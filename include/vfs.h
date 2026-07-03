@@ -98,6 +98,15 @@ inline std::string& main_script_dir() {
   return s;
 }
 
+// Absolute path of the entry script, set at startup before the environment is
+// built (so `Sys.script` can be baked into the Sys namespace on both backends).
+// Empty when there is no source file at runtime — the REPL, `stdin`, or an AOT
+// binary — in which case `Sys.script` reads back as nil.
+inline std::string& main_script_path() {
+  static std::string s;
+  return s;
+}
+
 // Content-Type from a file extension — the common web set; anything unknown is
 // served as application/octet-stream (the browser sniffs or downloads).
 inline std::string content_type_for(std::string_view path) {

@@ -779,6 +779,15 @@ struct ObjectValue {
   // detection never sniffs marker prop names — a hand-built object with
   // the same props is just an ordinary Object (forgery-inert).
   bool is_shared_val = false;
+  // A builtin stdlib namespace (IO, Sys, FS, ...): a closed, fixed set of
+  // members. Reading a member it doesn't have raises AttributeError instead
+  // of returning nil, so a typo or a removed API surfaces at the access site
+  // (like an undefined variable) rather than as a confusing "expected
+  // Function, got Nil" at a later call. `ns_name` points at the namespace's
+  // static name for the error message. Plain dicts/objects keep the
+  // permissive missing-key-is-nil semantics.
+  bool is_namespace = false;
+  const char* ns_name = nullptr;
 };
 
 struct ArrayValue : public ObjectValue {
@@ -3423,6 +3432,9 @@ inline Value _get_iterator(const Value& iterable, size_t line, size_t col) {
 
 inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
   using namespace std::literals;
+  // NOTE: keep the key set in sync with `is_object_builtin_method_name`
+  // (shared.h) — that predicate lets the JIT match this table when deciding
+  // whether an unknown namespace member is a dict builtin or an AttributeError.
   static std::unordered_map<std::string_view, Value> props_ = {
       {"size"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
@@ -8521,7 +8533,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   }
 
   Value eval_property(const peg::Ast& ast, const std::shared_ptr<Environment>& env,
-                      const Value& val, bool as_value = false) {
+                      const Value& val, bool as_value = false,
+                      const peg::Ast* recv = nullptr) {
     auto name = ast.token;
 
     // A bare reference to a value-type built-in method (`let m = x.map`, not
@@ -8639,6 +8652,27 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         return _wrap_method_with_this(prop, val, !obj.has_own(name), name);
       }
       return prop;
+    }
+
+    // A builtin namespace has a closed member set — an unknown member is a
+    // typo or a use of a removed API. Raise at the access site (naming the
+    // member) instead of returning nil and failing later at the call. UFCS
+    // (`Ns.free_fn()`) is resolved by the DOT handler before reaching here, so
+    // this never shadows a free-function fallback. Builtin methods (keys/size/
+    // has/...) satisfy obj.has() above, so they are unaffected.
+    if (obj.is_namespace) {
+      // Attribute the error to the receiver expression (the namespace), so the
+      // position matches the JIT — whose runtime property read carries the
+      // enclosing expression's position, not the member token's. Falls back to
+      // the member (DOT) position when the receiver node isn't threaded in.
+      long line = recv && recv->line ? static_cast<long>(recv->line) : ast.line;
+      long col =
+          recv && recv->column ? static_cast<long>(recv->column) : ast.column;
+      throw CulebraError(
+          "AttributeError",
+          std::format("namespace '{}' has no member '{}'",
+                      obj.ns_name ? obj.ns_name : "?", name),
+          line, col);
     }
 
     // Trait default-method fallback: if this instance's class doesn't
@@ -8783,7 +8817,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           // call from a bare reference; special properties (SharedBuffer .size,
           // function introspection) are handled before those sites and are
           // unaffected.
-          val = eval_property(postfix, env, val, /*as_value=*/!next_is_args);
+          val = eval_property(postfix, env, val, /*as_value=*/!next_is_args,
+                              /*recv=*/ast.nodes[0].get());
           break;
         }
         case "SAFE_INDEX"_:
@@ -9413,7 +9448,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
             lval = eval_array_reference(postfix, env, lval);
             break;
           case "DOT"_:
-            lval = eval_property(postfix, env, lval);
+            // Attribute a namespace AttributeError to the chain head (matching
+            // the rvalue path and the JIT), not the member token.
+            lval = eval_property(postfix, env, lval, /*as_value=*/false,
+                                 /*recv=*/ast.nodes[lvaloff].get());
             break;
           default:
             throw std::logic_error("invalid internal condition.");

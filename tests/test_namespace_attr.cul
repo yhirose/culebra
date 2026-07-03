@@ -1,0 +1,46 @@
+// Namespace member access + Sys.script.
+//
+// A builtin namespace (IO, FS, Sys, ...) has a closed member set: reading a
+// member it doesn't have raises AttributeError at the access site — naming the
+// member — instead of silently yielding nil and failing later at the call.
+// Plain dicts keep the permissive "missing key is nil" semantics. Interp and
+// JIT behave identically (see tests/jit_error_pos_test.sh for the position).
+
+// --- A5: unknown namespace member raises AttributeError ---
+assert_throws("AttributeError", fn() { IO.read_all() })   // removed API
+assert_throws("AttributeError", fn() { FS.nope("x") })
+assert_throws("AttributeError", fn() { Math.tau })        // bare read
+assert_throws("AttributeError", fn() { IO.push(1) })      // array-method name
+
+// A namespace bound to a value carries the same behavior (the marker travels
+// with the value).
+let io = IO
+assert_throws("AttributeError", fn() { io.read_all() })
+
+// The error is a normal catchable runtime exception, so a script can probe for
+// an optional API without a separate process.
+let mut probed = false
+try { IO.read_all() } catch e { probed = (e.kind == "AttributeError") }
+assert_true(probed)
+
+// --- Real members and dict builtins still resolve on a namespace ---
+assert_true(IO.keys().size() > 0)            // dict builtin over a namespace
+assert_true(IO.has("print"))                 // dict builtin
+assert_true(FS.exists("tests/test_namespace_attr.cul"))
+assert_true(Math.pi > 3.14 && Math.pi < 3.15)
+
+// --- Plain dicts are UNCHANGED: a missing key reads as nil ---
+let d = {a: 1}
+assert_eq(d.missing, nil)
+assert_eq(d.a, 1)
+
+// --- A2: Sys.script is the running script's absolute path ---
+// When run as a script (interp/jit), it is this file's absolute path; an AOT
+// binary has no source file at runtime, so it is nil. Accept both so the AOT
+// phase (which runs this same file compiled) agrees.
+if Sys.script != nil {
+  assert_true(Sys.script.ends_with("test_namespace_attr.cul"))
+  assert_true(FS.is_abs(Sys.script))
+}
+
+"OK".puts()

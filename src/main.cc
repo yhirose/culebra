@@ -1520,6 +1520,18 @@ int main(int argc, const char** argv) {
   startup_profile::mark("install_jit_stdlib");
 #endif
 
+  // `Sys.script` — the entry script's absolute path, baked into the Sys
+  // namespace when it is built (below). Set before `environment()` so the
+  // interpreter sees it; the JIT reads the same holder when it materializes
+  // Sys. Left empty (→ nil) for the REPL and stdin.
+  if (!options.script_path_list.empty()) {
+    std::error_code ec;
+    auto abs = std::filesystem::absolute(options.script_path_list.front(), ec);
+    culebra::main_script_path() = ec ? std::string() : abs.string();
+  } else {
+    culebra::main_script_path().clear();
+  }
+
   try {
     auto env = culebra::environment(options.script_argv);
     startup_profile::mark("environment() (interp stdlib registered)");

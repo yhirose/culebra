@@ -14,6 +14,7 @@
 #include <hash.h>
 #include <toml.h>
 #include <uuid.h>
+#include <vfs.h>
 #include <jit.h>
 #include <proc.h>
 #include <term.h>
@@ -6348,7 +6349,22 @@ inline JitObject* _jit_build_namespace_object(std::string_view ns_name) {
                                  _culebra_heap_str(
                                      culebra::current_executable_path()))},
         /*mut=*/false);
+    // `Sys.script` — the entry script's absolute path, or nil when there is no
+    // source file at runtime (an AOT binary never sets the holder). Mirrors the
+    // interpreter's make_sys_namespace.
+    const auto& sp = culebra::main_script_path();
+    obj->append_slot(
+        "script",
+        sp.empty()
+            ? JitValue{TAG_NIL, 0}
+            : JitValue{TAG_STRING,
+                       reinterpret_cast<int64_t>(_culebra_heap_str(sp))},
+        /*mut=*/false);
   }
+  // Tag as a builtin namespace so an unknown-member read raises AttributeError
+  // (see culebra_runtime_object_get_ic), matching the interpreter.
+  obj->is_namespace = true;
+  obj->ns_name = _intern_str(ns_name);  // process-lifetime, NUL-terminated
   return obj;
 }
 

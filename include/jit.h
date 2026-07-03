@@ -308,6 +308,13 @@ struct JitObject {
   // release/sweep paths tombstone the entry through it. Trailing field —
   // codegen only GEPs earlier members.
   int64_t owned_idx = -1;
+  // A builtin stdlib namespace (IO, Sys, FS, ...) — the JIT analogue of
+  // interp's ObjectValue::is_namespace. Reading a member it lacks raises
+  // AttributeError rather than yielding nil (see culebra_runtime_object_get_ic).
+  // `ns_name` points at the namespace's interned static name for the message.
+  // Trailing fields — codegen only GEPs earlier members.
+  bool is_namespace = false;
+  const char* ns_name = nullptr;
 
   // --- Shape-based property access helpers ---
 
@@ -4918,6 +4925,22 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
   // drop releases — acceptable for the borrowed-read contract here.
   if (_jit_is_shared_val(obj)) {
     return culebra::_jit_shared_val_prop(obj, key, line, col);
+  }
+  // A builtin namespace has a closed member set — an unknown member is a typo
+  // or a removed API. Raise here (naming the member) instead of returning nil,
+  // matching interp's eval_property. Builtin method names (keys/size/has/...)
+  // are excluded: the interp's ObjectValue::has() reports them present, so a
+  // call like `IO.keys()` dispatches the builtin; the JIT's user-method-over-
+  // builtin probe reads this same path and must see nil (not a throw) to fall
+  // through to the builtin. UFCS (`Ns.free_fn()`) is resolved before this cold
+  // path, so it is unaffected. Placed before the trait-default scan to match
+  // interp's ordering: a closed namespace never picks up a user trait default.
+  if (obj->is_namespace && !culebra::is_object_builtin_method_name(key)) {
+    throw culebra::CulebraError(
+        "AttributeError",
+        std::format("namespace '{}' has no member '{}'",
+                    obj->ns_name ? obj->ns_name : "?", key),
+        line, col);
   }
   // Trait default-method fallback (T4 part 2). Walk registered
   // defaults; for each candidate trait that owns `key`, check whether

@@ -23,6 +23,7 @@
 #include <sqlite.h>
 #include <toml.h>
 #include <uuid.h>
+#include <vfs.h>
 #include <interpreter.h>
 #include <proc.h>
 #if defined(CULEBRA_HTTP_ENABLED)
@@ -2030,6 +2031,15 @@ inline Value make_sys_namespace(const std::vector<std::string>& argv) {
   // Absolute path to the running culebra binary, for re-spawning a worker copy
   // of the interpreter (e.g. Proc.run([Sys.executable, "worker.cul"], ...)).
   ns.initialize("executable", Value(culebra::current_executable_path()), false);
+
+  // Absolute path of the running script (the `__file__` analogue), or nil when
+  // there is no source file — the REPL, stdin, or an AOT binary. Lets a script
+  // resolve files next to itself instead of relying on the cwd.
+  ns.initialize("script",
+                main_script_path().empty()
+                    ? Value()
+                    : Value(std::string(main_script_path())),
+                false);
 
   ns.initialize(
       "exit",
@@ -5885,50 +5895,69 @@ inline void setup_built_in_functions(
                           "String"sv)),
       false);
 
-  env.initialize("Math", make_math_namespace(), false);
-  env.initialize("IO", make_io_namespace(), false);
-  env.initialize("FS", make_fs_namespace(), false);
-  env.initialize("File", make_file_namespace(), false);
-  env.initialize("Embed", make_embed_namespace(), false);
+  // Install a builtin namespace, tagging its ObjectValue so reading an unknown
+  // member raises AttributeError instead of silently yielding nil (see
+  // ObjectValue::is_namespace). `name` must be a static string — its pointer is
+  // kept as `ns_name` for the error message.
+  auto ns_init = [&](const char* name, Value v) {
+    if (v.type == Value::Object) {
+      auto& o = v.to_object();
+      o.is_namespace = true;
+      o.ns_name = name;
+    }
+    env.initialize(name, std::move(v), false);
+  };
+
+  ns_init("Math", make_math_namespace());
+  ns_init("IO", make_io_namespace());
+  ns_init("FS", make_fs_namespace());
+  ns_init("File", make_file_namespace());
+  ns_init("Embed", make_embed_namespace());
   // Wrapped C++ classes (wrap.h declarations, e.g. foreign_binding.h's
   // `__Foreign.Counter`): one namespace object per declared ns, holding
   // one class object (ctor + statics) per class. Registered at
   // static-init time, so the registry is complete before setup runs.
   {
     std::map<std::string, ObjectValue> wrapped_ns;
+    // Stable name pointers for ns_name: the registry vector is a program-
+    // lifetime static, so its `wc.ns` strings outlive every namespace object.
+    std::map<std::string, const char*> stable_ns_name;
     for (const auto& wc : wrapped_classes()) {
       wrapped_ns[wc.ns].initialize(wc.name, wc.build_class_object(), false);
+      stable_ns_name.emplace(wc.ns, wc.ns.c_str());
     }
     for (auto& [ns, obj] : wrapped_ns) {
+      obj.is_namespace = true;
+      obj.ns_name = stable_ns_name[ns];
       env.initialize(ns, Value(std::move(obj)), false);
     }
   }
-  env.initialize("_Time", make_time_primitives_namespace(), false);
-  env.initialize("_Term", make_term_primitives_namespace(), false);
-  env.initialize("Random", make_random_namespace(), false);
-  env.initialize("Sys", make_sys_namespace(argv), false);
-  env.initialize("GC", make_gc_namespace(), false);
-  env.initialize("Tensor", make_tensor_namespace(), false);
-  env.initialize("JSON", make_json_namespace(), false);
-  env.initialize("Encoding", make_encoding_namespace(), false);
-  env.initialize("Compress", make_compress_namespace(), false);
-  env.initialize("Hash", make_hash_namespace(), false);
-  env.initialize("CSV", make_csv_namespace(), false);
-  env.initialize("SQLite", make_sqlite_namespace(), false);
-  env.initialize("TOML", make_toml_namespace(), false);
-  env.initialize("Env", make_env_namespace(), false);
-  env.initialize("UUID", make_uuid_namespace(), false);
-  env.initialize("_Regex", make_regex_primitives_namespace(), false);
-  env.initialize("Proc", make_proc_namespace(), false);
+  ns_init("_Time", make_time_primitives_namespace());
+  ns_init("_Term", make_term_primitives_namespace());
+  ns_init("Random", make_random_namespace());
+  ns_init("Sys", make_sys_namespace(argv));
+  ns_init("GC", make_gc_namespace());
+  ns_init("Tensor", make_tensor_namespace());
+  ns_init("JSON", make_json_namespace());
+  ns_init("Encoding", make_encoding_namespace());
+  ns_init("Compress", make_compress_namespace());
+  ns_init("Hash", make_hash_namespace());
+  ns_init("CSV", make_csv_namespace());
+  ns_init("SQLite", make_sqlite_namespace());
+  ns_init("TOML", make_toml_namespace());
+  ns_init("Env", make_env_namespace());
+  ns_init("UUID", make_uuid_namespace());
+  ns_init("_Regex", make_regex_primitives_namespace());
+  ns_init("Proc", make_proc_namespace());
 #if defined(CULEBRA_HTTP_ENABLED)
-  env.initialize("Http", make_http_namespace(), false);
+  ns_init("Http", make_http_namespace());
 #endif
-  env.initialize("Isolate", make_isolate_namespace(), false);
-  env.initialize("Channel", make_channel_namespace(), false);
-  env.initialize("Signal", make_signal_namespace(), false);
-  env.initialize("Parallel", make_parallel_namespace(), false);
-  env.initialize("SharedBuffer", make_shared_buffer_namespace(), false);
-  env.initialize("Shared", make_shared_namespace(), false);
+  ns_init("Isolate", make_isolate_namespace());
+  ns_init("Channel", make_channel_namespace());
+  ns_init("Signal", make_signal_namespace());
+  ns_init("Parallel", make_parallel_namespace());
+  ns_init("SharedBuffer", make_shared_buffer_namespace());
+  ns_init("Shared", make_shared_namespace());
 }
 
 // Embedded culebra source for stdlib modules that are easier to express

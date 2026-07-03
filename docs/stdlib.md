@@ -30,6 +30,13 @@ Conventions used below:
   spec](language.md). `Any` denotes any value.
 * Throws clauses describe runtime errors of the form
   `type error at L:C.` etc. See [§15 of the language spec](language.md).
+* Namespaces are **closed**: reading a member a namespace doesn't have
+  raises `AttributeError: namespace 'IO' has no member 'read_all'` at the
+  access site, rather than yielding `nil`. This turns a typo or a use of a
+  removed API into an immediate, catchable error instead of a confusing
+  failure at a later call. (Plain dicts keep the permissive rule — a missing
+  key reads as `nil`.) The dict builtins `keys`/`values`/`has`/`get`/`size`
+  still work on a namespace.
 
 ## Index
 
@@ -77,7 +84,7 @@ Conventions used below:
 | `Instant` / `Duration`, ISO 8601, calendar arithmetic | [§5 Time](#5-time) |
 | Random numbers | `Random.int`, `.uniform`, `.gauss`, `.shuffle`, `.weighted_choice` |
 | CLI argument parsing | [§10 Args](#10-args) |
-| Process info | `Sys.argv`, `Sys.exit`, `Sys.env`, `Sys.set_env`, `Sys.getcwd`, `Sys.chdir`, `Sys.executable` |
+| Process info | `Sys.argv`, `Sys.exit`, `Sys.env`, `Sys.set_env`, `Sys.getcwd`, `Sys.chdir`, `Sys.executable`, `Sys.script` |
 | Run an external command | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
 | Call an HTTP/HTTPS API | [§15 Http](#15-http) — `Http.get("https://api.example/x")` |
 | Escape / unescape HTML entities | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
@@ -1033,6 +1040,19 @@ to that standalone binary.)
 ```culebra
 # doctest: skip
 puts(Sys.executable)           # '/usr/local/bin/culebra'
+```
+
+### `Sys.script -> String?`
+
+Absolute path of the running script — the `__file__` analogue. Use it to resolve
+files next to the script instead of relying on the current working directory:
+`FS.join(FS.dirname(Sys.script), "data.txt")`. It is `nil` when there is no
+source file at runtime — the REPL, a piped `stdin`, or an AOT-built binary (which
+carries no `.cul`; use `Sys.executable` there).
+
+```culebra
+# doctest: skip
+puts(Sys.script)               # '/Users/alice/project/build.cul'
 ```
 
 ### `GC` — heap introspection

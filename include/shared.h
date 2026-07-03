@@ -68,6 +68,20 @@ inline bool is_builtin_method_name(std::string_view name) {
   return builtin_method_names().count(name) > 0;
 }
 
+// The subset of builtin methods that apply to a plain Object/dict receiver —
+// exactly the keys of interpreter.h's `ObjectValue::builtins()`. Kept in sync
+// with that table (add a name here when you add one there). A builtin namespace
+// (IO, FS, ...) reads its unknown members as an AttributeError, EXCEPT these:
+// `IO.keys()` / `Sys.has("script")` and the like still dispatch the dict
+// builtin, matching the interp (whose `ObjectValue::has()` reports them
+// present). Array/Set/Tensor/String method names are deliberately excluded so
+// `IO.push()` / `FS.split()` raise on both backends.
+inline bool is_object_builtin_method_name(std::string_view name) {
+  static const std::unordered_set<std::string_view> kNames = {
+      "size", "keys", "has", "get", "get_or_put", "remove", "values", "iter"};
+  return kNames.count(name) > 0;
+}
+
 // Transparent hash/eq for std::string-keyed unordered_map that allows
 // std::string_view lookups without constructing a temporary std::string
 // on every find (C++20 heterogeneous lookup needs is_transparent on

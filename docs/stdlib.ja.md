@@ -28,6 +28,13 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
   値を示します。
 * 例外条項は `type error at L:C.` 等の実行時エラーを示します。
   [言語仕様 §15](language.ja.md) を参照。
+* 名前空間は**閉じて**います：名前空間が持たないメンバーを読むと、`nil` を
+  返すのではなくアクセス地点で
+  `AttributeError: namespace 'IO' has no member 'read_all'` を送出します。
+  これにより、タイプミスや廃止 API の使用が、後続の呼び出しでの分かりにくい
+  失敗ではなく、即座に捕捉可能なエラーになります。（プレーンな dict は寛容な
+  ルールのまま — 未定義キーは `nil`。）dict の組み込みメソッド
+  `keys`/`values`/`has`/`get`/`size` は名前空間でも従来通り使えます。
 
 ## 目次
 
@@ -75,7 +82,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | `Instant` / `Duration` クラス、ISO 8601、カレンダー算術 | [§5 Time](#5-time) |
 | 乱数 | `Random.int`、`.uniform`、`.gauss`、`.shuffle`、`.weighted_choice` |
 | CLI 引数解析 | [§10 Args](#10-args) |
-| プロセス情報 | `Sys.argv`、`Sys.exit`、`Sys.env`、`Sys.set_env`、`Sys.getcwd`、`Sys.chdir`、`Sys.executable` |
+| プロセス情報 | `Sys.argv`、`Sys.exit`、`Sys.env`、`Sys.set_env`、`Sys.getcwd`、`Sys.chdir`、`Sys.executable`、`Sys.script` |
 | 外部コマンド実行 | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
 | HTTP/HTTPS API を呼ぶ | [§15 Http](#15-http) — `Http.get("https://api.example/x")` |
 | HTML エンティティの escape / unescape | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
@@ -997,6 +1004,19 @@ puts(Sys.getcwd())             # '/tmp'（または解決後のパス）
 ```culebra
 # doctest: skip
 puts(Sys.executable)           # '/usr/local/bin/culebra'
+```
+
+### `Sys.script -> String?`
+
+実行中スクリプトの絶対パス（`__file__` 相当）。カレントディレクトリに頼らず、
+スクリプトの隣にあるファイルを解決するのに使う：
+`FS.join(FS.dirname(Sys.script), "data.txt")`。実行時にソースファイルが存在しない
+場合 — REPL・パイプした `stdin`・AOT ビルドされたバイナリ（`.cul` を持たない。その
+場合は `Sys.executable` を使う）— では `nil`。
+
+```culebra
+# doctest: skip
+puts(Sys.script)               # '/Users/alice/project/build.cul'
 ```
 
 ### `GC` — ヒープ情報の取得

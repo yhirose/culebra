@@ -124,5 +124,19 @@ g().collect()'
 check_same "fn-def in if in generator"  'fn g() { if true { fn h() { 1 } }; yield 1 }
 g().collect()'
 
+# Reading an unknown member of a builtin namespace raises AttributeError at the
+# access site (naming the member), instead of silently yielding nil and failing
+# later at the call. Interp (eval_property) and JIT (object_get_ic) must agree
+# on kind + message + position — the position is the receiver expression, not
+# the member token. `keys`/`has` (dict builtins) still dispatch; only genuinely
+# absent members raise. Also covers a builtin method name that is NOT a dict
+# builtin (`push`) and the bare-value read form.
+check_same "ns missing member call"   'IO.read_all()'
+check_same "ns missing member bare"   'let x = IO.read_all'
+check_same "ns missing (FS)"          'FS.typo("x")'
+check_same "ns array-method name"     'IO.push(1)'
+check_same "ns via bound value"       'let x = IO
+x.read_all()'
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1
