@@ -8425,10 +8425,20 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                                       bool is_builtin = true,
                                       std::string_view method_name = {}) {
     const auto& pf = prop.to_function();
+    // Hold the underlying function in a shared Value so the eval closure and
+    // the cycle-collector hook (for_each_captured_value, below) reference the
+    // SAME copy. When `prop` is a user closure (a class constructor or method)
+    // it holds def_env refs to the declaring env; the plain wrapper's own
+    // def_env is null, so InterpGC's value-walk can't see those refs and
+    // `let mk = Cls.new` would leak the env each call — the constructor-hidden
+    // -methods problem again, one layer out.
+    auto underlying = std::make_shared<Value>(prop);
     Value wrapped = Value(
-        FunctionValue(*pf.params, [=](std::shared_ptr<Environment> callEnv) {
+        FunctionValue(*pf.params, [val, underlying](std::shared_ptr<Environment> callEnv) {
           callEnv->initialize("this", val, false);
-          return pf.eval(callEnv);
+          // get<>() returns a reference (prop is already a validated Function);
+          // to_function() would copy the FunctionValue on every call.
+          return underlying->get<FunctionValue>().eval(callEnv);
         }));
     // Carry introspection metadata (name / return_type /
     // introspection_target) through the method-binding wrapper so
@@ -8451,6 +8461,15 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // carry the strict-arity flag through it or `Math.abs(1, 2)` would slip
     // past the positional check that `type_of(1, 2)` (unwrapped) hits.
     wf.strict_arity = pf.strict_arity;
+    // Expose the hidden underlying function so the cycle collector subtracts
+    // its def_env edges (see `underlying` above). For a builtin `pf` (def_env
+    // null) this walks to nothing; for a user closure it reclaims the env.
+    // Keyed on the shared identity so an aliased wrapper is counted once.
+    wf.for_each_captured_value =
+        [underlying](const std::function<void(const Value&)>& emit) {
+          emit(*underlying);
+        };
+    wf.captured_group_key = underlying;
     return wrapped;
   }
 

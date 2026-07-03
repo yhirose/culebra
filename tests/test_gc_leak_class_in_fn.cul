@@ -34,3 +34,22 @@ assert_lt(measure(fn () {
   j
 }), 1000)
 puts("gc leak [class-in-fn]: no leak")
+
+// Variant — binding the constructor (or any method) to a name goes through
+// _wrap_method_with_this, whose closure hides the underlying function (holding
+// the class's env). Without exposing it (for_each_captured_value on the
+// wrapper) `let mk = Cls.new` leaked ~2 objects/call even bound-but-uncalled.
+fn make_and_bind() {
+  class Local {
+    new(v) { this.v = v }
+    m() { this.v }
+  }
+  let mk = Local.new     // wrapper over the ctor — the leak site
+  mk(1).m()
+}
+assert_lt(measure(fn () {
+  mut j = 0
+  while j < 100 { make_and_bind(); j = j + 1 }
+  j
+}), 1000)
+puts("gc leak [wrapped-ctor bound to name]: no leak")
