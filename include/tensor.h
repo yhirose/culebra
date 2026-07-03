@@ -417,6 +417,36 @@ inline tl::array _tl_binop(Op op, const tl::array& a, const tl::array& b) {
   }
 }
 
+// Rank-0 materialized operand: read its value and use tl's scalar
+// overloads. This is not a micro-optimization — the scalar forms compose
+// into affine epilogues (e.g. `dot(...) * lr` folds into the GEMM store;
+// scalar chains collapse to one node), where the lifted rank-0 tensor
+// form runs a broadcast kernel over the large side. `t * 2.0` from the
+// language and every scalar the VJPs build (lr, -1, 1/n) hit this.
+// The Op tape keeps the rank-0 tensor as a real input either way, so
+// autograd is unaffected.
+inline tl::array _tl_binop_vs_scalar(Op op, const tl::array& a, float s,
+                                     bool scalar_on_left) {
+  if (!scalar_on_left) {
+    switch (op) {
+      case Op::Add: return a + s;
+      case Op::Sub: return a - s;
+      case Op::Mul: return a * s;
+      case Op::Div: return a / s;
+      default: break;
+    }
+  } else {
+    switch (op) {
+      case Op::Add: return s + a;
+      case Op::Sub: return s - a;
+      case Op::Mul: return s * a;
+      case Op::Div: return s / a;
+      default: break;
+    }
+  }
+  throw std::logic_error("tensor: bad op in scalar binop dispatch");
+}
+
 // Build a lazy elementwise binop node. Shapes are broadcast per numpy
 // rules; dtype must match (no implicit promotion in Phase 1).
 inline TensorPtr tensor_binop(Op op, TensorPtr a, TensorPtr b) {
@@ -424,7 +454,17 @@ inline TensorPtr tensor_binop(Op op, TensorPtr a, TensorPtr b) {
     throw CulebraError("ValueError", "Tensor: dtype mismatch in binop.");
   }
   tensor_broadcast_shape(a->shape, b->shape);  // culebra-worded error
-  auto v = _tl_guard([&] { return _tl_binop(op, a->value, b->value); });
+  bool b_scalar = op != Op::Pow && b->shape.rank() == 0 &&
+                  b->value.materialized();
+  bool a_scalar = op != Op::Pow && a->shape.rank() == 0 &&
+                  a->value.materialized() && b->shape.rank() != 0;
+  auto v = _tl_guard([&] {
+    if (b_scalar) return _tl_binop_vs_scalar(op, a->value, b->value.raw()[0],
+                                             /*scalar_on_left=*/false);
+    if (a_scalar) return _tl_binop_vs_scalar(op, b->value, a->value.raw()[0],
+                                             /*scalar_on_left=*/true);
+    return _tl_binop(op, a->value, b->value);
+  });
   auto dtype = a->dtype;
   return tensor_propagate_grad(std::make_shared<TensorImpl>(
       op, std::move(v), dtype,
