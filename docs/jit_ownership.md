@@ -164,8 +164,19 @@ A C++ RAII handle (already in `jit.h`, piloted on operators — see
 - `.consume()` — hand the `+1` onward (into a slot, a call, a return); marks
   spent. Double-consume is a **codegen-time `assert`/abort** — a bug becomes a
   build failure, not a double-free.
+- `.drop()` — the explicit-release twin of `.consume()`: emit the release
+  **now**, at the current insertion point, and mark spent. For a value that is
+  simply dead rather than handed on, and whose release must land before later
+  IR (a `make_*` that emits, a branch arm, an out-param load) where the
+  scope-exit dtor would place it too late. A default-constructed (empty)
+  `Owned` drops to a no-op, so it cleanly models an optional arg.
 - destructor — if still owned, emit `emit_value_release` (the RAII `Drop`).
 - move-assign releases the old value first.
+
+A `.drop()`/dtor releases at the builder's *current* point, so `Owned` covers
+**straight-line temporaries only**. A value whose lifetime is one loop
+*iteration* inside an emitted loop is not straight-line; keep such a release
+bare (or scope an `Owned` to the loop-body region) — see §6.
 
 Straight-line temporaries held only as `Owned` are **leak- and
 double-free-proof by the C++ type system**: they are either consumed exactly
@@ -409,21 +420,45 @@ Corollary: no correct codegen path contains a bare, hand-placed
   old raw `+1` contract), verified byte-identical IR at -O2/-O0 plus the
   full gates. The `.consume()` calls are the grep-able inventory of what's
   left to convert.
-- **The through-line work:** convert those `.consume()` clusters to real
-  `Owned` flow (dtor releases, borrows) cluster by cluster, deleting the
-  hand-placed retain/release as each converts — until §5's invariants hold
-  codebase-wide. Notes for those slices: a probe sweep found **no
-  normal-path leaks** in the remaining clusters (statement discard /
-  `cond` / guards / interpolation / `??` are flat; `if`/`while`/logical
-  conditions only accept Bool/Long/Float, so a heap `+1` can't reach them
-  on the normal path — only their *throw* edges carry heap refs, and those
-  are the per-region cleanup pads' job, not `Owned`'s, §4.3). Beware
-  release-position changes: e.g. `compile_statements` frees the previous
-  statement's result *before* compiling the next one — a naive move-assign
-  rewrite would emit the release after it, shifting drop timing observed by
-  the interpreter. Also remaining: the method-dispatch children's internals
-  (`compile_user_method_over_builtin` / set-mutate / method-or-ufcs, which
-  still share consumed raws across their runtime-exclusive arms).
+- **The through-line work (in progress):** convert those `.consume()`
+  clusters to real `Owned` flow (dtor releases, borrows) cluster by cluster,
+  deleting the hand-placed retain/release as each converts — until §5's
+  invariants hold codebase-wide. **Done so far** (slices A1–A4, all verified
+  `--emit-llvm` 0-diff — hand-placed `emit_value_release` in `jit.h` 81→52):
+  every `compile_builtin_method` HOF callback (map/filter/for_each/reduce/
+  find/any-all/flat_map) and every builtin-method operand arg (tensor
+  pow/reshape/dot/linear_sigmoid; set union/intersect/diff/sym_diff/subset/
+  superset; string join/index_of/contains/tr/trim/split/split_iter/
+  starts_with/ends_with) now holds its value as `Owned`. Two shapes recur:
+  where the release sat immediately before `return <value>` the handle just
+  falls off scope (a bare `return <value>` emits no IR, so the dtor lands at
+  the same point); where IR follows the release (a `make_*`, a branch arm, an
+  out-param load) use `Owned::drop()` — release now, mark spent — or a C++
+  block scope. **`Owned::drop()` (§4.2) was added for exactly this.**
+- **The straight-line clusters are the tractable part; the rest is
+  loop-body.** The remaining ~52 bare releases live in inline-loop emitters
+  (`emit_inlined_*`, `*_inline_loop`) and destructuring (`emit_array_pattern`)
+  — values whose lifetime is one loop *iteration*, not a straight line. A
+  scope-exit `Owned` dtor fires at the builder's current point, which inside
+  an emitted loop is the wrong place, so these are **out of scope for the
+  plain handle (§4.2)**: they need either an `Owned` scoped to the loop-body
+  region (works for a per-iteration temporary created-and-released within one
+  turn) or, for a value released at the loop's natural exhaustion point, a
+  documented invariant carve-out — a bare release inside a loop-body emitter
+  whose lifetime is provably one iteration is *not* migration debt. Decide
+  per-site; do not force the last releases onto `Owned` where it distorts the
+  code. Beware release-position changes: e.g. `compile_statements` frees the
+  previous statement's result *before* compiling the next one — a naive
+  move-assign rewrite would emit the release after it, shifting drop timing
+  observed by the interpreter. A probe sweep found **no normal-path leaks**
+  in the remaining straight-line clusters (statement discard / `cond` /
+  guards / interpolation / `??` are flat; `if`/`while`/logical conditions
+  only accept Bool/Long/Float, so a heap `+1` can't reach them on the normal
+  path — only their *throw* edges carry heap refs, and those are the
+  per-region cleanup pads' job, §4.3). Also remaining: the method-dispatch
+  children's internals (`compile_user_method_over_builtin` / set-mutate /
+  method-or-ufcs, which still share consumed raws across their
+  runtime-exclusive arms).
 - **Unblocks in order:** (1) the rooting/ownership split (§2/§4.5) is closed
   by evidence — both shipping collectors root in-flight temporaries
   independently, so removing a redundant ref needs an accounting proof, not
