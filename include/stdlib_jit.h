@@ -7033,49 +7033,52 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
     return emit_output_call(jit, rt::print, argsAst);
 
   if (name == "to_long" && argsAst.nodes.size() == 1) {
-    auto arg = jit.compile(*argsAst.nodes[0]).consume();
+    auto arg = jit.compile(*argsAst.nodes[0]);
     // Polymorphic: Long/Float/String. The runtime helper dispatches
     // on tag (Long identity, Float truncate, String parse) and
     // raises `type error` for anything else.
     auto result = jit.emit_call(
         jit.module_->getFunction(rt::to_long_any),
-        {jit.extract_tag(arg), jit.extract_data(arg), line, col});
-    jit.emit_value_release(arg);
+        {jit.extract_tag(arg.borrow()), jit.extract_data(arg.borrow()),
+         line, col});
+    arg.drop();
     return result;
   }
 
   if (name == "to_float" && argsAst.nodes.size() == 1) {
-    auto arg = jit.compile(*argsAst.nodes[0]).consume();
+    auto arg = jit.compile(*argsAst.nodes[0]);
     auto result = jit.emit_call(
         jit.module_->getFunction(rt::to_float_any),
-        {jit.extract_tag(arg), jit.extract_data(arg), line, col});
-    jit.emit_value_release(arg);
+        {jit.extract_tag(arg.borrow()), jit.extract_data(arg.borrow()),
+         line, col});
+    arg.drop();
     return result;
   }
 
   if (name == "to_string" && argsAst.nodes.size() == 1) {
-    auto arg = jit.compile(*argsAst.nodes[0]).consume();
+    auto arg = jit.compile(*argsAst.nodes[0]);
     auto s = jit.emit_call(
         jit.module_->getFunction(rt::value_to_display),
-        {jit.extract_tag(arg), jit.extract_data(arg)});
-    jit.emit_value_release(arg);
+        {jit.extract_tag(arg.borrow()), jit.extract_data(arg.borrow())});
+    arg.drop();
     return jit.make_string(s);
   }
 
   if (name == "type_of" && argsAst.nodes.size() == 1) {
-    auto arg = jit.compile(*argsAst.nodes[0]).consume();
+    auto arg = jit.compile(*argsAst.nodes[0]);
     auto s = jit.emit_call(jit.module_->getFunction(rt::type_of),
-                                 {jit.extract_tag(arg)});
-    jit.emit_value_release(arg);
+                                 {jit.extract_tag(arg.borrow())});
+    arg.drop();
     return jit.make_string(s);
   }
 
   if (name == "hash" && argsAst.nodes.size() == 1) {
-    auto arg = jit.compile(*argsAst.nodes[0]).consume();
+    auto arg = jit.compile(*argsAst.nodes[0]);
     auto h = jit.emit_call(
         jit.module_->getFunction(rt::hash_any),
-        {jit.extract_tag(arg), jit.extract_data(arg), line, col});
-    jit.emit_value_release(arg);
+        {jit.extract_tag(arg.borrow()), jit.extract_data(arg.borrow()),
+         line, col});
+    arg.drop();
     return jit.make_long(h);
   }
 
@@ -7092,14 +7095,15 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
     while (nameNode->nodes.size() == 1) nameNode = nameNode->nodes[0].get();
     auto namePtr = jit.get_or_create_global_str(
         std::string(nameNode->token), ".lazyns.name");
-    auto builder = jit.compile(*argsAst.nodes[1]).consume();
+    auto builder = jit.compile(*argsAst.nodes[1]);
     jit.emit_call(
         jit.module_->getOrInsertFunction(rt::lazy_ns_register,
                                          jit.builder_.getVoidTy(), ptrTy,
                                          jit.builder_.getInt8Ty(),
                                          jit.builder_.getInt64Ty()),
-        {namePtr, jit.extract_tag(builder), jit.extract_data(builder)});
-    jit.emit_value_release(builder);
+        {namePtr, jit.extract_tag(builder.borrow()),
+         jit.extract_data(builder.borrow())});
+    builder.drop();
     return jit.make_nil();
   }
 
@@ -8305,10 +8309,11 @@ inline llvm::Value* JitExtension::compile_ns_prop(JIT& jit,
 inline llvm::Value* JitExtension::emit_output_call(JIT& jit,
                                                      const char* rt_name,
                                                      const peg::Ast& argsAst) {
-  auto arg = jit.compile(*argsAst.nodes[0]).consume();
+  auto arg = jit.compile(*argsAst.nodes[0]);
   jit.emit_call(jit.module_->getFunction(rt_name),
-                      {jit.extract_tag(arg), jit.extract_data(arg)});
-  jit.emit_value_release(arg);
+                      {jit.extract_tag(arg.borrow()),
+                       jit.extract_data(arg.borrow())});
+  arg.drop();
   return jit.make_nil();
 }
 
