@@ -307,10 +307,14 @@ _run-tests BACKEND:
     }
 
     run_embed() {
+        # -j: the ctest targets are independent processes, so run them in
+        # parallel like the per-file phases. The suite's wall-clock is otherwise
+        # the serial sum, dominated by the two slowest scripts (signal_test,
+        # fmt_test) — parallelism hides everything behind the longest single test.
         # --timeout: bound each test so a stalled CI runner (GitHub's scarce
         # macOS VMs occasionally freeze a process) fails fast instead of hanging
         # the job for hours. 300 s is ~8x the slowest legit test (signal_test).
-        (cd "$(dirname "$BIN")" && ctest --output-on-failure --timeout 300)
+        (cd "$(dirname "$BIN")" && ctest --output-on-failure --timeout 300 -j "$JOBS")
     }
 
     # Exercises `culebra test`-only ambient bindings (matchers, DI,
