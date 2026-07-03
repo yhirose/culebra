@@ -69,10 +69,29 @@ if [[ $# -ge 1 ]]; then
 else
   echo "GC leak check — N=$N, threshold=${THRESHOLD}x (binary: $CULEBRA)"
   echo "--------------------------------------------------------------------"
+  # Each pattern is an independent pair of culebra runs (conservative vs
+  # gc_refs), and each run reports only its own process's live count — so the
+  # battery fans out across patterns with no cross-talk. Serially the ~39
+  # patterns dominate the gate (~5 s each); parallel they collapse to the
+  # slowest single pattern. Per-pattern output is buffered and replayed in list
+  # order; a leak/error drops a marker file collected afterward.
+  work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+  list="$work/patterns"
+  "$CULEBRA" --jit "$PATTERNS" list 2>/dev/null | grep -v '^[[:space:]]*$' > "$list"
+  jobs="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}"
+  export -f check_one live_of
+  export CULEBRA PATTERNS N THRESHOLD work
+  xargs -P "$jobs" -I '{}' bash -c '
+      row=$(check_one "{}" "$PATTERNS" "{}" "$N"); st=$?
+      printf "%s\n" "$row" > "$work/{}.row"
+      [[ $st -eq 0 ]] || touch "$work/{}.bad"
+    ' < "$list"
   while read -r pat; do
-    [[ -z "$pat" ]] && continue
-    check_one "$pat" "$PATTERNS" "$pat" "$N" || rc=1
-  done < <("$CULEBRA" --jit "$PATTERNS" list 2>/dev/null)
+    [[ -s "$work/$pat.row" ]] && cat "$work/$pat.row"
+  done < "$list"
+  shopt -s nullglob
+  bad=("$work"/*.bad)
+  (( ${#bad[@]} > 0 )) && rc=1
   echo "--------------------------------------------------------------------"
   if (( rc == 0 )); then echo "no RC leaks detected"; else echo "RC leak(s) detected — see LEAK rows above"; fi
 fi
