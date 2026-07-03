@@ -15936,15 +15936,15 @@ struct JIT {
                                        ptrTy, builder_.getInt64Ty(),
                                        builder_.getInt64Ty()),
           {arrPtr, rest_start, rest_len}, "rest.arr");
-      auto rest_val = make_array(rest_arr_ptr);
+      auto rest_val = own(make_array(rest_arr_ptr));
       auto rest_name = std::string(elems[rest_idx]->nodes[0]->token);
       if (is_sink_name(rest_name)) {
         // `[a, ...] = arr` / `[a, ..._, b] = arr`: still slice the
         // tail (so post-rest elements get the right indices), but
         // drop the resulting Array's +1 instead of holding it.
-        emit_value_release(rest_val);
+        rest_val.drop();
       } else {
-        declare_local(rest_name, rest_val, is_mut);
+        declare_local(rest_name, rest_val.consume(), is_mut);
       }
       for (size_t i = rest_idx + 1; i < elems.size(); i++) {
         auto off = static_cast<int64_t>(elems.size() - i);
@@ -21392,11 +21392,11 @@ struct JIT {
 
     // Build the 0-arg closure and push it onto the defer stack. The
     // runtime retains it; we drop the local ref after.
-    auto closureVal = emit_closure_build(fn, info, 0);
+    auto closureVal = own(emit_closure_build(fn, info, 0));
     builder_.CreateCall(
         module_->getFunction(rt::defer_push),
-        {extract_tag(closureVal), extract_data(closureVal)});
-    emit_value_release(closureVal);
+        {extract_tag(closureVal.borrow()), extract_data(closureVal.borrow())});
+    closureVal.drop();
     return make_nil();
   }
 
