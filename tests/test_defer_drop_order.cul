@@ -1,0 +1,64 @@
+# defer/drop ordering at scope exit must match the interpreter: a scope's
+# `defer`s run BEFORE its drop-carrying locals are released (defer -> drop),
+# on the normal exit path. Regression guard for the JIT normal-path reorder
+# in compile_lexical_scope / compile_while / compile_for (all share the same
+# finish_and_pop_scope handoff; fn-level was already correct). difftest
+# doesn't generate defer+observable-drop co-occurrence, so this is pinned
+# explicitly and runs on both backends.
+#
+# NOTE: the lexical bare-block form `{ ... }` also exercises this reorder but
+# `culebra fmt` currently refuses a bare block nested in a function, so it
+# can't live in the fmt corpus; the while/for bodies below drive the same
+# finish_and_pop_scope path (bare-block parity is verified manually).
+
+mut log = []
+
+class Res {
+  new(n) {
+    this.n = n
+  }
+  drop() {
+    log.push("drop" + this.n.to_string())
+  }
+}
+
+# --- while body: defer before drop, each iteration ---
+mut i = 0
+while i < 2 {
+  let r = Res.new(i)
+  defer {
+    log.push("wdefer")
+  }
+  i = i + 1
+}
+assert_eq(log, ["wdefer", "drop0", "wdefer", "drop1"])
+
+# --- for body: defer before the (LIFO) drops, each iteration ---
+log = []
+for x in [10] {
+  let r = Res.new(x)
+  let s = Res.new(x + 100)
+  defer {
+    log.push("fdefer")
+  }
+}
+assert_eq(log, ["fdefer", "drop110", "drop10"])
+
+# --- a throwing defer still drops the scope's locals before propagating ---
+log = []
+fn throws_in_defer() {
+  for x in [9] {
+    let r = Res.new(x)
+    defer {
+      throw "boom"
+    }
+  }
+}
+mut caught = ""
+try {
+  throws_in_defer()
+} catch e {
+  caught = e
+}
+assert_eq(caught, "boom")
+assert_eq(log, ["drop9"])

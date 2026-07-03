@@ -16334,12 +16334,14 @@ struct JIT {
       emit_value_release(bodyVal);
     }
 
+    // defer before drop (see compile_lexical_scope): run this iteration's
+    // defers while current_lpad_ is still cleanupBB, then release its slots.
+    if (has_defer && !builder_.GetInsertBlock()->getTerminator()) {
+      emit_call(module_->getFunction(rt::defer_run_to), {mark});
+    }
     finish_and_pop_scope(cleanupBB, mark, savedLpad, "while.body.exc",
                          savedLpad);
     if (!builder_.GetInsertBlock()->getTerminator()) {
-      if (has_defer) {
-        emit_call(module_->getFunction(rt::defer_run_to), {mark});
-      }
       builder_.CreateBr(condBB);
     }
 
@@ -16631,11 +16633,13 @@ struct JIT {
       emit_value_release(bodyVal);
     }
 
+    // defer before drop (see compile_lexical_scope): run this iteration's
+    // defers while current_lpad_ is still cleanupBB, then release its slots.
+    if (has_defer && !builder_.GetInsertBlock()->getTerminator()) {
+      emit_call(module_->getFunction(rt::defer_run_to), {mark});
+    }
     finish_and_pop_scope(cleanupBB, mark, savedLpad, "for.body.exc", savedLpad);
     if (!builder_.GetInsertBlock()->getTerminator()) {
-      if (has_defer) {
-        emit_call(module_->getFunction(rt::defer_run_to), {mark});
-      }
       builder_.CreateBr(continue_bb);
     }
   }
@@ -17079,13 +17083,17 @@ struct JIT {
     }
     val = make_nil();
 
-    // Fill (or erase) the throw-path cleanup while the scope is still the live
-    // top-of-stack, then release it on the normal path (see finish_and_pop_scope
-    // for the current_lpad_ discipline that keeps the DCE intact).
-    finish_and_pop_scope(cleanupBB, mark, savedLpad, "scope.exc", savedLpad);
+    // Normal exit runs this scope's defers BEFORE releasing its slots, so
+    // `defer` fires before `drop`, matching the interpreter (run_deferred then
+    // the owned-scope-exit). Emit it while current_lpad_ is still this scope's
+    // cleanupBB: a defer that throws routes there and drops the slots (running
+    // no defers, since defer_run_to already drained them on the throw) before
+    // re-raising. Then fill/erase the throw-path cleanup and release on the
+    // normal path.
     if (has_defer && !builder_.GetInsertBlock()->getTerminator()) {
       emit_call(module_->getFunction(rt::defer_run_to), {mark});
     }
+    finish_and_pop_scope(cleanupBB, mark, savedLpad, "scope.exc", savedLpad);
     return val;
   }
 
