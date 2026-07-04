@@ -9,14 +9,33 @@
 # every method accepts either a String or another Path wherever a path is
 # expected.
 let _path_module = fn() {
-  let _s = fn(o) { to_string(o) }
+  # A structural "is this a Path" probe: a Path is the only object carrying a
+  # `_path` string field. `type_of` first so `.has` is only ever called on an
+  # Object (String/Array/… don't answer `.has`).
+  let _is_path = fn(o) { type_of(o) == "Object" && o.has("_path") }
+  # PathLike coercion used *inside* the class: a String/StringView stays a
+  # string, a Path collapses to its inner string via __str__. Anything else is
+  # a TypeError — the same strictness the native FS.* layer enforces, so a
+  # non-path never slips through Path.new / `/` / `rename` as stringified junk.
+  let _s = fn(o) {
+    let t = type_of(o)
+    if t == "String" || t == "StringView" { o }
+    else if _is_path(o) { to_string(o) }
+    else { throw {kind: "TypeError", message: "type error: expected String|Path, got {t}"} }
+  }
   class Path {
     new(p) { this._path = _s(p) }
 
     # --- display / conversion ---
     __str__() { this._path }         # "{p}" and to_string(p) yield the raw path
     str() { this._path }             # explicit String escape hatch
-    __eq__(o) { this._path == _s(o) }
+    # equal only to a String/StringView or another Path with the same path;
+    # any other type is simply not-equal (never a TypeError).
+    __eq__(o) {
+      if type_of(o) == "String" || type_of(o) == "StringView" { this._path == o }
+      else if _is_path(o) { this._path == to_string(o) }
+      else { false }
+    }
 
     # --- joining: `base / "sub" / "leaf"` ---
     join(o) { Path.new(FS.join(this._path, _s(o))) }

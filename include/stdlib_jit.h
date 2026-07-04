@@ -7569,13 +7569,19 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
   }
 
   if (ns == "FS") {
+    // A path arg already type-checked as `String | Path` -> its C string:
+    // value_to_display returns a String's own pointer (no copy) and collapses
+    // a Path via __str__. One place for the fast-path PathLike extraction.
+    auto emit_pathlike = [&](llvm::Value* v) {
+      return emit_call(module_->getFunction(rt::value_to_display),
+                       {extract_tag(v), extract_data(v)});
+    };
     // Whole-file read/write convenience (open+read/write+close).
     if (method == "read" && argsAst.nodes.size() == 1) {
       auto arg = jit.compile(*argsAst.nodes[0]);
       emit_type_check(arg.borrow(), "String|Path", "parameter 'path'",
                       argsAst.nodes[0].get());
-      auto ptr = emit_call(module_->getFunction(rt::value_to_display),
-                           {extract_tag(arg.borrow()), extract_data(arg.borrow())});
+      auto ptr = emit_pathlike(arg.borrow());
       auto s = emit_call(module_->getFunction(rt::read_file),
                          {ptr, line, col});
       arg.drop();
@@ -7588,8 +7594,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto c = jit.compile(*argsAst.nodes[1]);
       emit_type_check(c.borrow(), "String", "parameter 'content'",
                       argsAst.nodes[1].get());
-      auto pp = emit_call(module_->getFunction(rt::value_to_display),
-                          {extract_tag(p.borrow()), extract_data(p.borrow())});
+      auto pp = emit_pathlike(p.borrow());
       auto cp = builder_.CreateIntToPtr(extract_data(c.borrow()), ptrTy);
       emit_call(module_->getFunction(rt::write_file), {pp, cp, line, col});
       p.drop();
@@ -7603,8 +7608,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto arg = jit.compile(*argsAst.nodes[0]);
       emit_type_check(arg.borrow(), "String|Path", "parameter 'path'",
                       argsAst.nodes[0].get());
-      auto p = emit_call(module_->getFunction(rt::value_to_display),
-                         {extract_tag(arg.borrow()), extract_data(arg.borrow())});
+      auto p = emit_pathlike(arg.borrow());
       auto s = emit_call(module_->getFunction(rt_name), {p});
       arg.drop();
       return make_string(s);
@@ -7620,8 +7624,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto arg = jit.compile(*argsAst.nodes[0]);
       emit_type_check(arg.borrow(), "String|Path", "parameter 'path'",
                       argsAst.nodes[0].get());
-      auto p = emit_call(module_->getFunction(rt::value_to_display),
-                         {extract_tag(arg.borrow()), extract_data(arg.borrow())});
+      auto p = emit_pathlike(arg.borrow());
       auto i = emit_call(module_->getFunction(rt_name), {p});
       arg.drop();
       auto b = builder_.CreateICmpNE(i, builder_.getInt64(0));
@@ -7636,8 +7639,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto arg = jit.compile(*argsAst.nodes[0]);
       emit_type_check(arg.borrow(), "String|Path", "parameter 'path'",
                       argsAst.nodes[0].get());
-      auto p = emit_call(module_->getFunction(rt::value_to_display),
-                         {extract_tag(arg.borrow()), extract_data(arg.borrow())});
+      auto p = emit_pathlike(arg.borrow());
       auto n = emit_call(module_->getFunction(rt::fs_size),
                          {p, line, col});
       arg.drop();
@@ -7649,8 +7651,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto arg = jit.compile(*argsAst.nodes[0]);
       emit_type_check(arg.borrow(), "String|Path", "parameter 'path'",
                       argsAst.nodes[0].get());
-      auto p = emit_call(module_->getFunction(rt::value_to_display),
-                         {extract_tag(arg.borrow()), extract_data(arg.borrow())});
+      auto p = emit_pathlike(arg.borrow());
       auto a = emit_call(module_->getFunction(rt::fs_list_dir),
                          {p, line, col});
       arg.drop();
@@ -7663,8 +7664,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto arg = jit.compile(*argsAst.nodes[0]);
       emit_type_check(arg.borrow(), "String|Path", "parameter 'path'",
                       argsAst.nodes[0].get());
-      auto p = emit_call(module_->getFunction(rt::value_to_display),
-                         {extract_tag(arg.borrow()), extract_data(arg.borrow())});
+      auto p = emit_pathlike(arg.borrow());
       emit_call(module_->getFunction(rt_name), {p, line, col});
       arg.drop();
       return make_nil();
