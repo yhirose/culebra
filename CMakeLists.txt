@@ -100,6 +100,12 @@ target_compile_definitions(culebra_sqlite3 PRIVATE
 # macOS/Linux and linked dynamically (macOS ships no static libz.a); a non-
 # Compress, non-Http AOT binary still omits it via the weak gzip/gunzip choke in
 # the core archive (see compress.h / aot_uses_compress).
+# On Windows there is no system zlib, so prefer the static libz.a — a dynamic
+# zlib1.dll would make the otherwise self-contained .exe fail to start on a
+# plain Windows box that lacks it.
+if(WIN32)
+  set(ZLIB_USE_STATIC_LIBS ON)
+endif()
 find_package(ZLIB REQUIRED)
 message(STATUS "Found ZLIB ${ZLIB_VERSION_STRING}")
 include_directories(${ZLIB_INCLUDE_DIRS})
@@ -603,6 +609,23 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set(_sqlite_link "-lpthread -ldl -lm")
 else()
   set(_sqlite_link "")
+endif()
+
+# Windows (mingw-w64 for Phase 1): link winpthread for std::thread (the posix
+# thread model libstdc++ uses) and Winsock for cpp-httplib. http.h is always
+# compiled into the driver, so ws2_32 is linked unconditionally; harmless when
+# the Http namespace is disabled. (TLS via OpenSSL is a separate opt-in — see the
+# CULEBRA_ENABLE_HTTP block; Phase 1 Windows builds run without it.)
+if(WIN32)
+  find_package(Threads REQUIRED)
+  target_link_libraries(culebra Threads::Threads ws2_32)
+  # std::print/println (C++23) resolves the Windows console at runtime via
+  # __open_terminal / __write_to_terminal, which libstdc++ ships in the separate
+  # experimental library — not pulled in by -static-libstdc++. Link it explicitly
+  # (before libstdc++, which the g++ driver appends last) so std::print links.
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_link_libraries(culebra stdc++exp)
+  endif()
 endif()
 if(CULEBRA_ENABLE_JIT)
   target_compile_definitions(culebra PRIVATE CULEBRA_SQLITE_LINK="${_sqlite_link}")

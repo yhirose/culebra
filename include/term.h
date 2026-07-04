@@ -14,17 +14,22 @@
 #include <csignal>
 #include <cstdlib>
 #include <iostream>
-#include <poll.h>
 #include <string>
+#if !defined(_WIN32)
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
+#endif
 
+#include <os_compat.h>  // os_isatty + guarded <windows.h> (console size on Windows)
 #include <unicodelib.h>
 #include <unicodelib_encodings.h>
 
 namespace culebra {
 namespace _term_detail {
+
+#if !defined(_WIN32)
 
 // Original terminal attributes, captured on the first `raw_on` so `raw_off`
 // can restore them. `_raw_active` guards against double enable/disable.
@@ -136,6 +141,121 @@ inline std::string read_key(double timeout_secs) {
   return out;
 }
 
+#else  // _WIN32
+
+// Windows Console API port of the POSIX termios/poll primitives. The console's
+// Virtual Terminal modes are the bridge to symmetry: ENABLE_VIRTUAL_TERMINAL_-
+// INPUT makes the console deliver arrow/function keys as the same `\x1b[A`
+// escape sequences the POSIX path and the culebra `Term` preamble already
+// parse, and ENABLE_VIRTUAL_TERMINAL_PROCESSING makes the ANSI colour/cursor
+// codes the render loop emits take effect — so nothing above this layer needs a
+// Windows branch.
+
+// Terminal width/height in cells from a single console query (the per-frame
+// take_resize poll wants both dimensions at once), falling back to 80x24.
+inline std::pair<int, int> _console_size() {
+  CONSOLE_SCREEN_BUFFER_INFO info;
+  if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &info)) {
+    int w = info.srWindow.Right - info.srWindow.Left + 1;
+    int h = info.srWindow.Bottom - info.srWindow.Top + 1;
+    return {w > 0 ? w : 80, h > 0 ? h : 24};
+  }
+  return {80, 24};
+}
+inline int cols() { return _console_size().first; }
+inline int rows() { return _console_size().second; }
+
+// Saved console modes captured on the first raw_on so raw_off can restore them.
+// _raw_active guards against double enable/disable, mirroring the POSIX path.
+inline bool& _raw_active() {
+  static bool b = false;
+  return b;
+}
+inline DWORD& _saved_in_mode() {
+  static DWORD m = 0;
+  return m;
+}
+inline DWORD& _saved_out_mode() {
+  static DWORD m = 0;
+  return m;
+}
+
+inline void raw_off() {
+  if (!_raw_active()) return;
+  HANDLE hin = GetStdHandle(STD_INPUT_HANDLE);
+  HANDLE hout = GetStdHandle(STD_OUTPUT_HANDLE);
+  if (hin != INVALID_HANDLE_VALUE) SetConsoleMode(hin, _saved_in_mode());
+  if (hout != INVALID_HANDLE_VALUE) SetConsoleMode(hout, _saved_out_mode());
+  _raw_active() = false;
+}
+
+// Enter raw mode: no echo, no line buffering, no input processing, and keys as
+// VT escape sequences. A no-op when stdin is not a console (piped input / test
+// runs), so a TUI script run non-interactively degrades instead of erroring —
+// GetConsoleMode failing is the Windows equivalent of the POSIX !isatty check.
+inline void raw_on() {
+  if (_raw_active()) return;
+  HANDLE hin = GetStdHandle(STD_INPUT_HANDLE);
+  HANDLE hout = GetStdHandle(STD_OUTPUT_HANDLE);
+  DWORD in_mode = 0;
+  if (hin == INVALID_HANDLE_VALUE || !GetConsoleMode(hin, &in_mode)) return;
+  _saved_in_mode() = in_mode;
+  DWORD out_mode = 0;
+  bool have_out = hout != INVALID_HANDLE_VALUE && GetConsoleMode(hout, &out_mode);
+  _saved_out_mode() = out_mode;
+
+  static bool atexit_registered = false;
+  if (!atexit_registered) {
+    std::atexit(raw_off);
+    atexit_registered = true;
+  }
+  // Raw input built from scratch: only VT input (no line/echo/processed/mouse/
+  // window events), so ReadFile returns keypress bytes and nothing spurious
+  // wakes the wait in read_key.
+  DWORD raw_in = ENABLE_VIRTUAL_TERMINAL_INPUT;
+  if (!SetConsoleMode(hin, raw_in)) return;
+  if (have_out)
+    SetConsoleMode(hout, out_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING |
+                             DISABLE_NEWLINE_AUTO_RETURN);
+  _raw_active() = true;
+}
+
+// Last console size take_resize observed; a change since the previous call is
+// reported as a resize. Windows has no SIGWINCH, and in VT-input mode buffer-
+// size events are not in the byte stream, so the render loop's per-frame poll
+// compares the size instead — cheap and dependency-free.
+inline std::pair<int, int>& _last_size() {
+  static std::pair<int, int> s{-1, -1};
+  return s;
+}
+inline bool take_resize() {
+  std::pair<int, int> cur = _console_size();  // one syscall for both dims
+  std::pair<int, int>& last = _last_size();
+  if (last.first < 0) { last = cur; return false; }  // first call: establish
+  if (cur != last) { last = cur; return true; }
+  return false;
+}
+
+// Wait up to `timeout_secs` for a keypress, then read the VT bytes that
+// arrived. Returns "" on timeout, EOF, or non-console stdin. NUL bytes are
+// dropped so the result survives the NUL-terminated `const char*` JIT boundary.
+inline std::string read_key(double timeout_secs) {
+  HANDLE hin = GetStdHandle(STD_INPUT_HANDLE);
+  DWORD mode = 0;
+  if (hin == INVALID_HANDLE_VALUE || !GetConsoleMode(hin, &mode)) return "";
+  DWORD ms = timeout_secs <= 0 ? 0 : static_cast<DWORD>(timeout_secs * 1000.0);
+  if (WaitForSingleObject(hin, ms) != WAIT_OBJECT_0) return "";
+  char buf[32];
+  DWORD n = 0;
+  if (!ReadFile(hin, buf, sizeof(buf), &n, nullptr) || n == 0) return "";
+  std::string out;
+  for (DWORD i = 0; i < n; i++)
+    if (buf[i] != '\0') out.push_back(buf[i]);
+  return out;
+}
+
+#endif  // _WIN32
+
 // Detected colour capability: 0 = none, 1 = 16 colours, 2 = 256, 3 = 24-bit
 // truecolour. Honours the `NO_COLOR` convention (present => off), `FORCE_COLOR`
 // (overrides the tty check), and `COLORTERM` / `TERM`. The culebra layer
@@ -144,7 +264,7 @@ inline int color_level() {
   if (std::getenv("NO_COLOR")) return 0;
   const char* fc = std::getenv("FORCE_COLOR");
   bool forced = fc && std::string(fc) != "0";
-  if (!forced && !isatty(STDOUT_FILENO)) return 0;
+  if (!forced && !os_isatty(1)) return 0;
   auto env = [](const char* k) {
     const char* v = std::getenv(k);
     return std::string(v ? v : "");

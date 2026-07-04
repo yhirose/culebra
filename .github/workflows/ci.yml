@@ -155,3 +155,120 @@ jobs:
 
       - name: Smoke test microgpt (5 steps, both backends)
         run: just smoke-microgpt
+
+  # Windows port — Phase 1. Builds the interpreter-only driver (no JIT/AOT) with
+  # the OS-heavy optional features off, to prove the core language + stdlib +
+  # SQLite compile and run on Windows. The subprocess (Proc), terminal raw-mode
+  # (Term) and cross-process SharedBuffer subsystems are stubbed on Windows (they
+  # raise a clear "not supported" error) and land in later phases; everything
+  # else — interp, FS, string/collection/number stdlib, in-process SharedBuffer —
+  # runs. Kept a separate job from the JIT/AOT matrix above, whose `just build`
+  # / `just test` steps assume the full LLVM toolchain.
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25  # a runtime hang (e.g. a Proc deadlock) fails fast here
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      # mingw-w64 (GCC 14+ / libstdc++) rather than MSVC: the codebase's central
+      # recursive Value type is used through std::vector<Value> while still
+      # incomplete, which libstdc++ (as on Linux/macOS) accepts but the MSVC STL
+      # rejects. mingw keeps the Linux STL behaviour, so the core compiles with
+      # no changes. The binary is linked fully static (-static: libstdc++ /
+      # libgcc / libwinpthread), so it runs on a plain Windows box with no mingw
+      # runtime DLLs — verified below.
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-zlib
+
+      - name: Configure (interpreter only, static, Phase 1 feature set)
+        run: |
+          cmake -S . -B build-win -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++ \
+            -DCMAKE_C_COMPILER=gcc \
+            -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
+            -DCULEBRA_ENABLE_JIT=OFF \
+            -DCULEBRA_ENABLE_HTTP=OFF \
+            -DCULEBRA_ENABLE_GRAPHICS=OFF \
+            -DCULEBRA_ENABLE_WEBVIEW=OFF \
+            -DCULEBRA_DEV_NO_RT=ON \
+            -DCULEBRA_LTO=OFF
+
+      # `-k 0` keeps building after the first error so a CI run surfaces the full
+      # set of Windows-portability breakages at once instead of one per push.
+      - name: Build (culebra driver)
+        run: cmake --build build-win --target culebra -j -- -k 0
+
+      # Prove the "runs on a plain Windows box" claim: the .exe may import ONLY
+      # DLLs that ship with every Windows install. Anything else (mingw runtime
+      # libstdc++-6 / libgcc_s / libwinpthread, or a bundled zlib1.dll) would
+      # make it fail to start on a clean machine. Whitelist the system DLLs and
+      # fail on any other import.
+      - name: Verify standalone binary (only system DLLs)
+        run: |
+          echo "Imported DLLs:"
+          imports=$(objdump -p build-win/culebra.exe \
+            | grep -i 'DLL Name' | sed -E 's/.*DLL Name:\s*//' | tr 'A-Z' 'a-z' | sort -u)
+          echo "$imports"
+          allow='^(kernel32|kernelbase|msvcrt|ntdll|user32|advapi32|ws2_32|shell32|ole32|oleaut32|bcrypt|crypt32|secur32|iphlpapi|dbghelp|version|winmm|gdi32)\.dll$'
+          bad=$(echo "$imports" | grep -viE "$allow" || true)
+          if [ -n "$bad" ]; then
+            echo "ERROR: binary imports non-system DLL(s) — not standalone:"
+            echo "$bad"
+            exit 1
+          fi
+          echo "OK: only system DLLs imported — runs on a plain Windows box"
+
+      - name: Smoke test (interp runs a script + core stdlib)
+        run: |
+          cat > smoke.cul <<'EOF'
+          fn check(cond, msg) { if !cond { throw "check failed: " + msg } }
+          print("hello from culebra on windows")
+          let xs = [3, 1, 2].sorted_by(fn(x) { x })
+          check(xs.join(",") == "1,2,3", "sort")
+          check("UPPER".lower() == "upper" && "abc".upper() == "ABC", "case")
+          let o = {"a": 1, "b": 2}
+          check(o.keys().sorted_by(fn(k) { k }).join(",") == "a,b", "keys")
+
+          # Phase 2: Proc runs real subprocesses via CreateProcess/CreatePipe.
+          let r = Proc.run(["cmd", "/c", "echo hi"])
+          check(r.ok && r.code == 0, "Proc.run exit code")
+          check(r.stdout.contains("hi"), "Proc.run stdout capture")
+          # Non-zero exit is reported, not raised.
+          let bad = Proc.run(["cmd", "/c", "exit 3"])
+          check(!bad.ok && bad.code == 3, "Proc.run non-zero exit")
+          # stdin is fed to the child (findstr echoes lines matching the pattern).
+          let f = Proc.run(["findstr", "x"], stdin: "x marks\nno match\n")
+          check(f.stdout.contains("x marks") && !f.stdout.contains("no match"),
+                "Proc.run stdin feed")
+          # allSettled batch of two concurrent children, results in input order.
+          let batch = Proc.all([["cmd", "/c", "echo one"], ["cmd", "/c", "echo two"]])
+          check(batch[0].stdout.contains("one") && batch[1].stdout.contains("two"),
+                "Proc.all batch order")
+          # Live handle: spawn, then wait for the reaped result.
+          let h = Proc.spawn(["cmd", "/c", "echo spawned"])
+          let hr = h.wait()
+          check(hr.stdout.contains("spawned"), "Proc.spawn + wait")
+
+          # Phase 2: Term primitives are callable off-tty (raw mode no-ops, size
+          # falls back / queries the console, width is pure).
+          check(Term.cols() > 0 && Term.rows() > 0, "Term size")
+          check(Term.width("abc") == 3, "Term display width")
+
+          print("smoke ok")
+          EOF
+          # Bound the run so a future regression that deadlocks fails the step in
+          # ~90s (exit 124) instead of hanging the whole job to its timeout.
+          timeout 90 ./build-win/culebra.exe smoke.cul
