@@ -6978,6 +6978,7 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   auto i64 = jit.builder_.getInt64Ty();
   auto i8 = jit.builder_.getInt8Ty();
   jit.module_->getOrInsertFunction(rt::iter_collect, ptrTy, i8, i64);
+  jit.module_->getOrInsertFunction(rt::iter_join, ptrTy, i8, i64, ptrTy);
   jit.module_->getOrInsertFunction(rt::iter_count, i64, i8, i64);
   jit.module_->getOrInsertFunction(rt::iter_for_each, jit.builder_.getVoidTy(),
                                i8, i64, i8, i64, i64, i64);

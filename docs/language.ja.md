@@ -1157,6 +1157,25 @@ UFCS は **DOT の直後に引数リストがある場合のみ**適用されま
   — class 本体内で `FOO = expr` のみは構文エラーです。static メソッドと
   同じく、static field は immutable（`Circle.PI = 2` は `ImmutableError`
   を投げる）かつインスタンス経由では参照できません。
+* `get NAME () { ... }` は **getter**（引数なしメソッド）を宣言します。
+  括弧なしのプロパティ読み取りで呼び出されます:
+
+      class Circle {
+        new (r)      { this.radius = r }
+        get area ()  { this.radius * this.radius * 3.14 }
+      }
+      let c = Circle.new(4)
+      puts(c.area)          # 50.24  — field のように読める
+      puts(c.area())        # 50.24  — 呼び出し表記も動く
+
+  getter は他のメソッド同様 `this` を読みますが property として振る舞う
+  ので、fluent chain の括弧が消えます（`p.parent().name()` ではなく
+  `p.parent.name`）。getter は純粋・全域・O(1) の導出（値の本質的な性質）
+  に限り、I/O や失敗しうる処理は通常メソッドに残します。こうして括弧の
+  不在が「副作用なし」を表します（Swift/Kotlin と同じ指針）。getter は
+  引数を取れません（`get f (x)` は構文エラー）。`get` は contextual で、
+  `get` という名のメンバー（`get () { ... }`）は通常メソッドのままです。
+  `obj.name` と `obj.name()` の両表記は interp・JIT・AOT で同一に発火します。
 * インタプリタ・JIT の両方でクラス宣言をコンパイルします。
   インスタンス生成は軽いランタイム呼出: `new` 自体は通常の JIT
   closure で、captures にメソッド closure 群とユーザの `new` 本体
@@ -3148,6 +3167,7 @@ puts(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 | 終端 | 戻り値 | 説明 |
 |---|---|---|
 | `it.collect()` | `Array` | Array に実体化 |
+| `it.join(sep)` | `String` | 要素を `sep` で連結（各要素は `to_string` 相当で描画）。`Array.join` と同じなので `xs.map(...).join(",")` に中間 `.collect()` は不要 |
 | `it.for_each(f)` | `Nil` | 副作用目的で `f(x)` を呼ぶ |
 | `it.reduce(init, f)` | Any | 左畳み込み: `acc = f(acc, x)` を `init` から |
 | `it.find(p)` | Any \| `nil` | 最初に `p(x)` が真の `x`、無ければ `nil` |

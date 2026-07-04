@@ -632,6 +632,10 @@ struct FunctionValue {
   // closure registered with the test runner or REPL session) may
   // outlive the AST source backing the original token.
   std::string name;
+  // True for a class getter (`get name() { ... }`): reading the member as a
+  // value (`obj.name`, no call parens) invokes it 0-arg instead of yielding a
+  // bound method. Set at class-decl time; plain methods leave it false.
+  bool is_getter = false;
   // Multifn dispatcher view-of-source: when set, `fn.params` and
   // `fn.return_type` look through to this snapshot of the first
   // registered method body. The dispatcher itself keeps a synthetic
@@ -5404,6 +5408,23 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
          return Value(std::move(out));
        }))},
 
+      // Terminal join: drain the iterator and concatenate elements with `sep`,
+      // matching Array.join so `xs.map(...).join(",")` needs no `.collect()`.
+      {"join"sv,
+       Value(FunctionValue({{"sep", false, "String"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("this");
+         const auto& sep = callEnv->get("sep").to_string();
+         std::string out;
+         bool first = true;
+         while (auto v = _iter_next_value(upstream)) {
+           if (!first) out += sep;
+           first = false;
+           out += v->str_display();
+         }
+         return Value(std::move(out));
+       }))},
+
       {"for_each"sv,
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
@@ -7668,6 +7689,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     for (size_t i = k + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
       auto mv = culebra::view_method(m);
+      // A getter must be a no-parameter method — reject `get x: T` /
+      // `get x = e` (field forms) and `get f(a)` (has params) up front.
+      if (mv.is_getter) culebra::require_getter_no_params(mv, class_name);
       if (mv.is_typed_field) {
         Value init = mv.value ? eval(*mv.value, env)
                               : zero_value_for_type(mv.type_annotation);
@@ -7688,6 +7712,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       }
       auto fn_val = make_function_value(*mv.params, *mv.body, {}, env);
       fn_val.get<FunctionValue>().name = std::string(mv.name);
+      fn_val.get<FunctionValue>().is_getter = mv.is_getter;
       neutralize_fn_type_params(fn_val.get<FunctionValue>(), type_params);
       if (mv.is_static) {
         static_template.push_back({mv.name, std::move(fn_val)});
@@ -8749,6 +8774,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     if (obj.has(name)) {
       const auto& prop = obj.get(name);
       if (prop.type == Value::Function) {
+        // A getter read as a value (`obj.name`, no call parens) auto-invokes
+        // 0-arg with `this`=receiver. When called as `obj.name()` (as_value
+        // false) it falls through to the bound-method path and the call site
+        // invokes it — same result, so both spellings work.
+        if (as_value && prop.get<FunctionValue>().is_getter) {
+          return _invoke_method_no_args(val, name);
+        }
         // Own Function properties (user methods, namespace methods like
         // Proc.run) accept kwargs and stay first-class; only builtins()-table
         // methods (not an own property — `[1,2].map`) are rejected as bare

@@ -73,11 +73,20 @@ const auto grammar_ = R"(
   DECORATOR                <-  '@' _ CALL
   # A class member is one of: a typed instance field (`x: Float32`,
   # `x: Float32 = 0.0` — the type annotation distinguishes it), a static
-  # field (`static x = expr`), or a method (`f(a) { ... }`). The typed
-  # field alternative must come first so its `: Type` is matched before
-  # the bare-`=` static field. See MethodView / view_method.
-  METHOD                   <-  STATIC_MOD _ IDENTIFIER _ (TYPE_ANNOTATION (_ '=' _ EXPRESSION)? / '=' _ EXPRESSION / PARAMETERS _ BLOCK)
-  STATIC_MOD               <-  K('static')?
+  # field (`static x = expr`), a getter method (`get name() { ... }`,
+  # invoked without parens as `obj.name`), or a plain method (`f(a) { ... }`).
+  # The typed field alternative must come first so its `: Type` is matched
+  # before the bare-`=` static field. See MethodView / view_method.
+  METHOD                   <-  MEMBER_MOD _ IDENTIFIER _ (TYPE_ANNOTATION (_ '=' _ EXPRESSION)? / '=' _ EXPRESSION / PARAMETERS _ BLOCK)
+  # A single leading modifier: `static` (field/method) or `get` (getter).
+  # `static` and `get` never combine, so one slot keeps METHOD's node
+  # layout unchanged; the `< >` capture puts the matched keyword in the
+  # MEMBER_MOD node's token (view_method reads it). `get` is contextual —
+  # the `&(_ IdentInitChar)` lookahead (outside the capture, so the token
+  # stays exactly "get") means it is a modifier only when an identifier
+  # follows (the getter's name), so a member literally named `get`
+  # (`get()`, `get: Int`) still parses as an ordinary identifier.
+  MEMBER_MOD               <-  (< 'static' !IdentInitChar > / < 'get' !IdentInitChar > &(_ IdentInitChar))?
 
   DEBUGGER                 <-  debugger
   RETURN                   <-  return (_sp_ !_nl_ EXPRESSION)?

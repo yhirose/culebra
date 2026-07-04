@@ -397,3 +397,12 @@ assert_true(calls <= 3)
 mut threw = false
 try { GC.collect() } catch e { threw = true }
 assert_true(threw)
+
+# Terminal join on a lazy iterator — no intermediate .collect() needed.
+# Mirrors Array.join (str_display of each element, joined by sep).
+assert_eq(nums().map(|x| x * 10).join(","), "10,20,30,40")
+assert_eq(nums().filter(|x| x % 2 == 0).join("-"), "2-4")
+assert_eq(range(0, 0).map(|x| x).join(","), "")          # empty iterator
+assert_eq(range(1, 4).join(""), "123")                   # range is lazy
+# Array.join still works (eager receiver, same dispatch site)
+assert_eq([1, 2, 3].map(|x| x + 1).join(" "), "2 3 4")

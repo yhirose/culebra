@@ -622,9 +622,9 @@ and property chains read more clearly:
 # doctest: skip
 let root = Path.new(FS.dirname(Sys.script)).resolve()
 for src in root.glob("*/content.src.js") {
-  let dst = src.parent() / "content.js"       # vs FS.join(FS.dirname(src), …)
+  let dst = src.parent / "content.js"         # vs FS.join(FS.dirname(src), …)
   dst.write(transform(src.read()))
-  IO.print("{src.parent().name()}/content.js\n")   # vs FS.basename(FS.dirname(src))
+  IO.print("{src.parent.name}/content.js\n")  # vs FS.basename(FS.dirname(src))
 }
 ```
 
@@ -636,10 +636,10 @@ accepts a `String` or a `Path`. String interpolation (`"{p}"`) and
 | Member | Returns | Delegates to |
 |---|---|---|
 | `p / other` / `p.join(other)` | `Path` | `FS.join` |
-| `p.name()` | `String` (final component) | `FS.basename` |
-| `p.stem()` | `String` (name without suffix) | `FS.stem` |
-| `p.suffix()` | `String` (extension incl. dot) | `FS.extension` |
-| `p.parent()` | `Path` | `FS.dirname` |
+| `p.name` | `String` (final component) | `FS.basename` |
+| `p.stem` | `String` (name without suffix) | `FS.stem` |
+| `p.suffix` | `String` (extension incl. dot) | `FS.extension` |
+| `p.parent` | `Path` | `FS.dirname` |
 | `p.resolve()` | `Path` (absolute) | `FS.abspath` |
 | `p.exists()` / `p.is_file()` / `p.is_dir()` | `Bool` | `FS.*` |
 | `p.read()` / `p.write(s)` | `String` / `Nil` | `FS.read` / `FS.write` |
@@ -650,6 +650,11 @@ accepts a `String` or a `Path`. String interpolation (`"{p}"`) and
 | `p.glob(pattern)` | `Array<Path>` | `FS.glob` |
 | `p.walk()` | `Array<Path>` (recursive) | `FS.walk` |
 | `p.str()` | `String` (escape hatch) | — |
+
+`name`, `stem`, `suffix`, and `parent` are **getters** (pure string
+derivations), read without parentheses — `p.parent.name`, not
+`p.parent().name()` (the call spelling still works). The filesystem
+operations below stay methods because they do I/O and can throw.
 
 Two `Path`s compare by their inner path string: `==` (also against a
 `String`) and `<` / `<=` / `>` / `>=`, so a `Path` array sorts

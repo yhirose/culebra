@@ -1241,6 +1241,28 @@ Semantics:
   class body is a syntax error. Like static methods, static fields are
   immutable (`Circle.PI = 2` raises `ImmutableError`) and not visible
   through instances.
+* `get NAME () { ... }` declares a **getter** — a no-parameter method
+  that is invoked on a bare property read, with no call parentheses:
+
+      class Circle {
+        new (r)      { this.radius = r }
+        get area ()  { this.radius * this.radius * 3.14 }
+        get name ()  { "circle" }
+      }
+      let c = Circle.new(4)
+      puts(c.area)          # 50.24  — reads like a field
+      puts(c.area())        # 50.24  — the call spelling also works
+
+  A getter reads `this` like any method but presents as a property, so a
+  fluent chain drops its parentheses (`p.parent.name` rather than
+  `p.parent().name()`). Reserve getters for pure, total, O(1) derivations
+  (an inherent quality of the value); anything that does I/O or can fail
+  should stay an ordinary method, so the absence of parentheses signals
+  "no side effects" — the same guidance Swift/Kotlin give. A getter takes
+  no parameters (`get f (x)` is a syntax error), and `get` is contextual:
+  a member literally named `get` (`get () { ... }`) is still an ordinary
+  method. Both spellings (`obj.name` and `obj.name()`) invoke the getter
+  identically on the interpreter, the JIT, and AOT.
 * Both the interpreter and the JIT compile classes. Instance
   construction is a small runtime call — `new` itself is a regular
   JIT closure whose captures are the method closures plus the user's
@@ -3362,6 +3384,7 @@ puts(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 | Terminal | Result | Notes |
 |---|---|---|
 | `it.collect()` | `Array` | materialize into an Array |
+| `it.join(sep)` | `String` | concatenate elements with `sep` between them (each rendered as by `to_string`); like `Array.join`, so `xs.map(...).join(",")` needs no intermediate `.collect()` |
 | `it.for_each(f)` | `Nil` | invoke `f(x)` for side effects |
 | `it.reduce(init, f)` | Any | left fold: `acc = f(acc, x)` starting from `init` |
 | `it.find(p)` | Any \| `nil` | first `x` where `p(x)` is truthy, else `nil` |

@@ -1195,7 +1195,10 @@ class Printer {
     if (v.is_field)  // `static x = expr`
       return doc_concat({doc_text("static " + std::string(v.name) + " = "),
                          print(*v.value)});
-    DocP prefix = v.is_static ? doc_text("static ") : doc_text("");
+    // `static` and `get` are mutually exclusive member modifiers.
+    DocP prefix = v.is_static ? doc_text("static ")
+                : v.is_getter ? doc_text("get ")
+                              : doc_text("");
     if (v.is_typed_field) {
       DocP d = doc_concat({prefix, doc_text(std::string(v.name) + ": " +
                                             std::string(v.type_annotation))});

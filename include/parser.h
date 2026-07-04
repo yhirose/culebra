@@ -395,10 +395,12 @@ inline TraitMethodView view_trait_method(const peg::Ast& m) {
 }
 
 // View of a METHOD AST node — see grammar:
-//   METHOD <- STATIC_MOD _ IDENTIFIER _
+//   METHOD <- MEMBER_MOD _ IDENTIFIER _
 //               (TYPE_ANNOTATION (_ '=' _ EXPRESSION)? / '=' _ EXPRESSION
 //                / PARAMETERS _ BLOCK)
-// Three member forms, told apart by the tag of nodes[2]:
+// MEMBER_MOD (nodes[0]) holds at most one of `static` / `get`, so node
+// indices are unchanged; a `get` method (nodes[2] == PARAMETERS) is read
+// as a property. Three member forms, told apart by the tag of nodes[2]:
 //   - typed instance field (`x: Float32`, `x: Float32 = 0.0`): nodes[2]
 //     is TYPE_ANNOTATION; an optional default expression is nodes[3].
 //   - static field (`static x = expr`): nodes[2] is the value expression.
@@ -406,6 +408,7 @@ inline TraitMethodView view_trait_method(const peg::Ast& m) {
 // One central accessor avoids walker drift when the rule changes again.
 struct MethodView {
   bool is_static;
+  bool is_getter;                 // `get name() { ... }` — read as `obj.name`
   std::string_view name;
   size_t name_line;
   size_t name_col;
@@ -421,11 +424,13 @@ struct MethodView {
 inline MethodView view_method(const peg::Ast& m) {
   using namespace peg::udl;
   const auto& ident = *m.nodes[1];
+  // MEMBER_MOD (nodes[0]) carries at most one of `static` / `get`.
   bool is_static = m.nodes[0]->token == "static";
+  bool is_getter = m.nodes[0]->token == "get";
   const auto& third = *m.nodes[2];
   if (third.tag == "TYPE_ANNOTATION"_) {
     return MethodView{
-        is_static, ident.token, ident.line, ident.column,
+        is_static, is_getter, ident.token, ident.line, ident.column,
         /*is_field=*/false, /*is_typed_field=*/true,
         /*type_annotation=*/third.token,
         /*params=*/nullptr, /*body=*/nullptr,
@@ -434,14 +439,14 @@ inline MethodView view_method(const peg::Ast& m) {
   }
   if (third.tag == "PARAMETERS"_) {
     return MethodView{
-        is_static, ident.token, ident.line, ident.column,
+        is_static, is_getter, ident.token, ident.line, ident.column,
         /*is_field=*/false, /*is_typed_field=*/false, /*type_annotation=*/{},
         /*params=*/m.nodes[2].get(), /*body=*/&m.nodes[3], /*value=*/nullptr,
     };
   }
   // Bare `= EXPRESSION`: static field.
   return MethodView{
-      is_static, ident.token, ident.line, ident.column,
+      is_static, is_getter, ident.token, ident.line, ident.column,
       /*is_field=*/true, /*is_typed_field=*/false, /*type_annotation=*/{},
       /*params=*/nullptr, /*body=*/nullptr, /*value=*/m.nodes[2].get(),
   };
@@ -505,6 +510,22 @@ inline void require_static_field(const MethodView& mv,
   throw CulebraError(
       "SyntaxError",
       std::format("field `{}` in class `{}` must be declared with `static`",
+                  mv.name, class_name),
+      static_cast<long>(mv.name_line),
+      static_cast<long>(mv.name_col));
+}
+
+// A getter (`get name() { ... }`) takes no parameters — it is read as a
+// property, so there is no call site to pass arguments. Throws one canonical
+// SyntaxError shared by interp and JIT. Only call for method-form members
+// (mv.params non-null); getter fields are rejected earlier by the grammar's
+// `&IdentInitChar` lookahead never firing on `get x = ...` / `get x: T`.
+inline void require_getter_no_params(const MethodView& mv,
+                                     std::string_view class_name) {
+  if (mv.params && mv.params->nodes.empty()) return;
+  throw CulebraError(
+      "SyntaxError",
+      std::format("getter `{}` in class `{}` must take no parameters",
                   mv.name, class_name),
       static_cast<long>(mv.name_line),
       static_cast<long>(mv.name_col));

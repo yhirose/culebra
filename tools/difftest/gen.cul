@@ -130,6 +130,31 @@ case("ctor-call-kw-default", kwclass_pre + "C(a: 7).s")
 case("ctor-call-nullary", 'class C { new() { this.x = 9 } }; C().x')
 case("ctor-call-plaindict", 'let d = { new: fn (x) { x } }; d(1)')
 
+# --- Dimension 6b: class getters (`get name()` read as `obj.name`) ----------
+# A getter fires on a bare property read AND when spelled with call parens;
+# both must agree across backends (the JIT resolves getters through a separate
+# runtime path than the interp). A getter named `name` also exercises the
+# function-introspection member path. `p` is fresh per case thunk.
+let getter_pre = 'class G { new(a) { this.a = a } get twice() { this.a * 2 } ' +
+                 'get name() { "g" } plain() { this.a } }; let p = G.new(21); '
+case("getter-bare", getter_pre + "p.twice")
+case("getter-paren", getter_pre + "p.twice()")
+case("getter-name-bare", getter_pre + "p.name")
+case("getter-name-paren", getter_pre + "p.name()")
+case("getter-in-hof", getter_pre + "[p, p].map(|x| x.twice)")
+case("getter-plain-method-value", getter_pre + "type_of(p.plain)")
+# a member literally named `get` is an ordinary method, not the modifier
+case("getter-named-get", 'class G { new() {} get() { 7 } }; G.new().get()')
+
+# --- Dimension 6c: iterator .join (terminal, no .collect() bridge) ----------
+let joinseps = ['","', '"-"', '""', '" "']
+for s in joinseps {
+  case("iterjoin|" + s, "range(1, 5).map(|x| x * 10).join(" + s + ")")
+  case("arrjoin|" + s, "[1, 2, 3].map(|x| x + 1).join(" + s + ")")
+}
+case("iterjoin-empty", 'range(0, 0).map(|x| x).join(",")')
+case("iterjoin-filter", 'range(1, 10).filter(|x| x % 2 == 0).join("-")')
+
 # --- Dimension 7: lazy iterator combinators over an erroring stream --------
 # D3's v-lazy maps over `[1, 2, 3]` (never errors); these run the callback
 # over `[1, "x"]` so a per-element type error tests the callback's error

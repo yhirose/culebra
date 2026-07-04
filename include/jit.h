@@ -3815,6 +3815,35 @@ inline bool _jit_is_native_fn(const void* fn_ptr) {
   return _jit_native_fns().contains(fn_ptr);
 }
 
+// Getter registry — the JIT twin of interp's FunctionValue::is_getter. A class
+// getter's compiled body address is registered here when its class declaration
+// runs; a bare property read (`obj.name`, no call parens) that resolves to a
+// proto method whose fn_ptr is in this set invokes it 0-arg instead of yielding
+// a bound method (culebra_runtime_bind_method_value). Append-only and keyed by
+// the unique compiled-body address, so a hit never goes stale and can't collide
+// with a plain method. Shares the native-fn mutex (both are cold, decl-time).
+inline std::unordered_set<const void*>& _jit_getter_fns() {
+  static std::unordered_set<const void*> s;
+  return s;
+}
+inline void _jit_register_getter_fn(const void* fn_ptr) {
+  static thread_local std::unordered_set<const void*> seen;
+  if (!seen.insert(fn_ptr).second) return;
+  std::lock_guard<std::mutex> lk(_jit_native_fns_mutex());
+  _jit_getter_fns().insert(fn_ptr);
+}
+inline bool _jit_is_getter_fn(const void* fn_ptr) {
+  std::lock_guard<std::mutex> lk(_jit_native_fns_mutex());
+  return _jit_getter_fns().contains(fn_ptr);
+}
+
+// Emitted-code entry point: register a compiled getter closure by its body
+// address (only known once the class declaration runs).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_register_getter(
+    JitClosure* method) {
+  _jit_register_getter_fn(method->fn_ptr);
+}
+
 // Emitted-code entry point: a class declaration registers its synthesized
 // constructor here at runtime (the compiled address only exists then). The
 // ctor is native on the interp side (body == nullptr), so neither backend
@@ -6618,6 +6647,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _jit_bound_method_thunk(
 // is an own slot, a method lives only on the proto). Returns a +1-owned value
 // in every case (retaining the view, or the receiver+method into the wrapper's
 // cells); the caller releases the receiver separately.
+// Invoke a getter body 0-arg with `this`=receiver, returning its +1-owned
+// result. The callee frame takes ownership of `this` on entry, so retain the
+// receiver first. Shared by the bare-read and introspection-name paths.
+CULEBRA_RT_INLINE JitValue _jit_invoke_getter(JitClosure* method,
+                                              int8_t recv_tag,
+                                              int64_t recv_data) {
+  culebra_runtime_value_retain(recv_tag, recv_data);
+  return reinterpret_cast<JitFn>(method->fn_ptr)(
+      method, {recv_tag, recv_data}, 0, nullptr);
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_bind_method_value(
     int8_t recv_tag, int64_t recv_data, int8_t view_tag, int64_t view_data,
     const char* key) {
@@ -6626,6 +6666,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_bind_method_value(
     if (obj->proto &&
         obj->find_slot(key) == static_cast<size_t>(-1)) {  // proto method
       auto* method = reinterpret_cast<JitClosure*>(view_data);
+      // A getter read as a value auto-invokes 0-arg with `this`=receiver
+      // (interp's eval_property getter branch). Reached only on the bare-read
+      // path; `obj.name()` compiles as a method call and never lands here, so
+      // both spellings yield the same value. `view` is borrowed here (the
+      // caller releases the receiver separately), so nothing to release.
+      if (_jit_is_getter_fn(method->fn_ptr)) {
+        return _jit_invoke_getter(method, recv_tag, recv_data);
+      }
       // The interp makes a bound method non-Sendable (its wrapper has no
       // params_ast), so an escapee is rejected rather than shipped without its
       // `this`. Register the thunk as native so sendable_jit's _jit_is_native_fn
@@ -6641,6 +6689,31 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_bind_method_value(
     }
   }
   culebra_runtime_value_retain(view_tag, view_data);
+  return {view_tag, view_data};
+}
+
+// The `.name` / `.params` / `.return_type` value-read path skips
+// bind_method_value (those names are function-introspection on a TAG_FUNC
+// receiver, whose resolved `view` is a fresh +1-owned result, not a borrowed
+// method to bind). But on a class instance those same names may be getters, so
+// fire them here. `view` is +1 OWNED (compile_property_get's fn_mode retains
+// the object path too), so on the getter branch release the owned method view
+// after invoking; on the pass-through branch return it unchanged (ownership
+// flows to the caller, which does own(view) with no extra retain).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_getter_or_value(
+    int8_t recv_tag, int64_t recv_data, int8_t view_tag, int64_t view_data,
+    const char* key) {
+  if (view_tag == TAG_FUNC && recv_tag == TAG_OBJECT) {
+    auto* obj = reinterpret_cast<JitObject*>(recv_data);
+    if (obj->proto && obj->find_slot(key) == static_cast<size_t>(-1)) {
+      auto* method = reinterpret_cast<JitClosure*>(view_data);
+      if (_jit_is_getter_fn(method->fn_ptr)) {
+        JitValue r = _jit_invoke_getter(method, recv_tag, recv_data);
+        _culebra_value_release_impl(view_tag, view_data);  // drop owned view
+        return r;
+      }
+    }
+  }
   return {view_tag, view_data};
 }
 
@@ -7245,6 +7318,29 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_iter_collect(
     culebra_runtime_array_push(out, v.tag, v.data);  // consumes +1
   }
   return out;
+}
+
+// Terminal join: drain the iterator, concatenating elements with `sep`,
+// mirroring culebra_runtime_array_join so an iterator `.join(sep)` needs no
+// intermediate `.collect()`. Each pulled value carries a +1 ref we release.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_iter_join(
+    int8_t it, int64_t id, const char* sep) {
+  std::string out;
+  bool first = true;
+  JitValue v;
+  auto* has_next_cls = _iter_has_next_closure({it, id});
+  auto* next_cls = _iter_next_closure({it, id});
+  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
+    if (!first) out += sep;
+    first = false;
+    if (v.tag == TAG_STRING || v.tag == TAG_STRINGVIEW) {
+      out += _culebra_str_view(v.tag, v.data);
+    } else {
+      out += _culebra_value_to_str_impl(v.tag, v.data);
+    }
+    _culebra_value_release_impl(v.tag, v.data);
+  }
+  return _culebra_heap_str(out);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_count(
@@ -9771,6 +9867,8 @@ inline constexpr auto set_callback_arg_site = "culebra_runtime_set_callback_arg_
 inline constexpr auto set_arg_pos         = "culebra_runtime_set_arg_pos";
 inline constexpr auto set_call_positions  = "culebra_runtime_set_call_positions";
 inline constexpr auto register_native_fn  = "culebra_runtime_register_native_fn";
+inline constexpr auto register_getter     = "culebra_runtime_register_getter";
+inline constexpr auto getter_or_value     = "culebra_runtime_getter_or_value";
 inline constexpr auto param_pos           = "culebra_runtime_param_pos";
 inline constexpr auto type_check_param    = "culebra_runtime_type_check_param";
 // Trailing underscore on `throw_` dodges C++ keyword collision.
@@ -9935,6 +10033,7 @@ inline constexpr auto iota                = "culebra_runtime_iota";
 inline constexpr auto math_range           = "culebra_runtime_math_range";
 inline constexpr auto check_pos_count      = "culebra_runtime_check_pos_count";
 inline constexpr auto iter_collect         = "culebra_runtime_iter_collect";
+inline constexpr auto iter_join            = "culebra_runtime_iter_join";
 inline constexpr auto iter_count           = "culebra_runtime_iter_count";
 inline constexpr auto iter_for_each        = "culebra_runtime_iter_for_each";
 inline constexpr auto iter_reduce          = "culebra_runtime_iter_reduce";
@@ -17676,6 +17775,9 @@ struct JIT {
     for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
       auto mv = culebra::view_method(m);
+      // Mirror interp: a getter must be a no-parameter method (rejects
+      // `get x: T` / `get x = e` field forms and `get f(a)`).
+      if (mv.is_getter) culebra::require_getter_no_params(mv, class_name);
       if (mv.is_typed_field) {
         // Typed instance fields don't materialize as JIT instance slots
         // yet (interp-first; see C3 plan), but @packable reads their
@@ -17744,11 +17846,23 @@ struct JIT {
       define_var(class_name, classSlot);
     }
 
-    // Compile each method into a closure %Value (+1 owned).
+    // Compile each method into a closure %Value (+1 owned). A getter's body
+    // address is registered at runtime so a bare `obj.name` read auto-invokes
+    // it (culebra_runtime_bind_method_value). Getters are never overloaded, so
+    // the closure survives the multimethod grouping below unchanged; register
+    // here where each maps 1:1 to its source method.
     std::vector<llvm::Value*> method_vals;
     method_vals.reserve(method_asts.size() + derive_methods.size());
+    auto ptrTyReg = llvm::PointerType::get(ctx_, 0);
     for (auto* m : method_asts) {
-      method_vals.push_back(compile_function(*m));
+      auto mval = compile_function(*m);
+      if (culebra::view_method(*m).is_getter) {
+        auto closPtr = builder_.CreateIntToPtr(extract_data(mval), ptrTyReg);
+        emit_call(module_->getOrInsertFunction(rt::register_getter,
+                                               builder_.getVoidTy(), ptrTyReg),
+                  {closPtr});
+      }
+      method_vals.push_back(mval);
     }
 
     // Group same-named instance-method overloads into one multimethod
@@ -19181,6 +19295,33 @@ struct JIT {
     builder_.SetInsertPoint(okBB);
   }
 
+  // Resolve `obj.name` read AS A VALUE (no call parens): fire a getter, bind a
+  // plain method's `this` (interp's _wrap_method_with_this), or pass a data
+  // field / introspection result through. `.name`/`.params`/`.return_type`
+  // route to getter_or_value because compile_property_get's fn_mode returns a
+  // +1-OWNED `view` for them; every other name yields a BORROWED `view` and
+  // routes to bind_method_value. Both return a fresh +1-owned value, so the
+  // caller does `own(...)` (the move-assign releases the receiver). Shared by
+  // compile_call and compile_call_with_builtins so the two stay in lockstep.
+  llvm::Value* emit_property_value_read(llvm::Value* receiver,
+                                        llvm::Value* view,
+                                        const std::string& name) {
+    bool intro =
+        (name == "name" || name == "params" || name == "return_type");
+    auto i8Ty = builder_.getInt8Ty();
+    auto i64Ty = builder_.getInt64Ty();
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto keyPtr =
+        get_or_create_global_str(name, intro ? ".getter.key" : ".bind.key");
+    return emit_call(
+        module_->getOrInsertFunction(
+            intro ? rt::getter_or_value : rt::bind_method_value, valueType_,
+            i8Ty, i64Ty, i8Ty, i64Ty, ptrTy),
+        {extract_tag(receiver), extract_data(receiver), extract_tag(view),
+         extract_data(view), keyPtr},
+        intro ? "getter.or.value" : "bind.method");
+  }
+
   llvm::Value* compile_call(const peg::Ast& ast) {
     using namespace peg::udl;
     auto calleeNode = ast.nodes[0];
@@ -19290,32 +19431,7 @@ struct JIT {
             auto view = compile_property_get(receiver, name);
             // Capture own-slot presence before the receiver is released below.
             auto hasOwn = emit_has_own_field(receiver, name);
-            // Function introspection (.name / .params / .return_type)
-            // returns a fresh +1 owned value rather than a borrowed
-            // Object IC slot view, so swap_owned would double-retain it
-            // and leak. The move-assign releases the receiver instead.
-            if (name == "name" || name == "params" || name == "return_type") {
-              callee = own(view);
-            } else {
-              // Bind `this` into a class method read as a value (interp's
-              // _wrap_method_with_this); own-slot functions (ns methods,
-              // ctors, lambda fields) and builtins pass through unchanged.
-              // The helper returns a fresh +1 (a bound wrapper, or the view
-              // retained); the move-assign releases the receiver's +1, as
-              // swap_owned did.
-              auto i8Ty = builder_.getInt8Ty();
-              auto i64Ty = builder_.getInt64Ty();
-              auto ptrTy = llvm::PointerType::get(ctx_, 0);
-              auto keyPtr = get_or_create_global_str(name, ".bind.key");
-              auto bound = emit_call(
-                  module_->getOrInsertFunction(
-                      rt::bind_method_value, valueType_, i8Ty, i64Ty, i8Ty,
-                      i64Ty, ptrTy),
-                  {extract_tag(receiver), extract_data(receiver),
-                   extract_tag(view), extract_data(view), keyPtr},
-                  "bind.method");
-              callee = own(bound);
-            }
+            callee = own(emit_property_value_read(receiver, view, name));
             emit_reject_bare_builtin_method(callee.borrow(), hasOwn, name,
                                             postfix);
           }
@@ -21470,18 +21586,7 @@ struct JIT {
             auto view = compile_property_get(receiver, name);
             // Capture own-slot presence before the receiver is released below.
             auto hasOwn = emit_has_own_field(receiver, name);
-            // Function introspection (.name / .params / .return_type)
-            // returns a fresh +1 owned value rather than a borrowed
-            // Object IC slot view, so swap_owned would double-retain it
-            // and leak. The move-assign releases the receiver instead.
-            if (name == "name" || name == "params" || name == "return_type") {
-              callee = own(view);
-            } else {
-              // swap_owned retains the view and releases the receiver.
-              emit_value_swap_owned(view, receiver);
-              callee.consume();
-              callee = own(view);
-            }
+            callee = own(emit_property_value_read(receiver, view, name));
             emit_reject_bare_builtin_method(callee.borrow(), hasOwn, name,
                                             postfix);
           }
@@ -22981,18 +23086,6 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     return phi;
   }
 
-  if (method == "join" && argsAst.nodes.size() == 1) {
-    auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "join");
-    auto sep = compile(*argsAst.nodes[0]);
-    emit_type_check(sep.borrow(), "String", "parameter 'sep'",
-                    argsAst.nodes[0].get());
-    auto sepPtr = builder_.CreateIntToPtr(extract_data(sep.borrow()), ptrTy);
-    auto s = emit_call(
-        module_->getFunction(rt::array_join), {arrPtr, sepPtr});
-    sep.drop();
-    return make_string(s);
-  }
-
   if (method == "index_of" && argsAst.nodes.size() == 1) {
     auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "iof");
     auto v = compile(*argsAst.nodes[0]);
@@ -23349,6 +23442,30 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     phi->addIncoming(lazyRes, lazyEnd);
     return phi;
   };
+
+  if (method == "join" && argsAst.nodes.size() == 1) {
+    // Array (eager) and Iterator (lazy) both join, so `xs.map(...).join(sep)`
+    // works with no intermediate `.collect()`. sep is borrowed by both arms
+    // (its data ptr is read, never stored) and dropped once after dispatch.
+    auto sep = compile(*argsAst.nodes[0]);
+    emit_type_check(sep.borrow(), "String", "parameter 'sep'",
+                    argsAst.nodes[0].get());
+    auto sepPtr = builder_.CreateIntToPtr(extract_data(sep.borrow()), ptrTy);
+    auto res = dispatch_arr_iter(
+        "join",
+        [&](llvm::Value* arrPtr) {
+          auto s = emit_call(module_->getFunction(rt::array_join),
+                             {arrPtr, sepPtr});
+          return make_string(s);
+        },
+        [&](llvm::Value* it, llvm::Value* id) {
+          auto s = emit_call(module_->getFunction(rt::iter_join),
+                             {it, id, sepPtr});
+          return make_string(s);
+        });
+    sep.drop();
+    return res;
+  }
 
   if (method == "map" && argsAst.nodes.size() == 1) {
     const auto& cb_ast = *argsAst.nodes[0];

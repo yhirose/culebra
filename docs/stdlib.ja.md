@@ -597,9 +597,9 @@ let sources = FS.glob('src/**/*.cul')
 # doctest: skip
 let root = Path.new(FS.dirname(Sys.script)).resolve()
 for src in root.glob("*/content.src.js") {
-  let dst = src.parent() / "content.js"       # vs FS.join(FS.dirname(src), …)
+  let dst = src.parent / "content.js"         # vs FS.join(FS.dirname(src), …)
   dst.write(transform(src.read()))
-  IO.print("{src.parent().name()}/content.js\n")   # vs FS.basename(FS.dirname(src))
+  IO.print("{src.parent.name}/content.js\n")  # vs FS.basename(FS.dirname(src))
 }
 ```
 
@@ -611,10 +611,10 @@ for src in root.glob("*/content.src.js") {
 | メンバー | 返り値 | 委譲先 |
 |---|---|---|
 | `p / other` / `p.join(other)` | `Path` | `FS.join` |
-| `p.name()` | `String`（末尾成分） | `FS.basename` |
-| `p.stem()` | `String`（拡張子なしの名前） | `FS.stem` |
-| `p.suffix()` | `String`（ドット込み拡張子） | `FS.extension` |
-| `p.parent()` | `Path` | `FS.dirname` |
+| `p.name` | `String`（末尾成分） | `FS.basename` |
+| `p.stem` | `String`（拡張子なしの名前） | `FS.stem` |
+| `p.suffix` | `String`（ドット込み拡張子） | `FS.extension` |
+| `p.parent` | `Path` | `FS.dirname` |
 | `p.resolve()` | `Path`（絶対） | `FS.abspath` |
 | `p.exists()` / `p.is_file()` / `p.is_dir()` | `Bool` | `FS.*` |
 | `p.read()` / `p.write(s)` | `String` / `Nil` | `FS.read` / `FS.write` |
@@ -625,6 +625,11 @@ for src in root.glob("*/content.src.js") {
 | `p.glob(pattern)` | `Array<Path>` | `FS.glob` |
 | `p.walk()` | `Array<Path>`（再帰） | `FS.walk` |
 | `p.str()` | `String`（エスケープハッチ） | — |
+
+`name` / `stem` / `suffix` / `parent` は **getter**（純粋な文字列導出）で、
+括弧なしで読みます — `p.parent().name()` ではなく `p.parent.name`（括弧付き
+の呼び出しも動きます）。下段のファイルシステム操作は I/O を行い throw し
+うるためメソッドのままです。
 
 2 つの `Path` は内部パス文字列で比較します: `==`（`String` 相手も可）と
 `<` / `<=` / `>` / `>=`。よって `Path` 配列はソート可能（`paths.sorted()`）で、

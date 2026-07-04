@@ -49,10 +49,13 @@ let _path_module = fn() {
     __div__(o) { this.join(o) }
 
     # --- path components (String, mirroring FS.*) ---
-    name() { FS.basename(this._path) }    # final component, e.g. "content.js"
-    stem() { FS.stem(this._path) }        # final component without suffix
-    suffix() { FS.extension(this._path) } # extension incl. dot, e.g. ".js"
-    parent() { Path.new(FS.dirname(this._path)) }
+    # Pure, total, O(1) string derivations, so they read as properties
+    # (`p.name`, `p.parent`) — no parens. `p.name()` still works too. The
+    # filesystem ops below stay methods: they do I/O and can throw.
+    get name() { FS.basename(this._path) }    # final component, e.g. "content.js"
+    get stem() { FS.stem(this._path) }        # final component without suffix
+    get suffix() { FS.extension(this._path) } # extension incl. dot, e.g. ".js"
+    get parent() { Path.new(FS.dirname(this._path)) }
 
     # --- queries ---
     exists() { FS.exists(this._path) }

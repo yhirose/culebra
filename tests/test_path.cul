@@ -19,16 +19,20 @@ assert_eq("{p.join("src").join("main.cul")}", "/home/user/project/src/main.cul")
 // a Path is accepted wherever a path is expected (PathLike via __str__)
 assert_eq("{Path.new("/a") / Path.new("b")}", "/a/b")
 
-// --- components (String, mirroring FS.*) ---
+// --- components (String, mirroring FS.*) — getters, read without parens ---
+assert_eq(q.name, "main.cul")
+assert_eq(q.stem, "main")
+assert_eq(q.suffix, ".cul")
+assert_eq("{q.parent}", "/home/user/project/src")
+assert_eq(q.parent.name, "src")                   // the fluent-chain payoff
+// a getter still works when spelled with call parens (both forms invoke it)
 assert_eq(q.name(), "main.cul")
-assert_eq(q.stem(), "main")
-assert_eq(q.suffix(), ".cul")
-assert_eq("{q.parent()}", "/home/user/project/src")
-assert_eq(q.parent().name(), "src")               // the fluent-chain payoff
+assert_eq(q.parent(), q.parent)
+assert_eq(q.parent().name(), q.parent.name)
 
 // --- value equality (String or Path on the RHS) ---
 assert_eq(q == "/home/user/project/src/main.cul", true)
-assert_eq(q.parent() == p / "src", true)
+assert_eq(q.parent == p / "src", true)
 assert_eq(q == "/other", false)
 // a non-path RHS is simply not-equal, never coerced (no stringify hole)
 assert_eq(Path.new("42") == 42, false)
@@ -72,10 +76,10 @@ assert_eq(f.exists(), true)
 assert_eq(f.is_file(), true)
 assert_eq(f.read(), "world")
 
-// list() / glob() return Path, so .name() chains
-let names = base.list().map(|e| e.name()).sorted_by(|s| s)
+// list() / glob() return Path, so the .name getter chains (inside a lambda)
+let names = base.list().map(|e| e.name).sorted_by(|s| s)
 assert_eq(names, ["hello.txt"])
-let globbed = base.glob("*.txt").map(|e| e.name())
+let globbed = base.glob("*.txt").map(|e| e.name)
 assert_eq(globbed, ["hello.txt"])
 
 // resolve() normalizes to an absolute Path
