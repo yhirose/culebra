@@ -1956,10 +1956,11 @@ drain_and_close()
 
 #### `SharedBuffer.file(path, count, Class) -> buffer`
 
-同じ buffer を、メモリマップしたファイル（`MAP_SHARED`）で裏打ちする。書き込み
+同じ buffer を、メモリマップしたファイル（POSIX `mmap(MAP_SHARED)`、Windows
+`CreateFileMapping`）で裏打ちする。書き込み
 はファイルのページに届く — **永続**（ファイルはプロセスより長生き）で、同じ
 `path` をマップした別プロセスからも見える。ハンドルに `flush()`（dirty ページを
-`msync` でディスクへ）が付く。ファイルは普通のファイルなので `FS.remove(path)`
+ディスクへ）が付く。ファイルは普通のファイルなので `FS.remove(path)`
 で削除する。`path` を RAM 上の場所（Linux なら `/dev/shm/...` など）に向ければ、
 ディスク永続なしの共有メモリになる。
 
@@ -1974,7 +1975,8 @@ buf.flush()                   # ディスクへ永続化
 #### `SharedBuffer.shared(count, Class) -> buffer`
 
 同じ buffer を、**匿名の**共有メモリ（名前のない fd — Linux は `memfd`、macOS は
-即 unlink した POSIX shm オブジェクト）で裏打ちする。名前を持たず、ディスクにも
+即 unlink した POSIX shm オブジェクト、Windows は pagefile-backed の
+`CreateFileMapping`）で裏打ちする。ディスクにも
 触れない。全ハンドルが drop されるとカーネルが解放する。用途は、`Proc.run` /
 `Proc.spawn` の `share:` で**子プロセス**へ渡すこと（下記
 [プロセス間での共有](#プロセス間での共有zero-copy)）。

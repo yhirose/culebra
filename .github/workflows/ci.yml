@@ -156,14 +156,13 @@ jobs:
       - name: Smoke test microgpt (5 steps, both backends)
         run: just smoke-microgpt
 
-  # Windows port — Phase 1. Builds the interpreter-only driver (no JIT/AOT) with
-  # the OS-heavy optional features off, to prove the core language + stdlib +
-  # SQLite compile and run on Windows. The subprocess (Proc), terminal raw-mode
-  # (Term) and cross-process SharedBuffer subsystems are stubbed on Windows (they
-  # raise a clear "not supported" error) and land in later phases; everything
-  # else — interp, FS, string/collection/number stdlib, in-process SharedBuffer —
-  # runs. Kept a separate job from the JIT/AOT matrix above, whose `just build`
-  # / `just test` steps assume the full LLVM toolchain.
+  # Windows port — interpreter-only driver (no JIT/AOT) with the OS-heavy
+  # optional features off, proving the core language + stdlib + SQLite compile
+  # and run on Windows. Phase 1 landed the core; Phase 2 added Proc (subprocess)
+  # and Term (terminal raw-mode); Phase 3 added cross-process SharedBuffer
+  # (CreateFileMapping + named mutex). Only JIT/AOT remains stubbed on Windows.
+  # Kept a separate job from the JIT/AOT matrix above, whose `just build` /
+  # `just test` steps assume the full LLVM toolchain.
   windows:
     runs-on: windows-latest
     timeout-minutes: 25  # a runtime hang (e.g. a Proc deadlock) fails fast here
@@ -272,3 +271,68 @@ jobs:
           # Bound the run so a future regression that deadlocks fails the step in
           # ~90s (exit 124) instead of hanging the whole job to its timeout.
           timeout 90 ./build-win/culebra.exe smoke.cul
+
+      # Phase 3: cross-process SharedBuffer via CreateFileMapping + MapViewOfFile
+      # + a named mutex (POSIX uses mmap + fd inheritance + an in-region
+      # PROCESS_SHARED pthread mutex). Exercises the three lanes stubbed in Phase
+      # 1/2: `.shared` + Proc `share:` + `.receive` (a named pagefile mapping
+      # passed to a child by name — no HANDLE inheritance), with_lock (the named
+      # mutex serializing a contended counter), and `.file` (a mapping over a
+      # path, read+written by a child process). The children are this same
+      # culebra.exe re-run via Sys.executable.
+      - name: Smoke test (cross-process SharedBuffer)
+        run: |
+          mkdir -p sbworker
+          cat > sbworker/slot.cul <<'EOF'
+          # Attach the parent's shared buffer by name, bump the shared counter
+          # (cell 0) once under with_lock, then write this child's disjoint slot.
+          @packable class Cell { v: Int64 = 0 }
+          let grid = SharedBuffer.receive("grid", Cell)
+          let slot = Sys.env("SLOT").to_long()
+          grid.with_lock(fn() { grid[0].v = grid[0].v + 1 })
+          grid[slot + 1].v = (slot + 1) * 100
+          grid.drop()
+          EOF
+          cat > sbworker/file.cul <<'EOF'
+          # Open the parent's file-backed buffer by path and echo cell 0 into
+          # cell 1 (incremented), proving both processes map the same file.
+          @packable class Cell { v: Int64 = 0 }
+          let buf = SharedBuffer.file(Sys.env("SBPATH"), 4, Cell)
+          buf[1].v = buf[0].v + 1
+          buf.flush()
+          buf.drop()
+          EOF
+          cat > sb_parent.cul <<'EOF'
+          fn check(cond, msg) { if !cond { throw "check failed: " + msg } }
+          @packable class Cell { v: Int64 = 0 }
+
+          let exe = Sys.executable
+          check(exe != "", "Sys.executable resolved")
+
+          # .shared + Proc share: + .receive + with_lock. Two concurrent children
+          # each bump the shared counter once (named mutex must lose none) and
+          # write their own disjoint slot (named mapping shared by name).
+          let grid = SharedBuffer.shared(3, Cell)
+          let h0 = Proc.spawn([exe, "sbworker/slot.cul"], env: {"SLOT": "0"}, share: {"grid": grid})
+          let h1 = Proc.spawn([exe, "sbworker/slot.cul"], env: {"SLOT": "1"}, share: {"grid": grid})
+          let r0 = h0.wait()
+          let r1 = h1.wait()
+          check(r0.ok && r1.ok, "share workers exit ok")
+          check(grid[0].v == 2, "with_lock counter: no lost increment")
+          check(grid[1].v == 100, "disjoint slot 0 write visible")
+          check(grid[2].v == 200, "disjoint slot 1 write visible")
+
+          # .file: a mapping over a path, written by a child, read back here.
+          let path = "cul_sb_smoke.bin"
+          let fbuf = SharedBuffer.file(path, 4, Cell)
+          fbuf[0].v = 41
+          fbuf.flush()
+          let fr = Proc.run([exe, "sbworker/file.cul"], env: {"SBPATH": path})
+          check(fr.ok, "file worker exit ok: " + fr.stderr)
+          check(fbuf[1].v == 42, "child's file write visible in parent's mapping")
+          fbuf.drop()
+          FS.remove(path)
+
+          print("sharedbuffer cross-process ok")
+          EOF
+          timeout 90 ./build-win/culebra.exe sb_parent.cul

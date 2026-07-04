@@ -30,6 +30,8 @@
 #if defined(__linux__)
 #include <sys/syscall.h>  // SYS_memfd_create (anonymous shm fd)
 #endif
+#else
+#include <os_compat.h>  // guarded <windows.h>: CreateFileMapping / named mutex
 #endif  // !_WIN32
 
 #include <shared.h>  // CulebraError
@@ -638,7 +640,17 @@ struct SharedBufferCore {
   std::shared_ptr<std::vector<uint8_t>> heap_bytes;
   std::mutex heap_mutex;  // Heap with_lock (cross-isolate, same process)
   int fd = -1;            // File/Shared: backing fd (for msync/close/inherit)
-  std::string name;       // File: the path (introspection / cross-proc by path)
+  std::string name;       // File: the path; Shared (Windows): the mapping name
+#if defined(_WIN32)
+  // Windows cross-process backing. Named kernel objects replace the POSIX
+  // fd + in-region PROCESS_SHARED pthread mutex: the mapping/mutex travel to a
+  // child by name (no HANDLE inheritance), and the mutex is a named object
+  // (Windows can't host a PROCESS_SHARED mutex inside the shared region).
+  HANDLE hMap = nullptr;      // File/Shared: the file-mapping object
+  HANDLE hFile = INVALID_HANDLE_VALUE;  // File: the backing file
+  HANDLE hMutex = nullptr;    // File/Shared: the named with_lock mutex
+  std::string mutex_name;     // File/Shared: the mutex's name (so it can reopen)
+#endif
   PackableLayout layout;
   std::string class_name;
   size_t count = 0;
@@ -655,7 +667,15 @@ struct SharedBufferCore {
 #if !defined(_WIN32)
     if (storage != Storage::Heap && map_base) munmap(map_base, byte_size);
     if (fd >= 0) close(fd);
-#endif  // Windows only ever holds Heap cores (map_base null, fd -1).
+#else
+    // Windows: unmap the view, then close the mapping / file / mutex handles.
+    // The kernel refcounts named objects by open handle, so the mapping and
+    // mutex outlive us only while another process still holds them.
+    if (map_base) UnmapViewOfFile(map_base);
+    if (hMap) CloseHandle(hMap);
+    if (hFile != INVALID_HANDLE_VALUE) CloseHandle(hFile);
+    if (hMutex) CloseHandle(hMutex);
+#endif
   }
 };
 
@@ -690,17 +710,26 @@ inline void shared_lock_wait_ready(SharedBufferCore& core) {
     sched_yield();
   }
 }
+#else  // _WIN32: the with_lock mutex is a named kernel object created/opened in
+       // the File/Shared constructors, so there is no in-region mutex to
+       // initialize or wait on. The reserved kLockHeader stays unused.
+inline void shared_lock_init(SharedBufferCore&) {}
+inline void shared_lock_wait_ready(SharedBufferCore&) {}
 #endif  // !_WIN32
 inline void shared_buffer_lock(SharedBufferCore& core) {
   if (core.storage == SharedBufferCore::Storage::Heap) core.heap_mutex.lock();
 #if !defined(_WIN32)
   else pthread_mutex_lock(&shared_lock_header(core)->mutex);
-#endif  // Windows only holds Heap cores, so the cross-process branch is dead.
+#else
+  else WaitForSingleObject(core.hMutex, INFINITE);  // named cross-proc mutex
+#endif
 }
 inline void shared_buffer_unlock(SharedBufferCore& core) {
   if (core.storage == SharedBufferCore::Storage::Heap) core.heap_mutex.unlock();
 #if !defined(_WIN32)
   else pthread_mutex_unlock(&shared_lock_header(core)->mutex);
+#else
+  else ReleaseMutex(core.hMutex);
 #endif
 }
 // RAII lock guard that also pins the core alive across the user callback (so a
@@ -757,6 +786,13 @@ inline long make_shared_buffer(const PackableLayout& layout,
   core->count = count;
   core->refcount = 1;
   return register_shared_buffer(std::move(core));
+}
+
+// The environment-variable name a `share:` buffer travels under, keyed by the
+// user's name for it. OS-independent, so it lives once outside the split — both
+// ends (parent prepare_share_buffer / child receive) agree on the spelling.
+inline std::string share_env_key(std::string_view name) {
+  return "CULEBRA_SHARE_" + std::string(name);
 }
 
 #if !defined(_WIN32)
@@ -914,12 +950,10 @@ inline long make_shared_buffer_receive(const PackableLayout& layout,
   return id;
 }
 
-// The environment-variable name a `share:` buffer travels under, keyed by the
-// user's name for it. The parent sets it (`fd:bytes:stride:count`), the child's
-// SharedBuffer.receive reads it. One place so both ends agree on the spelling.
-inline std::string share_env_key(std::string_view name) {
-  return "CULEBRA_SHARE_" + std::string(name);
-}
+// The POSIX `share:` wire value: `fd:bytes:stride:count`, read back by the
+// child's SharedBuffer.receive. (Windows carries object names instead — see its
+// prepare_share_buffer.) The shared env-var KEY is defined once, below the OS
+// split.
 inline std::string share_env_value(int fd, size_t bytes, size_t stride,
                                    size_t count) {
   return std::format("{}:{}:{}:{}", fd, bytes, stride, count);
@@ -988,52 +1022,259 @@ inline long make_shared_buffer_from_share_env(const PackableLayout& layout,
                                     static_cast<int>(fd));
 }
 
-#else  // _WIN32 — cross-process shared memory (mmap / shm / PROCESS_SHARED
-       // mutex) is not yet ported (Phase 3 will use CreateFileMapping +
-       // MapViewOfFile + named CreateMutex). The Heap lane above stays fully
-       // functional; the cross-process constructors raise at call time.
+#else  // _WIN32 — cross-process shared memory via named kernel objects.
+       // CreateFileMapping (file- or pagefile-backed) + MapViewOfFile replaces
+       // mmap; a named mutex replaces the in-region PROCESS_SHARED pthread mutex
+       // (Windows can't host one inside the shared region). The mapping/mutex
+       // travel to a child by NAME through the environment — no HANDLE
+       // inheritance, sidestepping the "HANDLE on an int fd ABI" trap. Records
+       // still sit past the reserved kLockHeader so their byte layout matches
+       // the POSIX backends exactly.
 
-[[noreturn]] inline void _win_no_shared_mem() {
-  throw CulebraError(
-      "RuntimeError",
-      "cross-process SharedBuffer (file / shared / receive) is not yet "
-      "supported on Windows; SharedBuffer.new (in-process) works");
+// A short, per-process-unique token for naming a `.shared` mapping/mutex pair.
+inline unsigned _win_shm_seq() {
+  static std::atomic<unsigned> ctr{0};
+  return ctr.fetch_add(1, std::memory_order_relaxed);
 }
-inline long make_shared_buffer_file(const PackableLayout&, std::string, size_t,
-                                    const std::string&) {
-  _win_no_shared_mem();
+
+// Map an already-created file-mapping object into a fresh core. Splits the
+// 64-bit size into the DWORD pair CreateFileMapping/MapViewOfFile want, wires
+// `data` past the lock header, and adopts the handles. On a null mutex or map
+// failure it closes the handles and throws IOError. Shared by the File / Shared
+// / receive constructors so they agree on the offset math and handle ownership.
+inline long _win_adopt_mapping(const PackableLayout& layout,
+                               std::string class_name, size_t count,
+                               size_t bytes, HANDLE hMap, HANDLE hFile,
+                               HANDLE hMutex,
+                               SharedBufferCore::Storage storage,
+                               std::string name, std::string mutex_name) {
+  // A null named mutex (CreateMutex/OpenMutex failed) must not be adopted: unlike
+  // the POSIX in-region mutex, it is a separate object that can fail even when
+  // the mapping succeeds, and WaitForSingleObject(NULL) returns at once — so
+  // with_lock would silently stop excluding, corrupting contended writes. Fail
+  // loudly instead, matching the POSIX backends' throw-on-error behavior.
+  if (!hMutex) {
+    if (hMap) CloseHandle(hMap);
+    if (hFile != INVALID_HANDLE_VALUE) CloseHandle(hFile);
+    throw CulebraError("IOError",
+        "SharedBuffer: cannot create or open the with_lock mutex");
+  }
+  void* p = MapViewOfFile(hMap, FILE_MAP_ALL_ACCESS, 0, 0, bytes);
+  if (!p) {
+    CloseHandle(hMutex);
+    if (hMap) CloseHandle(hMap);
+    if (hFile != INVALID_HANDLE_VALUE) CloseHandle(hFile);
+    throw CulebraError("IOError", "SharedBuffer: cannot map shared memory");
+  }
+  auto core = std::make_shared<SharedBufferCore>();
+  core->map_base = static_cast<uint8_t*>(p);
+  core->data = core->map_base + kLockHeader;
+  core->byte_size = bytes;
+  core->storage = storage;
+  core->hMap = hMap;
+  core->hFile = hFile;
+  core->hMutex = hMutex;
+  core->name = std::move(name);
+  core->mutex_name = std::move(mutex_name);
+  core->layout = layout;
+  core->class_name = std::move(class_name);
+  core->count = count;
+  core->refcount = 1;
+  return register_shared_buffer(std::move(core));
 }
-inline long make_shared_buffer_shared(const PackableLayout&, std::string,
-                                      size_t) {
-  _win_no_shared_mem();
+
+// Split a 64-bit size into the (high, low) DWORD pair CreateFileMapping takes.
+inline std::pair<DWORD, DWORD> _win_size_hilo(size_t bytes) {
+  return {static_cast<DWORD>((static_cast<uint64_t>(bytes) >> 32) & 0xffffffffu),
+          static_cast<DWORD>(bytes & 0xffffffffu)};
 }
-inline long make_shared_buffer_receive(const PackableLayout&, std::string,
-                                       size_t, int) {
-  _win_no_shared_mem();
+
+// File-backed SharedBuffer: a mapping over `path`, shared by any process that
+// maps the same path. CreateFileMapping grows the file to `bytes` if it is
+// smaller, so concurrent openers converge on the size with no ftruncate race.
+// The with_lock mutex is named from the file's identity (volume serial + file
+// index), not its path spelling, so processes opening the file under different
+// paths still share one mutex — the robustness the POSIX in-region mutex gave
+// for free. Throws IOError on an OS failure.
+inline long make_shared_buffer_file(const PackableLayout& layout,
+                                    std::string class_name, size_t count,
+                                    const std::string& path) {
+  size_t bytes = kLockHeader + layout.stride * count;
+  HANDLE hFile = CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                             OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (hFile == INVALID_HANDLE_VALUE) {
+    throw CulebraError("IOError",
+        std::format("SharedBuffer.file: cannot open `{}`", path));
+  }
+  // Name the mutex from the file's identity so different paths to the same file
+  // still lock together.
+  std::string mutex_name;
+  BY_HANDLE_FILE_INFORMATION info;
+  if (GetFileInformationByHandle(hFile, &info)) {
+    mutex_name = std::format("Local\\culebra_sbf_{:x}_{:x}_{:x}",
+                             info.dwVolumeSerialNumber, info.nFileIndexHigh,
+                             info.nFileIndexLow);
+  } else {
+    // Fallback: derive the name from the path. Object names may not contain a
+    // backslash (it separates namespaces), so scrub the path separators/colon
+    // to `_` — otherwise CreateMutex would reject the name and locking would be
+    // lost. Two processes opening the same spelling still share the lock.
+    std::string safe = path;
+    for (char& c : safe)
+      if (c == '\\' || c == '/' || c == ':') c = '_';
+    mutex_name = std::format("Local\\culebra_sbf_{}", safe);
+  }
+  auto [hi, lo] = _win_size_hilo(bytes);
+  HANDLE hMap = CreateFileMappingA(hFile, nullptr, PAGE_READWRITE, hi, lo,
+                                   nullptr);
+  if (!hMap) {
+    CloseHandle(hFile);
+    throw CulebraError("IOError",
+        std::format("SharedBuffer.file: cannot map `{}`", path));
+  }
+  HANDLE hMutex = CreateMutexA(nullptr, FALSE, mutex_name.c_str());
+  return _win_adopt_mapping(layout, std::move(class_name), count, bytes, hMap,
+                            hFile, hMutex, SharedBufferCore::Storage::File, path,
+                            std::move(mutex_name));
 }
-inline long make_shared_buffer_from_share_env(const PackableLayout&, std::string,
-                                              std::string_view) {
-  _win_no_shared_mem();
+
+// Anonymous-mapping SharedBuffer: a pagefile-backed, name-less-to-the-user RAM
+// region shared with child processes by name (Proc `share:`). The mapping and
+// its with_lock mutex get per-process-unique names; the child opens them by
+// name (no HANDLE inheritance). Throws IOError on an OS failure.
+inline long make_shared_buffer_shared(const PackableLayout& layout,
+                                      std::string class_name, size_t count) {
+  size_t bytes = kLockHeader + layout.stride * count;
+  unsigned seq = _win_shm_seq();
+  DWORD pid = GetCurrentProcessId();
+  std::string map_name = std::format("Local\\culebra_sbm_{}_{}", pid, seq);
+  std::string mutex_name = std::format("Local\\culebra_sbx_{}_{}", pid, seq);
+  auto [hi, lo] = _win_size_hilo(bytes);
+  HANDLE hMap = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
+                                   hi, lo, map_name.c_str());
+  if (!hMap) {
+    throw CulebraError("IOError",
+        "SharedBuffer.shared: CreateFileMapping failed");
+  }
+  HANDLE hMutex = CreateMutexA(nullptr, FALSE, mutex_name.c_str());
+  return _win_adopt_mapping(layout, std::move(class_name), count, bytes, hMap,
+                            INVALID_HANDLE_VALUE, hMutex,
+                            SharedBufferCore::Storage::Shared,
+                            std::move(map_name), std::move(mutex_name));
 }
-// Parent side of Proc.run `share:` — reached only via the (stubbed) Proc path,
-// but referenced by stdlib so it must compile.
-inline std::string share_env_key(std::string_view name) {
-  return "CULEBRA_SHARE_" + std::string(name);
+
+// Parent side of `Proc.run(..., share: {name: buf})`: validate that `buf` is an
+// anonymous (Shared) buffer and return the env value the child reads — the
+// mapping name, mutex name, and byte/stride/count (`|`-separated, since the
+// object names contain backslashes). The fd slot is unused on Windows (the
+// child opens by name, not by an inherited handle), so it returns -1. Throws
+// ValueError on a dropped or wrong-storage buffer.
+inline std::pair<int, std::string> prepare_share_buffer(long id,
+                                                        std::string_view name) {
+  auto core = lookup_shared_buffer(id);
+  if (!core) {
+    throw CulebraError(
+        "ValueError",
+        std::format("Proc share `{}`: SharedBuffer has been dropped", name));
+  }
+  if (core->storage != SharedBufferCore::Storage::Shared) {
+    throw CulebraError(
+        "ValueError",
+        std::format("Proc share `{}`: only a SharedBuffer.shared(...) buffer "
+                    "can be shared with a child process (heap is isolate-local; "
+                    "share a file buffer by re-opening its path)",
+                    name));
+  }
+  std::string env_val = std::format("{}|{}|{}|{}|{}", core->name,
+                                    core->mutex_name, core->byte_size,
+                                    core->layout.stride, core->count);
+  return {-1, std::move(env_val)};
 }
-inline std::pair<int, std::string> prepare_share_buffer(long, std::string_view) {
-  _win_no_shared_mem();
+
+// Child side of `SharedBuffer.receive(name, T)`: look the buffer up in the
+// environment (Proc.run `share:` put it there), validate the parent's record
+// stride against this process's @packable layout (a cheap drift guard), then
+// open the named mapping + mutex and map the region. `count` is the parent's.
+// Throws ValueError if the name isn't present or the layouts disagree, IOError
+// if the named objects can't be opened.
+inline long make_shared_buffer_from_share_env(const PackableLayout& layout,
+                                              std::string class_name,
+                                              std::string_view name) {
+  std::string key = share_env_key(name);
+  const char* v = std::getenv(key.c_str());
+  if (!v) {
+    throw CulebraError(
+        "ValueError",
+        std::format("SharedBuffer.receive: no shared buffer named `{}` "
+                    "(pass it from the parent via Proc.run share:)",
+                    name));
+  }
+  // Parse `mapname|mutexname|bytes|stride|count`. The names may hold backslashes
+  // but never a `|`, so split on the pipes.
+  std::string s(v);
+  std::string parts[5];
+  size_t start = 0;
+  for (int i = 0; i < 4; ++i) {
+    size_t bar = s.find('|', start);
+    if (bar == std::string::npos) {
+      throw CulebraError("ValueError",
+          std::format("SharedBuffer.receive: malformed share entry for `{}`",
+                      name));
+    }
+    parts[i] = s.substr(start, bar - start);
+    start = bar + 1;
+  }
+  parts[4] = s.substr(start);
+  long bytes = -1, stride = -1, count = -1;
+  auto to_long = [](const std::string& t, long& out) {
+    return std::from_chars(t.data(), t.data() + t.size(), out).ec ==
+           std::errc{};
+  };
+  if (!to_long(parts[2], bytes) || !to_long(parts[3], stride) ||
+      !to_long(parts[4], count) || bytes < 0 || stride < 0 || count < 0) {
+    throw CulebraError("ValueError",
+        std::format("SharedBuffer.receive: malformed share entry for `{}`",
+                    name));
+  }
+  if (static_cast<size_t>(stride) != layout.stride) {
+    throw CulebraError(
+        "ValueError",
+        std::format("SharedBuffer.receive: layout mismatch for `{}` (parent "
+                    "record is {} bytes, this @packable `{}` is {})",
+                    name, stride, class_name, layout.stride));
+  }
+  HANDLE hMap = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, parts[0].c_str());
+  if (!hMap) {
+    throw CulebraError("IOError",
+        std::format("SharedBuffer.receive: cannot open shared mapping for `{}`",
+                    name));
+  }
+  HANDLE hMutex = OpenMutexA(SYNCHRONIZE, FALSE, parts[1].c_str());
+  return _win_adopt_mapping(layout, std::move(class_name),
+                            static_cast<size_t>(count),
+                            static_cast<size_t>(bytes), hMap,
+                            INVALID_HANDLE_VALUE, hMutex,
+                            SharedBufferCore::Storage::Shared, parts[0],
+                            parts[1]);
 }
 
 #endif  // !_WIN32
 
-// Flush a file-backed buffer's dirty pages to disk (msync). No-op for Heap
-// (and thus a no-op on Windows, which only ever holds Heap cores).
+// Flush a file-backed buffer's dirty pages to disk. No-op for Heap and Shared
+// (RAM-backed): only a File buffer has anything to sync.
 inline void shared_buffer_flush(long id) {
   auto core = lookup_shared_buffer(id);
   if (core && core->storage != SharedBufferCore::Storage::Heap &&
       core->map_base && core->byte_size) {
 #if !defined(_WIN32)
     ::msync(core->map_base, core->byte_size, MS_SYNC);
+#else
+    // Push the view's dirty pages into the file, then the file cache to disk.
+    if (core->storage == SharedBufferCore::Storage::File) {
+      FlushViewOfFile(core->map_base, core->byte_size);
+      if (core->hFile != INVALID_HANDLE_VALUE) FlushFileBuffers(core->hFile);
+    }
 #endif
   }
 }

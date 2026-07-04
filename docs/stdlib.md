@@ -2030,12 +2030,13 @@ process's heap — shareable across isolates (threads), not across processes.
 
 #### `SharedBuffer.file(path, count, Class) -> buffer`
 
-Same buffer, backed by a memory-mapped file (`MAP_SHARED`). Writes go to the
-file's pages — **persistent** (the file outlives the process) and visible to any
-other process that maps the same `path`. The handle gains a `flush()` method
-(`msync` the dirty pages to disk); the file is an ordinary file you remove with
-`FS.remove(path)`. Pointing `path` at a RAM-backed location (e.g. `/dev/shm/...`
-on Linux) gives shared memory without disk durability.
+Same buffer, backed by a memory-mapped file (POSIX `mmap(MAP_SHARED)`, Windows
+`CreateFileMapping`). Writes go to the file's pages — **persistent** (the file
+outlives the process) and visible to any other process that maps the same
+`path`. The handle gains a `flush()` method (flush the dirty pages to disk); the
+file is an ordinary file you remove with `FS.remove(path)`. Pointing `path` at a
+RAM-backed location (e.g. `/dev/shm/...` on Linux) gives shared memory without
+disk durability.
 
 ```culebra
 # doctest: skip
@@ -2048,9 +2049,10 @@ buf.flush()                   # durable on disk
 #### `SharedBuffer.shared(count, Class) -> buffer`
 
 Same buffer, backed by **anonymous** shared memory (a name-less fd — `memfd` on
-Linux, an immediately-unlinked POSIX shm object on macOS). It holds no name and
-touches no disk; the kernel frees it once every handle is dropped. Its purpose
-is to be handed to a **child process** via `Proc.run` / `Proc.spawn` `share:`
+Linux, an immediately-unlinked POSIX shm object on macOS; a pagefile-backed
+`CreateFileMapping` on Windows). It touches no disk; the kernel frees it once
+every handle is dropped. Its purpose is to be handed to a **child process** via
+`Proc.run` / `Proc.spawn` `share:`
 (see [Sharing across processes](#sharing-across-processes-zero-copy) below).
 
 #### `buffer[i] -> view`
