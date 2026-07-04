@@ -6045,6 +6045,7 @@ inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
     }
   } catch (culebra::CulebraError& e) {
     if (e.line == 0) { e.line = line; e.col = col; }
+    culebra::culebra_note_pending_error(e);
     throw;
   }
 }
@@ -6206,6 +6207,7 @@ inline bool _jit_ns_kwarg_resolve_core(
       *out = _jit_ns_dispatch_owned_slab(m, slab);
     } catch (culebra::CulebraError& e) {
       if (e.line == 0) { e.line = line; e.col = col; }
+      culebra::culebra_note_pending_error(e);
       throw;
     }
     return true;

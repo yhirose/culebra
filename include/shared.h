@@ -104,6 +104,15 @@ struct sv_equal {
 
 // --- Structured runtime error ---
 
+// Records a just-constructed CulebraError into the current Runtime's pending
+// carrier (defined after Runtime is complete). The JIT try/catch pad reads that
+// carrier instead of re-inspecting the in-flight C++ exception with `throw;` —
+// the portable path for Windows SEH funclet EH. Declared here so the ctor below
+// can call it; a no-op for anything that ignores the carrier (the interpreter).
+inline void culebra_note_pending_error(const std::string& kind,
+                                       const std::string& msg, long line,
+                                       long col);
+
 // Both backends throw this; try/catch machinery translates it into a
 // culebra Object with `kind`/`message`/`line`/`col` fields. Inherits
 // from std::runtime_error so unconverted call sites still work via
@@ -118,8 +127,38 @@ class CulebraError : public std::runtime_error {
       : std::runtime_error(std::move(msg)),
         kind(std::move(k)),
         line(l),
-        col(c) {}
+        col(c) {
+    // Publish this error as the current pending one at construction — which
+    // immediately precedes the throw at every call site — so a JIT catch pad
+    // can materialize it from the carrier without a `throw;` re-inspection.
+    culebra_note_pending_error(kind, what(), line, col);
+  }
+  // Copy/move must publish too: an isolate re-surfaces a producer's stored error
+  // at join() with `throw *stored`, which COPIES — and that copy is what unwinds,
+  // so the JIT catch pad must find it in the carrier exactly as a fresh throw
+  // would. Assignment is plain storage (not a throw), so it stays defaulted.
+  CulebraError(const CulebraError& o)
+      : std::runtime_error(o), kind(o.kind), line(o.line), col(o.col) {
+    culebra_note_pending_error(kind, what(), line, col);
+  }
+  CulebraError(CulebraError&& o)
+      : std::runtime_error(std::move(o)),
+        kind(std::move(o.kind)),
+        line(o.line),
+        col(o.col) {
+    culebra_note_pending_error(kind, what(), line, col);
+  }
+  CulebraError& operator=(const CulebraError&) = default;
+  CulebraError& operator=(CulebraError&&) = default;
 };
+
+// Re-publish an in-flight error into the pending carrier after a backfill catch
+// has adjusted its position (a runtime site that stamps its own line/col onto a
+// positionless error and rethrows). Keeps the carrier the JIT pad reads in sync
+// with the exception object. One place maps a CulebraError to the carrier.
+inline void culebra_note_pending_error(const CulebraError& e) {
+  culebra_note_pending_error(e.kind, e.what(), e.line, e.col);
+}
 
 // Absolute path to the running culebra executable, for re-spawning a worker
 // copy of the interpreter (Sys.executable). macOS: _NSGetExecutablePath;
@@ -1422,6 +1461,26 @@ struct Runtime {
   int64_t thrown_data = 0;
   int8_t is_throw = 0;
 
+  // Pending runtime-error carrier (backend-neutral: kind/msg/line/col, no
+  // Value). Every CulebraError records itself here at construction; the JIT
+  // try/catch pad materializes it into thrown_tag/data rather than re-inspecting
+  // the in-flight C++ exception via `throw;` (which Windows SEH funclet EH can't
+  // do). Distinct from the `is_throw` carriers because a user `throw` fills
+  // those directly (it already has a Value), while a runtime error carries only
+  // text until a catch pad turns it into an error Object. The interpreter
+  // ignores this — it catches the C++ CulebraError directly.
+  //
+  // Invariant: trusted only while a culebra error is unwinding. It is consumed
+  // (cleared) by the catch pad's try_translate, restored across a swallowing
+  // dispose(), and superseded by the next thrown error. A runtime helper that
+  // catches a CulebraError in C++ and RECOVERS (does not rethrow) must clear
+  // pending_error, or a later foreign C++ exception could be misread as it.
+  std::string pending_kind;
+  std::string pending_msg;
+  int64_t pending_line = 0;
+  int64_t pending_col = 0;
+  int8_t pending_error = 0;
+
   // Cooperative cancellation. When non-null and set, the interpreter's
   // statement dispatch throws `Interrupted` to unwind this thread (an isolate
   // being cancelled / dropped). The flag itself lives on the owning IsolateCore
@@ -1461,6 +1520,22 @@ inline Runtime& default_runtime() {
 inline Runtime& current_runtime() {
   return _culebra_current_runtime ? *_culebra_current_runtime
                                   : default_runtime();
+}
+
+// Definition of the forward-declared hook (see CulebraError's ctor). Records the
+// error's text into the current Runtime's pending carrier; cheap and on the cold
+// error path. current_runtime() always returns a valid Runtime (a lazily-created
+// thread-local when none is installed), so this is safe from any context — parse,
+// interpret, or JIT.
+inline void culebra_note_pending_error(const std::string& kind,
+                                       const std::string& msg, long line,
+                                       long col) {
+  auto& rt = current_runtime();
+  rt.pending_kind = kind;
+  rt.pending_msg = msg;
+  rt.pending_line = line;
+  rt.pending_col = col;
+  rt.pending_error = 1;
 }
 
 // True when the current isolate has been asked to cancel (see Runtime::
