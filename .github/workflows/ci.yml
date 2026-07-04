@@ -287,4 +287,5 @@ jobs:
           EOF
           # Bound the run so a deadlock fails the step in ~90s (exit 124) with the
           # last [smoke] marker on stderr, instead of hanging the whole job.
-          timeout 90 ./build-win/culebra.exe smoke.cul
+          # CULEBRA_PROC_TRACE surfaces where inside the Proc machinery it hangs.
+          CULEBRA_PROC_TRACE=1 timeout 90 ./build-win/culebra.exe smoke.cul
