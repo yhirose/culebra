@@ -100,10 +100,10 @@ assert_eq(v1.col, 35)                     // points at the `5`, not the call sit
 let gr = FS.read
 let v2 = nm_err(fn () { gr(5) })          // arg0 of a param-less method
 assert_eq(v2.kind, 'TypeError')
-assert_eq(v2.message, "type error: parameter 'path' expects String")
+assert_eq(v2.message, "type error: parameter 'path' expects String|Path")
 // A callback keeps the body-coercion wording (the value path must not leak in).
 let v3 = nm_err(fn () { [5].map(FS.read).collect() })
-assert_eq(v3.message, "type error: expected String, got Long")
+assert_eq(v3.message, "type error: expected String|Path, got Long")
 
 // --- value-type built-in methods are not first-class values ----------------
 // `let m = [1,2].map` is not a usable value (the JIT dispatches it inline with

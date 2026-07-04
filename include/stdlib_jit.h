@@ -329,10 +329,20 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_join(
     const JitValue* args, int64_t n, int64_t line, int64_t col) {
   std::filesystem::path out;
   for (int64_t i = 0; i < n; ++i) {
-    if (args[i].tag != TAG_STRING) {
-      throw_type_error_at(line, col);
+    // PathLike per component: String as-is, Path via __str__ (symmetric with
+    // the interp `_fspath` and the adapter `take_path`).
+    if (args[i].tag == TAG_STRING) {
+      out /= reinterpret_cast<const char*>(args[i].data);
+    } else if (args[i].tag == TAG_STRINGVIEW ||
+               _culebra_value_matches_type(args[i].tag, args[i].data, "Path")) {
+      out /= culebra_runtime_value_to_display(args[i].tag, args[i].data);
+    } else {
+      culebra::throw_runtime_error_at(
+          "TypeError",
+          std::format("type error: expected String|Path, got {}",
+                      culebra_runtime_type_of(args[i].tag)),
+          line, col);
     }
-    out /= reinterpret_cast<const char*>(args[i].data);
   }
   return _culebra_heap_str(out.string());
 }
@@ -3000,6 +3010,23 @@ namespace _ns_adapt {
 inline const char* take_str(JitValue v) {
   return v.tag == TAG_STRING ? reinterpret_cast<const char*>(v.data) : "";
 }
+// PathLike coercion for a path-typed adapter argument: a String/StringView
+// passes through, a `Path` object collapses to its inner string via __str__
+// (culebra_runtime_value_to_display honors it). The JIT twin of the interp
+// `_fspath`; byte-identical "expected String|Path" wording keeps FS.read(42)
+// symmetric across backends. Returns a stable C string (heap-interned for the
+// Path case).
+inline const char* take_path(JitValue v) {
+  if (v.tag == TAG_STRING) return reinterpret_cast<const char*>(v.data);
+  if (v.tag == TAG_STRINGVIEW ||
+      _culebra_value_matches_type(v.tag, v.data, "Path"))
+    return culebra_runtime_value_to_display(v.tag, v.data);
+  culebra::throw_runtime_error_at(
+      "TypeError",
+      std::format("type error: expected String|Path, got {}",
+                  culebra_runtime_type_of(v.tag)),
+      0, 0);
+}
 // Length-authoritative view of a TAG_STRING (header-backed, so embedded NUL
 // survives). Use this instead of take_str for binary-safe codecs where a
 // strlen would truncate at the first NUL byte.
@@ -3182,17 +3209,17 @@ inline JitValue _ns_global_iota(JitValue* a, int64_t) {
 // the runtime file helpers; streaming lives on the File handle.
 inline JitValue _ns_fs_read(JitValue* a, int64_t) {
   return _ns_adapt::v_string(
-      culebra_runtime_read_file(_ns_adapt::take_str(a[0]), 0, 0));
+      culebra_runtime_read_file(_ns_adapt::take_path(a[0]), 0, 0));
 }
 inline JitValue _ns_fs_write(JitValue* a, int64_t) {
-  culebra_runtime_write_file(_ns_adapt::take_str(a[0]),
+  culebra_runtime_write_file(_ns_adapt::take_path(a[0]),
                               _ns_adapt::take_str(a[1]), 0, 0);
   return _ns_adapt::v_nil();
 }
 
 // File.open(path, mode="r") -> handle. File.with(path, mode, fn) -> block value.
 inline JitValue _ns_file_open(JitValue* a, int64_t n) {
-  std::string path = _ns_adapt::take_str(a[0]);
+  std::string path = _ns_adapt::take_path(a[0]);
   std::string mode = (n >= 2 && (a[1].tag == TAG_STRING ||
                                  a[1].tag == TAG_STRINGVIEW))
       ? std::string(_culebra_str_view(a[1].tag, a[1].data)) : "r";
@@ -3200,7 +3227,7 @@ inline JitValue _ns_file_open(JitValue* a, int64_t n) {
   return _culebra_file_build_handle(id);
 }
 inline JitValue _ns_file_with(JitValue* a, int64_t n) {
-  std::string path = _ns_adapt::take_str(a[0]);
+  std::string path = _ns_adapt::take_path(a[0]);
   // params: path, mode="r", fn. With 2 positional args, slot 1 is fn.
   std::string mode = "r";
   JitValue fnv;
@@ -3311,58 +3338,58 @@ inline JitValue _ns_fs_join(JitValue* a, int64_t n) {
   return _ns_adapt::v_string(culebra_runtime_fs_join(a, n, 0, 0));
 }
 inline JitValue _ns_fs_basename(JitValue* a, int64_t) {
-  return _ns_adapt::v_string(culebra_runtime_fs_basename(_ns_adapt::take_str(a[0])));
+  return _ns_adapt::v_string(culebra_runtime_fs_basename(_ns_adapt::take_path(a[0])));
 }
 inline JitValue _ns_fs_dirname(JitValue* a, int64_t) {
-  return _ns_adapt::v_string(culebra_runtime_fs_dirname(_ns_adapt::take_str(a[0])));
+  return _ns_adapt::v_string(culebra_runtime_fs_dirname(_ns_adapt::take_path(a[0])));
 }
 inline JitValue _ns_fs_extension(JitValue* a, int64_t) {
-  return _ns_adapt::v_string(culebra_runtime_fs_extension(_ns_adapt::take_str(a[0])));
+  return _ns_adapt::v_string(culebra_runtime_fs_extension(_ns_adapt::take_path(a[0])));
 }
 inline JitValue _ns_fs_stem(JitValue* a, int64_t) {
-  return _ns_adapt::v_string(culebra_runtime_fs_stem(_ns_adapt::take_str(a[0])));
+  return _ns_adapt::v_string(culebra_runtime_fs_stem(_ns_adapt::take_path(a[0])));
 }
 inline JitValue _ns_fs_exists(JitValue* a, int64_t) {
-  return _ns_adapt::v_bool(culebra_runtime_io_exists(_ns_adapt::take_str(a[0])));
+  return _ns_adapt::v_bool(culebra_runtime_io_exists(_ns_adapt::take_path(a[0])));
 }
 inline JitValue _ns_fs_is_file(JitValue* a, int64_t) {
-  return _ns_adapt::v_bool(culebra_runtime_fs_is_file(_ns_adapt::take_str(a[0])));
+  return _ns_adapt::v_bool(culebra_runtime_fs_is_file(_ns_adapt::take_path(a[0])));
 }
 inline JitValue _ns_fs_is_dir(JitValue* a, int64_t) {
-  return _ns_adapt::v_bool(culebra_runtime_fs_is_dir(_ns_adapt::take_str(a[0])));
+  return _ns_adapt::v_bool(culebra_runtime_fs_is_dir(_ns_adapt::take_path(a[0])));
 }
 inline JitValue _ns_fs_size(JitValue* a, int64_t) {
-  return _ns_adapt::v_long(culebra_runtime_fs_size(_ns_adapt::take_str(a[0]), 0, 0));
+  return _ns_adapt::v_long(culebra_runtime_fs_size(_ns_adapt::take_path(a[0]), 0, 0));
 }
 inline JitValue _ns_fs_list_dir(JitValue* a, int64_t) {
   return _ns_adapt::v_array(
-      culebra_runtime_fs_list_dir(_ns_adapt::take_str(a[0]), 0, 0));
+      culebra_runtime_fs_list_dir(_ns_adapt::take_path(a[0]), 0, 0));
 }
 inline JitValue _ns_fs_mkdir(JitValue* a, int64_t) {
-  culebra_runtime_fs_mkdir(_ns_adapt::take_str(a[0]), 0, 0);
+  culebra_runtime_fs_mkdir(_ns_adapt::take_path(a[0]), 0, 0);
   return _ns_adapt::v_nil();
 }
 // remove(path, recursive=false): slab is full-arity via NsParamMeta.
 inline JitValue _ns_fs_remove(JitValue* a, int64_t n) {
   JitValue rec = n > 1 ? a[1] : JitValue{TAG_BOOL, 0};
   if (rec.tag == TAG_BOOL && rec.data != 0) {
-    culebra_runtime_fs_remove_all(_ns_adapt::take_str(a[0]), 0, 0);
+    culebra_runtime_fs_remove_all(_ns_adapt::take_path(a[0]), 0, 0);
   } else {
-    culebra_runtime_fs_remove(_ns_adapt::take_str(a[0]), 0, 0);
+    culebra_runtime_fs_remove(_ns_adapt::take_path(a[0]), 0, 0);
   }
   return _ns_adapt::v_nil();
 }
 inline JitValue _ns_fs_stat(JitValue* a, int64_t) {
   return _ns_adapt::v_object(
-      culebra_runtime_fs_stat(_ns_adapt::take_str(a[0]), 0, 0));
+      culebra_runtime_fs_stat(_ns_adapt::take_path(a[0]), 0, 0));
 }
 inline JitValue _ns_fs_rename(JitValue* a, int64_t) {
-  culebra_runtime_fs_rename(_ns_adapt::take_str(a[0]),
-                            _ns_adapt::take_str(a[1]), 0, 0);
+  culebra_runtime_fs_rename(_ns_adapt::take_path(a[0]),
+                            _ns_adapt::take_path(a[1]), 0, 0);
   return _ns_adapt::v_nil();
 }
 inline JitValue _ns_fs_chmod(JitValue* a, int64_t) {
-  culebra_runtime_fs_chmod(_ns_adapt::take_str(a[0]),
+  culebra_runtime_fs_chmod(_ns_adapt::take_path(a[0]),
                            _ns_adapt::take_long(a[1]), 0, 0);
   return _ns_adapt::v_nil();
 }
@@ -3397,47 +3424,47 @@ inline long _fs_chown_id(JitValue v, const char* param, bool is_user) {
 inline JitValue _ns_fs_chown(JitValue* a, int64_t n) {
   long uid = _fs_chown_id(n > 1 ? a[1] : JitValue{TAG_NIL, 0}, "owner", true);
   long gid = _fs_chown_id(n > 2 ? a[2] : JitValue{TAG_NIL, 0}, "group", false);
-  culebra::_fs_do_chown(_ns_adapt::take_str(a[0]), uid, gid, 0, 0);
+  culebra::_fs_do_chown(_ns_adapt::take_path(a[0]), uid, gid, 0, 0);
   return _ns_adapt::v_nil();
 }
 // copy(src, dst, recursive=false): slab full-arity via NsParamMeta.
 inline JitValue _ns_fs_copy(JitValue* a, int64_t n) {
   JitValue rec = n > 2 ? a[2] : JitValue{TAG_BOOL, 0};
-  culebra_runtime_fs_copy(_ns_adapt::take_str(a[0]), _ns_adapt::take_str(a[1]),
+  culebra_runtime_fs_copy(_ns_adapt::take_path(a[0]), _ns_adapt::take_path(a[1]),
                           rec.tag == TAG_BOOL && rec.data != 0 ? 1 : 0, 0, 0);
   return _ns_adapt::v_nil();
 }
 inline JitValue _ns_fs_normpath(JitValue* a, int64_t) {
   return _ns_adapt::v_string(
-      culebra_runtime_fs_normpath(_ns_adapt::take_str(a[0])));
+      culebra_runtime_fs_normpath(_ns_adapt::take_path(a[0])));
 }
 inline JitValue _ns_fs_is_abs(JitValue* a, int64_t) {
-  return _ns_adapt::v_bool(culebra_runtime_fs_is_abs(_ns_adapt::take_str(a[0])));
+  return _ns_adapt::v_bool(culebra_runtime_fs_is_abs(_ns_adapt::take_path(a[0])));
 }
 inline JitValue _ns_fs_abspath(JitValue* a, int64_t) {
   return _ns_adapt::v_string(
-      culebra_runtime_fs_abspath(_ns_adapt::take_str(a[0]), 0, 0));
+      culebra_runtime_fs_abspath(_ns_adapt::take_path(a[0]), 0, 0));
 }
 inline JitValue _ns_fs_realpath(JitValue* a, int64_t) {
   return _ns_adapt::v_string(
-      culebra_runtime_fs_realpath(_ns_adapt::take_str(a[0]), 0, 0));
+      culebra_runtime_fs_realpath(_ns_adapt::take_path(a[0]), 0, 0));
 }
 inline JitValue _ns_fs_is_symlink(JitValue* a, int64_t) {
   return _ns_adapt::v_bool(
-      culebra_runtime_fs_is_symlink(_ns_adapt::take_str(a[0])));
+      culebra_runtime_fs_is_symlink(_ns_adapt::take_path(a[0])));
 }
 inline JitValue _ns_fs_symlink(JitValue* a, int64_t) {
-  culebra_runtime_fs_symlink(_ns_adapt::take_str(a[0]),
-                             _ns_adapt::take_str(a[1]), 0, 0);
+  culebra_runtime_fs_symlink(_ns_adapt::take_path(a[0]),
+                             _ns_adapt::take_path(a[1]), 0, 0);
   return _ns_adapt::v_nil();
 }
 inline JitValue _ns_fs_readlink(JitValue* a, int64_t) {
   return _ns_adapt::v_string(
-      culebra_runtime_fs_readlink(_ns_adapt::take_str(a[0]), 0, 0));
+      culebra_runtime_fs_readlink(_ns_adapt::take_path(a[0]), 0, 0));
 }
 inline JitValue _ns_fs_walk(JitValue* a, int64_t) {
   return _ns_adapt::v_array(
-      culebra_runtime_fs_walk(_ns_adapt::take_str(a[0]), 0, 0));
+      culebra_runtime_fs_walk(_ns_adapt::take_path(a[0]), 0, 0));
 }
 inline JitValue _ns_fs_glob(JitValue* a, int64_t) {
   return _ns_adapt::v_array(
@@ -5702,17 +5729,17 @@ inline const NsMethod kNsMethods[] = {
   {"Math",   "clamp",     3, &_ns_math_clamp},
 
   {"FS",     "join",     -1, &_ns_fs_join},
-  {"FS",     "basename",  1, &_ns_fs_basename, nullptr, "String", "path"},
-  {"FS",     "dirname",   1, &_ns_fs_dirname, nullptr, "String", "path"},
-  {"FS",     "extension", 1, &_ns_fs_extension, nullptr, "String", "path"},
-  {"FS",     "stem",      1, &_ns_fs_stem, nullptr, "String", "path"},
-  {"FS",     "exists",    1, &_ns_fs_exists, nullptr, "String", "path"},
-  {"FS",     "is_file",   1, &_ns_fs_is_file, nullptr, "String", "path"},
-  {"FS",     "is_dir",    1, &_ns_fs_is_dir, nullptr, "String", "path"},
-  {"FS",     "read",      1, &_ns_fs_read, nullptr, "String", "path"},
+  {"FS",     "basename",  1, &_ns_fs_basename, nullptr, "String|Path", "path"},
+  {"FS",     "dirname",   1, &_ns_fs_dirname, nullptr, "String|Path", "path"},
+  {"FS",     "extension", 1, &_ns_fs_extension, nullptr, "String|Path", "path"},
+  {"FS",     "stem",      1, &_ns_fs_stem, nullptr, "String|Path", "path"},
+  {"FS",     "exists",    1, &_ns_fs_exists, nullptr, "String|Path", "path"},
+  {"FS",     "is_file",   1, &_ns_fs_is_file, nullptr, "String|Path", "path"},
+  {"FS",     "is_dir",    1, &_ns_fs_is_dir, nullptr, "String|Path", "path"},
+  {"FS",     "read",      1, &_ns_fs_read, nullptr, "String|Path", "path"},
   {"FS",     "write",     2, &_ns_fs_write},
-  {"FS",     "size",      1, &_ns_fs_size, nullptr, "String", "path"},
-  {"FS",     "list_dir",  1, &_ns_fs_list_dir, nullptr, "String", "path"},
+  {"FS",     "size",      1, &_ns_fs_size, nullptr, "String|Path", "path"},
+  {"FS",     "list_dir",  1, &_ns_fs_list_dir, nullptr, "String|Path", "path"},
   {"FS",     "mkdir",     1, &_ns_fs_mkdir},
   {"FS",     "remove",    1, &_ns_fs_remove},
   {"FS",     "stat",      1, &_ns_fs_stat},
@@ -5999,8 +6026,8 @@ inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
     // direct-call form emits inline in compile_ns_call). Reported at the
     // argument's position (arg0_line/col, threaded from the indirect call site).
     if (!pm && m->arg0_type != nullptr && n_args >= 1 &&
-        !_culebra_type_matches_single(args[0].tag, args[0].data,
-                                      m->arg0_type)) {
+        !_culebra_value_matches_type(args[0].tag, args[0].data,
+                                     m->arg0_type)) {
       const char* got = culebra_runtime_type_of(args[0].tag);
       release_args();
       culebra::throw_runtime_error_at(
@@ -7545,9 +7572,10 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     // Whole-file read/write convenience (open+read/write+close).
     if (method == "read" && argsAst.nodes.size() == 1) {
       auto arg = jit.compile(*argsAst.nodes[0]);
-      emit_type_check(arg.borrow(), "String", "parameter 'path'",
+      emit_type_check(arg.borrow(), "String|Path", "parameter 'path'",
                       argsAst.nodes[0].get());
-      auto ptr = builder_.CreateIntToPtr(extract_data(arg.borrow()), ptrTy);
+      auto ptr = emit_call(module_->getFunction(rt::value_to_display),
+                           {extract_tag(arg.borrow()), extract_data(arg.borrow())});
       auto s = emit_call(module_->getFunction(rt::read_file),
                          {ptr, line, col});
       arg.drop();
@@ -7555,12 +7583,13 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     }
     if (method == "write" && argsAst.nodes.size() == 2) {
       auto p = jit.compile(*argsAst.nodes[0]);
-      emit_type_check(p.borrow(), "String", "parameter 'path'",
+      emit_type_check(p.borrow(), "String|Path", "parameter 'path'",
                       argsAst.nodes[0].get());
       auto c = jit.compile(*argsAst.nodes[1]);
       emit_type_check(c.borrow(), "String", "parameter 'content'",
                       argsAst.nodes[1].get());
-      auto pp = builder_.CreateIntToPtr(extract_data(p.borrow()), ptrTy);
+      auto pp = emit_call(module_->getFunction(rt::value_to_display),
+                          {extract_tag(p.borrow()), extract_data(p.borrow())});
       auto cp = builder_.CreateIntToPtr(extract_data(c.borrow()), ptrTy);
       emit_call(module_->getFunction(rt::write_file), {pp, cp, line, col});
       p.drop();
@@ -7572,9 +7601,10 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     auto path_to_string = [&](const char* rt_name) -> llvm::Value* {
       if (argsAst.nodes.size() != 1) return nullptr;
       auto arg = jit.compile(*argsAst.nodes[0]);
-      emit_type_check(arg.borrow(), "String", "parameter 'path'",
+      emit_type_check(arg.borrow(), "String|Path", "parameter 'path'",
                       argsAst.nodes[0].get());
-      auto p = builder_.CreateIntToPtr(extract_data(arg.borrow()), ptrTy);
+      auto p = emit_call(module_->getFunction(rt::value_to_display),
+                         {extract_tag(arg.borrow()), extract_data(arg.borrow())});
       auto s = emit_call(module_->getFunction(rt_name), {p});
       arg.drop();
       return make_string(s);
@@ -7588,9 +7618,10 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     auto path_to_bool = [&](const char* rt_name) -> llvm::Value* {
       if (argsAst.nodes.size() != 1) return nullptr;
       auto arg = jit.compile(*argsAst.nodes[0]);
-      emit_type_check(arg.borrow(), "String", "parameter 'path'",
+      emit_type_check(arg.borrow(), "String|Path", "parameter 'path'",
                       argsAst.nodes[0].get());
-      auto p = builder_.CreateIntToPtr(extract_data(arg.borrow()), ptrTy);
+      auto p = emit_call(module_->getFunction(rt::value_to_display),
+                         {extract_tag(arg.borrow()), extract_data(arg.borrow())});
       auto i = emit_call(module_->getFunction(rt_name), {p});
       arg.drop();
       auto b = builder_.CreateICmpNE(i, builder_.getInt64(0));
@@ -7603,9 +7634,10 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     // (path, line, col) -> Long. IOError on missing.
     if (method == "size" && argsAst.nodes.size() == 1) {
       auto arg = jit.compile(*argsAst.nodes[0]);
-      emit_type_check(arg.borrow(), "String", "parameter 'path'",
+      emit_type_check(arg.borrow(), "String|Path", "parameter 'path'",
                       argsAst.nodes[0].get());
-      auto p = builder_.CreateIntToPtr(extract_data(arg.borrow()), ptrTy);
+      auto p = emit_call(module_->getFunction(rt::value_to_display),
+                         {extract_tag(arg.borrow()), extract_data(arg.borrow())});
       auto n = emit_call(module_->getFunction(rt::fs_size),
                          {p, line, col});
       arg.drop();
@@ -7615,9 +7647,10 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     // (path, line, col) -> Array*.
     if (method == "list_dir" && argsAst.nodes.size() == 1) {
       auto arg = jit.compile(*argsAst.nodes[0]);
-      emit_type_check(arg.borrow(), "String", "parameter 'path'",
+      emit_type_check(arg.borrow(), "String|Path", "parameter 'path'",
                       argsAst.nodes[0].get());
-      auto p = builder_.CreateIntToPtr(extract_data(arg.borrow()), ptrTy);
+      auto p = emit_call(module_->getFunction(rt::value_to_display),
+                         {extract_tag(arg.borrow()), extract_data(arg.borrow())});
       auto a = emit_call(module_->getFunction(rt::fs_list_dir),
                          {p, line, col});
       arg.drop();
@@ -7628,9 +7661,10 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     auto path_to_void = [&](const char* rt_name) -> llvm::Value* {
       if (argsAst.nodes.size() != 1) return nullptr;
       auto arg = jit.compile(*argsAst.nodes[0]);
-      emit_type_check(arg.borrow(), "String", "parameter 'path'",
+      emit_type_check(arg.borrow(), "String|Path", "parameter 'path'",
                       argsAst.nodes[0].get());
-      auto p = builder_.CreateIntToPtr(extract_data(arg.borrow()), ptrTy);
+      auto p = emit_call(module_->getFunction(rt::value_to_display),
+                         {extract_tag(arg.borrow()), extract_data(arg.borrow())});
       emit_call(module_->getFunction(rt_name), {p, line, col});
       arg.drop();
       return make_nil();

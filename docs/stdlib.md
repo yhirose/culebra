@@ -650,8 +650,19 @@ accepts a `String` or a `Path`. String interpolation (`"{p}"`) and
 | `p.walk()` | `Array<Path>` (recursive) | `FS.walk` |
 | `p.str()` | `String` (escape hatch) | — |
 
-`Path` and `String` are **distinct types**: a plain `fn(x: String)` does
-*not* accept a `Path`. This keeps the type boundary meaningful — use
+The `FS.*` helpers and `File.open` / `File.with` accept a `Path` anywhere
+they take a path — their path parameters are `String | Path` — so a `Path`
+flows straight through without `.str()`:
+
+```culebra
+let cfg = Path.new("/etc") / "app.conf"
+let text = FS.read(cfg)                 # FS.read(String | Path)
+for line in File.open(cfg).lines() { }  # File.open(String | Path)
+```
+
+Only the *path-taking* stdlib functions opt in this way. `Path` and
+`String` remain **distinct types** everywhere else: a plain `fn(x: String)`
+does *not* accept a `Path`, so the type boundary stays meaningful — use
 `p.str()` (or `"{p}"`) to hand a raw string to a `String`-only API.
 
 ---

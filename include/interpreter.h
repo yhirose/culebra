@@ -3296,6 +3296,23 @@ inline std::optional<std::string> _try_str_special(const Value& v) {
   return std::string(r.to_string_view());
 }
 
+// PathLike coercion for a path-typed native argument: accept a `String`
+// (or `StringView`) as-is, or a `Path` object (the stdlib's fluent FS
+// wrapper) collapsed to its inner string via `__str__`. Anything else is
+// the same "expected String|Path" type error on both backends — see the
+// JIT twin `_ns_adapt::take_path`. Path-taking FS/File natives call this
+// instead of `.to_string()` so the whole surface accepts either flavor.
+inline std::string _fspath(const Value& v) {
+  if (v.type == Value::String || v.type == Value::StringView)
+    return std::string(v.to_string_view());
+  if (auto cls = class_tag(v); cls && *cls == "Path") {
+    if (auto s = _try_str_special(v)) return *s;
+  }
+  throw CulebraError(
+      "TypeError",
+      std::format("type error: expected String|Path, got {}", v.type_name()));
+}
+
 // Like `v.str_display()` (unquoted strings) but honors `__str__` on
 // Object — used by interpolation, `print`, and `to_string`.
 inline std::string str_display_with_special(const Value& v) {

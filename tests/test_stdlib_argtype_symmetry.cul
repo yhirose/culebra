@@ -18,13 +18,13 @@ let err = fn (f) { try { f(); nil } catch e { e } }
 # (was an IOError under the JIT — it coerced 5 to "" and ran the op).
 let e1 = err(fn () { FS.rename("a", 5) })
 assert_eq(e1.kind, 'TypeError')
-assert_eq(e1.message, "type error: parameter 'dst' expects String")
+assert_eq(e1.message, "type error: parameter 'dst' expects String|Path")
 
 let e2 = err(fn () { FS.rename(5, "b") })
-assert_eq(e2.message, "type error: parameter 'src' expects String")
+assert_eq(e2.message, "type error: parameter 'src' expects String|Path")
 
 let e3 = err(fn () { FS.symlink("a", 5) })
-assert_eq(e3.message, "type error: parameter 'link' expects String")
+assert_eq(e3.message, "type error: parameter 'link' expects String|Path")
 
 # --- Inline-fast-path numeric builtins: the named, arg-positioned message
 # (was a positionless `expected Long, got String` at the call site).
@@ -47,7 +47,7 @@ assert_eq(e10.message, "type error: parameter 'lo' expects Long")
 # --- Same rule through the as-value (closure) path: the bound builtin checks
 # every positional, not just arg0 (the JIT used to skip the check entirely).
 let r = FS.rename
-assert_eq(err(fn () { r("a", 5) }).message, "type error: parameter 'dst' expects String")
+assert_eq(err(fn () { r("a", 5) }).message, "type error: parameter 'dst' expects String|Path")
 let p = Math.pow
 assert_eq(err(fn () { p(2, "x") }).message, "type error: parameter 'exp' expects Long")
 

@@ -598,8 +598,7 @@ inline Value make_fs_namespace() {
         const auto& args = *env->get("__ARGS__").to_array().values;
         std::filesystem::path out;
         for (const auto& v : args) {
-          if (v.type != Value::String) throw_io("FS.join: non-String arg", line, col);
-          out /= std::string(v.to_string());
+          out /= _fspath(v);  // String or Path component
         }
         return Value(out.string());
       })),
@@ -607,9 +606,9 @@ inline Value make_fs_namespace() {
 
   auto string_to_string = [](auto fn) {
     return Value(FunctionValue(
-        {{"path", false, "String"sv}},
+        {{"path", false, "String|Path"sv}},
         [fn](std::shared_ptr<Environment> env) {
-          const auto& p = env->get("path").to_string();
+          auto p = _fspath(env->get("path"));
           return Value(fn(std::filesystem::path(p)));
         },
         "String"sv));
@@ -622,9 +621,9 @@ inline Value make_fs_namespace() {
 
   auto path_query_bool = [](auto fn) {
     return Value(FunctionValue(
-        {{"path", false, "String"sv}},
+        {{"path", false, "String|Path"sv}},
         [fn](std::shared_ptr<Environment> env) {
-          const auto& p = env->get("path").to_string();
+          auto p = _fspath(env->get("path"));
           std::error_code ec;
           return Value(fn(std::filesystem::path(p), ec));
         },
@@ -640,11 +639,11 @@ inline Value make_fs_namespace() {
   // String is a byte string, so this round-trips arbitrary content.
   ns.initialize(
       "read",
-      Value(FunctionValue({{"path", false, "String"sv}},
+      Value(FunctionValue({{"path", false, "String|Path"sv}},
                           [throw_io](std::shared_ptr<Environment> env) {
                             long line = env->get("__LINE__").to_long();
                             long col = env->get("__COLUMN__").to_long();
-                            const auto& p = env->get("path").to_string();
+                            const auto& p = _fspath(env->get("path"));
                             std::ifstream ifs(p, std::ios::binary);
                             if (!ifs) {
                               throw_io(
@@ -662,11 +661,11 @@ inline Value make_fs_namespace() {
   ns.initialize(
       "write",
       Value(FunctionValue(
-          {{"path", false, "String"sv}, {"content", false, "String"sv}},
+          {{"path", false, "String|Path"sv}, {"content", false, "String"sv}},
           [throw_io](std::shared_ptr<Environment> env) {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
-            const auto& p = env->get("path").to_string();
+            const auto& p = _fspath(env->get("path"));
             const auto& c = env->get("content").to_string();
             std::ofstream ofs(p, std::ios::binary);
             if (!ofs) {
@@ -680,11 +679,11 @@ inline Value make_fs_namespace() {
   ns.initialize(
       "size",
       Value(FunctionValue(
-          {{"path", false, "String"sv}},
+          {{"path", false, "String|Path"sv}},
           [throw_io](std::shared_ptr<Environment> env) {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
-            const auto& p = env->get("path").to_string();
+            const auto& p = _fspath(env->get("path"));
             std::error_code ec;
             auto sz = std::filesystem::file_size(p, ec);
             if (ec) throw_io(std::format("FS.size('{}')", p), line, col, ec);
@@ -696,11 +695,11 @@ inline Value make_fs_namespace() {
   ns.initialize(
       "list_dir",
       Value(FunctionValue(
-          {{"path", false, "String"sv}},
+          {{"path", false, "String|Path"sv}},
           [throw_io](std::shared_ptr<Environment> env) -> Value {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
-            const auto& p = env->get("path").to_string();
+            const auto& p = _fspath(env->get("path"));
             std::error_code ec;
             auto it = std::filesystem::directory_iterator(p, ec);
             if (ec) throw_io(std::format("FS.list_dir('{}')", p), line, col, ec);
@@ -716,11 +715,11 @@ inline Value make_fs_namespace() {
   ns.initialize(
       "mkdir",
       Value(FunctionValue(
-          {{"path", false, "String"sv}},
+          {{"path", false, "String|Path"sv}},
           [throw_io](std::shared_ptr<Environment> env) {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
-            const auto& p = env->get("path").to_string();
+            const auto& p = _fspath(env->get("path"));
             std::error_code ec;
             std::filesystem::create_directories(p, ec);
             if (ec) throw_io(std::format("FS.mkdir('{}')", p), line, col, ec);
@@ -731,12 +730,12 @@ inline Value make_fs_namespace() {
   ns.initialize(
       "remove",
       Value(FunctionValue(
-          {{"path", false, "String"sv},
+          {{"path", false, "String|Path"sv},
            {"recursive", false, ""sv, nullptr, kw_default_false()}},
           [throw_io](std::shared_ptr<Environment> env) {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
-            const auto& p = env->get("path").to_string();
+            const auto& p = _fspath(env->get("path"));
             bool recursive = env->get("recursive").to_bool();
             std::error_code ec;
             if (recursive) {
@@ -758,11 +757,11 @@ inline Value make_fs_namespace() {
   ns.initialize(
       "stat",
       Value(FunctionValue(
-          {{"path", false, "String"sv}},
+          {{"path", false, "String|Path"sv}},
           [throw_io](std::shared_ptr<Environment> env) -> Value {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
-            const auto& p = env->get("path").to_string();
+            const auto& p = _fspath(env->get("path"));
             std::error_code ec;
             auto st = std::filesystem::symlink_status(p, ec);
             if (ec || st.type() == std::filesystem::file_type::not_found) {
@@ -807,11 +806,11 @@ inline Value make_fs_namespace() {
   ns.initialize(
       "chmod",
       Value(FunctionValue(
-          {{"path", false, "String"sv}, {"mode", false, "Long"sv}},
+          {{"path", false, "String|Path"sv}, {"mode", false, "Long"sv}},
           [throw_io](std::shared_ptr<Environment> env) {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
-            const auto& p = env->get("path").to_string();
+            const auto& p = _fspath(env->get("path"));
             long mode = env->get("mode").to_long();
             std::error_code ec;
             std::filesystem::permissions(
@@ -831,13 +830,13 @@ inline Value make_fs_namespace() {
   ns.initialize(
       "chown",
       Value(FunctionValue(
-          {{"path", false, "String"sv},
+          {{"path", false, "String|Path"sv},
            {"owner", false, ""sv, nullptr, kw_default_nil()},
            {"group", false, ""sv, nullptr, kw_default_nil()}},
           [](std::shared_ptr<Environment> env) -> Value {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
-            const auto& p = env->get("path").to_string();
+            const auto& p = _fspath(env->get("path"));
             auto resolve = [&](const Value& v, const char* param,
                                bool is_user) -> long {
               if (v.type == Value::Nil) return -1;
@@ -873,12 +872,12 @@ inline Value make_fs_namespace() {
   ns.initialize(
       "rename",
       Value(FunctionValue(
-          {{"src", false, "String"sv}, {"dst", false, "String"sv}},
+          {{"src", false, "String|Path"sv}, {"dst", false, "String|Path"sv}},
           [throw_io](std::shared_ptr<Environment> env) {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
-            const auto& s = env->get("src").to_string();
-            const auto& d = env->get("dst").to_string();
+            const auto& s = _fspath(env->get("src"));
+            const auto& d = _fspath(env->get("dst"));
             std::error_code ec;
             std::filesystem::rename(s, d, ec);
             if (ec) throw_io(std::format("FS.rename('{}', '{}')", s, d),
@@ -891,13 +890,13 @@ inline Value make_fs_namespace() {
   ns.initialize(
       "copy",
       Value(FunctionValue(
-          {{"src", false, "String"sv}, {"dst", false, "String"sv},
+          {{"src", false, "String|Path"sv}, {"dst", false, "String|Path"sv},
            {"recursive", false, ""sv, nullptr, kw_default_false()}},
           [throw_io](std::shared_ptr<Environment> env) {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
-            const auto& s = env->get("src").to_string();
-            const auto& d = env->get("dst").to_string();
+            const auto& s = _fspath(env->get("src"));
+            const auto& d = _fspath(env->get("dst"));
             bool recursive = env->get("recursive").to_bool();
             std::error_code ec;
             auto opts = std::filesystem::copy_options::overwrite_existing;
@@ -924,11 +923,11 @@ inline Value make_fs_namespace() {
   ns.initialize(
       "abspath",
       Value(FunctionValue(
-          {{"path", false, "String"sv}},
+          {{"path", false, "String|Path"sv}},
           [throw_io](std::shared_ptr<Environment> env) {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
-            const auto& p = env->get("path").to_string();
+            const auto& p = _fspath(env->get("path"));
             std::error_code ec;
             auto out = std::filesystem::absolute(p, ec);
             if (ec) throw_io(std::format("FS.abspath('{}')", p), line, col, ec);
@@ -939,11 +938,11 @@ inline Value make_fs_namespace() {
   ns.initialize(
       "realpath",
       Value(FunctionValue(
-          {{"path", false, "String"sv}},
+          {{"path", false, "String|Path"sv}},
           [throw_io](std::shared_ptr<Environment> env) {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
-            const auto& p = env->get("path").to_string();
+            const auto& p = _fspath(env->get("path"));
             std::error_code ec;
             auto out = std::filesystem::weakly_canonical(p, ec);
             if (ec) throw_io(std::format("FS.realpath('{}')", p), line, col, ec);
@@ -963,12 +962,12 @@ inline Value make_fs_namespace() {
   ns.initialize(
       "symlink",
       Value(FunctionValue(
-          {{"target", false, "String"sv}, {"link", false, "String"sv}},
+          {{"target", false, "String|Path"sv}, {"link", false, "String|Path"sv}},
           [throw_io](std::shared_ptr<Environment> env) {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
-            const auto& t = env->get("target").to_string();
-            const auto& l = env->get("link").to_string();
+            const auto& t = _fspath(env->get("target"));
+            const auto& l = _fspath(env->get("link"));
             std::error_code ec;
             std::filesystem::create_symlink(t, l, ec);
             if (ec) throw_io(std::format("FS.symlink('{}', '{}')", t, l),
@@ -979,11 +978,11 @@ inline Value make_fs_namespace() {
   ns.initialize(
       "readlink",
       Value(FunctionValue(
-          {{"path", false, "String"sv}},
+          {{"path", false, "String|Path"sv}},
           [throw_io](std::shared_ptr<Environment> env) {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
-            const auto& p = env->get("path").to_string();
+            const auto& p = _fspath(env->get("path"));
             std::error_code ec;
             auto out = std::filesystem::read_symlink(p, ec);
             if (ec) throw_io(std::format("FS.readlink('{}')", p), line, col, ec);
@@ -997,11 +996,11 @@ inline Value make_fs_namespace() {
   ns.initialize(
       "walk",
       Value(FunctionValue(
-          {{"path", false, "String"sv}},
+          {{"path", false, "String|Path"sv}},
           [throw_io](std::shared_ptr<Environment> env) -> Value {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
-            const auto& p = env->get("path").to_string();
+            const auto& p = _fspath(env->get("path"));
             std::error_code ec;
             std::filesystem::recursive_directory_iterator it(p, ec);
             if (ec) throw_io(std::format("FS.walk('{}')", p), line, col, ec);
@@ -2699,13 +2698,13 @@ inline Value make_file_namespace() {
   ns.initialize(
       "open",
       Value(FunctionValue(
-          {{"path", false, "String"sv},
+          {{"path", false, "String|Path"sv},
            {"mode", false, ""sv, nullptr,
             std::make_shared<Value>(std::string("r"))}},
           [](std::shared_ptr<Environment> env) {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
-            int64_t id = _file_open(env->get("path").to_string(),
+            int64_t id = _file_open(_fspath(env->get("path")),
                                     env->get("mode").to_string(), line, col);
             return make_file_handle(id);
           },
@@ -2717,14 +2716,14 @@ inline Value make_file_namespace() {
   ns.initialize(
       "with",
       Value(FunctionValue(
-          {{"path", false, "String"sv},
+          {{"path", false, "String|Path"sv},
            {"mode", false, ""sv, nullptr,
             std::make_shared<Value>(std::string("r"))},
            {"fn", false, "Function"sv}},
           [](std::shared_ptr<Environment> env) -> Value {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
-            int64_t id = _file_open(env->get("path").to_string(),
+            int64_t id = _file_open(_fspath(env->get("path")),
                                     env->get("mode").to_string(), line, col);
             Value handle = make_file_handle(id);
             const auto& fn = env->get("fn").to_function();

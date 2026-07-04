@@ -66,5 +66,27 @@ assert_eq("{g}", "{base}/renamed.txt")
 assert_eq(g.exists(), true)
 assert_eq(f.exists(), false)
 
+// --- PathLike: native FS.* / File.open accept a Path directly ---
+base.mkdir()
+let pf = base / "pl.txt"
+FS.write(pf, "PL")                          // FS.write(Path, ...)
+assert_eq(FS.read(pf), "PL")                // FS.read(Path)
+assert_eq(FS.exists(pf), true)              // FS.exists(Path)
+assert_eq(FS.basename(pf), "pl.txt")        // FS.basename(Path)
+assert_eq(FS.is_file(pf), true)
+assert_eq(FS.join(base, "x"), "{base}/x")   // FS.join(Path, String)
+let pf2 = base / "pl2.txt"
+FS.copy(pf, pf2)                            // FS.copy(Path, Path)
+assert_eq(FS.read(pf2), "PL")
+File.with(pf, "r", |fh| assert_eq(fh.read(), "PL"))   // File.with(Path)
+// a plain String param still rejects a Path (types stay distinct)
+let needs_string = fn (s: String) { s }
+let te = try { needs_string(base); nil } catch e { e.kind }
+assert_eq(te, "TypeError")
+// a mistyped path arg raises a TypeError (exact wording asserted, per call
+// form, in test_ns_kwargs / test_stdlib_argtype_symmetry)
+let te2 = try { FS.read(42); nil } catch e { e.kind }
+assert_eq(te2, "TypeError")
+
 base.remove(recursive: true)
 assert_eq(base.exists(), false)
