@@ -76,7 +76,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | 標準出力 | `IO.puts`（改行 + クォート付き） / `IO.print`（生） |
 | ファイル全体を読む | `FS.read`（失敗時 throw） |
 | ファイルをストリーム（行 / チャンク / seek） | [§4 File](#4-file) — `File.open` / `File.with` |
-| パス操作（join / basename / dirname / stem / extension） | [§3 FS](#3-fs) |
+| パス操作（join / basename / dirname / stem / extension） | [§3 FS](#3-fs)；流暢な `Path` ラッパ: [§3 `Path`](#path--流暢なラッパ) |
 | stat / walk / glob / copy / rename / symlink / chmod / chown | [§3 FS](#3-fs) |
 | ディレクトリ列挙・作成・削除 | `FS.list_dir`、`FS.mkdir`、`FS.remove` |
 | `Instant` / `Duration` クラス、ISO 8601、カレンダー算術 | [§5 Time](#5-time) |
@@ -581,6 +581,66 @@ let sources = FS.glob('src/**/*.cul')
 #### `FS.is_symlink(path: String) -> Bool`
 
 `path` がシンボリックリンク自体か（参照先でなく）。
+
+### `Path` — 流暢なラッパ
+
+`Path` は `FS.*` ヘルパの上の薄い**不変**ラッパです。`FS` が原始層
+（生の `String` パスを受け、`String`／値を返す）で、`Path` はパスを持ち
+回る糖衣層 — パス文字列を手で引き回さずに済みます。各操作は新しい
+`Path`（成分は `String`）を返し、`Path` は決して破壊的に変更されません。
+
+短いスクリプトでは `FS.*` を、パスを段階的に組み立てたり複数の操作へ
+渡したりする所では `Path` を。`/` 演算子とプロパティ連鎖の方が読みやすく
+なります:
+
+```culebra
+# doctest: skip
+let root = Path.new(FS.dirname(Sys.script)).resolve()
+for src in root.glob("*/content.src.js") {
+  let dst = src.parent() / "content.js"       # vs FS.join(FS.dirname(src), …)
+  dst.write(transform(src.read()))
+  IO.print("{src.parent().name()}/content.js\n")   # vs FS.basename(FS.dirname(src))
+}
+```
+
+`Path.new(s)` で構築します（`s` は `String` または別の `Path`）。パスを
+取るメソッド（`join`, `/`, `rename`, `==`）はいずれも `String` か `Path`
+を受けます。文字列補間（`"{p}"`）と `to_string(p)` は生のパス文字列を
+返します。
+
+| メンバー | 返り値 | 委譲先 |
+|---|---|---|
+| `p / other` / `p.join(other)` | `Path` | `FS.join` |
+| `p.name()` | `String`（末尾成分） | `FS.basename` |
+| `p.stem()` | `String`（拡張子なしの名前） | `FS.stem` |
+| `p.suffix()` | `String`（ドット込み拡張子） | `FS.extension` |
+| `p.parent()` | `Path` | `FS.dirname` |
+| `p.resolve()` | `Path`（絶対） | `FS.abspath` |
+| `p.exists()` / `p.is_file()` / `p.is_dir()` | `Bool` | `FS.*` |
+| `p.read()` / `p.write(s)` | `String` / `Nil` | `FS.read` / `FS.write` |
+| `p.mkdir()` | `Nil`（親も作成） | `FS.mkdir` |
+| `p.remove(recursive=false)` | `Nil` | `FS.remove` |
+| `p.rename(dst)` | `Path`（移動先） | `FS.rename` |
+| `p.list()` | `Array<Path>`（ディレクトリ項目） | `FS.list_dir` |
+| `p.glob(pattern)` | `Array<Path>` | `FS.glob` |
+| `p.walk()` | `Array<Path>`（再帰） | `FS.walk` |
+| `p.str()` | `String`（エスケープハッチ） | — |
+
+`FS.*` ヘルパと `File.open` / `File.with` は、パスを取る所ならどこでも
+`Path` を受けます（パス引数の型は `String | Path`）。よって `Path` は
+`.str()` なしでそのまま流し込めます:
+
+```culebra
+# doctest: skip
+let cfg = Path.new("/etc") / "app.conf"
+let text = FS.read(cfg)                 # FS.read(String | Path)
+for line in File.open(cfg).lines() { }  # File.open(String | Path)
+```
+
+こうして opt-in するのは*パスを取る*標準ライブラリ関数だけです。それ
+以外では `Path` と `String` は**別の型**のまま — ふつうの `fn(x: String)`
+は `Path` を受け付けないので型境界は意味を保ちます。`String` 専用 API に
+生文字列を渡すには `p.str()`（または `"{p}"`）を使ってください。
 
 ---
 

@@ -1140,6 +1140,11 @@ puts(Sys.argv)                # => []
 
 puts(Random.int(0, 100) >= 0)          # => true
 
+# Path — a fluent wrapper over FS that carries a path around:
+#   let cfg = Path.new('/etc') / 'app.conf'   # `/` joins
+#   cfg.parent().name(); cfg.read()           # properties + FS ops
+# FS.* and File.open also accept a Path directly. See stdlib.md.
+
 # String, FS, Time, Args namespaces — see stdlib.md
 ```
 

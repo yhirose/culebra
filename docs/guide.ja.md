@@ -1115,6 +1115,11 @@ puts(Sys.argv)                # => []
 
 puts(Random.int(0, 100) >= 0)          # => true
 
+# Path — パスを持ち回る FS の流暢なラッパ:
+#   let cfg = Path.new('/etc') / 'app.conf'   # `/` で結合
+#   cfg.parent().name(); cfg.read()           # プロパティ + FS 操作
+# FS.* や File.open も Path を直接受けます。stdlib.ja.md を参照。
+
 # String / FS / Time / Args namespace — stdlib.ja.md を参照
 ```
 

@@ -619,6 +619,7 @@ up in stages or passed through several operations, where the `/` operator
 and property chains read more clearly:
 
 ```culebra
+# doctest: skip
 let root = Path.new(FS.dirname(Sys.script)).resolve()
 for src in root.glob("*/content.src.js") {
   let dst = src.parent() / "content.js"       # vs FS.join(FS.dirname(src), …)
@@ -655,6 +656,7 @@ they take a path — their path parameters are `String | Path` — so a `Path`
 flows straight through without `.str()`:
 
 ```culebra
+# doctest: skip
 let cfg = Path.new("/etc") / "app.conf"
 let text = FS.read(cfg)                 # FS.read(String | Path)
 for line in File.open(cfg).lines() { }  # File.open(String | Path)
