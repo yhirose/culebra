@@ -235,9 +235,6 @@ jobs:
         run: |
           cat > smoke.cul <<'EOF'
           fn check(cond, msg) { if !cond { throw "check failed: " + msg } }
-          # Progress markers go to stderr (unbuffered) so if a Proc call ever
-          # deadlocks, the last marker printed pinpoints which one.
-          fn step(msg) { IO.eputs("[smoke] " + msg) }
           print("hello from culebra on windows")
           let xs = [3, 1, 2].sorted_by(fn(x) { x })
           check(xs.join(",") == "1,2,3", "sort")
@@ -246,46 +243,32 @@ jobs:
           check(o.keys().sorted_by(fn(k) { k }).join(",") == "a,b", "keys")
 
           # Phase 2: Proc runs real subprocesses via CreateProcess/CreatePipe.
-          step("before Proc.run echo")
           let r = Proc.run(["cmd", "/c", "echo hi"])
-          step("after Proc.run echo")
           check(r.ok && r.code == 0, "Proc.run exit code")
           check(r.stdout.contains("hi"), "Proc.run stdout capture")
           # Non-zero exit is reported, not raised.
-          step("before Proc.run exit3")
           let bad = Proc.run(["cmd", "/c", "exit 3"])
-          step("after Proc.run exit3")
           check(!bad.ok && bad.code == 3, "Proc.run non-zero exit")
           # stdin is fed to the child (findstr echoes lines matching the pattern).
-          step("before Proc.run findstr(stdin)")
           let f = Proc.run(["findstr", "x"], stdin: "x marks\nno match\n")
-          step("after Proc.run findstr(stdin)")
           check(f.stdout.contains("x marks") && !f.stdout.contains("no match"),
                 "Proc.run stdin feed")
-          # allSettled batch across two commands, results in input order.
-          step("before Proc.all")
+          # allSettled batch of two concurrent children, results in input order.
           let batch = Proc.all([["cmd", "/c", "echo one"], ["cmd", "/c", "echo two"]])
-          step("after Proc.all")
           check(batch[0].stdout.contains("one") && batch[1].stdout.contains("two"),
                 "Proc.all batch order")
           # Live handle: spawn, then wait for the reaped result.
-          step("before Proc.spawn")
           let h = Proc.spawn(["cmd", "/c", "echo spawned"])
-          step("after Proc.spawn, before wait")
           let hr = h.wait()
-          step("after Proc.spawn wait")
           check(hr.stdout.contains("spawned"), "Proc.spawn + wait")
 
           # Phase 2: Term primitives are callable off-tty (raw mode no-ops, size
           # falls back / queries the console, width is pure).
-          step("before Term")
           check(Term.cols() > 0 && Term.rows() > 0, "Term size")
           check(Term.width("abc") == 3, "Term display width")
-          step("after Term")
 
           print("smoke ok")
           EOF
-          # Bound the run so a deadlock fails the step in ~90s (exit 124) with the
-          # last [smoke] marker on stderr, instead of hanging the whole job.
-          # CULEBRA_PROC_TRACE surfaces where inside the Proc machinery it hangs.
-          CULEBRA_PROC_TRACE=1 timeout 90 ./build-win/culebra.exe smoke.cul
+          # Bound the run so a future regression that deadlocks fails the step in
+          # ~90s (exit 124) instead of hanging the whole job to its timeout.
+          timeout 90 ./build-win/culebra.exe smoke.cul

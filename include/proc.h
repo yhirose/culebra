@@ -42,7 +42,6 @@
 #else
 #include <algorithm>  // std::min
 #include <cctype>     // std::tolower (case-insensitive env-key match)
-#include <cstdio>     // opt-in CULEBRA_PROC_TRACE diagnostics
 #include <map>        // live-handle registry keyed by an opaque id
 #include <memory>     // unique_ptr — stable buffer address across WinChild moves
 #include <mutex>      // guards the live-handle registry across parallel isolates
@@ -790,21 +789,6 @@ inline int clamp_interrupt_timeout(long long pto) {
                                              : static_cast<int>(pto);
 }
 
-// Opt-in stderr tracing (CULEBRA_PROC_TRACE=1) to locate a runtime hang on the
-// Windows runner where there is no local repro. TEMPORARY — remove once fixed.
-inline bool proc_trace() {
-  static const bool t = std::getenv("CULEBRA_PROC_TRACE") != nullptr;
-  return t;
-}
-#define WPTRACE(...)                                       \
-  do {                                                     \
-    if (::culebra::proc::_detail::proc_trace()) {          \
-      std::fprintf(stderr, "[proc] " __VA_ARGS__);         \
-      std::fprintf(stderr, "\n");                          \
-      std::fflush(stderr);                                 \
-    }                                                      \
-  } while (0)
-
 // Close-and-null and join-the-two-readers are the invariants WinChild and
 // WinLive both compose, so they live as free helpers here.
 inline void close_handle(HANDLE& h) {
@@ -979,8 +963,25 @@ struct WinChild {
   RunOutcome outcome;
 
   WinChild() = default;
-  WinChild(WinChild&&) = default;
-  WinChild& operator=(WinChild&&) = default;
+  WinChild(WinChild&& o) noexcept { *this = std::move(o); }
+  // A defaulted move would COPY the raw HANDLEs and leave them set in the
+  // source, so the moved-from object's destructor closes handles the moved-to
+  // object still owns — the exact bug that made a moved WinChild's hProcess
+  // invalid (WaitForMultipleObjects then spins on a dead handle). Transfer the
+  // handles and null the source, as the POSIX Child does with its fds.
+  WinChild& operator=(WinChild&& o) noexcept {
+    if (this != &o) {
+      join_readers();   // our threads must be non-joinable before overwriting
+      close_handles();  // and our handles released before taking o's
+      hProcess = o.hProcess; out_rd = o.out_rd; err_rd = o.err_rd;
+      out = std::move(o.out); err = std::move(o.err);
+      out_th = std::move(o.out_th); err_th = std::move(o.err_th);
+      index = o.index; deadline_ms = o.deadline_ms;
+      timed_out = o.timed_out; done = o.done; outcome = std::move(o.outcome);
+      o.hProcess = o.out_rd = o.err_rd = nullptr;
+    }
+    return *this;
+  }
   WinChild(const WinChild&) = delete;
   WinChild& operator=(const WinChild&) = delete;
   ~WinChild() { join_readers(); close_handles(); }
@@ -1006,7 +1007,6 @@ inline WinChild spawn_child(
   c.out_th = std::thread(drain_pipe, h.out_rd, c.out.get());
   c.err_th = std::thread(drain_pipe, h.err_rd, c.err.get());
   feed_and_close_stdin(h.in_wr, stdin_data);
-  WPTRACE("spawned idx=%zu (readers started, stdin closed)", index);
   return c;
 }
 
@@ -1024,9 +1024,7 @@ inline ProcResult decode_child(WinChild& c) {
 
 // Join readers + decode the exit code into a RunOutcome. Consumes the child.
 inline RunOutcome reap_child(WinChild& c) {
-  WPTRACE("reap idx=%zu: join start", c.index);
   c.join_readers();
-  WPTRACE("reap idx=%zu: join done", c.index);
   RunOutcome oc;
   oc.spawned = true;
   oc.result = decode_child(c);
@@ -1174,16 +1172,12 @@ inline std::vector<RunOutcome> run_all(
     }
   };
   fill();
-  WPTRACE("all: filled, running=%zu finished=%zu n=%zu", running.size(), finished, n);
 
   while (finished < n && failed_index < 0) {
     if (_detail::interrupt_pending()) throw_if_interrupted();  // killer reaps
     long long nearest = _detail::enforce_deadlines(running, _detail::now_ms());
     _detail::wait_any(running, (DWORD)_detail::clamp_interrupt_timeout(nearest));
-    WPTRACE("all: woke, running=%zu finished=%zu", running.size(), finished);
     for (size_t k = 0; k < running.size();) {
-      WPTRACE("all: check k=%zu idx=%zu exited=%d", k, running[k].index,
-              (int)_detail::child_exited(running[k]));
       if (_detail::child_exited(running[k])) {
         size_t idx = running[k].index;
         RunOutcome oc = _detail::reap_child(running[k]);
