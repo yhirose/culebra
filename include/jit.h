@@ -1351,6 +1351,9 @@ inline auto _culebra_hash_at(int64_t line, int64_t col, F&& op)
       e.line = line;
       e.col = col;
     }
+    // Keep the pending carrier (read by the JIT catch pad) in sync with the
+    // position just stamped onto the in-flight exception.
+    culebra::culebra_note_pending_error(e);
     throw;
   }
 }
@@ -1560,6 +1563,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_hash_any(
       e.line = static_cast<int>(line);
       e.col = static_cast<int>(col);
     }
+    culebra::culebra_note_pending_error(e);
     throw;
   }
 }
@@ -1793,6 +1797,19 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_get_thrown_data() {
 // the normal and the swallowed paths: if the cleanup replaced the payload,
 // release the replacement and put the snapshot back (the save's retain
 // transfers into the carrier); otherwise just drop the snapshot's retain.
+// LIFO stack of pending-error snapshots, paired with save/restore below. A
+// runtime error in flight lives only in the pending carrier (is_throw is still
+// 0 until a catch pad materializes it), so a swallowed dispose() that throws its
+// own CulebraError would overwrite it — the pending analogue of the thrown-value
+// clobber the save/restore was written for. The interpreter needs no such thing:
+// its in-flight error is a distinct C++ exception object, untouched by dispose's.
+struct _PendingSnapshot {
+  int8_t error;
+  std::string kind, msg;
+  int64_t line, col;
+};
+inline thread_local std::vector<_PendingSnapshot> _pending_save_stack;
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_save_thrown(
     int8_t* out_flag, int8_t* out_tag, int64_t* out_data) {
   auto& rt = culebra::current_runtime();
@@ -1800,6 +1817,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_save_thrown(
   *out_tag = rt.thrown_tag;
   *out_data = rt.thrown_data;
   if (rt.is_throw) culebra_runtime_value_retain(rt.thrown_tag, rt.thrown_data);
+  _pending_save_stack.push_back({rt.pending_error, rt.pending_kind,
+                                 rt.pending_msg, rt.pending_line,
+                                 rt.pending_col});
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_restore_thrown(
@@ -1819,6 +1839,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_restore_thrown(
   rt.thrown_tag = tag;
   rt.thrown_data = data;
   rt.is_throw = flag;
+  // Restore the pending carrier the swallowed cleanup may have overwritten
+  // (paired push in save above; LIFO across nested disposes).
+  if (!_pending_save_stack.empty()) {
+    auto& s = _pending_save_stack.back();
+    rt.pending_error = s.error;
+    rt.pending_kind = std::move(s.kind);
+    rt.pending_msg = std::move(s.msg);
+    rt.pending_line = s.line;
+    rt.pending_col = s.col;
+    _pending_save_stack.pop_back();
+  }
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_throw(int8_t tag,
@@ -4824,41 +4855,39 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
   if (std::string_view(key) == "drop") _jit_owned_bind_drop(obj);
 }
 
-// Build a structured Error Object for a C++ exception that has reached
-// a try/catch landingpad. Called inside an active __cxa_begin_catch
-// region so `try { throw; }` re-raises the same exception for type
-// inspection. On success, populates the culebra_thrown_* globals as if
-// the user had run `throw error_object` and sets `is_throw=1`. Foreign
-// exceptions (anything we can't classify) leave `is_throw=0` so the
-// caller will propagate them with __cxa_rethrow.
+// Build a structured Error Object for a C++ exception that has reached a
+// try/catch landingpad, from the pending carrier a CulebraError recorded at its
+// construction (see culebra_note_pending_error). This replaces an older
+// `try { throw; } catch` re-inspection, which needed an active __cxa_begin_catch
+// context — a dependency Windows SEH funclet EH can't provide inside a catchpad.
+// On success, populates the thrown-value carriers as if the user had run
+// `throw error_object`. A user `throw` already set `is_throw` with a real Value,
+// so it early-outs. A foreign C++ exception (no pending carrier) leaves
+// `is_throw=0` so the caller propagates it with __cxa_rethrow.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_try_translate() {
   auto& rt = culebra::current_runtime();
-  if (rt.is_throw) return;
-  auto build = [&rt](std::string_view kind, std::string_view msg,
-                     int64_t line, int64_t col) {
-    auto* obj = culebra_runtime_object_new();
-    culebra_runtime_object_set(
-        obj, "kind", false, TAG_STRING,
-        reinterpret_cast<int64_t>(_culebra_heap_str(kind)), 0, 0);
-    culebra_runtime_object_set(
-        obj, "message", false, TAG_STRING,
-        reinterpret_cast<int64_t>(_culebra_heap_str(msg)), 0, 0);
-    culebra_runtime_object_set(obj, "line", false, TAG_LONG, line, 0, 0);
-    culebra_runtime_object_set(obj, "col", false, TAG_LONG, col, 0, 0);
-    rt.thrown_tag = TAG_OBJECT;
-    rt.thrown_data = reinterpret_cast<int64_t>(obj);
-    rt.is_throw = 1;
-  };
-  try {
-    throw;
-  } catch (culebra::CulebraError& e) {
-    _jit_backfill_op_pos(e);  // positionless runtime error → published op pos
-    build(e.kind, e.what(), e.line, e.col);
-  } catch (const std::runtime_error& e) {
-    build("RuntimeError", e.what(), 0, 0);
-  } catch (...) {
-    // Foreign exception — let the landingpad rethrow it.
+  if (rt.is_throw) return;        // user throw already carries a Value
+  if (!rt.pending_error) return;  // foreign exception — the pad rethrows it
+  // A positionless runtime error (line/col 0) adopts the last published op
+  // position, matching the old _jit_backfill_op_pos path.
+  int64_t line = rt.pending_line, col = rt.pending_col;
+  if (line == 0 && col == 0) {
+    line = _jit_op_line;
+    col = _jit_op_col;
   }
+  auto* obj = culebra_runtime_object_new();
+  culebra_runtime_object_set(
+      obj, "kind", false, TAG_STRING,
+      reinterpret_cast<int64_t>(_culebra_heap_str(rt.pending_kind)), 0, 0);
+  culebra_runtime_object_set(
+      obj, "message", false, TAG_STRING,
+      reinterpret_cast<int64_t>(_culebra_heap_str(rt.pending_msg)), 0, 0);
+  culebra_runtime_object_set(obj, "line", false, TAG_LONG, line, 0, 0);
+  culebra_runtime_object_set(obj, "col", false, TAG_LONG, col, 0, 0);
+  rt.thrown_tag = TAG_OBJECT;
+  rt.thrown_data = reinterpret_cast<int64_t>(obj);
+  rt.is_throw = 1;
+  rt.pending_error = 0;  // consumed
 }
 
 // Write `(tag, data)` to the out-params; nil if entry is null.
@@ -21572,20 +21601,21 @@ struct JIT {
       builder_.CreateBr(endBB);
     }
 
-    // --- Landing pad: catch-all. begin_catch enters the C++ catch
-    // context, then `culebra_runtime_try_translate` inspects the
-    // in-flight exception. If it's a user throw (`culebra_is_throw==1`
-    // already, set by `culebra_runtime_throw`) or a CulebraError /
-    // std::runtime_error from a runtime helper (set by translate),
-    // read the carried tag/data and proceed to the catch body.
-    // Otherwise rethrow so the foreign exception keeps unwinding. ---
+    // --- Landing pad: catch-all. `culebra_runtime_try_translate` classifies
+    // the in-flight exception from the carriers: a user throw
+    // (`culebra_is_throw==1`, set by `culebra_runtime_throw`) or a CulebraError
+    // recorded in the pending carrier at its construction. Either way, read the
+    // carried tag/data and proceed to the catch body; a foreign exception (no
+    // carrier) leaves the flag 0 so we rethrow and keep unwinding. ---
     builder_.SetInsertPoint(lpadBB);
     auto lpadTy = llvm::StructType::get(ptrTy, builder_.getInt32Ty());
     auto lpad = builder_.CreateLandingPad(lpadTy, 1, "exc");
     lpad->addClause(llvm::ConstantPointerNull::get(ptrTy));  // catch-all
 
-    // Enter the C++ catch context. begin_catch must run before
-    // translate so its `try { throw; }` re-raises the active exception.
+    // Enter the C++ catch context so we own the exception — needed for the
+    // __cxa_end_catch that consumes it on the handled path and the __cxa_rethrow
+    // on the foreign path. (translate no longer re-raises it; it reads the
+    // carrier, so begin_catch is only about owning the region now.)
     auto excPtr = builder_.CreateExtractValue(lpad, {0}, "exc.ptr");
     auto beginCatch = module_->getOrInsertFunction(
         "__cxa_begin_catch", ptrTy, ptrTy);
