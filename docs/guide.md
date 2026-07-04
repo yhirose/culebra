@@ -712,6 +712,16 @@ puts(car.total())             # => 'total: 15 miles'
 puts(car.class)               # => 'Car'
 ```
 
+Calling the class itself is shorthand for `.new` — `Car(5)` is exactly
+`Car.new(5)`, keyword arguments and all. Use whichever reads better; a
+class is callable the way its constructor is.
+
+```culebra
+class Point { new(x, y) { this.x = x; this.y = y } }
+p = Point(3, 4)               # same as Point.new(3, 4)
+puts("{p.x},{p.y}")           # => '3,4'
+```
+
 ### 8.2 The closure-based alternative
 
 A class is sugar; the same encapsulation works with a factory that

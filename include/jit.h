@@ -314,6 +314,12 @@ struct JitObject {
   // `ns_name` points at the namespace's interned static name for the message.
   // Trailing fields — codegen only GEPs earlier members.
   bool is_namespace = false;
+  // A class object (the value bound by `class C { ... }`): `C(args)` dispatches
+  // to its `new` constructor (see culebra_runtime_class_new_method), the JIT
+  // twin of interp's ObjectValue::is_class. Tucked in beside is_namespace to
+  // reuse its padding (JitObject stays <= 128 bytes); set via the
+  // culebra_runtime_mark_class helper, never GEP'd by codegen.
+  bool is_class = false;
   const char* ns_name = nullptr;
 
   // --- Shape-based property access helpers ---
@@ -5081,6 +5087,31 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_class_call_method(
     if (_culebra_type_matches_single(TAG_OBJECT, data, trait_name)) {
       return {TAG_FUNC, reinterpret_cast<int64_t>(m_it->second)};
     }
+  }
+  return {TAG_NIL, 0};
+}
+
+// Flag a freshly built class namespace object as callable — `C(args)`
+// dispatches to its `new` (see culebra_runtime_class_new_method). Emitted by
+// compile_class_decl; mirrors interp's `ObjectValue::is_class = true`.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_mark_class(
+    JitObject* o) {
+  o->is_class = true;
+}
+
+// `C(args)` construction: returns the class object's `new` constructor as a
+// borrowed TAG_FUNC JitValue, or Nil for a non-class. Gated on `is_class`
+// (set only by CLASS_DECL) so a plain dict holding a "new" key stays
+// non-callable, matching the interp is_class gate. The constructor needs no
+// `this` (it builds its own instance), so the caller invokes it with a nil
+// receiver — the twin of class_call_method but for the class object itself.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_class_new_method(
+    int8_t tag, int64_t data) {
+  if (tag != TAG_OBJECT) return {TAG_NIL, 0};
+  auto* obj = reinterpret_cast<JitObject*>(data);
+  if (!obj->is_class) return {TAG_NIL, 0};
+  if (auto* e = _find_property(obj, "new")) {
+    if (e->value.tag == TAG_FUNC) return e->value;
   }
   return {TAG_NIL, 0};
 }
@@ -9860,6 +9891,8 @@ inline constexpr auto prop_get            = "culebra_runtime_prop_get";
 inline constexpr auto bind_method_value   = "culebra_runtime_bind_method_value";
 inline constexpr auto to_bool             = "culebra_runtime_to_bool";
 inline constexpr auto class_call_method   = "culebra_runtime_class_call_method";
+inline constexpr auto class_new_method    = "culebra_runtime_class_new_method";
+inline constexpr auto mark_class          = "culebra_runtime_mark_class";
 inline constexpr auto explicit_drop       = "culebra_runtime_explicit_drop";
 inline constexpr auto owned_hot           = "culebra_runtime_owned_hot";
 inline constexpr auto owned_scope_exit    = "culebra_runtime_owned_scope_exit";
@@ -17913,6 +17946,11 @@ struct JIT {
     auto classObj = emit_call(
         module_->getOrInsertFunction(rt::object_new, ptrTy), {},
         "class.ns");
+    // Mark it callable: `C(args)` dispatches to `new` (compile_function_call_raw
+    // cold path). The flag also keeps a plain dict with a "new" key inert.
+    emit_call(module_->getOrInsertFunction(rt::mark_class,
+                                           builder_.getVoidTy(), ptrTy),
+              {classObj});
     emit_object_set(classObj, "new", /*mut=*/false, extract_tag(ctorVal),
                     extract_data(ctorVal));
     for (size_t i = 0; i < static_vals.size(); i++) {
@@ -20578,6 +20616,8 @@ struct JIT {
     };
     llvm::Value* overloadResult = nullptr;
     llvm::BasicBlock* overloadEndBB = nullptr;
+    llvm::Value* ctorResult = nullptr;
+    llvm::BasicBlock* ctorEndBB = nullptr;
     if (allow_call_overload) {
       auto callMethod = emit_call(
           module_->getOrInsertFunction(
@@ -20587,11 +20627,8 @@ struct JIT {
       auto isCallFn = builder_.CreateICmpEQ(
           extract_tag(callMethod), builder_.getInt8(TAG_FUNC));
       auto overloadBB = llvm::BasicBlock::Create(ctx_, "call.overload", fn);
-      auto notFnBB = llvm::BasicBlock::Create(ctx_, "call.notfn", fn);
-      builder_.CreateCondBr(isCallFn, overloadBB, notFnBB);
-
-      builder_.SetInsertPoint(notFnBB);
-      emit_not_function();
+      auto tryCtorBB = llvm::BasicBlock::Create(ctx_, "call.tryctor", fn);
+      builder_.CreateCondBr(isCallFn, overloadBB, tryCtorBB);
 
       builder_.SetInsertPoint(overloadBB);
       // `callee` becomes `this`; retain so the recursive frame consumes
@@ -20602,7 +20639,31 @@ struct JIT {
           callMethod, callee, userArgs,
           /*check_kw_only=*/false, /*allow_call_overload=*/false);
       overloadEndBB = builder_.GetInsertBlock();
-      // Terminator added after callBB so both arms can merge at contBB.
+      // Terminator added after callBB so all arms can merge at contBB.
+
+      // Not a callable instance: try a class object — `C(args)` dispatches
+      // to its `new`. The constructor builds its own instance, so it takes
+      // no `this` (nil receiver, no retain), matching interp.
+      builder_.SetInsertPoint(tryCtorBB);
+      auto newMethod = emit_call(
+          module_->getOrInsertFunction(
+              rt::class_new_method, valueType_,
+              builder_.getInt8Ty(), builder_.getInt64Ty()),
+          {tag, extract_data(callee)}, "ctor.method");
+      auto isNewFn = builder_.CreateICmpEQ(
+          extract_tag(newMethod), builder_.getInt8(TAG_FUNC));
+      auto ctorBB = llvm::BasicBlock::Create(ctx_, "call.ctor", fn);
+      auto notFnBB = llvm::BasicBlock::Create(ctx_, "call.notfn", fn);
+      builder_.CreateCondBr(isNewFn, ctorBB, notFnBB);
+
+      builder_.SetInsertPoint(notFnBB);
+      emit_not_function();
+
+      builder_.SetInsertPoint(ctorBB);
+      ctorResult = compile_function_call_raw(
+          newMethod, /*thisVal=*/nullptr, userArgs,
+          /*check_kw_only=*/false, /*allow_call_overload=*/false);
+      ctorEndBB = builder_.GetInsertBlock();
     } else {
       emit_not_function();
     }
@@ -20657,16 +20718,20 @@ struct JIT {
     // only producer, return directly and keep the original shape.
     if (!allow_call_overload) return callResult;
 
-    // Merge the function-call result with the __call__ dispatch result.
+    // Merge the function-call result with the __call__ and constructor
+    // dispatch results (three producers: callBB, overload arm, ctor arm).
     auto callEndBB = builder_.GetInsertBlock();
     auto contBB = llvm::BasicBlock::Create(ctx_, "call.cont", fn);
     builder_.CreateBr(contBB);
     builder_.SetInsertPoint(overloadEndBB);
     builder_.CreateBr(contBB);
+    builder_.SetInsertPoint(ctorEndBB);
+    builder_.CreateBr(contBB);
     builder_.SetInsertPoint(contBB);
-    auto phi = builder_.CreatePHI(valueType_, 2, "call.phi");
+    auto phi = builder_.CreatePHI(valueType_, 3, "call.phi");
     phi->addIncoming(callResult, callEndBB);
     phi->addIncoming(overloadResult, overloadEndBB);
+    phi->addIncoming(ctorResult, ctorEndBB);
     return phi;
   }
 
@@ -21061,9 +21126,10 @@ struct JIT {
     }
 
     // Callee must be a closure (matches compile_function_call_raw's
-    // guard) — or a callable class instance, in which case `obj(kwargs)`
-    // dispatches to its `__call__` with `this` bound to the instance
-    // (Phase 2b). Resolve cls/this on both arms and merge.
+    // guard) — or a callable class instance (`obj(kwargs)` → `__call__`
+    // with `this` bound to the instance, Phase 2b) — or a class object
+    // (`C(kwargs)` → its `new` constructor, nil `this`). Resolve cls/this
+    // on all three arms and merge.
     auto tag = extract_tag(callee);
     auto isFunc = builder_.CreateICmpEQ(tag,
                                          builder_.getInt8(TAG_FUNC));
@@ -21087,24 +21153,44 @@ struct JIT {
     auto isCm = builder_.CreateICmpEQ(extract_tag(cm),
                                        builder_.getInt8(TAG_FUNC));
     auto callBB = llvm::BasicBlock::Create(ctx_, "kwc.callee.call", fn);
-    auto errBB = llvm::BasicBlock::Create(ctx_, "kwc.callee.err", fn);
-    builder_.CreateCondBr(isCm, callBB, errBB);
-    builder_.SetInsertPoint(errBB);
-    emit_type_error_typed("Function", tag);
-    builder_.CreateUnreachable();
+    auto tryCtorBB = llvm::BasicBlock::Create(ctx_, "kwc.callee.tryctor", fn);
+    builder_.CreateCondBr(isCm, callBB, tryCtorBB);
     builder_.SetInsertPoint(callBB);
     emit_value_retain(callee);  // instance becomes `this` (consumed by frame)
     auto clsOverload = builder_.CreateIntToPtr(extract_data(cm), ptrTy);
     auto ovEnd = builder_.GetInsertBlock();
     builder_.CreateBr(contBB);
 
+    // Class object: `C(kwargs)` → `new`. The constructor builds its own
+    // instance, so `this` is nil (no retain), matching interp.
+    builder_.SetInsertPoint(tryCtorBB);
+    auto nm = emit_call(
+        module_->getOrInsertFunction(rt::class_new_method, valueType_,
+                                     builder_.getInt8Ty(),
+                                     builder_.getInt64Ty()),
+        {tag, extract_data(callee)}, "kwc.nm");
+    auto isNm = builder_.CreateICmpEQ(extract_tag(nm),
+                                       builder_.getInt8(TAG_FUNC));
+    auto ctorBB = llvm::BasicBlock::Create(ctx_, "kwc.callee.ctor", fn);
+    auto errBB = llvm::BasicBlock::Create(ctx_, "kwc.callee.err", fn);
+    builder_.CreateCondBr(isNm, ctorBB, errBB);
+    builder_.SetInsertPoint(errBB);
+    emit_type_error_typed("Function", tag);
+    builder_.CreateUnreachable();
+    builder_.SetInsertPoint(ctorBB);
+    auto clsCtor = builder_.CreateIntToPtr(extract_data(nm), ptrTy);
+    auto ctorEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(contBB);
+
     builder_.SetInsertPoint(contBB);
-    auto clsPtr = builder_.CreatePHI(ptrTy, 2, "kwc.cls");
+    auto clsPtr = builder_.CreatePHI(ptrTy, 3, "kwc.cls");
     clsPtr->addIncoming(clsNormal, okEnd);
     clsPtr->addIncoming(clsOverload, ovEnd);
-    auto thisVV = builder_.CreatePHI(valueType_, 2, "kwc.this");
+    clsPtr->addIncoming(clsCtor, ctorEnd);
+    auto thisVV = builder_.CreatePHI(valueType_, 3, "kwc.this");
     thisVV->addIncoming(thisNormal, okEnd);
     thisVV->addIncoming(callee, ovEnd);
+    thisVV->addIncoming(make_nil(), ctorEnd);
 
     // Positional slab index == param index in the kwargs helper (it passes
     // the resolved slab straight to fn_ptr), so the argpos indices line up

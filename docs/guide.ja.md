@@ -696,6 +696,16 @@ puts(car.total())             # => '走行距離: 15 miles'
 puts(car.class)               # => 'Car'
 ```
 
+クラスそのものを呼び出すのは `.new` のショートハンドです。`Car(5)` は
+`Car.new(5)` とまったく同じで、キーワード引数もそのまま渡せます。読みやすい
+方を使ってください。クラスはコンストラクタと同じように callable です。
+
+```culebra
+class Point { new(x, y) { this.x = x; this.y = y } }
+p = Point(3, 4)               # Point.new(3, 4) と同じ
+puts("{p.x},{p.y}")           # => '3,4'
+```
+
 ### 8.2 クロージャベースの別解
 
 `class` は糖衣 — 同じカプセル化はファクトリが Object リテラルを

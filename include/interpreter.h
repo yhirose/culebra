@@ -788,6 +788,13 @@ struct ObjectValue {
   // permissive missing-key-is-nil semantics.
   bool is_namespace = false;
   const char* ns_name = nullptr;
+  // A class object (the value bound by `class C { ... }`): carries `new` +
+  // static members. Calling it — `C(args)` — dispatches to its `new`
+  // constructor, so a class is callable exactly like its `.new`. A plain
+  // marker, invisible to str()/iteration/equality; a hand-built dict with a
+  // `new` key stays a non-callable ordinary Object (forgery-inert), mirroring
+  // is_match / is_shared_val. The JIT sets JitObject::is_class in symmetry.
+  bool is_class = false;
 };
 
 struct ArrayValue : public ObjectValue {
@@ -7854,6 +7861,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     }
 
     ObjectValue class_obj;
+    class_obj.is_class = true;  // `C(args)` dispatches to `new` (see eval_function_call)
     class_obj.properties->emplace("new", Symbol{constructor, false});
     if (is_packable) {
       class_obj.properties->emplace(
@@ -8354,6 +8362,16 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       return invoke_user_function_with_args(*bound, env, std::move(args),
                                             call_line, call_column, ast.path,
                                             &ast);
+    }
+    // Callable class object: `C(args)` constructs an instance, dispatching to
+    // the class's `new`. The is_class flag (set only by CLASS_DECL) keeps a
+    // plain dict holding a "new" key non-callable. `new` is always present on
+    // a class object (an explicit ctor or the synthesized default), so this
+    // never falls through to the not-a-Function error.
+    if (val.type == Value::Object && val.to_object().is_class) {
+      return invoke_user_function_with_args(val.to_object().get("new"), env,
+                                            std::move(args), call_line,
+                                            call_column, ast.path, &ast);
     }
     return invoke_user_function_with_args(val, env, std::move(args), call_line,
                                           call_column, ast.path, &ast);

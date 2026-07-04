@@ -1,0 +1,78 @@
+// Class objects are callable: `C(args)` constructs an instance, dispatching
+// to the class's `new` constructor. `C(args)` is exactly `C.new(args)`.
+
+// --- basic construction ---
+class Point {
+    new(x, y) { this.x = x; this.y = y }
+    sum() { this.x + this.y }
+}
+let p = Point(3, 4)
+assert_eq(p.x, 3)
+assert_eq(p.y, 4)
+assert_eq(p.sum(), 7)
+// identical to .new
+assert_eq(Point(3, 4).sum(), Point.new(3, 4).sum())
+
+// --- default (no explicit `new`) constructor ---
+class Empty {
+    greet() { "hi" }
+}
+assert_eq(Empty().greet(), "hi")
+
+// --- keyword arguments forward to `new` ---
+class Config {
+    new(host, port = 80) { this.host = host; this.port = port }
+}
+let c = Config("localhost", port: 8080)
+assert_eq(c.host, "localhost")
+assert_eq(c.port, 8080)
+assert_eq(Config("h").port, 80)
+assert_eq(Config(port: 9, host: "x").port, 9)
+
+// --- callable class composes: chaining, higher-order use ---
+class Adder {
+    new(n) { this.n = n }
+    add(x) { this.x = x; this.n + x }
+}
+assert_eq(Adder(10).add(5), 15)
+let makers = [Point, Empty]
+assert_eq(makers[0](1, 2).sum(), 3)
+
+// a class flows as a callable through an untyped parameter
+fn apply0(f) { f() }
+assert_eq(apply0(Empty).greet(), "hi")
+
+// MVP boundary (symmetric across interp/JIT): a class object does NOT
+// satisfy the `Function` type used by higher-order builtins — `map(Cls)` is
+// a clean TypeError on both backends. Use `map(|x| Cls(x))` instead. Frozen
+// here so a future relaxation is a deliberate, symmetric change.
+let mut map_threw = false
+try {
+    let _ = [1, 2, 3].map(Point)
+} catch e {
+    map_threw = true
+}
+assert_eq(map_threw, true)
+
+// --- a plain dict holding a "new" key stays NON-callable ---
+let fake = { new: fn(x) { x + 1 } }
+let mut threw = false
+try {
+    fake(5)
+} catch e {
+    threw = true
+}
+assert_eq(threw, true)
+// its `new` member is still an ordinary callable field
+assert_eq(fake.new(5), 6)
+
+// --- arity error from `new` surfaces normally ---
+let mut bad = false
+try {
+    Point(1)
+} catch e {
+    bad = true
+}
+assert_eq(bad, true)
+
+puts("test_class_call ok")

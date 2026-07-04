@@ -116,9 +116,19 @@ let class_pre = 'class C { new(a) { this.a = a } }; '
 for a in ['', '1', '1, 2', '1, 2, 3'] {
   case("ctor-enum|" + a, enum_pre + "E.V(" + a + ")")
   case("ctor-class|" + a, class_pre + "C.new(" + a + ")")
+  # Callable class object: `C(a)` dispatches to `new`, identical to `C.new(a)`
+  # (arity errors, kind/message/position all mirror `.new` across backends).
+  case("ctor-call|" + a, class_pre + "C(" + a + ")")
 }
 case("ctor-enum-nullary", enum_pre + "E.W")
 case("ctor-enum-nullary-call", enum_pre + "E.W()")
+# `C(...)` construction ≡ `C.new(...)`, incl. kwargs and a plain dict staying
+# non-callable (a "new" key alone must not make it callable — TypeError).
+let kwclass_pre = 'class C { new(a, b = 5) { this.s = a + b } }; '
+case("ctor-call-kw", kwclass_pre + "C(1, b: 2).s")
+case("ctor-call-kw-default", kwclass_pre + "C(a: 7).s")
+case("ctor-call-nullary", 'class C { new() { this.x = 9 } }; C().x')
+case("ctor-call-plaindict", 'let d = { new: fn (x) { x } }; d(1)')
 
 # --- Dimension 7: lazy iterator combinators over an erroring stream --------
 # D3's v-lazy maps over `[1, 2, 3]` (never errors); these run the callback
