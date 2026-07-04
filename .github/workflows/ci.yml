@@ -2,8 +2,16 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    # master, plus any `ci/**` branch: this repo's local-first, multi-worktree
+    # workflow lands most work by local-master ff (no PR), so pushing a branch
+    # named `ci/<topic>` runs the full matrix on it WITHOUT opening a throwaway
+    # PR just to trigger CI. Feature branches don't auto-run (avoids CI spend on
+    # every push across the concurrent worktrees); opt in by the `ci/` prefix.
+    branches: [master, 'ci/**']
   pull_request:
+  # Manual trigger for any branch (no PR, no rename needed):
+  #   gh workflow run ci.yml --ref <branch>
+  workflow_dispatch:
   # Weekly build on master to keep the per-OS ccache warm. GitHub evicts a
   # cache after 7 days without access; this repo's local-first workflow can go
   # long stretches without a CI push, and a cold cache makes the macOS build
@@ -11,6 +19,13 @@ on:
   # refresh the 7-day timer, so this is just the backstop for quiet weeks.
   schedule:
     - cron: '0 4 * * 1'
+
+# Coalesce runs per ref: a new push to the same branch cancels its still-running
+# CI (a branch + its PR would otherwise double-run, and rapid re-pushes pile up).
+# master is exempt — every landed commit keeps its own gate result.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
   test:
