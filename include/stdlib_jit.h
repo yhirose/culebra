@@ -8362,7 +8362,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       // the lazy-ns builder registry). Listed here so closures capture-skip
       // them and bare references compile to namespace_get — mirroring the
       // interp's builtin_names skip. See _jit_namespace_get_or_build.
-      "Time",    "Args",      "Regex",     "Term",      "Log",
+      "Time",    "Args",      "Regex",     "Term",      "Log",      "Path",
 #if defined(CULEBRA_HTTP_ENABLED)
       "Http",
 #endif

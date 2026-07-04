@@ -1,0 +1,70 @@
+// Conformance: stdlib (Path). See docs/stdlib.md and docs/language.md.
+//
+// Path — an immutable sugar layer over FS.*. `Path.new(s)` wraps a path
+// string; `/` joins; properties/methods delegate to FS and return Path
+// (or String for components). Tested on interp, JIT, and AOT via `just
+// test`; identical stdout (asserts are silent on success).
+
+// --- construction / display ---
+let p = Path.new("/home/user/project")
+assert_eq("{p}", "/home/user/project")          // __str__ yields raw path
+assert_eq(p.str(), "/home/user/project")
+assert_eq(to_string(p), "/home/user/project")
+
+// --- joining: `/` operator and .join(), both Path-returning ---
+let q = p / "src" / "main.cul"
+assert_eq("{q}", "/home/user/project/src/main.cul")
+assert_eq("{p.join("src").join("main.cul")}", "/home/user/project/src/main.cul")
+
+// a Path is accepted wherever a path is expected (PathLike via __str__)
+assert_eq("{Path.new("/a") / Path.new("b")}", "/a/b")
+
+// --- components (String, mirroring FS.*) ---
+assert_eq(q.name(), "main.cul")
+assert_eq(q.stem(), "main")
+assert_eq(q.suffix(), ".cul")
+assert_eq("{q.parent()}", "/home/user/project/src")
+assert_eq(q.parent().name(), "src")               // the fluent-chain payoff
+
+// --- value equality (String or Path on the RHS) ---
+assert_eq(q == "/home/user/project/src/main.cul", true)
+assert_eq(q.parent() == p / "src", true)
+assert_eq(q == "/other", false)
+
+// --- queries on known-good paths ---
+assert_eq(Path.new("/tmp").exists(), true)
+assert_eq(Path.new("/tmp").is_dir(), true)
+assert_eq(Path.new("/tmp").is_file(), false)
+assert_eq(Path.new("/definitely/not/real/xyzzy").exists(), false)
+
+// --- filesystem round-trip: mkdir / write / read / list / glob / remove ---
+let tmpdir_env = Sys.env("TMPDIR")
+let tmp_root   = if tmpdir_env != "" { tmpdir_env } else { "/tmp" }
+let base       = Path.new(tmp_root) / "culebra_path_test"
+base.remove(recursive: true)  // clean any stale run (idempotent enough)
+base.mkdir()
+assert_eq(base.is_dir(), true)
+
+let f = base / "hello.txt"
+f.write("world")
+assert_eq(f.exists(), true)
+assert_eq(f.is_file(), true)
+assert_eq(f.read(), "world")
+
+// list() / glob() return Path, so .name() chains
+let names = base.list().map(|e| e.name()).sorted_by(|s| s)
+assert_eq(names, ["hello.txt"])
+let globbed = base.glob("*.txt").map(|e| e.name())
+assert_eq(globbed, ["hello.txt"])
+
+// resolve() normalizes to an absolute Path
+assert_eq(base.resolve().is_dir(), true)
+
+// rename returns the destination Path
+let g = f.rename("{base}/renamed.txt")
+assert_eq("{g}", "{base}/renamed.txt")
+assert_eq(g.exists(), true)
+assert_eq(f.exists(), false)
+
+base.remove(recursive: true)
+assert_eq(base.exists(), false)

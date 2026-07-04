@@ -6146,6 +6146,9 @@ inline std::string stdlib_preamble_for(std::string_view user_src) {
   if (has("Log"))
     preamble.append(_wrap_lazy_ns_module(LOG_MODULE_SOURCE, "Log",
                                          "_log_module"));
+  if (has("Path"))
+    preamble.append(_wrap_lazy_ns_module(PATH_MODULE_SOURCE, "Path",
+                                         "_path_module"));
 #ifdef CULEBRA_ENABLE_WEBVIEW
   // `Desktop.run` facade — only when the Webview namespace it drives is built in.
   if (has("Desktop"))
@@ -6220,6 +6223,7 @@ inline void register_stdlib_lazy_modules(Environment& env) {
   env.initialize_lazy("Regex", REGEX_MODULE_SOURCE);
   env.initialize_lazy("replace", STRING_REPLACE_MODULE_SOURCE);
   env.initialize_lazy("Log", LOG_MODULE_SOURCE);
+  env.initialize_lazy("Path", PATH_MODULE_SOURCE);
 #ifdef CULEBRA_ENABLE_WEBVIEW
   env.initialize_lazy("Desktop", DESKTOP_MODULE_SOURCE);
 #endif

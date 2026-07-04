@@ -78,7 +78,7 @@ Conventions used below:
 | Print to stdout | `IO.puts` (with newline + quoting) / `IO.print` (raw) |
 | Read a whole file | `FS.read` (throws on failure) |
 | Stream a file (lines / chunks / seek) | [§4 File](#4-file) — `File.open` / `File.with` |
-| Path manipulation (join, basename, dirname, stem, extension) | [§3 FS](#3-fs) |
+| Path manipulation (join, basename, dirname, stem, extension) | [§3 FS](#3-fs); fluent `Path` wrapper: [§3 `Path`](#path--the-fluent-wrapper) |
 | Stat / walk / glob / copy / rename / symlink / chmod / chown | [§3 FS](#3-fs) |
 | Directory listing / create / remove | `FS.list_dir`, `FS.mkdir`, `FS.remove` |
 | `Instant` / `Duration`, ISO 8601, calendar arithmetic | [§5 Time](#5-time) |
@@ -605,6 +605,54 @@ Read a symlink's target. Throws `IOError` if `path` isn't a symlink.
 #### `FS.is_symlink(path: String) -> Bool`
 
 Whether `path` is a symbolic link (the link itself, not its target).
+
+### `Path` — the fluent wrapper
+
+`Path` is a thin, **immutable** wrapper over the `FS.*` helpers. `FS` is
+the primitive layer (raw `String` paths in, `String`/values out); `Path`
+is the sugar layer that carries the path around so you stop threading path
+strings by hand. Every operation returns a fresh `Path` (or a `String` for
+components) — a `Path` is never mutated in place.
+
+Reach for `FS.*` in short scripts; reach for `Path` when a path is built
+up in stages or passed through several operations, where the `/` operator
+and property chains read more clearly:
+
+```culebra
+let root = Path.new(FS.dirname(Sys.script)).resolve()
+for src in root.glob("*/content.src.js") {
+  let dst = src.parent() / "content.js"       # vs FS.join(FS.dirname(src), …)
+  dst.write(transform(src.read()))
+  IO.print("{src.parent().name()}/content.js\n")   # vs FS.basename(FS.dirname(src))
+}
+```
+
+Construct with `Path.new(s)`, where `s` is a `String` or another `Path`.
+Anywhere a method takes a path (`join`, `/`, `rename`, `==`) it likewise
+accepts a `String` or a `Path`. String interpolation (`"{p}"`) and
+`to_string(p)` yield the raw path string.
+
+| Member | Returns | Delegates to |
+|---|---|---|
+| `p / other` / `p.join(other)` | `Path` | `FS.join` |
+| `p.name()` | `String` (final component) | `FS.basename` |
+| `p.stem()` | `String` (name without suffix) | `FS.stem` |
+| `p.suffix()` | `String` (extension incl. dot) | `FS.extension` |
+| `p.parent()` | `Path` | `FS.dirname` |
+| `p.resolve()` | `Path` (absolute) | `FS.abspath` |
+| `p.exists()` / `p.is_file()` / `p.is_dir()` | `Bool` | `FS.*` |
+| `p.read()` / `p.write(s)` | `String` / `Nil` | `FS.read` / `FS.write` |
+| `p.mkdir()` | `Nil` (creates parents) | `FS.mkdir` |
+| `p.remove(recursive=false)` | `Nil` | `FS.remove` |
+| `p.rename(dst)` | `Path` (the destination) | `FS.rename` |
+| `p.list()` | `Array<Path>` (dir entries) | `FS.list_dir` |
+| `p.glob(pattern)` | `Array<Path>` | `FS.glob` |
+| `p.walk()` | `Array<Path>` (recursive) | `FS.walk` |
+| `p.str()` | `String` (escape hatch) | — |
+
+`Path` and `String` are **distinct types**: a plain `fn(x: String)` does
+*not* accept a `Path`. This keeps the type boundary meaningful — use
+`p.str()` (or `"{p}"`) to hand a raw string to a `String`-only API.
 
 ---
 
