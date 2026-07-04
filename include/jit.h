@@ -5871,8 +5871,18 @@ _jit_multifn_dispatcher_names() {
 // Value::eval_property dispatch for Value::Function. Unknown
 // properties return Nil. Used by compile_property_get when the
 // receiver tag is TAG_FUNC.
+// Bound-method trampoline address (defined below): a method read as a value
+// captures its receiver in a wrapper closure whose fn_ptr is this thunk.
+CULEBRA_RT_INLINE JitValue _jit_bound_method_thunk(JitClosure*, JitValue,
+                                                   int64_t, JitValue*);
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue
 culebra_runtime_fn_introspect_get(JitClosure* cls, const char* prop) {
+  // A bound method presents its underlying method's signature (the interp's
+  // _wrap_method_with_this carries name/params/return_type through). Look
+  // through to the captured method before resolving the metadata.
+  if (cls && cls->fn_ptr == reinterpret_cast<void*>(&_jit_bound_method_thunk))
+    cls = reinterpret_cast<JitClosure*>(cls->captures[1]->value.data);
   const JitParamMeta* meta =
       cls ? _jit_lookup_param_meta(cls->fn_ptr) : nullptr;
   // Multifn dispatcher fallback: dispatchers share a single thunk
@@ -6520,6 +6530,60 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
   return c;
 }
 
+// Trampoline for a bound method value (the JIT twin of interp's
+// _wrap_method_with_this). A method read as a VALUE — `let g = obj.m` — is
+// wrapped in a closure whose captures are [receiver, method]. A value call
+// (`g()`, a HOF, `__call__`) reaches every closure through its fn_ptr with
+// `this` = Nil; this thunk substitutes the captured receiver so the method
+// body sees the right `this`. It forwards args/arity unchanged, so it composes
+// with every existing invoke path and with the callee's own arg handling.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _jit_bound_method_thunk(
+    JitClosure* self, JitValue /*this is Nil on a value call*/, int64_t n_args,
+    JitValue* args) {
+  JitValue receiver = self->captures[0]->value;
+  auto* method = reinterpret_cast<JitClosure*>(self->captures[1]->value.data);
+  // The callee frame takes ownership of `this` on entry (a direct call retains
+  // the receiver before passing it). Retain the captured receiver per call so
+  // repeated invocations don't drain the wrapper's single held reference.
+  culebra_runtime_value_retain(receiver.tag, receiver.data);
+  return reinterpret_cast<JitFn>(method->fn_ptr)(method, receiver, n_args, args);
+}
+
+// Resolve a property read AS A VALUE (`obj.name`, not `obj.name(...)`). When it
+// is a class method — a TAG_FUNC reached through the proto, NOT an own slot —
+// bind `this`=receiver into a wrapper so a later call sees the right receiver
+// (interp's _wrap_method_with_this). Own-slot functions (namespace methods,
+// constructors, lambda fields) and builtins keep their raw value; the own/proto
+// split is decided by an own-slot lookup on `key` (a lambda stored in a field
+// is an own slot, a method lives only on the proto). Returns a +1-owned value
+// in every case (retaining the view, or the receiver+method into the wrapper's
+// cells); the caller releases the receiver separately.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_bind_method_value(
+    int8_t recv_tag, int64_t recv_data, int8_t view_tag, int64_t view_data,
+    const char* key) {
+  if (view_tag == TAG_FUNC && recv_tag == TAG_OBJECT) {
+    auto* obj = reinterpret_cast<JitObject*>(recv_data);
+    if (obj->proto &&
+        obj->find_slot(key) == static_cast<size_t>(-1)) {  // proto method
+      auto* method = reinterpret_cast<JitClosure*>(view_data);
+      // The interp makes a bound method non-Sendable (its wrapper has no
+      // params_ast), so an escapee is rejected rather than shipped without its
+      // `this`. Register the thunk as native so sendable_jit's _jit_is_native_fn
+      // rejects it with the same SendError. Cheap after the first (memoized).
+      _jit_register_native_fn(reinterpret_cast<const void*>(&_jit_bound_method_thunk));
+      auto* bound = culebra_runtime_closure_new(
+          reinterpret_cast<void*>(&_jit_bound_method_thunk), 2, method->arity);
+      culebra_runtime_value_retain(recv_tag, recv_data);
+      bound->captures[0] = culebra_runtime_cell_new(recv_tag, recv_data);
+      culebra_runtime_value_retain(view_tag, view_data);
+      bound->captures[1] = culebra_runtime_cell_new(view_tag, view_data);
+      return {TAG_FUNC, reinterpret_cast<int64_t>(bound)};
+    }
+  }
+  culebra_runtime_value_retain(view_tag, view_data);
+  return {view_tag, view_data};
+}
+
 // Runtime kwarg resolver: routes a call carrying keyword arguments
 // and/or dynamic `**splat` operands against a closure whose parameter
 // names live in the JitParamMeta side table. Mirrors the interp's
@@ -6554,6 +6618,21 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
       _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
     }
   };
+
+  // A bound method value (`obj.m` read as a value) wraps [receiver, method];
+  // its trampoline fn_ptr carries no JitParamMeta, so recurse into the
+  // underlying method with `this` = the captured receiver (retained, since the
+  // callee frame consumes `this` — same as the positional trampoline). Without
+  // this a kwarg call `g(x: 1)` would wrongly hit the "no keyword arguments"
+  // reject on the wrapper's null meta.
+  if (cls->fn_ptr == reinterpret_cast<void*>(&_jit_bound_method_thunk)) {
+    JitValue receiver = cls->captures[0]->value;
+    auto* method = reinterpret_cast<JitClosure*>(cls->captures[1]->value.data);
+    culebra_runtime_value_retain(receiver.tag, receiver.data);
+    return culebra_runtime_call_with_kwargs(method, receiver, n_pos, positional,
+                                            n_kw, kw_keys, kw_vals, n_splat,
+                                            splat_objs, line, col);
+  }
 
   // stdlib namespace methods route through the hook FIRST — before the
   // splat validation below — because an ns-method (strict_arity) checks its
@@ -9712,6 +9791,7 @@ inline constexpr auto object_get_default  = "culebra_runtime_object_get_default"
 inline constexpr auto object_get_or_put   = "culebra_runtime_object_get_or_put";
 inline constexpr auto object_get_ic       = "culebra_runtime_object_get_ic";
 inline constexpr auto prop_get            = "culebra_runtime_prop_get";
+inline constexpr auto bind_method_value   = "culebra_runtime_bind_method_value";
 inline constexpr auto to_bool             = "culebra_runtime_to_bool";
 inline constexpr auto class_call_method   = "culebra_runtime_class_call_method";
 inline constexpr auto explicit_drop       = "culebra_runtime_explicit_drop";
@@ -19105,11 +19185,24 @@ struct JIT {
             if (name == "name" || name == "params" || name == "return_type") {
               callee = own(view);
             } else {
-              // swap_owned retains the view and releases the receiver —
-              // it consumes the handle's +1 and produces the view's.
-              emit_value_swap_owned(view, receiver);
-              callee.consume();
-              callee = own(view);
+              // Bind `this` into a class method read as a value (interp's
+              // _wrap_method_with_this); own-slot functions (ns methods,
+              // ctors, lambda fields) and builtins pass through unchanged.
+              // The helper returns a fresh +1 (a bound wrapper, or the view
+              // retained); the move-assign releases the receiver's +1, as
+              // swap_owned did.
+              auto i8Ty = builder_.getInt8Ty();
+              auto i64Ty = builder_.getInt64Ty();
+              auto ptrTy = llvm::PointerType::get(ctx_, 0);
+              auto keyPtr = get_or_create_global_str(name, ".bind.key");
+              auto bound = emit_call(
+                  module_->getOrInsertFunction(
+                      rt::bind_method_value, valueType_, i8Ty, i64Ty, i8Ty,
+                      i64Ty, ptrTy),
+                  {extract_tag(receiver), extract_data(receiver),
+                   extract_tag(view), extract_data(view), keyPtr},
+                  "bind.method");
+              callee = own(bound);
             }
             emit_reject_bare_builtin_method(callee.borrow(), hasOwn, name,
                                             postfix);
