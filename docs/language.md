@@ -3158,6 +3158,8 @@ return a new `Array` and leave the receiver unchanged.
 | `a.product() -> Long`                       | Product of all elements. All elements must be `Long`. Empty → `1`. |
 | `a.min() -> Long`                           | Smallest element. All elements must be `Long`. Throws on empty. |
 | `a.max() -> Long`                           | Largest element. All elements must be `Long`. Throws on empty. |
+| `a.sort(reverse: Bool = false) -> Nil` *(mutating)* | Stable-sort in place in natural order — elements compare by the same rule as `<`, so an Object's `__lt__` / `cmp` is honored (a `Path` array sorts) and incomparable elements throw. Keyword-only `reverse: true` sorts descending (still stable). |
+| `a.sorted(reverse: Bool = false) -> Array` | Like `sort` but returns a new sorted Array, leaving the receiver unchanged — so it chains (`xs.sorted().join(",")`). `reverse: true` for stable descending. |
 | `a.sort_by(key: Function, reverse: Bool = false) -> Nil` *(mutating)* | Stable-sort in place using `key(x)` as the comparison key (ascending). `key` must take one parameter and return a comparable value (`Long` / `String` / `Bool`). Keyword-only `reverse: true` sorts descending (still stable). |
 | `a.sorted_by(key: Function, reverse: Bool = false) -> Array` | Like `sort_by` but returns a new sorted Array, leaving the receiver unchanged — so it chains (`xs.sorted_by(f).join(",")`). `reverse: true` for stable descending. |
 

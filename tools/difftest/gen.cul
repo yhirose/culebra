@@ -45,7 +45,8 @@ for u in ['-', '!'] {
 # every method to every receiver with every arg shape mostly errors; the point
 # is that the error (kind/message/position) must match across backends.
 let methods = ['size', 'push', 'pop', 'slice', 'map', 'filter', 'reduce',
-               'find', 'any', 'all', 'for_each', 'flat_map', 'sort_by', 'sum',
+               'find', 'any', 'all', 'for_each', 'flat_map', 'sort_by',
+               'sort', 'sorted', 'sum',
                'product', 'min', 'max', 'join', 'contains', 'index_of',
                'reverse', 'keys', 'values', 'has', 'remove', 'upper', 'lower',
                'trim', 'split', 'code_points', 'iter', 'take', 'skip',
@@ -140,6 +141,8 @@ let kwcases = ['range(0, 5, step: 2).collect()',
                'range(0, 5, **{bad: 2}).collect()',
                'range(0, 5, bad: 2).collect()',
                '[1, 2, 3].sort_by(key: |x| x)',
+               '[3, 1, 2].sorted(reverse: true)',
+               '[3, 1, 2].sorted(bad: 1)',
                'Math.abs(x: 1)']
 for kc in kwcases {
   case("kw|" + kc, kc)

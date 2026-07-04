@@ -8592,6 +8592,41 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_sorted_by(
   return out;
 }
 
+// Keyless natural-order sort (in place). Elements compare by the same rule as
+// `<`: culebra_runtime_value_less honors an Object's __lt__/cmp (so a Path
+// array sorts) and throws for incomparable operands. The comparator borrows
+// its operands (no ref consumed), so the array's elements stay owned by `arr`.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_sort(
+    JitArray* arr, bool reverse, int64_t line, int64_t col) {
+  std::stable_sort(arr->items, arr->items + arr->size,
+                   [reverse, line, col](const JitValue& a, const JitValue& b) {
+                     const auto& x = reverse ? b : a;
+                     const auto& y = reverse ? a : b;
+                     return culebra_runtime_value_less(x.tag, x.data, y.tag,
+                                                       y.data, line, col);
+                   });
+}
+
+// Non-mutating twin of `sort`: returns a fresh array (owning its own refs to
+// the shared elements) sorted in natural order; the receiver is untouched, so
+// it chains.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_sorted(
+    JitArray* arr, bool reverse, int64_t line, int64_t col) {
+  auto* out = culebra_runtime_array_new();
+  for (size_t i = 0; i < arr->size; i++) {
+    auto e = arr->items[i];
+    culebra_runtime_value_retain(e.tag, e.data);
+    culebra_runtime_array_push(out, e.tag, e.data);
+  }
+  try {
+    culebra_runtime_array_sort(out, reverse, line, col);
+  } catch (...) {
+    _culebra_value_release_impl(TAG_ARRAY, reinterpret_cast<int64_t>(out));
+    throw;
+  }
+  return out;
+}
+
 // reduce returns the final accumulator via out-params (avoids relying on
 // cross-language struct-return ABI).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_reduce(
@@ -9669,6 +9704,8 @@ inline constexpr auto range_iter          = "culebra_runtime_range_iter";
 inline constexpr auto array_slice2        = "culebra_runtime_array_slice2";
 inline constexpr auto array_sort_by       = "culebra_runtime_array_sort_by";
 inline constexpr auto array_sorted_by     = "culebra_runtime_array_sorted_by";
+inline constexpr auto array_sort          = "culebra_runtime_array_sort";
+inline constexpr auto array_sorted        = "culebra_runtime_array_sorted";
 // Tuple allocates a JitArray and returns it tagged TAG_TUPLE; storage
 // is shared with Array but the tag forbids mutation everywhere
 // downstream.
@@ -13477,6 +13514,14 @@ struct JIT {
     module_->getOrInsertFunction(
         rt::array_sorted_by, ptrTy, ptrTy,
         builder_.getInt8Ty(), builder_.getInt64Ty(), builder_.getInt1Ty(),
+        builder_.getInt64Ty(), builder_.getInt64Ty());
+    // sort (arr, reverse, line, col) -> void
+    module_->getOrInsertFunction(
+        rt::array_sort, builder_.getVoidTy(), ptrTy, builder_.getInt1Ty(),
+        builder_.getInt64Ty(), builder_.getInt64Ty());
+    // sorted — same args, returns a new array (ptr)
+    module_->getOrInsertFunction(
+        rt::array_sorted, ptrTy, ptrTy, builder_.getInt1Ty(),
         builder_.getInt64Ty(), builder_.getInt64Ty());
     // sum/product/min/max: (arr, line, col) -> i64
     module_->getOrInsertFunction(rt::array_sum, builder_.getInt64Ty(),
@@ -20784,10 +20829,11 @@ struct JIT {
       long cap_long = cap ? static_cast<long>(*cap) : -1;
       long n_pos = static_cast<long>(positional.size());
       // Match throw_if_too_many_positionals' compile-time predicate
-      // but route through emit_throw_error so the runtime throw is
-      // catchable by `try { ... } catch e { ... }`, the same way
+      // (cap < 0 = no cap; cap == 0 = leading kw-only, zero positionals
+      // allowed) but route through emit_throw_error so the runtime throw
+      // is catchable by `try { ... } catch e { ... }`, the same way
       // interp's eval-time call at interpreter.h:4220 is.
-      if (cap_long > 0 && n_pos > cap_long) {
+      if (cap_long >= 0 && n_pos > cap_long) {
         emit_throw_error("TypeError",
             std::format("takes {} positional argument{} but {} given",
                         cap_long, cap_long == 1 ? "" : "s", n_pos),
@@ -23810,6 +23856,39 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
                            {arrPtr, extract_tag(f.borrow()),
                             extract_data(f.borrow()), rev, ho_line, ho_col});
       f.drop();
+      return make_array(out);
+    }
+  }
+
+  // Keyless sort / sorted: no positional args, optional keyword-only
+  // `reverse:`. Elements order by `<` (Object __lt__/cmp honored). Same
+  // malformed-shape fallthrough as sort_by above.
+  if (method == "sort" || method == "sorted") {
+    using namespace peg::udl;
+    const peg::Ast* rev_expr = nullptr;
+    int npos = 0;
+    bool only_known_kw = true;
+    for (auto& n : argsAst.nodes) {
+      if (n->tag == "KWARG"_) {
+        if (n->nodes[0]->token == "reverse" && !rev_expr) rev_expr = n->nodes[1].get();
+        else only_known_kw = false;
+      } else if (n->tag == "KWARG_SPLAT"_) {
+        only_known_kw = false;
+      } else {
+        npos++;
+      }
+    }
+    if (npos == 0 && only_known_kw) {
+      auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, method.c_str());
+      llvm::Value* rev = rev_expr ? value_to_bool(compile(*rev_expr).consume())
+                                  : builder_.getInt1(false);
+      if (method == "sort") {
+        emit_call(module_->getFunction(rt::array_sort),
+                  {arrPtr, rev, ho_line, ho_col});
+        return make_nil();
+      }
+      auto out = emit_call(module_->getFunction(rt::array_sorted),
+                           {arrPtr, rev, ho_line, ho_col});
       return make_array(out);
     }
   }

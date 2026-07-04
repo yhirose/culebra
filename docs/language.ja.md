@@ -2964,6 +2964,8 @@ Array や String スカラーを回す場合は `for c in s { ... }`
 | `a.product() -> Long`                       | 全要素の積。全要素が `Long` である必要あり。空 → `1` |
 | `a.min() -> Long`                           | 最小値。全要素が `Long` である必要あり。空配列では例外 |
 | `a.max() -> Long`                           | 最大値。全要素が `Long` である必要あり。空配列では例外 |
+| `a.sort(reverse: Bool = false) -> Nil` *(破壊的)* | 自然順で in-place 安定ソート。要素は `<` と同じ規則で比較し、Object の `__lt__` / `cmp` を尊重する（`Path` 配列もソート可）。比較不能な要素は throw。キーワード専用 `reverse: true` で降順（安定のまま） |
+| `a.sorted(reverse: Bool = false) -> Array` | `sort` の非破壊版。新しいソート済み Array を返し、受け手は不変＝チェーン可（`xs.sorted().join(",")`）。`reverse: true` で安定降順 |
 | `a.sort_by(key: Function, reverse: Bool = false) -> Nil` *(破壊的)* | `key(x)` を比較キーとして昇順に in-place で安定ソート。`key` は 1 引数を受け取り、比較可能な値（`Long` / `String` / `Bool`）を返す必要あり。キーワード専用 `reverse: true` で降順（安定のまま） |
 | `a.sorted_by(key: Function, reverse: Bool = false) -> Array` | `sort_by` の非破壊版。新しいソート済み Array を返し、受け手は不変＝チェーン可（`xs.sorted_by(f).join(",")`）。`reverse: true` で安定降順 |
 

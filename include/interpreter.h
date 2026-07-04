@@ -3154,6 +3154,41 @@ inline bool _invoke_user_eq(const Value& a, const Value& b) {
   return fn.eval(env).to_bool();
 }
 
+// `a < b` honoring the same ordering dispatch as the `<` operator: an Object
+// with `__lt__` (or a Comparable `cmp`) drives its own ordering; otherwise the
+// primitive `Value::operator<` decides (throwing for incomparable operands).
+// Mirrors compare_values' `<` branch so keyless sort()/sorted() order Paths and
+// other user types exactly like `a < b` — the interp twin of the JIT's
+// culebra_runtime_value_less.
+inline Value _invoke_binary_method(const Value& receiver,
+                                   std::string_view method_name,
+                                   const Value& arg) {
+  const auto& fn = receiver.to_object().get(method_name).to_function();
+  auto env = _make_method_call_env(receiver, 0, 0);
+  if (!fn.params->empty()) env->initialize((*fn.params)[0].name, arg, false);
+  // A method body may `return` (raises ReturnValue) rather than fall off its
+  // last expression — catch it like _invoke_method_no_args.
+  try {
+    return fn.eval(env);
+  } catch (const ReturnValue& r) {
+    return r.value;
+  }
+}
+inline bool _ordering_less(const Value& a, const Value& b) {
+  if (a.type == Value::Object) {
+    const auto& oa = a.to_object();
+    if (oa.has("__lt__")) return _invoke_binary_method(a, "__lt__", b).to_bool();
+    if (oa.has("cmp")) {
+      // Comparable `cmp` must return a Long; a non-Long return falls through
+      // to the primitive compare, mirroring compare_values' try_cmp and the
+      // JIT's _special_cmp (so a contract-breaking cmp errors identically).
+      auto r = _invoke_binary_method(a, "cmp", b);
+      if (r.type == Value::Long) return r.template get<long>() < 0;
+    }
+  }
+  return a < b;
+}
+
 // --- @derive support (project_type_system.md §D) ----------------------
 //
 // `@derive(Eq, Hash, Show, Comparable)` is a compiler-recognized class
@@ -4352,6 +4387,41 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                              for (auto& [k, i] : keyed) {
                                out.values->push_back(vs[i]);
                              }
+                             return Value(std::move(out));
+                           }))},
+      // Keyless natural-order sort (in place, returns Nil). Elements compare
+      // by the same rule as `<` — an Object's __lt__/cmp is honored, so a Path
+      // array sorts; incomparable elements throw (like `a < b`).
+      {"sort"sv,
+       Value(FunctionValue({{"reverse", false, "Bool"sv, nullptr,
+                             kw_default_false(), true}},
+                           [](std::shared_ptr<Environment> callEnv) {
+                             auto& vs = *callEnv->get("this").to_array().values;
+                             bool reverse = callEnv->get("reverse").to_bool();
+                             std::stable_sort(
+                                 vs.begin(), vs.end(),
+                                 [reverse](const Value& a, const Value& b) {
+                                   return reverse ? _ordering_less(b, a)
+                                                  : _ordering_less(a, b);
+                                 });
+                             return Value();
+                           }))},
+      // Non-mutating twin of `sort`: returns a new sorted Array so it chains.
+      {"sorted"sv,
+       Value(FunctionValue({{"reverse", false, "Bool"sv, nullptr,
+                             kw_default_false(), true}},
+                           [](std::shared_ptr<Environment> callEnv) {
+                             const auto& vs =
+                                 *callEnv->get("this").to_array().values;
+                             bool reverse = callEnv->get("reverse").to_bool();
+                             ArrayValue out;
+                             out.values->assign(vs.begin(), vs.end());
+                             std::stable_sort(
+                                 out.values->begin(), out.values->end(),
+                                 [reverse](const Value& a, const Value& b) {
+                                   return reverse ? _ordering_less(b, a)
+                                                  : _ordering_less(a, b);
+                                 });
                              return Value(std::move(out));
                            }))},
       // Iterator protocol: yield elements in index order.

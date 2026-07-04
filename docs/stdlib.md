@@ -651,6 +651,12 @@ accepts a `String` or a `Path`. String interpolation (`"{p}"`) and
 | `p.walk()` | `Array<Path>` (recursive) | `FS.walk` |
 | `p.str()` | `String` (escape hatch) | — |
 
+Two `Path`s compare by their inner path string: `==` (also against a
+`String`) and `<` / `<=` / `>` / `>=`, so a `Path` array sorts
+(`paths.sorted()`) and works with `min` / `max` / `Set`. Ordering against a
+non-path is a `TypeError` (no meaningful answer), whereas `==` against a
+non-path is simply `false`.
+
 The `FS.*` helpers and `File.open` / `File.with` accept a `Path` anywhere
 they take a path — their path parameters are `String | Path` — so a `Path`
 flows straight through without `.str()`:

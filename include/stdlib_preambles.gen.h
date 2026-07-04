@@ -390,6 +390,13 @@ let _path_module = fn() {
       else if _is_path(o) { this._path == to_string(o) }
       else { false }
     }
+    # Order paths by their normalized inner string, so a Path array sorts and
+    # `<`/`<=`/`>`/`>=` work. `_s` coerces a String/StringView/Path to the raw
+    # path (and throws on anything else) — comparing against a non-path is a
+    # TypeError, not a silent false, since an ordering has no meaningful answer
+    # there. `<=`/`>`/`>=` fall out of `__lt__` + `__eq__` via the backends'
+    # comparison derivation. Raw (not resolved) to stay consistent with __eq__.
+    __lt__(o) { this._path < _s(o) }
 
     # --- joining: `base / "sub" / "leaf"` ---
     join(o) { Path.new(FS.join(this._path, _s(o))) }

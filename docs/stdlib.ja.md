@@ -626,6 +626,11 @@ for src in root.glob("*/content.src.js") {
 | `p.walk()` | `Array<Path>`（再帰） | `FS.walk` |
 | `p.str()` | `String`（エスケープハッチ） | — |
 
+2 つの `Path` は内部パス文字列で比較します: `==`（`String` 相手も可）と
+`<` / `<=` / `>` / `>=`。よって `Path` 配列はソート可能（`paths.sorted()`）で、
+`min` / `max` / `Set` でも使えます。非パスとの順序比較は `TypeError`（意味のある
+答えがないため）、一方 `==` の非パス相手は単に `false` です。
+
 `FS.*` ヘルパと `File.open` / `File.with` は、パスを取る所ならどこでも
 `Path` を受けます（パス引数の型は `String | Path`）。よって `Path` は
 `.str()` なしでそのまま流し込めます:

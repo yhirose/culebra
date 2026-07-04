@@ -1,0 +1,51 @@
+// Array.sort() / .sorted(): keyless natural-order sort. Elements order by the
+// same rule as `<` — an Object's __lt__ / cmp is honored — so incomparable
+// elements throw, just like `a < b`. `sort` mutates and returns Nil; `sorted`
+// returns a new Array (chains) and leaves the receiver untouched. Tested on
+// interp, JIT, and AOT via `just test`; identical stdout.
+
+// --- sorted: non-mutating, returns a new Array ---
+let xs = [3, 1, 2]
+assert_eq(xs.sorted(), [1, 2, 3])
+assert_eq(xs, [3, 1, 2])                       // receiver unchanged
+assert_eq(xs.sorted(reverse: true), [3, 2, 1])
+
+// --- sort: in place, returns Nil ---
+let ys = [3, 1, 2]
+assert_eq(ys.sort(), nil)
+assert_eq(ys, [1, 2, 3])
+ys.sort(reverse: true)
+assert_eq(ys, [3, 2, 1])
+
+// --- Strings order by byte order; Floats by value ---
+assert_eq(["bb", "a", "ccc"].sorted(), ["a", "bb", "ccc"])
+assert_eq([2.5, 1.5, 3.0].sorted(), [1.5, 2.5, 3.0])
+
+// --- stable (equal elements keep input order) ---
+assert_eq([[1, "a"], [1, "b"]].sorted_by(fn (p) { p[0] }),
+          [[1, "a"], [1, "b"]])
+
+// --- edge cases ---
+assert_eq([].sorted(), [])
+assert_eq([7].sorted(), [7])
+assert_eq([].sort(), nil)
+
+// --- chains ---
+assert_eq([3, 1, 2].sorted().join(","), "1,2,3")
+
+// --- Object with cmp (Comparable) orders by cmp; __lt__ takes precedence ---
+class Money { new(c) { this.c = c } cmp(o) { this.c - o.c } }
+assert_eq([Money.new(3), Money.new(1), Money.new(2)].sorted().map(fn (m) { m.c }),
+          [1, 2, 3])
+class Rank { new(n) { this.n = n } __lt__(o) { this.n < o.n } }
+assert_eq([Rank.new(2), Rank.new(1)].sorted().map(fn (r) { r.n }), [1, 2])
+
+// --- incomparable elements throw, like `a < b` ---
+let e = try { [1, "a"].sorted(); nil } catch e { e.kind }
+assert_eq(e, "TypeError")
+
+// --- extra positional arg is rejected (0 positional params) ---
+let e2 = try { [1, 2].sorted(1); nil } catch e { e.kind }
+assert_eq(e2, "TypeError")
+
+IO.puts("test_sort OK")

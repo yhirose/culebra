@@ -34,6 +34,20 @@ assert_eq(q == "/other", false)
 assert_eq(Path.new("42") == 42, false)
 assert_eq(p == 99, false)
 
+// --- ordering (by the normalized inner string, so Paths sort) ---
+assert_eq(Path.new("a") < Path.new("b"), true)
+assert_eq(Path.new("b") < Path.new("a"), false)
+assert_eq(Path.new("a") <= Path.new("a"), true)   // derived from __lt__ + __eq__
+assert_eq(Path.new("b") > Path.new("a"), true)
+assert_eq(Path.new("a") >= Path.new("b"), false)
+assert_eq(Path.new("a") < "b", true)              // String RHS via _s coercion
+// a Path array sorts (the point of the ordering) — dedup/min also follow
+assert_eq([Path.new("z"), Path.new("a"), Path.new("m")].sorted().map(fn (x) { x.str() }),
+          ["a", "m", "z"])
+// ordering against a non-PathLike is a TypeError (no meaningful answer),
+// unlike __eq__ which is simply not-equal
+assert_eq(try { Path.new("a") < 5; "" } catch e { e.kind }, "TypeError")
+
 // --- construction / join reject a non-PathLike (mirrors the FS.* contract) ---
 assert_eq(try { Path.new(42); "" } catch e { e.kind }, "TypeError")
 assert_eq(try { p / [1, 2]; "" } catch e { e.kind }, "TypeError")

@@ -55,6 +55,7 @@ inline const std::unordered_set<std::string_view>& builtin_method_names() {
       "remove",     "get",         "get_or_put", "map",        "filter",
       "reduce",     "for_each",    "find",
       "any",        "all",         "flat_map",   "sort_by",    "sorted_by",
+      "sort",       "sorted",
       "sum",        "product",     "min",        "max",        "collect",
       "count",      "take",        "skip",       "take_while", "chain",
       "zip",        "enumerate",   "code_points","graphemes",  "iter",
@@ -204,14 +205,15 @@ inline std::string current_executable_path() {
 }
 
 // Throw TypeError "takes N positional argument(s) but M given" when M
-// exceeds the cap. `cap < 0` means no `*` separator (no cap); `cap ==
-// 0` means a leading `*` (variadic via __ARGS__, no overflow error).
-// Shared by interp's bind_call_args, the JIT static kwargs resolver,
-// and the JIT dynamic-callee runtime guard — all three throw the same
-// shape.
+// exceeds the cap. `cap < 0` means no cap (no kw-only section, or a
+// `*args` catch-all that swallows overflow — callers pass -1 for both).
+// `cap == 0` is a real cap: the first param is keyword-only, so zero
+// positionals are accepted and any positional overflows. Shared by
+// interp's bind_call_args, the JIT static kwargs resolver, and the JIT
+// dynamic-callee runtime guard — all three throw the same shape.
 inline void throw_if_too_many_positionals(long cap, long n_pos,
                                            long line, long col) {
-  if (cap <= 0 || n_pos <= cap) return;
+  if (cap < 0 || n_pos <= cap) return;
   throw CulebraError("TypeError", std::format(
       "takes {} positional argument{} but {} given",
       cap, cap == 1 ? "" : "s", n_pos), line, col);
