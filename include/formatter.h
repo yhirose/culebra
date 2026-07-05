@@ -592,7 +592,12 @@ class Printer {
     };
     // A mid-item comment (between first and last token, brace depth 0) is one
     // the item's printer can't place; the item is emitted verbatim to keep it.
+    // A bare block (LEXICAL_SCOPE) is exempt: unlike keyword-led constructs its
+    // first token sits *inside* its own `{`, so a comment among its statements
+    // would read as brace-depth 0 — yet its printer (print_lexical_scope) places
+    // every interior comment, so verbatim would only corrupt it (double braces).
     auto has_mid_comment = [&](size_t k) {
+      if (items[k]->name == "LEXICAL_SCOPE") return false;
       for (const auto& c : comments_)
         if (head[k] < c.start && c.start < tail[k] &&
             brace_depth(head[k], c.start) == 0)
@@ -695,6 +700,23 @@ class Printer {
     auto stmts = stmt_children(body);
     return print_braced(stmts, after_pos, "", empty_ok,
                         [&](size_t k) { return print(*stmts[k]); });
+  }
+
+  // A bare `{ ... }` statement block. The optimizer keeps LEXICAL_SCOPE as a
+  // distinct node (a real variable scope), so it must always render braced —
+  // never shed its braces via the wrapper-collapse fallback. Its lone child is
+  // the STATEMENTS list (or a single collapsed statement); print that as a
+  // braced block. When a function/loop body is itself a single bare block, the
+  // enclosing BLOCK folds onto this LEXICAL_SCOPE (original_name=="BLOCK") — the
+  // fold is why the wrapper-collapse path used to strip the inner braces.
+  DocP print_lexical_scope(const peg::Ast& node) {
+    if (node.nodes.empty()) return doc_text("{}");
+    // node.position may point at an *enclosing* `{` that the optimizer folded
+    // onto this scope (a fn/loop body that is a single bare block), so scanning
+    // from it would locate the wrong brace and mis-attribute interior comments.
+    // The lone child's span is folded to start exactly at this scope's own `{`.
+    const peg::Ast& body = *node.nodes[0];
+    return print_block(body, body.position, /*empty_ok=*/true);
   }
 
   // Print `node` as an operand of a binary/unary context, parenthesizing when
@@ -1277,6 +1299,7 @@ class Printer {
 
     // Statements / control flow
     if (n == "STATEMENTS") return print_block(node, node.position, false);
+    if (n == "LEXICAL_SCOPE") return print_lexical_scope(node);
     if (n == "ASSIGNMENT") return print_assignment(node);
     if (n == "MULTIFN_DECL") return print_function(node, /*named=*/true);
     if (n == "FUNCTION") return print_function(node, /*named=*/false);

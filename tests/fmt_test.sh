@@ -49,6 +49,48 @@ if ! diff -u "$TMP/want.cul" "$TMP/got.cul" > "$TMP/diff" 2>&1; then
   fail=1
 fi
 
+# --- 1b. Golden fixture: bare lexical-scope blocks (LEXICAL_SCOPE) ---------
+# A `{ ... }` statement block nested inside a fn/loop body must keep its braces
+# and reformat its interior (comments included). The optimizer folds the
+# enclosing body's `{` onto the scope, which once made fmt strip the inner
+# braces (safety net refused) — see include/formatter.h print_lexical_scope.
+cat > "$TMP/blk_in.cul" <<'EOF'
+fn g() {
+  // before block
+  {
+    let r=1 // trailing
+    // standalone
+    let s=2
+  }
+}
+for i in 0..3 {
+  {
+    let a = i
+  }
+}
+EOF
+cat > "$TMP/blk_want.cul" <<'EOF'
+fn g() {
+  // before block
+  {
+    let r = 1  // trailing
+    // standalone
+    let s = 2
+  }
+}
+for i in 0..3 {
+  {
+    let a = i
+  }
+}
+EOF
+"$CULEBRA" fmt "$TMP/blk_in.cul" > "$TMP/blk_got.cul" 2>"$TMP/blk_err"
+if ! diff -u "$TMP/blk_want.cul" "$TMP/blk_got.cul" > "$TMP/blk_diff" 2>&1; then
+  echo "FAIL golden (bare block): formatted output differs from expected"
+  cat "$TMP/blk_diff"
+  fail=1
+fi
+
 # --- 2 + 3. Corpus safety + idempotency (parallel) ------------------------
 # Format every corpus file twice — once to check the re-parse/comment safety
 # net doesn't refuse (exit 2), once more to assert idempotency. The files are
