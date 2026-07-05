@@ -664,11 +664,15 @@ inline bool is_args_rest(const peg::Ast& node) {
   return node.tag == "ARGS_REST"_;
 }
 
-// A parameter written as a destructuring pattern (`fn ({a, b})`).
+// A destructuring pattern used as a binding target: `fn ({a, b})` params
+// and `for (k, v) in …` loop bindings both route through here. FOR_BINDING
+// (the multi-target `for k, v` node) has the same shape as a tuple pattern
+// and only ever appears as a loop binding, never in a real parameter list —
+// so recognizing it here classifies for-bindings without affecting params.
 inline bool is_pattern_param(const peg::Ast& node) {
   using namespace peg::udl;
   return node.tag == "OBJECT_PATTERN"_ || node.tag == "ARRAY_PATTERN"_ ||
-         node.tag == "TUPLE_PATTERN"_;
+         node.tag == "TUPLE_PATTERN"_ || node.tag == "FOR_BINDING"_;
 }
 
 // Stable synthetic names for destructured parameters (`fn ({a,b})` binds
@@ -1045,11 +1049,14 @@ inline const std::vector<std::string>& ast_optimizer_keep_rules() {
       "CLASS_DECL", "METHOD", "DECORATOR",
       "TRAIT_DECL", "TRAIT_METHOD", "TRAIT_BODY",
       "ENUM_DECL", "VARIANT",
-      // TUPLE_PATTERN is intentionally absent: a real tuple
-      // pattern always has >=2 children (grammar requires
-      // `'(' PATTERN ',' PATTERN ...`), so it is never collapsed
-      // anyway, while FOR_BINDING (which emits a TUPLE_PATTERN
-      // tag) must collapse to its lone child for single targets.
+      // TUPLE_PATTERN must be kept: the single-element form `(a,)`
+      // (grammar's `'(' PATTERN ',' ')'` alt) has exactly one child and
+      // would otherwise collapse onto its lone sub-pattern, losing the
+      // tuple tag. FOR_BINDING is deliberately NOT kept: it emits its own
+      // name and relies on the same single-child collapse for `for x in`
+      // (see grammar_def.h). The two used to share the TUPLE_PATTERN name
+      // — that collision is what made `(a,)` uncollapsible-yet-collapsed.
+      "TUPLE_PATTERN",
       "MATCH_ARMS", "GUARD", "COND", "COND_ARM",
       "ARRAY_PATTERN", "OBJECT_PATTERN",
       "CTOR_PATTERN",
@@ -1134,6 +1141,7 @@ inline void for_each_pattern_binding(const peg::Ast& pattern, F&& f) {
     }
     case "ARRAY_PATTERN"_:
     case "TUPLE_PATTERN"_:
+    case "FOR_BINDING"_:  // multi-target `for k, v in …` — same shape as a tuple
       for (auto& e : pattern.nodes) for_each_pattern_binding(*e, f);
       return;
     case "CTOR_PATTERN"_:

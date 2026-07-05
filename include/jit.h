@@ -16123,6 +16123,7 @@ struct JIT {
         return emit_array_pattern(pattern, subject, is_mut);
       case "OBJECT_PATTERN"_:
         return emit_object_pattern(pattern, subject, is_mut);
+      case "FOR_BINDING"_:  // multi-target `for k, v in …` — same shape as a tuple
       case "TUPLE_PATTERN"_:
         return emit_tuple_pattern(pattern, subject, is_mut);
     }

@@ -10,6 +10,13 @@ assert_eq(swap_pair((1, 2)), (2, 1))
 fn sum_pair([a, b]) { a + b }
 assert_eq(sum_pair([10, 20]), 30)
 
+// Single-element tuple pattern `(a,)`: the Ast optimizer used to collapse
+// this one-child node onto a bare identifier, so the param was mis-parsed
+// (segfault in both backends). It must bind the sole element, like `(a, b)`.
+fn first_of_one((a,)) { a }
+assert_eq(first_of_one((99,)), 99)
+assert_eq(first_of_one([7]), 7)  // a list unifies with the tuple pattern too
+
 // Mixed with normal params.
 fn scale(factor, {x, y}) { (factor * x, factor * y) }
 assert_eq(scale(2, {x: 1, y: 3}), (2, 6))

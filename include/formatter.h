@@ -300,8 +300,18 @@ inline bool scan_has_comment(std::string_view s) {
 // AST structural equality (safety net)
 // ----------------------------------------------------------------------------
 
+// A multi-target `for k, v` binding parses to a FOR_BINDING node; the
+// formatter renders it parenthesized (`for (k, v)`), which re-parses to a
+// TUPLE_PATTERN. The two names denote the same loop-target tuple and only
+// ever interchange in this for-binding context, so the safety net treats
+// them as equal rather than flagging a spurious meaning change.
+inline std::string_view normalized_pattern_name(std::string_view name) {
+  return name == "FOR_BINDING" ? std::string_view("TUPLE_PATTERN") : name;
+}
+
 inline bool ast_equal(const peg::Ast& a, const peg::Ast& b) {
-  if (a.name != b.name) return false;
+  if (normalized_pattern_name(a.name) != normalized_pattern_name(b.name))
+    return false;
   if (a.is_token != b.is_token) return false;
   if (a.is_token) return a.token == b.token;
   if (a.nodes.size() != b.nodes.size()) return false;
@@ -960,7 +970,9 @@ class Printer {
   // normalized comma spacing; leaf patterns (identifier, `_`, `name: Type`,
   // `Ctor(a)`, literals, `a | b` alternation) are sliced verbatim.
   DocP print_pattern(const peg::Ast& n) {
-    if (n.name == "TUPLE_PATTERN") {
+    // FOR_BINDING (multi-target `for k, v in …`) shares the tuple pattern's
+    // shape; render it parenthesized like a tuple (matching `for (k, v)`).
+    if (n.name == "TUPLE_PATTERN" || n.name == "FOR_BINDING") {
       std::vector<DocP> items;
       for (auto& c : n.nodes) items.push_back(print_pattern(*c));
       if (items.size() == 1)

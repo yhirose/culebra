@@ -6288,6 +6288,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         }
         return true;
       }
+      case "FOR_BINDING"_:  // multi-target `for k, v in …` — same shape as a tuple
       case "TUPLE_PATTERN"_: {
         // Same unification as ARRAY_PATTERN: bare `a, b` (which parses to a
         // TUPLE_PATTERN) matches a list too, not only a tuple.

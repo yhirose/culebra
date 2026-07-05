@@ -60,6 +60,12 @@ let (p, (q, r)) = (1, (2, 3))
 assert_eq(p, 1)
 assert_eq(q, 2)
 assert_eq(r, 3)
+// Single-element tuple pattern `(a,)` binds the lone element (used to
+// collapse to a bare identifier and bind the whole value / crash the JIT).
+let (solo,) = (42,)
+assert_eq(solo, 42)
+let (only,) = [5]  // a list unifies with the tuple pattern
+assert_eq(only, 5)
 // Match-arm tuple pattern.
 let kind = match (1, 2) {
   (0, 0) => "origin",

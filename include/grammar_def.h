@@ -210,13 +210,15 @@ const auto grammar_ = R"(
   WHILE                    <-  while _ EXPRESSION _ BLOCK
   # The loop variable may be a destructuring pattern. Bare comma-separated
   # targets `for k, v in obj` are sugar for a parenthesized tuple pattern
-  # `for (k, v) in obj`: FOR_BINDING emits a TUPLE_PATTERN tag, which the
-  # AST optimizer collapses to the lone child when there is only one
-  # target (so `for x in xs` / `for (a, b) in xs` are unchanged) and keeps
-  # as a real TUPLE_PATTERN node for two-or-more, reusing the existing
-  # tuple-destructure matcher in both backends.
+  # `for (k, v) in obj`. FOR_BINDING keeps its own node name (not
+  # TUPLE_PATTERN's — a single-element tuple pattern `(a,)` is a real
+  # TUPLE_PATTERN that must stay un-collapsed, so the two names can't be
+  # shared): the AST optimizer collapses FOR_BINDING to its lone child when
+  # there is only one target (so `for x in xs` binds a single name), and
+  # keeps it as a FOR_BINDING node for two-or-more. The pattern matcher in
+  # both backends treats FOR_BINDING identically to TUPLE_PATTERN.
   FOR                      <-  for _ FOR_BINDING _ in _ EXPRESSION _ BLOCK   { no_ast_opt }
-  FOR_BINDING              <-  FOR_PAT (_ ',' _ FOR_PAT)*   { ast_name: TUPLE_PATTERN }
+  FOR_BINDING              <-  FOR_PAT (_ ',' _ FOR_PAT)*
   FOR_PAT                  <-  TUPLE_PATTERN / ARRAY_PATTERN / OBJECT_PATTERN / IDENTIFIER
   IF                       <-  if _ EXPRESSION _ BLOCK (_ else _ if _ EXPRESSION _ BLOCK)* (_ else _ BLOCK)?
 
