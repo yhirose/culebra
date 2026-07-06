@@ -91,4 +91,4 @@ hi def link culStorage       StorageClass
 hi def link culType          Type
 hi def link culFuncCall      Function
 
-let b:current_syntax = "cul"
+let b:current_syntax = "culebra"
