@@ -131,7 +131,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-ccache-
 
-      - name: Check grammar sync (misc/culebra.peg and misc/cul.vim)
+      - name: Check grammar sync (misc/culebra.peg and misc/culebra.vim)
         run: just check-grammar-sync
 
       - name: Check stdlib preambles sync (src/preambles -> gen.h)

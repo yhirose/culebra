@@ -1,6 +1,6 @@
-# Keyword → cul.vim syntax category mapping for `just sync-grammar`.
+# Keyword → culebra.vim syntax category mapping for `just sync-grammar`.
 # Lines are `CATEGORY: KEYWORD KEYWORD ...` (or `#` for comments).
-# Categories appear in cul.vim in the same order as listed here.
+# Categories appear in culebra.vim in the same order as listed here.
 # When grammar grows a new K('xxx'), add it to the appropriate line;
 # sync_grammar.sh warns about any K() keyword missing from the map.
 
@@ -13,4 +13,4 @@ culInclude:     import export from
 culDebugger:    debugger
 culBoolean:     true false
 culConstant:    nil
-culStorage:     let mut static
+culStorage:     let mut static get

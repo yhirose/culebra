@@ -15,7 +15,7 @@
 // can't express, so it comes from a tiny external scanner (src/scanner.c).
 //
 // The keyword rules mirror misc/keyword-map.txt; keep them in step with the
-// language (the cul.vim / VSCode keyword lists are the other mirrors).
+// language (the culebra.vim / VSCode keyword lists are the other mirrors).
 
 // The shared code-token set, used both at top level and inside an
 // interpolation. Excludes a bare `{`/`}` — those only enter as a matched

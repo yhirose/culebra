@@ -1,4 +1,4 @@
-; Tree-sitter highlight queries for Culebra (Zed). Mirrors the cul.vim / VSCode
+; Tree-sitter highlight queries for Culebra (Zed). Mirrors the culebra.vim / VSCode
 ; TextMate scopes against the grammar in ../../tree-sitter-culebra.
 ;
 ; Precedence: a smaller (deeper) node wins for its own range, so an identifier

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Sync misc/culebra.peg and the AUTO-KEYWORDS blocks in the editor syntax files
-# (misc/vim/cul.vim, misc/vscode/syntaxes/culebra.tmLanguage.json) from
+# (misc/vim/culebra.vim, misc/vscode/syntaxes/culebra.tmLanguage.json) from
 # include/grammar_def.h (the single-source grammar; parser.h #includes it).
 # Run `misc/sync_grammar.sh` to overwrite the files;
 # `misc/sync_grammar.sh --check` exits non-zero if any is stale.
@@ -16,7 +16,7 @@ fi
 
 PARSER=include/grammar_def.h
 PEG=misc/culebra.peg
-VIM=misc/vim/cul.vim
+VIM=misc/vim/culebra.vim
 TM=misc/vscode/syntaxes/culebra.tmLanguage.json
 MAP=misc/keyword-map.txt
 
@@ -58,7 +58,7 @@ awk -F: '/^cul/{
   printf "syn keyword %-14s %s\n", cat, rest
 }' "$MAP" > "$TMP_VIM_BLOCK"
 
-# 5. Splice the new block into cul.vim between BEGIN/END markers.
+# 5. Splice the new block into culebra.vim between BEGIN/END markers.
 awk -v block_file="$TMP_VIM_BLOCK" '
   /^" === BEGIN AUTO-KEYWORDS/ {
     print
@@ -76,7 +76,7 @@ awk -v block_file="$TMP_VIM_BLOCK" '
 ' "$VIM" > "$TMP_VIM"
 
 # 6. Emit the VSCode TextMate keyword rules — one per category, mapping the
-#    cul.vim category to a TextMate scope. Each line carries a trailing comma;
+#    culebra.vim category to a TextMate scope. Each line carries a trailing comma;
 #    the never-matching `\b\B` end marker that follows is the array's last
 #    element, so the JSON stays valid.
 tm_scope() {

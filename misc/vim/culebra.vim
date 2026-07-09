@@ -52,7 +52,7 @@ syn keyword culInclude     import export from
 syn keyword culDebugger    debugger
 syn keyword culBoolean     true false
 syn keyword culConstant    nil
-syn keyword culStorage     let mut static
+syn keyword culStorage     let mut static get
 " === END AUTO-KEYWORDS ===
 
 " Conventional identifiers that aren't grammar keywords.
