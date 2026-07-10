@@ -500,11 +500,17 @@ int run_build(const BuildOptions& opts) {
     return 1;
   }
 
-  auto tmpdir = std::getenv("TMPDIR");
-  if (!tmpdir || !*tmpdir) tmpdir = "/tmp";
+  // Scratch object goes in the platform temp dir. temp_directory_path()
+  // honours TMPDIR/TMP/TEMP and falls back to /tmp on POSIX; on Windows it
+  // returns %TEMP% (a real, writable dir — the bare "/tmp" fallback used
+  // before doesn't exist there, so the object write failed).
+  std::error_code tmp_ec;
+  auto tmpdir = std::filesystem::temp_directory_path(tmp_ec);
+  if (tmp_ec) tmpdir = "/tmp";
   auto stem = std::filesystem::path(opts.output).filename().string();
-  auto obj = std::format("{}/{}.{}.o", tmpdir, stem,
-                         static_cast<unsigned>(::getpid()));
+  auto obj =
+      (tmpdir / std::format("{}.{}.o", stem, static_cast<unsigned>(::getpid())))
+          .string();
 
   bool verbose = std::getenv("CULEBRA_VERBOSE") != nullptr;
   if (verbose) std::println(stderr, "culebra build: object -> {}", obj);
@@ -611,7 +617,15 @@ int run_build(const BuildOptions& opts) {
   // Single-quote a path so $TMPDIR / paths with spaces survive verbatim through
   // std::system (validate_build_path rejects the quote char, so it can't escape).
   // Used by both the embedded-assets compile and the final link below.
+  // POSIX `system()` runs the command via /bin/sh (single-quote quoting);
+  // mingw `system()` runs it via cmd.exe, where single quotes are literal and
+  // double quotes are the quoting form. Pick per-platform so paths with spaces
+  // survive on both. (mingw g++ itself accepts forward-slash paths.)
+#ifdef _WIN32
+  auto shq = [](std::string_view s) { return std::format("\"{}\"", s); };
+#else
   auto shq = [](std::string_view s) { return std::format("'{}'", s); };
+#endif
 
   // --- Embedded assets: bake each `Embed.dir("...")` directory into an object
   // file linked alongside the program. The object reproduces the directory as a
@@ -690,10 +704,12 @@ int run_build(const BuildOptions& opts) {
         ti++;
       }
       src += "}\n";
-      auto acpp = std::format("{}/{}.assets.{}.cpp", tmpdir, stem,
-                              static_cast<unsigned>(::getpid()));
-      auto aobj = std::format("{}/{}.assets.{}.o", tmpdir, stem,
-                              static_cast<unsigned>(::getpid()));
+      auto acpp = (tmpdir / std::format("{}.assets.{}.cpp", stem,
+                                        static_cast<unsigned>(::getpid())))
+                      .string();
+      auto aobj = (tmpdir / std::format("{}.assets.{}.o", stem,
+                                        static_cast<unsigned>(::getpid())))
+                      .string();
       { std::ofstream(acpp) << src; }
       auto ccmd = std::format("c++ -std=c++23 -O2 -I {}/include -c {} -o {}",
                               shq(CULEBRA_SOURCE_DIR), shq(acpp), shq(aobj));
@@ -751,7 +767,15 @@ int run_build(const BuildOptions& opts) {
     return 1;
   }
 
+  // Link driver: `cc` on POSIX; on Windows the runtime archive is C++
+  // (libstdc++/exceptions), so drive the link with mingw `g++` to pull the
+  // right default libs. The produced .exe is statically linked (below) so it
+  // runs on a bare Windows like the interpreter build.
+#ifdef _WIN32
+  const char* cc = "g++";
+#else
   const char* cc = "cc";
+#endif
 
   // Link-DCE flag follows the *target* object format. LLVM's Triple
   // knows that "*-apple-*" is Mach-O and everything else is ELF;
@@ -871,10 +895,24 @@ int run_build(const BuildOptions& opts) {
   // Linux distros (Ubuntu, Fedora) configure their `cc` to link as a
   // PIE executable unconditionally, which then refuses the non-PIC
   // .o with `failed to set dynamic section sizes: bad value`.
-  // Force `-no-pie` on non-macOS to match the object's reloc model.
-  // (macOS clang/ld take the PIE choice from the .o; no override
-  // needed.)
+  // Force `-no-pie` on Linux to match the object's non-PIC reloc model
+  // (distros default `cc` to PIE, which rejects the non-PIC .o). macOS
+  // clang/ld take the PIE choice from the .o; Windows PE is always
+  // relocatable and mingw doesn't want `-no-pie` here.
+#ifdef _WIN32
+  const char* no_pie = "";
+  // Standalone .exe on a bare Windows (no mingw DLLs), matching the
+  // interpreter build's link flags. `-lstdc++exp` resolves C++23 std::print's
+  // __open_terminal / __write_to_terminal, which live in libstdc++exp (NOT in
+  // -static-libstdc++); the runtime archive's `culebra_runtime_print` uses
+  // std::print, so the AOT'd binary needs it too. Placed before the driver's
+  // implicit -lstdc++ so the experimental lib resolves against the base.
+  const char* win_static =
+      "-static -static-libgcc -static-libstdc++ -lstdc++exp";
+#else
   const char* no_pie = target_is_macho ? "" : "-no-pie";
+  const char* win_static = "";
+#endif
 
   std::string extra;
   if (cross) extra += std::format(" --target={}", shq(opts.target));
@@ -882,9 +920,9 @@ int run_build(const BuildOptions& opts) {
     extra += std::format(" --sysroot={}", shq(opts.sysroot));
 
   std::string cmd = std::format(
-      "{}{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} -o {}", cc, extra,
+      "{}{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} -o {}", cc, extra,
       shq(obj), assets_obj, shq(lib), tensor_lib, http_lib, compress_lib, sqlite_lib,
-      graphics_lib, webview_lib, wrap_lib, dead_strip, strip_syms, no_pie, libcxx, blas, ssl, zlib,
+      graphics_lib, webview_lib, wrap_lib, dead_strip, strip_syms, no_pie, win_static, libcxx, blas, ssl, zlib,
       sqlite_link, graphics_link, webview_link, wrap_link_flags, shq(opts.output));
 
   if (verbose) std::println(stderr, "culebra build: link: {}", cmd);
