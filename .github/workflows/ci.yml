@@ -484,7 +484,8 @@ jobs:
           print(P(9).v())'
 
       # EH JIT smoke — a throw must unwind through a defer and reach a catch,
-      # exercising the seh0 personality end to end in-process. Informative.
+      # exercising the seh0 personality end to end in-process (SEH unwind-table
+      # registration + near-image JIT memory + personality RVA fix-up). Informative.
       - name: Smoke — JIT exceptions (seh0 personality)
         run: |
           cat > jit_eh.cul <<'EOF'
@@ -494,18 +495,8 @@ jobs:
           print("done")
           EOF
           echo "=== culebra --jit jit_eh.cul ==="
-          if timeout 60 ./build-win-jit/culebra.exe --jit jit_eh.cul; then
-            echo "JIT_EH_PASS"
-          else
-            # KNOWN LIMITATION (informative, not a gate): in-process JIT
-            # exceptions don't yet unwind on Win64. A throw is raised correctly
-            # but the OS SEH unwinder can't walk the JIT'd frame — its .xdata
-            # personality is an image-relative 32-bit RVA and the JIT code sits
-            # >4GB from the runtime's personality. Needs near-image JIT memory
-            # placement (or AOT, whose static .o EH tables are in-image). Named
-            # functions / methods / recursion DO work under --jit on Win64.
-            echo "JIT_EH_FAIL rc=$? (known limitation: Win64 JIT unwind)"
-          fi
+          timeout 60 ./build-win-jit/culebra.exe --jit jit_eh.cul \
+            && echo "JIT_EH_PASS" || echo "JIT_EH_FAIL rc=$?"
 
   # Windows AOT (`culebra build`): stand up native single-.exe generation on
   # Win64. Unlike the JIT job this builds WITH the runtime archives embedded
