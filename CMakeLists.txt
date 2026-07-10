@@ -105,6 +105,13 @@ target_compile_definitions(culebra_sqlite3 PRIVATE
 # plain Windows box that lacks it.
 if(WIN32)
   set(ZLIB_USE_STATIC_LIBS ON)
+  # Pin the Windows API baseline on the command line so it is set before ANY
+  # header. mingw's <windows.h> locks _WIN32_WINNT to its (lower) default on the
+  # first windows-header inclusion in a TU, and that can happen (via winpthread
+  # etc.) before os_compat.h's #ifndef floor runs — leaving version-gated APIs
+  # like GetCurrentThreadStackLimits (conservative-GC stack_base, needs 0x0602)
+  # undeclared. Windows 10 (0x0A00) is the realistic floor.
+  add_compile_definitions(_WIN32_WINNT=0x0A00)
 endif()
 find_package(ZLIB REQUIRED)
 message(STATUS "Found ZLIB ${ZLIB_VERSION_STRING}")
@@ -225,7 +232,15 @@ if(CULEBRA_ENABLE_JIT)
   message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 
   include_directories(${LLVM_INCLUDE_DIRS})
-  add_definitions(${LLVM_DEFINITIONS})
+  # LLVM_DEFINITIONS is a single space-joined string on some toolchains (msys2
+  # mingw LLVM: "-D_GLIBCXX_USE_CXX11_ABI=1 -D_FILE_OFFSET_BITS=64 ..."). Passed
+  # straight to add_definitions() it becomes ONE -D, quoting the trailing flags
+  # into the first macro's value, so `#if _GLIBCXX_USE_CXX11_ABI` then sees
+  # "1 -D..." and every compile fails ("token '=' is not valid in preprocessor
+  # expressions"). Split into separate arguments first (a no-op on toolchains
+  # where it is already a clean list).
+  separate_arguments(_llvm_defs NATIVE_COMMAND "${LLVM_DEFINITIONS}")
+  add_definitions(${_llvm_defs})
 
   # Native target keeps the JIT lean. WebAssembly is bundled so the
   # docs-site WASM playground (see project-docs-site memory) can be
@@ -353,6 +368,19 @@ if(CULEBRA_ENABLE_JIT)
   # we link with -rdynamic. ENABLE_EXPORTS adds the right flag per
   # platform (no-op on macOS).
   set_target_properties(culebra PROPERTIES ENABLE_EXPORTS ON)
+  # ENABLE_EXPORTS is a no-op for a MinGW .exe, so GetProcAddress over this
+  # image (how ORC's process-symbol resolver works on Windows) finds nothing.
+  # --export-all-symbols is the Windows analog of -rdynamic, but exporting
+  # *everything* overflows the 65535-entry PE export table once LLVM's ~80k
+  # static symbols are counted ("export ordinal too large"). --exclude-libs ALL
+  # keeps static-lib symbols (LLVM, libstdc++, libgcc) out of the table, leaving
+  # just culebra's own runtime symbols exported — comfortably under the limit.
+  # The few EH entry points that live in the excluded static libs are supplied
+  # to the JIT separately as absolute symbols (JIT::define_windows_eh_symbols).
+  if(WIN32)
+    target_link_options(culebra PRIVATE
+      -Wl,--export-all-symbols -Wl,--exclude-libs,ALL)
+  endif()
 
   # `culebra wrap` rebuilds this tree with CULEBRA_WRAP_SOURCES; the
   # baked source path is the default when CULEBRA_HOME is unset.

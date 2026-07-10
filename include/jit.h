@@ -58,6 +58,22 @@
 #include <unordered_set>
 #include <vector>
 
+#ifdef _WIN32
+#include "llvm/ExecutionEngine/Orc/AbsoluteSymbols.h"  // orc::absoluteSymbols
+#include <cxxabi.h>  // __cxa_begin_catch / __cxa_end_catch / __cxa_rethrow
+// The mingw SEH personality has no public header; declare it to take its address
+// for the JIT's absolute-symbol map (see JIT::define_windows_eh_symbols).
+extern "C" int __gxx_personality_seh0(...);
+// libgcc's stack-probe helper. LLVM's X86 backend emits a call to `___chkstk_ms`
+// in the prologue of any JIT'd function whose frame exceeds one page (4 KB) — a
+// user method body reaches that once its args/ret-slot allocas add up — to touch
+// the guard pages before moving %rsp. Like the EH entry points it lives in
+// libgcc (excluded from export), so declare it to take its in-process address for
+// the absolute-symbol map. Its real ABI is nonstandard (size in %rax, preserves
+// all regs); this signature exists only to name the symbol for &-taking.
+extern "C" void ___chkstk_ms();
+#endif
+
 namespace culebra {
 
 // Object property layout description, V8/SpiderMonkey "hidden class"
@@ -477,9 +493,27 @@ inline constexpr size_t JIT_VARIADIC_ARITY = static_cast<size_t>(-1);
 // stack slab of user args and pass (cls, this, n_args, args_ptr); the
 // callee extracts its declared params from `args` and bundles any
 // overflow into the function-scope `__ARGS__` Array.
+// The result is returned through an explicit out-pointer (`__ret`), NOT as a
+// by-value 16-byte aggregate: for an INDIRECT call (through a closure fn_ptr)
+// LLVM's raw-IR aggregate return disagrees with the Win64 C ABI (which returns
+// a 16-byte struct via a hidden sret pointer), so a JIT→C++-thunk call would
+// mis-place every argument. A plain pointer is unambiguous on every target, so
+// the receiver `this` likewise crosses as two scalars (tag, data). See JitValue.
 using JitFn =
-    JitValue (*)(JitClosure*, JitValue /*this*/, int64_t /*n_args*/,
-                 JitValue* /*args*/);
+    void (*)(JitValue* /*__ret*/, JitClosure*, int8_t /*this_tag*/,
+             int64_t /*this_data*/, int64_t /*n_args*/, JitValue* /*args*/);
+
+// One place that hands a receiver to a closure's fn_ptr through the JitFn ABI
+// and recovers the result from the out-pointer. Callers own retain/release
+// around the call as before; this wraps the ABI hand-off (out-ptr return + the
+// two receiver scalars), so a future ABI tweak is a one-line change here.
+inline JitValue _jit_invoke(JitClosure* fn, JitValue recv, int64_t n_args,
+                            JitValue* args) {
+  JitValue __ret;
+  reinterpret_cast<JitFn>(fn->fn_ptr)(
+      &__ret, fn, static_cast<int8_t>(recv.tag), recv.data, n_args, args);
+  return __ret;
+}
 
 // Invocation helpers for the common runtime-callback arities. Each
 // packs its args into a stack array and hands them to the closure's
@@ -487,15 +521,15 @@ using JitFn =
 // is responsible for retaining each arg before handoff; the callee
 // frame takes over ownership on entry.
 inline JitValue _culebra_invoke0(JitClosure* fn) {
-  return reinterpret_cast<JitFn>(fn->fn_ptr)(fn, {0, 0}, 0, nullptr);
+  return _jit_invoke(fn, {0, 0} /*nil this*/, 0, nullptr);
 }
 inline JitValue _culebra_invoke1(JitClosure* fn, JitValue a) {
   JitValue args[1] = {a};
-  return reinterpret_cast<JitFn>(fn->fn_ptr)(fn, {0, 0}, 1, args);
+  return _jit_invoke(fn, {0, 0} /*nil this*/, 1, args);
 }
 inline JitValue _culebra_invoke2(JitClosure* fn, JitValue a, JitValue b) {
   JitValue args[2] = {a, b};
-  return reinterpret_cast<JitFn>(fn->fn_ptr)(fn, {0, 0}, 2, args);
+  return _jit_invoke(fn, {0, 0} /*nil this*/, 2, args);
 }
 
 // --- Cycle collector ---
@@ -2154,12 +2188,12 @@ inline JitValue _culebra_invoke_method1(JitClosure* cls, JitValue self,
   culebra_runtime_value_retain(self.tag, self.data);
   culebra_runtime_value_retain(arg.tag, arg.data);
   JitValue args[1] = {arg};
-  return reinterpret_cast<JitFn>(cls->fn_ptr)(cls, self, 1, args);
+  return _jit_invoke(cls, self, 1, args);
 }
 
 inline JitValue _culebra_invoke_method0(JitClosure* cls, JitValue self) {
   culebra_runtime_value_retain(self.tag, self.data);
-  return reinterpret_cast<JitFn>(cls->fn_ptr)(cls, self, 0, nullptr);
+  return _jit_invoke(cls, self, 0, nullptr);
 }
 
 inline JitValue _culebra_invoke_method2(JitClosure* cls, JitValue self,
@@ -2168,7 +2202,7 @@ inline JitValue _culebra_invoke_method2(JitClosure* cls, JitValue self,
   culebra_runtime_value_retain(a1.tag, a1.data);
   culebra_runtime_value_retain(a2.tag, a2.data);
   JitValue args[2] = {a1, a2};
-  return reinterpret_cast<JitFn>(cls->fn_ptr)(cls, self, 2, args);
+  return _jit_invoke(cls, self, 2, args);
 }
 
 // Resolve user-defined `hash()` on an Object (Hashable structural
@@ -3873,7 +3907,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_register_param_meta(
     void* fn_ptr, const JitParamMeta* meta);
 
 CULEBRA_RT_INLINE JitClosure* _jit_make_handle_method(
-    JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*), size_t arity,
+    void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*), size_t arity,
     const JitParamMeta* meta = nullptr) {
   _jit_register_native_fn(reinterpret_cast<const void*>(fn));
   auto* cls = new JitClosure();
@@ -3898,7 +3932,7 @@ CULEBRA_RT_INLINE JitClosure* _jit_make_handle_method(
 // drop / no-param methods pass nullptr.
 CULEBRA_RT_INLINE void _jit_handle_bind_method(
     JitObject* h, const char* name,
-    JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*), size_t ar,
+    void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*), size_t ar,
     const JitParamMeta* meta = nullptr) {
   h->set_or_append(name,
       JitValue{TAG_FUNC, reinterpret_cast<int64_t>(
@@ -3911,7 +3945,7 @@ CULEBRA_RT_INLINE void _jit_handle_bind_method(
 // here (not sendable_jit.h) so the FixedArray view, ODR-used from this file,
 // is fully defined where it is used.
 inline JitClosure* _jit_native_method(
-    JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*)) {
+    void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
   _jit_register_native_fn(reinterpret_cast<const void*>(fn));
   auto* c = new JitClosure();
   c->refcount = 1;
@@ -3928,7 +3962,7 @@ inline JitClosure* _jit_native_method(
 // builder (an immutable, borrowed function slot).
 inline void _jit_view_method(
     JitObject* o, const char* nm,
-    JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*)) {
+    void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
   o->set_or_append(
       nm, JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(fn))},
       false);
@@ -3949,17 +3983,20 @@ struct JitMethodSelf {
   JitValue v;
   ~JitMethodSelf() { culebra_runtime_value_release(v.tag, v.data); }
 };
-inline JitValue _jit_fa_size(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_fa_size(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
-  return {TAG_LONG, _jit_fa_len(reinterpret_cast<JitObject*>(self.data))};
+  { *__ret = {TAG_LONG, _jit_fa_len(reinterpret_cast<JitObject*>(self.data))}; return; }
 }
-inline JitValue _jit_fa_capacity(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_fa_capacity(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   _jit_fa_core(reinterpret_cast<JitObject*>(self.data));  // dropped-buffer check
-  return {TAG_LONG, _jit_fa_self_long(self, "__fa_cap__")};
+  { *__ret = {TAG_LONG, _jit_fa_self_long(self, "__fa_cap__")}; return; }
 }
-inline JitValue _jit_fa_push(JitClosure*, JitValue self, int64_t n,
+inline void _jit_fa_push(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                              JitValue* args) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* v = reinterpret_cast<JitObject*>(self.data);
   auto core = _jit_fa_core(v);
@@ -3973,43 +4010,49 @@ inline JitValue _jit_fa_push(JitClosure*, JitValue self, int64_t n,
                               args[0].tag, args[0].data);
   int32_t nl = static_cast<int32_t>(len + 1);
   std::memcpy(core->data + _jit_fa_field_long(v, "__fa_off__"), &nl, 4);
-  return {TAG_NIL, 0};
+  { *__ret = {TAG_NIL, 0}; return; }
 }
-inline JitValue _jit_fa_get_m(JitClosure*, JitValue self, int64_t n,
+inline void _jit_fa_get_m(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                               JitValue* args) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
-  return _jit_fa_get(reinterpret_cast<JitObject*>(self.data),
-                     n >= 1 ? _jit_fa_arg_index(args[0]) : 0);
+  { *__ret = _jit_fa_get(reinterpret_cast<JitObject*>(self.data),
+                     n >= 1 ? _jit_fa_arg_index(args[0]) : 0); return; }
 }
-inline JitValue _jit_fa_set_m(JitClosure*, JitValue self, int64_t n,
+inline void _jit_fa_set_m(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                               JitValue* args) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   if (n >= 2)
     _jit_fa_set(reinterpret_cast<JitObject*>(self.data),
                 _jit_fa_arg_index(args[0]), args[1].tag, args[1].data);
-  return {TAG_NIL, 0};
+  { *__ret = {TAG_NIL, 0}; return; }
 }
-inline JitValue _jit_fa_iter_self(JitClosure*, JitValue self, int64_t,
+inline void _jit_fa_iter_self(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                   JitValue*) {
+  JitValue self{self_tag, self_data};
   culebra_runtime_value_retain(self.tag, self.data);
-  return self;
+  { *__ret = self; return; }
 }
-inline JitValue _jit_fa_iter_has_next(JitClosure*, JitValue self, int64_t,
+inline void _jit_fa_iter_has_next(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                       JitValue*) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* it = reinterpret_cast<JitObject*>(self.data);
-  return {TAG_BOOL, _jit_fa_self_long(self, "_pos") < _jit_fa_len(it) ? 1 : 0};
+  { *__ret = {TAG_BOOL, _jit_fa_self_long(self, "_pos") < _jit_fa_len(it) ? 1 : 0}; return; }
 }
-inline JitValue _jit_fa_iter_next(JitClosure*, JitValue self, int64_t,
+inline void _jit_fa_iter_next(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                   JitValue*) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* it = reinterpret_cast<JitObject*>(self.data);
   long pos = _jit_fa_self_long(self, "_pos");
   JitValue r = _jit_fa_get(it, pos);
   it->set_or_append("_pos", JitValue{TAG_LONG, pos + 1}, true);
-  return r;
+  { *__ret = r; return; }
 }
-inline JitValue _jit_fa_iter(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_fa_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* v = reinterpret_cast<JitObject*>(self.data);
   auto* it = culebra_runtime_object_new();
@@ -4018,13 +4061,13 @@ inline JitValue _jit_fa_iter(JitClosure*, JitValue self, int64_t, JitValue*) {
     it->set_or_append(k, JitValue{TAG_LONG, _jit_fa_field_long(v, k)}, false);
   it->set_or_append("_pos", JitValue{TAG_LONG, 0}, true);
   auto meth = [&](const char* nm,
-                  JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*)) {
+                  void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
     _jit_view_method(it, nm, f);
   };
   meth("iter", _jit_fa_iter_self);
   meth("has_next", _jit_fa_iter_has_next);
   meth("next", _jit_fa_iter_next);
-  return {TAG_OBJECT, reinterpret_cast<int64_t>(it)};
+  { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
 inline JitValue _jit_make_fixed_array_view(long id, long abs_off,
                                            const culebra::PackableField& f) {
@@ -4037,7 +4080,7 @@ inline JitValue _jit_make_fixed_array_view(long id, long abs_off,
   h->set_or_append("__fa_esize__", JitValue{TAG_LONG, static_cast<long>(f.elem_size)}, false);
   h->set_or_append("__fa_ecode__", JitValue{TAG_LONG, culebra::packable_scalar_code(f.elem_type)}, false);
   auto meth = [&](const char* nm,
-                  JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*)) {
+                  void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
     _jit_view_method(h, nm, fn);
   };
   meth("size", _jit_fa_size);
@@ -4088,18 +4131,21 @@ inline long _jit_fs_encode(JitObject* v, int8_t tag, int64_t data, uint8_t* out)
   _jit_packable_write_field(out, _jit_fs_elem_field(v), tag, data);
   return _jit_fs_long(v, "__fs_esize__");
 }
-inline JitValue _jit_fs_size(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_fs_size(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
-  return {TAG_LONG, _jit_fs_count(reinterpret_cast<JitObject*>(self.data))};
+  { *__ret = {TAG_LONG, _jit_fs_count(reinterpret_cast<JitObject*>(self.data))}; return; }
 }
-inline JitValue _jit_fs_capacity(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_fs_capacity(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* v = reinterpret_cast<JitObject*>(self.data);
   _jit_fs_core(v);  // dropped-buffer check
-  return {TAG_LONG, _jit_fs_long(v, "__fs_cap__")};
+  { *__ret = {TAG_LONG, _jit_fs_long(v, "__fs_cap__")}; return; }
 }
-inline JitValue _jit_fs_contains(JitClosure*, JitValue self, int64_t n,
+inline void _jit_fs_contains(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                                  JitValue* args) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* v = reinterpret_cast<JitObject*>(self.data);
   uint8_t key[8];
@@ -4107,10 +4153,11 @@ inline JitValue _jit_fs_contains(JitClosure*, JitValue self, int64_t n,
   long cap = _jit_fs_long(v, "__fs_cap__");
   long slot = culebra::fixed_probe(_jit_fs_states(v), _jit_fs_vals(v), cap,
                                    esize, esize, key, nullptr);
-  return {TAG_BOOL, slot >= 0 ? 1 : 0};
+  { *__ret = {TAG_BOOL, slot >= 0 ? 1 : 0}; return; }
 }
-inline JitValue _jit_fs_add(JitClosure*, JitValue self, int64_t n,
+inline void _jit_fs_add(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                             JitValue* args) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* v = reinterpret_cast<JitObject*>(self.data);
   uint8_t key[8];
@@ -4119,17 +4166,18 @@ inline JitValue _jit_fs_add(JitClosure*, JitValue self, int64_t n,
   long insert = -1;
   long slot = culebra::fixed_probe(_jit_fs_states(v), _jit_fs_vals(v), cap,
                                    esize, esize, key, &insert);
-  if (slot >= 0) return {TAG_NIL, 0};
+  if (slot >= 0) { *__ret = {TAG_NIL, 0}; return; }
   if (insert < 0)
     throw culebra::CulebraError(
         "CapacityError", std::format("FixedSet is full (capacity {})", cap));
   std::memcpy(_jit_fs_vals(v) + insert * esize, key, esize);
   _jit_fs_states(v)[insert] = culebra::kFixedFull;
   _jit_fs_set_count(v, _jit_fs_count(v) + 1);
-  return {TAG_NIL, 0};
+  { *__ret = {TAG_NIL, 0}; return; }
 }
-inline JitValue _jit_fs_remove(JitClosure*, JitValue self, int64_t n,
+inline void _jit_fs_remove(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                                JitValue* args) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* v = reinterpret_cast<JitObject*>(self.data);
   uint8_t key[8];
@@ -4137,10 +4185,10 @@ inline JitValue _jit_fs_remove(JitClosure*, JitValue self, int64_t n,
   long cap = _jit_fs_long(v, "__fs_cap__");
   long slot = culebra::fixed_probe(_jit_fs_states(v), _jit_fs_vals(v), cap,
                                    esize, esize, key, nullptr);
-  if (slot < 0) return {TAG_BOOL, 0};
+  if (slot < 0) { *__ret = {TAG_BOOL, 0}; return; }
   _jit_fs_states(v)[slot] = culebra::kFixedTomb;
   _jit_fs_set_count(v, _jit_fs_count(v) - 1);
-  return {TAG_BOOL, 1};
+  { *__ret = {TAG_BOOL, 1}; return; }
 }
 inline long _jit_fs_next_full(JitObject* it, long from) {
   long cap = _jit_fs_long(it, "__fs_cap__");
@@ -4149,15 +4197,17 @@ inline long _jit_fs_next_full(JitObject* it, long from) {
     if (st[i] == culebra::kFixedFull) return i;
   return cap;
 }
-inline JitValue _jit_fs_iter_has_next(JitClosure*, JitValue self, int64_t,
+inline void _jit_fs_iter_has_next(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                       JitValue*) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* it = reinterpret_cast<JitObject*>(self.data);
-  return {TAG_BOOL, _jit_fs_next_full(it, _jit_fs_long(it, "_pos")) <
-                            _jit_fs_long(it, "__fs_cap__") ? 1 : 0};
+  { *__ret = {TAG_BOOL, _jit_fs_next_full(it, _jit_fs_long(it, "_pos")) <
+                            _jit_fs_long(it, "__fs_cap__") ? 1 : 0}; return; }
 }
-inline JitValue _jit_fs_iter_next(JitClosure*, JitValue self, int64_t,
+inline void _jit_fs_iter_next(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                   JitValue*) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* it = reinterpret_cast<JitObject*>(self.data);
   long idx = _jit_fs_next_full(it, _jit_fs_long(it, "_pos"));
@@ -4165,9 +4215,10 @@ inline JitValue _jit_fs_iter_next(JitClosure*, JitValue self, int64_t,
       _jit_fs_vals(it) + idx * _jit_fs_long(it, "__fs_esize__"),
       _jit_fs_elem_field(it));
   it->set_or_append("_pos", JitValue{TAG_LONG, idx + 1}, true);
-  return r;
+  { *__ret = r; return; }
 }
-inline JitValue _jit_fs_iter(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_fs_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* v = reinterpret_cast<JitObject*>(self.data);
   auto* it = culebra_runtime_object_new();
@@ -4176,13 +4227,13 @@ inline JitValue _jit_fs_iter(JitClosure*, JitValue self, int64_t, JitValue*) {
     it->set_or_append(k, JitValue{TAG_LONG, _jit_fs_long(v, k)}, false);
   it->set_or_append("_pos", JitValue{TAG_LONG, 0}, true);
   auto meth = [&](const char* nm,
-                  JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*)) {
+                  void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
     _jit_view_method(it, nm, f);
   };
   meth("iter", _jit_fa_iter_self);
   meth("has_next", _jit_fs_iter_has_next);
   meth("next", _jit_fs_iter_next);
-  return {TAG_OBJECT, reinterpret_cast<int64_t>(it)};
+  { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
 inline JitValue _jit_make_fixed_set_view(long id, long abs_off,
                                          const culebra::PackableField& f) {
@@ -4194,7 +4245,7 @@ inline JitValue _jit_make_fixed_set_view(long id, long abs_off,
   h->set_or_append("__fs_esize__", JitValue{TAG_LONG, static_cast<long>(f.elem_size)}, false);
   h->set_or_append("__fs_ecode__", JitValue{TAG_LONG, culebra::packable_scalar_code(f.elem_type)}, false);
   auto meth = [&](const char* nm,
-                  JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*)) {
+                  void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
     _jit_view_method(h, nm, fn);
   };
   meth("size", _jit_fs_size);
@@ -4246,15 +4297,17 @@ inline long _jit_fm_enc_key(JitObject* v, int8_t tag, int64_t data,
   _jit_packable_write_field(out, _jit_fm_field(v, "__fm_kcode__"), tag, data);
   return _jit_fm_long(v, "__fm_ksize__");
 }
-inline JitValue _jit_fm_size(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_fm_size(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
-  return {TAG_LONG, _jit_fm_count(reinterpret_cast<JitObject*>(self.data))};
+  { *__ret = {TAG_LONG, _jit_fm_count(reinterpret_cast<JitObject*>(self.data))}; return; }
 }
-inline JitValue _jit_fm_capacity(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_fm_capacity(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* v = reinterpret_cast<JitObject*>(self.data);
   _jit_fm_core(v);
-  return {TAG_LONG, _jit_fm_long(v, "__fm_cap__")};
+  { *__ret = {TAG_LONG, _jit_fm_long(v, "__fm_cap__")}; return; }
 }
 inline long _jit_fm_find(JitObject* v, int8_t tag, int64_t data, long* insert) {
   uint8_t key[8];
@@ -4263,24 +4316,27 @@ inline long _jit_fm_find(JitObject* v, int8_t tag, int64_t data, long* insert) {
   return culebra::fixed_probe(_jit_fm_states(v), _jit_fm_keys(v), cap, ksize,
                               ksize, key, insert);
 }
-inline JitValue _jit_fm_contains(JitClosure*, JitValue self, int64_t n,
+inline void _jit_fm_contains(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                                  JitValue* args) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* v = reinterpret_cast<JitObject*>(self.data);
-  return {TAG_BOOL, _jit_fm_find(v, args[0].tag, args[0].data, nullptr) >= 0 ? 1 : 0};
+  { *__ret = {TAG_BOOL, _jit_fm_find(v, args[0].tag, args[0].data, nullptr) >= 0 ? 1 : 0}; return; }
 }
-inline JitValue _jit_fm_get(JitClosure*, JitValue self, int64_t n,
+inline void _jit_fm_get(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                             JitValue* args) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* v = reinterpret_cast<JitObject*>(self.data);
   long slot = _jit_fm_find(v, args[0].tag, args[0].data, nullptr);
-  if (slot < 0) return {TAG_NIL, 0};
-  return _jit_packable_read_field(
+  if (slot < 0) { *__ret = {TAG_NIL, 0}; return; }
+  { *__ret = _jit_packable_read_field(
       _jit_fm_vals(v) + slot * _jit_fm_long(v, "__fm_vsize__"),
-      _jit_fm_field(v, "__fm_vcode__"));
+      _jit_fm_field(v, "__fm_vcode__")); return; }
 }
-inline JitValue _jit_fm_set(JitClosure*, JitValue self, int64_t n,
+inline void _jit_fm_set(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                             JitValue* args) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* v = reinterpret_cast<JitObject*>(self.data);
   uint8_t key[8];
@@ -4301,19 +4357,21 @@ inline JitValue _jit_fm_set(JitClosure*, JitValue self, int64_t n,
   _jit_packable_write_field(
       _jit_fm_vals(v) + slot * _jit_fm_long(v, "__fm_vsize__"),
       _jit_fm_field(v, "__fm_vcode__"), args[1].tag, args[1].data);
-  return {TAG_NIL, 0};
+  { *__ret = {TAG_NIL, 0}; return; }
 }
-inline JitValue _jit_fm_remove(JitClosure*, JitValue self, int64_t n,
+inline void _jit_fm_remove(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                                JitValue* args) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* v = reinterpret_cast<JitObject*>(self.data);
   long slot = _jit_fm_find(v, args[0].tag, args[0].data, nullptr);
-  if (slot < 0) return {TAG_BOOL, 0};
+  if (slot < 0) { *__ret = {TAG_BOOL, 0}; return; }
   _jit_fm_states(v)[slot] = culebra::kFixedTomb;
   _jit_fm_set_count(v, _jit_fm_count(v) - 1);
-  return {TAG_BOOL, 1};
+  { *__ret = {TAG_BOOL, 1}; return; }
 }
-inline JitValue _jit_fm_keys_m(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_fm_keys_m(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* v = reinterpret_cast<JitObject*>(self.data);
   long cap = _jit_fm_long(v, "__fm_cap__");
@@ -4326,7 +4384,7 @@ inline JitValue _jit_fm_keys_m(JitClosure*, JitValue self, int64_t, JitValue*) {
                                             _jit_fm_field(v, "__fm_kcode__"));
       culebra_runtime_array_push(arr, k.tag, k.data);
     }
-  return {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
+  { *__ret = {TAG_ARRAY, reinterpret_cast<int64_t>(arr)}; return; }
 }
 inline long _jit_fm_next_full(JitObject* it, long from) {
   long cap = _jit_fm_long(it, "__fm_cap__");
@@ -4335,15 +4393,17 @@ inline long _jit_fm_next_full(JitObject* it, long from) {
     if (st[i] == culebra::kFixedFull) return i;
   return cap;
 }
-inline JitValue _jit_fm_iter_has_next(JitClosure*, JitValue self, int64_t,
+inline void _jit_fm_iter_has_next(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                       JitValue*) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* it = reinterpret_cast<JitObject*>(self.data);
-  return {TAG_BOOL, _jit_fm_next_full(it, _jit_fm_long(it, "_pos")) <
-                            _jit_fm_long(it, "__fm_cap__") ? 1 : 0};
+  { *__ret = {TAG_BOOL, _jit_fm_next_full(it, _jit_fm_long(it, "_pos")) <
+                            _jit_fm_long(it, "__fm_cap__") ? 1 : 0}; return; }
 }
-inline JitValue _jit_fm_iter_next(JitClosure*, JitValue self, int64_t,
+inline void _jit_fm_iter_next(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                   JitValue*) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* it = reinterpret_cast<JitObject*>(self.data);
   long idx = _jit_fm_next_full(it, _jit_fm_long(it, "_pos"));
@@ -4357,9 +4417,10 @@ inline JitValue _jit_fm_iter_next(JitClosure*, JitValue self, int64_t,
   culebra_runtime_tuple_push(tup, k.tag, k.data);
   culebra_runtime_tuple_push(tup, val.tag, val.data);
   it->set_or_append("_pos", JitValue{TAG_LONG, idx + 1}, true);
-  return {TAG_TUPLE, reinterpret_cast<int64_t>(tup)};
+  { *__ret = {TAG_TUPLE, reinterpret_cast<int64_t>(tup)}; return; }
 }
-inline JitValue _jit_fm_iter(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_fm_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* v = reinterpret_cast<JitObject*>(self.data);
   auto* it = culebra_runtime_object_new();
@@ -4369,13 +4430,13 @@ inline JitValue _jit_fm_iter(JitClosure*, JitValue self, int64_t, JitValue*) {
     it->set_or_append(k, JitValue{TAG_LONG, _jit_fm_long(v, k)}, false);
   it->set_or_append("_pos", JitValue{TAG_LONG, 0}, true);
   auto meth = [&](const char* nm,
-                  JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*)) {
+                  void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
     _jit_view_method(it, nm, f);
   };
   meth("iter", _jit_fa_iter_self);
   meth("has_next", _jit_fm_iter_has_next);
   meth("next", _jit_fm_iter_next);
-  return {TAG_OBJECT, reinterpret_cast<int64_t>(it)};
+  { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
 inline JitValue _jit_make_fixed_map_view(long id, long abs_off,
                                          const culebra::PackableField& f) {
@@ -4390,7 +4451,7 @@ inline JitValue _jit_make_fixed_map_view(long id, long abs_off,
   h->set_or_append("__fm_kcode__", JitValue{TAG_LONG, culebra::packable_scalar_code(f.elem_type)}, false);
   h->set_or_append("__fm_vcode__", JitValue{TAG_LONG, culebra::packable_scalar_code(f.val_type)}, false);
   auto meth = [&](const char* nm,
-                  JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*)) {
+                  void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
     _jit_view_method(h, nm, fn);
   };
   meth("size", _jit_fm_size);
@@ -5251,8 +5312,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
     // otherwise stranded — release it before rethrowing to the caller.
     culebra_runtime_value_retain(this_val.tag, this_val.data);
     try {
-      auto result = reinterpret_cast<JitFn>(body_cls->fn_ptr)(
-          body_cls, this_val, n_args, args);
+      auto result = _jit_invoke(body_cls, this_val, n_args, args);
       _culebra_value_release_impl(result.tag, result.data);
     } catch (...) {
       _culebra_value_release_impl(TAG_OBJECT,
@@ -5444,15 +5504,16 @@ _jit_variant_ctor_info() {
 // JitFn-ABI shared thunk installed as `fn_ptr` on every payload-variant
 // constructor closure. Recovers the variant/enum names from the side
 // table and builds the instance from the call args.
-inline JitValue _jit_variant_ctor_thunk(JitClosure* cls, JitValue /*this*/,
-                                         int64_t n_args, JitValue* args) {
+inline void _jit_variant_ctor_thunk(JitValue* __ret, JitClosure* cls, int8_t /*this_tag*/,
+                                         int64_t /*this_data*/, int64_t n_args,
+                                         JitValue* args) {
   auto& info = _jit_variant_ctor_info();
   auto it = info.find(cls);
-  if (it == info.end()) return {TAG_NIL, 0};
-  return culebra_runtime_build_variant(
+  if (it == info.end()) { *__ret = {TAG_NIL, 0}; return; }
+  { *__ret = culebra_runtime_build_variant(
       _intern_str(it->second.first), _intern_str(it->second.second), n_args,
       args, static_cast<int64_t>(cls->arity), _jit_call_site_line,
-      _jit_call_site_col);
+      _jit_call_site_col); return; }
 }
 
 // Create a payload-variant constructor closure (`Result.Ok`): a closure
@@ -5600,31 +5661,35 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_derived_cmp(
 }
 
 // JitFn-ABI thunks installed as `fn_ptr` on each derived-method closure.
-inline JitValue _jit_derived_eq_thunk(JitClosure*, JitValue self, int64_t n,
+inline void _jit_derived_eq_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                                        JitValue* args) {
-  if (self.tag != TAG_OBJECT || n < 1) return {TAG_BOOL, 0};
-  return culebra_runtime_derived_eq(reinterpret_cast<JitObject*>(self.data),
-                                     args[0]);
+  JitValue self{self_tag, self_data};
+  if (self.tag != TAG_OBJECT || n < 1) { *__ret = {TAG_BOOL, 0}; return; }
+  { *__ret = culebra_runtime_derived_eq(reinterpret_cast<JitObject*>(self.data),
+                                     args[0]); return; }
 }
-inline JitValue _jit_derived_hash_thunk(JitClosure*, JitValue self, int64_t,
+inline void _jit_derived_hash_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                          JitValue*) {
-  if (self.tag != TAG_OBJECT) return {TAG_LONG, 0};
-  return {TAG_LONG, culebra_runtime_derived_hash(
-                        reinterpret_cast<JitObject*>(self.data))};
+  JitValue self{self_tag, self_data};
+  if (self.tag != TAG_OBJECT) { *__ret = {TAG_LONG, 0}; return; }
+  { *__ret = {TAG_LONG, culebra_runtime_derived_hash(
+                        reinterpret_cast<JitObject*>(self.data))}; return; }
 }
-inline JitValue _jit_derived_show_thunk(JitClosure*, JitValue self, int64_t,
+inline void _jit_derived_show_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                          JitValue*) {
+  JitValue self{self_tag, self_data};
   const char* s = (self.tag == TAG_OBJECT)
                       ? culebra_runtime_derived_show(
                             reinterpret_cast<JitObject*>(self.data))
                       : _culebra_heap_str("");
-  return {TAG_STRING, reinterpret_cast<int64_t>(s)};
+  { *__ret = {TAG_STRING, reinterpret_cast<int64_t>(s)}; return; }
 }
-inline JitValue _jit_derived_cmp_thunk(JitClosure*, JitValue self, int64_t n,
+inline void _jit_derived_cmp_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                                         JitValue* args) {
-  if (self.tag != TAG_OBJECT || n < 1) return {TAG_LONG, 0};
-  return {TAG_LONG, culebra_runtime_derived_cmp(
-                        reinterpret_cast<JitObject*>(self.data), args[0])};
+  JitValue self{self_tag, self_data};
+  if (self.tag != TAG_OBJECT || n < 1) { *__ret = {TAG_LONG, 0}; return; }
+  { *__ret = {TAG_LONG, culebra_runtime_derived_cmp(
+                        reinterpret_cast<JitObject*>(self.data), args[0])}; return; }
 }
 
 // Build a derived-method closure. `kind`: 0=eq, 1=hash, 2=show, 3=cmp.
@@ -5962,7 +6027,7 @@ _jit_multifn_dispatcher_names() {
 // receiver tag is TAG_FUNC.
 // Bound-method trampoline address (defined below): a method read as a value
 // captures its receiver in a wrapper closure whose fn_ptr is this thunk.
-CULEBRA_RT_INLINE JitValue _jit_bound_method_thunk(JitClosure*, JitValue,
+CULEBRA_RT_INLINE void _jit_bound_method_thunk(JitValue* __ret, JitClosure*, int8_t, int64_t,
                                                    int64_t, JitValue*);
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue
@@ -6057,8 +6122,8 @@ inline void _gc_push_value(std::vector<void*>& out, const JitValue& v) {
 
 // extern "C" to match the definition's linkage (we sit in an extern "C++"
 // island; the thunk itself lives in the surrounding extern "C" block).
-extern "C" JitValue _jit_multifn_dispatcher_thunk(JitClosure*, JitValue,
-                                                  int64_t, JitValue*);
+extern "C" void _jit_multifn_dispatcher_thunk(JitValue*, JitClosure*, int8_t,
+                                              int64_t, int64_t, JitValue*);
 
 // A `fn name` dispatcher shares the one dispatch thunk; its overloads live in
 // the thread_local `_jit_multimethods()` table, keyed by name. The table is
@@ -6346,17 +6411,17 @@ inline MultifnPick _jit_multifn_resolve(
 // `culebra_runtime_call_with_kwargs` to intercept the kwargs path) is
 // resolved through `_jit_multifn_dispatcher_names()` to recover the
 // multimethod name, then dispatched via `_jit_multifn_resolve`.
-inline JitValue _jit_multifn_dispatcher_thunk(JitClosure* cls,
-                                              JitValue this_val,
-                                              int64_t n_args,
-                                              JitValue* args) {
+inline void _jit_multifn_dispatcher_thunk(JitValue* __ret, JitClosure* cls,
+                                          int8_t this_val_tag,
+                                          int64_t this_val_data,
+                                          int64_t n_args, JitValue* args) {
+  JitValue this_val{this_val_tag, this_val_data};
   auto picked = _jit_multifn_resolve(cls, args, n_args,
                                      _jit_call_site_line, _jit_call_site_col);
   // Forward `this_val` to the picked body. For a free-function dispatcher the
   // call site passes nil and the body ignores it; for a class method-overload
   // dispatcher it carries the receiver, so the picked overload sees `this`.
-  return reinterpret_cast<JitFn>(picked.body->fn_ptr)(
-      picked.body, this_val, n_args, args);
+  *__ret = _jit_invoke(picked.body, this_val, n_args, args);
 }
 
 // Record the call-site position read by `_jit_multifn_dispatcher_thunk` on
@@ -6626,16 +6691,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
 // `this` = Nil; this thunk substitutes the captured receiver so the method
 // body sees the right `this`. It forwards args/arity unchanged, so it composes
 // with every existing invoke path and with the callee's own arg handling.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _jit_bound_method_thunk(
-    JitClosure* self, JitValue /*this is Nil on a value call*/, int64_t n_args,
-    JitValue* args) {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void _jit_bound_method_thunk(JitValue* __ret, 
+    JitClosure* self, int8_t /*this_tag: Nil on a value call*/,
+    int64_t /*this_data*/, int64_t n_args, JitValue* args) {
   JitValue receiver = self->captures[0]->value;
   auto* method = reinterpret_cast<JitClosure*>(self->captures[1]->value.data);
   // The callee frame takes ownership of `this` on entry (a direct call retains
   // the receiver before passing it). Retain the captured receiver per call so
   // repeated invocations don't drain the wrapper's single held reference.
   culebra_runtime_value_retain(receiver.tag, receiver.data);
-  return reinterpret_cast<JitFn>(method->fn_ptr)(method, receiver, n_args, args);
+  { *__ret = _jit_invoke(method, receiver, n_args, args); return; }
 }
 
 // Resolve a property read AS A VALUE (`obj.name`, not `obj.name(...)`). When it
@@ -6654,8 +6719,7 @@ CULEBRA_RT_INLINE JitValue _jit_invoke_getter(JitClosure* method,
                                               int8_t recv_tag,
                                               int64_t recv_data) {
   culebra_runtime_value_retain(recv_tag, recv_data);
-  return reinterpret_cast<JitFn>(method->fn_ptr)(
-      method, {recv_tag, recv_data}, 0, nullptr);
+  return _jit_invoke(method, {recv_tag, recv_data}, 0, nullptr);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_bind_method_value(
@@ -6731,11 +6795,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_getter_or_value(
 // the dispatched call (consumed by the callee frame) or are released
 // here on the throw paths.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
-    JitClosure* cls, JitValue this_val,
+    JitClosure* cls, int8_t this_val_tag, int64_t this_val_data,
     int64_t n_pos, JitValue* positional,
     int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
     int64_t n_splat, JitValue* splat_objs,
     int64_t line, int64_t col) {
+  JitValue this_val{this_val_tag, this_val_data};
   auto release_owned = [&](size_t skip_pos = 0) {
     // Drop every +1 the caller transferred to us that hasn't already
     // been consumed downstream. `skip_pos` lets us skip positionals
@@ -6762,9 +6827,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     JitValue receiver = cls->captures[0]->value;
     auto* method = reinterpret_cast<JitClosure*>(cls->captures[1]->value.data);
     culebra_runtime_value_retain(receiver.tag, receiver.data);
-    return culebra_runtime_call_with_kwargs(method, receiver, n_pos, positional,
-                                            n_kw, kw_keys, kw_vals, n_splat,
-                                            splat_objs, line, col);
+    return culebra_runtime_call_with_kwargs(
+        method, static_cast<int8_t>(receiver.tag), receiver.data, n_pos,
+        positional, n_kw, kw_keys, kw_vals, n_splat, splat_objs, line, col);
   }
 
   // stdlib namespace methods route through the hook FIRST — before the
@@ -6824,7 +6889,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     auto picked = _jit_multifn_resolve(
         cls, positional, n_pos, line, col, release_owned, kwarg_keys);
     return culebra_runtime_call_with_kwargs(
-        picked.body, this_val, n_pos, positional, n_kw, kw_keys, kw_vals,
+        picked.body, static_cast<int8_t>(this_val.tag), this_val.data, n_pos,
+        positional, n_kw, kw_keys, kw_vals,
         n_splat, splat_objs, line, col);
   }
 
@@ -6995,8 +7061,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
   }
 
-  return reinterpret_cast<JitFn>(cls->fn_ptr)(
-      cls, this_val, static_cast<int64_t>(slab.size()), slab.data());
+  return _jit_invoke(cls, this_val, static_cast<int64_t>(slab.size()),
+                     slab.data());
 }
 
 // --- Iterator protocol runtime --------------------------------------------
@@ -7041,8 +7107,9 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray*
 culebra_runtime_object_keys(JitObject* obj);
 
 // Generic "iter returns self" — used by every wrapper we build.
-inline JitValue _iter_self_iter_fn(JitClosure*, JitValue this_val,
+inline void _iter_self_iter_fn(JitValue* __ret, JitClosure*, int8_t this_val_tag, int64_t this_val_data,
                                    int64_t, JitValue*) {
+  JitValue this_val{this_val_tag, this_val_data};
   // iter() on a wrapped iterator returns self. The Iterator-protocol calling
   // convention (see compile_for_protocol_loop / _iter_coerce_iterable /
   // object_iter_dispatch) has every caller retain `this` before the call so a
@@ -7051,7 +7118,7 @@ inline JitValue _iter_self_iter_fn(JitClosure*, JitValue this_val,
   // `this` directly, transferring the caller's +1 to the result. (A stray
   // `retain` here instead of the transfer leaked one ref per `.iter()` on
   // every native wrapped iterator — the for-in protocol loop's ref B.)
-  return this_val;
+  { *__ret = this_val; return; }
 }
 
 // Look up a 0-arg method closure on an iterator Object. Returns nullptr
@@ -7149,14 +7216,12 @@ inline bool _iter_advance_raw(JitClosure* has_next_cls, JitClosure* next_cls,
                                 "type error: target is not iterable");
   }
   culebra_runtime_value_retain(iter_val.tag, iter_val.data);
-  auto hn = reinterpret_cast<JitFn>(has_next_cls->fn_ptr)(
-      has_next_cls, iter_val, 0, nullptr);
+  auto hn = _jit_invoke(has_next_cls, iter_val, 0, nullptr);
   bool has = (hn.tag == TAG_BOOL && hn.data != 0);
   _culebra_value_release_impl(hn.tag, hn.data);
   if (!has) return false;
   culebra_runtime_value_retain(iter_val.tag, iter_val.data);
-  auto v = reinterpret_cast<JitFn>(next_cls->fn_ptr)(
-      next_cls, iter_val, 0, nullptr);
+  auto v = _jit_invoke(next_cls, iter_val, 0, nullptr);
   *out_tag = v.tag;
   *out_data = v.data;
   return true;
@@ -7195,8 +7260,8 @@ CULEBRA_RT_KEEP void culebra_runtime_cell_retain(JitCell* c);
 // state_cell.value.data ∈ { _ITER_LA_EMPTY, _ITER_LA_FILLED, _ITER_LA_DRAINED }.
 // value_cell holds a +1-owned lookahead while state == FILLED.
 inline JitObject* _iter_wrap_new(
-    JitValue (*has_next_fn)(JitClosure*, JitValue, int64_t, JitValue*),
-    JitValue (*next_fn)(JitClosure*, JitValue, int64_t, JitValue*),
+    void (*has_next_fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*),
+    void (*next_fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*),
     std::initializer_list<JitCell*> captures) {
   auto* state_cell = culebra_runtime_cell_new(TAG_LONG, _ITER_LA_EMPTY);
   auto* value_cell = culebra_runtime_cell_new(TAG_NIL, 0);
@@ -7244,24 +7309,26 @@ inline JitObject* _iter_wrap_new(
 // state cells) so a subsequent `next()` can consume the cached value
 // without re-invoking FastFn. Idempotent on repeat calls.
 template <JitIterFastFn FastFn>
-inline JitValue _iter_trampoline_has_next_fn(JitClosure* cls, JitValue iv,
-                                              int64_t, JitValue*) {
+inline void _iter_trampoline_has_next_fn(JitValue* __ret, JitClosure* cls, int8_t iv_tag,
+                                              int64_t iv_data, int64_t,
+                                              JitValue*) {
+  JitValue iv{iv_tag, iv_data};
   size_t n = cls->n_captures;
   JitCell* state_cell = cls->captures[n - 2];
   JitCell* value_cell = cls->captures[n - 1];
-  if (state_cell->value.data == _ITER_LA_FILLED) return {TAG_BOOL, 1};
-  if (state_cell->value.data == _ITER_LA_DRAINED) return {TAG_BOOL, 0};
+  if (state_cell->value.data == _ITER_LA_FILLED) { *__ret = {TAG_BOOL, 1}; return; }
+  if (state_cell->value.data == _ITER_LA_DRAINED) { *__ret = {TAG_BOOL, 0}; return; }
   bool done;
   int8_t tag;
   int64_t data;
   FastFn(cls, iv, &done, &tag, &data);
   if (done) {
     state_cell->value = {TAG_LONG, _ITER_LA_DRAINED};
-    return {TAG_BOOL, 0};
+    { *__ret = {TAG_BOOL, 0}; return; }
   }
   state_cell->value = {TAG_LONG, _ITER_LA_FILLED};
   value_cell->value = {tag, data};   // +1 transfers into the cell
-  return {TAG_BOOL, 1};
+  { *__ret = {TAG_BOOL, 1}; return; }
 }
 
 // next() trampoline. Returns the cached lookahead when present (cheap
@@ -7269,8 +7336,10 @@ inline JitValue _iter_trampoline_has_next_fn(JitClosure* cls, JitValue iv,
 // Calling next() past end yields nil; the contract advises pairing
 // with has_next() to avoid that case.
 template <JitIterFastFn FastFn>
-inline JitValue _iter_trampoline_next_fn(JitClosure* cls, JitValue iv,
-                                          int64_t, JitValue*) {
+inline void _iter_trampoline_next_fn(JitValue* __ret, JitClosure* cls, int8_t iv_tag,
+                                          int64_t iv_data, int64_t,
+                                          JitValue*) {
+  JitValue iv{iv_tag, iv_data};
   size_t n = cls->n_captures;
   JitCell* state_cell = cls->captures[n - 2];
   JitCell* value_cell = cls->captures[n - 1];
@@ -7278,18 +7347,18 @@ inline JitValue _iter_trampoline_next_fn(JitClosure* cls, JitValue iv,
     auto v = value_cell->value;
     state_cell->value = {TAG_LONG, _ITER_LA_EMPTY};
     value_cell->value = {TAG_NIL, 0};
-    return v;  // +1 transfers to caller
+    { *__ret = v; return; }  // +1 transfers to caller
   }
-  if (state_cell->value.data == _ITER_LA_DRAINED) return {TAG_NIL, 0};
+  if (state_cell->value.data == _ITER_LA_DRAINED) { *__ret = {TAG_NIL, 0}; return; }
   bool done;
   int8_t tag;
   int64_t data;
   FastFn(cls, iv, &done, &tag, &data);
   if (done) {
     state_cell->value = {TAG_LONG, _ITER_LA_DRAINED};
-    return {TAG_NIL, 0};
+    { *__ret = {TAG_NIL, 0}; return; }
   }
-  return {tag, data};
+  { *__ret = {tag, data}; return; }
 }
 
 // Build a wrapper Object whose user-visible has_next / next trampoline
@@ -7855,8 +7924,7 @@ inline JitValue _iter_coerce_iterable(int8_t t, int64_t d, int64_t line,
       auto iv = o->slots[idx].value;
       auto* iv_cls = reinterpret_cast<JitClosure*>(iv.data);
       culebra_runtime_value_retain(t, d);
-      return reinterpret_cast<JitFn>(iv_cls->fn_ptr)(iv_cls, {t, d}, 0,
-                                                     nullptr);
+      return _jit_invoke(iv_cls, JitValue{t, d}, 0, nullptr);
     }
   }
   // Match interp's for-in / flat_map coercion wording (throw_type_mismatch),
@@ -8243,7 +8311,7 @@ culebra_runtime_object_iter_dispatch(JitObject* obj) {
     auto* cls = reinterpret_cast<JitClosure*>(entry->value.data);
     auto self = JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
     culebra_runtime_value_retain(self.tag, self.data);
-    auto r = reinterpret_cast<JitFn>(cls->fn_ptr)(cls, self, 0, nullptr);
+    auto r = _jit_invoke(cls, self, 0, nullptr);
     // The user iter() returns an Object (+1) — caller takes that retain.
     return reinterpret_cast<JitObject*>(r.data);
   }
@@ -8400,12 +8468,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_iota(int64_t start,
 // (bound as `this`), captures[1] is its resolved `__call__` closure
 // (captured once so the per-element call skips the property lookup). Each
 // call dispatches to __call__ with the callback args passed through.
-inline JitValue _culebra_callable_adapter(JitClosure* self, JitValue,
+inline void _culebra_callable_adapter(JitValue* __ret, JitClosure* self, int8_t, int64_t,
                                           int64_t n, JitValue* args) {
   JitValue inst = self->captures[0]->value;  // borrowed
   auto* m = reinterpret_cast<JitClosure*>(self->captures[1]->value.data);
   culebra_runtime_value_retain(inst.tag, inst.data);  // `this` consumed by frame
-  return reinterpret_cast<JitFn>(m->fn_ptr)(m, inst, n, args);
+  { *__ret = _jit_invoke(m, inst, n, args); return; }
 }
 
 // Whether `cls` accepts exactly `expected` positional callback args, using the
@@ -9218,7 +9286,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_or_put(
   JitValue v;
   if (it_tag == TAG_FUNC) {
     v = culebra_runtime_call_with_kwargs(
-        reinterpret_cast<JitClosure*>(it_data), JitValue{TAG_NIL, 0}, 0,
+        reinterpret_cast<JitClosure*>(it_data), int8_t{TAG_NIL}, int64_t{0}, 0,
         nullptr, 0, nullptr, nullptr, 0, nullptr, line, col);
     _culebra_value_release_impl(it_tag, it_data);  // release the closure
   } else {
@@ -9327,8 +9395,7 @@ inline void _culebra_call_drop_if_present(JitObject* o) {
   o->refcount = int64_t{1} << 40;
   JitValue this_val{GC_TAG_OBJECT, reinterpret_cast<int64_t>(o)};
   try {
-    auto r = reinterpret_cast<JitFn>(cls->fn_ptr)(cls, this_val, 0,
-                                                  nullptr);
+    auto r = _jit_invoke(cls, this_val, 0, nullptr);
     _culebra_value_release_impl(r.tag, r.data);
   } catch (const std::exception& e) {
     std::cerr << "drop: " << e.what() << std::endl;
@@ -10251,6 +10318,7 @@ struct JIT {
     std::vector<Scope> scopes;
     const FuncInfo* info;
     llvm::Value* closure_arg;
+    llvm::Value* sret;
     std::string_view return_type;
     llvm::BasicBlock* lpad;
     llvm::Value* fn_defer_mark;
@@ -10263,6 +10331,7 @@ struct JIT {
           scopes(std::exchange(j.scopes_, {})),
           info(std::exchange(j.current_info_, nullptr)),
           closure_arg(std::exchange(j.current_closure_arg_, nullptr)),
+          sret(std::exchange(j.current_sret_, nullptr)),
           return_type(std::exchange(j.current_return_type_, {})),
           lpad(std::exchange(j.current_lpad_, nullptr)),
           fn_defer_mark(std::exchange(j.current_fn_defer_mark_, nullptr)),
@@ -10282,6 +10351,7 @@ struct JIT {
       jit->current_lpad_ = lpad;
       jit->current_return_type_ = return_type;
       jit->current_closure_arg_ = closure_arg;
+      jit->current_sret_ = sret;
       jit->current_info_ = info;
       jit->scopes_ = std::move(scopes);
       jit->builder_.SetInsertPoint(insert_block);
@@ -10348,6 +10418,45 @@ struct JIT {
       return inv;
     }
     return builder_.CreateCall(callee, args, name);
+  }
+
+  // Call a runtime helper that returns a 16-byte JitValue BY VALUE, recovering
+  // the result. On Win64 the C ABI (GCC) returns a 16-byte aggregate through a
+  // hidden pointer passed as the first integer argument (RCX), but LLVM's
+  // raw-IR `{i64,i64}` return is two-register — the two disagree, so every
+  // argument shifts one slot and the callee reads garbage (tags come out
+  // "Unknown", positions become junk). Match GCC by passing an explicit result
+  // slot as a leading pointer argument and calling a void-returning form: the
+  // slot lands in RCX exactly where GCC's implicit sret pointer goes, so the
+  // remaining args line up. On SysV a 16-byte struct is returned in two
+  // registers by both LLVM and GCC, so it's a plain value-returning call.
+  llvm::Value* emit_value_call(llvm::FunctionCallee callee,
+                               llvm::ArrayRef<llvm::Value*> args,
+                               const llvm::Twine& name = "") {
+#ifdef _WIN32
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto* origTy = callee.getFunctionType();
+    std::vector<llvm::Type*> params;
+    params.reserve(origTy->getNumParams() + 1);
+    params.push_back(ptrTy);  // result slot (matches GCC's hidden sret ptr)
+    params.insert(params.end(), origTy->param_begin(), origTy->param_end());
+    auto* voidTy = llvm::FunctionType::get(builder_.getVoidTy(), params,
+                                           origTy->isVarArg());
+    auto fn = builder_.GetInsertBlock()->getParent();
+    llvm::Value* slot;
+    {
+      llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+      slot = eb.CreateAlloca(valueType_, nullptr, "sret.slot");
+    }
+    std::vector<llvm::Value*> newArgs;
+    newArgs.reserve(args.size() + 1);
+    newArgs.push_back(slot);
+    newArgs.insert(newArgs.end(), args.begin(), args.end());
+    emit_call(llvm::FunctionCallee(voidTy, callee.getCallee()), newArgs);
+    return builder_.CreateLoad(valueType_, slot, name);
+#else
+    return emit_call(callee, args, name);
+#endif
   }
 
   // Loop safepoint: inline a relaxed load of the process "wake" flag and a cold
@@ -10556,10 +10665,21 @@ struct JIT {
     current_lpad_ = restoreLpad;
   }
 
-  // Itanium C++ personality. Same attribute used by -fexceptions output.
+  // C++ personality routine for this module's target. Windows (mingw) uses the
+  // SEH personality `__gxx_personality_seh0` with the *same* Itanium-shaped
+  // landingpad IR the rest of the JIT emits — only the personality name differs
+  // (confirmed on the real mingw LLVM: landingpad+seh0 lowers to COFF EH tables
+  // that interoperate with libstdc++/libgcc; MSVC funclets are NOT needed since
+  // culebra links libstdc++, not the MSVC STL). Every other target uses v0.
+  // Read from the module's target triple — set before any emission in every
+  // codegen entry (JIT exec, AOT build_object) — so a cross-compiled Windows
+  // object also gets seh0.
   llvm::Constant* get_personality_fn() {
     auto fty = llvm::FunctionType::get(builder_.getInt32Ty(), {}, true);
-    auto callee = module_->getOrInsertFunction("__gxx_personality_v0", fty);
+    const char* name = module_->getTargetTriple().isOSWindows()
+                           ? "__gxx_personality_seh0"
+                           : "__gxx_personality_v0";
+    auto callee = module_->getOrInsertFunction(name, fty);
     return llvm::cast<llvm::Constant>(callee.getCallee());
   }
 
@@ -10787,8 +10907,43 @@ struct JIT {
         orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
             jit->getDataLayout().getGlobalPrefix()));
     jd.addGenerator(std::move(gen));
+#ifdef _WIN32
+    define_windows_eh_symbols(*jit, jd);
+#endif
     return jit;
   }
+
+#ifdef _WIN32
+  // The process-symbol resolver (GetForCurrentProcess) reads the PE export
+  // table, which carries culebra's own runtime symbols but NOT the
+  // libstdc++/libgcc C++ EH entry points the JIT'd landingpads reference: those
+  // live in static libs excluded from export (--exclude-libs ALL, needed to stay
+  // under the 65535-export limit once LLVM is linked in). They are still present
+  // in this image (culebra's own C++ uses exceptions), so define them for the
+  // JIT as absolute symbols pointing at their in-process addresses. The POSIX
+  // path needs none of this — -rdynamic exports the static EH symbols too.
+  static void define_windows_eh_symbols(llvm::orc::LLJIT& jit,
+                                        llvm::orc::JITDylib& jd) {
+    using namespace llvm;
+    auto& es = jit.getExecutionSession();
+    orc::SymbolMap syms;
+    auto add = [&](const char* n, void* p) {
+      syms[es.intern(n)] = orc::ExecutorSymbolDef(
+          orc::ExecutorAddr::fromPtr(p),
+          JITSymbolFlags::Exported | JITSymbolFlags::Callable);
+    };
+    add("__gxx_personality_seh0",
+        reinterpret_cast<void*>(&__gxx_personality_seh0));
+    add("__cxa_begin_catch", reinterpret_cast<void*>(&__cxa_begin_catch));
+    add("__cxa_end_catch", reinterpret_cast<void*>(&__cxa_end_catch));
+    add("__cxa_rethrow", reinterpret_cast<void*>(&__cxa_rethrow));
+    // Stack-probe helper for large-frame prologues (see the extern declaration
+    // above). Missing it makes any JIT'd function with a >4 KB frame — e.g. a
+    // user class method — call an unresolved address and jump into garbage.
+    add("___chkstk_ms", reinterpret_cast<void*>(&___chkstk_ms));
+    cantFail(jd.define(orc::absoluteSymbols(std::move(syms))));
+  }
+#endif
 
   static inline void run(const std::shared_ptr<peg::Ast>& ast,
                          bool emit_llvm = false, bool debug = false,
@@ -11667,6 +11822,7 @@ struct JIT {
 
   // LLVM function-level state for the function currently being compiled
   llvm::Value* current_closure_arg_ = nullptr;  // __cls__ argument
+  llvm::Value* current_sret_ = nullptr;  // JitFn out-pointer (result slot)
 
   // Current AST position for error reporting
   size_t current_line_ = 0;
@@ -12623,6 +12779,23 @@ struct JIT {
 
   llvm::Value* extract_data(llvm::Value* v) {
     return builder_.CreateExtractValue(v, {1}, "data");
+  }
+
+  // The LLVM half of the JitFn ABI (see the `JitFn` typedef): every closure
+  // body, ctor, defer thunk, and indirect call site shares this signature —
+  // void(ret:ptr, cls:ptr, this_tag:i8, this_data:i64, n_args:i64, args:ptr).
+  // The result is written through the leading out-pointer and the receiver
+  // `this` crosses as two scalars — no by-value 16-byte aggregate crosses the
+  // boundary in either direction, so the Win64 C ABI and the raw-IR lowering
+  // agree (a by-value aggregate return would be sret on Win64 but two-register
+  // in raw IR, mis-placing args). One place so an ABI change is a single edit.
+  llvm::FunctionType* jitFnCalleeType() {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    return llvm::FunctionType::get(
+        builder_.getVoidTy(),
+        {ptrTy, ptrTy, builder_.getInt8Ty(), builder_.getInt64Ty(),
+         builder_.getInt64Ty(), ptrTy},
+        false);
   }
 
   // value_to_bool: returns i1. Bool is the monomorphic hot case (comparisons,
@@ -15168,7 +15341,7 @@ struct JIT {
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(numBB);
-    auto numResult = emit_call(
+    auto numResult = emit_value_call(
         module_->getOrInsertFunction(rt_name, valueType_,
                                      builder_.getInt8Ty(),
                                      builder_.getInt64Ty(),
@@ -15197,7 +15370,7 @@ struct JIT {
                                std::string_view op, bool inplace = false) {
     if (op == "@") {
       // No in-place matmul (output shape differs from lhs).
-      return emit_call(
+      return emit_value_call(
           module_->getOrInsertFunction(
               rt::num_matmul, valueType_,
               builder_.getInt8Ty(), builder_.getInt64Ty(),
@@ -15209,7 +15382,7 @@ struct JIT {
     }
     if (op == "**") {
       const char* rt_name = inplace ? rt::num_inplace_pow : rt::num_pow;
-      return emit_call(
+      return emit_value_call(
           module_->getOrInsertFunction(
               rt_name, valueType_,
               builder_.getInt8Ty(), builder_.getInt64Ty(),
@@ -15309,7 +15482,7 @@ struct JIT {
       if (ope == '@') {
         auto ptrTy = llvm::PointerType::get(ctx_, 0);
         (void)ptrTy;
-        auto result = emit_call(
+        auto result = emit_value_call(
             module_->getOrInsertFunction(
                 rt::num_matmul, valueType_,
                 builder_.getInt8Ty(), builder_.getInt64Ty(),
@@ -15385,7 +15558,7 @@ struct JIT {
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(slowBB);
-    auto slowResult = emit_call(
+    auto slowResult = emit_value_call(
         module_->getOrInsertFunction(rt::num_neg, valueType_,
                                      builder_.getInt8Ty(),
                                      builder_.getInt64Ty(),
@@ -15548,7 +15721,7 @@ struct JIT {
     }
 
     Owned exp = compile(*ast.nodes[2]);
-    auto result = emit_call(
+    auto result = emit_value_call(
         module_->getOrInsertFunction(rt::num_pow, valueType_,
                                      builder_.getInt8Ty(),
                                      builder_.getInt64Ty(),
@@ -17429,8 +17602,7 @@ struct JIT {
     auto i64Ty = builder_.getInt64Ty();
     auto i8Ty = builder_.getInt8Ty();
 
-    auto fnType = FunctionType::get(
-        valueType_, {ptrTy, valueType_, i64Ty, ptrTy}, false);
+    auto fnType = jitFnCalleeType();
     auto fnName = std::format("__culebra_ctor_{}", funcCounter_++);
     auto fn = Function::Create(fnType, GlobalValue::ExternalLinkage, fnName,
                                module_);
@@ -17441,17 +17613,24 @@ struct JIT {
     // into that other function — invalid IR that crashes the optimizer.
     CompilerStateSaver saver(*this);
     auto argIt = fn->arg_begin();
+    current_sret_ = &*argIt++;  // __ret out-pointer (result slot)
     auto clsArg = &*argIt++;
-    auto thisArg = &*argIt++;
+    auto thisTagArg = &*argIt++;
+    auto thisDataArg = &*argIt++;
     auto nArgsArg = &*argIt++;
     auto argsArg = &*argIt++;
+    current_sret_->setName("__ret");
     clsArg->setName("__cls__");
-    thisArg->setName("this");
+    thisTagArg->setName("this_tag");
+    thisDataArg->setName("this_data");
     nArgsArg->setName("n_args");
     argsArg->setName("args");
 
     auto entryBB = BasicBlock::Create(ctx_, "entry", fn);
     builder_.SetInsertPoint(entryBB);
+
+    // Reconstruct the receiver `this` from the two scalar ABI args.
+    llvm::Value* thisArg = make_value(thisTagArg, thisDataArg);
 
     // Caller's `this` (the class namespace) is unused — release the +1.
     emit_value_release(thisArg);
@@ -17489,12 +17668,16 @@ struct JIT {
     // Header-backed: stored as the instance's "class" TAG_STRING value.
     auto classNameGlobal = emit_str_literal(class_name);
 
-    auto result = builder_.CreateCall(
+    // build_class_instance returns a 16-byte JitValue by value — route through
+    // emit_value_call so the Win64 sret ABI matches (see emit_value_call). On
+    // SysV / with no active landingpad this is the same plain call as before.
+    auto result = emit_value_call(
         module_->getOrInsertFunction(rt::build_class_instance, valueType_,
                                      ptrTy, ptrTy, i8Ty, i64Ty, i64Ty,
                                      ptrTy),
         {classNameGlobal, metaPtr, bodyTag, bodyData, nArgsArg, argsArg});
-    builder_.CreateRet(result);
+    builder_.CreateStore(result, current_sret_);
+    builder_.CreateRetVoid();
 
     verifyFunction(*fn);
     saver.restore();
@@ -17648,7 +17831,7 @@ struct JIT {
       auto variant_g = emit_str_literal(variant);  // stored as "class" value
       if (vv.arity == 0) {
         // Nullary variant: build the singleton instance now.
-        auto inst = emit_call(
+        auto inst = emit_value_call(
             module_->getOrInsertFunction(rt::build_variant, valueType_, ptrTy,
                                          ptrTy, i64Ty, ptrTy, i64Ty, i64Ty,
                                          i64Ty),
@@ -18559,9 +18742,7 @@ struct JIT {
     // function prologue. The uniform shape lets every call site (user
     // calls, UFCS, runtime callbacks) use one ABI even when the
     // declared arity differs from the passed arg count.
-    auto fnType = FunctionType::get(
-        valueType_, {ptrTy, valueType_, builder_.getInt64Ty(), ptrTy},
-        false);
+    auto fnType = jitFnCalleeType();
 
     auto fnName = std::format("__culebra_fn_{}", funcCounter_++);
     auto fn = Function::Create(fnType, GlobalValue::ExternalLinkage, fnName,
@@ -18571,9 +18752,13 @@ struct JIT {
     }
 
     auto argIt = fn->arg_begin();
+    argIt->setName("__ret");
+    ++argIt;
     argIt->setName("__cls__");
     ++argIt;
-    argIt->setName("this");
+    argIt->setName("this_tag");
+    ++argIt;
+    argIt->setName("this_data");
     ++argIt;
     argIt->setName("n_args");
     ++argIt;
@@ -18613,11 +18798,16 @@ struct JIT {
     current_lpad_ = fnCleanupBB;
 
     argIt = fn->arg_begin();
+    current_sret_ = &*argIt++;  // __ret out-pointer (result slot)
     auto clsArg = &*argIt++;
     current_closure_arg_ = clsArg;
-    auto thisArg = &*argIt++;
+    auto thisTagArg = &*argIt++;
+    auto thisDataArg = &*argIt++;
     auto nArgsArg = &*argIt++;
     auto argsArg = &*argIt++;
+    // Reconstruct the receiver `this` from the two scalar ABI args. The
+    // insert point is already at `entryBB`, so this emits into the prologue.
+    llvm::Value* thisArg = make_value(thisTagArg, thisDataArg);
 
     // Arity guard: matching the interpreter, it is an error to call
     // with fewer args than declared. Overflow is allowed (lands in
@@ -18914,7 +19104,8 @@ struct JIT {
             module_->getFunction(rt::defer_run_to), {fnMark});
       }
       release_all_scopes_for_exit();
-      builder_.CreateRet(bodyVal);
+      builder_.CreateStore(bodyVal, current_sret_);
+      builder_.CreateRetVoid();
     }
 
     // Throw-path cleanup landingpad for the function frame. Runs any fn-level
@@ -19314,7 +19505,10 @@ struct JIT {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto keyPtr =
         get_or_create_global_str(name, intro ? ".getter.key" : ".bind.key");
-    return emit_call(
+    // Both helpers return a 16-byte JitValue by value; route through
+    // emit_value_call so the Win64 sret ABI matches the C++ side (no-op on
+    // SysV). See the emit_value_call rationale at its definition.
+    return emit_value_call(
         module_->getOrInsertFunction(
             intro ? rt::getter_or_value : rt::bind_method_value, valueType_,
             i8Ty, i64Ty, i8Ty, i64Ty, ptrTy),
@@ -19487,7 +19681,7 @@ struct JIT {
       builder_.SetInsertPoint(fnBB);
       auto clsPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
       auto keyPtr = builder_.CreateGlobalString(name, ".fn.prop");
-      introResult = emit_call(
+      introResult = emit_value_call(
           module_->getOrInsertFunction(rt::fn_introspect_get,
                                        valueType_, ptrTy, ptrTy),
           {clsPtr, keyPtr}, "fn.intro");
@@ -19578,7 +19772,7 @@ struct JIT {
     // escape to the call and survive SROA, dominating the backend's
     // alloca count in property-heavy code).
     builder_.SetInsertPoint(slowBB);
-    auto slowResult = emit_call(
+    auto slowResult = emit_value_call(
         module_->getOrInsertFunction(rt::prop_get, valueType_,
                                      i8Ty, i64Ty, ptrTy, ptrTy,
                                      i64Ty, i64Ty),
@@ -20053,7 +20247,7 @@ struct JIT {
 
     // autoBB: call the runtime walker.
     builder_.SetInsertPoint(autoBB);
-    auto walkResult = emit_call(
+    auto walkResult = emit_value_call(
         module_->getOrInsertFunction(rt::class_parameters_walk, valueType_,
                                      ptrTy),
         {objPtr}, "params.walk");
@@ -20736,7 +20930,7 @@ struct JIT {
     llvm::Value* ctorResult = nullptr;
     llvm::BasicBlock* ctorEndBB = nullptr;
     if (allow_call_overload) {
-      auto callMethod = emit_call(
+      auto callMethod = emit_value_call(
           module_->getOrInsertFunction(
               rt::class_call_method, valueType_,
               builder_.getInt8Ty(), builder_.getInt64Ty()),
@@ -20762,7 +20956,7 @@ struct JIT {
       // to its `new`. The constructor builds its own instance, so it takes
       // no `this` (nil receiver, no retain), matching interp.
       builder_.SetInsertPoint(tryCtorBB);
-      auto newMethod = emit_call(
+      auto newMethod = emit_value_call(
           module_->getOrInsertFunction(
               rt::class_new_method, valueType_,
               builder_.getInt8Ty(), builder_.getInt64Ty()),
@@ -20821,15 +21015,28 @@ struct JIT {
 
     emit_call_position_publish(arg_asts);
 
-    auto calleeType = llvm::FunctionType::get(
-        valueType_, {ptrTy, valueType_, builder_.getInt64Ty(), ptrTy},
-        false);
+    auto calleeType = jitFnCalleeType();
+    // The result comes back through an out-pointer slot and the receiver `this`
+    // crosses as two scalars (tag, data) — no by-value 16-byte aggregate crosses
+    // the ABI in either direction, so the raw-IR lowering matches the Win64 C
+    // ABI (which would pass an aggregate arg by-reference and return it via
+    // sret). Hoist the result slot into the entry block like the args slab.
+    llvm::Value* retSlot;
+    {
+      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                               fn->getEntryBlock().begin());
+      retSlot = entryB.CreateAlloca(valueType_, nullptr, "call.ret");
+    }
+    llvm::Value* thisNormal = thisVal ? thisVal : make_nil();
     std::vector<llvm::Value*> args = {
+        retSlot,
         clsPtr,
-        thisVal ? thisVal : make_nil(),
+        extract_tag(thisNormal),
+        extract_data(thisNormal),
         builder_.getInt64(static_cast<int64_t>(userArgs.size())),
         argsPtr};
-    auto callResult = emit_call(calleeType, fnPtr, args, "call.result");
+    emit_call(calleeType, fnPtr, args);
+    auto callResult = builder_.CreateLoad(valueType_, retSlot, "call.result");
 
     // No __call__ overload arm (recursive inner call): callBB is the
     // only producer, return directly and keep the original shape.
@@ -21262,7 +21469,7 @@ struct JIT {
     builder_.CreateBr(contBB);
 
     builder_.SetInsertPoint(ovBB);
-    auto cm = emit_call(
+    auto cm = emit_value_call(
         module_->getOrInsertFunction(rt::class_call_method, valueType_,
                                      builder_.getInt8Ty(),
                                      builder_.getInt64Ty()),
@@ -21281,7 +21488,7 @@ struct JIT {
     // Class object: `C(kwargs)` → `new`. The constructor builds its own
     // instance, so `this` is nil (no retain), matching interp.
     builder_.SetInsertPoint(tryCtorBB);
-    auto nm = emit_call(
+    auto nm = emit_value_call(
         module_->getOrInsertFunction(rt::class_new_method, valueType_,
                                      builder_.getInt8Ty(),
                                      builder_.getInt64Ty()),
@@ -21322,12 +21529,12 @@ struct JIT {
       }
     }
     emit_call_position_publish(posAsts);
-    auto result = emit_call(
+    auto result = emit_value_call(
         module_->getOrInsertFunction(
-            rt::call_with_kwargs, valueType_, ptrTy, valueType_,
-            i64Ty, ptrTy, i64Ty, ptrTy, ptrTy, i64Ty, ptrTy,
+            rt::call_with_kwargs, valueType_, ptrTy, builder_.getInt8Ty(),
+            i64Ty, i64Ty, ptrTy, i64Ty, ptrTy, ptrTy, i64Ty, ptrTy,
             i64Ty, i64Ty),
-        {clsPtr, thisVV,
+        {clsPtr, extract_tag(thisVV), extract_data(thisVV),
          builder_.getInt64(static_cast<int64_t>(posVals.size())), posSlab,
          builder_.getInt64(static_cast<int64_t>(kwVals.size())),
          kwKeysSlab, kwValsSlab,
@@ -21677,7 +21884,10 @@ struct JIT {
           {current_fn_defer_mark_});
     }
     release_all_scopes_for_exit();
-    builder_.CreateRet(val);
+    // JitFn returns its result through the out-pointer (see JitFn), not by
+    // value — so no 16-byte aggregate crosses the closure-call ABI boundary.
+    builder_.CreateStore(val, current_sret_);
+    builder_.CreateRetVoid();
     current_lpad_ = savedExitLpad;
     return val;
   }
@@ -21708,9 +21918,7 @@ struct JIT {
 
     // Same uniform ABI as compile_function; defer thunks ignore
     // n_args/args (callers always pass 0/null).
-    auto fnType = FunctionType::get(
-        valueType_, {ptrTy, valueType_, builder_.getInt64Ty(), ptrTy},
-        false);
+    auto fnType = jitFnCalleeType();
     auto fnName = std::format("__culebra_defer_{}", funcCounter_++);
     auto fn = Function::Create(fnType, GlobalValue::ExternalLinkage, fnName,
                                module_);
@@ -21719,9 +21927,13 @@ struct JIT {
     }
 
     auto argIt = fn->arg_begin();
+    argIt->setName("__ret");
+    ++argIt;
     argIt->setName("__cls__");
     ++argIt;
-    argIt->setName("this");
+    argIt->setName("this_tag");
+    ++argIt;
+    argIt->setName("this_data");
     ++argIt;
     argIt->setName("n_args");
     ++argIt;
@@ -21735,6 +21947,7 @@ struct JIT {
     push_scope();
 
     argIt = fn->arg_begin();
+    current_sret_ = &*argIt++;  // __ret out-pointer (result slot, unused)
     auto clsArg = &*argIt++;
     current_closure_arg_ = clsArg;
 
@@ -21765,7 +21978,8 @@ struct JIT {
     auto deferResult = compile(*ast.nodes[0]).consume();
     if (!builder_.GetInsertBlock()->getTerminator()) {
       emit_value_release(deferResult);
-      builder_.CreateRet(make_nil());
+      builder_.CreateStore(make_nil(), current_sret_);
+      builder_.CreateRetVoid();
     }
 
     pop_scope();
@@ -23341,7 +23555,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto fb = compile(*argsAst.nodes[1]).consume();
     // The runtime fn consumes the key's +1 and (on a hit) the fallback's +1,
     // returning the stored value (+1) or the fallback. No IR-level release.
-    return emit_call(
+    return emit_value_call(
         module_->getOrInsertFunction(
             rt::object_get_default, valueType_, ptrTy, builder_.getInt8Ty(),
             builder_.getInt64Ty(), builder_.getInt8Ty(),
@@ -23357,7 +23571,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     // `init` compiles to a value (a `|| []` thunk stays an unevaluated
     // closure); the runtime fn invokes it only on a miss.
     auto init = compile(*argsAst.nodes[1]).consume();
-    return emit_call(
+    return emit_value_call(
         module_->getOrInsertFunction(
             rt::object_get_or_put, valueType_, ptrTy, builder_.getInt8Ty(),
             builder_.getInt64Ty(), builder_.getInt8Ty(),

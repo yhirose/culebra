@@ -29,6 +29,13 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+// Target a modern Windows baseline before <windows.h> so version-gated APIs are
+// declared. mingw-w64 hides e.g. GetCurrentThreadStackLimits (used by the
+// conservative GC's stack_base) behind `_WIN32_WINNT >= 0x0602` (Windows 8), and
+// its default can be lower. Windows 10 (0x0A00) is the realistic floor.
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#endif
 #include <windows.h>
 #include <io.h>       // _isatty
 #include <stdlib.h>   // _putenv_s

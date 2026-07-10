@@ -21,7 +21,11 @@
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE
 #endif
-#include <pthread.h>
+#if !defined(_WIN32)
+#include <pthread.h>  // pthread_get_stackaddr_np / getattr_np (stack_base, POSIX)
+#else
+#include <os_compat.h>  // guarded <windows.h> for GetCurrentThreadStackLimits
+#endif
 
 #include <algorithm>
 #include <csetjmp>
@@ -707,6 +711,13 @@ class Heap {
     pthread_attr_getstack(&attr, &addr, &size);
     pthread_attr_destroy(&attr);
     return static_cast<char*>(addr) + size;
+#elif defined(_WIN32)
+    // The TIB records the current thread's stack bounds; the high limit is the
+    // base (the stack grows down toward the low limit). GetCurrentThreadStackLimits
+    // is available on Windows 8 / Server 2012+.
+    ULONG_PTR low = 0, high = 0;
+    GetCurrentThreadStackLimits(&low, &high);
+    return reinterpret_cast<void*>(high);
 #else
 #error "conservative GC stack_base: unsupported platform"
 #endif

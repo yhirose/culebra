@@ -414,9 +414,8 @@ inline void run_isolate_child_jit(std::shared_ptr<IsolateCore> core,
     if (args.empty()) r = _culebra_invoke0(cls);
     else if (args.size() == 1) r = _culebra_invoke1(cls, args[0]);
     else if (args.size() == 2) r = _culebra_invoke2(cls, args[0], args[1]);
-    else r = reinterpret_cast<JitFn>(cls->fn_ptr)(cls, {0, 0},
-                                                  static_cast<int64_t>(args.size()),
-                                                  args.data());
+    else r = _jit_invoke(cls, {0, 0} /*nil this*/,
+                         static_cast<int64_t>(args.size()), args.data());
     JitSerCtx sc;
     sendable::SendNode out = jit_serialize(r, sc);
     {
@@ -485,7 +484,8 @@ inline long _jit_isolate_self_id(JitValue self) {
   return i == static_cast<size_t>(-1) ? 0 : h->slots[i].value.data;
 }
 
-inline JitValue _jit_isolate_join(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_isolate_join(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   auto core = jit_isolate_lookup(_jit_isolate_self_id(self));
   JitValue ret{TAG_NIL, 0};
   if (core) {
@@ -496,10 +496,11 @@ inline JitValue _jit_isolate_join(JitClosure*, JitValue self, int64_t, JitValue*
     ret = _jit_isolate_extract(core);
   }
   culebra_runtime_value_release(self.tag, self.data);
-  return ret;
+  { *__ret = ret; return; }
 }
 
-inline JitValue _jit_isolate_poll(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_isolate_poll(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   auto core = jit_isolate_lookup(_jit_isolate_self_id(self));
   JitValue ret{TAG_NIL, 0};
   if (core) {
@@ -508,10 +509,11 @@ inline JitValue _jit_isolate_poll(JitClosure*, JitValue self, int64_t, JitValue*
     if (done) ret = _jit_isolate_extract(core);
   }
   culebra_runtime_value_release(self.tag, self.data);
-  return ret;
+  { *__ret = ret; return; }
 }
 
-inline JitValue _jit_isolate_drop(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_isolate_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   long id = _jit_isolate_self_id(self);
   auto core = jit_isolate_lookup(id);
   if (core && !core->joined && core->thread.joinable()) {
@@ -527,7 +529,7 @@ inline JitValue _jit_isolate_drop(JitClosure*, JitValue self, int64_t, JitValue*
     std::lock_guard<std::mutex> lk(jit_isolate_reg_mutex());
     jit_isolate_reg().erase(id);
   }
-  return {TAG_NIL, 0};
+  { *__ret = {TAG_NIL, 0}; return; }
 }
 
 // _jit_native_method (captureless native method closure) now lives in jit.h.
@@ -537,7 +539,7 @@ inline JitValue _jit_build_isolate_handle(long id) {
   h->set_or_append("_core_id", JitValue{TAG_LONG, id}, true);
   h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
   auto m = [&](const char* name,
-               JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*)) {
+               void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
     h->set_or_append(
         name,
         JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
@@ -625,18 +627,20 @@ inline long _jit_self_long(JitValue self, const char* key) {
   return i == static_cast<size_t>(-1) ? 0 : h->slots[i].value.data;
 }
 
-inline JitValue _jit_chan_send(JitClosure*, JitValue self, int64_t n,
+inline void _jit_chan_send(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                                JitValue* args) {
+  JitValue self{self_tag, self_data};
   long id = _jit_self_long(self, "__channel_id__");
   if (n >= 1) {
     JitSerCtx sc;
     channel_send_node(id, jit_serialize(args[0], sc));  // Sendable check here
   }
   culebra_runtime_value_release(self.tag, self.data);
-  return {TAG_NIL, 0};
+  { *__ret = {TAG_NIL, 0}; return; }
 }
 
-inline JitValue _jit_chan_recv(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_chan_recv(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   long id = _jit_self_long(self, "__channel_id__");
   auto node = chan_pop_blocking(id);
   JitValue ret{TAG_NIL, 0};
@@ -646,7 +650,7 @@ inline JitValue _jit_chan_recv(JitClosure*, JitValue self, int64_t, JitValue*) {
     release_inflight_channels(*node);
   }
   culebra_runtime_value_release(self.tag, self.data);
-  return ret;
+  { *__ret = ret; return; }
 }
 
 // True if the handle was already dropped; otherwise marks it dropped. Shared
@@ -662,31 +666,35 @@ inline bool _jit_handle_drop_consumed(JitObject* h) {
   return false;
 }
 
-inline JitValue _jit_chan_drop(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_chan_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   if (!_jit_handle_drop_consumed(reinterpret_cast<JitObject*>(self.data)))
     chan_drop(_jit_self_long(self, "__channel_id__"),
               static_cast<int>(_jit_self_long(self, "__channel_role__")));
-  return {TAG_NIL, 0};
+  { *__ret = {TAG_NIL, 0}; return; }
 }
 
-inline JitValue _jit_chan_clone(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_chan_clone(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   long id = _jit_self_long(self, "__channel_id__");
   int role = static_cast<int>(_jit_self_long(self, "__channel_role__"));
   chan_bump(id, role, +1);
   JitValue ret = _jit_make_channel_endpoint(id, role);
   culebra_runtime_value_release(self.tag, self.data);
-  return ret;
+  { *__ret = ret; return; }
 }
 
 // rx for-in iterator: has_next pulls one value (blocking, ends on close), next
 // hands over the cached lookahead. State lives in the iterator's own slots.
-inline JitValue _jit_chan_iter_self(JitClosure*, JitValue self, int64_t,
+inline void _jit_chan_iter_self(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                     JitValue*) {
+  JitValue self{self_tag, self_data};
   culebra_runtime_value_retain(self.tag, self.data);
-  return self;
+  { *__ret = self; return; }
 }
-inline JitValue _jit_chan_iter_has_next(JitClosure*, JitValue self, int64_t,
+inline void _jit_chan_iter_has_next(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                         JitValue*) {
+  JitValue self{self_tag, self_data};
   auto* it = reinterpret_cast<JitObject*>(self.data);
   long st = _jit_self_long(self, "_st");
   JitValue ret;
@@ -709,10 +717,11 @@ inline JitValue _jit_chan_iter_has_next(JitClosure*, JitValue self, int64_t,
     }
   }
   culebra_runtime_value_release(self.tag, self.data);
-  return ret;
+  { *__ret = ret; return; }
 }
-inline JitValue _jit_chan_iter_next(JitClosure*, JitValue self, int64_t,
+inline void _jit_chan_iter_next(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                     JitValue*) {
+  JitValue self{self_tag, self_data};
   auto* it = reinterpret_cast<JitObject*>(self.data);
   JitValue ret{TAG_NIL, 0};
   if (_jit_self_long(self, "_st") == 1) {
@@ -721,16 +730,17 @@ inline JitValue _jit_chan_iter_next(JitClosure*, JitValue self, int64_t,
     it->set_or_append("_st", JitValue{TAG_LONG, 0}, true);
   }
   culebra_runtime_value_release(self.tag, self.data);
-  return ret;
+  { *__ret = ret; return; }
 }
-inline JitValue _jit_chan_iter(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_chan_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   long id = _jit_self_long(self, "__channel_id__");
   auto* it = culebra_runtime_object_new();
   it->set_or_append("_cid", JitValue{TAG_LONG, id}, true);
   it->set_or_append("_st", JitValue{TAG_LONG, 0}, true);
   it->set_or_append("_lv", JitValue{TAG_NIL, 0}, true);
   auto meth = [&](const char* nm,
-                  JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*)) {
+                  void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
     it->set_or_append(nm,
         JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
         false);
@@ -739,7 +749,7 @@ inline JitValue _jit_chan_iter(JitClosure*, JitValue self, int64_t, JitValue*) {
   meth("has_next", _jit_chan_iter_has_next);
   meth("next", _jit_chan_iter_next);
   culebra_runtime_value_release(self.tag, self.data);
-  return {TAG_OBJECT, reinterpret_cast<int64_t>(it)};
+  { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
 
 inline JitValue _jit_make_channel_endpoint(long id, int role) {
@@ -749,7 +759,7 @@ inline JitValue _jit_make_channel_endpoint(long id, int role) {
   h->set_or_append("__channel_role__", JitValue{TAG_LONG, role}, false);
   h->set_or_append("_dropped", JitValue{TAG_BOOL, 0}, true);
   auto meth = [&](const char* nm,
-                  JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*)) {
+                  void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
     h->set_or_append(nm,
         JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
         false);
@@ -767,26 +777,29 @@ inline JitValue _jit_make_channel_endpoint(long id, int role) {
 }
 
 // Idempotent SharedBuffer handle drop (explicit `buf.drop()` + GC teardown).
-inline JitValue _jit_shared_buffer_drop(JitClosure*, JitValue self, int64_t,
+inline void _jit_shared_buffer_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                         JitValue*) {
+  JitValue self{self_tag, self_data};
   if (!_jit_handle_drop_consumed(reinterpret_cast<JitObject*>(self.data)))
     culebra::shared_buffer_drop(_jit_self_long(self, "__sharedbuffer_id__"));
-  return {TAG_NIL, 0};
+  { *__ret = {TAG_NIL, 0}; return; }
 }
 
 // `flush()` on a file-backed buffer (msync). Only attached to file handles.
-inline JitValue _jit_shared_buffer_flush(JitClosure*, JitValue self, int64_t,
+inline void _jit_shared_buffer_flush(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                          JitValue*) {
+  JitValue self{self_tag, self_data};
   culebra::shared_buffer_flush(_jit_self_long(self, "__sharedbuffer_id__"));
   culebra_runtime_value_release(self.tag, self.data);
-  return {TAG_NIL, 0};
+  { *__ret = {TAG_NIL, 0}; return; }
 }
 
 // `with_lock(fn)`: run `fn()` holding the buffer's lock, return its value. The
 // guard + JitMethodSelf release the lock and `self` on any exit (mirrors the
 // interp make_shared_buffer_handle with_lock).
-inline JitValue _jit_shared_buffer_with_lock(JitClosure*, JitValue self,
+inline void _jit_shared_buffer_with_lock(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                              int64_t n_args, JitValue* args) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   if (n_args < 1 || args[0].tag != TAG_FUNC) {
     throw culebra::CulebraError("TypeError",
@@ -798,7 +811,7 @@ inline JitValue _jit_shared_buffer_with_lock(JitClosure*, JitValue self,
     throw culebra::CulebraError("ValueError", "SharedBuffer has been dropped");
   }
   culebra::SharedBufferLockGuard guard(std::move(core));
-  return _culebra_invoke0(reinterpret_cast<JitClosure*>(args[0].data));
+  { *__ret = _culebra_invoke0(reinterpret_cast<JitClosure*>(args[0].data)); return; }
 }
 
 
@@ -972,18 +985,20 @@ inline void _jit_sv_require_object(const sendable::SendNode* n,
 
 
 
-inline JitValue _jit_sv_size(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_sv_size(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   auto [core, n, id, idx] = _jit_shared_val_node_of(
       reinterpret_cast<JitObject*>(self.data));
   using K = sendable::SendNode::K;
   long sz = n->kind == K::Object ? static_cast<long>(n->entries.size())
                                  : static_cast<long>(n->elems.size());
   culebra_runtime_value_release(self.tag, self.data);
-  return {TAG_LONG, sz};
+  { *__ret = {TAG_LONG, sz}; return; }
 }
 
-inline JitValue _jit_sv_has(JitClosure*, JitValue self, int64_t n_args,
+inline void _jit_sv_has(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n_args,
                             JitValue* args) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto [core, n, id, idx] = _jit_shared_val_node_of(
       reinterpret_cast<JitObject*>(self.data));
@@ -996,11 +1011,11 @@ inline JitValue _jit_sv_has(JitClosure*, JitValue self, int64_t n_args,
   for (const auto& [k, v] : n->entries) {
     if (_jit_shared_val_key_eq(k, args[0].tag, args[0].data)) {
       _culebra_value_release_impl(args[0].tag, args[0].data);
-      return {TAG_BOOL, 1};
+      { *__ret = {TAG_BOOL, 1}; return; }
     }
   }
   _culebra_value_release_impl(args[0].tag, args[0].data);
-  return {TAG_BOOL, 0};
+  { *__ret = {TAG_BOOL, 0}; return; }
 }
 
 // Deep materialization of one node into the local heap — shared by
@@ -1011,7 +1026,8 @@ inline JitValue _jit_sv_materialize(const sendable::SendNode& n) {
   return jit_deserialize(n, dc);
 }
 
-inline JitValue _jit_sv_keys(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_sv_keys(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto [core, n, id, idx] = _jit_shared_val_node_of(
       reinterpret_cast<JitObject*>(self.data));
@@ -1023,11 +1039,12 @@ inline JitValue _jit_sv_keys(JitClosure*, JitValue self, int64_t, JitValue*) {
     culebra_runtime_array_push(arr, kv.tag, kv.data);
     _culebra_value_release_impl(kv.tag, kv.data);
   }
-  return {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
+  { *__ret = {TAG_ARRAY, reinterpret_cast<int64_t>(arr)}; return; }
 }
 
-inline JitValue _jit_sv_values(JitClosure*, JitValue self, int64_t,
+inline void _jit_sv_values(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                JitValue*) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* view = reinterpret_cast<JitObject*>(self.data);
   auto [core, n, id, idx] = _jit_shared_val_node_of(view);
@@ -1039,20 +1056,22 @@ inline JitValue _jit_sv_values(JitClosure*, JitValue self, int64_t,
     culebra_runtime_array_push(arr, vv.tag, vv.data);
     _culebra_value_release_impl(vv.tag, vv.data);
   }
-  return {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
+  { *__ret = {TAG_ARRAY, reinterpret_cast<int64_t>(arr)}; return; }
 }
 
-inline JitValue _jit_sv_copy(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_sv_copy(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto [core, n, id, idx] = _jit_shared_val_node_of(
       reinterpret_cast<JitObject*>(self.data));
-  return _jit_sv_materialize(*n);
+  { *__ret = _jit_sv_materialize(*n); return; }
 }
 
-inline JitValue _jit_sv_drop(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_sv_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   if (!_jit_handle_drop_consumed(reinterpret_cast<JitObject*>(self.data)))
     culebra::shared_val_drop(_jit_self_long(self, "__sharedval_id__"));
-  return {TAG_NIL, 0};
+  { *__ret = {TAG_NIL, 0}; return; }
 }
 
 // for-in protocol: the JIT's object iter dispatch prefers a user `iter`
@@ -1060,8 +1079,9 @@ inline JitValue _jit_sv_drop(JitClosure*, JitValue self, int64_t, JitValue*) {
 // changes. Object nodes yield (key, value) pairs, Array/Tuple/Set nodes
 // yield elements — mirroring the local collection protocols. The tree is
 // immutable, so a plain cursor is a correct snapshot.
-inline JitValue _jit_sv_iter_has_next(JitClosure*, JitValue self, int64_t,
+inline void _jit_sv_iter_has_next(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                       JitValue*) {
+  JitValue self{self_tag, self_data};
   auto [core, n, id, nidx] = _jit_shared_val_node_of(
       reinterpret_cast<JitObject*>(self.data));
   (void)nidx;
@@ -1070,11 +1090,12 @@ inline JitValue _jit_sv_iter_has_next(JitClosure*, JitValue self, int64_t,
                                     : static_cast<long>(n->elems.size());
   long idx = _jit_self_long(self, "_idx");
   culebra_runtime_value_release(self.tag, self.data);
-  return {TAG_BOOL, idx < total ? 1 : 0};
+  { *__ret = {TAG_BOOL, idx < total ? 1 : 0}; return; }
 }
 
-inline JitValue _jit_sv_iter_next(JitClosure*, JitValue self, int64_t,
+inline void _jit_sv_iter_next(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                   JitValue*) {
+  JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* it = reinterpret_cast<JitObject*>(self.data);
   auto [core, n, id, nidx] = _jit_shared_val_node_of(it);
@@ -1083,7 +1104,7 @@ inline JitValue _jit_sv_iter_next(JitClosure*, JitValue self, int64_t,
   long total = n->kind == K::Object ? static_cast<long>(n->entries.size())
                                     : static_cast<long>(n->elems.size());
   long idx = _jit_self_long(self, "_idx");
-  if (idx >= total) return {TAG_NIL, 0};
+  if (idx >= total) { *__ret = {TAG_NIL, 0}; return; }
   it->set_or_append("_idx", JitValue{TAG_LONG, idx + 1}, true);
   if (n->kind == K::Object) {
     const auto& [k, v] = n->entries[static_cast<size_t>(idx)];
@@ -1094,19 +1115,21 @@ inline JitValue _jit_sv_iter_next(JitClosure*, JitValue self, int64_t,
     culebra_runtime_tuple_push(pair, vv.tag, vv.data);
     _culebra_value_release_impl(kv.tag, kv.data);
     _culebra_value_release_impl(vv.tag, vv.data);
-    return {TAG_TUPLE, reinterpret_cast<int64_t>(pair)};
+    { *__ret = {TAG_TUPLE, reinterpret_cast<int64_t>(pair)}; return; }
   }
-  return _jit_shared_val_read(id, *core,
-                              n->elems[static_cast<size_t>(idx)]);
+  { *__ret = _jit_shared_val_read(id, *core,
+                              n->elems[static_cast<size_t>(idx)]); return; }
 }
 
-inline JitValue _jit_sv_iter_self(JitClosure*, JitValue self, int64_t,
+inline void _jit_sv_iter_self(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                   JitValue*) {
+  JitValue self{self_tag, self_data};
   culebra_runtime_value_retain(self.tag, self.data);
-  return self;
+  { *__ret = self; return; }
 }
 
-inline JitValue _jit_sv_iter(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_sv_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   auto* view = reinterpret_cast<JitObject*>(self.data);
   // Validate first (a dropped handle must not mint a live iterator) and
   // reuse the resolved id/node index.
@@ -1126,7 +1149,7 @@ inline JitValue _jit_sv_iter(JitClosure*, JitValue self, int64_t, JitValue*) {
   it->set_or_append("__sharedval_node__", JitValue{TAG_LONG, node}, false);
   it->set_or_append("_idx", JitValue{TAG_LONG, 0}, true);
   auto meth = [&](const char* nm,
-                  JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*)) {
+                  void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
     it->set_or_append(nm,
         JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
         false);
@@ -1137,7 +1160,7 @@ inline JitValue _jit_sv_iter(JitClosure*, JitValue self, int64_t, JitValue*) {
   meth("drop", _jit_sv_drop);
   it->has_drop = true;
   culebra_runtime_value_release(self.tag, self.data);
-  return {TAG_OBJECT, reinterpret_cast<int64_t>(it)};
+  { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
 
 inline JitValue _jit_make_shared_val_view(long id, long node) {
@@ -1146,7 +1169,7 @@ inline JitValue _jit_make_shared_val_view(long id, long node) {
   h->set_or_append("__sharedval_node__", JitValue{TAG_LONG, node}, false);
   h->set_or_append("_dropped", JitValue{TAG_BOOL, 0}, true);
   auto meth = [&](const char* nm,
-                  JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*)) {
+                  void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
     h->set_or_append(nm,
         JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
         false);
@@ -1199,7 +1222,8 @@ inline JitValue _jit_make_shared_buffer_handle(long id, long count) {
 // JIT merged rx (Channel.fan_in). Same JitObject endpoint shape as a channel rx,
 // but reaches several sources via chan_select_recv (the backend-neutral core).
 // The iterator's iter_self/next slots are generic, so only has_next differs.
-inline JitValue _jit_merged_recv(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_merged_recv(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   long mid = _jit_self_long(self, "__merged_id__");
   auto node = chan_select_recv(mid);
   JitValue ret{TAG_NIL, 0};
@@ -1209,20 +1233,22 @@ inline JitValue _jit_merged_recv(JitClosure*, JitValue self, int64_t, JitValue*)
     release_inflight_channels(*node);
   }
   culebra_runtime_value_release(self.tag, self.data);
-  return ret;
+  { *__ret = ret; return; }
 }
-inline JitValue _jit_merged_drop(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_merged_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   auto* h = reinterpret_cast<JitObject*>(self.data);
   size_t di = h->find_slot("_dropped");
   if (di != static_cast<size_t>(-1) && h->slots[di].value.tag == TAG_BOOL &&
       h->slots[di].value.data) {
-    return {TAG_NIL, 0};
+    { *__ret = {TAG_NIL, 0}; return; }
   }
   h->set_or_append("_dropped", JitValue{TAG_BOOL, 1}, true);
   chan_merge_drop(_jit_self_long(self, "__merged_id__"));  // idempotent anyway
-  return {TAG_NIL, 0};
+  { *__ret = {TAG_NIL, 0}; return; }
 }
-inline JitValue _jit_merged_join(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_merged_join(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   long mid = _jit_self_long(self, "__merged_id__");
   culebra_runtime_value_release(self.tag, self.data);
   // Join the producers (fan_in(items, fn)) and surface the first error. Extract
@@ -1254,10 +1280,11 @@ inline JitValue _jit_merged_join(JitClosure*, JitValue self, int64_t, JitValue*)
   }
   if (have_thrown) culebra_runtime_throw(tt, td);
   if (first_err) throw *first_err;
-  return {TAG_NIL, 0};
+  { *__ret = {TAG_NIL, 0}; return; }
 }
-inline JitValue _jit_merged_iter_has_next(JitClosure*, JitValue self, int64_t,
+inline void _jit_merged_iter_has_next(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                           JitValue*) {
+  JitValue self{self_tag, self_data};
   auto* it = reinterpret_cast<JitObject*>(self.data);
   long st = _jit_self_long(self, "_st");
   JitValue ret;
@@ -1280,16 +1307,17 @@ inline JitValue _jit_merged_iter_has_next(JitClosure*, JitValue self, int64_t,
     }
   }
   culebra_runtime_value_release(self.tag, self.data);
-  return ret;
+  { *__ret = ret; return; }
 }
-inline JitValue _jit_merged_iter(JitClosure*, JitValue self, int64_t, JitValue*) {
+inline void _jit_merged_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   long mid = _jit_self_long(self, "__merged_id__");
   auto* it = culebra_runtime_object_new();
   it->set_or_append("_mid", JitValue{TAG_LONG, mid}, true);
   it->set_or_append("_st", JitValue{TAG_LONG, 0}, true);
   it->set_or_append("_lv", JitValue{TAG_NIL, 0}, true);
   auto meth = [&](const char* nm,
-                  JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*)) {
+                  void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
     it->set_or_append(nm,
         JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
         false);
@@ -1298,7 +1326,7 @@ inline JitValue _jit_merged_iter(JitClosure*, JitValue self, int64_t, JitValue*)
   meth("has_next", _jit_merged_iter_has_next);
   meth("next", _jit_chan_iter_next);          // reuse: hands over _lv
   culebra_runtime_value_release(self.tag, self.data);
-  return {TAG_OBJECT, reinterpret_cast<int64_t>(it)};
+  { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
 inline JitValue _jit_make_merged_rx_endpoint(long mid) {
   auto* h = culebra_runtime_object_new();
@@ -1306,7 +1334,7 @@ inline JitValue _jit_make_merged_rx_endpoint(long mid) {
   h->set_or_append("__merged_id__", JitValue{TAG_LONG, mid}, false);
   h->set_or_append("_dropped", JitValue{TAG_BOOL, 0}, true);
   auto meth = [&](const char* nm,
-                  JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*)) {
+                  void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
     h->set_or_append(nm,
         JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
         false);

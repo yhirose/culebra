@@ -402,7 +402,7 @@ template <class T>
 struct jit_class_info {
   struct Method {
     std::string name;
-    JitValue (*thunk)(JitClosure*, JitValue, int64_t, JitValue*);
+    void (*thunk)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*);
     size_t arity;
     const JitParamMeta* meta;
   };
@@ -495,10 +495,12 @@ inline JitValue jit_lower_return(R r) {
 // The drop event — runs from the destructor's drop protocol, which
 // passes self WITHOUT a +1: must not release it (Phase 3 convention).
 template <class T>
-JitValue jit_drop_thunk(JitClosure*, JitValue self, int64_t, JitValue*) {
+void jit_drop_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                        int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   auto* h = reinterpret_cast<JitObject*>(self.data);
   foreign::table<T>().erase(_jit_handle_long(h, "_id"));
-  return {TAG_NIL, 0};
+  { *__ret = {TAG_NIL, 0}; return; }
 }
 
 template <class T>
@@ -542,11 +544,12 @@ inline void jit_parent_link(JitObject* parent, int64_t* state,
 // every drop thunk it must NOT release self (the destructor protocol
 // passes self without a +1). Does not touch the parent's resource.
 template <class T2>
-JitValue jit_borrow_drop_thunk(JitClosure*, JitValue self, int64_t,
-                               JitValue*) {
+void jit_borrow_drop_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                               int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
   auto* h = reinterpret_cast<JitObject*>(self.data);
   foreign::borrow_erase(_jit_handle_long(h, "_bid"));
-  return {TAG_NIL, 0};
+  { *__ret = {TAG_NIL, 0}; return; }
 }
 
 // Borrowing handle, JIT side — same shape as the interp's: opaque _bid
@@ -634,8 +637,9 @@ inline void jit_check_args(JitValue self, int64_t n, JitValue* args) {
 // `Bump` (a non-const method without preserves_borrows) increments the
 // generation after validation, BEFORE the call.
 template <class T, auto Mf, class R, bool Bump, class... Args>
-JitValue jit_method_thunk(JitClosure*, JitValue self, int64_t n,
-                          JitValue* args) {
+void jit_method_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                          int64_t n, JitValue* args) {
+  JitValue self{self_tag, self_data};
   jit_check_args<T, Mf, Args...>(self, n, args);
   T* obj = jit_handle_self<T>(self);
   if constexpr (Bump) jit_bump_handle_gen<T>(self);
@@ -650,15 +654,16 @@ JitValue jit_method_thunk(JitClosure*, JitValue self, int64_t n,
       return jit_lower_return<R>(std::forward<decltype(r)>(r));
     }
   };
-  return invoke(std::index_sequence_for<Args...>{});
+  { *__ret = invoke(std::index_sequence_for<Args...>{}); return; }
 }
 
 // A borrowed-return method thunk (§10.4): the parent's generation is
 // snapshotted after validation, and the result is a borrowing handle.
 // Taking a borrow never bumps.
 template <class T, auto Mf, class T2, class... Args>
-JitValue jit_borrowed_thunk(JitClosure*, JitValue self, int64_t n,
-                            JitValue* args) {
+void jit_borrowed_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                            int64_t n, JitValue* args) {
+  JitValue self{self_tag, self_data};
   jit_check_args<T, Mf, Args...>(self, n, args);
   T* obj = jit_handle_self<T>(self);
   int64_t pgen = jit_handle_gen(reinterpret_cast<JitObject*>(self.data));
@@ -669,7 +674,7 @@ JitValue jit_borrowed_thunk(JitClosure*, JitValue self, int64_t n,
     culebra_runtime_value_release(self.tag, self.data);
     return out;
   };
-  return invoke(std::index_sequence_for<Args...>{});
+  { *__ret = invoke(std::index_sequence_for<Args...>{}); return; }
 }
 
 // ns adapters: reached through the kNsMethods trampoline, which has
