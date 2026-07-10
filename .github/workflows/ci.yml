@@ -351,3 +351,284 @@ jobs:
           print("sharedbuffer cross-process ok")
           EOF
           timeout 90 ./build-win/culebra.exe sb_parent.cul
+
+  # Windows in-process JIT (Phase 4). Builds culebra with CULEBRA_ENABLE_JIT ON
+  # under the mingw LLVM toolchain and runs a regression smoke over every codegen
+  # path that needed a Win64-specific fix (16-byte-return sret ABI, the
+  # ___chkstk_ms stack-probe symbol, class methods/getters/callable objects).
+  # DEV_NO_RT=ON isolates the in-process JIT (no AOT runtime archives). The
+  # smokes are informative (echo PASS/FAIL, never fail the job): everything
+  # except in-process exceptions works on Win64 — JIT'd exception unwind needs
+  # near-image memory placement for the .xdata RVA and is deferred (see the EH
+  # smoke). AOT exceptions already work (windows-aot-build).
+  windows-jit-build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-llvm
+            mingw-w64-x86_64-ccache
+            mingw-w64-x86_64-gdb
+
+      - name: Toolchain versions
+        run: |
+          g++ --version | head -1
+          echo "llvm-config: $(llvm-config --version)"
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: windows-jit-ccache-${{ github.sha }}
+          restore-keys: |
+            windows-jit-ccache-
+
+      - name: Configure (JIT ON, mingw LLVM, static, no AOT runtime)
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: |
+          cmake -S . -B build-win-jit -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++ \
+            -DCMAKE_C_COMPILER=gcc \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
+            -DCULEBRA_ENABLE_JIT=ON \
+            -DCULEBRA_ENABLE_HTTP=OFF \
+            -DCULEBRA_ENABLE_GRAPHICS=OFF \
+            -DCULEBRA_ENABLE_WEBVIEW=OFF \
+            -DCULEBRA_DEV_NO_RT=ON \
+            -DCULEBRA_LTO=OFF
+
+      - name: Build (culebra driver, JIT enabled)
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: cmake --build build-win-jit --target culebra -j
+
+      - name: Report ccache stats
+        run: ccache -s || true
+
+      # In-process JIT regression smoke: exercises every codegen path that
+      # needed a Win64-specific fix. All informative (echo PASS/FAIL, never fail
+      # the job) so one run reports the whole matrix. The rungs build up from a
+      # bare print through arithmetic, closures, the 16-byte-return runtime
+      # helpers (sret ABI), and class methods (which need the ___chkstk_ms
+      # stack-probe symbol resolved).
+      - name: Smoke — JIT (regression)
+        run: |
+          run() {  # $1=label $2=source
+            printf '%s' "$2" > probe.cul
+            echo "=== $1: culebra --jit ==="
+            if timeout 60 ./build-win-jit/culebra.exe --jit probe.cul; then
+              echo "${1}_PASS"
+            else
+              echo "${1}_FAIL rc=$?"
+            fi
+          }
+          run JIT_PRINT_STR 'print("hi")'
+          run JIT_PRINT_INT 'print(41)'
+          run JIT_ARITH 'print(20 + 22)'
+          run JIT_VAR 'let x = 7
+          print(x * 6)'
+          # Closures: no-arg / one-arg / nested / lambda / self-recursion.
+          run JIT_FN_NOARG 'fn f() { return 1 }
+          print(f())'
+          run JIT_FN_ARG 'fn g(n) { return n + 1 }
+          print(g(5))'
+          run JIT_FN_NEST 'fn a() { return 2 }
+          fn b() { return a() }
+          print(b())'
+          run JIT_LAMBDA 'let sq = fn(n) { n * n }
+          print(sq(6))'
+          run JIT_RECUR 'fn fib(n) { if n < 2 { return n }; return fib(n-1) + fib(n-2) }
+          print(fib(10))'
+          # 16-byte-return runtime helpers (routed through emit_value_call so the
+          # Win64 sret ABI matches the C++ side): string `+` and `**` go through
+          # num-binop helpers, unlike the inline int fast path; object.get uses
+          # object_get_default.
+          run JIT_STRCAT 'print("a" + "b")'
+          run JIT_POW 'print(2 ** 10)'
+          run JIT_OBJGET 'let o = { a: 1 }
+          print(o.get("b", 99))'
+          # Classes: full new+method+property, a bare method dispatch, a getter
+          # (getter_or_value helper), and a callable class object `C(args)`
+          # (class_new_method helper) — the last two are 16-byte-return helpers
+          # too. Method bodies also exercise the ___chkstk_ms stack probe.
+          run JIT_CLASS 'class P { new(x) { this.x = x }
+          val() { return this.x + 1 } }
+          print(P.new(7).val())'
+          run JIT_CLASS_METH0 'class P { new(x) {}
+          m() { return 42 } }
+          print(P.new(1).m())'
+          run JIT_GETTER 'class P { new(x) { this.x = x }
+          get val() { return this.x + 1 } }
+          print(P.new(7).val)'
+          run JIT_CLASSCALL 'class P { new(x) { this.x = x }
+          v() { return this.x } }
+          print(P(9).v())'
+
+      # EH JIT smoke — a throw must unwind through a defer and reach a catch,
+      # exercising the seh0 personality end to end in-process. Informative.
+      - name: Smoke — JIT exceptions (seh0 personality)
+        run: |
+          cat > jit_eh.cul <<'EOF'
+          fn boom() { throw "kaboom" }
+          fn worker() { defer { print("deferred ran") }; boom() }
+          try { worker() } catch e { print("caught: " + e) }
+          print("done")
+          EOF
+          echo "=== culebra --jit jit_eh.cul ==="
+          if timeout 60 ./build-win-jit/culebra.exe --jit jit_eh.cul; then
+            echo "JIT_EH_PASS"
+          else
+            # KNOWN LIMITATION (informative, not a gate): in-process JIT
+            # exceptions don't yet unwind on Win64. A throw is raised correctly
+            # but the OS SEH unwinder can't walk the JIT'd frame — its .xdata
+            # personality is an image-relative 32-bit RVA and the JIT code sits
+            # >4GB from the runtime's personality. Needs near-image JIT memory
+            # placement (or AOT, whose static .o EH tables are in-image). Named
+            # functions / methods / recursion DO work under --jit on Win64.
+            echo "JIT_EH_FAIL rc=$? (known limitation: Win64 JIT unwind)"
+          fi
+
+  # Windows AOT (`culebra build`): stand up native single-.exe generation on
+  # Win64. Unlike the JIT job this builds WITH the runtime archives embedded
+  # (DEV_NO_RT=OFF) so `culebra build` can link them, and exercises the link
+  # driver's Windows path (g++ driver, double-quote quoting, -static, no
+  # -no-pie). The EH smoke is the payoff: AOT's static .o unwind tables are
+  # in-image, so a throw should unwind (unlike in-process JIT — see that job).
+  windows-aot-build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-llvm
+            mingw-w64-x86_64-ccache
+            mingw-w64-x86_64-gdb
+      - name: Toolchain versions
+        run: |
+          g++ --version | head -1
+          echo "llvm-config $(llvm-config --version)"
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: windows-aot-ccache-${{ github.sha }}
+          restore-keys: |
+            windows-aot-ccache-
+      - name: Configure (JIT ON, runtime archives embedded, static)
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: |
+          cmake -S . -B build-win-aot -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++ \
+            -DCMAKE_C_COMPILER=gcc \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
+            -DCULEBRA_ENABLE_JIT=ON \
+            -DCULEBRA_ENABLE_HTTP=OFF \
+            -DCULEBRA_ENABLE_GRAPHICS=OFF \
+            -DCULEBRA_ENABLE_WEBVIEW=OFF \
+            -DCULEBRA_DEV_NO_RT=OFF \
+            -DCULEBRA_LTO=OFF
+      - name: Build (culebra driver + runtime archives)
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        # Only the `culebra` target (+ its embedded runtime-archive deps), not
+        # the POSIX-only test targets (dap_test needs poll.h; smoke_suite needs
+        # C++23 std::print's -lstdc++exp) which the default `all` would build.
+        run: cmake --build build-win-aot --target culebra -j
+      - name: Report ccache stats
+        run: ccache -s || true
+      # Trivial AOT (no exceptions): exercises COFF object emit + the Windows
+      # link driver (g++/quoting/-static). Verbose so the link command shows.
+      - name: Smoke — trivial AOT (no EH)
+        env:
+          CULEBRA_VERBOSE: "1"
+        run: |
+          printf 'print(1 + 2)\n' > triv.cul
+          echo "=== culebra build triv.cul ==="
+          if ./build-win-aot/culebra.exe build triv.cul -o triv.exe; then
+            echo "=== run triv.exe ==="
+            ./triv.exe && echo "AOT_TRIVIAL_PASS" || echo "AOT_TRIVIAL_RUN_FAIL rc=$?"
+          else
+            echo "AOT_TRIVIAL_BUILD_FAIL rc=$?"
+          fi
+      # AOT regression smoke: string concat + caught-value integrity (16-byte
+      # runtime helpers, sret ABI), classes, getters and callable class objects.
+      # Informative (echo PASS/FAIL); set +e so one case's non-zero exit doesn't
+      # abort the whole step.
+      - name: Smoke — AOT (regression)
+        run: |
+          set +e
+          run() {  # $1=label $2=source $3=expected
+            printf '%s' "$2" > p.cul
+            echo "=== $1 ==="
+            if ./build-win-aot/culebra.exe build p.cul -o p.exe; then
+              out=$(./p.exe 2>&1); rc=$?
+              echo "out=[$out] rc=$rc"
+              [ "$out" = "$3" ] && echo "${1}_PASS" || echo "${1}_FAIL"
+            else
+              echo "${1}_BUILD_FAIL rc=$?"
+            fi
+          }
+          run AOT_STRCAT 'print("a" + "b")' 'ab'
+          run AOT_STRVAR 'let s = "hi"
+          print(s + "!")' 'hi!'
+          run AOT_NUMSTR 'print(42.to_string())' '42'
+          run AOT_CATCHVAL 'try { throw "x" } catch e { print(e) }' 'x'
+          run AOT_CATCHCAT 'try { throw "x" } catch e { print("got: " + e) }' 'got: x'
+          run AOT_CLASS 'class P { new(x) { this.x = x }
+          val() { return this.x + 1 } }
+          print(P.new(7).val())' '8'
+          run AOT_GETTER 'class P { new(x) { this.x = x }
+          get val() { return this.x + 1 } }
+          print(P.new(7).val)' '8'
+          run AOT_CLASSCALL 'class P { new(x) { this.x = x }
+          v() { return this.x } }
+          print(P(9).v())' '9'
+          # Full EH (defer + catch + concat), the original failing case.
+          cat > aot_eh.cul <<'EOF'
+          fn boom() { throw "kaboom" }
+          fn worker() { defer { print("deferred ran") }; boom() }
+          try { worker() } catch e { print("caught: " + e) }
+          print("done")
+          EOF
+          echo "=== AOT_EH_FULL ==="
+          if ./build-win-aot/culebra.exe build aot_eh.cul -o aot_eh.exe; then
+            ./aot_eh.exe 2>&1 && echo "AOT_EH_FULL_done rc=$?" || echo "AOT_EH_FULL_RUN_FAIL rc=$?"
+          else
+            echo "AOT_EH_FULL_BUILD_FAIL rc=$?"
+          fi
