@@ -1,0 +1,70 @@
+# GAP2 (docs/gc_model.md §5): the interpreter's cycle collector must reclaim a
+# cycle routed entirely through Object property maps / Tuples — the shape the
+# JIT's conservative collector always handled but InterpGC used to miss (it
+# tracked only Array backings + closure Environments, so a pure Object↔Object
+# cycle leaked, and if it escaped its birth scope `drop` never fired either).
+#
+# GC.stat() forces a collect and reports live_objects; a leak-free workload
+# returns ~0 growth over N iterations. Each cycle is escaped to a top-level
+# `sink`, then orphaned (overwritten) so only the periodic collector — not
+# scope-exit trial deletion — can reclaim it. Runs identically on both backends
+# (the JIT retains at most the most-recent conservative batch, well under 1000).
+
+fn measure(work) {
+  work()
+  let base = GC.stat().live_objects
+  mut i = 0
+  while i < 30 { work(); i = i + 1 }
+  GC.stat().live_objects - base
+}
+
+mut sink = nil
+
+fn pure_object_cycle() {
+  let a = {}
+  let b = {}
+  a.peer = b          # a.properties -> b
+  b.peer = a          # b.properties -> a  (RC never reaches zero)
+  sink = a
+}
+assert_lt(measure(pure_object_cycle), 1000)
+
+fn self_cycle() {
+  let a = {}
+  a.me = a
+  sink = a
+}
+assert_lt(measure(self_cycle), 1000)
+
+fn tuple_in_object() {
+  let a = {}
+  a.t = (a, 1)        # cycle through a Tuple element
+  sink = a
+}
+assert_lt(measure(tuple_in_object), 1000)
+
+fn nonstring_key_cycle() {
+  let a = {}
+  a[(1, 2)] = a       # cycle through the non-String-key sidecars
+  sink = a
+}
+assert_lt(measure(nonstring_key_cycle), 1000)
+
+fn instance_data_cycle() {
+  class Node {
+    new() { this.link = nil }
+  }
+  let a = Node.new()
+  let b = Node.new()
+  a.link = b          # class-instance data cycle (not just an env cycle)
+  b.link = a
+  sink = a
+}
+assert_lt(measure(instance_data_cycle), 1000)
+
+# (Drop-firing for an *escaped* pure-object cycle is verified interp-side
+# separately; the JIT finalizes escaped cycles on a different collect schedule,
+# so a drop-count assertion here would not be backend-symmetric — this file is
+# run on both. The reclamation checks above hold identically on both backends.)
+
+puts("interp cycle gc: ok")

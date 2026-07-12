@@ -1,0 +1,19 @@
+# Leak-fuzz manifest preamble. Reuses the difftest corpus — each case is a
+# re-runnable `fn () { ... }` thunk — as an RC-leak oracle.
+#
+# Run under CULEBRA_GC_NEVER=1 (conservative backstop OFF) so an RC leak is not
+# masked: with no tracing collect, only refcounting frees objects, so a case
+# that leaks shows live_objects growing with each thunk() call. One warmup call
+# absorbs first-call lazy allocation (namespace init, shape caches). Comparing
+# JIT growth vs interp growth (interp is leak-free by shared_ptr) isolates
+# JIT-specific RC leaks from cases that legitimately accumulate global state.
+fn _show(v) { type_of(v) + ":" + to_string(v) }
+fn _p(label, thunk) {
+  let warm = try { thunk(); 1 } catch e { 0 }
+  if warm == 0 { print(label + " ::: skip=err\n"); return }
+  let base = GC.stat().live_objects
+  mut i = 0
+  while i < 40 { try { thunk() } catch e { 0 }; i = i + 1 }
+  let growth = GC.stat().live_objects - base
+  print(label + " ::: growth=" + growth.to_string() + "\n")
+}

@@ -116,6 +116,32 @@ expect_accept "args-rest distinct"      'fn f(x, *args) { x }'
 expect_accept "destructuring param"     'fn f({a, b}) { a }'
 expect_accept "param shadowed by let"   'fn f(x) { let mut x = 1 }'
 
+# Reserved parameter names: `self` / `this` are language-core identifiers the
+# callee binds unconditionally, so a same-named parameter shadows that binding
+# (and on the JIT the overwritten implicit slot leaked a ref every call). Abort
+# before eval with "SyntaxError: '<name>' is a reserved name".
+expect_reserved_reject() {
+  printf 'puts("RAN")\n%s\n' "$2" > "$TMP/t.cul"
+  out=$("$CULEBRA" "$TMP/t.cul" 2>&1)
+  if [[ "$out" == *RAN* || "$out" != *"is a reserved name"* ]]; then
+    echo "FAIL reserved-reject [$1]: $out"; fail=1
+  fi
+}
+expect_reserved_reject "fn self"        'fn f(self, x) { x }'
+expect_reserved_reject "fn this"        'fn f(this) { 1 }'
+expect_reserved_reject "self non-first" 'fn f(x, self) { x }'
+expect_reserved_reject "lambda self"    'let g = |self| self'
+expect_reserved_reject "method self"    'class C { m(self, x) { x } }'
+expect_reserved_reject "ctor this"      'class C { new(this) { } }'
+expect_reserved_reject "trait sig self" 'trait T { go(self) }'
+expect_reserved_reject "kw-only this"   'fn f(x, *, this) { x }'
+expect_reserved_reject "typed self"     'fn f(self: Int) { 1 }'
+
+# Accepted (sound-negative): names that merely CONTAIN self/this are ordinary.
+expect_accept "selfie param"            'fn f(selfie, x) { selfie }'
+expect_accept "myself param"            'fn f(myself) { myself }'
+expect_accept "this_ param"             'fn f(this_) { this_ }'
+
 # `return` outside any function is a SyntaxError (docs §return; `Sys.exit`
 # is the early-exit mechanism, and the module interface is `export`, so a
 # top-level return value goes nowhere).

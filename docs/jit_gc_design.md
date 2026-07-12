@@ -92,14 +92,20 @@ history / memory):
 > perf phase MAY move the mark bit to a trailing in-object field (offset 0
 > stays `refcount`, so the IR is still untouched).
 >
-> **Finalization invariant (Phase 1+):** **`drop` is fired by RC's
-> release-to-zero exactly once; sweep NEVER fires `drop`.** RC, on
-> release-to-zero, fires `drop` + frees memory + de-registers. Only objects
-> RC could not reclaim (cycles / missed-release) reach the backstop, which
-> reclaims their *memory only* (cycle members do not fire `drop` — matches
-> the current behavior and Python's `__del__` rule). So `drop` runs
-> structurally at most once; there is no double-finalization path. Any
-> "sweep fires drop" scaffolding from the pure-tracing draft must be removed.
+> **Finalization invariant (updated for the deterministic-drop work):**
+> **`drop` fires exactly once per object, from a union of four paths deduped
+> by the per-object `dropped` flag** — (a) RC release-to-zero, (b) explicit
+> `obj.drop()`, (c) scope-exit owned-region resolution (`owned_scope_exit`
+> trial deletion), and (d) the GC backstop's **pre-sweep finalize pass**
+> (`_jit_gc_finalize_dead`, PEP-442 style: the dead set's `drop`s run while
+> the structure is still intact, then the sweep reclaims memory without
+> re-firing — interp mirror: `_owned_gc_backstop` before the clear cascade).
+> So **cycle members DO fire `drop`** (via (c) at scope exit or (d) at
+> collect time); the *sweep itself* still never fires `drop` — finalize is a
+> separate pre-sweep pass. An earlier revision of this doc stated "cycle
+> members do not fire drop"; that predates the deterministic-drop phases and
+> was wrong for the shipped code (see `jit_ownership.md` and
+> `_culebra_call_drop_if_present` in jit.h for the current chokepoint).
 >
 > The sections below (object model, registry heap, conservative root
 > scanning, mark-sweep, safety devices) still apply — they describe the
@@ -267,13 +273,18 @@ container's death is deterministic too — which recurses to every object). So:
   RC cannot: **cycles** and objects leaked by a **missed release**. These are
   unreachable from roots, so a full mark-sweep frees them regardless of their
   stale refcount.
-- **Sweep NEVER fires `drop`.** Backstop-reclaimed objects are cycle members /
-  leaked residue; their `drop` is intentionally skipped (matches the current
-  behavior and Python's `__del__` rule — cycle finalizer order is undefined).
-- **Finalization invariant:** `drop` is fired by RC release-to-zero **at most
-  once**; the sweep path frees *memory only*. RC reclaims an object before it
-  ever reaches the sweep set (it is de-registered on free), so there is no
-  double-finalization and no double-free path.
+- **The sweep itself never fires `drop` — but a pre-sweep finalize pass DOES.**
+  `_jit_gc_finalize_dead` (PEP-442 style, mirroring Python's post-PEP-442
+  `__del__`-for-cycle-members rule) runs once per collection over the intact
+  dead set and fires `drop` for every dead Object; the sweep then reclaims
+  memory without re-firing. Interp mirror: `_owned_gc_backstop` before the
+  clear cascade. (An earlier revision said cycle members' `drop` is skipped;
+  that predates the deterministic-drop phases.)
+- **Finalization invariant:** `drop` fires **exactly once** per object, from
+  the four-path union (release-to-zero / explicit / scope-exit resolution /
+  backstop finalize) deduped by the per-object `dropped` flag. The sweep path
+  frees *memory only*; RC-reclaimed objects are de-registered on free, so
+  there is no double-finalization and no double-free path.
 
 The retain/release machinery is kept (it owns memory and deterministic
 `drop`); the conservative backstop reclaims only the residue RC cannot.

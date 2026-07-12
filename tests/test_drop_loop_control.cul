@@ -1,0 +1,98 @@
+# GAP1 (docs/gc_model.md §5): break / continue must release the abandoned
+# iteration's owned slots and fire `drop` at the loop-control point — exactly
+# as fall-through does — not leak them to the GC backstop until frame exit.
+# Before the fix the JIT's compile_break / compile_continue ran only the
+# iteration's defers and jumped, so a drop-bearing binding in the iteration
+# that broke/continued never fired `drop` (the stale slot alloca kept it
+# conservatively rooted). The interpreter released the same slots automatically
+# through its BreakSignal/ContinueSignal shared_ptr unwinding, so this was a
+# backend asymmetry in drop *timing* — invisible to the leak-fuzzer (a one-shot
+# break is not per-iteration growth; a continue's slot is overwritten by the
+# next iteration), which is why it needs an explicit drop-count test.
+#
+# Each scenario runs inside a wrapper fn and asserts the drop count *right
+# after the loop* — before the frame exits — so a drop deferred to frame exit
+# (the bug) is caught, not masked by end-of-function cleanup.
+
+let log = []
+
+class R {
+  new(lg) { this.log = lg }
+  drop() { this.log.push(1) }
+}
+
+fn expect(n) { assert_eq(log.size(), n) }
+
+# --- for + break: the breaking iteration's resource drops at the break.
+fn for_break(base) {
+  for x in [0, 1, 2] {
+    let r = R.new(log)          # x=0 drops at fall-through, x=1 at break
+    if x == 1 { break }
+  }
+  expect(base + 2)              # both R's dropped by the time the loop exits
+}
+for_break(0)
+
+# --- while + break.
+fn while_break(base) {
+  let mut i = 0
+  while true {
+    let r = R.new(log)
+    if i == 1 { break }
+    i = i + 1
+  }
+  expect(base + 2)
+}
+while_break(log.size())
+
+# --- for + continue on the LAST iteration: no later iteration re-stores the
+# slot, so a leaked slot would only drop at frame exit — the strict test.
+fn for_continue_last(base) {
+  for x in [0, 1] {
+    let r = R.new(log)
+    if x == 1 { continue }
+  }
+  expect(base + 2)
+}
+for_continue_last(log.size())
+
+# --- while + continue on the last iteration.
+fn while_continue_last(base) {
+  let mut j = 0
+  while j < 2 {
+    let r = R.new(log)
+    j = j + 1
+    if j == 2 { continue }
+  }
+  expect(base + 2)
+}
+while_continue_last(log.size())
+
+# --- break nested inside an inner lexical block: the inner block scope AND
+# the loop body scope are both abandoned; both must release.
+fn nested_break(base) {
+  for x in [0, 1] {
+    {
+      let r = R.new(log)
+      if x == 0 { break }
+    }
+  }
+  expect(base + 1)              # only x=0's R created, and it drops
+}
+nested_break(log.size())
+
+# --- continue past a resource declared before an inner block, exercising the
+# multi-scope release range (body scope + inner scope).
+fn continue_multiscope(base) {
+  for x in [0, 1] {
+    let outer = R.new(log)
+    {
+      let inner = R.new(log)
+      if x == 1 { continue }   # abandons inner + body scopes; both drop
+    }
+  }
+  expect(base + 4)             # 2 iterations x (outer + inner)
+}
+continue_multiscope(log.size())
+
+print("ok\n")

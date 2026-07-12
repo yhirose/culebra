@@ -1,0 +1,21 @@
+# Allowlist for the suite-wide GAP5 gate (tools/difftest/leak_abort_suite.sh).
+#
+# Each non-comment line is an exact `_p(...)` case label that aborts under
+# CULEBRA_GC_LEAK_ABORT=1 and is structurally out of reach of the current JIT
+# ownership convention. The gate FAILS on any abort whose label is NOT listed
+# here (a new regression); an allowlisted label that stops aborting is reported
+# so this file can shrink. This is now cycle-only — every non-comment line is a
+# legitimate reference cycle (the backstop's job), so the acyclic-leak-freedom
+# milestone is reached. Blank lines and `#` comments are ignored. Regenerate
+# the abort set with `just leak-abort-suite-update`, but keep the "why"
+# comments by hand. Rationale is in memory/project_leak_fuzzer.md (C⑥–C⑧).
+
+# --- legitimate reference cycles (the backstop's job, not RC bugs) -----------
+# A drop-object reachable through a hashable key's back-edge; the cycle balances
+# refcounts so nothing frees it. Same class as leak_baseline.txt's drop| cycles
+# (this one aborts the audit because its residue reads as inflated, not a keep).
+drop|mut g = []; { let a = {drop: fn () { g.push(1) }}; let k = {hash: fn () { 42 }, eq: fn () { true }, back: a}; a[k] = 1 }; g
+# A self-recursive nested function captures itself — a closure cycle that leaks
+# equally on interp (shared_ptr) and JIT, exactly like Rust's Rc. Same class as
+# leak_baseline.txt's nestedfn| cycles; the audit flags this one as inflated.
+nestedfn|match 1 { Long => { fn h(n) { n > 0 ? h(n - 1) : 17 }; h(2) }, _ => nil }

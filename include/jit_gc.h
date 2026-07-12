@@ -23,11 +23,19 @@
 #endif
 #if !defined(_WIN32)
 #include <pthread.h>  // pthread_get_stackaddr_np / getattr_np (stack_base, POSIX)
+// backtrace() for GAP5 birth-site capture (macOS, glibc Linux).
+#include <execinfo.h>
 #else
 #include <os_compat.h>  // guarded <windows.h> for GetCurrentThreadStackLimits
+// mingw has no <execinfo.h>; GAP5 birth-site capture degrades gracefully —
+// the audit still fires, printing "(no birth site)" (n==0 / null symbols are
+// already handled at the report site).
+static inline int backtrace(void**, int) { return 0; }
+static inline char** backtrace_symbols(void* const*, int) { return nullptr; }
 #endif
 
 #include <algorithm>
+#include <array>
 #include <csetjmp>
 #include <cstdint>
 #include <cstdio>
@@ -188,6 +196,10 @@ class Heap {
     objects_.insert(p, GcHeader{/*mark=*/0, type_tag, /*generation=*/0,
                                 /*flags=*/0, size});
     live_bytes_ += size;
+    if (birth_tracking()) {
+      BirthSite& b = birth_sites_[p];
+      b.n = backtrace(b.frames.data(), kBirthFrames);
+    }
     maybe_collect();
   }
 
@@ -231,6 +243,7 @@ class Heap {
     if (GcHeader* h = objects_.find(p)) {
       live_bytes_ -= h->size;
       objects_.erase(p);
+      if (!birth_sites_.empty()) birth_sites_.erase(p);
     }
   }
 
@@ -242,6 +255,7 @@ class Heap {
     uint32_t size = h->size;
     live_bytes_ -= size;
     objects_.erase(p);
+    if (!birth_sites_.empty()) birth_sites_.erase(p);
     std::memset(p, 0xDE, size);
     std::free(p);
   }
@@ -343,6 +357,25 @@ class Heap {
     });
   }
 
+  // GAP5 (docs/gc_model.md §5) entry point. When CULEBRA_GC_LEAK_ABORT=1,
+  // classify the heap for inflated-RC leaks and, if any survive, abort with
+  // their birth sites. No-op otherwise (zero cost when off).
+  //
+  // MUST be called at a QUIESCENT safepoint — the mutator between top-level
+  // statements or at program teardown, with the top-level env still rooted and
+  // NO expression in flight. The classifier is only zero-false-positive there:
+  // mid-expression, a freshly allocated object legitimately has refcount 1 and
+  // zero internal refs (inflated) while its only reference sits in a register
+  // the conservative scan may not have spilled yet — indistinguishable from a
+  // true orphan at a single snapshot. At a quiescent point every such newborn
+  // has been rooted or released, so an inflated-and-dead object is a real leak.
+  // This is why it is NOT wired into the per-allocation collect() path. Runs
+  // regardless of CULEBRA_GC_NEVER (the audit does not itself reclaim), so the
+  // fuzzer's backstop-off mode still gets a loud teardown check.
+  void maybe_audit_leaks() {
+    if (leak_abort()) audit_inflated_rc();
+  }
+
  private:
   // GC_STRESS=1 collects on every allocation (SpiderMonkey gcZeal style) so a
   // missing root or a teardown bug surfaces immediately under the test suite.
@@ -394,45 +427,16 @@ class Heap {
   // is over-subtraction, which the GC_STRESS + difftest gates catch. This is
   // the same algorithm the interpreter's InterpGC uses, so the two backends
   // share one cycle-collection model.
-  size_t collect_refs() {
-    if (gc_refs_diag()) collect_refs_diag();
-    return collect_impl([this](auto&& push) {
-      std::unordered_map<void*, int64_t> gc_refs;
-      gc_refs.reserve(objects_.size());
-      objects_.for_each([&](void* o, GcHeader&) {
-        gc_refs.emplace(o, *reinterpret_cast<int64_t*>(o));  // refcount @ off 0
-      });
-      std::vector<void*> kids;
-      objects_.for_each([&](void* o, GcHeader& h) {
-        if (!children_fn_) return;
-        kids.clear();
-        children_fn_(o, h.type_tag, kids);
-        for (void* c : kids) {
-          auto it = gc_refs.find(c);
-          if (it != gc_refs.end()) it->second--;
-        }
-      });
-      for (auto& [o, refs] : gc_refs) {
-        if (refs > 0) push(o);
-      }
-    });
-  }
-
-  static bool gc_refs_diag() {
-    static const bool s = std::getenv("CULEBRA_GC_REFS_DIAG") != nullptr;
-    return s;
-  }
-
-  // Pinpoint why gc_refs over-retains: mark the gc_refs-reachable set and the
-  // conservative-reachable set, then report objects gc_refs keeps that the
-  // conservative scan would free (the leak), broken down by type tag. If the
-  // refcount of such an object exceeds its counted internal references, the
-  // refcount is inflated = an RC leak; otherwise gc_refs's child enumeration is
-  // missing an internal edge.
-  void collect_refs_diag() {
-    std::unordered_map<void*, int64_t> gc_refs;
+  // Build the gc_refs map: each object's refcount (the i64 @ offset 0) minus
+  // its internal (heap) in-edges. A positive residue means a reference from
+  // OUTSIDE the heap (a root/borrow) still holds it. This edge accounting is
+  // load-bearing and over-subtraction is the one unsafe direction (see the
+  // collect_refs docblock), so both users — collect_refs (cycle collection) and
+  // classify_leaks (leak diagnostics) — share this single construction.
+  void compute_gc_refs(std::unordered_map<void*, int64_t>& gc_refs) {
+    gc_refs.reserve(objects_.size());
     objects_.for_each([&](void* o, GcHeader&) {
-      gc_refs.emplace(o, *reinterpret_cast<int64_t*>(o));
+      gc_refs.emplace(o, *reinterpret_cast<int64_t*>(o));  // refcount @ off 0
     });
     std::vector<void*> kids;
     objects_.for_each([&](void* o, GcHeader& h) {
@@ -444,30 +448,136 @@ class Heap {
         if (it != gc_refs.end()) it->second--;
       }
     });
+  }
+
+  size_t collect_refs() {
+    if (gc_refs_diag()) collect_refs_diag();
+    return collect_impl([this](auto&& push) {
+      std::unordered_map<void*, int64_t> gc_refs;
+      compute_gc_refs(gc_refs);
+      for (auto& [o, refs] : gc_refs) {
+        if (refs > 0) push(o);
+      }
+    });
+  }
+
+  static bool gc_refs_diag() {
+    static const bool s = std::getenv("CULEBRA_GC_REFS_DIAG") != nullptr;
+    return s;
+  }
+
+  // GAP5 (docs/gc_model.md §5) — loud leak detection. With
+  // CULEBRA_GC_LEAK_ABORT=1, the teardown quiescent-point audit (see
+  // maybe_audit_leaks) classifies the conservative-dead-but-refcount-reachable
+  // objects; any *inflated-RC* one (a phantom +1 = a definite acyclic RC leak,
+  // distinct from a benign cycle) is reported with its allocation backtrace and
+  // the process aborts. This turns the backstop's silent masking into an
+  // actionable crash at the birth site. Off by default: production keeps
+  // reclaiming (a crash would be a DoS trade, §5-GAP5); this is the debug/CI
+  // net. Enabling it auto-enables birth-site capture (see birth_tracking).
+  static bool leak_abort() {
+    static const bool s = std::getenv("CULEBRA_GC_LEAK_ABORT") != nullptr;
+    return s;
+  }
+
+  // Record each object's allocation backtrace so leak_abort can name the birth
+  // site. Costly (a backtrace() per adopt), so it is opt-in: on automatically
+  // under leak_abort, or standalone via CULEBRA_GC_BIRTH_SITE for diagnostics.
+  static bool birth_tracking() {
+    static const bool s =
+        leak_abort() || std::getenv("CULEBRA_GC_BIRTH_SITE") != nullptr;
+    return s;
+  }
+
+  // Classify why gc_refs over-retains: mark the gc_refs-reachable set and the
+  // conservative-reachable set; every object gc_refs keeps that the
+  // conservative scan would free is a leak. Split them: an *inflated-RC* object
+  // (refcount exceeds its counted internal references) carries a phantom +1 =
+  // a definite acyclic RC leak; a *transitively-held* one (refcount == internal
+  // count, gc_refs residue 0) is kept only via a retained-live ancestor — the
+  // shape a benign reference cycle takes, not an RC bug. Fills `inflated` with
+  // the former and `by_tag` with the per-type leak histogram; returns the total
+  // leaked count. This is the zero-false-positive detector GAP5 makes loud.
+  size_t classify_leaks(std::vector<void*>& inflated, size_t by_tag[256],
+                        int64_t& transitively_held) {
+    std::unordered_map<void*, int64_t> gc_refs;
+    compute_gc_refs(gc_refs);
     std::unordered_set<void*> refs_live, cons_live;
     mark_reachable(refs_live, [&](auto&& push) {
       for (auto& [o, r] : gc_refs) if (r > 0) push(o);
     });
     mark_reachable(cons_live, [this](auto&& push) { scan_roots(push); });
-    size_t by_tag[256] = {0};
-    int64_t inflated = 0, zero_internal = 0, leak = 0;
+    size_t leak = 0;
+    transitively_held = 0;
     for (void* o : refs_live) {
       if (cons_live.count(o)) continue;  // genuinely live — keep
       leak++;
       GcHeader* h = objects_.find(o);
       if (h) by_tag[h->type_tag]++;
       // gc_refs[o] here is refcount - internal; > 0 means external refs remain.
-      if (gc_refs[o] > 0) inflated++;  // refcount exceeds internal count
-      else zero_internal++;            // kept only via a retained-live ancestor
+      if (gc_refs[o] > 0) inflated.push_back(o);  // phantom +1 = RC leak
+      else transitively_held++;                   // via a retained-live ancestor
     }
+    return leak;
+  }
+
+  // Print the leak classification (CULEBRA_GC_REFS_DIAG diagnostic).
+  void collect_refs_diag() {
+    std::vector<void*> inflated;
+    size_t by_tag[256] = {0};
+    int64_t transitively_held = 0;
+    size_t leak = classify_leaks(inflated, by_tag, transitively_held);
     std::fprintf(stderr,
-        "[gc-refs-diag] heap=%zu refs_live=%zu cons_live=%zu leak=%lld "
-        "(inflated_rc=%lld transitively_held=%lld) tags:",
-        objects_.size(), refs_live.size(), cons_live.size(),
-        (long long)leak, (long long)inflated, (long long)zero_internal);
+        "[gc-refs-diag] heap=%zu leak=%lld "
+        "(inflated_rc=%zu transitively_held=%lld) tags:",
+        objects_.size(), (long long)leak, inflated.size(),
+        (long long)transitively_held);
     for (int t = 0; t < 256; t++)
       if (by_tag[t]) std::fprintf(stderr, " %d=%zu", t, by_tag[t]);
     std::fprintf(stderr, "\n");
+  }
+
+  // GAP5 worker (call only via maybe_audit_leaks, at a quiescent safepoint).
+  // Classify leaks; if any inflated-RC object survives — a definite acyclic RC
+  // leak the backstop would otherwise silently reclaim — dump each one's type
+  // and allocation birth site, then abort so the bug surfaces where it was
+  // born. Benign cycles never trigger this (their residue is transitively-held,
+  // not inflated).
+  void audit_inflated_rc() {
+    std::vector<void*> inflated;
+    size_t by_tag[256] = {0};
+    int64_t transitively_held = 0;
+    classify_leaks(inflated, by_tag, transitively_held);
+    if (inflated.empty()) return;
+    std::fprintf(stderr,
+        "\n[gc-leak-abort] %zu inflated-RC object(s) detected — a phantom +1 "
+        "the backstop would silently reclaim. This is a definite RC leak.\n",
+        inflated.size());
+    size_t shown = 0;
+    for (void* o : inflated) {
+      if (shown++ >= kMaxLeakReports) {
+        std::fprintf(stderr, "  ... and %zu more (capped)\n",
+                     inflated.size() - kMaxLeakReports);
+        break;
+      }
+      GcHeader* h = objects_.find(o);
+      std::fprintf(stderr, "\n  leak: obj=%p tag=%d refcount=%lld\n", o,
+                   h ? h->type_tag : -1,
+                   (long long)*reinterpret_cast<int64_t*>(o));
+      auto it = birth_sites_.find(o);
+      if (it == birth_sites_.end() || it->second.n == 0) {
+        std::fprintf(stderr,
+                     "    (no birth site — set CULEBRA_GC_BIRTH_SITE=1)\n");
+        continue;
+      }
+      char** syms = backtrace_symbols(it->second.frames.data(), it->second.n);
+      std::fprintf(stderr, "    born at:\n");
+      for (int i = 0; i < it->second.n; i++)
+        std::fprintf(stderr, "      %s\n", syms ? syms[i] : "?");
+      std::free(syms);
+    }
+    std::fflush(stderr);
+    std::abort();
   }
 
   // The non-stack root sources: registered global slots plus the runtime's
@@ -722,6 +832,18 @@ class Heap {
 #error "conservative GC stack_base: unsupported platform"
 #endif
   }
+
+  // GAP5 birth-site side table (populated only under birth_tracking): the
+  // captured allocation backtrace per live object, symbolized on a leak abort.
+  // A side map keeps GcHeader at its load-bearing 8 bytes and costs nothing
+  // when the feature is off.
+  static constexpr int kBirthFrames = 12;
+  static constexpr size_t kMaxLeakReports = 20;  // cap the abort dump
+  struct BirthSite {
+    std::array<void*, kBirthFrames> frames{};
+    int n = 0;
+  };
+  std::unordered_map<void*, BirthSite> birth_sites_;
 
   GcRegistry objects_;
   std::vector<void**> global_roots_;

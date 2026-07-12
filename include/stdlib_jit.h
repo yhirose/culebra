@@ -975,11 +975,20 @@ class _JitKwargResolver {
     try {
       build_merged(n_kw, kw_keys, kw_vals, n_splat, splat_objs);
     } catch (...) {
-      // build_merged threw mid-loop. The map holds whatever entries
-      // we already retained; release them so we don't leak. Caller
-      // still owns the un-consumed kwarg / splat slots — those are
-      // its responsibility to release on rethrow.
+      // build_merged threw mid-loop (both throw sites are in the splat
+      // pass, which runs before any kwarg slot is moved into the map).
+      // The map holds only splat-retained copies — release those, then
+      // the caller-side +1s nobody consumed yet: every kwarg slot and
+      // every splat operand. The JIT callers emit no slab cleanup of
+      // their own (consume-at-store, §4.7 callee-consumes), so this is
+      // the sole releaser on the throw edge.
       release_merged();
+      for (int64_t i = 0; i < n_kw; i++) {
+        _culebra_value_release_impl(kw_vals[i].tag, kw_vals[i].data);
+      }
+      for (int64_t i = 0; i < n_splat; i++) {
+        _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
+      }
       throw;
     }
     // Splat operand +1s served their purpose (we retained the values
@@ -2928,21 +2937,21 @@ struct NsParamMeta;  // defined below; referenced by compile_single_positional_k
 
 struct JitExtension {
   static void declare_runtime(JIT& jit);
-  static llvm::Value* compile_global(JIT& jit, const std::string& name,
+  static JIT::Owned compile_global(JIT& jit, const std::string& name,
                                        const peg::Ast& argsAst,
                                        const peg::Ast& callAst);
-  static llvm::Value* compile_ns_call(JIT& jit,
+  static JIT::Owned compile_ns_call(JIT& jit,
                                         std::string_view ns,
                                         std::string_view method,
                                         const peg::Ast& argsAst,
                                         const peg::Ast& callAst);
-  static llvm::Value* compile_nested_ns_call(JIT& jit,
+  static JIT::Owned compile_nested_ns_call(JIT& jit,
                                               std::string_view ns,
                                               std::string_view sub,
                                               std::string_view method,
                                               const peg::Ast& argsAst,
                                               const peg::Ast& callAst);
-  static llvm::Value* compile_ns_prop(JIT& jit,
+  static JIT::Owned compile_ns_prop(JIT& jit,
                                         std::string_view ns,
                                         std::string_view prop);
 
@@ -2952,7 +2961,7 @@ struct JitExtension {
   // Proc.spawn. Extra positionals after cmd bind to the leading params by
   // name (from `meta`) — i.e. `Proc.run(cmd, "/tmp")` sets cwd positionally,
   // matching interp — so they're folded into the kwarg slab here.
-  static llvm::Value* compile_single_positional_kwargs(
+  static JIT::Owned compile_single_positional_kwargs(
       JIT& jit, const peg::Ast& argsAst, const peg::Ast& callAst,
       const char* ctx, const char* rt_name, const NsParamMeta* meta);
 
@@ -2962,7 +2971,7 @@ struct JitExtension {
   // positional whose NsParam carries a declared type, then dispatches the
   // compiled args through `culebra_runtime_ns_method_call_kw` (which consumes
   // them — no caller-side release).
-  static llvm::Value* compile_ns_method_kwargs(
+  static JIT::Owned compile_ns_method_kwargs(
       JIT& jit, const NsMethod* m, const peg::Ast& argsAst,
       const peg::Ast& callAst);
 
@@ -2980,7 +2989,7 @@ struct JitExtension {
                                          const peg::Ast& argsAst);
 
   static bool is_builtin_var(const std::string& name);
-  static llvm::Value* compile_ufcs_builtin(JIT& jit,
+  static JIT::Owned compile_ufcs_builtin(JIT& jit,
                                              const std::string& method,
                                              const peg::Ast& argsAst,
                                              llvm::Value* receiver);
@@ -6251,6 +6260,13 @@ inline bool _jit_ns_kwarg_resolve_core(
       merged.emplace(kw_keys[i], kw_vals[i]);
     }
   }
+  // The merge retained each splat value it kept (kwargs transfer their +1 into
+  // `merged`); the splat *Objects* themselves — +1-owned by the caller's slab
+  // and handed to us — are done being read, so drop them here. Covers both the
+  // args-rest (range/iota) and fixed-param success paths below. The pre-merge
+  // error paths already release them via `release_all`, so this runs only once.
+  for (int64_t i = 0; i < n_splat; i++)
+    _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
 
   // Args-rest method (range/iota): positionals collect into the rest Array
   // instead of binding fixed slots, so the variadic 1-2 start/end args coexist
@@ -7094,7 +7110,7 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                 jit.builder_.getInt8Ty());
 }
 
-inline llvm::Value* JitExtension::compile_global(JIT& jit,
+inline JIT::Owned JitExtension::compile_global(JIT& jit,
                                                   const std::string& name,
                                                   const peg::Ast& argsAst,
                                                   const peg::Ast& callAst) {
@@ -7106,7 +7122,7 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
   // name-resolution-first behavior). Otherwise return nullptr so
   // downstream call dispatch can take over.
   if (!JIT::arg_list_is_positional_only(argsAst)) {
-    if (jit.lookup_fn_ast(name) != nullptr) return nullptr;
+    if (jit.lookup_fn_ast(name) != nullptr) return {};
     // range/iota accept a `step` kwarg / `**` splat — fall through to nullptr
     // so the general path resolves them as their args-rest closure and routes
     // through call_with_kwargs (the resolver handles step + unknown-kwarg).
@@ -7123,17 +7139,17 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
       jit.emit_throw_error("TypeError",
           "function does not accept keyword arguments",
           callAst.line, callAst.column);
-      return jit.make_nil();  // unreachable after the throw
+      return jit.own(jit.make_nil());  // unreachable after the throw
     }
-    return nullptr;
+    return {};
   }
   auto line = jit.builder_.getInt64(callAst.line);
   auto col = jit.builder_.getInt64(callAst.column);
 
   if (name == "puts" && argsAst.nodes.size() == 1)
-    return emit_output_call(jit, rt::puts, argsAst);
+    return jit.own(emit_output_call(jit, rt::puts, argsAst));
   if (name == "print" && argsAst.nodes.size() == 1)
-    return emit_output_call(jit, rt::print, argsAst);
+    return jit.own(emit_output_call(jit, rt::print, argsAst));
 
   if (name == "to_long" && argsAst.nodes.size() == 1) {
     auto arg = jit.compile(*argsAst.nodes[0]);
@@ -7145,7 +7161,7 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
         {jit.extract_tag(arg.borrow()), jit.extract_data(arg.borrow()),
          line, col});
     arg.drop();
-    return result;
+    return jit.own(result);
   }
 
   if (name == "to_float" && argsAst.nodes.size() == 1) {
@@ -7155,7 +7171,7 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
         {jit.extract_tag(arg.borrow()), jit.extract_data(arg.borrow()),
          line, col});
     arg.drop();
-    return result;
+    return jit.own(result);
   }
 
   if (name == "to_string" && argsAst.nodes.size() == 1) {
@@ -7164,7 +7180,7 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
         jit.module_->getFunction(rt::value_to_display),
         {jit.extract_tag(arg.borrow()), jit.extract_data(arg.borrow())});
     arg.drop();
-    return jit.make_string(s);
+    return jit.own(jit.make_string(s));
   }
 
   if (name == "type_of" && argsAst.nodes.size() == 1) {
@@ -7172,7 +7188,7 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
     auto s = jit.emit_call(jit.module_->getFunction(rt::type_of),
                                  {jit.extract_tag(arg.borrow())});
     arg.drop();
-    return jit.make_string(s);
+    return jit.own(jit.make_string(s));
   }
 
   if (name == "hash" && argsAst.nodes.size() == 1) {
@@ -7182,7 +7198,7 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
         {jit.extract_tag(arg.borrow()), jit.extract_data(arg.borrow()),
          line, col});
     arg.drop();
-    return jit.make_long(h);
+    return jit.own(jit.make_long(h));
   }
 
   // _lazy_ns_register("Name", builder) — JIT/AOT-only intrinsic the stdlib
@@ -7207,10 +7223,10 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
         {namePtr, jit.extract_tag(builder.borrow()),
          jit.extract_data(builder.borrow())});
     builder.drop();
-    return jit.make_nil();
+    return jit.own(jit.make_nil());
   }
 
-  return nullptr;
+  return {};
 }
 
 // Member-style shorthands so each JitExtension::compile_* body can call
@@ -7242,7 +7258,10 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
                              const peg::Ast* a = nullptr) {                   \
     return jit.emit_type_check(v, t, w, a);                                   \
   };                                                                          \
-  auto compile = [&](const peg::Ast& a) { return jit.compile(a).consume(); };           \
+  /* Block-pinned (§4.9): the raw is usable only in the block it was        \
+     consumed in. A value held across another compile / arg-check emission  \
+     stays in an Owned instead: `Owned v = jit.compile(a);`. */              \
+  auto compile = [&](const peg::Ast& a) { return jit.compile(a).consume(); };\
   auto emit_output_call = [&](const char* rt, const peg::Ast& a) {            \
     return JitExtension::emit_output_call(jit, rt, a);                        \
   };                                                                          \
@@ -7309,7 +7328,7 @@ inline ScannedArgs _jit_scan_arg_list(const peg::Ast& argsAst) {
   return s;
 }
 
-inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
+inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
                                                     std::string_view ns,
                                                     std::string_view method,
                                                     const peg::Ast& argsAst,
@@ -7333,12 +7352,41 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     static const std::set<std::string_view> kwarg_aware_ns = {"JSON", "Proc",
                                                               "Http"};
     if (!kwarg_aware_ns.contains(ns)) {
-      return nullptr;
+      return {};
     }
   }
   auto ptrTy = llvm::PointerType::get(ctx_, 0);
   auto line = builder_.getInt64(callAst.line);
   auto col = builder_.getInt64(callAst.column);
+
+  // Compile all positional args into an entry-block Value slab and call
+  // `rt_name(slab, n, line, col)`. Each arg stays Owned across the later
+  // compiles and the call (§4.9): the window releases them on a throw
+  // edge; all are dropped after the call returns.
+  auto emit_value_slab_call = [&](const char* rt_name,
+                                  const char* slab_name) -> llvm::Value* {
+    auto n = argsAst.nodes.size();
+    llvm::IRBuilder<> entryB(
+        &builder_.GetInsertBlock()->getParent()->getEntryBlock(),
+        builder_.GetInsertBlock()->getParent()->getEntryBlock().begin());
+    auto slab = entryB.CreateAlloca(
+        valueType_,
+        builder_.getInt64(static_cast<int64_t>(std::max<size_t>(n, 1))),
+        slab_name);
+    std::vector<JIT::Owned> compiled;
+    compiled.reserve(n);
+    for (size_t i = 0; i < n; i++) {
+      JIT::Owned v = jit.compile(*argsAst.nodes[i]);
+      auto slot = builder_.CreateGEP(valueType_, slab, builder_.getInt64(i));
+      builder_.CreateStore(v.borrow(), slot);
+      compiled.push_back(std::move(v));
+    }
+    auto r = emit_call(module_->getFunction(rt_name),
+                       {slab, builder_.getInt64(static_cast<int64_t>(n)),
+                        line, col});
+    for (auto& v : compiled) v.drop();
+    return r;
+  };
 
   // Emit the canonical positional type check for argument `i` of this ns method:
   // `parameter '<name>' expects <T>` at the argument's source position, exactly
@@ -7456,22 +7504,22 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
             auto isNeg = builder_.CreateICmpSLT(d, builder_.getInt64(0));
             return make_long(
                 builder_.CreateSelect(isNeg, builder_.CreateNeg(d), d));
-          })) return v;
+          })) return jit.own(v);
     }
     // For floor/ceil/round on Long, the result is the input unchanged.
     auto long_identity = [&](llvm::Value* d) { return make_long(d); };
-    if (method == "floor") { if (auto v = math_unary(rt::math_floor, long_identity)) return v; }
-    if (method == "ceil")  { if (auto v = math_unary(rt::math_ceil,  long_identity)) return v; }
-    if (method == "round") { if (auto v = math_unary(rt::math_round, long_identity)) return v; }
-    if (method == "log")   { if (auto v = math_unary_runtime(rt::math_log))   return v; }
-    if (method == "exp")   { if (auto v = math_unary_runtime(rt::math_exp))   return v; }
-    if (method == "sqrt")  { if (auto v = math_unary_runtime(rt::math_sqrt))  return v; }
-    if (method == "sin")   { if (auto v = math_unary_runtime(rt::math_sin))   return v; }
-    if (method == "cos")   { if (auto v = math_unary_runtime(rt::math_cos))   return v; }
-    if (method == "tan")   { if (auto v = math_unary_runtime(rt::math_tan))   return v; }
-    if (method == "asin")  { if (auto v = math_unary_runtime(rt::math_asin))  return v; }
-    if (method == "acos")  { if (auto v = math_unary_runtime(rt::math_acos))  return v; }
-    if (method == "atan")  { if (auto v = math_unary_runtime(rt::math_atan))  return v; }
+    if (method == "floor") { if (auto v = math_unary(rt::math_floor, long_identity)) return jit.own(v); }
+    if (method == "ceil")  { if (auto v = math_unary(rt::math_ceil,  long_identity)) return jit.own(v); }
+    if (method == "round") { if (auto v = math_unary(rt::math_round, long_identity)) return jit.own(v); }
+    if (method == "log")   { if (auto v = math_unary_runtime(rt::math_log))   return jit.own(v); }
+    if (method == "exp")   { if (auto v = math_unary_runtime(rt::math_exp))   return jit.own(v); }
+    if (method == "sqrt")  { if (auto v = math_unary_runtime(rt::math_sqrt))  return jit.own(v); }
+    if (method == "sin")   { if (auto v = math_unary_runtime(rt::math_sin))   return jit.own(v); }
+    if (method == "cos")   { if (auto v = math_unary_runtime(rt::math_cos))   return jit.own(v); }
+    if (method == "tan")   { if (auto v = math_unary_runtime(rt::math_tan))   return jit.own(v); }
+    if (method == "asin")  { if (auto v = math_unary_runtime(rt::math_asin))  return jit.own(v); }
+    if (method == "acos")  { if (auto v = math_unary_runtime(rt::math_acos))  return jit.own(v); }
+    if (method == "atan")  { if (auto v = math_unary_runtime(rt::math_atan))  return jit.own(v); }
     if (method == "atan2" && argsAst.nodes.size() == 2) {
       auto y = jit.compile(*argsAst.nodes[0]);
       auto x = jit.compile(*argsAst.nodes[1]);
@@ -7481,7 +7529,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
                           line, col});
       y.drop();
       x.drop();
-      return r;
+      return jit.own(r);
     }
 
     // min/max: compile every arg, stash them in a stack array of
@@ -7551,45 +7599,29 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
         b.drop();
         return r;
       }
-      llvm::IRBuilder<> entryB(
-          &builder_.GetInsertBlock()->getParent()->getEntryBlock(),
-          builder_.GetInsertBlock()->getParent()->getEntryBlock().begin());
-      auto argsAlloca = entryB.CreateAlloca(
-          valueType_, builder_.getInt64(static_cast<int64_t>(n)),
-          "num.args");
-      std::vector<llvm::Value*> compiled;
-      compiled.reserve(n);
-      for (size_t i = 0; i < n; i++) {
-        auto v = compile(*argsAst.nodes[i]);
-        auto slot = builder_.CreateGEP(valueType_, argsAlloca,
-                                       builder_.getInt64(i));
-        builder_.CreateStore(v, slot);
-        compiled.push_back(v);
-      }
-      auto result = emit_call(
-          module_->getFunction(rt_name),
-          {argsAlloca, builder_.getInt64(static_cast<int64_t>(n)),
-           line, col});
-      for (auto v : compiled) emit_value_release(v);
-      return result;
+      return emit_value_slab_call(rt_name, "num.args");
     };
     if (method == "min") {
       if (auto v = variadic_reduce(rt::math_min,
-                                   llvm::CmpInst::ICMP_SLT)) return v;
+                                   llvm::CmpInst::ICMP_SLT)) return jit.own(v);
     }
     if (method == "max") {
       if (auto v = variadic_reduce(rt::math_max,
-                                   llvm::CmpInst::ICMP_SGT)) return v;
+                                   llvm::CmpInst::ICMP_SGT)) return jit.own(v);
     }
 
     if (method == "pow" && argsAst.nodes.size() == 2) {
-      auto baseV = compile(*argsAst.nodes[0]); emit_canon_arg_check(0, baseV);
-      auto expV = compile(*argsAst.nodes[1]); emit_canon_arg_check(1, expV);
-      auto base = value_to_long(baseV);
-      auto exp = value_to_long(expV);
+      // Each arg stays Owned across the next compile / check (§4.9); a
+      // checked value is a scalar, so the consume needs no release.
+      JIT::Owned baseV = jit.compile(*argsAst.nodes[0]);
+      emit_canon_arg_check(0, baseV.borrow());
+      JIT::Owned expV = jit.compile(*argsAst.nodes[1]);
+      emit_canon_arg_check(1, expV.borrow());
+      auto base = value_to_long(baseV.consume());
+      auto exp = value_to_long(expV.consume());
       auto r = emit_call(module_->getFunction(rt::math_pow),
                                    {base, exp, line, col});
-      return make_long(r);
+      return jit.own(make_long(r));
     }
     if (method == "sign" && argsAst.nodes.size() == 1) {
       auto x = value_to_long(compile(*argsAst.nodes[0]));
@@ -7600,31 +7632,35 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
                                                zero);
       auto r = builder_.CreateSelect(is_neg, builder_.getInt64(-1),
                                      pos_or_zero);
-      return make_long(r);
+      return jit.own(make_long(r));
     }
     if (method == "clamp" && argsAst.nodes.size() == 3) {
-      auto xV = compile(*argsAst.nodes[0]); emit_canon_arg_check(0, xV);
-      auto loV = compile(*argsAst.nodes[1]); emit_canon_arg_check(1, loV);
-      auto hiV = compile(*argsAst.nodes[2]); emit_canon_arg_check(2, hiV);
-      auto x = value_to_long(xV);
-      auto lo = value_to_long(loV);
-      auto hi = value_to_long(hiV);
+      // Same Owned-across-checks discipline as Math.pow above.
+      JIT::Owned xV = jit.compile(*argsAst.nodes[0]);
+      emit_canon_arg_check(0, xV.borrow());
+      JIT::Owned loV = jit.compile(*argsAst.nodes[1]);
+      emit_canon_arg_check(1, loV.borrow());
+      JIT::Owned hiV = jit.compile(*argsAst.nodes[2]);
+      emit_canon_arg_check(2, hiV.borrow());
+      auto x = value_to_long(xV.consume());
+      auto lo = value_to_long(loV.consume());
+      auto hi = value_to_long(hiV.consume());
       auto above_lo = builder_.CreateSelect(builder_.CreateICmpSLT(x, lo),
                                             lo, x);
       auto r = builder_.CreateSelect(builder_.CreateICmpSGT(above_lo, hi),
                                      hi, above_lo);
-      return make_long(r);
+      return jit.own(make_long(r));
     }
   }
 
   if (ns == "IO") {
     if (method == "puts" && argsAst.nodes.size() == 1)
-      return emit_output_call(rt::puts, argsAst);
+      return jit.own(emit_output_call(rt::puts, argsAst));
     if (method == "print" && argsAst.nodes.size() == 1)
-      return emit_output_call(rt::print, argsAst);
+      return jit.own(emit_output_call(rt::print, argsAst));
     if (method == "input" && argsAst.nodes.size() == 0) {
       auto s = emit_call(module_->getFunction(rt::input), {});
-      return make_string(s);
+      return jit.own(make_string(s));
     }
   }
 
@@ -7645,7 +7681,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto s = emit_call(module_->getFunction(rt::read_file),
                          {ptr, line, col});
       arg.drop();
-      return make_string(s);
+      return jit.own(make_string(s));
     }
     if (method == "write" && argsAst.nodes.size() == 2) {
       auto p = jit.compile(*argsAst.nodes[0]);
@@ -7659,7 +7695,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       emit_call(module_->getFunction(rt::write_file), {pp, cp, line, col});
       p.drop();
       c.drop();
-      return make_nil();
+      return jit.own(make_nil());
     }
 
     // (path) -> String for the four path-manipulation helpers.
@@ -7673,10 +7709,10 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       arg.drop();
       return make_string(s);
     };
-    if (method == "basename")  if (auto v = path_to_string(rt::fs_basename)) return v;
-    if (method == "dirname")   if (auto v = path_to_string(rt::fs_dirname)) return v;
-    if (method == "extension") if (auto v = path_to_string(rt::fs_extension)) return v;
-    if (method == "stem")      if (auto v = path_to_string(rt::fs_stem)) return v;
+    if (method == "basename")  if (auto v = path_to_string(rt::fs_basename)) return jit.own(v);
+    if (method == "dirname")   if (auto v = path_to_string(rt::fs_dirname)) return jit.own(v);
+    if (method == "extension") if (auto v = path_to_string(rt::fs_extension)) return jit.own(v);
+    if (method == "stem")      if (auto v = path_to_string(rt::fs_stem)) return jit.own(v);
 
     // (path) -> Bool query helpers.
     auto path_to_bool = [&](const char* rt_name) -> llvm::Value* {
@@ -7690,9 +7726,9 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto b = builder_.CreateICmpNE(i, builder_.getInt64(0));
       return make_bool(b);
     };
-    if (method == "exists")  if (auto v = path_to_bool(rt::io_exists)) return v;
-    if (method == "is_file") if (auto v = path_to_bool(rt::fs_is_file)) return v;
-    if (method == "is_dir")  if (auto v = path_to_bool(rt::fs_is_dir)) return v;
+    if (method == "exists")  if (auto v = path_to_bool(rt::io_exists)) return jit.own(v);
+    if (method == "is_file") if (auto v = path_to_bool(rt::fs_is_file)) return jit.own(v);
+    if (method == "is_dir")  if (auto v = path_to_bool(rt::fs_is_dir)) return jit.own(v);
 
     // (path, line, col) -> Long. IOError on missing.
     if (method == "size" && argsAst.nodes.size() == 1) {
@@ -7703,7 +7739,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto n = emit_call(module_->getFunction(rt::fs_size),
                          {p, line, col});
       arg.drop();
-      return make_long(n);
+      return jit.own(make_long(n));
     }
 
     // (path, line, col) -> Array*.
@@ -7715,7 +7751,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto a = emit_call(module_->getFunction(rt::fs_list_dir),
                          {p, line, col});
       arg.drop();
-      return make_array(a);
+      return jit.own(make_array(a));
     }
 
     // (path, line, col) -> void mutators.
@@ -7729,33 +7765,12 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       arg.drop();
       return make_nil();
     };
-    if (method == "mkdir")  if (auto v = path_to_void(rt::fs_mkdir)) return v;
-    if (method == "remove") if (auto v = path_to_void(rt::fs_remove)) return v;
+    if (method == "mkdir")  if (auto v = path_to_void(rt::fs_mkdir)) return jit.own(v);
+    if (method == "remove") if (auto v = path_to_void(rt::fs_remove)) return jit.own(v);
 
     // (args*) -> String join; build a slab of JitValues then call.
     if (method == "join") {
-      auto n = argsAst.nodes.size();
-      llvm::IRBuilder<> entryB(
-          &builder_.GetInsertBlock()->getParent()->getEntryBlock(),
-          builder_.GetInsertBlock()->getParent()->getEntryBlock().begin());
-      auto slab = entryB.CreateAlloca(
-          valueType_, builder_.getInt64(static_cast<int64_t>(n)),
-          "fs.join.args");
-      std::vector<llvm::Value*> compiled;
-      compiled.reserve(n);
-      for (size_t i = 0; i < n; i++) {
-        auto v = compile(*argsAst.nodes[i]);
-        auto slot = builder_.CreateGEP(valueType_, slab,
-                                       builder_.getInt64(i));
-        builder_.CreateStore(v, slot);
-        compiled.push_back(v);
-      }
-      auto s = emit_call(
-          module_->getFunction(rt::fs_join),
-          {slab, builder_.getInt64(static_cast<int64_t>(n)),
-           line, col});
-      for (auto v : compiled) emit_value_release(v);
-      return make_string(s);
+      return jit.own(make_string(emit_value_slab_call(rt::fs_join, "fs.join.args")));
     }
   }
 
@@ -7773,11 +7788,11 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
 
     if (method == "now_nanos" && a.empty()) {
       auto n = emit_call(module_->getFunction(rt::time_now_nanos), {});
-      return make_long(n);
+      return jit.own(make_long(n));
     }
     if (method == "monotonic" && a.empty()) {
       auto d = emit_call(module_->getFunction(rt::time_monotonic), {});
-      return make_float(d);
+      return jit.own(make_float(d));
     }
     if (method == "sleep" && a.size() == 1) {
       auto secs = jit.compile(*a[0]);
@@ -7785,7 +7800,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto d = jit.coerce_to_double(secs.borrow());
       emit_call(module_->getFunction(rt::time_sleep), {d});
       secs.drop();
-      return make_nil();
+      return jit.own(make_nil());
     }
     if (method == "from_iso_nanos" && a.size() == 1) {
       auto arg = jit.compile(*a[0]);
@@ -7794,7 +7809,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto n = emit_call(module_->getFunction(rt::time_from_iso_nanos),
                          {p, line, col});
       arg.drop();
-      return make_long(n);
+      return jit.own(make_long(n));
     }
     if (method == "parse_nanos" && a.size() == 2) {
       auto s = jit.compile(*a[0]);
@@ -7807,25 +7822,25 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
                          {sp, fp, line, col});
       s.drop();
       f.drop();
-      return make_long(n);
+      return jit.own(make_long(n));
     }
     if (method == "iso_nanos" && a.size() == 2) {
       auto n = value_to_long(compile(*a[0]));
       auto u = eat_bool_i64(*a[1]);
       auto s = emit_call(module_->getFunction(rt::time_iso_nanos), {n, u});
-      return make_string(s);
+      return jit.own(make_string(s));
     }
     if (method == "weekday_nanos" && a.size() == 2) {
       auto n = value_to_long(compile(*a[0]));
       auto u = eat_bool_i64(*a[1]);
       auto w = emit_call(module_->getFunction(rt::time_weekday_nanos), {n, u});
-      return make_long(w);
+      return jit.own(make_long(w));
     }
     if (method == "parts_nanos" && a.size() == 2) {
       auto n = value_to_long(compile(*a[0]));
       auto u = eat_bool_i64(*a[1]);
       auto o = emit_call(module_->getFunction(rt::time_parts_nanos), {n, u});
-      return make_object(o);
+      return jit.own(make_object(o));
     }
     if (method == "format_nanos" && a.size() == 3) {
       auto n = value_to_long(compile(*a[0]));
@@ -7836,7 +7851,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto s = emit_call(module_->getFunction(rt::time_format_nanos),
                          {n, fp, u});
       f.drop();
-      return make_string(s);
+      return jit.own(make_string(s));
     }
     if (method == "from_parts_nanos" && a.size() == 2) {
       auto obj = jit.compile(*a[0]);
@@ -7846,7 +7861,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto n = emit_call(module_->getFunction(rt::time_from_parts_nanos),
                          {op, u});
       obj.drop();
-      return make_long(n);
+      return jit.own(make_long(n));
     }
     if (method == "add_nanos" && a.size() == 8) {
       auto n  = value_to_long(compile(*a[0]));
@@ -7859,7 +7874,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto u  = eat_bool_i64(*a[7]);
       auto r = emit_call(module_->getFunction(rt::time_add_nanos),
                          {n, y, mo, d, h, mi, se, u});
-      return make_long(r);
+      return jit.own(make_long(r));
     }
     if (method == "start_of_nanos" && a.size() == 3) {
       auto n = value_to_long(compile(*a[0]));
@@ -7870,47 +7885,47 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto r = emit_call(module_->getFunction(rt::time_start_of_nanos),
                          {n, up, u, line, col});
       unit.drop();
-      return make_long(r);
+      return jit.own(make_long(r));
     }
   }
 
   if (ns == "_Term") {
     auto& a = argsAst.nodes;
     if (method == "cols" && a.empty())
-      return make_long(emit_call(module_->getFunction(rt::term_cols), {}));
+      return jit.own(make_long(emit_call(module_->getFunction(rt::term_cols), {})));
     if (method == "rows" && a.empty())
-      return make_long(emit_call(module_->getFunction(rt::term_rows), {}));
+      return jit.own(make_long(emit_call(module_->getFunction(rt::term_rows), {})));
     if (method == "raw_on" && a.empty()) {
       emit_call(module_->getFunction(rt::term_raw_on), {});
-      return make_nil();
+      return jit.own(make_nil());
     }
     if (method == "raw_off" && a.empty()) {
       emit_call(module_->getFunction(rt::term_raw_off), {});
-      return make_nil();
+      return jit.own(make_nil());
     }
     if (method == "flush" && a.empty()) {
       emit_call(module_->getFunction(rt::term_flush), {});
-      return make_nil();
+      return jit.own(make_nil());
     }
     if (method == "resized" && a.empty())
-      return make_bool(emit_call(module_->getFunction(rt::term_resized), {}));
+      return jit.own(make_bool(emit_call(module_->getFunction(rt::term_resized), {})));
     if (method == "width" && a.size() == 1) {
       auto str = jit.compile(*a[0]);
       emit_type_check(str.borrow(), "String", "parameter 's'", a[0].get());
       auto p = builder_.CreateIntToPtr(extract_data(str.borrow()), ptrTy);
       auto w = emit_call(module_->getFunction(rt::term_width), {p});
       str.drop();
-      return make_long(w);
+      return jit.own(make_long(w));
     }
     if (method == "color_level" && a.empty())
-      return make_long(emit_call(module_->getFunction(rt::term_color_level), {}));
+      return jit.own(make_long(emit_call(module_->getFunction(rt::term_color_level), {})));
     if (method == "read_key" && a.size() == 1) {
       auto t = jit.compile(*a[0]);
       emit_type_check(t.borrow(), "Float", "parameter 'timeout'", a[0].get());
       auto d = jit.coerce_to_double(t.borrow());
       auto s = emit_call(module_->getFunction(rt::term_read_key), {d});
       t.drop();
-      return make_string(s);
+      return jit.own(make_string(s));
     }
   }
 
@@ -7918,16 +7933,19 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     if (method == "seed" && argsAst.nodes.size() == 1) {
       auto n = value_to_long(compile(*argsAst.nodes[0]));
       emit_call(module_->getFunction(rt::random_seed), {n});
-      return make_nil();
+      return jit.own(make_nil());
     }
     if (method == "int" && argsAst.nodes.size() == 2) {
-      auto loV = compile(*argsAst.nodes[0]); emit_canon_arg_check(0, loV);
-      auto hiV = compile(*argsAst.nodes[1]); emit_canon_arg_check(1, hiV);
-      auto lo = value_to_long(loV);
-      auto hi = value_to_long(hiV);
+      // Same Owned-across-checks discipline as Math.pow.
+      JIT::Owned loV = jit.compile(*argsAst.nodes[0]);
+      emit_canon_arg_check(0, loV.borrow());
+      JIT::Owned hiV = jit.compile(*argsAst.nodes[1]);
+      emit_canon_arg_check(1, hiV.borrow());
+      auto lo = value_to_long(loV.consume());
+      auto hi = value_to_long(hiV.consume());
       auto r = emit_call(
           module_->getFunction(rt::random_int), {lo, hi, line, col});
-      return make_long(r);
+      return jit.own(make_long(r));
     }
     auto num_pair_call = [&](const char* rt_name) -> llvm::Value* {
       if (argsAst.nodes.size() != 2) return nullptr;
@@ -7942,10 +7960,10 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       return r;
     };
     if (method == "uniform") {
-      if (auto v = num_pair_call(rt::random_uniform)) return v;
+      if (auto v = num_pair_call(rt::random_uniform)) return jit.own(v);
     }
     if (method == "gauss") {
-      if (auto v = num_pair_call(rt::random_gauss)) return v;
+      if (auto v = num_pair_call(rt::random_gauss)) return jit.own(v);
     }
     if (method == "shuffle" && argsAst.nodes.size() == 1) {
       auto arg = jit.compile(*argsAst.nodes[0]);
@@ -7954,7 +7972,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto ap = builder_.CreateIntToPtr(extract_data(arg.borrow()), ptrTy);
       emit_call(module_->getFunction(rt::random_shuffle), {ap});
       arg.drop();
-      return make_nil();
+      return jit.own(make_nil());
     }
     if (method == "weighted_choice" && argsAst.nodes.size() == 2) {
       auto pop = jit.compile(*argsAst.nodes[0]);
@@ -7970,7 +7988,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
           {pp, wp, line, col});
       pop.drop();
       wts.drop();
-      return r;
+      return jit.own(r);
     }
   }
 
@@ -7988,12 +8006,12 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
 
   if (ns == "Sys") {
     if (method == "exit" && argsAst.nodes.size() == 1) {
-      auto codeVal = compile(*argsAst.nodes[0]);
-      emit_type_check(codeVal, "Long", "parameter 'code'",
+      JIT::Owned codeVal = jit.compile(*argsAst.nodes[0]);
+      emit_type_check(codeVal.borrow(), "Long", "parameter 'code'",
                       argsAst.nodes[0].get());
-      auto code = value_to_long(codeVal);
+      auto code = value_to_long(codeVal.consume());
       emit_call(module_->getFunction(rt::sys_exit), {code});
-      return make_nil();  // unreachable; sys_exit terminates the process
+      return jit.own(make_nil());  // unreachable; sys_exit terminates the process
     }
     if (method == "env" && argsAst.nodes.size() == 1) {
       auto arg = jit.compile(*argsAst.nodes[0]);
@@ -8002,15 +8020,15 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto ptr = builder_.CreateIntToPtr(extract_data(arg.borrow()), ptrTy);
       auto s = emit_call(module_->getFunction(rt::sys_env), {ptr});
       arg.drop();
-      return make_string(s);
+      return jit.own(make_string(s));
     }
     if (method == "time" && argsAst.nodes.size() == 0) {
       auto t = emit_call(module_->getFunction(rt::sys_time), {});
-      return make_float(t);
+      return jit.own(make_float(t));
     }
     if (method == "getcwd" && argsAst.nodes.size() == 0) {
       auto s = emit_call(module_->getFunction(rt::sys_getcwd), {line, col});
-      return make_string(s);
+      return jit.own(make_string(s));
     }
     if (method == "chdir" && argsAst.nodes.size() == 1) {
       auto arg = jit.compile(*argsAst.nodes[0]);
@@ -8019,7 +8037,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto p = builder_.CreateIntToPtr(extract_data(arg.borrow()), ptrTy);
       emit_call(module_->getFunction(rt::sys_chdir), {p, line, col});
       arg.drop();
-      return make_nil();
+      return jit.own(make_nil());
     }
     if (method == "set_env" && argsAst.nodes.size() == 2) {
       auto nameV = jit.compile(*argsAst.nodes[0]);
@@ -8033,43 +8051,16 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       emit_call(module_->getFunction(rt::sys_set_env), {np, vp, line, col});
       nameV.drop();
       valV.drop();
-      return make_nil();
+      return jit.own(make_nil());
     }
   }
 
   if (ns == "Tensor") {
-    auto pack_args = [&]() {
-      auto n = argsAst.nodes.size();
-      llvm::IRBuilder<> entryB(
-          &builder_.GetInsertBlock()->getParent()->getEntryBlock(),
-          builder_.GetInsertBlock()->getParent()->getEntryBlock().begin());
-      auto argsAlloca = entryB.CreateAlloca(
-          valueType_, builder_.getInt64(static_cast<int64_t>(std::max<size_t>(n, 1))),
-          "tensor.args");
-      std::vector<llvm::Value*> compiled;
-      compiled.reserve(n);
-      for (size_t i = 0; i < n; i++) {
-        auto v = compile(*argsAst.nodes[i]);
-        auto slot = builder_.CreateGEP(valueType_, argsAlloca,
-                                       builder_.getInt64(i));
-        builder_.CreateStore(v, slot);
-        compiled.push_back(v);
-      }
-      return std::make_pair(argsAlloca, std::move(compiled));
-    };
-
     if (method == "zeros" || method == "ones" || method == "randn") {
-      auto [argsAlloca, compiled] = pack_args();
       const char* rt_name = method == "zeros" ? rt::tensor_zeros
                           : method == "ones"  ? rt::tensor_ones
                                               : rt::tensor_randn;
-      auto t = emit_call(
-          module_->getFunction(rt_name),
-          {argsAlloca,
-           builder_.getInt64(static_cast<int64_t>(argsAst.nodes.size())),
-           line, col});
-      for (auto v : compiled) emit_value_release(v);
-      return make_tensor(t);
+      return jit.own(make_tensor(emit_value_slab_call(rt_name, "tensor.args")));
     }
     if (method == "from" && argsAst.nodes.size() == 1) {
       auto arg = jit.compile(*argsAst.nodes[0]);
@@ -8081,7 +8072,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto t = emit_call(
           module_->getFunction(rt::tensor_from), {ap, line, col});
       arg.drop();
-      return make_tensor(t);
+      return jit.own(make_tensor(t));
     }
     if (method == "concat" && argsAst.nodes.size() == 1) {
       auto arg = jit.compile(*argsAst.nodes[0]);
@@ -8091,7 +8082,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto t = emit_call(
           module_->getFunction(rt::tensor_concat), {ap, line, col});
       arg.drop();
-      return make_tensor(t);
+      return jit.own(make_tensor(t));
     }
     if (method == "from_csv" && argsAst.nodes.size() == 1) {
       auto arg = jit.compile(*argsAst.nodes[0]);
@@ -8101,25 +8092,25 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto t = emit_call(
           module_->getFunction(rt::tensor_from_csv), {pp});
       arg.drop();
-      return make_tensor(t);
+      return jit.own(make_tensor(t));
     }
     // Activations relu/sigmoid/softmax are Tensor instance methods
     // (`t.relu()`), handled in JIT::compile_builtin_method.
     if (method == "eval") {
       // Variadic: each arg must be a Tensor; we just call eval_one
-      // on each and release. No alloca needed.
+      // on each and drop. No alloca needed.
       for (size_t i = 0; i < argsAst.nodes.size(); i++) {
-        auto v = compile(*argsAst.nodes[i]);
-        emit_type_check(v, "Tensor", "Tensor.eval argument");
-        auto p = builder_.CreateIntToPtr(extract_data(v), ptrTy);
+        JIT::Owned v = jit.compile(*argsAst.nodes[i]);
+        emit_type_check(v.borrow(), "Tensor", "Tensor.eval argument");
+        auto p = builder_.CreateIntToPtr(extract_data(v.borrow()), ptrTy);
         emit_call(module_->getFunction(rt::tensor_eval_one), {p});
-        emit_value_release(v);
+        v.drop();
       }
-      return make_nil();
+      return jit.own(make_nil());
     }
   }
 
-  return nullptr;
+  return {};
 }
 
 inline llvm::Value* JitExtension::emit_malformed_arg_throw(
@@ -8139,7 +8130,7 @@ inline llvm::Value* JitExtension::emit_malformed_arg_throw(
   return make_nil();  // unreachable: emit_throw_error is noreturn
 }
 
-inline llvm::Value* JitExtension::compile_single_positional_kwargs(
+inline JIT::Owned JitExtension::compile_single_positional_kwargs(
     JIT& jit, const peg::Ast& argsAst, const peg::Ast& callAst,
     const char* ctx, const char* rt_name, const NsParamMeta* meta) {
   CULEBRA_JIT_EXT_BODY_ALIASES(jit);
@@ -8158,9 +8149,9 @@ inline llvm::Value* JitExtension::compile_single_positional_kwargs(
   // scan recorded it instead of throwing, so re-emit it as a runtime throw at
   // its evaluate-then-error point — catchable like interp + the general path.
   if (scanned.err_kind) {
-    return emit_malformed_arg_throw(jit, argsAst, scanned.err_eval_count,
+    return jit.own(emit_malformed_arg_throw(jit, argsAst, scanned.err_eval_count,
                                     scanned.err_kind, scanned.err_msg,
-                                    scanned.err_line, scanned.err_col);
+                                    scanned.err_line, scanned.err_col));
   }
   // Arity (too few / too many positionals) and positional-vs-keyword conflict
   // are statically known here, but interp reports them at RUNTIME (catchable,
@@ -8187,42 +8178,46 @@ inline llvm::Value* JitExtension::compile_single_positional_kwargs(
             : std::format(
                   "got argument '{}' both positionally and as a keyword",
                   conflict_param);
-    return emit_malformed_arg_throw(
+    return jit.own(emit_malformed_arg_throw(
         jit, argsAst, argsAst.nodes.size(),
         (too_few || too_many) ? "ArityError" : "TypeError", msg,
-        callAst.line, callAst.column);
+        callAst.line, callAst.column));
   }
 
-  auto cmd_val = compile(*positional[0]);
+  // Every compiled argument stays in an Owned while the later ones compile
+  // and their checks emit (§4.9): the window releases them on a throw edge.
+  // The kw/splat +1s are consumed into the slab stores below (the _kw entry
+  // owns them); cmd is borrowed by the entry and dropped after the call.
+  JIT::Owned cmd_val = jit.compile(*positional[0]);
   // The positional command list is a typed `Array` param on the interp side
   // (`cmd` for run/spawn, `commands` for all); mirror its message + argument
   // position here so a non-Array is rejected identically (the runtime impls
   // keep a backstop check for the element/empty cases).
-  jit.emit_type_check(cmd_val, "Array",
+  jit.emit_type_check(cmd_val.borrow(), "Array",
                       std::strcmp(ctx, "Proc.all") == 0 ? "parameter 'commands'"
                                                         : "parameter 'cmd'",
                       positional[0]);
   std::vector<llvm::Constant*> kwKeys;
-  std::vector<llvm::Value*> kwVals;
+  std::vector<JIT::Owned> kwVals;
   for (auto& [name, ast] : explicit_kwargs) {
     kwKeys.push_back(builder_.CreateGlobalString(std::string(name), ".kwkey"));
-    kwVals.push_back(compile(*ast));
+    kwVals.push_back(jit.compile(*ast));
   }
   // Positionals after cmd → kwargs named after params[1..] (cwd, env, …). A
   // param given both positionally and by keyword is an error, matching interp.
   for (size_t i = 1; i < positional.size(); i++) {
     std::string_view pname = meta->params[i].name;  // conflict already ruled out
     kwKeys.push_back(builder_.CreateGlobalString(std::string(pname), ".kwkey"));
-    auto pv = compile(*positional[i]);
+    JIT::Owned pv = jit.compile(*positional[i]);
     // A typed param bound positionally (e.g. Proc.run's cwd: String?) is checked
     // at the argument's position, matching the interp binder — otherwise the
     // adapter rejects it later at the call site. No-op for untyped params.
-    jit.emit_type_check(pv, meta->params[i].type,
+    jit.emit_type_check(pv.borrow(), meta->params[i].type,
                         std::format("parameter '{}'", pname), positional[i]);
-    kwVals.push_back(pv);
+    kwVals.push_back(std::move(pv));
   }
-  std::vector<llvm::Value*> splatVals;
-  for (auto* ast : splats) splatVals.push_back(compile(*ast));
+  std::vector<JIT::Owned> splatVals;
+  for (auto* ast : splats) splatVals.push_back(jit.compile(*ast));
 
   auto fn = builder_.GetInsertBlock()->getParent();
   llvm::IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
@@ -8244,10 +8239,10 @@ inline llvm::Value* JitExtension::compile_single_positional_kwargs(
                               "proc.kw.splat");
   for (size_t i = 0; i < kwKeys.size(); i++) {
     store_at(keysSlab, ptrTy, i, kwKeys[i]);
-    store_at(valsSlab, jit.valueType_, i, kwVals[i]);
+    store_at(valsSlab, jit.valueType_, i, kwVals[i].consume());
   }
   for (size_t i = 0; i < splatVals.size(); i++) {
-    store_at(splatSlab, jit.valueType_, i, splatVals[i]);
+    store_at(splatSlab, jit.valueType_, i, splatVals[i].consume());
   }
 
   auto lineV = builder_.getInt64(callAst.line);
@@ -8256,17 +8251,17 @@ inline llvm::Value* JitExtension::compile_single_positional_kwargs(
       module_->getOrInsertFunction(
           rt_name, jit.valueType_, builder_.getInt8Ty(), i64Ty,
           i64Ty, ptrTy, ptrTy, i64Ty, ptrTy, i64Ty, i64Ty),
-      {extract_tag(cmd_val), extract_data(cmd_val),
+      {extract_tag(cmd_val.borrow()), extract_data(cmd_val.borrow()),
        builder_.getInt64(static_cast<int64_t>(kwVals.size())),
        keysSlab, valsSlab,
        builder_.getInt64(static_cast<int64_t>(splatVals.size())),
        splatSlab, lineV, colV});
-  // The _kw fn doesn't consume the positional; release it here.
-  emit_value_release(cmd_val);
-  return r;
+  // The _kw fn doesn't consume the positional; drop it here.
+  cmd_val.drop();
+  return jit.own(r);
 }
 
-inline llvm::Value* JitExtension::compile_ns_method_kwargs(
+inline JIT::Owned JitExtension::compile_ns_method_kwargs(
     JIT& jit, const NsMethod* m, const peg::Ast& argsAst,
     const peg::Ast& callAst) {
   CULEBRA_JIT_EXT_BODY_ALIASES(jit);
@@ -8281,9 +8276,9 @@ inline llvm::Value* JitExtension::compile_ns_method_kwargs(
   // re-emit as a runtime throw, catchable like interp (the scan no longer
   // throws at compile time).
   if (scanned.err_kind) {
-    return emit_malformed_arg_throw(jit, argsAst, scanned.err_eval_count,
+    return jit.own(emit_malformed_arg_throw(jit, argsAst, scanned.err_eval_count,
                                     scanned.err_kind, scanned.err_msg,
-                                    scanned.err_line, scanned.err_col);
+                                    scanned.err_line, scanned.err_col));
   }
   auto& positional = scanned.positional;
   auto& explicit_kwargs = scanned.explicit_kwargs;
@@ -8293,21 +8288,25 @@ inline llvm::Value* JitExtension::compile_ns_method_kwargs(
   // arguments first, then checks arity, then type-checks per param — so a too-
   // many/too-few call raises ArityError before any positional type error. We
   // therefore defer the type checks until after the arity gate below.
-  std::vector<llvm::Value*> posVals;
+  // Every compiled argument stays in an Owned while the later ones compile
+  // and the arity/type checks emit (§4.9): the window releases them on a
+  // throw edge. All are consumed into the slab stores below — the runtime
+  // entry owns them on every exit.
+  std::vector<JIT::Owned> posVals;
   posVals.reserve(positional.size());
   const NsParamMeta* pm = _ns_meta(m);
   for (size_t i = 0; i < positional.size(); i++) {
-    posVals.push_back(compile(*positional[i]));
+    posVals.push_back(jit.compile(*positional[i]));
   }
 
   std::vector<llvm::Constant*> kwKeys;
-  std::vector<llvm::Value*> kwVals;
+  std::vector<JIT::Owned> kwVals;
   for (auto& [name, ast] : explicit_kwargs) {
     kwKeys.push_back(builder_.CreateGlobalString(std::string(name), ".kwkey"));
-    kwVals.push_back(compile(*ast));
+    kwVals.push_back(jit.compile(*ast));
   }
-  std::vector<llvm::Value*> splatVals;
-  for (auto* ast : splats) splatVals.push_back(compile(*ast));
+  std::vector<JIT::Owned> splatVals;
+  for (auto* ast : splats) splatVals.push_back(jit.compile(*ast));
 
   // Arity gate, after all arguments are evaluated — interp's strict_arity block
   // fires here, before the per-param type checks and before splat validation.
@@ -8322,7 +8321,7 @@ inline llvm::Value* JitExtension::compile_ns_method_kwargs(
               npos < pm->min_arity ? pm->min_arity : pm->max_arity, npos),
           static_cast<size_t>(callAst.line),
           static_cast<size_t>(callAst.column));
-      return make_nil();  // unreachable: emit_throw_error is noreturn
+      return jit.own(make_nil());  // unreachable: emit_throw_error is noreturn
     }
   }
 
@@ -8341,7 +8340,8 @@ inline llvm::Value* JitExtension::compile_ns_method_kwargs(
       if (m->arg0_name) pname = m->arg0_name;
     }
     if (!ptype.empty()) {
-      jit.emit_type_check(posVals[i], ptype, std::format("parameter '{}'", pname),
+      jit.emit_type_check(posVals[i].borrow(), ptype,
+                          std::format("parameter '{}'", pname),
                           positional[i]);
     }
   }
@@ -8365,13 +8365,13 @@ inline llvm::Value* JitExtension::compile_ns_method_kwargs(
   auto valsSlab = alloc_slab(jit.valueType_, kwVals.size(), "ns.kw.vals");
   auto splatSlab = alloc_slab(jit.valueType_, splatVals.size(), "ns.kw.splat");
   for (size_t i = 0; i < posVals.size(); i++)
-    store_at(posSlab, jit.valueType_, i, posVals[i]);
+    store_at(posSlab, jit.valueType_, i, posVals[i].consume());
   for (size_t i = 0; i < kwKeys.size(); i++) {
     store_at(keysSlab, ptrTy, i, kwKeys[i]);
-    store_at(valsSlab, jit.valueType_, i, kwVals[i]);
+    store_at(valsSlab, jit.valueType_, i, kwVals[i].consume());
   }
   for (size_t i = 0; i < splatVals.size(); i++)
-    store_at(splatSlab, jit.valueType_, i, splatVals[i]);
+    store_at(splatSlab, jit.valueType_, i, splatVals[i].consume());
 
   // Identify the method by name (AOT-safe; a baked NsMethod* would be invalid
   // in the separately-linked AOT binary). `sub` is null for top-level methods.
@@ -8381,7 +8381,7 @@ inline llvm::Value* JitExtension::compile_ns_method_kwargs(
                        : llvm::ConstantPointerNull::get(ptrTy);
   // Signature: (ns, method, sub, n_pos, pos*, n_kw, keys*, vals*, n_splat,
   // splat*, line, col) -> JitValue. The entry consumes all arg values.
-  return emit_call(
+  return jit.own(emit_call(
       module_->getOrInsertFunction(
           rt::ns_method_call_kw, jit.valueType_, ptrTy, ptrTy, ptrTy, i64Ty,
           ptrTy, i64Ty, ptrTy, ptrTy, i64Ty, ptrTy, i64Ty, i64Ty),
@@ -8390,10 +8390,10 @@ inline llvm::Value* JitExtension::compile_ns_method_kwargs(
        builder_.getInt64(static_cast<int64_t>(kwVals.size())), keysSlab,
        valsSlab, builder_.getInt64(static_cast<int64_t>(splatVals.size())),
        splatSlab, builder_.getInt64(callAst.line),
-       builder_.getInt64(callAst.column)});
+       builder_.getInt64(callAst.column)}));
 }
 
-inline llvm::Value* JitExtension::compile_nested_ns_call(
+inline JIT::Owned JitExtension::compile_nested_ns_call(
     JIT& jit, std::string_view ns, std::string_view sub,
     std::string_view method, const peg::Ast& argsAst,
     const peg::Ast& callAst) {
@@ -8404,31 +8404,31 @@ inline llvm::Value* JitExtension::compile_nested_ns_call(
   // and only positional-only calls — anything else (an unknown method, kwargs
   // on a param-less codec) falls through to the generic sub-namespace-object
   // method dispatch, which matches interp there.
-  if (!JIT::arg_list_is_positional_only(argsAst)) return nullptr;
+  if (!JIT::arg_list_is_positional_only(argsAst)) return {};
   std::string sub_s(sub);
   const NsMethod* m = _lookup_ns_method(ns, method, sub_s.c_str());
-  if (!m) return nullptr;
+  if (!m) return {};
   return compile_ns_method_kwargs(jit, m, argsAst, callAst);
 }
 
-inline llvm::Value* JitExtension::compile_ns_prop(JIT& jit,
+inline JIT::Owned JitExtension::compile_ns_prop(JIT& jit,
                                                     std::string_view ns,
                                                     std::string_view prop) {
   CULEBRA_JIT_EXT_BODY_ALIASES(jit);
   if (ns == "Sys" && prop == "argv") {
     auto arr = emit_call(module_->getFunction(rt::sys_argv), {});
-    return make_array(arr);
+    return jit.own(make_array(arr));
   }
   if (ns == "Math") {
     auto emit = [&](double d) {
       return make_float(llvm::ConstantFP::get(builder_.getDoubleTy(), d));
     };
-    if (prop == "pi")  return emit(std::numbers::pi);
-    if (prop == "e")   return emit(std::numbers::e);
-    if (prop == "inf") return emit(std::numeric_limits<double>::infinity());
-    if (prop == "nan") return emit(std::numeric_limits<double>::quiet_NaN());
+    if (prop == "pi")  return jit.own(emit(std::numbers::pi));
+    if (prop == "e")   return jit.own(emit(std::numbers::e));
+    if (prop == "inf") return jit.own(emit(std::numeric_limits<double>::infinity()));
+    if (prop == "nan") return jit.own(emit(std::numeric_limits<double>::quiet_NaN()));
   }
-  return nullptr;
+  return {};
 }
 
 inline llvm::Value* JitExtension::emit_output_call(JIT& jit,
@@ -8472,7 +8472,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
   return false;
 }
 
-inline llvm::Value* JitExtension::compile_ufcs_builtin(
+inline JIT::Owned JitExtension::compile_ufcs_builtin(
     JIT& jit, const std::string& method, const peg::Ast& argsAst,
     llvm::Value* receiver) {
   using namespace peg::udl;
@@ -8522,7 +8522,7 @@ inline llvm::Value* JitExtension::compile_ufcs_builtin(
           "TypeError",
           std::format("unknown keyword argument '{}'", unknown_kw_name),
           unknown_kw_node->line, unknown_kw_node->column);
-      return jit.make_nil();  // unreachable after the throw
+      return jit.own(jit.make_nil());  // unreachable after the throw
     }
     // The receiver is the implicit first positional, so the total is
     // 1 (receiver only) or 2 (receiver + start/end). More is an
@@ -8535,7 +8535,7 @@ inline llvm::Value* JitExtension::compile_ufcs_builtin(
                              culebra::builtin_arity_error_message(method, 1, 2,
                                                                   total),
                              argsAst.line, argsAst.column);
-        return jit.make_nil();  // unreachable after the throw
+        return jit.own(jit.make_nil());  // unreachable after the throw
       }
       // A non-Long always throws inside value_to_long, whose error path
       // reads only the tag byte (never derefs `data`) — so the +1 can be
@@ -8556,13 +8556,13 @@ inline llvm::Value* JitExtension::compile_ufcs_builtin(
       }
       if (method == "iota") {
         auto arr = emit_call(module_->getFunction(rt::iota), {s, e});
-        return jit.make_array(arr);
+        return jit.own(jit.make_array(arr));
       }
       auto step = step_ast ? to_long_consuming(jit.compile(*step_ast).consume())
                            : jit.builder_.getInt64(1);
       auto obj = emit_call(module_->getFunction(rt::math_range),
                            {s, e, step, line, col});
-      return jit.make_object(obj);
+      return jit.own(jit.make_object(obj));
     }
   }
 
@@ -8610,7 +8610,7 @@ inline llvm::Value* JitExtension::compile_ufcs_builtin(
                            argsAst.line, argsAst.column);
       builder_.CreateBr(deadBB);
       builder_.SetInsertPoint(deadBB);
-      return make_nil();  // unreachable: both predecessors throw
+      return jit.own(make_nil());  // unreachable: both predecessors throw
     }
     // Other arity-1 globals have no value-method form: the receiver is the
     // implicit arg 0, so the total is 1 + the extras. The nameless message
@@ -8619,16 +8619,16 @@ inline llvm::Value* JitExtension::compile_ufcs_builtin(
     jit.emit_throw_error("ArityError",
                          culebra::ns_fn_arity_error_message(1, 1 + extra),
                          argsAst.line, argsAst.column);
-    return make_nil();  // unreachable after the throw
+    return jit.own(make_nil());  // unreachable after the throw
   }
 
-  if (argsAst.nodes.size() != 0) return nullptr;
+  if (argsAst.nodes.size() != 0) return {};
   if (method == "puts" || method == "print") {
     auto rt_name = method == "puts" ? rt::puts : rt::print;
     emit_call(module_->getFunction(rt_name),
                         {extract_tag(receiver), extract_data(receiver)});
     emit_value_release(receiver);
-    return make_nil();
+    return jit.own(make_nil());
   }
   // to_long/to_float attribute a bad-conversion error to the call's argument
   // list, matching interp's UFCS path (eval_ufcs_call invokes with
@@ -8645,7 +8645,7 @@ inline llvm::Value* JitExtension::compile_ufcs_builtin(
         module_->getFunction(rt::to_long_any),
         {extract_tag(receiver), extract_data(receiver), argLine, argCol});
     emit_value_release(receiver);
-    return r;
+    return jit.own(r);
   }
   if (method == "to_float") {
     // Polymorphic Long/Float/String, mirroring compile_global's bare
@@ -8654,29 +8654,29 @@ inline llvm::Value* JitExtension::compile_ufcs_builtin(
         module_->getFunction(rt::to_float_any),
         {extract_tag(receiver), extract_data(receiver), argLine, argCol});
     emit_value_release(receiver);
-    return r;
+    return jit.own(r);
   }
   if (method == "to_string") {
     auto s = emit_call(
         module_->getFunction(rt::value_to_display),
         {extract_tag(receiver), extract_data(receiver)});
     emit_value_release(receiver);
-    return make_string(s);
+    return jit.own(make_string(s));
   }
   if (method == "type_of") {
     auto s = emit_call(module_->getFunction(rt::type_of),
                                  {extract_tag(receiver)});
     emit_value_release(receiver);
-    return make_string(s);
+    return jit.own(make_string(s));
   }
   if (method == "hash") {
     auto h = emit_call(
         module_->getFunction(rt::hash_any),
         {extract_tag(receiver), extract_data(receiver), line, col});
     emit_value_release(receiver);
-    return make_long(h);
+    return jit.own(make_long(h));
   }
-  return nullptr;
+  return {};
 }
 
 #undef CULEBRA_JIT_EXT_BODY_ALIASES

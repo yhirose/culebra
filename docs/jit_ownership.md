@@ -1,8 +1,10 @@
 # JIT Ownership — Making Leaks Structurally Impossible
 
-Status: **Design / north star.** This document is the authoritative statement
-of *how* the JIT manages the lifetime of heap values, and the standing rule for
-all future work in this area. It is the ownership counterpart to
+Status: **Design / north star — and, as of 2026-07, shipped.** Every layer in
+§4 is implemented and gated (§4.8 unwind-temp window, §4.9 block-pinned raws +
+typed `compile_*` seam, the rc-discipline ratchets). This document is the
+authoritative statement of *how* the JIT manages the lifetime of heap values,
+and the standing rule for all future work in this area. It is the ownership counterpart to
 [`jit_gc_design.md`](jit_gc_design.md) (which covers the tracing backstop and
 the object/heap model).
 
@@ -198,8 +200,28 @@ releases it **on every exit path**:
 - exception → the fn-level / lexical / match-arm landingpads
 
 This is *one* mechanism for "escape," reused everywhere, instead of a bespoke
-release at each site. Loops get a fresh scope per iteration (already true), so
-per-iteration temporaries drop each turn. Iterators/generators that carry a
+release at each site. **A same-name rebinding within one scope releases the
+prior slot's owned `+1` before overwriting it** (`define_var` →
+`release_slot_value`): the LIFO teardown list records only the first slot for
+a name, so a silent overwrite would orphan the earlier binding. The canonical
+trigger was the implicit `self`/`this` slot (bound unconditionally for
+recursion / the receiver) shadowed by a same-named parameter — which the lint
+pass now also rejects pre-eval (`self`/`this` are reserved parameter names),
+so the two fixes are belt-and-suspenders: the reject stops the source, the
+release keeps *any* rebinding leak-free by construction. The same slot
+machinery also carries **branch-spanning operands** as an anonymous region
+scope: a 3+ comparison chain (`a < b < c`) lowers across short-circuit blocks,
+so each operand is consumed into an owned `cmpchain.N` slot of a scope pushed
+around the chain (the `compile_match` subject pattern) — entry-nil-initialised
+slots mean the shared merge releases exactly what the taken path materialised,
+and the region's cleanup pad covers the throw edges. The two slots entering a
+comparison are blanked for exactly that call: the comparison helpers own their
+operands' throw edges (§4.7), so the region releasing them too would
+double-free. (The logical operators need none of this: strict truthiness
+rejects heap conditions with the operand released by `to_bool`, and `??` never
+overwrites a heap candidate — a nil is the only thing replaced.) Loops get a
+fresh scope per iteration (already true), so per-iteration temporaries drop
+each turn. Iterators/generators that carry a
 `dispose` register it with the same scope machinery so early exits run it — the
 gap here is the current for-in raw-alloca iterator ([[project_jit_gc_rewrite]]
 Task #2), which is a *missing* scope registration, exactly the kind of hole
@@ -310,6 +332,160 @@ Reference cycles are out of scope for any RC discipline (Rust has the same
 residue. With ownership single-sourced and correct, the backstop becomes
 **non-load-bearing** (rare, not per-step), which is the whole performance point.
 
+### 4.7 Helper ownership contracts — the callee-cleans table
+
+Every codegen-owned `+1` that is live across a may-throw runtime call has
+exactly one cleaner on the unwind edge, drawn from this closed set of
+contracts. This table is the (for now human-readable) input the GAP4-ENFORCE
+accounting pass will check against: an emitter holding a `+1` across an
+`invoke` must be able to name which row covers it.
+
+| Contract | Mechanism | Who uses it |
+|---|---|---|
+| **Caller-cleans (codegen)** | `ThrowGuard` — a per-region cleanup pad packaged as RAII; pred-empty DCE keeps the happy path free | builtin-method receivers and operand args; the callee closure in `compile_call`; the assignment lvalue across the final-assignment switch; the UFCS free-function callee; sort_by's `reverse:` coercion window (the callback's `+1` has no owner until the sorter is entered) |
+| **Callee-cleans-on-direct-throw** | `JitUnwindRelease` in the helper — releases IFF the scope unwinds; armed only after user dispatch has declined | operator entries (arith / ordering / `==` coercion / `to_bool` / neg / matmul); `object_get_any` (receiver under `own_receiver`, plus a refcounted key); `culebra_runtime_prop_get` (under `own_receiver`); `_culebra_expect_callback` (reject throw, all tags); the not-a-function edge in `compile_function_call_raw` (flag-gated per call site: `own_this_on_error` / `own_args_on_error`); the receiver-resolution error block in `dispatch_arr_iter` (releases the values already consume()d for the HOF runtime, which never runs on that edge) |
+| **Callee-consumes-on-every-exit** | `JitOwnedVal` / `JitMethodSelf` / `JitMethodArgs` declared at entry — releases on normal return AND unwind | native method endpoints (sendable channel/isolate/shared-val/buffer methods, FixedArray methods, `@wrap` foreign thunks); `@packable` stores; HOF helper accumulators (`out`/`acc`/computed sort keys); **the HOF callback itself** (`JitHofCallback` for eager drivers, the lazy factories' capture cell) |
+| **Invoker-cleans** | `JitUnwindRelease` in `_culebra_invoke_method*` — the invoker retains the operands, the callee frame releases them on a NORMAL return, the invoker's guard releases them iff the callee throws | every user-dispatch window (`__op__` / `eq` / `hash` / `cmp` / `__index__` / getter bodies). Corollary: the derived-method thunks (`_jit_derived_thunk_consume`) release on the normal path ONLY — releasing on throw too would double-free once the invoker unwinds |
+| **Transfer** | return the incoming `+1` as the result (or hand it into a capture cell / slot) | iter-self methods; `_culebra_capture_callback` into a lazy combinator's cell; `emit_point_index`'s uniformly-`+1` result |
+
+The gate rules that fall out of the table:
+
+- The flags `own_receiver` (helper ABI) and `own_this_on_error` /
+  `own_args_on_error` (emitter parameters) are the same declaration — "this
+  call site owns the value; the helper is the sole releaser on its
+  direct-error edge" — expressed at the two layers. A new helper that can
+  raise a direct error while handed an owned value must take the same gate,
+  not invent a new cleanup shape.
+- Two contracts may never overlap on one edge: two cleaners on the same value
+  double-free (ASan-confirmed three times: operator operands guarded codegen-
+  side over user dispatch; the pre-unification HOF blanket guard; the
+  callable adapter's throw-path release once the callback became
+  callee-consumes). The mutual exclusion for helpers is always "user dispatch
+  declined" — which is why `JitUnwindRelease` is armed after the dispatch
+  attempt, never around it — and for consumed values "the owner is entered",
+  which is why a codegen guard over a consumed value must close before the
+  consuming call.
+- One known ordering-sensitive spot: `wrap.h`'s `jit_check_args` releases
+  `self` on its binder-throw itself, so the thunk's `JitMethodSelf` is
+  declared AFTER the check — declaring it first would double-free that edge.
+
+### 4.8 The automatic unwind-temp window (GAP4-ENFORCE)
+
+§4.2's `Owned` handle releases through a C++ destructor, which a runtime
+LLVM-level throw cannot run. Historically that meant **every** "codegen-owned
+`+1` live across a may-throw call" was a leak unless someone hand-placed a
+guard: a binop's lhs while the rhs compiles (`mk() + boom()`), an argument
+while a later argument compiles (`g(mk(), boom())`), an index receiver while
+the key compiles (`mk()[boom()]`), a method receiver while its arguments
+compile. The leak-fuzzer corpus never spelled these shapes, so C①–⑨ shipped
+without them; a six-shape probe confirmed all of them leaking.
+
+Instead of guarding sites one by one (§0 forbids that), the ownership layer
+now owns the unwind edge **by construction**:
+
+- **Registry.** Every live `Owned` holding a heap-capable value is registered
+  with the JIT (constant scalars are skipped). Registration is pure codegen
+  bookkeeping; consume/drop/move maintain it. The registry, the slot pool and
+  the coverage stack are per LLVM function (`CompilerStateSaver` swaps them).
+- **Window.** `emit_call`, the single point where a may-throw call gets its
+  unwind edge, spills every live, uncovered `Owned` into a per-function pool
+  slot (an entry alloca, nil-initialised) for exactly the duration of that one
+  invoke: store before, nil-clear in the continuation. Coverage is complete by
+  construction — the only runtime events that can unwind are the calls
+  `emit_call` emits. A call with no live temps pays nothing.
+- **Release.** Every scope-family cleanup pad (`finish_scope_cleanup`, the
+  fn-level pad) releases the pool first — before the region's defers, matching
+  the interpreter, where a throwing expression's temporaries die as its eval
+  frames unwind ahead of any enclosing block's defers — then nil-clears each
+  slot so outer pads on the same chain no-op. Outside a window every slot is
+  nil, so the cold-path cost is a handful of no-op releases.
+- **Coverage (`UnwindCovered`).** Where a §4.7 contract already names another
+  unwind-edge releaser — an operator helper's direct-error release, the
+  invoker guard over user `__op__`/getter dispatch, a `ThrowGuard`'s own pad —
+  the value is declared covered for that region and the window skips it.
+  Spilling it too would double-free (the §4.7 overlap trap, ASan-confirmed).
+  `ThrowGuard` declares its values covered automatically; the hand-written
+  declarations sit exactly at the contract call sites (`emit_binop_dispatch`,
+  `emit_comparison_i1`, `value_to_bool`, neg/matmul/pow, `prop_get` under
+  `own_receiver`, the getter dispatch, the well-known-property check), so the
+  §4.7 table now has a machine-visible footprint in the code.
+- **Timeline discipline.** `consume()` is the codegen-time marker for "the
+  emitted code from here on owns the +1", so it must be called **before**
+  emitting code that consumes the value at runtime — not after. The two
+  emission hooks that consumed late (`try_fuse_iter_map_collect`, the
+  ufcs-builtin hook) let the window spill a value the emitted code had already
+  released (an ASan-confirmed teardown UAF); both now consume up front and
+  re-own on a declined (no-IR) hook.
+- **Kill switch.** `CULEBRA_JIT_NO_UNWIND_TEMPS=1` compiles with the windows
+  off — the discriminator (CULEBRA_GC_NEVER's sibling) for deciding whether an
+  ASan report is a window double-free or a pre-existing over-release.
+
+This layer subsumed the hand-placed pending-guard stores in the container
+literals (a spread source, a heap object key awaiting its value) — their
+`Owned` handles are now window-covered, so the hand-placed stores are gone
+and `make_pending_guard` survives as the slot primitive (for
+`make_build_guard` and for the window's own pool slots). Pinned by
+`tools/difftest/leak_abort.sh` Case 4 (the six probe shapes must stay quiet
+under the teardown audit).
+
+### 4.9 Block-pinned raws — no bare `+1` crosses a basic block (raw-across-BB ENFORCE)
+
+§4.2–§4.8 protect a `+1` **while it is in a handle**. The last escape hatch
+was the moment it left one: `consume()` returned a bare `llvm::Value*` that
+codegen could carry across basic-block boundaries (branches, phi merges),
+where no layer tracked it — a missed release on one CFG edge was a silent
+leak. Every recent product leak (comparison chain, UFCS-kwargs receiver,
+compound `obj[k] op=` key, `slice(start, end)` first argument, the fn/return
+/try epilogues) was this class. This section closes it.
+
+- **The invariant.** A bare `+1` may only be used in the basic block where it
+  was consumed. This is *sound and complete* because `emit_call` turns every
+  may-throw call into an `invoke` that terminates the current block (§4.8):
+  same block ⟹ no unwind edge and no branch ran while the value was bare.
+- **`Pinned`.** `consume()` returns a `Pinned` token recording the pin block
+  (constants and null sentinels are exempt — no `+1` to strand). Its
+  conversions to `llvm::Value*` check the builder still sits on that block;
+  a violation calls `rc_pin_violation` — a loud abort in **every build mode**
+  with the codegen source position and pin→use block names. The difftest
+  corpus (5641 cases) compiles nearly every construct, so a violating pattern
+  is caught the first time it is *compiled* — no runtime leak repro needed.
+- **`OwnedPhi`.** The checked merge construct: every `%Value` phi in jit.h is
+  built through it (ratchet: hand-built `CreatePHI(valueType_` = 0). Each
+  incoming is declared **in its arm block** — `add_incoming(Owned&&)`
+  consumes on the spot; a raw incoming must be a constant, produced in the
+  current block, or the invoke whose normal dest the builder sits on — and
+  `finish(mergeBB)` verifies every recorded arm's terminator still targets
+  the merge (an `emit_call` slipped in after `add_incoming` would have
+  re-terminated the arm toward its `call.cont`). Emits the identical phi IR;
+  the safety is codegen-time bookkeeping.
+- **`consume_unchecked()`.** The justified escape hatch, each site carrying a
+  one-line rationale and counted by the ratchet: the batch handoff into
+  mutually-exclusive dispatch arms (each arm the sole releaser on its runtime
+  path — the `consume_all` pattern), a crossing whose `+1` is owned by a
+  scope slot (§4.3), and the prologue transfer into `declare_local`.
+- **The `compile_*` return seam is typed (closed 2026-07-12).** Every
+  `compile_*` helper — the node compilers behind `compile()`'s dispatch, the
+  whole call family, the extension compile hooks (`ExtensionHooks`), and the
+  stdlib implementations behind them — returns `Owned`; a helper that
+  declines returns an empty handle. `compile()`'s old `own(compiled)`
+  re-owning boundary is gone: the switch result *is* the `Owned`, so no bare
+  `+1` ever crosses a `compile_*` C++ return. The return type now encodes
+  the ownership contract — `Owned` = the `+1` transfers, raw `llvm::Value*`
+  = borrowed/scalar, which is why the two borrowed-contract emitters were
+  renamed out of the family (`emit_property_get` returns `+0`,
+  `emit_comparison_i1` returns an `i1`; `emit_interp_fragment` returns a
+  C-string pointer). Ratchet: `llvm::Value*`-returning `compile_*` = 0 in
+  jit.h + stdlib_jit.h. The only remaining raw form is the explicitly-typed
+  `llvm::Value* x = ….consume();` assignment (converts at the assignment —
+  also ratcheted to 0).
+
+The Phase-2 flip surfaced and fixed a real-strand family beyond the known
+bugs: values held bare across scope teardown / defer runs / a second
+argument's compile (fn & return epilogues, try/catch and match-arm results,
+the lvalue postfix chain, `obj.get/get_or_put` keys, compound-assign keys,
+`slice` bounds, `take_while`'s callback, destructure rvals). Each now rides
+an `Owned` so the §4.8 window releases it on the edge that used to strand it.
+
 ---
 
 ## 5. Invariants that make leaks impossible
@@ -326,6 +502,17 @@ failure), not a runtime accident:
 5. Rooting is provided by the GC layer independently of ownership refcounts.
 6. Cycles + residue are reclaimed by the backstop; the backstop is not relied
    on for steady-state memory.
+7. Every `Owned` `+1` live across a may-throw call has exactly one releaser on
+   the unwind edge: the automatic unwind-temp window (§4.8) by default, or the
+   §4.7 contract its call site declares via `UnwindCovered` — never both.
+8. A bare `+1` exists only inside the basic block where it was consumed
+   (`Pinned`, §4.9); every `%Value` phi is built through `OwnedPhi`; a
+   deliberate crossing is a `consume_unchecked` site with a declared per-edge
+   releaser, ratcheted by tools/check_rc_discipline.sh.
+9. No `compile_*` helper (core or extension hook) returns a bare
+   `llvm::Value*` — a `+1` crosses a compile-layer C++ return only inside an
+   `Owned` (§4.9, ratcheted to 0). A raw-returning `compile_*` signature is
+   the reopened seam, not a style choice.
 
 Corollary: no correct codegen path contains a bare, hand-placed
 `retain`/`release`. Existing bare calls are migration debt, not the pattern.
@@ -420,8 +607,8 @@ Corollary: no correct codegen path contains a bare, hand-placed
   old raw `+1` contract), verified byte-identical IR at -O2/-O0 plus the
   full gates. The `.consume()` calls are the grep-able inventory of what's
   left to convert.
-- **The through-line work (in progress):** convert those `.consume()`
-  clusters to real `Owned` flow (dtor releases, borrows) cluster by cluster,
+- **The through-line work (done to its audited residue):** convert those
+  `.consume()` clusters to real `Owned` flow (dtor releases, borrows) cluster by cluster,
   deleting the hand-placed retain/release as each converts — until §5's
   invariants hold codebase-wide. **Done so far** (slices A1–A6, all verified
   `--emit-llvm` 0-diff — hand-placed `emit_value_release` in `jit.h` 81→45):
@@ -464,7 +651,9 @@ Corollary: no correct codegen path contains a bare, hand-placed
   - **statement-sequencing** (`compile_statements` / standalone block): the
     result is loop-accumulated and freed *before* the next statement compiles
     — a naive move-assign rewrite shifts the drop past it, changing timing the
-    interpreter observes.
+    interpreter observes. (Since converted: the loop now rides an `Owned`
+    with an explicit `drop()` ahead of each `compile`, which lands the
+    release on the same instruction the hand-placed one occupied.)
   - **shared-receiver dispatch children** (`compile_user_method_over_builtin`
     / set-mutate / method-or-ufcs): the receiver/callee raw is shared across
     runtime-exclusive arms; consumed once per path, not scoped.
@@ -474,8 +663,79 @@ Corollary: no correct codegen path contains a bare, hand-placed
   them on the normal path — only their *throw* edges carry heap refs, the
   per-region cleanup pads' job, §4.3). The 28 `emit_value_retain` are the
   dual set (slot stores, pattern bindings, `this` hand-offs) — legitimate
-  ownership *generation*, not debt. These bare calls stay bare, guarded by the
-  Level-2 CI leak battery ([[project_gc_safety_phase_plan]]).
+  ownership *generation*, not debt. These bare calls stay bare, counted by
+  the `tools/check_rc_discipline.sh` ratchet (the population may only
+  shrink) and guarded by the CI leak batteries
+  ([[project_gc_safety_phase_plan]]).
+- **Throw-path cleanup — shipped across the board (leak-fuzzer C①–C⑨,
+  2026-07).** The leak-fuzzer (run under the loud teardown audit,
+  `CULEBRA_GC_LEAK_ABORT`) showed the corpus's *throwing* cases were never
+  measured by the growth gate (its `_p` warmup catches and skips a throw), so
+  "cycle-only" held only for the non-throwing subset. The throw edges are
+  closed by two complementary mechanisms, chosen per site by who owns the
+  in-flight `+1`:
+  - **Codegen owns it → `ThrowGuard`** (a §4.3 cleanup pad packaged as an RAII
+    handle): the callee closure in `compile_call` (the callee frame borrows
+    `__cls__`, so a throw stranded it), the builtin-method receiver and operand
+    args (`[1,2,3].enumerate("x")`), the assignment lvalue across the
+    final-assignment switch (`o.a = v` on an ImmutableError), tensor/set/string
+    operand args, the UFCS free-function callee, and the HOF callback (see the
+    tag-gated note below).
+  - **The helper throws it directly → callee-cleans-on-direct-throw.** Every
+    runtime helper that raises a *direct* error — no user dispatch ran —
+    releases the owned operands it was handed before raising. This is mutually
+    exclusive with user `__op__`/method dispatch (whose callee frame +
+    the invoker's unwind guard already clean a throw; guarding there double-frees,
+    ASan-confirmed), so each edge has exactly one releaser. Shipped for: the
+    operator helpers (`_arith_guard_numeric`, `num_matmul`/`num_neg`,
+    `to_bool`, and the ordering ops via the `_value_<name>_borrow`/public
+    split so sort comparators keep the borrow contract — C①); index/slice
+    (`object_get_any` under the `own_receiver` gate — C③, extended to the
+    shared-val arm in C⑤); the not-a-function error path
+    (`compile_function_call_raw`, gated per call site via
+    `own_this_on_error`/`own_args_on_error` because the
+    unresolved-builtin path already frees the receiver on that edge — a
+    blanket release double-frees); `==`/`!=` non-Bool coercion (C⑤); the
+    property-read cold path (`culebra_runtime_prop_get` under `own_receiver` —
+    C⑧); and the HOF callback-reject arm (C⑦).
+  - **Two subtle contracts worth restating.** (1) The HOF callback is
+    **callee-consumes, uniformly**: the codegen `consume()`s the callback's
+    `+1` into the HOF runtime, which owns it on every exit — `JitHofCallback`
+    for the eager drivers, the capture cell for the lazy factories, the
+    reject guard for a validation throw. The only codegen-side cleanup left
+    is for edges where no helper runs: the receiver-resolution error
+    (`dispatch_arr_iter`'s error block releases the consumed values) and
+    sort_by's `reverse:` coercion window (a scoped `ThrowGuard`). This
+    replaced an earlier tag-gated split (Function guarded codegen-side,
+    adapter freed helper-side) whose compensating adapter-side release
+    freed a lazily-captured instance out from under its capture cell — a
+    teardown use-after-free on a mid-iteration `__call__` throw. (2)
+    `emit_point_index` returns uniformly `+1` (C⑨) — the array path retains
+    the borrowed slot, the shared-val memoized sub-view is retained in
+    `object_get_any` — so both INDEX promotion sites just release the receiver
+    (the old borrowed-promotion `swap_owned` double-counted the object path).
+  - **Native methods use helper-side RAII** (`JitMethodSelf`/`JitMethodArgs`):
+    a native callee (channel send, `with_lock`, @wrap foreign thunks) consumes
+    its `+1` self/args on *every* exit, because the caller does not clean a
+    native method's operands on unwind (C⑤/C⑨).
+  - The suite-wide GAP5 gate (`tools/difftest/leak_abort_suite.sh`, a standing
+    `just test` phase) pins all of the above: any new inflated-RC leak on any
+    corpus case, throw paths included, fails with the object's birth site.
+- **The `compile_*` return seam is closed (2026-07-12, §4.9).** All 64
+  `compile_*` helpers in jit.h, the extension compile hooks, and the stdlib
+  implementations return `Owned`; `compile()`'s `own(compiled)` boundary is
+  deleted. Migrating the call sites converted the remaining raw batch
+  carriers (class/enum/multifn decl method + static + dispatcher vectors,
+  decorator rolls, the for-in protocol iterator) onto `Owned`/`consume()`
+  handoffs with the absorbing registry/slab/slot named at each consume. Three
+  crossings stay raw by proof, as `consume_unchecked` sites with rationale
+  comments (the two `call.phi` late-merge arms — an `Owned` held across the
+  sibling arms would spill a non-dominating SSA value into the §4.8 window —
+  and the for-protocol iterator owned by its alloca slot); the ratchet
+  ceiling moved 11→14 for exactly these. The §4.9 pin caught the one
+  conversion slip in flight (the iterator raw reused across property-get
+  blocks) at difftest compile time. Two ratchets pin the seam:
+  raw-returning `compile_*` = 0 and typed consume-assignments = 0.
 - **Unblocks in order:** (1) the rooting/ownership split (§2/§4.5) is closed
   by evidence — both shipping collectors root in-flight temporaries
   independently, so removing a redundant ref needs an accounting proof, not

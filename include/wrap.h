@@ -629,11 +629,12 @@ inline void jit_check_args(JitValue self, int64_t n, JitValue* args) {
   }
 }
 
-// One handle method thunk per (T, member fn). Self arrives +1,
-// released after the body runs (an early release on a temp receiver
-// would fire its drop and erase the table entry under our feet). The
-// binder-throw paths release; the ClosedError / body-throw paths leak
-// the +1 to the GC backstop — the hand-written Phase 3 behavior.
+// One handle method thunk per (T, member fn). Self arrives +1, released on
+// every exit by the guard below — an early release on a temp receiver would
+// fire its drop and erase the table entry under our feet, so the guard runs at
+// scope exit, after the body. `jit_check_args` still owns its own binder-throw
+// release (it runs before the guard is armed); the guard closes the previously
+// leaking ClosedError (jit_handle_self) and body-throw paths.
 // `Bump` (a non-const method without preserves_borrows) increments the
 // generation after validation, BEFORE the call.
 template <class T, auto Mf, class R, bool Bump, class... Args>
@@ -641,16 +642,15 @@ void jit_method_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t sel
                           int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   jit_check_args<T, Mf, Args...>(self, n, args);
+  JitMethodSelf _s{self};
   T* obj = jit_handle_self<T>(self);
   if constexpr (Bump) jit_bump_handle_gen<T>(self);
   auto invoke = [&]<size_t... I>(std::index_sequence<I...>) -> JitValue {
     if constexpr (std::is_void_v<R>) {
       (obj->*Mf)(jit_arg_get<Args>(args[I])...);
-      culebra_runtime_value_release(self.tag, self.data);
       return {TAG_NIL, 0};
     } else {
       auto&& r = (obj->*Mf)(jit_arg_get<Args>(args[I])...);
-      culebra_runtime_value_release(self.tag, self.data);
       return jit_lower_return<R>(std::forward<decltype(r)>(r));
     }
   };
@@ -665,14 +665,16 @@ void jit_borrowed_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t s
                             int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   jit_check_args<T, Mf, Args...>(self, n, args);
+  // Release self on every exit (see jit_method_thunk). The borrow handle keeps
+  // its own reference to self as its parent, so the scope-exit release — after
+  // the handle is built and returned — leaves the borrow valid while closing
+  // the ClosedError / body-throw strand.
+  JitMethodSelf _s{self};
   T* obj = jit_handle_self<T>(self);
   int64_t pgen = jit_handle_gen(reinterpret_cast<JitObject*>(self.data));
   auto invoke = [&]<size_t... I>(std::index_sequence<I...>) -> JitValue {
     auto& r = (obj->*Mf)(jit_arg_get<Args>(args[I])...);
-    JitValue out =
-        jit_make_borrow_handle<T2>(const_cast<T2*>(&r), self, pgen);
-    culebra_runtime_value_release(self.tag, self.data);
-    return out;
+    return jit_make_borrow_handle<T2>(const_cast<T2*>(&r), self, pgen);
   };
   { *__ret = invoke(std::index_sequence_for<Args...>{}); return; }
 }

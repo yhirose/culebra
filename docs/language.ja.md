@@ -2709,7 +2709,10 @@ JIT バックエンドは `throw` / `try` / `catch` / `defer` を主要な
 コレクタに登録し、Python スタイルのマーク＆スイープを定期的
 （新規アロケ 10,000 回ごと）およびプログラム終了時に実行します。
 
-* 対象: `Array`, `Object`、JIT ではさらに `Closure`, `Cell`。
+* 対象: `Array`, `Object`, `Tuple`, `Set`、およびクロージャが捕獲
+  した環境（JIT ではさらに `Closure`, `Cell`）。両バックエンドとも
+  あらゆるコンテナ循環形状を回収します（`Object` のプロパティマップ
+  だけを経由する循環を含む）。
 * 非対象: `String`（プログラム終了まで保持 — 小さく単純）。
 
 循環データは通常通り取得・変更できます。外部のルートがなくなれば、
@@ -3961,13 +3964,12 @@ AOT バンドリングと tree-shaking 解析が成り立つ前提になりま�
 ユーザコードからは見えませんが、Culebra を組み込む側は知っておく
 価値があります:
 
-* **サイクル GC の tracking 範囲.** インタプリタの `InterpGC` は
-  `Array` と closure が捕捉する `Environment` を追跡（配列・closure
-  を介する循環は回収される）。JIT の保守的 mark-sweep はあらゆる
-  循環形状を回収。配列も closure も経由しない純粋な Object→Object
-  循環はインタプリタでは*メモリ*が leak しますが、`drop` は所有
-  スコープの離脱時に両 backend とも発火する（§16）ので、leak する
-  のはバイトでありリソースではありません。
+* **サイクル GC の内部方式.** インタプリタの `InterpGC` は追跡する
+  コンテナ（`Array`, `Object`, `Tuple`, `Set`、捕捉した `Environment`）
+  に対し精密な gc_refs mark-sweep を行い、JIT は保守的なスタック走査
+  mark-sweep を行う。両者ともあらゆる循環形状を回収する（`Object` の
+  プロパティマップだけを経由する循環を含む）ので、これは実装差であり
+  振る舞いの差ではありません。
 * **REPL の永続化ストレージ.** インタプリタは session globals を
   トップレベル `Environment` スコープに保持。JIT は thread_local
   `JitReplGlobals` 辞書を経由（`culebra_runtime_repl_{get,set}`）。

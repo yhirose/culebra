@@ -174,6 +174,30 @@ class ScopeWalker {
     }
   }
 
+  // Reject `self` / `this` as a parameter name. Both are language-core
+  // identifiers the callee binds unconditionally — `self` is the implicit
+  // recursion handle, `this` the method receiver (see always_bound) — so a
+  // same-named parameter shadows that binding. Rejecting pre-eval keeps the
+  // reserved names reserved on every backend: the interpreter and JIT
+  // previously accepted such a parameter and silently let it shadow (a real
+  // divergence risk, and on the JIT the overwritten implicit slot leaked its
+  // ref every call). Pattern params carry no simple name, so skipping them is
+  // sound.
+  void check_reserved_params(const peg::Ast& params) {
+    for (const auto& p : params.nodes) {
+      if (culebra::is_kw_only_sep(*p) || culebra::is_pattern_param(*p)) continue;
+      auto loc = culebra::extract_param_name_loc(*p);
+      if (loc.name == "self" || loc.name == "this") {
+        diags_.push_back(Diagnostic{
+            "SyntaxError",
+            std::format("'{}' is a reserved name and cannot be used as a "
+                        "parameter", loc.name),
+            static_cast<long>(loc.line), static_cast<long>(loc.column),
+            Severity::Error});
+      }
+    }
+  }
+
   // Reject a malformed parameter list — ordering rules that are certain to
   // fail. Faithfully mirrors the interpreter's parameter builder (the state
   // machine in interpreter.h `build_parameters`), matching its message and
@@ -250,6 +274,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       auto fv = node.tag == "FUNCTION"_ ? culebra::view_function(node)
                                         : culebra::view_lambda(node);
       check_dup_params(*fv.params);
+      check_reserved_params(*fv.params);
       check_param_wellformed(*fv.params);
       LoopDepthGuard g(loop_depth_, 0);
       FnDepthGuard fg(fn_depth_);
@@ -327,6 +352,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       for (size_t d = 0; d < i; d++) walk(*node.nodes[d]);   // decorators: outer
       if (i + 1 >= node.nodes.size()) { walk_children(node); return; }
       check_dup_params(*node.nodes[i + 1]);
+      check_reserved_params(*node.nodes[i + 1]);
       check_param_wellformed(*node.nodes[i + 1]);
       LoopDepthGuard g(loop_depth_, 0);
       FnDepthGuard fg(fn_depth_);
@@ -445,6 +471,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
           continue;
         }
         check_dup_params(*mv.params);
+        check_reserved_params(*mv.params);
         check_param_wellformed(*mv.params);
         FnDepthGuard fg(fn_depth_);
         scoped(**mv.body, [&](Scope& s) { collect_idents(*mv.params, s.muts); });
@@ -509,6 +536,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         auto tv = culebra::view_trait_method(*node.nodes[j]);
         check_dup_params(*tv.params);
+        check_reserved_params(*tv.params);
         check_param_wellformed(*tv.params);
         if (!tv.body) continue;   // signature-only method: nothing to walk
         FnDepthGuard fg(fn_depth_);

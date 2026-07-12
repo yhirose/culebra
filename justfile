@@ -405,6 +405,31 @@ _run-tests BACKEND:
         # only a genuine hang trips it.
         ${TIMEOUT_BIN:+$TIMEOUT_BIN 1800} tools/difftest/run.sh "$BIN"
     }
+    # Leak-fuzz: rerun the same corpus under CULEBRA_GC_NEVER and fail on any
+    # JIT RC leak not already in tools/difftest/leak_baseline.txt. A regression
+    # gate for the ownership work — catches a new carve-out leak the moment a
+    # codegen change introduces one, which the backstop would otherwise mask.
+    run_leak_fuzz() {
+        ${TIMEOUT_BIN:+$TIMEOUT_BIN 1800} tools/difftest/leak.sh "$BIN"
+    }
+    # GAP5 detector smoke test (cheap): the loud inflated-RC audit
+    # (CULEBRA_GC_LEAK_ABORT=1) must fire with a birth site on a real acyclic
+    # leak and stay quiet on clean code and benign cycles. Guards the detector
+    # itself, distinct from the growth-based corpus gate above.
+    run_leak_abort() {
+        LEAKFUZZ_WORK="$job_dir/leakabort" tools/difftest/leak_abort.sh "$BIN"
+    }
+    # Suite-wide GAP5 gate: run the WHOLE corpus under the loud inflated-RC audit
+    # and fail on any acyclic RC leak not in tools/difftest/leak_abort_allow.txt.
+    # This is the throw-path-aware complement to run_leak_fuzz: the growth gate's
+    # `_p` drops any case that throws, so it never measures throw-path leaks; the
+    # audit here runs every case (result discarded) and fires whether or not the
+    # thunk threw. Heavy (per-case fallback on aborting chunks), so SKIP_HEAVY.
+    run_leak_abort_suite() {
+        ${TIMEOUT_BIN:+$TIMEOUT_BIN 1800} \
+            env LEAKFUZZ_WORK="$job_dir/leakabort-suite" \
+            tools/difftest/leak_abort_suite.sh "$BIN"
+    }
 
     # Run every test file under the JIT with collect-on-every-allocation
     # (CULEBRA_GC_STRESS=1) and assert none crash. This is the phase that would
@@ -457,6 +482,11 @@ _run-tests BACKEND:
         fi
     }
 
+    # RC-discipline ratchet (GAP3/GAP4-lite): source-level ceilings on the
+    # hand-placed retain/release forms, so migration debt can only shrink and
+    # a new bare RC op fails the gate (docs/jit_ownership.md §4.7).
+    run_rc_discipline() { bash tools/check_rc_discipline.sh; }
+
     # Announce each phase with the running elapsed time, so a slow/stalled CI
     # run shows where it is (otherwise the silent phases — difftest, the
     # interp/jit sweep — emit nothing until they finish).
@@ -469,9 +499,13 @@ _run-tests BACKEND:
       # per-test AOT links). CI sets it on the slow macOS runner — those run on
       # Linux CI and in local dev.
       all)
+        phase "rc-discipline (bare retain/release ratchet)"; run_rc_discipline
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
         phase "codegen backends (-O0, fast vs interp)"; run_codegen_backends
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "difftest (5114 generated cases)"; run_difftest; }
+        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "leak-fuzz (corpus RC-leak regression)"; run_leak_fuzz; }
+        phase "leak-abort (GAP5 loud detector smoke)"; run_leak_abort
+        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "leak-abort-suite (corpus inflated-RC, throw-paths)"; run_leak_abort_suite; }
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "jit gc-stress (collect every alloc)"; run_gc_stress; }
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "rc-leak battery (gc_refs vs conservative)"; run_leak_battery; }
         phase "ctest (embedding smokes)"; run_embed
@@ -486,6 +520,7 @@ _run-tests BACKEND:
       # no-LTO build-dev/ binary too (see `test-dev`). This is the green-light
       # check after a single edit; `all` is the pre-commit gate.
       fast)
+        phase "rc-discipline (bare retain/release ratchet)"; run_rc_discipline
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
         phase "culebra-test self"; run_culebra_test_self
         phase "isolate (interp + jit)"; run_isolate
@@ -517,6 +552,58 @@ doctest: build
 [group("test")]
 difftest: build
     tools/difftest/run.sh ./build/culebra
+
+# Leak-fuzz gate: reuse the difftest corpus (each case is a re-runnable thunk)
+# as an RC-leak oracle — run every case under CULEBRA_GC_NEVER (backstop off)
+# and flag cases whose JIT live-object growth exceeds the interpreter's. Fails
+# on any NEW leak vs tools/difftest/leak_baseline.txt (a regression gate; the
+# JIT still has a known carve-out leak set the ownership work is closing).
+# Regenerate the baseline with `just leak-fuzz-update` after fixing leaks.
+[doc("Leak-fuzz gate: new JIT RC leaks vs baseline (tools/difftest/leak.sh)")]
+[group("test")]
+leak-fuzz: build
+    tools/difftest/leak.sh ./build/culebra
+
+# GAP5 loud leak detector. Run a script under CULEBRA_GC_LEAK_ABORT=1: at the
+# teardown quiescent point the JIT audits for inflated-RC leaks and, if any
+# survive, aborts with each leaked object's allocation birth site (backtrace).
+# Best paired with CULEBRA_GC_NEVER=1 so the backstop doesn't reclaim the
+# residue first. Use this to localize a leak the corpus gate (leak-fuzz)
+# reports. With no FILE, runs the 3-case detector smoke test.
+#
+# Uses the no-LTO build-dev/ binary on purpose: the audit rides the conservative
+# scan's completeness (best-effort), and LTO's altered stack layout lets the
+# teardown scan alias leaked objects as live, so it under-reports. GAP5 is a
+# debug/CI (no-LTO) tool — the gate runs it against the no-LTO build-gate too.
+[doc("Run a script under the GAP5 loud inflated-RC leak detector (birth-site abort)")]
+[group("test")]
+leak-abort FILE='': dev
+    #!/usr/bin/env bash
+    if [ -z '{{FILE}}' ]; then
+        tools/difftest/leak_abort.sh ./build-dev/culebra
+    else
+        CULEBRA_GC_NEVER=1 CULEBRA_GC_LEAK_ABORT=1 ./build-dev/culebra --jit '{{FILE}}'
+    fi
+
+[doc("Regenerate the leak-fuzz baseline (tools/difftest/leak_baseline.txt)")]
+[group("test")]
+leak-fuzz-update: build
+    tools/difftest/leak.sh ./build/culebra --update-baseline
+
+# Suite-wide GAP5 gate: run the whole difftest corpus under the loud inflated-RC
+# audit (CULEBRA_GC_LEAK_ABORT=1) and fail on any acyclic RC leak whose case
+# label is not in tools/difftest/leak_abort_allow.txt. Unlike leak-fuzz (growth-
+# based, skips throwing cases), this measures the throw-path leaks too. Uses the
+# no-LTO build-gate/ binary (LTO under-reports the conservative-scan audit).
+[doc("Suite-wide GAP5 gate: corpus inflated-RC leaks vs allowlist (throw-paths)")]
+[group("test")]
+leak-abort-suite: build-gate
+    tools/difftest/leak_abort_suite.sh ./build-gate/culebra
+
+[doc("Regenerate the leak-abort allowlist (tools/difftest/leak_abort_allow.txt)")]
+[group("test")]
+leak-abort-suite-update: build-gate
+    tools/difftest/leak_abort_suite.sh ./build-gate/culebra --update-allowlist
 
 # Microbenchmark regression check: every tests/perf/*.cul on interp
 # and JIT, asserts speedup meets the per-bench `# perf: min_speedup N`

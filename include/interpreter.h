@@ -379,18 +379,30 @@ inline void reject_class_decl_in_class_body(
 // Process-wide singleton; NOT thread-safe (see THREAD SAFETY note at
 // the top of the runtime section in jit.h).
 //
-// Tracked nodes are ArrayValue `values` vectors and closure-captured
-// Environments (the two container kinds that form cycles RC can't break).
-// Cycles routed entirely through Object property maps with no Array or
-// Environment in between are not detected — microgpt's route Object → Array
-// (`_children`) → Object and closures route Function → Environment, so both
-// are broken correctly; direct Object→Object cycles leak (the language spec
-// calls cycles a hazard and recommends `drop` for explicit teardown).
+// Tracked nodes (see GcKind): Array `values` vectors, Tuple `elements`, Set
+// `members` (+ its `index` sidecar), Object prop maps (+ their non_string_props
+// / key_order sidecars), and closure-captured Environments. All container
+// shapes are covered, so a cycle routed entirely through Object property maps
+// (or Tuples / Sets) is reclaimed just like the JIT's collector reclaims it —
+// the interp no longer has the old Object↔Object blind spot (GAP2). The edge
+// enumeration is single-sourced with the scope-exit collector via the
+// gc_for_each_* helpers below.
+//
+// A tracked cycle node's kind — the container shape at `ptr`. `Env` content is
+// walked with caller policy; the `Vec`/`Set`/`Map` container kinds are
+// enumerated through the shared `gc_for_each_*` helpers (see below, GAP2 §3a).
+enum class GcKind : uint8_t { Env, Vec, Set, Map };
+
 struct InterpGC {
   struct Entry {
-    std::weak_ptr<void> weak;
+    std::weak_ptr<void> weak;  // primary container (node identity at `ptr`)
     void* ptr;
-    bool is_env;  // false = a ValVec (Array backing); true = an Environment
+    GcKind kind;
+    // Held-together sidecars, locked into `live` and cleared with the primary
+    // (§3a/§4a). Map: side1=non_string_props, side2=key_order. Set: side1=index.
+    // Env/Vec: both empty.
+    std::weak_ptr<void> side1_weak;
+    std::weak_ptr<void> side2_weak;
   };
 
   static InterpGC& instance() { return runtime_substate<InterpGC>(kSlotInterpGc); }
@@ -406,15 +418,42 @@ struct InterpGC {
   int64_t live_objects = 0;
   int64_t live_bytes = 0;
 
+  // Aliasing weak_ptr<void> onto a container's control block — the node's
+  // GC identity. Empty for a null sidecar.
   template <typename T>
-  void track_vec(std::shared_ptr<T> p) {
-    push_entry(std::shared_ptr<void>(p, p.get()), /*is_env=*/false);
+  static std::weak_ptr<void> alias_weak(const std::shared_ptr<T>& p) {
+    return p ? std::weak_ptr<void>(std::shared_ptr<void>(p, p.get()))
+             : std::weak_ptr<void>();
   }
 
-  // Register a node (a type-erased aliasing shared_ptr) and trigger a
-  // threshold collect. Shared by track_vec and track_env.
-  void push_entry(std::shared_ptr<void> sp, bool is_env) {
-    entries_.push_back({std::weak_ptr<void>(sp), sp.get(), is_env});
+  // Track an Array `values` / Tuple `elements` vector (no sidecars).
+  template <typename T>
+  void track_vec(const std::shared_ptr<T>& p) {
+    push_entry({alias_weak(p), p.get(), GcKind::Vec, {}, {}});
+  }
+
+  // Track an Object's prop map (Map kind) with its held-together sidecars, and
+  // a Set's members (Set kind) with its `index` sidecar (GAP2 §3). Templated on
+  // the sidecar types so the incomplete forward-declared containers need not be
+  // complete here. Called once, from the freshly-allocated container's ctor —
+  // never a copy path — so a node is registered exactly once (§3b track-once).
+  template <class NS, class KO>
+  void track_map(const std::shared_ptr<OrderedSymbolMap>& props,
+                 const std::shared_ptr<NS>& non_string_props,
+                 const std::shared_ptr<KO>& key_order) {
+    push_entry({alias_weak(props), props.get(), GcKind::Map,
+                alias_weak(non_string_props), alias_weak(key_order)});
+  }
+  template <class Vec, class Index>
+  void track_set(const std::shared_ptr<Vec>& members,
+                 const std::shared_ptr<Index>& index) {
+    push_entry({alias_weak(members), members.get(), GcKind::Set,
+                alias_weak(index), {}});
+  }
+
+  // Register a node and trigger a threshold collect.
+  void push_entry(Entry e) {
+    entries_.push_back(std::move(e));
     bump();
   }
 
@@ -735,7 +774,7 @@ struct ObjectValue {
   // _call_drop_if_present can build a `this` view over an existing map
   // without extra bookkeeping. Caller must assign `properties` itself.
   struct Synthetic {};
-  explicit ObjectValue(Synthetic) {}
+  explicit ObjectValue(Synthetic) : is_synthetic(true) {}
 
   bool has(std::string_view name) const;
   // Own-field existence, excluding builtin methods. `has()` returns true
@@ -779,6 +818,13 @@ struct ObjectValue {
   // property/sidecar lookup. A plain marker, invisible to str()/iteration —
   // mirrors the JIT's JitObject::is_match flag for byte-for-byte symmetry.
   bool is_match = false;
+  // A `drop`-`this` view (Synthetic ctor): its `properties` is a second,
+  // no-op-deleter control block aliasing an existing map's raw pointer, and
+  // its sidecars are null. The cycle collectors must emit NO edge for such an
+  // occurrence — it carries no primary `use_count` bump, so counting it would
+  // over-subtract and free a live node (gc_model.md GAP2 §4b). Skipping it is
+  // a symmetric under-count = leak-safe.
+  bool is_synthetic = false;
   // Shared.new view (sharedval.h): set at handle construction, so view
   // detection never sniffs marker prop names — a hand-built object with
   // the same props is just an ordinary Object (forgery-inert).
@@ -814,9 +860,13 @@ struct ArrayValue : public ObjectValue {
 struct TupleValue {
   std::shared_ptr<std::vector<Value>> elements;
 
-  TupleValue() : elements(std::make_shared<std::vector<Value>>()) {}
+  TupleValue() : elements(std::make_shared<std::vector<Value>>()) {
+    interp_gc().track_vec(elements);
+  }
   explicit TupleValue(std::vector<Value> v)
-      : elements(std::make_shared<std::vector<Value>>(std::move(v))) {}
+      : elements(std::make_shared<std::vector<Value>>(std::move(v))) {
+    interp_gc().track_vec(elements);
+  }
 };
 
 // Defined after ValueHash/ValueEq are complete (see below).
@@ -1428,7 +1478,9 @@ struct SetValue {
   SetValue()
       : members(std::make_shared<std::vector<Value>>()),
         index(std::make_shared<
-              std::unordered_map<Value, size_t, ValueHash, ValueEq>>()) {}
+              std::unordered_map<Value, size_t, ValueHash, ValueEq>>()) {
+    interp_gc().track_set(members, index);
+  }
 
   // Insert `v` if not already present. Returns true on insert.
   bool add(const Value& v) {
@@ -1585,6 +1637,14 @@ struct OrderedSymbolMap {
   size_t size() const { return entries_.size(); }
   bool empty() const { return entries_.empty(); }
 
+  // Drop every entry (releases the contained Symbol Values). Used by the
+  // cycle collector's sweep to break an unreachable Object cycle (§4). Does
+  // not bump mut_count_ — the map is being torn down, not mutated in place.
+  void clear() {
+    entries_.clear();
+    index_.clear();
+  }
+
   auto find(std::string_view k) {
     auto it = index_.find(k);
     return it == index_.end() ? entries_.end()
@@ -1665,14 +1725,21 @@ inline ObjectValue::ObjectValue() {
   gc.live_objects++;
   gc.live_bytes += static_cast<int64_t>(sizeof(OrderedSymbolMap));
   properties = std::shared_ptr<OrderedSymbolMap>(raw, &_destroy_prop_map);
-  // properties map is intentionally not GC-tracked — see the InterpGC
-  // class header. Cycles are detected via the contained ArrayValues.
   // Sidecar maps are eager-allocated so `obj[k] = v` writes through a
   // Value copy reach the same storage as later reads. Lazy alloc would
   // mutate a per-copy shared_ptr field and never propagate.
   non_string_props = std::make_shared<
       std::unordered_map<Value, Symbol, ValueHash, ValueEq>>();
   key_order = std::make_shared<std::vector<Value>>();
+  // Register the prop map (+ its sidecars) as a cycle-collector node so a
+  // pure Object↔Object cycle is reclaimed (GAP2). Fresh map, tracked exactly
+  // once (§3b). A TensorValue's base map is tracked too but is inert — a
+  // Tensor is a leaf in the walk, so its node is never reached and always
+  // pins. Correctness-neutral, but not free: each tensor adds an entry that
+  // `bump()`s the collect counter and is walked every collect, so a
+  // tensor-heavy loop pays a per-op constant. Accepted for now; opting the
+  // Tensor base map out (a protected ctor variant) is a perf follow-up.
+  gc.track_map(properties, non_string_props, key_order);
 }
 
 // --- Deterministic drop: the owned-resource stack (design §14.3) ---
@@ -1981,6 +2048,90 @@ inline long _owned_scope_binding_refs(const Environment& env,
     }
   }
   return n;
+}
+
+// --- Shared cycle-collector enumeration (single-sourced; used by both
+// InterpGC::collect and _owned_resolve_ambiguous — gc_model.md GAP2 §3a).
+// The two collectors' container edge models had already drifted (the Set
+// `index` edge below existed in neither), so the enumeration lives in one
+// place; each collector keeps its own graph policy (force-pins, credits,
+// subtract/mark passes). Env content is walked per-caller (its `outer` edge
+// and binding policy differ); the container kinds are identical for both. ---
+// (GcKind is declared before InterpGC, above, since Entry stores it.)
+
+// The tracked container backing(s) a single Value occurrence directly holds a
+// reference to, each at multiplicity 1 (one Value copy = one shared_ptr
+// use_count bump). Containers only — Function def_env / multimethod edges and
+// primitives stay per-caller. A `drop`-`this` synthetic view holds no primary
+// ref (its map is a no-op-deleter alias), so it emits nothing: counting it
+// would over-subtract and free a live node (GAP2 §4b). Tensor is a leaf (its
+// buffer is opaque bytes — no container edge).
+template <class Emit>  // Emit(GcKind kind, void* primary)
+inline void gc_for_each_container_backing(const Value& v, Emit&& emit) {
+  switch (v.type) {
+    case Value::Object: {
+      const auto& o = v.get<ObjectValue>();
+      if (!o.is_synthetic) emit(GcKind::Map, o.properties.get());
+      break;
+    }
+    case Value::Array: {
+      // Two nodes: the element vector and the ObjectValue-base prop map.
+      const auto& a = v.get<ArrayValue>();
+      emit(GcKind::Vec, a.values.get());
+      emit(GcKind::Map, a.properties.get());
+      break;
+    }
+    case Value::Tuple:
+      emit(GcKind::Vec, v.get<TupleValue>().elements.get());
+      break;
+    case Value::Set:
+      emit(GcKind::Set, v.get<SetValue>().members.get());
+      break;
+    default:
+      break;  // Function / primitive / Tensor — caller's responsibility
+  }
+}
+
+// Invoke f(childValue) for every Value a Vec/Set/Map node holds — the outgoing
+// edges to subtract/mark. `side1`/`side2` are the node's held-together sidecars
+// (§3a); a null sidecar (a synthetic view, or an absent map) is skipped.
+// Multiplicity is implicit in repetition: a Set member appears once in
+// `members` and once as an `index` key = the +2 its use_count carries; an
+// Object's non-String key appears once in `non_string_props` and once in
+// `key_order` = its +2. Env is not handled here (its `outer` is an Env edge and
+// its bindings carry caller policy).
+template <class ValueFn>  // ValueFn(const Value&)
+inline void gc_for_each_child(GcKind kind, void* primary, void* side1,
+                              void* side2, ValueFn&& f) {
+  using ValVec = std::vector<Value>;
+  switch (kind) {
+    case GcKind::Vec:
+      for (const auto& e : *static_cast<ValVec*>(primary)) f(e);
+      break;
+    case GcKind::Set:
+      for (const auto& e : *static_cast<ValVec*>(primary)) f(e);
+      if (side1)  // index keys duplicate the members (SetValue::add)
+        for (const auto& [k, _] :
+             *static_cast<
+                 std::unordered_map<Value, size_t, ValueHash, ValueEq>*>(side1))
+          f(k);
+      break;
+    case GcKind::Map:
+      for (const auto& [_, sym] : *static_cast<OrderedSymbolMap*>(primary))
+        f(sym.val);
+      if (side1)  // non_string_props: key AND value are edges
+        for (const auto& [k, sym] :
+             *static_cast<
+                 std::unordered_map<Value, Symbol, ValueHash, ValueEq>*>(side1)) {
+          f(k);
+          f(sym.val);
+        }
+      if (side2)  // key_order: each key (a non-String key object is a real ref)
+        for (const auto& k : *static_cast<ValVec*>(side2)) f(k);
+      break;
+    case GcKind::Env:
+      break;  // caller-specific
+  }
 }
 
 // A region entry locked for analysis: the lock (+1, credited below)
@@ -8576,9 +8727,16 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // `let mk = Cls.new` would leak the env each call — the constructor-hidden
     // -methods problem again, one layer out.
     auto underlying = std::make_shared<Value>(prop);
+    // Hold the receiver in a shared Value too, so the eval closure and the
+    // cycle-collector hook (for_each_captured_value, below) reference the SAME
+    // copy — not two. Capturing `val` by value in BOTH would hold two refs to
+    // the receiver while the hook emits only one, leaving the receiver (a class
+    // object, once it became a tracked node) spuriously rooted by the
+    // unaccounted second ref (GAP2). One shared copy, one emitted edge.
+    auto receiver = std::make_shared<Value>(val);
     Value wrapped = Value(
-        FunctionValue(*pf.params, [val, underlying](std::shared_ptr<Environment> callEnv) {
-          callEnv->initialize("this", val, false);
+        FunctionValue(*pf.params, [receiver, underlying](std::shared_ptr<Environment> callEnv) {
+          callEnv->initialize("this", *receiver, false);
           // get<>() returns a reference (prop is already a validated Function);
           // to_function() would copy the FunctionValue on every call.
           return underlying->get<FunctionValue>().eval(callEnv);
@@ -8604,12 +8762,18 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // carry the strict-arity flag through it or `Math.abs(1, 2)` would slip
     // past the positional check that `type_of(1, 2)` (unwrapped) hits.
     wf.strict_arity = pf.strict_arity;
-    // Expose the hidden underlying function so the cycle collector subtracts
-    // its def_env edges (see `underlying` above). For a builtin `pf` (def_env
-    // null) this walks to nothing; for a user closure it reclaims the env.
-    // Keyed on the shared identity so an aliased wrapper is counted once.
+    // Expose BOTH hidden captures the eval closure holds — the underlying
+    // function (its def_env pins the declaring env) and the receiver `val`
+    // (`this`, which for a constructor wrapper is the class object). The cycle
+    // collector subtracts these edges; without the `val` edge a bound method /
+    // ctor keeps its receiver spuriously reachable, so an env↔class cycle
+    // reached through `let mk = Cls.new` never reclaims (GAP2: once the class
+    // object became a tracked node, an unsubtracted hidden ref roots it). For a
+    // builtin `pf` (def_env null) `underlying` walks to nothing. Keyed on the
+    // shared identity so an aliased wrapper is counted once.
     wf.for_each_captured_value =
-        [underlying](const std::function<void(const Value&)>& emit) {
+        [receiver, underlying](const std::function<void(const Value&)>& emit) {
+          emit(*receiver);
           emit(*underlying);
         };
     wf.captured_group_key = underlying;
@@ -10234,7 +10398,7 @@ inline void Environment::resolve_from_lazy(
 inline void InterpGC::track_env(const std::shared_ptr<Environment>& e) {
   if (!e || e->gc_tracked) return;
   e->gc_tracked = true;
-  push_entry(std::shared_ptr<void>(e, e.get()), /*is_env=*/true);
+  push_entry({alias_weak(e), e.get(), GcKind::Env, {}, {}});
 }
 
 inline void InterpGC::collect(Environment* current) {
@@ -10247,48 +10411,69 @@ inline void InterpGC::collect(Environment* current) {
                                 [](auto& e) { return e.weak.expired(); }),
                  entries_.end());
 
-  // Lock live shared_ptrs.
+  // Lock live shared_ptrs. Sidecars (Map: non_string_props+key_order; Set:
+  // index) are locked alongside their primary and held for the WHOLE collect,
+  // so a sibling's clear cannot destroy a still-to-be-cleared node's sidecar
+  // mid-sweep (§4a — the alternative would be a use-after-free). Their inflated
+  // use_counts are never read (only the primary's is).
   struct Live {
     void* ptr;
-    bool is_env;
+    GcKind kind;
+    void* side1;  // raw, kept alive by sp1 for this collect's duration
+    void* side2;
     std::shared_ptr<void> sp;
+    std::shared_ptr<void> sp1;
+    std::shared_ptr<void> sp2;
   };
   std::vector<Live> live;
   live.reserve(entries_.size());
   for (auto& e : entries_) {
-    if (auto sp = e.weak.lock())
-      live.push_back({e.ptr, e.is_env, std::move(sp)});
+    auto sp = e.weak.lock();
+    if (!sp) continue;
+    auto sp1 = e.side1_weak.lock();
+    auto sp2 = e.side2_weak.lock();
+    void* s1 = sp1.get();
+    void* s2 = sp2.get();
+    live.push_back({e.ptr, e.kind, s1, s2, std::move(sp), std::move(sp1),
+                    std::move(sp2)});
   }
 
-  // Per-node state: gc_refs = use_count - 1 (our local copy in `live`), plus
-  // the node kind so the BFS can dispatch walk_node without a second map.
+  // Per-node state: gc_refs = use_count - 1 (our local `live` lock), plus the
+  // node kind + sidecars so the BFS can dispatch walk_node without a second
+  // lookup. A node is registered exactly once (§3b track-once); assert it in
+  // debug builds — a duplicate would double-subtract and free a live node.
   struct Node {
     long refs;
-    bool is_env;
+    GcKind kind;
+    void* side1;
+    void* side2;
   };
   std::unordered_map<void*, Node> gc_refs;
   gc_refs.reserve(live.size());
-  for (auto& l : live) gc_refs[l.ptr] = {l.sp.use_count() - 1, l.is_env};
+  for (auto& l : live) {
+    assert(!gc_refs.contains(l.ptr) && "InterpGC: container tracked twice");
+    gc_refs[l.ptr] = {l.sp.use_count() - 1, l.kind, l.side1, l.side2};
+  }
 
-  // Walk a node's edges to OTHER tracked nodes (ValVecs + Environments),
-  // invoking emit(child_ptr, multiplicity). A ValVec yields its element
-  // Values; an Environment yields its bindings' Values plus its `outer`.
-  // For each Value: Array -> its tracked ValVec; Function -> its def_env
-  // (multiplicity 2 when `eval` also captures it — see FunctionValue); and
-  // Object/Tuple/Set are descended ONE level (untracked containers) to
-  // surface the tracked nodes they hold. The one-level cap matches the old
-  // walk and bounds recursion through untracked-container cycles. Missing an
+  // Walk a node's edges to OTHER tracked nodes, invoking emit(child_ptr,
+  // multiplicity). Container children come from the single-sourced
+  // gc_for_each_child / gc_for_each_container_backing (each Value occurrence of
+  // a container = one edge at multiplicity 1); Env content is walked here (its
+  // `outer` is an Env edge). A Function contributes its def_env (multiplicity 2
+  // when `eval` also captures it), its dispatcher overload bodies + the
+  // introspection snapshot, and its hidden constructor captures. Missing an
   // edge only under-counts gc_refs (a bounded leak); only OVER-counting could
-  // free a live node, which is why the Function multiplicity must be exact.
+  // free a live node, so the Function multiplicity and the once-per-shared-
+  // table/group dedups must be exact.
   //
-  // A multimethod dispatcher's overload bodies (and its introspection
-  // snapshot) close over the same activation env but live in
-  // `multimethod_table`, not the env binding, so plain value-walking misses
-  // that edge. We subtract it via the baked enumerator — but a dispatcher
-  // Value can be aliased into several bindings while its bodies hold the env
-  // only ONCE, so the subtract pass must process each shared table just once
-  // (`mm_dedup`). The mark pass leaves `mm_dedup` null and always traverses,
-  // so a live dispatcher keeps its bodies' env reachable.
+  // A multimethod dispatcher's overload bodies (and its introspection snapshot)
+  // close over the same activation env but live in `multimethod_table`, not the
+  // env binding, so plain value-walking misses that edge. We subtract it via
+  // the baked enumerator — but a dispatcher Value can be aliased into several
+  // bindings while its bodies hold the env only ONCE, so the subtract pass
+  // processes each shared table just once (`mm_dedup`). The mark pass leaves
+  // `mm_dedup` null and always traverses, so a live dispatcher keeps its
+  // bodies' env reachable.
   std::unordered_set<void*> mm_seen;
   std::unordered_set<void*>* mm_dedup = nullptr;
   // Same once-per-group dedup for a constructor's captured method edges,
@@ -10296,64 +10481,46 @@ inline void InterpGC::collect(Environment* current) {
   // mm_dedup: active in the subtract pass, null in the mark pass.
   std::unordered_set<void*> cap_seen;
   std::unordered_set<void*>* cap_dedup = nullptr;
-  auto walk_node = [&](void* ptr, bool is_env, auto&& emit) {
-    auto walk_value = [&](const Value& val, bool descend, auto&& wv) -> void {
-      switch (val.type) {
-        case Value::Array:
-          emit(val.template get<ArrayValue>().values.get(), 1L);
-          break;
-        case Value::Function: {
-          auto& fv = val.template get<FunctionValue>();
-          if (fv.def_env)
-            emit(fv.def_env.get(), fv.def_env_multiplicity());
-          // Dispatcher overload bodies + introspection snapshot (see above).
-          if (fv.multimethod_table &&
-              (!mm_dedup || mm_dedup->insert(fv.multimethod_table.get()).second)) {
-            if (fv.multimethod_for_each_body_env)
-              fv.multimethod_for_each_body_env(
-                  [&emit](Environment* e, long mult) { emit(e, mult); });
-            if (fv.introspection_target && fv.introspection_target->def_env)
-              emit(fv.introspection_target->def_env.get(),
-                   fv.introspection_target->def_env_multiplicity());
-          }
-          // Values a constructor captured out of value-walk sight (a class's
-          // instance methods live in build_instance's method_template). Walk
-          // each so its own def_env / dispatcher edges get subtracted — once
-          // per group in the subtract pass (cap_dedup), else an aliased
-          // constructor over-subtracts and could free a live env.
-          if (fv.for_each_captured_value &&
-              (!cap_dedup || !fv.captured_group_key ||
-               cap_dedup->insert(fv.captured_group_key.get()).second))
-            fv.for_each_captured_value(
-                [&](const Value& hidden) { wv(hidden, false, wv); });
-          break;
+  auto walk_node = [&](void* ptr, GcKind kind, void* side1, void* side2,
+                       auto&& emit) {
+    auto emit_value_edges = [&](const Value& val, auto&& self) -> void {
+      // Container backings (Object/Array/Tuple/Set; synthetic views and Tensor
+      // emit nothing) — single-sourced with _owned_resolve_ambiguous.
+      gc_for_each_container_backing(val,
+                                    [&](GcKind, void* p) { emit(p, 1L); });
+      if (val.type == Value::Function) {
+        auto& fv = val.template get<FunctionValue>();
+        if (fv.def_env) emit(fv.def_env.get(), fv.def_env_multiplicity());
+        if (fv.multimethod_table &&
+            (!mm_dedup || mm_dedup->insert(fv.multimethod_table.get()).second)) {
+          if (fv.multimethod_for_each_body_env)
+            fv.multimethod_for_each_body_env(
+                [&emit](Environment* e, long mult) { emit(e, mult); });
+          if (fv.introspection_target && fv.introspection_target->def_env)
+            emit(fv.introspection_target->def_env.get(),
+                 fv.introspection_target->def_env_multiplicity());
         }
-        case Value::Object:
-          if (descend)
-            for (auto& [k, sym] : *val.template get<ObjectValue>().properties)
-              wv(sym.val, false, wv);
-          break;
-        case Value::Tuple:
-          if (descend)
-            for (auto& e : *val.template get<TupleValue>().elements)
-              wv(e, false, wv);
-          break;
-        case Value::Set:
-          if (descend)
-            for (auto& e : *val.template get<SetValue>().members)
-              wv(e, false, wv);
-          break;
-        default:
-          break;
+        // Values a constructor captured out of value-walk sight (a class's
+        // instance methods live in build_instance's method_template). Walk each
+        // so its own def_env / dispatcher / container edges get subtracted —
+        // once per group in the subtract pass (cap_dedup), else an aliased
+        // constructor over-subtracts and could free a live env.
+        if (fv.for_each_captured_value &&
+            (!cap_dedup || !fv.captured_group_key ||
+             cap_dedup->insert(fv.captured_group_key.get()).second))
+          fv.for_each_captured_value(
+              [&](const Value& hidden) { self(hidden, self); });
       }
     };
-    if (is_env) {
+    if (kind == GcKind::Env) {
       auto* e = static_cast<Environment*>(ptr);
-      for (auto& [k, sym] : e->dictionary) walk_value(sym.val, true, walk_value);
+      for (auto& [k, sym] : e->dictionary)
+        emit_value_edges(sym.val, emit_value_edges);
       if (e->outer) emit(e->outer.get(), 1L);
     } else {
-      for (auto& val : *static_cast<ValVec*>(ptr))
-        walk_value(val, true, walk_value);
+      gc_for_each_child(kind, ptr, side1, side2, [&](const Value& cv) {
+        emit_value_edges(cv, emit_value_edges);
+      });
     }
   };
 
@@ -10363,7 +10530,7 @@ inline void InterpGC::collect(Environment* current) {
   mm_dedup = &mm_seen;
   cap_dedup = &cap_seen;
   for (auto& l : live) {
-    walk_node(l.ptr, l.is_env, [&](void* p, long mult) {
+    walk_node(l.ptr, l.kind, l.side1, l.side2, [&](void* p, long mult) {
       auto it = gc_refs.find(p);
       if (it != gc_refs.end()) it->second.refs -= mult;
     });
@@ -10392,7 +10559,7 @@ inline void InterpGC::collect(Environment* current) {
   auto seed_chain = [&](Environment* e) {
     for (; e; e = e->outer.get()) {
       reachable.insert(e);
-      walk_node(e, /*is_env=*/true, mark);
+      walk_node(e, GcKind::Env, nullptr, nullptr, mark);
     }
   };
   seed_chain(current);
@@ -10401,15 +10568,17 @@ inline void InterpGC::collect(Environment* current) {
   while (!q.empty()) {
     void* p = q.front();
     q.pop();
-    walk_node(p, gc_refs.find(p)->second.is_env, mark);
+    const auto& n = gc_refs.find(p)->second;
+    walk_node(p, n.kind, n.side1, n.side2, mark);
   }
 
-  // GC backstop finalize (PEP 442 style, design §9): before breaking
-  // anything, fire the pending `drop` of every owned resource that the
-  // unreachable set orphaned — the structure is still intact, so drop
-  // bodies see their captures. The clear cascade below then reclaims
-  // memory without re-firing (the `dropped` flag). Mirrors the JIT's
-  // _jit_gc_finalize_dead (whose dead set comes from its own mark).
+  // GC backstop finalize (PEP-442 *style* — fire-before-clear, design §9):
+  // before breaking anything, fire the pending `drop` of every owned resource
+  // that the unreachable set orphaned — the structure is still intact, so drop
+  // bodies see their captures. The clear cascade below then reclaims memory
+  // without re-firing (the `dropped` flag). Not full PEP 442: a drop body that
+  // resurrects a garbage member is NOT rescued (it is cleared anyway, matching
+  // the JIT sweep). Mirrors the JIT's _jit_gc_finalize_dead.
   if (!owned_stack().entries.empty()) {
     std::unordered_set<const void*> garbage;
     for (auto& l : live) {
@@ -10418,20 +10587,42 @@ inline void InterpGC::collect(Environment* current) {
     _owned_gc_backstop(garbage);
   }
 
-  // Break cycles by clearing unreachable nodes. The shared_ptr cascade
-  // frees each member's PropMap; drop does not fire DURING the cascade
-  // (a member's drop already ran above if it was due — a cascade-time
-  // body would see cleared envs). Suppress across the whole cascade so
-  // interp matches the JIT sweep (see _drop_suppressed).
+  // Break cycles by clearing unreachable nodes — including a node's sidecars
+  // (Map: non_string_props + key_order; Set: index), else a sidecar keeps a
+  // child alive and nothing is reclaimed (§4). The sidecars are still valid
+  // here because `live` holds them locked for the whole collect (§4a). The
+  // shared_ptr cascade frees each member's containers; drop does not fire
+  // DURING the cascade (a member's drop already ran above if it was due — a
+  // cascade-time body would see cleared envs). Suppress across the whole
+  // cascade so interp matches the JIT sweep (see _drop_suppressed).
   _drop_suppressed() = true;
   for (auto& l : live) {
     if (reachable.contains(l.ptr)) continue;
-    if (l.is_env) {
-      auto* e = static_cast<Environment*>(l.ptr);
-      e->dictionary.clear();
-      e->outer.reset();
-    } else {
-      static_cast<ValVec*>(l.ptr)->clear();
+    switch (l.kind) {
+      case GcKind::Env: {
+        auto* e = static_cast<Environment*>(l.ptr);
+        e->dictionary.clear();
+        e->outer.reset();
+        break;
+      }
+      case GcKind::Vec:
+        static_cast<ValVec*>(l.ptr)->clear();
+        break;
+      case GcKind::Set:
+        static_cast<ValVec*>(l.ptr)->clear();
+        if (l.side1)
+          static_cast<
+              std::unordered_map<Value, size_t, ValueHash, ValueEq>*>(l.side1)
+              ->clear();
+        break;
+      case GcKind::Map:
+        static_cast<OrderedSymbolMap*>(l.ptr)->clear();
+        if (l.side1)
+          static_cast<
+              std::unordered_map<Value, Symbol, ValueHash, ValueEq>*>(l.side1)
+              ->clear();
+        if (l.side2) static_cast<ValVec*>(l.side2)->clear();
+        break;
     }
   }
   _drop_suppressed() = false;

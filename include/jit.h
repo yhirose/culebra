@@ -39,6 +39,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -393,13 +394,6 @@ struct JitObject {
   // Iterate (name, entry) pairs in insertion order.
   template <class F>
   void for_each(F&& f) const {
-    if (!shape) return;
-    for (size_t i = 0; i < shape->names.size(); i++) {
-      f(std::string_view(shape->names[i]), slots[i]);
-    }
-  }
-  template <class F>
-  void for_each_mut(F&& f) {
     if (!shape) return;
     for (size_t i = 0; i < shape->names.size(); i++) {
       f(std::string_view(shape->names[i]), slots[i]);
@@ -1219,6 +1213,10 @@ inline double _culebra_coerce_num(int8_t tag, int64_t data) {
 // Throw the canonical `cannot apply 'op' to L and R` when either operand
 // is non-numeric, after special-method dispatch has already declined.
 // Single source for every arithmetic helper's type error, with location.
+// Borrow-contract: never touches the operands' refs — each caller arms a
+// `JitUnwindRelease` over its direct-error section (after user dispatch has
+// declined), which is the sole releaser of the codegen-owned operand temps
+// on this throw (callee-cleans-on-direct-throw, docs/jit_ownership.md §6).
 inline void _arith_guard_numeric(const char* op, int8_t lt, int8_t rt,
                                  int64_t line, int64_t col) {
   bool ln = (lt == TAG_LONG || lt == TAG_FLOAT);
@@ -2183,19 +2181,54 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_div_zero(int64_t line,
 // emits an inline "both Long" fast path and only calls these when at
 // least one operand is Float or the types are mixed.
 
+// Releases its values IFF the enclosing scope exits via C++ exception unwind
+// (std::uncaught_exceptions grew since construction) — the single RAII form of
+// the callee-cleans-on-direct-throw convention (docs/jit_ownership.md §6).
+// Arm it only over a region whose throws are all DIRECT errors: after user
+// dispatch has declined or returned (a user-dispatch throw is cleaned by the
+// callee frame + the invoker's own guard, so releasing here too would
+// double-free). A value that needs no cleanup on some path is passed as nil
+// (releasing nil is a no-op), which models conditional-ownership gates like
+// `own_receiver`. Values release in list order.
+struct JitUnwindRelease {
+  JitValue v[3];
+  int n = 0;
+  int exc = std::uncaught_exceptions();
+  JitUnwindRelease(std::initializer_list<JitValue> vals) {
+    assert(vals.size() <= 3);
+    for (auto& x : vals) v[n++] = x;
+  }
+  JitUnwindRelease(const JitUnwindRelease&) = delete;
+  JitUnwindRelease& operator=(const JitUnwindRelease&) = delete;
+  ~JitUnwindRelease() {
+    if (std::uncaught_exceptions() <= exc) return;
+    for (int i = 0; i < n; i++)
+      culebra_runtime_value_release(v[i].tag, v[i].data);
+  }
+};
+
 // Invoke a method closure with an explicit `this`. Retains both the
 // receiver and the argument so the callee can consume them per the
 // JIT's closure ABI. Returns the +1 result.
+// Callee-consumes ABI: these helpers hand `self` and each arg to the method at
+// +1, and the callee releases them on a NORMAL return. On a C++ throw from the
+// callee (a user `eq`/`hash`/`__lt__`/… body, possibly recursing into nested
+// fields) the callee does NOT release them — the caller cleans up its operands,
+// exactly as a codegen call site releases them through its cleanup pad. These
+// C++ invokers have no cleanup pad, so the unwind guard is their equivalent:
+// it releases the retained operands iff the call unwinds.
 inline JitValue _culebra_invoke_method1(JitClosure* cls, JitValue self,
                                         JitValue arg) {
   culebra_runtime_value_retain(self.tag, self.data);
   culebra_runtime_value_retain(arg.tag, arg.data);
+  JitUnwindRelease g{self, arg};
   JitValue args[1] = {arg};
   return _jit_invoke(cls, self, 1, args);
 }
 
 inline JitValue _culebra_invoke_method0(JitClosure* cls, JitValue self) {
   culebra_runtime_value_retain(self.tag, self.data);
+  JitUnwindRelease g{self};
   return _jit_invoke(cls, self, 0, nullptr);
 }
 
@@ -2204,6 +2237,7 @@ inline JitValue _culebra_invoke_method2(JitClosure* cls, JitValue self,
   culebra_runtime_value_retain(self.tag, self.data);
   culebra_runtime_value_retain(a1.tag, a1.data);
   culebra_runtime_value_retain(a2.tag, a2.data);
+  JitUnwindRelease g{self, a1, a2};
   JitValue args[2] = {a1, a2};
   return _jit_invoke(cls, self, 2, args);
 }
@@ -2228,20 +2262,31 @@ inline std::optional<int64_t> _jit_object_user_hash(JitObject* obj) {
 // Resolve user-defined `eq(other)` on a pair of Objects (Eq structural
 // conformance). Both sides must expose `eq`; otherwise nullopt so the
 // caller keeps reference equality.
-inline std::optional<bool> _jit_object_user_eq(JitObject* a, JitObject* b) {
+// Invoke the Eq-trait `eq(other)` and return its raw +1 result, WITHOUT
+// coercing to Bool. Split from the coercing wrapper so the public `==` entry
+// can run the coercion under its own operand-release guard: a user-dispatch
+// throw (inside the invoke here) is cleaned by the callee frame + JitUnwindRelease,
+// whereas a non-Bool RETURN throws only in the later coercion — two paths the
+// caller must treat differently.
+inline std::optional<JitValue> _jit_object_user_eq_raw(JitObject* a,
+                                                       JitObject* b) {
   auto* ea = _find_property(a, "eq");
   auto* eb = _find_property(b, "eq");
   if (!ea || !eb || ea->value.tag != TAG_FUNC || eb->value.tag != TAG_FUNC) {
     return std::nullopt;
   }
   auto* cls = reinterpret_cast<JitClosure*>(ea->value.data);
-  auto r = _culebra_invoke_method1(
+  return _culebra_invoke_method1(
       cls, {TAG_OBJECT, reinterpret_cast<int64_t>(a)},
       {TAG_OBJECT, reinterpret_cast<int64_t>(b)});
+}
+
+inline std::optional<bool> _jit_object_user_eq(JitObject* a, JitObject* b) {
   // Coerce the return via `to_bool` semantics (Bool/Long/Float), matching
   // the interpreter's `_invoke_user_eq` so a non-Bool `eq` agrees across
   // backends (and, like interp, throws on a non-coercible return).
-  return _extract_bool_and_release(r);
+  if (auto r = _jit_object_user_eq_raw(a, b)) return _extract_bool_and_release(*r);
+  return std::nullopt;
 }
 
 // Look up a Function-typed property on a JitObject by name.
@@ -2338,6 +2383,7 @@ inline std::optional<JitValue> _try_tensor_binop(
     if (auto r = _dispatch_arith_special(lt, ld, rt, rd, method,        \
                                          reflect))                      \
       return *r;                                                        \
+    JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};             \
     _arith_guard_numeric(opstr, lt, rt, line, col);                     \
     auto a = _culebra_coerce_num(lt, ld);                               \
     auto b = _culebra_coerce_num(rt, rd);                               \
@@ -2359,6 +2405,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_add(
     return *r;
   if (auto r = _dispatch_arith_special(lt, ld, rt, rd, "__add__", true))
     return *r;
+  JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};
   bool ls = (lt == TAG_STRING || lt == TAG_STRINGVIEW);
   bool rs = (rt == TAG_STRING || rt == TAG_STRINGVIEW);
   if (ls && rs) {
@@ -2380,6 +2427,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_div(
     return *r;
   if (auto r = _dispatch_arith_special(lt, ld, rt, rd, "__div__", false))
     return *r;
+  JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};
   _arith_guard_numeric("/", lt, rt, line, col);
   auto a = _culebra_coerce_num(lt, ld);
   auto b = _culebra_coerce_num(rt, rd);
@@ -2391,6 +2439,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_mod(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
   if (auto r = _dispatch_arith_special(lt, ld, rt, rd, "__mod__", false))
     return *r;
+  JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};
   _arith_guard_numeric("%", lt, rt, line, col);
   auto a = _culebra_coerce_num(lt, ld);
   auto b = _culebra_coerce_num(rt, rd);
@@ -2403,6 +2452,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_mod(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_matmul(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
   if (auto r = _try_special_binop(lt, ld, rt, rd, "__matmul__")) return *r;
+  // Direct type error (no user `__matmul__` matched) — the guard releases the
+  // owned operand temps on the raise, matching the other arithmetic entries.
+  JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};
   culebra::throw_arith_type_error("@", _culebra_tag_name(lt),
                                   _culebra_tag_name(rt), line, col);
 }
@@ -2433,17 +2485,28 @@ inline bool _extract_bool_and_release(JitValue v) {
 // operator so the JIT can look them up by name.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_equal(
     int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
+  // Bool-coerce a user `__eq__`/`eq` return. A non-Bool RETURN throws here,
+  // AFTER the dispatch returned normally (the invoker's unwind guard is out of
+  // scope), so the `==` codegen's operands are still owned by us and would
+  // strand — the guard releases them (callee-cleans-on-direct-type-error, C①).
+  // A user-dispatch THROW is the other path: it unwinds inside the invoke
+  // below, where the callee frame + the invoker's unwind guard release the
+  // operands, and never reaches this coercion — so this never double-frees
+  // (ASan-confirmed: `eq` throw = clean).
+  auto coerce = [&](JitValue r) -> bool {
+    JitUnwindRelease g{JitValue{t1, d1}, JitValue{t2, d2}};
+    return _extract_bool_and_release(r);
+  };
   // `==` is commutative, so try either side's `__eq__`.
-  if (auto r = _try_special_binop(t1, d1, t2, d2, "__eq__"))
-    return _extract_bool_and_release(*r);
-  if (auto r = _try_special_binop(t2, d2, t1, d1, "__eq__"))
-    return _extract_bool_and_release(*r);
+  if (auto r = _try_special_binop(t1, d1, t2, d2, "__eq__")) return coerce(*r);
+  if (auto r = _try_special_binop(t2, d2, t1, d1, "__eq__")) return coerce(*r);
   // Eq-trait fallback: route through a user/derived `eq(other)` so the
-  // operator agrees with key equality (JitValueEq dispatches `eq` too).
+  // operator agrees with key equality (JitValueEq dispatches `eq` too). Invoke
+  // raw and coerce under the same guard so a non-Bool return releases operands.
   if (t1 == TAG_OBJECT && t2 == TAG_OBJECT) {
-    if (auto e = _jit_object_user_eq(reinterpret_cast<JitObject*>(d1),
-                                     reinterpret_cast<JitObject*>(d2)))
-      return *e;
+    if (auto r = _jit_object_user_eq_raw(reinterpret_cast<JitObject*>(d1),
+                                         reinterpret_cast<JitObject*>(d2)))
+      return coerce(*r);
   }
   return _culebra_value_equal(t1, d1, t2, d2);
 }
@@ -2474,11 +2537,37 @@ inline std::optional<bool> _special_le(int8_t t1, int64_t d1,
   return l || e;
 }
 
+// Each ordering operator expands to two functions:
+//
+//   _value_<name>_borrow  — borrow-contract core: the full `<`/`<=`/… semantics
+//     (user `__lt__`/`__le__`/`cmp` dispatch, then numeric/String/Nil ordering)
+//     raising the canonical compare type error WITHOUT touching the operands'
+//     refs. The sort comparators call this directly: the array still owns its
+//     elements, so releasing them on an incomparable-element throw would corrupt
+//     its refcounts.
+//
+//   culebra_runtime_value_<name>  — public operator entry, callee-cleans-on-
+//     throw. The `fast_path` user dispatch runs first and OUTSIDE the operand-
+//     release guard: a user `__lt__`/`cmp` throw is already cleaned by the
+//     invoker's unwind guard, so releasing the operands there would double-free
+//     (ASan-confirmed). Only the trailing numeric/String ordering raises the
+//     direct type error, and its `+1`-owned operand temps strand on the unwind
+//     edge (the codegen `Owned` handles fire only on the normal path), so the
+//     entry's guard releases them there — matching _arith_guard_numeric.
 #define CUL_DEF_ORD_OP(name, cmp_op, fast_path)                         \
+  inline bool _value_##name##_borrow(                                   \
+      int8_t t1, int64_t d1, int8_t t2, int64_t d2,                     \
+      int64_t line, int64_t col) {                                      \
+    fast_path                                                           \
+    return _culebra_value_ord(t1, d1, t2, d2,                           \
+                              [](double a, double b) { return a cmp_op b; }, \
+                              line, col);                               \
+  }                                                                     \
   CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_##name(       \
       int8_t t1, int64_t d1, int8_t t2, int64_t d2,                     \
       int64_t line, int64_t col) {                                      \
     fast_path                                                           \
+    JitUnwindRelease g{JitValue{t1, d1}, JitValue{t2, d2}};             \
     return _culebra_value_ord(t1, d1, t2, d2,                           \
                               [](double a, double b) { return a cmp_op b; }, \
                               line, col);                               \
@@ -2553,6 +2642,7 @@ CUL_NUM_INPLACE(div, Op::Div)
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_pow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
   if (auto r = _try_special_binop(lt, ld, rt, rd, "__pow__")) return *r;
+  JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};
   if (lt == TAG_LONG && rt == TAG_LONG) {
     int64_t a = ld, e = rd;
     if (e >= 0) return {TAG_LONG, culebra::ipow_nonneg(a, e)};
@@ -2580,6 +2670,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_neg(
     auto v = _culebra_float_to_double(d);
     return {TAG_FLOAT, _culebra_double_to_bits(-v)};
   }
+  // Direct type error (no user `__neg__` matched) — the guard releases the
+  // owned operand temp on the raise, matching the other arithmetic entries.
+  JitUnwindRelease g{JitValue{t, d}};
   culebra::throw_type_mismatch("Long or Float", _culebra_tag_name(t),
                                line, col);
 }
@@ -3491,23 +3584,41 @@ inline JitValue _jit_packable_read_field(const uint8_t* base,
   return {TAG_NIL, 0};
 }
 
-// Releases one ref of `(tag, data)` when it goes out of scope. The single
-// chokepoint for the "a @packable store consumes exactly one ref" contract:
-// the owning setter declares one of these and every exit path (normal,
-// validation throw, or write throw) consumes the value exactly once.
-struct JitConsumeOnExit {
-  int8_t tag;
-  int64_t data;
-  JitConsumeOnExit(int8_t t, int64_t d) : tag(t), data(d) {}
-  ~JitConsumeOnExit() { _culebra_value_release_impl(tag, data); }
-  JitConsumeOnExit(const JitConsumeOnExit&) = delete;
-  JitConsumeOnExit& operator=(const JitConsumeOnExit&) = delete;
+// Move-only owned JitValue for runtime *helper* bodies — the C++-side twin of
+// the codegen `Owned` handle (see the `Owned` struct further down). Releases
+// its `+1` on scope exit — every exit path, INCLUDING C++ exception unwind —
+// unless `consume()`d (handed to an out-param / return / a sink that takes
+// ownership). The iterator/HOF helpers held raw `JitValue` across a throwing
+// `_culebra_invoke*` and leaked on the throw path (leak-fuzzer P0); wrapping
+// a helper's owned locals in this makes the throw path release for free. Also
+// the single chokepoint for callee-consumes contracts (a @packable store, a
+// native method's `self`/args — see `JitMethodSelf`/`JitMethodArgs`).
+struct JitOwnedVal {
+  JitValue v;
+  bool owned;
+  explicit JitOwnedVal(JitValue val) : v(val), owned(true) {}
+  JitOwnedVal(int8_t t, int64_t d) : v{t, d}, owned(true) {}
+  JitOwnedVal(JitOwnedVal&& o) noexcept : v(o.v), owned(o.owned) { o.owned = false; }
+  JitOwnedVal& operator=(JitOwnedVal&& o) noexcept {  // releases the old value
+    if (this != &o) {
+      if (owned) _culebra_value_release_impl(v.tag, v.data);
+      v = o.v;
+      owned = o.owned;
+      o.owned = false;
+    }
+    return *this;
+  }
+  JitOwnedVal(const JitOwnedVal&) = delete;
+  JitOwnedVal& operator=(const JitOwnedVal&) = delete;
+  JitValue borrow() const { return v; }            // read without consuming
+  JitValue consume() { owned = false; return v; }  // hand the +1 onward
+  ~JitOwnedVal() { if (owned) _culebra_value_release_impl(v.tag, v.data); }
 };
 
 // Encode a primitive JitValue into field `f`'s raw bytes. Numeric coercion
 // mirrors the interp (Long<->Float implicit). Pure borrow-and-write: it
 // never releases `(tag, data)` — both the storing callers (which consume
-// via JitConsumeOnExit) and the key-encoding callers (FixedSet/Map probe,
+// via an owned JitOwnedVal) and the key-encoding callers (FixedSet/Map probe,
 // which must NOT consume) rely on that.
 inline void _jit_packable_write_field(uint8_t* base,
                                       const culebra::PackableField& f,
@@ -3711,7 +3822,7 @@ inline void _jit_packed_view_set(JitObject* view, const char* key, int8_t tag,
   // A store consumes exactly one ref of the assigned value, on every exit
   // path (validation throw, struct memcpy, or the terminal field write).
   // One guard replaces the per-path releases and makes the contract uniform.
-  JitConsumeOnExit _consume{tag, data};
+  JitOwnedVal _consume{tag, data};
   long id = view->slots[view->find_slot("__packedview_id__")].value.data;
   auto core = culebra::lookup_shared_buffer(id);
   if (!core) {
@@ -3980,11 +4091,25 @@ inline long _jit_fa_arg_index(JitValue a) {
        : a.tag == TAG_FLOAT   ? static_cast<long>(_culebra_float_to_double(a.data))
                               : 0;
 }
-// Releases the bound `this` (the method ABI passes it +1) on scope exit —
-// success or exception — so a throwing FixedArray method can't leak it.
-struct JitMethodSelf {
-  JitValue v;
-  ~JitMethodSelf() { culebra_runtime_value_release(v.tag, v.data); }
+// Releases the bound `this` (the native-method ABI passes it +1) on scope
+// exit — success or exception — so a throwing native method can't leak it.
+// An alias: the semantics are exactly an owned value never consumed; the name
+// records the ABI contract at each method's entry.
+using JitMethodSelf = JitOwnedVal;
+// Releases every argument the method ABI passed at +1 (callee-consumes) on scope
+// exit — success or exception — mirroring JitMethodSelf for `self`. For native
+// methods that neither forward nor manually release their args, this is the
+// throw-safe consume: the caller does NOT clean a native method's operands on
+// unwind, so the callee must (channel send, with_lock's callback). Guarding the
+// whole args span also closes the direct-error throw path a manual per-branch
+// release would miss.
+struct JitMethodArgs {
+  int64_t n;
+  JitValue* args;
+  ~JitMethodArgs() {
+    for (int64_t i = 0; i < n; i++)
+      culebra_runtime_value_release(args[i].tag, args[i].data);
+  }
 };
 inline void _jit_fa_size(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
@@ -4781,91 +4906,111 @@ inline JitValue _jit_match_index(JitObject* m, int8_t key_tag,
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
     JitObject* obj, int8_t key_tag, int64_t key_data,
-    int8_t* out_tag, int64_t* out_data, int64_t line, int64_t col) {
+    int8_t* out_tag, int64_t* out_data, int64_t line, int64_t col,
+    bool own_receiver) {
   std::string _kbuf;
   _jit_normalize_str_key(key_tag, key_data, _kbuf);
-  // `arr[i]` on a FixedArray view: read element i from the inline bytes.
-  if (obj->is_fixed_array_view) {
-    long i = (key_tag == TAG_LONG) ? key_data
-           : (key_tag == TAG_FLOAT)
-               ? static_cast<long>(_culebra_float_to_double(key_data))
+  // When the codegen index path (`obj[k]`) owns the receiver +1, a *direct*
+  // lookup failure (KeyError / bad-key TypeError / OOB) must release it — the
+  // caller only releases on the normal path and there is no landing pad on the
+  // unwind edge. A user `__index__` dispatch is exempt: its throw is cleaned
+  // by the callee frame + the invoker's unwind guard, so the guards below are
+  // scoped to the dispatch-free regions only. The C++/compound-assign callers
+  // borrow the receiver and pass false; a TAG_STRING key is a borrowed cstring
+  // (never released). Nil guard entries no-op.
+  const JitValue recv_guard = own_receiver
+      ? JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(obj)}
+      : JitValue{TAG_NIL, 0};
+  const JitValue key_guard = key_tag != TAG_STRING
+      ? JitValue{key_tag, key_data}
+      : JitValue{TAG_NIL, 0};
+  // FixedArray view / SharedBuffer / Shared.new view / Regex match: no user
+  // dispatch can run in these arms, so one unwind guard covers every direct
+  // throw (bad-key TypeError, OOB IndexError, the shared-val reader's errors).
+  {
+    JitUnwindRelease g{key_guard, recv_guard};
+    // `arr[i]` on a FixedArray view: read element i from the inline bytes.
+    if (obj->is_fixed_array_view) {
+      long i = (key_tag == TAG_LONG) ? key_data
+             : (key_tag == TAG_FLOAT)
+                 ? static_cast<long>(_culebra_float_to_double(key_data))
+                 : throw culebra::CulebraError("TypeError",
+                       "type error: expected Long or Float", line, col);
+      JitValue r = _jit_fa_get(obj, i, line, col);
+      *out_tag = r.tag;
+      *out_data = r.data;
+      return;
+    }
+    // `buf[i]` on a SharedBuffer: hand back a packed view over element `i`
+    // (the index coerces Long/Float like the interp's `key.to_long()`).
+    if (_jit_is_shared_buffer(obj)) {
+      long idx = (key_tag == TAG_LONG)    ? key_data
+               : (key_tag == TAG_FLOAT)   ? static_cast<long>(_culebra_float_to_double(key_data))
                : throw culebra::CulebraError("TypeError",
                      "type error: expected Long or Float", line, col);
-    JitValue r = _jit_fa_get(obj, i, line, col);
-    *out_tag = r.tag;
-    *out_data = r.data;
-    return;
+      auto* view = _jit_shared_buffer_index(obj, idx, line, col);
+      *out_tag = TAG_OBJECT;
+      *out_data = reinterpret_cast<int64_t>(view);
+      return;
+    }
+    // Shared.new view: `view[key]` reads the frozen tree (Object key
+    // lookup / Array-Tuple positional). Consumes a refcounted key per
+    // this helper's contract; the result is +1.
+    if (_jit_is_shared_val(obj)) {
+      JitValue r = culebra::_jit_shared_val_index(obj, key_tag, key_data,
+                                                  line, col);
+      if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
+      // _jit_shared_val_child hands back a container sub-view BORROWED (+0; the
+      // parent view's memo owns the +1) or a fresh primitive leaf. Retain so
+      // this helper is uniformly +1-owned like every other branch — index
+      // callers release the receiver without a promotion retain, and a borrowed
+      // sub-view would otherwise be freed by that release while the parent
+      // still points at it (a use-after-free the memo's next reader would hit).
+      culebra_runtime_value_retain(r.tag, r.data);
+      *out_tag = r.tag;
+      *out_data = r.data;
+      return;
+    }
+    // `m[i]` / `m["name"]` on a Regex match: index its capture groups (Long ->
+    // positional, String/StringView -> named). A miss is nil. Record fields
+    // (`m.value`, spans) stay on dot access.
+    if (obj->is_match) {
+      JitValue r = _jit_match_index(obj, key_tag, key_data);
+      *out_tag = r.tag;
+      *out_data = r.data;
+      if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
+      return;
+    }
   }
-  // `buf[i]` on a SharedBuffer: hand back a packed view over element `i`
-  // (the index coerces Long/Float like the interp's `key.to_long()`).
-  if (_jit_is_shared_buffer(obj)) {
-    long idx = (key_tag == TAG_LONG)    ? key_data
-             : (key_tag == TAG_FLOAT)   ? static_cast<long>(_culebra_float_to_double(key_data))
-             : throw culebra::CulebraError("TypeError",
-                   "type error: expected Long or Float", line, col);
-    auto* view = _jit_shared_buffer_index(obj, idx, line, col);
-    *out_tag = TAG_OBJECT;
-    *out_data = reinterpret_cast<int64_t>(view);
-    return;
-  }
-  // Shared.new view: `view[key]` reads the frozen tree (Object key
-  // lookup / Array-Tuple positional). Consumes a refcounted key per
-  // this helper's contract; the result is +1.
-  if (_jit_is_shared_val(obj)) {
-    JitValue r = culebra::_jit_shared_val_index(obj, key_tag, key_data, line, col);
-    if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
-    *out_tag = r.tag;
-    *out_data = r.data;
-    return;
-  }
-  // `m[i]` / `m["name"]` on a Regex match: index its capture groups (Long ->
-  // positional, String/StringView -> named). A miss is nil. Record fields
-  // (`m.value`, spans) stay on dot access. Borrowed cstring keys (TAG_STRING)
-  // are not freed; a heap StringView key is released like the sidecar path.
-  if (obj->is_match) {
-    JitValue r = _jit_match_index(obj, key_tag, key_data);
-    *out_tag = r.tag;
-    *out_data = r.data;
-    if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
-    return;
-  }
-  // String keys: unified with shape access (see object_set_any).
+  // Slot hit: String keys are unified with shape access (see object_set_any);
+  // other keys live in the non-String sidecar.
   if (key_tag == TAG_STRING) {
     auto idx = obj->find_slot(reinterpret_cast<const char*>(key_data));
-    if (idx == static_cast<size_t>(-1)) {
-      // String keys are borrowed cstrings (non-refcounted) — no release.
-      if (_jit_try_object_index(obj, key_tag, key_data, out_tag, out_data)) {
-        return;
-      }
-      throw culebra::CulebraError("KeyError", "key not present", line, col);
+    if (idx != static_cast<size_t>(-1)) {
+      *out_tag = obj->slots[idx].value.tag;
+      *out_data = obj->slots[idx].value.data;
+      culebra_runtime_value_retain(*out_tag, *out_data);
+      return;
     }
-    *out_tag = obj->slots[idx].value.tag;
-    *out_data = obj->slots[idx].value.data;
-    culebra_runtime_value_retain(*out_tag, *out_data);
+  } else if (obj->non_string_props) {
+    auto it = obj->non_string_props->find(JitValue{key_tag, key_data});
+    if (it != obj->non_string_props->end()) {
+      *out_tag = it->second.value.tag;
+      *out_data = it->second.value.data;
+      culebra_runtime_value_retain(*out_tag, *out_data);
+      _culebra_value_release_impl(key_tag, key_data);
+      return;
+    }
+  }
+  // Miss → user `__index__` overload (a dispatch window: its throw is cleaned
+  // by the callee frame, not by us).
+  if (_jit_try_object_index(obj, key_tag, key_data, out_tag, out_data)) {
+    if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
     return;
   }
-  if (!obj->non_string_props) {
-    if (_jit_try_object_index(obj, key_tag, key_data, out_tag, out_data)) {
-      _culebra_value_release_impl(key_tag, key_data);
-      return;
-    }
-    _culebra_value_release_impl(key_tag, key_data);
-    throw culebra::CulebraError("KeyError", "key not present", line, col);
-  }
-  JitValue key{key_tag, key_data};
-  auto it = obj->non_string_props->find(key);
-  if (it == obj->non_string_props->end()) {
-    if (_jit_try_object_index(obj, key_tag, key_data, out_tag, out_data)) {
-      _culebra_value_release_impl(key_tag, key_data);
-      return;
-    }
-    _culebra_value_release_impl(key_tag, key_data);
-    throw culebra::CulebraError("KeyError", "key not present", line, col);
-  }
-  *out_tag = it->second.value.tag;
-  *out_data = it->second.value.data;
-  culebra_runtime_value_retain(*out_tag, *out_data);
-  _culebra_value_release_impl(key_tag, key_data);
+  // Direct KeyError — sole releaser of the owned receiver + refcounted key.
+  JitUnwindRelease g{key_guard, recv_guard};
+  throw culebra::CulebraError("KeyError", "key not present", line, col);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_object_has_any(
@@ -5006,7 +5151,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get(
   _write_value_out(_find_property(obj, key), out_tag, out_data);
 }
 
-// Slow path for the per-callsite IC emitted by compile_property_get.
+// Slow path for the per-callsite IC emitted by emit_property_get.
 // On an own-property hit, refreshes `ic->shape` / `ic->offset` so the
 // next read with the same shape stays on the inlined fast path. Proto
 // hits don't update the cache because the fast path keys on
@@ -5047,10 +5192,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
   }
   // Shared.new view: own slots (markers + reader methods) resolved
   // above; anything else reads the frozen tree (nil on miss, like a
-  // plain Object). The returned value is FRESH (+1): a string is a heap
-  // string (leak-bounded by design like every JIT string), a container
-  // is a sub-view object whose extra ref the GC backstop's exactly-once
-  // drop releases — acceptable for the borrowed-read contract here.
+  // plain Object). The returned value is +0-borrowed: a string leaf is a
+  // fresh heap string (leak-bounded by design like every JIT string), a
+  // container child is a sub-view memoized on the parent view (see
+  // _jit_shared_val_child) and released on the parent's teardown — no
+  // backstop-reclaimed orphan.
   if (_jit_is_shared_val(obj)) {
     return culebra::_jit_shared_val_prop(obj, key, line, col);
   }
@@ -5095,9 +5241,23 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
 //     interpreter's permissive member read; a `.foo()` on that Nil then
 //     fails with the usual "expected Function, got Nil")
 //   - scalar -> TypeError, same wording as interpreter.h to_object.
+//
+// `own_receiver` gate (C⑧, mirrors object_get_any's C③ contract): a bare
+// property read `recv.key` on a +1-owned receiver (the postfix chain's rolling
+// handle) strands that +1 when this cold path throws — a dropped Shared view's
+// ClosedError, a closed namespace's AttributeError, a corrupt-view ValueError,
+// or the scalar TypeError. All of those are DIRECT errors (no user dispatch:
+// a getter is invoked later in emit_property_value_read, whose JitUnwindRelease
+// already balances the receiver), so this helper is the sole releaser on the
+// unwind edge. Callers that merely borrow the receiver (compound-assign
+// intermediates, the iterator protocol) pass false. The fast inline path never
+// reaches here, so the gate costs the cold path one i1 arg and no IR at the
+// monomorphic read site.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_prop_get(
     int8_t recv_tag, int64_t recv_data, const char* key, JitPropIC* ic,
-    int64_t line, int64_t col) {
+    int64_t line, int64_t col, bool own_receiver) {
+  JitUnwindRelease g{own_receiver ? JitValue{recv_tag, recv_data}
+                                  : JitValue{TAG_NIL, 0}};
   if (recv_tag == TAG_OBJECT) {
     return culebra_runtime_object_get_ic(
         reinterpret_cast<JitObject*>(recv_data), key, ic, line, col);
@@ -5128,8 +5288,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_to_bool(
       std::memcpy(&d, &data, sizeof(d));
       return d != 0.0;
     }
-    default:
+    default: {
+      // Direct type error (a non-numeric condition/operand, e.g. `if [1]` or
+      // `![1]`). The codegen hands a `+1`-owned temp and does not release it
+      // on this unwind edge, so the guard does — callee-cleans-on-throw,
+      // matching the arithmetic and comparison operator entries.
+      JitUnwindRelease g{JitValue{tag, data}};
       culebra_runtime_type_error_typed(line, col, "Bool, Long, or Float", tag);
+    }
   }
   return false;  // unreachable: type_error_typed throws
 }
@@ -5312,16 +5478,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
     JitValue this_val = {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
     // Body consumes `this` via the slot +1 on function exit, so retain
     // before handing it off. If the body throws, the instance's +1 is
-    // otherwise stranded — release it before rethrowing to the caller.
+    // otherwise stranded — the guard releases it on the unwind edge.
     culebra_runtime_value_retain(this_val.tag, this_val.data);
-    try {
-      auto result = _jit_invoke(body_cls, this_val, n_args, args);
-      _culebra_value_release_impl(result.tag, result.data);
-    } catch (...) {
-      _culebra_value_release_impl(TAG_OBJECT,
-                                   reinterpret_cast<int64_t>(inst));
-      throw;
-    }
+    JitUnwindRelease g{this_val};
+    auto result = _jit_invoke(body_cls, this_val, n_args, args);
+    _culebra_value_release_impl(result.tag, result.data);
   } else {
     // Default constructor: release any args the caller transferred.
     for (int64_t i = 0; i < n_args; i++) {
@@ -5507,9 +5668,16 @@ _jit_variant_ctor_info() {
 // JitFn-ABI shared thunk installed as `fn_ptr` on every payload-variant
 // constructor closure. Recovers the variant/enum names from the side
 // table and builds the instance from the call args.
-inline void _jit_variant_ctor_thunk(JitValue* __ret, JitClosure* cls, int8_t /*this_tag*/,
-                                         int64_t /*this_data*/, int64_t n_args,
+inline void _jit_variant_ctor_thunk(JitValue* __ret, JitClosure* cls, int8_t this_tag,
+                                         int64_t this_data, int64_t n_args,
                                          JitValue* args) {
+  JitValue this_val{this_tag, this_data};
+  // A direct `E.V(x)` call reaches here through the method-call ABI, which
+  // hands `this` (the enum namespace) at +1 for the callee to consume. This
+  // thunk builds a fresh variant instead of forwarding `this` to a body, so
+  // it must drop that +1 or the namespace strands one reference per call.
+  // (An indirect `let f = E.V; f(x)` passes nil — a no-op release.)
+  _culebra_value_release_impl(this_val.tag, this_val.data);
   auto& info = _jit_variant_ctor_info();
   auto it = info.find(cls);
   if (it == info.end()) { *__ret = {TAG_NIL, 0}; return; }
@@ -5664,35 +5832,59 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_derived_cmp(
 }
 
 // JitFn-ABI thunks installed as `fn_ptr` on each derived-method closure.
+// The ABI is callee-consumes: the invoker (_culebra_invoke_method*, or a direct
+// call site) hands `self` and each arg at +1, and the callee releases them on a
+// NORMAL return; on a C++ throw the *caller* cleans up its operands (a codegen
+// call site via its cleanup pad, _culebra_invoke_method* via its JitUnwindRelease
+// guard). So these native thunks release self + args on the normal path only —
+// releasing on throw too would double-release once the invoker unwinds. Without
+// even the normal-path release, every derived `==`/`!=`/`cmp`/`hash`/`show`
+// leaks its operand(s) (the dispatch retains them and nobody gives them back).
+inline void _jit_derived_thunk_consume(JitValue self, int64_t n,
+                                       JitValue* args) {
+  culebra_runtime_value_release(self.tag, self.data);
+  for (int64_t i = 0; i < n; i++)
+    culebra_runtime_value_release(args[i].tag, args[i].data);
+}
 inline void _jit_derived_eq_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                                        JitValue* args) {
   JitValue self{self_tag, self_data};
-  if (self.tag != TAG_OBJECT || n < 1) { *__ret = {TAG_BOOL, 0}; return; }
-  { *__ret = culebra_runtime_derived_eq(reinterpret_cast<JitObject*>(self.data),
-                                     args[0]); return; }
+  JitValue r{TAG_BOOL, 0};
+  if (self.tag == TAG_OBJECT && n >= 1)
+    r = culebra_runtime_derived_eq(reinterpret_cast<JitObject*>(self.data),
+                                   args[0]);
+  _jit_derived_thunk_consume(self, n, args);
+  { *__ret = r; return; }
 }
-inline void _jit_derived_hash_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
-                                         JitValue*) {
+inline void _jit_derived_hash_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
+                                         JitValue* args) {
   JitValue self{self_tag, self_data};
-  if (self.tag != TAG_OBJECT) { *__ret = {TAG_LONG, 0}; return; }
-  { *__ret = {TAG_LONG, culebra_runtime_derived_hash(
-                        reinterpret_cast<JitObject*>(self.data))}; return; }
+  JitValue r{TAG_LONG, 0};
+  if (self.tag == TAG_OBJECT)
+    r = {TAG_LONG, culebra_runtime_derived_hash(
+                       reinterpret_cast<JitObject*>(self.data))};
+  _jit_derived_thunk_consume(self, n, args);
+  { *__ret = r; return; }
 }
-inline void _jit_derived_show_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
-                                         JitValue*) {
+inline void _jit_derived_show_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
+                                         JitValue* args) {
   JitValue self{self_tag, self_data};
   const char* s = (self.tag == TAG_OBJECT)
                       ? culebra_runtime_derived_show(
                             reinterpret_cast<JitObject*>(self.data))
                       : _culebra_heap_str("");
+  _jit_derived_thunk_consume(self, n, args);
   { *__ret = {TAG_STRING, reinterpret_cast<int64_t>(s)}; return; }
 }
 inline void _jit_derived_cmp_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                                         JitValue* args) {
   JitValue self{self_tag, self_data};
-  if (self.tag != TAG_OBJECT || n < 1) { *__ret = {TAG_LONG, 0}; return; }
-  { *__ret = {TAG_LONG, culebra_runtime_derived_cmp(
-                        reinterpret_cast<JitObject*>(self.data), args[0])}; return; }
+  JitValue r{TAG_LONG, 0};
+  if (self.tag == TAG_OBJECT && n >= 1)
+    r = {TAG_LONG, culebra_runtime_derived_cmp(
+                       reinterpret_cast<JitObject*>(self.data), args[0])};
+  _jit_derived_thunk_consume(self, n, args);
+  { *__ret = r; return; }
 }
 
 // Build a derived-method closure. `kind`: 0=eq, 1=hash, 2=show, 3=cmp.
@@ -6026,7 +6218,7 @@ _jit_multifn_dispatcher_names() {
 // Function-value introspection. `cls` is a JitClosure*; `prop` is
 // one of "name" / "return_type" / "params". Mirrors the interp side's
 // Value::eval_property dispatch for Value::Function. Unknown
-// properties return Nil. Used by compile_property_get when the
+// properties return Nil. Used by emit_property_get when the
 // receiver tag is TAG_FUNC.
 // Bound-method trampoline address (defined below): a method read as a value
 // captures its receiver in a wrapper closure whose fn_ptr is this thunk.
@@ -6419,8 +6611,17 @@ inline void _jit_multifn_dispatcher_thunk(JitValue* __ret, JitClosure* cls,
                                           int64_t this_val_data,
                                           int64_t n_args, JitValue* args) {
   JitValue this_val{this_val_tag, this_val_data};
-  auto picked = _jit_multifn_resolve(cls, args, n_args,
-                                     _jit_call_site_line, _jit_call_site_col);
+  // On a normal dispatch `this_val` (a method receiver) and every arg are
+  // forwarded to the picked body, which consumes them (callee-consumes). A
+  // DispatchError throws before that hand-off, so the receiver + args would
+  // strand — release them on the failure path (callee-cleans-on-dispatch-
+  // error). A free-function dispatcher passes nil `this` (a no-op release).
+  auto picked = _jit_multifn_resolve(
+      cls, args, n_args, _jit_call_site_line, _jit_call_site_col, [&]() {
+        _culebra_value_release_impl(this_val.tag, this_val.data);
+        for (int64_t i = 0; i < n_args; i++)
+          _culebra_value_release_impl(args[i].tag, args[i].data);
+      });
   // Forward `this_val` to the picked body. For a free-function dispatcher the
   // call site passes nil and the body ignores it; for a class method-overload
   // dispatcher it carries the receiver, so the picked overload sees `this`.
@@ -6703,7 +6904,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void _jit_bound_method_thunk(JitValue* __ret,
   // the receiver before passing it). Retain the captured receiver per call so
   // repeated invocations don't drain the wrapper's single held reference.
   culebra_runtime_value_retain(receiver.tag, receiver.data);
-  { *__ret = _jit_invoke(method, receiver, n_args, args); return; }
+  // The method (a user proto method — never a builtin) frame consumes `this` on
+  // a normal return; on a C++ throw the caller cleans up, so free the retained
+  // receiver here if the body throws (callee-consumes / caller-cleans-on-throw).
+  JitOwnedVal recv_guard(receiver);
+  auto r = _jit_invoke(method, receiver, n_args, args);
+  recv_guard.consume();
+  { *__ret = r; return; }
 }
 
 // Resolve a property read AS A VALUE (`obj.name`, not `obj.name(...)`). When it
@@ -6716,13 +6923,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void _jit_bound_method_thunk(JitValue* __ret,
 // in every case (retaining the view, or the receiver+method into the wrapper's
 // cells); the caller releases the receiver separately.
 // Invoke a getter body 0-arg with `this`=receiver, returning its +1-owned
-// result. The callee frame takes ownership of `this` on entry, so retain the
-// receiver first. Shared by the bare-read and introspection-name paths.
+// result. The callee frame takes ownership of `this` on entry (retained inside
+// _culebra_invoke_method0, released on a throw via its JitUnwindRelease). Shared
+// by the bare-read and introspection-name paths.
 CULEBRA_RT_INLINE JitValue _jit_invoke_getter(JitClosure* method,
                                               int8_t recv_tag,
                                               int64_t recv_data) {
-  culebra_runtime_value_retain(recv_tag, recv_data);
-  return _jit_invoke(method, {recv_tag, recv_data}, 0, nullptr);
+  return _culebra_invoke_method0(method, {recv_tag, recv_data});
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_bind_method_value(
@@ -6763,7 +6970,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_bind_method_value(
 // bind_method_value (those names are function-introspection on a TAG_FUNC
 // receiver, whose resolved `view` is a fresh +1-owned result, not a borrowed
 // method to bind). But on a class instance those same names may be getters, so
-// fire them here. `view` is +1 OWNED (compile_property_get's fn_mode retains
+// fire them here. `view` is +1 OWNED (emit_property_get's fn_mode retains
 // the object path too), so on the getter branch release the owned method view
 // after invoking; on the pass-through branch return it unchanged (ownership
 // flows to the caller, which does own(view) with no extra retain).
@@ -6818,6 +7025,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     for (int64_t i = 0; i < n_splat; i++) {
       _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
     }
+    // callee-cleans-on-direct-binding-error: `this` is passed +1 (the callee
+    // frame consumes it on the normal hand-off at the tail). Every throw here
+    // aborts before that hand-off, so the receiver would strand (a method
+    // receiver on `obj.m(bad: 1)`). release_owned runs only on the throw /
+    // dispatch-failure paths — never before a hand-off — so this is safe.
+    _culebra_value_release_impl(this_val.tag, this_val.data);
   };
 
   // A bound method value (`obj.m` read as a value) wraps [receiver, method];
@@ -6968,6 +7181,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
       for (int64_t k = 0; k < n_splat; k++) {
         _culebra_value_release_impl(splat_objs[k].tag, splat_objs[k].data);
       }
+      _culebra_value_release_impl(this_val.tag, this_val.data);
       throw culebra::CulebraError("TypeError",
           std::format("got argument '{}' both positionally and as a "
                       "keyword", meta->names[i]), line, col);
@@ -7014,6 +7228,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
       for (int64_t k = 0; k < n_splat; k++) {
         _culebra_value_release_impl(splat_objs[k].tag, splat_objs[k].data);
       }
+      _culebra_value_release_impl(this_val.tag, this_val.data);
       throw culebra::CulebraError("ArityError",
           std::format("missing required argument '{}'", missing),
           line, col);
@@ -7047,6 +7262,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     for (int64_t i = 0; i < n_splat; i++) {
       _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
     }
+    _culebra_value_release_impl(this_val.tag, this_val.data);
     throw culebra::CulebraError("TypeError",
         std::format("unknown keyword argument '{}'", bad_name),
         line, col);
@@ -7106,6 +7322,27 @@ inline JitClosure* _culebra_capture_callback(int8_t fn_tag, int64_t fn_data,
                                              const char* method_name,
                                              const char* param_name,
                                              int64_t line, int64_t col);
+
+// Acquire a callback for an EAGER/terminal HOF and own it on every exit —
+// the callee-consumes side of the HOF contract. The codegen hands the
+// callback value at `+1`; `_culebra_expect_callback` normalizes it (a plain
+// Function passes through carrying that `+1`; a callable class instance
+// becomes a fresh `+1` adapter that absorbed the instance's `+1` into its
+// capture cell) and this wrapper releases the normalized closure on any
+// exit, including a throw from the per-element call. The lazy combinators
+// take the same `+1` into a capture cell via `_culebra_capture_callback`
+// instead. Converts to JitClosure* so the call sites read unchanged.
+struct JitHofCallback {
+  JitClosure* fn;
+  JitOwnedVal guard;
+  JitHofCallback(int8_t ft, int64_t fd, size_t arity, const char* method,
+                 const char* param, int64_t line, int64_t col)
+      : fn(_culebra_expect_callback(ft, fd, arity, method, param, line, col)),
+        guard(JitValue{TAG_FUNC, reinterpret_cast<int64_t>(fn)}) {}
+  JitClosure* operator->() const { return fn; }
+  operator JitClosure*() const { return fn; }
+};
+
 extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray*
 culebra_runtime_object_keys(JitObject* obj);
 
@@ -7316,6 +7553,15 @@ inline void _iter_trampoline_has_next_fn(JitValue* __ret, JitClosure* cls, int8_
                                               int64_t iv_data, int64_t,
                                               JitValue*) {
   JitValue iv{iv_tag, iv_data};
+  // Native iterator method: the caller hands `this` (the iterator Object)
+  // +1-owned (callee-consumes, like _iter_self_iter_fn and the retain-before-
+  // call in _iter_advance_raw's slow path). This releases it on every exit —
+  // after the body's use of `cls` (whose captures `iv` keeps alive) — so an
+  // explicit `it.has_next()` / `it.next()` (or the for-in-with-yield desugar's
+  // `while _g_it.has_next()`) doesn't strand the iterator. Without it the
+  // iterator (and its transitively-held source + closures) leaked once per
+  // drained iterator.
+  JitOwnedVal this_guard(iv);
   size_t n = cls->n_captures;
   JitCell* state_cell = cls->captures[n - 2];
   JitCell* value_cell = cls->captures[n - 1];
@@ -7343,6 +7589,10 @@ inline void _iter_trampoline_next_fn(JitValue* __ret, JitClosure* cls, int8_t iv
                                           int64_t iv_data, int64_t,
                                           JitValue*) {
   JitValue iv{iv_tag, iv_data};
+  // Consume the caller's `this` +1 on every exit — see the note on
+  // _iter_trampoline_has_next_fn. Released after the lookahead value is copied
+  // out (the returned +1 is independent of `iv`'s captures).
+  JitOwnedVal this_guard(iv);
   size_t n = cls->n_captures;
   JitCell* state_cell = cls->captures[n - 2];
   JitCell* value_cell = cls->captures[n - 1];
@@ -7383,12 +7633,17 @@ extern "C" {
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_iter_collect(
     int8_t it, int64_t id) {
   auto* out = culebra_runtime_array_new();
+  // Helper-owned accumulator: if a lazy map/filter callback in the chain throws
+  // while pulling, this frees `out` (and the elements collected so far) on the
+  // unwind edge instead of stranding it. Same shape as array_map's out_guard.
+  JitOwnedVal out_guard(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(out)});
   JitValue v;
   auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
   while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
     culebra_runtime_array_push(out, v.tag, v.data);  // consumes +1
   }
+  out_guard.consume();
   return out;
 }
 
@@ -7430,7 +7685,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_count(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_for_each(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
-  auto* fn = _culebra_expect_callback(ft, fd, 1, "for_each", "f", line, col);
+  JitHofCallback fn(ft, fd, 1, "for_each", "f", line, col);
   JitValue v;
   auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
@@ -7444,7 +7699,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_reduce(
     int8_t it, int64_t id, int8_t init_tag, int64_t init_data,
     int8_t ft, int64_t fd, int64_t line, int64_t col, int8_t* out_tag,
     int64_t* out_data) {
-  auto* fn = _culebra_expect_callback(ft, fd, 2, "reduce", "f", line, col);
+  // See culebra_runtime_array_reduce: own the codegen-consumed seed across the
+  // callback validation so an invalid callback releases it instead of stranding.
+  JitOwnedVal init_guard{init_tag, init_data};
+  JitHofCallback fn(ft, fd, 2, "reduce", "f", line, col);
+  init_guard.consume();
   JitValue acc = {init_tag, init_data};
   JitValue v;
   auto* has_next_cls = _iter_has_next_closure({it, id});
@@ -7459,21 +7718,23 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_reduce(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_find(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col,
     int8_t* out_tag, int64_t* out_data) {
-  auto* fn = _culebra_expect_callback(ft, fd, 1, "find", "p", line, col);
+  JitHofCallback fn(ft, fd, 1, "find", "p", line, col);
   JitValue v;
   auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
   while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
-    culebra_runtime_value_retain(v.tag, v.data);  // an extra +1 for the call
-    auto r = _culebra_invoke1_at(fn, v, line, col);
+    JitOwnedVal owned(v);                          // v's original +1 (POC: RAII)
+    culebra_runtime_value_retain(v.tag, v.data);   // an extra +1 for the call
+    auto r = _culebra_invoke1_at(fn, v, line, col);  // consumes the extra +1
+    JitOwnedVal rg(r);                             // result +1
     bool keep = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
-    _culebra_value_release_impl(r.tag, r.data);
     if (keep) {
-      *out_tag = v.tag;
-      *out_data = v.data;  // out-param takes v's original +1
+      JitValue kept = owned.consume();            // hand v's +1 to the out-param
+      *out_tag = kept.tag;
+      *out_data = kept.data;
       return;
     }
-    _culebra_value_release_impl(v.tag, v.data);
+    // owned releases v, rg releases r on loop-body scope exit (incl. throw)
   }
   *out_tag = 0;
   *out_data = 0;
@@ -7481,7 +7742,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_find(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_any(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
-  auto* fn = _culebra_expect_callback(ft, fd, 1, "any", "p", line, col);
+  JitHofCallback fn(ft, fd, 1, "any", "p", line, col);
   JitValue v;
   auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
@@ -7496,7 +7757,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_any(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_all(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
-  auto* fn = _culebra_expect_callback(ft, fd, 1, "all", "p", line, col);
+  JitHofCallback fn(ft, fd, 1, "all", "p", line, col);
   JitValue v;
   auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
@@ -8133,7 +8394,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_graphemes(
                                reinterpret_cast<int64_t>(v));
     cp_off += gl;
   }
-  return _iter_from_array_obj(TAG_ARRAY, reinterpret_cast<int64_t>(arr));
+  // _iter_from_array_obj takes its own +1 on the array; drop the fresh +1
+  // that array_new handed us here, or the materialized backing Array outlives
+  // the iterator (a per-call leak of the grapheme snapshot).
+  auto* it = _iter_from_array_obj(TAG_ARRAY, reinterpret_cast<int64_t>(arr));
+  culebra_runtime_value_release(TAG_ARRAY, reinterpret_cast<int64_t>(arr));
+  return it;
 }
 
 // Wrap a JitArray as a one-shot iterator Object. Used to drive
@@ -8232,7 +8498,8 @@ inline void _iter_from_object_pairs_fast_fn(JitClosure* cls, JitValue,
     int8_t vt;
     int64_t vd;
     culebra_runtime_value_retain(key.tag, key.data);
-    culebra_runtime_object_get_any(obj, key.tag, key.data, &vt, &vd, 0, 0);
+    culebra_runtime_object_get_any(obj, key.tag, key.data, &vt, &vd, 0, 0,
+                                   /*own_receiver=*/false);
     culebra_runtime_value_retain(key.tag, key.data);
     auto* pair = culebra_runtime_tuple_new();
     culebra_runtime_tuple_push(pair, key.tag, key.data);
@@ -8278,7 +8545,7 @@ inline void _iter_from_object_values_fast_fn(JitClosure* cls, JitValue,
     if (!_jit_obj_has_key(obj, key)) continue;  // removed → skip
     culebra_runtime_value_retain(key.tag, key.data);
     culebra_runtime_object_get_any(obj, key.tag, key.data, out_tag, out_data, 0,
-                                   0);
+                                   0, /*own_receiver=*/false);
     *done = false;
     return;
   }
@@ -8313,8 +8580,9 @@ culebra_runtime_object_iter_dispatch(JitObject* obj) {
   if (entry && entry->value.tag == TAG_FUNC) {
     auto* cls = reinterpret_cast<JitClosure*>(entry->value.data);
     auto self = JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
-    culebra_runtime_value_retain(self.tag, self.data);
-    auto r = _jit_invoke(cls, self, 0, nullptr);
+    // _culebra_invoke_method0 retains `this`, and frees it on a throw from the
+    // user iter() body via its JitUnwindRelease (callee-consumes on normal return).
+    auto r = _culebra_invoke_method0(cls, self);
     // The user iter() returns an Object (+1) — caller takes that retain.
     return reinterpret_cast<JitObject*>(r.data);
   }
@@ -8473,9 +8741,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_iota(int64_t start,
 // call dispatches to __call__ with the callback args passed through.
 inline void _culebra_callable_adapter(JitValue* __ret, JitClosure* self, int8_t, int64_t,
                                           int64_t n, JitValue* args) {
-  JitValue inst = self->captures[0]->value;  // borrowed
+  JitValue inst = self->captures[0]->value;  // borrowed from the capture cell
   auto* m = reinterpret_cast<JitClosure*>(self->captures[1]->value.data);
-  culebra_runtime_value_retain(inst.tag, inst.data);  // `this` consumed by frame
+  // The compiled __call__ frame consumes this retain on EVERY exit — its
+  // `this` slot releases on a normal return, and its fn-level cleanup pad
+  // releases it on a throw — so no guard belongs here. (A throw-path guard
+  // used to sit here compensating for the codegen's stranded callback `+1`;
+  // under the callee-consumes contract that `+1` lives in the capture cell,
+  // and the extra release freed the instance out from under it — a teardown
+  // use-after-free on a mid-iteration `__call__` throw, ASan-confirmed.)
+  culebra_runtime_value_retain(inst.tag, inst.data);
   { *__ret = _jit_invoke(m, inst, n, args); return; }
 }
 
@@ -8520,6 +8795,12 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
   auto accepts = [&](JitClosure* cls) {
     return _culebra_callback_arity_ok(cls, expected_arity);
   };
+  // Callee-consumes: the codegen hands the callback value at `+1` and never
+  // releases it — this helper's caller (`JitHofCallback` for the eager
+  // drivers, `_culebra_capture_callback` for the lazy factories) owns it from
+  // here on every exit. A rejection throw is the one edge where neither has
+  // taken over yet, so the guard is the sole releaser there — all tags.
+  JitUnwindRelease g{JitValue{fn_tag, fn_data}};
   if (fn_tag != TAG_FUNC) {
     // A callable class instance (own/proto `__call__`) stands in for a
     // function: synthesize an adapter closure that forwards to __call__
@@ -8536,9 +8817,11 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
               method_name, expected_arity), line, col);
         }
         // Capture the instance and its __call__ closure (each +1, released
-        // when the adapter is collected). Capturing the resolved closure
-        // lets the per-element forward skip the property lookup.
-        culebra_runtime_value_retain(fn_tag, fn_data);
+        // when the adapter is collected). The instance's +1 is the incoming
+        // callee-consumes ref, transferred into the capture cell; the
+        // resolved closure is a borrowed property read, so it takes a fresh
+        // retain. Capturing the closure lets the per-element forward skip
+        // the property lookup.
         culebra_runtime_value_retain(TAG_FUNC, e->value.data);
         _jit_register_native_fn(
             reinterpret_cast<const void*>(&_culebra_callable_adapter));
@@ -8571,12 +8854,13 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
 
 // Validate + normalize a callback for a LAZY iterator combinator (map/filter/
 // take_while/flat_map), which captures it in its wrapper and invokes it per
-// element. Returns a +1-owned closure for the combinator to capture: a plain
-// Function (retained), or — for a callable class instance (Option A) — an
-// adapter that forwards to __call__ with `this` bound. Reuses
-// _culebra_expect_callback (the eager-HOF path / interp's as_callback) so all
-// iterator HOFs accept a callable identically. The caller transfers the
-// returned reference into its capture cell with no extra retain.
+// element. Callee-consumes the incoming `+1` and returns a +1-owned closure
+// for the combinator to capture: a plain Function (the incoming ref passes
+// through), or — for a callable class instance (Option A) — an adapter that
+// forwards to __call__ with `this` bound. Reuses _culebra_expect_callback
+// (the eager-HOF path / interp's as_callback) so all iterator HOFs accept a
+// callable identically. The caller transfers the returned reference into its
+// capture cell with no extra retain.
 inline JitClosure* _culebra_capture_callback(int8_t fn_tag, int64_t fn_data,
                                              size_t expected_arity,
                                              const char* method_name,
@@ -8584,32 +8868,37 @@ inline JitClosure* _culebra_capture_callback(int8_t fn_tag, int64_t fn_data,
                                              int64_t line, int64_t col) {
   auto* fn = _culebra_expect_callback(fn_tag, fn_data, expected_arity,
                                       method_name, param_name, line, col);
-  // _expect_callback hands back a fresh +1 adapter for a callable instance,
-  // or the borrowed raw closure for a Function — retain the latter so the
-  // capture cell owns a reference either way.
-  if (fn_tag == TAG_FUNC) {
-    culebra_runtime_value_retain(TAG_FUNC, reinterpret_cast<int64_t>(fn));
-  }
+  // Callee-consumes: _expect_callback hands back the incoming `+1` (a plain
+  // Function passes through; a callable instance becomes a fresh `+1`
+  // adapter), which the capture cell takes over directly.
   return fn;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_map(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
-  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"map", "f", line, col);
+  JitHofCallback fn(fn_tag, fn_data, 1,"map", "f", line, col);
   auto* out = culebra_runtime_array_new();
+  // The accumulator is helper-owned (never handed to the callback), so freeing
+  // it if a per-element call throws is unambiguous — it releases the elements
+  // mapped so far too. (The element passed to the callback is a separate matter:
+  // a throwing user callback leaks it, a builtin self-cleans it — that
+  // asymmetry is a known follow-up, not guarded here.)
+  JitOwnedVal out_guard(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(out)});
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
     culebra_runtime_value_retain(e.tag, e.data);
     JitValue r = _culebra_invoke1_at(fn, e, line, col);
     culebra_runtime_array_push(out, r.tag, r.data);
   }
+  out_guard.consume();
   return out;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_filter(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
-  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"filter", "f", line, col);
+  JitHofCallback fn(fn_tag, fn_data, 1,"filter", "f", line, col);
   auto* out = culebra_runtime_array_new();
+  JitOwnedVal out_guard(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(out)});
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
     culebra_runtime_value_retain(e.tag, e.data);
@@ -8621,12 +8910,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_filter(
       culebra_runtime_array_push(out, e.tag, e.data);
     }
   }
+  out_guard.consume();
   return out;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_for_each(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
-  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"for_each", "f", line, col);
+  JitHofCallback fn(fn_tag, fn_data, 1,"for_each", "f", line, col);
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
     culebra_runtime_value_retain(e.tag, e.data);
@@ -8639,7 +8929,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_for_each(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_find(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col,
     int8_t* out_tag, int64_t* out_data) {
-  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"find", "f", line, col);
+  JitHofCallback fn(fn_tag, fn_data, 1,"find", "f", line, col);
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
     culebra_runtime_value_retain(e.tag, e.data);
@@ -8659,7 +8949,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_find(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_any(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
-  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"any", "f", line, col);
+  JitHofCallback fn(fn_tag, fn_data, 1,"any", "f", line, col);
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
     culebra_runtime_value_retain(e.tag, e.data);
@@ -8673,7 +8963,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_any(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_all(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
-  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"all", "f", line, col);
+  JitHofCallback fn(fn_tag, fn_data, 1,"all", "f", line, col);
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
     culebra_runtime_value_retain(e.tag, e.data);
@@ -8687,8 +8977,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_all(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_flat_map(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
-  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"flat_map", "f", line, col);
+  JitHofCallback fn(fn_tag, fn_data, 1,"flat_map", "f", line, col);
   auto* out = culebra_runtime_array_new();
+  JitOwnedVal out_guard(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(out)});
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
     culebra_runtime_value_retain(e.tag, e.data);
@@ -8706,6 +8997,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_flat_map(
     }
     _culebra_value_release_impl(r.tag, r.data);
   }
+  out_guard.consume();
   return out;
 }
 
@@ -8715,38 +9007,31 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_flat_map(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_sort_by(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, bool reverse, int64_t line,
     int64_t col) {
-  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"sort_by", "f", line, col);
-  std::vector<std::pair<JitValue, size_t>> keyed;
+  JitHofCallback fn(fn_tag, fn_data, 1,"sort_by", "f", line, col);
+  // Each computed key is held owned, so every exit path — normal, a throw
+  // from the key callback, or from the key comparison — releases it.
+  std::vector<std::pair<JitOwnedVal, size_t>> keyed;
   keyed.reserve(arr->size);
-  auto release_keys = [&] {
-    for (auto& [k, _] : keyed) _culebra_value_release_impl(k.tag, k.data);
-  };
-  try {
-    for (size_t i = 0; i < arr->size; i++) {
-      auto e = arr->items[i];
-      culebra_runtime_value_retain(e.tag, e.data);
-      keyed.emplace_back(_culebra_invoke1_at(fn, e, line, col), i);
-    }
-    std::stable_sort(keyed.begin(), keyed.end(),
-                     [reverse, line, col](const auto& a, const auto& b) {
-                       const auto& x = reverse ? b : a;
-                       const auto& y = reverse ? a : b;
-                       return _culebra_value_ord(
-                           x.first.tag, x.first.data,
-                           y.first.tag, y.first.data,
-                           [](double p, double q) { return p < q; },
-                           line, col);
-                     });
-    std::vector<JitValue> sorted(arr->size);
-    for (size_t i = 0; i < keyed.size(); i++) {
-      sorted[i] = arr->items[keyed[i].second];
-    }
-    for (size_t i = 0; i < arr->size; i++) arr->items[i] = sorted[i];
-  } catch (...) {
-    release_keys();
-    throw;
+  for (size_t i = 0; i < arr->size; i++) {
+    auto e = arr->items[i];
+    culebra_runtime_value_retain(e.tag, e.data);
+    keyed.emplace_back(JitOwnedVal(_culebra_invoke1_at(fn, e, line, col)), i);
   }
-  release_keys();
+  std::stable_sort(keyed.begin(), keyed.end(),
+                   [reverse, line, col](const auto& a, const auto& b) {
+                     const auto& x = reverse ? b : a;
+                     const auto& y = reverse ? a : b;
+                     auto xk = x.first.borrow(), yk = y.first.borrow();
+                     return _culebra_value_ord(
+                         xk.tag, xk.data, yk.tag, yk.data,
+                         [](double p, double q) { return p < q; },
+                         line, col);
+                   });
+  std::vector<JitValue> sorted(arr->size);
+  for (size_t i = 0; i < keyed.size(); i++) {
+    sorted[i] = arr->items[keyed[i].second];
+  }
+  for (size_t i = 0; i < arr->size; i++) arr->items[i] = sorted[i];
 }
 
 // Non-mutating sort_by: returns a fresh array with the elements in sorted
@@ -8755,32 +9040,25 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_sort_by(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_sorted_by(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, bool reverse, int64_t line,
     int64_t col) {
-  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1, "sorted_by", "f",
-                                      line, col);
-  std::vector<std::pair<JitValue, size_t>> keyed;
+  JitHofCallback fn(fn_tag, fn_data, 1, "sorted_by", "f", line, col);
+  // Owned keys release on every exit path (normal, callback throw, or a throw
+  // from the key comparison).
+  std::vector<std::pair<JitOwnedVal, size_t>> keyed;
   keyed.reserve(arr->size);
-  auto release_keys = [&] {
-    for (auto& [k, _] : keyed) _culebra_value_release_impl(k.tag, k.data);
-  };
-  try {
-    for (size_t i = 0; i < arr->size; i++) {
-      auto e = arr->items[i];
-      culebra_runtime_value_retain(e.tag, e.data);
-      keyed.emplace_back(_culebra_invoke1_at(fn, e, line, col), i);
-    }
-    std::stable_sort(keyed.begin(), keyed.end(),
-                     [reverse, line, col](const auto& a, const auto& b) {
-                       const auto& x = reverse ? b : a;
-                       const auto& y = reverse ? a : b;
-                       return _culebra_value_ord(
-                           x.first.tag, x.first.data, y.first.tag, y.first.data,
-                           [](double p, double q) { return p < q; }, line, col);
-                     });
-  } catch (...) {
-    release_keys();
-    throw;
+  for (size_t i = 0; i < arr->size; i++) {
+    auto e = arr->items[i];
+    culebra_runtime_value_retain(e.tag, e.data);
+    keyed.emplace_back(JitOwnedVal(_culebra_invoke1_at(fn, e, line, col)), i);
   }
-  release_keys();
+  std::stable_sort(keyed.begin(), keyed.end(),
+                   [reverse, line, col](const auto& a, const auto& b) {
+                     const auto& x = reverse ? b : a;
+                     const auto& y = reverse ? a : b;
+                     auto xk = x.first.borrow(), yk = y.first.borrow();
+                     return _culebra_value_ord(
+                         xk.tag, xk.data, yk.tag, yk.data,
+                         [](double p, double q) { return p < q; }, line, col);
+                   });
   auto* out = culebra_runtime_array_new();
   for (auto& [k, idx] : keyed) {
     auto e = arr->items[idx];
@@ -8791,17 +9069,19 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_sorted_by(
 }
 
 // Keyless natural-order sort (in place). Elements compare by the same rule as
-// `<`: culebra_runtime_value_less honors an Object's __lt__/cmp (so a Path
-// array sorts) and throws for incomparable operands. The comparator borrows
-// its operands (no ref consumed), so the array's elements stay owned by `arr`.
+// `<`: `_value_less_borrow` honors an Object's __lt__/cmp (so a Path array
+// sorts) and throws for incomparable operands. It is the borrow-contract core
+// (no ref consumed), so the array's elements stay owned by `arr` — the public
+// `culebra_runtime_value_less` entry would release them on the type-error edge,
+// which is correct for codegen operand temps but would corrupt `arr` here.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_sort(
     JitArray* arr, bool reverse, int64_t line, int64_t col) {
   std::stable_sort(arr->items, arr->items + arr->size,
                    [reverse, line, col](const JitValue& a, const JitValue& b) {
                      const auto& x = reverse ? b : a;
                      const auto& y = reverse ? a : b;
-                     return culebra_runtime_value_less(x.tag, x.data, y.tag,
-                                                       y.data, line, col);
+                     return _value_less_borrow(x.tag, x.data, y.tag,
+                                               y.data, line, col);
                    });
 }
 
@@ -8811,17 +9091,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_sort(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_sorted(
     JitArray* arr, bool reverse, int64_t line, int64_t col) {
   auto* out = culebra_runtime_array_new();
+  JitOwnedVal out_guard{TAG_ARRAY, reinterpret_cast<int64_t>(out)};
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
     culebra_runtime_value_retain(e.tag, e.data);
     culebra_runtime_array_push(out, e.tag, e.data);
   }
-  try {
-    culebra_runtime_array_sort(out, reverse, line, col);
-  } catch (...) {
-    _culebra_value_release_impl(TAG_ARRAY, reinterpret_cast<int64_t>(out));
-    throw;
-  }
+  culebra_runtime_array_sort(out, reverse, line, col);
+  out_guard.consume();
   return out;
 }
 
@@ -8831,7 +9108,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_reduce(
     JitArray* arr, int8_t init_tag, int64_t init_data, int8_t fn_tag,
     int64_t fn_data, int64_t line, int64_t col, int8_t* out_tag,
     int64_t* out_data) {
-  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 2, "reduce", "f", line, col);
+  // Codegen consumed the seed into this call (`+1` transferred). The callback
+  // validation below throws before the seed is used, so own it across the
+  // construction and release it on that throw; on success `.consume()` hands
+  // it back to `acc` (consumed by the first fold step, or returned as-is for an
+  // empty array). Declared first so a JitHofCallback ctor throw runs its dtor.
+  JitOwnedVal init_guard{init_tag, init_data};
+  JitHofCallback fn(fn_tag, fn_data, 2, "reduce", "f", line, col);
+  init_guard.consume();
   JitValue acc = {init_tag, init_data};
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
@@ -10476,6 +10760,10 @@ struct JIT {
     bool fill_pending = false;
   };
 
+ private:
+  struct Owned;  // defined below (the +1 ownership handle, §4.2)
+
+ public:
   // RAII snapshot of compiler per-function state. Entering a nested
   // LLVM function body (compile_function / compile_defer) constructs
   // one; the dtor (or an explicit `restore()` before the caller's
@@ -10495,6 +10783,13 @@ struct JIT {
     llvm::Value* fn_defer_mark;
     llvm::Value* owned_hot;
     std::vector<IterCleanup> iter_cleanup;
+    // The unwind-temp window state (§4.8) is per LLVM function: the outer
+    // frame's live handles, slot pool and coverage belong to the outer
+    // function's IR and must not leak into a nested body's windows.
+    std::vector<Owned*> live_owned;
+    std::vector<llvm::Value*> unwind_temp_slots;
+    std::vector<llvm::Value*> unwind_covered;
+    bool emitting_unwind_cleanup;
 
     explicit CompilerStateSaver(JIT& j)
         : jit(&j),
@@ -10509,13 +10804,26 @@ struct JIT {
           owned_hot(std::exchange(j.current_owned_hot_, nullptr)),
           // A nested fn's `return` must not clean up an enclosing fn's for-in
           // iterators (their allocas belong to the outer function).
-          iter_cleanup(std::exchange(j.iter_cleanup_stack_, {})) {}
+          iter_cleanup(std::exchange(j.iter_cleanup_stack_, {})),
+          live_owned(std::exchange(j.live_owned_, {})),
+          unwind_temp_slots(std::exchange(j.unwind_temp_slots_, {})),
+          unwind_covered(std::exchange(j.unwind_covered_, {})),
+          emitting_unwind_cleanup(
+              std::exchange(j.emitting_unwind_cleanup_, false)) {}
 
     void restore() {
       if (!jit) return;
       // Caller is expected to pop every scope it pushed; anything left
       // behind signals a push/pop imbalance that would silently leak.
       assert(jit->scopes_.empty() && "unbalanced push_scope/pop_scope");
+      // Every Owned created while compiling the nested body must be dead by
+      // its end — a survivor would deregister into the restored (outer)
+      // registry and corrupt it.
+      assert(jit->live_owned_.empty() && "Owned outlived its LLVM function");
+      jit->live_owned_ = std::move(live_owned);
+      jit->unwind_temp_slots_ = std::move(unwind_temp_slots);
+      jit->unwind_covered_ = std::move(unwind_covered);
+      jit->emitting_unwind_cleanup_ = emitting_unwind_cleanup;
       jit->iter_cleanup_stack_ = std::move(iter_cleanup);
       jit->current_owned_hot_ = owned_hot;
       jit->current_fn_defer_mark_ = fn_defer_mark;
@@ -10557,6 +10865,12 @@ struct JIT {
     // eval_for / eval_while, which run_deferred on both signals). null when the
     // body has no defer.
     llvm::Value* defer_mark = nullptr;
+    // Index into scopes_ of this loop's per-iteration body scope (the scope
+    // pushed just before the loop_stack_ entry). break/continue release the
+    // owned slots of every scope from the innermost open one down to this one
+    // (inclusive), mirroring the body's normal pop_scope — see
+    // emit_loop_scope_exit / GAP1 in docs/gc_model.md.
+    size_t body_scope_index = 0;
   };
   std::vector<LoopBlocks> loop_stack_;
 
@@ -10581,11 +10895,15 @@ struct JIT {
     auto* f = llvm::dyn_cast<llvm::Function>(callee.getCallee());
     bool may_throw = !f || !f->doesNotThrow();
     if (current_lpad_ && may_throw) {
+      // Automatic unwind-temp window (§4.8): spill the live Owned +1s around
+      // this one invoke so the cleanup-pad chain releases them on a throw.
+      auto armed = open_unwind_window();
       auto fn = builder_.GetInsertBlock()->getParent();
       auto contBB = llvm::BasicBlock::Create(ctx_, "call.cont", fn);
       auto inv = builder_.CreateInvoke(callee, contBB, current_lpad_, args,
                                        name);
       builder_.SetInsertPoint(contBB);
+      close_unwind_window(armed);
       return inv;
     }
     return builder_.CreateCall(callee, args, name);
@@ -10751,7 +11069,7 @@ struct JIT {
   // non-throwing identifiers, emits no cleanup — and the guard stores dead-code
   // eliminate). Restores the caller's insertion point.
   void finish_construction_cleanup(llvm::BasicBlock* cleanupBB,
-                                   std::initializer_list<llvm::Value*> guards,
+                                   llvm::ArrayRef<llvm::Value*> guards,
                                    llvm::BasicBlock* outerLpad) {
     if (llvm::pred_empty(cleanupBB)) {
       cleanupBB->eraseFromParent();
@@ -10762,7 +11080,18 @@ struct JIT {
     // with no try/catch otherwise has none. Idempotent.
     auto fn = cleanupBB->getParent();
     if (!fn->hasPersonalityFn()) fn->setPersonalityFn(get_personality_fn());
+    UnwindCleanupEmission cleanup_scope(this);
     emit_catch_all_prologue(cleanupBB, "build.lpad");
+    // In-flight expression temporaries die first (§4.8), then the partial
+    // container — the same order as finish_scope_cleanup / the fn-level pad.
+    // Required here too: at top level (__culebra_main has no fn-level pad) a
+    // bare statement's construction pad re-raises straight out of the frame
+    // with outerLpad null, so nothing downstream drains the pool — the
+    // stranded +1 outlives the error in any embedding that catches it and
+    // keeps the process alive (the REPL). The nil-clear makes any outer pad
+    // on the same unwind chain a no-op, so draining at every link never
+    // double-frees.
+    release_unwind_temps();
     for (auto* guard : guards)
       emit_value_release(
           builder_.CreateLoad(valueType_, guard, "build.partial"));
@@ -10799,7 +11128,12 @@ struct JIT {
     // with no try/defer otherwise has none. Idempotent.
     auto fn = cleanupBB->getParent();
     if (!fn->hasPersonalityFn()) fn->setPersonalityFn(get_personality_fn());
+    UnwindCleanupEmission cleanup_scope(this);
     emit_catch_all_prologue(cleanupBB, excName);
+    // The throwing expression's in-flight temporaries die first (§4.8) —
+    // in the interpreter they are freed as its eval frames unwind, before
+    // any enclosing block's defers run.
+    release_unwind_temps();
     // Order mirrors the interpreter's scope unwind (run_deferred fires the
     // scope's defers, then the scope's resources are released — so a defer body
     // may still touch them): defers first, then the slot release, which fires
@@ -11720,7 +12054,7 @@ struct JIT {
   }
 
   // Built-in type method dispatch (language-level; lives in jit.h).
-  llvm::Value* compile_builtin_method(const std::string& method,
+  Owned compile_builtin_method(const std::string& method,
                                       const peg::Ast& argsAst,
                                       llvm::Value* receiver);
 
@@ -11766,14 +12100,26 @@ struct JIT {
     // paramMuts handling and interp's per-param mut flag.
     auto pv = culebra::view_parameter(*lambda_ast.nodes[0]->nodes[0]);
     auto param_name = std::string(pv.name);
-    emit_inlined_param_check(pv, elem);
+    // The body region gets its own cleanup pad (the while.body idiom), so a
+    // throw — the typed-param check, the body, or per_iter — releases the
+    // param slot's owned +1 like a real callee frame's prologue/cleanup
+    // would (bind first, then check, exactly the compiled-fn order). A heap
+    // element used to strand here: the bare push/pop_scope released it on
+    // the normal path only. DCE'd when nothing in the region can throw.
+    auto ihofFn = builder_.GetInsertBlock()->getParent();
+    auto cleanupBB =
+        llvm::BasicBlock::Create(ctx_, "ihof.body.cleanup", ihofFn);
+    auto savedLpad = current_lpad_;
     push_scope();
+    current_lpad_ = cleanupBB;
     bool captured = info.captured_locals.contains(param_name);
     define_var(param_name,
                make_var_slot(captured, param_name, elem, pv.is_mut));
+    emit_inlined_param_check(pv, elem);
     auto result = compile(*lambda_ast.nodes[1]).consume();
     per_iter(elem, result);
-    pop_scope();
+    finish_and_pop_scope(cleanupBB, /*defer_mark=*/nullptr, savedLpad,
+                         "ihof.body.exc", savedLpad);
   }
 
   template <class StoreResult>
@@ -11786,18 +12132,28 @@ struct JIT {
     auto val_pv = culebra::view_parameter(*lambda_ast.nodes[0]->nodes[1]);
     auto acc_name = std::string(acc_pv.name);
     auto val_name = std::string(val_pv.name);
-    emit_inlined_param_check(acc_pv, acc_val);
-    emit_inlined_param_check(val_pv, val_val);
+    // Same cleanup-pad region as emit_unary_lambda_body: a throw from the
+    // typed-param checks or the body releases both param slots' owned +1s
+    // (the accumulator shares its single +1 with the loop's alloca, so the
+    // slot release is the exactly-once release on the unwind edge).
+    auto ihofFn = builder_.GetInsertBlock()->getParent();
+    auto cleanupBB =
+        llvm::BasicBlock::Create(ctx_, "ihof.body2.cleanup", ihofFn);
+    auto savedLpad = current_lpad_;
     push_scope();
+    current_lpad_ = cleanupBB;
     bool acc_captured = info.captured_locals.contains(acc_name);
     define_var(acc_name,
                make_var_slot(acc_captured, acc_name, acc_val, acc_pv.is_mut));
     bool val_captured = info.captured_locals.contains(val_name);
     define_var(val_name,
                make_var_slot(val_captured, val_name, val_val, val_pv.is_mut));
+    emit_inlined_param_check(acc_pv, acc_val);
+    emit_inlined_param_check(val_pv, val_val);
     auto result = compile(*lambda_ast.nodes[1]).consume();
     store_result(result);
-    pop_scope();
+    finish_and_pop_scope(cleanupBB, /*defer_mark=*/nullptr, savedLpad,
+                         "ihof.body.exc", savedLpad);
   }
 
   // Adding a new HOF: implement an `emit_inlined_array_<op>` that
@@ -11896,28 +12252,28 @@ struct JIT {
     // calls into the extension link cleanly.
     void (*declare_runtime)(JIT&);
     // CALL with a bare identifier callee (`name(args)`).
-    llvm::Value* (*compile_global)(JIT&, const std::string& name,
-                                    const peg::Ast& argsAst,
-                                    const peg::Ast& callAst);
+    Owned (*compile_global)(JIT&, const std::string& name,
+                            const peg::Ast& argsAst,
+                            const peg::Ast& callAst);
     // CALL with a `Namespace.method(args)` callee.
-    llvm::Value* (*compile_ns_call)(JIT&,
-                                     std::string_view ns,
-                                     std::string_view method,
-                                     const peg::Ast& argsAst,
-                                     const peg::Ast& callAst);
+    Owned (*compile_ns_call)(JIT&,
+                             std::string_view ns,
+                             std::string_view method,
+                             const peg::Ast& argsAst,
+                             const peg::Ast& callAst);
     // CALL with a nested `Namespace.sub.method(args)` callee (e.g.
     // `Encoding.base64.encode(x)`). Returns nullptr to fall through to the
     // generic sub-namespace-object method dispatch.
-    llvm::Value* (*compile_nested_ns_call)(JIT&,
-                                            std::string_view ns,
-                                            std::string_view sub,
-                                            std::string_view method,
-                                            const peg::Ast& argsAst,
-                                            const peg::Ast& callAst);
+    Owned (*compile_nested_ns_call)(JIT&,
+                                    std::string_view ns,
+                                    std::string_view sub,
+                                    std::string_view method,
+                                    const peg::Ast& argsAst,
+                                    const peg::Ast& callAst);
     // Bare `Namespace.property` reference (no call following).
-    llvm::Value* (*compile_ns_prop)(JIT&,
-                                     std::string_view ns,
-                                     std::string_view prop);
+    Owned (*compile_ns_prop)(JIT&,
+                             std::string_view ns,
+                             std::string_view prop);
     // True if `name` is provided by the extension (puts/Math/IO/...).
     // Free-variable analysis uses this to skip names that don't live in
     // user scopes_.
@@ -11925,9 +12281,9 @@ struct JIT {
     // Emit `receiver.method(args)` as a UFCS call into an extension
     // global (`x.puts()` → `puts(x)`). Returns nullptr to fall through
     // to regular method dispatch.
-    llvm::Value* (*compile_ufcs_builtin)(JIT&, const std::string& method,
-                                          const peg::Ast& argsAst,
-                                          llvm::Value* receiver);
+    Owned (*compile_ufcs_builtin)(JIT&, const std::string& method,
+                                  const peg::Ast& argsAst,
+                                  llvm::Value* receiver);
   };
   // Inside a RuntimeScope: install into that Runtime (overrides the
   // default, for sandboxing). Outside any scope: install into the
@@ -12157,30 +12513,35 @@ struct JIT {
   //
   // Releases in reverse declaration order (LIFO) so a later-declared
   // binding is destroyed before an earlier one it may reference.
+  // Release one owned slot's current value at the builder's insertion point
+  // and zero the alloca (so a later read/release sees nil). A borrow slot
+  // (owned=false) or a still-zero-init alloca is a no-op. Shared by scope
+  // teardown and define_var's same-scope rebinding.
+  void release_slot_value(const VarSlot& slot) {
+    if (!slot.owned) return;
+    if (slot.kind == VarSlot::Stack) {
+      emit_value_release(builder_.CreateLoad(valueType_, slot.alloca));
+      builder_.CreateStore(
+          llvm::ConstantAggregateZero::get(valueType_), slot.alloca);
+    } else {
+      auto ptrTy = llvm::PointerType::get(ctx_, 0);
+      emit_cell_release(builder_.CreateLoad(ptrTy, slot.alloca));
+      builder_.CreateStore(llvm::ConstantPointerNull::get(ptrTy), slot.alloca);
+    }
+  }
+
   void release_scope_slots(const Scope& scope) {
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
     for (auto it = scope.order.rbegin(); it != scope.order.rend(); ++it) {
-      const auto& slot = (*it)->second;
-      if (!slot.owned) continue;
-      if (slot.kind == VarSlot::Stack) {
-        auto val = builder_.CreateLoad(valueType_, slot.alloca);
-        emit_value_release(val);
-        builder_.CreateStore(
-            llvm::ConstantAggregateZero::get(valueType_), slot.alloca);
-      } else {
-        auto cellPtr = builder_.CreateLoad(ptrTy, slot.alloca);
-        emit_cell_release(cellPtr);
-        builder_.CreateStore(llvm::ConstantPointerNull::get(ptrTy),
-                             slot.alloca);
-      }
+      release_slot_value((*it)->second);
     }
   }
 
   // Release every binding in every active scope. Used at function exit
   // (return / fall-through) so locals' refcounts reach zero in the
   // callee — this is what gives auto-drop interp-equivalent timing.
-  // Throw / break / continue paths still leak their inner-scope slots
-  // until the cycle collector runs (matches prior JIT behaviour).
+  // break / continue release their abandoned iteration scopes via
+  // emit_loop_scope_exit (GAP1); the throw path still leaks its inner-scope
+  // slots to the cycle collector (matches prior JIT behaviour).
   // `suppress_drop` is set only at `__culebra_main`'s exit: the top-level
   // scopes hold every top-level binding, and at program exit those leak
   // without `drop` to match the interpreter (whose global Environment is a
@@ -12204,6 +12565,26 @@ struct JIT {
   void emit_set_drop_suppressed(int8_t v) {
     builder_.CreateCall(module_->getFunction(rt::set_drop_suppressed),
                         {builder_.getInt8(v)});
+  }
+
+  // break/continue abandon the current iteration without running the loop
+  // body's normal pop_scope, so emit the same owned-slot release + owned-region
+  // resolution that fall-through does — for every open scope from the innermost
+  // one down to (and including) the loop body scope recorded at loop entry.
+  // Without this the per-iteration owned slots leak to the backstop and, because
+  // the stale slot alloca keeps the object conservatively rooted, a drop-bearing
+  // binding exited by break/continue never fires `drop` (GAP1, docs/gc_model.md
+  // §5). Slots are only released in IR — scopes_ is left intact, so the loop's
+  // own finish_and_pop_scope still runs on the (now dead) fall-through path.
+  // Slot release precedes the owned-region exit so non-escaped resources die
+  // through the ordinary refcount-0 path first, matching pop_scope's order. The
+  // body scope's mark is the lowest of the abandoned scopes, so it covers them
+  // all (owned ids are monotonic — cf. release_all_scopes_for_exit).
+  void emit_loop_scope_exit(size_t body_scope_index) {
+    for (size_t i = scopes_.size(); i-- > body_scope_index;) {
+      release_scope_slots(scopes_[i]);
+    }
+    emit_owned_scope_exit(scopes_[body_scope_index].owned_mark);
   }
 
   void pop_scope() {
@@ -12233,8 +12614,16 @@ struct JIT {
     if (inserted) {
       scope.order.push_back(it);
     } else {
-      // Re-binding within the same scope keeps the original release
-      // position (first-declared wins for LIFO order).
+      // Re-binding the same name within one scope. The LIFO `order` list holds
+      // only the FIRST slot registered for this name, so scope teardown never
+      // sees the prior slot again — its owned +1 would orphan if we just
+      // overwrote it (a fresh make_*_slot allocates a distinct alloca). Release
+      // it now; the new binding lives in its own alloca, so this never double-
+      // frees, and a borrow / still-zero-init slot releases nil (a no-op). The
+      // canonical trigger is the implicit `self`/`this` slot shadowed by a
+      // same-named parameter — but the release keeps any such rebinding leak-
+      // free by construction rather than by spotting each site.
+      release_slot_value(it->second);
       it->second = slot;
     }
   }
@@ -12414,6 +12803,38 @@ struct JIT {
     emit_value_release(old);
   }
 
+  // Block-pinned raw `+1` (docs/jit_ownership.md §4.9): the checked form of
+  // a consumed value. Once a `+1` leaves its Owned handle it is invisible to
+  // every ownership layer, so it may only be used inside the basic block
+  // where it was consumed — emit_call turns every may-throw call into an
+  // invoke that terminates the current block, so "same block" structurally
+  // means "no unwind edge and no branch can strand it". The conversion
+  // operators enforce that pin; a violation is a compiler bug and aborts
+  // loudly (all build modes) rather than shipping a silent leak. Values that
+  // must cross a block go through a scope slot (§4.3), an OwnedPhi merge, or
+  // a justified consume_unchecked().
+  struct Pinned {
+    llvm::Value* val_ = nullptr;
+    // Pin block; null = exempt (a null sentinel or a constant %Value, which
+    // carries no heap +1 — the same exemption as Owned::reg_()).
+    llvm::BasicBlock* bb_ = nullptr;
+    JIT* jit_ = nullptr;
+
+    Pinned(JIT* jit, llvm::Value* val) : val_(val), jit_(jit) {
+      if (jit_ && val_ && !llvm::isa<llvm::Constant>(val_))
+        bb_ = jit_->builder_.GetInsertBlock();
+    }
+
+    llvm::Value* get() const {
+      if (bb_ && jit_->builder_.GetInsertBlock() != bb_)
+        jit_->rc_pin_violation("a consumed +1 was used outside its pin block",
+                               bb_);
+      return val_;
+    }
+    operator llvm::Value*() const { return get(); }
+    llvm::Value* operator->() const { return get(); }
+  };
+
   // RAII handle for a `+1`-owned Value during codegen: must be consumed
   // exactly once (consume() hands the +1 on); if dropped unconsumed the dtor
   // emits the release, and consuming twice asserts — making an accidental
@@ -12426,15 +12847,22 @@ struct JIT {
     JIT* jit_ = nullptr;
     llvm::Value* val_ = nullptr;
     bool consumed_ = false;
+    // Index into jit_->live_owned_ while this handle owns a heap-capable
+    // value; SIZE_MAX when unregistered (empty, consumed, constant scalar).
+    // The registry is what lets emit_call spill every live +1 across a
+    // may-throw call (the automatic unwind-temp window, docs/jit_ownership.md
+    // §4.8) — registration is pure codegen bookkeeping and emits no IR.
+    size_t live_idx_ = SIZE_MAX;
 
     Owned() = default;
-    Owned(JIT* jit, llvm::Value* val) : jit_(jit), val_(val) {}
+    Owned(JIT* jit, llvm::Value* val) : jit_(jit), val_(val) { reg_(); }
 
     Owned(const Owned&) = delete;
     Owned& operator=(const Owned&) = delete;
 
     Owned(Owned&& o) noexcept
         : jit_(o.jit_), val_(o.val_), consumed_(o.consumed_) {
+      take_registration_(o);
       o.consumed_ = true;
       o.val_ = nullptr;
     }
@@ -12444,26 +12872,63 @@ struct JIT {
         jit_ = o.jit_;
         val_ = o.val_;
         consumed_ = o.consumed_;
+        take_registration_(o);
         o.consumed_ = true;
         o.val_ = nullptr;
       }
       return *this;
     }
 
+    // A constant %Value (nil / literal scalar) can never carry a heap +1, so
+    // it needs no unwind window; skipping it keeps the registry (and the
+    // spill traffic) limited to values that can actually leak.
+    void reg_() {
+      if (!jit_ || !val_ || llvm::isa<llvm::Constant>(val_)) return;
+      live_idx_ = jit_->live_owned_.size();
+      jit_->live_owned_.push_back(this);
+    }
+    void unreg_() {
+      if (live_idx_ == SIZE_MAX) return;
+      auto& reg = jit_->live_owned_;
+      reg[live_idx_] = reg.back();
+      reg[live_idx_]->live_idx_ = live_idx_;
+      reg.pop_back();
+      live_idx_ = SIZE_MAX;
+    }
+    void take_registration_(Owned& o) {
+      live_idx_ = o.live_idx_;
+      o.live_idx_ = SIZE_MAX;
+      if (live_idx_ != SIZE_MAX) jit_->live_owned_[live_idx_] = this;
+    }
+
     // Emit the release iff this handle still owns a value.
     void release_if_owned() {
       if (!consumed_ && val_) jit_->emit_value_release(val_);
+      unreg_();
     }
 
     // Read the Value's tag/data for a non-consuming use (operator dispatch,
     // coercion); ownership stays with the handle.
     llvm::Value* borrow() const { return val_; }
 
-    // Hand the `+1` on: returns the raw Value and marks the handle spent so
-    // its destructor stays silent. Consuming twice is a codegen-time bug.
-    llvm::Value* consume() {
+    // Hand the `+1` on: returns the raw Value block-pinned (§4.9 — usable
+    // only inside the current basic block; see Pinned) and marks the handle
+    // spent so its destructor stays silent. Consuming twice is a
+    // codegen-time bug.
+    Pinned consume() {
+      return Pinned(jit_, consume_unchecked());
+    }
+
+    // The unpinned escape hatch (§4.9): hands the raw `+1` on with no
+    // block-crossing check. Legal only where a documented contract names
+    // another releaser for every CFG edge the raw can cross (a batch handoff
+    // into mutually-exclusive dispatch arms, a region-scope slot that owns
+    // the value) — justify each call site in a comment; the count is
+    // ratcheted by tools/check_rc_discipline.sh.
+    llvm::Value* consume_unchecked() {
       assert(!consumed_ && "Owned value consumed twice");
       consumed_ = true;
+      unreg_();
       return val_;
     }
 
@@ -12480,6 +12945,188 @@ struct JIT {
     ~Owned() { release_if_owned(); }
   };
 
+  // A Pinned/OwnedPhi discipline violation: a raw `+1` crossed a basic block
+  // during codegen. This is a bug in the compiler, not the user program —
+  // report the codegen site (source position pins which construct) and abort
+  // in every build mode, so the difftest corpus catches a violating pattern
+  // the first time it is *compiled* (no runtime leak repro needed). Not a
+  // CulebraError: compile()'s catch would stamp a user position on it and
+  // surface it as a user-facing error.
+  [[noreturn]] void rc_pin_violation(const char* what, llvm::BasicBlock* pin) {
+    auto* cur = builder_.GetInsertBlock();
+    fprintf(stderr,
+            "[rc-pin] %s at %zu:%zu (fn %s: %s -> %s) — hold it in an Owned "
+            "or a scope slot across the boundary (docs/jit_ownership.md "
+            "§4.9)\n",
+            what, current_line_, current_column_,
+            cur ? cur->getParent()->getName().str().c_str() : "?",
+            pin ? pin->getName().str().c_str() : "?",
+            cur ? cur->getName().str().c_str() : "?");
+    abort();
+  }
+
+  // RAII throw-cleanup for borrowed `+1` temporaries that are live across a
+  // may-throw call and would otherwise strand on the runtime unwind edge — the
+  // borrowed callee closure held across a call (`compile_call`) or a builtin
+  // method's borrowed receiver (`compile_builtin_method` /
+  // `compile_user_method_over_builtin`), whose helper may raise. The caller's
+  // `Owned` handle releases the value on the *normal* path only: a C++ RAII
+  // destructor cannot run on an LLVM-level `throw`, so without this the value
+  // leaks whenever the callee throws.
+  //
+  // Reuses the container-literal cleanup machinery (§4.3): spill each value to
+  // an entry alloca (never an SSA value live across the unwind edge — SDAG-O0's
+  // register coalescer crashes on that form), redirect `current_lpad_` to a
+  // fresh cleanup pad for the guard's lifetime, and on close fill that pad
+  // ("release each guarded value, re-raise to the outer lpad") or erase it when
+  // nothing inside threw (pred_empty DCE — zero happy-path cost). The normal and
+  // throw paths are mutually exclusive, so each value frees exactly once.
+  struct ThrowGuard {
+    JIT* jit_ = nullptr;
+    llvm::BasicBlock* cleanupBB_ = nullptr;
+    llvm::BasicBlock* savedLpad_ = nullptr;
+    std::vector<llvm::Value*> guards_;
+    bool closed_ = false;
+
+    // The guard's own pad is the sole unwind-edge releaser for its values, so
+    // they are also declared unwind-covered for its lifetime — the automatic
+    // unwind-temp window (§4.8) must not spill them a second time.
+    std::vector<llvm::Value*> covered_;
+
+    ThrowGuard(JIT* jit, std::initializer_list<llvm::Value*> vals) : jit_(jit) {
+      savedLpad_ = jit_->current_lpad_;
+      auto fn = jit_->builder_.GetInsertBlock()->getParent();
+      cleanupBB_ = llvm::BasicBlock::Create(jit_->ctx_, "throw.cleanup", fn);
+      guards_.reserve(vals.size());
+      for (auto* v : vals) guards_.push_back(jit_->make_build_guard(v));
+      covered_.assign(vals);
+      jit_->cover_on_unwind(covered_);
+      jit_->current_lpad_ = cleanupBB_;
+    }
+
+    // Fill (or DCE) the cleanup pad and restore the outer landingpad. Idempotent
+    // and dtor-invoked, so a straight-line region needs no explicit close.
+    void close() {
+      if (closed_) return;
+      closed_ = true;
+      jit_->uncover_on_unwind(covered_);
+      jit_->current_lpad_ = savedLpad_;
+      jit_->finish_construction_cleanup(cleanupBB_, guards_, savedLpad_);
+    }
+    ~ThrowGuard() { close(); }
+
+    ThrowGuard(const ThrowGuard&) = delete;
+    ThrowGuard& operator=(const ThrowGuard&) = delete;
+  };
+
+  // --- The automatic unwind-temp window (docs/jit_ownership.md §4.8) ---
+  //
+  // A codegen-owned `+1` held in an `Owned` is released by a C++ destructor,
+  // which the runtime's LLVM-level throw cannot run — historically every
+  // "Owned live across a may-throw call" site (a binop lhs while the rhs
+  // compiles, a receiver while an argument compiles, …) stranded its value on
+  // the unwind edge. Instead of guarding such sites one by one, emit_call
+  // spills every live, uncovered Owned into a per-function pool slot for
+  // exactly the duration of each may-throw call (store before the invoke,
+  // nil-clear in the continuation), and the scope-chain cleanup pads release
+  // the pool (release_unwind_temps). Coverage is complete by construction:
+  // the only runtime events that can unwind are the calls emit_call emits.
+  //
+  // live_owned_ is the registry of in-flight handles (per LLVM function;
+  // CompilerStateSaver swaps it), unwind_temp_slots_ the slot pool (slot i is
+  // reused across calls — windows never overlap at runtime, a frame executes
+  // one call at a time), and unwind_covered_ the values currently excluded
+  // from windows because a §4.7 contract names another unwind-edge releaser
+  // (a ThrowGuard pad, a callee-cleans helper, an invoker guard) — spilling
+  // those too would double-free, the ASan-confirmed overlap trap.
+  std::vector<Owned*> live_owned_;
+  std::vector<llvm::Value*> unwind_temp_slots_;
+  std::vector<llvm::Value*> unwind_covered_;
+  // True while a cleanup pad's own contents are being emitted: releases
+  // emitted inside a pad must not re-arm windows over the pool they are
+  // about to release.
+  bool emitting_unwind_cleanup_ = false;
+
+  void cover_on_unwind(const std::vector<llvm::Value*>& vals) {
+    unwind_covered_.insert(unwind_covered_.end(), vals.begin(), vals.end());
+  }
+  void uncover_on_unwind(const std::vector<llvm::Value*>& vals) {
+    // Erase by value (last occurrence): guards may close out of strict LIFO
+    // order (an explicit ThrowGuard::close before an inner cover ends).
+    for (auto* v : vals) {
+      auto it = std::find(unwind_covered_.rbegin(), unwind_covered_.rend(), v);
+      if (it != unwind_covered_.rend()) unwind_covered_.erase(std::next(it).base());
+    }
+  }
+
+  // Scoped §4.7 contract declaration: while alive, the calls emitted have a
+  // callee/invoker-side cleaner for `vals` on the unwind edge (an operator
+  // helper's direct-error release, an invoke_method* guard over user
+  // dispatch, a pending-guard window), so the automatic unwind-temp window
+  // skips them — each edge keeps exactly one releaser.
+  struct UnwindCovered {
+    JIT* jit_;
+    std::vector<llvm::Value*> vals_;
+    UnwindCovered(JIT* jit, std::initializer_list<llvm::Value*> vals)
+        : jit_(jit), vals_(vals) {
+      jit_->cover_on_unwind(vals_);
+    }
+    ~UnwindCovered() { jit_->uncover_on_unwind(vals_); }
+    UnwindCovered(const UnwindCovered&) = delete;
+    UnwindCovered& operator=(const UnwindCovered&) = delete;
+  };
+
+  // Spill every live, uncovered Owned `+1` into a pool slot for the duration
+  // of one may-throw call. Returns the number of slots armed.
+  size_t open_unwind_window() {
+    // Diagnostic kill switch (CULEBRA_GC_NEVER's sibling): compiling with the
+    // windows off discriminates "window double-free" from a pre-existing
+    // over-release when bisecting an ASan report.
+    static bool disabled =
+        std::getenv("CULEBRA_JIT_NO_UNWIND_TEMPS") != nullptr;
+    if (disabled || emitting_unwind_cleanup_ || live_owned_.empty()) return 0;
+    size_t n = 0;
+    for (auto* o : live_owned_) {
+      if (std::find(unwind_covered_.begin(), unwind_covered_.end(), o->val_) !=
+          unwind_covered_.end())
+        continue;
+      if (n == unwind_temp_slots_.size())
+        unwind_temp_slots_.push_back(make_pending_guard());
+      builder_.CreateStore(o->val_, unwind_temp_slots_[n++]);
+    }
+    return n;
+  }
+  void close_unwind_window(size_t n) {
+    for (size_t i = 0; i < n; i++) clear_pending_guard(unwind_temp_slots_[i]);
+  }
+
+  // Release (then nil-clear, so an outer pad on the same unwind chain no-ops)
+  // the whole unwind-temp pool. Runs at the top of every scope-family cleanup
+  // pad — before the region's defers, matching the interpreter, where the
+  // throwing expression's temporaries die as its eval frames unwind, ahead of
+  // any enclosing block's defers. Outside a window every slot is nil, so the
+  // cold-path cost is a handful of no-op releases.
+  void release_unwind_temps() {
+    for (auto* slot : unwind_temp_slots_) {
+      emit_value_release(builder_.CreateLoad(valueType_, slot, "unwind.temp"));
+      clear_pending_guard(slot);
+    }
+  }
+
+  // RAII flag for emitting a cleanup pad's contents (scope teardown,
+  // construction cleanup): suppresses window arming inside the pad.
+  struct UnwindCleanupEmission {
+    JIT* jit_;
+    bool prev_;
+    explicit UnwindCleanupEmission(JIT* jit)
+        : jit_(jit), prev_(jit->emitting_unwind_cleanup_) {
+      jit->emitting_unwind_cleanup_ = true;
+    }
+    ~UnwindCleanupEmission() { jit_->emitting_unwind_cleanup_ = prev_; }
+    UnwindCleanupEmission(const UnwindCleanupEmission&) = delete;
+    UnwindCleanupEmission& operator=(const UnwindCleanupEmission&) = delete;
+  };
+
   // Wrap a freshly produced `+1`-owned Value in an ownership handle.
   Owned own(llvm::Value* val) { return Owned(this, val); }
 
@@ -12491,9 +13138,85 @@ struct JIT {
   std::vector<llvm::Value*> consume_all(std::vector<Owned>&& vals) {
     std::vector<llvm::Value*> raw;
     raw.reserve(vals.size());
-    for (auto& v : vals) raw.push_back(v.consume());
+    // Batch handoff into mutually-exclusive dispatch arms: each raw still
+    // consumed exactly once per runtime path (see the contract above), so
+    // the block-pin check does not apply.
+    for (auto& v : vals) raw.push_back(v.consume_unchecked());
     return raw;
   }
+
+  // Owned merge (§4.9): the checked way to join per-arm `+1` results into a
+  // `%Value` phi. Each incoming is captured *in its arm block* — either
+  // consumed out of an Owned on the spot (window-covered until that instant)
+  // or, for a raw, proven to be a constant or produced in the current block
+  // (an intervening may-throw call would have terminated the block). finish()
+  // then verifies every recorded arm still branches straight to the merge
+  // block — an emit_call slipped in after add_incoming would have
+  // re-terminated the arm toward its call.cont, i.e. an unwind edge crossed
+  // the bare value — and builds the phi at the merge front. Emits exactly
+  // the IR the hand-written CreatePHI/addIncoming pattern did: the safety is
+  // codegen-time bookkeeping, not extra instructions.
+  struct OwnedPhi {
+    JIT* jit_;
+    std::string name_;
+    std::vector<std::pair<llvm::Value*, llvm::BasicBlock*>> incoming_;
+
+    OwnedPhi(JIT* jit, std::string name) : jit_(jit), name_(std::move(name)) {}
+
+    void add_incoming(Owned&& v) {
+      incoming_.emplace_back(v.consume_unchecked(),
+                             jit_->builder_.GetInsertBlock());
+    }
+    void add_incoming(llvm::Value* v) {
+      if (v && !llvm::isa<llvm::Constant>(v) && !produced_here_(v))
+        jit_->rc_pin_violation("a raw phi incoming was produced outside the "
+                               "current arm block",
+                               llvm::isa<llvm::Instruction>(v)
+                                   ? llvm::cast<llvm::Instruction>(v)
+                                         ->getParent()
+                                   : nullptr);
+      incoming_.emplace_back(v, jit_->builder_.GetInsertBlock());
+    }
+
+    // A raw incoming is safe when nothing throw-capable ran while it was
+    // bare: produced in the current block (emit_call splits blocks on every
+    // may-throw call, so block identity implies that), or produced by the
+    // invoke whose normal destination the builder now sits on (the value is
+    // born on that edge; its own unwind edge never materialises it).
+    bool produced_here_(llvm::Value* v) const {
+      auto* inst = llvm::dyn_cast<llvm::Instruction>(v);
+      if (!inst) return false;
+      auto* cur = jit_->builder_.GetInsertBlock();
+      if (inst->getParent() == cur) return true;
+      auto* inv = llvm::dyn_cast<llvm::InvokeInst>(inst);
+      return inv && inv->getNormalDest() == cur;
+    }
+
+    // Build the phi. The caller has already terminated every arm toward
+    // `mergeBB` and (typically) sits at the merge; the phi is inserted at
+    // the block front so it composes with sibling scalar phis regardless of
+    // call order.
+    Owned finish(llvm::BasicBlock* mergeBB) {
+      for (auto& [v, bb] : incoming_) {
+        auto* term = bb->getTerminator();
+        bool targets_merge = false;
+        for (unsigned i = 0; term && i < term->getNumSuccessors(); ++i)
+          if (term->getSuccessor(i) == mergeBB) targets_merge = true;
+        if (!targets_merge)
+          jit_->rc_pin_violation(
+              "a phi arm no longer branches to its merge block (a may-throw "
+              "call was emitted after add_incoming)", bb);
+        (void)v;
+      }
+      auto saved = jit_->builder_.saveIP();
+      jit_->builder_.SetInsertPoint(mergeBB, mergeBB->begin());
+      auto phi = jit_->builder_.CreatePHI(jit_->valueType_,
+                                          incoming_.size(), name_);
+      for (auto& [v, bb] : incoming_) phi->addIncoming(v, bb);
+      jit_->builder_.restoreIP(saved);
+      return Owned(jit_, phi);
+    }
+  };
 
   // Emit IR to retain a Value (no-op for non-refcounted tags; done in runtime).
   void emit_value_retain(llvm::Value* val) {
@@ -12570,15 +13293,6 @@ struct JIT {
   llvm::Value* call_root_col_val() {
     return builder_.getInt64(static_cast<int64_t>(
         call_root_line_ ? call_root_col_ : current_column_));
-  }
-
-  void emit_type_error() {
-    emit_call(
-        module_->getOrInsertFunction(rt::type_error,
-                                     builder_.getVoidTy(),
-                                     builder_.getInt64Ty(),
-                                     builder_.getInt64Ty()),
-        {current_line_val(), current_column_val()});
   }
 
   // Declare (or fetch) a runtime helper and stamp `noreturn` on it.
@@ -12935,11 +13649,6 @@ struct JIT {
   llvm::Value* make_object(llvm::Value* ptr) { return make_ptr_value(TAG_OBJECT, ptr); }
   llvm::Value* make_tensor(llvm::Value* ptr) { return make_ptr_value(TAG_TENSOR, ptr); }
 
-  llvm::Value* extract_ptr(llvm::Value* v) {
-    auto data = extract_data(v);
-    return builder_.CreateIntToPtr(data, llvm::PointerType::get(ctx_, 0));
-  }
-
   llvm::Value* extract_tag(llvm::Value* v) {
     // The tag field is i64 (see JitValue); truncate to i8 so all downstream
     // tag comparisons (getInt8(TAG_*)) and runtime calls keep their i8 ABI.
@@ -12996,6 +13705,9 @@ struct JIT {
   // culebra_runtime_to_bool, which keeps the strict-truthiness semantics (Nil
   // and other tags raise the same TypeError as the interpreter) in one place.
   llvm::Value* value_to_bool(llvm::Value* v) {
+    // §4.7 callee-cleans: culebra_runtime_to_bool releases the operand on its
+    // direct TypeError, so the unwind-temp window must not spill it too.
+    UnwindCovered cover(this, {v});
     auto tag = extract_tag(v);
     auto data = extract_data(v);
 
@@ -14101,9 +14813,9 @@ struct JIT {
     if (ast.line) current_line_ = ast.line;
     if (ast.column) current_column_ = ast.column;
 
-    llvm::Value* compiled = nullptr;
+    Owned compiled;
     try {
-    compiled = [&]() -> llvm::Value* {
+    compiled = [&]() -> Owned {
     switch (ast.tag) {
       case "STATEMENTS"_:
         return compile_statements(ast);
@@ -14139,7 +14851,7 @@ struct JIT {
         return compile_range(ast);
       case "RANGE_OPERATOR"_:
         // Bare `..` (full range) collapses to a lone RANGE_OPERATOR node.
-        return emit_make_range(nullptr, nullptr, ast.token == "..=");
+        return own(emit_make_range(nullptr, nullptr, ast.token == "..="));
       case "CLASS_DECL"_:
         return compile_class_decl(ast);
       case "ENUM_DECL"_:
@@ -14154,7 +14866,7 @@ struct JIT {
         // No-op at compile site. `compile_module` walks the module's
         // AST after the body and builds the export Object explicitly,
         // so the in-place EXPORT_STMT just falls through.
-        return make_nil();
+        return own(make_nil());
       case "LOGICAL_OR"_:
         return compile_logical_or(ast);
       case "NIL_COALESCE"_:
@@ -14191,7 +14903,7 @@ struct JIT {
       case "BOOLEAN"_:
         return compile_bool(ast);
       case "NIL"_:
-        return make_nil();
+        return own(make_nil());
       case "STRING"_:
         return compile_string(ast);
       case "INTERPOLATED_CONTENT"_:
@@ -14222,15 +14934,15 @@ struct JIT {
 
     // Token (e.g., operator string)
     if (ast.is_token) {
-      return nullptr;  // handled by parent
+      return {};   // handled by parent
     }
 
     // Single child: recurse
     if (ast.nodes.size() == 1) {
-      return compile(*ast.nodes[0]).consume();
+      return compile(*ast.nodes[0]);
     }
 
-    return make_nil();
+    return own(make_nil());
     }();
     } catch (culebra::CulebraError& e) {
       // Backfill this (deepest) compiling node's position onto a compile-time
@@ -14254,21 +14966,21 @@ struct JIT {
     // is fine there. This catches any new declaration/statement compiler that
     // forgets to return make_nil().
     auto* insert_bb = builder_.GetInsertBlock();
-    assert((!compiled || (insert_bb && insert_bb->getTerminator()) ||
-            !llvm::isa<llvm::UndefValue>(compiled)) &&
+    assert((!compiled.borrow() || (insert_bb && insert_bb->getTerminator()) ||
+            !llvm::isa<llvm::UndefValue>(compiled.borrow())) &&
            "compile() returned an undef %Value; declarations/statements must "
            "return make_nil()");
-    return own(compiled);
+    return compiled;
   }
 
   // --- Statements ---
 
-  llvm::Value* compile_statements(const peg::Ast& ast) {
+  Owned compile_statements(const peg::Ast& ast) {
     if (ast.is_token) {
-      return compile(ast).consume();
+      return compile(ast);
     }
     if (ast.nodes.empty()) {
-      return make_nil();
+      return own(make_nil());
     }
     // Forward-ref / self-recursion support for captured names declared
     // by this statement list (if/while/for bodies, match arms, try and
@@ -14277,32 +14989,36 @@ struct JIT {
     // Idempotent — the function-body entry point already pre-allocates
     // its own list, and pre() skips existing slots.
     pre_allocate_forward_refs(ast);
-    llvm::Value* val = nullptr;
+    Owned val;
     for (auto& node : ast.nodes) {
       if (builder_.GetInsertBlock()->getTerminator()) break;
-      // Release previous statement's result (not used)
-      if (val) emit_value_release(val);
-      val = compile(*node).consume();
+      // Release the previous statement's result (not used) here — before the
+      // next statement's IR — via drop(), so the release lands where the
+      // hand-placed one did and the handle is spent (unregistered) while the
+      // next statement compiles.
+      val.drop();
+      val = compile(*node);
     }
-    return val ? val : make_nil();
+    if (val.borrow()) return val;
+    return own(make_nil());
   }
 
   // --- Literals ---
 
-  llvm::Value* compile_number(const peg::Ast& ast) {
+  Owned compile_number(const peg::Ast& ast) {
     auto n = culebra::parse_integer_literal(ast.token);
-    return make_long(builder_.getInt64(n));
+    return own(make_long(builder_.getInt64(n)));
   }
 
-  llvm::Value* compile_float(const peg::Ast& ast) {
+  Owned compile_float(const peg::Ast& ast) {
     auto d = ast.token_to_number<double>();
     auto constD = llvm::ConstantFP::get(builder_.getDoubleTy(), d);
-    return make_float(constD);
+    return own(make_float(constD));
   }
 
-  llvm::Value* compile_bool(const peg::Ast& ast) {
+  Owned compile_bool(const peg::Ast& ast) {
     auto b = (ast.token == "true");
-    return make_bool(builder_.getInt1(b));
+    return own(make_bool(builder_.getInt1(b)));
   }
 
   // Emit a String literal as a .rodata length-prefixed buffer matching the
@@ -14328,15 +15044,15 @@ struct JIT {
     return builder_.CreateInBoundsGEP(structTy, g, idx, ".str.data");
   }
 
-  llvm::Value* compile_string(const peg::Ast& ast) {
-    return make_string(emit_str_literal(std::string(ast.token)));
+  Owned compile_string(const peg::Ast& ast) {
+    return own(make_string(emit_str_literal(std::string(ast.token))));
   }
 
-  llvm::Value* compile_interpolated_content(const peg::Ast& ast) {
-    return make_string(emit_str_literal(decode_interpolated_content(ast.token)));
+  Owned compile_interpolated_content(const peg::Ast& ast) {
+    return own(make_string(emit_str_literal(decode_interpolated_content(ast.token))));
   }
 
-  llvm::Value* compile_array(const peg::Ast& ast) {
+  Owned compile_array(const peg::Ast& ast) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
 
@@ -14350,7 +15066,6 @@ struct JIT {
     // container literal cannot leak when a later element throws. The block is
     // erased if nothing inside can throw. See docs/jit_ownership.md §4.3.
     auto buildGuard = make_build_guard(make_array(arrPtr));
-    auto pendingGuard = make_pending_guard();  // a spread source mid-consume
     auto cleanupBB = llvm::BasicBlock::Create(ctx_, "arr.build.cleanup", fn);
     auto savedLpad = current_lpad_;
     current_lpad_ = cleanupBB;
@@ -14390,21 +15105,19 @@ struct JIT {
 
     for (auto i = 0u; i < seqNodes.size(); i++) {
       if (has_spread && seqNodes[i]->tag == "SPREAD_ELEM"_) {
-        {
-          // extend borrows the source (retaining each copied element); the
-          // handle's dtor at this block's end releases the source +1.
-          Owned v = compile(*seqNodes[i]->nodes[0]);
-          builder_.CreateStore(v.borrow(), pendingGuard);  // freed on throw
-          emit_call(
-              module_->getOrInsertFunction(
-                  rt::array_extend, builder_.getVoidTy(), ptrTy,
-                  builder_.getInt8Ty(), builder_.getInt64Ty(),
-                  builder_.getInt64Ty(), builder_.getInt64Ty()),
-              {arrPtr, extract_tag(v.borrow()), extract_data(v.borrow()),
-               builder_.getInt64(seqNodes[i]->line),
-               builder_.getInt64(seqNodes[i]->column)});
-        }
-        clear_pending_guard(pendingGuard);
+        // extend borrows the source (retaining each copied element); the
+        // handle's dtor releases the source +1 on the normal path, and the
+        // unwind-temp window (§4.8) frees it if extend throws (`[...1]`) —
+        // this used to need a hand-placed pending-guard store.
+        Owned v = compile(*seqNodes[i]->nodes[0]);
+        emit_call(
+            module_->getOrInsertFunction(
+                rt::array_extend, builder_.getVoidTy(), ptrTy,
+                builder_.getInt8Ty(), builder_.getInt64Ty(),
+                builder_.getInt64Ty(), builder_.getInt64Ty()),
+            {arrPtr, extract_tag(v.borrow()), extract_data(v.borrow()),
+             builder_.getInt64(seqNodes[i]->line),
+             builder_.getInt64(seqNodes[i]->column)});
         continue;
       }
       Owned val = compile(*seqNodes[i]);
@@ -14428,15 +15141,15 @@ struct JIT {
     }
 
     current_lpad_ = savedLpad;
-    finish_construction_cleanup(cleanupBB, {buildGuard, pendingGuard}, savedLpad);
-    return make_array(arrPtr);
+    finish_construction_cleanup(cleanupBB, {buildGuard}, savedLpad);
+    return own(make_array(arrPtr));
   }
 
   // Tuple literal: `(a, b, c)`. Allocate a TAG_TUPLE-tagged JitArray,
   // compile and push each element. AST shape: nodes are the elements
   // directly (the TUPLE rule expands `EXPRESSION (',' EXPRESSION)+`
   // into nested children — peglib flattens them).
-  llvm::Value* compile_tuple(const peg::Ast& ast) {
+  Owned compile_tuple(const peg::Ast& ast) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
     auto tupPtr = emit_call(
@@ -14457,12 +15170,12 @@ struct JIT {
     }
     current_lpad_ = savedLpad;
     finish_construction_cleanup(cleanupBB, {buildGuard}, savedLpad);
-    return make_tuple(tupPtr);
+    return own(make_tuple(tupPtr));
   }
 
   // Set literal: `{a, b, c}`. Compiles each element, hands its +1
   // reference to `set_add` which dedupes against the sidecar index.
-  llvm::Value* compile_set(const peg::Ast& ast) {
+  Owned compile_set(const peg::Ast& ast) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
     auto setPtr = emit_call(
@@ -14483,7 +15196,7 @@ struct JIT {
     }
     current_lpad_ = savedLpad;
     finish_construction_cleanup(cleanupBB, {buildGuard}, savedLpad);
-    return make_set(setPtr);
+    return own(make_set(setPtr));
   }
 
   // Object property bind. The runtime well-known check (drop/iter/
@@ -14515,7 +15228,7 @@ struct JIT {
 
     // IC: { void* expected, void* result, i64 offset, i8 prop_mut }.
     // PrivateLinkage so each module owns its own cache cells. Initial
-    // expected_shape uses sentinel `(void*)1` (see compile_property_get
+    // expected_shape uses sentinel `(void*)1` (see emit_property_get
     // for the rationale) so the first call always misses to the slow
     // path; nullptr would spuriously match a fresh Object's null shape.
     auto icTy = llvm::StructType::get(ctx_, {ptrTy, ptrTy, i64Ty, i8Ty});
@@ -14585,6 +15298,14 @@ struct JIT {
     }
   }
 
+  // Set property `name` to an owned value: the property slot absorbs the +1.
+  void emit_object_set_owned(llvm::Value* objPtr, const std::string& name,
+                             bool mut, Owned val) {
+    emit_object_set(objPtr, name, mut, extract_tag(val.borrow()),
+                    extract_data(val.borrow()));
+    val.consume();
+  }
+
   llvm::Value* emit_object_has(llvm::Value* objPtr, llvm::Value* keyPtr,
                                const llvm::Twine& name = "has.prop") {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
@@ -14611,7 +15332,7 @@ struct JIT {
     return make_object(objPtr);
   }
 
-  llvm::Value* compile_object(const peg::Ast& ast) {
+  Owned compile_object(const peg::Ast& ast) {
     using namespace peg::udl;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
 
@@ -14621,10 +15342,9 @@ struct JIT {
         {}, "obj");
 
     // Release the partial object if a later key/value expression throws
-    // (see compile_array).
+    // (see compile_array). In-flight spread sources and heap keys are covered
+    // by the unwind-temp window (§4.8) via their Owned handles.
     auto buildGuard = make_build_guard(make_object(objPtr));
-    // Holds a spread source, or a heap key awaiting its (throwing) value.
-    auto pendingGuard = make_pending_guard();
     auto cleanupBB = llvm::BasicBlock::Create(ctx_, "obj.build.cleanup", fn);
     auto savedLpad = current_lpad_;
     current_lpad_ = cleanupBB;
@@ -14636,21 +15356,18 @@ struct JIT {
     for (auto& prop : ast.nodes) {
       if (prop->tag == "SPREAD_ELEM"_) {
         // `{...obj}` — merge another Object's entries (later keys win).
-        {
-          // merge borrows the source (retaining each copied entry); the
-          // handle's dtor at this block's end releases the source +1.
-          Owned v = compile(*prop->nodes[0]);
-          builder_.CreateStore(v.borrow(), pendingGuard);  // freed on throw
-          emit_call(
-              module_->getOrInsertFunction(
-                  rt::object_merge, builder_.getVoidTy(), ptrTy,
-                  builder_.getInt8Ty(), builder_.getInt64Ty(),
-                  builder_.getInt64Ty(), builder_.getInt64Ty()),
-              {objPtr, extract_tag(v.borrow()), extract_data(v.borrow()),
-               builder_.getInt64(prop->line),
-               builder_.getInt64(prop->column)});
-        }
-        clear_pending_guard(pendingGuard);
+        // merge borrows the source (retaining each copied entry); the
+        // handle's dtor releases the source +1 on the normal path, and the
+        // unwind-temp window (§4.8) frees it if merge throws.
+        Owned v = compile(*prop->nodes[0]);
+        emit_call(
+            module_->getOrInsertFunction(
+                rt::object_merge, builder_.getVoidTy(), ptrTy,
+                builder_.getInt8Ty(), builder_.getInt64Ty(),
+                builder_.getInt64Ty(), builder_.getInt64Ty()),
+            {objPtr, extract_tag(v.borrow()), extract_data(v.borrow()),
+             builder_.getInt64(prop->line),
+             builder_.getInt64(prop->column)});
         continue;
       }
       auto pv = culebra::view_object_property(*prop);
@@ -14659,10 +15376,10 @@ struct JIT {
         // Non-IDENTIFIER literal key — emit Value-keyed set. is_init=true so a
         // duplicate key overwrites last-wins (like the interp), rather than
         // tripping the immutable-entry guard meant for `o[k] = v`.
+        // The key's +1 is live until object_set_any consumes it; its Owned
+        // handle keeps it under the unwind-temp window (§4.8), so a throwing
+        // value expression can't orphan a heap key (`{(1,2): boom()}`).
         Owned key = compile(*pv.key);
-        // The key's +1 is live until object_set_any consumes it; guard it so a
-        // throwing value expression doesn't orphan a heap key (`{(1,2): boom()}`).
-        builder_.CreateStore(key.borrow(), pendingGuard);
         Owned val = compile(*pv.value);
         emit_call(
             module_->getOrInsertFunction(
@@ -14677,7 +15394,6 @@ struct JIT {
              current_column_val(), builder_.getInt1(true)});
         key.consume();  // object_set_any absorbed the key's +1
         val.consume();  // ... and the value's
-        clear_pending_guard(pendingGuard);
         continue;
       }
 
@@ -14699,20 +15415,26 @@ struct JIT {
       } else {
         val = compile(*pv.value);
       }
-      emit_object_set(objPtr, name, pv.is_mut, extract_tag(val.borrow()),
-                      extract_data(val.borrow()), /*is_init=*/true);
+      {
+        // §4.7 callee-cleans: emit_object_set's well-known-property check
+        // (`{next: 5}`) releases the value's +1 on its contract throw —
+        // exclude it from the unwind-temp window.
+        UnwindCovered cover(this, {val.borrow()});
+        emit_object_set(objPtr, name, pv.is_mut, extract_tag(val.borrow()),
+                        extract_data(val.borrow()), /*is_init=*/true);
+      }
       val.consume();  // the property slot absorbed the +1
     }
 
     current_lpad_ = savedLpad;
-    finish_construction_cleanup(cleanupBB, {buildGuard, pendingGuard}, savedLpad);
-    return make_object(objPtr);
+    finish_construction_cleanup(cleanupBB, {buildGuard}, savedLpad);
+    return own(make_object(objPtr));
   }
 
   // Emit the string piece for a `{expr}` / `{expr:spec}` interpolation (or a
   // defensive bare expression node). Shared by the `"..."` and `"""..."""`
   // paths so the interpolation codegen stays single-sourced.
-  llvm::Value* compile_interp_expr(const peg::Ast& node) {
+  llvm::Value* emit_interp_fragment(const peg::Ast& node) {
     using namespace peg::udl;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     if (node.tag == "INTERP_EXPR"_ && node.nodes.size() > 1) {
@@ -14741,7 +15463,7 @@ struct JIT {
         {extract_tag(val), extract_data(val)}, "disp");
   }
 
-  llvm::Value* compile_interpolated_string(const peg::Ast& ast) {
+  Owned compile_interpolated_string(const peg::Ast& ast) {
     using namespace peg::udl;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
 
@@ -14756,7 +15478,7 @@ struct JIT {
         // (\n \r \t \\ \" \{) so the runtime sees the resolved bytes.
         piece = emit_str_literal(decode_interpolated_content(node->token));
       } else {
-        piece = compile_interp_expr(*node);
+        piece = emit_interp_fragment(*node);
       }
       result = emit_call(
           module_->getOrInsertFunction(rt::str_concat, ptrTy,
@@ -14764,14 +15486,14 @@ struct JIT {
           {result, piece}, "concat");
     }
 
-    return make_string(result);
+    return own(make_string(result));
   }
 
   // `"""..."""` — Swift-style block dedent (see normalize_triple_pieces) when
   // the opening `"""` is followed by a newline; otherwise a raw interpolated
   // string. The dedent lives in the shared parser.h helper so it can never
   // diverge from the interpreter.
-  llvm::Value* compile_triple_string(const peg::Ast& ast) {
+  Owned compile_triple_string(const peg::Ast& ast) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto pieces = normalize_triple_pieces(ast);
 
@@ -14796,22 +15518,22 @@ struct JIT {
         continue;
       }
       flush();
-      auto* piece = compile_interp_expr(*p.expr);
+      auto* piece = emit_interp_fragment(*p.expr);
       result = result ? emit_call(module_->getOrInsertFunction(
                                       rt::str_concat, ptrTy, ptrTy, ptrTy),
                                   {result, piece}, "concat")
                       : piece;
     }
     flush();
-    return make_string(result ? result : emit_str_literal(""));
+    return own(make_string(result ? result : emit_str_literal("")));
   }
 
   // --- Identifier ---
 
-  llvm::Value* compile_identifier(const peg::Ast& ast) {
+  Owned compile_identifier(const peg::Ast& ast) {
     auto name = std::string(ast.token);
     auto slot = lookup_var(name);
-    if (slot) return load_slot(*slot, name);
+    if (slot) return own(load_slot(*slot, name));
     // bare stdlib namespace (e.g. `let m = IO`) — fetch its lazy-built
     // sentinel Object so the value can be passed around like any user
     // Object. `IO.method(...)` still goes through the fast compile_global
@@ -14836,15 +15558,14 @@ struct JIT {
                                       "ns.tag.v");
       auto data = builder_.CreateLoad(builder_.getInt64Ty(), dataSlot,
                                        "ns.data.v");
-      llvm::Value* v = make_value(tag, data);
-      return v;
+      return own(make_value(tag, data));
     }
     // Match interp's eval-time NameError so `try { undefined } catch e
     // { ... }` works under --jit too.
     emit_throw_error("NameError",
         std::format("undefined variable '{}'", name),
         ast.line, ast.column);
-    return make_nil();
+    return own(make_nil());
   }
 
   // Create an alloca + cell for a new captured variable.
@@ -14918,7 +15639,7 @@ struct JIT {
 
   // --- Assignment ---
 
-  llvm::Value* compile_assignment(const peg::Ast& ast) {
+  Owned compile_assignment(const peg::Ast& ast) {
     using namespace peg::udl;
     // ASSIGNMENT layout (see parser.h `view_assignment`).
     auto av = culebra::view_assignment(ast);
@@ -14967,7 +15688,7 @@ struct JIT {
       // it. Caller (compile_statements) drops the result like any other
       // unused value.
       if (is_sink_name(name)) {
-        return rval;
+        return own(rval);
       }
 
       if (compound) {
@@ -14982,7 +15703,7 @@ struct JIT {
           // The throw is the terminal effect; emit a dummy nil so
           // surrounding IR stays well-formed (the runtime unwinds
           // before any of it runs).
-          return make_nil();
+          return own(make_nil());
         }
         auto cur = load_slot(*slot, name);
         if (nil_coalesce) {
@@ -15014,7 +15735,7 @@ struct JIT {
           builder_.CreateBr(doneBB);
 
           builder_.SetInsertPoint(doneBB);
-          return builder_.CreateLoad(valueType_, resAlloca, "ncasn.result");
+          return own(builder_.CreateLoad(valueType_, resAlloca, "ncasn.result"));
         }
         // In-place fast path is requested for Tensor lhs; the runtime
         // helper falls back to the plain binop otherwise. When it
@@ -15054,7 +15775,7 @@ struct JIT {
         builder_.CreateBr(doneBB);
 
         builder_.SetInsertPoint(doneBB);
-        return new_val;
+        return own(new_val);
       }
 
       // `mut x = ...` (no `let`) is also a declaration, matching the
@@ -15080,7 +15801,7 @@ struct JIT {
           }
           store_slot(it->second, rval);
           emit_value_retain(rval);
-          return rval;
+          return own(rval);
         }
       }
 
@@ -15092,7 +15813,7 @@ struct JIT {
           }
           store_slot(*existing, rval);
           emit_value_retain(rval);
-          return rval;
+          return own(rval);
         }
       }
 
@@ -15109,13 +15830,20 @@ struct JIT {
           scopes_.back().fn_asts[name] = &rhs;
         }
       }
-      return rval;
+      return own(rval);
     }
 
     using namespace peg::udl;
 
-    // Complex lvalue (obj.prop, arr[idx])
-    llvm::Value* lval = compile(*ast.nodes[lvaloff]).consume();
+    // Complex lvalue (obj.prop, arr[idx]). The receiver rolls through one
+    // Owned handle (the compile_call idiom): each step borrows the current
+    // +1 and move-assigning the step's fresh +1 releases the previous link
+    // at the same insertion point the hand-placed releases used to occupy.
+    // While a step compiles (its helpers may throw), the +1 stays registered
+    // and the unwind-temp window (§4.8) releases it on the throw edge — a
+    // bare intermediate receiver used to strand whenever a later step threw
+    // (`a[i][j] = v` with an OOB inner index).
+    Owned lvalOwned = compile(*ast.nodes[lvaloff]);
 
     // Process intermediate postfixes (all but the last)
     auto end = lvaloff + lvalcnt - 1;
@@ -15123,29 +15851,31 @@ struct JIT {
       const auto& postfix = *ast.nodes[i];
       switch (postfix.original_tag) {
         case "INDEX"_: {
-          // Promote borrowed result of INDEX to +1 owned (mirrors the
-          // chained-postfix path at compile_postfix); the symmetric
-          // release below would otherwise underflow the inner array.
-          auto receiver = lval;
-          lval = compile_index_access(postfix, lval);
-          emit_value_swap_owned(lval, receiver);
+          // compile_index_access (emit_point_index) returns +1-owned, so the
+          // move-assign just releases the previous receiver — no re-retain.
+          // The old swap_owned double-counted the object-index path (a fresh
+          // SharedBuffer view leaked; a dict slot's refcount inflated); the
+          // array path is now retained inside emit_point_index so this stays
+          // balanced.
+          lvalOwned = compile_index_access(postfix, lvalOwned.borrow());
           break;
         }
         case "DOT"_: {
           // Intermediate `.prop` in a chain like `this.d[i] = v`: read the
           // property (borrowed) and promote to +1, mirroring the INDEX case
           // so the trailing release doesn't underflow the receiver.
-          auto receiver = lval;
-          lval = compile_property_get(lval, std::string(postfix.token));
-          emit_value_swap_owned(lval, receiver);
+          // swap_owned retains the property before releasing the receiver,
+          // absorbing the receiver's +1 (consumed into the same call).
+          auto prop = emit_property_get(lvalOwned.borrow(),
+                                           std::string(postfix.token));
+          emit_value_swap_owned(prop, lvalOwned.consume());
+          lvalOwned = own(prop);
           break;
         }
         case "ARGUMENTS"_: {
-          // Borrowed-callee dispatch; release the owned temp after (see
-          // the compile_call ARGUMENTS note).
-          auto calleeTemp = lval;
-          lval = compile_function_call(postfix, lval);
-          emit_value_release(calleeTemp);
+          // Borrowed-callee dispatch; the move-assign releases the owned
+          // temp after (see the compile_call ARGUMENTS note).
+          lvalOwned = compile_function_call(postfix, lvalOwned.borrow());
           break;
         }
         default:
@@ -15154,7 +15884,17 @@ struct JIT {
       }
     }
 
-    // Final postfix - do the assignment
+    // Final postfix - do the assignment. The receiver `lval` is +1 owned and
+    // released on the normal path at each case's merge; guard it so an
+    // assignment-error throw — ImmutableError on an immutable slot or a
+    // Shared.new view (`o.a = v` on a literal, `s.a = v`), a KeyError / OOB /
+    // type error from the get/set helpers — releases it on the unwind edge
+    // instead of stranding it. The guard fires only on the throw edge, so it
+    // does not double-release the normal-path `emit_value_release(lval)`.
+    // The raw deliberately crosses the per-case dispatch blocks below with the
+    // guard as its sole unwind-edge releaser (§4.7) — hence unchecked.
+    llvm::Value* lval = lvalOwned.consume_unchecked();
+    ThrowGuard lval_guard(this, {lval});
     const auto& finalPostfix = *ast.nodes[end];
     switch (finalPostfix.original_tag) {
       case "INDEX"_: {
@@ -15221,9 +15961,12 @@ struct JIT {
              current_column_val()});
         // `to_store_arr`'s +1 (rval directly for plain set, or the
         // arith-step result for compound) is consumed by array_set;
-        // re-retain so the merge sees a +1 result.
+        // re-retain so the merge sees a +1 result. own() marks the minted
+        // +1 as this arm's merge contribution (the SSA value predates the
+        // arm, so the produced-here check doesn't apply).
         emit_value_retain(to_store_arr);
-        auto arrEnd = builder_.GetInsertBlock();
+        OwnedPhi setMerge(this, "set.r");
+        setMerge.add_incoming(own(to_store_arr));
         builder_.CreateBr(mergeBB);
 
         // Object path: see culebra_runtime_object_set_any. Compound
@@ -15233,13 +15976,19 @@ struct JIT {
         // place before writing back.
         builder_.SetInsertPoint(objBB);
         auto objPtr = builder_.CreateIntToPtr(extract_data(lval), ptrTy);
-        auto keyVal = compile(finalPostfix).consume();
+        // The key rides the compound read-modify sequence in an Owned: it
+        // crosses the object_get_any invoke (KeyError on a missing slot)
+        // and the arith step (a user __add__ may throw), and a bare +1
+        // used to strand on both edges (§4.9). The window spills it around
+        // each call; it is consumed at the object_set_any handoff below.
+        Owned keyO = compile(finalPostfix);
         llvm::Value* to_store_obj = rval;
         if (compound) {
           // object_get_any and object_set_any both consume the caller's
           // +1 to the key. Retain once up front so each call sees a
-          // separate +1.
-          emit_value_retain(keyVal);
+          // separate +1 (the minted ref feeds object_get_any; keyO keeps
+          // the object_set_any ref).
+          emit_value_retain(keyO.borrow());
           auto outTag = builder_.CreateAlloca(builder_.getInt8Ty(),
                                               nullptr, "cobj.out.tag");
           auto outData = builder_.CreateAlloca(builder_.getInt64Ty(),
@@ -15248,9 +15997,12 @@ struct JIT {
               module_->getOrInsertFunction(
                   rt::object_get_any, builder_.getVoidTy(), ptrTy,
                   builder_.getInt8Ty(), builder_.getInt64Ty(), ptrTy,
-                  ptrTy, builder_.getInt64Ty(), builder_.getInt64Ty()),
-              {objPtr, extract_tag(keyVal), extract_data(keyVal),
-               outTag, outData, current_line_val(), current_column_val()});
+                  ptrTy, builder_.getInt64Ty(), builder_.getInt64Ty(),
+                  builder_.getInt1Ty()),
+              {objPtr, extract_tag(keyO.borrow()), extract_data(keyO.borrow()),
+               outTag, outData, current_line_val(), current_column_val(),
+               // Compound-assign target is borrowed here — do not release it.
+               builder_.getInt1(false)});
           auto curTag = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
           auto curData =
               builder_.CreateLoad(builder_.getInt64Ty(), outData);
@@ -15260,6 +16012,7 @@ struct JIT {
           emit_value_release(rval);
           emit_value_release(cur);
         }
+        auto keyVal = keyO.consume();
         emit_call(
             module_->getOrInsertFunction(
                 rt::object_set_any, builder_.getVoidTy(), ptrTy,
@@ -15280,15 +16033,13 @@ struct JIT {
         // object_set_any consumed to_store_obj's +1; re-retain for the
         // merge so callers see a +1 result.
         emit_value_retain(to_store_obj);
-        auto objEnd = builder_.GetInsertBlock();
+        setMerge.add_incoming(own(to_store_obj));
         builder_.CreateBr(mergeBB);
 
         builder_.SetInsertPoint(mergeBB);
-        auto phi = builder_.CreatePHI(valueType_, 2, "set.r");
-        phi->addIncoming(to_store_arr, arrEnd);
-        phi->addIncoming(to_store_obj, objEnd);
+        Owned result = setMerge.finish(mergeBB);
         emit_value_release(lval);
-        return phi;
+        return result;
       }
       case "DOT"_: {
         auto ptrTy = llvm::PointerType::get(ctx_, 0);
@@ -15335,9 +16086,9 @@ struct JIT {
           builder_.CreateUnreachable();
 
           builder_.SetInsertPoint(hasBB);
-          // compile_property_get returns +0 borrowed (no slot retain),
+          // emit_property_get returns +0 borrowed (no slot retain),
           // so cur does not need a matching release; only rval does.
-          auto cur = compile_property_get(lval, name);
+          auto cur = emit_property_get(lval, name);
           to_store = emit_arith_step(cur, rval, base_op, /*inplace=*/true);
           emit_value_release(rval);
         }
@@ -15354,7 +16105,7 @@ struct JIT {
         emit_object_set(objPtr, name, mut, extract_tag(to_store),
                         extract_data(to_store));
         emit_value_release(lval);  // release the lvalue's ref
-        return to_store;
+        return own(to_store);
       }
       default:
         throw std::runtime_error("invalid lvalue postfix");
@@ -15386,11 +16137,11 @@ struct JIT {
   // Math.range). Inclusive form bumps the end by one at compile time.
   // Builds a `{class:"Range",...}` value (the bare `..` form is handled by
   // the RANGE_OPERATOR case in compile()).
-  llvm::Value* compile_range(const peg::Ast& ast) {
+  Owned compile_range(const peg::Ast& ast) {
     auto lay = decode_range_layout(ast);
     llvm::Value* startV = lay.start ? value_to_long(compile(*lay.start).consume()) : nullptr;
     llvm::Value* endV = lay.end ? value_to_long(compile(*lay.end).consume()) : nullptr;
-    return emit_make_range(startV, endV, lay.inclusive);
+    return own(emit_make_range(startV, endV, lay.inclusive));
   }
 
   // Build a range value via culebra_runtime_make_range. A null start/end
@@ -15426,7 +16177,7 @@ struct JIT {
   // `let`/`let mut` declares; a bare `(a, b) = …` reassigns existing
   // variables. Reuses the match-pattern emitter. On runtime mismatch,
   // throws via the same channel as other "shape mismatch" cases.
-  llvm::Value* compile_destructure_assign(const peg::Ast& ast) {
+  Owned compile_destructure_assign(const peg::Ast& ast) {
     bool declares = ast.nodes[0]->token == "let" || ast.nodes[1]->token == "mut";
     bool is_mut = ast.nodes[1]->token == "mut";
     const auto& pattern = *ast.nodes[2];
@@ -15437,11 +16188,14 @@ struct JIT {
     // path's `ast.line / ast.column`.
     auto stmt_line = builder_.getInt64(ast.line);
     auto stmt_col = builder_.getInt64(ast.column);
-    auto rval = compile(*ast.nodes[3]).consume();
+    // The rval stays Owned across the pattern emission (its helpers may
+    // throw; a bare +1 would strand on that edge — §4.9) and the mismatch
+    // branch, and is consumed into the ok-path return.
+    Owned rvalO = compile(*ast.nodes[3]);
 
     auto saved_declare = pattern_declare_;
     pattern_declare_ = declares;
-    auto matched = emit_pattern(pattern, rval, is_mut);
+    auto matched = emit_pattern(pattern, rvalO.borrow(), is_mut);
     pattern_declare_ = saved_declare;
 
     auto fn = builder_.GetInsertBlock()->getParent();
@@ -15459,7 +16213,7 @@ struct JIT {
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(okBB);
-    return rval;
+    return rvalO;
   }
 
   // --- Arithmetic ---
@@ -15487,6 +16241,11 @@ struct JIT {
                                    const char* rt_name,
                                    LongPath long_path,
                                    FloatPath float_path) {
+    // §4.7: on the helper's unwind edge the operands already have exactly one
+    // releaser — the arith helper itself on a direct type error, the callee
+    // frame + invoker guard on a user `__op__` dispatch — so the unwind-temp
+    // window must not spill them (the ASan-confirmed overlap trap).
+    UnwindCovered cover(this, {lhs, rhs});
     auto fn = builder_.GetInsertBlock()->getParent();
     auto intBB = llvm::BasicBlock::Create(ctx_, "binop.int", fn);
     auto checkNumBB =
@@ -15506,9 +16265,9 @@ struct JIT {
     auto bothLong = builder_.CreateAnd(lIsLong, rIsLong, "both.long");
     builder_.CreateCondBr(bothLong, intBB, checkNumBB);
 
+    OwnedPhi merge(this, "binop.r");
     builder_.SetInsertPoint(intBB);
-    auto intResult = long_path(ldata, rdata);
-    auto intEndBB = builder_.GetInsertBlock();
+    merge.add_incoming(long_path(ldata, rdata));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(checkNumBB);
@@ -15529,12 +16288,20 @@ struct JIT {
     auto rFromLong = builder_.CreateSIToFP(rdata, doubleTy, "r.l2f");
     auto rDouble = builder_.CreateSelect(rIsLong, rFromLong, rFromFloat,
                                           "r.d");
-    auto floatResult = float_path(lDouble, rDouble);
-    auto floatEndBB = builder_.GetInsertBlock();
+    merge.add_incoming(float_path(lDouble, rDouble));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(numBB);
-    auto numResult = emit_value_call(
+    // Slow path: the runtime helper borrows both operands and can throw. The
+    // operands are NOT guarded on the unwind edge here — a *user*-operator
+    // dispatch (`v + 2` invoking `__add__`) already releases them via the
+    // callee frame's throw cleanup + JitUnwindRelease, so a codegen-side guard
+    // would triple-free (ASan-confirmed). A *builtin*-operator TypeError
+    // (`1 + "a"`) does strand the operand, but closing that needs the operator
+    // helpers to release on their direct-throw path (uniform callee-cleans),
+    // not a codegen guard that can't tell the two dispatch paths apart. See
+    // docs/jit_ownership.md §4.3 (operator throw-path, deferred).
+    merge.add_incoming(emit_value_call(
         module_->getOrInsertFunction(rt_name, valueType_,
                                      builder_.getInt8Ty(),
                                      builder_.getInt64Ty(),
@@ -15543,16 +16310,11 @@ struct JIT {
                                      builder_.getInt64Ty(),
                                      builder_.getInt64Ty()),
         {ltag, ldata, rtag, rdata,
-         current_line_val(), current_column_val()}, "num.op");
-    auto numEndBB = builder_.GetInsertBlock();
+         current_line_val(), current_column_val()}, "num.op"));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(valueType_, 3, "binop.r");
-    phi->addIncoming(intResult, intEndBB);
-    phi->addIncoming(floatResult, floatEndBB);
-    phi->addIncoming(numResult, numEndBB);
-    return phi;
+    return merge.finish(mergeBB).consume();
   }
 
   // Single arith step for compound-assignment lowering. `inplace=true`
@@ -15561,6 +16323,9 @@ struct JIT {
   // in-place doesn't apply).
   llvm::Value* emit_arith_step(llvm::Value* lhs, llvm::Value* rhs,
                                std::string_view op, bool inplace = false) {
+    // §4.7 callee-cleans (same as emit_binop_dispatch, which covers again for
+    // its own callers): matmul/pow below call their helpers directly.
+    UnwindCovered cover(this, {lhs, rhs});
     if (op == "@") {
       // No in-place matmul (output shape differs from lhs).
       return emit_value_call(
@@ -15628,7 +16393,7 @@ struct JIT {
         });
   }
 
-  llvm::Value* compile_additive(const peg::Ast& ast) {
+  Owned compile_additive(const peg::Ast& ast) {
     // The accumulator and each rhs are `+1`-owned operand temps; the Owned
     // handles release them (no-op for immediates) once the binop has read
     // them — freeing a heap operand of an overloaded `+`/`-`. The result of
@@ -15657,10 +16422,10 @@ struct JIT {
       // the end of the iteration — both after the binop has consumed them.
       acc = own(result);
     }
-    return acc.consume();
+    return acc;
   }
 
-  llvm::Value* compile_multiplicative(const peg::Ast& ast) {
+  Owned compile_multiplicative(const peg::Ast& ast) {
     // Same ownership story as compile_additive: accumulator and each rhs are
     // `+1`-owned temps released by their Owned handles once the binop (or `@`)
     // has read them; the final result's `+1` transfers to the caller.
@@ -15673,6 +16438,9 @@ struct JIT {
       // because it has no built-in numeric meaning (dispatch only via
       // `__matmul__`). Emit directly, then skip the dispatch below.
       if (ope == '@') {
+        // §4.7 callee-cleans: num_matmul releases both operands on its direct
+        // type error, user `__matmul__` via the invoker guard.
+        UnwindCovered cover(this, {acc.borrow(), rhs.borrow()});
         auto ptrTy = llvm::PointerType::get(ctx_, 0);
         (void)ptrTy;
         auto result = emit_value_call(
@@ -15719,16 +16487,16 @@ struct JIT {
           });
       acc = own(result);
     }
-    return acc.consume();
+    return acc;
   }
 
   // --- Unary ---
 
-  llvm::Value* compile_unary_plus(const peg::Ast& ast) {
-    return compile(*ast.nodes[1]).consume();
+  Owned compile_unary_plus(const peg::Ast& ast) {
+    return compile(*ast.nodes[1]);
   }
 
-  llvm::Value* compile_unary_minus(const peg::Ast& ast) {
+  Owned compile_unary_minus(const peg::Ast& ast) {
     // The operand is a +1-owned temp; the Owned handle releases it once neg
     // has read it (no-op for an immediate Long, frees a heap operand of an
     // overloaded `__neg__`). Both paths join at mergeBB, where the handle's
@@ -15744,45 +16512,50 @@ struct JIT {
     auto mergeBB = llvm::BasicBlock::Create(ctx_, "neg.merge", fn);
     builder_.CreateCondBr(isLong, intBB, slowBB);
 
+    OwnedPhi merge(this, "neg.r");
     builder_.SetInsertPoint(intBB);
-    auto intResult =
-        make_long(builder_.CreateNeg(extract_data(val.borrow()), "neg"));
-    auto intEndBB = builder_.GetInsertBlock();
+    merge.add_incoming(
+        make_long(builder_.CreateNeg(extract_data(val.borrow()), "neg")));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(slowBB);
-    auto slowResult = emit_value_call(
+    // §4.7 callee-cleans: num_neg releases the operand on its direct type
+    // error, a user `__neg__` dispatch via the callee frame + invoker guard —
+    // exclude it from the unwind-temp window (see emit_binop_dispatch).
+    UnwindCovered cover(this, {val.borrow()});
+    merge.add_incoming(emit_value_call(
         module_->getOrInsertFunction(rt::num_neg, valueType_,
                                      builder_.getInt8Ty(),
                                      builder_.getInt64Ty(),
                                      builder_.getInt64Ty(),
                                      builder_.getInt64Ty()),
         {extract_tag(val.borrow()), extract_data(val.borrow()),
-         current_line_val(), current_column_val()}, "neg.num");
-    auto slowEndBB = builder_.GetInsertBlock();
+         current_line_val(), current_column_val()}, "neg.num"));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(valueType_, 2, "neg.r");
-    phi->addIncoming(intResult, intEndBB);
-    phi->addIncoming(slowResult, slowEndBB);
-    return phi;
+    return merge.finish(mergeBB);
   }
 
-  llvm::Value* compile_unary_not(const peg::Ast& ast) {
+  Owned compile_unary_not(const peg::Ast& ast) {
     // Operand owned; released by the handle after value_to_bool borrows it
-    // (frees a heap operand whose truthiness is taken).
+    // (frees a heap operand whose truthiness is taken). value_to_bool throws a
+    // TypeError on a non-Bool (`![1]`); the operand strands on that edge, but
+    // it is not guarded here — see the operator throw-path note in
+    // emit_binop_dispatch (deferred to the uniform helper-side release).
     Owned val = compile(*ast.nodes[1]);
     auto b = value_to_bool(val.borrow());
     auto notb = builder_.CreateNot(b, "not");
-    return make_bool(notb);
+    return own(make_bool(notb));
   }
 
   // `~x` — bitwise complement, Long-only (else TypeError). Mirrors the
   // interp's eval_unary_bnot.
-  llvm::Value* compile_unary_bnot(const peg::Ast& ast) {
-    auto val = compile(*ast.nodes[1]).consume();
-    auto tag = extract_tag(val);
+  Owned compile_unary_bnot(const peg::Ast& ast) {
+    // Owned like compile_unary_minus's operand: visible to the unwind-temp
+    // window across the TypeError edge, released (a Long no-op) at return.
+    Owned val = compile(*ast.nodes[1]);
+    auto tag = extract_tag(val.borrow());
     auto isLong = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_LONG));
     auto fn = builder_.GetInsertBlock()->getParent();
     auto intBB = llvm::BasicBlock::Create(ctx_, "bnot.int", fn);
@@ -15790,9 +16563,10 @@ struct JIT {
     auto mergeBB = llvm::BasicBlock::Create(ctx_, "bnot.merge", fn);
     builder_.CreateCondBr(isLong, intBB, errBB);
 
+    OwnedPhi merge(this, "bnot.r");
     builder_.SetInsertPoint(intBB);
-    auto r = make_long(builder_.CreateNot(extract_data(val), "bnot"));
-    auto intEnd = builder_.GetInsertBlock();
+    merge.add_incoming(
+        make_long(builder_.CreateNot(extract_data(val.borrow()), "bnot")));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(errBB);
@@ -15800,21 +16574,23 @@ struct JIT {
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(valueType_, 1, "bnot.r");
-    phi->addIncoming(r, intEnd);
-    return phi;
+    return merge.finish(mergeBB);
   }
 
   // Bitwise / shift chains (`^` `&` `<<` `>>`), Long-only. A non-Long
   // operand raises TypeError. Mirrors interp's eval_bitwise.
-  llvm::Value* compile_bitwise(const peg::Ast& ast) {
-    auto lhs = compile(*ast.nodes[0]).consume();
+  Owned compile_bitwise(const peg::Ast& ast) {
+    // Operands are +1-owned temps like compile_additive's: the handles keep
+    // them visible to the unwind-temp window while the next operand compiles
+    // (and across the TypeError edge below), and release them — a no-op for
+    // the Long-only happy path — once the step's result is built.
+    Owned lhs = compile(*ast.nodes[0]);
     auto longTag = builder_.getInt8(TAG_LONG);
     for (auto i = 1u; i < ast.nodes.size(); i += 2) {
-      auto rhs = compile(*ast.nodes[i + 1]).consume();
+      Owned rhs = compile(*ast.nodes[i + 1]);
       auto op = ast.nodes[i]->token;
-      auto ltag = extract_tag(lhs);
-      auto rtag = extract_tag(rhs);
+      auto ltag = extract_tag(lhs.borrow());
+      auto rtag = extract_tag(rhs.borrow());
       auto bothLong = builder_.CreateAnd(
           builder_.CreateICmpEQ(ltag, longTag),
           builder_.CreateICmpEQ(rtag, longTag), "bit.bothlong");
@@ -15825,8 +16601,8 @@ struct JIT {
       builder_.CreateCondBr(bothLong, intBB, errBB);
 
       builder_.SetInsertPoint(intBB);
-      auto ld = extract_data(lhs);
-      auto rd = extract_data(rhs);
+      auto ld = extract_data(lhs.borrow());
+      auto rd = extract_data(rhs.borrow());
       llvm::Value* r;
       if (op == "|") r = builder_.CreateOr(ld, rd, "bor");
       else if (op == "^") r = builder_.CreateXor(ld, rd, "bxor");
@@ -15839,8 +16615,8 @@ struct JIT {
         if (op == "<<") r = builder_.CreateShl(ld, sh, "shl");
         else r = builder_.CreateAShr(ld, sh, "ashr");  // ">>" (signed)
       }
-      auto intResult = make_long(r);
-      auto intEnd = builder_.GetInsertBlock();
+      OwnedPhi step(this, "bit.r");
+      step.add_incoming(make_long(r));
       builder_.CreateBr(mergeBB);
 
       builder_.SetInsertPoint(errBB);
@@ -15851,9 +16627,9 @@ struct JIT {
       builder_.CreateUnreachable();
 
       builder_.SetInsertPoint(mergeBB);
-      auto phi = builder_.CreatePHI(valueType_, 1, "bit.r");
-      phi->addIncoming(intResult, intEnd);
-      lhs = phi;
+      // Move-assign releases the previous accumulator (a no-op Long here);
+      // `rhs` releases at the end of the iteration.
+      lhs = step.finish(mergeBB);
     }
     return lhs;
   }
@@ -15880,7 +16656,7 @@ struct JIT {
     return std::nullopt;
   }
 
-  llvm::Value* compile_power(const peg::Ast& ast) {
+  Owned compile_power(const peg::Ast& ast) {
     // POWER = [base, POWER_OPERATOR, exponent]; optimizer strips the
     // node entirely when there's no `**`.
     Owned base = compile(*ast.nodes[0]);
@@ -15898,22 +16674,25 @@ struct JIT {
             [&](llvm::Value* lD, llvm::Value* rD) {
               return make_float(builder_.CreateFMul(lD, rD, "fmul"));
             });
-        return r;  // base (used as both operands) released by its handle
+        return own(r);  // base (used as both operands) released by its handle
       }
       if (lit->is_float && lit->d == 0.5) {
         auto d = coerce_to_double(base.borrow());
         auto sqrtFn = llvm::Intrinsic::getOrInsertDeclaration(
             module_, llvm::Intrinsic::sqrt, {builder_.getDoubleTy()});
         auto result = make_float(builder_.CreateCall(sqrtFn, {d}, "sqrt"));
-        return result;  // base released by its handle
+        return own(result);  // base released by its handle
       }
       if ((!lit->is_float && lit->l == 1) ||
           (lit->is_float && lit->d == 1.0)) {
-        return base.consume();  // base IS the result — its +1 transfers out
+        return base;  // base IS the result — its +1 transfers out
       }
     }
 
     Owned exp = compile(*ast.nodes[2]);
+    // §4.7 callee-cleans: num_pow releases both operands on its direct type
+    // error (via _arith_guard_numeric), user `__pow__` via the invoker guard.
+    UnwindCovered cover(this, {base.borrow(), exp.borrow()});
     auto result = emit_value_call(
         module_->getOrInsertFunction(rt::num_pow, valueType_,
                                      builder_.getInt8Ty(),
@@ -15922,7 +16701,7 @@ struct JIT {
                                      builder_.getInt64Ty()),
         {extract_tag(base.borrow()), extract_data(base.borrow()),
          extract_tag(exp.borrow()), extract_data(exp.borrow())}, "pow.r");
-    return result;  // base and exp consumed by `**`, released by their handles
+    return own(result);  // base and exp consumed by `**`, released by their handles
   }
 
   // --- Comparison ---
@@ -15934,8 +16713,13 @@ struct JIT {
   // Compile one comparison `lhs OPE rhs` to an i1 (boolean, pre-make_bool).
   // Factored out so compile_condition can chain `a < b < c` as
   // `(a < b) && (b < c)` with each middle operand evaluated once.
-  llvm::Value* compile_comparison_i1(llvm::Value* lhs, llvm::Value* rhs,
+  llvm::Value* emit_comparison_i1(llvm::Value* lhs, llvm::Value* rhs,
                                      const std::string& ope_str) {
+    // §4.7: every throw edge of the eq/ordering helpers already has exactly
+    // one releaser for the operands (the helper on a direct type error /
+    // non-Bool coercion, the callee frame + invoker guard on a user
+    // `__eq__`/`__lt__` dispatch) — exclude them from the unwind-temp window.
+    UnwindCovered cover(this, {lhs, rhs});
     auto ltag = extract_tag(lhs);
     auto ldata = extract_data(lhs);
     auto rtag = extract_tag(rhs);
@@ -15968,6 +16752,10 @@ struct JIT {
       // a positionless error; publish the operator position so the exception
       // boundary backfills it (the ordering ops carry line/col explicitly).
       emit_set_op_pos();
+      // Not guarded on the unwind edge: a user `__eq__` dispatch already
+      // releases the operands via the callee frame + JitUnwindRelease, so a
+      // codegen guard here would double-free (ASan-confirmed). See the
+      // operator throw-path note in emit_binop_dispatch.
       auto slowEq = emit_call(
           module_->getOrInsertFunction(rt::value_equal,
                                        builder_.getInt1Ty(),
@@ -16030,6 +16818,9 @@ struct JIT {
     else if (ope_str == ">=") ord_rt = rt::value_geq;
     else throw std::runtime_error("invalid comparison operator");
 
+    // Not guarded on the unwind edge (same reason as the eq slow path and
+    // emit_binop_dispatch): a user `__lt__` dispatch releases the operands via
+    // the callee frame + JitUnwindRelease, so a codegen guard would double-free.
     auto slowResult = emit_call(
         module_->getOrInsertFunction(ord_rt,
                                      builder_.getInt1Ty(),
@@ -16054,7 +16845,7 @@ struct JIT {
   // `a OPE b` or a chain `a < b < c …` = `(a<b) && (b<c) && …`. Each
   // middle operand is evaluated once (the rhs becomes the next lhs).
   // Short-circuits to false at the first failing link (Python semantics).
-  llvm::Value* compile_condition(const peg::Ast& ast) {
+  Owned compile_condition(const peg::Ast& ast) {
     Owned lhs = compile(*ast.nodes[0]);
     if (ast.nodes.size() == 3) {  // common single comparison — direct
       Owned rhs = compile(*ast.nodes[2]);
@@ -16062,19 +16853,33 @@ struct JIT {
       // a user __eq__/__lt__, which borrows too); the Owned handles release a
       // heap operand of an overloaded `<`/`==`/… once the i1 result is built.
       // Scalar operands release as a no-op.
-      return make_bool(
-          compile_comparison_i1(lhs.borrow(), rhs.borrow(),
-                                std::string(ast.nodes[1]->token)));
+      return own(make_bool(
+          emit_comparison_i1(lhs.borrow(), rhs.borrow(),
+                                std::string(ast.nodes[1]->token))));
     }
-    // Chain form `a < b < c` lowers to `(a<b) && (b<c)` with the later operands
-    // evaluated conditionally in the short-circuit blocks — they cross basic
-    // blocks and are created on only some paths, so a straight-line Owned can't
-    // release them correctly. A heap operand of a *chained* overloaded
-    // comparison still leaks here (a niche pre-existing gap); releasing it needs
-    // per-path scope machinery, deferred to the broader compile()→Owned work.
-    // consume() preserves the existing behavior exactly (no release).
-    llvm::Value* lhs_raw = lhs.consume();
+    // Chain form `a < b < c` lowers to `(a<b) && (b<c)` with the later
+    // operands evaluated conditionally in short-circuit blocks — each operand
+    // crosses basic blocks and is materialised on only some runtime paths, so
+    // a straight-line Owned can't release it. Instead every operand lives in
+    // an owned slot of a region scope (the compile_match subject pattern):
+    // slot allocas are entry-nil-initialised, so the shared merge releases
+    // exactly the operands the taken path materialised, and the region's
+    // cleanup pad does the same on a throw edge. `.`-joined slot names are
+    // unreachable by source code.
+    push_scope();
     auto fn = builder_.GetInsertBlock()->getParent();
+    auto chainCleanupBB =
+        llvm::BasicBlock::Create(ctx_, "cmpchain.cleanup", fn);
+    auto savedLpad = current_lpad_;
+    current_lpad_ = chainCleanupBB;
+    int slot_n = 0;
+    auto operand_slot = [&](llvm::Value* v) {
+      auto name = "cmpchain." + std::to_string(slot_n++);
+      auto slot = make_stack_slot(name, v);
+      define_var(name, slot);
+      return slot;
+    };
+
     llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
     auto resultAlloca = eb.CreateAlloca(builder_.getInt1Ty(), nullptr,
                                         "cmpchain.tmp");
@@ -16087,22 +16892,45 @@ struct JIT {
       builder_.CreateBr(endBB);
       builder_.restoreIP(saveIP);
     }
-    llvm::Value* prev = lhs_raw;
+    // The raws deliberately cross the chain's short-circuit blocks with the
+    // region's owned slots as their per-edge releaser (§4.3) — hence
+    // unchecked; the slot stores just below are what make that sound.
+    llvm::Value* prev = lhs.consume_unchecked();
+    VarSlot prevSlot = operand_slot(prev);
     for (size_t i = 1; i + 1 < ast.nodes.size(); i += 2) {
-      auto rhs = compile(*ast.nodes[i + 1]).consume();
-      auto cmp = compile_comparison_i1(prev, rhs,
+      auto rhs = compile(*ast.nodes[i + 1]).consume_unchecked();
+      // The comparison owns its two operands' throw edges (a direct type
+      // error releases them in the helper; a user __lt__/__eq__ throw
+      // releases the owner +1 via the invoker guard + callee frame — the
+      // same contract the 2-operand branch relies on). Blank prev's slot for
+      // exactly that call so the region pad doesn't double-release it; rhs
+      // is not slotted yet for the same reason. Each operand thus has one
+      // releaser per edge: the helper on its own throw, the region on every
+      // other path.
+      store_slot_raw(prevSlot, make_nil());
+      auto cmp = emit_comparison_i1(prev, rhs,
                                        std::string(ast.nodes[i]->token));
+      store_slot_raw(prevSlot, prev);
+      VarSlot rhsSlot = operand_slot(rhs);
       auto nextBB = llvm::BasicBlock::Create(ctx_, "cmpchain.next", fn);
       builder_.CreateCondBr(cmp, nextBB, falseBB);
       builder_.SetInsertPoint(nextBB);
       prev = rhs;
+      prevSlot = rhsSlot;
     }
     builder_.CreateStore(builder_.getInt1(true), resultAlloca);
     builder_.CreateBr(endBB);
     fn->insert(fn->end(), endBB);
     builder_.SetInsertPoint(endBB);
-    return make_bool(builder_.CreateLoad(builder_.getInt1Ty(), resultAlloca,
-                                         "cmpchain.r"));
+    auto chainResult = builder_.CreateLoad(builder_.getInt1Ty(), resultAlloca,
+                                           "cmpchain.r");
+    // Region close at the merge (the all-true fall-through and the
+    // short-circuit false edge both converge here): releases every
+    // materialised operand slot on the normal paths; the cleanup pad covers
+    // the throw edges of the operand compiles.
+    finish_and_pop_scope(chainCleanupBB, /*defer_mark=*/nullptr, savedLpad,
+                         "cmpchain.exc", savedLpad);
+    return own(make_bool(chainResult));
   }
 
   // --- Logical operators (short-circuit) ---
@@ -16111,8 +16939,17 @@ struct JIT {
   // fall through to the last" — the shared skeleton for `||` and `??`
   // (logical-and inverts the branch so doesn't share). `label` prefixes
   // generated block/slot names for readable IR.
+  //
+  // Ownership: the raw store below overwrites the previous candidate without
+  // a release, which looks like the comparison-chain leak but is not one —
+  // no heap +1 can be overwritten on any reachable path (GAP5-verified).
+  // For `||`/`&&`, `keep_if` is strict truthiness: a heap candidate throws
+  // TypeError in `to_bool`, which releases it (§4.7 callee-cleans), so only
+  // scalars proceed to be overwritten. For `??`, a heap candidate is never
+  // nil, so it is always kept (returned +1) — only a nil is replaced. The
+  // kept candidate's +1 escapes through the merge load as the result.
   template <class KeepPred>
-  llvm::Value* compile_short_circuit(const peg::Ast& ast, const char* label,
+  Owned compile_short_circuit(const peg::Ast& ast, const char* label,
                                      KeepPred keep_if) {
     auto fn = builder_.GetInsertBlock()->getParent();
     auto mergeBB = llvm::BasicBlock::Create(
@@ -16139,11 +16976,11 @@ struct JIT {
 
     fn->insert(fn->end(), mergeBB);
     builder_.SetInsertPoint(mergeBB);
-    return builder_.CreateLoad(
-        valueType_, resultAlloca, std::string(label) + ".result");
+    return own(builder_.CreateLoad(
+        valueType_, resultAlloca, std::string(label) + ".result"));
   }
 
-  llvm::Value* compile_nil_coalesce(const peg::Ast& ast) {
+  Owned compile_nil_coalesce(const peg::Ast& ast) {
     return compile_short_circuit(
         ast, "coal", [&](llvm::Value* v) {
           return builder_.CreateICmpNE(
@@ -16151,12 +16988,12 @@ struct JIT {
         });
   }
 
-  llvm::Value* compile_logical_or(const peg::Ast& ast) {
+  Owned compile_logical_or(const peg::Ast& ast) {
     return compile_short_circuit(
         ast, "or", [&](llvm::Value* v) { return value_to_bool(v); });
   }
 
-  llvm::Value* compile_logical_and(const peg::Ast& ast) {
+  Owned compile_logical_and(const peg::Ast& ast) {
     auto fn = builder_.GetInsertBlock()->getParent();
     auto mergeBB = llvm::BasicBlock::Create(ctx_, "and.merge");
 
@@ -16181,12 +17018,12 @@ struct JIT {
 
     fn->insert(fn->end(), mergeBB);
     builder_.SetInsertPoint(mergeBB);
-    return builder_.CreateLoad(valueType_, resultAlloca, "and.result");
+    return own(builder_.CreateLoad(valueType_, resultAlloca, "and.result"));
   }
 
   // --- Control flow ---
 
-  llvm::Value* compile_if(const peg::Ast& ast) {
+  Owned compile_if(const peg::Ast& ast) {
     auto fn = builder_.GetInsertBlock()->getParent();
     auto mergeBB = llvm::BasicBlock::Create(ctx_, "if.merge");
 
@@ -16233,14 +17070,14 @@ struct JIT {
 
     fn->insert(fn->end(), mergeBB);
     builder_.SetInsertPoint(mergeBB);
-    return builder_.CreateLoad(valueType_, resultAlloca, "if.result");
+    return own(builder_.CreateLoad(valueType_, resultAlloca, "if.result"));
   }
 
   // `cond { test => body, ..., _ => default }` — the value-producing
   // subjectless conditional. Same branch+phi shape as compile_if, but each
   // arm carries its own test (a `_` WILDCARD test is the unconditional
   // default; later arms after it are dead and skipped). nil when none match.
-  llvm::Value* compile_cond(const peg::Ast& ast) {
+  Owned compile_cond(const peg::Ast& ast) {
     using namespace peg::udl;
     auto fn = builder_.GetInsertBlock()->getParent();
     auto mergeBB = llvm::BasicBlock::Create(ctx_, "cond.merge");
@@ -16283,7 +17120,7 @@ struct JIT {
 
     fn->insert(fn->end(), mergeBB);
     builder_.SetInsertPoint(mergeBB);
-    return builder_.CreateLoad(valueType_, resultAlloca, "cond.result");
+    return own(builder_.CreateLoad(valueType_, resultAlloca, "cond.result"));
   }
 
   // Emit IR that tests whether `subject` matches `pattern`.
@@ -16716,7 +17553,13 @@ struct JIT {
       auto d = builder_.CreateLoad(builder_.getInt64Ty(), outData);
       llvm::Value* v = make_value(t, d);
       if (sub_pattern) {
-        // Full `key: PATTERN` form: recursively match the value.
+        // Full `key: PATTERN` form: recursively match the value. object_get
+        // hands back a BORROWED value, so an owning leaf sub-pattern (a bare
+        // name) needs its own +1 before it binds — otherwise the slot releases
+        // a ref it never owned (double-free once the source object is freed).
+        // Nested sub-patterns recurse on the borrow and retain their own
+        // leaves, so they don't take ownership here. Mirrors emit_indexed_pattern.
+        if (pattern_takes_ownership(*sub_pattern)) emit_value_retain(v);
         auto m = emit_pattern(*sub_pattern, v, is_mut);
         auto contBB = llvm::BasicBlock::Create(ctx_, "obj.cont", fn);
         builder_.CreateCondBr(m, contBB, failBB);
@@ -16803,6 +17646,12 @@ struct JIT {
       auto t = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
       auto d = builder_.CreateLoad(builder_.getInt64Ty(), outData);
       llvm::Value* v = make_value(t, d);
+      // object_get borrows; an owning leaf payload (`W(a)`) needs its own +1
+      // before binding, or its slot double-frees the payload once the enum
+      // object is released (deterministic under for-in's per-iteration release;
+      // latent elsewhere). Nested sub-patterns retain their own leaves. Mirrors
+      // emit_indexed_pattern / emit_object_pattern.
+      if (pattern_takes_ownership(*pattern.nodes[i])) emit_value_retain(v);
       auto m = emit_pattern(*pattern.nodes[i], v, is_mut);
       auto contBB2 = llvm::BasicBlock::Create(ctx_, "ctor.cont", fn);
       builder_.CreateCondBr(m, contBB2, failBB);
@@ -16823,7 +17672,7 @@ struct JIT {
     return phi;
   }
 
-  llvm::Value* compile_match(const peg::Ast& ast) {
+  Owned compile_match(const peg::Ast& ast) {
     using namespace peg::udl;
     auto fn = builder_.GetInsertBlock()->getParent();
     llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
@@ -16917,7 +17766,10 @@ struct JIT {
             module_->getFunction(rt::defer_mark), {}, "arm.mark");
       }
       current_lpad_ = arm_cleanupBB;
-      auto body_val = compile(body_node).consume();
+      // The arm value stays in its Owned across the defer-run below (an
+      // invoke — a throwing defer would strand a bare +1, §4.9): the window
+      // spills it around that call, and it is consumed into the store.
+      Owned body_owned = compile(body_node);
       // Restore the enclosing lpad for the normal-exit epilogue (its store /
       // defer-run must not unwind back into arm_cleanupBB).
       current_lpad_ = arm_savedLpad;
@@ -16930,8 +17782,11 @@ struct JIT {
         if (body_has_defer) {
           emit_call(module_->getFunction(rt::defer_run_to), {arm_mark});
         }
-        builder_.CreateStore(body_val, resultAlloca);
+        builder_.CreateStore(body_owned.consume(), resultAlloca);
         builder_.CreateBr(endBB);
+      } else {
+        // Dead residue in a terminated block: discard without emitting.
+        (void)body_owned.consume();
       }
       finish_scope_cleanup(arm_cleanupBB, scopes_.back(), arm_mark,
                            arm_savedLpad, "arm.exc");
@@ -16954,10 +17809,10 @@ struct JIT {
     // still live, then release it (subject drop fires here on the throw path).
     finish_and_pop_scope(subjCleanupBB, /*defer_mark=*/nullptr, savedOuterLpad,
                          "match.subj.exc", savedOuterLpad);
-    return result;
+    return own(result);
   }
 
-  llvm::Value* compile_while(const peg::Ast& ast) {
+  Owned compile_while(const peg::Ast& ast) {
     auto fn = builder_.GetInsertBlock()->getParent();
 
     auto condBB = llvm::BasicBlock::Create(ctx_, "while.cond", fn);
@@ -16991,8 +17846,8 @@ struct JIT {
     llvm::BasicBlock* savedLpad = current_lpad_;
     // Per-iteration throw-path cleanup: release this iteration's owned slots and
     // fire drop (mirroring pop_scope), run its defers, then re-raise. DCE'd when
-    // the body can't throw. (break/continue keep leaking their iteration slots
-    // to the backstop, as before — this only covers the exception edge.)
+    // the body can't throw. (break/continue release their iteration slots via
+    // emit_loop_scope_exit — GAP1; this covers the exception edge.)
     auto cleanupBB = llvm::BasicBlock::Create(ctx_, "while.body.cleanup", fn);
     if (has_defer) {
       mark = builder_.CreateCall(module_->getFunction(rt::defer_mark), {},
@@ -17000,7 +17855,7 @@ struct JIT {
     }
     current_lpad_ = cleanupBB;
 
-    loop_stack_.push_back({condBB, endBB, mark});
+    loop_stack_.push_back({condBB, endBB, mark, scopes_.size() - 1});
     // compile_statements returns the body block's final-statement value as an
     // owned (+1) temporary; a loop discards it every iteration, so release it
     // (else a body ending in a heap expression leaks one object per pass).
@@ -17022,7 +17877,7 @@ struct JIT {
     }
 
     builder_.SetInsertPoint(endBB);
-    return make_nil();
+    return own(make_nil());
   }
 
   // Branch to `target`, then switch the insert point to a fresh dead
@@ -17035,7 +17890,7 @@ struct JIT {
     builder_.SetInsertPoint(dead);
   }
 
-  llvm::Value* compile_break(const peg::Ast& ast) {
+  Owned compile_break(const peg::Ast& ast) {
     if (loop_stack_.empty()) {
       throw culebra::CulebraError("SyntaxError", "break outside loop",
                                   ast.line, ast.column);
@@ -17046,11 +17901,16 @@ struct JIT {
     if (auto* m = loop_stack_.back().defer_mark) {
       emit_call(module_->getFunction(rt::defer_run_to), {m});
     }
+    // Release the abandoned iteration's owned slots + resolve its owned region
+    // before leaving (GAP1). break's target already releases the loop's outer
+    // scope (the for-in iterable) at the loop end, so only the per-iteration
+    // scopes down to the body are ours to close here.
+    emit_loop_scope_exit(loop_stack_.back().body_scope_index);
     branch_then_dead(loop_stack_.back().break_target, "break.dead");
-    return make_nil();
+    return own(make_nil());
   }
 
-  llvm::Value* compile_continue(const peg::Ast& ast) {
+  Owned compile_continue(const peg::Ast& ast) {
     if (loop_stack_.empty()) {
       throw culebra::CulebraError("SyntaxError", "continue outside loop",
                                   ast.line, ast.column);
@@ -17060,11 +17920,15 @@ struct JIT {
     if (auto* m = loop_stack_.back().defer_mark) {
       emit_call(module_->getFunction(rt::defer_run_to), {m});
     }
+    // Release the iteration's owned slots + resolve its owned region before
+    // looping back (GAP1) — the continue target re-enters the loop header, so
+    // only the per-iteration scopes down to the body are abandoned.
+    emit_loop_scope_exit(loop_stack_.back().body_scope_index);
     branch_then_dead(loop_stack_.back().continue_target, "continue.dead");
-    return make_nil();
+    return own(make_nil());
   }
 
-  llvm::Value* compile_for(const peg::Ast& ast) {
+  Owned compile_for(const peg::Ast& ast) {
     using namespace peg::udl;
     auto& id = *ast.nodes[0];  // loop variable: IDENTIFIER or a pattern
     auto& iter_expr = *ast.nodes[1];
@@ -17091,7 +17955,7 @@ struct JIT {
         auto endBB = llvm::BasicBlock::Create(ctx_, "for.r.end", fn);
         compile_for_counted_range(startV, endV, lay.inclusive, id, body, endBB);
         builder_.SetInsertPoint(endBB);
-        return make_nil();
+        return own(make_nil());
       }
     }
 
@@ -17102,7 +17966,10 @@ struct JIT {
     // Without this the iterable leaked one reference per loop — and for an
     // array of heap elements, that pinned the whole array's contents alive.
     push_scope();
-    auto iterable = compile(iter_expr).consume();
+    // The slot defined just below is the +1's owner on every path (§4.3);
+    // the raw crossing the tag-dispatch arms after that is a borrow of the
+    // slot's value, so the block-pin check does not apply.
+    auto iterable = compile(iter_expr).consume_unchecked();
     auto iterSlot = make_stack_slot("for.iterable", iterable);
     define_var("for.iterable", iterSlot);  // '.' name: unreachable by source
     auto tag = extract_tag(iterable);
@@ -17228,7 +18095,7 @@ struct JIT {
     // through release_all_scopes_for_exit).
     finish_and_pop_scope(forCleanupBB, /*defer_mark=*/nullptr, savedLpad,
                          "for.iterable.exc", savedLpad);
-    return make_nil();
+    return own(make_nil());
   }
 
   // Bind `elemVal` to `var` (identifier or pattern) for a for-in body. Caller must
@@ -17252,9 +18119,11 @@ struct JIT {
         declare_local(std::string(var.token), elemVal);
       }
     } else {
-      // Destructuring loop variable: `for (i, x) in …`. emit_pattern
-      // consumes elemVal's +1 (binds sub-slots); a runtime shape
-      // mismatch throws, mirroring the interp's destructure error.
+      // Destructuring loop variable: `for (i, x) in …`. emit_pattern only
+      // *borrows* elemVal (leaf bindings retain their own sub-elements), so the
+      // per-iteration container's +1 (retained above) is ours to release once
+      // the destructure succeeds — else every iteration leaks the (k, v) pair
+      // tuple. A runtime shape mismatch throws, mirroring the interp's error.
       auto matched = emit_pattern(var, elemVal, /*is_mut=*/false);
       auto fn = builder_.GetInsertBlock()->getParent();
       auto okBB = llvm::BasicBlock::Create(ctx_, "for.destr.ok", fn);
@@ -17269,6 +18138,7 @@ struct JIT {
           {builder_.getInt64(var.line), builder_.getInt64(var.column)});
       builder_.CreateUnreachable();
       builder_.SetInsertPoint(okBB);
+      emit_value_release(elemVal);
     }
 
     // A defer in the body fires at the end of each iteration (docs §defer).
@@ -17298,7 +18168,7 @@ struct JIT {
     }
     current_lpad_ = cleanupBB;
 
-    loop_stack_.push_back({continue_bb, break_bb, mark});
+    loop_stack_.push_back({continue_bb, break_bb, mark, scopes_.size() - 1});
     // compile_statements hands back the body block's final-statement value as
     // an owned (+1) temporary; the loop discards it each iteration, so release
     // it (else a body ending in a heap expression — `for x in xs { f(x) }`,
@@ -17472,7 +18342,7 @@ struct JIT {
     builder_.CreateCondBr(hasDispose, disposeBB, skipBB);
 
     builder_.SetInsertPoint(disposeBB);
-    auto dispose_fn_val = compile_property_get(iterFinal, "dispose");
+    auto dispose_fn_val = emit_property_get(iterFinal, "dispose");
     // Hand the dispose frame its own +1 for `this` (same convention as the
     // iter() call in compile_for_protocol_loop) — the skipBB release below
     // frees the alloca's ref, not the frame's.
@@ -17577,23 +18447,27 @@ struct JIT {
     }
 
     // iter_val = obj.iter()
-    auto iter_fn_val = compile_property_get(objVal, "iter");
+    auto iter_fn_val = emit_property_get(objVal, "iter");
     emit_value_retain(objVal);  // handed off to `this` slot
-    auto iter_val = compile_function_call_raw(iter_fn_val, objVal, {});
+    Owned iter_owned = compile_function_call_raw(iter_fn_val, objVal, {});
 
     auto iterAlloca = entryB.CreateAlloca(valueType_, nullptr, "for.iter");
     entryB.CreateStore(llvm::ConstantAggregateZero::get(valueType_),
                        iterAlloca);
+    // The alloca owns the iterator from here (every exit path releases it);
+    // the raw deliberately crosses the property-get blocks below with the
+    // alloca slot as its per-edge releaser (§4.3) — hence unchecked.
+    llvm::Value* iter_val = iter_owned.consume_unchecked();
     builder_.CreateStore(iter_val, iterAlloca);
 
     // `has_next` + `next` are fixed for an iterator's lifetime — hoist
     // both lookups so each step is a pair of cached closure dispatches
     // rather than a per-iteration `find_slot`.
-    auto has_next_fn_val = compile_property_get(iter_val, "has_next");
+    auto has_next_fn_val = emit_property_get(iter_val, "has_next");
     auto has_next_cls_ptr =
         builder_.CreateIntToPtr(extract_data(has_next_fn_val), ptrTy,
                                 "has_next.cls");
-    auto next_fn_val = compile_property_get(iter_val, "next");
+    auto next_fn_val = emit_property_get(iter_val, "next");
     auto next_cls_ptr =
         builder_.CreateIntToPtr(extract_data(next_fn_val), ptrTy, "next.cls");
 
@@ -17719,7 +18593,7 @@ struct JIT {
 
   // --- Lexical scope ---
 
-  llvm::Value* compile_lexical_scope(const peg::Ast& ast) {
+  Owned compile_lexical_scope(const peg::Ast& ast) {
     bool has_defer = scope_has_defer_.contains(&ast);
 
     llvm::BasicBlock* savedLpad = current_lpad_;
@@ -17745,19 +18619,21 @@ struct JIT {
     // before any closure that captures them is built (the function-body
     // entry does the same — see pre_allocate_forward_refs).
     pre_allocate_forward_refs(ast);
-    llvm::Value* val = make_nil();
+    Owned val;
     for (auto& node : ast.nodes) {
       if (builder_.GetInsertBlock()->getTerminator()) break;
-      val = compile(*node).consume();
+      val.drop();  // release the previous child's result (single child in practice)
+      val = compile(*node);
     }
     // Statement-like: drop the block's final expression before
     // pop_scope so `drop` callbacks fire in true LIFO order (a retained
     // expression result would otherwise outlive the slot release).
     // Matches the interpreter's standalone-block semantics.
     if (!builder_.GetInsertBlock()->getTerminator()) {
-      emit_value_release(val);
+      val.drop();
+    } else {
+      val.consume();  // dead on a terminated path — no IR after a terminator
     }
-    val = make_nil();
 
     // Normal exit runs this scope's defers BEFORE releasing its slots, so
     // `defer` fires before `drop`, matching the interpreter (run_deferred then
@@ -17770,7 +18646,7 @@ struct JIT {
       emit_call(module_->getFunction(rt::defer_run_to), {mark});
     }
     finish_and_pop_scope(cleanupBB, mark, savedLpad, "scope.exc", savedLpad);
-    return val;
+    return own(make_nil());
   }
 
   // --- Function ---
@@ -17883,7 +18759,7 @@ struct JIT {
   // type_matches / dispatch can see it. Default method bodies are
   // compiled into JitClosures and stashed in `_jit_trait_default_impls`
   // for the property-access fallback path.
-  llvm::Value* compile_trait_decl(const peg::Ast& ast) {
+  Owned compile_trait_decl(const peg::Ast& ast) {
     using namespace peg::udl;
     size_t k = 0;
     k = culebra::first_non_decorator_index(ast);
@@ -17934,15 +18810,15 @@ struct JIT {
       if (tv.body) {
         // Compile the default-method body as a closure. analyze_fn_body
         // has already populated func_info_[&m] via visit_for_frees.
-        auto* fn_val_ir = compile_fn_common(
+        Owned fn_val = compile_fn_common(
             &m, *tv.params, tv.body, /*returnType=*/{},
             std::string(tv.name));
-        // fn_val_ir is a JitValue (struct {i8 tag, i64 data}); the data
+        // fn_val is a JitValue (struct {i8 tag, i64 data}); the data
         // is the JitClosure*. Pull it out and register the default into
         // the runtime trait-default table.
         auto ptrTy = llvm::PointerType::get(ctx_, 0);
         auto closure_data =
-            builder_.CreateExtractValue(fn_val_ir, /*idx=*/1, "td.data");
+            builder_.CreateExtractValue(fn_val.borrow(), /*idx=*/1, "td.data");
         auto closure_ptr =
             builder_.CreateIntToPtr(closure_data, ptrTy, "td.cls");
         auto trait_g = builder_.CreateGlobalString(
@@ -17950,6 +18826,7 @@ struct JIT {
         auto method_g = builder_.CreateGlobalString(
             std::string(tv.name),
             ".td." + trait_name + "." + std::string(tv.name));
+        fn_val.consume();  // the trait-default registry absorbs the +1
         emit_call(
             module_->getOrInsertFunction(
                 rt::register_trait_default,
@@ -17981,14 +18858,14 @@ struct JIT {
     // previous statement's result, and releasing an undef derefs garbage at
     // -O0 (Task #9). Other declarations (class/enum/multifn/import) already
     // return make_nil() for the same reason.
-    return make_nil();
+    return own(make_nil());
   }
 
   // `enum Name<T> { Ok(T), None }` — a namespace object bound under
   // `Name`. Each payload variant becomes a constructor closure (over the
   // shared variant-ctor thunk); each nullary variant is a singleton
   // instance built at decl time. Mirrors the interp eval_enum_decl.
-  llvm::Value* compile_enum_decl(const peg::Ast& ast) {
+  Owned compile_enum_decl(const peg::Ast& ast) {
     using namespace peg::udl;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto i64Ty = builder_.getInt64Ty();
@@ -18047,7 +18924,7 @@ struct JIT {
                         extract_data(ctorVal));
       }
     }
-    auto enumVal = make_object(enumObj);
+    Owned enumVal = own(make_object(enumObj));
 
     // @packable enum: register the fixed tagged-union layout at runtime (so
     // AOT sees it), emitting a `variant:type,type;...` spec. Lint already
@@ -18082,19 +18959,19 @@ struct JIT {
       // after the call (a let-bound closure decorator leaked one ref per
       // application without it; fn-decl callees load unretained and no-op).
       Owned decoCallee = compile(dec_expr);
-      enumVal =
-          compile_function_call_raw(decoCallee.borrow(), nullptr, {enumVal});
+      enumVal = compile_function_call_raw(decoCallee.borrow(), nullptr,
+                                          {enumVal.consume()});
     }
 
-    store_slot(enumSlot, enumVal);
-    return make_nil();
+    store_slot(enumSlot, enumVal.consume());
+    return own(make_nil());
   }
 
   // `class Name { new(...){...}  m(...){...} }` — compiles each method
   // plus the user-new body as regular closures, then emits a synthetic
   // constructor closure that delegates to the runtime instance builder.
   // `Name` binds the resulting namespace object in the current scope.
-  llvm::Value* compile_class_decl(const peg::Ast& ast) {
+  Owned compile_class_decl(const peg::Ast& ast) {
     using namespace peg::udl;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
 
@@ -18228,18 +19105,19 @@ struct JIT {
     // it (culebra_runtime_bind_method_value). Getters are never overloaded, so
     // the closure survives the multimethod grouping below unchanged; register
     // here where each maps 1:1 to its source method.
-    std::vector<llvm::Value*> method_vals;
+    std::vector<Owned> method_vals;
     method_vals.reserve(method_asts.size() + derive_methods.size());
     auto ptrTyReg = llvm::PointerType::get(ctx_, 0);
     for (auto* m : method_asts) {
-      auto mval = compile_function(*m);
+      Owned mval = compile_function(*m);
       if (culebra::view_method(*m).is_getter) {
-        auto closPtr = builder_.CreateIntToPtr(extract_data(mval), ptrTyReg);
+        auto closPtr =
+            builder_.CreateIntToPtr(extract_data(mval.borrow()), ptrTyReg);
         emit_call(module_->getOrInsertFunction(rt::register_getter,
                                                builder_.getVoidTy(), ptrTyReg),
                   {closPtr});
       }
-      method_vals.push_back(mval);
+      method_vals.push_back(std::move(mval));
     }
 
     // Group same-named instance-method overloads into one multimethod
@@ -18258,7 +19136,7 @@ struct JIT {
       // same compiled decl reuses the baked-in uid, so replacement still works.
       auto class_uid = multifn_uid_counter_++;
       std::vector<std::string> grouped_names;
-      std::vector<llvm::Value*> grouped_vals;
+      std::vector<Owned> grouped_vals;
       for (size_t a = 0; a < method_names.size(); a++) {
         if (std::find(grouped_names.begin(), grouped_names.end(),
                       method_names[a]) != grouped_names.end())
@@ -18268,7 +19146,7 @@ struct JIT {
           if (method_names[b] == method_names[a]) idxs.push_back(b);
         if (idxs.size() == 1) {
           grouped_names.push_back(method_names[a]);
-          grouped_vals.push_back(method_vals[a]);
+          grouped_vals.push_back(std::move(method_vals[a]));
         } else {
           // Key as `method\x1fClass#uid` — the per-decl uid keeps two
           // same-named classes in different scopes on separate tables.
@@ -18277,16 +19155,22 @@ struct JIT {
           regKey += class_name;
           regKey.push_back('#');
           regKey += std::to_string(class_uid);
-          llvm::Value* disp = nullptr;
+          Owned disp;
           for (size_t bi : idxs) {
-            auto bodyPtr =
-                builder_.CreateIntToPtr(extract_data(method_vals[bi]), ptrTy);
-            disp = emit_multifn_register(
+            auto bodyPtr = builder_.CreateIntToPtr(
+                extract_data(method_vals[bi].borrow()), ptrTy);
+            method_vals[bi].consume();  // the multimethod registry absorbs it
+            auto newDisp = emit_multifn_register(
                 regKey, bodyPtr, *culebra::view_method(*method_asts[bi]).params,
                 class_type_params_);
+            // Every registration hands back a +1 to the same shared dispatcher
+            // (the first creates it, the rest bump its refcount). Only the last
+            // is stored in the meta; the move-assign releases the earlier +1s
+            // so the dispatcher does not strand one reference per overload.
+            disp = own(newDisp);
           }
           grouped_names.push_back(method_names[a]);
-          grouped_vals.push_back(disp);
+          grouped_vals.push_back(std::move(disp));
         }
       }
       method_names = std::move(grouped_names);
@@ -18301,10 +19185,10 @@ struct JIT {
           module_->getOrInsertFunction(rt::make_derived_method, ptrTy,
                                        builder_.getInt64Ty()),
           {builder_.getInt64(kind)}, "derive.closure");
-      method_vals.push_back(make_func(closPtr));
+      method_vals.push_back(own(make_func(closPtr)));
       method_names.push_back(mname);
     }
-    llvm::Value* body_val = nullptr;
+    Owned body_val;
     size_t new_arity = 0;
     llvm::Constant* new_param_meta = nullptr;
     if (new_ast) {
@@ -18312,16 +19196,16 @@ struct JIT {
       new_arity = culebra::view_method(*new_ast).params->nodes.size();
     }
 
-    std::vector<llvm::Value*> static_vals;
+    std::vector<Owned> static_vals;
     static_vals.reserve(static_asts.size());
     for (auto* m : static_asts) {
       static_vals.push_back(compile_function(*m));
     }
 
-    std::vector<llvm::Value*> static_field_vals;
+    std::vector<Owned> static_field_vals;
     static_field_vals.reserve(static_field_asts.size());
     for (auto* m : static_field_asts) {
-      static_field_vals.push_back(compile(*m->nodes[2]).consume());
+      static_field_vals.push_back(compile(*m->nodes[2]));
     }
 
     // Build the shared class meta object once per class declaration:
@@ -18342,7 +19226,7 @@ struct JIT {
           auto slot = builder_.CreateInBoundsGEP(
               valueType_, methodSlab,
               {builder_.getInt64(static_cast<int64_t>(i))});
-          builder_.CreateStore(method_vals[i], slot);
+          builder_.CreateStore(method_vals[i].consume(), slot);
         }
         std::vector<llvm::Constant*> names;
         names.reserve(n_methods);
@@ -18366,7 +19250,7 @@ struct JIT {
            builder_.getInt64(static_cast<int64_t>(n_methods))},
           "class.meta");
     }
-    auto metaVal = make_object(metaPtr);
+    Owned metaVal = own(make_object(metaPtr));
 
     auto ctor_fn =
         emit_constructor_fn(class_name, new_ast != nullptr, new_arity);
@@ -18425,9 +19309,9 @@ struct JIT {
           {builder_.getInt64(static_cast<int64_t>(i))});
       builder_.CreateStore(cellPtr, dst);
     };
-    install_capture(0, metaVal);
-    if (body_val) {
-      install_capture(1, body_val);
+    install_capture(0, metaVal.consume());
+    if (body_val.borrow()) {
+      install_capture(1, body_val.consume());
     }
 
     // Wrap the constructor closure into a Value(TAG_FUNC) for storage.
@@ -18445,14 +19329,12 @@ struct JIT {
     emit_object_set(classObj, "new", /*mut=*/false, extract_tag(ctorVal),
                     extract_data(ctorVal));
     for (size_t i = 0; i < static_vals.size(); i++) {
-      emit_object_set(classObj, static_names[i], /*mut=*/false,
-                      extract_tag(static_vals[i]),
-                      extract_data(static_vals[i]));
+      emit_object_set_owned(classObj, static_names[i], /*mut=*/false,
+                            std::move(static_vals[i]));
     }
     for (size_t i = 0; i < static_field_vals.size(); i++) {
-      emit_object_set(classObj, static_field_names[i], /*mut=*/false,
-                      extract_tag(static_field_vals[i]),
-                      extract_data(static_field_vals[i]));
+      emit_object_set_owned(classObj, static_field_names[i], /*mut=*/false,
+                            std::move(static_field_vals[i]));
     }
     // @packable: register the fixed C-ABI layout and mark the class object
     // so SharedBuffer.new can recover the class name. Registration is
@@ -18475,7 +19357,7 @@ struct JIT {
       emit_object_set(classObj, "__packable__", /*mut=*/false,
                       extract_tag(markerVal), extract_data(markerVal));
     }
-    auto classVal = make_object(classObj);
+    Owned classVal = own(make_object(classObj));
 
     // Apply decorators (bottom-up): each takes the current class
     // value and returns the new one. Decorated class still ends up
@@ -18489,15 +19371,15 @@ struct JIT {
       const auto& dec_expr = *ast.nodes[i - 1]->nodes[0];
       // Borrowed-callee dispatch; see the enum decorator loop.
       Owned decoCallee = compile(dec_expr);
-      classVal =
-          compile_function_call_raw(decoCallee.borrow(), nullptr, {classVal});
+      classVal = compile_function_call_raw(decoCallee.borrow(), nullptr,
+                                           {classVal.consume()});
     }
 
     // Patch the pre-allocated cell with the real class namespace.
     // `store_slot` transfers `classVal`'s +1 into the cell; nothing
     // else here consumes the SSA value.
-    store_slot(classSlot, classVal);
-    return make_nil();
+    store_slot(classSlot, classVal.consume());
+    return own(make_nil());
   }
 
   // IMPORT_STMT: [IDENTIFIER, STRING]. The dependency was loaded and
@@ -18505,7 +19387,7 @@ struct JIT {
   // module's IR was emitted; the helper just pulls the export Object
   // back out, retains it for the importing scope, and the local cell
   // takes ownership.
-  llvm::Value* compile_import_stmt(const peg::Ast& ast) {
+  Owned compile_import_stmt(const peg::Ast& ast) {
     auto name = std::string(ast.nodes[0]->token);
     auto rel = std::string(ast.nodes[1]->token);
     if (current_module_path_.empty()) {
@@ -18541,7 +19423,7 @@ struct JIT {
                                      "mod.data.v");
     llvm::Value* v = make_value(tag, data);
     declare_local(name, v);
-    return make_nil();
+    return own(make_nil());
   }
 
   // After a dependency module's body has been compiled, walk its AST
@@ -18570,9 +19452,8 @@ struct JIT {
           // compile_identifier walks locals → builtin namespace and
           // raises NameError at runtime on a miss, matching interp's
           // env->get / NameError path in extract_export.
-          auto val = compile_identifier(*id);
-          emit_object_set(objPtr, name, /*mut=*/false,
-                          extract_tag(val), extract_data(val));
+          emit_object_set_owned(objPtr, name, /*mut=*/false,
+                                compile_identifier(*id));
         }
       }
     }
@@ -18664,7 +19545,7 @@ struct JIT {
     return make_func(dispatcherPtr);
   }
 
-  llvm::Value* compile_multifn_decl(const peg::Ast& ast) {
+  Owned compile_multifn_decl(const peg::Ast& ast) {
     using namespace peg::udl;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto i64Ty = builder_.getInt64Ty();
@@ -18704,36 +19585,37 @@ struct JIT {
     // compile_fn_common neutralizes `T` in the param type_checks (it
     // moves+clears class_type_params_, so nested fns don't inherit).
     class_type_params_ = mf_type_params;
-    auto bodyVal = compile_fn_common(&ast, *params_ast, body_ast, returnType,
-                                      name);
+    Owned bodyVal = compile_fn_common(&ast, *params_ast, body_ast, returnType,
+                                       name);
 
     // Decorated fns bypass the multimethod register/install path —
     // the decorator's return value is bound directly under `name`.
     if (has_decorators) {
-      llvm::Value* fnVal = bodyVal;
+      Owned fnVal = std::move(bodyVal);
       for (size_t i = dec_end; i > 0; --i) {
         const auto& dec_expr = *ast.nodes[i - 1]->nodes[0];
         // Borrowed-callee dispatch; see the enum decorator loop.
         Owned decoCallee = compile(dec_expr);
-        fnVal =
-            compile_function_call_raw(decoCallee.borrow(), nullptr, {fnVal});
+        fnVal = compile_function_call_raw(decoCallee.borrow(), nullptr,
+                                          {fnVal.consume()});
       }
       auto* existing = lookup_var(name);
       if (!existing) {
-        auto slot = make_cell_slot(name, fnVal);
+        auto slot = make_cell_slot(name, fnVal.consume());
         define_var(name, slot);
       } else {
-        store_slot(*existing, fnVal);
+        store_slot(*existing, fnVal.consume());
       }
-      return make_nil();
+      return own(make_nil());
     }
 
     auto bodyClosurePtr =
-        builder_.CreateIntToPtr(extract_data(bodyVal), ptrTy);
+        builder_.CreateIntToPtr(extract_data(bodyVal.borrow()), ptrTy);
 
     // Key the registry per lexical scope so a same-named `fn` in an
     // unrelated scope gets its own dispatcher + method table (interp
     // parity — see Scope::multifn_keys).
+    bodyVal.consume();  // the multimethod registry absorbs the body's +1
     auto dispatcherVal = emit_multifn_register(
         multifn_scope_key(name), bodyClosurePtr, *params_ast, mf_type_params);
 
@@ -18750,10 +19632,10 @@ struct JIT {
       define_var(name, slot);
     }
 
-    return make_nil();
+    return own(make_nil());
   }
 
-  llvm::Value* compile_function(const peg::Ast& ast,
+  Owned compile_function(const peg::Ast& ast,
                                 llvm::Constant** outParamMeta = nullptr) {
     using namespace peg::udl;
     // FUNCTION: [PARAMETERS, (RETURN_TYPE)?, BLOCK]
@@ -18781,7 +19663,7 @@ struct JIT {
   // LAMBDA ast: [LAMBDA_PARAMS, BODY]. No declared return type. BODY
   // is a single EXPRESSION (grammar restricts lambdas to expression
   // bodies; use `fn (...) { ... }` for block bodies).
-  llvm::Value* compile_lambda(const peg::Ast& ast) {
+  Owned compile_lambda(const peg::Ast& ast) {
     auto fv = culebra::view_lambda(ast);
     return compile_fn_common(&ast, *fv.params, fv.body, fv.return_type, {});
   }
@@ -18789,7 +19671,7 @@ struct JIT {
   // Emit the LLVM function for a FUNCTION / METHOD / synthetic-ctor AST.
   // `info_key` matches what `analyze_fn_common` used, so `func_info_`
   // lookup finds the free-var / captured-local sets.
-  llvm::Value* compile_fn_common(
+  Owned compile_fn_common(
       const peg::Ast* info_key,
       const peg::Ast& params_ast,
       std::shared_ptr<peg::Ast> body_ast,
@@ -19016,6 +19898,22 @@ struct JIT {
       builder_.CreateCondBr(tooFew, errBB, okBB);
 
       builder_.SetInsertPoint(errBB);
+      // callee-cleans-on-direct-binding-error: this arity check runs in the
+      // prologue *before* `this`/params enter the frame's cleanup scope, so
+      // the fn.cleanup landingpad releases nothing on this throw. The +1s the
+      // caller transferred — the receiver `this` and every passed positional
+      // — would otherwise strand (a ctor receiver stranding on `C.new()`, a
+      // method receiver on `obj.m()` with a missing arg). Release them here,
+      // matching the in-body throw path where the slot cleanup does the same.
+      // (For a ctor body, build_class_instance also holds a +1 it releases in
+      // its own catch — this drops the slot-consume +1, so together the count
+      // reaches zero exactly once.)
+      emit_value_release(thisArg);
+      emit_call(
+          module_->getOrInsertFunction(
+              rt::release_overflow_args, builder_.getVoidTy(), ptrTy,
+              builder_.getInt64Ty(), builder_.getInt64Ty()),
+          {argsArg, builder_.getInt64(0), nArgsArg});
       // Build a constant char* array of declared param names so the
       // runtime can name the first missing slot ("missing required
       // argument 'X'"). Matches interp's bind_call_args message.
@@ -19147,9 +20045,9 @@ struct JIT {
             slotTag, builder_.getInt8(TAG_UNFILLED), name + ".unf");
         builder_.CreateCondBr(isUnfilled, defBB, takeBB);
 
+        OwnedPhi merge(this, name + ".phi");
         builder_.SetInsertPoint(takeBB);
-        auto fromArgs = builder_.CreateLoad(valueType_, slotPtr, name);
-        auto takeEndBB = builder_.GetInsertBlock();
+        merge.add_incoming(builder_.CreateLoad(valueType_, slotPtr, name));
         builder_.CreateBr(mergeBB);
 
         builder_.SetInsertPoint(defBB);
@@ -19157,15 +20055,14 @@ struct JIT {
         // caller transfers into the arg slab for a passed argument — so the
         // slot below absorbs it directly. An extra retain here would leak the
         // default's +1 (the slot only releases one ref at scope exit).
-        auto defVal = compile(*paramDefaults[i]).consume();
-        auto defEndBB = builder_.GetInsertBlock();
+        merge.add_incoming(compile(*paramDefaults[i]));
         builder_.CreateBr(mergeBB);
 
         builder_.SetInsertPoint(mergeBB);
-        auto phi = builder_.CreatePHI(valueType_, 2, name + ".phi");
-        phi->addIncoming(fromArgs, takeEndBB);
-        phi->addIncoming(defVal, defEndBB);
-        argVal = phi;
+        // The merged +1 crosses the remaining prologue emissions (type
+        // check) into declare_local, which absorbs it (§4.7 transfer) — the
+        // pre-existing prologue choreography, hence unchecked.
+        argVal = merge.finish(mergeBB).consume_unchecked();
       }
       if (!paramTypeNames[i].empty()) {
         if (paramErrPos[i].first) {
@@ -19254,7 +20151,12 @@ struct JIT {
       if (!paramPatterns[i]) continue;
       auto slot = lookup_var(paramNames[i]);
       if (!slot) continue;
-      auto val = load_slot(*slot, paramNames[i]);
+      // Borrow the synthetic slot's value: emit_pattern only reads the subject
+      // (leaf bindings retain their own elements), and the owned synthetic slot
+      // keeps the tuple alive until scope exit, where it is released. A
+      // retaining load_slot here adds a +1 that nothing consumes or releases —
+      // a per-call leak of the destructured argument.
+      auto val = load_slot_raw(*slot, paramNames[i]);
       auto matched = emit_pattern(*paramPatterns[i], val, /*is_mut=*/false);
       auto pfn = builder_.GetInsertBlock()->getParent();
       auto okBB = llvm::BasicBlock::Create(ctx_, "param.destr.ok", pfn);
@@ -19276,7 +20178,13 @@ struct JIT {
     // pre-allocated cells. See `pre_allocate_forward_refs` doc.
     pre_allocate_forward_refs(*body_ast);
 
-    auto bodyVal = compile(*body_ast).consume();
+    // The body's result stays in its Owned across the epilogue: the scope
+    // teardown below branches through owned.exit/owned.cont blocks, so a
+    // bare +1 would cross them (§4.9) — it is consumed directly into the
+    // ret. (On the unfixable niche path — a drop that throws during a
+    // *normal* return, which propagates out of the frame with no pad — the
+    // value still strands; see the current_lpad_ note below.)
+    Owned bodyOwned = compile(*body_ast);
 
     // The body is done: the normal-exit epilogue below is not an unwind, so its
     // scope-exit owned-region resolution runs as a plain call, not an invoke
@@ -19289,7 +20197,7 @@ struct JIT {
 
     if (!builder_.GetInsertBlock()->getTerminator()) {
       if (!returnType.empty()) {
-        emit_type_check(bodyVal, returnType, "return value");
+        emit_type_check(bodyOwned.borrow(), returnType, "return value");
       }
       // Run function-level defers before returning.
       if (fnMark) {
@@ -19297,8 +20205,14 @@ struct JIT {
             module_->getFunction(rt::defer_run_to), {fnMark});
       }
       release_all_scopes_for_exit();
-      builder_.CreateStore(bodyVal, current_sret_);
+      builder_.CreateStore(bodyOwned.consume(), current_sret_);
       builder_.CreateRetVoid();
+    } else {
+      // The body ended in its own terminator (return/throw): the compiled
+      // value is dead residue in a terminated block — discard without
+      // emitting a release (the dtor would place invalid IR after the
+      // terminator). The unconverted consume() result carries no check.
+      (void)bodyOwned.consume();
     }
 
     // Throw-path cleanup landingpad for the function frame. Runs any fn-level
@@ -19314,7 +20228,11 @@ struct JIT {
       // body with no try/defer had none set at creation (has_eh gates that).
       // Idempotent.
       if (!fn->hasPersonalityFn()) fn->setPersonalityFn(get_personality_fn());
+      UnwindCleanupEmission cleanup_scope(this);
       emit_catch_all_prologue(fnCleanupBB, "fn.exc");
+      // In-flight expression temporaries first (§4.8), then the frame's
+      // defers and slots — the same order as finish_scope_cleanup.
+      release_unwind_temps();
       if (fnMark) {
         builder_.CreateCall(
             module_->getFunction(rt::defer_run_to), {fnMark});
@@ -19349,7 +20267,7 @@ struct JIT {
         std::string(declName), std::string(returnType), paramMuts,
         paramTypeNames, paramDeclaredTypeNames, cbMin, cbMax);
     if (outParamMeta) *outParamMeta = paramMeta;
-    return emit_closure_build(fn, info, paramNames.size(), paramMeta);
+    return own(emit_closure_build(fn, info, paramNames.size(), paramMeta));
   }
 
   // Emit module-level globals describing this function's parameter
@@ -19683,7 +20601,7 @@ struct JIT {
   // Resolve `obj.name` read AS A VALUE (no call parens): fire a getter, bind a
   // plain method's `this` (interp's _wrap_method_with_this), or pass a data
   // field / introspection result through. `.name`/`.params`/`.return_type`
-  // route to getter_or_value because compile_property_get's fn_mode returns a
+  // route to getter_or_value because emit_property_get's fn_mode returns a
   // +1-OWNED `view` for them; every other name yields a BORROWED `view` and
   // routes to bind_method_value. Both return a fresh +1-owned value, so the
   // caller does `own(...)` (the move-assign releases the receiver). Shared by
@@ -19691,6 +20609,10 @@ struct JIT {
   llvm::Value* emit_property_value_read(llvm::Value* receiver,
                                         llvm::Value* view,
                                         const std::string& name) {
+    // §4.7 invoker-cleans: a getter body's throw is cleaned by the invoke
+    // helper's unwind guard, which releases the owner-side receiver +1 —
+    // exclude it from the unwind-temp window.
+    UnwindCovered cover(this, {receiver});
     bool intro =
         (name == "name" || name == "params" || name == "return_type");
     auto i8Ty = builder_.getInt8Ty();
@@ -19710,7 +20632,7 @@ struct JIT {
         intro ? "getter.or.value" : "bind.method");
   }
 
-  llvm::Value* compile_call(const peg::Ast& ast) {
+  Owned compile_call(const peg::Ast& ast) {
     using namespace peg::udl;
     auto calleeNode = ast.nodes[0];
     CallRootSaver call_root(*this, ast);
@@ -19763,27 +20685,41 @@ struct JIT {
           // so a local closure that had ever been called could not die by
           // refcount — its captures (and any drop-having resource in
           // them) waited for the GC backstop instead of scope exit.
-          llvm::Value* result;
-          if (fnAst && !has_dynamic_splat && need_kwarg_path) {
-            result = compile_function_call_with_kwargs(
-                postfix, callee.borrow(), *fnAst);
-          } else {
-            result = compile_function_call(postfix, callee.borrow());
+          // The move-assign covers only the *normal* path: the callee frame
+          // borrows its closure (it never releases `__cls__` — it reads
+          // captures through it), so on a throw out of the callee (or out of
+          // an argument expression) nothing releases the borrowed closure. A
+          // ThrowGuard releases it on the unwind edge; the two paths are
+          // mutually exclusive so the closure frees exactly once. Guarding
+          // here — where the rolling handle proves we own the +1 — rather than
+          // inside compile_function_call_raw is deliberate: that raw helper is
+          // also reached with a +0-borrowed method value, which a guard would
+          // double-free (docs/jit_ownership.md §4.3).
+          Owned result;
+          {
+            ThrowGuard guard(this, {callee.borrow()});
+            if (fnAst && !has_dynamic_splat && need_kwarg_path) {
+              result = compile_function_call_with_kwargs(
+                  postfix, callee.borrow(), *fnAst);
+            } else {
+              result = compile_function_call(postfix, callee.borrow());
+            }
           }
-          callee = own(result);
+          callee = std::move(result);
           break;
         }
         case "INDEX"_: {
-          // INDEX/DOT return borrowed slot values; emit_index_step promotes
-          // a point index to +1 (so chained `a.b[i].c` doesn't over-release
-          // the intermediate) and slices `a..b` into a fresh owned value.
-          callee = own(emit_index_step(postfix, callee.consume()));
+          // emit_index_step returns a +1-owned value for both a point index
+          // (emit_point_index is uniformly +1) and a slice, releasing the
+          // receiver — so a chained `a.b[i].c` neither over-releases nor
+          // leaks the intermediate.
+          callee = own(emit_index_step(postfix, std::move(callee)));
           break;
         }
         case "SAFE_INDEX"_: {
           // `a?[k]` — nil receiver short-circuits the chain to nil.
           emit_safe_nav_guard(callee.borrow(), sn);
-          callee = own(emit_index_step(postfix, callee.consume()));
+          callee = own(emit_index_step(postfix, std::move(callee)));
           break;
         }
         case "SAFE_DOT"_:
@@ -19800,23 +20736,32 @@ struct JIT {
             // (Not applied to `?.map` — the receiver was just nil-guarded
             // and the fused path doesn't thread that.)
             if (method == "map" && postfix.original_tag == "DOT"_) {
-              // Declines on AST shape alone (no receiver IR emitted), so a
-              // null result leaves the +1 untouched; a hit consumed it.
+              // The fused emission hands the receiver's +1 to exactly one
+              // runtime consumer per arm, so consume() BEFORE emitting: a
+              // stale-live handle would let the unwind-temp window (§4.8)
+              // spill a value the emitted code already released. Declines on
+              // AST shape alone (no IR emitted), so re-owning on null is
+              // sound.
+              auto rawCallee = callee.consume();
               if (auto fused =
-                      try_fuse_iter_map_collect(ast, i, callee.borrow())) {
-                callee.consume();
+                      try_fuse_iter_map_collect(ast, i, rawCallee)) {
                 callee = own(*fused);
                 i += 3;  // consume ARGUMENTS, DOT(collect), ARGUMENTS
                 break;
               }
+              callee = own(rawCallee);
             }
-            callee = own(compile_method_call(method, *ast.nodes[i + 1],
-                                             std::move(callee), &postfix));
+            callee = compile_method_call(method, *ast.nodes[i + 1],
+                                         std::move(callee), &postfix);
             i++;  // consume ARGUMENTS
           } else {
             auto name = std::string(postfix.token);
             auto receiver = callee.borrow();
-            auto view = compile_property_get(receiver, name);
+            // The rolling handle owns the receiver's +1; a direct-error throw
+            // out of the cold read path (dropped Shared view, closed namespace)
+            // would strand it, so let the helper release it on the unwind edge.
+            auto view = emit_property_get(receiver, name,
+                                             /*own_receiver=*/true);
             // Capture own-slot presence before the receiver is released below.
             auto hasOwn = emit_has_own_field(receiver, name);
             callee = own(emit_property_value_read(receiver, view, name));
@@ -19833,7 +20778,7 @@ struct JIT {
       }
     }
 
-    return end_safe_nav(sn, callee.consume());
+    return own(end_safe_nav(sn, callee.consume()));
   }
 
   // Get a property from an object (TAG_OBJECT required).
@@ -19845,8 +20790,16 @@ struct JIT {
   // path: call `culebra_runtime_object_get_ic`, which looks up the
   // shape and refreshes the IC. Layout assumption: std::vector's first
   // member is its data pointer (true on libc++/libstdc++/MSVC STL).
-  llvm::Value* compile_property_get(llvm::Value* receiver,
-                                    const std::string& name) {
+  llvm::Value* emit_property_get(llvm::Value* receiver,
+                                    const std::string& name,
+                                    bool own_receiver = false) {
+    // §4.7: with own_receiver the slow-path helper (culebra_runtime_prop_get)
+    // is the sole releaser of the receiver on its direct-error unwind edge —
+    // exclude it from the unwind-temp window. A borrow caller's receiver
+    // (own_receiver=false) keeps its own cleaner and needs no window either
+    // way; covering only the owning form keeps the declaration precise.
+    std::optional<UnwindCovered> cover;
+    if (own_receiver) cover.emplace(this, std::initializer_list<llvm::Value*>{receiver});
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto i8Ty = builder_.getInt8Ty();
     auto i64Ty = builder_.getInt64Ty();
@@ -19861,28 +20814,27 @@ struct JIT {
     bool fn_mode =
         name == "name" || name == "params" || name == "return_type";
     llvm::BasicBlock* finalMergeBB = nullptr;
-    llvm::BasicBlock* fnEnd = nullptr;
-    llvm::Value* introResult = nullptr;
+    std::optional<OwnedPhi> finalMerge;
     if (fn_mode) {
       auto isFn =
           builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_FUNC), "is.fn");
       auto fnBB = llvm::BasicBlock::Create(ctx_, "prop.fn", fn);
       auto notFnBB = llvm::BasicBlock::Create(ctx_, "prop.not_fn", fn);
       finalMergeBB = llvm::BasicBlock::Create(ctx_, "prop.final", fn);
+      finalMerge.emplace(this, "prop.result");
       builder_.CreateCondBr(isFn, fnBB, notFnBB);
 
       builder_.SetInsertPoint(fnBB);
       auto clsPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
       auto keyPtr = builder_.CreateGlobalString(name, ".fn.prop");
-      introResult = emit_value_call(
+      // Caller (compile_call_with_builtins) runs swap_owned on the
+      // returned value, which retains the introspection result and releases
+      // the original receiver. The Object path leaves receiver alive too —
+      // mirror that contract here.
+      finalMerge->add_incoming(emit_value_call(
           module_->getOrInsertFunction(rt::fn_introspect_get,
                                        valueType_, ptrTy, ptrTy),
-          {clsPtr, keyPtr}, "fn.intro");
-      // Caller (compile_call_with_builtins) runs swap_owned on the
-      // returned value, which retains `introResult` and releases the
-      // original receiver. The Object path leaves receiver alive too —
-      // mirror that contract here.
-      fnEnd = builder_.GetInsertBlock();
+          {clsPtr, keyPtr}, "fn.intro"));
       builder_.CreateBr(finalMergeBB);
 
       builder_.SetInsertPoint(notFnBB);
@@ -19968,9 +20920,10 @@ struct JIT {
     auto slowResult = emit_value_call(
         module_->getOrInsertFunction(rt::prop_get, valueType_,
                                      i8Ty, i64Ty, ptrTy, ptrTy,
-                                     i64Ty, i64Ty),
+                                     i64Ty, i64Ty, builder_.getInt1Ty()),
         {tag, recvData, keyPtr, icGlobal,
-         current_line_val(), current_column_val()},
+         current_line_val(), current_column_val(),
+         builder_.getInt1(own_receiver)},
         "prop.slow");
     auto slowTag = extract_tag(slowResult);
     auto slowData = extract_data(slowResult);
@@ -19999,20 +20952,17 @@ struct JIT {
       // owned → premature free → heap corruption. Scalars no-op (tag-aware),
       // which is why this only surfaced for object-valued fields.
       emit_value_retain(result);
-      auto objEnd = builder_.GetInsertBlock();
+      finalMerge->add_incoming(own(result));
       builder_.CreateBr(finalMergeBB);
       builder_.SetInsertPoint(finalMergeBB);
-      auto finalPhi = builder_.CreatePHI(valueType_, 2, "prop.result");
-      finalPhi->addIncoming(introResult, fnEnd);
-      finalPhi->addIncoming(result, objEnd);
-      return finalPhi;
+      return finalMerge->finish(finalMergeBB).consume();
     }
     return result;
   }
 
-  llvm::Value* compile_index_access(const peg::Ast& idxAst,
+  Owned compile_index_access(const peg::Ast& idxAst,
                                     llvm::Value* arr) {
-    return emit_point_index(arr, compile(idxAst).consume());
+    return own(emit_point_index(arr, compile(idxAst).consume()));
   }
 
   // Point index `arr[key]` — Array/Tuple by Long, Object by Value key.
@@ -20045,6 +20995,14 @@ struct JIT {
     builder_.CreateCondBr(isObj, objBB, errBB);
 
     builder_.SetInsertPoint(errBB);
+    // Non-indexable receiver (Set, String, …): release the owned receiver and
+    // key before the direct type error. emit_point_index consumes `key` on
+    // every returning path (callers never release it), but neither the array
+    // nor object arm runs here, so a heap key (`aSet[{a:1}]`) would strand.
+    // type_error_typed reads only the already extracted `tag` (never derefs a
+    // value), so release-before-throw is safe; non-refcounted values no-op.
+    emit_value_release(arr);
+    emit_value_release(key);
     emit_type_error_typed("Array", tag);
     builder_.CreateUnreachable();
 
@@ -20054,27 +21012,46 @@ struct JIT {
     auto outTag = entryB.CreateAlloca(i8Ty, nullptr, "idx.out.tag");
     auto outData = entryB.CreateAlloca(i64Ty, nullptr, "idx.out.data");
 
-    // Array path: index by Long.
+    // Array path: index by Long. value_to_long (non-Long key) and array_get
+    // (out-of-bounds) both raise a *direct* error — no user dispatch — so the
+    // borrowed receiver strands on the unwind edge. Guard it there; the caller
+    // releases it on the normal path (swap_owned), so it frees exactly once.
+    // `key` is guarded too: the Array/Tuple path never releases it (a valid
+    // index is a non-refcounted Long — a no-op), but a heap key (`arr[[9]]`)
+    // that trips value_to_long's type error would otherwise strand.
     builder_.SetInsertPoint(arrBB);
-    auto arrPtr = builder_.CreateIntToPtr(extract_data(arr), ptrTy);
-    auto idx = value_to_long(key);
-    emit_call(
-        module_->getOrInsertFunction(
-            rt::array_get, builder_.getVoidTy(), ptrTy, i64Ty, ptrTy,
-            ptrTy, i64Ty, i64Ty),
-        {arrPtr, idx, outTag, outData, current_line_val(),
-         current_column_val()});
+    {
+      ThrowGuard arr_guard(this, {arr, key});
+      auto arrPtr = builder_.CreateIntToPtr(extract_data(arr), ptrTy);
+      auto idx = value_to_long(key);
+      emit_call(
+          module_->getOrInsertFunction(
+              rt::array_get, builder_.getVoidTy(), ptrTy, i64Ty, ptrTy,
+              ptrTy, i64Ty, i64Ty),
+          {arrPtr, idx, outTag, outData, current_line_val(),
+           current_column_val()});
+    }
+    // array_get borrows the element slot; retain so emit_point_index returns a
+    // uniformly +1-owned result (the object path's object_get_any already does).
+    // Callers then just release the receiver, never re-retaining — the old
+    // "promote borrowed via retain" model double-counted the object path (a
+    // fresh SharedBuffer view leaked, a dict slot's refcount inflated).
+    emit_value_retain(make_value(builder_.CreateLoad(i8Ty, outTag),
+                                 builder_.CreateLoad(i64Ty, outData)));
     builder_.CreateBr(mergeBB);
 
-    // Object path: look up by Value key in the non-String sidecar.
+    // Object path: look up by Value key in the non-String sidecar. object_get_any
+    // owns the receiver on its *direct* KeyError edge (own_receiver=true) — a
+    // user `__index__` dispatch is exempt there (its callee frame already
+    // balances the receiver), so a codegen guard is unusable on this path.
     builder_.SetInsertPoint(objBB);
     auto objPtr = builder_.CreateIntToPtr(extract_data(arr), ptrTy);
     emit_call(
         module_->getOrInsertFunction(
             rt::object_get_any, builder_.getVoidTy(), ptrTy, i8Ty, i64Ty,
-            ptrTy, ptrTy, i64Ty, i64Ty),
+            ptrTy, ptrTy, i64Ty, i64Ty, builder_.getInt1Ty()),
         {objPtr, extract_tag(key), extract_data(key), outTag, outData,
-         current_line_val(), current_column_val()});
+         current_line_val(), current_column_val(), builder_.getInt1(true)});
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(mergeBB);
@@ -20094,12 +21071,20 @@ struct JIT {
     llvm::IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
     auto outTag = entryB.CreateAlloca(i8Ty, nullptr, "slice.out.tag");
     auto outData = entryB.CreateAlloca(i64Ty, nullptr, "slice.out.data");
-    emit_call(
-        module_->getOrInsertFunction(
-            rt::slice, builder_.getVoidTy(), i8Ty, i64Ty, i64Ty, ptrTy,
-            ptrTy, i64Ty, i64Ty),
-        {extract_tag(receiver), extract_data(receiver), extract_data(range),
-         outTag, outData, current_line_val(), current_column_val()});
+    {
+      // culebra_runtime_slice throws a direct "expected Array" type error for a
+      // non-sliceable receiver (no user dispatch), stranding the borrowed
+      // receiver and the codegen-owned range temp on the unwind edge — the
+      // caller (emit_index_step) releases both only on the normal path. Guard
+      // both so a slice on a non-sliceable receiver frees exactly once.
+      ThrowGuard guard(this, {receiver, range});
+      emit_call(
+          module_->getOrInsertFunction(
+              rt::slice, builder_.getVoidTy(), i8Ty, i64Ty, i64Ty, ptrTy,
+              ptrTy, i64Ty, i64Ty),
+          {extract_tag(receiver), extract_data(receiver), extract_data(range),
+           outTag, outData, current_line_val(), current_column_val()});
+    }
     auto tagLoaded = builder_.CreateLoad(i8Ty, outTag);
     auto dataLoaded = builder_.CreateLoad(i64Ty, outData);
     llvm::Value* result = make_value(tagLoaded, dataLoaded);
@@ -20118,17 +21103,25 @@ struct JIT {
   }
 
   // Apply one INDEX/SAFE_INDEX postfix to `receiver`, returning the new
-  // value and releasing `receiver`. A range index slices (fresh owned
-  // result); a point index borrows a slot and is promoted via retain.
-  llvm::Value* emit_index_step(const peg::Ast& postfix, llvm::Value* receiver) {
+  // value and releasing `receiver`. Both a range index (slice) and a point
+  // index (emit_point_index) return a fresh +1-owned result, so the receiver
+  // is simply released — never swapped-owned into the result.
+  llvm::Value* emit_index_step(const peg::Ast& postfix, Owned receiverH) {
     using namespace peg::udl;
+    // The receiver arrives as Owned so the unwind-temp window covers it while
+    // the key expression compiles (`mk()[boom()]` used to strand it); it is
+    // consumed into the raw dispatch below, whose arms keep the pre-existing
+    // release choreography.
     // Literal range index (`xs[1..3]`, `xs[2..]`, `xs[..]`): statically
-    // known — `key` is a fresh owned Range temp, released after slicing.
+    // known — `key` is a fresh owned Range temp, dropped after slicing.
+    // Both stay Owned across the slice call (it may throw; the window
+    // releases them on that edge) and the drops land where the hand-placed
+    // releases used to.
     if (postfix.tag == "RANGE"_ || postfix.tag == "RANGE_OPERATOR"_) {
-      auto key = compile(postfix).consume();
-      auto result = emit_slice_value(receiver, key);
-      emit_value_release(receiver);
-      emit_value_release(key);
+      Owned key = compile(postfix);
+      auto result = emit_slice_value(receiverH.borrow(), key.borrow());
+      receiverH.drop();
+      key.drop();
       return result;
     }
     // Non-literal index: compile once (`key` is +1 owned), then branch at
@@ -20136,8 +21129,13 @@ struct JIT {
     // point key. The slice path only reads `key` (so it releases it); the
     // point path's emit_point_index consumes `key` (object_get_any), so it
     // must not.
-    auto key = compile(postfix).consume();
-    auto cond = emit_is_range(key);
+    Owned keyH = compile(postfix);
+    auto cond = emit_is_range(keyH.borrow());
+    // Raw handoff into the mutually-exclusive dispatch arms below (§4.7,
+    // the consume_all pattern): each arm is the sole releaser of both +1s
+    // on its runtime path, so the block-pin check does not apply.
+    auto key = keyH.consume_unchecked();
+    auto receiver = receiverH.consume_unchecked();
     auto fn = builder_.GetInsertBlock()->getParent();
     auto sliceBB = llvm::BasicBlock::Create(ctx_, "idx.slice", fn);
     auto pointBB = llvm::BasicBlock::Create(ctx_, "idx.point", fn);
@@ -20145,27 +21143,27 @@ struct JIT {
     builder_.CreateCondBr(cond, sliceBB, pointBB);
 
     // Slice path: `key` (the range value) is read-only, so release it here;
-    // the result is fresh owned.
+    // the result is fresh owned (held in an Owned across the releases so
+    // the window covers a throwing drop).
+    OwnedPhi merge(this, "idx.r");
     builder_.SetInsertPoint(sliceBB);
-    auto sliceRes = emit_slice_value(receiver, key);
+    Owned sliceRes = own(emit_slice_value(receiver, key));
     emit_value_release(receiver);
     emit_value_release(key);
-    auto sliceEnd = builder_.GetInsertBlock();
+    merge.add_incoming(std::move(sliceRes));
     builder_.CreateBr(doneBB);
 
-    // Point path: borrowed slot -> promote (retain result, release receiver).
-    // emit_point_index consumes `key`, so it is not released here.
+    // Point path: emit_point_index returns +1-owned, so just release the
+    // receiver (no re-retain). emit_point_index consumes `key`, so it is not
+    // released here.
     builder_.SetInsertPoint(pointBB);
-    auto pointRes = emit_point_index(receiver, key);
-    emit_value_swap_owned(pointRes, receiver);
-    auto pointEnd = builder_.GetInsertBlock();
+    Owned pointRes = own(emit_point_index(receiver, key));
+    emit_value_release(receiver);
+    merge.add_incoming(std::move(pointRes));
     builder_.CreateBr(doneBB);
 
     builder_.SetInsertPoint(doneBB);
-    auto phi = builder_.CreatePHI(valueType_, 2);
-    phi->addIncoming(sliceRes, sliceEnd);
-    phi->addIncoming(pointRes, pointEnd);
-    return phi;
+    return merge.finish(doneBB).consume();
   }
 
   // Helper: check receiver tag matches expected TAG_*, else type error.
@@ -20265,7 +21263,15 @@ struct JIT {
     } else if (arg_param) {
       // We are in the not-StringLike branch, so this always throws the
       // canonical parameter-type error (StringLike ⊇ String/StringView)
-      // at the argument's own position, like the interp binder.
+      // at the argument's own position, like the interp binder. `val` is the
+      // caller's `+1`-owned argument, borrowed here and released on the normal
+      // path by its `Owned` dtor (`.drop()`); that straight-line release is
+      // skipped on this unwind edge, stranding e.g. the array in
+      // `"ab".split([9,9])`. Guard it: the throw-cleanup releases it on the
+      // unwind edge, mutually exclusive with the ok branch's normal release, so
+      // exactly once. The receiver branch above is never guarded here — its `+1`
+      // is covered by the caller's builtin-arm ThrowGuard (jit_ownership.md §4.3).
+      ThrowGuard arg_guard(this, {val});
       emit_type_check(val, "StringLike",
                       std::string("parameter '") + arg_param + "'", arg_ast);
       builder_.CreateUnreachable();
@@ -20287,7 +21293,7 @@ struct JIT {
   // Every return path below either hands the +1 to a consuming child
   // (`receiver.consume()`) or reads it borrowed and lets the handle's dtor
   // release it — a new early return can no longer leak the receiver.
-  llvm::Value* compile_method_call(const std::string& method,
+  Owned compile_method_call(const std::string& method,
                                    const peg::Ast& argsAst,
                                    Owned receiver,
                                    const peg::Ast* dot_ast = nullptr) {
@@ -20305,7 +21311,7 @@ struct JIT {
                     rt::explicit_drop, builder_.getVoidTy(),
                     builder_.getInt8Ty(), builder_.getInt64Ty()),
                 {extract_tag(receiver.borrow()), extract_data(receiver.borrow())});
-      return make_nil();
+      return own(make_nil());
     }
     // Method dispatch: true built-ins (Array/String/...) parse argsAst
     // positionally and can't accept kwargs. But a builtin-named method can
@@ -20351,16 +21357,25 @@ struct JIT {
       return compile_user_method_over_builtin(method, argsAst,
                                               receiver.consume());
     }
-    if (auto* r =
-            compile_builtin_method(method, argsAst, receiver.borrow())) {
-      // Uniform receiver-ownership convention for builtin methods: a builtin
-      // treats the receiver as BORROWED — read-only/mutating methods never
-      // store it, and methods that DO retain it for longer (the lazy iterator
-      // paths in `dispatch_arr_iter`) take their own +1. So this frame always
-      // drops the incoming ref (the handle's dtor at this return); without it
-      // every `arr.size()` / `acc.push(x)` leaves the receiver's refcount
-      // dangling.
-      return r;
+    // Uniform receiver-ownership convention for builtin methods: a builtin
+    // treats the receiver as BORROWED — read-only/mutating methods never
+    // store it, and methods that DO retain it for longer (the lazy iterator
+    // paths in `dispatch_arr_iter`) take their own +1. So this frame always
+    // drops the incoming ref (the handle's dtor at this return); without it
+    // every `arr.size()` / `acc.push(x)` leaves the receiver's refcount
+    // dangling. A throwing builtin (bad arity/type — `[1,2,3].enumerate("x")`)
+    // skips that straight-line release and strands the heap receiver, so guard
+    // the borrow on the unwind edge (the same reasoning as the builtin arm of
+    // compile_user_method_over_builtin: a builtin never hands the receiver to a
+    // callee frame, so this guard is the sole throw-path releaser and can't
+    // double-free). Pred-empty ⇒ erased, so a non-throwing builtin pays nothing.
+    Owned builtinR;
+    {
+      ThrowGuard guard(this, {receiver.borrow()});
+      builtinR = compile_builtin_method(method, argsAst, receiver.borrow());
+    }
+    if (builtinR.borrow()) {
+      return builtinR;
     }
 
     // UFCS fallback: if `method` is not a known builtin and resolves as
@@ -20381,13 +21396,17 @@ struct JIT {
     // Matches interp's UFCS resolution, which consults the full env.
     auto& h = current_hooks();
     if (h.compile_ufcs_builtin) {
-      if (auto* r = h.compile_ufcs_builtin(*this, method, argsAst,
-                                           receiver.borrow())) {
-        // Hook contract: a non-null result means the hook consumed the
-        // receiver's +1 itself; a null result leaves it untouched.
-        receiver.consume();
+      // Hook contract: a non-null result means the hook's emitted code
+      // consumed the receiver's +1; a null result (no IR emitted) leaves it
+      // untouched. consume() before the hook runs so the unwind-temp window
+      // (§4.8) can't spill a value the emitted code already released; re-own
+      // on decline.
+      auto rawReceiver = receiver.consume();
+      Owned r = h.compile_ufcs_builtin(*this, method, argsAst, rawReceiver);
+      if (r.borrow()) {
         return r;
       }
+      receiver = own(rawReceiver);
     }
 
     // Auto-synthesized `parameters()` on class instances. Mirrors the
@@ -20399,9 +21418,26 @@ struct JIT {
       return compile_class_parameters_call(argsAst, receiver.consume());
     }
 
-    // User-defined method on Object: fetch property, call with this=receiver
-    auto methodVal = compile_property_get(receiver.borrow(), method);
-    return compile_function_call(argsAst, methodVal, receiver.consume());
+    // User-defined method on Object: fetch property, call with this=receiver.
+    // emit_property_get returns a BORROWED (+0) slot value for an ordinary
+    // method, but a +1-OWNED value for the three function-introspection names
+    // (`name`/`params`/`return_type` — its fn_mode retains so a value-read like
+    // `req.params` escapes with +1). compile_function_call only borrows the
+    // callee, so for those names that extra +1 would strand (e.g.
+    // `obj.name()` on a class method named `name`); drop it after the call.
+    auto methodVal = emit_property_get(receiver.borrow(), method);
+    bool owned_method_view = (method == "name" || method == "params" ||
+                              method == "return_type");
+    // A method miss lowers to `call nil`, whose error path must release the
+    // consumed receiver + args (nothing else does on this site's throw edge) —
+    // opt into that cleanup. A real method call proceeds normally (its callee
+    // frame cleans `this`/args), so the flag only fires on the not-a-function
+    // arm and never double-frees.
+    auto callRes = compile_function_call(argsAst, methodVal, receiver.consume(),
+                                         /*own_this_on_error=*/true,
+                                         /*own_args_on_error=*/true);
+    if (owned_method_view) emit_value_release(methodVal);
+    return callRes;
   }
 
   // Auto-synthesized `parameters()` on class instances, JIT side. The
@@ -20410,7 +21446,7 @@ struct JIT {
   // and (b) the original property-get + call path for user overrides
   // and degenerate cases (non-Object receiver, plain dict). See
   // _jit_walk_collect_params for the walker semantics.
-  llvm::Value* compile_class_parameters_call(const peg::Ast& argsAst,
+  Owned compile_class_parameters_call(const peg::Ast& argsAst,
                                              llvm::Value* receiver) {
     auto fn = builder_.GetInsertBlock()->getParent();
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
@@ -20439,32 +21475,29 @@ struct JIT {
     builder_.CreateCondBr(useAuto, autoBB, fallbackBB);
 
     // autoBB: call the runtime walker.
+    OwnedPhi merge(this, "params.result");
     builder_.SetInsertPoint(autoBB);
-    auto walkResult = emit_value_call(
+    Owned walkResult = own(emit_value_call(
         module_->getOrInsertFunction(rt::class_parameters_walk, valueType_,
                                      ptrTy),
-        {objPtr}, "params.walk");
+        {objPtr}, "params.walk"));
     // The walker borrows the receiver; consume this frame's +1 (the
     // fallback arm hands it to `this` instead).
     emit_value_release(receiver);
-    auto autoEnd = builder_.GetInsertBlock();
+    merge.add_incoming(std::move(walkResult));
     builder_.CreateBr(mergeBB);
 
     // fallbackBB: original path. Errors out for non-Object receivers
-    // (compile_property_get's type check), or invokes the user-defined
+    // (emit_property_get's type check), or invokes the user-defined
     // method, or fails with "expected Function, got Nil" for missing
     // method on a plain dict — all matching pre-auto-synth behavior.
     builder_.SetInsertPoint(fallbackBB);
-    auto methodVal = compile_property_get(receiver, "parameters");
-    auto fbResult = compile_function_call(argsAst, methodVal, receiver);
-    auto fbEnd = builder_.GetInsertBlock();
+    auto methodVal = emit_property_get(receiver, "parameters");
+    merge.add_incoming(compile_function_call(argsAst, methodVal, receiver));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(valueType_, 2, "params.result");
-    phi->addIncoming(walkResult, autoEnd);
-    phi->addIncoming(fbResult, fbEnd);
-    return phi;
+    return merge.finish(mergeBB);
   }
 
   // `.add(x)` / `.remove(x)`: runtime tag dispatch.
@@ -20475,12 +21508,15 @@ struct JIT {
   //   - other      → type error
   // The argument is compiled once before the branch so side effects
   // don't duplicate.
-  llvm::Value* compile_set_mutate_dispatch(const std::string& method,
+  Owned compile_set_mutate_dispatch(const std::string& method,
                                            const peg::Ast& argsAst,
                                            llvm::Value* receiver) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
-    auto arg = compile(*argsAst.nodes[0]).consume();
+    // Raw handoff into the mutually-exclusive dispatch arms below (§4.7):
+    // every arm releases or hands off the +1 on its runtime path (see the
+    // errBB note), so the block-pin check does not apply.
+    auto arg = compile(*argsAst.nodes[0]).consume_unchecked();
 
     auto tag = extract_tag(receiver);
     auto setBB = llvm::BasicBlock::Create(ctx_, "ma.set", fn);
@@ -20498,6 +21534,14 @@ struct JIT {
     builder_.CreateCondBr(isObj, objBB, errBB);
 
     builder_.SetInsertPoint(errBB);
+    // A non-Set/non-Object receiver (`(1).remove(|x| x)`, `[1,2].remove(9)`)
+    // throws here before either mutate arm consumes the operands. Both `arg`
+    // (compiled `+1` above) and this frame's `receiver` `+1` strand on the
+    // unwind edge — the set/object arms release or hand off both, but errBB does
+    // neither. Release both now (the error reads only the already-extracted tag
+    // SSA, not either value), so each frees exactly once across the three paths.
+    emit_value_release(arg);
+    emit_value_release(receiver);
     emit_receiver_resolution_error(tag, "remove");
 
     // Set: mutating runtime helper.
@@ -20505,20 +21549,30 @@ struct JIT {
     auto setPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
     const char* set_rt = method == "add" ? rt::set_add_method
                                          : rt::set_remove;
-    auto setR = emit_call(
-        module_->getOrInsertFunction(
-            set_rt, builder_.getInt8Ty(), ptrTy,
-            builder_.getInt8Ty(), builder_.getInt64Ty(),
-            builder_.getInt64Ty(), builder_.getInt64Ty()),
-        {setPtr, extract_tag(arg), extract_data(arg),
-         current_line_val(), current_column_val()});
+    llvm::Value* setR;
+    {
+      // Both helpers hash the arg and can throw ("unhashable type" for a
+      // Function/Array member). On that edge neither `arg` nor `receiver` is
+      // released by the straight-line code below, so guard both — mutually
+      // exclusive with the normal releases (remove) / the add's absorb of the
+      // arg `+1`, so each frees exactly once (jit_ownership.md §4.3).
+      ThrowGuard set_guard(this, {arg, receiver});
+      setR = emit_call(
+          module_->getOrInsertFunction(
+              set_rt, builder_.getInt8Ty(), ptrTy,
+              builder_.getInt8Ty(), builder_.getInt64Ty(),
+              builder_.getInt64Ty(), builder_.getInt64Ty()),
+          {setPtr, extract_tag(arg), extract_data(arg),
+           current_line_val(), current_column_val()});
+    }
+    OwnedPhi maMerge(this, "ma.res");
     auto setRes = make_bool(builder_.CreateICmpNE(setR, builder_.getInt8(0)));
     // `set_remove` borrows the arg; `set_add_method` absorbs the +1.
     if (method == "remove") emit_value_release(arg);
     // Both runtime helpers borrow the receiver; consume this frame's +1
     // (the Object arm hands it to `this` / releases it — match here).
     emit_value_release(receiver);
-    auto setEnd = builder_.GetInsertBlock();
+    maMerge.add_incoming(own(setRes));
     builder_.CreateBr(mergeBB);
 
     // Object: `add` routes to the user-defined property `this.add` (no
@@ -20526,14 +21580,14 @@ struct JIT {
     // FixedSet/FixedMap view) — matching interp's own-method-over-builtin
     // priority — and otherwise calls the dict's built-in key removal.
     builder_.SetInsertPoint(objBB);
-    llvm::Value* objRes = nullptr;
+    Owned objRes;
     if (method == "add") {
-      auto methodVal = compile_property_get(receiver, method);
+      auto methodVal = emit_property_get(receiver, method);
       objRes = compile_function_call_raw(
           methodVal, receiver, {arg},
           llvm::ArrayRef<const peg::Ast*>{argsAst.nodes[0].get()});
     } else {
-      auto methodVal = compile_property_get(receiver, "remove");  // borrowed
+      auto methodVal = emit_property_get(receiver, "remove");  // borrowed
       auto isFunc = builder_.CreateICmpEQ(extract_tag(methodVal),
                                           builder_.getInt8(TAG_FUNC));
       auto userBB2 = llvm::BasicBlock::Create(ctx_, "ma.obj.user", fn);
@@ -20541,42 +21595,44 @@ struct JIT {
       auto oMergeBB = llvm::BasicBlock::Create(ctx_, "ma.obj.merge", fn);
       builder_.CreateCondBr(isFunc, userBB2, biBB2);
 
+      OwnedPhi objMerge(this, "ma.obj.res");
       builder_.SetInsertPoint(userBB2);
-      auto uRes = compile_function_call_raw(
+      objMerge.add_incoming(compile_function_call_raw(
           methodVal, receiver, {arg},
-          llvm::ArrayRef<const peg::Ast*>{argsAst.nodes[0].get()});
-      auto uEnd = builder_.GetInsertBlock();
+          llvm::ArrayRef<const peg::Ast*>{argsAst.nodes[0].get()}));
       builder_.CreateBr(oMergeBB);
 
       builder_.SetInsertPoint(biBB2);
       auto objPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-      // object_remove_any consumes the key's +1 (see runtime helper).
-      emit_call(
-          module_->getOrInsertFunction(
-              rt::object_remove_any, builder_.getVoidTy(), ptrTy,
-              builder_.getInt8Ty(), builder_.getInt64Ty(),
-              builder_.getInt64Ty(), builder_.getInt64Ty()),
-          {objPtr, extract_tag(arg), extract_data(arg),
-           current_line_val(), current_column_val()});
+      // object_remove_any consumes the key's +1 on the normal path, but it
+      // hashes the key first and throws "unhashable type" (`{a:1}.remove([1])`)
+      // BEFORE consuming — so on that edge both the key `arg` and this frame's
+      // `receiver` strand (neither the helper's consume nor the release below
+      // runs). Guard both; mutually exclusive with the normal consume/release,
+      // so each frees exactly once (jit_ownership.md §4.3).
+      {
+        ThrowGuard rm_guard(this, {arg, receiver});
+        emit_call(
+            module_->getOrInsertFunction(
+                rt::object_remove_any, builder_.getVoidTy(), ptrTy,
+                builder_.getInt8Ty(), builder_.getInt64Ty(),
+                builder_.getInt64Ty(), builder_.getInt64Ty()),
+            {objPtr, extract_tag(arg), extract_data(arg),
+             current_line_val(), current_column_val()});
+      }
       emit_value_release(receiver);  // the user path consumes it; match here
-      auto bRes = make_nil();
-      auto bEnd = builder_.GetInsertBlock();
+      objMerge.add_incoming(make_nil());
       builder_.CreateBr(oMergeBB);
 
       builder_.SetInsertPoint(oMergeBB);
-      auto op = builder_.CreatePHI(valueType_, 2, "ma.obj.res");
-      op->addIncoming(uRes, uEnd);
-      op->addIncoming(bRes, bEnd);
-      objRes = op;
+      // Handed straight to the outer merge below in this same block.
+      objRes = objMerge.finish(oMergeBB);
     }
-    auto objEnd = builder_.GetInsertBlock();
+    maMerge.add_incoming(std::move(objRes));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(valueType_, 2, "ma.res");
-    phi->addIncoming(setRes, setEnd);
-    phi->addIncoming(objRes, objEnd);
-    return phi;
+    return maMerge.finish(mergeBB);
   }
 
   // Value-typed receiver tags paired with their builtin method table —
@@ -20777,14 +21833,47 @@ struct JIT {
   // mirroring interp's eval_property + arity check: a wrong arity on a
   // method the receiver type HAS → ArityError; a method an object-ish type
   // lacks → "expected Function, got Nil"; a scalar receiver → the
-  // member-access type error (via compile_property_get). Used by the
+  // member-access type error (via emit_property_get). Used by the
   // builtinBB fallback and the Tensor-reduction guard's non-Tensor branch.
-  llvm::Value* emit_unresolved_builtin_method(const std::string& method,
+  // `guard_arity_receiver`: wrap the arity/kwarg check in a receiver cleanup
+  // pad. Set ONLY by the caller that reaches here with an unguarded `receiver`
+  // (compile_user_method_over_builtin's fallthrough) — the arity/kwarg check
+  // throws (e.g. `[1].sorted_by(f, bad: 1)`) *before* `receiver` is consumed
+  // below, and nothing else releases it there. The other callers already run
+  // under a receiver cleanup pad (they sit inside compile_builtin_method, under
+  // the builtin-arm guard), so a second guard here would double-free; they pass
+  // false. The subsequent compile_function_call consumes `receiver` and its
+  // callee frame cleans `this` on throw, so it is never guarded either way
+  // (docs/jit_ownership.md §4.3).
+  Owned emit_unresolved_builtin_method(const std::string& method,
                                               const peg::Ast& argsAst,
-                                              llvm::Value* receiver) {
-    emit_builtin_arity_check(method, argsAst, receiver);
-    auto methodVal = compile_property_get(receiver, method);
-    return compile_function_call(argsAst, methodVal, receiver);
+                                              llvm::Value* receiver,
+                                              bool guard_arity_receiver = false) {
+    if (guard_arity_receiver) {
+      // Sole throw-path releaser for the borrowed receiver: the arity/kwarg
+      // check throws before `receiver` is consumed below and nothing else frees
+      // it on that edge.
+      ThrowGuard guard(this, {receiver});
+      emit_builtin_arity_check(method, argsAst, receiver);
+    } else {
+      emit_builtin_arity_check(method, argsAst, receiver);
+    }
+    auto methodVal = emit_property_get(receiver, method);
+    // A method miss here (`{a:1}.map(f)`, or a method the receiver type lacks
+    // whose name isn't in the arity table so the check above fell through —
+    // `[1,2,3].to_array(9)`) lowers to `call nil`. Whether this throw edge must
+    // release the receiver depends on the caller (jit_ownership.md §4.3):
+    //   - guard_arity_receiver=true (compile_user_method_over_builtin's
+    //     fallthrough): the builtin-arm guard already closed and the arity guard
+    //     above wraps only the arity check, so nothing else frees the receiver on
+    //     the call-nil edge — release it here.
+    //   - guard_arity_receiver=false (the callers inside compile_builtin_method):
+    //     they still sit under an open builtin-arm receiver guard that covers this
+    //     edge too, so releasing here would double-free.
+    // The callback args strand on either path — always release those.
+    return compile_function_call(argsAst, methodVal, receiver,
+                                 /*own_this_on_error=*/guard_arity_receiver,
+                                 /*own_args_on_error=*/true);
   }
 
   // Builtin-named method on a user class: give the class's own method priority
@@ -20794,7 +21883,7 @@ struct JIT {
   // evaluated exactly once. Mirrors compile_method_or_ufcs + the receiver
   // ownership of compile_method_call (user path keeps receiver; builtin path
   // releases it).
-  llvm::Value* compile_user_method_over_builtin(const std::string& method,
+  Owned compile_user_method_over_builtin(const std::string& method,
                                                 const peg::Ast& argsAst,
                                                 llvm::Value* receiver) {
     auto fn = builder_.GetInsertBlock()->getParent();
@@ -20811,7 +21900,7 @@ struct JIT {
 
     // checkBB: does the object's class define `method` (own + proto)?
     builder_.SetInsertPoint(checkBB);
-    auto methodVal = compile_property_get(receiver, method);  // borrowed; nil if absent
+    auto methodVal = emit_property_get(receiver, method);  // borrowed; nil if absent
     auto isFunc = builder_.CreateICmpEQ(extract_tag(methodVal),
                                         builder_.getInt8(TAG_FUNC), "umb.is.func");
     // A Shared.new view has no builtin methods — `view.get(...)` reads the
@@ -20831,53 +21920,82 @@ struct JIT {
     // args from `argsAst` and binds `this` correctly for both class instances
     // (methods take `this`) and namespace objects (functions ignore it).
     builder_.SetInsertPoint(userBB);
-    auto userRes = compile_function_call(argsAst, methodVal, receiver);
-    auto userEnd = builder_.GetInsertBlock();
+    // A Shared.new view reads a non-method name (`s.get(...)`) as nil from the
+    // frozen tree, so the call lowers to `call nil` and raises "expected
+    // Function" — release the consumed receiver + args on that method-miss edge
+    // (a real shadowing method is a Function whose callee frame cleans itself,
+    // so the flags apply only to the not-a-function branch: no double-free).
+    OwnedPhi umbMerge(this, "umb.res");
+    umbMerge.add_incoming(
+        compile_function_call(argsAst, methodVal, receiver,
+                              /*own_this_on_error=*/true,
+                              /*own_args_on_error=*/true));
     builder_.CreateBr(mergeBB);
 
     // builtinBB: the receiver is a real builtin value (or an Object lacking
     // the method). A kwargs call here targets a true builtin, which never
     // accepts keywords — raise the same TypeError the interp does.
     builder_.SetInsertPoint(builtinBB);
-    llvm::Value* builtinRes;
+    Owned builtinRes;
     if (!arg_list_is_positional_only(argsAst) &&
         !builtin_method_is_kwarg_capable(method)) {
+      // The receiver is owned here (+1) and this arm never hands it to a
+      // callee frame, so release it before the throw or it strands (the Set
+      // in `{1, 2}.add(x: 3)`). emit_throw_error only reads the message, not
+      // the receiver's data, so release-before-throw is safe.
+      emit_value_release(receiver);
       emit_throw_error("TypeError",
           std::format("built-in method '{}' does not accept keyword "
                       "arguments", method),
           argsAst.line, argsAst.column);
-      builtinRes = llvm::UndefValue::get(valueType_);
+      builtinRes = own(llvm::UndefValue::get(valueType_));
     } else {
       // Try the builtin; if it declines (e.g. an arity it doesn't implement —
       // `min(a,b)` is not Array.min()), fall back to the user/namespace
       // method path, exactly as compile_method_call does when
       // compile_builtin_method returns null.
-      builtinRes = compile_builtin_method(method, argsAst, receiver);
-      if (builtinRes) {
+      //
+      // The builtin BORROWS `receiver` and this arm drops that borrow on the
+      // normal path (the release below). A throwing builtin — a lazy
+      // `.map(f).collect()` whose callback throws mid-pull — skips that
+      // straight-line release and strands the receiver (an iterator wrapper
+      // whose capture cells transitively hold the whole chain). Guard the
+      // borrow on the unwind edge (docs/jit_ownership.md §4.3). Safe *here*,
+      // unlike the general call chain: a builtin never hands `receiver` to a
+      // callee frame, so this is the sole throw-path releaser — the user arm
+      // (compile_function_call) is left untouched because its callee frame
+      // already cleans its own `this` on throw (a caller-side guard there would
+      // double-free). Pred-empty ⇒ erased, so a non-throwing builtin pays
+      // nothing.
+      {
+        ThrowGuard guard(this, {receiver});
+        builtinRes = compile_builtin_method(method, argsAst, receiver);
+      }
+      if (builtinRes.borrow()) {
         emit_value_release(receiver);  // builtin borrows the receiver
       } else {
         // No native codegen matched this (method, argc): defer to the
         // shared unresolved-method path (arity error / method-miss /
         // scalar member error), matching interp. So `"abc".push(1,2)`
-        // stays "expected Function, got Nil" on both backends.
-        builtinRes = emit_unresolved_builtin_method(method, argsAst, receiver);
+        // stays "expected Function, got Nil" on both backends. The receiver
+        // reaches here unguarded (the builtin-arm pad above was already
+        // finalized), so ask the arity check to guard it on its throw edge.
+        builtinRes = emit_unresolved_builtin_method(
+            method, argsAst, receiver, /*guard_arity_receiver=*/true);
       }
     }
-    auto builtinEnd = builder_.GetInsertBlock();
+    umbMerge.add_incoming(std::move(builtinRes));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(valueType_, 2, "umb.res");
-    phi->addIncoming(userRes, userEnd);
-    phi->addIncoming(builtinRes, builtinEnd);
-    return phi;
+    return umbMerge.finish(mergeBB);
   }
 
   // Emit the runtime dispatch between a user method (receiver owns a
   // property `method`) and UFCS (call the free variable `method` with
   // `receiver` as the first argument). Args are compiled once up front
   // so side-effects don't duplicate across branches.
-  llvm::Value* compile_method_or_ufcs(const std::string& method,
+  Owned compile_method_or_ufcs(const std::string& method,
                                       const VarSlot& freeFnSlot,
                                       const peg::Ast& argsAst,
                                       llvm::Value* receiver,
@@ -20910,34 +22028,44 @@ struct JIT {
       auto hasProp = emit_object_has(objPtr, keyPtr);
       builder_.CreateCondBr(hasProp, methodHasBB, ufcsHasBB);
 
+      // The incoming receiver +1 is handed to whichever arm runs — the same
+      // single-ownership hand-off the positional path below uses. The callee
+      // (compile_function_call_runtime_kwargs) owns it on EVERY exit: its
+      // this_guard / posVals[0] Owned covers the argument-expression compiles
+      // (§4.8 window), emit_arg_list_check releases it on a malformed-list
+      // throw, and call_with_kwargs owns the dispatch edges. The old shape —
+      // retain per arm + release at the merge — leaked the outer +1 whenever
+      // the callee threw (the merge release sits past the unwind edge), and
+      // guarding it was impossible: the retained copy shares the receiver's
+      // SSA, so a caller-side guard would collide with the callee's window
+      // coverage of the same value.
+      OwnedPhi kwMerge(this, "ufcs.kw.res");
       builder_.SetInsertPoint(methodHasBB);
-      // Receiver becomes `this_val`; retain so the +1 the helper
-      // consumes is independent of the caller's reference.
-      emit_value_retain(receiver);
-      auto methodVal = compile_property_get(receiver, method);
-      auto methodRes = compile_function_call_runtime_kwargs(
-          argsAst, methodVal, receiver);
-      auto methodEndBB = builder_.GetInsertBlock();
+      auto methodVal = emit_property_get(receiver, method);
+      kwMerge.add_incoming(compile_function_call_runtime_kwargs(
+          argsAst, methodVal, receiver));
       builder_.CreateBr(mergeBB);
 
       builder_.SetInsertPoint(ufcsHasBB);
-      // UFCS: receiver is positional[0]; retain separately.
-      emit_value_retain(receiver);
       auto freeFn = load_slot(freeFnSlot, method);
-      auto ufcsRes = compile_function_call_runtime_kwargs(
-          argsAst, freeFn, /*thisVal=*/nullptr, {receiver}, dot_ast);
-      // Borrowed-callee dispatch; this branch owns the slot load's +1
+      // This branch owns the slot load's +1, released on the normal path
+      // below. A typed-param / binding throw from the call would strand it
+      // (`"x".f(m: 1)` where `f`'s first param is Long) — guard the callee
+      // value on the unwind edge. It is a distinct SSA from the callee frame's
+      // this/params, so it does not double-free the callee's own cleanup.
+      Owned ufcsRes;
+      {
+        ThrowGuard callee_guard(this, {freeFn});
+        ufcsRes = compile_function_call_runtime_kwargs(
+            argsAst, freeFn, /*thisVal=*/nullptr, {receiver}, dot_ast);
+      }
       // (the method branch's property view is borrowed — don't touch it).
       emit_value_release(freeFn);
-      auto ufcsEndBB = builder_.GetInsertBlock();
+      kwMerge.add_incoming(std::move(ufcsRes));
       builder_.CreateBr(mergeBB);
 
       builder_.SetInsertPoint(mergeBB);
-      auto phi = builder_.CreatePHI(valueType_, 2, "ufcs.kw.res");
-      phi->addIncoming(methodRes, methodEndBB);
-      phi->addIncoming(ufcsRes, ufcsEndBB);
-      emit_value_release(receiver);
-      return phi;
+      return kwMerge.finish(mergeBB);
     }
 
     std::vector<const peg::Ast*> argAsts;
@@ -20965,10 +22093,10 @@ struct JIT {
     builder_.CreateCondBr(hasProp, methodBB, ufcsBB);
 
     builder_.SetInsertPoint(methodBB);
-    auto methodVal = compile_property_get(receiver, method);
-    auto methodRes =
-        compile_function_call_raw(methodVal, receiver, userArgs, argAsts);
-    auto methodEndBB = builder_.GetInsertBlock();
+    auto methodVal = emit_property_get(receiver, method);
+    OwnedPhi ufcsMerge(this, "ufcs.res");
+    ufcsMerge.add_incoming(
+        compile_function_call_raw(methodVal, receiver, userArgs, argAsts));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(ufcsBB);
@@ -20983,18 +22111,25 @@ struct JIT {
     ufcsArgAsts.reserve(argAsts.size() + 1);
     ufcsArgAsts.push_back(dot_ast);
     for (auto* a : argAsts) ufcsArgAsts.push_back(a);
-    auto ufcsRes =
-        compile_function_call_raw(freeFn, nullptr, ufcsArgs, ufcsArgAsts);
+    // This branch owns the slot load's +1, released on the normal path below.
+    // A positional typed-param binding throw (`"x".f(1)` where `f`'s first
+    // param is Long) would strand it — guard the borrowed callee value on the
+    // unwind edge, mirroring the kwarg UFCS branch above. The closure is a
+    // distinct SSA from the callee frame's this/params (which the callee frame
+    // cleans on throw), so it does not double-free the callee's own cleanup.
+    Owned ufcsRes;
+    {
+      ThrowGuard callee_guard(this, {freeFn});
+      ufcsRes =
+          compile_function_call_raw(freeFn, nullptr, ufcsArgs, ufcsArgAsts);
+    }
     // Borrowed-callee dispatch; release the slot load's +1 (see above).
     emit_value_release(freeFn);
-    auto ufcsEndBB = builder_.GetInsertBlock();
+    ufcsMerge.add_incoming(std::move(ufcsRes));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(valueType_, 2, "ufcs.res");
-    phi->addIncoming(methodRes, methodEndBB);
-    phi->addIncoming(ufcsRes, ufcsEndBB);
-    return phi;
+    return ufcsMerge.finish(mergeBB);
   }
 
   // Publish the call-site + per-argument positions the callee reads at
@@ -21083,7 +22218,7 @@ struct JIT {
   // dispatch) drive pre-resolved slabs where the check would misfire.
   // Convenience overload for the common "default flags, but thread the
   // arg positions" call shape.
-  llvm::Value* compile_function_call_raw(
+  Owned compile_function_call_raw(
       llvm::Value* callee, llvm::Value* thisVal,
       llvm::ArrayRef<llvm::Value*> userArgs,
       llvm::ArrayRef<const peg::Ast*> arg_asts) {
@@ -21092,11 +22227,13 @@ struct JIT {
                                      /*allow_call_overload=*/true, arg_asts);
   }
 
-  llvm::Value* compile_function_call_raw(
+  Owned compile_function_call_raw(
       llvm::Value* callee, llvm::Value* thisVal,
       llvm::ArrayRef<llvm::Value*> userArgs,
       bool check_kw_only = false, bool allow_call_overload = true,
-      llvm::ArrayRef<const peg::Ast*> arg_asts = {}) {
+      llvm::ArrayRef<const peg::Ast*> arg_asts = {},
+      bool own_this_on_error = false,
+      bool own_args_on_error = false) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
 
     auto tag = extract_tag(callee);
@@ -21115,6 +22252,19 @@ struct JIT {
     // reconstruction emits only once (no compile-time recursion).
     builder_.SetInsertPoint(errorBB);
     auto emit_not_function = [&] {
+      // The callee is not callable (a method miss lowers to `call nil` —
+      // `[1,2,3].first()`). No callee frame will run, so the +1s the caller
+      // handed this call have no consumer and strand on the raise. The receiver
+      // (`thisVal`) and args are gated separately by the caller: the method-call
+      // fallthrough consumes both and nothing else releases them, so it opts into
+      // both; the unresolved-builtin path (`{a:1}.map(f)`) already releases the
+      // receiver on this edge via its own machinery but strands the callback arg,
+      // so it opts into args-only — releasing its receiver too would double-free.
+      // Most callers pass a nil/borrowed `thisVal` and opt into neither. `thisVal`
+      // may be null (releasing nil is a no-op). See docs/jit_ownership.md §4.3.
+      if (own_this_on_error && thisVal) emit_value_release(thisVal);
+      if (own_args_on_error)
+        for (auto* a : userArgs) emit_value_release(a);
       emit_type_error_typed("Function", tag);
       builder_.CreateUnreachable();
     };
@@ -21139,9 +22289,14 @@ struct JIT {
       // its own +1 (the original ref stays borrowed, the convention the
       // normal path shares — see the leak note in the kwargs path).
       emit_value_retain(callee);
+      // Late-merge arm raw (§4.9): the value lives only on this arm's
+      // runtime path and is re-owned when the builder revisits the arm to
+      // declare it into call.phi below — holding it in an Owned across the
+      // other arms' emission would spill a non-dominating SSA value.
       overloadResult = compile_function_call_raw(
           callMethod, callee, userArgs,
-          /*check_kw_only=*/false, /*allow_call_overload=*/false);
+          /*check_kw_only=*/false, /*allow_call_overload=*/false)
+          .consume_unchecked();
       overloadEndBB = builder_.GetInsertBlock();
       // Terminator added after callBB so all arms can merge at contBB.
 
@@ -21164,9 +22319,11 @@ struct JIT {
       emit_not_function();
 
       builder_.SetInsertPoint(ctorBB);
+      // Late-merge arm raw — same contract as overloadResult above.
       ctorResult = compile_function_call_raw(
           newMethod, /*thisVal=*/nullptr, userArgs,
-          /*check_kw_only=*/false, /*allow_call_overload=*/false);
+          /*check_kw_only=*/false, /*allow_call_overload=*/false)
+          .consume_unchecked();
       ctorEndBB = builder_.GetInsertBlock();
     } else {
       emit_not_function();
@@ -21233,23 +22390,24 @@ struct JIT {
 
     // No __call__ overload arm (recursive inner call): callBB is the
     // only producer, return directly and keep the original shape.
-    if (!allow_call_overload) return callResult;
+    if (!allow_call_overload) return own(callResult);
 
     // Merge the function-call result with the __call__ and constructor
     // dispatch results (three producers: callBB, overload arm, ctor arm).
-    auto callEndBB = builder_.GetInsertBlock();
+    // The arm end blocks were left unterminated; each incoming is declared
+    // as the builder revisits its arm to emit the branch.
     auto contBB = llvm::BasicBlock::Create(ctx_, "call.cont", fn);
+    OwnedPhi callMerge(this, "call.phi");
+    callMerge.add_incoming(own(callResult));
     builder_.CreateBr(contBB);
     builder_.SetInsertPoint(overloadEndBB);
+    callMerge.add_incoming(own(overloadResult));
     builder_.CreateBr(contBB);
     builder_.SetInsertPoint(ctorEndBB);
+    callMerge.add_incoming(own(ctorResult));
     builder_.CreateBr(contBB);
     builder_.SetInsertPoint(contBB);
-    auto phi = builder_.CreatePHI(valueType_, 3, "call.phi");
-    phi->addIncoming(callResult, callEndBB);
-    phi->addIncoming(overloadResult, overloadEndBB);
-    phi->addIncoming(ctorResult, ctorEndBB);
-    return phi;
+    return callMerge.finish(contBB);
   }
 
   // True if every ARG_LIST child is a plain positional expression
@@ -21286,19 +22444,29 @@ struct JIT {
   // source so every call kind reports the same error + position as the interp.
   // Returns true if a throw was emitted; callers may continue (the IR after is
   // dead) like the other emit_throw_error sites.
-  bool emit_arg_list_check(const peg::Ast& argsAst) {
+  // `owned_on_throw` are caller-evaluated +1 values (the receiver `this`, a
+  // UFCS positional prefix) that the malformed-call throw aborts before the
+  // call consumes — release them so a bad arg list (`obj.m(a: 1, a: 1)`, a
+  // ctor's freshly built instance passed as `this`) does not strand them.
+  // The throw fires first at runtime; the IR emitted after is dead, so the
+  // later normal-path consume of these values never executes.
+  bool emit_arg_list_check(const peg::Ast& argsAst,
+                            llvm::ArrayRef<llvm::Value*> owned_on_throw = {}) {
     if (auto e = culebra::check_arg_list(argsAst)) {
+      for (auto* v : owned_on_throw)
+        if (v) emit_value_release(v);
       emit_throw_error(e->kind.c_str(), e->message, e->line, e->col);
       return true;
     }
     return false;
   }
 
-  llvm::Value* compile_function_call_with_kwargs(
+  Owned compile_function_call_with_kwargs(
       const peg::Ast& argsAst, llvm::Value* callee,
       const peg::Ast& fnAst, llvm::Value* thisVal = nullptr) {
     using namespace peg::udl;
-    emit_arg_list_check(argsAst);  // shared single source; inline scan stays
+    // shared single source; inline scan stays
+    emit_arg_list_check(argsAst, {thisVal});
 
     // FUNCTION layout: [PARAMETERS, (RETURN_TYPE)?, BLOCK]. Each
     // PARAMETER child: [MUTABLE, IDENTIFIER, (TYPE_ANNOTATION)?,
@@ -21504,19 +22672,27 @@ struct JIT {
         callee, thisVal, consume_all(std::move(userArgs)), argAsts);
   }
 
-  llvm::Value* compile_function_call(const peg::Ast& argsAst,
+  Owned compile_function_call(const peg::Ast& argsAst,
                                      llvm::Value* callee,
-                                     llvm::Value* thisVal = nullptr) {
+                                     llvm::Value* thisVal = nullptr,
+                                     bool own_this_on_error = false,
+                                     bool own_args_on_error = false) {
     if (!arg_list_is_positional_only(argsAst)) {
       return compile_function_call_runtime_kwargs(
           argsAst, callee, thisVal);
     }
     std::vector<const peg::Ast*> argAsts;
+    // This frame owns the receiver's +1 until the call consumes it — holding
+    // it as Owned keeps it visible to the unwind-temp window while the
+    // argument expressions compile (a throwing argument used to strand it).
+    Owned this_guard = thisVal ? own(thisVal) : Owned();
     auto ownedArgs = compile_positional_args(argsAst, argAsts);
+    if (thisVal) this_guard.consume();  // handed to the raw call below
     return compile_function_call_raw(
         callee, thisVal, consume_all(std::move(ownedArgs)),
         /*check_kw_only=*/any_kw_only_in_program_,
-        /*allow_call_overload=*/true, argAsts);
+        /*allow_call_overload=*/true, argAsts, own_this_on_error,
+        own_args_on_error);
   }
 
   // Indirect / UFCS / method kwargs path. Compiles ARG_LIST into
@@ -21531,13 +22707,21 @@ struct JIT {
   // ahead of any kwarg or splat. `prefix_ast` is the prefix value's
   // report position (the DOT node for a UFCS receiver); null falls back
   // to the call site.
-  llvm::Value* compile_function_call_runtime_kwargs(
+  Owned compile_function_call_runtime_kwargs(
       const peg::Ast& argsAst, llvm::Value* callee,
       llvm::Value* thisVal,
       const std::vector<llvm::Value*>& positional_prefix = {},
       const peg::Ast* prefix_ast = nullptr) {
     using namespace peg::udl;
-    emit_arg_list_check(argsAst);  // shared single source; inline scan stays
+    // shared single source; inline scan stays. A malformed arg list aborts
+    // before the receiver `this` and any UFCS positional prefix are consumed
+    // by the call — release those caller-owned +1s on the throw path. They
+    // must be released inside emit_arg_list_check (before the noreturn throw);
+    // releasing after it returns would land behind dead IR and never run.
+    std::vector<llvm::Value*> owned_on_throw{thisVal};
+    owned_on_throw.insert(owned_on_throw.end(), positional_prefix.begin(),
+                          positional_prefix.end());
+    emit_arg_list_check(argsAst, owned_on_throw);
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto i64Ty = builder_.getInt64Ty();
 
@@ -21572,6 +22756,13 @@ struct JIT {
         positional.push_back(child.get());
       }
     }
+
+    // This frame owns the receiver's +1 until call_with_kwargs consumes it —
+    // held as Owned so the unwind-temp window covers it while the argument
+    // value expressions compile below (a throwing argument used to strand
+    // it). The scan-time malformed-list throws above stay with
+    // emit_arg_list_check's release contract, so the handle starts here.
+    Owned this_guard = thisVal ? own(thisVal) : Owned();
 
     // Pre-size the per-bucket value vectors and pre-build kwarg key
     // global strings (these have no side effects). The actual value
@@ -21642,6 +22833,10 @@ struct JIT {
       store_at(splatSlab, valueType_, i, splatVals[i].consume());
     }
 
+    // From here the receiver's +1 is handed to the dispatch below;
+    // call_with_kwargs owns its cleanup on every throw site (release_owned).
+    if (thisVal) this_guard.consume();
+
     // Callee must be a closure (matches compile_function_call_raw's
     // guard) — or a callable class instance (`obj(kwargs)` → `__call__`
     // with `this` bound to the instance, Phase 2b) — or a class object
@@ -21655,9 +22850,13 @@ struct JIT {
     auto contBB = llvm::BasicBlock::Create(ctx_, "kwc.callee.cont", fn);
     builder_.CreateCondBr(isFunc, okBB, ovBB);
 
+    // kwc.this carries mixed-provenance +1s (the ov arm mints one via the
+    // retain; the ok arm passes the caller's through) — each arm declares
+    // its contribution via own() at its end.
+    OwnedPhi thisMerge(this, "kwc.this");
     builder_.SetInsertPoint(okBB);
     auto clsNormal = builder_.CreateIntToPtr(extract_data(callee), ptrTy);
-    auto thisNormal = thisVal ? thisVal : make_nil();
+    thisMerge.add_incoming(own(thisVal ? thisVal : make_nil()));
     auto okEnd = builder_.GetInsertBlock();
     builder_.CreateBr(contBB);
 
@@ -21675,6 +22874,7 @@ struct JIT {
     builder_.SetInsertPoint(callBB);
     emit_value_retain(callee);  // instance becomes `this` (consumed by frame)
     auto clsOverload = builder_.CreateIntToPtr(extract_data(cm), ptrTy);
+    thisMerge.add_incoming(own(callee));
     auto ovEnd = builder_.GetInsertBlock();
     builder_.CreateBr(contBB);
 
@@ -21696,6 +22896,7 @@ struct JIT {
     builder_.CreateUnreachable();
     builder_.SetInsertPoint(ctorBB);
     auto clsCtor = builder_.CreateIntToPtr(extract_data(nm), ptrTy);
+    thisMerge.add_incoming(make_nil());
     auto ctorEnd = builder_.GetInsertBlock();
     builder_.CreateBr(contBB);
 
@@ -21704,10 +22905,9 @@ struct JIT {
     clsPtr->addIncoming(clsNormal, okEnd);
     clsPtr->addIncoming(clsOverload, ovEnd);
     clsPtr->addIncoming(clsCtor, ctorEnd);
-    auto thisVV = builder_.CreatePHI(valueType_, 3, "kwc.this");
-    thisVV->addIncoming(thisNormal, okEnd);
-    thisVV->addIncoming(callee, ovEnd);
-    thisVV->addIncoming(make_nil(), ctorEnd);
+    // Owned across the position publish below; consumed at the kwargs-call
+    // handoff (the helper owns `this` from entry).
+    Owned thisO = thisMerge.finish(contBB);
 
     // Positional slab index == param index in the kwargs helper (it passes
     // the resolved slab straight to fn_ptr), so the argpos indices line up
@@ -21722,12 +22922,13 @@ struct JIT {
       }
     }
     emit_call_position_publish(posAsts);
+    auto thisPin = thisO.consume();
     auto result = emit_value_call(
         module_->getOrInsertFunction(
             rt::call_with_kwargs, valueType_, ptrTy, builder_.getInt8Ty(),
             i64Ty, i64Ty, ptrTy, i64Ty, ptrTy, ptrTy, i64Ty, ptrTy,
             i64Ty, i64Ty),
-        {clsPtr, extract_tag(thisVV), extract_data(thisVV),
+        {clsPtr, extract_tag(thisPin), extract_data(thisPin),
          builder_.getInt64(static_cast<int64_t>(posVals.size())), posSlab,
          builder_.getInt64(static_cast<int64_t>(kwVals.size())),
          kwKeysSlab, kwValsSlab,
@@ -21737,7 +22938,7 @@ struct JIT {
     // it is borrowed for the duration of the dispatch, not released
     // here — the outer postfix (compile_call's ARGUMENTS case) owns the
     // +1 temp and releases it after the dispatch returns.
-    return result;
+    return own(result);
   }
 
   // Lower `range(N)` / `range(start, end)` / `iota(N)` / `iota(start,
@@ -21745,7 +22946,7 @@ struct JIT {
   // `step:` kw-only argument. Returns nullptr if the callee is not
   // one of these or the shape is wrong, letting the regular dispatch
   // take over.
-  llvm::Value* try_compile_core_global(const std::string& name,
+  Owned try_compile_core_global(const std::string& name,
                                         const peg::Ast& argsAst) {
     using namespace peg::udl;
     // Collect positional args + any `step:` kwarg (range-only). Any
@@ -21754,7 +22955,7 @@ struct JIT {
     const peg::Ast* step_ast = nullptr;
     bool is_seq = (name == "range" || name == "iota");
     for (auto& c : argsAst.nodes) {
-      if (c->tag == "KWARG_SPLAT"_) return nullptr;  // splat: see compile_global
+      if (c->tag == "KWARG_SPLAT"_) return {};  // splat: see compile_global
       if (c->tag == "KWARG"_) {
         auto kwname = std::string(c->nodes[0]->token);
         if (name == "range" && kwname == "step") {
@@ -21767,9 +22968,9 @@ struct JIT {
               "TypeError",
               std::format("unknown keyword argument '{}'", kwname),
               current_line_, current_column_);  // call site, matching interp
-          return make_nil();  // unreachable after the throw
+          return own(make_nil());  // unreachable after the throw
         } else {
-          return nullptr;  // other global → compile_global handles it
+          return {};  // other global → compile_global handles it
         }
       } else {
         positional.push_back(c.get());
@@ -21785,7 +22986,7 @@ struct JIT {
           builtin_arity_error_message(name, 1, 2,
                                       static_cast<long>(positional.size())),
           current_line_, current_column_);  // call site, matching interp
-      return make_nil();  // unreachable after the throw
+      return own(make_nil());  // unreachable after the throw
     }
     auto two_args = [&](llvm::Value*& s, llvm::Value*& e) {
       if (positional.size() == 1) {
@@ -21803,7 +23004,7 @@ struct JIT {
     llvm::Value *s = nullptr, *e = nullptr;
     if (name == "iota" && !step_ast && two_args(s, e)) {
       auto arr = builder_.CreateCall(module_->getFunction(rt::iota), {s, e});
-      return make_array(arr);
+      return own(make_array(arr));
     }
     if (name == "range" && two_args(s, e)) {
       auto step = step_ast ? value_to_long(compile(*step_ast).consume())
@@ -21811,9 +23012,9 @@ struct JIT {
       auto obj = emit_call(
           module_->getFunction(rt::math_range),
           {s, e, step, current_line_val(), current_column_val()});
-      return make_object(obj);
+      return own(make_object(obj));
     }
-    return nullptr;
+    return {};
   }
 
   // Fuse `range(N).<HOF>(...)` into a direct counter loop, skipping
@@ -21821,18 +23022,18 @@ struct JIT {
   // .reduce(init, |acc,i|), .for_each(|i|), .map(|i|).collect().
   // ~17% of HOF microgpt's runtime is in these shapes; bypassing the
   // wrapper keeps the loop alloc-free.
-  llvm::Value* try_compile_range_fusion(const peg::Ast& ast) {
+  Owned try_compile_range_fusion(const peg::Ast& ast) {
     using namespace peg::udl;
-    if (ast.nodes.empty()) return nullptr;
+    if (ast.nodes.empty()) return {};
     const auto& calleeNode = *ast.nodes[0];
-    if (calleeNode.tag != "IDENTIFIER"_) return nullptr;
-    if (calleeNode.token != "range") return nullptr;
+    if (calleeNode.tag != "IDENTIFIER"_) return {};
+    if (calleeNode.token != "range") return {};
     // Bail out on any kwarg/splat in either ARGUMENTS so the normal
     // dispatch's guard surfaces a clean error.
     for (size_t i = 1; i < ast.nodes.size(); i++) {
       if (ast.nodes[i]->original_tag == "ARGUMENTS"_ &&
           !arg_list_is_positional_only(*ast.nodes[i])) {
-        return nullptr;
+        return {};
       }
     }
     if (ast.nodes.size() < 4 ||
@@ -21840,7 +23041,7 @@ struct JIT {
         ast.nodes[1]->nodes.size() != 1 ||
         ast.nodes[2]->original_tag != "DOT"_ ||
         ast.nodes[3]->original_tag != "ARGUMENTS"_) {
-      return nullptr;
+      return {};
     }
     const auto& n_ast = *ast.nodes[1]->nodes[0];
     auto method = ast.nodes[2]->token;
@@ -21848,13 +23049,13 @@ struct JIT {
     if (method == "reduce" && m_args.nodes.size() == 2 &&
         is_inlinable_lambda(*m_args.nodes[1], 2) &&
         ast.nodes.size() == 4) {
-      return emit_inlined_range_reduce(
-          n_ast, *m_args.nodes[0], *m_args.nodes[1]);
+      return own(emit_inlined_range_reduce(
+          n_ast, *m_args.nodes[0], *m_args.nodes[1]));
     }
     if (method == "for_each" && m_args.nodes.size() == 1 &&
         is_inlinable_lambda(*m_args.nodes[0], 1) &&
         ast.nodes.size() == 4) {
-      return emit_inlined_range_for_each(n_ast, *m_args.nodes[0]);
+      return own(emit_inlined_range_for_each(n_ast, *m_args.nodes[0]));
     }
     if (method == "map" && m_args.nodes.size() == 1 &&
         is_inlinable_lambda(*m_args.nodes[0], 1) &&
@@ -21863,9 +23064,9 @@ struct JIT {
         ast.nodes[4]->token == "collect" &&
         ast.nodes[5]->original_tag == "ARGUMENTS"_ &&
         ast.nodes[5]->nodes.empty()) {
-      return emit_inlined_range_map_collect(n_ast, *m_args.nodes[0]);
+      return own(emit_inlined_range_map_collect(n_ast, *m_args.nodes[0]));
     }
-    return nullptr;
+    return {};
   }
 
   // Handle a CALL. The core lowers `range`/`iota` (and the
@@ -21873,7 +23074,7 @@ struct JIT {
   // to the registered extension via the install_extension hooks. With
   // no extension installed every hook is a no-op and this falls
   // through to the regular CALL dispatch.
-  llvm::Value* compile_call_with_builtins(const peg::Ast& ast) {
+  Owned compile_call_with_builtins(const peg::Ast& ast) {
     using namespace peg::udl;
     auto calleeNode = ast.nodes[0];
     CallRootSaver call_root(*this, ast);
@@ -21887,9 +23088,9 @@ struct JIT {
       return compile_call(ast);
     }
 
-    if (auto v = try_compile_range_fusion(ast)) return v;
+    if (Owned v = try_compile_range_fusion(ast); v.borrow()) return v;
 
-    llvm::Value* start = nullptr;
+    Owned start;
     size_t next_idx = 1;
 
     auto& h = current_hooks();
@@ -21900,13 +23101,13 @@ struct JIT {
       // kwarg-name check, matching the interp + the generic path.
       emit_arg_list_check(*ast.nodes[1]);
       start = try_compile_core_global(name, *ast.nodes[1]);
-      if (!start && h.compile_global) {
+      if (!start.borrow() && h.compile_global) {
         start = h.compile_global(*this, name, *ast.nodes[1], ast);
       }
-      if (start) next_idx = 2;
+      if (start.borrow()) next_idx = 2;
     }
 
-    if (!start && calleeNode->tag == "IDENTIFIER"_ &&
+    if (!start.borrow() && calleeNode->tag == "IDENTIFIER"_ &&
         ast.nodes.size() >= 2 &&
         ast.nodes[1]->original_tag == "DOT"_) {
       auto ns = calleeNode->token;
@@ -21916,32 +23117,32 @@ struct JIT {
           h.compile_ns_call) {
         emit_arg_list_check(*ast.nodes[2]);
         start = h.compile_ns_call(*this, ns, prop, *ast.nodes[2], ast);
-        if (start) next_idx = 3;
+        if (start.borrow()) next_idx = 3;
       }
       // Nested `Ns.sub.method(args)` (e.g. `Encoding.base64.encode(x)`): try
       // the extension's typed-positional fast path before the generic
       // sub-namespace-object method dispatch (compile_ns_prop + the postfix
       // loop). `prop` is the sub-namespace; nodes[2] the method.
-      if (!start && ast.nodes.size() >= 4 &&
+      if (!start.borrow() && ast.nodes.size() >= 4 &&
           ast.nodes[2]->original_tag == "DOT"_ &&
           ast.nodes[3]->original_tag == "ARGUMENTS"_ &&
           h.compile_nested_ns_call) {
         emit_arg_list_check(*ast.nodes[3]);
         start = h.compile_nested_ns_call(*this, ns, prop, ast.nodes[2]->token,
                                          *ast.nodes[3], ast);
-        if (start) next_idx = 4;
+        if (start.borrow()) next_idx = 4;
       }
-      if (!start && h.compile_ns_prop) {
+      if (!start.borrow() && h.compile_ns_prop) {
         start = h.compile_ns_prop(*this, ns, prop);
-        if (start) next_idx = 2;
+        if (start.borrow()) next_idx = 2;
       }
     }
 
-    if (!start) return compile_call(ast);
+    if (!start.borrow()) return compile_call(ast);
 
     // Continue with remaining postfixes (matching compile_call's loop —
     // same rolling Owned handle, see the ownership note there).
-    Owned callee = own(start);
+    Owned callee = std::move(start);
     auto sn = begin_safe_nav(ast);
     for (auto i = next_idx; i < ast.nodes.size(); i++) {
       const auto& postfix = *ast.nodes[i];
@@ -21949,16 +23150,16 @@ struct JIT {
         case "ARGUMENTS"_: {
           // Borrowed-callee dispatch; the move-assign releases the owned
           // temp after (see the compile_call ARGUMENTS note).
-          callee = own(compile_function_call(postfix, callee.borrow()));
+          callee = compile_function_call(postfix, callee.borrow());
           break;
         }
         case "INDEX"_: {
-          callee = own(emit_index_step(postfix, callee.consume()));
+          callee = own(emit_index_step(postfix, std::move(callee)));
           break;
         }
         case "SAFE_INDEX"_: {
           emit_safe_nav_guard(callee.borrow(), sn);
-          callee = own(emit_index_step(postfix, callee.consume()));
+          callee = own(emit_index_step(postfix, std::move(callee)));
           break;
         }
         case "SAFE_DOT"_:
@@ -21969,22 +23170,28 @@ struct JIT {
               ast.nodes[i + 1]->original_tag == "ARGUMENTS"_) {
             auto method = std::string(postfix.token);
             if (method == "map" && postfix.original_tag == "DOT"_) {
-              // Declines on AST shape alone; a hit consumed the +1.
+              // consume() before emitting; re-own on decline (see the
+              // compile_call copy of this hook for the rationale).
+              auto rawCallee = callee.consume();
               if (auto fused =
-                      try_fuse_iter_map_collect(ast, i, callee.borrow())) {
-                callee.consume();
+                      try_fuse_iter_map_collect(ast, i, rawCallee)) {
                 callee = own(*fused);
                 i += 3;  // consume ARGUMENTS, DOT(collect), ARGUMENTS
                 break;
               }
+              callee = own(rawCallee);
             }
-            callee = own(compile_method_call(method, *ast.nodes[i + 1],
-                                             std::move(callee), &postfix));
+            callee = compile_method_call(method, *ast.nodes[i + 1],
+                                         std::move(callee), &postfix);
             i++;
           } else {
             auto name = std::string(postfix.token);
             auto receiver = callee.borrow();
-            auto view = compile_property_get(receiver, name);
+            // The rolling handle owns the receiver's +1; a direct-error throw
+            // out of the cold read path (dropped Shared view, closed namespace)
+            // would strand it, so let the helper release it on the unwind edge.
+            auto view = emit_property_get(receiver, name,
+                                             /*own_receiver=*/true);
             // Capture own-slot presence before the receiver is released below.
             auto hasOwn = emit_has_own_field(receiver, name);
             callee = own(emit_property_value_read(receiver, view, name));
@@ -22012,13 +23219,13 @@ struct JIT {
           throw std::runtime_error("invalid call postfix");
       }
     }
-    return end_safe_nav(sn, callee.consume());
+    return own(end_safe_nav(sn, callee.consume()));
   }
 
   // --- Debugger ---
 
-  llvm::Value* compile_debugger(const peg::Ast& ast) {
-    if (!debug_enabled_) return make_nil();
+  Owned compile_debugger(const peg::Ast& ast) {
+    if (!debug_enabled_) return own(make_nil());
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto pathPtr = builder_.CreateGlobalString(ast.path, ".dbgpath");
     emit_call(
@@ -22027,20 +23234,20 @@ struct JIT {
             builder_.getInt64Ty(), builder_.getInt64Ty()),
         {pathPtr, builder_.getInt64(static_cast<int64_t>(ast.line)),
          builder_.getInt64(static_cast<int64_t>(ast.column))});
-    return make_nil();
+    return own(make_nil());
   }
 
   // --- Return ---
 
-  llvm::Value* compile_return(const peg::Ast& ast) {
-    llvm::Value* val;
-    if (ast.nodes.empty()) {
-      val = make_nil();
-    } else {
-      val = compile(*ast.nodes[0]).consume();
-    }
+  Owned compile_return(const peg::Ast& ast) {
+    // The return value stays in its Owned across the exit sequence below
+    // (iterator disposes, defer runs, scope teardown — all may throw, and a
+    // bare +1 would strand on those edges, §4.9): the window spills it
+    // around each invoke, and it is consumed directly into the ret.
+    Owned valOwned = ast.nodes.empty() ? own(make_nil())
+                                       : compile(*ast.nodes[0]);
     if (!current_return_type_.empty()) {
-      emit_type_check(val, current_return_type_, "return value");
+      emit_type_check(valOwned.borrow(), current_return_type_, "return value");
     }
     // When returning out of one or more for-in bodies, current_lpad_ is the
     // innermost loop's own exception landingpad (it drives that loop's
@@ -22079,10 +23286,11 @@ struct JIT {
     release_all_scopes_for_exit();
     // JitFn returns its result through the out-pointer (see JitFn), not by
     // value — so no 16-byte aggregate crosses the closure-call ABI boundary.
-    builder_.CreateStore(val, current_sret_);
+    auto retV = valOwned.consume();
+    builder_.CreateStore(retV, current_sret_);
     builder_.CreateRetVoid();
     current_lpad_ = savedExitLpad;
-    return val;
+    return own(retV);
   }
 
   // `defer { BODY }` — compiles BODY as a 0-param closure and pushes
@@ -22091,7 +23299,7 @@ struct JIT {
   // fn literals. The surrounding scope's exit path (fall-through,
   // return, throw) calls `culebra_runtime_defer_run_to` to unwind the
   // stack back to that scope's mark.
-  llvm::Value* compile_defer(const peg::Ast& ast) {
+  Owned compile_defer(const peg::Ast& ast) {
     using namespace llvm;
     auto ptrTy = PointerType::get(ctx_, 0);
 
@@ -22187,12 +23395,12 @@ struct JIT {
         module_->getFunction(rt::defer_push),
         {extract_tag(closureVal.borrow()), extract_data(closureVal.borrow())});
     closureVal.drop();
-    return make_nil();
+    return own(make_nil());
   }
 
   // `throw expr` — evaluates expr, hands its tag/data to the runtime
   // which raises a CulebraException. Control never falls through.
-  llvm::Value* compile_throw(const peg::Ast& ast) {
+  Owned compile_throw(const peg::Ast& ast) {
     auto val = compile(*ast.nodes[0]).consume();
     emit_call(module_->getFunction(rt::throw_),
               {extract_tag(val), extract_data(val)});
@@ -22201,7 +23409,7 @@ struct JIT {
     auto deadBB = llvm::BasicBlock::Create(
         ctx_, "throw.dead", builder_.GetInsertBlock()->getParent());
     builder_.SetInsertPoint(deadBB);
-    return make_nil();
+    return own(make_nil());
   }
 
   // `try BODY catch name HANDLER` — evaluates BODY. If BODY throws a
@@ -22209,7 +23417,7 @@ struct JIT {
   // value. The whole form is an expression yielding whichever block
   // ran last. `return` inside BODY / HANDLER returns from the
   // enclosing user function (standard LLVM ret semantics).
-  llvm::Value* compile_try(const peg::Ast& ast) {
+  Owned compile_try(const peg::Ast& ast) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
 
@@ -22236,15 +23444,27 @@ struct JIT {
     auto tryCleanupBB = llvm::BasicBlock::Create(ctx_, "try.body.cleanup", fn);
     current_lpad_ = tryCleanupBB;
     push_scope();
-    auto tryVal = compile(*ast.nodes[0]).consume();
+    // Land a body/catch result in resultSlot and branch to the shared end
+    // block; in a terminated block the value is dead residue — discard it
+    // without emitting a release past the terminator.
+    auto finalize = [&](Owned&& v) {
+      if (!builder_.GetInsertBlock()->getTerminator()) {
+        builder_.CreateStore(v.consume(), resultSlot);
+        builder_.CreateBr(endBB);
+      } else {
+        (void)v.consume();
+      }
+    };
+    // The body value stays in its Owned across the scope teardown (which
+    // branches through owned.exit/cont and may invoke a throwing drop —
+    // §4.9): the window releases it on that edge, and it is consumed
+    // directly into the result store.
+    Owned tryOwned = compile(*ast.nodes[0]);
     // Fill/erase the body cleanup while the scope is live; it re-raises to the
     // catch pad (lpadBB), but the code after the try restores the outer lpad.
     finish_and_pop_scope(tryCleanupBB, /*defer_mark=*/nullptr, lpadBB,
                          "try.body.exc", savedLpad);
-    if (!builder_.GetInsertBlock()->getTerminator()) {
-      builder_.CreateStore(tryVal, resultSlot);
-      builder_.CreateBr(endBB);
-    }
+    finalize(std::move(tryOwned));
 
     // --- Landing pad: catch-all. `culebra_runtime_try_translate` classifies
     // the in-flight exception from the carriers: a user throw
@@ -22319,17 +23539,15 @@ struct JIT {
     // can do `catch e { e = transformed(e); ... }`.
     auto caughtValue = builder_.CreateLoad(valueType_, caughtSlot);
     declare_local(caughtName, caughtValue, /*is_mut=*/true);
-    auto catchVal = compile(*ast.nodes[2]).consume();
+    // Same Owned-across-teardown discipline as the try body above.
+    Owned catchOwned = compile(*ast.nodes[2]);
     finish_and_pop_scope(catchCleanupBB, /*defer_mark=*/nullptr, savedLpad,
                          "try.catch.exc", savedLpad);
-    if (!builder_.GetInsertBlock()->getTerminator()) {
-      builder_.CreateStore(catchVal, resultSlot);
-      builder_.CreateBr(endBB);
-    }
+    finalize(std::move(catchOwned));
 
     // --- End ---
     builder_.SetInsertPoint(endBB);
-    return builder_.CreateLoad(valueType_, resultSlot, "try.res");
+    return own(builder_.CreateLoad(valueType_, resultSlot, "try.res"));
   }
 
   // --- Execution ---
@@ -22345,6 +23563,22 @@ struct JIT {
 
     auto mainFn =
         cantFail(jit->lookup("__culebra_main")).toPtr<void (*)()>();
+    // GAP5 detector fixture (debug/tests only): CULEBRA_GC_TEST_LEAK=1 mints
+    // a handful of deliberately orphaned +1 arrays here, before the program
+    // body runs, so the teardown audit has a guaranteed inflated-RC leak to
+    // fire on. The smoke test's fires-on-leak case used to piggyback on a
+    // real open product leak and needed a new fixture every time one closed;
+    // this knob makes the detector's own regression test self-contained.
+    // Run it under CULEBRA_GC_NEVER=1 for a deterministic fixture — without
+    // it a mid-run collect may sweep the conservatively-dead orphans before
+    // the audit (whether one runs depends on the program's allocation
+    // volume). Eight of them: a single orphan can alias a stale stack slot
+    // in the conservative scan and under-report (the same knee
+    // leak_abort_suite.sh works around), so mint enough that the audit fires
+    // deterministically.
+    if (std::getenv("CULEBRA_GC_TEST_LEAK")) {
+      for (int i = 0; i < 8; i++) (void)culebra_runtime_array_new();
+    }
     // Force a collect while the LLJIT (and therefore every closure's
     // `fn_ptr`) is still alive — on BOTH success and throw paths. Without
     // this, leaked residue holding a `drop` survives until the heap is torn
@@ -22365,6 +23599,12 @@ struct JIT {
     // cannot occur because no drop fires.
     struct CollectGuard {
       ~CollectGuard() {
+        // GAP5: the top-level body has returned, so the mutator is quiescent
+        // (no expression in flight) yet the module/namespace roots are still
+        // wired — the one sound point to audit for inflated-RC leaks and abort
+        // at their birth site (no-op unless CULEBRA_GC_LEAK_ABORT=1). Do it
+        // BEFORE the reclaiming collect, while the leaked residue is still live.
+        _gc_heap().maybe_audit_leaks();
         bool saved = _jit_drop_suppressed();
         _jit_drop_suppressed() = true;
         _gc_heap().collect();  // reclaim leaked residue before module teardown
@@ -22512,12 +23752,20 @@ inline void JIT::emit_array_unary_inline_loop(
 inline llvm::Value* JIT::emit_inlined_array_map(
     llvm::Value* arrPtr, const peg::Ast& lambda_ast) {
   auto ptrTy = llvm::PointerType::get(ctx_, 0);
+  auto fn = builder_.GetInsertBlock()->getParent();
   auto size = emit_call(
       module_->getOrInsertFunction(rt::array_size, builder_.getInt64Ty(),
                                    ptrTy),
       {arrPtr}, "imap.size");
   auto out =
       emit_call(module_->getFunction(rt::array_new_reserved), {size});
+  // Guard the `out` accumulator on the throw edge: a throwing inline map body
+  // would strand it (and the results pushed so far) — a codegen temp, not a
+  // scope slot (docs/jit_ownership.md §4.3); pred-empty ⇒ erased.
+  auto cleanupBB = llvm::BasicBlock::Create(ctx_, "imap.cleanup", fn);
+  auto outGuard = make_build_guard(make_array(out));
+  auto savedLpad = current_lpad_;
+  current_lpad_ = cleanupBB;
   emit_array_unary_inline_loop(
       arrPtr, lambda_ast,
       [&](llvm::Value* /*elem*/, llvm::Value* result) {
@@ -22527,6 +23775,8 @@ inline llvm::Value* JIT::emit_inlined_array_map(
                 builder_.getInt8Ty(), builder_.getInt64Ty()),
             {out, extract_tag(result), extract_data(result)});
       });
+  current_lpad_ = savedLpad;
+  finish_construction_cleanup(cleanupBB, {outGuard}, savedLpad);
   return make_array(out);
 }
 
@@ -22539,6 +23789,12 @@ inline llvm::Value* JIT::emit_inlined_array_filter(
   auto ptrTy = PointerType::get(ctx_, 0);
   auto fn = builder_.GetInsertBlock()->getParent();
   auto out = emit_call(module_->getFunction(rt::array_new), {});
+  // Guard the `out` accumulator on the throw edge (a throwing predicate would
+  // strand it — a codegen temp, not a scope slot; docs/jit_ownership.md §4.3).
+  auto cleanupBB = BasicBlock::Create(ctx_, "ifil.cleanup", fn);
+  auto outGuard = make_build_guard(make_array(out));
+  auto savedLpad = current_lpad_;
+  current_lpad_ = cleanupBB;
   emit_array_unary_inline_loop(
       arrPtr, lambda_ast,
       [&](llvm::Value* elem, llvm::Value* result) {
@@ -22571,6 +23827,8 @@ inline llvm::Value* JIT::emit_inlined_array_filter(
 
         builder_.SetInsertPoint(contBB);
       });
+  current_lpad_ = savedLpad;
+  finish_construction_cleanup(cleanupBB, {outGuard}, savedLpad);
   return make_array(out);
 }
 
@@ -22674,10 +23932,10 @@ inline void JIT::emit_iter_unary_inline_loop(
   auto ptrTy = PointerType::get(ctx_, 0);
   auto fn = builder_.GetInsertBlock()->getParent();
 
-  auto has_next_fn_val = compile_property_get(iter_val, "has_next");
+  auto has_next_fn_val = emit_property_get(iter_val, "has_next");
   auto has_next_cls_ptr = builder_.CreateIntToPtr(
       extract_data(has_next_fn_val), ptrTy, "ihof.has_next.cls");
-  auto next_fn_val = compile_property_get(iter_val, "next");
+  auto next_fn_val = emit_property_get(iter_val, "next");
   auto next_cls_ptr =
       builder_.CreateIntToPtr(extract_data(next_fn_val), ptrTy, "ihof.next.cls");
   auto iterTag = extract_tag(iter_val);
@@ -22770,13 +24028,15 @@ inline std::optional<llvm::Value*> JIT::try_fuse_iter_map_collect(
                                  get_or_create_global_str("next", ".it.next"));
   builder_.CreateCondBr(hasNext, fusedBB, unfusedBB);
 
+  OwnedPhi mcMerge(this, "mc.res");
   builder_.SetInsertPoint(fusedBB);
-  auto fusedRes =
-      emit_inlined_iter_map_collect(receiver, *ast.nodes[i + 1]->nodes[0]);
+  Owned fusedRes =
+      own(emit_inlined_iter_map_collect(receiver,
+                                        *ast.nodes[i + 1]->nodes[0]));
   // The inline loop borrows the iterator; consume the +1 the postfix chain
   // transferred (the unfused arm hands it to compile_method_call instead).
   emit_value_release(receiver);
-  auto fusedEnd = builder_.GetInsertBlock();
+  mcMerge.add_incoming(std::move(fusedRes));
   builder_.CreateBr(mergeBB);
 
   builder_.SetInsertPoint(unfusedBB);
@@ -22784,26 +24044,36 @@ inline std::optional<llvm::Value*> JIT::try_fuse_iter_map_collect(
   // the arms are mutually exclusive at runtime, so own(receiver) here and
   // the fused arm's release each hand that single +1 to exactly one
   // runtime consumer. (`mapped` is a fresh +1 produced in this arm.)
-  auto mapped = compile_method_call("map", *ast.nodes[i + 1], own(receiver));
-  auto unfusedRes =
-      compile_method_call("collect", *ast.nodes[i + 3], own(mapped));
-  auto unfusedEnd = builder_.GetInsertBlock();
+  Owned mapped = compile_method_call("map", *ast.nodes[i + 1], own(receiver));
+  mcMerge.add_incoming(
+      compile_method_call("collect", *ast.nodes[i + 3], std::move(mapped)));
   builder_.CreateBr(mergeBB);
 
   builder_.SetInsertPoint(mergeBB);
-  auto phi = builder_.CreatePHI(valueType_, 2, "mc.res");
-  phi->addIncoming(fusedRes, fusedEnd);
-  phi->addIncoming(unfusedRes, unfusedEnd);
-  return phi;
+  return mcMerge.finish(mergeBB).consume();
 }
 
 inline llvm::Value* JIT::emit_inlined_iter_map_collect(
     llvm::Value* iter_val, const peg::Ast& lambda_ast) {
   auto ptrTy = llvm::PointerType::get(ctx_, 0);
+  auto fn = builder_.GetInsertBlock()->getParent();
   // Allocate the destination Array up-front; per-element results get
   // pushed into it inside the inlined iteration loop.
   auto outPtr = emit_call(
       module_->getOrInsertFunction(rt::array_new, ptrTy), {}, "imc.out");
+  // Exception-safe: a throwing inline map body strands two codegen temps on the
+  // unwind edge — the `out` accumulator (plus the results pushed so far) and the
+  // borrowed iterator receiver (whose caller drops it only on the normal path,
+  // at try_fuse's emit_value_release). Neither is a scope slot, so guard both on
+  // a per-region cleanup pad (docs/jit_ownership.md §4.3); pred-empty ⇒ erased,
+  // so a non-throwing body pays nothing. The normal-path receiver release and
+  // this throw-path release are mutually exclusive (cleanupBB is only entered on
+  // the unwind edge), so the +1 is dropped exactly once on each path.
+  auto cleanupBB = llvm::BasicBlock::Create(ctx_, "imc.cleanup", fn);
+  auto outGuard = make_build_guard(make_array(outPtr));
+  auto recvGuard = make_build_guard(iter_val);
+  auto savedLpad = current_lpad_;
+  current_lpad_ = cleanupBB;
   emit_iter_unary_inline_loop(
       iter_val, lambda_ast,
       [&](llvm::Value* /*elem*/, llvm::Value* result) {
@@ -22813,6 +24083,8 @@ inline llvm::Value* JIT::emit_inlined_iter_map_collect(
                 builder_.getInt8Ty(), builder_.getInt64Ty()),
             {outPtr, extract_tag(result), extract_data(result)});
       });
+  current_lpad_ = savedLpad;
+  finish_construction_cleanup(cleanupBB, {outGuard, recvGuard}, savedLpad);
   return make_array(outPtr);
 }
 
@@ -22875,8 +24147,17 @@ inline llvm::Value* JIT::emit_inlined_range_for_each(
 inline llvm::Value* JIT::emit_inlined_range_map_collect(
     const peg::Ast& n_ast, const peg::Ast& lambda_ast) {
   auto ptrTy = llvm::PointerType::get(ctx_, 0);
+  auto fn = builder_.GetInsertBlock()->getParent();
   auto outPtr = emit_call(
       module_->getOrInsertFunction(rt::array_new, ptrTy), {}, "rmc.out");
+  // Guard the `out` accumulator on the throw edge (a throwing map body would
+  // otherwise strand it — a codegen temp, not a scope slot). No receiver to
+  // guard here: the range source is an i64 counter, not a heap value. See
+  // docs/jit_ownership.md §4.3; pred-empty ⇒ erased.
+  auto cleanupBB = llvm::BasicBlock::Create(ctx_, "rmc.cleanup", fn);
+  auto outGuard = make_build_guard(make_array(outPtr));
+  auto savedLpad = current_lpad_;
+  current_lpad_ = cleanupBB;
   emit_range_unary_inline_loop(
       n_ast, lambda_ast,
       [&](llvm::Value* /*i*/, llvm::Value* result) {
@@ -22886,6 +24167,8 @@ inline llvm::Value* JIT::emit_inlined_range_map_collect(
                 builder_.getInt8Ty(), builder_.getInt64Ty()),
             {outPtr, extract_tag(result), extract_data(result)});
       });
+  current_lpad_ = savedLpad;
+  finish_construction_cleanup(cleanupBB, {outGuard}, savedLpad);
   return make_array(outPtr);
 }
 
@@ -22953,10 +24236,10 @@ inline llvm::Value* JIT::emit_inlined_iter_reduce(
   auto accAlloca = entryB.CreateAlloca(valueType_, nullptr, "iri.acc");
   builder_.CreateStore(init, accAlloca);
 
-  auto has_next_fn_val = compile_property_get(iter_val, "has_next");
+  auto has_next_fn_val = emit_property_get(iter_val, "has_next");
   auto has_next_cls_ptr = builder_.CreateIntToPtr(
       extract_data(has_next_fn_val), ptrTy, "iri.has_next.cls");
-  auto next_fn_val = compile_property_get(iter_val, "next");
+  auto next_fn_val = emit_property_get(iter_val, "next");
   auto next_cls_ptr =
       builder_.CreateIntToPtr(extract_data(next_fn_val), ptrTy, "iri.next.cls");
   auto iterTag = extract_tag(iter_val);
@@ -23004,12 +24287,12 @@ inline llvm::Value* JIT::emit_inlined_iter_reduce(
   return builder_.CreateLoad(valueType_, accAlloca, "iri.result");
 }
 
-inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
+inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
                                                 const peg::Ast& argsAst,
                                                 llvm::Value* receiver) {
   // Fast path: bail out immediately on unknown method names before doing any
   // setup. Keeps user-defined method calls free of builtin-method overhead.
-  if (!known_builtin_methods().contains(method)) return nullptr;
+  if (!known_builtin_methods().contains(method)) return {};
 
   auto ptrTy = llvm::PointerType::get(ctx_, 0);
   auto tag = extract_tag(receiver);
@@ -23065,7 +24348,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto tPtr = expect_receiver_tag(receiver, TAG_TENSOR, "shape");
     auto arrPtr = emit_call(
         module_->getFunction(rt::tensor_shape), {tPtr}, "tshape");
-    return make_array(arrPtr);
+    return own(make_array(arrPtr));
   }
   if (method == "pow" && argsAst.nodes.size() == 1) {
     expect_receiver_tag(receiver, TAG_TENSOR, "pow");
@@ -23077,19 +24360,19 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
          builder_.getInt64(static_cast<int64_t>(culebra::Op::Pow))},
         "tpow");
     exp.drop();
-    return make_tensor(resultPtr);
+    return own(make_tensor(resultPtr));
   }
   if (method == "transpose" && argsAst.nodes.size() == 0) {
     auto tPtr = expect_receiver_tag(receiver, TAG_TENSOR, "transpose");
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_transpose), {tPtr}, "tt");
-    return make_tensor(resultPtr);
+    return own(make_tensor(resultPtr));
   }
   if (method == "clone" && argsAst.nodes.size() == 0) {
     auto tPtr = expect_receiver_tag(receiver, TAG_TENSOR, "clone");
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_clone), {tPtr}, "tcl");
-    return make_tensor(resultPtr);
+    return own(make_tensor(resultPtr));
   }
   // Autograd methods — all no-arg, all return a Tensor (the receiver for
   // mark / backward / clear; a fresh tensor for grad / detach). Logic
@@ -23104,7 +24387,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
                        : method == "zero_grad"     ? rt::tensor_zero_grad
                                                    : rt::tensor_detach;
     auto resultPtr = emit_call(module_->getFunction(rtName), {tPtr}, "tag");
-    return make_tensor(resultPtr);
+    return own(make_tensor(resultPtr));
   }
   // Activations as instance methods: `t.relu()` / `.sigmoid()` /
   // `.softmax()`. Each is a no-arg unary over the receiver Tensor.
@@ -23119,19 +24402,27 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_unary),
         {tPtr, builder_.getInt64(op_id)}, "tact");
-    return make_tensor(resultPtr);
+    return own(make_tensor(resultPtr));
   }
   if (method == "reshape" && argsAst.nodes.size() == 1) {
     auto tPtr = expect_receiver_tag(receiver, TAG_TENSOR, "reshape");
     auto dims = compile(*argsAst.nodes[0]);
-    emit_type_check(dims.borrow(), "Array", "parameter 'dims'",
-                    argsAst.nodes[0].get());
-    auto dimsPtr = builder_.CreateIntToPtr(extract_data(dims.borrow()), ptrTy);
-    emit_set_op_pos();  // tensor_reshape raises positionless on bad/neg dims
-    auto resultPtr = emit_call(
-        module_->getFunction(rt::tensor_reshape), {tPtr, dimsPtr}, "tr");
+    // The dims Array is +1 owned and released on the normal path below;
+    // guard it so the type check or reshape's element-count/bad-dim throw
+    // releases it on the unwind edge instead of stranding it.
+    llvm::Value* resultPtr;
+    {
+      ThrowGuard dims_guard(this, {dims.borrow()});
+      emit_type_check(dims.borrow(), "Array", "parameter 'dims'",
+                      argsAst.nodes[0].get());
+      auto dimsPtr =
+          builder_.CreateIntToPtr(extract_data(dims.borrow()), ptrTy);
+      emit_set_op_pos();  // tensor_reshape raises positionless on bad/neg dims
+      resultPtr = emit_call(module_->getFunction(rt::tensor_reshape),
+                            {tPtr, dimsPtr}, "tr");
+    }
     dims.drop();
-    return make_tensor(resultPtr);
+    return own(make_tensor(resultPtr));
   }
 
   // Tensor axis-ful reductions (1 Long arg). Tensor-only — receivers
@@ -23153,9 +24444,10 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
         builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_TENSOR)), tensorBB,
         elseBB);
 
+    OwnedPhi tredMerge(this, "tred.res");
     builder_.SetInsertPoint(elseBB);
-    auto elseRes = emit_unresolved_builtin_method(method, argsAst, receiver);
-    auto elseEnd = builder_.GetInsertBlock();
+    tredMerge.add_incoming(
+        emit_unresolved_builtin_method(method, argsAst, receiver));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(tensorBB);
@@ -23170,15 +24462,11 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_reduce_axis),
         {tPtr, builder_.getInt64(op_id), axis}, "trax");
-    auto tensorRes = make_tensor(resultPtr);
-    auto tensorEnd = builder_.GetInsertBlock();
+    tredMerge.add_incoming(make_tensor(resultPtr));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(valueType_, 2, "tred.res");
-    phi->addIncoming(elseRes, elseEnd);
-    phi->addIncoming(tensorRes, tensorEnd);
-    return phi;
+    return tredMerge.finish(mergeBB);
   }
   // Tensor `.mean()` (0-arg). `.sum()` / `.max()` 0-arg fall through
   // to the polymorphic handler below which adds a TAG_TENSOR branch.
@@ -23188,12 +24476,12 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
         module_->getFunction(rt::tensor_reduce_all),
         {tPtr, builder_.getInt64(static_cast<int>(culebra::Op::Mean))},
         "trall");
-    return v;
+    return own(v);
   }
   if (method == "item" && argsAst.nodes.size() == 0) {
     auto tPtr = expect_receiver_tag(receiver, TAG_TENSOR, "item");
     emit_set_op_pos();  // tensor_item raises positionless on multi-element
-    return emit_call(module_->getFunction(rt::tensor_item), {tPtr}, "titem");
+    return own(emit_call(module_->getFunction(rt::tensor_item), {tPtr}, "titem"));
   }
   if (method == "to_array" && argsAst.nodes.size() == 0) {
     auto tenBB = llvm::BasicBlock::Create(ctx_, "ta.ten", fn);
@@ -23209,12 +24497,12 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.SetInsertPoint(errBB);
     emit_receiver_resolution_error(tag, "to_array");
 
+    OwnedPhi taMerge(this, "ta.r");
     builder_.SetInsertPoint(tenBB);
     auto tenPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
     auto tenArr = emit_call(
         module_->getFunction(rt::tensor_to_array), {tenPtr}, "tta");
-    auto tenVal = make_array(tenArr);
-    auto tenEnd = builder_.GetInsertBlock();
+    taMerge.add_incoming(make_array(tenArr));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(tupBB);
@@ -23222,8 +24510,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto tupArr = emit_call(
         module_->getOrInsertFunction(rt::tuple_to_array, ptrTy, ptrTy),
         {tupPtr}, "ta.tup.arr");
-    auto tupVal = make_array(tupArr);
-    auto tupEnd = builder_.GetInsertBlock();
+    taMerge.add_incoming(make_array(tupArr));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(setBB);
@@ -23231,16 +24518,11 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto setArr = emit_call(
         module_->getOrInsertFunction(rt::set_to_array, ptrTy, ptrTy),
         {setPtr}, "ta.set.arr");
-    auto setVal = make_array(setArr);
-    auto setEnd = builder_.GetInsertBlock();
+    taMerge.add_incoming(make_array(setArr));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(valueType_, 3, "ta.r");
-    phi->addIncoming(tenVal, tenEnd);
-    phi->addIncoming(tupVal, tupEnd);
-    phi->addIncoming(setVal, setEnd);
-    return phi;
+    return taMerge.finish(mergeBB);
   }
   if (method == "dot" && argsAst.nodes.size() == 1) {
     auto aPtr = expect_receiver_tag(receiver, TAG_TENSOR, "dot");
@@ -23251,7 +24533,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_dot), {aPtr, bPtr}, "td");
     other.drop();
-    return make_tensor(resultPtr);
+    return own(make_tensor(resultPtr));
   }
   if (method == "linear_sigmoid" && argsAst.nodes.size() == 2) {
     auto wPtr = expect_receiver_tag(receiver, TAG_TENSOR, "linear_sigmoid");
@@ -23268,7 +24550,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
         {wPtr, xp, bp}, "tls");
     xv.drop();
     bv.drop();
-    return make_tensor(resultPtr);
+    return own(make_tensor(resultPtr));
   }
 
   // .size() — works on Array, Object, String, StringView, Set
@@ -23338,7 +24620,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     phi->addIncoming(strSize, strSizeBB);
     phi->addIncoming(svSize, svSizeBB);
     phi->addIncoming(setSize, setSizeBB);
-    return make_long(phi);
+    return own(make_long(phi));
   }
 
   // --- Set methods ---
@@ -23348,8 +24630,14 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
       argsAst.nodes.size() == 1) {
     auto aPtr = expect_receiver_tag(receiver, TAG_SET, method.c_str());
     auto other = compile(*argsAst.nodes[0]);
-    emit_type_check(other.borrow(), "Set", "parameter 'other'",
-                    argsAst.nodes[0].get());
+    {
+      // `other` is `+1`-owned and dropped on the normal path below; guard it so
+      // the type check's throw (`{1,2}.union(|x| x)`) releases it on the unwind
+      // edge instead of stranding (same as `join`, jit_ownership.md §4.3).
+      ThrowGuard other_guard(this, {other.borrow()});
+      emit_type_check(other.borrow(), "Set", "parameter 'other'",
+                      argsAst.nodes[0].get());
+    }
     auto bPtr = builder_.CreateIntToPtr(extract_data(other.borrow()), ptrTy);
     const char* rt_name = method == "union"     ? rt::set_union
                         : method == "intersect" ? rt::set_intersect
@@ -23359,15 +24647,19 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
         module_->getOrInsertFunction(rt_name, ptrTy, ptrTy, ptrTy),
         {aPtr, bPtr}, "set.op");
     other.drop();
-    return make_set(out);
+    return own(make_set(out));
   }
   // subset/superset: both operands Set, returns Bool.
   if ((method == "subset" || method == "superset") &&
       argsAst.nodes.size() == 1) {
     auto aPtr = expect_receiver_tag(receiver, TAG_SET, method.c_str());
     auto other = compile(*argsAst.nodes[0]);
-    emit_type_check(other.borrow(), "Set", "parameter 'other'",
-                    argsAst.nodes[0].get());
+    {
+      // Guard the borrowed arg on the type check's throw edge (see `union`).
+      ThrowGuard other_guard(this, {other.borrow()});
+      emit_type_check(other.borrow(), "Set", "parameter 'other'",
+                      argsAst.nodes[0].get());
+    }
     auto bPtr = builder_.CreateIntToPtr(extract_data(other.borrow()), ptrTy);
     const char* rt_name = method == "subset" ? rt::set_subset
                                              : rt::set_superset;
@@ -23376,7 +24668,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
             rt_name, builder_.getInt8Ty(), ptrTy, ptrTy),
         {aPtr, bPtr}, "set.pred");
     other.drop();
-    return make_bool(builder_.CreateICmpNE(r, builder_.getInt8(0)));
+    return own(make_bool(builder_.CreateICmpNE(r, builder_.getInt8(0))));
   }
   // Set's mutating `.add(x)` / `.remove(x)` are routed through
   // `compile_set_mutate_dispatch` higher up in this file — that path
@@ -23390,7 +24682,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto val = compile(*argsAst.nodes[0]).consume();
     emit_call(module_->getFunction(rt::array_push),
                         {arrPtr, extract_tag(val), extract_data(val)});
-    return make_nil();
+    return own(make_nil());
   }
 
   if (method == "pop" && argsAst.nodes.size() == 0) {
@@ -23404,14 +24696,14 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
     auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
     llvm::Value* result = make_value(tagLoaded, dataLoaded);
-    return result;
+    return own(result);
   }
 
   if (method == "reverse" && argsAst.nodes.size() == 0) {
     auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "rev");
     emit_call(module_->getFunction(rt::array_reverse),
                         {arrPtr});
-    return make_nil();
+    return own(make_nil());
   }
 
   // slice works on Array, String, StringView, and Tensor.
@@ -23442,14 +24734,26 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     // Receiver OK: check the bounds with the canonical parameter-type
     // message (`start`/`end` are declared `: Long` on the interp methods).
     builder_.SetInsertPoint(argBB);
-    auto startVal = compile(*argsAst.nodes[0]).consume();
-    auto endVal = compile(*argsAst.nodes[1]).consume();
-    emit_type_check(startVal, "Long", "parameter 'start'",
-                    argsAst.nodes[0].get());
-    emit_type_check(endVal, "Long", "parameter 'end'",
-                    argsAst.nodes[1].get());
-    auto start = extract_data(startVal);
-    auto end = extract_data(endVal);
+    // `start` stays Owned while `end` compiles (its evaluation may throw; a
+    // bare +1 first argument used to strand on that edge — §4.9, the window
+    // covers it), and both stay Owned through the type checks below.
+    Owned startO = compile(*argsAst.nodes[0]);
+    Owned endO = compile(*argsAst.nodes[1]);
+    {
+      // A valid slice takes Long bounds (scalars, nothing to free), but a
+      // non-Long argument (`[1,2,3].slice(0, |a,b| a+b)`) is a heap `+1` the
+      // type check strands on its throw edge. Guard both across both checks;
+      // on the valid path they're scalars and this DCEs (jit_ownership.md §4.3).
+      ThrowGuard bounds_guard(this, {startO.borrow(), endO.borrow()});
+      emit_type_check(startO.borrow(), "Long", "parameter 'start'",
+                      argsAst.nodes[0].get());
+      emit_type_check(endO.borrow(), "Long", "parameter 'end'",
+                      argsAst.nodes[1].get());
+    }
+    // Proven Long: the +1 is a scalar no-op, so consume without emitting a
+    // release (the pre-existing choreography).
+    auto start = extract_data(startO.consume());
+    auto end = extract_data(endO.consume());
 
     auto sw = builder_.CreateSwitch(tag, errBB, 4);
     sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
@@ -23457,21 +24761,20 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     sw->addCase(builder_.getInt8(TAG_STRINGVIEW), strBB);
     sw->addCase(builder_.getInt8(TAG_TENSOR), tenBB);
 
+    OwnedPhi slMerge(this, "sl");
     builder_.SetInsertPoint(arrBB);
     auto arrPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
     auto newArr = emit_call(
         module_->getFunction(rt::array_slice2),
         {arrPtr, start, end});
-    auto arrVal = make_array(newArr);
-    auto arrBBEnd = builder_.GetInsertBlock();
+    slMerge.add_incoming(make_array(newArr));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(strBB);
     auto newView = emit_call(
         module_->getFunction(rt::strlike_slice_view),
         {tag, extract_data(receiver), start, end});
-    auto strVal = make_stringview(newView);
-    auto strBBEnd = builder_.GetInsertBlock();
+    slMerge.add_incoming(make_stringview(newView));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(tenBB);
@@ -23480,18 +24783,13 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto newTen = emit_call(
         module_->getFunction(rt::tensor_slice),
         {tenPtr, start, end});
-    auto tenVal = make_tensor(newTen);
-    auto tenBBEnd = builder_.GetInsertBlock();
+    slMerge.add_incoming(make_tensor(newTen));
     builder_.CreateBr(mergeBB);
 
     // errBB was already filled by the receiver guard above; the second
     // dispatch switch shares it as a (statically unreachable) default.
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(valueType_, 3, "sl");
-    phi->addIncoming(arrVal, arrBBEnd);
-    phi->addIncoming(strVal, strBBEnd);
-    phi->addIncoming(tenVal, tenBBEnd);
-    return phi;
+    return slMerge.finish(mergeBB);
   }
 
   if (method == "index_of" && argsAst.nodes.size() == 1) {
@@ -23501,7 +24799,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
         module_->getFunction(rt::array_index_of),
         {arrPtr, extract_tag(v.borrow()), extract_data(v.borrow())});
     v.drop();
-    return make_long(idx);
+    return own(make_long(idx));
   }
 
   // contains works on Array, String, Set, and Tuple (different arg types).
@@ -23520,15 +24818,22 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     sw->addCase(builder_.getInt8(TAG_SET), setBB);
     sw->addCase(builder_.getInt8(TAG_TUPLE), tupBB);
 
+    OwnedPhi ctMerge(this, "ct");
     builder_.SetInsertPoint(arrBB);
     auto arrPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
     auto v = compile(*argsAst.nodes[0]);
-    auto arrFound = emit_call(
-        module_->getFunction(rt::array_contains),
-        {arrPtr, extract_tag(v.borrow()), extract_data(v.borrow())});
+    llvm::Value* arrFound;
+    {
+      // array_contains hashes the value (`{... }.contains(|x| x)` → "unhashable
+      // type") and can throw; guard the borrowed `+1` so it isn't stranded on
+      // that edge, mutually exclusive with the drop below (jit_ownership.md §4.3).
+      ThrowGuard v_guard(this, {v.borrow()});
+      arrFound = emit_call(
+          module_->getFunction(rt::array_contains),
+          {arrPtr, extract_tag(v.borrow()), extract_data(v.borrow())});
+    }
     v.drop();
-    auto arrBoolVal = make_bool(arrFound);
-    auto arrEnd = builder_.GetInsertBlock();
+    ctMerge.add_incoming(make_bool(arrFound));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(strBB);
@@ -23541,49 +24846,53 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
         module_->getFunction(rt::str_contains),
         {strPtr, subPtr});
     sub.drop();
-    auto strBoolVal = make_bool(strFound);
-    auto strEnd = builder_.GetInsertBlock();
+    ctMerge.add_incoming(make_bool(strFound));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(setBB);
     auto setPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
     auto vs = compile(*argsAst.nodes[0]);
-    auto setFound = emit_call(
-        module_->getOrInsertFunction(
-            rt::set_contains, builder_.getInt1Ty(), ptrTy,
-            builder_.getInt8Ty(), builder_.getInt64Ty(),
-            builder_.getInt64Ty(), builder_.getInt64Ty()),
-        {setPtr, extract_tag(vs.borrow()), extract_data(vs.borrow()),
-         current_line_val(), current_column_val()});
+    llvm::Value* setFound;
+    {
+      // set_contains hashes the value and can throw ("unhashable type"); guard
+      // the borrowed `+1` on that edge (see the array arm above).
+      ThrowGuard vs_guard(this, {vs.borrow()});
+      setFound = emit_call(
+          module_->getOrInsertFunction(
+              rt::set_contains, builder_.getInt1Ty(), ptrTy,
+              builder_.getInt8Ty(), builder_.getInt64Ty(),
+              builder_.getInt64Ty(), builder_.getInt64Ty()),
+          {setPtr, extract_tag(vs.borrow()), extract_data(vs.borrow()),
+           current_line_val(), current_column_val()});
+    }
     vs.drop();
-    auto setBoolVal = make_bool(setFound);
-    auto setEnd = builder_.GetInsertBlock();
+    ctMerge.add_incoming(make_bool(setFound));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(tupBB);
     auto tupPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
     auto vt = compile(*argsAst.nodes[0]);
-    auto tupFound = emit_call(
-        module_->getOrInsertFunction(
-            rt::tuple_contains, builder_.getInt8Ty(), ptrTy,
-            builder_.getInt8Ty(), builder_.getInt64Ty()),
-        {tupPtr, extract_tag(vt.borrow()), extract_data(vt.borrow())});
+    llvm::Value* tupFound;
+    {
+      // tuple_contains compares (and may hash) the value; guard the borrowed
+      // `+1` on a throw edge (see the array arm above).
+      ThrowGuard vt_guard(this, {vt.borrow()});
+      tupFound = emit_call(
+          module_->getOrInsertFunction(
+              rt::tuple_contains, builder_.getInt8Ty(), ptrTy,
+              builder_.getInt8Ty(), builder_.getInt64Ty()),
+          {tupPtr, extract_tag(vt.borrow()), extract_data(vt.borrow())});
+    }
     vt.drop();
-    auto tupBoolVal = make_bool(
-        builder_.CreateICmpNE(tupFound, builder_.getInt8(0)));
-    auto tupEnd = builder_.GetInsertBlock();
+    ctMerge.add_incoming(make_bool(
+        builder_.CreateICmpNE(tupFound, builder_.getInt8(0))));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(errBB);
     emit_receiver_resolution_error(tag, "contains");
 
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(valueType_, 4, "ct");
-    phi->addIncoming(arrBoolVal, arrEnd);
-    phi->addIncoming(strBoolVal, strEnd);
-    phi->addIncoming(setBoolVal, setEnd);
-    phi->addIncoming(tupBoolVal, tupEnd);
-    return phi;
+    return ctMerge.finish(mergeBB);
   }
 
   // --- String methods ---
@@ -23602,28 +24911,28 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.SetInsertPoint(okBB);
     auto v = emit_call(module_->getFunction(rt::strlike_view),
                        {tag, extract_data(receiver)});
-    return make_stringview(v);
+    return own(make_stringview(v));
   }
 
   if (method == "upper" && argsAst.nodes.size() == 0) {
     auto strPtr = coerce_strlike_cstr(receiver, "up", true);
     auto s = emit_call(
         module_->getFunction(rt::str_upper), {strPtr});
-    return make_string(s);
+    return own(make_string(s));
   }
 
   if (method == "lower" && argsAst.nodes.size() == 0) {
     auto strPtr = coerce_strlike_cstr(receiver, "lo", true);
     auto s = emit_call(
         module_->getFunction(rt::str_lower), {strPtr});
-    return make_string(s);
+    return own(make_string(s));
   }
 
   if (method == "trim" && argsAst.nodes.size() == 0) {
     auto strPtr = coerce_strlike_cstr(receiver, "tr", true);
     auto s = emit_call(
         module_->getFunction(rt::str_trim), {strPtr});
-    return make_string(s);
+    return own(make_string(s));
   }
 
   if (method == "tr" && argsAst.nodes.size() == 2) {
@@ -23638,7 +24947,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
         module_->getFunction(rt::str_tr), {strPtr, fromPtr, toPtr});
     from.drop();
     to.drop();
-    return make_string(s);
+    return own(make_string(s));
   }
 
   if ((method == "trim_start" || method == "trim_end") &&
@@ -23658,7 +24967,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
         method == "trim_start" ? rt::str_trim_start : rt::str_trim_end);
     auto s = emit_call(fn, {strPtr, charsPtr});
     chars.drop();  // no-op when empty; releases the compiled arg otherwise
-    return make_string(s);
+    return own(make_string(s));
   }
 
   if (method == "split" && argsAst.nodes.size() == 1) {
@@ -23669,7 +24978,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto arr = emit_call(
         module_->getFunction(rt::str_split), {strPtr, sepPtr});
     sep.drop();
-    return make_array(arr);
+    return own(make_array(arr));
   }
 
   // split_iter is "lazy in API, eager underneath" for now: build the
@@ -23684,7 +24993,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
         module_->getFunction(rt::str_split), {strPtr, sepPtr});
     sep.drop();
     auto iter = emit_call(module_->getFunction(rt::array_iter), {arr});
-    return make_object(iter);
+    return own(make_object(iter));
   }
 
   if (method == "starts_with" && argsAst.nodes.size() == 1) {
@@ -23696,7 +25005,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
         module_->getFunction(rt::str_starts_with),
         {strPtr, pPtr});
     p.drop();
-    return make_bool(r);
+    return own(make_bool(r));
   }
 
   if (method == "ends_with" && argsAst.nodes.size() == 1) {
@@ -23708,7 +25017,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
         module_->getFunction(rt::str_ends_with),
         {strPtr, pPtr});
     p.drop();
-    return make_bool(r);
+    return own(make_bool(r));
   }
 
   // --- Object methods ---
@@ -23717,7 +25026,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto objPtr = expect_receiver_tag(receiver, TAG_OBJECT, "keys");
     auto arr = emit_call(
         module_->getFunction(rt::object_keys), {objPtr});
-    return make_array(arr);
+    return own(make_array(arr));
   }
 
   if (method == "values" && argsAst.nodes.size() == 0) {
@@ -23725,7 +25034,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto it = emit_call(
         module_->getOrInsertFunction(rt::object_values, ptrTy, ptrTy),
         {objPtr});
-    return make_object(it);
+    return own(make_object(it));
   }
 
   if (method == "has" && argsAst.nodes.size() == 1) {
@@ -23739,39 +25048,47 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
             rt::object_has_value, builder_.getInt1Ty(), ptrTy,
             builder_.getInt8Ty(), builder_.getInt64Ty()),
         {objPtr, extract_tag(key), extract_data(key)});
-    return make_bool(r);
+    return own(make_bool(r));
   }
 
   if (method == "get" && argsAst.nodes.size() == 2) {
     auto objPtr = expect_receiver_tag(receiver, TAG_OBJECT, "get");
-    auto key = compile(*argsAst.nodes[0]).consume();
-    auto fb = compile(*argsAst.nodes[1]).consume();
-    // The runtime fn consumes the key's +1 and (on a hit) the fallback's +1,
-    // returning the stored value (+1) or the fallback. No IR-level release.
-    return emit_value_call(
+    // The key stays Owned while the fallback compiles (its evaluation may
+    // throw; a bare +1 key used to strand on that edge — §4.9), then both
+    // are consumed at the handoff: the runtime fn consumes the key's +1 and
+    // (on a hit) the fallback's +1, returning the stored value (+1) or the
+    // fallback. No IR-level release.
+    Owned keyO = compile(*argsAst.nodes[0]);
+    Owned fbO = compile(*argsAst.nodes[1]);
+    auto key = keyO.consume();
+    auto fb = fbO.consume();
+    return own(emit_value_call(
         module_->getOrInsertFunction(
             rt::object_get_default, valueType_, ptrTy, builder_.getInt8Ty(),
             builder_.getInt64Ty(), builder_.getInt8Ty(),
             builder_.getInt64Ty(), builder_.getInt64Ty(),
             builder_.getInt64Ty()),
         {objPtr, extract_tag(key), extract_data(key), extract_tag(fb),
-         extract_data(fb), current_line_val(), current_column_val()});
+         extract_data(fb), current_line_val(), current_column_val()}));
   }
 
   if (method == "get_or_put" && argsAst.nodes.size() == 2) {
     auto objPtr = expect_receiver_tag(receiver, TAG_OBJECT, "get_or_put");
-    auto key = compile(*argsAst.nodes[0]).consume();
+    // Same Owned-across-the-second-argument discipline as `get` above.
     // `init` compiles to a value (a `|| []` thunk stays an unevaluated
     // closure); the runtime fn invokes it only on a miss.
-    auto init = compile(*argsAst.nodes[1]).consume();
-    return emit_value_call(
+    Owned keyO = compile(*argsAst.nodes[0]);
+    Owned initO = compile(*argsAst.nodes[1]);
+    auto key = keyO.consume();
+    auto init = initO.consume();
+    return own(emit_value_call(
         module_->getOrInsertFunction(
             rt::object_get_or_put, valueType_, ptrTy, builder_.getInt8Ty(),
             builder_.getInt64Ty(), builder_.getInt8Ty(),
             builder_.getInt64Ty(), builder_.getInt64Ty(),
             builder_.getInt64Ty()),
         {objPtr, extract_tag(key), extract_data(key), extract_tag(init),
-         extract_data(init), current_line_val(), current_column_val()});
+         extract_data(init), current_line_val(), current_column_val()}));
   }
 
   // Note: `.remove(x)` is routed through compile_set_mutate_dispatch
@@ -23794,6 +25111,12 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   // position for a non-Function rejection (matches interp's typed-param
   // check, which points at the argument). null for argument-less methods.
   const peg::Ast* hof_cb = nullptr;
+
+  // Values the call site has already consume()d for the HOF runtime
+  // (callee-consumes: the callback, reduce's seed). The helper owns them from
+  // entry, but the receiver-resolution error fires before any helper runs, so
+  // that cold edge is their sole releaser (docs/jit_ownership.md 4.7).
+  llvm::SmallVector<llvm::Value*, 2> hof_owned;
 
   // Emit Array-or-Iterator dispatch with the supplied eager/lazy body
   // emitters. Bodies produce the %Value result for their branch.
@@ -23821,12 +25144,13 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     sw->addCase(builder_.getInt8(TAG_OBJECT), objBB);
 
     builder_.SetInsertPoint(errBB);
+    for (auto* v : hof_owned) emit_value_release(v);
     emit_receiver_resolution_error(t, std::string(label) + ".recv");
 
+    OwnedPhi elMerge(this, std::string(label) + ".res");
     builder_.SetInsertPoint(arrBB);
     auto arrPtr = builder_.CreateIntToPtr(d, ptrTy);
-    auto eagerRes = eager(arrPtr);
-    auto eagerEnd = builder_.GetInsertBlock();
+    elMerge.add_incoming(own(eager(arrPtr)));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(objBB);
@@ -23839,16 +25163,11 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     // upstream ref per lazy wrapper / per runtime-driver terminal call.
     // Non-iterator-shaped Objects are rejected at the top of
     // compile_builtin_method, so the Object here is always a real iterator.)
-    auto lazyRes = lazy(t, d);
-    auto lazyEnd = builder_.GetInsertBlock();
+    elMerge.add_incoming(own(lazy(t, d)));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(valueType_, 2,
-                                  std::string(label) + ".res");
-    phi->addIncoming(eagerRes, eagerEnd);
-    phi->addIncoming(lazyRes, lazyEnd);
-    return phi;
+    return elMerge.finish(mergeBB).consume();
   };
 
   if (method == "join" && argsAst.nodes.size() == 1) {
@@ -23856,8 +25175,15 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     // works with no intermediate `.collect()`. sep is borrowed by both arms
     // (its data ptr is read, never stored) and dropped once after dispatch.
     auto sep = compile(*argsAst.nodes[0]);
-    emit_type_check(sep.borrow(), "String", "parameter 'sep'",
-                    argsAst.nodes[0].get());
+    {
+      // `sep` is `+1`-owned; `.drop()` below releases it on the normal path but
+      // that is skipped when the type check throws (`[1,2,3].join([9,9])`).
+      // Guard the borrow so the unwind edge releases it — exactly once, since
+      // the normal drop and the guard are mutually exclusive.
+      ThrowGuard sep_guard(this, {sep.borrow()});
+      emit_type_check(sep.borrow(), "String", "parameter 'sep'",
+                      argsAst.nodes[0].get());
+    }
     auto sepPtr = builder_.CreateIntToPtr(extract_data(sep.borrow()), ptrTy);
     auto res = dispatch_arr_iter(
         "join",
@@ -23872,7 +25198,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
           return make_string(s);
         });
     sep.drop();
-    return res;
+    return own(res);
   }
 
   if (method == "map" && argsAst.nodes.size() == 1) {
@@ -23882,32 +25208,29 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
       // Skip the closure construction entirely on the eager path; the
       // iterator (lazy) path still needs a closure, so we only emit
       // it inside that branch.
-      return dispatch_arr_iter(
+      return own(dispatch_arr_iter(
           "map",
           [&](llvm::Value* arrPtr) {
             return emit_inlined_array_map(arrPtr, cb_ast);
           },
           [&](llvm::Value* it, llvm::Value* id) {
-            // Scope the callback so its Owned dtor releases before
-            // make_object emits IR — same point as the hand-placed release.
-            llvm::Value* out;
-            {
-              auto f = compile(cb_ast);
-              out = emit_call(module_->getFunction(rt::iter_map),
-                              {it, id, extract_tag(f.borrow()),
-                               extract_data(f.borrow()), ho_line, ho_col});
-            }
+            // Callee-consumes: the lazy factory captures the callback's +1.
+            auto fv = compile(cb_ast).consume();
+            auto out = emit_call(module_->getFunction(rt::iter_map),
+                                 {it, id, extract_tag(fv),
+                                  extract_data(fv), ho_line, ho_col});
             return make_object(out);
-          });
+          }));
     }
-    // The callback is borrowed by both dispatch arms (its tag/data are read,
-    // never stored); the Owned handle's dtor releases it once at the merge
-    // point, exactly where the hand-placed release stood (a bare `return
-    // <value>` emits no IR between).
-    auto f = compile(cb_ast);
-    auto ft = extract_tag(f.borrow());
-    auto fd = extract_data(f.borrow());
-    return dispatch_arr_iter(
+    // Callee-consumes: the HOF runtime owns the callback's +1 from entry on
+    // every exit (normal, reject, mid-iteration throw). Only one dispatch arm
+    // runs, so the +1 is consumed exactly once per runtime path; the
+    // receiver-error edge (no helper runs) releases it via hof_owned.
+    auto fv = compile(cb_ast).consume();
+    auto ft = extract_tag(fv);
+    auto fd = extract_data(fv);
+    hof_owned.push_back(fv);
+    return own(dispatch_arr_iter(
         "map",
         [&](llvm::Value* arrPtr) {
           auto out = emit_call(
@@ -23919,36 +25242,33 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
           auto out = emit_call(module_->getFunction(rt::iter_map),
                                {it, id, ft, fd, ho_line, ho_col});
           return make_object(out);
-        });
+        }));
   }
 
   if (method == "filter" && argsAst.nodes.size() == 1) {
     const auto& cb_ast = *argsAst.nodes[0];
     hof_cb = &cb_ast;
     if (is_inlinable_lambda(cb_ast, /*expected_arity=*/1)) {
-      return dispatch_arr_iter(
+      return own(dispatch_arr_iter(
           "filter",
           [&](llvm::Value* arrPtr) {
             return emit_inlined_array_filter(arrPtr, cb_ast);
           },
           [&](llvm::Value* it, llvm::Value* id) {
-            // Scope the callback so its Owned dtor releases before
-            // make_object emits IR — same point as the hand-placed release.
-            llvm::Value* out;
-            {
-              auto f = compile(cb_ast);
-              out = emit_call(module_->getFunction(rt::iter_filter),
-                              {it, id, extract_tag(f.borrow()),
-                               extract_data(f.borrow()), ho_line, ho_col});
-            }
+            // Callee-consumes: the lazy factory captures the callback's +1.
+            auto fv = compile(cb_ast).consume();
+            auto out = emit_call(module_->getFunction(rt::iter_filter),
+                                 {it, id, extract_tag(fv),
+                                  extract_data(fv), ho_line, ho_col});
             return make_object(out);
-          });
+          }));
     }
-    // Callback borrowed by both arms; Owned dtor releases once at the merge.
-    auto f = compile(cb_ast);
-    auto ft = extract_tag(f.borrow());
-    auto fd = extract_data(f.borrow());
-    return dispatch_arr_iter(
+    // Callee-consumes (see map above).
+    auto fv = compile(cb_ast).consume();
+    auto ft = extract_tag(fv);
+    auto fd = extract_data(fv);
+    hof_owned.push_back(fv);
+    return own(dispatch_arr_iter(
         "filter",
         [&](llvm::Value* arrPtr) {
           auto out = emit_call(
@@ -23960,14 +25280,14 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
           auto out = emit_call(module_->getFunction(rt::iter_filter),
                                {it, id, ft, fd, ho_line, ho_col});
           return make_object(out);
-        });
+        }));
   }
 
   if (method == "for_each" && argsAst.nodes.size() == 1) {
     const auto& cb_ast = *argsAst.nodes[0];
     hof_cb = &cb_ast;
     if (is_inlinable_lambda(cb_ast, /*expected_arity=*/1)) {
-      return dispatch_arr_iter(
+      return own(dispatch_arr_iter(
           "foreach",
           [&](llvm::Value* arrPtr) {
             return emit_inlined_array_for_each(arrPtr, cb_ast);
@@ -23976,13 +25296,14 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
             // The inline loop borrows the iterator, like the runtime
             // drivers; the dispatch hands no ref to release.
             return emit_inlined_iter_for_each(make_value(it, id), cb_ast);
-          });
+          }));
     }
-    // Callback borrowed by both arms; Owned dtor releases once at the merge.
-    auto f = compile(cb_ast);
-    auto ft = extract_tag(f.borrow());
-    auto fd = extract_data(f.borrow());
-    return dispatch_arr_iter(
+    // Callee-consumes (see map above).
+    auto fv = compile(cb_ast).consume();
+    auto ft = extract_tag(fv);
+    auto fd = extract_data(fv);
+    hof_owned.push_back(fv);
+    return own(dispatch_arr_iter(
         "foreach",
         [&](llvm::Value* arrPtr) {
           emit_call(module_->getFunction(rt::array_for_each),
@@ -23993,41 +25314,52 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
           emit_call(module_->getFunction(rt::iter_for_each),
                     {it, id, ft, fd, ho_line, ho_col});
           return make_nil();
-        });
+        }));
   }
 
   if (method == "reduce" && argsAst.nodes.size() == 2) {
     const auto& cb_ast = *argsAst.nodes[1];
     hof_cb = &cb_ast;
     if (is_inlinable_lambda(cb_ast, /*expected_arity=*/2)) {
-      auto init = compile(*argsAst.nodes[0]).consume();
-      return dispatch_arr_iter(
+      // The seed's +1 crosses into the dispatch arms as a re-assembled
+      // {tag,data} value (the scalar-crossing idiom — a Pinned raw would
+      // trip the §4.9 block check here): each runtime path consumes it
+      // exactly once — the inline loops absorb it as the accumulator, and
+      // the receiver-error arm releases it via hof_owned (a heap seed used
+      // to strand on that edge).
+      auto initP = compile(*argsAst.nodes[0]).consume();
+      auto initV = make_value(extract_tag(initP), extract_data(initP));
+      hof_owned.push_back(initV);
+      return own(dispatch_arr_iter(
           "reduce",
           [&](llvm::Value* arrPtr) {
-            return emit_inlined_array_reduce(arrPtr, init, cb_ast);
+            return emit_inlined_array_reduce(arrPtr, initV, cb_ast);
           },
           [&](llvm::Value* it, llvm::Value* id) {
             // Same as for_each: the inline loop borrows the iterator.
-            return emit_inlined_iter_reduce(make_value(it, id), init,
+            return emit_inlined_iter_reduce(make_value(it, id), initV,
                                             cb_ast);
-          });
+          }));
     }
     auto init = compile(*argsAst.nodes[0]).consume();
-    // `init`'s +1 is consumed by the runtime reduce (the accumulator seed).
-    // Scope the callback so its Owned dtor releases after dispatch but before
-    // the out-param loads — exactly where the hand-placed release stood.
+    // Callee-consumes: the runtime reduce owns both the seed and the callback
+    // from entry (its init_guard covers a callback-reject throw); only the
+    // receiver-error edge — where no helper runs — releases them, via
+    // hof_owned.
     llvm::Value* outTag;
     llvm::Value* outData;
     {
-      auto f = compile(cb_ast);
+      auto fv = compile(cb_ast).consume();
       auto it_tag = extract_tag(init);
       auto it_data = extract_data(init);
-      auto ft = extract_tag(f.borrow());
-      auto fd = extract_data(f.borrow());
+      auto ft = extract_tag(fv);
+      auto fd = extract_data(fv);
       llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
                                fn->getEntryBlock().begin());
       outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "red.tag");
       outData = entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "red.data");
+      hof_owned.push_back(init);
+      hof_owned.push_back(fv);
       dispatch_arr_iter(
           "reduce",
           [&](llvm::Value* arrPtr) {
@@ -24046,7 +25378,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
     auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
     llvm::Value* result = make_value(tagLoaded, dataLoaded);
-    return result;
+    return own(result);
   }
 
   if (method == "find" && argsAst.nodes.size() == 1) {
@@ -24056,13 +25388,14 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     llvm::Value* outTag;
     llvm::Value* outData;
     {
-      auto f = compile(*argsAst.nodes[0]);
-      auto ft = extract_tag(f.borrow());
-      auto fd = extract_data(f.borrow());
+      auto fv = compile(*argsAst.nodes[0]).consume();  // callee-consumes
+      auto ft = extract_tag(fv);
+      auto fd = extract_data(fv);
       llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
                                fn->getEntryBlock().begin());
       outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "find.tag");
       outData = entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "find.data");
+      hof_owned.push_back(fv);
       dispatch_arr_iter(
           "find",
           [&](llvm::Value* arrPtr) {
@@ -24079,18 +25412,19 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
     auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
     llvm::Value* result = make_value(tagLoaded, dataLoaded);
-    return result;
+    return own(result);
   }
 
   if ((method == "any" || method == "all") && argsAst.nodes.size() == 1) {
     hof_cb = argsAst.nodes[0].get();
-    // Callback borrowed by both arms; Owned dtor releases once at the merge.
-    auto f = compile(*argsAst.nodes[0]);
-    auto ft = extract_tag(f.borrow());
-    auto fd = extract_data(f.borrow());
+    // Callee-consumes (see map above).
+    auto fv = compile(*argsAst.nodes[0]).consume();
+    auto ft = extract_tag(fv);
+    auto fd = extract_data(fv);
+    hof_owned.push_back(fv);
     auto arr_rt = method == "any" ? rt::array_any : rt::array_all;
     auto iter_rt = method == "any" ? rt::iter_any : rt::iter_all;
-    return dispatch_arr_iter(
+    return own(dispatch_arr_iter(
         method.c_str(),
         [&](llvm::Value* arrPtr) {
           auto r = emit_call(module_->getFunction(arr_rt),
@@ -24103,16 +25437,17 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
                              {it, id, ft, fd, ho_line, ho_col});
           return make_bool(
               builder_.CreateICmpNE(r, builder_.getInt64(0)));
-        });
+        }));
   }
 
   if (method == "flat_map" && argsAst.nodes.size() == 1) {
     hof_cb = argsAst.nodes[0].get();
-    // Callback borrowed by both arms; Owned dtor releases once at the merge.
-    auto f = compile(*argsAst.nodes[0]);
-    auto ft = extract_tag(f.borrow());
-    auto fd = extract_data(f.borrow());
-    return dispatch_arr_iter(
+    // Callee-consumes (see map above).
+    auto fv = compile(*argsAst.nodes[0]).consume();
+    auto ft = extract_tag(fv);
+    auto fd = extract_data(fv);
+    hof_owned.push_back(fv);
+    return own(dispatch_arr_iter(
         "flat_map",
         [&](llvm::Value* arrPtr) {
           auto out = emit_call(
@@ -24124,7 +25459,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
           auto out = emit_call(module_->getFunction(rt::iter_flat_map),
                                {it, id, ft, fd, ho_line, ho_col});
           return make_object(out);
-        });
+        }));
   }
 
   // sum / product / min / max — integer aggregates, same shape for
@@ -24152,7 +25487,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     }
     bool tensor_capable = (method == "sum" || method == "max");
     if (!tensor_capable) {
-      return dispatch_arr_iter(
+      return own(dispatch_arr_iter(
           method.c_str(),
           [&](llvm::Value* arrPtr) {
             auto n = emit_call(module_->getFunction(arr_rt_name),
@@ -24163,7 +25498,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
             auto n = emit_call(module_->getFunction(iter_rt_name),
                                {it, id, ho_line, ho_col});
             return make_long(n);
-          });
+          }));
     }
     // 3-way dispatch for sum / max: TAG_ARRAY → Long, TAG_OBJECT
     // (iterator) → Long, TAG_TENSOR → Float (axis-less reduction).
@@ -24184,19 +25519,18 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     sw->addCase(builder_.getInt8(TAG_OBJECT), iterBB);
     sw->addCase(builder_.getInt8(TAG_TENSOR), tenBB);
 
+    OwnedPhi redMerge(this, std::string(method) + ".res");
     builder_.SetInsertPoint(arrBB);
     auto arrPtr = builder_.CreateIntToPtr(d, ptrTy);
     auto arrN = emit_call(module_->getFunction(arr_rt_name),
                           {arrPtr, ho_line, ho_col});
-    auto arrV = make_long(arrN);
-    auto arrEnd = builder_.GetInsertBlock();
+    redMerge.add_incoming(make_long(arrN));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(iterBB);
     auto iterN = emit_call(module_->getFunction(iter_rt_name),
                            {t, d, ho_line, ho_col});
-    auto iterV = make_long(iterN);
-    auto iterEnd = builder_.GetInsertBlock();
+    redMerge.add_incoming(make_long(iterN));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(tenBB);
@@ -24206,7 +25540,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto tenV = emit_call(
         module_->getFunction(rt::tensor_reduce_all),
         {tenPtr, builder_.getInt64(op_id)});
-    auto tenEnd = builder_.GetInsertBlock();
+    redMerge.add_incoming(tenV);
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(errBB);
@@ -24214,12 +25548,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(valueType_, 3,
-                                  std::string(method) + ".res");
-    phi->addIncoming(arrV, arrEnd);
-    phi->addIncoming(iterV, iterEnd);
-    phi->addIncoming(tenV, tenEnd);
-    return phi;
+    return redMerge.finish(mergeBB);
   }
 
   // --- Iterator-only methods (no eager Array equivalent) ---
@@ -24233,7 +25562,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto out = emit_call(module_->getFunction(rt::iter_collect), {t, d});
-    return make_array(out);
+    return own(make_array(out));
   }
 
   if (method == "count" && argsAst.nodes.size() == 0) {
@@ -24241,7 +25570,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto n = emit_call(module_->getFunction(rt::iter_count), {t, d});
-    return make_long(n);
+    return own(make_long(n));
   }
 
   if (method == "take" && argsAst.nodes.size() == 1) {
@@ -24251,7 +25580,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto d = extract_data(receiver);
     auto out =
         emit_call(module_->getFunction(rt::iter_take), {t, d, n});
-    return make_object(out);
+    return own(make_object(out));
   }
 
   if (method == "skip" && argsAst.nodes.size() == 1) {
@@ -24261,20 +25590,23 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto d = extract_data(receiver);
     auto out =
         emit_call(module_->getFunction(rt::iter_skip), {t, d, n});
-    return make_object(out);
+    return own(make_object(out));
   }
 
   if (method == "take_while" && argsAst.nodes.size() == 1) {
     expect_receiver_tag(receiver, TAG_OBJECT, "take_while");
-    auto f = compile(*argsAst.nodes[0]);
+    // The callback stays Owned across the site-publish call (§4.9), then
+    // callee-consumes: the factory call is the very next runtime step and
+    // owns the +1 from entry.
+    Owned f = compile(*argsAst.nodes[0]);
     emit_set_callback_arg_site(*argsAst.nodes[0]);
+    auto fv = f.consume();
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto out = emit_call(module_->getFunction(rt::iter_take_while),
-                         {t, d, extract_tag(f.borrow()), extract_data(f.borrow()),
+                         {t, d, extract_tag(fv), extract_data(fv),
                           ho_line, ho_col});
-    f.drop();
-    return make_object(out);
+    return own(make_object(out));
   }
 
   if (method == "enumerate" && argsAst.nodes.size() == 0) {
@@ -24287,7 +25619,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
                                      builder_.getInt8Ty(),
                                      builder_.getInt64Ty()),
         {t, d});
-    return make_object(out);
+    return own(make_object(out));
   }
 
   if (method == "chain" && argsAst.nodes.size() == 1) {
@@ -24299,7 +25631,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
                          {t, d, extract_tag(other.borrow()),
                           extract_data(other.borrow()), ho_line, ho_col});
     other.drop();
-    return make_object(out);
+    return own(make_object(out));
   }
 
   if (method == "zip" && argsAst.nodes.size() == 1) {
@@ -24311,21 +25643,21 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
                          {t, d, extract_tag(other.borrow()),
                           extract_data(other.borrow()), ho_line, ho_col});
     other.drop();
-    return make_object(out);
+    return own(make_object(out));
   }
 
   if (method == "code_points" && argsAst.nodes.size() == 0) {
     auto strPtr = coerce_strlike_cstr(receiver, "code_points", true);
     auto out =
         emit_call(module_->getFunction(rt::str_code_points), {strPtr});
-    return make_object(out);
+    return own(make_object(out));
   }
 
   if (method == "graphemes" && argsAst.nodes.size() == 0) {
     auto strPtr = coerce_strlike_cstr(receiver, "graphemes", true);
     auto out =
         emit_call(module_->getFunction(rt::str_graphemes), {strPtr});
-    return make_object(out);
+    return own(make_object(out));
   }
 
   if (method == "iter" && argsAst.nodes.size() == 0) {
@@ -24351,12 +25683,12 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.SetInsertPoint(errBB);
     emit_receiver_resolution_error(t, "iter");
 
+    OwnedPhi iterMerge(this, "iter.res");
     builder_.SetInsertPoint(arrBB);
     auto arrPtr = builder_.CreateIntToPtr(d, ptrTy);
     auto arrIter = emit_call(module_->getFunction(rt::array_iter),
                              {arrPtr});
-    auto arrVal = make_object(arrIter);
-    auto arrEnd = builder_.GetInsertBlock();
+    iterMerge.add_incoming(make_object(arrIter));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(setBB);
@@ -24366,8 +25698,10 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
         {setPtr});
     auto setIter = emit_call(module_->getFunction(rt::array_iter),
                              {setAsArr});
-    auto setVal = make_object(setIter);
-    auto setEnd = builder_.GetInsertBlock();
+    // array_iter took its own +1 on the members Array; release set_to_array's
+    // fresh +1 (nothing else holds it) so the snapshot dies with the iterator.
+    emit_value_release(make_array(setAsArr));
+    iterMerge.add_incoming(make_object(setIter));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(objBB);
@@ -24387,8 +25721,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
                                      builder_.getInt64Ty(),
                                      builder_.getInt64Ty()),
         {d, builder_.getInt64(0), builder_.getInt64(0)});
-    auto rangeVal = make_object(rangeIt);
-    auto rangeEnd = builder_.GetInsertBlock();
+    iterMerge.add_incoming(make_object(rangeIt));
     builder_.CreateBr(mergeBB);
 
     // Object.iter() — defer to a user-defined `iter` slot when present
@@ -24401,8 +25734,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
         module_->getOrInsertFunction(
             "culebra_runtime_object_iter_dispatch", ptrTy, ptrTy),
         {objPtr});
-    auto objVal = make_object(objIter);
-    auto objEnd = builder_.GetInsertBlock();
+    iterMerge.add_incoming(make_object(objIter));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(strBB);
@@ -24414,18 +25746,11 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto strIter = emit_call(
         module_->getOrInsertFunction(rt::str_scalars, ptrTy, ptrTy),
         {strPtr});
-    auto strVal = make_object(strIter);
-    auto strEnd = builder_.GetInsertBlock();
+    iterMerge.add_incoming(make_object(strIter));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(valueType_, 5, "iter.res");
-    phi->addIncoming(arrVal, arrEnd);
-    phi->addIncoming(setVal, setEnd);
-    phi->addIncoming(rangeVal, rangeEnd);
-    phi->addIncoming(objVal, objEnd);
-    phi->addIncoming(strVal, strEnd);
-    return phi;
+    return iterMerge.finish(mergeBB);
   }
 
   // sort_by / sorted_by accept one positional callback plus an optional
@@ -24454,20 +25779,27 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
       auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, method.c_str());
       auto f = compile(*cb);
       emit_set_callback_arg_site(*cb);
-      llvm::Value* rev = rev_expr ? value_to_bool(compile(*rev_expr).consume())
-                                  : builder_.getInt1(false);
+      llvm::Value* rev;
+      {
+        // The reverse: coercion can raise while the callback's +1 has no
+        // owner yet (the sorter consumes it only from entry) — guard that
+        // window; the guard closes before the call, keeping the two
+        // releasers mutually exclusive.
+        ThrowGuard rev_guard(this, {f.borrow()});
+        rev = rev_expr ? value_to_bool(compile(*rev_expr).consume())
+                       : builder_.getInt1(false);
+      }
+      auto fv = f.consume();  // callee-consumes from here
       if (method == "sort_by") {
         emit_call(module_->getFunction(rt::array_sort_by),
-                  {arrPtr, extract_tag(f.borrow()), extract_data(f.borrow()),
+                  {arrPtr, extract_tag(fv), extract_data(fv),
                    rev, ho_line, ho_col});
-        f.drop();
-        return make_nil();
+        return own(make_nil());
       }
       auto out = emit_call(module_->getFunction(rt::array_sorted_by),
-                           {arrPtr, extract_tag(f.borrow()),
-                            extract_data(f.borrow()), rev, ho_line, ho_col});
-      f.drop();
-      return make_array(out);
+                           {arrPtr, extract_tag(fv),
+                            extract_data(fv), rev, ho_line, ho_col});
+      return own(make_array(out));
     }
   }
 
@@ -24496,15 +25828,15 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
       if (method == "sort") {
         emit_call(module_->getFunction(rt::array_sort),
                   {arrPtr, rev, ho_line, ho_col});
-        return make_nil();
+        return own(make_nil());
       }
       auto out = emit_call(module_->getFunction(rt::array_sorted),
                            {arrPtr, rev, ho_line, ho_col});
-      return make_array(out);
+      return own(make_array(out));
     }
   }
 
-  return nullptr;
+  return {};
 }
 
 }  // namespace culebra

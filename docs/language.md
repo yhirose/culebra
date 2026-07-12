@@ -2899,8 +2899,10 @@ backends register every refcounted heap object with an auxiliary
 cycle collector that runs a Python-style mark-and-sweep periodically
 (every 10,000 new allocations) and at program exit.
 
-* Subject to collection: `Array`, `Object`, and in the JIT `Closure`
-  and `Cell`.
+* Subject to collection: `Array`, `Object`, `Tuple`, `Set`, and the
+  environments captured by closures (plus `Closure` / `Cell` in the
+  JIT). Both backends reclaim every container cycle shape, including
+  one routed purely through `Object` property maps.
 * Not tracked: `String` (leaked for the program's lifetime — small
   and simple).
 
@@ -4240,14 +4242,12 @@ These change how the program executes but not what it observes:
 These do not affect any program-visible behavior, but operators
 embedding Culebra should be aware:
 
-* **Cycle collector tracking scope.** The interpreter's `InterpGC`
-  tracks `Array`s and the `Environment`s captured by closures, so
-  cycles routed through either are reclaimed. The JIT's conservative
-  mark-sweep reclaims every cycle shape. Cycles formed purely between
-  `Object`s — passing through neither an array nor a closure — still
-  leak their *memory* under the interpreter; their `drop` still fires
-  at the owning scope's exit on both backends (§16), so the leak is
-  bytes, not resources.
+* **Cycle collector internals.** The interpreter's `InterpGC` runs a
+  precise gc_refs mark-sweep over its tracked containers (`Array`,
+  `Object`, `Tuple`, `Set`, and captured `Environment`s); the JIT uses
+  a conservative stack-scanning mark-sweep. Both reclaim every cycle
+  shape — including one routed purely through `Object` property maps —
+  so this is an implementation difference, not a behavioral one.
 * **REPL persistence storage.** The interpreter persists session
   globals in the top-level `Environment` scope. The JIT uses a
   thread-local `JitReplGlobals` dict accessed via

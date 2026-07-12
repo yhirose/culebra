@@ -1,0 +1,23 @@
+# Suite-wide GAP5 preamble. Reuses the difftest corpus — each case is a
+# re-runnable `fn () { ... }` thunk — as an absolute inflated-RC oracle.
+#
+# Run under CULEBRA_GC_NEVER=1 CULEBRA_GC_LEAK_ABORT=1: the backstop is off (so
+# an RC leak is not reclaimed) and the teardown quiescent-point audit aborts if
+# any object survives with an inflated refcount (a phantom +1 = an acyclic RC
+# leak). Unlike the growth-based leak.sh, this runs the thunk even when it
+# THROWS, so it measures the throw-path leaks the growth gate structurally
+# skips (its `_p` drops any case whose warmup call throws).
+#
+# The audit rides the conservative stack scan (best-effort), which can alias a
+# lone stranded object as live and under-report it. Running the thunk a handful
+# of times accumulates the per-call leak into several stranded objects, so the
+# scan can't alias them all — the abort becomes deterministic (a single call is
+# marginal and flaky; the 8th run below is well past the knee). Each result is
+# discarded to nil: a bare `thunk()` tail expression would return the heap
+# result up through `_p` to the discarded top-level `_p(...)`, minting a phantom
+# +1 on every heap-returning case (a scan artifact, not a real leak).
+fn _p(label, thunk) {
+  mut i = 0
+  while i < 8 { try { thunk(); nil } catch e { nil }; i = i + 1 }
+  nil
+}

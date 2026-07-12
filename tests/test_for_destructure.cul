@@ -47,4 +47,23 @@ mut keys = []
 for (k, _) in [("a", 1), ("b", 2)] { keys.push(k) }
 assert_eq(keys, ["a", "b"])
 
+// Enum-constructor pattern binding a heap payload, looped twice over the same
+// source. The bound leaf takes a +1 on a value object_get only borrows; without
+// that retain the slot double-frees the payload once the enum object is
+// released — deterministic under the for-in per-iteration release (JIT abort).
+enum ForDestrBox { Wrap(Array) }
+let boxed = [(ForDestrBox.Wrap([1, 2]), "a"), (ForDestrBox.Wrap([3, 4]), "b")]
+mut sizes_a = []
+for (Wrap(arr), tag) in boxed { sizes_a.push((tag, arr.size())) }
+for (Wrap(arr), tag) in boxed { sizes_a.push((tag, arr.size())) }
+assert_eq(sizes_a, [("a", 2), ("b", 2), ("a", 2), ("b", 2)])
+
+// Object full `key: name` pattern with a heap value, same double-loop — the
+// object-pattern sibling of the ctor case (both recurse on a borrowed value).
+let recs = [{items: [1, 2]}, {items: [3]}]
+mut sizes_o = []
+for {items: xs} in recs { sizes_o.push(xs.size()) }
+for {items: xs} in recs { sizes_o.push(xs.size()) }
+assert_eq(sizes_o, [2, 1, 2, 1])
+
 IO.puts("test_for_destructure OK")
