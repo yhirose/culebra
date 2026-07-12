@@ -7156,7 +7156,7 @@ inline JIT::Owned JitExtension::compile_global(JIT& jit,
     // Polymorphic: Long/Float/String. The runtime helper dispatches
     // on tag (Long identity, Float truncate, String parse) and
     // raises `type error` for anything else.
-    auto result = jit.emit_call(
+    auto result = jit.emit_value_call(
         jit.module_->getFunction(rt::to_long_any),
         {jit.extract_tag(arg.borrow()), jit.extract_data(arg.borrow()),
          line, col});
@@ -7166,7 +7166,7 @@ inline JIT::Owned JitExtension::compile_global(JIT& jit,
 
   if (name == "to_float" && argsAst.nodes.size() == 1) {
     auto arg = jit.compile(*argsAst.nodes[0]);
-    auto result = jit.emit_call(
+    auto result = jit.emit_value_call(
         jit.module_->getFunction(rt::to_float_any),
         {jit.extract_tag(arg.borrow()), jit.extract_data(arg.borrow()),
          line, col});
@@ -7523,7 +7523,7 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
     if (method == "atan2" && argsAst.nodes.size() == 2) {
       auto y = jit.compile(*argsAst.nodes[0]);
       auto x = jit.compile(*argsAst.nodes[1]);
-      auto r = emit_call(module_->getFunction(rt::math_atan2),
+      auto r = jit.emit_value_call(module_->getFunction(rt::math_atan2),
                          {extract_tag(y.borrow()), extract_data(y.borrow()),
                           extract_tag(x.borrow()), extract_data(x.borrow()),
                           line, col});
@@ -7983,7 +7983,7 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
                       argsAst.nodes[1].get());
       auto pp = builder_.CreateIntToPtr(extract_data(pop.borrow()), ptrTy);
       auto wp = builder_.CreateIntToPtr(extract_data(wts.borrow()), ptrTy);
-      auto r = emit_call(
+      auto r = jit.emit_value_call(
           module_->getFunction(rt::random_weighted_choice),
           {pp, wp, line, col});
       pop.drop();
@@ -8247,7 +8247,7 @@ inline JIT::Owned JitExtension::compile_single_positional_kwargs(
 
   auto lineV = builder_.getInt64(callAst.line);
   auto colV = builder_.getInt64(callAst.column);
-  auto r = emit_call(
+  auto r = jit.emit_value_call(
       module_->getOrInsertFunction(
           rt_name, jit.valueType_, builder_.getInt8Ty(), i64Ty,
           i64Ty, ptrTy, ptrTy, i64Ty, ptrTy, i64Ty, i64Ty),
@@ -8381,7 +8381,7 @@ inline JIT::Owned JitExtension::compile_ns_method_kwargs(
                        : llvm::ConstantPointerNull::get(ptrTy);
   // Signature: (ns, method, sub, n_pos, pos*, n_kw, keys*, vals*, n_splat,
   // splat*, line, col) -> JitValue. The entry consumes all arg values.
-  return jit.own(emit_call(
+  return jit.own(jit.emit_value_call(
       module_->getOrInsertFunction(
           rt::ns_method_call_kw, jit.valueType_, ptrTy, ptrTy, ptrTy, i64Ty,
           ptrTy, i64Ty, ptrTy, ptrTy, i64Ty, ptrTy, i64Ty, i64Ty),
@@ -8641,7 +8641,7 @@ inline JIT::Owned JitExtension::compile_ufcs_builtin(
     // Polymorphic Long/Float/String, mirroring compile_global's bare
     // `to_long(x)` — interp's `(123).to_long()` accepts a Long, so the
     // String-only `rt::to_long` here used to wrongly reject it.
-    auto r = emit_call(
+    auto r = jit.emit_value_call(
         module_->getFunction(rt::to_long_any),
         {extract_tag(receiver), extract_data(receiver), argLine, argCol});
     emit_value_release(receiver);
@@ -8650,7 +8650,7 @@ inline JIT::Owned JitExtension::compile_ufcs_builtin(
   if (method == "to_float") {
     // Polymorphic Long/Float/String, mirroring compile_global's bare
     // `to_float(x)`. Returns a full Value (the runtime picks the tag).
-    auto r = emit_call(
+    auto r = jit.emit_value_call(
         module_->getFunction(rt::to_float_any),
         {extract_tag(receiver), extract_data(receiver), argLine, argCol});
     emit_value_release(receiver);

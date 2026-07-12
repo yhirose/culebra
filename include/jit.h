@@ -24472,7 +24472,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   // to the polymorphic handler below which adds a TAG_TENSOR branch.
   if (method == "mean" && argsAst.nodes.size() == 0) {
     auto tPtr = expect_receiver_tag(receiver, TAG_TENSOR, "mean");
-    auto v = emit_call(
+    auto v = emit_value_call(
         module_->getFunction(rt::tensor_reduce_all),
         {tPtr, builder_.getInt64(static_cast<int>(culebra::Op::Mean))},
         "trall");
@@ -24481,7 +24481,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   if (method == "item" && argsAst.nodes.size() == 0) {
     auto tPtr = expect_receiver_tag(receiver, TAG_TENSOR, "item");
     emit_set_op_pos();  // tensor_item raises positionless on multi-element
-    return own(emit_call(module_->getFunction(rt::tensor_item), {tPtr}, "titem"));
+    return own(emit_value_call(module_->getFunction(rt::tensor_item), {tPtr}, "titem"));
   }
   if (method == "to_array" && argsAst.nodes.size() == 0) {
     auto tenBB = llvm::BasicBlock::Create(ctx_, "ta.ten", fn);
@@ -25537,7 +25537,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     auto tenPtr = builder_.CreateIntToPtr(d, ptrTy);
     int op_id = (method == "sum") ? static_cast<int>(culebra::Op::Sum)
                                   : static_cast<int>(culebra::Op::Max);
-    auto tenV = emit_call(
+    auto tenV = emit_value_call(
         module_->getFunction(rt::tensor_reduce_all),
         {tenPtr, builder_.getInt64(op_id)});
     redMerge.add_incoming(tenV);
