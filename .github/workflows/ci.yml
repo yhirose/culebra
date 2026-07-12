@@ -432,6 +432,7 @@ jobs:
       # stack-probe symbol resolved).
       - name: Smoke — JIT (regression)
         run: |
+          fail=0
           run() {  # $1=label $2=source
             printf '%s' "$2" > probe.cul
             echo "=== $1: culebra --jit ==="
@@ -439,6 +440,7 @@ jobs:
               echo "${1}_PASS"
             else
               echo "${1}_FAIL rc=$?"
+              fail=1
             fi
           }
           run JIT_PRINT_STR 'print("hi")'
@@ -466,6 +468,25 @@ jobs:
           run JIT_POW 'print(2 ** 10)'
           run JIT_OBJGET 'let o = { a: 1 }
           print(o.get("b", 99))'
+          # The long tail of 16-byte-return helpers converted in a second pass
+          # (an exhaustive scan; the first pass covered only the sites the
+          # original port exercised). Self-checking: a shifted-arg garble
+          # throws or mis-compares, so the exit code carries correctness.
+          run JIT_TOLONG_STR 'if to_long("42") != 42 { throw "bad" }
+          print("ok")'
+          run JIT_TOFLOAT_STR 'if to_float("1.5") != 1.5 { throw "bad" }
+          print("ok")'
+          run JIT_ATAN2 'if Math.atan2(0.0, 1.0) != 0.0 { throw "bad" }
+          print("ok")'
+          run JIT_WCHOICE 'if Random.weighted_choice(["only"], [1.0]) != "only" { throw "bad" }
+          print("ok")'
+          run JIT_TENSOR_RED 'if Tensor.from([1.0, 2.0, 3.0]).mean() != 2.0 { throw "bad" }
+          print("ok")'
+          run JIT_TENSOR_ITEM 'if Tensor.from([7.0]).item() != 7.0 { throw "bad" }
+          print("ok")'
+          run JIT_PROC_KW 'let r = Proc.run(["cmd", "/c", "echo hi"], env: {A: "1"})
+          if r.stdout.trim() != "hi" { throw "bad: " + r.stdout }
+          print("ok")'
           # Classes: full new+method+property, a bare method dispatch, a getter
           # (getter_or_value helper), and a callable class object `C(args)`
           # (class_new_method helper) — the last two are 16-byte-return helpers
@@ -482,6 +503,7 @@ jobs:
           run JIT_CLASSCALL 'class P { new(x) { this.x = x }
           v() { return this.x } }
           print(P(9).v())'
+          exit $fail
 
       # EH JIT smoke — a throw must unwind through a defer and reach a catch,
       # exercising the seh0 personality end to end in-process (SEH unwind-table
