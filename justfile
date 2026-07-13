@@ -498,6 +498,12 @@ _run-tests BACKEND:
     # a new bare RC op fails the gate (docs/jit_ownership.md §4.7).
     run_rc_discipline() { bash tools/check_rc_discipline.sh; }
 
+    # Dispatch-tag symmetry gate: the AST tag sets handled by the interp
+    # _eval_dispatch and the JIT compile() switches must stay equal, so a
+    # grammar node added to one walker but not the other fails here instead
+    # of becoming a one-backend bug (tools/check_dispatch_symmetry.sh).
+    run_dispatch_symmetry() { bash tools/check_dispatch_symmetry.sh; }
+
     # Announce each phase with the running elapsed time, so a slow/stalled CI
     # run shows where it is (otherwise the silent phases — difftest, the
     # interp/jit sweep — emit nothing until they finish).
@@ -511,6 +517,7 @@ _run-tests BACKEND:
       # Linux CI and in local dev.
       all)
         phase "rc-discipline (bare retain/release ratchet)"; run_rc_discipline
+        phase "dispatch symmetry (eval_X vs compile_X tag sets)"; run_dispatch_symmetry
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
         phase "codegen backends (-O0, fast vs interp)"; run_codegen_backends
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "difftest (5114 generated cases)"; run_difftest; }
@@ -532,6 +539,7 @@ _run-tests BACKEND:
       # check after a single edit; `all` is the pre-commit gate.
       fast)
         phase "rc-discipline (bare retain/release ratchet)"; run_rc_discipline
+        phase "dispatch symmetry (eval_X vs compile_X tag sets)"; run_dispatch_symmetry
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
         phase "culebra-test self"; run_culebra_test_self
         phase "isolate (interp + jit)"; run_isolate

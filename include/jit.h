@@ -4226,6 +4226,14 @@ struct JIT {
   // or let the handle's dtor release it; a double hand-off asserts at
   // codegen time (§5, docs/jit_ownership.md). `nullptr` stays the "token
   // handled by parent" sentinel (the handle is inert).
+  //
+  // interp/JIT symmetry table: this switch and the interpreter's
+  // _eval_dispatch are parallel walkers over the same AST, and their case
+  // labels ARE the compile_X <-> eval_X correspondence table. A node added
+  // here needs a counterpart case there (and vice versa) — tag set equality
+  // is enforced by tools/check_dispatch_symmetry.sh in the test gate. The
+  // known naming/shape differences are listed on _eval_dispatch's header
+  // comment (interpreter.h).
   Owned compile(const peg::Ast& ast) {
     using namespace peg::udl;
 

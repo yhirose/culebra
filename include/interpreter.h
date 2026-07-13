@@ -5972,6 +5972,20 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return body.tag != "STATEMENTS"_ && body.original_tag != "STATEMENT"_;
   }
 
+  // interp/JIT symmetry table: this switch and the JIT's compile() dispatch
+  // (jit.h, "--- Main dispatch ---") are parallel walkers over the same AST,
+  // and their case labels ARE the eval_X <-> compile_X correspondence table.
+  // A node added here needs a counterpart case there (and vice versa) — tag
+  // set equality is enforced by tools/check_dispatch_symmetry.sh in the test
+  // gate. Known naming/shape differences (same behavior, different homes):
+  //   CALL              -> eval_call            / compile_call_with_builtins
+  //   ADDITIVE/MULTIPL. -> eval_bin_expression  / compile_additive + _multiplicative
+  //   CONDITIONAL       -> inline ternary here  / compile_if (same node shape)
+  //   TUPLE/SET/NIL     -> inline or eval_nil   / compile_tuple/_set/make_nil
+  //   BREAK/CONTINUE    -> throw Break/ContinueSignal / compile_break/_continue
+  //   STRING/INTERPOLATED_CONTENT -> is_token fallthrough below / explicit cases
+  // Property/index/slice/UFCS reads have no tag case: both walkers reach them
+  // through CALL (eval_call / compile_call_with_builtins subtrees).
   Value _eval_dispatch(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
 
