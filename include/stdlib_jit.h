@@ -12,6 +12,7 @@
 #include <csv.h>
 #include <env.h>
 #include <hash.h>
+#include <json.h>
 #include <toml.h>
 #include <uuid.h>
 #include <vfs.h>
@@ -836,96 +837,111 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_sys_argv() {
 
 // --- JSON ---
 
-// `indent` > 0 pretty-prints with that many spaces per level; 0 is
-// compact. `sort_keys` walks Object keys alphabetically (deterministic
-// output). `depth` tracks recursion for indentation only.
-inline std::string _jit_json_stringify(int8_t tag, int64_t data,
-                                        int indent = 0,
-                                        bool sort_keys = false,
-                                        int depth = 0) {
-  auto sep = [&](int level) -> std::string {
-    if (indent <= 0) return "";
-    return std::string("\n") + std::string(indent * level, ' ');
-  };
-  switch (tag) {
-    case TAG_NIL:    return "null";
-    case TAG_BOOL:   return data ? "true" : "false";
-    case TAG_LONG:   return std::to_string(data);
-    case TAG_FLOAT: {
-      double d = _culebra_float_to_double(data);
-      if (!std::isfinite(d)) {
-        throw culebra::CulebraError("ValueError",
-            "JSON.stringify: non-finite Float");
-      }
-      return culebra::format_float_shortest(d);
+// JSON logic lives in json.h (culebra::json), shared with the interp
+// (stdlib_interp.h) so values, error texts, and positions stay
+// byte-identical across backends. These policies adapt the neutral core
+// to JitValues.
+
+struct _JitJsonReader {
+  using Value = JitValue;
+  static culebra::json::Kind kind(const JitValue& v) {
+    using culebra::json::Kind;
+    switch (v.tag) {
+      case TAG_NIL:    return Kind::Nil;
+      case TAG_BOOL:   return Kind::Bool;
+      case TAG_LONG:   return Kind::Long;
+      case TAG_FLOAT:  return Kind::Float;
+      case TAG_STRING: return Kind::String;
+      // Array and Tuple share JitArray storage; Set renders in insertion
+      // order — all three are JSON arrays.
+      case TAG_ARRAY:
+      case TAG_TUPLE:
+      case TAG_SET:    return Kind::Seq;
+      case TAG_OBJECT: return Kind::Object;
     }
-    case TAG_STRING:
-      return culebra::json_escape(reinterpret_cast<const char*>(data));
-    case TAG_ARRAY:
-    case TAG_TUPLE: {
-      // Both Array and Tuple share JitArray storage and render as
-      // JSON arrays.
-      auto* arr = reinterpret_cast<JitArray*>(data);
-      if (arr->size == 0) return "[]";
-      std::string s = "[";
-      for (size_t i = 0; i < arr->size; i++) {
-        if (i) s += ",";
-        s += sep(depth + 1);
-        s += _jit_json_stringify(arr->items[i].tag, arr->items[i].data,
-                                 indent, sort_keys, depth + 1);
-      }
-      s += sep(depth);
-      return s + "]";
-    }
-    case TAG_SET: {
-      auto* set = reinterpret_cast<JitSet*>(data);
-      if (set->members.empty()) return "[]";
-      std::string s = "[";
-      for (size_t i = 0; i < set->members.size(); i++) {
-        if (i) s += ",";
-        s += sep(depth + 1);
-        s += _jit_json_stringify(set->members[i].tag,
-                                 set->members[i].data, indent,
-                                 sort_keys, depth + 1);
-      }
-      s += sep(depth);
-      return s + "]";
-    }
-    case TAG_OBJECT: {
-      auto* obj = reinterpret_cast<JitObject*>(data);
-      // Non-String keys are not representable in JSON; reject loudly
-      // so round-trip with `JSON.parse` stays consistent.
-      if (obj->non_string_props && !obj->non_string_props->empty()) {
-        throw culebra::CulebraError("TypeError",
-            "JSON.stringify: Object has non-String keys");
-      }
-      if (!obj->shape || obj->shape->names.empty()) return "{}";
-      std::string colon = indent > 0 ? ": " : ":";
-      std::vector<size_t> order(obj->shape->names.size());
-      for (size_t i = 0; i < order.size(); i++) order[i] = i;
-      if (sort_keys) {
-        std::sort(order.begin(), order.end(),
-                  [&](size_t a, size_t b) {
-                    return obj->shape->names[a] < obj->shape->names[b];
-                  });
-      }
-      std::string s = "{";
-      for (size_t k = 0; k < order.size(); k++) {
-        if (k) s += ",";
-        s += sep(depth + 1);
-        size_t i = order[k];
-        s += culebra::json_escape(obj->shape->names[i]) + colon +
-             _jit_json_stringify(obj->slots[i].value.tag,
-                                 obj->slots[i].value.data, indent,
-                                 sort_keys, depth + 1);
-      }
-      s += sep(depth);
-      return s + "}";
-    }
+    return Kind::Other;
   }
-  throw culebra::CulebraError("TypeError", std::format(
-      "JSON.stringify: cannot serialize {}", _culebra_tag_name(tag)));
-}
+  static bool as_bool(const JitValue& v) { return v.data != 0; }
+  static int64_t as_long(const JitValue& v) { return v.data; }
+  static double as_double(const JitValue& v) {
+    return _culebra_float_to_double(v.data);
+  }
+  static std::string_view as_string(const JitValue& v) {
+    return reinterpret_cast<const char*>(v.data);
+  }
+  static size_t seq_size(const JitValue& v) {
+    if (v.tag == TAG_SET) return reinterpret_cast<JitSet*>(v.data)->members.size();
+    return reinterpret_cast<JitArray*>(v.data)->size;
+  }
+  static const JitValue& seq_at(const JitValue& v, size_t i) {
+    if (v.tag == TAG_SET) return reinterpret_cast<JitSet*>(v.data)->members[i];
+    return reinterpret_cast<JitArray*>(v.data)->items[i];
+  }
+  static bool object_has_non_string_keys(const JitValue& v) {
+    auto* obj = reinterpret_cast<JitObject*>(v.data);
+    return obj->non_string_props && !obj->non_string_props->empty();
+  }
+  static std::vector<std::pair<std::string_view, const JitValue*>>
+  object_entries(const JitValue& v) {
+    auto* obj = reinterpret_cast<JitObject*>(v.data);
+    std::vector<std::pair<std::string_view, const JitValue*>> entries;
+    if (!obj->shape) return entries;
+    entries.reserve(obj->shape->names.size());
+    for (size_t i = 0; i < obj->shape->names.size(); i++) {
+      entries.emplace_back(obj->shape->names[i], &obj->slots[i].value);
+    }
+    return entries;
+  }
+  static std::string_view type_name(const JitValue& v) {
+    return _culebra_tag_name(v.tag);
+  }
+};
+
+// Each built heap object (JitArray, JitObject, allocated String) is +1
+// owned by the caller, who hands ownership to the user binding.
+struct _JitJsonBuilder {
+  using Value = JitValue;
+  using Object = JitObject*;
+  using Array = JitArray*;
+  static JitValue make_null() { return {TAG_NIL, 0}; }
+  static JitValue boolean(bool b) { return {TAG_BOOL, b ? 1 : 0}; }
+  static JitValue integer(int64_t n) { return {TAG_LONG, n}; }
+  static JitValue real(double d) {
+    return {TAG_FLOAT, _culebra_double_to_bits(d)};
+  }
+  static JitValue string(std::string&& s) {
+    return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(s))};
+  }
+  static JitObject* object_new() { return culebra_runtime_object_new(); }
+  static void object_set(JitObject*& o, const std::string& key, JitValue&& v) {
+    culebra_runtime_object_set(o, key.c_str(), false, v.tag, v.data, 0, 0);
+  }
+  static JitValue object_done(JitObject*&& o) {
+    return {TAG_OBJECT, reinterpret_cast<int64_t>(o)};
+  }
+  static JitArray* array_new() { return culebra_runtime_array_new(); }
+  static void array_push(JitArray*& a, JitValue&& v) {
+    culebra_runtime_array_push(a, v.tag, v.data);
+  }
+  static JitValue array_done(JitArray*&& a) {
+    return {TAG_ARRAY, reinterpret_cast<int64_t>(a)};
+  }
+  // Raw +1 heap objects: release the partial container / finished value
+  // when a parse throws mid-way. The container abandons funnel through the
+  // single value releaser so there is exactly one bare RC site here (the
+  // release is a no-op for non-heap tags).
+  static void object_abandon(JitObject*& o) {
+    JitValue v{TAG_OBJECT, reinterpret_cast<int64_t>(o)};
+    abandon_value(v);
+  }
+  static void array_abandon(JitArray*& a) {
+    JitValue v{TAG_ARRAY, reinterpret_cast<int64_t>(a)};
+    abandon_value(v);
+  }
+  static void abandon_value(JitValue& v) {
+    culebra_runtime_value_release(v.tag, v.data);
+  }
+};
 
 // RAII guard for a transferred-+1 JitValue. Releases on scope exit
 // (normal or throw), so adapter code that takes ownership of a
@@ -1194,273 +1210,27 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_json_stringify(
     int8_t tag, int64_t data, int64_t indent, int8_t sort_keys,
     int8_t lines) {
   if (!lines) {
-    return _culebra_heap_str(
-        _jit_json_stringify(tag, data, static_cast<int>(indent),
-                            sort_keys != 0, 0));
+    return _culebra_heap_str(culebra::json::stringify<_JitJsonReader>(
+        {tag, data}, static_cast<int>(indent), sort_keys != 0));
   }
   if (indent > 0) {
     throw culebra::CulebraError("TypeError",
         "JSON.stringify: lines=true is incompatible with indent>0");
   }
-  const JitValue* items = nullptr;
-  size_t n = 0;
-  if (tag == TAG_ARRAY || tag == TAG_TUPLE) {
-    auto* arr = reinterpret_cast<JitArray*>(data);
-    items = arr->items;
-    n = arr->size;
-  } else if (tag == TAG_SET) {
-    auto* set = reinterpret_cast<JitSet*>(data);
-    items = set->members.data();
-    n = set->members.size();
-  } else {
-    throw culebra::CulebraError("TypeError", std::format(
-        "JSON.stringify(lines: true): expects Array/Tuple/Set, got {}",
-        _culebra_tag_name(tag)));
-  }
-  std::string s;
-  for (size_t i = 0; i < n; i++) {
-    s += _jit_json_stringify(items[i].tag, items[i].data, /*indent=*/0,
-                             sort_keys != 0, 0);
-    s += '\n';
-  }
-  return _culebra_heap_str(s);
+  return _culebra_heap_str(culebra::json::stringify_lines<_JitJsonReader>(
+      {tag, data}, sort_keys != 0));
 }
 
-// Minimal recursive-descent JSON parser producing JitValues. Each
-// returned heap object (JitArray, JitObject, allocated String) is +1
-// owned by the caller, who hands ownership to the user binding.
-// Tracks 1-based line/col so failures surface positions via the
-// caller's structured Error catch.
-struct _JitJsonParser {
-  const char* p;
-  const char* end;
-  long line = 1;
-  long col = 1;
-  // 'auto' / 'float' — same shape as the interp parser.
-  std::string_view number_mode = "auto";
-  // JSONC tolerance (comments + trailing commas); mirrors the interp parser.
-  bool jsonc = false;
-
-  void advance() {
-    if (*p == '\n') { line++; col = 1; }
-    else            { col++; }
-    ++p;
-  }
-  void skip_ws() {
-    while (p < end) {
-      char c = *p;
-      if (c == ' ' || c == '\t' || c == '\n' || c == '\r') { advance(); continue; }
-      if (jsonc && c == '/' && p + 1 < end) {
-        if (p[1] == '/') {                 // line comment → to end of line
-          advance(); advance();
-          while (p < end && *p != '\n') advance();
-          continue;
-        }
-        if (p[1] == '*') {                 // block comment → to closing */
-          advance(); advance();
-          while (p < end && !(*p == '*' && p + 1 < end && p[1] == '/')) advance();
-          if (p < end) { advance(); advance(); }
-          continue;
-        }
-      }
-      break;
-    }
-  }
-  [[noreturn]] void fail(const char* msg) {
-    // Embed " at L:C." inline so eval()'s outer catch doesn't override
-    // our JSON-internal position with the caller AST's location.
-    throw culebra::CulebraError("ValueError",
-        std::format("JSON.parse: {}", msg), line, col);
-  }
-  JitValue parse_value() {
-    skip_ws();
-    if (p >= end) fail("unexpected end");
-    char c = *p;
-    if (c == '{') return parse_object();
-    if (c == '[') return parse_array();
-    if (c == '"') return parse_string();
-    if (c == 't' || c == 'f') return parse_bool();
-    if (c == 'n') return parse_null();
-    return parse_number();
-  }
-  JitValue parse_object() {
-    advance(); skip_ws();
-    auto* obj = culebra_runtime_object_new();
-    if (p < end && *p == '}') {
-      advance();
-      return {TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
-    }
-    while (p < end) {
-      skip_ws();
-      // JSONC: a `,` may be followed by `}` (trailing comma).
-      if (jsonc && p < end && *p == '}') {
-        advance();
-        return {TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
-      }
-      auto key = parse_string_raw();
-      skip_ws();
-      if (p >= end || *p != ':') fail("expected ':'");
-      advance();
-      auto val = parse_value();
-      culebra_runtime_object_set(obj, key.c_str(), false, val.tag, val.data,
-                                 0, 0);
-      skip_ws();
-      if (p < end && *p == ',') { advance(); continue; }
-      if (p < end && *p == '}') {
-        advance();
-        return {TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
-      }
-      fail("expected ',' or '}'");
-    }
-    fail("unterminated object");
-  }
-  JitValue parse_array() {
-    advance(); skip_ws();
-    auto* arr = culebra_runtime_array_new();
-    if (p < end && *p == ']') {
-      advance();
-      return {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
-    }
-    while (p < end) {
-      skip_ws();
-      // JSONC: a `,` may be followed by `]` (trailing comma).
-      if (jsonc && p < end && *p == ']') {
-        advance();
-        return {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
-      }
-      auto v = parse_value();
-      culebra_runtime_array_push(arr, v.tag, v.data);
-      skip_ws();
-      if (p < end && *p == ',') { advance(); continue; }
-      if (p < end && *p == ']') {
-        advance();
-        return {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
-      }
-      fail("expected ',' or ']'");
-    }
-    fail("unterminated array");
-  }
-  JitValue parse_string() {
-    auto raw = parse_string_raw();
-    return {TAG_STRING,
-            reinterpret_cast<int64_t>(_culebra_heap_str(raw))};
-  }
-  std::string parse_string_raw() {
-    if (*p != '"') fail("expected string");
-    advance();
-    std::string out;
-    while (p < end && *p != '"') {
-      if (*p == '\\' && p + 1 < end) {
-        advance();
-        switch (*p) {
-          case '"':  out += '"'; break;
-          case '\\': out += '\\'; break;
-          case '/':  out += '/'; break;
-          case 'n':  out += '\n'; break;
-          case 'r':  out += '\r'; break;
-          case 't':  out += '\t'; break;
-          case 'b':  out += '\b'; break;
-          case 'f':  out += '\f'; break;
-          default:   fail("bad escape");
-        }
-        advance();
-      } else {
-        out += *p; advance();
-      }
-    }
-    if (p >= end) fail("unterminated string");
-    advance();
-    return out;
-  }
-  JitValue parse_bool() {
-    if (end - p >= 4 && std::string_view(p, 4) == "true") {
-      for (int i = 0; i < 4; i++) advance();
-      return {TAG_BOOL, 1};
-    }
-    if (end - p >= 5 && std::string_view(p, 5) == "false") {
-      for (int i = 0; i < 5; i++) advance();
-      return {TAG_BOOL, 0};
-    }
-    fail("bad bool");
-  }
-  JitValue parse_null() {
-    if (end - p >= 4 && std::string_view(p, 4) == "null") {
-      for (int i = 0; i < 4; i++) advance();
-      return {TAG_NIL, 0};
-    }
-    fail("bad null");
-  }
-  JitValue parse_number() {
-    const char* start = p;
-    if (*p == '-') advance();
-    bool is_float = false;
-    const char* digits_start = p;
-    while (p < end && (*p >= '0' && *p <= '9')) advance();
-    if (p == digits_start) fail("expected value");
-    if (p < end && *p == '.') {
-      is_float = true; advance();
-      while (p < end && (*p >= '0' && *p <= '9')) advance();
-    }
-    if (p < end && (*p == 'e' || *p == 'E')) {
-      is_float = true; advance();
-      if (p < end && (*p == '+' || *p == '-')) advance();
-      while (p < end && (*p >= '0' && *p <= '9')) advance();
-    }
-    std::string buf(start, p);
-    if (number_mode == "float") {
-      return {TAG_FLOAT, _culebra_double_to_bits(std::stod(buf))};
-    }
-    if (is_float) {
-      return {TAG_FLOAT, _culebra_double_to_bits(std::stod(buf))};
-    }
-    return {TAG_LONG, static_cast<int64_t>(std::stoll(buf))};
-  }
-};
-
+// Parse driver: the shared core builds JitValues directly through
+// _JitJsonBuilder; the returned root is +1 owned by the caller, who
+// hands ownership to the user binding.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_json_parse(
     const char* s, const char* number_mode, int8_t lines, int8_t jsonc) {
   if (!lines) {
-    _JitJsonParser jp{s, s + std::strlen(s)};
-    jp.number_mode = number_mode;
-    jp.jsonc = jsonc != 0;
-    auto v = jp.parse_value();
-    jp.skip_ws();
-    if (jp.p != jp.end) {
-      throw culebra::CulebraError("ValueError",
-          "JSON.parse: trailing characters", jp.line, jp.col);
-    }
-    return v;
+    return culebra::json::parse<_JitJsonBuilder>(s, number_mode, jsonc != 0);
   }
-  // JSON Lines: split on `\n`, parse each non-empty slice; return an
-  // Array. The line counter advances with each `\n` so error positions
-  // stay coherent across the whole input.
-  auto* arr = culebra_runtime_array_new();
-  long lineno = 1;
-  size_t n = std::strlen(s);
-  size_t i = 0;
-  while (i < n) {
-    size_t j = i;
-    while (j < n && s[j] != '\n') j++;
-    if (j > i) {
-      _JitJsonParser jp{s + i, s + j};
-      jp.line = lineno;
-      jp.number_mode = number_mode;
-      jp.jsonc = jsonc != 0;
-      auto v = jp.parse_value();
-      jp.skip_ws();
-      if (jp.p != jp.end) {
-        culebra_runtime_value_release(TAG_ARRAY,
-                                      reinterpret_cast<int64_t>(arr));
-        throw culebra::CulebraError("ValueError",
-            "JSON.parse(lines: true): trailing characters", jp.line, jp.col);
-      }
-      culebra_runtime_array_push(arr, v.tag, v.data);
-    }
-    if (j == n) break;
-    i = j + 1;
-    lineno++;
-  }
-  return {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
+  return culebra::json::parse_lines<_JitJsonBuilder>(s, number_mode,
+                                                     jsonc != 0);
 }
 
 // Build the `{code, stdout, stderr, ok, signal, error}` result Object shared

@@ -185,4 +185,36 @@ assert_eq(tc.kind, 'ValueError')
 // `jsonc` binds positionally too (s, lines, number_mode, jsonc).
 assert_eq(JSON.parse("[1, /* c */ 2,]", false, "auto", true), [1, 2])
 
+// Exact wording + position pins for the parser/stringify error surface.
+// The logic is single-sourced in json.h; these keep kind, message, and
+// 1-based line:col identical across interp/JIT/AOT.
+let pe1 = try { JSON.parse(`{"a" 1}`); nil } catch e { e }
+assert_true(pe1.kind == 'ValueError' &&
+       pe1.message == "JSON.parse: expected ':'" &&
+       pe1.line == 1 && pe1.col == 6)
+let pe2 = try { JSON.parse("[1,\n 2,,]"); nil } catch e { e }  // error on line 2
+assert_true(pe2.kind == 'ValueError' &&
+       pe2.message == 'JSON.parse: expected value' &&
+       pe2.line == 2 && pe2.col == 4)
+let pe3 = try { JSON.parse(`"a\q"`); nil } catch e { e }
+assert_true(pe3.kind == 'ValueError' && pe3.message == 'JSON.parse: bad escape')
+let pe4 = try { JSON.parse("[1"); nil } catch e { e }
+assert_true(pe4.kind == 'ValueError' &&
+       pe4.message == "JSON.parse: expected ',' or ']'")
+let pe5 = try { JSON.parse("1 x"); nil } catch e { e }
+assert_true(pe5.kind == 'ValueError' &&
+       pe5.message == 'JSON.parse: trailing characters' &&
+       pe5.line == 1 && pe5.col == 3)
+let se1 = try { JSON.stringify(to_float("inf")); nil } catch e { e }
+assert_true(se1.kind == 'ValueError' &&
+       se1.message == 'JSON.stringify: non-finite Float')
+let nsk = {}
+nsk[(1, 2)] = "x"
+let se2 = try { JSON.stringify(nsk); nil } catch e { e }
+assert_true(se2.kind == 'TypeError' &&
+       se2.message == 'JSON.stringify: Object has non-String keys')
+let se3 = try { JSON.stringify(fn() { 1 }); nil } catch e { e }
+assert_true(se3.kind == 'TypeError' &&
+       se3.message == 'JSON.stringify: cannot serialize Function')
+
 IO.puts("test_json OK")
