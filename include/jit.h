@@ -5080,14 +5080,10 @@ struct JIT {
     using namespace peg::udl;
     // ASSIGNMENT layout (see parser.h `view_assignment`).
     auto av = culebra::view_assignment(ast);
-    auto lvaloff = av.lvaloff;
-    auto lvalcnt = av.lvalcnt;
-    auto let = av.is_let;
-    auto mut = av.is_mut;
     bool compound = av.compound;
     auto base_op = av.op_base;
 
-    if (compound && (let || mut)) {
+    if (compound && (av.is_let || av.is_mut)) {
       // Position omitted on purpose: compile()'s wrapper backfills this
       // ASSIGNMENT node's line/col. Demonstrates the backfill on a real path.
       throw culebra::CulebraError("SyntaxError",
@@ -5100,7 +5096,7 @@ struct JIT {
     // therefore compiled lazily (inside the nil branch), not up front.
     bool nil_coalesce = compound && base_op == "??";
     // `??=` is MVP-limited to a simple variable target (matches interp).
-    if (nil_coalesce && lvalcnt != 1) {
+    if (nil_coalesce && av.lvalcnt != 1) {
       // Position backfilled by compile()'s wrapper (the ASSIGNMENT node).
       throw culebra::CulebraError("SyntaxError",
           "`??=` is only supported on a simple variable target.");
@@ -5116,162 +5112,194 @@ struct JIT {
     llvm::Value* rval = nullptr;
     if (!nil_coalesce) rval = compile_rhs();
 
-    if (lvalcnt == 1) {
-      auto name = std::string(ast.nodes[lvaloff]->token);
+    // Two disjoint shapes: a simple variable target (the common case, with
+    // its compound / `??=` / declare variants) and a complex lvalue
+    // (`obj.prop`, `arr[idx]`, chains). Split so each keeps its own local
+    // reasoning — the complex path threads a single Owned receiver across
+    // throw-guarded steps (§4.8/§4.9).
+    if (av.lvalcnt == 1)
+      return compile_assign_var(ast, av, rval, nil_coalesce, compile_rhs);
+    return compile_assign_complex(ast, av, rval);
+  }
 
-      // Sink: `let _ = expr` / `_ = expr`. The RHS still runs (its side
-      // effects matter); the value passes through as the assignment's
-      // result with its +1 from compile() intact, since no slot absorbs
-      // it. Caller (compile_statements) drops the result like any other
-      // unused value.
-      if (is_sink_name(name)) {
-        return own(rval);
-      }
+  // Simple variable target: `x = e`, `let x = e`, `mut x = e`, `x op= e`,
+  // `x ??= e`, and the sink `_ = e`. `rval` is the already-compiled RHS
+  // (+1), or nullptr for `??=` where the RHS is emitted lazily via
+  // `compile_rhs` inside the nil branch. Returns the assignment's +1 result.
+  template <class CompileRhs>
+  Owned compile_assign_var(const peg::Ast& ast,
+                           const culebra::AssignmentView& av, llvm::Value* rval,
+                           bool nil_coalesce, CompileRhs&& compile_rhs) {
+    using namespace peg::udl;
+    auto lvaloff = av.lvaloff;
+    bool compound = av.compound;
+    auto base_op = av.op_base;
+    bool let = av.is_let, mut = av.is_mut;
+    auto name = std::string(ast.nodes[lvaloff]->token);
 
-      if (compound) {
-        auto slot = lookup_var(name);
-        if (!slot) {
-          // Match interp's eval-time NameError (interpreter.h:5000)
-          // so `try { x += 1 } catch e { e.kind }` is symmetric.
-          emit_throw_error("NameError",
-              std::format("compound assignment on undefined name '{}'",
-                          name),
-              ast.line, ast.column);
-          // The throw is the terminal effect; emit a dummy nil so
-          // surrounding IR stays well-formed (the runtime unwinds
-          // before any of it runs).
-          return own(make_nil());
-        }
-        auto cur = load_slot(*slot, name);
-        if (nil_coalesce) {
-          // `a ??= b`: assign only when `a` reads nil; else keep `a`.
-          auto fn2 = builder_.GetInsertBlock()->getParent();
-          auto assignBB = llvm::BasicBlock::Create(ctx_, "ncasn.assign", fn2);
-          auto keepBB = llvm::BasicBlock::Create(ctx_, "ncasn.keep", fn2);
-          auto doneBB = llvm::BasicBlock::Create(ctx_, "ncasn.done", fn2);
-          llvm::IRBuilder<> eb(&fn2->getEntryBlock(),
-                               fn2->getEntryBlock().begin());
-          auto resAlloca = eb.CreateAlloca(valueType_, nullptr, "ncasn.tmp");
-          auto isNil = builder_.CreateICmpEQ(
-              extract_tag(cur), builder_.getInt8(TAG_NIL), "ncasn.isnil");
-          builder_.CreateCondBr(isNil, assignBB, keepBB);
-
-          builder_.SetInsertPoint(assignBB);
-          auto rv = compile_rhs();  // +1, lazily emitted here
-          if (!slot->mut) {
-            emit_immutable_assign_throw(name, ast.line, ast.column);
-          }
-          emit_value_release(cur);   // cur is nil; balance the load's +1
-          store_slot(*slot, rv);     // consumes rv's +1
-          emit_value_retain(rv);     // result keeps a +1
-          builder_.CreateStore(rv, resAlloca);
-          builder_.CreateBr(doneBB);
-
-          builder_.SetInsertPoint(keepBB);
-          builder_.CreateStore(cur, resAlloca);  // cur (+1) is the result
-          builder_.CreateBr(doneBB);
-
-          builder_.SetInsertPoint(doneBB);
-          return own(builder_.CreateLoad(valueType_, resAlloca, "ncasn.result"));
-        }
-        // In-place fast path is requested for Tensor lhs; the runtime
-        // helper falls back to the plain binop otherwise. When it
-        // succeeds for Tensor, new_val is the same handle as cur (mutated
-        // buffer in place) — in that case interp skips the env->assign
-        // check entirely, so the JIT must also skip rebinding (and the
-        // mut check that would gate it).
-        auto new_val = emit_arith_step(cur, rval, base_op, /*inplace=*/true);
-        // Both cur (from load_slot) and rval (from compile) carry a +1
-        // that emit_arith_step did not consume. Drop them here so the
-        // path is leak-balanced for refcounted operands (Tensor/Object).
-        emit_value_release(rval);
-        emit_value_release(cur);
-
-        // Detect Tensor in-place: tag == TAG_TENSOR && handle unchanged.
-        // Any other combination (Long, String, Float, fresh Tensor) is
-        // a logical rebind and must enforce the slot's mut flag.
-        auto isTensor = builder_.CreateICmpEQ(
-            extract_tag(cur), builder_.getInt8(TAG_TENSOR));
-        auto sameData = builder_.CreateICmpEQ(
-            extract_data(cur), extract_data(new_val));
-        auto isInPlace = builder_.CreateAnd(isTensor, sameData);
-
-        auto fn = builder_.GetInsertBlock()->getParent();
-        auto rebindBB =
-            llvm::BasicBlock::Create(ctx_, "compound.rebind", fn);
-        auto doneBB =
-            llvm::BasicBlock::Create(ctx_, "compound.done", fn);
-        builder_.CreateCondBr(isInPlace, doneBB, rebindBB);
-
-        builder_.SetInsertPoint(rebindBB);
-        if (!slot->mut) {
-          emit_immutable_assign_throw(name, ast.line, ast.column);
-        }
-        store_slot(*slot, new_val);
-        emit_value_retain(new_val);
-        builder_.CreateBr(doneBB);
-
-        builder_.SetInsertPoint(doneBB);
-        return own(new_val);
-      }
-
-      // `mut x = ...` (no `let`) is also a declaration, matching the
-      // interp's `declare = let || mut` rule. Implicit `x = ...`
-      // first-occurrence is also a declaration.
-      bool declare = let || mut;
-      // Check if the variable already exists in the current (innermost) scope.
-      // If so, reuse the slot (avoid alloca accumulation in loops with `let`).
-      if (!scopes_.empty()) {
-        auto& slots = scopes_.back().slots;
-        auto it = slots.find(name);
-        if (it != slots.end()) {
-          if (declare) {
-            // Forward-ref pre-allocation or loop re-entry: this is the
-            // first / re-running binding. Honor the user-declared mut
-            // flag from the source.
-            it->second.mut = mut;
-          } else {
-            // Reassignment (`x = expr`) on an existing same-scope slot.
-            if (!it->second.mut) {
-              emit_immutable_assign_throw(name, ast.line, ast.column);
-            }
-          }
-          store_slot(it->second, rval);
-          emit_value_retain(rval);
-          return own(rval);
-        }
-      }
-
-      if (!declare) {
-        auto existing = lookup_var(name);
-        if (existing) {
-          if (!existing->mut) {
-            emit_immutable_assign_throw(name, ast.line, ast.column);
-          }
-          store_slot(*existing, rval);
-          emit_value_retain(rval);
-          return own(rval);
-        }
-      }
-
-      declare_local(name, rval, /*is_mut=*/mut);
-      emit_value_retain(rval);
-      // Record direct `let f = fn (...) {...}` bindings so a later
-      // `f(x, y: 2)` can resolve kwargs against the FUNCTION AST at
-      // compile time. The RHS lives at ast.nodes.back(); its `tag`
-      // (post-optimizer) is "FUNCTION" for a function literal.
-      {
-        using namespace peg::udl;
-        const auto& rhs = *ast.nodes.back();
-        if (rhs.tag == "FUNCTION"_ && !scopes_.empty()) {
-          scopes_.back().fn_asts[name] = &rhs;
-        }
-      }
+    // Sink: `let _ = expr` / `_ = expr`. The RHS still runs (its side
+    // effects matter); the value passes through as the assignment's
+    // result with its +1 from compile() intact, since no slot absorbs
+    // it. Caller (compile_statements) drops the result like any other
+    // unused value.
+    if (is_sink_name(name)) {
       return own(rval);
     }
 
-    using namespace peg::udl;
+    if (compound) {
+      auto slot = lookup_var(name);
+      if (!slot) {
+        // Match interp's eval-time NameError (interpreter.h:5000)
+        // so `try { x += 1 } catch e { e.kind }` is symmetric.
+        emit_throw_error("NameError",
+            std::format("compound assignment on undefined name '{}'",
+                        name),
+            ast.line, ast.column);
+        // The throw is the terminal effect; emit a dummy nil so
+        // surrounding IR stays well-formed (the runtime unwinds
+        // before any of it runs).
+        return own(make_nil());
+      }
+      auto cur = load_slot(*slot, name);
+      if (nil_coalesce) {
+        // `a ??= b`: assign only when `a` reads nil; else keep `a`.
+        auto fn2 = builder_.GetInsertBlock()->getParent();
+        auto assignBB = llvm::BasicBlock::Create(ctx_, "ncasn.assign", fn2);
+        auto keepBB = llvm::BasicBlock::Create(ctx_, "ncasn.keep", fn2);
+        auto doneBB = llvm::BasicBlock::Create(ctx_, "ncasn.done", fn2);
+        llvm::IRBuilder<> eb(&fn2->getEntryBlock(),
+                             fn2->getEntryBlock().begin());
+        auto resAlloca = eb.CreateAlloca(valueType_, nullptr, "ncasn.tmp");
+        auto isNil = builder_.CreateICmpEQ(
+            extract_tag(cur), builder_.getInt8(TAG_NIL), "ncasn.isnil");
+        builder_.CreateCondBr(isNil, assignBB, keepBB);
 
+        builder_.SetInsertPoint(assignBB);
+        auto rv = compile_rhs();  // +1, lazily emitted here
+        if (!slot->mut) {
+          emit_immutable_assign_throw(name, ast.line, ast.column);
+        }
+        emit_value_release(cur);   // cur is nil; balance the load's +1
+        store_slot(*slot, rv);     // consumes rv's +1
+        emit_value_retain(rv);     // result keeps a +1
+        builder_.CreateStore(rv, resAlloca);
+        builder_.CreateBr(doneBB);
+
+        builder_.SetInsertPoint(keepBB);
+        builder_.CreateStore(cur, resAlloca);  // cur (+1) is the result
+        builder_.CreateBr(doneBB);
+
+        builder_.SetInsertPoint(doneBB);
+        return own(builder_.CreateLoad(valueType_, resAlloca, "ncasn.result"));
+      }
+      // In-place fast path is requested for Tensor lhs; the runtime
+      // helper falls back to the plain binop otherwise. When it
+      // succeeds for Tensor, new_val is the same handle as cur (mutated
+      // buffer in place) — in that case interp skips the env->assign
+      // check entirely, so the JIT must also skip rebinding (and the
+      // mut check that would gate it).
+      auto new_val = emit_arith_step(cur, rval, base_op, /*inplace=*/true);
+      // Both cur (from load_slot) and rval (from compile) carry a +1
+      // that emit_arith_step did not consume. Drop them here so the
+      // path is leak-balanced for refcounted operands (Tensor/Object).
+      emit_value_release(rval);
+      emit_value_release(cur);
+
+      // Detect Tensor in-place: tag == TAG_TENSOR && handle unchanged.
+      // Any other combination (Long, String, Float, fresh Tensor) is
+      // a logical rebind and must enforce the slot's mut flag.
+      auto isTensor = builder_.CreateICmpEQ(
+          extract_tag(cur), builder_.getInt8(TAG_TENSOR));
+      auto sameData = builder_.CreateICmpEQ(
+          extract_data(cur), extract_data(new_val));
+      auto isInPlace = builder_.CreateAnd(isTensor, sameData);
+
+      auto fn = builder_.GetInsertBlock()->getParent();
+      auto rebindBB =
+          llvm::BasicBlock::Create(ctx_, "compound.rebind", fn);
+      auto doneBB =
+          llvm::BasicBlock::Create(ctx_, "compound.done", fn);
+      builder_.CreateCondBr(isInPlace, doneBB, rebindBB);
+
+      builder_.SetInsertPoint(rebindBB);
+      if (!slot->mut) {
+        emit_immutable_assign_throw(name, ast.line, ast.column);
+      }
+      store_slot(*slot, new_val);
+      emit_value_retain(new_val);
+      builder_.CreateBr(doneBB);
+
+      builder_.SetInsertPoint(doneBB);
+      return own(new_val);
+    }
+
+    // `mut x = ...` (no `let`) is also a declaration, matching the
+    // interp's `declare = let || mut` rule. Implicit `x = ...`
+    // first-occurrence is also a declaration.
+    bool declare = let || mut;
+    // Check if the variable already exists in the current (innermost) scope.
+    // If so, reuse the slot (avoid alloca accumulation in loops with `let`).
+    if (!scopes_.empty()) {
+      auto& slots = scopes_.back().slots;
+      auto it = slots.find(name);
+      if (it != slots.end()) {
+        if (declare) {
+          // Forward-ref pre-allocation or loop re-entry: this is the
+          // first / re-running binding. Honor the user-declared mut
+          // flag from the source.
+          it->second.mut = mut;
+        } else {
+          // Reassignment (`x = expr`) on an existing same-scope slot.
+          if (!it->second.mut) {
+            emit_immutable_assign_throw(name, ast.line, ast.column);
+          }
+        }
+        store_slot(it->second, rval);
+        emit_value_retain(rval);
+        return own(rval);
+      }
+    }
+
+    if (!declare) {
+      auto existing = lookup_var(name);
+      if (existing) {
+        if (!existing->mut) {
+          emit_immutable_assign_throw(name, ast.line, ast.column);
+        }
+        store_slot(*existing, rval);
+        emit_value_retain(rval);
+        return own(rval);
+      }
+    }
+
+    declare_local(name, rval, /*is_mut=*/mut);
+    emit_value_retain(rval);
+    // Record direct `let f = fn (...) {...}` bindings so a later
+    // `f(x, y: 2)` can resolve kwargs against the FUNCTION AST at
+    // compile time. The RHS lives at ast.nodes.back(); its `tag`
+    // (post-optimizer) is "FUNCTION" for a function literal.
+    {
+      using namespace peg::udl;
+      const auto& rhs = *ast.nodes.back();
+      if (rhs.tag == "FUNCTION"_ && !scopes_.empty()) {
+        scopes_.back().fn_asts[name] = &rhs;
+      }
+    }
+    return own(rval);
+  }
+
+  // Complex lvalue: `obj.prop = e`, `arr[idx] = e`, and chains
+  // (`this.d[i] = v`). Rolls the receiver through one Owned handle across
+  // the intermediate postfixes, then dispatches the final INDEX / DOT set.
+  Owned compile_assign_complex(const peg::Ast& ast,
+                               const culebra::AssignmentView& av,
+                               llvm::Value* rval) {
+    using namespace peg::udl;
+    auto lvaloff = av.lvaloff;
+    auto lvalcnt = av.lvalcnt;
+    bool compound = av.compound;
+    auto base_op = av.op_base;
+    bool mut = av.is_mut;
     // Complex lvalue (obj.prop, arr[idx]). The receiver rolls through one
     // Owned handle (the compile_call idiom): each step borrows the current
     // +1 and move-assigning the step's fresh +1 releases the previous link

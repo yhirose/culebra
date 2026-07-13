@@ -9703,13 +9703,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // ASSIGNMENT layout (see parser.h `view_assignment`):
     //   [LET, MUTABLE, lval-chain..., (TYPE_ANNOTATION)?, ASSIGN_OP, EXPRESSION]
     auto av = culebra::view_assignment(ast);
-    auto lvaloff = av.lvaloff;
-    auto lvalcnt = av.lvalcnt;
-    auto let = av.is_let;
-    auto mut = av.is_mut;
     bool compound = av.compound;
 
-    if (compound && (let || mut)) {
+    if (compound && (av.is_let || av.is_mut)) {
       throw CulebraError("SyntaxError",
           "compound assignment cannot declare a new variable.",
           static_cast<long>(ast.line), static_cast<long>(ast.column));
@@ -9722,7 +9718,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     bool nil_coalesce = compound && base_op == "??";
     // `??=` is MVP-limited to a simple variable target (the short-circuit
     // write on indexed / property lvalues is a JIT-parity follow-up).
-    if (nil_coalesce && lvalcnt != 1) {
+    if (nil_coalesce && av.lvalcnt != 1) {
       throw CulebraError("SyntaxError",
           "`??=` is only supported on a simple variable target.",
           static_cast<long>(ast.line), static_cast<long>(ast.column));
@@ -9739,221 +9735,254 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     Value rval;
     if (!nil_coalesce) rval = eval_rhs();
 
-    if (lvalcnt == 1) {
-      const auto& ident = ast.nodes[lvaloff]->token;
-      if (is_keyword(ident)) {
-        throw CulebraError("SyntaxError",
-                           "left-hand side is invalid variable name.");
+    // Two disjoint shapes: a simple variable target (the common case, with
+    // its compound / `??=` / declare variants) and a complex lvalue
+    // (`obj.prop`, `arr[idx]`, chains). Split so each keeps its own local
+    // reasoning; mirrors the JIT's compile_assign_var / _complex.
+    if (av.lvalcnt == 1)
+      return eval_assign_var(ast, av, env, std::move(rval), nil_coalesce,
+                             eval_rhs);
+    return eval_assign_complex(ast, av, env, std::move(rval));
+  }
+
+  // Simple variable target: `x = e`, `let x = e`, `mut x = e`, `x op= e`,
+  // and `x ??= e`. `rval` is the already-evaluated RHS, or a Nil placeholder
+  // for `??=` where the RHS is evaluated lazily via `eval_rhs`.
+  template <class EvalRhs>
+  Value eval_assign_var(const peg::Ast& ast, const culebra::AssignmentView& av,
+                        const std::shared_ptr<Environment>& env, Value rval,
+                        bool nil_coalesce, EvalRhs&& eval_rhs) {
+    using namespace peg::udl;
+    auto lvaloff = av.lvaloff;
+    bool compound = av.compound;
+    auto base_op = av.op_base;
+    bool let = av.is_let, mut = av.is_mut;
+    const auto& ident = ast.nodes[lvaloff]->token;
+    if (is_keyword(ident)) {
+      throw CulebraError("SyntaxError",
+                         "left-hand side is invalid variable name.");
+    }
+    if (compound) {
+      if (!env->has(ident)) {
+        throw CulebraError("NameError", std::format(
+            "compound assignment on undefined name '{}'", ident));
       }
-      if (compound) {
-        if (!env->has(ident)) {
-          throw CulebraError("NameError", std::format(
-              "compound assignment on undefined name '{}'", ident));
-        }
-        auto cur = env->get(ident);
-        if (nil_coalesce) {
-          if (cur.type != Value::Nil) return cur;  // short-circuit
-          auto v = eval_rhs();
-          env->assign(ident, v);
-          return v;
-        }
-        // In-place fast path for Tensor LHS — see try_tensor_inplace.
-        if (try_tensor_inplace(cur, base_op, rval)) {
-          return cur;
-        }
-        auto new_val = apply_compound_op(cur, rval, base_op, env);
-        env->assign(ident, new_val);
-        return new_val;
+      auto cur = env->get(ident);
+      if (nil_coalesce) {
+        if (cur.type != Value::Nil) return cur;  // short-circuit
+        auto v = eval_rhs();
+        env->assign(ident, v);
+        return v;
       }
-      auto declare = let || mut;
-      if (declare) {
-        env->initialize(ident, rval, mut);
-      } else if (env->has(ident)) {
-        env->assign(ident, rval);
-      } else {
-        env->initialize(ident, rval, mut);
+      // In-place fast path for Tensor LHS — see try_tensor_inplace.
+      if (try_tensor_inplace(cur, base_op, rval)) {
+        return cur;
       }
-      return rval;
+      auto new_val = apply_compound_op(cur, rval, base_op, env);
+      env->assign(ident, new_val);
+      return new_val;
+    }
+    auto declare = let || mut;
+    if (declare) {
+      env->initialize(ident, rval, mut);
+    } else if (env->has(ident)) {
+      env->assign(ident, rval);
     } else {
-      Value lval = eval(*ast.nodes[lvaloff], env);
+      env->initialize(ident, rval, mut);
+    }
+    return rval;
+  }
 
-      auto end = lvaloff + lvalcnt - 1;
-      for (auto i = lvaloff + 1; i < end; i++) {
-        const auto& postfix = *ast.nodes[i];
+  // Complex lvalue: `obj.prop = e`, `arr[idx] = e`, and chains
+  // (`this.d[i] = v`). Resolves the receiver through the intermediate
+  // postfixes, then dispatches the final INDEX / DOT write (fixed-array /
+  // shared-view / object / array element cases).
+  Value eval_assign_complex(const peg::Ast& ast, const culebra::AssignmentView& av,
+                            const std::shared_ptr<Environment>& env, Value rval) {
+    using namespace peg::udl;
+    auto lvaloff = av.lvaloff;
+    auto lvalcnt = av.lvalcnt;
+    bool compound = av.compound;
+    auto base_op = av.op_base;
+    bool mut = av.is_mut;
+    Value lval = eval(*ast.nodes[lvaloff], env);
 
-        switch (postfix.original_tag) {
-          case "ARGUMENTS"_: {
-            // Attribute the call error to the chain head (the lvalue's base
-            // expression), matching the rvalue path's nodes[0] and the JIT.
-            // The immediately-preceding postfix would point at an inner arg
-            // list for chained calls like `f()(x).y = z`.
-            const auto& head = *ast.nodes[lvaloff];
-            lval = eval_function_call(postfix, env, lval,
-                                      head.line, head.column);
-            break;
-          }
-          case "INDEX"_:
-            lval = eval_array_reference(postfix, env, lval);
-            break;
-          case "DOT"_:
-            // Attribute a namespace AttributeError to the chain head (matching
-            // the rvalue path and the JIT), not the member token.
-            lval = eval_property(postfix, env, lval, /*as_value=*/false,
-                                 /*recv=*/ast.nodes[lvaloff].get());
-            break;
-          default:
-            throw std::logic_error("invalid internal condition.");
-        }
-      }
-
-      const auto& postfix = *ast.nodes[end];
+    auto end = lvaloff + lvalcnt - 1;
+    for (auto i = lvaloff + 1; i < end; i++) {
+      const auto& postfix = *ast.nodes[i];
 
       switch (postfix.original_tag) {
-        case "INDEX"_: {
-          // FixedArray view `arr[i] = v` (and compound `arr[i] += v`): write
-          // element i into the inline bytes.
-          if (is_fixed_array_view(lval)) {
-            long i = eval(postfix, env).to_long();
-            if (compound) {
-              Value cur = fa_get(lval, i);
-              Value nv = apply_compound_op(cur, rval, base_op, env);
-              fa_set(lval, i, nv);
-              return nv;
-            }
-            fa_set(lval, i, rval);
-            return rval;
-          }
-          // Shared.new views are immutable — every write surface throws
-          // (position backfilled by the eval wrapper, like the DOT case).
-          if (is_shared_val_view(lval)) {
-            throw CulebraError("ImmutableError",
-                               "Shared values are immutable");
-          }
-          // Whole-element assignment `buf[i] = ...` isn't supported — a
-          // packed record has no Value form; write fields individually.
-          if (is_shared_buffer(lval)) {
-            throw CulebraError(
-                "TypeError",
-                "cannot assign to a SharedBuffer element directly; "
-                "set fields via buf[i].field = value",
-                static_cast<long>(postfix.line),
-                static_cast<long>(postfix.column));
-          }
-          // `obj[k] = v` on an Object. String keys flow into the same
-          // slot as `obj.foo`; other hashable keys live in the sidecar.
-          // Existing slots honor their `mut` flag (matches the DOT path
-          // above and the JIT's `object_set` behavior).
-          if (lval.type == Value::Object) {
-            auto key = eval(postfix, env);
-            auto& obj = lval.to_object();
-            if (compound) {
-              if (obj.has(key)) {
-                auto cur = obj.get(key);
-                auto new_val = apply_compound_op(cur, rval, base_op, env);
-                obj.assign(key, new_val);
-                return new_val;
-              }
-              // `g[k] op= v` on a class instance: read via __index__ and
-              // write back via __setindex__ (matches the JIT, which lowers
-              // it to a plain get + set).
-              if (class_tag(lval)) {
-                if (auto cur = try_special(lval, &key, "__index__", env)) {
-                  auto new_val = apply_compound_op(*cur, rval, base_op, env);
-                  if (try_special2(lval, key, new_val, "__setindex__", env)) {
-                    return new_val;
-                  }
-                }
-              }
-              throw CulebraError("KeyError",
-                  "compound assignment on missing key.");
-            }
-            // A class instance may define `__setindex__(key, value)` to
-            // handle assignment to subscripts the sidecar misses.
-            if (obj.has(key)) {
-              obj.assign(key, rval);
-            } else if (class_tag(lval) &&
-                       try_special2(lval, key, rval, "__setindex__", env)) {
-              // handled by the user method
-            } else {
-              obj.initialize(key, rval, mut);
-            }
-            return rval;
-          }
-          const auto& arr = lval.to_array();
-          auto idx = eval(postfix, env).to_long();
-          if (idx < 0 || idx >= static_cast<long>(arr.values->size())) {
-            throw CulebraError("IndexError", "index out of range");
-          }
-          if (compound) {
-            auto cur = arr.values->at(idx);
-            if (try_tensor_inplace(cur, base_op, rval)) {
-              return cur;
-            }
-            auto new_val = apply_compound_op(cur, rval, base_op, env);
-            arr.values->at(idx) = new_val;
-            return new_val;
-          }
-          arr.values->at(idx) = rval;
-          return rval;
+        case "ARGUMENTS"_: {
+          // Attribute the call error to the chain head (the lvalue's base
+          // expression), matching the rvalue path's nodes[0] and the JIT.
+          // The immediately-preceding postfix would point at an inner arg
+          // list for chained calls like `f()(x).y = z`.
+          const auto& head = *ast.nodes[lvaloff];
+          lval = eval_function_call(postfix, env, lval,
+                                    head.line, head.column);
+          break;
         }
-        case "DOT"_: {
-          // Shared.new views are immutable — every write surface throws.
-          // No explicit position: the eval wrapper backfills the
-          // statement position, matching the plain immutable-prop error.
-          if (is_shared_val_view(lval)) {
-            throw CulebraError("ImmutableError",
-                               "Shared values are immutable");
-          }
-          // `buf[i].field = v` / `view.field = v`: write straight into the
-          // shared backing bytes (zero copy).
-          if (is_packed_view(lval)) {
-            auto name = postfix.token;
-            if (compound) {
-              Value cur = packed_view_get(lval, name);
-              Value new_val = apply_compound_op(cur, rval, base_op, env);
-              packed_view_set(lval, name, new_val, postfix.line,
-                              postfix.column);
-              return new_val;
-            }
-            packed_view_set(lval, name, rval, postfix.line, postfix.column);
-            return rval;
-          }
-          auto& obj = lval.to_object();
-          auto name = postfix.token;
-          if (compound) {
-            if (!obj.has_own(name)) {
-              // Shared helper so the JIT path (see jit.h
-              // `compile_assignment` DOT-compound branch) raises
-              // the same AttributeError with location attached.
-              // has_own (not has) so a builtin-named miss still errors
-              // rather than compounding against a builtin method value.
-              throw_compound_missing_property_at(
-                  static_cast<long>(postfix.line),
-                  static_cast<long>(postfix.column));
-            }
-            auto cur = obj.get(name);
-            if (try_tensor_inplace(cur, base_op, rval)) {
-              return cur;
-            }
-            auto new_val = apply_compound_op(cur, rval, base_op, env);
-            obj.assign(name, new_val);
-            return new_val;
-          }
-          // has_own: a fresh field whose name shadows a builtin method
-          // (`size`/`keys`/...) must initialize a new slot, not route to
-          // assign() which expects an existing property.
-          if (obj.has_own(name)) {
-            obj.assign(name, rval);
-          } else {
-            obj.initialize(name, rval, mut);
-          }
-          return rval;
-        }
+        case "INDEX"_:
+          lval = eval_array_reference(postfix, env, lval);
+          break;
+        case "DOT"_:
+          // Attribute a namespace AttributeError to the chain head (matching
+          // the rvalue path and the JIT), not the member token.
+          lval = eval_property(postfix, env, lval, /*as_value=*/false,
+                               /*recv=*/ast.nodes[lvaloff].get());
+          break;
         default:
           throw std::logic_error("invalid internal condition.");
       }
     }
-  };
+
+    const auto& postfix = *ast.nodes[end];
+
+    switch (postfix.original_tag) {
+      case "INDEX"_: {
+        // FixedArray view `arr[i] = v` (and compound `arr[i] += v`): write
+        // element i into the inline bytes.
+        if (is_fixed_array_view(lval)) {
+          long i = eval(postfix, env).to_long();
+          if (compound) {
+            Value cur = fa_get(lval, i);
+            Value nv = apply_compound_op(cur, rval, base_op, env);
+            fa_set(lval, i, nv);
+            return nv;
+          }
+          fa_set(lval, i, rval);
+          return rval;
+        }
+        // Shared.new views are immutable — every write surface throws
+        // (position backfilled by the eval wrapper, like the DOT case).
+        if (is_shared_val_view(lval)) {
+          throw CulebraError("ImmutableError",
+                             "Shared values are immutable");
+        }
+        // Whole-element assignment `buf[i] = ...` isn't supported — a
+        // packed record has no Value form; write fields individually.
+        if (is_shared_buffer(lval)) {
+          throw CulebraError(
+              "TypeError",
+              "cannot assign to a SharedBuffer element directly; "
+              "set fields via buf[i].field = value",
+              static_cast<long>(postfix.line),
+              static_cast<long>(postfix.column));
+        }
+        // `obj[k] = v` on an Object. String keys flow into the same
+        // slot as `obj.foo`; other hashable keys live in the sidecar.
+        // Existing slots honor their `mut` flag (matches the DOT path
+        // above and the JIT's `object_set` behavior).
+        if (lval.type == Value::Object) {
+          auto key = eval(postfix, env);
+          auto& obj = lval.to_object();
+          if (compound) {
+            if (obj.has(key)) {
+              auto cur = obj.get(key);
+              auto new_val = apply_compound_op(cur, rval, base_op, env);
+              obj.assign(key, new_val);
+              return new_val;
+            }
+            // `g[k] op= v` on a class instance: read via __index__ and
+            // write back via __setindex__ (matches the JIT, which lowers
+            // it to a plain get + set).
+            if (class_tag(lval)) {
+              if (auto cur = try_special(lval, &key, "__index__", env)) {
+                auto new_val = apply_compound_op(*cur, rval, base_op, env);
+                if (try_special2(lval, key, new_val, "__setindex__", env)) {
+                  return new_val;
+                }
+              }
+            }
+            throw CulebraError("KeyError",
+                "compound assignment on missing key.");
+          }
+          // A class instance may define `__setindex__(key, value)` to
+          // handle assignment to subscripts the sidecar misses.
+          if (obj.has(key)) {
+            obj.assign(key, rval);
+          } else if (class_tag(lval) &&
+                     try_special2(lval, key, rval, "__setindex__", env)) {
+            // handled by the user method
+          } else {
+            obj.initialize(key, rval, mut);
+          }
+          return rval;
+        }
+        const auto& arr = lval.to_array();
+        auto idx = eval(postfix, env).to_long();
+        if (idx < 0 || idx >= static_cast<long>(arr.values->size())) {
+          throw CulebraError("IndexError", "index out of range");
+        }
+        if (compound) {
+          auto cur = arr.values->at(idx);
+          if (try_tensor_inplace(cur, base_op, rval)) {
+            return cur;
+          }
+          auto new_val = apply_compound_op(cur, rval, base_op, env);
+          arr.values->at(idx) = new_val;
+          return new_val;
+        }
+        arr.values->at(idx) = rval;
+        return rval;
+      }
+      case "DOT"_: {
+        // Shared.new views are immutable — every write surface throws.
+        // No explicit position: the eval wrapper backfills the
+        // statement position, matching the plain immutable-prop error.
+        if (is_shared_val_view(lval)) {
+          throw CulebraError("ImmutableError",
+                             "Shared values are immutable");
+        }
+        // `buf[i].field = v` / `view.field = v`: write straight into the
+        // shared backing bytes (zero copy).
+        if (is_packed_view(lval)) {
+          auto name = postfix.token;
+          if (compound) {
+            Value cur = packed_view_get(lval, name);
+            Value new_val = apply_compound_op(cur, rval, base_op, env);
+            packed_view_set(lval, name, new_val, postfix.line,
+                            postfix.column);
+            return new_val;
+          }
+          packed_view_set(lval, name, rval, postfix.line, postfix.column);
+          return rval;
+        }
+        auto& obj = lval.to_object();
+        auto name = postfix.token;
+        if (compound) {
+          if (!obj.has_own(name)) {
+            // Shared helper so the JIT path (see jit.h
+            // `compile_assignment` DOT-compound branch) raises
+            // the same AttributeError with location attached.
+            // has_own (not has) so a builtin-named miss still errors
+            // rather than compounding against a builtin method value.
+            throw_compound_missing_property_at(
+                static_cast<long>(postfix.line),
+                static_cast<long>(postfix.column));
+          }
+          auto cur = obj.get(name);
+          if (try_tensor_inplace(cur, base_op, rval)) {
+            return cur;
+          }
+          auto new_val = apply_compound_op(cur, rval, base_op, env);
+          obj.assign(name, new_val);
+          return new_val;
+        }
+        // has_own: a fresh field whose name shadows a builtin method
+        // (`size`/`keys`/...) must initialize a new slot, not route to
+        // assign() which expects an existing property.
+        if (obj.has_own(name)) {
+          obj.assign(name, rval);
+        } else {
+          obj.initialize(name, rval, mut);
+        }
+        return rval;
+      }
+      default:
+        throw std::logic_error("invalid internal condition.");
+    }
+  }
 
   Value eval_identifier(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     return env->get(ast.token);
