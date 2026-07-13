@@ -6,7 +6,7 @@ Rust 風シンタックスを持つ小さな動的型付けスクリプト言語
 AST を共有します。 このガイドは "hello" から C++ ホストへの埋め込み
 までを案内します。 厳密な文法は [`language.ja.md`](language.ja.md)、
 API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳細は
-[`internals.md`](internals.md) (英語のみ) を参照してください。
+[`internals.ja.md`](internals.ja.md) を参照してください。
 
 > **doctest 規約。** 本ガイドの各 ` ```culebra ` ブロックは実行可能
 > な例です。 行末の `# => <value>` は標準出力の期待値、`# !! <pattern>`
@@ -16,7 +16,7 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
 > **Status ラベル。** ラベル無しの見出しは現時点の実装を記述します。
 > 出現するラベル: **Draft** (実装中、API 変更あり)、**Planned**
 > (採用決定、未実装)、**Deprecated** (将来削除予定)。 採用せずと
-> 決定した機能は [`internals.md` §13](internals.md) に集約。
+> 決定した機能は [`record.ja.md`](record.ja.md) に集約。
 
 目次
 ----
@@ -62,7 +62,7 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
   クは式。 クロージャは第一級、エラーは値、隠れたグローバル無し。
 - **UFCS、パイプライン不採用。** 任意の自由関数 `f(x, ...)` を
   `x.f(...)` として呼べる。 パイプライン演算子は検討の上不採用 (詳細
-  は [`internals.md` §13](internals.md))。
+  は [`record.ja.md`](record.ja.md))。
 - **暗黙 import、明示 `import` 文無し。** トップレベル識別子への
   bare な参照がモジュールビルド内でファイル境界を越える (Ch.12)。
   明示 `import` は検討の上不採用。
@@ -333,7 +333,7 @@ puts(['a', 'b', 'c'].join('-'))       # => 'a-b-c'
 ### 4.4 `StringView`、`StringLike`、graphemes() lazy
 
 > **Status: Planned.** 未実装。 設計議論は
-> [`internals.md` §6](internals.md) (英語) 参照。 これらが入ると、
+> [`internals.ja.md` §6](internals.ja.md) 参照。 これらが入ると、
 > ユーザコードが `String` でも借用でも copy 無しで受け取れ、
 > grapheme cluster を lazy に走査できるようになる。
 
@@ -1008,7 +1008,7 @@ puts(PI)                      # => 3.14159
 tree-shaking もちゃんと効く (リーチャブルなトップレベルがツールで
 分かるため、Ch.17)。
 
-リゾルバ設計と循環検出アルゴリズムの詳細は [`internals.md` §10](internals.md) (英語)。
+リゾルバ設計と循環検出アルゴリズムの詳細は [`internals.ja.md` §10](internals.ja.md)。
 
 ---
 
@@ -1060,7 +1060,7 @@ let pair: (Long, String) = (1, 'one')
 
 > **Status: Planned.** Structural と nominal の両方が射程内。
 > trade-off (とどちらを先に入れるか) は議論中。
-> [`internals.md` §13](internals.md) (英語) 参照。
+> [`record.ja.md`](record.ja.md) 参照。
 
 ### 13.4 Generic
 
@@ -1238,7 +1238,7 @@ puts((row + col).to_array())  # => [[11.0, 12.0, 13.0], [21.0, 22.0, 23.0]]
 [`benchmarks/microgpt/README.md`](../benchmarks/microgpt/README.md)。
 
 dtype の根拠、アロケータ選定、lazy shape の議論は
-[`internals.md` §8](internals.md) (英語)。
+[`internals.ja.md` §8](internals.ja.md)。
 
 ---
 
@@ -1611,6 +1611,6 @@ int main() {
 
 - 厳密な文法と評価規則: [`language.ja.md`](language.ja.md)
 - API リファレンス: [`stdlib.ja.md`](stdlib.ja.md)
-- 実装の内部詳細: [`internals.md`](internals.md) (英語のみ)
+- 実装の内部詳細: [`internals.ja.md`](internals.ja.md)
 - 大きめの実例: [`benchmarks/microgpt/`](../benchmarks/microgpt/)
 - インタラクティブな REPL: `./build/culebra --shell`

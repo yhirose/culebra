@@ -18,7 +18,7 @@ internals see [`internals.md`](internals.md).
 > implementation as of today. Labels that appear: **Draft** (under
 > implementation, API may change), **Planned** (decided, not yet
 > implemented), **Deprecated** (slated for removal). Features that
-> were considered and rejected live in [`internals.md` §13](internals.md).
+> were considered and rejected live in [`record.md`](record.md).
 
 Contents
 --------
@@ -65,7 +65,7 @@ Read this once; the rest of the guide assumes these choices.
   globals.
 - **UFCS, not pipeline.** Any free function `f(x, ...)` can be called
   as `x.f(...)`. A pipeline operator was considered and rejected (see
-  [`internals.md` §13](internals.md)).
+  [`record.md`](record.md)).
 - **Implicit imports, no explicit `import` statement.** Bare references
   to top-level identifiers cross file boundaries within a module
   build (Ch.12). Explicit `import` was considered and rejected.
@@ -1083,7 +1083,7 @@ let pair: (Long, String) = (1, 'one')
 
 > **Status: Planned.** Structural and nominal both in scope; the
 > trade-off (and which to introduce first) is open. See
-> [`internals.md` §13](internals.md).
+> [`record.md`](record.md).
 
 ### 13.4 Generics
 

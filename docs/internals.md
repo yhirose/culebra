@@ -3,10 +3,10 @@ Culebra Internals
 
 This document is the developer-facing companion to the user-facing
 guide. It records the *how* (implementation strategy, library choices,
-internal data structures) and the *why-not* (designs that were
-considered and rejected). It is English-only by policy — contributors
-are expected to read English; user-facing docs (`guide.md`,
-`language.md`, `stdlib.md`) are bilingual.
+internal data structures). Designs that were considered and not
+adopted live in [`record.md`](record.md), not here. Every doc is
+bilingual; the Japanese mirror of this file is
+[`internals.ja.md`](internals.ja.md) and must be kept in sync with it.
 
 Contents
 --------
@@ -23,7 +23,8 @@ Contents
 10. [Module system](#10-module-system)
 11. [Build & vendor](#11-build--vendor)
 12. [Test runner](#12-test-runner)
-13. [Design rejected](#13-design-rejected)
+
+Rejected and withdrawn designs are collected in [`record.md`](record.md).
 
 ---
 
@@ -514,102 +515,3 @@ The doctest extractor is the most interesting internal: it parses
 the markdown for fenced blocks tagged `culebra`, scans block-leading
 `# doctest:` lines for directives, and assembles expected stdout
 from `# =>` and `# => |` markers.
-
-13. Design rejected
--------------------
-
-This chapter records proposals that were considered and not adopted.
-The list is append-only: entries stay even if a decision is later
-revisited (with a "Reopened: <date>" note). Each entry follows a
-fixed shape: a one-line status, the alternative that *was* adopted,
-the reasoning, and a pointer to the relevant memory file.
-
-### 13.1 Pipeline operator `|>`
-
-**Status:** Rejected.
-**Adopted instead:** UFCS (`guide.md` Ch.10).
-**Reasoning:** `x.f(...)` reads left-to-right the same as `x |> f`,
-and *also* serves as the resolution path for free functions over
-user types. Adding `|>` would split the idiom space (some libraries
-would use UFCS, others `|>`) without functional gain. Other languages
-with pipelines (Elixir, F#) lack a UFCS, which makes `|>` the only
-left-to-right form there.
-**Source:** [[feedback_culebra_pipeline_ufcs]].
-
-### 13.2 Explicit `import` statement
-
-**Status:** Rejected.
-**Adopted instead:** Implicit imports via top-level identifier
-resolution (`guide.md` Ch.12).
-**Reasoning:** Each `import` line is redundant with the unresolved
-identifier graph that the resolver already builds. The resolver pays
-the same cost either way; users save typing and the build stays
-correct. Tree-shaking is unaffected (the resolver still produces a
-reachable set).
-**Source:** [[project_module_system]], [[project_binary_build_roadmap]].
-
-### 13.3 Set / Tuple operators (`|`, `&`, `^`, `+`)
-
-**Status:** Rejected (removed mid-development).
-**Adopted instead:** Method calls (`.union`, `.intersect`, etc.) when
-Set / Tuple land.
-**Reasoning:** Lambda syntax `|x| expr` and binary `|` create a
-parser ambiguity that was costly to resolve while keeping both
-features usable. Method syntax has no such ambiguity. The set/tuple
-operator forms were removed before they shipped.
-**Update:** The binary-`|` ambiguity was later resolved for the
-numeric bit-OR operator (a parallel bit-or-free expression ladder for
-parameter defaults, unified back to the same AST tags via cpp-peglib's
-`{ ast_name }` instruction). Set / Tuple keep the method form by
-design, but the "ambiguity is unresolvable" part of the reasoning no
-longer holds.
-**Source:** [[project_roadmap]] §③.
-
-### 13.4 Scalar bump allocator
-
-**Status:** Rejected after measurement.
-**Adopted instead:** Default `shared_ptr`-backed allocation.
-**Reasoning:** The hypothesis was that microgpt's scalar `Value`
-graph was allocator-bound. A `thread_local` pool prototype was
-measured at parity (~1.6% noise) with the baseline. Realizing the
-expected 14× gap to Tensor would require structural changes
-(recursive release loop, etc.), which is out of scope for the
-benefit. Lesson: profile before optimizing object layout
-([[feedback_profile_first]]).
-**Source:** [[project_microgpt_state]].
-
-### 13.5 TypeScript-specific type features
-
-**Status:** Rejected (scope decision).
-**Adopted instead:** Stay at Rust/Swift expressiveness: Union /
-Optional / Tuple / Trait/Protocol / Generic / Nominal typing
-(`guide.md` Ch.13).
-**Reasoning:** Conditional types, mapped types, template literal
-types, and the utility-type family (`Pick`, `Omit`, `Partial`,
-`Required`, ...) are designed for typing arbitrary JavaScript
-libraries that pre-existed the type system. Culebra owns its own
-stdlib; we do not need TS-grade type-level computation. The
-implementation cost is large; the benefit is small for a fresh
-language.
-**Source:** [[project_type_system_vision]].
-
-### 13.6 async/await
-
-**Status:** Rejected.
-**Adopted instead:** Blocking I/O + threads.
-**Reasoning:** "Colored functions" (async/sync split) and an executor
-model are heavy additions for an interpreted dynamic language. The
-HTTP and similar stacks target the few-thousand-connection ceiling,
-which is well within reach of blocking + threads. cpp-httplib (the
-planned HTTP backend) supports SSE and WebSocket without async, so
-no functional capability is lost.
-**Source:** [[project_http_strategy]].
-
-### 13.7 Release machinery (deferred, not rejected)
-
-**Status:** Deferred until 1.0. Not a reject — a "not yet".
-**Reasoning:** Pre-1.0 the API surface still moves. Version tags,
-CHANGELOG, Homebrew formula, and GitHub Releases lock in expectations
-that would be costly to honour and then break. These come after the
-type system lands and the language goes 1.0.
-**Source:** [[feedback_no_premature_release]].

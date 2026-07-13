@@ -6,7 +6,7 @@
 を対象とします。 ここに記載のものは `import` 文なしで利用できます。
 
 実例つきの導入とイディオムは [`guide.ja.md` §14](guide.ja.md#14-標準ライブラリ巡り)、
-ライブラリの実装詳細と設計理由は [`internals.md`](internals.md) (英語) を
+ライブラリの実装詳細と設計理由は [`internals.ja.md`](internals.ja.md) を
 参照してください。
 
 言語レベルの組み込み関数（`to_long`, `to_float`, `to_string`,

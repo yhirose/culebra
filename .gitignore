@@ -71,3 +71,7 @@ tmp/
 # Local ccache scratch (the canonical CCACHE_DIR is $TMPDIR/ccache)
 .cache-ccache/
 scratchpad/
+
+# Ignore internal development record
+docs/record.md
+docs/record.ja.md

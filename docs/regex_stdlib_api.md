@@ -140,9 +140,9 @@ docs: `docs/stdlib.md` + `.ja.md`.
   `find_all_index(s) -> [Int]` returns flat byte spans `[s0,e0,s1,e1,…]`;
   Longs are inline in the Array, so the whole result is one allocation (≈ the
   speed of `count`, ~13×). Use `find_all` only when you need offsets *and*
-  group/named captures together. (A StringView `value` was
-  tried first and reverted: in the JIT the view descriptor is itself
-  heap-allocated, so it left the alloc count — and the runtime — unchanged.)
+  group/named captures together. (`value` is a copied `String`; a
+  StringView-valued result was tried and reverted — see
+  [`record.md`](record.md).)
 
 ## Open / deferred
 
