@@ -267,9 +267,20 @@ _run-tests BACKEND:
     # O2 silently legalizes but those paths abort or miscompile on (see
     # tests/test_forin_codegen.cul). Behavior must equal interp on every
     # backend. Cheap: a handful of codegen-sensitive files, not the corpus.
+    # Files are chosen for IR shapes that stress -O0/FastISel specifically:
+    # for-in tag handling, phi merges (cond/match), destructure, invoke/unwind
+    # edges (drop-on-throw), generator CPS, iterator HOF, per-iteration scopes.
     run_codegen_backends() {
         local fail=0
-        for f in tests/test_forin_codegen.cul; do
+        for f in tests/test_forin_codegen.cul \
+                 tests/test_forin_unwind_drop.cul \
+                 tests/test_destructure_seq_unify.cul \
+                 tests/test_match_block_arm.cul \
+                 tests/test_generator_complex.cul \
+                 tests/test_drop_on_throw.cul \
+                 tests/test_cond.cul \
+                 tests/test_while_scope.cul \
+                 tests/callable_iterator_hof.cul; do
             local ref; ref=$(cul "$f") || { echo "interp failed: $f" >&2; fail=1; continue; }
             for flags in "--jit -O0" "--jit-faststart"; do
                 local got
