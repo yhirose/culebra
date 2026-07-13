@@ -341,8 +341,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_join(
     } else {
       culebra::throw_runtime_error_at(
           "TypeError",
-          std::format("type error: expected String|Path, got {}",
-                      culebra_runtime_type_of(args[i].tag)),
+          culebra::type_mismatch_message("String|Path",
+                                         culebra_runtime_type_of(args[i].tag)),
           line, col);
     }
   }
@@ -1125,8 +1125,7 @@ class _JitKwargResolver {
   // Throw if any kwargs went unread — i.e. unknown to this built-in.
   void validate_consumed() {
     if (merged_.empty()) return;
-    fail(std::format("unknown keyword argument '{}'",
-                      merged_.begin()->first));
+    fail(culebra::unknown_kwarg_message(merged_.begin()->first));
   }
 
   // Format and throw a structured CulebraError with " at L:C." in the
@@ -2236,7 +2235,7 @@ CULEBRA_RT_INLINE bool _jit_file_arg_present(int64_t n, JitValue* args,
                                                           const char* pname) {
   culebra_runtime_value_release(self.tag, self.data);
   throw culebra::CulebraError(
-      "ArityError", std::format("missing required argument '{}'", pname),
+      "ArityError", culebra::missing_required_arg_message(pname),
       _jit_call_site_line, _jit_call_site_col);
 }
 [[noreturn]] CULEBRA_RT_INLINE void _jit_file_param_type_error(
@@ -3060,8 +3059,8 @@ inline const char* take_path(JitValue v) {
     return culebra_runtime_value_to_display(v.tag, v.data);
   culebra::throw_runtime_error_at(
       "TypeError",
-      std::format("type error: expected String|Path, got {}",
-                  culebra_runtime_type_of(v.tag)),
+      culebra::type_mismatch_message("String|Path",
+                                     culebra_runtime_type_of(v.tag)),
       0, 0);
 }
 // Length-authoritative view of a TAG_STRING (header-backed, so embedded NUL
@@ -5341,8 +5340,8 @@ inline JitValue _ns_tensor_no_grad(JitValue* a, int64_t) {
   if (a[0].tag != TAG_FUNC) {
     throw culebra::CulebraError(
         "TypeError",
-        std::format("type error: expected Function, got {}",
-                    culebra_runtime_type_of(a[0].tag)));
+        culebra::type_mismatch_message("Function",
+                                       culebra_runtime_type_of(a[0].tag)));
   }
   return culebra_runtime_tensor_no_grad(
       reinterpret_cast<JitClosure*>(a[0].data));
@@ -6000,7 +5999,7 @@ inline std::vector<JitValue> _jit_ns_build_args_rest_slab(
     } else {
       cleanup();
       throw culebra::CulebraError("ArityError",
-          std::format("missing required argument '{}'", pm->params[i].name),
+          culebra::missing_required_arg_message(pm->params[i].name),
           line, col);
     }
   }
@@ -6008,7 +6007,7 @@ inline std::vector<JitValue> _jit_ns_build_args_rest_slab(
     auto bad = std::string(merged.begin()->first);
     cleanup();
     throw culebra::CulebraError("TypeError",
-        std::format("unknown keyword argument '{}'", bad), line, col);
+        culebra::unknown_kwarg_message(bad), line, col);
   }
   return slab;
 }
@@ -6096,8 +6095,7 @@ inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
       const char* got = culebra_runtime_type_of(args[0].tag);
       release_args();
       culebra::throw_runtime_error_at(
-          "TypeError",
-          std::format("type error: expected {}, got {}", m->arg0_type, got),
+          "TypeError", culebra::type_mismatch_message(m->arg0_type, got),
           arg0_line, arg0_col);
     }
     try {
@@ -6299,8 +6297,7 @@ inline bool _jit_ns_kwarg_resolve_core(
       for (auto& [_, v] : merged)
         _culebra_value_release_impl(v.tag, v.data);
       throw culebra::CulebraError("TypeError",
-          std::format("got argument '{}' both positionally and as a "
-                      "keyword", pm->params[i].name),
+          culebra::positional_kw_conflict_message(pm->params[i].name),
           line, col);
     }
     slab[i] = positional[i];
@@ -6345,7 +6342,7 @@ inline bool _jit_ns_kwarg_resolve_core(
     for (auto& [_, v] : merged)
       _culebra_value_release_impl(v.tag, v.data);
     throw culebra::CulebraError("TypeError",
-        std::format("unknown keyword argument '{}'", bad), line, col);
+        culebra::unknown_kwarg_message(bad), line, col);
   }
 
   // Dispatch the full-arity slab (it releases the slab values, and backfills a
@@ -8175,9 +8172,7 @@ inline JIT::Owned JitExtension::compile_single_positional_kwargs(
             ? culebra::ns_fn_arity_error_message(
                   too_few ? meta->min_arity : meta->n_params,
                   static_cast<long>(positional.size()))
-            : std::format(
-                  "got argument '{}' both positionally and as a keyword",
-                  conflict_param);
+            : culebra::positional_kw_conflict_message(conflict_param);
     return jit.own(emit_malformed_arg_throw(
         jit, argsAst, argsAst.nodes.size(),
         (too_few || too_many) ? "ArityError" : "TypeError", msg,
@@ -8519,8 +8514,7 @@ inline JIT::Owned JitExtension::compile_ufcs_builtin(
       // error path doesn't leak it — the throw never reads the receiver.
       jit.emit_value_release(receiver);
       jit.emit_throw_error(
-          "TypeError",
-          std::format("unknown keyword argument '{}'", unknown_kw_name),
+          "TypeError", culebra::unknown_kwarg_message(unknown_kw_name),
           unknown_kw_node->line, unknown_kw_node->column);
       return jit.own(jit.make_nil());  // unreachable after the throw
     }

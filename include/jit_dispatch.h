@@ -96,8 +96,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_variant(
       _culebra_value_release_impl(args[i].tag, args[i].data);
     }
     throw culebra::CulebraError(
-        "ArityError",
-        std::format("missing required argument '{}'", missing), line, col);
+        "ArityError", culebra::missing_required_arg_message(missing),
+        line, col);
   }
   auto* inst = culebra_runtime_object_new();
   culebra_runtime_object_set(inst, "class", /*mut*/ false, TAG_STRING,
@@ -1651,8 +1651,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
       }
       _culebra_value_release_impl(this_val.tag, this_val.data);
       throw culebra::CulebraError("TypeError",
-          std::format("got argument '{}' both positionally and as a "
-                      "keyword", meta->names[i]), line, col);
+          culebra::positional_kw_conflict_message(meta->names[i]), line, col);
     }
     slab[i] = positional[i];
     filled[i] = true;
@@ -1698,8 +1697,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
       }
       _culebra_value_release_impl(this_val.tag, this_val.data);
       throw culebra::CulebraError("ArityError",
-          std::format("missing required argument '{}'", missing),
-          line, col);
+          culebra::missing_required_arg_message(missing), line, col);
     }
     slab[i] = {TAG_UNFILLED, 0};
   }
@@ -1732,8 +1730,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     }
     _culebra_value_release_impl(this_val.tag, this_val.data);
     throw culebra::CulebraError("TypeError",
-        std::format("unknown keyword argument '{}'", bad_name),
-        line, col);
+        culebra::unknown_kwarg_message(bad_name), line, col);
   }
 
   // Extras past the formal arity flow into `__ARGS__`.

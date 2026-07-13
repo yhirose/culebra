@@ -1072,7 +1072,7 @@ inline void _jit_sv_has(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t s
   _jit_sv_require_object(n, "has");
   if (n_args < 1) {
     throw culebra::CulebraError("ArityError",
-                                "missing required argument 'key'");
+                                culebra::missing_required_arg_message("key"));
   }
   for (const auto& [k, v] : n->entries) {
     if (_jit_shared_val_key_eq(k, args[0].tag, args[0].data)) {

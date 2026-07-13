@@ -203,6 +203,22 @@ let e6 = try { err_f(x: 1, 2); nil } catch e { e }
 assert_true(e6.kind == 'SyntaxError' &&
        e6.message.contains('positional argument follows'))
 
+# Exact wording pin for the too-many-positionals TypeError (kw-only cap).
+# All three paths — static call, dynamic callee (runtime param-meta guard),
+# and a builtin with kw-only params — must render this byte-identical text;
+# it is single-sourced in shared.h (too_many_positionals_message).
+let kw_cap = fn (a, *, k = 1) { a + k }
+let e7 = try { kw_cap(1, 2); nil } catch e { e }
+assert_true(e7.kind == 'TypeError' &&
+       e7.message == 'takes 1 positional argument but 2 given')
+let kw_cap_dyn = kw_cap
+let e8 = try { kw_cap_dyn(1, 2); nil } catch e { e }
+assert_true(e8.kind == 'TypeError' &&
+       e8.message == 'takes 1 positional argument but 2 given')
+let e9 = try { [3, 1].sort(1); nil } catch e { e }
+assert_true(e9.kind == 'TypeError' &&
+       e9.message == 'takes 0 positional arguments but 1 given')
+
 # The argument-list shape errors (positional-after-keyword, duplicate keyword)
 # are the same catchable error for every call kind, not just user functions: a
 # shared validator runs before the callee-specific kwarg handling. These used

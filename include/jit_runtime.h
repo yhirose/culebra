@@ -575,8 +575,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_error_typed(
     case TAG_SET:    got = "Set";      break;
     case TAG_STRINGVIEW: got = "StringView"; break;
   }
-  throw culebra::CulebraError("TypeError", std::format(
-      "type error: expected {}, got {}", expected, got), line, col);
+  throw culebra::CulebraError("TypeError",
+      culebra::type_mismatch_message(expected, got), line, col);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_arity_error(
@@ -1297,8 +1297,7 @@ inline bool _extract_bool_and_release(JitValue v) {
     auto got = std::string(_culebra_tag_name(v.tag));
     _culebra_value_release_impl(v.tag, v.data);
     throw culebra::CulebraError("TypeError",
-        std::format("type error: expected Bool, Long, or Float, got {}",
-                    got));
+        culebra::type_mismatch_message("Bool, Long, or Float", got));
   }
   _culebra_value_release_impl(v.tag, v.data);
   return b;

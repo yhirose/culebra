@@ -611,8 +611,7 @@ inline void jit_check_args(JitValue self, int64_t n, JitValue* args) {
     const auto& names = jit_method_info<T, Mf>::param_names;
     if (missing) {
       throw culebra::CulebraError(
-          "ArityError",
-          std::format("missing required argument '{}'", names[bad]),
+          "ArityError", culebra::missing_required_arg_message(names[bad]),
           _jit_call_site_line, _jit_call_site_col);
     }
     static constexpr std::string_view kAnnos[] = {

@@ -204,6 +204,44 @@ inline std::string current_executable_path() {
 #endif
 }
 
+// --- Call-binding error messages (single source for both backends) ---
+//
+// Builders for the error texts the argument binder can produce. The
+// throw-form helpers below use them, but so do the sites that cannot
+// throw directly — the JIT's compile-time Err records, emit_throw_error
+// (deferred runtime throws baked into IR), and runtime slow paths that
+// must release owned values first. Any independent std::format of these
+// texts is a symmetry hazard: route new sites through a builder.
+
+// "takes N positional argument(s) but M given" — a call overflowed the
+// positional cap of a kw-only section.
+inline std::string too_many_positionals_message(long cap, long got) {
+  return std::format("takes {} positional argument{} but {} given", cap,
+                     cap == 1 ? "" : "s", got);
+}
+
+// "missing required argument 'name'" — no positional, no kwarg, no default.
+inline std::string missing_required_arg_message(std::string_view name) {
+  return std::format("missing required argument '{}'", name);
+}
+
+// "unknown keyword argument 'name'" — a kwarg the callee doesn't accept.
+inline std::string unknown_kwarg_message(std::string_view name) {
+  return std::format("unknown keyword argument '{}'", name);
+}
+
+// "got argument 'name' both positionally and as a keyword".
+inline std::string positional_kw_conflict_message(std::string_view name) {
+  return std::format("got argument '{}' both positionally and as a keyword",
+                     name);
+}
+
+// "type error: expected X, got Y" — an argument/receiver type mismatch.
+inline std::string type_mismatch_message(std::string_view expected,
+                                         std::string_view got) {
+  return std::format("type error: expected {}, got {}", expected, got);
+}
+
 // Throw TypeError "takes N positional argument(s) but M given" when M
 // exceeds the cap. `cap < 0` means no cap (no kw-only section, or a
 // `*args` catch-all that swallows overflow — callers pass -1 for both).
@@ -214,9 +252,8 @@ inline std::string current_executable_path() {
 inline void throw_if_too_many_positionals(long cap, long n_pos,
                                            long line, long col) {
   if (cap < 0 || n_pos <= cap) return;
-  throw CulebraError("TypeError", std::format(
-      "takes {} positional argument{} but {} given",
-      cap, cap == 1 ? "" : "s", n_pos), line, col);
+  throw CulebraError("TypeError", too_many_positionals_message(cap, n_pos),
+                     line, col);
 }
 
 // Count-based ArityError message for a wrong-arity built-in method call,
@@ -650,9 +687,7 @@ inline std::string url_decode(std::string_view in) {
 // to runtime throws.
 [[noreturn]] inline void throw_unknown_kwarg_at(
     const std::string& name, long line, long col) {
-  throw CulebraError("TypeError",
-                     std::format("unknown keyword argument '{}'", name),
-                     line, col);
+  throw CulebraError("TypeError", unknown_kwarg_message(name), line, col);
 }
 
 // Call site failed to bind a required parameter (no positional, no
@@ -660,8 +695,7 @@ inline std::string url_decode(std::string_view in) {
 // kwarg helper above.
 [[noreturn]] inline void throw_missing_required_arg_at(
     const std::string& name, long line, long col) {
-  throw CulebraError("ArityError",
-                     std::format("missing required argument '{}'", name),
+  throw CulebraError("ArityError", missing_required_arg_message(name),
                      line, col);
 }
 

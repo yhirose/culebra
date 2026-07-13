@@ -11199,21 +11199,19 @@ struct JIT {
       size_t rl = call_root_line_ ? call_root_line_ : current_line_;
       size_t rc = call_root_line_ ? call_root_col_ : current_column_;
       if (!b.variadic && n_pos > b.max)
-        return Err{"TypeError",
-            std::format("takes {} positional argument{} but {} given", b.max,
-                        b.max == 1 ? "" : "s", n_pos), rl, rc};
+        return Err{"TypeError", too_many_positionals_message(b.max, n_pos),
+                   rl, rc};
       for (size_t i = 0; i < params.size(); i++) {
         const auto& p = params[i];
         if (p.kwargs_rest || p.args_rest) continue;
         bool filled_pos = static_cast<long>(i) < n_pos && !p.kw_only;
         if (filled_pos && named(p.name))
-          return Err{"TypeError",
-              std::format("got argument '{}' both positionally and as a keyword",
-                          p.name), rl, rc};
+          return Err{"TypeError", positional_kw_conflict_message(p.name),
+                     rl, rc};
         bool has_def = p.default_expr != nullptr || p.default_value != nullptr;
         if (!filled_pos && !named(p.name) && !has_def)
-          return Err{"ArityError",
-              std::format("missing required argument '{}'", p.name), rl, rc};
+          return Err{"ArityError", missing_required_arg_message(p.name),
+                     rl, rc};
       }
       if (!has_rest)
         for (auto kn : kw_names) {
@@ -11221,8 +11219,7 @@ struct JIT {
           for (const auto& p : params)
             if (!p.kwargs_rest && p.name == kn) { known = true; break; }
           if (!known)
-            return Err{"TypeError", std::format("unknown keyword argument '{}'",
-                                                std::string(kn)), rl, rc};
+            return Err{"TypeError", unknown_kwarg_message(kn), rl, rc};
         }
       return std::nullopt;
     };
@@ -12022,8 +12019,7 @@ struct JIT {
       // interp's eval-time call at interpreter.h:4220 is.
       if (cap_long >= 0 && n_pos > cap_long) {
         emit_throw_error("TypeError",
-            std::format("takes {} positional argument{} but {} given",
-                        cap_long, cap_long == 1 ? "" : "s", n_pos),
+            too_many_positionals_message(cap_long, n_pos),
             argsAst.line, argsAst.column);
       }
     }
@@ -12032,8 +12028,7 @@ struct JIT {
       if (i < positional.size() && !params[i].kw_only) {
         if (kwargs.contains(params[i].name)) {
           emit_throw_error("TypeError",
-              std::format("got argument '{}' both positionally and as "
-                          "a keyword", params[i].name),
+              positional_kw_conflict_message(params[i].name),
               argsAst.line, argsAst.column);
         }
         resolved[i] = positional[i];
@@ -12402,8 +12397,7 @@ struct JIT {
           // unknown, the same runtime TypeError interp's binder raises
           // (not a compile-time "does not accept keyword arguments").
           emit_throw_error(
-              "TypeError",
-              std::format("unknown keyword argument '{}'", kwname),
+              "TypeError", unknown_kwarg_message(kwname),
               current_line_, current_column_);  // call site, matching interp
           return own(make_nil());  // unreachable after the throw
         } else {

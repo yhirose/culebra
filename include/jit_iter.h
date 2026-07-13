@@ -2182,7 +2182,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_is_shared_val(
   const char* got = _culebra_tag_name(v.tag);
   _culebra_value_release_impl(v.tag, v.data);
   throw culebra::CulebraError(
-      "TypeError", std::format("type error: expected Function, got {}", got),
+      "TypeError", culebra::type_mismatch_message("Function", got),
       line, col);
 }
 

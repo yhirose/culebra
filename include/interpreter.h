@@ -1003,8 +1003,8 @@ struct Value {
   // messages have no trailing period — the eval() wrap appends one
   // along with " at L:C." so the format stays consistent.
   [[noreturn]] void _throw_type_error(const char* expected) const {
-    throw CulebraError("TypeError", std::format(
-        "type error: expected {}, got {}", expected, type_name()));
+    throw CulebraError("TypeError",
+                       type_mismatch_message(expected, type_name()));
   }
 
   double to_double_coerce() const {
@@ -3506,8 +3506,7 @@ inline std::string _fspath(const Value& v) {
     if (auto s = _try_str_special(v)) return *s;
   }
   throw CulebraError(
-      "TypeError",
-      std::format("type error: expected String|Path, got {}", v.type_name()));
+      "TypeError", type_mismatch_message("String|Path", v.type_name()));
 }
 
 // Like `v.str_display()` (unquoted strings) but honors `__str__` on
@@ -8406,9 +8405,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         v = std::move(args.positional[p]);
         std::tie(ln, col) = args.positional_locs[p];
         if (merged.contains(params[p].name)) {
-          throw CulebraError("TypeError", std::format(
-              "got argument '{}' both positionally and as a keyword",
-              params[p].name), call_line, call_column);
+          throw CulebraError("TypeError",
+              positional_kw_conflict_message(params[p].name),
+              call_line, call_column);
         }
       } else if (auto it = merged.find(params[p].name); it != merged.end()) {
         v = std::move(it->second);
@@ -8423,8 +8422,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         // a literal) — shared with the callback binder via resolve_param_default.
         v = std::move(*dv);
       } else {  // No default — required and missing.
-        throw CulebraError("ArityError", std::format(
-            "missing required argument '{}'", params[p].name),
+        throw CulebraError("ArityError",
+            missing_required_arg_message(params[p].name),
             call_line, call_column);
       }
       check_type(v, params[p].type_name,
@@ -8446,8 +8445,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       callEnv->initialize(rest_it->name, Value(std::move(rest)), false);
       merged.clear();
     } else if (!merged.empty()) {
-      throw CulebraError("TypeError", std::format(
-          "unknown keyword argument '{}'", merged.begin()->first),
+      throw CulebraError("TypeError",
+          unknown_kwarg_message(merged.begin()->first),
           call_line, call_column);
     }
 
