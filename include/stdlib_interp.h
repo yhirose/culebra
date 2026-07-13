@@ -4885,6 +4885,26 @@ inline Value make_compress_namespace() {
 // `UUID`: generate canonical UUIDs. v4 = random, v7 = time-ordered (Unix-ms
 // prefix). Entropy from the shared PRNG (csv-style value-neutral core in
 // uuid.h shared with the JIT slow-path adapters).
+// `String.from_code_point(cp)` — the inverse of `.code_points()` /
+// `.bytes()`: a single Unicode scalar value in, a one-character String out.
+// Raises ValueError (via string_from_code_point in shared.h) for values
+// above U+10FFFF or in the surrogate range, the same boundary the
+// `\u{...}` literal escape enforces at parse time.
+inline Value make_string_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+  ns.initialize(
+      "from_code_point",
+      Value(FunctionValue(
+          {{"cp", false, "Long"sv}},
+          [](std::shared_ptr<Environment> callEnv) {
+            return Value(string_from_code_point(callEnv->get("cp").get<long>()));
+          },
+          "String"sv)),
+      false);
+  return Value(std::move(ns));
+}
+
 inline Value make_uuid_namespace() {
   using namespace std::literals;
   ObjectValue ns;
@@ -5767,6 +5787,7 @@ inline void setup_built_in_functions(
   ns_init("TOML", make_toml_namespace());
   ns_init("Env", make_env_namespace());
   ns_init("UUID", make_uuid_namespace());
+  ns_init("String", make_string_namespace());
   ns_init("_Regex", make_regex_primitives_namespace());
   ns_init("Proc", make_proc_namespace());
 #if defined(CULEBRA_HTTP_ENABLED)

@@ -1027,6 +1027,38 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_code_points(
       {buf_cell, off_cell, len_cell});
 }
 
+// String.bytes(): yields the receiver's raw UTF-8 bytes as Long (0-255), one
+// byte per step — no decoding, unlike code_points. Mirrors the interp's
+// `bytes` entry in string_builtins().
+inline void _iter_bytes_fast_fn(JitClosure* cls, JitValue, bool* done,
+                                 int8_t* out_tag, int64_t* out_data) {
+  auto buf_cell = cls->captures[0];
+  auto off_cell = cls->captures[1];
+  auto len_cell = cls->captures[2];
+  const char* s = reinterpret_cast<const char*>(buf_cell->value.data);
+  int64_t off = off_cell->value.data;
+  int64_t len = len_cell->value.data;
+  if (off >= len) {
+    *done = true;
+    return;
+  }
+  off_cell->value.data = off + 1;
+  *done = false;
+  *out_tag = TAG_LONG;
+  *out_data = static_cast<unsigned char>(s[off]);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_bytes(
+    const char* s) {
+  auto* buf_cell = culebra_runtime_cell_new(
+      TAG_LONG, reinterpret_cast<int64_t>(s));
+  auto* off_cell = culebra_runtime_cell_new(TAG_LONG, 0);
+  auto* len_cell = culebra_runtime_cell_new(
+      TAG_LONG, static_cast<int64_t>(_str_len(s)));
+  return _iter_wrap_fast<&_iter_bytes_fast_fn>(
+      {buf_cell, off_cell, len_cell});
+}
+
 // Like code_points, but yields each scalar as a 1-scalar StringView into
 // the source buffer — matches interp's `s.iter()` (type StringView, zero
 // copy). Invalid bytes yield as one-byte views (docs §17.1).

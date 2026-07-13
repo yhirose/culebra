@@ -110,6 +110,24 @@ assert_eq('a👨‍👩‍👧b'.code_points().count(), 7)
 assert_eq('a👨‍👩‍👧b'.graphemes().count(), 3)
 assert_eq(''.graphemes().count(), 0)
 
+# --- String.bytes() — Iterator<Long> over raw UTF-8 bytes (no decoding) ---
+bs = 'café'.bytes().collect()
+assert_eq(bs.size(), 5)  # 'é' is 2 bytes; code_points() above sees 4 scalars
+assert_true(bs[0] == 99 && bs[1] == 97 && bs[2] == 102 && bs[3] == 195 && bs[4] == 169)
+assert_eq(''.bytes().count(), 0)
+assert_eq('hello'.bytes().count(), 5)
+# ASCII: bytes() and code_points() agree
+assert_eq('hello'.bytes().collect(), 'hello'.code_points().collect())
+
+# --- String.from_code_point(cp) — inverse of code_points()/\u{...} ---
+assert_eq(String.from_code_point(97), 'a')
+assert_eq(String.from_code_point(233), 'é')
+# Round-trips through code_points()
+assert_eq(String.from_code_point('é'.code_points().collect()[0]), 'é')
+assert_throws("ValueError", fn () { String.from_code_point(0x110000) })   # above max scalar
+assert_throws("ValueError", fn () { String.from_code_point(0xD800) })     # surrogate range
+assert_throws("TypeError", fn () { String.from_code_point('a') })        # not a Long
+
 # --- Phase 2: range (lazy integer iterator) ---
 mut sum = 0
 for i in range(5) { sum = sum + i }

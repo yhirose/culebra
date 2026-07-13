@@ -3085,6 +3085,13 @@ receiver is never mutated.
 | `s.iter() -> Iterator<StringView>`              | Lazy walk yielding **one-scalar `StringView`s** (UTF-8 scalar). What `for c in s { ... }` uses internally. Invalid bytes yield as one-byte substrings. |
 | `s.code_points() -> Iterator<Long>`             | Lazy walk yielding **Unicode scalar values** as `Long` (`U+0000`–`U+10FFFF`). For numeric / range / classification work where the per-scalar allocation of `iter` is wasteful. Invalid bytes yield as `0`–`255`. |
 | `s.graphemes() -> Iterator<StringView>`         | Lazy walk yielding **Extended Grapheme Clusters** (UAX #29) — one user-perceived character per step (e.g. an emoji ZWJ sequence is a single element). |
+| `s.bytes() -> Iterator<Long>`                   | Lazy walk yielding the receiver's **raw UTF-8 bytes** as `Long` (`0`–`255`), one byte per step — no decoding, unlike `code_points`. For when the encoding itself is wanted (hashing, tokenizer vocabularies, wire formats); mirrors Python's `list(s.encode())`. |
+| `String.from_code_point(cp: Long) -> String`    | The inverse of `code_points()`: one Unicode scalar value in, a one-character `String` out (Python's `chr`, Rust's `char::from_u32`). Raises `ValueError` for `cp` above `U+10FFFF` or in the surrogate range `U+D800`–`U+DFFF` — the same boundary the `\u{...}` literal escape (§4.1) rejects at parse time. |
+
+```culebra
+puts('café'.bytes().collect())          # => [99, 97, 102, 195, 169]  ('é' is 2 UTF-8 bytes)
+puts(String.from_code_point(233))       # => 'é'
+```
 
 #### StringView
 

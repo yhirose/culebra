@@ -5071,6 +5071,14 @@ inline JitValue _ns_env_load(JitValue* a, int64_t n) {
   return _ns_adapt::v_object(_env_build_object(pairs));
 }
 
+// String.from_code_point(cp): shared with interp via string_from_code_point
+// (shared.h) — raises ValueError for values above U+10FFFF or in the
+// surrogate range, same boundary the `\u{...}` literal escape enforces.
+inline JitValue _ns_string_from_code_point(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(
+      _culebra_heap_str(culebra::string_from_code_point(_ns_adapt::take_long(a[0]))));
+}
+
 // UUID.{v4,v7}: canonical UUID strings via uuid.h (shared entropy/format).
 inline JitValue _ns_uuid_v4(JitValue*, int64_t) {
   return _ns_adapt::v_string(_culebra_heap_str(culebra::uuid::v4()));
@@ -5692,6 +5700,8 @@ inline const NsMethod kNsMethods[] = {
 
   {"UUID", "v4", 0, &_ns_uuid_v4},
   {"UUID", "v7", 0, &_ns_uuid_v7},
+
+  {"String", "from_code_point", 1, &_ns_string_from_code_point, nullptr, "Long", "cp"},
 
   {"Tensor", "zeros",    -1, &_ns_tensor_zeros},
   {"Tensor", "ones",     -1, &_ns_tensor_ones},
@@ -6861,6 +6871,7 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                ptrTy, ptrTy, i8, i64, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::str_code_points, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::str_graphemes, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::str_bytes, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::array_iter, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::object_iter, ptrTy, ptrTy);
 
@@ -8215,7 +8226,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
       "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel",
       "Signal",  "Encoding", "Compress",  "SharedBuffer", "Shared",
-      "Hash",    "CSV",       "TOML",      "Env",       "UUID",
+      "Hash",    "CSV",       "TOML",      "Env",       "UUID",       "String",
       "_Term",   "SQLite",
       // Lazy source modules (preamble builders, resolved via namespace_get +
       // the lazy-ns builder registry). Listed here so closures capture-skip

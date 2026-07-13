@@ -59,6 +59,7 @@ inline const std::unordered_set<std::string_view>& builtin_method_names() {
       "sum",        "product",     "min",        "max",        "collect",
       "count",      "take",        "skip",       "take_while", "chain",
       "zip",        "enumerate",   "code_points","graphemes",  "iter",
+      "bytes",
       "view",       "split_iter",  "shape",      "pow",        "transpose",
       "reshape",    "mean",        "argmax",     "to_array",   "dot",
       "linear_sigmoid", "clone",   "relu",       "sigmoid",    "softmax",
@@ -332,6 +333,14 @@ inline std::string json_escape(std::string_view s) {
   return out;
 }
 
+// Whether `cp` is a Unicode scalar value: <= U+10FFFF and not a surrogate
+// (U+D800-U+DFFF). Same boundary the `\u{...}` string-literal escape enforces
+// (parser.h::decode_unicode_escape) — `String.from_code_point` reuses it so
+// both ways of turning a number into a codepoint agree on what's valid.
+inline bool is_unicode_scalar_value(int64_t cp) {
+  return cp >= 0 && cp <= 0x10FFFF && !(cp >= 0xD800 && cp <= 0xDFFF);
+}
+
 // Append code point `cp` to `out` as UTF-8. Out-of-range / surrogate code
 // points fall back to U+FFFD, matching how the rest of the runtime handles
 // invalid scalar values.
@@ -352,6 +361,20 @@ inline void append_utf8(std::string& out, uint32_t cp) {
     out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
     out += static_cast<char>(0x80 | (cp & 0x3F));
   }
+}
+
+// `String.from_code_point(cp)` — the runtime counterpart of the `\u{...}`
+// literal escape, single-sourced here for interp + JIT. Raises ValueError
+// (not SyntaxError — this is a runtime call, not a parse error) on the same
+// boundary the escape rejects at parse time.
+inline std::string string_from_code_point(int64_t cp) {
+  if (!is_unicode_scalar_value(cp)) {
+    throw CulebraError("ValueError", std::format(
+        "String.from_code_point: {} is not a Unicode scalar value.", cp));
+  }
+  std::string out;
+  append_utf8(out, static_cast<uint32_t>(cp));
+  return out;
 }
 
 // HTML escape: the five characters that are unsafe in HTML text/attributes.

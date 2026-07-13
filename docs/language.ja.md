@@ -2890,6 +2890,13 @@ matcher 一族 `assert_true` / `assert_eq` 等）は
 | `s.iter() -> Iterator<StringView>`              | UTF-8 をスカラー単位で walk し**1 スカラー `StringView`** を yield。 `for c in s { ... }` の内部実装。 不正バイトは 1 バイト部分 view |
 | `s.code_points() -> Iterator<Long>`             | **Unicode スカラー値**を `Long`（`U+0000`–`U+10FFFF`）として yield する遅延イテレータ。 `iter` の毎反復アロケが無駄になる数値・範囲・分類処理向け。 不正バイトは生バイト値（0–255） |
 | `s.graphemes() -> Iterator<StringView>`         | **Extended Grapheme Cluster**（UAX #29）を 1 つずつ yield。 1 ステップが 1 ユーザー知覚文字（絵文字 ZWJ シーケンス等は 1 要素にまとまる） |
+| `s.bytes() -> Iterator<Long>`                   | レシーバの**生 UTF-8 バイト**を `Long`（`0`–`255`）として 1 バイトずつ yield — `code_points` と違いデコードしない。エンコーディングそのものが欲しい場面向け（ハッシュ計算、tokenizer の語彙、ワイヤーフォーマット等）。Python の `list(s.encode())` 相当 |
+| `String.from_code_point(cp: Long) -> String`    | `code_points()` の逆演算: Unicode スカラー値 1 つを受け取り 1 文字の `String` を返す（Python の `chr`、Rust の `char::from_u32` 相当）。`cp` が `U+10FFFF` 超過またはサロゲート範囲 `U+D800`–`U+DFFF` の場合 `ValueError`（`\u{...}` リテラルエスケープ §4.1 がパース時に拒否するのと同じ境界） |
+
+```culebra
+puts('café'.bytes().collect())          # => [99, 97, 102, 195, 169]  ('é' は UTF-8 で 2 バイト)
+puts(String.from_code_point(233))       # => 'é'
+```
 
 #### StringView
 

@@ -5096,6 +5096,22 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
                return _iter_step_value(Value(static_cast<long>(cp)));
              });
        }))},
+      // Lazy walk yielding the receiver's raw UTF-8 bytes as Long (0–255),
+      // one byte per step — no decoding, unlike `code_points`. For when
+      // the byte encoding itself is the thing wanted (hashing, tokenizer
+      // vocab, wire formats), mirroring Python's `list(s.encode())`.
+      {"bytes"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto [src, base] = callEnv->get("this").share_source_and_view();
+         auto offset = std::make_shared<size_t>(0);
+         return _make_iterator(
+             [src, base, offset](std::shared_ptr<Environment>) {
+               if (*offset >= base.size()) return _iter_step_done();
+               auto b = static_cast<unsigned char>(base[*offset]);
+               (*offset)++;
+               return _iter_step_value(Value(static_cast<long>(b)));
+             });
+       }))},
       // Lazy walk yielding Extended Grapheme Cluster boundaries (UAX
       // #29) as Strings — one user-perceived character per step (e.g.
       // `'👨‍👩‍👧'.graphemes()` yields one element).

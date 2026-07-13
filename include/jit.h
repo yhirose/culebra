@@ -15161,6 +15161,13 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     return own(make_object(out));
   }
 
+  if (method == "bytes" && argsAst.nodes.size() == 0) {
+    auto strPtr = coerce_strlike_cstr(receiver, "bytes", true);
+    auto out =
+        emit_call(module_->getFunction(rt::str_bytes), {strPtr});
+    return own(make_object(out));
+  }
+
   if (method == "iter" && argsAst.nodes.size() == 0) {
     // Tag-dispatch on receiver: Array/Tuple/Set → array_iter on the
     // underlying members; Object → user `iter` if present, else
