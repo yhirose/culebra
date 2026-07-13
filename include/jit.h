@@ -8404,56 +8404,16 @@ struct JIT {
     return own(make_nil());
   }
 
-  // `class Name { new(...){...}  m(...){...} }` — compiles each method
-  // plus the user-new body as regular closures, then emits a synthetic
-  // constructor closure that delegates to the runtime instance builder.
-  // `Name` binds the resulting namespace object in the current scope.
-  Owned compile_class_decl(const peg::Ast& ast) {
-    using namespace peg::udl;
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
-
-    // AST: [DECORATOR*, IDENTIFIER, METHOD ...]
+  // Parsed structure of a CLASS_DECL AST — the front-end of compile_class_decl.
+  // Holds the decorator span, class head (Generic params stripped to the outer
+  // name), and per-member AST pointers grouped by kind. Method bodies are NOT
+  // compiled here (that needs class_type_params_ installed); this only
+  // classifies. Mirrors interp's collect_class_members.
+  struct ClassMembers {
     size_t dec_end = 0;
-    while (dec_end < ast.nodes.size() &&
-           ast.nodes[dec_end]->tag == "DECORATOR"_) {
-      dec_end++;
-    }
-
-    // CLASS_HEAD may carry Generic type params (`Box<T>`); strip them
-    // — the runtime sees only the outer name, type params are docs.
-    auto class_head = culebra::parse_generic_head(
-        ast.nodes[dec_end]->token);
-    std::string class_name(class_head.outer);
-    // Construct the guard BEFORE the populate step so any exception
-    // (allocation failure in split_generic_args, etc.) still restores
-    // the outer class's params on unwind.
-    struct ClassScopeGuard {
-      std::vector<std::string_view>& slot;
-      std::vector<std::string_view> saved;
-      ~ClassScopeGuard() { slot = std::move(saved); }
-    } class_scope_guard{class_type_params_,
-                        std::move(class_type_params_)};
-    class_type_params_.clear();
-    if (!class_head.args.empty()) {
-      class_type_params_ = culebra::split_generic_args(class_head.args);
-    }
-
-    for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
-      auto mv = culebra::view_method(*ast.nodes[i]);
-      const peg::Ast* body_node =
-          (mv.is_typed_field || mv.is_field) ? mv.value : mv.body->get();
-      if (body_node)
-        culebra::reject_class_decl_in_class_body(*body_node, class_name);
-    }
-
-    // `@packable`: flips the class into a fixed-layout struct. Detected
-    // here (not a callable decorator); the layout is computed + registered
-    // below once the typed fields are gathered.
+    std::string class_name;
+    std::vector<std::string_view> type_params;
     bool is_packable = false;
-    for (size_t i = 0; i < dec_end; i++) {
-      if (culebra::is_packable_decorator(*ast.nodes[i])) { is_packable = true; break; }
-    }
-
     const peg::Ast* new_ast = nullptr;
     std::vector<std::string> method_names;
     std::vector<const peg::Ast*> method_asts;
@@ -8463,35 +8423,73 @@ struct JIT {
     std::vector<const peg::Ast*> static_field_asts;
     // Declared (name, type) pairs in field order, for the @packable layout.
     std::vector<std::pair<std::string, std::string>> packable_fields;
-    for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
+    // Resolved @derive (method name, kind) pairs; user definitions win.
+    std::vector<std::pair<std::string, int64_t>> derive_methods;
+  };
+
+  ClassMembers collect_class_members(const peg::Ast& ast) {
+    using namespace peg::udl;
+    ClassMembers out;
+
+    // AST: [DECORATOR*, IDENTIFIER, METHOD ...]
+    while (out.dec_end < ast.nodes.size() &&
+           ast.nodes[out.dec_end]->tag == "DECORATOR"_) {
+      out.dec_end++;
+    }
+
+    // CLASS_HEAD may carry Generic type params (`Box<T>`); strip them
+    // — the runtime sees only the outer name, type params are docs.
+    auto class_head = culebra::parse_generic_head(
+        ast.nodes[out.dec_end]->token);
+    out.class_name = std::string(class_head.outer);
+    if (!class_head.args.empty()) {
+      out.type_params = culebra::split_generic_args(class_head.args);
+    }
+
+    for (size_t i = out.dec_end + 1; i < ast.nodes.size(); i++) {
+      auto mv = culebra::view_method(*ast.nodes[i]);
+      const peg::Ast* body_node =
+          (mv.is_typed_field || mv.is_field) ? mv.value : mv.body->get();
+      if (body_node)
+        culebra::reject_class_decl_in_class_body(*body_node, out.class_name);
+    }
+
+    // `@packable`: flips the class into a fixed-layout struct. Detected
+    // here (not a callable decorator); the layout is computed + registered
+    // by compile_class_decl once the typed fields are gathered.
+    for (size_t i = 0; i < out.dec_end; i++) {
+      if (culebra::is_packable_decorator(*ast.nodes[i])) { out.is_packable = true; break; }
+    }
+
+    for (size_t i = out.dec_end + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
       auto mv = culebra::view_method(m);
       // Mirror interp: a getter must be a no-parameter method (rejects
       // `get x: T` / `get x = e` field forms and `get f(a)`).
-      if (mv.is_getter) culebra::require_getter_no_params(mv, class_name);
+      if (mv.is_getter) culebra::require_getter_no_params(mv, out.class_name);
       if (mv.is_typed_field) {
         // Typed instance fields don't materialize as JIT instance slots
         // yet (interp-first; see C3 plan), but @packable reads their
         // declared type to lay out the byte record.
-        packable_fields.push_back(
+        out.packable_fields.push_back(
             {std::string(mv.name), std::string(mv.type_annotation)});
         continue;
       }
       if (mv.is_field) {
-        culebra::require_static_field(mv, class_name);
-        static_field_names.push_back(std::string(mv.name));
-        static_field_asts.push_back(&m);
+        culebra::require_static_field(mv, out.class_name);
+        out.static_field_names.push_back(std::string(mv.name));
+        out.static_field_asts.push_back(&m);
         continue;
       }
       auto name = std::string(mv.name);
       if (!mv.is_static && mv.name == "new") {
-        new_ast = &m;
+        out.new_ast = &m;
       } else if (mv.is_static) {
-        static_names.push_back(std::move(name));
-        static_asts.push_back(&m);
+        out.static_names.push_back(std::move(name));
+        out.static_asts.push_back(&m);
       } else {
-        method_names.push_back(std::move(name));
-        method_asts.push_back(&m);
+        out.method_names.push_back(std::move(name));
+        out.method_asts.push_back(&m);
       }
     }
 
@@ -8500,17 +8498,114 @@ struct JIT {
     // selector (shared with the interpreter). User definitions win (a
     // derived method whose name the class already declares is skipped).
     // See project_type_system.md §D.
-    std::vector<std::pair<std::string, int64_t>> derive_methods;
-    for (size_t i = 0; i < dec_end; i++) {
+    for (size_t i = 0; i < out.dec_end; i++) {
       for (auto trait : culebra::view_derive(*ast.nodes[i])) {
         auto dm = culebra::derive_method_for(trait);
         std::string mname(dm.name);
         bool user_defined =
-            std::find(method_names.begin(), method_names.end(), mname) !=
-            method_names.end();
-        if (!user_defined) derive_methods.emplace_back(std::move(mname), dm.kind);
+            std::find(out.method_names.begin(), out.method_names.end(),
+                      mname) != out.method_names.end();
+        if (!user_defined)
+          out.derive_methods.emplace_back(std::move(mname), dm.kind);
       }
     }
+    return out;
+  }
+
+  // Group same-named instance-method overloads into one multimethod
+  // dispatcher (method multidispatch). A name defined once keeps its bare
+  // closure (unchanged — zero overhead). For >=2 overloads, register each
+  // compiled body into the multimethod table under a per-class key and store
+  // the shared dispatcher closure once. `method_asts` supplies each overload's
+  // param signature (indexed by the pre-grouping position, so this must run
+  // before the arrays are reassigned). Mirrors interp's group_method_overloads.
+  void group_method_overloads(std::vector<std::string>& method_names,
+                              std::vector<Owned>& method_vals,
+                              const std::vector<const peg::Ast*>& method_asts,
+                              const std::string& class_name) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    // One unique suffix per class declaration so two same-named classes in
+    // different scopes don't share a global multimethod table (the key is
+    // `method\x1fClass#uid`; _jit_multifn_display strips at the first \x1f
+    // so DispatchError still shows the bare method name). Re-running this
+    // same compiled decl reuses the baked-in uid, so replacement still works.
+    auto class_uid = multifn_uid_counter_++;
+    std::vector<std::string> grouped_names;
+    std::vector<Owned> grouped_vals;
+    for (size_t a = 0; a < method_names.size(); a++) {
+      if (std::find(grouped_names.begin(), grouped_names.end(),
+                    method_names[a]) != grouped_names.end())
+        continue;  // this name's (possibly merged) entry already emitted
+      std::vector<size_t> idxs;
+      for (size_t b = a; b < method_names.size(); b++)
+        if (method_names[b] == method_names[a]) idxs.push_back(b);
+      if (idxs.size() == 1) {
+        grouped_names.push_back(method_names[a]);
+        grouped_vals.push_back(std::move(method_vals[a]));
+      } else {
+        // Key as `method\x1fClass#uid` — the per-decl uid keeps two
+        // same-named classes in different scopes on separate tables.
+        std::string regKey = method_names[a];
+        regKey.push_back('\x1f');
+        regKey += class_name;
+        regKey.push_back('#');
+        regKey += std::to_string(class_uid);
+        Owned disp;
+        for (size_t bi : idxs) {
+          auto bodyPtr = builder_.CreateIntToPtr(
+              extract_data(method_vals[bi].borrow()), ptrTy);
+          method_vals[bi].consume();  // the multimethod registry absorbs it
+          auto newDisp = emit_multifn_register(
+              regKey, bodyPtr, *culebra::view_method(*method_asts[bi]).params,
+              class_type_params_);
+          // Every registration hands back a +1 to the same shared dispatcher
+          // (the first creates it, the rest bump its refcount). Only the last
+          // is stored in the meta; the move-assign releases the earlier +1s
+          // so the dispatcher does not strand one reference per overload.
+          disp = own(newDisp);
+        }
+        grouped_names.push_back(method_names[a]);
+        grouped_vals.push_back(std::move(disp));
+      }
+    }
+    method_names = std::move(grouped_names);
+    method_vals = std::move(grouped_vals);
+  }
+
+  // `class Name { new(...){...}  m(...){...} }` — compiles each method
+  // plus the user-new body as regular closures, then emits a synthetic
+  // constructor closure that delegates to the runtime instance builder.
+  // `Name` binds the resulting namespace object in the current scope.
+  Owned compile_class_decl(const peg::Ast& ast) {
+    using namespace peg::udl;
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+
+    auto members = collect_class_members(ast);
+    const size_t dec_end = members.dec_end;
+    const std::string& class_name = members.class_name;
+    const bool is_packable = members.is_packable;
+    const peg::Ast* new_ast = members.new_ast;
+    auto& method_names = members.method_names;
+    auto& method_asts = members.method_asts;
+    auto& static_names = members.static_names;
+    auto& static_asts = members.static_asts;
+    auto& static_field_names = members.static_field_names;
+    auto& static_field_asts = members.static_field_asts;
+    auto& packable_fields = members.packable_fields;
+    auto& derive_methods = members.derive_methods;
+
+    // Install this class's Generic type params for the method-body
+    // compilations below, under an RAII guard that restores the outer
+    // class's params on any unwind. collect_class_members parsed the params
+    // without touching the member slot, so an exception there left the outer
+    // class's params intact; from here the guard covers all later throws.
+    struct ClassScopeGuard {
+      std::vector<std::string_view>& slot;
+      std::vector<std::string_view> saved;
+      ~ClassScopeGuard() { slot = std::move(saved); }
+    } class_scope_guard{class_type_params_,
+                        std::move(class_type_params_)};
+    class_type_params_ = std::move(members.type_params);
 
     // Pre-allocate a cell for `Name` so method closures — which will
     // almost always reference the class for `Name.new(...)` or match
@@ -8557,62 +8652,9 @@ struct JIT {
       method_vals.push_back(std::move(mval));
     }
 
-    // Group same-named instance-method overloads into one multimethod
-    // dispatcher (method multidispatch). A name defined once keeps its bare
-    // closure (unchanged — zero overhead). For >=2 overloads, register each
-    // compiled body into the multimethod table under a per-class key and
-    // store the shared dispatcher closure once. Done before the @derive
-    // append; a derived method whose name a user overloads is already skipped
-    // (user_defined check above). Mirrors interp's eval_class_decl grouping.
-    {
-      auto ptrTy = llvm::PointerType::get(ctx_, 0);
-      // One unique suffix per class declaration so two same-named classes in
-      // different scopes don't share a global multimethod table (the key is
-      // `method\x1fClass#uid`; _jit_multifn_display strips at the first \x1f
-      // so DispatchError still shows the bare method name). Re-running this
-      // same compiled decl reuses the baked-in uid, so replacement still works.
-      auto class_uid = multifn_uid_counter_++;
-      std::vector<std::string> grouped_names;
-      std::vector<Owned> grouped_vals;
-      for (size_t a = 0; a < method_names.size(); a++) {
-        if (std::find(grouped_names.begin(), grouped_names.end(),
-                      method_names[a]) != grouped_names.end())
-          continue;  // this name's (possibly merged) entry already emitted
-        std::vector<size_t> idxs;
-        for (size_t b = a; b < method_names.size(); b++)
-          if (method_names[b] == method_names[a]) idxs.push_back(b);
-        if (idxs.size() == 1) {
-          grouped_names.push_back(method_names[a]);
-          grouped_vals.push_back(std::move(method_vals[a]));
-        } else {
-          // Key as `method\x1fClass#uid` — the per-decl uid keeps two
-          // same-named classes in different scopes on separate tables.
-          std::string regKey = method_names[a];
-          regKey.push_back('\x1f');
-          regKey += class_name;
-          regKey.push_back('#');
-          regKey += std::to_string(class_uid);
-          Owned disp;
-          for (size_t bi : idxs) {
-            auto bodyPtr = builder_.CreateIntToPtr(
-                extract_data(method_vals[bi].borrow()), ptrTy);
-            method_vals[bi].consume();  // the multimethod registry absorbs it
-            auto newDisp = emit_multifn_register(
-                regKey, bodyPtr, *culebra::view_method(*method_asts[bi]).params,
-                class_type_params_);
-            // Every registration hands back a +1 to the same shared dispatcher
-            // (the first creates it, the rest bump its refcount). Only the last
-            // is stored in the meta; the move-assign releases the earlier +1s
-            // so the dispatcher does not strand one reference per overload.
-            disp = own(newDisp);
-          }
-          grouped_names.push_back(method_names[a]);
-          grouped_vals.push_back(std::move(disp));
-        }
-      }
-      method_names = std::move(grouped_names);
-      method_vals = std::move(grouped_vals);
-    }
+    // Done before the @derive append; a derived method whose name a user
+    // overloads is already skipped (user_defined check in collect).
+    group_method_overloads(method_names, method_vals, method_asts, class_name);
     // Append @derive methods: captureless closures over shared runtime
     // thunks (mirrors the variant-ctor pattern). They land in the class
     // meta alongside user methods, so dispatch + Set/Object key lookup

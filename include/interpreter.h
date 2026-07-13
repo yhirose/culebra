@@ -7790,45 +7790,66 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     packable_write_field(core->data + off, *f, val);
   }
 
-  Value eval_class_decl(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
-    using namespace peg::udl;
-
-    // Optional leading DECORATOR children. Apply them to the final
-    // class Object before binding. `@derive(...)` is special-cased: it
-    // names traits whose methods we inject below rather than a callable.
-    size_t k = 0;
+  // Parsed structure of a CLASS_DECL AST — the front-end of eval_class_decl,
+  // split out so the class-value construction below reads as a narrative.
+  // Method names and the class name are `string_view`s into the source AST
+  // (stable for the program's lifetime), matching how Environment and
+  // ObjectValue store keys and avoiding dangling views from moved strings in
+  // captured lambdas. Field defaults and static-field values are already
+  // eval'd against `env`. Mirrors JIT's collect_class_members.
+  struct ClassMembers {
+    std::string_view class_name;
+    std::vector<std::string_view> type_params;
+    // Callable decorators (bottom-up applied), `@derive` trait names, and
+    // whether `@packable` was present — the three DECORATOR flavors.
     std::vector<const peg::Ast*> decorators;
     std::vector<std::string_view> derive_traits;
     bool is_packable = false;
+    const peg::Ast* new_ast = nullptr;
+    std::vector<std::pair<std::string_view, Value>> method_template;
+    std::vector<std::pair<std::string_view, Value>> static_template;
+    std::vector<std::pair<std::string_view, Value>> static_field_template;
+    // Typed instance fields (`x: Float32 = 0.0`) in declaration order (the
+    // field order the @packable layout reads). Default value, or the type's
+    // zero value when omitted.
+    std::vector<std::pair<std::string_view, Value>> field_template;
+    // Declared (name, type) pairs in field order — the @packable layout
+    // reads this to compute byte offsets.
+    std::vector<std::pair<std::string, std::string>> packable_fields;
+  };
+
+  ClassMembers collect_class_members(
+      const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
+    using namespace peg::udl;
+    ClassMembers out;
+
+    // Optional leading DECORATOR children. Callable decorators are applied
+    // to the final class Object before binding; `@derive(...)` names traits
+    // whose methods are injected rather than a callable; `@packable` is a
+    // layout constraint.
+    size_t k = 0;
     while (k < ast.nodes.size() && ast.nodes[k]->tag == "DECORATOR"_) {
       auto traits = culebra::view_derive(*ast.nodes[k]);
       if (!traits.empty()) {
-        derive_traits.insert(derive_traits.end(), traits.begin(), traits.end());
+        out.derive_traits.insert(out.derive_traits.end(), traits.begin(),
+                                 traits.end());
       } else if (culebra::is_packable_decorator(*ast.nodes[k])) {
-        is_packable = true;
+        out.is_packable = true;
       } else {
-        decorators.push_back(ast.nodes[k].get());
+        out.decorators.push_back(ast.nodes[k].get());
       }
       k++;
     }
 
-    // Method names and class name are kept as `string_view` into the
-    // source AST (stable for the program's lifetime). This matches how
-    // Environment and ObjectValue store keys, and avoids dangling
-    // `string_view`s caused by moving std::strings inside captured
-    // lambdas.
-    //
-    // CLASS_HEAD token may include Generic type parameters
-    // (`Box<T>`, `Pair<K, V>`). The runtime drops them — class is
-    // bound under `Box`, class_tag stores `Box`. Type parameters are
-    // documentation in the MVP; param/return annotations naming a
-    // type-param (e.g. `v: T`) are rewritten to "Any" below so they
-    // pass type_check at invocation.
+    // CLASS_HEAD token may include Generic type parameters (`Box<T>`,
+    // `Pair<K, V>`). The runtime drops them — class is bound under `Box`,
+    // class_tag stores `Box`. Type parameters are documentation in the MVP;
+    // param/return annotations naming a type-param (e.g. `v: T`) are
+    // rewritten to "Any" below so they pass type_check at invocation.
     auto class_head = parse_generic_head(ast.nodes[k]->token);
-    auto class_name = class_head.outer;
-    std::vector<std::string_view> type_params;
+    out.class_name = class_head.outer;
     if (!class_head.args.empty()) {
-      type_params = split_generic_args(class_head.args);
+      out.type_params = split_generic_args(class_head.args);
     }
 
     // Reject CLASS_DECL directly inside another class body — declares
@@ -7838,53 +7859,87 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       auto mv = culebra::view_method(*ast.nodes[i]);
       const peg::Ast* body_node =
           (mv.is_typed_field || mv.is_field) ? mv.value : mv.body->get();
-      if (body_node) reject_class_decl_in_class_body(*body_node, class_name);
+      if (body_node) reject_class_decl_in_class_body(*body_node, out.class_name);
     }
-    const peg::Ast* new_ast = nullptr;
-    std::vector<std::pair<std::string_view, Value>> method_template;
-    std::vector<std::pair<std::string_view, Value>> static_template;
-    std::vector<std::pair<std::string_view, Value>> static_field_template;
-    // Typed instance fields (`x: Float32 = 0.0`). Declaration order is
-    // the field order (the @packable layout reads it). Default value, or
-    // the type's zero value when omitted.
-    std::vector<std::pair<std::string_view, Value>> field_template;
-    // Declared (name, type) pairs in field order — the @packable layout
-    // reads this to compute byte offsets.
-    std::vector<std::pair<std::string, std::string>> packable_fields;
+
     for (size_t i = k + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
       auto mv = culebra::view_method(m);
       // A getter must be a no-parameter method — reject `get x: T` /
       // `get x = e` (field forms) and `get f(a)` (has params) up front.
-      if (mv.is_getter) culebra::require_getter_no_params(mv, class_name);
+      if (mv.is_getter) culebra::require_getter_no_params(mv, out.class_name);
       if (mv.is_typed_field) {
         Value init = mv.value ? eval(*mv.value, env)
                               : zero_value_for_type(mv.type_annotation);
-        field_template.push_back({mv.name, std::move(init)});
-        packable_fields.push_back(
+        out.field_template.push_back({mv.name, std::move(init)});
+        out.packable_fields.push_back(
             {std::string(mv.name), std::string(mv.type_annotation)});
         continue;
       }
       if (mv.is_field) {
-        culebra::require_static_field(mv, class_name);
+        culebra::require_static_field(mv, out.class_name);
         Value val = eval(*mv.value, env);
-        static_field_template.push_back({mv.name, std::move(val)});
+        out.static_field_template.push_back({mv.name, std::move(val)});
         continue;
       }
       if (!mv.is_static && mv.name == "new") {
-        new_ast = &m;
+        out.new_ast = &m;
         continue;
       }
       auto fn_val = make_function_value(*mv.params, *mv.body, {}, env);
       fn_val.get<FunctionValue>().name = std::string(mv.name);
       fn_val.get<FunctionValue>().is_getter = mv.is_getter;
-      neutralize_fn_type_params(fn_val.get<FunctionValue>(), type_params);
+      neutralize_fn_type_params(fn_val.get<FunctionValue>(), out.type_params);
       if (mv.is_static) {
-        static_template.push_back({mv.name, std::move(fn_val)});
+        out.static_template.push_back({mv.name, std::move(fn_val)});
       } else {
-        method_template.push_back({mv.name, std::move(fn_val)});
+        out.method_template.push_back({mv.name, std::move(fn_val)});
       }
     }
+    return out;
+  }
+
+  // Group same-named instance methods into one method-multidispatch
+  // dispatcher (Julia-style: scored on the explicit arg types, with `this`
+  // fixed by the property lookup). A name defined once stays a bare
+  // Function — zero overhead and byte-identical to the pre-overload path.
+  // Mirrors JIT's group_method_overloads.
+  void group_method_overloads(
+      std::vector<std::pair<std::string_view, Value>>& method_template) {
+    std::vector<std::pair<std::string_view, Value>> grouped;
+    for (size_t a = 0; a < method_template.size(); a++) {
+      auto name = method_template[a].first;
+      if (std::any_of(grouped.begin(), grouped.end(),
+                      [&](const auto& g) { return g.first == name; }))
+        continue;  // this name's (possibly merged) entry already emitted
+      auto methods = std::make_shared<std::vector<MultiMethod>>();
+      for (size_t b = a; b < method_template.size(); b++)
+        if (method_template[b].first == name)
+          methods->push_back(
+              make_multimethod_from_body(method_template[b].second));
+      if (methods->size() == 1)
+        grouped.push_back({name, method_template[a].second});
+      else
+        grouped.push_back({name, build_multifn_dispatcher(name, methods)});
+    }
+    method_template = std::move(grouped);
+  }
+
+  Value eval_class_decl(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
+    using namespace peg::udl;
+
+    auto members = collect_class_members(ast, env);
+    const auto class_name = members.class_name;
+    const auto& type_params = members.type_params;
+    const auto& decorators = members.decorators;
+    const auto& derive_traits = members.derive_traits;
+    const bool is_packable = members.is_packable;
+    const peg::Ast* new_ast = members.new_ast;
+    auto method_template = std::move(members.method_template);
+    auto field_template = std::move(members.field_template);
+    auto& static_template = members.static_template;
+    auto& static_field_template = members.static_field_template;
+    auto& packable_fields = members.packable_fields;
 
     // Inject @derive methods (after user methods so user definitions
     // win) before the instance template is frozen into build_instance.
@@ -7892,29 +7947,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       inject_derived_methods(method_template, class_name, derive_traits);
     }
 
-    // Group same-named instance methods into one method-multidispatch
-    // dispatcher (Julia-style: scored on the explicit arg types, with `this`
-    // fixed by the property lookup). A name defined once stays a bare
-    // Function — zero overhead and byte-identical to the pre-overload path.
-    {
-      std::vector<std::pair<std::string_view, Value>> grouped;
-      for (size_t a = 0; a < method_template.size(); a++) {
-        auto name = method_template[a].first;
-        if (std::any_of(grouped.begin(), grouped.end(),
-                        [&](const auto& g) { return g.first == name; }))
-          continue;  // this name's (possibly merged) entry already emitted
-        auto methods = std::make_shared<std::vector<MultiMethod>>();
-        for (size_t b = a; b < method_template.size(); b++)
-          if (method_template[b].first == name)
-            methods->push_back(
-                make_multimethod_from_body(method_template[b].second));
-        if (methods->size() == 1)
-          grouped.push_back({name, method_template[a].second});
-        else
-          grouped.push_back({name, build_multifn_dispatcher(name, methods)});
-      }
-      method_template = std::move(grouped);
-    }
+    group_method_overloads(method_template);
 
     // Instances of a drop-having class register on the owned stack at
     // construction (the method loop below bypasses `initialize`, so the
