@@ -8261,6 +8261,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       // them and bare references compile to namespace_get — mirroring the
       // interp's builtin_names skip. See _jit_namespace_get_or_build.
       "Time",    "Args",      "Regex",     "Term",      "Log",      "Path",
+      "__Eff",
 #if defined(CULEBRA_HTTP_ENABLED)
       "Http",
 #endif

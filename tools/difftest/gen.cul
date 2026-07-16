@@ -869,4 +869,24 @@ for c in mmd {
   case("mmd|" + c, c)
 }
 
+# --- Dimension 36: algebraic effects (thin slice) -------------------------
+# `effect fn` / `perform` / `handle … with` lower, at parse time, onto
+# synthesized computation classes + the `__Eff` runtime; both backends run
+# the same lowered source, so a divergence would signal a transform/runtime
+# asymmetry. Covers dynamic scope (perform inside a called effect fn),
+# lexical perform, handler abort (no resume), an op argument, sequential
+# performs, and resume-value flow-back. Bodies are single-line (statements
+# `;`-separated) so `case` can wrap them in one thunk.
+let eff = [
+  'effect fn get(); effect fn c() { let x = perform get(); x * 2 }; handle { c() } with get(r) { r(21) }',
+  'effect fn ask(); handle { let x = perform ask(); x + 1 } with ask(r) { r(10) }',
+  'effect fn fail(); effect fn risky() { perform fail(); 99 }; handle { risky() } with fail(r) { -1 }',
+  'effect fn emit(v); effect fn prod() { perform emit(1); perform emit(2); "done" }; mut seen = []; let c = handle { prod() } with emit(v, r) { seen.push(v); r(nil) }; to_string(seen) + c',
+  'effect fn twice(n); effect fn dbl() { let y = perform twice(5); y + 100 }; handle { dbl() } with twice(n, r) { r(n * 2) }',
+  # no handler for the performed op -> EffectError (same on both backends)
+  'effect fn get(); handle { let x = perform get(); x } with other(r) { r(1) }']
+for c in eff {
+  case("eff|" + c, c)
+}
+
 print(out.join("\n"))

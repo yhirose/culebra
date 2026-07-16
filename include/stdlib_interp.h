@@ -5969,6 +5969,11 @@ inline std::string stdlib_preamble_for(std::string_view user_src) {
   if (has("Path"))
     preamble.append(_wrap_lazy_ns_module(PATH_MODULE_SOURCE, "Path",
                                          "_path_module"));
+  // Algebraic-effects runtime — pulled in when the source uses any effect
+  // construct (lowered code calls `__Eff.handle`). See effects_transform.h.
+  if (has("perform") || has("handle") || has("effect"))
+    preamble.append(_wrap_lazy_ns_module(EFFECTS_MODULE_SOURCE, "__Eff",
+                                         "_eff_module"));
 #ifdef CULEBRA_ENABLE_WEBVIEW
   // `Desktop.run` facade — only when the Webview namespace it drives is built in.
   if (has("Desktop"))
@@ -6044,6 +6049,7 @@ inline void register_stdlib_lazy_modules(Environment& env) {
   env.initialize_lazy("replace", STRING_REPLACE_MODULE_SOURCE);
   env.initialize_lazy("Log", LOG_MODULE_SOURCE);
   env.initialize_lazy("Path", PATH_MODULE_SOURCE);
+  env.initialize_lazy("__Eff", EFFECTS_MODULE_SOURCE);
 #ifdef CULEBRA_ENABLE_WEBVIEW
   env.initialize_lazy("Desktop", DESKTOP_MODULE_SOURCE);
 #endif

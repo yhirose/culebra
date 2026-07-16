@@ -9,7 +9,7 @@
 #include <unordered_set>
 #include <vector>
 
-#include "generator_transform.h"
+#include "effects_transform.h"
 #include "lint.h"
 #include "parser.h"
 #include "shared.h"

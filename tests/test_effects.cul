@@ -1,0 +1,86 @@
+// Conformance: algebraic effects (thin slice).
+// `effect fn` / `perform` / `handle … with` lower, at parse time, onto
+// synthesized computation classes + the `__Eff` runtime (dynamically-scoped
+// handler stack + one-shot resume). All three backends run the lowered code,
+// so behaviour is symmetric by construction. This slice covers straight-line
+// bodies, statement-level performs, one-shot resume, and dynamic scope
+// (perform inside a called effect fn). Control-flow bodies, A-normalization,
+// multiple handler clauses, and multi-shot resume are the next cycle.
+
+// --- dynamic scope: perform inside a called effect fn ---
+effect fn get()
+
+effect fn compute() {
+  let x = perform get()
+  x * 2
+}
+
+let r = handle {
+  compute()
+} with get(resume) {
+  resume(21)
+}
+assert_eq(r, 42)
+
+// --- perform directly in a handle body (lexical) ---
+effect fn ask()
+let a = handle {
+  let x = perform ask()
+  x + 1
+} with ask(resume) {
+  resume(10)
+}
+assert_eq(a, 11)
+
+// --- handler aborts (never resumes): body tail is skipped ---
+effect fn fail()
+effect fn risky() {
+  perform fail()
+  99            // unreachable when the handler doesn't resume
+}
+let b = handle {
+  risky()
+} with fail(resume) {
+  -1
+}
+assert_eq(b, -1)
+
+// --- effect op with an argument + multiple sequential performs ---
+effect fn emit(v)
+effect fn producer() {
+  perform emit(1)
+  perform emit(2)
+  "done"
+}
+mut seen = []
+let c = handle {
+  producer()
+} with emit(v, resume) {
+  seen.push(v)
+  resume(nil)
+}
+assert_eq(seen, [1, 2])
+assert_eq(c, "done")
+
+// --- resume value flows back as the perform expression's value ---
+effect fn twice(n)
+effect fn doubler() {
+  let y = perform twice(5)
+  y + 100
+}
+let d = handle {
+  doubler()
+} with twice(n, resume) {
+  resume(n * 2)   // n=5 -> resume 10 -> y=10 -> 110
+}
+assert_eq(d, 110)
+
+// --- a fresh computation per call: handles are independent ---
+let e1 = handle { compute() } with get(resume) { resume(1) }
+let e2 = handle { compute() } with get(resume) { resume(7) }
+assert_eq(e1, 2)
+assert_eq(e2, 14)
+
+// --- effect-free code is completely unaffected ---
+fn plain(n) { n * n }
+assert_eq(plain(6), 36)

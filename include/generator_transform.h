@@ -326,13 +326,22 @@ inline std::optional<std::string> rewrite_yielding_fors_to_while(
 // its MULTIFN_DECL node, after registering the source for lifetime. peg::Ast
 // holds string_views into the source, so the synthesized buffer must stay
 // alive until the AST is discarded — generator_transform_sources() owns it.
+// Parse a synthesized buffer after registering it for process lifetime (the
+// resulting AST's string_views point into it). The single place that pairs the
+// lifetime store with `parse` — used by both the generator wrapper parse and
+// the effects transform's body re-parse, so the "register before parse" rule
+// lives in one spot.
+inline std::shared_ptr<peg::Ast> parse_registered_source(
+    const char* label, std::shared_ptr<std::string> synthesized) {
+  generator_transform_sources().push_back(synthesized);
+  std::vector<std::string> msgs;
+  return parse(label, synthesized->data(), synthesized->size(), msgs);
+}
+
 inline std::shared_ptr<peg::Ast> parse_wrapper_fn(
     std::shared_ptr<std::string> synthesized) {
   using namespace peg::udl;
-  generator_transform_sources().push_back(synthesized);
-  std::vector<std::string> msgs;
-  auto sub_ast = parse("<generator-transform>", synthesized->data(),
-                       synthesized->size(), msgs);
+  auto sub_ast = parse_registered_source("<generator-transform>", synthesized);
   if (!sub_ast) return nullptr;
   std::shared_ptr<peg::Ast> wrapper_fn;
   std::function<void(std::shared_ptr<peg::Ast>)> walk =
@@ -379,6 +388,20 @@ inline bool swap_body_with_wrapper_params(
 // Stage 3 and Stage 6b — both stages seed `ctor_inits` with their own
 // state-field prefix (`_g_drained` / `_g_phase` / etc.) before calling
 // this to append the per-instance bindings.
+// Positional parameter names of a PARAMETERS node, skipping the kw-only
+// separator and any `**kwargs` rest. Shared by the generator and effects
+// transforms — both feed the names into ctor slot emission, so the skip rules
+// must stay in lockstep.
+inline std::vector<std::string_view> collect_positional_param_names(
+    const peg::Ast& params_ast) {
+  std::vector<std::string_view> names;
+  for (const auto& pn : params_ast.nodes) {
+    if (is_kw_only_sep(*pn) || is_kwargs_rest(*pn)) continue;
+    names.push_back(view_parameter(*pn).name);
+  }
+  return names;
+}
+
 inline void emit_ctor_param_and_local_inits(
     const std::vector<std::string_view>& param_names,
     const std::set<std::string>& locals,
@@ -623,11 +646,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
                               std::string(name_ast.token),
                               name_ast.line, name_ast.column);
 
-  std::vector<std::string_view> param_names;
-  for (const auto& pn : params_ast.nodes) {
-    if (is_kw_only_sep(*pn) || is_kwargs_rest(*pn)) continue;
-    param_names.push_back(view_parameter(*pn).name);
-  }
+  auto param_names = collect_positional_param_names(params_ast);
   auto locals = collect_local_names(*ast->nodes.back());
   std::set<std::string> rewrite_set = locals;
   for (auto& pn : param_names) rewrite_set.insert(std::string(pn));
@@ -817,11 +836,10 @@ inline std::shared_ptr<peg::Ast> transform_generators_in(
   return ast;
 }
 
-// Public parse entry: identical to `parse()` plus the generator
-// transformation pass. Every caller that wants `yield` support
-// (interp module load, JIT/AOT, REPL, lazy module loader) routes
-// through here.
-inline std::shared_ptr<peg::Ast> parse_with_transforms(
+// Parse + the generator transformation pass. The public entry
+// `parse_with_transforms` (effects_transform.h) chains the effects pass
+// after this one; callers route through the public entry.
+inline std::shared_ptr<peg::Ast> parse_with_generator_transforms(
     const std::string& path, const char* expr, size_t len,
     std::vector<std::string>& msgs) {
   auto ast = parse(path, expr, len, msgs);

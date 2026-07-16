@@ -436,3 +436,55 @@ let _path_module = fn() {
 let Path = _path_module()
 )=culpre=";
 
+inline constexpr const char* EFFECTS_MODULE_SOURCE = R"=culpre=(# Algebraic-effects runtime (thin slice). The parse-time transform
+# (effects_transform.h) lowers `effect fn` / `perform` / `handle … with`
+# into synthesized computation classes plus calls to `__Eff.handle`; this
+# module is the dynamically-scoped handler stack and the trampoline driver
+# that resumes a computation across its suspension points. Because it is
+# ordinary culebra source, the interp / JIT / AOT backends run it uniformly.
+#
+# A computation object exposes `_step(rv)` returning a tag:
+#   0 = DONE     — `_eff_val` holds the result
+#   1 = SUSPEND  — `_eff_op` / `_eff_args` describe a `perform`
+#   2 = DELEGATE — `_eff_delegate` is a sub-computation to drive first
+# `resume` is the one-shot continuation handed to a handler.
+let _eff_module = fn() {
+  let _handlers = []   # stack of frames; each frame maps op-name -> adapter fn
+
+  fn _find(op) {
+    let mut i = _handlers.size() - 1
+    while i >= 0 {
+      let frame = _handlers[i]
+      if frame.has(op) { return frame[op] }
+      i -= 1
+    }
+    throw { kind: "EffectError", message: "no handler for effect '{op}'" }
+  }
+
+  fn _drive(comp, rv) {
+    let mut resume_val = rv
+    while true {
+      let tag = comp._step(resume_val)
+      if tag == 0 { return comp._eff_val }
+      if tag == 1 {
+        let h = _find(comp._eff_op)
+        let resume = fn(v) { _drive(comp, v) }
+        return h(comp._eff_args, resume)
+      }
+      resume_val = _drive(comp._eff_delegate, nil)
+    }
+  }
+
+  fn _handle(comp, op, adapter) {
+    let frame = {}
+    frame[op] = adapter
+    _handlers.push(frame)
+    defer { _handlers.pop() }
+    _drive(comp, nil)
+  }
+
+  { handle: _handle }
+}
+let __Eff = _eff_module()
+)=culpre=";
+

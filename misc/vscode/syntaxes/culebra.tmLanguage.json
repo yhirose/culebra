@@ -175,6 +175,7 @@
         { "match": "\\b(if|else|match|cond)\\b", "name": "keyword.control.conditional.culebra" },
         { "match": "\\b(while|for|in)\\b", "name": "keyword.control.loop.culebra" },
         { "match": "\\b(return|break|continue|throw|try|catch|defer|yield)\\b", "name": "keyword.control.culebra" },
+        { "match": "\\b(effect|perform|handle|with)\\b", "name": "keyword.other.culebra" },
         { "match": "\\b(import|export|from)\\b", "name": "keyword.control.import.culebra" },
         { "match": "\\b(debugger)\\b", "name": "keyword.other.debugger.culebra" },
         { "match": "\\b(true|false)\\b", "name": "constant.language.boolean.culebra" },

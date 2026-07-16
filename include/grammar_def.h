@@ -7,7 +7,7 @@ namespace culebra {
 const auto grammar_ = R"(
   PROGRAM                  <-  _ STATEMENTS _
   STATEMENTS               <-  (STATEMENT (_sp_ (';' / _nl_) (_ STATEMENT)?)*)?
-  STATEMENT                <-  DEBUGGER / RETURN / THROW / YIELD_FROM / YIELD / BREAK / CONTINUE / DEFER / IMPORT_STMT / EXPORT_STMT / MULTIFN_DECL / ENUM_DECL / CLASS_DECL / TRAIT_DECL / LEXICAL_SCOPE / EXPRESSION
+  STATEMENT                <-  DEBUGGER / RETURN / THROW / YIELD_FROM / YIELD / BREAK / CONTINUE / DEFER / IMPORT_STMT / EXPORT_STMT / EFFECT_FN_DECL / MULTIFN_DECL / ENUM_DECL / CLASS_DECL / TRAIT_DECL / LEXICAL_SCOPE / EXPRESSION
 
   # Module system (§25). `import name from "./path"` binds the file's
   # `export { ... }` value to `name`. String-literal paths only.
@@ -21,6 +21,14 @@ const auto grammar_ = R"(
   # transform the declared fn value before binding it to the name —
   # see DECORATOR below.
   MULTIFN_DECL             <-  (DECORATOR (_ DECORATOR)* _)? fn _ CLASS_HEAD _ PARAMETERS (_ RETURN_TYPE)? _ BLOCK
+
+  # Algebraic effects (thin slice). `effect fn op(...)` with no body
+  # declares an effect operation that `perform op(...)` may invoke; with a
+  # body it is an effectful function whose calls to other effect fns /
+  # `perform` are suspension points. Both shapes are lowered, at parse
+  # time, onto the generator CPS engine (see effects_transform.h). See
+  # [[project-algebraic-effects]].
+  EFFECT_FN_DECL           <-  effect _ fn _ CLASS_HEAD _ PARAMETERS (_ RETURN_TYPE)? (_ BLOCK)?
 
   CLASS_DECL               <-  (DECORATOR (_ DECORATOR)* _)? class _ CLASS_HEAD _ '{' _ (METHOD (_ METHOD)*)? _ '}'
 
@@ -265,8 +273,16 @@ const auto grammar_ = R"(
   TUPLE_PATTERN            <-  '(' _ PATTERN _ ',' _ PATTERN (_ ',' _ PATTERN)* _ ','? _ ')'
                             /  '(' _ PATTERN _ ',' _ ')'
 
-  PRIMARY                  <-  WHILE / FOR / IF / MATCH / COND / FUNCTION / LAMBDA / OBJECT / SET / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / REGEX_LIT / IDENTIFIER /
+  PRIMARY                  <-  WHILE / FOR / IF / MATCH / COND / HANDLE / PERFORM / FUNCTION / LAMBDA / OBJECT / SET / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / REGEX_LIT / IDENTIFIER /
                                TRIPLE_STRING / STRING / RAW_STRING / INTERPOLATED_STRING / TUPLE / '(' _ EXPRESSION _ ')'
+
+  # `perform op(args)` invokes an effect operation; it is an expression
+  # whose value is what the handler resumes with. `handle { body } with
+  # op(resume) { … }` runs `body` under a dynamically-scoped handler for
+  # `op`; `resume` is the one-shot continuation. Both are lowered at parse
+  # time (effects_transform.h) — no backend-specific runtime.
+  PERFORM                  <-  perform _sp_ IDENTIFIER _ ARGUMENTS
+  HANDLE                   <-  handle _ BLOCK _ with _ IDENTIFIER _ PARAMETERS _ BLOCK
   TUPLE                    <-  '(' _ EXPRESSION _ ',' _ EXPRESSION (_ ',' _ EXPRESSION)* _ ','? _ ')'
                             /  '(' _ EXPRESSION _ ',' _ ')'
   SET                      <-  '{' _ EXPRESSION _ ',' _ EXPRESSION (_ ',' _ EXPRESSION)* _ ','? _ '}'
@@ -441,6 +457,10 @@ const auto grammar_ = R"(
   ~from                    <-  K('from')
   ~trait                   <-  K('trait')
   ~enum                    <-  K('enum')
+  ~effect                  <-  K('effect')
+  ~perform                 <-  K('perform')
+  ~handle                  <-  K('handle')
+  ~with                    <-  K('with')
 
   ~_                       <-  (WhiteSpace / EndOfLine)*
   ~_sp_                    <-  SpaceChar*

@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-#include "generator_transform.h"
+#include "effects_transform.h"
 #include "interpreter.h"
 #include "test_runner.h"  // StdoutCapture, Reporter, TestRunSummary, json_escape
 
