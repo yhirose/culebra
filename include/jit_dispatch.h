@@ -974,11 +974,17 @@ inline void _jit_gc_sweep_object(void* obj, uint8_t tag) {
     case GC_TAG_CELL:
       delete static_cast<JitCell*>(obj);
       break;
-    case GC_TAG_STRING:
-      // Registered at the bytes pointer; the malloc base is the length
-      // header just before it (see _str_alloc). No destructor, no children.
-      std::free(static_cast<char*>(obj) - sizeof(JitStrHeader));
+    case GC_TAG_STRING: {
+      // Registered at the bytes pointer; the slab base is the length header
+      // just before it (see _str_alloc). No destructor, no children. Free
+      // back to the slab with the exact byte count _str_alloc requested
+      // (header + len + NUL), recomputed from the length header before it is
+      // overwritten by the free-list link.
+      auto* data = static_cast<char*>(obj);
+      size_t total = sizeof(JitStrHeader) + _str_len(data) + 1;
+      _slab().free(data - sizeof(JitStrHeader), total);
       break;
+    }
     case GC_TAG_STRINGVIEW:
       // The descriptor is a trivial POD (borrowed ptr/len + owner_base edge);
       // the backing it borrows is a separate GC node, reclaimed on its own.

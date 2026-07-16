@@ -254,16 +254,28 @@ inline std::string_view _str_sv(const char* s) {
 // return a pointer to the bytes field. malloc's 16-byte alignment keeps
 // the bytes (at base+8) 8-aligned. Caller fills [data, data+len); the NUL
 // is pre-written.
-inline char* _str_alloc(uint64_t len) {
-  size_t total = sizeof(JitStrHeader) + len + 1;
-  auto* base = static_cast<char*>(std::malloc(total));
+// Write the length header + trailing NUL into a raw buffer `base` sized at
+// least sizeof(JitStrHeader)+len+1; return the bytes pointer (at base+8, kept
+// 8-aligned by the 16-aligned allocators). Caller fills [data, data+len).
+inline char* _str_init(char* base, uint64_t len) {
   std::memcpy(base, &len, sizeof(len));
   char* data = base + sizeof(JitStrHeader);
   data[len] = '\0';
+  return data;
+}
+
+inline char* _str_alloc(uint64_t len) {
+  size_t total = sizeof(JitStrHeader) + len + 1;
+  // Carve the bytes from the per-Runtime slab (16-aligned, same as malloc),
+  // not system malloc: string churn allocates millions of tiny buffers, and
+  // the slab collapses that into amortized 64KB-chunk bump-carving with an
+  // intrusive free-list — the same win the JIT structs already take. The
+  // sweep path frees back to the slab with the recomputed byte count.
+  char* data = _str_init(static_cast<char*>(_slab().alloc(total)), len);
   // Traced-only strings: register the buffer as a GC leaf keyed on the
   // *bytes* pointer (`data`) — that is the pointer a TAG_STRING JitValue
   // carries, so the conservative stack scan roots it by exact match. The
-  // sweep path recovers the malloc base (data - sizeof(JitStrHeader)).
+  // sweep path recovers the slab base (data - sizeof(JitStrHeader)).
   // adopt() also drives maybe_collect(), so a string-only allocation loop
   // still triggers reclamation. Literals bypass _str_alloc (.rodata) and
   // are therefore never registered nor swept. See docs on this branch.
@@ -289,13 +301,19 @@ inline const char* _intern_str(std::string_view s) {
   std::string key(s);
   auto it = cache.find(key);
   if (it != cache.end()) return it->second;
-  const char* buf = _culebra_heap_str(s);
-  // The intern cache is a process-lifetime holder the collector cannot see
-  // (a static std::unordered_map, not a GC-traced container). Pin the buffer
-  // so the tracing backstop never sweeps a name the cache still hands out.
-  _gc_heap().pin(const_cast<char*>(buf));
-  cache.emplace(std::move(key), buf);
-  return buf;
+  // The intern cache is a PROCESS-GLOBAL static shared across Runtimes, and
+  // hands out its pointers for the whole process lifetime. So an interned name
+  // must NOT come from the per-Runtime slab (freed at that Runtime's teardown
+  // -> the cache would dangle for every other live Runtime) nor be registered
+  // with any single Runtime's collector. Allocate an immortal malloc buffer
+  // with the same header layout and hand it out uninstrumented — invisible to
+  // every Runtime's GC, exactly like a .rodata string literal, never swept.
+  uint64_t len = s.size();
+  char* base = static_cast<char*>(std::malloc(sizeof(JitStrHeader) + len + 1));
+  char* data = _str_init(base, len);
+  std::memcpy(data, s.data(), len);
+  cache.emplace(std::move(key), data);
+  return data;
 }
 
 // The registered GC base pointer that owns a strlike value's bytes, for use
