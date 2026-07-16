@@ -3,7 +3,10 @@
 #
 # Run under CULEBRA_GC_NEVER=1 (conservative backstop OFF) so an RC leak is not
 # masked: with no tracing collect, only refcounting frees objects, so a case
-# that leaks shows live_objects growing with each thunk() call. One warmup call
+# that leaks shows rc_objects growing with each thunk() call. rc_objects counts
+# only refcounted heap objects — traced-only Strings/StringViews are excluded,
+# since with the collector off (their sole reclaimer) they accumulate benignly
+# and would otherwise read as a leak. One warmup call
 # absorbs first-call lazy allocation (namespace init, shape caches). Comparing
 # JIT growth vs interp growth (interp is leak-free by shared_ptr) isolates
 # JIT-specific RC leaks from cases that legitimately accumulate global state.
@@ -11,9 +14,9 @@ fn _show(v) { type_of(v) + ":" + to_string(v) }
 fn _p(label, thunk) {
   let warm = try { thunk(); 1 } catch e { 0 }
   if warm == 0 { print(label + " ::: skip=err\n"); return }
-  let base = GC.stat().live_objects
+  let base = GC.stat().rc_objects
   mut i = 0
   while i < 40 { try { thunk() } catch e { 0 }; i = i + 1 }
-  let growth = GC.stat().live_objects - base
+  let growth = GC.stat().rc_objects - base
   print(label + " ::: growth=" + growth.to_string() + "\n")
 }

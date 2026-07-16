@@ -3337,10 +3337,18 @@ inline JitValue _ns_gc_stat(JitValue*, int64_t) {
   auto& gc = _gc_heap();
   gc.collect();  // report reachable objects, not registry residue not yet swept
   int64_t live = static_cast<int64_t>(gc.live_count());
+  int64_t rc_live = static_cast<int64_t>(gc.rc_live_count());
   int64_t bytes = static_cast<int64_t>(gc.live_bytes());
   auto* obj = culebra_runtime_object_new();
   culebra_runtime_object_set(obj, "live_objects", /*mut=*/false, TAG_LONG,
                              live, 0, 0);
+  // Refcounted-only live count (Strings/StringViews excluded). The RC-leak
+  // fuzzer measures this so benign traced-only churn under CULEBRA_GC_NEVER
+  // (collector off) doesn't read as growth. Under normal GC it equals a
+  // subset of live_objects; the interp exposes the same field (== its
+  // live_objects, all heap objects are shared_ptr-managed) for symmetry.
+  culebra_runtime_object_set(obj, "rc_objects", /*mut=*/false, TAG_LONG,
+                             rc_live, 0, 0);
   culebra_runtime_object_set(obj, "heap_bytes", /*mut=*/false, TAG_LONG,
                              bytes, 0, 0);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
@@ -6066,6 +6074,14 @@ inline bool _jit_ns_kwarg_resolve_core(
 
   int n = pm->n_params;
   std::vector<JitValue> slab(n);
+  // The slab lives in a std::vector's heap buffer, which the conservative
+  // collector does not scan. Refcounted values in it are held by their +1,
+  // but a traced-only String/StringView has no refcount — a default-valued
+  // string param, or an adapter-internal string temporary staged here, is
+  // then unreachable from any root and a GC_STRESS collect would sweep it
+  // before the adapter reads it (crash). Pause collection across slab build
+  // and dispatch, mirroring _jit_ns_dispatch_owned_slab's args-rest path.
+  culebra::gc::Heap::CollectPause _pause(_gc_heap());
   std::vector<bool> filled(n, false);
   // Positional args bind leftmost params; reject if also given by keyword.
   for (int64_t i = 0; i < n_pos && i < n; i++) {

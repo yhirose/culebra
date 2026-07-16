@@ -25,13 +25,19 @@ struct _JitStrGuard {
   }
 };
 
-// Heap-allocated descriptor for TAG_STRINGVIEW. Bytes are owned
-// elsewhere (leak-bounded, same as TAG_STRING).
+// Heap-allocated descriptor for TAG_STRINGVIEW. `ptr`/`len` borrow bytes
+// owned by `owner_base` — the *registered* GC base pointer of the backing
+// String (data pointer, i.e. what a TAG_STRING JitValue carries), or nullptr
+// when the backing is not GC-tracked (a literal's .rodata, an interned/pinned
+// name). Traced-only strings sweep their backing, so the view roots that
+// backing through this edge (see _jit_gc_enumerate_children). ptr@0 / len@8
+// stay fixed — codegen loads len at offset 8 (jit.h).
 struct JitStringView {
   const char* ptr;
   uint64_t len;
+  const char* owner_base;
 };
-static_assert(sizeof(JitStringView) == 16, "JitStringView layout drift");
+static_assert(sizeof(JitStringView) == 24, "JitStringView layout drift");
 
 // `obj.k` as a JitValue, or Nil when the key is absent. Used where a
 // missing slot should read as Nil (e.g. a range value's optional bounds).
@@ -292,14 +298,31 @@ inline const char* _intern_str(std::string_view s) {
   return buf;
 }
 
-// Allocate a JitStringView descriptor for the given byte range.
-// Leaks for the program's lifetime (cycle-bounded, same as
-// _culebra_heap_str). Callers retain no ownership beyond storing
-// the returned pointer in a JitValue.
-inline JitStringView* _culebra_heap_view(const char* ptr, uint64_t len) {
+// The registered GC base pointer that owns a strlike value's bytes, for use
+// as a view's owner_base. A String owns its own bytes (the data pointer is the
+// registered base); a view forwards its owner (transitive, so a view-of-view
+// still roots the ultimate backing); anything else has no GC-tracked owner.
+inline const char* _view_owner_base(int8_t tag, int64_t data) {
+  if (tag == TAG_STRING) return reinterpret_cast<const char*>(data);
+  if (tag == TAG_STRINGVIEW)
+    return reinterpret_cast<const JitStringView*>(data)->owner_base;
+  return nullptr;
+}
+
+// Allocate a JitStringView descriptor over [ptr, ptr+len) borrowing bytes
+// owned by `owner_base` (the registered backing String's base, or nullptr for
+// an untracked backing — a literal / pinned name). The descriptor is adopted
+// as a GC_TAG_STRINGVIEW node so the collector reclaims it once no live value
+// references it, and so its owner_base edge keeps the backing alive meanwhile
+// (traced-only strings are otherwise swept out from under a live view).
+inline JitStringView* _culebra_heap_view(const char* ptr, uint64_t len,
+                                         const char* owner_base) {
   auto* v = static_cast<JitStringView*>(std::malloc(sizeof(JitStringView)));
   v->ptr = ptr;
   v->len = len;
+  v->owner_base = owner_base;
+  _gc_heap().adopt(v, static_cast<uint32_t>(sizeof(JitStringView)),
+                   GC_TAG_STRINGVIEW);
   return v;
 }
 

@@ -101,7 +101,7 @@ Conventions used below:
 | Share fixed-layout data across threads/processes (zero copy) | [§12 SharedBuffer](#sharedbuffer--zero-copy-shared-fixed-layout-data) — `SharedBuffer.new(n, Vec2)` / `.file` / `.shared` |
 | Share variable-length read-only data across threads (no copy) | [§12 Shared](#shared--immutable-values-shared-by-reference) — `Shared.new(value)` |
 | Handle Ctrl+C / SIGINT gracefully | [§12 Signal](#signal--signalnotify--signalreset) — `Signal.notify(tx)` / `Signal.reset()` |
-| Heap introspection / leak checks | [§7 GC](#gc--heap-introspection) — `GC.stat()` → `{live_objects, heap_bytes}` |
+| Heap introspection / leak checks | [§7 GC](#gc--heap-introspection) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes}` |
 | String / Array / Object methods | [language spec §17](language.md) |
 | Integer sequences (`range`, `iota`) | [language spec §18](language.md) |
 | Conversion (`to_long`, `to_float`, `to_string`, `type_of`) | [language spec §18](language.md) |
@@ -1135,6 +1135,7 @@ live heap right after it:
 | key | type | meaning |
 |---|---|---|
 | `live_objects` | `Long` | number of reachable heap objects |
+| `rc_objects` | `Long` | reachable *refcounted* objects (excludes traced-only Strings/StringViews) |
 | `heap_bytes` | `Long` | bytes those objects occupy |
 
 Because it collects first, the numbers report *reachable* state, not cycle

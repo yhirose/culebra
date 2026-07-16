@@ -1,0 +1,51 @@
+// StringView owner-edge under GC. A JIT String is traced-only (reclaimed by
+// the collector, no refcount), so a live view must root its backing String
+// through the owner_base edge — otherwise the backing is swept out from under
+// the view and reads return freed bytes. Run this under CULEBRA_GC_STRESS=1
+// (collect on every alloc) to force the window every pass. Interp is naturally
+// safe (shared_ptr strings); this keeps the two backends symmetric.
+
+// A view whose backing String is reachable ONLY through the view itself: the
+// backing goes out of `make_view`'s scope, so the owner_base edge is its sole
+// root. Non-literal source ("a"+"b") so the backing is a traced String, not
+// an immortal .rodata literal.
+fn make_view() {
+  let backing = "abcdefghij" + "klmnopqrst"
+  return backing.slice(2, 8)          // "cdefgh"
+}
+
+let v = make_view()
+
+// Churn a lot of transient strings to drive collections between the slice and
+// the read. A swept backing would corrupt `v`.
+mut sink = 0
+for i in 0..50000 { sink = sink + "x${i}".size() }
+
+assert_eq(v, "cdefgh")
+assert_eq(v.size(), 6)
+
+// split() yields views into its (freshly-copied) backing; each element must
+// root that backing.
+let parts = ("alpha,beta,gamma,delta" + "").split(",")
+for i in 0..50000 { sink = sink + "y${i}".size() }
+assert_eq(parts, ["alpha", "beta", "gamma", "delta"])
+
+// code_points / scalars / graphemes iterators dereference the backing on every
+// step, so the iterator must keep it rooted across intervening allocations.
+let src = "héllo wörld" + ""
+mut chars = []
+for c in src {
+  chars.push(c)
+  for j in 0..1000 { sink = sink + "z${j}".size() }
+}
+assert_eq(chars.size(), 11)
+assert_eq(chars.join(""), "héllo wörld")
+
+// A view of a view (transitive owner_base) must still root the ultimate
+// backing.
+let outer = ("0123456789" + "").slice(1, 9)   // "12345678"
+let inner = outer.slice(2, 5)                 // "345"
+for i in 0..50000 { sink = sink + "w${i}".size() }
+assert_eq(inner, "345")
+
+puts("string_view_gc ok")

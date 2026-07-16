@@ -779,10 +779,12 @@ extern "C++" {  // C++ linkage (these take std::vector&); we sit in extern "C"
 // --- Backstop collector callbacks (forward-declared near _gc_heap) ---------
 // Push a JitValue's heap pointer as a GC child/root if it is refcounted.
 inline void _gc_push_value(std::vector<void*>& out, const JitValue& v) {
-  // TAG_STRING is traced (leaf) but not refcounted, so admit it explicitly:
-  // a string held only inside a container must be marked from its parent.
-  // A literal's data is not in the registry, so push() drops it harmlessly.
-  if (v.data && (_is_refcounted_value_tag(v.tag) || v.tag == GC_TAG_STRING))
+  // TAG_STRING / TAG_STRINGVIEW are traced but not refcounted, so admit them
+  // explicitly: a string or view held only inside a container must be marked
+  // from its parent. A literal's data is not in the registry, so push() drops
+  // it harmlessly; the view descriptor and its owner_base backing are, and get
+  // marked (the descriptor here, the backing via enumerate_children).
+  if (v.data && (_is_refcounted_value_tag(v.tag) || _jit_gc_is_traced_only(v.tag)))
     out.push_back(reinterpret_cast<void*>(v.data));
 }
 
@@ -900,6 +902,15 @@ inline void _jit_gc_enumerate_children(void* obj, uint8_t tag,
     case GC_TAG_CELL:
       _gc_push_value(out, static_cast<JitCell*>(obj)->value);
       break;
+    case GC_TAG_STRINGVIEW: {
+      // A view's single child is the backing String it borrows. Rooting it
+      // keeps the traced-only backing alive for as long as the view is
+      // reachable. owner_base is a registered String base or nullptr (an
+      // untracked literal / interned name), which the mark drops harmlessly.
+      auto* base = static_cast<JitStringView*>(obj)->owner_base;
+      if (base) out.push_back(const_cast<char*>(base));
+      break;
+    }
   }
 }
 
@@ -967,6 +978,11 @@ inline void _jit_gc_sweep_object(void* obj, uint8_t tag) {
       // Registered at the bytes pointer; the malloc base is the length
       // header just before it (see _str_alloc). No destructor, no children.
       std::free(static_cast<char*>(obj) - sizeof(JitStrHeader));
+      break;
+    case GC_TAG_STRINGVIEW:
+      // The descriptor is a trivial POD (borrowed ptr/len + owner_base edge);
+      // the backing it borrows is a separate GC node, reclaimed on its own.
+      std::free(obj);
       break;
   }
 }

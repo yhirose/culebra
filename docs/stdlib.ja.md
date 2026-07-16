@@ -98,7 +98,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | 固定レイアウトデータをスレッド/プロセス間で共有（zero copy） | [§12 SharedBuffer](#sharedbuffer--zero-copy-で共有する固定レイアウトデータ) — `SharedBuffer.new(n, Vec2)` / `.file` / `.shared` |
 | 可変長の read-only データをスレッド間で共有（コピーなし） | [§12 Shared](#shared--参照共有する-immutable-値) — `Shared.new(value)` |
 | Ctrl+C / SIGINT を綺麗に扱う | [§12 Signal](#signal--signalnotify--signalreset) — `Signal.notify(tx)` / `Signal.reset()` |
-| ヒープ情報・リークチェック | [§7 GC](#gc--ヒープ情報の取得) — `GC.stat()` → `{live_objects, heap_bytes}` |
+| ヒープ情報・リークチェック | [§7 GC](#gc--ヒープ情報の取得) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes}` |
 | 行列・テンソル演算（BLAS 対応） | [§8 Tensor](#8-tensor) |
 | String / Array / Object のメソッド | [言語仕様 §17](language.ja.md) |
 | 整数列（`range`, `iota`） | [言語仕様 §18](language.ja.md) |
@@ -1097,6 +1097,7 @@ puts(Sys.script)               # '/Users/alice/project/build.cul'
 | キー | 型 | 意味 |
 |---|---|---|
 | `live_objects` | `Long` | 到達可能なヒープオブジェクト数 |
+| `rc_objects` | `Long` | 到達可能な *参照カウント* オブジェクト数（traced-only な String/StringView を除く） |
 | `heap_bytes` | `Long` | それらが占めるバイト数 |
 
 先にコレクションを走らせるので、数値は sweep 待ちの循環残渣ではなく

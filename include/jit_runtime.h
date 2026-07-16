@@ -1874,7 +1874,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_slice(
     auto view = _culebra_str_view(tag, data);
     long hi = open_end ? static_cast<long>(view.size()) : ev.data;
     auto [s, e] = culebra::_slice_bounds(lo, hi, inclusive, view.size());
-    auto* v = _culebra_heap_view(view.data() + s, e - s);
+    auto* v = _culebra_heap_view(view.data() + s, e - s,
+                                 _view_owner_base(tag, data));
     *out_tag = TAG_STRINGVIEW;
     *out_data = reinterpret_cast<int64_t>(v);
     return;

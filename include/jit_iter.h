@@ -1015,11 +1015,13 @@ inline void _iter_code_points_fast_fn(JitClosure* cls, JitValue, bool* done,
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_code_points(
     const char* s) {
-  // Strings are not refcounted in JIT; the pointer stays valid as long
-  // as the source String stays rooted somewhere (usually via the
-  // caller's own slot). Lifetime is documented in §16.
+  // Store the backing buffer as a TAG_STRING (not TAG_LONG) so the tracing
+  // collector roots it for the iterator's whole lifetime — each step reads
+  // `s + off`, so a traced-only String must not be swept while the iterator
+  // is live. (A literal / interned base is untracked: the extra root is a
+  // harmless no-op.) Lifetime is documented in §16.
   auto* buf_cell = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(s));
+      TAG_STRING, reinterpret_cast<int64_t>(s));
   auto* off_cell = culebra_runtime_cell_new(TAG_LONG, 0);
   auto* len_cell = culebra_runtime_cell_new(
       TAG_LONG, static_cast<int64_t>(_str_len(s)));
@@ -1051,7 +1053,7 @@ inline void _iter_bytes_fast_fn(JitClosure* cls, JitValue, bool* done,
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_bytes(
     const char* s) {
   auto* buf_cell = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(s));
+      TAG_STRING, reinterpret_cast<int64_t>(s));
   auto* off_cell = culebra_runtime_cell_new(TAG_LONG, 0);
   auto* len_cell = culebra_runtime_cell_new(
       TAG_LONG, static_cast<int64_t>(_str_len(s)));
@@ -1079,7 +1081,7 @@ inline void _iter_str_scalars_fast_fn(JitClosure* cls, JitValue, bool* done,
   if (!unicode::utf8::decode_codepoint(s + off, len - off, bytes, cp)) {
     bytes = 1;  // invalid → one-byte view (raw), like the interp
   }
-  auto* v = _culebra_heap_view(s + off, bytes);
+  auto* v = _culebra_heap_view(s + off, bytes, s);
   off_cell->value.data = off + static_cast<int64_t>(bytes);
   *done = false;
   *out_tag = TAG_STRINGVIEW;
@@ -1089,7 +1091,7 @@ inline void _iter_str_scalars_fast_fn(JitClosure* cls, JitValue, bool* done,
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_scalars(
     const char* s) {
   auto* buf_cell = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(s));
+      TAG_STRING, reinterpret_cast<int64_t>(s));
   auto* off_cell = culebra_runtime_cell_new(TAG_LONG, 0);
   auto* len_cell = culebra_runtime_cell_new(
       TAG_LONG, static_cast<int64_t>(_str_len(s)));
@@ -1101,7 +1103,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_scalars(
 // source buffer (matches interp). The view borrows `s` (§16 lifetime).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitStringView* culebra_runtime_str_scalar_view(
     const char* s, int64_t off, int64_t len) {
-  return _culebra_heap_view(s + off, static_cast<uint64_t>(len));
+  return _culebra_heap_view(s + off, static_cast<uint64_t>(len), s);
 }
 
 // graphemes: eagerly materialize all cluster boundaries into a JitArray
@@ -1150,7 +1152,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_graphemes(
     if (gl == 0) gl = 1;
     size_t byte_start = spans[cp_off].first;
     size_t byte_end = spans[cp_off + gl - 1].first + spans[cp_off + gl - 1].second;
-    auto* v = _culebra_heap_view(s + byte_start, byte_end - byte_start);
+    auto* v = _culebra_heap_view(s + byte_start, byte_end - byte_start, s);
     culebra_runtime_array_push(arr, TAG_STRINGVIEW,
                                reinterpret_cast<int64_t>(v));
     cp_off += gl;
@@ -2021,7 +2023,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_str_split(
   std::string_view sv = _str_sv(s);
   std::string_view sp = _str_sv(sep);
   auto push_view = [&](std::string_view piece) {
-    auto* v = _culebra_heap_view(piece.data(), piece.size());
+    auto* v = _culebra_heap_view(piece.data(), piece.size(), s);
     culebra_runtime_array_push(r, TAG_STRINGVIEW,
                                reinterpret_cast<int64_t>(v));
   };
@@ -2073,7 +2075,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_slice(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitStringView*
 culebra_runtime_strlike_view(int8_t tag, int64_t data) {
   auto sv = _culebra_str_view(tag, data);
-  return _culebra_heap_view(sv.data(), sv.size());
+  return _culebra_heap_view(sv.data(), sv.size(), _view_owner_base(tag, data));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitStringView*
@@ -2088,7 +2090,8 @@ culebra_runtime_strlike_slice_view(int8_t tag, int64_t data,
   if (end < start) end = start;
   if (end > size) end = size;
   return _culebra_heap_view(sv.data() + start,
-                            static_cast<size_t>(end - start));
+                            static_cast<size_t>(end - start),
+                            _view_owner_base(tag, data));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char*

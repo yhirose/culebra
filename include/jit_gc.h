@@ -270,6 +270,21 @@ class Heap {
   size_t live_count() const { return objects_.size(); }
   size_t live_bytes() const { return live_bytes_; }
 
+  // Live count restricted to refcounted objects — traced-only values
+  // (Strings/StringViews) excluded. The RC-leak fuzzer runs with the collector
+  // disabled (CULEBRA_GC_NEVER) so an RC leak cannot be masked; but that also
+  // stops traced-only values (whose sole reclaimer is the collector) from ever
+  // being freed, so live_count() grows with benign string churn. This gives
+  // that oracle an allocation measure that moves only on an actual RC leak.
+  size_t rc_live_count() {
+    if (!no_rc_fn_) return objects_.size();
+    size_t n = 0;
+    objects_.for_each([&](void*, GcHeader& h) {
+      if (!no_rc_fn_(h.type_tag)) n++;
+    });
+    return n;
+  }
+
   // Iterate every live object (for sweep / heap-verify).
   template <class F>
   void for_each(F&& f) {
@@ -314,6 +329,16 @@ class Heap {
   // its sweep.
   using FinalizeFn = void (*)(const std::vector<void*>& dead);
   void set_finalize_fn(FinalizeFn f) { finalize_fn_ = f; }
+
+  // Predicate: does an object of this tag lack the i64 refcount slot at
+  // offset 0? Traced-only values (Strings/StringViews) have content there,
+  // not a refcount — reading it as one yields garbage. The RC-accounting
+  // paths (compute_gc_refs and the GAP5 leak audit) use this to leave them
+  // out of the reference-count arithmetic entirely; they are reclaimed by
+  // the tracing mark-sweep, never by RC. Set by the JIT runtime; the
+  // standalone heap (all refcounted) leaves it null (every tag has a slot).
+  using NoRcFn = bool (*)(uint8_t type_tag);
+  void set_no_rc_fn(NoRcFn f) { no_rc_fn_ = f; }
 
   // Full conservative mark-sweep. Returns objects reclaimed. MUST be
   // called directly on the mutator thread (scan walks this thread's stack
@@ -435,7 +460,14 @@ class Heap {
   // classify_leaks (leak diagnostics) — share this single construction.
   void compute_gc_refs(std::unordered_map<void*, int64_t>& gc_refs) {
     gc_refs.reserve(objects_.size());
-    objects_.for_each([&](void* o, GcHeader&) {
+    objects_.for_each([&](void* o, GcHeader& h) {
+      // Traced-only tags have no refcount at offset 0 (content lives there),
+      // so they take no part in RC arithmetic — the tracing mark-sweep is
+      // their sole reclaimer. Leaving them out of the map means they are
+      // never seeded as RC roots and, as children, never decrement anyone
+      // (find() misses). A String reached only from a live container is
+      // still marked via children_fn during the reachability walk.
+      if (no_rc_fn_ && no_rc_fn_(h.type_tag)) return;
       gc_refs.emplace(o, *reinterpret_cast<int64_t*>(o));  // refcount @ off 0
     });
     std::vector<void*> kids;
@@ -458,6 +490,18 @@ class Heap {
       for (auto& [o, refs] : gc_refs) {
         if (refs > 0) push(o);
       }
+      // Traced-only values (Strings/Views) carry no refcount to seed from and
+      // can live purely on the stack, so the refcount seed above cannot root
+      // them — freeing one still borrowed would crash. Seed them the way the
+      // conservative collector does: a stack scan restricted to their tags.
+      // Dead ones are still swept (the scan won't find them), so refs-mode
+      // string reclamation matches conservative — leaving this experiment a
+      // faithful RC-correctness test for the refcounted objects it targets.
+      if (no_rc_fn_)
+        scan_roots([&](void* o) {
+          GcHeader* h = objects_.find(o);
+          if (h && no_rc_fn_(h->type_tag)) push(o);
+        });
     });
   }
 
@@ -868,6 +912,7 @@ class Heap {
   RootFn extra_roots_fn_ = nullptr;
   SweepFn sweep_fn_ = nullptr;
   FinalizeFn finalize_fn_ = nullptr;
+  NoRcFn no_rc_fn_ = nullptr;
   size_t live_bytes_ = 0;
   bool callbacks_wired_ = false;
   int collect_paused_ = 0;

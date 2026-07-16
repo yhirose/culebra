@@ -555,6 +555,12 @@ static constexpr int8_t GC_TAG_CELL = 100;
 // _is_refcounted_value_tag on purpose — retain/release must remain no-ops
 // (zero per-op cost); only the collector reclaims strings. See jit_string.h.
 static constexpr int8_t GC_TAG_STRING = TAG_STRING;
+// Traced-only, like GC_TAG_STRING: the heap-allocated JitStringView descriptor
+// is a GC node whose single child is the backing String it borrows (owner_base
+// edge). Tracing it keeps a borrowed backing alive for exactly as long as any
+// live view references it, and reclaims the descriptor itself. Also OUT of
+// _is_refcounted_value_tag — retain/release stay no-ops. See jit_string.h.
+static constexpr int8_t GC_TAG_STRINGVIEW = TAG_STRINGVIEW;
 
 // Is this tag a refcounted heap value (the container/handle tags, excluding
 // Cell)? Pure predicate over GC_TAG_*.
@@ -707,6 +713,13 @@ void _jit_gc_sweep_object(void* obj, uint8_t type_tag);
 
 inline void _jit_gc_finalize_dead(const std::vector<void*>& dead);
 
+// Traced-only tags carry no refcount at offset 0 (String bytes / a view's
+// borrowed ptr live there). The Heap's RC-accounting paths consult this to
+// leave them out of the reference-count arithmetic. See jit_gc.h NoRcFn.
+inline bool _jit_gc_is_traced_only(uint8_t type_tag) {
+  return type_tag == GC_TAG_STRING || type_tag == GC_TAG_STRINGVIEW;
+}
+
 inline culebra::gc::Heap& _gc_heap() {
   auto& h = culebra::runtime_substate<culebra::gc::Heap>(culebra::kSlotJitGc);
   if (!h.callbacks_wired()) {
@@ -714,6 +727,7 @@ inline culebra::gc::Heap& _gc_heap() {
     h.set_extra_roots_fn(&_jit_gc_enumerate_roots);
     h.set_sweep_fn(&_jit_gc_sweep_object);
     h.set_finalize_fn(&_jit_gc_finalize_dead);
+    h.set_no_rc_fn(&_jit_gc_is_traced_only);
     h.mark_callbacks_wired();  // arms threshold/stress collects (must be last)
   }
   return h;

@@ -2182,6 +2182,12 @@ inline Value make_gc_namespace() {
                             long bytes = static_cast<long>(gc.live_bytes);
                             ObjectValue stat;
                             stat.initialize("live_objects", Value(live), false);
+                            // Symmetry with the JIT: refcounted-only live count.
+                            // The interp has no traced-only values (every heap
+                            // object is shared_ptr-managed), so it equals
+                            // live_objects; the RC-leak fuzzer reads this field
+                            // on both backends.
+                            stat.initialize("rc_objects", Value(live), false);
                             stat.initialize("heap_bytes", Value(bytes), false);
                             return Value(std::move(stat));
                           },

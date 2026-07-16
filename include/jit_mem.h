@@ -110,10 +110,11 @@ inline void _jit_gc_finalize_dead(const std::vector<void*>& dead) {
   auto& heap = _gc_heap();
   // All refcounted heap types share the i64 refcount first field; a traced
   // String has no refcount (its first bytes are content, and for short
-  // strings offset 0 may even reach the trailing NUL), so never touch one.
+  // strings offset 0 may even reach the trailing NUL) and a traced view's
+  // offset 0 is its borrowed `ptr`, so never touch either.
   for (void* p : dead) {
     auto* h = heap.header(p);
-    if (h && h->type_tag == GC_TAG_STRING) continue;
+    if (h && _jit_gc_is_traced_only(h->type_tag)) continue;
     (*reinterpret_cast<int64_t*>(p))++;
   }
   for (void* p : dead) {
