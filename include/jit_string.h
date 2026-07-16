@@ -249,10 +249,19 @@ inline std::string_view _str_sv(const char* s) {
 // the bytes (at base+8) 8-aligned. Caller fills [data, data+len); the NUL
 // is pre-written.
 inline char* _str_alloc(uint64_t len) {
-  auto* base = static_cast<char*>(std::malloc(sizeof(JitStrHeader) + len + 1));
+  size_t total = sizeof(JitStrHeader) + len + 1;
+  auto* base = static_cast<char*>(std::malloc(total));
   std::memcpy(base, &len, sizeof(len));
   char* data = base + sizeof(JitStrHeader);
   data[len] = '\0';
+  // Traced-only strings: register the buffer as a GC leaf keyed on the
+  // *bytes* pointer (`data`) — that is the pointer a TAG_STRING JitValue
+  // carries, so the conservative stack scan roots it by exact match. The
+  // sweep path recovers the malloc base (data - sizeof(JitStrHeader)).
+  // adopt() also drives maybe_collect(), so a string-only allocation loop
+  // still triggers reclamation. Literals bypass _str_alloc (.rodata) and
+  // are therefore never registered nor swept. See docs on this branch.
+  _gc_heap().adopt(data, static_cast<uint32_t>(total), GC_TAG_STRING);
   return data;
 }
 
@@ -275,6 +284,10 @@ inline const char* _intern_str(std::string_view s) {
   auto it = cache.find(key);
   if (it != cache.end()) return it->second;
   const char* buf = _culebra_heap_str(s);
+  // The intern cache is a process-lifetime holder the collector cannot see
+  // (a static std::unordered_map, not a GC-traced container). Pin the buffer
+  // so the tracing backstop never sweeps a name the cache still hands out.
+  _gc_heap().pin(const_cast<char*>(buf));
   cache.emplace(std::move(key), buf);
   return buf;
 }

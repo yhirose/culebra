@@ -779,7 +779,10 @@ extern "C++" {  // C++ linkage (these take std::vector&); we sit in extern "C"
 // --- Backstop collector callbacks (forward-declared near _gc_heap) ---------
 // Push a JitValue's heap pointer as a GC child/root if it is refcounted.
 inline void _gc_push_value(std::vector<void*>& out, const JitValue& v) {
-  if (v.data && _is_refcounted_value_tag(v.tag))
+  // TAG_STRING is traced (leaf) but not refcounted, so admit it explicitly:
+  // a string held only inside a container must be marked from its parent.
+  // A literal's data is not in the registry, so push() drops it harmlessly.
+  if (v.data && (_is_refcounted_value_tag(v.tag) || v.tag == GC_TAG_STRING))
     out.push_back(reinterpret_cast<void*>(v.data));
 }
 
@@ -959,6 +962,11 @@ inline void _jit_gc_sweep_object(void* obj, uint8_t tag) {
     }
     case GC_TAG_CELL:
       delete static_cast<JitCell*>(obj);
+      break;
+    case GC_TAG_STRING:
+      // Registered at the bytes pointer; the malloc base is the length
+      // header just before it (see _str_alloc). No destructor, no children.
+      std::free(static_cast<char*>(obj) - sizeof(JitStrHeader));
       break;
   }
 }

@@ -107,9 +107,15 @@ culebra_runtime_owned_register_drop(JitObject* o) {
 // exit, multifn body replacement) are honored inside
 // _culebra_call_drop_if_present.
 inline void _jit_gc_finalize_dead(const std::vector<void*>& dead) {
-  // All refcounted heap types share the i64 refcount first field.
-  for (void* p : dead) (*reinterpret_cast<int64_t*>(p))++;
   auto& heap = _gc_heap();
+  // All refcounted heap types share the i64 refcount first field; a traced
+  // String has no refcount (its first bytes are content, and for short
+  // strings offset 0 may even reach the trailing NUL), so never touch one.
+  for (void* p : dead) {
+    auto* h = heap.header(p);
+    if (h && h->type_tag == GC_TAG_STRING) continue;
+    (*reinterpret_cast<int64_t*>(p))++;
+  }
   for (void* p : dead) {
     auto* h = heap.header(p);
     if (!h || h->type_tag != GC_TAG_OBJECT) continue;

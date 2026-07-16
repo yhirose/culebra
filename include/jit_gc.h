@@ -652,9 +652,22 @@ class Heap {
   // adapts the next threshold to the post-collect live set to keep the
   // amortised cost ~constant while bounding peak RSS.
   static constexpr size_t kMinThreshold = 100000;
+  static constexpr size_t kByteFloor = 16u * 1024 * 1024;
   void maybe_collect() {
     if (never() || !callbacks_wired_ || collect_paused_) return;
-    if (++alloc_since_collect_ < collect_threshold_) return;
+    ++alloc_since_collect_;
+    // Two triggers, whichever fires first:
+    //  - count-based (objects*16 amortization): tuned for RC-reclaimed heaps
+    //    where the collector is only a reference-CYCLE backstop.
+    //  - bytes-based (classic tracing-GC growth factor): required for
+    //    traced-only values (Strings) that RC never frees, so the collector
+    //    is their sole reclaimer. Bounds inter-collect resident growth to ~2x
+    //    the post-collect live set (kByteFloor floor). It rarely fires for
+    //    RC'd workloads — their live_bytes_ stays bounded via RC — so the
+    //    microgpt/autograd amortization is left untouched.
+    if (alloc_since_collect_ < collect_threshold_ &&
+        live_bytes_ < byte_threshold_)
+      return;
     alloc_since_collect_ = 0;
     collect();
     // The backstop is only the reclaimer of reference CYCLES — RC frees
@@ -675,6 +688,9 @@ class Heap {
     }();
     collect_threshold_ =
         stress() ? 1 : std::max(kMinThreshold, objects_.size() * mult);
+    // Re-arm the bytes trigger to ~2x the post-collect live set (classic
+    // tracing-GC growth factor), never below the floor.
+    byte_threshold_ = std::max(kByteFloor, live_bytes_ * 2);
   }
 
   // Shared mark-sweep core. `seed(push)` supplies the initial roots.
@@ -857,6 +873,7 @@ class Heap {
   int collect_paused_ = 0;
   size_t alloc_since_collect_ = 0;
   size_t collect_threshold_ = stress() ? 1 : kMinThreshold;
+  size_t byte_threshold_ = kByteFloor;
 };
 
 }  // namespace culebra::gc

@@ -550,6 +550,11 @@ static constexpr int8_t GC_TAG_TENSOR = TAG_TENSOR;
 static constexpr int8_t GC_TAG_TUPLE = TAG_TUPLE;
 static constexpr int8_t GC_TAG_SET = TAG_SET;
 static constexpr int8_t GC_TAG_CELL = 100;
+// Traced-only: a heap String is registered as a GC leaf node (no children,
+// no refcount) so the tracing backstop can reclaim it. It stays OUT of
+// _is_refcounted_value_tag on purpose — retain/release must remain no-ops
+// (zero per-op cost); only the collector reclaims strings. See jit_string.h.
+static constexpr int8_t GC_TAG_STRING = TAG_STRING;
 
 // Is this tag a refcounted heap value (the container/handle tags, excluding
 // Cell)? Pure predicate over GC_TAG_*.
