@@ -3094,7 +3094,8 @@ receiver is never mutated.
 | `String.from_code_point(cp: Long) -> String`    | The inverse of `code_points()`: one Unicode scalar value in, a one-character `String` out (Python's `chr`, Rust's `char::from_u32`). Raises `ValueError` for `cp` above `U+10FFFF` or in the surrogate range `U+D800`–`U+DFFF` — the same boundary the `\u{...}` literal escape (§4.1) rejects at parse time. |
 
 ```culebra
-puts('café'.bytes().collect())          # => [99, 97, 102, 195, 169]  ('é' is 2 UTF-8 bytes)
+# 'é' is 2 UTF-8 bytes, so 'café' is 5 bytes
+puts('café'.bytes().collect())          # => [99, 97, 102, 195, 169]
 puts(String.from_code_point(233))       # => 'é'
 ```
 

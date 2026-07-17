@@ -2899,7 +2899,8 @@ matcher 一族 `assert_true` / `assert_eq` 等）は
 | `String.from_code_point(cp: Long) -> String`    | `code_points()` の逆演算: Unicode スカラー値 1 つを受け取り 1 文字の `String` を返す（Python の `chr`、Rust の `char::from_u32` 相当）。`cp` が `U+10FFFF` 超過またはサロゲート範囲 `U+D800`–`U+DFFF` の場合 `ValueError`（`\u{...}` リテラルエスケープ §4.1 がパース時に拒否するのと同じ境界） |
 
 ```culebra
-puts('café'.bytes().collect())          # => [99, 97, 102, 195, 169]  ('é' は UTF-8 で 2 バイト)
+# 'é' は UTF-8 で 2 バイトなので 'café' は 5 バイト
+puts('café'.bytes().collect())          # => [99, 97, 102, 195, 169]
 puts(String.from_code_point(233))       # => 'é'
 ```
 
