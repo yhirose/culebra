@@ -72,6 +72,6 @@ tmp/
 .cache-ccache/
 scratchpad/
 
-# Ignore internal development record
-docs/record.md
-docs/record.ja.md
+# Ignore internal development history
+docs/_history.md
+docs/_history.ja.md
