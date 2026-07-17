@@ -3039,6 +3039,12 @@ puts(handle { work() } with outer(k) { k(5) })    # => 105
   **string** in a captured effect body may be rewritten there too. Keep
   literal text that looks like a captured binding out of such bodies when
   exactness matters.
+* Handlers are **isolate-local**. A `handle` installed on one thread is not
+  visible to a spawned isolate; a `perform` inside the child reaches only
+  handlers installed within that same isolate (an unhandled operation there
+  raises `EffectError`, which propagates to the parent on `join`). This
+  follows the concurrency invariant that a script value — and a continuation
+  is one — never crosses an isolate boundary.
 
 ---
 

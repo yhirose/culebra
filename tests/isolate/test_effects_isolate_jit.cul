@@ -1,0 +1,65 @@
+# Conformance: algebraic effects work inside an isolate, and handlers stay
+# isolate-local. The effects runtime `__Eff` is a lazy stdlib namespace (like
+# Time/Regex), so it is rebuilt per Runtime; its dynamically-scoped handler
+# stack (`_handlers`) therefore belongs to the isolate that installed it and
+# never crosses the thread boundary — matching the invariant that a script
+# value (a handler / continuation is one) does not cross an isolate boundary.
+# Symmetric on interp + JIT (+ AOT).
+#
+# Run: ./build/culebra tests/isolate/test_effects_isolate_jit.cul
+#      ./build/culebra --jit tests/isolate/test_effects_isolate_jit.cul
+
+# --- an effect handled entirely inside the isolate ---
+effect fn get()
+let h = Isolate.spawn(fn () {
+  handle { let x = perform get(); x * 2 } with get(k) { k(21) }
+})
+assert_eq(h.join(), 42)
+
+# --- multi-shot resume inside an isolate ---
+effect fn choose(a, b)
+let hms = Isolate.spawn(fn () {
+  handle { let x = perform choose(1, 2); x * 10 } with choose(a, b, k) { [k(a), k(b)] }
+})
+assert_eq(hms.join(), [10, 20])
+
+# --- nested-handle capture inside an isolate ---
+effect fn outer()
+effect fn inner()
+effect fn body() {
+  let base = perform outer()
+  handle { base + perform inner() } with inner(k) { k(100) }
+}
+let hcap = Isolate.spawn(fn () {
+  handle { body() } with outer(k) { k(5) }
+})
+assert_eq(hcap.join(), 105)
+
+# --- Parallel.map: each element handled in its own isolate ---
+effect fn scale()
+effect fn work(n) { let f = perform scale(); n * f }
+let out = Parallel.map([1, 2, 3], fn (n) {
+  handle { work(n) } with scale(k) { k(10) }
+})
+assert_eq(out, [10, 20, 30])
+
+# --- handlers are isolate-local: a handler installed in the PARENT is not
+#     visible to a child isolate. The child performs an op it does not handle
+#     itself, so its own (empty-for-that-op) handler stack raises EffectError,
+#     which propagates to the parent on join. The parent's `other` handler
+#     never sees it. ---
+effect fn other()
+effect fn dummy()
+let boundary = handle {
+  try {
+    Isolate.spawn(fn () {
+      handle { perform other(); "unreachable" } with dummy(k) { k(0) }
+    }).join()
+    "no-error"
+  } catch e {
+    e.kind
+  }
+} with other(k) { k(999) }
+assert_eq(boundary, "EffectError")
+
+puts("test_effects_isolate: all assertions passed")
