@@ -30,16 +30,17 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
 13. [パターンマッチ](#13-パターンマッチ)
 14. [オプショナル型注釈](#14-オプショナル型注釈)
 15. [エラー処理](#15-エラー処理)
-16. [メモリモデル](#16-メモリモデル)
-17. [組み込み型のメソッド（イテレータプロトコル含む）](#17-組み込み型のメソッド)
-18. [コア組み込み関数](#18-コア組み込み関数)
-19. [多重ディスパッチ](#19-多重ディスパッチ)
-20. [デコレータ](#20-デコレータ)
-21. [コマンドラインインタフェース](#21-コマンドラインインタフェース)
-22. [既知の制約](#22-既知の制約)
-23. [モジュール](#23-モジュール)
-24. [付録: インタプリタ ↔ JIT の差分](#24-付録-インタプリタ--jit-の差分)
-25. [付録: conformance test 対応表](#25-付録-conformance-test-対応表)
+16. [代数的エフェクト](#16-代数的エフェクト)
+17. [メモリモデル](#17-メモリモデル)
+18. [組み込み型のメソッド（イテレータプロトコル含む）](#18-組み込み型のメソッド)
+19. [コア組み込み関数](#19-コア組み込み関数)
+20. [多重ディスパッチ](#20-多重ディスパッチ)
+21. [デコレータ](#21-デコレータ)
+22. [コマンドラインインタフェース](#22-コマンドラインインタフェース)
+23. [既知の制約](#23-既知の制約)
+24. [モジュール](#24-モジュール)
+25. [付録: インタプリタ ↔ JIT の差分](#25-付録-インタプリタ--jit-の差分)
+26. [付録: conformance test 対応表](#26-付録-conformance-test-対応表)
 
 ---
 
@@ -1183,7 +1184,7 @@ UFCS は **DOT の直後に引数リストがある場合のみ**適用されま
   closure で、captures にメソッド closure 群とユーザの `new` 本体
   closure を持ち、ランタイムヘルパーが新オブジェクトに結び付けます。
 * `drop` 等の well-known メソッドも通常のメソッドと同じ形で書けます
-  （§16）。JIT ではメソッドはクラス共有メタオブジェクト経由のプロト
+  （§17）。JIT ではメソッドはクラス共有メタオブジェクト経由のプロト
   委譲で持たれますが、auto-drop ルックアップは proto chain を辿るため
   `class C { drop() { ... } }` も期待通り発火し、`this` はインスタンス
   に束縛されます。
@@ -1702,7 +1703,7 @@ JIT 制限:
     puts(c2())   # 1、独立したカウンタ
 
 JIT では捕捉された可変変数はヒープの**セル**に配置され、複数の
-クロージャが同じスロットを共有できます。§16 参照。
+クロージャが同じスロットを共有できます。§17 参照。
 
 ---
 
@@ -1732,7 +1733,7 @@ JIT では捕捉された可変変数はヒープの**セル**に配置され、
 
 `iterable.iter()` を一度呼んで得たイテレータを `has_next()` /
 `next()` で駆動します。`has_next()` が `true` の間、`next()` が
-返す要素を `var` として反復ごとに新しいスコープに束縛します（§17.5）。
+返す要素を `var` として反復ごとに新しいスコープに束縛します（§18.5）。
 
 ```culebra
 for x in [1, 2, 3] { puts(x) }
@@ -1755,7 +1756,7 @@ for k, v in {a: 1, b: 2} { puts("{k}={v}") }        # 括弧なし == (k, v)
 for i, v in xs.enumerate() { ... }                  # (index, value) タプル
 ```
 
-イテレータプロトコル（§17.5）により、対象は `iter` メソッドを持つ
+イテレータプロトコル（§18.5）により、対象は `iter` メソッドを持つ
 `Object`（サブ型の `Array` 含む）、またはすでにイテレータとして
 振る舞う `has_next` / `next` メソッドを持つオブジェクトである必要が
 あります。それ以外の型は `type error`。
@@ -1942,7 +1943,7 @@ Union 内の `Object` は **クラス インスタンスの catch-all**
 ではない通常のクラス注釈と同じ扱い — その候補は何にも一致しないので
 実質 dead alt です。 他の候補は通常通り match します。
 
-多重ディスパッチ ([§19](#19-多重ディスパッチ)) は Union 型注釈を
+多重ディスパッチ ([§20](#20-多重ディスパッチ)) は Union 型注釈を
 理解し、各候補で score して最良一致を選びます — 例:
 `fn area(s: Square | Circle)` は Square / Circle の双方で
 dispatch 可能。 また、bare concrete type は同型を含む Union よりも
@@ -2003,7 +2004,7 @@ Generic の要素型と同じく、引数型・戻り型は **MVP では documen
     run(|n| nil)                # → -1
     run(nil)                    # !! type error（関数が必須）
 
-多重ディスパッチ ([§19](#19-multimethods)) は関数型引数を `Function`
+多重ディスパッチ ([§20](#20-多重ディスパッチ)) は関数型引数を `Function`
 と同様に扱います: クロージャや `__call__` インスタンスは
 `fn(...) -> ...` overload に、具体型 (`Long`) は自身の overload に
 ルートされます。
@@ -2613,7 +2614,7 @@ shutdown パターン）は、`Signal.notify` でチャネルを登録します�
 | `ValueError` | Destructure pattern mismatch；Tensor の shape / dtype 不一致；`[].min()` 等空コレクションへの reduce；不正な数値文字列；JSON parse 失敗 | はい |
 | `AttributeError` | compound 代入（`o.x += ...`）で `x` が存在しない | はい |
 | `ArityError` | 必須引数の欠如；positional の過不足；class new の arity 不一致 | はい |
-| `DispatchError` | 多重ディスパッチ（§19）でマッチなし、または specificity 同点 | はい |
+| `DispatchError` | 多重ディスパッチ（§20）でマッチなし、または specificity 同点 | はい |
 | `AssertionError` | matcher の失敗 (`assert_true` / `assert_eq` 等) もしくはユーザ `throw {kind: "AssertionError", ...}`。 比較系 matcher は両辺を message に含めます | はい |
 | `SyntaxError` | AST lowering で検出される構造エラー：`**rest` が末尾でない、`*` 区切りの重複、デフォルト値後に非デフォルト、`let` 付き compound、ループ外の `break` / `continue` 等。該当 function の宣言評価時に発火 | はい |
 | `ShadowError` | §6 のシャドウ解析でキャプチャ済み外側名と衝突する束縛を検出。ユーザの `try` が走る前に発火 | **いいえ**（eval 前の analyzer） |
@@ -2654,7 +2655,7 @@ shutdown パターン）は、`Signal.notify` でチャネルを登録します�
 ### Assertion API
 
 `assert` キーワード / builtin は存在しません。 テストは matcher 一族
-(`assert_true` / `assert_eq` 等、 §18 と `docs/stdlib.ja.md` 参照)
+(`assert_true` / `assert_eq` 等、 §19 と `docs/stdlib.ja.md` 参照)
 を使います。 production の不変条件チェックには Object を throw:
 
 ```culebra
@@ -2689,7 +2690,167 @@ JIT バックエンドは `throw` / `try` / `catch` / `defer` を主要な
 
 ---
 
-## 16. メモリモデル
+## 16. 代数的エフェクト
+
+**エフェクト**とは、意味を呼び出し側ではなく、動的に外側を囲むコンテキストが
+供給する操作です。コードは操作を `perform` し、コールスタックの上位に設置された
+`handle` ブロックが、その操作が何をするか — そして、`perform` したコードを
+**再開 (resume)** するか、何回するか — を決めます。ジェネレータ・例外・協調
+スケジューリング・バックトラック探索を、それぞれ専用構文なしに、1 つの機構で
+表現できます。
+
+エフェクトは parse 時に通常の Culebra クラスと小さなランタイムへ lower されます
+（ジェネレータと同じコンパイル時変換方式）。そのため 3 つのバックエンドは同一の
+コードを走らせ、同一に振る舞います。
+
+### エフェクトの宣言
+
+`effect fn` は、**操作**（本体なし）か **エフェクトフル関数**（本体あり）の
+いずれかを導入します:
+
+    effect fn log(msg)              # 操作: perform され、別の場所で処理される
+    effect fn greet(name) {         # エフェクトフル関数: 操作を perform しうる
+      perform log("hi {name}")
+      name
+    }
+
+操作宣言は操作名とパラメータを名付けるだけです。直接呼び出すのはエラーで、
+必ず `perform` を通して到達しなければなりません。
+
+### 操作の perform
+
+`perform op(args)` は現在の計算を中断し、`op` に対する最も内側の外側ハンドラへ
+制御を移します:
+
+```culebra
+effect fn ask()
+let x = handle {
+  let n = perform ask()
+  n + 1
+} with ask(resume) {
+  resume(10)
+}
+puts(x)     # => 11
+```
+
+### handle
+
+`handle { BODY } with op(params…, resume) { CLAUSE }` は、その間ハンドラを
+設置した状態で `BODY` を走らせます。`BODY`（またはそれが呼ぶもの）が `op` を
+perform すると、対応する clause が、操作の引数を先頭のパラメータに、**継続**を
+最後のパラメータ（上の `resume`）に束縛して走ります。継続は第一級の関数で、
+渡した値で perform 側のコードを再開します。
+
+ハンドラは再開してもしなくてもよく、`resume` を呼ばなければ perform 側の残りの
+計算は破棄されます:
+
+```culebra
+effect fn fail()
+let r = handle {
+  perform fail()
+  "unreachable"
+} with fail(resume) {
+  "aborted"
+}
+puts(r)     # => 'aborted'
+```
+
+#### 複数の操作と `return` clause
+
+1 つの `handle` は（操作ごとに）複数の `with` clause と、`BODY` の正常完了値を
+写す省略可能な `with return(v) { … }` を持てます:
+
+```culebra
+effect fn get()
+effect fn put(v)
+mut cell = 0
+let out = handle {
+  let a = perform get()
+  perform put(a + 5)
+  perform get()
+} with get(k) { k(cell) }
+  with put(v, k) { cell = v; k(nil) }
+  with return(v) { "final={v}" }
+puts(out)   # => 'final=5'
+```
+
+`return` clause は*正常*完了にのみ適用されます。ハンドラが（再開せず）abort
+した場合は、そのハンドラ自身の値が結果となり、`return` は走りません。
+
+### 複数回の再開 (multi-shot)
+
+継続は multi-shot です。ハンドラは `resume` を何回でも呼べ、各呼び出しは
+中断点から perform 側の残りの計算を独立に再実行します。これで非決定性 /
+バックトラックを表現できます:
+
+```culebra
+effect fn choose(a, b)
+let all = handle {
+  let x = perform choose(1, 2)
+  let y = perform choose(10, 20)
+  x + y
+} with choose(a, b, k) {
+  [k(a), k(b)]
+}
+puts(all)   # => [[11, 21], [12, 22]]
+```
+
+各 fork は参照する heap 値（配列・オブジェクト）を共有し（fork は浅いコピー）、
+独立なスカラ状態は fork ごとにコピーされます。
+
+### 動的スコープとエフェクトフル呼び出し
+
+ハンドラは**動的**スコープです。`perform` は字句的に最も内側ではなく、現在の
+コールスタック上で最も内側のハンドラへ届きます。ハンドルされた本体から
+エフェクトフルな `effect fn` を呼ぶとそこへ委譲され、その `perform` は同じ
+ハンドラに届きます:
+
+```culebra
+effect fn ask2()
+effect fn double() {
+  let n = perform ask2()
+  n * 2
+}
+puts(handle { double() } with ask2(k) { k(21) })   # => 42
+```
+
+### 外側の束縛のキャプチャ
+
+エフェクトフルな `effect fn` の本体、または別の `handle` の本体の中に書かれた
+ネストした `handle` は、外側の計算のローカルを読み書きできます:
+
+```culebra
+effect fn outer()
+effect fn inner()
+effect fn work() {
+  let base = perform outer()
+  handle {
+    base + perform inner()
+  } with inner(k) { k(100) }
+}
+puts(handle { work() } with outer(k) { k(5) })    # => 105
+```
+
+### 意味論と制約
+
+* ハンドラの**ない**操作を perform すると `EffectError` を送出します。
+* **エフェクトフル**な `effect fn` は `handle` ブロック内から（直接、または
+  別のエフェクトフル関数経由で）呼び出す想定です。ハンドルされない通常のコード
+  から呼ぶと、実行せず内部の計算オブジェクトを返します — `handle` で駆動して
+  ください。
+* `perform` は**文の位置**、または無条件に評価されるオペランドでのみ対応します。
+  短絡（`&&` / `||` / `??`）のオペランド、三項演算子のアーム、メソッドチェーンの
+  レシーバ、制御フローの条件の中の `perform` は parse 時に（全バックエンドで
+  対称に）拒否されます。
+* エフェクトは本体ソースの書き換えで lower されるため、エフェクト本体内の構文
+  エラーの位置は書き換え後のフラグメント相対で報告されます。またキャプチャした
+  本体内の**文字列**リテラル中に、ローカル名や `this.` アクセスと同じ字面の
+  テキストがあると、そこも書き換わることがあります。厳密さが要る場合は、
+  キャプチャされる束縛に見えるテキストをそうした本体に置かないでください。
+
+---
+
+## 17. メモリモデル
 
 ### 参照カウント
 
@@ -2837,7 +2998,7 @@ JIT ではスコープ離脱で解決します（インタープリタは次の�
 
 ---
 
-## 17. 組み込み型のメソッド
+## 18. 組み込み型のメソッド
 
 以下のメソッドは言語の一部であり、対応する型の任意の値に対して
 `import` なしで利用できます。ユーザコードで差し替えることはできません
@@ -2856,8 +3017,8 @@ matcher 一族 `assert_true` / `assert_eq` 等）は
 |---|---|---|
 | `__add__`, `__sub__`, `__mul__`, `__div__`, `__mod__`, `__pow__`, `__matmul__`, `__neg__`, `__eq__`, `__lt__`, `__le__` | 演算子オーバーロード | §10 |
 | `__str__` | カスタム表示形式 | §10 |
-| `drop` | RAII クリーンアップフック | §16 |
-| `iter`, `next` | イテレータプロトコル | §17.5 |
+| `drop` | RAII クリーンアップフック | §17 |
+| `iter`, `next` | イテレータプロトコル | §18.5 |
 | `class`（プロパティ、メソッドではない） | `match` / debug 用の名義タグ | §10 |
 
 記法:
@@ -2927,10 +3088,10 @@ puts(v.to_string())                  # 'world' (materialize した String)
 **既知の制約** (cycle B): `StringView` に対して `.contains()` /
 `.starts_with()` / `.ends_with()` 等を呼ぶと呼び出しごとに一時的な
 cstr コピーが発生する。これは他の `String` と同様トレーシングコレクタ
-が回収する（§16）ので leak はしないが、 view を大量の hot-loop で
+が回収する（§17）ので leak はしないが、 view を大量の hot-loop で
 通す場合は避けられる allocation が発生し続けるので、 1 度
 `.to_string()` で materialize しておくとよい。（`String` と
-`StringView` の Object key 正規化は制約ではない — §17.3 参照。）
+`StringView` の Object key 正規化は制約ではない — §18.3 参照。）
 
 ```culebra
 puts('hello'.size())              # 5
@@ -3099,7 +3260,7 @@ puts(p)          # {b: 2}
 
 **契約（プロパティ代入時に検査）**: `iter` / `next` を非 `Function`
 値、または引数ありの Function に束縛すると、代入時点で `type error`
-が送出されます（§16 の `drop` 契約と同じ）。
+が送出されます（§17 の `drop` 契約と同じ）。
 
 **ステップオブジェクトの形状**:
 
@@ -3197,7 +3358,7 @@ puts(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 | `it.max()` | `Long` | 最大値（全要素が `Long`、空では例外） |
 
 **eager vs lazy**: `Array` には独自の eager 版 `map` / `filter` /
-`for_each` / `reduce` / `find` / `any` / `all` / `flat_map`（§17.2）
+`for_each` / `reduce` / `find` / `any` / `all` / `flat_map`（§18.2）
 があり、すべて新しい `Array` を返します。`Array` に対してこれらを
 呼ぶと eager 版にディスパッチされます。遅延チェーンに切り替えるには
 先に `.iter()` を呼びます。Swift の `arr` vs `arr.lazy`、Kotlin の
@@ -3249,7 +3410,7 @@ iterator chain で不可避）。eager に実体化して最大スループッ�
 
 ---
 
-## 18. コア組み込み関数
+## 19. コア組み込み関数
 
 以下の関数は言語本体の一部で、すべての実行環境にグローバル名として
 バインドされ、置き換えはできません。第 1 グループ（`to_long`
@@ -3261,7 +3422,7 @@ fusion / specialisation の対象として認識し、言語全体の `for`-in �
 `assert_eq` / `assert_throws` / `assert_close` 等) — 全 reference は
 [`docs/stdlib.ja.md`](stdlib.ja.md) を参照。 `Math` / `IO` / `Sys`
 といったネームスペース付きの標準ライブラリも同じく `stdlib.ja.md` を
-参照。 出力プリミティブ `puts` / `print` は CLI が追加するグローバルです（§21）。
+参照。 出力プリミティブ `puts` / `print` は CLI が追加するグローバルです（§22）。
 
 これらのグローバルはすべて **first-class value** です。変数に束縛したり
 高階関数へ渡したりすると、両バックエンドでクロージャと同じように振る舞います。
@@ -3347,7 +3508,7 @@ puts(type_of({1, 2}))      # 'Set'
 
 ### `range(n: Long, *, step: Long = 1) -> Iterator` / `range(start: Long, end: Long, *, step: Long = 1) -> Iterator`
 
-遅延評価の整数列ファクトリ。Iterator（§17.5）を返し、整数を 1 つずつ
+遅延評価の整数列ファクトリ。Iterator（§18.5）を返し、整数を 1 つずつ
 yield します。`for`-in やイテレータメソッドチェーンと組み合わせると、
 範囲のサイズに関わらず**一定の追加メモリ**で反復できます。
 
@@ -3372,7 +3533,7 @@ for i in range(1000000000) {
 
 **JIT**: `range` は JIT ネイティブな iterator Object を返し、
 `range(N).<HOF>(...)` のメソッドチェーンは直接の counter ループに
-fusion されます。§17.5 を参照。
+fusion されます。§18.5 を参照。
 
 ### `iota(n: Long) -> Array` / `iota(start: Long, end: Long) -> Array`
 
@@ -3440,7 +3601,7 @@ puts(ps[1].has_default)           # → true
 
 ---
 
-## 19. 多重ディスパッチ
+## 20. 多重ディスパッチ
 
 トップレベルで `fn name(params) body` 形式の名前付き関数宣言を
 複数書き、パラメータの型注釈（§14）を変えると、それらは 1 つの
@@ -3571,7 +3732,7 @@ greet("alice")  # → "hello, alice"
 * **エラー.** 一致するメソッドが無い場合は `no matching method`、
   特異度が完全に並んだ場合は `ambiguous dispatch` を投げます。
   どちらもランタイム例外ではなく即座にプログラムを中断します
-  （§15、§23）。
+  （§15、§24）。
 
 ### キーワード引数とマルチメソッド
 
@@ -3627,7 +3788,7 @@ free 関数のマルチメソッドと同じ（キーワード引数は選ばれ
 
 ---
 
-## 20. デコレータ
+## 21. デコレータ
 
 `fn` または `class` 宣言の前に `@expr` の行を置くと、宣言された値を
 `expr` で包んでから元の名前に bind する糖衣構文。スタックされたデコ
@@ -3702,7 +3863,7 @@ fn ...` は前の式の matmul 継続ではなく、独立した 2 statement と
 
 ---
 
-## 21. コマンドラインインタフェース
+## 22. コマンドラインインタフェース
 
     culebra [flags] [script.cul ...] [arg ...]
 
@@ -3757,11 +3918,11 @@ CLI バイナリはユーザコード実行前に、以下 2 つのグローバ�
 `IO` 配下と**同一の関数値**を指すため `puts(x)` と `IO.puts(x)`
 は完全に等価です。`culebra::environment()` を直接使う埋め込み用途
 では、これらのエイリアスは付与されず、環境には `Math`, `IO`,
-`Random`, `Sys` と §18 のコア組み込み関数のみが含まれます。
+`Random`, `Sys` と §19 のコア組み込み関数のみが含まれます。
 
 ---
 
-## 22. 既知の制約
+## 23. 既知の制約
 
 * 多倍長整数（bignum）はなし。`Long` のオーバーフローはラップする。
 * シングルクォート `'...'` は Raw（エスケープなし、補間なし、
@@ -3786,7 +3947,7 @@ CLI バイナリはユーザコード実行前に、以下 2 つのグローバ�
 
 ---
 
-## 23. モジュール
+## 24. モジュール
 
 複数ファイルにまたがるプログラムは、ファイル単位の `import` /
 `export` で繋ぎます。設計は静的かつ最小限 — パスは文字列リテラル、
@@ -3909,7 +4070,7 @@ AOT バンドリングと tree-shaking 解析が成り立つ前提になりま�
 
 ---
 
-## 24. 付録: インタプリタ ↔ JIT の差分
+## 25. 付録: インタプリタ ↔ JIT の差分
 
 インタプリタ（`include/interpreter.h`）が規範的です。JIT
 （`include/jit.h`）は同じ AST をコンパイルし、すべてのプログラム
@@ -3929,16 +4090,16 @@ AOT バンドリングと tree-shaking 解析が成り立つ前提になりま�
   ソース上の左から右へ。`||` / `&&` / `??` は最初の決定的オペランド
   で短絡。配列・オブジェクトリテラルも同じ規則。
 * **メソッドディスパッチと UFCS（§10）、演算子の特殊メソッド (§10)、
-  `__str__` 表示 (§10)、イテレータプロトコル (§17.5)。**
+  `__str__` 表示 (§10)、イテレータプロトコル (§18.5)。**
 * **`throw` / `try` / `catch` / `defer` (§15).** 関数直下や
   トップレベルに置いた `defer` も throw 巻き戻し経路で発火します。
   JIT は LLVM `invoke` / `landingpad` + Itanium personality に
   lower しますが、観測可能な伝播挙動は同一。
-* **Auto-drop (§16).** 参照カウントが 0 になったタイミング（スコープ
+* **Auto-drop (§17).** 参照カウントが 0 になったタイミング（スコープ
   退出・プロパティ上書き・配列再代入のいずれでも）で発火。親→子の
   カスケード順も一致。スコープ所有の循環メンバーも両 backend とも
   スコープ離脱時に drop。closure 保持・トップレベルの循環は GC
-  バックストップで発火（コレクション駆動・順序未規定、§16 参照）。
+  バックストップで発火（コレクション駆動・順序未規定、§17 参照）。
 * **エラー報告.** §15 に列挙された各 `kind` は両 backend で同じ
   条件で発生し、`e.message` / `e.line` / `e.col` が同一値で populated。
   未捕捉エラーは `Kind: message at L:C.` 形式で表示。
@@ -3992,10 +4153,10 @@ AOT バンドリングと tree-shaking 解析が成り立つ前提になりま�
   シングルスレッドなので、1 つの `Runtime` を複数スレッドから駆動する
   組み込み側は自前で呼び出しをシリアライズする必要があります。
 
-### トップレベル drop に関する注意 (§16)
+### トップレベル drop に関する注意 (§17)
 
 `drop` を持つオブジェクトをトップレベルに束縛すると、どちらの
-backend でもプログラム終了まで `drop` を実行せず生存します（§16 の
+backend でもプログラム終了まで `drop` を実行せず生存します（§17 の
 例参照）。インタープリタは循環したグローバル環境を破棄せず、
 JIT/AOT はトップレベルスコープ解放時に drop を抑制して揃えます。
 スクリプト全体のリソースには `defer` か factory 関数を
@@ -4006,7 +4167,7 @@ JIT/AOT はトップレベルスコープ解放時に drop を抑制して揃え
 
 ---
 
-## 25. 付録: conformance test 対応表
+## 26. 付録: conformance test 対応表
 
 本 spec の各セクションには対応するテストファイルが `tests/` に
 あります。`just test` で interp/JIT 差分・AOT 差分・埋め込み C++
@@ -4016,27 +4177,27 @@ smoke を 1 度に回します。AOT 差分のみなら `just test aot`。下表
 
 | テストファイル | 検証する spec セクション |
 |---|---|
-| `tests/test_core.cul` | §6, §7, §8, §9, §10, §11, §12, §15, §17, §18 (broad — 主要 unit-test まとめ) |
+| `tests/test_core.cul` | §6, §7, §8, §9, §10, §11, §12, §15, §18, §19 (broad — 主要 unit-test まとめ) |
 | `tests/test_class.cul` | §10 (class 構文、演算子オーバーロード、`__str__`、auto-reflection、static methods)、§11 |
 | `tests/test_class_parameters.cul` | §10 (自動合成 `parameters()`) |
-| `tests/test_decorator.cul` | §20 |
+| `tests/test_decorator.cul` | §21 |
 | `tests/test_defer.cul` | §15 (`defer`、scope-guard パターン) |
-| `tests/test_forward_ref.cul` | §6 (スコープ)、§11 (closure)、§19 |
-| `tests/test_iter.cul` | §12 (`for ... in`)、§17 (iterator protocol、String メソッド)、§18 (`range`、`iota`) |
-| `tests/test_kwargs.cul` | §11 (キーワード引数、`**` splat)、§19 (kwargs in 多重 dispatch)、§7 (mixed call の評価順) |
+| `tests/test_forward_ref.cul` | §6 (スコープ)、§11 (closure)、§20 |
+| `tests/test_iter.cul` | §12 (`for ... in`)、§18 (iterator protocol、String メソッド)、§19 (`range`、`iota`) |
+| `tests/test_kwargs.cul` | §11 (キーワード引数、`**` splat)、§20 (kwargs in 多重 dispatch)、§7 (mixed call の評価順) |
 | `tests/test_match_class.cul` | §13 (型パターン) |
-| `tests/test_multidispatch.cul` | §19 |
+| `tests/test_multidispatch.cul` | §20 |
 | `tests/test_object_keys.cul` | §10 (非 String キー) |
 | `tests/test_runtime_errors.cul` | §15 (`throw`/`try`/`catch`、すべての `kind` の catch 可能性) |
 | `tests/test_set.cul` | §10 (Set) |
 | `tests/test_tuple.cul` | §10 (Tuple、destructuring) |
-| `tests/test_ufcs.cul` | §10 (メソッド、UFCS)、§18 (`__ARGS__`) |
+| `tests/test_ufcs.cul` | §10 (メソッド、UFCS)、§19 (`__ARGS__`) |
 | `tests/test_args.cul` | stdlib §9 (`Args`) |
 | `tests/test_fs.cul` | stdlib §3 (`FS`) |
 | `tests/test_json.cul` | stdlib §8 (`JSON`) |
 | `tests/test_tensor.cul` | stdlib §7 (`Tensor`) |
 | `tests/test_time.cul` | stdlib §4 (`Time`) |
-| `tests/test_import.cul` | §23 (モジュール) — `tests/test_import_helpers/*.cul` が依存先 |
+| `tests/test_import.cul` | §24 (モジュール) — `tests/test_import_helpers/*.cul` が依存先 |
 
 `tests/` 配下のすべてのテストファイルは両 backend で同一 stdout
 を出すことが要求されます — `just test` がそれを強制します。

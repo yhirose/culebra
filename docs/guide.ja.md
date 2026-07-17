@@ -31,22 +31,23 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
   5. [イテレータ](#5-イテレータ)
   6. [パターンマッチ](#6-パターンマッチ)
   7. [エラー処理と RAII](#7-エラー処理と-raii)
+  8. [代数的エフェクト](#8-代数的エフェクト)
 - **第 II 部 — 抽象化の道具**
-  8. [クラス](#8-クラス)
-  9. [演算子オーバーロード](#9-演算子オーバーロード)
-  10. [UFCS とマルチメソッド](#10-ufcs-とマルチメソッド)
-  11. [デコレータ](#11-デコレータ)
-  12. [モジュール](#12-モジュール)
+  9. [クラス](#9-クラス)
+  10. [演算子オーバーロード](#10-演算子オーバーロード)
+  11. [UFCS とマルチメソッド](#11-ufcs-とマルチメソッド)
+  12. [デコレータ](#12-デコレータ)
+  13. [モジュール](#13-モジュール)
 - **第 III 部 — 型とライブラリ**
-  13. [型システム](#13-型システム)
-  14. [標準ライブラリ巡り](#14-標準ライブラリ巡り)
-  15. [Tensor プリミティブ](#15-tensor-プリミティブ)
+  14. [型システム](#14-型システム)
+  15. [標準ライブラリ巡り](#15-標準ライブラリ巡り)
+  16. [Tensor プリミティブ](#16-tensor-プリミティブ)
 - **第 IV 部 — 検証とデプロイ**
-  16. [テスト (`culebra test`)](#16-テスト-culebra-test)
-  17. [リント (`culebra lint`)](#17-リント-culebra-lint)
-  18. [フォーマット (`culebra fmt`)](#18-フォーマット-culebra-fmt)
-  19. [AOT バイナリビルド](#19-aot-バイナリビルド)
-  20. [埋め込み概観](#20-埋め込み概観)
+  17. [テスト (`culebra test`)](#17-テスト-culebra-test)
+  18. [リント (`culebra lint`)](#18-リント-culebra-lint)
+  19. [フォーマット (`culebra fmt`)](#19-フォーマット-culebra-fmt)
+  20. [AOT バイナリビルド](#20-aot-バイナリビルド)
+  21. [埋め込み概観](#21-埋め込み概観)
 
 0. 設計哲学
 -----------
@@ -66,7 +67,7 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
   `x.f(...)` として呼べる。 パイプライン演算子は検討の上不採用 (詳細
   は [`record.ja.md`](record.ja.md))。
 - **暗黙 import、明示 `import` 文無し。** トップレベル識別子への
-  bare な参照がモジュールビルド内でファイル境界を越える (Ch.12)。
+  bare な参照がモジュールビルド内でファイル境界を越える (Ch.13)。
   明示 `import` は検討の上不採用。
 - **async/await 無し。** I/O はブロッキング設計、並行はスレッドで。
   HTTP 等のネットワークスタックはブロッキング、典型的なスケール
@@ -74,7 +75,7 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
 - **batteries-included、ティア制。** コア stdlib
   (Math/IO/Sys/Random/String/FS/Time/Args) と Tier 1
   (Regex/Http/Hash+Encoding) はどちらも出荷済み。 Tier 2/3
-  (Crypto、Sockets) は需要次第 — Ch.14 参照。
+  (Crypto、Sockets) は需要次第 — Ch.15 参照。
 - **1.0 前。** ソース・API は変わる可能性。 リリース機構 (バージョン
   タグ、CHANGELOG、Homebrew formula 等) は 1.0 後。
 
@@ -155,7 +156,7 @@ puts(z)             # => 32
 
 bare 代入は外側スコープへ向かって検索し、最も近い同名束縛を再代入。
 見つからなければ現スコープに新規束縛。 クロージャベースのオブジェクト
-パターン (Ch.8) はこの挙動で成立しています。
+パターン (Ch.9) はこの挙動で成立しています。
 
 > **注意:** 束縛はデフォルトで不変なので、裸の `x = 1` の後に同一
 > スコープで `x = 2` と書くとエラーになります (`immutable variable
@@ -215,7 +216,7 @@ for n in 0..=2  { puts(n) }   # 包含レンジ
 
 `break` / `continue` は `while` / `for` 内で動作。
 
-クロージャベースのオブジェクトパターン (Ch.8) では、捕捉された状態が
+クロージャベースのオブジェクトパターン (Ch.9) では、捕捉された状態が
 そのままオブジェクトの状態なので、silent shadow はオブジェクトを壊す。
 一方、関数内 block での rebinding は日常パターンなので許容する。詳細
 なルールと設計根拠は [language.ja.md §6](language.ja.md)。
@@ -229,7 +230,7 @@ for n in 0..=2  { puts(n) }   # 包含レンジ
 add = fn (a, b) { a + b }
 puts(add(2, 3))               # => 5
 
-# 型注釈はオプション; 詳細は Ch.13
+# 型注釈はオプション; 詳細は Ch.14
 add_typed = fn (a: Long, b: Long) -> Long { a + b }
 puts(add_typed(2, 3))         # => 5
 
@@ -327,7 +328,7 @@ puts('foo'.starts_with('fo'))         # => true
 puts(['a', 'b', 'c'].join('-'))       # => 'a-b-c'
 ```
 
-完全な一覧は [language.ja.md §17.1](language.ja.md)。
+完全な一覧は [language.ja.md §18.1](language.ja.md)。
 
 ### 4.4 `StringView`、`StringLike`、graphemes() lazy
 
@@ -356,7 +357,7 @@ puts('a👨‍👩‍👧b'.graphemes().collect().size())    # => 3
 puts('café'.graphemes().collect().size())        # => 4
 ```
 
-`StringView`/grapheme の完全な API は [language.ja.md §17.1](language.ja.md)。
+`StringView`/grapheme の完全な API は [language.ja.md §18.1](language.ja.md)。
 設計議論は [`internals.ja.md` §6](internals.ja.md) 参照。
 
 ### Why Go 流のバイトインデックス
@@ -436,7 +437,7 @@ puts(head)                    # => [10, 11, 12, 13, 14]
 3 メソッドを実装: `iter()` (慣習でイテレータ自身を返す)、
 `has_next()` (`Bool` を返す)、`next()` (次の要素を返す)。 lazy チェ
 インの早期終了保証を含む完全なプロトコルは
-[language.ja.md §17.5](language.ja.md)。
+[language.ja.md §18.5](language.ja.md)。
 
 ```culebra
 countdown = fn (start) {
@@ -659,7 +660,7 @@ puts('exit')
 
 `drop` はカスケードする — 外側オブジェクトが解放されると、内側に
 持つ参照 (drop 付き) が連鎖して解放される。 完全なメモリモデル
-(RC + サイクル収集) は [language.ja.md §16](language.ja.md)。
+(RC + サイクル収集) は [language.ja.md §17](language.ja.md)。
 
 ### 7.5 Scope guard パターン
 
@@ -672,18 +673,112 @@ puts('exit')
 ### Why throw 値は任意
 
 `throw "msg"` で十分なケースがほとんど (スクリプト)。 ライブラリ
-ではクラス化したエラー (Ch.8) で十分。 階層は最初から要らない。
+ではクラス化したエラー (Ch.9) で十分。 階層は最初から要らない。
 catch 節は thrower が使った形をパターンマッチで受ければよい (Ch.6)。
+
+---
+
+8. 代数的エフェクト
+-------------------
+
+*エフェクト*は、意味を呼び出し側が決める操作をコードから呼べるようにします。
+操作を `perform` し、コールスタック上位の `handle` ブロックが、それが何をするか、
+そして `perform` したコードを *再開 (resume)* するかを選びます。ジェネレータ・
+例外・依存性注入・バックトラック探索を 1 つの機構でカバーします。
+
+### 8.1 `perform` と `handle`
+
+操作は `effect fn`（本体なし）で宣言し、`perform` し、`handle` ブロックに `with`
+clause を与えます。clause は操作の引数と `resume` 継続を受け取ります:
+
+```culebra
+effect fn ask()
+
+let answer = handle {
+  let n = perform ask()
+  n * 2
+} with ask(resume) {
+  resume(21)
+}
+puts(answer)   # => 42
+```
+
+`resume(21)` はハンドルされた本体を `perform ask()` の地点から値 `21` で再開する
+ので、`n` は `21` となり本体は `42` を返します。
+
+### 8.2 ハンドラは状態を紡ぐ
+
+ハンドラは `perform` のたびに走るので、自身が持つ状態に対して操作を解釈できます
+— ここでは `get` が読み `put` が書くセルです:
+
+```culebra
+effect fn get()
+effect fn put(v)
+
+effect fn counter() {
+  perform put(perform get() + 1)
+  perform put(perform get() + 1)
+  perform get()
+}
+
+mut cell = 0
+let n = handle { counter() } with get(k) { k(cell) }
+                             with put(v, k) { cell = v; k(nil) }
+puts(n)   # => 2
+```
+
+`perform` する関数は自身が `effect fn` である必要があります。`handle { counter() }`
+はそこへ委譲するので、その `perform` はこれらのハンドラに届きます。1 つの `handle`
+は操作ごとに `with` clause を持てます。
+
+### 8.3 複数回の再開
+
+継続は multi-shot です — ハンドラは `resume` を何回でも呼べ、各呼び出しは
+perform 側の残りを独立に再実行します。両方の再開を返せば両方の選択肢を探索します:
+
+```culebra
+effect fn choose(a, b)
+
+let both = handle {
+  let x = perform choose(1, 2)
+  x * 10
+} with choose(a, b, k) {
+  [k(a), k(b)]
+}
+puts(both)   # => [10, 20]
+```
+
+### 8.4 再開しないハンドラ
+
+`resume` を呼ばない clause は残りの計算を破棄します — まさに例外です。ハンドラの
+ない `perform` は `EffectError` を送出するので、エフェクトは回復可能で型付きの
+失敗としても使えます:
+
+```culebra
+effect fn raise(msg)
+
+effect fn safeDiv(a, b) {
+  if b == 0 { perform raise("div by zero") }
+  a / b
+}
+
+puts(handle { safeDiv(10, 2) } with raise(m, k) { -1 })   # => 5
+puts(handle { safeDiv(10, 0) } with raise(m, k) { -1 })   # => -1
+```
+
+正常完了値を写すには `with return(v) { … }` を加えます。エフェクトフルな本体の
+中に `handle` を書けば、外側の計算をキャプチャしてそこから再開できます。完全な
+リファレンスと制約は [language.ja.md §16](language.ja.md) を参照。
 
 ---
 
 第 II 部 — 抽象化の道具
 =======================
 
-8. クラス
+9. クラス
 ---------
 
-### 8.1 構文
+### 9.1 構文
 
 `class` はコンストラクタ (`new`) とメソッドを宣言する。 `this.x =
 ...` で設定したフィールドはデフォルトで可変。 インスタンスは可読な
@@ -712,7 +807,7 @@ p = Point(3, 4)               # Point.new(3, 4) と同じ
 puts("{p.x},{p.y}")           # => '3,4'
 ```
 
-### 8.2 クロージャベースの別解
+### 9.2 クロージャベースの別解
 
 `class` は糖衣 — 同じカプセル化はファクトリが Object リテラルを
 返す形でも書ける。 状態は捕捉ローカル (真にプライベート)。 両方
@@ -737,7 +832,7 @@ puts(car.total())             # => '走行距離: 15 miles'
 `class:` タグと shape マッチが欲しいなら `class`、private 状態の
 方が重要ならクロージャ形式を選ぶ。
 
-### 8.3 Static method とフィールド
+### 9.3 Static method とフィールド
 
 メソッドやフィールドに `static` を付けるとクラス自身に載る (インス
 タンス不要) — ファクトリやクラスレベルの定数を置く自然な場所。
@@ -762,10 +857,10 @@ static フィールドはクラス宣言時に一度だけ eager に評価され
 ジェクトが遠くまで運ばれてアイデンティティが必要 (`class:` タグ、
 `match` やデバッグ出力で使う) になる時に意味を持つ。
 
-9. 演算子オーバーロード
+10. 演算子オーバーロード
 -----------------------
 
-### 9.1 特殊メソッド
+### 10.1 特殊メソッド
 
 算術・比較・インデックス・call の各演算子は dunder メソッド
 (`__add__` / `__eq__` / `__lt__` / `__index__` / `__call__` 等) に
@@ -774,7 +869,7 @@ static フィールドはクラス宣言時に一度だけ eager に評価され
 する型に置く。 完全なメソッド表とディスパッチ規則は
 [language.ja.md §10](language.ja.md) (演算子オーバーロード)。
 
-### 9.2 例: 2 次元ベクトル
+### 10.2 例: 2 次元ベクトル
 
 ```culebra
 class Vec2 {
@@ -796,7 +891,7 @@ puts((-a).show())             # => '(-1, -2)'
 puts(a == Vec2.new(1, 2))     # => true
 ```
 
-### 9.3 `__call__` で callable インスタンス
+### 10.3 `__call__` で callable インスタンス
 
 クラスに `__call__` を定義すると、そのインスタンスを直接呼び出せる。
 
@@ -811,10 +906,10 @@ puts(add5(10))                # => 15
 puts(add5(99))                # => 104
 ```
 
-10. UFCS とマルチメソッド
+11. UFCS とマルチメソッド
 -------------------------
 
-### 10.1 UFCS 解決順
+### 11.1 UFCS 解決順
 
 `x.name(args)` では、既存のプロパティ/メソッド `name` が常に優先
 され、無ければスコープ内の自由関数 `name` が `name(x, args)` として
@@ -834,7 +929,7 @@ a.reverse()
 puts(a)                                            # => [3, 2, 1]
 ```
 
-### 10.2 マルチメソッド (自由関数の多重ディスパッチ)
+### 11.2 マルチメソッド (自由関数の多重ディスパッチ)
 
 同名で別型の関数を複数定義。 ランタイムが引数の宣言型に対する最具
 体マッチを選ぶ。
@@ -853,8 +948,8 @@ puts(area(10))                               # => 10
 ```
 
 ディスパッチは positional / kwargs / `**splat` 全部カバー、Union
-で注釈したパラメータ (`x: Long | String`、Ch.13.2) もここに参加する。
-完全なディスパッチ/優先度規則は [language.ja.md §19](language.ja.md)。
+で注釈したパラメータ (`x: Long | String`、Ch.14.2) もここに参加する。
+完全なディスパッチ/優先度規則は [language.ja.md §20](language.ja.md)。
 
 インスタンスメソッドも同じ方式でディスパッチする — クラスは同名で
 パラメータ型の異なるメソッドを複数宣言できる:
@@ -870,12 +965,12 @@ puts(c.go(1))                  # => 'long'
 puts(c.go('a'))                # => 'string'
 ```
 
-### 10.3 ディスパッチ拡張
+### 11.3 ディスパッチ拡張
 
 > **Status: Planned.** hot なディスパッチ経路向けの call-site 単位
 > inline cache がロードマップ上 — 現状は毎回オーバーロード集合を
 > 再解決する。 class ベース (nominal) の継承は検討の上不採用 — 型
-> ファミリー全体にわたる多態は trait ディスパッチ (Ch.13.3) 側で担
+> ファミリー全体にわたる多態は trait ディスパッチ (Ch.14.3) 側で担
 > う。UFCS と無理なく合成でき、サブタイピングの物語を増やさずに済む
 > ため。
 
@@ -886,14 +981,14 @@ puts(c.go('a'))                # => 'string'
 チメソッドは own-class vs UFCS vs free の優先順序を決める必要が
 あり、推測より実ワークロードで決めたい。
 
-11. デコレータ
+12. デコレータ
 --------------
 
-### 11.1 `@deco`
+### 12.1 `@deco`
 
 `fn` (または `class`) の前に置く `@deco` は、`deco(original)` の
 結果を元の名前に束縛する。 マルチメソッドとの相互作用を含む完全な
-仕様は [language.ja.md §20](language.ja.md)。
+仕様は [language.ja.md §21](language.ja.md)。
 
 ```culebra
 log = fn (f) {
@@ -912,7 +1007,7 @@ puts(double(7))
 # 14
 ```
 
-### 11.2 ファクトリとスタック
+### 12.2 ファクトリとスタック
 
 ```culebra
 prefix = fn (tag) {
@@ -938,7 +1033,7 @@ greet()
 外側デコレータが内側の結果をラップする。 上から下に読むと実行順と
 一致。
 
-### 11.3 Memoize の実例
+### 12.3 Memoize の実例
 
 ```culebra
 memoize = fn (f) {
@@ -957,7 +1052,7 @@ puts(slow_square(7))          # => 49
 puts(slow_square(7))          # => 49
 ```
 
-### 11.4 `fn.params` introspection
+### 12.4 `fn.params` introspection
 
 `Function` 値は宣言時のシグネチャを露出する。 `@autograd` / `@trace`
 のような signature を知る必要のあるデコレータはこれを使って書ける。
@@ -971,12 +1066,12 @@ puts(add_typed.return_type)               # => 'Long'
 デコレートされた関数は単一値 (ラップされたクロージャ) として束縛
 される — これは「同名の `fn` が複数共存する」というマルチメソッド
 の形と相容れない。名前ごとにどちらか一方を選ぶ (完全な規則は
-[language.ja.md §20](language.ja.md))。
+[language.ja.md §21](language.ja.md))。
 
-12. モジュール
+13. モジュール
 --------------
 
-### 12.1 暗黙 import
+### 13.1 暗黙 import
 
 Culebra の「モジュールビルド」は 1 つのエントリファイルから始まり、
 そこからトップレベル識別子を辿って参照される全ての兄弟 `.cul` を
@@ -998,7 +1093,7 @@ puts(PI)                      # => 3.14159
 `culebra main.cul` を実行すると、未解決の名前 `greet` を辿って
 `lib.cul` を自動発見する。 `import` 文は無い。
 
-### 12.2 エントリ環境の隔離と循環
+### 13.2 エントリ環境の隔離と循環
 
 エントリファイルで導入された束縛は import されたファイルからは見え
 ない。 import されたファイル内で導入された束縛はビルドから到達可能
@@ -1006,7 +1101,7 @@ puts(PI)                      # => 3.14159
 ケージ」) に揃え、エントリだけは最上位 main 扱い。 ファイル間の循環
 参照はモジュールビルド時に検出され、ファイル/行付きで拒絶される
 (共通の第三ファイルで分解)。 完全な解決規則と循環検出は
-[language.ja.md §23](language.ja.md)。
+[language.ja.md §24](language.ja.md)。
 
 ### Why 暗黙か
 
@@ -1014,19 +1109,19 @@ puts(PI)                      # => 3.14159
 する。 個別 `import` を要求する得は無い — 未解決識別子からツールが
 同じグラフを導けるから。 著作ループが速く・単純になる代わりに、
 tree-shaking もちゃんと効く (リーチャブルなトップレベルがツールで
-分かるため、Ch.17)。
+分かるため、Ch.18)。
 
-リゾルバ設計と循環検出アルゴリズムの詳細は [`internals.ja.md` §10](internals.ja.md)。
+リゾルバ設計と循環検出アルゴリズムの詳細は [`internals.ja.md` §11](internals.ja.md)。
 
 ---
 
 第 III 部 — 型とライブラリ
 ==========================
 
-13. 型システム
+14. 型システム
 --------------
 
-### 13.1 現状: オプショナル注釈 + `Any`
+### 14.1 現状: オプショナル注釈 + `Any`
 
 注釈は 3 つの境界での**ランタイム**チェック: 変数代入、関数パラ
 メータ渡し、関数戻り値。 静的な narrowing は無い。 完全な注釈仕様は
@@ -1047,7 +1142,7 @@ puts(describe([1, 2], 'array'))     # => 'array: [1, 2]'
 `match` 節の `n: ClassName` (Ch.6) はそのクラスのインスタンスに
 マッチ。
 
-### 13.2 Union / Optional / Tuple
+### 14.2 Union / Optional / Tuple
 
 `Long | String` はどちらの型も受け付け、`T?` は `T | Nil` の糖衣、
 `(Long, String)` は固定長・不変・要素ごと等価な `Tuple`。 完全な
@@ -1064,7 +1159,7 @@ puts(type_of(pair))            # => 'Tuple'
 puts(pair == (1, 'one'))       # => true
 ```
 
-### 13.3 Trait / Protocol
+### 14.3 Trait / Protocol
 
 `trait` は必須メソッド集合を宣言する。 それらに (名前・アリティが)
 マッチするメソッドを持つクラスなら、明示 `impl` 無しで conform し
@@ -1073,7 +1168,7 @@ puts(pair == (1, 'one'))       # => true
 メソッドも持てて `@derive` で導出できる。 完全な仕様は
 [language.ja.md §14](language.ja.md) (Traits and protocols)。
 nominal (class) 継承がこの structural モデルのために不採用になった
-経緯は [`record.ja.md`](record.ja.md) 参照 (Ch.10.3)。
+経緯は [`record.ja.md`](record.ja.md) 参照 (Ch.11.3)。
 
 ```culebra
 trait Greeter { hello() -> String }
@@ -1087,10 +1182,10 @@ greet = fn (x: Greeter) -> String { x.hello() }
 puts(greet(Bob.new('Alice')))   # => 'hi, Alice'
 ```
 
-### 13.4 Generic
+### 14.4 Generic
 
 `Array<Long>` のような注釈は要素型をドキュメント化し、マルチメソッ
-ドの specificity (Ch.10.2) にも使われる。 要素チェック自体は no-op
+ドの specificity (Ch.11.2) にも使われる。 要素チェック自体は no-op
 — Rust/Swift の generic を精神的に踏襲するが、アクセスの度に要素を
 ランタイムチェックするコストは払わない。 bound 制約と generic クラ
 ス宣言は [language.ja.md §14](language.ja.md)。
@@ -1106,14 +1201,14 @@ Conditional types、mapped types、template literal types、ユーティリ
 ティ型群 (`Pick` / `Omit` 等) は、小さな動的言語には複雑すぎる。
 目標は Rust/Swift の表現力であって、TS の表現力ではない。
 
-14. 標準ライブラリ巡り
+15. 標準ライブラリ巡り
 ----------------------
 
 CLI ドライバは `puts` / `print` を `IO.puts` / `IO.print` のエイ
 リアスとして提供する。 自前で環境を組み立てる埋め込み用途では
 namespace は見えるが bare alias は無い。
 
-### 14.1 コア組み込み
+### 15.1 コア組み込み
 
 ```culebra
 puts(to_long('42'))           # => 42
@@ -1122,9 +1217,9 @@ puts(iota(2, 5))              # => [2, 3, 4]
 assert_eq(1 + 1, 2)           # 成功時は無音、失敗で throw
 ```
 
-完全な一覧は [language.ja.md §18](language.ja.md)。
+完全な一覧は [language.ja.md §19](language.ja.md)。
 
-### 14.2 `Math`
+### 15.2 `Math`
 
 ```culebra
 puts(Math.abs(-7))            # => 7
@@ -1137,7 +1232,7 @@ puts(Math.clamp(15, 0, 10))   # => 10
 
 完全リファレンス: [`stdlib.ja.md` §1](stdlib.ja.md)。
 
-### 14.3 `IO`
+### 15.3 `IO`
 
 ```culebra
 print('Hello, '); print('world!'); print("\n")   # => Hello, world!
@@ -1148,7 +1243,7 @@ print('Hello, '); print('world!'); print("\n")   # => Hello, world!
 
 完全リファレンス: [`stdlib.ja.md` §2](stdlib.ja.md)。
 
-### 14.4 `Sys` / `Random` / `FS` / `Time` / `Args`
+### 15.4 `Sys` / `Random` / `FS` / `Time` / `Args`
 
 ```culebra
 puts(Sys.argv)                # => []
@@ -1164,9 +1259,9 @@ puts(Random.int(0, 100) >= 0)          # => true
 ```
 
 完全リファレンス: `Sys` [`stdlib.ja.md` §7](stdlib.ja.md)、`Random` §6、
-`FS`/`Path` §3、`Time` §5、`Args` §10。
+`FS`/`Path` §3、`Time` §5、`Args` §11。
 
-### 14.5 `Regex`
+### 15.5 `Regex`
 
 線形時間マッチ (NFA ベース、catastrophic backtracking 無し)、
 grapheme cluster 単位がデフォルト。 `/u` フラグ不要。
@@ -1180,19 +1275,19 @@ puts(re.test('order #42'))    # => true
 puts(re'\d+'.test('abc 123')) # => true
 ```
 
-完全な API: [`stdlib.ja.md` §14](stdlib.ja.md)。
+完全な API: [`stdlib.ja.md` §15](stdlib.ja.md)。
 
-### 14.6 `Hash` / `Encoding` / `Compress`
+### 15.6 `Hash` / `Encoding` / `Compress`
 
 `Hash.sha256`/`sha1`/`sha512`/`md5` とその `hmac_*` 系は hex ダイ
 ジェストを返す。 `Encoding.base64`/`hex`/`url`/`html` はそれぞれ
 `.encode`/`.decode` を持つ。 `Compress.gzip`/`gunzip` がデータ系
 namespace を締めくくる。 JSON は独立の top-level `JSON.parse`/
 `JSON.stringify` — `Encoding.json` は無い。 完全リファレンス:
-[`stdlib.ja.md`](stdlib.ja.md) §16 (Encoding)、§17 (Compress)、
-§18 (Hash)。
+[`stdlib.ja.md`](stdlib.ja.md) §17 (Encoding)、§18 (Compress)、
+§19 (Hash)。
 
-### 14.7 `Http`
+### 15.7 `Http`
 
 Blocking なクライアントとサーバ、SSE / WebSocket 含む、TLS は
 statically link した BoringSSL。 `async` / `await` 無し — 並行は
@@ -1210,25 +1305,25 @@ srv.listen('127.0.0.1', 8080)
 ```
 
 streaming・ルーティング・クライアントセッション API:
-[`stdlib.ja.md` §15](stdlib.ja.md)。
+[`stdlib.ja.md` §16](stdlib.ja.md)。
 
-### 14.8 さらに計画中
+### 15.8 さらに計画中
 
 > **Status: Planned (Tier 2/3).** `Crypto` (`Hash` を超える非対称鍵/TLS
 > プリミティブ) と `Sockets` (raw TCP/UDP)。 順序未確定、Ch.0 のティア
 > 方針どおり demand-driven で。
 
-15. Tensor プリミティブ
+16. Tensor プリミティブ
 -----------------------
 
-### 15.1 構築・matmul・ブロードキャスト
+### 16.1 構築・matmul・ブロードキャスト
 
 `Tensor` は組み込みの n 次元配列で、BLAS にルーティングされる
 (macOS は Apple Accelerate、Linux は OpenBLAS)。 格納は F32 で、
 スカラー結果は `Float` として返る。 matmul (`dot`) は遅延グラフを
 作り、`Tensor.eval` が単一の BLAS カーネルとして実行する。要素ごと
 の演算は NumPy 同様にブロードキャストする。 完全な API (shape・
-reduction・autograd) は [`stdlib.ja.md` §8](stdlib.ja.md)。
+reduction・autograd) は [`stdlib.ja.md` §9](stdlib.ja.md)。
 
 ```culebra
 a = Tensor.from([1.0, 2.0, 3.0])
@@ -1242,7 +1337,7 @@ Tensor.eval(c)
 puts(c.to_array())            # => [[7.0, 10.0], [15.0, 22.0]]
 ```
 
-### 15.2 GPU プリミティブ
+### 16.2 GPU プリミティブ
 
 > **Status: Planned.** CUDA / Metal Shading Language 用のバックエ
 > ンドを別の `Matrix` (または `GTensor`) として用意する計画 —
@@ -1258,21 +1353,21 @@ puts(c.to_array())            # => [[7.0, 10.0], [15.0, 22.0]]
 [`benchmarks/microgpt/README.md`](../benchmarks/microgpt/README.md)。
 
 dtype の根拠、アロケータ選定、lazy shape の議論は
-[`internals.ja.md` §8](internals.ja.md)。
+[`internals.ja.md` §9](internals.ja.md)。
 
 ---
 
 第 IV 部 — 検証とデプロイ
 =========================
 
-16. テスト (`culebra test`)
+17. テスト (`culebra test`)
 ---------------------------
 
 > `test()` / `@test` / `@parametrize` と matcher 群、 引数で DI 解決
 > される fixture (decorator 不要、 env 内の任意の fn) が実装済で、
 > `culebra test [path]` で動きます。
 
-### 16.1 doctest 規約 (確定)
+### 17.1 doctest 規約 (確定)
 
 本ガイド、 `language.ja.md`、 `stdlib.ja.md` の各 ` ```culebra `
 ブロックは以下の規約に従う:
@@ -1292,7 +1387,7 @@ dtype の根拠、アロケータ選定、lazy shape の議論は
 honor されるのは `skip` のみ。`compile-only` と backend 限定ディレクティブ
 は予約済み (該当ブロックは当面そのまま実行される)。
 
-### 16.2 テストの書き方
+### 17.2 テストの書き方
 
 3 つの書き方があります — `test()` 呼出形と `@test` デコレータ形は
 等価。 `@parametrize` は cases ごとに 1 テストを登録します。
@@ -1370,7 +1465,7 @@ fixture 関数本体内の `defer` は fixture fn が return した瞬間に発�
 してしまう (test 本体実行前) ので、 cleanup には class `drop` を
 使います。 複数の test ファイルで共有したい長寿命 state (例: 1 回
 ロードした model) は module top-level に置きます — モジュールシス
-テム (Ch.12) が binding を cache するためです。
+テム (Ch.13) が binding を cache するためです。
 
 **matchers**。 アサーションは matcher 一族を使います — `assert`
 キーワード / builtin は存在しません。 matcher は **3 backend の
@@ -1387,21 +1482,21 @@ assert_close(0.1 + 0.2, 0.3, 1e-9)      # |a - b| <= tol
 
 完全な matcher 一覧 (`assert_true`/`false`/`ne`/`lt`/`le`/`gt`/`ge`
 と `__eq__`/`__lt__` dispatch の規則) は
-[`stdlib.ja.md` §13](stdlib.ja.md)。
+[`stdlib.ja.md` §14](stdlib.ja.md)。
 
 **production の不変条件**。 テストスイート外で `if (!cond) throw {...}`
 を書くときは `if`/`throw` を直接書きます (Go 流儀、
 [language.ja.md §15](language.ja.md) 参照)。 production build で
 disable する別の `assert` キーワードは存在しません。
 
-### 16.3 実行
+### 17.3 実行
 
 `culebra test [path]` がテストファイルを discover します。 このサブコマンド
 経由で起動した場合のみ、 `test` / `@test` / `@parametrize` が
 **ambient global** として注入されます — `import` 不要。 matcher 一族は
 3 backend で常時 global なので追加注入は不要です。 これは script 実行
 モード下でだけ `puts` / `print` が ambient で、 `culebra::environment()`
-には注入されない設計と同じ流儀 ([stdlib.ja.md §11](stdlib.ja.md) 参照)。
+には注入されない設計と同じ流儀 ([stdlib.ja.md §12](stdlib.ja.md) 参照)。
 
 ```sh
 culebra test                       # 現在ディレクトリから探索・実行
@@ -1437,7 +1532,7 @@ JSON モードでは test 内の `puts(...)` は event の `stdout` フィール
 global なので `culebra test` を介さずに 3 backend で同じファイルが
 回ります。
 
-### 16.4 今後の拡張
+### 17.4 今後の拡張
 
 - **明示 `import { test } from "std/test"`** — `culebra test` 経由でない
   コード (embedded test helper 等) で使うため
@@ -1448,7 +1543,7 @@ global なので `culebra test` を介さずに 3 backend で同じファイル�
 - **並列実行** — 現状逐次。 JIT/AOT が入った時の parallel default は
   optional
 
-17. リント (`culebra lint`)
+18. リント (`culebra lint`)
 ---------------------------
 
 `culebra lint <file.cul>...` はプログラムを**実行せずに**静的な問題を
@@ -1479,7 +1574,7 @@ culebra lint app.cul
 予定: 未使用 import、到達不能コード、エディタ/LSP 連携用の
 `--format json`、インライン `# lint: ignore` 抑制。
 
-18. フォーマット (`culebra fmt`)
+19. フォーマット (`culebra fmt`)
 --------------------------------
 
 `culebra fmt [files...]` はソースを唯一の正準スタイルに整形する: 演算子
@@ -1527,7 +1622,7 @@ exit 0 の時だけ結果を適用する (parse/安全網エラー時はバッ�
 - 他のエディタも「保存時整形」機構があれば同様にバッファを
   `culebra fmt -` に通せる。
 
-19. AOT バイナリビルド
+20. AOT バイナリビルド
 ----------------------
 
 `culebra build` は `.cul` ソースを ahead-of-time で自己完結バイナ
@@ -1541,7 +1636,7 @@ Accelerate / BLAS フレームワーク依存も外せる。
 otool -L ./out                            # Accelerate も LLVM も無し
 ```
 
-### 19.1 クロスコンパイル
+### 20.1 クロスコンパイル
 
 ```bash
 ./build/culebra build my-program.cul \
@@ -1561,7 +1656,7 @@ otool -L ./out                            # Accelerate も LLVM も無し
 タイムヘルパ (~200 個) を落とせる。 `Tensor` 参照が無ければ no-BLAS
 archive に差し替わるので、数 MB が数百 KB になる。
 
-20. 埋め込み概観
+21. 埋め込み概観
 ----------------
 
 Culebra は header-friendly な C++23 ライブラリ。 最小埋め込み例:

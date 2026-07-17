@@ -31,16 +31,17 @@ that were considered and not adopted are in [`record.md`](record.md).
 13. [Pattern matching (`match`)](#13-pattern-matching)
 14. [Optional type annotations](#14-optional-type-annotations)
 15. [Error handling](#15-error-handling)
-16. [Memory model (RC + cycle collector)](#16-memory-model)
-17. [Built-in type methods (incl. iterator protocol)](#17-built-in-type-methods)
-18. [Core built-in functions](#18-core-built-in-functions)
-19. [Multimethods](#19-multimethods)
-20. [Decorators](#20-decorators)
-21. [Command-line interface](#21-command-line-interface)
-22. [Known limitations](#22-known-limitations)
-23. [Modules](#23-modules)
-24. [Appendix: interpreter ↔ JIT divergence](#24-appendix-interpreter--jit-divergence)
-25. [Appendix: conformance test mapping](#25-appendix-conformance-test-mapping)
+16. [Algebraic effects](#16-algebraic-effects)
+17. [Memory model (RC + cycle collector)](#17-memory-model)
+18. [Built-in type methods (incl. iterator protocol)](#18-built-in-type-methods)
+19. [Core built-in functions](#19-core-built-in-functions)
+20. [Multimethods](#20-multimethods)
+21. [Decorators](#21-decorators)
+22. [Command-line interface](#22-command-line-interface)
+23. [Known limitations](#23-known-limitations)
+24. [Modules](#24-modules)
+25. [Appendix: interpreter ↔ JIT divergence](#25-appendix-interpreter--jit-divergence)
+26. [Appendix: conformance test mapping](#26-appendix-conformance-test-mapping)
 
 ---
 
@@ -1268,7 +1269,7 @@ Semantics:
   construction is a small runtime call — `new` itself is a regular
   JIT closure whose captures are the method closures plus the user's
   `new` body, and a runtime helper wires them into the fresh object.
-* Well-known methods like `drop` (§16) can be written as ordinary
+* Well-known methods like `drop` (§17) can be written as ordinary
   class methods. Under the JIT, methods are held on a shared per-class
   meta object via prototype delegation, but the auto-drop lookup walks
   the proto chain — `class C { drop() { ... } }` fires as expected
@@ -1807,7 +1808,7 @@ Example:
     puts(c2())   # 1, independent
 
 In the JIT, captured mutable variables are allocated in heap **cells**
-so that multiple closures can share the same slot. See §16.
+so that multiple closures can share the same slot. See §17.
 
 ---
 
@@ -1838,7 +1839,7 @@ work inside the loop body. The body is a fresh scope per iteration
 Iterates by calling `iterable.iter()` once, then driving the returned
 iterator with `has_next()` / `next()`: while `has_next()` is `true`,
 `next()` produces the element bound to `var` in a fresh scope per
-iteration (see §17.5).
+iteration (see §18.5).
 
 ```culebra
 for x in [1, 2, 3] { puts(x) }
@@ -1872,7 +1873,7 @@ for k, v in {a: 1, b: 2} { puts("{k}={v}") }        # bare comma == (k, v)
 for i, v in xs.enumerate() { ... }                  # (index, value) tuples
 ```
 
-The iterator protocol (see §17.5) requires the target to be either an
+The iterator protocol (see §18.5) requires the target to be either an
 `Object` (or subtype `Array`) with an `iter` method, or an object
 already playing the iterator role with `has_next` / `next` methods.
 Passing any other type raises `type error`.
@@ -2069,7 +2070,7 @@ treats it the same as a class annotation that no instance can
 satisfy — the alt simply never matches, so it's effectively dead.
 Other alternatives in the Union still match normally.
 
-Multimethod dispatch ([§19](#19-multimethods)) understands Union
+Multimethod dispatch ([§20](#20-multimethods)) understands Union
 parameter annotations by scoring each alternative and taking the
 best match — `fn area(s: Square | Circle)` dispatches on either
 exact class. A bare concrete type outranks any Union that contains
@@ -2131,7 +2132,7 @@ Union of *a function returning B* and *C*). An optional **return** uses
     run(|n| nil)                # → -1
     run(nil)                    # !! type error (a function is required)
 
-Multimethod dispatch ([§19](#19-multimethods)) treats a function-type
+Multimethod dispatch ([§20](#20-multimethods)) treats a function-type
 parameter like `Function`: a closure or `__call__` instance routes to
 the `fn(...) -> ...` overload, while a concrete type (`Long`) routes to
 its own overload.
@@ -2797,7 +2798,7 @@ AOT builds (unless noted).
 | `ValueError` | Destructure pattern mismatch (`[a, b] = ...` shape mismatch); Tensor shape / dtype mismatch; `[].min()` or other empty-collection reductions; numeric conversion of malformed string; JSON parse failure. | yes |
 | `AttributeError` | Compound assignment (`o.x += ...`) on a missing property. | yes |
 | `ArityError` | Call missing a required argument; too few or too many positional args; class instantiation arity mismatch. | yes |
-| `DispatchError` | Multimethod call with no matching method or with ambiguous specificity tie (§19). | yes |
+| `DispatchError` | Multimethod call with no matching method or with ambiguous specificity tie (§20). | yes |
 | `AssertionError` | Matcher failure (`assert_true` / `assert_eq` / etc.) or user `throw {kind: "AssertionError", ...}`. Message names both operands for comparison matchers. | yes |
 | `SyntaxError` | Structural errors raised during AST lowering: `**rest` not last param, duplicate `*` separator, non-default param after default, `compound let`, `break` / `continue` outside loop. Surfaces at function decl evaluation, before that function runs. | yes |
 | `ShadowError` | Static shadow analyzer (§6) detected a binding that shadows a captured outer name. Fires before any user `try` block can observe it. | **no** (pre-eval analyzer) |
@@ -2841,7 +2842,7 @@ missing / unknown kwargs.
 ### Assertion API
 
 There is no `assert` keyword or builtin. For tests, use the matcher
-family (`assert_true` / `assert_eq` / etc., see §18 and `docs/stdlib.md`).
+family (`assert_true` / `assert_eq` / etc., see §19 and `docs/stdlib.md`).
 For production invariants, throw an Object:
 
 ```culebra
@@ -2878,7 +2879,170 @@ through user `try/catch` as structured Error Objects on both backends
 
 ---
 
-## 16. Memory model
+## 16. Algebraic effects
+
+An **effect** is an operation whose meaning is supplied by the dynamically
+enclosing context rather than fixed at the call site. Code `perform`s an
+operation; a `handle` block installed higher on the call stack decides what
+the operation does — and whether, and how many times, to **resume** the code
+that performed it. One mechanism expresses generators, exceptions, cooperative
+scheduling, and backtracking search without each needing dedicated syntax.
+
+Effects lower, at parse time, to ordinary Culebra classes plus a small runtime
+(the same compile-time transform the generators use), so all three backends
+run identical code and behave identically.
+
+### Declaring an effect
+
+`effect fn` introduces either an **operation** (no body) or an **effectful
+function** (with a body):
+
+    effect fn log(msg)              # operation: performed, handled elsewhere
+    effect fn greet(name) {         # effectful fn: may perform operations
+      perform log("hi {name}")
+      name
+    }
+
+An operation declaration only names the operation and its parameters; invoking
+it directly is an error — it must be reached through `perform`.
+
+### Performing an operation
+
+`perform op(args)` suspends the current computation and transfers to the
+nearest enclosing handler for `op`:
+
+```culebra
+effect fn ask()
+let x = handle {
+  let n = perform ask()
+  n + 1
+} with ask(resume) {
+  resume(10)
+}
+puts(x)     # => 11
+```
+
+### Handling
+
+`handle { BODY } with op(params…, resume) { CLAUSE }` runs `BODY` with a
+handler installed for the duration. When `BODY` (or anything it calls)
+performs `op`, the matching clause runs with the operation's arguments bound to
+the leading parameters and the **continuation** bound to the last parameter
+(`resume` above) — a first-class function that resumes the performing code with
+the value passed to it.
+
+A handler may resume, or not — declining to call `resume` discards the rest of
+the performing computation:
+
+```culebra
+effect fn fail()
+let r = handle {
+  perform fail()
+  "unreachable"
+} with fail(resume) {
+  "aborted"
+}
+puts(r)     # => 'aborted'
+```
+
+#### Multiple operations, and a `return` clause
+
+One `handle` may carry several `with` clauses (one per operation) and an
+optional `with return(v) { … }` that maps `BODY`'s normal-completion value:
+
+```culebra
+effect fn get()
+effect fn put(v)
+mut cell = 0
+let out = handle {
+  let a = perform get()
+  perform put(a + 5)
+  perform get()
+} with get(k) { k(cell) }
+  with put(v, k) { cell = v; k(nil) }
+  with return(v) { "final={v}" }
+puts(out)   # => 'final=5'
+```
+
+The `return` clause applies only to *normal* completion. When a handler aborts
+(never resumes), its own value is the result and `return` does not run.
+
+### Resuming more than once (multi-shot)
+
+A continuation is multi-shot: a handler may call `resume` any number of times,
+and each call independently re-runs the rest of the performing computation from
+its suspension point. This expresses nondeterminism / backtracking:
+
+```culebra
+effect fn choose(a, b)
+let all = handle {
+  let x = perform choose(1, 2)
+  let y = perform choose(10, 20)
+  x + y
+} with choose(a, b, k) {
+  [k(a), k(b)]
+}
+puts(all)   # => [[11, 21], [12, 22]]
+```
+
+Forks share referenced heap values (arrays, objects) — the fork is a shallow
+copy — while independent scalar state is copied per fork.
+
+### Dynamic scope and effectful calls
+
+Handlers are **dynamically** scoped: a `perform` reaches the nearest handler on
+the current call stack, not the lexically nearest. Calling an effectful
+`effect fn` from a handled body delegates into it, so its `perform`s reach the
+same handlers:
+
+```culebra
+effect fn ask2()
+effect fn double() {
+  let n = perform ask2()
+  n * 2
+}
+puts(handle { double() } with ask2(k) { k(21) })   # => 42
+```
+
+### Capturing an enclosing binding
+
+A nested `handle` — written inside an effectful `effect fn` body or another
+`handle` body — may read and write the enclosing computation's locals:
+
+```culebra
+effect fn outer()
+effect fn inner()
+effect fn work() {
+  let base = perform outer()
+  handle {
+    base + perform inner()
+  } with inner(k) { k(100) }
+}
+puts(handle { work() } with outer(k) { k(5) })    # => 105
+```
+
+### Semantics and limitations
+
+* Performing an operation with **no handler** raises `EffectError`.
+* An **effectful** `effect fn` is meant to be invoked from within a `handle`
+  block (directly, or via another effectful fn). Calling one from ordinary,
+  unhandled code returns an internal computation object rather than running it —
+  drive it with a `handle`.
+* A `perform` is supported only in **statement position** or an
+  unconditionally-evaluated operand. A `perform` in a short-circuit
+  (`&&` / `||` / `??`) operand, a ternary arm, a method-chain receiver, or a
+  control-flow condition is rejected at parse time (symmetrically on every
+  backend).
+* Because effects lower by rewriting body source, a syntax error inside an
+  effect body reports a position relative to the rewritten fragment, and a
+  local name or `this.`-access that also appears as literal text inside a
+  **string** in a captured effect body may be rewritten there too. Keep
+  literal text that looks like a captured binding out of such bodies when
+  exactness matters.
+
+---
+
+## 17. Memory model
 
 ### Reference counting
 
@@ -3031,7 +3195,7 @@ assignment time on both backends.
 
 ---
 
-## 17. Built-in type methods
+## 18. Built-in type methods
 
 The methods below are part of the language: they are available on any
 value of the corresponding type without any `import`, and cannot be
@@ -3051,8 +3215,8 @@ features. They are checked by name on both backends:
 |---|---|---|
 | `__add__`, `__sub__`, `__mul__`, `__div__`, `__mod__`, `__pow__`, `__matmul__`, `__neg__`, `__eq__`, `__lt__`, `__le__` | Operator overloading | §10 |
 | `__str__` | Custom display form | §10 |
-| `drop` | RAII cleanup hook | §16 |
-| `iter`, `next` | Iterator protocol | §17.5 |
+| `drop` | RAII cleanup hook | §17 |
+| `iter`, `next` | Iterator protocol | §18.5 |
 | `class` (property, not a method) | Nominal tag for `match` / debug | §10 |
 
 Conventions:
@@ -3122,10 +3286,10 @@ APIs declared with `StringLike` accept either flavor directly.
 **Known limitation** (cycle B): calling `.contains()` / `.starts_with()`
 / `.ends_with()` etc. on a `StringView` materializes a temporary cstr
 copy per call. It is reclaimed by the tracing collector like any other
-`String` (§16), not leaked, but hot-looping over a large sequence of
+`String` (§17), not leaked, but hot-looping over a large sequence of
 views still means avoidable per-call allocation — materialize the view
 once with `.to_string()` in that case. (Object-key normalization
-between `String` and `StringView` is not a limitation — see §17.3.)
+between `String` and `StringView` is not a limitation — see §18.3.)
 
 ```culebra
 puts('hello'.size())              # 5
@@ -3307,7 +3471,7 @@ on `Object` (and its subtype `Array`):
 **Contract, enforced at property assignment**: binding `iter` or
 `next` to a non-`Function` value, or to a function with non-zero
 arity, raises `type error` at the assignment site (mirrors the `drop`
-contract — §16).
+contract — §17).
 
 **Step object shape**:
 
@@ -3409,7 +3573,7 @@ puts(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 | `it.max()` | `Long` | largest element (all must be `Long`; throws on empty) |
 
 **Eager vs lazy**: `Array` has its own eager `map` / `filter` /
-`for_each` / `reduce` / `find` / `any` / `all` / `flat_map` (§17.2)
+`for_each` / `reduce` / `find` / `any` / `all` / `flat_map` (§18.2)
 which all return a new `Array`. Calling them on an `Array` dispatches
 to the eager versions; call `.iter()` first to opt into the lazy
 chain. This mirrors Swift's `arr` vs `arr.lazy`, Kotlin's `list` vs
@@ -3459,7 +3623,7 @@ when you want eager materialization and maximum throughput; use
 
 ---
 
-## 18. Core built-in functions
+## 19. Core built-in functions
 
 The functions below are part of the language proper: they are bound
 into every execution environment as global names and cannot be
@@ -3474,7 +3638,7 @@ The matcher family (`assert_true` / `assert_eq` / `assert_throws` /
 [`docs/stdlib.md`](stdlib.md) for the full reference. The broader
 standard library (namespaced under `Math`, `IO`, `Sys`) is also
 documented in `stdlib.md`. Output primitives `puts` and `print` are
-CLI-installed globals (§21).
+CLI-installed globals (§22).
 
 All of these globals are **first-class values**: bind one to a variable
 or hand it to a higher-order function and it behaves like any closure,
@@ -3563,7 +3727,7 @@ puts(type_of({1, 2}))      # 'Set'
 
 ### `range(n: Long, *, step: Long = 1) -> Iterator` / `range(start: Long, end: Long, *, step: Long = 1) -> Iterator`
 
-Lazy integer-sequence factory: returns an Iterator (§17.5) that
+Lazy integer-sequence factory: returns an Iterator (§18.5) that
 yields integers one at a time. Use with `for`-in or iterator method
 chains to iterate in **constant additional memory** regardless of
 the range size.
@@ -3591,7 +3755,7 @@ for i in range(1000000000) {
 
 **JIT**: `range` returns a JIT-native iterator Object, and the
 `range(N).<HOF>(...)` method-chain pattern is fused into a direct
-counter loop. See §17.5.
+counter loop. See §18.5.
 
 ### `iota(n: Long) -> Array` / `iota(start: Long, end: Long) -> Array`
 
@@ -3663,7 +3827,7 @@ appear).
 
 ---
 
-## 19. Multimethods
+## 20. Multimethods
 
 Multiple top-level `fn name(params) body` declarations sharing a name
 form a **multimethod** when their parameters have differing type
@@ -3796,7 +3960,7 @@ greet("alice")  # → "hello, alice"
 * **Errors.** With no matching method the runtime raises
   `no matching method`; with a tie in specificity it raises
   `ambiguous dispatch`. Both halt the program immediately rather than
-  surfacing as catchable runtime exceptions (§15, §23).
+  surfacing as catchable runtime exceptions (§15, §24).
 
 ### Keyword arguments and multimethods
 
@@ -3855,7 +4019,7 @@ do not overload yet.
 
 ---
 
-## 20. Decorators
+## 21. Decorators
 
 A `@expr` line before a `fn` or `class` declaration wraps the
 declared value through `expr` before binding it to the original name.
@@ -3934,7 +4098,7 @@ expression.
 
 ---
 
-## 21. Command-line interface
+## 22. Command-line interface
 
     culebra [flags] [script.cul ...] [arg ...]
 
@@ -3993,11 +4157,11 @@ they point to the same function values that live under `IO`, so
 `puts(x)` and `IO.puts(x)` are fully equivalent. Embedders that use
 `culebra::environment()` directly do not receive these aliases —
 their environment contains only `Math`, `IO`, `Sys`, and the core
-built-ins from §18.
+built-ins from §19.
 
 ---
 
-## 22. Known limitations
+## 23. Known limitations
 
 * No big integers or bignums; `Long` overflow wraps.
 * Single-quoted `'...'` strings are raw (no escapes, no interpolation,
@@ -4022,7 +4186,7 @@ built-ins from §18.
 
 ---
 
-## 23. Modules
+## 24. Modules
 
 A program may span multiple files. One file `imports` another by
 name; the imported file may `export` selected bindings to expose
@@ -4172,7 +4336,7 @@ where the failing source is itself another helper.
 
 ---
 
-## 24. Appendix: interpreter ↔ JIT divergence
+## 25. Appendix: interpreter ↔ JIT divergence
 
 The interpreter (`include/interpreter.h`) is normative. The JIT
 (`include/jit.h`) compiles the same AST and is required to produce
@@ -4195,17 +4359,17 @@ AOT builds:
   `??` short-circuiting at the first decisive operand. The same
   rule applies to array and object literals.
 * **Method dispatch and UFCS (§10), operator special methods (§10),
-  `__str__` display (§10), and the iterator protocol (§17.5).**
+  `__str__` display (§10), and the iterator protocol (§18.5).**
 * **`throw` / `try` / `catch` / `defer` (§15).** Including
   function-level and top-level `defer` firing on the throw-unwind
   path. The JIT lowers throws to LLVM `invoke` / `landingpad` with
   the Itanium personality; observable propagation is identical.
-* **Auto-drop (§16).** Fires on every refcount-to-zero transition,
+* **Auto-drop (§17).** Fires on every refcount-to-zero transition,
   whether triggered by scope exit, property overwrite, or array
   rebind. Cascade order — parent before child — is the same.
   Scope-owned cycle members drop at their scope's exit on both
   backends; closure-held and top-level cycles fire at the GC backstop
-  (collection-timed, order unspecified — see §16).
+  (collection-timed, order unspecified — see §17).
 * **Error reporting.** Every `kind` listed in §15 fires under the
   same trigger condition on both backends; `e.message`, `e.line`,
   and `e.col` are populated identically. Uncaught errors print as
@@ -4266,10 +4430,10 @@ embedding Culebra should be aware:
   single-threaded: an embedder that drives one `Runtime` from
   multiple threads must serialize the calls itself.
 
-### Top-level drop note (§16)
+### Top-level drop note (§17)
 
 Top-level bindings to `drop`-bearing objects live until program exit
-without running `drop`, on either backend (see §16 for the worked
+without running `drop`, on either backend (see §17 for the worked
 example): the interpreter never tears down its cyclic global
 environment, and the JIT/AOT suppress drop at the top-level scope
 release to match. Use `defer` or a factory function for script-wide
@@ -4280,7 +4444,7 @@ in observable behavior is treated as a bug.
 
 ---
 
-## 25. Appendix: conformance test mapping
+## 26. Appendix: conformance test mapping
 
 Every section of this spec has at least one corresponding test file
 under `tests/`. `just test` runs interp/JIT diff, AOT diff, and
@@ -4290,27 +4454,27 @@ touch multiple sections, marked "(broad)".
 
 | Test file | Spec sections verified |
 |---|---|
-| `tests/test_core.cul` | §6, §7, §8, §9, §10, §11, §12, §15, §17, §18 (broad — primary unit-test catch-all) |
+| `tests/test_core.cul` | §6, §7, §8, §9, §10, §11, §12, §15, §18, §19 (broad — primary unit-test catch-all) |
 | `tests/test_class.cul` | §10 (class sugar, operator overloading, `__str__`, auto-reflection, static methods), §11 |
 | `tests/test_class_parameters.cul` | §10 (auto-synthesized `parameters()`) |
-| `tests/test_decorator.cul` | §20 |
+| `tests/test_decorator.cul` | §21 |
 | `tests/test_defer.cul` | §15 (`defer`, scope-guard pattern) |
-| `tests/test_forward_ref.cul` | §6 (scope), §11 (closures), §19 |
-| `tests/test_iter.cul` | §12 (`for ... in`), §17 (iterator protocol, String methods), §18 (`range`, `iota`) |
-| `tests/test_kwargs.cul` | §11 (keyword arguments, `**` splat), §19 (kwargs in multimethods), §7 (evaluation order for mixed calls) |
+| `tests/test_forward_ref.cul` | §6 (scope), §11 (closures), §20 |
+| `tests/test_iter.cul` | §12 (`for ... in`), §18 (iterator protocol, String methods), §19 (`range`, `iota`) |
+| `tests/test_kwargs.cul` | §11 (keyword arguments, `**` splat), §20 (kwargs in multimethods), §7 (evaluation order for mixed calls) |
 | `tests/test_match_class.cul` | §13 (type patterns) |
-| `tests/test_multidispatch.cul` | §19 |
+| `tests/test_multidispatch.cul` | §20 |
 | `tests/test_object_keys.cul` | §10 (non-String keys) |
 | `tests/test_runtime_errors.cul` | §15 (`throw`/`try`/`catch`, all `kind` values catchable) |
 | `tests/test_set.cul` | §10 (sets) |
 | `tests/test_tuple.cul` | §10 (tuples, destructuring) |
-| `tests/test_ufcs.cul` | §10 (methods, UFCS), §18 (`__ARGS__`) |
+| `tests/test_ufcs.cul` | §10 (methods, UFCS), §19 (`__ARGS__`) |
 | `tests/test_args.cul` | stdlib §9 (`Args`) |
 | `tests/test_fs.cul` | stdlib §3 (`FS`) |
 | `tests/test_json.cul` | stdlib §8 (`JSON`) |
 | `tests/test_tensor.cul` | stdlib §7 (`Tensor`) |
 | `tests/test_time.cul` | stdlib §4 (`Time`) |
-| `tests/test_import.cul` | §23 (Modules) — uses `tests/test_import_helpers/*.cul` as dependencies |
+| `tests/test_import.cul` | §24 (Modules) — uses `tests/test_import_helpers/*.cul` as dependencies |
 
 Every test file in `tests/` is required to pass on both backends
 with identical stdout — `just test` enforces it. Interactive
