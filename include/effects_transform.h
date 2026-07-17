@@ -1027,23 +1027,6 @@ class EffectsLowerer {
     return {dispatch, entry};
   }
 
-  // Re-parse a body's inner source as a standalone program so its statement
-  // nodes are cleanly optimized with correct source positions. A single-
-  // statement BLOCK collapses onto its lone statement whose pos/len then span
-  // the enclosing braces (the AstOptimizer pos/len trap — see
-  // [[peglib-ast-optimizer]]); parsing the brace-stripped inner sidesteps it
-  // uniformly for single- and multi-statement bodies alike.
-  struct ReparsedBody {
-    std::shared_ptr<peg::Ast> program;
-    std::shared_ptr<std::string> source;  // owns the buffer nodes point into
-  };
-  ReparsedBody reparse_body(const peg::Ast& body_node) const {
-    auto inner = std::string(strip_block_braces(slice(body_node)));
-    auto src = std::make_shared<std::string>(std::move(inner));
-    auto prog = parse_registered_source("<eff-body>", src);
-    return {prog, src};
-  }
-
   // --- for-in desugar (to `while` + iterator) ----------------------------
   // The CPS engine works over `while`, so a `for x in e { … }` that carries a
   // suspension is rewritten to `let _it = (e).iter(); while _it.has_next() {
@@ -1100,6 +1083,47 @@ class EffectsLowerer {
     return out;
   }
 
+  // A `this.` field access, boundary-guarded so `foo.this.` / `athis.` don't
+  // match. Shared by the two redirects (their detection twin `captures_outer`
+  // walks the AST instead, so it never fires on `this.` text in a string).
+  static const std::regex& this_field_access() {
+    static const std::regex pat(R"((^|[^.A-Za-z0-9_])this\.)");
+    return pat;
+  }
+  // Redirect an enclosing-computation field access `this.x` to `this._eff_outer.x`
+  // so a nested handle's own computation reaches the captured binding through the
+  // outer instance passed to its ctor. Idempotent per nesting level: a second
+  // pass over `this._eff_outer.x` lengthens the chain (`this._eff_outer._eff_outer.x`),
+  // which is exactly the walk a doubly-nested capture needs.
+  static std::string redirect_this_to_outer(std::string_view src) {
+    return std::regex_replace(std::string(src), this_field_access(),
+                              "$1this._eff_outer.");
+  }
+  // Redirect `this.x` to `<self>.x` for a handler-clause body: the adapter is a
+  // closure inside the `<self>` IIFE, so it captures the enclosing instance as a
+  // plain local (both backends), not via lexical `this`. `<self>` is unique per
+  // handle so nested handles' IIFE params don't shadow one another.
+  static std::string redirect_this_to_self(std::string_view src,
+                                           const std::string& self) {
+    return std::regex_replace(std::string(src), this_field_access(),
+                              "$1" + self + ".");
+  }
+  // True when the handle reads an enclosing-computation binding: a genuine
+  // `this` receiver node somewhere in its subtree. Walk the AST (not the raw
+  // slice) so `this.` inside a string literal or comment is never mistaken for
+  // a capture — otherwise a top-level handle carrying such text would synthesize
+  // a `_eff_self` wrapper over a nonexistent `this`. `this` only enters an
+  // effect body via the outer locals-to-`this` rewrite, so any `this` node is a
+  // real capture; an interpolation's `"{this.x}"` is a node too and is redirected.
+  static bool captures_outer(const peg::Ast& node) {
+    using namespace peg::udl;
+    if (node.tag == "IDENTIFIER"_ && node.token == "this") return true;
+    for (auto& c : node.nodes) {
+      if (captures_outer(*c)) return true;
+    }
+    return false;
+  }
+
   // Build the whole computation class source (ctor + _step) for a body node.
   // `param_names` are the enclosing fn's params (empty for a handle body);
   // `rv_name` is the per-class resume parameter (unique so a nested computation
@@ -1108,17 +1132,24 @@ class EffectsLowerer {
   // A-normalization (hoisting expression-nested performs to statement level),
   // so the CPS builder only ever sees statement-level suspensions over
   // if/while. Each pre-pass re-parses into a clean buffer whose slices resolve.
+  // `capture_outer` redirects enclosing-instance reads (`this.x`) through the
+  // `_eff_outer` ctor param — set when a nested handle captures an outer binding.
   std::string build_computation_class(
       const std::string& class_name, const peg::Ast& body_node,
       const std::vector<std::string_view>& param_names,
-      const std::string& rv_name) const {
-    auto rb = reparse_body(body_node);
-    if (!rb.program) {
+      const std::string& rv_name, bool capture_outer = false) const {
+    // Parse the brace-stripped inner source so a single-statement BLOCK's
+    // pos/len doesn't span the enclosing braces (the AstOptimizer trap —
+    // [[peglib-ast-optimizer]]); uniform for single/multi-statement bodies.
+    std::string inner = std::string(strip_block_braces(slice(body_node)));
+    if (capture_outer) inner = redirect_this_to_outer(inner);
+    std::shared_ptr<std::string> src =
+        std::make_shared<std::string>(std::move(inner));
+    std::shared_ptr<peg::Ast> prog = parse_registered_source("<eff-body>", src);
+    if (!prog) {
       throw CulebraError("InternalError",
                          "effects transform could not re-parse a body", 0, 0);
     }
-    std::shared_ptr<peg::Ast> prog = rb.program;
-    std::shared_ptr<std::string> src = rb.source;
 
     // for-in desugar to a fixpoint (a nested for-in surfaces as outermost on
     // the next pass).
@@ -1154,32 +1185,6 @@ class EffectsLowerer {
     return sub.build_class_from_program(class_name, *prog, param_names, rv_name);
   }
 
-  // A nested `handle` that references an enclosing computation's binding is
-  // rejected: the inner handler / body lowers to a closure whose `this` is NOT
-  // the enclosing instance, so a rewritten `this.<local>` reads nil (the interp
-  // happens to capture `this` lexically, the JIT does not — an asymmetry). Test
-  // by the same matcher the rewrite uses, so detection tracks it exactly.
-  void reject_handle_capture(const peg::Ast& program,
-                             const std::set<std::string>& names) const {
-    using namespace peg::udl;
-    if (names.empty()) return;
-    std::function<void(const peg::Ast&)> walk = [&](const peg::Ast& n) {
-      if (n.tag == "HANDLE"_) {
-        auto src = slice(n);
-        if (rewrite_locals_to_this(src, names) != std::string(src)) {
-          throw CulebraError(
-              "SyntaxError",
-              "a nested `handle` that references an enclosing effect binding is "
-              "not supported yet — pass the value in explicitly.",
-              static_cast<long>(n.line), static_cast<long>(n.column));
-        }
-        return;  // the inner handle's own captures are checked when it lowers
-      }
-      for (auto& c : n.nodes) walk(*c);
-    };
-    for (auto& c : program.nodes) walk(*c);
-  }
-
   std::string build_class_from_program(
       const std::string& class_name, const peg::Ast& program,
       const std::vector<std::string_view>& param_names,
@@ -1187,7 +1192,6 @@ class EffectsLowerer {
     auto locals = collect_local_names(program);
     std::set<std::string> rewrite = locals;
     for (auto& p : param_names) rewrite.insert(std::string(p));
-    reject_handle_capture(program, rewrite);
 
     auto [step, entry] = build_dispatch(program, rewrite, rv_name);
 
@@ -1260,9 +1264,21 @@ class EffectsLowerer {
     using namespace peg::udl;
     const auto& body = *ast->nodes[0];
 
+    // A nested `handle` whose body / clauses read an enclosing computation's
+    // binding (a `this.` access, from the outer locals-to-`this` rewrite) is
+    // lowered to reach that binding through the enclosing instance: the body
+    // class takes it as an `_eff_outer` ctor arg, the handler closures capture
+    // it as a plain `_eff_self` local. Neither leans on lexical `this` capture
+    // (which the interp does and the JIT doesn't), so both backends agree.
+    bool captures = captures_outer(*ast);
+    auto self_name = std::format("_eff_self_{}_{}", ast->line, ast->column);
+
     auto class_name = std::format("_EffBody_{}_{}", ast->line, ast->column);
     auto rv_name = std::format("_rv_{}_{}", ast->line, ast->column);
-    std::string cls = build_computation_class(class_name, body, {}, rv_name);
+    std::vector<std::string_view> body_params;
+    if (captures) body_params.push_back("_eff_outer");
+    std::string cls =
+        build_computation_class(class_name, body, body_params, rv_name, captures);
 
     // Build the handler frame `{ op: adapter, … }` over every op `with` clause,
     // plus an optional `with return(v) { … }` that maps the normal-completion
@@ -1291,10 +1307,11 @@ class EffectsLowerer {
               static_cast<long>(clause.line), static_cast<long>(clause.column));
         }
         auto vn = view_parameter(*params.nodes[0]).name;
-        auto ret_src = strip_block_braces(slice(*clause.nodes[1]));
+        std::string ret_src(strip_block_braces(slice(*clause.nodes[1])));
+        if (captures) ret_src = redirect_this_to_self(ret_src, self_name);
         return_fn = std::format(
             "fn(_eh_val) {{\n      let {} = _eh_val\n      {}\n    }}",
-            std::string(vn), std::string(ret_src));
+            std::string(vn), ret_src);
         continue;
       }
 
@@ -1324,23 +1341,41 @@ class EffectsLowerer {
       }
       auto resume_name = view_parameter(*params.nodes[nparams - 1]).name;
       binds += std::format("      let {} = _eh_resume\n", std::string(resume_name));
-      auto handler_src = strip_block_braces(slice(handler_body));
+      std::string handler_src(strip_block_braces(slice(handler_body)));
+      if (captures) handler_src = redirect_this_to_self(handler_src, self_name);
       if (!first_op) frame += ",";
       first_op = false;
       frame += std::format(
           "\n    {0}: fn(_eh_args, _eh_resume) {{\n{1}      {2}\n    }}",
-          op, binds, std::string(handler_src));
+          op, binds, handler_src);
     }
     frame += "}";
 
-    auto synth = std::make_shared<std::string>(std::format(
-        "fn __eff_handle_wrapper__() {{\n"
-        "  __Eff.handle(\n"
-        "    (fn() {{\n{0}    {1}.new()\n    }})(),\n"
-        "    {2},\n"
-        "    {3})\n"
-        "}}\n",
-        cls, class_name, frame, return_fn));
+    // When the handle captures an enclosing binding, bind the enclosing
+    // instance once as `_eff_self` (a plain local the handler closures capture)
+    // and hand it to the body computation's ctor as `_eff_outer`.
+    std::shared_ptr<std::string> synth;
+    if (captures) {
+      synth = std::make_shared<std::string>(std::format(
+          "fn __eff_handle_wrapper__() {{\n"
+          "  (fn({4}) {{\n"
+          "    __Eff.handle(\n"
+          "      (fn() {{\n{0}      {1}.new({4})\n      }})(),\n"
+          "      {2},\n"
+          "      {3})\n"
+          "  }})(this)\n"
+          "}}\n",
+          cls, class_name, frame, return_fn, self_name));
+    } else {
+      synth = std::make_shared<std::string>(std::format(
+          "fn __eff_handle_wrapper__() {{\n"
+          "  __Eff.handle(\n"
+          "    (fn() {{\n{0}    {1}.new()\n    }})(),\n"
+          "    {2},\n"
+          "    {3})\n"
+          "}}\n",
+          cls, class_name, frame, return_fn));
+    }
     return reparse_expr(synth);
   }
 

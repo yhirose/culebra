@@ -923,7 +923,17 @@ let eff = [
   'effect fn ch(a, b); effect fn c() { let x = perform ch(1, 2); let y = perform ch(10, 20); x + y }; to_string(handle { c() } with ch(a, b, r) { [r(a), r(b)] })',
   'effect fn ch(a, b); effect fn inr() { perform ch(1, 2) }; to_string(handle { let y = inr() * 10; y } with ch(a, b, r) { [r(a), r(b)] })',
   'effect fn ch(a, b); effect fn lg() { let acc = []; let x = perform ch(1, 2); acc.push(x); acc }; mut sn = []; handle { lg() } with ch(a, b, r) { sn.push(r(a)); sn.push(r(b)) }; to_string(sn[0])',
-  'effect fn ch(a, b); effect fn idv() { perform ch(1, 2) }; to_string(handle { idv() } with ch(a, b, r) { [r(a), r(b)] } with return(v) { v + 100 })']
+  'effect fn ch(a, b); effect fn idv() { perform ch(1, 2) }; to_string(handle { idv() } with ch(a, b, r) { [r(a), r(b)] } with return(v) { v + 100 })',
+  # nested-handle capture: an inner handle's body / clauses reach an enclosing
+  # binding through the enclosing instance (`_eff_outer` ctor arg / `_eff_self`
+  # closure local), so both backends agree without leaning on lexical `this`.
+  'effect fn o(); effect fn ic(); effect fn bd() { let base = perform o(); handle { base + perform ic() } with ic(k) { k(100) } }; to_string(handle { bd() } with o(k) { k(5) })',
+  'effect fn o(); effect fn ic(); effect fn bd() { let base = perform o(); handle { perform ic() } with ic(k) { k(base) } }; to_string(handle { bd() } with o(k) { k(7) })',
+  'effect fn o(); effect fn tk(); effect fn bd() { mut acc = 0; let r = handle { perform tk(); perform tk(); "d" } with tk(k) { acc = acc + 1; k(nil) }; to_string(acc) + r }; to_string(handle { bd() } with o(k) { k(nil) })',
+  'effect fn o(); effect fn e1(); effect fn e2(); effect fn bd() { let base = perform o(); handle { let m = perform e1(); handle { base + m + perform e2() } with e2(k) { k(30) } } with e1(k) { k(200) } }; to_string(handle { bd() } with o(k) { k(1000) })',
+  'effect fn o(); effect fn pk(x, y); effect fn bd() { let base = perform o(); handle { base + perform pk(1, 2) } with pk(x, y, k) { [k(x), k(y)] } }; to_string(handle { bd() } with o(k) { k(10) })',
+  # `this.` inside a string is not a capture (AST-walk detection, not raw text)
+  'effect fn ask(); to_string(handle { let msg = "p is this.foo"; let v = perform ask(); v + msg.size() } with ask(k) { k(3) })']
 for c in eff {
   case("eff|" + c, c)
 }
