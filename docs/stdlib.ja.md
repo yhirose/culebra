@@ -1246,10 +1246,12 @@ loss など単一要素の結果を reshape せず読むのに使う。`loss.ite
 ### 自動微分（reverse-mode）
 
 Tensor プリミティブはネイティブな reverse-mode 自動微分エンジンを
-持ちます。各 lazy op が記録する forward グラフがそのまま tape を
-兼ね、`.backward()` が C++ 側でそれを辿ります。スクリプト側の
-ラッパは不要 — 値を計算する op 自身が vector-Jacobian product を
-知っています。
+持ちます。forward グラフがそのまま tape を兼ね、`.backward()` が
+C++ 側でそれを辿ります。スクリプト側のラッパは不要 — 値を計算する
+op 自身が vector-Jacobian product を知っています。tape が記録される
+のは `requires_grad` な葉に繋がる op のみ。forward-only な処理
+（推論、あるいは backward を自前で書く学習ループ）は tape を一切
+記録しないので、下層のテンソルライブラリと同等のコストで済みます。
 
 | メソッド | 戻り値 | 説明 |
 |---|---|---|

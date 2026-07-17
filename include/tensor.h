@@ -260,18 +260,38 @@ struct TensorNoGradGuard {
   TensorNoGradGuard& operator=(const TensorNoGradGuard&) = delete;
 };
 
-// Propagate requires_grad forward: a node requires grad iff any of its
-// inputs do. Op constructors call this on the node they return so the
-// flag flows from leaves (marked by the user) up through the graph.
-// Suppressed inside a no-grad scope.
-inline const TensorPtr& tensor_propagate_grad(const TensorPtr& out) {
-  if (tensor_no_grad_depth() > 0) return out;
-  for (auto& in : out->inputs) {
-    if (in && in->requires_grad) {
-      out->requires_grad = true;
-      break;
+// Single source for every op-result node. A node requires grad iff any of
+// its inputs does (and we are not in a no-grad scope); the flag flows from
+// leaves the user marked up through the graph.
+//
+// The autograd tape (op tag + `inputs` + op_param) is recorded ONLY when the
+// result requires grad — backward walks requires_grad nodes only, so a
+// forward-only result never needs it. A non-grad result is built as a plain
+// Const leaf: no `inputs` chain to keep alive or tear down (the tl::array
+// value carries the real compute graph independently), and op=Const so a
+// later `.requires_grad()` + `.backward()` sees a well-formed leaf rather
+// than an op tag with no operands. `is_view` is preserved regardless — it
+// governs in-place-write refusal, not autograd.
+inline TensorPtr tensor_make_op(Op op, tl::array value, Dtype dtype,
+                                std::vector<TensorPtr> inputs,
+                                int64_t op_param = 0, bool is_view = false) {
+  bool rg = false;
+  if (tensor_no_grad_depth() == 0) {
+    for (auto& in : inputs) {
+      if (in && in->requires_grad) {
+        rg = true;
+        break;
+      }
     }
   }
+  if (!rg) {
+    return std::make_shared<TensorImpl>(Op::Const, std::move(value), dtype,
+                                        std::vector<TensorPtr>{}, is_view);
+  }
+  auto out = std::make_shared<TensorImpl>(op, std::move(value), dtype,
+                                          std::move(inputs), is_view);
+  out->op_param = op_param;
+  out->requires_grad = true;
   return out;
 }
 
@@ -485,9 +505,8 @@ inline TensorPtr tensor_binop(Op op, TensorPtr a, TensorPtr b) {
     return _tl_binop(op, a->value, b->value);
   });
   auto dtype = a->dtype;
-  return tensor_propagate_grad(std::make_shared<TensorImpl>(
-      op, std::move(v), dtype,
-      std::vector<TensorPtr>{std::move(a), std::move(b)}));
+  return tensor_make_op(op, std::move(v), dtype,
+                        std::vector<TensorPtr>{std::move(a), std::move(b)});
 }
 
 // Rank-0 Tensor holding a single scalar — used to lift scalar Float
@@ -544,10 +563,8 @@ inline TensorPtr tensor_reduce_axis(Op op, TensorPtr a, int64_t axis) {
     }
   });
   auto dtype = a->dtype;
-  auto t = std::make_shared<TensorImpl>(op, std::move(v), dtype,
-                                        std::vector<TensorPtr>{std::move(a)});
-  t->op_param = axis;
-  return tensor_propagate_grad(t);
+  return tensor_make_op(op, std::move(v), dtype,
+                        std::vector<TensorPtr>{std::move(a)}, axis);
 }
 
 // Eager axis-less reduction → scalar double. Used by the .sum() /
@@ -579,10 +596,9 @@ inline TensorPtr tensor_clone(TensorPtr t) {
 inline TensorPtr tensor_transpose(TensorPtr t) {
   auto v = _tl_guard([&] { return t->value.transpose(); });
   auto dtype = t->dtype;
-  auto out = std::make_shared<TensorImpl>(
-      Op::Transpose, std::move(v), dtype,
-      std::vector<TensorPtr>{std::move(t)}, /*view=*/true);
-  return tensor_propagate_grad(out);
+  return tensor_make_op(Op::Transpose, std::move(v), dtype,
+                        std::vector<TensorPtr>{std::move(t)},
+                        /*op_param=*/0, /*is_view=*/true);
 }
 
 // Slice along axis 0 (rows): [start, end). Matches Array's .slice()
@@ -596,11 +612,10 @@ inline TensorPtr tensor_slice(TensorPtr t, int64_t start, int64_t end) {
   }
   auto v = _tl_guard([&] { return t->value.slice(start, end - start); });
   auto dtype = t->dtype;
-  auto out = std::make_shared<TensorImpl>(
-      Op::Slice, std::move(v), dtype,
-      std::vector<TensorPtr>{std::move(t)}, /*view=*/true);
-  out->op_param = start;  // backward scatters g into rows [start, start+len)
-  return tensor_propagate_grad(out);
+  // op_param = start: backward scatters g into rows [start, start+len).
+  return tensor_make_op(Op::Slice, std::move(v), dtype,
+                        std::vector<TensorPtr>{std::move(t)},
+                        /*op_param=*/start, /*is_view=*/true);
 }
 
 // Build a lazy matrix multiply A @ B. A is [M, K], B is [K, N], the
@@ -619,9 +634,8 @@ inline TensorPtr tensor_dot(TensorPtr a, TensorPtr b) {
   }
   auto v = _tl_guard([&] { return a->value.dot(b->value); });
   auto dtype = a->dtype;
-  return tensor_propagate_grad(std::make_shared<TensorImpl>(
-      Op::Dot, std::move(v), dtype,
-      std::vector<TensorPtr>{std::move(a), std::move(b)}));
+  return tensor_make_op(Op::Dot, std::move(v), dtype,
+                        std::vector<TensorPtr>{std::move(a), std::move(b)});
 }
 
 // Build a lazy unary node (one input, same shape and dtype).
@@ -637,8 +651,8 @@ inline TensorPtr tensor_unary(Op op, TensorPtr a) {
     }
   });
   auto dtype = a->dtype;
-  return tensor_propagate_grad(std::make_shared<TensorImpl>(
-      op, std::move(v), dtype, std::vector<TensorPtr>{std::move(a)}));
+  return tensor_make_op(op, std::move(v), dtype,
+                        std::vector<TensorPtr>{std::move(a)});
 }
 
 inline TensorPtr tensor_log(TensorPtr a) {
@@ -665,9 +679,9 @@ inline TensorPtr tensor_linear_sigmoid(TensorPtr W, TensorPtr x, TensorPtr b) {
   auto v = _tl_guard(
       [&] { return (W->value.dot(x->value) + b->value).sigmoid(); });
   auto dtype = W->dtype;
-  return tensor_propagate_grad(std::make_shared<TensorImpl>(
+  return tensor_make_op(
       Op::LinearSigmoid, std::move(v), dtype,
-      std::vector<TensorPtr>{std::move(W), std::move(x), std::move(b)}));
+      std::vector<TensorPtr>{std::move(W), std::move(x), std::move(b)});
 }
 
 // View with a different shape. Phase 1 only allows contiguous inputs;
@@ -686,10 +700,9 @@ inline TensorPtr tensor_reshape(TensorPtr t, TensorShape new_shape) {
   }
   auto v = _tl_guard([&] { return t->value.reshape(new_shape.dims); });
   auto dtype = t->dtype;
-  auto out = std::make_shared<TensorImpl>(
-      Op::Reshape, std::move(v), dtype,
-      std::vector<TensorPtr>{std::move(t)}, /*view=*/true);
-  return tensor_propagate_grad(out);
+  return tensor_make_op(Op::Reshape, std::move(v), dtype,
+                        std::vector<TensorPtr>{std::move(t)},
+                        /*op_param=*/0, /*is_view=*/true);
 }
 
 // Stack tensors along axis 0 (rows). All parts must share dtype and all
@@ -722,8 +735,7 @@ inline TensorPtr tensor_concat(std::vector<TensorPtr> parts) {
     for (const auto& p : parts) vs.push_back(p->value);
     return tl::concat(vs);
   });
-  return tensor_propagate_grad(std::make_shared<TensorImpl>(
-      Op::Concat, std::move(v), dt, std::move(parts)));
+  return tensor_make_op(Op::Concat, std::move(v), dt, std::move(parts));
 }
 
 // ===================== Autograd (reverse mode) =====================
@@ -943,6 +955,10 @@ inline void _tensor_vjp(const TensorPtr& n) {
 
 // backward(): seed dL/droot = 1 and propagate through the whole graph.
 inline void tensor_backward(const TensorPtr& root) {
+  // VJPs build gradient tensors with the same op builders as forward; culebra
+  // has no double-backward (grad is always a Const), so those intermediates
+  // never need their own tape. Suppress it for the whole reverse pass.
+  TensorNoGradGuard no_grad;
   tensor_eval_node(*root);
   std::vector<TensorPtr> topo;
   std::unordered_set<TensorImpl*> visited;

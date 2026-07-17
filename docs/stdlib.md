@@ -1288,9 +1288,12 @@ reshaping. `loss.item()` replaces `to_float(loss.to_array()[0])`.
 ### Autograd (reverse-mode)
 
 The Tensor primitive carries a native reverse-mode autodiff engine: the
-forward graph every lazy op already records doubles as the tape, and
-`.backward()` walks it in C++. No script-level wrapper is needed — the
-same op that computes a value also knows its vector-Jacobian product.
+forward graph doubles as the tape, and `.backward()` walks it in C++. No
+script-level wrapper is needed — the same op that computes a value also
+knows its vector-Jacobian product. The tape is recorded only for ops that
+feed a `requires_grad` leaf; forward-only work (inference, or a training
+loop that writes its own backward) records none, so it costs no more than
+the underlying tensor library.
 
 | Method | Returns | Description |
 |---|---|---|

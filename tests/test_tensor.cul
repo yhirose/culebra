@@ -361,4 +361,35 @@ model.W -= Tensor.from([[2.0]])
 Tensor.eval(alias_W)
 assert_eq(to_float(alias_W.to_array()[0][0]), 3.0)
 
+// --- autograd: y = sum(x*x) -> dy/dx = 2x ---
+mut ag_x = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
+ag_x = ag_x.requires_grad()
+let ag_y = (ag_x * ag_x).reshape([4]).sum(0)
+ag_y.backward()
+assert_eq(to_float(ag_y.item()), 30.0)
+let ag_g = ag_x.grad().to_array()
+assert_eq(to_float(ag_g[0][0]), 2.0)
+assert_eq(to_float(ag_g[1][1]), 8.0)
+
+// autograd through matmul: d/dw sum(w @ x) = row-sums of x
+mut ag_w = Tensor.from([[0.5, -0.5], [1.0, 1.0]])
+ag_w = ag_w.requires_grad()
+let ag_h = ag_w.dot(ag_x).reshape([4]).sum(0)
+ag_h.backward()
+let ag_wg = ag_w.grad().to_array()
+assert_eq(to_float(ag_wg[0][0]), 3.0)
+assert_eq(to_float(ag_wg[0][1]), 7.0)
+
+// Regression: a forward-only result (both operands non-grad -> the op tape
+// is elided, node is a Const leaf) marked requires_grad() after the fact
+// must backward cleanly, giving grad=ones — not crash on an op tag whose
+// operands were never recorded.
+mut ag_z = Tensor.from([[1.0, 2.0], [3.0, 4.0]]).dot(
+             Tensor.from([[1.0, 0.0], [0.0, 1.0]]))
+ag_z = ag_z.requires_grad()
+ag_z.backward()
+let ag_zg = ag_z.grad().to_array()
+assert_eq(to_float(ag_zg[0][0]), 1.0)
+assert_eq(to_float(ag_zg[1][1]), 1.0)
+
 puts("test_tensor: OK")
