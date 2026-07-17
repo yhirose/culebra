@@ -302,3 +302,18 @@ shape needs (or doesn't need) the GPU path; and don't read the
 absolute per-epoch gap against silarray as a Culebra-runtime cost —
 most of it is the tensor library, and only ~1.5-1.9x of it is
 Culebra.
+
+**Update — both factors since reduced.** The table above is the
+decomposition that motivated two follow-up changes; each attacked one
+factor. (1) Culebra's runtime factor: forward-only work like this
+manual-backprop loop no longer records an autograd tape (it walks
+requires_grad nodes only), removing the per-op wrapper build/teardown —
+the `.cul` epoch dropped from ~5.2 s to ~3.2 s. (2) The library factor:
+`cpp-tensorlib` gained contiguous fast paths for axis reductions and
+rank-2 broadcast (flat pointer loops instead of the generic strided
+coordinate walker), ~20-24% faster on this step — the `_tl.cpp` C++
+baseline dropped to ~2.6 s and the combined `.cul` epoch to ~2.1-2.3 s
+(same-machine mins; cross-run numbers drift with thermal state).
+silarray's remaining lead is now mostly kernel fusion (it folds bias +
+activation into single passes); that fusion is the next lever on the
+library side.
