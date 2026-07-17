@@ -884,7 +884,15 @@ let eff = [
   'effect fn emit(v); effect fn prod() { perform emit(1); perform emit(2); "done" }; mut seen = []; let c = handle { prod() } with emit(v, r) { seen.push(v); r(nil) }; to_string(seen) + c',
   'effect fn twice(n); effect fn dbl() { let y = perform twice(5); y + 100 }; handle { dbl() } with twice(n, r) { r(n * 2) }',
   # no handler for the performed op -> EffectError (same on both backends)
-  'effect fn get(); handle { let x = perform get(); x } with other(r) { r(1) }']
+  'effect fn get(); handle { let x = perform get(); x } with other(r) { r(1) }',
+  # A-normalization: perform nested in an expression is hoisted at parse
+  # time, so both backends run the same lowered statement-level performs.
+  'effect fn get(); effect fn c() { let x = perform get() + 1; x }; handle { c() } with get(r) { r(41) }',
+  'effect fn get(); fn ad(a, b) { a + b }; effect fn c() { let y = ad(perform get(), 2); y }; handle { c() } with get(r) { r(40) }',
+  'effect fn emit(v); effect fn c() { let z = perform emit(1) + perform emit(2); z }; mut s = []; let r = handle { c() } with emit(v, k) { s.push(v); k(v * 10) }; to_string(s) + to_string(r)',
+  'effect fn wrap(v); effect fn c() { let w = perform wrap(perform wrap(1)); w }; handle { c() } with wrap(v, k) { k(v + 100) }',
+  'effect fn get(); effect fn c() { return perform get() * 3 }; handle { c() } with get(r) { r(7) }',
+  'effect fn get(); effect fn c() { let xs = [10, 20, 30]; let v = xs[perform get()]; v }; handle { c() } with get(r) { r(1) }']
 for c in eff {
   case("eff|" + c, c)
 }

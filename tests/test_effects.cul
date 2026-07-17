@@ -84,3 +84,85 @@ assert_eq(e2, 14)
 // --- effect-free code is completely unaffected ---
 fn plain(n) { n * n }
 assert_eq(plain(6), 36)
+
+// === A-normalization: expression-nested perform ==========================
+// A `perform` buried in an expression is hoisted, at parse time, to a
+// statement-level binding (ANF) so the straight-line splitter lowers it.
+// Only unconditionally-evaluated positions are supported; a perform in a
+// short-circuit / ternary operand or behind a method chain is rejected
+// symmetrically (see the reject cases at the bottom).
+
+// perform in a binary expression
+effect fn anf_get()
+effect fn anf_binary() {
+  let x = perform anf_get() + 1
+  x
+}
+assert_eq(handle { anf_binary() } with anf_get(resume) { resume(41) }, 42)
+
+// perform as a positional call argument
+fn add2(a, b) { a + b }
+effect fn anf_arg() {
+  let y = add2(perform anf_get(), 2)
+  y
+}
+assert_eq(handle { anf_arg() } with anf_get(resume) { resume(40) }, 42)
+
+// two performs, left-to-right evaluation order
+mut anf_order = []
+effect fn anf_emit(v)
+effect fn anf_two() {
+  let z = perform anf_emit(1) + perform anf_emit(2)
+  z
+}
+let anf_r = handle { anf_two() } with anf_emit(v, resume) {
+  anf_order.push(v)
+  resume(v * 10)
+}
+assert_eq(anf_order, [1, 2])
+assert_eq(anf_r, 30)
+
+// nested perform inside a perform's argument (single handler)
+effect fn anf_wrap(v)
+effect fn anf_nested() {
+  let w = perform anf_wrap(perform anf_wrap(1))
+  w
+}
+// inner wrap(1) -> 101; outer wrap(101) -> 201
+assert_eq(handle { anf_nested() } with anf_wrap(v, resume) { resume(v + 100) },
+          201)
+
+// perform in a return expression
+effect fn anf_ret() {
+  return perform anf_get() * 3
+}
+assert_eq(handle { anf_ret() } with anf_get(resume) { resume(7) }, 21)
+
+// perform as a subscript index
+effect fn anf_index() {
+  let xs = [10, 20, 30]
+  let v = xs[perform anf_get()]
+  v
+}
+assert_eq(handle { anf_index() } with anf_get(resume) { resume(1) }, 20)
+
+// a left operand's side effect runs before the suspension it precedes
+mut anf_trace = []
+fn anf_se(tag, val) { anf_trace.push(tag); val }
+effect fn anf_order_fn() {
+  let q = anf_se("left", 100) + perform anf_get()
+  q
+}
+let anf_q = handle { anf_order_fn() } with anf_get(resume) {
+  anf_trace.push("handler")
+  resume(1)
+}
+assert_eq(anf_trace, ["left", "handler"])
+assert_eq(anf_q, 101)
+
+// perform as an array element
+effect fn anf_arr() {
+  let arr = [perform anf_get(), 2, 3]
+  arr
+}
+assert_eq(handle { anf_arr() } with anf_get(resume) { resume(1) }, [1, 2, 3])

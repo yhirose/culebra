@@ -34,9 +34,11 @@
 #include "generator_transform.h"
 #include "parser.h"
 
+#include <algorithm>
 #include <format>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -303,6 +305,367 @@ class EffectsLowerer {
     return su;
   }
 
+  // --- A-normalization (expression-nested perform) ---------------------
+  //
+  // The straight-line splitter (`build_step`) only lowers a suspension that
+  // sits at statement level (`let x = perform …` / a bare `perform …`). A
+  // `perform` buried in a larger expression (`let x = f(perform a()) + 1`)
+  // is first hoisted, here, into a sequence of statement-level bindings —
+  // ANF (administrative-normal form) — so the splitter then handles it with
+  // no changes. This is a source pre-pass over the (already re-parsed) body:
+  // every `perform` / effect-fn call in an expression position is bound to a
+  // fresh `_anf_N` temp, in left-to-right evaluation order, and operands to
+  // the left of a suspension are frozen into temps so their evaluation order
+  // (and side effects) are preserved across the suspension.
+  //
+  // Scope of this slice (matching the thin-slice's "reject, don't guess"
+  // stance): only *unconditionally-evaluated* positions are hoisted —
+  // arithmetic / comparison / bitwise chains, unary operators, positional
+  // call arguments, subscripts, and array elements. A `perform` in a
+  // conditionally-evaluated position (`&&` / `||` / `??` right arm, a
+  // ternary arm) or behind a non-trivial callee (a method chain whose
+  // receiver would need freezing) is rejected with a symmetric SyntaxError —
+  // generated-`if` guards and receiver freezing are the next sub-cycle.
+  // Because this is a parse-time rewrite, interp / JIT / AOT stay in step
+  // for free, rejections included ([[feedback-check-jit-interp-symmetry]]).
+
+  static bool is_operator_node(const peg::Ast& n) {
+    // Operator leaves in the precedence chain are named `*_OPERATOR`
+    // (ADDITIVE_OPERATOR, MULTIPLICATIVE_OPERATOR, CONDITION_OPERATOR, …);
+    // everything else at a chain node's children is an operand.
+    static const std::string suffix = "_OPERATOR";
+    const std::string& s = n.name;
+    return s.size() >= suffix.size() &&
+           std::equal(suffix.rbegin(), suffix.rend(), s.rbegin());
+  }
+
+  // A re-evaluable leaf: a literal or a bare identifier. Freezing one before a
+  // suspension is unnecessary (a literal has no side effect; an identifier
+  // resolves to a stable `this.<local>` that a handler cannot mutate).
+  static bool is_atom(const peg::Ast& n) {
+    using namespace peg::udl;
+    switch (n.tag) {
+      case "NUMBER"_:
+      case "FLOAT"_:
+      case "STRING"_:
+      case "RAW_STRING"_:
+      case "BOOLEAN"_:
+      case "NIL"_:
+      case "IDENTIFIER"_:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  // Infix chains whose operands are *all* evaluated left-to-right (no
+  // short-circuit), so any operand is a safe hoist site.
+  static bool is_eager_chain(unsigned int tag) {
+    using namespace peg::udl;
+    return tag == "ADDITIVE"_ || tag == "MULTIPLICATIVE"_ || tag == "POWER"_ ||
+           tag == "CONDITION"_ || tag == "BIT_OR"_ || tag == "BIT_XOR"_ ||
+           tag == "BIT_AND"_ || tag == "SHIFT"_ || tag == "RANGE"_;
+  }
+
+  static bool is_unary(unsigned int tag) {
+    using namespace peg::udl;
+    return tag == "UNARY_PLUS"_ || tag == "UNARY_MINUS"_ ||
+           tag == "UNARY_NOT"_ || tag == "UNARY_BNOT"_;
+  }
+
+  std::string fresh_temp(int& ctr) const {
+    return std::format("_anf_{}", ctr++);
+  }
+
+  // Strip the enclosing `[ … ]` from a (pos/len-polluted) subscript slice.
+  static std::string strip_index_brackets(std::string_view s) {
+    size_t lb = s.find('[');
+    size_t rb = s.rfind(']');
+    if (lb != std::string_view::npos && rb != std::string_view::npos &&
+        rb > lb) {
+      return std::string(s.substr(lb + 1, rb - lb - 1));
+    }
+    return std::string(s);
+  }
+
+  // ANF an expression given as source text (used to sidestep pos/len
+  // pollution): re-parse it, on its own clean buffer, as the RHS of a throwaway
+  // `let`, then ANF that clean subtree — hoists and the temp counter thread
+  // through the caller's. `context` only supplies a position for a parse-error
+  // rejection.
+  std::string anf_reparsed(const std::string& expr_src,
+                           const peg::Ast& context, int& ctr,
+                           std::vector<std::string>& hoists) const {
+    using namespace peg::udl;
+    auto buf = std::make_shared<std::string>("let __anf_e = " + expr_src + "\n");
+    auto prog = parse_registered_source("<eff-anf-expr>", buf);
+    const peg::Ast* expr = nullptr;
+    if (prog) {
+      std::function<void(const peg::Ast&)> walk = [&](const peg::Ast& n) {
+        if (expr) return;
+        if (n.tag == "ASSIGNMENT"_) {
+          expr = view_assignment(n).rhs;
+          return;
+        }
+        for (auto& c : n.nodes) walk(*c);
+      };
+      walk(*prog);
+    }
+    if (!expr) reject_unsupported_expr(context);
+    EffectsLowerer sub(buf->data(), buf->size(), effect_fns_);
+    return sub.anf(*expr, ctr, hoists);
+  }
+
+  [[noreturn]] void reject_conditional(const peg::Ast& n) const {
+    throw CulebraError(
+        "SyntaxError",
+        "a `perform` in a short-circuit (`&&` / `||` / `??`) or ternary "
+        "(`? :`) operand is not supported yet — bind it first "
+        "(`let x = perform …`).",
+        static_cast<long>(n.line), static_cast<long>(n.column));
+  }
+  [[noreturn]] void reject_complex_callee(const peg::Ast& n) const {
+    throw CulebraError(
+        "SyntaxError",
+        "a `perform` behind a method chain / computed callee is not supported "
+        "yet — bind the receiver or the argument first "
+        "(`let r = obj.foo(); let a = perform …`).",
+        static_cast<long>(n.line), static_cast<long>(n.column));
+  }
+  [[noreturn]] void reject_unsupported_expr(const peg::Ast& n) const {
+    throw CulebraError(
+        "SyntaxError",
+        "a `perform` in this expression position is not supported yet — bind "
+        "it first (`let x = perform …`).",
+        static_cast<long>(n.line), static_cast<long>(n.column));
+  }
+
+  // Replace, in `node`'s source, each of `operands`' spans with the aligned
+  // residual text, keeping every byte in between (operators, delimiters,
+  // parentheses) verbatim. Operands are siblings in source order, so editing
+  // right-to-left keeps earlier offsets valid.
+  std::string splice_operands(const peg::Ast& node,
+                              const std::vector<const peg::Ast*>& operands,
+                              const std::vector<std::string>& residuals) const {
+    std::string out(slice(node));
+    size_t base = node.position;
+    for (size_t i = operands.size(); i-- > 0;) {
+      size_t off = operands[i]->position - base;
+      out.replace(off, operands[i]->length, residuals[i]);
+    }
+    return out;
+  }
+
+  // Normalize an ordered operand list. Every operand left of the rightmost
+  // suspension is fully evaluated now — hoisted (if it suspends) then frozen
+  // into a temp (unless it is an atom) — so left-to-right order survives the
+  // suspension. The rightmost suspending operand is hoisted but its residual
+  // may stay in place; operands to its right are emitted verbatim (nothing
+  // after them suspends).
+  std::vector<std::string> anf_operands(
+      const std::vector<const peg::Ast*>& operands, int& ctr,
+      std::vector<std::string>& hoists) const {
+    int k = -1;
+    for (int i = 0; i < static_cast<int>(operands.size()); i++) {
+      if (has_suspension(*operands[i])) k = i;
+    }
+    std::vector<std::string> out(operands.size());
+    for (int i = 0; i < static_cast<int>(operands.size()); i++) {
+      const peg::Ast& op = *operands[i];
+      if (i < k) {
+        std::string r = has_suspension(op) ? anf(op, ctr, hoists)
+                                           : std::string(slice(op));
+        if (is_atom(op) && !has_suspension(op)) {
+          out[i] = std::move(r);
+        } else {
+          std::string t = fresh_temp(ctr);
+          hoists.push_back(std::format("let {} = ({})", t, r));
+          out[i] = std::move(t);
+        }
+      } else if (i == k) {
+        out[i] = anf(op, ctr, hoists);
+      } else {
+        out[i] = std::string(slice(op));
+      }
+    }
+    return out;
+  }
+
+  // Positional-argument nodes of a call/perform ARGUMENTS list. Rejects the
+  // whole call if it carries a kwarg / `**` splat while also suspending (the
+  // thin slice can't reorder those around a hoist).
+  std::vector<const peg::Ast*> call_operands(const peg::Ast& args) const {
+    using namespace peg::udl;
+    std::vector<const peg::Ast*> ops;
+    for (auto& c : args.nodes) {
+      if (c->tag == "KWARG"_ || c->tag == "KWARG_SPLAT"_) {
+        throw CulebraError(
+            "SyntaxError",
+            "keyword / splat arguments are not supported alongside a nested "
+            "`perform` yet.",
+            static_cast<long>(c->line), static_cast<long>(c->column));
+      }
+      ops.push_back(c.get());
+    }
+    return ops;
+  }
+
+  // Expression-mode ANF: append hoist statements to `hoists`, return the
+  // suspension-free residual source for `node`. Any perform / effect-fn call,
+  // including the outermost, becomes a fresh temp.
+  std::string anf(const peg::Ast& node, int& ctr,
+                  std::vector<std::string>& hoists) const {
+    using namespace peg::udl;
+    if (!has_suspension(node)) return std::string(slice(node));
+
+    if (node.tag == "PERFORM"_ || is_effect_call(node)) {
+      // A suspending call in expression position: normalize its args in place
+      // (`anf_keep_call`), then hoist the whole call into a fresh temp.
+      std::string call = anf_keep_call(node, ctr, hoists);
+      std::string t = fresh_temp(ctr);
+      hoists.push_back(std::format("let {} = {}", t, call));
+      return t;
+    }
+    if (is_eager_chain(node.tag)) {
+      std::vector<const peg::Ast*> ops;
+      for (auto& c : node.nodes)
+        if (!is_operator_node(*c)) ops.push_back(c.get());
+      auto res = anf_operands(ops, ctr, hoists);
+      return splice_operands(node, ops, res);
+    }
+    if (is_unary(node.tag)) {
+      std::vector<const peg::Ast*> ops{node.nodes.back().get()};
+      auto res = anf_operands(ops, ctr, hoists);
+      return splice_operands(node, ops, res);
+    }
+    if (node.tag == "CALL"_) {
+      // Only a plain `name(args)` or `name[index]` is lowerable: the base is a
+      // bare identifier (an atom, no freeze). Anything else (a method chain, a
+      // call/index on a call) would need receiver freezing — deferred.
+      if (node.nodes.size() != 2 || node.nodes[0]->tag != "IDENTIFIER"_) {
+        reject_complex_callee(node);
+      }
+      // The postfix's original_tag names its kind — INDEX/DOT collapse onto
+      // their inner expression, so `tag` alone can't tell a subscript from a
+      // member (same mechanism the interpreter dispatches on).
+      const peg::Ast& post = *node.nodes[1];
+      if (post.original_tag == "ARGUMENTS"_) {
+        auto ops = call_operands(post);  // plain call: hoist positional args
+        auto res = anf_operands(ops, ctr, hoists);
+        return splice_operands(node, ops, res);
+      }
+      if (post.original_tag == "INDEX"_) {
+        // `[ EXPR ]` collapses onto EXPR but leaves its span covering the
+        // brackets (the AstOptimizer single-child pos/len trap — see
+        // [[peglib-ast-optimizer]]), so slicing/splicing it directly would
+        // eat the brackets. Re-parse the bracket-trimmed index as a
+        // standalone expression for clean positions, ANF it, and rebuild
+        // `base[<residual>]`.
+        std::string idx_res = anf_reparsed(strip_index_brackets(slice(post)),
+                                           node, ctr, hoists);
+        return std::string(slice(*node.nodes[0])) + "[" + idx_res + "]";
+      }
+      reject_complex_callee(node);  // member (DOT) / computed callee
+    }
+    if (node.tag == "ARRAY"_) {
+      const peg::Ast& seq = *node.nodes[0];
+      std::vector<const peg::Ast*> ops;
+      for (auto& c : seq.nodes) {
+        if (c->tag == "SPREAD_ELEM"_ && has_suspension(*c)) {
+          reject_unsupported_expr(*c);
+        }
+        ops.push_back(c.get());
+      }
+      auto res = anf_operands(ops, ctr, hoists);
+      return splice_operands(node, ops, res);
+    }
+    if (node.tag == "LOGICAL_AND"_ || node.tag == "LOGICAL_OR"_ ||
+        node.tag == "NIL_COALESCE"_ || node.tag == "CONDITIONAL"_) {
+      reject_conditional(node);
+    }
+    reject_unsupported_expr(node);
+  }
+
+  // Statement-mode ANF: like `anf`, but a `perform` / effect-fn call already
+  // at statement level (a bare call, or a `let x = perform …` RHS) is KEPT
+  // there — only its nested arguments are hoisted — so `build_step` still sees
+  // the clean statement-level shape it lowers directly.
+  std::string anf_keep_call(const peg::Ast& call, int& ctr,
+                            std::vector<std::string>& hoists) const {
+    auto ops = call_operands(*call.nodes[1]);
+    auto res = anf_operands(ops, ctr, hoists);
+    return splice_operands(call, ops, res);
+  }
+
+  // True if a statement-level perform/effect-call carries a suspension inside
+  // its arguments (so its args need hoisting even though the call stays put).
+  bool args_have_suspension(const peg::Ast& call) const {
+    return call.nodes.size() > 1 && has_suspension(*call.nodes[1]);
+  }
+
+  // Normalize one body statement. Returns nullopt when nothing needed hoisting
+  // (the caller emits the statement verbatim); otherwise the returned source is
+  // the hoist lines followed by the residual statement.
+  std::optional<std::string> anf_statement(const peg::Ast* stmt,
+                                           int& ctr) const {
+    using namespace peg::udl;
+    const peg::Ast* s = unwrap_stmt(stmt);
+    std::vector<std::string> hoists;
+    std::string residual_stmt;
+
+    if (s->tag == "RETURN"_) {
+      if (s->nodes.empty() || !has_suspension(*s->nodes[0])) return std::nullopt;
+      std::string r = anf(*s->nodes[0], ctr, hoists);
+      residual_stmt = splice_operands(*s, {s->nodes[0].get()}, {r});
+    } else if (s->tag == "ASSIGNMENT"_) {
+      auto av = view_assignment(*s);
+      const peg::Ast* rhs = av.rhs;
+      if (!has_suspension(*rhs)) return std::nullopt;
+      std::string r;
+      if (rhs->tag == "PERFORM"_ || is_effect_call(*rhs)) {
+        if (!args_have_suspension(*rhs)) return std::nullopt;  // already clean
+        r = anf_keep_call(*rhs, ctr, hoists);
+      } else {
+        r = anf(*rhs, ctr, hoists);
+      }
+      residual_stmt = splice_operands(*s, {rhs}, {r});
+    } else {
+      // bare expression statement
+      if (!has_suspension(*s)) return std::nullopt;
+      if (s->tag == "PERFORM"_ || is_effect_call(*s)) {
+        if (!args_have_suspension(*s)) return std::nullopt;
+        residual_stmt = anf_keep_call(*s, ctr, hoists);
+      } else {
+        residual_stmt = anf(*s, ctr, hoists);
+      }
+    }
+
+    std::string out;
+    for (auto& h : hoists) out += h + "\n";
+    out += residual_stmt;
+    return out;
+  }
+
+  // Whole-body ANF pass. Returns the rewritten body source when any statement
+  // needed hoisting, else nullopt (so the proven straight-line path runs
+  // unchanged for bodies with no expression-nested performs).
+  std::optional<std::string> anf_program(const peg::Ast& program) const {
+    auto stmts = body_stmts(program);
+    int ctr = 0;
+    bool changed = false;
+    std::string out;
+    for (auto* st : stmts) {
+      if (auto expanded = anf_statement(st, ctr)) {
+        changed = true;
+        out += *expanded;
+      } else {
+        out += std::string(slice(*st));
+      }
+      if (out.empty() || out.back() != '\n') out += "\n";
+    }
+    return changed ? std::optional<std::string>(std::move(out)) : std::nullopt;
+  }
+
   // Lower a straight-line body (BLOCK) into the `_step(_rv)` dispatch source
   // plus the `this._<field> = nil` seeds a ctor needs beyond params/locals.
   // `rewrite` = params + body locals (moved to `this.` so they persist across
@@ -419,6 +782,21 @@ class EffectsLowerer {
     if (!rb.program) {
       throw CulebraError("InternalError",
                          "effects transform could not re-parse a body", 0, 0);
+    }
+    // A-normalization: hoist any expression-nested `perform` to statement
+    // level, then re-parse the flattened body so `build_step` sees only
+    // statement-level suspensions. Bodies with none skip this entirely.
+    EffectsLowerer anf_pass(rb.source->data(), rb.source->size(), effect_fns_);
+    if (auto normalized = anf_pass.anf_program(*rb.program)) {
+      auto src2 = std::make_shared<std::string>(std::move(*normalized));
+      auto prog2 = parse_registered_source("<eff-anf>", src2);
+      if (!prog2) {
+        throw CulebraError(
+            "InternalError",
+            "effects A-normalization produced unparseable source", 0, 0);
+      }
+      EffectsLowerer sub(src2->data(), src2->size(), effect_fns_);
+      return sub.build_class_from_program(class_name, *prog2, param_names);
     }
     EffectsLowerer sub(rb.source->data(), rb.source->size(), effect_fns_);
     return sub.build_class_from_program(class_name, *rb.program, param_names);
