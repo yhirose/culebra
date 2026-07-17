@@ -46,6 +46,10 @@ Training (benchmark):
 - `train_bench_torch.py`  — PyTorch training; `DEVICE=cpu|mps`
 - `train_bench.jl`        — Julia training (LinearAlgebra, hand-coded)
 - `train_bench.cul`       — Culebra Tensor training (matched to `train_bench_numpy.py`)
+- `train_bench_autoencoder.cul` — Culebra Tensor autoencoder training
+                            (784-512-256-64-256-512-784, mini-batch SGD),
+                            a shape deep/wide enough to actually cross the
+                            GPU/CPU threshold — see "GPU vs CPU" below.
 
 Other:
 - `bench.sh`              — runs every implementation $RUNS× and reports means
@@ -85,6 +89,10 @@ julia      benchmarks/mnist/train_bench.jl
 
 # Or run everything 3× via the bench harness
 ./benchmarks/mnist/bench.sh 3
+
+# Autoencoder (needs the full 60000-sample training set, not the 10000 subset)
+python3.11 benchmarks/mnist/prep_train.py 60000
+./build/culebra --jit benchmarks/mnist/train_bench_autoencoder.cul [cpu|gpu|auto]
 ```
 
 `python3.11` is used for any script that imports numpy or torch; pure
@@ -216,3 +224,51 @@ against numpy-style broadcast and the same trio of `linear_sigmoid`
 automatically or via `tl::use_cpu()`/`tl::use_gpu()`; this MNIST-size
 MLP stays on CPU by default since it's too small to benefit (see
 above).
+
+### GPU vs CPU: a shape that actually crosses the threshold
+
+The classifier above (784-30-10, or even a widened 784-512-10 run in
+a single full-batch step) never crosses `cpp-tensorlib`'s per-kernel
+GPU/CPU size threshold (`auto_threshold_()` in
+`vendor/cpp-tensorlib/include/types.h`, ~2e9 for matmul on Metal):
+its output layer is always `M=10` (ten digit classes), so that op's
+`M*N*K` stays small regardless of batch size or hidden width, and
+forcing `Tensor.use_gpu()` on the whole network makes it *slower*
+than CPU (confirmed against `sil-gpu`/`mlx-gpu`/`torch-gpu` on the
+same 784-50-10 shape in `~/Projects/silarray/bench`, which all show
+the same 4-12x GPU slowdown — this is shape, not a Culebra quirk).
+
+`train_bench_autoencoder.cul` uses a deeper, wider shape instead:
+784-512-256-64-256-512-784 (sigmoid, MSE, SGD, batch=100, 1 epoch =
+600 steps over the full 60,000-image training set), matching
+`~/Projects/silarray/bench/mnist/bench_autoencoder.cpp`. Mini-batch
+SGD over many steps also lets the GPU backend pipeline consecutive
+kernel dispatches, unlike a single giant full-batch step. Apple
+Silicon (M1 Pro), mean of 2 runs:
+
+| device                | warm (1 epoch) |
+|------------------------|---------------:|
+| `Tensor.use_cpu()`     | ~5.50 s |
+| `Tensor.use_gpu()`     | ~5.05 s |
+| `Tensor.use_auto()`    | ~4.94 s |
+
+GPU/auto beat CPU here (~8-15%), the opposite of the classifier
+shape — but the margin is smaller than silarray's own measurement on
+the identical architecture (CPU 914 ms vs GPU 621 ms, ~1.5x), and
+Culebra's absolute per-epoch time (~5 s) is 6-9x silarray's
+(600-900 ms). silarray's loop is raw C++ over `sil::array<float>`
+values on the stack; Culebra's script creates ~30-40 new `Tensor`
+objects per step (forward outputs, `dnet`/`dW`/`db`/`input_l` per
+layer, updated `Ws[l]`/`bs[l]`) — each one a GC-tracked Object on top
+of its `cpp-tensorlib` handle, and `Array` indexing (`Ws[l]`,
+`outs[l]`) goes through tagged-value boxing. Across 600 steps that's
+~20-25k GC-registered objects, paying the same per-object
+adopt+refcount tax Culebra's object model pays generally (see the
+scalar-vs-Python analysis in `benchmarks/microgpt/README.md`) — a
+language-runtime cost that's roughly backend-independent,
+so it compresses the CPU/GPU *ratio* without changing its direction.
+Compare backends directly with
+`Tensor.use_cpu()`/`use_gpu()`/`use_auto()` before assuming a given
+shape needs (or doesn't need) the GPU path; don't compare Culebra's
+absolute per-epoch time against a raw-C++ library benchmark like
+silarray's.
