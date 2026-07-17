@@ -2981,6 +2981,11 @@ inline JitValue _ns_global_hash(JitValue* a, int64_t) {
   return _ns_adapt::v_long(
       culebra_runtime_hash_any(a[0].tag, a[0].data, 0, 0));
 }
+inline JitValue _ns_global_eff_copy(JitValue* a, int64_t) {
+  if (a[0].tag != TAG_OBJECT) return a[0];   // symmetric with interp's passthrough
+  return _ns_adapt::v_object(
+      culebra_runtime_eff_copy(reinterpret_cast<JitObject*>(a[0].data)));
+}
 
 // range/iota as first-class values, via the args-rest NsParamMeta (kRangeMeta
 // / kIotaMeta): the resolver/trampoline hand a canonical slab whose first slot
@@ -6306,6 +6311,7 @@ inline const NsMethod kBuiltinFns[] = {
   {"", "to_float",  1, &_ns_global_to_float},
   {"", "to_string", 1, &_ns_global_to_string},
   {"", "hash",      1, &_ns_global_hash},
+  {"", "__eff_copy", 1, &_ns_global_eff_copy},
   {"", "range",    -1, &_ns_global_range},
   {"", "iota",     -1, &_ns_global_iota},
 };
@@ -8246,7 +8252,7 @@ inline llvm::Value* JitExtension::emit_output_call(JIT& jit,
 inline bool JitExtension::is_builtin_var(const std::string& name) {
   static const std::unordered_set<std::string_view> names = {
       "puts",    "print",
-      "to_long", "to_float",  "to_string", "type_of", "hash",
+      "to_long", "to_float",  "to_string", "type_of", "hash", "__eff_copy",
       "Math",    "IO",        "FS",        "File",     "Embed",   "_Time",
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
       "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel",

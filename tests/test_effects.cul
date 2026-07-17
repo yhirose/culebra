@@ -1,12 +1,12 @@
 // Conformance: algebraic effects (thin slice).
 // `effect fn` / `perform` / `handle … with` lower, at parse time, onto
 // synthesized computation classes + the `__Eff` runtime (dynamically-scoped
-// handler stack + one-shot resume). All three backends run the lowered code,
+// handler stack + multi-shot resume). All three backends run the lowered code,
 // so behaviour is symmetric by construction. This slice covers straight-line
-// bodies, statement-level performs, one-shot resume, dynamic scope (perform
-// inside a called effect fn), A-normalization, control-flow bodies (if / while
-// / for with break / continue / return), and nested handles. Multiple handler
-// clauses and multi-shot resume are the next cycle.
+// bodies, statement-level performs, one-shot and multi-shot resume, dynamic
+// scope (perform inside a called effect fn), A-normalization, control-flow
+// bodies (if / while / for with break / continue / return), nested handles,
+// and multiple handler clauses.
 
 // --- dynamic scope: perform inside a called effect fn ---
 effect fn get()
@@ -479,3 +479,58 @@ let rc_s = handle {
 assert_eq(rc_s.sum, 6)
 assert_eq(rc_s.count, 3)
 assert_eq(rc_notes, [1, 2, 3])
+
+// --- multi-shot resume: a handler may resume the same continuation N times ---
+
+// single suspension, resumed twice
+effect fn ms_choose(a, b)
+effect fn ms_collect() {
+  let x = perform ms_choose(1, 2)
+  x * 10
+}
+let ms1 = handle { ms_collect() } with ms_choose(a, b, r) { [r(a), r(b)] }
+assert_eq(ms1, [10, 20])
+
+// two suspensions, each resumed twice -> a 2x2 tree of results
+effect fn ms_pair() {
+  let x = perform ms_choose(1, 2)
+  let y = perform ms_choose(10, 20)
+  x + y
+}
+let ms2 = handle { ms_pair() } with ms_choose(a, b, r) { [r(a), r(b)] }
+assert_eq(ms2, [[11, 21], [12, 22]])
+
+// the continuation spans a delegate boundary: `* 10` runs once per fork
+effect fn ms_inner() { perform ms_choose(1, 2) }
+let ms3 = handle { let y = ms_inner() * 10; y } with ms_choose(a, b, r) {
+  [r(a), r(b)]
+}
+assert_eq(ms3, [10, 20])
+
+// shallow clone aliases referenced heap values across forks
+effect fn ms_log() {
+  let acc = []
+  let x = perform ms_choose(1, 2)
+  acc.push(x)
+  acc
+}
+mut ms_seen = []
+handle { ms_log() } with ms_choose(a, b, r) {
+  ms_seen.push(r(a))
+  ms_seen.push(r(b))
+}
+assert_eq(ms_seen[0], [1, 2])   // both forks appended into the same array
+
+// the return clause maps each fork's completion, not the aggregate
+effect fn ms_id() { perform ms_choose(1, 2) }
+let ms4 = handle { ms_id() } with ms_choose(a, b, r) {
+  [r(a), r(b)]
+} with return(v) {
+  v + 100
+}
+assert_eq(ms4, [101, 102])
+
+// resuming zero times (abort) still works alongside the multi-shot machinery
+effect fn ms_ab() { let x = perform ms_choose(1, 2); x }
+let ms5 = handle { ms_ab() } with ms_choose(a, b, r) { 99 }
+assert_eq(ms5, 99)

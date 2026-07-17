@@ -5741,6 +5741,28 @@ inline void setup_built_in_functions(
                           "String"sv)),
       false);
 
+  // Shallow-copy a class instance / object (the effects continuation clone,
+  // `__eff_copy`): a fresh property map — scalars independent, referenced heap
+  // values aliased, methods and `class` tag carried over — mirror of `{...obj}`
+  // spread. Interp twin of the JIT `culebra_runtime_eff_copy` (which documents
+  // why the clone stays native rather than a culebra method).
+  env.initialize(
+      "__eff_copy",
+      Value(FunctionValue(
+          {{"v", false}},
+          [](std::shared_ptr<Environment> env) {
+            const auto& v = env->get("v");
+            if (v.type != Value::Object) return v;
+            const auto& src = v.to_object();
+            ObjectValue copy;
+            for (const auto& [k, sym] : *src.properties) {
+              copy.initialize(k, sym.val, sym.mut);
+            }
+            return Value(std::move(copy));
+          },
+          "Object"sv)),
+      false);
+
   // Install a builtin namespace, tagging its ObjectValue so reading an unknown
   // member raises AttributeError instead of silently yielding nil (see
   // ObjectValue::is_namespace). `name` must be a static string — its pointer is

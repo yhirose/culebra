@@ -446,8 +446,13 @@ inline constexpr const char* EFFECTS_MODULE_SOURCE = R"=culpre=(# Algebraic-effe
 # A computation object exposes `_step(rv)` returning a tag:
 #   0 = DONE     — `_eff_val` holds the result
 #   1 = SUSPEND  — `_eff_op` / `_eff_args` describe a `perform`
-#   2 = DELEGATE — `_eff_delegate` is a sub-computation to drive first
-# `resume` is the one-shot continuation handed to a handler.
+#   2 = DELEGATE — `_eff_delegate` is a sub-computation to run first
+# The driver keeps an explicit stack of computation frames (bottom = the
+# handled body, higher frames = delegated effect-fn calls). A `perform`
+# captures the WHOLE frame stack as the continuation, so `resume` re-runs the
+# enclosing computation across delegate boundaries. Each `resume` clones every
+# frame (`__eff_copy`, a native shallow object copy) and drives the fresh copy,
+# leaving the snapshot intact — that is what makes a continuation multi-shot.
 let _eff_module = fn() {
   let _handlers = []   # stack of frames; each frame maps op-name -> adapter fn
 
@@ -461,22 +466,32 @@ let _eff_module = fn() {
     throw { kind: "EffectError", message: "no handler for effect '{op}'" }
   }
 
-  fn _drive(comp, rv, ret) {
+  fn _drive(stack, rv, ret) {
     let mut resume_val = rv
     while true {
+      let comp = stack[stack.size() - 1]
       let tag = comp._step(resume_val)
       if tag == 0 {
-        # Normal completion: a `return` clause (if any) maps the value.
-        if ret != nil { return ret(comp._eff_val) }
-        return comp._eff_val
+        let done_val = comp._eff_val
+        if stack.size() == 1 {
+          # The handled body finished: a `return` clause (if any) maps it.
+          if ret != nil { return ret(done_val) }
+          return done_val
+        }
+        # A delegated call finished; feed its value to the enclosing frame.
+        stack.pop()
+        resume_val = done_val
+        continue
       }
       if tag == 1 {
         let h = _find(comp._eff_op)
-        let resume = fn(v) { _drive(comp, v, ret) }
+        let snapshot = stack   # frozen at the suspend point; forks clone it
+        let resume = fn(v) { _drive(snapshot.map(|f| __eff_copy(f)), v, ret) }
         return h(comp._eff_args, resume)
       }
-      # A delegated sub-computation is not wrapped by this handle's return.
-      resume_val = _drive(comp._eff_delegate, nil, nil)
+      # DELEGATE: push the sub-computation as a new frame and run it next.
+      stack.push(comp._eff_delegate)
+      resume_val = nil
     }
   }
 
@@ -486,7 +501,7 @@ let _eff_module = fn() {
     # Push the frame as one dynamically-scoped frame for `comp`'s duration.
     _handlers.push(frame)
     defer { _handlers.pop() }
-    _drive(comp, nil, ret)
+    _drive([comp], nil, ret)
   }
 
   { handle: _handle }

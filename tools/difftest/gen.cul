@@ -915,7 +915,15 @@ let eff = [
   'effect fn ask(i); effect fn lg(m); effect fn dn(); effect fn s(n) { mut t = 0; mut i = 0; while i < n { let x = perform ask(i); perform lg(x); t = t + x; i = i + 1 }; perform dn(); t }; mut ls = []; let r = handle { s(3) } with ask(i, k) { k(i * 10) } with lg(m, k) { ls.push(m); k(nil) } with dn(k) { k(nil) }; to_string(r) + to_string(ls)',
   'effect fn ask(); handle { let x = perform ask(); x } with ask(r) { r(5) } with return(v) { v + 100 }',
   'effect fn fail(); handle { perform fail(); 99 } with fail(r) { -1 } with return(v) { v + 100 }',
-  'effect fn q(i); effect fn nt(m); mut ns = []; let r = handle { mut t = 0; mut i = 0; while i < 3 { let x = perform q(i); perform nt(x); t = t + x; i = i + 1 }; t } with q(i, k) { k(i + 1) } with nt(m, k) { ns.push(m); k(nil) } with return(v) { { sum: v, count: ns.size() } }; to_string(r.sum) + "," + to_string(r.count) + to_string(ns)']
+  'effect fn q(i); effect fn nt(m); mut ns = []; let r = handle { mut t = 0; mut i = 0; while i < 3 { let x = perform q(i); perform nt(x); t = t + x; i = i + 1 }; t } with q(i, k) { k(i + 1) } with nt(m, k) { ns.push(m); k(nil) } with return(v) { { sum: v, count: ns.size() } }; to_string(r.sum) + "," + to_string(r.count) + to_string(ns)',
+  # multi-shot resume: a handler may resume the same continuation N times. The
+  # driver captures the whole delegate frame stack, so each fork re-runs the
+  # enclosing computation (a return clause maps per fork, not the aggregate).
+  'effect fn ch(a, b); effect fn c() { let x = perform ch(1, 2); x * 10 }; to_string(handle { c() } with ch(a, b, r) { [r(a), r(b)] })',
+  'effect fn ch(a, b); effect fn c() { let x = perform ch(1, 2); let y = perform ch(10, 20); x + y }; to_string(handle { c() } with ch(a, b, r) { [r(a), r(b)] })',
+  'effect fn ch(a, b); effect fn inr() { perform ch(1, 2) }; to_string(handle { let y = inr() * 10; y } with ch(a, b, r) { [r(a), r(b)] })',
+  'effect fn ch(a, b); effect fn lg() { let acc = []; let x = perform ch(1, 2); acc.push(x); acc }; mut sn = []; handle { lg() } with ch(a, b, r) { sn.push(r(a)); sn.push(r(b)) }; to_string(sn[0])',
+  'effect fn ch(a, b); effect fn idv() { perform ch(1, 2) }; to_string(handle { idv() } with ch(a, b, r) { [r(a), r(b)] } with return(v) { v + 100 })']
 for c in eff {
   case("eff|" + c, c)
 }

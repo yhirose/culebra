@@ -2220,6 +2220,29 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_new() {
   return o;
 }
 
+// Shallow-copy a class instance / object: a fresh object with the same shape,
+// its own copy of the data slots (each field ref retained), and the shared
+// per-class meta (`proto`, method table — not refcounted per instance). Scalars
+// are copied independently; referenced heap values are aliased. This is the
+// clone the effects runtime forks a suspended continuation from (`__eff_copy`),
+// kept native so no method names its own class — a self-referential method
+// would form a def_env cycle only the tracing backstop could reclaim.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_eff_copy(
+    JitObject* src) {
+  auto* o = new JitObject();
+  o->refcount = 1;
+  o->proto = src->proto;   // shared class meta (methods)
+  if (o->proto) o->proto->refcount++;   // each instance holds a +1 (see dtor)
+  o->shape = src->shape;   // interned, immortal
+  o->slots = src->slots;   // per-field value copy
+  for (auto& e : o->slots) {
+    culebra_runtime_value_retain(e.value.tag, e.value.data);
+  }
+  o->is_class = src->is_class;
+  _gc_register(o, GC_TAG_OBJECT);
+  return o;
+}
+
 // Build an Array from args[start..n) for binding to `__ARGS__`. Caller
 // transferred +1 ownership of each arg via the stack-allocated slab;
 // Array takes over (object_set-style: no extra retain, slot owns +1).
