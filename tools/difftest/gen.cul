@@ -892,7 +892,24 @@ let eff = [
   'effect fn emit(v); effect fn c() { let z = perform emit(1) + perform emit(2); z }; mut s = []; let r = handle { c() } with emit(v, k) { s.push(v); k(v * 10) }; to_string(s) + to_string(r)',
   'effect fn wrap(v); effect fn c() { let w = perform wrap(perform wrap(1)); w }; handle { c() } with wrap(v, k) { k(v + 100) }',
   'effect fn get(); effect fn c() { return perform get() * 3 }; handle { c() } with get(r) { r(7) }',
-  'effect fn get(); effect fn c() { let xs = [10, 20, 30]; let v = xs[perform get()]; v }; handle { c() } with get(r) { r(1) }']
+  'effect fn get(); effect fn c() { let xs = [10, 20, 30]; let v = xs[perform get()]; v }; handle { c() } with get(r) { r(1) }',
+  # control-flow bodies: a perform reachable through while / if / for / break /
+  # continue / return lowers to the flat-dispatch CPS state machine; for-in is
+  # desugared to while + iterator. The tail expression is the body's value.
+  'effect fn ask(i); effect fn s(n) { mut t = 0; mut i = 0; while i < n { let a = perform ask(i); t = t + a; i = i + 1 }; t }; handle { s(3) } with ask(i, r) { r(i + 1) }',
+  'effect fn ch(x); effect fn b(f) { if f == 0 { let a = perform ch(0); a } else if f == 1 { let z = perform ch(1); z * 2 } else { let c = perform ch(2); c + 100 } }; to_string(handle { b(0) } with ch(x, r) { r(x + 10) }) + "," + to_string(handle { b(1) } with ch(x, r) { r(x + 10) }) + "," + to_string(handle { b(2) } with ch(x, r) { r(x + 10) })',
+  'effect fn each(); effect fn it(xs) { mut acc = []; for x in xs { let r = perform each(); acc.push(x + r) }; acc }; to_string(handle { it([10, 20, 30]) } with each(r) { r(1) })',
+  'effect fn tick(); effect fn cnt(n) { mut i = 0; mut sum = 0; while true { if i >= n { break }; let v = perform tick(); if v == 0 { i = i + 1; continue }; sum = sum + v; i = i + 1 }; sum }; mut ts = [1, 0, 2, 3]; mut ti = 0; handle { cnt(4) } with tick(r) { let v = ts[ti]; ti = ti + 1; r(v) }',
+  'effect fn probe(); effect fn find(n) { mut i = 0; while i < n { let h = perform probe(); if h { return i }; i = i + 1 }; -1 }; mut hs = [false, false, true]; mut pi = 0; handle { find(3) } with probe(r) { let h = hs[pi]; pi = pi + 1; r(h) }',
+  # A-normalization inside a control-flow body (uniform with top level)
+  'effect fn qty(); effect fn acc(n) { mut t = 0; mut i = 0; while i < n { t = t + perform qty() * 2; i = i + 1 }; t }; handle { acc(3) } with qty(r) { r(5) }',
+  # a non-suspending loop in tail position runs verbatim (value nil); a
+  # non-suspending tail `if` still yields its branch value
+  'effect fn sd(); mut lg = []; effect fn f() { let r = perform sd(); for x in [1, 2] { lg.push(x + r) } }; to_string(handle { f() } with sd(k) { k(10) }) + "|" + to_string(lg)',
+  'effect fn pk(); effect fn f() { let r = perform pk(); if r > 0 { "pos" } else { "neg" } }; to_string(handle { f() } with pk(k) { k(5) }) + "," + to_string(handle { f() } with pk(k) { k(-5) })',
+  # nested handles: inner handled locally, a separate outer effect delegates up
+  'effect fn ni(); effect fn no(); handle { let a = handle { perform ni() } with ni(r) { r(5) }; let b = perform no(); a + b } with no(r) { r(10) }',
+  'effect fn na(); effect fn nb(); handle { handle { let x = perform na(); let y = perform nb(); x + y } with na(r) { r(1) } } with nb(r) { r(2) }']
 for c in eff {
   case("eff|" + c, c)
 }

@@ -1,4 +1,4 @@
-// Algebraic-effects (thin slice) AST transformation pass.
+// Algebraic-effects AST transformation pass.
 //
 // `effect fn` / `perform` / `handle … with` are rewritten, at parse time,
 // into plain culebra source (synthesized classes + calls into the `__Eff`
@@ -7,23 +7,30 @@
 // three backends stay symmetric for free (see [[project-algebraic-effects]],
 // [[feedback-check-jit-interp-symmetry]]).
 //
-// Design (thin slice, dynamic scope, one-shot resume):
+// Design (dynamic scope, one-shot resume):
 //   * An `effect fn f(...) { BODY }` (with body) lowers to a normal fn that
 //     RETURNS a *computation object* — a flat-dispatch state machine whose
 //     `_step(rv)` runs the body until the next suspension point, then hands
 //     control back to the driver. A signature-only `effect fn op(...)`
 //     declares an operation and lowers to a throwing stub.
 //   * A suspension point is a statement-level `perform op(args)` (SUSPEND) or
-//     a statement-level call to another effect fn (DELEGATE). The thin slice
-//     supports straight-line bodies only; a suspension reachable through an
-//     `if`/`while`/`for` or nested inside a larger expression is rejected
-//     (A-normalization + control-flow lowering are the next cycle).
+//     a statement-level call to another effect fn (DELEGATE). The body may use
+//     arbitrary control flow — if / while / for (desugared to while) with
+//     break / continue / return — lowered by a flat-dispatch CPS builder (the
+//     same shape the generator transform uses; see `build_dispatch`). An
+//     expression-nested `perform` is first hoisted to statement level by an
+//     A-normalization pre-pass (`anf_program`), so the CPS layer only ever
+//     sees statement-level suspensions. A `perform` in a control-flow
+//     condition / iterable, or a nested `handle` that captures an enclosing
+//     binding, is rejected symmetrically.
 //   * `handle { BODY } with op(params, resume) { H }` lowers to
 //     `__Eff.handle(<BODY as a computation>, "op", <handler adapter>)`. The
 //     driver (`__Eff.drive`, in src/preambles/effects.cul) walks the
 //     dynamically-scoped handler stack; `resume` is the one-shot continuation
 //     (an ordinary RC value, so leak-safety is inherited from the generator
-//     machinery it mirrors — [[project-rc-gc-correct-model]]).
+//     machinery it mirrors — [[project-rc-gc-correct-model]]). Handles may
+//     nest; each computation's `_step` resume parameter is uniquely named so an
+//     inner computation doesn't shadow an enclosing one.
 //
 // Reuses the generator transform's source-slice / local-rewrite helpers
 // (generator_transform.h): everything here is the same "splice verbatim
@@ -104,14 +111,13 @@ struct EffSuspension {
   std::string call_src;    // Delegate: the effect-fn call source (rewritten)
 };
 
-// Classify one body statement. Returns nullopt for a verbatim (non-suspending)
-// statement; the caller emits it literally. Throws SyntaxError when a
-// suspension hides somewhere the thin slice can't lower (nested in a larger
-// expression / inside control flow), keeping interp and JIT honestly in step.
+// Classification of a leaf body statement: a statement-level suspension
+// (`perform` / effect-fn call, possibly bound by `let`) or a plain Verbatim
+// statement. Reached only after A-normalization, so a suspension still hidden
+// in an expression is rejected — keeping interp and JIT honestly in step.
 struct EffStmtClass {
-  enum Kind { Verbatim, Suspend, Return } kind;
-  EffSuspension susp;         // when kind == Suspend
-  const peg::Ast* expr = nullptr;  // when kind == Return: the returned expr (may be null)
+  enum Kind { Verbatim, Suspend } kind;
+  EffSuspension susp;  // when kind == Suspend
 };
 
 class EffectsLowerer {
@@ -203,19 +209,6 @@ class EffectsLowerer {
     using namespace peg::udl;
     const auto* s = unwrap_stmt(stmt);
 
-    // `return e`
-    if (s->tag == "RETURN"_) {
-      const peg::Ast* e = s->nodes.empty() ? nullptr : s->nodes[0].get();
-      if (e && has_suspension(*e)) {
-        throw CulebraError(
-            "SyntaxError",
-            "a `perform` inside a `return` expression is not supported yet "
-            "(only statement-level `perform`).",
-            static_cast<long>(s->line), static_cast<long>(s->column));
-      }
-      return EffStmtClass{EffStmtClass::Return, {}, e};
-    }
-
     // `let x = perform …` / `let x = effectfn(…)`
     if (s->tag == "ASSIGNMENT"_) {
       auto av = view_assignment(*s);
@@ -236,8 +229,7 @@ class EffectsLowerer {
               static_cast<long>(s->line), static_cast<long>(s->column));
         }
         return EffStmtClass{EffStmtClass::Suspend,
-                            make_perform(*rhs, target, /*binds=*/true, rewrite),
-                            nullptr};
+                            make_perform(*rhs, target, /*binds=*/true, rewrite)};
       }
       if (is_effect_call(*rhs)) {
         if (!bind) {
@@ -248,37 +240,34 @@ class EffectsLowerer {
               static_cast<long>(s->line), static_cast<long>(s->column));
         }
         return EffStmtClass{EffStmtClass::Suspend,
-                            make_delegate(*rhs, target, /*binds=*/true, rewrite),
-                            nullptr};
+                            make_delegate(*rhs, target, /*binds=*/true, rewrite)};
       }
       // Plain assignment: verbatim, but must not hide a suspension.
       if (has_suspension(*s)) reject_hidden(*s);
-      return EffStmtClass{EffStmtClass::Verbatim, {}, nullptr};
+      return EffStmtClass{EffStmtClass::Verbatim, {}};
     }
 
     // bare `perform …`
     if (s->tag == "PERFORM"_) {
       return EffStmtClass{EffStmtClass::Suspend,
-                          make_perform(*s, "", /*binds=*/false, rewrite),
-                          nullptr};
+                          make_perform(*s, "", /*binds=*/false, rewrite)};
     }
     // bare `effectfn(…)`
     if (is_effect_call(*s)) {
       return EffStmtClass{EffStmtClass::Suspend,
-                          make_delegate(*s, "", /*binds=*/false, rewrite),
-                          nullptr};
+                          make_delegate(*s, "", /*binds=*/false, rewrite)};
     }
 
     // Any other statement is verbatim — as long as no suspension hides in it.
     if (has_suspension(*s)) reject_hidden(*s);
-    return EffStmtClass{EffStmtClass::Verbatim, {}, nullptr};
+    return EffStmtClass{EffStmtClass::Verbatim, {}};
   }
 
   void reject_hidden(const peg::Ast& s) const {
     throw CulebraError(
         "SyntaxError",
-        "a `perform` / effect-fn call is only supported at statement level in "
-        "this slice (not nested in an expression or control-flow body).",
+        "a `perform` / effect-fn call is only supported at statement level "
+        "here — bind it first (`let x = perform …`).",
         static_cast<long>(s.line), static_cast<long>(s.column));
   }
 
@@ -437,6 +426,13 @@ class EffectsLowerer {
         "SyntaxError",
         "a `perform` in this expression position is not supported yet — bind "
         "it first (`let x = perform …`).",
+        static_cast<long>(n.line), static_cast<long>(n.column));
+  }
+  [[noreturn]] void reject_control_expr(const peg::Ast& n) const {
+    throw CulebraError(
+        "SyntaxError",
+        "a `perform` in a control-flow condition / iterable is not supported "
+        "yet — bind it first (`let c = perform …; while c { … }`).",
         static_cast<long>(n.line), static_cast<long>(n.column));
   }
 
@@ -613,6 +609,15 @@ class EffectsLowerer {
     std::vector<std::string> hoists;
     std::string residual_stmt;
 
+    // Control-flow statement carrying a suspension: recurse ANF into each
+    // block body (hoists stay inside the block so a loop re-evaluates them),
+    // leaving the driving condition / iterable untouched (a `perform` there is
+    // rejected — its evaluation order across iterations has no hoist).
+    if ((s->tag == "IF"_ || s->tag == "WHILE"_ || s->tag == "FOR"_) &&
+        has_suspension(*s)) {
+      return anf_control_flow(s, ctr);
+    }
+
     if (s->tag == "RETURN"_) {
       if (s->nodes.empty() || !has_suspension(*s->nodes[0])) return std::nullopt;
       std::string r = anf(*s->nodes[0], ctr, hoists);
@@ -646,12 +651,58 @@ class EffectsLowerer {
     return out;
   }
 
+  // ANF a control-flow statement's block bodies in place. `ctr` threads through
+  // so hoist temps stay unique across nesting levels (a per-block reset would
+  // alias `_anf_0` across blocks, and every temp becomes a shared `this.` field).
+  std::optional<std::string> anf_control_flow(const peg::Ast* s,
+                                              int& ctr) const {
+    using namespace peg::udl;
+    std::vector<const peg::Ast*> blocks;
+    if (s->tag == "WHILE"_) {
+      if (s->nodes.size() < 2) reject_unsupported_expr(*s);
+      if (has_suspension(*s->nodes[0])) reject_control_expr(*s->nodes[0]);
+      blocks.push_back(s->nodes[1].get());
+    } else if (s->tag == "FOR"_) {
+      if (s->nodes.size() < 3) reject_unsupported_expr(*s);
+      if (has_suspension(*s->nodes[1])) reject_control_expr(*s->nodes[1]);
+      blocks.push_back(s->nodes[2].get());
+    } else {  // IF: [cond, block, cond, block, …, (else-block)]
+      size_t n = s->nodes.size();
+      size_t pairs = n / 2;
+      for (size_t p = 0; p < pairs; p++) {
+        if (has_suspension(*s->nodes[2 * p]))
+          reject_control_expr(*s->nodes[2 * p]);
+        blocks.push_back(s->nodes[2 * p + 1].get());
+      }
+      if (n % 2 == 1) blocks.push_back(s->nodes[n - 1].get());
+    }
+    std::vector<std::string> new_blocks;
+    for (auto* b : blocks) new_blocks.push_back(anf_block(*b, ctr));
+    return splice_operands(*s, blocks, new_blocks);
+  }
+
+  // ANF a `{ … }` block: re-parse its inner (for clean positions), ANF the
+  // statements, and re-brace. Returns the block verbatim when nothing hoisted.
+  std::string anf_block(const peg::Ast& block, int& ctr) const {
+    auto inner = std::string(strip_block_braces(slice(block)));
+    auto buf = std::make_shared<std::string>(inner + "\n");
+    auto prog = parse_registered_source("<eff-anf-block>", buf);
+    if (!prog) {
+      throw CulebraError("InternalError",
+                         "effects ANF could not re-parse a block body", 0, 0);
+    }
+    EffectsLowerer sub(buf->data(), buf->size(), effect_fns_);
+    auto norm = sub.anf_program(*prog, ctr);
+    return "{\n" + (norm ? *norm : inner) + "\n}";
+  }
+
   // Whole-body ANF pass. Returns the rewritten body source when any statement
   // needed hoisting, else nullopt (so the proven straight-line path runs
-  // unchanged for bodies with no expression-nested performs).
-  std::optional<std::string> anf_program(const peg::Ast& program) const {
+  // unchanged for bodies with no expression-nested performs). `ctr` threads
+  // the fresh-temp counter through nested block recursion.
+  std::optional<std::string> anf_program(const peg::Ast& program,
+                                         int& ctr) const {
     auto stmts = body_stmts(program);
-    int ctr = 0;
     bool changed = false;
     std::string out;
     for (auto* st : stmts) {
@@ -666,92 +717,314 @@ class EffectsLowerer {
     return changed ? std::optional<std::string>(std::move(out)) : std::nullopt;
   }
 
-  // Lower a straight-line body (BLOCK) into the `_step(_rv)` dispatch source
-  // plus the `this._<field> = nil` seeds a ctor needs beyond params/locals.
-  // `rewrite` = params + body locals (moved to `this.` so they persist across
-  // states). Returns the full `_step` method body (the `while true { … }`).
-  std::string build_step(const peg::Ast& body,
-                         const std::set<std::string>& rewrite) const {
-    auto stmts = body_stmts(body);
-    std::vector<std::string> states;  // states[i] = source inside `if _state==i`
-    std::string cur;                  // statements accumulating into the current state
-    // States are emitted in order. A suspension names its successor as
-    // `states.size()+1` (the state that opens right after the pending flush);
-    // the terminal DONE state is appended last, once all statements are
-    // consumed.
+  // --- CPS: flat-dispatch state machine over control flow ----------------
+  //
+  // The body lowers to a flat list of states — the same shape and reasoning as
+  // the generator's `CpsBuilder` ([[project-generator-design]] §CPS): each
+  // basic block is a state, control flow becomes `this._eff_state = K; continue`
+  // jumps over one `while true` dispatch loop, and every local lives on the
+  // instance (all-locals-on-heap, so no liveness analysis). The transition
+  // primitives differ from the generator's: a `perform` returns SUSPEND (and
+  // on resume binds `_rv` to its target), an effect-fn call returns DELEGATE,
+  // and the body's tail expression / a `return` assign `this._eff_val`. A
+  // statement-level suspension is all the CPS layer sees; expression-nested
+  // performs are hoisted to statement level by the ANF pre-pass first, and
+  // `for`-in is desugared to `while` upstream. `_rv` is the per-class resume
+  // parameter name (unique so a nested computation doesn't shadow an enclosing
+  // one — culebra forbids shadowing an enclosing-fn variable).
+  struct CpsState {
+    std::vector<std::string> states;
+    std::vector<std::pair<int, int>> loop_stack;  // (header, exit) innermost last
+    int terminal = -1;                            // state that returns EFF_DONE
+    std::string rv;                               // resume parameter name
+    bool failed = false;
+    int fresh() {
+      states.emplace_back();
+      return static_cast<int>(states.size()) - 1;
+    }
+  };
 
-    auto flush_state = [&](const std::string& transition) {
-      states.push_back(cur + transition);
-      cur.clear();
+  std::string cps_rw(const peg::Ast& n,
+                     const std::set<std::string>& rw) const {
+    return rewrite_locals_to_this(slice(n), rw);
+  }
+  bool cps_needs_split(const peg::Ast& s) const {
+    return has_suspension(s) || has_escaping_loop_ctrl(s);
+  }
+
+  int cps_jump(CpsState& st, int target) const {
+    int e = st.fresh();
+    st.states[e] =
+        std::format("      this._eff_state = {}\n      continue\n", target);
+    return e;
+  }
+
+  // A suspension state (+ resume state when it binds a result or is in tail
+  // position). On resume the driver re-enters `_step` at the resume state,
+  // where `_rv` holds the resumed value.
+  int cps_emit_suspension(CpsState& st, const EffSuspension& su, int cont,
+                          bool tail) const {
+    int after = cont;
+    if (su.binds || tail) {
+      int resume = st.fresh();
+      std::string b;
+      if (su.binds)
+        b += std::format("      this.{} = {}\n", su.target, st.rv);
+      if (tail) {
+        std::string v = su.binds ? ("this." + su.target) : st.rv;
+        b += std::format("      this._eff_val = {}\n", v);
+      }
+      b += std::format("      this._eff_state = {}\n      continue\n", cont);
+      st.states[resume] = b;
+      after = resume;
+    }
+    int susp = st.fresh();
+    if (su.kind == EffSuspension::Perform) {
+      st.states[susp] = std::format(
+          "      this._eff_op = \"{}\"\n      this._eff_args = {}\n"
+          "      this._eff_state = {}\n      return {}\n",
+          su.op, su.args_array, after, EFF_SUSPEND);
+    } else {
+      st.states[susp] = std::format(
+          "      this._eff_delegate = ({})\n      this._eff_state = {}\n"
+          "      return {}\n",
+          su.call_src, after, EFF_DELEGATE);
+    }
+    return susp;
+  }
+
+  int cps_return(CpsState& st, const peg::Ast* u,
+                 const std::set<std::string>& rw) const {
+    const peg::Ast* e = u->nodes.empty() ? nullptr : u->nodes[0].get();
+    if (e && has_suspension(*e)) reject_hidden(*u);  // ANF hoists; defensive
+    int s = st.fresh();
+    std::string v = e ? cps_rw(*e, rw) : "nil";
+    st.states[s] = std::format(
+        "      this._eff_val = ({})\n      this._eff_state = {}\n      continue\n",
+        v, st.terminal);
+    return s;
+  }
+
+  // A verbatim statement in tail (value) position: a bare expression IS the
+  // value; an assignment runs, then its single-ident target is read back as the
+  // value (matching culebra's block-value semantics — `let x = e` / `x = e`
+  // evaluate to `e`); anything else leaves `_eff_val` nil.
+  int cps_tail_value(CpsState& st, const peg::Ast* u,
+                     const std::set<std::string>& rw) const {
+    using namespace peg::udl;
+    int s = st.fresh();
+    std::string body;
+    if (u->tag == "ASSIGNMENT"_) {
+      body = "      " + cps_rw(*u, rw) + "\n";
+      auto av = view_assignment(*u);
+      if (av.lvalcnt == 1) {
+        const auto& lval = *u->nodes[av.lvaloff];
+        if (lval.tag == "IDENTIFIER"_)
+          body += std::format("      this._eff_val = this.{}\n",
+                              std::string(lval.token));
+      }
+    } else {
+      body = std::format("      this._eff_val = ({})\n", cps_rw(*u, rw));
+    }
+    body += std::format("      this._eff_state = {}\n      continue\n", st.terminal);
+    st.states[s] = body;
+    return s;
+  }
+
+  // Compile a control-flow block's statements. A single-statement block
+  // collapses onto its lone statement, whose span then covers the enclosing
+  // braces (the AstOptimizer pos/len trap — [[peglib-ast-optimizer]]); re-parse
+  // the brace-stripped inner for clean positions. A sub-lowerer bound to the
+  // fresh buffer feeds states into the shared `st`. Multi-statement blocks
+  // re-parse too — uniform and cheap.
+  int cps_block_seq(CpsState& st, const peg::Ast& block, int cont, bool tail,
+                    const std::set<std::string>& rw) const {
+    auto sv = slice(block);
+    if (sv.size() >= 2 && sv.front() == '{') {
+      auto inner = std::string(strip_block_braces(sv));
+      auto buf = std::make_shared<std::string>(inner + "\n");
+      auto prog = parse_registered_source("<eff-block>", buf);
+      if (!prog) { st.failed = true; return -1; }
+      EffectsLowerer sub(buf->data(), buf->size(), effect_fns_);
+      return sub.cps_seq(st, body_stmts(*prog), cont, tail, rw);
+    }
+    return cps_seq(st, body_stmts(block), cont, tail, rw);
+  }
+
+  int cps_while(CpsState& st, const peg::Ast* w, int cont,
+                const std::set<std::string>& rw) const {
+    if (w->nodes.size() < 2) { st.failed = true; return -1; }
+    if (has_suspension(*w->nodes[0])) reject_control_expr(*w->nodes[0]);
+    int h = st.fresh();
+    st.loop_stack.push_back({h, cont});
+    int body_entry = cps_block_seq(st, *w->nodes[1], h, /*tail=*/false, rw);
+    st.loop_stack.pop_back();
+    if (st.failed) return -1;
+    st.states[h] = std::format(
+        "      if {} {{ this._eff_state = {} }} else {{ this._eff_state = {} }}\n"
+        "      continue\n",
+        cps_rw(*w->nodes[0], rw), body_entry, cont);
+    return h;
+  }
+
+  // if / else-if / else. IF nodes are [cond, block, …, elseblock?]. When `tail`,
+  // each arm is compiled in value position; a missing else leaves the value nil.
+  int cps_if(CpsState& st, const peg::Ast* ifn, int cont, bool tail,
+             const std::set<std::string>& rw) const {
+    const auto& nodes = ifn->nodes;
+    size_t n = nodes.size();
+    int else_entry;
+    size_t pairs;
+    if (n % 2 == 1) {
+      else_entry = cps_block_seq(st, *nodes[n - 1], cont, tail, rw);
+      if (st.failed) return -1;
+      pairs = (n - 1) / 2;
+    } else {
+      else_entry = cont;
+      pairs = n / 2;
+    }
+    int chain = else_entry;
+    for (size_t p = pairs; p-- > 0;) {
+      if (has_suspension(*nodes[2 * p])) reject_control_expr(*nodes[2 * p]);
+      int block_entry = cps_block_seq(st, *nodes[2 * p + 1], cont, tail, rw);
+      if (st.failed) return -1;
+      int s = st.fresh();
+      st.states[s] = std::format(
+          "      if {} {{ this._eff_state = {} }} else {{ this._eff_state = {} }}\n"
+          "      continue\n",
+          cps_rw(*nodes[2 * p], rw), block_entry, chain);
+      chain = s;
+    }
+    return chain;
+  }
+
+  int cps_stmt(CpsState& st, const peg::Ast* s, int cont, bool tail,
+               const std::set<std::string>& rw) const {
+    using namespace peg::udl;
+    auto* u = unwrap_stmt(s);
+    if (u->tag == "IF"_) return cps_if(st, u, cont, tail, rw);
+    if (u->tag == "WHILE"_) return cps_while(st, u, cont, rw);
+    if (u->tag == "RETURN"_) return cps_return(st, u, rw);
+    if (u->tag == "BREAK"_) {
+      if (st.loop_stack.empty()) { st.failed = true; return -1; }
+      return cps_jump(st, st.loop_stack.back().second);
+    }
+    if (u->tag == "CONTINUE"_) {
+      if (st.loop_stack.empty()) { st.failed = true; return -1; }
+      return cps_jump(st, st.loop_stack.back().first);
+    }
+    if (u->tag == "LEXICAL_SCOPE"_ || u->tag == "STATEMENTS"_) {
+      return cps_block_seq(st, *u, cont, tail, rw);
+    }
+    // Leaf statement: a statement-level suspension (post-ANF) or a rejected
+    // hidden one.
+    EffStmtClass c = classify(u, rw);
+    if (c.kind == EffStmtClass::Suspend)
+      return cps_emit_suspension(st, c.susp, cont, tail);
+    st.failed = true;  // FOR (must be desugared) / anything unexpected
+    return -1;
+  }
+
+  // The tail statement of a value-producing sequence. Loops carry no value; an
+  // `if` recurses per arm; a suspension's resumed value becomes the value; a
+  // plain statement is compiled by `cps_tail_value`.
+  int cps_tail_stmt(CpsState& st, const peg::Ast* s, int cont,
+                    const std::set<std::string>& rw) const {
+    using namespace peg::udl;
+    auto* u = unwrap_stmt(s);
+    if (u->tag == "IF"_) return cps_if(st, u, cont, /*tail=*/true, rw);
+    if (u->tag == "WHILE"_ || u->tag == "RETURN"_ || u->tag == "BREAK"_ ||
+        u->tag == "CONTINUE"_)
+      return cps_stmt(st, s, cont, /*tail=*/false, rw);
+    if (u->tag == "FOR"_) {
+      // A suspending `for` is desugared to `while` upstream; a non-suspending
+      // one just runs verbatim. Either way a loop yields no value (nil, as in
+      // culebra), so tail position adds nothing.
+      if (cps_needs_split(*u)) return cps_stmt(st, s, cont, /*tail=*/false, rw);
+      int e = st.fresh();
+      st.states[e] = "      " + cps_rw(*u, rw) +
+                     std::format("\n      this._eff_state = {}\n      continue\n",
+                                 cont);
+      return e;
+    }
+    if (u->tag == "LEXICAL_SCOPE"_ || u->tag == "STATEMENTS"_)
+      return cps_block_seq(st, *u, cont, /*tail=*/true, rw);
+    if (has_suspension(*u)) {
+      EffStmtClass c = classify(u, rw);
+      if (c.kind == EffStmtClass::Suspend)
+        return cps_emit_suspension(st, c.susp, cont, /*tail=*/true);
+      reject_hidden(*u);
+    }
+    return cps_tail_value(st, u, rw);
+  }
+
+  // Linearize a sequence with no value semantics (interior of a body / loop):
+  // maximal runs of split-free statements collapse into one state.
+  int cps_interior(CpsState& st, const std::vector<const peg::Ast*>& stmts,
+                   int cont, const std::set<std::string>& rw) const {
+    int k = cont;
+    std::string pending;
+    auto flush = [&]() {
+      if (pending.empty()) return;
+      int s = st.fresh();
+      st.states[s] = pending +
+                     std::format("      this._eff_state = {}\n      continue\n", k);
+      k = s;
+      pending.clear();
     };
-
-    for (size_t i = 0; i < stmts.size(); i++) {
-      bool last = (i + 1 == stmts.size());
-      EffStmtClass c = classify(stmts[i], rewrite);
-
-      if (c.kind == EffStmtClass::Verbatim) {
-        if (last) {
-          // The trailing expression is the computation's value.
-          cur += std::format("      this._eff_val = ({})\n",
-                             rewrite_locals_to_this(slice(*stmts[i]), rewrite));
-        } else {
-          cur += "      " +
-                 rewrite_locals_to_this(slice(*stmts[i]), rewrite) + "\n";
-        }
-        continue;
-      }
-
-      if (c.kind == EffStmtClass::Return) {
-        std::string val = c.expr
-            ? rewrite_locals_to_this(slice(*c.expr), rewrite)
-            : "nil";
-        cur += std::format("      this._eff_val = ({})\n", val);
-        // remaining statements are dead; stop here.
-        break;
-      }
-
-      // Suspend: emit the transition, open the next state, bind the result.
-      int next = static_cast<int>(states.size()) + 1;
-      const EffSuspension& su = c.susp;
-      if (su.kind == EffSuspension::Perform) {
-        flush_state(std::format(
-            "      this._eff_op = \"{}\"\n"
-            "      this._eff_args = {}\n"
-            "      this._state = {}\n"
-            "      return {}\n",
-            su.op, su.args_array, next, EFF_SUSPEND));
+    for (size_t idx = stmts.size(); idx-- > 0;) {
+      const peg::Ast* s = stmts[idx];
+      if (!cps_needs_split(*s)) {
+        pending = "      " + cps_rw(*s, rw) + "\n" + pending;
       } else {
-        flush_state(std::format(
-            "      this._eff_delegate = ({})\n"
-            "      this._state = {}\n"
-            "      return {}\n",
-            su.call_src, next, EFF_DELEGATE));
-      }
-      // Next state opens by binding the resumed value.
-      if (su.binds) {
-        cur += std::format("      this.{} = _rv\n", su.target);
-      }
-      if (last) {
-        // A trailing bare suspension's result is the computation's value.
-        if (su.binds) {
-          cur += std::format("      this._eff_val = this.{}\n", su.target);
-        } else {
-          cur += "      this._eff_val = _rv\n";
-        }
+        flush();
+        k = cps_stmt(st, s, k, /*tail=*/false, rw);
+        if (st.failed) return -1;
       }
     }
+    flush();
+    return k;
+  }
 
-    // Close the final state: DONE. `_state` already equals this state's index
-    // on entry (a predecessor set it), so no self-assignment is needed.
-    states.push_back(cur + std::format("      return {}\n", EFF_DONE));
+  // Compile a statement sequence; when `tail`, its final statement is in value
+  // position (assigns `this._eff_val`).
+  int cps_seq(CpsState& st, const std::vector<const peg::Ast*>& stmts, int cont,
+              bool tail, const std::set<std::string>& rw) const {
+    if (tail && !stmts.empty()) {
+      std::vector<const peg::Ast*> rest(stmts.begin(), stmts.end() - 1);
+      int tail_entry = cps_tail_stmt(st, stmts.back(), cont, rw);
+      if (st.failed) return -1;
+      return cps_interior(st, rest, tail_entry, rw);
+    }
+    return cps_interior(st, stmts, cont, rw);
+  }
 
+  // Lower a body into the `_step` dispatch source and its entry state index.
+  // `rewrite` = params + body locals (moved to `this.` so they persist across
+  // states). Throws SyntaxError for a construct the CPS engine can't lower.
+  std::pair<std::string, int> build_dispatch(
+      const peg::Ast& body, const std::set<std::string>& rewrite,
+      const std::string& rv_name) const {
+    CpsState st;
+    st.rv = rv_name;
+    st.terminal = st.fresh();
+    st.states[st.terminal] = std::format("      return {}\n", EFF_DONE);
+    int entry = cps_seq(st, body_stmts(body), st.terminal, /*tail=*/true,
+                        rewrite);
+    if (st.failed || entry < 0) {
+      throw CulebraError(
+          "SyntaxError",
+          "unsupported control flow in an effect body (a `perform` reachable "
+          "through a construct the effects transform can't lower).",
+          static_cast<long>(body.line), static_cast<long>(body.column));
+    }
     std::string dispatch = "      while true {\n";
-    for (size_t i = 0; i < states.size(); i++) {
-      dispatch += std::format("        if this._state == {} {{\n{}        }}\n",
-                              i, states[i]);
+    for (size_t i = 0; i < st.states.size(); i++) {
+      dispatch += std::format("        if this._eff_state == {} {{\n{}        }}\n",
+                              i, st.states[i]);
     }
     dispatch += "      }\n";
-    return dispatch;
+    return {dispatch, entry};
   }
 
   // Re-parse a body's inner source as a standalone program so its statement
@@ -771,23 +1044,101 @@ class EffectsLowerer {
     return {prog, src};
   }
 
+  // --- for-in desugar (to `while` + iterator) ----------------------------
+  // The CPS engine works over `while`, so a `for x in e { … }` that carries a
+  // suspension is rewritten to `let _it = (e).iter(); while _it.has_next() {
+  // let x = _it.next(); … }` — the same source pre-pass the generator uses,
+  // keyed on `has_suspension` instead of `has_yield`. Only a single loop
+  // variable is supported; a destructuring `for k, v in …` with a suspension is
+  // rejected. Stops at fn / HANDLE boundaries so a nested handle's own for-ins
+  // aren't reattributed.
+  std::vector<const peg::Ast*> collect_outermost_suspending_fors(
+      const peg::Ast& body) const {
+    using namespace peg::udl;
+    std::vector<const peg::Ast*> out;
+    std::function<void(const peg::Ast&)> walk = [&](const peg::Ast& n) {
+      if (is_fn_boundary(n.tag) || n.tag == "HANDLE"_) return;
+      if (n.tag == "FOR"_ && has_suspension(n)) { out.push_back(&n); return; }
+      for (auto& c : n.nodes) walk(*c);
+    };
+    walk(body);
+    return out;
+  }
+  std::optional<std::string> rewrite_suspending_fors(
+      const peg::Ast& body) const {
+    using namespace peg::udl;
+    auto fors = collect_outermost_suspending_fors(body);
+    if (fors.empty()) return std::nullopt;
+    std::string out(slice(body));
+    size_t base = body.position;
+    for (auto it = fors.rbegin(); it != fors.rend(); ++it) {
+      auto* f = *it;
+      if (f->nodes.size() < 3) continue;
+      const auto& var_node = *f->nodes[0];
+      const auto& expr_node = *f->nodes[1];
+      const auto& blk_node = *f->nodes[2];
+      if (var_node.tag != "IDENTIFIER"_) {
+        throw CulebraError(
+            "SyntaxError",
+            "a destructuring `for k, v in …` with a `perform` inside is not "
+            "supported yet — iterate a single value.",
+            static_cast<long>(f->line), static_cast<long>(f->column));
+      }
+      if (has_suspension(expr_node)) reject_control_expr(expr_node);
+      auto iter_var = std::format("_eff_it_{}", f->position);
+      auto replacement = std::format(
+          "let {0} = ({1}).iter()\n"
+          "while {0}.has_next() {{\n"
+          "  let {2} = {0}.next()\n"
+          "  {3}\n"
+          "}}",
+          iter_var, std::string(slice(expr_node)),
+          std::string(var_node.token),
+          std::string(strip_block_braces(slice(blk_node))));
+      out.replace(f->position - base, f->length, replacement);
+    }
+    return out;
+  }
+
   // Build the whole computation class source (ctor + _step) for a body node.
-  // `param_names` are the enclosing fn's params (empty for a handle body). The
-  // body is re-parsed into a clean buffer; a sub-lowerer bound to that buffer
-  // does the actual construction so all source slices resolve correctly.
+  // `param_names` are the enclosing fn's params (empty for a handle body);
+  // `rv_name` is the per-class resume parameter (unique so a nested computation
+  // doesn't shadow an enclosing one). Two source pre-passes run first over the
+  // re-parsed body: `for`-in desugar (to a fixpoint for nested loops), then
+  // A-normalization (hoisting expression-nested performs to statement level),
+  // so the CPS builder only ever sees statement-level suspensions over
+  // if/while. Each pre-pass re-parses into a clean buffer whose slices resolve.
   std::string build_computation_class(
       const std::string& class_name, const peg::Ast& body_node,
-      const std::vector<std::string_view>& param_names) const {
+      const std::vector<std::string_view>& param_names,
+      const std::string& rv_name) const {
     auto rb = reparse_body(body_node);
     if (!rb.program) {
       throw CulebraError("InternalError",
                          "effects transform could not re-parse a body", 0, 0);
     }
-    // A-normalization: hoist any expression-nested `perform` to statement
-    // level, then re-parse the flattened body so `build_step` sees only
-    // statement-level suspensions. Bodies with none skip this entirely.
-    EffectsLowerer anf_pass(rb.source->data(), rb.source->size(), effect_fns_);
-    if (auto normalized = anf_pass.anf_program(*rb.program)) {
+    std::shared_ptr<peg::Ast> prog = rb.program;
+    std::shared_ptr<std::string> src = rb.source;
+
+    // for-in desugar to a fixpoint (a nested for-in surfaces as outermost on
+    // the next pass).
+    while (true) {
+      EffectsLowerer fl(src->data(), src->size(), effect_fns_);
+      auto desugared = fl.rewrite_suspending_fors(*prog);
+      if (!desugared) break;
+      src = std::make_shared<std::string>(std::move(*desugared));
+      prog = parse_registered_source("<eff-for>", src);
+      if (!prog) {
+        throw CulebraError(
+            "InternalError", "effects for-in desugar produced unparseable "
+            "source", 0, 0);
+      }
+    }
+
+    // A-normalization.
+    EffectsLowerer anf_pass(src->data(), src->size(), effect_fns_);
+    int ctr = 0;
+    if (auto normalized = anf_pass.anf_program(*prog, ctr)) {
       auto src2 = std::make_shared<std::string>(std::move(*normalized));
       auto prog2 = parse_registered_source("<eff-anf>", src2);
       if (!prog2) {
@@ -796,36 +1147,67 @@ class EffectsLowerer {
             "effects A-normalization produced unparseable source", 0, 0);
       }
       EffectsLowerer sub(src2->data(), src2->size(), effect_fns_);
-      return sub.build_class_from_program(class_name, *prog2, param_names);
+      return sub.build_class_from_program(class_name, *prog2, param_names,
+                                          rv_name);
     }
-    EffectsLowerer sub(rb.source->data(), rb.source->size(), effect_fns_);
-    return sub.build_class_from_program(class_name, *rb.program, param_names);
+    EffectsLowerer sub(src->data(), src->size(), effect_fns_);
+    return sub.build_class_from_program(class_name, *prog, param_names, rv_name);
+  }
+
+  // A nested `handle` that references an enclosing computation's binding is
+  // rejected: the inner handler / body lowers to a closure whose `this` is NOT
+  // the enclosing instance, so a rewritten `this.<local>` reads nil (the interp
+  // happens to capture `this` lexically, the JIT does not — an asymmetry). Test
+  // by the same matcher the rewrite uses, so detection tracks it exactly.
+  void reject_handle_capture(const peg::Ast& program,
+                             const std::set<std::string>& names) const {
+    using namespace peg::udl;
+    if (names.empty()) return;
+    std::function<void(const peg::Ast&)> walk = [&](const peg::Ast& n) {
+      if (n.tag == "HANDLE"_) {
+        auto src = slice(n);
+        if (rewrite_locals_to_this(src, names) != std::string(src)) {
+          throw CulebraError(
+              "SyntaxError",
+              "a nested `handle` that references an enclosing effect binding is "
+              "not supported yet — pass the value in explicitly.",
+              static_cast<long>(n.line), static_cast<long>(n.column));
+        }
+        return;  // the inner handle's own captures are checked when it lowers
+      }
+      for (auto& c : n.nodes) walk(*c);
+    };
+    for (auto& c : program.nodes) walk(*c);
   }
 
   std::string build_class_from_program(
       const std::string& class_name, const peg::Ast& program,
-      const std::vector<std::string_view>& param_names) const {
+      const std::vector<std::string_view>& param_names,
+      const std::string& rv_name) const {
     auto locals = collect_local_names(program);
     std::set<std::string> rewrite = locals;
     for (auto& p : param_names) rewrite.insert(std::string(p));
+    reject_handle_capture(program, rewrite);
+
+    auto [step, entry] = build_dispatch(program, rewrite, rv_name);
 
     std::string ctor_params, ctor_call_args;
-    std::string ctor_inits =
-        "      this._state = 0\n"
+    std::string ctor_inits = std::format(
+        "      this._eff_state = {}\n"
         "      this._eff_val = nil\n"
         "      this._eff_op = nil\n"
         "      this._eff_args = nil\n"
-        "      this._eff_delegate = nil\n";
+        "      this._eff_delegate = nil\n",
+        entry);
     emit_ctor_param_and_local_inits(param_names, locals, ctor_params,
                                     ctor_call_args, ctor_inits);
 
-    std::string step = build_step(program, rewrite);
     return std::format(
         "  class {0} {{\n"
         "    new({1}) {{\n{2}    }}\n"
-        "    _step(_rv) {{\n{3}    }}\n"
+        "    _step({3}) {{\n{4}    }}\n"
         "  }}\n",
-        class_name, ctor_params, ctor_inits, step);
+        class_name, ctor_params, ctor_inits, rv_name, step);
   }
 
   // `effect fn f(params) { BODY }` -> `fn f(params) { class …; ….new(args) }`
@@ -849,7 +1231,9 @@ class EffectsLowerer {
     auto param_names = collect_positional_param_names(params_ast);
     auto class_name = std::format("_EffComp_{}_{}_{}", name, ast->line,
                                   ast->column);
-    std::string cls = build_computation_class(class_name, body, param_names);
+    auto rv_name = std::format("_rv_{}_{}", ast->line, ast->column);
+    std::string cls =
+        build_computation_class(class_name, body, param_names, rv_name);
 
     std::string call_args;
     for (size_t j = 0; j < param_names.size(); j++) {
@@ -876,7 +1260,8 @@ class EffectsLowerer {
     const auto& handler_body = *ast->nodes[3];
 
     auto class_name = std::format("_EffBody_{}_{}", ast->line, ast->column);
-    std::string cls = build_computation_class(class_name, body, {});
+    auto rv_name = std::format("_rv_{}_{}", ast->line, ast->column);
+    std::string cls = build_computation_class(class_name, body, {}, rv_name);
 
     // Handler adapter: leading params bind op args from _eh_args[i]; the last
     // param is the resume continuation.

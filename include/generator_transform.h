@@ -219,7 +219,10 @@ inline std::set<std::string> collect_local_names(const peg::Ast& body) {
   using namespace peg::udl;
   std::set<std::string> out;
   std::function<void(const peg::Ast&)> walk = [&](const peg::Ast& n) {
-    if (is_fn_boundary(n.tag)) return;
+    // A nested `handle` opens its own computation scope; its locals belong to
+    // that inner computation, not this one (they must not be rewritten to this
+    // instance's `this.`). Generators carry no HANDLE, so this is a no-op there.
+    if (is_fn_boundary(n.tag) || n.tag == "HANDLE"_) return;
     if (n.tag == "ASSIGNMENT"_) {
       auto av = view_assignment(n);
       if ((av.is_let || av.is_mut) && av.lvalcnt == 1) {

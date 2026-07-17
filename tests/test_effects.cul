@@ -3,9 +3,10 @@
 // synthesized computation classes + the `__Eff` runtime (dynamically-scoped
 // handler stack + one-shot resume). All three backends run the lowered code,
 // so behaviour is symmetric by construction. This slice covers straight-line
-// bodies, statement-level performs, one-shot resume, and dynamic scope
-// (perform inside a called effect fn). Control-flow bodies, A-normalization,
-// multiple handler clauses, and multi-shot resume are the next cycle.
+// bodies, statement-level performs, one-shot resume, dynamic scope (perform
+// inside a called effect fn), A-normalization, control-flow bodies (if / while
+// / for with break / continue / return), and nested handles. Multiple handler
+// clauses and multi-shot resume are the next cycle.
 
 // --- dynamic scope: perform inside a called effect fn ---
 effect fn get()
@@ -166,3 +167,206 @@ effect fn anf_arr() {
   arr
 }
 assert_eq(handle { anf_arr() } with anf_get(resume) { resume(1) }, [1, 2, 3])
+
+// === control-flow bodies ================================================
+// A `perform` reachable through if / while / for (and break / continue /
+// return) lowers to a flat-dispatch state machine — the same CPS shape the
+// generator transform uses. `for`-in is desugared to `while` + iterator; the
+// tail expression of a body is its value. Symmetric across the backends by
+// construction (one lowered program).
+
+// while + statement-level perform; the trailing expression is the value
+effect fn cf_ask(i)
+effect fn cf_survey(n) {
+  mut total = 0
+  mut i = 0
+  while i < n {
+    let a = perform cf_ask(i)
+    total = total + a
+    i = i + 1
+  }
+  total
+}
+assert_eq(handle { cf_survey(3) } with cf_ask(i, resume) { resume(i + 1) }, 6)
+
+// if / else-if / else — each arm suspends and is the arm's value
+effect fn cf_choose(x)
+effect fn cf_branch(f) {
+  if f == 0 { let a = perform cf_choose(0); a }
+  else if f == 1 { let b = perform cf_choose(1); b * 2 }
+  else { let c = perform cf_choose(2); c + 100 }
+}
+assert_eq(handle { cf_branch(0) } with cf_choose(x, resume) { resume(x + 10) },
+          10)
+assert_eq(handle { cf_branch(1) } with cf_choose(x, resume) { resume(x + 10) },
+          22)
+assert_eq(handle { cf_branch(2) } with cf_choose(x, resume) { resume(x + 10) },
+          112)
+
+// for-in body performs (desugared to while + iterator)
+effect fn cf_each()
+effect fn cf_iterate(xs) {
+  mut acc = []
+  for x in xs {
+    let r = perform cf_each()
+    acc.push(x + r)
+  }
+  acc
+}
+assert_eq(handle { cf_iterate([10, 20, 30]) } with cf_each(resume) { resume(1) },
+          [11, 21, 31])
+
+// break / continue inside a while carrying a perform
+effect fn cf_tick()
+effect fn cf_counted(n) {
+  mut i = 0
+  mut sum = 0
+  while true {
+    if i >= n { break }
+    let v = perform cf_tick()
+    if v == 0 { i = i + 1; continue }
+    sum = sum + v
+    i = i + 1
+  }
+  sum
+}
+mut cf_ticks = [1, 0, 2, 3]
+mut cf_ti = 0
+assert_eq(handle { cf_counted(4) } with cf_tick(resume) {
+  let v = cf_ticks[cf_ti]; cf_ti = cf_ti + 1; resume(v)
+}, 6)
+
+// return early out of a loop
+effect fn cf_probe()
+effect fn cf_finder(n) {
+  mut i = 0
+  while i < n {
+    let hit = perform cf_probe()
+    if hit { return i }
+    i = i + 1
+  }
+  -1
+}
+mut cf_hits = [false, false, true, false]
+mut cf_pi = 0
+assert_eq(handle { cf_finder(4) } with cf_probe(resume) {
+  let h = cf_hits[cf_pi]; cf_pi = cf_pi + 1; resume(h)
+}, 2)
+
+// A-normalization reaches inside a control-flow body (uniform with top level)
+effect fn cf_qty()
+effect fn cf_accumulate(n) {
+  mut total = 0
+  mut i = 0
+  while i < n {
+    total = total + perform cf_qty() * 2
+    i = i + 1
+  }
+  total
+}
+assert_eq(handle { cf_accumulate(3) } with cf_qty(resume) { resume(5) }, 30)
+
+// nested control flow: for inside if
+effect fn cf_gen()
+effect fn cf_nested(flag) {
+  if flag {
+    mut s = 0
+    for x in [1, 2, 3] {
+      s = s + perform cf_gen() + x
+    }
+    s
+  } else {
+    0
+  }
+}
+assert_eq(handle { cf_nested(true) } with cf_gen(resume) { resume(10) }, 36)
+assert_eq(handle { cf_nested(false) } with cf_gen(resume) { resume(10) }, 0)
+
+// a non-suspending loop in tail position runs verbatim; the loop's value is nil
+effect fn cf_side()
+mut cf_log = []
+effect fn cf_trailing_loop() {
+  let r = perform cf_side()
+  for x in [1, 2] { cf_log.push(x + r) }
+}
+assert_eq(handle { cf_trailing_loop() } with cf_side(resume) { resume(10) }, nil)
+assert_eq(cf_log, [11, 12])
+
+// a non-suspending if in tail position still yields its branch value
+effect fn cf_pick()
+effect fn cf_tail_if() {
+  let r = perform cf_pick()
+  if r > 0 { "pos" } else { "neg" }
+}
+assert_eq(handle { cf_tail_if() } with cf_pick(resume) { resume(5) }, "pos")
+assert_eq(handle { cf_tail_if() } with cf_pick(resume) { resume(-5) }, "neg")
+
+// return of an expression-nested perform, from an if nested in a while
+effect fn cf_seek()
+effect fn cf_ret_in_loop(n) {
+  mut i = 0
+  while i < n {
+    if i == 2 { return perform cf_seek() * 10 }
+    i = i + 1
+  }
+  -1
+}
+assert_eq(handle { cf_ret_in_loop(5) } with cf_seek(resume) { resume(3) }, 30)
+
+// nested while, perform in the inner loop
+effect fn cf_unit()
+effect fn cf_grid(n, m) {
+  mut sum = 0
+  mut i = 0
+  while i < n {
+    mut j = 0
+    while j < m {
+      sum = sum + perform cf_unit()
+      j = j + 1
+    }
+    i = i + 1
+  }
+  sum
+}
+assert_eq(handle { cf_grid(2, 3) } with cf_unit(resume) { resume(1) }, 6)
+
+// A-normalization inside an if-branch inside a while
+effect fn cf_val()
+effect fn cf_branch_anf(n) {
+  mut total = 0
+  mut i = 0
+  while i < n {
+    if i % 2 == 0 { total = total + perform cf_val() + i }
+    i = i + 1
+  }
+  total
+}
+assert_eq(handle { cf_branch_anf(4) } with cf_val(resume) { resume(5) }, 12)
+
+// === nested handles =====================================================
+// A `handle` may nest inside another (the per-class resume parameter is unique,
+// so an inner computation no longer shadows an enclosing one). `perform`
+// resolves up the dynamically-scoped handler stack, so an inner body can
+// delegate an effect to an outer handler.
+
+// inner handled locally; a separate outer effect delegates up the stack
+effect fn nh_inner()
+effect fn nh_outer()
+let nh1 = handle {
+  let a = handle { perform nh_inner() } with nh_inner(resume) { resume(5) }
+  let b = perform nh_outer()
+  a + b
+} with nh_outer(resume) { resume(10) }
+assert_eq(nh1, 15)
+
+// multi-effect: an inner body performs two ops; one handled here, one delegated
+effect fn nh_a()
+effect fn nh_b()
+let nh2 = handle {
+  handle {
+    let x = perform nh_a()
+    let y = perform nh_b()
+    x + y
+  } with nh_a(resume) { resume(1) }
+} with nh_b(resume) { resume(2) }
+assert_eq(nh2, 3)
