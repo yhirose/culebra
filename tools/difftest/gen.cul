@@ -909,7 +909,13 @@ let eff = [
   'effect fn pk(); effect fn f() { let r = perform pk(); if r > 0 { "pos" } else { "neg" } }; to_string(handle { f() } with pk(k) { k(5) }) + "," + to_string(handle { f() } with pk(k) { k(-5) })',
   # nested handles: inner handled locally, a separate outer effect delegates up
   'effect fn ni(); effect fn no(); handle { let a = handle { perform ni() } with ni(r) { r(5) }; let b = perform no(); a + b } with no(r) { r(10) }',
-  'effect fn na(); effect fn nb(); handle { handle { let x = perform na(); let y = perform nb(); x + y } with na(r) { r(1) } } with nb(r) { r(2) }']
+  'effect fn na(); effect fn nb(); handle { handle { let x = perform na(); let y = perform nb(); x + y } with na(r) { r(1) } } with nb(r) { r(2) }',
+  # multiple handler clauses (one `with` each) + optional `return` clause
+  'effect fn g(); effect fn p(v); effect fn c() { let a = perform g(); perform p(a + 1); perform g() }; mut cell = 10; handle { c() } with g(r) { r(cell) } with p(v, r) { cell = v; r(nil) }',
+  'effect fn ask(i); effect fn lg(m); effect fn dn(); effect fn s(n) { mut t = 0; mut i = 0; while i < n { let x = perform ask(i); perform lg(x); t = t + x; i = i + 1 }; perform dn(); t }; mut ls = []; let r = handle { s(3) } with ask(i, k) { k(i * 10) } with lg(m, k) { ls.push(m); k(nil) } with dn(k) { k(nil) }; to_string(r) + to_string(ls)',
+  'effect fn ask(); handle { let x = perform ask(); x } with ask(r) { r(5) } with return(v) { v + 100 }',
+  'effect fn fail(); handle { perform fail(); 99 } with fail(r) { -1 } with return(v) { v + 100 }',
+  'effect fn q(i); effect fn nt(m); mut ns = []; let r = handle { mut t = 0; mut i = 0; while i < 3 { let x = perform q(i); perform nt(x); t = t + x; i = i + 1 }; t } with q(i, k) { k(i + 1) } with nt(m, k) { ns.push(m); k(nil) } with return(v) { { sum: v, count: ns.size() } }; to_string(r.sum) + "," + to_string(r.count) + to_string(ns)']
 for c in eff {
   case("eff|" + c, c)
 }

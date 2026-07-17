@@ -279,10 +279,18 @@ const auto grammar_ = R"(
   # `perform op(args)` invokes an effect operation; it is an expression
   # whose value is what the handler resumes with. `handle { body } with
   # op(resume) { … }` runs `body` under a dynamically-scoped handler for
-  # `op`; `resume` is the one-shot continuation. Both are lowered at parse
-  # time (effects_transform.h) — no backend-specific runtime.
+  # `op`; `resume` is the one-shot continuation. One handle may carry several
+  # clauses, each introduced by its own `with` (`handle { … } with get(r) { … }
+  # with put(v, r) { … }`) — the leading `with` keyword disambiguates a clause
+  # from a following statement. Both are lowered at parse time
+  # (effects_transform.h) — no backend-specific runtime.
+  # An optional `with return(v) { … }` clause maps the handled computation's
+  # normal-completion value; a clause that aborts (never resumes) is not
+  # wrapped by it.
   PERFORM                  <-  perform _sp_ IDENTIFIER _ ARGUMENTS
-  HANDLE                   <-  handle _ BLOCK _ with _ IDENTIFIER _ PARAMETERS _ BLOCK
+  HANDLE                   <-  handle _ BLOCK (_ with _ (RETURN_CLAUSE / HANDLE_CLAUSE))+
+  RETURN_CLAUSE            <-  return _ PARAMETERS _ BLOCK
+  HANDLE_CLAUSE            <-  IDENTIFIER _ PARAMETERS _ BLOCK
   TUPLE                    <-  '(' _ EXPRESSION _ ',' _ EXPRESSION (_ ',' _ EXPRESSION)* _ ','? _ ')'
                             /  '(' _ EXPRESSION _ ',' _ ')'
   SET                      <-  '{' _ EXPRESSION _ ',' _ EXPRESSION (_ ',' _ EXPRESSION)* _ ','? _ '}'

@@ -23,26 +23,32 @@ let _eff_module = fn() {
     throw { kind: "EffectError", message: "no handler for effect '{op}'" }
   }
 
-  fn _drive(comp, rv) {
+  fn _drive(comp, rv, ret) {
     let mut resume_val = rv
     while true {
       let tag = comp._step(resume_val)
-      if tag == 0 { return comp._eff_val }
+      if tag == 0 {
+        # Normal completion: a `return` clause (if any) maps the value.
+        if ret != nil { return ret(comp._eff_val) }
+        return comp._eff_val
+      }
       if tag == 1 {
         let h = _find(comp._eff_op)
-        let resume = fn(v) { _drive(comp, v) }
+        let resume = fn(v) { _drive(comp, v, ret) }
         return h(comp._eff_args, resume)
       }
-      resume_val = _drive(comp._eff_delegate, nil)
+      # A delegated sub-computation is not wrapped by this handle's return.
+      resume_val = _drive(comp._eff_delegate, nil, nil)
     }
   }
 
-  fn _handle(comp, op, adapter) {
-    let frame = {}
-    frame[op] = adapter
+  fn _handle(comp, frame, ret) {
+    # `frame` maps each handled op-name to its adapter fn (one per `with`
+    # clause); `ret` is the optional `return`-clause adapter (nil if none).
+    # Push the frame as one dynamically-scoped frame for `comp`'s duration.
     _handlers.push(frame)
     defer { _handlers.pop() }
-    _drive(comp, nil)
+    _drive(comp, nil, ret)
   }
 
   { handle: _handle }

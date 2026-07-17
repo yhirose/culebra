@@ -1247,50 +1247,100 @@ class EffectsLowerer {
     return reparse_decl(synth);
   }
 
-  // `handle { BODY } with op(params) { H }` ->
+  // `handle { BODY } with op1(params) { H1 } … with return(v) { R }` ->
   //   __Eff.handle(
   //     (fn() { class _EffBody…; _EffBody….new() })(),
-  //     "op",
-  //     fn(_eh_args, _eh_resume) { <bind op-args>; let <resume> = _eh_resume; H })
+  //     { op1: fn(_eh_args, _eh_resume) { <bind op-args>; let <resume> =
+  //             _eh_resume; H1 }, op2: … },
+  //     fn(_eh_val) { let v = _eh_val; R })   // the return-clause map, or nil
+  // Each op `with` clause becomes one entry of the handler frame; `_find` (in
+  // effects.cul) looks an operation up in the dynamically-scoped frame stack.
+  // The optional `with return` clause maps the normal-completion value.
   std::shared_ptr<peg::Ast> lower_handle(std::shared_ptr<peg::Ast> ast) {
     using namespace peg::udl;
     const auto& body = *ast->nodes[0];
-    std::string op = std::string(ast->nodes[1]->token);
-    const auto& params = *ast->nodes[2];
-    const auto& handler_body = *ast->nodes[3];
 
     auto class_name = std::format("_EffBody_{}_{}", ast->line, ast->column);
     auto rv_name = std::format("_rv_{}_{}", ast->line, ast->column);
     std::string cls = build_computation_class(class_name, body, {}, rv_name);
 
-    // Handler adapter: leading params bind op args from _eh_args[i]; the last
-    // param is the resume continuation.
-    if (params.nodes.empty()) {
-      throw CulebraError(
-          "SyntaxError",
-          "a handler clause needs a `resume` parameter (`with op(resume) "
-          "{ … }`).",
-          static_cast<long>(ast->line), static_cast<long>(ast->column));
+    // Build the handler frame `{ op: adapter, … }` over every op `with` clause,
+    // plus an optional `with return(v) { … }` that maps the normal-completion
+    // value. An adapter binds the operation's args from _eh_args[i], then names
+    // the last parameter as the one-shot resume continuation.
+    std::string frame = "{";
+    std::string return_fn = "nil";  // the return-clause adapter, or nil
+    std::set<std::string> seen;
+    bool first_op = true;
+    for (size_t c = 1; c < ast->nodes.size(); c++) {
+      const auto& clause = *ast->nodes[c];
+
+      if (clause.tag == "RETURN_CLAUSE"_) {  // [PARAMETERS, BLOCK]
+        if (return_fn != "nil") {
+          throw CulebraError(
+              "SyntaxError",
+              "a `handle` may have only one `return` clause.",
+              static_cast<long>(clause.line), static_cast<long>(clause.column));
+        }
+        const auto& params = *clause.nodes[0];
+        if (params.nodes.size() != 1) {
+          throw CulebraError(
+              "SyntaxError",
+              "a `return` clause takes exactly one parameter "
+              "(`with return(value) { … }`).",
+              static_cast<long>(clause.line), static_cast<long>(clause.column));
+        }
+        auto vn = view_parameter(*params.nodes[0]).name;
+        auto ret_src = strip_block_braces(slice(*clause.nodes[1]));
+        return_fn = std::format(
+            "fn(_eh_val) {{\n      let {} = _eh_val\n      {}\n    }}",
+            std::string(vn), std::string(ret_src));
+        continue;
+      }
+
+      // [IDENTIFIER, PARAMETERS, BLOCK]
+      std::string op = std::string(clause.nodes[0]->token);
+      if (!seen.insert(op).second) {
+        throw CulebraError(
+            "SyntaxError",
+            std::format("duplicate handler clause for effect '{}' in one "
+                        "`handle`.", op),
+            static_cast<long>(clause.line), static_cast<long>(clause.column));
+      }
+      const auto& params = *clause.nodes[1];
+      const auto& handler_body = *clause.nodes[2];
+      if (params.nodes.empty()) {
+        throw CulebraError(
+            "SyntaxError",
+            "a handler clause needs a `resume` parameter (`with op(resume) "
+            "{ … }`).",
+            static_cast<long>(clause.line), static_cast<long>(clause.column));
+      }
+      std::string binds;
+      size_t nparams = params.nodes.size();
+      for (size_t i = 0; i + 1 < nparams; i++) {
+        auto pn = view_parameter(*params.nodes[i]).name;
+        binds += std::format("      let {} = _eh_args[{}]\n", std::string(pn), i);
+      }
+      auto resume_name = view_parameter(*params.nodes[nparams - 1]).name;
+      binds += std::format("      let {} = _eh_resume\n", std::string(resume_name));
+      auto handler_src = strip_block_braces(slice(handler_body));
+      if (!first_op) frame += ",";
+      first_op = false;
+      frame += std::format(
+          "\n    {0}: fn(_eh_args, _eh_resume) {{\n{1}      {2}\n    }}",
+          op, binds, std::string(handler_src));
     }
-    std::string binds;
-    size_t nparams = params.nodes.size();
-    for (size_t i = 0; i + 1 < nparams; i++) {
-      auto pn = view_parameter(*params.nodes[i]).name;
-      binds += std::format("    let {} = _eh_args[{}]\n", std::string(pn), i);
-    }
-    auto resume_name = view_parameter(*params.nodes[nparams - 1]).name;
-    binds += std::format("    let {} = _eh_resume\n", std::string(resume_name));
-    auto handler_src =
-        strip_block_braces(slice(handler_body));
+    frame += "}";
 
     auto synth = std::make_shared<std::string>(std::format(
         "fn __eff_handle_wrapper__() {{\n"
         "  __Eff.handle(\n"
         "    (fn() {{\n{0}    {1}.new()\n    }})(),\n"
-        "    \"{2}\",\n"
-        "    fn(_eh_args, _eh_resume) {{\n{3}    {4}\n    }})\n"
+        "    {2},\n"
+        "    {3})\n"
         "}}\n",
-        cls, class_name, op, binds, std::string(handler_src)));
+        cls, class_name, frame, return_fn));
     return reparse_expr(synth);
   }
 

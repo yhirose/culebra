@@ -1049,7 +1049,7 @@ inline const std::vector<std::string>& ast_optimizer_keep_rules() {
       "CLASS_DECL", "METHOD", "DECORATOR",
       "TRAIT_DECL", "TRAIT_METHOD", "TRAIT_BODY",
       "ENUM_DECL", "VARIANT",
-      "EFFECT_FN_DECL", "PERFORM", "HANDLE",
+      "EFFECT_FN_DECL", "PERFORM", "HANDLE", "HANDLE_CLAUSE", "RETURN_CLAUSE",
       // TUPLE_PATTERN must be kept: the single-element form `(a,)`
       // (grammar's `'(' PATTERN ',' ')'` alt) has exactly one child and
       // would otherwise collapse onto its lone sub-pattern, losing the

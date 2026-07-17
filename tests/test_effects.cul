@@ -370,3 +370,112 @@ let nh2 = handle {
   } with nh_a(resume) { resume(1) }
 } with nh_b(resume) { resume(2) }
 assert_eq(nh2, 3)
+
+// === multiple handler clauses ===========================================
+// One `handle` may carry several `with` clauses (one per effect operation);
+// an operation resolves up the dynamically-scoped frame stack. An optional
+// `with return(v) { … }` clause maps the normal-completion value.
+
+// state effect: get + put threaded through a cell by two clauses
+effect fn mc_get()
+effect fn mc_put(v)
+effect fn mc_counter() {
+  let a = perform mc_get()
+  perform mc_put(a + 1)
+  let b = perform mc_get()
+  b
+}
+mut mc_cell = 10
+let mc_r = handle {
+  mc_counter()
+} with mc_get(resume) {
+  resume(mc_cell)
+} with mc_put(v, resume) {
+  mc_cell = v
+  resume(nil)
+}
+assert_eq(mc_r, 11)
+assert_eq(mc_cell, 11)
+
+// three clauses + control-flow body
+effect fn mc_ask(i)
+effect fn mc_log(m)
+effect fn mc_done()
+effect fn mc_session(n) {
+  mut total = 0
+  mut i = 0
+  while i < n {
+    let x = perform mc_ask(i)
+    perform mc_log(x)
+    total = total + x
+    i = i + 1
+  }
+  perform mc_done()
+  total
+}
+mut mc_logs = []
+let mc_s = handle {
+  mc_session(3)
+} with mc_ask(i, resume) {
+  resume(i * 10)
+} with mc_log(m, resume) {
+  mc_logs.push(m)
+  resume(nil)
+} with mc_done(resume) {
+  resume(nil)
+}
+assert_eq(mc_s, 30)
+assert_eq(mc_logs, [0, 10, 20])
+
+// a duplicate clause for one effect is rejected (parse-time, symmetric)
+// (see the reject corpus; not asserted here since it aborts the module)
+
+// return clause maps the normal-completion value
+effect fn rc_ask()
+let rc_r = handle {
+  let x = perform rc_ask()
+  x
+} with rc_ask(resume) {
+  resume(5)
+} with return(v) {
+  v + 100
+}
+assert_eq(rc_r, 105)
+
+// return clause is NOT applied when a handler aborts (never resumes)
+effect fn rc_fail()
+let rc_a = handle {
+  perform rc_fail()
+  99
+} with rc_fail(resume) {
+  -1
+} with return(v) {
+  v + 100
+}
+assert_eq(rc_a, -1)
+
+// return clause + multiple clauses + control flow: wrap the result
+effect fn rc_q(i)
+effect fn rc_note(m)
+mut rc_notes = []
+let rc_s = handle {
+  mut total = 0
+  mut i = 0
+  while i < 3 {
+    let x = perform rc_q(i)
+    perform rc_note(x)
+    total = total + x
+    i = i + 1
+  }
+  total
+} with rc_q(i, resume) {
+  resume(i + 1)
+} with rc_note(m, resume) {
+  rc_notes.push(m)
+  resume(nil)
+} with return(v) {
+  { sum: v, count: rc_notes.size() }
+}
+assert_eq(rc_s.sum, 6)
+assert_eq(rc_s.count, 3)
+assert_eq(rc_notes, [1, 2, 3])
