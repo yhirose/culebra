@@ -196,7 +196,9 @@ let gens = ['fn gg() { yield 1; yield 2; yield 3 }; gg().collect()',
             'fn gg() { }; gg().collect()',
             'fn gg() { yield 1; yield 2 }; gg().count()',
             'fn gg() { yield 7 }; gg().next()',
-            'mut s = 0; fn gg() { yield 1; yield 2 }; for x in gg() { s = s + x }; s']
+            'mut s = 0; fn gg() { yield 1; yield 2 }; for x in gg() { s = s + x }; s',
+            # a local name as literal string text is not rewritten; interpolation is
+            'fn gg() { let base = 9; yield "the base v"; yield "b={base}" }; to_string(gg().collect())']
 for g in gens {
   case("gen|" + g, g)
 }
@@ -933,7 +935,11 @@ let eff = [
   'effect fn o(); effect fn e1(); effect fn e2(); effect fn bd() { let base = perform o(); handle { let m = perform e1(); handle { base + m + perform e2() } with e2(k) { k(30) } } with e1(k) { k(200) } }; to_string(handle { bd() } with o(k) { k(1000) })',
   'effect fn o(); effect fn pk(x, y); effect fn bd() { let base = perform o(); handle { base + perform pk(1, 2) } with pk(x, y, k) { [k(x), k(y)] } }; to_string(handle { bd() } with o(k) { k(10) })',
   # `this.` inside a string is not a capture (AST-walk detection, not raw text)
-  'effect fn ask(); to_string(handle { let msg = "p is this.foo"; let v = perform ask(); v + msg.size() } with ask(k) { k(3) })']
+  'effect fn ask(); to_string(handle { let msg = "p is this.foo"; let v = perform ask(); v + msg.size() } with ask(k) { k(3) })',
+  # a local name as literal string text is not rewritten; interpolation is
+  'effect fn a(); effect fn f() { let base = perform a(); let lit = "the base v"; "{base}-{lit}" }; handle { f() } with a(k) { k(2) }',
+  # a block comment (its local name) is skipped, not rewritten
+  'effect fn a(); effect fn f() { let base = perform a(); let y = /* just base */ base + 1; y }; to_string(handle { f() } with a(k) { k(10) })']
 for c in eff {
   case("eff|" + c, c)
 }

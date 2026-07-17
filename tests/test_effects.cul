@@ -609,3 +609,27 @@ let cap_h = handle {
   v + msg.size()
 } with cap_ask(k) { k(3) }
 assert_eq(cap_h, 3 + 16)
+
+// a local name that also appears as literal text inside a string / comment must
+// NOT be rewritten there; only interpolation `{expr}` and code are rewritten.
+effect fn sc_ask()
+effect fn sc_body() {
+  let base = perform sc_ask()      # comment mentioning base stays literal
+  let lit = "the base rate"        # literal 'base' — untouched
+  let raw = 'base'                 # single-quote raw — untouched
+  let interp = "v={base} lit=base" # {base} rewritten, literal 'base' untouched
+  "{base}|{lit}|{raw}|{interp}"
+}
+assert_eq(handle { sc_body() } with sc_ask(k) { k(5) },
+          "5|the base rate|base|v=5 lit=base")
+
+// all three comment forms (# / // / block) are skipped even when they contain a
+// local name or an unbalanced quote (which would otherwise open a phantom
+// string). The block comment is mid-expression (its only valid position).
+effect fn cm_ask()
+effect fn cm_body() {
+  let base = perform cm_ask()   // don't rewrite base in this line comment
+  let y = /* it's base */ base + 1
+  y                             # base again, still literal
+}
+assert_eq(handle { cm_body() } with cm_ask(k) { k(10) }, 11)

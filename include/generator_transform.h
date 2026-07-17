@@ -186,7 +186,106 @@ inline std::string_view strip_block_braces(std::string_view s) {
 // exempted from that exclusion: `0..n`'s `n` is an operand, not a member,
 // so a range bound naming a local/param (`for i in 0..n`, desugared to
 // `(0..n).iter()`) must still be rewritten to `0..this.n`. String-literal
-// and comment false positives remain out of scope (regex, not a real lexer).
+// content and comments (line `#`/`//`, block `/* … */`) are skipped by
+// `rewrite_outside_strings` below, so a local name appearing there as literal
+// text is never rewritten.
+// `"""` starts at `i`.
+inline bool is_triple_quote(std::string_view s, size_t i) {
+  return i + 2 < s.size() && s[i] == '"' && s[i + 1] == '"' && s[i + 2] == '"';
+}
+
+// Index just past the string literal starting at `i` (`'…'` / `` `…` `` raw,
+// `"…"` / `"""…"""` interpolated). Escapes (`\`) are honoured in the
+// double-quoted forms; the raw forms end at the first closing delimiter.
+inline size_t skip_string_literal(std::string_view s, size_t i) {
+  size_t n = s.size();
+  char q = s[i];
+  if (q == '\'' || q == '`') {
+    for (i++; i < n && s[i] != q; i++) {}
+    return i < n ? i + 1 : i;
+  }
+  bool triple = is_triple_quote(s, i);
+  i += triple ? 3 : 1;
+  while (i < n) {
+    if (s[i] == '\\' && i + 1 < n) { i += 2; continue; }
+    if (triple) {
+      if (is_triple_quote(s, i)) return i + 3;
+    } else if (s[i] == '"') {
+      return i + 1;
+    }
+    i++;
+  }
+  return i;
+}
+
+// Apply `rewrite` to `src`, but only to its *code* — the literal content of
+// string constants and comments (line `#`/`//`, block `/* … */`) is copied
+// verbatim so an identifier that happens to appear as literal text is never
+// touched. Interpolation `{expr}` inside a `"…"` / `"""…"""` string IS code and
+// is rewritten (recursively, as an expr may embed further strings). Only the
+// double-quoted forms interpolate; `'…'` / `` `…` `` are fully raw.
+inline std::string rewrite_outside_strings(
+    std::string_view s,
+    const std::function<std::string(std::string_view)>& rewrite) {
+  std::string out;
+  size_t i = 0, n = s.size(), code0 = 0;
+  auto flush = [&](size_t end) {
+    if (end > code0) out += rewrite(s.substr(code0, end - code0));
+  };
+  auto copy_verbatim = [&](size_t j) {
+    out.append(s.substr(i, j - i));
+    i = code0 = j;
+  };
+  while (i < n) {
+    char c = s[i];
+    bool line_comment = c == '#' || (c == '/' && i + 1 < n && s[i + 1] == '/');
+    if (line_comment) {
+      flush(i);
+      size_t j = i;
+      while (j < n && s[j] != '\n') j++;
+      copy_verbatim(j);
+    } else if (c == '/' && i + 1 < n && s[i + 1] == '*') {  // block comment
+      flush(i);
+      size_t j = i + 2;
+      while (j + 1 < n && !(s[j] == '*' && s[j + 1] == '/')) j++;
+      copy_verbatim(j + 1 < n ? j + 2 : n);
+    } else if (c == '\'' || c == '`') {  // raw string, no interpolation
+      flush(i);
+      copy_verbatim(skip_string_literal(s, i));
+    } else if (c == '"') {  // interpolated (or triple) string
+      flush(i);
+      bool triple = is_triple_quote(s, i);
+      size_t open = triple ? 3 : 1;
+      out.append(s.substr(i, open));
+      i += open;
+      while (i < n) {
+        if (!triple && s[i] == '"') { out += '"'; i++; break; }
+        if (triple && is_triple_quote(s, i)) { out.append("\"\"\""); i += 3; break; }
+        if (s[i] == '\\' && i + 1 < n) { out.append(s.substr(i, 2)); i += 2; continue; }
+        if (s[i] == '{') {  // interpolation expr — code, may embed strings
+          size_t k = i + 1, depth = 1;
+          while (k < n && depth > 0) {
+            char d = s[k];
+            if (d == '{') { depth++; k++; }
+            else if (d == '}') { if (--depth == 0) break; k++; }
+            else if (d == '"' || d == '\'' || d == '`') k = skip_string_literal(s, k);
+            else k++;
+          }
+          out += '{';
+          out += rewrite_outside_strings(s.substr(i + 1, k - (i + 1)), rewrite);
+          if (k < n) { out += '}'; k++; }
+          i = k;
+        } else { out += s[i]; i++; }
+      }
+      code0 = i;
+    } else {
+      i++;
+    }
+  }
+  flush(n);
+  return out;
+}
+
 inline std::string rewrite_locals_to_this(std::string_view src,
                                           const std::set<std::string>& names) {
   // The two declaration-strip patterns are name-independent — hoist
@@ -194,22 +293,34 @@ inline std::string rewrite_locals_to_this(std::string_view src,
   // them. `std::regex` construction is the famously expensive part.
   static const std::regex strip_let_this(R"(\blet\s+this\.)");
   static const std::regex strip_mut_this(R"(\bmut\s+this\.)");
-  std::string out(src);
   std::vector<std::string> sorted(names.begin(), names.end());
   std::sort(sorted.begin(), sorted.end(),
             [](const auto& a, const auto& b) { return a.size() > b.size(); });
+  // Build each name's pattern once per call and reuse it across code spans —
+  // `std::regex` construction is the expensive part (see the two static strips
+  // above); the patterns are name-dependent so they can't be file-scope static.
+  // Group 1 captures the boundary (start-of-string, the `..` range operator, or
+  // any byte that is neither `.` nor an identifier char) so it can be restored
+  // ahead of the inserted `this.`. `..` is listed before the single-char class
+  // so a range bound is matched as an operand rather than a member access on
+  // its second dot.
+  std::vector<std::regex> pats;
+  pats.reserve(sorted.size());
   for (const auto& name : sorted) {
-    // Group 1 captures the boundary (start-of-string, the `..` range
-    // operator, or any byte that is neither `.` nor an identifier char) so
-    // it can be restored ahead of the inserted `this.`. `..` is listed
-    // before the single-char class so a range bound is matched as an operand
-    // rather than mistaken for a member access on its second dot.
-    std::regex pat("(^|\\.\\.|[^.A-Za-z0-9_])" + name + "\\b");
-    out = std::regex_replace(out, pat, "$1this." + name);
+    pats.emplace_back("(^|\\.\\.|[^.A-Za-z0-9_])" + name + "\\b");
   }
-  out = std::regex_replace(out, strip_let_this, "this.");
-  out = std::regex_replace(out, strip_mut_this, "this.");
-  return out;
+  // Rewrite only the code spans (see rewrite_outside_strings): an identifier
+  // that appears as literal text inside a string / comment is left untouched.
+  auto rewrite_code = [&](std::string_view code) -> std::string {
+    std::string out(code);
+    for (size_t k = 0; k < sorted.size(); k++) {
+      out = std::regex_replace(out, pats[k], "$1this." + sorted[k]);
+    }
+    out = std::regex_replace(out, strip_let_this, "this.");
+    out = std::regex_replace(out, strip_mut_this, "this.");
+    return out;
+  };
+  return rewrite_outside_strings(src, rewrite_code);
 }
 
 // Collect every name introduced by a `let`/`mut` decl in a fn body
