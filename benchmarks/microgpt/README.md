@@ -33,7 +33,8 @@ python3 benchmarks/microgpt/microgpt.py [num_steps]
 
 ## Numbers
 
-Apple Silicon, single core, training only (`n_samples=0`).
+Apple Silicon, single core, training only (`n_samples=0`), measured
+2026-07-17.
 
 Compare the **per-step rate** (steady state), not total wall: the scalar
 port's wall includes ~1–2 s of JIT warmup, and the Tensor port's wall is
@@ -47,9 +48,9 @@ Per-step (steady-state train loop, n_samples=0):
 
 | implementation              | ms/step |
 |-----------------------------|--------:|
-| Culebra Tensor `--jit`      | **~1.1 ms** |
-| Culebra Tensor interp       | ~5 ms |
-| Python (scalar reference)   | ~82 ms |
+| Culebra Tensor `--jit`      | **~1.15 ms** |
+| Culebra Tensor interp       | ~5.3 ms |
+| Python (scalar reference)   | ~83 ms |
 
 The Tensor port is **~50–100× faster per step than the scalar port** (one
 layer-level op per Tensor node + BLAS, instead of thousands of per-scalar
@@ -62,15 +63,15 @@ loop (~0.1 s) — `--jit-faststart` or the on-disk object cache
 
 The scalar port builds thousands of `Value` objects per step (one per
 scalar arithmetic op), so it is **alloc-bound**: GC + refcount + malloc are
-~55% of steady-state time. Current per-step is **~Python-parity-to-slower**
-(JIT ~110 ms/step vs Python ~82 ms/step on this machine; absolute figures
+~55% of steady-state time. Current per-step is **slower than Python**
+(JIT ~149 ms/step vs Python ~83 ms/step on this machine; absolute figures
 drift with load — compare ratios).
 
 An earlier version of this README reported the scalar JIT *beating* Python
 (~0.85×). That advantage relied on the old minor-only cycle collector,
 which was **fast but leaked** (microgpt grew to ~5 GB). The current
 conservative mark-sweep backstop is sound (no leak) but pays a real cost on
-this GC-bound workload — roughly the ~1.5× difference. Recovering it
+this GC-bound workload — roughly the ~1.8× difference. Recovering it
 precisely (Julia-style shadow-stack rooting → cycle-only collection) is
 tracked separately; the decisive-speed answer for ML on Culebra is the
 **Tensor** path above. Both backends still produce bit-identical loss

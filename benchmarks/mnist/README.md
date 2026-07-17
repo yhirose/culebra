@@ -111,20 +111,20 @@ deterministic init).
 
 ## Numbers
 
-Apple Silicon (M-series), single-machine. Mean of 3 external runs;
-each run does `CYCLES` in-process cycles (3 for inference / 2 for
-training, except pure Python training which uses 1).
+Apple Silicon (M-series), single-machine, measured 2026-07-17. Mean of
+3 external runs; each run does `CYCLES` in-process cycles (3 for
+inference / 2 for training, except pure Python training which uses 1).
 
 ### Inference (10000 test images)
 
 | implementation     |  load   |  cold   |  warm   |
 |--------------------|--------:|--------:|--------:|
-| numpy (BLAS)       | 0.385 s | 0.024 s | 0.022 s |
-| pure Python        | 0.615 s | 10.93 s | 10.90 s |
-| PyTorch CPU        | 0.294 s | 0.008 s | 0.003 s |
-| PyTorch MPS (GPU)  | 0.364 s | 0.147 s | 0.002 s |
-| Julia              | 1.268 s | 0.303 s | 0.007 s |
-| Culebra Tensor     | 0.221 s | 0.003 s | 0.002 s |
+| numpy (BLAS)       | 0.348 s | 0.014 s | 0.025 s |
+| pure Python        | 0.633 s | 11.19 s | 10.86 s |
+| PyTorch CPU        | 0.300 s | 0.008 s | 0.003 s |
+| PyTorch MPS (GPU)  | 0.407 s | 0.094 s | 0.002 s |
+| Julia              | 1.281 s | 0.306 s | 0.007 s |
+| Culebra Tensor     | 0.315 s | 0.005 s | 0.004 s |
 
 All seven agree on predictions (accuracy 0.9551 from `train.py`'s
 30-epoch full-MNIST weights).
@@ -133,12 +133,15 @@ All seven agree on predictions (accuracy 0.9551 from `train.py`'s
 
 | implementation     |  load   |  cold   |  warm   |
 |--------------------|--------:|--------:|--------:|
-| numpy (BLAS)       | 0.635 s | 0.091 s | 0.080 s |
-| pure Python        | 1.224 s | 27.25 s |    –    |
-| PyTorch CPU        | 0.592 s | 0.077 s | 0.065 s |
-| PyTorch MPS (GPU)  | 0.646 s | 0.300 s | 0.273 s |
-| Julia              | 2.284 s | 0.779 s | 0.075 s |
-| Culebra Tensor     | 0.442 s | 0.077 s | 0.077 s |
+| numpy (BLAS)       | 0.659 s | 0.095 s | 0.093 s |
+| pure Python        | 1.307 s | 27.01 s |    –    |
+| PyTorch CPU        | 0.597 s | 0.074 s | 0.064 s |
+| PyTorch MPS (GPU)  | 0.708 s | 0.255 s | 0.232 s |
+| Julia              | 2.408 s | 0.871 s | 0.086 s |
+| Culebra Tensor     | 0.611 s | 0.039 s | 0.038 s |
+
+Culebra Tensor is the fastest of the six on warm training (0.038 s),
+ahead of PyTorch CPU (0.064 s) and numpy (0.093 s).
 
 All implementations agree on final accuracy (0.9079 — Culebra Tensor
 lands at 0.9081, FP-epsilon away from the F64 reference). Pure Python
@@ -146,8 +149,8 @@ uses `CYCLES=1` because a single epoch already takes ~27 s.
 
 ### What the cold/warm split shows
 
-- **Julia** has the most visible JIT warmup: cold 0.30 s → warm
-  0.007 s on inference (≈40×), cold 0.78 s → warm 0.075 s on training.
+- **Julia** has the most visible JIT warmup: cold 0.31 s → warm
+  0.007 s on inference (≈40×), cold 0.87 s → warm 0.086 s on training.
   Method specialization on first call dominates the cold cost.
 - **PyTorch MPS** pays a one-time GPU context init at cold (~0.05–0.3 s
   depending on workload), then drops to ~2 ms warm on inference.
@@ -159,7 +162,7 @@ uses `CYCLES=1` because a single epoch already takes ~27 s.
 
 The 30-hidden MLP at batch=10 is small enough that MPS kernel-launch
 latency dominates the actual matmul. PyTorch MPS (training) lands at
-**0.273 s warm, ~4.2× slower than PyTorch CPU's 0.065 s warm**. This
+**0.232 s warm, ~3.6× slower than PyTorch CPU's 0.064 s warm**. This
 is the expected scaling — GPU pays off once the matmul is large
 enough to amortize launch overhead, which a 30×784 hidden layer does
 not hit. Larger models in `benchmarks/microgpt` are a more honest GPU
@@ -177,8 +180,8 @@ Default dtypes differ across the row:
 | Julia              | F64         |
 | Culebra Tensor     | F32         |
 
-PyTorch CPU running ~20% faster than numpy on training is partly the
-F32 vs F64 difference; on the same Apple Accelerate, F32 sgemm is
+PyTorch CPU running faster than numpy on training is partly the F32
+vs F64 difference; on the same Apple Accelerate, F32 sgemm is
 roughly 2× the throughput of F64 dgemm, but the MNIST matmuls are too
 small for the full ratio to show. Accuracy is unaffected at this
 scale (0.9079 vs 0.9079).
@@ -208,5 +211,8 @@ the algorithm is identical to the scalar/numpy versions, written
 against numpy-style broadcast and the same trio of `linear_sigmoid`
 + `argmax` + `to_array` patterns. The training script uses
 `Tensor.clone()` to reset weights between cycles, mirroring numpy's
-`init_W1.copy()` pattern. CUDA/MSL backends are future work behind
-the same `Tensor` interface.
+`init_W1.copy()` pattern. `Tensor` also has Metal (macOS) and CUDA
+(Linux/Windows) backends via `vendor/cpp-tensorlib`, selected
+automatically or via `tl::use_cpu()`/`tl::use_gpu()`; this MNIST-size
+MLP stays on CPU by default since it's too small to benefit (see
+above).
