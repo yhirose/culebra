@@ -679,3 +679,10 @@ fetch-mnist:
         || curl -fsSL "$fallback/$f" -o "$out/$f"
     done
     echo "MNIST data ready in $out"
+
+# Check vendor/* submodules for upstream updates (dry-run by default).
+# Pass `--run` to actually check out the latest commit for outdated ones
+# (working tree only — review + rebuild + test before committing).
+[group("vendor")]
+vendor-update *extra:
+    ./tools/vendor_update.sh {{extra}}
