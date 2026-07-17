@@ -50,6 +50,10 @@ Training (benchmark):
                             (784-512-256-64-256-512-784, mini-batch SGD),
                             a shape deep/wide enough to actually cross the
                             GPU/CPU threshold — see "GPU vs CPU" below.
+- `train_bench_autoencoder_tl.cpp` — the same autoencoder step graph in raw
+                            `cpp-tensorlib` C++ (no Culebra), the baseline that
+                            splits the silarray gap into library vs runtime —
+                            see "GPU vs CPU" below.
 
 Other:
 - `bench.sh`              — runs every implementation $RUNS× and reports means
@@ -256,19 +260,45 @@ GPU/auto beat CPU here (~8-15%), the opposite of the classifier
 shape — but the margin is smaller than silarray's own measurement on
 the identical architecture (CPU 914 ms vs GPU 621 ms, ~1.5x), and
 Culebra's absolute per-epoch time (~5 s) is 6-9x silarray's
-(600-900 ms). silarray's loop is raw C++ over `sil::array<float>`
-values on the stack; Culebra's script creates ~30-40 new `Tensor`
-objects per step (forward outputs, `dnet`/`dW`/`db`/`input_l` per
-layer, updated `Ws[l]`/`bs[l]`) — each one a GC-tracked Object on top
+(600-900 ms).
+
+**Where that 6-9x actually comes from (measured, CPU).** It is
+tempting to blame the whole gap on Culebra's object model, but a
+direct measurement splits it in two, and the *library* is the larger
+factor. `train_bench_autoencoder_tl.cpp` runs the exact same tl op
+graph this `.cul` emits per step (same forward `linear_sigmoid`
+expansion, same backward line-for-line, same per-layer ones-tensor
+allocation) with **no Culebra in the loop** — pure `cpp-tensorlib`
+C++. On the same machine, back to back:
+
+| layer                                    | CPU epoch | vs silarray |
+|------------------------------------------|----------:|------------:|
+| silarray (eager C++, `sil::array<float>`) |  ~0.9 s   |    1.0x     |
+| `cpp-tensorlib` C++ (`_tl.cpp`, no Culebra) | ~2.8-3.0 s |  ~3.1x    |
+| Culebra `.cul` (CPU)                     | ~4.3-5.3 s |  ~5-6x      |
+
+So the bulk of the gap — ~3x — is `cpp-tensorlib` itself being
+slower than silarray on this op mix at the C++ level (lazy-graph
+build/dispatch per op, and weaker backward fusion than silarray's
+single `sigmoid_backward`/`linear` kernels); it has nothing to do
+with Culebra. Culebra's own runtime then adds only ~1.5-1.9x on top
+of the `cpp-tensorlib` baseline: the `.cul` script creates ~30-40 new
+`Tensor` objects per step (forward outputs, `dnet`/`dW`/`db`/`input_l`
+per layer, updated `Ws[l]`/`bs[l]`) — each a GC-tracked Object on top
 of its `cpp-tensorlib` handle, and `Array` indexing (`Ws[l]`,
-`outs[l]`) goes through tagged-value boxing. Across 600 steps that's
-~20-25k GC-registered objects, paying the same per-object
-adopt+refcount tax Culebra's object model pays generally (see the
-scalar-vs-Python analysis in `benchmarks/microgpt/README.md`) — a
-language-runtime cost that's roughly backend-independent,
-so it compresses the CPU/GPU *ratio* without changing its direction.
+`outs[l]`) goes through tagged-value boxing, ~20-25k GC-registered
+objects across 600 steps, the same per-object adopt+refcount tax
+Culebra's object model pays generally (see the scalar-vs-Python
+analysis in `benchmarks/microgpt/README.md`). That runtime tax is
+roughly backend-independent, so it compresses the CPU/GPU *ratio*
+without changing its direction. (The per-layer `Tensor.ones`
+allocation, incidentally, is free at the tl level — the `_tl.cpp`
+baseline keeps it and a no-ones variant times identically — so it
+only costs at Culebra's object layer, not in the library.)
+
 Compare backends directly with
 `Tensor.use_cpu()`/`use_gpu()`/`use_auto()` before assuming a given
-shape needs (or doesn't need) the GPU path; don't compare Culebra's
-absolute per-epoch time against a raw-C++ library benchmark like
-silarray's.
+shape needs (or doesn't need) the GPU path; and don't read the
+absolute per-epoch gap against silarray as a Culebra-runtime cost —
+most of it is the tensor library, and only ~1.5-1.9x of it is
+Culebra.
