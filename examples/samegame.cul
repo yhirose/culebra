@@ -10,16 +10,19 @@
 #          culebra examples/samegame.cul 40 </dev/null    (auto-demo, up to 40 moves)
 #          culebra examples/samegame.cul 40 7 </dev/null  (auto-demo, board seeded with 7)
 
-let ROWS = 9
-let COLS = 14
-let NCOLORS = 5
-let COLORS = [0, 196, 46, 39, 226, 201]   # 256-colour per tile value 1..5
+ROWS = 9
+COLS = 14
+NCOLORS = 5
+COLORS = [0, 196, 46, 39, 226, 201]   # 256-colour per tile value 1..5
 
-let MAX_MOVES = if Sys.argv.size() > 0 { to_long(Sys.argv[0]) } else { -1 }
+MAX_MOVES = if Sys.argv.size() > 0 { to_long(Sys.argv[0]) } else { -1 }
 # Optional second arg seeds the board for a reproducible demo (and lets the
 # interp / JIT / AOT backends be diffed byte-for-byte); -1 = seed from the clock.
-let SEED = if Sys.argv.size() > 1 { to_long(Sys.argv[1]) } else { -1 }
-let INTERACTIVE = IO.stdin_is_terminal()
+SEED = if Sys.argv.size() > 1 { to_long(Sys.argv[1]) } else { -1 }
+INTERACTIVE = IO.stdin_is_terminal()
+
+SCORE_DIR = Sys.env("HOME") + "/.samegame"
+SCORE_FILE = SCORE_DIR + "/score.json"
 
 fn clampi(v, lo, hi) { if v < lo { lo } else { if v > hi { hi } else { v } } }
 
@@ -36,17 +39,15 @@ fn new_board() {
 
 # All cells orthogonally connected to (r,c) sharing its colour.
 fn group_at(b, r, c) {
-  let color = b[r][c]
+  color = b[r][c]
   mut out = []
   if color == 0 { return out }
   mut seen = {}
   mut stack = [(r, c)]
   while stack.size() > 0 {
-    let p = stack.pop()
-    let pr = p[0]
-    let pc = p[1]
+    (pr, pc) = stack.pop()
     if (pr >= 0 && pr < ROWS && pc >= 0 && pc < COLS) {
-      let key = to_string(pr) + "," + to_string(pc)
+      key = to_string(pr) + "," + to_string(pc)
       if !seen.has(key) {
         mut seen[key] = true
         if b[pr][pc] == color {
@@ -76,7 +77,7 @@ fn gravity(b) {
     mut r2 = ROWS - 1
     mut i = 0
     while r2 >= 0 {
-      b[r2][c] = if i < col.size() { let v = col[i]; i = i + 1; v } else { 0 }
+      b[r2][c] = if i < col.size() { v = col[i]; i = i + 1; v } else { 0 }
       r2 = r2 - 1
     }
     c = c + 1
@@ -109,7 +110,7 @@ fn has_moves(b) {
   while r < ROWS {
     mut c = 0
     while c < COLS {
-      let v = b[r][c]
+      v = b[r][c]
       if v != 0 {
         if (c + 1 < COLS && b[r][c + 1] == v) { return true }
         if (r + 1 < ROWS && b[r + 1][c] == v) { return true }
@@ -145,18 +146,16 @@ fn offsets(s) { ((s.cols() - COLS * 2) / 2, (s.rows() - ROWS) / 2) }
 
 fn draw(s, b, cur_r, cur_c, score, msg) {
   s.clear()
-  let off = offsets(s)
-  let ox = off[0]
-  let oy = off[1]
+  (ox, oy) = offsets(s)
   s.put(ox, oy - 2, "Same Game   Score: " + to_string(score) + "   " + msg)
   mut r = 0
   while r < ROWS {
     mut c = 0
     while c < COLS {
-      let v = b[r][c]
-      let px = ox + c * 2
-      let py = oy + r
-      let cur = (INTERACTIVE && r == cur_r && c == cur_c)
+      v = b[r][c]
+      px = ox + c * 2
+      py = oy + r
+      cur = (INTERACTIVE && r == cur_r && c == cur_c)
       if v == 0 {
         if cur { s.put(px, py, "()") } else { s.put(px, py, "  ") }
       } else {
@@ -167,12 +166,140 @@ fn draw(s, b, cur_r, cur_c, score, msg) {
     }
     r = r + 1
   }
-  s.put(ox, oy + ROWS + 1, "click a group of 2+   ·   arrows + space   ·   q to quit")
   s.flush()
 }
 
+fn load_scores() {
+  if !FS.exists(SCORE_FILE) { return [] }
+  try { JSON.parse(FS.read(SCORE_FILE)) } catch e { [] }
+}
+
+fn save_scores(scores) {
+  FS.mkdir(SCORE_DIR)
+  FS.write(SCORE_FILE, JSON.stringify(scores, indent: 2))
+}
+
+# Merges `entry` into `scores`, keeps the top 5 by score, and reports
+# whether `entry` made the cut.
+fn rank_into(scores, entry) {
+  mut list = scores.slice(0, scores.size())
+  list.push(entry)
+  list.sort_by(fn (x) { x.score }, reverse: true)
+  list = list.slice(0, 5)
+  (list, list.index_of(entry) >= 0)
+}
+
+# Persists `score` into the top-5 file. Returns (top5, entry) — entry is
+# nil when the score didn't make the cut (and nothing is written).
+fn record_score(score) {
+  let scores = load_scores()
+  let now = Time.now()
+  let entry = {score: score, date: now.format("%Y-%m-%d"), time: now.format("%H:%M:%S")}
+  let (list, made_top5) = rank_into(scores, entry)
+  if made_top5 { save_scores(list) }
+  (list, if made_top5 { entry } else { nil })
+}
+
+fn spaces(n) {
+  mut out = ""
+  mut i = 0
+  while i < n { out = out + " "; i = i + 1 }
+  out
+}
+
+fn draw_score_box(s, scores, highlight, footer) {
+  let cols = s.cols()
+  let rows = s.rows()
+  let w = 40
+  let n = if scores.size() > 0 { scores.size() } else { 1 }
+  let list_start = 3
+  let footer_row = list_start + n + 1
+  let h = footer_row + 2
+  let bx = (cols - w) / 2
+  let by = (rows - h) / 2
+  let blank = spaces(w)
+  let box_style = Term.style(bg: 236, fg: 255)
+  mut r = 0
+  while r < h { s.put(bx, by + r, blank, box_style); r = r + 1 }
+  s.put(bx + 2, by + 1, "BEST 5", Term.style(bg: 236, fg: 226, bold: true))
+  if scores.size() == 0 {
+    s.put(bx + 2, by + list_start, "no scores yet", box_style)
+  } else {
+    mut i = 0
+    while i < scores.size() {
+      let e = scores[i]
+      let row = to_string(i + 1) + ". " + to_string(e.score) + "   " + e.date + " " + e.time
+      let style = if (highlight != nil && e == highlight) { Term.style(bg: 226, fg: 16, bold: true) } else { box_style }
+      s.put(bx + 2, by + list_start + i, row, style)
+      i = i + 1
+    }
+  }
+  s.put(bx + 2, by + footer_row, footer, Term.style(bg: 236, fg: 244))
+  s.flush()
+}
+
+# Shows the persisted top 5, plus the live in-progress score (highlighted)
+# if it would currently place in the top 5. Blocks until any key is pressed.
+fn show_scores(s, board, cur_r, cur_c, score, msg) {
+  let scores = load_scores()
+  let entry = {score: score, date: "(current)", time: ""}
+  let (list, made_top5) = rank_into(scores, entry)
+  let shown = if made_top5 { list } else { scores }
+  let highlight = if made_top5 { entry } else { nil }
+  draw(s, board, cur_r, cur_c, score, msg)
+  draw_score_box(s, shown, highlight, "press any key")
+  while true { let e = s.poll(0.1); if e != nil && e.kind == "key" { return } }
+}
+
+fn draw_help_box(s) {
+  let cols = s.cols()
+  let rows = s.rows()
+  let w = 44
+  let lines = [
+    "Click 2+ same-colored tiles to clear them.",
+    "",
+    "arrows    move cursor",
+    "space     clear group",
+    "n         new game",
+    "s         best scores",
+    "h         this help",
+    "q         quit",
+  ]
+  let list_start = 3
+  let footer_row = list_start + lines.size() + 1
+  let h = footer_row + 2
+  let bx = (cols - w) / 2
+  let by = (rows - h) / 2
+  let blank = spaces(w)
+  let box_style = Term.style(bg: 236, fg: 255)
+  mut r = 0
+  while r < h { s.put(bx, by + r, blank, box_style); r = r + 1 }
+  s.put(bx + 2, by + 1, "HELP", Term.style(bg: 236, fg: 226, bold: true))
+  mut i = 0
+  while i < lines.size() {
+    s.put(bx + 2, by + list_start + i, lines[i], box_style)
+    i = i + 1
+  }
+  s.put(bx + 2, by + footer_row, "press any key", Term.style(bg: 236, fg: 244))
+  s.flush()
+}
+
+# Shows the help overlay. Blocks until any key is pressed.
+fn show_help(s, board, cur_r, cur_c, score, msg) {
+  draw(s, board, cur_r, cur_c, score, msg)
+  draw_help_box(s)
+  wait_any_key(s)
+}
+
+fn wait_any_key(s) {
+  while true {
+    let e = s.poll(0.1)
+    if e != nil && e.kind == "key" { return e.key }
+  }
+}
+
 fn try_remove(b, r, c) {
-  let cells = group_at(b, r, c)
+  cells = group_at(b, r, c)
   if cells.size() < 2 { return -1 }
   remove_cells(b, cells)
   gravity(b)
@@ -187,26 +314,50 @@ Term.app(fn (s) {
   mut cur_c = 0
   mut moves = 0
   mut msg = ""
+
+  fn new_round() {
+    board = new_board()
+    score = 0
+    cur_r = 0
+    cur_c = 0
+    moves = 0
+    msg = ""
+  }
+
   draw(s, board, cur_r, cur_c, score, msg)
 
   while true {
     if !has_moves(board) {
-      let left = count_tiles(board)
+      left = count_tiles(board)
       if left == 0 { score = score + 1000; msg = "CLEARED!  bonus +1000" }
       else { msg = "no moves — game over (" + to_string(left) + " left)" }
+      msg = msg + "  —  q: quit, other key: new game"
       draw(s, board, cur_r, cur_c, score, msg)
       if !INTERACTIVE { return }
-      while true { let e = s.poll(0.1); if e != nil && e.kind == "key" { return } }
+      let (best, entry) = record_score(score)
+      if entry != nil {
+        draw_score_box(s, best, entry, "q: quit   other key: new game")
+        if wait_any_key(s) == "q" { return }
+        new_round()
+        draw(s, board, cur_r, cur_c, score, msg)
+        continue
+      }
+      if wait_any_key(s) == "q" { return }
+      new_round()
+      draw(s, board, cur_r, cur_c, score, msg)
     }
     if (MAX_MOVES >= 0 && moves >= MAX_MOVES) { return }
 
     mut sr = -1
     mut sc = -1
     if INTERACTIVE {
-      let ev = s.poll(0.1)
+      ev = s.poll(0.1)
       if ev != nil {
         if ev.kind == "key" {
           if ev.key == "q" { return }
+          if ev.key == "n" { new_round() }
+          if ev.key == "s" { show_scores(s, board, cur_r, cur_c, score, msg) }
+          if ev.key == "h" { show_help(s, board, cur_r, cur_c, score, msg) }
           if ev.key == "left"  { cur_c = clampi(cur_c - 1, 0, COLS - 1) }
           if ev.key == "right" { cur_c = clampi(cur_c + 1, 0, COLS - 1) }
           if ev.key == "up"    { cur_r = clampi(cur_r - 1, 0, ROWS - 1) }
@@ -215,22 +366,22 @@ Term.app(fn (s) {
           draw(s, board, cur_r, cur_c, score, msg)
         } else {
           if (ev.kind == "mouse" && ev.event == "press" && ev.button == "left") {
-            let off = offsets(s)
-            let gc = (ev.x - off[0]) / 2
-            let gr = ev.y - off[1]
+            (ox, oy) = offsets(s)
+            gc = (ev.x - ox) / 2
+            gr = ev.y - oy
             if (gr >= 0 && gr < ROWS && gc >= 0 && gc < COLS) { sr = gr; sc = gc }
           }
         }
       }
     } else {
-      let m = find_move(board)
+      m = find_move(board)
       sr = m[0]
       sc = m[1]
       Time.sleep(0.04)
     }
 
     if sr >= 0 {
-      let n = try_remove(board, sr, sc)
+      n = try_remove(board, sr, sc)
       if n >= 2 {
         score = score + (n - 2) * (n - 2)
         moves = moves + 1
