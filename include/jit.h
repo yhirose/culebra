@@ -12086,11 +12086,13 @@ struct JIT {
       // (cap < 0 = no cap; cap == 0 = leading kw-only, zero positionals
       // allowed) but route through emit_throw_error so the runtime throw
       // is catchable by `try { ... } catch e { ... }`, the same way
-      // interp's eval-time call at interpreter.h:4220 is.
+      // interp's eval-time call at interpreter.h:4220 is. Position: the
+      // call root (callee), matching interp's call_line/call_column —
+      // not argsAst, which points at the arg list instead.
       if (cap_long >= 0 && n_pos > cap_long) {
         emit_throw_error("TypeError",
             too_many_positionals_message(cap_long, n_pos),
-            argsAst.line, argsAst.column);
+            call_root_line_, call_root_col_);
       }
     }
     for (size_t i = 0; i < params.size(); i++) {
@@ -12099,7 +12101,7 @@ struct JIT {
         if (kwargs.contains(params[i].name)) {
           emit_throw_error("TypeError",
               positional_kw_conflict_message(params[i].name),
-              argsAst.line, argsAst.column);
+              call_root_line_, call_root_col_);
         }
         resolved[i] = positional[i];
         sources[i] = Source::Positional;
@@ -12114,7 +12116,7 @@ struct JIT {
         // Source::None so the surrounding slab-fill logic emits a
         // syntactically valid TAG_UNFILLED placeholder.
         emit_missing_required_arg_throw(std::string(params[i].name),
-                                         argsAst.line, argsAst.column);
+                                         call_root_line_, call_root_col_);
       }
     }
     if (rest_idx) {
@@ -12125,7 +12127,7 @@ struct JIT {
       // runtime so the error is catchable. Clear the map so subsequent
       // resolution paths see a consistent empty state.
       auto bad_name = std::string(kwargs.begin()->first);
-      emit_unknown_kwarg_throw(bad_name, argsAst.line, argsAst.column);
+      emit_unknown_kwarg_throw(bad_name, call_root_line_, call_root_col_);
       kwargs.clear();
     }
 
