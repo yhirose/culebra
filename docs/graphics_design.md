@@ -7,7 +7,7 @@ the culebra-side interface stays fixed.
 > Revision history: 1st edition = naive extraction from SceneKit. 2nd edition (this one) =
 > reflects the design-review meeting's points (retained as the base / material PBR-intent /
 > drop / fixed coordinate system / capability / dynamic mesh). Qt, which was weighed and not
-> adopted during backend selection, is covered in [`record.md`](record.md).
+> adopted during backend selection, is covered in [`_history.md`](_history.md).
 >
 > The Japanese original is [`graphics_design.ja.md`](graphics_design.ja.md); the two must be
 > kept in sync.
@@ -15,16 +15,15 @@ the culebra-side interface stays fixed.
 > Status (2026-06-28): this facade is **implemented and shipped** (master `1712c59`,
 > `CULEBRA_ENABLE_GRAPHICS` opt-in-integrates raylib into culebra core, AOT usage-gated,
 > single binary via `culebra build suzuka.cul`). This document is a **record of the design
-> rationale**; the concrete signatures below are a pre-implementation sketch. The shipped API
-> differs: because `wrap.h` cannot take kwargs defaults / tuple arguments, it settled on
-> **fluent setters + flat scalars + colors 0..255** (e.g. not `make_material(color, metallic:, …)`
-> but `view.material_tex_pbr(tex, r,g,b, metallic, roughness)` /
-> `add_box(w,h,d).material(m).move(x,y,z)` / `view.camera(ex,ey,ez, tx,ty,tz, …)`). The real
-> API is authoritative in `examples/graphics/suzuka.cul`. The switching mechanism also changed
-> from "a separate binary per backend via a `culebra wrap` extension" to an **opt-in build into
-> core**. The design rationale (renderer independence / retained base / PBR-intent / fixed
-> coordinate system / the core⇔optional line / backend scope) still holds. Full reconciliation
-> of the signature tables with the shipped API is left to the graphics implementation session.
+> rationale**; the signatures below are a pre-implementation sketch, not the shipped API.
+> Because `wrap.h` cannot take kwargs defaults / tuple arguments, the shipped API settled on
+> **fluent setters + flat scalars + colors 0..255** instead (e.g. not
+> `make_material(color, metallic:, …)` but `view.material_tex_pbr(tex, r,g,b, metallic, roughness)` /
+> `add_box(w,h,d).material(m).move(x,y,z)` / `view.camera(ex,ey,ez, tx,ty,tz, …)`) — see
+> `examples/graphics/suzuka.cul` for the authoritative API. The switching mechanism also
+> changed, from a separate binary per backend via a `culebra wrap` extension to an **opt-in
+> build into core**. The design rationale itself (renderer independence / retained base /
+> PBR-intent / fixed coordinate system / core⇔optional line / backend scope) still holds.
 
 ## Requirements
 

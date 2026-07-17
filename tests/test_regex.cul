@@ -1,5 +1,5 @@
-// Conformance: stdlib Regex (object form). See docs/regex_stdlib_api.md and
-// docs/stdlib.md. Engine: include/regexlib.h (linear-time, grapheme-aware).
+// Conformance: stdlib Regex (object form). See docs/stdlib.md §14.
+// Engine: include/regexlib.h (linear-time, grapheme-aware).
 // Offsets are byte offsets (Go-style), always on grapheme boundaries.
 //
 // Write patterns as single-quoted RAW strings ('\d+', not "\\d+"): single

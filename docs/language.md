@@ -93,7 +93,8 @@ Identifiers are case-sensitive.
 Reserved words that cannot be used as identifiers in declarations:
 
     nil  true  false  mut  debugger  return  while  for  in  if  else
-    fn  match  break  continue  throw  try  catch  defer
+    fn  match  cond  break  continue  throw  try  catch  defer  yield
+    class  trait  enum  import  export  from
 
 The parser also recognizes `let` as an optional prefix in assignments.
 Type annotation names (`Nil`, `Bool`, `Long`, `Float`, `String`,
@@ -2903,8 +2904,12 @@ cycle collector that runs a Python-style mark-and-sweep periodically
   environments captured by closures (plus `Closure` / `Cell` in the
   JIT). Both backends reclaim every container cycle shape, including
   one routed purely through `Object` property maps.
-* Not tracked: `String` (leaked for the program's lifetime — small
-  and simple).
+* `String` is not refcounted. The interpreter manages it with a
+  `shared_ptr` (freed deterministically, so it is never leaked). The
+  JIT allocates string bytes from a per-`Runtime` slab and treats
+  `String` as a **traced-only** value: it carries no refcount to hit
+  zero, so the tracing sweep above is its sole reclaimer rather than
+  a cycle-only backstop.
 
 Cyclic data is retrieved and mutated normally; once no external root
 keeps the cycle alive, the collector frees it on the next cycle.
@@ -3113,16 +3118,13 @@ Use `.to_string()` when you need an owning `String` (storing in a
 data structure, returning from a long-lived function, etc.). Most
 APIs declared with `StringLike` accept either flavor directly.
 
-**Known limitations** (cycle B):
-- Object keys: a `StringView` and a `String` with identical bytes are
-  separate keys. Call `.to_string()` on the view before using it as a
-  key. Cross-flavor `==` and hashing still treat the bytes as equal,
-  but storage routing splits them.
-- In long-running JIT programs, calling `.contains()` / `.starts_with()`
-  / `.ends_with()` etc. on a `StringView` materializes a cstr copy
-  that lives until process exit (existing culebra string-leak model).
-  Materialize the view once with `.to_string()` if hot-looping over a
-  large sequence of views.
+**Known limitation** (cycle B): calling `.contains()` / `.starts_with()`
+/ `.ends_with()` etc. on a `StringView` materializes a temporary cstr
+copy per call. It is reclaimed by the tracing collector like any other
+`String` (§16), not leaked, but hot-looping over a large sequence of
+views still means avoidable per-call allocation — materialize the view
+once with `.to_string()` in that case. (Object-key normalization
+between `String` and `StringView` is not a limitation — see §17.3.)
 
 ```culebra
 puts('hello'.size())              # 5
@@ -3949,6 +3951,7 @@ as the script even if it begins with a dash.
 | `--ast`        | Print the parsed AST before running.                      |
 | `--debug`      | Enable the CLI debugger; `debugger` statements break in.  |
 | `--jit`        | Use the LLVM ORC JIT instead of the tree-walking interpreter. |
+| `--jit-faststart` | Like `--jit`, but uses the FastISel backend to roughly halve JIT warmup time at a small steady-state throughput cost (~7% on pure-script hot loops, ~0% when hot work is in the C++/BLAS runtime). Output matches `--jit`/interp. |
 | `--emit-llvm`  | With `--jit`, print the generated IR and exit.            |
 | `-O0`..`-O3`   | With `--jit`, select the LLVM optimization level. Default `-O2`. |
 
@@ -4004,19 +4007,12 @@ built-ins from §18.
   work goes through `code_points()` / `graphemes()` iterators.
 * `Array` / `Object` / `Tuple` / `Set` equality is structural (by value);
   only `Function` / `Tensor` compare by reference identity.
-* Runtime errors (`type error`, `divide by 0`, `index out of range`,
-  etc.) abort the program and do **not** flow through user `throw` /
-  `try` / `catch` — those channels are reserved for user-raised
-  values.
 * JIT `defer` at function / top-level scope does not run on the
   throw-unwind path (see §15); wrap the defer in a nested block for
   throw-safe cleanup.
-* No module / `import` system yet.
 * Type annotations are enforced only at function boundaries and
   annotated assignments; they do not make the language static.
 * Pattern matching has no exhaustiveness check.
-* `match` arm bodies must be single expressions — `{ ... }` in an arm
-  body is parsed as an `Object` literal, not a block.
 * Dot-form property names are identifiers only (`obj.foo`). Non-String
   hashable keys (`Long`, `Float`, `Bool`, `Nil`, `Tuple`) reach the
   Object via the subscript path (`obj[k]`) and live in a sidecar map.

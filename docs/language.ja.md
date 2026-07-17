@@ -91,7 +91,8 @@ Culebra は Rust 風の構文を持つ、小さな動的型付けスクリプト
 識別子として使えない予約語:
 
     nil  true  false  mut  debugger  return  while  for  in  if  else
-    fn  match  break  continue  throw  try  catch  defer
+    fn  match  cond  break  continue  throw  try  catch  defer  yield
+    class  trait  enum  import  export  from
 
 パーサは代入における `let` もオプショナルな接頭辞として認識します。
 型注釈の型名（`Nil`, `Bool`, `Long`, `Float`, `String`, `Array`,
@@ -2714,7 +2715,11 @@ JIT バックエンドは `throw` / `try` / `catch` / `defer` を主要な
   した環境（JIT ではさらに `Closure`, `Cell`）。両バックエンドとも
   あらゆるコンテナ循環形状を回収します（`Object` のプロパティマップ
   だけを経由する循環を含む）。
-* 非対象: `String`（プログラム終了まで保持 — 小さく単純）。
+* `String` は refcount 管理されません。インタプリタは `shared_ptr` で
+  管理する（決定的に解放され、leak しません）。JIT は文字列バイトを
+  Runtime ごとの slab から確保し、`String` を **traced-only** な値
+  として扱います — refcount が 0 になることはないので、上記の
+  トレーシング sweep が唯一の回収経路です。
 
 循環データは通常通り取得・変更できます。外部のルートがなくなれば、
 次回のサイクルでコレクタが解放します。
@@ -2918,15 +2923,13 @@ puts(v.to_string())                  # 'world' (materialize した String)
 関数から返す等) では `.to_string()` を呼ぶ。 多くの API が
 `StringLike` で宣言されており、 どちらの flavor もそのまま受ける。
 
-**既知の制約** (cycle B):
-- Object key: 同じバイトの `StringView` と `String` は別キー扱い。
-  key として使う前に `.to_string()` で String 化する。 cross-flavor
-  `==` と hash は同 bytes 等価扱いだが、 storage routing は分離。
-- long-running な JIT プログラムでは、 `StringView` に対して
-  `.contains()` / `.starts_with()` / `.ends_with()` 等を呼ぶと cstr
-  コピーが process 終了まで残る (既存 culebra string-leak モデル)。
-  view を hot-loop で大量に通すなら、 1 度 `.to_string()` で
-  materialize しておく。
+**既知の制約** (cycle B): `StringView` に対して `.contains()` /
+`.starts_with()` / `.ends_with()` 等を呼ぶと呼び出しごとに一時的な
+cstr コピーが発生する。これは他の `String` と同様トレーシングコレクタ
+が回収する（§16）ので leak はしないが、 view を大量の hot-loop で
+通す場合は避けられる allocation が発生し続けるので、 1 度
+`.to_string()` で materialize しておくとよい。（`String` と
+`StringView` の Object key 正規化は制約ではない — §17.3 参照。）
 
 ```culebra
 puts('hello'.size())              # 5
@@ -3062,6 +3065,8 @@ puts([1, 2, 3].reduce(0, fn (a, *xs) { a + xs.size() }))  # => 3
 | `o.values() -> Iterator`        | 値を挿入順で返す遅延イテレータ。`o.iter()`（`(key, value)` ペアを yield）の値だけのビュー。他のイテレータ同様に連鎖／`collect` できる |
 | `o.has(key: String) -> Bool`     | `key` を自身のプロパティとして持つか。ビルトインメソッド名は含まない |
 | `o.remove(key: String) -> Nil` *(破壊的)* | `key` が存在すれば削除              |
+
+`String` とバイト列が等しい `StringView`（例: `s[0..2]`）は**同じキー**扱いです — 上記のどの操作でも `o[key] = v` でも同じスロットに到達します。
 
 ```culebra
 o = {b: 2, a: 1, c: 3}
@@ -3713,6 +3718,7 @@ fn ...` は前の式の matmul 継続ではなく、独立した 2 statement と
 | `--ast`        | 解析した AST を実行前に出力                             |
 | `--debug`      | CLI デバッガを有効化、`debugger` 文でブレーク            |
 | `--jit`        | インタープリタではなく LLVM ORC JIT を使用               |
+| `--jit-faststart` | `--jit` と同様だが FastISel バックエンドで JIT のウォームアップ時間をおおよそ半減させる代わりに定常状態のスループットが小さく低下する（純スクリプトのホットループで約7%、ホット処理が C++/BLAS ランタイム側にある場合は約0%）。出力は `--jit` / インタプリタと一致 |
 | `--emit-llvm`  | `--jit` と併用で生成された IR を出力して終了             |
 | `-O0`〜`-O3`   | `--jit` の最適化レベル（デフォルトは `-O2`）            |
 
@@ -3762,19 +3768,14 @@ CLI バイナリはユーザコード実行前に、以下 2 つのグローバ�
   `\n \r \t \\ \" \{` のみ（`{{` / `}}` 形式は未サポート）。
 * `String` はバイト単位のインデックス（`size` / `slice` はバイト数）。
   Unicode 処理は `code_points()` / `graphemes()` イテレータを使う。
-* `Array` / `Object` の等価比較は参照比較で、構造比較ではない。
-* ランタイムエラー（`type error`、`divide by 0`、`index out of range`
-  など）はプログラムを即座に中断し、ユーザの `throw` / `try` /
-  `catch` には流れない（§15）。
+* `Array` / `Object` / `Tuple` / `Set` の等価比較は構造的（値）比較。
+  参照同一性で比較するのは `Function` / `Tensor` のみ。
 * JIT の `defer` を関数直下・トップレベルに置くと、throw の巻き戻し
   経路では発火しない（§15）。throw 安全な後処理が必要な場合は
   `defer` をネストしたブロック内に書く。
-* モジュールシステム（`import`）は未実装。
 * 型注釈は関数境界と注釈付き代入でのみ検査され、言語を静的にする
   ものではない。
 * パターンマッチに網羅性検査はない。
-* `match` アーム本体は単一式である必要がある（`{ ... }` は `Object`
-  リテラルと解釈される）。
 * ドット形式のプロパティ名は識別子のみ（`obj.foo`）。非 String の
   ハッシュ可能キー（`Long`, `Float`, `Bool`, `Nil`, `Tuple`）は
   添字パス（`obj[k]`）でアクセスし、サイドカーマップに格納されます。

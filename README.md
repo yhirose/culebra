@@ -99,7 +99,7 @@ culebra build path/to/script.cul -o ./out
 ```
 
 Cross-compile is also supported — see
-[`docs/binary_build.md`](docs/binary_build.md).
+[`docs/deployment.md`](docs/deployment.md#1-standalone-binary-build-culebra-build).
 
 Embedding in a C++ host
 -----------------------
@@ -123,14 +123,15 @@ int main() {
 }
 ```
 
-See [`docs/embedding.md`](docs/embedding.md) for the JIT path,
-threading, and host-function registration.
+See [`docs/deployment.md`](docs/deployment.md#2-embedding-culebra-in-a-c-host)
+for the JIT path, threading, and host-function registration.
 
 Design choices
 --------------
 
 The rationale lives in [`docs/internals.md`](docs/internals.md)
-(rejected designs in §13). Headline decisions:
+(rejected alternatives in [`docs/_history.md`](docs/_history.md)). Headline
+decisions:
 
 - **Two backends, one AST.** Interpreter and JIT both maintained;
   no plan to consolidate.
@@ -179,15 +180,14 @@ Documentation
   / [日本語](docs/language.ja.md)
 * Standard library reference: [`docs/stdlib.md`](docs/stdlib.md)
   / [日本語](docs/stdlib.ja.md)
-* Embedding from C++: [`docs/embedding.md`](docs/embedding.md)
-  / [日本語](docs/embedding.ja.md)
-* Wrapping C++ libraries (`culebra wrap`): [`docs/wrapping.md`](docs/wrapping.md)
-  / [日本語](docs/wrapping.ja.md)
 * Debugging in VSCode / Vim / Zed (`culebra dap`): [`docs/debugging.md`](docs/debugging.md)
   / [日本語](docs/debugging.ja.md)
-* Standalone binary build: [`docs/binary_build.md`](docs/binary_build.md)
-  / [日本語](docs/binary_build.ja.md)
-* Implementation internals (en only): [`docs/internals.md`](docs/internals.md)
+* Deployment — standalone binary build, embedding from C++, wrapping
+  C++ libraries (`culebra build` / `culebra wrap`):
+  [`docs/deployment.md`](docs/deployment.md)
+  / [日本語](docs/deployment.ja.md)
+* Implementation internals: [`docs/internals.md`](docs/internals.md)
+  / [日本語](docs/internals.ja.md)
 
 Building from source and running the tests:
 [`CONTRIBUTING.md`](CONTRIBUTING.md).

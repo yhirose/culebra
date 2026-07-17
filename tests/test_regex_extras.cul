@@ -1,5 +1,5 @@
 // Regex extras: Regex.escape / replace_all(fn) / find_iter (lazy).
-// See docs/regex_stdlib_api.md, docs/stdlib.md §12.
+// See docs/stdlib.md §14.
 
 // --- Regex.escape: quote metacharacters so a string matches literally ---
 assert_eq(Regex.escape("a.b(c)"), `a\.b\(c\)`)

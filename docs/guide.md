@@ -11,8 +11,10 @@ internals see [`internals.md`](internals.md).
 > **Doctest convention.** Every ` ```culebra ` block in this guide is
 > a runnable example. Lines ending in `# => <value>` show expected
 > stdout; `# !! <pattern>` shows an expected `throw`. A block prefixed
-> with `# doctest: skip` is illustrative only (typically a *Planned*
-> feature). Blocks are independent: each runs in a fresh scope.
+> with `# doctest: skip` is illustrative only (typically because it
+> needs multiple files, network access, or the `culebra test` runner).
+> Blocks are independent: each runs in a fresh scope. Full convention
+> and directive list: Ch.16.1.
 
 > **Status labels.** Section headings without a label describe the
 > implementation as of today. Labels that appear: **Draft** (under
@@ -74,8 +76,8 @@ Read this once; the rest of the guide assumes these choices.
   blocking with the typical scale ceiling of a few thousand
   connections.
 - **Batteries-included, tiered.** Core stdlib (Math/IO/Sys/Random/
-  String/FS/Time/Args) ships today. Tier 1 (Regex/HTTP/Hash+Encoding)
-  is the next priority — see Ch.14.
+  String/FS/Time/Args) and Tier 1 (Regex/Http/Hash+Encoding) both ship
+  today; Tier 2/3 (Crypto, Sockets) follows demand — see Ch.14.
 - **Pre-1.0.** Source and APIs may change. There is no release
   machinery (no version tags, no CHANGELOG, no Homebrew formula) yet
   — that comes after 1.0.
@@ -223,13 +225,10 @@ for n in 0..=2  { puts(n) }   # inclusive range
 
 `break` and `continue` work inside `while` and `for`.
 
-### Why split shadow rules by axis?
-
-Captured state *is* the object's state in the closure-based pattern;
-silently shadowing it would break the object. Block-local rebinding,
-in contrast, is a routine pattern (`let a = transform(a)` in a single
-function). Most languages apply one policy to all axes; Culebra
-splits them because each axis serves a different purpose.
+Captured state *is* the object's state in the closure-based pattern
+(Ch.8), so silently shadowing it would break the object; block-local
+rebinding, by contrast, is a routine pattern and stays legal. Full
+rule set and design rationale: [language.md §6](language.md).
 
 3. Functions and closures
 -------------------------
@@ -291,12 +290,11 @@ opts = {greeting: 'yo', formal: false}
 puts(greet('carol', **opts))               # => 'yo, carol'
 ```
 
-### Why keyword-only?
-
-A `*` marker forces the caller to name the option, which keeps long
-parameter lists readable and lets you reorder/extend them without
-breaking call sites. Free positional rest (`*args`) is intentionally
-omitted: Array literals fill that role.
+A `*` marker forces the caller to name the option, keeping long
+parameter lists readable across reorders and extensions; free
+positional rest (`*args`) is intentionally omitted since Array
+literals already fill that role. Full parameter, default, and splat
+semantics: [language.md §11](language.md).
 
 4. Strings
 ----------
@@ -341,32 +339,45 @@ puts('foo'.starts_with('fo'))         # => true
 puts(['a', 'b', 'c'].join('-'))       # => 'a-b-c'
 ```
 
-See [`stdlib.md` §String](stdlib.md) for the full list.
+See [language.md §17.1](language.md) for the full method list.
 
 ### 4.4 `StringView`, `StringLike`, lazy graphemes
 
-> **Status: Planned.** Not implemented yet. See
-> [`internals.md` §6](internals.md) for the design discussion.
-> Together these let user code accept either `String` or a borrow
-> without copying, and walk grapheme clusters lazily.
+`.slice()`, `.split()`, and `.view()` return a `StringView` — a
+zero-copy borrow into the original string's bytes, kept alive by a
+shared owner even if the original binding goes out of scope. A
+parameter typed `StringLike` accepts either a `String` or a
+`StringView`, so helpers don't force a copy just to read.
 
 ```culebra
-# doctest: skip
-# Parameter type StringLike accepts both String and StringView:
 print_first_grapheme = fn (s: StringLike) {
   for g in s.graphemes() { puts(g); break }
 }
-print_first_grapheme('🇯🇵 hello')   # planned: => 🇯🇵
+print_first_grapheme('café')          # => 'c'
+
+puts(type_of('hello'.slice(1, 4)))    # => 'StringView'
+puts('hello'.slice(1, 4))             # => 'ell'
 ```
+
+`.graphemes()` walks Unicode *extended grapheme clusters* lazily —
+each step is one user-perceived character, even a multi-codepoint
+emoji family joined by ZWJ:
+
+```culebra
+puts('a👨‍👩‍👧b'.graphemes().collect().size())    # => 3
+puts('café'.graphemes().collect().size())        # => 4
+```
+
+Full `StringView`/grapheme API: [language.md §17.1](language.md). Design
+discussion: [`internals.md` §6](internals.md).
 
 ### Why Go-style byte indexing?
 
 Swift/Python 3 hide the bytes-vs-scalars distinction behind an
-opaque `Character` / `str` index, which is convenient until you
-interop with sockets or files. Go exposes byte offsets and offers
-explicit `rune` iteration on top; Culebra follows that model:
-predictable I/O semantics, with scalar iteration when you need it,
-and (planned) lazy grapheme iteration for display work.
+opaque `Character` / `str` index, convenient until you interop with
+sockets or files. Go exposes byte offsets and offers explicit `rune`
+iteration on top; Culebra follows that model, adding lazy grapheme
+iteration (above) for display work.
 
 5. Iterators
 ------------
@@ -437,7 +448,8 @@ puts(head)                    # => [10, 11, 12, 13, 14]
 
 Implement three methods: `iter()` (returning the iterator itself, by
 convention), `has_next()` (returning a `Bool`), and `next()` (returning
-the next element).
+the next element). Full protocol, including the early-termination
+guarantee for lazy chains: [language.md §17.5](language.md).
 
 ```culebra
 countdown = fn (start) {
@@ -458,15 +470,32 @@ for v in countdown(3) { puts(v) }
 
 ### 5.5 Generators with `yield`
 
-> **Status: Planned.** A `yield`-based generator syntax is on the
-> roadmap. Today, write iterators by hand (5.4) or compose with
-> `range`/`iter()` (5.1–5.3).
+A `fn` body containing `yield` becomes a generator: calling it doesn't
+run the body, it returns an iterator (Ch.5.4's `iter`/`has_next`/`next`
+protocol, so it works with `for` and every lazy-chain method). `yield
+from` delegates to another iterable.
 
-### Why no pipeline `|>`?
+```culebra
+fn countdown(start) {
+  mut i = start
+  while i > 0 { yield i; i = i - 1 }
+}
+for v in countdown(3) { puts(v) }
+# => |
+# 3
+# 2
+# 1
 
-`x.f(...)` reads the same way and also serves as the resolution path
-for free functions over user types (Ch.10). Adding `|>` would split
-the idiom space without functional gain.
+fn chunk(arr, n) {
+  mut buf = []
+  for v in arr {
+    buf.push(v)
+    if buf.size() >= n { yield buf; buf = [] }
+  }
+  if buf.size() > 0 { yield buf }
+}
+puts(chunk([1, 2, 3, 4, 5], 2).collect())    # => [[1, 2], [3, 4], [5]]
+```
 
 6. Pattern matching
 -------------------
@@ -553,9 +582,9 @@ puts(is_even(7))              # => false
 ### Why no exhaustiveness check?
 
 Without a static type system, exhaustiveness on `Object` shape would
-require runtime tracking that costs more than it saves. The `_`
-arm (or a guarded final pattern) makes intent explicit. When the
-type system grows (Ch.13), Union exhaustiveness becomes feasible.
+cost more to track than it saves; the `_` arm (or a guarded final
+pattern) makes intent explicit instead. Details and the Union-type
+exception: [language.md §13](language.md).
 
 7. Error handling and RAII
 --------------------------
@@ -598,7 +627,8 @@ puts(safe(-99))               # => 0
 `defer { ... }` registers a cleanup that runs on every exit path from
 the *enclosing block* (normal fall-through, `return`, or `throw`) in
 LIFO order. Wrap the protected code in `{ }` so the cleanups also fire
-when the body throws.
+when the body throws. Full exit-path and ordering rules:
+[language.md §15](language.md).
 
 ```culebra
 demo = fn (fail) {
@@ -640,44 +670,17 @@ puts('exit')
 # 'exit'
 ```
 
-`drop` cascades: when the outer object is released, its members
-(themselves holding refs to inner objects with `drop`) release in
-turn.
+`drop` cascades — when the outer object is released, its members
+(themselves holding refs to `drop`-bearing objects) release in turn.
+Full memory model (RC + cycle collection): [language.md §16](language.md).
 
 ### 7.5 Scope guard pattern
 
-```culebra
-make_guard = fn () {
-  mut fns = []
-  {
-    add: fn (f) { fns.push(f) },
-    run: fn () {
-      mut i = fns.size() - 1
-      while i >= 0 { fns[i](); i = i - 1 }
-      fns = []
-    }
-  }
-}
-
-process = fn (items) {
-  {
-    g = make_guard()
-    defer { g.run() }
-
-    items.for_each(fn (item) {
-      g.add(fn () { puts("close {item}") })
-      puts("open {item}")
-    })
-  }
-}
-
-process(['a', 'b'])
-# => |
-# 'open a'
-# 'open b'
-# 'close b'
-# 'close a'
-```
+When cleanup needs to be registered from code that can't place its
+own `defer` (e.g. a callback that wants cleanup at the caller's
+scope), a small helper object holding a list of cleanup closures
+does the job — run in LIFO order from one `defer` at the call site.
+Full worked example: [language.md §15](language.md).
 
 ### Why allow any value to be thrown?
 
@@ -747,18 +750,24 @@ puts(car.total())             # => 'total: 15 miles'
 Use `class` when you want the `class:` tag and matchable shape; use
 the closure form when private state matters more than the tag.
 
-### 8.3 Static methods
+### 8.3 Static methods and fields
 
-> **Status: Planned.** Today, factories live as free functions
-> alongside the class:
->
-> ```culebra
-> class Shape { new(name) { this.name = name } }
-> make_circle = fn (r) { Shape.new("circle r={r}") }
-> puts(make_circle(3).name)         # => circle r=3
-> ```
->
-> Once static methods land, the factory will be `Shape.make_circle(3)`.
+A `static` marker on a method or field puts it on the class itself
+(no instance needed), which is the natural home for factories and
+class-level constants.
+
+```culebra
+class Circle {
+  new(r)          { this.r = r }
+  static PI       = 3.14
+  static unit()   { Circle.new(1) }
+  area()          { this.r * this.r * Circle.PI }
+}
+puts(Circle.unit().area())    # => 3.14
+puts(Circle.PI)               # => 3.14
+```
+
+Static fields are eagerly evaluated once, at class declaration time.
 
 ### Why support both `class` and closure-based OO?
 
@@ -772,23 +781,12 @@ identity (the `class:` tag, used by `match` and debug output).
 
 ### 9.1 Special methods
 
-| operator | method        | typical use         |
-|----------|---------------|---------------------|
-| `+`      | `__add__`     | numeric / vec       |
-| `-`      | `__sub__`     | numeric / vec       |
-| `*`      | `__mul__`     | numeric / scalar    |
-| `/`      | `__div__`     | numeric             |
-| `%`      | `__mod__`     | numeric             |
-| `**`     | `__pow__`     | numeric             |
-| `@`      | `__matmul__`  | matrix multiply     |
-| unary -  | `__neg__`     | negation            |
-| `==`     | `__eq__`      | equality            |
-| `<`      | `__lt__`      | ordering (`<=` etc. follow) |
-| `()`     | `__call__`    | callable instances  |
-| `[i]`    | `__index__`   | indexing            |
-
-The reverse-side method (`__radd__`, ...) is *not* supported; place
-your overload on the type that owns the operation.
+Arithmetic, comparison, indexing, and call operators each map to a
+dunder method (`__add__`, `__eq__`, `__lt__`, `__index__`, `__call__`,
+...) that a class can define to participate in the operator. The
+reverse-side method (`__radd__`, ...) is *not* supported — place your
+overload on the type that owns the operation. Full method table and
+dispatch rules: [language.md §10](language.md) (Operator overloading).
 
 ### 9.2 A worked example: 2-D vectors
 
@@ -814,12 +812,9 @@ puts(a == Vec2.new(1, 2))     # => true
 
 ### 9.3 `__call__` for callable instances
 
-> **Status: Planned.** Calling an instance directly (`add5(10)`) is not
-> yet wired up. For now, give the class a named method and call that
-> (`add5.apply(10)`).
+A class that defines `__call__` makes its instances directly callable.
 
 ```culebra
-# doctest: skip
 class Adder {
   new(n)        { this.n = n }
   __call__(x)   { x + this.n }
@@ -835,12 +830,10 @@ puts(add5(99))                # => 104
 
 ### 10.1 UFCS resolution order
 
-For `x.name(args)`:
-
-1. If `x` has a property/method named `name`, use it.
-2. Else, if a free function `name` is in scope, call it as
-   `name(x, args)`.
-3. Else, property access yields `nil`; a call on `nil` errors.
+For `x.name(args)`, an existing property/method named `name` always
+wins; otherwise a free function `name` in scope is called as
+`name(x, args)`. Full resolution order (incl. the `DOT` + call-list
+requirement): [language.md §10](language.md) (Methods and UFCS).
 
 ```culebra
 double = fn (x) { x * 2 }
@@ -875,22 +868,32 @@ puts(area(10))                               # => 10
 ```
 
 The dispatch covers free positional arguments, keyword arguments, and
-`**splat`. Instance methods are *not* yet multimethod-dispatched (see
-10.3).
+`**splat`, and a Union-annotated parameter (`x: Long | String`,
+Ch.13.2) also participates. Full dispatch/specificity rules:
+[language.md §19](language.md).
+
+Instance methods dispatch the same way — a class may declare several
+methods with the same name but different parameter types:
+
+```culebra
+class Calc {
+  new() {}
+  go(x: Long)   { "long" }
+  go(x: String) { "string" }
+}
+c = Calc.new()
+puts(c.go(1))                  # => 'long'
+puts(c.go('a'))                # => 'string'
+```
 
 ### 10.3 Dispatch extensions
 
-> **Status: Planned.** All four are decided but not yet implemented.
-> Today, work around with explicit `match v.class` or with separate
-> function names.
->
-> - **Class inheritance dispatch** — a parameter `x: Shape` accepts
->   subclasses of `Shape`, with the closest match chosen.
-> - **Union annotation dispatch** — `fn f(x: Long | String)` selects
->   on the runtime type of `x`.
-> - **Method multimethods** — `class.method` participates in the same
->   resolution that free functions enjoy today.
-> - **Dispatch IC** — per-callsite inline cache for hot dispatch.
+> **Status: Planned.** Per-callsite inline caching for hot dispatch
+> paths is on the roadmap; today each call re-resolves the overload
+> set. Class-based (nominal) inheritance was considered and rejected —
+> polymorphism over a family of types goes through trait dispatch
+> (Ch.13.3) instead, since it composes with UFCS without adding a
+> subtyping story.
 
 ### Why free functions first?
 
@@ -905,7 +908,8 @@ that we'd rather lock down with a real workload than guess.
 ### 11.1 `@deco`
 
 `@deco` before a `fn` (or `class`) binds the result of `deco(original)`
-to the original name.
+to the original name. Full semantics, incl. the multimethod
+interaction: [language.md §20](language.md).
 
 ```culebra
 log = fn (f) {
@@ -947,9 +951,8 @@ greet()
 # 'hi'
 ```
 
-Outer decorator wraps the result of the inner; here `@prefix('A')`
-wraps the function already wrapped by `@prefix('B')`. Reading top-to-
-bottom matches the execution order.
+Outer decorator wraps the result of the inner; reading top-to-bottom
+matches the execution order.
 
 ### 11.3 Memoize, a real example
 
@@ -972,15 +975,19 @@ puts(slow_square(7))          # => 49
 
 ### 11.4 `fn.params` introspection
 
-> **Status: Planned.** Will expose a function's declared parameter
-> names and types, enabling decorators like `@autograd` and `@trace`
-> that need to know the signature.
+A `Function` value exposes its declared signature, which decorators
+can use to write signature-aware wrappers (`@autograd`, `@trace`, ...).
 
-### Why don't decorators and multimethods coexist?
+```culebra
+add_typed = fn (a: Long, b: Long) -> Long { a + b }
+puts(add_typed.params.map(|p| p.name))    # => ['a', 'b']
+puts(add_typed.return_type)               # => 'Long'
+```
 
 A decorated function is bound as a single value (the wrapped
 closure), which is incompatible with the "many `fn`s sharing one
-name" shape of multimethods. Choose one or the other per name.
+name" shape of multimethods — choose one or the other per name (full
+rule: [language.md §20](language.md)).
 
 12. Modules
 -----------
@@ -1008,19 +1015,16 @@ Running `culebra main.cul` discovers `lib.cul` automatically by
 following the unresolved name `greet`. There is no `import`
 statement.
 
-### 12.2 Entry-env isolation
+### 12.2 Entry-env isolation and cycles
 
-Bindings introduced *in the entry file* (`main.cul` above) are not
-visible from imported files. Bindings introduced *in imported files*
-become visible everywhere the build can reach. This matches Go's
-intuition (every file in a package is "the package"), with the entry
-treated like a top-level main.
-
-### 12.3 Cycles
-
-Cyclic references between files are detected at module-build time
-and rejected with a precise file/line. Refactor through a shared
-third file.
+Bindings introduced *in the entry file* are not visible from imported
+files; bindings introduced *in imported files* become visible
+everywhere the build can reach — matching Go's intuition that every
+file in a package is "the package," with the entry file treated like
+a top-level main. Cyclic references between files are rejected at
+module-build time with a precise file/line; refactor through a shared
+third file. Full resolution and cycle-detection rules:
+[language.md §23](language.md).
 
 ### Why implicit?
 
@@ -1044,22 +1048,18 @@ Part III — Types and libraries
 ### 13.1 Today: optional annotations + `Any`
 
 Annotations are *runtime* checks at three boundaries: variable
-assignment, function parameter passing, and function return.
+assignment, function parameter passing, and function return. There is
+no static narrowing. Full annotation semantics: [language.md
+§14](language.md).
 
 ```culebra
-let x: Long = 10
-puts(x)                       # => 10
-
 add = fn (a: Long, b: Long) -> Long { a + b }
 puts(add(3, 4))               # => 7
 
-# Any matches everything
+# Any matches everything; typed and dynamic parameters can mix
 identity = fn (x: Any) -> Any { x }
-puts(identity(42))            # => 42
-puts(identity('hi'))          # => 'hi'
-
-# Mix typed and dynamic parameters
 describe = fn (v, label: String) -> String { "{label}: {v}" }
+puts(identity(42))                  # => 42
 puts(describe([1, 2], 'array'))     # => 'array: [1, 2]'
 ```
 
@@ -1069,28 +1069,56 @@ class.
 
 ### 13.2 Union, Optional, Tuple
 
-> **Status: Planned.** `Long | String`, `T?` (= `T | Nil`), and
-> `(Long, String)` are decided but not yet implemented.
+`Long | String` accepts either alternative; `T?` is sugar for
+`T | Nil`; `(Long, String)` is a fixed-size, immutable, element-wise-
+equal `Tuple`. Full semantics: [language.md §14](language.md) (Union
+types / Optional types) and [language.md §10](language.md) (Tuples).
 
 ```culebra
-# doctest: skip
-let id: Long | String = 42
-let maybe: Long?      = nil
-let pair: (Long, String) = (1, 'one')
+show = fn (x: Long | String) -> String { to_string(x) }
+puts(show(1))                  # => '1'
+puts(show('hi'))               # => 'hi'
+
+pair = (1, 'one')
+puts(type_of(pair))            # => 'Tuple'
+puts(pair == (1, 'one'))       # => true
 ```
 
 ### 13.3 Trait / Protocol
 
-> **Status: Planned.** Structural and nominal both in scope; the
-> trade-off (and which to introduce first) is open. See
-> [`record.md`](record.md).
+`trait` declares a set of required methods; any class whose methods
+match (by name and arity) conforms — no explicit `impl` needed, and a
+class missing a required method fails dispatch (`DispatchError`)
+rather than matching silently. Traits can also carry default-
+implemented methods and be derived with `@derive`. Full spec: [language.md
+§14](language.md) (Traits and protocols). See [`record.md`](record.md)
+for why nominal (class) inheritance was rejected in favor of this
+structural model (Ch.10.3).
+
+```culebra
+trait Greeter { hello() -> String }
+
+class Bob {
+  new(name)  { this.name = name }
+  hello()    { "hi, {this.name}" }
+}
+
+greet = fn (x: Greeter) -> String { x.hello() }
+puts(greet(Bob.new('Alice')))   # => 'hi, Alice'
+```
 
 ### 13.4 Generics
 
-> **Status: Planned.** Required before 1.0. Adding generics after
-> the language has a large library is expensive (Java 5 era
-> taught us); Culebra commits to landing them while the surface area
-> is still small.
+`Array<Long>` and similar annotations document the element type and
+feed multimethod specificity (Ch.10.2); the element check itself is a
+no-op — Culebra follows Rust/Swift generics in spirit but does not pay
+for runtime element checking on every access. Bound constraints and
+generic class declarations: [language.md §14](language.md).
+
+```culebra
+first = fn (xs: Array<Long>) -> Long { xs[0] }
+puts(first([1, 2, 3]))         # => 1
+```
 
 ### What Culebra deliberately does *not* take from TypeScript
 
@@ -1110,14 +1138,12 @@ namespaces but not the bare aliases.
 
 ```culebra
 puts(to_long('42'))           # => 42
-puts(to_long('  -7 '))        # => -7
-puts(to_string(42))           # => '42'
 puts(to_string([1, 2]))       # => '[1, 2]'
-puts(type_of(42))             # => 'Long'
-puts(iota(3))                 # => [0, 1, 2]
 puts(iota(2, 5))              # => [2, 3, 4]
 assert_eq(1 + 1, 2)           # passes silently; throws on failure
 ```
+
+Full list: [language.md §18](language.md).
 
 ### 14.2 `Math`
 
@@ -1130,6 +1156,8 @@ puts(Math.sign(-42))          # => -1
 puts(Math.clamp(15, 0, 10))   # => 10
 ```
 
+Full reference: [`stdlib.md` §1](stdlib.md).
+
 ### 14.3 `IO`
 
 ```culebra
@@ -1139,9 +1167,9 @@ print('Hello, '); print('world!'); print("\n")   # => Hello, world!
 # FS.read('in.txt')          # read a file
 ```
 
-### 14.4 `Sys`, `Random`, `String`, `FS`, `Time`, `Args`
+Full reference: [`stdlib.md` §2](stdlib.md).
 
-Brief tour; full reference in [`stdlib.md`](stdlib.md).
+### 14.4 `Sys`, `Random`, `FS`, `Time`, `Args`
 
 ```culebra
 puts(Sys.argv)                # => []
@@ -1153,103 +1181,88 @@ puts(Random.int(0, 100) >= 0)          # => true
 # Path — a fluent wrapper over FS that carries a path around:
 #   let cfg = Path.new('/etc') / 'app.conf'   # `/` joins
 #   cfg.parent().name(); cfg.read()           # properties + FS ops
-# FS.* and File.open also accept a Path directly. See stdlib.md.
-
-# String, FS, Time, Args namespaces — see stdlib.md
+# FS.* and File.open also accept a Path directly.
 ```
+
+Full reference: `Sys` [`stdlib.md` §7](stdlib.md), `Random` §6, `FS`/`Path`
+§3, `Time` §5, `Args` §10.
 
 ### 14.5 `Regex`
 
-> **Status: Planned (Tier 1).** Linear-time matching (NFA-based,
-> no catastrophic backtracking), grapheme-cluster–aware by default.
-> No `/u` flag needed: matching always operates at the grapheme
-> level for `.` and character classes.
+Linear-time matching (NFA-based, no catastrophic backtracking),
+grapheme-cluster–aware by default — no `/u` flag needed.
 
 ```culebra
-# doctest: skip
-re = Regex.compile("\\d+")
-m = re.match('order #42')
-puts(m.text)                  # planned: => 42
+re = Regex.compile('\d+')
+puts(re.test('order #42'))    # => true
+
+# `re"..."` literals are sugar for Regex.compile(pattern, flags);
+# the body is raw, so `\d` passes through as-is.
+puts(re'\d+'.test('abc 123')) # => true
 ```
 
-### 14.6 `Hash` + `Encoding`
+Full API: [`stdlib.md` §14](stdlib.md).
 
-> **Status: Implemented.** `Hash.sha256` / `sha1` / `sha512` / `md5` and
-> `Hash.hmac_sha256` / `hmac_sha1` / `hmac_sha512` return the hex digest
-> (see stdlib §18). `Encoding.base64`, `Encoding.hex`, `Encoding.url`,
-> `Encoding.html` (`.encode`/`.decode`) and `Compress.gzip` / `Compress.gunzip`
-> are available too (see stdlib §16–17). JSON is the top-level `JSON`
-> namespace (`JSON.parse` / `JSON.stringify`) — there is no `Encoding.json`.
+### 14.6 `Hash`, `Encoding`, `Compress`
 
-### 14.7 `HTTP`
+`Hash.sha256`/`sha1`/`sha512`/`md5` and their `hmac_*` variants return
+hex digests; `Encoding.base64`/`hex`/`url`/`html` each expose
+`.encode`/`.decode`; `Compress.gzip`/`gunzip` round out the data
+namespaces. JSON is its own top-level `JSON.parse`/`JSON.stringify` —
+there is no `Encoding.json`. Full reference: [`stdlib.md`](stdlib.md)
+§16 (Encoding), §17 (Compress), §18 (Hash).
 
-> **Status: Planned (Tier 1).** Blocking, SSE and WebSocket
-> included, TLS via statically linked BoringSSL. No `async`/`await`
-> — concurrency is via threads. Scale ceiling: a few thousand
-> connections.
+### 14.7 `Http`
+
+Blocking client and server, SSE and WebSocket included, TLS via
+statically linked BoringSSL. No `async`/`await` — concurrency is via
+threads; scale ceiling is a few thousand connections.
 
 ```culebra
 # doctest: skip
-res = HTTP.get('https://example.com')
-puts(res.status)              # planned: => 200
+res = Http.get('https://example.com')
+puts(res.status)              # => 200
 
 # Server
-HTTP.serve('127.0.0.1', 8080, fn (req) {
-  HTTP.response(200, 'hello')
-})
+srv = Http.server()
+srv.get('/', fn (req) { 'hello' })
+srv.listen('127.0.0.1', 8080)
 ```
+
+Streaming, routing, and the client session API: [`stdlib.md`
+§15](stdlib.md).
 
 ### 14.8 More planned
 
-> **Status: Planned (Tier 2/3).** `Compression` (gzip), `Crypto`,
-> `Process` (subprocess), `Sockets` (raw TCP/UDP). No firm
-> ordering yet; demand-driven.
-
-### Why "batteries-included, tiered"?
-
-Picking up Culebra for a CLI tool or a small server should not
-require pulling in a package manager. Tier 1 (Regex / HTTP /
-Hash+Encoding) covers most everyday scripts; Tier 2/3 follows when
-a concrete user pushes a feature into the critical path.
+> **Status: Planned (Tier 2/3).** `Crypto` (asymmetric/TLS primitives
+> beyond `Hash`) and `Sockets` (raw TCP/UDP). No firm ordering yet —
+> demand-driven, per the tiering in Ch.0.
 
 15. Tensor primitive
 --------------------
 
-### 15.1 Construction and arithmetic
+### 15.1 Construction, matmul, broadcasting
 
 `Tensor` is a built-in n-dimensional array routed through BLAS
 (Apple Accelerate on macOS, OpenBLAS on Linux). Storage is F32;
-scalar results surface as `Float`.
+scalar results surface as `Float`. Matmul (`dot`) builds a lazy graph
+that `Tensor.eval` runs as a single BLAS kernel; elementwise ops
+broadcast like NumPy. Full API (shapes, reductions, autograd):
+[`stdlib.md` §8](stdlib.md).
 
 ```culebra
 a = Tensor.from([1.0, 2.0, 3.0])
 b = Tensor.from([10.0, 20.0, 30.0])
 puts((a + b).to_array())      # => [11.0, 22.0, 33.0]
-puts((a * 2.0).to_array())    # => [2.0, 4.0, 6.0]
 puts(a.sum())                 # => 6.0
-```
 
-### 15.2 Shape and matmul
-
-```culebra
 m = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
-puts(m.shape())               # => [2, 2]
-
-# Matmul (`dot`) builds a lazy graph; `Tensor.eval` runs the BLAS kernel.
 c = m.dot(m)
 Tensor.eval(c)
 puts(c.to_array())            # => [[7.0, 10.0], [15.0, 22.0]]
 ```
 
-### 15.3 Broadcasting
-
-```culebra
-row = Tensor.from([1.0, 2.0, 3.0])
-col = Tensor.from([[10.0], [20.0]])
-puts((row + col).to_array())  # => [[11.0, 12.0, 13.0], [21.0, 22.0, 23.0]]
-```
-
-### 15.4 GPU primitive
+### 15.2 GPU primitive
 
 > **Status: Planned.** A CUDA / Metal Shading Language backend is
 > on the roadmap, exposed as a separate `Matrix` (or `GTensor`)
@@ -1377,11 +1390,9 @@ fn user_count(db) {
 
 `defer` inside a fixture body would fire when the fixture fn returns
 (before the test runs), so class `drop` is the right tool for cleanup.
-
-Long-lived state shared across files — e.g. a model loaded once —
-goes at module top level and is imported by each test file. The
-module system caches the binding, so `import` always returns the
-same instance.
+Long-lived state shared across files (e.g. a model loaded once) goes
+at module top level instead, since the module system (Ch.12) caches
+the binding.
 
 **Matchers.** Assertions in tests use the matcher family — there is
 no `assert` keyword or builtin. Matchers are **3-backend globals**
@@ -1391,27 +1402,13 @@ identically under `culebra script.cul`, `culebra --jit script.cul`,
 
 ```culebra
 # doctest: skip
-assert_true(x)                          # x is truthy
-assert_false(x)                         # x is falsy
 assert_eq(arr.len(), 3)                 # == ; shows both sides on failure
-assert_ne(status, "error")              # !=
-assert_lt(elapsed, 1.0)                 # <
-assert_le(count, max)                   # <=
-assert_gt(score, 0)                     # >
-assert_ge(items.len(), 1)               # >=
 assert_throws("TypeError", fn() { let _ = 1 + 'b' })
 assert_close(0.1 + 0.2, 0.3, 1e-9)      # |a - b| <= tol
 ```
 
-- `assert_eq` / `assert_ne` / `assert_lt` / `assert_le` / `assert_gt` /
-  `assert_ge` use the same `__eq__` / `__lt__` / `__le__` dispatch as
-  the operators, so `assert_eq(p1, p2)` and the expression `p1 == p2`
-  agree for class instances.
-- `assert_throws(kind, fn)` invokes 0-arg `fn()` and asserts it throws
-  with the given `kind` (for built-in errors) or `.kind` property (for
-  `throw { kind: ..., message: ... }`).
-- `assert_close(a, b, tol)` asserts `|a - b| <= tol`. NaN counts as
-  failure (a naive `>` would silently pass divergent computations).
+Full matcher list (`assert_true`/`false`/`ne`/`lt`/`le`/`gt`/`ge` and
+the `__eq__`/`__lt__` dispatch rule): [`stdlib.md` §13](stdlib.md).
 
 **Production invariants.** For `if (!cond) throw {...}` checks outside
 the test suite, write the `if`/`throw` directly (Go-style, see
@@ -1445,25 +1442,16 @@ Exit code is `0` when all tests pass, `1` when any fail.
 JSON object per line (NDJSON) — useful for agent loops and CI:
 
 ```
-{"event":"test_pass","name":"adds_correctly","source":"tests/test_math.cul",
- "stdout":""}
+{"event":"test_pass","name":"adds_correctly","source":"tests/test_math.cul","stdout":""}
 {"event":"test_fail","name":"divides_correctly","kind":"AssertionError",
- "message":"assert_eq failed:\n  left:  3\n  right: 4","line":12,"col":3,
- "source":"tests/test_math.cul",
- "snippet":" 10  @test\n 11  fn divides_correctly() {\n 12>   assert_eq(6/2, 4)\n 13  }\n",
- "stdout":""}
-{"event":"file_error","source":"tests/test_bad.cul","kind":"SyntaxError",
- "message":"..."}
-{"event":"test_list","name":"divides_correctly","source":"tests/test_math.cul"}
-{"event":"list_end","count":42}
+ "message":"assert_eq failed:\n  left:  3\n  right: 4","line":12,"col":3,"stdout":""}
 {"event":"run_end","passed":42,"failed":1,"errored_files":0,"bailed":false}
 ```
 
-In JSON mode, user `puts(...)` from inside a test is captured into the
-event's `stdout` field rather than interleaved with the NDJSON stream.
-Failure events carry a `snippet` with the failing line marked `>` and
-two lines of context on either side, so a consumer can show the
-relevant code without an extra file read.
+User `puts(...)` from inside a test is captured into the event's
+`stdout` field rather than interleaved with the NDJSON stream, and
+failure events carry a `snippet` with the failing line marked `>` for
+context.
 
 The legacy `tests/*.cul` suite under `just test` (matchers + no
 `test()` calls) runs each file directly via `./build/culebra <f>`,
@@ -1553,38 +1541,24 @@ running it once.
 
 ### Editor integration
 
-The stdin form (`culebra fmt -`) is the format hook. Because `culebra fmt` is a
-whole-file formatter (like gofmt / rustfmt), each integration formats the whole
-buffer and applies the result only when it exits zero — a parse / safety error
-leaves the buffer untouched.
+The stdin form (`culebra fmt -`) is the format hook: each integration
+formats the whole buffer and applies the result only when it exits
+zero, leaving the buffer untouched on a parse/safety error.
 
-**VSCode** — the bundled extension (`misc/vscode/`) registers a document
-formatting provider, so **Format Document** and `editor.formatOnSave` work for
-`.cul` files out of the box. Rebuild/reinstall it with `build-vsix.sh` /
-`install.sh`.
-
-**Zed** — add an external formatter for the language in your `settings.json`
-(Zed's `format_on_save` already defaults to on, so a formatter is all you need;
-set it to `"off"` here to opt out for `.cul`):
-
-```json
-{
-  "languages": {
-    "Culebra": {
-      "formatter": { "external": { "command": "culebra", "arguments": ["fmt", "-"] } }
-    }
-  }
-}
-```
-
-**Vim/Neovim** — the bundled `ftplugin` (`misc/vim/cul_ftplugin.vim`) provides a
-`:CulebraFmt` command that reformats the whole buffer (cursor preserved,
-untouched on error); set `let g:culebra_fmt_autosave = 1` for format-on-save. It
-deliberately does *not* wire into `gq` / `'formatprg'`, which would replace a
-partial or unparseable range with the empty output.
-
-Any other editor with a "format on save" mechanism can pipe the buffer through
-`culebra fmt -` the same way (apply the output only when it exits zero).
+- **VSCode** — the bundled extension (`misc/vscode/`) registers a
+  document formatting provider, so **Format Document** and
+  `editor.formatOnSave` work for `.cul` files out of the box (rebuild
+  with `build-vsix.sh` / `install.sh`).
+- **Zed** — add an external formatter in `settings.json`:
+  `"formatter": { "external": { "command": "culebra", "arguments": ["fmt", "-"] } }`
+  under `"languages": { "Culebra": { ... } }`.
+- **Vim/Neovim** — the bundled `ftplugin` provides a `:CulebraFmt`
+  command (cursor preserved, untouched on error); set
+  `let g:culebra_fmt_autosave = 1` for format-on-save. It deliberately
+  skips `gq` / `'formatprg'`, which would replace an unparseable range
+  with empty output.
+- Any other editor with a format-on-save hook can pipe the buffer
+  through `culebra fmt -` the same way.
 
 19. AOT binary build
 --------------------
@@ -1610,7 +1584,7 @@ otool -L ./out                            # no Accelerate, no LLVM
   -o ./out-linux
 ```
 
-See [`binary_build.md`](binary_build.md) for the runtime-archive
+See [`deployment.md`](deployment.md) for the runtime-archive
 build, sysroot expectations, and the full cross-compile workflow.
 
 ### Why tree-shaking matters
@@ -1644,7 +1618,7 @@ The embedder constructs the environment, so `IO` is present but
 Errors surface as `culebra::Error` exceptions carrying the original
 thrown value plus line/column.
 
-See [`embedding.md`](embedding.md) for environment customization,
+See [`deployment.md`](deployment.md) for environment customization,
 value conversion, hosting the JIT, and the AOT-archive embed pathway
 (`libculebra_rt.a`).
 
@@ -1656,5 +1630,6 @@ Where to go next
 - Formal grammar and evaluation rules: [`language.md`](language.md)
 - API reference: [`stdlib.md`](stdlib.md)
 - Implementation internals: [`internals.md`](internals.md)
+- Binary builds, embedding, and wrapping: [`deployment.md`](deployment.md)
 - Larger worked example: [`benchmarks/microgpt/`](../benchmarks/microgpt/)
 - Interactive REPL: `./build/culebra --shell`

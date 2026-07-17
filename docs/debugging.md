@@ -24,9 +24,9 @@ below).
 
 ## How it works
 
-The adapter runs your program in the **interpreter** and uses its per-statement
-hook to pause on a breakpoint, a `debugger` statement, or a step, while the DAP
-loop answers the editor's requests and resumes execution.
+The adapter uses the interpreter's per-statement hook to pause on a breakpoint,
+a `debugger` statement, or a step, while the DAP loop answers the editor's
+requests and resumes execution.
 
 Your program's `stdout`/`stderr` is forwarded to the editor's debug console as
 `output` events, so it never collides with the protocol.
@@ -51,9 +51,8 @@ Your program's `stdout`/`stderr` is forwarded to the editor's debug console as
 
 VSCode needs a tiny extension to highlight `.cul` files and register the
 `culebra` debug type (debugging is pure registration — all the logic lives in
-`culebra dap`, so the same adapter then works in every editor). Publishing
-isn't required: the repo ships a template under `misc/vscode/` with an
-installer.
+`culebra dap`). Publishing isn't required: the repo ships a template under
+`misc/vscode/` with an installer.
 
 1. Install the extension:
 

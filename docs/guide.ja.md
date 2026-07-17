@@ -11,7 +11,9 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
 > **doctest 規約。** 本ガイドの各 ` ```culebra ` ブロックは実行可能
 > な例です。 行末の `# => <value>` は標準出力の期待値、`# !! <pattern>`
 > は `throw` の期待値。 ブロック先頭の `# doctest: skip` は説明用
-> （多くは *Planned* 機能）。 ブロック間は独立スコープです。
+> （複数ファイル・ネットワークアクセス・`culebra test` ランナーが
+> 必要な場合が多い）。 ブロック間は独立スコープです。 規約とディレ
+> クティブ一覧の全体は第16.1節。
 
 > **Status ラベル。** ラベル無しの見出しは現時点の実装を記述します。
 > 出現するラベル: **Draft** (実装中、API 変更あり)、**Planned**
@@ -70,8 +72,9 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
   HTTP 等のネットワークスタックはブロッキング、典型的なスケール
   上限は数千接続。
 - **batteries-included、ティア制。** コア stdlib
-  (Math/IO/Sys/Random/String/FS/Time/Args) は出荷済み。 Tier 1
-  (Regex/HTTP/Hash+Encoding) が次の優先 — Ch.14 参照。
+  (Math/IO/Sys/Random/String/FS/Time/Args) と Tier 1
+  (Regex/Http/Hash+Encoding) はどちらも出荷済み。 Tier 2/3
+  (Crypto、Sockets) は需要次第 — Ch.14 参照。
 - **1.0 前。** ソース・API は変わる可能性。 リリース機構 (バージョン
   タグ、CHANGELOG、Homebrew formula 等) は 1.0 後。
 
@@ -212,13 +215,10 @@ for n in 0..=2  { puts(n) }   # 包含レンジ
 
 `break` / `continue` は `while` / `for` 内で動作。
 
-### Why シャドウ規則を軸ごとに分けるか
-
-クロージャベースのオブジェクトパターンでは、捕捉された状態が
-そのままオブジェクトの状態。 silent shadow はオブジェクトを壊す。
-一方、関数内 block での rebinding は `let a = transform(a)` のよう
-な日常パターン。 多くの言語は 1 つのポリシーを全軸に適用するが、
-Culebra は各軸が違う目的を持つので分けて扱う。
+クロージャベースのオブジェクトパターン (Ch.8) では、捕捉された状態が
+そのままオブジェクトの状態なので、silent shadow はオブジェクトを壊す。
+一方、関数内 block での rebinding は日常パターンなので許容する。詳細
+なルールと設計根拠は [language.ja.md §6](language.ja.md)。
 
 3. 関数とクロージャ
 -------------------
@@ -279,12 +279,11 @@ opts = {greeting: 'yo', formal: false}
 puts(greet('carol', **opts))               # => 'yo, carol'
 ```
 
-### Why keyword-only
-
 `*` マーカーは呼び出し側にオプション名を書かせるので、長いパラメー
 タリストが読みやすくなり、再配置・拡張もコール側を壊さない。 free
 な positional rest (`*args`) は意図的に不採用 — Array リテラルが
-その役割を果たす。
+その役割を果たす。パラメータ・デフォルト値・splat の完全な仕様は
+[language.ja.md §11](language.ja.md)。
 
 4. 文字列
 ---------
@@ -328,32 +327,45 @@ puts('foo'.starts_with('fo'))         # => true
 puts(['a', 'b', 'c'].join('-'))       # => 'a-b-c'
 ```
 
-完全な一覧は [`stdlib.ja.md` §String](stdlib.ja.md)。
+完全な一覧は [language.ja.md §17.1](language.ja.md)。
 
 ### 4.4 `StringView`、`StringLike`、graphemes() lazy
 
-> **Status: Planned.** 未実装。 設計議論は
-> [`internals.ja.md` §6](internals.ja.md) 参照。 これらが入ると、
-> ユーザコードが `String` でも借用でも copy 無しで受け取れ、
-> grapheme cluster を lazy に走査できるようになる。
+`.slice()` / `.split()` / `.view()` は `StringView` を返す — 元の
+文字列のバイト列への zero-copy な借用で、元の束縛がスコープを抜けて
+も共有オーナーが生存させ続ける。 `StringLike` 型のパラメータは
+`String` と `StringView` の両方を受け付けるので、読むだけのヘルパー
+が copy を強制しない。
 
 ```culebra
-# doctest: skip
-# パラメータ型 StringLike は String と StringView 両方を受ける:
 print_first_grapheme = fn (s: StringLike) {
   for g in s.graphemes() { puts(g); break }
 }
-print_first_grapheme('🇯🇵 hello')   # planned: => 🇯🇵
+print_first_grapheme('café')          # => 'c'
+
+puts(type_of('hello'.slice(1, 4)))    # => 'StringView'
+puts('hello'.slice(1, 4))             # => 'ell'
 ```
+
+`.graphemes()` は Unicode の *extended grapheme cluster* を lazy に
+走査する — ZWJ で連結された複数コードポイントの絵文字ファミリーで
+あっても、1 ステップ = ユーザが知覚する 1 文字になる:
+
+```culebra
+puts('a👨‍👩‍👧b'.graphemes().collect().size())    # => 3
+puts('café'.graphemes().collect().size())        # => 4
+```
+
+`StringView`/grapheme の完全な API は [language.ja.md §17.1](language.ja.md)。
+設計議論は [`internals.ja.md` §6](internals.ja.md) 参照。
 
 ### Why Go 流のバイトインデックス
 
 Swift / Python 3 は bytes vs scalar の区別を不透明な `Character` /
 `str` インデックスで隠す。 ソケット・ファイル I/O と相互運用する
 までは便利だが、その時点で破綻する。 Go はバイトオフセットを露出
-させ、`rune` 反復をその上に置く。 Culebra は同じモデル — I/O 意味
-論が予測可能で、スカラ反復は欲しい時に、(将来) lazy grapheme 反復
-は表示用に使える。
+させ、`rune` 反復をその上に置く。 Culebra は同じモデルに、表示用の
+lazy grapheme 反復 (上記) を足したもの。
 
 5. イテレータ
 -------------
@@ -422,7 +434,9 @@ puts(head)                    # => [10, 11, 12, 13, 14]
 ### 5.4 ユーザー定義イテレータ
 
 3 メソッドを実装: `iter()` (慣習でイテレータ自身を返す)、
-`has_next()` (`Bool` を返す)、`next()` (次の要素を返す)。
+`has_next()` (`Bool` を返す)、`next()` (次の要素を返す)。 lazy チェ
+インの早期終了保証を含む完全なプロトコルは
+[language.ja.md §17.5](language.ja.md)。
 
 ```culebra
 countdown = fn (start) {
@@ -443,15 +457,32 @@ for v in countdown(3) { puts(v) }
 
 ### 5.5 ジェネレータ (`yield`)
 
-> **Status: Planned.** `yield` ベースのジェネレータ構文はロードマップ
-> 上。 現状は手書きイテレータ (5.4) か `range` / `iter()` 合成
-> (5.1–5.3) で代替。
+`yield` を含む `fn` 本体はジェネレータになる — 呼び出しても本体は
+実行されず、イテレータ (5.4 の `iter`/`has_next`/`next` プロトコル)
+が返るので、`for` や lazy チェインのメソッドがそのまま使える。
+`yield from` は他の iterable へ委譲する。
 
-### Why パイプライン `|>` を採用しないか
+```culebra
+fn countdown(start) {
+  mut i = start
+  while i > 0 { yield i; i = i - 1 }
+}
+for v in countdown(3) { puts(v) }
+# => |
+# 3
+# 2
+# 1
 
-`x.f(...)` は同じ読み方ができる上、ユーザ型上の自由関数の解決経路
-(Ch.10) も兼ねる。 `|>` を加えるとイディオム空間が分裂するだけで
-機能的な得は無い。
+fn chunk(arr, n) {
+  mut buf = []
+  for v in arr {
+    buf.push(v)
+    if buf.size() >= n { yield buf; buf = [] }
+  }
+  if buf.size() > 0 { yield buf }
+}
+puts(chunk([1, 2, 3, 4, 5], 2).collect())    # => [[1, 2], [3, 4], [5]]
+```
 
 6. パターンマッチ
 -----------------
@@ -539,8 +570,8 @@ puts(is_even(7))              # => false
 
 静的型システム無しで Object の shape を網羅性検査するには、節約
 以上のランタイムコストがかかる。 `_` 節 (またはガード付き最終
-パターン) で意図を明示する方針。 型システムが育てば (Ch.13)、
-Union の網羅性検査が現実的になる。
+パターン) で意図を明示する方針。 詳細と Union 型の例外は
+[language.ja.md §13](language.ja.md)。
 
 7. エラー処理と RAII
 --------------------
@@ -583,7 +614,8 @@ puts(safe(-99))               # => 0
 `defer { ... }` は囲むブロックの**全 exit パス** (通常終了 /
 `return` / `throw`) で LIFO に実行されるクリーンアップ登録。
 保護対象を `{ }` で囲むことで、本体が throw してもクリーンアップが
-発火する。
+発火する。 exit パスと順序の完全なルールは
+[language.ja.md §15](language.ja.md)。
 
 ```culebra
 demo = fn (fail) {
@@ -626,42 +658,16 @@ puts('exit')
 ```
 
 `drop` はカスケードする — 外側オブジェクトが解放されると、内側に
-持つ参照 (drop 付き) が連鎖して解放される。
+持つ参照 (drop 付き) が連鎖して解放される。 完全なメモリモデル
+(RC + サイクル収集) は [language.ja.md §16](language.ja.md)。
 
 ### 7.5 Scope guard パターン
 
-```culebra
-make_guard = fn () {
-  mut fns = []
-  {
-    add: fn (f) { fns.push(f) },
-    run: fn () {
-      mut i = fns.size() - 1
-      while i >= 0 { fns[i](); i = i - 1 }
-      fns = []
-    }
-  }
-}
-
-process = fn (items) {
-  {
-    g = make_guard()
-    defer { g.run() }
-
-    items.for_each(fn (item) {
-      g.add(fn () { puts("close {item}") })
-      puts("open {item}")
-    })
-  }
-}
-
-process(['a', 'b'])
-# => |
-# 'open a'
-# 'open b'
-# 'close b'
-# 'close a'
-```
+自前で `defer` を置けないコード (例: 呼び出し元のスコープでの
+クリーンアップを望むコールバック) からクリーンアップを登録したい
+場合は、クリーンアップ用クロージャのリストを持つ小さなヘルパー
+オブジェクトを用意し、呼び出し側の 1 つの `defer` から LIFO で実行
+すればよい。 完全な実装例は [language.ja.md §15](language.ja.md)。
 
 ### Why throw 値は任意
 
@@ -731,18 +737,23 @@ puts(car.total())             # => '走行距離: 15 miles'
 `class:` タグと shape マッチが欲しいなら `class`、private 状態の
 方が重要ならクロージャ形式を選ぶ。
 
-### 8.3 Static method
+### 8.3 Static method とフィールド
 
-> **Status: Planned.** 現状、ファクトリはクラスの外の自由関数として
-> 書く:
->
-> ```culebra
-> class Shape { new(name) { this.name = name } }
-> make_circle = fn (r) { Shape.new("circle r={r}") }
-> puts(make_circle(3).name)         # => circle r=3
-> ```
->
-> static method が入れば `Shape.make_circle(3)` と書ける。
+メソッドやフィールドに `static` を付けるとクラス自身に載る (インス
+タンス不要) — ファクトリやクラスレベルの定数を置く自然な場所。
+
+```culebra
+class Circle {
+  new(r)          { this.r = r }
+  static PI       = 3.14
+  static unit()   { Circle.new(1) }
+  area()          { this.r * this.r * Circle.PI }
+}
+puts(Circle.unit().area())    # => 3.14
+puts(Circle.PI)               # => 3.14
+```
+
+static フィールドはクラス宣言時に一度だけ eager に評価される。
 
 ### Why `class` とクロージャ両方サポートか
 
@@ -756,23 +767,12 @@ puts(car.total())             # => '走行距離: 15 miles'
 
 ### 9.1 特殊メソッド
 
-| 演算子   | メソッド       | 典型用途             |
-|----------|---------------|---------------------|
-| `+`      | `__add__`     | 数値 / ベクトル     |
-| `-`      | `__sub__`     | 数値 / ベクトル     |
-| `*`      | `__mul__`     | 数値 / スカラ       |
-| `/`      | `__div__`     | 数値                |
-| `%`      | `__mod__`     | 数値                |
-| `**`     | `__pow__`     | 数値                |
-| `@`      | `__matmul__`  | 行列積              |
-| 単項 -   | `__neg__`     | 符号反転            |
-| `==`     | `__eq__`      | 等価                |
-| `<`      | `__lt__`      | 順序 (`<=` 等は導出) |
-| `()`     | `__call__`    | callable インスタンス |
-| `[i]`    | `__index__`   | インデックス        |
-
-逆側メソッド (`__radd__` 等) はサポートしない — オーバーロードは
-その演算を所有する型に置く。
+算術・比較・インデックス・call の各演算子は dunder メソッド
+(`__add__` / `__eq__` / `__lt__` / `__index__` / `__call__` 等) に
+対応し、クラスがそれを定義すればその演算に参加できる。 逆側メソッド
+(`__radd__` 等) はサポートしない — オーバーロードはその演算を所有
+する型に置く。 完全なメソッド表とディスパッチ規則は
+[language.ja.md §10](language.ja.md) (演算子オーバーロード)。
 
 ### 9.2 例: 2 次元ベクトル
 
@@ -798,12 +798,9 @@ puts(a == Vec2.new(1, 2))     # => true
 
 ### 9.3 `__call__` で callable インスタンス
 
-> **Status: Planned.** インスタンスを直接呼び出す形 (`add5(10)`) は
-> まだ未対応。 当面はクラスに名前付きメソッドを持たせてそれを呼ぶ
-> (`add5.apply(10)`)。
+クラスに `__call__` を定義すると、そのインスタンスを直接呼び出せる。
 
 ```culebra
-# doctest: skip
 class Adder {
   new(n)        { this.n = n }
   __call__(x)   { x + this.n }
@@ -819,12 +816,10 @@ puts(add5(99))                # => 104
 
 ### 10.1 UFCS 解決順
 
-`x.name(args)` の解決:
-
-1. `x` にプロパティ/メソッド `name` があればそれを使う
-2. 無ければスコープ内の自由関数 `name` を `name(x, args)` として呼ぶ
-3. それも無ければプロパティアクセスは `nil`、 nil に対する call は
-   エラー
+`x.name(args)` では、既存のプロパティ/メソッド `name` が常に優先
+され、無ければスコープ内の自由関数 `name` が `name(x, args)` として
+呼ばれる。 完全な解決順序 (`DOT` + 呼び出しリストの要件を含む) は
+[language.ja.md §10](language.ja.md) (Methods and UFCS)。
 
 ```culebra
 double = fn (x) { x * 2 }
@@ -857,21 +852,32 @@ puts(area(Square.new(3)))                    # => 9
 puts(area(10))                               # => 10
 ```
 
-ディスパッチは positional / kwargs / `**splat` 全部カバー。 インス
-タンスメソッドはまだマルチメソッド非対応 (10.3 参照)。
+ディスパッチは positional / kwargs / `**splat` 全部カバー、Union
+で注釈したパラメータ (`x: Long | String`、Ch.13.2) もここに参加する。
+完全なディスパッチ/優先度規則は [language.ja.md §19](language.ja.md)。
+
+インスタンスメソッドも同じ方式でディスパッチする — クラスは同名で
+パラメータ型の異なるメソッドを複数宣言できる:
+
+```culebra
+class Calc {
+  new() {}
+  go(x: Long)   { "long" }
+  go(x: String) { "string" }
+}
+c = Calc.new()
+puts(c.go(1))                  # => 'long'
+puts(c.go('a'))                # => 'string'
+```
 
 ### 10.3 ディスパッチ拡張
 
-> **Status: Planned.** 4 つすべて採用決定、未実装。 現状は
-> `match v.class` で明示分岐、または関数名を分けて回避。
->
-> - **class 継承ディスパッチ** — パラメータ `x: Shape` が `Shape`
->   のサブクラスを受け、最近接マッチが選ばれる。
-> - **Union 注釈ディスパッチ** — `fn f(x: Long | String)` が引数
->   の実行時型で選ばれる。
-> - **メソッドマルチメソッド** — `class.method` が自由関数と同じ
->   解決に参加。
-> - **ディスパッチ IC** — call-site ごとの inline cache。
+> **Status: Planned.** hot なディスパッチ経路向けの call-site 単位
+> inline cache がロードマップ上 — 現状は毎回オーバーロード集合を
+> 再解決する。 class ベース (nominal) の継承は検討の上不採用 — 型
+> ファミリー全体にわたる多態は trait ディスパッチ (Ch.13.3) 側で担
+> う。UFCS と無理なく合成でき、サブタイピングの物語を増やさずに済む
+> ため。
 
 ### Why 自由関数から先か
 
@@ -886,7 +892,8 @@ puts(area(10))                               # => 10
 ### 11.1 `@deco`
 
 `fn` (または `class`) の前に置く `@deco` は、`deco(original)` の
-結果を元の名前に束縛する。
+結果を元の名前に束縛する。 マルチメソッドとの相互作用を含む完全な
+仕様は [language.ja.md §20](language.ja.md)。
 
 ```culebra
 log = fn (f) {
@@ -928,9 +935,8 @@ greet()
 # 'hi'
 ```
 
-外側デコレータが内側の結果をラップする — ここでは `@prefix('A')`
-が `@prefix('B')` でラップ済みの関数を更にラップ。 上から下に読む
-と実行順と一致。
+外側デコレータが内側の結果をラップする。 上から下に読むと実行順と
+一致。
 
 ### 11.3 Memoize の実例
 
@@ -953,15 +959,19 @@ puts(slow_square(7))          # => 49
 
 ### 11.4 `fn.params` introspection
 
-> **Status: Planned.** 関数の宣言パラメータ名と型を露出する仕組み。
-> `@autograd` / `@trace` のような signature を知る必要のあるデコ
-> レータが書けるようになる。
+`Function` 値は宣言時のシグネチャを露出する。 `@autograd` / `@trace`
+のような signature を知る必要のあるデコレータはこれを使って書ける。
 
-### Why デコレータとマルチメソッドは併存しないか
+```culebra
+add_typed = fn (a: Long, b: Long) -> Long { a + b }
+puts(add_typed.params.map(|p| p.name))    # => ['a', 'b']
+puts(add_typed.return_type)               # => 'Long'
+```
 
 デコレートされた関数は単一値 (ラップされたクロージャ) として束縛
 される — これは「同名の `fn` が複数共存する」というマルチメソッド
-の形と相容れない。 名前ごとにどちらか一方を選ぶ。
+の形と相容れない。名前ごとにどちらか一方を選ぶ (完全な規則は
+[language.ja.md §20](language.ja.md))。
 
 12. モジュール
 --------------
@@ -988,17 +998,15 @@ puts(PI)                      # => 3.14159
 `culebra main.cul` を実行すると、未解決の名前 `greet` を辿って
 `lib.cul` を自動発見する。 `import` 文は無い。
 
-### 12.2 エントリ環境の隔離
+### 12.2 エントリ環境の隔離と循環
 
-エントリファイル (`main.cul` 上) で導入された束縛は import された
-ファイルからは見えない。 import されたファイル内で導入された束縛は
-ビルドから到達可能などこからでも見える。 Go の直観 (パッケージ内
-全ファイルが「パッケージ」) に揃え、エントリだけは最上位 main 扱い。
-
-### 12.3 循環
-
-ファイル間の循環参照はモジュールビルド時に検出され、ファイル/行付き
-で拒絶される。 共通の第三ファイルで分解。
+エントリファイルで導入された束縛は import されたファイルからは見え
+ない。 import されたファイル内で導入された束縛はビルドから到達可能
+などこからでも見える — Go の直観 (パッケージ内全ファイルが「パッ
+ケージ」) に揃え、エントリだけは最上位 main 扱い。 ファイル間の循環
+参照はモジュールビルド時に検出され、ファイル/行付きで拒絶される
+(共通の第三ファイルで分解)。 完全な解決規則と循環検出は
+[language.ja.md §23](language.ja.md)。
 
 ### Why 暗黙か
 
@@ -1021,22 +1029,17 @@ tree-shaking もちゃんと効く (リーチャブルなトップレベルが�
 ### 13.1 現状: オプショナル注釈 + `Any`
 
 注釈は 3 つの境界での**ランタイム**チェック: 変数代入、関数パラ
-メータ渡し、関数戻り値。
+メータ渡し、関数戻り値。 静的な narrowing は無い。 完全な注釈仕様は
+[language.ja.md §14](language.ja.md)。
 
 ```culebra
-let x: Long = 10
-puts(x)                       # => 10
-
 add = fn (a: Long, b: Long) -> Long { a + b }
 puts(add(3, 4))               # => 7
 
-# Any は全部受ける
+# Any は全部受ける。型注釈と動的パラメータは混在できる
 identity = fn (x: Any) -> Any { x }
-puts(identity(42))            # => 42
-puts(identity('hi'))          # => 'hi'
-
-# 一部だけ型注釈、残りは動的
 describe = fn (v, label: String) -> String { "{label}: {v}" }
+puts(identity(42))                  # => 42
 puts(describe([1, 2], 'array'))     # => 'array: [1, 2]'
 ```
 
@@ -1046,27 +1049,56 @@ puts(describe([1, 2], 'array'))     # => 'array: [1, 2]'
 
 ### 13.2 Union / Optional / Tuple
 
-> **Status: Planned.** `Long | String`、 `T?` (= `T | Nil`)、
-> `(Long, String)` — 採用決定、未実装。
+`Long | String` はどちらの型も受け付け、`T?` は `T | Nil` の糖衣、
+`(Long, String)` は固定長・不変・要素ごと等価な `Tuple`。 完全な
+仕様は [language.ja.md §14](language.ja.md) (Union types /
+Optional types) と [language.ja.md §10](language.ja.md) (Tuples)。
 
 ```culebra
-# doctest: skip
-let id: Long | String = 42
-let maybe: Long?      = nil
-let pair: (Long, String) = (1, 'one')
+show = fn (x: Long | String) -> String { to_string(x) }
+puts(show(1))                  # => '1'
+puts(show('hi'))               # => 'hi'
+
+pair = (1, 'one')
+puts(type_of(pair))            # => 'Tuple'
+puts(pair == (1, 'one'))       # => true
 ```
 
 ### 13.3 Trait / Protocol
 
-> **Status: Planned.** Structural と nominal の両方が射程内。
-> trade-off (とどちらを先に入れるか) は議論中。
-> [`record.ja.md`](record.ja.md) 参照。
+`trait` は必須メソッド集合を宣言する。 それらに (名前・アリティが)
+マッチするメソッドを持つクラスなら、明示 `impl` 無しで conform し
+(structural conformance)、必須メソッドを欠くクラスは黙って通らず
+ディスパッチが失敗する (`DispatchError`)。 trait はデフォルト実装
+メソッドも持てて `@derive` で導出できる。 完全な仕様は
+[language.ja.md §14](language.ja.md) (Traits and protocols)。
+nominal (class) 継承がこの structural モデルのために不採用になった
+経緯は [`record.ja.md`](record.ja.md) 参照 (Ch.10.3)。
+
+```culebra
+trait Greeter { hello() -> String }
+
+class Bob {
+  new(name)  { this.name = name }
+  hello()    { "hi, {this.name}" }
+}
+
+greet = fn (x: Greeter) -> String { x.hello() }
+puts(greet(Bob.new('Alice')))   # => 'hi, Alice'
+```
 
 ### 13.4 Generic
 
-> **Status: Planned.** 1.0 前に必須。 大きなライブラリが育った後に
-> generic を入れるのは高コスト (Java 5 期の教訓)。 表面積が小さい
-> うちに着地させる方針。
+`Array<Long>` のような注釈は要素型をドキュメント化し、マルチメソッ
+ドの specificity (Ch.10.2) にも使われる。 要素チェック自体は no-op
+— Rust/Swift の generic を精神的に踏襲するが、アクセスの度に要素を
+ランタイムチェックするコストは払わない。 bound 制約と generic クラ
+ス宣言は [language.ja.md §14](language.ja.md)。
+
+```culebra
+first = fn (xs: Array<Long>) -> Long { xs[0] }
+puts(first([1, 2, 3]))         # => 1
+```
 
 ### TypeScript から意図的に取り入れない要素
 
@@ -1085,14 +1117,12 @@ namespace は見えるが bare alias は無い。
 
 ```culebra
 puts(to_long('42'))           # => 42
-puts(to_long('  -7 '))        # => -7
-puts(to_string(42))           # => '42'
 puts(to_string([1, 2]))       # => '[1, 2]'
-puts(type_of(42))             # => 'Long'
-puts(iota(3))                 # => [0, 1, 2]
 puts(iota(2, 5))              # => [2, 3, 4]
 assert_eq(1 + 1, 2)           # 成功時は無音、失敗で throw
 ```
+
+完全な一覧は [language.ja.md §18](language.ja.md)。
 
 ### 14.2 `Math`
 
@@ -1105,6 +1135,8 @@ puts(Math.sign(-42))          # => -1
 puts(Math.clamp(15, 0, 10))   # => 10
 ```
 
+完全リファレンス: [`stdlib.ja.md` §1](stdlib.ja.md)。
+
 ### 14.3 `IO`
 
 ```culebra
@@ -1114,9 +1146,9 @@ print('Hello, '); print('world!'); print("\n")   # => Hello, world!
 # FS.read('in.txt')          # ファイル読み込み
 ```
 
-### 14.4 `Sys` / `Random` / `String` / `FS` / `Time` / `Args`
+完全リファレンス: [`stdlib.ja.md` §2](stdlib.ja.md)。
 
-簡単に紹介。 完全リファレンスは [`stdlib.ja.md`](stdlib.ja.md)。
+### 14.4 `Sys` / `Random` / `FS` / `Time` / `Args`
 
 ```culebra
 puts(Sys.argv)                # => []
@@ -1128,101 +1160,89 @@ puts(Random.int(0, 100) >= 0)          # => true
 # Path — パスを持ち回る FS の流暢なラッパ:
 #   let cfg = Path.new('/etc') / 'app.conf'   # `/` で結合
 #   cfg.parent().name(); cfg.read()           # プロパティ + FS 操作
-# FS.* や File.open も Path を直接受けます。stdlib.ja.md を参照。
-
-# String / FS / Time / Args namespace — stdlib.ja.md を参照
+# FS.* や File.open も Path を直接受けます。
 ```
+
+完全リファレンス: `Sys` [`stdlib.ja.md` §7](stdlib.ja.md)、`Random` §6、
+`FS`/`Path` §3、`Time` §5、`Args` §10。
 
 ### 14.5 `Regex`
 
-> **Status: Planned (Tier 1).** 線形時間マッチ (NFA ベース、
-> catastrophic backtracking 無し)、grapheme cluster 単位がデフォルト。
-> `/u` フラグ不要 — `.` や文字クラスは常に grapheme レベルで動作。
+線形時間マッチ (NFA ベース、catastrophic backtracking 無し)、
+grapheme cluster 単位がデフォルト。 `/u` フラグ不要。
 
 ```culebra
-# doctest: skip
-re = Regex.compile("\\d+")
-m = re.match('order #42')
-puts(m.text)                  # planned: => 42
+re = Regex.compile('\d+')
+puts(re.test('order #42'))    # => true
+
+# `re"..."` リテラルは Regex.compile(pattern, flags) の糖衣。
+# body は raw なので `\d` はそのまま通る。
+puts(re'\d+'.test('abc 123')) # => true
 ```
 
-### 14.6 `Hash` + `Encoding`
+完全な API: [`stdlib.ja.md` §14](stdlib.ja.md)。
 
-> **Status: 実装済み。** `Hash.sha256` / `sha1` / `sha512` / `md5` と
-> `Hash.hmac_sha256` / `hmac_sha1` / `hmac_sha512` は hex ダイジェストを返す
-> （stdlib §18 参照）。 `Encoding.base64` / `Encoding.hex` / `Encoding.url` /
-> `Encoding.html`（`.encode`/`.decode`）と `Compress.gzip` / `Compress.gunzip`
-> も利用可能（stdlib §16–17 参照）。 JSON は top-level の `JSON` ネームスペース
-> （`JSON.parse` / `JSON.stringify`）— `Encoding.json` は無い。
+### 14.6 `Hash` / `Encoding` / `Compress`
 
-### 14.7 `HTTP`
+`Hash.sha256`/`sha1`/`sha512`/`md5` とその `hmac_*` 系は hex ダイ
+ジェストを返す。 `Encoding.base64`/`hex`/`url`/`html` はそれぞれ
+`.encode`/`.decode` を持つ。 `Compress.gzip`/`gunzip` がデータ系
+namespace を締めくくる。 JSON は独立の top-level `JSON.parse`/
+`JSON.stringify` — `Encoding.json` は無い。 完全リファレンス:
+[`stdlib.ja.md`](stdlib.ja.md) §16 (Encoding)、§17 (Compress)、
+§18 (Hash)。
 
-> **Status: Planned (Tier 1).** Blocking、SSE / WebSocket 含む、
-> TLS は statically link した BoringSSL。 `async` / `await` 無し
-> — 並行はスレッドで。 スケール上限は数千接続。
+### 14.7 `Http`
+
+Blocking なクライアントとサーバ、SSE / WebSocket 含む、TLS は
+statically link した BoringSSL。 `async` / `await` 無し — 並行は
+スレッドで、スケール上限は数千接続。
 
 ```culebra
 # doctest: skip
-res = HTTP.get('https://example.com')
-puts(res.status)              # planned: => 200
+res = Http.get('https://example.com')
+puts(res.status)              # => 200
 
 # サーバ
-HTTP.serve('127.0.0.1', 8080, fn (req) {
-  HTTP.response(200, 'hello')
-})
+srv = Http.server()
+srv.get('/', fn (req) { 'hello' })
+srv.listen('127.0.0.1', 8080)
 ```
+
+streaming・ルーティング・クライアントセッション API:
+[`stdlib.ja.md` §15](stdlib.ja.md)。
 
 ### 14.8 さらに計画中
 
-> **Status: Planned (Tier 2/3).** `Compression` (gzip)、 `Crypto`、
-> `Process` (子プロセス)、 `Sockets` (raw TCP/UDP)。 順序未確定、
-> demand-driven で。
-
-### Why "batteries-included、ティア制"
-
-CLI ツールや小さなサーバを書くのにパッケージマネージャを引っ張り
-出さなくて済むようにしたい。 Tier 1 (Regex / HTTP / Hash+Encoding)
-が日常スクリプトの大半をカバー。 Tier 2/3 は具体ユーザがクリ
-ティカルパスに押し上げたら着手。
+> **Status: Planned (Tier 2/3).** `Crypto` (`Hash` を超える非対称鍵/TLS
+> プリミティブ) と `Sockets` (raw TCP/UDP)。 順序未確定、Ch.0 のティア
+> 方針どおり demand-driven で。
 
 15. Tensor プリミティブ
 -----------------------
 
-### 15.1 構築と算術
+### 15.1 構築・matmul・ブロードキャスト
 
 `Tensor` は組み込みの n 次元配列で、BLAS にルーティングされる
 (macOS は Apple Accelerate、Linux は OpenBLAS)。 格納は F32 で、
-スカラー結果は `Float` として返る。
+スカラー結果は `Float` として返る。 matmul (`dot`) は遅延グラフを
+作り、`Tensor.eval` が単一の BLAS カーネルとして実行する。要素ごと
+の演算は NumPy 同様にブロードキャストする。 完全な API (shape・
+reduction・autograd) は [`stdlib.ja.md` §8](stdlib.ja.md)。
 
 ```culebra
 a = Tensor.from([1.0, 2.0, 3.0])
 b = Tensor.from([10.0, 20.0, 30.0])
 puts((a + b).to_array())      # => [11.0, 22.0, 33.0]
-puts((a * 2.0).to_array())    # => [2.0, 4.0, 6.0]
 puts(a.sum())                 # => 6.0
-```
 
-### 15.2 形状と matmul
-
-```culebra
 m = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
-puts(m.shape())               # => [2, 2]
-
-# matmul (`dot`) は遅延グラフを作る; `Tensor.eval` で BLAS カーネルが走る。
 c = m.dot(m)
 Tensor.eval(c)
 puts(c.to_array())            # => [[7.0, 10.0], [15.0, 22.0]]
 ```
 
-### 15.3 ブロードキャスト
-
-```culebra
-row = Tensor.from([1.0, 2.0, 3.0])
-col = Tensor.from([[10.0], [20.0]])
-puts((row + col).to_array())  # => [[11.0, 12.0, 13.0], [21.0, 22.0, 23.0]]
-```
-
-### 15.4 GPU プリミティブ
+### 15.2 GPU プリミティブ
 
 > **Status: Planned.** CUDA / Metal Shading Language 用のバックエ
 > ンドを別の `Matrix` (または `GTensor`) として用意する計画 —
@@ -1347,13 +1367,10 @@ fn user_count(db) {
 ```
 
 fixture 関数本体内の `defer` は fixture fn が return した瞬間に発火
-してしまう (test 本体実行前) ので、 cleanup には class `drop` を使い
-ます。
-
-複数の test ファイルで共有したい長寿命 state (例: 1 回ロードした
-model) は module top-level に置き、 各 test ファイルで import します。
-モジュールシステムが binding を cache するので、 `import` は常に同一
-インスタンスを返します。
+してしまう (test 本体実行前) ので、 cleanup には class `drop` を
+使います。 複数の test ファイルで共有したい長寿命 state (例: 1 回
+ロードした model) は module top-level に置きます — モジュールシス
+テム (Ch.12) が binding を cache するためです。
 
 **matchers**。 アサーションは matcher 一族を使います — `assert`
 キーワード / builtin は存在しません。 matcher は **3 backend の
@@ -1363,27 +1380,14 @@ global** として bind されており (`puts` / `Math` と同じ立場)、
 
 ```culebra
 # doctest: skip
-assert_true(x)                          # x が truthy
-assert_false(x)                         # x が falsy
 assert_eq(arr.len(), 3)                 # == ; 失敗時に両辺を表示
-assert_ne(status, "error")              # !=
-assert_lt(elapsed, 1.0)                 # <
-assert_le(count, max)                   # <=
-assert_gt(score, 0)                     # >
-assert_ge(items.len(), 1)               # >=
 assert_throws("TypeError", fn() { let _ = 1 + 'b' })
 assert_close(0.1 + 0.2, 0.3, 1e-9)      # |a - b| <= tol
 ```
 
-- `assert_eq` / `assert_ne` / `assert_lt` / `assert_le` / `assert_gt` /
-  `assert_ge` は `==` / `<` / `<=` 演算子と同じ `__eq__` / `__lt__` /
-  `__le__` dispatch を行います — クラスインスタンスでも `assert_eq(p1,
-  p2)` と式 `p1 == p2` は一致します。
-- `assert_throws(kind, fn)` は 0 引数の `fn()` を呼んで throw を検査。
-  組み込みエラーは `kind`、 ユーザの `throw { kind: ..., message: ... }`
-  は `.kind` プロパティを比較。
-- `assert_close(a, b, tol)` は `|a - b| <= tol` を検査。 NaN は失敗扱い
-  (素朴な `>` 検査だと発散計算が silently pass してしまうため)。
+完全な matcher 一覧 (`assert_true`/`false`/`ne`/`lt`/`le`/`gt`/`ge`
+と `__eq__`/`__lt__` dispatch の規則) は
+[`stdlib.ja.md` §13](stdlib.ja.md)。
 
 **production の不変条件**。 テストスイート外で `if (!cond) throw {...}`
 を書くときは `if`/`throw` を直接書きます (Go 流儀、
@@ -1417,24 +1421,15 @@ fail で `1`。
 (1 行 1 JSON object) — agent loop / CI 連携向け:
 
 ```
-{"event":"test_pass","name":"adds_correctly","source":"tests/test_math.cul",
- "stdout":""}
+{"event":"test_pass","name":"adds_correctly","source":"tests/test_math.cul","stdout":""}
 {"event":"test_fail","name":"divides_correctly","kind":"AssertionError",
- "message":"assert_eq failed:\n  left:  3\n  right: 4","line":12,"col":3,
- "source":"tests/test_math.cul",
- "snippet":" 10  @test\n 11  fn divides_correctly() {\n 12>   assert_eq(6/2, 4)\n 13  }\n",
- "stdout":""}
-{"event":"file_error","source":"tests/test_bad.cul","kind":"SyntaxError",
- "message":"..."}
-{"event":"test_list","name":"divides_correctly","source":"tests/test_math.cul"}
-{"event":"list_end","count":42}
+ "message":"assert_eq failed:\n  left:  3\n  right: 4","line":12,"col":3,"stdout":""}
 {"event":"run_end","passed":42,"failed":1,"errored_files":0,"bailed":false}
 ```
 
 JSON モードでは test 内の `puts(...)` は event の `stdout` フィールド
 に capture され NDJSON ストリームに interleave しません。 失敗 event
-には `snippet` が付き、 失敗行を `>` で marker、 前後 2 行の文脈と共に
-含まれます — consumer が file 再読込なしで該当コードを表示できます。
+には `snippet` が付き、 失敗行を `>` で marker した文脈が含まれます。
 
 `just test` 経由の従来 `tests/*.cul` スイート (matcher 使用、`test()`
 呼出なし) は各ファイルを `./build/culebra <f>` / `--jit <f>` /
@@ -1516,34 +1511,21 @@ match / cond の腕、class / trait / enum のメンバ、分配パターン、�
 
 ### エディタ統合
 
-stdin 形式 (`culebra fmt -`) が整形フック。`culebra fmt` は (gofmt/rustfmt と
-同様) 全ファイル整形なので、各統合はバッファ全体を整形し、exit 0 の時だけ結果を
-適用する (parse/安全網エラー時はバッファ不変)。
+stdin 形式 (`culebra fmt -`) が整形フック。各統合はバッファ全体を整形し、
+exit 0 の時だけ結果を適用する (parse/安全網エラー時はバッファ不変)。
 
-**VSCode** — 同梱拡張 (`misc/vscode/`) が document formatting provider を登録する
-ので、`.cul` で **Format Document** と `editor.formatOnSave` がそのまま動く。
-`build-vsix.sh` / `install.sh` で再ビルド・再インストール。
-
-**Zed** — `settings.json` に外部フォーマッタを設定 (Zed は `format_on_save` が
-既定で on なので formatter だけでよい。`.cul` で切るなら `"off"` を明示):
-
-```json
-{
-  "languages": {
-    "Culebra": {
-      "formatter": { "external": { "command": "culebra", "arguments": ["fmt", "-"] } }
-    }
-  }
-}
-```
-
-**Vim/Neovim** — 同梱 `ftplugin` (`misc/vim/cul_ftplugin.vim`) が `:CulebraFmt`
-コマンドを提供 (全体整形・カーソル保持・エラー時不変)。保存時整形は
-`let g:culebra_fmt_autosave = 1`。`gq` / `'formatprg'` には**あえて紐付けない**
-(部分範囲やパース不能断片を空出力で置換して消すため)。
-
-他のエディタも「保存時整形」機構があれば同様にバッファを `culebra fmt -` に
-通せる (exit 0 の時だけ出力を適用)。
+- **VSCode** — 同梱拡張 (`misc/vscode/`) が document formatting provider
+  を登録するので、`.cul` で **Format Document** と `editor.formatOnSave`
+  がそのまま動く (`build-vsix.sh` / `install.sh` で再ビルド・再インストール)。
+- **Zed** — `settings.json` の `"languages": { "Culebra": { ... } }` に
+  `"formatter": { "external": { "command": "culebra", "arguments": ["fmt", "-"] } }`
+  を追加。
+- **Vim/Neovim** — 同梱 `ftplugin` が `:CulebraFmt` コマンドを提供 (全体
+  整形・カーソル保持・エラー時不変)。保存時整形は
+  `let g:culebra_fmt_autosave = 1`。`gq` / `'formatprg'` には**あえて紐付
+  けない** (パース不能な部分範囲を空出力で置換してしまうため)。
+- 他のエディタも「保存時整形」機構があれば同様にバッファを
+  `culebra fmt -` に通せる。
 
 19. AOT バイナリビルド
 ----------------------
@@ -1570,7 +1552,7 @@ otool -L ./out                            # Accelerate も LLVM も無し
 ```
 
 ランタイムアーカイブのビルド、sysroot の用意、クロスコンパイル全
-ワークフローの詳細は [`binary_build.ja.md`](binary_build.ja.md)。
+ワークフローの詳細は [`deployment.ja.md`](deployment.ja.md)。
 
 ### Why tree-shaking が効くか
 
@@ -1602,7 +1584,7 @@ int main() {
 `culebra::Error` 例外として throw され、元の値と行/列情報を持つ。
 
 環境カスタマイズ、値変換、JIT ホスト、AOT-archive 埋め込み経路
-(`libculebra_rt.a`) の詳細は [`embedding.ja.md`](embedding.ja.md)。
+(`libculebra_rt.a`) の詳細は [`deployment.ja.md`](deployment.ja.md)。
 
 ---
 
@@ -1612,5 +1594,6 @@ int main() {
 - 厳密な文法と評価規則: [`language.ja.md`](language.ja.md)
 - API リファレンス: [`stdlib.ja.md`](stdlib.ja.md)
 - 実装の内部詳細: [`internals.ja.md`](internals.ja.md)
+- バイナリビルド・埋め込み・ラッピング: [`deployment.ja.md`](deployment.ja.md)
 - 大きめの実例: [`benchmarks/microgpt/`](../benchmarks/microgpt/)
 - インタラクティブな REPL: `./build/culebra --shell`

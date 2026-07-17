@@ -5,18 +5,18 @@ culebra 側 IF を固定したままバックエンド（raylib / Filament 等�
 
 > 改訂履歴: 初版＝SceneKit からの素朴抽出。第2版（本版）＝設計レビュー会議の指摘を反映
 > （保持土台化 / マテリアル PBR-intent 化 / drop / 座標系固定 / capability / 動的メッシュ）。
-> バックエンド選定で不採用にした Qt は [`record.ja.md`](record.ja.md) を参照。
+> バックエンド選定で不採用にした Qt は [`_history.ja.md`](_history.ja.md) を参照。
 
 > 状態（2026-06-28）: この facade は**実装・出荷済み**（master `1712c59`、raylib を culebra
 > core に opt-in 統合する `CULEBRA_ENABLE_GRAPHICS`、AOT usage-gated、`culebra build suzuka.cul`
-> で単体バイナリ）。本書は**設計の根拠の記録**であり、以下の具体シグネチャは実装前のスケッチ。
-> 出荷 API はこれと異なる: `wrap.h` が kwargs デフォルト/タプル引数を取れないため、**fluent setter +
-> 平坦スカラ + 色 0..255** に確定した（例: `make_material(color, metallic:, …)` でなく
-> `view.material_tex_pbr(tex, r,g,b, metallic, roughness)` / `add_box(w,h,d).material(m).move(x,y,z)`
-> / `view.camera(ex,ey,ez, tx,ty,tz, …)`）。実 API は `examples/graphics/suzuka.cul` を正とする。
-> 切替機構も「バックエンドごとに `culebra wrap` 拡張で別バイナリ」案から **core への opt-in ビルド**へ
-> 変更。設計の根拠（renderer 非依存 / 保持土台 / PBR-intent / 座標系固定 / core⇔optional の線引き /
-> backend 射程）は有効。シグネチャ表の出荷 API への全面整合は graphics 実装セッションに委ねる。
+> で単体バイナリ）。本書は**設計の根拠の記録**であり、以下の具体シグネチャは実装前のスケッチで
+> 出荷 API そのものではない。`wrap.h` が kwargs デフォルト/タプル引数を取れないため、出荷 API は
+> **fluent setter + 平坦スカラ + 色 0..255** に確定した（例: `make_material(color, metallic:, …)`
+> でなく `view.material_tex_pbr(tex, r,g,b, metallic, roughness)` / `add_box(w,h,d).material(m).move(x,y,z)`
+> / `view.camera(ex,ey,ez, tx,ty,tz, …)`） — 正の API は `examples/graphics/suzuka.cul` を参照。
+> 切替機構も、バックエンドごとに `culebra wrap` 拡張で別バイナリを作る案から **core への opt-in
+> ビルド**へ変更した。設計の根拠自体（renderer 非依存 / 保持土台 / PBR-intent / 座標系固定 /
+> core⇔optional の線引き / backend 射程）は有効。
 
 ## 要件
 

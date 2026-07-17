@@ -4,7 +4,7 @@ Culebra Internals
 This document is the developer-facing companion to the user-facing
 guide. It records the *how* (implementation strategy, library choices,
 internal data structures). Designs that were considered and not
-adopted live in [`record.md`](record.md), not here. Every doc is
+adopted live in [`_history.md`](_history.md), not here. Every doc is
 bilingual; the Japanese mirror of this file is
 [`internals.ja.md`](internals.ja.md) and must be kept in sync with it.
 
@@ -23,8 +23,11 @@ Contents
 10. [Module system](#10-module-system)
 11. [Build & vendor](#11-build--vendor)
 12. [Test runner](#12-test-runner)
+13. [Memory model: RC, GC, and deterministic drop](#13-memory-model-rc-gc-and-deterministic-drop)
+14. [JIT GC backstop](#14-jit-gc-backstop)
+15. [JIT ownership: structural leak-freedom](#15-jit-ownership-structural-leak-freedom)
 
-Rejected and withdrawn designs are collected in [`record.md`](record.md).
+Rejected and withdrawn designs are collected in [`_history.md`](_history.md).
 
 ---
 
@@ -64,6 +67,10 @@ Header roots:
 - `include/aot.h` — AOT compile to LLVM `.o`, link via system cc.
 - `include/runtime/` — runtime helpers visible from JIT and AOT.
 
+Memory management (reference counting, the tracing backstop, and the
+JIT's structural leak-freedom discipline) is a cross-cutting concern
+covered on its own in Ch.13–15.
+
 2. Parser (cpp-peglib)
 ----------------------
 
@@ -101,9 +108,12 @@ built-in types. Boxing happens via `shared_ptr` for the four reference
 types (`String`, `Array`, `Object`, `Function`); the four scalars are
 in-line.
 
-Refcount is `shared_ptr`'s default. A small cycle GC sweeps Objects
-that hold mutual references; it is invoked opportunistically rather
-than scheduled, since most programs do not generate cycles.
+Refcounting is `shared_ptr`'s default — automatic and exact, so leaks
+and double-frees cannot occur by construction on this backend. A
+precise cycle collector (`InterpGC`) reclaims reference cycles that RC
+alone cannot; see Ch.13 for the full RC/GC/drop model shared with the
+JIT, and Ch.13 §"Rooting" for how `InterpGC` finds its roots without
+scanning the C++ stack.
 
 ### Scoping
 
@@ -176,6 +186,13 @@ inlined. The pattern is matched on the AST shape after the parser
 runs; the JIT then emits a tight loop in IR. The interpreter does not
 fuse; its iterator chain implementation is also lazy but allocates a
 small wrapper per stage.
+
+Unlike the interpreter, JIT-generated code manages heap values (Object,
+Array, Func, Set, Tensor, Cell, String) through hand-emitted retain/
+release IR rather than `shared_ptr`. That discipline — how ownership is
+tracked, how the tracing backstop reclaims what RC cannot, and how
+leaks/double-frees were made structurally impossible rather than
+patched site by site — is the subject of Ch.13–15.
 
 5. AOT codegen
 --------------
@@ -264,8 +281,11 @@ Invariant: every `TAG_STRING` is header-backed. The only producers are
 never branch on origin. Borrowed shape names surfaced as String values
 (object keys, `class` / variant / enum names) go through `_intern_str`
 to gain a header. A debug `assert` in `_str_len` catches a header-less
-pointer mis-tagged as `TAG_STRING`. Folding strings into the cycle GC
-(they currently leak) is the header's natural next use.
+pointer mis-tagged as `TAG_STRING`.
+
+`String`/`StringView` carry no refcount — they are reclaimed by the
+tracing backstop, not by RC release-to-zero (Ch.13–14 cover why and
+how; see Ch.13's "traced-only" note).
 
 ### Planned: StringView, StringLike, lazy graphemes
 
@@ -515,3 +535,563 @@ The doctest extractor is the most interesting internal: it parses
 the markdown for fenced blocks tagged `culebra`, scans block-leading
 `# doctest:` lines for directives, and assembles expected stdout
 from `# =>` and `# => |` markers.
+
+13. Memory model: RC, GC, and deterministic drop
+-------------------------------------------------
+
+Culebra's memory management is **RC-primary + tracing-backstop** on
+both backends. This chapter states how reference counting, the
+tracing collector, and deterministic `drop` behave; Ch.14 is the JIT
+collector's implementation and Ch.15 is how the JIT keeps RC placement
+correct in the first place. Where any of the three disagree, this
+chapter wins.
+
+### 13.1 Two layers, both permanent
+
+- **RC owns memory and `drop` timing.** Interp: values are
+  `shared_ptr` (automatic, exact). JIT: values are tagged `i64`; RC
+  placement follows the ownership discipline of Ch.15 — the remaining
+  bare retain/release sites are audited carve-outs counted by the
+  `tools/check_rc_discipline.sh` ratchet. Release-to-zero frees
+  promptly and fires `drop`, which is what makes `drop` deterministic.
+- **Tracing reclaims what RC cannot**: reference cycles, and anything
+  an RC placement bug leaks. JIT: a conservative mark-sweep over a
+  registry heap (Ch.14). Interp: `InterpGC`, a precise CPython-style
+  `gc_refs` collector.
+
+Neither layer is retirable. RC alone is never leak-free — cycles keep
+each other's counts positive forever, and hand-placement bugs leak
+(even Swift's compiler-perfect ARC leaks retain cycles routinely, the
+standard counterexample to "systematic RC suffices"). Tracing alone
+destroys deterministic `drop` — a tracer discovers death only at
+collect time, so `drop` fires late, unordered, non-deterministically
+(the Go/Java finalizer model), and deterministic finalization under
+shared ownership requires full reference counting. So the tracer is a
+**permanent, load-bearing component**, not a temporary crutch; the open
+question is only how to stop it from *silently masking* RC bugs
+(§13.4–13.5, Ch.15 §15.2).
+
+### 13.2 Deterministic `drop` — the four-path union
+
+`drop` fires from four paths, **deduped to exactly-once by a per-
+object `dropped` flag** (JIT: `JitObject::dropped`; interp:
+`OrderedSymbolMap::dropped`). The flag, not the call sites, is the
+invariant:
+
+| path | trigger | mechanism |
+|---|---|---|
+| (a) release-to-zero | last reference released | JIT `_culebra_value_release_impl` fires drop first, then tears down proto/slots/sidecars. Interp: the prop-map `shared_ptr` deleter → `_call_drop_if_present`. |
+| (b) explicit `obj.drop()` | user call | object stays alive; the flag just prevents a second fire. |
+| (c) scope exit | owned-region resolution | both backends run a localized Bacon-Rajan trial deletion over the scope's drop-bearing objects: unreachable-from-outside fires now (cycle members included); externally reachable survives, compacted to the parent scope. |
+| (d) GC backstop finalize | collect finds a dead set | a **PEP-442-style pre-sweep pass** fires the dead set's `drop`s while the structure is still intact; sweep then reclaims *memory only*. **Cycle members DO fire `drop`.** |
+
+Ordering: LIFO within a scope; defers run before slot release on every
+exit path; parent-before-child for the RC cascade.
+
+A few load-bearing subtleties: firing `drop` **pins the refcount to a
+sentinel during the body and restores the entry count after**, so an
+unbounded re-entrant release (a `drop` body nulling its own cycle
+member) is absorbed — *restoring* rather than zeroing, because paths
+(b)/(c)/(d) arrive with live references still held. `throw` deliberately
+does **not** retain the payload — the carrier takes over the thrower's
+`+1`; retaining there would reintroduce a leak. Top-level bindings
+intentionally never fire `drop` at program exit (§13.6).
+
+### 13.3 What is refcounted, and what is traced-only
+
+Refcounted (refcount at struct offset 0, uniformly): `Func` (closure),
+`Array`, `Tuple`, `Object`, `Tensor`, `Set`, plus internal capture
+`Cell`s. Nil/Bool/Long/Float are immediate values, never refcounted.
+
+**`String`/`StringView` carry no refcount** — retain/release are
+no-ops on these tags; they are reclaimed **only** by the tracing
+backstop. Until 2026-07 this was a genuine permanent leak (JIT strings
+were `malloc`ed with no reclaimer at all). Two barriers made strings
+visible to the collector: owner-edge tracking (a `StringView` roots the
+`String` it borrows from) and routing transient JIT string bytes
+through a per-Runtime byte slab the collector can enumerate. A dead
+string is now reclaimed at the next collect like any other traced-only
+object — at the cost of being backstop-only rather than RC-reclaimed
+(acceptable: strings are typically short-lived or immortal-interned,
+not cycle-prone). The interp has no traced-only concept — every interp
+heap value, including `std::string`, is an ordinary `shared_ptr`
+object.
+
+### 13.4 Rooting — the two backends do it differently
+
+- **JIT (shipping default):** a conservative scan of the entire
+  machine stack roots every in-flight `JitValue` regardless of
+  refcount — see Ch.14 §14.3 for the scan mechanism and its
+  correctness argument. An alternative `gc_refs` mode
+  (`CULEBRA_GC_REFS=1`, off by default) is the CPython algorithm
+  instead (refcount minus in-heap edges, no stack scan), whose
+  soundness is exactly as good as the RC accounting. A diagnostic
+  classifier built on `gc_refs` (§13.5) sorts conservative-dead-but-
+  gc_refs-retained objects into *inflated-RC* (a definite RC placement
+  leak) vs *transitively-held* (a cycle) — a zero-false-positive RC-leak
+  detector.
+- **Interp:** no C++ stack scan at all. Safety is *scheduling*:
+  collection runs only at statement boundaries, with roots hand-walked
+  from the current env chain plus `FrameRootGuard` entries.
+
+Consequence: "rooting is independent of any single retain" is
+**JIT-only**, and under `gc_refs` rooting is only as sound as the RC
+accounting — an early-but-balanced release is a use-after-free window
+that the conservative scan silently absorbs (by rooting strictly more)
+but `gc_refs` does not. This is why the conservative scan is not simply
+replaced by `gc_refs`; see Ch.15 §15.2 for the consequence this has for
+the ownership design.
+
+### 13.5 Detecting RC bugs without relying on coverage
+
+A placement bug historically just meant "the backstop quietly reclaims
+it, nobody ever knows." A debug/CI-only detector closes that blind
+spot: `CULEBRA_GC_LEAK_ABORT=1` captures each object's allocation
+backtrace and, at one quiescent safepoint per program (JIT teardown,
+after the top level returns but while module/namespace roots are still
+wired — the only point where "inflated RC and dead" unambiguously means
+"leaked"), the inflated-RC classifier aborts with the object's birth
+site. This runs as a standing CI phase over the whole difftest corpus
+(`tools/difftest/leak_abort_suite.sh`), throw paths included, with a
+cycle-only allowlist. It is a no-LTO/debug tool (LTO's altered stack
+layout under-reports); production keeps quietly reclaiming, an accepted
+trade (a crash would itself be a DoS vector).
+
+### 13.6 Accepted `drop`-timing carve-outs
+
+Three cases where `drop` is not *exactly* deterministic are accepted as
+documented language semantics — matching the Python/Swift norm, and
+each degrades only *timing*, never actual reclamation: (1) a scope
+resolving an extreme number of drop-bearing objects at once
+(`kNodeBudget` overflow) defers the excess to the backstop; (2)
+top-level bindings never fire `drop` at program exit, by design, on
+both backends — stdlib resources (`File`, sockets) still flush/close on
+exit via C++ RAII regardless, so only a user-defined `drop`'s *extra*
+side effect at top-level scope is affected, and `defer` / explicit
+`.drop()` / `with` remain available there; (3) a self-capturing
+closure's cycle fires one collect later on the interpreter than on the
+JIT (drop *count* is symmetric, *timing* differs by one collect).
+
+Every mainstream RC/GC language ships equivalent carve-outs (Python's
+module-level `__del__` is not guaranteed at interpreter exit; Go's
+`defer` does not run on `os.Exit`; C++ static-dtor order is not
+guaranteed under `_exit`/signal/`abort`) — this is "deterministic drop
+as strong as Python/Swift," not "zero carve-out," and closing them
+further isn't pursued because the standing `defer`/`with`/`.drop()`
+escape hatches already cover what it would buy.
+
+14. JIT GC backstop
+--------------------
+
+The JIT's tracing collector is a **conservative, non-moving, mark-
+sweep backstop** running alongside the kept manual RC (Ch.13) — not a
+replacement for it. This chapter is the collector's implementation;
+Ch.13 covers the RC/drop model it backstops, Ch.15 covers how RC
+placement is kept correct in the first place.
+
+### 14.1 Why a backstop
+
+Manual RC in generated code leaks (a missed release) and double-frees
+(a release of an already-consumed value) — getting placement right on
+every control-flow path (fall-through, `break`, `continue`, early
+`return`, exception unwind) by hand is hard, and without a backstop a
+missed release or a cycle is *permanent* (a JIT microgpt run once grew
+to ~5 GB RSS this way). Pure tracing (no RC at all) was considered and
+rejected for the reason given in §13.1: deterministic `drop` requires
+full RC. So RC stays primary, and the collector's only job is
+reclaiming the residue RC cannot (cycles, missed-release leaks).
+
+### 14.2 Object model and heap
+
+GC-tracked structs (`JitObject`, `JitArray`, `JitCell`, `JitClosure`,
+`JitSet`, `JitTensor`) keep `int64_t refcount` at struct offset 0 (the
+existing retain/release IR is undisturbed). The collector's own
+per-object metadata (mark bit, type tag, generation) lives in a
+**registry** (an address → metadata map) rather than an in-object
+header — the smaller change, since it revives the retain/release IR
+verbatim instead of rewriting every codegen emit site.
+
+Variable-length buffers (`JitArray::items`, `JitObject::slots`, closure
+captures) stay C++-owned, not GC-allocated: they are released by the
+struct's ordinary C++ destructor at sweep, reached during marking via
+`enumerate_children`. This keeps the collector simple and sweep
+cleanup automatic.
+
+The registry started as a `std::unordered_map`, whose per-object node
+allocation was measured as the entire alloc-churn overhead on
+object/array-heavy workloads (+12–21%). It was replaced with an
+open-addressing flat hash map (no per-entry allocation, tombstone
+reuse), recovering the overhead. A size-class/region allocator (the
+Go/JSC model) is the next lever *if* allocation throughput is later
+measured to need it — not pursued without measurement.
+
+### 14.3 Root finding (conservative)
+
+At collection time, any machine word that, read as a pointer, lands on
+a valid object start is a candidate root. Sources: (1) the machine
+stack of every mutator thread, from the collection point's SP up to
+the thread's stack base — covering both JIT-generated and C++
+runtime-helper frames, so a `JitValue` held in any C++ builtin local is
+rooted automatically; (2) callee-saved registers, flushed to the stack
+at collection entry; (3) explicit global roots registered with the
+collector (namespace table, module caches, REPL globals, exception
+carriers, the defer stack).
+
+**Correctness argument:** any GC pointer live across a call that can
+trigger collection must, by the platform calling convention, be either
+spilled to the stack or held in a callee-saved register before the
+call. At the moment collection runs — deep inside the allocator — every
+such value is therefore found by (1)+(2). This is the same argument
+that makes Boehm/Ruby conservative GC sound under an optimizing
+compiler.
+
+A `JitValue` is `{tag, data}`; the scanner does not consult the tag —
+it tests every 8-byte word, so a heap pointer is found regardless of
+tag. A non-pointer scalar that happens to alias a heap address is a
+*false* root (bounded over-retention, not a correctness problem).
+`data` always points to the object base (no interior pointers), which
+keeps validation simple. One detail that cost real debug time: root
+scanning must start at the **stack pointer**, not the frame pointer —
+locals/spills below the frame pointer would otherwise be missed under
+`-O2` and higher.
+
+### 14.4 Collect: mark and sweep
+
+**Mark:** from the root set, trace transitively; for each live object
+set its mark bit and push its children (via `enumerate_children`) onto
+the mark stack, to a fixpoint. Conservative roots are pinned — nothing
+moves, so there's nothing to update.
+
+**Sweep:** walk the registry; for each unmarked object, run its C++
+destructor exactly once and reclaim the slot. A full mark-sweep from
+real roots reclaims any unreachable object regardless of stale
+bookkeeping — the property the old, non-tracing collector lacked, and
+the reason leaks used to be permanent.
+
+Finalization (the pre-sweep `drop` pass) is covered in Ch.13 §13.2
+path (d); it belongs to the drop model, not the sweep mechanism, and
+is not duplicated here.
+
+### 14.5 Generational layer (future, not correctness-relevant)
+
+The current mark-sweep is non-generational and correct on its own. A
+generational layer (young/old, minor collects tracing young + a
+remembered set) is a throughput optimization to add only once the base
+is measured to need it. Its one hard requirement, noted here because
+it constrains any future implementation, is a **write barrier**: every
+store of a heap value into an old object's field must record the old
+object in a remembered set, or a minor collect can free a live young
+object reachable only via that old→young edge.
+
+### 14.6 Safety devices
+
+- **`CULEBRA_GC_STRESS=1`** collects on every allocation, surfacing
+  rooting/marking bugs deterministically instead of flakily (the
+  SpiderMonkey `gcZeal` model); the suite runs green under it.
+- **`GC.stat()`** exposes live-object/heap-byte counts.
+- **Leak regression tests** (`tests/test_gc_no_leak.cul`) are the JIT
+  acceptance gate, mirrored from the interpreter's green baseline.
+- **Debug fill** poisons freed slots; use-after-free asserts instead of
+  silently reading garbage.
+- **Heap verify** (debug builds) walks all live objects and checks
+  every child pointer resolves to a valid heap object.
+
+The GC's own C++ implementation follows the same RAII discipline it
+enforces on the runtime: teardown is a struct destructor, stop-the-
+world coordination is a scope guard, global-root registration is
+scope-lifetime.
+
+### 14.7 Cross-backend: the interpreter's precise collector
+
+The interpreter's `InterpGC` is precise (CPython-style `gc_refs`
+subtraction + BFS + clear), not conservative — refcounts are exact
+`shared_ptr` counts, so it needs no fallback stack scan. It tracks
+Array backing vectors, captured Environments, Object property maps,
+and Tuple/Set members as cycle nodes, so the same cycle shapes the JIT
+backstop reclaims are reclaimed on the interpreter, keeping the two
+backends behaviorally symmetric.
+
+Being precise means `InterpGC` is correct **only if every live value is
+reachable from a registered root** — two classes of stack-only
+liveness are rooted explicitly, or a value is swept mid-program
+(surfacing as a spurious `NameError`): (1) active env chains — collect
+is deferred to the next statement boundary, and at that safe point live
+envs are the current statement's `env` plus every caller's env still on
+the C++ call stack, each pushed via an RAII `FrameRootGuard`; (2)
+in-flight C++-stack temporaries — deferring collect to the statement
+boundary (rather than the allocation point) also covers a freshly built
+self-capturing closure held only as a C++ return value in transit, since
+by the next boundary it is already stored into a rooted env.
+
+Objects crossing the interp/JIT boundary (a `Tensor`'s `impl` is a
+`shared_ptr<TensorImpl>`) keep their existing handle unchanged by
+either collector — nothing moves, so raw pointers handed to C++
+interop stay valid across a collect.
+
+### 14.8 Why not a precise/moving collector
+
+A moving collector was considered and rejected, not deferred, because
+Culebra fails two of its hard prerequisites today: (1) **precise
+rooting** — a conservative (maybe-pointer) root cannot be updated when
+its referent moves, so moving requires precise roots first; (2) **no
+raw pointers escaping to GC-uncooperative code** — Culebra hands raw
+pointers to C++ for Tensor and interpreter interop, and the tagged
+`JitValue {tag, data}` representation stuffs pointers into integers,
+which LLVM Statepoints cannot track. This is the same reason CPython,
+Lua, and Ruby's default GC stay non-moving. The throughput lever moving
+*uniquely* buys — compaction, collection cost proportional to
+survivors — is second-order for Culebra today; a size-class/Immix-style
+bump-region allocator (§14.2) gets most of the non-moving throughput
+without paying the rooting/interop redesign cost. Revisit only if
+fragmentation is measured to be a real cost, or if raw-pointer interop
+is redesigned behind handles/pinning.
+
+### 14.9 Invariants
+
+1. Manual RC is kept and owns memory + deterministic `drop`; the
+   collector is a backstop, never a replacement. Struct offset 0 stays
+   `int64_t refcount`; collector metadata lives in the registry.
+2. **Soundness (unconditional):** a collection never frees an object
+   reachable from a root or another live object.
+3. **Completeness is best-effort, not exact:** a conservative collect
+   may over-retain an unreachable object when a stale stack/register
+   word looks like a pointer to it — safe, bounded, expected. A
+   `collect_precise(roots)` entry (explicit roots, no stack scan)
+   exists for tests that need the exact reclaimed set.
+4. Sweep runs each dead object's C++ destructor exactly once.
+5. (If/when generational lands) every old→young store is recorded by
+   the write barrier before the next minor collect.
+6. The full suite is green under `CULEBRA_GC_STRESS=1`.
+
+15. JIT ownership: structural leak-freedom
+--------------------------------------------
+
+Ch.13–14 describe the RC/drop model and the backstop collector; this
+chapter is the standing design for *how the JIT keeps RC placement
+correct in the first place* — making leaks and double-frees in
+generated code structurally impossible rather than a class of bug
+fixed one call site at a time.
+
+### 15.1 The rule
+
+**Leaks and double-frees must be prevented by construction — the way
+RAII (C++) and ownership/`Drop` (Rust) prevent them — not patched case
+by case.** Hunting one leaking codegen site at a time is explicitly not
+the strategy: every such point fix leaves the next un-audited path
+exposed. New codegen that produces or consumes a heap value uses the
+ownership layer below; a bare `emit_value_retain`/`emit_value_release`
+in a *new* code path is a design smell to justify in review or,
+better, refactor away.
+
+Only the JIT has this problem — the interpreter's `shared_ptr` values
+already make leaks and double-frees impossible by construction. The
+JIT abandoned exact RC for hand-emitted retain/release (to avoid
+`shared_ptr` atomic-refcount overhead) without originally pairing it
+with either a rigorously enforced convention or a tracing backstop.
+This chapter is that convention; Ch.14 is the backstop.
+
+### 15.2 Ownership and rooting are different jobs
+
+A refcount silently does two independent jobs, and conflating them is
+what makes naive "this retain looks redundant, remove it" fixes crash:
+(1) **ownership/release** decides *when* an object is freed
+(release-to-zero, which also fires `drop`); (2) **rooting/liveness**
+decides *what stays alive across a collect*.
+
+**Rooting is already guaranteed independently of any single retain**,
+by both shipping collectors (Ch.13 §13.4, Ch.14 §14.3) — a native
+frame's `+1` is itself a rooting edge, so an in-flight temporary is a
+root by construction, provided RC accounting is accurate (which is
+exactly what this chapter's discipline establishes). So the
+precondition for removing a "redundant-looking" retain is an
+accounting proof — a refcount trace of the object's whole economy plus
+the full test gate — never new rooting machinery.
+
+A standing diagnostic makes the two failure modes distinguishable:
+`CULEBRA_GC_NEVER=1` disables every collect; a crash that **survives**
+it is a pure ownership bug (an over-release), one that disappears was a
+rooting gap. Every crash investigated this way has turned out to be
+the former — rooting has not been the source of a real bug since both
+collectors shipped.
+
+### 15.3 Prior art
+
+The design synthesizes established RC/ownership models:
+
+| System | What we take |
+|---|---|
+| Rust (affine ownership, `Drop`) | move-or-drop as the value discipline; a borrow is never freed |
+| C++ RAII | the implementation vehicle — a handle whose destructor emits the release, correct across early-returns/exceptions |
+| Swift ARC | *derive* retain/release placement from a uniform convention rather than hand-placing it |
+| Perceus (Koka) | precise, deterministic-drop RC as the closest structural match |
+| Nim ORC | validates "RC + cycle backstop" as a shipping combination |
+| MLIR/Swift SIL ownership | the end state to aim at — ownership as a checked IR property, not a comment convention |
+
+None fits wholesale — no borrow checker in codegen, and Culebra lowers
+a dynamic AST rather than a functional IR with whole-program inference
+— but the converged shape (**the compiler derives RC placement from a
+uniform convention; nobody hand-writes retain/release**) is what §15.4
+implements via C++ RAII handles over LLVM IR.
+
+### 15.4 The design, layer by layer
+
+Each layer removes one way to leak; together, a leak requires breaking
+a C++ type/RAII invariant — a compile error, not a silent runtime leak.
+
+**Uniform convention.** `compile(expr)` returns a `+1`-owned value for
+every expression node. Parameters/receivers are borrowed (`+0`): the
+caller retains before the call and the callee consumes the ref it's
+handed. A value stored in a scope slot is owned by that slot; a `Cell`
+does not retain on store, so the caller must own the ref it hands in.
+
+**`Owned` — the handle for a transient `+1`.** A move-only RAII handle
+(`Owned { JIT*, llvm::Value*, bool consumed }`) exposes `.borrow()`
+(read without consuming), `.consume()` (hand the `+1` onward — into a
+slot, a call, a return — and mark the handle spent; a **double-consume
+is a codegen-time abort**, turning that bug class into a build failure
+rather than a double-free), and `.drop()` (emit the release
+immediately, for a value that dies rather than being handed on, since a
+scope-exit destructor would place the release too late). The
+destructor releases if the handle is still owned when it goes out of
+scope. `Owned` only covers **straight-line temporaries** — a value
+living across a loop iteration, or consumed on one control-flow arm and
+released on another, needs the next layer.
+
+**Scope slots own escaping values.** A value that must outlive the
+current straight-line region is `.consume()`d into a scope slot; the
+existing scope-unwind machinery releases it on **every** exit path —
+fall-through, `break`/`continue`, early `return`, and exception unwind,
+the last via a per-region cleanup landingpad (dead-code-eliminated when
+the region can't throw) — one mechanism instead of a bespoke release
+per site. This closed a real throw-path leak class: a scope's owned
+locals, and their `drop()`, used to simply never run on `throw`. It
+covers every scope-like region: lexical scopes, loop/match/try bodies,
+the `for` iterable scope, and the function frame itself.
+
+**Borrows can't be released.** A borrowed value is only ever touched
+through `.borrow()` — no API both borrows and releases, so "released a
+borrowed operand" is unrepresentable.
+
+**Rooting is the collector's job, not the refcount's.** Per §15.2, no
+scoped-pin/shadow-stack machinery is needed to keep in-flight
+temporaries alive across a collect — both shipping collectors already
+guarantee that. `Owned`/slot ownership is purely about *release
+timing*.
+
+**Cycles are swept, not counted.** Reference cycles are out of scope
+for any RC discipline (Rust's `Rc` has the identical gap); the
+mark-sweep backstop (Ch.14) reclaims cycles and any residue. With
+ownership correct, the backstop is non-load-bearing in the steady
+state — rare, not per-step — which is the performance point of doing
+this at all.
+
+**Helper ownership contracts.** Every codegen-owned `+1` live across a
+may-throw runtime call has exactly one releaser on the unwind edge,
+drawn from a closed set of contracts:
+
+| Contract | Mechanism | Used for |
+|---|---|---|
+| Caller-cleans | `ThrowGuard`, a per-region RAII cleanup pad, eliminated when the region can't throw | builtin-method receivers/args, `compile_call`'s callee, the assignment lvalue, the UFCS callee |
+| Callee-cleans-on-direct-throw | a guard inside the helper, armed only after user dispatch declines | operator entries, index/property-get under `own_receiver`, the not-a-function edge |
+| Callee-consumes-on-every-exit | an owned-arg handle declared at entry, releasing on normal return *and* unwind | native method endpoints, HOF accumulators and callbacks |
+| Invoker-cleans | invoker retains; callee frame releases on normal return; invoker's guard releases iff the callee throws | every user-dispatch window (`__op__`/`eq`/`hash`/`cmp`/`__index__`/getters) |
+| Transfer | return the incoming `+1` as the result, or hand it into a capture cell/slot | iter-self methods, lazy-combinator capture cells |
+
+Two contracts may never cover the same edge (two cleaners on one value
+is a double-free); the mutual exclusion is always "user dispatch
+declined" for helper guards and "the owner is entered" for consumed
+values.
+
+**The automatic unwind-temp window.** `Owned` releases through a C++
+destructor, which a *runtime* LLVM-level throw cannot run — so
+historically, any codegen-owned `+1` live across a may-throw call
+leaked unless someone hand-placed a guard, and no corpus spelled every
+such shape. Instead, the ownership layer now owns the unwind edge by
+construction: every live `Owned` is registered with the JIT;
+`emit_call` — the one point where a may-throw call gets its unwind
+edge — spills every live, uncovered `Owned` into a per-function pool
+slot for the duration of that call, and every cleanup pad releases the
+pool first. A value already covered by a helper contract is declared
+`UnwindCovered` and skipped, avoiding a double-free.
+`CULEBRA_JIT_NO_UNWIND_TEMPS=1` disables it as a diagnostic twin to
+`CULEBRA_GC_NEVER`.
+
+**Block-pinned raws.** The last escape hatch was the moment a `+1` left
+its handle: `consume()` used to return a bare `llvm::Value*` that could
+cross basic-block boundaries with no layer tracking it — every recent
+leak in practice was this shape. The invariant: a bare `+1` may only be
+used in the basic block where it was consumed, which is sound and
+complete because `emit_call` turns every may-throw call into an
+`invoke` that terminates the current block — same block implies no
+unwind edge ran while the value was bare. `consume()` now returns a
+`Pinned` token recording its pin block; using it outside that block is
+a codegen-time abort in every build mode, caught the first time the
+pattern is *compiled* since the difftest corpus compiles nearly every
+construct. `OwnedPhi` is the checked construct all `%Value` phis are
+built through (each incoming declared and consumed in its own arm
+block). `consume_unchecked()` is a justified, ratchet-counted escape
+hatch for the handful of shapes that genuinely cross a block boundary
+(mutually exclusive dispatch arms, a crossing already owned by a scope
+slot, the prologue transfer into `declare_local`). The `compile_*`
+return seam is typed to match: every `compile_*` helper returns
+`Owned` (or an empty handle on decline), so a bare `+1` never crosses a
+`compile_*` C++ return.
+
+### 15.5 Invariants
+
+If these hold, a leak requires breaking a C++ type/RAII invariant (a
+build-time failure), not a runtime accident:
+
+1. Every `+1` transient value is held in an `Owned` or immediately
+   consumed.
+2. `Owned` is consumed exactly once **or** dropped exactly once — never
+   both, never neither (move-only + destructor + double-consume abort).
+3. Every escaping value is consumed into exactly one scope slot; scope
+   unwind releases every slot on every exit path.
+4. Borrowed values are never released.
+5. Rooting is provided by the GC layer independently of ownership
+   refcounts.
+6. Cycles and residue are reclaimed by the backstop; the backstop is
+   not relied on for steady-state memory.
+7. Every `Owned` `+1` live across a may-throw call has exactly one
+   releaser on the unwind edge — the automatic window by default, or a
+   helper contract declared via `UnwindCovered` — never both.
+8. A bare `+1` exists only inside the basic block where it was
+   consumed (`Pinned`); every `%Value` phi is built through `OwnedPhi`;
+   a deliberate crossing is a `consume_unchecked` site with a declared
+   releaser.
+9. No `compile_*` helper returns a bare `llvm::Value*` — a `+1` crosses
+   a compile-layer C++ return only inside an `Owned`.
+
+Corollary: no correct codegen path contains a bare, hand-placed
+`retain`/`release`. Remaining bare calls are audited migration debt,
+counted (never allowed to grow) by `tools/check_rc_discipline.sh`, and
+fall into a few legitimate categories the `Owned` layer isn't meant to
+cover: per-*iteration* releases inside an emitted loop body, slot/scope
+primitives below the `Owned` layer, values threaded as a function
+parameter down a chain rather than held as a straight-line temporary,
+and branch-spanning consume-or-release pairs where one arm consumes and
+a different arm releases the same value.
+
+### 15.6 Constraints specific to Culebra
+
+- **Tagged `i64` values, not pointers.** Root/child enumeration reads
+  the tag to decide whether `data` is a heap pointer; this, plus raw
+  pointers escaping to Tensor/interpreter interop, is why LLVM
+  Statepoints were rejected as the rooting mechanism (Ch.14 §14.8) — a
+  value-ABI rewrite to support them would dwarf the ownership work.
+- **The two backends must stay symmetric.** An ownership change is
+  JIT-internal and must not alter observable behavior, error messages,
+  or check timing/order versus the interpreter
+  ([[feedback_check_jit_interp_symmetry]]).
+- **Dynamic dispatch.** Method/operator targets are resolved at
+  runtime, so ownership conventions are enforced dynamically at the
+  call boundary, not by a static type of the callee.
+- **A whole-function IR ownership verifier was considered and
+  rejected**, adversarially reviewed: it would be blind to C++ helper
+  interiors, and "balanced retains/releases" does not imply "correct
+  lifetime" (an early-but-balanced release can still be a
+  use-after-free). The block-pinned accounting above is deliberately
+  narrower — it reasons only about codegen's own `Owned`/`Pinned`
+  handles, not heap aliasing or object lifetime, which is why it
+  sidesteps the rejected verifier's fatal objections.
