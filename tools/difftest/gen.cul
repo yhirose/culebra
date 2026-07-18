@@ -953,7 +953,17 @@ let eff = [
   # ... in a handler clause
   'effect fn a(); to_string(handle { perform a() } with a(k) { fn g() { yield 1; yield 2 }; k(g().collect()) })',
   # multi-shot resume across a body defining a nested generator
-  'effect fn c(); effect fn f() { let b = perform c(); fn g(n) { yield n; yield n + 1 }; g(b).collect() }; to_string(handle { f() } with c(k) { [k(10), k(20)] })']
+  'effect fn c(); effect fn f() { let b = perform c(); fn g(n) { yield n; yield n + 1 }; g(b).collect() }; to_string(handle { f() } with c(k) { [k(10), k(20)] })',
+  # a self-contained handle inside a generator body (fragment-registry slicing)
+  'effect fn a(); fn g() { let v = handle { perform a() + 1 } with a(k) { k(10) }; yield v; yield v * 2 }; to_string(g().collect())',
+  # ... in the yielded expression
+  'effect fn a(); fn g() { yield handle { perform a() } with a(k) { k(5) }; yield 9 }; to_string(g().collect())',
+  # ... capturing a generator local
+  'effect fn a(); fn g(n) { let base = n * 10; let v = handle { base + perform a() } with a(k) { k(n) }; yield v }; to_string(g(3).collect())',
+  # ... inside a yielding for-in loop
+  'effect fn a(); fn g() { for i in [1, 2] { let v = handle { perform a() * i } with a(k) { k(100) }; yield v } }; to_string(g().collect())',
+  # multi-shot resume inside a generator body handle
+  'effect fn a(); fn g() { let r = handle { perform a() } with a(k) { [k(1), k(2)] }; yield r }; to_string(g().collect())']
 for c in eff {
   case("eff|" + c, c)
 }

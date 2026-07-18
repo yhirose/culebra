@@ -32,6 +32,7 @@
 #include <charconv>
 #include <format>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <regex>
@@ -53,26 +54,31 @@ generator_transform_sources() {
   return sources;
 }
 
-// A YIELD found inside one of these tag types belongs to the *inner*
-// function, not the enclosing one — the walkers below stop here so a
-// nested generator's yields aren't reattributed upward.
+// These tag types open a fresh fn-body scope: anything found inside (a
+// yield, a local, a class decl) belongs to the *inner* function, not the
+// enclosing one — walkers stop here so it isn't reattributed upward.
 inline bool is_fn_boundary(unsigned int tag) {
   using namespace peg::udl;
   return tag == "FUNCTION"_ || tag == "LAMBDA"_ || tag == "MULTIFN_DECL"_;
 }
 
-// True if `node` carries at least one YIELD or YIELD_FROM anywhere
-// inside, stopping at fn boundaries (see `is_fn_boundary`). Treating
-// the two as equivalent here lets Stage 5's for-in desugar fire even
-// when the only yield-shaped node inside is a `yield from`.
-inline bool fn_body_has_yield(const peg::Ast& node) {
+// First YIELD or YIELD_FROM belonging to this fn body, stopping at fn
+// boundaries (see `is_fn_boundary`) — a nested generator's yields are its
+// own. Treating the two as equivalent here lets Stage 5's for-in desugar
+// fire even when the only yield-shaped node inside is a `yield from`.
+// nullptr when absent.
+inline const peg::Ast* find_yield_in_fn_body(const peg::Ast& node) {
   using namespace peg::udl;
-  if (node.tag == "YIELD"_ || node.tag == "YIELD_FROM"_) return true;
-  if (is_fn_boundary(node.tag)) return false;
+  if (node.tag == "YIELD"_ || node.tag == "YIELD_FROM"_) return &node;
+  if (is_fn_boundary(node.tag)) return nullptr;
   for (auto& c : node.nodes) {
-    if (fn_body_has_yield(*c)) return true;
+    if (auto* y = find_yield_in_fn_body(*c)) return y;
   }
-  return false;
+  return nullptr;
+}
+
+inline bool fn_body_has_yield(const peg::Ast& node) {
+  return find_yield_in_fn_body(node) != nullptr;
 }
 
 // Collect every DEFER node in a fn body in source order, stopping at
@@ -143,9 +149,11 @@ inline const peg::Ast* find_nested_fndef(const peg::Ast& body) {
         found = c.get();
         return;
       }
-      // A nested fn VALUE keeps its own scope; its body is not part of the
-      // generator's flattened frame, so leave it (and its inner defs) alone.
-      if (c->tag == "FUNCTION"_ || c->tag == "LAMBDA"_) continue;
+      // A nested fn VALUE keeps its own scope, and a nested `handle` opens
+      // its own computation scope (the effects pass validates fns inside it)
+      // — leave both (and their inner defs) alone.
+      if (c->tag == "FUNCTION"_ || c->tag == "LAMBDA"_ || c->tag == "HANDLE"_)
+        continue;
       walk(*c);
     }
   };
@@ -307,6 +315,12 @@ inline std::string rewrite_outside_strings(
 // `#@123` can't be mistaken for provenance.
 inline constexpr std::string_view kLineMarker = "#@culebra:";
 
+// The ` #@culebra:N` suffix for a line whose original line is `n` — the one
+// writer of the format `line_has_marker` / `marker_line_map` read back.
+inline std::string line_marker(long n) {
+  return std::format(" {}{}", kLineMarker, n);
+}
+
 // 1-based line number of byte offset `pos` in `s`.
 inline long line_of_offset(std::string_view s, size_t pos) {
   long line = 1;
@@ -375,6 +389,26 @@ inline bool line_has_marker(std::string_view line) {
          line.substr(d - kLineMarker.size(), kLineMarker.size()) == kLineMarker;
 }
 
+// True when any marker-safe line of `text` carries a trailing marker — i.e.
+// the text is an already-annotated fragment. A marker-shaped substring inside
+// a string literal doesn't count (its line end is unsafe).
+inline bool text_has_line_marker(std::string_view text) {
+  auto safe = safe_line_ends(text);
+  size_t start = 0, idx = 0;
+  while (start <= text.size()) {
+    size_t nl = text.find('\n', start);
+    size_t end = (nl == std::string_view::npos) ? text.size() : nl;
+    if ((idx + 1) < safe.size() && safe[idx + 1] &&
+        line_has_marker(text.substr(start, end - start))) {
+      return true;
+    }
+    if (nl == std::string_view::npos) break;
+    start = nl + 1;
+    idx++;
+  }
+  return false;
+}
+
 // Append ` #@culebra:<first_line + i>` to each marker-safe line of `text` — the
 // entry-point annotation for a body sliced verbatim out of the ORIGINAL file
 // (so line numbering is contiguous). Lines that already carry a marker (a body
@@ -392,8 +426,7 @@ inline std::string annotate_line_markers(std::string_view text,
     out += line;
     bool ok = (idx + 1) < safe.size() && safe[idx + 1];
     if (ok && !line.empty() && !line_has_marker(line)) {
-      out += std::format(" {}{}", kLineMarker,
-                         first_line + static_cast<long>(idx));
+      out += line_marker(first_line + static_cast<long>(idx));
     }
     if (nl == std::string_view::npos) break;
     out += '\n';
@@ -464,7 +497,7 @@ struct LineMarkers {
   // plain slice loses it).
   std::string mk(const peg::Ast& n) {
     long p = orig_line(n);
-    return p ? std::format(" {}{}", kLineMarker, p) : "";
+    return p ? line_marker(p) : "";
   }
 };
 
@@ -661,15 +694,15 @@ inline std::optional<std::string> rewrite_yielding_fors_to_while(
     // A single-line body's trailing marker sits outside the for's span —
     // re-attach it so the loop body keeps its provenance.
     if (body_text.find('\n') == std::string::npos)
-      body_text += std::format(" {}{}", kLineMarker, orig);
+      body_text += line_marker(orig);
     auto replacement = std::format(
-        "let {0} = ({1}).iter() {4}{5}\n"
-        "while {0}.has_next() {{ {4}{5}\n"
-        "  let {2} = {0}.next() {4}{5}\n"
+        "let {0} = ({1}).iter(){4}\n"
+        "while {0}.has_next() {{{4}\n"
+        "  let {2} = {0}.next(){4}\n"
         "  {3}\n"
         "}}",
         iter_var, std::string(expr_sv),
-        std::string(var_node.token), body_text, kLineMarker, orig);
+        std::string(var_node.token), body_text, line_marker(orig));
     out.replace(f->position - base, f->length, replacement);
   }
   return out;
@@ -686,9 +719,23 @@ inline std::optional<std::string> rewrite_yielding_fors_to_while(
 // lifetime store with `parse` — used by both the generator wrapper parse and
 // the effects transform's body re-parse, so the "register before parse" rule
 // lives in one spot.
+// Ledger from parse label -> the fragment buffer it was parsed from. A
+// transform that walks a tree with spliced-in subtrees (identified by a
+// different `node->path`) resolves the right slice base here — e.g. the
+// effects pass reaching a construct inside a generator-lowered body.
+// Non-unique labels (internal re-parses that never splice nodes into the
+// final AST) may overwrite each other; only `next_fragment_label` labels
+// are ever looked up.
+inline std::map<std::string, std::shared_ptr<std::string>, std::less<>>&
+fragment_source_registry() {
+  static std::map<std::string, std::shared_ptr<std::string>, std::less<>> reg;
+  return reg;
+}
+
 inline std::shared_ptr<peg::Ast> parse_registered_source(
     const char* label, std::shared_ptr<std::string> synthesized) {
   generator_transform_sources().push_back(synthesized);
+  fragment_source_registry()[label] = synthesized;
   std::vector<std::string> msgs;
   return parse(label, synthesized->data(), synthesized->size(), msgs);
 }
@@ -1133,30 +1180,27 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
         static_cast<long>(bad->column));
   }
 
-  // An effect construct inside a generator body breaks: the effects pass runs
-  // after this one and would slice the construct from the original buffer while
-  // its nodes point into the swapped generator fragment — silently wrong
-  // results. Reject symmetrically (including inside nested fn values, which are
-  // carried into the fragment the same way).
+  // A self-contained `handle { … }` expression inside a generator body is
+  // fine: the effects pass (which runs after this one) follows the fragment
+  // registry to slice it from the right buffer. An `effect fn` DECL is not —
+  // it would lower to a named fn in a state block (the same state-scope
+  // problem that rejects plain named fn decls below); a bare `perform`
+  // outside any handle is rejected by the effects pass itself.
   {
     using namespace peg::udl;
-    std::function<const peg::Ast*(const peg::Ast&)> find_eff =
+    std::function<const peg::Ast*(const peg::Ast&)> find_eff_decl =
         [&](const peg::Ast& n) -> const peg::Ast* {
-      if (n.tag == "HANDLE"_ || n.tag == "PERFORM"_ ||
-          n.tag == "EFFECT_FN_DECL"_) {
-        return &n;
-      }
+      if (n.tag == "EFFECT_FN_DECL"_) return &n;
       for (auto& c : n.nodes) {
-        if (auto* e = find_eff(*c)) return e;
+        if (auto* e = find_eff_decl(*c)) return e;
       }
       return nullptr;
     };
-    if (auto* e = find_eff(*ast->nodes.back())) {
+    if (auto* e = find_eff_decl(*ast->nodes.back())) {
       throw CulebraError(
           "SyntaxError",
-          "an effect construct (`handle` / `perform` / `effect fn`) cannot "
-          "appear inside a generator body — run the effect outside and pass "
-          "the value in.",
+          "an `effect fn` declaration cannot appear inside a generator body — "
+          "define it outside the generator.",
           static_cast<long>(e->line), static_cast<long>(e->column));
     }
   }
@@ -1184,14 +1228,11 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
   // A body sliced out of an already-annotated fragment (a generator fn nested
   // in an effect body) keeps its markers as-is: re-annotating would stamp
   // fragment-relative numbers onto the marker-less machinery lines.
-  // Resolve the decl line for machinery fallback while `src` is still the
-  // buffer the name node indexes: identity for a real file, marker-mapped for
-  // an annotated fragment.
-  long decl_fallback = marker_orig_line({src, src_len}, ast->nodes[i]->line);
+  long decl_fallback = static_cast<long>(ast->nodes[i]->line);
   {
     auto inner = strip_block_braces(
         ast_source_slice(*ast->nodes.back(), src, src_len));
-    if (inner.find(kLineMarker) == std::string_view::npos) {
+    if (!text_has_line_marker(inner)) {
       long first = line_of_offset({src, src_len},
                                   static_cast<size_t>(inner.data() - src));
       auto params_sv = ast_source_slice(*ast->nodes[i + 1], src, src_len);
@@ -1201,6 +1242,10 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
       if (!swap_body_with_wrapper_params(ast, annotated, i)) return ast;
       src = annotated->data();
       src_len = annotated->size();
+    } else {
+      // Already-annotated fragment: map the decl line through its markers
+      // while `src` is still the buffer the name node indexes.
+      decl_fallback = marker_orig_line({src, src_len}, ast->nodes[i]->line);
     }
   }
 

@@ -129,16 +129,30 @@ class EffectsLowerer {
   // markers on entry, which every later text stage carries as comments so the
   // final fragment parse can restore original line numbers (see the marker
   // helpers in generator_transform.h).
+  // `path` names the parse label `src` belongs to (the file path for the
+  // original, a fragment label for re-parses); the transform() walk uses it to
+  // notice subtrees spliced in from other fragments.
   EffectsLowerer(const char* src, size_t src_len,
                  const std::set<std::string>& effect_fns,
-                 bool src_is_original = false)
+                 bool src_is_original = false, std::string path = "")
       : src_(src), src_len_(src_len), effect_fns_(effect_fns),
-        src_is_original_(src_is_original),
+        src_is_original_(src_is_original), path_(std::move(path)),
         markers_{{src, src_len}, src_is_original} {}
 
   // --- entry: rebuild the tree, lowering effect constructs -------------
   std::shared_ptr<peg::Ast> transform(std::shared_ptr<peg::Ast> ast) {
     using namespace peg::udl;
+    // A subtree from another fragment (e.g. a generator-lowered body spliced
+    // in by the mainline generator pass) indexes that fragment's buffer, not
+    // ours — hand the walk to a lowerer over the right slice base.
+    if (!path_.empty() && ast->path != path_) {
+      auto& reg = fragment_source_registry();
+      if (auto it = reg.find(ast->path); it != reg.end()) {
+        EffectsLowerer sub(it->second->data(), it->second->size(), effect_fns_,
+                           /*src_is_original=*/false, ast->path);
+        return sub.transform(ast);
+      }
+    }
     if (ast->tag == "EFFECT_FN_DECL"_) return lower_effect_fn_decl(ast);
     if (ast->tag == "HANDLE"_) return lower_handle(ast);
     if (ast->tag == "PERFORM"_) {
@@ -159,6 +173,7 @@ class EffectsLowerer {
   size_t src_len_;
   const std::set<std::string>& effect_fns_;
   bool src_is_original_ = false;
+  std::string path_;
   mutable LineMarkers markers_;
 
   // Error-position line: provenance when known, else the raw (fragment) line.
@@ -177,16 +192,13 @@ class EffectsLowerer {
     return ast_source_slice(n, src_, src_len_);
   }
 
-  // First YIELD / YIELD_FROM directly in this body — stopping at fn
-  // boundaries, so a nested named generator fn is fine (the effects fragment
-  // re-parse runs the generator chain and lowers it). A bare yield would make
-  // the effect body itself a generator, which it is not. nullptr when absent.
-  static const peg::Ast* find_bare_yield(const peg::Ast& n) {
+  // First CLASS_DECL anywhere under `n` (including nested fn values — the
+  // textual `this.` redirect reaches them all). nullptr when absent.
+  static const peg::Ast* find_class_decl(const peg::Ast& n) {
     using namespace peg::udl;
-    if (n.tag == "YIELD"_ || n.tag == "YIELD_FROM"_) return &n;
-    if (is_fn_boundary(n.tag)) return nullptr;
+    if (n.tag == "CLASS_DECL"_) return &n;
     for (auto& c : n.nodes) {
-      if (auto* y = find_bare_yield(*c)) return y;
+      if (auto* d = find_class_decl(*c)) return d;
     }
     return nullptr;
   }
@@ -809,14 +821,23 @@ class EffectsLowerer {
           "`handle` body — define it outside.",
           err_line(decl), static_cast<long>(decl.column));
     }
-    std::string name(decl.nodes[k]->token);
-    std::string text = rewrite_locals_to_this(slice(decl), rw);
-    // The locals rewrite turned the header's own name into `fn this.<name>(`;
-    // restore a plain inner name before redirecting `this.` to the IIFE param.
-    std::string marked = "fn this." + name;
-    if (text.rfind(marked, 0) == 0) {
-      text = "fn " + name + text.substr(marked.size());
+    // The `this.` redirect below is textual over the whole decl, so a class
+    // declared anywhere inside would have its methods' own `this` corrupted —
+    // reject it symmetrically instead of silently mis-binding.
+    if (auto* cd = find_class_decl(decl)) {
+      throw CulebraError(
+          "SyntaxError",
+          "a class declaration inside a named fn of an `effect fn` / `handle` "
+          "body is not supported — define the class outside.",
+          err_line(*cd), static_cast<long>(cd->column));
     }
+    std::string name(decl.nodes[k]->token);
+    // Rewrite only past the name token so the header keeps a plain inner name
+    // (the locals rewrite would turn it into `fn this.<name>(`).
+    size_t after = decl.nodes[k]->position + decl.nodes[k]->length -
+                   decl.position;
+    std::string text =
+        "fn " + name + rewrite_locals_to_this(slice(decl).substr(after), rw);
     auto self_name =
         std::format("_eff_self_{}_{}", decl.line, decl.column);
     text = redirect_this_to_self(text, self_name);
@@ -1252,7 +1273,7 @@ class EffectsLowerer {
     // A bare yield would make the effect body itself a generator, which it is
     // not — reject it symmetrically up front. Yields inside a nested named fn
     // are fine: the fragment re-parse runs the generator chain over them.
-    if (auto* y = find_bare_yield(body_node)) {
+    if (auto* y = find_yield_in_fn_body(body_node)) {
       throw CulebraError(
           "SyntaxError",
           "`yield` cannot appear directly in an `effect fn` or `handle` body "
@@ -1316,14 +1337,25 @@ class EffectsLowerer {
   // Names of named fn decls in the body (statement level or nested control
   // flow), stopping at fn / HANDLE boundaries like `collect_local_names` —
   // they live as instance fields (see `emit_named_fn_field`), so calls to
-  // them rewrite to `this.<name>(...)`.
-  static std::set<std::string> collect_named_fn_decls(const peg::Ast& body) {
+  // them rewrite to `this.<name>(...)`. A second clause of the same name
+  // would silently overwrite the field (a single value can't hold a
+  // multimethod), so it is rejected symmetrically.
+  std::set<std::string> collect_named_fn_decls(const peg::Ast& body) const {
     using namespace peg::udl;
     std::set<std::string> out;
     std::function<void(const peg::Ast&)> walk = [&](const peg::Ast& n) {
       if (n.tag == "MULTIFN_DECL"_) {
         // Record the name, but don't descend: fns nested inside it are its own.
-        out.insert(std::string(n.nodes[first_non_decorator_index(n)]->token));
+        auto name = std::string(n.nodes[first_non_decorator_index(n)]->token);
+        if (!out.insert(name).second) {
+          throw CulebraError(
+              "SyntaxError",
+              std::format("multiple clauses of fn `{}` are not supported "
+                          "inside an `effect fn` / `handle` body — define the "
+                          "multimethod outside.",
+                          name),
+              err_line(n), static_cast<long>(n.column));
+        }
         return;
       }
       if (is_fn_boundary(n.tag) || n.tag == "HANDLE"_) return;
@@ -1555,7 +1587,8 @@ class EffectsLowerer {
                          "effects transform produced unparseable source", 0, 0);
     }
     fn = transform_generators_in(fn, synth->data(), synth->size());
-    EffectsLowerer sub(synth->data(), synth->size(), effect_fns_);
+    EffectsLowerer sub(synth->data(), synth->size(), effect_fns_,
+                       /*src_is_original=*/false, label);
     auto out = sub.transform(fn);
     // Restore original line numbers from the provenance markers; machinery
     // lines fall back to the declaration's line. Subtrees spliced in by the
@@ -1583,7 +1616,8 @@ class EffectsLowerer {
     } else {
       expr = body;
     }
-    EffectsLowerer sub(synth->data(), synth->size(), effect_fns_);
+    EffectsLowerer sub(synth->data(), synth->size(), effect_fns_,
+                       /*src_is_original=*/false, label);
     auto out = sub.transform(expr);
     return reposition_ast(out, marker_line_map(*synth), fallback_line, label);
   }
@@ -1594,7 +1628,8 @@ class EffectsLowerer {
 inline std::shared_ptr<peg::Ast> transform_effects_in(
     std::shared_ptr<peg::Ast> ast, const char* src, size_t src_len) {
   auto effect_fns = collect_effect_fn_names(*ast);
-  EffectsLowerer lowerer(src, src_len, effect_fns, /*src_is_original=*/true);
+  EffectsLowerer lowerer(src, src_len, effect_fns, /*src_is_original=*/true,
+                         ast->path);
   return lowerer.transform(ast);
 }
 

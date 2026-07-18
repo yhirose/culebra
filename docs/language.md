@@ -3021,6 +3021,18 @@ effect fn work() {
 puts(handle { work() } with outer(k) { k(5) })    # => 105
 ```
 
+Effects compose with generators in both directions — a `handle` expression
+inside a generator body, and a named generator fn inside an effect body:
+
+```culebra
+effect fn scale()
+fn doubled() {
+  yield handle { perform scale() * 2 } with scale(k) { k(10) }
+  yield 7
+}
+puts(doubled().collect())    # => [20, 7]
+```
+
 ### Semantics and limitations
 
 * Performing an operation with **no handler** raises `EffectError`.
@@ -3033,12 +3045,20 @@ puts(handle { work() } with outer(k) { k(5) })    # => 105
   control-flow condition is rejected at parse time (symmetrically on every
   backend).
 * Errors inside an effect body report the **original source line**; the
-  column is approximate (the lowering shifts it).
-* Effects and generators do not compose inside one body yet: `yield` cannot
-  appear inside an `effect fn` / `handle` body, and an effect construct
-  (`handle` / `perform` / `effect fn`) cannot appear inside a generator body.
-  Both are rejected at parse time (symmetrically); run one mechanism outside
-  the other and pass values in.
+  column is approximate (the lowering shifts it). An unhandled `perform`'s
+  `EffectError` carries the perform's line as `e.line`.
+* Effects and generators **compose**: a named generator fn declared in an
+  `effect fn` / `handle` body works (and may read the body's locals), and a
+  self-contained `handle { … }` expression works inside a generator body
+  (including in a yielded expression or a loop). The remaining boundaries,
+  rejected at parse time (symmetrically): a **bare `yield`** in an effect
+  body (the body itself is not a generator — wrap the yield in a nested
+  generator fn), a **`perform` in a generator body outside any `handle`**
+  (a generator suspension cannot cross an effect boundary), and an
+  **`effect fn` declaration** inside a generator body.
+* A **named fn** declared in an effect body must sit at the body's statement
+  level (one buried in nested control flow is rejected at parse time); it may
+  be a generator and may reference the body's locals.
 * Handlers are **isolate-local**. A `handle` installed on one thread is not
   visible to a spawned isolate; a `perform` inside the child reaches only
   handlers installed within that same isolate (an unhandled operation there

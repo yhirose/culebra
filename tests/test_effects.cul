@@ -751,3 +751,92 @@ assert_eq(handle { yg_tail() } with nf_ask(k) { k(3) }, [3])
 
 // (bare yield / a named fn buried in verbatim control flow stay parse-time
 // SyntaxErrors — verified manually on both backends, not runnable here)
+
+// --- effect constructs inside generator bodies ----------------------------
+// A self-contained `handle` expression works inside a generator body: the
+// effects pass follows the fragment registry to slice it from the
+// generator-lowered buffer. (A bare `perform` / an `effect fn` decl inside a
+// generator stay parse-time SyntaxErrors.)
+effect fn eg_ask()
+fn eg_g1() {
+  let v = handle { perform eg_ask() + 1 } with eg_ask(k) { k(10) }
+  yield v
+  yield v * 2
+}
+assert_eq(eg_g1().collect(), [11, 22])
+
+// in the yielded expression
+fn eg_g2() {
+  yield handle { perform eg_ask() } with eg_ask(k) { k(5) }
+  yield 9
+}
+assert_eq(eg_g2().collect(), [5, 9])
+
+// the handle body captures a generator local (redirected to the _Gen
+// instance through the `_eff_self` machinery)
+fn eg_g3(n) {
+  let base = n * 10
+  let v = handle { base + perform eg_ask() } with eg_ask(k) { k(n) }
+  yield v
+}
+assert_eq(eg_g3(3).collect(), [33])
+
+// inside a yielding for-in loop (desugared before the effects pass runs)
+fn eg_g4() {
+  for i in [1, 2] {
+    let v = handle { perform eg_ask() * i } with eg_ask(k) { k(100) }
+    yield v
+  }
+}
+assert_eq(eg_g4().collect(), [100, 200])
+
+// delegation to an effectful effect fn from inside a generator's handle
+effect fn eg_dbl() { perform eg_ask() * 2 }
+fn eg_g5() {
+  yield handle { eg_dbl() } with eg_ask(k) { k(21) }
+}
+assert_eq(eg_g5().collect(), [42])
+
+// multi-shot resume inside a generator's handle
+fn eg_g6() {
+  let r = handle { perform eg_ask() } with eg_ask(k) { [k(1), k(2)] }
+  yield r
+}
+assert_eq(eg_g6().collect(), [[1, 2]])
+
+// both directions at once: a generator nested in an effect body, itself
+// containing a handle that reads the effect body's local
+effect fn eg_outer() {
+  let x = perform eg_ask()
+  fn inner_gen() {
+    yield handle { perform eg_ask() + x } with eg_ask(k) { k(100) }
+  }
+  inner_gen().collect()
+}
+assert_eq(handle { eg_outer() } with eg_ask(k) { k(7) }, [107])
+
+// a named fn works at a nested handle's statement level (find_nested_fndef
+// stops at HANDLE — the effects pass validates fns inside it)
+effect fn nh_a()
+effect fn nh_b()
+effect fn nh_wrap() {
+  let x = perform nh_a()
+  let y = handle { fn hf(n) { n * 2 }; hf(3) } with nh_b(k) { k(0) }
+  x + y
+}
+assert_eq(handle { nh_wrap() } with nh_a(k) { k(1) }, 7)
+
+// ... and inside a generator body's handle
+fn nh_gen() {
+  yield handle { fn hg(n) { n + 1 }; hg(1) } with nh_b(k) { k(0) }
+}
+assert_eq(nh_gen().collect(), [2])
+
+// extra whitespace in the decl header is fine (the field emission slices
+// past the name token, not a textual prefix)
+effect fn ws_body() {
+  fn  wsf(n) { n * 2 }
+  let x = perform nh_a()
+  wsf(x)
+}
+assert_eq(handle { ws_body() } with nh_a(k) { k(5) }, 10)

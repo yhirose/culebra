@@ -138,4 +138,15 @@ effect fn ng_body() {
 }
 check("nested-gen-in-effect", 135, fn() { handle { ng_body() } with ask(k) { k(1) } })
 
+// error inside a handle body nested in a generator reports the original line
+// (the effects pass sliced it from the generator fragment via the registry)
+fn eg_gen() {
+  let v = handle {
+    let x = perform ask()
+    x + "s"
+  } with ask(k) { k(1) }
+  yield v
+}
+check("handle-in-gen", 146, fn() { eg_gen().collect() })
+
 puts("test_transform_error_lines: all assertions passed")

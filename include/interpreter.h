@@ -339,10 +339,10 @@ inline int64_t multifn_pick(const std::vector<Entry>& methods,
 }
 
 // Walk an AST subtree and throw SyntaxError if a CLASS_DECL appears
-// in the current scope. Stops at FUNCTION / LAMBDA / MULTIFN_DECL /
-// LEXICAL_SCOPE boundaries because those re-open a fresh scope (class
-// declarations inside a fn body or `{ ... }` block are allowed — only direct
-// class body children are restricted).
+// in the current scope. Stops at fn-body boundaries (`is_fn_boundary`) and
+// LEXICAL_SCOPE because those re-open a fresh scope (class declarations
+// inside a fn body or `{ ... }` block are allowed — only direct class body
+// children are restricted).
 //
 // Called from eval_class_decl / compile_class_decl on each METHOD
 // body and the constructor body to enforce "class declarations live
@@ -351,8 +351,7 @@ inline int64_t multifn_pick(const std::vector<Entry>& methods,
 inline void reject_class_decl_in_class_body(
     const peg::Ast& node, std::string_view outer_class) {
   using namespace peg::udl;
-  if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_ ||
-      node.tag == "MULTIFN_DECL"_ || node.tag == "LEXICAL_SCOPE"_) {
+  if (is_fn_boundary(node.tag) || node.tag == "LEXICAL_SCOPE"_) {
     return;
   }
   if (node.tag == "CLASS_DECL"_) {
