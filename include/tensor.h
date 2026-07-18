@@ -693,7 +693,9 @@ inline TensorPtr tensor_reshape(TensorPtr t, TensorShape new_shape) {
     throw CulebraError("ValueError",
                        "Tensor: reshape element-count mismatch.");
   }
-  tensor_eval_node(*t);
+  // No eval needed for the check: an unevaluated op result is always
+  // contiguous (tl lays lazy results out contiguously); only materialized
+  // views (transpose/slice) can be strided, and those report directly.
   if (!t->is_contiguous()) {
     throw CulebraError("ValueError",
                        "Tensor: reshape requires a contiguous input.");
