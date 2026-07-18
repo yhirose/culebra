@@ -54,6 +54,12 @@ Training (benchmark):
                             `cpp-tensorlib` C++ (no Culebra), the baseline that
                             splits the silarray gap into library vs runtime —
                             see "GPU vs CPU" below.
+- `train_bench_transformer.cul` — a single transformer block (LayerNorm ->
+                            self-attention -> residual -> LayerNorm ->
+                            FFN(ReLU) -> residual), a matmul-dominated shape
+                            where a GPU is expected to win, unlike the
+                            elementwise-heavy autoencoder — see "GPU vs CPU"
+                            below.
 
 Other:
 - `bench.sh`              — runs every implementation $RUNS× and reports means
@@ -97,6 +103,9 @@ julia      benchmarks/mnist/train_bench.jl
 # Autoencoder (needs the full 60000-sample training set, not the 10000 subset)
 python3.11 benchmarks/mnist/prep_train.py 60000
 ./build/culebra --jit benchmarks/mnist/train_bench_autoencoder.cul [cpu|gpu|auto]
+
+# Transformer block (no data file needed — random weights, timing only)
+./build/culebra --jit benchmarks/mnist/train_bench_transformer.cul [cpu|gpu|auto]
 ```
 
 `python3.11` is used for any script that imports numpy or torch; pure
@@ -321,3 +330,36 @@ environment understate the host: without a Metal device, every buffer
 allocation falls back from `cpp-tensorlib`'s pooled MTLBuffers to fresh
 heap allocations, which changes the cost structure — measure on the
 host before drawing allocation-related conclusions.)
+
+### Transformer block: where the GPU is expected to win
+
+The autoencoder above is elementwise-heavy (bias adds, activations, an
+axis-sum per layer) — exactly the op mix Culebra's CPU work above
+targeted, and exactly the op mix a GPU pays a per-op dispatch cost on
+without enough matmul FLOPs to hide it. A single transformer block
+(LayerNorm -> self-attention -> residual -> LayerNorm -> FFN(ReLU) ->
+residual, `train_bench_transformer.cul`, ported op-for-op from
+silarray's `bench/composite/bench_transformer.cpp`) is the opposite
+shape: mostly large matmuls (Q/K/V/O projections, the FFN, the
+attention score/context products), which is where GPUs are supposed to
+amortize dispatch overhead. Apple Silicon (M1 Pro), host, ms/iter:
+
+| shape (seq, d_model) | Culebra CPU | Culebra GPU | Culebra auto | silarray GPU | silarray CPU |
+|-----------------------|------------:|------------:|--------------:|-------------:|-------------:|
+| 256, 512              | **2.97**    | 6.70        | 3.18           | **1.91**     | 9.65          |
+| 256, 768               | **4.85**    | 10.03       | 5.32           | **2.20**     | —             |
+| 256, 1024               | **9.88**    | 13.00       | 10.37          | **3.14**     | —             |
+| 512, 1024               | 17.11       | **15.32**   | 17.55          | **5.32**     | —             |
+
+Two things are true at once here. silarray shows this is a real
+GPU-favorable shape: its GPU beats its own CPU 5x at (256, 512) and the
+gap only widens with `d_model`. But Culebra's GPU is consistently
+~3-4x slower than silarray's GPU on the same shapes, and loses to
+Culebra's own CPU everywhere except the largest config — the opposite
+of what the op mix predicts. Combined with the autoencoder's GPU number
+(~8x silarray's GPU there too), the pattern points at `cpp-tensorlib`'s
+Metal backend itself, independent of the CPU work above: something in
+its per-op dispatch, command-buffer batching, or lack of kernel fusion
+is leaving GPU throughput on the table. Not yet diagnosed — treat
+Culebra's GPU numbers as a known-slow baseline until that lands, and use
+`Tensor.use_cpu()`/`use_auto()` for the shapes measured here.

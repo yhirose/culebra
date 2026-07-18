@@ -1,0 +1,86 @@
+# Single transformer block (inference): LayerNorm -> Self-Attention -> Residual
+# -> LayerNorm -> FFN(ReLU) -> Residual. Ported op-for-op from silarray's
+# bench/composite/bench_transformer.cpp so Culebra Tensor's cpu/gpu/auto
+# backends can be compared on a matmul-dominated workload (where the GPU is
+# expected to pay off, unlike the elementwise-heavy autoencoder).
+#
+# Usage: ./build/culebra --jit benchmarks/mnist/train_bench_transformer.cul [cpu|gpu|auto]
+
+let device = if Sys.argv.size() > 0 { Sys.argv[0] } else { 'auto' }
+if device == 'cpu' { Tensor.use_cpu() }
+else if device == 'gpu' { Tensor.use_gpu() }
+else { Tensor.use_auto() }
+
+let EPS = 0.00001
+
+# LayerNorm over the last axis. gamma/beta are [1, d] (broadcast over rows).
+let layer_norm = fn (x, gamma, beta) {
+  let seq = x.shape()[0]
+  let mu = x.mean(1).reshape([seq, 1])
+  let diff = x - mu
+  let var = (diff * diff).mean(1).reshape([seq, 1])
+  let normed = diff * (var + EPS).pow(-0.5)
+  normed * gamma + beta
+}
+
+# seq, d_model, d_ff, iters — silarray's GPU configs
+let configs = [
+  [256, 512, 2048, 20],
+  [256, 768, 3072, 15],
+  [256, 1024, 4096, 10],
+  [512, 1024, 4096, 5],
+]
+
+for cfg in configs {
+  let seq = cfg[0]
+  let d = cfg[1]
+  let dff = cfg[2]
+  let iters = cfg[3]
+  let scale = 1.0 / Math.sqrt(to_float(d))
+
+  # weights (init values irrelevant to timing; shapes match silarray)
+  let x = Tensor.randn(seq, d)
+  let Wq = Tensor.randn(d, d) * scale
+  let Wk = Tensor.randn(d, d) * scale
+  let Wv = Tensor.randn(d, d) * scale
+  let Wo = Tensor.randn(d, d) * scale
+  let bq = Tensor.zeros(1, d)
+  let bk = Tensor.zeros(1, d)
+  let bv = Tensor.zeros(1, d)
+  let bo = Tensor.zeros(1, d)
+  let W1 = Tensor.randn(d, dff) * (1.0 / Math.sqrt(to_float(d)))
+  let b1 = Tensor.zeros(1, dff)
+  let W2 = Tensor.randn(dff, d) * (1.0 / Math.sqrt(to_float(dff)))
+  let b2 = Tensor.zeros(1, d)
+  let gamma1 = Tensor.ones(1, d)
+  let beta1 = Tensor.zeros(1, d)
+  let gamma2 = Tensor.ones(1, d)
+  let beta2 = Tensor.zeros(1, d)
+
+  let block = fn () {
+    let h = layer_norm(x, gamma1, beta1)
+    let Q = h.dot(Wq) + bq
+    let K = h.dot(Wk) + bk
+    let V = h.dot(Wv) + bv
+    let attn = (Q.dot(K.transpose()) * scale).softmax()
+    let context = attn.dot(V)
+    let attn_out = context.dot(Wo) + bo
+    let r1 = x + attn_out
+    let h2 = layer_norm(r1, gamma2, beta2)
+    let ff = (h2.dot(W1) + b1).relu()
+    let out = r1 + (ff.dot(W2) + b2)
+    Tensor.eval(out)
+  }
+
+  # warmup (stabilizes GPU clock + first-call init), not timed
+  for w in range(3) { block() }
+
+  mut total = 0.0
+  for it in range(iters) {
+    let t0 = Sys.time()
+    block()
+    total = total + (Sys.time() - t0)
+  }
+  let per = 1000.0 * total / to_float(iters)  # ms/iter
+  print("BENCH label=culebra_transformer device={device} seq={seq} d={d} d_ff={dff} ms_per_iter={per}\n")
+}
