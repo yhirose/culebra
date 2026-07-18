@@ -6610,8 +6610,22 @@ culebra_runtime_lazy_ns_register(const char* name, int8_t builder_tag,
   if (builder_tag != TAG_FUNC) return;  // splice only ever passes a closure
   auto* c = reinterpret_cast<JitClosure*>(builder_data);
   // A module builder closes over nothing (it references only builtins +
-  // its own locals), so the per-Runtime rebuild uses 0 captures.
-  assert(c->n_captures == 0 && "lazy-ns builder must be captureless");
+  // its own locals), so the per-Runtime rebuild uses 0 captures. A non-zero
+  // count means the builder body accidentally referenced an entry-module
+  // global (the free-var analysis's UFCS-candidate check can pull one in via
+  // a call-form `x.name(...)` where `name` collides with a user global fn —
+  // see the dynamic-perform cycle notes); the rebuilt closure would then read
+  // a capture cell that was never populated, a release-silent null deref.
+  // Fail loudly here instead, at the point the mistake was made.
+  if (c->n_captures != 0) {
+    throw culebra::CulebraError(
+        "InternalError",
+        std::format("lazy-ns builder '{}' must be captureless (has {} "
+                    "capture(s)) — a call-form method name in its body "
+                    "likely collides with a user global fn",
+                    name ? name : "?", c->n_captures),
+        0, 0);
+  }
   _lazy_ns_register_builder(name ? name : "", c->fn_ptr);
 }
 
