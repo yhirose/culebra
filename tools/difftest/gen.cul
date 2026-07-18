@@ -939,7 +939,9 @@ let eff = [
   # a local name as literal string text is not rewritten; interpolation is
   'effect fn a(); effect fn f() { let base = perform a(); let lit = "the base v"; "{base}-{lit}" }; handle { f() } with a(k) { k(2) }',
   # a block comment (its local name) is skipped, not rewritten
-  'effect fn a(); effect fn f() { let base = perform a(); let y = /* just base */ base + 1; y }; to_string(handle { f() } with a(k) { k(10) })']
+  'effect fn a(); effect fn f() { let base = perform a(); let y = /* just base */ base + 1; y }; to_string(handle { f() } with a(k) { k(10) })',
+  # an effectful effect fn called with no driver raises EffectError
+  'effect fn g(); effect fn f() { perform g() }; try { f() } catch e { e.kind }']
 for c in eff {
   case("eff|" + c, c)
 }

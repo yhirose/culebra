@@ -17,6 +17,13 @@
 # leaving the snapshot intact — that is what makes a continuation multi-shot.
 let _eff_module = fn() {
   let _handlers = []   # stack of frames; each frame maps op-name -> adapter fn
+  # `_sflag[0]` is true only while a computation's `_step` is running. An
+  # effectful `effect fn` call lowers to a DELEGATE evaluated inside `_step`, so
+  # its wrapper reads this shared cell to tell a genuine drive from a bare call
+  # in ordinary code (which must raise, not return an un-driven computation). A
+  # 1-element array (not a `mut`) so the wrapper can read it via `__Eff.stepping`
+  # without a per-call accessor closure.
+  let _sflag = [false]
 
   fn _find(op) {
     let mut i = _handlers.size() - 1
@@ -32,7 +39,12 @@ let _eff_module = fn() {
     let mut resume_val = rv
     while true {
       let comp = stack[stack.size() - 1]
+      # Flag the `_step` window so a delegate call inside it is recognised. A
+      # throw skips the reset here but `_handle`'s defer restores it (every
+      # drive runs under a handle), so ordinary code never sees a stale flag.
+      _sflag[0] = true
       let tag = comp._step(resume_val)
+      _sflag[0] = false
       if tag == 0 {
         let done_val = comp._eff_val
         if stack.size() == 1 {
@@ -62,10 +74,10 @@ let _eff_module = fn() {
     # clause); `ret` is the optional `return`-clause adapter (nil if none).
     # Push the frame as one dynamically-scoped frame for `comp`'s duration.
     _handlers.push(frame)
-    defer { _handlers.pop() }
+    defer { _handlers.pop(); _sflag[0] = false }
     _drive([comp], nil, ret)
   }
 
-  { handle: _handle }
+  { handle: _handle, stepping: _sflag }
 }
 let __Eff = _eff_module()

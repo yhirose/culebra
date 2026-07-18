@@ -1244,9 +1244,17 @@ class EffectsLowerer {
       if (j > 0) call_args += ", ";
       call_args += std::string(param_names[j]);
     }
+    // An effectful `effect fn` is only meaningful under a driver: a DELEGATE
+    // call (from another effect body / a handle) runs inside a `_step`, so the
+    // shared `__Eff.stepping` cell reads true and we hand back the un-driven
+    // computation for the frame stack. A bare call in ordinary code has no
+    // driver, so raise instead of leaking the internal computation object.
     auto params_sv = slice(params_ast);
     auto synth = std::make_shared<std::string>(std::format(
-        "fn {0}{1} {{\n{2}  {3}.new({4})\n}}\n",
+        "fn {0}{1} {{\n{2}"
+        "  if __Eff.stepping[0] {{ {3}.new({4}) }}\n"
+        "  else {{ throw {{ kind: \"EffectError\", message: \"effect fn '{0}' "
+        "must be run inside a `handle`\" }} }}\n}}\n",
         name, std::string(params_sv), cls, class_name, call_args));
     return reparse_decl(synth);
   }

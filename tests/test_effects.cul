@@ -633,3 +633,24 @@ effect fn cm_body() {
   y                             # base again, still literal
 }
 assert_eq(handle { cm_body() } with cm_ask(k) { k(10) }, 11)
+
+// an effectful `effect fn` called outside a driver raises EffectError instead
+// of returning an un-driven computation object — both in ordinary code and in a
+// handler clause (neither is a `_step`, so `__Eff.stepping()` is false there).
+effect fn cl_g()
+effect fn cl_f() { let v = perform cl_g(); v * 2 }
+let cl_bare = try { cl_f(); "no-error" } catch e { e.kind }
+assert_eq(cl_bare, "EffectError")
+
+effect fn cl_x()
+let cl_in_clause = handle { perform cl_x() } with cl_x(k) {
+  let caught = try { cl_f(); "no-error" } catch e { e.kind }
+  k(caught)
+}
+assert_eq(cl_in_clause, "EffectError")
+
+// but a delegate call (effect fn from another effect fn / a handle body) still
+// runs under the driver
+effect fn cl_inner() { let a = perform cl_g(); a + 1 }
+effect fn cl_outer() { let b = cl_inner(); b * 10 }
+assert_eq(handle { cl_outer() } with cl_g(k) { k(5) }, 60)

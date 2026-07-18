@@ -3024,10 +3024,9 @@ puts(handle { work() } with outer(k) { k(5) })    # => 105
 ### Semantics and limitations
 
 * Performing an operation with **no handler** raises `EffectError`.
-* An **effectful** `effect fn` is meant to be invoked from within a `handle`
-  block (directly, or via another effectful fn). Calling one from ordinary,
-  unhandled code returns an internal computation object rather than running it —
-  drive it with a `handle`.
+* An **effectful** `effect fn` must be invoked from within a `handle` block
+  (directly, or via another effectful fn). Calling one from ordinary, undriven
+  code raises `EffectError` — it cannot run without a handler.
 * A `perform` is supported only in **statement position** or an
   unconditionally-evaluated operand. A `perform` in a short-circuit
   (`&&` / `||` / `??`) operand, a ternary arm, a method-chain receiver, or a
