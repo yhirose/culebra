@@ -518,7 +518,59 @@ let _eff_module = fn() {
     _drive([comp], nil, ret)
   }
 
-  { handle: _handle, stepping: _sflag }
+  # (spike) A `perform` inside a plain fn: no computation object, no
+  # suspension, so the adapter runs with an identity resume — a tail-
+  # resumptive clause's `resume(v)` just becomes the direct result. Save/
+  # restore `_sflag` around the adapter call so an effectful effect-fn call
+  # made from inside the clause body is not mistaken for a delegate (the
+  # adapter body runs outside any `_step`, even when `_perform_direct` itself
+  # was reached from inside one).
+  fn _perform_direct(op, args, line) {
+    let h = _find(op, line)
+    let saved = _sflag[0]
+    _sflag[0] = false
+    let result = h(args, |v| v)
+    _sflag[0] = saved
+    result
+  }
+
+  # (spike) An effect-fn call from a plain fn: the caller's native frame IS the
+  # continuation, so drive the computation right here. Each SUSPEND dispatches
+  # through the dynamic handler stack with an identity resume (tail-resumptive
+  # clauses only) and the clause result feeds straight back into `_step`.
+  # `mk` is a thunk returning the un-driven computation: the wrapper hands it
+  # over only while the stepping flag reads true.
+  fn _run_direct(mk) {
+    let saved = _sflag[0]
+    _sflag[0] = true
+    let comp = mk()
+    _sflag[0] = saved
+    let stack = [comp]
+    let mut resume_val = nil
+    defer { _sflag[0] = saved }
+    while true {
+      let c = stack[stack.size() - 1]
+      _sflag[0] = true
+      let tag = c._step(resume_val)
+      _sflag[0] = false
+      if tag == 0 {
+        if stack.size() == 1 { return c._eff_val }
+        stack.pop()
+        resume_val = c._eff_val
+        continue
+      }
+      if tag == 1 {
+        let h = _find(c._eff_op, c._eff_line)
+        resume_val = h(c._eff_args, |v| v)
+        continue
+      }
+      stack.push(c._eff_delegate)
+      resume_val = nil
+    }
+  }
+
+  { handle: _handle, stepping: _sflag, perform_direct: _perform_direct,
+    run_direct: _run_direct }
 }
 let __Eff = _eff_module()
 )=culpre=";

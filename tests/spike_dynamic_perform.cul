@@ -1,0 +1,70 @@
+// Spike 1: dynamic perform from plain fns (hand-lowered).
+// `perform op(args)` inside a plain fn is written here as
+// `__Eff.perform_direct("op", [args], <line>)`, and an effect-fn call from a
+// plain fn as `__Eff.run_direct(fn() { efffn() })` — the forms the transform
+// will emit automatically in spike 3.
+
+// --- (1) DI example: plain fn performs, tail handler answers ---
+effect fn ask()
+fn greet() {
+  let name = __Eff.perform_direct("ask", [], 10)
+  "hi " + name
+}
+let r1 = handle { greet() } with ask(resume) { resume("yuji") }
+assert_eq(r1, "hi yuji")
+
+// --- (2) mixed chain: effect fn -> plain fn -> direct perform ---
+// plain_mid runs inside the outer computation's `_step` window; the direct
+// perform must save/restore the stepping flag so the later state-machine
+// perform in `outer` still delegates correctly.
+effect fn get()
+fn plain_mid() {
+  __Eff.perform_direct("get", [], 23) + 1
+}
+effect fn outer() {
+  let a = perform get()
+  let b = plain_mid()
+  let c = perform get()
+  a + b + c
+}
+let r2 = handle { outer() } with get(resume) { resume(10) }
+assert_eq(r2, 31)
+
+// --- (3) bare effect-fn call inside a tail clause body is an EffectError ---
+// perform_direct clears the stepping flag before running the clause, so the
+// clause body is ordinary code: an un-driven effect-fn call must raise.
+effect fn tick()
+effect fn boom() { perform get() }
+fn plain_bad() {
+  __Eff.perform_direct("tick", [], 40)
+}
+let r3 = try {
+  handle { plain_bad() } with tick(resume) { boom(); resume(1) }
+} catch e { e.kind }
+assert_eq(r3, "EffectError")
+
+// --- (4) no handler: EffectError carries the perform line ---
+effect fn nope()
+fn orphan() { __Eff.perform_direct("nope", [], 42) }
+let r4 = try { orphan(); "no-error" } catch e { [e.kind, e.line] }
+assert_eq(r4, ["EffectError", 42])
+
+// --- (5) plain fn calls an effect fn (call-site mini-driver) ---
+effect fn twice() {
+  let x = perform get()
+  x * 2
+}
+fn plain_calls_effect() {
+  __Eff.run_direct(fn() { twice() }) + 5
+}
+let r5 = handle { plain_calls_effect() } with get(resume) { resume(7) }
+assert_eq(r5, 19)
+
+// --- (6) mini-driver drives DELEGATE frames (effect fn -> effect fn) ---
+effect fn inner_e() { perform get() + 1 }
+effect fn outer_e() { inner_e() * 3 }
+fn plain_deleg() { __Eff.run_direct(fn() { outer_e() }) }
+let r6 = handle { plain_deleg() } with get(resume) { resume(2) }
+assert_eq(r6, 9)
+
+print("spike ok")
