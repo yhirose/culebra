@@ -304,16 +304,20 @@ most of it is the tensor library, and only ~1.5-1.9x of it is
 Culebra.
 
 **Update — both factors since reduced.** The table above is the
-decomposition that motivated two follow-up changes; each attacked one
-factor. (1) Culebra's runtime factor: forward-only work like this
-manual-backprop loop no longer records an autograd tape (it walks
-requires_grad nodes only), removing the per-op wrapper build/teardown —
-the `.cul` epoch dropped from ~5.2 s to ~3.2 s. (2) The library factor:
+decomposition that motivated three follow-up changes. (1) Culebra's
+runtime factor: forward-only work like this manual-backprop loop no
+longer records an autograd tape (it walks requires_grad nodes only),
+removing the per-op wrapper build/teardown. (2)+(3) The library factor:
 `cpp-tensorlib` gained contiguous fast paths for axis reductions and
 rank-2 broadcast (flat pointer loops instead of the generic strided
-coordinate walker), ~20-24% faster on this step — the `_tl.cpp` C++
-baseline dropped to ~2.6 s and the combined `.cul` epoch to ~2.1-2.3 s
-(same-machine mins; cross-run numbers drift with thermal state).
-silarray's remaining lead is now mostly kernel fusion (it folds bias +
-activation into single passes); that fusion is the next lever on the
-library side.
+coordinate walker), then two vectorization-stall fixes in those paths —
+last-axis reductions now accumulate in a register instead of through the
+output buffer (the memory-carried dependency was ~40x on row sums), and
+the broadcast inner loop is stride-specialized so it no longer compiles
+as a gather. Combined effect on the host (M1 Pro): **CPU epoch
+5.50 s → 1.39 s**, within ~1.5x of silarray's 0.91 s eager-C++ epoch on
+the same shape. (Intermediate numbers measured in a sandboxed
+environment understate the host: without a Metal device, every buffer
+allocation falls back from `cpp-tensorlib`'s pooled MTLBuffers to fresh
+heap allocations, which changes the cost structure — measure on the
+host before drawing allocation-related conclusions.)
