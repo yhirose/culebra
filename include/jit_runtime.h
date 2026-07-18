@@ -2243,6 +2243,42 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_eff_copy(
   return o;
 }
 
+// --- Effects abort signal (spike) ---
+// An aborting handler clause (one that never resumes) unwinds from the
+// perform point back to its `handle` as a distinct C++ type. User try/catch
+// must not observe it: compiled catches classify the in-flight exception via
+// the pending carrier and rethrow anything unrecognised, so scope cleanups
+// and defers still run on the way out while the signal keeps unwinding.
+// The carried value is +1; the catcher takes ownership.
+struct CulebraEffAbort {
+  JitValue val;
+};
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_eff_abort(int8_t tag,
+                                                                 int64_t data) {
+  culebra_runtime_value_retain(tag, data);
+  throw CulebraEffAbort{JitValue{tag, data}};
+}
+
+// Run `fn`, catching only the abort signal. Returns a fresh [aborted, value]
+// pair; the value slot takes over the +1 (from the invoke result or the
+// signal). Any other exception keeps unwinding untouched.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_eff_catch_abort(
+    JitClosure* fn) {
+  int64_t aborted = 0;
+  JitValue v;
+  try {
+    v = _culebra_invoke0(fn);
+  } catch (const CulebraEffAbort& a) {
+    aborted = 1;
+    v = a.val;
+  }
+  auto* pair = culebra_runtime_array_new();
+  culebra_runtime_array_push(pair, TAG_BOOL, aborted);
+  culebra_runtime_array_push(pair, v.tag, v.data);
+  return pair;
+}
+
 // Build an Array from args[start..n) for binding to `__ARGS__`. Caller
 // transferred +1 ownership of each arg via the stack-allocated slab;
 // Array takes over (object_set-style: no extra retain, slot owns +1).

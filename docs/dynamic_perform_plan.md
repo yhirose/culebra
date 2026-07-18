@@ -167,6 +167,15 @@ abort（resume を呼ばない）clause の非局所 unwind を、既存の Inte
    `EffAbortSignal` だけ捕捉して `{aborted, val}` 相当を返す
 （native fn 追加のアンカーは [[project_add_stdlib_namespace]] の 7 アンカー + JIT slow path）
 
+**spike 2 実証済み（2026-07-18）**：`__eff_abort(v)`（native throw）+
+`__eff_catch_abort(fn)`（handle driver 用 catcher、`[aborted, value]` を返す）を
+`__eff_copy` と同じ4アンカー（stdlib_interp.h / stdlib_jit.h テーブル +
+is_builtin_var / jit_runtime.h）で追加。interp=`InterpEffAbort{Value}`、
+JIT/AOT=`CulebraEffAbort{JitValue}`（値は +1 で運び catcher が引き取る）。
+tests/spike_abort_unwind.cul で user try/catch 素通り・defer 発火・複数フレーム
+横断・nested catcher・user throw 非干渉の5点を interp/JIT 一致で確認。
+rc-discipline ratchet は変更不要（jit_runtime.h は対象外、stdlib_jit 側は RC 呼び無し）。
+
 ### spike 3（本実装、spike 1+2 が両方 green なら）
 
 1. 文法：plain fn で perform 許可（`transform()` line 158-166 の throw を、effect fn

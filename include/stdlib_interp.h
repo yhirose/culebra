@@ -5635,6 +5635,14 @@ inline Value make_shared_namespace();
 inline Value make_signal_namespace();
 inline Value make_parallel_namespace();
 
+// Effects abort signal (spike): a distinct C++ type so `eval_try` (which
+// catches Value / CulebraError / runtime_error only) passes it through —
+// defers still run via its catch-all rethrow — and `__eff_catch_abort` at
+// the handle driver is the only catcher. Interp twin of CulebraEffAbort.
+struct InterpEffAbort {
+  Value val;
+};
+
 inline void setup_built_in_functions(
     Environment& env, const std::vector<std::string>& argv = {}) {
   using namespace std::literals;
@@ -5761,6 +5769,38 @@ inline void setup_built_in_functions(
             return Value(std::move(copy));
           },
           "Object"sv)),
+      false);
+
+  // Throw the effects abort signal carrying `v`. See InterpEffAbort: user
+  // try/catch passes it through; only __eff_catch_abort stops it.
+  env.initialize(
+      "__eff_abort",
+      Value(FunctionValue(
+          {{"v", false}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            throw InterpEffAbort{env->get("v")};
+          })),
+      false);
+
+  // Run `fn`, catching only the abort signal. Returns [aborted, value].
+  // Any other exception keeps unwinding untouched.
+  env.initialize(
+      "__eff_catch_abort",
+      Value(FunctionValue(
+          {{"fn", false, "Function"sv}},
+          [](std::shared_ptr<Environment> env) {
+            ArrayValue pair;
+            try {
+              auto r = _invoke_callback(env->get("fn"));
+              pair.values->emplace_back(false);
+              pair.values->emplace_back(std::move(r));
+            } catch (const InterpEffAbort& a) {
+              pair.values->emplace_back(true);
+              pair.values->emplace_back(a.val);
+            }
+            return Value(std::move(pair));
+          },
+          "Array"sv)),
       false);
 
   // Install a builtin namespace, tagging its ObjectValue so reading an unknown

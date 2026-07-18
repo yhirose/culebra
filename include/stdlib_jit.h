@@ -2986,6 +2986,15 @@ inline JitValue _ns_global_eff_copy(JitValue* a, int64_t) {
   return _ns_adapt::v_object(
       culebra_runtime_eff_copy(reinterpret_cast<JitObject*>(a[0].data)));
 }
+inline JitValue _ns_global_eff_abort(JitValue* a, int64_t) {
+  culebra_runtime_eff_abort(static_cast<int8_t>(a[0].tag), a[0].data);
+  return {TAG_NIL, 0};  // unreachable: eff_abort always throws
+}
+inline JitValue _ns_global_eff_catch_abort(JitValue* a, int64_t) {
+  auto* fn = reinterpret_cast<JitClosure*>(a[0].data);
+  return {TAG_ARRAY,
+          reinterpret_cast<int64_t>(culebra_runtime_eff_catch_abort(fn))};
+}
 
 // range/iota as first-class values, via the args-rest NsParamMeta (kRangeMeta
 // / kIotaMeta): the resolver/trampoline hand a canonical slab whose first slot
@@ -6312,6 +6321,8 @@ inline const NsMethod kBuiltinFns[] = {
   {"", "to_string", 1, &_ns_global_to_string},
   {"", "hash",      1, &_ns_global_hash},
   {"", "__eff_copy", 1, &_ns_global_eff_copy},
+  {"", "__eff_abort", 1, &_ns_global_eff_abort},
+  {"", "__eff_catch_abort", 1, &_ns_global_eff_catch_abort},
   {"", "range",    -1, &_ns_global_range},
   {"", "iota",     -1, &_ns_global_iota},
 };
@@ -8253,6 +8264,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
   static const std::unordered_set<std::string_view> names = {
       "puts",    "print",
       "to_long", "to_float",  "to_string", "type_of", "hash", "__eff_copy",
+      "__eff_abort", "__eff_catch_abort",
       "Math",    "IO",        "FS",        "File",     "Embed",   "_Time",
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
       "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel",
