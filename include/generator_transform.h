@@ -294,14 +294,18 @@ inline std::string rewrite_outside_strings(
 // so the re-parsed AST's line numbers are fragment-relative and every error
 // reported through them used to point nowhere near the user's code. The fix is
 // a `#line`-style provenance marker: each user code line gets a trailing
-// ` #@<original-line>` comment when the body is first sliced out of the real
-// file. Being a comment, the marker survives every later text stage (for-in
+// ` #@culebra:<original-line>` comment when the body is first sliced out of
+// the real file. Being a comment, the marker survives every later text stage (for-in
 // desugar, ANF hoisting, CPS state emission, nested re-lowering) for free —
 // verbatim slices carry it, synthesized lines simply lack one. After the FINAL
 // fragment parse, `marker_line_map` reads the markers back and
 // `reposition_ast` rebuilds the AST with original line numbers (columns stay
 // fragment-relative — approximate, since `this.` insertion shifts them).
 // Synthesized machinery lines fall back to the construct's declaration line.
+
+// The marker token. Deliberately verbose so a user comment ending in a bare
+// `#@123` can't be mistaken for provenance.
+inline constexpr std::string_view kLineMarker = "#@culebra:";
 
 // 1-based line number of byte offset `pos` in `s`.
 inline long line_of_offset(std::string_view s, size_t pos) {
@@ -314,7 +318,7 @@ inline long line_of_offset(std::string_view s, size_t pos) {
 
 // For each line of `s` (1-based; index 0 unused), whether its END (the `\n`,
 // or EOF for the last line) sits in code / comment context — i.e. a trailing
-// `#@N` marker comment may be placed or read there. A line ending inside a
+// `#@culebra:N` marker comment may be placed or read there. A line ending inside a
 // string literal (multi-line triple string) or an interpolation hole is
 // unsafe. This walk mirrors `rewrite_outside_strings`' lane logic at line
 // granularity; the two are kept as documented twins (unifying them under one
@@ -362,15 +366,16 @@ inline std::vector<bool> safe_line_ends(std::string_view s) {
   return safe;
 }
 
-// True when the line already carries a trailing `#@N` marker.
+// True when the line already carries a trailing `#@culebra:N` marker.
 inline bool line_has_marker(std::string_view line) {
   size_t e = line.size();
   size_t d = e;
   while (d > 0 && std::isdigit(static_cast<unsigned char>(line[d - 1]))) d--;
-  return d < e && d >= 2 && line[d - 2] == '#' && line[d - 1] == '@';
+  return d < e && d >= kLineMarker.size() &&
+         line.substr(d - kLineMarker.size(), kLineMarker.size()) == kLineMarker;
 }
 
-// Append ` #@<first_line + i>` to each marker-safe line of `text` — the
+// Append ` #@culebra:<first_line + i>` to each marker-safe line of `text` — the
 // entry-point annotation for a body sliced verbatim out of the ORIGINAL file
 // (so line numbering is contiguous). Lines that already carry a marker (a body
 // re-sliced from an annotated fragment never reaches here, but a user comment
@@ -387,7 +392,8 @@ inline std::string annotate_line_markers(std::string_view text,
     out += line;
     bool ok = (idx + 1) < safe.size() && safe[idx + 1];
     if (ok && !line.empty() && !line_has_marker(line)) {
-      out += std::format(" #@{}", first_line + static_cast<long>(idx));
+      out += std::format(" {}{}", kLineMarker,
+                         first_line + static_cast<long>(idx));
     }
     if (nl == std::string_view::npos) break;
     out += '\n';
@@ -436,7 +442,7 @@ inline long marker_orig_line(std::string_view text, size_t line) {
                                           : static_cast<long>(line);
 }
 
-// Cached `#@N` marker lookup over one fragment's source, shared by the effects
+// Cached `#@culebra:N` marker lookup over one fragment's source, shared by the effects
 // lowerer and the generator CpsBuilder. `src_is_original` makes an unmarked
 // line fall back to its own (identity) line; otherwise it has no provenance.
 struct LineMarkers {
@@ -458,7 +464,7 @@ struct LineMarkers {
   // plain slice loses it).
   std::string mk(const peg::Ast& n) {
     long p = orig_line(n);
-    return p ? std::format(" #@{}", p) : "";
+    return p ? std::format(" {}{}", kLineMarker, p) : "";
   }
 };
 
@@ -655,15 +661,15 @@ inline std::optional<std::string> rewrite_yielding_fors_to_while(
     // A single-line body's trailing marker sits outside the for's span —
     // re-attach it so the loop body keeps its provenance.
     if (body_text.find('\n') == std::string::npos)
-      body_text += std::format(" #@{}", orig);
+      body_text += std::format(" {}{}", kLineMarker, orig);
     auto replacement = std::format(
-        "let {0} = ({1}).iter() #@{4}\n"
-        "while {0}.has_next() {{ #@{4}\n"
-        "  let {2} = {0}.next() #@{4}\n"
+        "let {0} = ({1}).iter() {4}{5}\n"
+        "while {0}.has_next() {{ {4}{5}\n"
+        "  let {2} = {0}.next() {4}{5}\n"
         "  {3}\n"
         "}}",
         iter_var, std::string(expr_sv),
-        std::string(var_node.token), body_text, orig);
+        std::string(var_node.token), body_text, kLineMarker, orig);
     out.replace(f->position - base, f->length, replacement);
   }
   return out;
@@ -1170,7 +1176,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
         static_cast<long>(fd->column));
   }
 
-  // Annotate every body line with a `#@<original-line>` provenance marker
+  // Annotate every body line with a `#@culebra:<original-line>` provenance marker
   // before any rewriting stage. Markers are comments, so each later stage
   // (for-desugar, CPS state emission) carries them for free, and the final
   // fragment parse can restore original line numbers (see reposition below).

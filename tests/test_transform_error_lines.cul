@@ -1,6 +1,6 @@
 // Conformance: runtime errors inside effect / generator bodies report the
 // ORIGINAL source line, not a transform-fragment line. The transforms annotate
-// body lines with `#@N` provenance markers (comments that survive every text
+// body lines with `#@culebra:N` provenance markers (comments that survive every text
 // stage) and the final fragment parse rebuilds the AST with original lines.
 // Columns stay approximate (rewrites shift them); both backends read the same
 // repositioned AST, so symmetry is structural.
@@ -100,5 +100,29 @@ fn gen_stmt() {
   yield bad
 }
 check("gen-stmt", 99, fn() { gen_stmt().collect() })
+
+// no-handler EffectError carries the line of the offending `perform`
+effect fn nh_body() {
+  let a = 1
+  let x = perform ask()
+  x + a
+}
+check("no-handler", 107, fn() { handle { nh_body() } with return(v) { v } })
+
+// …and across a delegate chain it is the innermost perform's line
+effect fn nh_inner() {
+  perform ask()
+}
+effect fn nh_outer() { nh_inner() }
+check("no-handler-delegate", 114, fn() { handle { nh_outer() } with return(v) { v } })
+
+// a user comment ending in a bare `#@N` is not provenance (the marker token
+// is the verbose `#@culebra:N`)
+effect fn imit_body() {
+  let a = 1   # decoy #@5
+  let bad = a + "s"
+  bad
+}
+check("marker-imitation", 123, fn() { handle { imit_body() } with return(v) { v } })
 
 puts("test_transform_error_lines: all assertions passed")

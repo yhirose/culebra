@@ -109,7 +109,8 @@ struct EffSuspension {
   std::string op;          // Perform: operation name
   std::string args_array;  // Perform: `[a, b, …]` source (rewritten)
   std::string call_src;    // Delegate: the effect-fn call source (rewritten)
-  std::string prov;        // ` #@N` marker for the emitted line ("" = none)
+  std::string prov;        // ` #@culebra:N` marker for the emitted line ("" = none)
+  long line = 0;           // Perform: original source line (for EffectError)
 };
 
 // Classification of a leaf body statement: a statement-level suspension
@@ -124,7 +125,7 @@ struct EffStmtClass {
 class EffectsLowerer {
  public:
   // `src_is_original` marks the one lowerer bound to the user's real file (set
-  // by transform_effects_in); its body slices get `#@<line>` provenance
+  // by transform_effects_in); its body slices get `#@culebra:<line>` provenance
   // markers on entry, which every later text stage carries as comments so the
   // final fragment parse can restore original line numbers (see the marker
   // helpers in generator_transform.h).
@@ -316,6 +317,7 @@ class EffectsLowerer {
     su.op = std::string(perform.nodes[0]->token);
     su.args_array = perform_args_array(*perform.nodes[1], rewrite);
     su.prov = mk(perform);
+    su.line = err_line(perform);
     return su;
   }
 
@@ -820,8 +822,9 @@ class EffectsLowerer {
     if (su.kind == EffSuspension::Perform) {
       st.states[susp] = std::format(
           "      this._eff_op = \"{}\"\n      this._eff_args = {}{}\n"
+          "      this._eff_line = {}\n"
           "      this._eff_state = {}\n      return {}\n",
-          su.op, su.args_array, su.prov, after, EFF_SUSPEND);
+          su.op, su.args_array, su.prov, su.line, after, EFF_SUSPEND);
     } else {
       st.states[susp] = std::format(
           "      this._eff_delegate = ({}){}\n      this._eff_state = {}\n"
@@ -1264,6 +1267,7 @@ class EffectsLowerer {
         "      this._eff_val = nil\n"
         "      this._eff_op = nil\n"
         "      this._eff_args = nil\n"
+        "      this._eff_line = nil\n"
         "      this._eff_delegate = nil\n",
         entry);
     emit_ctor_param_and_local_inits(param_names, locals, ctor_params,

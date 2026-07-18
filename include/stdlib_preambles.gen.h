@@ -463,14 +463,16 @@ let _eff_module = fn() {
   # without a per-call accessor closure.
   let _sflag = [false]
 
-  fn _find(op) {
+  fn _find(op, line) {
     let mut i = _handlers.size() - 1
     while i >= 0 {
       let frame = _handlers[i]
       if frame.has(op) { return frame[op] }
       i -= 1
     }
-    throw { kind: "EffectError", message: "no handler for effect '{op}'" }
+    # `line` is the original source line of the `perform` (carried on the
+    # computation object by the transform), so the error points at the caller.
+    throw { kind: "EffectError", message: "no handler for effect '{op}'", line: line }
   }
 
   fn _drive(stack, rv, ret) {
@@ -496,7 +498,7 @@ let _eff_module = fn() {
         continue
       }
       if tag == 1 {
-        let h = _find(comp._eff_op)
+        let h = _find(comp._eff_op, comp._eff_line)
         let snapshot = stack   # frozen at the suspend point; forks clone it
         let resume = fn(v) { _drive(snapshot.map(|f| __eff_copy(f)), v, ret) }
         return h(comp._eff_args, resume)
