@@ -73,12 +73,16 @@ for cf in "${chunks[@]}"; do
 done
 [ "$fail" = 0 ] || exit 1
 
-# JIT-specific leaks: labels where (jit_growth - interp_growth) >= THRESH.
+# JIT-specific leaks: labels where (jit_growth - max(0, interp_growth)) >= THRESH.
 # interp is the leak-free baseline, so this subtracts legitimately-accumulating
-# cases (globals) and pure reference cycles (which leak equally on both).
+# cases (globals) and pure reference cycles (which leak equally on both). Clamp
+# the interp reference at 0: a *negative* interp growth means interp rc_objects
+# settled during the window (a warmup transient not fully absorbed, or churn from
+# neighbouring cases), and subtracting it would manufacture a phantom JIT leak
+# out of a JIT growth that is actually 0.
 awk -F' ::: growth=' -v TH="$THRESH" '
   FNR==NR { if ($2 != "") ig[$1] = $2 + 0; next }
-  $2 != "" { d = ($2 + 0) - (($1 in ig) ? ig[$1] : 0); if (d >= TH) print $1 }
+  $2 != "" { ref = ($1 in ig) ? ig[$1] : 0; if (ref < 0) ref = 0; d = ($2 + 0) - ref; if (d >= TH) print $1 }
 ' "$WORK/out_interp.txt" "$WORK/out_jit.txt" | LC_ALL=C sort -u > "$WORK/current_leaks.txt"
 now=$(grep -c '' "$WORK/current_leaks.txt")
 
