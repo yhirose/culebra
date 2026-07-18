@@ -160,4 +160,48 @@ assert_eq(er_tail, 9)
 // effect body is a parse-time SyntaxError — verified manually on both
 // backends, not runnable here)
 
+// --- (16) same-op shadowing across nested handles: the innermost handle
+// wins while active, and the outer one is restored when it exits — on the
+// direct path, the driven path, and for clause-kind mixes ---
+effect fn sh_ask()
+fn sh_direct() { perform sh_ask() }
+effect fn sh_eff() { perform sh_ask() }
+let sh1 = handle {
+  let inner = handle { sh_direct() } with sh_ask(r) { r("inner") }
+  [inner, sh_direct()]
+} with sh_ask(r) { r("outer") }
+assert_eq(sh1, ["inner", "outer"])
+let sh2 = handle {
+  let a = handle { sh_eff() } with sh_ask(r) { r("in2") }
+  [a, sh_eff()]
+} with sh_ask(r) { r("out2") }
+assert_eq(sh2, ["in2", "out2"])
+// inner tail clause shadows the outer abort clause for the same op
+let sh3 = handle {
+  handle { sh_direct() } with sh_ask(r) { r("tail-in") }
+} with sh_ask(r) { "abort-out" }
+assert_eq(sh3, "tail-in")
+// a user throw unwinding through a handle still unwinds its handler scope:
+// afterwards a fresh handle dispatches, and no stale handler is left behind
+fn sh_boom() { throw "boom" }
+let sh4 = try { handle { sh_boom() } with sh_ask(r) { r(1) } } catch e { "caught" }
+assert_eq(sh4, "caught")
+assert_eq(handle { sh_direct() } with sh_ask(r) { r("after") }, "after")
+assert_eq(try { sh_direct() } catch e { e.kind }, "EffectError")
+
+// --- (17) an op named like a dict method (get/has/…) dispatches correctly:
+// the handler index keys must not let such a name shadow the methods the
+// runtime calls on that index ---
+effect fn get()
+effect fn has(k)
+fn uses_get() { perform get() }
+fn uses_has() { perform has("x") }
+assert_eq(handle { uses_get() } with get(resume) { resume(42) }, 42)
+assert_eq(handle { uses_has() } with has(k, resume) { resume("saw " + k) }, "saw x")
+// nested: outer `get`, inner `has`, both reachable
+let both = handle {
+  handle { [uses_get(), uses_has()] } with has(k, resume) { resume("H") }
+} with get(resume) { resume(7) }
+assert_eq(both, [7, "H"])
+
 print("dynamic perform ok")

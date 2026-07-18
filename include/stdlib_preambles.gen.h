@@ -472,9 +472,17 @@ inline constexpr const char* EFFECTS_MODULE_SOURCE = R"=culpre=(# Algebraic-effe
 # from direct dispatch is an EffectError (the native frames in between cannot
 # be reified).
 let _eff_module = fn() {
-  let _handlers = []   # stack of frames; each frame maps op-name -> {t, f}
-  # Monotonic token distinguishing nested `handle` frames, so an abort unwinds
-  # to exactly the handle whose clause ran (not the innermost catcher).
+  # Dynamically-scoped handlers indexed by op-name: each op maps to a stack of
+  # its live `{t, f, tok}` entries, innermost last. Lookup is one dict probe
+  # regardless of how deeply `handle`s nest (an O(1) dispatch that stays a pure
+  # preamble change — no evidence-passing / type-directed compilation, so the
+  # three backends still run identical lowered source). Keys are prefixed with
+  # `@` so a user op named like a dict method (`get`, `has`, …) can never
+  # shadow the method we call on this dict.
+  let _op_stacks = {}
+  fn _key(op) { "@" + op }
+  # Monotonic token distinguishing nested `handle`s, so an abort unwinds to
+  # exactly the handle whose clause ran (not the innermost catcher).
   let _tok = [0]
   # Identity resume for tail clauses under direct dispatch — hoisted so the
   # per-perform hot path does not allocate a closure (which also perturbs the
@@ -482,11 +490,10 @@ let _eff_module = fn() {
   let _id_resume = fn(v) { v }
 
   fn _find(op, line) {
-    let mut i = _handlers.size() - 1
-    while i >= 0 {
-      let frame = _handlers[i]
-      if frame.has(op) { return frame }
-      i -= 1
+    let st = _op_stacks.get(_key(op), nil)
+    if st != nil {
+      let n = st.size()
+      if n > 0 { return st[n - 1] }
     }
     # `line` is the original source line of the `perform` (carried on the
     # computation object by the transform), so the error points at the caller.
@@ -519,10 +526,14 @@ let _eff_module = fn() {
         continue
       }
       if tag == 1 {
-        # Bind the adapter before calling it: `h.f(…)` in call form would
-        # let a user global fn shadow-race the field in the JIT's method
-        # resolution (see the dynamic-perform cycle notes).
-        let hf = _find(comp._eff_op, comp._eff_line)[comp._eff_op].f
+        # Bind the adapter before calling it: `h.f(…)` in call form makes
+        # the JIT's UFCS-candidate analysis treat `f` as a possible free
+        # variable, which — since this preamble is spliced into the entry
+        # module — can capture a same-named user global fn. That breaks the
+        # lazy-ns builder's captureless invariant (see the dynamic-perform
+        # cycle notes; the runtime now raises a loud error on this instead
+        # of a silent crash, but the bind-then-call form avoids it outright).
+        let hf = _find(comp._eff_op, comp._eff_line).f
         let snapshot = stack   # frozen at the suspend point; forks clone it
         let resume = fn(v) { _drive(snapshot.map(|c| __eff_copy(c)), v, ret) }
         return hf(comp._eff_args, resume)
@@ -536,13 +547,19 @@ let _eff_module = fn() {
   fn _handle(comp, frame, ret) {
     # `frame` maps each handled op-name to its {t: class, f: adapter} entry
     # (one per `with` clause); `ret` is the optional `return`-clause adapter
-    # (nil if none). Push the frame as one dynamically-scoped frame for
-    # `comp`'s duration, tagged with this handle's abort token.
+    # (nil if none). Push each op's entry onto its per-op stack for `comp`'s
+    # duration, tagging it with this handle's abort token.
     _tok[0] += 1
     let tok = _tok[0]
-    frame["_eff_tok"] = tok
-    _handlers.push(frame)
-    defer { _handlers.pop() }
+    let keys = []
+    for op, entry in frame {
+      entry["tok"] = tok
+      let k = _key(op)
+      if !_op_stacks.has(k) { _op_stacks[k] = [] }
+      _op_stacks[k].push(entry)
+      keys.push(k)
+    }
+    defer { for pk in keys { _op_stacks[pk].pop() } }
     let pair = __eff_catch_abort(fn() { _drive([comp], nil, ret) })
     if pair[0] {
       let sig = pair[1]
@@ -555,15 +572,14 @@ let _eff_module = fn() {
   }
 
   # A `perform` in ordinary (non-effect) code: no computation object, no
-  # suspension — dispatch straight off the handler stack. Tail clauses run
+  # suspension — dispatch straight off the per-op handler stack. Tail clauses run
   # with an identity resume (the native stack is the continuation); abort
   # clauses compute their result and unwind to their handle.
   fn _perform_direct(op, args, line) {
-    let fr = _find(op, line)
-    let h = fr[op]
+    let h = _find(op, line)
     let hf = h.f
     if h.t == "f" { _full_control_error(op, line) }
-    if h.t == "a" { __eff_abort([fr["_eff_tok"], hf(args, _id_resume)]) }
+    if h.t == "a" { __eff_abort([h.tok, hf(args, _id_resume)]) }
     hf(args, _id_resume)
   }
 
