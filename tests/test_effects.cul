@@ -667,3 +667,87 @@ effect fn sc2_body() {
   } with sc2_i(k) { k(1) }
 }
 assert_eq(handle { sc2_body() } with sc2_o(k) { k(5) }, "5|path is this.foo|1")
+
+// --- named fns and generators inside effect / handle bodies ---------------
+// A named fn declared at the body's statement level persists across
+// suspensions (it lives as an instance field, bound through the `_eff_self`
+// IIFE so references to effect locals stay symmetric).
+effect fn nf_ask()
+effect fn nf_body() {
+  fn h(n) { n * 2 }
+  let x = perform nf_ask()
+  h(x)
+}
+assert_eq(handle { nf_body() } with nf_ask(k) { k(5) }, 10)
+
+// recursion through the instance field
+effect fn nf_rec() {
+  let base = perform nf_ask()
+  fn fact(n) {
+    if n <= 1 { return base }
+    n * fact(n - 1)
+  }
+  fact(4)
+}
+assert_eq(handle { nf_rec() } with nf_ask(k) { k(1) }, 24)
+
+// a nested named generator fn captures effect locals and works in an effect
+// body, a handle body, and a handler clause; the fragment re-parse runs the
+// generator chain over it
+effect fn yg_body() {
+  let x = perform nf_ask()
+  fn g(n) {
+    yield n
+    yield n + x
+  }
+  g(10).collect()
+}
+assert_eq(handle { yg_body() } with nf_ask(k) { k(5) }, [10, 15])
+
+let yg_handle = handle {
+  let x = perform nf_ask()
+  fn g2(n) { yield n; yield n * x }
+  g2(3).collect()
+} with nf_ask(k) { k(7) }
+assert_eq(yg_handle, [3, 21])
+
+let yg_clause = handle { perform nf_ask() } with nf_ask(k) {
+  fn g3() { yield 1; yield 2 }
+  k(g3().collect())
+}
+assert_eq(yg_clause, [1, 2])
+
+// for-in and yield-from inside the nested generator
+fn yg_base() { yield 100; yield 200 }
+effect fn yg_mix() {
+  let x = perform nf_ask()
+  fn g4() {
+    for v in [1, 2] { yield v + x }
+    yield from yg_base()
+  }
+  g4().collect()
+}
+assert_eq(handle { yg_mix() } with nf_ask(k) { k(10) }, [11, 12, 100, 200])
+
+// multi-shot resume across a body that defines a nested generator
+effect fn yg_choose()
+effect fn yg_ms() {
+  let b = perform yg_choose()
+  fn g5(n) { yield n; yield n + 1 }
+  g5(b).collect()
+}
+assert_eq(handle { yg_ms() } with yg_choose(k) { [k(10), k(20)] },
+          [[10, 11], [20, 21]])
+
+// a named fn in a CPS-visited tail `if` arm works too
+effect fn yg_tail() {
+  let x = perform nf_ask()
+  if x > 0 {
+    fn g6() { yield x }
+    g6().collect()
+  }
+}
+assert_eq(handle { yg_tail() } with nf_ask(k) { k(3) }, [3])
+
+// (bare yield / a named fn buried in verbatim control flow stay parse-time
+// SyntaxErrors — verified manually on both backends, not runnable here)

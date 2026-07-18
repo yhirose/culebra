@@ -224,4 +224,17 @@ for x in outer_times10(100) {
 }
 assert_eq(sum_s5, 0 + 10 + 20 + 30)
 
+// a named generator fn declared inside a class method (its lowered class decl
+// sits inside the method's fn scope, not directly in the class body)
+class GenHost {
+  m(n) {
+    fn g() {
+      yield n
+      yield n * 2
+    }
+    g().collect()
+  }
+}
+assert_eq(GenHost.new().m(7), [7, 14])
+
 IO.puts('test_generator OK')

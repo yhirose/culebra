@@ -997,7 +997,8 @@ struct CpsBuilder {
 // engine's scope (caller then reports / falls back).
 inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
     std::shared_ptr<peg::Ast> ast, const char* src, size_t src_len,
-    const peg::Ast& name_ast, const peg::Ast& params_ast) {
+    const peg::Ast& name_ast, const peg::Ast& params_ast,
+    long decl_fallback) {
   using namespace peg::udl;
 
   auto gen_name = std::format("_Gen_{}_{}_{}",
@@ -1097,7 +1098,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
   if (!wrapper_fn) return ast;
   auto map = marker_line_map(*synthesized);
   ast->nodes.back() = reposition_ast(wrapper_fn->nodes.back(), map,
-                                     static_cast<long>(name_ast.line), label);
+                                     decl_fallback, label);
   return ast;
 }
 
@@ -1180,18 +1181,27 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
   // before any rewriting stage. Markers are comments, so each later stage
   // (for-desugar, CPS state emission) carries them for free, and the final
   // fragment parse can restore original line numbers (see reposition below).
+  // A body sliced out of an already-annotated fragment (a generator fn nested
+  // in an effect body) keeps its markers as-is: re-annotating would stamp
+  // fragment-relative numbers onto the marker-less machinery lines.
+  // Resolve the decl line for machinery fallback while `src` is still the
+  // buffer the name node indexes: identity for a real file, marker-mapped for
+  // an annotated fragment.
+  long decl_fallback = marker_orig_line({src, src_len}, ast->nodes[i]->line);
   {
     auto inner = strip_block_braces(
         ast_source_slice(*ast->nodes.back(), src, src_len));
-    long first = line_of_offset({src, src_len},
-                                static_cast<size_t>(inner.data() - src));
-    auto params_sv = ast_source_slice(*ast->nodes[i + 1], src, src_len);
-    auto annotated = std::make_shared<std::string>(std::format(
-        "fn __gen_wrapper__{} {{\n{}\n}}\n", std::string(params_sv),
-        annotate_line_markers(inner, first)));
-    if (!swap_body_with_wrapper_params(ast, annotated, i)) return ast;
-    src = annotated->data();
-    src_len = annotated->size();
+    if (inner.find(kLineMarker) == std::string_view::npos) {
+      long first = line_of_offset({src, src_len},
+                                  static_cast<size_t>(inner.data() - src));
+      auto params_sv = ast_source_slice(*ast->nodes[i + 1], src, src_len);
+      auto annotated = std::make_shared<std::string>(std::format(
+          "fn __gen_wrapper__{} {{\n{}\n}}\n", std::string(params_sv),
+          annotate_line_markers(inner, first)));
+      if (!swap_body_with_wrapper_params(ast, annotated, i)) return ast;
+      src = annotated->data();
+      src_len = annotated->size();
+    }
   }
 
   // Desugar yielding for-in loops to while + iterator, re-parsing each
@@ -1215,7 +1225,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
   const auto& params_ast = *ast->nodes[i + 1];
   auto orig_body = ast->nodes.back();
   auto out = transform_one_generator_fn_cps(ast, src, src_len, name_ast,
-                                            params_ast);
+                                            params_ast, decl_fallback);
   if (out->nodes.back().get() != orig_body.get()) return out;
 
   // CPS left the body untouched — it hit a construct it can't lower

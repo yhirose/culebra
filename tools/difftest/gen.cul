@@ -941,7 +941,19 @@ let eff = [
   # a block comment (its local name) is skipped, not rewritten
   'effect fn a(); effect fn f() { let base = perform a(); let y = /* just base */ base + 1; y }; to_string(handle { f() } with a(k) { k(10) })',
   # an effectful effect fn called with no driver raises EffectError
-  'effect fn g(); effect fn f() { perform g() }; try { f() } catch e { e.kind }']
+  'effect fn g(); effect fn f() { perform g() }; try { f() } catch e { e.kind }',
+  # a named fn at statement level persists across a suspension (instance field)
+  'effect fn a(); effect fn f() { fn h(n) { n * 2 }; let x = perform a(); h(x) }; handle { f() } with a(k) { k(5) }',
+  # recursion through the field binding
+  'effect fn a(); effect fn f() { let b = perform a(); fn r(n) { if n <= 1 { return b }; n * r(n - 1) }; r(4) }; handle { f() } with a(k) { k(1) }',
+  # a nested named generator fn captures an effect local (effect body)
+  'effect fn a(); effect fn f() { let x = perform a(); fn g(n) { yield n; yield n + x }; g(10).collect() }; to_string(handle { f() } with a(k) { k(5) })',
+  # ... in a handle body
+  'effect fn a(); to_string(handle { let x = perform a(); fn g(n) { yield n * x }; g(3).collect() } with a(k) { k(7) })',
+  # ... in a handler clause
+  'effect fn a(); to_string(handle { perform a() } with a(k) { fn g() { yield 1; yield 2 }; k(g().collect()) })',
+  # multi-shot resume across a body defining a nested generator
+  'effect fn c(); effect fn f() { let b = perform c(); fn g(n) { yield n; yield n + 1 }; g(b).collect() }; to_string(handle { f() } with c(k) { [k(10), k(20)] })']
 for c in eff {
   case("eff|" + c, c)
 }

@@ -177,14 +177,16 @@ class EffectsLowerer {
     return ast_source_slice(n, src_, src_len_);
   }
 
-  // First YIELD / YIELD_FROM anywhere under `n`, including inside nested fn
-  // values and named fns (the effects re-parse skips the generator chain, so
-  // none of them would be lowered). nullptr when absent.
-  static const peg::Ast* find_yield_anywhere(const peg::Ast& n) {
+  // First YIELD / YIELD_FROM directly in this body — stopping at fn
+  // boundaries, so a nested named generator fn is fine (the effects fragment
+  // re-parse runs the generator chain and lowers it). A bare yield would make
+  // the effect body itself a generator, which it is not. nullptr when absent.
+  static const peg::Ast* find_bare_yield(const peg::Ast& n) {
     using namespace peg::udl;
     if (n.tag == "YIELD"_ || n.tag == "YIELD_FROM"_) return &n;
+    if (is_fn_boundary(n.tag)) return nullptr;
     for (auto& c : n.nodes) {
-      if (auto* y = find_yield_anywhere(*c)) return y;
+      if (auto* y = find_bare_yield(*c)) return y;
     }
     return nullptr;
   }
@@ -788,6 +790,57 @@ class EffectsLowerer {
                      const std::set<std::string>& rw) const {
     return rewrite_locals_to_this(slice(n), rw);
   }
+
+  // A named fn declared at statement level in an effect body persists as an
+  // instance field (each state block is a fresh scope, so a plain local decl
+  // would not survive past the next suspension). The decl is wrapped in an
+  // IIFE that binds the enclosing instance to a plain local so body
+  // references to effect locals (rewritten to `this.` by the locals pass)
+  // resolve symmetrically in both backends — the `_eff_self` pattern from
+  // handler clauses. The inner decl may be a generator (`yield`): the
+  // fragment re-parse runs the generator chain over it.
+  std::string emit_named_fn_field(const peg::Ast& decl,
+                                  const std::set<std::string>& rw) const {
+    size_t k = first_non_decorator_index(decl);
+    if (k != 0) {
+      throw CulebraError(
+          "SyntaxError",
+          "a decorated named fn is not supported inside an `effect fn` or "
+          "`handle` body — define it outside.",
+          err_line(decl), static_cast<long>(decl.column));
+    }
+    std::string name(decl.nodes[k]->token);
+    std::string text = rewrite_locals_to_this(slice(decl), rw);
+    // The locals rewrite turned the header's own name into `fn this.<name>(`;
+    // restore a plain inner name before redirecting `this.` to the IIFE param.
+    std::string marked = "fn this." + name;
+    if (text.rfind(marked, 0) == 0) {
+      text = "fn " + name + text.substr(marked.size());
+    }
+    auto self_name =
+        std::format("_eff_self_{}_{}", decl.line, decl.column);
+    text = redirect_this_to_self(text, self_name);
+    return std::format("this.{0} = (fn ({1}) {{\n{2}\n{0} }})(this)", name,
+                       self_name, text);
+  }
+
+  // Statement-level emission source: a named fn decl becomes an instance-field
+  // binding; one buried in otherwise-verbatim control flow would silently keep
+  // state-local scope, so reject it; anything else is the rewritten slice.
+  std::string stmt_src(const peg::Ast& s,
+                       const std::set<std::string>& rw) const {
+    using namespace peg::udl;
+    auto* u = unwrap_stmt(&s);
+    if (u->tag == "MULTIFN_DECL"_) return emit_named_fn_field(*u, rw);
+    if (auto* fd = find_nested_fndef(*u)) {
+      throw CulebraError(
+          "SyntaxError",
+          "a named fn inside nested control flow of an `effect fn` / `handle` "
+          "body is not supported — define it at the body's statement level.",
+          err_line(*fd), static_cast<long>(fd->column));
+    }
+    return cps_rw(s, rw);
+  }
   bool cps_needs_split(const peg::Ast& s) const {
     return has_suspension(s) || has_escaping_loop_ctrl(s);
   }
@@ -855,8 +908,13 @@ class EffectsLowerer {
     using namespace peg::udl;
     int s = st.fresh();
     std::string body;
-    if (u->tag == "ASSIGNMENT"_) {
-      body = "      " + cps_rw(*u, rw) + mk(*u) + "\n";
+    if (u->tag == "MULTIFN_DECL"_) {
+      // A named fn decl in tail position: bind the field; the value is nil
+      // (matching plain culebra, where a fn decl statement evaluates to nil).
+      body = "      " + emit_named_fn_field(*u, rw) + mk(*u) + "\n" +
+             "      this._eff_val = nil\n";
+    } else if (u->tag == "ASSIGNMENT"_) {
+      body = "      " + stmt_src(*u, rw) + mk(*u) + "\n";
       auto av = view_assignment(*u);
       if (av.lvalcnt == 1) {
         const auto& lval = *u->nodes[av.lvaloff];
@@ -865,7 +923,7 @@ class EffectsLowerer {
                               std::string(lval.token));
       }
     } else {
-      body = std::format("      this._eff_val = ({}){}\n", cps_rw(*u, rw),
+      body = std::format("      this._eff_val = ({}){}\n", stmt_src(*u, rw),
                          mk(*u));
     }
     body += std::format("      this._eff_state = {}\n      continue\n", st.terminal);
@@ -985,7 +1043,7 @@ class EffectsLowerer {
       // culebra), so tail position adds nothing.
       if (cps_needs_split(*u)) return cps_stmt(st, s, cont, /*tail=*/false, rw);
       int e = st.fresh();
-      st.states[e] = "      " + cps_rw(*u, rw) + mk(*u) +
+      st.states[e] = "      " + stmt_src(*u, rw) + mk(*u) +
                      std::format("\n      this._eff_state = {}\n      continue\n",
                                  cont);
       return e;
@@ -1018,7 +1076,7 @@ class EffectsLowerer {
     for (size_t idx = stmts.size(); idx-- > 0;) {
       const peg::Ast* s = stmts[idx];
       if (!cps_needs_split(*s)) {
-        pending = "      " + cps_rw(*s, rw) + mk(*s) + "\n" + pending;
+        pending = "      " + stmt_src(*s, rw) + mk(*s) + "\n" + pending;
       } else {
         flush();
         k = cps_stmt(st, s, k, /*tail=*/false, rw);
@@ -1164,9 +1222,13 @@ class EffectsLowerer {
   // a `_eff_self` wrapper over a nonexistent `this`. `this` only enters an
   // effect body via the outer locals-to-`this` rewrite, so any `this` node is a
   // real capture; an interpolation's `"{this.x}"` is a node too and is redirected.
+  // Stops at CLASS_DECL: `this` inside a class's methods is that class's own
+  // instance (e.g. the machinery of a generator fn the mainline pass already
+  // lowered in place), never an enclosing-computation read.
   static bool captures_outer(const peg::Ast& node) {
     using namespace peg::udl;
     if (node.tag == "IDENTIFIER"_ && node.token == "this") return true;
+    if (node.tag == "CLASS_DECL"_) return false;
     for (auto& c : node.nodes) {
       if (captures_outer(*c)) return true;
     }
@@ -1187,14 +1249,14 @@ class EffectsLowerer {
       const std::string& class_name, const peg::Ast& body_node,
       const std::vector<std::string_view>& param_names,
       const std::string& rv_name, bool capture_outer = false) const {
-    // The body's re-parse bypasses the generator transform, so any yield in
-    // here (bare, or inside a nested named generator fn) would reach the
-    // backends unlowered — reject it symmetrically up front.
-    if (auto* y = find_yield_anywhere(body_node)) {
+    // A bare yield would make the effect body itself a generator, which it is
+    // not — reject it symmetrically up front. Yields inside a nested named fn
+    // are fine: the fragment re-parse runs the generator chain over them.
+    if (auto* y = find_bare_yield(body_node)) {
       throw CulebraError(
           "SyntaxError",
-          "`yield` cannot appear inside an `effect fn` or `handle` body — "
-          "define the generator outside and call it.",
+          "`yield` cannot appear directly in an `effect fn` or `handle` body "
+          "— wrap it in a generator fn defined in (or outside) the body.",
           err_line(*y), static_cast<long>(y->column));
     }
     // Parse the brace-stripped inner source so a single-statement BLOCK's
@@ -1251,11 +1313,32 @@ class EffectsLowerer {
     return sub.build_class_from_program(class_name, *prog, param_names, rv_name);
   }
 
+  // Names of named fn decls in the body (statement level or nested control
+  // flow), stopping at fn / HANDLE boundaries like `collect_local_names` —
+  // they live as instance fields (see `emit_named_fn_field`), so calls to
+  // them rewrite to `this.<name>(...)`.
+  static std::set<std::string> collect_named_fn_decls(const peg::Ast& body) {
+    using namespace peg::udl;
+    std::set<std::string> out;
+    std::function<void(const peg::Ast&)> walk = [&](const peg::Ast& n) {
+      if (n.tag == "MULTIFN_DECL"_) {
+        // Record the name, but don't descend: fns nested inside it are its own.
+        out.insert(std::string(n.nodes[first_non_decorator_index(n)]->token));
+        return;
+      }
+      if (is_fn_boundary(n.tag) || n.tag == "HANDLE"_) return;
+      for (auto& c : n.nodes) walk(*c);
+    };
+    walk(body);
+    return out;
+  }
+
   std::string build_class_from_program(
       const std::string& class_name, const peg::Ast& program,
       const std::vector<std::string_view>& param_names,
       const std::string& rv_name) const {
     auto locals = collect_local_names(program);
+    for (auto& fname : collect_named_fn_decls(program)) locals.insert(fname);
     std::set<std::string> rewrite = locals;
     for (auto& p : param_names) rewrite.insert(std::string(p));
 
@@ -1457,9 +1540,12 @@ class EffectsLowerer {
   }
 
   // Re-parse a synthesized `fn name(...) { … }` and return its MULTIFN_DECL,
-  // then recursively lower any effect constructs the fragment still carries
-  // (composition of nested handles / effect fns). The synthesized source is
-  // registered for lifetime via the generator transform's source store.
+  // then run the generator pass over the fragment (a nested named generator fn
+  // carried verbatim into a `_step` body is lowered here — the mainline chain
+  // ran before this text existed) and recursively lower any effect constructs
+  // it still carries (composition of nested handles / effect fns). The
+  // synthesized source is registered for lifetime via the generator
+  // transform's source store.
   std::shared_ptr<peg::Ast> reparse_decl(std::shared_ptr<std::string> synth,
                                          long fallback_line) {
     auto label = next_fragment_label("eff");
@@ -1468,6 +1554,7 @@ class EffectsLowerer {
       throw CulebraError("InternalError",
                          "effects transform produced unparseable source", 0, 0);
     }
+    fn = transform_generators_in(fn, synth->data(), synth->size());
     EffectsLowerer sub(synth->data(), synth->size(), effect_fns_);
     auto out = sub.transform(fn);
     // Restore original line numbers from the provenance markers; machinery
@@ -1488,6 +1575,7 @@ class EffectsLowerer {
       throw CulebraError("InternalError",
                          "effects transform produced unparseable source", 0, 0);
     }
+    fn = transform_generators_in(fn, synth->data(), synth->size());
     auto body = fn->nodes.back();
     std::shared_ptr<peg::Ast> expr;
     if (body->tag == "STATEMENTS"_ && !body->nodes.empty()) {
