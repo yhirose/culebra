@@ -654,3 +654,16 @@ assert_eq(cl_in_clause, "EffectError")
 effect fn cl_inner() { let a = perform cl_g(); a + 1 }
 effect fn cl_outer() { let b = cl_inner(); b * 10 }
 assert_eq(handle { cl_outer() } with cl_g(k) { k(5) }, 60)
+
+// `this.`-lookalike text inside a string survives a capturing nested handle
+// (the capture redirects are string-aware, like the locals rewrite)
+effect fn sc2_o()
+effect fn sc2_i()
+effect fn sc2_body() {
+  let base = perform sc2_o()
+  handle {
+    let m = "path is this.foo"
+    to_string(base) + "|" + m + "|" + to_string(perform sc2_i())
+  } with sc2_i(k) { k(1) }
+}
+assert_eq(handle { sc2_body() } with sc2_o(k) { k(5) }, "5|path is this.foo|1")

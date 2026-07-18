@@ -1126,6 +1126,34 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
         static_cast<long>(bad->column));
   }
 
+  // An effect construct inside a generator body breaks: the effects pass runs
+  // after this one and would slice the construct from the original buffer while
+  // its nodes point into the swapped generator fragment — silently wrong
+  // results. Reject symmetrically (including inside nested fn values, which are
+  // carried into the fragment the same way).
+  {
+    using namespace peg::udl;
+    std::function<const peg::Ast*(const peg::Ast&)> find_eff =
+        [&](const peg::Ast& n) -> const peg::Ast* {
+      if (n.tag == "HANDLE"_ || n.tag == "PERFORM"_ ||
+          n.tag == "EFFECT_FN_DECL"_) {
+        return &n;
+      }
+      for (auto& c : n.nodes) {
+        if (auto* e = find_eff(*c)) return e;
+      }
+      return nullptr;
+    };
+    if (auto* e = find_eff(*ast->nodes.back())) {
+      throw CulebraError(
+          "SyntaxError",
+          "an effect construct (`handle` / `perform` / `effect fn`) cannot "
+          "appear inside a generator body — run the effect outside and pass "
+          "the value in.",
+          static_cast<long>(e->line), static_cast<long>(e->column));
+    }
+  }
+
   // A named function definition inside a generator body has no good CPS
   // lowering — the JIT doesn't bind it in the generator's state frame, so it
   // raised NameError while the interp ran it, an interp/JIT divergence. Reject

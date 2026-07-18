@@ -3033,10 +3033,12 @@ puts(handle { work() } with outer(k) { k(5) })    # => 105
   control-flow condition is rejected at parse time (symmetrically on every
   backend).
 * Errors inside an effect body report the **original source line**; the
-  column is approximate (the lowering shifts it). A `this.`-access that also
-  appears as literal text inside a **string** in a captured effect body may
-  still be rewritten there — keep literal text that looks like a captured
-  binding out of such bodies when exactness matters.
+  column is approximate (the lowering shifts it).
+* Effects and generators do not compose inside one body yet: `yield` cannot
+  appear inside an `effect fn` / `handle` body, and an effect construct
+  (`handle` / `perform` / `effect fn`) cannot appear inside a generator body.
+  Both are rejected at parse time (symmetrically); run one mechanism outside
+  the other and pass values in.
 * Handlers are **isolate-local**. A `handle` installed on one thread is not
   visible to a spawned isolate; a `perform` inside the child reaches only
   handlers installed within that same isolate (an unhandled operation there

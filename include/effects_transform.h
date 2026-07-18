@@ -176,6 +176,18 @@ class EffectsLowerer {
     return ast_source_slice(n, src_, src_len_);
   }
 
+  // First YIELD / YIELD_FROM anywhere under `n`, including inside nested fn
+  // values and named fns (the effects re-parse skips the generator chain, so
+  // none of them would be lowered). nullptr when absent.
+  static const peg::Ast* find_yield_anywhere(const peg::Ast& n) {
+    using namespace peg::udl;
+    if (n.tag == "YIELD"_ || n.tag == "YIELD_FROM"_) return &n;
+    for (auto& c : n.nodes) {
+      if (auto* y = find_yield_anywhere(*c)) return y;
+    }
+    return nullptr;
+  }
+
   // Detect `f(args)` where f is a known effect fn (a Delegate suspension).
   // Requires the plain call shape [IDENTIFIER, ARGUMENTS]; a method chain or
   // indexed callee is left verbatim (and, if it hides a perform, rejected
@@ -1126,8 +1138,10 @@ class EffectsLowerer {
   // pass over `this._eff_outer.x` lengthens the chain (`this._eff_outer._eff_outer.x`),
   // which is exactly the walk a doubly-nested capture needs.
   static std::string redirect_this_to_outer(std::string_view src) {
-    return std::regex_replace(std::string(src), this_field_access(),
-                              "$1this._eff_outer.");
+    return rewrite_outside_strings(src, [](std::string_view code) {
+      return std::regex_replace(std::string(code), this_field_access(),
+                                "$1this._eff_outer.");
+    });
   }
   // Redirect `this.x` to `<self>.x` for a handler-clause body: the adapter is a
   // closure inside the `<self>` IIFE, so it captures the enclosing instance as a
@@ -1135,8 +1149,10 @@ class EffectsLowerer {
   // handle so nested handles' IIFE params don't shadow one another.
   static std::string redirect_this_to_self(std::string_view src,
                                            const std::string& self) {
-    return std::regex_replace(std::string(src), this_field_access(),
-                              "$1" + self + ".");
+    return rewrite_outside_strings(src, [&](std::string_view code) {
+      return std::regex_replace(std::string(code), this_field_access(),
+                                "$1" + self + ".");
+    });
   }
   // True when the handle reads an enclosing-computation binding: a genuine
   // `this` receiver node somewhere in its subtree. Walk the AST (not the raw
@@ -1168,6 +1184,16 @@ class EffectsLowerer {
       const std::string& class_name, const peg::Ast& body_node,
       const std::vector<std::string_view>& param_names,
       const std::string& rv_name, bool capture_outer = false) const {
+    // The body's re-parse bypasses the generator transform, so any yield in
+    // here (bare, or inside a nested named generator fn) would reach the
+    // backends unlowered — reject it symmetrically up front.
+    if (auto* y = find_yield_anywhere(body_node)) {
+      throw CulebraError(
+          "SyntaxError",
+          "`yield` cannot appear inside an `effect fn` or `handle` body — "
+          "define the generator outside and call it.",
+          err_line(*y), static_cast<long>(y->column));
+    }
     // Parse the brace-stripped inner source so a single-statement BLOCK's
     // pos/len doesn't span the enclosing braces (the AstOptimizer trap —
     // [[peglib-ast-optimizer]]); uniform for single/multi-statement bodies.
