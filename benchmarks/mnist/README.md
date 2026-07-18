@@ -346,15 +346,15 @@ amortize dispatch overhead. Apple Silicon (M1 Pro), host, ms/iter:
 
 | shape (seq, d_model) | Culebra CPU | Culebra GPU | Culebra auto | silarray GPU | silarray CPU |
 |-----------------------|------------:|------------:|--------------:|-------------:|-------------:|
-| 256, 512              | **3.21**    | 4.24        | 3.51           | **1.91**     | 9.65          |
-| 256, 768               | 5.68        | **4.21**    | 6.79           | **2.20**     | —             |
-| 256, 1024               | 11.23       | **5.58**    | 9.06           | **3.14**     | —             |
-| 512, 1024               | 19.37       | **6.40**    | 8.19           | **5.32**     | —             |
+| 256, 512              | **3.21**    | 4.31        | 3.35           | **1.91**     | 9.65          |
+| 256, 768               | 5.38        | **4.03**    | 5.92           | **2.20**     | —             |
+| 256, 1024               | 10.24       | **4.90**    | 5.51           | **3.14**     | —             |
+| 512, 1024               | 17.01       | **6.34**    | 7.64           | **5.32**     | —             |
 
-(min of 3 interleaved runs; earlier snapshots of this table had the GPU
-at 6.7–15.3 ms/iter, losing to Culebra's own CPU everywhere below the
-largest config.) Three `cpp-tensorlib` Metal rounds closed most of that
-gap: broadcast/pow/mean kernels so mid-graph ops stop falling back to
+(min of 6 position-rotated interleaved runs; earlier snapshots of this
+table had the GPU at 6.7–15.3 ms/iter, losing to Culebra's own CPU
+everywhere below the largest config.) Three `cpp-tensorlib` Metal rounds
+closed most of that gap: broadcast/pow/mean kernels so mid-graph ops stop falling back to
 the CPU (each fallback drained the whole pending command buffer),
 views (`transpose`/`reshape`/`slice`) that realize their source without
 a sync, and STEEL gemm kernels for transposed operands (`Q·Kᵀ` and the
@@ -363,11 +363,17 @@ wins from d_model=768 up, scales the way the op mix predicts (the
 CPU:GPU ratio reaches 3x at the largest config), and sits within
 1.2–2.2x of silarray's GPU instead of 3–4x.
 
-`auto` picks the CPU correctly at (256, 512) and improves on CPU-only
-above that, but does not reach forced-GPU on the larger configs: its
-per-op thresholds decide device as each op is evaluated, and view
-realization splits a block into fragments none of which alone crosses
-the matmul threshold that the block as a whole clears easily. A
-batch-level device decision (the evaluator sees the whole graph) is the
-known follow-up; until then use `Tensor.use_gpu()` for
-transformer-shaped workloads at d_model >= 768.
+`auto` now adds a batch-level device decision on top of the per-op
+thresholds: before evaluating a batch the tensor engine sums its total
+matmul work and, when the block as a whole earns the GPU, pins the whole
+batch there so the sub-threshold projection gemms ride along instead of
+stranding on the CPU (`batch_matmul_bias_threshold_` in `cpp-tensorlib`'s
+`types.h`; `TL_BATCH_MATMUL_BIAS` re-calibrates). This closes most of the
+d_model=1024 gap (auto 9.06 -> 5.51, within ~12% of forced-GPU) while
+keeping (256, 512) on the CPU. (256, 768) is the one config it can't
+place cleanly: it sits right on the crossover (CPU 5.38 vs GPU 4.03), and
+its per-block matmul work overlaps d_model=1024's, so no single work
+threshold can send it to the CPU while still sending d_model=1024 to the
+GPU — `auto` stays in the mixed regime there. For a transformer-shaped
+workload at d_model=768 exactly, `Tensor.use_gpu()` is still the better
+call; from d_model=1024 up, `auto` tracks forced-GPU closely.
