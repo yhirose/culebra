@@ -109,6 +109,7 @@ struct EffSuspension {
   std::string op;          // Perform: operation name
   std::string args_array;  // Perform: `[a, b, …]` source (rewritten)
   std::string call_src;    // Delegate: the effect-fn call source (rewritten)
+  std::string prov;        // ` #@N` marker for the emitted line ("" = none)
 };
 
 // Classification of a leaf body statement: a statement-level suspension
@@ -122,9 +123,17 @@ struct EffStmtClass {
 
 class EffectsLowerer {
  public:
+  // `src_is_original` marks the one lowerer bound to the user's real file (set
+  // by transform_effects_in); its body slices get `#@<line>` provenance
+  // markers on entry, which every later text stage carries as comments so the
+  // final fragment parse can restore original line numbers (see the marker
+  // helpers in generator_transform.h).
   EffectsLowerer(const char* src, size_t src_len,
-                 const std::set<std::string>& effect_fns)
-      : src_(src), src_len_(src_len), effect_fns_(effect_fns) {}
+                 const std::set<std::string>& effect_fns,
+                 bool src_is_original = false)
+      : src_(src), src_len_(src_len), effect_fns_(effect_fns),
+        src_is_original_(src_is_original),
+        markers_{{src, src_len}, src_is_original} {}
 
   // --- entry: rebuild the tree, lowering effect constructs -------------
   std::shared_ptr<peg::Ast> transform(std::shared_ptr<peg::Ast> ast) {
@@ -138,7 +147,7 @@ class EffectsLowerer {
           "SyntaxError",
           "`perform` may only appear inside an `effect fn` body or a "
           "`handle` block.",
-          static_cast<long>(ast->line), static_cast<long>(ast->column));
+          err_line(*ast), static_cast<long>(ast->column));
     }
     for (auto& child : ast->nodes) child = transform(child);
     return ast;
@@ -148,6 +157,20 @@ class EffectsLowerer {
   const char* src_;
   size_t src_len_;
   const std::set<std::string>& effect_fns_;
+  bool src_is_original_ = false;
+  mutable LineMarkers markers_;
+
+  // Error-position line: provenance when known, else the raw (fragment) line.
+  long err_line(const peg::Ast& n) const {
+    long p = markers_.orig_line(n);
+    return p ? p : static_cast<long>(n.line);
+  }
+  std::string mk(const peg::Ast& n) const { return markers_.mk(n); }
+  // Re-attach `n`'s marker when `x` is a single-line slice (the trailing
+  // marker sits outside the node span, so the slice dropped it).
+  void reattach_marker(std::string& x, const peg::Ast& n) const {
+    if (x.find('\n') == std::string::npos) x += mk(n);
+  }
 
   std::string_view slice(const peg::Ast& n) const {
     return ast_source_slice(n, src_, src_len_);
@@ -226,7 +249,7 @@ class EffectsLowerer {
               "SyntaxError",
               "`perform` can only bind to a fresh `let x = perform …` in this "
               "slice (no compound / destructuring / re-assignment targets).",
-              static_cast<long>(s->line), static_cast<long>(s->column));
+              err_line(*s), static_cast<long>(s->column));
         }
         return EffStmtClass{EffStmtClass::Suspend,
                             make_perform(*rhs, target, /*binds=*/true, rewrite)};
@@ -237,7 +260,7 @@ class EffectsLowerer {
               "SyntaxError",
               "an effect-fn call can only bind to a fresh `let x = f(…)` in "
               "this slice.",
-              static_cast<long>(s->line), static_cast<long>(s->column));
+              err_line(*s), static_cast<long>(s->column));
         }
         return EffStmtClass{EffStmtClass::Suspend,
                             make_delegate(*rhs, target, /*binds=*/true, rewrite)};
@@ -268,7 +291,7 @@ class EffectsLowerer {
         "SyntaxError",
         "a `perform` / effect-fn call is only supported at statement level "
         "here — bind it first (`let x = perform …`).",
-        static_cast<long>(s.line), static_cast<long>(s.column));
+        err_line(s), static_cast<long>(s.column));
   }
 
   EffSuspension make_perform(const peg::Ast& perform, std::string target,
@@ -280,6 +303,7 @@ class EffectsLowerer {
     su.binds = binds;
     su.op = std::string(perform.nodes[0]->token);
     su.args_array = perform_args_array(*perform.nodes[1], rewrite);
+    su.prov = mk(perform);
     return su;
   }
 
@@ -291,6 +315,7 @@ class EffectsLowerer {
     su.target = std::move(target);
     su.binds = binds;
     su.call_src = rewrite_locals_to_this(slice(call), rewrite);
+    su.prov = mk(call);
     return su;
   }
 
@@ -411,7 +436,7 @@ class EffectsLowerer {
         "a `perform` in a short-circuit (`&&` / `||` / `??`) or ternary "
         "(`? :`) operand is not supported yet — bind it first "
         "(`let x = perform …`).",
-        static_cast<long>(n.line), static_cast<long>(n.column));
+        err_line(n), static_cast<long>(n.column));
   }
   [[noreturn]] void reject_complex_callee(const peg::Ast& n) const {
     throw CulebraError(
@@ -419,21 +444,21 @@ class EffectsLowerer {
         "a `perform` behind a method chain / computed callee is not supported "
         "yet — bind the receiver or the argument first "
         "(`let r = obj.foo(); let a = perform …`).",
-        static_cast<long>(n.line), static_cast<long>(n.column));
+        err_line(n), static_cast<long>(n.column));
   }
   [[noreturn]] void reject_unsupported_expr(const peg::Ast& n) const {
     throw CulebraError(
         "SyntaxError",
         "a `perform` in this expression position is not supported yet — bind "
         "it first (`let x = perform …`).",
-        static_cast<long>(n.line), static_cast<long>(n.column));
+        err_line(n), static_cast<long>(n.column));
   }
   [[noreturn]] void reject_control_expr(const peg::Ast& n) const {
     throw CulebraError(
         "SyntaxError",
         "a `perform` in a control-flow condition / iterable is not supported "
         "yet — bind it first (`let c = perform …; while c { … }`).",
-        static_cast<long>(n.line), static_cast<long>(n.column));
+        err_line(n), static_cast<long>(n.column));
   }
 
   // Replace, in `node`'s source, each of `operands`' spans with the aligned
@@ -646,8 +671,9 @@ class EffectsLowerer {
     }
 
     std::string out;
-    for (auto& h : hoists) out += h + "\n";
-    out += residual_stmt;
+    auto prov = mk(*s);
+    for (auto& h : hoists) out += h + prov + "\n";
+    out += residual_stmt + prov;
     return out;
   }
 
@@ -710,7 +736,7 @@ class EffectsLowerer {
         changed = true;
         out += *expanded;
       } else {
-        out += std::string(slice(*st));
+        out += std::string(slice(*st)) + mk(*st);
       }
       if (out.empty() || out.back() != '\n') out += "\n";
     }
@@ -781,14 +807,14 @@ class EffectsLowerer {
     int susp = st.fresh();
     if (su.kind == EffSuspension::Perform) {
       st.states[susp] = std::format(
-          "      this._eff_op = \"{}\"\n      this._eff_args = {}\n"
+          "      this._eff_op = \"{}\"\n      this._eff_args = {}{}\n"
           "      this._eff_state = {}\n      return {}\n",
-          su.op, su.args_array, after, EFF_SUSPEND);
+          su.op, su.args_array, su.prov, after, EFF_SUSPEND);
     } else {
       st.states[susp] = std::format(
-          "      this._eff_delegate = ({})\n      this._eff_state = {}\n"
+          "      this._eff_delegate = ({}){}\n      this._eff_state = {}\n"
           "      return {}\n",
-          su.call_src, after, EFF_DELEGATE);
+          su.call_src, su.prov, after, EFF_DELEGATE);
     }
     return susp;
   }
@@ -800,8 +826,8 @@ class EffectsLowerer {
     int s = st.fresh();
     std::string v = e ? cps_rw(*e, rw) : "nil";
     st.states[s] = std::format(
-        "      this._eff_val = ({})\n      this._eff_state = {}\n      continue\n",
-        v, st.terminal);
+        "      this._eff_val = ({}){}\n      this._eff_state = {}\n      continue\n",
+        v, e ? mk(*e) : "", st.terminal);
     return s;
   }
 
@@ -815,7 +841,7 @@ class EffectsLowerer {
     int s = st.fresh();
     std::string body;
     if (u->tag == "ASSIGNMENT"_) {
-      body = "      " + cps_rw(*u, rw) + "\n";
+      body = "      " + cps_rw(*u, rw) + mk(*u) + "\n";
       auto av = view_assignment(*u);
       if (av.lvalcnt == 1) {
         const auto& lval = *u->nodes[av.lvaloff];
@@ -824,7 +850,8 @@ class EffectsLowerer {
                               std::string(lval.token));
       }
     } else {
-      body = std::format("      this._eff_val = ({})\n", cps_rw(*u, rw));
+      body = std::format("      this._eff_val = ({}){}\n", cps_rw(*u, rw),
+                         mk(*u));
     }
     body += std::format("      this._eff_state = {}\n      continue\n", st.terminal);
     st.states[s] = body;
@@ -842,6 +869,7 @@ class EffectsLowerer {
     auto sv = slice(block);
     if (sv.size() >= 2 && sv.front() == '{') {
       auto inner = std::string(strip_block_braces(sv));
+      reattach_marker(inner, block);
       auto buf = std::make_shared<std::string>(inner + "\n");
       auto prog = parse_registered_source("<eff-block>", buf);
       if (!prog) { st.failed = true; return -1; }
@@ -861,9 +889,9 @@ class EffectsLowerer {
     st.loop_stack.pop_back();
     if (st.failed) return -1;
     st.states[h] = std::format(
-        "      if {} {{ this._eff_state = {} }} else {{ this._eff_state = {} }}\n"
+        "      if {} {{ this._eff_state = {} }} else {{ this._eff_state = {} }}{}\n"
         "      continue\n",
-        cps_rw(*w->nodes[0], rw), body_entry, cont);
+        cps_rw(*w->nodes[0], rw), body_entry, cont, mk(*w->nodes[0]));
     return h;
   }
 
@@ -890,9 +918,9 @@ class EffectsLowerer {
       if (st.failed) return -1;
       int s = st.fresh();
       st.states[s] = std::format(
-          "      if {} {{ this._eff_state = {} }} else {{ this._eff_state = {} }}\n"
+          "      if {} {{ this._eff_state = {} }} else {{ this._eff_state = {} }}{}\n"
           "      continue\n",
-          cps_rw(*nodes[2 * p], rw), block_entry, chain);
+          cps_rw(*nodes[2 * p], rw), block_entry, chain, mk(*nodes[2 * p]));
       chain = s;
     }
     return chain;
@@ -942,7 +970,7 @@ class EffectsLowerer {
       // culebra), so tail position adds nothing.
       if (cps_needs_split(*u)) return cps_stmt(st, s, cont, /*tail=*/false, rw);
       int e = st.fresh();
-      st.states[e] = "      " + cps_rw(*u, rw) +
+      st.states[e] = "      " + cps_rw(*u, rw) + mk(*u) +
                      std::format("\n      this._eff_state = {}\n      continue\n",
                                  cont);
       return e;
@@ -975,7 +1003,7 @@ class EffectsLowerer {
     for (size_t idx = stmts.size(); idx-- > 0;) {
       const peg::Ast* s = stmts[idx];
       if (!cps_needs_split(*s)) {
-        pending = "      " + cps_rw(*s, rw) + "\n" + pending;
+        pending = "      " + cps_rw(*s, rw) + mk(*s) + "\n" + pending;
       } else {
         flush();
         k = cps_stmt(st, s, k, /*tail=*/false, rw);
@@ -1065,19 +1093,21 @@ class EffectsLowerer {
             "SyntaxError",
             "a destructuring `for k, v in …` with a `perform` inside is not "
             "supported yet — iterate a single value.",
-            static_cast<long>(f->line), static_cast<long>(f->column));
+            err_line(*f), static_cast<long>(f->column));
       }
       if (has_suspension(expr_node)) reject_control_expr(expr_node);
       auto iter_var = std::format("_eff_it_{}", f->position);
+      auto prov = mk(*f);
+      std::string body_text(strip_block_braces(slice(blk_node)));
+      reattach_marker(body_text, *f);
       auto replacement = std::format(
-          "let {0} = ({1}).iter()\n"
-          "while {0}.has_next() {{\n"
-          "  let {2} = {0}.next()\n"
+          "let {0} = ({1}).iter(){4}\n"
+          "while {0}.has_next() {{{4}\n"
+          "  let {2} = {0}.next(){4}\n"
           "  {3}\n"
           "}}",
           iter_var, std::string(slice(expr_node)),
-          std::string(var_node.token),
-          std::string(strip_block_braces(slice(blk_node))));
+          std::string(var_node.token), body_text, prov);
       out.replace(f->position - base, f->length, replacement);
     }
     return out;
@@ -1141,7 +1171,14 @@ class EffectsLowerer {
     // Parse the brace-stripped inner source so a single-statement BLOCK's
     // pos/len doesn't span the enclosing braces (the AstOptimizer trap —
     // [[peglib-ast-optimizer]]); uniform for single/multi-statement bodies.
-    std::string inner = std::string(strip_block_braces(slice(body_node)));
+    auto inner_sv = strip_block_braces(slice(body_node));
+    std::string inner(inner_sv);
+    if (src_is_original_) {
+      long first = line_of_offset({src_, src_len_},
+                                  static_cast<size_t>(inner_sv.data() - src_));
+      inner = annotate_line_markers(inner, first);
+      inner += '\n';  // a trailing marker comment needs a newline to parse
+    }
     if (capture_outer) inner = redirect_this_to_outer(inner);
     std::shared_ptr<std::string> src =
         std::make_shared<std::string>(std::move(inner));
@@ -1227,7 +1264,7 @@ class EffectsLowerer {
           "fn {0}{1} {{ throw {{ kind: \"EffectError\", message: \"effect "
           "operation '{0}' must be invoked via `perform`\" }} }}\n",
           name, std::string(params_sv)));
-      return reparse_decl(synth);
+      return reparse_decl(synth, err_line(*ast));
     }
 
     const auto& params_ast = *ast->nodes[1];
@@ -1256,7 +1293,7 @@ class EffectsLowerer {
         "  else {{ throw {{ kind: \"EffectError\", message: \"effect fn '{0}' "
         "must be run inside a `handle`\" }} }}\n}}\n",
         name, std::string(params_sv), cls, class_name, call_args));
-    return reparse_decl(synth);
+    return reparse_decl(synth, err_line(*ast));
   }
 
   // `handle { BODY } with op1(params) { H1 } … with return(v) { R }` ->
@@ -1304,7 +1341,7 @@ class EffectsLowerer {
           throw CulebraError(
               "SyntaxError",
               "a `handle` may have only one `return` clause.",
-              static_cast<long>(clause.line), static_cast<long>(clause.column));
+              err_line(clause), static_cast<long>(clause.column));
         }
         const auto& params = *clause.nodes[0];
         if (params.nodes.size() != 1) {
@@ -1312,11 +1349,12 @@ class EffectsLowerer {
               "SyntaxError",
               "a `return` clause takes exactly one parameter "
               "(`with return(value) { … }`).",
-              static_cast<long>(clause.line), static_cast<long>(clause.column));
+              err_line(clause), static_cast<long>(clause.column));
         }
         auto vn = view_parameter(*params.nodes[0]).name;
         std::string ret_src(strip_block_braces(slice(*clause.nodes[1])));
         if (captures) ret_src = redirect_this_to_self(ret_src, self_name);
+        reattach_marker(ret_src, *clause.nodes[1]);
         return_fn = std::format(
             "fn(_eh_val) {{\n      let {} = _eh_val\n      {}\n    }}",
             std::string(vn), ret_src);
@@ -1330,7 +1368,7 @@ class EffectsLowerer {
             "SyntaxError",
             std::format("duplicate handler clause for effect '{}' in one "
                         "`handle`.", op),
-            static_cast<long>(clause.line), static_cast<long>(clause.column));
+            err_line(clause), static_cast<long>(clause.column));
       }
       const auto& params = *clause.nodes[1];
       const auto& handler_body = *clause.nodes[2];
@@ -1339,7 +1377,7 @@ class EffectsLowerer {
             "SyntaxError",
             "a handler clause needs a `resume` parameter (`with op(resume) "
             "{ … }`).",
-            static_cast<long>(clause.line), static_cast<long>(clause.column));
+            err_line(clause), static_cast<long>(clause.column));
       }
       std::string binds;
       size_t nparams = params.nodes.size();
@@ -1351,6 +1389,7 @@ class EffectsLowerer {
       binds += std::format("      let {} = _eh_resume\n", std::string(resume_name));
       std::string handler_src(strip_block_braces(slice(handler_body)));
       if (captures) handler_src = redirect_this_to_self(handler_src, self_name);
+      reattach_marker(handler_src, handler_body);
       if (!first_op) frame += ",";
       first_op = false;
       frame += std::format(
@@ -1384,29 +1423,37 @@ class EffectsLowerer {
           "}}\n",
           cls, class_name, frame, return_fn));
     }
-    return reparse_expr(synth);
+    return reparse_expr(synth, err_line(*ast));
   }
 
   // Re-parse a synthesized `fn name(...) { … }` and return its MULTIFN_DECL,
   // then recursively lower any effect constructs the fragment still carries
   // (composition of nested handles / effect fns). The synthesized source is
   // registered for lifetime via the generator transform's source store.
-  std::shared_ptr<peg::Ast> reparse_decl(std::shared_ptr<std::string> synth) {
-    auto fn = parse_wrapper_fn(synth);
+  std::shared_ptr<peg::Ast> reparse_decl(std::shared_ptr<std::string> synth,
+                                         long fallback_line) {
+    auto label = next_fragment_label("eff");
+    auto fn = parse_wrapper_fn(synth, label.c_str());
     if (!fn) {
       throw CulebraError("InternalError",
                          "effects transform produced unparseable source", 0, 0);
     }
     EffectsLowerer sub(synth->data(), synth->size(), effect_fns_);
-    return sub.transform(fn);
+    auto out = sub.transform(fn);
+    // Restore original line numbers from the provenance markers; machinery
+    // lines fall back to the declaration's line. Subtrees spliced in by the
+    // nested lowering above carry other labels and are already repositioned.
+    return reposition_ast(out, marker_line_map(*synth), fallback_line, label);
   }
 
   // Re-parse a synthesized `fn __wrapper__() { <expr> }` and return the single
   // expression node in its body (to splice in place of a HANDLE), recursively
   // lowering nested effect constructs.
-  std::shared_ptr<peg::Ast> reparse_expr(std::shared_ptr<std::string> synth) {
+  std::shared_ptr<peg::Ast> reparse_expr(std::shared_ptr<std::string> synth,
+                                         long fallback_line) {
     using namespace peg::udl;
-    auto fn = parse_wrapper_fn(synth);
+    auto label = next_fragment_label("eff");
+    auto fn = parse_wrapper_fn(synth, label.c_str());
     if (!fn) {
       throw CulebraError("InternalError",
                          "effects transform produced unparseable source", 0, 0);
@@ -1419,7 +1466,8 @@ class EffectsLowerer {
       expr = body;
     }
     EffectsLowerer sub(synth->data(), synth->size(), effect_fns_);
-    return sub.transform(expr);
+    auto out = sub.transform(expr);
+    return reposition_ast(out, marker_line_map(*synth), fallback_line, label);
   }
 };
 
@@ -1428,7 +1476,7 @@ class EffectsLowerer {
 inline std::shared_ptr<peg::Ast> transform_effects_in(
     std::shared_ptr<peg::Ast> ast, const char* src, size_t src_len) {
   auto effect_fns = collect_effect_fn_names(*ast);
-  EffectsLowerer lowerer(src, src_len, effect_fns);
+  EffectsLowerer lowerer(src, src_len, effect_fns, /*src_is_original=*/true);
   return lowerer.transform(ast);
 }
 

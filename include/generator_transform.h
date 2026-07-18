@@ -28,6 +28,8 @@
 #include "parser.h"
 
 #include <algorithm>
+#include <cctype>
+#include <charconv>
 #include <format>
 #include <functional>
 #include <memory>
@@ -286,6 +288,227 @@ inline std::string rewrite_outside_strings(
   return out;
 }
 
+// --- line-provenance markers ---------------------------------------------
+//
+// The generator / effects transforms rewrite body SOURCE TEXT and re-parse it,
+// so the re-parsed AST's line numbers are fragment-relative and every error
+// reported through them used to point nowhere near the user's code. The fix is
+// a `#line`-style provenance marker: each user code line gets a trailing
+// ` #@<original-line>` comment when the body is first sliced out of the real
+// file. Being a comment, the marker survives every later text stage (for-in
+// desugar, ANF hoisting, CPS state emission, nested re-lowering) for free —
+// verbatim slices carry it, synthesized lines simply lack one. After the FINAL
+// fragment parse, `marker_line_map` reads the markers back and
+// `reposition_ast` rebuilds the AST with original line numbers (columns stay
+// fragment-relative — approximate, since `this.` insertion shifts them).
+// Synthesized machinery lines fall back to the construct's declaration line.
+
+// 1-based line number of byte offset `pos` in `s`.
+inline long line_of_offset(std::string_view s, size_t pos) {
+  long line = 1;
+  for (size_t i = 0; i < pos && i < s.size(); i++) {
+    if (s[i] == '\n') line++;
+  }
+  return line;
+}
+
+// For each line of `s` (1-based; index 0 unused), whether its END (the `\n`,
+// or EOF for the last line) sits in code / comment context — i.e. a trailing
+// `#@N` marker comment may be placed or read there. A line ending inside a
+// string literal (multi-line triple string) or an interpolation hole is
+// unsafe. This walk mirrors `rewrite_outside_strings`' lane logic at line
+// granularity; the two are kept as documented twins (unifying them under one
+// lane scanner is deferred until a third consumer appears).
+inline std::vector<bool> safe_line_ends(std::string_view s) {
+  std::vector<bool> safe;
+  safe.push_back(false);  // index 0 unused
+  size_t i = 0, n = s.size();
+  auto endline = [&](bool ok) { safe.push_back(ok); };
+  while (i < n) {
+    char c = s[i];
+    if (c == '\n') { endline(true); i++; continue; }
+    if (c == '#' || (c == '/' && i + 1 < n && s[i + 1] == '/')) {
+      while (i < n && s[i] != '\n') i++;   // comment tail: its EOL is safe
+      continue;
+    }
+    if (c == '/' && i + 1 < n && s[i + 1] == '*') {  // block comment
+      i += 2;
+      while (i + 1 < n && !(s[i] == '*' && s[i + 1] == '/')) {
+        if (s[i] == '\n') endline(true);   // marker inside a comment is fine
+        i++;
+      }
+      i = (i + 1 < n) ? i + 2 : n;
+      continue;
+    }
+    if (c == '\'' || c == '`') {  // raw string: interior EOLs unsafe
+      size_t j = skip_string_literal(s, i);
+      for (size_t k = i; k < j; k++) {
+        if (s[k] == '\n') endline(false);
+      }
+      i = j;
+      continue;
+    }
+    if (c == '"') {  // interpolated / triple string; holes conservatively unsafe
+      size_t j = skip_string_literal(s, i);
+      for (size_t k = i; k < j; k++) {
+        if (s[k] == '\n') endline(false);
+      }
+      i = j;
+      continue;
+    }
+    i++;
+  }
+  endline(true);  // last line (no trailing newline): EOF in code context
+  return safe;
+}
+
+// True when the line already carries a trailing `#@N` marker.
+inline bool line_has_marker(std::string_view line) {
+  size_t e = line.size();
+  size_t d = e;
+  while (d > 0 && std::isdigit(static_cast<unsigned char>(line[d - 1]))) d--;
+  return d < e && d >= 2 && line[d - 2] == '#' && line[d - 1] == '@';
+}
+
+// Append ` #@<first_line + i>` to each marker-safe line of `text` — the
+// entry-point annotation for a body sliced verbatim out of the ORIGINAL file
+// (so line numbering is contiguous). Lines that already carry a marker (a body
+// re-sliced from an annotated fragment never reaches here, but a user comment
+// could imitate one) keep the existing value.
+inline std::string annotate_line_markers(std::string_view text,
+                                         long first_line) {
+  auto safe = safe_line_ends(text);
+  std::string out;
+  size_t start = 0, idx = 0;
+  while (start <= text.size()) {
+    size_t nl = text.find('\n', start);
+    size_t end = (nl == std::string_view::npos) ? text.size() : nl;
+    std::string_view line = text.substr(start, end - start);
+    out += line;
+    bool ok = (idx + 1) < safe.size() && safe[idx + 1];
+    if (ok && !line.empty() && !line_has_marker(line)) {
+      out += std::format(" #@{}", first_line + static_cast<long>(idx));
+    }
+    if (nl == std::string_view::npos) break;
+    out += '\n';
+    start = nl + 1;
+    idx++;
+  }
+  return out;
+}
+
+// Read the markers back: for each 1-based line of `text`, its original line,
+// or 0 when the line carries none (synthesized machinery).
+inline std::vector<long> marker_line_map(std::string_view text) {
+  auto safe = safe_line_ends(text);
+  std::vector<long> map;
+  map.push_back(0);  // index 0 unused
+  size_t start = 0, idx = 0;
+  while (start <= text.size()) {
+    size_t nl = text.find('\n', start);
+    size_t end = (nl == std::string_view::npos) ? text.size() : nl;
+    std::string_view line = text.substr(start, end - start);
+    long v = 0;
+    if ((idx + 1) < safe.size() && safe[idx + 1] && line_has_marker(line)) {
+      size_t d = line.size();
+      while (d > 0 && std::isdigit(static_cast<unsigned char>(line[d - 1]))) d--;
+      // A user comment can imitate a marker with an absurd number — treat an
+      // unparseable value as "no marker" rather than aborting the compile.
+      auto digits = line.substr(d);
+      if (std::from_chars(digits.data(), digits.data() + digits.size(), v)
+              .ec != std::errc{}) {
+        v = 0;
+      }
+    }
+    map.push_back(v);
+    if (nl == std::string_view::npos) break;
+    start = nl + 1;
+    idx++;
+  }
+  return map;
+}
+
+// Original line for a node parsed from marker-annotated text: the marker on
+// its line, else its own line (identity for the original, unannotated file).
+inline long marker_orig_line(std::string_view text, size_t line) {
+  auto map = marker_line_map(text);
+  return (line < map.size() && map[line]) ? map[line]
+                                          : static_cast<long>(line);
+}
+
+// Cached `#@N` marker lookup over one fragment's source, shared by the effects
+// lowerer and the generator CpsBuilder. `src_is_original` makes an unmarked
+// line fall back to its own (identity) line; otherwise it has no provenance.
+struct LineMarkers {
+  std::string_view src;
+  bool src_is_original = false;
+  std::vector<long> cache;
+  bool built = false;
+  long orig_line(const peg::Ast& n) {
+    if (!built) {
+      cache = marker_line_map(src);
+      built = true;
+    }
+    long m = (n.line < cache.size()) ? cache[n.line] : 0;
+    if (m) return m;
+    return src_is_original ? static_cast<long>(n.line) : 0;
+  }
+  // Marker suffix to re-attach when emitting `n`'s source onto a fresh line (a
+  // single-line statement's trailing marker sits outside its node span, so a
+  // plain slice loses it).
+  std::string mk(const peg::Ast& n) {
+    long p = orig_line(n);
+    return p ? std::format(" #@{}", p) : "";
+  }
+};
+
+// Rebuild `n`'s subtree with original line numbers: a node's line maps through
+// `map`, or `fallback` (the construct's declaration line) when its line is
+// synthesized. Subtrees spliced in from other fragments — identified by a
+// different parse `path` label — are already repositioned and returned as-is.
+// peg::Ast's line is const, so nodes are recreated via the two-step ctor pair
+// (full ctor sets name; the copy ctor restores original_name / original_tag).
+inline std::shared_ptr<peg::Ast> reposition_ast(
+    const std::shared_ptr<peg::Ast>& n, const std::vector<long>& map,
+    long fallback, const std::string& label) {
+  if (n->path != label) return n;
+  long line = (n->line < map.size() && map[n->line])
+                  ? map[n->line]
+                  : fallback;
+  std::shared_ptr<peg::Ast> out;
+  if (n->is_token) {
+    peg::Ast tmp(n->path.c_str(), static_cast<size_t>(line), n->column,
+                 n->name.c_str(), n->token, n->position, n->length,
+                 n->choice_count, n->choice, n->preserve_position);
+    out = std::make_shared<peg::Ast>(tmp, n->original_name.c_str(),
+                                     n->position, n->length,
+                                     n->original_choice_count,
+                                     n->original_choice);
+  } else {
+    std::vector<std::shared_ptr<peg::Ast>> kids;
+    kids.reserve(n->nodes.size());
+    for (auto& c : n->nodes) {
+      kids.push_back(reposition_ast(c, map, fallback, label));
+    }
+    peg::Ast tmp(n->path.c_str(), static_cast<size_t>(line), n->column,
+                 n->name.c_str(), kids, n->position, n->length,
+                 n->choice_count, n->choice, n->preserve_position);
+    out = std::make_shared<peg::Ast>(tmp, n->original_name.c_str(),
+                                     n->position, n->length,
+                                     n->original_choice_count,
+                                     n->original_choice);
+  }
+  for (auto& c : out->nodes) c->parent = out;
+  return out;
+}
+
+// Unique per-fragment parse label, so `reposition_ast` can tell this
+// fragment's nodes from subtrees spliced in by nested lowering.
+inline std::string next_fragment_label(const char* stem) {
+  static int counter = 0;
+  return std::format("<{}#{}>", stem, counter++);
+}
+
 inline std::string rewrite_locals_to_this(std::string_view src,
                                           const std::set<std::string>& names) {
   // The two declaration-strip patterns are name-independent — hoist
@@ -411,6 +634,7 @@ inline std::optional<std::string> rewrite_yielding_fors_to_while(
   if (fors.empty()) return std::nullopt;
   std::string out(ast_source_slice(body, src, src_len));
   size_t base = body.position;
+  auto marker_map = marker_line_map({src, src_len});  // loop-invariant
   for (auto it = fors.rbegin(); it != fors.rend(); ++it) {
     auto* f = *it;
     if (f->nodes.size() < 3) continue;
@@ -421,14 +645,25 @@ inline std::optional<std::string> rewrite_yielding_fors_to_while(
     auto blk_inner = strip_block_braces(
         ast_source_slice(blk_node, src, src_len));
     auto iter_var = std::format("_g_it_{}", f->position);
+    // The three synthesized lines carry the `for`'s provenance marker so an
+    // error in the loop machinery (e.g. `.iter()` on a non-iterable) reports
+    // the for-in's original line.
+    long orig = (f->line < marker_map.size() && marker_map[f->line])
+                    ? marker_map[f->line]
+                    : static_cast<long>(f->line);
+    std::string body_text(blk_inner);
+    // A single-line body's trailing marker sits outside the for's span —
+    // re-attach it so the loop body keeps its provenance.
+    if (body_text.find('\n') == std::string::npos)
+      body_text += std::format(" #@{}", orig);
     auto replacement = std::format(
-        "let {0} = ({1}).iter()\n"
-        "while {0}.has_next() {{\n"
-        "  let {2} = {0}.next()\n"
+        "let {0} = ({1}).iter() #@{4}\n"
+        "while {0}.has_next() {{ #@{4}\n"
+        "  let {2} = {0}.next() #@{4}\n"
         "  {3}\n"
         "}}",
         iter_var, std::string(expr_sv),
-        std::string(var_node.token), std::string(blk_inner));
+        std::string(var_node.token), body_text, orig);
     out.replace(f->position - base, f->length, replacement);
   }
   return out;
@@ -453,9 +688,10 @@ inline std::shared_ptr<peg::Ast> parse_registered_source(
 }
 
 inline std::shared_ptr<peg::Ast> parse_wrapper_fn(
-    std::shared_ptr<std::string> synthesized) {
+    std::shared_ptr<std::string> synthesized,
+    const char* label = "<generator-transform>") {
   using namespace peg::udl;
-  auto sub_ast = parse_registered_source("<generator-transform>", synthesized);
+  auto sub_ast = parse_registered_source(label, synthesized);
   if (!sub_ast) return nullptr;
   std::shared_ptr<peg::Ast> wrapper_fn;
   std::function<void(std::shared_ptr<peg::Ast>)> walk =
@@ -605,6 +841,8 @@ struct CpsBuilder {
     return rewrite_locals_to_this(ast_source_slice(n, src, src_len),
                                   rewrite_set);
   }
+  LineMarkers markers{{src, src_len}};
+  std::string mk(const peg::Ast& n) { return markers.mk(n); }
   // A fresh state that just jumps to `target` (break/continue/return).
   int jump_state(int target) {
     int e = fresh();
@@ -640,7 +878,7 @@ struct CpsBuilder {
     for (size_t idx = stmts.size(); idx-- > 0;) {
       const peg::Ast* s = stmts[idx];
       if (!needs_split(*s)) {
-        pending = "      " + rw(*s) + "\n" + pending;
+        pending = "      " + rw(*s) + mk(*s) + "\n" + pending;
       } else {
         flush();
         k = compile_stmt(s, k);
@@ -657,20 +895,20 @@ struct CpsBuilder {
     if (u->tag == "YIELD"_ && !u->nodes.empty()) {
       int e = fresh();
       states[e] = std::format(
-          "      this._g_la = ({})\n"
+          "      this._g_la = ({}){}\n"
           "      this._g_has_la = true\n"
           "      this._g_state = {}\n"
           "      return true\n",
-          rw(*u->nodes[0]), cont);
+          rw(*u->nodes[0]), mk(*u->nodes[0]), cont);
       return e;
     }
     if (u->tag == "YIELD_FROM"_ && !u->nodes.empty()) {
       int e = fresh();
       states[e] = std::format(
-          "      this._g_delegate = ({}).iter()\n"
+          "      this._g_delegate = ({}).iter(){}\n"
           "      this._g_state = {}\n"
           "      continue\n",
-          rw(*u->nodes[0]), cont);
+          rw(*u->nodes[0]), mk(*u->nodes[0]), cont);
       return e;
     }
     if (u->tag == "BREAK"_) {
@@ -706,9 +944,9 @@ struct CpsBuilder {
       loop_stack.pop_back();
       if (failed) return -1;
       states[h] = std::format(
-          "      if {} {{ this._g_state = {} }} else {{ this._g_state = {} }}\n"
+          "      if {} {{ this._g_state = {} }} else {{ this._g_state = {} }}{}\n"
           "      continue\n",
-          rw(*u->nodes[0]), body_entry, cont);
+          rw(*u->nodes[0]), body_entry, cont, mk(*u->nodes[0]));
       return h;
     }
     if (u->tag == "LEXICAL_SCOPE"_ || u->tag == "STATEMENTS"_) {
@@ -739,9 +977,9 @@ struct CpsBuilder {
       if (failed) return -1;
       int s = fresh();
       states[s] = std::format(
-          "      if {} {{ this._g_state = {} }} else {{ this._g_state = {} }}\n"
+          "      if {} {{ this._g_state = {} }} else {{ this._g_state = {} }}{}\n"
           "      continue\n",
-          rw(*nodes[2 * p]), block_entry, chain);
+          rw(*nodes[2 * p]), block_entry, chain, mk(*nodes[2 * p]));
       chain = s;
     }
     return chain;
@@ -846,7 +1084,14 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
       "}}\n",
       gen_name, ctor_params, ctor_inits, dispatch, ctor_call_args,
       defer_runs));
-  swap_body_from_wrapper(ast, synthesized);
+  // Final parse: read the provenance markers back and rebuild the body with
+  // original line numbers (machinery lines fall back to the fn's decl line).
+  auto label = next_fragment_label("gen");
+  auto wrapper_fn = parse_wrapper_fn(synthesized, label.c_str());
+  if (!wrapper_fn) return ast;
+  auto map = marker_line_map(*synthesized);
+  ast->nodes.back() = reposition_ast(wrapper_fn->nodes.back(), map,
+                                     static_cast<long>(name_ast.line), label);
   return ast;
 }
 
@@ -895,6 +1140,24 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
         "generator.",
         static_cast<long>(fd->line),
         static_cast<long>(fd->column));
+  }
+
+  // Annotate every body line with a `#@<original-line>` provenance marker
+  // before any rewriting stage. Markers are comments, so each later stage
+  // (for-desugar, CPS state emission) carries them for free, and the final
+  // fragment parse can restore original line numbers (see reposition below).
+  {
+    auto inner = strip_block_braces(
+        ast_source_slice(*ast->nodes.back(), src, src_len));
+    long first = line_of_offset({src, src_len},
+                                static_cast<size_t>(inner.data() - src));
+    auto params_sv = ast_source_slice(*ast->nodes[i + 1], src, src_len);
+    auto annotated = std::make_shared<std::string>(std::format(
+        "fn __gen_wrapper__{} {{\n{}\n}}\n", std::string(params_sv),
+        annotate_line_markers(inner, first)));
+    if (!swap_body_with_wrapper_params(ast, annotated, i)) return ast;
+    src = annotated->data();
+    src_len = annotated->size();
   }
 
   // Desugar yielding for-in loops to while + iterator, re-parsing each

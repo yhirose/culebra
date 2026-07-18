@@ -3032,12 +3032,11 @@ puts(handle { work() } with outer(k) { k(5) })    # => 105
   (`&&` / `||` / `??`) operand, a ternary arm, a method-chain receiver, or a
   control-flow condition is rejected at parse time (symmetrically on every
   backend).
-* Because effects lower by rewriting body source, a syntax error inside an
-  effect body reports a position relative to the rewritten fragment, and a
-  local name or `this.`-access that also appears as literal text inside a
-  **string** in a captured effect body may be rewritten there too. Keep
-  literal text that looks like a captured binding out of such bodies when
-  exactness matters.
+* Errors inside an effect body report the **original source line**; the
+  column is approximate (the lowering shifts it). A `this.`-access that also
+  appears as literal text inside a **string** in a captured effect body may
+  still be rewritten there — keep literal text that looks like a captured
+  binding out of such bodies when exactness matters.
 * Handlers are **isolate-local**. A `handle` installed on one thread is not
   visible to a spawned isolate; a `perform` inside the child reaches only
   handlers installed within that same isolate (an unhandled operation there
