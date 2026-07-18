@@ -220,5 +220,29 @@ rc-discipline ratchet は変更不要（jit_runtime.h は対象外、stdlib_jit 
 
 ## 現在地
 
-- done: 設計確定・実コード照合・呼び出し方向マトリクス確定・レビュー・先行研究照合完了
-- 未着手: spike 1。まだ1行も書いていない
+- spike 1 完了（`10e4e28`）・spike 2 完了（`7e68db7`）・spike 3 本実装済み
+- **実装で確定した設計変更（計画からの逸脱、良い方向）**:
+  - `_sflag`（stepping フラグ）は**全廃**。動的フラグの多重化は「computation 内から
+    呼ばれた plain fn の中の effect-fn 呼び」を誤ルートする構造的欠陥だったため、
+    decl を **maker + driver のペア**（`__eff_comp_f` = 未駆動 computation を返す /
+    `f` = 呼び出し地点で `_run_comp` 駆動）に分割し、DELEGATE 発行は maker 名を
+    静的に呼ぶ（`make_delegate` が callee を textual に付け替え）。ルーティングが
+    静的になり保存/復元バグのクラスごと消滅
+  - 一方向 transform 変更のみで plain 側は無変更: bare effect-fn call は wrapper
+    (driver) がそのまま自走するので `.map(f)` 等 first-class 透過が自動で成立
+  - abort の宛先は handle ごとの単調 token（`_tok`）で識別、`_handle` が
+    `__eff_catch_abort` で受けて token 不一致なら re-throw
+  - clause 分類は `classify_clause`（保守側バイアス、単独末尾 `resume(…)` のみ tail）
+  - generator 本体の裸 perform は**自然に合法化**（`.next()` 時点の動的ディスパッチ）
+- **踏んだ罠**: JIT の `.f(a, b)` call-form は同名 global fn があると segfault
+  （Task #1 に切り出し済み）。preamble は `let hf = h.f; hf(…)` の bind-then-call で
+  回避。difftest corpus はチャンク連結なので case 間で effect fn 名と plain fn 名の
+  衝突に注意（`is_effect_call` は名前ベース）
+- **leak ゲート解決（2026-07-18）**: 新規 difftest ケース 2 件の JIT ガベージは
+  effects と無関係の**既存 master バグ**と確定（二分で導入コミット `86c5d1b`
+  = traced-only strings spike を特定。文字列入りネストリテラルで JIT のみ
+  2 obj/iter、真の RC リークではなく backstop 回収される循環系。Task #1 登録済み、
+  最小再現 `fn thunk() { let e = { ask: ["t", "u"] }; nil }`）。回帰ゲートの趣旨に
+  従い `leak.sh --update-baseline` で baseline へ（10→12 件）。バグ修正時に
+  baseline から外すこと
+- full gate green（test-dev / difftest 5709 / aot / leak / doctest 318）

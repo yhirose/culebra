@@ -5,6 +5,12 @@
 # that resumes a computation across its suspension points. Because it is
 # ordinary culebra source, the interp / JIT / AOT backends run it uniformly.
 #
+# Every `effect fn f` lowers to a pair: `__eff_comp_f(args)` builds the
+# un-driven computation object, and `f(args)` drives one at its own call
+# site (`_run_comp`). Code compiled INTO a computation body delegates by
+# calling the maker (static routing — no dynamic "am I inside a _step"
+# flag); everything else calls `f` and gets direct dispatch.
+#
 # A computation object exposes `_step(rv)` returning a tag:
 #   0 = DONE     — `_eff_val` holds the result
 #   1 = SUSPEND  — `_eff_op` / `_eff_args` describe a `perform`
@@ -15,21 +21,33 @@
 # enclosing computation across delegate boundaries. Each `resume` clones every
 # frame (`__eff_copy`, a native shallow object copy) and drives the fresh copy,
 # leaving the snapshot intact — that is what makes a continuation multi-shot.
+#
+# Handler clauses are classified at parse time (t on each frame entry):
+#   "t" tail-resumptive — `resume(v)` exactly once, in tail position
+#   "a" abort           — never resumes; its result becomes the handle result
+#   "f" full-control    — anything else (multi-shot / non-tail resume)
+# Tail and abort clauses also serve DIRECT dispatch (a `perform` in a plain
+# fn, or an effect fn driven at its call site): tail runs with an identity
+# resume — the native stack is the continuation — and abort unwinds to its
+# `handle` via the native abort signal (`__eff_abort`), which user try/catch
+# cannot observe. Full-control needs a captured continuation, so reaching one
+# from direct dispatch is an EffectError (the native frames in between cannot
+# be reified).
 let _eff_module = fn() {
-  let _handlers = []   # stack of frames; each frame maps op-name -> adapter fn
-  # `_sflag[0]` is true only while a computation's `_step` is running. An
-  # effectful `effect fn` call lowers to a DELEGATE evaluated inside `_step`, so
-  # its wrapper reads this shared cell to tell a genuine drive from a bare call
-  # in ordinary code (which must raise, not return an un-driven computation). A
-  # 1-element array (not a `mut`) so the wrapper can read it via `__Eff.stepping`
-  # without a per-call accessor closure.
-  let _sflag = [false]
+  let _handlers = []   # stack of frames; each frame maps op-name -> {t, f}
+  # Monotonic token distinguishing nested `handle` frames, so an abort unwinds
+  # to exactly the handle whose clause ran (not the innermost catcher).
+  let _tok = [0]
+  # Identity resume for tail clauses under direct dispatch — hoisted so the
+  # per-perform hot path does not allocate a closure (which also perturbs the
+  # leak oracle).
+  let _id_resume = fn(v) { v }
 
   fn _find(op, line) {
     let mut i = _handlers.size() - 1
     while i >= 0 {
       let frame = _handlers[i]
-      if frame.has(op) { return frame[op] }
+      if frame.has(op) { return frame }
       i -= 1
     }
     # `line` is the original source line of the `perform` (carried on the
@@ -37,16 +55,19 @@ let _eff_module = fn() {
     throw { kind: "EffectError", message: "no handler for effect '{op}'", line: line }
   }
 
+  fn _full_control_error(op, line) {
+    throw {
+      kind: "EffectError",
+      message: "effect '{op}' reached a full-control handler (non-tail `resume`) from outside an `effect fn`; declare the performing fn as `effect fn` so the continuation can be captured",
+      line: line,
+    }
+  }
+
   fn _drive(stack, rv, ret) {
     let mut resume_val = rv
     while true {
       let comp = stack[stack.size() - 1]
-      # Flag the `_step` window so a delegate call inside it is recognised. A
-      # throw skips the reset here but `_handle`'s defer restores it (every
-      # drive runs under a handle), so ordinary code never sees a stale flag.
-      _sflag[0] = true
       let tag = comp._step(resume_val)
-      _sflag[0] = false
       if tag == 0 {
         let done_val = comp._eff_val
         if stack.size() == 1 {
@@ -60,10 +81,13 @@ let _eff_module = fn() {
         continue
       }
       if tag == 1 {
-        let h = _find(comp._eff_op, comp._eff_line)
+        # Bind the adapter before calling it: `h.f(…)` in call form would
+        # let a user global fn shadow-race the field in the JIT's method
+        # resolution (see the dynamic-perform cycle notes).
+        let hf = _find(comp._eff_op, comp._eff_line)[comp._eff_op].f
         let snapshot = stack   # frozen at the suspend point; forks clone it
-        let resume = fn(v) { _drive(snapshot.map(|f| __eff_copy(f)), v, ret) }
-        return h(comp._eff_args, resume)
+        let resume = fn(v) { _drive(snapshot.map(|c| __eff_copy(c)), v, ret) }
+        return hf(comp._eff_args, resume)
       }
       # DELEGATE: push the sub-computation as a new frame and run it next.
       stack.push(comp._eff_delegate)
@@ -72,49 +96,48 @@ let _eff_module = fn() {
   }
 
   fn _handle(comp, frame, ret) {
-    # `frame` maps each handled op-name to its adapter fn (one per `with`
-    # clause); `ret` is the optional `return`-clause adapter (nil if none).
-    # Push the frame as one dynamically-scoped frame for `comp`'s duration.
+    # `frame` maps each handled op-name to its {t: class, f: adapter} entry
+    # (one per `with` clause); `ret` is the optional `return`-clause adapter
+    # (nil if none). Push the frame as one dynamically-scoped frame for
+    # `comp`'s duration, tagged with this handle's abort token.
+    _tok[0] += 1
+    let tok = _tok[0]
+    frame["_eff_tok"] = tok
     _handlers.push(frame)
-    defer { _handlers.pop(); _sflag[0] = false }
-    _drive([comp], nil, ret)
+    defer { _handlers.pop() }
+    let pair = __eff_catch_abort(fn() { _drive([comp], nil, ret) })
+    if pair[0] {
+      let sig = pair[1]
+      # An abort clause's result becomes ITS handle's result (bypassing the
+      # return clause, like the driven path); someone else's keeps unwinding.
+      if sig[0] == tok { return sig[1] }
+      __eff_abort(sig)
+    }
+    pair[1]
   }
 
-  # (spike) A `perform` inside a plain fn: no computation object, no
-  # suspension, so the adapter runs with an identity resume — a tail-
-  # resumptive clause's `resume(v)` just becomes the direct result. Save/
-  # restore `_sflag` around the adapter call so an effectful effect-fn call
-  # made from inside the clause body is not mistaken for a delegate (the
-  # adapter body runs outside any `_step`, even when `_perform_direct` itself
-  # was reached from inside one).
+  # A `perform` in ordinary (non-effect) code: no computation object, no
+  # suspension — dispatch straight off the handler stack. Tail clauses run
+  # with an identity resume (the native stack is the continuation); abort
+  # clauses compute their result and unwind to their handle.
   fn _perform_direct(op, args, line) {
-    let h = _find(op, line)
-    let saved = _sflag[0]
-    _sflag[0] = false
-    let result = h(args, |v| v)
-    _sflag[0] = saved
-    result
+    let fr = _find(op, line)
+    let h = fr[op]
+    let hf = h.f
+    if h.t == "f" { _full_control_error(op, line) }
+    if h.t == "a" { __eff_abort([fr["_eff_tok"], hf(args, _id_resume)]) }
+    hf(args, _id_resume)
   }
 
-  # (spike) An effect-fn call from a plain fn: the caller's native frame IS the
-  # continuation, so drive the computation right here. Each SUSPEND dispatches
-  # through the dynamic handler stack with an identity resume (tail-resumptive
-  # clauses only) and the clause result feeds straight back into `_step`.
-  # `mk` is a thunk returning the un-driven computation: the wrapper hands it
-  # over only while the stepping flag reads true.
-  fn _run_direct(mk) {
-    let saved = _sflag[0]
-    _sflag[0] = true
-    let comp = mk()
-    _sflag[0] = saved
+  # An effect-fn call from ordinary code: the caller's native frame IS the
+  # continuation, so drive the computation right here. SUSPENDs dispatch
+  # via _perform_direct; DELEGATE frames stack as in _drive.
+  fn _run_comp(comp) {
     let stack = [comp]
     let mut resume_val = nil
-    defer { _sflag[0] = saved }
     while true {
       let c = stack[stack.size() - 1]
-      _sflag[0] = true
       let tag = c._step(resume_val)
-      _sflag[0] = false
       if tag == 0 {
         if stack.size() == 1 { return c._eff_val }
         stack.pop()
@@ -122,8 +145,7 @@ let _eff_module = fn() {
         continue
       }
       if tag == 1 {
-        let h = _find(c._eff_op, c._eff_line)
-        resume_val = h(c._eff_args, |v| v)
+        resume_val = _perform_direct(c._eff_op, c._eff_args, c._eff_line)
         continue
       }
       stack.push(c._eff_delegate)
@@ -131,7 +153,6 @@ let _eff_module = fn() {
     }
   }
 
-  { handle: _handle, stepping: _sflag, perform_direct: _perform_direct,
-    run_direct: _run_direct }
+  { handle: _handle, perform_direct: _perform_direct, run_comp: _run_comp }
 }
 let __Eff = _eff_module()

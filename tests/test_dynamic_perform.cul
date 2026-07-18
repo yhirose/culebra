@@ -1,0 +1,163 @@
+// Conformance: dynamic perform — plain fns and effect fns call each other
+// freely. A `perform` in ordinary code dispatches straight off the dynamic
+// handler stack (tail clauses run with an identity resume, abort clauses
+// unwind natively to their handle); an effect fn called from ordinary code
+// drives itself at the call site. Only full-control handlers (multi-shot /
+// non-tail resume) still require the perform to sit inside an `effect fn`
+// run under a `handle`.
+
+// --- (1) DI: a plain fn performs, a tail handler answers ---
+effect fn ask()
+fn greet() {
+  let name = perform ask()
+  "hi " + name
+}
+assert_eq(handle { greet() } with ask(resume) { resume("yuji") }, "hi yuji")
+
+// --- (2) mixed chain: effect fn -> plain fn -> perform ---
+effect fn get()
+fn plain_mid() {
+  perform get() + 1
+}
+effect fn outer() {
+  let a = perform get()
+  let b = plain_mid()
+  let c = perform get()
+  a + b + c
+}
+assert_eq(handle { outer() } with get(resume) { resume(10) }, 31)
+
+// --- (3) plain fn calls an effect fn (call-site drive) ---
+effect fn twice() {
+  let x = perform get()
+  x * 2
+}
+fn plain_calls_effect() {
+  twice() + 5
+}
+assert_eq(handle { plain_calls_effect() } with get(resume) { resume(7) }, 19)
+
+// --- (4) call-site drive crosses DELEGATE frames (effect -> effect) ---
+effect fn inner_e() { perform get() + 1 }
+effect fn outer_e() { inner_e() * 3 }
+fn plain_deleg() { outer_e() }
+assert_eq(handle { plain_deleg() } with get(resume) { resume(2) }, 9)
+
+// --- (5) perform transparent through first-class use (.map with plain fn) ---
+fn scale(x) { x * perform get() }
+let mapped = handle { [1, 2, 3].map(scale) } with get(resume) { resume(10) }
+assert_eq(mapped, [10, 20, 30])
+
+// --- (6) abort clause: plain-fn perform unwinds to the handle ---
+mut cleanup = []
+effect fn fail(msg)
+fn risky() {
+  defer { cleanup.push("defer-ran") }
+  perform fail("nope")
+  "unreached"
+}
+let aborted = handle { risky() } with fail(msg, resume) { "failed: " + msg }
+assert_eq(aborted, "failed: nope")
+assert_eq(cleanup, ["defer-ran"])
+
+// --- (7) abort unwind is invisible to a user try/catch in between ---
+fn risky_wrapped() {
+  try { risky() } catch e { "user-caught" }
+}
+let aborted2 = handle { risky_wrapped() } with fail(msg, resume) { "abort: " + msg }
+assert_eq(aborted2, "abort: nope")
+
+// --- (8) nested handles: a direct abort lands on ITS handle, not the
+// innermost one (the signal carries the owning handle's token) ---
+effect fn tick()
+fn deep_fail() { perform fail("outer-stop") }
+let nested = handle {
+  handle { deep_fail() } with tick(resume) { resume(nil) }
+} with fail(msg, resume) { "outer-abort: " + msg }
+assert_eq(nested, "outer-abort: outer-stop")
+
+// --- (9) no handler at all: EffectError with the perform line ---
+effect fn nope()
+fn orphan() { perform nope() }
+let no_handler = try { orphan(); "no-error" } catch e { [e.kind, e.line] }
+assert_eq(no_handler, ["EffectError", 81])
+
+// --- (10) full-control handler reached from a plain fn: symmetric error ---
+effect fn choice()
+fn wants_full() { perform choice() }
+let full_err = try {
+  handle { wants_full() } with choice(resume) {
+    let a = resume(1)
+    let b = resume(2)
+    a + b
+  }
+} catch e { e.kind }
+assert_eq(full_err, "EffectError")
+
+// --- (11) …but the same full-control handler works via an effect fn ---
+effect fn wants_full_eff() { perform choice() }
+let full_ok = handle { wants_full_eff() } with choice(resume) {
+  let a = resume(1)
+  let b = resume(2)
+  a + b
+}
+assert_eq(full_ok, 3)
+
+// --- (12) handler-clause body re-performs to an outer handler ---
+effect fn log_line(s)
+mut logged = []
+let composed = handle {
+  handle { greet() } with ask(resume) {
+    perform log_line("asked")
+    resume("bob")
+  }
+} with log_line(s, resume) {
+  logged.push(s)
+  resume(nil)
+}
+assert_eq(composed, "hi bob")
+assert_eq(logged, ["asked"])
+
+// --- (13) tail clause with op args, from a plain fn ---
+effect fn add(a, b)
+fn adder() { perform add(3, 4) }
+assert_eq(handle { adder() } with add(a, b, resume) { resume(a + b) }, 7)
+
+// --- (14) plain-fn perform at top level of the handle body still works ---
+assert_eq(handle { greet() } with ask(k) { k("top") }, "hi top")
+
+// --- (15) an early `return` before the tail resume demotes the clause to
+// full-control: the driven path honors the dynamic abort, and the direct
+// path refuses (a tail dispatch would silently feed the abort value back
+// into the performer) ---
+effect fn er_ask()
+effect fn er_eff() {
+  let v = perform er_ask()
+  "resumed: {v}"
+}
+let er_driven = handle { er_eff() } with er_ask(resume) {
+  if true { return "aborted" }
+  resume(7)
+}
+assert_eq(er_driven, "aborted")
+fn er_plain() { perform er_ask() }
+let er_direct = try {
+  handle { er_plain() } with er_ask(resume) {
+    if true { return "aborted" }
+    resume(7)
+  }
+} catch e { e.kind }
+assert_eq(er_direct, "EffectError")
+// …while a `return` inside a nested fn does not demote the clause.
+fn er_plain2() { perform er_ask() }
+let er_tail = handle { er_plain2() } with er_ask(resume) {
+  let f = fn() { return 9 }
+  resume(f())
+}
+assert_eq(er_tail, 9)
+
+// (a local binding shadowing an effect-fn name at a call site inside an
+// effect body is a parse-time SyntaxError — verified manually on both
+// backends, not runnable here)
+
+print("dynamic perform ok")

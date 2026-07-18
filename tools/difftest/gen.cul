@@ -963,7 +963,32 @@ let eff = [
   # ... inside a yielding for-in loop
   'effect fn a(); fn g() { for i in [1, 2] { let v = handle { perform a() * i } with a(k) { k(100) }; yield v } }; to_string(g().collect())',
   # multi-shot resume inside a generator body handle
-  'effect fn a(); fn g() { let r = handle { perform a() } with a(k) { [k(1), k(2)] }; yield r }; to_string(g().collect())']
+  'effect fn a(); fn g() { let r = handle { perform a() } with a(k) { [k(1), k(2)] }; yield r }; to_string(g().collect())',
+  # --- dynamic perform: plain fns and effect fns interoperate freely -------
+  # a perform in a plain fn dispatches off the dynamic handler stack (tail
+  # clause = identity resume); an effect fn called from ordinary code drives
+  # itself at the call site; abort clauses unwind natively to their handle.
+  'effect fn ask(); fn g() { let n = perform ask(); "hi " + n }; handle { g() } with ask(r) { r("x") }',
+  'effect fn get(); fn m() { perform get() + 1 }; effect fn o() { let a = perform get(); let b = m(); a + b }; handle { o() } with get(r) { r(10) }',
+  'effect fn get(); effect fn tw() { let x = perform get(); x * 2 }; fn p() { tw() + 5 }; handle { p() } with get(r) { r(7) }',
+  'effect fn get(); effect fn i() { perform get() + 1 }; effect fn o() { i() * 3 }; fn p() { o() }; handle { p() } with get(r) { r(2) }',
+  'effect fn get(); fn s(x) { x * perform get() }; to_string(handle { [1, 2, 3].map(s) } with get(r) { r(10) })',
+  'effect fn g(); let lam = fn() { perform g() * 2 }; handle { lam() } with g(k) { k(21) }',
+  # abort from a plain fn: unwinds to the handle, invisible to try/catch,
+  # defers still run, and the result bypasses the return clause
+  'effect fn fl(m); fn r() { perform fl("n"); 99 }; handle { r() } with fl(m, k) { "a: " + m }',
+  'effect fn fl(); fn r() { try { perform fl(); 1 } catch e { 2 } }; to_string(handle { r() } with fl(k) { -1 })',
+  'effect fn fl(); mut lg = []; fn r() { defer { lg.push("d") }; perform fl(); 9 }; let x = handle { r() } with fl(k) { -1 }; to_string(x) + to_string(lg)',
+  'effect fn fl(); fn r() { perform fl(); 9 }; handle { r() } with fl(k) { -1 } with return(v) { v + 100 }',
+  # nested handles: the abort signal carries its handle token past inner ones
+  'effect fn fl(m); effect fn tk(); fn d() { perform fl("s") }; handle { handle { d() } with tk(k) { k(nil) } } with fl(m, k) { "o: " + m }',
+  # errors stay symmetric: no handler at all; full-control reached directly
+  'effect fn np(); fn o() { perform np() }; try { o(); "no" } catch e { e.kind }',
+  'effect fn ch(); fn w() { perform ch() }; try { handle { w() } with ch(r) { [r(1), r(2)] } } catch e { e.kind }',
+  # a handler clause body re-performs to an outer handler (composition)
+  'effect fn a(); effect fn l(s); mut lg = []; let r = handle { handle { (fn() { perform a() })() } with a(k) { perform l("x"); k(1) } } with l(s, k) { lg.push(s); k(nil) }; to_string(r) + to_string(lg)',
+  # a bare perform in a generator body dispatches at .next() time
+  'effect fn a(); fn g() { let v = perform a(); yield v; yield v * 2 }; to_string(handle { g().collect() } with a(k) { k(5) })']
 for c in eff {
   case("eff|" + c, c)
 }

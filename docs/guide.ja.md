@@ -727,9 +727,10 @@ let n = handle { counter() } with get(k) { k(cell) }
 puts(n)   # => 2
 ```
 
-`perform` する関数は自身が `effect fn` である必要があります。`handle { counter() }`
-はそこへ委譲するので、その `perform` はこれらのハンドラに届きます。1 つの `handle`
-は操作ごとに `with` clause を持てます。
+どの関数からでも `perform` できます。plain 関数の `perform` は現在のコール
+スタックに設置されたハンドラへディスパッチされ、`effect fn` マーカーが必要なのは
+ハンドラが複数回 resume する、または非末尾で resume する場合（継続のキャプチャが
+要る場合）だけです。1 つの `handle` は操作ごとに `with` clause を持てます。
 
 ### 8.3 複数回の再開
 

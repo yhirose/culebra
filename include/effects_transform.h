@@ -157,12 +157,21 @@ class EffectsLowerer {
     if (ast->tag == "HANDLE"_) return lower_handle(ast);
     if (ast->tag == "PERFORM"_) {
       // Reached through the generic walk => not consumed by an effect fn /
-      // handle body, i.e. a `perform` in ordinary (non-effect) code.
-      throw CulebraError(
-          "SyntaxError",
-          "`perform` may only appear inside an `effect fn` body or a "
-          "`handle` block.",
-          err_line(*ast), static_cast<long>(ast->column));
+      // handle body, i.e. a `perform` in ordinary (non-effect) code. No
+      // suspension is possible here (the native stack is the continuation),
+      // so lower it to a direct dispatch off the dynamic handler stack —
+      // tail/abort clauses serve it; a full-control clause raises at runtime.
+      // The sub-lower inside reparse_expr recursively handles effect
+      // constructs nested in the argument expressions.
+      std::string op = std::string(ast->nodes[0]->token);
+      std::string args = perform_args_array(*ast->nodes[1], {});
+      long line = err_line(*ast);
+      auto synth = std::make_shared<std::string>(std::format(
+          "fn __eff_perform_wrapper__() {{\n"
+          "  __Eff.perform_direct(\"{}\", {}, {})\n"
+          "}}\n",
+          op, args, line));
+      return reparse_expr(synth, line);
     }
     for (auto& child : ast->nodes) child = transform(child);
     return ast;
@@ -342,7 +351,29 @@ class EffectsLowerer {
     su.kind = EffSuspension::Delegate;
     su.target = std::move(target);
     su.binds = binds;
-    su.call_src = rewrite_locals_to_this(slice(call), rewrite);
+    // A delegate site needs the un-driven computation, not a driven result:
+    // route to the maker half of the decl pair (`f(…)` -> `__eff_comp_f(…)`).
+    // The slice can carry leading trivia, so trim it before prefixing the
+    // callee (`is_effect_call` guarantees the trimmed slice starts with the
+    // bare fn name). The maker is declared right next to `f`, so it is
+    // visible wherever `f` is. A local binding shadowing the effect-fn name
+    // must not be silently redirected to the global maker (`is_effect_call`
+    // is name-set based), so reject the shadow at lower time.
+    std::string callee(call.nodes[0]->token);
+    if (rewrite.count(callee)) {
+      throw CulebraError(
+          "SyntaxError",
+          std::format("a local binding shadows effect fn '{}' at a call site "
+                      "inside an effect body.",
+                      callee),
+          err_line(call), static_cast<long>(call.column));
+    }
+    std::string_view cs = slice(call);
+    if (auto p = cs.find_first_not_of(" \t\r\n"); p != std::string_view::npos) {
+      cs = cs.substr(p);
+    }
+    su.call_src =
+        rewrite_locals_to_this("__eff_comp_" + std::string(cs), rewrite);
     su.prov = mk(call);
     return su;
   }
@@ -1426,19 +1457,56 @@ class EffectsLowerer {
       if (j > 0) call_args += ", ";
       call_args += std::string(param_names[j]);
     }
-    // An effectful `effect fn` is only meaningful under a driver: a DELEGATE
-    // call (from another effect body / a handle) runs inside a `_step`, so the
-    // shared `__Eff.stepping` cell reads true and we hand back the un-driven
-    // computation for the frame stack. A bare call in ordinary code has no
-    // driver, so raise instead of leaking the internal computation object.
+    // The decl lowers to a PAIR: `__eff_comp_f` builds the un-driven
+    // computation (called by DELEGATE sites compiled into other computation
+    // bodies — static routing, no dynamic in-a-`_step` flag), and `f` drives
+    // one at its own call site. The caller's native frame is the continuation
+    // there (tail/abort dispatch; a full-control clause raises), which is
+    // what lets ordinary code call an effect fn — including through
+    // first-class uses like `.map(f)`.
     auto params_sv = slice(params_ast);
     auto synth = std::make_shared<std::string>(std::format(
-        "fn {0}{1} {{\n{2}"
-        "  if __Eff.stepping[0] {{ {3}.new({4}) }}\n"
-        "  else {{ throw {{ kind: \"EffectError\", message: \"effect fn '{0}' "
-        "must be run inside a `handle`\" }} }}\n}}\n",
+        "fn __eff_decls__() {{\n"
+        "fn __eff_comp_{0}{1} {{\n{2}  {3}.new({4})\n}}\n"
+        "fn {0}{1} {{ __Eff.run_comp(__eff_comp_{0}({4})) }}\n"
+        "}}\n",
         name, std::string(params_sv), cls, class_name, call_args));
-    return reparse_decl(synth, err_line(*ast));
+    return reparse_stmts(synth, err_line(*ast));
+  }
+
+  // Classify a handler clause body against its `resume` parameter: "t" =
+  // tail-resumptive (a lone `resume(…)` call as the body's final statement),
+  // "a" = abort (the name never appears), "f" = full-control (anything else).
+  // Deliberately biased toward "f": a wrong "f" only refuses direct dispatch
+  // with a clear EffectError, while a wrong "t"/"a" would be silently wrong
+  // semantics. Any other appearance of the name (alias, argument, capture,
+  // rebinding, a call in non-tail position or under a loop/if) lands on "f"
+  // because the single use is then not the final statement's callee. An
+  // early `return` before the tail resume also lands on "f": that path is a
+  // dynamic abort, which direct dispatch cannot honor.
+  static const char* classify_clause(const peg::Ast& body,
+                                     std::string_view resume_name) {
+    using namespace peg::udl;
+    std::vector<const peg::Ast*> uses;
+    bool early_ret = false;
+    std::function<void(const peg::Ast&, bool)> walk = [&](const peg::Ast& n,
+                                                          bool in_fn) {
+      if (n.tag == "IDENTIFIER"_ && n.token == resume_name) uses.push_back(&n);
+      if (n.tag == "RETURN"_ && !in_fn) early_ret = true;
+      for (auto& c : n.nodes) walk(*c, in_fn || is_fn_boundary(c->tag));
+    };
+    walk(body, false);
+    if (uses.empty()) return "a";
+    if (uses.size() != 1 || early_ret) return "f";
+    const peg::Ast* b = &body;
+    while (b->tag == "BLOCK"_ && b->nodes.size() == 1) b = b->nodes[0].get();
+    auto stmts = body_stmts(*b);
+    if (stmts.empty()) return "f";
+    const auto* last = unwrap_stmt(stmts.back());
+    return (last->tag == "CALL"_ && last->nodes.size() == 2 &&
+            last->nodes[0].get() == uses[0])
+               ? "t"
+               : "f";
   }
 
   // `handle { BODY } with op1(params) { H1 } … with return(v) { R }` ->
@@ -1538,8 +1606,8 @@ class EffectsLowerer {
       if (!first_op) frame += ",";
       first_op = false;
       frame += std::format(
-          "\n    {0}: fn(_eh_args, _eh_resume) {{\n{1}      {2}\n    }}",
-          op, binds, handler_src);
+          "\n    {0}: {{t: \"{3}\", f: fn(_eh_args, _eh_resume) {{\n{1}      {2}\n    }}}}",
+          op, binds, handler_src, classify_clause(handler_body, resume_name));
     }
     frame += "}";
 
@@ -1596,12 +1664,13 @@ class EffectsLowerer {
     return reposition_ast(out, marker_line_map(*synth), fallback_line, label);
   }
 
-  // Re-parse a synthesized `fn __wrapper__() { <expr> }` and return the single
-  // expression node in its body (to splice in place of a HANDLE), recursively
-  // lowering nested effect constructs.
-  std::shared_ptr<peg::Ast> reparse_expr(std::shared_ptr<std::string> synth,
-                                         long fallback_line) {
-    using namespace peg::udl;
+  // Re-parse a synthesized `fn __wrapper__() { <stmts> }` and return its whole
+  // body (to splice, as a statement sequence, in place of an EFFECT_FN_DECL
+  // that lowers to more than one declaration), recursively lowering nested
+  // effect constructs. Both backends evaluate a nested STATEMENTS node in the
+  // enclosing scope, so the spliced decls bind exactly where the original did.
+  std::shared_ptr<peg::Ast> reparse_stmts(std::shared_ptr<std::string> synth,
+                                          long fallback_line) {
     auto label = next_fragment_label("eff");
     auto fn = parse_wrapper_fn(synth, label.c_str());
     if (!fn) {
@@ -1610,16 +1679,22 @@ class EffectsLowerer {
     }
     fn = transform_generators_in(fn, synth->data(), synth->size());
     auto body = fn->nodes.back();
-    std::shared_ptr<peg::Ast> expr;
-    if (body->tag == "STATEMENTS"_ && !body->nodes.empty()) {
-      expr = body->nodes[0];
-    } else {
-      expr = body;
-    }
     EffectsLowerer sub(synth->data(), synth->size(), effect_fns_,
                        /*src_is_original=*/false, label);
-    auto out = sub.transform(expr);
+    auto out = sub.transform(body);
     return reposition_ast(out, marker_line_map(*synth), fallback_line, label);
+  }
+
+  // Re-parse a synthesized `fn __wrapper__() { <expr> }` and return the single
+  // expression node in its body (to splice in place of a HANDLE), recursively
+  // lowering nested effect constructs.
+  std::shared_ptr<peg::Ast> reparse_expr(std::shared_ptr<std::string> synth,
+                                         long fallback_line) {
+    using namespace peg::udl;
+    auto body = reparse_stmts(synth, fallback_line);
+    return (body->tag == "STATEMENTS"_ && !body->nodes.empty())
+               ? body->nodes[0]
+               : body;
   }
 };
 

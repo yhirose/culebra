@@ -3004,6 +3004,43 @@ effect fn double() {
 puts(handle { double() } with ask2(k) { k(21) })   # => 42
 ```
 
+### Plain functions and effects
+
+Ordinary (non-`effect`) functions participate fully. A `perform` in a plain
+fn dispatches straight off the dynamic handler stack, and a plain fn may call
+an effect fn (and vice versa) — including through first-class uses like
+`.map(f)`:
+
+```culebra
+effect fn ask()
+fn greet() {                     # a plain fn performing an effect
+  let name = perform ask()
+  "hi " + name
+}
+puts(handle { greet() } with ask(k) { k("ana") })   # => 'hi ana'
+```
+
+What makes this work is a classification of each handler clause at parse
+time:
+
+* **tail-resumptive** — `resume(v)` called exactly once, as the clause's
+  final statement. The clause runs like a plain function call at the perform
+  point; the native call stack is the continuation. This is the common case
+  (dependency injection, state, mocking, logging).
+* **abort** — the clause never calls `resume`. Its result becomes the
+  `handle`'s result: the stack between the perform point and the `handle`
+  unwinds, running `defer`s on the way, and the unwind is **not** observable
+  by `try/catch` in between (it is not an exception).
+* **full-control** — anything else (multi-shot, a non-tail `resume`, storing
+  or passing `resume`). The continuation must be captured, which only an
+  `effect fn` body can support: reaching a full-control handler from a plain
+  fn raises `EffectError`. This is the one remaining case where the
+  `effect fn` marker is required.
+
+The classification is deliberately conservative: any use of `resume` other
+than a lone tail call classifies the clause as full-control (which is always
+safe — it only means direct dispatch from plain code refuses it).
+
 ### Capturing an enclosing binding
 
 A nested `handle` — written inside an effectful `effect fn` body or another
@@ -3036,25 +3073,27 @@ puts(doubled().collect())    # => [20, 7]
 ### Semantics and limitations
 
 * Performing an operation with **no handler** raises `EffectError`.
-* An **effectful** `effect fn` must be invoked from within a `handle` block
-  (directly, or via another effectful fn). Calling one from ordinary, undriven
-  code raises `EffectError` — it cannot run without a handler.
-* A `perform` is supported only in **statement position** or an
-  unconditionally-evaluated operand. A `perform` in a short-circuit
-  (`&&` / `||` / `??`) operand, a ternary arm, a method-chain receiver, or a
-  control-flow condition is rejected at parse time (symmetrically on every
-  backend).
+* Reaching a **full-control** handler clause (multi-shot / non-tail `resume`)
+  from a `perform` or effect-fn call in ordinary code raises `EffectError`:
+  the native frames in between cannot be captured as a continuation. Route
+  such performs through an `effect fn` run under the `handle`.
+* Inside an **effect fn or `handle` body**, a `perform` is supported only in
+  **statement position** or an unconditionally-evaluated operand. A `perform`
+  in a short-circuit (`&&` / `||` / `??`) operand, a ternary arm, a
+  method-chain receiver, or a control-flow condition is rejected at parse
+  time (symmetrically on every backend). In a **plain fn**, a `perform` is an
+  ordinary expression with no positional restrictions.
 * Errors inside an effect body report the **original source line**; the
   column is approximate (the lowering shifts it). An unhandled `perform`'s
   `EffectError` carries the perform's line as `e.line`.
 * Effects and generators **compose**: a named generator fn declared in an
-  `effect fn` / `handle` body works (and may read the body's locals), and a
+  `effect fn` / `handle` body works (and may read the body's locals), a
   self-contained `handle { … }` expression works inside a generator body
-  (including in a yielded expression or a loop). The remaining boundaries,
-  rejected at parse time (symmetrically): a **bare `yield`** in an effect
-  body (the body itself is not a generator — wrap the yield in a nested
-  generator fn), a **`perform` in a generator body outside any `handle`**
-  (a generator suspension cannot cross an effect boundary), and an
+  (including in a yielded expression or a loop), and a bare `perform` in a
+  generator body dispatches dynamically — against the handlers installed at
+  the `.next()` call that runs it. The remaining boundaries, rejected at
+  parse time (symmetrically): a **bare `yield`** in an effect body (the body
+  itself is not a generator — wrap the yield in a nested generator fn) and an
   **`effect fn` declaration** inside a generator body.
 * A **named fn** declared in an effect body must sit at the body's statement
   level (one buried in nested control flow is rejected at parse time); it may

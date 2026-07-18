@@ -741,9 +741,10 @@ let n = handle { counter() } with get(k) { k(cell) }
 puts(n)   # => 2
 ```
 
-A function that performs must itself be an `effect fn`; `handle { counter() }`
-delegates into it so its `perform`s reach these handlers. One `handle` can
-carry a `with` clause per operation.
+Any function may perform: a plain fn's `perform` dispatches to the handlers
+installed on the current call stack, and the `effect fn` marker is needed only
+when a handler resumes more than once or in non-tail position (a captured
+continuation). One `handle` can carry a `with` clause per operation.
 
 ### 8.3 Resuming more than once
 
