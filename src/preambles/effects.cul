@@ -114,7 +114,19 @@ let _eff_module = fn() {
     let mut resume_val = rv
     while true {
       let comp = stack[stack.size() - 1]
-      let tag = comp._step(resume_val)
+      # A regular `throw` out of `_step` abandons every frame currently on
+      # `stack` (delegate ancestors included) — `_step` finalizes `comp` itself,
+      # but an ancestor delegate frame below it needs this to finalize too. This
+      # is sound to catch unconditionally here: `_step` never captures `stack`
+      # into a `resume` closure (only the `hf` call below does that, and it
+      # stays unwrapped so an exception there can't spuriously finalize a
+      # continuation that might still be resumed again).
+      let tag = try {
+        comp._step(resume_val)
+      } catch e {
+        _finalize_stack(stack)
+        throw e
+      }
       if tag == 0 {
         let done_val = comp._eff_val
         if stack.size() == 1 {
@@ -197,7 +209,15 @@ let _eff_module = fn() {
       let mut resume_val = nil
       while true {
         let c = stack[stack.size() - 1]
-        let tag = c._step(resume_val)
+        # Same reasoning as `_drive`: a regular throw out of `_step` abandons
+        # every frame on `stack`, not just `c` (which already finalized
+        # itself); `_perform_direct`'s dispatch stays unwrapped below.
+        let tag = try {
+          c._step(resume_val)
+        } catch e {
+          _finalize_stack(stack)
+          throw e
+        }
         if tag == 0 {
           if stack.size() == 1 { return c._eff_val }
           stack.pop()

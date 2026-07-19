@@ -474,6 +474,40 @@ let de_r11 = handle {
 assert_eq(de_r11, "outer")
 assert_eq(de_log11, ["inner-defer"])
 
+// a regular `throw` (not an abort signal) unwinding through a delegate chain
+// abandons every ancestor frame on the way out, not just the one that threw:
+// `_step` finalizes the throwing frame itself, the driver finalizes the rest.
+mut de_log12 = []
+effect fn de_thrower() {
+  defer { de_log12.push("inner") }
+  throw { kind: "E", message: "boom" }
+}
+effect fn de_delegator() {
+  defer { de_log12.push("outer") }
+  de_thrower()
+  0
+}
+let de_r12 = try { handle { de_delegator() } with dummy(r) { 0 } } catch e { "caught:" + e.message }
+assert_eq(de_r12, "caught:boom")
+assert_eq(de_log12, ["inner", "outer"])
+
+// soundness: a full-control handler that stores `resume` and then throws (for
+// an unrelated reason) must not finalize the stored continuation early — it
+// stays viable to resume later, and its defer fires once, on that resume
+mut de_log13 = []
+mut de_saved13 = nil
+effect fn de_esc2() {
+  defer { de_log13.push("body-defer") }
+  perform de_fail() + 1
+}
+let de_out13 = try {
+  handle { de_esc2() } with de_fail(resume) { de_saved13 = resume; throw { kind: "E", message: "h" } }
+} catch e { "caught:" + e.message }
+assert_eq(de_out13, "caught:h")
+assert_eq(de_log13, [])
+assert_eq(de_saved13(41), 42)
+assert_eq(de_log13, ["body-defer"])
+
 // A-normalization reaches inside a control-flow body (uniform with top level)
 effect fn cf_qty()
 effect fn cf_accumulate(n) {
