@@ -204,4 +204,20 @@ let both = handle {
 } with get(resume) { resume(7) }
 assert_eq(both, [7, "H"])
 
+// --- (18) a user global fn whose name matches a lazy-ns preamble method
+// (`_step`, `f`, …) must not be captured by the __Eff builder. The builder
+// is spliced at entry-module top level; its call-form `comp._step(rv)` is a
+// UFCS candidate that, before the scope barrier, captured the same-named
+// user global and broke the captureless-builder invariant (JIT-only crash) ---
+fn _step(x) { x + 100 }
+fn f(x) { x - 1 }
+effect fn cg_ask()
+effect fn cg_body() {
+  let v = perform cg_ask()
+  v * 2
+}
+assert_eq(handle { cg_body() } with cg_ask(resume) { resume(21) }, 42)
+assert_eq(_step(5), 105)
+assert_eq(f(10), 9)
+
 print("dynamic perform ok")

@@ -3409,6 +3409,28 @@ struct JIT {
     }
   }
 
+  // If `node` is a `_lazy_ns_register("Ns", fn(){...})` intrinsic call,
+  // return its builder FUNCTION/LAMBDA argument (descending single-child
+  // wrappers), else nullptr. Mirrors the detection in the stdlib intrinsic.
+  const peg::Ast* lazy_ns_builder_arg(const peg::Ast& node) const {
+    using namespace peg::udl;
+    if (node.tag != "CALL"_ || node.nodes.size() != 2) return nullptr;
+    const auto& callee = *node.nodes[0];
+    if (callee.tag != "IDENTIFIER"_ ||
+        callee.token != "_lazy_ns_register")
+      return nullptr;
+    const auto& args = *node.nodes[1];
+    if (args.original_tag != "ARGUMENTS"_ || args.nodes.size() != 2)
+      return nullptr;
+    const peg::Ast* builder = args.nodes[1].get();
+    while (builder->nodes.size() == 1 && builder->tag != "FUNCTION"_ &&
+           builder->tag != "LAMBDA"_)
+      builder = builder->nodes[0].get();
+    return (builder->tag == "FUNCTION"_ || builder->tag == "LAMBDA"_)
+               ? builder
+               : nullptr;
+  }
+
   // Record `name` as a free variable of the function under analysis when it
   // resolves to an enclosing lexical scope. Shared by the IDENTIFIER read path
   // and the UFCS method-name path.
@@ -3579,6 +3601,20 @@ struct JIT {
     // `dbl(5)` resolves fine. Bare property access (DOT without a
     // following ARGUMENTS) never uses UFCS, so it's left alone.
     if (node.tag == "CALL"_) {
+      // Scope barrier for a lazy-ns builder. The stdlib splices
+      // `_lazy_ns_register("Ns", fn(){...})` at entry-module top level; the
+      // builder fn is a self-contained module rebuilt per-Runtime via its
+      // fn_ptr, so it MUST stay captureless. A UFCS-candidate method name in
+      // its body (`comp._step(rv)`) would otherwise be noted as a free var
+      // and capture a same-named entry-module user global, breaking the
+      // captureless invariant. Analyze the builder with no outer scope so
+      // such names resolve as globals (never captures); skip the rest of the
+      // CALL so it isn't re-analyzed under the enclosing scope.
+      if (const peg::Ast* builder = lazy_ns_builder_arg(node)) {
+        std::vector<const std::set<std::string>*> barrier;  // no outer scope
+        analyze_function(*builder, barrier);
+        return;
+      }
       for (size_t i = 0; i < node.nodes.size(); i++) {
         const auto& child = *node.nodes[i];
         bool is_method = (child.original_tag == "DOT"_ ||

@@ -988,7 +988,11 @@ let eff = [
   # a handler clause body re-performs to an outer handler (composition)
   'effect fn a(); effect fn l(s); mut lg = []; let r = handle { handle { (fn() { perform a() })() } with a(k) { perform l("x"); k(1) } } with l(s, k) { lg.push(s); k(nil) }; to_string(r) + to_string(lg)',
   # a bare perform in a generator body dispatches at .next() time
-  'effect fn a(); fn g() { let v = perform a(); yield v; yield v * 2 }; to_string(handle { g().collect() } with a(k) { k(5) })']
+  'effect fn a(); fn g() { let v = perform a(); yield v; yield v * 2 }; to_string(handle { g().collect() } with a(k) { k(5) })',
+  # a user global fn named like a __Eff builder method (_step / f / _drive)
+  # must not be captured by the spliced captureless builder (scope barrier)
+  'fn _step(x) { x + 100 }; effect fn cg(); effect fn cb() { let v = perform cg(); v * 2 }; to_string(handle { cb() } with cg(r) { r(21) }) + "," + to_string(_step(5))',
+  'fn f(x) { x - 1 }; effect fn g2(); fn u() { perform g2() }; to_string(handle { u() } with g2(r) { r(7) }) + "," + to_string(f(10))']
 for c in eff {
   case("eff|" + c, c)
 }
