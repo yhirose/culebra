@@ -508,6 +508,24 @@ let _eff_module = fn() {
     }
   }
 
+  # Run each abandoned frame's deferred cleanup, innermost (deepest) first.
+  fn _finalize_stack(stack) {
+    mut i = stack.size()
+    while i > 0 {
+      i = i - 1
+      stack[i]._eff_finalize()
+    }
+  }
+
+  # A frame's `defer`s run when it is abandoned. Normal completion and a regular
+  # `throw` finalize the frame inside `_step`. An abort *clause* that returns a
+  # value without resuming abandons the suspended frames while the drive is still
+  # live, so they are finalized inline below — keyed on the "a" classification,
+  # the only clause that provably never resumes. (An abort *signal* unwinding a
+  # throw through the drive — a plain-fn `perform` or a nested-handle cross —
+  # would need a finalize hook on this hot recursive path, but both a native
+  # `defer` and an abort-catch wrapper here leak a clone in the JIT RC; those
+  # defers do not run, a documented residual. Both backends stay symmetric.)
   fn _drive(stack, rv, ret) {
     let mut resume_val = rv
     while true {
@@ -533,10 +551,15 @@ let _eff_module = fn() {
         # lazy-ns builder's captureless invariant (see the dynamic-perform
         # cycle notes; the runtime now raises a loud error on this instead
         # of a silent crash, but the bind-then-call form avoids it outright).
-        let hf = _find(comp._eff_op, comp._eff_line).f
+        let h = _find(comp._eff_op, comp._eff_line)
+        let hf = h.f
+        let is_abort = h.t == "a"
         let snapshot = stack   # frozen at the suspend point; forks clone it
         let resume = fn(v) { _drive(snapshot.map(|c| __eff_copy(c)), v, ret) }
-        return hf(comp._eff_args, resume)
+        let result = hf(comp._eff_args, resume)
+        # An abort clause never resumes: the suspended body is abandoned.
+        if is_abort { _finalize_stack(stack) }
+        return result
       }
       # DELEGATE: push the sub-computation as a new frame and run it next.
       stack.push(comp._eff_delegate)
@@ -585,7 +608,8 @@ let _eff_module = fn() {
 
   # An effect-fn call from ordinary code: the caller's native frame IS the
   # continuation, so drive the computation right here. SUSPENDs dispatch
-  # via _perform_direct; DELEGATE frames stack as in _drive.
+  # via _perform_direct; DELEGATE frames stack as in _drive. An abort signal
+  # unwinds natively through here to its `_handle`, which finalizes the frames.
   fn _run_comp(comp) {
     let stack = [comp]
     let mut resume_val = nil

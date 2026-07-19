@@ -1203,9 +1203,10 @@ class EffectsLowerer {
   }
 
   struct DispatchOut {
-    std::string step;  // `_step` body source (dispatch, defer-wrapped if needed)
-    int entry;         // initial state index
-    int n_defers;      // number of registered `defer` bodies (ctor flags)
+    std::string step;           // `_step` body (dispatch, defer-wrapped if any)
+    std::string finalize_body;  // `_eff_finalize` body (empty when no defers)
+    int entry;                  // initial state index
+    int n_defers;               // number of registered `defer` bodies
   };
 
   // Lower a body into the `_step` dispatch source and its entry state index.
@@ -1230,25 +1231,25 @@ class EffectsLowerer {
     }
     int n_defers = static_cast<int>(st.defer_bodies.size());
 
-    // Registered defers run LIFO exactly once, at the body's normal completion
-    // and on a throw unwinding out of it. `defer_bodies` is in reverse source
-    // order (statements are compiled back-to-front), so iterating it forward IS
-    // the LIFO order; each is gated on its reach flag. The `_eff_finalized`
-    // guard keeps the terminal path and the catch path from double-running.
-    // (Known gap: an abort handler that never resumes unwinds past the already-
-    // suspended `_step`, so these defers do not fire on abort — symmetric on
-    // both backends. A plain fn's native defer still runs. Tracked separately.)
-    std::string defer_run;
+    // `_eff_finalize()` runs the registered defers LIFO, exactly once. It fires
+    // at the body's normal completion (terminal state) and on a throw unwinding
+    // out of it (the `_step` dispatch is wrapped in try/catch), and the driver
+    // calls it on the abort path — when a handler abandons the suspended
+    // computation without resuming — so cleanup runs there too. `defer_bodies`
+    // is in reverse source order (statements compile back-to-front), so forward
+    // iteration IS the LIFO order; each defer is gated on its reach flag and the
+    // whole run on `_eff_finalized` (exactly-once across all three paths).
+    std::string finalize_body;
     if (n_defers > 0) {
-      defer_run = "      if !this._eff_finalized {\n"
-                  "        this._eff_finalized = true\n";
+      finalize_body = "      if !this._eff_finalized {\n"
+                      "        this._eff_finalized = true\n";
       for (int k = 0; k < n_defers; k++)
-        defer_run += std::format(
+        finalize_body += std::format(
             "        if this._eff_defer_{} {{\n{}\n        }}\n", k,
             st.defer_bodies[k]);
-      defer_run += "      }\n";
-      st.states[st.terminal] =
-          defer_run + std::format("      return {}\n", EFF_DONE);
+      finalize_body += "      }\n";
+      st.states[st.terminal] = "      this._eff_finalize()\n" +
+                               std::format("      return {}\n", EFF_DONE);
     }
 
     std::string dispatch = "      while true {\n";
@@ -1262,10 +1263,11 @@ class EffectsLowerer {
       // A suspension leaves `_step` via `return` (not caught); only a real
       // throw hits the catch, runs the pending defers, and re-raises the same
       // error value (kind/message/position preserved — verified symmetric).
-      dispatch = "      try {\n" + dispatch + "      } catch _eff_ex {\n" +
-                 defer_run + "        throw _eff_ex\n      }\n";
+      dispatch = "      try {\n" + dispatch +
+                 "      } catch _eff_ex {\n        this._eff_finalize()\n"
+                 "        throw _eff_ex\n      }\n";
     }
-    return {dispatch, entry, n_defers};
+    return {dispatch, finalize_body, entry, n_defers};
   }
 
   // A `defer` must sit at the effect body's top statement level: block-scope
@@ -1539,12 +1541,16 @@ class EffectsLowerer {
     emit_ctor_param_and_local_inits(param_names, locals, ctor_params,
                                     ctor_call_args, ctor_inits);
 
+    // Every computation exposes `_eff_finalize()` so the driver can call it
+    // uniformly on the abort path; it is empty when the body has no defers.
     return std::format(
         "  class {0} {{\n"
         "    new({1}) {{\n{2}    }}\n"
         "    _step({3}) {{\n{4}    }}\n"
+        "    _eff_finalize() {{\n{5}    }}\n"
         "  }}\n",
-        class_name, ctor_params, ctor_inits, rv_name, disp.step);
+        class_name, ctor_params, ctor_inits, rv_name, disp.step,
+        disp.finalize_body);
   }
 
   // `effect fn f(params) { BODY }` -> `fn f(params) { class …; ….new(args) }`

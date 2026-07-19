@@ -391,6 +391,56 @@ let de_r6 = handle {
 assert_eq(de_log6, ["end", "defer"])
 assert_eq(de_r6, 5)
 
+// an abort (a handler that never resumes) abandons the body; the driver runs
+// the reached defers of the discarded computation. A defer AFTER the aborting
+// perform was never reached, so it does not run.
+mut de_log7 = []
+effect fn de_fail()
+effect fn de_abort() {
+  defer { de_log7.push("reached") }
+  perform de_fail()
+  defer { de_log7.push("unreached") }
+  99
+}
+let de_r7 = handle { de_abort() } with de_fail(resume) { "aborted" }
+assert_eq(de_r7, "aborted")
+assert_eq(de_log7, ["reached"])
+
+// abort through a delegate chain: each abandoned frame's defer runs, deepest
+// (innermost) first
+mut de_log8 = []
+effect fn de_inner() {
+  defer { de_log8.push("inner") }
+  perform de_fail()
+  0
+}
+effect fn de_outer() {
+  defer { de_log8.push("outer") }
+  de_inner()
+  0
+}
+let de_r8 = handle { de_outer() } with de_fail(resume) { "ab" }
+assert_eq(de_r8, "ab")
+assert_eq(de_log8, ["inner", "outer"])
+
+// an escaping continuation (a full-control handler that saves `resume` and
+// invokes it after the handle returns) must NOT finalize early: the body's
+// defers run when the resumed fork completes, not when the handle returns
+mut de_log9 = []
+mut de_saved = nil
+effect fn de_esc() {
+  defer { de_log9.push("pre") }
+  let x = perform de_fail()
+  de_log9.push("resumed")
+  defer { de_log9.push("post") }
+  x + 100
+}
+let de_r9 = handle { de_esc() } with de_fail(resume) { de_saved = resume; "paused" }
+de_log9.push("handle:" + de_r9)
+let de_r9b = de_saved(42)
+assert_eq(de_log9, ["handle:paused", "resumed", "post", "pre"])
+assert_eq(de_r9b, 142)
+
 // A-normalization reaches inside a control-flow body (uniform with top level)
 effect fn cf_qty()
 effect fn cf_accumulate(n) {

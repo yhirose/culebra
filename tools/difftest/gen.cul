@@ -1006,7 +1006,14 @@ let eff = [
   'effect fn a(); mut lg = []; effect fn b() { defer { lg.push("d1") }; let x = perform a(); defer { lg.push("d2") }; lg.push("e"); x }; handle { b() } with a(k) { k(1) }; to_string(lg)',
   'effect fn a(); mut lg = []; effect fn b() { defer { lg.push("d") }; let x = perform a(); throw "x" }; let r = try { handle { b() } with a(k) { k(1) } } catch e { lg.push("c"); e }; to_string(lg) + r',
   'effect fn a(); mut lg = []; fn boom() { throw "x" }; effect fn b() { defer { lg.push("d") }; let v = perform a(); boom(); v }; let r = try { handle { b() } with a(k) { k(1) } } catch e { "caught:" + e }; to_string(lg) + r',
-  'effect fn ch(a, b); mut lg = []; effect fn c() { defer { lg.push("d") }; let x = perform ch(1, 2); x * 10 }; let r = handle { c() } with ch(a, b, k) { [k(a), k(b)] }; to_string(r) + to_string(lg)']
+  'effect fn ch(a, b); mut lg = []; effect fn c() { defer { lg.push("d") }; let x = perform ch(1, 2); x * 10 }; let r = handle { c() } with ch(a, b, k) { [k(a), k(b)] }; to_string(r) + to_string(lg)',
+  # abort (handler never resumes): the driver runs the abandoned body's reached
+  # defers; a defer after the aborting perform was never reached.
+  'effect fn fail(); mut lg = []; effect fn b() { defer { lg.push("r") }; perform fail(); defer { lg.push("u") }; 99 }; let r = handle { b() } with fail(k) { "ab" }; r + to_string(lg)',
+  'effect fn fail(); mut lg = []; effect fn inr() { defer { lg.push("i") }; perform fail(); 0 }; effect fn ot() { defer { lg.push("o") }; inr(); 0 }; let r = handle { ot() } with fail(k) { "ab" }; r + to_string(lg)',
+  # an escaping continuation (resume saved, called after the handle returns) must
+  # not finalize early: the defers run when the resumed fork completes.
+  'effect fn a(); mut lg = []; mut sv = nil; effect fn b() { defer { lg.push("pre") }; let x = perform a(); lg.push("res"); defer { lg.push("post") }; x + 1 }; let r = handle { b() } with a(k) { sv = k; "p" }; lg.push("h:" + r); let r2 = sv(9); to_string(lg) + to_string(r2)']
 for c in eff {
   case("eff|" + c, c)
 }
