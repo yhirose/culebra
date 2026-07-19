@@ -212,8 +212,8 @@ inline void install_doctest_exit_guard(Environment& env) {
 }
 
 // Factory producing a fresh, fully-aliased environment per block. The
-// CLI provides this (it owns `install_cli_aliases`), keeping the runner
-// decoupled from CLI-specific globals.
+// CLI provides this (composing `install_cli_aliases` from stdlib_interp.h),
+// keeping the runner decoupled from CLI-specific globals.
 using EnvFactory = std::function<std::shared_ptr<Environment>()>;
 
 // Run the doctest blocks in each file. Mirrors run_tests' reporter

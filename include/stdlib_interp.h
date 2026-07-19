@@ -389,6 +389,14 @@ inline Value make_io_namespace() {
   return Value(std::move(ns));
 }
 
+// Opt-in: alias IO.puts / IO.print as bare globals (CLI and playground
+// scripting ergonomics). Embedders get a clean environment unless called.
+inline void install_cli_aliases(Environment& env) {
+  const auto& io = env.get("IO").to_object();
+  env.initialize("puts", io.get("puts"), false);
+  env.initialize("print", io.get("print"), false);
+}
+
 // --- Glob (file-scope, shared between interp + JIT) ---
 
 namespace _glob_detail {

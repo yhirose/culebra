@@ -1224,15 +1224,6 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
   return true;
 }
 
-// The CLI aliases IO.puts and IO.print as globals. Embedders that use
-// culebra::environment() directly get a clean environment without
-// these global names.
-void install_cli_aliases(culebra::Environment& env) {
-  const auto& io = env.get("IO").to_object();
-  env.initialize("puts", io.get("puts"), false);
-  env.initialize("print", io.get("print"), false);
-}
-
 int run_test(int argc, const char** argv) {
   std::vector<std::string> roots;
   std::string filter;

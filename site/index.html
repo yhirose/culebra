@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>culebra</title>
+  <meta name="description" content="culebra — a programming language with interpreter, JIT, and native AOT backends.">
+  <link rel="stylesheet" href="./assets/brand.css">
+  <style>
+    .nav {
+      display: flex; align-items: center; justify-content: space-between;
+      max-width: 960px; margin: 0 auto; padding: 1.1rem 1.4rem;
+    }
+    .nav-links { display: flex; gap: 1.3rem; align-items: center; }
+    .nav-links a { color: var(--muted); font-weight: 500; }
+    .nav-links a:hover { color: var(--text); text-decoration: none; }
+
+    main { max-width: 760px; margin: 0 auto; padding: 3.5rem 1.4rem 5rem; }
+    .hero h1 {
+      font-size: clamp(2.4rem, 6vw, 3.4rem); line-height: 1.05;
+      letter-spacing: -0.03em; margin: 0 0 0.9rem;
+    }
+    .hero .tag { font-size: 1.15rem; color: var(--muted); margin: 0 0 1.8rem; max-width: 34em; }
+    .cta { display: flex; flex-wrap: wrap; gap: 0.7rem; margin-bottom: 3.2rem; }
+
+    .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.1rem; margin: 2.5rem 0; }
+    .fact { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.1rem 1.2rem; box-shadow: var(--shadow); }
+    .fact h3 { margin: 0 0 0.35rem; font-size: 0.95rem; color: var(--brand-strong); }
+    .fact p { margin: 0; font-size: 0.92rem; color: var(--muted); }
+
+    pre.sample {
+      background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 1.1rem 1.3rem; overflow-x: auto; font-size: 0.9rem; line-height: 1.6;
+      margin: 2.2rem 0;
+    }
+    .k { color: var(--brand-strong); font-weight: 600; }
+    .s { color: var(--accent); }
+    .c { color: var(--muted); font-style: italic; }
+
+    footer { border-top: 1px solid var(--border); color: var(--muted); font-size: 0.85rem; }
+    .foot-inner { max-width: 760px; margin: 0 auto; padding: 1.6rem 1.4rem; }
+  </style>
+</head>
+<body>
+  <nav class="nav">
+    <a class="wordmark" href="./" aria-label="culebra home">
+      <svg class="snake" width="26" height="26" viewBox="0 0 26 26" fill="none" aria-hidden="true">
+        <path d="M4 8c0-2.2 1.8-4 4-4s4 1.8 4 4-1.8 4-4 4h6c2.2 0 4 1.8 4 4s-1.8 4-4 4-4-1.8-4-4"
+              stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none"/>
+        <circle cx="6.4" cy="7.4" r="1" fill="currentColor"/>
+      </svg>
+      culebra
+    </a>
+    <div class="nav-links">
+      <a href="./playground/">Playground</a>
+      <a href="https://github.com/yhirose/culebra/tree/master/docs">Docs</a>
+      <a href="https://github.com/yhirose/culebra">Repository</a>
+    </div>
+  </nav>
+
+  <main>
+    <section class="hero">
+      <h1>culebra</h1>
+      <p class="tag">A programming language that runs three ways from one source: a tree-walking interpreter, an LLVM JIT, and native ahead-of-time binaries.</p>
+      <div class="cta">
+        <a class="btn btn-primary" href="./playground/">Open the Playground →</a>
+        <a class="btn" href="https://github.com/yhirose/culebra">Repository</a>
+      </div>
+    </section>
+
+    <pre class="sample"><span class="c"># runs in your browser on the Playground — interpreter compiled to WebAssembly</span>
+<span class="k">fn</span> fib(n) { <span class="k">if</span> n &lt; 2 { n } <span class="k">else</span> { fib(n-1) + fib(n-2) } }
+
+<span class="k">let</span> xs = [<span class="s">1</span>, <span class="s">2</span>, <span class="s">3</span>, <span class="s">4</span>, <span class="s">5</span>]
+puts(<span class="s">"squares: "</span> + xs.map(|x| x * x).to_string())
+puts(<span class="s">"fib(20): "</span> + fib(<span class="s">20</span>).to_string())</pre>
+
+    <section class="facts">
+      <div class="fact">
+        <h3>Three backends, one language</h3>
+        <p>The same program yields identical results and errors under the interpreter, JIT, and AOT.</p>
+      </div>
+      <div class="fact">
+        <h3>Runs in the browser</h3>
+        <p>The interpreter compiles to WebAssembly, so the Playground executes entirely client-side.</p>
+      </div>
+      <div class="fact">
+        <h3>Batteries included</h3>
+        <p>Strings, collections, tensors, regex, JSON/TOML, HTTP, and more in the standard library.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="foot-inner">
+      culebra · <a href="https://github.com/yhirose/culebra">github.com/yhirose/culebra</a>
+    </div>
+  </footer>
+
+  <script>
+    // Respect a saved theme choice if one exists; otherwise follow the OS.
+    try {
+      var t = localStorage.getItem("culebra-theme");
+      if (t) document.documentElement.setAttribute("data-theme", t);
+    } catch (e) {}
+  </script>
+</body>
+</html>

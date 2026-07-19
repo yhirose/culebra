@@ -1,0 +1,61 @@
+/* Playground layout. Colors come from the shared brand system
+   (../assets/brand.css); this file owns only structure. */
+
+html, body { height: 100%; }
+body { display: flex; flex-direction: column; overflow: hidden; }
+
+/* --- header ------------------------------------------------------------ */
+.pg-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0.7rem 1.1rem; border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.pg-header .brand { display: flex; align-items: baseline; gap: 0.55rem; }
+.pg-header .sub { color: var(--muted); font-size: 0.9rem; }
+.pg-header nav { display: flex; gap: 1.2rem; }
+.pg-header nav a { color: var(--muted); font-weight: 500; font-size: 0.9rem; }
+.pg-header nav a:hover { color: var(--text); text-decoration: none; }
+
+/* --- toolbar ----------------------------------------------------------- */
+.pg-toolbar {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.55rem 1.1rem; border-bottom: 1px solid var(--border);
+  background: var(--surface-2); flex-wrap: wrap;
+}
+.pg-toolbar .hint { color: var(--muted); font-size: 0.82rem; margin-left: 0.4rem; }
+.pg-toolbar .spacer { flex: 1; }
+.pg-toolbar .status { color: var(--muted); font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+.pg-toolbar .status.err { color: var(--danger); }
+.pg-toolbar select {
+  font: inherit; font-size: 0.88rem; padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); color: var(--text);
+}
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn:disabled:hover { border-color: var(--border); }
+
+/* --- split panes ------------------------------------------------------- */
+.pg-main {
+  flex: 1; display: grid; grid-template-columns: 1fr 1fr; min-height: 0;
+}
+.pg-editor, .pg-output {
+  min-height: 0; margin: 0; border: 0; padding: 1rem 1.2rem;
+  font-family: var(--font-mono); font-size: 0.92rem; line-height: 1.55;
+  overflow: auto; tab-size: 2;
+}
+.pg-editor {
+  resize: none; outline: none; background: var(--code-bg); color: var(--text);
+  border-right: 1px solid var(--border); white-space: pre;
+}
+.pg-output {
+  background: var(--bg); color: var(--text); white-space: pre-wrap;
+  word-break: break-word;
+}
+.pg-output.err { color: var(--danger); }
+.pg-output .placeholder { color: var(--muted); }
+
+@media (max-width: 720px) {
+  .pg-main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+  .pg-editor { border-right: 0; border-bottom: 1px solid var(--border); }
+  .pg-header .sub { display: none; }
+}

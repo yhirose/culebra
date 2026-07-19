@@ -696,3 +696,17 @@ fetch-mnist:
 [group("vendor")]
 vendor-update *extra:
     ./tools/vendor_update.sh {{extra}}
+
+# Build the browser playground (interp-only wasm via emscripten) into
+# site/playground/. Artifacts are committed — GitHub Pages serves site/
+# straight from the branch. Needs emsdk (default ~/Projects/emsdk, override
+# with EMSDK_DIR).
+[group("site")]
+[doc("Build the browser playground (wasm) into site/playground/")]
+site-build:
+    ./playground/build.sh
+
+[group("site")]
+[doc("Build the playground, then serve site/ locally")]
+site-serve port="8000": site-build
+    python3 -m http.server {{port}} -d site

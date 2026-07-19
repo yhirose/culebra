@@ -1,0 +1,109 @@
+/* culebra brand system — shared by the landing page and the playground.
+   Serpent-green accent on a warm neutral ground; light + dark aware. */
+
+:root {
+  /* palette — light */
+  --bg: #f7f5ef;
+  --surface: #fffdf8;
+  --surface-2: #f2efe6;
+  --text: #1a201d;
+  --muted: #6c736d;
+  --border: #e5e0d4;
+  --brand: #157a58;
+  --brand-strong: #0f5c43;
+  --brand-soft: #e4f1ea;
+  --accent: #c06a38;
+  --code-bg: #f3f0e8;
+  --danger: #b23b3b;
+
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --radius: 8px;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 4px 16px rgba(0, 0, 0, 0.04);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1512;
+    --surface: #161d19;
+    --surface-2: #1b231e;
+    --text: #e7ece9;
+    --muted: #98a19b;
+    --border: #243029;
+    --brand: #3ec48d;
+    --brand-strong: #59d3a1;
+    --brand-soft: #13241c;
+    --accent: #e08a55;
+    --code-bg: #141a17;
+    --danger: #e06a6a;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 20px rgba(0, 0, 0, 0.25);
+  }
+}
+
+/* explicit theme override wins over the media query in both directions */
+:root[data-theme="light"] {
+  --bg: #f7f5ef; --surface: #fffdf8; --surface-2: #f2efe6; --text: #1a201d;
+  --muted: #6c736d; --border: #e5e0d4; --brand: #157a58; --brand-strong: #0f5c43;
+  --brand-soft: #e4f1ea; --accent: #c06a38; --code-bg: #f3f0e8; --danger: #b23b3b;
+}
+:root[data-theme="dark"] {
+  --bg: #0f1512; --surface: #161d19; --surface-2: #1b231e; --text: #e7ece9;
+  --muted: #98a19b; --border: #243029; --brand: #3ec48d; --brand-strong: #59d3a1;
+  --brand-soft: #13241c; --accent: #e08a55; --code-bg: #141a17; --danger: #e06a6a;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--brand-strong); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+code, pre { font-family: var(--font-mono); }
+
+/* --- wordmark (logo) --------------------------------------------------- */
+.wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 700;
+  font-size: 1.15rem;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.wordmark svg { display: block; }
+.wordmark .snake { color: var(--brand); }
+
+/* --- buttons ----------------------------------------------------------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.55rem 1.1rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, transform 0.05s ease;
+}
+.btn:hover { text-decoration: none; border-color: var(--brand); }
+.btn:active { transform: translateY(1px); }
+.btn-primary {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+}
+.btn-primary:hover { background: var(--brand-strong); border-color: var(--brand-strong); }
+:root[data-theme="dark"] .btn-primary,
+:root:not([data-theme="light"]) .btn-primary { color: #08130d; }
