@@ -2835,7 +2835,10 @@ puts(handle { greet() } with ask(k) { k("ana") })   # => 'hi ana'
 * **末尾 resume（tail-resumptive）** — `resume(v)` を節の最終文として
   ちょうど1回呼ぶ。節は perform 地点でのただの関数呼び出しのように走り、
   native コールスタックがそのまま継続になります。実用の大半（DI・state・
-  mock・logging）はこれです。
+  mock・logging）はこれです。継続をキャプチャしないので、末尾 perform を
+  いくら連鎖してもスタックは一定で、節内の `defer` は節を抜ける時 —
+  perform 側のコードが続行する前 — に発火します（plain fn 経由でも
+  `effect fn` 経由でも同一）。
 * **abort** — 節が `resume` を一度も呼ばない。節の結果がその `handle` の
   結果になります。perform 地点から `handle` までのスタックは `defer` を
   走らせながら巻き戻り、途中の `try/catch` からはこの巻き戻りは**見えません**

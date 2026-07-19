@@ -17,8 +17,9 @@
 #   2 = DELEGATE — `_eff_delegate` is a sub-computation to run first
 # The driver keeps an explicit stack of computation frames (bottom = the
 # handled body, higher frames = delegated effect-fn calls). A `perform`
-# captures the WHOLE frame stack as the continuation, so `resume` re-runs the
-# enclosing computation across delegate boundaries. Each `resume` clones every
+# reaching a non-tail clause captures the WHOLE frame stack as the
+# continuation, so `resume` re-runs the enclosing computation across
+# delegate boundaries. Each `resume` clones every
 # frame (`__eff_copy`, a native shallow object copy) and drives the fresh copy,
 # leaving the snapshot intact — that is what makes a continuation multi-shot.
 #
@@ -46,9 +47,9 @@ let _eff_module = fn() {
   # Monotonic token distinguishing nested `handle`s, so an abort unwinds to
   # exactly the handle whose clause ran (not the innermost catcher).
   let _tok = [0]
-  # Identity resume for tail clauses under direct dispatch — hoisted so the
-  # per-perform hot path does not allocate a closure (which also perturbs the
-  # leak oracle).
+  # Identity resume for tail clauses (direct dispatch and the driven fast
+  # path) — hoisted so the per-perform hot path does not allocate a closure
+  # (which also perturbs the leak oracle).
   let _id_resume = fn(v) { v }
 
   fn _find(op, line) {
@@ -105,11 +106,10 @@ let _eff_module = fn() {
   # through a driver abandons its frames without that: `_guard_stack` finalizes
   # them on the way out. Both backends stay symmetric.
   #
-  # A driven tail `resume` re-enters `_drive` recursively, so this stays a plain
+  # A full-control `resume` re-enters `_drive` recursively, so this stays a plain
   # loop with no per-call abort guard — the guard belongs on the non-recursive
-  # `_handle` frame that owns the stack (see `_handle`), keeping deep tail-resume
-  # chains shallow. A driven abort clause is still finalized inline here, since
-  # it returns rather than unwinding.
+  # `_handle` frame that owns the stack (see `_handle`). A driven abort clause is
+  # still finalized inline here, since it returns rather than unwinding.
   fn _drive(stack, rv, ret) {
     let mut resume_val = rv
     while true {
@@ -149,6 +149,15 @@ let _eff_module = fn() {
         # of a silent crash, but the bind-then-call form avoids it outright).
         let h = _find(comp._eff_op, comp._eff_line)
         let hf = h.f
+        # Tail clause: a lone trailing `resume(v)`, so no continuation needs
+        # capturing — run it with the identity resume (as direct dispatch
+        # already does) and feed its value straight back into this loop. No
+        # snapshot clone, no recursion: a chain of N tail performs stays at
+        # O(1) native depth instead of nesting N `_drive` frames.
+        if h.t == "t" {
+          resume_val = hf(comp._eff_args, _id_resume)
+          continue
+        }
         let is_abort = h.t == "a"
         let snapshot = stack   # frozen at the suspend point; forks clone it
         let resume = fn(v) { _drive(snapshot.map(|c| __eff_copy(c)), v, ret) }

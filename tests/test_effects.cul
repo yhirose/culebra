@@ -508,6 +508,55 @@ assert_eq(de_log13, [])
 assert_eq(de_saved13(41), 42)
 assert_eq(de_log13, ["body-defer"])
 
+// tail clauses under driven dispatch run without capturing a continuation:
+// a long chain of tail performs must not overflow the native stack (the
+// driver used to nest one recursive frame per resume — ~3000 was the ceiling)
+effect fn tp_tick()
+effect fn tp_chain(n) {
+  mut total = 0
+  mut i = 0
+  while i < n {
+    total = total + perform tp_tick()
+    i = i + 1
+  }
+  total
+}
+assert_eq(handle { tp_chain(50000) } with tp_tick(resume) { resume(1) }, 50000)
+
+// a defer in a tail clause fires when the clause returns — BEFORE the
+// continuation proceeds — identically under direct dispatch (plain-fn
+// perform) and driven dispatch (effect-fn body perform)
+mut tp_log1 = []
+effect fn tp_op1()
+fn tp_plain() {
+  let v = perform tp_op1()
+  tp_log1.push("after")
+  v
+}
+handle { tp_plain() } with tp_op1(resume) {
+  defer { tp_log1.push("clause-defer") }
+  resume(1)
+}
+assert_eq(tp_log1, ["clause-defer", "after"])
+
+mut tp_log2 = []
+effect fn tp_op2()
+effect fn tp_driven() {
+  let v = perform tp_op2()
+  tp_log2.push("after")
+  v
+}
+handle { tp_driven() } with tp_op2(resume) {
+  defer { tp_log2.push("clause-defer") }
+  resume(1)
+}
+assert_eq(tp_log2, ["clause-defer", "after"])
+
+// the driven tail path still applies the return clause to the final value
+let tp_r = handle { tp_chain(3) } with tp_tick(resume) { resume(10) }
+  with return(v) { v * 2 }
+assert_eq(tp_r, 60)
+
 // A-normalization reaches inside a control-flow body (uniform with top level)
 effect fn cf_qty()
 effect fn cf_accumulate(n) {

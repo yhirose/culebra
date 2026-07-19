@@ -3026,7 +3026,10 @@ time:
 * **tail-resumptive** — `resume(v)` called exactly once, as the clause's
   final statement. The clause runs like a plain function call at the perform
   point; the native call stack is the continuation. This is the common case
-  (dependency injection, state, mocking, logging).
+  (dependency injection, state, mocking, logging). No continuation is
+  captured, so a long chain of tail performs uses constant stack, and a
+  `defer` in the clause fires when the clause returns — before the performing
+  code proceeds — under both plain-fn and `effect fn` dispatch.
 * **abort** — the clause never calls `resume`. Its result becomes the
   `handle`'s result: the stack between the perform point and the `handle`
   unwinds, running `defer`s on the way, and the unwind is **not** observable
