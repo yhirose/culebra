@@ -3102,8 +3102,12 @@ puts(doubled().collect())    # => [20, 7]
   body is left by **any** path: normal completion, a `throw` unwinding through
   it, or an abort — whether a handler clause returns without resuming or an
   abort *signal* unwinds the driver from a plain-fn `perform` or a
-  cross-handle abort. A `defer` nested in control flow, or a `perform` inside a
-  `defer`, is rejected at parse time.
+  cross-handle abort. A tail or abort clause that exits by `throw` without
+  resuming also runs the suspended body's defers; only a **full-control**
+  clause's throw leaves them pending — it may have kept `resume`, and a kept
+  continuation runs its defers when a resumed fork completes. A `defer`
+  nested in control flow, or a `perform` inside a `defer`, is rejected at
+  parse time.
 * A **named fn** declared in an effect body must sit at the body's statement
   level (one buried in nested control flow is rejected at parse time); it may
   be a generator and may reference the body's locals.

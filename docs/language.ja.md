@@ -2908,8 +2908,12 @@ puts(doubled().collect())    # => [20, 7]
 * effect fn / `handle` 本体の文レベルにある `defer` は、本体を**どの経路で
   抜けても**発火します: 正常終了、`throw` の unwind、そして abort —
   ハンドラ節が resume せず値を返す場合も、plain fn の `perform` や
-  ハンドラ跨ぎの abort *シグナル*がドライバを unwind する場合も。制御フロー
-  内にネストした `defer` や `defer` 内の `perform` は parse 時に拒否されます。
+  ハンドラ跨ぎの abort *シグナル*がドライバを unwind する場合も。末尾 resume
+  節・abort 節が resume せず `throw` で抜けた場合も中断中の本体の defer は
+  走ります。走らないのは**full-control** 節の throw だけ — `resume` を
+  保持している可能性があり、保持された継続の defer は resume された fork の
+  完了時に走ります。制御フロー内にネストした `defer` や `defer` 内の
+  `perform` は parse 時に拒否されます。
 * エフェクト本体で宣言する**名前付き関数**は本体の文レベルに置く必要が
   あります（ネストした制御フローの中の宣言は parse 時に拒否されます）。
   ジェネレータにでき、本体のローカルも参照できます。

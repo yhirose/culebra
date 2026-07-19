@@ -508,6 +508,73 @@ assert_eq(de_log13, [])
 assert_eq(de_saved13(41), 42)
 assert_eq(de_log13, ["body-defer"])
 
+// a tail clause that throws BEFORE its trailing resume can never have saved
+// the continuation, so the suspended body is abandoned for good: its defer
+// runs as the throw unwinds — under driven dispatch...
+mut de_log14 = []
+effect fn de_t14()
+effect fn de_body14() {
+  defer { de_log14.push("body-defer") }
+  perform de_t14()
+  0
+}
+let de_r14 = try {
+  handle { de_body14() } with de_t14(resume) {
+    de_log14.push("clause")
+    throw { kind: "E", message: "t-threw" }
+    resume(1)   // dead — its presence is what classifies the clause "t"
+  }
+} catch e { "caught:" + e.message }
+assert_eq(de_r14, "caught:t-threw")
+assert_eq(de_log14, ["clause", "body-defer"])
+
+// ...and under direct dispatch (the effect fn bare-called from a plain fn)
+mut de_log15 = []
+effect fn de_body15() {
+  defer { de_log15.push("body-defer") }
+  perform de_t14()
+  0
+}
+fn de_plain15() { de_body15() }
+let de_r15 = try {
+  handle { de_plain15() } with de_t14(resume) {
+    de_log15.push("clause")
+    throw { kind: "E", message: "t-threw2" }
+    resume(1)   // dead — its presence is what classifies the clause "t"
+  }
+} catch e { "caught:" + e.message }
+assert_eq(de_r15, "caught:t-threw2")
+assert_eq(de_log15, ["clause", "body-defer"])
+
+// an abort clause (never mentions resume) that throws instead of returning
+// likewise abandons the body: its defer runs
+mut de_log16 = []
+effect fn de_body16() {
+  defer { de_log16.push("body-defer") }
+  perform de_t14()
+  0
+}
+let de_r16 = try {
+  handle { de_body16() } with de_t14(resume) { throw { kind: "E", message: "a-threw" } }
+} catch e { "caught:" + e.message }
+assert_eq(de_r16, "caught:a-threw")
+assert_eq(de_log16, ["body-defer"])
+
+// a no-handler EffectError from a driven perform abandons the frames the same
+// way a clause throw does: the body's defer runs as the error unwinds
+mut de_log17 = []
+effect fn de_unhandled17()
+effect fn de_body17() {
+  defer { de_log17.push("body-defer") }
+  perform de_unhandled17()
+  0
+}
+let de_r17 = try {
+  handle { de_body17() } with de_t14(resume) { resume(1) }
+} catch e { "caught:" + e.kind }
+assert_eq(de_r17, "caught:EffectError")
+assert_eq(de_log17, ["body-defer"])
+
 // tail clauses under driven dispatch run without capturing a continuation:
 // a long chain of tail performs must not overflow the native stack (the
 // driver used to nest one recursive frame per resume — ~3000 was the ceiling)

@@ -540,9 +540,11 @@ let _eff_module = fn() {
   # `throw` finalize the frame inside `_step`. An abort *clause* that returns a
   # value without resuming abandons the suspended frames while the drive is still
   # live, so they are finalized inline below — keyed on the "a" classification,
-  # the only clause that provably never resumes. An abort *signal* unwinding
-  # through a driver abandons its frames without that: `_guard_stack` finalizes
-  # them on the way out. Both backends stay symmetric.
+  # the only clause that provably never resumes. A regular `throw` out of a
+  # "t"/"a" clause (or a no-handler lookup) also finalizes inline at each
+  # dispatch site. An abort *signal* unwinding through a driver abandons its
+  # frames without that: `_guard_stack` finalizes them on the way out. Both
+  # backends stay symmetric.
   #
   # A full-control `resume` re-enters `_drive` recursively, so this stays a plain
   # loop with no per-call abort guard — the guard belongs on the non-recursive
@@ -556,9 +558,9 @@ let _eff_module = fn() {
       # `stack` (delegate ancestors included) — `_step` finalizes `comp` itself,
       # but an ancestor delegate frame below it needs this to finalize too. This
       # is sound to catch unconditionally here: `_step` never captures `stack`
-      # into a `resume` closure (only the `hf` call below does that, and it
-      # stays unwrapped so an exception there can't spuriously finalize a
-      # continuation that might still be resumed again).
+      # into a `resume` closure (only the full-control `hf` call below does
+      # that, and only that call skips the finalize so an exception there
+      # can't spuriously finalize a continuation that might be resumed again).
       let tag = try {
         comp._step(resume_val)
       } catch e {
@@ -585,7 +587,9 @@ let _eff_module = fn() {
         # lazy-ns builder's captureless invariant (see the dynamic-perform
         # cycle notes; the runtime now raises a loud error on this instead
         # of a silent crash, but the bind-then-call form avoids it outright).
-        let h = _find(comp._eff_op, comp._eff_line)
+        # A no-handler EffectError abandons the frames just like a clause
+        # throw (`_find` never touches the stack, so the catch is sound).
+        let h = try { _find(comp._eff_op, comp._eff_line) } catch e { _finalize_stack(stack); throw e }
         let hf = h.f
         # Tail clause: a lone trailing `resume(v)`, so no continuation needs
         # capturing — run it with the identity resume (as direct dispatch
@@ -593,13 +597,32 @@ let _eff_module = fn() {
         # snapshot clone, no recursion: a chain of N tail performs stays at
         # O(1) native depth instead of nesting N `_drive` frames.
         if h.t == "t" {
-          resume_val = hf(comp._eff_args, _id_resume)
+          # A "t" clause provably cannot save `resume` (its one appearance is
+          # the trailing call), so a throw out of it abandons the suspended
+          # frames for good — run their defers on the way out.
+          resume_val = try {
+            hf(comp._eff_args, _id_resume)
+          } catch e {
+            _finalize_stack(stack)
+            throw e
+          }
           continue
         }
         let is_abort = h.t == "a"
         let snapshot = stack   # frozen at the suspend point; forks clone it
         let resume = fn(v) { _drive(snapshot.map(|c| __eff_copy(c)), v, ret) }
-        let result = hf(comp._eff_args, resume)
+        # An "a" clause never mentions `resume`, so — like the tail path — a
+        # throw out of it abandons the frames: finalize. An "f" clause may
+        # have stored `resume` for a later fork, so its throw leaves the
+        # frames alone (finalizing would also poison the fork's copies, which
+        # inherit `_eff_finalized`); a kept continuation runs its defers when
+        # its fork completes.
+        let result = try {
+          hf(comp._eff_args, resume)
+        } catch e {
+          if h.t != "f" { _finalize_stack(stack) }
+          throw e
+        }
         # An abort clause never resumes: the suspended body is abandoned.
         if is_abort { _finalize_stack(stack) }
         return result
@@ -658,7 +681,7 @@ let _eff_module = fn() {
         let c = stack[stack.size() - 1]
         # Same reasoning as `_drive`: a regular throw out of `_step` abandons
         # every frame on `stack`, not just `c` (which already finalized
-        # itself); `_perform_direct`'s dispatch stays unwrapped below.
+        # itself).
         let tag = try {
           c._step(resume_val)
         } catch e {
@@ -672,7 +695,16 @@ let _eff_module = fn() {
           continue
         }
         if tag == 1 {
-          resume_val = _perform_direct(c._eff_op, c._eff_args, c._eff_line)
+          # Direct dispatch only ever runs "t"/"a" clauses (a full-control
+          # clause raises before invoking anything), so a regular throw out of
+          # it always abandons the frames — finalize. An abort *signal* is not
+          # observable by `catch` and unwinds to `_guard_stack` instead.
+          resume_val = try {
+            _perform_direct(c._eff_op, c._eff_args, c._eff_line)
+          } catch e {
+            _finalize_stack(stack)
+            throw e
+          }
           continue
         }
         stack.push(c._eff_delegate)
