@@ -3095,6 +3095,12 @@ puts(doubled().collect())    # => [20, 7]
   parse time (symmetrically): a **bare `yield`** in an effect body (the body
   itself is not a generator — wrap the yield in a nested generator fn) and an
   **`effect fn` declaration** inside a generator body.
+* A `defer` at an effect fn or `handle` body's statement level runs when the
+  body is left by **any** path: normal completion, a `throw` unwinding through
+  it, or an abort — whether a handler clause returns without resuming or an
+  abort *signal* unwinds the driver from a plain-fn `perform` or a
+  cross-handle abort. A `defer` nested in control flow, or a `perform` inside a
+  `defer`, is rejected at parse time.
 * A **named fn** declared in an effect body must sit at the body's statement
   level (one buried in nested control flow is rejected at parse time); it may
   be a generator and may reference the body's locals.

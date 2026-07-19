@@ -441,6 +441,39 @@ let de_r9b = de_saved(42)
 assert_eq(de_log9, ["handle:paused", "resumed", "post", "pre"])
 assert_eq(de_r9b, 142)
 
+// a defer also runs when an abort *signal* (not a driven abort clause) unwinds
+// through a driver. An effect fn bare-called from ordinary code is driven by
+// _run_comp; a `perform` handled by an abort clause aborts natively through it,
+// abandoning the frame — whose defer must still run.
+mut de_log10 = []
+effect fn de_sig_op()
+effect fn de_sig_f() {
+  defer { de_log10.push("f-defer") }
+  perform de_sig_op()
+  0
+}
+fn de_sig_plain() { de_sig_f() }   // bare call → _run_comp
+let de_r10 = handle { de_sig_plain() } with de_sig_op(resume) { "aborted" }
+assert_eq(de_r10, "aborted")
+assert_eq(de_log10, ["f-defer"])
+
+// an abort signal that crosses an inner handle (targeting an outer one) unwinds
+// through the inner _drive: the inner handle body's defer runs before the signal
+// keeps unwinding to the outer handle
+mut de_log11 = []
+effect fn de_outer_op()
+effect fn de_inner_op()
+fn de_cross_plain() { perform de_outer_op() }
+let de_r11 = handle {
+  handle {
+    defer { de_log11.push("inner-defer") }
+    de_cross_plain()
+    0
+  } with de_inner_op(resume) { "never" }
+} with de_outer_op(resume) { "outer" }
+assert_eq(de_r11, "outer")
+assert_eq(de_log11, ["inner-defer"])
+
 // A-normalization reaches inside a control-flow body (uniform with top level)
 effect fn cf_qty()
 effect fn cf_accumulate(n) {

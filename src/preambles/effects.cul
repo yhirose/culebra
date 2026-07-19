@@ -79,15 +79,37 @@ let _eff_module = fn() {
     }
   }
 
+  # Run a driver loop for `stack`; if an abort *signal* unwinds through it — a
+  # plain-fn `perform` or a nested-handle cross — finalize the frames it
+  # abandoned (each frame's `_eff_finalize` is guarded, so one the signal
+  # already finalized is not run twice). A signal carrying this guard's own
+  # token is consumed: the abort clause's result becomes the result here,
+  # bypassing any return clause. Anyone else's signal (or any signal when `tok`
+  # is nil — `_run_comp` owns no handle) keeps unwinding to its handle.
+  fn _guard_stack(stack, tok, run) {
+    let pair = __eff_catch_abort(run)
+    if pair[0] {
+      _finalize_stack(stack)
+      let sig = pair[1]
+      if sig[0] == tok { return sig[1] }
+      __eff_abort(sig)
+    }
+    pair[1]
+  }
+
   # A frame's `defer`s run when it is abandoned. Normal completion and a regular
   # `throw` finalize the frame inside `_step`. An abort *clause* that returns a
   # value without resuming abandons the suspended frames while the drive is still
   # live, so they are finalized inline below — keyed on the "a" classification,
-  # the only clause that provably never resumes. (An abort *signal* unwinding a
-  # throw through the drive — a plain-fn `perform` or a nested-handle cross —
-  # would need a finalize hook on this hot recursive path, but both a native
-  # `defer` and an abort-catch wrapper here leak a clone in the JIT RC; those
-  # defers do not run, a documented residual. Both backends stay symmetric.)
+  # the only clause that provably never resumes. An abort *signal* unwinding
+  # through a driver abandons its frames without that: `_guard_stack` finalizes
+  # them on the way out. Both backends stay symmetric.
+  #
+  # A driven tail `resume` re-enters `_drive` recursively, so this stays a plain
+  # loop with no per-call abort guard — the guard belongs on the non-recursive
+  # `_handle` frame that owns the stack (see `_handle`), keeping deep tail-resume
+  # chains shallow. A driven abort clause is still finalized inline here, since
+  # it returns rather than unwinding.
   fn _drive(stack, rv, ret) {
     let mut resume_val = rv
     while true {
@@ -145,15 +167,11 @@ let _eff_module = fn() {
       keys.push(k)
     }
     defer { for pk in keys { _op_stacks[pk].pop() } }
-    let pair = __eff_catch_abort(fn() { _drive([comp], nil, ret) })
-    if pair[0] {
-      let sig = pair[1]
-      # An abort clause's result becomes ITS handle's result (bypassing the
-      # return clause, like the driven path); someone else's keeps unwinding.
-      if sig[0] == tok { return sig[1] }
-      __eff_abort(sig)
-    }
-    pair[1]
+    # `_drive` mutates `stack` in place, so on an abort signal the frames left
+    # here are exactly the ones the signal abandoned; `_guard_stack` finalizes
+    # them and settles a signal carrying this handle's token.
+    let stack = [comp]
+    _guard_stack(stack, tok, fn() { _drive(stack, nil, ret) })
   }
 
   # A `perform` in ordinary (non-effect) code: no computation object, no
@@ -171,26 +189,29 @@ let _eff_module = fn() {
   # An effect-fn call from ordinary code: the caller's native frame IS the
   # continuation, so drive the computation right here. SUSPENDs dispatch
   # via _perform_direct; DELEGATE frames stack as in _drive. An abort signal
-  # unwinds natively through here to its `_handle`, which finalizes the frames.
+  # unwinds natively through here; `_guard_stack` finalizes the abandoned frames
+  # before it keeps unwinding to the handle that owns it.
   fn _run_comp(comp) {
     let stack = [comp]
-    let mut resume_val = nil
-    while true {
-      let c = stack[stack.size() - 1]
-      let tag = c._step(resume_val)
-      if tag == 0 {
-        if stack.size() == 1 { return c._eff_val }
-        stack.pop()
-        resume_val = c._eff_val
-        continue
+    _guard_stack(stack, nil, fn() {
+      let mut resume_val = nil
+      while true {
+        let c = stack[stack.size() - 1]
+        let tag = c._step(resume_val)
+        if tag == 0 {
+          if stack.size() == 1 { return c._eff_val }
+          stack.pop()
+          resume_val = c._eff_val
+          continue
+        }
+        if tag == 1 {
+          resume_val = _perform_direct(c._eff_op, c._eff_args, c._eff_line)
+          continue
+        }
+        stack.push(c._eff_delegate)
+        resume_val = nil
       }
-      if tag == 1 {
-        resume_val = _perform_direct(c._eff_op, c._eff_args, c._eff_line)
-        continue
-      }
-      stack.push(c._eff_delegate)
-      resume_val = nil
-    }
+    })
   }
 
   { handle: _handle, perform_direct: _perform_direct, run_comp: _run_comp }
