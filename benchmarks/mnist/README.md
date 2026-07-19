@@ -60,6 +60,9 @@ Training (benchmark):
                             where a GPU is expected to win, unlike the
                             elementwise-heavy autoencoder — see "GPU vs CPU"
                             below.
+- `train_bench_transformer_torch.py` — the same transformer block in PyTorch;
+                            `DEVICE=cpu|mps`, the cross-framework baseline for
+                            the transformer table.
 
 Other:
 - `bench.sh`              — runs every implementation $RUNS× and reports means
@@ -106,6 +109,8 @@ python3.11 benchmarks/mnist/prep_train.py 60000
 
 # Transformer block (no data file needed — random weights, timing only)
 ./build/culebra --jit benchmarks/mnist/train_bench_transformer.cul [cpu|gpu|auto]
+DEVICE=cpu python3.11 benchmarks/mnist/train_bench_transformer_torch.py
+DEVICE=mps python3.11 benchmarks/mnist/train_bench_transformer_torch.py
 ```
 
 `python3.11` is used for any script that imports numpy or torch; pure
@@ -344,15 +349,17 @@ shape: mostly large matmuls (Q/K/V/O projections, the FFN, the
 attention score/context products), which is where GPUs are supposed to
 amortize dispatch overhead. Apple Silicon (M1 Pro), host, ms/iter:
 
-| shape (seq, d_model) | Culebra CPU | Culebra GPU | Culebra auto | silarray GPU | silarray CPU |
-|-----------------------|------------:|------------:|--------------:|-------------:|-------------:|
-| 256, 512              | **3.21**    | 4.31        | 3.35           | **1.91**     | 9.65          |
-| 256, 768               | 5.38        | **4.03**    | 5.92           | **2.20**     | —             |
-| 256, 1024               | 10.24       | **4.90**    | 5.51           | **3.14**     | —             |
-| 512, 1024               | 17.01       | **6.34**    | 7.64           | **5.32**     | —             |
+| shape (seq, d_model) | Culebra CPU | Culebra GPU | Culebra auto | PyTorch CPU | PyTorch MPS | silarray GPU | silarray CPU |
+|-----------------------|------------:|------------:|--------------:|------------:|------------:|-------------:|-------------:|
+| 256, 512              | **3.21**    | 4.31        | 3.35           | 4.45        | 5.21        | **1.91**     | 9.65          |
+| 256, 768               | 5.38        | **4.03**    | 5.92           | 7.68        | 4.91        | **2.20**     | —             |
+| 256, 1024               | 10.24       | **4.90**    | 5.51           | 11.98       | 6.97        | **3.14**     | —             |
+| 512, 1024               | 17.01       | **6.34**    | 7.64           | 20.27       | 8.03        | **5.32**     | —             |
 
-(min of 6 position-rotated interleaved runs; earlier snapshots of this
-table had the GPU at 6.7–15.3 ms/iter, losing to Culebra's own CPU
+(min of 6 runs; Culebra/silarray are position-rotated interleaved runs, the
+PyTorch columns are a separate run of `train_bench_transformer_torch.py`
+— `DEVICE=cpu|mps` — on the same host and F32 dtype. Earlier snapshots of
+this table had the GPU at 6.7–15.3 ms/iter, losing to Culebra's own CPU
 everywhere below the largest config.) Three `cpp-tensorlib` Metal rounds
 closed most of that gap: broadcast/pow/mean kernels so mid-graph ops stop falling back to
 the CPU (each fallback drained the whole pending command buffer),
@@ -377,3 +384,19 @@ threshold can send it to the CPU while still sending d_model=1024 to the
 GPU — `auto` stays in the mixed regime there. For a transformer-shaped
 workload at d_model=768 exactly, `Tensor.use_gpu()` is still the better
 call; from d_model=1024 up, `auto` tracks forced-GPU closely.
+
+**Against PyTorch.** On this shape PyTorch CPU tracks Culebra's own CPU
+path (both call into Accelerate sgemm) but runs a bit slower everywhere —
+4.45 vs 3.21 ms at the smallest config, 20.27 vs 17.01 at the largest.
+PyTorch MPS shows the same CPU→GPU crossover Culebra does: it loses to its
+own CPU at (256, 512) (5.21 vs 4.45) and wins from d_model=768 up. Culebra's
+forced GPU is faster than PyTorch MPS at every config here (4.03 vs 4.91 at
+d=768, 6.34 vs 8.03 at the largest), and both trail silarray's GPU, which
+stays ahead across the board (1.9–5.3 ms). So on a single transformer block
+the ordering at d_model≥768 is silarray GPU < Culebra GPU < PyTorch MPS <
+Culebra/PyTorch CPU. Reproduce the PyTorch columns with:
+
+```bash
+DEVICE=cpu python3.11 benchmarks/mnist/train_bench_transformer_torch.py
+DEVICE=mps python3.11 benchmarks/mnist/train_bench_transformer_torch.py
+```
