@@ -992,7 +992,14 @@ let eff = [
   # a user global fn named like a __Eff builder method (_step / f / _drive)
   # must not be captured by the spliced captureless builder (scope barrier)
   'fn _step(x) { x + 100 }; effect fn cg(); effect fn cb() { let v = perform cg(); v * 2 }; to_string(handle { cb() } with cg(r) { r(21) }) + "," + to_string(_step(5))',
-  'fn f(x) { x - 1 }; effect fn g2(); fn u() { perform g2() }; to_string(handle { u() } with g2(r) { r(7) }) + "," + to_string(f(10))']
+  'fn f(x) { x - 1 }; effect fn g2(); fn u() { perform g2() }; to_string(handle { u() } with g2(r) { r(7) }) + "," + to_string(f(10))',
+  # `throw` as a terminal statement in an effect / handle body: it lowers to a
+  # verbatim throw state and unwinds through the driver to the nearest try/catch.
+  'effect fn ask(); effect fn b() { let x = perform ask(); throw "boom" }; try { handle { b() } with ask(r) { r(1) } } catch e { "caught:" + e }',
+  'effect fn ask(); try { handle { let x = perform ask(); throw "hb" } with ask(r) { r(7) } } catch e { "caught:" + e }',
+  'effect fn ask(); effect fn b() { let x = perform ask(); throw "mid"; x + 1 }; try { handle { b() } with ask(r) { r(1) } } catch e { e }',
+  'effect fn ask(); effect fn b(f) { let x = perform ask(); if f { throw "hit" } else { x } }; to_string(handle { b(false) } with ask(r) { r(9) }) + "," + to_string(try { handle { b(true) } with ask(r) { r(9) } } catch e { e })',
+  'effect fn ask(); effect fn b() { let x = perform ask(); throw "boom" }; fn g() { yield try { handle { b() } with ask(r) { r(0) } } catch e { "g:" + e } }; to_string(g().collect())']
 for c in eff {
   case("eff|" + c, c)
 }

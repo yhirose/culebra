@@ -951,6 +951,19 @@ class EffectsLowerer {
     return s;
   }
 
+  // A `throw` is a terminal statement: it never yields a value and never falls
+  // through, so — unlike `cps_return` — it neither assigns `_eff_val` nor jumps
+  // to the terminal state. The grammar guarantees an operand, thrown verbatim;
+  // a suspension in it is defensively rejected (ANF hoists it first).
+  int cps_throw(CpsState& st, const peg::Ast* u,
+                const std::set<std::string>& rw) const {
+    const peg::Ast& e = *u->nodes[0];
+    if (has_suspension(e)) reject_hidden(*u);  // ANF hoists; defensive
+    int s = st.fresh();
+    st.states[s] = std::format("      throw ({}){}\n", cps_rw(e, rw), mk(e));
+    return s;
+  }
+
   // A verbatim statement in tail (value) position: a bare expression IS the
   // value; an assignment runs, then its single-ident target is read back as the
   // value (matching culebra's block-value semantics — `let x = e` / `x = e`
@@ -1058,6 +1071,7 @@ class EffectsLowerer {
     if (u->tag == "IF"_) return cps_if(st, u, cont, tail, rw);
     if (u->tag == "WHILE"_) return cps_while(st, u, cont, rw);
     if (u->tag == "RETURN"_) return cps_return(st, u, rw);
+    if (u->tag == "THROW"_) return cps_throw(st, u, rw);
     if (u->tag == "BREAK"_) {
       if (st.loop_stack.empty()) { st.failed = true; return -1; }
       return cps_jump(st, st.loop_stack.back().second);
@@ -1086,8 +1100,8 @@ class EffectsLowerer {
     using namespace peg::udl;
     auto* u = unwrap_stmt(s);
     if (u->tag == "IF"_) return cps_if(st, u, cont, /*tail=*/true, rw);
-    if (u->tag == "WHILE"_ || u->tag == "RETURN"_ || u->tag == "BREAK"_ ||
-        u->tag == "CONTINUE"_)
+    if (u->tag == "WHILE"_ || u->tag == "RETURN"_ || u->tag == "THROW"_ ||
+        u->tag == "BREAK"_ || u->tag == "CONTINUE"_)
       return cps_stmt(st, s, cont, /*tail=*/false, rw);
     if (u->tag == "FOR"_) {
       // A suspending `for` is desugared to `while` upstream; a non-suspending

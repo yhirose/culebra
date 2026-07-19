@@ -253,6 +253,59 @@ assert_eq(handle { cf_finder(4) } with cf_probe(resume) {
   let h = cf_hits[cf_pi]; cf_pi = cf_pi + 1; resume(h)
 }, 2)
 
+// --- throw as a terminal statement in an effect / handle body ---
+// `throw` never yields a value and never falls through, so it lowers to a
+// verbatim `throw` state (like `return`, but without assigning `_eff_val`).
+// The thrown value unwinds through the effect driver's native frames to the
+// nearest user `try/catch`, symmetrically across the backends.
+
+// throw in tail position of an effect fn body (after a resumed perform)
+effect fn th_ask()
+effect fn th_body() {
+  let x = perform th_ask()
+  throw "boom"
+}
+assert_eq(
+  try { handle { th_body() } with th_ask(resume) { resume(1) } }
+  catch e { "caught:" + e },
+  "caught:boom")
+
+// throw directly in a handle body (lexical position)
+assert_eq(
+  try {
+    handle { let x = perform th_ask(); throw "hb" } with th_ask(resume) { resume(7) }
+  } catch e { "caught:" + e },
+  "caught:hb")
+
+// interior throw skips the (unreachable) tail expression
+effect fn th_interior() {
+  let x = perform th_ask()
+  throw "mid"
+  x + 1
+}
+assert_eq(
+  try { handle { th_interior() } with th_ask(resume) { resume(1) } }
+  catch e { e },
+  "mid")
+
+// throw guarded by an if arm; the other arm returns normally
+effect fn th_guard(flag) {
+  let x = perform th_ask()
+  if flag { throw "hit" } else { x }
+}
+assert_eq(handle { th_guard(false) } with th_ask(resume) { resume(9) }, 9)
+assert_eq(
+  try { handle { th_guard(true) } with th_ask(resume) { resume(9) } }
+  catch e { e },
+  "hit")
+
+// a thrown effect body escapes an enclosing generator's iteration too
+fn th_gen() {
+  yield try { handle { th_body() } with th_ask(resume) { resume(0) } }
+        catch e { "g:" + e }
+}
+assert_eq(th_gen().collect(), ["g:boom"])
+
 // A-normalization reaches inside a control-flow body (uniform with top level)
 effect fn cf_qty()
 effect fn cf_accumulate(n) {
