@@ -149,4 +149,14 @@ fn eg_gen() {
 }
 check("handle-in-gen", 146, fn() { eg_gen().collect() })
 
+// error inside a single-line top-level defer body reports the defer's own
+// line (its marker survives the block-brace strip of `defer { ... }`)
+effect fn de_prov() {
+  let z = nil
+  defer { z.no_such() }
+  let x = perform ask()
+  x
+}
+check("defer-1line", 156, fn() { handle { de_prov() } with ask(k) { k(1) } })
+
 puts("test_transform_error_lines: all assertions passed")

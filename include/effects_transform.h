@@ -820,6 +820,7 @@ class EffectsLowerer {
   struct CpsState {
     std::vector<std::string> states;
     std::vector<std::pair<int, int>> loop_stack;  // (header, exit) innermost last
+    std::vector<std::string> defer_bodies;        // reverse source order (LIFO)
     int terminal = -1;                            // state that returns EFF_DONE
     std::string rv;                               // resume parameter name
     bool failed = false;
@@ -894,7 +895,11 @@ class EffectsLowerer {
     return cps_rw(s, rw);
   }
   bool cps_needs_split(const peg::Ast& s) const {
-    return has_suspension(s) || has_escaping_loop_ctrl(s);
+    using namespace peg::udl;
+    // A top-level `defer` must register into the defer list (not run verbatim
+    // as a state-scope defer, which would fire at the next suspension).
+    return has_suspension(s) || has_escaping_loop_ctrl(s) ||
+           unwrap_stmt(&s)->tag == "DEFER"_;
   }
 
   int cps_jump(CpsState& st, int target) const {
@@ -961,6 +966,36 @@ class EffectsLowerer {
     if (has_suspension(e)) reject_hidden(*u);  // ANF hoists; defensive
     int s = st.fresh();
     st.states[s] = std::format("      throw ({}){}\n", cps_rw(e, rw), mk(e));
+    return s;
+  }
+
+  // A top-level `defer { B }` registers B into the computation's defer list
+  // (rewritten to `this.`) and marks a reach flag; the body runs, LIFO, when
+  // the effect body completes or throws (see `build_dispatch`), not when this
+  // state's `_step` invocation returns at a suspension. `defer` nested in
+  // control flow is rejected upstream (block-scope semantics the flat state
+  // machine can't express); a `perform` inside the body is rejected too — it
+  // would run at completion, outside the CPS engine.
+  int cps_defer(CpsState& st, const peg::Ast* u, int cont,
+                const std::set<std::string>& rw) const {
+    const peg::Ast& block = *u->nodes[0];
+    if (has_suspension(block))
+      throw CulebraError(
+          "SyntaxError",
+          "a `perform` inside a `defer` of an `effect fn` / `handle` body is "
+          "not supported — the deferred body runs outside the effect engine.",
+          err_line(*u), static_cast<long>(u->column));
+    int k = static_cast<int>(st.defer_bodies.size());
+    std::string body_src =
+        rewrite_locals_to_this(std::string(strip_block_braces(slice(block))),
+                               rw);
+    reattach_marker(body_src, block);  // single-line body: keep provenance
+    st.defer_bodies.push_back(std::move(body_src));
+    int s = st.fresh();
+    st.states[s] = std::format(
+        "      this._eff_defer_{} = true\n      this._eff_state = {}\n"
+        "      continue\n",
+        k, cont);
     return s;
   }
 
@@ -1072,6 +1107,7 @@ class EffectsLowerer {
     if (u->tag == "WHILE"_) return cps_while(st, u, cont, rw);
     if (u->tag == "RETURN"_) return cps_return(st, u, rw);
     if (u->tag == "THROW"_) return cps_throw(st, u, rw);
+    if (u->tag == "DEFER"_) return cps_defer(st, u, cont, rw);
     if (u->tag == "BREAK"_) {
       if (st.loop_stack.empty()) { st.failed = true; return -1; }
       return cps_jump(st, st.loop_stack.back().second);
@@ -1101,7 +1137,7 @@ class EffectsLowerer {
     auto* u = unwrap_stmt(s);
     if (u->tag == "IF"_) return cps_if(st, u, cont, /*tail=*/true, rw);
     if (u->tag == "WHILE"_ || u->tag == "RETURN"_ || u->tag == "THROW"_ ||
-        u->tag == "BREAK"_ || u->tag == "CONTINUE"_)
+        u->tag == "DEFER"_ || u->tag == "BREAK"_ || u->tag == "CONTINUE"_)
       return cps_stmt(st, s, cont, /*tail=*/false, rw);
     if (u->tag == "FOR"_) {
       // A suspending `for` is desugared to `while` upstream; a non-suspending
@@ -1166,12 +1202,19 @@ class EffectsLowerer {
     return cps_interior(st, stmts, cont, rw);
   }
 
+  struct DispatchOut {
+    std::string step;  // `_step` body source (dispatch, defer-wrapped if needed)
+    int entry;         // initial state index
+    int n_defers;      // number of registered `defer` bodies (ctor flags)
+  };
+
   // Lower a body into the `_step` dispatch source and its entry state index.
   // `rewrite` = params + body locals (moved to `this.` so they persist across
   // states). Throws SyntaxError for a construct the CPS engine can't lower.
-  std::pair<std::string, int> build_dispatch(
-      const peg::Ast& body, const std::set<std::string>& rewrite,
-      const std::string& rv_name) const {
+  DispatchOut build_dispatch(const peg::Ast& body,
+                             const std::set<std::string>& rewrite,
+                             const std::string& rv_name) const {
+    reject_nested_defers(body);
     CpsState st;
     st.rv = rv_name;
     st.terminal = st.fresh();
@@ -1185,13 +1228,71 @@ class EffectsLowerer {
           "through a construct the effects transform can't lower).",
           static_cast<long>(body.line), static_cast<long>(body.column));
     }
+    int n_defers = static_cast<int>(st.defer_bodies.size());
+
+    // Registered defers run LIFO exactly once, at the body's normal completion
+    // and on a throw unwinding out of it. `defer_bodies` is in reverse source
+    // order (statements are compiled back-to-front), so iterating it forward IS
+    // the LIFO order; each is gated on its reach flag. The `_eff_finalized`
+    // guard keeps the terminal path and the catch path from double-running.
+    // (Known gap: an abort handler that never resumes unwinds past the already-
+    // suspended `_step`, so these defers do not fire on abort — symmetric on
+    // both backends. A plain fn's native defer still runs. Tracked separately.)
+    std::string defer_run;
+    if (n_defers > 0) {
+      defer_run = "      if !this._eff_finalized {\n"
+                  "        this._eff_finalized = true\n";
+      for (int k = 0; k < n_defers; k++)
+        defer_run += std::format(
+            "        if this._eff_defer_{} {{\n{}\n        }}\n", k,
+            st.defer_bodies[k]);
+      defer_run += "      }\n";
+      st.states[st.terminal] =
+          defer_run + std::format("      return {}\n", EFF_DONE);
+    }
+
     std::string dispatch = "      while true {\n";
     for (size_t i = 0; i < st.states.size(); i++) {
       dispatch += std::format("        if this._eff_state == {} {{\n{}        }}\n",
                               i, st.states[i]);
     }
     dispatch += "      }\n";
-    return {dispatch, entry};
+
+    if (n_defers > 0) {
+      // A suspension leaves `_step` via `return` (not caught); only a real
+      // throw hits the catch, runs the pending defers, and re-raises the same
+      // error value (kind/message/position preserved — verified symmetric).
+      dispatch = "      try {\n" + dispatch + "      } catch _eff_ex {\n" +
+                 defer_run + "        throw _eff_ex\n      }\n";
+    }
+    return {dispatch, entry, n_defers};
+  }
+
+  // A `defer` must sit at the effect body's top statement level: block-scope
+  // semantics inside if / while / for can't be expressed by the flat state
+  // machine (the flat defer list runs at body exit, not the inner block's).
+  // Reject a nested one, mirroring the generator's stance. Stops at fn / HANDLE
+  // boundaries — those open their own scope and are validated on their own.
+  void reject_nested_defers(const peg::Ast& body) const {
+    using namespace peg::udl;
+    for (auto* s : body_stmts(body)) {
+      auto* u = unwrap_stmt(s);
+      if (u->tag == "DEFER"_) continue;  // top level: allowed
+      if (auto* d = find_nested_defer(*u))
+        throw CulebraError(
+            "SyntaxError",
+            "a `defer` nested in control flow of an `effect fn` / `handle` "
+            "body is not supported — place it at the body's top level.",
+            err_line(*d), static_cast<long>(d->column));
+    }
+  }
+  const peg::Ast* find_nested_defer(const peg::Ast& n) const {
+    using namespace peg::udl;
+    if (n.tag == "DEFER"_) return &n;
+    if (is_fn_boundary(n.tag) || n.tag == "HANDLE"_) return nullptr;
+    for (auto& c : n.nodes)
+      if (auto* d = find_nested_defer(*c)) return d;
+    return nullptr;
   }
 
   // --- for-in desugar (to `while` + iterator) ----------------------------
@@ -1419,7 +1520,7 @@ class EffectsLowerer {
     std::set<std::string> rewrite = locals;
     for (auto& p : param_names) rewrite.insert(std::string(p));
 
-    auto [step, entry] = build_dispatch(program, rewrite, rv_name);
+    auto disp = build_dispatch(program, rewrite, rv_name);
 
     std::string ctor_params, ctor_call_args;
     std::string ctor_inits = std::format(
@@ -1429,7 +1530,12 @@ class EffectsLowerer {
         "      this._eff_args = nil\n"
         "      this._eff_line = nil\n"
         "      this._eff_delegate = nil\n",
-        entry);
+        disp.entry);
+    if (disp.n_defers > 0) {
+      ctor_inits += "      this._eff_finalized = false\n";
+      for (int k = 0; k < disp.n_defers; k++)
+        ctor_inits += std::format("      this._eff_defer_{} = false\n", k);
+    }
     emit_ctor_param_and_local_inits(param_names, locals, ctor_params,
                                     ctor_call_args, ctor_inits);
 
@@ -1438,7 +1544,7 @@ class EffectsLowerer {
         "    new({1}) {{\n{2}    }}\n"
         "    _step({3}) {{\n{4}    }}\n"
         "  }}\n",
-        class_name, ctor_params, ctor_inits, rv_name, step);
+        class_name, ctor_params, ctor_inits, rv_name, disp.step);
   }
 
   // `effect fn f(params) { BODY }` -> `fn f(params) { class …; ….new(args) }`

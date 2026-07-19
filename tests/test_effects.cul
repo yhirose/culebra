@@ -306,6 +306,91 @@ fn th_gen() {
 }
 assert_eq(th_gen().collect(), ["g:boom"])
 
+// --- top-level `defer` in an effect / handle body ---
+// A `defer` at the body's statement level registers into the computation's
+// defer list (rewritten to `this.`) and runs, LIFO, when the body completes or
+// throws — not when the `_step` invocation returns at a suspension. Block-scope
+// semantics (a defer nested in if / while / for) and a `perform` inside a defer
+// are rejected symmetrically.
+
+// a defer registered before a suspension still runs at body completion, not
+// early at the perform (the bug this fixes)
+effect fn de_ask()
+mut de_log = []
+effect fn de_before() {
+  defer { de_log.push("defer") }
+  let x = perform de_ask()
+  de_log.push("end")
+  x
+}
+let de_r = handle { de_before() } with de_ask(resume) { resume(1) }
+assert_eq(de_log, ["end", "defer"])
+assert_eq(de_r, 1)
+
+// LIFO across a suspension: the later-registered defer runs first
+mut de_log2 = []
+effect fn de_lifo() {
+  defer { de_log2.push("d1") }
+  let x = perform de_ask()
+  defer { de_log2.push("d2") }
+  de_log2.push("end")
+  x
+}
+handle { de_lifo() } with de_ask(resume) { resume(1) }
+assert_eq(de_log2, ["end", "d2", "d1"])
+
+// a defer fires while a throw unwinds out of the body, before the catcher
+mut de_log3 = []
+effect fn de_throw() {
+  defer { de_log3.push("defer") }
+  let x = perform de_ask()
+  de_log3.push("before-throw")
+  throw "boom"
+}
+let de_r3 = try {
+  handle { de_throw() } with de_ask(resume) { resume(1) }
+} catch e { de_log3.push("catch"); e }
+assert_eq(de_log3, ["before-throw", "defer", "catch"])
+assert_eq(de_r3, "boom")
+
+// a throw from a *called* fn (not a statement-level throw) still runs the defer
+mut de_log4 = []
+fn de_boom() { throw "x" }
+effect fn de_callthrow() {
+  defer { de_log4.push("defer") }
+  let v = perform de_ask()
+  de_boom()
+  v
+}
+let de_r4 = try {
+  handle { de_callthrow() } with de_ask(resume) { resume(1) }
+} catch e { "caught:" + e }
+assert_eq(de_log4, ["defer"])
+assert_eq(de_r4, "caught:x")
+
+// multi-shot resume: each fork completes the body, so the defer fires per fork
+mut de_log5 = []
+effect fn de_ch(a, b)
+effect fn de_multi() {
+  defer { de_log5.push("d") }
+  let x = perform de_ch(1, 2)
+  x * 10
+}
+let de_r5 = handle { de_multi() } with de_ch(a, b, resume) { [resume(a), resume(b)] }
+assert_eq(de_r5, [10, 20])
+assert_eq(de_log5, ["d", "d"])
+
+// a defer directly in a handle body (lexical) runs at the body's end
+mut de_log6 = []
+let de_r6 = handle {
+  defer { de_log6.push("defer") }
+  let x = perform de_ask()
+  de_log6.push("end")
+  x + 1
+} with de_ask(resume) { resume(4) }
+assert_eq(de_log6, ["end", "defer"])
+assert_eq(de_r6, 5)
+
 // A-normalization reaches inside a control-flow body (uniform with top level)
 effect fn cf_qty()
 effect fn cf_accumulate(n) {
