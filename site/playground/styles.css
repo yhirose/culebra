@@ -10,7 +10,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   padding: 0.7rem 1.1rem; border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
-.pg-header .brand { display: flex; align-items: baseline; gap: 0.55rem; }
+.pg-header .brand { display: flex; align-items: center; gap: 0.55rem; }
 .pg-header .sub { color: var(--muted); font-size: 0.9rem; }
 .pg-header nav { display: flex; gap: 1.2rem; }
 .pg-header nav a { color: var(--muted); font-weight: 500; font-size: 0.9rem; }

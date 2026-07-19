@@ -1,5 +1,5 @@
 /* culebra brand system — shared by the landing page and the playground.
-   Serpent-green accent on a warm neutral ground; light + dark aware. */
+   Sky-blue accent on a warm neutral ground; light + dark aware. */
 
 :root {
   /* palette — light */
@@ -9,9 +9,9 @@
   --text: #1a201d;
   --muted: #6c736d;
   --border: #e5e0d4;
-  --brand: #157a58;
-  --brand-strong: #0f5c43;
-  --brand-soft: #e4f1ea;
+  --brand: #1590c4;
+  --brand-strong: #0f6f9c;
+  --brand-soft: #e3f2f9;
   --accent: #c06a38;
   --code-bg: #f3f0e8;
   --danger: #b23b3b;
@@ -30,9 +30,9 @@
     --text: #e7ece9;
     --muted: #98a19b;
     --border: #243029;
-    --brand: #3ec48d;
-    --brand-strong: #59d3a1;
-    --brand-soft: #13241c;
+    --brand: #45b8ee;
+    --brand-strong: #74cbf4;
+    --brand-soft: #122530;
     --accent: #e08a55;
     --code-bg: #141a17;
     --danger: #e06a6a;
@@ -43,13 +43,13 @@
 /* explicit theme override wins over the media query in both directions */
 :root[data-theme="light"] {
   --bg: #f7f5ef; --surface: #fffdf8; --surface-2: #f2efe6; --text: #1a201d;
-  --muted: #6c736d; --border: #e5e0d4; --brand: #157a58; --brand-strong: #0f5c43;
-  --brand-soft: #e4f1ea; --accent: #c06a38; --code-bg: #f3f0e8; --danger: #b23b3b;
+  --muted: #6c736d; --border: #e5e0d4; --brand: #1590c4; --brand-strong: #0f6f9c;
+  --brand-soft: #e3f2f9; --accent: #c06a38; --code-bg: #f3f0e8; --danger: #b23b3b;
 }
 :root[data-theme="dark"] {
   --bg: #0f1512; --surface: #161d19; --surface-2: #1b231e; --text: #e7ece9;
-  --muted: #98a19b; --border: #243029; --brand: #3ec48d; --brand-strong: #59d3a1;
-  --brand-soft: #13241c; --accent: #e08a55; --code-bg: #141a17; --danger: #e06a6a;
+  --muted: #98a19b; --border: #243029; --brand: #45b8ee; --brand-strong: #74cbf4;
+  --brand-soft: #122530; --accent: #e08a55; --code-bg: #141a17; --danger: #e06a6a;
 }
 
 * { box-sizing: border-box; }
@@ -79,7 +79,7 @@ code, pre { font-family: var(--font-mono); }
   color: var(--text);
 }
 .wordmark svg { display: block; }
-.wordmark .snake { color: var(--brand); }
+.wordmark .mark { color: var(--brand); }
 
 /* --- buttons ----------------------------------------------------------- */
 .btn {
