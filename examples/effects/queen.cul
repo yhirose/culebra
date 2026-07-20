@@ -8,11 +8,11 @@
 # short-circuiting first-answer search — and a third handler counts placements
 # underneath either. See docs/language.md §16 for the reference.
 #
-# Run it:  culebra examples/effects.cul            (6 queens)
-#          culebra examples/effects.cul 8          (8 queens — noticeably slower)
-#          culebra --jit examples/effects.cul      (JIT; options precede the script.
-#                                                   Warmup dominates at this size,
-#                                                   so it is slower than the interp.)
+# Run it:  culebra examples/effects/queen.cul        (6 queens)
+#          culebra examples/effects/queen.cul 8      (8 queens — noticeably slower)
+#          culebra --jit examples/effects/queen.cul  (JIT; options precede the script.
+#                                                     Warmup dominates at this size,
+#                                                     so it is slower than the interp.)
 
 effect fn choose(options)   # pick one option; the handler decides how many
 effect fn reject()          # this branch is a dead end
