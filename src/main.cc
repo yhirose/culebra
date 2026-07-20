@@ -1368,14 +1368,32 @@ int run_lint(int argc, const char** argv) {
       had_failure = true;
       continue;
     }
+    // `collect_module` wants both views of the program: the lowered AST the
+    // backends run (sound error checks) and the source as written (advisory
+    // warnings). See its comment for why neither alone is enough.
     vector<string> parse_msgs;
-    auto ast = culebra::parse(path, buff.data(), buff.size(), parse_msgs);
-    if (!ast) {
+    auto authored = culebra::parse(path, buff.data(), buff.size(), parse_msgs);
+    std::shared_ptr<peg::Ast> lowered;
+    if (authored) {
+      // The lowering itself rejects malformed effects (two `return` clauses,
+      // a duplicate handler clause, …) by throwing. Report those as ordinary
+      // error diagnostics instead of letting them escape the CLI — a linter
+      // must never abort on the input it was asked to inspect.
+      try {
+        lowered = culebra::parse_with_transforms(path, buff.data(),
+                                                 buff.size(), parse_msgs);
+      } catch (const culebra::CulebraError& e) {
+        std::println("{}:{}:{}: error: {}", path, e.line, e.col, e.what());
+        errors++;
+        continue;
+      }
+    }
+    if (!authored || !lowered) {
       for (const auto& m : parse_msgs) std::print(stderr, "{}", m);
       had_failure = true;
       continue;
     }
-    for (const auto& d : culebra::lint::collect_module(*ast)) {
+    for (const auto& d : culebra::lint::collect_module(*lowered, *authored)) {
       const char* sev =
           d.severity == culebra::lint::Severity::Error ? "error" : "warning";
       std::println("{}:{}:{}: {}: {}", path, d.line, d.col, sev, d.message);

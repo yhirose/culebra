@@ -404,5 +404,42 @@ expect_lint_clean "unused toplevel" 'let g = 1'       # top-level not flagged (M
 expect_lint_error "undefined var"      'fn f() { nope }'
 expect_lint_error "break outside loop" 'fn f() { break }'
 
+# --- effects / generators through the CLI ---
+# The CLI must run its error checks over the *lowered* AST (what the backends
+# run). On the raw parse, `effect fn` and `handle … with` bind names no
+# analyzer knows, so operations, clause parameters and `resume` all read as
+# undefined and every effects file fails to lint.
+expect_lint_clean "effects tail-resumptive" 'effect fn ask()
+puts(handle { perform ask() } with ask(resume) { resume(1) })'
+expect_lint_clean "effects effect fn body" 'effect fn ask()
+effect fn double() { let n = perform ask(); n * 2 }
+puts(handle { double() } with ask(resume) { resume(21) })'
+expect_lint_clean "effects multi-shot" 'effect fn choose(a, b)
+puts(handle { perform choose(1, 2) } with choose(a, b, resume) { [resume(a), resume(b)] })'
+expect_lint_clean "effects return clause" 'effect fn get()
+mut cell = 0
+puts(handle { perform get() } with get(resume) { resume(cell) } with return(v) { v + 1 })'
+expect_lint_clean "generator yield" 'fn counter(n) { mut i = 0; while i < n { yield i; i = i + 1 } }
+mut t = 0
+for v in counter(3) { t = t + v }
+puts(t)'
+# Advisory warnings run over the source as written, so bindings the lowering
+# synthesizes are never reported: an abort clause deliberately never reads its
+# `resume`, and a clause may ignore an operation argument.
+expect_lint_clean "abort clause ignores resume" 'effect fn fail()
+puts(handle { perform fail(); "x" } with fail(resume) { "aborted" })'
+expect_lint_clean "clause ignores an op arg" 'effect fn pair(x, y)
+puts(handle { perform pair(1, 2) } with pair(x, y, resume) { resume(x) })'
+# The lowering rejects malformed effects by throwing; the CLI must turn that
+# into an error diagnostic (exit 2) rather than aborting on uncaught exception.
+expect_lint_error "two return clauses" 'effect fn a()
+puts(handle { perform a() } with a(r) { r(1) } with return(v) { v } with return(w) { w })'
+expect_lint_error "duplicate clause" 'effect fn a()
+puts(handle { perform a() } with a(r) { r(1) } with a(r) { r(2) })'
+# A real unused local elsewhere in the same file is still reported:
+expect_lint_warns "unused local beside effects" 'effect fn ask()
+fn helper() { let dead = 1; 2 }
+puts(handle { perform ask() } with ask(resume) { resume(helper()) })' "unused variable 'dead'"
+
 if [[ $fail -eq 0 ]]; then echo "lint_test OK"; exit 0; fi
 exit 1

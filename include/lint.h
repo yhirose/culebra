@@ -1547,10 +1547,32 @@ inline void check_module(const peg::Ast& ast) {
 // static analysis (the Error-severity load checks plus advisory Warnings like
 // unused locals) and RETURN all diagnostics without throwing, so the caller
 // can print them all. Diagnostics are sorted by source position.
-inline std::vector<Diagnostic> collect_module(const peg::Ast& ast) {
+//
+// The two analyses need different views of the program, so the caller passes
+// both:
+//   `lowered`  — what the backends actually run: generators and effects
+//                lowered to classes plus runtime calls, i.e. the output of
+//                `parse_with_transforms`, which is also what the load-stage
+//                `check_module` sees. Error checks must use this form to stay
+//                sound — on the raw parse, `effect fn` and `handle … with`
+//                introduce bindings no analyzer knows about, so every
+//                operation, clause parameter and `resume` reads as undefined.
+//   `authored` — the raw parse of the source the user typed. Advisory
+//                warnings must use this form, because a synthesized binding
+//                is not the user's to act on (an abort clause deliberately
+//                never reads its `resume`; a clause may ignore an operation
+//                argument) and synthesized positions collapse onto the
+//                enclosing construct rather than pointing at editable source.
+// Consequence: the warning analyzers do not currently descend into `effect
+// fn` bodies or handler clause bodies, so an unused local written there is
+// missed. That is the safe direction for an advisory check (it under-reports
+// rather than pointing at code the user cannot act on); closing it means
+// teaching the analyzers those node kinds.
+inline std::vector<Diagnostic> collect_module(const peg::Ast& lowered,
+                                              const peg::Ast& authored) {
   std::vector<Diagnostic> diags;
-  run_error_checks(ast, diags);
-  _detail::unused::analyze_module(ast, diags);
+  run_error_checks(lowered, diags);
+  _detail::unused::analyze_module(authored, diags);
   std::sort(diags.begin(), diags.end(), [](const Diagnostic& a,
                                            const Diagnostic& b) {
     return a.line != b.line ? a.line < b.line : a.col < b.col;
