@@ -1,0 +1,9 @@
+let hello = "Hello"
+let world = "World"
+
+let s = "{hello}, {world}\n"
+
+print("This is a test\n")
+print("Start\n")
+print(s)
+print("Done\n")
