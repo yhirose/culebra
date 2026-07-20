@@ -1,0 +1,93 @@
+# Algebraic effects — a tour of the core patterns.
+#
+# An effect is an operation whose meaning is supplied by the dynamically
+# enclosing `handle` rather than fixed at the call site. `perform` invokes
+# the operation; the nearest handler decides what happens and whether (and
+# how many times) to `resume` the code that performed it. See
+# docs/language.md §16 for the full reference.
+#
+# Run it:  culebra examples/effects.cul             (interp)
+#          culebra examples/effects.cul --jit        (JIT)
+
+# --- tail-resumptive: dependency injection ------------------------------
+# The handler calls `resume` exactly once, as its last statement. No
+# continuation is captured — this is the common case (DI, state, mocking).
+effect fn ask()
+let greeting = handle {
+  let name = perform ask()
+  "hi " + name
+} with ask(resume) {
+  resume("ana")
+}
+puts(greeting)   # => 'hi ana'
+
+# --- abort: the handler never resumes -----------------------------------
+# Declining to call `resume` discards the rest of the performing
+# computation; the clause's own value becomes the `handle`'s result.
+effect fn fail()
+let recovered = handle {
+  perform fail()
+  "unreachable"
+} with fail(resume) {
+  "recovered"
+}
+puts(recovered)   # => 'recovered'
+
+# --- multiple operations + a `return` clause ----------------------------
+# One `handle` can carry several `with` clauses (one per operation) plus an
+# optional `with return(v) { … }` that maps the body's normal-completion
+# value. `return` only runs on normal completion, not after an abort.
+effect fn get()
+effect fn put(v)
+mut cell = 0
+let final_state = handle {
+  let a = perform get()
+  perform put(a + 5)
+  perform get()
+} with get(resume) { resume(cell) }
+  with put(v, resume) { cell = v; resume(nil) }
+  with return(v) { "final=" + v.to_string() }
+puts(final_state)   # => 'final=5'
+
+# --- multi-shot: a handler may resume more than once --------------------
+# Each `resume` call independently re-runs the rest of the performing
+# computation from its suspension point — this is how effects express
+# nondeterminism / backtracking without dedicated syntax.
+effect fn choose(a, b)
+let all_sums = handle {
+  let x = perform choose(1, 2)
+  let y = perform choose(10, 20)
+  x + y
+} with choose(a, b, resume) {
+  [resume(a), resume(b)]
+}
+puts(all_sums)   # => [[11, 21], [12, 22]]
+
+# --- dynamic scope: an effect fn delegates its performs upward ----------
+# Handlers are scoped by the call stack, not by lexical nesting. Calling an
+# effectful `effect fn` from a handled body reaches the same handlers.
+effect fn ask2()
+effect fn double() {
+  let n = perform ask2()
+  n * 2
+}
+puts(handle { double() } with ask2(resume) { resume(21) })   # => 42
+
+# --- plain functions participate too -------------------------------------
+# A `perform` in an ordinary (non-`effect`) fn dispatches straight off the
+# dynamic handler stack. Plain fns and effect fns can call each other
+# freely — including through first-class uses like `.map(f)` — as long as
+# every reachable handler for a plain fn's performs is tail-resumptive or
+# abort (full-control needs an `effect fn` to capture the continuation).
+effect fn log(msg)
+fn greet_plain() {
+  let name = perform log("greeting requested")
+  "hi " + name
+}
+let via_plain = handle {
+  greet_plain()
+} with log(msg, resume) {
+  puts("[log] " + msg)
+  resume("plain-ana")
+}
+puts(via_plain)   # => 'hi plain-ana'
