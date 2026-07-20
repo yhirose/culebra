@@ -8087,6 +8087,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         };
     // Dedup key so an aliased constructor's hidden edges are counted once.
     constructor.get<FunctionValue>().captured_group_key = shared_methods;
+    // The constructor closes over `env` like any closure, so the declaring
+    // scope must be a tracked cycle node. Methods track it as a side effect
+    // of make_function_value, but a ctor-only class never gets there — and
+    // an untracked env makes the env↔class-value cycle invisible to the
+    // collector (a per-call leak for a class declared inside a fn).
+    if (env) interp_gc().track_env(env);
 
     // @packable: compute the fixed C-ABI layout (throws on a non-fixed
     // field type) and register it under the class name. A hidden marker
