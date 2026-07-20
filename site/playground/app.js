@@ -162,7 +162,6 @@ examplesSel.addEventListener("change", () => {
   const name = examplesSel.value;
   if (!name) return;
   editor.value = EXAMPLES[name];
-  examplesSel.value = "";
   editor.focus();
 });
 
