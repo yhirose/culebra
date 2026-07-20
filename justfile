@@ -262,14 +262,18 @@ _run-tests BACKEND:
         echo "test (interp vs jit) OK"
     }
 
-    # Guard the non-default JIT codegen backends (--jit -O0 = SDAG at O0,
-    # --jit-faststart = FastISel) against the malformed-Value class of bug that
-    # O2 silently legalizes but those paths abort or miscompile on (see
+    # Guard the non-default JIT codegen paths (--jit -O0 = unoptimized IR over
+    # the default optimizing backend, --jit-faststart = neither optimizer)
+    # against the malformed-Value class of bug that O2 silently legalizes but
+    # those paths abort or miscompile on (see
     # tests/test_forin_codegen.cul). Behavior must equal interp on every
     # backend. Cheap: a handful of codegen-sensitive files, not the corpus.
-    # Files are chosen for IR shapes that stress -O0/FastISel specifically:
+    # Files are chosen for IR shapes that stress the unoptimized backend:
     # for-in tag handling, phi merges (cond/match), destructure, invoke/unwind
     # edges (drop-on-throw), generator CPS, iterator HOF, per-iteration scopes.
+    # The second group throws through deep preamble call chains — the shape
+    # that hid a backend miscompile from this gate until 2026-07 precisely
+    # because the list above never exercised it.
     run_codegen_backends() {
         local fail=0
         for f in tests/test_forin_codegen.cul \
@@ -280,7 +284,13 @@ _run-tests BACKEND:
                  tests/test_drop_on_throw.cul \
                  tests/test_cond.cul \
                  tests/test_while_scope.cul \
-                 tests/callable_iterator_hof.cul; do
+                 tests/callable_iterator_hof.cul \
+                 tests/test_effects.cul \
+                 tests/test_dynamic_perform.cul \
+                 tests/test_transform_error_lines.cul \
+                 tests/test_path.cul \
+                 tests/test_regex.cul \
+                 tests/test_args.cul; do
             local ref; ref=$(cul "$f") || { echo "interp failed: $f" >&2; fail=1; continue; }
             for flags in "--jit -O0" "--jit-faststart"; do
                 local got
