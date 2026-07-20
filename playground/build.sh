@@ -16,25 +16,13 @@ fi
 source "$EMSDK/emsdk_env.sh" >/dev/null 2>&1
 
 OUT="site/playground"
-BUILD="playground/.build"    # cached intermediates (sqlite3.o); gitignored
-mkdir -p "$OUT" "$BUILD"
+mkdir -p "$OUT"
 
 INCLUDES=(
   -Iinclude
   -Ivendor/cpp-peglib -Ivendor/cpp-unicodelib -Ivendor/cpp-regexlib
-  -Ivendor/cpp-tensorlib/include -Ivendor/sqlite
+  -Ivendor/cpp-tensorlib/include
 )
-
-# sqlite3 is an unconditional include in the interpreter; compile it once
-# (single-threaded for wasm) and cache the object.
-if [ ! -f "$BUILD/sqlite3.o" ]; then
-  echo "[playground] compiling sqlite3.o (once)…"
-  emcc -O2 -w -c vendor/sqlite/sqlite3.c -o "$BUILD/sqlite3.o" \
-    -DSQLITE_THREADSAFE=0 -DSQLITE_DQS=0 -DSQLITE_OMIT_LOAD_EXTENSION \
-    -DSQLITE_DEFAULT_FOREIGN_KEYS=1 -DSQLITE_OMIT_DEPRECATED \
-    -DSQLITE_OMIT_SHARED_CACHE -DSQLITE_LIKE_DOESNT_MATCH_BLOBS \
-    -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_RTREE
-fi
 
 echo "[playground] compiling culebra.wasm…"
 emcc -std=c++23 -O2 -fwasm-exceptions \
@@ -44,7 +32,7 @@ emcc -std=c++23 -O2 -fwasm-exceptions \
   -sEXPORTED_FUNCTIONS=_run_culebra,_get_output,_malloc,_free \
   -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString \
   "${INCLUDES[@]}" \
-  playground/wasm_main.cc "$BUILD/sqlite3.o" \
+  playground/wasm_main.cc \
   -o "$OUT/culebra.js"
 
 # Copy the static frontend alongside the wasm (brand.css lives in site/assets/).

@@ -76,6 +76,3 @@ scratchpad/
 docs/_history.md
 docs/_history.ja.md
 docs/_internal/*
-
-# Playground wasm build intermediates (sqlite3.o cache)
-playground/.build/
