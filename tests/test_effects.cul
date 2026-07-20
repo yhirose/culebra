@@ -577,7 +577,9 @@ assert_eq(de_log17, ["body-defer"])
 
 // tail clauses under driven dispatch run without capturing a continuation:
 // a long chain of tail performs must not overflow the native stack (the
-// driver used to nest one recursive frame per resume — ~3000 was the ceiling)
+// driver used to nest one recursive frame per resume — ~3000 was the ceiling).
+// 10000 is comfortably past that ceiling; going higher only buys interp time
+// (each perform runs the CPS driver, ~166 us under interp).
 effect fn tp_tick()
 effect fn tp_chain(n) {
   mut total = 0
@@ -588,7 +590,7 @@ effect fn tp_chain(n) {
   }
   total
 }
-assert_eq(handle { tp_chain(50000) } with tp_tick(resume) { resume(1) }, 50000)
+assert_eq(handle { tp_chain(10000) } with tp_tick(resume) { resume(1) }, 10000)
 
 // a defer in a tail clause fires when the clause returns — BEFORE the
 // continuation proceeds — identically under direct dispatch (plain-fn
