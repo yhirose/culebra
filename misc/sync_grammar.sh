@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Sync misc/culebra.peg and the AUTO-KEYWORDS blocks in the editor syntax files
-# (misc/vim/culebra.vim, misc/vscode/syntaxes/culebra.tmLanguage.json) from
-# include/grammar_def.h (the single-source grammar; parser.h #includes it).
+# (misc/vim/culebra.vim, misc/vscode/syntaxes/culebra.tmLanguage.json,
+# playground/culebra-lang.js — the last only on branches where it exists)
+# from include/grammar_def.h (the single-source grammar; parser.h #includes it).
 # Run `misc/sync_grammar.sh` to overwrite the files;
 # `misc/sync_grammar.sh --check` exits non-zero if any is stale.
 
@@ -18,6 +19,7 @@ PARSER=include/grammar_def.h
 PEG=misc/culebra.peg
 VIM=misc/vim/culebra.vim
 TM=misc/vscode/syntaxes/culebra.tmLanguage.json
+CMLANG=playground/culebra-lang.js
 MAP=misc/keyword-map.txt
 
 TMP_PEG=$(mktemp)
@@ -27,7 +29,9 @@ TMP_VIM_BLOCK=$(mktemp)
 TMP_VIM=$(mktemp)
 TMP_TM_BLOCK=$(mktemp)
 TMP_TM=$(mktemp)
-trap 'rm -f "$TMP_PEG" "$TMP_KW" "$TMP_MAP_KW" "$TMP_VIM_BLOCK" "$TMP_VIM" "$TMP_TM_BLOCK" "$TMP_TM"' EXIT
+TMP_CMLANG_BLOCK=$(mktemp)
+TMP_CMLANG=$(mktemp)
+trap 'rm -f "$TMP_PEG" "$TMP_KW" "$TMP_MAP_KW" "$TMP_VIM_BLOCK" "$TMP_VIM" "$TMP_TM_BLOCK" "$TMP_TM" "$TMP_CMLANG_BLOCK" "$TMP_CMLANG"' EXIT
 
 # 1. Extract the embedded grammar block.
 awk '/^const auto grammar_ = R"\(/{flag=1; next} /^\)";/{flag=0; exit} flag{print}' "$PARSER" > "$TMP_PEG"
@@ -122,6 +126,54 @@ awk -v block_file="$TMP_TM_BLOCK" '
   !in_block { print }
 ' "$TM" > "$TMP_TM"
 
+# 8. Emit the CodeMirror (playground) KEYWORDS/CONSTANTS sets — culBoolean and
+#    culConstant fold into CONSTANTS (mirroring the tmLanguage's separate
+#    constant.language.* scopes vs its keyword.* scopes); every other category
+#    folds into KEYWORDS. Only runs where playground/culebra-lang.js exists
+#    (it ships on the wasm-playground branch, not yet on master).
+if [[ -f "$CMLANG" ]]; then
+  KW_LINES=$(mktemp)
+  CONST_WORDS=$(mktemp)
+  : > "$KW_LINES"
+  : > "$CONST_WORDS"
+  while IFS= read -r line; do
+    case "$line" in ''|\#*) continue;; esac
+    cat=${line%%:*}
+    # shellcheck disable=SC2086
+    set -- ${line#*:}
+    quoted=$(printf '"%s", ' "$@"); quoted=${quoted%, }
+    case "$cat" in
+      culBoolean|culConstant) printf '%s ' "$@" >> "$CONST_WORDS" ;;
+      *)                      echo "  $quoted," >> "$KW_LINES" ;;
+    esac
+  done < "$MAP"
+  {
+    echo "const KEYWORDS = new Set(["
+    cat "$KW_LINES"
+    echo "]);"
+    const_words=$(cat "$CONST_WORDS")
+    const_quoted=$(printf '"%s", ' $const_words); const_quoted=${const_quoted%, }
+    echo "const CONSTANTS = new Set([$const_quoted]);"
+  } > "$TMP_CMLANG_BLOCK"
+  rm -f "$KW_LINES" "$CONST_WORDS"
+
+  awk -v block_file="$TMP_CMLANG_BLOCK" '
+    /\/\/ === BEGIN AUTO-KEYWORDS/ {
+      print
+      while ((getline line < block_file) > 0) print line
+      close(block_file)
+      in_block = 1
+      next
+    }
+    /\/\/ === END AUTO-KEYWORDS/ {
+      in_block = 0
+      print
+      next
+    }
+    !in_block { print }
+  ' "$CMLANG" > "$TMP_CMLANG"
+fi
+
 if [[ "$CHECK" -eq 1 ]]; then
   STATUS=0
   if ! diff -q "$PEG" "$TMP_PEG" > /dev/null 2>&1; then
@@ -139,10 +191,20 @@ if [[ "$CHECK" -eq 1 ]]; then
     diff -u "$TM" "$TMP_TM" >&2 || true
     STATUS=1
   fi
+  if [[ -f "$CMLANG" ]] && ! diff -q "$CMLANG" "$TMP_CMLANG" > /dev/null 2>&1; then
+    echo "ERROR: $CMLANG AUTO-KEYWORDS block is out of sync. Run \`just sync-grammar\`." >&2
+    diff -u "$CMLANG" "$TMP_CMLANG" >&2 || true
+    STATUS=1
+  fi
   exit $STATUS
 fi
 
 cp "$TMP_PEG" "$PEG"
 cp "$TMP_VIM" "$VIM"
 cp "$TMP_TM" "$TM"
-echo "synced $PEG, $VIM, and $TM from $PARSER"
+if [[ -f "$CMLANG" ]]; then
+  cp "$TMP_CMLANG" "$CMLANG"
+  echo "synced $PEG, $VIM, $TM, and $CMLANG from $PARSER"
+else
+  echo "synced $PEG, $VIM, and $TM from $PARSER"
+fi
