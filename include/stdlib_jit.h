@@ -22,6 +22,9 @@
 #if defined(CULEBRA_HTTP_ENABLED)
 #include <http.h>
 #endif
+#if defined(CULEBRA_SQLITE_ENABLED)
+#include <sqlite.h>
+#endif
 #include <shared.h>
 #include <regexlib.h>
 #include <sendable_jit.h>  // JIT isolate transfer (jit_serialize, spawn, handle)
@@ -2261,6 +2264,7 @@ CULEBRA_RT_INLINE JitValue _culebra_stdin_build_handle() {
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
+#if defined(CULEBRA_SQLITE_ENABLED)
 // ===========================================================================
 // SQLite — JIT/AOT mirror of the interp Database/Statement handles (see
 // stdlib_interp.h). The value-neutral cursor core (sqlite.h) is shared; only
@@ -2617,6 +2621,7 @@ CULEBRA_RT_INLINE JitValue _culebra_sqlite_build_db_handle(int64_t db_id) {
   _jit_owned_bind_drop(h);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
+#endif  // CULEBRA_SQLITE_ENABLED
 
 // Spawn core: parse argv, spawn detached, return a live handle (or throw).
 CULEBRA_RT_INLINE JitValue _culebra_proc_spawn_build(
@@ -3061,6 +3066,7 @@ inline JitValue _ns_file_with(JitValue* a, int64_t n) {
   return result;
 }
 
+#if defined(CULEBRA_SQLITE_ENABLED)
 // SQLite.open(path) -> Database handle. SQLite.version() -> library version.
 inline JitValue _ns_sqlite_open(JitValue* a, int64_t) {
   std::string path = _ns_adapt::take_str(a[0]);
@@ -3073,6 +3079,7 @@ inline JitValue _ns_sqlite_version(JitValue*, int64_t) {
   return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(
                           std::string(culebra::sqlite::libversion())))};
 }
+#endif  // CULEBRA_SQLITE_ENABLED
 
 // Math
 inline JitValue _ns_math_abs(JitValue* a, int64_t) {
@@ -5698,8 +5705,10 @@ inline const NsMethod kNsMethods[] = {
 
   {"CSV", "parse",     1, &_ns_csv_parse,     nullptr, "String", "text"},
   {"CSV", "stringify", 1, &_ns_csv_stringify, nullptr, "Array",  "rows"},
+#if defined(CULEBRA_SQLITE_ENABLED)
   {"SQLite", "open",    1, &_ns_sqlite_open,    nullptr, "String", "path"},
   {"SQLite", "version", 0, &_ns_sqlite_version},
+#endif
   {"TOML", "parse",     1, &_ns_toml_parse,     nullptr, "String", "text"},
   {"TOML", "stringify", 1, &_ns_toml_stringify, nullptr, "Object", "v"},
 
@@ -8243,7 +8252,10 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel",
       "Signal",  "Encoding", "Compress",  "SharedBuffer", "Shared",
       "Hash",    "CSV",       "TOML",      "Env",       "UUID",       "String",
-      "_Term",   "SQLite",
+      "_Term",
+#if defined(CULEBRA_SQLITE_ENABLED)
+      "SQLite",
+#endif
       // Lazy source modules (preamble builders, resolved via namespace_get +
       // the lazy-ns builder registry). Listed here so closures capture-skip
       // them and bare references compile to namespace_get — mirroring the

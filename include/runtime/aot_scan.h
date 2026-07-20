@@ -131,11 +131,15 @@ inline bool aot_uses_compress(const peg::Ast& node) {
 // base archive's weak SQLite stubs reference no sqlite3 symbol, so a non-SQLite
 // program links no sqlite3 at all. Same conservative bare-identifier match.
 inline bool aot_uses_sqlite(const peg::Ast& node) {
+#if defined(CULEBRA_SQLITE_ENABLED)
   using namespace peg::udl;
   if (node.tag == "IDENTIFIER"_ && node.token == "SQLite") return true;
   for (const auto& child : node.nodes) {
     if (aot_uses_sqlite(*child)) return true;
   }
+#else
+  (void)node;
+#endif
   return false;
 }
 

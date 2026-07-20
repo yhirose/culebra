@@ -21,7 +21,9 @@
 #include <foreign_binding.h>
 #include <hash.h>
 #include <json.h>
+#if defined(CULEBRA_SQLITE_ENABLED)
 #include <sqlite.h>
+#endif
 #include <toml.h>
 #include <uuid.h>
 #include <vfs.h>
@@ -2760,6 +2762,7 @@ inline Value make_file_namespace() {
   return Value(std::move(ns));
 }
 
+#if defined(CULEBRA_SQLITE_ENABLED)
 // ===========================================================================
 // SQLite — embedded SQL database over the value-neutral cursor core (sqlite.h).
 // `SQLite.open(path)` returns a Database handle; db.execute/query/transaction
@@ -3146,6 +3149,7 @@ inline Value make_sqlite_namespace() {
 
   return Value(std::move(ns));
 }
+#endif  // CULEBRA_SQLITE_ENABLED
 
 // Build the Proc.spawn live handle: data fields `_pid/_out/_err/_done/_result`
 // plus `wait`/`poll`/`kill`/`drop` methods. The result is cached on first
@@ -5789,7 +5793,9 @@ inline void setup_built_in_functions(
   ns_init("Compress", make_compress_namespace());
   ns_init("Hash", make_hash_namespace());
   ns_init("CSV", make_csv_namespace());
+#if defined(CULEBRA_SQLITE_ENABLED)
   ns_init("SQLite", make_sqlite_namespace());
+#endif
   ns_init("TOML", make_toml_namespace());
   ns_init("Env", make_env_namespace());
   ns_init("UUID", make_uuid_namespace());
