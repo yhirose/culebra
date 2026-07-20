@@ -1,8 +1,9 @@
 // Playground UI. The WASM interpreter runs inside worker.js; this file owns
 // the editor, toolbar, and worker lifecycle (Stop = terminate + respawn).
+import { createEditor } from "./editor.js";
 
 const $ = (id) => document.getElementById(id);
-const editor = $("editor");
+const editor = createEditor($("editor"), "");
 const output = $("output");
 const runBtn = $("run");
 const stopBtn = $("stop");
@@ -136,7 +137,7 @@ function run() {
   output.classList.remove("err");
   output.textContent = "";
   setStatus("running…");
-  worker.postMessage({ type: "run", src: editor.value });
+  worker.postMessage({ type: "run", src: editor.getValue() });
 }
 
 function stop() {
@@ -161,7 +162,7 @@ clearBtn.addEventListener("click", () => {
 examplesSel.addEventListener("change", () => {
   const name = examplesSel.value;
   if (!name) return;
-  editor.value = EXAMPLES[name];
+  editor.setValue(EXAMPLES[name]);
   editor.focus();
 });
 
@@ -172,18 +173,8 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// Two-space indent on Tab inside the editor.
-editor.addEventListener("keydown", (e) => {
-  if (e.key === "Tab") {
-    e.preventDefault();
-    const { selectionStart: s, selectionEnd: t, value } = editor;
-    editor.value = value.slice(0, s) + "  " + value.slice(t);
-    editor.selectionStart = editor.selectionEnd = s + 2;
-  }
-});
-
 // --- boot -----------------------------------------------------------------
 
-editor.value = EXAMPLES["Hello"];
+editor.setValue(EXAMPLES["Hello"]);
 setStatus("loading…");
 spawnWorker();

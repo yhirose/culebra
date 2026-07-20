@@ -37,6 +37,6 @@ emcc -std=c++23 -O2 -fwasm-exceptions \
 
 # Copy the static frontend alongside the wasm (brand.css lives in site/assets/).
 cp playground/index.html playground/app.js playground/worker.js \
-   playground/styles.css "$OUT/"
+   playground/editor.js playground/culebra-lang.js playground/styles.css "$OUT/"
 
 echo "[playground] done → $OUT/ ($(du -h "$OUT/culebra.wasm" | cut -f1) wasm)"

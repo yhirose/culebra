@@ -39,15 +39,16 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   flex: 1; display: grid; grid-template-columns: 1fr 1fr; min-height: 0;
 }
 .pg-editor, .pg-output {
-  min-height: 0; margin: 0; border: 0; padding: 1rem 1.2rem;
-  font-family: var(--font-mono); font-size: 0.92rem; line-height: 1.55;
-  overflow: auto; tab-size: 2;
+  min-height: 0; margin: 0; overflow: auto;
 }
 .pg-editor {
-  resize: none; outline: none; background: var(--code-bg); color: var(--text);
-  border-right: 1px solid var(--border); white-space: pre;
+  background: var(--code-bg); border-right: 1px solid var(--border);
 }
+/* CodeMirror mounts its own DOM inside #editor; fill the pane. */
+.pg-editor .cm-editor { height: 100%; }
 .pg-output {
+  border: 0; padding: 1rem 1.2rem; font-family: var(--font-mono);
+  font-size: 0.92rem; line-height: 1.55; tab-size: 2;
   background: var(--bg); color: var(--text); white-space: pre-wrap;
   word-break: break-word;
 }

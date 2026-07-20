@@ -1,0 +1,172 @@
+// culebra syntax highlighting for CodeMirror 6 — a hand-written StreamLanguage
+// (token-level, not a full parse tree; sufficient for highlighting).
+//
+// Keyword/operator/string/number rules mirror misc/vscode/syntaxes/culebra.tmLanguage.json
+// (the single source of truth for culebra's lexical surface — kept in sync with
+// misc/keyword-map.txt via `just sync-grammar`). Update both if culebra's syntax changes.
+import { StreamLanguage, HighlightStyle } from "https://esm.sh/@codemirror/language@6.12.4";
+import { tags as t } from "https://esm.sh/@lezer/highlight@1.2.1";
+
+const KEYWORDS = new Set([
+  "fn", "class", "trait", "enum",
+  "if", "else", "match", "cond",
+  "while", "for", "in",
+  "return", "break", "continue", "throw", "try", "catch", "defer", "yield",
+  "effect", "perform", "handle", "with",
+  "import", "export", "from",
+  "debugger",
+  "let", "mut", "static", "get",
+]);
+const CONSTANTS = new Set(["true", "false", "nil"]);
+const LANG_VARS = new Set(["self", "this", "__ARGS__"]);
+
+// A tiny explicit stack gives StringStream nested modes: string/regex bodies
+// push their closing delimiter, {expr}/${expr} interpolation pushes "interp"
+// and recurses back into normal tokenizing until the matching '}'.
+function pushMode(state, kind, quote) {
+  state.stack.push({ kind: state.kind, quote: state.quote });
+  state.kind = kind;
+  state.quote = quote;
+}
+function popMode(state) {
+  const prev = state.stack.pop();
+  state.kind = prev ? prev.kind : "base";
+  state.quote = prev ? prev.quote : undefined;
+}
+
+function tokenBase(stream, state) {
+  if (stream.match("/*")) {
+    if (!stream.match(/^[\s\S]*?\*\//)) stream.skipToEnd();
+    return "comment";
+  }
+  if (stream.match("//") || stream.match("#")) {
+    stream.skipToEnd();
+    return "comment";
+  }
+
+  // re'...' / re"..." / re`...` regex literal with trailing [ims] flags.
+  const reMatch = stream.match(/^re(['"`])/);
+  if (reMatch) {
+    pushMode(state, "regex", reMatch[1]);
+    return "keyword";
+  }
+
+  if (stream.match('"""')) {
+    pushMode(state, "tripleString", '"""');
+    return "string";
+  }
+  if (stream.match('"')) {
+    pushMode(state, "string", '"');
+    return "string";
+  }
+  if (stream.match("'")) {
+    pushMode(state, "string", "'");
+    return "string";
+  }
+
+  // Numbers: float patterns first so the integer rule doesn't steal them.
+  if (stream.match(/^\d+\.\d+([eE][-+]?\d+)?\b/)) return "number";
+  if (stream.match(/^\d+[eE][-+]?\d+\b/)) return "number";
+  if (stream.match(/^\d+\b/)) return "number";
+
+  const id = stream.match(/^[A-Za-z_]\w*/);
+  if (id) {
+    const name = id[0];
+    if (KEYWORDS.has(name)) return "keyword";
+    if (CONSTANTS.has(name)) return "atom";
+    if (LANG_VARS.has(name)) return "specialVar";
+    if (stream.peek() === "(") return "callName";
+    if (/^[A-Z]/.test(name)) return "typeName";
+    return "variableName";
+  }
+
+  // Multi-char operators before single-char ones so prefixes don't shadow them.
+  if (stream.match(/^(&&|\|\||\?\?|\*\*|=>|->|\.\.\.|\.\.=?)/)) return "operator";
+  if (stream.match(/^[-+*/%@!=<>^|&]=?/)) return "operator";
+
+  stream.next();
+  return null;
+}
+
+function tokenString(stream, state) {
+  if (stream.match(/^\\./)) return "escape";
+  if (stream.match(state.quote)) {
+    popMode(state);
+    return "string";
+  }
+  // {expr} interpolation — only double-quoted strings interpolate (single is raw).
+  if (state.quote === '"' && stream.match("{")) {
+    pushMode(state, "interp", undefined);
+    return "punctuation";
+  }
+  stream.next();
+  return "string";
+}
+
+function tokenRegex(stream, state) {
+  if (stream.match(/^\\[^'"`]/)) return "escape";
+  if (stream.match(new RegExp("^" + state.quote + "[ims]*"))) {
+    popMode(state);
+    return "string";
+  }
+  if (stream.match("${")) {
+    pushMode(state, "interp", undefined);
+    return "punctuation";
+  }
+  stream.next();
+  return "string";
+}
+
+export const culebraLanguage = StreamLanguage.define({
+  startState() {
+    return { kind: "base", quote: undefined, stack: [] };
+  },
+  token(stream, state) {
+    if (state.kind === "interp") {
+      if (stream.match("}")) {
+        popMode(state);
+        return "punctuation";
+      }
+      return tokenBase(stream, state);
+    }
+    if (state.kind === "string" || state.kind === "tripleString") {
+      return tokenString(stream, state);
+    }
+    if (state.kind === "regex") return tokenRegex(stream, state);
+    return tokenBase(stream, state);
+  },
+  languageData: {
+    commentTokens: { line: "#", block: { open: "/*", close: "*/" } },
+    closeBrackets: { brackets: ["(", "[", "{", '"', "'"] },
+  },
+  tokenTable: {
+    comment: t.comment,
+    keyword: t.keyword,
+    string: t.string,
+    number: t.number,
+    atom: t.atom,
+    specialVar: t.special(t.variableName),
+    callName: t.function(t.variableName),
+    typeName: t.typeName,
+    variableName: t.variableName,
+    operator: t.operator,
+    punctuation: t.punctuation,
+    escape: t.escape,
+  },
+});
+
+// Colors reference the brand.css custom properties directly, so the same
+// HighlightStyle works for both light and dark without a second theme object.
+export const culebraHighlightStyle = HighlightStyle.define([
+  { tag: t.comment, color: "var(--muted)", fontStyle: "italic" },
+  { tag: t.keyword, color: "var(--brand-strong)", fontWeight: "600" },
+  { tag: t.string, color: "var(--accent)" },
+  { tag: t.number, color: "var(--accent)" },
+  { tag: t.atom, color: "var(--brand-strong)" },
+  { tag: t.special(t.variableName), color: "var(--brand)" },
+  { tag: t.function(t.variableName), color: "var(--text)" },
+  { tag: t.typeName, color: "var(--brand)" },
+  { tag: t.operator, color: "var(--muted)" },
+  { tag: t.punctuation, color: "var(--muted)" },
+  { tag: t.escape, color: "var(--accent)" },
+]);
