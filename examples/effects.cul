@@ -1,93 +1,106 @@
-# Algebraic effects — a tour of the core patterns.
+# N-queens — a search that does not know it backtracks.
 #
-# An effect is an operation whose meaning is supplied by the dynamically
-# enclosing `handle` rather than fixed at the call site. `perform` invokes
-# the operation; the nearest handler decides what happens and whether (and
-# how many times) to `resume` the code that performed it. See
-# docs/language.md §16 for the full reference.
+# Place N queens on an N×N board so that no two share a row, column, or
+# diagonal. The search below never mentions backtracking: it asks for a column
+# with `perform choose(...)` and gives up on a bad placement with
+# `perform reject()`. What those operations *mean* is supplied by the enclosing
+# `handle`, so one `search` runs unchanged as an exhaustive enumeration or as a
+# short-circuiting first-answer search — and a third handler counts placements
+# underneath either. See docs/language.md §16 for the reference.
 #
-# Run it:  culebra examples/effects.cul             (interp)
-#          culebra examples/effects.cul --jit        (JIT)
+# Run it:  culebra examples/effects.cul            (6 queens)
+#          culebra examples/effects.cul 8          (8 queens — noticeably slower)
+#          culebra --jit examples/effects.cul      (JIT; options precede the script.
+#                                                   Warmup dominates at this size,
+#                                                   so it is slower than the interp.)
 
-# --- tail-resumptive: dependency injection ------------------------------
-# The handler calls `resume` exactly once, as its last statement. No
-# continuation is captured — this is the common case (DI, state, mocking).
-effect fn ask()
-let greeting = handle {
-  let name = perform ask()
-  "hi " + name
-} with ask(resume) {
-  resume("ana")
-}
-puts(greeting)   # => 'hi ana'
+effect fn choose(options)   # pick one option; the handler decides how many
+effect fn reject()          # this branch is a dead end
+effect fn visit()           # one placement considered (for instrumentation)
 
-# --- abort: the handler never resumes -----------------------------------
-# Declining to call `resume` discards the rest of the performing
-# computation; the clause's own value becomes the `handle`'s result.
-effect fn fail()
-let recovered = handle {
-  perform fail()
-  "unreachable"
-} with fail(resume) {
-  "recovered"
-}
-puts(recovered)   # => 'recovered'
+let N = if Sys.argv.size() > 0 { to_long(Sys.argv[0]) } else { 6 }
 
-# --- multiple operations + a `return` clause ----------------------------
-# One `handle` can carry several `with` clauses (one per operation) plus an
-# optional `with return(v) { … }` that maps the body's normal-completion
-# value. `return` only runs on normal completion, not after an abort.
-effect fn get()
-effect fn put(v)
-mut cell = 0
-let final_state = handle {
-  let a = perform get()
-  perform put(a + 5)
-  perform get()
-} with get(resume) { resume(cell) }
-  with put(v, resume) { cell = v; resume(nil) }
-  with return(v) { "final=" + v.to_string() }
-puts(final_state)   # => 'final=5'
+# `cols[r]` is the column of the queen on row r; a partial solution is a
+# prefix. A new queen at column `c` on row `cols.size()` is safe if it shares
+# no column and no diagonal with any queen already placed.
+fn is_safe(cols, c) {
+  let row = cols.size()
+  for r in 0..row {
+    let cc = cols[r]
+    if cc == c { return false }
+    if (row - r) == Math.abs(c - cc) { return false }
+  }
+  true
+}
 
-# --- multi-shot: a handler may resume more than once --------------------
-# Each `resume` call independently re-runs the rest of the performing
-# computation from its suspension point — this is how effects express
-# nondeterminism / backtracking without dedicated syntax.
-effect fn choose(a, b)
-let all_sums = handle {
-  let x = perform choose(1, 2)
-  let y = perform choose(10, 20)
-  x + y
-} with choose(a, b, resume) {
-  [resume(a), resume(b)]
+# The whole search. It is written as if `choose` returned a single column and
+# `reject` simply ended the program — the linear, obvious reading. Whether it
+# explores one branch or all of them is entirely the handler's business.
+effect fn search(cols) {
+  if cols.size() == N { return cols }
+  let c = perform choose(iota(N))
+  perform visit()
+  if !is_safe(cols, c) { perform reject() }
+  # A fresh array, built *after* the suspension point above, so each fork of
+  # `choose` gets its own. Pushing onto an array created before the `perform`
+  # would be seen by every fork — the fork copies locals, not the heap.
+  search([...cols, c])
 }
-puts(all_sums)   # => [[11, 21], [12, 22]]
 
-# --- dynamic scope: an effect fn delegates its performs upward ----------
-# Handlers are scoped by the call stack, not by lexical nesting. Calling an
-# effectful `effect fn` from a handled body reaches the same handlers.
-effect fn ask2()
-effect fn double() {
-  let n = perform ask2()
-  n * 2
+fn board_of(cols) {
+  cols.map(|c| iota(N).map(|i| if i == c { "Q" } else { "." }).join("")).join("\n")
 }
-puts(handle { double() } with ask2(resume) { resume(21) })   # => 42
 
-# --- plain functions participate too -------------------------------------
-# A `perform` in an ordinary (non-`effect`) fn dispatches straight off the
-# dynamic handler stack. Plain fns and effect fns can call each other
-# freely — including through first-class uses like `.map(f)` — as long as
-# every reachable handler for a plain fn's performs is tail-resumptive or
-# abort (full-control needs an `effect fn` to capture the continuation).
-effect fn log(msg)
-fn greet_plain() {
-  let name = perform log("greeting requested")
-  "hi " + name
+# --- handler A: enumerate every solution --------------------------------
+# `choose` resumes once per option and concatenates the results, so a single
+# `perform` fans out into the whole subtree — this is the backtracking. A
+# handler that resumes more than once is "full-control": the continuation is
+# captured, which is why `search` must be an `effect fn`.
+# `reject` never resumes, so a dead branch's suspended computation is
+# discarded and the clause's own value — no solutions — takes its place.
+mut nodes_all = 0
+let all = handle {
+  handle {
+    # `search` yields one solution, lifted into a list so that every clause
+    # below deals in the same currency: a list of solutions.
+    [search([])]
+  } with choose(options, resume) {
+    options.flat_map(|o| resume(o))
+  } with reject(resume) {
+    []
+  }
+} with visit(resume) {
+  nodes_all = nodes_all + 1
+  resume(nil)   # tail-resumptive: no continuation captured, just a callback
 }
-let via_plain = handle {
-  greet_plain()
-} with log(msg, resume) {
-  puts("[log] " + msg)
-  resume("plain-ana")
+
+print("{N} queens: {all.size()} solutions, {nodes_all} placements considered\n\n")
+if all.size() > 0 { print(board_of(all[0]) + "\n\n") }
+
+# --- handler B: same search, stop at the first solution ------------------
+# Only the `choose` clause changes — it stops resuming once a branch has
+# produced an answer. `search` itself is untouched.
+mut nodes_one = 0
+let one = handle {
+  handle {
+    [search([])]
+  } with choose(options, resume) {
+    mut hit = []
+    for o in options {
+      for s in resume(o) { hit.push(s) }
+      if hit.size() > 0 { break }
+    }
+    hit
+  } with reject(resume) {
+    []
+  }
+} with visit(resume) {
+  nodes_one = nodes_one + 1
+  resume(nil)
 }
-puts(via_plain)   # => 'hi plain-ana'
+
+let answer = if one.size() > 0 { one[0].to_string() } else { "none" }
+print("first solution only: {answer}, {nodes_one} placements considered\n")
+if nodes_one < nodes_all {
+  print("(same search, {nodes_all - nodes_one} fewer placements — the handler pruned it)\n")
+}
