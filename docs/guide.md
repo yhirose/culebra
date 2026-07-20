@@ -114,12 +114,13 @@ echo "puts('hello, culebra!')" > hello.cul
 ```
 
 All three backends produce identical observable output (the whole
-interp↔JIT differential corpus is verified). `--jit-faststart` swaps the
-JIT's optimizing backend for FastISel: it roughly **halves JIT warmup**
-(startup/codegen time) for a small steady-state cost — about 7% on
-pure-script hot loops, and ~0% when the heavy work lives in the C++/BLAS
-runtime (e.g. `Tensor`). Prefer it for short scripts or BLAS-bound runs;
-the default `--jit` (`-O2`) keeps the best steady-state throughput.
+interp↔JIT differential corpus is verified). `--jit-faststart` skips both
+the IR and the machine-code optimizers, which cuts **JIT warmup**
+(startup/codegen time) by roughly **40x** for a small steady-state cost —
+about 12% on pure-script hot loops, and ~0% when the heavy work lives in
+the C++/BLAS runtime (e.g. `Tensor`). It implies `-O0`; passing another
+`-O` alongside it is an error. Prefer it for short scripts or BLAS-bound
+runs; the default `--jit` (`-O2`) keeps the best steady-state throughput.
 
 Comments start with `#` (line) or `/* ... */` (block). Statements may
 end with `;`; newlines also separate statements. The recommended style

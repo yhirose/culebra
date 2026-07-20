@@ -4194,7 +4194,7 @@ as the script even if it begins with a dash.
 | `--ast`        | Print the parsed AST before running.                      |
 | `--debug`      | Enable the CLI debugger; `debugger` statements break in.  |
 | `--jit`        | Use the LLVM ORC JIT instead of the tree-walking interpreter. |
-| `--jit-faststart` | Like `--jit`, but uses the FastISel backend to roughly halve JIT warmup time at a small steady-state throughput cost (~7% on pure-script hot loops, ~0% when hot work is in the C++/BLAS runtime). Output matches `--jit`/interp. |
+| `--jit-faststart` | Like `--jit`, but skips both the IR and the machine-code optimizers, cutting JIT warmup time ~40x at a small steady-state throughput cost (~12% on pure-script hot loops, ~0% when hot work is in the C++/BLAS runtime). Implies `-O0`. Output matches `--jit`/interp. |
 | `--emit-llvm`  | With `--jit`, print the generated IR and exit.            |
 | `-O0`..`-O3`   | With `--jit`, select the LLVM optimization level. Default `-O2`. |
 

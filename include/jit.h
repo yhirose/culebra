@@ -798,18 +798,43 @@ struct JIT {
            std::to_string(llvm::xxh3_64bits(acc));
   }
 
+  // Backend configuration for `--jit-faststart`, in one place because both
+  // LLJIT construction paths below need it.
+  //
+  // `CodeGenOptLevel::None` selects FastISel plus RegAllocFast, and
+  // RegAllocFast is the half of the warmup win that lives in the backend —
+  // FastISel over the greedy allocator recovers almost none of it. Skipping
+  // the IR pipeline buys about as much again. It is also unsound above a
+  // threshold: RegAllocFast miscompiles a landing pad carrying more than ten
+  // live phi values, running out of scratch registers and sourcing the
+  // eleventh from x1, which the Itanium EH ABI has already overwritten with
+  // the exception selector. The corrupted value then flows into the pad's
+  // release calls and the process dies dereferencing it. See
+  // tests/llvm_regalloc_landingpad_phi/ for a ~40-line reproducer with no
+  // culebra involvement.
+  //
+  // We stay outside that threshold structurally rather than by luck: our
+  // own codegen never puts a phi in a landing pad — every value crossing
+  // an unwind edge goes through an alloca (§4.3) — so at IR-O0 the pads
+  // carry zero phis. Only mem2reg/SROA, which run from IR-O1 up, promote
+  // those allocas into pad phis (measured: 26-47 of them on the tests that
+  // used to crash). Hence `--jit-faststart` pins the IR pipeline to O0
+  // too; main.cc rejects an explicit conflicting -O rather than silently
+  // reinstating the broken combination.
+  static void apply_fast_codegen(llvm::orc::JITTargetMachineBuilder& jtmb) {
+    jtmb.setCodeGenOptLevel(llvm::CodeGenOptLevel::None);
+  }
+
   // Build a fresh, ready-to-use LLJIT instance with the host's process
   // symbols available. Used by one-shot `exec` (script mode).
   //
-  // `fast_codegen` decouples the *backend* opt level (instruction selection
-  // + register allocation) from the IR opt level. Profiling microgpt shows
-  // JIT warmup is dominated by the backend, not the IR passes: dropping the
-  // backend to FastISel + fast regalloc roughly halves warmup. The machine
-  // code is worse, so this trades steady-state throughput for startup
-  // latency — a clear win when the hot compute lives in the C++/BLAS runtime
-  // (Tensor) rather than in JIT-emitted arithmetic (scalar). It is also the
-  // natural foundation for future tiered compilation (start at FastISel,
-  // promote hot functions to the optimizing backend in the background).
+  // `fast_codegen` drops the *backend* to FastISel + fast regalloc; callers
+  // pin the IR pipeline to O0 alongside it, never on its own — see
+  // apply_fast_codegen above for the LLVM bug that rules out the mixed
+  // configuration. The machine code is worse, so this trades steady-state
+  // throughput for startup latency — a clear win when the hot compute lives
+  // in the C++/BLAS runtime (Tensor) rather than in JIT-emitted arithmetic
+  // (scalar).
   static std::unique_ptr<llvm::orc::LLJIT> create_jit_instance(
       bool fast_codegen = false) {
     using namespace llvm;
@@ -824,7 +849,7 @@ struct JIT {
       lb.setCompileFunctionCreator(
           [fast_codegen](orc::JITTargetMachineBuilder jtmb)
               -> Expected<std::unique_ptr<orc::IRCompileLayer::IRCompiler>> {
-            if (fast_codegen) jtmb.setCodeGenOptLevel(CodeGenOptLevel::None);
+            if (fast_codegen) apply_fast_codegen(jtmb);
             auto tm = jtmb.createTargetMachine();
             if (!tm) return tm.takeError();
             return std::make_unique<orc::TMOwningSimpleCompiler>(
@@ -832,7 +857,7 @@ struct JIT {
           });
     } else if (fast_codegen) {
       auto jtmb = cantFail(orc::JITTargetMachineBuilder::detectHost());
-      jtmb.setCodeGenOptLevel(CodeGenOptLevel::None);
+      apply_fast_codegen(jtmb);
       lb.setJITTargetMachineBuilder(std::move(jtmb));
     }
 #ifdef _WIN32

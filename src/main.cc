@@ -100,14 +100,17 @@ struct Options {
   bool help = false;
 #ifdef CULEBRA_JIT_ENABLED
   bool jit = false;
-  // FastISel backend: ~halves JIT warmup (startup/compile time) at a small
-  // steady-state cost (~7% on pure-script hot loops; ~0% when the hot work
-  // lives in the C++/BLAS runtime, e.g. Tensor). Output is interp-symmetric
-  // (the whole difftest corpus passes under --jit-faststart). Opt-in: the
-  // default --jit (O2) keeps the best steady-state throughput.
+  // Unoptimized IR pipeline + unoptimized backend: collapses JIT warmup
+  // (startup/compile time) by ~40x at a small steady-state cost (~12% on
+  // pure-script hot loops; ~0% when the hot work lives in the C++/BLAS
+  // runtime, e.g. Tensor). Output is interp-symmetric. Opt-in: the default
+  // --jit (O2) keeps the best steady-state throughput. The two levels move
+  // together — see JIT::apply_fast_codegen for why an optimized IR
+  // pipeline over an unoptimized backend is not a configuration we allow.
   bool jit_faststart = false;
   bool emit_llvm = false;
   int opt_level = 2;
+  bool opt_level_explicit = false;
 #endif
   vector<string> script_path_list;
   vector<string> script_argv;
@@ -284,10 +287,11 @@ void print_usage(ostream& os) {
         "                     tree-walking interpreter (same observable output).\n"
         "                     The REPL always uses the interpreter.\n"
         "  --jit-faststart    Like --jit but tuned for fast startup, not peak\n"
-        "                     throughput: the FastISel backend ~halves JIT warmup\n"
-        "                     (compile time) for a small steady-state cost (~7% on\n"
-        "                     pure-script hot loops, ~0% when hot work is in the\n"
-        "                     C++/BLAS runtime). Output matches --jit/interp.\n"
+        "                     throughput: skipping both the IR and the backend\n"
+        "                     optimizers cuts JIT warmup (compile time) by ~40x\n"
+        "                     for a small steady-state cost (~12% on pure-script\n"
+        "                     hot loops, ~0% when hot work is in the C++/BLAS\n"
+        "                     runtime). Implies -O0. Output matches --jit/interp.\n"
         "  --emit-llvm        Print the generated LLVM IR (with --jit)\n"
         "  -O<level>          JIT optimization level 0-3 (default 2)\n"
 #endif
@@ -1116,6 +1120,7 @@ Options parse_command_line(int argc, const char** argv) {
       if (arg == "--emit-llvm") { options.emit_llvm = true; continue; }
       if (arg.starts_with("-O")) {
         options.opt_level = std::stoi(arg.substr(2));
+        options.opt_level_explicit = true;
         continue;
       }
 #endif
@@ -1556,6 +1561,21 @@ int main(int argc, const char** argv) {
   }
 
 #ifdef CULEBRA_JIT_ENABLED
+  // --jit-faststart names one configuration, not a backend knob that can be
+  // mixed with an arbitrary IR level: an optimized IR pipeline feeding the
+  // unoptimized backend hits an LLVM register-allocation bug that silently
+  // corrupts values on throw paths (JIT::apply_fast_codegen). Say so rather
+  // than quietly running something the user did not ask for.
+  if (options.jit_faststart && options.opt_level_explicit &&
+      options.opt_level != 0) {
+    std::println(cerr,
+                 "culebra: --jit-faststart implies -O0; drop the -O{} (or "
+                 "use --jit -O{} for the optimizing backend)",
+                 options.opt_level, options.opt_level);
+    return 1;
+  }
+  if (options.jit_faststart) options.opt_level = 0;
+
   culebra::install_jit_stdlib();
   startup_profile::mark("install_jit_stdlib");
 #endif
