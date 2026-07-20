@@ -42,6 +42,8 @@
 #include "parser.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <format>
 #include <functional>
 #include <memory>
@@ -1843,7 +1845,27 @@ inline std::shared_ptr<peg::Ast> parse_with_transforms(
     std::vector<std::string>& msgs) {
   auto ast = parse_with_generator_transforms(path, expr, len, msgs);
   if (!ast) return ast;
-  return transform_effects_in(ast, expr, len);
+  auto out = transform_effects_in(ast, expr, len);
+  // CULEBRA_TRANSFORM_STATS=1 reports how much culebra source the generator +
+  // effects passes synthesized for this module — the input to every backend's
+  // compile, so it bounds what any codegen-side change can save.
+  if (std::getenv("CULEBRA_TRANSFORM_STATS")) {
+    size_t bytes = 0, lines = 0;
+    for (auto& s : generator_transform_sources()) {
+      bytes += s->size();
+      lines += static_cast<size_t>(std::count(s->begin(), s->end(), '\n'));
+    }
+    std::fprintf(stderr,
+                 "[transform-stats] %s: source %zu bytes -> synthesized %zu "
+                 "fragments, %zu bytes, %zu lines\n",
+                 path.c_str(), len, generator_transform_sources().size(),
+                 bytes, lines);
+    if (std::string_view(std::getenv("CULEBRA_TRANSFORM_STATS")) == "2") {
+      for (auto& s : generator_transform_sources())
+        std::fprintf(stderr, "----8<---- fragment\n%s\n", s->c_str());
+    }
+  }
+  return out;
 }
 
 }  // namespace culebra
