@@ -10,6 +10,7 @@ const stopBtn = $("stop");
 const clearBtn = $("clear");
 const examplesSel = $("examples");
 const status = $("status");
+const backendEl = $("backend");
 
 // --- examples (playground-safe: no Term/Proc/FS/argv) ---------------------
 
@@ -65,7 +66,34 @@ print("chunks = {chunk([1, 2, 3, 4, 5], 2).collect()}\\n")
   "Tensors": `let t = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
 print("tensor : {t.to_string()}\\n")
 print("shape  : {t.shape()}\\n")
-# GPU backends aren't compiled on wasm — everything runs on the CPU path.
+print("GPU    : {Tensor.gpu_available()}\\n")
+`,
+  "Tensors on the GPU": `# Where WebGPU is available, auto mode picks the device per op: small
+# kernels stay on the CPU (a browser GPU dispatch has a fixed ~0.6 ms
+# floor), big ones go to the GPU. Both are measured here.
+fn bench(label, n) {
+  let a = Tensor.randn([n, n])
+  let b = Tensor.randn([n, n])
+  Tensor.eval(a); Tensor.eval(b)
+  mut warm = a.dot(b)
+  Tensor.eval(warm)                     # compile shaders / first dispatch
+  let t0 = Time.monotonic()
+  mut i = 0
+  while i < 5 {
+    mut c = a.dot(b)
+    Tensor.eval(c)
+    i += 1
+  }
+  print("{label} {n}x{n}: {(Time.monotonic() - t0) * 200.0} ms/iter\\n")
+}
+
+print("GPU available: {Tensor.gpu_available()}\\n\\n")
+for n in [64, 512] {
+  Tensor.use_cpu();  bench("cpu ", n)
+  Tensor.use_gpu();  bench("gpu ", n)
+  Tensor.use_auto(); bench("auto", n)
+  print("\\n")
+}
 `,
   "Error handling": `fn risky(n) {
   if n < 0 { throw {kind: "RangeError", message: "n must be >= 0, got {n}"} }
@@ -104,6 +132,12 @@ function spawnWorker() {
     const msg = e.data;
     if (msg.type === "ready") {
       runBtn.disabled = false;
+      // Which build the browser got — GPU means Tensor can reach WebGPU, and
+      // Tensor.use_auto() (set at startup) sends the big kernels there.
+      backendEl.textContent = msg.backend === "gpu" ? "Tensor: GPU" : "Tensor: CPU";
+      backendEl.title = msg.backend === "gpu"
+        ? "WebGPU backend available — auto mode runs large tensor ops on the GPU"
+        : "CPU-only build (this browser lacks WebGPU or JSPI)";
       if (!running) setStatus("ready");
       return;
     }

@@ -15,11 +15,22 @@
 
 static std::string g_output;
 
+// tensorlib starts in cpu mode; auto is what makes the WebGPU build worth
+// shipping — it keeps small tensors on the CPU (a browser dispatch has a
+// ~0.3-0.6 ms floor) and only pays for the GPU past the measured per-kernel
+// crossovers. Harmless in the CPU build: with no backend compiled in,
+// gpu_available() is false and auto always resolves to the CPU path.
+static const bool g_tensor_auto = [] {
+  culebra::tensor_use_auto();
+  return true;
+}();
+
 extern "C" {
 
 // Run one program; returns 0 on success, 1 on error. Combined stdout + error
 // text is retrievable via get_output().
 EMSCRIPTEN_KEEPALIVE int run_culebra(const char* src_c) {
+  (void)g_tensor_auto;
   std::ostringstream cap;
   std::streambuf* old = std::cout.rdbuf(cap.rdbuf());
   std::streambuf* old_err = std::cerr.rdbuf(cap.rdbuf());  // IO.eputs/eprint

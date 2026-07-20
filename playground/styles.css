@@ -25,6 +25,10 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .pg-toolbar .hint { color: var(--muted); font-size: 0.82rem; margin-left: 0.4rem; }
 .pg-toolbar .spacer { flex: 1; }
 .pg-toolbar .status { color: var(--muted); font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+.pg-toolbar .backend {
+  color: var(--muted); font-size: 0.78rem; margin-right: 0.9rem;
+  padding: 0.15rem 0.5rem; border: 1px solid var(--border); border-radius: 999px;
+}
 .pg-toolbar .status.err { color: var(--danger); }
 .pg-toolbar select {
   font: inherit; font-size: 0.88rem; padding: 0.4rem 0.5rem;
