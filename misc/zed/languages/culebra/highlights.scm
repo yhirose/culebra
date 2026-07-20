@@ -16,6 +16,7 @@
 (kw_statement) @keyword
 (kw_include) @keyword
 (kw_debugger) @keyword
+(kw_effect) @keyword
 (storage) @keyword
 
 (boolean) @boolean

@@ -43,6 +43,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "kw_effect"
+        },
+        {
+          "type": "SYMBOL",
           "name": "storage"
         },
         {
@@ -256,6 +260,27 @@
         }
       ]
     },
+    "kw_effect": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "effect"
+        },
+        {
+          "type": "STRING",
+          "value": "perform"
+        },
+        {
+          "type": "STRING",
+          "value": "handle"
+        },
+        {
+          "type": "STRING",
+          "value": "with"
+        }
+      ]
+    },
     "kw_include": {
       "type": "CHOICE",
       "members": [
@@ -291,6 +316,10 @@
         {
           "type": "STRING",
           "value": "static"
+        },
+        {
+          "type": "STRING",
+          "value": "get"
         }
       ]
     },
