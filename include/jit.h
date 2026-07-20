@@ -12183,13 +12183,12 @@ struct JIT {
     }
     for (size_t i = 0; i < fill_end; i++) {
       if (sources[i] == Source::None) {
-        // Middle gap with a default — emit TAG_UNFILLED sentinel.
-        llvm::Value* v = llvm::UndefValue::get(valueType_);
-        v = builder_.CreateInsertValue(
-            v, builder_.getInt8(TAG_UNFILLED), {0});
-        v = builder_.CreateInsertValue(
-            v, builder_.getInt64(0), {1});
-        userArgs.push_back(own(v));
+        // Middle gap with a default — emit TAG_UNFILLED sentinel. Built via
+        // make_value so the tag fills the whole i64 field: inserting the raw
+        // i8 left the upper 56 bits undef, the malformed shape that garbages
+        // a tag on the non-optimizing backend (see JitValue).
+        userArgs.push_back(
+            own(make_value(TAG_UNFILLED, builder_.getInt64(0))));
         argAsts.push_back(nullptr);
       } else if (sources[i] == Source::KwargsRest) {
         userArgs.push_back(own(emit_kwargs_rest_object(kwargs, argsAst)));
