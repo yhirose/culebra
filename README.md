@@ -129,9 +129,7 @@ for the JIT path, threading, and host-function registration.
 Design choices
 --------------
 
-The rationale lives in [`docs/internals.md`](docs/internals.md)
-(rejected alternatives in [`docs/_history.md`](docs/_history.md)). Headline
-decisions:
+The rationale lives in [`docs/internals.md`](docs/internals.md).
 
 - **Two backends, one AST.** Interpreter and JIT both maintained;
   no plan to consolidate.
@@ -189,8 +187,7 @@ Documentation
 * Implementation internals: [`docs/internals.md`](docs/internals.md)
   / [日本語](docs/internals.ja.md)
 
-Building from source and running the tests:
-[`CONTRIBUTING.md`](CONTRIBUTING.md).
+Building from source and running the tests: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 License
 -------

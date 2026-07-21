@@ -75,3 +75,4 @@ scratchpad/
 # Ignore internal development history
 docs/_history.md
 docs/_history.ja.md
+docs/_internals/*
