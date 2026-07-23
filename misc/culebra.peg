@@ -216,9 +216,17 @@
   # rejects a bare (non let/mut) binding. No ambiguity: ASSIGNMENT requires an
   # assign op, so a plain `while cond { }` fails the init match and falls
   # through — the `;` is what selects the init form.
-  WHILE                    <-  while _ (INIT_CLAUSE _ ';' _)? EXPRESSION _ BLOCK
+  # Optional trailing `nobreak { … }` clause (Python/Zig loop-else, no-break
+  # semantics): the block runs when the loop finishes normally (condition
+  # false / iterator exhausted), NOT when it exits via break / return / throw.
+  # NOBREAK_CLAUSE wraps its BLOCK and is kept by the AstOptimizer so its
+  # presence is a last-child tag test (see view_while / view_for). `nobreak` is
+  # contextual: it is recognized only in this trailing position, so it stays a
+  # valid identifier elsewhere (IDENTIFIER does not exclude keywords).
+  WHILE                    <-  while _ (INIT_CLAUSE _ ';' _)? EXPRESSION _ BLOCK (_ NOBREAK_CLAUSE)?
   INIT_CLAUSE              <-  INIT_BINDING (_ ',' _ INIT_BINDING)*
   INIT_BINDING             <-  DESTRUCTURE_ASSIGN / ASSIGNMENT
+  NOBREAK_CLAUSE           <-  nobreak _ BLOCK
   # The loop variable may be a destructuring pattern. Bare comma-separated
   # targets `for k, v in obj` are sugar for a parenthesized tuple pattern
   # `for (k, v) in obj`. FOR_BINDING keeps its own node name (not
@@ -228,7 +236,7 @@
   # there is only one target (so `for x in xs` binds a single name), and
   # keeps it as a FOR_BINDING node for two-or-more. The pattern matcher in
   # both backends treats FOR_BINDING identically to TUPLE_PATTERN.
-  FOR                      <-  for _ FOR_BINDING _ in _ EXPRESSION _ BLOCK   { no_ast_opt }
+  FOR                      <-  for _ FOR_BINDING _ in _ EXPRESSION _ BLOCK (_ NOBREAK_CLAUSE)?   { no_ast_opt }
   FOR_BINDING              <-  FOR_PAT (_ ',' _ FOR_PAT)*
   FOR_PAT                  <-  TUPLE_PATTERN / ARRAY_PATTERN / OBJECT_PATTERN / IDENTIFIER
   IF                       <-  if _ EXPRESSION _ BLOCK (_ else _ if _ EXPRESSION _ BLOCK)* (_ else _ BLOCK)?
@@ -462,6 +470,7 @@
   ~catch                   <-  K('catch')
   ~break                   <-  K('break')
   ~continue                <-  K('continue')
+  ~nobreak                 <-  K('nobreak')
   ~defer                   <-  K('defer')
   ~import                  <-  K('import')
   ~export                  <-  K('export')

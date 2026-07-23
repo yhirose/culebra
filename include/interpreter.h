@@ -6173,6 +6173,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     if (wv.init) {
       for (const auto& binding : wv.init->nodes) eval(*binding, loopEnv);
     }
+    bool completed = true;  // set false when the loop exits via break
     for (;;) {
       check_interrupt();
       auto cond = eval(*wv.cond, loopEnv);
@@ -6191,7 +6192,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         run_deferred(scopeEnv);
       } catch (const BreakSignal&) {
         run_deferred(scopeEnv);
-        return Value();
+        completed = false;
+        break;
       } catch (const ContinueSignal&) {
         run_deferred(scopeEnv);
         // fall through to next iteration
@@ -6200,7 +6202,28 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         throw;
       }
     }
+    // A `nobreak { … }` runs only on normal completion (condition false), not
+    // after break (nor return/throw, which unwind past here). It sees the init
+    // scope but opens its own child scope.
+    if (completed && wv.nobreak) run_loop_else(*wv.nobreak, loopEnv);
     return Value();
+  }
+
+  // Run a loop's `nobreak { … }` block on normal completion. `loopEnv` is the
+  // enclosing scope (the while init scope, or the for's outer env), so init /
+  // loop variables stay visible; the block gets its own child scope for its
+  // locals and defers. A break/continue inside propagates to an enclosing loop
+  // (this loop has already exited), matching the JIT's post-loop placement.
+  void run_loop_else(const peg::Ast& block,
+                     const std::shared_ptr<Environment>& loopEnv) {
+    auto nbEnv = make_scope(loopEnv);
+    try {
+      eval(block, nbEnv);
+      run_deferred(nbEnv);
+    } catch (...) {
+      run_deferred(nbEnv);
+      throw;
+    }
   }
 
   // for IDENT in EXPR BLOCK
@@ -6208,9 +6231,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // fresh scope per iteration. Honors break/continue and defer.
   Value eval_for(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
-    const auto& var = *ast.nodes[0];
-    const auto& iter_expr = *ast.nodes[1];
-    const auto& body = *ast.nodes[2];
+    auto fv = culebra::view_for(ast);
+    const auto& var = *fv.binding;
+    const auto& iter_expr = *fv.iter;
+    const auto& body = *fv.body;
     bool var_is_ident = var.tag == "IDENTIFIER"_;
 
     auto iterable = eval(iter_expr, env);
@@ -6241,6 +6265,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       _invoke_method_no_args(iter_val, "dispose");
     };
 
+    const peg::Ast* nb = fv.nobreak;
+    bool completed = true;  // set false when the loop exits via break
+
     // Drive via the Kotlin-style protocol: `has_next()` gates each
     // `next()`. `_iter_next_value` already encapsulates that pair.
     for (;;) {
@@ -6263,8 +6290,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         run_deferred(scopeEnv);
       } catch (const BreakSignal&) {
         run_deferred(scopeEnv);
+        completed = false;
         dispose_iter();
-        return Value();
+        break;
       } catch (const ContinueSignal&) {
         run_deferred(scopeEnv);
         // fall through (loop continues; dispose only at final exit)
@@ -6274,6 +6302,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         throw;
       }
     }
+    // `nobreak { … }` runs only when the iterator is exhausted normally, after
+    // dispose (so the block runs in a released-iterator world); a break skips
+    // it. The loop variable is per-iteration and already gone, so it is not
+    // visible here — the block runs in the for's enclosing scope.
+    if (completed && nb) run_loop_else(*nb, env);
     return Value();
   }
 

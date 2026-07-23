@@ -238,6 +238,32 @@ for w in winits {
 case("while_init|gen", 'fn g() { while mut i = 0; i < 4 { yield i * i; i = i + 1 } }; g().collect()')
 case("while_init|eff", 'effect fn tk(); effect fn c(n) { mut s = 0; while mut i = 0; i < n { perform tk(); s = s + i; i = i + 1 }; s }; handle { c(5) } with tk(r) { r(nil) }')
 
+# --- Dimension: nobreak clause (loop-else, no-break semantics) -------------
+# `nobreak { … }` runs only when the loop completes normally (condition false /
+# iterator exhausted), never after break / return. Exercise while + for, run to
+# completion vs break, the search idiom (return-in-body vs return-in-nobreak),
+# and init + nobreak together — interp and JIT must agree on every path.
+let nobreaks = [
+  '{ mut o = []; while mut i = 0; i < 3 { o.push(i); i = i + 1 } nobreak { o.push(99) }; o }',
+  '{ mut o = []; while mut i = 0; i < 10 { if i == 2 { break }; o.push(i); i = i + 1 } nobreak { o.push(99) }; o }',
+  '{ mut r = 0; while mut i = 0; i < 5 { i = i + 1 } nobreak { r = i }; r }',
+  '{ mut o = []; for x in [10, 20, 30] { o.push(x) } nobreak { o.push(0) }; o }',
+  '{ mut o = []; for x in [10, 20, 30] { if x == 20 { break }; o.push(x) } nobreak { o.push(0) }; o }',
+  '{ mut o = []; for x in 0..4 { o.push(x) } nobreak { o.push(-1) }; o }',
+  '{ mut t = 0; for c in "abc" { t = t + 1 } nobreak { t = t + 100 }; t }']
+for nb in nobreaks {
+  case("nobreak|" + nb, nb)
+}
+# Search idiom: return inside body (break-like, skips nobreak) vs return inside
+# nobreak (exhausted). Both the for and while forms, in a function.
+case("nobreak|find_hit", 'fn f(xs, t) { for x in xs { if x == t { return "hit" } } nobreak { return "miss" } }; f([1, 2, 3], 2)')
+case("nobreak|find_miss", 'fn f(xs, t) { for x in xs { if x == t { return "hit" } } nobreak { return "miss" } }; f([1, 2, 3], 9)')
+case("nobreak|while_ret", 'fn f() { while mut i = 0; i < 3 { i = i + 1 } nobreak { return "done" } }; f()')
+# Generator + effect fn with nobreak (source-transform paths).
+case("nobreak|gen_while", 'fn g() { while mut i = 0; i < 3 { yield i; i = i + 1 } nobreak { yield 100 } }; g().collect()')
+case("nobreak|gen_for", 'fn g() { for x in [1, 2, 3] { yield x } nobreak { yield 99 } }; g().collect()')
+case("nobreak|eff", 'effect fn tk(); effect fn c(n) { mut s = 0; while mut i = 0; i < n { perform tk(); s = s + i; i = i + 1 } nobreak { s = s + 1000 }; s }; handle { c(3) } with tk(r) { r(nil) }')
+
 # --- Dimension 11: match / patterns ---------------------------------------
 let me_pre = 'enum E { A(Long), B }; '
 let matches = [me_pre + 'match E.A(5) { A(x) => x, _ => -1 }',

@@ -3806,7 +3806,13 @@ struct JIT {
       if (scan_eh_defer(*wv.body, /*at_fn_top=*/false, info)) {
         scope_has_defer_.insert(wv.body);
       }
-      return false;  // the body absorbs its own defers
+      // The nobreak block is its own scope (like the body): absorb its defers
+      // so they fire at its exit, not at function exit.
+      if (wv.nobreak &&
+          scan_eh_defer(*wv.nobreak, /*at_fn_top=*/false, info)) {
+        scope_has_defer_.insert(wv.nobreak);
+      }
+      return false;  // the body / nobreak absorb their own defers
     }
     if (node.tag == "FOR"_) {
       // for-in over the iterator protocol (Object iter() path) emits an
@@ -3815,20 +3821,23 @@ struct JIT {
       // enclosing function to carry a personality, so flag it here even
       // though no try/defer is present.
       info.has_eh = true;
-      // nodes: [pattern, iterable, BLOCK]. The body is a per-iteration scope:
-      // a defer in it fires each iteration (docs: "defer in a loop body fires
-      // on every iteration"), not at function exit. Scan the body with
-      // at_fn_top=false and absorb its defers here (mark the body node) so
-      // they don't bubble up to has_fn_defer; pattern/iterable stay at the
-      // enclosing level. (`while` deliberately does NOT do this — its body is
-      // not a scope, so its defers are function-scoped, matching interp.)
-      for (size_t i = 0; i + 1 < node.nodes.size(); i++)
-        scan_eh_defer(*node.nodes[i], at_fn_top, info);
-      if (node.nodes.size() >= 3 &&
-          scan_eh_defer(*node.nodes.back(), /*at_fn_top=*/false, info)) {
-        scope_has_defer_.insert(&*node.nodes.back());
+      // nodes: [pattern, iterable, BLOCK, (NOBREAK_CLAUSE)?]. The body is a
+      // per-iteration scope: a defer in it fires each iteration (docs: "defer
+      // in a loop body fires on every iteration"), not at function exit. Scan
+      // the body / nobreak with at_fn_top=false and absorb their defers (mark
+      // the node) so they don't bubble up to has_fn_defer; pattern/iterable
+      // stay at the enclosing level.
+      auto fv = culebra::view_for(node);
+      scan_eh_defer(*fv.binding, at_fn_top, info);
+      scan_eh_defer(*fv.iter, at_fn_top, info);
+      if (scan_eh_defer(*fv.body, /*at_fn_top=*/false, info)) {
+        scope_has_defer_.insert(fv.body);
       }
-      return false;  // the body absorbs its own defers
+      if (fv.nobreak &&
+          scan_eh_defer(*fv.nobreak, /*at_fn_top=*/false, info)) {
+        scope_has_defer_.insert(fv.nobreak);
+      }
+      return false;  // the body / nobreak absorb their own defers
     }
     if (node.tag == "LEXICAL_SCOPE"_) {
       bool inner = false;
@@ -7369,6 +7378,12 @@ struct JIT {
     auto condBB = llvm::BasicBlock::Create(ctx_, "while.cond", fn);
     auto bodyBB = llvm::BasicBlock::Create(ctx_, "while.body", fn);
     auto endBB = llvm::BasicBlock::Create(ctx_, "while.end", fn);
+    // With a `nobreak { … }` clause the two exits diverge: a condition-false
+    // exit runs the nobreak block, a break skips it. endBB is the cond-false
+    // landing (runs nobreak); afterBB is where break jumps and where both
+    // rejoin. Without nobreak the two coincide (break == normal exit == endBB).
+    llvm::BasicBlock* afterBB =
+        wv.nobreak ? llvm::BasicBlock::Create(ctx_, "while.after", fn) : endBB;
 
     builder_.CreateBr(condBB);
 
@@ -7406,7 +7421,7 @@ struct JIT {
     }
     current_lpad_ = cleanupBB;
 
-    loop_stack_.push_back({condBB, endBB, mark, scopes_.size() - 1});
+    loop_stack_.push_back({condBB, afterBB, mark, scopes_.size() - 1});
     // compile_statements returns the body block's final-statement value as an
     // owned (+1) temporary; a loop discards it every iteration, so release it
     // (else a body ending in a heap expression leaks one object per pass).
@@ -7429,15 +7444,65 @@ struct JIT {
 
     builder_.SetInsertPoint(endBB);
 
-    // Drop the init scope on every exit that reaches endBB (normal cond-false
-    // fall-through and break both land here). A throw inside the loop instead
-    // unwinds via initCleanupBB, which finish_and_pop_scope fills to release
-    // the same init slots before re-raising — exactly-once on all paths.
+    // The nobreak block runs only on the condition-false exit (endBB), never on
+    // break (which jumps straight to afterBB). loop_stack_ is already popped, so
+    // a break/continue inside it targets an enclosing loop. It sees the init
+    // scope (still open) and gets its own child scope for its locals / defers.
+    if (wv.nobreak) {
+      compile_nobreak_block(*wv.nobreak, "while.nobreak");
+      if (!builder_.GetInsertBlock()->getTerminator()) {
+        builder_.CreateBr(afterBB);
+      }
+      builder_.SetInsertPoint(afterBB);
+    }
+
+    // Drop the init scope on every exit that reaches afterBB (normal cond-false
+    // fall-through — after nobreak — and break both land here). A throw inside
+    // the loop or the nobreak block instead unwinds via initCleanupBB, which
+    // finish_and_pop_scope fills to release the same init slots before
+    // re-raising — exactly-once on all paths.
     if (wv.init) {
       finish_and_pop_scope(initCleanupBB, /*defer_mark=*/nullptr, initSavedLpad,
                            "while.init.exc", initSavedLpad);
     }
     return own(make_nil());
+  }
+
+  // Compile a loop's `nobreak { … }` block in its own child scope, mirroring
+  // compile_lexical_scope: a cleanup landingpad drops the block's slots (and
+  // runs its defers) on the throw edge, the normal edge runs defers then
+  // releases. Shared by compile_while / compile_for. The enclosing scope
+  // (a while init scope, or nothing) stays open so its variables are visible.
+  void compile_nobreak_block(const peg::Ast& block, const char* tag) {
+    auto fn = builder_.GetInsertBlock()->getParent();
+    bool has_defer = scope_has_defer_.contains(&block);
+    llvm::BasicBlock* savedLpad = current_lpad_;
+    auto cleanupBB =
+        llvm::BasicBlock::Create(ctx_, std::string(tag) + ".cleanup", fn);
+    llvm::Value* mark = nullptr;
+    if (has_defer) {
+      mark = builder_.CreateCall(module_->getFunction(rt::defer_mark), {},
+                                 std::string(tag) + ".mark");
+    }
+    current_lpad_ = cleanupBB;
+    push_scope();
+    pre_allocate_forward_refs(block);
+    // Drop the block's result on the normal path; on a terminated path (the
+    // block ended in a `return` / `throw`, e.g. the search idiom's `nobreak {
+    // return … }`) consume it without emitting — a stray release after the
+    // terminator would append to a finished block. Mirrors compile_lexical_scope.
+    Owned val = compile(block);
+    if (!builder_.GetInsertBlock()->getTerminator()) {
+      val.drop();
+    } else {
+      val.consume();
+    }
+    if (has_defer && !builder_.GetInsertBlock()->getTerminator()) {
+      emit_call(module_->getFunction(rt::defer_run_to), {mark});
+    }
+    std::string excName = std::string(tag) + ".exc";
+    finish_and_pop_scope(cleanupBB, mark, savedLpad, excName.c_str(),
+                         savedLpad);
   }
 
   // Branch to `target`, then switch the insert point to a fresh dead
@@ -7488,14 +7553,64 @@ struct JIT {
     return own(make_nil());
   }
 
+  // With a `nobreak { … }` clause a for loop must tell a break from natural
+  // exhaustion. brokeFlag is an i1 alloca (false at loop entry); the break edge
+  // stores true just before the shared cleanup/end block, so the post-loop tail
+  // can branch on it. Returns the break target to hand the loop body: the
+  // flag-setting block when a nobreak clause is present, else `target` as-is.
+  llvm::BasicBlock* for_break_target(llvm::BasicBlock* target,
+                                     llvm::Value* brokeFlag, const char* tag) {
+    if (!brokeFlag) return target;
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto brkBB = llvm::BasicBlock::Create(ctx_, std::string(tag) + ".brk", fn);
+    auto saved = builder_.saveIP();
+    builder_.SetInsertPoint(brkBB);
+    builder_.CreateStore(builder_.getInt1(true), brokeFlag);
+    builder_.CreateBr(target);
+    builder_.restoreIP(saved);
+    return brkBB;
+  }
+
+  // Emit a for loop's nobreak tail at its endBB: run the nobreak block unless a
+  // break set brokeFlag, then leave the insert point at the join block for the
+  // caller's final scope cleanup. No-op when the loop has no nobreak clause.
+  void emit_for_nobreak_tail(const peg::Ast* nobreak, llvm::Value* brokeFlag) {
+    if (!nobreak) return;
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto runBB = llvm::BasicBlock::Create(ctx_, "for.nobreak.run", fn);
+    auto afterBB = llvm::BasicBlock::Create(ctx_, "for.after", fn);
+    auto broke =
+        builder_.CreateLoad(builder_.getInt1Ty(), brokeFlag, "for.broke");
+    builder_.CreateCondBr(broke, afterBB, runBB);  // broke → skip nobreak
+    builder_.SetInsertPoint(runBB);
+    compile_nobreak_block(*nobreak, "for.nobreak");
+    if (!builder_.GetInsertBlock()->getTerminator()) {
+      builder_.CreateBr(afterBB);
+    }
+    builder_.SetInsertPoint(afterBB);
+  }
+
   Owned compile_for(const peg::Ast& ast) {
     using namespace peg::udl;
-    auto& id = *ast.nodes[0];  // loop variable: IDENTIFIER or a pattern
-    auto& iter_expr = *ast.nodes[1];
-    auto& body = *ast.nodes[2];
+    auto fv = culebra::view_for(ast);
+    auto& id = *fv.binding;  // loop variable: IDENTIFIER or a pattern
+    auto& iter_expr = *fv.iter;
+    auto& body = *fv.body;
 
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
+
+    // Allocate the nobreak "broke?" flag once, before any loop path (the
+    // fast-path range and the generic dispatch both consume it). Stored false
+    // here so every break edge that flips it dominates the post-loop test.
+    llvm::Value* brokeFlag = nullptr;
+    if (fv.nobreak) {
+      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                               fn->getEntryBlock().begin());
+      brokeFlag =
+          entryB.CreateAlloca(builder_.getInt1Ty(), nullptr, "for.broke.flag");
+      builder_.CreateStore(builder_.getInt1(false), brokeFlag);
+    }
 
     // Fast path: `for <ident> in <a>..<b>` (or `..=`) — a bounded literal
     // range bound to a plain identifier compiles to a direct Long counter
@@ -7513,8 +7628,10 @@ struct JIT {
         auto startV = value_to_long(compile(*lay.start).consume());
         auto endV = value_to_long(compile(*lay.end).consume());
         auto endBB = llvm::BasicBlock::Create(ctx_, "for.r.end", fn);
-        compile_for_counted_range(startV, endV, lay.inclusive, id, body, endBB);
+        compile_for_counted_range(startV, endV, lay.inclusive, id, body, endBB,
+                                  brokeFlag);
         builder_.SetInsertPoint(endBB);
+        emit_for_nobreak_tail(fv.nobreak, brokeFlag);
         return own(make_nil());
       }
     }
@@ -7569,7 +7686,7 @@ struct JIT {
 
     builder_.SetInsertPoint(arrayBB);
     compile_for_array_loop(builder_.CreateIntToPtr(data, ptrTy),
-                           id, body, endBB);
+                           id, body, endBB, brokeFlag);
 
     // Set: materialize members into a fresh Array, then reuse the array
     // walker. The temporary Array's +1 lives in a scope slot beside the
@@ -7583,7 +7700,7 @@ struct JIT {
         {setSrcPtr}, "for.set.arr");
     define_var("for.set.arr",
                make_stack_slot("for.set.arr", make_array(setMembersArr)));
-    compile_for_array_loop(setMembersArr, id, body, endBB);
+    compile_for_array_loop(setMembersArr, id, body, endBB, brokeFlag);
 
     // Object branch splits on whether the receiver carries its own
     // `iter` property:
@@ -7611,7 +7728,8 @@ struct JIT {
     // the keys/proto values below.
     llvm::Value* rangeIterVal = make_value(
         TAG_OBJECT, builder_.CreatePtrToInt(rangeIt, builder_.getInt64Ty()));
-    compile_for_protocol_loop(rangeIterVal, id, body, endBB, /*owns_obj=*/true);
+    compile_for_protocol_loop(rangeIterVal, id, body, endBB, /*owns_obj=*/true,
+                              brokeFlag);
 
     builder_.SetInsertPoint(notRangeBB);
     auto iterKeyPtr = get_or_create_global_str("iter", ".iter.key");
@@ -7628,7 +7746,8 @@ struct JIT {
                              {objPtr});
     llvm::Value* keysIterVal = make_value(
         TAG_OBJECT, builder_.CreatePtrToInt(objIter, builder_.getInt64Ty()));
-    compile_for_protocol_loop(keysIterVal, id, body, endBB, /*owns_obj=*/true);
+    compile_for_protocol_loop(keysIterVal, id, body, endBB, /*owns_obj=*/true,
+                              brokeFlag);
 
     builder_.SetInsertPoint(protoBB);
     // User-defined `iter` (including generators): the protocol machinery
@@ -7640,16 +7759,23 @@ struct JIT {
     // iter() = this) that makes two refs on one object, released once by
     // the protocol cleanup and once by pop_scope.
     llvm::Value* objVal = make_value(TAG_OBJECT, data);
-    compile_for_protocol_loop(objVal, id, body, endBB);
+    compile_for_protocol_loop(objVal, id, body, endBB, /*owns_obj=*/false,
+                              brokeFlag);
 
     builder_.SetInsertPoint(stringBB);
     // For StringView, materialize via strlike_to_cstr (TAG_STRING input
     // returns the same ptr — no copy).
     auto strDataPtr = emit_call(
         module_->getFunction(rt::strlike_to_cstr), {tag, data});
-    compile_for_string_loop(strDataPtr, id, body, endBB);
+    compile_for_string_loop(strDataPtr, id, body, endBB, brokeFlag);
 
     builder_.SetInsertPoint(endBB);
+    // The nobreak block runs here (before the iterable scope is released) only
+    // when no break occurred; a break skips it via brokeFlag. It runs while
+    // current_lpad_ is still forCleanupBB, so a throw inside nobreak releases
+    // the iterable before unwinding — leak-free.
+    emit_for_nobreak_tail(fv.nobreak, brokeFlag);
+
     // Every normal/break path funnels here and releases the iterable exactly
     // once; the throw path mirrors it via forCleanupBB (return releases it
     // through release_all_scopes_for_exit).
@@ -7773,7 +7899,8 @@ struct JIT {
   void compile_for_counted_range(llvm::Value* startV, llvm::Value* endV,
                                  bool inclusive, const peg::Ast& var,
                                  const peg::Ast& body,
-                                 llvm::BasicBlock* endBB) {
+                                 llvm::BasicBlock* endBB,
+                                 llvm::Value* brokeFlag = nullptr) {
     auto i64Ty = builder_.getInt64Ty();
     auto fn = builder_.GetInsertBlock()->getParent();
 
@@ -7797,7 +7924,8 @@ struct JIT {
     builder_.SetInsertPoint(bodyBB);
     emit_safepoint();
     emit_for_body_iteration(var, make_value(builder_.getInt8(TAG_LONG), idx),
-                            body, incBB, endBB);
+                            body, incBB,
+                            for_break_target(endBB, brokeFlag, "for.r"));
 
     builder_.SetInsertPoint(incBB);
     auto next = builder_.CreateAdd(
@@ -7809,7 +7937,8 @@ struct JIT {
   void compile_for_array_loop(llvm::Value* arrPtr,
                               const peg::Ast& var,
                               const peg::Ast& body,
-                              llvm::BasicBlock* endBB) {
+                              llvm::BasicBlock* endBB,
+                              llvm::Value* brokeFlag = nullptr) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
 
@@ -7851,7 +7980,8 @@ struct JIT {
     auto d = builder_.CreateLoad(builder_.getInt64Ty(), outData);
     llvm::Value* elem = make_value(t, d);
 
-    emit_for_body_iteration(var, elem, body, incBB, endBB);
+    emit_for_body_iteration(var, elem, body, incBB,
+                            for_break_target(endBB, brokeFlag, "for.a"));
 
     builder_.SetInsertPoint(incBB);
     auto next = builder_.CreateAdd(
@@ -7986,7 +8116,8 @@ struct JIT {
                                  const peg::Ast& var,
                                  const peg::Ast& body,
                                  llvm::BasicBlock* endBB,
-                                 bool owns_obj = false) {
+                                 bool owns_obj = false,
+                                 llvm::Value* brokeFlag = nullptr) {
     auto fn = builder_.GetInsertBlock()->getParent();
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
 
@@ -8077,7 +8208,8 @@ struct JIT {
     iter_cleanup_stack_.push_back(
         {iterAlloca, objAlloca, nullptr, /*fill_pending=*/true});
     emit_for_body_with_owned_binding(var, loop_val, body, condBB,
-                                     cleanupBB);
+                                     for_break_target(cleanupBB, brokeFlag,
+                                                      "for.p"));
     iter_cleanup_stack_.pop_back();
     current_lpad_ = savedLpad;
 
@@ -8099,7 +8231,8 @@ struct JIT {
   void compile_for_string_loop(llvm::Value* strPtr,
                                const peg::Ast& var,
                                const peg::Ast& body,
-                               llvm::BasicBlock* endBB) {
+                               llvm::BasicBlock* endBB,
+                               llvm::Value* brokeFlag = nullptr) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
 
@@ -8142,7 +8275,7 @@ struct JIT {
                                      builder_.getInt64Ty()),
         {strPtr, off, scalarLen}, "for.sview");
     emit_for_body_iteration(var, make_stringview(scalarView), body, incBB,
-                            endBB);
+                            for_break_target(endBB, brokeFlag, "for.s"));
 
     builder_.SetInsertPoint(incBB);
     auto next = builder_.CreateAdd(

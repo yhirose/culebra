@@ -747,10 +747,13 @@ class EffectsLowerer {
           if (has_suspension(*b)) reject_control_expr(*b);
       if (has_suspension(*wv.cond)) reject_control_expr(*wv.cond);
       blocks.push_back(wv.body);
+      if (wv.nobreak) blocks.push_back(wv.nobreak);
     } else if (s->tag == "FOR"_) {
       if (s->nodes.size() < 3) reject_unsupported_expr(*s);
-      if (has_suspension(*s->nodes[1])) reject_control_expr(*s->nodes[1]);
-      blocks.push_back(s->nodes[2].get());
+      auto fv = culebra::view_for(*s);
+      if (has_suspension(*fv.iter)) reject_control_expr(*fv.iter);
+      blocks.push_back(fv.body);
+      if (fv.nobreak) blocks.push_back(fv.nobreak);
     } else {  // IF: [cond, block, cond, block, …, (else-block)]
       size_t n = s->nodes.size();
       size_t pairs = n / 2;
@@ -1058,6 +1061,13 @@ class EffectsLowerer {
     auto wv = culebra::view_while(*w);
     if (has_suspension(*wv.cond)) reject_control_expr(*wv.cond);
     int h = st.fresh();
+    // break exits to `cont` (skipping nobreak); a condition-false exit runs the
+    // nobreak block first, so normal_exit is the loop's fall-through state.
+    int normal_exit = cont;
+    if (wv.nobreak) {
+      normal_exit = cps_block_seq(st, *wv.nobreak, cont, /*tail=*/false, rw);
+      if (st.failed) return -1;
+    }
     st.loop_stack.push_back({h, cont});
     int body_entry = cps_block_seq(st, *wv.body, h, /*tail=*/false, rw);
     st.loop_stack.pop_back();
@@ -1065,7 +1075,7 @@ class EffectsLowerer {
     st.states[h] = std::format(
         "      if {} {{ this._eff_state = {} }} else {{ this._eff_state = {} }}{}\n"
         "      continue\n",
-        cps_rw(*wv.cond, rw), body_entry, cont, mk(*wv.cond));
+        cps_rw(*wv.cond, rw), body_entry, normal_exit, mk(*wv.cond));
     if (!wv.init) return h;
     // The init clause runs its (suspension-free) bindings once, then enters the
     // condition state. cps_seq emits the yield-free declarations verbatim
@@ -1352,14 +1362,21 @@ class EffectsLowerer {
       auto prov = mk(*f);
       std::string body_text(strip_block_braces(slice(blk_node)));
       reattach_marker(body_text, *f);
+      // Preserve a trailing `nobreak { … }` (a FOR child inside f->length that
+      // the whole-node replacement would otherwise drop): re-attach it to the
+      // desugared while verbatim.
+      std::string nobreak_suffix;
+      if (const peg::Ast* nc = culebra::nobreak_clause_of(*f)) {
+        nobreak_suffix = std::string(" ") + std::string(slice(*nc));
+      }
       auto replacement = std::format(
           "let {0} = ({1}).iter(){4}\n"
           "while {0}.has_next() {{{4}\n"
           "  let {2} = {0}.next(){4}\n"
           "  {3}\n"
-          "}}",
+          "}}{5}",
           iter_var, std::string(slice(expr_node)),
-          std::string(var_node.token), body_text, prov);
+          std::string(var_node.token), body_text, prov, nobreak_suffix);
       out.replace(f->position - base, f->length, replacement);
     }
     return out;

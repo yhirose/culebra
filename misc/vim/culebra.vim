@@ -47,7 +47,7 @@ syn keyword culFunction    fn
 syn keyword culClass       class trait enum
 syn keyword culConditional if else match cond
 syn keyword culRepeat      while for in
-syn keyword culStatement   return break continue throw try catch defer yield
+syn keyword culStatement   return break continue nobreak throw try catch defer yield
 syn keyword culEffect      effect perform handle with
 syn keyword culInclude     import export from
 syn keyword culDebugger    debugger

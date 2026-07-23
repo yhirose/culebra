@@ -335,17 +335,38 @@ inline AssignmentView view_assignment(const peg::Ast& a) {
   };
 }
 
+// A loop's optional trailing NOBREAK_CLAUSE node, or nullptr when absent.
+// NOBREAK_CLAUSE is kept by the AstOptimizer, so a loop's last child is a
+// NOBREAK_CLAUSE tag exactly when a `nobreak { … }` is present. Callers that
+// need the clause node itself (e.g. to slice its source text) use this; those
+// that want the inner block use nobreak_block_of below.
+inline const peg::Ast* nobreak_clause_of(const peg::Ast& loop) {
+  using namespace peg::udl;
+  if (loop.nodes.empty()) return nullptr;
+  const auto& last = *loop.nodes.back();
+  return last.tag == "NOBREAK_CLAUSE"_ ? &last : nullptr;
+}
+
+// The BLOCK inside a loop's nobreak clause, or nullptr when the loop has none.
+// Shared by view_while / view_for.
+inline const peg::Ast* nobreak_block_of(const peg::Ast& loop) {
+  const peg::Ast* clause = nobreak_clause_of(loop);
+  return clause ? clause->nodes[0].get() : nullptr;
+}
+
 // View of a WHILE AST node — see grammar:
-//   WHILE <- while _ (INIT_CLAUSE _ ';' _)? EXPRESSION _ BLOCK
-// The init clause is optional, so the condition/body indices float. INIT_CLAUSE
-// is kept by the AstOptimizer (parser.h keep-list), so its presence is a simple
-// first-child tag test. All WHILE consumers (interp eval_while, JIT
-// compile_while / scan_eh_defer, formatter, lint, transforms) read through this
-// view so the grammar's optional-init shape lives in exactly one place.
+//   WHILE <- while _ (INIT_CLAUSE _ ';' _)? EXPRESSION _ BLOCK (_ NOBREAK_CLAUSE)?
+// Both the init clause and the nobreak clause are optional, so the
+// condition/body indices float. INIT_CLAUSE / NOBREAK_CLAUSE are kept by the
+// AstOptimizer (parser.h keep-list), so their presence is a first-/last-child
+// tag test. All WHILE consumers (interp eval_while, JIT compile_while /
+// scan_eh_defer, formatter, lint, transforms) read through this view so the
+// grammar's optional-clause shape lives in exactly one place.
 struct WhileView {
-  const peg::Ast* init;   // INIT_CLAUSE node, or nullptr when absent
-  const peg::Ast* cond;   // condition EXPRESSION
-  const peg::Ast* body;   // body BLOCK
+  const peg::Ast* init;     // INIT_CLAUSE node, or nullptr when absent
+  const peg::Ast* cond;     // condition EXPRESSION
+  const peg::Ast* body;     // body BLOCK
+  const peg::Ast* nobreak;  // nobreak clause's BLOCK, or nullptr when absent
 };
 
 inline WhileView view_while(const peg::Ast& a) {
@@ -356,6 +377,28 @@ inline WhileView view_while(const peg::Ast& a) {
       has_init ? a.nodes[0].get() : nullptr,
       a.nodes[off].get(),
       a.nodes[off + 1].get(),
+      nobreak_block_of(a),
+  };
+}
+
+// View of a FOR AST node — see grammar:
+//   FOR <- for _ FOR_BINDING _ in _ EXPRESSION _ BLOCK (_ NOBREAK_CLAUSE)?
+// The binding/iterable/body indices are fixed; only the trailing nobreak
+// clause floats. Consumers that only need the first three children still index
+// directly; this view is for the ones that also handle nobreak.
+struct ForView {
+  const peg::Ast* binding;  // FOR_BINDING / pattern / IDENTIFIER
+  const peg::Ast* iter;     // iterable EXPRESSION
+  const peg::Ast* body;     // body BLOCK
+  const peg::Ast* nobreak;  // nobreak clause's BLOCK, or nullptr when absent
+};
+
+inline ForView view_for(const peg::Ast& a) {
+  return ForView{
+      a.nodes[0].get(),
+      a.nodes[1].get(),
+      a.nodes[2].get(),
+      nobreak_block_of(a),
   };
 }
 
@@ -1104,6 +1147,10 @@ inline const std::vector<std::string>& ast_optimizer_keep_rules() {
       // kept — it is a single-alternative wrapper that collapses to its
       // ASSIGNMENT / DESTRUCTURE_ASSIGN, which is what the walkers expect.
       "INIT_CLAUSE",
+      // NOBREAK_CLAUSE (`while/for … nobreak { … }`) wraps a single BLOCK; kept
+      // so the loop's last child is a NOBREAK_CLAUSE tag when present (else it
+      // would collapse onto the BLOCK and be indistinguishable from the body).
+      "NOBREAK_CLAUSE",
       "MATCH_ARMS", "GUARD", "COND", "COND_ARM",
       "ARRAY_PATTERN", "OBJECT_PATTERN",
       "CTOR_PATTERN",

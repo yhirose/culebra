@@ -308,13 +308,15 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       // the body is inside the loop.
       if (node.nodes.size() < 2) { walk_children(node); return; }
       auto wv = culebra::view_while(node);
+      // The init clause (`while mut i = 0; …`) binds loop-scoped variables in
+      // an enclosing scope wrapping the condition, body, and nobreak. Each
+      // binding must be a declaration (`let`/`mut`); a bare `x = 0` would
+      // reassign an outer variable or create an immutable binding — reject it
+      // pre-eval on every backend, mirroring the break/continue check above.
+      bool pushed = false;
       if (wv.init) {
-        // The init clause (`while mut i = 0; …`) binds loop-scoped variables
-        // in an enclosing scope wrapping the condition + body. Each binding
-        // must be a declaration (`let`/`mut`); a bare `x = 0` would reassign
-        // an outer variable or create an immutable binding — reject it
-        // pre-eval on every backend, mirroring the break/continue check above.
         scopes_.emplace_back();
+        pushed = true;
         for (const auto& binding : wv.init->nodes) {
           bool declared = binding->nodes.size() >= 2 &&
                           (binding->nodes[0]->token == "let" ||
@@ -328,27 +330,33 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
           }
           walk(*binding);   // registers the declared name in the init scope
         }
-        walk(*wv.cond);
-        {
-          LoopDepthGuard g(loop_depth_, loop_depth_ + 1);
-          scoped(*wv.body, [](Scope&) {});
-        }
-        scopes_.pop_back();
-        return;
       }
       walk(*wv.cond);
-      LoopDepthGuard g(loop_depth_, loop_depth_ + 1);
-      scoped(*wv.body, [](Scope&) {});
+      {
+        LoopDepthGuard g(loop_depth_, loop_depth_ + 1);
+        scoped(*wv.body, [](Scope&) {});
+      }
+      // The nobreak block runs after the loop, so a break/continue inside it
+      // belongs to an enclosing loop — walk it at the *outer* loop depth (no
+      // guard), in its own scope. It still sees the init scope, so keep it
+      // before the pop.
+      if (wv.nobreak) scoped(*wv.nobreak, [](Scope&) {});
+      if (pushed) scopes_.pop_back();
       return;
     }
     case "FOR"_: {
-      // [pattern, iterable, BLOCK]: iterable in the enclosing scope, loop
-      // var + body in a child scope that is inside the loop.
+      // [pattern, iterable, BLOCK, (NOBREAK_CLAUSE)?]: iterable in the
+      // enclosing scope, loop var + body in a child scope inside the loop. A
+      // nobreak block runs after the loop (enclosing loop depth, own scope);
+      // the loop variable is not visible there.
       if (node.nodes.size() < 3) { walk_children(node); return; }
-      walk(*node.nodes[1]);
-      LoopDepthGuard g(loop_depth_, loop_depth_ + 1);
-      scoped(*node.nodes[2],
-             [&](Scope& s) { collect_idents(*node.nodes[0], s.muts); });
+      auto fv = culebra::view_for(node);
+      walk(*fv.iter);
+      {
+        LoopDepthGuard g(loop_depth_, loop_depth_ + 1);
+        scoped(*fv.body, [&](Scope& s) { collect_idents(*fv.binding, s.muts); });
+      }
+      if (fv.nobreak) scoped(*fv.nobreak, [](Scope&) {});
       return;
     }
     case "TRY"_: {

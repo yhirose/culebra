@@ -1804,6 +1804,41 @@ for i, v in xs.enumerate() { ... }                  # (index, value) タプル
 伝播します。`break` / `continue` は値を運びません（ループの値は
 `nil` のまま）。
 
+### `nobreak`（loop-else）
+
+    while cond { body } nobreak { … }
+    for var in iterable { body } nobreak { … }
+
+`while` / `for` の後に置ける省略可能な `nobreak { … }` ブロックは、
+**ループが正常に終了したとき**（条件が false になった、または
+イテレータが尽きた）**のみ**実行され、**`break` で抜けたときは
+スキップ**されます（`return` や throw で抜けたときも通り抜けて実行
+されません）。これは Python / Zig の loop-`else` と同じ意味論です。
+`else` の誤読を避けるため、条件を直接表す `nobreak`（break しなかった
+ときに走る）という名前にしています。値は運びません（ループは `nil`
+のまま）。
+
+代表的な用途は検索で、フラグ変数なしの「見つからなかった」分岐に
+なります:
+
+```culebra
+# doctest: skip
+fn find(xs, target) {
+  for x in xs {
+    if x == target { return "found" }
+  } nobreak {
+    return "not found"     # ループが一度も break しなかったときだけ到達
+  }
+}
+```
+
+`while` の init 節は `nobreak` ブロック内でも見えます（カウンタが
+ループ後の後処理まで生存する）が、`for` のループ変数は見えません
+（反復ごとのスコープで既に消えている）。`nobreak` ブロック内の
+`break` / `continue` は、このループが既に終了しているため、**外側の
+ループ**に属します。`nobreak` は文脈依存キーワードで、この末尾位置
+でのみ認識されるので、他の場所では通常の識別子として使えます。
+
 ### `return`
 
 関数本体内でのみ有効。指定した値（または `nil`）で関数を抜けます。

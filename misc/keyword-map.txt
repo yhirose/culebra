@@ -8,7 +8,7 @@ culFunction:    fn
 culClass:       class trait enum
 culConditional: if else match cond
 culRepeat:      while for in
-culStatement:   return break continue throw try catch defer yield
+culStatement:   return break continue nobreak throw try catch defer yield
 culEffect:      effect perform handle with
 culInclude:     import export from
 culDebugger:    debugger

@@ -1135,9 +1135,18 @@ class Printer {
     return doc_concat(std::move(parts));
   }
 
+  // Render a loop's optional trailing ` nobreak { … }` clause, or nothing.
+  // `after` is the node whose end the nobreak block's `{` follows (the body).
+  DocP print_nobreak(const peg::Ast* nobreak, const peg::Ast& after) {
+    if (!nobreak) return doc_text("");
+    return doc_concat({doc_text(" nobreak "),
+                       print_block(*nobreak, node_end(after), false)});
+  }
+
   DocP print_while(const peg::Ast& node) {
-    // [(INIT_CLAUSE)?, condition, BLOCK]. The optional init clause renders as
-    // `binding, binding; ` before the condition (`while mut i = 0; i < n {…}`).
+    // [(INIT_CLAUSE)?, condition, BLOCK, (NOBREAK_CLAUSE)?]. The optional init
+    // clause renders as `binding, binding; ` before the condition
+    // (`while mut i = 0; i < n {…}`); a nobreak clause renders after the body.
     auto wv = culebra::view_while(node);
     DocP head = print(*wv.cond);
     if (wv.init) {
@@ -1151,14 +1160,18 @@ class Printer {
       head = doc_concat(std::move(parts));
     }
     return doc_concat({doc_text("while "), head, doc_text(" "),
-                       print_block(*wv.body, node_end(*wv.cond), false)});
+                       print_block(*wv.body, node_end(*wv.cond), false),
+                       print_nobreak(wv.nobreak, *wv.body)});
   }
 
   DocP print_for(const peg::Ast& node) {
-    // [binding, iter, BLOCK]. The binding is a single var or a pattern.
-    return doc_concat({doc_text("for "), print_pattern(*node.nodes[0]), doc_text(" in "),
-                       print(*node.nodes[1]), doc_text(" "),
-                       print_block(*node.nodes[2], node_end(*node.nodes[1]), false)});
+    // [binding, iter, BLOCK, (NOBREAK_CLAUSE)?]. The binding is a single var or
+    // a pattern; a nobreak clause renders after the body.
+    auto fv = culebra::view_for(node);
+    return doc_concat({doc_text("for "), print_pattern(*fv.binding),
+                       doc_text(" in "), print(*fv.iter), doc_text(" "),
+                       print_block(*fv.body, node_end(*fv.iter), false),
+                       print_nobreak(fv.nobreak, *fv.body)});
   }
 
   DocP print_defer(const peg::Ast& node) {

@@ -669,6 +669,7 @@ inline std::vector<const peg::Ast*> collect_outermost_yielding_fors(
 // callers must re-parse before walking the AST again.
 inline std::optional<std::string> rewrite_yielding_fors_to_while(
     const peg::Ast& body, const char* src, size_t src_len) {
+  using namespace peg::udl;
   auto fors = collect_outermost_yielding_fors(body);
   if (fors.empty()) return std::nullopt;
   std::string out(ast_source_slice(body, src, src_len));
@@ -695,14 +696,23 @@ inline std::optional<std::string> rewrite_yielding_fors_to_while(
     // re-attach it so the loop body keeps its provenance.
     if (body_text.find('\n') == std::string::npos)
       body_text += line_marker(orig);
+    // Preserve a trailing `nobreak { … }`: it spans inside f->length (a FOR
+    // child), so the whole-node replacement would otherwise drop it. Re-attach
+    // it verbatim to the desugared while, which carries the same semantics.
+    std::string nobreak_suffix;
+    if (const peg::Ast* nc = culebra::nobreak_clause_of(*f)) {
+      nobreak_suffix =
+          std::string(" ") + std::string(ast_source_slice(*nc, src, src_len));
+    }
     auto replacement = std::format(
         "let {0} = ({1}).iter(){4}\n"
         "while {0}.has_next() {{{4}\n"
         "  let {2} = {0}.next(){4}\n"
         "  {3}\n"
-        "}}",
+        "}}{5}",
         iter_var, std::string(expr_sv),
-        std::string(var_node.token), body_text, line_marker(orig));
+        std::string(var_node.token), body_text, line_marker(orig),
+        nobreak_suffix);
     out.replace(f->position - base, f->length, replacement);
   }
   return out;
@@ -864,10 +874,14 @@ inline bool has_escaping_loop_ctrl(const peg::Ast& node, int loop_depth = 0) {
   if ((node.tag == "BREAK"_ || node.tag == "CONTINUE"_) && loop_depth == 0) {
     return true;
   }
-  int inner = (node.tag == "WHILE"_ || node.tag == "FOR"_) ? loop_depth + 1
-                                                           : loop_depth;
+  bool is_loop = node.tag == "WHILE"_ || node.tag == "FOR"_;
   for (auto& c : node.nodes) {
-    if (has_escaping_loop_ctrl(*c, inner)) return true;
+    // A loop body is one level deeper (its break/continue are bound here); but
+    // a trailing `nobreak { … }` runs *outside* the loop, so its break/continue
+    // escape to an enclosing loop — walk it at the current depth.
+    int d = (is_loop && c->tag != "NOBREAK_CLAUSE"_) ? loop_depth + 1
+                                                     : loop_depth;
+    if (has_escaping_loop_ctrl(*c, d)) return true;
   }
   return false;
 }
@@ -993,6 +1007,14 @@ struct CpsBuilder {
     if (u->tag == "WHILE"_ && u->nodes.size() >= 2) {
       auto wv = culebra::view_while(*u);
       int h = fresh();
+      // break exits to `cont` (skipping nobreak); a condition-false exit runs
+      // the nobreak block first, so its entry state is where the loop falls
+      // through on normal completion. loop_stack's exit stays `cont`.
+      int normal_exit = cont;
+      if (wv.nobreak) {
+        normal_exit = compile_seq(body_stmts(*wv.nobreak), cont);
+        if (failed) return -1;
+      }
       loop_stack.push_back({h, cont});
       int body_entry = compile_seq(body_stmts(*wv.body), h);
       loop_stack.pop_back();
@@ -1000,7 +1022,7 @@ struct CpsBuilder {
       states[h] = std::format(
           "      if {} {{ this._g_state = {} }} else {{ this._g_state = {} }}{}\n"
           "      continue\n",
-          rw(*wv.cond), body_entry, cont, mk(*wv.cond));
+          rw(*wv.cond), body_entry, normal_exit, mk(*wv.cond));
       if (!wv.init) return h;
       // The init clause runs its bindings once, then enters the condition
       // state. They are yield-free declarations, so compile_seq emits them

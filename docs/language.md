@@ -1922,6 +1922,41 @@ Valid only inside `for` or `while`. Using them outside a loop
 propagates up as a runtime error. `break` / `continue` do not carry a
 value (the loop's value remains `nil`).
 
+### `nobreak` (loop-else)
+
+    while cond { body } nobreak { … }
+    for var in iterable { body } nobreak { … }
+
+An optional `nobreak { … }` block after a `while` or `for` runs **only
+when the loop finishes normally** — the condition became false, or the
+iterator was exhausted — and is **skipped when the loop exits via
+`break`** (and also by `return` or a throw, which unwind past it). These
+are the same semantics as Python's / Zig's loop-`else`; `nobreak` names
+the condition directly (it runs when no `break` happened) to avoid the
+`else` misreading. It carries no value (the loop stays `nil`).
+
+The canonical use is search — the block is the "not found" branch, with
+no flag variable:
+
+```culebra
+# doctest: skip
+fn find(xs, target) {
+  for x in xs {
+    if x == target { return "found" }
+  } nobreak {
+    return "not found"     # only reached if the loop never broke
+  }
+}
+```
+
+A `while` init clause is in scope in its `nobreak` block (the counter
+survives to the post-loop step); a `for` loop variable is not (it is
+per-iteration and already gone). A `break` / `continue` inside a
+`nobreak` block belongs to an *enclosing* loop, since the block runs
+after this loop has finished. `nobreak` is a contextual keyword —
+recognized only in this trailing position, so it stays usable as an
+ordinary identifier elsewhere.
+
 ### `return`
 
 Valid only inside a function body. Exits the enclosing function with
