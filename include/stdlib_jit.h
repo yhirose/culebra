@@ -18,6 +18,7 @@
 #include <vfs.h>
 #include <jit.h>
 #include <proc.h>
+#include <canvas.h>
 #include <term.h>
 #if defined(CULEBRA_HTTP_ENABLED)
 #include <http.h>
@@ -657,6 +658,82 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_term_color_level() {
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_term_read_key(
     double timeout) {
   return _culebra_heap_str(culebra::_term_detail::read_key(timeout));
+}
+
+// --- _Canvas primitives ---
+// Immediate-mode 2D framebuffer thin wrappers (logic in canvas.h, shared with
+// interp). All positional. sprite_load reads its pixels straight off the
+// JitArray runtime struct (packed-RGBA Longs), mirroring tensor_from.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_init(int64_t w,
+                                                                   int64_t h) {
+  culebra::_canvas_detail::init(static_cast<int>(w), static_cast<int>(h));
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_clear(
+    int64_t rgba) {
+  culebra::_canvas_detail::clear(static_cast<uint32_t>(rgba));
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_set_pixel(
+    int64_t x, int64_t y, int64_t rgba) {
+  culebra::_canvas_detail::set_pixel(static_cast<int>(x), static_cast<int>(y),
+                                     static_cast<uint32_t>(rgba));
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_get_pixel(
+    int64_t x, int64_t y) {
+  return static_cast<int64_t>(
+      culebra::_canvas_detail::get_pixel(static_cast<int>(x),
+                                         static_cast<int>(y)));
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_rect(
+    int64_t x, int64_t y, int64_t w, int64_t h, int64_t rgba) {
+  culebra::_canvas_detail::rect(static_cast<int>(x), static_cast<int>(y),
+                                static_cast<int>(w), static_cast<int>(h),
+                                static_cast<uint32_t>(rgba));
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_sprite_load(
+    JitArray* pixels, int64_t w, int64_t h) {
+  std::vector<uint32_t> px;
+  if (pixels) {
+    px.reserve(pixels->size);
+    for (size_t i = 0; i < pixels->size; i++)
+      px.push_back(static_cast<uint32_t>(pixels->items[i].data));
+  }
+  return culebra::_canvas_detail::sprite_load(
+      px.data(), static_cast<int64_t>(px.size()), static_cast<int>(w),
+      static_cast<int>(h));
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_blit(
+    int64_t id, int64_t dx, int64_t dy, int64_t sx, int64_t sy, int64_t sw,
+    int64_t sh, int64_t flags) {
+  culebra::_canvas_detail::blit(id, static_cast<int>(dx), static_cast<int>(dy),
+                                static_cast<int>(sx), static_cast<int>(sy),
+                                static_cast<int>(sw), static_cast<int>(sh),
+                                flags);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_present() {
+  culebra::_canvas_detail::present();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_buttons() {
+  return culebra::_canvas_detail::buttons();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_mouse_x() {
+  return culebra::_canvas_detail::mouse_x();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_mouse_y() {
+  return culebra::_canvas_detail::mouse_y();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t
+culebra_runtime_canvas_mouse_buttons() {
+  return culebra::_canvas_detail::mouse_buttons();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_tone(
+    int64_t freq, int64_t dur, int64_t vol, int64_t wave) {
+  culebra::_canvas_detail::tone(freq, dur, vol, wave);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_width() {
+  return culebra::_canvas_detail::width();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_height() {
+  return culebra::_canvas_detail::height();
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_from_iso_nanos(
@@ -6580,7 +6657,8 @@ inline JitObject* _jit_namespace_get_or_build(const std::string& name) {
 // canonical interp params by _ns_meta), so there is nothing else to verify.
 inline void _check_ns_drift_once() {
   static const bool checked = []() {
-    static const std::set<std::string_view> kInternalNs = {"_Time", "_Term"};
+    static const std::set<std::string_view> kInternalNs = {"_Time", "_Term",
+                                                            "_Canvas"};
     const auto& env = _canonical_env();
     for (const auto& [key, sym] : env.dictionary) {
       if (sym.val.type != culebra::Value::Object) continue;
@@ -6861,6 +6939,24 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::term_color_level, i64);
   jit.module_->getOrInsertFunction(rt::term_read_key, ptrTy,
                                    jit.builder_.getDoubleTy());
+  // _Canvas (immediate-mode 2D framebuffer primitives).
+  auto vt = jit.builder_.getVoidTy();
+  jit.module_->getOrInsertFunction(rt::canvas_init, vt, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_clear, vt, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_set_pixel, vt, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_get_pixel, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_rect, vt, i64, i64, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_sprite_load, i64, ptrTy, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_blit, vt, i64, i64, i64, i64, i64,
+                                   i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_present, vt);
+  jit.module_->getOrInsertFunction(rt::canvas_buttons, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_mouse_x, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_mouse_y, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_mouse_buttons, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_tone, vt, i64, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_width, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_height, i64);
   }
 
   // Tensor: zeros/ones/randn use the variadic (args_ptr, n, line, col)
@@ -7795,6 +7891,88 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
     }
   }
 
+  if (ns == "_Canvas") {
+    auto& a = argsAst.nodes;
+    // Compile a fixed run of Long arguments, type-checking each against its
+    // stdlib param name so the message matches interp ("parameter 'x' expects
+    // Long"). Longs are primitive (no refcount), so no drop bookkeeping. nullopt
+    // on arity mismatch, so the method's `if` falls through like the others.
+    auto longs = [&](std::initializer_list<const char*> names)
+        -> std::optional<std::vector<llvm::Value*>> {
+      if (a.size() != names.size()) return std::nullopt;
+      std::vector<llvm::Value*> out;
+      size_t i = 0;
+      for (const char* nm : names) {
+        auto v = jit.compile(*a[i]);
+        std::string w = std::string("parameter '") + nm + "'";
+        emit_type_check(v.borrow(), "Long", w, a[i].get());
+        out.push_back(value_to_long(v.consume()));
+        i++;
+      }
+      return out;
+    };
+    auto call_void = [&](const char* rt_name,
+                         const std::vector<llvm::Value*>& args) {
+      emit_call(module_->getFunction(rt_name), args);
+      return jit.own(make_nil());
+    };
+    if (method == "init")
+      if (auto v = longs({"w", "h"})) return call_void(rt::canvas_init, *v);
+    if (method == "clear")
+      if (auto v = longs({"rgba"})) return call_void(rt::canvas_clear, *v);
+    if (method == "set_pixel")
+      if (auto v = longs({"x", "y", "rgba"}))
+        return call_void(rt::canvas_set_pixel, *v);
+    if (method == "get_pixel")
+      if (auto v = longs({"x", "y"}))
+        return jit.own(make_long(
+            emit_call(module_->getFunction(rt::canvas_get_pixel), *v)));
+    if (method == "rect")
+      if (auto v = longs({"x", "y", "w", "h", "rgba"}))
+        return call_void(rt::canvas_rect, *v);
+    if (method == "sprite_load" && a.size() == 3) {
+      auto px = jit.compile(*a[0]);
+      emit_type_check(px.borrow(), "Array", "parameter 'pixels'", a[0].get());
+      auto pp = builder_.CreateIntToPtr(extract_data(px.borrow()), ptrTy);
+      auto w = jit.compile(*a[1]);
+      emit_type_check(w.borrow(), "Long", "parameter 'w'", a[1].get());
+      auto wl = value_to_long(w.consume());
+      auto h = jit.compile(*a[2]);
+      emit_type_check(h.borrow(), "Long", "parameter 'h'", a[2].get());
+      auto hl = value_to_long(h.consume());
+      auto id = emit_call(module_->getFunction(rt::canvas_sprite_load),
+                          {pp, wl, hl});
+      px.drop();
+      return jit.own(make_long(id));
+    }
+    if (method == "blit")
+      if (auto v = longs({"id", "dx", "dy", "sx", "sy", "sw", "sh", "flags"}))
+        return call_void(rt::canvas_blit, *v);
+    if (method == "present" && a.empty())
+      return call_void(rt::canvas_present, {});
+    if (method == "buttons" && a.empty())
+      return jit.own(make_long(
+          emit_call(module_->getFunction(rt::canvas_buttons), {})));
+    if (method == "mouse_x" && a.empty())
+      return jit.own(make_long(
+          emit_call(module_->getFunction(rt::canvas_mouse_x), {})));
+    if (method == "mouse_y" && a.empty())
+      return jit.own(make_long(
+          emit_call(module_->getFunction(rt::canvas_mouse_y), {})));
+    if (method == "mouse_buttons" && a.empty())
+      return jit.own(make_long(
+          emit_call(module_->getFunction(rt::canvas_mouse_buttons), {})));
+    if (method == "tone")
+      if (auto v = longs({"freq", "dur", "vol", "wave"}))
+        return call_void(rt::canvas_tone, *v);
+    if (method == "width" && a.empty())
+      return jit.own(make_long(
+          emit_call(module_->getFunction(rt::canvas_width), {})));
+    if (method == "height" && a.empty())
+      return jit.own(make_long(
+          emit_call(module_->getFunction(rt::canvas_height), {})));
+  }
+
   if (ns == "Random") {
     if (method == "seed" && argsAst.nodes.size() == 1) {
       auto n = value_to_long(compile(*argsAst.nodes[0]));
@@ -8316,7 +8494,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel",
       "Signal",  "Encoding", "Compress",  "SharedBuffer", "Shared",
       "Hash",    "CSV",       "TOML",      "Env",       "UUID",       "String",
-      "_Term",
+      "_Term",   "_Canvas",
 #if defined(CULEBRA_SQLITE_ENABLED)
       "SQLite",
 #endif
@@ -8325,7 +8503,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       // them and bare references compile to namespace_get — mirroring the
       // interp's builtin_names skip. See _jit_namespace_get_or_build.
       "Time",    "Args",      "Regex",     "Term",      "Log",      "Path",
-      "__Eff",
+      "Canvas",  "__Eff",
 #if defined(CULEBRA_HTTP_ENABLED)
       "Http",
 #endif

@@ -1,0 +1,68 @@
+// Canvas preamble: the culebra layer over the _Canvas primitives (colours,
+// Sprite, the bitmap font, input helpers). Framebuffer-observable behaviour is
+// asserted via Canvas.get so interp and JIT stay identical; the host-driven
+// parts (present/input/tone) are smoke-called.
+
+let RED = Canvas.rgba(255, 0, 0)
+let GREEN = Canvas.rgba(0, 255, 0)
+let BLUE = Canvas.rgba(0, 0, 255, 255)
+assert_eq(RED, 255 + 255 * 16777216)          // r=255, a=255
+assert_eq(Canvas.rgba(0, 0, 0, 0), 0)
+
+// Canvas.run initialises the framebuffer; a one-shot tick lets us draw and
+// inspect. frames=1 + tick returning false keeps it to a single pass.
+Canvas.run(8, 8, fn () {
+  Canvas.clear(GREEN)
+  assert_eq(Canvas.width(), 8)
+  assert_eq(Canvas.height(), 8)
+  assert_eq(Canvas.get_pixel(0, 0), GREEN)
+
+  Canvas.rect(2, 2, 3, 3, BLUE)
+  assert_eq(Canvas.get_pixel(2, 2), BLUE)
+  assert_eq(Canvas.get_pixel(1, 1), GREEN)
+
+  // Sprite from packed RGBA: 2x2, top row red, bottom-left blue, rest clear.
+  let clear = Canvas.rgba(0, 0, 0, 0)
+  let s = Canvas.Sprite.new([RED, RED, BLUE, clear], 2, 2)
+  Canvas.clear(GREEN)
+  s.draw(0, 0)
+  assert_eq(Canvas.get_pixel(0, 0), RED)
+  assert_eq(Canvas.get_pixel(0, 1), BLUE)
+  assert_eq(Canvas.get_pixel(1, 1), GREEN)          // transparent showed through
+
+  // Indexed sprite: indices into a palette resolve to the same pixels.
+  let si = Canvas.Sprite.new([1, 1, 2, 0], 2, 2, [clear, RED, BLUE])
+  Canvas.clear(GREEN)
+  si.draw(0, 0)
+  assert_eq(Canvas.get_pixel(0, 0), RED)
+  assert_eq(Canvas.get_pixel(0, 1), BLUE)
+
+  // Text: draws lit pixels of the glyph. "1" (5x7) has a lit pixel at its
+  // top-middle stem; a space draws nothing. Just assert some pixel landed and
+  // measure width.
+  Canvas.clear(0)
+  Canvas.text("1", 0, 0, RED)
+  assert_eq(Canvas.text_width("AB"), 12)      // 2 glyphs * 6px advance
+  mut lit = 0
+  for y in 0..7 { for x in 0..5 { if Canvas.get_pixel(x, y) == RED { lit = lit + 1 } } }
+  assert_eq(lit > 0, true)
+
+  false                                        // stop after one frame
+})
+
+// Input edge detector (headless: buttons read 0, so nothing is pressed).
+let inp = Canvas.Input.new()
+inp.update()
+assert_eq(inp.down(Canvas.A), false)
+assert_eq(inp.pressed(Canvas.A), false)
+
+// Button/wave constants are distinct bits/codes.
+assert_eq(Canvas.LEFT + Canvas.RIGHT + Canvas.UP + Canvas.DOWN, 15)
+assert_eq(Canvas.NOISE, 3)
+
+// Host-driven, smoke only.
+Canvas.tone(440, 8, 100, Canvas.PULSE)
+let m = Canvas.mouse()
+assert_eq(m.x, 0)
+
+print("canvas module ok\n")

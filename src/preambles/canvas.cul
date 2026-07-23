@@ -1,0 +1,194 @@
+
+let _canvas_module = fn () {
+  # Pack r,g,b,a (each 0..255) into one Long, byte order [r,g,b,a] — exactly
+  # what the browser's putImageData reads, so no repacking at present(). This
+  # is the colour every Canvas call takes.
+  let rgba = fn (r, g, b, a = 255) { r + g * 256 + b * 65536 + a * 16777216 }
+
+  # Pack the blit transform flags. flip_x/flip_y mirror; transpose swaps the X
+  # and Y axes — a reflection across the main diagonal (combine it with a flip
+  # for a true 90° rotation).
+  let _blit_flags = fn (flip_x, flip_y, transpose) {
+    (if flip_x { 1 } else { 0 }) + (if flip_y { 2 } else { 0 }) + (if transpose { 4 } else { 0 })
+  }
+
+  # A registered sprite. `pixels` is a flat row-major array; if `palette` is
+  # given they are indices into it (WASM-4-style indexed art), otherwise they
+  # are packed-RGBA Longs. Either way the pixels are normalised to RGBA and
+  # uploaded once (`_Canvas.sprite_load`); draw() re-references the handle so
+  # nothing is re-marshalled per frame.
+  class Sprite {
+    new(pixels, w, h, palette = nil) {
+      let rgba_px = if palette == nil { pixels } else { pixels.map(|i| palette[i]) }
+      this._id = _Canvas.sprite_load(rgba_px, w, h)
+      this._w = w
+      this._h = h
+    }
+    width() { this._w }
+    height() { this._h }
+    # Blit the whole sprite to (x, y). flip_x/flip_y mirror; transpose swaps
+    # X/Y. Transparent (alpha 0) pixels are skipped.
+    draw(x, y, flip_x = false, flip_y = false, transpose = false) {
+      _Canvas.blit(this._id, x, y, 0, 0, this._w, this._h, _blit_flags(flip_x, flip_y, transpose))
+    }
+    # Blit a sub-rectangle (sx, sy, sw, sh) of the sprite to (x, y) — for sheets.
+    draw_sub(x, y, sx, sy, sw, sh, flip_x = false, flip_y = false, transpose = false) {
+      _Canvas.blit(this._id, x, y, sx, sy, sw, sh, _blit_flags(flip_x, flip_y, transpose))
+    }
+  }
+
+  # --- built-in 5x7 bitmap font -------------------------------------------
+  # Each glyph is 7 rows of a 5-wide cell; '#' is a lit pixel. Rows are turned
+  # into arrays of booleans once, at module load, so text() just indexes them.
+  # Advance is 6px (5 + 1 gap). Uppercase, digits, and a little punctuation —
+  # enough for a game's HUD; text() upper-cases its input so lowercase works.
+  let _glyph = fn (rows) { rows.map(|row| row.graphemes().map(|c| to_string(c) != " ").collect()) }
+  let _font = {
+    " ": _glyph(["     ", "     ", "     ", "     ", "     ", "     ", "     "]),
+    "0": _glyph([" ### ", "#   #", "#  ##", "# # #", "##  #", "#   #", " ### "]),
+    "1": _glyph(["  #  ", " ##  ", "  #  ", "  #  ", "  #  ", "  #  ", " ### "]),
+    "2": _glyph([" ### ", "#   #", "    #", "   # ", "  #  ", " #   ", "#####"]),
+    "3": _glyph(["#####", "   # ", "  #  ", "   # ", "    #", "#   #", " ### "]),
+    "4": _glyph(["   # ", "  ## ", " # # ", "#  # ", "#####", "   # ", "   # "]),
+    "5": _glyph(["#####", "#    ", "#### ", "    #", "    #", "#   #", " ### "]),
+    "6": _glyph(["  ## ", " #   ", "#    ", "#### ", "#   #", "#   #", " ### "]),
+    "7": _glyph(["#####", "    #", "   # ", "  #  ", " #   ", " #   ", " #   "]),
+    "8": _glyph([" ### ", "#   #", "#   #", " ### ", "#   #", "#   #", " ### "]),
+    "9": _glyph([" ### ", "#   #", "#   #", " ####", "    #", "   # ", " ##  "]),
+    "A": _glyph([" ### ", "#   #", "#   #", "#####", "#   #", "#   #", "#   #"]),
+    "B": _glyph(["#### ", "#   #", "#   #", "#### ", "#   #", "#   #", "#### "]),
+    "C": _glyph([" ### ", "#   #", "#    ", "#    ", "#    ", "#   #", " ### "]),
+    "D": _glyph(["###  ", "#  # ", "#   #", "#   #", "#   #", "#  # ", "###  "]),
+    "E": _glyph(["#####", "#    ", "#    ", "#### ", "#    ", "#    ", "#####"]),
+    "F": _glyph(["#####", "#    ", "#    ", "#### ", "#    ", "#    ", "#    "]),
+    "G": _glyph([" ### ", "#   #", "#    ", "# ###", "#   #", "#   #", " ### "]),
+    "H": _glyph(["#   #", "#   #", "#   #", "#####", "#   #", "#   #", "#   #"]),
+    "I": _glyph([" ### ", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ", " ### "]),
+    "J": _glyph(["  ###", "   # ", "   # ", "   # ", "#  # ", "#  # ", " ##  "]),
+    "K": _glyph(["#   #", "#  # ", "# #  ", "##   ", "# #  ", "#  # ", "#   #"]),
+    "L": _glyph(["#    ", "#    ", "#    ", "#    ", "#    ", "#    ", "#####"]),
+    "M": _glyph(["#   #", "## ##", "# # #", "#   #", "#   #", "#   #", "#   #"]),
+    "N": _glyph(["#   #", "##  #", "# # #", "#  ##", "#   #", "#   #", "#   #"]),
+    "O": _glyph([" ### ", "#   #", "#   #", "#   #", "#   #", "#   #", " ### "]),
+    "P": _glyph(["#### ", "#   #", "#   #", "#### ", "#    ", "#    ", "#    "]),
+    "Q": _glyph([" ### ", "#   #", "#   #", "#   #", "# # #", "#  # ", " ## #"]),
+    "R": _glyph(["#### ", "#   #", "#   #", "#### ", "# #  ", "#  # ", "#   #"]),
+    "S": _glyph([" ####", "#    ", "#    ", " ### ", "    #", "    #", "#### "]),
+    "T": _glyph(["#####", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ", "  #  "]),
+    "U": _glyph(["#   #", "#   #", "#   #", "#   #", "#   #", "#   #", " ### "]),
+    "V": _glyph(["#   #", "#   #", "#   #", "#   #", "#   #", " # # ", "  #  "]),
+    "W": _glyph(["#   #", "#   #", "#   #", "# # #", "# # #", "## ##", "#   #"]),
+    "X": _glyph(["#   #", "#   #", " # # ", "  #  ", " # # ", "#   #", "#   #"]),
+    "Y": _glyph(["#   #", "#   #", " # # ", "  #  ", "  #  ", "  #  ", "  #  "]),
+    "Z": _glyph(["#####", "    #", "   # ", "  #  ", " #   ", "#    ", "#####"]),
+    ".": _glyph(["     ", "     ", "     ", "     ", "     ", " ##  ", " ##  "]),
+    ",": _glyph(["     ", "     ", "     ", "     ", " ##  ", " ##  ", "#    "]),
+    ":": _glyph(["     ", " ##  ", " ##  ", "     ", " ##  ", " ##  ", "     "]),
+    "!": _glyph(["  #  ", "  #  ", "  #  ", "  #  ", "  #  ", "     ", "  #  "]),
+    "?": _glyph([" ### ", "#   #", "    #", "   # ", "  #  ", "     ", "  #  "]),
+    "-": _glyph(["     ", "     ", "     ", "#####", "     ", "     ", "     "]),
+    "+": _glyph(["     ", "  #  ", "  #  ", "#####", "  #  ", "  #  ", "     "]),
+    "/": _glyph(["    #", "    #", "   # ", "  #  ", " #   ", "#    ", "#    "]),
+  }
+  let _char_w = 6
+  let _char_h = 7
+
+  # Draw `s` at (x, y) in `color`, left to right (6px per glyph). Unknown
+  # characters are skipped (advance still applies), so layout stays stable.
+  let text = fn (s, x, y, color) {
+    mut cx = x
+    for ch in s.upper().graphemes() {
+      let g = _font.get(to_string(ch), nil)
+      if g != nil {
+        mut ry = 0
+        for row in g {
+          mut rx = 0
+          for lit in row {
+            if lit { _Canvas.set_pixel(cx + rx, y + ry, color) }
+            rx = rx + 1
+          }
+          ry = ry + 1
+        }
+      }
+      cx = cx + _char_w
+    }
+  }
+  # Pixel width a string will occupy — for right-aligning / centring HUD text.
+  let text_width = fn (s) { s.graphemes().collect().size() * _char_w }
+
+  # --- input --------------------------------------------------------------
+  # Button bitmask bits (also mapped by the Playground frontend). A/B are the
+  # two action buttons (space / another key); D-pad is arrows.
+  let LEFT = 1
+  let RIGHT = 2
+  let UP = 4
+  let DOWN = 8
+  let A = 16
+  let B = 32
+
+  # Held-button bitmask this frame, and the mouse as an Object.
+  let buttons = fn () { _Canvas.buttons() }
+  let mouse = fn () { { x: _Canvas.mouse_x(), y: _Canvas.mouse_y(), buttons: _Canvas.mouse_buttons() } }
+
+  # Edge detector: remembers last frame's bitmask so pressed(btn) is true only
+  # on the frame a button goes down (the natural "flap" trigger). Call update()
+  # once per frame, after reading input.
+  class Input {
+    new() { this._prev = 0; this._cur = 0 }
+    update() { this._prev = this._cur; this._cur = _Canvas.buttons(); this }
+    down(btn) { (this._cur & btn) != 0 }                       # held now
+    pressed(btn) { (this._cur & btn) != 0 && (this._prev & btn) == 0 }  # just went down
+  }
+
+  # --- audio --------------------------------------------------------------
+  let PULSE = 0
+  let TRIANGLE = 1
+  let SAWTOOTH = 2
+  let NOISE = 3
+  # Play a simple tone: frequency (Hz), duration (frames at ~60fps), volume
+  # (0..100), waveform. No-op on the headless native backend.
+  let tone = fn (freq, dur, vol = 100, wave = 0) { _Canvas.tone(freq, dur, vol, wave) }
+
+  # --- game loop ----------------------------------------------------------
+  # Set up a w×h framebuffer and drive `tick` once per frame, presenting after
+  # each. `tick()` returns false to stop (e.g. the player quit). present()
+  # suspends to the browser's animation frame in the interactive build, so the
+  # loop yields cooperatively. When input isn't interactive (the non-JSPI wasm
+  # build, or a piped/headless native run) it also stops after `frames`, so a
+  # CI/auto-demo run can't spin forever.
+  let run = fn (w, h, tick, frames = 600) {
+    _Canvas.init(w, h)
+    let interactive = IO.stdin_is_terminal()
+    mut i = 0
+    mut running = true
+    while running {
+      let cont = tick()
+      _Canvas.present()
+      i = i + 1
+      if cont == false { running = false }
+      if !interactive && i >= frames { running = false }
+    }
+  }
+
+  {
+    rgba: rgba,
+    clear: fn (color) { _Canvas.clear(color) },
+    set_pixel: fn (x, y, color) { _Canvas.set_pixel(x, y, color) },
+    get_pixel: fn (x, y) { _Canvas.get_pixel(x, y) },
+    rect: fn (x, y, w, h, color) { _Canvas.rect(x, y, w, h, color) },
+    present: fn () { _Canvas.present() },
+    width: fn () { _Canvas.width() },
+    height: fn () { _Canvas.height() },
+    Sprite: Sprite,
+    text: text,
+    text_width: text_width,
+    buttons: buttons,
+    mouse: mouse,
+    Input: Input,
+    tone: tone,
+    run: run,
+    LEFT: LEFT, RIGHT: RIGHT, UP: UP, DOWN: DOWN, A: A, B: B,
+    PULSE: PULSE, TRIANGLE: TRIANGLE, SAWTOOTH: SAWTOOTH, NOISE: NOISE,
+  }
+}
+let Canvas = _canvas_module()

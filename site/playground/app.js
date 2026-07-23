@@ -27,24 +27,38 @@ const TERM_ROWS = 24;
 const term = new Terminal({ cols: TERM_COLS, rows: TERM_ROWS, cursorBlink: true });
 term.open($("tui"));
 
+// --- Canvas pane -----------------------------------------------------------
+//
+// A Canvas program (canvas.h / src/preambles/canvas.cul) posts RGBA frames the
+// worker forwards as "frame" messages; here they become putImageData on a
+// <canvas>. The framebuffer's own w/h drive the backing store, and CSS scales
+// it up crisply. Input (keys/pointer) is captured on the pane and forwarded to
+// the worker, which the wasm side polls — see the input block near onData.
+const gameCanvas = $("game");
+const gctx = gameCanvas.getContext("2d");
+const canvasPane = $("canvas-pane");
+
 // --- tabs --------------------------------------------------------------
 
-const tabButtons = { output: $("tab-output"), tui: $("tab-tui") };
-const panes = { output, tui: $("tui") };
+const TABS = ["output", "tui", "canvas"];
+const tabButtons = { output: $("tab-output"), tui: $("tab-tui"), canvas: $("tab-canvas") };
+const panes = { output, tui: $("tui"), canvas: canvasPane };
 let activeTab = "output";
 
 function switchTab(name) {
   if (name === activeTab) return;
   activeTab = name;
-  for (const k of ["output", "tui"]) {
+  for (const k of TABS) {
     tabButtons[k].classList.toggle("active", k === name);
     tabButtons[k].setAttribute("aria-selected", k === name ? "true" : "false");
     panes[k].classList.toggle("active", k === name);
   }
   if (name === "tui") term.focus();
+  if (name === "canvas") canvasPane.focus();
 }
 tabButtons.output.addEventListener("click", () => switchTab("output"));
 tabButtons.tui.addEventListener("click", () => switchTab("tui"));
+tabButtons.canvas.addEventListener("click", () => switchTab("canvas"));
 
 // A TUI program's Term.app enters/exits the alternate screen with these two
 // escapes (src/preambles/term.cul) — reliable markers for "now drawing a
@@ -53,11 +67,15 @@ tabButtons.tui.addEventListener("click", () => switchTab("tui"));
 const ALT_SCREEN_ENTER = "\x1b[?1049h";
 const ALT_SCREEN_EXIT = "\x1b[?1049l";
 let inTui = false;
+let inCanvas = false;   // a "frame" message has switched to the Canvas pane
 
-// Leave TUI mode and show the Output pane. inTui (routeOutput's routing state)
-// and the visible tab must move together, so run/stop/onerror share this.
+// Leave TUI/Canvas mode and show the Output pane. The routing state (inTui /
+// inCanvas) and the visible tab must move together, so run/stop/onerror share
+// this.
 function resetToOutput() {
   inTui = false;
+  inCanvas = false;
+  heldButtons = 0;
   switchTab("output");
 }
 
@@ -569,6 +587,209 @@ Term.app(fn (s) {
   }
 }, mouse: INTERACTIVE)   # enable mouse reporting (interactive only) so clicks reach s.poll()
 `,
+  "Canvas: Rocci Bird": `// rocci-bird — a flappy-bird clone on the Canvas 2D library (a culebra port of
+// Roc's WASM-4 example). Tap SPACE (or the up arrow, or click) to flap and
+// thread the gaps. Switches to the Canvas tab automatically; best score
+// persists in the (MEMFS-backed) filesystem for the session.
+
+let W = 160
+let H = 160
+let GROUND_Y = 144
+let BIRD_X = 44
+let BIRD_SIZE = 8
+
+let PIPE_W = 24
+let GAP = 52
+let SPEED = 2
+let SPAWN_GAP = 96
+
+let GRAVITY = 0.28
+let FLAP = -3.6
+
+let SKY = Canvas.rgba(112, 197, 206)
+let PIPE = Canvas.rgba(92, 184, 64)
+let PIPE_DK = Canvas.rgba(64, 148, 44)
+let GROUND = Canvas.rgba(222, 184, 120)
+let GROUND_DK = Canvas.rgba(150, 116, 70)
+let INK = Canvas.rgba(34, 40, 54)
+let WHITE = Canvas.rgba(255, 255, 255)
+
+let BIRD_PAL = [
+  Canvas.rgba(0, 0, 0, 0),
+  Canvas.rgba(250, 208, 60),
+  Canvas.rgba(240, 140, 40),
+  Canvas.rgba(40, 40, 40),
+  Canvas.rgba(255, 255, 255),
+]
+let BIRD_PX = [
+  0, 0, 1, 1, 1, 1, 0, 0,
+  0, 1, 1, 1, 1, 1, 1, 0,
+  1, 1, 1, 3, 1, 1, 1, 2,
+  1, 1, 1, 1, 1, 1, 2, 2,
+  1, 4, 4, 4, 4, 1, 1, 2,
+  1, 4, 4, 4, 4, 1, 1, 0,
+  0, 1, 4, 4, 1, 1, 0, 0,
+  0, 0, 1, 1, 1, 0, 0, 0,
+]
+let bird = Canvas.Sprite.new(BIRD_PX, 8, 8, BIRD_PAL)
+
+let SAVE_DIR = "/rocci"
+let SAVE_FILE = "/rocci/best.json"
+let load_best = fn () {
+  if !FS.exists(SAVE_FILE) { return 0 }
+  try { JSON.parse(FS.read(SAVE_FILE)) } catch e { 0 }
+}
+let save_best = fn (n) {
+  try { FS.mkdir(SAVE_DIR); FS.write(SAVE_FILE, JSON.stringify(n)) } catch e { nil }
+}
+
+let TITLE = 0
+let PLAY = 1
+let OVER = 2
+
+mut state = TITLE
+mut bird_y = 72.0
+mut bird_v = 0.0
+mut pipes = []
+mut score = 0
+mut best = load_best()
+
+let demo = !IO.stdin_is_terminal()
+
+let spawn_pipe = fn (x) {
+  let gap_top = Random.int(24, GROUND_Y - GAP - 24)
+  pipes.push([x, gap_top, 0])
+}
+
+let reset = fn () {
+  bird_y = 72.0
+  bird_v = 0.0
+  score = 0
+  pipes = []
+  spawn_pipe(W + 20)
+}
+
+let flap = fn () { bird_v = FLAP; Canvas.tone(520, 6, 60, Canvas.PULSE) }
+
+let overlap = fn (ax, ay, aw, ah, bx, by, bw, bh) {
+  ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by
+}
+
+let hit_something = fn (byi) {
+  if byi < 0 || byi + BIRD_SIZE > GROUND_Y { return true }
+  mut i = 0
+  while i < pipes.size() {
+    let p = pipes[i]
+    let px = p[0]
+    let gt = p[1]
+    let top_hit = overlap(BIRD_X, byi, BIRD_SIZE, BIRD_SIZE, px, 0, PIPE_W, gt)
+    let bot_hit = overlap(BIRD_X, byi, BIRD_SIZE, BIRD_SIZE, px, gt + GAP, PIPE_W, GROUND_Y - (gt + GAP))
+    if top_hit || bot_hit { return true }
+    i = i + 1
+  }
+  false
+}
+
+let draw_pipe = fn (px, gap_top) {
+  Canvas.rect(px, 0, PIPE_W, gap_top, PIPE)
+  Canvas.rect(px, gap_top - 6, PIPE_W, 6, PIPE_DK)
+  Canvas.rect(px, 0, 3, gap_top, PIPE_DK)
+  let by = gap_top + GAP
+  Canvas.rect(px, by, PIPE_W, GROUND_Y - by, PIPE)
+  Canvas.rect(px, by, PIPE_W, 6, PIPE_DK)
+  Canvas.rect(px, by, 3, GROUND_Y - by, PIPE_DK)
+}
+
+let draw_world = fn () {
+  Canvas.clear(SKY)
+  mut i = 0
+  while i < pipes.size() {
+    let p = pipes[i]
+    draw_pipe(p[0], p[1])
+    i = i + 1
+  }
+  Canvas.rect(0, GROUND_Y, W, H - GROUND_Y, GROUND)
+  Canvas.rect(0, GROUND_Y, W, 4, GROUND_DK)
+  bird.draw(BIRD_X, to_long(bird_y))
+}
+
+let center = fn (s, y, color) { Canvas.text(s, (W - Canvas.text_width(s)) / 2, y, color) }
+
+let inp = Canvas.Input.new()
+mut prev_pointer = 0
+
+let wants_flap = fn () {
+  let key = inp.pressed(Canvas.A) || inp.pressed(Canvas.UP)
+  let pointer = Canvas.mouse().buttons
+  let click = pointer != 0 && prev_pointer == 0
+  prev_pointer = pointer
+  if demo {
+    mut target = 72
+    mut i = 0
+    while i < pipes.size() {
+      let p = pipes[i]
+      if p[0] + PIPE_W > BIRD_X { target = p[1] + GAP / 2; i = pipes.size() }
+      else { i = i + 1 }
+    }
+    return bird_y > to_float(target) && bird_v > -1.0
+  }
+  key || click
+}
+
+reset()
+
+Canvas.run(W, H, fn () {
+  inp.update()
+
+  if state == TITLE {
+    draw_world()
+    center("ROCCI BIRD", 44, INK)
+    center("PRESS SPACE", 92, INK)
+    if wants_flap() { state = PLAY; flap() }
+  } else {
+    if state == PLAY {
+      if wants_flap() { flap() }
+      bird_v = bird_v + GRAVITY
+      bird_y = bird_y + bird_v
+
+      mut i = 0
+      while i < pipes.size() {
+        pipes[i][0] = pipes[i][0] - SPEED
+        if pipes[i][2] == 0 && pipes[i][0] + PIPE_W < BIRD_X {
+          pipes[i][2] = 1
+          score = score + 1
+          Canvas.tone(720, 5, 55, Canvas.TRIANGLE)
+        }
+        i = i + 1
+      }
+      if pipes.size() > 0 {
+        let last = pipes[pipes.size() - 1]
+        if last[0] < W - SPAWN_GAP { spawn_pipe(W + 20) }
+      }
+      if pipes.size() > 0 && pipes[0][0] + PIPE_W < 0 { pipes = pipes[1..pipes.size()] }
+
+      if hit_something(to_long(bird_y)) {
+        Canvas.tone(160, 14, 70, Canvas.SAWTOOTH)
+        state = OVER
+        if score > best { best = score; save_best(best) }
+      }
+    }
+
+    draw_world()
+    Canvas.text(to_string(score), 4, 4, INK)
+
+    if state == OVER {
+      Canvas.rect(20, 52, W - 40, 56, INK)
+      center("GAME OVER", 60, WHITE)
+      center("SCORE " + to_string(score), 76, WHITE)
+      center("BEST " + to_string(best), 88, WHITE)
+      if wants_flap() { state = PLAY; reset(); flap() }
+    }
+  }
+
+  true
+})
+`,
 };
 
 for (const name of Object.keys(EXAMPLES)) {
@@ -611,17 +832,27 @@ function spawnWorker() {
       routeOutput(msg.text);
       return;
     }
+    if (msg.type === "frame") {
+      drawFrame(msg);
+      return;
+    }
+    if (msg.type === "tone") {
+      playTone(msg.freq, msg.dur, msg.vol, msg.wave);
+      return;
+    }
     if (msg.type === "done") {
       running = false;
+      stopRafPump();
       stopBtn.disabled = true;
       runBtn.disabled = false;
-      if (!inTui && output.textContent === "") output.textContent = "(no output)";
+      if (!inTui && !inCanvas && output.textContent === "") output.textContent = "(no output)";
       output.classList.toggle("err", msg.rc !== 0);
       setStatus(msg.rc === 0 ? `done in ${Math.round(msg.ms)} ms` : "error", msg.rc !== 0);
     }
   };
   worker.onerror = (e) => {
     setStatus("worker error", true);
+    stopRafPump();
     resetToOutput();
     appendOutput(String(e.message || e));
     output.classList.add("err");
@@ -643,6 +874,7 @@ function run() {
   output.textContent = "";
   term.reset();
   resetToOutput();
+  startRafPump();   // drives Canvas present()'s frame wait; harmless otherwise
   setStatus("running…");
   worker.postMessage({ type: "run", src: editor.getValue() });
 }
@@ -651,6 +883,7 @@ function stop() {
   if (!running) return;
   worker.terminate();
   running = false;
+  stopRafPump();
   stopBtn.disabled = true;
   runBtn.disabled = true; // until the fresh worker reports ready
   resetToOutput();
@@ -689,6 +922,106 @@ document.addEventListener("keydown", (e) => {
 term.onData((data) => {
   if (worker) worker.postMessage({ type: "key", key: data });
 });
+
+// --- Canvas frame / input / audio -----------------------------------------
+
+// Paint a posted RGBA frame. The framebuffer's own dimensions drive the
+// backing store (so a script can pick any size); CSS scales it up crisply.
+// The first frame of a run auto-switches to the Canvas tab, mirroring how the
+// TUI tab reacts to the alt-screen marker.
+function drawFrame(msg) {
+  if (gameCanvas.width !== msg.w || gameCanvas.height !== msg.h) {
+    gameCanvas.width = msg.w;
+    gameCanvas.height = msg.h;
+  }
+  gctx.putImageData(new ImageData(new Uint8ClampedArray(msg.buf), msg.w, msg.h), 0, 0);
+  if (!inCanvas) {
+    inCanvas = true;
+    switchTab("canvas");
+  }
+}
+
+// A requestAnimationFrame heartbeat: each tick lets the worker's suspended
+// present() (self.__nextFrame) resolve, pacing the game to the display's
+// refresh. Started for every run (a plain script never waits on it) and
+// stopped when the run ends.
+let rafId = null;
+function startRafPump() {
+  if (rafId !== null) return;
+  const pump = () => {
+    if (worker) worker.postMessage({ type: "tick" });
+    rafId = requestAnimationFrame(pump);
+  };
+  rafId = requestAnimationFrame(pump);
+}
+function stopRafPump() {
+  if (rafId !== null) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+}
+
+// Simple WebAudio tone for Canvas.tone — one oscillator per call with a quick
+// decay envelope. A deliberately small subset of a real chiptune APU (no
+// per-channel state, noise approximated by a square wave); enough for game
+// blips. The context is created lazily on first use so the page needs no audio
+// permission until a program actually plays something.
+let audioCtx = null;
+const WAVES = ["square", "triangle", "sawtooth", "square"];  // 3 = noise ≈ square
+function playTone(freq, durFrames, vol, wave) {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const now = audioCtx.currentTime;
+    const dur = Math.max(1, durFrames) / 60;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = WAVES[wave] || "square";
+    osc.frequency.value = Math.max(1, freq);
+    const peak = Math.max(0, Math.min(1, vol / 100)) * 0.2;  // keep it gentle
+    gain.gain.setValueAtTime(peak, now);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(now);
+    osc.stop(now + dur);
+  } catch {
+    // Audio unavailable (autoplay policy, no device) — a game stays playable.
+  }
+}
+
+// Keyboard → button bitmask (bits match src/preambles/canvas.cul: LEFT=1,
+// RIGHT=2, UP=4, DOWN=8, A=16, B=32). Captured on the focused Canvas pane so
+// arrows/space don't also scroll the page. The worker keeps the held mask in
+// self.__canvasButtons for the wasm side to poll.
+const KEY_BITS = {
+  ArrowLeft: 1, ArrowRight: 2, ArrowUp: 4, ArrowDown: 8,
+  " ": 16, z: 16, Z: 16, x: 32, X: 32,
+};
+let heldButtons = 0;
+canvasPane.addEventListener("keydown", (e) => {
+  const bit = KEY_BITS[e.key];
+  if (bit === undefined) return;
+  e.preventDefault();
+  heldButtons |= bit;
+  if (worker) worker.postMessage({ type: "input", buttons: heldButtons });
+});
+canvasPane.addEventListener("keyup", (e) => {
+  const bit = KEY_BITS[e.key];
+  if (bit === undefined) return;
+  e.preventDefault();
+  heldButtons &= ~bit;
+  if (worker) worker.postMessage({ type: "input", buttons: heldButtons });
+});
+
+// Pointer → framebuffer coordinates (accounting for the CSS scale-up).
+function sendMouse(e) {
+  const r = gameCanvas.getBoundingClientRect();
+  const x = Math.floor(((e.clientX - r.left) / r.width) * gameCanvas.width);
+  const y = Math.floor(((e.clientY - r.top) / r.height) * gameCanvas.height);
+  if (worker) worker.postMessage({ type: "canvasMouse", x, y, buttons: e.buttons });
+}
+for (const ev of ["pointermove", "pointerdown", "pointerup"]) {
+  gameCanvas.addEventListener(ev, sendMouse);
+}
 
 // --- boot -----------------------------------------------------------------
 

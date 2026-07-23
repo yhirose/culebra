@@ -83,6 +83,19 @@ body { display: flex; flex-direction: column; overflow: hidden; }
    this container's box — the padding just keeps the game off the edges. */
 .pg-tui { padding: 0.6rem; background: #000; }
 
+/* Canvas pane: centre the framebuffer and scale it up with crisp (nearest-
+   neighbour) pixels, so a 160x160 game fills the pane without blurring. */
+.pg-canvas {
+  display: flex; align-items: center; justify-content: center;
+  background: #000; outline: none;
+}
+.pg-canvas canvas {
+  image-rendering: pixelated;
+  width: min(100%, 100vh);
+  height: auto;
+  max-height: 100%;
+}
+
 @media (max-width: 720px) {
   .pg-main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
   .pg-editor { border-right: 0; border-bottom: 1px solid var(--border); }

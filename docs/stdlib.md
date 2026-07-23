@@ -65,8 +65,9 @@ Conventions used below:
 23. [`Log`](#23-log) — leveled, structured logging to stderr (text / JSON, child loggers)
 24. [`TOML`](#24-toml) — parse / stringify TOML configuration
 25. [`SQLite`](#25-sqlite) — embedded SQL database (query / execute / prepared statements / transactions)
-26. [Design notes](#26-design-notes)
-27. [Not included (yet)](#27-not-included-yet)
+26. [`Canvas`](#26-canvas) — immediate-mode 2D framebuffer for games (pixels, sprites, font, input, tone)
+27. [Design notes](#27-design-notes)
+28. [Not included (yet)](#28-not-included-yet)
 
 **Where to find what**
 
@@ -3825,7 +3826,111 @@ boundary. Transactions do not nest (use `SAVEPOINT` directly if you need that).
 
 ---
 
-## 26. Design notes
+## 26. `Canvas`
+
+An immediate-mode 2D framebuffer for little games and pixel graphics: draw a
+frame, `present` it, poll input, repeat. Colours are packed RGBA `Long`s and
+the buffer can be any size (a WASM-4-style 160×160 is typical). In the WASM
+Playground a Canvas program runs in the **Canvas tab** — frames are shown on a
+`<canvas>`, keyboard/pointer feed the input, and `tone` plays through WebAudio.
+Natively the backend is currently **headless**: the pixel and sprite ops run
+identically (so behaviour is the same across interpreter / JIT / AOT and testable
+via `Canvas.get_pixel`), but nothing is displayed, input reads as "no button", and
+`tone` is silent. A windowed native backend is planned.
+
+### Colour
+
+`Canvas.rgba(r, g, b, a = 255) -> Long` packs four 0–255 channels into one
+`Long` (byte order `[r, g, b, a]`). Every drawing call takes such a colour; an
+alpha of 0 is transparent (skipped by sprite blits).
+
+### Drawing
+
+| Function | Effect |
+| --- | --- |
+| `Canvas.clear(color)` | fill the whole framebuffer |
+| `Canvas.set_pixel(x, y, color)` | set one pixel (off-buffer writes are ignored) |
+| `Canvas.get_pixel(x, y) -> Long` | read a pixel (0 off-buffer) — for pixel-readback collision |
+| `Canvas.rect(x, y, w, h, color)` | filled rectangle, clipped |
+| `Canvas.width()` / `Canvas.height() -> Long` | framebuffer dimensions |
+| `Canvas.present()` | show the frame (see the loop below) |
+
+### Sprites
+
+`Canvas.Sprite.new(pixels, w, h, palette = nil)` uploads a sprite once and
+returns a handle to blit cheaply each frame. `pixels` is a flat, row-major
+array: packed-RGBA `Long`s, or — when `palette` is given — indices into that
+palette (compact indexed art). Blits skip transparent pixels, so sprites
+composite.
+
+| Method | Effect |
+| --- | --- |
+| `sprite.draw(x, y, flip_x = false, flip_y = false, transpose = false)` | blit the whole sprite to `(x, y)`; `transpose` swaps X/Y (a diagonal reflection — combine with a flip for a 90° rotation) |
+| `sprite.draw_sub(x, y, sx, sy, sw, sh, flip_x = false, flip_y = false, transpose = false)` | blit a sub-rectangle (for sprite sheets) |
+| `sprite.width()` / `sprite.height()` | sprite dimensions |
+
+### Text
+
+`Canvas.text(s, x, y, color)` draws `s` in a built-in 5×7 bitmap font
+(upper-cased first, so lowercase works; unknown glyphs are skipped). Advance is
+6px per character. `Canvas.text_width(s) -> Long` gives the pixel width, for
+centring or right-aligning a HUD.
+
+### Input
+
+Input is polled each frame (it reflects the current state, not an event queue).
+
+| Function | Result |
+| --- | --- |
+| `Canvas.buttons() -> Long` | bitmask of held buttons |
+| `Canvas.mouse() -> Object` | `{x, y, buttons}` in framebuffer pixels |
+
+Button bits are the constants `Canvas.LEFT`, `RIGHT`, `UP`, `DOWN` (arrow keys)
+and `Canvas.A`, `B` (action keys — `A` is Space/Z, `B` is X). For edge
+detection, `Canvas.Input.new()` tracks the previous frame:
+
+| Method | Result |
+| --- | --- |
+| `input.update()` | sample this frame's buttons (call once per frame) |
+| `input.down(btn) -> Bool` | button is held now |
+| `input.pressed(btn) -> Bool` | button went down **this** frame (the flap trigger) |
+
+### Audio
+
+`Canvas.tone(freq, dur, vol = 100, wave = 0)` plays a simple tone: frequency in
+Hz, duration in frames (~60fps), volume 0–100, and a waveform constant
+`Canvas.PULSE` / `TRIANGLE` / `SAWTOOTH` / `NOISE`. It is a small subset of a
+chiptune APU (one voice per call, a quick decay) — enough for game blips — and
+is silent on the headless native backend.
+
+### The game loop
+
+`Canvas.run(w, h, tick, frames = 600)` sets up a `w`×`h` framebuffer and calls
+`tick()` once per frame, presenting after each. `tick` returns `false` to stop
+(e.g. the player quit). In the interactive Playground build `present()` waits
+for the browser's next animation frame, so the loop paces itself and yields
+cooperatively; when input isn't interactive (a non-JSPI browser, or a piped /
+headless native run) it also stops after `frames`, so an automated run can't
+spin forever.
+
+```culebra
+# doctest: skip
+let red = Canvas.rgba(220, 60, 60)
+mut x = 0
+Canvas.run(160, 160, fn () {
+  Canvas.clear(Canvas.rgba(20, 24, 40))
+  Canvas.rect(x, 76, 8, 8, red)
+  x = (x + 2) % 160
+  true
+})
+```
+
+See `examples/games/rocci-bird.cul` for a complete game (a flappy-bird clone
+with sprites, the font, input, sound, and a saved best score).
+
+---
+
+## 27. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -3879,7 +3984,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 27. Not included (yet)
+## 28. Not included (yet)
 
 ### Heavier data structures
 

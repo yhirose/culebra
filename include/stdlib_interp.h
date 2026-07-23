@@ -32,6 +32,7 @@
 #if defined(CULEBRA_HTTP_ENABLED)
 #include <http.h>
 #endif
+#include <canvas.h>
 #include <regexlib.h>
 #include <term.h>
 
@@ -1702,6 +1703,178 @@ inline Value make_term_primitives_namespace() {
             return Value(_term_detail::read_key(t));
           },
           "String"sv)),
+      false);
+
+  return Value(std::move(ns));
+}
+
+// `_Canvas`: thin immediate-mode 2D framebuffer primitives (pixel buffer,
+// sprite blit, present, polled input, tone). The user-facing `Canvas` module
+// (colours, `Sprite`, the bitmap font, the `run` loop — `CANVAS_MODULE_SOURCE`
+// below) is culebra source layered on top. Underscore-prefixed: the wrapper's
+// ABI, not stable API. All positional-only so the JIT fast path stays simple.
+inline Value make_canvas_primitives_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+
+  // _Canvas.init(w, h) -> Nil (allocate/reset the framebuffer)
+  ns.initialize("init",
+      Value(FunctionValue({{"w", false, "Long"sv}, {"h", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            _canvas_detail::init(env->get("w").to_long(),
+                                 env->get("h").to_long());
+            return Value();
+          })),
+      false);
+
+  // _Canvas.clear(rgba) -> Nil (fill the whole framebuffer)
+  ns.initialize("clear",
+      Value(FunctionValue({{"rgba", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            _canvas_detail::clear(
+                static_cast<uint32_t>(env->get("rgba").to_long()));
+            return Value();
+          })),
+      false);
+
+  // _Canvas.set_pixel(x, y, rgba) -> Nil
+  ns.initialize("set_pixel",
+      Value(FunctionValue({{"x", false, "Long"sv}, {"y", false, "Long"sv},
+                           {"rgba", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            _canvas_detail::set_pixel(
+                env->get("x").to_long(), env->get("y").to_long(),
+                static_cast<uint32_t>(env->get("rgba").to_long()));
+            return Value();
+          })),
+      false);
+
+  // _Canvas.get_pixel(x, y) -> Long (packed RGBA; 0 off-buffer)
+  ns.initialize("get_pixel",
+      Value(FunctionValue({{"x", false, "Long"sv}, {"y", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            return Value(static_cast<long>(_canvas_detail::get_pixel(
+                env->get("x").to_long(), env->get("y").to_long())));
+          },
+          "Long"sv)),
+      false);
+
+  // _Canvas.rect(x, y, w, h, rgba) -> Nil (filled, clipped)
+  ns.initialize("rect",
+      Value(FunctionValue({{"x", false, "Long"sv}, {"y", false, "Long"sv},
+                           {"w", false, "Long"sv}, {"h", false, "Long"sv},
+                           {"rgba", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            _canvas_detail::rect(
+                env->get("x").to_long(), env->get("y").to_long(),
+                env->get("w").to_long(), env->get("h").to_long(),
+                static_cast<uint32_t>(env->get("rgba").to_long()));
+            return Value();
+          })),
+      false);
+
+  // _Canvas.sprite_load(pixels: Array, w, h) -> Long (handle). pixels is a
+  // flat row-major array of packed-RGBA Longs.
+  ns.initialize("sprite_load",
+      Value(FunctionValue({{"pixels", false, "Array"sv}, {"w", false, "Long"sv},
+                           {"h", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            const auto& arr = *env->get("pixels").to_array().values;
+            std::vector<uint32_t> px;
+            px.reserve(arr.size());
+            for (const auto& v : arr)
+              px.push_back(static_cast<uint32_t>(v.to_long()));
+            return Value(static_cast<long>(_canvas_detail::sprite_load(
+                px.data(), static_cast<int64_t>(px.size()),
+                env->get("w").to_long(), env->get("h").to_long())));
+          },
+          "Long"sv)),
+      false);
+
+  // _Canvas.blit(id, dx, dy, sx, sy, sw, sh, flags) -> Nil
+  ns.initialize("blit",
+      Value(FunctionValue({{"id", false, "Long"sv}, {"dx", false, "Long"sv},
+                           {"dy", false, "Long"sv}, {"sx", false, "Long"sv},
+                           {"sy", false, "Long"sv}, {"sw", false, "Long"sv},
+                           {"sh", false, "Long"sv}, {"flags", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            _canvas_detail::blit(
+                env->get("id").to_long(), env->get("dx").to_long(),
+                env->get("dy").to_long(), env->get("sx").to_long(),
+                env->get("sy").to_long(), env->get("sw").to_long(),
+                env->get("sh").to_long(), env->get("flags").to_long());
+            return Value();
+          })),
+      false);
+
+  // _Canvas.present() -> Nil (show the frame; suspends to the next animation
+  // frame in the JSPI browser build, no-op headless)
+  ns.initialize("present",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            _canvas_detail::present();
+            return Value();
+          })),
+      false);
+
+  // _Canvas.buttons() -> Long (held-button bitmask; 0 headless)
+  ns.initialize("buttons",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            return Value(static_cast<long>(_canvas_detail::buttons()));
+          },
+          "Long"sv)),
+      false);
+
+  // _Canvas.mouse_x() / mouse_y() / mouse_buttons() -> Long (0 headless)
+  ns.initialize("mouse_x",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            return Value(static_cast<long>(_canvas_detail::mouse_x()));
+          },
+          "Long"sv)),
+      false);
+  ns.initialize("mouse_y",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            return Value(static_cast<long>(_canvas_detail::mouse_y()));
+          },
+          "Long"sv)),
+      false);
+  ns.initialize("mouse_buttons",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            return Value(static_cast<long>(_canvas_detail::mouse_buttons()));
+          },
+          "Long"sv)),
+      false);
+
+  // _Canvas.tone(freq, dur, vol, wave) -> Nil (no-op headless)
+  ns.initialize("tone",
+      Value(FunctionValue({{"freq", false, "Long"sv}, {"dur", false, "Long"sv},
+                           {"vol", false, "Long"sv}, {"wave", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            _canvas_detail::tone(
+                env->get("freq").to_long(), env->get("dur").to_long(),
+                env->get("vol").to_long(), env->get("wave").to_long());
+            return Value();
+          })),
+      false);
+
+  // _Canvas.width() / height() -> Long (current framebuffer dimensions)
+  ns.initialize("width",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            return Value(static_cast<long>(_canvas_detail::width()));
+          },
+          "Long"sv)),
+      false);
+  ns.initialize("height",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            return Value(static_cast<long>(_canvas_detail::height()));
+          },
+          "Long"sv)),
       false);
 
   return Value(std::move(ns));
@@ -5898,6 +6071,7 @@ inline void setup_built_in_functions(
   }
   ns_init("_Time", make_time_primitives_namespace());
   ns_init("_Term", make_term_primitives_namespace());
+  ns_init("_Canvas", make_canvas_primitives_namespace());
   ns_init("Random", make_random_namespace());
   ns_init("Sys", make_sys_namespace(argv));
   ns_init("GC", make_gc_namespace());
@@ -6069,6 +6243,9 @@ inline std::string stdlib_preamble_for(std::string_view user_src) {
   if (has("Term"))
     preamble.append(_wrap_lazy_ns_module(TERM_MODULE_SOURCE, "Term",
                                          "_term_module"));
+  if (has("Canvas"))
+    preamble.append(_wrap_lazy_ns_module(CANVAS_MODULE_SOURCE, "Canvas",
+                                         "_canvas_module"));
   if (has("Args"))
     preamble.append(_wrap_lazy_ns_module(ARGS_MODULE_SOURCE, "Args",
                                          "_args_module"));
@@ -6158,6 +6335,7 @@ inline void splice_stdlib_preamble(std::vector<LoadedModule>& modules,
 inline void register_stdlib_lazy_modules(Environment& env) {
   env.initialize_lazy("Time", TIME_MODULE_SOURCE);
   env.initialize_lazy("Term", TERM_MODULE_SOURCE);
+  env.initialize_lazy("Canvas", CANVAS_MODULE_SOURCE);
   env.initialize_lazy("Args", ARGS_MODULE_SOURCE);
   env.initialize_lazy("Regex", REGEX_MODULE_SOURCE);
   env.initialize_lazy("replace", STRING_REPLACE_MODULE_SOURCE);

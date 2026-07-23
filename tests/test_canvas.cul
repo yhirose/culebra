@@ -1,0 +1,76 @@
+// _Canvas: the value-neutral framebuffer primitives (canvas.h). The Canvas
+// preamble (colours, Sprite, font, run loop) is exercised via its own surface;
+// here we pin the raw pixel ops so interp and JIT agree byte for byte. present
+// / input / tone are host-driven (headless returns nothing), so they are
+// smoke-called for symmetry, not asserted.
+
+// A packed RGBA colour: r | g<<8 | b<<16 | a<<24 — the byte order putImageData
+// consumes. Built with arithmetic so the test needs nothing from the preamble.
+fn rgba(r, g, b, a) { r + g * 256 + b * 65536 + a * 16777216 }
+let RED = rgba(255, 0, 0, 255)
+let GREEN = rgba(0, 255, 0, 255)
+let BLUE = rgba(0, 0, 255, 255)
+
+// --- framebuffer: init / clear / set_pixel / get_pixel / bounds ---
+_Canvas.init(4, 4)
+assert_eq(_Canvas.width(), 4)
+assert_eq(_Canvas.height(), 4)
+
+_Canvas.clear(RED)
+assert_eq(_Canvas.get_pixel(0, 0), RED)
+assert_eq(_Canvas.get_pixel(3, 3), RED)
+
+_Canvas.set_pixel(1, 1, GREEN)
+assert_eq(_Canvas.get_pixel(1, 1), GREEN)
+assert_eq(_Canvas.get_pixel(0, 0), RED)      // neighbours untouched
+
+// Off-buffer writes are dropped and reads return 0 (transparent).
+_Canvas.set_pixel(-1, 0, GREEN)
+_Canvas.set_pixel(9, 9, GREEN)
+assert_eq(_Canvas.get_pixel(9, 9), 0)
+assert_eq(_Canvas.get_pixel(-1, -1), 0)
+
+// --- rect: filled, clipped ---
+_Canvas.clear(RED)
+_Canvas.rect(1, 1, 2, 2, BLUE)
+assert_eq(_Canvas.get_pixel(1, 1), BLUE)
+assert_eq(_Canvas.get_pixel(2, 2), BLUE)
+assert_eq(_Canvas.get_pixel(0, 0), RED)      // outside the rect
+assert_eq(_Canvas.get_pixel(3, 3), RED)
+_Canvas.rect(3, 3, 5, 5, GREEN)              // spills past the edge, clipped
+assert_eq(_Canvas.get_pixel(3, 3), GREEN)
+
+// --- sprite: load + blit, with transparency and flips ---
+// A 2x2 sprite: top row RED, bottom-left BLUE, bottom-right transparent.
+let CLEAR = rgba(0, 0, 0, 0)
+let spr = _Canvas.sprite_load([RED, RED, BLUE, CLEAR], 2, 2)
+
+_Canvas.init(4, 4)
+_Canvas.clear(GREEN)
+_Canvas.blit(spr, 0, 0, 0, 0, 2, 2, 0)       // no flags
+assert_eq(_Canvas.get_pixel(0, 0), RED)
+assert_eq(_Canvas.get_pixel(1, 0), RED)
+assert_eq(_Canvas.get_pixel(0, 1), BLUE)
+assert_eq(_Canvas.get_pixel(1, 1), GREEN)    // transparent pixel showed through
+
+// flip Y: bottom row of the sprite lands on the top row of the destination.
+_Canvas.clear(GREEN)
+_Canvas.blit(spr, 0, 0, 0, 0, 2, 2, 2)       // flag 2 = flip Y
+assert_eq(_Canvas.get_pixel(0, 0), BLUE)
+assert_eq(_Canvas.get_pixel(1, 0), GREEN)    // transparent, moved to top-right
+assert_eq(_Canvas.get_pixel(0, 1), RED)
+
+// An out-of-range handle blits nothing (no crash).
+_Canvas.clear(GREEN)
+_Canvas.blit(999, 0, 0, 0, 0, 2, 2, 0)
+assert_eq(_Canvas.get_pixel(0, 0), GREEN)
+
+// --- host-driven prims: headless returns 0 / no-ops (called for symmetry) ---
+assert_eq(_Canvas.buttons(), 0)
+assert_eq(_Canvas.mouse_x(), 0)
+assert_eq(_Canvas.mouse_y(), 0)
+assert_eq(_Canvas.mouse_buttons(), 0)
+_Canvas.tone(440, 10, 100, 0)
+_Canvas.present()
+
+print("canvas ok\n")

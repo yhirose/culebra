@@ -63,8 +63,9 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 23. [`Log`](#23-log) — stderr へのレベル付き構造化ログ（text / JSON、child logger）
 24. [`TOML`](#24-toml) — TOML 設定を parse / stringify
 25. [`SQLite`](#25-sqlite) — 組み込み SQL データベース（query / execute / プリペアド文 / トランザクション）
-26. [設計上の注記](#26-設計上の注記)
-27. [未収録（将来検討）](#27-未収録将来検討)
+26. [`Canvas`](#26-canvas) — ゲーム向けイミディエイトモード 2D フレームバッファ（ピクセル / スプライト / フォント / 入力 / tone）
+27. [設計上の注記](#27-設計上の注記)
+28. [未収録（将来検討）](#28-未収録将来検討)
 
 **目的別索引**
 
@@ -3682,7 +3683,108 @@ Database / Statement ハンドルは生成したスレッド（isolate）に紐�
 
 ---
 
-## 26. 設計上の注記
+## 26. `Canvas`
+
+小さなゲームやピクセルグラフィックス向けのイミディエイトモード 2D フレーム
+バッファ。フレームを描き、`present` で提示し、入力をポーリングして繰り返す。
+色は packed RGBA `Long`、バッファは任意サイズ（WASM-4 流の 160×160 が典型）。
+WASM Playground では Canvas プログラムは **Canvas タブ**で動く — フレームは
+`<canvas>` に表示され、キーボード / ポインタが入力になり、`tone` は WebAudio で
+鳴る。ネイティブでは現状 **ヘッドレス**: ピクセル / スプライト操作は同一に動く
+（振る舞いは interpreter / JIT / AOT で一致し `Canvas.get_pixel` で検証可能）が、何も
+表示されず、入力は「ボタンなし」を返し、`tone` は無音。ウィンドウ付きネイティブ
+バックエンドは計画中。
+
+### 色
+
+`Canvas.rgba(r, g, b, a = 255) -> Long` は 0–255 の 4 チャンネルを 1 つの `Long`
+に詰める（バイト順 `[r, g, b, a]`）。すべての描画呼び出しがこの色を取る。アルファ
+0 は透過（スプライト blit でスキップ）。
+
+### 描画
+
+| 関数 | 効果 |
+| --- | --- |
+| `Canvas.clear(color)` | フレームバッファ全体を塗る |
+| `Canvas.set_pixel(x, y, color)` | 1 ピクセルを設定（範囲外は無視） |
+| `Canvas.get_pixel(x, y) -> Long` | ピクセルを読む（範囲外は 0）— ピクセル読み戻しの当たり判定用 |
+| `Canvas.rect(x, y, w, h, color)` | 塗り矩形（クリップ） |
+| `Canvas.width()` / `Canvas.height() -> Long` | フレームバッファ寸法 |
+| `Canvas.present()` | フレームを提示（下記ループ参照） |
+
+### スプライト
+
+`Canvas.Sprite.new(pixels, w, h, palette = nil)` はスプライトを一度アップロード
+し、毎フレーム安価に blit できるハンドルを返す。`pixels` は行優先の平坦配列:
+packed RGBA `Long`、または `palette` を与えたときはそのパレットへのインデックス
+（コンパクトなインデックスカラー画像）。blit は透過ピクセルをスキップするので
+スプライトは合成される。
+
+| メソッド | 効果 |
+| --- | --- |
+| `sprite.draw(x, y, flip_x = false, flip_y = false, transpose = false)` | スプライト全体を `(x, y)` に blit。`transpose` は X/Y 入替（対角反射 — flip と組み合わせれば 90° 回転） |
+| `sprite.draw_sub(x, y, sx, sy, sw, sh, flip_x = false, flip_y = false, transpose = false)` | サブ矩形を blit（スプライトシート用） |
+| `sprite.width()` / `sprite.height()` | スプライト寸法 |
+
+### テキスト
+
+`Canvas.text(s, x, y, color)` は内蔵 5×7 ビットマップフォントで `s` を描く（先に
+大文字化するので小文字も可、未定義グリフはスキップ）。送りは 1 文字 6px。
+`Canvas.text_width(s) -> Long` はピクセル幅を返す（HUD の中央寄せ / 右寄せ用）。
+
+### 入力
+
+入力は毎フレームのポーリング（イベントキューでなく現在の状態を反映する）。
+
+| 関数 | 結果 |
+| --- | --- |
+| `Canvas.buttons() -> Long` | 押下中ボタンのビットマスク |
+| `Canvas.mouse() -> Object` | フレームバッファ座標の `{x, y, buttons}` |
+
+ボタンビットは定数 `Canvas.LEFT` / `RIGHT` / `UP` / `DOWN`（矢印キー）と
+`Canvas.A` / `B`（アクションキー — `A` は Space/Z、`B` は X）。エッジ検出には
+`Canvas.Input.new()` が前フレームを覚える:
+
+| メソッド | 結果 |
+| --- | --- |
+| `input.update()` | このフレームのボタンをサンプル（毎フレーム 1 回） |
+| `input.down(btn) -> Bool` | 今押されている |
+| `input.pressed(btn) -> Bool` | **このフレーム**に押された（フラップのトリガ） |
+
+### 音声
+
+`Canvas.tone(freq, dur, vol = 100, wave = 0)` は簡易な音を鳴らす: 周波数（Hz）、
+長さ（フレーム、~60fps）、音量 0–100、波形定数 `Canvas.PULSE` / `TRIANGLE` /
+`SAWTOOTH` / `NOISE`。チップチューン APU の小さなサブセット（1 呼び出し 1 ボイス、
+素早い減衰）— ゲームの効果音には十分 — で、ヘッドレスなネイティブでは無音。
+
+### ゲームループ
+
+`Canvas.run(w, h, tick, frames = 600)` は `w`×`h` のフレームバッファを用意し、
+`tick()` を毎フレーム呼んで各回のあとに present する。`tick` が `false` を返すと
+停止（例: プレイヤーが終了）。対話的な Playground ビルドでは `present()` が
+ブラウザの次のアニメーションフレームを待つので、ループは自らペーシングし協調的に
+譲る。入力が非対話（非 JSPI ブラウザ、またはパイプ / ヘッドレスなネイティブ実行）
+のときは `frames` 後にも停止するので、自動実行が無限に回り続けることはない。
+
+```culebra
+# doctest: skip
+let red = Canvas.rgba(220, 60, 60)
+mut x = 0
+Canvas.run(160, 160, fn () {
+  Canvas.clear(Canvas.rgba(20, 24, 40))
+  Canvas.rect(x, 76, 8, 8, red)
+  x = (x + 2) % 160
+  true
+})
+```
+
+完全なゲームは `examples/games/rocci-bird.cul` を参照（スプライト・フォント・
+入力・音・ベストスコア保存を備えた flappy-bird クローン）。
+
+---
+
+## 27. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -3736,7 +3838,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 27. 未収録（将来検討）
+## 28. 未収録（将来検討）
 
 ### 重量級データ構造
 

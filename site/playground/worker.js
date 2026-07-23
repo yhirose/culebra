@@ -79,6 +79,39 @@ self.__waitForKey = (timeoutMs) => {
   });
 };
 
+// --- Canvas frame pacing / input ------------------------------------------
+//
+// Canvas.present() (canvas.h, full build) suspends via JSPI on self.__nextFrame
+// until the main thread's requestAnimationFrame loop forwards a "tick", pacing
+// the game to the display. Unlike keys these are NOT queued: present() waits for
+// the *next* tick after it's called, so an unheeded tick between frames is just
+// dropped. A setTimeout fallback keeps a backgrounded tab (where rAF stalls)
+// from wedging the run.
+let pendingFrameResolve = null;
+self.__nextFrame = () => {
+  return new Promise((resolve) => {
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      pendingFrameResolve = null;
+      resolve();
+    }, 100);
+    pendingFrameResolve = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve();
+    };
+  });
+};
+
+// Input state the wasm side polls synchronously (canvas.h's _wasm_canvas_*).
+self.__canvasButtons = 0;
+self.__canvasMouseX = 0;
+self.__canvasMouseY = 0;
+self.__canvasMouseButtons = 0;
+
 postMessage({ type: "ready", backend: useFullBuild ? "full" : "basic" });
 
 // Output streams live: wasm_main.cc's StreamingBuf posts "output" messages
@@ -93,6 +126,20 @@ onmessage = async (e) => {
     deliverKey(e.data.key);
     return;
   }
+  if (type === "tick") {
+    if (pendingFrameResolve) pendingFrameResolve();
+    return;
+  }
+  if (type === "input") {
+    self.__canvasButtons = e.data.buttons;
+    return;
+  }
+  if (type === "canvasMouse") {
+    self.__canvasMouseX = e.data.x;
+    self.__canvasMouseY = e.data.y;
+    self.__canvasMouseButtons = e.data.buttons;
+    return;
+  }
   if (type === "termSize") {
     // Read synchronously by _wasm_term_cols/rows (term.h) — a Worker has its
     // own global scope, so app.js can't set these directly and sends them
@@ -105,6 +152,9 @@ onmessage = async (e) => {
   running = true;
   keyQueue.length = 0;
   pendingKeyResolve = null;
+  pendingFrameResolve = null;
+  self.__canvasButtons = 0;
+  self.__canvasMouseButtons = 0;
 
   const t0 = performance.now();
   let rc = 1;

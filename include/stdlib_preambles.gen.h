@@ -306,6 +306,202 @@ let _term_module = fn () {
 let Term = _term_module()
 )=culpre=";
 
+inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(
+let _canvas_module = fn () {
+  # Pack r,g,b,a (each 0..255) into one Long, byte order [r,g,b,a] — exactly
+  # what the browser's putImageData reads, so no repacking at present(). This
+  # is the colour every Canvas call takes.
+  let rgba = fn (r, g, b, a = 255) { r + g * 256 + b * 65536 + a * 16777216 }
+
+  # Pack the blit transform flags. flip_x/flip_y mirror; transpose swaps the X
+  # and Y axes — a reflection across the main diagonal (combine it with a flip
+  # for a true 90° rotation).
+  let _blit_flags = fn (flip_x, flip_y, transpose) {
+    (if flip_x { 1 } else { 0 }) + (if flip_y { 2 } else { 0 }) + (if transpose { 4 } else { 0 })
+  }
+
+  # A registered sprite. `pixels` is a flat row-major array; if `palette` is
+  # given they are indices into it (WASM-4-style indexed art), otherwise they
+  # are packed-RGBA Longs. Either way the pixels are normalised to RGBA and
+  # uploaded once (`_Canvas.sprite_load`); draw() re-references the handle so
+  # nothing is re-marshalled per frame.
+  class Sprite {
+    new(pixels, w, h, palette = nil) {
+      let rgba_px = if palette == nil { pixels } else { pixels.map(|i| palette[i]) }
+      this._id = _Canvas.sprite_load(rgba_px, w, h)
+      this._w = w
+      this._h = h
+    }
+    width() { this._w }
+    height() { this._h }
+    # Blit the whole sprite to (x, y). flip_x/flip_y mirror; transpose swaps
+    # X/Y. Transparent (alpha 0) pixels are skipped.
+    draw(x, y, flip_x = false, flip_y = false, transpose = false) {
+      _Canvas.blit(this._id, x, y, 0, 0, this._w, this._h, _blit_flags(flip_x, flip_y, transpose))
+    }
+    # Blit a sub-rectangle (sx, sy, sw, sh) of the sprite to (x, y) — for sheets.
+    draw_sub(x, y, sx, sy, sw, sh, flip_x = false, flip_y = false, transpose = false) {
+      _Canvas.blit(this._id, x, y, sx, sy, sw, sh, _blit_flags(flip_x, flip_y, transpose))
+    }
+  }
+
+  # --- built-in 5x7 bitmap font -------------------------------------------
+  # Each glyph is 7 rows of a 5-wide cell; '#' is a lit pixel. Rows are turned
+  # into arrays of booleans once, at module load, so text() just indexes them.
+  # Advance is 6px (5 + 1 gap). Uppercase, digits, and a little punctuation —
+  # enough for a game's HUD; text() upper-cases its input so lowercase works.
+  let _glyph = fn (rows) { rows.map(|row| row.graphemes().map(|c| to_string(c) != " ").collect()) }
+  let _font = {
+    " ": _glyph(["     ", "     ", "     ", "     ", "     ", "     ", "     "]),
+    "0": _glyph([" ### ", "#   #", "#  ##", "# # #", "##  #", "#   #", " ### "]),
+    "1": _glyph(["  #  ", " ##  ", "  #  ", "  #  ", "  #  ", "  #  ", " ### "]),
+    "2": _glyph([" ### ", "#   #", "    #", "   # ", "  #  ", " #   ", "#####"]),
+    "3": _glyph(["#####", "   # ", "  #  ", "   # ", "    #", "#   #", " ### "]),
+    "4": _glyph(["   # ", "  ## ", " # # ", "#  # ", "#####", "   # ", "   # "]),
+    "5": _glyph(["#####", "#    ", "#### ", "    #", "    #", "#   #", " ### "]),
+    "6": _glyph(["  ## ", " #   ", "#    ", "#### ", "#   #", "#   #", " ### "]),
+    "7": _glyph(["#####", "    #", "   # ", "  #  ", " #   ", " #   ", " #   "]),
+    "8": _glyph([" ### ", "#   #", "#   #", " ### ", "#   #", "#   #", " ### "]),
+    "9": _glyph([" ### ", "#   #", "#   #", " ####", "    #", "   # ", " ##  "]),
+    "A": _glyph([" ### ", "#   #", "#   #", "#####", "#   #", "#   #", "#   #"]),
+    "B": _glyph(["#### ", "#   #", "#   #", "#### ", "#   #", "#   #", "#### "]),
+    "C": _glyph([" ### ", "#   #", "#    ", "#    ", "#    ", "#   #", " ### "]),
+    "D": _glyph(["###  ", "#  # ", "#   #", "#   #", "#   #", "#  # ", "###  "]),
+    "E": _glyph(["#####", "#    ", "#    ", "#### ", "#    ", "#    ", "#####"]),
+    "F": _glyph(["#####", "#    ", "#    ", "#### ", "#    ", "#    ", "#    "]),
+    "G": _glyph([" ### ", "#   #", "#    ", "# ###", "#   #", "#   #", " ### "]),
+    "H": _glyph(["#   #", "#   #", "#   #", "#####", "#   #", "#   #", "#   #"]),
+    "I": _glyph([" ### ", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ", " ### "]),
+    "J": _glyph(["  ###", "   # ", "   # ", "   # ", "#  # ", "#  # ", " ##  "]),
+    "K": _glyph(["#   #", "#  # ", "# #  ", "##   ", "# #  ", "#  # ", "#   #"]),
+    "L": _glyph(["#    ", "#    ", "#    ", "#    ", "#    ", "#    ", "#####"]),
+    "M": _glyph(["#   #", "## ##", "# # #", "#   #", "#   #", "#   #", "#   #"]),
+    "N": _glyph(["#   #", "##  #", "# # #", "#  ##", "#   #", "#   #", "#   #"]),
+    "O": _glyph([" ### ", "#   #", "#   #", "#   #", "#   #", "#   #", " ### "]),
+    "P": _glyph(["#### ", "#   #", "#   #", "#### ", "#    ", "#    ", "#    "]),
+    "Q": _glyph([" ### ", "#   #", "#   #", "#   #", "# # #", "#  # ", " ## #"]),
+    "R": _glyph(["#### ", "#   #", "#   #", "#### ", "# #  ", "#  # ", "#   #"]),
+    "S": _glyph([" ####", "#    ", "#    ", " ### ", "    #", "    #", "#### "]),
+    "T": _glyph(["#####", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ", "  #  "]),
+    "U": _glyph(["#   #", "#   #", "#   #", "#   #", "#   #", "#   #", " ### "]),
+    "V": _glyph(["#   #", "#   #", "#   #", "#   #", "#   #", " # # ", "  #  "]),
+    "W": _glyph(["#   #", "#   #", "#   #", "# # #", "# # #", "## ##", "#   #"]),
+    "X": _glyph(["#   #", "#   #", " # # ", "  #  ", " # # ", "#   #", "#   #"]),
+    "Y": _glyph(["#   #", "#   #", " # # ", "  #  ", "  #  ", "  #  ", "  #  "]),
+    "Z": _glyph(["#####", "    #", "   # ", "  #  ", " #   ", "#    ", "#####"]),
+    ".": _glyph(["     ", "     ", "     ", "     ", "     ", " ##  ", " ##  "]),
+    ",": _glyph(["     ", "     ", "     ", "     ", " ##  ", " ##  ", "#    "]),
+    ":": _glyph(["     ", " ##  ", " ##  ", "     ", " ##  ", " ##  ", "     "]),
+    "!": _glyph(["  #  ", "  #  ", "  #  ", "  #  ", "  #  ", "     ", "  #  "]),
+    "?": _glyph([" ### ", "#   #", "    #", "   # ", "  #  ", "     ", "  #  "]),
+    "-": _glyph(["     ", "     ", "     ", "#####", "     ", "     ", "     "]),
+    "+": _glyph(["     ", "  #  ", "  #  ", "#####", "  #  ", "  #  ", "     "]),
+    "/": _glyph(["    #", "    #", "   # ", "  #  ", " #   ", "#    ", "#    "]),
+  }
+  let _char_w = 6
+  let _char_h = 7
+
+  # Draw `s` at (x, y) in `color`, left to right (6px per glyph). Unknown
+  # characters are skipped (advance still applies), so layout stays stable.
+  let text = fn (s, x, y, color) {
+    mut cx = x
+    for ch in s.upper().graphemes() {
+      let g = _font.get(to_string(ch), nil)
+      if g != nil {
+        mut ry = 0
+        for row in g {
+          mut rx = 0
+          for lit in row {
+            if lit { _Canvas.set_pixel(cx + rx, y + ry, color) }
+            rx = rx + 1
+          }
+          ry = ry + 1
+        }
+      }
+      cx = cx + _char_w
+    }
+  }
+  # Pixel width a string will occupy — for right-aligning / centring HUD text.
+  let text_width = fn (s) { s.graphemes().collect().size() * _char_w }
+
+  # --- input --------------------------------------------------------------
+  # Button bitmask bits (also mapped by the Playground frontend). A/B are the
+  # two action buttons (space / another key); D-pad is arrows.
+  let LEFT = 1
+  let RIGHT = 2
+  let UP = 4
+  let DOWN = 8
+  let A = 16
+  let B = 32
+
+  # Held-button bitmask this frame, and the mouse as an Object.
+  let buttons = fn () { _Canvas.buttons() }
+  let mouse = fn () { { x: _Canvas.mouse_x(), y: _Canvas.mouse_y(), buttons: _Canvas.mouse_buttons() } }
+
+  # Edge detector: remembers last frame's bitmask so pressed(btn) is true only
+  # on the frame a button goes down (the natural "flap" trigger). Call update()
+  # once per frame, after reading input.
+  class Input {
+    new() { this._prev = 0; this._cur = 0 }
+    update() { this._prev = this._cur; this._cur = _Canvas.buttons(); this }
+    down(btn) { (this._cur & btn) != 0 }                       # held now
+    pressed(btn) { (this._cur & btn) != 0 && (this._prev & btn) == 0 }  # just went down
+  }
+
+  # --- audio --------------------------------------------------------------
+  let PULSE = 0
+  let TRIANGLE = 1
+  let SAWTOOTH = 2
+  let NOISE = 3
+  # Play a simple tone: frequency (Hz), duration (frames at ~60fps), volume
+  # (0..100), waveform. No-op on the headless native backend.
+  let tone = fn (freq, dur, vol = 100, wave = 0) { _Canvas.tone(freq, dur, vol, wave) }
+
+  # --- game loop ----------------------------------------------------------
+  # Set up a w×h framebuffer and drive `tick` once per frame, presenting after
+  # each. `tick()` returns false to stop (e.g. the player quit). present()
+  # suspends to the browser's animation frame in the interactive build, so the
+  # loop yields cooperatively. When input isn't interactive (the non-JSPI wasm
+  # build, or a piped/headless native run) it also stops after `frames`, so a
+  # CI/auto-demo run can't spin forever.
+  let run = fn (w, h, tick, frames = 600) {
+    _Canvas.init(w, h)
+    let interactive = IO.stdin_is_terminal()
+    mut i = 0
+    mut running = true
+    while running {
+      let cont = tick()
+      _Canvas.present()
+      i = i + 1
+      if cont == false { running = false }
+      if !interactive && i >= frames { running = false }
+    }
+  }
+
+  {
+    rgba: rgba,
+    clear: fn (color) { _Canvas.clear(color) },
+    set_pixel: fn (x, y, color) { _Canvas.set_pixel(x, y, color) },
+    get_pixel: fn (x, y) { _Canvas.get_pixel(x, y) },
+    rect: fn (x, y, w, h, color) { _Canvas.rect(x, y, w, h, color) },
+    present: fn () { _Canvas.present() },
+    width: fn () { _Canvas.width() },
+    height: fn () { _Canvas.height() },
+    Sprite: Sprite,
+    text: text,
+    text_width: text_width,
+    buttons: buttons,
+    mouse: mouse,
+    Input: Input,
+    tone: tone,
+    run: run,
+    LEFT: LEFT, RIGHT: RIGHT, UP: UP, DOWN: DOWN, A: A, B: B,
+    PULSE: PULSE, TRIANGLE: TRIANGLE, SAWTOOTH: SAWTOOTH, NOISE: NOISE,
+  }
+}
+let Canvas = _canvas_module()
+)=culpre=";
+
 inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = fn() { let _coerce = fn(raw, type, name) { if type == "String" { return raw }; if type == "Long" { return to_long(raw) }; if type == "Float" { return to_float(raw) }; if type == "Bool" { if raw == "true" || raw == "1" { return true }; if raw == "false" || raw == "0" { return false }; throw {kind: "ArgParseError", message: "argument '{name}' expects Bool, got '{raw}'"} }; throw {kind: "ArgParseError", message: "argument '{name}' has unknown type '{type}'"} }; let _find_by_name = fn(args, name) { let mut i = 0; while i < args.size() { let a = args[i]; if a.name == name { return a }; if a.has("short") && a.short == name { return a }; i += 1 }; nil }; let _is_option = fn(a) { a.has("short") || a.has("default") }; let _is_positional = fn(a) { !_is_option(a) }; let _arg_type = fn(a) { if a.has("type") { a.type } else { "String" } }; let _format_help = fn(spec) { let name = if spec.has("name") { spec.name } else { "program" }; let doc = if spec.has("doc") { spec.doc } else { "" }; let mut parts = []; if doc != "" { parts.push("{name} - {doc}\n\n") }; let mut pos_args = []; let mut opt_args = []; let mut i = 0; while i < spec.args.size() { let a = spec.args[i]; if _is_positional(a) { pos_args.push(a) } else { opt_args.push(a) }; i += 1 }; parts.push("Usage: {name}"); if opt_args.size() > 0 { parts.push(" [options]") }; let mut j = 0; while j < pos_args.size() { let a = pos_args[j]; if a.has("default") { parts.push(" [<{a.name}>]") } else if a.has("repeated") && a.repeated { parts.push(" <{a.name}>...") } else { parts.push(" <{a.name}>") }; j += 1 }; parts.push("\n"); if pos_args.size() > 0 { parts.push("\nArguments:\n"); let mut k = 0; while k < pos_args.size() { let a = pos_args[k]; let d = if a.has("doc") { a.doc } else { "" }; parts.push("  {a.name}    {d}\n"); k += 1 } }; if opt_args.size() > 0 { parts.push("\nOptions:\n"); let mut m = 0; while m < opt_args.size() { let a = opt_args[m]; let short = if a.has("short") { "-{a.short}, " } else { "    " }; let d = if a.has("doc") { a.doc } else { "" }; parts.push("  {short}--{a.name}    {d}\n"); m += 1 } }; parts.push("  -h, --help    show this help and exit\n"); parts.join("") }; let _route_subcommand = fn(argv, spec) { if !spec.has("subcommands") { return nil }; let mut i = 0; while i < argv.size() { let tok = argv[i]; if tok == "-h" || tok == "--help" { throw {kind: "ArgParseHelp", help: _format_help(spec)} }; if tok.starts_with("-") { i += 1; continue }; let mut j = 0; while j < spec.subcommands.size() { let sub = spec.subcommands[j]; if sub.name == tok { let mut rest = []; let mut k = 0; while k < argv.size() { if k != i { rest.push(argv[k]) }; k += 1 }; return {sub: sub, argv: rest} }; j += 1 }; throw {kind: "ArgParseError", message: "unknown subcommand '{tok}'"} }; throw {kind: "ArgParseError", message: "expected subcommand"} }; let _parse_impl_flat = fn(argv, spec) { let mut result = {}; let mut positionals = []; let mut i = 0; let n = argv.size(); while i < n { let tok = argv[i]; if tok == "--" { let mut j = i + 1; while j < n { positionals.push(argv[j]); j += 1 }; i = n } else if tok == "-h" || tok == "--help" { throw {kind: "ArgParseHelp", help: _format_help(spec)} } else if tok.starts_with("--") { let body = tok.slice(2, tok.size()); let mut name = body; let mut explicit_value = nil; let mut has_value = false; if body.contains("=") { let parts = body.split("="); name = parts[0]; let mut v = parts[1]; let mut pi = 2; while pi < parts.size() { v = "{v}={parts[pi]}"; pi += 1 }; explicit_value = v; has_value = true }; let spec_a = _find_by_name(spec.args, name); if spec_a == nil { throw {kind: "ArgParseError", message: "unknown option '--{name}'"} }; if _arg_type(spec_a) == "Bool" && !has_value { result[spec_a.name] = true } else { let raw = if has_value { explicit_value } else { i = i + 1; if i >= n { throw {kind: "ArgParseError", message: "option '--{name}' expects a value"} }; argv[i] }; let v = _coerce(raw, _arg_type(spec_a), spec_a.name); if spec_a.has("repeated") && spec_a.repeated { if !result.has(spec_a.name) { result[spec_a.name] = [] }; result[spec_a.name].push(v) } else { result[spec_a.name] = v } } } else if tok.starts_with("-") && tok.size() > 1 { let body = tok.slice(1, tok.size()); let mut name = body; let mut explicit_value = nil; let mut has_value = false; if body.contains("=") { let parts = body.split("="); name = parts[0]; let mut v = parts[1]; let mut pi = 2; while pi < parts.size() { v = "{v}={parts[pi]}"; pi += 1 }; explicit_value = v; has_value = true }; let spec_a = _find_by_name(spec.args, name); if spec_a == nil { throw {kind: "ArgParseError", message: "unknown option '-{name}'"} }; if _arg_type(spec_a) == "Bool" && !has_value { result[spec_a.name] = true } else { let raw = if has_value { explicit_value } else { i = i + 1; if i >= n { throw {kind: "ArgParseError", message: "option '-{name}' expects a value"} }; argv[i] }; let v = _coerce(raw, _arg_type(spec_a), spec_a.name); if spec_a.has("repeated") && spec_a.repeated { if !result.has(spec_a.name) { result[spec_a.name] = [] }; result[spec_a.name].push(v) } else { result[spec_a.name] = v } } } else { positionals.push(tok) }; i += 1 }; let mut pos_idx = 0; let mut spec_idx = 0; while spec_idx < spec.args.size() { let a = spec.args[spec_idx]; if _is_positional(a) { if a.has("repeated") && a.repeated { result[a.name] = []; while pos_idx < positionals.size() { let v = _coerce(positionals[pos_idx], _arg_type(a), a.name); result[a.name].push(v); pos_idx += 1 } } else if pos_idx < positionals.size() { result[a.name] = _coerce(positionals[pos_idx], _arg_type(a), a.name); pos_idx += 1 } }; spec_idx += 1 }; if pos_idx < positionals.size() { throw {kind: "ArgParseError", message: "unexpected positional argument '{positionals[pos_idx]}'"} }; let mut k = 0; while k < spec.args.size() { let a = spec.args[k]; if !result.has(a.name) { if a.has("default") { result[a.name] = a.default } else if a.has("repeated") && a.repeated { result[a.name] = [] } else if _arg_type(a) == "Bool" { result[a.name] = false } else { throw {kind: "ArgParseError", message: "missing required argument '{a.name}'"} } }; k += 1 }; result }; let _parse_impl = fn(argv, spec) { let routed = _route_subcommand(argv, spec); if routed != nil { let mut result = _parse_impl_flat(routed.argv, routed.sub); result.subcommand = routed.sub.name; return result }; _parse_impl_flat(argv, spec) }; { try_parse: fn(argv, spec) { _parse_impl(argv, spec) }, parse: fn(argv, spec) { try { _parse_impl(argv, spec) } catch e { if e.has("kind") && e.kind == "ArgParseHelp" { IO.puts(e.help); Sys.exit(0) }; IO.print("error: "); IO.puts(if e.has("message") { e.message } else { e }); Sys.exit(2) } }, help: fn(spec) { _format_help(spec) } } }; let Args = _args_module()
 )=culpre=";
 

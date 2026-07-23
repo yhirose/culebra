@@ -53,10 +53,14 @@
       <div class="pg-tabs" role="tablist">
         <button id="tab-output" class="pg-tab active" data-pane="output" role="tab" aria-selected="true">Output</button>
         <button id="tab-tui" class="pg-tab" data-pane="tui" role="tab" aria-selected="false">TUI</button>
+        <button id="tab-canvas" class="pg-tab" data-pane="canvas" role="tab" aria-selected="false">Canvas</button>
       </div>
       <div class="pg-panes">
         <pre id="output" class="pg-output pg-pane active"><span class="placeholder">Output appears here. Press Run.</span></pre>
         <div id="tui" class="pg-tui pg-pane"></div>
+        <div id="canvas-pane" class="pg-canvas pg-pane" tabindex="0">
+          <canvas id="game" width="160" height="160"></canvas>
+        </div>
       </div>
     </div>
   </main>
