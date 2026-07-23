@@ -1110,27 +1110,39 @@ class Printer {
   }
 
   DocP print_if(const peg::Ast& node) {
-    // [cond, then, (cond, block)*, (block)?]. Each block's `{` is located by
+    // [(INIT_CLAUSE)?, cond, then, (cond, block)*, (block)?]. The optional init
+    // clause renders as `binding, binding; ` before the first condition; the
+    // cond/block pairing then starts at arm_off. Each block's `{` is located by
     // scanning from the preceding child's end (cond) or the previous block's
     // close (the else block, whose `{` follows `else`).
+    auto iv = culebra::view_if(node);
+    const auto& nodes = node.nodes;
+    size_t off = iv.arm_off;
     std::vector<DocP> parts;
     parts.push_back(doc_text("if "));
-    parts.push_back(print(*node.nodes[0]));
+    if (iv.init) {
+      for (size_t k = 0; k < iv.init->nodes.size(); k++) {
+        if (k) parts.push_back(doc_text(", "));
+        parts.push_back(print(*iv.init->nodes[k]));
+      }
+      parts.push_back(doc_text("; "));
+    }
+    parts.push_back(print(*nodes[off]));
     parts.push_back(doc_text(" "));
-    parts.push_back(print_block(*node.nodes[1], node_end(*node.nodes[0]), false));
-    size_t cursor = block_interior(node_end(*node.nodes[0])).after;
-    size_t i = 2, n = node.nodes.size();
+    parts.push_back(print_block(*nodes[off + 1], node_end(*nodes[off]), false));
+    size_t cursor = block_interior(node_end(*nodes[off])).after;
+    size_t i = off + 2, n = nodes.size();
     while (n - i >= 2) {
       parts.push_back(doc_text(" else if "));
-      parts.push_back(print(*node.nodes[i]));
+      parts.push_back(print(*nodes[i]));
       parts.push_back(doc_text(" "));
-      parts.push_back(print_block(*node.nodes[i + 1], node_end(*node.nodes[i]), false));
-      cursor = block_interior(node_end(*node.nodes[i])).after;
+      parts.push_back(print_block(*nodes[i + 1], node_end(*nodes[i]), false));
+      cursor = block_interior(node_end(*nodes[i])).after;
       i += 2;
     }
     if (i < n) {
       parts.push_back(doc_text(" else "));
-      parts.push_back(print_block(*node.nodes[i], cursor, false));
+      parts.push_back(print_block(*nodes[i], cursor, false));
     }
     return doc_concat(std::move(parts));
   }

@@ -1714,10 +1714,29 @@ JIT では捕捉された可変変数はヒープの**セル**に配置され、
     if cond { then_block }
     if cond { then_block } else { else_block }
     if c1 { b1 } else if c2 { b2 } else { b3 }
+    if init; cond { … }
 
 `cond` は真偽値変換可能（`Bool` または `Long`）である必要があります。
 `if` は式で、値は取られた分岐の最後の式。取られた分岐がない（`else`
 なしで `if` が偽）場合は `nil`。
+
+`while` と同様に、`if` も省略可能な **init 節**（条件の前に `;` で
+区切って置く宣言）を受け取れます。これは `if` / `else if` / `else`
+チェーン全体にスコープを閉じ込めます（[`while`](#while) と同じ形で、
+C++17 の `if (init; cond)` に相当）:
+
+```culebra
+# doctest: skip
+if mut d = compute(n); d > threshold {
+  use(d)                # ここで d が見える …
+} else {
+  fallback(d)           # … ここでも見えるが、チェーンの外では見えない
+}
+```
+
+各束縛は宣言（`let` / `mut`）でなければならず、素の `if x = 0; …` は
+`SyntaxError` です。複数束縛は `,` で
+（`if mut a = f(), mut b = g(); …`）。
 
 ### `while`
 

@@ -264,6 +264,25 @@ case("nobreak|gen_while", 'fn g() { while mut i = 0; i < 3 { yield i; i = i + 1 
 case("nobreak|gen_for", 'fn g() { for x in [1, 2, 3] { yield x } nobreak { yield 99 } }; g().collect()')
 case("nobreak|eff", 'effect fn tk(); effect fn c(n) { mut s = 0; while mut i = 0; i < n { perform tk(); s = s + i; i = i + 1 } nobreak { s = s + 1000 }; s }; handle { c(3) } with tk(r) { r(nil) }')
 
+# --- Dimension: if init clause (`if mut x = f(); cond { … }`) --------------
+# The init clause scopes bindings to the whole if / else-if / else chain and is
+# dropped when the chain is left by any path. Exercise single/multiple bindings,
+# else-if chains, the init var as the branch value, and if-as-expression.
+let ifinits = [
+  '{ mut r = ""; if mut d = 6 * 2; d > 10 { r = "big" } else if d > 4 { r = "mid" } else { r = "small" }; r }',
+  '{ if mut d = 3 * 2; d > 10 { "big" } else if d > 4 { "mid" } else { "small" } }',
+  '{ if mut d = 1 * 2; d > 10 { "big" } else if d > 4 { "mid" } else { "small" } }',
+  '{ mut acc = 0; if mut a = 1, mut b = 2; a < b { acc = a + b }; acc }',
+  '{ if mut s = "ab" + "cd"; s.size() > 3 { s } else { "x" } }',
+  '{ if mut n = 5; n > 0 { n * 10 } else { -1 } }',
+  '{ mut x = 100; if mut x = 1; x > 0 { x } else { x } }']
+for f in ifinits {
+  case("if_init|" + f, f)
+}
+# Generator + effect fn bodies with an if-init (source-transform paths).
+case("if_init|gen", 'fn g() { for x in [1, 2, 3, 4] { if mut d = x * 2; d > 4 { yield d } } }; g().collect()')
+case("if_init|eff", 'effect fn ask(); effect fn go() { let v = perform ask(); if mut d = v * 10; d > 50 { "big" } else { "small" } }; handle { go() } with ask(r) { r(9) }')
+
 # --- Dimension 11: match / patterns ---------------------------------------
 let me_pre = 'enum E { A(Long), B }; '
 let matches = [me_pre + 'match E.A(5) { A(x) => x, _ => -1 }',

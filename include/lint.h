@@ -153,6 +153,27 @@ class ScopeWalker {
     for (const auto& c : node.nodes) walk(*c);
   }
 
+  // Validate + register an INIT_CLAUSE's bindings (while / if init clauses)
+  // into the current top scope. Each binding must declare with
+  // `let` / `mut`; a bare `x = 0` would reassign an outer variable or make an
+  // immutable binding, so reject it pre-eval on every backend — the caller has
+  // already pushed the enclosing scope the bindings live in.
+  void walk_init_clause(const peg::Ast& init) {
+    for (const auto& binding : init.nodes) {
+      bool declared = binding->nodes.size() >= 2 &&
+                      (binding->nodes[0]->token == "let" ||
+                       binding->nodes[1]->token == "mut");
+      if (!declared) {
+        diags_.push_back(Diagnostic{
+            "SyntaxError",
+            "init binding must be declared with 'let' or 'mut'",
+            static_cast<long>(binding->line),
+            static_cast<long>(binding->column), Severity::Error});
+      }
+      walk(*binding);   // registers the declared name in the enclosing scope
+    }
+  }
+
   // Reject a duplicate parameter name in one parameter list. The earlier
   // binding is unreachable (calls bind last-wins), so it is always a mistake
   // — every mainstream language rejects it. `_` (sink) may repeat. Pattern
@@ -317,19 +338,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       if (wv.init) {
         scopes_.emplace_back();
         pushed = true;
-        for (const auto& binding : wv.init->nodes) {
-          bool declared = binding->nodes.size() >= 2 &&
-                          (binding->nodes[0]->token == "let" ||
-                           binding->nodes[1]->token == "mut");
-          if (!declared) {
-            diags_.push_back(Diagnostic{
-                "SyntaxError",
-                "while-init binding must be declared with 'let' or 'mut'",
-                static_cast<long>(binding->line),
-                static_cast<long>(binding->column), Severity::Error});
-          }
-          walk(*binding);   // registers the declared name in the init scope
-        }
+        walk_init_clause(*wv.init);
       }
       walk(*wv.cond);
       {
@@ -342,6 +351,21 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       // before the pop.
       if (wv.nobreak) scoped(*wv.nobreak, [](Scope&) {});
       if (pushed) scopes_.pop_back();
+      return;
+    }
+    case "IF"_: {
+      // [(INIT_CLAUSE)?, cond, block, cond, block, …, (else-block)?]. IF shares
+      // the enclosing scope (no per-branch scope), so with no init clause the
+      // default child walk is correct. An init clause (`if mut x = f(); …`)
+      // scopes its bindings to the whole chain: push a scope, register them,
+      // then walk the arms (from arm_off, skipping the INIT_CLAUSE child).
+      auto iv = culebra::view_if(node);
+      if (!iv.init) { walk_children(node); return; }
+      scopes_.emplace_back();
+      walk_init_clause(*iv.init);
+      for (size_t i = iv.arm_off; i < node.nodes.size(); i++)
+        walk(*node.nodes[i]);
+      scopes_.pop_back();
       return;
     }
     case "FOR"_: {

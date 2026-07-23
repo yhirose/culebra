@@ -6560,6 +6560,27 @@ struct JIT {
   // --- Control flow ---
 
   Owned compile_if(const peg::Ast& ast) {
+    auto iv = culebra::view_if(ast);
+
+    // An optional init clause (`if mut x = f(); x > 0 { … }`) wraps the whole
+    // chain in an enclosing scope holding its bindings, dropped exactly once on
+    // exit. Same shape as compile_while's init scope: a cleanup landingpad
+    // drops the init slots on a throw from any condition/branch; the merge
+    // block falls through to finish_and_pop_scope. The taken branch's value is
+    // a fresh +1 in resultAlloca, independent of the init slots, so it survives
+    // the scope pop. CONDITIONAL (ternary) never carries an init clause, so
+    // iv.init is null there and this is a no-op.
+    llvm::BasicBlock* initCleanupBB = nullptr;
+    llvm::BasicBlock* initSavedLpad = current_lpad_;
+    if (iv.init) {
+      auto scopeFn = builder_.GetInsertBlock()->getParent();
+      initCleanupBB =
+          llvm::BasicBlock::Create(ctx_, "if.init.cleanup", scopeFn);
+      current_lpad_ = initCleanupBB;
+      push_scope();
+      for (auto& binding : iv.init->nodes) compile(*binding).drop();
+    }
+
     auto fn = builder_.GetInsertBlock()->getParent();
     auto mergeBB = llvm::BasicBlock::Create(ctx_, "if.merge");
 
@@ -6572,7 +6593,7 @@ struct JIT {
     builder_.CreateStore(make_nil(), resultAlloca);
 
     const auto& nodes = ast.nodes;
-    for (auto i = 0u; i < nodes.size(); i += 2) {
+    for (auto i = iv.arm_off; i < nodes.size(); i += 2) {
       if (i + 1 == nodes.size()) {
         // else block
         auto val = compile(*nodes[i]).consume();
@@ -6599,14 +6620,25 @@ struct JIT {
       }
     }
 
-    // If no else clause, current block is the last else-BB
-    if (nodes.size() % 2 == 0) {
+    // If no else clause, current block is the last else-BB. The arm count
+    // (excluding the leading init clause) is even exactly when there is no
+    // trailing else.
+    if ((nodes.size() - iv.arm_off) % 2 == 0) {
       builder_.CreateBr(mergeBB);
     }
 
     fn->insert(fn->end(), mergeBB);
     builder_.SetInsertPoint(mergeBB);
-    return own(builder_.CreateLoad(valueType_, resultAlloca, "if.result"));
+    Owned result = own(builder_.CreateLoad(valueType_, resultAlloca,
+                                           "if.result"));
+    // Drop the init scope after the result is materialized; its +1 is
+    // independent of the init slots, so it survives. A throw inside a
+    // condition/branch instead unwinds via initCleanupBB.
+    if (iv.init) {
+      finish_and_pop_scope(initCleanupBB, /*defer_mark=*/nullptr, initSavedLpad,
+                           "if.init.exc", initSavedLpad);
+    }
+    return result;
   }
 
   // `cond { test => body, ..., _ => default }` — the value-producing

@@ -1038,33 +1038,40 @@ struct CpsBuilder {
     return -1;
   }
 
-  // if / else-if / else chain. IF nodes are [cond, block, cond, block, ...,
-  // elseblock?]; a trailing odd node is the bare `else` block.
+  // if / else-if / else chain. IF nodes are [(INIT_CLAUSE)?, cond, block, cond,
+  // block, ..., elseblock?]; a trailing odd arm (past the init) is the bare
+  // `else` block. An init clause runs its bindings once before the chain.
   int compile_if(const peg::Ast* ifnode, int cont) {
+    auto iv = culebra::view_if(*ifnode);
     const auto& nodes = ifnode->nodes;
-    size_t n = nodes.size();
+    size_t off = iv.arm_off;
+    size_t arm_n = nodes.size() - off;
     int else_entry;
     size_t pairs;
-    if (n % 2 == 1) {
-      else_entry = compile_seq(body_stmts(*nodes[n - 1]), cont);
+    if (arm_n % 2 == 1) {
+      else_entry = compile_seq(body_stmts(*nodes[nodes.size() - 1]), cont);
       if (failed) return -1;
-      pairs = (n - 1) / 2;
+      pairs = (arm_n - 1) / 2;
     } else {
       else_entry = cont;
-      pairs = n / 2;
+      pairs = arm_n / 2;
     }
     int chain = else_entry;
     for (size_t p = pairs; p-- > 0;) {
-      int block_entry = compile_seq(body_stmts(*nodes[2 * p + 1]), cont);
+      int block_entry = compile_seq(body_stmts(*nodes[off + 2 * p + 1]), cont);
       if (failed) return -1;
       int s = fresh();
       states[s] = std::format(
           "      if {} {{ this._g_state = {} }} else {{ this._g_state = {} }}{}\n"
           "      continue\n",
-          rw(*nodes[2 * p]), block_entry, chain, mk(*nodes[2 * p]));
+          rw(*nodes[off + 2 * p]), block_entry, chain, mk(*nodes[off + 2 * p]));
       chain = s;
     }
-    return chain;
+    if (!iv.init) return chain;
+    // The init clause runs its bindings once, then enters the if-chain.
+    std::vector<const peg::Ast*> init_stmts;
+    for (auto& b : iv.init->nodes) init_stmts.push_back(b.get());
+    return compile_seq(init_stmts, chain);
   }
 };
 

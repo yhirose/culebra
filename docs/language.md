@@ -1819,10 +1819,29 @@ so that multiple closures can share the same slot. See §17.
     if cond { then_block }
     if cond { then_block } else { else_block }
     if c1 { b1 } else if c2 { b2 } else { b3 }
+    if init; cond { … }
 
 `cond` must be truthy-convertible (`Bool` or `Long`). `if` is an
 expression; its value is the taken branch's last expression, or `nil`
 if no branch is taken (no `else` and the `if` was false).
+
+Like `while`, `if` accepts an optional **init clause** — declarations
+before the condition, split by `;` — scoped to the whole `if` / `else
+if` / `else` chain (the same form as [`while`](#while), and matching
+C++17's `if (init; cond)`):
+
+```culebra
+# doctest: skip
+if mut d = compute(n); d > threshold {
+  use(d)                # d is in scope here …
+} else {
+  fallback(d)           # … and here, but not after the chain
+}
+```
+
+Each binding must be a declaration (`let` / `mut`); a bare `if x = 0;
+…` is a `SyntaxError`. Multiple bindings use `,`
+(`if mut a = f(), mut b = g(); …`).
 
 ### `while`
 

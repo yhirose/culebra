@@ -239,7 +239,11 @@
   FOR                      <-  for _ FOR_BINDING _ in _ EXPRESSION _ BLOCK (_ NOBREAK_CLAUSE)?   { no_ast_opt }
   FOR_BINDING              <-  FOR_PAT (_ ',' _ FOR_PAT)*
   FOR_PAT                  <-  TUPLE_PATTERN / ARRAY_PATTERN / OBJECT_PATTERN / IDENTIFIER
-  IF                       <-  if _ EXPRESSION _ BLOCK (_ else _ if _ EXPRESSION _ BLOCK)* (_ else _ BLOCK)?
+  # An optional init clause (`if mut x = f(); x > 0 { … }`, C++17-style) scopes
+  # its bindings to the whole if / else-if / else chain. Same INIT_CLAUSE as
+  # WHILE; kept by the AstOptimizer so it is detectable as IF's first child,
+  # which shifts the cond/block pairing by one (see view_if).
+  IF                       <-  if _ (INIT_CLAUSE _ ';' _)? EXPRESSION _ BLOCK (_ else _ if _ EXPRESSION _ BLOCK)* (_ else _ BLOCK)?
 
   MATCH                    <-  match _ EXPRESSION _ '{' _ MATCH_ARMS _ '}'
   MATCH_ARMS               <-  (MATCH_ARM (_ ',' _ MATCH_ARM)* _ ','?)?

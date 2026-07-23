@@ -402,6 +402,26 @@ inline ForView view_for(const peg::Ast& a) {
   };
 }
 
+// View of an IF AST node — see grammar:
+//   IF <- if _ (INIT_CLAUSE _ ';' _)? EXPRESSION _ BLOCK
+//         (_ else _ if _ EXPRESSION _ BLOCK)* (_ else _ BLOCK)?
+// Post-optimizer children: [(INIT_CLAUSE)?, cond, block, cond, block, …,
+// (else-block)?] — a flat cond/block pairing with an optional trailing else.
+// The optional leading init clause shifts that pairing, so every consumer
+// iterates the arms from `arm_off` instead of 0. Also serves CONDITIONAL (the
+// ternary `c ? a : b`, shape [cond, then, else]) which shares compile_if: a
+// CONDITIONAL never carries an INIT_CLAUSE, so arm_off is 0 there.
+struct IfView {
+  const peg::Ast* init;   // INIT_CLAUSE node, or nullptr when absent
+  size_t arm_off;         // index of the first condition (1 with init, else 0)
+};
+
+inline IfView view_if(const peg::Ast& a) {
+  using namespace peg::udl;
+  bool has_init = !a.nodes.empty() && a.nodes[0]->tag == "INIT_CLAUSE"_;
+  return IfView{has_init ? a.nodes[0].get() : nullptr, has_init ? 1u : 0u};
+}
+
 // View of an OBJECT_PROPERTY AST node — see grammar:
 //   OBJECT_PROPERTY <- MUTABLE _ (FLOAT/NUMBER/NIL/BOOLEAN/TUPLE/IDENTIFIER) _ ':' _ EXPRESSION
 //   (shorthand) OBJECT_PROPERTY <- MUTABLE _ IDENTIFIER   (no ':' or value)

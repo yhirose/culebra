@@ -754,15 +754,22 @@ class EffectsLowerer {
       if (has_suspension(*fv.iter)) reject_control_expr(*fv.iter);
       blocks.push_back(fv.body);
       if (fv.nobreak) blocks.push_back(fv.nobreak);
-    } else {  // IF: [cond, block, cond, block, …, (else-block)]
+    } else {  // IF: [(INIT_CLAUSE)?, cond, block, …, (else-block)]
+      auto iv = culebra::view_if(*s);
+      // A `perform` in the init clause is not supported (it would need a
+      // one-time hoist); reject it like the condition rule.
+      if (iv.init)
+        for (auto& b : iv.init->nodes)
+          if (has_suspension(*b)) reject_control_expr(*b);
+      size_t off = iv.arm_off;
       size_t n = s->nodes.size();
-      size_t pairs = n / 2;
+      size_t pairs = (n - off) / 2;
       for (size_t p = 0; p < pairs; p++) {
-        if (has_suspension(*s->nodes[2 * p]))
-          reject_control_expr(*s->nodes[2 * p]);
-        blocks.push_back(s->nodes[2 * p + 1].get());
+        if (has_suspension(*s->nodes[off + 2 * p]))
+          reject_control_expr(*s->nodes[off + 2 * p]);
+        blocks.push_back(s->nodes[off + 2 * p + 1].get());
       }
-      if (n % 2 == 1) blocks.push_back(s->nodes[n - 1].get());
+      if ((n - off) % 2 == 1) blocks.push_back(s->nodes[n - 1].get());
     }
     std::vector<std::string> new_blocks;
     for (auto* b : blocks) new_blocks.push_back(anf_block(*b, ctr));
@@ -1088,35 +1095,48 @@ class EffectsLowerer {
     return cps_seq(st, init_stmts, h, /*tail=*/false, rw);
   }
 
-  // if / else-if / else. IF nodes are [cond, block, …, elseblock?]. When `tail`,
-  // each arm is compiled in value position; a missing else leaves the value nil.
+  // if / else-if / else. IF nodes are [(INIT_CLAUSE)?, cond, block, …,
+  // elseblock?]. When `tail`, each arm is compiled in value position; a missing
+  // else leaves the value nil. An init clause runs its bindings once first.
   int cps_if(CpsState& st, const peg::Ast* ifn, int cont, bool tail,
              const std::set<std::string>& rw) const {
+    auto iv = culebra::view_if(*ifn);
     const auto& nodes = ifn->nodes;
-    size_t n = nodes.size();
+    size_t off = iv.arm_off;
+    size_t arm_n = nodes.size() - off;
     int else_entry;
     size_t pairs;
-    if (n % 2 == 1) {
-      else_entry = cps_block_seq(st, *nodes[n - 1], cont, tail, rw);
+    if (arm_n % 2 == 1) {
+      else_entry = cps_block_seq(st, *nodes[nodes.size() - 1], cont, tail, rw);
       if (st.failed) return -1;
-      pairs = (n - 1) / 2;
+      pairs = (arm_n - 1) / 2;
     } else {
       else_entry = cont;
-      pairs = n / 2;
+      pairs = arm_n / 2;
     }
     int chain = else_entry;
     for (size_t p = pairs; p-- > 0;) {
-      if (has_suspension(*nodes[2 * p])) reject_control_expr(*nodes[2 * p]);
-      int block_entry = cps_block_seq(st, *nodes[2 * p + 1], cont, tail, rw);
+      const peg::Ast* condn = nodes[off + 2 * p].get();
+      if (has_suspension(*condn)) reject_control_expr(*condn);
+      int block_entry =
+          cps_block_seq(st, *nodes[off + 2 * p + 1], cont, tail, rw);
       if (st.failed) return -1;
       int s = st.fresh();
       st.states[s] = std::format(
           "      if {} {{ this._eff_state = {} }} else {{ this._eff_state = {} }}{}\n"
           "      continue\n",
-          cps_rw(*nodes[2 * p], rw), block_entry, chain, mk(*nodes[2 * p]));
+          cps_rw(*condn, rw), block_entry, chain, mk(*condn));
       chain = s;
     }
-    return chain;
+    if (!iv.init) return chain;
+    // The init clause runs its (suspension-free) bindings once, then enters the
+    // if-chain.
+    std::vector<const peg::Ast*> init_stmts;
+    for (auto& b : iv.init->nodes) {
+      if (has_suspension(*b)) reject_control_expr(*b);
+      init_stmts.push_back(b.get());
+    }
+    return cps_seq(st, init_stmts, chain, /*tail=*/false, rw);
   }
 
   int cps_stmt(CpsState& st, const peg::Ast* s, int cont, bool tail,

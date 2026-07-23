@@ -6311,19 +6311,29 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   }
 
   Value eval_if(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
+    auto iv = culebra::view_if(ast);
     const auto& nodes = ast.nodes;
 
-    for (auto i = 0u; i < nodes.size(); i += 2) {
+    // An init clause (`if mut x = f(); …`) scopes its bindings to the whole
+    // if / else-if / else chain: bind them in an enclosing scope, then evaluate
+    // the arms in it. The taken branch's value outlives the scope (it is
+    // returned by value, refcounted). With no init clause `scope` is just env,
+    // and the arm pairing starts at index 0 (arm_off).
+    auto scope = iv.init ? make_scope(env) : env;
+    if (iv.init)
+      for (const auto& binding : iv.init->nodes) eval(*binding, scope);
+
+    for (auto i = iv.arm_off; i < nodes.size(); i += 2) {
       if (i + 1 == nodes.size()) {
         if (debugger_ && is_collapsed_single_statement(*nodes[i]))
-          statement_boundary(*nodes[i], env);  // breakpoint on a 1-stmt else
-        return eval(*nodes[i], env);
+          statement_boundary(*nodes[i], scope);  // breakpoint on a 1-stmt else
+        return eval(*nodes[i], scope);
       } else {
-        auto cond = eval(*nodes[i], env);
+        auto cond = eval(*nodes[i], scope);
         if (cond.to_bool()) {
           if (debugger_ && is_collapsed_single_statement(*nodes[i + 1]))
-            statement_boundary(*nodes[i + 1], env);  // 1-stmt then-body
-          return eval(*nodes[i + 1], env);
+            statement_boundary(*nodes[i + 1], scope);  // 1-stmt then-body
+          return eval(*nodes[i + 1], scope);
         }
       }
     }
