@@ -42,22 +42,46 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .pg-main {
   flex: 1; display: grid; grid-template-columns: 1fr 1fr; min-height: 0;
 }
-.pg-editor, .pg-output {
-  min-height: 0; margin: 0; overflow: auto;
-}
 .pg-editor {
+  min-height: 0; margin: 0; overflow: auto;
   background: var(--code-bg); border-right: 1px solid var(--border);
 }
 /* CodeMirror mounts its own DOM inside #editor; fill the pane. */
 .pg-editor .cm-editor { height: 100%; }
+
+/* --- right side: tabs + panes ------------------------------------------ */
+.pg-right { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.pg-tabs {
+  display: flex; gap: 0.2rem; padding: 0.4rem 0.6rem 0;
+  background: var(--surface-2); border-bottom: 1px solid var(--border);
+}
+.pg-tab {
+  font: inherit; font-size: 0.85rem; padding: 0.4rem 0.9rem;
+  border: 1px solid var(--border); border-bottom: none;
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: var(--surface-2); color: var(--muted); cursor: pointer;
+  position: relative; top: 1px;
+}
+.pg-tab.active { background: var(--bg); color: var(--text); border-bottom: 1px solid var(--bg); }
+.pg-tab:hover:not(.active) { color: var(--text); }
+
+.pg-panes { flex: 1; min-height: 0; position: relative; }
+.pg-pane { display: none; height: 100%; min-height: 0; overflow: auto; }
+.pg-pane.active { display: block; }
+
 .pg-output {
-  border: 0; padding: 1rem 1.2rem; font-family: var(--font-mono);
+  margin: 0; border: 0; padding: 1rem 1.2rem; font-family: var(--font-mono);
   font-size: 0.92rem; line-height: 1.55; tab-size: 2;
   background: var(--bg); color: var(--text); white-space: pre-wrap;
   word-break: break-word;
 }
 .pg-output.err { color: var(--danger); }
 .pg-output .placeholder { color: var(--muted); }
+
+/* xterm.js fills the TUI pane; it manages its own internal canvas sizing
+   from the fixed cols/rows given at construction (see app.js), not from
+   this container's box — the padding just keeps the game off the edges. */
+.pg-tui { padding: 0.6rem; background: #000; }
 
 @media (max-width: 720px) {
   .pg-main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }

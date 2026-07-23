@@ -55,7 +55,21 @@ namespace culebra {
 // `isatty(3)` — true when the fd refers to a terminal. Used by
 // IO.*_is_terminal and the Term colour-capability probe.
 inline bool os_isatty(int fd) {
-#if defined(_WIN32)
+#if defined(__EMSCRIPTEN__)
+  // No real tty in the browser, so the libc isatty() Emscripten ships
+  // always says no. The Playground's "full" (JSPI) build has a working
+  // Term.read_key (see term.h), so it reports itself as interactive —
+  // otherwise a TUI script's poll loop would spin forever never seeing a
+  // key. The "basic" (no-JSPI) build reports non-interactive so the same
+  // script takes its non-interactive/piped-input fallback instead, the way
+  // it already does natively when stdin isn't a tty.
+  (void)fd;
+#if defined(CULEBRA_WASM_JSPI)
+  return true;
+#else
+  return false;
+#endif
+#elif defined(_WIN32)
   return _isatty(fd) != 0;
 #else
   return ::isatty(fd) != 0;

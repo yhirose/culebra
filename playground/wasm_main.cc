@@ -1,19 +1,51 @@
 // culebra playground — interp-only core compiled to WebAssembly.
-// Call-based (no main): JS calls run_culebra(src) then get_output().
-// stdout (IO.puts/print write to std::cout) is captured deterministically by
-// swapping std::cout's stream buffer, so trailing newline-less output from
-// `print` is never lost to emscripten's line buffering.
+// Call-based (no main): JS calls run_culebra(src).
+//
+// Output streams live via a custom std::streambuf that posts to JS the
+// moment something flushes std::cout/cerr, rather than being captured and
+// handed back only after run_culebra returns. That capture-and-return
+// design (the previous approach here) works for a quick script but breaks a
+// TUI one: Term.app's event loop doesn't return until the user quits, so
+// nothing would ever reach the page while a game is being played. IO.puts
+// (which ends in std::endl) and Screen.flush() (one TUI frame) already
+// flush, so streaming falls out of the existing stdlib for free — no interp
+// change needed. IO.print alone doesn't auto-flush; run_culebra flushes
+// once more at the end so a plain script's trailing print()-without-\n text
+// is never lost, matching the old behavior for non-TUI scripts.
 #include <interpreter.h>
 #include <module_loader.h>
 #include <stdlib_interp.h>
 
+#include <emscripten.h>
 #include <emscripten/emscripten.h>
 
-#include <sstream>
 #include <string>
 #include <vector>
 
-static std::string g_output;
+class StreamingBuf : public std::streambuf {
+ protected:
+  int overflow(int ch) override {
+    if (ch != EOF) buf_.push_back(static_cast<char>(ch));
+    return ch;
+  }
+  std::streamsize xsputn(const char* s, std::streamsize n) override {
+    buf_.append(s, static_cast<size_t>(n));
+    return n;
+  }
+  int sync() override {
+    if (!buf_.empty()) {
+      EM_ASM({ postMessage({ type: "output", text: UTF8ToString($0, $1) }); },
+             buf_.data(), buf_.size());
+      buf_.clear();
+    }
+    return 0;
+  }
+
+ private:
+  std::string buf_;
+};
+
+static StreamingBuf g_stream_buf;
 
 // tensorlib starts in cpu mode; auto is what makes the WebGPU build worth
 // shipping — it keeps small tensors on the CPU (a browser dispatch has a
@@ -25,15 +57,20 @@ static const bool g_tensor_auto = [] {
   return true;
 }();
 
+static const bool g_streams_installed = [] {
+  std::cout.rdbuf(&g_stream_buf);
+  std::cerr.rdbuf(&g_stream_buf);  // IO.eputs/eprint
+  return true;
+}();
+
 extern "C" {
 
-// Run one program; returns 0 on success, 1 on error. Combined stdout + error
-// text is retrievable via get_output().
+// Run one program; returns 0 on success, 1 on error. Output (including
+// error text) has already streamed to JS as "output" messages by the time
+// this returns — see StreamingBuf above.
 EMSCRIPTEN_KEEPALIVE int run_culebra(const char* src_c) {
   (void)g_tensor_auto;
-  std::ostringstream cap;
-  std::streambuf* old = std::cout.rdbuf(cap.rdbuf());
-  std::streambuf* old_err = std::cerr.rdbuf(cap.rdbuf());  // IO.eputs/eprint
+  (void)g_streams_installed;
 
   int rc = 0;
   std::vector<std::string> msgs;
@@ -42,7 +79,7 @@ EMSCRIPTEN_KEEPALIVE int run_culebra(const char* src_c) {
   try {
     modules = loader.load_program("<playground>", src_c, msgs);
     if (modules.empty()) {
-      for (auto& m : msgs) cap << m << "\n";
+      for (auto& m : msgs) std::cerr << m << "\n";
       rc = 1;
     } else {
       auto env = culebra::environment({});
@@ -50,26 +87,23 @@ EMSCRIPTEN_KEEPALIVE int run_culebra(const char* src_c) {
       culebra::Value val;
       culebra::Debugger dbg;
       if (!culebra::interpret_modules(modules, env, val, msgs, dbg)) {
-        for (auto& m : msgs) cap << m << "\n";
+        for (auto& m : msgs) std::cerr << m << "\n";
         rc = 1;
       }
     }
   } catch (const culebra::CulebraError& e) {
-    cap << e.kind << ": " << e.what();
-    if (e.line > 0 || e.col > 0) cap << " at " << e.line << ":" << e.col << ".";
-    cap << "\n";
+    std::cerr << e.kind << ": " << e.what();
+    if (e.line > 0 || e.col > 0) std::cerr << " at " << e.line << ":" << e.col << ".";
+    std::cerr << "\n";
     rc = 1;
   } catch (const std::exception& e) {
-    cap << "error: " << e.what() << "\n";
+    std::cerr << "error: " << e.what() << "\n";
     rc = 1;
   }
 
-  std::cout.rdbuf(old);
-  std::cerr.rdbuf(old_err);
-  g_output = std::move(cap).str();
+  std::cout.flush();
+  std::cerr.flush();
   return rc;
 }
-
-EMSCRIPTEN_KEEPALIVE const char* get_output() { return g_output.c_str(); }
 
 }  // extern "C"

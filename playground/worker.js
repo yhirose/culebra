@@ -1,17 +1,23 @@
 // Playground worker: owns the WASM instance so the page never blocks.
 // Stop = the main thread terminates this worker and spawns a fresh one.
 //
-// Two builds ship (see build.sh): culebra-gpu adds the WebGPU Tensor backend
-// but is instantiable only where JSPI exists, so pick by feature detection —
-// by capability, never by browser version (Chrome 137 shipping JSPI is exactly
-// what broke version-sniffing detectors elsewhere).
+// Two builds ship (see build.sh): culebra-full adds JSPI, needed for both
+// the WebGPU Tensor backend and the TUI tab's Term.read_key. It loads only
+// where a WebGPU device can actually be acquired — tensorlib's WebGPU init
+// crashes at module startup with no device handed in (a known gap, not
+// handled gracefully yet), so a browser with JSPI but no usable WebGPU
+// device falls back to the basic build and loses TUI too. That coupling is
+// a narrow edge case (WebGPU disabled/unavailable on an otherwise-current
+// browser), not the common one — pick by capability, never by browser
+// version (Chrome 137 shipping JSPI is exactly what broke version-sniffing
+// detectors elsewhere).
 const hasJSPI = typeof WebAssembly.Suspending === "function";
 
 // The device is acquired here, in JS, and handed to wasm fully formed, which
 // is what lets every C++ entry point stay synchronous — the async surface is
 // this file, not the library. Without it tensorlib's WebGPU init dereferences
 // an undefined device ("cannot read properties of undefined (reading
-// 'queue')"), so a GPU build with no device must fall back to the CPU build.
+// 'queue')").
 async function acquireDevice() {
   if (!hasJSPI || !navigator.gpu) return null;
   try {
@@ -23,30 +29,92 @@ async function acquireDevice() {
 }
 
 const device = await acquireDevice();
-const useGpuBuild = device !== null;
+const useFullBuild = device !== null;
 
 const { default: createCulebra } = await import(
-  useGpuBuild ? "./culebra-gpu.js" : "./culebra-cpu.js"
+  useFullBuild ? "./culebra-full.js" : "./culebra-basic.js"
 );
 const mod = await createCulebra(
-  useGpuBuild ? { preinitializedWebGPUDevice: device } : {}
+  useFullBuild ? { preinitializedWebGPUDevice: device } : {}
 );
 
-postMessage({ type: "ready", backend: useGpuBuild ? "gpu" : "cpu" });
+// --- TUI key/mouse input --------------------------------------------------
+//
+// Term.read_key (full build only; see term.h) suspends the wasm call via
+// JSPI until self.__waitForKey resolves. The main thread forwards xterm.js's
+// onData bytes here as "key" messages (app.js) — a keystroke or an SGR mouse
+// report arrives as one onData call and is passed through verbatim;
+// culebra's _parse_event already tells them apart. A key arriving with
+// nobody waiting (the interpreter is busy between polls) is queued rather
+// than dropped, so fast typing/clicking isn't lost.
+const keyQueue = [];
+let pendingKeyResolve = null;
+
+function deliverKey(key) {
+  if (pendingKeyResolve) {
+    const resolve = pendingKeyResolve;
+    pendingKeyResolve = null;
+    resolve(key);
+  } else {
+    keyQueue.push(key);
+  }
+}
+
+self.__waitForKey = (timeoutMs) => {
+  if (keyQueue.length > 0) return Promise.resolve(keyQueue.shift());
+  return new Promise((resolve) => {
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      pendingKeyResolve = null;
+      resolve("");
+    }, timeoutMs);
+    pendingKeyResolve = (key) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(key);
+    };
+  });
+};
+
+postMessage({ type: "ready", backend: useFullBuild ? "full" : "basic" });
+
+// Output streams live: wasm_main.cc's StreamingBuf posts "output" messages
+// directly (via EM_ASM's plain `postMessage`, i.e. this same worker's global
+// scope) the moment std::cout/cerr flushes — those never pass through this
+// onmessage handler at all. This handler only owns the run/key protocol.
+let running = false;
 
 onmessage = async (e) => {
-  const { type, src } = e.data;
-  if (type !== "run") return;
+  const { type } = e.data;
+  if (type === "key") {
+    deliverKey(e.data.key);
+    return;
+  }
+  if (type === "termSize") {
+    // Read synchronously by _wasm_term_cols/rows (term.h) — a Worker has its
+    // own global scope, so app.js can't set these directly and sends them
+    // as a message instead. Must arrive before the program runs.
+    self.__termCols = e.data.cols;
+    self.__termRows = e.data.rows;
+    return;
+  }
+  if (type !== "run" || running) return;  // ignore a Run while one is in flight
+  running = true;
+  keyQueue.length = 0;
+  pendingKeyResolve = null;
+
   const t0 = performance.now();
   let rc = 1;
   try {
-    // JSPI makes run_culebra return a promise in the GPU build; the GPU waits
-    // suspend beneath it. Nothing in the C++ call chain is written as async.
-    rc = await mod.ccall("run_culebra", "number", ["string"], [src], { async: useGpuBuild });
+    // JSPI makes run_culebra return a promise in the full build; TUI/GPU
+    // waits suspend beneath it. Nothing in the C++ call chain is async.
+    rc = await mod.ccall("run_culebra", "number", ["string"], [e.data.src], { async: useFullBuild });
   } catch (err) {
-    postMessage({ type: "result", rc: 1, out: "internal error: " + err, ms: performance.now() - t0 });
-    return;
+    postMessage({ type: "output", text: "internal error: " + err });
   }
-  const out = mod.UTF8ToString(mod._get_output());
-  postMessage({ type: "result", rc, out, ms: performance.now() - t0 });
+  running = false;
+  postMessage({ type: "done", rc, ms: performance.now() - t0 });
 };

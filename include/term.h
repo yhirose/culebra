@@ -15,7 +15,10 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
-#if !defined(_WIN32)
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+#include <cstdio>
+#elif !defined(_WIN32)
 #include <poll.h>
 #include <sys/ioctl.h>
 #include <termios.h>
@@ -29,7 +32,69 @@
 namespace culebra {
 namespace _term_detail {
 
-#if !defined(_WIN32)
+#if defined(__EMSCRIPTEN__)
+
+// Browser TUI backend for the Playground. There is no real tty: raw mode is
+// a no-op (the frontend terminal emulator is already "raw"), size/resize
+// come from JS-side state the frontend keeps current, and read_key needs to
+// suspend the wasm call until a key arrives or a timeout elapses — the
+// browser equivalent of POSIX poll() on stdin.
+//
+// That suspend needs JSPI, which only the "full" wasm build (see
+// playground/build.sh) links with -sJSPI. The "basic" build (any browser
+// without JSPI) gets a stub that always times out immediately, so a TUI
+// script still runs (degrading to non-interactive, like piped stdin does
+// natively) instead of failing to link.
+
+inline void raw_on() {}
+inline void raw_off() {}
+
+// self.__termCols/__termRows are set once by worker.js before a run starts
+// (from the terminal emulator's current size); self.__termResized is set by
+// the frontend on an actual resize and consumed here. Plain EM_JS (no
+// suspend) — reading JS state is synchronous, unlike waiting for a key.
+EM_JS(int, _wasm_term_cols, (), { return self.__termCols || 80; });
+EM_JS(int, _wasm_term_rows, (), { return self.__termRows || 24; });
+EM_JS(int, _wasm_take_resize, (), {
+  if (self.__termResized) {
+    self.__termResized = false;
+    return 1;
+  }
+  return 0;
+});
+
+inline int cols() { return _wasm_term_cols(); }
+inline int rows() { return _wasm_term_rows(); }
+inline bool take_resize() { return _wasm_take_resize() != 0; }
+
+#if defined(CULEBRA_WASM_JSPI)
+// Suspends the wasm call (via JSPI) until worker.js's self.__waitForKey
+// resolves — either a key arrived (the frontend forwards it early) or
+// timeout_ms elapsed with none. See playground/worker.js.
+EM_ASYNC_JS(char*, _wasm_read_key, (double timeout_ms), {
+  return Asyncify.handleAsync(async () => {
+    const key = await self.__waitForKey(timeout_ms);
+    const len = lengthBytesUTF8(key) + 1;
+    const ptr = _malloc(len);
+    stringToUTF8(key, ptr, len);
+    return ptr;
+  });
+});
+
+inline std::string read_key(double timeout_secs) {
+  double ms = timeout_secs <= 0 ? 0.0 : timeout_secs * 1000.0;
+  char* p = _wasm_read_key(ms);
+  std::string out(p);
+  std::free(p);
+  return out;
+}
+#else
+// No JSPI in this build: a TUI script's poll loop always sees "no key
+// yet" — the same degradation piped/non-tty stdin already causes natively.
+inline std::string read_key(double) { return ""; }
+#endif  // CULEBRA_WASM_JSPI
+
+#elif !defined(_WIN32)
 
 // Original terminal attributes, captured on the first `raw_on` so `raw_off`
 // can restore them. `_raw_active` guards against double enable/disable.

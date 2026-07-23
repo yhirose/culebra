@@ -7,6 +7,7 @@
   <meta name="description" content="Run culebra in your browser — the interpreter compiled to WebAssembly.">
   <link rel="stylesheet" href="../assets/brand.css">
   <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="https://esm.sh/@xterm/xterm@5.5.0/css/xterm.css">
 </head>
 <body>
   <header class="pg-header">
@@ -48,7 +49,16 @@
 
   <main class="pg-main">
     <div id="editor" class="pg-editor"></div>
-    <pre id="output" class="pg-output"><span class="placeholder">Output appears here. Press Run.</span></pre>
+    <div class="pg-right">
+      <div class="pg-tabs" role="tablist">
+        <button id="tab-output" class="pg-tab active" data-pane="output" role="tab" aria-selected="true">Output</button>
+        <button id="tab-tui" class="pg-tab" data-pane="tui" role="tab" aria-selected="false">TUI</button>
+      </div>
+      <div class="pg-panes">
+        <pre id="output" class="pg-output pg-pane active"><span class="placeholder">Output appears here. Press Run.</span></pre>
+        <div id="tui" class="pg-tui pg-pane"></div>
+      </div>
+    </div>
   </main>
 
   <script>
