@@ -726,8 +726,11 @@ culebra_runtime_canvas_mouse_buttons() {
   return culebra::_canvas_detail::mouse_buttons();
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_tone(
-    int64_t freq, int64_t dur, int64_t vol, int64_t wave) {
-  culebra::_canvas_detail::tone(freq, dur, vol, wave);
+    int64_t start_freq, int64_t end_freq, int64_t attack, int64_t decay,
+    int64_t sustain, int64_t release, int64_t vol, int64_t peak,
+    int64_t channel, int64_t duty) {
+  culebra::_canvas_detail::tone(start_freq, end_freq, attack, decay, sustain,
+                                release, vol, peak, channel, duty);
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_width() {
   return culebra::_canvas_detail::width();
@@ -6954,7 +6957,8 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::canvas_mouse_x, i64);
   jit.module_->getOrInsertFunction(rt::canvas_mouse_y, i64);
   jit.module_->getOrInsertFunction(rt::canvas_mouse_buttons, i64);
-  jit.module_->getOrInsertFunction(rt::canvas_tone, vt, i64, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_tone, vt, i64, i64, i64, i64, i64,
+                                   i64, i64, i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_width, i64);
   jit.module_->getOrInsertFunction(rt::canvas_height, i64);
   }
@@ -7963,7 +7967,9 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
       return jit.own(make_long(
           emit_call(module_->getFunction(rt::canvas_mouse_buttons), {})));
     if (method == "tone")
-      if (auto v = longs({"freq", "dur", "vol", "wave"}))
+      if (auto v = longs({"start_freq", "end_freq", "attack", "decay",
+                          "sustain", "release", "vol", "peak", "channel",
+                          "duty"}))
         return call_void(rt::canvas_tone, *v);
     if (method == "width" && a.empty())
       return jit.own(make_long(

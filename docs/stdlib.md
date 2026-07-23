@@ -3871,10 +3871,11 @@ composite.
 
 ### Text
 
-`Canvas.text(s, x, y, color)` draws `s` in a built-in 5×7 bitmap font
-(upper-cased first, so lowercase works; unknown glyphs are skipped). Advance is
-6px per character. `Canvas.text_width(s) -> Long` gives the pixel width, for
-centring or right-aligning a HUD.
+`Canvas.text(s, x, y, color)` draws `s` in the built-in 8×8 bitmap font (the
+WASM-4 runtime font, covering printable ASCII 32–126, upper- and lower-case;
+characters outside that range are skipped). Advance is a fixed 8px per
+character. `Canvas.text_width(s) -> Long` gives the pixel width, for centring or
+right-aligning a HUD.
 
 ### Input
 
@@ -3897,11 +3898,18 @@ detection, `Canvas.Input.new()` tracks the previous frame:
 
 ### Audio
 
-`Canvas.tone(freq, dur, vol = 100, wave = 0)` plays a simple tone: frequency in
-Hz, duration in frames (~60fps), volume 0–100, and a waveform constant
-`Canvas.PULSE` / `TRIANGLE` / `SAWTOOTH` / `NOISE`. It is a small subset of a
-chiptune APU (one voice per call, a quick decay) — enough for game blips — and
-is silent on the headless native backend.
+`Canvas.tone(freq, dur, vol = 100, wave = 0, end_freq = nil, attack = 0,
+decay = 0, release = 0, peak = nil, duty = 2)` plays a note through a small
+WASM-4-style APU. In its simplest form `Canvas.tone(freq, dur)` is a `dur`-frame
+note (frames at ~60fps) at `freq` Hz. The optional arguments expose the full
+envelope: the pitch slides `freq → end_freq` while an ADSR envelope
+(`attack`/`decay`/`release` in frames, `dur` as the sustain length) shapes the
+volume from 0 up to `peak`, down to the sustain `vol` (0–100), and back to 0.
+`wave` selects the channel — `Canvas.PULSE` / `PULSE2` (with a `duty` cycle:
+`Canvas.DUTY_EIGHTH` / `DUTY_QUARTER` / `DUTY_HALF` / `DUTY_THREE_QUARTER`),
+`Canvas.TRIANGLE`, `Canvas.NOISE`, or the culebra extension `Canvas.SAWTOOTH`.
+Each channel is monophonic (a new note cuts the previous one). Audio is silent
+on the headless native backend.
 
 ### The game loop
 

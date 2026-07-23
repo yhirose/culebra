@@ -164,8 +164,17 @@ EM_JS(int, _wasm_canvas_buttons, (), { return self.__canvasButtons || 0; });
 EM_JS(int, _wasm_canvas_mouse_x, (), { return self.__canvasMouseX || 0; });
 EM_JS(int, _wasm_canvas_mouse_y, (), { return self.__canvasMouseY || 0; });
 EM_JS(int, _wasm_canvas_mouse_buttons, (), { return self.__canvasMouseButtons || 0; });
-EM_JS(void, _wasm_canvas_tone, (int freq, int dur, int vol, int wave), {
-  postMessage({ type: "tone", freq: freq, dur: dur, vol: vol, wave: wave });
+// A WASM-4-style tone: a note that slides start->end frequency over its life
+// under an ADSR envelope, on one of four channels (two pulse waves with a duty
+// cycle, a triangle, and noise). Times are in frames at ~60fps; volume/peak are
+// 0..100. The frontend (app.js playTone) turns this into WebAudio nodes.
+EM_JS(void, _wasm_canvas_tone,
+      (int start_freq, int end_freq, int attack, int decay, int sustain,
+       int release, int vol, int peak, int channel, int duty), {
+  postMessage({ type: "tone", startFreq: start_freq, endFreq: end_freq,
+                attack: attack, decay: decay, sustain: sustain,
+                release: release, vol: vol, peak: peak, channel: channel,
+                duty: duty });
 });
 
 inline void present() {
@@ -177,9 +186,14 @@ inline int64_t buttons() { return _wasm_canvas_buttons(); }
 inline int64_t mouse_x() { return _wasm_canvas_mouse_x(); }
 inline int64_t mouse_y() { return _wasm_canvas_mouse_y(); }
 inline int64_t mouse_buttons() { return _wasm_canvas_mouse_buttons(); }
-inline void tone(int64_t freq, int64_t dur, int64_t vol, int64_t wave) {
-  _wasm_canvas_tone(static_cast<int>(freq), static_cast<int>(dur),
-                    static_cast<int>(vol), static_cast<int>(wave));
+inline void tone(int64_t start_freq, int64_t end_freq, int64_t attack,
+                 int64_t decay, int64_t sustain, int64_t release, int64_t vol,
+                 int64_t peak, int64_t channel, int64_t duty) {
+  _wasm_canvas_tone(static_cast<int>(start_freq), static_cast<int>(end_freq),
+                    static_cast<int>(attack), static_cast<int>(decay),
+                    static_cast<int>(sustain), static_cast<int>(release),
+                    static_cast<int>(vol), static_cast<int>(peak),
+                    static_cast<int>(channel), static_cast<int>(duty));
 }
 
 #else  // native (headless in this milestone)
@@ -189,7 +203,8 @@ inline int64_t buttons() { return 0; }
 inline int64_t mouse_x() { return 0; }
 inline int64_t mouse_y() { return 0; }
 inline int64_t mouse_buttons() { return 0; }
-inline void tone(int64_t, int64_t, int64_t, int64_t) {}
+inline void tone(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,
+                 int64_t, int64_t, int64_t) {}
 
 #endif  // __EMSCRIPTEN__
 

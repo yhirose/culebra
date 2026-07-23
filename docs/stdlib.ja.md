@@ -3728,9 +3728,10 @@ packed RGBA `Long`、または `palette` を与えたときはそのパレット
 
 ### テキスト
 
-`Canvas.text(s, x, y, color)` は内蔵 5×7 ビットマップフォントで `s` を描く（先に
-大文字化するので小文字も可、未定義グリフはスキップ）。送りは 1 文字 6px。
-`Canvas.text_width(s) -> Long` はピクセル幅を返す（HUD の中央寄せ / 右寄せ用）。
+`Canvas.text(s, x, y, color)` は内蔵 8×8 ビットマップフォント（WASM-4 ランタイム
+のフォント、印字可能 ASCII 32–126 の大文字・小文字を収録、範囲外の文字はスキップ）
+で `s` を描く。送りは 1 文字固定 8px。`Canvas.text_width(s) -> Long` はピクセル幅
+を返す（HUD の中央寄せ / 右寄せ用）。
 
 ### 入力
 
@@ -3753,10 +3754,16 @@ packed RGBA `Long`、または `palette` を与えたときはそのパレット
 
 ### 音声
 
-`Canvas.tone(freq, dur, vol = 100, wave = 0)` は簡易な音を鳴らす: 周波数（Hz）、
-長さ（フレーム、~60fps）、音量 0–100、波形定数 `Canvas.PULSE` / `TRIANGLE` /
-`SAWTOOTH` / `NOISE`。チップチューン APU の小さなサブセット（1 呼び出し 1 ボイス、
-素早い減衰）— ゲームの効果音には十分 — で、ヘッドレスなネイティブでは無音。
+`Canvas.tone(freq, dur, vol = 100, wave = 0, end_freq = nil, attack = 0,
+decay = 0, release = 0, peak = nil, duty = 2)` は WASM-4 流の小さな APU で音を
+鳴らす。最も簡単な形 `Canvas.tone(freq, dur)` は `freq` Hz の `dur` フレーム
+（~60fps）の音。オプション引数でエンベロープ全体を扱える: 音程は `freq → end_freq`
+にスライドし、ADSR エンベロープ（`attack`/`decay`/`release` はフレーム数、`dur`
+はサステイン長）が音量を 0 → `peak` → サステインの `vol`（0–100）→ 0 と整形する。
+`wave` はチャンネルを選ぶ — `Canvas.PULSE` / `PULSE2`（`duty` サイクル付き:
+`Canvas.DUTY_EIGHTH` / `DUTY_QUARTER` / `DUTY_HALF` / `DUTY_THREE_QUARTER`）、
+`Canvas.TRIANGLE`、`Canvas.NOISE`、または culebra 拡張の `Canvas.SAWTOOTH`。各
+チャンネルはモノフォニック（新しい音が前の音を止める）。ヘッドレスなネイティブでは無音。
 
 ### ゲームループ
 

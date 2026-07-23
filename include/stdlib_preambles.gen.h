@@ -345,74 +345,46 @@ let _canvas_module = fn () {
     }
   }
 
-  # --- built-in 5x7 bitmap font -------------------------------------------
-  # Each glyph is 7 rows of a 5-wide cell; '#' is a lit pixel. Rows are turned
-  # into arrays of booleans once, at module load, so text() just indexes them.
-  # Advance is 6px (5 + 1 gap). Uppercase, digits, and a little punctuation —
-  # enough for a game's HUD; text() upper-cases its input so lowercase works.
-  let _glyph = fn (rows) { rows.map(|row| row.graphemes().map(|c| to_string(c) != " ").collect()) }
-  let _font = {
-    " ": _glyph(["     ", "     ", "     ", "     ", "     ", "     ", "     "]),
-    "0": _glyph([" ### ", "#   #", "#  ##", "# # #", "##  #", "#   #", " ### "]),
-    "1": _glyph(["  #  ", " ##  ", "  #  ", "  #  ", "  #  ", "  #  ", " ### "]),
-    "2": _glyph([" ### ", "#   #", "    #", "   # ", "  #  ", " #   ", "#####"]),
-    "3": _glyph(["#####", "   # ", "  #  ", "   # ", "    #", "#   #", " ### "]),
-    "4": _glyph(["   # ", "  ## ", " # # ", "#  # ", "#####", "   # ", "   # "]),
-    "5": _glyph(["#####", "#    ", "#### ", "    #", "    #", "#   #", " ### "]),
-    "6": _glyph(["  ## ", " #   ", "#    ", "#### ", "#   #", "#   #", " ### "]),
-    "7": _glyph(["#####", "    #", "   # ", "  #  ", " #   ", " #   ", " #   "]),
-    "8": _glyph([" ### ", "#   #", "#   #", " ### ", "#   #", "#   #", " ### "]),
-    "9": _glyph([" ### ", "#   #", "#   #", " ####", "    #", "   # ", " ##  "]),
-    "A": _glyph([" ### ", "#   #", "#   #", "#####", "#   #", "#   #", "#   #"]),
-    "B": _glyph(["#### ", "#   #", "#   #", "#### ", "#   #", "#   #", "#### "]),
-    "C": _glyph([" ### ", "#   #", "#    ", "#    ", "#    ", "#   #", " ### "]),
-    "D": _glyph(["###  ", "#  # ", "#   #", "#   #", "#   #", "#  # ", "###  "]),
-    "E": _glyph(["#####", "#    ", "#    ", "#### ", "#    ", "#    ", "#####"]),
-    "F": _glyph(["#####", "#    ", "#    ", "#### ", "#    ", "#    ", "#    "]),
-    "G": _glyph([" ### ", "#   #", "#    ", "# ###", "#   #", "#   #", " ### "]),
-    "H": _glyph(["#   #", "#   #", "#   #", "#####", "#   #", "#   #", "#   #"]),
-    "I": _glyph([" ### ", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ", " ### "]),
-    "J": _glyph(["  ###", "   # ", "   # ", "   # ", "#  # ", "#  # ", " ##  "]),
-    "K": _glyph(["#   #", "#  # ", "# #  ", "##   ", "# #  ", "#  # ", "#   #"]),
-    "L": _glyph(["#    ", "#    ", "#    ", "#    ", "#    ", "#    ", "#####"]),
-    "M": _glyph(["#   #", "## ##", "# # #", "#   #", "#   #", "#   #", "#   #"]),
-    "N": _glyph(["#   #", "##  #", "# # #", "#  ##", "#   #", "#   #", "#   #"]),
-    "O": _glyph([" ### ", "#   #", "#   #", "#   #", "#   #", "#   #", " ### "]),
-    "P": _glyph(["#### ", "#   #", "#   #", "#### ", "#    ", "#    ", "#    "]),
-    "Q": _glyph([" ### ", "#   #", "#   #", "#   #", "# # #", "#  # ", " ## #"]),
-    "R": _glyph(["#### ", "#   #", "#   #", "#### ", "# #  ", "#  # ", "#   #"]),
-    "S": _glyph([" ####", "#    ", "#    ", " ### ", "    #", "    #", "#### "]),
-    "T": _glyph(["#####", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ", "  #  "]),
-    "U": _glyph(["#   #", "#   #", "#   #", "#   #", "#   #", "#   #", " ### "]),
-    "V": _glyph(["#   #", "#   #", "#   #", "#   #", "#   #", " # # ", "  #  "]),
-    "W": _glyph(["#   #", "#   #", "#   #", "# # #", "# # #", "## ##", "#   #"]),
-    "X": _glyph(["#   #", "#   #", " # # ", "  #  ", " # # ", "#   #", "#   #"]),
-    "Y": _glyph(["#   #", "#   #", " # # ", "  #  ", "  #  ", "  #  ", "  #  "]),
-    "Z": _glyph(["#####", "    #", "   # ", "  #  ", " #   ", "#    ", "#####"]),
-    ".": _glyph(["     ", "     ", "     ", "     ", "     ", " ##  ", " ##  "]),
-    ",": _glyph(["     ", "     ", "     ", "     ", " ##  ", " ##  ", "#    "]),
-    ":": _glyph(["     ", " ##  ", " ##  ", "     ", " ##  ", " ##  ", "     "]),
-    "!": _glyph(["  #  ", "  #  ", "  #  ", "  #  ", "  #  ", "     ", "  #  "]),
-    "?": _glyph([" ### ", "#   #", "    #", "   # ", "  #  ", "     ", "  #  "]),
-    "-": _glyph(["     ", "     ", "     ", "#####", "     ", "     ", "     "]),
-    "+": _glyph(["     ", "  #  ", "  #  ", "#####", "  #  ", "  #  ", "     "]),
-    "/": _glyph(["    #", "    #", "   # ", "  #  ", " #   ", "#    ", "#    "]),
-  }
-  let _char_w = 6
-  let _char_h = 7
+  # --- built-in 8x8 bitmap font -------------------------------------------
+  # The WASM-4 runtime font (ISC-licensed, aduros/wasm4), covering printable
+  # ASCII 32..126. Each glyph is 8 rows of 8 pixels, one byte per row, MSB the
+  # leftmost pixel, and a 0 bit is a lit pixel. It is packed here as hex and
+  # unpacked once at module load into a flat byte table indexed by
+  # (code - 32) * 8 + row. Advance is a fixed 8px, matching WASM-4's text().
+  let _font_hex = "ffffffffffffffffc7c7c7cfcfffcfff939393ffffffffff93019393930193ffef832f83e903efff9d5b37efd9b573ff8f27278f253381ffcfcfcffffffffffff3e7cfcfcfe7f3ff9fcfe7e7e7cf9fffff93c701c793ffffffe7e781e7e7ffffffffffffffcfcf9fffffff81ffffffffffffffffffcfcffffdfbf7efdfbf7fffc7b33939399bc7ffe7c7e7e7e7e781ff8339f1c3871f01ff81f3e7c3f93983ffe3c3933301f3f3ff033f03f9f93983ffc39f3f03393983ff0139f3e7cfcfcfff873b1b87617983ff83393981f9f387ffffcfcfffcfcfffffffcfcfffcfcf9ffff3e7cf9fcfe7f3ffffff01ff01ffffff9fcfe7f3e7cf9fff830139f3c7ffc7ff837d4555417f83ffc7933939013939ff03393903393903ffc3993f3f3f99c3ff07333939393307ff013f3f033f3f01ff013f3f033f3f3fffc19f3f313999c1ff39393901393939ff81e7e7e7e7e781fff9f9f9f9f93983ff3933270f072331ff9f9f9f9f9f9f81ff39110101293939ff39190901213139ff83393939393983ff03393939033f3fff83393939213385ff03393931072331ff87333f83f93983ff81e7e7e7e7e7e7ff39393939393983ff3939391183c7efff39392901011139ff391183c7831139ff999999c3e7e7e7ff01f1e3c78f1f01ffc3cfcfcfcfcfc3ff7fbfdfeff7fbfdff87e7e7e7e7e787ffc793ffffffffffffffffffffffffff01eff7ffffffffffffffff83f9813981ff3f3f0339393983ffffff813f3f3f81fff9f98139393981ffffff8339013f83fff1e781e7e7e7e7ffffff81393981f9833f3f0339393939ffe7ffc7e7e7e781fff3ffe3f3f3f3f3873f3f3103072331ffc7e7e7e7e7e781ffffff0349494949ffffff0339393939ffffff8339393983ffffff033939033f3fffff81393981f9f9ffff918f9f9f9fffffff833f83f903ffe7e781e7e7e7e7ffffff3939393981ffffff999999c3e7ffffff4949494981ffffff3901c70139ffffff39393981f983ffff01e3c78f01fff3e7e7cfe7e7f3ffe7e7e7e7e7e7e7ff9fcfcfe7cfcf9fffffff8f45e3ffffff"
+  let _hex_digits = "0123456789abcdef".graphemes().collect()
+  let _font_bytes = fn () {
+    let chars = _font_hex.graphemes().collect()
+    mut out = []
+    mut i = 0
+    while i < chars.size() {
+      let hi = _hex_digits.index_of(chars[i])
+      let lo = _hex_digits.index_of(chars[i + 1])
+      out.push(hi * 16 + lo)
+      i = i + 2
+    }
+    out
+  }()
+  let _font_first = 32       # first glyph code (space)
+  let _font_last = 126       # last glyph code (~)
+  let _char_w = 8
 
-  # Draw `s` at (x, y) in `color`, left to right (6px per glyph). Unknown
-  # characters are skipped (advance still applies), so layout stays stable.
+  # Draw `s` at (x, y) in `color`, left to right (8px per glyph). Characters
+  # outside the printable range are skipped (advance still applies), so layout
+  # stays stable.
   let text = fn (s, x, y, color) {
     mut cx = x
-    for ch in s.upper().graphemes() {
-      let g = _font.get(to_string(ch), nil)
-      if g != nil {
+    for ch in s.graphemes() {
+      let code = to_string(ch).bytes().collect()[0]
+      if code >= _font_first && code <= _font_last {
+        let base = (code - _font_first) * 8
         mut ry = 0
-        for row in g {
+        while ry < 8 {
+          let bits = _font_bytes[base + ry]
           mut rx = 0
-          for lit in row {
-            if lit { _Canvas.set_pixel(cx + rx, y + ry, color) }
+          while rx < 8 {
+            # a 0 bit is a lit pixel (WASM-4 convention)
+            if ((bits >> (7 - rx)) & 1) == 0 { _Canvas.set_pixel(cx + rx, y + ry, color) }
             rx = rx + 1
           }
           ry = ry + 1
@@ -449,13 +421,32 @@ let _canvas_module = fn () {
   }
 
   # --- audio --------------------------------------------------------------
-  let PULSE = 0
-  let TRIANGLE = 1
-  let SAWTOOTH = 2
+  # Channels, matching WASM-4's APU. The two pulse channels take a duty cycle;
+  # SAWTOOTH is a culebra extension (not a WASM-4 channel). These values are the
+  # channel codes passed straight through to the host.
+  let PULSE = 0       # pulse 1
+  let PULSE2 = 1      # pulse 2
+  let TRIANGLE = 2
   let NOISE = 3
-  # Play a simple tone: frequency (Hz), duration (frames at ~60fps), volume
-  # (0..100), waveform. No-op on the headless native backend.
-  let tone = fn (freq, dur, vol = 100, wave = 0) { _Canvas.tone(freq, dur, vol, wave) }
+  let SAWTOOTH = 4
+  # Duty cycles for the pulse channels.
+  let DUTY_EIGHTH = 0
+  let DUTY_QUARTER = 1
+  let DUTY_HALF = 2
+  let DUTY_THREE_QUARTER = 3
+
+  # Play a tone. In the simple form, tone(freq, dur) is a `dur`-frame note at
+  # `freq`. The optional args expose the full WASM-4 envelope: the note slides
+  # `freq` -> `end_freq` while an ADSR envelope (attack/decay/release in frames,
+  # `dur` is the sustain length) shapes the amplitude from 0 up to `peak`, down
+  # to the sustain `vol`, and back to 0. `wave` picks the channel and `duty` the
+  # pulse shape. No-op on the headless native backend.
+  let tone = fn (freq, dur, vol = 100, wave = 0, end_freq = nil,
+                 attack = 0, decay = 0, release = 0, peak = nil, duty = 2) {
+    let ef = if end_freq == nil { freq } else { end_freq }
+    let pk = if peak == nil { vol } else { peak }
+    _Canvas.tone(freq, ef, attack, decay, dur, release, vol, pk, wave, duty)
+  }
 
   # --- game loop ----------------------------------------------------------
   # Set up a w×h framebuffer and drive `tick` once per frame, presenting after
@@ -496,7 +487,10 @@ let _canvas_module = fn () {
     tone: tone,
     run: run,
     LEFT: LEFT, RIGHT: RIGHT, UP: UP, DOWN: DOWN, A: A, B: B,
-    PULSE: PULSE, TRIANGLE: TRIANGLE, SAWTOOTH: SAWTOOTH, NOISE: NOISE,
+    PULSE: PULSE, PULSE2: PULSE2, TRIANGLE: TRIANGLE, SAWTOOTH: SAWTOOTH,
+    NOISE: NOISE,
+    DUTY_EIGHTH: DUTY_EIGHTH, DUTY_QUARTER: DUTY_QUARTER, DUTY_HALF: DUTY_HALF,
+    DUTY_THREE_QUARTER: DUTY_THREE_QUARTER,
   }
 }
 let Canvas = _canvas_module()

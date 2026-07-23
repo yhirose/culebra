@@ -37,14 +37,14 @@ Canvas.run(8, 8, fn () {
   assert_eq(Canvas.get_pixel(0, 0), RED)
   assert_eq(Canvas.get_pixel(0, 1), BLUE)
 
-  // Text: draws lit pixels of the glyph. "1" (5x7) has a lit pixel at its
-  // top-middle stem; a space draws nothing. Just assert some pixel landed and
-  // measure width.
+  // Text: draws lit pixels of the 8x8 glyph. Lower-case is preserved (no
+  // upper-casing), so "a" and "A" are distinct glyphs. Assert some pixel
+  // landed and measure the fixed 8px advance.
   Canvas.clear(0)
   Canvas.text("1", 0, 0, RED)
-  assert_eq(Canvas.text_width("AB"), 12)      // 2 glyphs * 6px advance
+  assert_eq(Canvas.text_width("AB"), 16)      // 2 glyphs * 8px advance
   mut lit = 0
-  for y in 0..7 { for x in 0..5 { if Canvas.get_pixel(x, y) == RED { lit = lit + 1 } } }
+  for y in 0..8 { for x in 0..8 { if Canvas.get_pixel(x, y) == RED { lit = lit + 1 } } }
   assert_eq(lit > 0, true)
 
   false                                        // stop after one frame

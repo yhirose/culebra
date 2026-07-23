@@ -70,7 +70,9 @@ assert_eq(_Canvas.buttons(), 0)
 assert_eq(_Canvas.mouse_x(), 0)
 assert_eq(_Canvas.mouse_y(), 0)
 assert_eq(_Canvas.mouse_buttons(), 0)
-_Canvas.tone(440, 10, 100, 0)
+// tone(start_freq, end_freq, attack, decay, sustain, release, vol, peak,
+// channel, duty) — 10 Longs; headless is a no-op but the arity/types must match.
+_Canvas.tone(700, 870, 10, 5, 0, 3, 10, 20, 0, 1)
 _Canvas.present()
 
 print("canvas ok\n")

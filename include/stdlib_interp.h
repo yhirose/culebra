@@ -1851,12 +1851,23 @@ inline Value make_canvas_primitives_namespace() {
 
   // _Canvas.tone(freq, dur, vol, wave) -> Nil (no-op headless)
   ns.initialize("tone",
-      Value(FunctionValue({{"freq", false, "Long"sv}, {"dur", false, "Long"sv},
-                           {"vol", false, "Long"sv}, {"wave", false, "Long"sv}},
+      Value(FunctionValue({{"start_freq", false, "Long"sv},
+                           {"end_freq", false, "Long"sv},
+                           {"attack", false, "Long"sv},
+                           {"decay", false, "Long"sv},
+                           {"sustain", false, "Long"sv},
+                           {"release", false, "Long"sv},
+                           {"vol", false, "Long"sv}, {"peak", false, "Long"sv},
+                           {"channel", false, "Long"sv},
+                           {"duty", false, "Long"sv}},
           [](std::shared_ptr<Environment> env) {
             _canvas_detail::tone(
-                env->get("freq").to_long(), env->get("dur").to_long(),
-                env->get("vol").to_long(), env->get("wave").to_long());
+                env->get("start_freq").to_long(),
+                env->get("end_freq").to_long(), env->get("attack").to_long(),
+                env->get("decay").to_long(), env->get("sustain").to_long(),
+                env->get("release").to_long(), env->get("vol").to_long(),
+                env->get("peak").to_long(), env->get("channel").to_long(),
+                env->get("duty").to_long());
             return Value();
           })),
       false);
