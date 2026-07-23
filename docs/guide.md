@@ -51,8 +51,7 @@ Contents
   20. [AOT binary build](#20-aot-binary-build)
   21. [Embedding overview](#21-embedding-overview)
 
-0. Design philosophy
---------------------
+## 0. Design philosophy
 
 Read this once; the rest of the guide assumes these choices.
 
@@ -88,8 +87,7 @@ Read this once; the rest of the guide assumes these choices.
 Part I — The Language Core
 ==========================
 
-1. Hello & setup
-----------------
+## 1. Hello & setup
 
 Build the interpreter (and JIT, if LLVM 17+ is installed):
 
@@ -136,8 +134,7 @@ surrounding quotes (`'hello'`) and reference types in their literal
 shape. Use `print` for raw, unquoted text (it also omits the trailing
 newline) — see Ch.12.
 
-2. Values, bindings, and control flow
--------------------------------------
+## 2. Values, bindings, and control flow
 
 ### 2.1 The eight types
 
@@ -232,8 +229,7 @@ Captured state *is* the object's state in the closure-based pattern
 rebinding, by contrast, is a routine pattern and stays legal. Full
 rule set and design rationale: [language.md §6](language.md).
 
-3. Functions and closures
--------------------------
+## 3. Functions and closures
 
 ### 3.1 `fn` and `|x|`
 
@@ -298,8 +294,7 @@ positional rest (`*args`) is intentionally omitted since Array
 literals already fill that role. Full parameter, default, and splat
 semantics: [language.md §11](language.md).
 
-4. Strings
-----------
+## 4. Strings
 
 ### 4.1 Interpolation and concatenation
 
@@ -381,8 +376,7 @@ sockets or files. Go exposes byte offsets and offers explicit `rune`
 iteration on top; Culebra follows that model, adding lazy grapheme
 iteration (above) for display work.
 
-5. Iterators
-------------
+## 5. Iterators
 
 ### 5.1 `range` (lazy) vs `iota` (eager)
 
@@ -499,8 +493,7 @@ fn chunk(arr, n) {
 puts(chunk([1, 2, 3, 4, 5], 2).collect())    # => [[1, 2], [3, 4], [5]]
 ```
 
-6. Pattern matching
--------------------
+## 6. Pattern matching
 
 ### 6.1 The basics
 
@@ -588,8 +581,7 @@ cost more to track than it saves; the `_` arm (or a guarded final
 pattern) makes intent explicit instead. Details and the Union-type
 exception: [language.md §13](language.md).
 
-7. Error handling and RAII
---------------------------
+## 7. Error handling and RAII
 
 ### 7.1 `throw`, `try`, `catch`
 
@@ -692,8 +684,7 @@ arms can pattern-match on whatever shape the thrower used (Ch.6).
 
 ---
 
-8. Algebraic effects
---------------------
+## 8. Algebraic effects
 
 An *effect* lets code invoke an operation whose meaning is decided by its
 caller. You `perform` an operation; a `handle` block up the call stack chooses
@@ -792,8 +783,7 @@ computation. Full reference and limitations: [language.md §16](language.md).
 Part II — Tools for abstraction
 ================================
 
-9. Classes
-----------
+## 9. Classes
 
 ### 9.1 Syntax
 
@@ -875,8 +865,7 @@ disposable encapsulation (e.g. one-off iterators, scope guards). The
 `class` form earns its keep when an object travels far and needs an
 identity (the `class:` tag, used by `match` and debug output).
 
-10. Operator overloading
------------------------
+## 10. Operator overloading
 
 ### 10.1 Special methods
 
@@ -924,8 +913,7 @@ puts(add5(10))                # => 15
 puts(add5(99))                # => 104
 ```
 
-11. UFCS and multimethods
--------------------------
+## 11. UFCS and multimethods
 
 ### 11.1 UFCS resolution order
 
@@ -1001,8 +989,7 @@ namespaces without surprises (no implicit subtyping). Method
 multimethods need a precedence story (own-class vs UFCS vs free)
 that we'd rather lock down with a real workload than guess.
 
-12. Decorators
---------------
+## 12. Decorators
 
 ### 12.1 `@deco`
 
@@ -1088,8 +1075,7 @@ closure), which is incompatible with the "many `fn`s sharing one
 name" shape of multimethods — choose one or the other per name (full
 rule: [language.md §21](language.md)).
 
-13. Modules
------------
+## 13. Modules
 
 ### 13.1 Implicit imports
 
@@ -1141,8 +1127,7 @@ cycle-detection algorithm.
 Part III — Types and libraries
 ==============================
 
-14. Type system
----------------
+## 14. Type system
 
 ### 14.1 Today: optional annotations + `Any`
 
@@ -1226,8 +1211,7 @@ suite of utility types (`Pick`, `Omit`, ...) sit at a complexity
 level that is too high for a small dynamic language. The target is
 Rust/Swift expressiveness, not TS expressiveness.
 
-15. Standard library tour
--------------------------
+## 15. Standard library tour
 
 The CLI driver exposes `puts` / `print` as aliases for `IO.puts` /
 `IO.print`. Embedders that build their own environment see the
@@ -1337,8 +1321,7 @@ Streaming, routing, and the client session API: [`stdlib.md`
 > beyond `Hash`) and `Sockets` (raw TCP/UDP). No firm ordering yet —
 > demand-driven, per the tiering in Ch.0.
 
-16. Tensor primitive
---------------------
+## 16. Tensor primitive
 
 ### 16.1 Construction, matmul, broadcasting
 
@@ -1384,8 +1367,7 @@ discussion, see [`internals.md` §9](internals.md).
 Part IV — Verification and deployment
 ======================================
 
-17. Testing (`culebra test`)
-----------------------------
+## 17. Testing (`culebra test`)
 
 > `test()` / `@test` / `@parametrize`, the matcher family, and
 > dependency-injected fixtures (any fn in env, no decorator) are
@@ -1569,8 +1551,7 @@ without going through `culebra test`.
 - **Parallel execution** — sequential today; parallel default is
   optional once the JIT/AOT backends are wired in.
 
-18. Linting (`culebra lint`)
-----------------------------
+## 18. Linting (`culebra lint`)
 
 `culebra lint <file.cul>...` reports static problems **without running**
 the program, and exits non-zero so CI can gate on it (0 = clean, 1 =
@@ -1602,8 +1583,7 @@ What it reports today:
 Planned: unused imports, unreachable code, a `--format json` mode for
 editor / LSP integration, and inline `# lint: ignore` suppression.
 
-19. Formatting (`culebra fmt`)
-------------------------------
+## 19. Formatting (`culebra fmt`)
 
 `culebra fmt [files...]` reformats source to one canonical style:
 normalized operator spacing, two-space indentation, brace blocks laid out
@@ -1659,8 +1639,7 @@ zero, leaving the buffer untouched on a parse/safety error.
 - Any other editor with a format-on-save hook can pipe the buffer
   through `culebra fmt -` the same way.
 
-20. AOT binary build
---------------------
+## 20. AOT binary build
 
 `culebra build` compiles a `.cul` source ahead-of-time into a
 self-contained executable. No LLVM at runtime; tree-shaking drops the
@@ -1694,8 +1673,7 @@ drop unreferenced runtime helpers (~200 of them) and, when no
 `Tensor` reference is found, swap in a no-BLAS archive. The result is
 a few hundred KB instead of a few MB.
 
-21. Embedding overview
-----------------------
+## 21. Embedding overview
 
 Culebra is a header-friendly C++23 library. Minimal embed:
 

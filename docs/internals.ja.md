@@ -33,8 +33,7 @@ Culebra 内部構造
 
 ---
 
-1. アーキテクチャ概観
----------------------
+## 1. アーキテクチャ概観
 
 1 つの AST、3 つの実行経路。同じパーサがすべてに供給します。
 
@@ -75,8 +74,7 @@ Interpreter  JIT (LLVM ORC)      AOT codegen
 メモリ管理 (参照カウント、tracing バックストップ、JIT の構造的リーク
 自由の規律) は横断的な関心事であり、Ch.13〜15 でまとめて扱います。
 
-2. パーサ (cpp-peglib)
-----------------------
+## 2. パーサ (cpp-peglib)
 
 文法は `include/grammar.h` に単一の PEG 仕様として置かれ、
 `peg::parser` に供給されます。cpp-peglib が提供するもの:
@@ -101,8 +99,7 @@ AST ノードはパースコールバックから `shared_ptr` として構築�
 `ParseError` は `file`、`line`、`col`、および短いメッセージを保持し、
 CLI ドライバが `clang` 風の固定幅スタイルで整形します。
 
-3. インタプリタ
----------------
+## 3. インタプリタ
 
 ### Value レイアウト
 
@@ -144,8 +141,7 @@ Ch.13 の「ルーティング」節を参照してください。
 visitor によって実装され、フレームごとの defer スタックと、あらゆる離
 脱経路での LIFO 実行を維持します。
 
-4. JIT (LLVM ORC)
------------------
+## 4. JIT (LLVM ORC)
 
 JIT は AST を関数粒度で LLVM IR へ lower し (スクリプトのトップレベル
 はモジュール全体を lower)、そのモジュールを ORC v2 に渡して `-O2` コン
@@ -199,8 +195,7 @@ Array、Func、Set、Tensor、Cell、String) を `shared_ptr` ではなく、手
 どう回収するか、リーク/二重解放を場当たり的な修正ではなく構造的に不
 可能化した方法 — が Ch.13〜15 の主題です。
 
-5. AOT codegen
---------------
+## 5. AOT codegen
 
 `culebra build foo.cul -o foo` は、モジュールグラフ (Ch.10) をウォー
 クし、到達可能な各トップレベルを LLVM IR へ lower し、non-PIC な `.o`
@@ -248,8 +243,7 @@ LLVM の `AllTargets*` コンポーネントがホストの `culebra` ドライ�
 あります — バンドルされた sysroot はまだありません
 ([[project_binary_build_roadmap]] Phase E MVP)。
 
-6. 文字列 / Unicode
--------------------
+## 6. 文字列 / Unicode
 
 ### 現状
 
@@ -313,8 +307,7 @@ release-to-zero ではなく、tracing バックストップのみが回収し�
 実装順序: `StringView` (interp + JIT) → `StringLike` マルチメソッドフ
 ック (Ch.10 のディスパッチ IC に依存) → `graphemes()`。
 
-7. Regex
---------
+## 7. Regex
 
 > ステータス: 計画中 ([[project_regex_self_hosted]])。
 
@@ -346,8 +339,7 @@ release-to-zero ではなく、tracing バックストップのみが回収し�
 果はバイトオフセット、スカラーオフセット、キャプチャグループを保持し
 ます。
 
-8. Tensor
----------
+## 8. Tensor
 
 ### TNode
 
@@ -405,8 +397,7 @@ CPU/BLAS プリミティブとして残ります。分割の理由は 2 つ:
 - Tensor の `shared_ptr<Float[]>` は、host/device を意識したラッパな
   しでは GPU デバイスメモリにマップできない。
 
-9. HTTP
--------
+## 9. HTTP
 
 > ステータス: 計画中 (Tier 1、[[project_http_strategy]])。
 
@@ -440,8 +431,7 @@ HTTP.websocket(...)
 サーバー側は、`**opts` でサイズ指定されるスレッドプール上で走りま
 す。
 
-10. モジュールシステム
-----------------------
+## 10. モジュールシステム
 
 ### リゾルバ
 
@@ -486,8 +476,7 @@ line の引用付きで拒否されます。共有の第 3 のファイルを介
 に 1 度支払われ、利得はより速い執筆ループと無償の tree-shaking です
 ([[project_module_system]])。
 
-11. ビルドと vendor
--------------------
+## 11. ビルドと vendor
 
 ### vendor ツリー (`vendor/`)
 
@@ -524,8 +513,7 @@ off にすると、ドライバは ~1 MB で LLVM 依存を持ちません。
 - git submodule なし — `vendor/` はコミット済み。
 - 新しい vendor ライブラリの追加には、この章に Why エントリが必要。
 
-12. テストランナー
-------------------
+## 12. テストランナー
 
 > ステータス: Draft。並行の作業サイクルで設計中
 > ([[project_culebra_test_docs_dependency]])。この節は CLI が確定した
@@ -547,8 +535,7 @@ off にすると、ドライバは ~1 MB で LLVM 依存を持ちません。
 てディレクティブを読み取り、`# =>` と `# => |` マーカーから期待される
 stdout を組み立てます。
 
-13. メモリモデル: RC、GC、決定的 drop
--------------------------------------
+## 13. メモリモデル: RC、GC、決定的 drop
 
 Culebra のメモリ管理は、両バックエンドにおいて **RC 主体 + tracing
 バックストップ**です。この章は、参照カウント、tracing コレクタ、決定
@@ -696,8 +683,7 @@ flush/close されます — 影響を受けるのは、トップレベルスコ
 以上の解消は、既存の `defer`/`with`/`.drop()` という逃げ道が既に得ら
 れるものをほとんどカバーしているため追及していません。
 
-14. JIT GC バックストップ
---------------------------
+## 14. JIT GC バックストップ
 
 JIT の tracing コレクタは、保持され続ける手動 RC (Ch.13) と並走する
 **保守的、non-moving、mark-sweep のバックストップ**です — RC の置き
@@ -888,8 +874,7 @@ pinning の背後に再設計された場合にのみ再検討します。
    minor collect の前に write barrier によって記録される。
 6. フルスイートは `CULEBRA_GC_STRESS=1` の下で green である。
 
-15. JIT 所有権: 構造的リーク自由
-----------------------------------
+## 15. JIT 所有権: 構造的リーク自由
 
 Ch.13〜14 は RC/drop モデルとバックストップコレクタを記述します。この
 章は、*そもそも JIT がどうやって RC の配置を正しく保つのか* — リーク

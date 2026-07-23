@@ -359,8 +359,8 @@ define してはいけない**。AOT archive の生成元 TU
 リポジトリには契約を検証する小さなサンプルが含まれます:
 
 * [`tests/embedding/mt_smoke.cc`](../tests/embedding/mt_smoke.cc) —
-  4 つのホストスレッドがそれぞれ try/catch 付きスクリプトを parse
-  + interpret、加えて JIT パスでも 4 スレッド。合計 240 並行実行。
+  4 つのホストスレッドがそれぞれ try/catch 付きスクリプトを parse +
+  interpret、加えて JIT パスでも 4 スレッド。合計 240 並行実行。
 * [`tests/embedding/mi_smoke.cc`](../tests/embedding/mi_smoke.cc) —
   1 スレッド内で 2 つの Runtime を交互に切替え、独立した PRNG 状態
   と独立した JIT フックセットを検証。

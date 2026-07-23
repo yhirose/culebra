@@ -31,8 +31,7 @@ Rejected and withdrawn designs are collected in [`_history.md`](_history.md).
 
 ---
 
-1. Architecture overview
-------------------------
+## 1. Architecture overview
 
 One AST, three execution paths. The same parser feeds all of them.
 
@@ -71,8 +70,7 @@ Memory management (reference counting, the tracing backstop, and the
 JIT's structural leak-freedom discipline) is a cross-cutting concern
 covered on its own in Ch.13–15.
 
-2. Parser (cpp-peglib)
-----------------------
+## 2. Parser (cpp-peglib)
 
 The grammar lives in `include/grammar.h` as a single PEG specification
 fed to `peg::parser`. cpp-peglib gives us:
@@ -98,8 +96,7 @@ can be context-free.
 `ParseError` carries `file`, `line`, `col`, and a short message; it is
 formatted by the CLI driver in a `clang`-like fixed-width style.
 
-3. Interpreter
---------------
+## 3. Interpreter
 
 ### Value layout
 
@@ -140,8 +137,7 @@ implemented by the visitor walking AST nodes for `BlockStmt`,
 `TryStmt`, and `DeferStmt`, maintaining a per-frame defer stack and
 LIFO execution on every exit path.
 
-4. JIT (LLVM ORC)
------------------
+## 4. JIT (LLVM ORC)
 
 The JIT lowers AST to LLVM IR at function granularity (whole-module
 lowering for the script's top-level) and hands the module to ORC v2
@@ -194,8 +190,7 @@ tracked, how the tracing backstop reclaims what RC cannot, and how
 leaks/double-frees were made structurally impossible rather than
 patched site by site — is the subject of Ch.13–15.
 
-5. AOT codegen
---------------
+## 5. AOT codegen
 
 `culebra build foo.cul -o foo` walks the module graph (Ch.10),
 lowers each reachable top-level to LLVM IR, emits a non-PIC `.o`, and
@@ -241,8 +236,7 @@ driver so it can emit for any LLVM-supported triple. The runtime
 archive itself must be built for the target — there is no bundled
 sysroot yet ([[project_binary_build_roadmap]] Phase E MVP).
 
-6. String / Unicode
--------------------
+## 6. String / Unicode
 
 ### Today
 
@@ -304,8 +298,7 @@ how; see Ch.13's "traced-only" note).
 Implementation order: `StringView` (interp + JIT) → `StringLike`
 multimethod hook (depends on Ch.10 dispatch IC) → `graphemes()`.
 
-7. Regex
---------
+## 7. Regex
 
 > Status: Planned ([[project_regex_self_hosted]]).
 
@@ -337,8 +330,7 @@ considered but ruled out because:
 `re.match(s)` / `re.find_all(s)` / `re.replace(s, repl)`. Match
 results carry byte offsets, scalar offsets, and captured groups.
 
-8. Tensor
----------
+## 8. Tensor
 
 ### TNode
 
@@ -396,8 +388,7 @@ primitive will host the CUDA / Metal Shading Language path, leaving
 - Tensor's `shared_ptr<Float[]>` does not map onto GPU device memory
   without a host/device aware wrapper.
 
-9. HTTP
--------
+## 9. HTTP
 
 > Status: Planned (Tier 1, [[project_http_strategy]]).
 
@@ -431,8 +422,7 @@ HTTP.websocket(...)
 
 Server side runs on a thread pool sized by `**opts`.
 
-10. Module system
------------------
+## 10. Module system
 
 ### Resolver
 
@@ -473,8 +463,7 @@ unresolved identifiers. The cost (an extra resolver pass) is paid
 once at build time; the gain is a faster authoring loop and free
 tree-shaking ([[project_module_system]]).
 
-11. Build & vendor
-------------------
+## 11. Build & vendor
 
 ### Vendor tree (`vendor/`)
 
@@ -513,8 +502,7 @@ driver is ~1 MB and has no LLVM dependency.
 - No git submodules — `vendor/` is committed.
 - Adding a new vendor lib requires a Why entry in this chapter.
 
-12. Test runner
----------------
+## 12. Test runner
 
 > Status: Draft. Designed in a parallel work cycle
 > ([[project_culebra_test_docs_dependency]]). This section will be
@@ -536,8 +524,7 @@ the markdown for fenced blocks tagged `culebra`, scans block-leading
 `# doctest:` lines for directives, and assembles expected stdout
 from `# =>` and `# => |` markers.
 
-13. Memory model: RC, GC, and deterministic drop
--------------------------------------------------
+## 13. Memory model: RC, GC, and deterministic drop
 
 Culebra's memory management is **RC-primary + tracing-backstop** on
 both backends. This chapter states how reference counting, the
@@ -680,8 +667,7 @@ as strong as Python/Swift," not "zero carve-out," and closing them
 further isn't pursued because the standing `defer`/`with`/`.drop()`
 escape hatches already cover what it would buy.
 
-14. JIT GC backstop
---------------------
+## 14. JIT GC backstop
 
 The JIT's tracing collector is a **conservative, non-moving, mark-
 sweep backstop** running alongside the kept manual RC (Ch.13) — not a
@@ -863,8 +849,7 @@ is redesigned behind handles/pinning.
    the write barrier before the next minor collect.
 6. The full suite is green under `CULEBRA_GC_STRESS=1`.
 
-15. JIT ownership: structural leak-freedom
---------------------------------------------
+## 15. JIT ownership: structural leak-freedom
 
 Ch.13–14 describe the RC/drop model and the backstop collector; this
 chapter is the standing design for *how the JIT keeps RC placement
