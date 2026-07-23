@@ -930,6 +930,10 @@ inline void _jit_gc_enumerate_roots(std::vector<void*>& out) {
   auto& rt = culebra::current_runtime();
   if (rt.thrown_data)
     _gc_push_value(out, JitValue{rt.thrown_tag, rt.thrown_data});
+  // In-flight algebraic-effect abort payloads (jit_runtime.h): each lives only
+  // inside its unwinding CulebraEffAbort exception object, off the scanned
+  // stack, so a collect mid-unwind would sweep it without this root.
+  for (auto& v : _eff_abort_inflight) _gc_push_value(out, v);
 }
 
 // Backstop reclaim of one unmarked object: free its owned C++ buffers and

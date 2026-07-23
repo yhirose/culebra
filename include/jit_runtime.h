@@ -2254,9 +2254,26 @@ struct CulebraEffAbort {
   JitValue val;
 };
 
+// In-flight abort payloads, kept as GC roots for their entire unwind. A user
+// throw's value lives in the Runtime's thrown carrier and is enumerated as a
+// root (see _jit_gc_enumerate_roots); an abort's value lives ONLY inside the
+// in-flight CulebraEffAbort C++ exception object, which sits off the scanned
+// machine stack. A collect during the unwind (every allocation under
+// GC_STRESS) would then find no root for it and sweep a traced-only payload
+// (a String) or an unmarked container out from under the handle driver that is
+// about to consume it — a rooting gap the conservative stack scan only masks
+// by luck (it crashes on x86-64 Linux, survives on AArch64 macOS). Rooting the
+// value here closes it. A stack, not a scalar: _guard_stack catches an abort,
+// runs the abandoned frames' finalizers, then re-aborts, so a payload can be
+// live while the next is pushed. Pushed in eff_abort, popped in eff_catch_abort
+// — the single consumer that stops an abort (cleanup/user-catch landingpads
+// only rethrow it, never consume) — so the two stay 1:1.
+inline thread_local std::vector<JitValue> _eff_abort_inflight;
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_eff_abort(int8_t tag,
                                                                  int64_t data) {
   culebra_runtime_value_retain(tag, data);
+  _eff_abort_inflight.push_back(JitValue{tag, data});
   throw CulebraEffAbort{JitValue{tag, data}};
 }
 
@@ -2267,15 +2284,21 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_eff_catch_abort(
     JitClosure* fn) {
   int64_t aborted = 0;
   JitValue v;
+  bool from_abort = false;
   try {
     v = _culebra_invoke0(fn);
   } catch (const CulebraEffAbort& a) {
     aborted = 1;
     v = a.val;
+    from_abort = true;  // payload still on _eff_abort_inflight — keep it rooted
   }
   auto* pair = culebra_runtime_array_new();
   culebra_runtime_array_push(pair, TAG_BOOL, aborted);
   culebra_runtime_array_push(pair, v.tag, v.data);
+  // Pop only now: array_new/array_push may collect, and until the payload is
+  // stored in `pair` (itself stack-rooted here) the inflight entry is its sole
+  // root. LIFO with eff_abort's push; this frame caught the abort it pops.
+  if (from_abort) _eff_abort_inflight.pop_back();
   return pair;
 }
 
