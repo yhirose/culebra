@@ -778,6 +778,13 @@ Add `with return(v) { … }` to map the normal-completion value, and write a
 `handle` inside an effectful body to capture and resume from an enclosing
 computation. Full reference and limitations: [language.md §16](language.md).
 
+A worked example lives in
+[`examples/effects/queen.cul`](../examples/effects/queen.cul): an N-queens
+search whose `search` never mentions backtracking — `perform choose(...)` and
+`perform reject()` get their meaning from the enclosing `handle`, so one body
+runs as an exhaustive enumeration, a first-answer search, or a placement
+counter depending only on the handler.
+
 ---
 
 Part II — Tools for abstraction

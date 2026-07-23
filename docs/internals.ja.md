@@ -27,6 +27,7 @@ Culebra 内部構造
 13. [メモリモデル: RC、GC、決定的 drop](#13-メモリモデル-rcgc決定的-drop)
 14. [JIT GC バックストップ](#14-jit-gc-バックストップ)
 15. [JIT 所有権: 構造的リーク自由](#15-jit-所有権-構造的リーク自由)
+16. [代数的エフェクト (source transform)](#16-代数的エフェクト-source-transform)
 
 不採用・撤回した設計は [`_history.ja.md`](_history.ja.md) に集約してあり
 ます。
@@ -1120,3 +1121,60 @@ per-*iteration* な release、`Owned` レイヤより下に位置するスロッ
   `Pinned` ハンドルのみを推論し、heap のエイリアシングやオブジェクト
   の生存期間は扱いません。これが、不採用となったベリファイアの致命的
   な反論を回避できる理由です。
+
+## 16. 代数的エフェクト (source transform)
+
+`effect fn`・`perform`・`handle … with` はどのバックエンドも解釈しませ
+ん。これらは*パース時に*プレーンな culebra ソース — 合成されたクラス
+と `__Eff` ランタイム preamble への呼び出し — へ書き換えられ、再パース
+された上で、インタプリタ・JIT・AOT の各パスがエフェクト固有のサポート
+を一切持たずにそのまま実行します。これにより3バックエンドの対称性が無償
+で保たれます ([[feedback_check_jit_interp_symmetry]])。ジェネレータも同
+じ lowering 機構を使うため、このパスとジェネレータ変換は source-slice /
+local-rewrite のヘルパーを共有します。
+
+ヘッダの起点: `include/effects_transform.h` (変換パス本体)。ドライバの
+ランタイムは `src/preambles/effects.cul` に `__Eff` モジュールとして存在
+します。
+
+lowering は動的スコープ・one-shot resume のモデルに従います:
+
+- **`effect fn f(...) { BODY }`** (本体あり) は、*computation オブジェ
+  クトを返す*通常の fn に lowering されます。これは flat-dispatch な状
+  態機械で、その `_step(rv)` が本体を次の中断点まで実行し、制御をドラ
+  イバへ返します。シグネチャのみの `effect fn op(...)` は操作を宣言し、
+  throw するスタブに lowering されます。
+- **中断点**は、文レベルの `perform op(args)` (SUSPEND) か、別の
+  effect fn への文レベル呼び出し (DELEGATE) です。本体は任意の制御フ
+  ロー — `if` / `while` / `for` (`while` へ desugar) と `break` /
+  `continue` / `return` — を使えます。これらは flat-dispatch な CPS
+  ビルダ (`build_dispatch`、ジェネレータ変換と同じ形) で lowering され
+  ます。式の中に埋め込まれた `perform` は、まず A 正規化の前段
+  (`anf_program`) で文レベルへ巻き上げられるので、CPS 層が見るのは常に
+  文レベルの中断のみです。
+- **`handle { BODY } with op(params, resume) { H }`** は
+  `__Eff.handle(<computation としての BODY>, "op", <ハンドラアダプタ>)`
+  へ lowering されます。ドライバは動的スコープのハンドラスタックを辿り、
+  `resume` は one-shot の継続 — 通常の RC 値なので、リーク安全性はこれ
+  が模倣するジェネレータ機構から継承されます
+  ([[project_rc_gc_correct_model]])。プレーンな (エフェクトでない) fn
+  も `__Eff.perform_direct` 経由で操作を `perform` でき、エフェクトフル
+  な呼び出しは `effect fn` の本体に閉じ込められません。
+
+computation オブジェクトとドライバは return-tag プロトコルを共有します。
+各 `_step(rv)` は、何が起きたかをドライバへ伝えるタグを返します。
+
+```
+0 = DONE      this._eff_val に computation の結果が入る
+1 = SUSPEND   this._eff_op / this._eff_args が perform を表す
+2 = DELEGATE  this._eff_delegate が driving 対象のサブ computation
+```
+
+2 つの構文は変換時に — 対称的に、どのバックエンドも誤コンパイルしない
+よう — 拒否されます: 制御フローの条件や iterable の中の `perform`、およ
+び外側の束縛をキャプチャする入れ子の `handle` です。
+
+この機能は完全に source-to-source なので、そのコストはバックエンドの複
+雑さではなく、パーサが噛み砕く生成ソース量として現れます。
+`CULEBRA_TRANSFORM_STATS=1` は各変換が emit する culebra ソース量を報告
+します (`=2` は lowering 後のソースそのものを出力します)。

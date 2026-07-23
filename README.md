@@ -78,6 +78,9 @@ Language features
   with default methods.
 - **Closures and `class` form.** Both supported, same encapsulation
   semantics.
+- **Algebraic effects.** `effect fn` / `perform` / `handle … with`, with
+  multi-shot `resume` — one mechanism covering generators, exceptions,
+  dependency injection, and backtracking search.
 - **Doctests in comments.** `1 + 1  # => 2` is an executable
   assertion under `culebra test`.
 - **Structural assert diagnostics.** `assert_eq` prints a diff.

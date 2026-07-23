@@ -26,6 +26,7 @@ Contents
 13. [Memory model: RC, GC, and deterministic drop](#13-memory-model-rc-gc-and-deterministic-drop)
 14. [JIT GC backstop](#14-jit-gc-backstop)
 15. [JIT ownership: structural leak-freedom](#15-jit-ownership-structural-leak-freedom)
+16. [Algebraic effects (source transform)](#16-algebraic-effects-source-transform)
 
 Rejected and withdrawn designs are collected in [`_history.md`](_history.md).
 
@@ -1080,3 +1081,60 @@ a different arm releases the same value.
   narrower — it reasons only about codegen's own `Owned`/`Pinned`
   handles, not heap aliasing or object lifetime, which is why it
   sidesteps the rejected verifier's fatal objections.
+
+## 16. Algebraic effects (source transform)
+
+`effect fn`, `perform`, and `handle … with` are understood by no
+backend. They are rewritten *at parse time* into plain culebra source —
+synthesized classes plus calls into the `__Eff` runtime preamble — which
+is then re-parsed and run by the interpreter, JIT, and AOT paths with no
+effects-specific support of their own. The three backends stay symmetric
+for free ([[feedback_check_jit_interp_symmetry]]). Generators use the
+same lowering machinery, so this pass and the generator transform share
+their source-slice and local-rewrite helpers.
+
+Header root: `include/effects_transform.h` (the pass). The driver runtime
+lives in `src/preambles/effects.cul` as the `__Eff` module.
+
+Lowering follows a dynamic-scope, one-shot-resume model:
+
+- **`effect fn f(...) { BODY }`** (with a body) lowers to a normal fn
+  that *returns a computation object* — a flat-dispatch state machine
+  whose `_step(rv)` runs the body until the next suspension point, then
+  hands control back to the driver. A signature-only `effect fn op(...)`
+  declares an operation and lowers to a throwing stub.
+- **Suspension points** are a statement-level `perform op(args)`
+  (SUSPEND) or a statement-level call to another effect fn (DELEGATE).
+  The body may use arbitrary control flow — `if` / `while` / `for`
+  (desugared to `while`) with `break` / `continue` / `return` — lowered
+  by a flat-dispatch CPS builder (`build_dispatch`, the same shape the
+  generator transform uses). An expression-nested `perform` is first
+  hoisted to statement level by an A-normalization pre-pass
+  (`anf_program`), so the CPS layer only ever sees statement-level
+  suspensions.
+- **`handle { BODY } with op(params, resume) { H }`** lowers to
+  `__Eff.handle(<BODY as a computation>, "op", <handler adapter>)`. The
+  driver walks the dynamically-scoped handler stack; `resume` is the
+  one-shot continuation — an ordinary RC value, so leak-safety is
+  inherited from the generator machinery it mirrors
+  ([[project_rc_gc_correct_model]]). A plain (non-effect) fn can still
+  `perform` an operation via `__Eff.perform_direct`, so effectful calls
+  are not confined to `effect fn` bodies.
+
+The computation object and driver share a return-tag protocol: each
+`_step(rv)` returns a tag that tells the driver what happened.
+
+```
+0 = DONE      this._eff_val holds the computation's result
+1 = SUSPEND   this._eff_op / this._eff_args describe a perform
+2 = DELEGATE  this._eff_delegate is a sub-computation to drive
+```
+
+Two constructs are rejected at transform time — symmetrically, so no
+backend miscompiles them: a `perform` in a control-flow condition or
+iterable, and a nested `handle` that captures an enclosing binding.
+
+Because the feature is entirely source-to-source, its cost surfaces as
+extra generated source for the parser to chew on, not as backend
+complexity; `CULEBRA_TRANSFORM_STATS=1` reports the culebra source volume
+each transform emits (`=2` dumps the lowered source itself).
