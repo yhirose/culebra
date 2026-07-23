@@ -461,5 +461,26 @@ expect_lint_clean "clause captures enclosing local" 'effect fn ask()
 fn f() { let base = 100; handle { perform ask() } with ask(resume) { resume(base) } }
 puts(f())'
 
+# --- `culebra lint` surfaces ShadowError like the run path ---
+# Shadowing an enclosing function's local is a pre-eval ShadowError when the
+# file runs; the CLI must report it too, at the same position, not stay clean.
+expect_lint_error "shadow in nested fn" 'fn outer() {
+  let x = 1
+  fn inner() { let x = 2; x }
+  inner() + x
+}
+puts(outer())'
+expect_lint_error "shadow in handler clause" 'effect fn ask()
+fn outer() {
+  let x = 1
+  handle { perform ask() } with ask(resume) { let x = 2; resume(x) }
+  x
+}
+puts(outer())'
+# Sound-negative: a same name in sibling (non-nested) scopes is not shadowing.
+expect_lint_clean "same name in sibling scopes" 'fn a() { let x = 1; x }
+fn b() { let x = 2; x }
+puts(a() + b())'
+
 if [[ $fail -eq 0 ]]; then echo "lint_test OK"; exit 0; fi
 exit 1

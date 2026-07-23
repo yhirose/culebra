@@ -1590,10 +1590,18 @@ inline void check_module(const peg::Ast& ast) {
 // The warning analyzers treat `effect fn` bodies and handler clause bodies as
 // their own scopes (they lower to functions), so an unused local written in
 // one is reported at its authored position, same as in any function.
+// Report-mode wrapper for the shadow check (defined below): fills `diags`
+// instead of throwing.
+inline void collect_shadow(const peg::Ast& ast, std::vector<Diagnostic>& diags);
+
 inline std::vector<Diagnostic> collect_module(const peg::Ast& lowered,
                                               const peg::Ast& authored) {
   std::vector<Diagnostic> diags;
   run_error_checks(lowered, diags);
+  // Shadow is an error-severity static check the run path applies before eval;
+  // like the other error checks it runs on the lowered AST (positions map back
+  // to the authored source, same as when running the file).
+  collect_shadow(lowered, diags);
   _detail::unused::analyze_module(authored, diags);
   std::sort(diags.begin(), diags.end(), [](const Diagnostic& a,
                                            const Diagnostic& b) {
@@ -1614,6 +1622,20 @@ inline void check_shadow(const peg::Ast& ast) {
   _detail::shadow::OuterChain outer;
   _detail::shadow::collect_locals(ast, top_locals, outer);
   _detail::shadow::descend_into_nested(ast, top_locals, outer);
+}
+
+// `culebra lint` reports the same static problems the run path aborts on, so it
+// must surface shadow errors too. `check_shadow` throws on the first violation
+// — which is exactly what running the file surfaces (it aborts before eval on
+// the first) — so catch it and record one diagnostic. The walker is not
+// structured to enumerate every violation, and reporting more than the run path
+// ever would is not the goal.
+inline void collect_shadow(const peg::Ast& ast, std::vector<Diagnostic>& diags) {
+  try {
+    check_shadow(ast);
+  } catch (const culebra::CulebraError& e) {
+    diags.push_back(Diagnostic{e.kind, e.what(), e.line, e.col, Severity::Error});
+  }
 }
 
 }  // namespace culebra::lint
