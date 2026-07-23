@@ -3334,11 +3334,15 @@ receiver is never mutated.
 | `s.graphemes() -> Iterator<StringView>`         | Lazy walk yielding **Extended Grapheme Clusters** (UAX #29) — one user-perceived character per step (e.g. an emoji ZWJ sequence is a single element). |
 | `s.bytes() -> Iterator<Long>`                   | Lazy walk yielding the receiver's **raw UTF-8 bytes** as `Long` (`0`–`255`), one byte per step — no decoding, unlike `code_points`. For when the encoding itself is wanted (hashing, tokenizer vocabularies, wire formats); mirrors Python's `list(s.encode())`. |
 | `String.from_code_point(cp: Long) -> String`    | The inverse of `code_points()`: one Unicode scalar value in, a one-character `String` out (Python's `chr`, Rust's `char::from_u32`). Raises `ValueError` for `cp` above `U+10FFFF` or in the surrogate range `U+D800`–`U+DFFF` — the same boundary the `\u{...}` literal escape (§4.1) rejects at parse time. |
+| `String.from_code_points(cps: Array) -> String` | The plural inverse of `code_points()`: an `Array` of Unicode scalar values in, a `String` out. Each element passes through the same gate as `from_code_point`, so `String.from_code_points([cp]) == String.from_code_point(cp)`; a non-`Long` element is a `TypeError`, an out-of-range one a `ValueError`. |
+| `String.from_bytes(bytes: Array) -> String`     | The inverse of `bytes()`: an `Array` of raw byte values (`0`–`255`) in, a `String` out. **No UTF-8 validation** (unlike Python's `bytes(ids).decode()`, which raises on malformed input): culebra `String`s tolerate invalid UTF-8 (same as `iter()`), so `String.from_bytes(s.bytes().collect()) == s` holds for every `String`, including ones with invalid sequences. A non-`Long` element is a `TypeError`, an out-of-range one (outside `0`–`255`) a `ValueError`. |
 
 ```culebra
 # 'é' is 2 UTF-8 bytes, so 'café' is 5 bytes
 puts('café'.bytes().collect())          # => [99, 97, 102, 195, 169]
 puts(String.from_code_point(233))       # => 'é'
+puts(String.from_bytes([99, 97, 102, 195, 169]))   # => 'café'
+puts(String.from_code_points([99, 97, 102, 233]))  # => 'café'
 ```
 
 #### StringView

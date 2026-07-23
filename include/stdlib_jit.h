@@ -5108,6 +5108,36 @@ inline JitValue _ns_string_from_code_point(JitValue* a, int64_t) {
       _culebra_heap_str(culebra::string_from_code_point(_ns_adapt::take_long(a[0]))));
 }
 
+// String.from_bytes(bytes): the inverse of `.bytes()`. Interp twin walks
+// `bytes` the same way (element-by-element, TypeError on a non-Long,
+// append_checked_byte from shared.h for the ValueError gate) so both
+// backends agree on which element fails and with what message.
+inline JitValue _ns_string_from_bytes(JitValue* a, int64_t) {
+  ::JitArray* arr = _ns_adapt::take_array(a[0]);
+  std::string out;
+  out.reserve(arr->size);
+  for (size_t i = 0; i < arr->size; i++) {
+    if (arr->items[i].tag != ::TAG_LONG) throw_type_error_at(0, 0);
+    culebra::append_checked_byte(out, _ns_adapt::take_long(arr->items[i]));
+  }
+  return _ns_adapt::v_string(_culebra_heap_str(out));
+}
+
+// String.from_code_points(cps): the plural inverse of `.code_points()`.
+// Same element-by-element walk as `from_bytes`, gated by
+// append_checked_code_point instead — the same scalar-value check
+// `from_code_point` uses, so `from_code_points([cp]) == from_code_point(cp)`.
+inline JitValue _ns_string_from_code_points(JitValue* a, int64_t) {
+  ::JitArray* arr = _ns_adapt::take_array(a[0]);
+  std::string out;
+  out.reserve(arr->size);
+  for (size_t i = 0; i < arr->size; i++) {
+    if (arr->items[i].tag != ::TAG_LONG) throw_type_error_at(0, 0);
+    culebra::append_checked_code_point(out, _ns_adapt::take_long(arr->items[i]));
+  }
+  return _ns_adapt::v_string(_culebra_heap_str(out));
+}
+
 // UUID.{v4,v7}: canonical UUID strings via uuid.h (shared entropy/format).
 inline JitValue _ns_uuid_v4(JitValue*, int64_t) {
   return _ns_adapt::v_string(_culebra_heap_str(culebra::uuid::v4()));
@@ -5733,6 +5763,8 @@ inline const NsMethod kNsMethods[] = {
   {"UUID", "v7", 0, &_ns_uuid_v7},
 
   {"String", "from_code_point", 1, &_ns_string_from_code_point, nullptr, "Long", "cp"},
+  {"String", "from_bytes", 1, &_ns_string_from_bytes, nullptr, "Array", "bytes"},
+  {"String", "from_code_points", 1, &_ns_string_from_code_points, nullptr, "Array", "cps"},
 
   {"Tensor", "zeros",    -1, &_ns_tensor_zeros},
   {"Tensor", "ones",     -1, &_ns_tensor_ones},

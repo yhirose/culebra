@@ -4912,6 +4912,50 @@ inline Value make_string_namespace() {
           },
           "String"sv)),
       false);
+  // `String.from_bytes(bytes)` — the inverse of `.bytes()`: raw UTF-8 byte
+  // values in (0-255), a String out. No decode validation — culebra Strings
+  // tolerate invalid UTF-8, so `String.from_bytes(s.bytes().collect()) == s`
+  // holds for every String, including ones with invalid UTF-8 sequences.
+  ns.initialize(
+      "from_bytes",
+      Value(FunctionValue(
+          {{"bytes", false, "Array"sv}},
+          [](std::shared_ptr<Environment> callEnv) {
+            auto line = callEnv->get("__LINE__").to_long();
+            auto col = callEnv->get("__COLUMN__").to_long();
+            const auto& arr = *callEnv->get("bytes").to_array().values;
+            std::string out;
+            out.reserve(arr.size());
+            for (const auto& v : arr) {
+              if (v.type != Value::Long) throw_type_error_at(line, col);
+              append_checked_byte(out, v.get<long>());
+            }
+            return Value(std::move(out));
+          },
+          "String"sv)),
+      false);
+  // `String.from_code_points(cps)` — the plural inverse of `.code_points()`:
+  // a sequence of Unicode scalar values in, a String out. Each element goes
+  // through the same gate as `from_code_point`, so `from_code_points([cp])
+  // == from_code_point(cp)`.
+  ns.initialize(
+      "from_code_points",
+      Value(FunctionValue(
+          {{"cps", false, "Array"sv}},
+          [](std::shared_ptr<Environment> callEnv) {
+            auto line = callEnv->get("__LINE__").to_long();
+            auto col = callEnv->get("__COLUMN__").to_long();
+            const auto& arr = *callEnv->get("cps").to_array().values;
+            std::string out;
+            out.reserve(arr.size());
+            for (const auto& v : arr) {
+              if (v.type != Value::Long) throw_type_error_at(line, col);
+              append_checked_code_point(out, v.get<long>());
+            }
+            return Value(std::move(out));
+          },
+          "String"sv)),
+      false);
   return Value(std::move(ns));
 }
 

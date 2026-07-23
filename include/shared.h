@@ -377,6 +377,31 @@ inline std::string string_from_code_point(int64_t cp) {
   return out;
 }
 
+// Element-level helper for `String.from_bytes(bytes)` — the inverse of
+// `.bytes()`. Appends one raw byte (no UTF-8 validation: culebra Strings
+// tolerate invalid UTF-8, same as `.iter()` — see docs/language.md's
+// `String.from_bytes` entry). Raises ValueError for a value outside 0-255;
+// single-sourced here for interp + JIT.
+inline void append_checked_byte(std::string& out, int64_t b) {
+  if (b < 0 || b > 255) {
+    throw CulebraError("ValueError", std::format(
+        "String.from_bytes: {} is not a byte (0-255).", b));
+  }
+  out += static_cast<char>(b);
+}
+
+// Element-level helper for `String.from_code_points(cps)` — the plural
+// inverse of `.code_points()`. Each element passes through the same
+// `is_unicode_scalar_value` gate as `string_from_code_point`, so
+// `String.from_code_points([cp]) == String.from_code_point(cp)`.
+inline void append_checked_code_point(std::string& out, int64_t cp) {
+  if (!is_unicode_scalar_value(cp)) {
+    throw CulebraError("ValueError", std::format(
+        "String.from_code_points: {} is not a Unicode scalar value.", cp));
+  }
+  append_utf8(out, static_cast<uint32_t>(cp));
+}
+
 // HTML escape: the five characters that are unsafe in HTML text/attributes.
 // `&` is replaced first so the others' replacements aren't re-escaped.
 inline std::string html_escape(std::string_view s) {

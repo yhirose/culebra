@@ -128,6 +128,30 @@ assert_throws("ValueError", fn () { String.from_code_point(0x110000) })   # abov
 assert_throws("ValueError", fn () { String.from_code_point(0xD800) })     # surrogate range
 assert_throws("TypeError", fn () { String.from_code_point('a') })        # not a Long
 
+# --- String.from_code_points(cps) — plural inverse of code_points() ---
+assert_eq(String.from_code_points([99, 97, 102, 233]), 'café')
+assert_eq(String.from_code_points([]), '')
+# Round-trips through code_points() for any String
+assert_eq(String.from_code_points('café'.code_points().collect()), 'café')
+assert_eq(String.from_code_points('a👨‍👩‍👧b'.code_points().collect()), 'a👨‍👩‍👧b')
+# Agrees with the singular form
+assert_eq(String.from_code_points([233]), String.from_code_point(233))
+assert_throws("ValueError", fn () { String.from_code_points([0x110000]) })
+assert_throws("ValueError", fn () { String.from_code_points([0xD800]) })
+assert_throws("TypeError", fn () { String.from_code_points(['a']) })
+
+# --- String.from_bytes(bytes) — inverse of bytes() (no UTF-8 validation) ---
+assert_eq(String.from_bytes([99, 97, 102, 195, 169]), 'café')
+assert_eq(String.from_bytes([]), '')
+# Round-trips through bytes() for any String, including multi-byte scalars
+assert_eq(String.from_bytes('café'.bytes().collect()), 'café')
+assert_eq(String.from_bytes('a👨‍👩‍👧b'.bytes().collect()), 'a👨‍👩‍👧b')
+# Invalid UTF-8 byte still builds — culebra Strings tolerate invalid UTF-8
+assert_eq(String.from_bytes([0xFF]).bytes().collect(), [0xFF])
+assert_throws("ValueError", fn () { String.from_bytes([256]) })   # above byte range
+assert_throws("ValueError", fn () { String.from_bytes([-1]) })    # below byte range
+assert_throws("TypeError", fn () { String.from_bytes(['a']) })    # not a Long
+
 # --- Phase 2: range (lazy integer iterator) ---
 mut sum = 0
 for i in range(5) { sum = sum + i }
