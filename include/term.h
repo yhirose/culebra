@@ -17,7 +17,6 @@
 #include <string>
 #if defined(__EMSCRIPTEN__)
 #include <emscripten.h>
-#include <cstdio>
 #elif !defined(_WIN32)
 #include <poll.h>
 #include <sys/ioctl.h>

@@ -54,6 +54,13 @@ const ALT_SCREEN_ENTER = "\x1b[?1049h";
 const ALT_SCREEN_EXIT = "\x1b[?1049l";
 let inTui = false;
 
+// Leave TUI mode and show the Output pane. inTui (routeOutput's routing state)
+// and the visible tab must move together, so run/stop/onerror share this.
+function resetToOutput() {
+  inTui = false;
+  switchTab("output");
+}
+
 function appendOutput(text) {
   if (text) output.textContent += text;
 }
@@ -615,8 +622,7 @@ function spawnWorker() {
   };
   worker.onerror = (e) => {
     setStatus("worker error", true);
-    inTui = false;
-    switchTab("output");
+    resetToOutput();
     appendOutput(String(e.message || e));
     output.classList.add("err");
     stopBtn.disabled = true;
@@ -636,8 +642,7 @@ function run() {
   output.classList.remove("err");
   output.textContent = "";
   term.reset();
-  inTui = false;
-  switchTab("output");
+  resetToOutput();
   setStatus("running…");
   worker.postMessage({ type: "run", src: editor.getValue() });
 }
@@ -648,8 +653,7 @@ function stop() {
   running = false;
   stopBtn.disabled = true;
   runBtn.disabled = true; // until the fresh worker reports ready
-  inTui = false;
-  switchTab("output");
+  resetToOutput();
   setStatus("stopped — reloading…");
   appendOutput("\n[stopped]");
   spawnWorker();
