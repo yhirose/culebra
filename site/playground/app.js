@@ -997,6 +997,10 @@ function spawnWorker() {
       runBtn.disabled = false;
       if (!inTui && !inCanvas && output.textContent === "") output.textContent = "(no output)";
       output.classList.toggle("err", msg.rc !== 0);
+      if (msg.rc !== 0) {
+        markErrorFromOutput();
+        switchTab("output");   // a crash mid-TUI/Canvas: show the message, not a frozen frame
+      }
       setStatus(msg.rc === 0 ? `done in ${Math.round(msg.ms)} ms` : "error", msg.rc !== 0);
     }
   };
@@ -1017,16 +1021,25 @@ function spawnWorker() {
 
 function run() {
   if (running || runBtn.disabled) return;
+  ensureAudio();    // this click is a user gesture — unlock audio for any tones
   running = true;
   runBtn.disabled = true;
   stopBtn.disabled = false;
   output.classList.remove("err");
   output.textContent = "";
+  editor.clearError();
   term.reset();
   resetToOutput();
   startRafPump();   // drives Canvas present()'s frame wait; harmless otherwise
   setStatus("running…");
   worker.postMessage({ type: "run", src: editor.getValue() });
+}
+
+// culebra errors end with `at LINE:COL`; surface the first such location in the
+// editor so a failed run points at the offending line, not just red text.
+function markErrorFromOutput() {
+  const m = output.textContent.match(/\bat (\d+):(\d+)/);
+  if (m) editor.setError(parseInt(m[1], 10));
 }
 
 function stop() {
@@ -1122,6 +1135,23 @@ let audioCtx = null;
 const activeVoices = [null, null, null, null, null];  // one slot per channel
 const pulseWaves = {};  // duty index -> PeriodicWave, built on demand
 
+// Browsers start an AudioContext "suspended" until a user gesture. Create it
+// (once) and resume it if suspended — called both from the first click/key
+// anywhere on the page and from playTone, so a program that makes noise right
+// away isn't silent. A resume() on an already-running context is a no-op.
+function ensureAudio() {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+  } catch {
+    // Audio unavailable (no device / blocked) — a program stays playable.
+  }
+  return audioCtx;
+}
+for (const ev of ["pointerdown", "keydown", "touchstart"]) {
+  window.addEventListener(ev, ensureAudio, { passive: true });
+}
+
 // A pulse wave of the given duty cycle as a PeriodicWave. Sine-series
 // coefficients b_n = (2/(n*pi))(1 - cos(2*pi*n*D)); D=0.5 recovers a square.
 function pulseWave(dutyIndex) {
@@ -1151,7 +1181,7 @@ function whiteNoise() {
 
 function playTone(m) {
   try {
-    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (!ensureAudio()) return;
     const now = audioCtx.currentTime;
     const F = (frames) => Math.max(0, frames) / 60;  // frames@60fps -> seconds
     const attackT = F(m.attack), decayT = F(m.decay);
