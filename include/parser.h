@@ -335,6 +335,30 @@ inline AssignmentView view_assignment(const peg::Ast& a) {
   };
 }
 
+// View of a WHILE AST node — see grammar:
+//   WHILE <- while _ (INIT_CLAUSE _ ';' _)? EXPRESSION _ BLOCK
+// The init clause is optional, so the condition/body indices float. INIT_CLAUSE
+// is kept by the AstOptimizer (parser.h keep-list), so its presence is a simple
+// first-child tag test. All WHILE consumers (interp eval_while, JIT
+// compile_while / scan_eh_defer, formatter, lint, transforms) read through this
+// view so the grammar's optional-init shape lives in exactly one place.
+struct WhileView {
+  const peg::Ast* init;   // INIT_CLAUSE node, or nullptr when absent
+  const peg::Ast* cond;   // condition EXPRESSION
+  const peg::Ast* body;   // body BLOCK
+};
+
+inline WhileView view_while(const peg::Ast& a) {
+  using namespace peg::udl;
+  bool has_init = !a.nodes.empty() && a.nodes[0]->tag == "INIT_CLAUSE"_;
+  size_t off = has_init ? 1 : 0;
+  return WhileView{
+      has_init ? a.nodes[0].get() : nullptr,
+      a.nodes[off].get(),
+      a.nodes[off + 1].get(),
+  };
+}
+
 // View of an OBJECT_PROPERTY AST node — see grammar:
 //   OBJECT_PROPERTY <- MUTABLE _ (FLOAT/NUMBER/NIL/BOOLEAN/TUPLE/IDENTIFIER) _ ':' _ EXPRESSION
 //   (shorthand) OBJECT_PROPERTY <- MUTABLE _ IDENTIFIER   (no ':' or value)
@@ -1073,6 +1097,13 @@ inline const std::vector<std::string>& ast_optimizer_keep_rules() {
       // (see grammar_def.h). The two used to share the TUPLE_PATTERN name
       // — that collision is what made `(a,)` uncollapsible-yet-collapsed.
       "TUPLE_PATTERN",
+      // INIT_CLAUSE (the optional `while` init clause) must be kept: a single
+      // binding would otherwise collapse onto its lone ASSIGNMENT, and the
+      // backends detect the init clause by WHILE's first child being an
+      // INIT_CLAUSE node (see view_while). INIT_BINDING is deliberately NOT
+      // kept — it is a single-alternative wrapper that collapses to its
+      // ASSIGNMENT / DESTRUCTURE_ASSIGN, which is what the walkers expect.
+      "INIT_CLAUSE",
       "MATCH_ARMS", "GUARD", "COND", "COND_ARM",
       "ARRAY_PATTERN", "OBJECT_PATTERN",
       "CTOR_PATTERN",

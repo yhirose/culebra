@@ -1827,10 +1827,32 @@ if no branch is taken (no `else` and the `if` was false).
 ### `while`
 
     while cond { body }
+    while init; cond { body }
 
 `while` is a statement; its value is `nil`. `break` and `continue`
 work inside the loop body. The body is a fresh scope per iteration
 (like `for` — see [Scope](#scope)).
+
+An optional **init clause** — a comma-separated list of declarations
+before the condition, split by `;` — binds variables scoped to the
+loop, so a counter no longer leaks into the enclosing scope:
+
+    while mut i = 0; i < len {
+      out.push(i)
+      i = i + 1
+    }
+    # `i` is not visible here
+
+The init variables persist across iterations (a body `i = i + 2`
+re-assigns) and are dropped when the loop exits by any path (normal,
+`break`, or an exception). Multiple bindings use `,`:
+
+    while mut i = 0, mut j = xs.size() - 1; i < j { i = i + 1; j = j - 1 }
+
+Each binding must be a declaration (`let` or `mut`); a bare
+`while x = 0; …` is a `SyntaxError` (it would reassign an outer `x`
+rather than scope one to the loop). Destructuring binds too:
+`while mut (a, b) = pair; …`.
 
 ### `for` ... `in`
 

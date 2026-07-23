@@ -218,6 +218,26 @@ for t in trys {
   case("try|" + t, t)
 }
 
+# --- Dimension: while init clause (`while mut i = 0; cond { … }`) ----------
+# The init clause binds loop-scoped variables that persist across iterations
+# and drop on loop exit. Exercise single/multiple bindings, break/continue,
+# nested loops, destructuring, and shadowing — all must agree interp vs JIT.
+let winits = [
+  '{ mut o = []; while mut i = 0; i < 5 { o.push(i); i = i + 1 }; o }',
+  '{ mut a = 0; while mut i = 0, mut j = 10; i < j { a = a + i + j; i = i + 1; j = j - 1 }; a }',
+  '{ mut r = -1; while mut i = 0; i < 100 { if i == 7 { r = i; break }; i = i + 1 }; r }',
+  '{ mut s = 0; while mut i = 0; i < 6 { i = i + 1; if i % 2 == 0 { continue }; s = s + i }; s }',
+  '{ mut t = 0; while mut i = 0; i < 3 { while mut j = 0; j < 3 { t = t + i * j; j = j + 1 }; i = i + 1 }; t }',
+  '{ mut o = []; while mut (a, b) = (1, 2); a < b { o.push(a + b); a = a + 5 }; o }',
+  '{ mut i = 999; while mut i = 0; i < 3 { i = i + 1 }; i }',
+  '{ let hd = "0123456789abcdef".graphemes().collect(); let cs = "48656c6c6f".graphemes().collect(); mut o = []; while mut i = 0; i < cs.size() { o.push(hd.index_of(cs[i]) * 16 + hd.index_of(cs[i + 1])); i = i + 2 }; o }']
+for w in winits {
+  case("while_init|" + w, w)
+}
+# Generator + effect fn bodies with a while-init loop (source-transform paths).
+case("while_init|gen", 'fn g() { while mut i = 0; i < 4 { yield i * i; i = i + 1 } }; g().collect()')
+case("while_init|eff", 'effect fn tk(); effect fn c(n) { mut s = 0; while mut i = 0; i < n { perform tk(); s = s + i; i = i + 1 }; s }; handle { c(5) } with tk(r) { r(nil) }')
+
 # --- Dimension 11: match / patterns ---------------------------------------
 let me_pre = 'enum E { A(Long), B }; '
 let matches = [me_pre + 'match E.A(5) { A(x) => x, _ => -1 }',

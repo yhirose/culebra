@@ -1136,8 +1136,22 @@ class Printer {
   }
 
   DocP print_while(const peg::Ast& node) {
-    return doc_concat({doc_text("while "), print(*node.nodes[0]), doc_text(" "),
-                       print_block(*node.nodes[1], node_end(*node.nodes[0]), false)});
+    // [(INIT_CLAUSE)?, condition, BLOCK]. The optional init clause renders as
+    // `binding, binding; ` before the condition (`while mut i = 0; i < n {…}`).
+    auto wv = culebra::view_while(node);
+    DocP head = print(*wv.cond);
+    if (wv.init) {
+      std::vector<DocP> parts;
+      for (size_t i = 0; i < wv.init->nodes.size(); i++) {
+        if (i) parts.push_back(doc_text(", "));
+        parts.push_back(print(*wv.init->nodes[i]));
+      }
+      parts.push_back(doc_text("; "));
+      parts.push_back(head);
+      head = doc_concat(std::move(parts));
+    }
+    return doc_concat({doc_text("while "), head, doc_text(" "),
+                       print_block(*wv.body, node_end(*wv.cond), false)});
   }
 
   DocP print_for(const peg::Ast& node) {

@@ -738,8 +738,15 @@ class EffectsLowerer {
     std::vector<const peg::Ast*> blocks;
     if (s->tag == "WHILE"_) {
       if (s->nodes.size() < 2) reject_unsupported_expr(*s);
-      if (has_suspension(*s->nodes[0])) reject_control_expr(*s->nodes[0]);
-      blocks.push_back(s->nodes[1].get());
+      auto wv = culebra::view_while(*s);
+      // A `perform` in the init clause or condition is not supported (the
+      // condition re-runs each iteration; the init would need a one-time
+      // hoist). Reject both with a clear error, like the condition rule.
+      if (wv.init)
+        for (auto& b : wv.init->nodes)
+          if (has_suspension(*b)) reject_control_expr(*b);
+      if (has_suspension(*wv.cond)) reject_control_expr(*wv.cond);
+      blocks.push_back(wv.body);
     } else if (s->tag == "FOR"_) {
       if (s->nodes.size() < 3) reject_unsupported_expr(*s);
       if (has_suspension(*s->nodes[1])) reject_control_expr(*s->nodes[1]);
@@ -1048,17 +1055,27 @@ class EffectsLowerer {
   int cps_while(CpsState& st, const peg::Ast* w, int cont,
                 const std::set<std::string>& rw) const {
     if (w->nodes.size() < 2) { st.failed = true; return -1; }
-    if (has_suspension(*w->nodes[0])) reject_control_expr(*w->nodes[0]);
+    auto wv = culebra::view_while(*w);
+    if (has_suspension(*wv.cond)) reject_control_expr(*wv.cond);
     int h = st.fresh();
     st.loop_stack.push_back({h, cont});
-    int body_entry = cps_block_seq(st, *w->nodes[1], h, /*tail=*/false, rw);
+    int body_entry = cps_block_seq(st, *wv.body, h, /*tail=*/false, rw);
     st.loop_stack.pop_back();
     if (st.failed) return -1;
     st.states[h] = std::format(
         "      if {} {{ this._eff_state = {} }} else {{ this._eff_state = {} }}{}\n"
         "      continue\n",
-        cps_rw(*w->nodes[0], rw), body_entry, cont, mk(*w->nodes[0]));
-    return h;
+        cps_rw(*wv.cond, rw), body_entry, cont, mk(*wv.cond));
+    if (!wv.init) return h;
+    // The init clause runs its (suspension-free) bindings once, then enters the
+    // condition state. cps_seq emits the yield-free declarations verbatim
+    // (locals rewritten) in a state that jumps to h.
+    std::vector<const peg::Ast*> init_stmts;
+    for (auto& b : wv.init->nodes) {
+      if (has_suspension(*b)) reject_control_expr(*b);
+      init_stmts.push_back(b.get());
+    }
+    return cps_seq(st, init_stmts, h, /*tail=*/false, rw);
   }
 
   // if / else-if / else. IF nodes are [cond, block, …, elseblock?]. When `tail`,

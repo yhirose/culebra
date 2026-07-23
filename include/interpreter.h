@@ -6161,9 +6161,21 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   }
 
   Value eval_while(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
+    auto wv = culebra::view_while(ast);
+    // The optional init clause (`while mut i = 0; i < n { … }`) binds its
+    // variables in an environment that encloses the whole loop: the bindings
+    // persist across iterations (so a body `i = i + 2` re-assigns rather than
+    // re-declares) yet are dropped when this scope is destroyed on loop exit —
+    // any exit path (normal, break, throw) unwinds loopEnv via RAII, so the
+    // init bindings' refcounts fall exactly once. With no init clause loopEnv
+    // is just env (no extra scope), preserving the original behavior.
+    auto loopEnv = wv.init ? make_scope(env) : env;
+    if (wv.init) {
+      for (const auto& binding : wv.init->nodes) eval(*binding, loopEnv);
+    }
     for (;;) {
       check_interrupt();
-      auto cond = eval(*ast.nodes[0], env);
+      auto cond = eval(*wv.cond, loopEnv);
       if (!cond.to_bool()) {
         break;
       }
@@ -6171,11 +6183,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       // introduced in the body neither leaks out nor persists across
       // iterations (so a bare immutable `x = …` re-declares each pass rather
       // than re-assigning), and a body `defer` fires on every iteration.
-      auto scopeEnv = make_scope(env);
+      auto scopeEnv = make_scope(loopEnv);
       try {
-        if (debugger_ && is_collapsed_single_statement(*ast.nodes[1]))
-          statement_boundary(*ast.nodes[1], scopeEnv);  // breakpoint on 1 stmt
-        eval(*ast.nodes[1], scopeEnv);
+        if (debugger_ && is_collapsed_single_statement(*wv.body))
+          statement_boundary(*wv.body, scopeEnv);  // breakpoint on 1 stmt
+        eval(*wv.body, scopeEnv);
         run_deferred(scopeEnv);
       } catch (const BreakSignal&) {
         run_deferred(scopeEnv);

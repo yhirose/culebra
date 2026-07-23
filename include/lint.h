@@ -301,15 +301,44 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       return;
     }
     case "WHILE"_: {
-      // [condition, BLOCK]: the condition is evaluated before each iteration
-      // in the enclosing scope; the body is a fresh child scope per iteration
-      // (like FOR — see interpreter.h eval_while / jit.h compile_while). The
-      // condition stays at the enclosing loop depth; the body is inside the
-      // loop.
+      // [(INIT_CLAUSE)?, condition, BLOCK]: the condition is evaluated before
+      // each iteration in the enclosing scope; the body is a fresh child scope
+      // per iteration (like FOR — see interpreter.h eval_while /
+      // jit.h compile_while). The condition stays at the enclosing loop depth;
+      // the body is inside the loop.
       if (node.nodes.size() < 2) { walk_children(node); return; }
-      walk(*node.nodes[0]);
+      auto wv = culebra::view_while(node);
+      if (wv.init) {
+        // The init clause (`while mut i = 0; …`) binds loop-scoped variables
+        // in an enclosing scope wrapping the condition + body. Each binding
+        // must be a declaration (`let`/`mut`); a bare `x = 0` would reassign
+        // an outer variable or create an immutable binding — reject it
+        // pre-eval on every backend, mirroring the break/continue check above.
+        scopes_.emplace_back();
+        for (const auto& binding : wv.init->nodes) {
+          bool declared = binding->nodes.size() >= 2 &&
+                          (binding->nodes[0]->token == "let" ||
+                           binding->nodes[1]->token == "mut");
+          if (!declared) {
+            diags_.push_back(Diagnostic{
+                "SyntaxError",
+                "while-init binding must be declared with 'let' or 'mut'",
+                static_cast<long>(binding->line),
+                static_cast<long>(binding->column), Severity::Error});
+          }
+          walk(*binding);   // registers the declared name in the init scope
+        }
+        walk(*wv.cond);
+        {
+          LoopDepthGuard g(loop_depth_, loop_depth_ + 1);
+          scoped(*wv.body, [](Scope&) {});
+        }
+        scopes_.pop_back();
+        return;
+      }
+      walk(*wv.cond);
       LoopDepthGuard g(loop_depth_, loop_depth_ + 1);
-      scoped(*node.nodes[1], [](Scope&) {});
+      scoped(*wv.body, [](Scope&) {});
       return;
     }
     case "FOR"_: {

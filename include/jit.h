@@ -3795,15 +3795,16 @@ struct JIT {
       // The loop safepoint (emit_safepoint) can throw Interrupted on Ctrl+C, so
       // the enclosing function needs a personality to unwind through.
       info.has_eh = true;
-      // nodes: [condition EXPRESSION, BLOCK]. Like FOR, the body is a
-      // per-iteration scope: a defer in it fires each iteration, not at
-      // function exit. Scan the condition at the enclosing level; absorb the
-      // body's defers into the body node (mark it) so they don't bubble up to
-      // has_fn_defer. Matches compile_while + interp's eval_while.
-      scan_eh_defer(*node.nodes[0], at_fn_top, info);
-      if (node.nodes.size() >= 2 &&
-          scan_eh_defer(*node.nodes.back(), /*at_fn_top=*/false, info)) {
-        scope_has_defer_.insert(&*node.nodes.back());
+      // nodes: [(INIT_CLAUSE)?, condition EXPRESSION, BLOCK]. Like FOR, the
+      // body is a per-iteration scope: a defer in it fires each iteration, not
+      // at function exit. Scan any init clause + the condition at the enclosing
+      // level; absorb the body's defers into the body node (mark it) so they
+      // don't bubble up to has_fn_defer. Matches compile_while + eval_while.
+      auto wv = culebra::view_while(node);
+      if (wv.init) scan_eh_defer(*wv.init, at_fn_top, info);
+      scan_eh_defer(*wv.cond, at_fn_top, info);
+      if (scan_eh_defer(*wv.body, /*at_fn_top=*/false, info)) {
+        scope_has_defer_.insert(wv.body);
       }
       return false;  // the body absorbs its own defers
     }
@@ -7339,6 +7340,30 @@ struct JIT {
   }
 
   Owned compile_while(const peg::Ast& ast) {
+    auto wv = culebra::view_while(ast);
+
+    // The optional init clause (`while mut i = 0; i < n { … }`) wraps the whole
+    // loop in an enclosing scope holding its bindings: they live across
+    // iterations yet are dropped exactly once on loop exit. Structured like
+    // compile_lexical_scope — a scope-cleanup landingpad drops the init slots
+    // on the throw/unwind edge; the normal-exit and break edges both fall
+    // through endBB into finish_and_pop_scope below. current_lpad_ is set to
+    // this cleanup so a throw from the condition or body unwinds through it.
+    llvm::BasicBlock* initCleanupBB = nullptr;
+    llvm::BasicBlock* initSavedLpad = current_lpad_;
+    if (wv.init) {
+      auto scopeFn = builder_.GetInsertBlock()->getParent();
+      initCleanupBB =
+          llvm::BasicBlock::Create(ctx_, "while.init.cleanup", scopeFn);
+      current_lpad_ = initCleanupBB;
+      push_scope();
+      // Each binding is an ASSIGNMENT / DESTRUCTURE_ASSIGN that declares into
+      // the init scope; drop the assignment's +1 result like a statement (the
+      // slot keeps the binding's reference). The let/mut requirement is
+      // enforced by the shared static pass (lint.h WHILE), so no check here.
+      for (auto& binding : wv.init->nodes) compile(*binding).drop();
+    }
+
     auto fn = builder_.GetInsertBlock()->getParent();
 
     auto condBB = llvm::BasicBlock::Create(ctx_, "while.cond", fn);
@@ -7348,7 +7373,7 @@ struct JIT {
     builder_.CreateBr(condBB);
 
     builder_.SetInsertPoint(condBB);
-    auto cond = compile(*ast.nodes[0]).consume();
+    auto cond = compile(*wv.cond).consume();
     auto b = value_to_bool(cond);
     builder_.CreateCondBr(b, bodyBB, endBB);
 
@@ -7361,7 +7386,7 @@ struct JIT {
     // than re-assigning), and a body `defer` fires at each iteration's exit.
     // pop_scope releases the per-iteration slots and zeros the allocas on the
     // back-edge, so the next pass starts clean.
-    const auto& body = *ast.nodes[1];
+    const auto& body = *wv.body;
     push_scope();
     // A defer in the body fires at the end of each iteration: capture the
     // defer-stack mark here and run back to it on every exit path — normal
@@ -7403,6 +7428,15 @@ struct JIT {
     }
 
     builder_.SetInsertPoint(endBB);
+
+    // Drop the init scope on every exit that reaches endBB (normal cond-false
+    // fall-through and break both land here). A throw inside the loop instead
+    // unwinds via initCleanupBB, which finish_and_pop_scope fills to release
+    // the same init slots before re-raising — exactly-once on all paths.
+    if (wv.init) {
+      finish_and_pop_scope(initCleanupBB, /*defer_mark=*/nullptr, initSavedLpad,
+                           "while.init.exc", initSavedLpad);
+    }
     return own(make_nil());
   }
 

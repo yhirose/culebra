@@ -991,16 +991,23 @@ struct CpsBuilder {
     }
     if (u->tag == "IF"_) return compile_if(u, cont);
     if (u->tag == "WHILE"_ && u->nodes.size() >= 2) {
+      auto wv = culebra::view_while(*u);
       int h = fresh();
       loop_stack.push_back({h, cont});
-      int body_entry = compile_seq(body_stmts(*u->nodes[1]), h);
+      int body_entry = compile_seq(body_stmts(*wv.body), h);
       loop_stack.pop_back();
       if (failed) return -1;
       states[h] = std::format(
           "      if {} {{ this._g_state = {} }} else {{ this._g_state = {} }}{}\n"
           "      continue\n",
-          rw(*u->nodes[0]), body_entry, cont, mk(*u->nodes[0]));
-      return h;
+          rw(*wv.cond), body_entry, cont, mk(*wv.cond));
+      if (!wv.init) return h;
+      // The init clause runs its bindings once, then enters the condition
+      // state. They are yield-free declarations, so compile_seq emits them
+      // verbatim (locals rewritten to this._g_*) in a state that jumps to h.
+      std::vector<const peg::Ast*> init_stmts;
+      for (auto& b : wv.init->nodes) init_stmts.push_back(b.get());
+      return compile_seq(init_stmts, h);
     }
     if (u->tag == "LEXICAL_SCOPE"_ || u->tag == "STATEMENTS"_) {
       return compile_seq(body_stmts(*u), cont);

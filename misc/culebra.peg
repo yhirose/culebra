@@ -208,7 +208,17 @@
   SEQ_ELEM                 <-  SPREAD_ELEM / EXPRESSION
   SPREAD_ELEM              <-  '...' _ EXPRESSION
 
-  WHILE                    <-  while _ EXPRESSION _ BLOCK
+  # Optional C++17-style init clause (`while mut i = 0; i < n { … }`): a
+  # comma-separated list of declaration bindings scoped to the loop, split
+  # from the condition by `;`. INIT_CLAUSE is kept by the AstOptimizer so its
+  # presence is detectable as WHILE's first child (see view_while). Each
+  # binding parses as ASSIGNMENT / DESTRUCTURE_ASSIGN; a shared static pass
+  # rejects a bare (non let/mut) binding. No ambiguity: ASSIGNMENT requires an
+  # assign op, so a plain `while cond { }` fails the init match and falls
+  # through — the `;` is what selects the init form.
+  WHILE                    <-  while _ (INIT_CLAUSE _ ';' _)? EXPRESSION _ BLOCK
+  INIT_CLAUSE              <-  INIT_BINDING (_ ',' _ INIT_BINDING)*
+  INIT_BINDING             <-  DESTRUCTURE_ASSIGN / ASSIGNMENT
   # The loop variable may be a destructuring pattern. Bare comma-separated
   # targets `for k, v in obj` are sugar for a parenthesized tuple pattern
   # `for (k, v) in obj`. FOR_BINDING keeps its own node name (not
