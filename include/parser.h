@@ -468,6 +468,21 @@ inline size_t first_non_decorator_index(const peg::Ast& node) {
   return i;
 }
 
+// True if this EFFECT_FN_DECL has a body (an effectful function) rather than a
+// bare operation declaration. Grammar:
+//   effect _ fn _ CLASS_HEAD _ PARAMETERS (_ RETURN_TYPE)? (_ BLOCK)?
+// Children: [CLASS_HEAD, PARAMETERS, (RETURN_TYPE)?, (BODY)?]. The AstOptimizer
+// collapses a single-statement BLOCK onto its statement, so the body may
+// surface as STATEMENTS or a bare expression, not literally a BLOCK; RETURN_TYPE
+// is keep-listed and keeps its tag. So a body is present iff there is a child
+// past the two mandatory ones (CLASS_HEAD, PARAMETERS) whose tag is not
+// RETURN_TYPE. Shared by the effects lowering and the lint pass so the shape
+// knowledge lives in one place.
+inline bool effect_fn_has_body(const peg::Ast& decl) {
+  using namespace peg::udl;
+  return decl.nodes.size() > 2 && decl.nodes.back()->tag != "RETURN_TYPE"_;
+}
+
 // `arity` is the positional payload count (0 = nullary). VARIANT is
 // kept un-collapsed by the AstOptimizer so nodes[0] is always the name.
 struct VariantView {

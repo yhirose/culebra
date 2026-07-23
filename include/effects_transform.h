@@ -63,17 +63,8 @@ inline constexpr int EFF_DONE = 0;
 inline constexpr int EFF_SUSPEND = 1;
 inline constexpr int EFF_DELEGATE = 2;
 
-// --- EFFECT_FN_DECL shape ------------------------------------------------
-// Grammar: effect _ fn _ CLASS_HEAD _ PARAMETERS (_ RETURN_TYPE)? (_ BLOCK)?
-// Children: [CLASS_HEAD, PARAMETERS, (RETURN_TYPE)?, (BODY)?]. The AstOptimizer
-// collapses a single-statement BLOCK onto its statement, so the body may
-// surface as STATEMENTS or a bare expression, not literally a BLOCK. RETURN_TYPE
-// is keep-listed and keeps its tag, so a body is present iff there is a child
-// past PARAMETERS whose tag is not RETURN_TYPE.
-inline bool effect_fn_has_body(const peg::Ast& decl) {
-  using namespace peg::udl;
-  return decl.nodes.size() > 2 && decl.nodes.back()->tag != "RETURN_TYPE"_;
-}
+// `effect_fn_has_body` (EFFECT_FN_DECL shape) lives in parser.h alongside the
+// other AST-layout helpers, shared with the lint pass.
 
 // The declared name — CLASS_HEAD's token, trimmed of any generic head
 // (`<...>`) the thin slice never emits but the grammar admits.

@@ -1413,6 +1413,13 @@ inline void collect_local_decls(const peg::Ast& node, std::vector<Decl>& out) {
     case "CLASS_DECL"_:
     case "TRAIT_DECL"_:
     case "ENUM_DECL"_:
+    // An `effect fn` body and each handler clause body lower to their own
+    // functions, so their locals belong to those scopes — not the enclosing
+    // one. (A HANDLE's own handled block, node[0], is NOT listed: it runs
+    // inline in the enclosing scope, so we descend into it like any block.)
+    case "EFFECT_FN_DECL"_:
+    case "HANDLE_CLAUSE"_:
+    case "RETURN_CLAUSE"_:
       return;  // separate scope
     case "ASSIGNMENT"_: {
       auto av = culebra::view_assignment(node);
@@ -1486,6 +1493,23 @@ inline void analyze_walk(const peg::Ast& node, std::vector<Diagnostic>& diags) {
     case "DEFER"_:
       if (!node.nodes.empty()) check_scope_body(*node.nodes[0], diags);
       break;
+    case "EFFECT_FN_DECL"_:
+      // The body is the trailing BLOCK, absent for a signature-only operation.
+      if (culebra::effect_fn_has_body(node))
+        check_scope_body(*node.nodes.back(), diags);
+      break;
+    case "HANDLE"_: {
+      // `handle BLOCK (with (RETURN_CLAUSE / HANDLE_CLAUSE))+` — node[0] is the
+      // handled block (inline, checked as part of the enclosing scope); each
+      // clause body is its own scope. HANDLE_CLAUSE is `IDENTIFIER PARAMETERS
+      // BLOCK`, RETURN_CLAUSE is `PARAMETERS BLOCK`; the body is the last node.
+      for (size_t j = 1; j < node.nodes.size(); j++) {
+        const auto& clause = *node.nodes[j];
+        if (!clause.nodes.empty())
+          check_scope_body(*clause.nodes.back(), diags);
+      }
+      break;
+    }
     default:
       break;
   }
@@ -1563,11 +1587,9 @@ inline void check_module(const peg::Ast& ast) {
 //                never reads its `resume`; a clause may ignore an operation
 //                argument) and synthesized positions collapse onto the
 //                enclosing construct rather than pointing at editable source.
-// Consequence: the warning analyzers do not currently descend into `effect
-// fn` bodies or handler clause bodies, so an unused local written there is
-// missed. That is the safe direction for an advisory check (it under-reports
-// rather than pointing at code the user cannot act on); closing it means
-// teaching the analyzers those node kinds.
+// The warning analyzers treat `effect fn` bodies and handler clause bodies as
+// their own scopes (they lower to functions), so an unused local written in
+// one is reported at its authored position, same as in any function.
 inline std::vector<Diagnostic> collect_module(const peg::Ast& lowered,
                                               const peg::Ast& authored) {
   std::vector<Diagnostic> diags;

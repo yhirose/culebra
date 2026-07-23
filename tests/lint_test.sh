@@ -440,6 +440,26 @@ puts(handle { perform a() } with a(r) { r(1) } with a(r) { r(2) })'
 expect_lint_warns "unused local beside effects" 'effect fn ask()
 fn helper() { let dead = 1; 2 }
 puts(handle { perform ask() } with ask(resume) { resume(helper()) })' "unused variable 'dead'"
+# An `effect fn` body and each handler clause body are their own scopes, so an
+# unused local written in one is reported (at its authored position) just like
+# in any function.
+expect_lint_warns "unused in effect fn body" 'effect fn ask()
+effect fn work() { let dead = 1; perform ask() }
+puts(handle { work() } with ask(resume) { resume(2) })' "unused variable 'dead'"
+expect_lint_warns "unused in handler clause body" 'effect fn ask()
+puts(handle { perform ask() } with ask(resume) { let dead = 1; resume(2) })' "unused variable 'dead'"
+expect_lint_warns "unused in return clause body" 'effect fn ask()
+puts(handle { perform ask() } with ask(resume) { resume(2) } with return(v) { let dead = 1; v })' "unused variable 'dead'"
+# Sound-negatives — locals that ARE used in these scopes must stay clean:
+expect_lint_clean "used in effect fn body" 'effect fn ask()
+effect fn work() { let n = perform ask(); n * 2 }
+puts(handle { work() } with ask(resume) { resume(2) })'
+expect_lint_clean "used in handler clause body" 'effect fn ask()
+puts(handle { perform ask() } with ask(resume) { let doubled = 2 * 3; resume(doubled) })'
+# A clause captures an enclosing local — that read must count, so no warning:
+expect_lint_clean "clause captures enclosing local" 'effect fn ask()
+fn f() { let base = 100; handle { perform ask() } with ask(resume) { resume(base) } }
+puts(f())'
 
 if [[ $fail -eq 0 ]]; then echo "lint_test OK"; exit 0; fi
 exit 1
