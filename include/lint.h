@@ -1349,15 +1349,35 @@ inline bool ignored_unused(std::string_view name) {
   return name.starts_with("_");
 }
 
+// The single lvalue IDENTIFIER node of a plain `let`/`mut` declaration (one
+// simple target, not a compound assignment), or nullptr when `node` is not
+// such a declaration. Centralizes the ASSIGNMENT grammar shape so the several
+// passes that pick out declarations don't each re-encode it (and drift when
+// the grammar changes). Callers apply `ignored_unused` to the returned name.
+inline const peg::Ast* let_decl_target(const peg::Ast& node) {
+  using namespace peg::udl;
+  if (node.tag != "ASSIGNMENT"_) return nullptr;
+  auto av = culebra::view_assignment(node);
+  if (!(av.is_let || av.is_mut) || av.compound || av.lvalcnt != 1)
+    return nullptr;
+  const auto& t = *node.nodes[av.lvaloff];
+  return (t.tag == "IDENTIFIER"_ && t.is_token) ? &t : nullptr;
+}
+
 // Every variable READ in a subtree, recursing through nested closures (they
 // capture outer locals). Excludes the positions that are writes or non-reads:
-// a plain `x = …` target (a write), a destructure pattern, a `.member` /
-// `?.member` name, a kwarg name, and a non-shorthand object key. A compound
-// `x += …` target IS a read. Declaration heads and parameter names are left
-// in (counting them as reads is harmless — it only suppresses warnings).
+// a plain `x = …` target (a write), a destructure pattern, a kwarg name, and a
+// non-shorthand object key. A compound `x += …` target IS a read.
+// A `.member` / `?.member` postfix name is deliberately COUNTED as a read:
+// under UFCS, `receiver.name(args)` calls the free function `name`, so a name
+// appearing only as `.name` may be the sole use of a binding. Over-counting
+// reads only ever suppresses a warning (the sound direction for "unused"), so
+// treating every `.name` as a potential use keeps the analysis free of false
+// positives at the cost of occasionally missing a genuinely dead binding whose
+// name coincides with a method call. Declaration heads and parameter names are
+// likewise left in (harmless — it only suppresses warnings).
 inline void collect_reads(const peg::Ast& node, NameSet& reads) {
   using namespace peg::udl;
-  if (node.original_tag == "DOT"_ || node.original_tag == "SAFE_DOT"_) return;
   switch (node.tag) {
     case "IDENTIFIER"_:
       if (node.is_token && !is_sink(node.token))
@@ -1392,6 +1412,10 @@ inline void collect_reads(const peg::Ast& node, NameSet& reads) {
       collect_reads(pv.is_shorthand ? *pv.key : *pv.value, reads);
       return;
     }
+    case "IMPORT_STMT"_:
+      return;  // binds a name; its path is a string literal — no reads. An
+               // `export { a, b }` is left to the default recursion so its
+               // identifiers DO count as reads (an exported name is used).
     default:
       for (const auto& c : node.nodes) collect_reads(*c, reads);
   }
@@ -1422,14 +1446,10 @@ inline void collect_local_decls(const peg::Ast& node, std::vector<Decl>& out) {
     case "RETURN_CLAUSE"_:
       return;  // separate scope
     case "ASSIGNMENT"_: {
-      auto av = culebra::view_assignment(node);
-      if ((av.is_let || av.is_mut) && !av.compound && av.lvalcnt == 1) {
-        const auto& t = *node.nodes[av.lvaloff];
-        if (t.tag == "IDENTIFIER"_ && t.is_token && !ignored_unused(t.token))
-          out.push_back({std::string(t.token), static_cast<long>(t.line),
-                         static_cast<long>(t.column)});
-      }
-      collect_local_decls(*av.rhs, out);
+      if (const auto* t = let_decl_target(node); t && !ignored_unused(t->token))
+        out.push_back({std::string(t->token), static_cast<long>(t->line),
+                       static_cast<long>(t->column)});
+      collect_local_decls(*culebra::view_assignment(node).rhs, out);
       return;
     }
     default:
@@ -1438,7 +1458,14 @@ inline void collect_local_decls(const peg::Ast& node, std::vector<Decl>& out) {
 }
 
 // Flag this function body's local `let`/`mut` bindings that are never read in
-// the body (reads include nested closures). Appends Warning diagnostics.
+// the body (reads include nested closures, which capture them). Appends
+// Warning diagnostics. Parameters are deliberately NOT checked: an unused
+// parameter is overwhelmingly intentional in culebra — a multidispatch clause
+// or trait/method signature fixes the arity, a higher-order callback (`fn(req)`
+// route handler, `|i| 4.0`) ignores an argument it must still declare, and a
+// type annotation exists to steer dispatch rather than to be read. Measured
+// over the whole corpus, every such warning was a true-but-unwanted positive,
+// so the check can't meet the linter's zero-false-positive bar.
 inline void check_scope_body(const peg::Ast& body,
                              std::vector<Diagnostic>& diags) {
   std::vector<Decl> decls;
@@ -1523,6 +1550,114 @@ inline void analyze_module(const peg::Ast& ast,
 
 }  // namespace unused
 
+// Unused top-level bindings: an `import`ed name or a top-level `let`/`mut`
+// that the module never reads and never re-exports. Function / class / enum /
+// trait declarations are intentionally not candidates — they are a module's
+// export surface, plausibly used by importers this single-file check can't
+// see. `let`/`mut` and imports are the private working set, so a truly unread
+// one is dead. Soundness matches the unused-local check: reads are
+// over-approximated module-wide (a name appearing anywhere as a read, even in
+// a nested closure or `export { … }`, suppresses the warning), so the only
+// flagged names are genuinely never referenced.
+namespace toplevel {
+
+using unused::ignored_unused;
+
+struct Cand {
+  std::string name;
+  long line;
+  long col;
+  bool is_import;
+};
+
+// Candidates come only from the module's direct top-level statements (a `let`
+// buried in a top-level `if`/`for` block is left to the runtime — keeping the
+// first version to straight top-level statements avoids the scope subtleties
+// of when a block shares the module frame).
+inline void collect_candidates(const peg::Ast& root, std::vector<Cand>& out) {
+  using namespace peg::udl;
+  auto consider = [&](const peg::Ast& s) {
+    if (s.tag == "IMPORT_STMT"_) {
+      if (!s.nodes.empty() && s.nodes[0]->is_token &&
+          !ignored_unused(s.nodes[0]->token)) {
+        const auto& id = *s.nodes[0];
+        out.push_back({std::string(id.token), static_cast<long>(id.line),
+                       static_cast<long>(id.column), true});
+      }
+      return;
+    }
+    if (const auto* t = unused::let_decl_target(s);
+        t && !ignored_unused(t->token))
+      out.push_back({std::string(t->token), static_cast<long>(t->line),
+                     static_cast<long>(t->column), false});
+  };
+  if (root.tag == "STATEMENTS"_)
+    for (const auto& s : root.nodes) consider(*s);
+  else
+    consider(root);  // a single-statement program collapses past STATEMENTS
+}
+
+inline void analyze_module(const peg::Ast& root,
+                           std::vector<Diagnostic>& diags) {
+  std::vector<Cand> cands;
+  collect_candidates(root, cands);
+  if (cands.empty()) return;
+  unused::NameSet reads;
+  unused::collect_reads(root, reads);  // module-wide; exports count as reads
+  for (const auto& c : cands) {
+    if (reads.contains(c.name)) continue;
+    std::string msg = c.is_import
+                          ? std::format("unused import '{}'", c.name)
+                          : std::format("unused top-level binding '{}'", c.name);
+    diags.push_back(Diagnostic{c.is_import ? "UnusedImport" : "UnusedBinding",
+                               std::move(msg), c.line, c.col,
+                               Severity::Warning});
+  }
+}
+
+}  // namespace toplevel
+
+// Unreachable code: a statement that can never execute because a straight-line
+// control-flow terminator (`return` / `throw` / `break` / `continue`)
+// precedes it in the same statement block. Only bare terminators that are
+// themselves direct statements count — a `return` nested inside an `if` does
+// not make the rest of the enclosing block dead, so control-flow-aware
+// analysis (both branches of an if/else terminating, etc.) is deliberately
+// left to a later version.
+namespace unreachable {
+
+inline bool is_terminator(const peg::Ast& s) {
+  using namespace peg::udl;
+  return s.tag == "RETURN"_ || s.tag == "THROW"_ || s.tag == "BREAK"_ ||
+         s.tag == "CONTINUE"_;
+}
+
+inline void analyze_walk(const peg::Ast& node, std::vector<Diagnostic>& diags) {
+  using namespace peg::udl;
+  if (node.tag == "STATEMENTS"_) {
+    for (size_t i = 0; i + 1 < node.nodes.size(); i++) {
+      if (is_terminator(*node.nodes[i])) {
+        // The whole tail is dead, but one marker per block is enough — point
+        // at the first statement that can never run.
+        const auto& dead = *node.nodes[i + 1];
+        diags.push_back(Diagnostic{"UnreachableCode", "unreachable code",
+                                   static_cast<long>(dead.line),
+                                   static_cast<long>(dead.column),
+                                   Severity::Warning});
+        break;
+      }
+    }
+  }
+  for (const auto& c : node.nodes) analyze_walk(*c, diags);
+}
+
+inline void analyze_module(const peg::Ast& ast,
+                           std::vector<Diagnostic>& diags) {
+  analyze_walk(ast, diags);
+}
+
+}  // namespace unreachable
+
 }  // namespace _detail
 
 // Cross-layer provider for the builtin / global names the undefined-var
@@ -1603,6 +1738,8 @@ inline std::vector<Diagnostic> collect_module(const peg::Ast& lowered,
   // to the authored source, same as when running the file).
   collect_shadow(lowered, diags);
   _detail::unused::analyze_module(authored, diags);
+  _detail::toplevel::analyze_module(authored, diags);
+  _detail::unreachable::analyze_module(authored, diags);
   std::sort(diags.begin(), diags.end(), [](const Diagnostic& a,
                                            const Diagnostic& b) {
     return a.line != b.line ? a.line < b.line : a.col < b.col;

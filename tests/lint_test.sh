@@ -398,8 +398,44 @@ expect_lint_clean "read let"        'fn f() { let a = 1; a + 1 }'
 expect_lint_clean "closure capture" 'fn f() { let a = 1; || a + 1 }'
 expect_lint_clean "compound is use" 'fn f() { mut a = 0; a += 1; a }'
 expect_lint_clean "sink"            'fn f() { let _ = 1; 2 }'
-expect_lint_clean "unused param"    'fn f(x) { 1 }'   # params not flagged (MVP)
-expect_lint_clean "unused toplevel" 'let g = 1'       # top-level not flagged (MVP)
+# Parameters are deliberately never flagged: an unused parameter is
+# overwhelmingly intentional (fixed dispatch/callback/method arity), so the
+# check can't meet the zero-false-positive bar.
+expect_lint_clean "unused param"    'fn f(x) { 1 }'
+
+# --- unused top-level bindings (imports + top-level let/mut) ---
+expect_lint_warns "unused toplevel let" 'let g = 1'   "unused top-level binding 'g'"
+expect_lint_warns "unused toplevel mut" 'mut g = 1'   "unused top-level binding 'g'"
+# Read anywhere (incl. inside a fn / via UFCS) or re-exported ⇒ used.
+expect_lint_clean "toplevel read"    'let g = 1
+puts(g)'
+expect_lint_clean "toplevel read in fn" 'let g = 1
+fn f() { g + 1 }'
+expect_lint_clean "toplevel ufcs use" 'let inc = fn (x) { x + 1 }
+puts((5).inc())'
+expect_lint_clean "toplevel exported"  'let g = 1
+export { g }'
+# A top-level fn/class is the export surface — never a candidate.
+expect_lint_clean "toplevel fn not flagged" 'fn helper() { 1 }'
+# Underscore opt-out on a top-level binding.
+expect_lint_clean "toplevel underscore"  'let _g = 1'
+
+# --- unreachable code (straight-line terminator + a following statement) ---
+expect_lint_warns "unreachable after return" 'fn f() { return 1
+puts(2) }'                                    "unreachable code"
+expect_lint_warns "unreachable after throw"  'throw "x"
+puts(1)'                                       "unreachable code"
+expect_lint_warns "unreachable after break"  'for i in [1] { break
+puts(i) }'                                     "unreachable code"
+expect_lint_warns "unreachable after continue" 'for i in [1] { continue
+puts(i) }'                                     "unreachable code"
+# A terminator that IS the last statement is fine; a return inside an if does
+# not make the enclosing block dead.
+expect_lint_clean "return is last"    'fn f() { let a = 1
+return a }'
+expect_lint_clean "return in if branch" 'fn f(x) { if x { return 1 }
+2 }'
+
 # Errors propagate through the same CLI with exit 2:
 expect_lint_error "undefined var"      'fn f() { nope }'
 expect_lint_error "break outside loop" 'fn f() { break }'

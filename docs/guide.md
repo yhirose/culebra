@@ -1580,15 +1580,27 @@ What it reports today:
   bound nowhere (the undefined-variable subset). These already abort any
   run; `lint` just surfaces them all at once instead of stopping at the
   first.
-- **Warnings** — currently **unused local variables**: a `let` / `mut`
-  binding inside a function that is never read. A leading underscore
-  (`_x`, or the bare sink `_`) marks a binding as intentionally unused
-  and is never flagged. Parameters and top-level bindings are not flagged
-  (unused parameters are common by design, and top-level names may be
-  exported).
+- **Warnings** — advisory findings that don't stop a run:
+  - **Unused local variable** — a `let` / `mut` binding inside a function
+    that is never read.
+  - **Unused top-level binding** — a top-level `let` / `mut` that the
+    module never reads and never re-exports. Function / class / enum /
+    trait declarations are the module's export surface and are never
+    flagged.
+  - **Unused import** — an `import`ed name the module never uses.
+  - **Unreachable code** — a statement that can never run because a
+    `return` / `throw` / `break` / `continue` precedes it in the same
+    block.
 
-Planned: unused imports, unreachable code, a `--format json` mode for
-editor / LSP integration, and inline `# lint: ignore` suppression.
+  A leading underscore (`_x`, or the bare sink `_`) marks a binding as
+  intentionally unused and is never flagged. **Parameters are not
+  flagged**: an unused parameter is overwhelmingly intentional in Culebra
+  — a multidispatch clause or method signature fixes the arity, and a
+  higher-order callback (a route handler `fn(req)`, an `|i| 4.0`) ignores
+  an argument it must still declare — so the check would be all noise.
+
+Planned: a `--format json` mode for editor / LSP integration, and inline
+`# lint: ignore` suppression.
 
 ## 19. Formatting (`culebra fmt`)
 
