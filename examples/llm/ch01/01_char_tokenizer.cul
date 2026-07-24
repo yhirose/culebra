@@ -1,3 +1,0 @@
-text = "hello世界😁"
-/* puts(text.graphemes().collect()) */
-puts(text.code_points().collect())
