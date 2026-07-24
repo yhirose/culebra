@@ -648,8 +648,7 @@ class View {
     Image im = GenImageColor((int)px, (int)px, col(r, g, b));
     Image noise = GenImageWhiteNoise((int)px, (int)px, 0.5f);
     ImageColorTint(&noise, col(amt, amt, amt));
-    ImageDraw(&im, noise, Rectangle{0, 0, (float)px, (float)px},
-              Rectangle{0, 0, (float)px, (float)px}, Color{255, 255, 255, 60});
+    ImageDrawImage(&im, noise, 0, 0, Color{255, 255, 255, 60});
     UnloadImage(noise);
     return register_texture(im);
   }
