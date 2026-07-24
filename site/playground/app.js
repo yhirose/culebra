@@ -1104,15 +1104,29 @@ function drawFrame(msg) {
   }
 }
 
-// A requestAnimationFrame heartbeat: each tick lets the worker's suspended
-// present() (self.__nextFrame) resolve, pacing the game to the display's
-// refresh. Started for every run (a plain script never waits on it) and
-// stopped when the run ends.
+// A requestAnimationFrame heartbeat paced to a fixed 60 Hz: each forwarded tick
+// lets the worker's suspended present() (self.__nextFrame) resolve. Canvas games
+// are frame-count based (WASM-4 heritage — gravity is px/frame at 60fps), so the
+// tick rate must NOT follow the display's refresh; on a 120 Hz / ProMotion panel
+// that ran the game at 2x. We forward at most one tick per 1/60 s of real time,
+// carrying the remainder so the average holds at 60 fps on any refresh rate.
+// Started for every run (a plain script never waits on it) and stopped when the
+// run ends.
+const FRAME_MS = 1000 / 60;
 let rafId = null;
+let nextTickAt = 0;
 function startRafPump() {
   if (rafId !== null) return;
-  const pump = () => {
-    if (worker) worker.postMessage({ type: "tick" });
+  nextTickAt = 0;
+  const pump = (now) => {
+    if (nextTickAt === 0) nextTickAt = now;
+    if (now >= nextTickAt) {
+      if (worker) worker.postMessage({ type: "tick" });
+      nextTickAt += FRAME_MS;
+      // A stall (backgrounded tab, GC pause) must not bank catch-up ticks that
+      // fast-forward the game — resync to now instead of replaying the gap.
+      if (now >= nextTickAt) nextTickAt = now + FRAME_MS;
+    }
     rafId = requestAnimationFrame(pump);
   };
   rafId = requestAnimationFrame(pump);
