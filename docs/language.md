@@ -1939,6 +1939,18 @@ same lazy integer sequence as `range`. A bounded range (both `Long`
 endpoints present) is iterable; an open-ended range used for slicing
 (`xs[2..]`) has no iteration end and raises if iterated.
 
+A range takes an optional `by <step>` clause to iterate by something
+other than 1, including descending (`step` negative):
+
+```culebra
+for i in 0..10 by 2 { puts(i) }      # 0, 2, 4, 6, 8
+for i in 10..0 by -2 { puts(i) }     # 10, 8, 6, 4, 2
+```
+
+`step` must not be `0` (raises `ValueError` when the range is
+iterated). Slicing (`xs[a..b by n]`) ignores `step` — it only affects
+iteration.
+
 **Destructuring loop variable.** The `var` may be a pattern, matched
 against each element's shape (a mismatch raises `ValueError`).
 Comma-separated targets without parens are sugar for a tuple pattern:
@@ -3770,6 +3782,8 @@ puts(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 | `it.take(n)` | Iterator | first `n` elements, then `done` |
 | `it.skip(n)` | Iterator | discards first `n` elements on first `next()` |
 | `it.take_while(p)` | Iterator | yields until the first `p(x)` that is falsy |
+| `it.chunks(n)` | Iterator | groups elements into Arrays of `n` (the last group may be shorter); `n` must be at least 1 |
+| `it.windows(n)` | Iterator | sliding window of the last `n` elements as an Array, advancing by one each step; `n` must be at least 1 |
 | `it.flat_map(f)` | Iterator | `f(x)` must return an iterable; results concatenated |
 | `it.chain(other)` | Iterator | yields `it` then `other` |
 | `it.zip(other)` | Iterator | yields `{first, second}` pairs; stops at the shorter side |

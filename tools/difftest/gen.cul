@@ -50,8 +50,8 @@ let methods = ['size', 'push', 'pop', 'slice', 'map', 'filter', 'reduce',
                'product', 'min', 'max', 'join', 'contains', 'index_of',
                'reverse', 'keys', 'values', 'has', 'remove', 'upper', 'lower',
                'trim', 'split', 'code_points', 'iter', 'take', 'skip',
-               'take_while', 'collect', 'count', 'enumerate', 'union',
-               'to_array', 'view']
+               'take_while', 'chunks', 'windows', 'collect', 'count',
+               'enumerate', 'union', 'to_array', 'view']
 let argshapes = ['', '0', '"x"', '1, 2', '0, 1, 2', '|x| x', '|x| x > 0',
                  '0, |a, b| a + b', 'fn (a, b) { a }', '[1]']
 for recv in recvs {
@@ -1152,6 +1152,28 @@ let eff = [
   'effect fn a(); mut lg = []; mut sv = nil; effect fn b() { defer { lg.push("pre") }; let x = perform a(); lg.push("res"); defer { lg.push("post") }; x + 1 }; let r = handle { b() } with a(k) { sv = k; "p" }; lg.push("h:" + r); let r2 = sv(9); to_string(lg) + to_string(r2)']
 for c in eff {
   case("eff|" + c, c)
+}
+
+# --- Dimension: range step (`a..b by n`) ------------------------------------
+# Ascending/descending/inclusive/exclusive, the for-in counted fast path
+# (compile_for skips it when a step is present — see jit.h) vs the generic
+# iterator path (`for` over a pattern-bound var can't take the fast path
+# either), display (`by n` suffix, and its absence for step 1), and the
+# step == 0 error.
+let rangestep = [
+  '(0..10 by 2).iter().collect()',
+  '(0..=10 by 2).iter().collect()',
+  '(10..0 by -2).iter().collect()',
+  '(10..=0 by -2).iter().collect()',
+  '(0..10 by 2).iter().chunks(2).collect()',
+  'mut t = 0; for i in 0..10 by 3 { t = t + i }; t',
+  'to_string(0..10 by 2)',
+  'to_string(0..10)',
+  'try { (0..10 by 0).iter().collect() } catch e { e.kind }',
+  'try { for i in 0..10 by 0 { i } } catch e { e.kind }',
+]
+for c in rangestep {
+  case("rangestep|" + c, c)
 }
 
 print(out.join("\n"))

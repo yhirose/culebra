@@ -223,6 +223,28 @@ r5 = range(20).take_while(fn (x) { x < 5 }).collect()
 assert_eq(r5.size(), 5)
 assert_true(r5[0] == 0 && r5[4] == 4)
 
+# chunks: last group may be shorter
+assert_eq([1, 2, 3, 4, 5].iter().chunks(2).collect(), [[1, 2], [3, 4], [5]])
+assert_eq(range(6).chunks(3).collect(), [[0, 1, 2], [3, 4, 5]])
+assert_eq([].iter().chunks(2).collect(), [])
+try {
+  [1].iter().chunks(0).collect()
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "ValueError")
+}
+
+# windows: sliding, full windows only
+assert_eq([1, 2, 3, 4, 5].iter().windows(3).collect(),
+         [[1, 2, 3], [2, 3, 4], [3, 4, 5]])
+assert_eq([1, 2].iter().windows(3).collect(), [])
+try {
+  [1].iter().windows(-1).collect()
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "ValueError")
+}
+
 # chain
 r6 = [1, 2].iter().chain([3, 4]).collect()
 assert_eq(r6.size(), 4)

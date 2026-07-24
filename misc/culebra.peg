@@ -145,13 +145,19 @@
   BIT_AND                  <-  SHIFT (_h_ BIT_AND_OPERATOR _ SHIFT)*
   SHIFT                    <-  RANGE_EXPR (_h_ SHIFT_OPERATOR _ RANGE_EXPR)*
   RANGE_EXPR               <-  RANGE / ADDITIVE
-  # A range value (`a..b`, `a..=b`, `a..`, `..b`, `..`). Either endpoint
-  # may be omitted (open-ended). `_h_` keeps the whole range on one line so
-  # an open end (`2..`) can't swallow the next statement. The bare `..`
-  # form collapses to a lone RANGE_OPERATOR node (single child); eval and
-  # codegen treat that tag as a full range. A plain expression with no
-  # operator falls through to ADDITIVE.
-  RANGE                    <-  ADDITIVE _h_ RANGE_OPERATOR (_h_ ADDITIVE)? / RANGE_OPERATOR (_h_ ADDITIVE)?
+  # A range value (`a..b`, `a..=b`, `a..`, `..b`, `..`), optionally stepped
+  # (`0..10 by 2`). Either endpoint may be omitted (open-ended). `_h_` keeps
+  # the whole range on one line so an open end (`2..`) can't swallow the
+  # next statement. The bare `..` form collapses to a lone RANGE_OPERATOR
+  # node (single child); eval and codegen treat that tag as a full range. A
+  # plain expression with no operator falls through to ADDITIVE.
+  RANGE                    <-  ADDITIVE _h_ RANGE_OPERATOR (_h_ ADDITIVE)? (_h_ BY_STEP)? / RANGE_OPERATOR (_h_ ADDITIVE)? (_h_ BY_STEP)?
+  # `by` is contextual (not a reserved word): only recognized right after a
+  # range's bounds, so it stays free to use as an ordinary identifier
+  # elsewhere. Kept un-collapsed by the AstOptimizer (parser.h keep-list) so
+  # RANGE's decoder can tell a step clause apart from an end bound
+  # positionally instead of collapsing onto its lone ADDITIVE child.
+  BY_STEP                  <-  'by' !IdentInitChar _h_ ADDITIVE
   # Container operations use method form: Set has `.union(b)` /
   # `.intersect(b)` / `.diff(b)` / `.sym_diff(b)`; Tuple has no
   # concat by design (multi-value returns + fixed records were the

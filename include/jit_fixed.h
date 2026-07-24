@@ -1672,13 +1672,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
   return {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
 }
 
-// Build a range value `{class:"Range", start, end, inclusive}`. An absent
-// endpoint (open-ended range) is stored Nil. Mirrors the interpreter's
-// _make_range so both backends represent a range identically. Returns a
-// fresh +1 JitObject.
+// Build a range value `{class:"Range", start, end, inclusive, step}`. An
+// absent endpoint (open-ended range) is stored Nil; `step` defaults to 1 and
+// is never Nil. Mirrors the interpreter's _make_range so both backends
+// represent a range identically. Returns a fresh +1 JitObject.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_make_range(
     int8_t has_start, int64_t start, int8_t has_end, int64_t end,
-    int8_t inclusive) {
+    int8_t inclusive, int64_t step) {
   static const char kRange[] = "Range";
   auto* o = culebra_runtime_object_new();
   culebra_runtime_object_set(o, "class", false, TAG_STRING,
@@ -1690,6 +1690,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_make_range(
                              has_end ? end : 0, 0, 0);
   culebra_runtime_object_set(o, "inclusive", false, TAG_BOOL,
                              inclusive ? 1 : 0, 0, 0);
+  culebra_runtime_object_set(o, "step", false, TAG_LONG, step, 0, 0);
   return o;
 }
 

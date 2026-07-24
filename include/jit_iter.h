@@ -812,6 +812,100 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_take_while(
        _iter_pos_cell(line, col)});
 }
 
+// chunks: captures upstream + size + cached upstream next. Each step pulls
+// up to `size` values into a fresh Array (the last chunk may be shorter);
+// stops once a pull yields nothing.
+inline void _iter_chunks_fast_fn(JitClosure* cls, JitValue, bool* done,
+                                 int8_t* out_tag, int64_t* out_data) {
+  int64_t size = cls->captures[1]->value.data;
+  auto upstream = cls->captures[0]->value;
+  auto* up_has_next = reinterpret_cast<JitClosure*>(cls->captures[2]->value.data);
+  auto* up_next = reinterpret_cast<JitClosure*>(cls->captures[3]->value.data);
+  auto* out = culebra_runtime_array_new();
+  JitOwnedVal out_guard(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(out)});
+  for (int64_t i = 0; i < size; i++) {
+    int8_t tag;
+    int64_t data;
+    if (!_iter_advance_raw(up_has_next, up_next, upstream, &tag, &data)) break;
+    culebra_runtime_array_push(out, tag, data);
+  }
+  if (out->size == 0) {
+    *done = true;
+    return;
+  }
+  *done = false;
+  *out_tag = TAG_ARRAY;
+  *out_data = out_guard.consume().data;
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_chunks(
+    int8_t it, int64_t id, int64_t n, int64_t line, int64_t col) {
+  if (n < 1) {
+    throw culebra::CulebraError("ValueError",
+                                "chunks() n must be at least 1", line, col);
+  }
+  culebra_runtime_value_retain(it, id);
+  auto* up = culebra_runtime_cell_new(it, id);
+  auto* size = culebra_runtime_cell_new(TAG_LONG, n);
+  auto up_cells = _iter_cache_closure_cells({it, id});
+  auto* up_has_next_cell = up_cells.has_next;
+  auto* up_next_cell = up_cells.next;
+  return _iter_wrap_fast<&_iter_chunks_fast_fn>(
+      {up, size, up_has_next_cell, up_next_cell});
+}
+
+// windows: captures upstream + size + a buffer Array (holds the current
+// window's elements) + cached upstream next. Each step tops the buffer up
+// to `size`, copies it out as a fresh Array, then drops the buffer's
+// oldest element so the next step slides by one.
+inline void _iter_windows_fast_fn(JitClosure* cls, JitValue, bool* done,
+                                  int8_t* out_tag, int64_t* out_data) {
+  int64_t size = cls->captures[1]->value.data;
+  auto* buf = reinterpret_cast<JitArray*>(cls->captures[2]->value.data);
+  auto upstream = cls->captures[0]->value;
+  auto* up_has_next = reinterpret_cast<JitClosure*>(cls->captures[3]->value.data);
+  auto* up_next = reinterpret_cast<JitClosure*>(cls->captures[4]->value.data);
+  while (static_cast<int64_t>(buf->size) < size) {
+    int8_t tag;
+    int64_t data;
+    if (!_iter_advance_raw(up_has_next, up_next, upstream, &tag, &data)) {
+      *done = true;
+      return;
+    }
+    culebra_runtime_array_push(buf, tag, data);  // absorbs the +1
+  }
+  auto* out = culebra_runtime_array_new();
+  JitOwnedVal out_guard(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(out)});
+  for (size_t i = 0; i < buf->size; i++) {
+    culebra_runtime_value_retain(buf->items[i].tag, buf->items[i].data);
+    culebra_runtime_array_push(out, buf->items[i].tag, buf->items[i].data);
+  }
+  _culebra_value_release_impl(buf->items[0].tag, buf->items[0].data);
+  std::memmove(buf->items, buf->items + 1, (buf->size - 1) * sizeof(JitValue));
+  buf->size--;
+  *done = false;
+  *out_tag = TAG_ARRAY;
+  *out_data = out_guard.consume().data;
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_windows(
+    int8_t it, int64_t id, int64_t n, int64_t line, int64_t col) {
+  if (n < 1) {
+    throw culebra::CulebraError("ValueError",
+                                "windows() n must be at least 1", line, col);
+  }
+  culebra_runtime_value_retain(it, id);
+  auto* up = culebra_runtime_cell_new(it, id);
+  auto* size = culebra_runtime_cell_new(TAG_LONG, n);
+  auto* buf_cell = culebra_runtime_cell_new(
+      TAG_ARRAY, reinterpret_cast<int64_t>(culebra_runtime_array_new()));
+  auto up_cells = _iter_cache_closure_cells({it, id});
+  auto* up_has_next_cell = up_cells.has_next;
+  auto* up_next_cell = up_cells.next;
+  return _iter_wrap_fast<&_iter_windows_fast_fn>(
+      {up, size, buf_cell, up_has_next_cell, up_next_cell});
+}
+
 // enumerate: captures upstream + index + cached upstream next.
 inline void _iter_enumerate_fast_fn(JitClosure* cls, JitValue, bool* done,
                                     int8_t* out_tag, int64_t* out_data) {
@@ -884,6 +978,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_math_range(
 
 // Build a bounded iterator over a range value `data`. An open start or end
 // has no defined iteration bound, so an unbounded range is not iterable.
+// `step` defaults to 1 when absent (older/manually-built range objects);
+// culebra_runtime_math_range validates step != 0.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_range_iter(
     int64_t data, int64_t line, int64_t col) {
   auto* o = reinterpret_cast<JitObject*>(data);
@@ -894,8 +990,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_range_iter(
     throw culebra::CulebraError("TypeError", "cannot iterate an unbounded range",
                                 line, col);
   }
-  int64_t end = ev.data + ((iv.tag == TAG_BOOL && iv.data != 0) ? 1 : 0);
-  return culebra_runtime_math_range(sv.data, end, 1, line, col);
+  auto stv = _jit_slot_or_nil(o, "step");
+  int64_t step = stv.tag == TAG_NIL ? 1 : stv.data;
+  bool inclusive = iv.tag == TAG_BOOL && iv.data != 0;
+  int64_t end = ev.data + (inclusive ? (step > 0 ? 1 : -1) : 0);
+  return culebra_runtime_math_range(sv.data, end, step, line, col);
 }
 
 inline JitValue _iter_coerce_iterable(int8_t t, int64_t d, int64_t line,

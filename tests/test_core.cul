@@ -1052,6 +1052,26 @@ test_for_in = fn () {
   for i in 0..n*2 { total = total + i }
   assert_eq(total, 15)
 
+  // Range literals with an explicit step (`by`) — ascending, descending,
+  // inclusive, and via the pattern-loop-variable generic path (no fast
+  // path exists for stepped ranges, see jit.h compile_for).
+  assert_eq((0..10 by 2).iter().collect(), [0, 2, 4, 6, 8])
+  assert_eq((0..=10 by 2).iter().collect(), [0, 2, 4, 6, 8, 10])
+  assert_eq((10..0 by -2).iter().collect(), [10, 8, 6, 4, 2])
+  assert_eq((10..=0 by -2).iter().collect(), [10, 8, 6, 4, 2, 0])
+  total = 0
+  for i in 0..10 by 3 { total = total + i }
+  assert_eq(total, 18)  // 0 + 3 + 6 + 9
+  assert_eq(to_string(0..10 by 2), "0..10 by 2")
+  assert_eq(to_string(0..10), "0..10")  // step 1 prints no suffix
+
+  try {
+    (0..10 by 0).iter().collect()
+    assert_true(false)
+  } catch e {
+    assert_eq(e.kind, "ValueError")
+  }
+
   // String: UTF-8 scalar walk. 'café' is 5 bytes but 4 scalars.
   mut count = 0
   for c in 'hello' { count = count + 1 }

@@ -173,7 +173,7 @@
         { "match": "\\b(fn)\\b", "name": "keyword.declaration.function.culebra" },
         { "match": "\\b(class|trait|enum)\\b", "name": "keyword.declaration.class.culebra" },
         { "match": "\\b(if|else|match|cond)\\b", "name": "keyword.control.conditional.culebra" },
-        { "match": "\\b(while|for|in)\\b", "name": "keyword.control.loop.culebra" },
+        { "match": "\\b(while|for|in|by)\\b", "name": "keyword.control.loop.culebra" },
         { "match": "\\b(return|break|continue|nobreak|throw|try|catch|defer|yield)\\b", "name": "keyword.control.culebra" },
         { "match": "\\b(effect|perform|handle|with)\\b", "name": "keyword.other.culebra" },
         { "match": "\\b(import|export|from)\\b", "name": "keyword.control.import.culebra" },

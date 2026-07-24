@@ -7046,6 +7046,11 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::iter_skip, ptrTy, i8, i64, i64);
   jit.module_->getOrInsertFunction(rt::iter_take_while, ptrTy, i8, i64, i8, i64,
                                i64, i64);
+  // chunks/windows carry line+col for the "n must be at least 1" error.
+  jit.module_->getOrInsertFunction(rt::iter_chunks, ptrTy, i8, i64, i64, i64,
+                               i64);
+  jit.module_->getOrInsertFunction(rt::iter_windows, ptrTy, i8, i64, i64, i64,
+                               i64);
   // chain/zip/flat_map carry line+col for the "not iterable" error.
   jit.module_->getOrInsertFunction(rt::iter_chain, ptrTy, i8, i64, i8, i64,
                                i64, i64);

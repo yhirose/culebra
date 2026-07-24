@@ -23,6 +23,7 @@ Value shared_val_make_iter(const Value& view);
 #include <cctype>
 #include <charconv>
 #include <cmath>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -3009,6 +3010,10 @@ inline std::string Value::str_object() const {
     if (s_v.type != Value::Nil) out += s_v.str();
     out += obj.get("inclusive").to_bool() ? "..=" : "..";
     if (e_v.type != Value::Nil) out += e_v.str();
+    const auto& step_v = obj.get("step");
+    if (step_v.type != Value::Nil && step_v.to_long() != 1) {
+      out += " by " + std::to_string(step_v.to_long());
+    }
     return out;
   }
   // If the object carries a String `class:` tag, hoist it as a
@@ -3162,17 +3167,19 @@ inline Value _make_iterator(AdvanceFn&& advance) {
   return Value(std::move(iter_obj));
 }
 
-// A range value (`a..b`). Represented as a tagged Object carrying its
-// bounds so it is a first-class storable/passable value; an absent
-// endpoint (open-ended range) is stored as Nil. Slicing reads the bounds
-// directly; for-in builds a bounded iterator (see _get_iterator).
+// A range value (`a..b`, optionally `a..b by step`). Represented as a
+// tagged Object carrying its bounds so it is a first-class storable/
+// passable value; an absent endpoint (open-ended range) is stored as Nil.
+// `step` defaults to 1 and is never Nil — slicing ignores it (bounds only);
+// for-in builds a bounded, step-aware iterator (see _get_iterator).
 inline Value _make_range(std::optional<long> start, std::optional<long> end,
-                         bool inclusive) {
+                         bool inclusive, long step = 1) {
   ObjectValue r;
   r.initialize("class", Value(std::string("Range")), false);
   r.initialize("start", start ? Value(*start) : Value(), false);
   r.initialize("end", end ? Value(*end) : Value(), false);
   r.initialize("inclusive", Value(inclusive), false);
+  r.initialize("step", Value(step), false);
   return Value(std::move(r));
 }
 
@@ -3610,12 +3617,20 @@ inline Value _get_iterator(const Value& iterable, size_t line, size_t col) {
       throw CulebraError("TypeError", "cannot iterate an unbounded range",
           static_cast<long>(line), static_cast<long>(col));
     }
-    long end = e.to_long() + (obj.get("inclusive").to_bool() ? 1 : 0);
+    const auto& step_v = obj.get("step");
+    long step = step_v.type == Value::Nil ? 1 : step_v.to_long();
+    if (step == 0) {
+      throw CulebraError("ValueError", "range() step must not be zero",
+          static_cast<long>(line), static_cast<long>(col));
+    }
+    bool inclusive = obj.get("inclusive").to_bool();
+    long end = e.to_long() + (inclusive ? (step > 0 ? 1 : -1) : 0);
     auto current = std::make_shared<long>(s.to_long());
-    return _make_iterator([current, end](std::shared_ptr<Environment>) {
-      if (*current >= end) return _iter_step_done();
+    return _make_iterator([current, end, step](std::shared_ptr<Environment>) {
+      bool done = step > 0 ? *current >= end : *current <= end;
+      if (done) return _iter_step_done();
       auto v = Value(*current);
-      (*current)++;
+      *current += step;
       return _iter_step_value(std::move(v));
     });
   }
@@ -5473,6 +5488,59 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                  return _iter_step_done();
                }
                return _iter_step_value(std::move(*v));
+             });
+       }))},
+
+      // Groups upstream values into Arrays of `n` (the last group may be
+      // shorter). n < 1 would never advance the upstream, so reject it
+      // up front rather than yielding an infinite stream of nothing.
+      {"chunks"sv,
+       Value(FunctionValue({{"n", false, "Long"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("this");
+         auto size = callEnv->get("n").to_long();
+         if (size < 1) {
+           throw CulebraError("ValueError", "chunks() n must be at least 1",
+                              callEnv->get("__LINE__").to_long(),
+                              callEnv->get("__COLUMN__").to_long());
+         }
+         return _make_iterator(
+             [upstream, size](std::shared_ptr<Environment>) {
+               ArrayValue chunk;
+               for (long i = 0; i < size; i++) {
+                 auto v = _iter_next_value(upstream);
+                 if (!v) break;
+                 chunk.values->push_back(std::move(*v));
+               }
+               if (chunk.values->empty()) return _iter_step_done();
+               return _iter_step_value(Value(std::move(chunk)));
+             });
+       }))},
+
+      // Sliding window of the last `n` upstream values as an Array,
+      // advancing by one each step. Stops once fewer than n remain.
+      {"windows"sv,
+       Value(FunctionValue({{"n", false, "Long"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("this");
+         auto size = callEnv->get("n").to_long();
+         if (size < 1) {
+           throw CulebraError("ValueError", "windows() n must be at least 1",
+                              callEnv->get("__LINE__").to_long(),
+                              callEnv->get("__COLUMN__").to_long());
+         }
+         auto buf = std::make_shared<std::deque<Value>>();
+         return _make_iterator(
+             [upstream, size, buf](std::shared_ptr<Environment>) {
+               while (static_cast<long>(buf->size()) < size) {
+                 auto v = _iter_next_value(upstream);
+                 if (!v) return _iter_step_done();
+                 buf->push_back(std::move(*v));
+               }
+               ArrayValue window;
+               window.values->assign(buf->begin(), buf->end());
+               buf->pop_front();
+               return _iter_step_value(Value(std::move(window)));
              });
        }))},
 
@@ -9566,16 +9634,22 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // A RANGE node carries `[start?] OP [end?]` — either endpoint may be
   // omitted (open-ended). The operator child is at index 0 when there is
   // no start, else index 1; an end follows it when present. (The bare `..`
-  // form collapses to a lone RANGE_OPERATOR node, handled in eval().)
+  // form collapses to a lone RANGE_OPERATOR node, handled in eval().) A
+  // trailing `by <step>` clause is its own BY_STEP node (single child: the
+  // step expression) so it can't be confused with the end bound positionally.
   Value eval_range(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
     size_t op_idx = (ast.nodes[0]->tag == "RANGE_OPERATOR"_) ? 0 : 1;
     bool has_start = op_idx == 1;
-    bool has_end = op_idx + 1 < ast.nodes.size();
+    size_t n = ast.nodes.size();
+    bool has_step = n > 0 && ast.nodes[n - 1]->tag == "BY_STEP"_;
+    size_t end_limit = has_step ? n - 1 : n;
+    bool has_end = op_idx + 1 < end_limit;
     std::optional<long> start, end;
     if (has_start) start = eval(*ast.nodes[0], env).to_long();
     if (has_end) end = eval(*ast.nodes[op_idx + 1], env).to_long();
-    return _make_range(start, end, ast.nodes[op_idx]->token == "..=");
+    long step = has_step ? eval(*ast.nodes[n - 1]->nodes[0], env).to_long() : 1;
+    return _make_range(start, end, ast.nodes[op_idx]->token == "..=", step);
   }
 
   // Resolve a method by name on a class instance, honoring both the

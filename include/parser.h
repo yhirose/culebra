@@ -1213,7 +1213,11 @@ inline const std::vector<std::string>& ast_optimizer_keep_rules() {
       "REST_PATTERN", "INTERP_EXPR", "INTERPOLATED_STRING",
       "TRIPLE_STRING", "REGEX_LIT", "REGEX_BODY", "REGEX_INTERP",
       "SPREAD_ELEM",
-      "IMPORT_STMT", "EXPORT_STMT"};
+      "IMPORT_STMT", "EXPORT_STMT",
+      // BY_STEP (`0..10 by 2`) wraps a single ADDITIVE step expression; kept
+      // so RANGE's decoder can tell a step clause apart from an end bound
+      // positionally (see grammar_def.h).
+      "BY_STEP"};
   return rules;
 }
 

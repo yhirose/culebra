@@ -1826,6 +1826,17 @@ for i in 0..10 { puts(i) }          # 排他範囲（0..9）
 for i in 0..=10 { puts(i) }         # 包含範囲（0..10）
 ```
 
+range は `by <step>` 節で 1 以外の刻み幅を指定できます（`step` を負に
+すれば降順も可）:
+
+```culebra
+for i in 0..10 by 2 { puts(i) }      # 0, 2, 4, 6, 8
+for i in 10..0 by -2 { puts(i) }     # 10, 8, 6, 4, 2
+```
+
+`step` は `0` にできません（range を反復した時点で `ValueError`）。
+スライス（`xs[a..b by n]`）は `step` を無視します — 反復にのみ影響します。
+
 **ループ変数の分解。** `var` はパターンにでき、各要素の形にマッチさせる
 （不一致は `ValueError`）。括弧なしのカンマ区切りはタプルパターンの糖衣で、
 `for k, v in xs` は `for (k, v) in xs` と同じ:
@@ -3550,6 +3561,8 @@ puts(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 | `it.take(n)` | Iterator | 先頭 `n` 個、以降 `done` |
 | `it.skip(n)` | Iterator | 最初の `next()` で先頭 `n` 個を捨てる |
 | `it.take_while(p)` | Iterator | 最初に `p(x)` が偽になるまで yield |
+| `it.chunks(n)` | Iterator | `n` 個ずつ Array にまとめて yield（最後のグループは短くなりうる）。`n` は 1 以上 |
+| `it.windows(n)` | Iterator | 直近 `n` 個のスライディングウィンドウを Array で yield、1つずつ進む。`n` は 1 以上 |
 | `it.flat_map(f)` | Iterator | `f(x)` は iterable を返す必要あり、結果を連結 |
 | `it.chain(other)` | Iterator | `it` の次に `other` を yield |
 | `it.zip(other)` | Iterator | `{first, second}` のペアを yield、短い側で終了 |
