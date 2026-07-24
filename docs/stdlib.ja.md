@@ -64,8 +64,9 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 24. [`TOML`](#24-toml) — TOML 設定を parse / stringify
 25. [`SQLite`](#25-sqlite) — 組み込み SQL データベース（query / execute / プリペアド文 / トランザクション）
 26. [`Canvas`](#26-canvas) — ゲーム向けイミディエイトモード 2D フレームバッファ（ピクセル / スプライト / フォント / 入力 / tone）
-27. [設計上の注記](#27-設計上の注記)
-28. [未収録（将来検討）](#28-未収録将来検討)
+27. [`Scene`](#27-scene) — 手続きジオメトリ向けの retained-mode 3D レンダラ（opt-in、macOS 限定）
+28. [設計上の注記](#28-設計上の注記)
+29. [未収録（将来検討）](#29-未収録将来検討)
 
 **目的別索引**
 
@@ -3791,7 +3792,167 @@ Canvas.run(160, 160, fn () {
 
 ---
 
-## 27. 設計上の注記
+## 27. `Scene`
+
+手続きジオメトリから組み立てる 3D 用の retained-mode レンダラ。ノードの
+シーングラフ — プリミティブ（box / sphere / cylinder / plane）と手組みメッシュ
+— を並べ、マテリアルとトランスフォームを与え、カメラを置いて描画する。
+ライティングは物理ベース（metallic / roughness マテリアル、2 カスケード影付き
+の指向性 sun、sky / fog、SSAA・アンビエントオクルージョン・bloom・被写界深度の
+post stack）なので、出力はフラットシェーディングのプリミティブ以上になる。
+
+`Scene` は **ゲームエンジンではない**。物理・当たり判定なし、モデル / テクスチャ
+の import なし（ジオメトリは手続き生成か頂点単位の組み立て、テクスチャはプロセス
+内生成）、スケルタルアニメーションなし、マウス入力なし。狙いは*組み立てる*
+3D — 可視化、手続き的シーン、チェイスカメラ付きの車両 / フライトデモ — であって、
+アセット駆動のゲームではない。リファレンス用途は `examples/scene/suzuka.cul`
+（レーシングデモ）。
+
+`Scene` は **opt-in で現状 macOS 限定**。デフォルトビルドには入らない。
+`-DCULEBRA_ENABLE_SCENE=ON` で有効化すると、vendored な静的 SDL2 + raylib
+バックエンドをビルドする。Linux / Windows とブラウザ向けのウィンドウ
+バックエンドはまだ無いので、`Canvas` と違い `Scene` プログラムはヘッドレスでも
+Playground でも動かない。
+
+### View とフレームループ
+
+`Scene.View.new(w, h, title)` はウィンドウを開く。位置とサイズは `Float`
+（ワールド単位）、色は `0–255` の 3 または 4 チャンネル整数。1 フレームは、
+2D オーバーレイ付きの 3D パス（`render_3d()` → オーバーレイ描画 → `present()`）
+か、純 2D（`begin2d()` → 描画 → `present()`）のいずれか。
+
+| メソッド | 効果 |
+| --- | --- |
+| `view.target_fps(fps)` | フレームレート上限 |
+| `view.closing() -> Bool` | ウィンドウ閉じ要求（true までループ） |
+| `view.dt() -> Float` | 前フレームからの秒数 |
+| `view.width()` / `view.height() -> Float` | ウィンドウ寸法 |
+| `view.camera(px,py,pz, tx,ty,tz, ux,uy,uz, fov)` | 視点位置・注視点・up ベクトル・垂直 FOV |
+| `view.render_3d()` | シーングラフを描画し、2D オーバーレイ用にフレームを開く |
+| `view.begin2d()` | 純 2D フレームを開く（3D パスなし） |
+| `view.present()` | フレームを確定して提示 |
+
+### シーングラフ
+
+`view.add_node()` は空ノードを追加。`add_*` ヘルパーはジオメトリを追加して新しい
+ノードを返す。ノードは入れ子（`node.add_node()`、`node.add_box()` …）にでき、
+トランスフォーム系メソッドは fluent なので、部分木を 1 式で組める。永続的な
+ジオメトリは一度組んで、毎フレーム動かす。
+
+| メソッド | 効果 |
+| --- | --- |
+| `view.add_box(w, h, d)` / `add_sphere(r)` / `add_cylinder(r, h)` / `add_plane(w, d)` | プリミティブノードを追加 |
+| `view.add_mesh()` / `node.add_mesh()` | 空のカスタムメッシュを追加（下記） |
+| `node.move(x, y, z)` | 位置を設定 |
+| `node.yaw(a)` / `pitch(a)` / `roll(a)` | 1 軸まわりの回転（ラジアン） |
+| `node.spin(x, y, z, a)` / `euler(x, y, z)` | 軸角 / オイラー回転 |
+| `node.scale(s)` / `scale3(x, y, z)` | 一様 / 軸別スケール |
+| `node.tint(r, g, b)` | ノード単位の色 |
+| `node.material(id)` | マテリアルを割り当て（下記） |
+| `node.hide()` / `show()` / `name(n)` | 可視性 / ラベル |
+| `node.x()` / `y()` / `z() -> Float` | 位置を読み戻す |
+
+カスタムメッシュは頂点と三角形から組み、最後に確定する: `m.vertex(x, y, z, nx,
+ny, nz)`（または `vertex_uv(…, u, v)`）が頂点、`m.tri(a, b, c)` が頂点インデックス
+での三角形、`m.build()` がアップロード。（raylib は 16bit インデックスバッファ
+なので 1 メッシュは 65535 頂点が上限。超過は `build()` が拒否する。）
+
+### マテリアル・ライティング・テクスチャ
+
+マテリアルは view 上で作り、id で参照する:
+
+| メソッド | 結果 |
+| --- | --- |
+| `view.material(r, g, b) -> id` | フラット色マテリアル |
+| `view.material_pbr(r, g, b, metallic, roughness) -> id` | PBR マテリアル（`metallic` / `roughness` は 0–1） |
+| `view.material_tex(tex, r, g, b) -> id` / `material_tex_pbr(tex, r, g, b, metallic, roughness) -> id` | テクスチャ付きマテリアル |
+
+テクスチャはプロセス内生成（画像ファイルローダは無い）:
+`view.checker(px, checks, r1,g1,b1, r2,g2,b2) -> tex` は市松、
+`view.grain(px, r, g, b, amt) -> tex` はノイズ、`view.canvas(w, h) -> tex` は
+2D 呼び出し（`rect` / `text` …）で塗る render-to-texture を開き、
+`view.canvas_end()` で閉じる — デモがリバリーや看板を描くのに使っている方法。
+
+ライティングは view 上で設定する:
+
+| メソッド | 効果 |
+| --- | --- |
+| `view.background(r, g, b)` | クリア色 |
+| `view.sky(tr,tg,tb, br,bg,bb)` | 天頂 → 地平のグラデーション（反射環境も兼ねる） |
+| `view.sun(dx,dy,dz, intensity, r,g,b)` | 指向性ライト（2 カスケード影） |
+| `view.ambient(intensity, r, g, b)` | フィルライト |
+| `view.fog(start, end, r, g, b)` | 距離フォグ |
+| `view.screenshot(path)` | 現フレームを PNG に保存 |
+
+### 2D オーバーレイ
+
+`render_3d()`（または `begin2d()`）の後、これらが上に描かれる（HUD 用）:
+
+| メソッド | 効果 |
+| --- | --- |
+| `view.text(s, x, y, size, r, g, b)` | テキスト描画 |
+| `view.rect(x, y, w, h, r, g, b)` | 塗り矩形 |
+| `view.circle(x, y, radius, r, g, b)` | 塗り円 |
+| `view.line(x0, y0, x1, y1, thick, r, g, b)` | 線 |
+| `view.alpha(a)` | 以降のオーバーレイ描画の不透明度（0–255） |
+
+### 入力
+
+入力は毎フレーム view からポーリングする。キーボードのキーやゲームパッドの
+軸 / ボタンは生の整数コード（raylib キーコード、SDL ゲームコントローラの
+インデックス）で、名前付き定数は無い:
+
+| メソッド | 結果 |
+| --- | --- |
+| `view.held(key) -> Bool` | キーが押下中（例: `262`–`265` = 矢印、`32` = space） |
+| `view.pressed(key) -> Bool` | このフレームで押された |
+| `view.pad_available() -> Bool` | ゲームパッド接続あり |
+| `view.pad_axis(n) -> Float` | 軸の値（スティック、トリガー） |
+| `view.pad_button(n) -> Bool` / `pad_pressed(n) -> Bool` | ボタン押下中 / 今押された |
+| `view.rumble(left, right, sec)` | ハプティクス（Sony パッドと XInput。Xbox × macOS は無音） |
+| `view.pad_name() -> String` / `view.gamepad_mappings(db)` | パッド識別 / SDL マッピング DB 読込 |
+
+### 音声
+
+`Scene.Sound.new(path)` はワンショット効果音、`Scene.Music.new(path)` は
+ストリーム再生トラック。どちらもファイルパスを取り、`volume(v)`・`pitch(p)`・
+`pan(p)` を持つ。`Sound` は `play` / `stop` / `playing`、`Music` は `pause` /
+`resume` / `looping(on)` を加え、バッファを供給し続けるため毎フレーム
+`update()` を呼ぶ必要がある。
+
+### 最小のシーン
+
+```culebra
+# doctest: skip
+let view = Scene.View.new(960, 540, "spinner")
+view.target_fps(60)
+view.background(30, 34, 42)
+view.sun(0.5, -0.8, -0.3, 1.2, 255, 245, 230)
+view.ambient(0.4, 180, 200, 220)
+
+let gold = view.material_pbr(230, 180, 60, 0.9, 0.3)
+let box = view.add_box(2.0, 2.0, 2.0).material(gold)
+
+mut a = 0.0
+while !view.closing() {
+  a = a + view.dt()
+  box.yaw(a)
+  view.camera(4.0, 3.0, 5.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 55.0)
+  view.render_3d()
+  view.text("culebra scene", 20.0, 20.0, 28, 235, 235, 240)
+  view.present()
+}
+view.drop()
+```
+
+完全なリファレンスは `examples/scene/suzuka.cul`: 手描きトレースのサーキットを
+道路メッシュとして描画し、リバリーを手続き生成した車、チェイスカメラ、
+フォースフィードバック付きのゲームパッド + キーボード操作、速度追従の
+エンジン音を備える。
+
+---
+
+## 28. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -3845,7 +4006,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 28. 未収録（将来検討）
+## 29. 未収録（将来検討）
 
 ### 重量級データ構造
 

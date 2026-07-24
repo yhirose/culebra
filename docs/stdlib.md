@@ -66,8 +66,9 @@ Conventions used below:
 24. [`TOML`](#24-toml) — parse / stringify TOML configuration
 25. [`SQLite`](#25-sqlite) — embedded SQL database (query / execute / prepared statements / transactions)
 26. [`Canvas`](#26-canvas) — immediate-mode 2D framebuffer for games (pixels, sprites, font, input, tone)
-27. [Design notes](#27-design-notes)
-28. [Not included (yet)](#28-not-included-yet)
+27. [`Scene`](#27-scene) — retained-mode 3D renderer for procedural geometry (opt-in, macOS-only)
+28. [Design notes](#28-design-notes)
+29. [Not included (yet)](#29-not-included-yet)
 
 **Where to find what**
 
@@ -3938,7 +3939,169 @@ with sprites, the font, input, sound, and a saved best score).
 
 ---
 
-## 27. Design notes
+## 27. `Scene`
+
+A retained-mode renderer for 3D built from procedural geometry: you populate a
+scene graph of nodes — primitives (boxes, spheres, cylinders, planes) and
+hand-built meshes — give them materials and transforms, place a camera, and
+render. The lighting is physically based (metallic/roughness materials, a
+directional sun with two-cascade shadows, sky/fog, and a post stack of SSAA,
+ambient occlusion, bloom, and depth of field), so the output is more than
+flat-shaded primitives.
+
+`Scene` is **not a game engine**. It has no physics or collision, no
+model/texture import (geometry is procedural or built vertex-by-vertex, and
+textures are generated in-process), no skeletal animation, and no mouse input.
+It targets 3D you *construct* — visualisations, procedural scenes, vehicle or
+flight demos with a chase camera — rather than asset-driven games.
+`examples/scene/suzuka.cul` (a racing demo) is the reference use case.
+
+`Scene` is **opt-in and currently macOS-only**. It is not in the default build;
+enable it with `-DCULEBRA_ENABLE_SCENE=ON`, which builds the vendored static
+SDL2 + raylib backend. A windowed backend for Linux/Windows and the browser is
+not available yet, so — unlike `Canvas` — `Scene` programs neither run headless
+nor in the Playground.
+
+### The view and the frame loop
+
+`Scene.View.new(w, h, title)` opens a window. Positions and sizes are `Float`
+world units; colours are three or four `0–255` integer channels. A frame is
+either a 3D pass with a 2D overlay (`render_3d()` → overlay draws → `present()`)
+or pure 2D (`begin2d()` → draws → `present()`).
+
+| Method | Effect |
+| --- | --- |
+| `view.target_fps(fps)` | cap the frame rate |
+| `view.closing() -> Bool` | window close requested (loop until true) |
+| `view.dt() -> Float` | seconds since the previous frame |
+| `view.width()` / `view.height() -> Float` | window size |
+| `view.camera(px,py,pz, tx,ty,tz, ux,uy,uz, fov)` | eye position, look-at target, up vector, vertical FOV |
+| `view.render_3d()` | render the scene graph, then open the frame for a 2D overlay |
+| `view.begin2d()` | open a pure-2D frame (no 3D pass) |
+| `view.present()` | finish and show the frame |
+
+### Scene graph
+
+`view.add_node()` adds an empty node; the `add_*` helpers add geometry and
+return the new node. Nodes nest (`node.add_node()`, `node.add_box()`, …) and the
+transform methods are fluent, so a subtree builds in one expression. Build
+persistent geometry once and move it each frame.
+
+| Method | Effect |
+| --- | --- |
+| `view.add_box(w, h, d)` / `add_sphere(r)` / `add_cylinder(r, h)` / `add_plane(w, d)` | add a primitive node |
+| `view.add_mesh()` / `node.add_mesh()` | add an empty custom mesh (below) |
+| `node.move(x, y, z)` | set position |
+| `node.yaw(a)` / `pitch(a)` / `roll(a)` | rotate about one axis (radians) |
+| `node.spin(x, y, z, a)` / `euler(x, y, z)` | axis-angle / Euler rotation |
+| `node.scale(s)` / `scale3(x, y, z)` | uniform / per-axis scale |
+| `node.tint(r, g, b)` | per-node colour |
+| `node.material(id)` | assign a material (below) |
+| `node.hide()` / `show()` / `name(n)` | visibility / label |
+| `node.x()` / `y()` / `z() -> Float` | read back position |
+
+A custom mesh is built from vertices and triangles, then finalised:
+`m.vertex(x, y, z, nx, ny, nz)` (or `vertex_uv(…, u, v)`) adds a vertex,
+`m.tri(a, b, c)` a triangle by vertex index, and `m.build()` uploads it. (raylib
+uses a 16-bit index buffer, so a mesh caps at 65535 vertices; `build()` rejects
+more.)
+
+### Materials, lighting, textures
+
+Materials are created on the view and referenced by id:
+
+| Method | Result |
+| --- | --- |
+| `view.material(r, g, b) -> id` | flat-colour material |
+| `view.material_pbr(r, g, b, metallic, roughness) -> id` | PBR material (`metallic`/`roughness` are 0–1) |
+| `view.material_tex(tex, r, g, b) -> id` / `material_tex_pbr(tex, r, g, b, metallic, roughness) -> id` | textured material |
+
+Textures are generated in-process (there is no image-file loader):
+`view.checker(px, checks, r1,g1,b1, r2,g2,b2) -> tex` makes a checkerboard,
+`view.grain(px, r, g, b, amt) -> tex` a noise texture, and `view.canvas(w, h) ->
+tex` opens a render-to-texture you paint with the 2D calls (`rect`/`text`/…) and
+close with `view.canvas_end()` — how the demo draws liveries and signage.
+
+Lighting is set on the view:
+
+| Method | Effect |
+| --- | --- |
+| `view.background(r, g, b)` | clear colour |
+| `view.sky(tr,tg,tb, br,bg,bb)` | zenith → horizon gradient (also the reflected environment) |
+| `view.sun(dx,dy,dz, intensity, r,g,b)` | directional light (two-cascade shadows) |
+| `view.ambient(intensity, r, g, b)` | fill light |
+| `view.fog(start, end, r, g, b)` | distance fog |
+| `view.screenshot(path)` | save the current frame to a PNG |
+
+### 2D overlay
+
+After `render_3d()` (or `begin2d()`) these draw on top, for a HUD:
+
+| Method | Effect |
+| --- | --- |
+| `view.text(s, x, y, size, r, g, b)` | draw text |
+| `view.rect(x, y, w, h, r, g, b)` | filled rectangle |
+| `view.circle(x, y, radius, r, g, b)` | filled circle |
+| `view.line(x0, y0, x1, y1, thick, r, g, b)` | line |
+| `view.alpha(a)` | opacity (0–255) for subsequent overlay draws |
+
+### Input
+
+Input is polled from the view each frame. Keyboard keys and gamepad
+axes/buttons are raw integer codes (raylib key codes; SDL game-controller
+indices) — there are no named constants:
+
+| Method | Result |
+| --- | --- |
+| `view.held(key) -> Bool` | key is down (e.g. `262`–`265` = arrows, `32` = space) |
+| `view.pressed(key) -> Bool` | key went down this frame |
+| `view.pad_available() -> Bool` | a gamepad is connected |
+| `view.pad_axis(n) -> Float` | axis value (sticks, triggers) |
+| `view.pad_button(n) -> Bool` / `pad_pressed(n) -> Bool` | button held / just pressed |
+| `view.rumble(left, right, sec)` | haptics (Sony pads and XInput; Xbox-on-macOS is silent) |
+| `view.pad_name() -> String` / `view.gamepad_mappings(db)` | pad identity / load an SDL mapping DB |
+
+### Audio
+
+`Scene.Sound.new(path)` is a one-shot effect; `Scene.Music.new(path)` is a
+streamed track. Both take a file path and support `volume(v)`, `pitch(p)`, and
+`pan(p)`. `Sound` adds `play` / `stop` / `playing`; `Music` adds `pause` /
+`resume` / `looping(on)` and needs `update()` called each frame to keep its
+buffer fed.
+
+### A minimal scene
+
+```culebra
+# doctest: skip
+let view = Scene.View.new(960, 540, "spinner")
+view.target_fps(60)
+view.background(30, 34, 42)
+view.sun(0.5, -0.8, -0.3, 1.2, 255, 245, 230)
+view.ambient(0.4, 180, 200, 220)
+
+let gold = view.material_pbr(230, 180, 60, 0.9, 0.3)
+let box = view.add_box(2.0, 2.0, 2.0).material(gold)
+
+mut a = 0.0
+while !view.closing() {
+  a = a + view.dt()
+  box.yaw(a)
+  view.camera(4.0, 3.0, 5.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 55.0)
+  view.render_3d()
+  view.text("culebra scene", 20.0, 20.0, 28, 235, 235, 240)
+  view.present()
+}
+view.drop()
+```
+
+`examples/scene/suzuka.cul` is the full reference: a hand-traced circuit
+rendered as a road mesh, a lofted car with a procedural livery, a chase camera,
+gamepad + keyboard driving with force feedback, and a speed-tracking engine
+note.
+
+---
+
+## 28. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -3992,7 +4155,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 28. Not included (yet)
+## 29. Not included (yet)
 
 ### Heavier data structures
 
