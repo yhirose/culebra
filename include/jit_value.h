@@ -432,6 +432,15 @@ using JitFn =
     void (*)(JitValue* /*__ret*/, JitClosure*, int8_t /*self_tag*/,
              int64_t /*self_data*/, int64_t /*n_args*/, JitValue* /*args*/);
 
+// Sentinel `self_tag` for a call with no receiver (a plain `f(x)`, not
+// `obj.f(x)`). The interp binds `self` only on a receiver call, so reading
+// it in a receiver-less frame must raise the same NameError — which needs
+// "no receiver" to be distinguishable from "receiver that is nil". A
+// receiver-guaranteed body folds it to nil on entry and a read guard stops
+// it elsewhere, so it never escapes into a user value. Not a value tag;
+// shares that space with TAG_UNFILLED.
+static constexpr int8_t TAG_NO_SELF = 126;
+
 // One place that hands a receiver to a closure's fn_ptr through the JitFn ABI
 // and recovers the result from the out-pointer. Callers own retain/release
 // around the call as before; this wraps the ABI hand-off (out-ptr return + the
@@ -450,15 +459,15 @@ inline JitValue _jit_invoke(JitClosure* fn, JitValue recv, int64_t n_args,
 // is responsible for retaining each arg before handoff; the callee
 // frame takes over ownership on entry.
 inline JitValue _culebra_invoke0(JitClosure* fn) {
-  return _jit_invoke(fn, {0, 0} /*nil this*/, 0, nullptr);
+  return _jit_invoke(fn, {TAG_NO_SELF, 0}, 0, nullptr);
 }
 inline JitValue _culebra_invoke1(JitClosure* fn, JitValue a) {
   JitValue args[1] = {a};
-  return _jit_invoke(fn, {0, 0} /*nil this*/, 1, args);
+  return _jit_invoke(fn, {TAG_NO_SELF, 0}, 1, args);
 }
 inline JitValue _culebra_invoke2(JitClosure* fn, JitValue a, JitValue b) {
   JitValue args[2] = {a, b};
-  return _jit_invoke(fn, {0, 0} /*nil this*/, 2, args);
+  return _jit_invoke(fn, {TAG_NO_SELF, 0}, 2, args);
 }
 
 // --- Cycle collector ---

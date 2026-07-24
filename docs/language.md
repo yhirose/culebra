@@ -1162,6 +1162,12 @@ bare property access (`x.name` without `()`) never uses UFCS. `self`
 is **not** bound inside UFCS invocations — the call is semantically a
 free-function call with the receiver in the first positional slot.
 
+`self` exists only for a call that supplied a receiver. Reading it in
+a body reached without one — a plain `f(x)`, a UFCS invocation, a
+function handed to a built-in like `map` — raises `NameError:
+undefined variable 'self'`, exactly as any other unbound name does,
+and at the point of the read rather than on entry to the body.
+
 **JIT**: UFCS is supported under `--jit`. Resolution happens at
 runtime: if the receiver carries a property by that name the method
 path wins, otherwise the name is looked up as a free function and

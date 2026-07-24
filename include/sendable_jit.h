@@ -414,7 +414,7 @@ inline void run_isolate_child_jit(std::shared_ptr<IsolateCore> core,
     if (args.empty()) r = _culebra_invoke0(cls);
     else if (args.size() == 1) r = _culebra_invoke1(cls, args[0]);
     else if (args.size() == 2) r = _culebra_invoke2(cls, args[0], args[1]);
-    else r = _jit_invoke(cls, {0, 0} /*nil this*/,
+    else r = _jit_invoke(cls, {TAG_NO_SELF, 0},
                          static_cast<int64_t>(args.size()), args.data());
     JitSerCtx sc;
     sendable::SendNode out = jit_serialize(r, sc);

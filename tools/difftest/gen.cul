@@ -1232,4 +1232,30 @@ for c in dmd {
   case("dmd|" + c, c)
 }
 
+# --- Dimension: `self` without a receiver ---------------------------------
+# `self` exists only when the call supplied a receiver, so a plain `f(x)`
+# leaves it unbound — the JIT hands every frame a receiver ABI slot and used
+# to let a receiver-less body read it silently. Covers the throw (kind,
+# message and bare position), each call shape that reaches a body with no
+# receiver (fn / lambda / multifn / runtime callback / top level), the branch
+# that never reads it (the check is on read, not on entry), and the receiver
+# paths that must keep seeing one (object property, method, ctor, static).
+let selfcases = [
+  'let f = fn (x) { self }; f(1)',
+  'let f = fn (x) { self }; try { f(1) } catch e { e.kind + "|" + e.message }',
+  'try { (|x| self)(1) } catch e { e.kind + "|" + e.message }',
+  'fn top() { self }; try { top() } catch e { e.kind + "|" + e.message }',
+  'try { [1].map(fn (x) { self }) } catch e { e.kind + "|" + e.message }',
+  'try { self } catch e { e.kind + "|" + e.message }',
+  'let f = fn (x) { if x > 0 { "ok" } else { self } }; f(1)',
+  'let f = fn (x) { if x > 0 { "ok" } else { self } }; try { f(0) } catch e { e.kind }',
+  'let f = fn (x: Long = 1) { self }; try { f(x: 5) } catch e { e.kind + "|" + e.message }',
+  'let o = { x: 42, f: fn () { self.x } }; to_string(o.f())',
+  'class C { new(v: Long){self.v=v} m() { self.v } }; to_string(C(5).m())',
+  'class C { new(v: Long){self.v=v} static mk() { to_string(self) != "" } }; to_string(C.mk())',
+]
+for c in selfcases {
+  case("self|" + c, c)
+}
+
 print(out.join("\n"))

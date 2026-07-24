@@ -219,6 +219,7 @@ struct JIT {
     std::vector<llvm::Value*> unwind_temp_slots;
     std::vector<llvm::Value*> unwind_covered;
     bool emitting_unwind_cleanup;
+    bool in_receiver_frame;
 
     explicit CompilerStateSaver(JIT& j)
         : jit(&j),
@@ -238,7 +239,8 @@ struct JIT {
           unwind_temp_slots(std::exchange(j.unwind_temp_slots_, {})),
           unwind_covered(std::exchange(j.unwind_covered_, {})),
           emitting_unwind_cleanup(
-              std::exchange(j.emitting_unwind_cleanup_, false)) {}
+              std::exchange(j.emitting_unwind_cleanup_, false)),
+          in_receiver_frame(std::exchange(j.in_receiver_frame_, false)) {}
 
     void restore() {
       if (!jit) return;
@@ -253,6 +255,7 @@ struct JIT {
       jit->unwind_temp_slots_ = std::move(unwind_temp_slots);
       jit->unwind_covered_ = std::move(unwind_covered);
       jit->emitting_unwind_cleanup_ = emitting_unwind_cleanup;
+      jit->in_receiver_frame_ = in_receiver_frame;
       jit->iter_cleanup_stack_ = std::move(iter_cleanup);
       jit->current_owned_hot_ = owned_hot;
       jit->current_fn_defer_mark_ = fn_defer_mark;
@@ -1846,6 +1849,9 @@ struct JIT {
   // LLVM function-level state for the function currently being compiled
   llvm::Value* current_closure_arg_ = nullptr;  // __cls__ argument
   llvm::Value* current_sret_ = nullptr;  // JitFn out-pointer (result slot)
+  // Compiling a body the language guarantees a receiver for: it folds
+  // TAG_NO_SELF to nil on entry, so `self` reads there skip the guard.
+  bool in_receiver_frame_ = false;
 
   // Current AST position for error reporting
   size_t current_line_ = 0;
@@ -2252,6 +2258,7 @@ struct JIT {
   llvm::Value* load_slot(const VarSlot& slot, const std::string& name) {
     emit_lazy_cell_read_guard(slot, name);
     auto val = load_slot_raw(slot, name);
+    emit_no_self_read_guard(val, name);
     emit_value_retain(val);
     return val;
   }
@@ -3076,6 +3083,26 @@ struct JIT {
     builder_.SetInsertPoint(contBB);
   }
 
+  // A `self` read outside a receiver frame: TAG_NO_SELF means the call
+  // supplied no receiver, which is the interp's unbound `self`. Checked on
+  // read rather than on entry so the throw lands where the interp's does —
+  // `fn (x) { if x { 1 } else { self } }` only raises on the branch that
+  // reads it.
+  void emit_no_self_read_guard(llvm::Value* val, const std::string& name) {
+    if (name != "self" || in_receiver_frame_) return;
+    auto absent = builder_.CreateICmpEQ(
+        extract_tag(val), builder_.getInt8(TAG_NO_SELF), "self.absent");
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto throwBB = llvm::BasicBlock::Create(ctx_, "self.unbound", fn);
+    auto contBB = llvm::BasicBlock::Create(ctx_, "self.bound", fn);
+    builder_.CreateCondBr(absent, throwBB, contBB);
+    builder_.SetInsertPoint(throwBB);
+    emit_throw_error("NameError", "undefined variable 'self'",
+                     current_line_, current_column_);
+    builder_.CreateUnreachable();
+    builder_.SetInsertPoint(contBB);
+  }
+
   // --- Value helpers ---
 
   // `data` must already be i64; callers zext/bitcast/ptrtoint as needed.
@@ -3093,6 +3120,11 @@ struct JIT {
   }
 
   llvm::Value* make_nil() { return make_value(TAG_NIL, builder_.getInt64(0)); }
+
+  // `self` handed to a call with no receiver — see TAG_NO_SELF.
+  llvm::Value* make_no_self() {
+    return make_value(TAG_NO_SELF, builder_.getInt64(0));
+  }
 
   llvm::Value* make_bool(llvm::Value* b) {
     return make_value(TAG_BOOL, builder_.CreateZExt(b, builder_.getInt64Ty()));
@@ -9694,6 +9726,7 @@ struct JIT {
       // scope teardown) is the regular function machinery.
       const std::vector<JitFieldInit>* field_inits = nullptr) {
     using namespace llvm;
+    using namespace peg::udl;
     auto ptrTy = PointerType::get(ctx_, 0);
 
     // Snapshot class_type_params_ for the *immediate* function's params
@@ -9894,6 +9927,20 @@ struct JIT {
     // Reconstruct the receiver `self` from the two scalar ABI args. The
     // insert point is already at `entryBB`, so this emits into the prologue.
     llvm::Value* selfArg = make_value(selfTagArg, selfDataArg);
+
+    // Bodies declared inside a class or trait are written against a receiver
+    // (a detached static — `let f = C.mk; f()` — is the one shape that still
+    // arrives without one, and folds to nil as it did before the sentinel).
+    // Reads of `self` there skip the guard; every other body keeps the
+    // sentinel for it to see.
+    in_receiver_frame_ = info_key->tag == "METHOD"_ ||
+                         info_key->tag == "TRAIT_METHOD"_ ||
+                         field_inits != nullptr;
+    if (in_receiver_frame_) {
+      auto absent = builder_.CreateICmpEQ(
+          selfTagArg, builder_.getInt8(TAG_NO_SELF), "self.absent");
+      selfArg = builder_.CreateSelect(absent, make_nil(), selfArg, "self");
+    }
 
     // Arity guard: matching the interpreter, it is an error to call
     // with fewer args than declared. Overflow is allowed (lands in
@@ -12434,7 +12481,7 @@ struct JIT {
                                fn->getEntryBlock().begin());
       retSlot = entryB.CreateAlloca(valueType_, nullptr, "call.ret");
     }
-    llvm::Value* selfNormal = selfVal ? selfVal : make_nil();
+    llvm::Value* selfNormal = selfVal ? selfVal : make_no_self();
     std::vector<llvm::Value*> args = {
         retSlot,
         clsPtr,
@@ -12912,7 +12959,7 @@ struct JIT {
     OwnedPhi selfMerge(this, "kwc.this");
     builder_.SetInsertPoint(okBB);
     auto clsNormal = builder_.CreateIntToPtr(extract_data(callee), ptrTy);
-    selfMerge.add_incoming(own(selfVal ? selfVal : make_nil()));
+    selfMerge.add_incoming(own(selfVal ? selfVal : make_no_self()));
     auto okEnd = builder_.GetInsertBlock();
     builder_.CreateBr(contBB);
 
