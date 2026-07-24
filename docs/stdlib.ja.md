@@ -3809,7 +3809,7 @@ post stack）なので、出力はフラットシェーディングのプリミ�
 （レーシングデモ）。
 
 `Scene` は **opt-in で現状 macOS 限定**。デフォルトビルドには入らない。
-`-DCULEBRA_ENABLE_SCENE=ON` で有効化すると、vendored な静的 SDL2 + raylib
+`-DCULEBRA_ENABLE_SCENE=ON` で有効化すると、vendored な静的 SDL3 + raylib
 バックエンドをビルドする。Linux / Windows とブラウザ向けのウィンドウ
 バックエンドはまだ無いので、`Canvas` と違い `Scene` プログラムはヘッドレスでも
 Playground でも動かない。

@@ -886,7 +886,7 @@ int run_build(const BuildOptions& opts) {
   // sqlite3 wrappers + amalgamation are force-loaded via sqlite_lib above; this
   // resolves the amalgamation's platform deps. "" when SQLite is unused.
   std::string sqlite_link = uses_sqlite ? CULEBRA_SQLITE_LINK : "";
-  // raylib + SDL2 statics' platform deps (GUI/audio frameworks). Appended only
+  // raylib + SDL3 statics' platform deps (GUI/audio frameworks). Appended only
   // when the program references Scene; the wrap registrar force-loaded via
   // scene_lib is what references the symbols these flags resolve. "" when
   // Scene is unused or built out.

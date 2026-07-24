@@ -3958,7 +3958,7 @@ flight demos with a chase camera — rather than asset-driven games.
 
 `Scene` is **opt-in and currently macOS-only**. It is not in the default build;
 enable it with `-DCULEBRA_ENABLE_SCENE=ON`, which builds the vendored static
-SDL2 + raylib backend. A windowed backend for Linux/Windows and the browser is
+SDL3 + raylib backend. A windowed backend for Linux/Windows and the browser is
 not available yet, so — unlike `Canvas` — `Scene` programs neither run headless
 nor in the Playground.
 

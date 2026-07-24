@@ -22,7 +22,7 @@
 [submodule "vendor/SDL"]
 	path = vendor/SDL
 	url = https://github.com/libsdl-org/SDL.git
-	branch = SDL2
+	branch = release-3.4.x
 [submodule "vendor/cpp-tensorlib"]
 	path = vendor/cpp-tensorlib
 	url = https://github.com/yhirose/cpp-tensorlib.git

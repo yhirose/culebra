@@ -276,34 +276,41 @@ endif()
 # --- Builtin Scene namespace (raylib + SDL): config ---------------------
 # Heavy, GUI/platform-bound, so OFF by default (normal/headless builds + CI stay
 # lean). Computed before the runtime/embed block so the feature archive + the
-# AOT link string can be registered there. Both SDL2 and raylib (SDL backend)
+# AOT link string can be registered there. Both SDL3 and raylib (SDL backend)
 # are built statically from vendored submodules further below; here we only
-# resolve paths + flags. Static SDL2 = fully self-contained binaries (no external
+# resolve paths + flags. Static SDL3 = fully self-contained binaries (no external
 # dylib path baked in) and keeps gamepad rumble across platforms — vs GLFW, whose
 # macOS gamepad subsystem is broken and which has no haptics API at all.
 option(CULEBRA_ENABLE_SCENE "Enable builtin Scene namespace (raylib + SDL)" OFF)
 set(_scene_link "")
 if(CULEBRA_ENABLE_SCENE)
   set(_sdl_install "${CMAKE_CURRENT_BINARY_DIR}/sdl_ext")
-  set(_sdl_a "${_sdl_install}/lib/libSDL2.a")
+  set(_sdl_a "${_sdl_install}/lib/libSDL3.a")
   set(_raylib_install "${CMAKE_CURRENT_BINARY_DIR}/raylib_ext")
   set(_raylib_a "${_raylib_install}/lib/libraylib.a")
-  # AOT link fragment (CULEBRA_SCENE_LINK): the built raylib + SDL2 statics +
+  # AOT link fragment (CULEBRA_SCENE_LINK): the built raylib + SDL3 statics +
   # GUI/audio system frameworks. `culebra build` appends it only when the program
   # uses Scene. Every path is in-tree or a system framework — no external dylib.
   set(_scene_link "'${_raylib_a}' '${_sdl_a}'")
   if(APPLE)
-    # Frameworks SDL2 needs (window/input/audio/haptics) + raylib's GL path.
-    # Single-sourced so the AOT link fragment here and the in-process link of the
-    # driver (further below) can't drift apart.
+    # Frameworks SDL3 needs (window/input/audio/haptics) + raylib's GL path,
+    # mirroring the installed sdl3.pc Libs.private. Single-sourced so the AOT
+    # link fragment here and the in-process link of the driver (further below)
+    # can't drift apart.
     set(_scene_frameworks
-      OpenGL Cocoa IOKit CoreVideo CoreAudio AudioToolbox CoreFoundation
-      GameController ForceFeedback CoreHaptics Carbon Metal)
+      OpenGL Cocoa IOKit CoreVideo CoreMedia CoreAudio AudioToolbox
+      CoreFoundation AVFoundation Foundation GameController ForceFeedback
+      Carbon Metal QuartzCore)
+    # SDL3 links these weakly so binaries still load on older macOS.
+    set(_scene_weak_frameworks CoreHaptics UniformTypeIdentifiers)
     foreach(_fw IN LISTS _scene_frameworks)
       string(APPEND _scene_link " -framework ${_fw}")
     endforeach()
+    foreach(_fw IN LISTS _scene_weak_frameworks)
+      string(APPEND _scene_link " -weak_framework ${_fw}")
+    endforeach()
   endif()
-  message(STATUS "Scene: enabled (vendored static SDL2 + raylib)")
+  message(STATUS "Scene: enabled (vendored static SDL3 + raylib)")
 endif()
 
 # --- Builtin Webview namespace (native WebView desktop): config ------------
@@ -696,9 +703,9 @@ if(CULEBRA_ENABLE_JIT)
   target_compile_definitions(culebra PRIVATE CULEBRA_WEBVIEW_LINK="${_webview_link}")
 endif()
 
-# --- Scene: build SDL2 + raylib + link into the driver -----------------
+# --- Scene: build SDL3 + raylib + link into the driver -----------------
 # Config (option / static lib paths / link flags) was resolved before the driver
-# target above. Here we build SDL2 (static) and raylib (SDL backend, static) from
+# target above. Here we build SDL3 (static) and raylib (SDL backend, static) from
 # vendored submodules, then compile the Scene binding straight into the driver
 # so interp + JIT run Scene in-process. AOT outputs instead force-load the
 # feature archive + CULEBRA_SCENE_LINK (gated on usage). raylib finds the
@@ -710,7 +717,9 @@ if(CULEBRA_ENABLE_SCENE)
     SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/SDL"
     PREFIX "${CMAKE_CURRENT_BINARY_DIR}/sdl_ext_build"
     CMAKE_ARGS
-      -DSDL_STATIC=ON -DSDL_SHARED=OFF -DSDL_TEST=OFF
+      -DSDL_STATIC=ON -DSDL_SHARED=OFF
+      -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF
+      -DSDL_INSTALL_CPACK=OFF
       -DCMAKE_BUILD_TYPE=Release
       -DCMAKE_INSTALL_PREFIX=${_sdl_install}
       -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
@@ -725,6 +734,10 @@ if(CULEBRA_ENABLE_SCENE)
     CMAKE_ARGS
       -DPLATFORM=SDL -DBUILD_EXAMPLES=OFF -DBUILD_SHARED_LIBS=OFF
       -DCMAKE_BUILD_TYPE=Release
+      # SDL3_DIR pins raylib's find_package(SDL3) to the vendored install. A
+      # system/homebrew SDL3 would otherwise be a candidate, and linking one
+      # SDL's headers against another's static archive fails at the final link.
+      -DSDL3_DIR=${_sdl_install}/lib/cmake/SDL3
       -DCMAKE_PREFIX_PATH=${_sdl_install}
       -DCMAKE_INSTALL_PREFIX=${_raylib_install}
       -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
@@ -740,6 +753,9 @@ if(CULEBRA_ENABLE_SCENE)
   if(APPLE)
     foreach(_fw IN LISTS _scene_frameworks)   # same single source as _scene_link
       target_link_libraries(culebra "-framework ${_fw}")
+    endforeach()
+    foreach(_fw IN LISTS _scene_weak_frameworks)
+      target_link_libraries(culebra "-weak_framework ${_fw}")
     endforeach()
   endif()
 endif()
