@@ -5,7 +5,6 @@ drop|mut g = []; { let a = {drop: fn () { g.push(1) }}; let b = {drop: fn () { g
 drop|mut g = []; { let a = {drop: fn () { g.push(1) }}; let b = {drop: fn () { g.push(2) }}; a.p = b; b.p = a }; let n = g.size(); n
 drop|mut g = []; { let a = {drop: fn () { g.push(1) }}; let k = {hash: fn () { 42 }, eq: fn () { true }, back: a}; a[k] = 1 }; g
 drop|mut g = []; { mut x = {drop: fn () { g.push(1) }}; x.me = x; x = nil }; g
-eff|effect fn ask(); fn g() { let n = perform ask(); "hi " + n }; handle { g() } with ask(r) { r("x") }
 nestedfn|match 1 { Long => { fn h(n) { n > 0 ? h(n - 1) : 17 }; h(2) }, _ => nil }
 nestedfn|{ let rec = fn (n) { n > 0 ? rec(n - 1) : 12 }; rec(2) }
 nestedfn|{ mut rec = fn (n) { n > 0 ? rec(n - 1) : 20 }; rec(2) }
