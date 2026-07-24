@@ -1253,6 +1253,7 @@ let selfcases = [
   'let o = { x: 42, f: fn () { self.x } }; to_string(o.f())',
   'class C { new(v: Long){self.v=v} m() { self.v } }; to_string(C(5).m())',
   'class C { new(v: Long){self.v=v} static mk() { to_string(self) != "" } }; to_string(C.mk())',
+  'trait T { cur() -> Long  nxt() -> Long { self.cur() + 1 } }; class Z { new(){} cur() { 4 } }; to_string(Z.new().nxt())',
 ]
 for c in selfcases {
   case("self|" + c, c)

@@ -608,17 +608,25 @@ _jit_trait_default_impls() {
 // IR. The compiled default-method JitValue is unpacked at the call
 // site; we receive the closure pointer plus the trait/method names
 // as process-lifetime cstrings (module-level globals).
+//
+// Caller's `closure` arrives at +1 and the table takes that ownership
+// outright — same seam as multifn_register_and_install. Install before
+// releasing the displaced entry: that release can cascade through the
+// displaced closure's capture chain, which re-enters the registry (the
+// GC root walk reads it), so it must not observe a slot still holding a
+// pointer that is being freed.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
 culebra_runtime_register_trait_default(const char* trait_name,
                                         const char* method_name,
                                         JitClosure* closure) {
   if (!closure) return;
   auto& slot = _jit_trait_default_impls()[trait_name][method_name];
-  if (slot) {
-    _culebra_value_release_impl(TAG_FUNC, reinterpret_cast<int64_t>(slot));
-  }
-  closure->refcount++;
+  auto* displaced = slot;
   slot = closure;
+  if (displaced) {
+    _culebra_value_release_impl(TAG_FUNC,
+                                reinterpret_cast<int64_t>(displaced));
+  }
 }
 
 // Add (or refresh) a method entry on the registered trait. Called
