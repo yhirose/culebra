@@ -1678,7 +1678,7 @@ Otherwise semantically identical to `fn (...) expr`:
 * Captures variables from the enclosing scope.
 * Accepts the same `mut` / type-annotation / default-value parameter
   forms: `|mut x = 10| x + 1` works just like `fn (mut x = 10) x + 1`.
-* Self-reference via `self` works the same as in `fn`.
+* Self-reference via `fn` works the same as in a named function.
 * No return-type annotation slot (keep lambdas short; use `fn` for
   functions whose signature deserves the annotation).
 
