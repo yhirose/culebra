@@ -811,7 +811,8 @@ inline void collect_locals(const peg::Ast& node, NameSet& locals,
   }
 
   if (node.tag == "FOR"_) {
-    auto& var = *node.nodes[0];
+    auto fv = culebra::view_for(node);
+    auto& var = *fv.binding;
     // The loop variable may be a destructuring pattern (`for (i, x) in`).
     if (culebra::is_pattern_param(var)) {
       check_pattern(var, outer);
@@ -820,8 +821,10 @@ inline void collect_locals(const peg::Ast& node, NameSet& locals,
     }
     // FOR binding is block-scoped; deliberately not added to enclosing
     // locals so a same-named binding outside the loop doesn't see it.
-    collect_locals(*node.nodes[1], locals, outer);
-    collect_locals(*node.nodes[2], locals, outer);
+    collect_locals(*fv.iter, locals, outer);
+    collect_locals(*fv.body, locals, outer);
+    // A nobreak block shares the enclosing function scope; collect its locals.
+    if (fv.nobreak) collect_locals(*fv.nobreak, locals, outer);
     return;
   }
 
@@ -993,15 +996,18 @@ inline void descend_into_nested(const peg::Ast& node, const NameSet& my_locals,
   }
 
   if (node.tag == "FOR"_) {
-    // [pattern/var, iterable, BLOCK]. The loop variable is block-scoped to the
-    // body and is captured by closures defined there, so a nested function
-    // inside the body must not shadow it — but code after the loop never sees
-    // it. Descend the body with the loop binding(s) folded into a body-local
-    // copy of the enclosing locals; the iterable is in the enclosing scope.
+    // [pattern/var, iterable, BLOCK, (NOBREAK)?]. The loop variable is
+    // block-scoped to the body and is captured by closures defined there, so a
+    // nested function inside the body must not shadow it — but code after the
+    // loop never sees it. Descend the body with the loop binding(s) folded into
+    // a body-local copy of the enclosing locals; the iterable is in the
+    // enclosing scope. A nobreak block runs after the loop with the loop var out
+    // of scope, so descend it with the plain enclosing locals.
     if (node.nodes.size() >= 3) {
-      descend_into_nested(*node.nodes[1], my_locals, outer);
+      auto fv = culebra::view_for(node);
+      descend_into_nested(*fv.iter, my_locals, outer);
       NameSet body_locals = my_locals;
-      auto& var = *node.nodes[0];
+      auto& var = *fv.binding;
       if (culebra::is_pattern_param(var)) {
         culebra::for_each_pattern_binding(
             var, [&](std::string_view name, size_t, size_t) {
@@ -1010,7 +1016,8 @@ inline void descend_into_nested(const peg::Ast& node, const NameSet& my_locals,
       } else if (var.is_token && !is_sink(var.token)) {
         body_locals.insert(std::string(var.token));
       }
-      descend_into_nested(*node.nodes[2], body_locals, outer);
+      descend_into_nested(*fv.body, body_locals, outer);
+      if (fv.nobreak) descend_into_nested(*fv.nobreak, my_locals, outer);
       return;
     }
   }
@@ -1125,10 +1132,13 @@ inline void collect_scope(const peg::Ast& node, NameSet& out) {
       return;
     }
     case "FOR"_:
-      // Loop var is block-scoped (bound by walk); collect iterable + body.
+      // Loop var is block-scoped (bound by walk); collect iterable + body
+      // (+ a nobreak block, which shares the enclosing function scope).
       if (node.nodes.size() >= 3) {
-        collect_scope(*node.nodes[1], out);
-        collect_scope(*node.nodes[2], out);
+        auto fv = culebra::view_for(node);
+        collect_scope(*fv.iter, out);
+        collect_scope(*fv.body, out);
+        if (fv.nobreak) collect_scope(*fv.nobreak, out);
       } else {
         for (const auto& c : node.nodes) collect_scope(*c, out);
       }
@@ -1295,16 +1305,19 @@ inline void walk(const peg::Ast& node, Chain& chain, const NameSet& globals,
         analyze_fn(nullptr, *node.nodes[0], chain, globals, diags);
       return;
     case "FOR"_: {
-      // [binding, iterable, body]: the loop variable is block-scoped to the
-      // body (the shadow collector deliberately omits it), so bind it in a
-      // child frame for the body walk. The iterable is in the enclosing scope.
+      // [binding, iterable, body, (NOBREAK)?]: the loop variable is
+      // block-scoped to the body (the shadow collector deliberately omits it),
+      // so bind it in a child frame for the body walk. The iterable is in the
+      // enclosing scope. A nobreak block runs after the loop with the loop var
+      // out of scope, so walk it in the enclosing chain.
       if (node.nodes.size() < 3) {
         for (const auto& c : node.nodes) walk(*c, chain, globals, diags);
         return;
       }
-      walk(*node.nodes[1], chain, globals, diags);
+      auto fv = culebra::view_for(node);
+      walk(*fv.iter, chain, globals, diags);
       NameSet loopvars;
-      const auto& var = *node.nodes[0];
+      const auto& var = *fv.binding;
       if (culebra::is_pattern_param(var)) {
         culebra::for_each_pattern_binding(
             var, [&](std::string_view n, size_t, size_t) {
@@ -1314,8 +1327,9 @@ inline void walk(const peg::Ast& node, Chain& chain, const NameSet& globals,
         loopvars.insert(std::string(var.token));
       }
       chain.push_back(&loopvars);
-      walk(*node.nodes[2], chain, globals, diags);
+      walk(*fv.body, chain, globals, diags);
       chain.pop_back();
+      if (fv.nobreak) walk(*fv.nobreak, chain, globals, diags);
       return;
     }
     case "TRY"_: {

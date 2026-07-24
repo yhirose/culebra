@@ -259,6 +259,13 @@ for nb in nobreaks {
 case("nobreak|find_hit", 'fn f(xs, t) { for x in xs { if x == t { return "hit" } } nobreak { return "miss" } }; f([1, 2, 3], 2)')
 case("nobreak|find_miss", 'fn f(xs, t) { for x in xs { if x == t { return "hit" } } nobreak { return "miss" } }; f([1, 2, 3], 9)')
 case("nobreak|while_ret", 'fn f() { while mut i = 0; i < 3 { i = i + 1 } nobreak { return "done" } }; f()')
+# A closure defined inside a nobreak block must capture enclosing locals
+# identically on both backends (regression: the JIT free-var / local-collect
+# pre-passes special-case FOR and used to drop the trailing nobreak child, so a
+# closure there had no func_info and the JIT aborted while interp ran fine).
+case("nobreak|for_closure", 'fn f() { let tag = "cap"; mut g = nil; for x in [1, 2] { } nobreak { g = fn() { tag } }; g() }; f()')
+case("nobreak|while_closure", 'fn f() { let tag = "cap"; mut g = nil; while mut i = 0; i < 2 { i = i + 1 } nobreak { g = fn() { tag } }; g() }; f()')
+case("nobreak|for_closure_sum", 'fn f() { mut total = 0; mut g = nil; for x in [1, 2, 3] { total = total + x } nobreak { g = fn() { total } }; g() }; f()')
 # Generator + effect fn with nobreak (source-transform paths).
 case("nobreak|gen_while", 'fn g() { while mut i = 0; i < 3 { yield i; i = i + 1 } nobreak { yield 100 } }; g().collect()')
 case("nobreak|gen_for", 'fn g() { for x in [1, 2, 3] { yield x } nobreak { yield 99 } }; g().collect()')

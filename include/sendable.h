@@ -188,12 +188,17 @@ class FreeVarWalker {
         walk_children(node);
         scopes_.pop_back();
         return;
-      case "FOR"_:
+      case "FOR"_: {
         if (node.nodes.size() < 3) { walk_children(node); return; }
-        walk(*node.nodes[1]);  // iterable: enclosing scope
-        scoped(*node.nodes[2],
-               [&](auto& s) { collect_binding_idents(*node.nodes[0], s); });
+        auto fv = culebra::view_for(node);
+        walk(*fv.iter);  // iterable: enclosing scope
+        scoped(*fv.body,
+               [&](auto& s) { collect_binding_idents(*fv.binding, s); });
+        // A `nobreak { … }` runs after the loop in the enclosing scope; the
+        // loop variable is not visible there, so walk it without the binding.
+        if (fv.nobreak) walk(*fv.nobreak);
         return;
+      }
       case "TRY"_:
         if (node.nodes.size() < 3) { walk_children(node); return; }
         scoped(*node.nodes[0], [](auto&) {});

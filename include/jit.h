@@ -3325,15 +3325,19 @@ struct JIT {
     }
 
     if (node.tag == "FOR"_) {
-      // FOR = [IDENT(var), EXPRESSION(iterable), BLOCK(body)]. The loop
-      // binding is BLOCK-SCOPED (visible only within the body), so we
+      // FOR = [IDENT(var), EXPRESSION(iterable), BLOCK(body), (NOBREAK)?]. The
+      // loop binding is BLOCK-SCOPED (visible only within the body), so we
       // deliberately don't add it to the enclosing function's flat
       // `locals` set — otherwise functions defined OUTSIDE the for
       // body in the same enclosing function would wrongly see the
       // binding in their `outer`. Subtree-local visibility for closures
       // inside the body is re-established in visit_for_frees' FOR handler.
-      collect_fn_locals(*node.nodes[1], locals, outer);
-      collect_fn_locals(*node.nodes[2], locals, outer);
+      auto fv = culebra::view_for(node);
+      collect_fn_locals(*fv.iter, locals, outer);
+      collect_fn_locals(*fv.body, locals, outer);
+      // A `nobreak { … }` block can define closures too; walk it so their
+      // captured locals are registered (compile_for emits it).
+      if (fv.nobreak) collect_fn_locals(*fv.nobreak, locals, outer);
       return;
     }
 
@@ -3700,7 +3704,7 @@ struct JIT {
     }
 
     if (node.tag == "FOR"_) {
-      // FOR = [IDENT(var), EXPRESSION(iterable), BLOCK(body)]. The
+      // FOR = [IDENT(var), EXPRESSION(iterable), BLOCK(body), (NOBREAK)?]. The
       // binding is block-scoped to the body — make it visible only
       // while walking the body (by extending `my_locals` for that
       // subtree) so nested closures inside the body can capture it
@@ -3708,11 +3712,16 @@ struct JIT {
       // the binding in `info.captured_locals` if any nested closure
       // references it — that flag is what triggers cell promotion at
       // emit_for_body_iteration time.
-      visit_for_frees(*node.nodes[1], my_locals, outer, info);
+      auto fv = culebra::view_for(node);
+      visit_for_frees(*fv.iter, my_locals, outer, info);
       auto extended = my_locals;
-      auto name = std::string(node.nodes[0]->token);
+      auto name = std::string(fv.binding->token);
       extended.insert(name);
-      visit_for_frees(*node.nodes[2], extended, outer, info);
+      visit_for_frees(*fv.body, extended, outer, info);
+      // A `nobreak { … }` runs after the loop with the loop variable OUT of
+      // scope, so walk it in `my_locals` (not `extended`) — a closure there
+      // must not resolve the loop binding.
+      if (fv.nobreak) visit_for_frees(*fv.nobreak, my_locals, outer, info);
       // If the body walk pulled `name` into the enclosing function's
       // free-vars (because a nested closure referenced it), we instead
       // mark it captured here and drop it from the free list — the
