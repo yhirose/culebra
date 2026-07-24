@@ -8731,7 +8731,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       merged.clear();
     } else if (!merged.empty()) {
       throw CulebraError("TypeError",
-          unknown_kwarg_message(merged.begin()->first),
+          unknown_kwarg_message(canonical_unknown_kwarg(merged)),
           call_line, call_column);
     }
 

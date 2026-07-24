@@ -1224,7 +1224,7 @@ class _JitKwargResolver {
   // Throw if any kwargs went unread — i.e. unknown to this built-in.
   void validate_consumed() {
     if (merged_.empty()) return;
-    fail(culebra::unknown_kwarg_message(merged_.begin()->first));
+    fail(culebra::unknown_kwarg_message(culebra::canonical_unknown_kwarg(merged_)));
   }
 
   // Format and throw a structured CulebraError with " at L:C." in the
@@ -5927,7 +5927,7 @@ inline std::vector<JitValue> _jit_ns_build_args_rest_slab(
     }
   }
   if (!merged.empty()) {
-    auto bad = std::string(merged.begin()->first);
+    auto bad = std::string(culebra::canonical_unknown_kwarg(merged));
     cleanup();
     throw culebra::CulebraError("TypeError",
         culebra::unknown_kwarg_message(bad), line, col);
@@ -6267,7 +6267,7 @@ inline bool _jit_ns_kwarg_resolve_core(
   }
   // Any leftover kwargs are unknown to this method.
   if (!merged.empty()) {
-    auto bad = std::string(merged.begin()->first);
+    auto bad = std::string(culebra::canonical_unknown_kwarg(merged));
     for (int k = 0; k < n; k++)
       _culebra_value_release_impl(slab[k].tag, slab[k].data);
     for (auto& [_, v] : merged)

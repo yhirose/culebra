@@ -232,6 +232,22 @@ inline std::string unknown_kwarg_message(std::string_view name) {
   return std::format("unknown keyword argument '{}'", name);
 }
 
+// Among leftover kwargs the callee can't accept, pick a backend-independent
+// one to name in the error. Every backend collects leftovers in a name-keyed
+// map, but the iteration order differs by backend and container (unordered_map
+// vs map), so naming `merged.begin()` would let the reported kwarg drift
+// between interp and JIT for an otherwise-identical call. Return the
+// lexicographically smallest name so all backends report the same kwarg — do
+// not "simplify" this back to `begin()`. `merged` must be non-empty.
+template <typename Map>
+std::string_view canonical_unknown_kwarg(const Map& merged) {
+  std::string_view best = merged.begin()->first;
+  for (const auto& entry : merged) {
+    if (entry.first < best) best = entry.first;
+  }
+  return best;
+}
+
 // "got argument 'name' both positionally and as a keyword".
 inline std::string positional_kw_conflict_message(std::string_view name) {
   return std::format("got argument '{}' both positionally and as a keyword",

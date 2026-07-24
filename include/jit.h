@@ -12679,7 +12679,7 @@ struct JIT {
       // Same rationale as the missing-required throw above — emit at
       // runtime so the error is catchable. Clear the map so subsequent
       // resolution paths see a consistent empty state.
-      auto bad_name = std::string(kwargs.begin()->first);
+      auto bad_name = std::string(culebra::canonical_unknown_kwarg(kwargs));
       emit_unknown_kwarg_throw(bad_name, call_root_line_, call_root_col_);
       kwargs.clear();
     }

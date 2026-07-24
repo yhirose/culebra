@@ -226,6 +226,13 @@ let kwcases = ['range(0, 5, step: 2).collect()',
 for kc in kwcases {
   case("kw|" + kc, kc)
 }
+# Ambiguous kwargs-only call landing on a 0-param overload: dispatch (by spec)
+# picks `f()`, which can't take the kwargs, so binding fails with an unknown-
+# keyword TypeError. Every backend must name the same leftover kwarg — leftover
+# selection is single-sourced to the lexicographically smallest name, so this
+# guards against the interp/JIT map-iteration-order drift it used to have.
+case("kw|overload_0param_ambiguous",
+     'fn f() { "empty" }; fn f(x: Long, y: Long) { "xy" }; f(y: 9, x: 8)')
 
 # --- Dimension 9: generators / yield --------------------------------------
 # Generators lower to a flat-dispatch CPS engine — structurally a different

@@ -1751,7 +1751,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
                                     reinterpret_cast<int64_t>(rest_obj)};
     filled[meta->kwargs_rest_idx] = true;
   } else if (!merged.empty()) {
-    auto bad_name = std::string(merged.begin()->first);
+    auto bad_name = std::string(culebra::canonical_unknown_kwarg(merged));
     for (auto& [_, v] : merged) {
       _culebra_value_release_impl(v.tag, v.data);
     }
