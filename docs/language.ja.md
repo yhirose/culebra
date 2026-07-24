@@ -4008,9 +4008,32 @@ free 関数のマルチメソッドと同じ（キーワード引数は選ばれ
 
 名前を 1 度だけ宣言したクラスは通常メソッドのまま（ディスパッチャ無し・
 オーバーヘッド無し）。以下はコンパイル時エラーのまま: 同一シグネチャの
-2 メソッド、フィールドとメソッドの名前衝突、フィールド重複、static
-メンバ重複。コンストラクタ（`new`）・static メソッド・演算子/dunder
-メソッド（`__call__`, `__add__` 等）はまだ overload できません。
+2 メソッド、フィールドとメソッドの名前衝突、フィールド重複。
+コンストラクタ（`new`）・演算子/dunder メソッド（`__call__`, `__add__`
+等）はまだ overload できません。
+
+### メソッド多重ディスパッチ（static メソッド）
+
+static メソッドも同様に overload できます。位置パラメータ型シグネチャ
+が異なる同名 `static` メソッドは、クラスオブジェクト上の 1 つの
+ディスパッチャにまとまり、`Cls.method(args)` は引数型で選びます。
+`this` は関与しません（static 呼び出しは `this` を束縛しません）:
+
+```culebra
+class Vec {
+  static make(x: Long)         { "long: {x}" }
+  static make(x: String)       { "str: {x}" }
+  static make(x: Long, y: Long) { "pair: {x}, {y}" }
+}
+Vec.make(5)     # → "long: 5"
+Vec.make("hi")  # → "str: hi"
+Vec.make(1, 2)  # → "pair: 1, 2"
+```
+
+static と instance の overload セットは独立です: static と instance の
+メソッドが同名で、それぞれ独自の overload を持てます。同一シグネチャの
+2 つの static メソッド、および static フィールドと static メソッド名の
+衝突はコンパイル時エラーのままです。
 
 ---
 

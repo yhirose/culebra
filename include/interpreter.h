@@ -8141,6 +8141,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     }
 
     group_method_overloads(method_template);
+    // Static methods overload too — same-named statics merge into one
+    // dispatcher stored on the class object. A static call binds no `this`
+    // (or the class object, which the picked body ignores), so the shared
+    // dispatcher's free-function path handles them.
+    group_method_overloads(static_template);
 
     // Instances of a drop-having class register on the owned stack at
     // construction (the method loop below bypasses `initialize`, so the

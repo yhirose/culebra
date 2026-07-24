@@ -9147,6 +9147,10 @@ struct JIT {
     for (auto* m : static_asts) {
       static_vals.push_back(compile_function(*m));
     }
+    // Static methods overload too — merge same-named statics into one
+    // dispatcher (own per-class uid keeps them off the instance-method
+    // table). The picked static body ignores the forwarded `this`.
+    group_method_overloads(static_names, static_vals, static_asts, class_name);
 
     std::vector<Owned> static_field_vals;
     static_field_vals.reserve(static_field_asts.size());

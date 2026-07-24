@@ -4244,10 +4244,32 @@ picked overload). A call with no matching overload raises a catchable
 
 A class declaring a name **once** keeps a plain method (no dispatcher,
 no overhead). The following stay compile-time errors: two methods with
-an identical signature, a field and a method sharing a name, a
-duplicate field, and a duplicate static member. Constructors (`new`),
-static methods, and operator/dunder methods (`__call__`, `__add__`, …)
-do not overload yet.
+an identical signature, a field and a method sharing a name, and a
+duplicate field. Constructors (`new`) and operator/dunder methods
+(`__call__`, `__add__`, …) do not overload yet.
+
+### Method multidispatch (static methods)
+
+Static methods overload the same way. Same-named `static` methods with
+different positional-param-type signatures merge into one dispatcher on
+the class object; `Cls.method(args)` picks on the argument types. No
+`this` participates — a static call binds none:
+
+```culebra
+class Vec {
+  static make(x: Long)         { "long: {x}" }
+  static make(x: String)       { "str: {x}" }
+  static make(x: Long, y: Long) { "pair: {x}, {y}" }
+}
+Vec.make(5)     # → "long: 5"
+Vec.make("hi")  # → "str: hi"
+Vec.make(1, 2)  # → "pair: 1, 2"
+```
+
+Static and instance overload sets are independent: a static and an
+instance method may share a name, each with its own overloads. Two
+static methods with an identical signature, and a static field clashing
+with a static method name, stay compile-time errors.
 
 ---
 

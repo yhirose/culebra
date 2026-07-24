@@ -447,15 +447,15 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       LoopDepthGuard g(loop_depth_, 0);
       std::vector<std::pair<std::string, std::string>> pk_fields;
       bool pk_ok = true;
-      // Member-name rules in a class body. Instance methods MAY overload —
-      // same name, distinct positional-param-type signatures merge into one
-      // method-multidispatch dispatcher at eval/compile time. Everything else
-      // stays an error (the later definition would be silently dead): a
-      // duplicate field, a field/method name clash, any duplicate static
-      // member (statics don't overload yet), or two instance methods with an
-      // identical signature (unreachable / ambiguous dispatch). Static and
-      // instance members live in different places (the class object vs
-      // instances), so each tracks its own set.
+      // Member-name rules in a class body. Both instance AND static methods
+      // MAY overload — same name, distinct positional-param-type signatures
+      // merge into one multidispatch dispatcher at eval/compile time.
+      // Everything else stays an error (the later definition would be silently
+      // dead): a duplicate field, a field/method name clash (instance or
+      // static), or two methods (instance or static) with an identical
+      // signature (unreachable / ambiguous dispatch). Static and instance
+      // members live in different places (the class object vs instances), so
+      // each tracks its own field set and method table.
       auto method_signature = [](const peg::Ast& params) {
         // Mirror the runtime's MultiMethod extraction: only regular
         // positional params (before any `*` kw-only separator, excluding
@@ -481,8 +481,42 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
             static_cast<long>(mv.name_line),
             static_cast<long>(mv.name_col), Severity::Error});
       };
-      std::set<std::string, std::less<>> seen_static, inst_fields, seen_special;
-      std::map<std::string, std::set<std::string>, std::less<>> inst_methods;
+      std::set<std::string, std::less<>> inst_fields, static_fields,
+          seen_special;
+      std::map<std::string, std::set<std::string>, std::less<>> inst_methods,
+          static_methods;
+      auto dup_sig = [&](const culebra::MethodView& mv) {
+        diags_.push_back(Diagnostic{
+            "SyntaxError",
+            std::format("duplicate method '{}' with identical signature "
+                        "in class `{}`",
+                        mv.name, class_name),
+            static_cast<long>(mv.name_line),
+            static_cast<long>(mv.name_col), Severity::Error});
+      };
+      // A member's name-uniqueness rule against its own scope's field set and
+      // method table. A field must be unique and not shadow a method; a method
+      // may overload (distinct signatures) but not shadow a field or repeat a
+      // signature. Shared by the static (class object) and instance scopes so
+      // the two stay a single source of truth.
+      auto check_named = [&](std::set<std::string, std::less<>>& fields,
+                             std::map<std::string, std::set<std::string>,
+                                      std::less<>>& methods,
+                             const culebra::MethodView& mv,
+                             bool is_field_member) {
+        if (is_field_member) {
+          if (!fields.insert(std::string(mv.name)).second ||
+              methods.count(mv.name)) {
+            dup_member(mv);
+          }
+        } else if (fields.count(mv.name)) {
+          dup_member(mv);
+        } else if (!methods[std::string(mv.name)]
+                        .insert(method_signature(*mv.params))
+                        .second) {
+          dup_sig(mv);
+        }
+      };
       // Constructors and operator/dunder methods (`__call__`, `__add__`, …)
       // dispatch through dedicated paths, not the method dispatcher, so they
       // don't overload yet — any duplicate is an error.
@@ -493,29 +527,16 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         auto mv = culebra::view_method(*node.nodes[j]);
         bool is_field_member = mv.is_field || mv.is_typed_field;
+        // Static members live on the class object, instance members on
+        // instances — each name space is checked independently. Constructors
+        // (`new`) and operator/dunder methods take a dedicated dispatch path,
+        // so they don't overload: any duplicate is an error.
         if (mv.is_static) {
-          if (!seen_static.insert(std::string(mv.name)).second) dup_member(mv);
-        } else if (is_field_member) {
-          if (!inst_fields.insert(std::string(mv.name)).second ||
-              inst_methods.count(mv.name)) {
-            dup_member(mv);
-          }
-        } else if (mv.name == "new" || is_dunder(mv.name)) {
+          check_named(static_fields, static_methods, mv, is_field_member);
+        } else if (!is_field_member && (mv.name == "new" || is_dunder(mv.name))) {
           if (!seen_special.insert(std::string(mv.name)).second) dup_member(mv);
-        } else {  // instance method — overloads allowed, identical sig rejected
-          if (inst_fields.count(mv.name)) {
-            dup_member(mv);
-          } else if (!inst_methods[std::string(mv.name)]
-                          .insert(method_signature(*mv.params))
-                          .second) {
-            diags_.push_back(Diagnostic{
-                "SyntaxError",
-                std::format("duplicate method '{}' with identical signature "
-                            "in class `{}`",
-                            mv.name, class_name),
-                static_cast<long>(mv.name_line),
-                static_cast<long>(mv.name_col), Severity::Error});
-          }
+        } else {
+          check_named(inst_fields, inst_methods, mv, is_field_member);
         }
         if (mv.is_field || mv.is_typed_field) {
           // An untyped instance field carries no type for the byte layout —
