@@ -2004,6 +2004,23 @@ whose pattern succeeds (and whose guard evaluates truthy) runs its
 body and the result is the value of the `match`. If no arm matches,
 the value is `nil`.
 
+Like `while` and `if`, `match` accepts an optional **init clause** —
+declarations before the subject, split by `;` — scoped to the subject
+and every arm (the same form as [`while`](#while), matching C++17's
+`if (init; cond)`):
+
+    match mut x = compute(n); x {
+      0 => "zero",
+      v if v > x - 1 => v,    # init var `x` is in scope in guards …
+      _ => x                   # … and arm bodies, but not after the match
+    }
+
+Each binding must be a declaration (`let` / `mut`); a bare
+`match x = 0; …` is a `SyntaxError`. Multiple bindings use `,`
+(`match mut a = f(), mut b = g(); a + b { … }`). The init variables are
+dropped when the match is left by any path (a matched arm, the no-match
+fall-through, or an exception).
+
 ### Patterns
 
 | Form              | Matches                                  |

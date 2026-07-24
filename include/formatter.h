@@ -1215,8 +1215,11 @@ class Printer {
   }
 
   DocP print_match(const peg::Ast& node) {
-    // [subject, MATCH_ARMS]. MATCH_ARM = [PATTERN, GUARD?, body].
-    const peg::Ast& arms = *node.nodes[1];
+    // [(INIT_CLAUSE)?, subject, MATCH_ARMS]. MATCH_ARM = [PATTERN, GUARD?, body].
+    // The optional init clause renders as `binding, binding; ` before the
+    // subject (`match mut x = f(); x { … }`).
+    auto mv = culebra::view_match(node);
+    const peg::Ast& arms = *mv.arms;
     std::vector<const peg::Ast*> items;
     for (auto& a : arms.nodes) items.push_back(a.get());
     auto render = [&](size_t k) {
@@ -1231,9 +1234,20 @@ class Printer {
       parts.push_back(print_arm_body(body, node_end(*arm.nodes[arm.nodes.size() - 2])));
       return doc_concat(std::move(parts));
     };
-    return doc_concat({doc_text("match "), print(*node.nodes[0]), doc_text(" "),
-                       print_braced(items, node_end(*node.nodes[0]), ",",
-                                    /*empty_ok=*/true, render)});
+    std::vector<DocP> head;
+    head.push_back(doc_text("match "));
+    if (mv.init) {
+      for (size_t k = 0; k < mv.init->nodes.size(); k++) {
+        if (k) head.push_back(doc_text(", "));
+        head.push_back(print(*mv.init->nodes[k]));
+      }
+      head.push_back(doc_text("; "));
+    }
+    head.push_back(print(*mv.subject));
+    head.push_back(doc_text(" "));
+    head.push_back(print_braced(items, node_end(*mv.subject), ",",
+                                /*empty_ok=*/true, render));
+    return doc_concat(std::move(head));
   }
 
   DocP print_cond(const peg::Ast& node) {

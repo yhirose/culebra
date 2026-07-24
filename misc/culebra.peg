@@ -245,7 +245,11 @@
   # which shifts the cond/block pairing by one (see view_if).
   IF                       <-  if _ (INIT_CLAUSE _ ';' _)? EXPRESSION _ BLOCK (_ else _ if _ EXPRESSION _ BLOCK)* (_ else _ BLOCK)?
 
-  MATCH                    <-  match _ EXPRESSION _ '{' _ MATCH_ARMS _ '}'
+  # An optional init clause (`match mut x = f(); x { … }`, C++17-style) scopes
+  # its bindings to the subject and every arm. Same INIT_CLAUSE as WHILE / IF;
+  # kept by the AstOptimizer so it is detectable as MATCH's first child, which
+  # shifts the subject/arms pairing by one (see view_match).
+  MATCH                    <-  match _ (INIT_CLAUSE _ ';' _)? EXPRESSION _ '{' _ MATCH_ARMS _ '}'
   MATCH_ARMS               <-  (MATCH_ARM (_ ',' _ MATCH_ARM)* _ ','?)?
   # Arm body: a single EXPRESSION, or a brace BLOCK for multi-statement arms
   # (`=> { stmt; expr }`, Rust-style; the arm yields the block's last value).

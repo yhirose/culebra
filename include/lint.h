@@ -153,7 +153,7 @@ class ScopeWalker {
     for (const auto& c : node.nodes) walk(*c);
   }
 
-  // Validate + register an INIT_CLAUSE's bindings (while / if init clauses)
+  // Validate + register an INIT_CLAUSE's bindings (while / if / match init clauses)
   // into the current top scope. Each binding must declare with
   // `let` / `mut`; a bare `x = 0` would reassign an outer variable or make an
   // immutable binding, so reject it pre-eval on every backend — the caller has
@@ -392,10 +392,19 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       return;
     }
     case "MATCH"_: {
-      // [subject, ARMS]; each arm = [PATTERN, (GUARD)?, EXPRESSION].
-      if (node.nodes.size() < 2) { walk_children(node); return; }
-      walk(*node.nodes[0]);
-      for (const auto& arm : node.nodes[1]->nodes) {
+      // [(INIT_CLAUSE)?, subject, ARMS]; each arm = [PATTERN, (GUARD)?, EXPR].
+      // An init clause (`match mut x = f(); x { … }`) scopes its bindings to the
+      // subject and every arm: push an enclosing scope, register them, then walk
+      // the subject/arms inside it. With no init clause `scope_pushed` is false
+      // and this behaves exactly as before.
+      auto mv = culebra::view_match(node);
+      bool scope_pushed = mv.init != nullptr;
+      if (scope_pushed) {
+        scopes_.emplace_back();
+        walk_init_clause(*mv.init);
+      }
+      walk(*mv.subject);
+      for (const auto& arm : mv.arms->nodes) {
         if (arm->nodes.empty()) continue;
         // A pattern is a constant position: reject interpolating `"..."`
         // patterns (the guard/body below may interpolate freely).
@@ -405,6 +414,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
         for (size_t i = 1; i < arm->nodes.size(); i++) walk(*arm->nodes[i]);
         scopes_.pop_back();
       }
+      if (scope_pushed) scopes_.pop_back();
       return;
     }
     case "MULTIFN_DECL"_: {
@@ -780,7 +790,9 @@ inline void collect_locals(const peg::Ast& node, NameSet& locals,
     // (a closure in a *different* arm would see the previous arm's
     // names too) but only affects free-var resolution, never the
     // shadow check itself — `check` looks at outer[1..] only.
-    for (auto& arm : node.nodes[1]->nodes) {
+    // The optional init clause's bindings are picked up by the generic
+    // recursion below (its ASSIGNMENT children register as locals).
+    for (auto& arm : culebra::view_match(node).arms->nodes) {
       check_pattern(*arm->nodes[0], outer);
       culebra::for_each_pattern_binding(
           *arm->nodes[0], [&](std::string_view name, size_t, size_t) {
@@ -1133,10 +1145,14 @@ inline void collect_scope(const peg::Ast& node, NameSet& out) {
       }
       return;
     case "MATCH"_:
-      // Arm patterns bind names visible in the arm; collect them all.
+      // Arm patterns bind names visible in the arm; collect them all. An init
+      // clause's bindings (`match mut x = f(); x { … }`) are scoped to the whole
+      // match, so collect them too (over-approximation, harmless).
       if (node.nodes.size() >= 2) {
-        collect_scope(*node.nodes[0], out);
-        for (const auto& arm : node.nodes[1]->nodes) {
+        auto mv = culebra::view_match(node);
+        if (mv.init) collect_scope(*mv.init, out);
+        collect_scope(*mv.subject, out);
+        for (const auto& arm : mv.arms->nodes) {
           if (arm->nodes.empty()) continue;
           culebra::for_each_pattern_binding(
               *arm->nodes[0], [&](std::string_view n, size_t, size_t) {
@@ -1313,14 +1329,18 @@ inline void walk(const peg::Ast& node, Chain& chain, const NameSet& globals,
       return;
     }
     case "MATCH"_: {
-      // [subject, ARMS]; each arm = [PATTERN, (GUARD)?, body]. Pattern
-      // bindings were collected; skip the pattern, walk guard + body.
+      // [(INIT_CLAUSE)?, subject, ARMS]; each arm = [PATTERN, (GUARD)?, body].
+      // Pattern bindings were collected; skip the pattern, walk guard + body.
+      // An init clause's bindings were collected too (their names resolve via
+      // the enclosing locals); walk the clause so its RHS reads are checked.
       if (node.nodes.size() < 2) {
         for (const auto& c : node.nodes) walk(*c, chain, globals, diags);
         return;
       }
-      walk(*node.nodes[0], chain, globals, diags);
-      for (const auto& arm : node.nodes[1]->nodes)
+      auto mv = culebra::view_match(node);
+      if (mv.init) walk(*mv.init, chain, globals, diags);
+      walk(*mv.subject, chain, globals, diags);
+      for (const auto& arm : mv.arms->nodes)
         for (size_t k = 1; k < arm->nodes.size(); k++)
           walk(*arm->nodes[k], chain, globals, diags);
       return;

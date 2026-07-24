@@ -422,6 +422,26 @@ inline IfView view_if(const peg::Ast& a) {
   return IfView{has_init ? a.nodes[0].get() : nullptr, has_init ? 1u : 0u};
 }
 
+// View of a MATCH AST node — see grammar:
+//   MATCH <- match _ (INIT_CLAUSE _ ';' _)? EXPRESSION _ '{' _ MATCH_ARMS _ '}'
+// Post-optimizer children: [(INIT_CLAUSE)?, subject, MATCH_ARMS]. The optional
+// leading init clause shifts subject/arms by one, so consumers read them via
+// this view instead of the fixed nodes[0]/nodes[1]. INIT_CLAUSE is kept by the
+// AstOptimizer, so it is detectable as MATCH's first child (see view_if).
+struct MatchView {
+  const peg::Ast* init;      // INIT_CLAUSE node, or nullptr when absent
+  const peg::Ast* subject;   // the value being matched
+  const peg::Ast* arms;      // MATCH_ARMS node
+};
+
+inline MatchView view_match(const peg::Ast& a) {
+  using namespace peg::udl;
+  bool has_init = !a.nodes.empty() && a.nodes[0]->tag == "INIT_CLAUSE"_;
+  size_t off = has_init ? 1u : 0u;
+  return MatchView{has_init ? a.nodes[0].get() : nullptr,
+                   a.nodes[off].get(), a.nodes[off + 1].get()};
+}
+
 // View of an OBJECT_PROPERTY AST node — see grammar:
 //   OBJECT_PROPERTY <- MUTABLE _ (FLOAT/NUMBER/NIL/BOOLEAN/TUPLE/IDENTIFIER) _ ':' _ EXPRESSION
 //   (shorthand) OBJECT_PROPERTY <- MUTABLE _ IDENTIFIER   (no ':' or value)

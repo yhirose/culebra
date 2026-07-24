@@ -1883,6 +1883,23 @@ fn find(xs, target) {
 あれば真）する最初のアームの本体が実行され、その値が `match` の値に
 なります。どれも一致しない場合は `nil`。
 
+`while` や `if` と同様に、`match` も省略可能な **init 節**（subject の
+前に `;` で区切って置く宣言）を受け取れます。これは subject と全アーム
+にスコープを閉じ込めます（[`while`](#while) と同じ形で、C++17 の
+`if (init; cond)` に相当）:
+
+    match mut x = compute(n); x {
+      0 => "zero",
+      v if v > x - 1 => v,    # init 変数 `x` はガードでも …
+      _ => x                   # … アーム本体でも見えるが、match の外では見えない
+    }
+
+各束縛は宣言（`let` / `mut`）でなければならず、素の `match x = 0; …`
+は `SyntaxError` です。複数束縛は `,` で
+（`match mut a = f(), mut b = g(); a + b { … }`）。init 変数は match を
+どの経路で抜けても（一致したアーム・非一致の素通り・例外）ドロップ
+されます。
+
 ### パターン
 
 | 形式              | 一致条件                                   |

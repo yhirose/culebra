@@ -283,6 +283,26 @@ for f in ifinits {
 case("if_init|gen", 'fn g() { for x in [1, 2, 3, 4] { if mut d = x * 2; d > 4 { yield d } } }; g().collect()')
 case("if_init|eff", 'effect fn ask(); effect fn go() { let v = perform ask(); if mut d = v * 10; d > 50 { "big" } else { "small" } }; handle { go() } with ask(r) { r(9) }')
 
+# --- Dimension: match init clause (`match mut x = f(); subject { … }`) -----
+# The init clause scopes bindings to the subject and every arm, and is dropped
+# when the match is left by any path. Exercise single/multiple bindings, the
+# init var in the subject / a guard / an arm body, block arms with defer, and
+# a heap-typed init var that must be released exactly once.
+let minits = [
+  '{ match mut x = 3 + 4; x { 7 => "seven", _ => "other" } }',
+  '{ match mut a = 2, mut b = 10; a + b { 12 => "twelve", _ => "no" } }',
+  '{ match mut n = 5; n { v if v > n - 1 => v * 2, _ => 0 } }',
+  '{ match mut arr = [1, 2, 3]; arr.size() { 3 => arr.size() * 10, _ => 0 } }',
+  '{ match mut s = "hi" + "!"; s { v => { defer { }; v.size() } } }',
+  '{ mut x = 100; match mut x = 1; x { v => v } }',
+  '{ mut o = []; for k in 0..3 { match mut d = k * 2; d { 0 => o.push("a"), 2 => o.push("b"), _ => o.push("c") } }; o }']
+for m in minits {
+  case("match_init|" + m, m)
+}
+# Throw out of an arm with a heap-typed init var: the init slot must be released
+# on the unwind path (no leak), and the error must surface identically.
+case("match_init|throw", 'fn f() { match mut arr = [1, 2, 3]; arr.size() { 3 => { throw "boom" }, _ => 0 } }; try { f() } catch e { "caught" }')
+
 # --- Dimension 11: match / patterns ---------------------------------------
 let me_pre = 'enum E { A(Long), B }; '
 let matches = [me_pre + 'match E.A(5) { A(x) => x, _ => -1 }',

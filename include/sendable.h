@@ -202,14 +202,23 @@ class FreeVarWalker {
         return;
       case "MATCH"_: {
         if (node.nodes.size() < 2) { walk_children(node); return; }
-        walk(*node.nodes[0]);
-        for (const auto& arm : node.nodes[1]->nodes) {
+        // An init clause (`match mut x = f(); x { … }`) scopes its bindings to
+        // the subject and every arm: push an enclosing scope and register them.
+        auto mv = culebra::view_match(node);
+        bool scope_pushed = mv.init != nullptr;
+        if (scope_pushed) {
+          scopes_.emplace_back();
+          for (const auto& binding : mv.init->nodes) walk(*binding);
+        }
+        walk(*mv.subject);
+        for (const auto& arm : mv.arms->nodes) {
           if (arm->nodes.empty()) continue;
           scopes_.emplace_back();
           collect_binding_idents(*arm->nodes[0], scopes_.back());
           for (size_t k = 1; k < arm->nodes.size(); k++) walk(*arm->nodes[k]);
           scopes_.pop_back();
         }
+        if (scope_pushed) scopes_.pop_back();
         return;
       }
       case "OBJECT_PROPERTY"_: {

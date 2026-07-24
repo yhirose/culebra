@@ -6563,13 +6563,23 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
   Value eval_match(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
-    auto subject = eval(*ast.nodes[0], env);
-    const auto& arms = ast.nodes[1]->nodes;  // MATCH_ARMS
+    auto mv = culebra::view_match(ast);
+
+    // An init clause (`match mut x = f(); x { … }`) scopes its bindings to the
+    // subject and every arm: bind them in an enclosing scope, then evaluate the
+    // subject and arms in it. The matched arm's value outlives the scope (it is
+    // returned by value, refcounted). With no init clause `scope` is just env.
+    auto scope = mv.init ? make_scope(env) : env;
+    if (mv.init)
+      for (const auto& binding : mv.init->nodes) eval(*binding, scope);
+
+    auto subject = eval(*mv.subject, scope);
+    const auto& arms = mv.arms->nodes;  // MATCH_ARMS
     for (const auto& arm : arms) {
       // arm.nodes: PATTERN (GUARD)? EXPRESSION
       const auto& pattern = *arm->nodes[0];
       size_t next = 1;
-      auto armEnv = make_scope(env);
+      auto armEnv = make_scope(scope);
       if (!try_pattern(pattern, subject, armEnv)) continue;
 
       if (next < arm->nodes.size() && arm->nodes[next]->tag == "GUARD"_) {

@@ -3280,13 +3280,14 @@ struct JIT {
     if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_) return;
 
     if (node.tag == "MATCH"_) {
-      // MATCH = [subject, MATCH_ARMS]; MATCH_ARM = [PATTERN, (GUARD)?, EXPR].
-      // Register pattern-bound names as locals of the enclosing
-      // function so that nested closures capturing them are handled
-      // correctly by the free-variable analysis (the bindings are
-      // then promoted to cells via `captured_locals`). Same mechanism
-      // as TRY's catch binding below.
-      for (auto& arm : node.nodes[1]->nodes) {
+      // MATCH = [(INIT_CLAUSE)?, subject, MATCH_ARMS]; MATCH_ARM =
+      // [PATTERN, (GUARD)?, EXPR]. Register pattern-bound names as locals of the
+      // enclosing function so that nested closures capturing them are handled
+      // correctly by the free-variable analysis (the bindings are then promoted
+      // to cells via `captured_locals`). Same mechanism as TRY's catch binding
+      // below. The optional init clause's own bindings are picked up by the
+      // generic recursive walk that follows (like a plain `let`).
+      for (auto& arm : culebra::view_match(node).arms->nodes) {
         for_each_pattern_binding(
             *arm->nodes[0],
             [&](std::string_view name, size_t, size_t) {
@@ -3849,13 +3850,16 @@ struct JIT {
       return false;  // this scope absorbs its own defers
     }
     if (node.tag == "MATCH"_) {
-      // nodes: [subject EXPRESSION, MATCH_ARMS]. A block arm's body is its
-      // own scope (like a lexical block): a defer in it fires at arm exit,
-      // not function exit (matching interp's eval_match, which runs the arm
-      // scope's deferred on exit). Scan subject + each arm's pattern/guard at
-      // the enclosing level; absorb each arm body's defers into the body node.
-      scan_eh_defer(*node.nodes[0], at_fn_top, info);
-      for (auto& arm : node.nodes[1]->nodes) {
+      // nodes: [(INIT_CLAUSE)?, subject EXPRESSION, MATCH_ARMS]. A block arm's
+      // body is its own scope (like a lexical block): a defer in it fires at arm
+      // exit, not function exit (matching interp's eval_match, which runs the arm
+      // scope's deferred on exit). Scan any init clause + subject + each arm's
+      // pattern/guard at the enclosing level; absorb each arm body's defers into
+      // the body node.
+      auto mv = culebra::view_match(node);
+      if (mv.init) scan_eh_defer(*mv.init, at_fn_top, info);
+      scan_eh_defer(*mv.subject, at_fn_top, info);
+      for (auto& arm : mv.arms->nodes) {
         for (size_t i = 0; i + 1 < arm->nodes.size(); i++)
           scan_eh_defer(*arm->nodes[i], at_fn_top, info);
         auto& body = *arm->nodes.back();
@@ -7242,9 +7246,27 @@ struct JIT {
 
   Owned compile_match(const peg::Ast& ast) {
     using namespace peg::udl;
+    auto mv = culebra::view_match(ast);
     auto fn = builder_.GetInsertBlock()->getParent();
     llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
                              fn->getEntryBlock().begin());
+
+    // An optional init clause (`match mut x = f(); x { … }`) wraps the whole
+    // match in an enclosing scope holding its bindings, visible to the subject
+    // and every arm and dropped exactly once on exit. Same shape as
+    // compile_while / compile_if: a cleanup landingpad drops the init slots on a
+    // throw from the subject / any arm; the normal exit falls through to
+    // finish_and_pop_scope below. The result is a fresh +1 independent of the
+    // init slots, so it survives the scope pop.
+    llvm::BasicBlock* initCleanupBB = nullptr;
+    llvm::BasicBlock* initSavedLpad = current_lpad_;
+    if (mv.init) {
+      initCleanupBB =
+          llvm::BasicBlock::Create(ctx_, "match.init.cleanup", fn);
+      current_lpad_ = initCleanupBB;
+      push_scope();
+      for (auto& binding : mv.init->nodes) compile(*binding).drop();
+    }
 
     // Own the subject for the whole match in a dedicated scope. Its single
     // +1 is released on every normal exit by the matching pop_scope below
@@ -7256,7 +7278,7 @@ struct JIT {
     // leaking one reference per match.
     llvm::BasicBlock* savedOuterLpad = current_lpad_;
     push_scope();
-    auto subject = compile(*ast.nodes[0]).consume();
+    auto subject = compile(*mv.subject).consume();
     auto subjSlot = make_stack_slot("match.subj", subject);
     define_var("match.subject", subjSlot);  // '.' name: unreachable by source
 
@@ -7272,7 +7294,7 @@ struct JIT {
         entryB.CreateAlloca(valueType_, nullptr, "match.result");
     builder_.CreateStore(make_nil(), resultAlloca);
 
-    const auto& arms = ast.nodes[1]->nodes;  // MATCH_ARMS
+    const auto& arms = mv.arms->nodes;  // MATCH_ARMS
     for (size_t ai = 0; ai < arms.size(); ai++) {
       auto next_arm_bb =
           llvm::BasicBlock::Create(ctx_, "match.next", fn);
@@ -7377,6 +7399,13 @@ struct JIT {
     // still live, then release it (subject drop fires here on the throw path).
     finish_and_pop_scope(subjCleanupBB, /*defer_mark=*/nullptr, savedOuterLpad,
                          "match.subj.exc", savedOuterLpad);
+    // Drop the init scope after the subject scope; the result's +1 is
+    // independent of the init slots, so it survives. A throw from the subject
+    // or an arm instead unwinds via initCleanupBB (savedOuterLpad points here).
+    if (mv.init) {
+      finish_and_pop_scope(initCleanupBB, /*defer_mark=*/nullptr, initSavedLpad,
+                           "match.init.exc", initSavedLpad);
+    }
     return own(result);
   }
 
