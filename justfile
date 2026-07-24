@@ -1,5 +1,13 @@
 set shell := ["bash", "-cu"]
 
+# Background-friendly scheduling priority for local builds/tests. Several
+# worktree sessions building/testing at once would otherwise each claim every
+# core, degrading interactive Mac use; `nice` only yields under contention —
+# a solo run still gets full CPU, since there's nothing to yield to.
+# Override with CULEBRA_NICE (0 = no-op, matches un-niced behavior; CI leaves
+# it at the default since nothing else competes for cores there either).
+nice_cmd := "nice -n " + env_var_or_default("CULEBRA_NICE", "10")
+
 # List recipes
 default:
     @just --list
@@ -14,7 +22,7 @@ build *extra:
     # CULEBRA_BUILD_JOBS overrides the parallel job count (defaults to all
     # cores). CI sets it to cap RAM on the memory-tight macOS runner — an
     # LLVM-header-heavy TU peaks at ~3 GB, so too many at once swap.
-    cd build && make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}
+    cd build && {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}
 
 # Fast dev build: LTO off (saves ~15-25 s link), still Release + JIT,
 # uses a separate `build-dev/` so it doesn't fight `just build`'s cache.
@@ -27,7 +35,7 @@ build *extra:
 dev *extra:
     mkdir -p build-dev
     cd build-dev && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF -DCULEBRA_DEV_NO_RT=ON {{extra}} .. > /dev/null
-    cd build-dev && make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8) culebra
+    cd build-dev && {{nice_cmd}} make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8) culebra
 
 # Gate build for `just test`: Release + JIT like `just build`, but LTO OFF.
 # LTO is a pure link-time optimization — every test phase's output is identical
@@ -42,7 +50,7 @@ dev *extra:
 build-gate *extra:
     mkdir -p build-gate
     cd build-gate && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF {{extra}} .. > /dev/null
-    cd build-gate && make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}
+    cd build-gate && {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}
 
 # Regenerate include/grammar_blob.h — the serialized grammar that lets
 # get_parser() skip peglib's ~10 ms meta-parse on startup. Run after editing the
@@ -66,7 +74,7 @@ gen-blob:
 build-no-jit:
     mkdir -p build-no-jit
     cd build-no-jit && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=OFF .. > /dev/null
-    cd build-no-jit && make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8) culebra
+    cd build-no-jit && {{nice_cmd}} make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8) culebra
 
 # Build with ASan+UBSan (no-LTO Release) and smoke the JIT GC paths.
 # The conservative stack scanner (scan_range, jit_gc.h) is exempted from
@@ -177,7 +185,7 @@ _run-tests BACKEND:
     # `test-dev` overrides it to the no-LTO build-dev/ binary for fast inner
     # loops. AOT/embed phases derive their paths from BIN's build dir.
     BIN="${BIN:-./build/culebra}"
-    cul() { ${TIMEOUT_BIN:+$TIMEOUT_BIN "$CULEBRA_TEST_TIMEOUT"} "$BIN" "$@"; }
+    cul() { {{nice_cmd}} ${TIMEOUT_BIN:+$TIMEOUT_BIN "$CULEBRA_TEST_TIMEOUT"} "$BIN" "$@"; }
     export -f cul
     export BIN TIMEOUT_BIN CULEBRA_TEST_TIMEOUT
 
@@ -350,7 +358,7 @@ _run-tests BACKEND:
         # --timeout: bound each test so a stalled CI runner (GitHub's scarce
         # macOS VMs occasionally freeze a process) fails fast instead of hanging
         # the job for hours. 300 s is ~8x the slowest legit test (signal_test).
-        (cd "$(dirname "$BIN")" && ctest --output-on-failure --timeout 300 -j "$JOBS")
+        (cd "$(dirname "$BIN")" && {{nice_cmd}} ctest --output-on-failure --timeout 300 -j "$JOBS")
     }
 
     # Exercises `culebra test`-only ambient bindings (matchers, DI,

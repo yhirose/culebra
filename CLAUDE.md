@@ -25,6 +25,7 @@ culebra は個人の趣味プロジェクト（未公開のプログラミング
 
 - inner loop（修正→実行→修正）は **`just dev`**（LTO off、AOT archive スキップ、`main.cc` 単体 rebuild）。`CCACHE_DIR=$TMPDIR` を設定しておくこと（未設定だとサンドボックスで build が即失敗する）。
 - **`just build`** はコミット前の最終確認、または AOT runtime archive 自体を触った変更のときのみ。
+- `build`/`dev`/`build-gate`/`build-no-jit` の make、および `_run-tests`（`test`/`test-dev` 共通）の culebra 実行・ctest はデフォルトで `nice -n 10` 経由。複数 worktree セッション並走時の CPU 専有で通常の Mac 操作が詰まる問題への対処（単独実行時は速度低下なし、競合時のみ譲る）。`CULEBRA_NICE=0` で無効化可。
 
 ## テスト（速い順に段階的に）
 
