@@ -1,7 +1,7 @@
 // `Webview` builtin namespace — a native WebView window (webview/webview).
 //
 // Built into the driver (interp + JIT) and force-loaded into `culebra build`
-// outputs when the program references Webview, mirroring the Graphics facade's
+// outputs when the program references Webview, mirroring the Scene facade's
 // usage-gating (CULEBRA_ENABLE_WEBVIEW / aot_scan). So a desktop app is just:
 //
 //   let w = Webview.Window.new()

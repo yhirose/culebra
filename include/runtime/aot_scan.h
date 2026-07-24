@@ -143,17 +143,17 @@ inline bool aot_uses_sqlite(const peg::Ast& node) {
   return false;
 }
 
-// Does the program reference the `Graphics` namespace? Drives the force-load of
-// libculebra_rt_graphics.a (the wrap registration whose static registrar pulls
+// Does the program reference the `Scene` namespace? Drives the force-load of
+// libculebra_rt_scene.a (the wrap registration whose static registrar pulls
 // in raylib) and appends the raylib/SDL link deps — only when true, the same
-// usage-gating as tensor/http/compress/sqlite. Graphics has no weak choke: it
-// simply isn't in the base archive, so a non-Graphics binary references no
+// usage-gating as tensor/http/compress/sqlite. Scene has no weak choke: it
+// simply isn't in the base archive, so a non-Scene binary references no
 // raylib symbol. Same conservative bare-identifier match.
-inline bool aot_uses_graphics(const peg::Ast& node) {
+inline bool aot_uses_scene(const peg::Ast& node) {
   using namespace peg::udl;
-  if (node.tag == "IDENTIFIER"_ && node.token == "Graphics") return true;
+  if (node.tag == "IDENTIFIER"_ && node.token == "Scene") return true;
   for (const auto& child : node.nodes) {
-    if (aot_uses_graphics(*child)) return true;
+    if (aot_uses_scene(*child)) return true;
   }
   return false;
 }
@@ -161,7 +161,7 @@ inline bool aot_uses_graphics(const peg::Ast& node) {
 // Does the program reference the `Webview` namespace (or the `Desktop` facade
 // that drives it)? Force-loads libculebra_rt_webview.a and appends the OS
 // WebView framework link deps — only when true, the same usage-gating as
-// Graphics (no weak choke; the symbols simply aren't in the base archive).
+// Scene (no weak choke; the symbols simply aren't in the base archive).
 // Matches `Desktop` too so the facade triggers the force-load even when the
 // program never names `Webview` directly. Same conservative bare-identifier
 // match.

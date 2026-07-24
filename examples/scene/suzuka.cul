@@ -1,4 +1,4 @@
-# Real Suzuka 1987 circuit, rendered through the Graphics contract.
+# Real Suzuka 1987 circuit, rendered through the Scene contract.
 #
 # The track surface is a road ribbon built with add_mesh from the hand-traced
 # centerline in suzuka_track.json (968 points, ~5.8 km). The car auto-drives
@@ -447,7 +447,7 @@ let corners = track["corners"]
 let pit = track["pitLane"]
 puts("loaded Suzuka: " + to_string(cl.size()) + " pts, " + to_string(corners.size()) + " corners, " + to_string(pit.size()) + " pit")
 
-let view = Graphics.View.new(WIN_W, WIN_H, "culebra — Suzuka 1987")
+let view = Scene.View.new(WIN_W, WIN_H, "culebra — Suzuka 1987")
 view.target_fps(60)
 view.background(120, 166, 210)
 view.sky(96, 140, 200, 175, 205, 230)                   # deep blue zenith → pale horizon
@@ -567,7 +567,7 @@ let cam = CameraRig.new()
 
 # Looping engine note: a streamed track whose pitch tracks the car's speed, so
 # it reads as rising/falling RPM. (Procedurally generated tone in engine.wav.)
-let engine = Graphics.Music.new("engine.wav")
+let engine = Scene.Music.new("engine.wav")
 engine.volume(0.55)
 engine.play()
 

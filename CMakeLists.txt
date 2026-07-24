@@ -273,7 +273,7 @@ if(CULEBRA_ENABLE_JIT)
   add_compile_definitions(CULEBRA_JIT_ENABLED)
 endif()
 
-# --- Builtin Graphics namespace (raylib + SDL): config ---------------------
+# --- Builtin Scene namespace (raylib + SDL): config ---------------------
 # Heavy, GUI/platform-bound, so OFF by default (normal/headless builds + CI stay
 # lean). Computed before the runtime/embed block so the feature archive + the
 # AOT link string can be registered there. Both SDL2 and raylib (SDL backend)
@@ -281,36 +281,36 @@ endif()
 # resolve paths + flags. Static SDL2 = fully self-contained binaries (no external
 # dylib path baked in) and keeps gamepad rumble across platforms — vs GLFW, whose
 # macOS gamepad subsystem is broken and which has no haptics API at all.
-option(CULEBRA_ENABLE_GRAPHICS "Enable builtin Graphics namespace (raylib + SDL)" OFF)
-set(_graphics_link "")
-if(CULEBRA_ENABLE_GRAPHICS)
+option(CULEBRA_ENABLE_SCENE "Enable builtin Scene namespace (raylib + SDL)" OFF)
+set(_scene_link "")
+if(CULEBRA_ENABLE_SCENE)
   set(_sdl_install "${CMAKE_CURRENT_BINARY_DIR}/sdl_ext")
   set(_sdl_a "${_sdl_install}/lib/libSDL2.a")
   set(_raylib_install "${CMAKE_CURRENT_BINARY_DIR}/raylib_ext")
   set(_raylib_a "${_raylib_install}/lib/libraylib.a")
-  # AOT link fragment (CULEBRA_GRAPHICS_LINK): the built raylib + SDL2 statics +
+  # AOT link fragment (CULEBRA_SCENE_LINK): the built raylib + SDL2 statics +
   # GUI/audio system frameworks. `culebra build` appends it only when the program
-  # uses Graphics. Every path is in-tree or a system framework — no external dylib.
-  set(_graphics_link "'${_raylib_a}' '${_sdl_a}'")
+  # uses Scene. Every path is in-tree or a system framework — no external dylib.
+  set(_scene_link "'${_raylib_a}' '${_sdl_a}'")
   if(APPLE)
     # Frameworks SDL2 needs (window/input/audio/haptics) + raylib's GL path.
     # Single-sourced so the AOT link fragment here and the in-process link of the
     # driver (further below) can't drift apart.
-    set(_graphics_frameworks
+    set(_scene_frameworks
       OpenGL Cocoa IOKit CoreVideo CoreAudio AudioToolbox CoreFoundation
       GameController ForceFeedback CoreHaptics Carbon Metal)
-    foreach(_fw IN LISTS _graphics_frameworks)
-      string(APPEND _graphics_link " -framework ${_fw}")
+    foreach(_fw IN LISTS _scene_frameworks)
+      string(APPEND _scene_link " -framework ${_fw}")
     endforeach()
   endif()
-  message(STATUS "Graphics: enabled (vendored static SDL2 + raylib)")
+  message(STATUS "Scene: enabled (vendored static SDL2 + raylib)")
 endif()
 
 # --- Builtin Webview namespace (native WebView desktop): config ------------
-# ON by default: unlike Graphics there is no static library to build — webview
+# ON by default: unlike Scene there is no static library to build — webview
 # is a single vendored header (vendor/webview/webview.h) plus the OS's native
 # WebView framework, so it adds ~300 KB to the driver and nothing to non-Webview
-# AOT binaries (usage-gated force-load, mirroring the Graphics axis). On
+# AOT binaries (usage-gated force-load, mirroring the Scene axis). On
 # platforms where the toolkit headers are missing (Linux without gtk4 +
 # webkitgtk-6.0, untested Windows) it auto-disables — the binding TU wouldn't
 # compile there.
@@ -480,7 +480,7 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   # one archive into an AOT binary is fully self-contained. Force-loaded only
   # when the AST scan reports SQLite use, mirroring the tensor/http/compress
   # objects, so a non-SQLite binary references no sqlite3 symbol. Gated on
-  # CULEBRA_ENABLE_SQLITE (added to the embed list further down, like Graphics).
+  # CULEBRA_ENABLE_SQLITE (added to the embed list further down, like Scene).
   if(CULEBRA_ENABLE_SQLITE)
   add_library(culebra_rt_sqlite STATIC ./src/runtime/culebra_rt_sqlite.cc
     $<TARGET_OBJECTS:culebra_sqlite3>)
@@ -517,7 +517,7 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     "${_rt_compress_archive}")
   set(_rt_embed_deps culebra_rt culebra_rt_tensor culebra_rt_http
     culebra_rt_compress)
-  # SQLite feature archive (gated), appended like Graphics/Webview below.
+  # SQLite feature archive (gated), appended like Scene/Webview below.
   if(CULEBRA_ENABLE_SQLITE)
     list(APPEND _rt_embed_files
       "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_sqlite${CMAKE_STATIC_LIBRARY_SUFFIX}")
@@ -543,22 +543,22 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   else()
     target_compile_definitions(culebra PRIVATE CULEBRA_WRAP_LINK_FLAGS="")
   endif()
-  # Graphics feature archive: the wrap registration (its static registrar pulls
+  # Scene feature archive: the wrap registration (its static registrar pulls
   # in raylib). Force-loaded into an AOT binary only when the AST scan reports
-  # Graphics use (raylib/SDL come from CULEBRA_GRAPHICS_LINK below) — the same
-  # usage-gating as sqlite, but with no weak choke since Graphics simply isn't in
+  # Scene use (raylib/SDL come from CULEBRA_SCENE_LINK below) — the same
+  # usage-gating as sqlite, but with no weak choke since Scene simply isn't in
   # the base archive. Compiling needs only raylib's headers (vendored in-tree).
-  if(CULEBRA_ENABLE_GRAPHICS)
-    add_library(culebra_rt_graphics STATIC ./src/runtime/culebra_rt_graphics.cc)
-    target_compile_features(culebra_rt_graphics PRIVATE cxx_std_23)
-    target_include_directories(culebra_rt_graphics PRIVATE ./vendor/raylib/src)
-    target_compile_definitions(culebra_rt_graphics PRIVATE CULEBRA_ENABLE_GRAPHICS=1)
-    target_compile_options(culebra_rt_graphics PRIVATE -ffunction-sections -fdata-sections)
+  if(CULEBRA_ENABLE_SCENE)
+    add_library(culebra_rt_scene STATIC ./src/runtime/culebra_rt_scene.cc)
+    target_compile_features(culebra_rt_scene PRIVATE cxx_std_23)
+    target_include_directories(culebra_rt_scene PRIVATE ./vendor/raylib/src)
+    target_compile_definitions(culebra_rt_scene PRIVATE CULEBRA_ENABLE_SCENE=1)
+    target_compile_options(culebra_rt_scene PRIVATE -ffunction-sections -fdata-sections)
     list(APPEND _rt_embed_files
-      "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_graphics${CMAKE_STATIC_LIBRARY_SUFFIX}")
-    list(APPEND _rt_embed_deps culebra_rt_graphics)
+      "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_scene${CMAKE_STATIC_LIBRARY_SUFFIX}")
+    list(APPEND _rt_embed_deps culebra_rt_scene)
   endif()
-  # Webview feature archive: same usage-gating as Graphics (force-loaded into an
+  # Webview feature archive: same usage-gating as Scene (force-loaded into an
   # AOT binary only when the AST scan reports Webview use; the OS WebView
   # framework comes from CULEBRA_WEBVIEW_LINK). Compiling needs only the vendored
   # single header.
@@ -681,12 +681,12 @@ if(CULEBRA_ENABLE_JIT)
 endif()
 
 # `culebra build` appends the raylib + SDL2 statics + frameworks only when the
-# program references Graphics (see aot_scan). Defined unconditionally (gated on
+# program references Scene (see aot_scan). Defined unconditionally (gated on
 # JIT) like the peer link fragments above so the fast inner-loop build
 # (CULEBRA_DEV_NO_RT) — which skips the AOT runtime archives — still compiles the
-# driver that references this macro. `_graphics_link` is "" when Graphics is off.
+# driver that references this macro. `_scene_link` is "" when Scene is off.
 if(CULEBRA_ENABLE_JIT)
-  target_compile_definitions(culebra PRIVATE CULEBRA_GRAPHICS_LINK="${_graphics_link}")
+  target_compile_definitions(culebra PRIVATE CULEBRA_SCENE_LINK="${_scene_link}")
 endif()
 
 # `culebra build` appends the OS WebView framework only when the program
@@ -696,15 +696,15 @@ if(CULEBRA_ENABLE_JIT)
   target_compile_definitions(culebra PRIVATE CULEBRA_WEBVIEW_LINK="${_webview_link}")
 endif()
 
-# --- Graphics: build SDL2 + raylib + link into the driver -----------------
+# --- Scene: build SDL2 + raylib + link into the driver -----------------
 # Config (option / static lib paths / link flags) was resolved before the driver
 # target above. Here we build SDL2 (static) and raylib (SDL backend, static) from
-# vendored submodules, then compile the Graphics binding straight into the driver
-# so interp + JIT run Graphics in-process. AOT outputs instead force-load the
-# feature archive + CULEBRA_GRAPHICS_LINK (gated on usage). raylib finds the
+# vendored submodules, then compile the Scene binding straight into the driver
+# so interp + JIT run Scene in-process. AOT outputs instead force-load the
+# feature archive + CULEBRA_SCENE_LINK (gated on usage). raylib finds the
 # vendored SDL via CMAKE_PREFIX_PATH; both statics + frameworks are supplied at
 # the final link (a static archive records no link deps of its own).
-if(CULEBRA_ENABLE_GRAPHICS)
+if(CULEBRA_ENABLE_SCENE)
   include(ExternalProject)
   ExternalProject_Add(sdl_ext
     SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/SDL"
@@ -732,13 +732,13 @@ if(CULEBRA_ENABLE_GRAPHICS)
       -DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}
     BUILD_BYPRODUCTS "${_raylib_a}")
 
-  target_sources(culebra PRIVATE ./src/runtime/culebra_rt_graphics.cc)
+  target_sources(culebra PRIVATE ./src/runtime/culebra_rt_scene.cc)
   target_include_directories(culebra PRIVATE ./vendor/raylib/src)
-  target_compile_definitions(culebra PRIVATE CULEBRA_ENABLE_GRAPHICS=1)
+  target_compile_definitions(culebra PRIVATE CULEBRA_ENABLE_SCENE=1)
   add_dependencies(culebra raylib_ext)
   target_link_libraries(culebra "${_raylib_a}" "${_sdl_a}")
   if(APPLE)
-    foreach(_fw IN LISTS _graphics_frameworks)   # same single source as _graphics_link
+    foreach(_fw IN LISTS _scene_frameworks)   # same single source as _scene_link
       target_link_libraries(culebra "-framework ${_fw}")
     endforeach()
   endif()

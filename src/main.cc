@@ -573,22 +573,22 @@ int run_build(const BuildOptions& opts) {
     }
     return false;
   };
-#ifdef CULEBRA_ENABLE_GRAPHICS
-  // Graphics reachability force-loads libculebra_rt_graphics.a (the wrap
+#ifdef CULEBRA_ENABLE_SCENE
+  // Scene reachability force-loads libculebra_rt_scene.a (the wrap
   // registration whose registrar pulls in raylib) and appends the raylib/SDL
   // link deps, mirroring the tensor/http/compress/sqlite axes. Compiled only
-  // into a graphics-enabled driver: a stock build never embeds that archive, so
+  // into a scene-enabled driver: a stock build never embeds that archive, so
   // it must not try to force-load it (doing so aborts on a missing archive).
-  auto any_uses_graphics = [&]() {
+  auto any_uses_scene = [&]() {
     for (const auto& m : modules) {
-      if (culebra::aot_uses_graphics(*m.ast)) return true;
+      if (culebra::aot_uses_scene(*m.ast)) return true;
     }
     return false;
   };
 #endif
 #ifdef CULEBRA_ENABLE_WEBVIEW
   // Webview reachability force-loads libculebra_rt_webview.a and appends the OS
-  // WebView framework link deps, mirroring the Graphics axis. Compiled only into
+  // WebView framework link deps, mirroring the Scene axis. Compiled only into
   // a webview-enabled driver (a stock build never embeds that archive).
   auto any_uses_webview = [&]() {
     for (const auto& m : modules) {
@@ -731,10 +731,10 @@ int run_build(const BuildOptions& opts) {
   bool uses_http = cross ? false : any_uses_http();
   bool uses_compress = cross ? false : any_uses_compress();
   bool uses_sqlite = cross ? false : any_uses_sqlite();
-#ifdef CULEBRA_ENABLE_GRAPHICS
-  bool uses_graphics = cross ? false : any_uses_graphics();
+#ifdef CULEBRA_ENABLE_SCENE
+  bool uses_scene = cross ? false : any_uses_scene();
 #else
-  bool uses_graphics = false;  // graphics archive isn't embedded in a stock build
+  bool uses_scene = false;  // scene archive isn't embedded in a stock build
 #endif
 #ifdef CULEBRA_ENABLE_WEBVIEW
   bool uses_webview = cross ? false : any_uses_webview();
@@ -837,9 +837,9 @@ int run_build(const BuildOptions& opts) {
       (uses_sqlite && host_build)
           ? force_load_feature("libculebra_rt_sqlite.a")
           : "";
-  std::string graphics_lib =
-      (uses_graphics && host_build)
-          ? force_load_feature("libculebra_rt_graphics.a")
+  std::string scene_lib =
+      (uses_scene && host_build)
+          ? force_load_feature("libculebra_rt_scene.a")
           : "";
   std::string webview_lib =
       (uses_webview && host_build)
@@ -884,10 +884,10 @@ int run_build(const BuildOptions& opts) {
   // resolves the amalgamation's platform deps. "" when SQLite is unused.
   std::string sqlite_link = uses_sqlite ? CULEBRA_SQLITE_LINK : "";
   // raylib + SDL2 statics' platform deps (GUI/audio frameworks). Appended only
-  // when the program references Graphics; the wrap registrar force-loaded via
-  // graphics_lib is what references the symbols these flags resolve. "" when
-  // Graphics is unused or built out.
-  std::string graphics_link = uses_graphics ? CULEBRA_GRAPHICS_LINK : "";
+  // when the program references Scene; the wrap registrar force-loaded via
+  // scene_lib is what references the symbols these flags resolve. "" when
+  // Scene is unused or built out.
+  std::string scene_link = uses_scene ? CULEBRA_SCENE_LINK : "";
   std::string webview_link = uses_webview ? CULEBRA_WEBVIEW_LINK : "";
   // The wrapped library's own link flags (`culebra wrap --link`, baked at
   // wrap time) ride the same usage axis as wrap_lib above: appended only when
@@ -926,8 +926,8 @@ int run_build(const BuildOptions& opts) {
   std::string cmd = std::format(
       "{}{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} -o {}", cc, extra,
       shq(obj), assets_obj, shq(lib), tensor_lib, http_lib, compress_lib, sqlite_lib,
-      graphics_lib, webview_lib, wrap_lib, dead_strip, strip_syms, no_pie, win_static, libcxx, blas, ssl, zlib,
-      sqlite_link, graphics_link, webview_link, wrap_link_flags, shq(opts.output));
+      scene_lib, webview_lib, wrap_lib, dead_strip, strip_syms, no_pie, win_static, libcxx, blas, ssl, zlib,
+      sqlite_link, scene_link, webview_link, wrap_link_flags, shq(opts.output));
 
   if (verbose) std::println(stderr, "culebra build: link: {}", cmd);
   int link_rc = std::system(cmd.c_str());

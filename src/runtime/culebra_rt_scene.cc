@@ -1,4 +1,4 @@
-// `Graphics` facade — raylib backend (v2: lighting + custom meshes).
+// `Scene` facade — raylib backend (v2: lighting + custom meshes).
 //
 // v1 validated the retained-scene + fluent-node architecture with flat-colour
 // shapes. v2 adds:
@@ -351,7 +351,7 @@ class Node {
     if (mv.empty() || mi.empty()) return *this;   // nothing pushed → no-op (no GL upload)
     if (mv.size() / 3 > 65535) {                   // raylib mesh indices are 16-bit
       TraceLog(LOG_ERROR,
-               "Graphics: mesh has %zu vertices; raylib's 16-bit index buffer "
+               "Scene: mesh has %zu vertices; raylib's 16-bit index buffer "
                "caps at 65535 — split it across multiple nodes.", mv.size() / 3);
       return *this;   // refuse rather than silently wrap indices into garbage
     }
@@ -885,7 +885,7 @@ class MusicTrack {
 
 namespace {
 const bool registered = [] {
-  culebra::wrap<gfx::Node>("Graphics", "Node")
+  culebra::wrap<gfx::Node>("Scene", "Node")
       .borrowed_method<&gfx::Node::move>("move", {"x", "y", "z"})
       .borrowed_method<&gfx::Node::euler>("euler", {"x", "y", "z"})
       .borrowed_method<&gfx::Node::yaw>("yaw", {"a"})
@@ -912,7 +912,7 @@ const bool registered = [] {
       .method<&gfx::Node::y>("y")
       .method<&gfx::Node::z>("z");
 
-  culebra::wrap<gfx::View>("Graphics", "View")
+  culebra::wrap<gfx::View>("Scene", "View")
       .ctor<long, long, std::string>({"w", "h", "title"})
       .method<&gfx::View::target_fps>("target_fps", {"fps"})
       .method<&gfx::View::closing>("closing")
@@ -959,7 +959,7 @@ const bool registered = [] {
       .method<&gfx::View::circle>("circle", {"x", "y", "radius", "r", "g", "b"})
       .method<&gfx::View::line>("line", {"x0", "y0", "x1", "y1", "thick", "r", "g", "b"});
 
-  culebra::wrap<gfx::SoundFx>("Graphics", "Sound")
+  culebra::wrap<gfx::SoundFx>("Scene", "Sound")
       .ctor<std::string>({"path"})
       .method<&gfx::SoundFx::play>("play")
       .method<&gfx::SoundFx::stop>("stop")
@@ -968,7 +968,7 @@ const bool registered = [] {
       .method<&gfx::SoundFx::pitch>("pitch", {"p"})
       .method<&gfx::SoundFx::pan>("pan", {"p"});
 
-  culebra::wrap<gfx::MusicTrack>("Graphics", "Music")
+  culebra::wrap<gfx::MusicTrack>("Scene", "Music")
       .ctor<std::string>({"path"})
       .method<&gfx::MusicTrack::play>("play")
       .method<&gfx::MusicTrack::stop>("stop")
