@@ -22,7 +22,7 @@ else if device == 'gpu' { Tensor.use_gpu() }
 else { Tensor.use_auto() }
 
 if !FS.exists("{DIR}/train_images.csv") {
-  puts("missing {DIR}/train_images.csv; run prep_train.py 60000 first")
+  inspect("missing {DIR}/train_images.csv; run prep_train.py 60000 first")
   Sys.exit(1)
 }
 
@@ -30,7 +30,7 @@ let load_t0 = Sys.time()
 let X = Tensor.from_csv("{DIR}/train_images.csv") # [N, 784]
 let t_load = Sys.time() - load_t0
 let n = X.shape()[0]
-puts("[culebra-tensor-autoencoder] device={device} loaded train={n} in {t_load}s")
+inspect("[culebra-tensor-autoencoder] device={device} loaded train={n} in {t_load}s")
 
 let make_weights = fn () {
   mut Ws = []
@@ -99,5 +99,5 @@ mut warm_sum = 0.0
 for t in times { warm_sum = warm_sum + t }
 warm_sum = warm_sum - cold
 let warm = if times.size() > 1 { warm_sum / to_float(times.size() - 1) } else { Math.nan }
-puts("[culebra-tensor-autoencoder] cold={cold}s warm={warm}s")
+inspect("[culebra-tensor-autoencoder] cold={cold}s warm={warm}s")
 print("BENCH label=culebra_tensor_autoencoder device={device} load={t_load} cold={cold} warm={warm}\n")

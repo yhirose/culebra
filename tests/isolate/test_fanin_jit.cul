@@ -99,4 +99,4 @@ let h = Isolate.spawn(fn () { throw [1, 2, 3] })
 let ch = try { h.join(); nil } catch e { e }
 assert_eq(ch, [1, 2, 3])
 
-puts("test_fanin_jit: all assertions passed")
+inspect("test_fanin_jit: all assertions passed")

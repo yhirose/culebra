@@ -125,7 +125,7 @@ static void scenario_basic() {
   // `x` is mutable so setVariable can change it; `y` stays `let` (immutable).
   std::string path = write_program(
       "culebra_dap_basic.cul",
-      "let mut x = 10\nlet y = 20\nlet total = x + y\nIO.puts(total)\n");
+      "let mut x = 10\nlet y = 20\nlet total = x + y\nIO.inspect(total)\n");
   spawn_adapter();
 
   send("{\"type\":\"request\",\"command\":\"initialize\"}");
@@ -198,7 +198,7 @@ static void scenario_call_stack() {
       "  b\n"                  // 7
       "}\n"                    // 8
       "let r = outer(10)\n"    // 9
-      "IO.puts(r)\n");         // 10
+      "IO.inspect(r)\n");         // 10
   spawn_adapter();
 
   send("{\"type\":\"request\",\"command\":\"initialize\"}");
@@ -247,7 +247,7 @@ static void scenario_conditional_bp() {
       "  }\n"                  // 5
       "  sum\n"                // 6
       "}\n"                    // 7
-      "IO.puts(run())\n");     // 8
+      "IO.inspect(run())\n");     // 8
   spawn_adapter();
 
   send("{\"type\":\"request\",\"command\":\"initialize\"}");

@@ -52,7 +52,7 @@ PY_KEYWORDS = {
 
 CUL_KEYWORDS = {
     'and', 'break', 'class', 'continue', 'else', 'false', 'fn', 'for',
-    'if', 'in', 'let', 'match', 'mut', 'new', 'or', 'puts', 'return',
+    'if', 'in', 'let', 'match', 'mut', 'new', 'or', 'inspect', 'return',
     'self', 'this', 'true', 'while',
 }
 

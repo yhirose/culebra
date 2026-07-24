@@ -3,4 +3,4 @@
 fib = fn (x) {
   if x < 2 { x } else { fn(x - 2) + fn(x - 1) }
 }
-puts(fib(33))
+inspect(fib(33))

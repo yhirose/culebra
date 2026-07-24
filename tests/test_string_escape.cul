@@ -43,4 +43,4 @@ assert_eq('\u{41}'.size(), 6)
 // a single module. They're covered by tests/embedding/utf8_invalid_smoke
 // / a parse-failure check instead.
 
-IO.puts("test_string_escape OK")
+IO.inspect("test_string_escape OK")

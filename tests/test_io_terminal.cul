@@ -19,4 +19,4 @@ assert_eq(IO.stdout_is_terminal(), false)
 let f = IO.stderr_is_terminal
 assert_eq(type_of(f()), "Bool")
 
-puts("ok")
+inspect("ok")

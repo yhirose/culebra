@@ -93,4 +93,4 @@ check('hof-terminal', e19, 91, 17)
 let e20 = try { range(2).map(fn (v: String) { v }).collect() } catch e { e }
 check('hof-range-inline', e20, 93, 17)
 
-puts('test_typed_param_pos OK')
+inspect('test_typed_param_pos OK')

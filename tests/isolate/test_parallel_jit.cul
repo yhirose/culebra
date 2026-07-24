@@ -66,4 +66,4 @@ for v in rx { drained.push(v) }
 assert_eq(drained.size(), 3)
 assert_eq(drained.reduce(0, |a, b| a + b), 60)
 
-puts("test_parallel_jit: all assertions passed")
+inspect("test_parallel_jit: all assertions passed")

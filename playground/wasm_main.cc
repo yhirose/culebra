@@ -6,7 +6,7 @@
 // handed back only after run_culebra returns. That capture-and-return
 // design (the previous approach here) works for a quick script but breaks a
 // TUI one: Term.app's event loop doesn't return until the user quits, so
-// nothing would ever reach the page while a game is being played. IO.puts
+// nothing would ever reach the page while a game is being played. IO.inspect
 // (which ends in std::endl) and Screen.flush() (one TUI frame) already
 // flush, so streaming falls out of the existing stdlib for free — no interp
 // change needed. IO.print alone doesn't auto-flush; run_culebra flushes
@@ -59,7 +59,7 @@ static const bool g_tensor_auto = [] {
 
 static const bool g_streams_installed = [] {
   std::cout.rdbuf(&g_stream_buf);
-  std::cerr.rdbuf(&g_stream_buf);  // IO.eputs/eprint
+  std::cerr.rdbuf(&g_stream_buf);  // IO.einspect/eprint
   return true;
 }();
 

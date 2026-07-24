@@ -42,4 +42,4 @@ assert_eq("{a + b:03}", "005")
 let e = try { let _ = "{pi:z}"; nil } catch er { er.kind }
 assert_eq(e, "ValueError")
 
-IO.puts("test_format_spec OK")
+IO.inspect("test_format_spec OK")

@@ -14,16 +14,16 @@ srv.listen_async(PORT)   # returns immediately (bind is synchronous)
 
 # index.html at the mount root, with inferred content type
 r = Http.get(BASE + "/")
-puts("GET / -> " + r.status.to_string() + " | ct=" + r.headers["Content-Type"] +
+inspect("GET / -> " + r.status.to_string() + " | ct=" + r.headers["Content-Type"] +
      " | h1=" + r.body.contains("<h1>It works</h1>").to_string())
 # a named asset
 js = Http.get(BASE + "/app.js")
-puts("GET /app.js -> " + js.status.to_string() + " | ct=" + js.headers["Content-Type"])
+inspect("GET /app.js -> " + js.status.to_string() + " | ct=" + js.headers["Content-Type"])
 # a registered route still wins over a missing static file (static tried first, misses)
 api = Http.get(BASE + "/api/ok")
-puts("GET /api/ok -> " + api.status.to_string() + " | " + api.body)
+inspect("GET /api/ok -> " + api.status.to_string() + " | " + api.body)
 # a missing file falls through to 404
 miss = Http.get(BASE + "/nope.css")
-puts("GET /nope.css -> " + miss.status.to_string())
+inspect("GET /nope.css -> " + miss.status.to_string())
 srv.stop()
-puts("server stopped")
+inspect("server stopped")

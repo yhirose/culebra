@@ -57,4 +57,4 @@ let k = gen_keys().collect()
 assert_eq(k.size(), 3)
 assert_eq(k[2], 2)
 
-IO.puts('test_builtin_name_fields OK')
+IO.inspect('test_builtin_name_fields OK')

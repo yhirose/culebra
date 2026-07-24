@@ -104,4 +104,4 @@ for n in 0..3000 {
 }
 assert_eq(GC.stat().live_objects - g0 < 200, true)
 
-puts("slice ok")
+inspect("slice ok")

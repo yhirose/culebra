@@ -152,4 +152,4 @@ File.with(vf, "w", fn (f) {
 FS.remove(vf)
 
 FS.remove(p)
-IO.puts("test_file OK")
+IO.inspect("test_file OK")

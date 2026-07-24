@@ -65,4 +65,4 @@ w.join()
 assert_eq(shared[0].start.x, 7.0)
 assert_eq(shared[0].end.y, 8.0)
 
-IO.puts("test_packable_nested OK")
+IO.inspect("test_packable_nested OK")

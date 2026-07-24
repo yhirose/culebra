@@ -75,4 +75,4 @@ try {
 }
 assert_eq(bad, true)
 
-puts("test_class_call ok")
+inspect("test_class_call ok")

@@ -118,4 +118,4 @@ try {
 assert_eq(all_heap_rejected, true)
 hh.drop()
 
-puts("proc share ok")
+inspect("proc share ok")

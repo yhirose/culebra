@@ -63,4 +63,4 @@ assert_eq("""Hello {name}!""", "Hello Alice!")
 assert_eq("""line one
 line two""", "line one\nline two")
 
-IO.puts("test_triple_string OK")
+IO.inspect("test_triple_string OK")

@@ -113,6 +113,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_print(int8_t type,
   }
 }
 
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_println(int8_t type,
+                                                        int64_t data) {
+  culebra_runtime_print(type, data);
+  std::cout << std::endl;
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_input() {
   std::string line;
   // Interruptible; empty string at EOF (unchanged behaviour).
@@ -2784,7 +2790,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_spawn_kw(
 namespace culebra {
 
 // JitExtension fills the JIT::ExtensionHooks for the standard library
-// (Math/IO/Random/Sys + bare globals like puts/to_long/type_of and the
+// (Math/IO/Random/Sys + bare globals like inspect/to_long/type_of and the
 // `Math.range(N).<HOF>(...)` fusion peephole). Declared as a friend of
 // JIT in jit.h so each member can reach the JIT internals it needs
 // (builder_/module_/valueType_/make_*/extract_*/...) without the JIT
@@ -2869,10 +2875,10 @@ inline void install_jit_stdlib() { JitExtension::install(); }
 
 // --- Stdlib namespace as first-class JIT object ---
 //
-// `let m = IO; m.puts(x)` needs IO to be a value, not just a
+// `let m = IO; m.inspect(x)` needs IO to be a value, not just a
 // compile-time syntactic pattern. Each stdlib namespace gets a
 // lazy JitObject whose method slots are closures that trampoline
-// into a single dispatcher table. Fast path (`IO.puts(x)` as
+// into a single dispatcher table. Fast path (`IO.inspect(x)` as
 // IDENTIFIER.DOT.ARGUMENTS) still goes through compile_ns_call
 // in JitExtension and bypasses this entirely.
 //
@@ -3005,12 +3011,16 @@ inline JitValue v_tensor(JitTensor* t)   {
 // --- Per-method adapters ---
 
 // IO
-inline JitValue _ns_io_puts(JitValue* a, int64_t) {
-  culebra_runtime_puts(a[0].tag, a[0].data);
+inline JitValue _ns_io_inspect(JitValue* a, int64_t) {
+  culebra_runtime_inspect(a[0].tag, a[0].data);
   return _ns_adapt::v_nil();
 }
 inline JitValue _ns_io_print(JitValue* a, int64_t) {
   culebra_runtime_print(a[0].tag, a[0].data);
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_io_println(JitValue* a, int64_t) {
+  culebra_runtime_println(a[0].tag, a[0].data);
   return _ns_adapt::v_nil();
 }
 inline JitValue _ns_io_input(JitValue*, int64_t) {
@@ -3019,12 +3029,16 @@ inline JitValue _ns_io_input(JitValue*, int64_t) {
 inline JitValue _ns_io_stdin(JitValue*, int64_t) {
   return _culebra_stdin_build_handle();
 }
-inline JitValue _ns_io_eputs(JitValue* a, int64_t) {
-  culebra_runtime_eputs(a[0].tag, a[0].data);
+inline JitValue _ns_io_einspect(JitValue* a, int64_t) {
+  culebra_runtime_einspect(a[0].tag, a[0].data);
   return _ns_adapt::v_nil();
 }
 inline JitValue _ns_io_eprint(JitValue* a, int64_t) {
   culebra_runtime_eprint(a[0].tag, a[0].data);
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_io_eprintln(JitValue* a, int64_t) {
+  culebra_runtime_eprintln(a[0].tag, a[0].data);
   return _ns_adapt::v_nil();
 }
 // Per-stream terminal detection (POSIX isatty). Slow-path only (no fast-path
@@ -3041,7 +3055,7 @@ inline JitValue _ns_io_stderr_is_terminal(JitValue*, int64_t) {
   return _ns_adapt::v_bool(isatty(STDERR_FILENO));
 }
 
-// Bare global builtins (`puts`/`print` reuse the IO adapters above)
+// Bare global builtins (`inspect`/`print`/`println` reuse the IO adapters above)
 // exposed as first-class values: `let f = type_of`, `[1,2,3].map(type_of)`.
 // Each delegates to the very runtime helper the direct-call fast path
 // (compile_global) emits, so the produced value is byte-identical. line/col
@@ -5682,12 +5696,14 @@ inline JitValue _ns_embed_dir(JitValue* args, int64_t n) {
 inline const NsMethod kNsMethods[] = {
   {"Embed",  "dir",       1, &_ns_embed_dir, nullptr, "String", "name"},
 
-  {"IO",     "puts",      1, &_ns_io_puts},
+  {"IO",     "inspect",   1, &_ns_io_inspect},
   {"IO",     "print",     1, &_ns_io_print},
+  {"IO",     "println",   1, &_ns_io_println},
   {"IO",     "input",     0, &_ns_io_input},
   {"IO",     "stdin",     0, &_ns_io_stdin},
-  {"IO",     "eputs",     1, &_ns_io_eputs},
+  {"IO",     "einspect",  1, &_ns_io_einspect},
   {"IO",     "eprint",    1, &_ns_io_eprint},
+  {"IO",     "eprintln",  1, &_ns_io_eprintln},
   {"IO",     "stdin_is_terminal",  0, &_ns_io_stdin_is_terminal},
   {"IO",     "stdout_is_terminal", 0, &_ns_io_stdout_is_terminal},
   {"IO",     "stderr_is_terminal", 0, &_ns_io_stderr_is_terminal},
@@ -6403,7 +6419,7 @@ inline JitObject* _jit_build_namespace_object(std::string_view ns_name) {
 
 struct _JitNamespaceTable {
   std::unordered_map<std::string, JitObject*> entries;
-  // Bare builtin function globals (`puts`, `type_of`, `range`, ...) used
+  // Bare builtin function globals (`inspect`, `type_of`, `range`, ...) used
   // as first-class values, materialized lazily as ns-method closures. Same
   // lifetime/teardown order as `entries` — both hold heap values that must
   // be released before the GC heap substate (a lower slot) is destroyed.
@@ -6423,13 +6439,14 @@ struct _JitNamespaceTable {
 // Bare builtin function globals, exposed as first-class values by reusing
 // the ns-method closure machinery (shared trampoline + arity check). Direct
 // calls keep their fast paths (compile_global / try_compile_core_global);
-// only value / higher-order uses (`map(type_of)`, `let f = puts`) reach the
+// only value / higher-order uses (`map(type_of)`, `let f = inspect`) reach the
 // closure built here. `ns` is empty — these are not namespaced; the trampoline
 // uses it only for arity-error text, which `_ns_adapt::arity_error` renders
 // name-only when blank.
 inline const NsMethod kBuiltinFns[] = {
-  {"", "puts",      1, &_ns_io_puts},
+  {"", "inspect",   1, &_ns_io_inspect},
   {"", "print",     1, &_ns_io_print},
+  {"", "println",   1, &_ns_io_println},
   {"", "type_of",   1, &_ns_global_type_of},
   {"", "to_long",   1, &_ns_global_to_long},
   {"", "to_float",  1, &_ns_global_to_float},
@@ -6693,7 +6710,7 @@ culebra_runtime_namespace_get(const char* name,
                                int8_t* out_tag, int64_t* out_data) {
   _check_ns_drift_once();
   std::string nm(name ? name : "");
-  // Bare builtin function used as a value (`let f = puts`, `map(type_of)`).
+  // Bare builtin function used as a value (`let f = inspect`, `map(type_of)`).
   // Checked before the namespace lookup since these names are not namespaces.
   if (auto* cls = _jit_builtin_fn_closure(nm)) {
     culebra_runtime_value_retain(TAG_FUNC, reinterpret_cast<int64_t>(cls));
@@ -6777,6 +6794,8 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   auto ptrTy = llvm::PointerType::get(jit.ctx_, 0);
 
   jit.module_->getOrInsertFunction(rt::print, jit.builder_.getVoidTy(),
+                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::println, jit.builder_.getVoidTy(),
                                jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::to_long,
                                jit.builder_.getInt64Ty(), ptrTy,
@@ -7089,7 +7108,7 @@ inline JIT::Owned JitExtension::compile_global(JIT& jit,
                                                   const std::string& name,
                                                   const peg::Ast& argsAst,
                                                   const peg::Ast& callAst) {
-  // Global builtins (puts, to_long, etc.) parse positionally. None of
+  // Global builtins (inspect, to_long, etc.) parse positionally. None of
   // them accept kwargs today; if the call carries kwargs/splats and
   // matches a built-in name surface a clean SyntaxError. If the user
   // shadowed the name with their own `let X = fn (...) {...}` binding,
@@ -7103,11 +7122,12 @@ inline JIT::Owned JitExtension::compile_global(JIT& jit,
     // through call_with_kwargs (the resolver handles step + unknown-kwarg).
     // The genuinely positional-only globals keep their clean SyntaxError.
     static const std::set<std::string_view> kwarg_rejecting_globals = {
-        "puts", "print", "to_long", "to_float", "to_string", "type_of", "hash",
+        "inspect", "print", "println", "to_long", "to_float", "to_string",
+        "type_of", "hash",
     };
     if (kwarg_rejecting_globals.contains(name)) {
       // Catchable runtime TypeError matching the interp (interpreter.h
-      // ~6429), not a compile-time SyntaxError — `try { puts(x: 1) }` must
+      // ~6429), not a compile-time SyntaxError — `try { inspect(x: 1) }` must
       // observe the same error on both backends, at the same call-site
       // position. A duplicate/positional-after-keyword shape is caught earlier
       // by emit_arg_list_check, so this fires only for a well-formed kwarg.
@@ -7121,10 +7141,12 @@ inline JIT::Owned JitExtension::compile_global(JIT& jit,
   auto line = jit.builder_.getInt64(callAst.line);
   auto col = jit.builder_.getInt64(callAst.column);
 
-  if (name == "puts" && argsAst.nodes.size() == 1)
-    return jit.own(emit_output_call(jit, rt::puts, argsAst));
+  if (name == "inspect" && argsAst.nodes.size() == 1)
+    return jit.own(emit_output_call(jit, rt::inspect, argsAst));
   if (name == "print" && argsAst.nodes.size() == 1)
     return jit.own(emit_output_call(jit, rt::print, argsAst));
+  if (name == "println" && argsAst.nodes.size() == 1)
+    return jit.own(emit_output_call(jit, rt::println, argsAst));
 
   if (name == "to_long" && argsAst.nodes.size() == 1) {
     auto arg = jit.compile(*argsAst.nodes[0]);
@@ -7629,10 +7651,12 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
   }
 
   if (ns == "IO") {
-    if (method == "puts" && argsAst.nodes.size() == 1)
-      return jit.own(emit_output_call(rt::puts, argsAst));
+    if (method == "inspect" && argsAst.nodes.size() == 1)
+      return jit.own(emit_output_call(rt::inspect, argsAst));
     if (method == "print" && argsAst.nodes.size() == 1)
       return jit.own(emit_output_call(rt::print, argsAst));
+    if (method == "println" && argsAst.nodes.size() == 1)
+      return jit.own(emit_output_call(rt::println, argsAst));
     if (method == "input" && argsAst.nodes.size() == 0) {
       auto s = emit_call(module_->getFunction(rt::input), {});
       return jit.own(make_string(s));
@@ -8504,7 +8528,7 @@ inline llvm::Value* JitExtension::emit_output_call(JIT& jit,
 
 inline bool JitExtension::is_builtin_var(const std::string& name) {
   static const std::unordered_set<std::string_view> names = {
-      "puts",    "print",
+      "inspect", "print",   "println",
       "to_long", "to_float",  "to_string", "type_of", "hash", "__eff_copy",
       "__eff_abort", "__eff_catch_abort",
       "Math",    "IO",        "FS",        "File",     "Embed",   "_Time",
@@ -8635,8 +8659,8 @@ inline JIT::Owned JitExtension::compile_ufcs_builtin(
   // extra positional arg is an ArityError on the arity-1 global — not the
   // property-get TypeError the JIT used to fall into when it only handled the
   // 0-arg form. (hash and to_float were also missing here entirely, so
-  // `x.hash()` / `x.to_float()` failed outright.) puts/print are variadic and
-  // handled separately below.
+  // `x.hash()` / `x.to_float()` failed outright.) inspect/print/println are
+  // variadic and handled separately below.
   static const std::set<std::string_view> arity1_globals = {
       "to_long", "to_float", "to_string", "type_of", "hash"};
   if (arity1_globals.contains(method) && argsAst.nodes.size() != 0) {
@@ -8687,8 +8711,10 @@ inline JIT::Owned JitExtension::compile_ufcs_builtin(
   }
 
   if (argsAst.nodes.size() != 0) return {};
-  if (method == "puts" || method == "print") {
-    auto rt_name = method == "puts" ? rt::puts : rt::print;
+  if (method == "inspect" || method == "print" || method == "println") {
+    auto rt_name = method == "inspect" ? rt::inspect
+                  : method == "println" ? rt::println
+                                         : rt::print;
     emit_call(module_->getFunction(rt_name),
                         {extract_tag(receiver), extract_data(receiver)});
     emit_value_release(receiver);

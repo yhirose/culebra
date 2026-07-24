@@ -18,4 +18,4 @@ while i < 1000 {
   assert_eq(t.size(), 3)
   i = i + 1
 }
-puts("array sized default: ok")
+inspect("array sized default: ok")

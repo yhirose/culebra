@@ -224,7 +224,7 @@
 <tr><td class="ln">  9</td><td class="src"><span class="cmt"># Let there be a Dataset `docs`: list[str] of documents (e.g. a list of names)</span></td></tr>
 <tr><td class="ln"> 10</td><td class="src">data_path = <span class="str">'benchmarks/microgpt/names.txt'</span></td></tr>
 <tr><td class="ln"> 11</td><td class="src"><span class="kw">if</span> !FS.exists(data_path) {</td></tr>
-<tr><td class="ln"> 12</td><td class="src">  <span class="kw">puts</span>(<span class="str">"error: {data_path} missing. Run `just fetch-names` first."</span>)</td></tr>
+<tr><td class="ln"> 12</td><td class="src">  <span class="kw">inspect</span>(<span class="str">"error: {data_path} missing. Run `just fetch-names` first."</span>)</td></tr>
 <tr><td class="ln"> 13</td><td class="src">  Sys.exit(<span class="num">1</span>)</td></tr>
 <tr><td class="ln"> 14</td><td class="src">}</td></tr>
 </tbody></table></div></td></tr>
@@ -240,7 +240,7 @@
 <tr><td class="ln"> 19</td><td class="src">  <span class="kw">if</span> s.size() &gt; <span class="num">0</span> { docs.push(s) }</td></tr>
 <tr><td class="ln"> 20</td><td class="src">}</td></tr>
 <tr><td class="ln"> 21</td><td class="src">Random.shuffle(docs)</td></tr>
-<tr><td class="ln"> 22</td><td class="src"><span class="kw">puts</span>(<span class="str">"num docs: {docs.size()}"</span>)</td></tr>
+<tr><td class="ln"> 22</td><td class="src"><span class="kw">inspect</span>(<span class="str">"num docs: {docs.size()}"</span>)</td></tr>
 </tbody></table></div></td></tr>
       <tr class="section"><td colspan="2">Vocabulary (sorted unique chars)</td></tr>
       <tr class="code-row"><td class="left"><div class="scroll"><table class="code"><tbody>
@@ -256,7 +256,7 @@
 <tr><td class="ln"> 27</td><td class="src">uchars.sort_by(|c| c)</td></tr>
 <tr><td class="ln"> 28</td><td class="src">BOS = uchars.size()              <span class="cmt"># token id for a special Beginning of Sequence (BOS) token</span></td></tr>
 <tr><td class="ln"> 29</td><td class="src">vocab_size = uchars.size() + <span class="num">1</span>   <span class="cmt"># total number of unique tokens, +1 is for BOS</span></td></tr>
-<tr><td class="ln"> 30</td><td class="src"><span class="kw">puts</span>(<span class="str">"vocab size: {vocab_size}"</span>)</td></tr>
+<tr><td class="ln"> 30</td><td class="src"><span class="kw">inspect</span>(<span class="str">"vocab size: {vocab_size}"</span>)</td></tr>
 </tbody></table></div></td></tr>
       <tr class="section"><td colspan="2">class Value — fields &amp; special methods</td></tr>
       <tr class="code-row"><td class="left"><div class="scroll"><table class="code"><tbody>
@@ -443,7 +443,7 @@
 <tr><td class="ln">138</td><td class="src">&nbsp;</td></tr>
 <tr><td class="ln">139</td><td class="src"><span class="kw">let</span> model = GPT.<span class="kw">new</span>()</td></tr>
 <tr><td class="ln">140</td><td class="src"><span class="kw">let</span> params = model.parameters()</td></tr>
-<tr><td class="ln">141</td><td class="src"><span class="kw">puts</span>(<span class="str">"num params: {params.size()}"</span>) <span class="cmt"># flat Array&lt;Value&gt;, one per scalar weight</span></td></tr>
+<tr><td class="ln">141</td><td class="src"><span class="kw">inspect</span>(<span class="str">"num params: {params.size()}"</span>) <span class="cmt"># flat Array&lt;Value&gt;, one per scalar weight</span></td></tr>
 <tr><td class="ln">142</td><td class="src">&nbsp;</td></tr>
 </tbody></table></div></td></tr>
       <tr class="section"><td colspan="2">linear (with dot helper)</td></tr>
@@ -666,7 +666,7 @@
 <tr><td class="ln">254</td><td class="src">  }</td></tr>
 <tr><td class="ln">255</td><td class="src">&nbsp;</td></tr>
 <tr><td class="ln">256</td><td class="src">  <span class="kw">if</span> (step + <span class="num">1</span>) % <span class="num">10</span> == <span class="num">0</span> || step == <span class="num">0</span> {</td></tr>
-<tr><td class="ln">257</td><td class="src">    <span class="kw">puts</span>(<span class="str">"step {step+1} / {num_steps} | loss {loss.data}"</span>)</td></tr>
+<tr><td class="ln">257</td><td class="src">    <span class="kw">inspect</span>(<span class="str">"step {step+1} / {num_steps} | loss {loss.data}"</span>)</td></tr>
 <tr><td class="ln">258</td><td class="src">  }</td></tr>
 <tr><td class="ln">259</td><td class="src">  final_loss = loss.data</td></tr>
 <tr><td class="ln">260</td><td class="src">  step = step + <span class="num">1</span></td></tr>
@@ -699,7 +699,7 @@
 <tr><td class="ln">266</td><td class="src"><span class="cmt"># Inference: may the model babble back to us</span></td></tr>
 <tr><td class="ln">267</td><td class="src"><span class="kw">let</span> n_samples = <span class="kw">if</span> Sys.argv.size() &gt; <span class="num">1</span> { to_long(Sys.argv[<span class="num">1</span>]) } <span class="kw">else</span> { <span class="num">5</span> }</td></tr>
 <tr><td class="ln">268</td><td class="src">temperature = <span class="num">0.5</span> <span class="cmt"># in (0, 1], control the "creativity" of generated text, low to high</span></td></tr>
-<tr><td class="ln">269</td><td class="src"><span class="kw">puts</span>(<span class="str">'--- inference (new, hallucinated names) ---'</span>)</td></tr>
+<tr><td class="ln">269</td><td class="src"><span class="kw">inspect</span>(<span class="str">'--- inference (new, hallucinated names) ---'</span>)</td></tr>
 <tr><td class="ln">270</td><td class="src"><span class="kw">let</span> pop = range(vocab_size).collect()</td></tr>
 <tr><td class="ln">271</td><td class="src">&nbsp;</td></tr>
 <tr><td class="ln">272</td><td class="src"><span class="kw">mut</span> sample_idx = <span class="num">0</span></td></tr>
@@ -717,7 +717,7 @@
 <tr><td class="ln">284</td><td class="src">    <span class="kw">if</span> token_id == BOS { <span class="kw">break</span> }</td></tr>
 <tr><td class="ln">285</td><td class="src">    sample.push(uchars[token_id])</td></tr>
 <tr><td class="ln">286</td><td class="src">  }</td></tr>
-<tr><td class="ln">287</td><td class="src">  <span class="kw">puts</span>(<span class="str">"sample {sample_idx+1}: {sample.join('')}"</span>)</td></tr>
+<tr><td class="ln">287</td><td class="src">  <span class="kw">inspect</span>(<span class="str">"sample {sample_idx+1}: {sample.join('')}"</span>)</td></tr>
 <tr><td class="ln">288</td><td class="src">  sample_idx = sample_idx + <span class="num">1</span></td></tr>
 <tr><td class="ln">289</td><td class="src">}</td></tr>
 </tbody></table></div></td></tr>

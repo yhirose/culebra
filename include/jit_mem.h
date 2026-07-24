@@ -789,7 +789,8 @@ inline constexpr auto check_well_known_prop =
     "culebra_runtime_check_well_known_prop";
 inline constexpr auto object_size         = "culebra_runtime_object_size";
 inline constexpr auto print               = "culebra_runtime_print";
-inline constexpr auto puts                = "culebra_runtime_puts";
+inline constexpr auto println             = "culebra_runtime_println";
+inline constexpr auto inspect             = "culebra_runtime_inspect";
 inline constexpr auto iota                = "culebra_runtime_iota";
 inline constexpr auto math_range           = "culebra_runtime_math_range";
 inline constexpr auto check_pos_count      = "culebra_runtime_check_pos_count";

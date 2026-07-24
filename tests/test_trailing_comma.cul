@@ -34,4 +34,4 @@ assert_eq(aa + bb, 11)
 assert_eq([], [])
 assert_eq({}, {})
 
-puts("ok")
+inspect("ok")

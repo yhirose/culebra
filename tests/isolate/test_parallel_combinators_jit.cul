@@ -50,4 +50,4 @@ try {
   assert_eq(e.kind, "ParallelError")
 }
 
-puts("test_parallel_combinators_jit: all assertions passed")
+inspect("test_parallel_combinators_jit: all assertions passed")

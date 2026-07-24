@@ -81,4 +81,4 @@ total = Isolate.spawn(fn() {
 }).join()
 assert_eq(total, 15.0)
 
-IO.puts("test_packable_enum OK")
+IO.inspect("test_packable_enum OK")

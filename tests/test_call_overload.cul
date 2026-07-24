@@ -197,4 +197,4 @@ test_callable_as_value()
 test_callable_function_param()
 test_dezero_call()
 
-puts('call-overload OK')
+inspect('call-overload OK')

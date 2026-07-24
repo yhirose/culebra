@@ -632,11 +632,12 @@ class DapServer {
       return;
     }
     auto env = culebra::environment(argv_);
-    // CLI-style global aliases so a script using bare puts/print behaves like
-    // a normal `culebra <file>` run.
+    // CLI-style global aliases so a script using bare inspect/print/println
+    // behaves like a normal `culebra <file>` run.
     const auto& io = env->get("IO").to_object();
-    env->initialize("puts", io.get("puts"), false);
+    env->initialize("inspect", io.get("inspect"), false);
     env->initialize("print", io.get("print"), false);
+    env->initialize("println", io.get("println"), false);
 
     Debugger dbg = [this](const peg::Ast& a, Environment& e, bool f) {
       on_statement(a, e, f);

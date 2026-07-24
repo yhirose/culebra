@@ -33,7 +33,7 @@ assert_lt(measure(fn () {
   while j < 100 { make_a_class().b(); j = j + 1 }
   j
 }), 1000)
-puts("gc leak [class-in-fn]: no leak")
+inspect("gc leak [class-in-fn]: no leak")
 
 // Variant — binding the constructor (or any method) to a name goes through
 // _wrap_method_with_this, whose closure hides the underlying function (holding
@@ -52,4 +52,4 @@ assert_lt(measure(fn () {
   while j < 100 { make_and_bind(); j = j + 1 }
   j
 }), 1000)
-puts("gc leak [wrapped-ctor bound to name]: no leak")
+inspect("gc leak [wrapped-ctor bound to name]: no leak")

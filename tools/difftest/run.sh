@@ -72,7 +72,7 @@ for cf in "${chunks[@]}"; do printf '%s\ti\n%s\tj\n' "$cf" "$cf"; done \
   | xargs -P "$JOBS" -L1 bash -c 'run_one "$1" "$2"' _
 
 # Completion guard (the invariant that makes this test non-vacuous): every
-# `_p` call prints exactly one record line, and `puts`/`print` cases only ADD
+# `_p` call prints exactly one record line, and `inspect`/`print` cases only ADD
 # lines, so a complete chunk yields at least `cc` lines under each backend.
 # Fewer means it never ran to completion — a parse error or crash made both
 # backends emit the same short error, which the byte diff would otherwise wave

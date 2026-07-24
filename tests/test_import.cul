@@ -49,4 +49,4 @@ let p_b = math2.Pair.new(1, 2)
 assert_true(p_a.class == 'Pair' && p_b.class == 'Pair')
 assert_eq(math2.add(1, 2), math.add(1, 2))
 
-IO.puts('test_import OK')
+IO.inspect('test_import OK')

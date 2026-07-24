@@ -87,16 +87,17 @@ struct SendNode {
 // USER bindings (e.g. a top-level `fn fib`) are transferred. Computed once.
 // ---------------------------------------------------------------------------
 // The base environment an isolate runs in: the standard stdlib plus the
-// puts/print globals the CLI aliases (so a closure that prints transfers
-// cleanly — those names resolve to the child's own copies and aren't shipped).
-// builtin_names() is derived from this same env, keeping the "skip" set and the
-// child's environment exactly in sync.
+// inspect/print/println globals the CLI aliases (so a closure that prints
+// transfers cleanly — those names resolve to the child's own copies and
+// aren't shipped). builtin_names() is derived from this same env, keeping
+// the "skip" set and the child's environment exactly in sync.
 inline std::shared_ptr<Environment> isolate_base_env() {
   auto env = culebra::environment({});
   if (env->has("IO")) {
     const auto& io = env->get("IO").to_object();
-    env->initialize("puts", io.get("puts"), false);
+    env->initialize("inspect", io.get("inspect"), false);
     env->initialize("print", io.get("print"), false);
+    env->initialize("println", io.get("println"), false);
   }
   return env;
 }

@@ -99,4 +99,4 @@ assert_eq(Encoding.url.decode("a+b"), "a+b")
 let q = "name=José Pérez & co. (50%)"
 assert_eq(Encoding.url.decode(Encoding.url.encode(q)), q)
 
-puts("test_encoding ok")
+inspect("test_encoding ok")

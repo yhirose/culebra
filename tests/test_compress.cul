@@ -43,4 +43,4 @@ let parts = ["one", "two", "three"]
 let zs = parts.map(Compress.gzip)
 assert_eq(zs.map(Compress.gunzip), parts)
 
-puts("compress tests passed")
+inspect("compress tests passed")

@@ -60,4 +60,4 @@ assert_eq(paren_default(), 3)
 let e = try { 1.5 & 2; nil } catch er { er.kind }
 assert_eq(e, "TypeError")
 
-IO.puts("test_bitwise OK")
+IO.inspect("test_bitwise OK")

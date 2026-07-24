@@ -14,4 +14,4 @@ assert_lt(measure(fn () {
   for k in 0..200 { acc.push(Box.new(k)) }
   acc.size()
 }), 200)
-puts("gc leak [for-range]: no leak")
+inspect("gc leak [for-range]: no leak")

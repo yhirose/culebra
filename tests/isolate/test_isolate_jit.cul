@@ -101,4 +101,4 @@ try {
   assert_eq(e.kind, "SendError")
 }
 
-puts("test_isolate_jit: all assertions passed")
+inspect("test_isolate_jit: all assertions passed")

@@ -170,7 +170,7 @@ PIE/-fPIC の経緯は [[project_aot_no_pie]] を参照。
 
 `include/stdlib_jit.h` は `kNsMethods` を公開します。これは
 `(namespace, method)` から JIT 呼び出し可能なランタイム関数ポインタへ
-のテーブルです。裸の namespace メソッド (`Math.abs`、`IO.puts`) は
+のテーブルです。裸の namespace メソッド (`Math.abs`、`IO.inspect`) は
 codegen 時にここで引かれ、汎用ルックアップのオーバーヘッドを回避しま
 す。新しい stdlib メソッドを追加するには、ここに 1 行と対応するインタ
 プリタ実装が必要です。[[project_jit_namespace_dispatch]] と
@@ -208,7 +208,7 @@ Array、Func、Set、Tensor、Cell、String) を `shared_ptr` ではなく、手
 モジュールグラフと AST が合わさって、到達可能なトップレベル名の集合を
 与えます。ランタイムヘルパ (~200 個) は機能グループごとに分割され、
 ユーザープログラムから静的に参照されるグループのみがリンクされます。
-`puts` を使う "hello world" は IO と Long プリンタを引き込み、それ以外
+`inspect` を使う "hello world" は IO と Long プリンタを引き込み、それ以外
 は何も引き込みません。
 
 ### ランタイムアーカイブ (base + 機能別)

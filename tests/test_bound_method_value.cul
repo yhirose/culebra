@@ -62,4 +62,4 @@ let bm = C.new(5).get
 let sent = try { Isolate.spawn(|| bm()).join(); "shipped" } catch e { e.kind }
 assert_eq(sent, "SendError")
 
-puts("bound method value: ok")
+inspect("bound method value: ok")

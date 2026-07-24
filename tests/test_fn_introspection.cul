@@ -90,4 +90,4 @@ let bx = Box.new(7)
 let g = bx.get
 assert_true(g.name == "get" || g.name == "")
 
-IO.puts("test_fn_introspection OK")
+IO.inspect("test_fn_introspection OK")

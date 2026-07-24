@@ -91,17 +91,17 @@ for recv in recvs {
   }
 }
 
-# --- Dimension 5: value display (puts / to_string) ------------------------
+# --- Dimension 5: value display (inspect / to_string) ----------------------
 # The display path differs from to_string for some tags (e.g. a Function
-# value: puts printed `[unknown]` under the JIT while to_string gave
-# `[function]`). `puts(V)` prints before _p's own line, so a display
+# value: inspect printed `[unknown]` under the JIT while to_string gave
+# `[function]`). `inspect(V)` prints before _p's own line, so a display
 # divergence shows up on that leading line; `to_string(V)` is compared via
 # `_show` on the returned String.
 let disp_vals = ['to_long', 'Math.abs', 'print', 'fn (x) { x }', '|x| x',
                  '1', '1.5', 'true', 'nil', '"s"', '[1, 2]', '{a: 1}',
                  '(1, 2)', '{1, 2}', 'range', 'iota']
 for v in disp_vals {
-  case("disp-puts|" + v, "puts(" + v + ")")
+  case("disp-inspect|" + v, "inspect(" + v + ")")
   case("disp-str|" + v, "to_string(" + v + ")")
 }
 

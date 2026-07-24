@@ -159,4 +159,4 @@ assert_eq(FS.readlink(FS.join(xdir, "link")), FS.join(xdir, "r.txt"))
 FS.remove(xdir, recursive: true)
 assert_eq(FS.exists(xdir), false)
 
-IO.puts("test_fs OK")
+IO.inspect("test_fs OK")

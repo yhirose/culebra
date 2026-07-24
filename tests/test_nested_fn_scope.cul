@@ -85,4 +85,4 @@ fn sh_outer() { 'outer' }
 { fn sh_outer() { 'inner' }; assert_eq(sh_outer(), 'inner') }
 assert_eq(sh_outer(), 'outer')
 
-IO.puts("test_nested_fn_scope OK")
+IO.inspect("test_nested_fn_scope OK")

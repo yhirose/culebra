@@ -120,4 +120,4 @@ fn nested_defer() {
 assert_eq(nested_defer(), 5)
 assert_eq(log4, ["inner", "outer"])
 
-puts("test_match_block_arm: OK")
+inspect("test_match_block_arm: OK")

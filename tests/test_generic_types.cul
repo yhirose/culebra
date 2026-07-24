@@ -119,4 +119,4 @@ assert_eq(inner_union([1, 2.5, 3]), 3)
 // Class-in-class is rejected at eval/compile time — verified manually
 // (JIT raises pre-runtime, doesn't fit the output-diff harness).
 
-IO.puts("test_generic_types OK")
+IO.inspect("test_generic_types OK")

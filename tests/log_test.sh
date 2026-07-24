@@ -21,7 +21,7 @@ Log.debug("nope")
 Log.set_level("debug")
 Log.debug("yes", {k: "v"})
 Log.with({req: "r1"}).warn("child")
-IO.puts("done")
+IO.inspect("done")
 EOF
 
 fail=0

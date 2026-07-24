@@ -999,7 +999,7 @@ inline TensorPtr tensor_detach(const TensorPtr& t) {
   return out;
 }
 
-// "Tensor 3x4 f32" — used by interp and JIT puts/str paths.
+// "Tensor 3x4 f32" — used by interp and JIT inspect/str paths.
 inline std::string tensor_str(const TensorImpl& t) {
   std::string s = "Tensor ";
   if (t.shape.dims.empty()) {

@@ -199,4 +199,4 @@ assert_eq(Term.mouse_off(), "\x1b[?1002l\x1b[?1006l")
 assert_eq(Term.parse("q").kind, "key")
 assert_eq(type_of(Term.parse("q")), "Object")
 
-puts("test_term ok")
+inspect("test_term ok")

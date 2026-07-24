@@ -5,7 +5,7 @@
 
 // --- IO (standard streams + console) ---
 let io = IO
-io.puts("IO bare resolve")
+io.inspect("IO bare resolve")
 
 // --- Math ---
 let math = Math
@@ -91,4 +91,4 @@ let arr = t.from([1.0, 2.0, 3.0])
 let as = arr.shape()
 assert_true(as.size() == 1 && as[0] == 3)
 
-"OK".puts()
+"OK".inspect()

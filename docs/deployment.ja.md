@@ -442,7 +442,7 @@ culebra wrap mylib_binding.cpp --link "-L/opt/mylib/lib -lmylib" -o ext-culebra
 ```culebra
 # doctest: skip
 let v = Geo.Vec2.new(3.0, 4.0)
-puts(v.len())          # => 5
+inspect(v.len())        # => 5
 v.scale(2.0)
 let u = v.unit()       # 値返し -> 新しい所有インスタンス
 v.drop()               # ~Vec2 が「いま」走る（確定的）

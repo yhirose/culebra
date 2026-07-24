@@ -60,7 +60,7 @@ assert_eq(i3, "SendError: Isolate.spawn: a native/builtin function is not Sendab
 let g = fn (x) { x * 2 }
 assert_eq(Isolate.spawn(fn () { g(21) }).join(), 42)
 
-puts("test_send_errors_jit: all assertions passed")
+inspect("test_send_errors_jit: all assertions passed")
 
 # --- Class instances cross with their methods --------------------------------
 # The JIT serializer used to drop the proto (the per-class meta holding the
@@ -92,7 +92,7 @@ let mk = SendP.new
 let mkr = caught(fn () { Isolate.spawn(fn () { mk(1) }).join() })
 assert_eq(mkr, "SendError: Isolate.spawn: a native/builtin function is not Sendable")
 
-puts("test_send_errors_jit: instance-send assertions passed")
+inspect("test_send_errors_jit: instance-send assertions passed")
 
 # --- A nested instance inside a mid-fill meta keeps its drop gate ------------
 # A method closure can capture a container holding instances of its own
@@ -101,7 +101,7 @@ puts("test_send_errors_jit: instance-send assertions passed")
 # on the class's member declaration order (`drop` declared after `peek`).
 class DropOrder {
   peek() { drop_registry }
-  drop() { puts('dropped ' + to_string(self.x)) }
+  drop() { inspect('dropped ' + to_string(self.x)) }
   new(x) { self.x = x }
 }
 let drop_registry = [DropOrder.new(1)]
@@ -112,4 +112,4 @@ let child_dropped = Isolate.spawn(fn () {
 }).join()
 assert_eq(child_dropped, 'sent-drop-ran')
 
-puts("test_send_errors_jit: drop-gate assertions passed")
+inspect("test_send_errors_jit: drop-gate assertions passed")

@@ -125,4 +125,4 @@ assert_eq(um(21), 42)
 // A genuinely missing member is still Nil (not a method name → not rejected).
 assert_eq([1, 2].nonexistent_xyz, nil)
 
-IO.puts("test_ns_kwargs OK")
+IO.inspect("test_ns_kwargs OK")

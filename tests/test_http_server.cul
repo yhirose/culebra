@@ -61,51 +61,51 @@ fn wait_get(p) {
 }
 
 r = wait_get("/")
-puts("GET / -> " + r.status.to_string() + " | " + r.body)
+inspect("GET / -> " + r.status.to_string() + " | " + r.body)
 
 r2 = Http.get(BASE + "/users/42")
-puts("route param -> " + r2.status.to_string() + " | " + r2.body)
+inspect("route param -> " + r2.status.to_string() + " | " + r2.body)
 
 r3 = Http.post(BASE + "/echo", body: "payload-123")
-puts("POST echo -> " + r3.status.to_string() + " | " + r3.body)
+inspect("POST echo -> " + r3.status.to_string() + " | " + r3.body)
 
 r4 = Http.get(BASE + "/q", params: { name: "alice" })
-puts("query -> " + r4.status.to_string() + " | " + r4.body)
+inspect("query -> " + r4.status.to_string() + " | " + r4.body)
 
 r5 = Http.get(BASE + "/method")
-puts("method -> " + r5.body)
+inspect("method -> " + r5.body)
 
 r6 = Http.get(BASE + "/json")
-puts("object return -> " + r6.status.to_string() + " | " + r6.body +
+inspect("object return -> " + r6.status.to_string() + " | " + r6.body +
      " | ct=" + r6.headers["Content-Type"] + " | x=" + r6.headers["X-Test"])
 
 r7 = Http.get(BASE + "/empty")
-puts("nil return -> " + r7.status.to_string() + " | len=" + r7.body.size().to_string())
+inspect("nil return -> " + r7.status.to_string() + " | len=" + r7.body.size().to_string())
 
 r8 = Http.get(BASE + "/missing")
-puts("unmatched -> " + r8.status.to_string())
+inspect("unmatched -> " + r8.status.to_string())
 
 for bad in ["/bad_status", "/bad_ct", "/bad_body", "/bad_hdr"] {
   let rb = Http.get(BASE + bad)
-  puts(bad + " -> " + rb.status.to_string() + " | " + rb.body)
+  inspect(bad + " -> " + rb.status.to_string() + " | " + rb.body)
 }
 
 # Streaming: the client buffers the reassembled chunked body.
 rc = Http.get(BASE + "/count")
-puts("stream count -> " + rc.status.to_string() + " | " + rc.body)
+inspect("stream count -> " + rc.status.to_string() + " | " + rc.body)
 
 rs = Http.get(BASE + "/sse")
-puts("stream sse -> " + rs.status.to_string() + " | ct=" +
+inspect("stream sse -> " + rs.status.to_string() + " | ct=" +
      rs.headers["Content-Type"] + " | cc=" + rs.headers["Cache-Control"] +
      " | bytes=" + rs.body.size().to_string())
 
 for sb in ["/stream_both", "/stream_bad"] {
   let rsb = Http.get(BASE + sb)
-  puts(sb + " -> " + rsb.status.to_string() + " | " + rsb.body)
+  inspect(sb + " -> " + rsb.status.to_string() + " | " + rsb.body)
 }
 
 iso.drop()
-puts("server stopped")
+inspect("server stopped")
 
 # --- Concurrent worker pool (workers > 1): each worker thread gets its own
 # runtime with the handlers rebuilt onto it (so they must be Sendable), giving
@@ -135,9 +135,9 @@ wait2("/sq/0")
 squares = Parallel.map([1, 2, 3, 4, 5, 6, 7, 8], fn(i) {
   Http.get(BASE2 + "/sq/" + i.to_string()).body
 })
-puts("concurrent squares: " + squares.to_string())
+inspect("concurrent squares: " + squares.to_string())
 iso2.drop()
-puts("pool stopped")
+inspect("pool stopped")
 
 # --- A non-Sendable handler is rejected at listen(workers>1) with SendError,
 # before binding — surfaced identically across backends.
@@ -147,7 +147,7 @@ bad.get("/", fn(req) { hits = hits + 1; "x" })
 try {
   bad.listen(18857, workers: 2)
 } catch e {
-  puts("non-sendable handler -> " + e.kind)
+  inspect("non-sendable handler -> " + e.kind)
 }
 bad.close()
 
@@ -155,10 +155,10 @@ bad.close()
 # idempotent. These never bind a socket.
 srv2 = Http.server()
 chained = srv2.get("/a", fn(req) { "a" }).post("/b", fn(req) { "b" })
-puts("chaining returns handle -> " + (chained == srv2).to_string())
+inspect("chaining returns handle -> " + (chained == srv2).to_string())
 srv2.close()
 srv2.close()
-puts("double close ok")
+inspect("double close ok")
 
 # --- WebSocket: a ws handler runs a long-lived loop over the connection. The
 # server echoes (for-in form) and greets (explicit receive + req access); the
@@ -199,14 +199,14 @@ fn ws_connect(p) {
 
 we = ws_connect("/echo")
 we.send("one")
-puts("ws echo -> " + we.receive())
+inspect("ws echo -> " + we.receive())
 we.send("two")
-puts("ws echo -> " + we.receive() + " | open=" + we.is_open().to_string())
+inspect("ws echo -> " + we.receive() + " | open=" + we.is_open().to_string())
 we.close()
 
 wg = Http.ws(WBASE + "/greet")
 wg.send("hi")
-puts("ws greet -> " + wg.receive())
+inspect("ws greet -> " + wg.receive())
 wg.close()
 
 # Concurrent ws echoes, one client (isolate) each — Parallel.map keeps order.
@@ -217,21 +217,21 @@ wmany = Parallel.map([1, 2, 3, 4], fn(i) {
   c.close()
   r
 })
-puts("ws pool -> " + wmany.to_string())
+inspect("ws pool -> " + wmany.to_string())
 
 # Client drains server-pushed messages with for-in (ends when the server closes).
 wp = Http.ws(WBASE + "/push")
 mut pushed = []
 for m in wp { pushed.push(m) }
-puts("ws pushed -> " + pushed.to_string())
+inspect("ws pushed -> " + pushed.to_string())
 
 # A bad URL is an HttpError.
 mut werr = "none"
 try { Http.ws("ws://127.0.0.1:1/nope") } catch e { werr = e.kind }
-puts("ws bad connect -> " + werr)
+inspect("ws bad connect -> " + werr)
 
 wiso.drop()
-puts("ws stopped")
+inspect("ws stopped")
 
 # --- listen_async + stop: a background server with no isolate wrapper. The
 # server serves on its own thread while the main thread drives requests, then
@@ -255,24 +255,24 @@ fn await_get(p) {
   return nil
 }
 ar = await_get("/")
-puts("listen_async GET / -> " + ar.status.to_string() + " | " + ar.body)
-puts("listen_async route -> " + Http.get(ABASE + "/sq/9").body)
+inspect("listen_async GET / -> " + ar.status.to_string() + " | " + ar.body)
+inspect("listen_async route -> " + Http.get(ABASE + "/sq/9").body)
 # A server is single-use: starting it again (even on a free port) is a catchable
 # error, not a crash/hang — serve again with a fresh Http.server().
 mut reerr = "none"
 try { asrv.listen_async(18923) } catch e { reerr = e.kind }
-puts("listen_async twice -> " + reerr)
+inspect("listen_async twice -> " + reerr)
 asrv.stop()                                # cross-thread stop + join
-puts("async stopped")
+inspect("async stopped")
 mut reerr2 = "none"
 try { asrv.listen_async(18924) } catch e { reerr2 = e.kind }
-puts("relisten after stop -> " + reerr2)
+inspect("relisten after stop -> " + reerr2)
 
 # After stop the port is free: a fresh server binds and serves it.
 asrv2 = Http.server()
 asrv2.get("/", fn(req) { "rebound" })
 asrv2.listen_async(APORT)
-puts("rebind -> " + await_get("/").body)
+inspect("rebind -> " + await_get("/").body)
 asrv2.stop()
 
 # A non-Sendable handler is rejected at listen_async (it runs off this thread).
@@ -282,7 +282,7 @@ abad.get("/", fn(req) { acount = acount + 1; "x" })
 try {
   abad.listen_async(18921)
 } catch e {
-  puts("async non-sendable -> " + e.kind)
+  inspect("async non-sendable -> " + e.kind)
 }
 abad.close()
 
@@ -291,5 +291,5 @@ abind = Http.server()
 abind.get("/", fn(req) { "x" })
 mut abinderr = "none"
 try { abind.listen_async(18922, "192.0.2.1") } catch e { abinderr = e.kind }
-puts("async bind fail -> " + abinderr)
+inspect("async bind fail -> " + abinderr)
 abind.close()

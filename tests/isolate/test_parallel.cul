@@ -85,4 +85,4 @@ fn shift(x: Long) { x + bias }
 fn shift(x: String) { "s:{x}" }
 assert_eq(Parallel.map([1, "z", 3], |v| shift(v)), [101, "s:z", 103])
 
-puts("test_parallel: all assertions passed")
+inspect("test_parallel: all assertions passed")

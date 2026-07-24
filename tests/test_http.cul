@@ -213,4 +213,4 @@ let cl_closed = try { cl.get("/x"); nil } catch e { e }
 assert_eq(cl_closed.kind, "HttpError")
 assert_eq(cl_closed.message, "client.get: Http: client is closed")
 
-puts("test_http: ok")
+inspect("test_http: ok")

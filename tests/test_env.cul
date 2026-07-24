@@ -62,4 +62,4 @@ let c2 = m.parse("X=1\nY=2")
 assert_eq(c2["X"], "1")
 assert_eq(c2["Y"], "2")
 
-IO.puts("test_env OK")
+IO.inspect("test_env OK")

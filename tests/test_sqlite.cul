@@ -93,4 +93,4 @@ assert_eq(nkind, "TypeError")
 assert_eq(db.query("SELECT * FROM users WHERE id = 999").size(), 0)
 
 db.close()
-puts("sqlite ok")
+inspect("sqlite ok")

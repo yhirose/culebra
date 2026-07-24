@@ -159,4 +159,4 @@ effect fn de_prov() {
 }
 check("defer-1line", 156, fn() { handle { de_prov() } with ask(k) { k(1) } })
 
-puts("test_transform_error_lines: all assertions passed")
+inspect("test_transform_error_lines: all assertions passed")

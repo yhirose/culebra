@@ -273,10 +273,10 @@ inline std::optional<JitValue> _try_special_unary(int8_t t, int64_t d,
 inline const JitObjectEntry* _find_property(JitObject* obj,
                                             const char* key);
 
-// The `puts` repr (top-level strings quoted) as a binary-safe string — no
-// trailing newline. Shared by IO.puts (→ stdout) and IO.eputs (→ stderr) so
-// the two format identically.
-inline std::string _culebra_puts_repr(int8_t type, int64_t data) {
+// The `inspect` repr (top-level strings quoted) as a binary-safe string — no
+// trailing newline. Shared by IO.inspect (→ stdout) and IO.einspect
+// (→ stderr) so the two format identically.
+inline std::string _culebra_inspect_repr(int8_t type, int64_t data) {
   if (auto s = _try_str_special(type, data)) return *s;
   switch (type) {
     case TAG_NIL:  return "nil";
@@ -307,21 +307,21 @@ inline std::string _culebra_puts_repr(int8_t type, int64_t data) {
   }
 }
 
-inline void _culebra_puts_to(std::ostream& os, int8_t type, int64_t data) {
-  auto r = _culebra_puts_repr(type, data);
+inline void _culebra_inspect_to(std::ostream& os, int8_t type, int64_t data) {
+  auto r = _culebra_inspect_repr(type, data);
   os.write(r.data(), static_cast<std::streamsize>(r.size()));
   os << std::endl;
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_puts(int8_t type,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_inspect(int8_t type,
                                                        int64_t data) {
-  _culebra_puts_to(std::cout, type, data);
+  _culebra_inspect_to(std::cout, type, data);
 }
 
-// `IO.eputs` — puts to stderr.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_eputs(int8_t type,
+// `IO.einspect` — inspect to stderr.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_einspect(int8_t type,
                                                              int64_t data) {
-  _culebra_puts_to(std::cerr, type, data);
+  _culebra_inspect_to(std::cerr, type, data);
 }
 
 // str_display equivalent for an uncaught throw value: a top-level String /
@@ -361,6 +361,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_value_to_display(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_eprint(int8_t type,
                                                               int64_t data) {
   std::cerr << culebra_runtime_value_to_display(type, data);
+}
+
+// `IO.eprintln` — print (raw display) + newline to stderr.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_eprintln(int8_t type,
+                                                                int64_t data) {
+  std::cerr << culebra_runtime_value_to_display(type, data) << std::endl;
 }
 
 // `"{x:spec}"` interpolation format. Mirrors interp's apply_format_spec:

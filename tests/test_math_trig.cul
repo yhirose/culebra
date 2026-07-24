@@ -46,4 +46,4 @@ let sines = angles.map(Math.sin)
 assert_close(sines[0], 0.0, tol)
 assert_close(sines[1], 1.0, tol)
 
-puts("math trig tests passed")
+inspect("math trig tests passed")

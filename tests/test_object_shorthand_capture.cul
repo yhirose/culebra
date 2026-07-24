@@ -25,4 +25,4 @@ test_shorthand_multiple_vars = fn () {
 
 test_shorthand_captures_outer_var()
 test_shorthand_multiple_vars()
-puts('object-shorthand-capture OK')
+inspect('object-shorthand-capture OK')

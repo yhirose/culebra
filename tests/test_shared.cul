@@ -108,4 +108,4 @@ let w3 = Isolate.spawn(fn () { keep.n })
 assert_eq(w3.join(), 7)
 assert_eq(keep.n, 7)
 
-IO.puts('test_shared OK')
+IO.inspect('test_shared OK')

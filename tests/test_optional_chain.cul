@@ -47,4 +47,4 @@ assert_eq(x?.v ?? "default", "default")
 assert_eq(b?.v ?? "default", 42)
 assert_eq(b?.v!!, 42)
 
-IO.puts("test_optional_chain OK")
+IO.inspect("test_optional_chain OK")

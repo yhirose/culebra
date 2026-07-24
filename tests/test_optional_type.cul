@@ -41,4 +41,4 @@ fn opt(x: Long?) -> Long { x ?? 0 }
 assert_eq(opt(nil), 0)
 assert_eq(opt(7), 7)
 
-IO.puts("test_optional_type OK")
+IO.inspect("test_optional_type OK")

@@ -189,4 +189,4 @@ while i < 20 {
 }
 assert_eq(bag3.size(), 0)
 
-IO.puts("test_object_keys OK")
+IO.inspect("test_object_keys OK")

@@ -14,4 +14,4 @@ while i < 1000000 {
   last = c()
   i = i + 1
 }
-puts(last)
+inspect(last)

@@ -42,4 +42,4 @@ let batch = [1, 2, 3].map(fn (_) { UUID.v4() })
 assert_eq(batch.size(), 3)
 assert_true(batch[0] != batch[1])
 
-puts("uuid tests passed")
+inspect("uuid tests passed")

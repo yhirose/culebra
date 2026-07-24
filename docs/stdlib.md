@@ -19,10 +19,11 @@ in [§13 below](#13-matchers). Methods on built-in types (`String`,
 `Array`, `Object`) are specified in
 [§17 of the language spec](language.md).
 
-The CLI (`src/main.cc`) additionally installs `puts` and `print` as
-globals aliased to `IO.puts` / `IO.print` (see [§20 of the language
-spec](language.md)). Embedders that use `culebra::environment()`
-directly get a clean namespace without those aliases.
+The CLI (`src/main.cc`) additionally installs `inspect`, `print`, and
+`println` as globals aliased to `IO.inspect` / `IO.print` / `IO.println`
+(see [§20 of the language spec](language.md)). Embedders that use
+`culebra::environment()` directly get a clean namespace without those
+aliases.
 
 Conventions used below:
 
@@ -77,7 +78,7 @@ Conventions used below:
 | Constants (π, e, inf, nan) | [§1 Math constants](#math-pi) |
 | Scalar arithmetic (abs, min, max, log, exp, sqrt, floor, ceil, round) | [§1 Math](#1-math) |
 | Trigonometry (sin, cos, tan, asin, acos, atan, atan2; radians) | [§1 Math](#1-math) |
-| Print to stdout | `IO.puts` (with newline + quoting) / `IO.print` (raw) |
+| Print to stdout | `IO.inspect` (newline + quoting) / `IO.println` (newline, raw) / `IO.print` (raw, no newline) |
 | Read a whole file | `FS.read` (throws on failure) |
 | Stream a file (lines / chunks / seek) | [§4 File](#4-file) — `File.open` / `File.with` |
 | Path manipulation (join, basename, dirname, stem, extension) | [§3 FS](#3-fs); fluent `Path` wrapper: [§3 `Path`](#path--the-fluent-wrapper) |
@@ -149,10 +150,10 @@ Positive infinity (`Math.inf > 1e308 == true`). Negate with `-Math.inf`.
 Quiet NaN. Note `Math.nan == Math.nan` is `false` per IEEE-754.
 
 ```culebra
-puts(Math.pi)              # 3.141592653589793
-puts(Math.e)               # 2.718281828459045
-puts(Math.inf > 1e308)     # true
-puts(Math.nan == Math.nan) # false
+inspect(Math.pi)              # 3.141592653589793
+inspect(Math.e)               # 2.718281828459045
+inspect(Math.inf > 1e308)     # true
+inspect(Math.nan == Math.nan) # false
 ```
 
 ### Scalar operations
@@ -163,8 +164,8 @@ Absolute value. Returns `Long` for `Long` input, `Float` for `Float`
 input.
 
 ```culebra
-puts(Math.abs(-7))     # 7
-puts(Math.abs(-7.5))   # 7.5
+inspect(Math.abs(-7))     # 7
+inspect(Math.abs(-7.5))   # 7.5
 ```
 
 ### `Math.min(a, b, ...) -> Long|Float`, `Math.max(a, b, ...) -> Long|Float`
@@ -175,8 +176,8 @@ result to `Float`. At least two arguments are required; fewer — or
 any non-numeric argument — raises `type error`.
 
 ```culebra
-puts(Math.min(3, 1, 4, 1, 5))   # 1
-puts(Math.max(1.5, 2, 0.5))     # 2.0
+inspect(Math.min(3, 1, 4, 1, 5))   # 1
+inspect(Math.max(1.5, 2, 0.5))     # 2.0
 ```
 
 ### `Math.log(x: Long|Float) -> Float`
@@ -198,8 +199,8 @@ Principal square root. `Math.sqrt(-1.0)` is `nan`.
 Trigonometric functions; `x` is in **radians** (`Long` or `Float`).
 
 ```culebra
-puts(Math.sin(Math.pi / 2))   # => 1.0
-puts(Math.cos(0))             # => 1.0
+inspect(Math.sin(Math.pi / 2))   # => 1.0
+inspect(Math.cos(0))             # => 1.0
 ```
 
 ### `Math.asin(x) -> Float`, `Math.acos(x) -> Float`, `Math.atan(x) -> Float`, `Math.atan2(y, x) -> Float`
@@ -209,7 +210,7 @@ expect `x` in `[-1, 1]` (else `nan`). `Math.atan2(y, x)` is the
 quadrant-aware arctangent of `y / x`.
 
 ```culebra
-puts(Math.atan2(1.0, 1.0))    # => 0.7853981633974483
+inspect(Math.atan2(1.0, 1.0))    # => 0.7853981633974483
 # (that is pi/4)
 ```
 
@@ -221,10 +222,10 @@ and `Math.round` uses **banker's rounding** (round half to even,
 matching Python's built-in `round()`).
 
 ```culebra
-puts(Math.floor(-1.5))   # -2
-puts(Math.ceil(-1.5))    # -1
-puts(Math.round(2.5))    # 2      (ties to even)
-puts(Math.round(3.5))    # 4
+inspect(Math.floor(-1.5))   # -2
+inspect(Math.ceil(-1.5))    # -1
+inspect(Math.round(2.5))    # 2      (ties to even)
+inspect(Math.round(3.5))    # 4
 ```
 
 ### `Math.pow(base: Long, exp: Long) -> Long`
@@ -238,9 +239,9 @@ Kept for back-compat; **prefer the `**` operator** which also handles
 `Float` and negative exponents (see language spec §7).
 
 ```culebra
-puts(Math.pow(2, 10))    # 1024
-puts(Math.pow(7, 0))     # 1
-puts(Math.pow(-3, 3))    # -27
+inspect(Math.pow(2, 10))    # 1024
+inspect(Math.pow(7, 0))     # 1
+inspect(Math.pow(-3, 3))    # -27
 ```
 
 ### `Math.sign(x: Long) -> Long`
@@ -248,9 +249,9 @@ puts(Math.pow(-3, 3))    # -27
 Returns `-1` for negative, `0` for zero, `1` for positive.
 
 ```culebra
-puts(Math.sign(-5))      # -1
-puts(Math.sign(0))       # 0
-puts(Math.sign(42))      # 1
+inspect(Math.sign(-5))      # -1
+inspect(Math.sign(0))       # 0
+inspect(Math.sign(42))      # 1
 ```
 
 ### `Math.clamp(x: Long, lo: Long, hi: Long) -> Long`
@@ -259,9 +260,9 @@ Clamp `x` to the inclusive range `[lo, hi]`. No error is raised when
 `lo > hi`; the result in that case is `hi`.
 
 ```culebra
-puts(Math.clamp(5, 0, 10))   # 5
-puts(Math.clamp(-5, 0, 10))  # 0
-puts(Math.clamp(15, 0, 10))  # 10
+inspect(Math.clamp(5, 0, 10))   # 5
+inspect(Math.clamp(-5, 0, 10))  # 0
+inspect(Math.clamp(15, 0, 10))  # 10
 ```
 
 ---
@@ -271,7 +272,7 @@ puts(Math.clamp(15, 0, 10))  # 10
 Output and standard input. File reading/writing lives under `FS`
 (`FS.read` / `FS.write` / `FS.exists`).
 
-### `IO.puts(x: Any) -> Nil`
+### `IO.inspect(x: Any) -> Nil`
 
 Print `x` followed by a newline to standard output. Reference types
 are formatted the same way as `Array.str_array()` /
@@ -279,9 +280,9 @@ are formatted the same way as `Array.str_array()` /
 single quotes**.
 
 ```culebra
-IO.puts('hi')       # → 'hi'
-IO.puts(42)         # → 42
-IO.puts([1, 'a'])   # → [1, 'a']
+IO.inspect('hi')       # → 'hi'
+IO.inspect(42)         # → 42
+IO.inspect([1, 'a'])   # → [1, 'a']
 ```
 
 ### `IO.print(x: Any) -> Nil`
@@ -293,7 +294,18 @@ building a single line of output from several writes.
 ```culebra
 IO.print('Hello, ')
 IO.print('world!')
-IO.puts('')         # → Hello, world!
+IO.println('')      # → Hello, world!
+```
+
+### `IO.println(x: Any) -> Nil`
+
+Print `x` followed by a newline to standard output, using `to_string`
+formatting (strings are **unquoted**) — the raw-display twin of
+`inspect`, and the newline-appending twin of `print`.
+
+```culebra
+IO.println('hi')       # → hi
+IO.println(42)         # → 42
 ```
 
 ### `IO.input() -> String`
@@ -303,9 +315,9 @@ stripped. Returns `''` (empty string) on end-of-file.
 
 ```culebra
 # doctest: skip
-puts('name?')
+println('name?')
 name = IO.input()
-puts("Hello, {name}")
+println("Hello, {name}")
 ```
 
 ### `IO.stdin() -> reader`
@@ -329,22 +341,25 @@ where the byte read left off.
 # doctest: skip
 # Filter: uppercase lines containing "error".
 for line in IO.stdin().lines() {
-    if line.contains("error") { IO.puts(line.upper()) }
+    if line.contains("error") { IO.println(line.upper()) }
 }
 
 let src = if IO.stdin_is_terminal() { read_clipboard() } else { IO.stdin().read() }
 ```
 
-### `IO.eputs(x: Any) -> Nil` / `IO.eprint(x: Any) -> Nil`
+### `IO.einspect(x: Any) -> Nil` / `IO.eprint(x: Any) -> Nil` / `IO.eprintln(x: Any) -> Nil`
 
-Write to standard error — the twins of `puts` / `print`. `eputs` quotes
-strings and adds a newline (like `puts`); `eprint` writes the raw display
-form (like `print`). Use for diagnostics that shouldn't mix into stdout.
+Write to standard error — the twins of `inspect` / `print` / `println`.
+`einspect` quotes strings and adds a newline (like `inspect`); `eprint`
+writes the raw display form with no trailing newline (like `print`);
+`eprintln` writes the raw display form with a trailing newline (like
+`println`). Use for diagnostics that shouldn't mix into stdout.
 
 ```culebra
 # doctest: skip
-IO.eputs("warning: retrying")     # → stderr
+IO.einspect("warning: retrying")     # → stderr
 if !ok { IO.eprint("error: {msg}\n") }
+IO.eprintln("done")
 ```
 
 ### `IO.stdin_is_terminal() -> Bool` / `IO.stdout_is_terminal() -> Bool` / `IO.stderr_is_terminal() -> Bool`
@@ -359,7 +374,7 @@ redirected to a file or pipe.
 ```culebra
 # doctest: skip
 let src = if IO.stdin_is_terminal() { read_clipboard() } else { FS.read("/dev/stdin") }
-if IO.stdout_is_terminal() { puts(colorize(msg)) } else { puts(msg) }
+if IO.stdout_is_terminal() { println(colorize(msg)) } else { println(msg) }
 ```
 
 `IO` is the standard-stream and console namespace. File reading and
@@ -383,9 +398,9 @@ arguments returns `""`. Trailing separators in components are
 respected — the operator behaves like `std::filesystem::path::operator/=`.
 
 ```culebra
-puts(FS.join('a', 'b', 'c.txt'))      # => 'a/b/c.txt'
-puts(FS.join('/usr', 'local', 'bin')) # => '/usr/local/bin'
-puts(FS.join())                       # => ''
+inspect(FS.join('a', 'b', 'c.txt'))      # => 'a/b/c.txt'
+inspect(FS.join('/usr', 'local', 'bin')) # => '/usr/local/bin'
+inspect(FS.join())                       # => ''
 ```
 
 #### `FS.basename(path: String) -> String`
@@ -394,8 +409,8 @@ Final path component (filename + extension). Trailing separator
 yields `""`.
 
 ```culebra
-puts(FS.basename('a/b/c.txt'))  # => 'c.txt'
-puts(FS.basename('/'))          # => ''
+inspect(FS.basename('a/b/c.txt'))  # => 'c.txt'
+inspect(FS.basename('/'))          # => ''
 ```
 
 #### `FS.dirname(path: String) -> String`
@@ -409,8 +424,8 @@ none. Dotfiles (`.hidden`) are treated as having no extension —
 matches `std::filesystem::path::extension`.
 
 ```culebra
-puts(FS.extension('a/b/c.txt'))  # => '.txt'
-puts(FS.extension('.hidden'))    # => ''
+inspect(FS.extension('a/b/c.txt'))  # => '.txt'
+inspect(FS.extension('.hidden'))    # => ''
 ```
 
 #### `FS.stem(path: String) -> String`
@@ -418,7 +433,7 @@ puts(FS.extension('.hidden'))    # => ''
 Basename without the trailing extension.
 
 ```culebra
-puts(FS.stem('a/b/c.txt'))  # => 'c'
+inspect(FS.stem('a/b/c.txt'))  # => 'c'
 ```
 
 ### Whole-file read / write
@@ -520,7 +535,7 @@ existing bits. Read the current bits back with `FS.stat(path).mode`. Throws
 ```culebra
 # doctest: skip
 FS.chmod('deploy.sh', 0o755)       # make executable
-puts(FS.stat('deploy.sh').mode)    # 493  (0o755)
+inspect(FS.stat('deploy.sh').mode)    # 493  (0o755)
 ```
 
 #### `FS.chown(path: String, owner = nil, group = nil) -> Nil`
@@ -552,7 +567,7 @@ octal, e.g. `st.mode == 0o644`); `uid` / `gid` are the owner and group ids;
 ```culebra
 # doctest: skip
 let st = FS.stat('config.toml')
-puts(st.size)
+inspect(st.size)
 ```
 
 ### Recursive traversal
@@ -743,7 +758,7 @@ it when the loop ends or breaks.
 ```culebra
 # doctest: skip
 for line in File.open('access.log').lines() {
-  if line.contains('ERROR') { puts(line) }
+  if line.contains('ERROR') { inspect(line) }
 }
 ```
 
@@ -813,7 +828,7 @@ changes. The primary tool for benchmarks and timeouts.
 # doctest: skip
 let t0 = Time.monotonic()
 do_work()
-puts("elapsed: {Time.monotonic() - t0} s")
+inspect("elapsed: {Time.monotonic() - t0} s")
 ```
 
 #### `Time.sleep(secs: Float) -> Nil`
@@ -884,7 +899,7 @@ nanosecond, weekday, dayofyear}`. `weekday` follows ISO 8601
 
 ```culebra
 let p = Time.now().parts()
-if p.hour >= 9 && p.hour < 17 { puts("business hours") }
+if p.hour >= 9 && p.hour < 17 { inspect("business hours") }
 ```
 
 #### `t.weekday(utc: false) -> Long`
@@ -991,7 +1006,7 @@ otherwise `type error`.
 
 ```culebra
 Random.seed(0)
-puts(Random.int(0, 10))        # 0..9
+inspect(Random.int(0, 10))        # 0..9
 ```
 
 ### `Random.uniform(lo: Float, hi: Float) -> Float`
@@ -1041,7 +1056,7 @@ when running in the REPL.
 
 ```culebra
 # $ culebra run.cul hello world
-puts(Sys.argv)        # ['hello', 'world']
+inspect(Sys.argv)        # ['hello', 'world']
 # $ culebra --jit run.cul hello   →  ['hello']   (--jit is culebra's)
 ```
 
@@ -1066,8 +1081,8 @@ string) if it is not set. Use `.size() > 0` to distinguish an unset
 variable from one set to the empty string.
 
 ```culebra
-puts(Sys.env('HOME'))          # '/Users/alice'
-puts(Sys.env('NOT_A_VAR'))     # ''
+inspect(Sys.env('HOME'))          # '/Users/alice'
+inspect(Sys.env('NOT_A_VAR'))     # ''
 ```
 
 ### `Sys.set_env(name: String, value: String) -> Nil`
@@ -1079,7 +1094,7 @@ processes spawned afterwards (e.g. `Proc.run`). Raises `IOError` on failure
 
 ```culebra
 Sys.set_env('CULEBRA_MODE', 'fast')
-puts(Sys.env('CULEBRA_MODE'))  # 'fast'
+inspect(Sys.env('CULEBRA_MODE'))  # 'fast'
 ```
 
 ### `Sys.getcwd() -> String`
@@ -1090,7 +1105,7 @@ path are resolved. Raises `IOError` if the directory cannot be determined
 
 ```culebra
 # doctest: skip
-puts(Sys.getcwd())             # '/Users/alice/project'
+inspect(Sys.getcwd())             # '/Users/alice/project'
 ```
 
 ### `Sys.chdir(path: String) -> Nil`
@@ -1101,7 +1116,7 @@ does not exist or is not a directory.
 ```culebra
 # doctest: skip
 Sys.chdir('/tmp')
-puts(Sys.getcwd())             # '/tmp' (or its resolved path)
+inspect(Sys.getcwd())             # '/tmp' (or its resolved path)
 ```
 
 ### `Sys.executable -> String`
@@ -1113,7 +1128,7 @@ to that standalone binary.)
 
 ```culebra
 # doctest: skip
-puts(Sys.executable)           # '/usr/local/bin/culebra'
+inspect(Sys.executable)           # '/usr/local/bin/culebra'
 ```
 
 ### `Sys.script -> String?`
@@ -1126,7 +1141,7 @@ carries no `.cul`; use `Sys.executable` there).
 
 ```culebra
 # doctest: skip
-puts(Sys.script)               # '/Users/alice/project/build.cul'
+inspect(Sys.script)               # '/Users/alice/project/build.cul'
 ```
 
 ### `GC` — heap introspection
@@ -1149,7 +1164,7 @@ the code under test rather than an absolute count.
 # doctest: skip
 let base = GC.stat().live_objects
 build_some_structure()
-puts(GC.stat().live_objects - base)   # objects retained by the structure
+inspect(GC.stat().live_objects - base)   # objects retained by the structure
 ```
 
 This is the foundation for leak-regression tests (see
@@ -1172,8 +1187,8 @@ let A = Tensor.from([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])  # [2, 3]
 let B = Tensor.randn(3, 2)
 let C = A.dot(B) + 1.0                # lazy: builds the graph only
 Tensor.eval(C)                        # BLAS GEMM runs here
-puts(C.shape())                       # [2, 2]
-puts(C.to_array())                    # [[..., ...], [..., ...]]
+inspect(C.shape())                       # [2, 2]
+inspect(C.to_array())                    # [[..., ...], [..., ...]]
 ```
 
 ### Construction (namespace functions)
@@ -1469,27 +1484,27 @@ exposes the JSON-internal position via `e.line` / `e.col` (both
 
 ```culebra
 let r = try { JSON.parse('{"a": ,}'); nil } catch e { e }
-puts(r.message)           # JSON.parse: expected value at 1:7.
-puts("{r.line}:{r.col}")  # 1:7
+inspect(r.message)           # JSON.parse: expected value at 1:7.
+inspect("{r.line}:{r.col}")  # 1:7
 ```
 
 Examples:
 
 ```culebra
 let v = {name: 'alice', age: 30, tags: ['admin', 'staff']}
-puts(JSON.stringify(v))                              # compact
-puts(JSON.stringify(v, indent: 2))                   # pretty
-puts(JSON.stringify(v, sort_keys: true))             # alphabetical
-puts(JSON.stringify([1, 2, 3], lines: true))         # JSONL
+inspect(JSON.stringify(v))                              # compact
+inspect(JSON.stringify(v, indent: 2))                   # pretty
+inspect(JSON.stringify(v, sort_keys: true))             # alphabetical
+inspect(JSON.stringify([1, 2, 3], lines: true))         # JSONL
 let back = JSON.parse(JSON.stringify(v))
-puts(back.name)                                      # alice
+inspect(back.name)                                      # alice
 let arr = JSON.parse("1\n2\n3\n", lines: true)
-puts(arr)                                            # [1, 2, 3]
+inspect(arr)                                            # [1, 2, 3]
 let cfg = JSON.parse('{
   // comments and trailing commas are allowed
   "port": 8080,
 }', jsonc: true)
-puts(cfg.port)                                       # 8080
+inspect(cfg.port)                                       # 8080
 ```
 
 JIT note: built-in `JSON.{stringify, parse}` route through the same
@@ -1564,10 +1579,10 @@ let spec = {
 }
 
 let args = Args.parse(Sys.argv, spec)
-puts(args.input)            # String
-if args.lines { puts("lines: ...") }
-if args.words { puts("words: ...") }
-puts("encoding: {args.encoding}")
+inspect(args.input)            # String
+if args.lines { inspect("lines: ...") }
+if args.words { inspect("words: ...") }
+inspect("encoding: {args.encoding}")
 ```
 
 ```
@@ -1682,7 +1697,7 @@ command throws `TypeError` / `ValueError`.
 # doctest: skip
 let r = Proc.run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
 if r.ok {
-  IO.puts("on branch " + r.stdout.trim())
+  IO.inspect("on branch " + r.stdout.trim())
 } else {
   IO.print(r.stderr)
 }
@@ -1789,7 +1804,7 @@ let server = Proc.spawn(["python", "-m", "http.server", "8000"])
 # ... do work against the server ...
 server.kill()                 # SIGTERM
 let r = server.wait()
-IO.puts("server exited via " + (r.signal ?? to_string(r.code)))
+IO.inspect("server exited via " + (r.signal ?? to_string(r.code)))
 
 # Run something and poll for completion without blocking.
 let job = Proc.spawn(["make", "-j4"])
@@ -2061,7 +2076,7 @@ let (tx, rx) = Channel.new(1)
 Signal.notify(tx)              # Ctrl+C now goes to the channel, not a throw
 serve_in_background()
 rx.recv()                      # blocks until the first Ctrl+C
-puts("shutting down…")
+inspect("shutting down…")
 drain_and_close()
 ```
 
@@ -2145,11 +2160,11 @@ per-record object is materialized:
   y: Float32 = 0.0
 }
 let buf = SharedBuffer.new(3, Vec2)
-puts(buf.size)                # 3
+inspect(buf.size)                # 3
 buf[0].x = 1.5                # writes the bytes in place
 let v = buf[0]                # a stored view aliases the same element
 v.y = 2.5
-puts([buf[0].x, buf[0].y])    # [1.5, 2.5]
+inspect([buf[0].x, buf[0].y])    # [1.5, 2.5]
 ```
 
 Whole-element assignment (`buf[i] = ...`) is a `TypeError` — a record has no
@@ -2194,7 +2209,7 @@ same physical pages: writes are visible without copying or serializing.
 let grid = SharedBuffer.shared(4, Cell)
 grid[0].v = 100
 Proc.run([Sys.executable, "worker.cul"], share: {grid: grid})
-puts(grid[0].v)               # the child's write, read back here
+inspect(grid[0].v)               # the child's write, read back here
 grid.drop()
 ```
 
@@ -2237,7 +2252,7 @@ Parallel.each(iota(0, 8), fn (w) {
     tally.with_lock(fn () { tally[0].n = tally[0].n + 1 })
   }
 })
-puts(tally[0].n)              # 8000 exactly — no lost updates
+inspect(tally[0].n)              # 8000 exactly — no lost updates
 ```
 
 The same call works across **processes**: a `.shared` or `.file` buffer carries
@@ -2545,8 +2560,8 @@ user `__str__`).
 assert_eq(1 + 1, 2)                                # passes silently
 
 let r = try { assert_eq("foo", "bar"); nil } catch e { e }
-puts(r.kind)         # => 'AssertionError'
-puts(r.message)
+inspect(r.kind)         # => 'AssertionError'
+inspect(r.message)
 # => |
 # 'assert_eq failed:
 #   left:  foo
@@ -2794,9 +2809,9 @@ Keyword arguments (shared by every method):
 let r = Http.get("https://api.example.com/users", params: {page: "2"})
 if r.ok {
   let users = r.json()                 # parse the response body as JSON
-  IO.puts(users.size().to_string())
+  IO.inspect(users.size().to_string())
 } else {
-  IO.puts("request failed: {r.status}")
+  IO.inspect("request failed: {r.status}")
 }
 
 # POST JSON with a header and a timeout (`json:` serializes + sets Content-Type).
@@ -3160,7 +3175,7 @@ URL or a failed connect is an `HttpError`.
 # doctest: skip
 let ws = Http.ws("ws://127.0.0.1:8080/echo")
 ws.send("hello")
-puts(ws.receive())               # => the echoed message
+inspect(ws.receive())               # => the echoed message
 for msg in ws { handle(msg) }    # drains messages until the server closes
 ws.close()
 ```
@@ -3219,13 +3234,13 @@ well-formed, recognized reference is left **exactly as written** (browser-style
 leniency), so a bare `&` and unknown entities pass through unchanged.
 
 ```culebra
-puts(Encoding.html.escape("a & b < c"))          # => 'a &amp; b &lt; c'
-puts(Encoding.html.escape("it's fine"))          # => 'it&#39;s fine'
-puts(Encoding.html.unescape("Tom &amp; Jerry"))  # => 'Tom & Jerry'
-puts(Encoding.html.unescape("caf&eacute; &mdash; x")) # => 'café — x'
-puts(Encoding.html.unescape("&#65;&#x42;"))      # => 'AB'
-puts(Encoding.html.unescape("&#12354;"))         # => 'あ'
-puts(Encoding.html.unescape("&unknownent;"))     # => '&unknownent;'
+inspect(Encoding.html.escape("a & b < c"))          # => 'a &amp; b &lt; c'
+inspect(Encoding.html.escape("it's fine"))          # => 'it&#39;s fine'
+inspect(Encoding.html.unescape("Tom &amp; Jerry"))  # => 'Tom & Jerry'
+inspect(Encoding.html.unescape("caf&eacute; &mdash; x")) # => 'café — x'
+inspect(Encoding.html.unescape("&#65;&#x42;"))      # => 'AB'
+inspect(Encoding.html.unescape("&#12354;"))         # => 'あ'
+inspect(Encoding.html.unescape("&unknownent;"))     # => '&unknownent;'
 ```
 
 ### `Encoding.base64`
@@ -3240,8 +3255,8 @@ puts(Encoding.html.unescape("&unknownent;"))     # => '&unknownent;'
 decodes) and `=` padding; an out-of-alphabet character raises `ValueError`.
 
 ```culebra
-puts(Encoding.base64.encode("user:pass"))   # => 'dXNlcjpwYXNz'
-puts(Encoding.base64.decode("dXNlcjpwYXNz")) # => 'user:pass'
+inspect(Encoding.base64.encode("user:pass"))   # => 'dXNlcjpwYXNz'
+inspect(Encoding.base64.decode("dXNlcjpwYXNz")) # => 'user:pass'
 ```
 
 ```culebra
@@ -3262,9 +3277,9 @@ let r = Http.get(url, headers: {Authorization: "Basic " + cred})
 raises `ValueError` on an odd-length string or any non-hex character.
 
 ```culebra
-puts(Encoding.hex.encode("abc"))   # => '616263'
-puts(Encoding.hex.decode("616263")) # => 'abc'
-puts(Encoding.hex.decode("00FF").size()) # => 2
+inspect(Encoding.hex.encode("abc"))   # => '616263'
+inspect(Encoding.hex.decode("616263")) # => 'abc'
+inspect(Encoding.hex.decode("00FF").size()) # => 2
 ```
 
 ### `Encoding.url`
@@ -3281,9 +3296,9 @@ and multi-byte UTF-8 is percent-encoded byte by byte. `decode` is lenient: a
 stays a `+` (so `encode`/`decode` round-trip exactly).
 
 ```culebra
-puts(Encoding.url.encode("a b&c"))   # => 'a%20b%26c'
-puts(Encoding.url.decode("a%20b%26c")) # => 'a b&c'
-puts(Encoding.url.encode("café"))    # => 'caf%C3%A9'
+inspect(Encoding.url.encode("a b&c"))   # => 'a%20b%26c'
+inspect(Encoding.url.decode("a%20b%26c")) # => 'a b&c'
+inspect(Encoding.url.encode("café"))    # => 'caf%C3%A9'
 ```
 
 ---
@@ -3304,8 +3319,8 @@ NUL bytes survive a round trip) and interoperate with the standard `gzip` tool.
 ```culebra
 let original = "the quick brown fox the quick brown fox the quick brown fox the quick brown fox"
 let z = Compress.gzip(original)
-puts(z.size() < original.size())          # => true
-puts(Compress.gunzip(z) == original)      # => true
+inspect(z.size() < original.size())          # => true
+inspect(Compress.gunzip(z) == original)      # => true
 ```
 
 ```culebra
@@ -3338,11 +3353,11 @@ binary-safe (embedded NUL bytes are part of the message, not a terminator).
 | `Hash.hmac_sha512(key: String, data: String) -> String` | 128-char hex HMAC-SHA-512 |
 
 ```culebra
-puts(Hash.sha256("abc"))
+inspect(Hash.sha256("abc"))
 # => 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
-puts(Hash.md5("abc"))
+inspect(Hash.md5("abc"))
 # => '900150983cd24fb0d6963f7d28e17f72'
-puts(Hash.hmac_sha256("Jefe", "what do ya want for nothing?"))
+inspect(Hash.hmac_sha256("Jefe", "what do ya want for nothing?"))
 # => '5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843'
 ```
 
@@ -3377,9 +3392,9 @@ well-formed input.
 
 ```culebra
 let rows = CSV.parse("name,age\nalice,30\nbob,25")
-puts(rows[1])                                         # => ['alice', '30']
-puts(CSV.stringify([["a,b", "c"], [1, 2]]) == "\"a,b\",c\n1,2")   # => true
-puts(CSV.parse("a\tb", delimiter: "\t")[0])           # => ['a', 'b']
+inspect(rows[1])                                         # => ['alice', '30']
+inspect(CSV.stringify([["a,b", "c"], [1, 2]]) == "\"a,b\",c\n1,2")   # => true
+inspect(CSV.parse("a\tb", delimiter: "\t")[0])           # => ['a', 'b']
 ```
 
 **Header mode — `header: true`.** The first row names the columns, and each later
@@ -3387,7 +3402,7 @@ row becomes an `Object` keyed by those names (instead of a positional Array):
 
 ```culebra
 let rows = CSV.parse("name,age\nalice,30\nbob,25", header: true)
-puts(rows[0]["name"])                                 # => 'alice'
+inspect(rows[0]["name"])                                 # => 'alice'
 ```
 
 A header with no data rows (or empty input) yields `[]`. A duplicate header name,
@@ -3403,10 +3418,10 @@ precision loss). `types:` requires `header: true`.
 let rows = CSV.parse("name,age,active\nalice,30,true", header: true,
                      types: {age: "Long", active: "Bool"})
 # age is a real Long now (not a String), so arithmetic works:
-puts(rows[0]["age"] + 1)                              # => 31
+inspect(rows[0]["age"] + 1)                              # => 31
 # a ZIP code stays exact text — no number inference:
 let z = CSV.parse("zip\n01234", header: true, types: {zip: "String"})
-puts(z[0]["zip"])                                     # => '01234'
+inspect(z[0]["zip"])                                     # => '01234'
 ```
 
 An unknown type name, a `types` key that names no column, or a cell that can't be
@@ -3450,15 +3465,15 @@ variables are visible via `Sys.env` and inherited by children spawned afterward
 
 ```culebra
 let cfg = Env.parse("# app config\nPORT=8080\nNAME=\"my app\"\nDEBUG=true")
-puts(cfg["PORT"])                 # => '8080'
-puts(cfg["NAME"])                 # => 'my app'
-puts(cfg["DEBUG"])                # => 'true'
+inspect(cfg["PORT"])                 # => '8080'
+inspect(cfg["NAME"])                 # => 'my app'
+inspect(cfg["DEBUG"])                # => 'true'
 ```
 
 ```culebra
 # doctest: skip
 Env.load(".env")                  # set vars from ./.env (if present)
-puts(Sys.env("PORT"))
+inspect(Sys.env("PORT"))
 ```
 
 To use values as numbers or booleans, convert at the use site with `to_long` /
@@ -3483,8 +3498,8 @@ two values created within the same millisecond are not ordered relative to
 each other (there is no monotonic counter).
 
 ```culebra
-puts(UUID.v4().size())          # => 36
-puts(UUID.v4() != UUID.v4())    # => true
+inspect(UUID.v4().size())          # => 36
+inspect(UUID.v4() != UUID.v4())    # => true
 ```
 
 ---
@@ -3521,7 +3536,7 @@ helpers wrap a string for direct printing; `Term.style(...)` produces the
 style passed to `screen.set` / `screen.put` for coloured cells.
 
 ```culebra
-puts(Term.bold(Term.fg("alert", 196)))      # bold bright-red "alert" (printed)
+inspect(Term.bold(Term.fg("alert", 196)))      # bold bright-red "alert" (printed)
 let st = Term.style(fg: (255, 128, 0), bold: true)   # for a Screen cell
 ```
 
@@ -3705,8 +3720,8 @@ character:
 
 ```culebra
 let r = try { TOML.parse("x = "); nil } catch e { e }
-puts(r.message)            # TOML.parse: expected value
-puts("{r.line}:{r.col}")   # 1:5
+inspect(r.message)            # TOML.parse: expected value
+inspect("{r.line}:{r.col}")   # 1:5
 ```
 
 `stringify` takes an `Object` (a TOML document is always a table) and renders
@@ -3725,9 +3740,9 @@ ports = [80, 443]
 [server]
 host = "localhost"
 """)
-puts(cfg.title)            # demo
-puts(cfg.server.host)      # localhost
-puts(TOML.stringify({a: 1, b: {c: 2}}))
+inspect(cfg.title)            # demo
+inspect(cfg.server.host)      # localhost
+inspect(TOML.stringify({a: 1, b: {c: 2}}))
 # a = 1
 #
 # [b]
@@ -3803,7 +3818,7 @@ db.execute("CREATE TABLE users (id INTEGER, name TEXT)")
 db.execute("INSERT INTO users VALUES (?, ?)", [1, "Alice"])
 
 let rows = db.query("SELECT * FROM users")
-puts(rows[0]["name"])      # Alice
+inspect(rows[0]["name"])      # Alice
 
 # a reusable prepared statement
 let ins = db.prepare("INSERT INTO users VALUES (?, ?)")
@@ -3816,7 +3831,7 @@ db.transaction(fn () {
 })
 
 let r = try { db.query("SELECT * FROM missing"); nil } catch e { e }
-puts(r.kind)               # SQLiteError
+inspect(r.kind)               # SQLiteError
 
 db.close()
 ```
@@ -4116,12 +4131,12 @@ everything else lives under `Math`, `IO`, `Random`, or `Sys`. This
 keeps `culebra::environment()` free of surprises for embedders who
 use Culebra as a scripting engine inside a host application.
 
-For CLI scripting, however, `puts` / `print` are so pervasive that
-writing `IO.puts` everywhere adds friction. The CLI binary
-(`src/main.cc`) installs them as globals right after constructing
-the environment — pointing to the same function values that live
-under `IO`, so there is no duplication. V8 takes an analogous
-approach: the engine provides no `print`, and the `d8` shell
+For CLI scripting, however, `inspect` / `print` / `println` are so
+pervasive that writing `IO.inspect` everywhere adds friction. The CLI
+binary (`src/main.cc`) installs them as globals right after
+constructing the environment — pointing to the same function values
+that live under `IO`, so there is no duplication. V8 takes an
+analogous approach: the engine provides no `print`, and the `d8` shell
 installs one.
 
 ### Namespaces as first-class values
@@ -4133,15 +4148,15 @@ on that binding observe the same semantics as direct calls:
 
 ```culebra
 let io = IO
-io.puts("hello")              # same as IO.puts("hello")
+io.inspect("hello")              # same as IO.inspect("hello")
 
-fn run_with(ns, x) { ns.puts(x) }
+fn run_with(ns, x) { ns.inspect(x) }
 run_with(IO, "via parameter")
 ```
 
 Both backends honor self. The JIT/AOT slow path goes through a
 runtime dispatcher (`stdlib_jit.h::kNsMethods`) while the syntactic
-fast path (`IO.puts(x)` directly) keeps its inlined IR emission.
+fast path (`IO.inspect(x)` directly) keeps its inlined IR emission.
 
 ### Free function vs method
 

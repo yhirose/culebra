@@ -392,7 +392,7 @@ SGD の重み更新のような巨大テンソルのループでは `-=` のほ�
 
 次の 2 ケースではシャドウが**許可**されます:
 
-* **グローバル・組み込み関数**（`puts`、`min`、トップレベル変数
+* **グローバル・組み込み関数**（`inspect`、`min`、トップレベル変数
   など）は常にシャドウ可能。`mut min = arr[0]` のような Ruby 風の
   気軽な書き方ができます。
 * **同関数内のブロックスコープ**内のシャドウは許可されます:
@@ -462,7 +462,7 @@ Culebra はシャドウを 3 つの軸で独立に扱います:
   `{ ... }` は局所計算の staging area で、`let a = transform(a)`
   のような rebinding は意図的パターンであってバグではありません。
   制限する理由がない。
-* **グローバル = 共有の語彙**。`puts`, `to_string`, `Math`, `IO` などの
+* **グローバル = 共有の語彙**。`inspect`, `to_string`, `Math`, `IO` などの
   builtins や top-level 名は ambient な存在と理解されており、
   `mut min = arr[0]` のようなローカルは使い勝手の良いイディオム
   であって混乱の種ではない。rename を強制すると安全性の利得なく
@@ -812,12 +812,12 @@ spec は C++ `std::format` のミニ言語（Python 由来）:
 * `Nil` → `nil`
 * `Bool` → `true` または `false`
 * `Long` → 10 進表記
-* `Array` → `[v1, v2, ...]`（`puts` 形式。内部の文字列は引用符付き）
+* `Array` → `[v1, v2, ...]`（`inspect` 形式。内部の文字列は引用符付き）
 * `Object` → `{key: val, mut key2: val2, ...}`（挿入順）
 * `Function` → `[function]`
 
 `"..."` 内の `String` 値はそのまま挿入されます（引用符なし）。これが
-`puts` と表示が異なる唯一の点です。
+`inspect` と表示が異なる唯一の点です。
 
 循環データ（`a.c = a` 等）は再入箇所で `{...}` / `[...]` と表示され、
 無限再帰を防ぎます。
@@ -895,24 +895,24 @@ range は**第一級の値**です（`let r = 1..3`）。変数に入れ、関�
 
 ```culebra
 let xs = [10, 20, 30, 40, 50]
-puts(xs[1..3])      # => [20, 30]
-puts(xs[1..=3])     # => [20, 30, 40]
-puts(xs[-3..-1])    # => [30, 40]
-puts(xs[2..])       # => [30, 40, 50]
-puts(xs[..3])       # => [10, 20, 30]
+inspect(xs[1..3])      # => [20, 30]
+inspect(xs[1..=3])     # => [20, 30, 40]
+inspect(xs[-3..-1])    # => [30, 40]
+inspect(xs[2..])       # => [30, 40, 50]
+inspect(xs[..3])       # => [10, 20, 30]
 ```
 
 ```culebra
 let xs = [10, 20, 30, 40, 50]
-puts(xs[1..100])    # => [20, 30, 40, 50]
-puts(xs[3..1])      # => []
+inspect(xs[1..100])    # => [20, 30, 40, 50]
+inspect(xs[3..1])      # => []
 let r = 1..3
-puts(xs[r])         # => [20, 30]
+inspect(xs[r])         # => [20, 30]
 ```
 
 ```culebra
-puts("hello"[1..3])    # => 'el'
-puts("hello"[1..=3])   # => 'ell'
+inspect("hello"[1..3])    # => 'el'
+inspect("hello"[1..=3])   # => 'ell'
 ```
 
 ### 等価性・順序
@@ -1019,17 +1019,17 @@ String キーと非 String キーは単一の挿入順を共有するので、`t
     bag[k]     = 1                  # ランタイム String キー
     bag[42]    = 'long'
     bag[(1,2)] = 'tuple'
-    puts(bag[k])                    # 1
-    puts(bag[(1,2)])                # 'tuple'
+    inspect(bag[k])                    # 1
+    inspect(bag[(1,2)])                # 'tuple'
 
 String キーは shape ベースの `obj.foo` パスと統合されます — どちらの
 形式でも同じスロットに到達します:
 
     mut o = {}
     o['x'] = 1
-    puts(o.x)                       # 1
+    inspect(o.x)                       # 1
     o.y = 2
-    puts(o['y'])                    # 2
+    inspect(o['y'])                    # 2
 
 既存スロットはどちらの書き込み形式でも `mut` フラグを尊重し、
 immutable なスロットへの `obj[k] = v` は `ImmutableError` を投げます。
@@ -1062,7 +1062,7 @@ shape が単調増加します。そのようなワークロードでは非 Stri
 
 ```culebra
 o = { n: 10, add: fn (x) { x + self.n } }
-puts(o.add(5))                   # 15  (メソッド、self = o)
+inspect(o.add(5))                   # 15  (メソッド、self = o)
 
 double = fn (x) { x * 2 }
 42.double()                      # UFCS → double(42) → 84
@@ -1102,8 +1102,8 @@ undefined variable 'self'` になります。送出されるのは本体に入�
       run(n)    { self.miles = self.miles + self.mpr * n }
       total()   { self.miles }
     }
-    c = Car.new(5); c.run(3); puts(c.total())
-    puts(c.class)            # 'Car' — match やデバッグ用の名義タグ
+    c = Car.new(5); c.run(3); inspect(c.total())
+    inspect(c.class)            # 'Car' — match やデバッグ用の名義タグ
 
 セマンティクス:
 
@@ -1143,7 +1143,7 @@ undefined variable 'self'` になります。送出されるのは本体に入�
       }
       let c = Shape.circle(4)   # 静的 factory
       let s = Shape.square(3)
-      puts(c.kind)              # 'circle'
+      inspect(c.kind)              # 'circle'
 
   static メソッドはインスタンス経由では参照できません（`c.circle(...)`
   は instance に `circle` プロパティが無いため `TypeError` を投げる）。
@@ -1158,8 +1158,8 @@ undefined variable 'self'` になります。送出されるのは本体に入�
         static MAX      = 100
         area ()         { self.radius * self.radius * Circle.PI }
       }
-      puts(Circle.PI)         # 3.14
-      puts(Circle.MAX)        # 100
+      inspect(Circle.PI)         # 3.14
+      inspect(Circle.MAX)        # 100
 
   値の式は任意（`static SUM = [1,2,3].sum()` 等）で、class 宣言時の
   外側スコープで評価されます。static メソッドと同じく、static field は
@@ -1177,8 +1177,8 @@ undefined variable 'self'` になります。送出されるのは本体に入�
         new (name) { self.name = name }
       }
       let p = Player.new('rocci')
-      puts(p.score)           # 0
-      puts(p.best)            # 10
+      inspect(p.score)           # 0
+      inspect(p.best)            # 10
       p.tags.push('bird')     # Array は各インスタンス独立
 
   初期化子の意味論（Kotlin のモデル）:
@@ -1215,8 +1215,8 @@ undefined variable 'self'` になります。送出されるのは本体に入�
         get area ()  { self.radius * self.radius * 3.14 }
       }
       let c = Circle.new(4)
-      puts(c.area)          # 50.24  — field のように読める
-      puts(c.area())        # 50.24  — 呼び出し表記も動く
+      inspect(c.area)          # 50.24  — field のように読める
+      inspect(c.area())        # 50.24  — 呼び出し表記も動く
 
   getter は他のメソッド同様 `self` を読みますが property として振る舞う
   ので、fluent chain の括弧が消えます（`p.parent().name()` ではなく
@@ -1300,7 +1300,7 @@ class Grid {
 }
 let g = Grid.new()
 g[1] = 99
-puts(g[1])                  # => 99
+inspect(g[1])                  # => 99
 ```
 
 **呼び出し (`__call__`)。** クラスインスタンスに `__call__(*args)` を
@@ -1318,8 +1318,8 @@ class Adder {
   __call__(x)  { self.b + x }
 }
 let add3 = Adder.new(3)
-puts(add3(10))              # => 13
-puts(add3.__call__(10))     # => 13
+inspect(add3(10))              # => 13
+inspect(add3.__call__(10))     # => 13
 ```
 
 `__call__` を持つクラスは `Function` 型を構造的に満たすので、callable
@@ -1329,10 +1329,10 @@ puts(add3.__call__(10))     # => 13
 
 ```culebra
 class Scale { new(k) { self.k = k } __call__(x) { x * self.k } }
-puts([1, 2, 3].map(Scale.new(10)))   # => [10, 20, 30]
+inspect([1, 2, 3].map(Scale.new(10)))   # => [10, 20, 30]
 
 fn apply_twice(f: Function, x) { f(f(x)) }
-puts(apply_twice(Scale.new(2), 5))   # => 20
+inspect(apply_twice(Scale.new(2), 5))   # => 20
 ```
 
 `__call__` は呼び出しの全形式（位置引数・`*args`・キーワード引数）を
@@ -1342,8 +1342,8 @@ puts(apply_twice(Scale.new(2), 5))   # => 20
 ### カスタム文字列表現 (`__str__`)
 
 `Object` に 0 引数の `__str__` メソッドを定義すると、値自身が
-`puts` / `print`、文字列補間 (`"{x}"`)、`to_string(x)` に対して
-独自の表示形式を提供できます。戻り値は `String` である必要があり、
+`inspect` / `print` / `println`、文字列補間 (`"{x}"`)、`to_string(x)`
+に対して独自の表示形式を提供できます。戻り値は `String` である必要があり、
 それ以外は型エラー。`__str__` を持たない `Object` は従来通りの
 デフォルト表示 (`{key: value, ...}`) になります。
 
@@ -1352,17 +1352,17 @@ puts(apply_twice(Scale.new(2), 5))   # => 20
       __str__()  { "Matrix {self.rows}x{self.cols}" }
     }
     m = Matrix.new(2, 3)
-    puts(m)                        # Matrix 2x3
-    puts("shape: {m}")             # 'shape: Matrix 2x3'
+    inspect(m)                     # Matrix 2x3
+    inspect("shape: {m}")          # 'shape: Matrix 2x3'
     to_string(m)                   # 'Matrix 2x3'
 
 ディスパッチはトップレベルのみ: ネストされた構造内で `__str__` が
-含まれる場合 (`puts([m])` など)、外側フォーマッターのデフォルト
+含まれる場合 (`inspect([m])` など)、外側フォーマッターのデフォルト
 再帰走査は各要素に対して依然として `str()` を使うため、カスタム
 形式は表示フックに直接渡されたオペランドにのみ現れます。より深い
 カスタマイズは具体的な必要性が出てから検討。
 
-`__str__` 本体では `puts(self)` や `"{self}"` といった再帰呼出は
+`__str__` 本体では `inspect(self)` や `"{self}"` といった再帰呼出は
 **避けてください** — 組み込みの再帰ガードがないため、コールスタック
 を使い切るまでループします。最終文字列はプロパティを直接参照
 (`self.x`) して組み立ててください。
@@ -1745,9 +1745,9 @@ JIT 制限:
     }
     c1 = make_counter()
     c2 = make_counter()
-    puts(c1())   # 1
-    puts(c1())   # 2
-    puts(c2())   # 1、独立したカウンタ
+    inspect(c1())   # 1
+    inspect(c1())   # 2
+    inspect(c2())   # 1、独立したカウンタ
 
 JIT では捕捉された可変変数はヒープの**セル**に配置され、複数の
 クロージャが同じスロットを共有できます。§17 参照。
@@ -1824,20 +1824,20 @@ init 変数は反復をまたいで生存し（本体の `i = i + 2` は再代�
 返す要素を `var` として反復ごとに新しいスコープに束縛します（§18.5）。
 
 ```culebra
-for x in [1, 2, 3] { puts(x) }
+for x in [1, 2, 3] { inspect(x) }
 
-for k, v in {b: 2, a: 1} { puts("{k}={v}") }   # (key, value) ペアを挿入順
+for k, v in {b: 2, a: 1} { inspect("{k}={v}") }   # (key, value) ペアを挿入順
 
-for i in 0..10 { puts(i) }          # 排他範囲（0..9）
-for i in 0..=10 { puts(i) }         # 包含範囲（0..10）
+for i in 0..10 { inspect(i) }          # 排他範囲（0..9）
+for i in 0..=10 { inspect(i) }         # 包含範囲（0..10）
 ```
 
 range は `by <step>` 節で 1 以外の刻み幅を指定できます（`step` を負に
 すれば降順も可）:
 
 ```culebra
-for i in 0..10 by 2 { puts(i) }      # 0, 2, 4, 6, 8
-for i in 10..0 by -2 { puts(i) }     # 10, 8, 6, 4, 2
+for i in 0..10 by 2 { inspect(i) }      # 0, 2, 4, 6, 8
+for i in 10..0 by -2 { inspect(i) }     # 10, 8, 6, 4, 2
 ```
 
 `step` は `0` にできません（range を反復した時点で `ValueError`）。
@@ -1849,9 +1849,9 @@ for i in 10..0 by -2 { puts(i) }     # 10, 8, 6, 4, 2
 
 ```culebra
 # doctest: skip
-for [a, b] in [[1, 2], [3, 4]] { puts(a + b) }      # 配列パターン
-for (k, v) in [(1, 'a'), (2, 'b')] { puts(k) }      # タプルパターン
-for k, v in {a: 1, b: 2} { puts("{k}={v}") }        # 括弧なし == (k, v)
+for [a, b] in [[1, 2], [3, 4]] { inspect(a + b) }      # 配列パターン
+for (k, v) in [(1, 'a'), (2, 'b')] { inspect(k) }      # タプルパターン
+for k, v in {a: 1, b: 2} { inspect("{k}={v}") }        # 括弧なし == (k, v)
 for i, v in xs.enumerate() { ... }                  # (index, value) タプル
 ```
 
@@ -2363,7 +2363,7 @@ Foo for Bar` block 不要。 Go interface / Python `__str__` 流。
       hello() { "hi, {self.name}" }
     }
 
-    fn greet(x: Greeter) { IO.puts(x.hello()) }
+    fn greet(x: Greeter) { IO.inspect(x.hello()) }
     greet(Bob.new("Alice"))                # → "hi, Alice"
 
 required method を欠くクラスは dispatch 段階で reject (DispatchError)。
@@ -2615,7 +2615,7 @@ Culebra は `throw` で例外を発生させ、`try`/`catch` で受けます。
     throw {kind: 'io', msg: 'file not found', path: p}
 
     try { risky() }
-    catch e { puts("error: {e}") }
+    catch e { inspect("error: {e}") }
 
 セマンティクス:
 
@@ -2667,7 +2667,7 @@ kill するのではなく、Python の `KeyboardInterrupt` と同じモデル�
     try {
       serve()                       # 長時間ループ
     } catch e {
-      puts("shutting down: {e.kind}")   # → Interrupted
+      inspect("shutting down: {e.kind}")   # → Interrupted
       cleanup()
     }
 
@@ -2745,7 +2745,7 @@ shutdown パターン）は、`Signal.notify` でチャネルを登録します�
 
     try { let x = arr[100] }
     catch e {
-      if e.kind == 'IndexError' { puts("out of range at line {e.line}") }
+      if e.kind == 'IndexError' { inspect("out of range at line {e.line}") }
       else { throw e }
     }
 
@@ -2881,7 +2881,7 @@ let x = handle {
 } with ask(resume) {
   resume(10)
 }
-puts(x)     # => 11
+inspect(x)     # => 11
 ```
 
 ### handle
@@ -2903,7 +2903,7 @@ let r = handle {
 } with fail(resume) {
   "aborted"
 }
-puts(r)     # => 'aborted'
+inspect(r)     # => 'aborted'
 ```
 
 #### 複数の操作と `return` clause
@@ -2922,7 +2922,7 @@ let out = handle {
 } with get(k) { k(cell) }
   with put(v, k) { cell = v; k(nil) }
   with return(v) { "final={v}" }
-puts(out)   # => 'final=5'
+inspect(out)   # => 'final=5'
 ```
 
 `return` clause は*正常*完了にのみ適用されます。ハンドラが（再開せず）abort
@@ -2943,7 +2943,7 @@ let all = handle {
 } with choose(a, b, k) {
   [k(a), k(b)]
 }
-puts(all)   # => [[11, 21], [12, 22]]
+inspect(all)   # => [[11, 21], [12, 22]]
 ```
 
 各 fork は参照する heap 値（配列・オブジェクト）を共有し（fork は浅いコピー）、
@@ -2962,7 +2962,7 @@ effect fn double() {
   let n = perform ask2()
   n * 2
 }
-puts(handle { double() } with ask2(k) { k(21) })   # => 42
+inspect(handle { double() } with ask2(k) { k(21) })   # => 42
 ```
 
 ### 通常の関数とエフェクト
@@ -2978,7 +2978,7 @@ fn greet() {                     # plain 関数がエフェクトを perform す
   let name = perform ask()
   "hi " + name
 }
-puts(handle { greet() } with ask(k) { k("ana") })   # => 'hi ana'
+inspect(handle { greet() } with ask(k) { k("ana") })   # => 'hi ana'
 ```
 
 これを支えるのは、各ハンドラ節の parse 時分類です:
@@ -3017,7 +3017,7 @@ effect fn work() {
     base + perform inner()
   } with inner(k) { k(100) }
 }
-puts(handle { work() } with outer(k) { k(5) })    # => 105
+inspect(handle { work() } with outer(k) { k(5) })    # => 105
 ```
 
 エフェクトとジェネレータは双方向に合成できます — ジェネレータ本体の中の
@@ -3029,7 +3029,7 @@ fn doubled() {
   yield handle { perform scale() * 2 } with scale(k) { k(10) }
   yield 7
 }
-puts(doubled().collect())    # => [20, 7]
+inspect(doubled().collect())    # => [20, 7]
 ```
 
 ### 意味論と制約
@@ -3165,7 +3165,7 @@ make_thing = fn (id) {
   a.other = b
   b.other = a
 }                # 循環していても、ブロック離脱でここで両方 drop
-puts(log)        # => ['b', 'a']
+inspect(log)        # => ['b', 'a']
 ```
 
 所有スコープは「循環が最後に escape した先」です: 関数の戻り値として
@@ -3198,7 +3198,7 @@ resource からの逆参照が無い closure 専用循環がその resource を�
 
 ```culebra
 make_thing = fn () {
-  { drop: fn () { puts('cleaned') } }   # make_thing の env を捕捉
+  { drop: fn () { inspect('cleaned') } }   # make_thing の env を捕捉
 }
 {
   let t = make_thing()                  # ブロックスコープ束縛
@@ -3231,7 +3231,7 @@ JIT ではスコープ離脱で解決します（インタープリタは次の�
 （`String` にはプロパティストアがないため；`Array`/`Object` では
 同名のユーザ定義プロパティが優先され、ビルトインはフォールバック）。
 
-グローバルなビルトイン関数（`puts`, `to_string`, `Math.*`, `IO.*`、
+グローバルなビルトイン関数（`inspect`, `to_string`, `Math.*`, `IO.*`、
 matcher 一族 `assert_true` / `assert_eq` 等）は
 [`docs/stdlib.ja.md`](stdlib.ja.md) で別途規定します。
 
@@ -3289,10 +3289,10 @@ matcher 一族 `assert_true` / `assert_eq` 等）は
 
 ```culebra
 # 'é' は UTF-8 で 2 バイトなので 'café' は 5 バイト
-puts('café'.bytes().collect())          # => [99, 97, 102, 195, 169]
-puts(String.from_code_point(233))       # => 'é'
-puts(String.from_bytes([99, 97, 102, 195, 169]))   # => 'café'
-puts(String.from_code_points([99, 97, 102, 233]))  # => 'café'
+inspect('café'.bytes().collect())          # => [99, 97, 102, 195, 169]
+inspect(String.from_code_point(233))       # => 'é'
+inspect(String.from_bytes([99, 97, 102, 195, 169]))   # => 'café'
+inspect(String.from_code_points([99, 97, 102, 233]))  # => 'café'
 ```
 
 #### StringView
@@ -3305,10 +3305,10 @@ view は有効:
 
 ```culebra
 let v = 'hello world'.slice(6, 11)
-puts(v)                              # 'world'
-puts(v == 'world')                   # true  (両 flavor 間のバイト等価)
-puts(type_of(v))                     # 'StringView'
-puts(v.to_string())                  # 'world' (materialize した String)
+inspect(v)                              # 'world'
+inspect(v == 'world')                   # true  (両 flavor 間のバイト等価)
+inspect(type_of(v))                     # 'StringView'
+inspect(v.to_string())                  # 'world' (materialize した String)
 ```
 
 所有権付き `String` が必要な場面 (data structure に格納、 長寿命の
@@ -3324,21 +3324,21 @@ cstr コピーが発生する。これは他の `String` と同様トレーシ�
 `StringView` の Object key 正規化は制約ではない — §18.3 参照。）
 
 ```culebra
-puts('hello'.size())              # 5
-puts('HeLLo'.lower())             # 'hello'
-puts('  hi  '.trim())             # 'hi'
-puts('a,b,c'.split(','))          # ['a', 'b', 'c']
-puts('hello'.slice(1, 4))         # 'ell'
-puts('hello'.slice(-3, -1))       # 'll'
+inspect('hello'.size())              # 5
+inspect('HeLLo'.lower())             # 'hello'
+inspect('  hi  '.trim())             # 'hi'
+inspect('a,b,c'.split(','))          # ['a', 'b', 'c']
+inspect('hello'.slice(1, 4))         # 'ell'
+inspect('hello'.slice(-3, -1))       # 'll'
 
 # 同じ文字列の3つのビュー
-puts('café'.size())                # 5（バイト）
-puts('café'.code_points().count()) # 4（スカラー）
-puts('café'.graphemes().count())   # 4（クラスタ）
+inspect('café'.size())                # 5（バイト）
+inspect('café'.code_points().count()) # 4（スカラー）
+inspect('café'.graphemes().count())   # 4（クラスタ）
 
 # 絵文字 ZWJ シーケンス: 5 スカラー、1 grapheme
-puts('👨‍👩‍👧'.code_points().count())  # 5
-puts('👨‍👩‍👧'.graphemes().count())    # 1
+inspect('👨‍👩‍👧'.code_points().count())  # 5
+inspect('👨‍👩‍👧'.graphemes().count())    # 1
 
 # code_points なら数値演算が自然
 upper = 'Hello World'.code_points()
@@ -3397,24 +3397,24 @@ Array や String スカラーを回す場合は `for c in s { ... }`
 ```culebra
 mut a = [1, 2, 3]
 a.push(4)
-puts(a.pop())                      # 4
-puts([10, 20, 30, 40].slice(1, 3)) # [20, 30]
-puts(['a', 'b', 'c'].join('-'))    # 'a-b-c'
-puts([1, 2, 3].contains(2))        # true
-puts([10, 20, 30].index_of(99))    # -1
+inspect(a.pop())                      # 4
+inspect([10, 20, 30, 40].slice(1, 3)) # [20, 30]
+inspect(['a', 'b', 'c'].join('-'))    # 'a-b-c'
+inspect([1, 2, 3].contains(2))        # true
+inspect([10, 20, 30].index_of(99))    # -1
 
-puts([1, 2, 3].map(fn (x) { x * x }))           # [1, 4, 9]
-puts([1, 2, 3, 4].filter(fn (x) { x % 2 == 0 })) # [2, 4]
-puts([1, 2, 3, 4].reduce(0, fn (acc, x) { acc + x })) # 10
+inspect([1, 2, 3].map(fn (x) { x * x }))           # [1, 4, 9]
+inspect([1, 2, 3, 4].filter(fn (x) { x % 2 == 0 })) # [2, 4]
+inspect([1, 2, 3, 4].reduce(0, fn (acc, x) { acc + x })) # 10
 
-puts([3, 1, 4, 1, 5].find(fn (x) { x > 3 }))    # 4
-puts([1, 2, 3].any(fn (x) { x > 2 }))           # true
-puts([1, 2, 3].all(fn (x) { x > 0 }))           # true
-puts([1, 2, 3].flat_map(fn (x) { [x, x * 10] })) # [1, 10, 2, 20, 3, 30]
+inspect([3, 1, 4, 1, 5].find(fn (x) { x > 3 }))    # 4
+inspect([1, 2, 3].any(fn (x) { x > 2 }))           # true
+inspect([1, 2, 3].all(fn (x) { x > 0 }))           # true
+inspect([1, 2, 3].flat_map(fn (x) { [x, x * 10] })) # [1, 10, 2, 20, 3, 30]
 
 mut words = ['banana', 'fig', 'apple']
 words.sort_by(fn (s) { s.size() })
-puts(words)                                      # ['fig', 'apple', 'banana']
+inspect(words)                                      # ['fig', 'apple', 'banana']
 ```
 
 **コールバックの引数個数。** 高階メソッドはコールバックを固定個数の引数で呼ぶ
@@ -3434,8 +3434,8 @@ puts(words)                                      # ['fig', 'apple', 'banana']
 引数は rest 配列として届く:
 
 ```culebra
-puts([10, 20].map(fn (*xs) { xs.size() }))                # => [1, 1]
-puts([1, 2, 3].reduce(0, fn (a, *xs) { a + xs.size() }))  # => 3
+inspect([10, 20].map(fn (*xs) { xs.size() }))                # => [1, 1]
+inspect([1, 2, 3].reduce(0, fn (a, *xs) { a + xs.size() }))  # => 3
 ```
 
 `range` / `iota`（可変長ビルトイン）をそのままコールバックとして渡せるのはこのため。
@@ -3462,12 +3462,12 @@ puts([1, 2, 3].reduce(0, fn (a, *xs) { a + xs.size() }))  # => 3
 
 ```culebra
 o = {b: 2, a: 1, c: 3}
-puts(o.keys())            # ['b', 'a', 'c']  (挿入順)
-puts(o.values().collect()) # [2, 1, 3]
-puts(o.has('a')) # true
+inspect(o.keys())            # ['b', 'a', 'c']  (挿入順)
+inspect(o.values().collect()) # [2, 1, 3]
+inspect(o.has('a')) # true
 mut p = {a: 1, b: 2}
 p.remove('a')
-puts(p)          # {b: 2}
+inspect(p)          # {b: 2}
 ```
 
 ### 17.4 特殊識別子
@@ -3520,9 +3520,9 @@ Iterable ラッパなしで動作します。
 `obj.keys()`（`Array`）と `obj.values()`（遅延イテレータ）:
 
 ```culebra
-for k, v in {a: 1, b: 2} { puts("{k}={v}") }   # 'a=1' then 'b=2'
-for k in {a: 1, b: 2}.keys() { puts(k) }       # 'a' then 'b'
-for v in {a: 1, b: 2}.values() { puts(v) }     # 1 then 2
+for k, v in {a: 1, b: 2} { inspect("{k}={v}") }   # 'a=1' then 'b=2'
+for k in {a: 1, b: 2}.keys() { inspect(k) }       # 'a' then 'b'
+for v in {a: 1, b: 2}.values() { inspect(v) }     # 1 then 2
 ```
 
 **Object iter と変更**: 反復はループ開始時に取ったキーのスナップショット
@@ -3535,7 +3535,7 @@ fail-fast ガードは無い）。反復中に**追加**したキーは対象に
 ```culebra
 mut o = {mut x: 1, mut y: 2}
 for k, v in o.iter() { o[k] = 99 }   # 既存の値を更新
-puts(o.x)            # => 99
+inspect(o.x)            # => 99
 ```
 
 ```culebra
@@ -3543,7 +3543,7 @@ mut books = {a: ('alpha', 1)}
 for reading, n in books.values() {   # 反復しながら別名を追加
   if !books.has(reading) { books[reading] = (reading, n) }
 }
-puts(books.has('alpha'))   # => true
+inspect(books.has('alpha'))   # => true
 ```
 
 **イテレータメソッド**: イテレータ・インターフェイスを満たす Object
@@ -3557,7 +3557,7 @@ puts(books.has('alpha'))   # => true
 
 ```culebra
 fn nums() { yield 1; yield 2; yield 3; yield 4 }
-puts(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
+inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 ```
 
 | 非終端 | 戻り値 | 説明 |
@@ -3625,7 +3625,7 @@ countdown = fn (start) {
   }
 }
 
-for x in countdown(3) { puts(x) }              # 3, 2, 1
+for x in countdown(3) { inspect(x) }              # 3, 2, 1
 ```
 
 **JIT**: 本節のすべて — for-in によるプロトコル駆動、ユーザー定義
@@ -3654,16 +3654,17 @@ fusion / specialisation の対象として認識し、言語全体の `for`-in �
 `assert_eq` / `assert_throws` / `assert_close` 等) — 全 reference は
 [`docs/stdlib.ja.md`](stdlib.ja.md) を参照。 `Math` / `IO` / `Sys`
 といったネームスペース付きの標準ライブラリも同じく `stdlib.ja.md` を
-参照。 出力プリミティブ `puts` / `print` は CLI が追加するグローバルです（§22）。
+参照。 出力プリミティブ `inspect` / `print` / `println` は CLI が追加する
+グローバルです（§22）。
 
 これらのグローバルはすべて **first-class value** です。変数に束縛したり
 高階関数へ渡したりすると、両バックエンドでクロージャと同じように振る舞います。
 
 ```culebra
-puts([1, 2, 3].map(type_of))                     # => ['Long', 'Long', 'Long']
-puts([1, 2, 3].map(range).map(|r| r.collect()))  # => [[0], [0, 1], [0, 1, 2]]
+inspect([1, 2, 3].map(type_of))                     # => ['Long', 'Long', 'Long']
+inspect([1, 2, 3].map(range).map(|r| r.collect()))  # => [[0], [0, 1], [0, 1, 2]]
 let f = range
-puts(f(0, 10, step: 2).collect())                # => [0, 2, 4, 6, 8]
+inspect(f(0, 10, step: 2).collect())                # => [0, 2, 4, 6, 8]
 ```
 
 直接呼び出しは引き続き fast path で、クロージャ形は名前が値の位置に
@@ -3687,9 +3688,9 @@ puts(f(0, 10, step: 2).collect())                # => [0, 2, 4, 6, 8]
 `type error at L:C.`。
 
 ```culebra
-puts(to_long('42'))    # 42
-puts(to_long('-7'))    # -7
-puts(to_long(3.9))     # 3
+inspect(to_long('42'))    # 42
+inspect(to_long('-7'))    # -7
+inspect(to_long(3.9))     # 3
 ```
 
 ### `to_float(v: Any) -> Float`
@@ -3704,9 +3705,9 @@ puts(to_long(3.9))     # 3
 * 上記以外の型は `type error`。
 
 ```culebra
-puts(to_float(3))         # 3.0
-puts(to_float('1.5'))     # 1.5
-puts(to_float('1e-5'))    # 1e-05
+inspect(to_float(3))         # 3.0
+inspect(to_float('1.5'))     # 1.5
+inspect(to_float('1e-5'))    # 1e-05
 ```
 
 ### `to_string(v: Any) -> String`
@@ -3716,11 +3717,11 @@ puts(to_float('1e-5'))    # 1e-05
 表現で、必ず小数点か指数を伴うため `Long` と視覚的に区別できます。
 
 ```culebra
-puts(to_string(42))         # '42'
-puts(to_string(1.0))        # '1.0'
-puts(to_string(1e-5))       # '1e-05'
-puts(to_string([1, 2]))     # '[1, 2]'
-puts(to_string('hi'))       # 'hi'
+inspect(to_string(42))         # '42'
+inspect(to_string(1.0))        # '1.0'
+inspect(to_string(1e-5))       # '1e-05'
+inspect(to_string([1, 2]))     # '[1, 2]'
+inspect(to_string('hi'))       # 'hi'
 ```
 
 ### `type_of(v: Any) -> String`
@@ -3730,12 +3731,12 @@ puts(to_string('hi'))       # 'hi'
 `'Object'`, `'Function'`, `'Tensor'`, `'Tuple'`, `'Set'` のいずれか。
 
 ```culebra
-puts(type_of(42))          # 'Long'
-puts(type_of(1.5))         # 'Float'
-puts(type_of('hi'))        # 'String'
-puts(type_of([1, 2]))      # 'Array'
-puts(type_of((1, 2)))      # 'Tuple'
-puts(type_of({1, 2}))      # 'Set'
+inspect(type_of(42))          # 'Long'
+inspect(type_of(1.5))         # 'Float'
+inspect(type_of('hi'))        # 'String'
+inspect(type_of([1, 2]))      # 'Array'
+inspect(type_of((1, 2)))      # 'Tuple'
+inspect(type_of({1, 2}))      # 'Set'
 ```
 
 ### `range(n: Long, *, step: Long = 1) -> Iterator` / `range(start: Long, end: Long, *, step: Long = 1) -> Iterator`
@@ -3751,15 +3752,15 @@ yield します。`for`-in やイテレータメソッドチェーンと組み�
   降順 (exclusive end)。`step: 0` は `ValueError`。
 
 ```culebra
-for i in range(5)              { puts(i) }   # 0, 1, 2, 3, 4
-for i in range(2, 6)           { puts(i) }   # 2, 3, 4, 5
-for i in range(0, 10, step: 2) { puts(i) }   # 0, 2, 4, 6, 8
-for i in range(5, 0, step: -1) { puts(i) }   # 5, 4, 3, 2, 1
+for i in range(5)              { inspect(i) }   # 0, 1, 2, 3, 4
+for i in range(2, 6)           { inspect(i) }   # 2, 3, 4, 5
+for i in range(0, 10, step: 2) { inspect(i) }   # 0, 2, 4, 6, 8
+for i in range(5, 0, step: -1) { inspect(i) }   # 5, 4, 3, 2, 1
 
 # 巨大な上限でも定数メモリで動く
 for i in range(1000000000) {
   if i > 3 { break }
-  puts(i)
+  inspect(i)
 }
 ```
 
@@ -3779,9 +3780,9 @@ C++ `std::iota` / Scheme SRFI-1 から命名。`for`-in ループには `range` 
   なら空配列。
 
 ```culebra
-puts(iota(3))         # [0, 1, 2]
-puts(iota(2, 5))      # [2, 3, 4]
-puts(iota(5, 2))      # []
+inspect(iota(3))         # [0, 1, 2]
+inspect(iota(2, 5))      # [2, 3, 4]
+inspect(iota(5, 2))      # []
 ```
 
 ### `__ARGS__` (可変長 catch-all バインディング)
@@ -3793,7 +3794,7 @@ puts(iota(5, 2))      # []
 
 ```culebra
 let logger = fn (level) {
-  puts("[{level}] " + __ARGS__.join(' '))
+  inspect("[{level}] " + __ARGS__.join(' '))
 }
 logger('info', 'building', 'fizzbuzz')   # → '[info] building fizzbuzz'
 ```
@@ -3816,14 +3817,14 @@ fn が引数付きで呼ばれた場合、全ての引数が `__ARGS__` に入�
 ```culebra
 fn greet(name: String, *, prefix = "hi") { "{prefix}, {name}" }
 
-puts(greet.name)                  # → 'greet'
-puts(greet.return_type)           # → ''
+inspect(greet.name)                  # → 'greet'
+inspect(greet.return_type)           # → ''
 let ps = greet.params
-puts(ps.size())                   # → 2
-puts(ps[0].name)                  # → 'name'
-puts(ps[0].type)                  # → 'String'
-puts(ps[1].kw_only)               # → true
-puts(ps[1].has_default)           # → true
+inspect(ps.size())                   # → 2
+inspect(ps[0].name)                  # → 'name'
+inspect(ps[0].type)                  # → 'String'
+inspect(ps[1].kw_only)               # → true
+inspect(ps[1].has_default)           # → true
 ```
 
 `fn.params` はアクセス毎に新規 `Array` を返します。これを書き換えても
@@ -4215,16 +4216,17 @@ REPL と同様）。
 
 ### CLI が追加するグローバル
 
-CLI バイナリはユーザコード実行前に、以下 2 つのグローバルを
+CLI バイナリはユーザコード実行前に、以下 3 つのグローバルを
 スクリプト環境に追加します:
 
-| グローバル | エイリアス先 |
-|-----------|-------------|
-| `puts`    | `IO.puts`   |
-| `print`   | `IO.print`  |
+| グローバル  | エイリアス先    |
+|------------|----------------|
+| `inspect`  | `IO.inspect`   |
+| `print`    | `IO.print`     |
+| `println`  | `IO.println`   |
 
 もっとも頻出する出力呼び出しのための便利なショートカットで、
-`IO` 配下と**同一の関数値**を指すため `puts(x)` と `IO.puts(x)`
+`IO` 配下と**同一の関数値**を指すため `inspect(x)` と `IO.inspect(x)`
 は完全に等価です。`culebra::environment()` を直接使う埋め込み用途
 では、これらのエイリアスは付与されず、環境には `Math`, `IO`,
 `Random`, `Sys` と §19 のコア組み込み関数のみが含まれます。

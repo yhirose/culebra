@@ -122,4 +122,4 @@ assert_throws("TypeError", fn () { TOML.stringify({f: fn () { 1 }}) })
 let p = TOML.parse
 assert_eq(p("k = 9").k, 9)
 
-puts("toml tests passed")
+inspect("toml tests passed")

@@ -82,4 +82,4 @@ assert_eq(e_key.kind, "TypeError")
 // See `docs/language.md` / project memory `string-stringview` for the
 // recommended `.to_string()` materialization.)
 
-IO.puts("test_hashable OK")
+IO.inspect("test_hashable OK")

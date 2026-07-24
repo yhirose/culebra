@@ -65,4 +65,4 @@ class Combo {
 }
 assert_eq(ord_and_show(Combo.new()), "c")
 
-IO.puts("test_trait_inherit OK")
+IO.inspect("test_trait_inherit OK")

@@ -3526,7 +3526,7 @@ inline std::string str_display_with_special(const Value& v) {
 }
 
 // Like `v.str()` (quoted strings) but honors `__str__` on Object —
-// used by `puts`. Objects with `__str__` return the custom form with
+// used by `inspect`. Objects with `__str__` return the custom form with
 // no extra quoting regardless.
 inline std::string str_quoted_with_special(const Value& v) {
   if (auto r = _try_str_special(v)) return *r;

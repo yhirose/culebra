@@ -74,4 +74,4 @@ assert_eq(oe.eq(OnlyEq.new(5)), true)
 let probe = try { oe.hash(); "present" } catch e { "absent" }
 assert_eq(probe, "absent")
 
-IO.puts("test_derive OK")
+IO.inspect("test_derive OK")

@@ -26,4 +26,4 @@ assert_eq("A-B-C".tr("A-C", "x"), "xxBxx")
 // full-width to ASCII roundtrip-ish (multibyte both sides)
 assert_eq("ＡＢ".tr("ＡＢ", "ＸＹ"), "ＸＹ")
 
-IO.puts("test_string_tr OK")
+IO.inspect("test_string_tr OK")

@@ -30,7 +30,7 @@ assert_eq(7.scale(3), 21)
 assert_eq(10.scale(-2), -20)
 
 # Existing method takes priority over same-named free function
-size = fn (x) { puts('user size NOT called'); 99 }
+size = fn (x) { inspect('user size NOT called'); 99 }
 assert_eq([1, 2, 3].size(), 3)          # Array builtin wins
 assert_eq('hello'.size(), 5)             # String builtin wins
 assert_eq({a: 1, b: 2}.size(), 2)        # Object builtin wins

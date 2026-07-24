@@ -36,4 +36,4 @@ let r_call = try { let _ = [1].nope(); nil } catch e { e }
 assert_eq(r_call.kind, 'TypeError')
 assert_true(r_call.message.contains('expected Function, got Nil'))
 
-puts("test_member_access OK")
+inspect("test_member_access OK")

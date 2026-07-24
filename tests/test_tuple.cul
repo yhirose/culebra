@@ -82,4 +82,4 @@ let err = try {
 }
 assert_eq(err, true)
 
-IO.puts("test_tuple OK")
+IO.inspect("test_tuple OK")

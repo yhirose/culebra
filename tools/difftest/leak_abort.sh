@@ -45,7 +45,7 @@ run_audit() {
 # survive to the teardown audit under run_audit's CULEBRA_GC_NEVER=1. Eight is
 # above the conservative-scan aliasing knee, so the abort is deterministic.
 cat > "$WORK/abort_leak.cul" <<'EOF'
-IO.puts("fixture ran")
+IO.inspect("fixture ran")
 EOF
 code=$(CULEBRA_GC_TEST_LEAK=1 run_audit "$WORK/abort_leak.cul")
 if [ "$code" != 134 ]; then
@@ -65,7 +65,7 @@ cat > "$WORK/abort_clean.cul" <<'EOF'
 fn work(n) { mut s = 0; for i in range(n) { s = s + i }; s }
 mut t = 0
 for j in range(200) { t = t + work(50) }
-IO.puts("clean total=" + t.to_string())
+IO.inspect("clean total=" + t.to_string())
 EOF
 code=$(run_audit "$WORK/abort_clean.cul")
 if [ "$code" != 0 ]; then
@@ -85,7 +85,7 @@ class Node { new() { self.link = nil } }
 fn mkcycle() { let a = Node.new(); a.link = a }
 mut i = 0
 while i < 200 { mkcycle(); i = i + 1 }
-IO.puts("cycle done")
+IO.inspect("cycle done")
 EOF
 code=$(run_audit "$WORK/abort_cycle.cul")
 if [ "$code" != 0 ]; then
@@ -117,7 +117,7 @@ fn shapes() {
 }
 mut i = 0
 while i < 50 { shapes(); i = i + 1 }
-IO.puts("unwind-temp done")
+IO.inspect("unwind-temp done")
 EOF
 code=$(run_audit "$WORK/abort_unwind_temp.cul")
 if [ "$code" != 0 ]; then
@@ -150,7 +150,7 @@ fn shapes() {
 }
 mut i = 0
 while i < 50 { shapes(); i = i + 1 }
-IO.puts("chain-ufcs done")
+IO.inspect("chain-ufcs done")
 EOF
 code=$(run_audit "$WORK/abort_chain_ufcs.cul")
 if [ "$code" != 0 ]; then
@@ -199,7 +199,7 @@ fn shapes() {
 }
 mut i = 0
 while i < 50 { shapes(); i = i + 1 }
-IO.puts("blockpin done")
+IO.inspect("blockpin done")
 EOF
 code=$(run_audit "$WORK/abort_blockpin.cul")
 if [ "$code" != 0 ]; then

@@ -211,4 +211,4 @@ assert_eq(se, "ProcessError")
 fn spawn_and_drop() { Proc.spawn(["true"]) }
 for i in range(10) { spawn_and_drop() }
 
-IO.puts("test_proc OK")
+IO.inspect("test_proc OK")

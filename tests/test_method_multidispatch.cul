@@ -107,4 +107,4 @@ let bumped = Parallel.map([Counter.new(100), Counter.new(200)], |c| c.bump(5))
 assert_eq(bumped[0], 105)
 assert_eq(bumped[1], 205)
 
-puts("method multidispatch OK")
+inspect("method multidispatch OK")

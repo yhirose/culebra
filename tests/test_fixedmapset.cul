@@ -80,4 +80,4 @@ w.join()
 assert_eq(shared[0].tags.contains(111), true)
 assert_eq(shared[0].counts.get(5), 55)
 
-IO.puts("test_fixedmapset OK")
+IO.inspect("test_fixedmapset OK")

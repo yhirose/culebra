@@ -6,7 +6,7 @@
 fn _show(v) { type_of(v) + ":" + to_string(v) }
 fn _p(label, thunk) {
   # `print` writes the string raw (no quoting, no newline); append "\n"
-  # ourselves so each case is one line. (`puts` would quote the String.)
+  # ourselves so each case is one line. (`inspect` would quote the String.)
   let r = try { "ok=" + _show(thunk()) }
     catch e {
       "err=" + e.kind + "|" + e.message + "|" +

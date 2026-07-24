@@ -330,7 +330,7 @@ test_ctor_return_ignored()
 test_static_methods()
 test_static_multiple()
 
-puts('class-sugar OK')
+inspect('class-sugar OK')
 
 # --- A throwing static initializer is catchable; execution continues --------
 # The JIT used to emit the class declaration's runtime calls as invokes
@@ -350,7 +350,7 @@ fn test_class_decl_throw_catchable() {
 }
 test_class_decl_throw_catchable()
 
-puts('class-sugar throw-catch OK')
+inspect('class-sugar throw-catch OK')
 
 # --- Declared instance fields (`x: T = e`) ----------------------------------
 # Initializers run per instance — declaration order, `self` in scope, after
@@ -533,4 +533,4 @@ fn test_field_init_after_arg_binding() {
 }
 test_field_init_after_arg_binding()
 
-puts('class-fields OK')
+inspect('class-fields OK')

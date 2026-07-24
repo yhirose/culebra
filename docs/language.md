@@ -419,7 +419,7 @@ the ambiguity.
 
 Shadowing is *allowed* in two cases:
 
-* **Globals and builtins** (`puts`, `min`, or any top-level binding)
+* **Globals and builtins** (`inspect`, `min`, or any top-level binding)
   may always be shadowed. This keeps the Ruby-style feel of writing
   `mut min = arr[0]` in a local function without friction.
 * **Block-scope shadowing within the same function** is allowed. A
@@ -493,7 +493,7 @@ Scheme-influenced, closure-as-object idiom:
   function, a `{ ... }` block is a local calculation region.
   Rebinding a name there (`let a = transform(a)`) is a common,
   intentional pattern, not a bug. No reason to restrict it.
-* **Globals form a shared vocabulary.** Builtins (`puts`, `to_string`,
+* **Globals form a shared vocabulary.** Builtins (`inspect`, `to_string`,
   `Math`, `IO`) and top-level names are understood to be ambient. Locals
   like `mut min = arr[0]` are an ergonomic idiom, not a confusion
   risk. Requiring renames would be friction without safety gain.
@@ -870,13 +870,13 @@ is inserted:
 * `Float` → shortest round-trip decimal, always with a `.` or an
   exponent so the type is distinguishable from `Long`: `1.0`, `0.5`,
   `-2.5`, `1e-05`, `nan`, `inf`, `-inf`
-* `Array` → `[v1, v2, ...]` with each element's `puts` form (strings
+* `Array` → `[v1, v2, ...]` with each element's `inspect` form (strings
   in brackets are quoted, e.g. `['hi']`)
 * `Object` → `{key: val, mut key2: val2, ...}` in insertion order
 * `Function` → `[function]`
 
 String values inside `"..."` are inserted verbatim (no quotes); this
-is the one place display differs from `puts`.
+is the one place display differs from `inspect`.
 
 Cyclic data (`a.c = a`) displays as `{...}` / `[...]` to avoid
 infinite recursion.
@@ -961,19 +961,19 @@ iteration end and raises if iterated.
 
 ```culebra
 let xs = [10, 20, 30, 40, 50]
-puts(xs[1..3])      # => [20, 30]
-puts(xs[1..=3])     # => [20, 30, 40]
-puts(xs[-3..-1])    # => [30, 40]
-puts(xs[2..])       # => [30, 40, 50]
-puts(xs[..3])       # => [10, 20, 30]
+inspect(xs[1..3])      # => [20, 30]
+inspect(xs[1..=3])     # => [20, 30, 40]
+inspect(xs[-3..-1])    # => [30, 40]
+inspect(xs[2..])       # => [30, 40, 50]
+inspect(xs[..3])       # => [10, 20, 30]
 ```
 
 ```culebra
 let xs = [10, 20, 30, 40, 50]
-puts(xs[1..100])    # => [20, 30, 40, 50]
-puts(xs[3..1])      # => []
+inspect(xs[1..100])    # => [20, 30, 40, 50]
+inspect(xs[3..1])      # => []
 let r = 1..3
-puts(xs[r])         # => [20, 30]
+inspect(xs[r])         # => [20, 30]
 ```
 
 ```culebra
@@ -981,12 +981,12 @@ puts(xs[r])         # => [20, 30]
 mut xs = [10, 20, 30]
 let s = xs[0..2]
 xs[0] = 99
-puts(s)            # => [10, 20]
+inspect(s)            # => [10, 20]
 ```
 
 ```culebra
-puts("hello"[1..3])    # => 'el'
-puts("hello"[1..=3])   # => 'ell'
+inspect("hello"[1..3])    # => 'el'
+inspect("hello"[1..=3])   # => 'ell'
 ```
 
 ### Equality and ordering
@@ -1099,17 +1099,17 @@ their actual write order — matching Python and Ruby Hash semantics.
     bag[k]     = 1                  # runtime String key
     bag[42]    = 'long'
     bag[(1,2)] = 'tuple'
-    puts(bag[k])                    # 1
-    puts(bag[(1,2)])                # 'tuple'
+    inspect(bag[k])                    # 1
+    inspect(bag[(1,2)])                # 'tuple'
 
 String keys unify with the shape-based `obj.foo` path — both forms
 reach the same slot:
 
     mut o = {}
     o['x'] = 1
-    puts(o.x)                       # 1
+    inspect(o.x)                       # 1
     o.y = 2
-    puts(o['y'])                    # 2
+    inspect(o['y'])                    # 2
 
 Existing slots honor their `mut` flag, regardless of which form the
 write uses; `obj[k] = v` on an immutable slot raises `ImmutableError`.
@@ -1143,7 +1143,7 @@ A method call `receiver.name(args)` resolves in this order:
 
 ```culebra
 o = { n: 10, add: fn (x) { x + self.n } }
-puts(o.add(5))                   # 15  (method, self = o)
+inspect(o.add(5))                   # 15  (method, self = o)
 
 double = fn (x) { x * 2 }
 42.double()                      # UFCS → double(42) → 84
@@ -1183,8 +1183,8 @@ is a lightweight alternative that desugars to the same runtime shape:
       run(n)    { self.miles = self.miles + self.mpr * n }
       total()   { self.miles }
     }
-    c = Car.new(5); c.run(3); puts(c.total())
-    puts(c.class)            # 'Car' — nominal tag for match / debugging
+    c = Car.new(5); c.run(3); inspect(c.total())
+    inspect(c.class)            # 'Car' — nominal tag for match / debugging
 
 Semantics:
 
@@ -1225,7 +1225,7 @@ Semantics:
       }
       let c = Shape.circle(4)   # static factory
       let s = Shape.square(3)
-      puts(c.kind)              # 'circle'
+      inspect(c.kind)              # 'circle'
 
   Static methods are not visible through instances (`c.circle(...)`
   raises `TypeError` because the instance has no `circle` property).
@@ -1240,8 +1240,8 @@ Semantics:
         static MAX      = 100
         area ()         { self.radius * self.radius * Circle.PI }
       }
-      puts(Circle.PI)         # 3.14
-      puts(Circle.MAX)        # 100
+      inspect(Circle.PI)         # 3.14
+      inspect(Circle.MAX)        # 100
 
   The value expression can be arbitrary (`static SUM = [1,2,3].sum()`),
   evaluated in the enclosing scope at class declaration time. Like
@@ -1260,8 +1260,8 @@ Semantics:
         new (name) { self.name = name }
       }
       let p = Player.new('rocci')
-      puts(p.score)           # 0
-      puts(p.best)            # 10
+      inspect(p.score)           # 0
+      inspect(p.best)            # 10
       p.tags.push('bird')     # each instance gets its own Array
 
   Initializer semantics (Kotlin's model):
@@ -1301,8 +1301,8 @@ Semantics:
         get name ()  { "circle" }
       }
       let c = Circle.new(4)
-      puts(c.area)          # 50.24  — reads like a field
-      puts(c.area())        # 50.24  — the call spelling also works
+      inspect(c.area)          # 50.24  — reads like a field
+      inspect(c.area())        # 50.24  — the call spelling also works
 
   A getter reads `self` like any method but presents as a property, so a
   fluent chain drops its parentheses (`p.parent.name` rather than
@@ -1390,7 +1390,7 @@ class Grid {
 }
 let g = Grid.new()
 g[1] = 99
-puts(g[1])                  # => 99
+inspect(g[1])                  # => 99
 ```
 
 **Calling (`__call__`).** A class instance can define `__call__(*args)`
@@ -1407,8 +1407,8 @@ class Adder {
   __call__(x)  { self.b + x }
 }
 let add3 = Adder.new(3)
-puts(add3(10))              # => 13
-puts(add3.__call__(10))     # => 13
+inspect(add3(10))              # => 13
+inspect(add3.__call__(10))     # => 13
 ```
 
 A class with `__call__` structurally satisfies the `Function` type, so a
@@ -1419,10 +1419,10 @@ to any `Function`-annotated parameter, and it is invoked through its
 
 ```culebra
 class Scale { new(k) { self.k = k } __call__(x) { x * self.k } }
-puts([1, 2, 3].map(Scale.new(10)))   # => [10, 20, 30]
+inspect([1, 2, 3].map(Scale.new(10)))   # => [10, 20, 30]
 
 fn apply_twice(f: Function, x) { f(f(x)) }
-puts(apply_twice(Scale.new(2), 5))   # => 20
+inspect(apply_twice(Scale.new(2), 5))   # => 20
 ```
 
 `__call__` accepts the full call form — positional, `*args`, and keyword
@@ -1432,7 +1432,7 @@ any method call.
 ### Custom string representation (`__str__`)
 
 Defining a 0-arg `__str__` method on an `Object` lets the value
-supply its own display form for `puts` / `print`, string
+supply its own display form for `inspect` / `print` / `println`, string
 interpolation (`"{x}"`), and `to_string(x)`. The method must
 return a `String`; anything else is a type error. `Object`s
 without `__str__` use the default formatter (`{key: value, ...}`).
@@ -1442,18 +1442,18 @@ without `__str__` use the default formatter (`{key: value, ...}`).
       __str__()  { "Matrix {self.rows}x{self.cols}" }
     }
     m = Matrix.new(2, 3)
-    puts(m)                        # Matrix 2x3
-    puts("shape: {m}")             # 'shape: Matrix 2x3'
+    inspect(m)                     # Matrix 2x3
+    inspect("shape: {m}")          # 'shape: Matrix 2x3'
     to_string(m)                   # 'Matrix 2x3'
 
 The dispatch is top-level only: when `__str__` is involved inside a
-nested structure (`puts([m])`), the outer formatter's default
+nested structure (`inspect([m])`), the outer formatter's default
 recursive walk still uses `str()` for each element, so the custom
 form only appears for the operand passed directly to the display
 hook. Deeper customization can be layered on once a concrete need
 arises.
 
-`__str__` bodies should **not** recursively invoke `puts(self)` or
+`__str__` bodies should **not** recursively invoke `inspect(self)` or
 interpolate `"{self}"` — there is no built-in recursion guard, so
 that form loops until the call stack is exhausted. Produce the
 final string via direct property access (`self.x`) instead.
@@ -1852,9 +1852,9 @@ Example:
     }
     c1 = make_counter()
     c2 = make_counter()
-    puts(c1())   # 1
-    puts(c1())   # 2
-    puts(c2())   # 1, independent
+    inspect(c1())   # 1
+    inspect(c1())   # 2
+    inspect(c2())   # 1, independent
 
 In the JIT, captured mutable variables are allocated in heap **cells**
 so that multiple closures can share the same slot. See §17.
@@ -1932,12 +1932,12 @@ iterator with `has_next()` / `next()`: while `has_next()` is `true`,
 iteration (see §18.5).
 
 ```culebra
-for x in [1, 2, 3] { puts(x) }
+for x in [1, 2, 3] { inspect(x) }
 
-for k in {b: 2, a: 1} { puts(k) }   # keys, ascending
+for k in {b: 2, a: 1} { inspect(k) }   # keys, ascending
 
-for i in 0..10 { puts(i) }          # exclusive (0..9)
-for i in 0..=10 { puts(i) }         # inclusive (0..10)
+for i in 0..10 { inspect(i) }          # exclusive (0..9)
+for i in 0..=10 { inspect(i) }         # inclusive (0..10)
 ```
 
 Range values `a..b` (exclusive) and `a..=b` (inclusive) iterate the
@@ -1949,8 +1949,8 @@ A range takes an optional `by <step>` clause to iterate by something
 other than 1, including descending (`step` negative):
 
 ```culebra
-for i in 0..10 by 2 { puts(i) }      # 0, 2, 4, 6, 8
-for i in 10..0 by -2 { puts(i) }     # 10, 8, 6, 4, 2
+for i in 0..10 by 2 { inspect(i) }      # 0, 2, 4, 6, 8
+for i in 10..0 by -2 { inspect(i) }     # 10, 8, 6, 4, 2
 ```
 
 `step` must not be `0` (raises `ValueError` when the range is
@@ -1969,9 +1969,9 @@ both bind.
 
 ```culebra
 # doctest: skip
-for [a, b] in [[1, 2], [3, 4]] { puts(a + b) }      # array pattern
-for (k, v) in [(1, 'a'), (2, 'b')] { puts(k) }      # tuple pattern
-for k, v in {a: 1, b: 2} { puts("{k}={v}") }        # bare comma == (k, v)
+for [a, b] in [[1, 2], [3, 4]] { inspect(a + b) }      # array pattern
+for (k, v) in [(1, 'a'), (2, 'b')] { inspect(k) }      # tuple pattern
+for k, v in {a: 1, b: 2} { inspect("{k}={v}") }        # bare comma == (k, v)
 for i, v in xs.enumerate() { ... }                  # (index, value) tuples
 ```
 
@@ -2563,7 +2563,7 @@ and Python's `__str__`-style magic methods.
       hello() { "hi, {self.name}" }
     }
 
-    fn greet(x: Greeter) { IO.puts(x.hello()) }
+    fn greet(x: Greeter) { IO.inspect(x.hello()) }
     greet(Bob.new("Alice"))                # → "hi, Alice"
 
 A class missing required methods is rejected at the dispatch
@@ -2798,7 +2798,7 @@ Culebra supports user-raised exceptions via `throw` and catching via
     throw {kind: 'io', msg: 'file not found', path: p}
 
     try { risky() }
-    catch e { puts("error: {e}") }
+    catch e { inspect("error: {e}") }
 
 Semantics:
 
@@ -2851,7 +2851,7 @@ Ctrl+C raises a cooperative, catchable `Interrupted` — Python's
     try {
       serve()                       # long-running loop
     } catch e {
-      puts("shutting down: {e.kind}")   # → Interrupted
+      inspect("shutting down: {e.kind}")   # → Interrupted
       cleanup()
     }
 
@@ -2932,7 +2932,7 @@ User code can branch on `e.kind`:
 
     try { let x = arr[100] }
     catch e {
-      if e.kind == 'IndexError' { puts("out of range at line {e.line}") }
+      if e.kind == 'IndexError' { inspect("out of range at line {e.line}") }
       else { throw e }
     }
 
@@ -3073,7 +3073,7 @@ let x = handle {
 } with ask(resume) {
   resume(10)
 }
-puts(x)     # => 11
+inspect(x)     # => 11
 ```
 
 ### Handling
@@ -3096,7 +3096,7 @@ let r = handle {
 } with fail(resume) {
   "aborted"
 }
-puts(r)     # => 'aborted'
+inspect(r)     # => 'aborted'
 ```
 
 #### Multiple operations, and a `return` clause
@@ -3115,7 +3115,7 @@ let out = handle {
 } with get(k) { k(cell) }
   with put(v, k) { cell = v; k(nil) }
   with return(v) { "final={v}" }
-puts(out)   # => 'final=5'
+inspect(out)   # => 'final=5'
 ```
 
 The `return` clause applies only to *normal* completion. When a handler aborts
@@ -3136,7 +3136,7 @@ let all = handle {
 } with choose(a, b, k) {
   [k(a), k(b)]
 }
-puts(all)   # => [[11, 21], [12, 22]]
+inspect(all)   # => [[11, 21], [12, 22]]
 ```
 
 Forks share referenced heap values (arrays, objects) — the fork is a shallow
@@ -3155,7 +3155,7 @@ effect fn double() {
   let n = perform ask2()
   n * 2
 }
-puts(handle { double() } with ask2(k) { k(21) })   # => 42
+inspect(handle { double() } with ask2(k) { k(21) })   # => 42
 ```
 
 ### Plain functions and effects
@@ -3171,7 +3171,7 @@ fn greet() {                     # a plain fn performing an effect
   let name = perform ask()
   "hi " + name
 }
-puts(handle { greet() } with ask(k) { k("ana") })   # => 'hi ana'
+inspect(handle { greet() } with ask(k) { k("ana") })   # => 'hi ana'
 ```
 
 What makes this work is a classification of each handler clause at parse
@@ -3212,7 +3212,7 @@ effect fn work() {
     base + perform inner()
   } with inner(k) { k(100) }
 }
-puts(handle { work() } with outer(k) { k(5) })    # => 105
+inspect(handle { work() } with outer(k) { k(5) })    # => 105
 ```
 
 Effects compose with generators in both directions — a `handle` expression
@@ -3224,7 +3224,7 @@ fn doubled() {
   yield handle { perform scale() * 2 } with scale(k) { k(10) }
   yield 7
 }
-puts(doubled().collect())    # => [20, 7]
+inspect(doubled().collect())    # => [20, 7]
 ```
 
 ### Semantics and limitations
@@ -3366,7 +3366,7 @@ make_thing = fn (id) {
   a.other = b
   b.other = a
 }                # both drop at the block's exit, despite the cycle
-puts(log)        # => ['b', 'a']
+inspect(log)        # => ['b', 'a']
 ```
 
 The owning scope is wherever the cycle last escaped to: a cycle that
@@ -3401,7 +3401,7 @@ closures-as-objects and works out of the box:
 
 ```culebra
 make_thing = fn () {
-  { drop: fn () { puts('cleaned') } }   # captures make_thing's env
+  { drop: fn () { inspect('cleaned') } }   # captures make_thing's env
 }
 {
   let t = make_thing()                  # block-scoped binding
@@ -3435,7 +3435,7 @@ shadowed by user code (for `String`, which has no property store; for
 `Array`/`Object`, a user-defined property of the same name wins and
 the built-in is a fallback).
 
-Global built-in functions (`puts`, `to_string`, `Math.*`, `IO.*`,
+Global built-in functions (`inspect`, `to_string`, `Math.*`, `IO.*`,
 matcher family `assert_true` / `assert_eq` / etc.) are specified
 separately in [`docs/stdlib.md`](stdlib.md).
 
@@ -3493,10 +3493,10 @@ receiver is never mutated.
 
 ```culebra
 # 'é' is 2 UTF-8 bytes, so 'café' is 5 bytes
-puts('café'.bytes().collect())          # => [99, 97, 102, 195, 169]
-puts(String.from_code_point(233))       # => 'é'
-puts(String.from_bytes([99, 97, 102, 195, 169]))   # => 'café'
-puts(String.from_code_points([99, 97, 102, 233]))  # => 'café'
+inspect('café'.bytes().collect())          # => [99, 97, 102, 195, 169]
+inspect(String.from_code_point(233))       # => 'é'
+inspect(String.from_bytes([99, 97, 102, 195, 169]))   # => 'café'
+inspect(String.from_code_points([99, 97, 102, 233]))  # => 'café'
 ```
 
 #### StringView
@@ -3509,10 +3509,10 @@ created it:
 
 ```culebra
 let v = 'hello world'.slice(6, 11)
-puts(v)                              # 'world'
-puts(v == 'world')                   # true  (byte equality across flavors)
-puts(type_of(v))                     # 'StringView'
-puts(v.to_string())                  # 'world' (materialized String)
+inspect(v)                              # 'world'
+inspect(v == 'world')                   # true  (byte equality across flavors)
+inspect(type_of(v))                     # 'StringView'
+inspect(v.to_string())                  # 'world' (materialized String)
 ```
 
 Use `.to_string()` when you need an owning `String` (storing in a
@@ -3528,21 +3528,21 @@ once with `.to_string()` in that case. (Object-key normalization
 between `String` and `StringView` is not a limitation — see §18.3.)
 
 ```culebra
-puts('hello'.size())              # 5
-puts('HeLLo'.lower())             # 'hello'
-puts('  hi  '.trim())             # 'hi'
-puts('a,b,c'.split(','))          # ['a', 'b', 'c']
-puts('hello'.slice(1, 4))         # 'ell'
-puts('hello'.slice(-3, -1))       # 'll'
+inspect('hello'.size())              # 5
+inspect('HeLLo'.lower())             # 'hello'
+inspect('  hi  '.trim())             # 'hi'
+inspect('a,b,c'.split(','))          # ['a', 'b', 'c']
+inspect('hello'.slice(1, 4))         # 'ell'
+inspect('hello'.slice(-3, -1))       # 'll'
 
 # Three views of the same string
-puts('café'.size())               # 5  (bytes)
-puts('café'.code_points().count()) # 4  (scalars)
-puts('café'.graphemes().count())   # 4  (clusters)
+inspect('café'.size())               # 5  (bytes)
+inspect('café'.code_points().count()) # 4  (scalars)
+inspect('café'.graphemes().count())   # 4  (clusters)
 
 # Emoji ZWJ sequence: 5 scalars, 1 grapheme
-puts('👨‍👩‍👧'.code_points().count())  # 5
-puts('👨‍👩‍👧'.graphemes().count())    # 1
+inspect('👨‍👩‍👧'.code_points().count())  # 5
+inspect('👨‍👩‍👧'.graphemes().count())    # 1
 
 # Numeric ops via code_points
 upper = 'Hello World'.code_points()
@@ -3600,24 +3600,24 @@ return a new `Array` and leave the receiver unchanged.
 ```culebra
 mut a = [1, 2, 3]
 a.push(4)
-puts(a.pop())                      # 4
-puts([10, 20, 30, 40].slice(1, 3)) # [20, 30]
-puts(['a', 'b', 'c'].join('-'))    # 'a-b-c'
-puts([1, 2, 3].contains(2))        # true
-puts([10, 20, 30].index_of(99))    # -1
+inspect(a.pop())                      # 4
+inspect([10, 20, 30, 40].slice(1, 3)) # [20, 30]
+inspect(['a', 'b', 'c'].join('-'))    # 'a-b-c'
+inspect([1, 2, 3].contains(2))        # true
+inspect([10, 20, 30].index_of(99))    # -1
 
-puts([1, 2, 3].map(fn (x) { x * x }))           # [1, 4, 9]
-puts([1, 2, 3, 4].filter(fn (x) { x % 2 == 0 })) # [2, 4]
-puts([1, 2, 3, 4].reduce(0, fn (acc, x) { acc + x })) # 10
+inspect([1, 2, 3].map(fn (x) { x * x }))           # [1, 4, 9]
+inspect([1, 2, 3, 4].filter(fn (x) { x % 2 == 0 })) # [2, 4]
+inspect([1, 2, 3, 4].reduce(0, fn (acc, x) { acc + x })) # 10
 
-puts([3, 1, 4, 1, 5].find(fn (x) { x > 3 }))    # 4
-puts([1, 2, 3].any(fn (x) { x > 2 }))           # true
-puts([1, 2, 3].all(fn (x) { x > 0 }))           # true
-puts([1, 2, 3].flat_map(fn (x) { [x, x * 10] })) # [1, 10, 2, 20, 3, 30]
+inspect([3, 1, 4, 1, 5].find(fn (x) { x > 3 }))    # 4
+inspect([1, 2, 3].any(fn (x) { x > 2 }))           # true
+inspect([1, 2, 3].all(fn (x) { x > 0 }))           # true
+inspect([1, 2, 3].flat_map(fn (x) { [x, x * 10] })) # [1, 10, 2, 20, 3, 30]
 
 mut words = ['banana', 'fig', 'apple']
 words.sort_by(fn (s) { s.size() })
-puts(words)                                      # ['fig', 'apple', 'banana']
+inspect(words)                                      # ['fig', 'apple', 'banana']
 ```
 
 **Callback arity.** A higher-order method calls its callback with a fixed
@@ -3638,8 +3638,8 @@ A `*args` callback absorbs whatever it is given, so it works at any arity —
 the per-call arguments arrive as the rest Array:
 
 ```culebra
-puts([10, 20].map(fn (*xs) { xs.size() }))                # => [1, 1]
-puts([1, 2, 3].reduce(0, fn (a, *xs) { a + xs.size() }))  # => 3
+inspect([10, 20].map(fn (*xs) { xs.size() }))                # => [1, 1]
+inspect([1, 2, 3].reduce(0, fn (a, *xs) { a + xs.size() }))  # => 3
 ```
 
 This is why `range` / `iota` (variadic builtins) can be passed directly as
@@ -3669,21 +3669,21 @@ A `String` and a byte-equal `StringView` (e.g. `s[0..2]`) are the **same key** �
 
 ```culebra
 o = {b: 2, a: 1, c: 3}
-puts(o.keys())            # ['b', 'a', 'c']  (insertion order)
-puts(o.values().collect()) # [2, 1, 3]
-puts(o.has('a'))          # true
-puts(o.get('z', 0))       # 0          (absent -> fallback, no insert)
+inspect(o.keys())            # ['b', 'a', 'c']  (insertion order)
+inspect(o.values().collect()) # [2, 1, 3]
+inspect(o.has('a'))          # true
+inspect(o.get('z', 0))       # 0          (absent -> fallback, no insert)
 
 # Group items by their first letter (StringView keys):
 mut groups = {}
 for w in ['apple', 'avocado', 'banana'] {
   groups.get_or_put(w[0..1], || []).push(w)
 }
-puts(groups)              # {a: ['apple', 'avocado'], b: ['banana']}
+inspect(groups)              # {a: ['apple', 'avocado'], b: ['banana']}
 
 mut p = {a: 1, b: 2}
 p.remove('a')
-puts(p)                   # {b: 2}
+inspect(p)                   # {b: 2}
 ```
 
 ### 17.4 Special identifiers
@@ -3740,9 +3740,9 @@ natural loop is `for k, v in obj` and `obj.iter()` is the entries view
 `obj.keys()` (an `Array`) and `obj.values()` (a lazy iterator):
 
 ```culebra
-for k, v in {a: 1, b: 2} { puts("{k}={v}") }   # 'a=1' then 'b=2'
-for k in {a: 1, b: 2}.keys() { puts(k) }       # 'a' then 'b'
-for v in {a: 1, b: 2}.values() { puts(v) }     # 1 then 2
+for k, v in {a: 1, b: 2} { inspect("{k}={v}") }   # 'a=1' then 'b=2'
+for k in {a: 1, b: 2}.keys() { inspect(k) }       # 'a' then 'b'
+for v in {a: 1, b: 2}.values() { inspect(v) }     # 1 then 2
 ```
 
 **Object iter and mutation**: iteration is over a snapshot of the keys
@@ -3756,7 +3756,7 @@ the same protocol.
 ```culebra
 mut o = {mut x: 1, mut y: 2}
 for k, v in o.iter() { o[k] = 99 }   # update existing values
-puts(o.x)            # => 99
+inspect(o.x)            # => 99
 ```
 
 ```culebra
@@ -3764,7 +3764,7 @@ mut books = {a: ('alpha', 1)}
 for reading, n in books.values() {   # add aliases while iterating
   if !books.has(reading) { books[reading] = (reading, n) }
 }
-puts(books.has('alpha'))   # => true
+inspect(books.has('alpha'))   # => true
 ```
 
 **Iterator methods**: any Object exposing the iterator interface —
@@ -3778,7 +3778,7 @@ concrete value.
 
 ```culebra
 fn nums() { yield 1; yield 2; yield 3; yield 4 }
-puts(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
+inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 ```
 
 | Non-terminal | Result | Notes |
@@ -3845,7 +3845,7 @@ countdown = fn (start) {
   }
 }
 
-for x in countdown(3) { puts(x) }              # 3, 2, 1
+for x in countdown(3) { inspect(x) }              # 3, 2, 1
 ```
 
 **JIT**: everything in this section — for-in driving the protocol,
@@ -3875,18 +3875,18 @@ The matcher family (`assert_true` / `assert_eq` / `assert_throws` /
 `assert_close` / etc.) is a third group of globals — see
 [`docs/stdlib.md`](stdlib.md) for the full reference. The broader
 standard library (namespaced under `Math`, `IO`, `Sys`) is also
-documented in `stdlib.md`. Output primitives `puts` and `print` are
-CLI-installed globals (§22).
+documented in `stdlib.md`. Output primitives `inspect`, `print`, and
+`println` are CLI-installed globals (§22).
 
 All of these globals are **first-class values**: bind one to a variable
 or hand it to a higher-order function and it behaves like any closure,
 on both backends.
 
 ```culebra
-puts([1, 2, 3].map(type_of))                     # => ['Long', 'Long', 'Long']
-puts([1, 2, 3].map(range).map(|r| r.collect()))  # => [[0], [0, 1], [0, 1, 2]]
+inspect([1, 2, 3].map(type_of))                     # => ['Long', 'Long', 'Long']
+inspect([1, 2, 3].map(range).map(|r| r.collect()))  # => [[0], [0, 1], [0, 1, 2]]
 let f = range
-puts(f(0, 10, step: 2).collect())                # => [0, 2, 4, 6, 8]
+inspect(f(0, 10, step: 2).collect())                # => [0, 2, 4, 6, 8]
 ```
 
 A direct call is still the fast path; the closure form is used only
@@ -3910,9 +3910,9 @@ Convert `v` to `Long`:
 non-numeric / non-string argument.
 
 ```culebra
-puts(to_long('42'))    # 42
-puts(to_long('-7'))    # -7
-puts(to_long(3.9))     # 3
+inspect(to_long('42'))    # 42
+inspect(to_long('-7'))    # -7
+inspect(to_long(3.9))     # 3
 ```
 
 ### `to_float(v: Any) -> Float`
@@ -3927,9 +3927,9 @@ Convert `v` to `Float`:
 * Other types raise `type error`.
 
 ```culebra
-puts(to_float(3))         # 3.0
-puts(to_float('1.5'))     # 1.5
-puts(to_float('1e-5'))    # 1e-05
+inspect(to_float(3))         # 3.0
+inspect(to_float('1.5'))     # 1.5
+inspect(to_float('1e-5'))    # 1e-05
 ```
 
 ### `to_string(v: Any) -> String`
@@ -3941,11 +3941,11 @@ carries either a decimal point or an exponent, so the type is
 visually distinguishable from `Long`.
 
 ```culebra
-puts(to_string(42))         # '42'
-puts(to_string(1.0))        # '1.0'
-puts(to_string(1e-5))       # '1e-05'
-puts(to_string([1, 2]))     # '[1, 2]'
-puts(to_string('hi'))       # 'hi'
+inspect(to_string(42))         # '42'
+inspect(to_string(1.0))        # '1.0'
+inspect(to_string(1e-5))       # '1e-05'
+inspect(to_string([1, 2]))     # '[1, 2]'
+inspect(to_string('hi'))       # 'hi'
 ```
 
 ### `type_of(v: Any) -> String`
@@ -3955,12 +3955,12 @@ Return the runtime type name of `v`. One of
 `'Object'`, `'Function'`, `'Tensor'`, `'Tuple'`, `'Set'`.
 
 ```culebra
-puts(type_of(42))          # 'Long'
-puts(type_of(1.5))         # 'Float'
-puts(type_of('hi'))        # 'String'
-puts(type_of([1, 2]))      # 'Array'
-puts(type_of((1, 2)))      # 'Tuple'
-puts(type_of({1, 2}))      # 'Set'
+inspect(type_of(42))          # 'Long'
+inspect(type_of(1.5))         # 'Float'
+inspect(type_of('hi'))        # 'String'
+inspect(type_of([1, 2]))      # 'Array'
+inspect(type_of((1, 2)))      # 'Tuple'
+inspect(type_of({1, 2}))      # 'Set'
 ```
 
 ### `range(n: Long, *, step: Long = 1) -> Iterator` / `range(start: Long, end: Long, *, step: Long = 1) -> Iterator`
@@ -3979,15 +3979,15 @@ the range size.
   `ValueError`.
 
 ```culebra
-for i in range(5)              { puts(i) }   # 0, 1, 2, 3, 4
-for i in range(2, 6)           { puts(i) }   # 2, 3, 4, 5
-for i in range(0, 10, step: 2) { puts(i) }   # 0, 2, 4, 6, 8
-for i in range(5, 0, step: -1) { puts(i) }   # 5, 4, 3, 2, 1
+for i in range(5)              { inspect(i) }   # 0, 1, 2, 3, 4
+for i in range(2, 6)           { inspect(i) }   # 2, 3, 4, 5
+for i in range(0, 10, step: 2) { inspect(i) }   # 0, 2, 4, 6, 8
+for i in range(5, 0, step: -1) { inspect(i) }   # 5, 4, 3, 2, 1
 
 # Constant memory even for huge bounds
 for i in range(1000000000) {
   if i > 3 { break }
-  puts(i)
+  inspect(i)
 }
 ```
 
@@ -4008,9 +4008,9 @@ expects an `Array`).
   `start >= end`, an empty array.
 
 ```culebra
-puts(iota(3))         # [0, 1, 2]
-puts(iota(2, 5))      # [2, 3, 4]
-puts(iota(5, 2))      # []
+inspect(iota(3))         # [0, 1, 2]
+inspect(iota(2, 5))      # [2, 3, 4]
+inspect(iota(5, 2))      # []
 ```
 
 ### `__ARGS__` (variadic catch-all binding)
@@ -4023,7 +4023,7 @@ values without declaring an explicit `**rest` (which catches
 
 ```culebra
 let logger = fn (level) {
-  puts("[{level}] " + __ARGS__.join(' '))
+  inspect("[{level}] " + __ARGS__.join(' '))
 }
 logger('info', 'building', 'fizzbuzz')   # → '[info] building fizzbuzz'
 ```
@@ -4048,14 +4048,14 @@ introspection:
 ```culebra
 fn greet(name: String, *, prefix = "hi") { "{prefix}, {name}" }
 
-puts(greet.name)                  # → 'greet'
-puts(greet.return_type)           # → ''
+inspect(greet.name)                  # → 'greet'
+inspect(greet.return_type)           # → ''
 let ps = greet.params
-puts(ps.size())                   # → 2
-puts(ps[0].name)                  # → 'name'
-puts(ps[0].type)                  # → 'String'
-puts(ps[1].kw_only)               # → true
-puts(ps[1].has_default)           # → true
+inspect(ps.size())                   # → 2
+inspect(ps[0].name)                  # → 'name'
+inspect(ps[0].type)                  # → 'String'
+inspect(ps[1].kw_only)               # → true
+inspect(ps[1].has_default)           # → true
 ```
 
 `fn.params` returns a fresh `Array` each access; mutating it has no
@@ -4460,17 +4460,18 @@ after each accepted line so a crash mid-session doesn't lose it
 
 ### CLI-installed globals
 
-The CLI binary adds two globals to the script environment before
+The CLI binary adds three globals to the script environment before
 running user code:
 
-| Global  | Aliased to  |
-|---------|-------------|
-| `puts`  | `IO.puts`   |
-| `print` | `IO.print`  |
+| Global    | Aliased to    |
+|-----------|---------------|
+| `inspect` | `IO.inspect`  |
+| `print`   | `IO.print`    |
+| `println` | `IO.println`  |
 
 These are convenience shortcuts for the most common output calls;
 they point to the same function values that live under `IO`, so
-`puts(x)` and `IO.puts(x)` are fully equivalent. Embedders that use
+`inspect(x)` and `IO.inspect(x)` are fully equivalent. Embedders that use
 `culebra::environment()` directly do not receive these aliases —
 their environment contains only `Math`, `IO`, `Sys`, and the core
 built-ins from §19.

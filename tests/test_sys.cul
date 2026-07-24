@@ -52,4 +52,4 @@ m.set_env("CULEBRA_SYS_BARE", "ok")
 assert_eq(m.env("CULEBRA_SYS_BARE"), "ok")
 assert_true(m.getcwd() != "")
 
-IO.puts("test_sys OK")
+IO.inspect("test_sys OK")

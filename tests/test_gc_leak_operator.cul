@@ -15,4 +15,4 @@ assert_lt(measure(fn () {
   while k < 200 { acc = acc + Num.new(k); k = k + 1 }
   acc.data
 }), 200)
-puts("gc leak [operator]: no leak")
+inspect("gc leak [operator]: no leak")

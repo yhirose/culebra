@@ -30,7 +30,7 @@ assert_eq(acc2, [1, 2, 3])
 mut k = 0
 while k < 1 { leaked = 99; k = k + 1 }
 mut saw_err = false
-try { puts(leaked) } catch e { saw_err = true }
+try { inspect(leaked) } catch e { saw_err = true }
 assert_eq(saw_err, true)
 
 // 4. An outer `mut` accumulator is still reassigned from inside via the scope
@@ -69,4 +69,4 @@ fn defer_break() {
 }
 assert_eq(defer_break(), [0, "cleanup", 1, "cleanup", "cleanup"])
 
-IO.puts("test_while_scope OK")
+IO.inspect("test_while_scope OK")

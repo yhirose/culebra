@@ -130,4 +130,4 @@ fn dedup(x: Long | Float) -> String { "second" }
 assert_eq(dedup(1), "second")
 assert_eq(dedup(1.5), "second")
 
-IO.puts("test_union_types OK")
+IO.inspect("test_union_types OK")

@@ -30,4 +30,4 @@ assert_eq(``.size(), 0)
 // --- backtick string composes like any String ---
 assert_eq((`ab` + `cd`).upper(), "ABCD")
 
-puts("test_raw_string: ok")
+inspect("test_raw_string: ok")

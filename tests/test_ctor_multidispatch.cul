@@ -110,4 +110,4 @@ class Cell<T> {
 assert_eq(Cell(7).kind, "one")
 assert_eq(Cell(1, 2).kind, "two")
 
-puts("ctor multidispatch OK")
+inspect("ctor multidispatch OK")

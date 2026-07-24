@@ -15,11 +15,11 @@ fn mk_distinct() {
         mut i: 0,
         has_next: fn () { self.i < 3 },
         next: fn () { self.i = self.i + 1; self.i },
-        dispose: fn () { puts("distinct: disposed") },
-        drop: fn () { puts("distinct: iter dropped") },
+        dispose: fn () { inspect("distinct: disposed") },
+        drop: fn () { inspect("distinct: iter dropped") },
       }
     },
-    drop: fn () { puts("distinct: iterable dropped") },
+    drop: fn () { inspect("distinct: iterable dropped") },
   }
 }
 
@@ -28,20 +28,20 @@ fn run_distinct() {
   for x in g {
     if x > 1 { break }
   }
-  puts("distinct: after loop")
+  inspect("distinct: after loop")
 }
 run_distinct()
-puts("distinct: after run")
+inspect("distinct: after run")
 
 # Fresh iterable (no binding): its drop fires at the loop's own scope exit.
 fn run_fresh() {
   for x in mk_distinct() {
     if x > 1 { break }
   }
-  puts("fresh: after loop")
+  inspect("fresh: after loop")
 }
 run_fresh()
-puts("fresh: after run")
+inspect("fresh: after run")
 
 # Self-returning iterator: still usable after the loop, drop at scope exit.
 fn mk_self() {
@@ -50,8 +50,8 @@ fn mk_self() {
     iter: fn () { self },
     has_next: fn () { self.i < 3 },
     next: fn () { self.i = self.i + 1; self.i },
-    dispose: fn () { puts("self: disposed") },
-    drop: fn () { puts("self: dropped") },
+    dispose: fn () { inspect("self: disposed") },
+    drop: fn () { inspect("self: dropped") },
   }
 }
 
@@ -60,15 +60,15 @@ fn run_self() {
   for x in g {
     if x > 1 { break }
   }
-  puts("self: after loop")
-  puts("self: usable " + g.has_next().to_string())
+  inspect("self: after loop")
+  inspect("self: usable " + g.has_next().to_string())
 }
 run_self()
-puts("self: after run")
+inspect("self: after run")
 
 # Generator with a body defer standing in for dispose observability.
 fn gen() {
-  defer { puts("gen: disposed") }
+  defer { inspect("gen: disposed") }
   yield 1
   yield 2
   yield 3
@@ -78,7 +78,7 @@ fn run_gen() {
   for x in gen() {
     if x > 1 { break }
   }
-  puts("gen: after loop")
+  inspect("gen: after loop")
 }
 run_gen()
-puts("gen: after run")
+inspect("gen: after run")

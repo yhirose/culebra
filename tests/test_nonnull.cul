@@ -27,4 +27,4 @@ fn pick(v) -> Long { (v ?? 0)!! }
 assert_eq(pick(nil), 0)
 assert_eq(pick(9), 9)
 
-IO.puts("test_nonnull OK")
+IO.inspect("test_nonnull OK")

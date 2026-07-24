@@ -34,4 +34,4 @@ fn boom() { hits = hits + 1; 99 }
 assert_eq(10 < 5 < boom(), false)
 assert_eq(hits, 0)
 
-IO.puts("test_compare_chain OK")
+IO.inspect("test_compare_chain OK")

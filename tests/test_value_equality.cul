@@ -37,4 +37,4 @@ assert_eq(P.new(1, 2) == Q.new(1, 2), false)
 assert_eq([1, 2, 3], [1, 2, 3])
 assert_eq({a: 1, b: [2, 3]}, {a: 1, b: [2, 3]})
 
-IO.puts("test_value_equality OK")
+IO.inspect("test_value_equality OK")

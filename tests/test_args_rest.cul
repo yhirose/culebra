@@ -52,4 +52,4 @@ assert_eq(introspect.params[0].name, "a")
 // but that aborts module parse, so it can't be asserted from within the
 // same module.)
 
-IO.puts("test_args_rest OK")
+IO.inspect("test_args_rest OK")

@@ -229,14 +229,14 @@ check_signotify() {
 
 # REPL: Ctrl+C interrupts the running eval and returns to the prompt instead of
 # killing the session. The program (fed from a plain file) evals `mut i=0`, then
-# blocks in the tight loop while `puts(42)` waits unread; a SIGINT interrupts the
-# loop, the REPL reads `puts(42)`, prints it, hits EOF, and exits 0. We assert
+# blocks in the tight loop while `inspect(42)` waits unread; a SIGINT interrupts the
+# loop, the REPL reads `inspect(42)`, prints it, hits EOF, and exits 0. We assert
 # the survival ("42" runs after the interrupt) — robust across the two backends'
 # differing value-echo formatting.
 cat > "$TMP/repl.cul" <<'EOF'
 mut i=0
 while true { i=i+1 }
-puts(42)
+inspect(42)
 EOF
 
 # check_repl <desc> <warmup> -- <command...>

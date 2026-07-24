@@ -48,4 +48,4 @@ assert_eq(e, "TypeError")
 let e2 = try { [1, 2].sorted(1); nil } catch e { e.kind }
 assert_eq(e2, "TypeError")
 
-IO.puts("test_sort OK")
+IO.inspect("test_sort OK")

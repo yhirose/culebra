@@ -20,7 +20,7 @@ Random.seed(42)
 
 let data_path = 'benchmarks/microgpt/names.txt'
 if !FS.exists(data_path) {
-  puts("error: {data_path} missing. Run `just fetch-names` first.")
+  inspect("error: {data_path} missing. Run `just fetch-names` first.")
   Sys.exit(1)
 }
 
@@ -30,14 +30,14 @@ for line in FS.read(data_path).split("\n") {
   if s.size() > 0 { docs.push(s) }
 }
 Random.shuffle(docs)
-puts("num docs: {docs.size()}")
+inspect("num docs: {docs.size()}")
 
 mut uchars = []
 for d in docs { for c in d { if !uchars.contains(c) { uchars.push(c) } } }
 uchars.sort_by(|c| c)
 let BOS = uchars.size()
 let vocab_size = uchars.size() + 1
-puts("vocab size: {vocab_size}")
+inspect("vocab size: {vocab_size}")
 
 # --- Hyperparameters ---
 
@@ -138,7 +138,7 @@ for layer in layers {
   params.push(layer.attn_wv); params.push(layer.attn_wo)
   params.push(layer.mlp_fc1); params.push(layer.mlp_fc2)
 }
-puts("num params: {params.size()} weight matrices")
+inspect("num params: {params.size()} weight matrices")
 
 # === Forward ===
 #
@@ -250,14 +250,14 @@ while step < num_steps {
 
   let l_val = loss.item()
   if (step + 1) % 5 == 0 || step == 0 {
-    puts("step {step+1} / {num_steps} | loss {l_val}")
+    inspect("step {step+1} / {num_steps} | loss {l_val}")
   }
   final_loss = l_val
   step = step + 1
 }
 
 let train_time = Sys.time() - train_t0
-puts("final loss: {final_loss} (train {train_time}s, {1000.0 * train_time / to_float(num_steps)} ms/step)")
+inspect("final loss: {final_loss} (train {train_time}s, {1000.0 * train_time / to_float(num_steps)} ms/step)")
 
 # === Inference: sample new names ===
 
@@ -265,7 +265,7 @@ let n_samples = if Sys.argv.size() > 1 { to_long(Sys.argv[1]) } else { 5 }
 let temperature = 0.5
 
 if n_samples > 0 {
-  puts('--- inference (new, hallucinated names) ---')
+  inspect('--- inference (new, hallucinated names) ---')
   let pop = range(vocab_size).collect()
 
   mut sample_idx = 0
@@ -288,7 +288,7 @@ if n_samples > 0 {
       if token_id == BOS { break }
       sample.push(uchars[token_id])
     }
-    puts("sample {sample_idx+1}: {sample.join('')}")
+    inspect("sample {sample_idx+1}: {sample.join('')}")
     sample_idx = sample_idx + 1
   }
 }

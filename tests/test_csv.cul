@@ -134,4 +134,4 @@ let e8 = try { CSV.parse(tdata, header: 5); nil } catch e { e }
 assert_eq(e8.kind, "TypeError")
 assert_eq(e8.message, "type error: parameter 'header' expects Bool")
 
-puts("csv tests passed")
+inspect("csv tests passed")

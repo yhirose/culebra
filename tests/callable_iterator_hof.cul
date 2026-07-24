@@ -9,20 +9,20 @@ class Dbl { new() {} __call__(x) { x * 2 } }
 class Pos { new() {} __call__(x) { x > 0 } }
 
 # Lazy combinators
-puts([1, 2, 3].iter().map(Dbl.new()).collect())
-puts([1, -2, 3].iter().filter(Pos.new()).collect())
-puts([1, -2, 3].iter().take_while(Pos.new()).collect())
+inspect([1, 2, 3].iter().map(Dbl.new()).collect())
+inspect([1, -2, 3].iter().filter(Pos.new()).collect())
+inspect([1, -2, 3].iter().take_while(Pos.new()).collect())
 # Chained: callable feeds a downstream lambda combinator
-puts([1, 2, 3].iter().map(Dbl.new()).filter(|x| x > 2).collect())
+inspect([1, 2, 3].iter().map(Dbl.new()).filter(|x| x > 2).collect())
 
 # Terminal iterator ops
-puts([1, -2, 3].iter().any(Pos.new()))
-puts([1, -2, 3].iter().all(Pos.new()))
-puts([1, -2, 3].iter().find(Pos.new()))
+inspect([1, -2, 3].iter().any(Pos.new()))
+inspect([1, -2, 3].iter().all(Pos.new()))
+inspect([1, -2, 3].iter().find(Pos.new()))
 mut total = 0
 [1, 2, 3].iter().for_each(Dbl.new())   # side-effect-free here, just must not error
-puts("for_each ok")
+inspect("for_each ok")
 
 # Eager Array HOFs still accept it (regression guard)
-puts([1, 2, 3].map(Dbl.new()))
-puts([1, -2, 3].filter(Pos.new()))
+inspect([1, 2, 3].map(Dbl.new()))
+inspect([1, -2, 3].filter(Pos.new()))

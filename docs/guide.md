@@ -104,7 +104,7 @@ A Culebra source file uses the `.cul` extension. Run it with the
 `culebra` binary:
 
 ```bash
-echo "puts('hello, culebra!')" > hello.cul
+echo "inspect('hello, culebra!')" > hello.cul
 ./build/culebra hello.cul            # interpreter
 ./build/culebra --jit hello.cul      # JIT (same output)
 ./build/culebra --jit-faststart hello.cul # JIT, fast startup
@@ -126,27 +126,27 @@ is to omit `;` at end-of-line.
 
 ```culebra
 # this is a comment
-puts('hello')          # => 'hello'
+inspect('hello')          # => 'hello'
 ```
 
-`puts` prints values in *inspect* form, so strings appear with
-surrounding quotes (`'hello'`) and reference types in their literal
-shape. Use `print` for raw, unquoted text (it also omits the trailing
-newline) — see Ch.12.
+`inspect` prints values in quoted, inspectable form, so strings appear
+with surrounding quotes (`'hello'`) and reference types in their literal
+shape. Use `println` for raw, unquoted text with a trailing newline, or
+`print` to omit the newline too — see Ch.15.
 
 ## 2. Values, bindings, and control flow
 
 ### 2.1 The eight types
 
 ```culebra
-puts(type_of(nil))            # => 'Nil'
-puts(type_of(true))           # => 'Bool'
-puts(type_of(42))             # => 'Long'
-puts(type_of(3.14))           # => 'Float'
-puts(type_of('hi'))           # => 'String'
-puts(type_of([1, 2]))         # => 'Array'
-puts(type_of({a: 1}))         # => 'Object'
-puts(type_of(fn () { 1 }))    # => 'Function'
+inspect(type_of(nil))            # => 'Nil'
+inspect(type_of(true))           # => 'Bool'
+inspect(type_of(42))             # => 'Long'
+inspect(type_of(3.14))           # => 'Float'
+inspect(type_of('hi'))           # => 'String'
+inspect(type_of([1, 2]))         # => 'Array'
+inspect(type_of({a: 1}))         # => 'Object'
+inspect(type_of(fn () { 1 }))    # => 'Function'
 ```
 
 ### 2.2 Bindings: bare, `let`, `mut`
@@ -157,7 +157,7 @@ let y = 20          # let: new immutable binding (must not shadow outer)
 mut z = 30          # mut: new mutable binding
 z = z + 1           # mut allows reassignment
 z += 1              # compound (`-= *= /= %= **= @=` work the same way)
-puts(z)             # => 32
+inspect(z)             # => 32
 ```
 
 A bare assignment searches outward through enclosing scopes and
@@ -188,8 +188,8 @@ make = fn () {
   }
 }
 c = make()
-puts(c())                     # => 1
-puts(c())                     # => 2
+inspect(c())                     # => 1
+inspect(c())                     # => 2
 ```
 
 ### 2.4 Control flow
@@ -200,22 +200,22 @@ branch. `while` and `for` are statements (value is `nil`).
 ```culebra
 x = 7
 sign = if x > 0 { 1 } else if x < 0 { -1 } else { 0 }
-puts(sign)                    # => 1
+inspect(sign)                    # => 1
 
 mut i = 0
-while i < 3 { puts(i); i = i + 1 }
+while i < 3 { inspect(i); i = i + 1 }
 # => |
 # 0
 # 1
 # 2
 
-for n in 0..3   { puts(n) }   # exclusive range
+for n in 0..3   { inspect(n) }   # exclusive range
 # => |
 # 0
 # 1
 # 2
 
-for n in 0..=2  { puts(n) }   # inclusive range
+for n in 0..=2  { inspect(n) }   # inclusive range
 # => |
 # 0
 # 1
@@ -235,21 +235,21 @@ rule set and design rationale: [language.md §6](language.md).
 
 ```culebra
 add = fn (a, b) { a + b }
-puts(add(2, 3))               # => 5
+inspect(add(2, 3))               # => 5
 
 # Type annotations are optional; see Ch.14
 add_typed = fn (a: Long, b: Long) -> Long { a + b }
-puts(add_typed(2, 3))         # => 5
+inspect(add_typed(2, 3))         # => 5
 
 # |x| expr is shorthand for fn (x) { expr }
 square = |x| x * x
-puts(square(7))               # => 49
+inspect(square(7))               # => 49
 
 # Use `fn` for recursion (the function refers to itself)
 fib = fn (x) {
   if x < 2 { x } else { fn(x - 2) + fn(x - 1) }
 }
-puts(fib(10))                 # => 55
+inspect(fib(10))                 # => 55
 ```
 
 ### 3.2 Closures
@@ -263,9 +263,9 @@ make_counter = fn () {
   fn () { n = n + 1; n }   # bare `n = ...` reassigns the captured `n`
 }
 c = make_counter()
-puts(c())                     # => 1
-puts(c())                     # => 2
-puts(c())                     # => 3
+inspect(c())                     # => 1
+inspect(c())                     # => 2
+inspect(c())                     # => 3
 ```
 
 ### 3.3 Keyword arguments and `**splat`
@@ -279,13 +279,13 @@ greet = fn (name, *, greeting = 'hi', **opts) {
   prefix = if opts.has('formal') && opts.formal { 'Mr./Ms. ' } else { '' }
   "{greeting}, {prefix}{name}"
 }
-puts(greet('alice'))                       # => 'hi, alice'
-puts(greet('alice', greeting: 'hello'))    # => 'hello, alice'
-puts(greet('bob', formal: true))           # => 'hi, Mr./Ms. bob'
+inspect(greet('alice'))                       # => 'hi, alice'
+inspect(greet('alice', greeting: 'hello'))    # => 'hello, alice'
+inspect(greet('bob', formal: true))           # => 'hi, Mr./Ms. bob'
 
 # `**` splats an Object as keyword arguments:
 opts = {greeting: 'yo', formal: false}
-puts(greet('carol', **opts))               # => 'yo, carol'
+inspect(greet('carol', **opts))               # => 'yo, carol'
 ```
 
 A `*` marker forces the caller to name the option, keeping long
@@ -300,9 +300,9 @@ semantics: [language.md §11](language.md).
 
 ```culebra
 name = 'Culebra'
-puts("hello, {name}!")                   # => 'hello, Culebra!'
-puts("two plus three is {2 + 3}")        # => 'two plus three is 5'
-puts('a' + 'b' + 'c')                    # => 'abc'
+inspect("hello, {name}!")                   # => 'hello, Culebra!'
+inspect("two plus three is {2 + 3}")        # => 'two plus three is 5'
+inspect('a' + 'b' + 'c')                    # => 'abc'
 ```
 
 ### 4.2 Iteration and indexing
@@ -312,14 +312,14 @@ byte. Indexing is by byte offset into the UTF-8 representation; out-
 of-bounds raises.
 
 ```culebra
-for c in 'café' { puts(c) }
+for c in 'café' { inspect(c) }
 # => |
 # 'c'
 # 'a'
 # 'f'
 # 'é'
 
-puts('café'.size())            # => 5
+inspect('café'.size())            # => 5
 ```
 
 `size()` counts bytes in the UTF-8 representation (`é` is 2 bytes, so
@@ -329,11 +329,11 @@ a time (four steps).
 ### 4.3 Common methods
 
 ```culebra
-puts('hello world'.split(' '))        # => ['hello', 'world']
-puts('  hi  '.trim())                 # => 'hi'
-puts('abc'.upper())                   # => 'ABC'
-puts('foo'.starts_with('fo'))         # => true
-puts(['a', 'b', 'c'].join('-'))       # => 'a-b-c'
+inspect('hello world'.split(' '))        # => ['hello', 'world']
+inspect('  hi  '.trim())                 # => 'hi'
+inspect('abc'.upper())                   # => 'ABC'
+inspect('foo'.starts_with('fo'))         # => true
+inspect(['a', 'b', 'c'].join('-'))       # => 'a-b-c'
 ```
 
 See [language.md §18.1](language.md) for the full method list.
@@ -348,12 +348,12 @@ parameter typed `StringLike` accepts either a `String` or a
 
 ```culebra
 print_first_grapheme = fn (s: StringLike) {
-  for g in s.graphemes() { puts(g); break }
+  for g in s.graphemes() { inspect(g); break }
 }
 print_first_grapheme('café')          # => 'c'
 
-puts(type_of('hello'.slice(1, 4)))    # => 'StringView'
-puts('hello'.slice(1, 4))             # => 'ell'
+inspect(type_of('hello'.slice(1, 4)))    # => 'StringView'
+inspect('hello'.slice(1, 4))             # => 'ell'
 ```
 
 `.graphemes()` walks Unicode *extended grapheme clusters* lazily —
@@ -361,8 +361,8 @@ each step is one user-perceived character, even a multi-codepoint
 emoji family joined by ZWJ:
 
 ```culebra
-puts('a👨‍👩‍👧b'.graphemes().collect().size())    # => 3
-puts('café'.graphemes().collect().size())        # => 4
+inspect('a👨‍👩‍👧b'.graphemes().collect().size())    # => 3
+inspect('café'.graphemes().collect().size())        # => 4
 ```
 
 Full `StringView`/grapheme API: [language.md §18.1](language.md). Design
@@ -382,15 +382,15 @@ iteration (above) for display work.
 
 ```culebra
 # range builds nothing; for-loops consume it lazily
-for i in range(3) { puts(i) }
+for i in range(3) { inspect(i) }
 # => |
 # 0
 # 1
 # 2
 
 # iota allocates an Array
-puts(iota(3))                 # => [0, 1, 2]
-puts(iota(2, 5))              # => [2, 3, 4]
+inspect(iota(3))                 # => [0, 1, 2]
+inspect(iota(2, 5))              # => [2, 3, 4]
 ```
 
 ### 5.2 Lazy chains
@@ -405,20 +405,20 @@ result = range(1000)
   .map(|x| x * 3)
   .take(5)
   .collect()
-puts(result)                  # => [0, 6, 12, 18, 24]
+inspect(result)                  # => [0, 6, 12, 18, 24]
 
 total = range(1, 11).reduce(0, |a, x| a + x)
-puts(total)                   # => 55
+inspect(total)                   # => 55
 
-puts([1, 2, 3, 4].iter().any(|x| x > 3))      # => true
-puts([10, 20, 30].iter().find(|x| x > 15))    # => 20
+inspect([1, 2, 3, 4].iter().any(|x| x > 3))      # => true
+inspect([10, 20, 30].iter().find(|x| x > 15))    # => 20
 ```
 
 ### 5.3 `enumerate`, `zip`, `flat_map`, `skip`, `take_while`
 
 ```culebra
 for i, v in ['fizz', 'buzz', 'bang'].enumerate() {
-  puts("{i}: {v}")
+  inspect("{i}: {v}")
 }
 # => |
 # '0: fizz'
@@ -426,7 +426,7 @@ for i, v in ['fizz', 'buzz', 'bang'].enumerate() {
 # '2: bang'
 
 for p in [1, 2, 3].iter().zip(['a', 'b', 'c']) {
-  puts("{p.first} / {p.second}")
+  inspect("{p.first} / {p.second}")
 }
 # => |
 # '1 / a'
@@ -434,10 +434,10 @@ for p in [1, 2, 3].iter().zip(['a', 'b', 'c']) {
 # '3 / c'
 
 flat = [[1, 2], [3], [4, 5, 6]].iter().flat_map(|xs| xs).collect()
-puts(flat)                    # => [1, 2, 3, 4, 5, 6]
+inspect(flat)                    # => [1, 2, 3, 4, 5, 6]
 
 head = range(100).skip(10).take_while(|x| x < 15).collect()
-puts(head)                    # => [10, 11, 12, 13, 14]
+inspect(head)                    # => [10, 11, 12, 13, 14]
 ```
 
 ### 5.4 User-defined iterators
@@ -457,7 +457,7 @@ countdown = fn (start) {
   }
 }
 
-for v in countdown(3) { puts(v) }
+for v in countdown(3) { inspect(v) }
 # => |
 # 3
 # 2
@@ -476,7 +476,7 @@ fn countdown(start) {
   mut i = start
   while i > 0 { yield i; i = i - 1 }
 }
-for v in countdown(3) { puts(v) }
+for v in countdown(3) { inspect(v) }
 # => |
 # 3
 # 2
@@ -490,7 +490,7 @@ fn chunk(arr, n) {
   }
   if buf.size() > 0 { yield buf }
 }
-puts(chunk([1, 2, 3, 4, 5], 2).collect())    # => [[1, 2], [3, 4], [5]]
+inspect(chunk([1, 2, 3, 4, 5], 2).collect())    # => [[1, 2], [3, 4], [5]]
 ```
 
 ## 6. Pattern matching
@@ -511,11 +511,11 @@ describe = fn (x) {
     _                  => 'other'
   }
 }
-puts(describe(0))             # => 'zero'
-puts(describe(2))             # => 'small'
-puts(describe(999))           # => 'big (999)'
-puts(describe('hi'))          # => 'str (hi)'
-puts(describe([1]))           # => 'other'
+inspect(describe(0))             # => 'zero'
+inspect(describe(2))             # => 'small'
+inspect(describe(999))           # => 'big (999)'
+inspect(describe('hi'))          # => 'str (hi)'
+inspect(describe([1]))           # => 'other'
 ```
 
 ### 6.2 As an expression
@@ -530,9 +530,9 @@ classify = fn (n: Long) -> Long {
     _          => 1
   }
 }
-puts(classify(-5))            # => -1
-puts(classify(0))             # => 0
-puts(classify(7))             # => 1
+inspect(classify(-5))            # => -1
+inspect(classify(0))             # => 0
+inspect(classify(7))             # => 1
 ```
 
 ### 6.3 Destructuring
@@ -546,9 +546,9 @@ shape = fn (a) {
     [head, ...tail] => "head={head}, rest={tail.size()}",
   }
 }
-puts(shape([]))               # => 'empty'
-puts(shape([10, 20]))         # => 'two (10,20)'
-puts(shape([1, 2, 3, 4]))     # => 'head=1, rest=3'
+inspect(shape([]))               # => 'empty'
+inspect(shape([10, 20]))         # => 'two (10,20)'
+inspect(shape([1, 2, 3, 4]))     # => 'head=1, rest=3'
 
 first_name = fn (people) {
   match people {
@@ -556,8 +556,8 @@ first_name = fn (people) {
     _              => 'none'
   }
 }
-puts(first_name([{name: 'x'}, {name: 'y'}]))     # => 'x'
-puts(first_name([]))                              # => 'none'
+inspect(first_name([{name: 'x'}, {name: 'y'}]))     # => 'x'
+inspect(first_name([]))                              # => 'none'
 ```
 
 ### 6.4 Recursion
@@ -570,8 +570,8 @@ is_even = fn (n) {
     _ => fn(n - 2)
   }
 }
-puts(is_even(10))             # => true
-puts(is_even(7))              # => false
+inspect(is_even(10))             # => true
+inspect(is_even(7))              # => false
 ```
 
 ### Why no exhaustiveness check?
@@ -594,11 +594,11 @@ validate = fn (x) {
 }
 
 try {
-  puts(validate(42))          # => 42
-  puts(validate(-1))          # throws, the next line is unreached
-  puts('unreached')
+  inspect(validate(42))          # => 42
+  inspect(validate(-1))          # throws, the next line is unreached
+  inspect('unreached')
 } catch e {
-  puts("caught: {e}")         # => 'caught: negative: -1'
+  inspect("caught: {e}")         # => 'caught: negative: -1'
 }
 ```
 
@@ -612,8 +612,8 @@ validate = fn (x) {
 safe = fn (x) {
   try { validate(x) } catch _ { 0 }
 }
-puts(safe(7))                 # => 7
-puts(safe(-99))               # => 0
+inspect(safe(7))                 # => 7
+inspect(safe(-99))               # => 0
 ```
 
 ### 7.3 `defer`
@@ -627,10 +627,10 @@ when the body throws. Full exit-path and ordering rules:
 ```culebra
 demo = fn (fail) {
   {
-    defer { puts('cleanup A') }
-    defer { puts('cleanup B') }
+    defer { inspect('cleanup A') }
+    defer { inspect('cleanup B') }
     if fail { throw 'failed' }
-    puts('work done')
+    inspect('work done')
   }
 }
 
@@ -650,14 +650,14 @@ scope exit.
 
 ```culebra
 make_resource = fn (id) {
-  { drop: fn () { puts("R{id} released") } }
+  { drop: fn () { inspect("R{id} released") } }
 }
 
-puts('enter')
+inspect('enter')
 {
   r = make_resource('X')
 }
-puts('exit')
+inspect('exit')
 # => |
 # 'enter'
 # 'RX released'
@@ -706,7 +706,7 @@ let answer = handle {
 } with ask(resume) {
   resume(21)
 }
-puts(answer)   # => 42
+inspect(answer)   # => 42
 ```
 
 `resume(21)` continues the handled body at the `perform ask()` point with the
@@ -730,7 +730,7 @@ effect fn counter() {
 mut cell = 0
 let n = handle { counter() } with get(k) { k(cell) }
                              with put(v, k) { cell = v; k(nil) }
-puts(n)   # => 2
+inspect(n)   # => 2
 ```
 
 Any function may perform: a plain fn's `perform` dispatches to the handlers
@@ -753,7 +753,7 @@ let both = handle {
 } with choose(a, b, k) {
   [k(a), k(b)]
 }
-puts(both)   # => [10, 20]
+inspect(both)   # => [10, 20]
 ```
 
 ### 8.4 Handlers that never resume
@@ -770,8 +770,8 @@ effect fn safeDiv(a, b) {
   a / b
 }
 
-puts(handle { safeDiv(10, 2) } with raise(m, k) { -1 })   # => 5
-puts(handle { safeDiv(10, 0) } with raise(m, k) { -1 })   # => -1
+inspect(handle { safeDiv(10, 2) } with raise(m, k) { -1 })   # => 5
+inspect(handle { safeDiv(10, 0) } with raise(m, k) { -1 })   # => -1
 ```
 
 Add `with return(v) { … }` to map the normal-completion value, and write a
@@ -807,8 +807,8 @@ class Car {
 
 car = Car.new(5)
 car.run(1); car.run(2)
-puts(car.total())             # => 'total: 15 miles'
-puts(car.class)               # => 'Car'
+inspect(car.total())             # => 'total: 15 miles'
+inspect(car.class)               # => 'Car'
 ```
 
 Calling the class itself is shorthand for `.new` — `Car(5)` is exactly
@@ -818,7 +818,7 @@ class is callable the way its constructor is.
 ```culebra
 class Point { new(x, y) { self.x = x; self.y = y } }
 p = Point(3, 4)               # same as Point.new(3, 4)
-puts("{p.x},{p.y}")           # => '3,4'
+inspect("{p.x},{p.y}")           # => '3,4'
 ```
 
 ### 9.2 The closure-based alternative
@@ -840,7 +840,7 @@ Car2 = {
 
 car = Car2.new(5)
 car.run(1); car.run(2)
-puts(car.total())             # => 'total: 15 miles'
+inspect(car.total())             # => 'total: 15 miles'
 ```
 
 Use `class` when you want the `class:` tag and matchable shape; use
@@ -859,8 +859,8 @@ class Circle {
   static unit()   { Circle.new(1) }
   area()          { self.r * self.r * Circle.PI }
 }
-puts(Circle.unit().area())    # => 3.14
-puts(Circle.PI)               # => 3.14
+inspect(Circle.unit().area())    # => 3.14
+inspect(Circle.PI)               # => 3.14
 ```
 
 Static fields are eagerly evaluated once, at class declaration time.
@@ -898,11 +898,11 @@ class Vec2 {
 
 a = Vec2.new(1, 2)
 b = Vec2.new(3, 4)
-puts((a + b).show())          # => '(4, 6)'
-puts((b - a).show())          # => '(2, 2)'
-puts((a * 3).show())          # => '(3, 6)'
-puts((-a).show())             # => '(-1, -2)'
-puts(a == Vec2.new(1, 2))     # => true
+inspect((a + b).show())          # => '(4, 6)'
+inspect((b - a).show())          # => '(2, 2)'
+inspect((a * 3).show())          # => '(3, 6)'
+inspect((-a).show())             # => '(-1, -2)'
+inspect(a == Vec2.new(1, 2))     # => true
 ```
 
 ### 10.3 `__call__` for callable instances
@@ -916,8 +916,8 @@ class Adder {
 }
 
 add5 = Adder.new(5)
-puts(add5(10))                # => 15
-puts(add5(99))                # => 104
+inspect(add5(10))                # => 15
+inspect(add5(99))                # => 104
 ```
 
 ## 11. UFCS and multimethods
@@ -931,15 +931,15 @@ requirement): [language.md §10](language.md) (Methods and UFCS).
 
 ```culebra
 double = fn (x) { x * 2 }
-puts(42.double())                                  # => 84
-puts('hello world'.split(' ').size())              # => 2
+inspect(42.double())                                  # => 84
+inspect('hello world'.split(' ').size())              # => 2
 
 # Existing methods always win — a user `reverse` does NOT
 # override Array's built-in `reverse`.
-reverse = fn (x) { puts('user reverse NOT called') }
+reverse = fn (x) { inspect('user reverse NOT called') }
 mut a = [1, 2, 3]
 a.reverse()
-puts(a)                                            # => [3, 2, 1]
+inspect(a)                                            # => [3, 2, 1]
 ```
 
 ### 11.2 Multimethods (free function multiple dispatch)
@@ -956,9 +956,9 @@ fn area(c: Circle) { 3.14159 * c.r * c.r }
 fn area(s: Square) { s.s * s.s }
 fn area(n: Long)   { n }                     # fallback for numbers
 
-puts(area(Circle.new(2)))                    # => 12.56636
-puts(area(Square.new(3)))                    # => 9
-puts(area(10))                               # => 10
+inspect(area(Circle.new(2)))                    # => 12.56636
+inspect(area(Square.new(3)))                    # => 9
+inspect(area(10))                               # => 10
 ```
 
 The dispatch covers free positional arguments, keyword arguments, and
@@ -976,8 +976,8 @@ class Calc {
   go(x: String) { "string" }
 }
 c = Calc.new()
-puts(c.go(1))                  # => 'long'
-puts(c.go('a'))                # => 'string'
+inspect(c.go(1))                  # => 'long'
+inspect(c.go('a'))                # => 'string'
 ```
 
 ### 11.3 Dispatch extensions
@@ -1007,7 +1007,7 @@ interaction: [language.md §21](language.md).
 ```culebra
 log = fn (f) {
   fn (x) {
-    puts("calling with {x}")
+    inspect("calling with {x}")
     f(x)
   }
 }
@@ -1015,7 +1015,7 @@ log = fn (f) {
 @log
 fn double(x) { x * 2 }
 
-puts(double(7))
+inspect(double(7))
 # => |
 # 'calling with 7'
 # 14
@@ -1027,7 +1027,7 @@ puts(double(7))
 prefix = fn (tag) {
   fn (f) {
     fn () {
-      puts("[{tag}]")
+      inspect("[{tag}]")
       f()
     }
   }
@@ -1035,7 +1035,7 @@ prefix = fn (tag) {
 
 @prefix('A')
 @prefix('B')
-fn greet() { puts('hi') }
+fn greet() { inspect('hi') }
 
 greet()
 # => |
@@ -1062,8 +1062,8 @@ memoize = fn (f) {
 @memoize
 fn slow_square(x) { x * x }
 
-puts(slow_square(7))          # => 49
-puts(slow_square(7))          # => 49
+inspect(slow_square(7))          # => 49
+inspect(slow_square(7))          # => 49
 ```
 
 ### 12.4 `fn.params` introspection
@@ -1073,8 +1073,8 @@ can use to write signature-aware wrappers (`@autograd`, `@trace`, ...).
 
 ```culebra
 add_typed = fn (a: Long, b: Long) -> Long { a + b }
-puts(add_typed.params.map(|p| p.name))    # => ['a', 'b']
-puts(add_typed.return_type)               # => 'Long'
+inspect(add_typed.params.map(|p| p.name))    # => ['a', 'b']
+inspect(add_typed.return_type)               # => 'Long'
 ```
 
 A decorated function is bound as a single value (the wrapped
@@ -1099,8 +1099,8 @@ PI    = 3.14159
 ```culebra
 # doctest: skip
 # main.cul — same directory as lib.cul
-puts(greet('world'))          # => hello, world
-puts(PI)                      # => 3.14159
+inspect(greet('world'))          # => hello, world
+inspect(PI)                      # => 3.14159
 ```
 
 Running `culebra main.cul` discovers `lib.cul` automatically by
@@ -1145,13 +1145,13 @@ no static narrowing. Full annotation semantics: [language.md
 
 ```culebra
 add = fn (a: Long, b: Long) -> Long { a + b }
-puts(add(3, 4))               # => 7
+inspect(add(3, 4))               # => 7
 
 # Any matches everything; typed and dynamic parameters can mix
 identity = fn (x: Any) -> Any { x }
 describe = fn (v, label: String) -> String { "{label}: {v}" }
-puts(identity(42))                  # => 42
-puts(describe([1, 2], 'array'))     # => 'array: [1, 2]'
+inspect(identity(42))                  # => 42
+inspect(describe([1, 2], 'array'))     # => 'array: [1, 2]'
 ```
 
 `type_of` (Ch.2.1) is the runtime introspection for built-in types.
@@ -1167,12 +1167,12 @@ types / Optional types) and [language.md §10](language.md) (Tuples).
 
 ```culebra
 show = fn (x: Long | String) -> String { to_string(x) }
-puts(show(1))                  # => '1'
-puts(show('hi'))               # => 'hi'
+inspect(show(1))                  # => '1'
+inspect(show('hi'))               # => 'hi'
 
 pair = (1, 'one')
-puts(type_of(pair))            # => 'Tuple'
-puts(pair == (1, 'one'))       # => true
+inspect(type_of(pair))            # => 'Tuple'
+inspect(pair == (1, 'one'))       # => true
 ```
 
 ### 14.3 Trait / Protocol
@@ -1195,7 +1195,7 @@ class Bob {
 }
 
 greet = fn (x: Greeter) -> String { x.hello() }
-puts(greet(Bob.new('Alice')))   # => 'hi, Alice'
+inspect(greet(Bob.new('Alice')))   # => 'hi, Alice'
 ```
 
 ### 14.4 Generics
@@ -1208,7 +1208,7 @@ generic class declarations: [language.md §14](language.md).
 
 ```culebra
 first = fn (xs: Array<Long>) -> Long { xs[0] }
-puts(first([1, 2, 3]))         # => 1
+inspect(first([1, 2, 3]))         # => 1
 ```
 
 ### What Culebra deliberately does *not* take from TypeScript
@@ -1220,16 +1220,16 @@ Rust/Swift expressiveness, not TS expressiveness.
 
 ## 15. Standard library tour
 
-The CLI driver exposes `puts` / `print` as aliases for `IO.puts` /
-`IO.print`. Embedders that build their own environment see the
-namespaces but not the bare aliases.
+The CLI driver exposes `inspect` / `print` / `println` as aliases for
+`IO.inspect` / `IO.print` / `IO.println`. Embedders that build their own
+environment see the namespaces but not the bare aliases.
 
 ### 15.1 Core built-ins
 
 ```culebra
-puts(to_long('42'))           # => 42
-puts(to_string([1, 2]))       # => '[1, 2]'
-puts(iota(2, 5))              # => [2, 3, 4]
+inspect(to_long('42'))           # => 42
+inspect(to_string([1, 2]))       # => '[1, 2]'
+inspect(iota(2, 5))              # => [2, 3, 4]
 assert_eq(1 + 1, 2)           # passes silently; throws on failure
 ```
 
@@ -1238,12 +1238,12 @@ Full list: [language.md §19](language.md).
 ### 15.2 `Math`
 
 ```culebra
-puts(Math.abs(-7))            # => 7
-puts(Math.min(3, 5))          # => 3
-puts(Math.max(3, 5))          # => 5
-puts(Math.pow(2, 10))         # => 1024
-puts(Math.sign(-42))          # => -1
-puts(Math.clamp(15, 0, 10))   # => 10
+inspect(Math.abs(-7))            # => 7
+inspect(Math.min(3, 5))          # => 3
+inspect(Math.max(3, 5))          # => 5
+inspect(Math.pow(2, 10))         # => 1024
+inspect(Math.sign(-42))          # => -1
+inspect(Math.clamp(15, 0, 10))   # => 10
 ```
 
 Full reference: [`stdlib.md` §1](stdlib.md).
@@ -1262,11 +1262,11 @@ Full reference: [`stdlib.md` §2](stdlib.md).
 ### 15.4 `Sys`, `Random`, `FS`, `Time`, `Args`
 
 ```culebra
-puts(Sys.argv)                # => []
+inspect(Sys.argv)                # => []
 # Sys.env('HOME')             # process env
 # Sys.exit(0)                 # terminate
 
-puts(Random.int(0, 100) >= 0)          # => true
+inspect(Random.int(0, 100) >= 0)          # => true
 
 # Path — a fluent wrapper over FS that carries a path around:
 #   let cfg = Path.new('/etc') / 'app.conf'   # `/` joins
@@ -1284,11 +1284,11 @@ grapheme-cluster–aware by default — no `/u` flag needed.
 
 ```culebra
 re = Regex.compile('\d+')
-puts(re.test('order #42'))    # => true
+inspect(re.test('order #42'))    # => true
 
 # `re"..."` literals are sugar for Regex.compile(pattern, flags);
 # the body is raw, so `\d` passes through as-is.
-puts(re'\d+'.test('abc 123')) # => true
+inspect(re'\d+'.test('abc 123')) # => true
 ```
 
 Full API: [`stdlib.md` §15](stdlib.md).
@@ -1311,7 +1311,7 @@ threads; scale ceiling is a few thousand connections.
 ```culebra
 # doctest: skip
 res = Http.get('https://example.com')
-puts(res.status)              # => 200
+inspect(res.status)              # => 200
 
 # Server
 srv = Http.server()
@@ -1342,13 +1342,13 @@ broadcast like NumPy. Full API (shapes, reductions, autograd):
 ```culebra
 a = Tensor.from([1.0, 2.0, 3.0])
 b = Tensor.from([10.0, 20.0, 30.0])
-puts((a + b).to_array())      # => [11.0, 22.0, 33.0]
-puts(a.sum())                 # => 6.0
+inspect((a + b).to_array())      # => [11.0, 22.0, 33.0]
+inspect(a.sum())                 # => 6.0
 
 m = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
 c = m.dot(m)
 Tensor.eval(c)
-puts(c.to_array())            # => [[7.0, 10.0], [15.0, 22.0]]
+inspect(c.to_array())            # => [[7.0, 10.0], [15.0, 22.0]]
 ```
 
 ### 16.2 GPU primitive
@@ -1484,7 +1484,7 @@ the binding.
 
 **Matchers.** Assertions in tests use the matcher family — there is
 no `assert` keyword or builtin. Matchers are **3-backend globals**
-(bound on every environment, same as `puts` / `Math`), so they work
+(bound on every environment, same as `inspect` / `Math`), so they work
 identically under `culebra script.cul`, `culebra --jit script.cul`,
 `culebra build`, and `culebra test`:
 
@@ -1508,7 +1508,7 @@ disable in production builds.
 `culebra test [path]` discovers test files. When invoked through this
 subcommand, `test` / `@test` / `@parametrize` become **ambient
 globals** alongside the always-available matcher family — no `import`
-required. This mirrors how `puts` / `print` are ambient under
+required. This mirrors how `inspect` / `print` are ambient under
 script-execution mode but absent from `culebra::environment()` (see
 [stdlib §12](stdlib.md)).
 
@@ -1536,7 +1536,7 @@ JSON object per line (NDJSON) — useful for agent loops and CI:
 {"event":"run_end","passed":42,"failed":1,"errored_files":0,"bailed":false}
 ```
 
-User `puts(...)` from inside a test is captured into the event's
+User `inspect(...)` from inside a test is captured into the event's
 `stdout` field rather than interleaved with the NDJSON stream, and
 failure events carry a `snippet` with the failing line marked `>` for
 context.
@@ -1703,7 +1703,7 @@ build, sysroot expectations, and the full cross-compile workflow.
 
 ### Why tree-shaking matters
 
-A "hello world" using `puts` doesn't need the FFT or HTTP runtime
+A "hello world" using `inspect` doesn't need the FFT or HTTP runtime
 glue. Tracing the call graph from the entry file lets the linker
 drop unreferenced runtime helpers (~200 of them) and, when no
 `Tensor` reference is found, swap in a no-BLAS archive. The result is
@@ -1727,7 +1727,7 @@ int main() {
 ```
 
 The embedder constructs the environment, so `IO` is present but
-`puts` / `print` (the CLI aliases) are not — your host owns I/O.
+`inspect` / `print` (the CLI aliases) are not — your host owns I/O.
 Errors surface as `culebra::Error` exceptions carrying the original
 thrown value plus line/column.
 

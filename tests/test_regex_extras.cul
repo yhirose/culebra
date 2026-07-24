@@ -100,4 +100,4 @@ assert_eq(dv.match("12x".slice(0, 3)).value, "12")
 // a StringView pattern compiles too ("Xa\dX".slice(1,4) -> the view "a\d")
 assert_eq(Regex.compile("Xa\\dX".slice(1, 4)).test("a7"), true)
 
-puts("test_regex_extras: ok")
+inspect("test_regex_extras: ok")

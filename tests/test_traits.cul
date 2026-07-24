@@ -101,4 +101,4 @@ assert_eq(comparable_only("x"), "ok")
 let e_cmp = try { comparable_only([1, 2]); nil } catch e { e }
 assert_eq(e_cmp.kind, "DispatchError")    // Array isn't Comparable here
 
-IO.puts("test_traits OK")
+IO.inspect("test_traits OK")

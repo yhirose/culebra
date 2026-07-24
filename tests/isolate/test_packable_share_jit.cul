@@ -54,4 +54,4 @@ Isolate.spawn(fn (t) {
 rx.recv()
 assert_eq(cbuf[0].v, 42)
 
-puts("packable share ok")
+inspect("packable share ok")

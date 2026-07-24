@@ -62,4 +62,4 @@ let boundary = handle {
 } with other(k) { k(999) }
 assert_eq(boundary, "EffectError")
 
-puts("test_effects_isolate: all assertions passed")
+inspect("test_effects_isolate: all assertions passed")

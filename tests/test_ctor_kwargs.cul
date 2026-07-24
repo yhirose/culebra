@@ -105,4 +105,4 @@ let e_setrem = try { mut s = {1, 2}; s.remove(x: 1); nil } catch e { e }
 assert_eq(e_setrem.kind, 'TypeError')
 assert_true(e_setrem.message.contains('does not accept keyword arguments'))
 
-IO.puts('test_ctor_kwargs OK')
+IO.inspect('test_ctor_kwargs OK')

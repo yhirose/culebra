@@ -111,4 +111,4 @@ assert_eq(cls[0], '20')
 assert_eq(cls[1], 'err')
 assert_eq(cls[2], '5')
 
-IO.puts('test_generator_resource OK')
+IO.inspect('test_generator_resource OK')

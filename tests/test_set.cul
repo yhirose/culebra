@@ -89,4 +89,4 @@ assert_eq(m.size(), 2)
 let rm_absent = m.remove(99)
 assert_eq(rm_absent, false)
 
-IO.puts("test_set OK")
+IO.inspect("test_set OK")

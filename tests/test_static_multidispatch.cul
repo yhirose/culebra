@@ -80,4 +80,4 @@ let f = Fmt.show
 assert_eq(f(1), "L")
 assert_eq(f("x"), "S")
 
-puts("static multidispatch OK")
+inspect("static multidispatch OK")

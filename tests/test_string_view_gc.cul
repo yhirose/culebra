@@ -48,4 +48,4 @@ let inner = outer.slice(2, 5)                 // "345"
 for i in 0..50000 { sink = sink + "w${i}".size() }
 assert_eq(inner, "345")
 
-puts("string_view_gc ok")
+inspect("string_view_gc ok")

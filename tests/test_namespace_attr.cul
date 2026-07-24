@@ -43,4 +43,4 @@ if Sys.script != nil {
   assert_true(FS.is_abs(Sys.script))
 }
 
-"OK".puts()
+"OK".inspect()

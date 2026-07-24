@@ -4,27 +4,27 @@
 # to_long). The interp-vs-JIT diff in `just test` guards the symmetry.
 
 # to_string on each primitive
-puts((42).to_string())
-puts((3.5).to_string())
-puts(true.to_string())
-puts("hi".to_string())
-puts([1, 2].to_string())
+inspect((42).to_string())
+inspect((3.5).to_string())
+inspect(true.to_string())
+inspect("hi".to_string())
+inspect([1, 2].to_string())
 
 # type_of via UFCS
-puts((42).type_of())
-puts("hi".type_of())
-puts([1].type_of())
+inspect((42).type_of())
+inspect("hi".type_of())
+inspect([1].type_of())
 
 # to_long is polymorphic: Long / Float / String all convert
-puts((42).to_long())
-puts((3.9).to_long())
-puts("123".to_long())
+inspect((42).to_long())
+inspect((3.9).to_long())
+inspect("123".to_long())
 
 # to_float is polymorphic too
-puts((7).to_float())
-puts("2.5".to_float())
+inspect((7).to_float())
+inspect("2.5".to_float())
 
 # hash works on hashable primitives and returns a Long; equal values hash equal
-puts((42).hash() == (42).hash())
-puts("hi".hash() == "hi".hash())
-puts((1).hash() == (2).hash())
+inspect((42).hash() == (42).hash())
+inspect("hi".hash() == "hi".hash())
+inspect((1).hash() == (2).hash())

@@ -70,4 +70,4 @@ test_static_field_expression()
 test_static_field_not_on_instance()
 test_static_field_immutable()
 
-puts('static-field OK')
+inspect('static-field OK')

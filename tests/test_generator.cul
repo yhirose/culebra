@@ -237,4 +237,4 @@ class GenHost {
 }
 assert_eq(GenHost.new().m(7), [7, 14])
 
-IO.puts('test_generator OK')
+IO.inspect('test_generator OK')

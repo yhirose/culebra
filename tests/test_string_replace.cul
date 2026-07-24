@@ -27,4 +27,4 @@ assert_eq(
   "a, b  1".replace(",", "、").replace(re'\s+', " ").replace(re'\d', "N"),
   "a、 b N")
 
-IO.puts("test_string_replace OK")
+IO.inspect("test_string_replace OK")

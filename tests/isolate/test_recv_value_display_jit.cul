@@ -39,4 +39,4 @@ let r = h.join()
 assert_eq(type_of(r), "String")
 assert_eq(r, "from-isolate")
 
-puts("test_recv_value_display: all assertions passed")
+inspect("test_recv_value_display: all assertions passed")

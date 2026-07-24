@@ -82,4 +82,4 @@ assert_eq(Math.clamp(-1, 0, 3), 0)
 let n = Random.int(3, 9)   # a Long is produced from a valid range
 assert_eq(type_of(n), 'Long')
 
-puts('stdlib argtype symmetry: ok')
+inspect('stdlib argtype symmetry: ok')

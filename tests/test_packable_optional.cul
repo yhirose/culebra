@@ -49,4 +49,4 @@ w = Isolate.spawn(fn() { shared[0].parent = 42 })
 w.join()
 assert_eq(shared[0].parent, 42)
 
-IO.puts("test_packable_optional OK")
+IO.inspect("test_packable_optional OK")

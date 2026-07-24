@@ -88,4 +88,4 @@ assert_eq((Both(2) + 10).n_(), 12)
 assert_eq(Both(2).scaled(3), 6)
 assert_eq(Both(2).scaled(Both(4)), 8)
 
-puts("dunder multidispatch OK")
+inspect("dunder multidispatch OK")

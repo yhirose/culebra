@@ -6,4 +6,4 @@ while i < 10000000 {
   acc = acc + i
   i = i + 1
 }
-puts(acc)
+inspect(acc)

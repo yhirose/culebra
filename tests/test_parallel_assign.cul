@@ -73,4 +73,4 @@ assert_eq(head, [1, 10])
 assert_eq(middle, [[2]])
 assert_eq(tail, [3, 30])
 
-IO.puts("test_parallel_assign OK")
+IO.inspect("test_parallel_assign OK")

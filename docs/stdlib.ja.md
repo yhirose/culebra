@@ -16,9 +16,9 @@
 組み込み型（`String`, `Array`, `Object`）のメソッドは
 [言語仕様 §17](language.ja.md) に規定されています。
 
-CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
-`IO.puts` / `IO.print` のエイリアスとしてグローバルに配置します
-（[言語仕様 §20](language.ja.md) 参照）。`culebra::environment()`
+CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println` を
+`IO.inspect` / `IO.print` / `IO.println` のエイリアスとしてグローバルに
+配置します（[言語仕様 §20](language.ja.md) 参照）。`culebra::environment()`
 を直接呼び出す埋め込み用途では、これらのエイリアスは導入されず
 名前空間はクリーンなままです。
 
@@ -75,7 +75,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | 定数（π、e、inf、nan） | [§1 Math 定数](#math-pi) |
 | スカラー演算（abs / min / max / log / exp / sqrt / floor / ceil / round） | [§1 Math](#1-math) |
 | 三角関数（sin / cos / tan / asin / acos / atan / atan2、ラジアン） | [§1 Math](#1-math) |
-| 標準出力 | `IO.puts`（改行 + クォート付き） / `IO.print`（生） |
+| 標準出力 | `IO.inspect`（改行 + クォート付き） / `IO.println`（改行、生） / `IO.print`（生、改行なし） |
 | ファイル全体を読む | `FS.read`（失敗時 throw） |
 | ファイルをストリーム（行 / チャンク / seek） | [§4 File](#4-file) — `File.open` / `File.with` |
 | パス操作（join / basename / dirname / stem / extension） | [§3 FS](#3-fs)；流暢な `Path` ラッパ: [§3 `Path`](#path--流暢なラッパ) |
@@ -145,10 +145,10 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 quiet NaN。`Math.nan == Math.nan` は IEEE-754 通り `false`。
 
 ```culebra
-puts(Math.pi)              # 3.141592653589793
-puts(Math.e)               # 2.718281828459045
-puts(Math.inf > 1e308)     # true
-puts(Math.nan == Math.nan) # false
+inspect(Math.pi)              # 3.141592653589793
+inspect(Math.e)               # 2.718281828459045
+inspect(Math.inf > 1e308)     # true
+inspect(Math.nan == Math.nan) # false
 ```
 
 ### スカラー演算
@@ -158,8 +158,8 @@ puts(Math.nan == Math.nan) # false
 絶対値。`Long` 入力なら `Long`、`Float` 入力なら `Float` を返します。
 
 ```culebra
-puts(Math.abs(-7))     # 7
-puts(Math.abs(-7.5))   # 7.5
+inspect(Math.abs(-7))     # 7
+inspect(Math.abs(-7.5))   # 7.5
 ```
 
 ### `Math.min(a, b, ...) -> Long|Float`、`Math.max(a, b, ...) -> Long|Float`
@@ -169,8 +169,8 @@ puts(Math.abs(-7.5))   # 7.5
 数値以外が混じれば `type error`。
 
 ```culebra
-puts(Math.min(3, 1, 4, 1, 5))   # 1
-puts(Math.max(1.5, 2, 0.5))     # 2.0
+inspect(Math.min(3, 1, 4, 1, 5))   # 1
+inspect(Math.max(1.5, 2, 0.5))     # 2.0
 ```
 
 ### `Math.log(x: Long|Float) -> Float`
@@ -191,8 +191,8 @@ puts(Math.max(1.5, 2, 0.5))     # 2.0
 三角関数。`x` は**ラジアン**（`Long` または `Float`）。
 
 ```culebra
-puts(Math.sin(Math.pi / 2))   # => 1.0
-puts(Math.cos(0))             # => 1.0
+inspect(Math.sin(Math.pi / 2))   # => 1.0
+inspect(Math.cos(0))             # => 1.0
 ```
 
 ### `Math.asin(x) -> Float`、`Math.acos(x) -> Float`、`Math.atan(x) -> Float`、`Math.atan2(y, x) -> Float`
@@ -202,7 +202,7 @@ puts(Math.cos(0))             # => 1.0
 逆正接。
 
 ```culebra
-puts(Math.atan2(1.0, 1.0))    # => 0.7853981633974483
+inspect(Math.atan2(1.0, 1.0))    # => 0.7853981633974483
 # (= pi/4)
 ```
 
@@ -213,10 +213,10 @@ puts(Math.atan2(1.0, 1.0))    # => 0.7853981633974483
 **偶数丸め（bankers' rounding）** — Python の `round()` と同じ挙動。
 
 ```culebra
-puts(Math.floor(-1.5))   # -2
-puts(Math.ceil(-1.5))    # -1
-puts(Math.round(2.5))    # 2      (偶数側へ丸める)
-puts(Math.round(3.5))    # 4
+inspect(Math.floor(-1.5))   # -2
+inspect(Math.ceil(-1.5))    # -1
+inspect(Math.round(2.5))    # 2      (偶数側へ丸める)
+inspect(Math.round(3.5))    # 4
 ```
 
 ### `Math.pow(base: Long, exp: Long) -> Long`
@@ -230,9 +230,9 @@ puts(Math.round(3.5))    # 4
 （`Float`・負指数も扱えます。言語仕様 §7）。
 
 ```culebra
-puts(Math.pow(2, 10))    # 1024
-puts(Math.pow(7, 0))     # 1
-puts(Math.pow(-3, 3))    # -27
+inspect(Math.pow(2, 10))    # 1024
+inspect(Math.pow(7, 0))     # 1
+inspect(Math.pow(-3, 3))    # -27
 ```
 
 ### `Math.sign(x: Long) -> Long`
@@ -240,9 +240,9 @@ puts(Math.pow(-3, 3))    # -27
 負数で `-1`、ゼロで `0`、正数で `1` を返します。
 
 ```culebra
-puts(Math.sign(-5))      # -1
-puts(Math.sign(0))       # 0
-puts(Math.sign(42))      # 1
+inspect(Math.sign(-5))      # -1
+inspect(Math.sign(0))       # 0
+inspect(Math.sign(42))      # 1
 ```
 
 ### `Math.clamp(x: Long, lo: Long, hi: Long) -> Long`
@@ -251,9 +251,9 @@ puts(Math.sign(42))      # 1
 ならず `hi` を返します。
 
 ```culebra
-puts(Math.clamp(5, 0, 10))   # 5
-puts(Math.clamp(-5, 0, 10))  # 0
-puts(Math.clamp(15, 0, 10))  # 10
+inspect(Math.clamp(5, 0, 10))   # 5
+inspect(Math.clamp(-5, 0, 10))  # 0
+inspect(Math.clamp(15, 0, 10))  # 10
 ```
 
 ---
@@ -263,16 +263,16 @@ puts(Math.clamp(15, 0, 10))  # 10
 出力と標準入力。ファイルの読み書きは `FS`（`FS.read` / `FS.write` /
 `FS.exists`）にあります。
 
-### `IO.puts(x: Any) -> Nil`
+### `IO.inspect(x: Any) -> Nil`
 
 `x` を改行付きで標準出力に書き出します。参照型は
 `Array.str_array()` / `Object.str_object()` と同じ書式で整形され、
 文字列は**シングルクォートで囲んで**出力されます。
 
 ```culebra
-IO.puts('hi')       # → 'hi'
-IO.puts(42)         # → 42
-IO.puts([1, 'a'])   # → [1, 'a']
+IO.inspect('hi')       # → 'hi'
+IO.inspect(42)         # → 42
+IO.inspect([1, 'a'])   # → [1, 'a']
 ```
 
 ### `IO.print(x: Any) -> Nil`
@@ -284,7 +284,18 @@ IO.puts([1, 'a'])   # → [1, 'a']
 ```culebra
 IO.print('Hello, ')
 IO.print('world!')
-IO.puts('')         # → Hello, world!
+IO.println('')      # → Hello, world!
+```
+
+### `IO.println(x: Any) -> Nil`
+
+`x` を改行付きで標準出力に書き出します。書式は `to_string` と同じで、
+文字列は**引用符なし**で出力されます — `inspect` の生表示版であり、
+`print` の改行付き版です。
+
+```culebra
+IO.println('hi')       # → hi
+IO.println(42)         # → 42
 ```
 
 ### `IO.input() -> String`
@@ -294,9 +305,9 @@ IO.puts('')         # → Hello, world!
 
 ```culebra
 # doctest: skip
-puts('name?')
+println('name?')
 name = IO.input()
-puts("Hello, {name}")
+println("Hello, {name}")
 ```
 
 ### `IO.stdin() -> reader`
@@ -319,17 +330,26 @@ Unix フィルタのイディオム。読み取りはブロッキングかつ割
 # doctest: skip
 # フィルタ: "error" を含む行を大文字化
 for line in IO.stdin().lines() {
-    if line.contains("error") { IO.puts(line.upper()) }
+    if line.contains("error") { IO.println(line.upper()) }
 }
 
 let src = if IO.stdin_is_terminal() { read_clipboard() } else { IO.stdin().read() }
 ```
 
-### `IO.eputs(x: Any) -> Nil` / `IO.eprint(x: Any) -> Nil`
+### `IO.einspect(x: Any) -> Nil` / `IO.eprint(x: Any) -> Nil` / `IO.eprintln(x: Any) -> Nil`
 
-標準エラーへ書き出します（`puts` / `print` の双子）。`eputs` は文字列を
-クォートし改行を付けます（`puts` 同様）、`eprint` は生の表示形（`print` 同様）。
-stdout に混ぜたくない診断出力に使います。
+標準エラーへ書き出します（`inspect` / `print` / `println` の双子）。
+`einspect` は文字列をクォートし改行を付けます（`inspect` 同様）、
+`eprint` は末尾改行なしの生の表示形（`print` 同様）、`eprintln` は
+改行付きの生の表示形（`println` 同様）。stdout に混ぜたくない診断
+出力に使います。
+
+```culebra
+# doctest: skip
+IO.einspect("warning: retrying")     # → stderr
+if !ok { IO.eprint("error: {msg}\n") }
+IO.eprintln("done")
+```
 
 ### `IO.stdin_is_terminal() -> Bool` / `IO.stdout_is_terminal() -> Bool` / `IO.stderr_is_terminal() -> Bool`
 
@@ -343,7 +363,7 @@ stdout に混ぜたくない診断出力に使います。
 ```culebra
 # doctest: skip
 let src = if IO.stdin_is_terminal() { read_clipboard() } else { FS.read("/dev/stdin") }
-if IO.stdout_is_terminal() { puts(colorize(msg)) } else { puts(msg) }
+if IO.stdout_is_terminal() { println(colorize(msg)) } else { println(msg) }
 ```
 
 `IO` は標準ストリームとコンソールの名前空間です。ファイルの読み書きは
@@ -367,9 +387,9 @@ if IO.stdout_is_terminal() { puts(colorize(msg)) } else { puts(msg) }
 途中要素の末尾区切り文字は尊重されます。
 
 ```culebra
-puts(FS.join('a', 'b', 'c.txt'))      # => 'a/b/c.txt'
-puts(FS.join('/usr', 'local', 'bin')) # => '/usr/local/bin'
-puts(FS.join())                       # => ''
+inspect(FS.join('a', 'b', 'c.txt'))      # => 'a/b/c.txt'
+inspect(FS.join('/usr', 'local', 'bin')) # => '/usr/local/bin'
+inspect(FS.join())                       # => ''
 ```
 
 #### `FS.basename(path: String) -> String`
@@ -377,8 +397,8 @@ puts(FS.join())                       # => ''
 最終要素（ファイル名＋拡張子）。末尾区切り文字のみのパスは `""`。
 
 ```culebra
-puts(FS.basename('a/b/c.txt'))  # => 'c.txt'
-puts(FS.basename('/'))          # => ''
+inspect(FS.basename('a/b/c.txt'))  # => 'c.txt'
+inspect(FS.basename('/'))          # => ''
 ```
 
 #### `FS.dirname(path: String) -> String`
@@ -392,8 +412,8 @@ puts(FS.basename('/'))          # => ''
 通り。
 
 ```culebra
-puts(FS.extension('a/b/c.txt'))  # => '.txt'
-puts(FS.extension('.hidden'))    # => ''
+inspect(FS.extension('a/b/c.txt'))  # => '.txt'
+inspect(FS.extension('.hidden'))    # => ''
 ```
 
 #### `FS.stem(path: String) -> String`
@@ -401,7 +421,7 @@ puts(FS.extension('.hidden'))    # => ''
 拡張子を除いた basename。
 
 ```culebra
-puts(FS.stem('a/b/c.txt'))  # => 'c'
+inspect(FS.stem('a/b/c.txt'))  # => 'c'
 ```
 
 ### ファイル全体の読み書き
@@ -502,7 +522,7 @@ setuid/setgid/sticky）にマスクされ、既存ビットを置き換える。
 ```culebra
 # doctest: skip
 FS.chmod('deploy.sh', 0o755)       # 実行可能にする
-puts(FS.stat('deploy.sh').mode)    # 493  (0o755)
+inspect(FS.stat('deploy.sh').mode)    # 493  (0o755)
 ```
 
 #### `FS.chown(path: String, owner = nil, group = nil) -> Nil`
@@ -715,7 +735,7 @@ iterator がハンドルを所有し、ループ終了・break で閉じます�
 ```culebra
 # doctest: skip
 for line in File.open('access.log').lines() {
-  if line.contains('ERROR') { puts(line) }
+  if line.contains('ERROR') { inspect(line) }
 }
 ```
 
@@ -784,7 +804,7 @@ wire form のため）、それ以外は `utc: false`（local）デフォルト�
 # doctest: skip
 let t0 = Time.monotonic()
 do_work()
-puts("elapsed: {Time.monotonic() - t0} s")
+inspect("elapsed: {Time.monotonic() - t0} s")
 ```
 
 #### `Time.sleep(secs: Float) -> Nil`
@@ -853,7 +873,7 @@ dayofyear}` に分解。`weekday` は ISO 8601 起点（`0=Mon`、`6=Sun`）、
 
 ```culebra
 let p = Time.now().parts()
-if p.hour >= 9 && p.hour < 17 { puts("business hours") }
+if p.hour >= 9 && p.hour < 17 { inspect("business hours") }
 ```
 
 #### `t.weekday(utc: false) -> Long`
@@ -957,7 +977,7 @@ Random.seed(42)
 
 ```culebra
 Random.seed(0)
-puts(Random.int(0, 10))        # 0..9
+inspect(Random.int(0, 10))        # 0..9
 ```
 
 ### `Random.uniform(lo: Float, hi: Float) -> Float`
@@ -1005,7 +1025,7 @@ Random.weighted_choice(['hit', 'miss'], [1, 9])   # ~10% 'hit'
 
 ```culebra
 # $ culebra run.cul hello world
-puts(Sys.argv)        # ['hello', 'world']
+inspect(Sys.argv)        # ['hello', 'world']
 # $ culebra --jit run.cul hello   →  ['hello']   (--jit は culebra 用)
 ```
 
@@ -1029,8 +1049,8 @@ if error_occurred { Sys.exit(1) }
 未設定と空文字列設定を区別したい場合は `.size() > 0` を使用。
 
 ```culebra
-puts(Sys.env('HOME'))          # '/Users/alice'
-puts(Sys.env('NOT_A_VAR'))     # ''
+inspect(Sys.env('HOME'))          # '/Users/alice'
+inspect(Sys.env('NOT_A_VAR'))     # ''
 ```
 
 ### `Sys.set_env(name: String, value: String) -> Nil`
@@ -1041,7 +1061,7 @@ puts(Sys.env('NOT_A_VAR'))     # ''
 
 ```culebra
 Sys.set_env('CULEBRA_MODE', 'fast')
-puts(Sys.env('CULEBRA_MODE'))  # 'fast'
+inspect(Sys.env('CULEBRA_MODE'))  # 'fast'
 ```
 
 ### `Sys.getcwd() -> String`
@@ -1052,7 +1072,7 @@ puts(Sys.env('CULEBRA_MODE'))  # 'fast'
 
 ```culebra
 # doctest: skip
-puts(Sys.getcwd())             # '/Users/alice/project'
+inspect(Sys.getcwd())             # '/Users/alice/project'
 ```
 
 ### `Sys.chdir(path: String) -> Nil`
@@ -1063,7 +1083,7 @@ puts(Sys.getcwd())             # '/Users/alice/project'
 ```culebra
 # doctest: skip
 Sys.chdir('/tmp')
-puts(Sys.getcwd())             # '/tmp'（または解決後のパス）
+inspect(Sys.getcwd())             # '/tmp'（または解決後のパス）
 ```
 
 ### `Sys.executable -> String`
@@ -1075,7 +1095,7 @@ puts(Sys.getcwd())             # '/tmp'（または解決後のパス）
 
 ```culebra
 # doctest: skip
-puts(Sys.executable)           # '/usr/local/bin/culebra'
+inspect(Sys.executable)           # '/usr/local/bin/culebra'
 ```
 
 ### `Sys.script -> String?`
@@ -1088,7 +1108,7 @@ puts(Sys.executable)           # '/usr/local/bin/culebra'
 
 ```culebra
 # doctest: skip
-puts(Sys.script)               # '/Users/alice/project/build.cul'
+inspect(Sys.script)               # '/Users/alice/project/build.cul'
 ```
 
 ### `GC` — ヒープ情報の取得
@@ -1111,7 +1131,7 @@ puts(Sys.script)               # '/Users/alice/project/build.cul'
 # doctest: skip
 let base = GC.stat().live_objects
 build_some_structure()
-puts(GC.stat().live_objects - base)   # 構造が保持しているオブジェクト数
+inspect(GC.stat().live_objects - base)   # 構造が保持しているオブジェクト数
 ```
 
 これはリーク回帰テストの土台になる（`tests/test_gc_no_leak.cul` 参照）:
@@ -1132,8 +1152,8 @@ let A = Tensor.from([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])  # [2, 3]
 let B = Tensor.randn(3, 2)
 let C = A.dot(B) + 1.0                # lazy: グラフを作るだけ
 Tensor.eval(C)                        # ここで BLAS GEMM が走る
-puts(C.shape())                       # [2, 2]
-puts(C.to_array())                    # [[..., ...], [..., ...]]
+inspect(C.shape())                       # [2, 2]
+inspect(C.to_array())                    # [[..., ...], [..., ...]]
 ```
 
 ### 構築（名前空間関数）
@@ -1420,27 +1440,27 @@ JSON 文字列を Culebra の値に変換します。
 
 ```culebra
 let r = try { JSON.parse('{"a": ,}'); nil } catch e { e }
-puts(r.message)           # JSON.parse: expected value at 1:7.
-puts("{r.line}:{r.col}")  # 1:7
+inspect(r.message)           # JSON.parse: expected value at 1:7.
+inspect("{r.line}:{r.col}")  # 1:7
 ```
 
 例:
 
 ```culebra
 let v = {name: 'alice', age: 30, tags: ['admin', 'staff']}
-puts(JSON.stringify(v))                              # コンパクト
-puts(JSON.stringify(v, indent: 2))                   # pretty
-puts(JSON.stringify(v, sort_keys: true))             # 辞書順
-puts(JSON.stringify([1, 2, 3], lines: true))         # JSONL
+inspect(JSON.stringify(v))                              # コンパクト
+inspect(JSON.stringify(v, indent: 2))                   # pretty
+inspect(JSON.stringify(v, sort_keys: true))             # 辞書順
+inspect(JSON.stringify([1, 2, 3], lines: true))         # JSONL
 let back = JSON.parse(JSON.stringify(v))
-puts(back.name)                                      # alice
+inspect(back.name)                                      # alice
 let arr = JSON.parse("1\n2\n3\n", lines: true)
-puts(arr)                                            # [1, 2, 3]
+inspect(arr)                                            # [1, 2, 3]
 let cfg = JSON.parse('{
   // コメントと末尾カンマを許容
   "port": 8080,
 }', jsonc: true)
-puts(cfg.port)                                       # 8080
+inspect(cfg.port)                                       # 8080
 ```
 
 JIT メモ: ビルトインの `JSON.{stringify, parse}` は他の名前空間
@@ -1511,10 +1531,10 @@ let spec = {
 }
 
 let args = Args.parse(Sys.argv, spec)
-puts(args.input)
-if args.lines { puts("lines: ...") }
-if args.words { puts("words: ...") }
-puts("encoding: {args.encoding}")
+inspect(args.input)
+if args.lines { inspect("lines: ...") }
+if args.words { inspect("words: ...") }
+inspect("encoding: {args.encoding}")
 ```
 
 ```
@@ -1623,7 +1643,7 @@ throw 値の `kind` は次のいずれか:
 # doctest: skip
 let r = Proc.run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
 if r.ok {
-  IO.puts("on branch " + r.stdout.trim())
+  IO.inspect("on branch " + r.stdout.trim())
 } else {
   IO.print(r.stderr)
 }
@@ -1722,7 +1742,7 @@ let server = Proc.spawn(["python", "-m", "http.server", "8000"])
 # ... サーバに対して作業 ...
 server.kill()                 # SIGTERM
 let r = server.wait()
-IO.puts("server exited via " + (r.signal ?? to_string(r.code)))
+IO.inspect("server exited via " + (r.signal ?? to_string(r.code)))
 
 # ブロックせずに完了をポーリング。
 let job = Proc.spawn(["make", "-j4"])
@@ -1983,7 +2003,7 @@ let (tx, rx) = Channel.new(1)
 Signal.notify(tx)              # Ctrl+C は throw でなくチャネルへ
 serve_in_background()
 rx.recv()                      # 最初の Ctrl+C までブロック
-puts("shutting down…")
+inspect("shutting down…")
 drain_and_close()
 ```
 
@@ -2068,11 +2088,11 @@ buf.flush()                   # ディスクへ永続化
   y: Float32 = 0.0
 }
 let buf = SharedBuffer.new(3, Vec2)
-puts(buf.size)                # 3
+inspect(buf.size)                # 3
 buf[0].x = 1.5                # その場でバイトを書く
 let v = buf[0]                # 保持した view は同じ要素を指す
 v.y = 2.5
-puts([buf[0].x, buf[0].y])    # [1.5, 2.5]
+inspect([buf[0].x, buf[0].y])    # [1.5, 2.5]
 ```
 
 要素まるごとの代入（`buf[i] = ...`）は `TypeError` — レコードは単独の値
@@ -2116,7 +2136,7 @@ buffer` の Object）で渡し、子はその名前で `SharedBuffer.receive(nam
 let grid = SharedBuffer.shared(4, Cell)
 grid[0].v = 100
 Proc.run([Sys.executable, "worker.cul"], share: {grid: grid})
-puts(grid[0].v)               # 子の書き込みをここで読み戻す
+inspect(grid[0].v)               # 子の書き込みをここで読み戻す
 grid.drop()
 ```
 
@@ -2159,7 +2179,7 @@ Parallel.each(iota(0, 8), fn (w) {
     tally.with_lock(fn () { tally[0].n = tally[0].n + 1 })
   }
 })
-puts(tally[0].n)              # ちょうど 8000 — lost update なし
+inspect(tally[0].n)              # ちょうど 8000 — lost update なし
 ```
 
 同じ呼び出しが**プロセス間**でも効く。`.shared` / `.file` の buffer は
@@ -2453,8 +2473,8 @@ if (!cond) {
 assert_eq(1 + 1, 2)                                # 成功時は無音
 
 let r = try { assert_eq("foo", "bar"); nil } catch e { e }
-puts(r.kind)         # => 'AssertionError'
-puts(r.message)
+inspect(r.kind)         # => 'AssertionError'
+inspect(r.message)
 # => |
 # 'assert_eq failed:
 #   left:  foo
@@ -2689,9 +2709,9 @@ Regex.escape("a.b(c)")                           // => `a\.b\(c\)`（リテラ�
 let r = Http.get("https://api.example.com/users", params: {page: "2"})
 if r.ok {
   let users = r.json()                 # レスポンスボディを JSON としてパース
-  IO.puts(users.size().to_string())
+  IO.inspect(users.size().to_string())
 } else {
-  IO.puts("request failed: {r.status}")
+  IO.inspect("request failed: {r.status}")
 }
 
 # ヘッダとタイムアウトを指定して JSON を POST（`json:` が serialize + Content-Type 設定）。
@@ -3042,7 +3062,7 @@ WebSocket クライアントを `url`（`ws://host:port/path`）に接続し、�
 # doctest: skip
 let ws = Http.ws("ws://127.0.0.1:8080/echo")
 ws.send("hello")
-puts(ws.receive())               # => エコーされたメッセージ
+inspect(ws.receive())               # => エコーされたメッセージ
 for msg in ws { handle(msg) }    # サーバが close するまでメッセージを drain
 ws.close()
 ```
@@ -3099,13 +3119,13 @@ srv.listen(8080)
 未知のエンティティは素通しされます。
 
 ```culebra
-puts(Encoding.html.escape("a & b < c"))          # => 'a &amp; b &lt; c'
-puts(Encoding.html.escape("it's fine"))          # => 'it&#39;s fine'
-puts(Encoding.html.unescape("Tom &amp; Jerry"))  # => 'Tom & Jerry'
-puts(Encoding.html.unescape("caf&eacute; &mdash; x")) # => 'café — x'
-puts(Encoding.html.unescape("&#65;&#x42;"))      # => 'AB'
-puts(Encoding.html.unescape("&#12354;"))         # => 'あ'
-puts(Encoding.html.unescape("&unknownent;"))     # => '&unknownent;'
+inspect(Encoding.html.escape("a & b < c"))          # => 'a &amp; b &lt; c'
+inspect(Encoding.html.escape("it's fine"))          # => 'it&#39;s fine'
+inspect(Encoding.html.unescape("Tom &amp; Jerry"))  # => 'Tom & Jerry'
+inspect(Encoding.html.unescape("caf&eacute; &mdash; x")) # => 'café — x'
+inspect(Encoding.html.unescape("&#65;&#x42;"))      # => 'AB'
+inspect(Encoding.html.unescape("&#12354;"))         # => 'あ'
+inspect(Encoding.html.unescape("&unknownent;"))     # => '&unknownent;'
 ```
 
 ### `Encoding.base64`
@@ -3120,8 +3140,8 @@ puts(Encoding.html.unescape("&unknownent;"))     # => '&unknownent;'
 文字は `ValueError`。
 
 ```culebra
-puts(Encoding.base64.encode("user:pass"))   # => 'dXNlcjpwYXNz'
-puts(Encoding.base64.decode("dXNlcjpwYXNz")) # => 'user:pass'
+inspect(Encoding.base64.encode("user:pass"))   # => 'dXNlcjpwYXNz'
+inspect(Encoding.base64.decode("dXNlcjpwYXNz")) # => 'user:pass'
 ```
 
 ```culebra
@@ -3142,9 +3162,9 @@ let r = Http.get(url, headers: {Authorization: "Basic " + cred})
 16 進以外の文字は `ValueError`。
 
 ```culebra
-puts(Encoding.hex.encode("abc"))   # => '616263'
-puts(Encoding.hex.decode("616263")) # => 'abc'
-puts(Encoding.hex.decode("00FF").size()) # => 2
+inspect(Encoding.hex.encode("abc"))   # => '616263'
+inspect(Encoding.hex.decode("616263")) # => 'abc'
+inspect(Encoding.hex.decode("00FF").size()) # => 2
 ```
 
 ### `Encoding.url`
@@ -3160,9 +3180,9 @@ puts(Encoding.hex.decode("00FF").size()) # => 2
 残し、リテラルの `+` も `+` のまま（`encode`/`decode` がちょうど往復します）。
 
 ```culebra
-puts(Encoding.url.encode("a b&c"))   # => 'a%20b%26c'
-puts(Encoding.url.decode("a%20b%26c")) # => 'a b&c'
-puts(Encoding.url.encode("café"))    # => 'caf%C3%A9'
+inspect(Encoding.url.encode("a b&c"))   # => 'a%20b%26c'
+inspect(Encoding.url.decode("a%20b%26c")) # => 'a b&c'
+inspect(Encoding.url.encode("café"))    # => 'caf%C3%A9'
 ```
 
 ---
@@ -3183,8 +3203,8 @@ zlib を用いた gzip 圧縮・展開。どちらの関数もバイナリセー
 ```culebra
 let original = "the quick brown fox the quick brown fox the quick brown fox the quick brown fox"
 let z = Compress.gzip(original)
-puts(z.size() < original.size())          # => true
-puts(Compress.gunzip(z) == original)      # => true
+inspect(z.size() < original.size())          # => true
+inspect(Compress.gunzip(z) == original)      # => true
 ```
 
 ```culebra
@@ -3217,11 +3237,11 @@ NUL も終端でなくメッセージの一部）。
 | `Hash.hmac_sha512(key: String, data: String) -> String` | 128 文字 hex の HMAC-SHA-512 |
 
 ```culebra
-puts(Hash.sha256("abc"))
+inspect(Hash.sha256("abc"))
 # => 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
-puts(Hash.md5("abc"))
+inspect(Hash.md5("abc"))
 # => '900150983cd24fb0d6963f7d28e17f72'
-puts(Hash.hmac_sha256("Jefe", "what do ya want for nothing?"))
+inspect(Hash.hmac_sha256("Jefe", "what do ya want for nothing?"))
 # => '5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843'
 ```
 
@@ -3253,9 +3273,9 @@ puts(Hash.hmac_sha256("Jefe", "what do ya want for nothing?"))
 
 ```culebra
 let rows = CSV.parse("name,age\nalice,30\nbob,25")
-puts(rows[1])                                         # => ['alice', '30']
-puts(CSV.stringify([["a,b", "c"], [1, 2]]) == "\"a,b\",c\n1,2")   # => true
-puts(CSV.parse("a\tb", delimiter: "\t")[0])           # => ['a', 'b']
+inspect(rows[1])                                         # => ['alice', '30']
+inspect(CSV.stringify([["a,b", "c"], [1, 2]]) == "\"a,b\",c\n1,2")   # => true
+inspect(CSV.parse("a\tb", delimiter: "\t")[0])           # => ['a', 'b']
 ```
 
 **ヘッダモード — `header: true`.** 1 行目を列名とし、以降の各行を（位置 Array でなく）
@@ -3263,7 +3283,7 @@ puts(CSV.parse("a\tb", delimiter: "\t")[0])           # => ['a', 'b']
 
 ```culebra
 let rows = CSV.parse("name,age\nalice,30\nbob,25", header: true)
-puts(rows[0]["name"])                                 # => 'alice'
+inspect(rows[0]["name"])                                 # => 'alice'
 ```
 
 データ行が無いヘッダ（や空入力）は `[]`。ヘッダ名の重複や、ヘッダとフィールド数が
@@ -3278,10 +3298,10 @@ puts(rows[0]["name"])                                 # => 'alice'
 let rows = CSV.parse("name,age,active\nalice,30,true", header: true,
                      types: {age: "Long", active: "Bool"})
 # age はもう本物の Long（String でない）ので算術が効く:
-puts(rows[0]["age"] + 1)                              # => 31
+inspect(rows[0]["age"] + 1)                              # => 31
 # 郵便番号は元テキストのまま — 数値推論なし:
 let z = CSV.parse("zip\n01234", header: true, types: {zip: "String"})
-puts(z[0]["zip"])                                     # => '01234'
+inspect(z[0]["zip"])                                     # => '01234'
 ```
 
 未知の型名・どの列も指さない `types` キー・変換不能なセル（`Long` への `"hello"`、
@@ -3319,15 +3339,15 @@ parse は寛容（不正な行は skip）。複数行の値は非対応。`Env.l
 
 ```culebra
 let cfg = Env.parse("# app config\nPORT=8080\nNAME=\"my app\"\nDEBUG=true")
-puts(cfg["PORT"])                 # => '8080'
-puts(cfg["NAME"])                 # => 'my app'
-puts(cfg["DEBUG"])                # => 'true'
+inspect(cfg["PORT"])                 # => '8080'
+inspect(cfg["NAME"])                 # => 'my app'
+inspect(cfg["DEBUG"])                # => 'true'
 ```
 
 ```culebra
 # doctest: skip
 Env.load(".env")                  # ./.env があれば変数を設定
-puts(Sys.env("PORT"))
+inspect(Sys.env("PORT"))
 ```
 
 値を数値や真偽値として使うには、利用箇所で `to_long` / `to_float` で変換する
@@ -3350,8 +3370,8 @@ puts(Sys.env("PORT"))
 （monotonic counter は持たない）。
 
 ```culebra
-puts(UUID.v4().size())          # => 36
-puts(UUID.v4() != UUID.v4())    # => true
+inspect(UUID.v4().size())          # => 36
+inspect(UUID.v4() != UUID.v4())    # => true
 ```
 
 ---
@@ -3387,7 +3407,7 @@ puts(UUID.v4() != UUID.v4())    # => true
 へ渡すスタイルを返します。
 
 ```culebra
-puts(Term.bold(Term.fg("alert", 196)))          # 太字・明るい赤の "alert"（表示用）
+inspect(Term.bold(Term.fg("alert", 196)))          # 太字・明るい赤の "alert"（表示用）
 let st = Term.style(fg: (255, 128, 0), bold: true)   # Screen セル用
 ```
 
@@ -3564,8 +3584,8 @@ log.error("upstream failed", {status: 502})
 
 ```culebra
 let r = try { TOML.parse("x = "); nil } catch e { e }
-puts(r.message)            # TOML.parse: expected value
-puts("{r.line}:{r.col}")   # 1:5
+inspect(r.message)            # TOML.parse: expected value
+inspect("{r.line}:{r.col}")   # 1:5
 ```
 
 `stringify` は `Object`（TOML 文書は常にテーブル）を取り、まずスカラ / 配列 /
@@ -3583,9 +3603,9 @@ ports = [80, 443]
 [server]
 host = "localhost"
 """)
-puts(cfg.title)            # demo
-puts(cfg.server.host)      # localhost
-puts(TOML.stringify({a: 1, b: {c: 2}}))
+inspect(cfg.title)            # demo
+inspect(cfg.server.host)      # localhost
+inspect(TOML.stringify({a: 1, b: {c: 2}}))
 # a = 1
 #
 # [b]
@@ -3660,7 +3680,7 @@ db.execute("CREATE TABLE users (id INTEGER, name TEXT)")
 db.execute("INSERT INTO users VALUES (?, ?)", [1, "Alice"])
 
 let rows = db.query("SELECT * FROM users")
-puts(rows[0]["name"])      # Alice
+inspect(rows[0]["name"])      # Alice
 
 # 再利用可能なプリペアド文
 let ins = db.prepare("INSERT INTO users VALUES (?, ?)")
@@ -3673,7 +3693,7 @@ db.transaction(fn () {
 })
 
 let r = try { db.query("SELECT * FROM missing"); nil } catch e { e }
-puts(r.kind)               # SQLiteError
+inspect(r.kind)               # SQLiteError
 
 db.close()
 ```
@@ -3967,12 +3987,12 @@ view.drop()
 むスクリプトエンジンとして、意図しないグローバルを持ち込まない形に
 なります。
 
-ただし CLI スクリプトで `puts` / `print` は頻出するため、毎回
-`IO.puts` と書くのは摩擦が大きい。CLI バイナリ（`src/main.cc`）
-は環境構築直後にこれらをグローバルとしてインストールします。
-指す関数値は `IO` 配下と同一なので重複はありません。V8 が同様の
-アプローチを採っており、エンジン自体は `print` を提供せず、`d8`
-シェルが後付けで導入しています。
+ただし CLI スクリプトで `inspect` / `print` / `println` は頻出する
+ため、毎回 `IO.inspect` と書くのは摩擦が大きい。CLI バイナリ
+（`src/main.cc`）は環境構築直後にこれらをグローバルとしてインストール
+します。指す関数値は `IO` 配下と同一なので重複はありません。V8 が
+同様のアプローチを採っており、エンジン自体は `print` を提供せず、
+`d8` シェルが後付けで導入しています。
 
 ### 名前空間はファーストクラス値
 
@@ -3983,15 +4003,15 @@ view.drop()
 
 ```culebra
 let io = IO
-io.puts("hello")              # IO.puts("hello") と同じ
+io.inspect("hello")              # IO.inspect("hello") と同じ
 
-fn run_with(ns, x) { ns.puts(x) }
+fn run_with(ns, x) { ns.inspect(x) }
 run_with(IO, "via parameter")
 ```
 
 両 backend がこれを保証します。JIT/AOT のスローパスは runtime
 ディスパッチャ（`stdlib_jit.h::kNsMethods`）を経由し、構文的
-ファストパス（`IO.puts(x)` 直接呼出）は従来の inline IR 生成を
+ファストパス（`IO.inspect(x)` 直接呼出）は従来の inline IR 生成を
 保ちます。
 
 ### 自由関数 vs メソッド

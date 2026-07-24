@@ -20,4 +20,4 @@ for v in Channel.fan_in(sources) { total = total + 1; sum = sum + v }
 for h in handles { h.join() }
 assert_eq(total, 30)              # 6 producers x 5 values
 assert_eq(sum, 1140)             # sum over w in 1..6 of (50*w + 15) = 50*21 + 90
-puts("test_spawn_overcap: passed")
+inspect("test_spawn_overcap: passed")

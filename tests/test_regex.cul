@@ -80,4 +80,4 @@ let w = Regex.compile('\w+')
 assert_eq(w.find("a b").value, "a")
 assert_eq(w.find_all("a b c").size(), 3)
 
-puts("test_regex: ok")
+inspect("test_regex: ok")

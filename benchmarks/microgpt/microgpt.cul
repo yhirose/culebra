@@ -9,7 +9,7 @@ Random.seed(42) # Let there be order among chaos
 # Let there be a Dataset `docs`: list[str] of documents (e.g. a list of names)
 data_path = 'benchmarks/microgpt/names.txt'
 if !FS.exists(data_path) {
-  puts("error: {data_path} missing. Run `just fetch-names` first.")
+  inspect("error: {data_path} missing. Run `just fetch-names` first.")
   Sys.exit(1)
 }
 
@@ -19,7 +19,7 @@ for line in FS.read(data_path).split("\n") {
   if s.size() > 0 { docs.push(s) }
 }
 Random.shuffle(docs)
-puts("num docs: {docs.size()}")
+inspect("num docs: {docs.size()}")
 
 # Let there be a Tokenizer to translate strings to sequences of integers ("tokens") and back
 mut uchars = [] # unique characters in the dataset become token ids 0..n-1
@@ -27,7 +27,7 @@ for d in docs { for c in d { if !uchars.contains(c) { uchars.push(c) } } }
 uchars.sort_by(|c| c)
 BOS = uchars.size()              # token id for a special Beginning of Sequence (BOS) token
 vocab_size = uchars.size() + 1   # total number of unique tokens, +1 is for BOS
-puts("vocab size: {vocab_size}")
+inspect("vocab size: {vocab_size}")
 
 
 # Let there be Autograd to recursively apply the chain rule through a computation graph
@@ -138,7 +138,7 @@ class GPT {
 
 let model = GPT.new()
 let params = model.parameters()
-puts("num params: {params.size()}") # flat Array<Value>, one per scalar weight
+inspect("num params: {params.size()}") # flat Array<Value>, one per scalar weight
 
 
 # Define the model architecture: a function mapping tokens and parameters to logits over what comes next
@@ -254,19 +254,19 @@ while step < num_steps {
   }
 
   if (step + 1) % 10 == 0 || step == 0 {
-    puts("step {step+1} / {num_steps} | loss {loss.data}")
+    inspect("step {step+1} / {num_steps} | loss {loss.data}")
   }
   final_loss = loss.data
   step = step + 1
 }
 
-puts("final loss: {final_loss}")
+inspect("final loss: {final_loss}")
 
 
 # Inference: may the model babble back to us
 let n_samples = if Sys.argv.size() > 1 { to_long(Sys.argv[1]) } else { 5 }
 temperature = 0.5 # in (0, 1], control the "creativity" of generated text, low to high
-puts('--- inference (new, hallucinated names) ---')
+inspect('--- inference (new, hallucinated names) ---')
 let pop = range(vocab_size).collect()
 
 mut sample_idx = 0
@@ -284,6 +284,6 @@ while sample_idx < n_samples {
     if token_id == BOS { break }
     sample.push(uchars[token_id])
   }
-  puts("sample {sample_idx+1}: {sample.join('')}")
+  inspect("sample {sample_idx+1}: {sample.join('')}")
   sample_idx = sample_idx + 1
 }

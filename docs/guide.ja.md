@@ -99,7 +99,7 @@ just test               # 全 backend + embed スモークテスト (並列; JOB
 Culebra ソースの拡張子は `.cul`。 `culebra` バイナリで実行:
 
 ```bash
-echo "puts('hello, culebra!')" > hello.cul
+echo "inspect('hello, culebra!')" > hello.cul
 ./build/culebra hello.cul            # インタプリタ
 ./build/culebra --jit hello.cul      # JIT (出力は同じ)
 ./build/culebra --jit-faststart hello.cul # JIT・起動が速い
@@ -119,26 +119,27 @@ echo "puts('hello, culebra!')" > hello.cul
 
 ```culebra
 # this is a comment
-puts('hello')          # => 'hello'
+inspect('hello')          # => 'hello'
 ```
 
-`puts` は値を *inspect* 形式で出力するため、文字列は引用符付き
+`inspect` は値をクォート付きの inspect 形式で出力するため、文字列は引用符付き
 (`'hello'`) で、参照型はそのリテラル表記で表示される。引用符の付かない
-生のテキストが必要なときは `print` を使う (末尾の改行も付かない) — 第11章参照。
+生のテキストに改行を付けたいときは `println`、改行も不要なら `print` を使う
+— 第15章参照。
 
 ## 2. 値・束縛・制御フロー
 
 ### 2.1 8 つの型
 
 ```culebra
-puts(type_of(nil))            # => 'Nil'
-puts(type_of(true))           # => 'Bool'
-puts(type_of(42))             # => 'Long'
-puts(type_of(3.14))           # => 'Float'
-puts(type_of('hi'))           # => 'String'
-puts(type_of([1, 2]))         # => 'Array'
-puts(type_of({a: 1}))         # => 'Object'
-puts(type_of(fn () { 1 }))    # => 'Function'
+inspect(type_of(nil))            # => 'Nil'
+inspect(type_of(true))           # => 'Bool'
+inspect(type_of(42))             # => 'Long'
+inspect(type_of(3.14))           # => 'Float'
+inspect(type_of('hi'))           # => 'String'
+inspect(type_of([1, 2]))         # => 'Array'
+inspect(type_of({a: 1}))         # => 'Object'
+inspect(type_of(fn () { 1 }))    # => 'Function'
 ```
 
 ### 2.2 束縛: bare / `let` / `mut`
@@ -149,7 +150,7 @@ let y = 20          # let: 新規不変束縛 (外側のシャドウは不可)
 mut z = 30          # mut: 新規可変束縛
 z = z + 1           # mut は再代入可能
 z += 1              # 複合 (`-= *= /= %= **= @=` も同様)
-puts(z)             # => 32
+inspect(z)             # => 32
 ```
 
 bare 代入は外側スコープへ向かって検索し、最も近い同名束縛を再代入。
@@ -178,8 +179,8 @@ make = fn () {
   }
 }
 c = make()
-puts(c())                     # => 1
-puts(c())                     # => 2
+inspect(c())                     # => 1
+inspect(c())                     # => 2
 ```
 
 ### 2.4 制御フロー
@@ -190,22 +191,22 @@ puts(c())                     # => 2
 ```culebra
 x = 7
 sign = if x > 0 { 1 } else if x < 0 { -1 } else { 0 }
-puts(sign)                    # => 1
+inspect(sign)                    # => 1
 
 mut i = 0
-while i < 3 { puts(i); i = i + 1 }
+while i < 3 { inspect(i); i = i + 1 }
 # => |
 # 0
 # 1
 # 2
 
-for n in 0..3   { puts(n) }   # 排他レンジ
+for n in 0..3   { inspect(n) }   # 排他レンジ
 # => |
 # 0
 # 1
 # 2
 
-for n in 0..=2  { puts(n) }   # 包含レンジ
+for n in 0..=2  { inspect(n) }   # 包含レンジ
 # => |
 # 0
 # 1
@@ -225,21 +226,21 @@ for n in 0..=2  { puts(n) }   # 包含レンジ
 
 ```culebra
 add = fn (a, b) { a + b }
-puts(add(2, 3))               # => 5
+inspect(add(2, 3))               # => 5
 
 # 型注釈はオプション; 詳細は Ch.14
 add_typed = fn (a: Long, b: Long) -> Long { a + b }
-puts(add_typed(2, 3))         # => 5
+inspect(add_typed(2, 3))         # => 5
 
 # |x| expr は fn (x) { expr } の糖衣
 square = |x| x * x
-puts(square(7))               # => 49
+inspect(square(7))               # => 49
 
 # 再帰には `fn` (関数自身への参照)
 fib = fn (x) {
   if x < 2 { x } else { fn(x - 2) + fn(x - 1) }
 }
-puts(fib(10))                 # => 55
+inspect(fib(10))                 # => 55
 ```
 
 ### 3.2 クロージャ
@@ -252,9 +253,9 @@ make_counter = fn () {
   fn () { n = n + 1; n }   # bare `n = ...` で捕捉 `n` を更新
 }
 c = make_counter()
-puts(c())                     # => 1
-puts(c())                     # => 2
-puts(c())                     # => 3
+inspect(c())                     # => 1
+inspect(c())                     # => 2
+inspect(c())                     # => 3
 ```
 
 ### 3.3 キーワード引数と `**splat`
@@ -268,13 +269,13 @@ greet = fn (name, *, greeting = 'hi', **opts) {
   prefix = if opts.has('formal') && opts.formal { 'Mr./Ms. ' } else { '' }
   "{greeting}, {prefix}{name}"
 }
-puts(greet('alice'))                       # => 'hi, alice'
-puts(greet('alice', greeting: 'hello'))    # => 'hello, alice'
-puts(greet('bob', formal: true))           # => 'hi, Mr./Ms. bob'
+inspect(greet('alice'))                       # => 'hi, alice'
+inspect(greet('alice', greeting: 'hello'))    # => 'hello, alice'
+inspect(greet('bob', formal: true))           # => 'hi, Mr./Ms. bob'
 
 # `**` で Object をキーワード引数として splat
 opts = {greeting: 'yo', formal: false}
-puts(greet('carol', **opts))               # => 'yo, carol'
+inspect(greet('carol', **opts))               # => 'yo, carol'
 ```
 
 `*` マーカーは呼び出し側にオプション名を書かせるので、長いパラメー
@@ -289,9 +290,9 @@ puts(greet('carol', **opts))               # => 'yo, carol'
 
 ```culebra
 name = 'Culebra'
-puts("hello, {name}!")                   # => 'hello, Culebra!'
-puts("two plus three is {2 + 3}")        # => 'two plus three is 5'
-puts('a' + 'b' + 'c')                    # => 'abc'
+inspect("hello, {name}!")                   # => 'hello, Culebra!'
+inspect("two plus three is {2 + 3}")        # => 'two plus three is 5'
+inspect('a' + 'b' + 'c')                    # => 'abc'
 ```
 
 ### 4.2 反復とインデックス
@@ -300,14 +301,14 @@ puts('a' + 'b' + 'c')                    # => 'abc'
 インデックスは UTF-8 上のバイトオフセット — 範囲外はエラー。
 
 ```culebra
-for c in 'café' { puts(c) }
+for c in 'café' { inspect(c) }
 # => |
 # 'c'
 # 'a'
 # 'f'
 # 'é'
 
-puts('café'.size())            # => 5
+inspect('café'.size())            # => 5
 ```
 
 `size()` は UTF-8 表現上のバイト数を返す (`é` は 2 バイトなので `'café'`
@@ -317,11 +318,11 @@ puts('café'.size())            # => 5
 ### 4.3 よく使うメソッド
 
 ```culebra
-puts('hello world'.split(' '))        # => ['hello', 'world']
-puts('  hi  '.trim())                 # => 'hi'
-puts('abc'.upper())                   # => 'ABC'
-puts('foo'.starts_with('fo'))         # => true
-puts(['a', 'b', 'c'].join('-'))       # => 'a-b-c'
+inspect('hello world'.split(' '))        # => ['hello', 'world']
+inspect('  hi  '.trim())                 # => 'hi'
+inspect('abc'.upper())                   # => 'ABC'
+inspect('foo'.starts_with('fo'))         # => true
+inspect(['a', 'b', 'c'].join('-'))       # => 'a-b-c'
 ```
 
 完全な一覧は [language.ja.md §18.1](language.ja.md)。
@@ -336,12 +337,12 @@ puts(['a', 'b', 'c'].join('-'))       # => 'a-b-c'
 
 ```culebra
 print_first_grapheme = fn (s: StringLike) {
-  for g in s.graphemes() { puts(g); break }
+  for g in s.graphemes() { inspect(g); break }
 }
 print_first_grapheme('café')          # => 'c'
 
-puts(type_of('hello'.slice(1, 4)))    # => 'StringView'
-puts('hello'.slice(1, 4))             # => 'ell'
+inspect(type_of('hello'.slice(1, 4)))    # => 'StringView'
+inspect('hello'.slice(1, 4))             # => 'ell'
 ```
 
 `.graphemes()` は Unicode の *extended grapheme cluster* を lazy に
@@ -349,8 +350,8 @@ puts('hello'.slice(1, 4))             # => 'ell'
 あっても、1 ステップ = ユーザが知覚する 1 文字になる:
 
 ```culebra
-puts('a👨‍👩‍👧b'.graphemes().collect().size())    # => 3
-puts('café'.graphemes().collect().size())        # => 4
+inspect('a👨‍👩‍👧b'.graphemes().collect().size())    # => 3
+inspect('café'.graphemes().collect().size())        # => 4
 ```
 
 `StringView`/grapheme の完全な API は [language.ja.md §18.1](language.ja.md)。
@@ -370,15 +371,15 @@ lazy grapheme 反復 (上記) を足したもの。
 
 ```culebra
 # range は何も構築しない; for ループが lazy に消費
-for i in range(3) { puts(i) }
+for i in range(3) { inspect(i) }
 # => |
 # 0
 # 1
 # 2
 
 # iota は Array を割り当てる
-puts(iota(3))                 # => [0, 1, 2]
-puts(iota(2, 5))              # => [2, 3, 4]
+inspect(iota(3))                 # => [0, 1, 2]
+inspect(iota(2, 5))              # => [2, 3, 4]
 ```
 
 ### 5.2 遅延チェイン
@@ -392,20 +393,20 @@ result = range(1000)
   .map(|x| x * 3)
   .take(5)
   .collect()
-puts(result)                  # => [0, 6, 12, 18, 24]
+inspect(result)                  # => [0, 6, 12, 18, 24]
 
 total = range(1, 11).reduce(0, |a, x| a + x)
-puts(total)                   # => 55
+inspect(total)                   # => 55
 
-puts([1, 2, 3, 4].iter().any(|x| x > 3))      # => true
-puts([10, 20, 30].iter().find(|x| x > 15))    # => 20
+inspect([1, 2, 3, 4].iter().any(|x| x > 3))      # => true
+inspect([10, 20, 30].iter().find(|x| x > 15))    # => 20
 ```
 
 ### 5.3 `enumerate` / `zip` / `flat_map` / `skip` / `take_while`
 
 ```culebra
 for i, v in ['fizz', 'buzz', 'bang'].enumerate() {
-  puts("{i}: {v}")
+  inspect("{i}: {v}")
 }
 # => |
 # '0: fizz'
@@ -413,7 +414,7 @@ for i, v in ['fizz', 'buzz', 'bang'].enumerate() {
 # '2: bang'
 
 for p in [1, 2, 3].iter().zip(['a', 'b', 'c']) {
-  puts("{p.first} / {p.second}")
+  inspect("{p.first} / {p.second}")
 }
 # => |
 # '1 / a'
@@ -421,10 +422,10 @@ for p in [1, 2, 3].iter().zip(['a', 'b', 'c']) {
 # '3 / c'
 
 flat = [[1, 2], [3], [4, 5, 6]].iter().flat_map(|xs| xs).collect()
-puts(flat)                    # => [1, 2, 3, 4, 5, 6]
+inspect(flat)                    # => [1, 2, 3, 4, 5, 6]
 
 head = range(100).skip(10).take_while(|x| x < 15).collect()
-puts(head)                    # => [10, 11, 12, 13, 14]
+inspect(head)                    # => [10, 11, 12, 13, 14]
 ```
 
 ### 5.4 ユーザー定義イテレータ
@@ -444,7 +445,7 @@ countdown = fn (start) {
   }
 }
 
-for v in countdown(3) { puts(v) }
+for v in countdown(3) { inspect(v) }
 # => |
 # 3
 # 2
@@ -463,7 +464,7 @@ fn countdown(start) {
   mut i = start
   while i > 0 { yield i; i = i - 1 }
 }
-for v in countdown(3) { puts(v) }
+for v in countdown(3) { inspect(v) }
 # => |
 # 3
 # 2
@@ -477,7 +478,7 @@ fn chunk(arr, n) {
   }
   if buf.size() > 0 { yield buf }
 }
-puts(chunk([1, 2, 3, 4, 5], 2).collect())    # => [[1, 2], [3, 4], [5]]
+inspect(chunk([1, 2, 3, 4, 5], 2).collect())    # => [[1, 2], [3, 4], [5]]
 ```
 
 ## 6. パターンマッチ
@@ -498,11 +499,11 @@ describe = fn (x) {
     _                  => 'other'
   }
 }
-puts(describe(0))             # => 'zero'
-puts(describe(2))             # => 'small'
-puts(describe(999))           # => 'big (999)'
-puts(describe('hi'))          # => 'str (hi)'
-puts(describe([1]))           # => 'other'
+inspect(describe(0))             # => 'zero'
+inspect(describe(2))             # => 'small'
+inspect(describe(999))           # => 'big (999)'
+inspect(describe('hi'))          # => 'str (hi)'
+inspect(describe([1]))           # => 'other'
 ```
 
 ### 6.2 式として
@@ -517,9 +518,9 @@ classify = fn (n: Long) -> Long {
     _          => 1
   }
 }
-puts(classify(-5))            # => -1
-puts(classify(0))             # => 0
-puts(classify(7))             # => 1
+inspect(classify(-5))            # => -1
+inspect(classify(0))             # => 0
+inspect(classify(7))             # => 1
 ```
 
 ### 6.3 分解
@@ -533,9 +534,9 @@ shape = fn (a) {
     [head, ...tail] => "head={head}, rest={tail.size()}",
   }
 }
-puts(shape([]))               # => 'empty'
-puts(shape([10, 20]))         # => 'two (10,20)'
-puts(shape([1, 2, 3, 4]))     # => 'head=1, rest=3'
+inspect(shape([]))               # => 'empty'
+inspect(shape([10, 20]))         # => 'two (10,20)'
+inspect(shape([1, 2, 3, 4]))     # => 'head=1, rest=3'
 
 first_name = fn (people) {
   match people {
@@ -543,8 +544,8 @@ first_name = fn (people) {
     _              => 'none'
   }
 }
-puts(first_name([{name: 'x'}, {name: 'y'}]))     # => 'x'
-puts(first_name([]))                              # => 'none'
+inspect(first_name([{name: 'x'}, {name: 'y'}]))     # => 'x'
+inspect(first_name([]))                              # => 'none'
 ```
 
 ### 6.4 再帰
@@ -557,8 +558,8 @@ is_even = fn (n) {
     _ => fn(n - 2)
   }
 }
-puts(is_even(10))             # => true
-puts(is_even(7))              # => false
+inspect(is_even(10))             # => true
+inspect(is_even(7))              # => false
 ```
 
 ### Why exhaustiveness check 無し
@@ -581,11 +582,11 @@ validate = fn (x) {
 }
 
 try {
-  puts(validate(42))          # => 42
-  puts(validate(-1))          # throws、次の行は到達せず
-  puts('unreached')
+  inspect(validate(42))          # => 42
+  inspect(validate(-1))          # throws、次の行は到達せず
+  inspect('unreached')
 } catch e {
-  puts("caught: {e}")         # => 'caught: negative: -1'
+  inspect("caught: {e}")         # => 'caught: negative: -1'
 }
 ```
 
@@ -599,8 +600,8 @@ validate = fn (x) {
 safe = fn (x) {
   try { validate(x) } catch _ { 0 }
 }
-puts(safe(7))                 # => 7
-puts(safe(-99))               # => 0
+inspect(safe(7))                 # => 7
+inspect(safe(-99))               # => 0
 ```
 
 ### 7.3 `defer`
@@ -614,10 +615,10 @@ puts(safe(-99))               # => 0
 ```culebra
 demo = fn (fail) {
   {
-    defer { puts('cleanup A') }
-    defer { puts('cleanup B') }
+    defer { inspect('cleanup A') }
+    defer { inspect('cleanup B') }
     if fail { throw 'failed' }
-    puts('work done')
+    inspect('work done')
   }
 }
 
@@ -637,14 +638,14 @@ demo(false)
 
 ```culebra
 make_resource = fn (id) {
-  { drop: fn () { puts("R{id} released") } }
+  { drop: fn () { inspect("R{id} released") } }
 }
 
-puts('enter')
+inspect('enter')
 {
   r = make_resource('X')
 }
-puts('exit')
+inspect('exit')
 # => |
 # 'enter'
 # 'RX released'
@@ -692,7 +693,7 @@ let answer = handle {
 } with ask(resume) {
   resume(21)
 }
-puts(answer)   # => 42
+inspect(answer)   # => 42
 ```
 
 `resume(21)` はハンドルされた本体を `perform ask()` の地点から値 `21` で再開する
@@ -716,7 +717,7 @@ effect fn counter() {
 mut cell = 0
 let n = handle { counter() } with get(k) { k(cell) }
                              with put(v, k) { cell = v; k(nil) }
-puts(n)   # => 2
+inspect(n)   # => 2
 ```
 
 どの関数からでも `perform` できます。plain 関数の `perform` は現在のコール
@@ -738,7 +739,7 @@ let both = handle {
 } with choose(a, b, k) {
   [k(a), k(b)]
 }
-puts(both)   # => [10, 20]
+inspect(both)   # => [10, 20]
 ```
 
 ### 8.4 再開しないハンドラ
@@ -755,8 +756,8 @@ effect fn safeDiv(a, b) {
   a / b
 }
 
-puts(handle { safeDiv(10, 2) } with raise(m, k) { -1 })   # => 5
-puts(handle { safeDiv(10, 0) } with raise(m, k) { -1 })   # => -1
+inspect(handle { safeDiv(10, 2) } with raise(m, k) { -1 })   # => 5
+inspect(handle { safeDiv(10, 0) } with raise(m, k) { -1 })   # => -1
 ```
 
 正常完了値を写すには `with return(v) { … }` を加えます。エフェクトフルな本体の
@@ -792,8 +793,8 @@ class Car {
 
 car = Car.new(5)
 car.run(1); car.run(2)
-puts(car.total())             # => '走行距離: 15 miles'
-puts(car.class)               # => 'Car'
+inspect(car.total())             # => '走行距離: 15 miles'
+inspect(car.class)               # => 'Car'
 ```
 
 クラスそのものを呼び出すのは `.new` のショートハンドです。`Car(5)` は
@@ -803,7 +804,7 @@ puts(car.class)               # => 'Car'
 ```culebra
 class Point { new(x, y) { self.x = x; self.y = y } }
 p = Point(3, 4)               # Point.new(3, 4) と同じ
-puts("{p.x},{p.y}")           # => '3,4'
+inspect("{p.x},{p.y}")           # => '3,4'
 ```
 
 ### 9.2 クロージャベースの別解
@@ -825,7 +826,7 @@ Car2 = {
 
 car = Car2.new(5)
 car.run(1); car.run(2)
-puts(car.total())             # => '走行距離: 15 miles'
+inspect(car.total())             # => '走行距離: 15 miles'
 ```
 
 `class:` タグと shape マッチが欲しいなら `class`、private 状態の
@@ -843,8 +844,8 @@ class Circle {
   static unit()   { Circle.new(1) }
   area()          { self.r * self.r * Circle.PI }
 }
-puts(Circle.unit().area())    # => 3.14
-puts(Circle.PI)               # => 3.14
+inspect(Circle.unit().area())    # => 3.14
+inspect(Circle.PI)               # => 3.14
 ```
 
 static フィールドはクラス宣言時に一度だけ eager に評価される。
@@ -882,11 +883,11 @@ class Vec2 {
 
 a = Vec2.new(1, 2)
 b = Vec2.new(3, 4)
-puts((a + b).show())          # => '(4, 6)'
-puts((b - a).show())          # => '(2, 2)'
-puts((a * 3).show())          # => '(3, 6)'
-puts((-a).show())             # => '(-1, -2)'
-puts(a == Vec2.new(1, 2))     # => true
+inspect((a + b).show())          # => '(4, 6)'
+inspect((b - a).show())          # => '(2, 2)'
+inspect((a * 3).show())          # => '(3, 6)'
+inspect((-a).show())             # => '(-1, -2)'
+inspect(a == Vec2.new(1, 2))     # => true
 ```
 
 ### 10.3 `__call__` で callable インスタンス
@@ -900,8 +901,8 @@ class Adder {
 }
 
 add5 = Adder.new(5)
-puts(add5(10))                # => 15
-puts(add5(99))                # => 104
+inspect(add5(10))                # => 15
+inspect(add5(99))                # => 104
 ```
 
 ## 11. UFCS とマルチメソッド
@@ -915,15 +916,15 @@ puts(add5(99))                # => 104
 
 ```culebra
 double = fn (x) { x * 2 }
-puts(42.double())                                  # => 84
-puts('hello world'.split(' ').size())              # => 2
+inspect(42.double())                                  # => 84
+inspect('hello world'.split(' ').size())              # => 2
 
 # 既存メソッドが常に優先 — Array の組み込み `reverse` は
 # ユーザの `reverse` で上書きされない
-reverse = fn (x) { puts('user reverse NOT called') }
+reverse = fn (x) { inspect('user reverse NOT called') }
 mut a = [1, 2, 3]
 a.reverse()
-puts(a)                                            # => [3, 2, 1]
+inspect(a)                                            # => [3, 2, 1]
 ```
 
 ### 11.2 マルチメソッド (自由関数の多重ディスパッチ)
@@ -939,9 +940,9 @@ fn area(c: Circle) { 3.14159 * c.r * c.r }
 fn area(s: Square) { s.s * s.s }
 fn area(n: Long)   { n }                     # 数値のフォールバック
 
-puts(area(Circle.new(2)))                    # => 12.56636
-puts(area(Square.new(3)))                    # => 9
-puts(area(10))                               # => 10
+inspect(area(Circle.new(2)))                    # => 12.56636
+inspect(area(Square.new(3)))                    # => 9
+inspect(area(10))                               # => 10
 ```
 
 ディスパッチは positional / kwargs / `**splat` 全部カバー、Union
@@ -958,8 +959,8 @@ class Calc {
   go(x: String) { "string" }
 }
 c = Calc.new()
-puts(c.go(1))                  # => 'long'
-puts(c.go('a'))                # => 'string'
+inspect(c.go(1))                  # => 'long'
+inspect(c.go('a'))                # => 'string'
 ```
 
 ### 11.3 ディスパッチ拡張
@@ -989,7 +990,7 @@ puts(c.go('a'))                # => 'string'
 ```culebra
 log = fn (f) {
   fn (x) {
-    puts("calling with {x}")
+    inspect("calling with {x}")
     f(x)
   }
 }
@@ -997,7 +998,7 @@ log = fn (f) {
 @log
 fn double(x) { x * 2 }
 
-puts(double(7))
+inspect(double(7))
 # => |
 # 'calling with 7'
 # 14
@@ -1009,7 +1010,7 @@ puts(double(7))
 prefix = fn (tag) {
   fn (f) {
     fn () {
-      puts("[{tag}]")
+      inspect("[{tag}]")
       f()
     }
   }
@@ -1017,7 +1018,7 @@ prefix = fn (tag) {
 
 @prefix('A')
 @prefix('B')
-fn greet() { puts('hi') }
+fn greet() { inspect('hi') }
 
 greet()
 # => |
@@ -1044,8 +1045,8 @@ memoize = fn (f) {
 @memoize
 fn slow_square(x) { x * x }
 
-puts(slow_square(7))          # => 49
-puts(slow_square(7))          # => 49
+inspect(slow_square(7))          # => 49
+inspect(slow_square(7))          # => 49
 ```
 
 ### 12.4 `fn.params` introspection
@@ -1055,8 +1056,8 @@ puts(slow_square(7))          # => 49
 
 ```culebra
 add_typed = fn (a: Long, b: Long) -> Long { a + b }
-puts(add_typed.params.map(|p| p.name))    # => ['a', 'b']
-puts(add_typed.return_type)               # => 'Long'
+inspect(add_typed.params.map(|p| p.name))    # => ['a', 'b']
+inspect(add_typed.return_type)               # => 'Long'
 ```
 
 デコレートされた関数は単一値 (ラップされたクロージャ) として束縛
@@ -1081,8 +1082,8 @@ PI    = 3.14159
 ```culebra
 # doctest: skip
 # main.cul — lib.cul と同じディレクトリ
-puts(greet('world'))          # => hello, world
-puts(PI)                      # => 3.14159
+inspect(greet('world'))          # => hello, world
+inspect(PI)                      # => 3.14159
 ```
 
 `culebra main.cul` を実行すると、未解決の名前 `greet` を辿って
@@ -1123,13 +1124,13 @@ tree-shaking もちゃんと効く (リーチャブルなトップレベルが�
 
 ```culebra
 add = fn (a: Long, b: Long) -> Long { a + b }
-puts(add(3, 4))               # => 7
+inspect(add(3, 4))               # => 7
 
 # Any は全部受ける。型注釈と動的パラメータは混在できる
 identity = fn (x: Any) -> Any { x }
 describe = fn (v, label: String) -> String { "{label}: {v}" }
-puts(identity(42))                  # => 42
-puts(describe([1, 2], 'array'))     # => 'array: [1, 2]'
+inspect(identity(42))                  # => 42
+inspect(describe([1, 2], 'array'))     # => 'array: [1, 2]'
 ```
 
 `type_of` (Ch.2.1) が組み込み型のランタイム introspection。
@@ -1145,12 +1146,12 @@ Optional types) と [language.ja.md §10](language.ja.md) (Tuples)。
 
 ```culebra
 show = fn (x: Long | String) -> String { to_string(x) }
-puts(show(1))                  # => '1'
-puts(show('hi'))               # => 'hi'
+inspect(show(1))                  # => '1'
+inspect(show('hi'))               # => 'hi'
 
 pair = (1, 'one')
-puts(type_of(pair))            # => 'Tuple'
-puts(pair == (1, 'one'))       # => true
+inspect(type_of(pair))            # => 'Tuple'
+inspect(pair == (1, 'one'))       # => true
 ```
 
 ### 14.3 Trait / Protocol
@@ -1173,7 +1174,7 @@ class Bob {
 }
 
 greet = fn (x: Greeter) -> String { x.hello() }
-puts(greet(Bob.new('Alice')))   # => 'hi, Alice'
+inspect(greet(Bob.new('Alice')))   # => 'hi, Alice'
 ```
 
 ### 14.4 Generic
@@ -1186,7 +1187,7 @@ puts(greet(Bob.new('Alice')))   # => 'hi, Alice'
 
 ```culebra
 first = fn (xs: Array<Long>) -> Long { xs[0] }
-puts(first([1, 2, 3]))         # => 1
+inspect(first([1, 2, 3]))         # => 1
 ```
 
 ### TypeScript から意図的に取り入れない要素
@@ -1197,16 +1198,16 @@ Conditional types、mapped types、template literal types、ユーティリ
 
 ## 15. 標準ライブラリ巡り
 
-CLI ドライバは `puts` / `print` を `IO.puts` / `IO.print` のエイ
-リアスとして提供する。 自前で環境を組み立てる埋め込み用途では
-namespace は見えるが bare alias は無い。
+CLI ドライバは `inspect` / `print` / `println` を `IO.inspect` /
+`IO.print` / `IO.println` のエイリアスとして提供する。 自前で環境を組み
+立てる埋め込み用途では namespace は見えるが bare alias は無い。
 
 ### 15.1 コア組み込み
 
 ```culebra
-puts(to_long('42'))           # => 42
-puts(to_string([1, 2]))       # => '[1, 2]'
-puts(iota(2, 5))              # => [2, 3, 4]
+inspect(to_long('42'))           # => 42
+inspect(to_string([1, 2]))       # => '[1, 2]'
+inspect(iota(2, 5))              # => [2, 3, 4]
 assert_eq(1 + 1, 2)           # 成功時は無音、失敗で throw
 ```
 
@@ -1215,12 +1216,12 @@ assert_eq(1 + 1, 2)           # 成功時は無音、失敗で throw
 ### 15.2 `Math`
 
 ```culebra
-puts(Math.abs(-7))            # => 7
-puts(Math.min(3, 5))          # => 3
-puts(Math.max(3, 5))          # => 5
-puts(Math.pow(2, 10))         # => 1024
-puts(Math.sign(-42))          # => -1
-puts(Math.clamp(15, 0, 10))   # => 10
+inspect(Math.abs(-7))            # => 7
+inspect(Math.min(3, 5))          # => 3
+inspect(Math.max(3, 5))          # => 5
+inspect(Math.pow(2, 10))         # => 1024
+inspect(Math.sign(-42))          # => -1
+inspect(Math.clamp(15, 0, 10))   # => 10
 ```
 
 完全リファレンス: [`stdlib.ja.md` §1](stdlib.ja.md)。
@@ -1239,11 +1240,11 @@ print('Hello, '); print('world!'); print("\n")   # => Hello, world!
 ### 15.4 `Sys` / `Random` / `FS` / `Time` / `Args`
 
 ```culebra
-puts(Sys.argv)                # => []
+inspect(Sys.argv)                # => []
 # Sys.env('HOME')             # プロセス環境
 # Sys.exit(0)                 # 終了
 
-puts(Random.int(0, 100) >= 0)          # => true
+inspect(Random.int(0, 100) >= 0)          # => true
 
 # Path — パスを持ち回る FS の流暢なラッパ:
 #   let cfg = Path.new('/etc') / 'app.conf'   # `/` で結合
@@ -1261,11 +1262,11 @@ grapheme cluster 単位がデフォルト。 `/u` フラグ不要。
 
 ```culebra
 re = Regex.compile('\d+')
-puts(re.test('order #42'))    # => true
+inspect(re.test('order #42'))    # => true
 
 # `re"..."` リテラルは Regex.compile(pattern, flags) の糖衣。
 # body は raw なので `\d` はそのまま通る。
-puts(re'\d+'.test('abc 123')) # => true
+inspect(re'\d+'.test('abc 123')) # => true
 ```
 
 完全な API: [`stdlib.ja.md` §15](stdlib.ja.md)。
@@ -1289,7 +1290,7 @@ statically link した BoringSSL。 `async` / `await` 無し — 並行は
 ```culebra
 # doctest: skip
 res = Http.get('https://example.com')
-puts(res.status)              # => 200
+inspect(res.status)              # => 200
 
 # サーバ
 srv = Http.server()
@@ -1320,13 +1321,13 @@ reduction・autograd) は [`stdlib.ja.md` §9](stdlib.ja.md)。
 ```culebra
 a = Tensor.from([1.0, 2.0, 3.0])
 b = Tensor.from([10.0, 20.0, 30.0])
-puts((a + b).to_array())      # => [11.0, 22.0, 33.0]
-puts(a.sum())                 # => 6.0
+inspect((a + b).to_array())      # => [11.0, 22.0, 33.0]
+inspect(a.sum())                 # => 6.0
 
 m = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
 c = m.dot(m)
 Tensor.eval(c)
-puts(c.to_array())            # => [[7.0, 10.0], [15.0, 22.0]]
+inspect(c.to_array())            # => [[7.0, 10.0], [15.0, 22.0]]
 ```
 
 ### 16.2 GPU プリミティブ
@@ -1460,7 +1461,7 @@ fixture 関数本体内の `defer` は fixture fn が return した瞬間に発�
 
 **matchers**。 アサーションは matcher 一族を使います — `assert`
 キーワード / builtin は存在しません。 matcher は **3 backend の
-global** として bind されており (`puts` / `Math` と同じ立場)、
+global** として bind されており (`inspect` / `Math` と同じ立場)、
 `culebra script.cul`、 `culebra --jit script.cul`、 `culebra build`、
 `culebra test` のいずれでも同じく動きます:
 
@@ -1486,7 +1487,7 @@ disable する別の `assert` キーワードは存在しません。
 経由で起動した場合のみ、 `test` / `@test` / `@parametrize` が
 **ambient global** として注入されます — `import` 不要。 matcher 一族は
 3 backend で常時 global なので追加注入は不要です。 これは script 実行
-モード下でだけ `puts` / `print` が ambient で、 `culebra::environment()`
+モード下でだけ `inspect` / `print` が ambient で、 `culebra::environment()`
 には注入されない設計と同じ流儀 ([stdlib.ja.md §12](stdlib.ja.md) 参照)。
 
 ```sh
@@ -1513,7 +1514,7 @@ fail で `1`。
 {"event":"run_end","passed":42,"failed":1,"errored_files":0,"bailed":false}
 ```
 
-JSON モードでは test 内の `puts(...)` は event の `stdout` フィールド
+JSON モードでは test 内の `inspect(...)` は event の `stdout` フィールド
 に capture され NDJSON ストリームに interleave しません。 失敗 event
 には `snippet` が付き、 失敗行を `>` で marker した文脈が含まれます。
 
@@ -1664,7 +1665,7 @@ otool -L ./out                            # Accelerate も LLVM も無し
 
 ### Why tree-shaking が効くか
 
-`puts` だけ使う "hello world" は FFT も HTTP ランタイムも要らない。
+`inspect` だけ使う "hello world" は FFT も HTTP ランタイムも要らない。
 エントリファイルから call graph を辿ることで、参照されていないラン
 タイムヘルパ (~200 個) を落とせる。 `Tensor` 参照が無ければ no-BLAS
 archive に差し替わるので、数 MB が数百 KB になる。
@@ -1687,7 +1688,7 @@ int main() {
 ```
 
 環境構築は埋め込み側。 `IO` は提供されるが、CLI 専用 alias の
-`puts` / `print` はホスト側で用意する設計。 エラーは
+`inspect` / `print` はホスト側で用意する設計。 エラーは
 `culebra::Error` 例外として throw され、元の値と行/列情報を持つ。
 
 環境カスタマイズ、値変換、JIT ホスト、AOT-archive 埋め込み経路

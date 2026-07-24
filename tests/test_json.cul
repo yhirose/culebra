@@ -217,4 +217,4 @@ let se3 = try { JSON.stringify(fn() { 1 }); nil } catch e { e }
 assert_true(se3.kind == 'TypeError' &&
        se3.message == 'JSON.stringify: cannot serialize Function')
 
-IO.puts("test_json OK")
+IO.inspect("test_json OK")

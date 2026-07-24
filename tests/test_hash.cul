@@ -111,4 +111,4 @@ let digs = inputs.map(Hash.md5)
 assert_eq(digs[0], "0cc175b9c0f1b6a831c399e269772661")
 assert_eq(digs.size(), 3)
 
-puts("hash tests passed")
+inspect("hash tests passed")

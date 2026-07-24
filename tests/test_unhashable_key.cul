@@ -34,4 +34,4 @@ mut ok = {}
 mut ok[(1, 2)] = "a"
 assert_eq(ok[(1, 2)], "a")
 
-IO.puts("test_unhashable_key OK")
+IO.inspect("test_unhashable_key OK")

@@ -20,7 +20,7 @@ let load_int_1d = fn (path) {
 for f in ['W1.csv', 'b1.csv', 'W2.csv', 'b2.csv',
           'test_images.csv', 'test_labels.csv'] {
   if !FS.exists("{DIR}/{f}") {
-    puts("missing {DIR}/{f}; run train.py and prep_test.py first")
+    inspect("missing {DIR}/{f}; run train.py and prep_test.py first")
     Sys.exit(1)
   }
 }
@@ -35,7 +35,7 @@ let y  = load_int_1d("{DIR}/test_labels.csv")
 let t_load = Sys.time() - load_t0
 
 let n = X.shape()[0]
-puts("[culebra-tensor] loaded N={n} in {t_load}s (W1=30x784, W2=10x30)")
+inspect("[culebra-tensor] loaded N={n} in {t_load}s (W1=30x784, W2=10x30)")
 
 let Xt = X.transpose()                              # [784, N], zero-copy view
 
@@ -67,5 +67,5 @@ mut warm_sum = 0.0
 for t in times { warm_sum = warm_sum + t }
 warm_sum = warm_sum - cold
 let warm = if times.size() > 1 { warm_sum / to_float(times.size() - 1) } else { Math.nan }
-puts("[culebra-tensor] cold={cold}s warm={warm}s accuracy={acc}")
+inspect("[culebra-tensor] cold={cold}s warm={warm}s accuracy={acc}")
 print("BENCH label=culebra_tensor_infer load={t_load} cold={cold} warm={warm} accuracy={acc}\n")

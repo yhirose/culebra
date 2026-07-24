@@ -34,4 +34,4 @@ let outs = Parallel.map([0, 1, 2, 3], fn (i) {
 })
 assert_eq(outs.sum(), 18)
 
-puts("lazy-ns isolate OK")
+inspect("lazy-ns isolate OK")

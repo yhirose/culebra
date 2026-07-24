@@ -26,4 +26,4 @@ assert_lt(measure(fn () {
   build(200)
   topo.size()
 }), 1000)
-puts("gc leak [self-closure]: no leak")
+inspect("gc leak [self-closure]: no leak")

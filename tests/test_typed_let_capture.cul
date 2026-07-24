@@ -22,4 +22,4 @@ test_typed_let_inside_lambda = fn () {
 
 test_typed_let_captured_by_closure()
 test_typed_let_inside_lambda()
-puts('typed-let-capture OK')
+inspect('typed-let-capture OK')

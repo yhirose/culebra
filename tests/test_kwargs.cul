@@ -239,7 +239,7 @@ assert_true(e6_ctor_dup.kind == 'TypeError' &&
 # A bare global builtin that accepts no keyword arguments reports the same
 # catchable TypeError on both backends (the JIT used to raise an uncatchable
 # compile-time SyntaxError for a well-formed kwarg here).
-let e6_builtin_kw = try { puts(x: 1); nil } catch e { e }
+let e6_builtin_kw = try { inspect(x: 1); nil } catch e { e }
 assert_true(e6_builtin_kw.kind == 'TypeError' &&
        e6_builtin_kw.message.contains('does not accept keyword'))
 
@@ -280,4 +280,4 @@ let p2 = try { pos2(b: 1, 2); nil } catch e { e }
 assert_eq(p2.kind, 'SyntaxError')
 assert_true(p2.message.contains('positional argument follows'))
 
-IO.puts('test_kwargs OK')
+IO.inspect('test_kwargs OK')

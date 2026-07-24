@@ -26,4 +26,4 @@ mut k2 = nil
 try { "abc".upper(x: 1) } catch e { k2 = e.kind }
 assert_eq(k2, "TypeError")
 
-IO.puts("test_sorted_by_reverse OK")
+IO.inspect("test_sorted_by_reverse OK")

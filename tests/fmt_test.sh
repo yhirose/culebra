@@ -26,7 +26,7 @@ fn add(a,b){
 
 
 
-if x>0{puts("hi")}else{puts("lo")}
+if x>0{inspect("hi")}else{inspect("lo")}
 EOF
 cat > "$TMP/want.cul" <<'EOF'
 # header comment
@@ -37,9 +37,9 @@ fn add(a, b) {
 }
 
 if x > 0 {
-  puts("hi")
+  inspect("hi")
 } else {
-  puts("lo")
+  inspect("lo")
 }
 EOF
 "$CULEBRA" fmt "$TMP/in.cul" > "$TMP/got.cul" 2>"$TMP/err"

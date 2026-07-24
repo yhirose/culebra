@@ -119,4 +119,4 @@ fn closed_msg(thunk) {
   assert_true(r == 'ClosedError' || r == 'ok=5')
 }
 
-puts('test_borrow OK')
+inspect('test_borrow OK')

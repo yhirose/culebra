@@ -165,7 +165,7 @@ to a slow path and updates the slot.
 
 `include/stdlib_jit.h` exposes `kNsMethods`, a table from
 `(namespace, method)` to a JIT-callable runtime function pointer.
-Bare namespace methods (`Math.abs`, `IO.puts`) are looked up here at
+Bare namespace methods (`Math.abs`, `IO.inspect`) are looked up here at
 codegen time, sidestepping the general lookup overhead. Adding a new
 stdlib method requires one row here plus the corresponding interp
 implementation; see [[project_jit_namespace_dispatch]] and the
@@ -203,7 +203,7 @@ for the final link.
 The module graph and the AST together give the set of reachable
 top-level names. Runtime helpers (~200) are partitioned by feature
 group; only the groups that are statically referenced from the user
-program are linked. A "hello world" using `puts` pulls in IO plus the
+program are linked. A "hello world" using `inspect` pulls in IO plus the
 Long printer, and nothing else.
 
 ### Runtime archives (base + per-feature)

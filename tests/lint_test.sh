@@ -10,10 +10,10 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 fail=0
 
-# A rejected case prepends puts("RAN"); a correct before-eval abort means
+# A rejected case prepends inspect("RAN"); a correct before-eval abort means
 # "RAN" never prints and the diagnostic is ImmutableError.
 expect_reject() {
-  printf 'puts("RAN")\n%s\n' "$2" > "$TMP/t.cul"
+  printf 'inspect("RAN")\n%s\n' "$2" > "$TMP/t.cul"
   out=$("$CULEBRA" "$TMP/t.cul" 2>&1)
   if [[ "$out" == *RAN* || "$out" != *ImmutableError* ]]; then
     echo "FAIL reject [$1]: $out"; fail=1
@@ -31,7 +31,7 @@ expect_accept() {
 # never prints and the diagnostic is "SyntaxError: ... outside loop"
 # (matching what the JIT already raises at compile time).
 expect_loop_reject() {
-  printf 'puts("RAN")\n%s\n' "$2" > "$TMP/t.cul"
+  printf 'inspect("RAN")\n%s\n' "$2" > "$TMP/t.cul"
   out=$("$CULEBRA" "$TMP/t.cul" 2>&1)
   if [[ "$out" == *RAN* || "$out" != *SyntaxError* || "$out" != *"outside loop"* ]]; then
     echo "FAIL loop-reject [$1]: $out"; fail=1
@@ -93,7 +93,7 @@ expect_accept "nested loop in fn"       'for i in [1] {
 # Duplicate parameter names: the earlier binding is unreachable (calls bind
 # last-wins), so it aborts before eval with "SyntaxError: duplicate parameter".
 expect_dup_reject() {
-  printf 'puts("RAN")\n%s\n' "$2" > "$TMP/t.cul"
+  printf 'inspect("RAN")\n%s\n' "$2" > "$TMP/t.cul"
   out=$("$CULEBRA" "$TMP/t.cul" 2>&1)
   if [[ "$out" == *RAN* || "$out" != *"duplicate parameter"* ]]; then
     echo "FAIL dup-reject [$1]: $out"; fail=1
@@ -121,7 +121,7 @@ expect_accept "param shadowed by let"   'fn f(x) { let mut x = 1 }'
 # (and on the JIT the overwritten implicit slot leaked a ref every call). Abort
 # before eval with "SyntaxError: '<name>' is a reserved name".
 expect_reserved_reject() {
-  printf 'puts("RAN")\n%s\n' "$2" > "$TMP/t.cul"
+  printf 'inspect("RAN")\n%s\n' "$2" > "$TMP/t.cul"
   out=$("$CULEBRA" "$TMP/t.cul" 2>&1)
   if [[ "$out" == *RAN* || "$out" != *"is a reserved name"* ]]; then
     echo "FAIL reserved-reject [$1]: $out"; fail=1
@@ -147,7 +147,7 @@ expect_accept "this param"              'fn f(this) { this }'
 # is the early-exit mechanism, and the module interface is `export`, so a
 # top-level return value goes nowhere).
 expect_syntax_reject() {
-  printf 'puts("RAN")\n%s\n' "$2" > "$TMP/t.cul"
+  printf 'inspect("RAN")\n%s\n' "$2" > "$TMP/t.cul"
   out=$("$CULEBRA" "$TMP/t.cul" 2>&1)
   if [[ "$out" == *RAN* || "$out" != *"return outside function"* ]]; then
     echo "FAIL return-reject [$1]: $out"; fail=1
@@ -172,7 +172,7 @@ expect_accept "return in top defer"     'for i in [1] { defer { return } }'
 # bare `*` silently — those were interp/JIT divergences). `$3` is a substring
 # of the expected SyntaxError message.
 expect_param_reject() {
-  printf 'puts("RAN")\n%s\n' "$3" > "$TMP/t.cul"
+  printf 'inspect("RAN")\n%s\n' "$3" > "$TMP/t.cul"
   out=$("$CULEBRA" "$TMP/t.cul" 2>&1)
   if [[ "$out" == *RAN* || "$out" != *SyntaxError* || "$out" != *"$2"* ]]; then
     echo "FAIL param-reject [$1]: $out"; fail=1
@@ -233,7 +233,7 @@ o[0] = 9'
 # reject before eval. For-loop variables are block-scoped to the body and are
 # captured by closures there — shadowing one was previously missed by the interp.
 expect_shadow_reject() {
-  printf 'puts("RAN")\n%s\n' "$2" > "$TMP/t.cul"
+  printf 'inspect("RAN")\n%s\n' "$2" > "$TMP/t.cul"
   for be in "" "--jit"; do
     out=$("$CULEBRA" $be "$TMP/t.cul" 2>&1)
     if [[ "$out" == *RAN* || "$out" != *ShadowError* ]]; then
@@ -266,7 +266,7 @@ fn f() { let x = 2; x }'
 # flow-dependent NameError (use-before-def) is NOT flagged — it stays a
 # catchable runtime error. Load-stage check, so it fires on every backend.
 expect_undef_reject() {
-  printf 'puts("RAN")\n%s\n' "$2" > "$TMP/t.cul"
+  printf 'inspect("RAN")\n%s\n' "$2" > "$TMP/t.cul"
   for be in "" "--jit"; do
     out=$("$CULEBRA" $be "$TMP/t.cul" 2>&1)
     if [[ "$out" == *RAN* || "$out" != *NameError* ||
@@ -283,8 +283,8 @@ expect_undef_accept() {
     fi
   done
 }
-expect_undef_reject "top-level read"          'puts(zzz)'
-expect_undef_reject "uncalled fn body read"   'fn f() { puts(zzz) }'
+expect_undef_reject "top-level read"          'inspect(zzz)'
+expect_undef_reject "uncalled fn body read"   'fn f() { inspect(zzz) }'
 expect_undef_reject "undefined object value"  'let o = {k: zzz}'
 expect_undef_reject "undefined kwarg value"   'fn f(a) { a }
 f(a: zzz)'
@@ -295,29 +295,29 @@ fn b() { 1 }
 a()'
 expect_undef_accept "use-before-def runtime"  'let r = try { x; let x = 1; nil } catch e { nil }'
 expect_undef_accept "destructure binding"     'let (p, q) = (1, 2)
-puts(p + q)'
-expect_undef_accept "for-var read"            'for i in [1, 2] { puts(i) }'
+inspect(p + q)'
+expect_undef_accept "for-var read"            'for i in [1, 2] { inspect(i) }'
 expect_undef_accept "match arm binding"       'let v = match 1 { n => n }
-puts(v)'
-expect_undef_accept "catch var"               'try { throw "x" } catch e { puts(e) }'
+inspect(v)'
+expect_undef_accept "catch var"               'try { throw "x" } catch e { inspect(e) }'
 expect_undef_accept "self in method"          'class C { f() { self } }'
 expect_undef_accept "fn recursion"            'fn f(n) { if n > 0 { fn(n - 1) } else { 0 } }
-puts(f(3))'
+inspect(f(3))'
 expect_undef_accept "dunder __ARGS__"         'fn f(*xs) { __ARGS__.size() }
-puts(f(1, 2))'
+inspect(f(1, 2))'
 expect_undef_accept "ufcs method name"        'let xs = [1]
-puts(xs.size())'
+inspect(xs.size())'
 expect_undef_accept "object shorthand"        'let k = 1
 let o = {k}'
 expect_undef_accept "enum variant names"      'enum Color { Red, Green, Blue }
-puts(Color.Red)'
+inspect(Color.Red)'
 
 # Duplicate class members abort before eval on every backend (the interp
 # used to keep the first definition silently; the JIT threw a catchable
 # ImmutableError mid-definition). Static and instance members are separate
 # namespaces, so a static/instance same-name pair stays accepted.
 expect_dup_member_reject() {
-  printf 'puts("RAN")\n%s\n' "$2" > "$TMP/t.cul"
+  printf 'inspect("RAN")\n%s\n' "$2" > "$TMP/t.cul"
   for be in "" "--jit"; do
     out=$("$CULEBRA" $be "$TMP/t.cul" 2>&1)
     if [[ "$out" == *RAN* || "$out" != *"duplicate member"* ]]; then
@@ -342,7 +342,7 @@ expect_dup_member_reject "field/method" 'class A { foo(x){1} foo: Long = 0 }'
 # Two instance methods with an IDENTICAL positional-type signature are
 # unreachable / ambiguous — rejected with a distinct message.
 identical_sig_reject() {
-  printf 'puts("RAN")\n%s\n' "$2" > "$TMP/t.cul"
+  printf 'inspect("RAN")\n%s\n' "$2" > "$TMP/t.cul"
   for be in "" "--jit"; do
     out=$("$CULEBRA" $be "$TMP/t.cul" 2>&1)
     if [[ "$out" == *RAN* || "$out" != *"identical signature"* ]]; then
@@ -360,23 +360,23 @@ identical_sig_reject "dup new same sig"     'class A { new(x: Long){self.x=x} ne
 identical_sig_reject "dup dunder same sig"  'class A { __call__(x) { x } __call__(y) { y + 1 } }'
 
 expect_dup_member_accept "static vs instance" 'class A { static m = 1 m() { 2 } }
-puts(A.m + A.new().m())'
+inspect(A.m + A.new().m())'
 expect_dup_member_accept "two classes" 'class A { m() { 1 } }
 class B { m() { 2 } }
-puts(A.new().m() + B.new().m())'
+inspect(A.new().m() + B.new().m())'
 # Instance-method multidispatch: same name, distinct positional-type sigs.
 expect_dup_member_accept "method overload" 'class A { new(){} m(x: Long) { "l" } m(x: String) { "s" } }
-puts(A.new().m(1) + A.new().m("a"))'
+inspect(A.new().m(1) + A.new().m("a"))'
 expect_dup_member_accept "arity overload" 'class A { new(){} m() { 1 } m(x) { x } }
-puts(A.new().m() + A.new().m(41))'
+inspect(A.new().m() + A.new().m(41))'
 # Constructor multidispatch: same name (`new`), distinct positional-type
 # / arity sigs merge into one ctor dispatcher.
 expect_dup_member_accept "ctor overload" 'class A { new(x: Long){self.t="l"} new(x: String){self.t="s"} new(){self.t="e"} }
-puts(A(1).t + A("a").t + A().t)'
+inspect(A(1).t + A("a").t + A().t)'
 # Dunder / operator multidispatch: same dunder name, distinct operand-type
 # sigs merge into one dispatcher picked by the operand type.
 expect_dup_member_accept "dunder overload" 'class A { new(n: Long){self.n=n} __add__(o: A){A(self.n+o.n)} __add__(k: Long){A(self.n+k)} }
-puts((A(2)+A(3)).n + (A(2)+10).n)'
+inspect((A(2)+A(3)).n + (A(2)+10).n)'
 
 # --- `culebra lint` CLI: advisory warnings (unused locals) in report mode ---
 # `culebra lint <file>` prints diagnostics without running and sets exit code
@@ -421,11 +421,11 @@ expect_lint_warns "unused toplevel let" 'let g = 1'   "unused top-level binding 
 expect_lint_warns "unused toplevel mut" 'mut g = 1'   "unused top-level binding 'g'"
 # Read anywhere (incl. inside a fn / via UFCS) or re-exported ⇒ used.
 expect_lint_clean "toplevel read"    'let g = 1
-puts(g)'
+inspect(g)'
 expect_lint_clean "toplevel read in fn" 'let g = 1
 fn f() { g + 1 }'
 expect_lint_clean "toplevel ufcs use" 'let inc = fn (x) { x + 1 }
-puts((5).inc())'
+inspect((5).inc())'
 expect_lint_clean "toplevel exported"  'let g = 1
 export { g }'
 # A top-level fn/class is the export surface — never a candidate.
@@ -436,19 +436,19 @@ expect_lint_clean "toplevel underscore"  'let _g = 1'
 # module-loading layer (pure AST, no filesystem access), so the imported
 # path need not resolve to a real file.
 expect_lint_warns "unused import" "import Math from 'std/math'
-puts(1)" "unused import 'Math'"
+inspect(1)" "unused import 'Math'"
 expect_lint_clean "used import"  "import Math from 'std/math'
-puts(Math.sqrt(4))"
+inspect(Math.sqrt(4))"
 
 # --- unreachable code (straight-line terminator + a following statement) ---
 expect_lint_warns "unreachable after return" 'fn f() { return 1
-puts(2) }'                                    "unreachable code"
+inspect(2) }'                                    "unreachable code"
 expect_lint_warns "unreachable after throw"  'throw "x"
-puts(1)'                                       "unreachable code"
+inspect(1)'                                       "unreachable code"
 expect_lint_warns "unreachable after break"  'for i in [1] { break
-puts(i) }'                                     "unreachable code"
+inspect(i) }'                                     "unreachable code"
 expect_lint_warns "unreachable after continue" 'for i in [1] { continue
-puts(i) }'                                     "unreachable code"
+inspect(i) }'                                     "unreachable code"
 # A terminator that IS the last statement is fine; a return inside an if does
 # not make the enclosing block dead.
 expect_lint_clean "return is last"    'fn f() { let a = 1
@@ -466,56 +466,56 @@ expect_lint_error "break outside loop" 'fn f() { break }'
 # analyzer knows, so operations, clause parameters and `resume` all read as
 # undefined and every effects file fails to lint.
 expect_lint_clean "effects tail-resumptive" 'effect fn ask()
-puts(handle { perform ask() } with ask(resume) { resume(1) })'
+inspect(handle { perform ask() } with ask(resume) { resume(1) })'
 expect_lint_clean "effects effect fn body" 'effect fn ask()
 effect fn double() { let n = perform ask(); n * 2 }
-puts(handle { double() } with ask(resume) { resume(21) })'
+inspect(handle { double() } with ask(resume) { resume(21) })'
 expect_lint_clean "effects multi-shot" 'effect fn choose(a, b)
-puts(handle { perform choose(1, 2) } with choose(a, b, resume) { [resume(a), resume(b)] })'
+inspect(handle { perform choose(1, 2) } with choose(a, b, resume) { [resume(a), resume(b)] })'
 expect_lint_clean "effects return clause" 'effect fn get()
 mut cell = 0
-puts(handle { perform get() } with get(resume) { resume(cell) } with return(v) { v + 1 })'
+inspect(handle { perform get() } with get(resume) { resume(cell) } with return(v) { v + 1 })'
 expect_lint_clean "generator yield" 'fn counter(n) { mut i = 0; while i < n { yield i; i = i + 1 } }
 mut t = 0
 for v in counter(3) { t = t + v }
-puts(t)'
+inspect(t)'
 # Advisory warnings run over the source as written, so bindings the lowering
 # synthesizes are never reported: an abort clause deliberately never reads its
 # `resume`, and a clause may ignore an operation argument.
 expect_lint_clean "abort clause ignores resume" 'effect fn fail()
-puts(handle { perform fail(); "x" } with fail(resume) { "aborted" })'
+inspect(handle { perform fail(); "x" } with fail(resume) { "aborted" })'
 expect_lint_clean "clause ignores an op arg" 'effect fn pair(x, y)
-puts(handle { perform pair(1, 2) } with pair(x, y, resume) { resume(x) })'
+inspect(handle { perform pair(1, 2) } with pair(x, y, resume) { resume(x) })'
 # The lowering rejects malformed effects by throwing; the CLI must turn that
 # into an error diagnostic (exit 2) rather than aborting on uncaught exception.
 expect_lint_error "two return clauses" 'effect fn a()
-puts(handle { perform a() } with a(r) { r(1) } with return(v) { v } with return(w) { w })'
+inspect(handle { perform a() } with a(r) { r(1) } with return(v) { v } with return(w) { w })'
 expect_lint_error "duplicate clause" 'effect fn a()
-puts(handle { perform a() } with a(r) { r(1) } with a(r) { r(2) })'
+inspect(handle { perform a() } with a(r) { r(1) } with a(r) { r(2) })'
 # A real unused local elsewhere in the same file is still reported:
 expect_lint_warns "unused local beside effects" 'effect fn ask()
 fn helper() { let dead = 1; 2 }
-puts(handle { perform ask() } with ask(resume) { resume(helper()) })' "unused variable 'dead'"
+inspect(handle { perform ask() } with ask(resume) { resume(helper()) })' "unused variable 'dead'"
 # An `effect fn` body and each handler clause body are their own scopes, so an
 # unused local written in one is reported (at its authored position) just like
 # in any function.
 expect_lint_warns "unused in effect fn body" 'effect fn ask()
 effect fn work() { let dead = 1; perform ask() }
-puts(handle { work() } with ask(resume) { resume(2) })' "unused variable 'dead'"
+inspect(handle { work() } with ask(resume) { resume(2) })' "unused variable 'dead'"
 expect_lint_warns "unused in handler clause body" 'effect fn ask()
-puts(handle { perform ask() } with ask(resume) { let dead = 1; resume(2) })' "unused variable 'dead'"
+inspect(handle { perform ask() } with ask(resume) { let dead = 1; resume(2) })' "unused variable 'dead'"
 expect_lint_warns "unused in return clause body" 'effect fn ask()
-puts(handle { perform ask() } with ask(resume) { resume(2) } with return(v) { let dead = 1; v })' "unused variable 'dead'"
+inspect(handle { perform ask() } with ask(resume) { resume(2) } with return(v) { let dead = 1; v })' "unused variable 'dead'"
 # Sound-negatives — locals that ARE used in these scopes must stay clean:
 expect_lint_clean "used in effect fn body" 'effect fn ask()
 effect fn work() { let n = perform ask(); n * 2 }
-puts(handle { work() } with ask(resume) { resume(2) })'
+inspect(handle { work() } with ask(resume) { resume(2) })'
 expect_lint_clean "used in handler clause body" 'effect fn ask()
-puts(handle { perform ask() } with ask(resume) { let doubled = 2 * 3; resume(doubled) })'
+inspect(handle { perform ask() } with ask(resume) { let doubled = 2 * 3; resume(doubled) })'
 # A clause captures an enclosing local — that read must count, so no warning:
 expect_lint_clean "clause captures enclosing local" 'effect fn ask()
 fn f() { let base = 100; handle { perform ask() } with ask(resume) { resume(base) } }
-puts(f())'
+inspect(f())'
 
 # --- `culebra lint` surfaces ShadowError like the run path ---
 # Shadowing an enclosing function's local is a pre-eval ShadowError when the
@@ -525,24 +525,24 @@ expect_lint_error "shadow in nested fn" 'fn outer() {
   fn inner() { let x = 2; x }
   inner() + x
 }
-puts(outer())'
+inspect(outer())'
 expect_lint_error "shadow in handler clause" 'effect fn ask()
 fn outer() {
   let x = 1
   handle { perform ask() } with ask(resume) { let x = 2; resume(x) }
   x
 }
-puts(outer())'
+inspect(outer())'
 # Sound-negative: a same name in sibling (non-nested) scopes is not shadowing.
 expect_lint_clean "same name in sibling scopes" 'fn a() { let x = 1; x }
 fn b() { let x = 2; x }
-puts(a() + b())'
+inspect(a() + b())'
 
 # --- directory argument: recurse into `.cul` files, like `culebra fmt` ---
 DIRTMP=$(mktemp -d)
 mkdir -p "$DIRTMP/sub"
-printf 'puts(1)\n' > "$DIRTMP/clean.cul"
-printf "import Math from 'std/math'\nputs(1)\n" > "$DIRTMP/sub/dirty.cul"
+printf 'inspect(1)\n' > "$DIRTMP/clean.cul"
+printf "import Math from 'std/math'\ninspect(1)\n" > "$DIRTMP/sub/dirty.cul"
 out=$("$CULEBRA" lint "$DIRTMP" 2>&1); rc=$?
 if [[ $rc -ne 1 || "$out" != *"dirty.cul"*"unused import 'Math'"* || "$out" == *"clean.cul"* ]]; then
   echo "FAIL lint-dir-recurse: rc=$rc out=$out"; fail=1
@@ -553,7 +553,7 @@ rm -rf "$DIRTMP"
 # A used import is left alone; an unused one is deleted and the file re-lints
 # clean afterward. `--fix` reports the file it rewrote and exits 0.
 FIXTMP=$(mktemp -d)
-printf "import Math from 'std/math'\nimport IO from 'std/io'\n\nIO.puts(Math.sqrt(4))\n" > "$FIXTMP/keep.cul"
+printf "import Math from 'std/math'\nimport IO from 'std/io'\n\nIO.inspect(Math.sqrt(4))\n" > "$FIXTMP/keep.cul"
 out=$("$CULEBRA" lint --fix "$FIXTMP/keep.cul" 2>&1); rc=$?
 if [[ $rc -ne 0 || -n "$out" ]]; then
   echo "FAIL lint-fix-noop-when-clean: rc=$rc out=$out"; fail=1
@@ -562,7 +562,7 @@ if ! grep -q "^import Math" "$FIXTMP/keep.cul"; then
   echo "FAIL lint-fix-noop-when-clean: used import was removed"; fail=1
 fi
 
-printf "import Math from 'std/math'\nimport IO from 'std/io'\nimport Time from 'std/time'\n\nIO.puts(1)\n" > "$FIXTMP/dead.cul"
+printf "import Math from 'std/math'\nimport IO from 'std/io'\nimport Time from 'std/time'\n\nIO.inspect(1)\n" > "$FIXTMP/dead.cul"
 out=$("$CULEBRA" lint --fix "$FIXTMP/dead.cul" 2>&1); rc=$?
 if [[ $rc -ne 0 || "$out" != *"fixed 2 unused imports"* ]]; then
   echo "FAIL lint-fix-removes-unused: rc=$rc out=$out"; fail=1

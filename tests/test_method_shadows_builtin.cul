@@ -37,4 +37,4 @@ let xs = [5, 1, 9]
 xs.sort_by(fn (x) { x })
 assert_eq(xs[0], 1)
 
-puts("test_method_shadows_builtin: ok")
+inspect("test_method_shadows_builtin: ok")

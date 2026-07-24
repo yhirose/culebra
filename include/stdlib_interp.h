@@ -5,10 +5,10 @@
 // Core built-ins bound on every environment: to_long, to_float,
 // to_string, type_of (see docs/language.md §18). Everything else is
 // grouped under a namespace ObjectValue: Math (abs/min/max/pow/sign/
-// clamp/iota), IO (puts/print/input/read/write), Sys (argv/exit/env).
-// The CLI (src/main.cc) additionally aliases IO.puts / IO.print as
-// globals for scripting ergonomics; embedders get a clean environment
-// by default.
+// clamp/iota), IO (inspect/print/println/input/read/write), Sys
+// (argv/exit/env). The CLI (src/main.cc) additionally aliases
+// IO.inspect / IO.print / IO.println as globals for scripting
+// ergonomics; embedders get a clean environment by default.
 //
 // Independent header. Include from main.cc (or any embedder) after
 // interpreter.h to wire stdlib into a fresh Environment via
@@ -297,7 +297,7 @@ inline Value make_io_namespace() {
   using namespace std::literals;
   ObjectValue ns;
 
-  ns.initialize("puts",
+  ns.initialize("inspect",
                 Value(FunctionValue({{"arg", true}},
                                     [](std::shared_ptr<Environment> env) {
                                       auto s = str_quoted_with_special(
@@ -317,6 +317,18 @@ inline Value make_io_namespace() {
                                       std::lock_guard<std::mutex> lk(
                                           stdio_mutex());
                                       std::cout << s;
+                                      return Value();
+                                    })),
+                false);
+
+  ns.initialize("println",
+                Value(FunctionValue({{"arg", true}},
+                                    [](std::shared_ptr<Environment> env) {
+                                      auto s = str_display_with_special(
+                                          env->get("arg"));
+                                      std::lock_guard<std::mutex> lk(
+                                          stdio_mutex());
+                                      std::cout << s << std::endl;
                                       return Value();
                                     })),
                 false);
@@ -347,9 +359,10 @@ inline Value make_io_namespace() {
                           "Object"sv)),
       false);
 
-  // Write to standard error — the twin of print / puts (no stderr writer
-  // existed before). eputs quotes + newline like puts; eprint is raw.
-  ns.initialize("eputs",
+  // Write to standard error — the twin of print / inspect (no stderr writer
+  // existed before). einspect quotes + newline like inspect; eprint is raw;
+  // eprintln is raw + newline.
+  ns.initialize("einspect",
                 Value(FunctionValue({{"arg", true}},
                                     [](std::shared_ptr<Environment> env) {
                                       auto s = str_quoted_with_special(
@@ -371,6 +384,17 @@ inline Value make_io_namespace() {
                                       return Value();
                                     })),
                 false);
+  ns.initialize("eprintln",
+                Value(FunctionValue({{"arg", true}},
+                                    [](std::shared_ptr<Environment> env) {
+                                      auto s = str_display_with_special(
+                                          env->get("arg"));
+                                      std::lock_guard<std::mutex> lk(
+                                          stdio_mutex());
+                                      std::cerr << s << std::endl;
+                                      return Value();
+                                    })),
+                false);
 
   // Terminal detection (POSIX isatty) per standard stream. Lets a script
   // branch on interactivity: prompt vs read a pipe (stdin), colorize vs emit
@@ -386,16 +410,18 @@ inline Value make_io_namespace() {
   ns.initialize("stderr_is_terminal", is_terminal(2), false);
 
   // File I/O lives on FS (FS.read / FS.write / FS.exists). IO is the
-  // standard-stream + console namespace: puts / print / input.
+  // standard-stream + console namespace: inspect / print / println / input.
   return Value(std::move(ns));
 }
 
-// Opt-in: alias IO.puts / IO.print as bare globals (CLI and playground
-// scripting ergonomics). Embedders get a clean environment unless called.
+// Opt-in: alias IO.inspect / IO.print / IO.println as bare globals (CLI and
+// playground scripting ergonomics). Embedders get a clean environment unless
+// called.
 inline void install_cli_aliases(Environment& env) {
   const auto& io = env.get("IO").to_object();
-  env.initialize("puts", io.get("puts"), false);
+  env.initialize("inspect", io.get("inspect"), false);
   env.initialize("print", io.get("print"), false);
+  env.initialize("println", io.get("println"), false);
 }
 
 // --- Glob (file-scope, shared between interp + JIT) ---
@@ -6431,11 +6457,12 @@ inline std::set<std::string, std::less<>> builtin_global_names() {
   std::set<std::string, std::less<>> names;
   for (const auto& [name, sym] : env->dictionary) names.insert(name);
   for (const auto& [name, src] : env->lazy_pending) names.insert(name);
-  // The CLI hoists these two IO members to bare globals before running a
+  // The CLI hoists these IO members to bare globals before running a
   // script (`install_cli_aliases` in main.cc), so a program sees them
   // without declaring them — the lint must treat them as builtins too.
-  names.insert("puts");
+  names.insert("inspect");
   names.insert("print");
+  names.insert("println");
   return names;
 }
 

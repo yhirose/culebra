@@ -1731,12 +1731,12 @@ struct JIT {
     Owned (*compile_ns_prop)(JIT&,
                              std::string_view ns,
                              std::string_view prop);
-    // True if `name` is provided by the extension (puts/Math/IO/...).
+    // True if `name` is provided by the extension (inspect/Math/IO/...).
     // Free-variable analysis uses this to skip names that don't live in
     // user scopes_.
     bool (*is_builtin_var)(const std::string& name);
     // Emit `receiver.method(args)` as a UFCS call into an extension
-    // global (`x.puts()` → `puts(x)`). Returns nullptr to fall through
+    // global (`x.inspect()` → `inspect(x)`). Returns nullptr to fall through
     // to regular method dispatch.
     Owned (*compile_ufcs_builtin)(JIT&, const std::string& method,
                                   const peg::Ast& argsAst,
@@ -3332,7 +3332,7 @@ struct JIT {
   // recursion handle (the enclosing function's own value). Both are
   // language-core keywords bound in every function frame. `range`/`iota`
   // are core globals (see `try_compile_core_global`); everything else
-  // (puts/Math/IO/...) is supplied by the registered extension.
+  // (inspect/Math/IO/...) is supplied by the registered extension.
   static bool is_builtin_var(const std::string& name) {
     if (name == "fn" || name == "self") return true;
     if (name == "range" || name == "iota") return true;
@@ -4143,7 +4143,7 @@ struct JIT {
 
   void declare_runtime_functions() {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    module_->getOrInsertFunction(rt::puts, builder_.getVoidTy(),
+    module_->getOrInsertFunction(rt::inspect, builder_.getVoidTy(),
                                  builder_.getInt8Ty(), builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::type_error,
                                  builder_.getVoidTy(), builder_.getInt64Ty(),
@@ -11497,7 +11497,7 @@ struct JIT {
                                     receiver.consume(), dot_ast);
     }
 
-    // UFCS into an extension builtin: `x.puts()` → `puts(x)` and so on
+    // UFCS into an extension builtin: `x.inspect()` → `inspect(x)` and so on
     // for unary globals. These names live in `is_builtin_var` but don't
     // show up in `scopes_`, so the lookup_var branch above misses them.
     // Matches interp's UFCS resolution, which consults the full env.

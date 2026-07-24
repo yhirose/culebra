@@ -104,4 +104,4 @@ assert_eq(e_ho != nil, true)
 fn tight<T:Hashable+Stringer>(x: T) { x }
 assert_eq(tight(9), 9)
 
-IO.puts("test_generic_bound OK")
+IO.inspect("test_generic_bound OK")

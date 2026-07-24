@@ -439,7 +439,7 @@ optimized binary (slower build).
 ```culebra
 # doctest: skip
 let v = Geo.Vec2.new(3.0, 4.0)
-puts(v.len())          # => 5
+inspect(v.len())        # => 5
 v.scale(2.0)
 let u = v.unit()       # by-value return -> a NEW owned instance
 v.drop()               # ~Vec2 runs NOW (deterministic)

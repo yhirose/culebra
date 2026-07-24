@@ -91,4 +91,4 @@ assert_lt(measure_delta(fn () {
   0
 }), TOL)
 
-puts("gc no-leak tests passed")
+inspect("gc no-leak tests passed")

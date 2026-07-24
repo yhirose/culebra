@@ -41,4 +41,4 @@ assert_eq(classify(""), "empty")
 assert_eq(classify("tab\tsep"), "escaped")
 assert_eq(classify("zzz"), "other")
 
-IO.puts("test_const_string_positions OK")
+IO.inspect("test_const_string_positions OK")

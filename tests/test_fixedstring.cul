@@ -65,4 +65,4 @@ worker.join()
 assert_eq(shared[0].name, "from_child")
 assert_eq(shared[1].name, "second")
 
-IO.puts("test_fixedstring OK")
+IO.inspect("test_fixedstring OK")

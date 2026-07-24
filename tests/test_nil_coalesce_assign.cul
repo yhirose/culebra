@@ -27,4 +27,4 @@ mut s = nil
 s ??= "hi"
 assert_eq(s, "hi")
 
-IO.puts("test_nil_coalesce_assign OK")
+IO.inspect("test_nil_coalesce_assign OK")

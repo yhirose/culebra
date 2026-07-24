@@ -89,4 +89,4 @@ assert_lt(GC.stat().live_objects - conly_base, 300)
 # so a drop-count assertion here would not be backend-symmetric — this file is
 # run on both. The reclamation checks above hold identically on both backends.)
 
-puts("interp cycle gc: ok")
+inspect("interp cycle gc: ok")

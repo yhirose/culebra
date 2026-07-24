@@ -14,7 +14,7 @@ mut drop_count = 0
 
 class R {
   new(n) { self.name = n }
-  drop() { drop_count = drop_count + 1; puts("DROP:" + self.name) }
+  drop() { drop_count = drop_count + 1; inspect("DROP:" + self.name) }
 }
 
 fn make_inner() {
@@ -51,4 +51,4 @@ fn make_orphan() {
 make_orphan()
 assert_eq(drop_count, 1)        // orphan never fires (parked, then exit-suppressed)
 
-puts("toplevel-drop test: OK")
+inspect("toplevel-drop test: OK")

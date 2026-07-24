@@ -18,4 +18,4 @@ assert_eq(["bb", "a", "ccc"].sorted_by(fn (x) { x.size() }).join(","), "a,bb,ccc
 // empty
 assert_eq([].sorted_by(fn (x) { x }), [])
 
-IO.puts("test_sorted_by OK")
+IO.inspect("test_sorted_by OK")

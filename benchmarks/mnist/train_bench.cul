@@ -36,7 +36,7 @@ for f in ['init_W1.csv', 'init_b1.csv', 'init_W2.csv', 'init_b2.csv',
           'train_images.csv', 'train_labels.csv',
           'test_images.csv',  'test_labels.csv'] {
   if !FS.exists("{DIR}/{f}") {
-    puts("missing {DIR}/{f}; run prep_train.py and prep_test.py first")
+    inspect("missing {DIR}/{f}; run prep_train.py and prep_test.py first")
     Sys.exit(1)
   }
 }
@@ -54,7 +54,7 @@ let t_load = Sys.time() - load_t0
 
 let n = X.shape()[0]
 let Y = build_one_hot(y, N_OUT)        # [N, 10]
-puts("[culebra-tensor-train] loaded train={n} test={Xt.shape()[0]} in {t_load}s")
+inspect("[culebra-tensor-train] loaded train={n} test={Xt.shape()[0]} in {t_load}s")
 
 let lr = ETA / to_float(BATCH)
 
@@ -117,5 +117,5 @@ mut warm_sum = 0.0
 for t in times { warm_sum = warm_sum + t }
 warm_sum = warm_sum - cold
 let warm = if times.size() > 1 { warm_sum / to_float(times.size() - 1) } else { Math.nan }
-puts("[culebra-tensor-train] cold={cold}s warm={warm}s accuracy={acc}")
+inspect("[culebra-tensor-train] cold={cold}s warm={warm}s accuracy={acc}")
 print("BENCH label=culebra_tensor_train load={t_load} cold={cold} warm={warm} accuracy={acc}\n")

@@ -41,4 +41,4 @@ assert_eq(Regex.compile("a").replace_all("aaa", "b"), "bbb")
 let w = "ab"
 assert_eq((re"^${w}c$").test("abc"), true)
 
-puts("lazy-ns resolution OK")
+inspect("lazy-ns resolution OK")

@@ -154,4 +154,4 @@ assert_throws('TypeError', fn () { lb.with_lock(3) })
 lb.drop()
 assert_throws('ValueError', fn () { lb.with_lock(fn() { 1 }) })
 
-puts("packable ok")
+inspect("packable ok")

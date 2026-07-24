@@ -80,4 +80,4 @@ let cs = Counter.new(0, 5).map(fn (x) { x * x }).collect()
 assert_eq(cs.size(), 5)
 assert_true(cs[0] == 0 && cs[4] == 16)
 
-IO.puts('test_iterator_trait OK')
+IO.inspect('test_iterator_trait OK')

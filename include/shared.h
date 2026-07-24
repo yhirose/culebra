@@ -1886,7 +1886,7 @@ inline bool read_stdin_line_interruptible(std::string& out) {
 }
 
 // Serializes stdout/stderr writes so concurrent isolates don't interleave
-// mid-line (`puts` once = one atomic line). Process-wide.
+// mid-line (`inspect` once = one atomic line). Process-wide.
 inline std::mutex& stdio_mutex() {
   static std::mutex m;
   return m;

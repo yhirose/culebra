@@ -49,4 +49,4 @@ w = Isolate.spawn(fn() { shared[0].digest = "\xde\xad\xbe\xef" })
 w.join()
 assert_eq(shared[0].digest, "\xde\xad\xbe\xef")
 
-IO.puts("test_packable_bytes OK")
+IO.inspect("test_packable_bytes OK")

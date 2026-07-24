@@ -11,4 +11,4 @@ let h = Isolate.spawn(fn () {
 })
 Time.sleep(0.05)
 h.drop()                 # cancel the still-spinning isolate; must return, not hang
-puts("test_cancel_tight_loop: passed")
+inspect("test_cancel_tight_loop: passed")

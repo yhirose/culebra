@@ -68,4 +68,4 @@ let r4 = try { f_mixed(); nil } catch e { e }
 assert_eq(r4, 'mixed')
 assert_eq(log, 'inner;outer;')
 
-IO.puts('test_defer OK')
+IO.inspect('test_defer OK')

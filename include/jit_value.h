@@ -194,7 +194,7 @@ struct JitObjectEntry {
 // per-type dispatch.
 
 // Forward-declared; defined with the String representation below (c2
-// inline length header). Referenced by value formatting / equality / puts
+// inline length header). Referenced by value formatting / equality / inspect
 // above.
 inline uint64_t _str_len(const char* data);
 inline char* _str_alloc(uint64_t len);

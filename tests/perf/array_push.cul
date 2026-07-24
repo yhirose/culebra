@@ -13,4 +13,4 @@ while j < 100000 {
   acc = acc + arr[j]
   j = j + 1
 }
-puts(acc)
+inspect(acc)

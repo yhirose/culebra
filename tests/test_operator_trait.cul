@@ -63,4 +63,4 @@ class Tagged {
 assert_eq(Tagged.new(5) == Tagged.new(5), true)   // __eq__ used, not eq
 assert_eq(Tagged.new(1) < Tagged.new(2), true)    // __lt__ used, not cmp
 
-puts("test_operator_trait ok")
+inspect("test_operator_trait ok")

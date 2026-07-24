@@ -66,4 +66,4 @@ for {items: xs} in recs { sizes_o.push(xs.size()) }
 for {items: xs} in recs { sizes_o.push(xs.size()) }
 assert_eq(sizes_o, [2, 1, 2, 1])
 
-IO.puts("test_for_destructure OK")
+IO.inspect("test_for_destructure OK")

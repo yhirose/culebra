@@ -29,4 +29,4 @@ assert_true(e1.contains("unknown level 'bogus'"))
 let e2 = try { Log.set_format("xml"); "no-error" } catch e { e }
 assert_true(e2.contains("unknown format 'xml'"))
 
-IO.puts("test_log OK")
+IO.inspect("test_log OK")

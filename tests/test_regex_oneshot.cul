@@ -33,4 +33,4 @@ assert_eq(Regex.find('x', "y")?.value ?? "none", "none")
 // the reuse path (Regex.compile) is unchanged
 assert_eq(Regex.compile('\d+').find_all("a1 b2").size(), 2)
 
-IO.puts("test_regex_oneshot OK")
+IO.inspect("test_regex_oneshot OK")

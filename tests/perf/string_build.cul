@@ -6,4 +6,4 @@ while i < 5000 {
   s = "{s}{i},"
   i = i + 1
 }
-puts('done')
+inspect('done')
