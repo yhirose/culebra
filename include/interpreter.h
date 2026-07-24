@@ -1400,7 +1400,10 @@ struct ValueHash {
         return std::hash<std::string_view>{}(
             v.get<StringViewPayload>().view);
       case Value::Tuple: {
-        size_t h = 0xa3b1c5d7e9f10000ULL;
+        // Golden-ratio seed, matching the 0x9e3779b9 combine constant below.
+        // Cast to size_t so it narrows cleanly on 32-bit targets (wasm32)
+        // instead of implicitly truncating the 64-bit literal to low bits.
+        size_t h = static_cast<size_t>(0x9e3779b97f4a7c15ULL);
         for (const auto& e : *v.get<TupleValue>().elements) {
           h ^= (*this)(e) + 0x9e3779b9 + (h << 6) + (h >> 2);
         }
