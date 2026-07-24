@@ -7958,7 +7958,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     std::vector<const peg::Ast*> decorators;
     std::vector<std::string_view> derive_traits;
     bool is_packable = false;
-    const peg::Ast* new_ast = nullptr;
+    // Constructor overloads in declaration order. A class with no explicit
+    // `new` leaves this empty (synthesized default ctor); multiple `new`
+    // bodies merge into one ctor multidispatch dispatcher.
+    std::vector<const peg::Ast*> new_asts;
     std::vector<std::pair<std::string_view, Value>> method_template;
     std::vector<std::pair<std::string_view, Value>> static_template;
     std::vector<std::pair<std::string_view, Value>> static_field_template;
@@ -8054,7 +8057,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         continue;
       }
       if (!mv.is_static && mv.name == "new") {
-        out.new_ast = &m;
+        out.new_asts.push_back(&m);
         continue;
       }
       auto fn_val = make_function_value(*mv.params, *mv.body, {}, env);
@@ -8127,7 +8130,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     const auto& decorators = members.decorators;
     const auto& derive_traits = members.derive_traits;
     const bool is_packable = members.is_packable;
-    const peg::Ast* new_ast = members.new_ast;
+    auto& new_asts = members.new_asts;
     auto method_template = std::move(members.method_template);
     auto field_template = std::move(members.field_template);
     auto& static_template = members.static_template;
@@ -8189,91 +8192,117 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       }
     };
 
-    Value constructor;
-    if (new_ast) {
-      auto ctor_view = culebra::view_method(*new_ast);
-      auto ctor_params = parse_parameters(*ctor_view.params, env);
-      // Neutralize class type-params on the constructor signature.
-      // Save the declared annotation first for introspection symmetry
-      // with method params.
-      for (auto& p : ctor_params) {
-        p.declared_type_name = p.type_name;
-        neutralize_type_slot(p.type_name, type_params);
-      }
-      auto body = *ctor_view.body;
-      auto self = shared_from_this();
-      constructor = Value(FunctionValue(
-          ctor_params,
-          // const&: no extra callEnv ref from this frame (see
-          // make_function_value's eval lambda for why).
-          [self = std::move(self), body, env, build_instance, promote_all_mut,
-           shared_fields](const std::shared_ptr<Environment>& callEnv) {
-            callEnv->append_outer(env);
-            // `self` is immutable inside the constructor body — match
-            // Java / Crystal / Ruby and the JIT backend. Attempts to
-            // write `this = newObj` raise ImmutableError instead of
-            // silently swapping the returned instance, and the
-            // constructor's return value is always the originally
-            // allocated object (so `self.x = ...` is the supported way
-            // to populate fields). See project_constructor_semantics.md.
-            auto inst = Value(build_instance());
-            // Declared-field initializers run first — against the class's
-            // defining scope, not callEnv, so `new` params stay invisible.
-            self->init_instance_fields(*shared_fields, env, inst);
-            callEnv->initialize("self", inst, false);
-            try {
-              self->eval(*body, callEnv);
-              self->run_deferred(callEnv);
-            } catch (const ReturnValue&) {
-              // Explicit `return` inside `new` is fine — we still hand
-              // back the allocated instance; the returned value is
-              // discarded.
-              self->run_deferred(callEnv);
-            } catch (...) {
-              self->run_deferred(callEnv);
-              throw;
-            }
-            promote_all_mut(inst);
-            return inst;
-          },
-          {},
-          env));
-      // The eval lambda above also closes over `env` (the capture list), so
-      // this constructor holds TWO shared_ptr refs to `def_env` — flag it so
-      // the cycle collector subtracts both (see def_env_multiplicity). The
-      // default constructor below now also captures `env` (for the field
-      // initializers), so both paths sit at multiplicity 2.
-      constructor.get<FunctionValue>().eval_captures_def_env = true;
-      // The ctor is built directly (not via make_function_value), so wire
-      // the default-expression evaluator bridge here too — the callback
-      // binder (`arr.map(C.new)`) resolves ctor param defaults through it.
-      for (const auto& p : ctor_params) {
-        if (p.default_expr) {
-          constructor.get<FunctionValue>().eval_default_expr =
-              [self = shared_from_this()](
-                  const peg::Ast& expr,
-                  const std::shared_ptr<Environment>& scope) {
-                return self->eval(expr, scope);
-              };
-          break;
+    // Build one constructor Value for a single `new` overload (or the
+    // synthesized default when `new_ast` is null). Each overload allocates
+    // its own instance and runs its own body, so an overload set is just a
+    // multidispatch dispatcher over these — picked BEFORE any instance is
+    // built (no field-init side effects on a dispatch miss). The
+    // hidden-instance-method wiring (for_each_captured_value) is applied once
+    // to the final constructor value below, not per overload.
+    auto make_ctor = [&](const peg::Ast* new_ast) -> Value {
+      Value ctor;
+      if (new_ast) {
+        auto ctor_view = culebra::view_method(*new_ast);
+        auto ctor_params = parse_parameters(*ctor_view.params, env);
+        // Neutralize class type-params on the constructor signature.
+        // Save the declared annotation first for introspection symmetry
+        // with method params.
+        for (auto& p : ctor_params) {
+          p.declared_type_name = p.type_name;
+          neutralize_type_slot(p.type_name, type_params);
         }
+        auto body = *ctor_view.body;
+        auto self = shared_from_this();
+        ctor = Value(FunctionValue(
+            ctor_params,
+            // const&: no extra callEnv ref from this frame (see
+            // make_function_value's eval lambda for why).
+            [self = std::move(self), body, env, build_instance, promote_all_mut,
+             shared_fields](const std::shared_ptr<Environment>& callEnv) {
+              callEnv->append_outer(env);
+              // `self` is immutable inside the constructor body — match
+              // Java / Crystal / Ruby and the JIT backend. Attempts to
+              // write `self = newObj` raise ImmutableError instead of
+              // silently swapping the returned instance, and the
+              // constructor's return value is always the originally
+              // allocated object (so `self.x = ...` is the supported way
+              // to populate fields). See project_constructor_semantics.md.
+              auto inst = Value(build_instance());
+              // Declared-field initializers run first — against the class's
+              // defining scope, not callEnv, so `new` params stay invisible.
+              self->init_instance_fields(*shared_fields, env, inst);
+              callEnv->initialize("self", inst, false);
+              try {
+                self->eval(*body, callEnv);
+                self->run_deferred(callEnv);
+              } catch (const ReturnValue&) {
+                // Explicit `return` inside `new` is fine — we still hand
+                // back the allocated instance; the returned value is
+                // discarded.
+                self->run_deferred(callEnv);
+              } catch (...) {
+                self->run_deferred(callEnv);
+                throw;
+              }
+              promote_all_mut(inst);
+              return inst;
+            },
+            {},
+            env));
+        // The eval lambda above also closes over `env` (the capture list), so
+        // this constructor holds TWO shared_ptr refs to `def_env` — flag it so
+        // the cycle collector subtracts both (see def_env_multiplicity). The
+        // default constructor below now also captures `env` (for the field
+        // initializers), so both paths sit at multiplicity 2.
+        ctor.get<FunctionValue>().eval_captures_def_env = true;
+        // The ctor is built directly (not via make_function_value), so wire
+        // the default-expression evaluator bridge here too — the callback
+        // binder (`arr.map(C.new)`) resolves ctor param defaults through it.
+        for (const auto& p : ctor_params) {
+          if (p.default_expr) {
+            ctor.get<FunctionValue>().eval_default_expr =
+                [self = shared_from_this()](
+                    const peg::Ast& expr,
+                    const std::shared_ptr<Environment>& scope) {
+                  return self->eval(expr, scope);
+                };
+            break;
+          }
+        }
+      } else {
+        auto self = shared_from_this();
+        ctor = Value(FunctionValue(
+            {},
+            [self = std::move(self), env, build_instance, promote_all_mut,
+             shared_fields](std::shared_ptr<Environment>) {
+              auto inst = Value(build_instance());
+              self->init_instance_fields(*shared_fields, env, inst);
+              promote_all_mut(inst);
+              return inst;
+            },
+            {},
+            env));
+        // The eval lambda captures `env` alongside the `def_env` field — two
+        // shared_ptr refs, same as the user-`new` path above.
+        ctor.get<FunctionValue>().eval_captures_def_env = true;
       }
+      return ctor;
+    };
+
+    Value constructor;
+    if (new_asts.size() <= 1) {
+      constructor = make_ctor(new_asts.empty() ? nullptr : new_asts[0]);
     } else {
-      auto self = shared_from_this();
-      constructor = Value(FunctionValue(
-          {},
-          [self = std::move(self), env, build_instance, promote_all_mut,
-           shared_fields](std::shared_ptr<Environment>) {
-            auto inst = Value(build_instance());
-            self->init_instance_fields(*shared_fields, env, inst);
-            promote_all_mut(inst);
-            return inst;
-          },
-          {},
-          env));
-      // The eval lambda captures `env` alongside the `def_env` field — two
-      // shared_ptr refs, same as the user-`new` path above.
-      constructor.get<FunctionValue>().eval_captures_def_env = true;
+      // Multiple `new` overloads → one ctor dispatcher, keyed like a method
+      // overload set. `C(args)` invokes it through the same path a single
+      // ctor uses (invoke_user_function_with_args on the class's "new"), so
+      // kwargs / defaults / DispatchError all flow through the shared
+      // dispatcher machinery. Each body allocates its own instance, so the
+      // picked overload builds exactly one — dispatch resolves first.
+      auto methods = std::make_shared<std::vector<MultiMethod>>();
+      for (auto* na : new_asts)
+        methods->push_back(make_multimethod_from_body(make_ctor(na)));
+      constructor = build_multifn_dispatcher("new", methods);
     }
 
     // Both constructors hide the instance methods inside `build_instance`.

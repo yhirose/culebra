@@ -4009,8 +4009,8 @@ free 関数のマルチメソッドと同じ（キーワード引数は選ばれ
 名前を 1 度だけ宣言したクラスは通常メソッドのまま（ディスパッチャ無し・
 オーバーヘッド無し）。以下はコンパイル時エラーのまま: 同一シグネチャの
 2 メソッド、フィールドとメソッドの名前衝突、フィールド重複。
-コンストラクタ（`new`）・演算子/dunder メソッド（`__call__`, `__add__`
-等）はまだ overload できません。
+コンストラクタ（`new`）も overload できます（下記）。演算子/dunder
+メソッド（`__call__`, `__add__` 等）はまだ overload できません。
 
 ### メソッド多重ディスパッチ（static メソッド）
 
@@ -4034,6 +4034,35 @@ static と instance の overload セットは独立です: static と instance �
 メソッドが同名で、それぞれ独自の overload を持てます。同一シグネチャの
 2 つの static メソッド、および static フィールドと static メソッド名の
 衝突はコンパイル時エラーのままです。
+
+### コンストラクタ多重ディスパッチ（`new`）
+
+クラスは位置パラメータ型シグネチャの異なる `new` 本体を複数宣言できます。
+`C(args)`（または `C.new(args)`）は引数の実行時型で、メソッド overload と
+同じように振り分けます:
+
+```culebra
+class Point {
+  new(x: Long, y: Long) { self.tag = "xy";  self.x = x; self.y = y }
+  new(s: String)        { self.tag = "str"; self.x = s.size(); self.y = 0 }
+  new()                 { self.tag = "empty"; self.x = -1; self.y = -1 }
+}
+Point(3, 4).tag    # → "xy"
+Point("hi").tag    # → "str"
+Point().tag        # → "empty"
+```
+
+overload は**インスタンスを確保する前**に選ばれるため、どの overload にも
+マッチしない呼び出しは副作用なしで catch 可能な `DispatchError` を送出します
+（インスタンスは作られず、field 初期化子（§10）も走りません）。overload が
+選ばれると、その宣言 field 初期化子が 1 度走り、続いて本体が走ります。この間
+`self` は不変です（`self = …` の再代入は単一 `new` と同様どの overload でも
+`ImmutableError`）。
+
+デフォルト引数・キーワード引数・`*args` はメソッド overload と同じルール。
+`new` を 1 度だけ宣言したクラスは通常コンストラクタのまま（ディスパッチャ
+無し・オーバーヘッド無し）。同一シグネチャの 2 つの `new` 本体はコンパイル時
+エラーのままです。
 
 ---
 

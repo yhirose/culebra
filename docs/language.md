@@ -4245,8 +4245,8 @@ picked overload). A call with no matching overload raises a catchable
 A class declaring a name **once** keeps a plain method (no dispatcher,
 no overhead). The following stay compile-time errors: two methods with
 an identical signature, a field and a method sharing a name, and a
-duplicate field. Constructors (`new`) and operator/dunder methods
-(`__call__`, `__add__`, …) do not overload yet.
+duplicate field. Constructors (`new`) overload too (see below);
+operator/dunder methods (`__call__`, `__add__`, …) do not overload yet.
 
 ### Method multidispatch (static methods)
 
@@ -4270,6 +4270,35 @@ Static and instance overload sets are independent: a static and an
 instance method may share a name, each with its own overloads. Two
 static methods with an identical signature, and a static field clashing
 with a static method name, stay compile-time errors.
+
+### Constructor multidispatch (`new`)
+
+A class may declare several `new` bodies with different
+positional-param-type signatures. `C(args)` (or `C.new(args)`) dispatches
+on the runtime types of the arguments, exactly like method overloads:
+
+```culebra
+class Point {
+  new(x: Long, y: Long) { self.tag = "xy";  self.x = x; self.y = y }
+  new(s: String)        { self.tag = "str"; self.x = s.size(); self.y = 0 }
+  new()                 { self.tag = "empty"; self.x = -1; self.y = -1 }
+}
+Point(3, 4).tag    # → "xy"
+Point("hi").tag    # → "str"
+Point().tag        # → "empty"
+```
+
+The overload is picked **before any instance is allocated**, so a call
+matching no overload raises a catchable `DispatchError` with no side
+effects — no instance is built and no field initializer (§10) runs. When
+an overload is picked, its declared field initializers run once, then its
+body, with `self` immutable throughout (a `self = …` reassignment raises
+`ImmutableError` in every overload, as for a single `new`).
+
+Default parameters, keyword arguments, and `*args` follow the same rules
+as method overloads. A class declaring `new` **once** keeps a plain
+constructor (no dispatcher, no overhead); two `new` bodies with an
+identical signature stay a compile-time error.
 
 ---
 

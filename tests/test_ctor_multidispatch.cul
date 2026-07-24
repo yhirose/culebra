@@ -1,0 +1,113 @@
+# Conformance: §20 (multimethods) extended to class CONSTRUCTORS.
+# A class may declare several `new` bodies with the SAME name but different
+# positional-param-type signatures; `C(args)` dispatches on the runtime types
+# of the explicit args, BEFORE any instance is built (a dispatch miss has no
+# field-init side effects). interp / JIT / AOT.
+
+# --- type dispatch on `new` ---
+class Point {
+  new(x: Long, y: Long) { self.tag = "xy"; self.x = x; self.y = y }
+  new(s: String)        { self.tag = "s";  self.x = s.size(); self.y = 0 }
+  new()                 { self.tag = "e";  self.x = -1; self.y = -1 }
+  show() { "{self.tag}:{self.x},{self.y}" }
+}
+assert_eq(Point(3, 4).show(), "xy:3,4")
+assert_eq(Point("hello").show(), "s:5,0")
+assert_eq(Point().show(), "e:-1,-1")
+
+# --- default param on one overload ---
+class Box {
+  new(v: Long = 100) { self.v = v }
+  new(a: Long, b: Long) { self.v = a + b }
+}
+assert_eq(Box().v, 100)
+assert_eq(Box(5).v, 5)
+assert_eq(Box(5, 6).v, 11)
+
+# --- keyword argument flows to the picked overload (no 0-param overload
+# competes, so the (x, y) body is the only one applicable) ---
+class Vec {
+  new(x: Long, y: Long) { self.x = x; self.y = y }
+  new(s: String)        { self.x = s.size(); self.y = 0 }
+}
+let v = Vec(x: 8, y: 9)
+assert_eq(v.x, 8)
+assert_eq(v.y, 9)
+
+# --- dispatch on a class-instance-typed param ---
+class Animal { new(n) { self.n = n } }
+class Wrap {
+  new(a: Animal) { self.kind = "animal"; self.name = a.n }
+  new(x: Long)   { self.kind = "count";  self.name = "{x}" }
+}
+assert_eq(Wrap(Animal.new("cat")).kind, "animal")
+assert_eq(Wrap(7).kind, "count")
+
+# --- no matching overload raises a catchable DispatchError ---
+mut err = nil
+try { Wrap(1.5) } catch e { err = e.kind }
+assert_eq(err, "DispatchError")
+
+# --- `self` stays immutable inside every overload (reassignment throws) ---
+class Imm {
+  new(x: Long) { self = 5 }
+  new(x: String) { self.x = x }
+}
+mut ierr = nil
+try { Imm(1) } catch e { ierr = e.kind }
+assert_eq(ierr, "ImmutableError")
+
+# --- declared field initializers run once, in the picked overload only ---
+mut inits = 0
+fn bump() { inits = inits + 1; 0 }
+class Field {
+  base: Long = bump()
+  new(x: Long) { self.x = x }
+  new(s: String) { self.x = s.size() }
+}
+assert_eq(Field(3).x, 3)
+assert_eq(Field("ab").x, 2)
+assert_eq(inits, 2)          # one init per successful construction
+# a dispatch miss builds nothing — no extra init runs
+try { Field(1.5) } catch e { }
+assert_eq(inits, 2)
+
+# --- a single `new` is unaffected (bare ctor, no dispatcher) ---
+class Solo { new(x) { self.x = x } }
+assert_eq(Solo(9).x, 9)
+
+# --- overloaded `new` coexists with overloaded instance methods ---
+class Both {
+  new(n: Long)   { self.n = n; self.from = "long" }
+  new(n: String) { self.n = n.size(); self.from = "str" }
+  tag(x: Long)   { "long:{self.from}" }
+  tag(x: String) { "str:{self.from}" }
+}
+assert_eq(Both(5).from, "long")
+assert_eq(Both("ab").from, "str")
+assert_eq(Both(5).tag(1), "long:long")
+assert_eq(Both("ab").tag("z"), "str:str")
+
+# --- two same-named classes in different scopes keep separate ctor tables ---
+fn mk_p() { class K { new(x: Long){self.t="P1"} new(x: String){self.t="P2"} }; K }
+fn mk_q() { class K { new(x: Long){self.t="Q1"} new(x: String){self.t="Q2"} }; K }
+let kp = mk_p()
+let kq = mk_q()
+assert_eq(kp(1).t + kp("z").t + kq(1).t + kq("z").t, "P1P2Q1Q2")
+
+# --- ctor overload set survives use as a first-class value (`C.new`) ---
+let mk = Point.new
+assert_eq(mk(2, 3).show(), "xy:2,3")
+assert_eq(mk("hi").show(), "s:2,0")
+assert_eq([1, 2, 3].map(|n| Point(n, n * 10)).map(|p| p.show()),
+          ["xy:1,10", "xy:2,20", "xy:3,30"])
+
+# --- generic class: type-param ctor overloads coexist with concrete ones ---
+class Cell<T> {
+  new(v: T)      { self.kind = "one"; self.v = v }
+  new(a: T, b: T) { self.kind = "two"; self.v = a }
+}
+assert_eq(Cell(7).kind, "one")
+assert_eq(Cell(1, 2).kind, "two")
+
+puts("ctor multidispatch OK")

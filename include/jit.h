@@ -1809,6 +1809,16 @@ struct JIT {
                        reinterpret_cast<uintptr_t>(&class_decl));
   }
 
+  // Registry key for an overloaded class member (instance/static method or
+  // `new`): `member\x1fClass#uid`. The per-decl uid keeps two same-named
+  // classes in different scopes on separate multimethod tables;
+  // _jit_multifn_display strips at the first \x1f to recover the diagnostic
+  // name. Shared by group_method_overloads and the ctor-overload path.
+  static std::string class_multifn_key(std::string_view member,
+                                       const std::string& class_name, int uid) {
+    return std::format("{}\x1f{}#{}", member, class_name, uid);
+  }
+
   // Holds the active function's Generic type-params ({"T", "U"}) while
   // its param annotations are compiled, so each can be lowered
   // (unbounded -> "Any", bounded -> bound trait; see lower_type_params).
@@ -3652,7 +3662,9 @@ struct JIT {
         }
       };
       bool has_instance_fields = false;
-      const peg::Ast* new_method_ast = nullptr;
+      // Every `new` overload's body invokes the field-init closure, so each
+      // needs the synthetic capture — not just the last one seen.
+      std::vector<const peg::Ast*> new_method_asts;
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         const auto& method = *node.nodes[j];
         auto mv = culebra::view_method(method);
@@ -3670,7 +3682,7 @@ struct JIT {
           if (mv.value) visit_for_frees(*mv.value, my_locals, outer, info);
           continue;
         }
-        if (!mv.is_static && mv.name == "new") new_method_ast = &method;
+        if (!mv.is_static && mv.name == "new") new_method_asts.push_back(&method);
         outer.push_back(&my_locals);
         auto method_info = analyze_method(method, outer);
         outer.pop_back();
@@ -3678,18 +3690,20 @@ struct JIT {
       }
       propagate(field_info);
       func_info_[&node] = std::move(field_info);
-      // The `new` body invokes the field-init closure right after its
+      // Each `new` body invokes the field-init closure right after its
       // parameter binding (interp parity: initializers run only once the
       // ctor args bound successfully). It reaches the closure through a
       // synthetic capture compile_class_decl binds in the class's scope;
       // added AFTER propagate so the hidden name never leaks into the
       // enclosing function's free list (nothing outside resolves it).
-      if (has_instance_fields && new_method_ast) {
-        auto& new_info = func_info_[new_method_ast];
+      if (has_instance_fields) {
         auto slot_name = field_init_slot_name(node);
-        if (std::find(new_info.free_vars.begin(), new_info.free_vars.end(),
-                      slot_name) == new_info.free_vars.end()) {
-          new_info.free_vars.push_back(slot_name);
+        for (auto* new_method_ast : new_method_asts) {
+          auto& new_info = func_info_[new_method_ast];
+          if (std::find(new_info.free_vars.begin(), new_info.free_vars.end(),
+                        slot_name) == new_info.free_vars.end()) {
+            new_info.free_vars.push_back(slot_name);
+          }
         }
       }
       return;
@@ -8849,7 +8863,9 @@ struct JIT {
     std::string class_name;
     std::vector<std::string_view> type_params;
     bool is_packable = false;
-    const peg::Ast* new_ast = nullptr;
+    // Constructor overloads in declaration order (empty ⇒ synthesized
+    // default ctor). Multiple bodies merge into one ctor dispatcher.
+    std::vector<const peg::Ast*> new_asts;
     std::vector<std::string> method_names;
     std::vector<const peg::Ast*> method_asts;
     std::vector<std::string> static_names;
@@ -8926,7 +8942,7 @@ struct JIT {
       }
       auto name = std::string(mv.name);
       if (!mv.is_static && mv.name == "new") {
-        out.new_ast = &m;
+        out.new_asts.push_back(&m);
       } else if (mv.is_static) {
         out.static_names.push_back(std::move(name));
         out.static_asts.push_back(&m);
@@ -8986,13 +9002,8 @@ struct JIT {
         grouped_names.push_back(method_names[a]);
         grouped_vals.push_back(std::move(method_vals[a]));
       } else {
-        // Key as `method\x1fClass#uid` — the per-decl uid keeps two
-        // same-named classes in different scopes on separate tables.
-        std::string regKey = method_names[a];
-        regKey.push_back('\x1f');
-        regKey += class_name;
-        regKey.push_back('#');
-        regKey += std::to_string(class_uid);
+        std::string regKey =
+            class_multifn_key(method_names[a], class_name, class_uid);
         Owned disp;
         for (size_t bi : idxs) {
           auto bodyPtr = builder_.CreateIntToPtr(
@@ -9027,7 +9038,8 @@ struct JIT {
     const size_t dec_end = members.dec_end;
     const std::string& class_name = members.class_name;
     const bool is_packable = members.is_packable;
-    const peg::Ast* new_ast = members.new_ast;
+    auto& new_asts = members.new_asts;
+    const bool has_new = !new_asts.empty();
     auto& method_names = members.method_names;
     auto& method_asts = members.method_asts;
     auto& static_names = members.static_names;
@@ -9128,19 +9140,14 @@ struct JIT {
                             /*body_ast=*/nullptr, /*returnType=*/{},
                             /*declName=*/{}, /*outParamMeta=*/nullptr,
                             &members.field_inits);
-      if (new_ast) {
+      if (has_new) {
+        // Every `new` overload's body captures the SAME field-init closure
+        // via this hidden slot and invokes it after binding its params
+        // (only the picked overload runs, so field inits fire exactly once).
         auto slot_name = field_init_slot_name(ast);
         auto slot = make_cell_slot(slot_name, field_init_val.consume());
         define_var(slot_name, slot);
       }
-    }
-
-    Owned body_val;
-    size_t new_arity = 0;
-    llvm::Constant* new_param_meta = nullptr;
-    if (new_ast) {
-      body_val = compile_function(*new_ast, &new_param_meta);
-      new_arity = culebra::view_method(*new_ast).params->nodes.size();
     }
 
     std::vector<Owned> static_vals;
@@ -9203,78 +9210,118 @@ struct JIT {
     }
     Owned metaVal = own(make_object(metaPtr));
 
-    // The ctor captures carry the field-init closure only for a class with
-    // no user `new` (otherwise the `new` body owns it via its hidden
-    // capture and invokes it after parameter binding).
-    const bool pass_finit = !members.field_inits.empty() && !new_ast;
-    auto ctor_fn = emit_constructor_fn(class_name, new_ast != nullptr,
-                                       pass_finit, new_arity);
-
-    // The synthesized ctor is native on the interp side (body == nullptr,
-    // not rebuildable), so neither backend ships it: register the compiled
-    // thunk so a captured class object / `C.new` value rejects at the
-    // serialize boundary with the interp's message. Runtime call — the
-    // ctor's address only exists once the declaration runs (and AOT runs
-    // in a separate process from compilation).
-    emit_call(module_->getOrInsertFunction(rt::register_native_fn,
-                                           builder_.getVoidTy(), ptrTy),
-              {ctor_fn});
-
-    // Register the `new` body's param meta under the synthesized ctor
-    // wrapper's fn_ptr. The kwargs resolver (call_with_kwargs) keys meta
-    // by fn_ptr, so `C.new(x: 1)` then binds keyword args into a positional
-    // slab exactly as the interp's constructor binder does, before the
-    // wrapper forwards that slab to the body. Without this, a kwarg ctor
-    // call hit the no-meta branch and raised "does not accept keyword
-    // arguments" — an interp/JIT divergence (the interp supports ctor kwargs).
-    if (new_param_meta) {
-      emit_call(
-          module_->getOrInsertFunction(rt::register_param_meta,
-                                       builder_.getVoidTy(), ptrTy, ptrTy),
-          {ctor_fn, new_param_meta});
-    }
-
-    // Captures: meta first, then the `new` body OR the field-init closure
-    // (never both — see pass_finit above). (Methods themselves were
-    // transferred into the meta object above and don't need to live
-    // separately in the closure.) emit_constructor_fn reads the same
-    // layout: body at [1]; field-init at [1] when there is no body.
-    size_t n_captures = 1 + (new_ast ? 1 : 0) + (pass_finit ? 1 : 0);
-    auto closurePtr = emit_call(
-        module_->getOrInsertFunction(rt::closure_new, ptrTy, ptrTy,
-                                     builder_.getInt64Ty(),
-                                     builder_.getInt64Ty()),
-        {ctor_fn,
-         builder_.getInt64(static_cast<int64_t>(n_captures)),
-         builder_.getInt64(static_cast<int64_t>(new_arity))},
-        "ctor.closure");
-
-    auto capturesFieldPtr =
-        builder_.CreateStructGEP(closureType_, closurePtr, 3);
-    auto capturesArr = builder_.CreateLoad(ptrTy, capturesFieldPtr);
-    auto install_capture = [&](size_t i, llvm::Value* v) {
-      // cell_new takes ownership of the %Value's +1 by storing the raw
-      // tag/data without retaining. Storing the cell pointer into the
-      // captures array likewise transfers the cell's +1 to the closure.
-      auto cellPtr = emit_call(
-          module_->getOrInsertFunction(rt::cell_new, ptrTy,
-                                       builder_.getInt8Ty(),
+    // Build one constructor closure for a single `new` overload (or the
+    // synthesized default when `na` is null). Captures: meta at [0]; the
+    // `new` body at [1] (with a user ctor) OR the field-init closure at [1]
+    // (default ctor for a class with fields) — never both, since a `new`
+    // body reaches the field-init through its own hidden capture. `keep_meta`
+    // retains a fresh meta ref (an overload set installs N closures over one
+    // shared meta); a single ctor consumes metaVal's original +1 outright.
+    auto build_ctor_closure = [&](const peg::Ast* na, bool keep_meta)
+        -> llvm::Value* {
+      Owned nbody;
+      size_t narity = 0;
+      llvm::Constant* np_meta = nullptr;
+      if (na) {
+        nbody = compile_function(*na, &np_meta);
+        narity = culebra::view_method(*na).params->nodes.size();
+      }
+      const bool pass_finit = !members.field_inits.empty() && !na;
+      auto ctor_fn = emit_constructor_fn(class_name, na != nullptr,
+                                         pass_finit, narity);
+      // The synthesized ctor is native on the interp side (body == nullptr,
+      // not rebuildable), so neither backend ships it: register the compiled
+      // thunk so a captured class object / `C.new` value rejects at the
+      // serialize boundary with the interp's message. Runtime call — the
+      // ctor's address only exists once the declaration runs (and AOT runs
+      // in a separate process from compilation).
+      emit_call(module_->getOrInsertFunction(rt::register_native_fn,
+                                             builder_.getVoidTy(), ptrTy),
+                {ctor_fn});
+      // Register the `new` body's param meta under the synthesized ctor
+      // wrapper's fn_ptr. The kwargs resolver (call_with_kwargs) keys meta
+      // by fn_ptr, so `C.new(x: 1)` then binds keyword args into a positional
+      // slab exactly as the interp's constructor binder does, before the
+      // wrapper forwards that slab to the body. For an overload set the
+      // dispatcher picks first, then recurses into the picked ctor wrapper —
+      // which finds its own meta here.
+      if (np_meta) {
+        emit_call(
+            module_->getOrInsertFunction(rt::register_param_meta,
+                                         builder_.getVoidTy(), ptrTy, ptrTy),
+            {ctor_fn, np_meta});
+      }
+      size_t n_captures = 1 + (na ? 1 : 0) + (pass_finit ? 1 : 0);
+      auto closurePtr = emit_call(
+          module_->getOrInsertFunction(rt::closure_new, ptrTy, ptrTy,
+                                       builder_.getInt64Ty(),
                                        builder_.getInt64Ty()),
-          {extract_tag(v), extract_data(v)}, "ctor.cell");
-      auto dst = builder_.CreateInBoundsGEP(
-          ptrTy, capturesArr,
-          {builder_.getInt64(static_cast<int64_t>(i))});
-      builder_.CreateStore(cellPtr, dst);
+          {ctor_fn,
+           builder_.getInt64(static_cast<int64_t>(n_captures)),
+           builder_.getInt64(static_cast<int64_t>(narity))},
+          "ctor.closure");
+      auto capturesFieldPtr =
+          builder_.CreateStructGEP(closureType_, closurePtr, 3);
+      auto capturesArr = builder_.CreateLoad(ptrTy, capturesFieldPtr);
+      auto install_capture = [&](size_t i, llvm::Value* v) {
+        // cell_new takes ownership of the %Value's +1 by storing the raw
+        // tag/data without retaining. Storing the cell pointer into the
+        // captures array likewise transfers the cell's +1 to the closure.
+        auto cellPtr = emit_call(
+            module_->getOrInsertFunction(rt::cell_new, ptrTy,
+                                         builder_.getInt8Ty(),
+                                         builder_.getInt64Ty()),
+            {extract_tag(v), extract_data(v)}, "ctor.cell");
+        auto dst = builder_.CreateInBoundsGEP(
+            ptrTy, capturesArr,
+            {builder_.getInt64(static_cast<int64_t>(i))});
+        builder_.CreateStore(cellPtr, dst);
+      };
+      if (keep_meta) {
+        // One class meta is shared by every `new` overload's ctor closure —
+        // each capture[0] needs its own +1 (build_class_instance's proto
+        // retain is separate). A genuine multi-capture fan-out, not a
+        // throw-safety carve-out, so it stays a bare retain (rc-discipline
+        // ceiling accounts for this one site). metaVal's original +1 is
+        // released once, after the loop (metaVal.drop()).
+        emit_value_retain(metaVal.borrow());
+        install_capture(0, metaVal.borrow());
+      } else {
+        install_capture(0, metaVal.consume());
+      }
+      if (nbody.borrow()) {
+        install_capture(1, nbody.consume());
+      } else if (pass_finit) {
+        install_capture(1, field_init_val.consume());
+      }
+      return closurePtr;
     };
-    install_capture(0, metaVal.consume());
-    if (body_val.borrow()) {
-      install_capture(1, body_val.consume());
-    } else if (pass_finit) {
-      install_capture(1, field_init_val.consume());
-    }
 
-    // Wrap the constructor closure into a Value(TAG_FUNC) for storage.
-    auto ctorVal = make_func(closurePtr);
+    // The class's "new": a lone ctor closure, or — for an overload set — a
+    // multimethod dispatcher over the per-overload ctor closures (keyed off
+    // the interp's shared multifn machinery, picked BEFORE any instance is
+    // built). `C(args)` reaches it through the same call path either way.
+    Owned ctorOwned;
+    if (new_asts.size() <= 1) {
+      ctorOwned = own(make_func(
+          build_ctor_closure(has_new ? new_asts[0] : nullptr,
+                             /*keep_meta=*/false)));
+    } else {
+      auto regKey =
+          class_multifn_key("new", class_name, multifn_uid_counter_++);
+      for (auto* na : new_asts) {
+        auto ctorPtr = build_ctor_closure(na, /*keep_meta=*/true);
+        // Each registration hands back a +1 to the same shared dispatcher;
+        // keep only the last (own() releases the earlier +1s). The registry
+        // absorbs each ctor closure's +1 as its overload body.
+        ctorOwned = own(emit_multifn_register(
+            regKey, ctorPtr, *culebra::view_method(*na).params,
+            class_type_params_));
+      }
+      // The keep_meta retains left metaVal's original +1 undistributed;
+      // release it so meta is owned only by the N ctor closures (+ instances).
+      metaVal.drop();
+    }
 
     // Build the class namespace object: { new: ctorClosure }.
     auto classObj = emit_call(
@@ -9285,8 +9332,7 @@ struct JIT {
     emit_call(module_->getOrInsertFunction(rt::mark_class,
                                            builder_.getVoidTy(), ptrTy),
               {classObj});
-    emit_object_set(classObj, "new", /*mut=*/false, extract_tag(ctorVal),
-                    extract_data(ctorVal));
+    emit_object_set_owned(classObj, "new", /*mut=*/false, std::move(ctorOwned));
     for (size_t i = 0; i < static_vals.size(); i++) {
       emit_object_set_owned(classObj, static_names[i], /*mut=*/false,
                             std::move(static_vals[i]));

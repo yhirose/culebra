@@ -333,11 +333,10 @@ expect_dup_member_accept() {
     fi
   done
 }
-# Constructors, operator/dunder methods, and statics don't overload — a
-# duplicate is a "duplicate member" error. A field clashing with a method
-# name is too.
+# Operator/dunder methods don't overload — a duplicate is a "duplicate
+# member" error. A field clashing with a method name is too. (Constructors
+# DO overload now — see the accept/identical-sig cases below.)
 expect_dup_member_reject "__call__"     'class A { __call__(x) { x } __call__(x) { x + 1 } }'
-expect_dup_member_reject "dup new"      'class A { new(){} new(x){} }'
 expect_dup_member_reject "static"       'class A { static v = 1 static v = 2 }'
 expect_dup_member_reject "field/method" 'class A { foo(x){1} foo: Long = 0 }'
 
@@ -354,6 +353,9 @@ identical_sig_reject() {
 }
 identical_sig_reject "same arity, no types" 'class A { m() { 1 } m() { 2 } }'
 identical_sig_reject "same types"           'class A { m(x: Long) { 1 } m(y: Long) { 2 } }'
+# Constructors overload on the same rule: an identical `new` signature is
+# an unreachable-overload error, distinct signatures merge (accepted below).
+identical_sig_reject "dup new same sig"     'class A { new(x: Long){self.x=x} new(y: Long){self.x=y} }'
 
 expect_dup_member_accept "static vs instance" 'class A { static m = 1 m() { 2 } }
 puts(A.m + A.new().m())'
@@ -365,6 +367,10 @@ expect_dup_member_accept "method overload" 'class A { new(){} m(x: Long) { "l" }
 puts(A.new().m(1) + A.new().m("a"))'
 expect_dup_member_accept "arity overload" 'class A { new(){} m() { 1 } m(x) { x } }
 puts(A.new().m() + A.new().m(41))'
+# Constructor multidispatch: same name (`new`), distinct positional-type
+# / arity sigs merge into one ctor dispatcher.
+expect_dup_member_accept "ctor overload" 'class A { new(x: Long){self.t="l"} new(x: String){self.t="s"} new(){self.t="e"} }
+puts(A(1).t + A("a").t + A().t)'
 
 # --- `culebra lint` CLI: advisory warnings (unused locals) in report mode ---
 # `culebra lint <file>` prints diagnostics without running and sets exit code

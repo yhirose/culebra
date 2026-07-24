@@ -1176,4 +1176,29 @@ for c in rangestep {
   case("rangestep|" + c, c)
 }
 
+# --- Dimension: constructor multidispatch (`new` overloads) ----------------
+# A class may declare several `new` bodies with distinct positional
+# param-type signatures; `C(args)` / `C.new(args)` dispatches on the explicit
+# arg types, picked BEFORE any instance is built (a dispatch miss runs no
+# field initializer). Covers type/arity dispatch, default-param and kwarg
+# overloads, class-instance-typed dispatch, the no-match DispatchError (kind +
+# position must agree), `self` immutability inside every overload, field-init
+# running once per successful construction, and the first-class `C.new` value.
+let cmd = [
+  'class C { new(x: Long){self.t="l"} new(x: String){self.t="s"} }; C(1).t + C("a").t',
+  'class C { new(x: Long){self.t="one"} new(x: Long, y: Long){self.t="two"} }; C(1).t + C(1,2).t',
+  'class B { new(x: Long){self.v=x} new(x: String){self.v=x.size()} }; to_string(B(5).v) + to_string(B("abc").v)',
+  'class D { new(v: Long = 100){self.v=v} new(a: Long, b: Long){self.v=a+b} }; to_string(D().v) + to_string(D(5).v) + to_string(D(5,6).v)',
+  'class V { new(x: Long, y: Long){self.s=x+y} new(s: String){self.s=s.size()} }; to_string(V(x: 8, y: 9).s)',
+  'class A { new(n){self.n=n} }; class W { new(a: A){self.k="a"} new(x: Long){self.k="n"} }; W(A.new("c")).k + W(7).k',
+  'class W { new(x: Long){self.x=x} new(x: String){self.x=x.size()} }; try { W(1.5) } catch e { e.kind }',
+  'class I { new(x: Long){self=5} new(x: String){self.x=x} }; try { I(1) } catch e { e.kind }',
+  'class F { base: Long = 7  new(x: Long){self.x=x} new(s: String){self.x=s.size()} }; to_string(F(3).base) + to_string(F("ab").base)',
+  'class S { new(x){self.x=x} }; to_string(S(9).x)',
+  'class P { new(x: Long, y: Long){self.p=x*10+y} new(s: String){self.p=s.size()} }; let mk = P.new; to_string(mk(2,3).p) + to_string(mk("hi").p)',
+]
+for c in cmd {
+  case("cmd|" + c, c)
+}
+
 print(out.join("\n"))

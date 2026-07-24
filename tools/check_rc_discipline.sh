@@ -28,7 +28,11 @@ rel=$(grep "emit_value_release(" include/jit.h \
 ret=$(grep "emit_value_retain(" include/jit.h \
       | grep -v "void emit_value_retain" | grep -vc "^[[:space:]]*//")
 ratchet "bare emit_value_release sites (jit.h)" "$rel" 53
-ratchet "bare emit_value_retain sites (jit.h)" "$ret" 28
+# 29 includes the ctor-overload shared-meta multi-capture retain in
+# compile_class_decl: one class meta fans out into N `new` overload closures,
+# each capture needing its own +1 (a genuine fan-out, not a throw-safety
+# carve-out). Reviewed against jit_ownership.md §4.2/§4.7.
+ratchet "bare emit_value_retain sites (jit.h)" "$ret" 29
 
 # Native-method endpoints consume self via RAII (JitMethodSelf at entry), not
 # a tail release a throw would skip. sendable_jit.h is fully converted; keep
