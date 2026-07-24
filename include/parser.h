@@ -635,18 +635,22 @@ inline std::string_view positional_field_name(size_t i) {
 
 // An untyped instance field (`x = e`) has no declared type, so a @packable
 // class — whose byte layout is computed FROM the field types — cannot
-// accept it. Throws a single canonical SyntaxError so interp and JIT
-// diagnostics stay identical (the lint pass reports the same message
-// pre-eval; this is the evaluator-side safety net).
+// accept it. The message is shared with the lint pass (which reports it
+// pre-eval as a Diagnostic rather than a throw) so the two can't drift.
+inline std::string packable_untyped_field_message(std::string_view name,
+                                                  std::string_view class_name) {
+  return std::format("field `{}` in @packable class `{}` needs a type "
+                     "annotation (the fixed layout is computed from it)",
+                     name, class_name);
+}
+// Evaluator-side safety net: throws a single canonical SyntaxError so interp
+// and JIT diagnostics stay identical.
 inline void require_typed_packable_field(const MethodView& mv,
                                          std::string_view class_name) {
-  throw CulebraError(
-      "SyntaxError",
-      std::format("field `{}` in @packable class `{}` needs a type "
-                  "annotation (the fixed layout is computed from it)",
-                  mv.name, class_name),
-      static_cast<long>(mv.name_line),
-      static_cast<long>(mv.name_col));
+  throw CulebraError("SyntaxError",
+                     packable_untyped_field_message(mv.name, class_name),
+                     static_cast<long>(mv.name_line),
+                     static_cast<long>(mv.name_col));
 }
 
 // A getter (`get name() { ... }`) takes no parameters — it is read as a

@@ -8502,7 +8502,7 @@ struct JIT {
   // The caller's `this` (the class namespace, carried with +1 per ABI)
   // is released up front since the constructor has no use for it.
   llvm::Function* emit_constructor_fn(std::string_view class_name,
-                                       bool has_new, bool has_fields,
+                                       bool has_new, bool pass_finit,
                                        size_t arity) {
     using namespace llvm;
     auto ptrTy = PointerType::get(ctx_, 0);
@@ -8556,11 +8556,10 @@ struct JIT {
     };
 
     // Capture[0] is the shared class meta (TAG_OBJECT). Capture[1] is
-    // the user `new` body (TAG_FUNC) when present, or the synthetic
-    // field-init closure for a `new`-less class with typed fields
-    // (has_new and has_fields are mutually exclusive here — a `new`
-    // body reaches the field-init through its own hidden capture; see
-    // compile_class_decl's pass_finit).
+    // EITHER the user `new` body (TAG_FUNC) OR — for a `new`-less class
+    // with fields — the synthetic field-init closure: never both, since a
+    // `new` body reaches the field-init through its own hidden capture
+    // (see compile_class_decl's pass_finit), so has_new implies !pass_finit.
     auto metaVal = load_capture(0);
     auto metaPtr = builder_.CreateIntToPtr(
         builder_.CreateExtractValue(metaVal, {1}), ptrTy, "meta.ptr");
@@ -8578,8 +8577,8 @@ struct JIT {
 
     llvm::Value* finitTag;
     llvm::Value* finitData;
-    if (has_fields) {
-      auto finitVal = load_capture(has_new ? 2 : 1);
+    if (pass_finit) {
+      auto finitVal = load_capture(1);  // !has_new here, so capture[1] is free
       finitTag = extract_tag(finitVal);
       finitData = builder_.CreateExtractValue(finitVal, {1});
     } else {

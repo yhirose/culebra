@@ -519,14 +519,12 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
         }
         if (mv.is_field || mv.is_typed_field) {
           // An untyped instance field carries no type for the byte layout —
-          // same message as the evaluator-side safety net
+          // shared message with the evaluator-side safety net
           // (require_typed_packable_field).
           if (is_packable && mv.is_field && !mv.is_static) {
             diags_.push_back(Diagnostic{
                 "SyntaxError",
-                std::format("field `{}` in @packable class `{}` needs a type "
-                            "annotation (the fixed layout is computed from it)",
-                            mv.name, class_name),
+                culebra::packable_untyped_field_message(mv.name, class_name),
                 static_cast<long>(mv.name_line),
                 static_cast<long>(mv.name_col), Severity::Error});
             pk_ok = false;
