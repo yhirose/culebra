@@ -205,9 +205,27 @@ inline void tone(int64_t start_freq, int64_t end_freq, int64_t attack,
 
 #elif defined(CULEBRA_CANVAS_WINDOW)  // native raylib desktop window
 
-// Defined in src/runtime/culebra_rt_canvas.cc (raylib), linked into the driver
-// only for a -DCULEBRA_ENABLE_CANVAS_WINDOW=ON build. Declarations only here so
-// the framebuffer core header stays raylib-free everywhere else.
+#if defined(CULEBRA_RT_CANVAS_WEAK)
+
+// Weak headless stubs for the base AOT runtime archive of a window build: a
+// program that never uses Canvas links these and pulls in no raylib. The strong
+// raylib bodies in the canvas feature archive (culebra_rt_canvas.cc,
+// force-loaded only when the AST scan reports Canvas use) override them — the
+// same weak choke as compress / http / sqlite.
+__attribute__((weak)) void present() {}
+__attribute__((weak)) int64_t buttons() { return 0; }
+__attribute__((weak)) int64_t mouse_x() { return 0; }
+__attribute__((weak)) int64_t mouse_y() { return 0; }
+__attribute__((weak)) int64_t mouse_buttons() { return 0; }
+__attribute__((weak)) bool closing() { return false; }
+__attribute__((weak)) void tone(int64_t, int64_t, int64_t, int64_t, int64_t,
+                                int64_t, int64_t, int64_t, int64_t, int64_t) {}
+
+#else
+
+// Strong raylib bodies live in src/runtime/culebra_rt_canvas.cc (the driver's
+// in-process backend + the force-loaded feature archive). Declarations only
+// here so the framebuffer core header stays raylib-free everywhere else.
 void present();
 int64_t buttons();
 int64_t mouse_x();
@@ -216,6 +234,8 @@ int64_t mouse_buttons();
 bool closing();
 void tone(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,
           int64_t, int64_t, int64_t);
+
+#endif  // CULEBRA_RT_CANVAS_WEAK
 
 #else  // native headless (default): frame held, nothing shown, no input
 

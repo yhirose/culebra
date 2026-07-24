@@ -133,13 +133,13 @@ int64_t buttons() {
 // to the buffer.
 int64_t mouse_x() {
   ensure_window();
-  if (!g_window_ready || g_scale <= 0) return 0;
+  if (!g_window_ready) return 0;
   int x = GetMouseX() / g_scale;
   return std::clamp(x, 0, g_tex_w > 0 ? g_tex_w - 1 : 0);
 }
 int64_t mouse_y() {
   ensure_window();
-  if (!g_window_ready || g_scale <= 0) return 0;
+  if (!g_window_ready) return 0;
   int y = GetMouseY() / g_scale;
   return std::clamp(y, 0, g_tex_h > 0 ? g_tex_h - 1 : 0);
 }

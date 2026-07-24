@@ -589,6 +589,19 @@ int run_build(const BuildOptions& opts) {
     return false;
   };
 #endif
+#ifdef CULEBRA_CANVAS_WINDOW
+  // Canvas reachability (window build) force-loads libculebra_rt_canvas.a (the
+  // strong raylib present/input bodies overriding the base archive's weak
+  // headless stubs) and appends the raylib/SDL link deps, mirroring the sqlite
+  // weak choke. Compiled only into a window-enabled driver: a stock build never
+  // embeds that archive, so it must not try to force-load it.
+  auto any_uses_canvas = [&]() {
+    for (const auto& m : modules) {
+      if (culebra::aot_uses_canvas(*m.ast)) return true;
+    }
+    return false;
+  };
+#endif
 #ifdef CULEBRA_ENABLE_WEBVIEW
   // Webview reachability force-loads libculebra_rt_webview.a and appends the OS
   // WebView framework link deps, mirroring the Scene axis. Compiled only into
@@ -739,6 +752,11 @@ int run_build(const BuildOptions& opts) {
 #else
   bool uses_scene = false;  // scene archive isn't embedded in a stock build
 #endif
+#ifdef CULEBRA_CANVAS_WINDOW
+  bool uses_canvas = cross ? false : any_uses_canvas();
+#else
+  bool uses_canvas = false;  // canvas archive isn't embedded in a headless build
+#endif
 #ifdef CULEBRA_ENABLE_WEBVIEW
   bool uses_webview = cross ? false : any_uses_webview();
 #else
@@ -844,6 +862,10 @@ int run_build(const BuildOptions& opts) {
       (uses_scene && host_build)
           ? force_load_feature("libculebra_rt_scene.a")
           : "";
+  std::string canvas_lib =
+      (uses_canvas && host_build)
+          ? force_load_feature("libculebra_rt_canvas.a")
+          : "";
   std::string webview_lib =
       (uses_webview && host_build)
           ? force_load_feature("libculebra_rt_webview.a")
@@ -891,6 +913,11 @@ int run_build(const BuildOptions& opts) {
   // scene_lib is what references the symbols these flags resolve. "" when
   // Scene is unused or built out.
   std::string scene_link = uses_scene ? CULEBRA_SCENE_LINK : "";
+  // raylib + SDL3 statics' platform deps for the native Canvas window, appended
+  // only when the program references Canvas in a window build. The strong
+  // present/input bodies force-loaded via canvas_lib above are what reference
+  // the symbols these flags resolve. "" when Canvas is unused or headless.
+  std::string canvas_link = uses_canvas ? CULEBRA_CANVAS_LINK : "";
   std::string webview_link = uses_webview ? CULEBRA_WEBVIEW_LINK : "";
   // The wrapped library's own link flags (`culebra wrap --link`, baked at
   // wrap time) ride the same usage axis as wrap_lib above: appended only when
@@ -927,10 +954,10 @@ int run_build(const BuildOptions& opts) {
     extra += std::format(" --sysroot={}", shq(opts.sysroot));
 
   std::string cmd = std::format(
-      "{}{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} -o {}", cc, extra,
+      "{}{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} -o {}", cc, extra,
       shq(obj), assets_obj, shq(lib), tensor_lib, http_lib, compress_lib, sqlite_lib,
-      scene_lib, webview_lib, wrap_lib, dead_strip, strip_syms, no_pie, win_static, libcxx, blas, ssl, zlib,
-      sqlite_link, scene_link, webview_link, wrap_link_flags, shq(opts.output));
+      scene_lib, canvas_lib, webview_lib, wrap_lib, dead_strip, strip_syms, no_pie, win_static, libcxx, blas, ssl, zlib,
+      sqlite_link, scene_link, canvas_link, webview_link, wrap_link_flags, shq(opts.output));
 
   if (verbose) std::println(stderr, "culebra build: link: {}", cmd);
   int link_rc = std::system(cmd.c_str());

@@ -288,6 +288,7 @@ option(CULEBRA_ENABLE_SCENE "Enable builtin Scene namespace (raylib + SDL)" OFF)
 option(CULEBRA_ENABLE_CANVAS_WINDOW
   "Enable a native desktop window for the Canvas namespace (raylib + SDL)" OFF)
 set(_scene_link "")
+set(_canvas_link "")
 
 # Resolve the shared static-lib paths + frameworks whenever either raylib-backed
 # namespace is on, so the ExternalProject build + the driver link below are
@@ -309,25 +310,28 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
     # SDL3 links these weakly so binaries still load on older macOS.
     set(_scene_weak_frameworks CoreHaptics UniformTypeIdentifiers)
   endif()
+  # The AOT link fragment (raylib + SDL3 statics + frameworks) `culebra build`
+  # appends on usage. Built once here — Scene and Canvas share it, so they can't
+  # drift apart — then assigned to the two per-feature vars (kept separate
+  # because they ride different usage axes: uses_scene vs uses_canvas).
+  set(_raylib_aot_link "'${_raylib_a}' '${_sdl_a}'")
+  if(APPLE)
+    foreach(_fw IN LISTS _scene_frameworks)
+      string(APPEND _raylib_aot_link " -framework ${_fw}")
+    endforeach()
+    foreach(_fw IN LISTS _scene_weak_frameworks)
+      string(APPEND _raylib_aot_link " -weak_framework ${_fw}")
+    endforeach()
+  endif()
 endif()
 
 if(CULEBRA_ENABLE_SCENE)
-  # AOT link fragment (CULEBRA_SCENE_LINK): the built raylib + SDL3 statics +
-  # GUI/audio system frameworks. `culebra build` appends it only when the program
-  # uses Scene. Every path is in-tree or a system framework — no external dylib.
-  set(_scene_link "'${_raylib_a}' '${_sdl_a}'")
-  if(APPLE)
-    foreach(_fw IN LISTS _scene_frameworks)
-      string(APPEND _scene_link " -framework ${_fw}")
-    endforeach()
-    foreach(_fw IN LISTS _scene_weak_frameworks)
-      string(APPEND _scene_link " -weak_framework ${_fw}")
-    endforeach()
-  endif()
+  set(_scene_link "${_raylib_aot_link}")
   message(STATUS "Scene: enabled (vendored static SDL3 + raylib)")
 endif()
 
 if(CULEBRA_ENABLE_CANVAS_WINDOW)
+  set(_canvas_link "${_raylib_aot_link}")
   message(STATUS "Canvas window: enabled (vendored static SDL3 + raylib)")
 endif()
 
@@ -464,6 +468,15 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     CULEBRA_RT_HTTP_REQUEST_WEAK=1
     CULEBRA_RT_COMPRESS_WEAK=1
     CULEBRA_RT_SQLITE_WEAK=1)
+  # In a window build the Canvas backend is the raylib one: the base archive
+  # carries weak headless present/input stubs (no raylib), overridden by the
+  # strong bodies force-loaded from culebra_rt_canvas on Canvas use. In a
+  # default build these flags are absent and the base archive's Canvas ops are
+  # the real headless inline bodies, as before.
+  if(CULEBRA_ENABLE_CANVAS_WINDOW)
+    target_compile_definitions(culebra_rt PRIVATE
+      CULEBRA_CANVAS_WINDOW=1 CULEBRA_RT_CANVAS_WEAK=1)
+  endif()
   # One section per function/data so the AOT link can `-dead_strip`
   # the ~200 `culebra_runtime_*` helpers a typical program doesn't
   # touch. Without this every runtime helper is in the same .text /
@@ -582,6 +595,21 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     list(APPEND _rt_embed_files
       "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_scene${CMAKE_STATIC_LIBRARY_SUFFIX}")
     list(APPEND _rt_embed_deps culebra_rt_scene)
+  endif()
+  # Canvas window feature archive: the strong raylib present/input bodies
+  # (culebra_rt_canvas.cc) that override the base archive's weak headless stubs.
+  # Force-loaded into an AOT binary only when the AST scan reports Canvas use
+  # (raylib/SDL come from CULEBRA_CANVAS_LINK below) — the same weak choke as
+  # sqlite. Compiling needs only raylib's headers (vendored in-tree).
+  if(CULEBRA_ENABLE_CANVAS_WINDOW)
+    add_library(culebra_rt_canvas STATIC ./src/runtime/culebra_rt_canvas.cc)
+    target_compile_features(culebra_rt_canvas PRIVATE cxx_std_23)
+    target_include_directories(culebra_rt_canvas PRIVATE ./vendor/raylib/src)
+    target_compile_definitions(culebra_rt_canvas PRIVATE CULEBRA_CANVAS_WINDOW=1)
+    target_compile_options(culebra_rt_canvas PRIVATE -ffunction-sections -fdata-sections)
+    list(APPEND _rt_embed_files
+      "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_canvas${CMAKE_STATIC_LIBRARY_SUFFIX}")
+    list(APPEND _rt_embed_deps culebra_rt_canvas)
   endif()
   # Webview feature archive: same usage-gating as Scene (force-loaded into an
   # AOT binary only when the AST scan reports Webview use; the OS WebView
@@ -705,13 +733,21 @@ if(CULEBRA_ENABLE_JIT)
   target_compile_definitions(culebra PRIVATE CULEBRA_SQLITE_LINK="${_sqlite_link}")
 endif()
 
-# `culebra build` appends the raylib + SDL2 statics + frameworks only when the
+# `culebra build` appends the raylib + SDL3 statics + frameworks only when the
 # program references Scene (see aot_scan). Defined unconditionally (gated on
 # JIT) like the peer link fragments above so the fast inner-loop build
 # (CULEBRA_DEV_NO_RT) — which skips the AOT runtime archives — still compiles the
 # driver that references this macro. `_scene_link` is "" when Scene is off.
 if(CULEBRA_ENABLE_JIT)
   target_compile_definitions(culebra PRIVATE CULEBRA_SCENE_LINK="${_scene_link}")
+endif()
+
+# `culebra build` appends the raylib + SDL3 statics + frameworks only when the
+# program references Canvas in a window build (see aot_scan). Defined
+# unconditionally (gated on JIT) like the peers. "" when the window backend is
+# off, so a default build's AOT link is unchanged.
+if(CULEBRA_ENABLE_JIT)
+  target_compile_definitions(culebra PRIVATE CULEBRA_CANVAS_LINK="${_canvas_link}")
 endif()
 
 # `culebra build` appends the OS WebView framework only when the program
