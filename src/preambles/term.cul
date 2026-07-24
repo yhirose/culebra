@@ -233,8 +233,11 @@ let _term_module = fn () {
               out = out + back
               this._front[idx] = back
               this._fstyle[idx] = st
-              # A wide glyph is the one whose continuation cell set() blanked.
-              let wide = x + 1 < this._w && this._back[idx + 1] == ""
+              # Advance the tracked cursor by the glyph's real display width, the
+              # same measure set() uses to blank the continuation cell. Keying off
+              # the neighbour cell instead under-counts when overlapping draws have
+              # since filled it, drifting cx and stranding a later cell's erase.
+              let wide = x + 1 < this._w && _Term.width(back) == 2
               cy = y
               if wide { cx = x + 2; this._front[idx + 1] = ""; this._fstyle[idx + 1] = st } else { cx = x + 1 }
             }

@@ -108,6 +108,19 @@ s.put(5, 3, " ")
 s.set(6, 3, " ")
 assert_eq(s.render(), "\x1b[4;6H  ")
 
+// A wide glyph advances the tracked cursor by its real display width even when
+// a later draw refills its continuation cell (overlapping entities). Keying the
+// advance off the neighbour cell instead would under-count and emit the next
+// cell without a cursor move, stranding it one column to the right.
+let w = Term.Screen.new()
+w.clear()
+w.render()                          // full repaint of blanks (discard)
+w.clear()
+w.set(0, 0, "🐸")                   // wide glyph (blanks col 1)
+w.set(1, 0, "z")                    // refill the continuation cell
+w.set(3, 0, "Q")                    // later cell that reveals cursor drift
+assert_eq(w.render(), "\x1b[1;1H🐸\x1b[1;2Hz\x1b[1;4HQ")
+
 // Screen.size mirrors the namespace size
 assert_eq(s.cols(), 80)
 assert_eq(s.rows(), 24)
