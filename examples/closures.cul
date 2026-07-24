@@ -1,0 +1,15 @@
+fn fib(n) { if n < 2 { n } else { fib(n-1) + fib(n-2) } }
+print("fib(20) = {fib(20)}\n")
+
+let xs = [1, 2, 3, 4, 5]
+let squares = xs.map(|x| x * x)
+print("squares      = {squares}\n")
+print("sum          = {squares.reduce(0, |a, b| a + b)}\n")
+
+fn make_counter() {
+  mut n = 0
+  fn() { n += 1; n }
+}
+let tick = make_counter()
+tick(); tick()
+print("counter says = {tick()}\n")

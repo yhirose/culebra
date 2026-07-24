@@ -68,6 +68,24 @@ emcc "${COMMON[@]}" \
 
 # Copy the static frontend alongside the wasm (brand.css lives in site/assets/).
 cp playground/index.html playground/app.js playground/worker.js \
-   playground/editor.js playground/culebra-lang.js playground/styles.css "$OUT/"
+   playground/editor.js playground/culebra-lang.js playground/styles.css \
+   playground/examples.json "$OUT/"
+
+# examples.json's "path" fields double as both the source location (relative
+# to the repo root) and the fetch path the browser uses (relative to $OUT) —
+# mirror each referenced .cul under $OUT/examples/ so both readings hold.
+echo "[playground] copying example sources…"
+python3 - "$OUT" <<'PY'
+import json, pathlib, shutil, sys
+
+out = pathlib.Path(sys.argv[1])
+catalog = json.loads((out / "examples.json").read_text())
+for category in catalog["categories"]:
+  for example in category["examples"]:
+    src = pathlib.Path(example["path"])
+    dst = out / example["path"]
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, dst)
+PY
 
 echo "[playground] done → $OUT/ (basic $(du -h "$OUT/culebra-basic.wasm" | cut -f1), full $(du -h "$OUT/culebra-full.wasm" | cut -f1))"

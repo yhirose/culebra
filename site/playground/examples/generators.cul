@@ -1,0 +1,15 @@
+fn countdown(start) {
+  mut i = start
+  while i > 0 { yield i; i -= 1 }
+}
+for v in countdown(3) { print("{v}...\n") }
+
+fn chunk(arr, n) {
+  mut buf = []
+  for v in arr {
+    buf.push(v)
+    if buf.size() >= n { yield buf; buf = [] }
+  }
+  if buf.size() > 0 { yield buf }
+}
+print("chunks = {chunk([1, 2, 3, 4, 5], 2).collect()}\n")

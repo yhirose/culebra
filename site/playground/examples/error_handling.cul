@@ -1,0 +1,11 @@
+fn risky(n) {
+  if n < 0 { throw {kind: "RangeError", message: "n must be >= 0, got {n}"} }
+  n * 2
+}
+
+try {
+  print("risky(21) = {risky(21)}\n")
+  risky(-1)
+} catch e {
+  print("caught {e.kind}: {e.message}\n")
+}

@@ -1,0 +1,28 @@
+{
+  "categories": [
+    {
+      "name": "Basics",
+      "examples": [
+        { "title": "Hello", "path": "examples/greeting.cul" },
+        { "title": "Functions & closures", "path": "examples/closures.cul" },
+        { "title": "Classes & operators", "path": "examples/classes.cul" },
+        { "title": "Generators", "path": "examples/generators.cul" },
+        { "title": "Error handling", "path": "examples/error_handling.cul" }
+      ]
+    },
+    {
+      "name": "Tensor",
+      "examples": [
+        { "title": "Tensors", "path": "examples/tensors.cul" },
+        { "title": "Tensors on the GPU", "path": "examples/tensors_gpu.cul" }
+      ]
+    },
+    {
+      "name": "Apps",
+      "examples": [
+        { "title": "TUI: Same Game", "path": "examples/games/samegame.cul" },
+        { "title": "Canvas: Rocci Bird", "path": "examples/games/rocci-bird.cul" }
+      ]
+    }
+  ]
+}

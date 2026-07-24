@@ -1,0 +1,11 @@
+class Vec2 {
+  new(x, y)  { self.x = x; self.y = y }
+  __add__(o) { Vec2.new(self.x + o.x, self.y + o.y) }
+  __mul__(k) { Vec2.new(self.x * k, self.y * k) }
+  show()     { "({self.x}, {self.y})" }
+}
+
+let a = Vec2.new(1, 2)
+let b = Vec2.new(3, 4)
+print("a + b   = {(a + b).show()}\n")
+print("a * 10  = {(a * 10).show()}\n")
