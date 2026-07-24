@@ -465,6 +465,31 @@ fn test_field_init_throw_at_construction() {
 }
 test_field_init_throw_at_construction()
 
+fn test_member_default_sees_defining_scope() {
+  # Method / ctor param defaults evaluate against the defining scope. The
+  # interp's method-binding wrapper used to drop def_env + the default
+  # evaluator, so any global (here to_long, or a user helper) resolved to
+  # NameError instead of running — while the JIT ran the default fine.
+  let bonus = 7
+  class M {
+    new(a = bonus + 1) { this.a = a }
+    m(b = bonus * 2) { b }
+  }
+  assert_eq(M.new().a, 8)
+  assert_eq(M.new(1).m(), 14)
+  # A THROWING default surfaces its own error (not NameError) on both
+  # backends — and the ctor also resolves defaults as a HOF callback
+  # (map passes one arg; the second param's default must evaluate).
+  class T {
+    new(x = 1, a = to_long('zzz')) { this.a = a }
+  }
+  let r = try { T.new(); 'built' } catch e { e.kind }
+  assert_eq(r, 'TypeError')
+  let r2 = try { [9].map(T.new); 'built' } catch e { e.kind }
+  assert_eq(r2, 'TypeError')
+}
+test_member_default_sees_defining_scope()
+
 fn test_field_init_after_arg_binding() {
   # Initializers run only once the ctor args bound successfully: an arity
   # error fires first, with no field side effects (interp/JIT symmetric).

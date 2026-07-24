@@ -158,6 +158,17 @@ case("field-packable-defaults",
      '@packable class P { x: Int32 = 7  y: Float32 = 0.5 }; ' +
      'let p = P.new(); [p.x, p.y]')
 
+# --- Dimension 6e: ctor / method param defaults resolve in defining scope ---
+# The interp's method-binding wrapper must carry def_env + the default
+# evaluator: a defaulted member call resolves globals (and raises the
+# default's own error) identically across backends.
+case("member-default-global",
+     'let g = 7; class M { new() {} m(b = g * 2) { b } }; M.new().m()')
+case("member-default-throws",
+     'class M { new(a = to_long("zzz")) { this.a = a } }; M.new()')
+case("member-default-hof",
+     'class M { new(x = 1, a = to_long("z")) { } }; [9].map(M.new)')
+
 # --- Dimension 6b: class getters (`get name()` read as `obj.name`) ----------
 # A getter fires on a bare property read AND when spelled with call parens;
 # both must agree across backends (the JIT resolves getters through a separate

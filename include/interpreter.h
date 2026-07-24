@@ -8163,6 +8163,20 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       // default constructor below now also captures `env` (for the field
       // initializers), so both paths sit at multiplicity 2.
       constructor.get<FunctionValue>().eval_captures_def_env = true;
+      // The ctor is built directly (not via make_function_value), so wire
+      // the default-expression evaluator bridge here too — the callback
+      // binder (`arr.map(C.new)`) resolves ctor param defaults through it.
+      for (const auto& p : ctor_params) {
+        if (p.default_expr) {
+          constructor.get<FunctionValue>().eval_default_expr =
+              [self = shared_from_this()](
+                  const peg::Ast& expr,
+                  const std::shared_ptr<Environment>& scope) {
+                return self->eval(expr, scope);
+              };
+          break;
+        }
+      }
     } else {
       auto self = shared_from_this();
       constructor = Value(FunctionValue(
@@ -8926,6 +8940,18 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     wf.return_type = pf.return_type;
     wf.introspection_target = pf.introspection_target;
     wf.is_builtin_method = is_builtin;
+    // Parameter-default machinery must survive the wrapper: defaults are
+    // expressions evaluated against the method's DEFINING scope
+    // (resolve_param_default chains def_env), and eval_default_expr is the
+    // evaluator bridge. Without these a defaulted method/ctor call resolved
+    // its default in an outer-less env — `m(a = to_long('x'))` raised
+    // NameError('to_long') on the interp where the JIT (whose compiled
+    // prologue closes over the real scope) raised the default's own error.
+    // eval_default_expr captures only the Interpreter (no env), and the
+    // def_env field edge is walked via def_env_multiplicity (the wrapper's
+    // eval closure does not capture it, so multiplicity stays 1).
+    wf.def_env = pf.def_env;
+    wf.eval_default_expr = pf.eval_default_expr;
     // Arity-check genuine builtin-table methods only. The table dispatch
     // sites pass `method_name` (for the error message); trait-default and
     // other non-table wrappers don't, so they stay unchecked — keeping
