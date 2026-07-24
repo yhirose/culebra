@@ -22,14 +22,9 @@ let GROUND_PAL = [C1, C2, C3, C4]        # set_draw_colors: C1, C2, C3, C4
 # --- 2BPP sprite decoding --------------------------------------------------
 let _hexd = "0123456789abcdef".graphemes().collect()
 let hex_bytes = fn (s) {
-  let cs = s.graphemes().collect()
-  mut out = []
-  mut i = 0
-  while i < cs.size() {
-    out.push(_hexd.index_of(cs[i]) * 16 + _hexd.index_of(cs[i + 1]))
-    i = i + 2
-  }
-  out
+  s.graphemes().chunks(2)
+    .map(fn ([hi, lo]) { _hexd.index_of(hi) * 16 + _hexd.index_of(lo) })
+    .collect()
 }
 # WASM-4 2BPP: a continuous bitstream, MSB first, 4 pixels per byte, each pixel
 # a palette index 0..3. All our sheet widths are byte-aligned per row.
