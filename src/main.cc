@@ -25,7 +25,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <print>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -306,8 +308,9 @@ void print_usage(ostream& os) {
 #endif
         "  test [paths...]           Run tests / doctests (--filter, --doc,\n"
         "                            --reporter, --bail, --list)\n"
-        "  lint <file.cul>...        Report static problems (errors + warnings\n"
+        "  lint [paths...]           Report static problems (errors + warnings\n"
         "                            like unused variables) without running\n"
+        "                            (--fix removes unused imports; `culebra lint --help`)\n"
         "  fmt [paths...]            Reformat source to canonical style\n"
         "                            (-i in-place, -l list, --check; `culebra fmt --help`)\n"
         "\n"
@@ -1329,29 +1332,100 @@ int run_test(int argc, const char** argv) {
   return (summary.failed == 0 && summary.errored_files == 0) ? 0 : 1;
 }
 
-// `culebra lint <file.cul>...` — parse each file and report static
+// Expand any directory argument into the `.cul` files it contains (recursively,
+// sorted for stable output); plain file arguments pass through unchanged. A
+// directory that can't be read is reported via `ok=false`. Shared by `fmt`
+// and `lint` (both take `[paths...]` where a path may be a directory).
+static vector<string> expand_cul_paths(const string& tool,
+                                       const vector<string>& args, bool& ok) {
+  namespace fs = std::filesystem;
+  vector<string> out;
+  for (const auto& a : args) {
+    std::error_code ec;
+    if (!fs::is_directory(a, ec)) { out.push_back(a); continue; }
+    vector<string> found;
+    for (fs::recursive_directory_iterator it(a, ec), end; it != end; it.increment(ec)) {
+      if (ec) { std::println(stderr, "culebra {}: can't read '{}'", tool, a); ok = false; break; }
+      if (it->is_regular_file(ec) && it->path().extension() == ".cul")
+        found.push_back(it->path().string());
+    }
+    std::sort(found.begin(), found.end());
+    out.insert(out.end(), found.begin(), found.end());
+  }
+  return out;
+}
+
+// Remove every source line named in `targets` (1-based line numbers) from
+// `src`, preserving every other line's exact bytes (including whether the
+// file ends with a trailing newline). Used by `culebra lint --fix` to drop
+// dead `import` statements, which are ordinary single-line top-level
+// statements (`import _ IDENTIFIER _ from _ STRING`, see grammar_def.h) in
+// the style the corpus and `culebra fmt` both produce. The grammar does
+// allow `;`-joining two statements onto one physical line, so a dead import
+// sharing a line with a live one is a real (if unstyled) possibility —
+// deleting that line would take the live statement with it. The caller's
+// re-parse-and-re-lint verification after this runs is what actually
+// guarantees safety: that case surfaces as a fresh undefined-variable error
+// (the live import's binding is gone) and the caller refuses to write.
+static std::string remove_source_lines(const std::string& src,
+                                       const std::set<long>& targets) {
+  std::string out;
+  long line_no = 1;
+  size_t i = 0;
+  while (i <= src.size()) {
+    size_t nl = src.find('\n', i);
+    size_t end = nl == std::string::npos ? src.size() : nl + 1;
+    if (!targets.contains(line_no)) out.append(src, i, end - i);
+    if (nl == std::string::npos) break;
+    i = end;
+    line_no++;
+  }
+  return out;
+}
+
+// `culebra lint [paths...]` — parse each file and report static
 // diagnostics (the load-stage errors plus advisory warnings like unused
 // locals) without evaluating. Each file is linted on its own (imports bind
-// their namespace name, so single-file analysis is sound). Exit code: 0 when
-// clean, 1 when only warnings were found, 2 when any error (or a parse /
-// read failure) occurred — so CI can gate on it.
+// their namespace name, so single-file analysis is sound). A directory
+// argument is expanded to the `.cul` files under it (recursively). Exit
+// code: 0 when clean, 1 when only warnings were found, 2 when any error (or
+// a parse / read failure) occurred — so CI can gate on it.
+//
+// `--fix` mechanically removes unused-import lines (`UnusedImport`
+// diagnostics). It is the only warning kind scoped to autofix: deleting a
+// dead `import` line can never change behavior (an import has no
+// author-visible side effect beyond binding the name), whereas deleting an
+// unused top-level `let`/`mut` could drop a side-effecting initializer
+// expression — unsafe to do unattended. Every other warning kind is
+// report-only. After editing, the fixed source is re-parsed and re-linted;
+// the fix is written only if that re-check confirms the removed imports are
+// gone and no new error-severity diagnostic appeared (mirrors `culebra
+// fmt`'s re-parse safety net — never write a change that wasn't
+// independently verified).
 int run_lint(int argc, const char** argv) {
+  bool fix = false;
   vector<string> files;
   for (int i = 2; i < argc; i++) {
     string arg = argv[i];
     if (arg == "-h" || arg == "--help") {
-      std::println("Usage: culebra lint <file.cul>...");
+      std::println("Usage: culebra lint [--fix] <paths...>\n"
+                   "  (no flags)  report static problems, exit 0/1/2\n"
+                   "  --fix       mechanically remove unused-import lines\n"
+                   "  paths       files, or directories scanned for *.cul");
       return 0;
     }
+    if (arg == "--fix") { fix = true; continue; }
     files.push_back(arg);
   }
   if (files.empty()) {
     std::println(stderr, "culebra lint: no input files");
     return 2;
   }
+  bool expand_ok = true;
+  files = expand_cul_paths("lint", files, expand_ok);
 
   int errors = 0, warnings = 0;
-  bool had_failure = false;
+  bool had_failure = !expand_ok;
   for (const auto& path : files) {
     vector<char> buff;
     if (!read_file(path.c_str(), buff)) {
@@ -1359,32 +1433,75 @@ int run_lint(int argc, const char** argv) {
       had_failure = true;
       continue;
     }
+    std::string src(buff.begin(), buff.end());
     // `collect_module` wants both views of the program: the lowered AST the
     // backends run (sound error checks) and the source as written (advisory
     // warnings). See its comment for why neither alone is enough.
-    vector<string> parse_msgs;
-    auto authored = culebra::parse(path, buff.data(), buff.size(), parse_msgs);
-    std::shared_ptr<peg::Ast> lowered;
-    if (authored) {
+    auto lint_source = [&](const std::string& s, vector<string>& parse_msgs)
+        -> std::optional<vector<culebra::lint::Diagnostic>> {
+      auto authored = culebra::parse(path, s.data(), s.size(), parse_msgs);
+      if (!authored) return std::nullopt;
       // The lowering itself rejects malformed effects (two `return` clauses,
       // a duplicate handler clause, …) by throwing. Report those as ordinary
       // error diagnostics instead of letting them escape the CLI — a linter
       // must never abort on the input it was asked to inspect.
+      std::shared_ptr<peg::Ast> lowered;
       try {
-        lowered = culebra::parse_with_transforms(path, buff.data(),
-                                                 buff.size(), parse_msgs);
+        lowered = culebra::parse_with_transforms(path, s.data(), s.size(),
+                                                 parse_msgs);
       } catch (const culebra::CulebraError& e) {
-        std::println("{}:{}:{}: error: {}", path, e.line, e.col, e.what());
-        errors++;
-        continue;
+        return vector<culebra::lint::Diagnostic>{
+            {e.kind, e.what(), e.line, e.col, culebra::lint::Severity::Error}};
       }
-    }
-    if (!authored || !lowered) {
+      if (!lowered) return std::nullopt;
+      return culebra::lint::collect_module(*lowered, *authored);
+    };
+
+    vector<string> parse_msgs;
+    auto diags = lint_source(src, parse_msgs);
+    if (!diags) {
       for (const auto& m : parse_msgs) std::print(stderr, "{}", m);
       had_failure = true;
       continue;
     }
-    for (const auto& d : culebra::lint::collect_module(*lowered, *authored)) {
+
+    if (fix) {
+      std::set<long> import_lines;
+      for (const auto& d : *diags)
+        if (d.kind == "UnusedImport") import_lines.insert(d.line);
+      if (!import_lines.empty()) {
+        auto fixed_src = remove_source_lines(src, import_lines);
+        vector<string> fix_msgs;
+        auto fixed_diags = lint_source(fixed_src, fix_msgs);
+        bool verified = fixed_diags.has_value();
+        if (verified) {
+          int orig_errors = 0, new_errors = 0;
+          for (const auto& d : *diags)
+            if (d.severity == culebra::lint::Severity::Error) orig_errors++;
+          for (const auto& d : *fixed_diags) {
+            if (d.severity == culebra::lint::Severity::Error) new_errors++;
+            if (d.kind == "UnusedImport") verified = false;
+          }
+          verified = verified && new_errors == orig_errors;
+        }
+        if (verified) {
+          ofstream ofs(path, ios::out | ios::binary | ios::trunc);
+          ofs << fixed_src;
+          std::println("{}: fixed {} unused import{}", path,
+                      import_lines.size(), import_lines.size() == 1 ? "" : "s");
+          src = std::move(fixed_src);
+          diags = std::move(fixed_diags);
+        } else {
+          std::println(stderr,
+                      "{}: --fix left {} unused import{} unresolved "
+                      "(re-check failed, left unchanged)",
+                      path, import_lines.size(),
+                      import_lines.size() == 1 ? "" : "s");
+        }
+      }
+    }
+
+    for (const auto& d : *diags) {
       const char* sev =
           d.severity == culebra::lint::Severity::Error ? "error" : "warning";
       std::println("{}:{}:{}: {}: {}", path, d.line, d.col, sev, d.message);
@@ -1397,27 +1514,6 @@ int run_lint(int argc, const char** argv) {
 
   if (errors > 0 || had_failure) return 2;
   return warnings > 0 ? 1 : 0;
-}
-
-// Expand any directory argument into the `.cul` files it contains (recursively,
-// sorted for stable output); plain file arguments pass through unchanged. A
-// directory that can't be read is reported via `ok=false`.
-static vector<string> fmt_expand_paths(const vector<string>& args, bool& ok) {
-  namespace fs = std::filesystem;
-  vector<string> out;
-  for (const auto& a : args) {
-    std::error_code ec;
-    if (!fs::is_directory(a, ec)) { out.push_back(a); continue; }
-    vector<string> found;
-    for (fs::recursive_directory_iterator it(a, ec), end; it != end; it.increment(ec)) {
-      if (ec) { std::println(stderr, "culebra fmt: can't read '{}'", a); ok = false; break; }
-      if (it->is_regular_file(ec) && it->path().extension() == ".cul")
-        found.push_back(it->path().string());
-    }
-    std::sort(found.begin(), found.end());
-    out.insert(out.end(), found.begin(), found.end());
-  }
-  return out;
 }
 
 // `culebra fmt [paths...]` — reformat Culebra source to the canonical style.
@@ -1454,7 +1550,7 @@ int run_fmt(int argc, const char** argv) {
   // `-` (stdin) is not a path to expand; only expand when there are real paths.
   bool has_stdin = false;
   for (auto& f : files) if (f == "-") has_stdin = true;
-  if (!has_stdin) files = fmt_expand_paths(files, expand_ok);
+  if (!has_stdin) files = expand_cul_paths("fmt", files, expand_ok);
 
   auto report = [](const string& path, const culebra::fmt::FormatResult& r) {
     if (r.status == culebra::fmt::FormatStatus::ParseError) {

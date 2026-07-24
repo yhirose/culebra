@@ -1560,7 +1560,7 @@ without going through `culebra test`.
 
 ## 18. Linting (`culebra lint`)
 
-`culebra lint <file.cul>...` reports static problems **without running**
+`culebra lint [paths...]` reports static problems **without running**
 the program, and exits non-zero so CI can gate on it (0 = clean, 1 =
 warnings only, 2 = errors). It reuses the same load-stage static analysis
 every backend already runs (so the errors it reports are exactly the ones
@@ -1570,6 +1570,9 @@ that would abort a run) and adds advisory warnings on top.
 culebra lint app.cul
 # app.cul:12:7: warning: unused variable 'tmp'
 # app.cul:20:3: error: undefined variable 'reuslt'
+
+culebra lint .          # recurse into every .cul under the current directory,
+                         # like `culebra fmt -i .`
 ```
 
 What it reports today:
@@ -1598,6 +1601,20 @@ What it reports today:
   — a multidispatch clause or method signature fixes the arity, and a
   higher-order callback (a route handler `fn(req)`, an `|i| 4.0`) ignores
   an argument it must still declare — so the check would be all noise.
+
+`culebra lint --fix <paths...>` mechanically removes unused-import lines —
+the only warning safe to autofix unattended, since deleting a dead
+`import` can never change behavior (unlike an unused `let`/`mut`, whose
+initializer may carry a side effect). Every other warning stays
+report-only. After editing, the fixed source is re-parsed and re-linted;
+the rewrite is written only if that re-check confirms the imports are
+gone and no new error appeared — the same re-parse safety net `culebra
+fmt` uses.
+
+```bash
+culebra lint --fix app.cul
+# app.cul: fixed 1 unused import
+```
 
 Planned: a `--format json` mode for editor / LSP integration, and inline
 `# lint: ignore` suppression.

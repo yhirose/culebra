@@ -1536,7 +1536,7 @@ global なので `culebra test` を介さずに 3 backend で同じファイル�
 
 ## 18. リント (`culebra lint`)
 
-`culebra lint <file.cul>...` はプログラムを**実行せずに**静的な問題を
+`culebra lint [paths...]` はプログラムを**実行せずに**静的な問題を
 報告し、CI でゲートできるよう非ゼロ終了する (0 = クリーン、1 = 警告のみ、
 2 = エラー)。全 backend が load 段で走らせている静的解析を再利用する
 (報告されるエラーは実行時に abort するものと厳密に同じ) 上に、助言的な
@@ -1546,6 +1546,9 @@ global なので `culebra test` を介さずに 3 backend で同じファイル�
 culebra lint app.cul
 # app.cul:12:7: warning: unused variable 'tmp'
 # app.cul:20:3: error: undefined variable 'reuslt'
+
+culebra lint .           # `culebra fmt -i .` と同様、カレント以下の
+                         # .cul を再帰的に走査
 ```
 
 現状の報告対象:
@@ -1570,6 +1573,18 @@ culebra lint app.cul
   パラメータはほぼ意図的 — 多重ディスパッチの節やメソッド署名が arity を
   固定し、高階コールバック (ルートハンドラ `fn(req)` や `|i| 4.0`) は宣言
   必須だが使わない引数を持つ — ため、検査してもノイズにしかならない。
+
+`culebra lint --fix <paths...>` は未使用 import の行を機械的に削除する —
+自動修正の対象は現状これだけ: 死んだ `import` の削除は挙動を変えない
+(未使用の `let`/`mut` と違い、import には初期化式の副作用が無いため)。
+他の警告はすべて報告のみに留まる。編集後は修正済みソースを再パース・
+再リントし、import が消えて新規エラーが出ていないことを確認できた場合
+だけ書き換える — `culebra fmt` と同じ再パース安全網。
+
+```bash
+culebra lint --fix app.cul
+# app.cul: fixed 1 unused import
+```
 
 予定: エディタ/LSP 連携用の `--format json`、インライン
 `# lint: ignore` 抑制。

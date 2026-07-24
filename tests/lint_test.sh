@@ -432,6 +432,13 @@ export { g }'
 expect_lint_clean "toplevel fn not flagged" 'fn helper() { 1 }'
 # Underscore opt-out on a top-level binding.
 expect_lint_clean "toplevel underscore"  'let _g = 1'
+# `import` is the other unused-toplevel candidate. Lint runs below the
+# module-loading layer (pure AST, no filesystem access), so the imported
+# path need not resolve to a real file.
+expect_lint_warns "unused import" "import Math from 'std/math'
+puts(1)" "unused import 'Math'"
+expect_lint_clean "used import"  "import Math from 'std/math'
+puts(Math.sqrt(4))"
 
 # --- unreachable code (straight-line terminator + a following statement) ---
 expect_lint_warns "unreachable after return" 'fn f() { return 1
@@ -530,6 +537,47 @@ puts(outer())'
 expect_lint_clean "same name in sibling scopes" 'fn a() { let x = 1; x }
 fn b() { let x = 2; x }
 puts(a() + b())'
+
+# --- directory argument: recurse into `.cul` files, like `culebra fmt` ---
+DIRTMP=$(mktemp -d)
+mkdir -p "$DIRTMP/sub"
+printf 'puts(1)\n' > "$DIRTMP/clean.cul"
+printf "import Math from 'std/math'\nputs(1)\n" > "$DIRTMP/sub/dirty.cul"
+out=$("$CULEBRA" lint "$DIRTMP" 2>&1); rc=$?
+if [[ $rc -ne 1 || "$out" != *"dirty.cul"*"unused import 'Math'"* || "$out" == *"clean.cul"* ]]; then
+  echo "FAIL lint-dir-recurse: rc=$rc out=$out"; fail=1
+fi
+rm -rf "$DIRTMP"
+
+# --- `--fix`: mechanically remove unused-import lines ---
+# A used import is left alone; an unused one is deleted and the file re-lints
+# clean afterward. `--fix` reports the file it rewrote and exits 0.
+FIXTMP=$(mktemp -d)
+printf "import Math from 'std/math'\nimport IO from 'std/io'\n\nIO.puts(Math.sqrt(4))\n" > "$FIXTMP/keep.cul"
+out=$("$CULEBRA" lint --fix "$FIXTMP/keep.cul" 2>&1); rc=$?
+if [[ $rc -ne 0 || -n "$out" ]]; then
+  echo "FAIL lint-fix-noop-when-clean: rc=$rc out=$out"; fail=1
+fi
+if ! grep -q "^import Math" "$FIXTMP/keep.cul"; then
+  echo "FAIL lint-fix-noop-when-clean: used import was removed"; fail=1
+fi
+
+printf "import Math from 'std/math'\nimport IO from 'std/io'\nimport Time from 'std/time'\n\nIO.puts(1)\n" > "$FIXTMP/dead.cul"
+out=$("$CULEBRA" lint --fix "$FIXTMP/dead.cul" 2>&1); rc=$?
+if [[ $rc -ne 0 || "$out" != *"fixed 2 unused imports"* ]]; then
+  echo "FAIL lint-fix-removes-unused: rc=$rc out=$out"; fail=1
+fi
+if grep -qE "^import (Math|Time)" "$FIXTMP/dead.cul"; then
+  echo "FAIL lint-fix-removes-unused: a dead import survived: $(cat "$FIXTMP/dead.cul")"; fail=1
+fi
+if ! grep -q "^import IO" "$FIXTMP/dead.cul"; then
+  echo "FAIL lint-fix-removes-unused: the live import was removed"; fail=1
+fi
+out=$("$CULEBRA" lint "$FIXTMP/dead.cul" 2>&1); rc=$?
+if [[ $rc -ne 0 || -n "$out" ]]; then
+  echo "FAIL lint-fix-removes-unused: file not clean after fix: rc=$rc out=$out"; fail=1
+fi
+rm -rf "$FIXTMP"
 
 if [[ $fail -eq 0 ]]; then echo "lint_test OK"; exit 0; fi
 exit 1
