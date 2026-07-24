@@ -3691,10 +3691,15 @@ Database / Statement ハンドルは生成したスレッド（isolate）に紐�
 色は packed RGBA `Long`、バッファは任意サイズ（WASM-4 流の 160×160 が典型）。
 WASM Playground では Canvas プログラムは **Canvas タブ**で動く — フレームは
 `<canvas>` に表示され、キーボード / ポインタが入力になり、`tone` は WebAudio で
-鳴る。ネイティブでは現状 **ヘッドレス**: ピクセル / スプライト操作は同一に動く
-（振る舞いは interpreter / JIT / AOT で一致し `Canvas.get_pixel` で検証可能）が、何も
-表示されず、入力は「ボタンなし」を返し、`tone` は無音。ウィンドウ付きネイティブ
-バックエンドは計画中。
+鳴る。ネイティブでは**デフォルトはヘッドレス**: ピクセル / スプライト操作は同一に
+動く（振る舞いは interpreter / JIT / AOT で一致し `Canvas.get_pixel` で検証可能）が、
+何も表示されず、入力は「ボタンなし」を返し、`tone` は無音。`-DCULEBRA_ENABLE_CANVAS_WINDOW=ON`
+でビルドすると（macOS、`Scene` と同じ vendored 静的 raylib + SDL3）、代わりに実際の
+デスクトップウィンドウを開く: 各 `present` はフレームをアップロードし、最近傍で
+見やすいサイズに整数倍拡大し、60fps で vsync までブロックする。キーボードとマウスが
+`Canvas.buttons` / `Canvas.mouse` になり、ウィンドウを閉じる（または Esc）と `run`
+ループが終わる。これは opt-in で、デフォルトビルドには影響しない。ネイティブ `tone`
+音声は後続（今は無音）。
 
 ### 色
 

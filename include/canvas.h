@@ -17,10 +17,15 @@
 // the byte order [r, g, b, a] — exactly what the browser's putImageData
 // consumes — so `present` hands the framebuffer to JS with no repacking.
 //
-// The native backend is headless in this milestone: the pixel buffer and
-// sprite ops run identically to the browser (so interp/JIT symmetry is
-// verifiable off-screen via get_pixel), but `present` shows nothing and input
-// reads as "no button". A real SDL2 window is a later milestone.
+// The native backend is headless by default: the pixel buffer and sprite ops
+// run identically to the browser (so interp/JIT symmetry is verifiable
+// off-screen via get_pixel), but `present` shows nothing and input reads as "no
+// button". Building with -DCULEBRA_ENABLE_CANVAS_WINDOW=ON instead links a real
+// raylib desktop window (present shows the frame and blocks to vsync, input
+// polls the keyboard/mouse) — the backend-specific present/input/tone/closing
+// are then declarations here, defined in src/runtime/culebra_rt_canvas.cc, so
+// this widely-included framebuffer header still pulls in no raylib on a default
+// build.
 
 #include <algorithm>
 #include <cstdint>
@@ -186,6 +191,8 @@ inline int64_t buttons() { return _wasm_canvas_buttons(); }
 inline int64_t mouse_x() { return _wasm_canvas_mouse_x(); }
 inline int64_t mouse_y() { return _wasm_canvas_mouse_y(); }
 inline int64_t mouse_buttons() { return _wasm_canvas_mouse_buttons(); }
+// The browser loop ends via tick()/frames, not a window-close event.
+inline bool closing() { return false; }
 inline void tone(int64_t start_freq, int64_t end_freq, int64_t attack,
                  int64_t decay, int64_t sustain, int64_t release, int64_t vol,
                  int64_t peak, int64_t channel, int64_t duty) {
@@ -196,13 +203,28 @@ inline void tone(int64_t start_freq, int64_t end_freq, int64_t attack,
                     static_cast<int>(channel), static_cast<int>(duty));
 }
 
-#else  // native (headless in this milestone)
+#elif defined(CULEBRA_CANVAS_WINDOW)  // native raylib desktop window
+
+// Defined in src/runtime/culebra_rt_canvas.cc (raylib), linked into the driver
+// only for a -DCULEBRA_ENABLE_CANVAS_WINDOW=ON build. Declarations only here so
+// the framebuffer core header stays raylib-free everywhere else.
+void present();
+int64_t buttons();
+int64_t mouse_x();
+int64_t mouse_y();
+int64_t mouse_buttons();
+bool closing();
+void tone(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,
+          int64_t, int64_t, int64_t);
+
+#else  // native headless (default): frame held, nothing shown, no input
 
 inline void present() {}  // headless: the framebuffer is held, nothing shown
 inline int64_t buttons() { return 0; }
 inline int64_t mouse_x() { return 0; }
 inline int64_t mouse_y() { return 0; }
 inline int64_t mouse_buttons() { return 0; }
+inline bool closing() { return false; }
 inline void tone(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,
                  int64_t, int64_t, int64_t) {}
 

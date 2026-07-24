@@ -1849,6 +1849,16 @@ inline Value make_canvas_primitives_namespace() {
           "Long"sv)),
       false);
 
+  // _Canvas.closing() -> Bool (the window's close box was clicked; false on the
+  // headless/browser backends, where the loop stops via tick()/frames)
+  ns.initialize("closing",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            return Value(_canvas_detail::closing());
+          },
+          "Bool"sv)),
+      false);
+
   // _Canvas.tone(freq, dur, vol, wave) -> Nil (no-op headless)
   ns.initialize("tone",
       Value(FunctionValue({{"start_freq", false, "Long"sv},

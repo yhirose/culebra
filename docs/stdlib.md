@@ -3834,10 +3834,16 @@ frame, `present` it, poll input, repeat. Colours are packed RGBA `Long`s and
 the buffer can be any size (a WASM-4-style 160×160 is typical). In the WASM
 Playground a Canvas program runs in the **Canvas tab** — frames are shown on a
 `<canvas>`, keyboard/pointer feed the input, and `tone` plays through WebAudio.
-Natively the backend is currently **headless**: the pixel and sprite ops run
+Natively the backend is **headless by default**: the pixel and sprite ops run
 identically (so behaviour is the same across interpreter / JIT / AOT and testable
 via `Canvas.get_pixel`), but nothing is displayed, input reads as "no button", and
-`tone` is silent. A windowed native backend is planned.
+`tone` is silent. Building with `-DCULEBRA_ENABLE_CANVAS_WINDOW=ON` (macOS;
+vendored static raylib + SDL3, the same backend the `Scene` namespace links)
+instead opens a real desktop window: each `present` uploads the frame, upscales
+it with nearest-neighbour to a comfortable window size, and blocks to vsync at 60
+fps; the keyboard and mouse feed `Canvas.buttons`/`Canvas.mouse`, and closing the
+window (or Esc) ends the `run` loop. This is opt-in and changes nothing on a
+default build. Native `tone` audio is a later step (silent for now).
 
 ### Colour
 
