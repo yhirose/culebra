@@ -4245,8 +4245,8 @@ picked overload). A call with no matching overload raises a catchable
 A class declaring a name **once** keeps a plain method (no dispatcher,
 no overhead). The following stay compile-time errors: two methods with
 an identical signature, a field and a method sharing a name, and a
-duplicate field. Constructors (`new`) overload too (see below);
-operator/dunder methods (`__call__`, `__add__`, …) do not overload yet.
+duplicate field. Constructors (`new`) and operator/dunder methods
+(`__add__`, `__eq__`, `__call__`, …) overload too (see below).
 
 ### Method multidispatch (static methods)
 
@@ -4299,6 +4299,33 @@ Default parameters, keyword arguments, and `*args` follow the same rules
 as method overloads. A class declaring `new` **once** keeps a plain
 constructor (no dispatcher, no overhead); two `new` bodies with an
 identical signature stay a compile-time error.
+
+### Dunder / operator multidispatch
+
+Operator methods (`__add__`, `__eq__`, `__lt__`, `__index__`, `__call__`,
+…, §10) are ordinary instance methods reached through the operator-lookup
+path, so several with distinct operand-type signatures merge into one
+dispatcher; the operator then picks the overload on the operand's runtime
+type:
+
+```culebra
+class Vec {
+  new(x: Long, y: Long) { self.x = x; self.y = y }
+  __add__(o: Vec) { Vec(self.x + o.x, self.y + o.y) }   # elementwise
+  __add__(n: Long) { Vec(self.x + n, self.y + n) }       # scalar
+}
+let v = Vec(1, 2)
+(v + Vec(10, 20))   # → Vec(11, 22)   (Vec overload)
+(v + 5)             # → Vec(6, 7)     (Long overload)
+```
+
+Commutative auto-reflection is unaffected: `5 + v` still reflects to
+`v.__add__(5)` and picks the `Long` overload. An operand matching no
+overload raises a catchable `DispatchError` (kind, message, and position
+agree across backends) — the same rule as a method with a typed parameter
+that the operand doesn't satisfy. A class declaring a dunder **once** keeps
+a plain method; two dunder bodies with an identical signature stay a
+compile-time error.
 
 ---
 

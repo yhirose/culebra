@@ -481,8 +481,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
             static_cast<long>(mv.name_line),
             static_cast<long>(mv.name_col), Severity::Error});
       };
-      std::set<std::string, std::less<>> inst_fields, static_fields,
-          seen_special, new_sigs;
+      std::set<std::string, std::less<>> inst_fields, static_fields, new_sigs;
       std::map<std::string, std::set<std::string>, std::less<>> inst_methods,
           static_methods;
       auto dup_sig = [&](const culebra::MethodView& mv) {
@@ -517,30 +516,21 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
           dup_sig(mv);
         }
       };
-      // Operator/dunder methods (`__call__`, `__add__`, …) dispatch through
-      // dedicated paths, not the method dispatcher, so they don't overload
-      // yet — any duplicate is an error. Constructors (`new`) DO overload
-      // (distinct positional-param-type signatures merge into one ctor
-      // dispatcher), so they follow the method rule instead.
-      auto is_dunder = [](std::string_view n) {
-        return n.size() >= 4 && n.substr(0, 2) == "__" &&
-               n.substr(n.size() - 2) == "__";
-      };
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         auto mv = culebra::view_method(*node.nodes[j]);
         bool is_field_member = mv.is_field || mv.is_typed_field;
         // Static members live on the class object, instance members on
-        // instances — each name space is checked independently. Operator/
-        // dunder methods take a dedicated dispatch path, so they don't
-        // overload: any duplicate is an error. Constructors (`new`) overload
-        // like methods — distinct signatures merge, an identical signature is
-        // an unreachable-overload error.
+        // instances — each name space is checked independently. Constructors
+        // (`new`) overload like methods — distinct signatures merge, an
+        // identical signature is an unreachable-overload error. Operator/
+        // dunder methods (`__add__`, `__eq__`, `__call__`, …) are ordinary
+        // instance methods reached through the operator-lookup path, so they
+        // overload on the same rule as any instance method (the retrieved
+        // dispatcher scores on the operand type).
         if (mv.is_static) {
           check_named(static_fields, static_methods, mv, is_field_member);
         } else if (!is_field_member && mv.name == "new") {
           if (!new_sigs.insert(method_signature(*mv.params)).second) dup_sig(mv);
-        } else if (!is_field_member && is_dunder(mv.name)) {
-          if (!seen_special.insert(std::string(mv.name)).second) dup_member(mv);
         } else {
           check_named(inst_fields, inst_methods, mv, is_field_member);
         }

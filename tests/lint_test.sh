@@ -333,10 +333,9 @@ expect_dup_member_accept() {
     fi
   done
 }
-# Operator/dunder methods don't overload — a duplicate is a "duplicate
-# member" error. A field clashing with a method name is too. (Constructors
-# DO overload now — see the accept/identical-sig cases below.)
-expect_dup_member_reject "__call__"     'class A { __call__(x) { x } __call__(x) { x + 1 } }'
+# A duplicate static member or a field clashing with a method name is a
+# "duplicate member" error. (Constructors AND operator/dunder methods DO
+# overload now — see the accept / identical-sig cases below.)
 expect_dup_member_reject "static"       'class A { static v = 1 static v = 2 }'
 expect_dup_member_reject "field/method" 'class A { foo(x){1} foo: Long = 0 }'
 
@@ -356,6 +355,9 @@ identical_sig_reject "same types"           'class A { m(x: Long) { 1 } m(y: Lon
 # Constructors overload on the same rule: an identical `new` signature is
 # an unreachable-overload error, distinct signatures merge (accepted below).
 identical_sig_reject "dup new same sig"     'class A { new(x: Long){self.x=x} new(y: Long){self.x=y} }'
+# Operator/dunder methods overload on the same rule too — an identical
+# signature is the same unreachable-overload error.
+identical_sig_reject "dup dunder same sig"  'class A { __call__(x) { x } __call__(y) { y + 1 } }'
 
 expect_dup_member_accept "static vs instance" 'class A { static m = 1 m() { 2 } }
 puts(A.m + A.new().m())'
@@ -371,6 +373,10 @@ puts(A.new().m() + A.new().m(41))'
 # / arity sigs merge into one ctor dispatcher.
 expect_dup_member_accept "ctor overload" 'class A { new(x: Long){self.t="l"} new(x: String){self.t="s"} new(){self.t="e"} }
 puts(A(1).t + A("a").t + A().t)'
+# Dunder / operator multidispatch: same dunder name, distinct operand-type
+# sigs merge into one dispatcher picked by the operand type.
+expect_dup_member_accept "dunder overload" 'class A { new(n: Long){self.n=n} __add__(o: A){A(self.n+o.n)} __add__(k: Long){A(self.n+k)} }
+puts((A(2)+A(3)).n + (A(2)+10).n)'
 
 # --- `culebra lint` CLI: advisory warnings (unused locals) in report mode ---
 # `culebra lint <file>` prints diagnostics without running and sets exit code

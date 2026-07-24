@@ -1201,4 +1201,28 @@ for c in cmd {
   case("cmd|" + c, c)
 }
 
+# --- Dimension: dunder / operator multidispatch --------------------------
+# Operator methods (`__add__`, `__eq__`, `__index__`, `__call__`, …) are
+# ordinary instance methods reached through the operator-lookup path, so
+# several with distinct positional-param-type signatures merge into one
+# dispatcher; the operator picks the overload on the operand's runtime type.
+# Covers type dispatch, commutative auto-reflection, subscript/call dunders,
+# the no-match DispatchError (kind + position must agree), and single-dunder
+# (bare method) staying unaffected.
+let dmd = [
+  'class V { new(x: Long){self.x=x} __add__(o: V){V(self.x+o.x)} __add__(n: Long){V(self.x+n)} }; to_string((V(1)+V(2)).x) + to_string((V(1)+5).x)',
+  'class V { new(x: Long){self.x=x} __add__(o: V){V(self.x+o.x)} __add__(n: Long){V(self.x+n)} }; to_string((5+V(10)).x)',
+  'class V { new(x: Long){self.x=x} __add__(o: V){V(self.x+o.x)} __add__(n: Long){V(self.x+n)} }; try { V(1)+"s" } catch e { e.kind }',
+  'class N { new(n: Long){self.n=n} __eq__(o: N){self.n==o.n} __eq__(k: Long){self.n==k} }; to_string(N(7)==N(7)) + to_string(N(7)==7) + to_string(N(7)==8)',
+  'class N { new(n: Long){self.n=n} __lt__(o: N){self.n<o.n} __lt__(k: Long){self.n<k} }; to_string(N(3)<N(5)) + to_string(N(3)<2)',
+  'class G { new(){self.d=[10,20,30]} __index__(i: Long){self.d[i]} __index__(s: String){"k:"+s} }; to_string(G()[1]) + G()["a"]',
+  'class M { new(v: Long){self.v=v} __mul__(n: Long){M(self.v*n)} __mul__(o: M){M(self.v*o.v)} }; to_string((M(3)*4).v) + to_string((M(3)*M(5)).v)',
+  'class F { new(){} __call__(n: Long){"l:"+to_string(n)} __call__(s: String){"s:"+s} }; F()(3) + F()("x")',
+  'class F { new(){} __call__(n: Long){n} __call__(s: String){s.size()} }; try { F()(1.5) } catch e { e.kind }',
+  'class S { new(n: Long){self.n=n} __add__(o){self.n+o.n} }; to_string(S(3)+S(4))',
+]
+for c in dmd {
+  case("dmd|" + c, c)
+}
+
 print(out.join("\n"))
