@@ -3650,13 +3650,13 @@ struct JIT {
           }
         }
       };
-      bool has_typed_fields = false;
+      bool has_instance_fields = false;
       const peg::Ast* new_method_ast = nullptr;
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         const auto& method = *node.nodes[j];
         auto mv = culebra::view_method(method);
-        if (mv.is_typed_field) {
-          has_typed_fields = true;
+        if (mv.is_typed_field || (mv.is_field && !mv.is_static)) {
+          has_instance_fields = true;
           if (mv.value) {
             outer.push_back(&my_locals);
             visit_for_frees(*mv.value, field_locals, outer, field_info);
@@ -3665,7 +3665,7 @@ struct JIT {
           }
           continue;
         }
-        if (mv.is_field) {
+        if (mv.is_field) {  // static field: declaration-time, enclosing scope
           if (mv.value) visit_for_frees(*mv.value, my_locals, outer, info);
           continue;
         }
@@ -3683,7 +3683,7 @@ struct JIT {
       // synthetic capture compile_class_decl binds in the class's scope;
       // added AFTER propagate so the hidden name never leaks into the
       // enclosing function's free list (nothing outside resolves it).
-      if (has_typed_fields && new_method_ast) {
+      if (has_instance_fields && new_method_ast) {
         auto& new_info = func_info_[new_method_ast];
         auto slot_name = field_init_slot_name(node);
         if (std::find(new_info.free_vars.begin(), new_info.free_vars.end(),
@@ -8904,7 +8904,13 @@ struct JIT {
         continue;
       }
       if (mv.is_field) {
-        culebra::require_static_field(mv, out.class_name);
+        if (!mv.is_static) {
+          // Untyped instance field (`x = e`) — mirrors interp's collect.
+          if (out.is_packable)
+            culebra::require_typed_packable_field(mv, out.class_name);
+          out.field_inits.push_back({mv.name, mv.value, {}});
+          continue;
+        }
         out.static_field_names.push_back(std::string(mv.name));
         out.static_field_asts.push_back(&m);
         continue;

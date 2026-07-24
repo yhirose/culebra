@@ -148,25 +148,25 @@ enum Mode { Title, Game, Over }
 
 class App {
   # Session state, alive across restarts.
-  interactive: Bool = IO.stdin_is_terminal()
-  input: Object = Canvas.Input.new()
-  high_score: Long = 0
-  fc: Long = 0
+  interactive = IO.stdin_is_terminal()
+  input = Canvas.Input.new()
+  high_score = 0
+  fc = 0
   # Per-mode state, owned by the enter_* transitions below.
   mode: Mode
-  plants: Array
-  pipes: Array = []
   rocci: Anim
-  hiscore: Anim = hiscore_anim(0)
-  score: Long = 0
-  max_score: Long = 0
-  player_y: Float = 0.0
-  player_vel: Float = 0.0
-  last_pipe: Long = 0
-  last_plant: Long = 0
-  last_flap: Bool = true
-  new_high: Bool = false
-  ground_x: Long = 0
+  hiscore = hiscore_anim(0)
+  plants = []
+  pipes = []
+  score = 0
+  max_score = 0
+  player_y = 0.0
+  player_vel = 0.0
+  last_pipe = 0
+  last_plant = 0
+  last_flap = true
+  new_high = false
+  ground_x = 0
 
   new() {
     Random.seed(this.fc)

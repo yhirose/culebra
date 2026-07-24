@@ -157,6 +157,11 @@ case("field-forward-read",
 case("field-packable-defaults",
      '@packable class P { x: Int32 = 7  y: Float32 = 0.5 }; ' +
      'let p = P.new(); [p.x, p.y]')
+# The type annotation is optional (`x = e` declares the same field).
+# (@packable rejects the untyped form — a STATIC error, pre-eval, so it
+# cannot live in this corpus of runnable thunks.)
+case("field-untyped",
+     'class F { a = 3  b = this.a * 2 }; let f = F.new(); [f.a, f.b]')
 
 # --- Dimension 6e: ctor / method param defaults resolve in defining scope ---
 # The interp's method-binding wrapper must carry def_env + the default

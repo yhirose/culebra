@@ -633,14 +633,17 @@ inline std::string_view positional_field_name(size_t i) {
   return names.at(i);
 }
 
-// `static`-modifier check for the field form (size 3). Throws a single
-// canonical SyntaxError so interp and JIT diagnostics stay identical.
-inline void require_static_field(const MethodView& mv,
-                                 std::string_view class_name) {
-  if (mv.is_static) return;
+// An untyped instance field (`x = e`) has no declared type, so a @packable
+// class — whose byte layout is computed FROM the field types — cannot
+// accept it. Throws a single canonical SyntaxError so interp and JIT
+// diagnostics stay identical (the lint pass reports the same message
+// pre-eval; this is the evaluator-side safety net).
+inline void require_typed_packable_field(const MethodView& mv,
+                                         std::string_view class_name) {
   throw CulebraError(
       "SyntaxError",
-      std::format("field `{}` in class `{}` must be declared with `static`",
+      std::format("field `{}` in @packable class `{}` needs a type "
+                  "annotation (the fixed layout is computed from it)",
                   mv.name, class_name),
       static_cast<long>(mv.name_line),
       static_cast<long>(mv.name_col));

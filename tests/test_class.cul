@@ -465,6 +465,32 @@ fn test_field_init_throw_at_construction() {
 }
 test_field_init_throw_at_construction()
 
+fn test_untyped_fields() {
+  # The type annotation on a declared field is optional, like everywhere
+  # else: `x = e` declares the same per-instance mutable field as
+  # `x: T = e` (an initializer is required — the type is inferred from
+  # nothing). `static x = e` stays a class-level constant.
+  let base = 5
+  class P {
+    score = 0
+    items = []
+    best = this.score + base
+    static MAX = 99
+    bump() { this.score = this.score + 1 }
+  }
+  let a = P.new()
+  let b = P.new()
+  a.bump()
+  a.items.push(1)
+  assert_eq(a.score, 1)
+  assert_eq(a.items, [1])
+  assert_eq(a.best, 5)
+  assert_eq(b.score, 0)
+  assert_eq(b.items, [])
+  assert_eq(P.MAX, 99)
+}
+test_untyped_fields()
+
 fn test_member_default_sees_defining_scope() {
   # Method / ctor param defaults evaluate against the defining scope. The
   # interp's method-binding wrapper used to drop def_env + the default

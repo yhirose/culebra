@@ -1238,20 +1238,19 @@ Semantics:
       puts(Circle.MAX)        # 100
 
   The value expression can be arbitrary (`static SUM = [1,2,3].sum()`),
-  evaluated in the enclosing scope at class declaration time. A bare
-  `FOO = expr` in a class body is a syntax error — class-level constants
-  require `static`, instance fields require a type annotation (below).
-  Like static methods, static fields are immutable (`Circle.PI = 2`
-  raises `ImmutableError`) and not visible through instances.
-* `NAME: Type` / `NAME: Type = EXPRESSION` declares an **instance
-  field** — mutable per-instance state initialized before the `new`
-  body runs:
+  evaluated in the enclosing scope at class declaration time. Like
+  static methods, static fields are immutable (`Circle.PI = 2` raises
+  `ImmutableError`) and not visible through instances.
+* `NAME = EXPRESSION` / `NAME: Type` / `NAME: Type = EXPRESSION`
+  declares an **instance field** — mutable per-instance state
+  initialized before the `new` body runs. The type annotation is
+  optional, as everywhere else in the language:
 
       class Player {
-        score: Long = 0
+        score = 0
         name:  String
-        tags:  Array = []
-        best:  Long = this.score + 10
+        tags  = []
+        best  = this.score + 10
         new (name) { this.name = name }
       }
       let p = Player.new('rocci')
@@ -1275,15 +1274,18 @@ Semantics:
     defining scope, like Kotlin property initializers vs
     secondary-constructor parameters); pass ctor args to fields
     explicitly with `this.x = a` in the body.
-  - Without an initializer the field takes its type's zero value:
-    `0` / `0.0` / `''` / `false`; reference types (`Array`, `Object`,
-    ...) default to `nil`.
+  - A typed field without an initializer (`name: String` above) takes
+    its type's zero value: `0` / `0.0` / `''` / `false`; reference
+    types (`Array`, `Object`, ...) default to `nil`. The untyped form
+    always carries an initializer (there is no type to infer a zero
+    value from).
   - Declared fields are mutable instance state, exactly like fields
     created via `this.x = y` in the constructor.
 
   The declared type is documentation (like parameter annotations on the
   runtime-check model, §14); `@packable` classes (§21) additionally read
-  it to compute their fixed byte layout.
+  it to compute their fixed byte layout, so their fields must be typed
+  (`x = 7` in a `@packable` class is a SyntaxError).
 * `get NAME () { ... }` declares a **getter** — a no-parameter method
   that is invoked on a bare property read, with no call parentheses:
 

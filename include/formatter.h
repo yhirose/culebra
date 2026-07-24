@@ -1279,9 +1279,11 @@ class Printer {
 
   DocP print_method(const peg::Ast& m) {
     auto v = view_method(m);
-    if (v.is_field)  // `static x = expr`
-      return doc_concat({doc_text("static " + std::string(v.name) + " = "),
-                         print(*v.value)});
+    if (v.is_field)  // `static x = expr` / untyped instance field `x = expr`
+      return doc_concat(
+          {doc_text((v.is_static ? "static " : "") + std::string(v.name) +
+                    " = "),
+           print(*v.value)});
     // `static` and `get` are mutually exclusive member modifiers.
     DocP prefix = v.is_static ? doc_text("static ")
                 : v.is_getter ? doc_text("get ")

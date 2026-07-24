@@ -7972,7 +7972,15 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         continue;
       }
       if (mv.is_field) {
-        culebra::require_static_field(mv, out.class_name);
+        if (!mv.is_static) {
+          // Untyped instance field (`x = e`): the same per-instance
+          // initializer path as a typed field, with no declared type.
+          // @packable needs every field's type for its byte layout.
+          if (out.is_packable)
+            culebra::require_typed_packable_field(mv, out.class_name);
+          out.field_template.push_back({mv.name, *mv.value_sp, {}});
+          continue;
+        }
         Value val = eval(*mv.value, env);
         out.static_field_template.push_back({mv.name, std::move(val)});
         continue;
