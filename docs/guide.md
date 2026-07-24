@@ -245,9 +245,9 @@ puts(add_typed(2, 3))         # => 5
 square = |x| x * x
 puts(square(7))               # => 49
 
-# Use `self` for recursion (the function refers to itself)
+# Use `fn` for recursion (the function refers to itself)
 fib = fn (x) {
-  if x < 2 { x } else { self(x - 2) + self(x - 1) }
+  if x < 2 { x } else { fn(x - 2) + fn(x - 1) }
 }
 puts(fib(10))                 # => 55
 ```
@@ -451,7 +451,7 @@ guarantee for lazy chains: [language.md §18.5](language.md).
 countdown = fn (start) {
   mut i = start
   {
-    iter:     fn () { this },
+    iter:     fn () { self },
     has_next: fn () { i > 0 },
     next:     fn () { v = i; i = i - 1; v }
   }
@@ -567,7 +567,7 @@ is_even = fn (n) {
   match n {
     0 => true,
     1 => false,
-    _ => self(n - 2)
+    _ => fn(n - 2)
   }
 }
 puts(is_even(10))             # => true
@@ -795,14 +795,14 @@ Part II — Tools for abstraction
 ### 9.1 Syntax
 
 `class` declares a constructor (`new`) and methods. Fields set via
-`this.x = ...` are mutable by default. Instances carry a readable
+`self.x = ...` are mutable by default. Instances carry a readable
 `class:` tag.
 
 ```culebra
 class Car {
-  new(mpr)  { this.miles = 0; this.mpr = mpr }
-  run(n)    { this.miles = this.miles + this.mpr * n }
-  total()   { "total: {this.miles} miles" }
+  new(mpr)  { self.miles = 0; self.mpr = mpr }
+  run(n)    { self.miles = self.miles + self.mpr * n }
+  total()   { "total: {self.miles} miles" }
 }
 
 car = Car.new(5)
@@ -816,7 +816,7 @@ Calling the class itself is shorthand for `.new` — `Car(5)` is exactly
 class is callable the way its constructor is.
 
 ```culebra
-class Point { new(x, y) { this.x = x; this.y = y } }
+class Point { new(x, y) { self.x = x; self.y = y } }
 p = Point(3, 4)               # same as Point.new(3, 4)
 puts("{p.x},{p.y}")           # => '3,4'
 ```
@@ -854,10 +854,10 @@ class-level constants.
 
 ```culebra
 class Circle {
-  new(r)          { this.r = r }
+  new(r)          { self.r = r }
   static PI       = 3.14
   static unit()   { Circle.new(1) }
-  area()          { this.r * this.r * Circle.PI }
+  area()          { self.r * self.r * Circle.PI }
 }
 puts(Circle.unit().area())    # => 3.14
 puts(Circle.PI)               # => 3.14
@@ -887,13 +887,13 @@ dispatch rules: [language.md §10](language.md) (Operator overloading).
 
 ```culebra
 class Vec2 {
-  new(x, y)   { this.x = x; this.y = y }
-  __add__(o)  { Vec2.new(this.x + o.x, this.y + o.y) }
-  __sub__(o)  { Vec2.new(this.x - o.x, this.y - o.y) }
-  __mul__(k)  { Vec2.new(this.x * k, this.y * k) }
-  __neg__()   { Vec2.new(-this.x, -this.y) }
-  __eq__(o)   { this.x == o.x && this.y == o.y }
-  show()      { "({this.x}, {this.y})" }
+  new(x, y)   { self.x = x; self.y = y }
+  __add__(o)  { Vec2.new(self.x + o.x, self.y + o.y) }
+  __sub__(o)  { Vec2.new(self.x - o.x, self.y - o.y) }
+  __mul__(k)  { Vec2.new(self.x * k, self.y * k) }
+  __neg__()   { Vec2.new(-self.x, -self.y) }
+  __eq__(o)   { self.x == o.x && self.y == o.y }
+  show()      { "({self.x}, {self.y})" }
 }
 
 a = Vec2.new(1, 2)
@@ -911,8 +911,8 @@ A class that defines `__call__` makes its instances directly callable.
 
 ```culebra
 class Adder {
-  new(n)        { this.n = n }
-  __call__(x)   { x + this.n }
+  new(n)        { self.n = n }
+  __call__(x)   { x + self.n }
 }
 
 add5 = Adder.new(5)
@@ -949,8 +949,8 @@ types. The runtime picks the most specific match based on the
 declared types of the arguments.
 
 ```culebra
-class Circle { new(r) { this.r = r } }
-class Square { new(s) { this.s = s } }
+class Circle { new(r) { self.r = r } }
+class Square { new(s) { self.s = s } }
 
 fn area(c: Circle) { 3.14159 * c.r * c.r }
 fn area(s: Square) { s.s * s.s }
@@ -1190,8 +1190,8 @@ structural model (Ch.11.3).
 trait Greeter { hello() -> String }
 
 class Bob {
-  new(name)  { this.name = name }
-  hello()    { "hi, {this.name}" }
+  new(name)  { self.name = name }
+  hello()    { "hi, {self.name}" }
 }
 
 greet = fn (x: Greeter) -> String { x.hello() }
@@ -1461,9 +1461,9 @@ released at test end.
 ```culebra
 # doctest: skip
 class TestDB {
-  new()    { this.conn = Database.connect("memory") }
-  drop()   { this.conn.close() }
-  users()  { this.conn.users }
+  new()    { self.conn = Database.connect("memory") }
+  drop()   { self.conn.close() }
+  users()  { self.conn.users }
 }
 
 fn db() { TestDB.new() }

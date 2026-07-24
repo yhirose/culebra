@@ -45,7 +45,7 @@ assert_eq(evens, 3)
 once = fn (v) {
   mut emitted = false
   {
-    iter: fn () { this },
+    iter: fn () { self },
     has_next: fn () { !emitted },
     next: fn () { emitted = true; v }
   }
@@ -330,7 +330,7 @@ assert_true(m[0] == 2 && m[2] == 4)
 
 # collect() on a user-defined iterator that yields zero values
 empty_iter = fn () {
-  { iter: fn () { this }, has_next: fn () { false }, next: fn () { nil } }
+  { iter: fn () { self }, has_next: fn () { false }, next: fn () { nil } }
 }
 assert_eq(empty_iter().collect().size(), 0)
 assert_eq(empty_iter().count(), 0)
@@ -394,7 +394,7 @@ assert_true(fm2[0] == 0 && fm2[1] == 0 && fm2[2] == 1
 drained = fn () {
   mut emitted = false
   {
-    iter: fn () { this },
+    iter: fn () { self },
     has_next: fn () { !emitted },
     next: fn () { emitted = true; 7 }
   }
@@ -426,9 +426,9 @@ assert_true(inner_seen[0] == 10 && inner_seen[1] == 20
 # methods as a built-in iterator (map/filter/take/.../collect), driven via
 # its has_next()/next().
 class Countdown {
-  new(n) { this.n = n }
+  new(n) { self.n = n }
   iter() {
-    let mut i = this.n
+    let mut i = self.n
     { has_next: fn() { i > 0 }, next: fn() { i = i - 1; i + 1 } }
   }
 }

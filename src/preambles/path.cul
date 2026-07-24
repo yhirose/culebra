@@ -24,16 +24,16 @@ let _path_module = fn() {
     else { throw {kind: "TypeError", message: "type error: expected String|Path, got {t}"} }
   }
   class Path {
-    new(p) { this._path = _s(p) }
+    new(p) { self._path = _s(p) }
 
     # --- display / conversion ---
-    __str__() { this._path }         # "{p}" and to_string(p) yield the raw path
-    str() { this._path }             # explicit String escape hatch
+    __str__() { self._path }         # "{p}" and to_string(p) yield the raw path
+    str() { self._path }             # explicit String escape hatch
     # equal only to a String/StringView or another Path with the same path;
     # any other type is simply not-equal (never a TypeError).
     __eq__(o) {
-      if type_of(o) == "String" || type_of(o) == "StringView" { this._path == o }
-      else if _is_path(o) { this._path == to_string(o) }
+      if type_of(o) == "String" || type_of(o) == "StringView" { self._path == o }
+      else if _is_path(o) { self._path == to_string(o) }
       else { false }
     }
     # Order paths by their normalized inner string, so a Path array sorts and
@@ -42,40 +42,40 @@ let _path_module = fn() {
     # TypeError, not a silent false, since an ordering has no meaningful answer
     # there. `<=`/`>`/`>=` fall out of `__lt__` + `__eq__` via the backends'
     # comparison derivation. Raw (not resolved) to stay consistent with __eq__.
-    __lt__(o) { this._path < _s(o) }
+    __lt__(o) { self._path < _s(o) }
 
     # --- joining: `base / "sub" / "leaf"` ---
-    join(o) { Path.new(FS.join(this._path, _s(o))) }
-    __div__(o) { this.join(o) }
+    join(o) { Path.new(FS.join(self._path, _s(o))) }
+    __div__(o) { self.join(o) }
 
     # --- path components (String, mirroring FS.*) ---
     # Pure, total, O(1) string derivations, so they read as properties
     # (`p.name`, `p.parent`) — no parens. `p.name()` still works too. The
     # filesystem ops below stay methods: they do I/O and can throw.
-    get name() { FS.basename(this._path) }    # final component, e.g. "content.js"
-    get stem() { FS.stem(this._path) }        # final component without suffix
-    get suffix() { FS.extension(this._path) } # extension incl. dot, e.g. ".js"
-    get parent() { Path.new(FS.dirname(this._path)) }
+    get name() { FS.basename(self._path) }    # final component, e.g. "content.js"
+    get stem() { FS.stem(self._path) }        # final component without suffix
+    get suffix() { FS.extension(self._path) } # extension incl. dot, e.g. ".js"
+    get parent() { Path.new(FS.dirname(self._path)) }
 
     # --- queries ---
-    exists() { FS.exists(this._path) }
-    is_file() { FS.is_file(this._path) }
-    is_dir() { FS.is_dir(this._path) }
+    exists() { FS.exists(self._path) }
+    is_file() { FS.is_file(self._path) }
+    is_dir() { FS.is_dir(self._path) }
 
     # --- filesystem ops (delegate to FS) ---
-    read() { FS.read(this._path) }
-    write(content) { FS.write(this._path, content) }
-    mkdir() { FS.mkdir(this._path) }               # creates parents (FS.mkdir does)
-    remove(recursive = false) { FS.remove(this._path, recursive: recursive) }
-    rename(dst) { FS.rename(this._path, _s(dst)); Path.new(_s(dst)) }
+    read() { FS.read(self._path) }
+    write(content) { FS.write(self._path, content) }
+    mkdir() { FS.mkdir(self._path) }               # creates parents (FS.mkdir does)
+    remove(recursive = false) { FS.remove(self._path, recursive: recursive) }
+    rename(dst) { FS.rename(self._path, _s(dst)); Path.new(_s(dst)) }
 
     # --- normalization ---
-    resolve() { Path.new(FS.abspath(this._path)) }
+    resolve() { Path.new(FS.abspath(self._path)) }
 
     # --- directory listing / globbing (return Path, so chains stay Path) ---
-    list() { FS.list_dir(this._path).map(fn(e) { Path.new(FS.join(this._path, e)) }) }
-    glob(pattern) { FS.glob(FS.join(this._path, pattern)).map(fn(p) { Path.new(p) }) }
-    walk() { FS.walk(this._path).map(fn(p) { Path.new(p) }) }
+    list() { FS.list_dir(self._path).map(fn(e) { Path.new(FS.join(self._path, e)) }) }
+    glob(pattern) { FS.glob(FS.join(self._path, pattern)).map(fn(p) { Path.new(p) }) }
+    walk() { FS.walk(self._path).map(fn(p) { Path.new(p) }) }
   }
   Path
 }

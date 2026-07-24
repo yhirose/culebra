@@ -2,7 +2,7 @@
 # A class may declare several methods with the SAME name but different
 # positional-param-type signatures; `obj.method(args)` dispatches on the
 # runtime types of the explicit args (the receiver is fixed by the lookup,
-# `this` is bound into the picked overload). Works on interp / JIT / AOT.
+# `self` is bound into the picked overload). Works on interp / JIT / AOT.
 
 # --- type dispatch on an instance method ---
 class Calc {
@@ -16,11 +16,11 @@ assert_eq(c.go(1), "long")
 assert_eq(c.go("a"), "string")
 assert_eq(c.go(2, 3), "two")
 
-# --- `this` is bound inside each overload body ---
+# --- `self` is bound inside each overload body ---
 class Box {
-  new(n) { this.n = n }
-  add(x: Long)   { this.n + x }
-  add(x: String) { x.size() + this.n }
+  new(n) { self.n = n }
+  add(x: Long)   { self.n + x }
+  add(x: String) { x.size() + self.n }
 }
 let b = Box.new(10)
 assert_eq(b.add(5), 15)
@@ -39,8 +39,8 @@ assert_eq(d.f("qq"), 2)
 
 # --- keyword argument flows to the picked overload ---
 class Srv {
-  new() { this.base = 1000 }
-  handle(x: Long, scale: Long = 2) { this.base + x * scale }
+  new() { self.base = 1000 }
+  handle(x: Long, scale: Long = 2) { self.base + x * scale }
   handle(x: String) { x.size() }
 }
 let s = Srv.new()
@@ -49,7 +49,7 @@ assert_eq(s.handle(5, scale: 10), 1050)
 assert_eq(s.handle("hey"), 3)
 
 # --- dispatch on a class-instance-typed param ---
-class Animal { new(n) { this.n = n } }
+class Animal { new(n) { self.n = n } }
 class Zoo {
   new() {}
   feed(a: Animal) { "animal" }
@@ -97,11 +97,11 @@ fn use_shower(s: Shower, v) { s.show(v) }
 assert_eq(use_shower(Shown.new(), 5), "n")
 assert_eq(use_shower(Shown.new(), "q"), "s")
 
-# --- an overloaded-method instance keeps `this` across an isolate ---
+# --- an overloaded-method instance keeps `self` across an isolate ---
 class Counter {
-  new(n) { this.n = n }
-  bump(x: Long)   { this.n + x }
-  bump(x: String) { this.n }
+  new(n) { self.n = n }
+  bump(x: Long)   { self.n + x }
+  bump(x: String) { self.n }
 }
 let bumped = Parallel.map([Counter.new(100), Counter.new(200)], |c| c.bump(5))
 assert_eq(bumped[0], 105)

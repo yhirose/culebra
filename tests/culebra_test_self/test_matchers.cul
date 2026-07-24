@@ -189,9 +189,9 @@ fn assert_lt_failure() {
 # --- Class instance __eq__ / __lt__ dispatch ---
 
 class Pt {
-  new(x, y) { this.x = x; this.y = y }
-  __eq__(o)  { this.x == o.x && this.y == o.y }
-  __lt__(o)  { (this.x * this.x + this.y * this.y)
+  new(x, y) { self.x = x; self.y = y }
+  __eq__(o)  { self.x == o.x && self.y == o.y }
+  __lt__(o)  { (self.x * self.x + self.y * self.y)
                < (o.x * o.x + o.y * o.y) }
 }
 
@@ -212,9 +212,9 @@ fn assert_lt_dispatches_user_lt() {
 # --- __str__ honored in failure message ---
 
 class Money {
-  new(c) { this.cents = c }
-  __str__()  { "{this.cents / 100}USD" }
-  __eq__(o)  { this.cents == o.cents }
+  new(c) { self.cents = c }
+  __str__()  { "{self.cents / 100}USD" }
+  __eq__(o)  { self.cents == o.cents }
 }
 
 @test
@@ -236,8 +236,8 @@ fn di_simple(answer) {
 
 # Fixture chain: a fixture depends on another by parameter name.
 class Counter {
-  new() { this.n = 0 }
-  bump() { this.n = this.n + 1; this.n }
+  new() { self.n = 0 }
+  bump() { self.n = self.n + 1; self.n }
 }
 fn db()      { Counter.new() }
 fn bumped(db) { db.bump(); db }
@@ -305,13 +305,13 @@ fn assert_close_rejects_nan_tol() {
 # Class `drop` fires when the per-test fixture cache releases its
 # ref at test end. Observed via a counter that holds no ref back.
 class DropCounter {
-  new() { this.n = 0 }
-  inc()  { this.n = this.n + 1 }
+  new() { self.n = 0 }
+  inc()  { self.n = self.n + 1 }
 }
 let drop_count = DropCounter.new()
 
 class Probe {
-  new() { this.open = true }
+  new() { self.open = true }
   drop() { drop_count.inc() }
 }
 

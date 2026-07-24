@@ -81,10 +81,10 @@ inline void _iter_self_iter_fn(JitValue* __ret, JitClosure*, int8_t this_val_tag
   JitValue this_val{this_val_tag, this_val_data};
   // iter() on a wrapped iterator returns self. The Iterator-protocol calling
   // convention (see compile_for_protocol_loop / _iter_coerce_iterable /
-  // object_iter_dispatch) has every caller retain `this` before the call so a
+  // object_iter_dispatch) has every caller retain `self` before the call so a
   // script method body can consume it via its frame and return a fresh +1.
   // A native fn has no frame, so it must consume that retain itself: return
-  // `this` directly, transferring the caller's +1 to the result. (A stray
+  // `self` directly, transferring the caller's +1 to the result. (A stray
   // `retain` here instead of the transfer leaked one ref per `.iter()` on
   // every native wrapped iterator — the for-in protocol loop's ref B.)
   { *__ret = this_val; return; }
@@ -282,7 +282,7 @@ inline void _iter_trampoline_has_next_fn(JitValue* __ret, JitClosure* cls, int8_
                                               int64_t iv_data, int64_t,
                                               JitValue*) {
   JitValue iv{iv_tag, iv_data};
-  // Native iterator method: the caller hands `this` (the iterator Object)
+  // Native iterator method: the caller hands `self` (the iterator Object)
   // +1-owned (callee-consumes, like _iter_self_iter_fn and the retain-before-
   // call in _iter_advance_raw's slow path). This releases it on every exit —
   // after the body's use of `cls` (whose captures `iv` keeps alive) — so an
@@ -318,7 +318,7 @@ inline void _iter_trampoline_next_fn(JitValue* __ret, JitClosure* cls, int8_t iv
                                           int64_t iv_data, int64_t,
                                           JitValue*) {
   JitValue iv{iv_tag, iv_data};
-  // Consume the caller's `this` +1 on every exit — see the note on
+  // Consume the caller's `self` +1 on every exit — see the note on
   // _iter_trampoline_has_next_fn. Released after the lookahead value is copied
   // out (the returned +1 is independent of `iv`'s captures).
   JitOwnedVal this_guard(iv);
@@ -1531,7 +1531,7 @@ culebra_runtime_object_iter_dispatch(JitObject* obj) {
   if (entry && entry->value.tag == TAG_FUNC) {
     auto* cls = reinterpret_cast<JitClosure*>(entry->value.data);
     auto self = JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
-    // _culebra_invoke_method0 retains `this`, and frees it on a throw from the
+    // _culebra_invoke_method0 retains `self`, and frees it on a throw from the
     // user iter() body via its JitUnwindRelease (callee-consumes on normal return).
     auto r = _culebra_invoke_method0(cls, self);
     // The user iter() returns an Object (+1) — caller takes that retain.
@@ -1641,7 +1641,7 @@ inline void _math_range_fast_fn(JitClosure* cls, JitValue, bool* done,
 // Entry point called from for-in codegen (`rt::iter_advance`): returns
 // 1 on a value step with `*out_tag`/`*out_data` holding a +1 Value, 0
 // on done. `next_cls` is the `iter.next` closure resolved once before
-// the loop; forwarded as the `this` capture slab on the fast path.
+// the loop; forwarded as the `self` capture slab on the fast path.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_advance(
     JitClosure* has_next_cls, JitClosure* next_cls,
     int8_t it, int64_t id, int8_t* out_tag, int64_t* out_data) {
@@ -1687,7 +1687,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_iota(int64_t start,
 // array runtime helpers.
 // Forwarding body for the adapter closure that lets a callable class
 // instance stand in for a function callback. captures[0] is the instance
-// (bound as `this`), captures[1] is its resolved `__call__` closure
+// (bound as `self`), captures[1] is its resolved `__call__` closure
 // (captured once so the per-element call skips the property lookup). Each
 // call dispatches to __call__ with the callback args passed through.
 inline void _culebra_callable_adapter(JitValue* __ret, JitClosure* self, int8_t, int64_t,
@@ -1695,7 +1695,7 @@ inline void _culebra_callable_adapter(JitValue* __ret, JitClosure* self, int8_t,
   JitValue inst = self->captures[0]->value;  // borrowed from the capture cell
   auto* m = reinterpret_cast<JitClosure*>(self->captures[1]->value.data);
   // The compiled __call__ frame consumes this retain on EVERY exit — its
-  // `this` slot releases on a normal return, and its fn-level cleanup pad
+  // `self` slot releases on a normal return, and its fn-level cleanup pad
   // releases it on a throw — so no guard belongs here. (A throw-path guard
   // used to sit here compensating for the codegen's stranded callback `+1`;
   // under the callee-consumes contract that `+1` lives in the capture cell,
@@ -1755,7 +1755,7 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
   if (fn_tag != TAG_FUNC) {
     // A callable class instance (own/proto `__call__`) stands in for a
     // function: synthesize an adapter closure that forwards to __call__
-    // with `this` bound (Option A: structural callable). Mirrors interp's
+    // with `self` bound (Option A: structural callable). Mirrors interp's
     // as_callback. proto-gated so a plain dict isn't callable.
     if (fn_tag == TAG_OBJECT) {
       auto* obj = reinterpret_cast<JitObject*>(fn_data);
@@ -1808,7 +1808,7 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
 // element. Callee-consumes the incoming `+1` and returns a +1-owned closure
 // for the combinator to capture: a plain Function (the incoming ref passes
 // through), or — for a callable class instance (Option A) — an adapter that
-// forwards to __call__ with `this` bound. Reuses _culebra_expect_callback
+// forwards to __call__ with `self` bound. Reuses _culebra_expect_callback
 // (the eager-HOF path / interp's as_callback) so all iterator HOFs accept a
 // callable identically. The caller transfers the returned reference into its
 // capture cell with no extra retain.

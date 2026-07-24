@@ -2,7 +2,7 @@
 // Edit the .cul sources, then run `just gen-preambles` (CI checks sync).
 #pragma once
 
-inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = fn () { class Duration { new(nanos) { this._nanos = nanos } seconds() { to_float(this._nanos) / 1000000000.0 } milliseconds() { to_float(this._nanos) / 1000000.0 } minutes() { this.seconds() / 60.0 } hours() { this.seconds() / 3600.0 } days() { this.seconds() / 86400.0 } abs() { if this._nanos < 0 { Duration.new(-this._nanos) } else { Duration.new(this._nanos) } } __add__(o) { Duration.new(this._nanos + o._nanos) } __sub__(o) { Duration.new(this._nanos - o._nanos) } __mul__(n) { Duration.new(to_long(to_float(this._nanos) * to_float(n))) } __div__(n) { Duration.new(to_long(to_float(this._nanos) / to_float(n))) } __neg__() { Duration.new(-this._nanos) } __lt__(o) { this._nanos < o._nanos } __le__(o) { this._nanos <= o._nanos } __eq__(o) { this._nanos == o._nanos } }; class Instant { new(nanos) { this._nanos = nanos } iso(utc = true) { _Time.iso_nanos(this._nanos, utc) } format(fmt, utc = false) { _Time.format_nanos(this._nanos, fmt, utc) } parts(utc = false) { _Time.parts_nanos(this._nanos, utc) } weekday(utc = false) { _Time.weekday_nanos(this._nanos, utc) } add(years = 0, months = 0, days = 0, hours = 0, minutes = 0, seconds = 0, utc = false) { Instant.new(_Time.add_nanos(this._nanos, years, months, days, hours, minutes, seconds, utc)) } start_of(unit, utc = false) { Instant.new(_Time.start_of_nanos(this._nanos, unit, utc)) } unix() { to_float(this._nanos) / 1000000000.0 } unix_nanos() { this._nanos } __add__(o) { Instant.new(this._nanos + o._nanos) } __sub__(o) { match o { d: Duration => Instant.new(this._nanos - d._nanos), i: Instant  => Duration.new(this._nanos - i._nanos) } } __lt__(o) { this._nanos < o._nanos } __le__(o) { this._nanos <= o._nanos } __eq__(o) { this._nanos == o._nanos } }; { now: fn() { Instant.new(_Time.now_nanos()) }, monotonic: fn() { _Time.monotonic() }, sleep: fn(secs) { _Time.sleep(secs) }, from_iso: fn(s) { Instant.new(_Time.from_iso_nanos(s)) }, from_unix: fn(secs) { Instant.new(to_long(to_float(secs) * 1000000000.0)) }, from_parts: fn(p, utc = false) { Instant.new(_Time.from_parts_nanos(p, utc)) }, parse: fn(s, fmt) { Instant.new(_Time.parse_nanos(s, fmt)) }, seconds: fn(n) { Duration.new(to_long(to_float(n) * 1000000000.0)) }, milliseconds: fn(n) { Duration.new(to_long(to_float(n) * 1000000.0)) }, minutes: fn(n) { Duration.new(to_long(to_float(n) * 60000000000.0)) }, hours: fn(n) { Duration.new(to_long(to_float(n) * 3600000000000.0)) }, days: fn(n) { Duration.new(to_long(to_float(n) * 86400000000000.0)) }, Instant: Instant, Duration: Duration } }; let Time = _time_module()
+inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = fn () { class Duration { new(nanos) { self._nanos = nanos } seconds() { to_float(self._nanos) / 1000000000.0 } milliseconds() { to_float(self._nanos) / 1000000.0 } minutes() { self.seconds() / 60.0 } hours() { self.seconds() / 3600.0 } days() { self.seconds() / 86400.0 } abs() { if self._nanos < 0 { Duration.new(-self._nanos) } else { Duration.new(self._nanos) } } __add__(o) { Duration.new(self._nanos + o._nanos) } __sub__(o) { Duration.new(self._nanos - o._nanos) } __mul__(n) { Duration.new(to_long(to_float(self._nanos) * to_float(n))) } __div__(n) { Duration.new(to_long(to_float(self._nanos) / to_float(n))) } __neg__() { Duration.new(-self._nanos) } __lt__(o) { self._nanos < o._nanos } __le__(o) { self._nanos <= o._nanos } __eq__(o) { self._nanos == o._nanos } }; class Instant { new(nanos) { self._nanos = nanos } iso(utc = true) { _Time.iso_nanos(self._nanos, utc) } format(fmt, utc = false) { _Time.format_nanos(self._nanos, fmt, utc) } parts(utc = false) { _Time.parts_nanos(self._nanos, utc) } weekday(utc = false) { _Time.weekday_nanos(self._nanos, utc) } add(years = 0, months = 0, days = 0, hours = 0, minutes = 0, seconds = 0, utc = false) { Instant.new(_Time.add_nanos(self._nanos, years, months, days, hours, minutes, seconds, utc)) } start_of(unit, utc = false) { Instant.new(_Time.start_of_nanos(self._nanos, unit, utc)) } unix() { to_float(self._nanos) / 1000000000.0 } unix_nanos() { self._nanos } __add__(o) { Instant.new(self._nanos + o._nanos) } __sub__(o) { match o { d: Duration => Instant.new(self._nanos - d._nanos), i: Instant  => Duration.new(self._nanos - i._nanos) } } __lt__(o) { self._nanos < o._nanos } __le__(o) { self._nanos <= o._nanos } __eq__(o) { self._nanos == o._nanos } }; { now: fn() { Instant.new(_Time.now_nanos()) }, monotonic: fn() { _Time.monotonic() }, sleep: fn(secs) { _Time.sleep(secs) }, from_iso: fn(s) { Instant.new(_Time.from_iso_nanos(s)) }, from_unix: fn(secs) { Instant.new(to_long(to_float(secs) * 1000000000.0)) }, from_parts: fn(p, utc = false) { Instant.new(_Time.from_parts_nanos(p, utc)) }, parse: fn(s, fmt) { Instant.new(_Time.parse_nanos(s, fmt)) }, seconds: fn(n) { Duration.new(to_long(to_float(n) * 1000000000.0)) }, milliseconds: fn(n) { Duration.new(to_long(to_float(n) * 1000000.0)) }, minutes: fn(n) { Duration.new(to_long(to_float(n) * 60000000000.0)) }, hours: fn(n) { Duration.new(to_long(to_float(n) * 3600000000000.0)) }, days: fn(n) { Duration.new(to_long(to_float(n) * 86400000000000.0)) }, Instant: Instant, Duration: Duration } }; let Time = _time_module()
 )=culpre=";
 
 inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(
@@ -161,7 +161,7 @@ let _term_module = fn () {
   # occupy two cells. Glyph and style are kept in parallel arrays so reuse
   # stays alloc-free (see clear()).
   class Screen {
-    new() { this._w = 0; this._h = 0; this._back = []; this._front = []; this._bstyle = []; this._fstyle = [] }
+    new() { self._w = 0; self._h = 0; self._back = []; self._front = []; self._bstyle = []; self._fstyle = [] }
     cols() { _Term.cols() }
     rows() { _Term.rows() }
     size() { (_Term.cols(), _Term.rows()) }
@@ -169,68 +169,68 @@ let _term_module = fn () {
       let w = _Term.cols()
       let h = _Term.rows()
       let n = w * h
-      this._w = w
-      this._h = h
+      self._w = w
+      self._h = h
       # Reuse the buffers on the common path (size unchanged); only reallocate
       # when the terminal was resized.
-      if this._back.size() == n {
+      if self._back.size() == n {
         mut i = 0
-        while i < n { this._back[i] = " "; this._bstyle[i] = ""; i = i + 1 }
+        while i < n { self._back[i] = " "; self._bstyle[i] = ""; i = i + 1 }
       } else {
-        this._back = []
-        this._bstyle = []
-        for _ in 0..n { this._back.push(" "); this._bstyle.push("") }
+        self._back = []
+        self._bstyle = []
+        for _ in 0..n { self._back.push(" "); self._bstyle.push("") }
       }
-      this
+      self
     }
     set(x, y, g, style = "") {
       let gs = to_string(g)   # graphemes()/slices yield StringView
-      if x >= 0 && x < this._w && y >= 0 && y < this._h {
-        let idx = y * this._w + x
-        this._back[idx] = gs
-        this._bstyle[idx] = style
-        if _Term.width(gs) == 2 && x + 1 < this._w { this._back[idx + 1] = ""; this._bstyle[idx + 1] = style }
+      if x >= 0 && x < self._w && y >= 0 && y < self._h {
+        let idx = y * self._w + x
+        self._back[idx] = gs
+        self._bstyle[idx] = style
+        if _Term.width(gs) == 2 && x + 1 < self._w { self._back[idx + 1] = ""; self._bstyle[idx + 1] = style }
       }
-      this
+      self
     }
     put(x, y, s, style = "") {
       mut cx = x
       for g in s.graphemes() {
-        this.set(cx, y, to_string(g), style)
+        self.set(cx, y, to_string(g), style)
         # set() marks the next cell "" for a wide glyph; reuse that instead of
         # measuring the width again.
-        let wide = cx + 1 < this._w && this._back[cx + 1] == ""
+        let wide = cx + 1 < self._w && self._back[cx + 1] == ""
         cx = cx + (if wide { 2 } else { 1 })
       }
-      this
+      self
     }
     # Minimal escape string to turn the displayed frame into the built one;
     # updates the front buffer. Empty when nothing changed. Returned (not
     # printed) so it is testable; flush() prints it.
     render() {
-      let n = this._w * this._h
+      let n = self._w * self._h
       mut out = ""
-      if this._front.size() != n {
-        this._front = []
-        this._fstyle = []
-        for _ in 0..n { this._front.push("\x00"); this._fstyle.push("") }   # force a full repaint
+      if self._front.size() != n {
+        self._front = []
+        self._fstyle = []
+        for _ in 0..n { self._front.push("\x00"); self._fstyle.push("") }   # force a full repaint
         out = "\x1b[2J"                                                     # wipe stale content
       }
       mut cy = -1
       mut cx = -1
       mut pen = ""   # SGR currently applied at the terminal ("" = default)
       mut y = 0
-      while y < this._h {
+      while y < self._h {
         mut x = 0
-        while x < this._w {
-          let idx = y * this._w + x
-          let back = this._back[idx]
+        while x < self._w {
+          let idx = y * self._w + x
+          let back = self._back[idx]
           if back == "" {
-            this._front[idx] = ""
-            this._fstyle[idx] = this._bstyle[idx]
+            self._front[idx] = ""
+            self._fstyle[idx] = self._bstyle[idx]
           } else {
-            let st = this._bstyle[idx]
-            if back != this._front[idx] || st != this._fstyle[idx] {
+            let st = self._bstyle[idx]
+            if back != self._front[idx] || st != self._fstyle[idx] {
               if cy != y || cx != x { out = out + "\x1b[" + to_string(y + 1) + ";" + to_string(x + 1) + "H" }
               if st != pen {
                 out = out + "\x1b[0m"
@@ -238,15 +238,15 @@ let _term_module = fn () {
                 pen = st
               }
               out = out + back
-              this._front[idx] = back
-              this._fstyle[idx] = st
+              self._front[idx] = back
+              self._fstyle[idx] = st
               # Advance the tracked cursor by the glyph's real display width, the
               # same measure set() uses to blank the continuation cell. Keying off
               # the neighbour cell instead under-counts when overlapping draws have
               # since filled it, drifting cx and stranding a later cell's erase.
-              let wide = x + 1 < this._w && _Term.width(back) == 2
+              let wide = x + 1 < self._w && _Term.width(back) == 2
               cy = y
-              if wide { cx = x + 2; this._front[idx + 1] = ""; this._fstyle[idx + 1] = st } else { cx = x + 1 }
+              if wide { cx = x + 2; self._front[idx + 1] = ""; self._fstyle[idx + 1] = st } else { cx = x + 1 }
             }
           }
           x = x + 1
@@ -256,7 +256,7 @@ let _term_module = fn () {
       if pen != "" { out = out + "\x1b[0m" }   # leave the terminal at default
       out
     }
-    flush() { IO.print(this.render()); _Term.flush(); this }
+    flush() { IO.print(self.render()); _Term.flush(); self }
     poll(timeout) { _poll(timeout) }
   }
   {
@@ -331,20 +331,20 @@ let _canvas_module = fn () {
   class Sprite {
     new(pixels, w, h, palette = nil) {
       let rgba_px = if palette == nil { pixels } else { pixels.map(|i| palette[i]) }
-      this._id = _Canvas.sprite_load(rgba_px, w, h)
-      this._w = w
-      this._h = h
+      self._id = _Canvas.sprite_load(rgba_px, w, h)
+      self._w = w
+      self._h = h
     }
-    width() { this._w }
-    height() { this._h }
+    width() { self._w }
+    height() { self._h }
     # Blit the whole sprite to (x, y). flip_x/flip_y mirror; transpose swaps
     # X/Y. Transparent (alpha 0) pixels are skipped.
     draw(x, y, flip_x = false, flip_y = false, transpose = false) {
-      _Canvas.blit(this._id, x, y, 0, 0, this._w, this._h, _blit_flags(flip_x, flip_y, transpose))
+      _Canvas.blit(self._id, x, y, 0, 0, self._w, self._h, _blit_flags(flip_x, flip_y, transpose))
     }
     # Blit a sub-rectangle (sx, sy, sw, sh) of the sprite to (x, y) — for sheets.
     draw_sub(x, y, sx, sy, sw, sh, flip_x = false, flip_y = false, transpose = false) {
-      _Canvas.blit(this._id, x, y, sx, sy, sw, sh, _blit_flags(flip_x, flip_y, transpose))
+      _Canvas.blit(self._id, x, y, sx, sy, sw, sh, _blit_flags(flip_x, flip_y, transpose))
     }
   }
 
@@ -417,10 +417,10 @@ let _canvas_module = fn () {
   # on the frame a button goes down (the natural "flap" trigger). Call update()
   # once per frame, after reading input.
   class Input {
-    new() { this._prev = 0; this._cur = 0 }
-    update() { this._prev = this._cur; this._cur = _Canvas.buttons(); this }
-    down(btn) { (this._cur & btn) != 0 }                       # held now
-    pressed(btn) { (this._cur & btn) != 0 && (this._prev & btn) == 0 }  # just went down
+    new() { self._prev = 0; self._cur = 0 }
+    update() { self._prev = self._cur; self._cur = _Canvas.buttons(); self }
+    down(btn) { (self._cur & btn) != 0 }                       # held now
+    pressed(btn) { (self._cur & btn) != 0 && (self._prev & btn) == 0 }  # just went down
   }
 
   # --- audio --------------------------------------------------------------
@@ -505,7 +505,7 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
 inline constexpr const char* MATCHERS_MODULE_SOURCE = R"=culpre=(let assert_true = fn(x) { if x { return nil }; throw {kind: "AssertionError", message: "assert_true failed:\n  value: {x}"} }; let assert_false = fn(x) { if !x { return nil }; throw {kind: "AssertionError", message: "assert_false failed:\n  value: {x}"} }; let assert_eq = fn(a, b) { if a == b { return nil }; throw {kind: "AssertionError", message: "assert_eq failed:\n  left:  {a}\n  right: {b}"} }; let assert_ne = fn(a, b) { if a != b { return nil }; throw {kind: "AssertionError", message: "assert_ne failed:\n  left:  {a}\n  right: {b}"} }; let assert_lt = fn(a, b) { if a < b { return nil }; throw {kind: "AssertionError", message: "assert_lt failed:\n  left:  {a}\n  right: {b}"} }; let assert_le = fn(a, b) { if a <= b { return nil }; throw {kind: "AssertionError", message: "assert_le failed:\n  left:  {a}\n  right: {b}"} }; let assert_gt = fn(a, b) { if a > b { return nil }; throw {kind: "AssertionError", message: "assert_gt failed:\n  left:  {a}\n  right: {b}"} }; let assert_ge = fn(a, b) { if a >= b { return nil }; throw {kind: "AssertionError", message: "assert_ge failed:\n  left:  {a}\n  right: {b}"} }; let assert_throws = fn(kind, f) { if f.params.size() != 0 { throw {kind: "ArityError", message: "assert_throws: fn must take 0 parameters (got {f.params.size()})"} }; let mut threw = false; let mut actual_kind = ""; try { f() } catch e { threw = true; actual_kind = if type_of(e) == "Object" && e.has("kind") { e.kind } else { type_of(e) } }; if !threw { throw {kind: "AssertionError", message: "assert_throws('{kind}', fn): expected throw but fn returned normally"} }; if actual_kind != kind { throw {kind: "AssertionError", message: "assert_throws: expected kind '{kind}' but got '{actual_kind}'"} } }; let assert_close = fn(a, b, tol) { let mut diff = a - b; if diff < 0 { diff = -diff }; if diff != diff || tol != tol || diff > tol { throw {kind: "AssertionError", message: "assert_close failed:\n  a:    {a}\n  b:    {b}\n  diff: {diff} (> tol {tol})"} } }
 )=culpre=";
 
-inline constexpr const char* REGEX_MODULE_SOURCE = R"=culpre=(fn _regex_find_iter(pat, s) { let mut pos = 0; while pos <= s.size() { let r = _Regex.find_from(pat, s, pos); if r.m == nil { return }; yield r.m; pos = r.nxt } }; fn _regex_escape(s) { let metas = `\.^$|?*+()[]{}`; let mut out = ""; for c in s { if metas.contains(c) { out = out + `\` + c } else { out = out + c } }; out }; fn _regex_interp(x) { if type_of(x) == "Object" && x.has("class") && x["class"] == "Regex" { "(?:" + x._pat + ")" } else { _regex_escape("{x}") } }; let _regex_module = fn () { class Regex { new(pattern) { this._pat = pattern; _Regex.check(pattern) } test(s) { _Regex.test(this._pat, s) } find(s) { _Regex.find(this._pat, s) } match(s) { _Regex.match(this._pat, s) } find_all(s) { _Regex.find_all(this._pat, s) } find_all_str(s) { _Regex.find_all_str(this._pat, s) } find_all_index(s) { _Regex.find_all_index(this._pat, s) } count(s) { _Regex.count(this._pat, s) } find_iter(s) { _regex_find_iter(this._pat, s) } replace_all(s, repl) { if type_of(repl) != "Function" { return _Regex.replace_all(this._pat, s, repl) }; let mut out = ""; let mut last = 0; for m in _Regex.find_all(this._pat, s) { out = out + s.slice(last, m.start) + repl(m); last = m.end }; out + s.slice(last, s.size()) } split(s) { _Regex.split(this._pat, s) } }; { compile: fn(pattern, flags = "") { Regex.new(if flags == "" { pattern } else { "(?" + flags + ")" + pattern }) }, escape: _regex_escape, interp: _regex_interp, find: fn(pattern, s) { _Regex.find(pattern, s) }, match: fn(pattern, s) { _Regex.match(pattern, s) }, find_all: fn(pattern, s) { _Regex.find_all(pattern, s) }, test: fn(pattern, s) { _Regex.test(pattern, s) }, split: fn(pattern, s) { _Regex.split(pattern, s) }, replace_all: fn(pattern, s, repl) { Regex.new(pattern).replace_all(s, repl) }, Regex: Regex } }; let Regex = _regex_module()
+inline constexpr const char* REGEX_MODULE_SOURCE = R"=culpre=(fn _regex_find_iter(pat, s) { let mut pos = 0; while pos <= s.size() { let r = _Regex.find_from(pat, s, pos); if r.m == nil { return }; yield r.m; pos = r.nxt } }; fn _regex_escape(s) { let metas = `\.^$|?*+()[]{}`; let mut out = ""; for c in s { if metas.contains(c) { out = out + `\` + c } else { out = out + c } }; out }; fn _regex_interp(x) { if type_of(x) == "Object" && x.has("class") && x["class"] == "Regex" { "(?:" + x._pat + ")" } else { _regex_escape("{x}") } }; let _regex_module = fn () { class Regex { new(pattern) { self._pat = pattern; _Regex.check(pattern) } test(s) { _Regex.test(self._pat, s) } find(s) { _Regex.find(self._pat, s) } match(s) { _Regex.match(self._pat, s) } find_all(s) { _Regex.find_all(self._pat, s) } find_all_str(s) { _Regex.find_all_str(self._pat, s) } find_all_index(s) { _Regex.find_all_index(self._pat, s) } count(s) { _Regex.count(self._pat, s) } find_iter(s) { _regex_find_iter(self._pat, s) } replace_all(s, repl) { if type_of(repl) != "Function" { return _Regex.replace_all(self._pat, s, repl) }; let mut out = ""; let mut last = 0; for m in _Regex.find_all(self._pat, s) { out = out + s.slice(last, m.start) + repl(m); last = m.end }; out + s.slice(last, s.size()) } split(s) { _Regex.split(self._pat, s) } }; { compile: fn(pattern, flags = "") { Regex.new(if flags == "" { pattern } else { "(?" + flags + ")" + pattern }) }, escape: _regex_escape, interp: _regex_interp, find: fn(pattern, s) { _Regex.find(pattern, s) }, match: fn(pattern, s) { _Regex.match(pattern, s) }, find_all: fn(pattern, s) { _Regex.find_all(pattern, s) }, test: fn(pattern, s) { _Regex.test(pattern, s) }, split: fn(pattern, s) { _Regex.split(pattern, s) }, replace_all: fn(pattern, s, repl) { Regex.new(pattern).replace_all(s, repl) }, Regex: Regex } }; let Regex = _regex_module()
 )=culpre=";
 
 inline constexpr const char* STRING_REPLACE_MODULE_SOURCE = R"=culpre=(let replace = fn(s, pat, repl) { if type_of(pat) == "String" { s.split(pat).join(repl) } else { pat.replace_all(s, repl) } }
@@ -571,16 +571,16 @@ let _path_module = fn() {
     else { throw {kind: "TypeError", message: "type error: expected String|Path, got {t}"} }
   }
   class Path {
-    new(p) { this._path = _s(p) }
+    new(p) { self._path = _s(p) }
 
     # --- display / conversion ---
-    __str__() { this._path }         # "{p}" and to_string(p) yield the raw path
-    str() { this._path }             # explicit String escape hatch
+    __str__() { self._path }         # "{p}" and to_string(p) yield the raw path
+    str() { self._path }             # explicit String escape hatch
     # equal only to a String/StringView or another Path with the same path;
     # any other type is simply not-equal (never a TypeError).
     __eq__(o) {
-      if type_of(o) == "String" || type_of(o) == "StringView" { this._path == o }
-      else if _is_path(o) { this._path == to_string(o) }
+      if type_of(o) == "String" || type_of(o) == "StringView" { self._path == o }
+      else if _is_path(o) { self._path == to_string(o) }
       else { false }
     }
     # Order paths by their normalized inner string, so a Path array sorts and
@@ -589,40 +589,40 @@ let _path_module = fn() {
     # TypeError, not a silent false, since an ordering has no meaningful answer
     # there. `<=`/`>`/`>=` fall out of `__lt__` + `__eq__` via the backends'
     # comparison derivation. Raw (not resolved) to stay consistent with __eq__.
-    __lt__(o) { this._path < _s(o) }
+    __lt__(o) { self._path < _s(o) }
 
     # --- joining: `base / "sub" / "leaf"` ---
-    join(o) { Path.new(FS.join(this._path, _s(o))) }
-    __div__(o) { this.join(o) }
+    join(o) { Path.new(FS.join(self._path, _s(o))) }
+    __div__(o) { self.join(o) }
 
     # --- path components (String, mirroring FS.*) ---
     # Pure, total, O(1) string derivations, so they read as properties
     # (`p.name`, `p.parent`) — no parens. `p.name()` still works too. The
     # filesystem ops below stay methods: they do I/O and can throw.
-    get name() { FS.basename(this._path) }    # final component, e.g. "content.js"
-    get stem() { FS.stem(this._path) }        # final component without suffix
-    get suffix() { FS.extension(this._path) } # extension incl. dot, e.g. ".js"
-    get parent() { Path.new(FS.dirname(this._path)) }
+    get name() { FS.basename(self._path) }    # final component, e.g. "content.js"
+    get stem() { FS.stem(self._path) }        # final component without suffix
+    get suffix() { FS.extension(self._path) } # extension incl. dot, e.g. ".js"
+    get parent() { Path.new(FS.dirname(self._path)) }
 
     # --- queries ---
-    exists() { FS.exists(this._path) }
-    is_file() { FS.is_file(this._path) }
-    is_dir() { FS.is_dir(this._path) }
+    exists() { FS.exists(self._path) }
+    is_file() { FS.is_file(self._path) }
+    is_dir() { FS.is_dir(self._path) }
 
     # --- filesystem ops (delegate to FS) ---
-    read() { FS.read(this._path) }
-    write(content) { FS.write(this._path, content) }
-    mkdir() { FS.mkdir(this._path) }               # creates parents (FS.mkdir does)
-    remove(recursive = false) { FS.remove(this._path, recursive: recursive) }
-    rename(dst) { FS.rename(this._path, _s(dst)); Path.new(_s(dst)) }
+    read() { FS.read(self._path) }
+    write(content) { FS.write(self._path, content) }
+    mkdir() { FS.mkdir(self._path) }               # creates parents (FS.mkdir does)
+    remove(recursive = false) { FS.remove(self._path, recursive: recursive) }
+    rename(dst) { FS.rename(self._path, _s(dst)); Path.new(_s(dst)) }
 
     # --- normalization ---
-    resolve() { Path.new(FS.abspath(this._path)) }
+    resolve() { Path.new(FS.abspath(self._path)) }
 
     # --- directory listing / globbing (return Path, so chains stay Path) ---
-    list() { FS.list_dir(this._path).map(fn(e) { Path.new(FS.join(this._path, e)) }) }
-    glob(pattern) { FS.glob(FS.join(this._path, pattern)).map(fn(p) { Path.new(p) }) }
-    walk() { FS.walk(this._path).map(fn(p) { Path.new(p) }) }
+    list() { FS.list_dir(self._path).map(fn(e) { Path.new(FS.join(self._path, e)) }) }
+    glob(pattern) { FS.glob(FS.join(self._path, pattern)).map(fn(p) { Path.new(p) }) }
+    walk() { FS.walk(self._path).map(fn(p) { Path.new(p) }) }
   }
   Path
 }

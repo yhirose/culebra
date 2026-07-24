@@ -1165,9 +1165,9 @@ computation オブジェクトとドライバは return-tag プロトコルを�
 各 `_step(rv)` は、何が起きたかをドライバへ伝えるタグを返します。
 
 ```
-0 = DONE      this._eff_val に computation の結果が入る
-1 = SUSPEND   this._eff_op / this._eff_args が perform を表す
-2 = DELEGATE  this._eff_delegate が driving 対象のサブ computation
+0 = DONE      self._eff_val に computation の結果が入る
+1 = SUSPEND   self._eff_op / self._eff_args が perform を表す
+2 = DELEGATE  self._eff_delegate が driving 対象のサブ computation
 ```
 
 2 つの構文は変換時に — 対称的に、どのバックエンドも誤コンパイルしない

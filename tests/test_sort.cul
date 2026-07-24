@@ -34,10 +34,10 @@ assert_eq([].sort(), nil)
 assert_eq([3, 1, 2].sorted().join(","), "1,2,3")
 
 // --- Object with cmp (Comparable) orders by cmp; __lt__ takes precedence ---
-class Money { new(c) { this.c = c } cmp(o) { this.c - o.c } }
+class Money { new(c) { self.c = c } cmp(o) { self.c - o.c } }
 assert_eq([Money.new(3), Money.new(1), Money.new(2)].sorted().map(fn (m) { m.c }),
           [1, 2, 3])
-class Rank { new(n) { this.n = n } __lt__(o) { this.n < o.n } }
+class Rank { new(n) { self.n = n } __lt__(o) { self.n < o.n } }
 assert_eq([Rank.new(2), Rank.new(1)].sorted().map(fn (r) { r.n }), [1, 2])
 
 // --- incomparable elements throw, like `a < b` ---

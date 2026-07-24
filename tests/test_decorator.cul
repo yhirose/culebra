@@ -61,7 +61,7 @@ let mark = fn(cls) {
 
 @mark
 class Point {
-  new(x, y) { this.x = x; this.y = y }
+  new(x, y) { self.x = x; self.y = y }
 }
 
 assert_eq(Point.marked, true)

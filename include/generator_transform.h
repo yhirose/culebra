@@ -16,7 +16,7 @@
 //
 // The body is lowered by a flat-dispatch CPS state machine (see
 // `CpsBuilder`): each basic block becomes a state, control flow becomes
-// `this._g_state = K; continue` jumps over one `while true` dispatch
+// `self._g_state = K; continue` jumps over one `while true` dispatch
 // loop, and every local lives on the instance (all-locals-on-heap, so no
 // liveness analysis). Two source-level pre-passes run first: the C# rule
 // rejects yield inside try-catch/defer, and yielding for-in loops are
@@ -182,20 +182,20 @@ inline std::string_view strip_block_braces(std::string_view s) {
   return s;
 }
 
-// Rewrite every standalone `<name>` in `src` to `this.<name>` for each
+// Rewrite every standalone `<name>` in `src` to `self.<name>` for each
 // name in `names`, then strip `let `/`mut ` prefixes that now sit in
-// front of `this.X` (assignment, no longer declaration).
+// front of `self.X` (assignment, no longer declaration).
 //
 // The match requires the identifier NOT be preceded by `.` — so a
 // member access like `arr.size()` is left alone even when a local/param
 // is named `size`. Without this, `\bsize\b` rewrote the `.size()` method
-// name to `arr.this.size()`, producing malformed source (a parser crash
+// name to `arr.self.size()`, producing malformed source (a parser crash
 // for any generator whose binding collides with a builtin method like
 // size / push / keys). The same `.`-exclusion also prevents re-rewriting
-// the `this.` prefixes this pass just inserted. The `..` range operator is
+// the `self.` prefixes this pass just inserted. The `..` range operator is
 // exempted from that exclusion: `0..n`'s `n` is an operand, not a member,
 // so a range bound naming a local/param (`for i in 0..n`, desugared to
-// `(0..n).iter()`) must still be rewritten to `0..this.n`. String-literal
+// `(0..n).iter()`) must still be rewritten to `0..self.n`. String-literal
 // content and comments (line `#`/`//`, block `/* … */`) are skipped by
 // `rewrite_outside_strings` below, so a local name appearing there as literal
 // text is never rewritten.
@@ -308,7 +308,7 @@ inline std::string rewrite_outside_strings(
 // verbatim slices carry it, synthesized lines simply lack one. After the FINAL
 // fragment parse, `marker_line_map` reads the markers back and
 // `reposition_ast` rebuilds the AST with original line numbers (columns stay
-// fragment-relative — approximate, since `this.` insertion shifts them).
+// fragment-relative — approximate, since `self.` insertion shifts them).
 // Synthesized machinery lines fall back to the construct's declaration line.
 
 // The marker token. Deliberately verbose so a user comment ending in a bare
@@ -548,13 +548,13 @@ inline std::string next_fragment_label(const char* stem) {
   return std::format("<{}#{}>", stem, counter++);
 }
 
-inline std::string rewrite_locals_to_this(std::string_view src,
+inline std::string rewrite_locals_to_self(std::string_view src,
                                           const std::set<std::string>& names) {
   // The two declaration-strip patterns are name-independent — hoist
   // them to file scope so each Stage 2 transform doesn't recompile
   // them. `std::regex` construction is the famously expensive part.
-  static const std::regex strip_let_this(R"(\blet\s+this\.)");
-  static const std::regex strip_mut_this(R"(\bmut\s+this\.)");
+  static const std::regex strip_let_self(R"(\blet\s+self\.)");
+  static const std::regex strip_mut_self(R"(\bmut\s+self\.)");
   std::vector<std::string> sorted(names.begin(), names.end());
   std::sort(sorted.begin(), sorted.end(),
             [](const auto& a, const auto& b) { return a.size() > b.size(); });
@@ -563,7 +563,7 @@ inline std::string rewrite_locals_to_this(std::string_view src,
   // above); the patterns are name-dependent so they can't be file-scope static.
   // Group 1 captures the boundary (start-of-string, the `..` range operator, or
   // any byte that is neither `.` nor an identifier char) so it can be restored
-  // ahead of the inserted `this.`. `..` is listed before the single-char class
+  // ahead of the inserted `self.`. `..` is listed before the single-char class
   // so a range bound is matched as an operand rather than a member access on
   // its second dot.
   std::vector<std::regex> pats;
@@ -576,10 +576,10 @@ inline std::string rewrite_locals_to_this(std::string_view src,
   auto rewrite_code = [&](std::string_view code) -> std::string {
     std::string out(code);
     for (size_t k = 0; k < sorted.size(); k++) {
-      out = std::regex_replace(out, pats[k], "$1this." + sorted[k]);
+      out = std::regex_replace(out, pats[k], "$1self." + sorted[k]);
     }
-    out = std::regex_replace(out, strip_let_this, "this.");
-    out = std::regex_replace(out, strip_mut_this, "this.");
+    out = std::regex_replace(out, strip_let_self, "self.");
+    out = std::regex_replace(out, strip_mut_self, "self.");
     return out;
   };
   return rewrite_outside_strings(src, rewrite_code);
@@ -594,7 +594,7 @@ inline std::set<std::string> collect_local_names(const peg::Ast& body) {
   std::function<void(const peg::Ast&)> walk = [&](const peg::Ast& n) {
     // A nested `handle` opens its own computation scope; its locals belong to
     // that inner computation, not this one (they must not be rewritten to this
-    // instance's `this.`). Generators carry no HANDLE, so this is a no-op there.
+    // instance's `self.`). Generators carry no HANDLE, so this is a no-op there.
     if (is_fn_boundary(n.tag) || n.tag == "HANDLE"_) return;
     if (n.tag == "ASSIGNMENT"_) {
       auto av = view_assignment(n);
@@ -796,7 +796,7 @@ inline bool swap_body_with_wrapper_params(
 }
 
 // Wire the generated class's `new(_p0, _p1, ...)` slot list and append
-// matching `this.<param> = _pN` initializers, then `this.<local> = nil`
+// matching `self.<param> = _pN` initializers, then `self.<local> = nil`
 // for every body-declared local not shadowed by a param. Shared between
 // Stage 3 and Stage 6b — both stages seed `ctor_inits` with their own
 // state-field prefix (`_g_drained` / `_g_phase` / etc.) before calling
@@ -831,12 +831,12 @@ inline void emit_ctor_param_and_local_inits(
     }
     ctor_params += slot;
     ctor_call_args += pn;
-    ctor_inits += std::format("      this.{} = {}\n", pn, slot);
+    ctor_inits += std::format("      self.{} = {}\n", pn, slot);
     param_set.insert(std::move(pn));
   }
   for (const auto& l : locals) {
     if (!param_set.contains(l)) {
-      ctor_inits += std::format("      this.{} = nil\n", l);
+      ctor_inits += std::format("      self.{} = nil\n", l);
     }
   }
 }
@@ -846,10 +846,10 @@ inline void emit_ctor_param_and_local_inits(
 // Linearizes a generator body into a flat list of states. Each state is a
 // culebra statement sequence ending in a transition: a yield (set
 // lookahead, advance state, `return true`), a delegate hand-off
-// (`yield from`), or a `this._g_state = K; continue` jump. has_next() is
+// (`yield from`), or a `self._g_state = K; continue` jump. has_next() is
 // one `while true` dispatch loop over the states. Because culebra's yield
 // is a STATEMENT (never an expression) and locals live on the heap
-// (this.X), the linearizer works statement-by-statement with no
+// (self.X), the linearizer works statement-by-statement with no
 // expression splitting and no liveness analysis; "flat" dispatch (every
 // basic block is a state, edges set a counter) sidesteps the relooper
 // problem of reconstructing structured loops. See
@@ -905,7 +905,7 @@ struct CpsBuilder {
     return static_cast<int>(states.size()) - 1;
   }
   std::string rw(const peg::Ast& n) {
-    return rewrite_locals_to_this(ast_source_slice(n, src, src_len),
+    return rewrite_locals_to_self(ast_source_slice(n, src, src_len),
                                   rewrite_set);
   }
   LineMarkers markers{{src, src_len}};
@@ -913,7 +913,7 @@ struct CpsBuilder {
   // A fresh state that just jumps to `target` (break/continue/return).
   int jump_state(int target) {
     int e = fresh();
-    states[e] = std::format("      this._g_state = {}\n      continue\n",
+    states[e] = std::format("      self._g_state = {}\n      continue\n",
                             target);
     return e;
   }
@@ -938,7 +938,7 @@ struct CpsBuilder {
       if (pending.empty()) return;
       int s = fresh();
       states[s] = pending +
-                  std::format("      this._g_state = {}\n      continue\n", k);
+                  std::format("      self._g_state = {}\n      continue\n", k);
       k = s;
       pending.clear();
     };
@@ -962,9 +962,9 @@ struct CpsBuilder {
     if (u->tag == "YIELD"_ && !u->nodes.empty()) {
       int e = fresh();
       states[e] = std::format(
-          "      this._g_la = ({}){}\n"
-          "      this._g_has_la = true\n"
-          "      this._g_state = {}\n"
+          "      self._g_la = ({}){}\n"
+          "      self._g_has_la = true\n"
+          "      self._g_state = {}\n"
           "      return true\n",
           rw(*u->nodes[0]), mk(*u->nodes[0]), cont);
       return e;
@@ -972,8 +972,8 @@ struct CpsBuilder {
     if (u->tag == "YIELD_FROM"_ && !u->nodes.empty()) {
       int e = fresh();
       states[e] = std::format(
-          "      this._g_delegate = ({}).iter(){}\n"
-          "      this._g_state = {}\n"
+          "      self._g_delegate = ({}).iter(){}\n"
+          "      self._g_state = {}\n"
           "      continue\n",
           rw(*u->nodes[0]), mk(*u->nodes[0]), cont);
       return e;
@@ -993,12 +993,12 @@ struct CpsBuilder {
     if (u->tag == "DEFER"_ && !u->nodes.empty()) {
       // Register the defer body when reached; dispose runs it (LIFO).
       int k = static_cast<int>(defer_bodies.size());
-      defer_bodies.push_back(rewrite_locals_to_this(
+      defer_bodies.push_back(rewrite_locals_to_self(
           strip_block_braces(ast_source_slice(*u->nodes[0], src, src_len)),
           rewrite_set));
       int e = fresh();
       states[e] = std::format(
-          "      this._g_defer_{} = true\n      this._g_state = {}\n"
+          "      self._g_defer_{} = true\n      self._g_state = {}\n"
           "      continue\n",
           k, cont);
       return e;
@@ -1020,13 +1020,13 @@ struct CpsBuilder {
       loop_stack.pop_back();
       if (failed) return -1;
       states[h] = std::format(
-          "      if {} {{ this._g_state = {} }} else {{ this._g_state = {} }}{}\n"
+          "      if {} {{ self._g_state = {} }} else {{ self._g_state = {} }}{}\n"
           "      continue\n",
           rw(*wv.cond), body_entry, normal_exit, mk(*wv.cond));
       if (!wv.init) return h;
       // The init clause runs its bindings once, then enters the condition
       // state. They are yield-free declarations, so compile_seq emits them
-      // verbatim (locals rewritten to this._g_*) in a state that jumps to h.
+      // verbatim (locals rewritten to self._g_*) in a state that jumps to h.
       std::vector<const peg::Ast*> init_stmts;
       for (auto& b : wv.init->nodes) init_stmts.push_back(b.get());
       return compile_seq(init_stmts, h);
@@ -1062,7 +1062,7 @@ struct CpsBuilder {
       if (failed) return -1;
       int s = fresh();
       states[s] = std::format(
-          "      if {} {{ this._g_state = {} }} else {{ this._g_state = {} }}{}\n"
+          "      if {} {{ self._g_state = {} }} else {{ self._g_state = {} }}{}\n"
           "      continue\n",
           rw(*nodes[off + 2 * p]), block_entry, chain, mk(*nodes[off + 2 * p]));
       chain = s;
@@ -1096,22 +1096,22 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
   CpsBuilder b{src, src_len, rewrite_set, {}};
   b.terminal = b.fresh();
   b.states[b.terminal] =
-      "      this._g_drained = true\n      return false\n";
+      "      self._g_drained = true\n      return false\n";
   int entry = b.compile_seq(body_stmts(*ast->nodes.back()), b.terminal);
   if (b.failed || entry < 0) return ast;  // unsupported shape
 
   std::string ctor_params;
   std::string ctor_call_args;
   std::string ctor_inits = std::format(
-      "      this._g_drained = false\n"
-      "      this._g_has_la = false\n"
-      "      this._g_la = nil\n"
-      "      this._g_disposed = false\n"
-      "      this._g_delegate = nil\n"
-      "      this._g_state = {}\n",
+      "      self._g_drained = false\n"
+      "      self._g_has_la = false\n"
+      "      self._g_la = nil\n"
+      "      self._g_disposed = false\n"
+      "      self._g_delegate = nil\n"
+      "      self._g_state = {}\n",
       entry);
   for (size_t k = 0; k < b.defer_bodies.size(); k++) {
-    ctor_inits += std::format("      this._g_defer_{} = false\n", k);
+    ctor_inits += std::format("      self._g_defer_{} = false\n", k);
   }
   emit_ctor_param_and_local_inits(param_names, locals,
                                   ctor_params, ctor_call_args, ctor_inits);
@@ -1119,7 +1119,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
   std::string dispatch;
   for (size_t id = 0; id < b.states.size(); id++) {
     dispatch += std::format(
-        "      if this._g_state == {} {{\n{}      }}\n", id, b.states[id]);
+        "      if self._g_state == {} {{\n{}      }}\n", id, b.states[id]);
   }
 
   // Registered defers run LIFO at dispose, each gated on its reach flag.
@@ -1128,44 +1128,44 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
   std::string defer_runs;
   for (size_t k = 0; k < b.defer_bodies.size(); k++) {
     defer_runs += std::format(
-        "      if this._g_defer_{} {{ {} }}\n", k, b.defer_bodies[k]);
+        "      if self._g_defer_{} {{ {} }}\n", k, b.defer_bodies[k]);
   }
 
   auto synthesized = std::make_shared<std::string>(std::format(
       "fn __gen_wrapper__() {{\n"
       "  class {0} {{\n"
       "    new({1}) {{\n{2}    }}\n"
-      "    iter() {{ this }}\n"
+      "    iter() {{ self }}\n"
       "    has_next() {{\n"
       "      while true {{\n"
-      "        if this._g_drained {{ return false }}\n"
-      "        if this._g_has_la {{ return true }}\n"
-      "        if this._g_delegate != nil {{\n"
-      "          if this._g_delegate.has_next() {{\n"
-      "            this._g_la = this._g_delegate.next()\n"
-      "            this._g_has_la = true\n"
+      "        if self._g_drained {{ return false }}\n"
+      "        if self._g_has_la {{ return true }}\n"
+      "        if self._g_delegate != nil {{\n"
+      "          if self._g_delegate.has_next() {{\n"
+      "            self._g_la = self._g_delegate.next()\n"
+      "            self._g_has_la = true\n"
       "            return true\n"
       "          }}\n"
-      "          if this._g_delegate.has('dispose') {{ this._g_delegate.dispose() }}\n"
-      "          this._g_delegate = nil\n"
+      "          if self._g_delegate.has('dispose') {{ self._g_delegate.dispose() }}\n"
+      "          self._g_delegate = nil\n"
       "        }}\n"
       "{3}"
       "      }}\n"
       "    }}\n"
       "    next() {{\n"
-      "      if !this._g_has_la {{ this.has_next() }}\n"
-      "      let _v = this._g_la\n"
-      "      this._g_la = nil\n"
-      "      this._g_has_la = false\n"
+      "      if !self._g_has_la {{ self.has_next() }}\n"
+      "      let _v = self._g_la\n"
+      "      self._g_la = nil\n"
+      "      self._g_has_la = false\n"
       "      return _v\n"
       "    }}\n"
       "    dispose() {{\n"
-      "      if this._g_disposed {{ return nil }}\n"
-      "      this._g_disposed = true\n"
-      "      this._g_drained = true\n"
-      "      if this._g_delegate != nil {{\n"
-      "        if this._g_delegate.has('dispose') {{ this._g_delegate.dispose() }}\n"
-      "        this._g_delegate = nil\n"
+      "      if self._g_disposed {{ return nil }}\n"
+      "      self._g_disposed = true\n"
+      "      self._g_drained = true\n"
+      "      if self._g_delegate != nil {{\n"
+      "        if self._g_delegate.has('dispose') {{ self._g_delegate.dispose() }}\n"
+      "        self._g_delegate = nil\n"
       "      }}\n"
       "{5}"
       "    }}\n"

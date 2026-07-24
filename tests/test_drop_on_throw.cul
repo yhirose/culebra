@@ -5,8 +5,8 @@
 # guard. The test runner compares interp vs every JIT backend byte-for-byte.
 
 class Res {
-  new(id) { this.id = id }
-  drop() { print("drop " + this.id.to_string() + "\n") }
+  new(id) { self.id = id }
+  drop() { print("drop " + self.id.to_string() + "\n") }
 }
 
 # 1. simple: local dropped when the function throws

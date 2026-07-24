@@ -98,8 +98,8 @@ test_lambda = fn () {
   typed = |x: Long| x + 1
   assert_eq(typed(5), 6)
 
-  # `self` inside a lambda refers to the lambda itself.
-  fib = |n| if n < 2 { n } else { self(n - 1) + self(n - 2) }
+  # `fn` inside a lambda refers to the lambda itself.
+  fib = |n| if n < 2 { n } else { fn(n - 1) + fn(n - 2) }
   assert_eq(fib(10), 55)
 }
 
@@ -190,7 +190,7 @@ test_object = fn () {
   o = {
     n: 123,
     s: 'str',
-    f1: fn (x) { x + this.n },
+    f1: fn (x) { x + self.n },
     f2: fn (x) { x + n }
   }
   assert_eq(o.size(), 4)
@@ -606,7 +606,7 @@ test_fib = fn () {
     if x < 2 {
       x
     } else {
-      self(x - 2) + self(x -1)
+      fn(x - 2) + fn(x -1)
     }
   }
 
@@ -887,8 +887,8 @@ test_drop = fn () {
   // `drop` declared as a class-sugar method.
   events = []
   class CSDrop {
-    new(id) { this.id = id }
-    drop()  { events.push(this.id) }
+    new(id) { self.id = id }
+    drop()  { events.push(self.id) }
   }
   {
     let _r = CSDrop.new('cs1')
@@ -1187,22 +1187,22 @@ test_special_method_ops = fn () {
       v: v,
       __add__: fn (r) {
         match r {
-          n: Long => this.v + n,
-          _       => this.v + r.v
+          n: Long => self.v + n,
+          _       => self.v + r.v
         }
       },
       __mul__: fn (r) {
         match r {
-          n: Long => this.v * n,
-          _       => this.v * r.v
+          n: Long => self.v * n,
+          _       => self.v * r.v
         }
       },
-      __sub__: fn (r) { this.v - r.v },
-      __neg__: fn ()  { -this.v },
-      __pow__: fn (e) { this.v ** e.v },
-      __matmul__: fn (r) { this.v * r.v + 1 },
-      __eq__:  fn (r) { this.v == r.v },
-      __lt__:  fn (r) { this.v <  r.v }
+      __sub__: fn (r) { self.v - r.v },
+      __neg__: fn ()  { -self.v },
+      __pow__: fn (e) { self.v ** e.v },
+      __matmul__: fn (r) { self.v * r.v + 1 },
+      __eq__:  fn (r) { self.v == r.v },
+      __lt__:  fn (r) { self.v <  r.v }
     }
   }
   a = make_box(3)

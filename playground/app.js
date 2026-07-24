@@ -137,10 +137,10 @@ tick(); tick()
 print("counter says = {tick()}\\n")
 `,
   "Classes & operators": `class Vec2 {
-  new(x, y)  { this.x = x; this.y = y }
-  __add__(o) { Vec2.new(this.x + o.x, this.y + o.y) }
-  __mul__(k) { Vec2.new(this.x * k, this.y * k) }
-  show()     { "({this.x}, {this.y})" }
+  new(x, y)  { self.x = x; self.y = y }
+  __add__(o) { Vec2.new(self.x + o.x, self.y + o.y) }
+  __mul__(k) { Vec2.new(self.x * k, self.y * k) }
+  show()     { "({self.x}, {self.y})" }
 }
 
 let a = Vec2.new(1, 2)
@@ -665,28 +665,28 @@ let death_tone = fn () { Canvas.tone(170, 20, 100, Canvas.NOISE, 40, 0, 40, 0, 0
 # cells is a list of [frames, src_x]; every frame is \`sw\`x16 on \`sheet\`.
 class Anim {
   new(sheet, sw, cells, fc, index, state) {
-    this.sheet = sheet
-    this.sw = sw
-    this.cells = cells
-    this.index = index
-    this.state = state          # "loop" | "runonce" | "completed"
-    this.last_updated = fc
+    self.sheet = sheet
+    self.sw = sw
+    self.cells = cells
+    self.index = index
+    self.state = state          # "loop" | "runonce" | "completed"
+    self.last_updated = fc
   }
-  reset(fc, index, state) { this.index = index; this.state = state; this.last_updated = fc }
+  reset(fc, index, state) { self.index = index; self.state = state; self.last_updated = fc }
   update(fc) {
-    let fpu = this.cells[this.index][0]
-    if fc - this.last_updated < fpu { return }
-    let ni = if this.index + 1 == this.cells.size() { 0 } else { this.index + 1 }
-    if this.state == "completed" {
-      this.last_updated = fc
-    } else if this.state == "loop" {
-      this.index = ni; this.last_updated = fc
+    let fpu = self.cells[self.index][0]
+    if fc - self.last_updated < fpu { return }
+    let ni = if self.index + 1 == self.cells.size() { 0 } else { self.index + 1 }
+    if self.state == "completed" {
+      self.last_updated = fc
+    } else if self.state == "loop" {
+      self.index = ni; self.last_updated = fc
     } else {                    # runonce
-      if ni == 0 { this.state = "completed"; this.last_updated = fc }
-      else { this.index = ni; this.last_updated = fc }
+      if ni == 0 { self.state = "completed"; self.last_updated = fc }
+      else { self.index = ni; self.last_updated = fc }
     }
   }
-  draw(x, y) { this.sheet.draw_sub(x, y, this.cells[this.index][1], 0, this.sw, 16) }
+  draw(x, y) { self.sheet.draw_sub(x, y, self.cells[self.index][1], 0, self.sw, 16) }
 }
 
 let idle_anim = fn (fc) { Anim.new(rocci_sheet, 16, [[17, 0], [6, 16], [17, 32]], fc, 0, "loop") }
@@ -736,29 +736,29 @@ let draw_score = fn (score, base_x, y) {
 # --- app -------------------------------------------------------------------
 class App {
   new() {
-    this.interactive = IO.stdin_is_terminal()
-    this.input = Canvas.Input.new()
-    this.high_score = 0
-    this.fc = 0
-    Random.seed(this.fc)
+    self.interactive = IO.stdin_is_terminal()
+    self.input = Canvas.Input.new()
+    self.high_score = 0
+    self.fc = 0
+    Random.seed(self.fc)
     # Every field a method later reassigns must be declared in the constructor —
     # a property first assigned outside \`new\` is immutable in culebra. The title
-    # state is set up directly here rather than via enter_title(), because \`this\`
+    # state is set up directly here rather than via enter_title(), because \`self\`
     # is immutable while the constructor runs (methods can only read it).
-    this.mode = "title"
-    this.plants = this.starting_plants()
-    this.pipes = []
-    this.rocci = idle_anim(this.fc)
-    this.hiscore = hiscore_anim(this.fc)
-    this.score = 0
-    this.max_score = 0
-    this.player_y = 0.0
-    this.player_vel = 0.0
-    this.last_pipe = 0
-    this.last_plant = 0
-    this.last_flap = true
-    this.new_high = false
-    this.ground_x = 0
+    self.mode = "title"
+    self.plants = self.starting_plants()
+    self.pipes = []
+    self.rocci = idle_anim(self.fc)
+    self.hiscore = hiscore_anim(self.fc)
+    self.score = 0
+    self.max_score = 0
+    self.player_y = 0.0
+    self.player_vel = 0.0
+    self.last_pipe = 0
+    self.last_plant = 0
+    self.last_flap = true
+    self.new_high = false
+    self.ground_x = 0
   }
 
   starting_plants() {
@@ -769,171 +769,171 @@ class App {
   }
 
   enter_title() {
-    this.mode = "title"
-    this.plants = this.starting_plants()
-    this.rocci = idle_anim(this.fc)
+    self.mode = "title"
+    self.plants = self.starting_plants()
+    self.rocci = idle_anim(self.fc)
   }
 
   enter_game() {
-    this.mode = "game"
+    self.mode = "game"
     # The original reseeds from the frame count at the moment play begins, so
     # the run feels randomly seeded (players rarely start on the same frame).
-    Random.seed(this.fc)
-    this.score = 0
-    this.max_score = 0
-    this.player_y = PLAYER_START_Y * 1.0
-    this.player_vel = JUMP
-    this.pipes = []
-    this.last_pipe = this.fc
-    this.last_plant = if this.fc >= 4 { this.fc - 4 } else { 0 }
-    this.last_flap = true
-    this.rocci = flap_anim(this.fc)
-    this.ground_x = 0
+    Random.seed(self.fc)
+    self.score = 0
+    self.max_score = 0
+    self.player_y = PLAYER_START_Y * 1.0
+    self.player_vel = JUMP
+    self.pipes = []
+    self.last_pipe = self.fc
+    self.last_plant = if self.fc >= 4 { self.fc - 4 } else { 0 }
+    self.last_flap = true
+    self.rocci = flap_anim(self.fc)
+    self.ground_x = 0
     flap_tone()
   }
 
   enter_over() {
-    this.mode = "over"
-    this.new_high = this.max_score > this.high_score
-    if this.new_high { this.high_score = this.max_score }
-    this.rocci = fall_anim(this.fc)
-    this.hiscore = hiscore_anim(this.fc)
+    self.mode = "over"
+    self.new_high = self.max_score > self.high_score
+    if self.new_high { self.high_score = self.max_score }
+    self.rocci = fall_anim(self.fc)
+    self.hiscore = hiscore_anim(self.fc)
     death_tone()
   }
 
   # The "flap / start" action: A, up, or left-click held this frame.
   action_held() {
     let m = Canvas.mouse()
-    this.input.down(Canvas.A) || this.input.down(Canvas.UP) || (m.buttons & 1) != 0
+    self.input.down(Canvas.A) || self.input.down(Canvas.UP) || (m.buttons & 1) != 0
   }
   # In-game flap and title start read the action, with a simple autopilot when
   # input is not interactive so a CI / headless run still plays the game.
   flap_input() {
-    if this.interactive { this.action_held() } else { this.player_vel > 0.0 && this.player_y > 70.0 }
+    if self.interactive { self.action_held() } else { self.player_vel > 0.0 && self.player_y > 70.0 }
   }
   start_input() {
-    if this.interactive { this.action_held() } else { true }
+    if self.interactive { self.action_held() } else { true }
   }
   restart_input() {
-    if this.interactive {
+    if self.interactive {
       let m = Canvas.mouse()
-      this.input.down(Canvas.B) || this.input.down(Canvas.RIGHT) || (m.buttons & 2) != 0
+      self.input.down(Canvas.B) || self.input.down(Canvas.RIGHT) || (m.buttons & 2) != 0
     } else { true }
   }
 
   tick() {
     Canvas.clear(C1)
-    this.input.update()
-    this.fc = this.fc + 1
-    if this.mode == "title" { this.tick_title() }
-    else if this.mode == "game" { this.tick_game() }
-    else { this.tick_over() }
+    self.input.update()
+    self.fc = self.fc + 1
+    if self.mode == "title" { self.tick_title() }
+    else if self.mode == "game" { self.tick_game() }
+    else { self.tick_over() }
     true
   }
 
   idle_shift() {
-    let a = this.rocci
+    let a = self.rocci
     if a.index == 2 { 0 }
-    else if a.index == 1 && this.fc - a.last_updated > 3 { 0 }
+    else if a.index == 1 && self.fc - a.last_updated > 3 { 0 }
     else { 1 }
   }
 
   flap_allowed() {
-    let a = this.rocci
+    let a = self.rocci
     if a.index == 2 { true }
-    else if a.index == 1 { this.fc - a.last_updated > 6 }
+    else if a.index == 1 { self.fc - a.last_updated > 6 }
     else { false }
   }
 
   tick_title() {
-    this.rocci.update(this.fc)
+    self.rocci.update(self.fc)
     Canvas.text("Rocci Bird!!!", 32, 12, C4)
     Canvas.text("Click to start!", 24, 72, C4)
     draw_ground(0)
-    draw_plants(this.plants)
-    this.rocci.draw(PLAYER_X, PLAYER_START_Y + this.idle_shift())
-    if this.start_input() { this.enter_game() }
+    draw_plants(self.plants)
+    self.rocci.draw(PLAYER_X, PLAYER_START_Y + self.idle_shift())
+    if self.start_input() { self.enter_game() }
   }
 
   tick_game() {
-    let flap = this.flap_input()
-    if !this.last_flap && flap && this.flap_allowed() {
+    let flap = self.flap_input()
+    if !self.last_flap && flap && self.flap_allowed() {
       flap_tone()
-      this.player_vel = JUMP
-      this.rocci.reset(this.fc, 0, "runonce")
+      self.player_vel = JUMP
+      self.rocci.reset(self.fc, 0, "runonce")
     } else {
-      this.player_vel = this.player_vel + GRAVITY
-      this.rocci.update(this.fc)
+      self.player_vel = self.player_vel + GRAVITY
+      self.rocci.update(self.fc)
     }
-    this.last_flap = flap
+    self.last_flap = flap
 
     # pipes: spawn, move (scoring when a pipe crosses PLAYER_X - 2), cull
-    if this.fc - this.last_pipe > 90 {
-      this.pipes.push({ x: W, gap_start: Random.int(0, 16) * 5 + 10 })
-      this.last_pipe = this.fc
+    if self.fc - self.last_pipe > 90 {
+      self.pipes.push({ x: W, gap_start: Random.int(0, 16) * 5 + 10 })
+      self.last_pipe = self.fc
     }
     mut next_pipes = []
     mut gained = 0
-    for pp in this.pipes {
+    for pp in self.pipes {
       let nx = pp.x - 1
       if nx == PLAYER_X - 2 { gained = gained + 1 }
       if nx >= -20 { next_pipes.push({ x: nx, gap_start: pp.gap_start }) }
     }
-    this.pipes = next_pipes
+    self.pipes = next_pipes
 
     # plants: spawn, move, cull
-    if this.fc - this.last_plant > 12 {
-      this.plants.push({ x: W, type: Random.int(0, PLANT_TYPES) })
-      this.last_plant = this.fc
+    if self.fc - self.last_plant > 12 {
+      self.plants.push({ x: W, type: Random.int(0, PLANT_TYPES) })
+      self.last_plant = self.fc
     }
     mut next_plants = []
-    for pl in this.plants {
+    for pl in self.plants {
       let nx = pl.x - 1
       if nx >= -12 { next_plants.push({ x: nx, type: pl.type }) }
     }
-    this.plants = next_plants
+    self.plants = next_plants
 
-    this.player_y = this.player_y + this.player_vel
-    this.score = Math.min(this.score + gained, 255)
-    this.max_score = Math.max(this.score, this.max_score)
-    this.ground_x = (this.ground_x - 1) % W
+    self.player_y = self.player_y + self.player_vel
+    self.score = Math.min(self.score + gained, 255)
+    self.max_score = Math.max(self.score, self.max_score)
+    self.ground_x = (self.ground_x - 1) % W
     if gained > 0 { point_tone() }
 
-    draw_pipes(this.pipes)
-    draw_ground(this.ground_x)
-    draw_plants(this.plants)
+    draw_pipes(self.pipes)
+    draw_ground(self.ground_x)
+    draw_plants(self.plants)
 
-    let y_pixel = Math.min(this.player_y.to_long(), 134)
-    let hit = collided(y_pixel, this.rocci.index)
-    this.rocci.draw(PLAYER_X, y_pixel)
-    draw_score(this.score, 68, 4)
+    let y_pixel = Math.min(self.player_y.to_long(), 134)
+    let hit = collided(y_pixel, self.rocci.index)
+    self.rocci.draw(PLAYER_X, y_pixel)
+    draw_score(self.score, 68, 4)
 
-    if hit || this.player_y >= 134.0 { this.enter_over() }
+    if hit || self.player_y >= 134.0 { self.enter_over() }
   }
 
   tick_over() {
-    this.player_vel = this.player_vel + GRAVITY
-    this.rocci.update(this.fc)
-    this.hiscore.update(this.fc)
-    this.player_y = Math.min(this.player_y + this.player_vel, 134.0)
+    self.player_vel = self.player_vel + GRAVITY
+    self.rocci.update(self.fc)
+    self.hiscore.update(self.fc)
+    self.player_y = Math.min(self.player_y + self.player_vel, 134.0)
 
-    draw_pipes(this.pipes)
-    draw_ground(this.ground_x)
-    draw_plants(this.plants)
-    this.rocci.draw(PLAYER_X, this.player_y.to_long())
+    draw_pipes(self.pipes)
+    draw_ground(self.ground_x)
+    draw_plants(self.plants)
+    self.rocci.draw(PLAYER_X, self.player_y.to_long())
 
     Canvas.rect(16, 52, 136, 32, C1)
     Canvas.text("Game Over!", 44, 56, C4)
     Canvas.text("Right to restart", 20, 72, C4)
     Canvas.text("Art by Luke DeVault", 4, 151, C4)
     Canvas.rect(66, 2, 28, 12, C1)
-    draw_score(this.score, 68, 4)
-    if this.new_high { this.hiscore.draw(64, 0) }
+    draw_score(self.score, 68, 4)
+    if self.new_high { self.hiscore.draw(64, 0) }
     Canvas.rect(54, 18, 52, 12, C1)
     Canvas.text("HS:", 57, 20, C4)
-    draw_score(this.high_score, 80, 20)
+    draw_score(self.high_score, 80, 20)
 
-    if this.restart_input() { this.enter_title() }
+    if self.restart_input() { self.enter_title() }
   }
 }
 

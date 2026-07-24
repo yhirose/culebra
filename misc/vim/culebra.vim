@@ -57,7 +57,7 @@ syn keyword culStorage     let mut static get
 " === END AUTO-KEYWORDS ===
 
 " Conventional identifiers that aren't grammar keywords.
-syn keyword culSelf         self this __ARGS__
+syn keyword culSelf         self __ARGS__
 
 " Capitalized identifiers — built-in types (Long/Float/String/Bool/...),
 " stdlib namespaces (Math/IO/Random), user class names.

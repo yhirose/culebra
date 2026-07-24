@@ -19,15 +19,15 @@
 # unwinding on the JIT (slots leak to the collector — pre-existing
 # shape, matched by keeping throws out of the symmetric corpus).
 #
-# Observable via a shared `log` reached through `this.log`: the drop body
+# Observable via a shared `log` reached through `self.log`: the drop body
 # pushes to it, so the count survives the object and is checkable after
 # the owning scope has exited.
 
 let log = []
 
 class R {
-  new(lg) { this.log = lg }
-  drop() { this.log.push(1) }
+  new(lg) { self.log = lg }
+  drop() { self.log.push(1) }
 }
 
 # --- Baseline: non-cyclic owned resources drop at scope exit (worked via

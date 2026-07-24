@@ -1971,7 +1971,7 @@ struct JIT {
   // Emit IR to release every owned binding in `scope` and zero the
   // underlying allocas so a subsequent re-entry (loop iteration,
   // recursive call) starts from a clean slate. Borrowed slots — the
-  // function's `self` / `this` / params and capture cells — are
+  // function's `fn` / `self` / params and capture cells — are
   // skipped: their refcounts belong to the caller or the enclosing
   // closure, not to the callee's frame.
   //
@@ -2084,7 +2084,7 @@ struct JIT {
       // overwrote it (a fresh make_*_slot allocates a distinct alloca). Release
       // it now; the new binding lives in its own alloca, so this never double-
       // frees, and a borrow / still-zero-init slot releases nil (a no-op). The
-      // canonical trigger is the implicit `self`/`this` slot shadowed by a
+      // canonical trigger is the implicit `fn`/`self` slot shadowed by a
       // same-named parameter — but the release keeps any such rebinding leak-
       // free by construction rather than by spotting each site.
       release_slot_value(it->second);
@@ -3169,9 +3169,9 @@ struct JIT {
 
   // The LLVM half of the JitFn ABI (see the `JitFn` typedef): every closure
   // body, ctor, defer thunk, and indirect call site shares this signature —
-  // void(ret:ptr, cls:ptr, this_tag:i8, this_data:i64, n_args:i64, args:ptr).
+  // void(ret:ptr, cls:ptr, self_tag:i8, self_data:i64, n_args:i64, args:ptr).
   // The result is written through the leading out-pointer and the receiver
-  // `this` crosses as two scalars — no by-value 16-byte aggregate crosses the
+  // `self` crosses as two scalars — no by-value 16-byte aggregate crosses the
   // boundary in either direction, so the Win64 C ABI and the raw-IR lowering
   // agree (a by-value aggregate return would be sret on Win64 but two-register
   // in raw IR, mis-placing args). One place so an ABI change is a single edit.
@@ -3286,12 +3286,13 @@ struct JIT {
 
   // --- Free variable analysis ---
 
-  // `self`/`this` are language-core keywords for the implicit method
-  // receiver; `range`/`iota` are core globals (see
-  // `try_compile_core_global`); everything else (puts/Math/IO/...) is
-  // supplied by the registered extension.
+  // `self` is the implicit method receiver; `fn` is the implicit
+  // recursion handle (the enclosing function's own value). Both are
+  // language-core keywords bound in every function frame. `range`/`iota`
+  // are core globals (see `try_compile_core_global`); everything else
+  // (puts/Math/IO/...) is supplied by the registered extension.
   static bool is_builtin_var(const std::string& name) {
-    if (name == "self" || name == "this") return true;
+    if (name == "fn" || name == "self") return true;
     if (name == "range" || name == "iota") return true;
     auto& h = current_hooks();
     return h.is_builtin_var && h.is_builtin_var(name);
@@ -3633,7 +3634,7 @@ struct JIT {
       // binding, or by build_class_instance for a class with no `new`),
       // not at declaration time — analyze them as one nested function
       // whose FuncInfo is keyed by the CLASS_DECL node itself so
-      // compile_class_decl can recover it. It has no locals; `this` is a
+      // compile_class_decl can recover it. It has no locals; `self` is a
       // builtin. Static-field values still evaluate at declaration time
       // in the enclosing scope.
       FuncInfo field_info;
@@ -4011,7 +4012,7 @@ struct JIT {
   }
 
   // METHOD ast: [IDENTIFIER, PARAMETERS, BLOCK]. Analyzed just like a
-  // nested FUNCTION — method-dispatch's implicit `this` is already
+  // nested FUNCTION — method-dispatch's implicit `self` is already
   // classified as a builtin by `is_builtin_var`, so no extra setup.
   FuncInfo analyze_method(
       const peg::Ast& methodAst,
@@ -5445,7 +5446,7 @@ struct JIT {
   }
 
   // Complex lvalue: `obj.prop = e`, `arr[idx] = e`, and chains
-  // (`this.d[i] = v`). Rolls the receiver through one Owned handle across
+  // (`self.d[i] = v`). Rolls the receiver through one Owned handle across
   // the intermediate postfixes, then dispatches the final INDEX / DOT set.
   Owned compile_assign_complex(const peg::Ast& ast,
                                const culebra::AssignmentView& av,
@@ -5482,7 +5483,7 @@ struct JIT {
           break;
         }
         case "DOT"_: {
-          // Intermediate `.prop` in a chain like `this.d[i] = v`: read the
+          // Intermediate `.prop` in a chain like `self.d[i] = v`: read the
           // property (borrowed) and promote to +1, mirroring the INDEX case
           // so the trailing release doesn't underflow the receiver.
           // swap_owned retains the property before releasing the receiver,
@@ -8151,7 +8152,7 @@ struct JIT {
   // Refcount flow: `iter()` returns a fresh `+1` iterator value stored
   // in a local slot so it survives across iterations. Each method call
   // retains its receiver before invocation (the callee frame releases
-  // on exit via the owned `this` slot). `step` — the {done, value}
+  // on exit via the owned `self` slot). `step` — the {done, value}
   // object — is released on every loop path before branching.
   // Iterator trait dispose + release, at the current insertion point. Calls
   // `iter.dispose()` if the iterator carries one (built-in iterators have no
@@ -8184,7 +8185,7 @@ struct JIT {
 
     builder_.SetInsertPoint(disposeBB);
     auto dispose_fn_val = emit_property_get(iterFinal, "dispose");
-    // Hand the dispose frame its own +1 for `this` (same convention as the
+    // Hand the dispose frame its own +1 for `self` (same convention as the
     // iter() call in compile_for_protocol_loop) — the skipBB release below
     // frees the alloca's ref, not the frame's.
     emit_value_retain(iterFinal);
@@ -8290,7 +8291,7 @@ struct JIT {
 
     // iter_val = obj.iter()
     auto iter_fn_val = emit_property_get(objVal, "iter");
-    emit_value_retain(objVal);  // handed off to `this` slot
+    emit_value_retain(objVal);  // handed off to `self` slot
     Owned iter_owned = compile_function_call_raw(iter_fn_val, objVal, {});
 
     auto iterAlloca = entryB.CreateAlloca(valueType_, nullptr, "for.iter");
@@ -8508,7 +8509,7 @@ struct JIT {
   //      the user body if any, and promote the instance's own data
   //      slots to mutable.
   //
-  // The caller's `this` (the class namespace, carried with +1 per ABI)
+  // The caller's `self` (the class namespace, carried with +1 per ABI)
   // is released up front since the constructor has no use for it.
   llvm::Function* emit_constructor_fn(std::string_view class_name,
                                        bool has_new, bool pass_finit,
@@ -8531,25 +8532,25 @@ struct JIT {
     auto argIt = fn->arg_begin();
     current_sret_ = &*argIt++;  // __ret out-pointer (result slot)
     auto clsArg = &*argIt++;
-    auto thisTagArg = &*argIt++;
-    auto thisDataArg = &*argIt++;
+    auto selfTagArg = &*argIt++;
+    auto selfDataArg = &*argIt++;
     auto nArgsArg = &*argIt++;
     auto argsArg = &*argIt++;
     current_sret_->setName("__ret");
     clsArg->setName("__cls__");
-    thisTagArg->setName("this_tag");
-    thisDataArg->setName("this_data");
+    selfTagArg->setName("self_tag");
+    selfDataArg->setName("self_data");
     nArgsArg->setName("n_args");
     argsArg->setName("args");
 
     auto entryBB = BasicBlock::Create(ctx_, "entry", fn);
     builder_.SetInsertPoint(entryBB);
 
-    // Reconstruct the receiver `this` from the two scalar ABI args.
-    llvm::Value* thisArg = make_value(thisTagArg, thisDataArg);
+    // Reconstruct the receiver `self` from the two scalar ABI args.
+    llvm::Value* selfArg = make_value(selfTagArg, selfDataArg);
 
-    // Caller's `this` (the class namespace) is unused — release the +1.
-    emit_value_release(thisArg);
+    // Caller's `self` (the class namespace) is unused — release the +1.
+    emit_value_release(selfArg);
 
     auto capturesFieldPtr =
         builder_.CreateStructGEP(closureType_, clsArg, 3);
@@ -8856,7 +8857,7 @@ struct JIT {
     std::vector<std::string> static_field_names;
     std::vector<const peg::Ast*> static_field_asts;
     // Typed instance fields in declaration order — compiled into the
-    // synthetic field-init function (per-instance evaluation, `this` in
+    // synthetic field-init function (per-instance evaluation, `self` in
     // scope, before the `new` body; mirrors interp's field_template).
     std::vector<JitFieldInit> field_inits;
     // Declared (name, type) pairs in field order, for the @packable layout.
@@ -9109,7 +9110,7 @@ struct JIT {
       method_vals.push_back(own(make_func(closPtr)));
       method_names.push_back(mname);
     }
-    // Synthetic field-init function: assigns each declared field on `this`
+    // Synthetic field-init function: assigns each declared field on `self`
     // (declaration order, per instance). Its FuncInfo is keyed by the
     // CLASS_DECL node (see the CLASS_DECL branch of visit_for_frees).
     // With a user `new`, the closure is bound under a hidden scope slot the
@@ -9149,7 +9150,7 @@ struct JIT {
     }
     // Static methods overload too — merge same-named statics into one
     // dispatcher (own per-class uid keeps them off the instance-method
-    // table). The picked static body ignores the forwarded `this`.
+    // table). The picked static body ignores the forwarded `self`.
     group_method_overloads(static_names, static_vals, static_asts, class_name);
 
     std::vector<Owned> static_field_vals;
@@ -9641,7 +9642,7 @@ struct JIT {
       // is what makes `C.new(x: 1)` bind kwargs the same way the interp does.
       llvm::Constant** outParamMeta = nullptr,
       // Field-init mode (`body_ast == nullptr`): instead of a user body,
-      // the function assigns each declared field on `this` in declaration
+      // the function assigns each declared field on `self` in declaration
       // order — the per-instance evaluation compile_class_decl hands to
       // build_class_instance. Everything else (captures, EH scaffolding,
       // scope teardown) is the regular function machinery.
@@ -9795,9 +9796,9 @@ struct JIT {
     ++argIt;
     argIt->setName("__cls__");
     ++argIt;
-    argIt->setName("this_tag");
+    argIt->setName("self_tag");
     ++argIt;
-    argIt->setName("this_data");
+    argIt->setName("self_data");
     ++argIt;
     argIt->setName("n_args");
     ++argIt;
@@ -9840,13 +9841,13 @@ struct JIT {
     current_sret_ = &*argIt++;  // __ret out-pointer (result slot)
     auto clsArg = &*argIt++;
     current_closure_arg_ = clsArg;
-    auto thisTagArg = &*argIt++;
-    auto thisDataArg = &*argIt++;
+    auto selfTagArg = &*argIt++;
+    auto selfDataArg = &*argIt++;
     auto nArgsArg = &*argIt++;
     auto argsArg = &*argIt++;
-    // Reconstruct the receiver `this` from the two scalar ABI args. The
+    // Reconstruct the receiver `self` from the two scalar ABI args. The
     // insert point is already at `entryBB`, so this emits into the prologue.
-    llvm::Value* thisArg = make_value(thisTagArg, thisDataArg);
+    llvm::Value* selfArg = make_value(selfTagArg, selfDataArg);
 
     // Arity guard: matching the interpreter, it is an error to call
     // with fewer args than declared. Overflow is allowed (lands in
@@ -9863,16 +9864,16 @@ struct JIT {
 
       builder_.SetInsertPoint(errBB);
       // callee-cleans-on-direct-binding-error: this arity check runs in the
-      // prologue *before* `this`/params enter the frame's cleanup scope, so
+      // prologue *before* `self`/params enter the frame's cleanup scope, so
       // the fn.cleanup landingpad releases nothing on this throw. The +1s the
-      // caller transferred — the receiver `this` and every passed positional
+      // caller transferred — the receiver `self` and every passed positional
       // — would otherwise strand (a ctor receiver stranding on `C.new()`, a
       // method receiver on `obj.m()` with a missing arg). Release them here,
       // matching the in-body throw path where the slot cleanup does the same.
       // (For a ctor body, build_class_instance also holds a +1 it releases in
       // its own catch — this drops the slot-consume +1, so together the count
       // reaches zero exactly once.)
-      emit_value_release(thisArg);
+      emit_value_release(selfArg);
       emit_call(
           module_->getOrInsertFunction(
               rt::release_overflow_args, builder_.getVoidTy(), ptrTy,
@@ -9903,22 +9904,22 @@ struct JIT {
       builder_.SetInsertPoint(okBB);
     }
 
-    // `self` = make_func(__cls__): calling it re-enters this fn with this
+    // `fn` = make_func(__cls__): calling it re-enters this fn with this
     // closure. make_func doesn't retain, so retain explicitly so the
-    // owned `self` slot has the +1 it will hand back at function exit.
+    // owned `fn` slot has the +1 it will hand back at function exit.
     {
-      auto selfVal = make_func(clsArg);
-      emit_value_retain(selfVal);
-      define_var("self", make_stack_slot("self", selfVal));
+      auto fnVal = make_func(clsArg);
+      emit_value_retain(fnVal);
+      define_var("fn", make_stack_slot("fn", fnVal));
     }
 
-    // `this` is from arg; if captured, allocate cell. The arg's +1 was
+    // `self` is from arg; if captured, allocate cell. The arg's +1 was
     // pre-retained by the caller (via load/compile of the receiver) and
     // is transferred into the slot — no extra retain needed.
-    if (info.captured_locals.contains("this")) {
-      define_var("this", make_cell_slot("this", thisArg));
+    if (info.captured_locals.contains("self")) {
+      define_var("self", make_cell_slot("self", selfArg));
     } else {
-      define_var("this", make_stack_slot("this", thisArg));
+      define_var("self", make_stack_slot("self", selfArg));
     }
 
     // Free variables bound BEFORE params so that default expressions on
@@ -10146,10 +10147,10 @@ struct JIT {
     for (const auto& fv : info.free_vars) {
       if (!fv.starts_with('\x1f')) continue;
       auto finitSlot = lookup_var(fv);
-      auto thisSlot = lookup_var("this");
-      if (!finitSlot || !thisSlot) continue;
+      auto selfSlot = lookup_var("self");
+      if (!finitSlot || !selfSlot) continue;
       auto finitVal = load_slot_raw(*finitSlot, "finit");
-      auto thisVal = load_slot_raw(*thisSlot, "this");
+      auto selfVal = load_slot_raw(*selfSlot, "self");
       auto finitPtr = builder_.CreateIntToPtr(extract_data(finitVal), ptrTy,
                                               "finit.cls");
       emit_call(
@@ -10157,7 +10158,7 @@ struct JIT {
                                        builder_.getVoidTy(), ptrTy,
                                        builder_.getInt8Ty(),
                                        builder_.getInt64Ty()),
-          {finitPtr, extract_tag(thisVal), extract_data(thisVal)});
+          {finitPtr, extract_tag(selfVal), extract_data(selfVal)});
     }
 
     // Forward-reference support: closure capture happens lazily through
@@ -10180,18 +10181,18 @@ struct JIT {
     if (body_ast) {
       bodyOwned = compile(*body_ast);
     } else {
-      // Field-init mode: assign each declared field on `this`, declaration
+      // Field-init mode: assign each declared field on `self`, declaration
       // order. is_init=true mirrors the interp's insert_or_assign — a
       // property an earlier initializer's method call may have created is
       // overwritten regardless of its mut flag, and ends up mut like any
-      // `this.x = ...` field (promote_all_mut equivalent).
-      auto thisSlot = lookup_var("this");
-      auto thisVal = load_slot_raw(*thisSlot, "this");
-      auto thisPtr = builder_.CreateIntToPtr(extract_data(thisVal),
-                                             ptrTy, "this.obj");
+      // `self.x = ...` field (promote_all_mut equivalent).
+      auto selfSlot = lookup_var("self");
+      auto selfVal = load_slot_raw(*selfSlot, "self");
+      auto selfPtr = builder_.CreateIntToPtr(extract_data(selfVal),
+                                             ptrTy, "self.obj");
       for (const auto& f : *field_inits) {
         Owned v = f.init ? compile(*f.init) : emit_zero_value(f.type);
-        emit_object_set(thisPtr, std::string(f.name), /*mut=*/true,
+        emit_object_set(selfPtr, std::string(f.name), /*mut=*/true,
                         extract_tag(v.borrow()), extract_data(v.borrow()),
                         /*is_init=*/true);
         v.consume();  // the property slot absorbed the +1
@@ -10612,7 +10613,7 @@ struct JIT {
   }
 
   // Resolve `obj.name` read AS A VALUE (no call parens): fire a getter, bind a
-  // plain method's `this` (interp's _wrap_method_with_this), or pass a data
+  // plain method's `self` (interp's _wrap_method_with_this), or pass a data
   // field / introspection result through. `.name`/`.params`/`.return_type`
   // route to getter_or_value because emit_property_get's fn_mode returns a
   // +1-OWNED `view` for them; every other name yields a BORROWED `view` and
@@ -11444,10 +11445,10 @@ struct JIT {
     // A method miss lowers to `call nil`, whose error path must release the
     // consumed receiver + args (nothing else does on this site's throw edge) —
     // opt into that cleanup. A real method call proceeds normally (its callee
-    // frame cleans `this`/args), so the flag only fires on the not-a-function
+    // frame cleans `self`/args), so the flag only fires on the not-a-function
     // arm and never double-frees.
     auto callRes = compile_function_call(argsAst, methodVal, receiver.consume(),
-                                         /*own_this_on_error=*/true,
+                                         /*own_self_on_error=*/true,
                                          /*own_args_on_error=*/true);
     if (owned_method_view) emit_value_release(methodVal);
     return callRes;
@@ -11495,7 +11496,7 @@ struct JIT {
                                      ptrTy),
         {objPtr}, "params.walk"));
     // The walker borrows the receiver; consume this frame's +1 (the
-    // fallback arm hands it to `this` instead).
+    // fallback arm hands it to `self` instead).
     emit_value_release(receiver);
     merge.add_incoming(std::move(walkResult));
     builder_.CreateBr(mergeBB);
@@ -11517,7 +11518,7 @@ struct JIT {
   //   - TAG_SET    → set_add_method / set_remove (returns Bool)
   //   - TAG_OBJECT → for `remove`, the built-in object_remove_any
   //                  (returns Nil); for `add`, a user-defined property
-  //                  with `this` bound to the receiver.
+  //                  with `self` bound to the receiver.
   //   - other      → type error
   // The argument is compiled once before the branch so side effects
   // don't duplicate.
@@ -11583,12 +11584,12 @@ struct JIT {
     // `set_remove` borrows the arg; `set_add_method` absorbs the +1.
     if (method == "remove") emit_value_release(arg);
     // Both runtime helpers borrow the receiver; consume this frame's +1
-    // (the Object arm hands it to `this` / releases it — match here).
+    // (the Object arm hands it to `self` / releases it — match here).
     emit_value_release(receiver);
     maMerge.add_incoming(own(setRes));
     builder_.CreateBr(mergeBB);
 
-    // Object: `add` routes to the user-defined property `this.add` (no
+    // Object: `add` routes to the user-defined property `self.add` (no
     // built-in). `remove` prefers an own `remove` method (e.g. a
     // FixedSet/FixedMap view) — matching interp's own-method-over-builtin
     // priority — and otherwise calls the dict's built-in key removal.
@@ -11853,7 +11854,7 @@ struct JIT {
   // under a receiver cleanup pad (they sit inside compile_builtin_method, under
   // the builtin-arm guard), so a second guard here would double-free; they pass
   // false. The subsequent compile_function_call consumes `receiver` and its
-  // callee frame cleans `this` on throw, so it is never guarded either way
+  // callee frame cleans `self` on throw, so it is never guarded either way
   // (docs/jit_ownership.md §4.3).
   Owned emit_unresolved_builtin_method(const std::string& method,
                                               const peg::Ast& argsAst,
@@ -11882,7 +11883,7 @@ struct JIT {
     //     edge too, so releasing here would double-free.
     // The callback args strand on either path — always release those.
     return compile_function_call(argsAst, methodVal, receiver,
-                                 /*own_this_on_error=*/guard_arity_receiver,
+                                 /*own_self_on_error=*/guard_arity_receiver,
                                  /*own_args_on_error=*/true);
   }
 
@@ -11927,8 +11928,8 @@ struct JIT {
 
     // userBB: the user-defined function shadows the builtin. Use the same
     // path as compile_method_call's final fallback (14505) — it compiles the
-    // args from `argsAst` and binds `this` correctly for both class instances
-    // (methods take `this`) and namespace objects (functions ignore it).
+    // args from `argsAst` and binds `self` correctly for both class instances
+    // (methods take `self`) and namespace objects (functions ignore it).
     builder_.SetInsertPoint(userBB);
     // A Shared.new view reads a non-method name (`s.get(...)`) as nil from the
     // frozen tree, so the call lowers to `call nil` and raises "expected
@@ -11938,7 +11939,7 @@ struct JIT {
     OwnedPhi umbMerge(this, "umb.res");
     umbMerge.add_incoming(
         compile_function_call(argsAst, methodVal, receiver,
-                              /*own_this_on_error=*/true,
+                              /*own_self_on_error=*/true,
                               /*own_args_on_error=*/true));
     builder_.CreateBr(mergeBB);
 
@@ -11974,7 +11975,7 @@ struct JIT {
       // unlike the general call chain: a builtin never hands `receiver` to a
       // callee frame, so this is the sole throw-path releaser — the user arm
       // (compile_function_call) is left untouched because its callee frame
-      // already cleans its own `this` on throw (a caller-side guard there would
+      // already cleans its own `self` on throw (a caller-side guard there would
       // double-free). Pred-empty ⇒ erased, so a non-throwing builtin pays
       // nothing.
       {
@@ -12014,7 +12015,7 @@ struct JIT {
     auto fn = builder_.GetInsertBlock()->getParent();
 
     // Kwargs path: runtime resolver per-branch — receiver flows into
-    // `this_val` on the user-method branch and into `positional[0]` on
+    // `self_val` on the user-method branch and into `positional[0]` on
     // the UFCS branch, with the rest of the ARG_LIST compiled once and
     // routed through `culebra_runtime_call_with_kwargs`.
     if (!arg_list_is_positional_only(argsAst)) {
@@ -12041,7 +12042,7 @@ struct JIT {
       // The incoming receiver +1 is handed to whichever arm runs — the same
       // single-ownership hand-off the positional path below uses. The callee
       // (compile_function_call_runtime_kwargs) owns it on EVERY exit: its
-      // this_guard / posVals[0] Owned covers the argument-expression compiles
+      // self_guard / posVals[0] Owned covers the argument-expression compiles
       // (§4.8 window), emit_arg_list_check releases it on a malformed-list
       // throw, and call_with_kwargs owns the dispatch edges. The old shape —
       // retain per arm + release at the merge — leaked the outer +1 whenever
@@ -12067,7 +12068,7 @@ struct JIT {
       {
         ThrowGuard callee_guard(this, {freeFn});
         ufcsRes = compile_function_call_runtime_kwargs(
-            argsAst, freeFn, /*thisVal=*/nullptr, {receiver}, dot_ast);
+            argsAst, freeFn, /*selfVal=*/nullptr, {receiver}, dot_ast);
       }
       // (the method branch's property view is borrowed — don't touch it).
       emit_value_release(freeFn);
@@ -12229,20 +12230,20 @@ struct JIT {
   // Convenience overload for the common "default flags, but thread the
   // arg positions" call shape.
   Owned compile_function_call_raw(
-      llvm::Value* callee, llvm::Value* thisVal,
+      llvm::Value* callee, llvm::Value* selfVal,
       llvm::ArrayRef<llvm::Value*> userArgs,
       llvm::ArrayRef<const peg::Ast*> arg_asts) {
-    return compile_function_call_raw(callee, thisVal, userArgs,
+    return compile_function_call_raw(callee, selfVal, userArgs,
                                      /*check_kw_only=*/false,
                                      /*allow_call_overload=*/true, arg_asts);
   }
 
   Owned compile_function_call_raw(
-      llvm::Value* callee, llvm::Value* thisVal,
+      llvm::Value* callee, llvm::Value* selfVal,
       llvm::ArrayRef<llvm::Value*> userArgs,
       bool check_kw_only = false, bool allow_call_overload = true,
       llvm::ArrayRef<const peg::Ast*> arg_asts = {},
-      bool own_this_on_error = false,
+      bool own_self_on_error = false,
       bool own_args_on_error = false) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
 
@@ -12265,14 +12266,14 @@ struct JIT {
       // The callee is not callable (a method miss lowers to `call nil` —
       // `[1,2,3].first()`). No callee frame will run, so the +1s the caller
       // handed this call have no consumer and strand on the raise. The receiver
-      // (`thisVal`) and args are gated separately by the caller: the method-call
+      // (`selfVal`) and args are gated separately by the caller: the method-call
       // fallthrough consumes both and nothing else releases them, so it opts into
       // both; the unresolved-builtin path (`{a:1}.map(f)`) already releases the
       // receiver on this edge via its own machinery but strands the callback arg,
       // so it opts into args-only — releasing its receiver too would double-free.
-      // Most callers pass a nil/borrowed `thisVal` and opt into neither. `thisVal`
+      // Most callers pass a nil/borrowed `selfVal` and opt into neither. `selfVal`
       // may be null (releasing nil is a no-op). See docs/jit_ownership.md §4.3.
-      if (own_this_on_error && thisVal) emit_value_release(thisVal);
+      if (own_self_on_error && selfVal) emit_value_release(selfVal);
       if (own_args_on_error)
         for (auto* a : userArgs) emit_value_release(a);
       emit_type_error_typed("Function", tag);
@@ -12295,7 +12296,7 @@ struct JIT {
       builder_.CreateCondBr(isCallFn, overloadBB, tryCtorBB);
 
       builder_.SetInsertPoint(overloadBB);
-      // `callee` becomes `this`; retain so the recursive frame consumes
+      // `callee` becomes `self`; retain so the recursive frame consumes
       // its own +1 (the original ref stays borrowed, the convention the
       // normal path shares — see the leak note in the kwargs path).
       emit_value_retain(callee);
@@ -12312,7 +12313,7 @@ struct JIT {
 
       // Not a callable instance: try a class object — `C(args)` dispatches
       // to its `new`. The constructor builds its own instance, so it takes
-      // no `this` (nil receiver, no retain), matching interp.
+      // no `self` (nil receiver, no retain), matching interp.
       builder_.SetInsertPoint(tryCtorBB);
       auto newMethod = emit_value_call(
           module_->getOrInsertFunction(
@@ -12331,7 +12332,7 @@ struct JIT {
       builder_.SetInsertPoint(ctorBB);
       // Late-merge arm raw — same contract as overloadResult above.
       ctorResult = compile_function_call_raw(
-          newMethod, /*thisVal=*/nullptr, userArgs,
+          newMethod, /*selfVal=*/nullptr, userArgs,
           /*check_kw_only=*/false, /*allow_call_overload=*/false)
           .consume_unchecked();
       ctorEndBB = builder_.GetInsertBlock();
@@ -12376,7 +12377,7 @@ struct JIT {
     emit_call_position_publish(arg_asts);
 
     auto calleeType = jitFnCalleeType();
-    // The result comes back through an out-pointer slot and the receiver `this`
+    // The result comes back through an out-pointer slot and the receiver `self`
     // crosses as two scalars (tag, data) — no by-value 16-byte aggregate crosses
     // the ABI in either direction, so the raw-IR lowering matches the Win64 C
     // ABI (which would pass an aggregate arg by-reference and return it via
@@ -12387,12 +12388,12 @@ struct JIT {
                                fn->getEntryBlock().begin());
       retSlot = entryB.CreateAlloca(valueType_, nullptr, "call.ret");
     }
-    llvm::Value* thisNormal = thisVal ? thisVal : make_nil();
+    llvm::Value* selfNormal = selfVal ? selfVal : make_nil();
     std::vector<llvm::Value*> args = {
         retSlot,
         clsPtr,
-        extract_tag(thisNormal),
-        extract_data(thisNormal),
+        extract_tag(selfNormal),
+        extract_data(selfNormal),
         builder_.getInt64(static_cast<int64_t>(userArgs.size())),
         argsPtr};
     emit_call(calleeType, fnPtr, args);
@@ -12454,10 +12455,10 @@ struct JIT {
   // source so every call kind reports the same error + position as the interp.
   // Returns true if a throw was emitted; callers may continue (the IR after is
   // dead) like the other emit_throw_error sites.
-  // `owned_on_throw` are caller-evaluated +1 values (the receiver `this`, a
+  // `owned_on_throw` are caller-evaluated +1 values (the receiver `self`, a
   // UFCS positional prefix) that the malformed-call throw aborts before the
   // call consumes — release them so a bad arg list (`obj.m(a: 1, a: 1)`, a
-  // ctor's freshly built instance passed as `this`) does not strand them.
+  // ctor's freshly built instance passed as `self`) does not strand them.
   // The throw fires first at runtime; the IR emitted after is dead, so the
   // later normal-path consume of these values never executes.
   bool emit_arg_list_check(const peg::Ast& argsAst,
@@ -12473,10 +12474,10 @@ struct JIT {
 
   Owned compile_function_call_with_kwargs(
       const peg::Ast& argsAst, llvm::Value* callee,
-      const peg::Ast& fnAst, llvm::Value* thisVal = nullptr) {
+      const peg::Ast& fnAst, llvm::Value* selfVal = nullptr) {
     using namespace peg::udl;
     // shared single source; inline scan stays
-    emit_arg_list_check(argsAst, {thisVal});
+    emit_arg_list_check(argsAst, {selfVal});
 
     // FUNCTION layout: [PARAMETERS, (RETURN_TYPE)?, BLOCK]. Each
     // PARAMETER child: [MUTABLE, IDENTIFIER, (TYPE_ANNOTATION)?,
@@ -12678,29 +12679,29 @@ struct JIT {
       argAsts.push_back(positional[i]);
     }
     return compile_function_call_raw(
-        callee, thisVal, consume_all(std::move(userArgs)), argAsts);
+        callee, selfVal, consume_all(std::move(userArgs)), argAsts);
   }
 
   Owned compile_function_call(const peg::Ast& argsAst,
                                      llvm::Value* callee,
-                                     llvm::Value* thisVal = nullptr,
-                                     bool own_this_on_error = false,
+                                     llvm::Value* selfVal = nullptr,
+                                     bool own_self_on_error = false,
                                      bool own_args_on_error = false) {
     if (!arg_list_is_positional_only(argsAst)) {
       return compile_function_call_runtime_kwargs(
-          argsAst, callee, thisVal);
+          argsAst, callee, selfVal);
     }
     std::vector<const peg::Ast*> argAsts;
     // This frame owns the receiver's +1 until the call consumes it — holding
     // it as Owned keeps it visible to the unwind-temp window while the
     // argument expressions compile (a throwing argument used to strand it).
-    Owned this_guard = thisVal ? own(thisVal) : Owned();
+    Owned self_guard = selfVal ? own(selfVal) : Owned();
     auto ownedArgs = compile_positional_args(argsAst, argAsts);
-    if (thisVal) this_guard.consume();  // handed to the raw call below
+    if (selfVal) self_guard.consume();  // handed to the raw call below
     return compile_function_call_raw(
-        callee, thisVal, consume_all(std::move(ownedArgs)),
+        callee, selfVal, consume_all(std::move(ownedArgs)),
         /*check_kw_only=*/any_kw_only_in_program_,
-        /*allow_call_overload=*/true, argAsts, own_this_on_error,
+        /*allow_call_overload=*/true, argAsts, own_self_on_error,
         own_args_on_error);
   }
 
@@ -12718,16 +12719,16 @@ struct JIT {
   // to the call site.
   Owned compile_function_call_runtime_kwargs(
       const peg::Ast& argsAst, llvm::Value* callee,
-      llvm::Value* thisVal,
+      llvm::Value* selfVal,
       const std::vector<llvm::Value*>& positional_prefix = {},
       const peg::Ast* prefix_ast = nullptr) {
     using namespace peg::udl;
     // shared single source; inline scan stays. A malformed arg list aborts
-    // before the receiver `this` and any UFCS positional prefix are consumed
+    // before the receiver `self` and any UFCS positional prefix are consumed
     // by the call — release those caller-owned +1s on the throw path. They
     // must be released inside emit_arg_list_check (before the noreturn throw);
     // releasing after it returns would land behind dead IR and never run.
-    std::vector<llvm::Value*> owned_on_throw{thisVal};
+    std::vector<llvm::Value*> owned_on_throw{selfVal};
     owned_on_throw.insert(owned_on_throw.end(), positional_prefix.begin(),
                           positional_prefix.end());
     emit_arg_list_check(argsAst, owned_on_throw);
@@ -12771,7 +12772,7 @@ struct JIT {
     // value expressions compile below (a throwing argument used to strand
     // it). The scan-time malformed-list throws above stay with
     // emit_arg_list_check's release contract, so the handle starts here.
-    Owned this_guard = thisVal ? own(thisVal) : Owned();
+    Owned self_guard = selfVal ? own(selfVal) : Owned();
 
     // Pre-size the per-bucket value vectors and pre-build kwarg key
     // global strings (these have no side effects). The actual value
@@ -12844,12 +12845,12 @@ struct JIT {
 
     // From here the receiver's +1 is handed to the dispatch below;
     // call_with_kwargs owns its cleanup on every throw site (release_owned).
-    if (thisVal) this_guard.consume();
+    if (selfVal) self_guard.consume();
 
     // Callee must be a closure (matches compile_function_call_raw's
     // guard) — or a callable class instance (`obj(kwargs)` → `__call__`
-    // with `this` bound to the instance, Phase 2b) — or a class object
-    // (`C(kwargs)` → its `new` constructor, nil `this`). Resolve cls/this
+    // with `self` bound to the instance, Phase 2b) — or a class object
+    // (`C(kwargs)` → its `new` constructor, nil `self`). Resolve cls/this
     // on all three arms and merge.
     auto tag = extract_tag(callee);
     auto isFunc = builder_.CreateICmpEQ(tag,
@@ -12862,10 +12863,10 @@ struct JIT {
     // kwc.this carries mixed-provenance +1s (the ov arm mints one via the
     // retain; the ok arm passes the caller's through) — each arm declares
     // its contribution via own() at its end.
-    OwnedPhi thisMerge(this, "kwc.this");
+    OwnedPhi selfMerge(this, "kwc.this");
     builder_.SetInsertPoint(okBB);
     auto clsNormal = builder_.CreateIntToPtr(extract_data(callee), ptrTy);
-    thisMerge.add_incoming(own(thisVal ? thisVal : make_nil()));
+    selfMerge.add_incoming(own(selfVal ? selfVal : make_nil()));
     auto okEnd = builder_.GetInsertBlock();
     builder_.CreateBr(contBB);
 
@@ -12881,14 +12882,14 @@ struct JIT {
     auto tryCtorBB = llvm::BasicBlock::Create(ctx_, "kwc.callee.tryctor", fn);
     builder_.CreateCondBr(isCm, callBB, tryCtorBB);
     builder_.SetInsertPoint(callBB);
-    emit_value_retain(callee);  // instance becomes `this` (consumed by frame)
+    emit_value_retain(callee);  // instance becomes `self` (consumed by frame)
     auto clsOverload = builder_.CreateIntToPtr(extract_data(cm), ptrTy);
-    thisMerge.add_incoming(own(callee));
+    selfMerge.add_incoming(own(callee));
     auto ovEnd = builder_.GetInsertBlock();
     builder_.CreateBr(contBB);
 
     // Class object: `C(kwargs)` → `new`. The constructor builds its own
-    // instance, so `this` is nil (no retain), matching interp.
+    // instance, so `self` is nil (no retain), matching interp.
     builder_.SetInsertPoint(tryCtorBB);
     auto nm = emit_value_call(
         module_->getOrInsertFunction(rt::class_new_method, valueType_,
@@ -12905,7 +12906,7 @@ struct JIT {
     builder_.CreateUnreachable();
     builder_.SetInsertPoint(ctorBB);
     auto clsCtor = builder_.CreateIntToPtr(extract_data(nm), ptrTy);
-    thisMerge.add_incoming(make_nil());
+    selfMerge.add_incoming(make_nil());
     auto ctorEnd = builder_.GetInsertBlock();
     builder_.CreateBr(contBB);
 
@@ -12915,8 +12916,8 @@ struct JIT {
     clsPtr->addIncoming(clsOverload, ovEnd);
     clsPtr->addIncoming(clsCtor, ctorEnd);
     // Owned across the position publish below; consumed at the kwargs-call
-    // handoff (the helper owns `this` from entry).
-    Owned thisO = thisMerge.finish(contBB);
+    // handoff (the helper owns `self` from entry).
+    Owned selfO = selfMerge.finish(contBB);
 
     // Positional slab index == param index in the kwargs helper (it passes
     // the resolved slab straight to fn_ptr), so the argpos indices line up
@@ -12931,13 +12932,13 @@ struct JIT {
       }
     }
     emit_call_position_publish(posAsts);
-    auto thisPin = thisO.consume();
+    auto selfPin = selfO.consume();
     auto result = emit_value_call(
         module_->getOrInsertFunction(
             rt::call_with_kwargs, valueType_, ptrTy, builder_.getInt8Ty(),
             i64Ty, i64Ty, ptrTy, i64Ty, ptrTy, ptrTy, i64Ty, ptrTy,
             i64Ty, i64Ty),
-        {clsPtr, extract_tag(thisPin), extract_data(thisPin),
+        {clsPtr, extract_tag(selfPin), extract_data(selfPin),
          builder_.getInt64(static_cast<int64_t>(posVals.size())), posSlab,
          builder_.getInt64(static_cast<int64_t>(kwVals.size())),
          kwKeysSlab, kwValsSlab,
@@ -13340,9 +13341,9 @@ struct JIT {
     ++argIt;
     argIt->setName("__cls__");
     ++argIt;
-    argIt->setName("this_tag");
+    argIt->setName("self_tag");
     ++argIt;
-    argIt->setName("this_data");
+    argIt->setName("self_data");
     ++argIt;
     argIt->setName("n_args");
     ++argIt;

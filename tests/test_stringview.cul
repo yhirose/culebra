@@ -95,8 +95,8 @@ assert_eq(classify('bye'), 0)
 
 // __str__ may return either flavor.
 class Tag {
-  new(label) { this.label = label }
-  __str__() { this.label.view() }
+  new(label) { self.label = label }
+  __str__() { self.label.view() }
 }
 assert_eq(to_string(Tag.new('demo')), 'demo')
 

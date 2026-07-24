@@ -112,7 +112,7 @@ for v in disp_vals {
 # Single-quote raw strings: the decl braces must not be read as `"{...}"`
 # interpolation.
 let enum_pre = 'enum E { V(Long), W }; '
-let class_pre = 'class C { new(a) { this.a = a } }; '
+let class_pre = 'class C { new(a) { self.a = a } }; '
 for a in ['', '1', '1, 2', '1, 2, 3'] {
   case("ctor-enum|" + a, enum_pre + "E.V(" + a + ")")
   case("ctor-class|" + a, class_pre + "C.new(" + a + ")")
@@ -124,19 +124,19 @@ case("ctor-enum-nullary", enum_pre + "E.W")
 case("ctor-enum-nullary-call", enum_pre + "E.W()")
 # `C(...)` construction ≡ `C.new(...)`, incl. kwargs and a plain dict staying
 # non-callable (a "new" key alone must not make it callable — TypeError).
-let kwclass_pre = 'class C { new(a, b = 5) { this.s = a + b } }; '
+let kwclass_pre = 'class C { new(a, b = 5) { self.s = a + b } }; '
 case("ctor-call-kw", kwclass_pre + "C(1, b: 2).s")
 case("ctor-call-kw-default", kwclass_pre + "C(a: 7).s")
-case("ctor-call-nullary", 'class C { new() { this.x = 9 } }; C().x')
+case("ctor-call-nullary", 'class C { new() { self.x = 9 } }; C().x')
 case("ctor-call-plaindict", 'let d = { new: fn (x) { x } }; d(1)')
 
 # --- Dimension 6d: declared instance fields (`x: T = e`) --------------------
-# Initializers run per instance, declaration order, `this` in scope, after
+# Initializers run per instance, declaration order, `self` in scope, after
 # ctor-arg binding, before the `new` body. The JIT compiles them into a
 # synthetic closure invoked from the `new` prologue (or the instance builder
 # for a `new`-less class) — value, error kind/position, and init-vs-binding
 # ordering must all mirror the interp.
-let field_pre = 'class F { a: Long = 3  b: Long = this.a * 2  z: Long  ' +
+let field_pre = 'class F { a: Long = 3  b: Long = self.a * 2  z: Long  ' +
                 's: String  arr: Array = [] }; '
 case("field-default", field_pre + "F.new().a")
 case("field-this-order", field_pre + "F.new().b")
@@ -145,15 +145,15 @@ case("field-zero-string", field_pre + "F.new().s")
 case("field-fresh-array",
      field_pre + "let x = F.new(); let y = F.new(); x.arr.push(1); y.arr")
 case("field-before-new",
-     'class F { a: Long = 3  new(m) { this.r = this.a * m } }; F.new(5).r')
+     'class F { a: Long = 3  new(m) { self.r = self.a * m } }; F.new(5).r')
 case("field-init-throws",
      'class F { a: Long = to_long("x") }; F.new()')
 case("field-init-after-binding",
      'class F { a: Long = to_long("x")  new(p, q) { } }; F.new(1)')
 case("field-method-call-init",
-     'class F { a: Long = this.base()  base() { 41 } }; F.new().a + 1')
+     'class F { a: Long = self.base()  base() { 41 } }; F.new().a + 1')
 case("field-forward-read",
-     'class F { a: Long = this.later  later: Long = 9 }; F.new().a')
+     'class F { a: Long = self.later  later: Long = 9 }; F.new().a')
 case("field-packable-defaults",
      '@packable class P { x: Int32 = 7  y: Float32 = 0.5 }; ' +
      'let p = P.new(); [p.x, p.y]')
@@ -161,7 +161,7 @@ case("field-packable-defaults",
 # (@packable rejects the untyped form — a STATIC error, pre-eval, so it
 # cannot live in this corpus of runnable thunks.)
 case("field-untyped",
-     'class F { a = 3  b = this.a * 2 }; let f = F.new(); [f.a, f.b]')
+     'class F { a = 3  b = self.a * 2 }; let f = F.new(); [f.a, f.b]')
 
 # --- Dimension 6e: ctor / method param defaults resolve in defining scope ---
 # The interp's method-binding wrapper must carry def_env + the default
@@ -170,7 +170,7 @@ case("field-untyped",
 case("member-default-global",
      'let g = 7; class M { new() {} m(b = g * 2) { b } }; M.new().m()')
 case("member-default-throws",
-     'class M { new(a = to_long("zzz")) { this.a = a } }; M.new()')
+     'class M { new(a = to_long("zzz")) { self.a = a } }; M.new()')
 case("member-default-hof",
      'class M { new(x = 1, a = to_long("z")) { } }; [9].map(M.new)')
 
@@ -179,8 +179,8 @@ case("member-default-hof",
 # both must agree across backends (the JIT resolves getters through a separate
 # runtime path than the interp). A getter named `name` also exercises the
 # function-introspection member path. `p` is fresh per case thunk.
-let getter_pre = 'class G { new(a) { this.a = a } get twice() { this.a * 2 } ' +
-                 'get name() { "g" } plain() { this.a } }; let p = G.new(21); '
+let getter_pre = 'class G { new(a) { self.a = a } get twice() { self.a * 2 } ' +
+                 'get name() { "g" } plain() { self.a } }; let p = G.new(21); '
 case("getter-bare", getter_pre + "p.twice")
 case("getter-paren", getter_pre + "p.twice()")
 case("getter-name-bare", getter_pre + "p.name")
@@ -501,7 +501,7 @@ for t in tensors {
 # kind/message/position stays identical across backends. A fresh class is
 # declared inside each thunk (single-quote raw so the decl braces are literal,
 # not read as `"{...}"` interpolation).
-let kwc_pre = 'class C { new(a, b = 10) { this.s = a + b } m(a, b = 10) { a + b } }; '
+let kwc_pre = 'class C { new(a, b = 10) { self.s = a + b } m(a, b = 10) { a + b } }; '
 let kw_ctor_calls = ['C.new(1).s', 'C.new(1, 2).s', 'C.new(a: 1).s',
                      'C.new(a: 1, b: 2).s', 'C.new(b: 2, a: 1).s',
                      'C.new(1, b: 2).s', 'C.new(1, **{b: 5}).s',
@@ -679,7 +679,7 @@ let drops = [
   'mut g = []; { let t = [{drop: fn () { g.push(1) }}, {drop: fn () { g.push(2) }}] }; g',
   'mut g = []; { let a = {drop: fn () { g.push(1) }}; a.list = [a] }; g',
   'mut g = []; { let a = {drop: fn () { g.push(1) }}; a.me = a; a.drop() }; g',
-  'mut g = []; { let a = {mut p: nil, drop: fn () { g.push(1) }}; let b = {mut p: nil, drop: fn () { this.p = nil; g.push(2) }}; a.p = b; b.p = a }; g',
+  'mut g = []; { let a = {mut p: nil, drop: fn () { g.push(1) }}; let b = {mut p: nil, drop: fn () { self.p = nil; g.push(2) }}; a.p = b; b.p = a }; g',
   'mut g = []; { let a = {drop: fn () { g.push(1) }}; let k = {hash: fn () { 42 }, eq: fn () { true }, back: a}; a[k] = 1 }; g',
   'mut g = []; { let a = {drop: fn () { g.push(1) }}; let b = {drop: fn () { g.push(2) }}; a.p = b; b.p = a }; let n = g.size(); n']
 for d in drops {
@@ -936,29 +936,29 @@ for c in shv {
 # kind/message/position must match across backends.
 let optr = [
   # @derive(Eq, Comparable): operators must work over data fields
-  '@derive(Eq, Comparable) class P { new(a, b) { this.a = a; this.b = b } }; to_string(P.new(1, 2) == P.new(1, 2)) + to_string(P.new(1, 2) == P.new(1, 3))',
-  '@derive(Eq, Comparable) class P { new(a, b) { this.a = a; this.b = b } }; to_string(P.new(1, 2) != P.new(1, 3))',
-  '@derive(Comparable) class P { new(a) { this.a = a } }; to_string(P.new(1) < P.new(2)) + to_string(P.new(2) < P.new(1))',
-  '@derive(Comparable) class P { new(a) { this.a = a } }; to_string(P.new(1) <= P.new(1)) + to_string(P.new(2) >= P.new(1)) + to_string(P.new(2) > P.new(1))',
+  '@derive(Eq, Comparable) class P { new(a, b) { self.a = a; self.b = b } }; to_string(P.new(1, 2) == P.new(1, 2)) + to_string(P.new(1, 2) == P.new(1, 3))',
+  '@derive(Eq, Comparable) class P { new(a, b) { self.a = a; self.b = b } }; to_string(P.new(1, 2) != P.new(1, 3))',
+  '@derive(Comparable) class P { new(a) { self.a = a } }; to_string(P.new(1) < P.new(2)) + to_string(P.new(2) < P.new(1))',
+  '@derive(Comparable) class P { new(a) { self.a = a } }; to_string(P.new(1) <= P.new(1)) + to_string(P.new(2) >= P.new(1)) + to_string(P.new(2) > P.new(1))',
   # hand-written eq / cmp
-  'class M { new(n) { this.n = n } eq(other) { this.n % 3 == other.n % 3 } }; to_string(M.new(1) == M.new(4)) + to_string(M.new(1) == M.new(2))',
-  'class R { new(n) { this.n = n } cmp(other) { other.n - this.n } }; to_string(R.new(1) < R.new(2)) + to_string(R.new(2) < R.new(1))',
+  'class M { new(n) { self.n = n } eq(other) { self.n % 3 == other.n % 3 } }; to_string(M.new(1) == M.new(4)) + to_string(M.new(1) == M.new(2))',
+  'class R { new(n) { self.n = n } cmp(other) { other.n - self.n } }; to_string(R.new(1) < R.new(2)) + to_string(R.new(2) < R.new(1))',
   # explicit dunder wins over the trait method
-  'class T { new(n) { this.n = n } eq(other) { false } __eq__(other) { this.n == other.n } }; to_string(T.new(5) == T.new(5))',
-  'class T { new(n) { this.n = n } cmp(other) { 0 } __lt__(other) { this.n < other.n } }; to_string(T.new(1) < T.new(2)) + to_string(T.new(2) < T.new(1))',
+  'class T { new(n) { self.n = n } eq(other) { false } __eq__(other) { self.n == other.n } }; to_string(T.new(5) == T.new(5))',
+  'class T { new(n) { self.n = n } cmp(other) { 0 } __lt__(other) { self.n < other.n } }; to_string(T.new(1) < T.new(2)) + to_string(T.new(2) < T.new(1))',
   # no eq / cmp: == is structural, ordering is a clean TypeError
-  'class N { new(a) { this.a = a } }; to_string(N.new(1) == N.new(1)) + to_string(N.new(1) == N.new(2))',
-  'class N { new(a) { this.a = a } }; N.new(1) < N.new(2)',
-  'class N { new(a) { this.a = a } }; N.new(1) >= N.new(2)',
+  'class N { new(a) { self.a = a } }; to_string(N.new(1) == N.new(1)) + to_string(N.new(1) == N.new(2))',
+  'class N { new(a) { self.a = a } }; N.new(1) < N.new(2)',
+  'class N { new(a) { self.a = a } }; N.new(1) >= N.new(2)',
   # cmp returning a non-Long must not be coerced: falls through to TypeError
-  'class B { new(a) { this.a = a } cmp(other) { "x" } }; B.new(1) < B.new(2)',
+  'class B { new(a) { self.a = a } cmp(other) { "x" } }; B.new(1) < B.new(2)',
   # eq return is coerced via to_bool (Long/Float truthy), matching interp
-  'class E { new(n) { this.n = n } eq(other) { this.n } }; to_string(E.new(5) == E.new(9)) + to_string(E.new(0) == E.new(9))',
+  'class E { new(n) { self.n = n } eq(other) { self.n } }; to_string(E.new(5) == E.new(9)) + to_string(E.new(0) == E.new(9))',
   # non-coercible eq return throws with the operator position on both backends
-  'class E { new(a) { this.a = a } eq(other) { "x" } }; E.new(1) == E.new(2)',
-  'class E { new(a) { this.a = a } __eq__(other) { "x" } }; E.new(1) == E.new(2)',
+  'class E { new(a) { self.a = a } eq(other) { "x" } }; E.new(1) == E.new(2)',
+  'class E { new(a) { self.a = a } __eq__(other) { "x" } }; E.new(1) == E.new(2)',
   # operator equality and key equality agree (no divergence)
-  '@derive(Eq, Hash) class P { new(a) { this.a = a } }; mut bag = {}; mut bag[P.new(7)] = "v"; bag[P.new(7)] + to_string(P.new(7) == P.new(7))']
+  '@derive(Eq, Hash) class P { new(a) { self.a = a } }; mut bag = {}; mut bag[P.new(7)] = "v"; bag[P.new(7)] + to_string(P.new(7) == P.new(7))']
 for c in optr {
   case("optr|" + c, c)
 }
@@ -989,17 +989,17 @@ for c in fnty {
 # --- Dimension 35: method multidispatch (class instance methods) ----------
 # A class may declare same-named instance methods with distinct positional
 # param-type signatures; `obj.m(args)` dispatches on the explicit arg types
-# with `this` fixed by the lookup. Covers type/arity dispatch, `this` read in
+# with `self` fixed by the lookup. Covers type/arity dispatch, `self` read in
 # the picked overload (positional + kwarg call), default-param overloads,
 # class-instance-typed dispatch, and the no-match DispatchError (kind +
 # position must agree across backends). Single-method classes stay bare.
 let mmd = [
   'class C { new(){} go(x: Long){"l"} go(x: String){"s"} }; C.new().go(1) + C.new().go("a")',
   'class C { new(){} go(x: Long){"one"} go(x: Long, y: Long){"two"} }; C.new().go(1) + C.new().go(1, 2)',
-  'class B { new(n){this.n=n} add(x: Long){this.n+x} add(x: String){x.size()+this.n} }; to_string(B.new(10).add(5)) + to_string(B.new(10).add("abc"))',
+  'class B { new(n){self.n=n} add(x: Long){self.n+x} add(x: String){x.size()+self.n} }; to_string(B.new(10).add(5)) + to_string(B.new(10).add("abc"))',
   'class D { new(){} f(x: Long, y: Long = 100){x+y} f(x: String){x.size()} }; to_string(D.new().f(1)) + to_string(D.new().f(1,2)) + to_string(D.new().f("qq"))',
-  'class S { new(){this.b=1000} h(x: Long, scale: Long = 2){this.b+x*scale} h(x: String){x.size()} }; to_string(S.new().h(5)) + to_string(S.new().h(5, scale: 10)) + to_string(S.new().h("hey"))',
-  'class A { new(n){this.n=n} }; class Z { new(){} f(a: A){"a"} f(x: Long){"n"} }; Z.new().f(A.new("c")) + Z.new().f(7)',
+  'class S { new(){self.b=1000} h(x: Long, scale: Long = 2){self.b+x*scale} h(x: String){x.size()} }; to_string(S.new().h(5)) + to_string(S.new().h(5, scale: 10)) + to_string(S.new().h("hey"))',
+  'class A { new(n){self.n=n} }; class Z { new(){} f(a: A){"a"} f(x: Long){"n"} }; Z.new().f(A.new("c")) + Z.new().f(7)',
   'class Z { new(){} f(x: Long){"n"} f(x: String){"s"} }; Z.new().f(1.5)',
   'class S { new(){} only(x){x*2} }; to_string(S.new().only(21))',
   'class T { new(){} __call__(n){n*2} }; class P { new(){} run(f: Function, x: Long){f(x)} run(x: Long){x} }; to_string(P.new().run(T.new(), 21)) + to_string(P.new().run(9))']
@@ -1064,14 +1064,14 @@ let eff = [
   'effect fn ch(a, b); effect fn idv() { perform ch(1, 2) }; to_string(handle { idv() } with ch(a, b, r) { [r(a), r(b)] } with return(v) { v + 100 })',
   # nested-handle capture: an inner handle's body / clauses reach an enclosing
   # binding through the enclosing instance (`_eff_outer` ctor arg / `_eff_self`
-  # closure local), so both backends agree without leaning on lexical `this`.
+  # closure local), so both backends agree without leaning on lexical `self`.
   'effect fn o(); effect fn ic(); effect fn bd() { let base = perform o(); handle { base + perform ic() } with ic(k) { k(100) } }; to_string(handle { bd() } with o(k) { k(5) })',
   'effect fn o(); effect fn ic(); effect fn bd() { let base = perform o(); handle { perform ic() } with ic(k) { k(base) } }; to_string(handle { bd() } with o(k) { k(7) })',
   'effect fn o(); effect fn tk(); effect fn bd() { mut acc = 0; let r = handle { perform tk(); perform tk(); "d" } with tk(k) { acc = acc + 1; k(nil) }; to_string(acc) + r }; to_string(handle { bd() } with o(k) { k(nil) })',
   'effect fn o(); effect fn e1(); effect fn e2(); effect fn bd() { let base = perform o(); handle { let m = perform e1(); handle { base + m + perform e2() } with e2(k) { k(30) } } with e1(k) { k(200) } }; to_string(handle { bd() } with o(k) { k(1000) })',
   'effect fn o(); effect fn pk(x, y); effect fn bd() { let base = perform o(); handle { base + perform pk(1, 2) } with pk(x, y, k) { [k(x), k(y)] } }; to_string(handle { bd() } with o(k) { k(10) })',
-  # `this.` inside a string is not a capture (AST-walk detection, not raw text)
-  'effect fn ask(); to_string(handle { let msg = "p is this.foo"; let v = perform ask(); v + msg.size() } with ask(k) { k(3) })',
+  # `self.` inside a string is not a capture (AST-walk detection, not raw text)
+  'effect fn ask(); to_string(handle { let msg = "p is self.foo"; let v = perform ask(); v + msg.size() } with ask(k) { k(3) })',
   # a local name as literal string text is not rewritten; interpolation is
   'effect fn a(); effect fn f() { let base = perform a(); let lit = "the base v"; "{base}-{lit}" }; handle { f() } with a(k) { k(2) }',
   # a block comment (its local name) is skipped, not rewritten

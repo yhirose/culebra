@@ -771,7 +771,7 @@ struct ObjectValue {
   ObjectValue();
 
   // Synthetic ctor: skips default map allocation and GC tracking so that
-  // _call_drop_if_present can build a `this` view over an existing map
+  // _call_drop_if_present can build a `self` view over an existing map
   // without extra bookkeeping. Caller must assign `properties` itself.
   struct Synthetic {};
   explicit ObjectValue(Synthetic) : is_synthetic(true) {}
@@ -781,7 +781,7 @@ struct ObjectValue {
   // for builtin method names (`size`/`keys`/...) even when the instance
   // carries no such field, which is what property *reads* want (the
   // builtin is the fallback). Assignment-target checks must use this
-  // instead, or `this.size = v` on a fresh field routes to `assign()`
+  // instead, or `self.size = v` on a fresh field routes to `assign()`
   // (which expects an existing slot) instead of `initialize()`.
   bool has_own(std::string_view name) const;
   const Value& get(std::string_view name) const;
@@ -818,7 +818,7 @@ struct ObjectValue {
   // property/sidecar lookup. A plain marker, invisible to str()/iteration —
   // mirrors the JIT's JitObject::is_match flag for byte-for-byte symmetry.
   bool is_match = false;
-  // A `drop`-`this` view (Synthetic ctor): its `properties` is a second,
+  // A `drop`-`self` view (Synthetic ctor): its `properties` is a second,
   // no-op-deleter control block aliasing an existing map's raw pointer, and
   // its sidecars are null. The cycle collectors must emit NO edge for such an
   // occurrence — it carries no primary `use_count` bump, so counting it would
@@ -2065,7 +2065,7 @@ inline long _owned_scope_binding_refs(const Environment& env,
 // The tracked container backing(s) a single Value occurrence directly holds a
 // reference to, each at multiplicity 1 (one Value copy = one shared_ptr
 // use_count bump). Containers only — Function def_env / multimethod edges and
-// primitives stay per-caller. A `drop`-`this` synthetic view holds no primary
+// primitives stay per-caller. A `drop`-`self` synthetic view holds no primary
 // ref (its map is a no-op-deleter alias), so it emits nothing: counting it
 // would over-subtract and free a live node (GAP2 §4b). Tensor is a leaf (its
 // buffer is opaque bytes — no container edge).
@@ -3138,7 +3138,7 @@ inline Value _make_iterator(AdvanceFn&& advance) {
   iter_obj.initialize(
       "iter",
       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-        return callEnv->get("this");
+        return callEnv->get("self");
       })),
       false);
   iter_obj.initialize(
@@ -3286,12 +3286,12 @@ inline void _decode_one_utf8(std::string_view s, size_t& off,
 // Build a call environment for invoking a well-known method (drop,
 // iter, next) by reaching into an ObjectValue's raw FunctionValue.
 // Populates the bindings that eval_function_call normally provides:
-// `this`, `__LINE__`, `__COLUMN__`, plus the function-frame marker.
+// `self`, `__LINE__`, `__COLUMN__`, plus the function-frame marker.
 inline std::shared_ptr<Environment> _make_method_call_env(
-    const Value& this_val, size_t line, size_t column) {
+    const Value& self_val, size_t line, size_t column) {
   auto env = std::make_shared<Environment>();
   env->is_function_frame = true;
-  env->initialize("this", this_val, false);
+  env->initialize("self", self_val, false);
   env->initialize("__LINE__", Value((long)line), false);
   env->initialize("__COLUMN__", Value((long)column), false);
   return env;
@@ -3409,7 +3409,7 @@ inline void inject_derived_methods(
       case 0:  // Eq -> eq(other)
         add(dm.name, {{"other", false}},
             [](const std::shared_ptr<Environment>& env) -> Value {
-              const auto& self_v = env->get("this");
+              const auto& self_v = env->get("self");
               const auto& other = env->get("other");
               if (other.type != Value::Object) return Value(false);
               if (class_tag(self_v) != class_tag(other)) return Value(false);
@@ -3429,7 +3429,7 @@ inline void inject_derived_methods(
       case 1:  // Hash -> hash()
         add(dm.name, {},
             [class_name](const std::shared_ptr<Environment>& env) -> Value {
-              const auto& self_v = env->get("this");
+              const auto& self_v = env->get("self");
               size_t h = std::hash<std::string_view>{}(class_name);
               _for_each_derived_field(
                   self_v, [&](std::string_view, const Value& av) {
@@ -3441,7 +3441,7 @@ inline void inject_derived_methods(
       case 2:  // Show -> to_s()
         add(dm.name, {},
             [class_name](const std::shared_ptr<Environment>& env) -> Value {
-              const auto& self_v = env->get("this");
+              const auto& self_v = env->get("self");
               std::string s(class_name);
               s += "(";
               bool first = true;
@@ -3458,7 +3458,7 @@ inline void inject_derived_methods(
       case 3:  // Comparable -> cmp(other)
         add(dm.name, {{"other", false}},
             [](const std::shared_ptr<Environment>& env) -> Value {
-              const auto& self_v = env->get("this");
+              const auto& self_v = env->get("self");
               const auto& other = env->get("other");
               if (other.type != Value::Object) return Value(0L);
               const auto& ob = other.to_object();
@@ -3552,15 +3552,15 @@ inline void bind_callback_params(Environment& frame, const FunctionValue& f,
 
 // Invoke a user-supplied callable (mapper/predicate/reducer callback)
 // on the given argument. Used by Iterator methods where the callback
-// body runs repeatedly per step. No `this` is bound — callbacks are
-// free-function calls — but `self` refers to the callback for
+// body runs repeatedly per step. No `self` is bound — callbacks are
+// free-function calls — but `fn` refers to the callback for
 // recursion. Arity is validated once at the iterator HOF entry
 // (check_callback_arity); the binder handles *args / defaults uniformly.
 inline Value _invoke_callback(const Value& fn_val) {
   const auto& fn = fn_val.to_function();
   auto env = std::make_shared<Environment>();
   env->is_function_frame = true;
-  env->initialize("self", fn_val, false);
+  env->initialize("fn", fn_val, false);
   bind_callback_params(*env, fn, {});
   env->initialize("__LINE__", Value(0L), false);
   env->initialize("__COLUMN__", Value(0L), false);
@@ -3575,7 +3575,7 @@ inline Value _invoke_callback(const Value& fn_val, const Value& a) {
   const auto& fn = fn_val.to_function();
   auto env = std::make_shared<Environment>();
   env->is_function_frame = true;
-  env->initialize("self", fn_val, false);
+  env->initialize("fn", fn_val, false);
   bind_callback_params(*env, fn, {a});
   env->initialize("__LINE__", Value(0L), false);
   env->initialize("__COLUMN__", Value(0L), false);
@@ -3591,7 +3591,7 @@ inline Value _invoke_callback(const Value& fn_val, const Value& a,
   const auto& fn = fn_val.to_function();
   auto env = std::make_shared<Environment>();
   env->is_function_frame = true;
-  env->initialize("self", fn_val, false);
+  env->initialize("fn", fn_val, false);
   bind_callback_params(*env, fn, {a, b});
   env->initialize("__LINE__", Value(0L), false);
   env->initialize("__COLUMN__", Value(0L), false);
@@ -3668,7 +3668,7 @@ inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
   static std::unordered_map<std::string_view, Value> props_ = {
       {"size"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& obj = callEnv->get("this").to_object();
+         const auto& obj = callEnv->get("self").to_object();
          long n = static_cast<long>(obj.properties->size());
          if (obj.non_string_props) {
            n += static_cast<long>(obj.non_string_props->size());
@@ -3677,7 +3677,7 @@ inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
        }))},
       {"keys"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& obj = callEnv->get("this").to_object();
+         const auto& obj = callEnv->get("self").to_object();
          ArrayValue arr;
          // Walk key_order when populated so String and non-String keys
          // come out interleaved in their actual insertion order. Fall
@@ -3696,7 +3696,7 @@ inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
        }))},
       {"has"sv, Value(FunctionValue({{"key", false}},
                                     [](std::shared_ptr<Environment> callEnv) {
-                                      const auto& obj = callEnv->get("this").to_object();
+                                      const auto& obj = callEnv->get("self").to_object();
                                       const auto& key = callEnv->get("key");
                                       return Value(obj.has(key));
                                     }))},
@@ -3705,7 +3705,7 @@ inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
       // eager value (cheap literals like 0/""/nil are the common case).
       {"get"sv, Value(FunctionValue({{"key", false}, {"fallback", false}},
                                     [](std::shared_ptr<Environment> callEnv) -> Value {
-                                      const auto& obj = callEnv->get("this").to_object();
+                                      const auto& obj = callEnv->get("self").to_object();
                                       const auto& key = callEnv->get("key");
                                       if (obj.has(key)) return obj.get(key);
                                       return callEnv->get("fallback");
@@ -3720,7 +3720,7 @@ inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
                                              // A Value copy shares the same storage
                                              // shared_ptrs, so initialize() through it
                                              // propagates (see ObjectValue field notes).
-                                             ObjectValue obj = callEnv->get("this").to_object();
+                                             ObjectValue obj = callEnv->get("self").to_object();
                                              const auto& key = callEnv->get("key");
                                              if (obj.has(key)) return obj.get(key);
                                              const auto& init = callEnv->get("init");
@@ -3736,7 +3736,7 @@ inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
       {"remove"sv,
        Value(FunctionValue({{"key", false}},
                            [](std::shared_ptr<Environment> callEnv) {
-                             const auto& val = callEnv->get("this");
+                             const auto& val = callEnv->get("self");
                              auto& obj = val.to_object();
                              // A StringView key (e.g. `s[0..1]`) normalizes to
                              // a String so it removes the same slot `obj["k"]`
@@ -3796,7 +3796,7 @@ inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
       // `_object_iterator`.
       {"values"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& obj = callEnv->get("this").to_object();
+         const auto& obj = callEnv->get("self").to_object();
          return _object_iterator(obj, ObjectIterMode::Values);
        }))},
       // Iterator protocol: yield `(key, value)` pairs in insertion order
@@ -3807,7 +3807,7 @@ inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
       // raises — Python dict semantics. Value updates are allowed.
       {"iter"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& self = callEnv->get("this");
+         const auto& self = callEnv->get("self");
          // A range value's `.iter()` must yield its `start..end` sequence,
          // not the (key, value) pairs of its backing object — same as the
          // for-in path (_get_iterator). Without this, `(0..n).iter()` (which
@@ -3873,7 +3873,7 @@ inline std::optional<Value> resolve_param_default(const FunctionValue& f,
 // same way the full call binder does — via the shared `resolve_param_default`.
 // Every higher-order callback invocation goes through here so a variadic
 // (`fn (*xs)`) or defaulted callback binds exactly like a direct call. The
-// caller sets up `self` and seeds __LINE__/__COLUMN__; this only binds the
+// caller sets up `fn` and seeds __LINE__/__COLUMN__; this only binds the
 // parameters. `args` is an initializer_list so the common 1-2 arg call sites
 // avoid a heap-backed vector.
 inline void bind_callback_params(Environment& frame, const FunctionValue& f,
@@ -3972,7 +3972,7 @@ inline void check_callback_arity(const FunctionValue& f, long expected,
 // Resolve a higher-order builtin's callback argument to a FunctionValue.
 // A plain function is returned as-is; a callable class instance (own/proto
 // `__call__`) is wrapped so the builtin invokes it like any function, with
-// `this` bound to the instance (Option A: structural callable). type_matches
+// `self` bound to the instance (Option A: structural callable). type_matches
 // already let the instance bind to the `f: Function` parameter; this is
 // where the per-call dispatch happens. A genuine non-callable falls through
 // to to_function(), which raises the standard "expected Function" error.
@@ -3983,7 +3983,7 @@ inline FunctionValue as_callback(const Value& cb) {
         it->second.val.type == Value::Function) {
       const auto& pf = it->second.val.get<FunctionValue>();
       FunctionValue bound(*pf.params, [pf, cb](std::shared_ptr<Environment> ce) {
-        ce->initialize("this", cb, false);
+        ce->initialize("self", cb, false);
         return pf.eval(ce);
       });
       bound.name = pf.name;
@@ -3993,7 +3993,7 @@ inline FunctionValue as_callback(const Value& cb) {
       // (the JIT calls the method's compiled prologue directly). The
       // wrapper never escapes the HOF call, so sendable never sees it —
       // and params_ast stays null so an escapee would still be rejected
-      // as not Sendable rather than rebuilt without its `this`.
+      // as not Sendable rather than rebuilt without its `self`.
       bound.body = pf.body;
       return bound;
     }
@@ -4001,14 +4001,14 @@ inline FunctionValue as_callback(const Value& cb) {
   return cb.to_function();
 }
 
-// Sets up a function-frame environment with `self` bound to the callback,
+// Sets up a function-frame environment with `fn` bound to the callback,
 // and treats an early return (`return x` compiled as a thrown Value) as
 // the callback's result.
 inline Value invoke_unary_callback(std::shared_ptr<Environment> callEnv,
                                    const FunctionValue& f, const Value& v) {
   auto inner = std::make_shared<Environment>(callEnv);
   inner->is_function_frame = true;
-  inner->initialize("self", callEnv->get("f"), false);
+  inner->initialize("fn", callEnv->get("f"), false);
   // Bind the element through the shared callback binder so a `*args` /
   // defaulted / __ARGS__-reading (range/iota) callback binds exactly like a
   // direct call. Arity is validated once at the HOF entry (check_callback_arity).
@@ -4053,7 +4053,7 @@ inline Value call(const std::shared_ptr<Environment>& env, std::string_view name
 
   auto callEnv = std::make_shared<Environment>(env);
   callEnv->is_function_frame = true;
-  callEnv->initialize("self", fn_val, false);
+  callEnv->initialize("fn", fn_val, false);
 
   size_t pos = 0;
   for (size_t i = 0; i < params.size(); ++i) {
@@ -4249,20 +4249,20 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
   static std::unordered_map<std::string_view, Value> props_ = {
       {"size"sv, Value(FunctionValue({},
                                      [](std::shared_ptr<Environment> callEnv) {
-                                       const auto& val = callEnv->get("this");
+                                       const auto& val = callEnv->get("self");
                                        long n = val.to_array().values->size();
                                        return Value(n);
                                      }))},
       {"push"sv, Value(FunctionValue{{{"arg", false}},
                                      [](std::shared_ptr<Environment> callEnv) {
-                                       const auto& val = callEnv->get("this");
+                                       const auto& val = callEnv->get("self");
                                        const auto& arg = callEnv->get("arg");
                                        val.to_array().values->push_back(arg);
                                        return Value();
                                      }})},
       {"pop"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& val = callEnv->get("this");
+         const auto& val = callEnv->get("self");
          auto& vs = *val.to_array().values;
          if (vs.empty()) return Value();
          auto last = vs.back();
@@ -4273,7 +4273,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
        Value(FunctionValue(
            {{"start", false, "Long"sv}, {"end", false, "Long"sv}},
            [](std::shared_ptr<Environment> callEnv) {
-             const auto& val = callEnv->get("this");
+             const auto& val = callEnv->get("self");
              auto& vs = *val.to_array().values;
              auto [s, e] = normalize_slice(callEnv->get("start").to_long(),
                                            callEnv->get("end").to_long(),
@@ -4286,7 +4286,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
       {"join"sv,
        Value(FunctionValue({{"sep", false, "String"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-                             const auto& val = callEnv->get("this");
+                             const auto& val = callEnv->get("self");
                              const auto& sep =
                                  callEnv->get("sep").to_string();
                              std::string out;
@@ -4301,7 +4301,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
       {"index_of"sv,
        Value(FunctionValue({{"v", false}},
                            [](std::shared_ptr<Environment> callEnv) {
-                             const auto& val = callEnv->get("this");
+                             const auto& val = callEnv->get("self");
                              const auto& needle = callEnv->get("v");
                              const auto& vs = *val.to_array().values;
                              for (size_t i = 0; i < vs.size(); i++) {
@@ -4313,7 +4313,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
       {"contains"sv,
        Value(FunctionValue({{"v", false}},
                            [](std::shared_ptr<Environment> callEnv) {
-                             const auto& val = callEnv->get("this");
+                             const auto& val = callEnv->get("self");
                              const auto& needle = callEnv->get("v");
                              for (const auto& v : *val.to_array().values) {
                                if (v == needle) return Value(true);
@@ -4322,7 +4322,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                            }))},
       {"reverse"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& val = callEnv->get("this");
+         const auto& val = callEnv->get("self");
          auto& vs = *val.to_array().values;
          std::reverse(vs.begin(), vs.end());
          return Value();
@@ -4332,7 +4332,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
       // streams. Snapshots the backing vector by shared_ptr.
       {"enumerate"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto vec = callEnv->get("this").to_array().values;
+         auto vec = callEnv->get("self").to_array().values;
          auto index = std::make_shared<long>(0);
          return _make_iterator([vec, index](std::shared_ptr<Environment>) {
            if (static_cast<size_t>(*index) >= vec->size()) {
@@ -4346,7 +4346,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
       {"map"sv,
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-                             const auto& arr = callEnv->get("this").to_array();
+                             const auto& arr = callEnv->get("self").to_array();
                              auto f = as_callback(callEnv->get("f"));
                              check_callback_arity(f, 1, "map");
                              ArrayValue out;
@@ -4360,7 +4360,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
       {"filter"sv,
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-                             const auto& arr = callEnv->get("this").to_array();
+                             const auto& arr = callEnv->get("self").to_array();
                              auto f = as_callback(callEnv->get("f"));
                              check_callback_arity(f, 1, "filter");
                              ArrayValue out;
@@ -4375,7 +4375,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
       {"for_each"sv,
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-                             const auto& arr = callEnv->get("this").to_array();
+                             const auto& arr = callEnv->get("self").to_array();
                              auto f = as_callback(callEnv->get("f"));
                              check_callback_arity(f, 1, "for_each");
                              for (const auto& v : *arr.values) {
@@ -4387,14 +4387,14 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
        Value(FunctionValue(
            {{"init", false}, {"f", false, "Function"sv}},
            [](std::shared_ptr<Environment> callEnv) {
-             const auto& arr = callEnv->get("this").to_array();
+             const auto& arr = callEnv->get("self").to_array();
              auto f = as_callback(callEnv->get("f"));
              check_callback_arity(f, 2, "reduce");
              Value acc = callEnv->get("init");
              for (const auto& v : *arr.values) {
                auto inner = std::make_shared<Environment>(callEnv);
                inner->is_function_frame = true;
-               inner->initialize("self", callEnv->get("f"), false);
+               inner->initialize("fn", callEnv->get("f"), false);
                // Bind (acc, elem) through the shared binder so a `*args` /
                // defaulted reducer binds like a direct call.
                bind_callback_params(*inner, f, {acc, v});
@@ -4413,7 +4413,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
       {"find"sv,
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-                             const auto& arr = callEnv->get("this").to_array();
+                             const auto& arr = callEnv->get("self").to_array();
                              auto f = as_callback(callEnv->get("f"));
                              check_callback_arity(f, 1, "find");
                              for (const auto& v : *arr.values) {
@@ -4425,7 +4425,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
       {"any"sv,
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-                             const auto& arr = callEnv->get("this").to_array();
+                             const auto& arr = callEnv->get("self").to_array();
                              auto f = as_callback(callEnv->get("f"));
                              check_callback_arity(f, 1, "any");
                              for (const auto& v : *arr.values) {
@@ -4437,7 +4437,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
       {"all"sv,
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-                             const auto& arr = callEnv->get("this").to_array();
+                             const auto& arr = callEnv->get("self").to_array();
                              auto f = as_callback(callEnv->get("f"));
                              check_callback_arity(f, 1, "all");
                              for (const auto& v : *arr.values) {
@@ -4449,7 +4449,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
       {"flat_map"sv,
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-                             const auto& arr = callEnv->get("this").to_array();
+                             const auto& arr = callEnv->get("self").to_array();
                              auto f = as_callback(callEnv->get("f"));
                              check_callback_arity(f, 1, "flat_map");
                              ArrayValue out;
@@ -4468,21 +4468,21 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                            }))},
       {"sum"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& arr = callEnv->get("this").to_array();
+         const auto& arr = callEnv->get("self").to_array();
          long acc = 0;
          for (const auto& v : *arr.values) acc += v.to_long();
          return Value(acc);
        }))},
       {"product"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& arr = callEnv->get("this").to_array();
+         const auto& arr = callEnv->get("self").to_array();
          long acc = 1;
          for (const auto& v : *arr.values) acc *= v.to_long();
          return Value(acc);
        }))},
       {"min"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& arr = callEnv->get("this").to_array();
+         const auto& arr = callEnv->get("self").to_array();
          if (arr.values->empty()) {
            throw CulebraError("ValueError",
                               "min of empty Array.");
@@ -4496,7 +4496,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
        }))},
       {"max"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& arr = callEnv->get("this").to_array();
+         const auto& arr = callEnv->get("self").to_array();
          if (arr.values->empty()) {
            throw CulebraError("ValueError",
                               "max of empty Array.");
@@ -4513,7 +4513,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                             {"reverse", false, "Bool"sv, nullptr,
                              kw_default_false(), true}},
                            [](std::shared_ptr<Environment> callEnv) {
-                             auto& arr = callEnv->get("this").to_array();
+                             auto& arr = callEnv->get("self").to_array();
                              auto f = as_callback(callEnv->get("f"));
                              check_callback_arity(f, 1, "sort_by");
                              bool reverse = callEnv->get("reverse").to_bool();
@@ -4543,7 +4543,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                             {"reverse", false, "Bool"sv, nullptr,
                              kw_default_false(), true}},
                            [](std::shared_ptr<Environment> callEnv) {
-                             auto& arr = callEnv->get("this").to_array();
+                             auto& arr = callEnv->get("self").to_array();
                              auto f = as_callback(callEnv->get("f"));
                              check_callback_arity(f, 1, "sorted_by");
                              bool reverse = callEnv->get("reverse").to_bool();
@@ -4574,7 +4574,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
        Value(FunctionValue({{"reverse", false, "Bool"sv, nullptr,
                              kw_default_false(), true}},
                            [](std::shared_ptr<Environment> callEnv) {
-                             auto& vs = *callEnv->get("this").to_array().values;
+                             auto& vs = *callEnv->get("self").to_array().values;
                              bool reverse = callEnv->get("reverse").to_bool();
                              std::stable_sort(
                                  vs.begin(), vs.end(),
@@ -4590,7 +4590,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                              kw_default_false(), true}},
                            [](std::shared_ptr<Environment> callEnv) {
                              const auto& vs =
-                                 *callEnv->get("this").to_array().values;
+                                 *callEnv->get("self").to_array().values;
                              bool reverse = callEnv->get("reverse").to_bool();
                              ArrayValue out;
                              out.values->assign(vs.begin(), vs.end());
@@ -4605,7 +4605,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
       // Iterator protocol: yield elements in index order.
       {"iter"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         return _iter_over_vector(callEnv->get("this").to_array().values);
+         return _iter_over_vector(callEnv->get("self").to_array().values);
        }))}};
   return props_;
 }
@@ -4622,7 +4622,7 @@ inline Value _make_tensor_reduction_method() {
   return Value(FunctionValue(
       {FunctionValue::Parameter::make_args_rest("axis")},
       [](std::shared_ptr<Environment> callEnv) {
-        const auto& self = callEnv->get("this").to_tensor().impl;
+        const auto& self = callEnv->get("self").to_tensor().impl;
         if (callEnv->has("__ARGS__")) {
           const auto& args = *callEnv->get("__ARGS__").to_array().values;
           if (!args.empty()) {
@@ -4647,7 +4647,7 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                        {},
                        [](std::shared_ptr<Environment> callEnv) {
                          const auto& impl =
-                             *callEnv->get("this").to_tensor().impl;
+                             *callEnv->get("self").to_tensor().impl;
                          ArrayValue out;
                          out.values->reserve(impl.shape.dims.size());
                          for (auto d : impl.shape.dims) {
@@ -4660,7 +4660,7 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                      {{"exp", false}},
                      [](std::shared_ptr<Environment> callEnv) {
                        const auto& self =
-                           callEnv->get("this").to_tensor().impl;
+                           callEnv->get("self").to_tensor().impl;
                        const auto& exp = callEnv->get("exp");
                        TensorPtr b;
                        if (exp.type == Value::Tensor) {
@@ -4681,7 +4681,7 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                           {},
                           [](std::shared_ptr<Environment> callEnv) {
                             const auto& self =
-                                callEnv->get("this").to_tensor().impl;
+                                callEnv->get("self").to_tensor().impl;
                             return Value(TensorValue(tensor_transpose(self)));
                           },
                           "Tensor"sv))},
@@ -4689,7 +4689,7 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                       {},
                       [](std::shared_ptr<Environment> callEnv) {
                         const auto& self =
-                            callEnv->get("this").to_tensor().impl;
+                            callEnv->get("self").to_tensor().impl;
                         return Value(TensorValue(tensor_clone(self)));
                       },
                       "Tensor"sv))},
@@ -4704,7 +4704,7 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                               {},
                               [](std::shared_ptr<Environment> callEnv) {
                                 const auto& self =
-                                    callEnv->get("this").to_tensor().impl;
+                                    callEnv->get("self").to_tensor().impl;
                                 tensor_requires_grad(self);
                                 return Value(TensorValue(self));
                               },
@@ -4713,7 +4713,7 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                      {},
                      [](std::shared_ptr<Environment> callEnv) {
                        const auto& self =
-                           callEnv->get("this").to_tensor().impl;
+                           callEnv->get("self").to_tensor().impl;
                        return Value(TensorValue(tensor_grad(self)));
                      },
                      "Tensor"sv))},
@@ -4721,7 +4721,7 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                          {},
                          [](std::shared_ptr<Environment> callEnv) {
                            const auto& self =
-                               callEnv->get("this").to_tensor().impl;
+                               callEnv->get("self").to_tensor().impl;
                            tensor_backward(self);
                            return Value(TensorValue(self));
                          },
@@ -4730,7 +4730,7 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                           {},
                           [](std::shared_ptr<Environment> callEnv) {
                             const auto& self =
-                                callEnv->get("this").to_tensor().impl;
+                                callEnv->get("self").to_tensor().impl;
                             tensor_zero_grad(self);
                             return Value(TensorValue(self));
                           },
@@ -4739,7 +4739,7 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                        {},
                        [](std::shared_ptr<Environment> callEnv) {
                          const auto& self =
-                             callEnv->get("this").to_tensor().impl;
+                             callEnv->get("self").to_tensor().impl;
                          return Value(TensorValue(tensor_detach(self)));
                        },
                        "Tensor"sv))},
@@ -4752,7 +4752,7 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                      {},
                      [](std::shared_ptr<Environment> callEnv) {
                        const auto& self =
-                           callEnv->get("this").to_tensor().impl;
+                           callEnv->get("self").to_tensor().impl;
                        return Value(TensorValue(tensor_unary(Op::Relu, self)));
                      },
                      "Tensor"sv))},
@@ -4760,7 +4760,7 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                         {},
                         [](std::shared_ptr<Environment> callEnv) {
                           const auto& self =
-                              callEnv->get("this").to_tensor().impl;
+                              callEnv->get("self").to_tensor().impl;
                           return Value(
                               TensorValue(tensor_unary(Op::Sigmoid, self)));
                         },
@@ -4769,7 +4769,7 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                         {},
                         [](std::shared_ptr<Environment> callEnv) {
                           const auto& self =
-                              callEnv->get("this").to_tensor().impl;
+                              callEnv->get("self").to_tensor().impl;
                           return Value(
                               TensorValue(tensor_unary(Op::Softmax, self)));
                         },
@@ -4778,7 +4778,7 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                     {},
                     [](std::shared_ptr<Environment> callEnv) {
                       const auto& self =
-                          callEnv->get("this").to_tensor().impl;
+                          callEnv->get("self").to_tensor().impl;
                       return Value(TensorValue(tensor_log(self)));
                     },
                     "Tensor"sv))},
@@ -4787,7 +4787,7 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                         {"end", false, "Long"sv}},
                        [](std::shared_ptr<Environment> callEnv) {
                          const auto& self =
-                             callEnv->get("this").to_tensor().impl;
+                             callEnv->get("self").to_tensor().impl;
                          auto start = callEnv->get("start").to_long();
                          auto end = callEnv->get("end").to_long();
                          return Value(TensorValue(
@@ -4798,7 +4798,7 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                          {{"dims", false, "Array"sv}},
                          [](std::shared_ptr<Environment> callEnv) {
                            const auto& self =
-                               callEnv->get("this").to_tensor().impl;
+                               callEnv->get("self").to_tensor().impl;
                            const auto& dims_v =
                                *callEnv->get("dims").to_array().values;
                            std::vector<int64_t> new_dims;
@@ -4825,7 +4825,7 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                         {{"axis", false, "Long"sv}},
                         [](std::shared_ptr<Environment> callEnv) {
                           const auto& self =
-                              callEnv->get("this").to_tensor().impl;
+                              callEnv->get("self").to_tensor().impl;
                           auto axis = callEnv->get("axis").to_long();
                           return Value(TensorValue(tensor_reduce_axis(
                               Op::Argmax, self, axis)));
@@ -4835,7 +4835,7 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                      {{"other", false, "Tensor"sv}},
                      [](std::shared_ptr<Environment> callEnv) {
                        const auto& self =
-                           callEnv->get("this").to_tensor().impl;
+                           callEnv->get("self").to_tensor().impl;
                        const auto& other =
                            callEnv->get("other").to_tensor().impl;
                        return Value(TensorValue(tensor_dot(self, other)));
@@ -4844,7 +4844,7 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
       {"linear_sigmoid"sv, Value(FunctionValue(
            {{"x", false, "Tensor"sv}, {"b", false, "Tensor"sv}},
            [](std::shared_ptr<Environment> callEnv) {
-             const auto& W = callEnv->get("this").to_tensor().impl;
+             const auto& W = callEnv->get("self").to_tensor().impl;
              const auto& x = callEnv->get("x").to_tensor().impl;
              const auto& b = callEnv->get("b").to_tensor().impl;
              return Value(TensorValue(tensor_linear_sigmoid(W, x, b)));
@@ -4857,7 +4857,7 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                           {},
                           [](std::shared_ptr<Environment> callEnv) {
                             const auto& self =
-                                callEnv->get("this").to_tensor().impl;
+                                callEnv->get("self").to_tensor().impl;
                             tensor_eval_node(*self);
                             auto read_at = [&](int64_t flat_idx) {
                               return static_cast<double>(
@@ -4899,7 +4899,7 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                      {},
                      [](std::shared_ptr<Environment> callEnv) {
                        const auto& self =
-                           callEnv->get("this").to_tensor().impl;
+                           callEnv->get("self").to_tensor().impl;
                        tensor_eval_node(*self);
                        if (self->shape.num_elements() != 1) {
                          throw CulebraError("ValueError",
@@ -4922,12 +4922,12 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
       {"size"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          return Value(static_cast<long>(
-             callEnv->get("this").to_string_view().size()));
+             callEnv->get("self").to_string_view().size()));
        }))},
       // `.view()` → StringView sharing the receiver's bytes.
       {"view"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto [src, sv] = callEnv->get("this").share_source_and_view();
+         auto [src, sv] = callEnv->get("self").share_source_and_view();
          return Value(std::move(src), sv);
        }))},
       // `.to_string()` on StringView → owning String (alloc + copy).
@@ -4936,21 +4936,21 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
       // lifetime: store as String, not StringView.
       {"to_string"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         return Value(std::string(callEnv->get("this").to_string_view()));
+         return Value(std::string(callEnv->get("self").to_string_view()));
        }))},
       {"upper"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          return Value(culebra::ascii_upper(
-             callEnv->get("this").to_string()));
+             callEnv->get("self").to_string()));
        }))},
       {"lower"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          return Value(culebra::ascii_lower(
-             callEnv->get("this").to_string()));
+             callEnv->get("self").to_string()));
        }))},
       {"trim"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& s = callEnv->get("this").to_string();
+         const auto& s = callEnv->get("self").to_string();
          return Value(std::string(trim_ascii(s)));
        }))},
       // Directional trim. No arg → ASCII whitespace; `chars` → trim leading
@@ -4960,7 +4960,7 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
            {{"chars", false, "StringLike"sv, nullptr, kw_default_empty_str()}},
            [](std::shared_ptr<Environment> callEnv) {
              return Value(std::string(culebra::trim_chars(
-                 callEnv->get("this").to_string_view(),
+                 callEnv->get("self").to_string_view(),
                  callEnv->get("chars").to_string_view(), true, false)));
            }))},
       {"trim_end"sv,
@@ -4968,7 +4968,7 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
            {{"chars", false, "StringLike"sv, nullptr, kw_default_empty_str()}},
            [](std::shared_ptr<Environment> callEnv) {
              return Value(std::string(culebra::trim_chars(
-                 callEnv->get("this").to_string_view(),
+                 callEnv->get("self").to_string_view(),
                  callEnv->get("chars").to_string_view(), false, true)));
            }))},
       // Per-scalar translation (Ruby `tr`, character-list form). See
@@ -4979,7 +4979,7 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
            {{"from", false, "StringLike"sv}, {"to", false, "StringLike"sv}},
            [](std::shared_ptr<Environment> callEnv) {
              return Value(culebra::str_tr(
-                 callEnv->get("this").to_string_view(),
+                 callEnv->get("self").to_string_view(),
                  callEnv->get("from").to_string_view(),
                  callEnv->get("to").to_string_view()));
            }))},
@@ -4989,7 +4989,7 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
        Value(FunctionValue(
            {{"sep", false, "StringLike"sv}},
            [](std::shared_ptr<Environment> callEnv) {
-             auto [src, base] = callEnv->get("this").share_source_and_view();
+             auto [src, base] = callEnv->get("self").share_source_and_view();
              auto sep = std::string(callEnv->get("sep").to_string_view());
              ArrayValue out;
              if (sep.empty()) {
@@ -5019,7 +5019,7 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
                size_t pos = 0;
                bool done = false;
              };
-             auto [src, base] = callEnv->get("this").share_source_and_view();
+             auto [src, base] = callEnv->get("self").share_source_and_view();
              auto st = std::make_shared<State>();
              st->sep = std::string(callEnv->get("sep").to_string_view());
              return _make_iterator(
@@ -5043,7 +5043,7 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
       {"contains"sv,
        Value(FunctionValue({{"sub", false, "StringLike"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-                             auto s = callEnv->get("this").to_string_view();
+                             auto s = callEnv->get("self").to_string_view();
                              auto sub =
                                  callEnv->get("sub").to_string_view();
                              return Value(s.find(sub) != std::string_view::npos);
@@ -5052,7 +5052,7 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
        Value(FunctionValue(
            {{"prefix", false, "StringLike"sv}},
            [](std::shared_ptr<Environment> callEnv) {
-             auto s = callEnv->get("this").to_string_view();
+             auto s = callEnv->get("self").to_string_view();
              auto prefix = callEnv->get("prefix").to_string_view();
              return Value(s.size() >= prefix.size() &&
                           s.compare(0, prefix.size(), prefix) == 0);
@@ -5061,7 +5061,7 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
        Value(FunctionValue(
            {{"suffix", false, "StringLike"sv}},
            [](std::shared_ptr<Environment> callEnv) {
-             auto s = callEnv->get("this").to_string_view();
+             auto s = callEnv->get("self").to_string_view();
              auto suf = callEnv->get("suffix").to_string_view();
              return Value(s.size() >= suf.size() &&
                           s.compare(s.size() - suf.size(), suf.size(), suf) ==
@@ -5073,7 +5073,7 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
        Value(FunctionValue(
            {{"start", false, "Long"sv}, {"end", false, "Long"sv}},
            [](std::shared_ptr<Environment> callEnv) {
-             auto [src, base] = callEnv->get("this").share_source_and_view();
+             auto [src, base] = callEnv->get("self").share_source_and_view();
              auto [ss, ee] = normalize_slice(callEnv->get("start").to_long(),
                                              callEnv->get("end").to_long(),
                                              static_cast<long>(base.size()));
@@ -5083,7 +5083,7 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
       // truncated lead bytes yield as 1-byte views and advance.
       {"iter"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto [src, base] = callEnv->get("this").share_source_and_view();
+         auto [src, base] = callEnv->get("self").share_source_and_view();
          auto offset = std::make_shared<size_t>(0);
          return _make_iterator(
              [src, base, offset](std::shared_ptr<Environment>) {
@@ -5103,7 +5103,7 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
       // by one, mirroring `iter`'s permissive policy.
       {"code_points"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto [src, base] = callEnv->get("this").share_source_and_view();
+         auto [src, base] = callEnv->get("self").share_source_and_view();
          auto offset = std::make_shared<size_t>(0);
          return _make_iterator(
              [src, base, offset](std::shared_ptr<Environment>) {
@@ -5119,7 +5119,7 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
       // vocab, wire formats), mirroring Python's `list(s.encode())`.
       {"bytes"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto [src, base] = callEnv->get("this").share_source_and_view();
+         auto [src, base] = callEnv->get("self").share_source_and_view();
          auto offset = std::make_shared<size_t>(0);
          return _make_iterator(
              [src, base, offset](std::shared_ptr<Environment>) {
@@ -5149,7 +5149,7 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
            size_t byte_off = 0;
            size_t cp_off = 0;
          };
-         auto [src, base] = callEnv->get("this").share_source_and_view();
+         auto [src, base] = callEnv->get("self").share_source_and_view();
          auto st = std::make_shared<State>();
          return _make_iterator(
              [src, base, st](std::shared_ptr<Environment>) {
@@ -5214,14 +5214,14 @@ inline std::unordered_map<std::string_view, Value>& set_builtins() {
   static std::unordered_map<std::string_view, Value> props_ = {
       {"size"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& self = callEnv->get("this").get<SetValue>();
+         const auto& self = callEnv->get("self").get<SetValue>();
          return Value(static_cast<long>(self.members->size()));
        }))},
       {"contains"sv,
        Value(FunctionValue(
            {{"x", false}},
            [](std::shared_ptr<Environment> callEnv) {
-             const auto& self = callEnv->get("this").get<SetValue>();
+             const auto& self = callEnv->get("self").get<SetValue>();
              const auto& x = callEnv->get("x");
              return Value(self.index->contains(x));
            },
@@ -5230,7 +5230,7 @@ inline std::unordered_map<std::string_view, Value>& set_builtins() {
        Value(FunctionValue(
            {{"other", false, "Set"sv}},
            [](std::shared_ptr<Environment> callEnv) {
-             const auto& a = callEnv->get("this").get<SetValue>();
+             const auto& a = callEnv->get("self").get<SetValue>();
              const auto& b = callEnv->get("other").get<SetValue>();
              SetValue out;
              for (const auto& v : *a.members) out.add(v);
@@ -5242,7 +5242,7 @@ inline std::unordered_map<std::string_view, Value>& set_builtins() {
        Value(FunctionValue(
            {{"other", false, "Set"sv}},
            [](std::shared_ptr<Environment> callEnv) {
-             const auto& a = callEnv->get("this").get<SetValue>();
+             const auto& a = callEnv->get("self").get<SetValue>();
              const auto& b = callEnv->get("other").get<SetValue>();
              SetValue out;
              for (const auto& v : *a.members) {
@@ -5255,7 +5255,7 @@ inline std::unordered_map<std::string_view, Value>& set_builtins() {
        Value(FunctionValue(
            {{"other", false, "Set"sv}},
            [](std::shared_ptr<Environment> callEnv) {
-             const auto& a = callEnv->get("this").get<SetValue>();
+             const auto& a = callEnv->get("self").get<SetValue>();
              const auto& b = callEnv->get("other").get<SetValue>();
              SetValue out;
              for (const auto& v : *a.members) {
@@ -5268,7 +5268,7 @@ inline std::unordered_map<std::string_view, Value>& set_builtins() {
        Value(FunctionValue(
            {{"other", false, "Set"sv}},
            [](std::shared_ptr<Environment> callEnv) {
-             const auto& a = callEnv->get("this").get<SetValue>();
+             const auto& a = callEnv->get("self").get<SetValue>();
              const auto& b = callEnv->get("other").get<SetValue>();
              SetValue out;
              for (const auto& v : *a.members) {
@@ -5284,7 +5284,7 @@ inline std::unordered_map<std::string_view, Value>& set_builtins() {
        Value(FunctionValue(
            {{"other", false, "Set"sv}},
            [](std::shared_ptr<Environment> callEnv) {
-             const auto& a = callEnv->get("this").get<SetValue>();
+             const auto& a = callEnv->get("self").get<SetValue>();
              const auto& b = callEnv->get("other").get<SetValue>();
              for (const auto& v : *a.members) {
                if (!b.index->contains(v)) return Value(false);
@@ -5296,7 +5296,7 @@ inline std::unordered_map<std::string_view, Value>& set_builtins() {
        Value(FunctionValue(
            {{"other", false, "Set"sv}},
            [](std::shared_ptr<Environment> callEnv) {
-             const auto& a = callEnv->get("this").get<SetValue>();
+             const auto& a = callEnv->get("self").get<SetValue>();
              const auto& b = callEnv->get("other").get<SetValue>();
              for (const auto& v : *b.members) {
                if (!a.index->contains(v)) return Value(false);
@@ -5309,7 +5309,7 @@ inline std::unordered_map<std::string_view, Value>& set_builtins() {
            {{"x", false}},
            [](std::shared_ptr<Environment> callEnv) {
              auto& self = const_cast<SetValue&>(
-                 callEnv->get("this").get<SetValue>());
+                 callEnv->get("self").get<SetValue>());
              return Value(self.add(callEnv->get("x")));
            },
            "Bool"sv))},
@@ -5318,7 +5318,7 @@ inline std::unordered_map<std::string_view, Value>& set_builtins() {
            {{"x", false}},
            [](std::shared_ptr<Environment> callEnv) {
              auto& self = const_cast<SetValue&>(
-                 callEnv->get("this").get<SetValue>());
+                 callEnv->get("self").get<SetValue>());
              auto it = self.index->find(callEnv->get("x"));
              if (it == self.index->end()) return Value(false);
              size_t idx = it->second;
@@ -5335,7 +5335,7 @@ inline std::unordered_map<std::string_view, Value>& set_builtins() {
        Value(FunctionValue(
            {},
            [](std::shared_ptr<Environment> callEnv) {
-             const auto& self = callEnv->get("this").get<SetValue>();
+             const auto& self = callEnv->get("self").get<SetValue>();
              ArrayValue out;
              out.values->reserve(self.members->size());
              for (const auto& v : *self.members) out.values->push_back(v);
@@ -5345,7 +5345,7 @@ inline std::unordered_map<std::string_view, Value>& set_builtins() {
       {"iter"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          return _iter_over_vector(
-             callEnv->get("this").get<SetValue>().members);
+             callEnv->get("self").get<SetValue>().members);
        }))},
   };
   return props_;
@@ -5359,14 +5359,14 @@ inline std::unordered_map<std::string_view, Value>& tuple_builtins() {
   static std::unordered_map<std::string_view, Value> props_ = {
       {"size"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& self = callEnv->get("this").get<TupleValue>();
+         const auto& self = callEnv->get("self").get<TupleValue>();
          return Value(static_cast<long>(self.elements->size()));
        }))},
       {"contains"sv,
        Value(FunctionValue(
            {{"x", false}},
            [](std::shared_ptr<Environment> callEnv) {
-             const auto& self = callEnv->get("this").get<TupleValue>();
+             const auto& self = callEnv->get("self").get<TupleValue>();
              const auto& x = callEnv->get("x");
              for (const auto& e : *self.elements) {
                if (e == x) return Value(true);
@@ -5378,7 +5378,7 @@ inline std::unordered_map<std::string_view, Value>& tuple_builtins() {
        Value(FunctionValue(
            {},
            [](std::shared_ptr<Environment> callEnv) {
-             const auto& self = callEnv->get("this").get<TupleValue>();
+             const auto& self = callEnv->get("self").get<TupleValue>();
              ArrayValue out;
              out.values->reserve(self.elements->size());
              for (const auto& e : *self.elements) out.values->push_back(e);
@@ -5388,7 +5388,7 @@ inline std::unordered_map<std::string_view, Value>& tuple_builtins() {
       {"iter"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          return _iter_over_vector(
-             callEnv->get("this").get<TupleValue>().elements);
+             callEnv->get("self").get<TupleValue>().elements);
        }))}};
   return props_;
 }
@@ -5407,7 +5407,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
       {"map"sv,
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("this");
+         auto upstream = callEnv->get("self");
          auto f = Value(as_callback(callEnv->get("f")));
          check_callback_arity(f.to_function(), 1, "map");
          return _make_iterator(
@@ -5421,7 +5421,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
       {"filter"sv,
        Value(FunctionValue({{"p", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("this");
+         auto upstream = callEnv->get("self");
          auto p = Value(as_callback(callEnv->get("p")));
          check_callback_arity(p.to_function(), 1, "filter");
          return _make_iterator(
@@ -5439,7 +5439,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
       {"take"sv,
        Value(FunctionValue({{"n", false, "Long"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("this");
+         auto upstream = callEnv->get("self");
          auto limit = callEnv->get("n").to_long();
          auto count = std::make_shared<long>(0);
          return _make_iterator(
@@ -5455,7 +5455,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
       {"skip"sv,
        Value(FunctionValue({{"n", false, "Long"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("this");
+         auto upstream = callEnv->get("self");
          auto limit = callEnv->get("n").to_long();
          auto skipped = std::make_shared<bool>(false);
          return _make_iterator(
@@ -5475,7 +5475,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
       {"take_while"sv,
        Value(FunctionValue({{"p", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("this");
+         auto upstream = callEnv->get("self");
          auto p = Value(as_callback(callEnv->get("p")));
          check_callback_arity(p.to_function(), 1, "take_while");
          auto exhausted = std::make_shared<bool>(false);
@@ -5497,7 +5497,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
       {"chunks"sv,
        Value(FunctionValue({{"n", false, "Long"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("this");
+         auto upstream = callEnv->get("self");
          auto size = callEnv->get("n").to_long();
          if (size < 1) {
            throw CulebraError("ValueError", "chunks() n must be at least 1",
@@ -5522,7 +5522,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
       {"windows"sv,
        Value(FunctionValue({{"n", false, "Long"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("this");
+         auto upstream = callEnv->get("self");
          auto size = callEnv->get("n").to_long();
          if (size < 1) {
            throw CulebraError("ValueError", "windows() n must be at least 1",
@@ -5549,7 +5549,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
       {"flat_map"sv,
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("this");
+         auto upstream = callEnv->get("self");
          auto f = Value(as_callback(callEnv->get("f")));
          check_callback_arity(f.to_function(), 1, "flat_map");
          // nullopt-like sentinel: inner iterator value (or Nil when
@@ -5576,7 +5576,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
       {"chain"sv,
        Value(FunctionValue({{"other", false}},
                            [](std::shared_ptr<Environment> callEnv) {
-         auto first = callEnv->get("this");
+         auto first = callEnv->get("self");
          auto line = callEnv->get("__LINE__").to_long();
          auto col = callEnv->get("__COLUMN__").to_long();
          // Resolve other's iterator up front; also accept anything
@@ -5601,7 +5601,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
       {"zip"sv,
        Value(FunctionValue({{"other", false}},
                            [](std::shared_ptr<Environment> callEnv) {
-         auto a = callEnv->get("this");
+         auto a = callEnv->get("self");
          auto line = callEnv->get("__LINE__").to_long();
          auto col = callEnv->get("__COLUMN__").to_long();
          auto b = _get_iterator(callEnv->get("other"), line, col);
@@ -5620,7 +5620,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
       // Yields {index, value} Objects with index starting at 0.
       {"enumerate"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("this");
+         auto upstream = callEnv->get("self");
          auto index = std::make_shared<long>(0);
          return _make_iterator(
              [upstream, index](std::shared_ptr<Environment>) {
@@ -5636,7 +5636,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
 
       {"collect"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("this");
+         auto upstream = callEnv->get("self");
          ArrayValue out;
          while (auto v = _iter_next_value(upstream)) {
            out.values->push_back(std::move(*v));
@@ -5649,7 +5649,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
       {"join"sv,
        Value(FunctionValue({{"sep", false, "String"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("this");
+         auto upstream = callEnv->get("self");
          const auto& sep = callEnv->get("sep").to_string();
          std::string out;
          bool first = true;
@@ -5664,7 +5664,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
       {"for_each"sv,
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("this");
+         auto upstream = callEnv->get("self");
          auto f = Value(as_callback(callEnv->get("f")));
          check_callback_arity(f.to_function(), 1, "for_each");
          while (auto v = _iter_next_value(upstream)) {
@@ -5676,7 +5676,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
       {"reduce"sv,
        Value(FunctionValue({{"init", false}, {"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("this");
+         auto upstream = callEnv->get("self");
          auto acc = callEnv->get("init");
          auto f = Value(as_callback(callEnv->get("f")));
          check_callback_arity(f.to_function(), 2, "reduce");
@@ -5689,7 +5689,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
       {"find"sv,
        Value(FunctionValue({{"p", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("this");
+         auto upstream = callEnv->get("self");
          auto p = Value(as_callback(callEnv->get("p")));
          check_callback_arity(p.to_function(), 1, "find");
          while (auto v = _iter_next_value(upstream)) {
@@ -5701,7 +5701,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
       {"any"sv,
        Value(FunctionValue({{"p", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("this");
+         auto upstream = callEnv->get("self");
          auto p = Value(as_callback(callEnv->get("p")));
          check_callback_arity(p.to_function(), 1, "any");
          while (auto v = _iter_next_value(upstream)) {
@@ -5713,7 +5713,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
       {"all"sv,
        Value(FunctionValue({{"p", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("this");
+         auto upstream = callEnv->get("self");
          auto p = Value(as_callback(callEnv->get("p")));
          check_callback_arity(p.to_function(), 1, "all");
          while (auto v = _iter_next_value(upstream)) {
@@ -5724,7 +5724,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
 
       {"count"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("this");
+         auto upstream = callEnv->get("self");
          long n = 0;
          while (_iter_next_value(upstream)) n++;
          return Value(n);
@@ -5732,7 +5732,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
 
       {"sum"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("this");
+         auto upstream = callEnv->get("self");
          long acc = 0;
          while (auto v = _iter_next_value(upstream)) acc += v->to_long();
          return Value(acc);
@@ -5740,7 +5740,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
 
       {"product"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("this");
+         auto upstream = callEnv->get("self");
          long acc = 1;
          while (auto v = _iter_next_value(upstream)) acc *= v->to_long();
          return Value(acc);
@@ -5748,7 +5748,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
 
       {"min"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("this");
+         auto upstream = callEnv->get("self");
          auto first = _iter_next_value(upstream);
          if (!first) {
            throw CulebraError("ValueError",
@@ -5764,7 +5764,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
 
       {"max"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("this");
+         auto upstream = callEnv->get("self");
          auto first = _iter_next_value(upstream);
          if (!first) {
            throw CulebraError("ValueError",
@@ -7019,12 +7019,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // reads it lazily. Shared by eval_multifn_decl (a fresh `fn name`) and the
   // isolate child rebuilding a transferred dispatcher (make_multifn_shell).
   // When invoked as a class instance method, the property-access wrapper
-  // (_wrap_method_with_this) puts the receiver `this` on the dispatcher's own
+  // (_wrap_method_with_this) puts the receiver `self` on the dispatcher's own
   // callEnv; the picked overload then sees it (class instance-method overloads
-  // dispatch on the explicit args only, with `this` fixed by the lookup). A
-  // free-function dispatcher's callEnv has no own `this`, so nothing is bound.
+  // dispatch on the explicit args only, with `self` fixed by the lookup). A
+  // free-function dispatcher's callEnv has no own `self`, so nothing is bound.
   // Keying off the binding rather than a flag means a method dispatcher
-  // rebuilt after isolate transfer (where no flag survives) still binds `this`.
+  // rebuilt after isolate transfer (where no flag survives) still binds `self`.
   Value build_multifn_dispatcher(
       std::string_view name,
       const std::shared_ptr<std::vector<MultiMethod>>& methods) {
@@ -7065,12 +7065,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           call_args.splats.push_back(callEnv->get("__KWARGS__"));
           // A method call binds the receiver into the picked overload via the
           // same _wrap_method_with_this path a single method uses, so the body
-          // sees `this` alongside its params (def_env chains in too). Detected
-          // by an own `this` on callEnv — present iff invoked as a method.
+          // sees `self` alongside its params (def_env chains in too). Detected
+          // by an own `self` on callEnv — present iff invoked as a method.
           Value body = (*methods)[pick.idx].body;
-          if (callEnv->has_own("this")) {
+          if (callEnv->has_own("self")) {
             body = _wrap_method_with_this(
-                body, callEnv->get("this"), /*is_builtin=*/false);
+                body, callEnv->get("self"), /*is_builtin=*/false);
           }
           return self->invoke_user_function_with_args(
               body, callEnv, std::move(call_args),
@@ -7234,7 +7234,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   //                           <new body>; this } }
   // `new` is optional; absent form accepts zero args and returns a
   // bare instance with only the class tag and methods. Methods close
-  // over the defining scope but `this` is bound fresh per method call
+  // over the defining scope but `self` is bound fresh per method call
   // via the existing method-dispatch protocol.
   // Zero value for a declared field type when no default is supplied
   // (`x: Float32` -> 0.0). Numeric types get their numeric zero, Bool
@@ -7534,15 +7534,15 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     h.initialize("__fa_etype__", Value(std::string(f.elem_type)), false);
     h.initialize("size", Value(FunctionValue({},
         [](std::shared_ptr<Environment> e) {
-          return Value(fa_len(fa_resolve(e->get("this"))));
+          return Value(fa_len(fa_resolve(e->get("self"))));
         }, "Long"sv)), false);
     h.initialize("capacity", Value(FunctionValue({},
         [](std::shared_ptr<Environment> e) {
-          return Value(fa_resolve(e->get("this")).cap);
+          return Value(fa_resolve(e->get("self")).cap);
         }, "Long"sv)), false);
     h.initialize("push", Value(FunctionValue({{"v", false, ""sv}},
         [](std::shared_ptr<Environment> e) -> Value {
-          auto v = fa_resolve(e->get("this"));
+          auto v = fa_resolve(e->get("self"));
           long n = fa_len(v);
           if (n >= v.cap)
             throw CulebraError("IndexError",
@@ -7553,16 +7553,16 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         }, "Nil"sv)), false);
     h.initialize("get", Value(FunctionValue({{"i", false, ""sv}},
         [](std::shared_ptr<Environment> e) {
-          return fa_get(e->get("this"), e->get("i").to_long());
+          return fa_get(e->get("self"), e->get("i").to_long());
         })), false);
     h.initialize("set", Value(FunctionValue({{"i", false, ""sv}, {"v", false, ""sv}},
         [](std::shared_ptr<Environment> e) -> Value {
-          fa_set(e->get("this"), e->get("i").to_long(), e->get("v"));
+          fa_set(e->get("self"), e->get("i").to_long(), e->get("v"));
           return Value();
         }, "Nil"sv)), false);
     h.initialize("iter", Value(FunctionValue({},
         [](std::shared_ptr<Environment> e) {
-          Value self = e->get("this");
+          Value self = e->get("self");
           auto idx = std::make_shared<long>(0);
           return _make_iterator(
               [self, idx](std::shared_ptr<Environment>) -> std::optional<Value> {
@@ -7625,15 +7625,15 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     h.initialize("__fs_etype__", Value(std::string(f.elem_type)), false);
     h.initialize("size", Value(FunctionValue({},
         [](std::shared_ptr<Environment> e) {
-          return Value(fs_count(fs_resolve(e->get("this"))));
+          return Value(fs_count(fs_resolve(e->get("self"))));
         }, "Long"sv)), false);
     h.initialize("capacity", Value(FunctionValue({},
         [](std::shared_ptr<Environment> e) {
-          return Value(fs_resolve(e->get("this")).cap);
+          return Value(fs_resolve(e->get("self")).cap);
         }, "Long"sv)), false);
     h.initialize("contains", Value(FunctionValue({{"v", false, ""sv}},
         [](std::shared_ptr<Environment> e) {
-          auto v = fs_resolve(e->get("this"));
+          auto v = fs_resolve(e->get("self"));
           auto key = fs_encode(v, e->get("v"));
           long slot = culebra::fixed_probe(fs_states(v), fs_vals(v), v.cap,
                                            v.esize, v.esize, key.data(), nullptr);
@@ -7641,7 +7641,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         }, "Bool"sv)), false);
     h.initialize("add", Value(FunctionValue({{"v", false, ""sv}},
         [](std::shared_ptr<Environment> e) -> Value {
-          auto v = fs_resolve(e->get("this"));
+          auto v = fs_resolve(e->get("self"));
           auto key = fs_encode(v, e->get("v"));
           long insert = -1;
           long slot = culebra::fixed_probe(fs_states(v), fs_vals(v), v.cap,
@@ -7657,7 +7657,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         }, "Nil"sv)), false);
     h.initialize("remove", Value(FunctionValue({{"v", false, ""sv}},
         [](std::shared_ptr<Environment> e) {
-          auto v = fs_resolve(e->get("this"));
+          auto v = fs_resolve(e->get("self"));
           auto key = fs_encode(v, e->get("v"));
           long slot = culebra::fixed_probe(fs_states(v), fs_vals(v), v.cap,
                                            v.esize, v.esize, key.data(), nullptr);
@@ -7668,7 +7668,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         }, "Bool"sv)), false);
     h.initialize("iter", Value(FunctionValue({},
         [](std::shared_ptr<Environment> e) {
-          Value self = e->get("this");
+          Value self = e->get("self");
           auto idx = std::make_shared<long>(0);
           return _make_iterator(
               [self, idx](std::shared_ptr<Environment>) -> std::optional<Value> {
@@ -7738,15 +7738,15 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     h.initialize("__fm_vtype__", Value(std::string(f.val_type)), false);
     h.initialize("size", Value(FunctionValue({},
         [](std::shared_ptr<Environment> e) {
-          return Value(fm_count(fm_resolve(e->get("this"))));
+          return Value(fm_count(fm_resolve(e->get("self"))));
         }, "Long"sv)), false);
     h.initialize("capacity", Value(FunctionValue({},
         [](std::shared_ptr<Environment> e) {
-          return Value(fm_resolve(e->get("this")).cap);
+          return Value(fm_resolve(e->get("self")).cap);
         }, "Long"sv)), false);
     h.initialize("contains", Value(FunctionValue({{"k", false, ""sv}},
         [](std::shared_ptr<Environment> e) {
-          auto v = fm_resolve(e->get("this"));
+          auto v = fm_resolve(e->get("self"));
           auto key = fm_enc(v.ktype, v.ksize, e->get("k"));
           long slot = culebra::fixed_probe(fm_states(v), fm_keys(v), v.cap,
                                            v.ksize, v.ksize, key.data(), nullptr);
@@ -7754,7 +7754,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         }, "Bool"sv)), false);
     h.initialize("get", Value(FunctionValue({{"k", false, ""sv}},
         [](std::shared_ptr<Environment> e) -> Value {
-          auto v = fm_resolve(e->get("this"));
+          auto v = fm_resolve(e->get("self"));
           auto key = fm_enc(v.ktype, v.ksize, e->get("k"));
           long slot = culebra::fixed_probe(fm_states(v), fm_keys(v), v.cap,
                                            v.ksize, v.ksize, key.data(), nullptr);
@@ -7764,7 +7764,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         })), false);
     h.initialize("set", Value(FunctionValue({{"k", false, ""sv}, {"v", false, ""sv}},
         [](std::shared_ptr<Environment> e) -> Value {
-          auto v = fm_resolve(e->get("this"));
+          auto v = fm_resolve(e->get("self"));
           auto key = fm_enc(v.ktype, v.ksize, e->get("k"));
           long insert = -1;
           long slot = culebra::fixed_probe(fm_states(v), fm_keys(v), v.cap,
@@ -7784,7 +7784,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         }, "Nil"sv)), false);
     h.initialize("remove", Value(FunctionValue({{"k", false, ""sv}},
         [](std::shared_ptr<Environment> e) {
-          auto v = fm_resolve(e->get("this"));
+          auto v = fm_resolve(e->get("self"));
           auto key = fm_enc(v.ktype, v.ksize, e->get("k"));
           long slot = culebra::fixed_probe(fm_states(v), fm_keys(v), v.cap,
                                            v.ksize, v.ksize, key.data(), nullptr);
@@ -7795,7 +7795,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         }, "Bool"sv)), false);
     h.initialize("keys", Value(FunctionValue({},
         [](std::shared_ptr<Environment> e) {
-          auto v = fm_resolve(e->get("this"));
+          auto v = fm_resolve(e->get("self"));
           ArrayValue arr;
           for (long i = 0; i < v.cap; i++)
             if (fm_states(v)[i] == culebra::kFixedFull)
@@ -7805,7 +7805,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         })), false);
     h.initialize("iter", Value(FunctionValue({},
         [](std::shared_ptr<Environment> e) {
-          Value self = e->get("this");
+          Value self = e->get("self");
           auto idx = std::make_shared<long>(0);
           return _make_iterator(
               [self, idx](std::shared_ptr<Environment>) -> std::optional<Value> {
@@ -7964,7 +7964,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     std::vector<std::pair<std::string_view, Value>> static_field_template;
     // Typed instance fields (`x: Float32 = 0.0`) in declaration order (the
     // field order the @packable layout reads). The initializer runs once per
-    // instance — declaration order, `this` in scope, before the `new` body
+    // instance — declaration order, `self` in scope, before the `new` body
     // (Kotlin's model) — so it is kept as an AST here, not a Value. A bare
     // `x: T` (init == nullptr) falls back to the type's zero value. The
     // shared_ptr keeps the subtree alive past the declaring input (REPL).
@@ -8071,10 +8071,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   }
 
   // Run the declared instance-field initializers on a fresh instance:
-  // declaration order, `this` bound (immutable, like the ctor body), before
+  // declaration order, `self` bound (immutable, like the ctor body), before
   // the `new` body runs. Evaluated against the class's defining scope — not
   // the constructor call env — so `new` parameters are not visible (Kotlin's
-  // model: property initializers see `this` but not secondary-ctor params).
+  // model: property initializers see `self` but not secondary-ctor params).
   // Sets overwrite an existing own property (a method called from an earlier
   // initializer may have created it) — mirrors the JIT's object_set.
   void init_instance_fields(
@@ -8083,7 +8083,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     if (fields.empty()) return;
     auto fieldEnv = std::make_shared<Environment>(def_env);
     fieldEnv->append_outer(def_env);
-    fieldEnv->initialize("this", inst, false);
+    fieldEnv->initialize("self", inst, false);
     for (const auto& f : fields) {
       Value v =
           f.init ? eval(*f.init, fieldEnv) : zero_value_for_type(f.type);
@@ -8093,7 +8093,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   }
 
   // Group same-named instance methods into one method-multidispatch
-  // dispatcher (Julia-style: scored on the explicit arg types, with `this`
+  // dispatcher (Julia-style: scored on the explicit arg types, with `self`
   // fixed by the property lookup). A name defined once stays a bare
   // Function — zero overhead and byte-identical to the pre-overload path.
   // Mirrors JIT's group_method_overloads.
@@ -8142,7 +8142,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
     group_method_overloads(method_template);
     // Static methods overload too — same-named statics merge into one
-    // dispatcher stored on the class object. A static call binds no `this`
+    // dispatcher stored on the class object. A static call binds no `self`
     // (or the class object, which the picked body ignores), so the shared
     // dispatcher's free-function path handles them.
     group_method_overloads(static_template);
@@ -8177,11 +8177,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       return instance;
     };
 
-    // Class-sugar convention: instance fields set via `this.x = y` are
+    // Class-sugar convention: instance fields set via `self.x = y` are
     // mutable regardless of the `let`/`mut` prefix used at assignment
     // time. This matches Python / Ruby / JS class semantics — methods
-    // routinely mutate `this` — and spares the user from peppering
-    // constructors with `mut this.x = ...`.
+    // routinely mutate `self` — and spares the user from peppering
+    // constructors with `mut self.x = ...`.
     auto promote_all_mut = [](const Value& inst) {
       if (inst.type != Value::Object) return;
       for (auto& [_, sym] : *inst.to_object().properties) {
@@ -8209,18 +8209,18 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           [self = std::move(self), body, env, build_instance, promote_all_mut,
            shared_fields](const std::shared_ptr<Environment>& callEnv) {
             callEnv->append_outer(env);
-            // `this` is immutable inside the constructor body — match
+            // `self` is immutable inside the constructor body — match
             // Java / Crystal / Ruby and the JIT backend. Attempts to
             // write `this = newObj` raise ImmutableError instead of
             // silently swapping the returned instance, and the
             // constructor's return value is always the originally
-            // allocated object (so `this.x = ...` is the supported way
+            // allocated object (so `self.x = ...` is the supported way
             // to populate fields). See project_constructor_semantics.md.
             auto inst = Value(build_instance());
             // Declared-field initializers run first — against the class's
             // defining scope, not callEnv, so `new` params stay invisible.
             self->init_instance_fields(*shared_fields, env, inst);
-            callEnv->initialize("this", inst, false);
+            callEnv->initialize("self", inst, false);
             try {
               self->eval(*body, callEnv);
               self->run_deferred(callEnv);
@@ -8647,7 +8647,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
     auto callEnv = std::make_shared<Environment>(env);
     callEnv->is_function_frame = true;
-    callEnv->initialize("self", fn_val, false);
+    callEnv->initialize("fn", fn_val, false);
     dap_frame.set_callee(callEnv.get());  // debugger: this call's function frame
 
     // C. Walk formal params in declaration order; consume positional
@@ -8825,7 +8825,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
   // UFCS (D / Nim style): call `fn_val` as if `receiver` were its first
   // positional argument, with the remaining arguments taken from the
-  // AST's `ARGUMENTS` node. Deliberately does NOT bind `this` (UFCS is
+  // AST's `ARGUMENTS` node. Deliberately does NOT bind `self` (UFCS is
   // a free-function call, not a method).
   Value eval_ufcs_call(const peg::Ast& args_ast,
                        const std::shared_ptr<Environment>& env,
@@ -8978,7 +8978,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   }
 
   // Wrap a method value (looked up from a builtin table) into a
-  // Function that will bind `this` to `val` when invoked. Matches how
+  // Function that will bind `self` to `val` when invoked. Matches how
   // eval_property used to inline this for Object/Array methods.
   // `is_builtin` marks wrappers around primitive method tables
   // (Array/String/Set/Tuple/iterator builtins) that parse positionally
@@ -9005,7 +9005,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     auto receiver = std::make_shared<Value>(val);
     Value wrapped = Value(
         FunctionValue(*pf.params, [receiver, underlying](std::shared_ptr<Environment> callEnv) {
-          callEnv->initialize("this", *receiver, false);
+          callEnv->initialize("self", *receiver, false);
           // get<>() returns a reference (prop is already a validated Function);
           // to_function() would copy the FunctionValue on every call.
           return underlying->get<FunctionValue>().eval(callEnv);
@@ -9045,7 +9045,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     wf.strict_arity = pf.strict_arity;
     // Expose BOTH hidden captures the eval closure holds — the underlying
     // function (its def_env pins the declaring env) and the receiver `val`
-    // (`this`, which for a constructor wrapper is the class object). The cycle
+    // (`self`, which for a constructor wrapper is the class object). The cycle
     // collector subtracts these edges; without the `val` edge a bound method /
     // ctor keeps its receiver spuriously reachable, so an env↔class cycle
     // reached through `let mk = Cls.new` never reclaims (GAP2: once the class
@@ -9138,7 +9138,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         return o.get("__sharedbuffer_count__");
       }
       // Shared.new view: the handle's own props (reader methods +
-      // markers) take the generic Object path below (which binds `this`
+      // markers) take the generic Object path below (which binds `self`
       // for method calls); anything else reads the frozen tree (an
       // Object node field, nil on miss — mirroring a plain Object). A
       // data field shadowed by a method name stays reachable via
@@ -9221,7 +9221,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       const auto& prop = obj.get(name);
       if (prop.type == Value::Function) {
         // A getter read as a value (`obj.name`, no call parens) auto-invokes
-        // 0-arg with `this`=receiver. When called as `obj.name()` (as_value
+        // 0-arg with `self`=receiver. When called as `obj.name()` (as_value
         // false) it falls through to the bound-method path and the call site
         // invokes it — same result, so both spellings work.
         if (as_value && prop.get<FunctionValue>().is_getter) {
@@ -9660,7 +9660,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // Resolve a method by name on a class instance, honoring both the
   // instance's own Function properties and inherited trait defaults
   // (mirrors eval_property's method lookup, which is where `__call__`
-  // can live when it's a trait default). Returns the `this`-bound
+  // can live when it's a trait default). Returns the `self`-bound
   // method, or nullopt for a non-instance / missing method. Gated on
   // class_tag so a plain dict holding a "__call__" key stays an
   // ordinary value, matching the subscript-overload gate.
@@ -10035,7 +10035,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   }
 
   // Complex lvalue: `obj.prop = e`, `arr[idx] = e`, and chains
-  // (`this.d[i] = v`). Resolves the receiver through the intermediate
+  // (`self.d[i] = v`). Resolves the receiver through the intermediate
   // postfixes, then dispatches the final INDEX / DOT write (fixed-array /
   // shared-view / object / array element cases).
   Value eval_assign_complex(const peg::Ast& ast, const culebra::AssignmentView& av,
@@ -10954,7 +10954,7 @@ inline void InterpGC::collect(Environment* current) {
 
 // RAII drop: invoked by the PropMap shared_ptr custom deleter (and by
 // InterpGC for cycle members). Looks up a `drop` Function property and
-// calls it with `this` bound to a non-owning view of the same map.
+// calls it with `self` bound to a non-owning view of the same map.
 // The map is always left untouched by this helper itself — the caller
 // (deleter or cycle-collector) performs the actual clear/delete.
 //
@@ -10964,9 +10964,9 @@ inline void InterpGC::collect(Environment* current) {
 // Exceptions in drop are logged to stderr and swallowed to preserve
 // the rest of the cleanup cascade (matching Python / Swift).
 //
-// Resurrection warning: storing `this` somewhere outside drop leaves
+// Resurrection warning: storing `self` somewhere outside drop leaves
 // a dangling reference once the caller completes the teardown. Do
-// not resurrect `this` in drop bodies.
+// not resurrect `self` in drop bodies.
 inline void _destroy_prop_map(OrderedSymbolMap* m) {
   if (!m) return;
   // Live-object accounting: matches the bump in ObjectValue's ctor.
@@ -10990,12 +10990,12 @@ inline void _call_drop_if_present(OrderedSymbolMap* m) {
 
   m->dropped = true;  // set before running: re-entrancy-safe, at-most-once
 
-  ObjectValue this_view(ObjectValue::Synthetic{});
-  this_view.properties =
+  ObjectValue self_view(ObjectValue::Synthetic{});
+  self_view.properties =
       std::shared_ptr<OrderedSymbolMap>(m, [](OrderedSymbolMap*) {});
 
   try {
-    fn.eval(_make_method_call_env(Value(std::move(this_view)), 0, 0));
+    fn.eval(_make_method_call_env(Value(std::move(self_view)), 0, 0));
   } catch (const std::exception& e) {
     std::cerr << "drop: " << e.what() << std::endl;
   } catch (...) {

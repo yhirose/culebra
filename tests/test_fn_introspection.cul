@@ -78,11 +78,11 @@ assert_eq(add.params.size(), n0)   // a fresh fetch is unaffected
 
 // --- class method also has name ---
 class Box {
-  new (v) { this.v = v }
-  get () { this.v }
+  new (v) { self.v = v }
+  get () { self.v }
 }
 let bx = Box.new(7)
-// `get` was wrapped with `this` bound for method call; the bound
+// `get` was wrapped with `self` bound for method call; the bound
 // wrapper is itself a Function, so `.name` should still reflect "get".
 // (Note: this checks the post-wrapping function; if culebra wraps
 // methods on each access, the name should propagate. We accept either

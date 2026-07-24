@@ -56,9 +56,9 @@
 namespace culebra {
 
 // Return-tag protocol shared with the `__Eff` driver (effects.cul):
-//   0 = DONE     — `this._eff_val` holds the computation's result
-//   1 = SUSPEND  — `this._eff_op` / `this._eff_args` describe a perform
-//   2 = DELEGATE — `this._eff_delegate` is a sub-computation to drive
+//   0 = DONE     — `self._eff_val` holds the computation's result
+//   1 = SUSPEND  — `self._eff_op` / `self._eff_args` describe a perform
+//   2 = DELEGATE — `self._eff_delegate` is a sub-computation to drive
 inline constexpr int EFF_DONE = 0;
 inline constexpr int EFF_SUSPEND = 1;
 inline constexpr int EFF_DELEGATE = 2;
@@ -195,7 +195,7 @@ class EffectsLowerer {
   }
 
   // First CLASS_DECL anywhere under `n` (including nested fn values — the
-  // textual `this.` redirect reaches them all). nullptr when absent.
+  // textual `self.` redirect reaches them all). nullptr when absent.
   static const peg::Ast* find_class_decl(const peg::Ast& n) {
     using namespace peg::udl;
     if (n.tag == "CLASS_DECL"_) return &n;
@@ -234,7 +234,7 @@ class EffectsLowerer {
   }
 
   // Build the `[a, b, …]` array source for a perform's arguments, rewriting
-  // locals to `this.` per `rewrite`. Rejects kwargs / `**` splat (thin slice).
+  // locals to `self.` per `rewrite`. Rejects kwargs / `**` splat (thin slice).
   std::string perform_args_array(const peg::Ast& arguments,
                                  const std::set<std::string>& rewrite) const {
     using namespace peg::udl;
@@ -248,14 +248,14 @@ class EffectsLowerer {
             static_cast<long>(item.line), static_cast<long>(item.column));
       }
       if (i > 0) out += ", ";
-      out += rewrite_locals_to_this(slice(item), rewrite);
+      out += rewrite_locals_to_self(slice(item), rewrite);
     }
     out += "]";
     return out;
   }
 
   // Classify a body statement. `rewrite` is the set of names rewritten to
-  // `this.` (params + body locals).
+  // `self.` (params + body locals).
   EffStmtClass classify(const peg::Ast* stmt,
                         const std::set<std::string>& rewrite) const {
     using namespace peg::udl;
@@ -366,7 +366,7 @@ class EffectsLowerer {
       cs = cs.substr(p);
     }
     su.call_src =
-        rewrite_locals_to_this("__eff_comp_" + std::string(cs), rewrite);
+        rewrite_locals_to_self("__eff_comp_" + std::string(cs), rewrite);
     su.prov = mk(call);
     return su;
   }
@@ -407,7 +407,7 @@ class EffectsLowerer {
 
   // A re-evaluable leaf: a literal or a bare identifier. Freezing one before a
   // suspension is unnecessary (a literal has no side effect; an identifier
-  // resolves to a stable `this.<local>` that a handler cannot mutate).
+  // resolves to a stable `self.<local>` that a handler cannot mutate).
   static bool is_atom(const peg::Ast& n) {
     using namespace peg::udl;
     switch (n.tag) {
@@ -731,7 +731,7 @@ class EffectsLowerer {
 
   // ANF a control-flow statement's block bodies in place. `ctr` threads through
   // so hoist temps stay unique across nesting levels (a per-block reset would
-  // alias `_anf_0` across blocks, and every temp becomes a shared `this.` field).
+  // alias `_anf_0` across blocks, and every temp becomes a shared `self.` field).
   std::optional<std::string> anf_control_flow(const peg::Ast* s,
                                               int& ctr) const {
     using namespace peg::udl;
@@ -816,12 +816,12 @@ class EffectsLowerer {
   //
   // The body lowers to a flat list of states — the same shape and reasoning as
   // the generator's `CpsBuilder` ([[project-generator-design]] §CPS): each
-  // basic block is a state, control flow becomes `this._eff_state = K; continue`
+  // basic block is a state, control flow becomes `self._eff_state = K; continue`
   // jumps over one `while true` dispatch loop, and every local lives on the
   // instance (all-locals-on-heap, so no liveness analysis). The transition
   // primitives differ from the generator's: a `perform` returns SUSPEND (and
   // on resume binds `_rv` to its target), an effect-fn call returns DELEGATE,
-  // and the body's tail expression / a `return` assign `this._eff_val`. A
+  // and the body's tail expression / a `return` assign `self._eff_val`. A
   // statement-level suspension is all the CPS layer sees; expression-nested
   // performs are hoisted to statement level by the ANF pre-pass first, and
   // `for`-in is desugared to `while` upstream. `_rv` is the per-class resume
@@ -842,14 +842,14 @@ class EffectsLowerer {
 
   std::string cps_rw(const peg::Ast& n,
                      const std::set<std::string>& rw) const {
-    return rewrite_locals_to_this(slice(n), rw);
+    return rewrite_locals_to_self(slice(n), rw);
   }
 
   // A named fn declared at statement level in an effect body persists as an
   // instance field (each state block is a fresh scope, so a plain local decl
   // would not survive past the next suspension). The decl is wrapped in an
   // IIFE that binds the enclosing instance to a plain local so body
-  // references to effect locals (rewritten to `this.` by the locals pass)
+  // references to effect locals (rewritten to `self.` by the locals pass)
   // resolve symmetrically in both backends — the `_eff_self` pattern from
   // handler clauses. The inner decl may be a generator (`yield`): the
   // fragment re-parse runs the generator chain over it.
@@ -863,8 +863,8 @@ class EffectsLowerer {
           "`handle` body — define it outside.",
           err_line(decl), static_cast<long>(decl.column));
     }
-    // The `this.` redirect below is textual over the whole decl, so a class
-    // declared anywhere inside would have its methods' own `this` corrupted —
+    // The `self.` redirect below is textual over the whole decl, so a class
+    // declared anywhere inside would have its methods' own `self` corrupted —
     // reject it symmetrically instead of silently mis-binding.
     if (auto* cd = find_class_decl(decl)) {
       throw CulebraError(
@@ -875,15 +875,15 @@ class EffectsLowerer {
     }
     std::string name(decl.nodes[k]->token);
     // Rewrite only past the name token so the header keeps a plain inner name
-    // (the locals rewrite would turn it into `fn this.<name>(`).
+    // (the locals rewrite would turn it into `fn self.<name>(`).
     size_t after = decl.nodes[k]->position + decl.nodes[k]->length -
                    decl.position;
     std::string text =
-        "fn " + name + rewrite_locals_to_this(slice(decl).substr(after), rw);
+        "fn " + name + rewrite_locals_to_self(slice(decl).substr(after), rw);
     auto self_name =
         std::format("_eff_self_{}_{}", decl.line, decl.column);
     text = redirect_this_to_self(text, self_name);
-    return std::format("this.{0} = (fn ({1}) {{\n{2}\n{0} }})(this)", name,
+    return std::format("self.{0} = (fn ({1}) {{\n{2}\n{0} }})(self)", name,
                        self_name, text);
   }
 
@@ -915,7 +915,7 @@ class EffectsLowerer {
   int cps_jump(CpsState& st, int target) const {
     int e = st.fresh();
     st.states[e] =
-        std::format("      this._eff_state = {}\n      continue\n", target);
+        std::format("      self._eff_state = {}\n      continue\n", target);
     return e;
   }
 
@@ -929,25 +929,25 @@ class EffectsLowerer {
       int resume = st.fresh();
       std::string b;
       if (su.binds)
-        b += std::format("      this.{} = {}\n", su.target, st.rv);
+        b += std::format("      self.{} = {}\n", su.target, st.rv);
       if (tail) {
-        std::string v = su.binds ? ("this." + su.target) : st.rv;
-        b += std::format("      this._eff_val = {}\n", v);
+        std::string v = su.binds ? ("self." + su.target) : st.rv;
+        b += std::format("      self._eff_val = {}\n", v);
       }
-      b += std::format("      this._eff_state = {}\n      continue\n", cont);
+      b += std::format("      self._eff_state = {}\n      continue\n", cont);
       st.states[resume] = b;
       after = resume;
     }
     int susp = st.fresh();
     if (su.kind == EffSuspension::Perform) {
       st.states[susp] = std::format(
-          "      this._eff_op = \"{}\"\n      this._eff_args = {}{}\n"
-          "      this._eff_line = {}\n"
-          "      this._eff_state = {}\n      return {}\n",
+          "      self._eff_op = \"{}\"\n      self._eff_args = {}{}\n"
+          "      self._eff_line = {}\n"
+          "      self._eff_state = {}\n      return {}\n",
           su.op, su.args_array, su.prov, su.line, after, EFF_SUSPEND);
     } else {
       st.states[susp] = std::format(
-          "      this._eff_delegate = ({}){}\n      this._eff_state = {}\n"
+          "      self._eff_delegate = ({}){}\n      self._eff_state = {}\n"
           "      return {}\n",
           su.call_src, su.prov, after, EFF_DELEGATE);
     }
@@ -961,7 +961,7 @@ class EffectsLowerer {
     int s = st.fresh();
     std::string v = e ? cps_rw(*e, rw) : "nil";
     st.states[s] = std::format(
-        "      this._eff_val = ({}){}\n      this._eff_state = {}\n      continue\n",
+        "      self._eff_val = ({}){}\n      self._eff_state = {}\n      continue\n",
         v, e ? mk(*e) : "", st.terminal);
     return s;
   }
@@ -980,7 +980,7 @@ class EffectsLowerer {
   }
 
   // A top-level `defer { B }` registers B into the computation's defer list
-  // (rewritten to `this.`) and marks a reach flag; the body runs, LIFO, when
+  // (rewritten to `self.`) and marks a reach flag; the body runs, LIFO, when
   // the effect body completes or throws (see `build_dispatch`), not when this
   // state's `_step` invocation returns at a suspension. `defer` nested in
   // control flow is rejected upstream (block-scope semantics the flat state
@@ -997,13 +997,13 @@ class EffectsLowerer {
           err_line(*u), static_cast<long>(u->column));
     int k = static_cast<int>(st.defer_bodies.size());
     std::string body_src =
-        rewrite_locals_to_this(std::string(strip_block_braces(slice(block))),
+        rewrite_locals_to_self(std::string(strip_block_braces(slice(block))),
                                rw);
     reattach_marker(body_src, block);  // single-line body: keep provenance
     st.defer_bodies.push_back(std::move(body_src));
     int s = st.fresh();
     st.states[s] = std::format(
-        "      this._eff_defer_{} = true\n      this._eff_state = {}\n"
+        "      self._eff_defer_{} = true\n      self._eff_state = {}\n"
         "      continue\n",
         k, cont);
     return s;
@@ -1022,21 +1022,21 @@ class EffectsLowerer {
       // A named fn decl in tail position: bind the field; the value is nil
       // (matching plain culebra, where a fn decl statement evaluates to nil).
       body = "      " + emit_named_fn_field(*u, rw) + mk(*u) + "\n" +
-             "      this._eff_val = nil\n";
+             "      self._eff_val = nil\n";
     } else if (u->tag == "ASSIGNMENT"_) {
       body = "      " + stmt_src(*u, rw) + mk(*u) + "\n";
       auto av = view_assignment(*u);
       if (av.lvalcnt == 1) {
         const auto& lval = *u->nodes[av.lvaloff];
         if (lval.tag == "IDENTIFIER"_)
-          body += std::format("      this._eff_val = this.{}\n",
+          body += std::format("      self._eff_val = self.{}\n",
                               std::string(lval.token));
       }
     } else {
-      body = std::format("      this._eff_val = ({}){}\n", stmt_src(*u, rw),
+      body = std::format("      self._eff_val = ({}){}\n", stmt_src(*u, rw),
                          mk(*u));
     }
-    body += std::format("      this._eff_state = {}\n      continue\n", st.terminal);
+    body += std::format("      self._eff_state = {}\n      continue\n", st.terminal);
     st.states[s] = body;
     return s;
   }
@@ -1080,7 +1080,7 @@ class EffectsLowerer {
     st.loop_stack.pop_back();
     if (st.failed) return -1;
     st.states[h] = std::format(
-        "      if {} {{ this._eff_state = {} }} else {{ this._eff_state = {} }}{}\n"
+        "      if {} {{ self._eff_state = {} }} else {{ self._eff_state = {} }}{}\n"
         "      continue\n",
         cps_rw(*wv.cond, rw), body_entry, normal_exit, mk(*wv.cond));
     if (!wv.init) return h;
@@ -1123,7 +1123,7 @@ class EffectsLowerer {
       if (st.failed) return -1;
       int s = st.fresh();
       st.states[s] = std::format(
-          "      if {} {{ this._eff_state = {} }} else {{ this._eff_state = {} }}{}\n"
+          "      if {} {{ self._eff_state = {} }} else {{ self._eff_state = {} }}{}\n"
           "      continue\n",
           cps_rw(*condn, rw), block_entry, chain, mk(*condn));
       chain = s;
@@ -1186,7 +1186,7 @@ class EffectsLowerer {
       if (cps_needs_split(*u)) return cps_stmt(st, s, cont, /*tail=*/false, rw);
       int e = st.fresh();
       st.states[e] = "      " + stmt_src(*u, rw) + mk(*u) +
-                     std::format("\n      this._eff_state = {}\n      continue\n",
+                     std::format("\n      self._eff_state = {}\n      continue\n",
                                  cont);
       return e;
     }
@@ -1211,7 +1211,7 @@ class EffectsLowerer {
       if (pending.empty()) return;
       int s = st.fresh();
       st.states[s] = pending +
-                     std::format("      this._eff_state = {}\n      continue\n", k);
+                     std::format("      self._eff_state = {}\n      continue\n", k);
       k = s;
       pending.clear();
     };
@@ -1230,7 +1230,7 @@ class EffectsLowerer {
   }
 
   // Compile a statement sequence; when `tail`, its final statement is in value
-  // position (assigns `this._eff_val`).
+  // position (assigns `self._eff_val`).
   int cps_seq(CpsState& st, const std::vector<const peg::Ast*>& stmts, int cont,
               bool tail, const std::set<std::string>& rw) const {
     if (tail && !stmts.empty()) {
@@ -1250,7 +1250,7 @@ class EffectsLowerer {
   };
 
   // Lower a body into the `_step` dispatch source and its entry state index.
-  // `rewrite` = params + body locals (moved to `this.` so they persist across
+  // `rewrite` = params + body locals (moved to `self.` so they persist across
   // states). Throws SyntaxError for a construct the CPS engine can't lower.
   DispatchOut build_dispatch(const peg::Ast& body,
                              const std::set<std::string>& rewrite,
@@ -1281,20 +1281,20 @@ class EffectsLowerer {
     // whole run on `_eff_finalized` (exactly-once across all three paths).
     std::string finalize_body;
     if (n_defers > 0) {
-      finalize_body = "      if !this._eff_finalized {\n"
-                      "        this._eff_finalized = true\n";
+      finalize_body = "      if !self._eff_finalized {\n"
+                      "        self._eff_finalized = true\n";
       for (int k = 0; k < n_defers; k++)
         finalize_body += std::format(
-            "        if this._eff_defer_{} {{\n{}\n        }}\n", k,
+            "        if self._eff_defer_{} {{\n{}\n        }}\n", k,
             st.defer_bodies[k]);
       finalize_body += "      }\n";
-      st.states[st.terminal] = "      this._eff_finalize()\n" +
+      st.states[st.terminal] = "      self._eff_finalize()\n" +
                                std::format("      return {}\n", EFF_DONE);
     }
 
     std::string dispatch = "      while true {\n";
     for (size_t i = 0; i < st.states.size(); i++) {
-      dispatch += std::format("        if this._eff_state == {} {{\n{}        }}\n",
+      dispatch += std::format("        if self._eff_state == {} {{\n{}        }}\n",
                               i, st.states[i]);
     }
     dispatch += "      }\n";
@@ -1304,7 +1304,7 @@ class EffectsLowerer {
       // throw hits the catch, runs the pending defers, and re-raises the same
       // error value (kind/message/position preserved — verified symmetric).
       dispatch = "      try {\n" + dispatch +
-                 "      } catch _eff_ex {\n        this._eff_finalize()\n"
+                 "      } catch _eff_ex {\n        self._eff_finalize()\n"
                  "        throw _eff_ex\n      }\n";
     }
     return {dispatch, finalize_body, entry, n_defers};
@@ -1402,48 +1402,48 @@ class EffectsLowerer {
     return out;
   }
 
-  // A `this.` field access, boundary-guarded so `foo.this.` / `athis.` don't
+  // A `self.` field access, boundary-guarded so `foo.self.` / `aself.` don't
   // match. Shared by the two redirects (their detection twin `captures_outer`
-  // walks the AST instead, so it never fires on `this.` text in a string).
-  static const std::regex& this_field_access() {
-    static const std::regex pat(R"((^|[^.A-Za-z0-9_])this\.)");
+  // walks the AST instead, so it never fires on `self.` text in a string).
+  static const std::regex& self_field_access() {
+    static const std::regex pat(R"((^|[^.A-Za-z0-9_])self\.)");
     return pat;
   }
-  // Redirect an enclosing-computation field access `this.x` to `this._eff_outer.x`
+  // Redirect an enclosing-computation field access `self.x` to `self._eff_outer.x`
   // so a nested handle's own computation reaches the captured binding through the
   // outer instance passed to its ctor. Idempotent per nesting level: a second
-  // pass over `this._eff_outer.x` lengthens the chain (`this._eff_outer._eff_outer.x`),
+  // pass over `self._eff_outer.x` lengthens the chain (`self._eff_outer._eff_outer.x`),
   // which is exactly the walk a doubly-nested capture needs.
   static std::string redirect_this_to_outer(std::string_view src) {
     return rewrite_outside_strings(src, [](std::string_view code) {
-      return std::regex_replace(std::string(code), this_field_access(),
-                                "$1this._eff_outer.");
+      return std::regex_replace(std::string(code), self_field_access(),
+                                "$1self._eff_outer.");
     });
   }
-  // Redirect `this.x` to `<self>.x` for a handler-clause body: the adapter is a
+  // Redirect `self.x` to `<self>.x` for a handler-clause body: the adapter is a
   // closure inside the `<self>` IIFE, so it captures the enclosing instance as a
-  // plain local (both backends), not via lexical `this`. `<self>` is unique per
+  // plain local (both backends), not via lexical `self`. `<self>` is unique per
   // handle so nested handles' IIFE params don't shadow one another.
   static std::string redirect_this_to_self(std::string_view src,
                                            const std::string& self) {
     return rewrite_outside_strings(src, [&](std::string_view code) {
-      return std::regex_replace(std::string(code), this_field_access(),
+      return std::regex_replace(std::string(code), self_field_access(),
                                 "$1" + self + ".");
     });
   }
   // True when the handle reads an enclosing-computation binding: a genuine
-  // `this` receiver node somewhere in its subtree. Walk the AST (not the raw
-  // slice) so `this.` inside a string literal or comment is never mistaken for
+  // `self` receiver node somewhere in its subtree. Walk the AST (not the raw
+  // slice) so `self.` inside a string literal or comment is never mistaken for
   // a capture — otherwise a top-level handle carrying such text would synthesize
-  // a `_eff_self` wrapper over a nonexistent `this`. `this` only enters an
-  // effect body via the outer locals-to-`this` rewrite, so any `this` node is a
-  // real capture; an interpolation's `"{this.x}"` is a node too and is redirected.
-  // Stops at CLASS_DECL: `this` inside a class's methods is that class's own
+  // a `_eff_self` wrapper over a nonexistent `self`. `self` only enters an
+  // effect body via the outer locals-to-`self` rewrite, so any `self` node is a
+  // real capture; an interpolation's `"{self.x}"` is a node too and is redirected.
+  // Stops at CLASS_DECL: `self` inside a class's methods is that class's own
   // instance (e.g. the machinery of a generator fn the mainline pass already
   // lowered in place), never an enclosing-computation read.
   static bool captures_outer(const peg::Ast& node) {
     using namespace peg::udl;
-    if (node.tag == "IDENTIFIER"_ && node.token == "this") return true;
+    if (node.tag == "IDENTIFIER"_ && node.token == "self") return true;
     if (node.tag == "CLASS_DECL"_) return false;
     for (auto& c : node.nodes) {
       if (captures_outer(*c)) return true;
@@ -1459,7 +1459,7 @@ class EffectsLowerer {
   // A-normalization (hoisting expression-nested performs to statement level),
   // so the CPS builder only ever sees statement-level suspensions over
   // if/while. Each pre-pass re-parses into a clean buffer whose slices resolve.
-  // `capture_outer` redirects enclosing-instance reads (`this.x`) through the
+  // `capture_outer` redirects enclosing-instance reads (`self.x`) through the
   // `_eff_outer` ctor param — set when a nested handle captures an outer binding.
   std::string build_computation_class(
       const std::string& class_name, const peg::Ast& body_node,
@@ -1532,7 +1532,7 @@ class EffectsLowerer {
   // Names of named fn decls in the body (statement level or nested control
   // flow), stopping at fn / HANDLE boundaries like `collect_local_names` —
   // they live as instance fields (see `emit_named_fn_field`), so calls to
-  // them rewrite to `this.<name>(...)`. A second clause of the same name
+  // them rewrite to `self.<name>(...)`. A second clause of the same name
   // would silently overwrite the field (a single value can't hold a
   // multimethod), so it is rejected symmetrically.
   std::set<std::string> collect_named_fn_decls(const peg::Ast& body) const {
@@ -1573,17 +1573,17 @@ class EffectsLowerer {
 
     std::string ctor_params, ctor_call_args;
     std::string ctor_inits = std::format(
-        "      this._eff_state = {}\n"
-        "      this._eff_val = nil\n"
-        "      this._eff_op = nil\n"
-        "      this._eff_args = nil\n"
-        "      this._eff_line = nil\n"
-        "      this._eff_delegate = nil\n",
+        "      self._eff_state = {}\n"
+        "      self._eff_val = nil\n"
+        "      self._eff_op = nil\n"
+        "      self._eff_args = nil\n"
+        "      self._eff_line = nil\n"
+        "      self._eff_delegate = nil\n",
         disp.entry);
     if (disp.n_defers > 0) {
-      ctor_inits += "      this._eff_finalized = false\n";
+      ctor_inits += "      self._eff_finalized = false\n";
       for (int k = 0; k < disp.n_defers; k++)
-        ctor_inits += std::format("      this._eff_defer_{} = false\n", k);
+        ctor_inits += std::format("      self._eff_defer_{} = false\n", k);
     }
     emit_ctor_param_and_local_inits(param_names, locals, ctor_params,
                                     ctor_call_args, ctor_inits);
@@ -1696,10 +1696,10 @@ class EffectsLowerer {
     const auto& body = *ast->nodes[0];
 
     // A nested `handle` whose body / clauses read an enclosing computation's
-    // binding (a `this.` access, from the outer locals-to-`this` rewrite) is
+    // binding (a `self.` access, from the outer locals-to-`self` rewrite) is
     // lowered to reach that binding through the enclosing instance: the body
     // class takes it as an `_eff_outer` ctor arg, the handler closures capture
-    // it as a plain `_eff_self` local. Neither leans on lexical `this` capture
+    // it as a plain `_eff_self` local. Neither leans on lexical `self` capture
     // (which the interp does and the JIT doesn't), so both backends agree.
     bool captures = captures_outer(*ast);
     auto self_name = std::format("_eff_self_{}_{}", ast->line, ast->column);
@@ -1796,7 +1796,7 @@ class EffectsLowerer {
           "      (fn() {{\n{0}      {1}.new({4})\n      }})(),\n"
           "      {2},\n"
           "      {3})\n"
-          "  }})(this)\n"
+          "  }})(self)\n"
           "}}\n",
           cls, class_name, frame, return_fn, self_name));
     } else {

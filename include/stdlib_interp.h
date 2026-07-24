@@ -1184,7 +1184,7 @@ inline void _file_close(int64_t id) {
 }
 
 // Attach a `dispose` method to a lines()/chunks() iterator: closes the
-// handle on for-in exit (incl. break). `self` is captured only to keep the
+// handle on for-in exit (incl. break). `fn` is captured only to keep the
 // handle Value alive until the loop drains (otherwise the anonymous
 // `File.open(p).lines()` handle would be GC'd before iteration).
 inline void _file_attach_dispose(Value& iter, Value self, int64_t id) {
@@ -2746,7 +2746,7 @@ inline Value proc_result_to_value(culebra::proc::ProcResult&& pr) {
 }
 
 // Mutate a handle field. Objects share their property map, so this is visible
-// to every holder of the handle (the user's variable and the bound `this`).
+// to every holder of the handle (the user's variable and the bound `self`).
 inline void _proc_handle_set(const Value& this_v, std::string_view key,
                              Value val) {
   this_v.to_object().properties->insert_or_assign(
@@ -2765,7 +2765,7 @@ inline Value make_file_handle(int64_t id) {
   h.initialize("__nonsendable__", Value(true), false);
 
   auto hid = [](const std::shared_ptr<Environment>& env) -> int64_t {
-    return env->get("this").to_object().get("_id").to_long();
+    return env->get("self").to_object().get("_id").to_long();
   };
   auto loc = [](const std::shared_ptr<Environment>& env, long& line, long& col) {
     line = env->get("__LINE__").to_long();
@@ -2840,7 +2840,7 @@ inline Value make_file_handle(int64_t id) {
         // Capture the handle Value so the iterator keeps it alive — without
         // this the anonymous `File.open(p).lines()` handle would be GC'd
         // (drop → close) before the loop runs.
-        Value self = env->get("this");
+        Value self = env->get("self");
         Value iter = _make_iterator(
             [self, id, line, col](std::shared_ptr<Environment>) -> std::optional<Value> {
               std::string out;
@@ -2860,7 +2860,7 @@ inline Value make_file_handle(int64_t id) {
         long line, col; loc(env, line, col);
         int64_t id = hid(env);
         long n = env->get("n").to_long();
-        Value self = env->get("this");
+        Value self = env->get("self");
         Value iter = _make_iterator(
             [self, id, n, line, col](std::shared_ptr<Environment>) -> std::optional<Value> {
               auto chunk = _file_read_n(id, n, line, col);
@@ -3142,10 +3142,10 @@ inline Value make_sqlite_stmt_handle(int64_t stmt_id, const Value& db_handle) {
   h.initialize("__parent__", db_handle, false);
 
   auto sid = [](const std::shared_ptr<Environment>& env) -> int64_t {
-    return env->get("this").to_object().get("_id").to_long();
+    return env->get("self").to_object().get("_id").to_long();
   };
   auto dbid = [](const std::shared_ptr<Environment>& env) -> int64_t {
-    return env->get("this").to_object().get("__parent__").to_object().get("_id").to_long();
+    return env->get("self").to_object().get("__parent__").to_object().get("_id").to_long();
   };
   auto loc = [](const std::shared_ptr<Environment>& env, long& line, long& col) {
     line = env->get("__LINE__").to_long();
@@ -3215,7 +3215,7 @@ inline Value make_sqlite_db_handle(int64_t db_id) {
   h.initialize("__nonsendable__", Value(true), false);
 
   auto did = [](const std::shared_ptr<Environment>& env) -> int64_t {
-    return env->get("this").to_object().get("_id").to_long();
+    return env->get("self").to_object().get("_id").to_long();
   };
   auto loc = [](const std::shared_ptr<Environment>& env, long& line, long& col) {
     line = env->get("__LINE__").to_long();
@@ -3262,7 +3262,7 @@ inline Value make_sqlite_db_handle(int64_t db_id) {
             int64_t st =
                 culebra::sqlite::prepare(did(env), env->get("sql").to_string(), &err);
             if (st < 0) _sqlite_throw(err, line, col);
-            return make_sqlite_stmt_handle(st, env->get("this"));
+            return make_sqlite_stmt_handle(st, env->get("self"));
           },
           "Object"sv)),
       false);
@@ -3361,7 +3361,7 @@ inline Value make_proc_handle(long pid, int out_fd, int err_fd) {
 
   h.initialize("wait",
       Value(FunctionValue({}, [](std::shared_ptr<Environment> env) -> Value {
-        const Value& self = env->get("this");
+        const Value& self = env->get("self");
         const auto& o = self.to_object();
         if (o.get("_done").to_bool()) return o.get("_result");
         int out_fd = static_cast<int>(o.get("_out").to_long());
@@ -3376,7 +3376,7 @@ inline Value make_proc_handle(long pid, int out_fd, int err_fd) {
 
   h.initialize("poll",
       Value(FunctionValue({}, [](std::shared_ptr<Environment> env) -> Value {
-        const Value& self = env->get("this");
+        const Value& self = env->get("self");
         const auto& o = self.to_object();
         if (o.get("_done").to_bool()) return o.get("_result");
         int status = 0;
@@ -3397,7 +3397,7 @@ inline Value make_proc_handle(long pid, int out_fd, int err_fd) {
   h.initialize("kill",
       Value(FunctionValue({{"sig", false, "Long"sv, nullptr, kill_sig_default}},
           [](std::shared_ptr<Environment> env) -> Value {
-            const auto& o = env->get("this").to_object();
+            const auto& o = env->get("self").to_object();
             if (!o.get("_done").to_bool()) {
               culebra::proc::kill_pid(
                   o.get("_pid").to_long(),
@@ -3408,7 +3408,7 @@ inline Value make_proc_handle(long pid, int out_fd, int err_fd) {
 
   h.initialize("drop",
       Value(FunctionValue({}, [](std::shared_ptr<Environment> env) -> Value {
-        const Value& self = env->get("this");
+        const Value& self = env->get("self");
         const auto& o = self.to_object();
         if (o.get("_done").to_bool()) return Value();
         int out_fd = static_cast<int>(o.get("_out").to_long());
@@ -3516,7 +3516,7 @@ inline Value http_result_to_value(culebra::http::HttpResult&& r) {
   obj.initialize(
       "json",
       Value(FunctionValue({}, [](std::shared_ptr<Environment> env) {
-        return json_parse(env->get("this").to_object().get("body")
+        return json_parse(env->get("self").to_object().get("body")
                               .to_string_view(), "auto"sv);
       }, "Any"sv)),
       false);
@@ -3850,7 +3850,7 @@ inline Value make_http_client_handle(int64_t id) {
       FunctionValue::Parameter{"files", false, ""sv, nullptr, kw_default_nil()};
 
   auto cid = [](const std::shared_ptr<Environment>& env) -> int64_t {
-    return env->get("this").to_object().get("_id").to_long();
+    return env->get("self").to_object().get("_id").to_long();
   };
 
   // get / delete / head — no body.
@@ -4043,7 +4043,7 @@ inline Value make_http_sink_handle(int64_t sink_id) {
       Value(FunctionValue(
           {{"data", false, "String"sv}},
           [](std::shared_ptr<Environment> env) -> Value {
-            int64_t sid = env->get("this").to_object().get("_sink").to_long();
+            int64_t sid = env->get("self").to_object().get("_sink").to_long();
             auto sv = env->get("data").to_string_view();
             return Value(http::http_sink_write(sid, sv.data(), sv.size()));
           },
@@ -4101,7 +4101,7 @@ inline Value make_http_ws_handle(int64_t ws_id, bool is_client) {
   h.initialize("_ws", Value(static_cast<long>(ws_id)), false);
   h.initialize("__nonsendable__", Value(true), false);
   auto wid = [](const std::shared_ptr<Environment>& env) -> int64_t {
-    return env->get("this").to_object().get("_ws").to_long();
+    return env->get("self").to_object().get("_ws").to_long();
   };
   h.initialize(
       "send",
@@ -4198,7 +4198,7 @@ inline Value make_http_server_handle(int64_t id) {
   h.initialize("__nonsendable__", Value(true), false);
 
   auto sid = [](const std::shared_ptr<Environment>& env) -> int64_t {
-    return env->get("this").to_object().get("_id").to_long();
+    return env->get("self").to_object().get("_id").to_long();
   };
 
   // get/post/put/delete/patch/options(pattern, handler) — record a route (the
@@ -4209,7 +4209,7 @@ inline Value make_http_server_handle(int64_t id) {
         [method, sid](std::shared_ptr<Environment> env) -> Value {
           g_srv_routes[sid(env)].push_back(
               {method, env->get("pattern").to_string(), env->get("handler")});
-          return env->get("this");
+          return env->get("self");
         },
         "Object"sv));
   };
@@ -4264,7 +4264,7 @@ inline Value make_http_server_handle(int64_t id) {
                                  std::format("server.static: {}", err), line,
                                  col);
             }
-            return env->get("this");
+            return env->get("self");
           },
           "Object"sv)),
       false);
@@ -4305,14 +4305,14 @@ inline Value make_http_server_handle(int64_t id) {
       "stop",
       Value(FunctionValue({}, [](std::shared_ptr<Environment> env) -> Value {
         culebra::http::http_server_stop(
-            env->get("this").to_object().get("_id").to_long());
+            env->get("self").to_object().get("_id").to_long());
         return Value();
       })),
       false);
 
   // close — stop, drop recorded routes, free. drop — GC backstop for the same.
   auto shutdown = [](std::shared_ptr<Environment> env) {
-    int64_t id = env->get("this").to_object().get("_id").to_long();
+    int64_t id = env->get("self").to_object().get("_id").to_long();
     g_srv_routes.erase(id);
     culebra::http::http_server_close(id);
     return Value();

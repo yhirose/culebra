@@ -390,7 +390,7 @@ inline Value make_shared_val_view(long id, long node_idx) {
   h.initialize("__sharedval_node__", Value(node_idx), false);
   h.initialize("_dropped", Value(false), true);
   auto self_node = [](std::shared_ptr<Environment>& env) {
-    return _shared_val_node_of(env->get("this"));
+    return _shared_val_node_of(env->get("self"));
   };
   h.initialize("size",
       Value(FunctionValue({}, [self_node](std::shared_ptr<Environment> env) {
@@ -438,13 +438,13 @@ inline Value make_shared_val_view(long id, long node_idx) {
       }, ""sv)), false);
   h.initialize("iter",
       Value(FunctionValue({}, [](std::shared_ptr<Environment> env) {
-        return shared_val_make_iter(env->get("this"));
+        return shared_val_make_iter(env->get("self"));
       }, ""sv)), false);
   h.initialize("drop",
       Value(FunctionValue({}, [id](std::shared_ptr<Environment> env) -> Value {
         // Idempotent via the shared `_dropped` flag (explicit drop and
         // the GC/scope-exit drop path both land here; later calls no-op).
-        auto self = env->get("this");
+        auto self = env->get("self");
         auto& o = self.to_object();
         if (o.get("_dropped").to_bool()) return Value();
         o.assign("_dropped", Value(true));

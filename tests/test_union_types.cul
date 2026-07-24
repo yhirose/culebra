@@ -24,10 +24,10 @@ assert_eq(lookup("missing"), nil)
 
 // --- Class instances in Union ---
 class Square {
-  new (s) { this.side = s }
+  new (s) { self.side = s }
 }
 class Circle {
-  new (r) { this.r = r }
+  new (r) { self.r = r }
 }
 fn area(shape: Square | Circle) -> Float {
   match shape {
@@ -108,7 +108,7 @@ assert_eq(pick(1.5), "union")
 // Union outranks bare `Object` when arg is in the Union (Object is
 // class-instance catch-all only; primitives go through the Union).
 class Holder {
-  new (v) { this.value = v }
+  new (v) { self.value = v }
 }
 fn rank(x: Object) -> String { "object" }
 fn rank(x: Long | Float) -> String { "union" }

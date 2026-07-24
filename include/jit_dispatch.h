@@ -141,8 +141,8 @@ inline void _jit_variant_ctor_thunk(JitValue* __ret, JitClosure* cls, int8_t thi
                                          JitValue* args) {
   JitValue this_val{this_tag, this_data};
   // A direct `E.V(x)` call reaches here through the method-call ABI, which
-  // hands `this` (the enum namespace) at +1 for the callee to consume. This
-  // thunk builds a fresh variant instead of forwarding `this` to a body, so
+  // hands `self` (the enum namespace) at +1 for the callee to consume. This
+  // thunk builds a fresh variant instead of forwarding `self` to a body, so
   // it must drop that +1 or the namespace strands one reference per call.
   // (An indirect `let f = E.V; f(x)` passes nil — a no-op release.)
   _culebra_value_release_impl(this_val.tag, this_val.data);
@@ -177,7 +177,7 @@ culebra_runtime_make_variant_ctor(const char* variant_name,
 // instance's own data fields at call time. The JIT mirrors the variant
 // ctor pattern: each derived method is a captureless closure over a
 // shared thunk, so no per-class codegen is needed. The thunks recover
-// `this` from the JitFn ABI and forward to the reflective helpers below
+// `self` from the JitFn ABI and forward to the reflective helpers below
 // — no side table, since the helpers read everything off the instance.
 // AOT inherits this for free: the closures are built by runtime calls
 // emitted in the class-decl IR, and the thunks/helpers live in the rt
@@ -1117,7 +1117,7 @@ inline void _jit_multifn_dispatcher_thunk(JitValue* __ret, JitClosure* cls,
   // forwarded to the picked body, which consumes them (callee-consumes). A
   // DispatchError throws before that hand-off, so the receiver + args would
   // strand — release them on the failure path (callee-cleans-on-dispatch-
-  // error). A free-function dispatcher passes nil `this` (a no-op release).
+  // error). A free-function dispatcher passes nil `self` (a no-op release).
   auto picked = _jit_multifn_resolve(
       cls, args, n_args, _jit_call_site_line, _jit_call_site_col, [&]() {
         _culebra_value_release_impl(this_val.tag, this_val.data);
@@ -1126,7 +1126,7 @@ inline void _jit_multifn_dispatcher_thunk(JitValue* __ret, JitClosure* cls,
       });
   // Forward `this_val` to the picked body. For a free-function dispatcher the
   // call site passes nil and the body ignores it; for a class method-overload
-  // dispatcher it carries the receiver, so the picked overload sees `this`.
+  // dispatcher it carries the receiver, so the picked overload sees `self`.
   *__ret = _jit_invoke(picked.body, this_val, n_args, args);
 }
 
@@ -1394,19 +1394,19 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
 // _wrap_method_with_this). A method read as a VALUE — `let g = obj.m` — is
 // wrapped in a closure whose captures are [receiver, method]. A value call
 // (`g()`, a HOF, `__call__`) reaches every closure through its fn_ptr with
-// `this` = Nil; this thunk substitutes the captured receiver so the method
-// body sees the right `this`. It forwards args/arity unchanged, so it composes
+// `self` = Nil; this thunk substitutes the captured receiver so the method
+// body sees the right `self`. It forwards args/arity unchanged, so it composes
 // with every existing invoke path and with the callee's own arg handling.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void _jit_bound_method_thunk(JitValue* __ret, 
     JitClosure* self, int8_t /*this_tag: Nil on a value call*/,
     int64_t /*this_data*/, int64_t n_args, JitValue* args) {
   JitValue receiver = self->captures[0]->value;
   auto* method = reinterpret_cast<JitClosure*>(self->captures[1]->value.data);
-  // The callee frame takes ownership of `this` on entry (a direct call retains
+  // The callee frame takes ownership of `self` on entry (a direct call retains
   // the receiver before passing it). Retain the captured receiver per call so
   // repeated invocations don't drain the wrapper's single held reference.
   culebra_runtime_value_retain(receiver.tag, receiver.data);
-  // The method (a user proto method — never a builtin) frame consumes `this` on
+  // The method (a user proto method — never a builtin) frame consumes `self` on
   // a normal return; on a C++ throw the caller cleans up, so free the retained
   // receiver here if the body throws (callee-consumes / caller-cleans-on-throw).
   JitOwnedVal recv_guard(receiver);
@@ -1417,15 +1417,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void _jit_bound_method_thunk(JitValue* __ret,
 
 // Resolve a property read AS A VALUE (`obj.name`, not `obj.name(...)`). When it
 // is a class method — a TAG_FUNC reached through the proto, NOT an own slot —
-// bind `this`=receiver into a wrapper so a later call sees the right receiver
+// bind `self`=receiver into a wrapper so a later call sees the right receiver
 // (interp's _wrap_method_with_this). Own-slot functions (namespace methods,
 // constructors, lambda fields) and builtins keep their raw value; the own/proto
 // split is decided by an own-slot lookup on `key` (a lambda stored in a field
 // is an own slot, a method lives only on the proto). Returns a +1-owned value
 // in every case (retaining the view, or the receiver+method into the wrapper's
 // cells); the caller releases the receiver separately.
-// Invoke a getter body 0-arg with `this`=receiver, returning its +1-owned
-// result. The callee frame takes ownership of `this` on entry (retained inside
+// Invoke a getter body 0-arg with `self`=receiver, returning its +1-owned
+// result. The callee frame takes ownership of `self` on entry (retained inside
 // _culebra_invoke_method0, released on a throw via its JitUnwindRelease). Shared
 // by the bare-read and introspection-name paths.
 CULEBRA_RT_INLINE JitValue _jit_invoke_getter(JitClosure* method,
@@ -1442,7 +1442,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_bind_method_value(
     if (obj->proto &&
         obj->find_slot(key) == static_cast<size_t>(-1)) {  // proto method
       auto* method = reinterpret_cast<JitClosure*>(view_data);
-      // A getter read as a value auto-invokes 0-arg with `this`=receiver
+      // A getter read as a value auto-invokes 0-arg with `self`=receiver
       // (interp's eval_property getter branch). Reached only on the bare-read
       // path; `obj.name()` compiles as a method call and never lands here, so
       // both spellings yield the same value. `view` is borrowed here (the
@@ -1452,7 +1452,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_bind_method_value(
       }
       // The interp makes a bound method non-Sendable (its wrapper has no
       // params_ast), so an escapee is rejected rather than shipped without its
-      // `this`. Register the thunk as native so sendable_jit's _jit_is_native_fn
+      // `self`. Register the thunk as native so sendable_jit's _jit_is_native_fn
       // rejects it with the same SendError. Cheap after the first (memoized).
       _jit_register_native_fn(reinterpret_cast<const void*>(&_jit_bound_method_thunk));
       auto* bound = culebra_runtime_closure_new(
@@ -1527,7 +1527,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     for (int64_t i = 0; i < n_splat; i++) {
       _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
     }
-    // callee-cleans-on-direct-binding-error: `this` is passed +1 (the callee
+    // callee-cleans-on-direct-binding-error: `self` is passed +1 (the callee
     // frame consumes it on the normal hand-off at the tail). Every throw here
     // aborts before that hand-off, so the receiver would strand (a method
     // receiver on `obj.m(bad: 1)`). release_owned runs only on the throw /
@@ -1537,8 +1537,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
 
   // A bound method value (`obj.m` read as a value) wraps [receiver, method];
   // its trampoline fn_ptr carries no JitParamMeta, so recurse into the
-  // underlying method with `this` = the captured receiver (retained, since the
-  // callee frame consumes `this` — same as the positional trampoline). Without
+  // underlying method with `self` = the captured receiver (retained, since the
+  // callee frame consumes `self` — same as the positional trampoline). Without
   // this a kwarg call `g(x: 1)` would wrongly hit the "no keyword arguments"
   // reject on the wrapper's null meta.
   if (cls->fn_ptr == reinterpret_cast<void*>(&_jit_bound_method_thunk)) {

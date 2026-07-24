@@ -6,9 +6,9 @@
 
 test_class_basic = fn () {
   class Car {
-    new(mpr) { this.miles = 0; this.mpr = mpr }
-    run(n)   { this.miles = this.miles + this.mpr * n }
-    total()  { this.miles }
+    new(mpr) { self.miles = 0; self.mpr = mpr }
+    run(n)   { self.miles = self.miles + self.mpr * n }
+    total()  { self.miles }
   }
   c = Car.new(5)
   c.run(1); c.run(2)
@@ -27,9 +27,9 @@ test_class_default_ctor = fn () {
 
 test_class_independent_instances = fn () {
   class Car {
-    new(mpr) { this.miles = 0; this.mpr = mpr }
-    run(n)   { this.miles = this.miles + this.mpr * n }
-    total()  { this.miles }
+    new(mpr) { self.miles = 0; self.mpr = mpr }
+    run(n)   { self.miles = self.miles + self.mpr * n }
+    total()  { self.miles }
   }
   a = Car.new(10); b = Car.new(20)
   a.run(1); b.run(1)
@@ -38,9 +38,9 @@ test_class_independent_instances = fn () {
 
 test_class_chain = fn () {
   class Counter {
-    new()  { this.n = 0 }
-    bump() { this.n = this.n + 1; this }
-    value(){ this.n }
+    new()  { self.n = 0 }
+    bump() { self.n = self.n + 1; self }
+    value(){ self.n }
   }
   k = Counter.new()
   k.bump().bump().bump()
@@ -48,7 +48,7 @@ test_class_chain = fn () {
 }
 
 test_class_match_tag = fn () {
-  class Point { new(x, y) { this.x = x; this.y = y } }
+  class Point { new(x, y) { self.x = x; self.y = y } }
   describe = fn (o) {
     match o {
       {class} if class == 'Point' => 'point',
@@ -61,19 +61,19 @@ test_class_match_tag = fn () {
 
 test_op_overload = fn () {
   class Vec {
-    new(x, y) { this.x = x; this.y = y }
-    __add__(r) { Vec.new(this.x + r.x, this.y + r.y) }
-    __sub__(r) { Vec.new(this.x - r.x, this.y - r.y) }
+    new(x, y) { self.x = x; self.y = y }
+    __add__(r) { Vec.new(self.x + r.x, self.y + r.y) }
+    __sub__(r) { Vec.new(self.x - r.x, self.y - r.y) }
     __mul__(r) {
       match r {
-        n: Long => Vec.new(this.x * n, this.y * n),
-        _       => Vec.new(this.x * r.x, this.y * r.y)
+        n: Long => Vec.new(self.x * n, self.y * n),
+        _       => Vec.new(self.x * r.x, self.y * r.y)
       }
     }
-    __neg__()  { Vec.new(-this.x, -this.y) }
-    __eq__(r)  { this.x == r.x && this.y == r.y }
+    __neg__()  { Vec.new(-self.x, -self.y) }
+    __eq__(r)  { self.x == r.x && self.y == r.y }
     __lt__(r)  {
-      (this.x * this.x + this.y * this.y) < (r.x * r.x + r.y * r.y)
+      (self.x * self.x + self.y * self.y) < (r.x * r.x + r.y * r.y)
     }
   }
   a = Vec.new(1, 2)
@@ -96,8 +96,8 @@ test_op_overload = fn () {
 
 test_pow_overload = fn () {
   class Wrapped {
-    new(n) { this.n = n }
-    __pow__(e) { Wrapped.new(this.n * e.n) }   # silly demo semantics
+    new(n) { self.n = n }
+    __pow__(e) { Wrapped.new(self.n * e.n) }   # silly demo semantics
   }
   r = Wrapped.new(3) ** Wrapped.new(4)
   assert_eq(r.n, 12)
@@ -107,9 +107,9 @@ test_pow_overload = fn () {
 # instance, so a user collection wrapper subscripts like a built-in.
 test_subscript_overload = fn () {
   class Grid {
-    new() { this.d = [10, 20, 30] }
-    __index__(i)    { this.d[i] }
-    __setindex__(i, v) { this.d[i] = v }     # exercises this.d[i] = v lvalue
+    new() { self.d = [10, 20, 30] }
+    __index__(i)    { self.d[i] }
+    __setindex__(i, v) { self.d[i] = v }     # exercises self.d[i] = v lvalue
   }
   g = Grid.new()
   assert_eq(g[0], 10)
@@ -122,9 +122,9 @@ test_subscript_overload = fn () {
 
   # Non-integer keys route through the same hooks.
   class Bag {
-    new() { this.m = {} }
-    __index__(k)    { this.m[k] }
-    __setindex__(k, v) { this.m[k] = v }
+    new() { self.m = {} }
+    __index__(k)    { self.m[k] }
+    __setindex__(k, v) { self.m[k] = v }
   }
   b = Bag.new()
   b["x"] = 1
@@ -147,20 +147,20 @@ test_subscript_overload = fn () {
 
 test_auto_reflect = fn () {
   class Vec {
-    new(x, y) { this.x = x; this.y = y }
+    new(x, y) { self.x = x; self.y = y }
     __add__(r) {
       match r {
-        n: Long => Vec.new(this.x + n, this.y + n),
-        _       => Vec.new(this.x + r.x, this.y + r.y)
+        n: Long => Vec.new(self.x + n, self.y + n),
+        _       => Vec.new(self.x + r.x, self.y + r.y)
       }
     }
     __mul__(r) {
       match r {
-        n: Long => Vec.new(this.x * n, this.y * n),
-        _       => Vec.new(this.x * r.x, this.y * r.y)
+        n: Long => Vec.new(self.x * n, self.y * n),
+        _       => Vec.new(self.x * r.x, self.y * r.y)
       }
     }
-    __eq__(r) { this.x == r.x && this.y == r.y }
+    __eq__(r) { self.x == r.x && self.y == r.y }
   }
   v = Vec.new(3, 4)
   a = 2 * v                          # Long * Vec reflects to v.__mul__(2)
@@ -174,15 +174,15 @@ test_auto_reflect = fn () {
 
 test_matmul_overload = fn () {
   class Mat {
-    new(data) { this.data = data }
+    new(data) { self.data = data }
     __matmul__(r) {
       mut out = []
-      for i in 0..this.data.size() {
+      for i in 0..self.data.size() {
         mut row = []
         for j in 0..r.data[0].size() {
           mut s = 0
           for k in 0..r.data.size() {
-            s = s + this.data[i][k] * r.data[k][j]
+            s = s + self.data[i][k] * r.data[k][j]
           }
           row.push(s)
         }
@@ -203,8 +203,8 @@ test_matmul_overload = fn () {
 
 test_str_special = fn () {
   class Matrix {
-    new(r, c) { this.rows = r; this.cols = c }
-    __str__()  { "Matrix {this.rows}x{this.cols}" }
+    new(r, c) { self.rows = r; self.cols = c }
+    __str__()  { "Matrix {self.rows}x{self.cols}" }
   }
   m = Matrix.new(2, 3)
 
@@ -222,7 +222,7 @@ test_str_special = fn () {
 test_default_display = fn () {
   # Class-sugar instance: `class:` tag is hoisted to a prefix, and
   # omitted from the property list to avoid repetition.
-  class Point { new(x, y) { this.x = x; this.y = y } }
+  class Point { new(x, y) { self.x = x; self.y = y } }
   p = Point.new(3, 4)
   assert_eq(to_string(p), 'Point {mut x: 3, mut y: 4}')
 
@@ -239,16 +239,16 @@ test_default_display = fn () {
   assert_eq(to_string(plain), '{a: 1, b: 2}')
 }
 
-# `this` is immutable inside the constructor body. interp and JIT
-# both raise ImmutableError when user code attempts `this = newObj`,
+# `self` is immutable inside the constructor body. interp and JIT
+# both raise ImmutableError when user code attempts `self = newObj`,
 # matching Java/Crystal/Ruby. Identity-swap factories live as plain
 # top-level functions instead (see samples/drop.cul guideline).
-test_this_immutable_in_ctor = fn () {
+test_self_immutable_in_ctor = fn () {
   class C {
     new () {
-      let r = try { this = {hijacked: true}; "no error" }
+      let r = try { self = {hijacked: true}; "no error" }
                 catch e { "kind={e.kind}" }
-      this.result = r
+      self.result = r
     }
   }
   c = C.new()
@@ -262,7 +262,7 @@ test_this_immutable_in_ctor = fn () {
 test_ctor_return_ignored = fn () {
   class C {
     new () {
-      this.tag = 'allocated'
+      self.tag = 'allocated'
       return {tag: 'returned'}
     }
   }
@@ -283,7 +283,7 @@ test_static_methods = fn () {
       s
     }
     area () {
-      if this.kind == 'circle' { 3 * this.radius * this.radius } else { 0 }
+      if self.kind == 'circle' { 3 * self.radius * self.radius } else { 0 }
     }
   }
   let circle = Shape.make_circle(4)
@@ -299,8 +299,8 @@ test_static_methods = fn () {
 # Multiple statics + interop with the regular constructor.
 test_static_multiple = fn () {
   class Counter {
-    new (start) { this.n = start }
-    bump () { this.n = this.n + 1; this }
+    new (start) { self.n = start }
+    bump () { self.n = self.n + 1; self }
     static zero () { Counter.new(0) }
     static from_array (arr) { Counter.new(arr.size()) }
   }
@@ -325,7 +325,7 @@ test_auto_reflect()
 test_matmul_overload()
 test_str_special()
 test_default_display()
-test_this_immutable_in_ctor()
+test_self_immutable_in_ctor()
 test_ctor_return_ignored()
 test_static_methods()
 test_static_multiple()
@@ -353,7 +353,7 @@ test_class_decl_throw_catchable()
 puts('class-sugar throw-catch OK')
 
 # --- Declared instance fields (`x: T = e`) ----------------------------------
-# Initializers run per instance — declaration order, `this` in scope, after
+# Initializers run per instance — declaration order, `self` in scope, after
 # the ctor args bind, before the `new` body (Kotlin's model). The JIT used
 # to drop typed fields entirely (every declared field read nil).
 
@@ -405,13 +405,13 @@ fn test_field_per_instance() {
 test_field_per_instance()
 
 fn test_field_this_and_order() {
-  # Declaration order; `this` sees earlier fields and methods.
+  # Declaration order; `self` sees earlier fields and methods.
   let base = 100
   class K {
     a: Long = base + 1
-    b: Long = this.a * 2
-    c: Long = this.calc()
-    calc() { this.a + this.b }
+    b: Long = self.a * 2
+    c: Long = self.calc()
+    calc() { self.a + self.b }
   }
   let k = K.new()
   assert_eq(k.a, 101)
@@ -423,7 +423,7 @@ test_field_this_and_order()
 fn test_field_before_new_body() {
   class N {
     x: Long = 5
-    new(m) { this.y = this.x * m }
+    new(m) { self.y = self.x * m }
   }
   assert_eq(N.new(10).y, 50)
 }
@@ -432,7 +432,7 @@ test_field_before_new_body()
 fn test_field_mutable_in_methods() {
   class C {
     n: Long = 0
-    bump() { this.n = this.n + 1 }
+    bump() { self.n = self.n + 1 }
   }
   let c = C.new()
   c.bump(); c.bump()
@@ -474,9 +474,9 @@ fn test_untyped_fields() {
   class P {
     score = 0
     items = []
-    best = this.score + base
+    best = self.score + base
     static MAX = 99
-    bump() { this.score = this.score + 1 }
+    bump() { self.score = self.score + 1 }
   }
   let a = P.new()
   let b = P.new()
@@ -498,7 +498,7 @@ fn test_member_default_sees_defining_scope() {
   # NameError instead of running — while the JIT ran the default fine.
   let bonus = 7
   class M {
-    new(a = bonus + 1) { this.a = a }
+    new(a = bonus + 1) { self.a = a }
     m(b = bonus * 2) { b }
   }
   assert_eq(M.new().a, 8)
@@ -507,7 +507,7 @@ fn test_member_default_sees_defining_scope() {
   # backends — and the ctor also resolves defaults as a HOF callback
   # (map passes one arg; the second param's default must evaluate).
   class T {
-    new(x = 1, a = to_long('zzz')) { this.a = a }
+    new(x = 1, a = to_long('zzz')) { self.a = a }
   }
   let r = try { T.new(); 'built' } catch e { e.kind }
   assert_eq(r, 'TypeError')
@@ -523,7 +523,7 @@ fn test_field_init_after_arg_binding() {
   fn noisy() { ran = ran + 1; 1 }
   class A {
     x: Long = noisy()
-    new(a, b) { this.s = a + b }
+    new(a, b) { self.s = a + b }
   }
   let r = try { A.new(1); 'built' } catch e { e.kind }
   assert_eq(r, 'ArityError')

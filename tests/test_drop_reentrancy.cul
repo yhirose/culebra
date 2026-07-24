@@ -52,7 +52,7 @@ assert_true(ev1.size() <= 1)      # conservative retention tolerance; the
 # the in-drop pin must absorb any number of self-releases.
 let ev2 = []
 make_self = fn () {
-  let cyc = { id: 'c', mut me: nil, drop: fn () { this.me = nil; ev2.push('d') } }
+  let cyc = { id: 'c', mut me: nil, drop: fn () { self.me = nil; ev2.push('d') } }
   cyc.me = cyc
   let g = fn () { cyc.id }
   g()

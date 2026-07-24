@@ -6,8 +6,8 @@
 # Basic: a callable class instance behaves like a function.
 test_call_basic = fn () {
   class Adder {
-    new(b) { this.b = b }
-    __call__(x) { this.b + x }
+    new(b) { self.b = b }
+    __call__(x) { self.b + x }
   }
   let f = Adder.new(3)
   assert_eq(f(10), 13)
@@ -33,12 +33,12 @@ test_call_variadic = fn () {
 # Chaining: a model whose __call__ invokes its layers' __call__.
 test_call_chain = fn () {
   class Layer {
-    new(w) { this.w = w }
-    __call__(x) { x * this.w }
+    new(w) { self.w = w }
+    __call__(x) { x * self.w }
   }
   class Model {
-    new() { this.l1 = Layer.new(2); this.l2 = Layer.new(3) }
-    __call__(x) { this.l2(this.l1(x)) }
+    new() { self.l1 = Layer.new(2); self.l2 = Layer.new(3) }
+    __call__(x) { self.l2(self.l1(x)) }
   }
   let m = Model.new()
   assert_eq(m(5), 30)            # 5 * 2 * 3
@@ -47,8 +47,8 @@ test_call_chain = fn () {
 # Callables in containers / closures: direct call syntax inside a lambda.
 test_call_in_lambda_and_loop = fn () {
   class Mul {
-    new(k) { this.k = k }
-    __call__(x) { x * this.k }
+    new(k) { self.k = k }
+    __call__(x) { x * self.k }
   }
   let fs = [Mul.new(1), Mul.new(2), Mul.new(3)]
   assert_eq(fs.map(|f| f(10)), [10, 20, 30])
@@ -70,7 +70,7 @@ test_plain_dict_not_callable = fn () {
 # A class instance without __call__ is not callable; both backends raise
 # a TypeError (captured as a boolean so the message text need not match).
 test_non_callable_instance = fn () {
-  class Plain { new() { this.x = 1 } }
+  class Plain { new() { self.x = 1 } }
   let p = Plain.new()
   mut threw = false
   try { let _ = p(1) } catch e { threw = true }
@@ -88,20 +88,20 @@ test_kwargs_call = fn () {
   assert_eq(f(step: 2, x: 5), 10)        # order-independent
   assert_eq(f(5, step: 2), 10)           # positional + keyword
 
-  class Plain { new() { this.v = 1 } }
+  class Plain { new() { self.v = 1 } }
   mut kind = nil
   try { let _ = Plain.new()(a: 1) } catch e { kind = e.kind }
   assert_eq(kind, 'TypeError')
 }
 
 # Phase 2a: a bare callable instance is itself a valid higher-order
-# callback — the builtin invokes its __call__ per element, `this` bound to
+# callback — the builtin invokes its __call__ per element, `self` bound to
 # the instance. A class with __call__ structurally satisfies `Function`.
 test_callable_as_value = fn () {
   class Inc { new() {} __call__(x) { x + 1 } }
   assert_eq([1, 2, 3].map(Inc.new()), [2, 3, 4])
 
-  class Mul { new(k) { this.k = k } __call__(x) { x * this.k } }
+  class Mul { new(k) { self.k = k } __call__(x) { x * self.k } }
   assert_eq([1, 2, 3].filter(fn (x) { x > 1 }).map(Mul.new(10)), [20, 30])
 
   # 2-arg __call__ as a reduce callback.
@@ -120,8 +120,8 @@ test_callable_as_value = fn () {
 # honored by multidispatch + the param type check. A non-callable bound
 # there is rejected with the same message on both backends.
 test_callable_function_param = fn () {
-  class Mul { new(k) { this.k = k } __call__(x) { x * this.k } }
-  class Plain { new() { this.x = 1 } }
+  class Mul { new(k) { self.k = k } __call__(x) { x * self.k } }
+  class Plain { new() { self.x = 1 } }
   fn apply2(cb: Function, v) { cb(cb(v)) }
   assert_eq(apply2(Mul.new(3), 2), 18)            # 2*3*3
   assert_eq(apply2(fn (x) { x + 1 }, 0), 2)       # real function still works
@@ -139,31 +139,31 @@ test_dezero_call = fn () {
     forward(a, b)
     backward(gy)
     __call__(a, b) {
-      let y = Variable.new(this.forward(a.data, b.data))
-      y.set_creator(this)
-      this.inputs = [a, b]
-      this.output = y
+      let y = Variable.new(self.forward(a.data, b.data))
+      y.set_creator(self)
+      self.inputs = [a, b]
+      self.output = y
       y
     }
   }
   class Mul {
-    new() { this.inputs = nil; this.output = nil }
+    new() { self.inputs = nil; self.output = nil }
     forward(x, y) { x * y }
-    backward(gy) { [this.inputs[1].data * gy, this.inputs[0].data * gy] }
+    backward(gy) { [self.inputs[1].data * gy, self.inputs[0].data * gy] }
   }
   class Add {
-    new() { this.inputs = nil; this.output = nil }
+    new() { self.inputs = nil; self.output = nil }
     forward(x, y) { x + y }
     backward(gy) { [gy, gy] }
   }
   class Variable {
-    new(data) { this.data = data; this.grad = nil; this.creator = nil }
-    set_creator(f) { this.creator = f }
-    __mul__(o) { Mul.new()(this, o) }
-    __add__(o) { Add.new()(this, o) }
+    new(data) { self.data = data; self.grad = nil; self.creator = nil }
+    set_creator(f) { self.creator = f }
+    __mul__(o) { Mul.new()(self, o) }
+    __add__(o) { Add.new()(self, o) }
     backward() {
-      if this.grad == nil { this.grad = 1.0 }
-      mut funcs = [this.creator]
+      if self.grad == nil { self.grad = 1.0 }
+      mut funcs = [self.creator]
       while funcs.size() > 0 {
         let f = funcs.pop()
         let gxs = f.backward(f.output.grad)

@@ -68,7 +68,7 @@ struct is_shared_ptr<std::shared_ptr<U>> : std::true_type {};
 // Per-T binding info, filled once by the binder's static-init run and
 // read by make_foreign_handle on every construction. The prototypes
 // capture nothing per-instance (the foreign table resolves per call,
-// `this` per invocation), so each handle just copies the shared Values
+// `self` per invocation), so each handle just copies the shared Values
 // into its property map — the hand-written Phase 3 binding's shape.
 // constinit pins the constant-initialization the registration scheme
 // relies on: the binder's dynamic initializer writes into these, so they
@@ -83,7 +83,7 @@ struct class_info {
 template <class T>
 inline int64_t handle_id(const std::shared_ptr<Environment>& env) {
   return static_cast<int64_t>(
-      env->get("this").to_object().get("_id").to_long());
+      env->get("self").to_object().get("_id").to_long());
 }
 
 // Generation of a handle, or -1 when it is no longer valid (§10.4).
@@ -108,7 +108,7 @@ template <class T>
 inline T* handle_self(const std::shared_ptr<Environment>& env) {
   long line = env->get("__LINE__").to_long();
   long col = env->get("__COLUMN__").to_long();
-  const auto& h = env->get("this").to_object();
+  const auto& h = env->get("self").to_object();
   if (h.has("_bid")) {
     int64_t bid = h.get("_bid").to_long();
     if (!foreign::borrow_valid(bid))
@@ -184,7 +184,7 @@ inline Value make_borrow_handle(T2* p, const Value& parent, int64_t pgen) {
   }
   static const Value borrow_drop(
       FunctionValue({}, [](std::shared_ptr<Environment> env) {
-        foreign::borrow_erase(env->get("this").to_object().get("_bid").to_long());
+        foreign::borrow_erase(env->get("self").to_object().get("_bid").to_long());
         return Value();
       }));
   h.initialize("drop", borrow_drop, false);
@@ -197,7 +197,7 @@ inline Value make_borrow_handle(T2* p, const Value& parent, int64_t pgen) {
 // through a borrow stales its children, not its siblings).
 template <class T>
 inline void bump_handle_gen(const std::shared_ptr<Environment>& env) {
-  const auto& h = env->get("this").to_object();
+  const auto& h = env->get("self").to_object();
   if (h.has("_bid")) {
     foreign::borrow_bump(h.get("_bid").to_long());
   } else {
@@ -313,7 +313,7 @@ inline Value make_borrowed_proto(Mf mf, std::vector<std::string> names) {
   auto storage = pin_param_names(std::move(names), sizeof...(Args));
   auto eval = [storage, mf](std::shared_ptr<Environment> env) -> Value {
     T* self = handle_self<T>(env);
-    const Value parent = env->get("this");
+    const Value parent = env->get("self");
     int64_t pgen = handle_gen(parent.to_object());
     auto invoke = [&]<size_t... I>(std::index_sequence<I...>) -> Value {
       auto& r = (self->*mf)(_detail::ValueAs<Args>::convert(
@@ -584,7 +584,7 @@ JitValue jit_make_borrow_handle(T2* p, JitValue parent, int64_t pgen) {
 // Binder-order param checks shared by the method and borrowed thunks:
 // a missing required argument is an ArityError at the call site, a
 // wrong-typed one a TypeError at the argument's threaded position —
-// both released `self` first.
+// both released `fn` first.
 template <class T, auto Mf, class... Args>
 inline void jit_check_args(JitValue self, int64_t n, JitValue* args) {
   size_t bad = sizeof...(Args);

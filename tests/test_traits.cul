@@ -9,8 +9,8 @@ trait Greeter {
 }
 
 class Bob {
-  new(name) { this.name = name }
-  hello() { "hi, {this.name}" }
+  new(name) { self.name = name }
+  hello() { "hi, {self.name}" }
 }
 class Mute {
   new() {}
@@ -26,7 +26,7 @@ assert_eq(e.kind, "DispatchError")
 // --- Default method dispatch ---
 trait Counter {
   current() -> Long
-  next() -> Long { this.current() + 1 }
+  next() -> Long { self.current() + 1 }
 }
 
 class Zero {
@@ -43,16 +43,16 @@ assert_eq(Five.new().next(), 99)   // override wins
 
 // --- Built-in: Stringer ---
 class Tag {
-  new(v) { this.v = v }
-  to_s() { "<{this.v}>" }
+  new(v) { self.v = v }
+  to_s() { "<{self.v}>" }
 }
 fn show(x: Stringer) -> String { x.to_s() }
 assert_eq(show(Tag.new("ok")), "<ok>")
 
 // --- Built-in: Eq with default neq ---
 class Box {
-  new(v) { this.v = v }
-  eq(other) { this.v == other.v }
+  new(v) { self.v = v }
+  eq(other) { self.v == other.v }
 }
 let a = Box.new(1)
 let b = Box.new(1)
@@ -63,8 +63,8 @@ assert_false(a.neq(b))    // default
 
 // --- Built-in: Comparable with full six-way default suite ---
 class Pri {
-  new(v) { this.v = v }
-  cmp(other) { this.v - other.v }
+  new(v) { self.v = v }
+  cmp(other) { self.v - other.v }
 }
 let lo = Pri.new(1)
 let hi = Pri.new(5)

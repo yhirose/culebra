@@ -47,7 +47,7 @@ fn closed_msg(thunk) {
 # the borrow's parent reference makes the Box reachable, so scope exit
 # does NOT drop it — the borrow stays valid, and the Box's drop falls to
 # the GC backstop once the borrow itself dies. ClosedError is for
-# explicit drops and generation staleness, not for this.
+# explicit drops and generation staleness, not for self.
 {
   mut c = nil
   {
@@ -108,7 +108,7 @@ fn closed_msg(thunk) {
 # --- Forging a borrow's internal slots is memory-safe (no raw pointer is
 # read from a script-writable slot — the borrow id resolves through the
 # borrow table, so a bogus id is a clean miss, never a deref). The JIT
-# rebinds `this` to the forged object and gets ClosedError; the interp's
+# rebinds `self` to the forged object and gets ClosedError; the interp's
 # stolen method stays bound to its origin and returns the real value.
 # Either way: no crash, no UB.
 {

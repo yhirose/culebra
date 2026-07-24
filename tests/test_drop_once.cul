@@ -4,14 +4,14 @@
 # double-fire (the drop body ran twice). An explicit drop must suppress the
 # subsequent auto-drop (C#-Dispose / GC.SuppressFinalize semantics).
 #
-# The drop body pushes to a list reached via `this.log` (a shared reference),
+# The drop body pushes to a list reached via `self.log` (a shared reference),
 # so the count survives the object and is observable after the drop.
 
 let log = []
 
 class R {
-  new(lg) { this.log = lg }
-  drop() { this.log.push(1) }
+  new(lg) { self.log = lg }
+  drop() { self.log.push(1) }
 }
 
 # Explicit drop() then scope-exit: auto-drop must be suppressed → exactly once.

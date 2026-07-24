@@ -34,9 +34,9 @@ assert_eq(e_obj.kind, "DispatchError")
 
 // --- User class: structural conformance via hash() + eq() ---
 class Point {
-  new(x, y) { this.x = x; this.y = y }
-  hash() { this.x * 31 + this.y }
-  eq(other) { this.x == other.x && this.y == other.y }
+  new(x, y) { self.x = x; self.y = y }
+  hash() { self.x * 31 + self.y }
+  eq(other) { self.x == other.x && self.y == other.y }
 }
 
 let p = Point.new(1, 2)
@@ -65,7 +65,7 @@ assert_eq(s2.size(), 3)
 
 // --- User class without hash() ---
 class Naked {
-  new(v) { this.v = v }
+  new(v) { self.v = v }
 }
 
 // Rejected as Hashable param.

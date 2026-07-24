@@ -116,7 +116,7 @@ expect_accept "args-rest distinct"      'fn f(x, *args) { x }'
 expect_accept "destructuring param"     'fn f({a, b}) { a }'
 expect_accept "param shadowed by let"   'fn f(x) { let mut x = 1 }'
 
-# Reserved parameter names: `self` / `this` are language-core identifiers the
+# Reserved parameter names: `self` / `fn` are language-core identifiers the
 # callee binds unconditionally, so a same-named parameter shadows that binding
 # (and on the JIT the overwritten implicit slot leaked a ref every call). Abort
 # before eval with "SyntaxError: '<name>' is a reserved name".
@@ -128,19 +128,20 @@ expect_reserved_reject() {
   fi
 }
 expect_reserved_reject "fn self"        'fn f(self, x) { x }'
-expect_reserved_reject "fn this"        'fn f(this) { 1 }'
+expect_reserved_reject "fn fn"          'fn f(fn) { 1 }'
 expect_reserved_reject "self non-first" 'fn f(x, self) { x }'
 expect_reserved_reject "lambda self"    'let g = |self| self'
 expect_reserved_reject "method self"    'class C { m(self, x) { x } }'
-expect_reserved_reject "ctor this"      'class C { new(this) { } }'
+expect_reserved_reject "ctor fn"        'class C { new(fn) { } }'
 expect_reserved_reject "trait sig self" 'trait T { go(self) }'
-expect_reserved_reject "kw-only this"   'fn f(x, *, this) { x }'
+expect_reserved_reject "kw-only fn"     'fn f(x, *, fn) { x }'
 expect_reserved_reject "typed self"     'fn f(self: Int) { 1 }'
 
-# Accepted (sound-negative): names that merely CONTAIN self/this are ordinary.
+# Accepted (sound-negative): names that merely CONTAIN self/fn are ordinary.
 expect_accept "selfie param"            'fn f(selfie, x) { selfie }'
 expect_accept "myself param"            'fn f(myself) { myself }'
-expect_accept "this_ param"             'fn f(this_) { this_ }'
+expect_accept "fn_ param"               'fn f(fn_) { fn_ }'
+expect_accept "this param"              'fn f(this) { this }'
 
 # `return` outside any function is a SyntaxError (docs §return; `Sys.exit`
 # is the early-exit mechanism, and the module interface is `export`, so a
@@ -299,8 +300,8 @@ expect_undef_accept "for-var read"            'for i in [1, 2] { puts(i) }'
 expect_undef_accept "match arm binding"       'let v = match 1 { n => n }
 puts(v)'
 expect_undef_accept "catch var"               'try { throw "x" } catch e { puts(e) }'
-expect_undef_accept "this in method"          'class C { f() { this } }'
-expect_undef_accept "self recursion"          'fn f(n) { if n > 0 { self(n - 1) } else { 0 } }
+expect_undef_accept "self in method"          'class C { f() { self } }'
+expect_undef_accept "fn recursion"            'fn f(n) { if n > 0 { fn(n - 1) } else { 0 } }
 puts(f(3))'
 expect_undef_accept "dunder __ARGS__"         'fn f(*xs) { __ARGS__.size() }
 puts(f(1, 2))'

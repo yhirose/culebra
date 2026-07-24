@@ -16,10 +16,10 @@ test_static_field_basic = fn () {
 # Static fields and static methods coexist on the same class namespace.
 test_static_field_with_method = fn () {
   class Circle {
-    new (r) { this.radius = r }
+    new (r) { self.radius = r }
     static PI = 3.14
     static unit () { Circle.new(1) }
-    area () { this.radius * this.radius * Circle.PI }
+    area () { self.radius * self.radius * Circle.PI }
   }
   let c = Circle.unit()
   assert_eq(c.area(), 3.14)

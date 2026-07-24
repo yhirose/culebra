@@ -195,9 +195,9 @@ class ScopeWalker {
     }
   }
 
-  // Reject `self` / `this` as a parameter name. Both are language-core
-  // identifiers the callee binds unconditionally — `self` is the implicit
-  // recursion handle, `this` the method receiver (see always_bound) — so a
+  // Reject `fn` / `self` as a parameter name. Both are language-core
+  // identifiers the callee binds unconditionally — `fn` is the implicit
+  // recursion handle, `self` the method receiver (see always_bound) — so a
   // same-named parameter shadows that binding. Rejecting pre-eval keeps the
   // reserved names reserved on every backend: the interpreter and JIT
   // previously accepted such a parameter and silently let it shadow (a real
@@ -208,7 +208,7 @@ class ScopeWalker {
     for (const auto& p : params.nodes) {
       if (culebra::is_kw_only_sep(*p) || culebra::is_pattern_param(*p)) continue;
       auto loc = culebra::extract_param_name_loc(*p);
-      if (loc.name == "self" || loc.name == "this") {
+      if (loc.name == "fn" || loc.name == "self") {
         diags_.push_back(Diagnostic{
             "SyntaxError",
             std::format("'{}' is a reserved name and cannot be used as a "
@@ -1106,7 +1106,7 @@ using NameSet = std::set<std::string, std::less<>>;
 using Chain = std::vector<const NameSet*>;
 
 // Names the runtime binds implicitly, never via a user declaration:
-// `this` (method receiver) / `self` (current function, for recursion), and
+// `self` (method receiver) / `fn` (current function, for recursion), and
 // the reserved dunder names it injects per scope — `__ARGS__` / `__KWARGS__`
 // (the positional / keyword argument collections), `__LINE__` / `__COLUMN__`
 // (the current source position), `__cls__` (a static method's class), and
@@ -1114,7 +1114,7 @@ using Chain = std::vector<const NameSet*>;
 // these are reserved internals, never plain variables, and a blanket rule
 // can't drift as new injected dunders are added.
 inline bool always_bound(std::string_view n) {
-  if (n == "this" || n == "self") return true;
+  if (n == "self" || n == "fn") return true;
   return n.size() > 4 && n.starts_with("__") && n.ends_with("__");
 }
 

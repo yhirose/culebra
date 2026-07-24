@@ -8,22 +8,22 @@ trait Ord: Eq { cmp(other) -> Long }
 
 // A class with BOTH eq and cmp conforms to Ord.
 class Money {
-  new(a) { this.a = a }
-  eq(other) { this.a == other.a }
-  cmp(other) { this.a - other.a }
+  new(a) { self.a = a }
+  eq(other) { self.a == other.a }
+  cmp(other) { self.a - other.a }
 }
 fn needs_ord<T: Ord>(x: T) { x.a }
 assert_eq(needs_ord(Money.new(5)), 5)
 
 // cmp but no eq -> the inherited Eq.eq is missing -> rejected.
-class Partial { new(a) { this.a = a } cmp(other) { this.a - other.a } }
+class Partial { new(a) { self.a = a } cmp(other) { self.a - other.a } }
 let e_partial = try { needs_ord(Partial.new(1)); nil } catch ex { ex }
 assert_eq(e_partial != nil, true)
 
 // Transitive: Done: Ord (and Ord: Eq) requires eq + cmp + done.
 trait Done: Ord { done() -> Bool }
 class Task {
-  new() { this.x = 1 }
+  new() { self.x = 1 }
   eq(o) { true }
   cmp(o) { 0 }
   done() { true }
@@ -32,35 +32,35 @@ fn needs_done<T: Done>(x: T) { x.done() }
 assert_eq(needs_done(Task.new()), true)
 
 // Missing a transitively-required method (eq) -> rejected.
-class Task2 { new() { this.x = 1 } cmp(o) { 0 } done() { true } }
+class Task2 { new() { self.x = 1 } cmp(o) { 0 } done() { true } }
 let e_task2 = try { needs_done(Task2.new()); nil } catch ex { ex }
 assert_eq(e_task2 != nil, true)
 
 // An inherited DEFAULT method is usable on the subtrait.
 trait Greet {
   name() -> String
-  hello() -> String { "hi {this.name()}" }
+  hello() -> String { "hi {self.name()}" }
 }
 trait LoudGreet: Greet { shout() -> String }
-class Bob { new() { this.x = 1 } name() { "bob" } shout() { "HEY" } }
+class Bob { new() { self.x = 1 } name() { "bob" } shout() { "HEY" } }
 fn greet<T: LoudGreet>(x: T) { x.hello() }   // hello inherited from Greet
 assert_eq(greet(Bob.new()), "hi bob")
 
 // Multiple supertraits: Both: Eq, Show requires eq + show.
 trait Show { show() -> String }
 trait Both: Eq, Show { extra() }
-class Widget { new() { this.x = 1 } eq(o) { true } show() { "w" } extra() { 0 } }
+class Widget { new() { self.x = 1 } eq(o) { true } show() { "w" } extra() { 0 } }
 fn use_both<T: Both>(x: T) { x.show() }
 assert_eq(use_both(Widget.new()), "w")
 
-class MissShow { new() { this.x = 1 } eq(o) { true } extra() { 0 } }
+class MissShow { new() { self.x = 1 } eq(o) { true } extra() { 0 } }
 let e_ms = try { use_both(MissShow.new()); nil } catch ex { ex }
 assert_eq(e_ms != nil, true)
 
 // Composite bound interacts with inheritance: <T: Ord + Show>.
 fn ord_and_show<T: Ord + Show>(x: T) { x.show() }
 class Combo {
-  new() { this.x = 1 }
+  new() { self.x = 1 }
   eq(o) { true } cmp(o) { 0 } show() { "c" }
 }
 assert_eq(ord_and_show(Combo.new()), "c")

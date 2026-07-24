@@ -12,14 +12,14 @@
 # --- Basic: scalar fields + class-instance fields ---
 
 class V {
-  new(d) { this.data = d; this.grad = 0.0 }
+  new(d) { self.data = d; self.grad = 0.0 }
 }
 
 class M1 {
   new() {
-    this.a = V.new(1.0)
-    this.b = V.new(2.0)
-    this.scalar = 42         # not a class instance — should be skipped
+    self.a = V.new(1.0)
+    self.b = V.new(2.0)
+    self.scalar = 42         # not a class instance — should be skipped
   }
 }
 
@@ -34,7 +34,7 @@ assert_eq(p1[1].data, 2.0)
 
 class M2 {
   new() {
-    this.row = [V.new(10.0), V.new(20.0), V.new(30.0)]
+    self.row = [V.new(10.0), V.new(20.0), V.new(30.0)]
   }
 }
 
@@ -48,7 +48,7 @@ assert_eq(p2[2].data, 30.0)
 
 class M3 {
   new() {
-    this.W = [[V.new(1.0), V.new(2.0)],
+    self.W = [[V.new(1.0), V.new(2.0)],
               [V.new(3.0), V.new(4.0)]]
   }
 }
@@ -63,7 +63,7 @@ assert_eq(p3[3].data, 4.0)
 
 class M4 {
   new() {
-    this.state = { x: V.new(7.0), y: V.new(8.0) }
+    self.state = { x: V.new(7.0), y: V.new(8.0) }
   }
 }
 
@@ -78,9 +78,9 @@ assert_eq(p4[1].data, 8.0)
 
 class M5 {
   new() {
-    this.a = V.new(1.0)
-    this._cache = V.new(99.0)     # leading underscore — skipped
-    this._visited = false         # also skipped
+    self.a = V.new(1.0)
+    self._cache = V.new(99.0)     # leading underscore — skipped
+    self._visited = false         # also skipped
   }
 }
 
@@ -93,10 +93,10 @@ assert_eq(p5[0].data, 1.0)
 
 class M6 {
   new() {
-    this.a = V.new(100.0)
-    this.b = V.new(200.0)
+    self.a = V.new(100.0)
+    self.b = V.new(200.0)
   }
-  parameters() { [this.a] }    # explicit override: only `a` is trainable
+  parameters() { [self.a] }    # explicit override: only `a` is trainable
 }
 
 let m6 = M6.new()
@@ -108,7 +108,7 @@ assert_eq(p6[0].data, 100.0)
 
 class M7 {
   new() {
-    this.W = [[V.new(0.5), V.new(1.5)]]
+    self.W = [[V.new(0.5), V.new(1.5)]]
   }
 }
 

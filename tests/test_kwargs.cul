@@ -62,7 +62,7 @@ assert_eq('alice'.greet(greeting: 'yo'), 'yo, alice')
 let counter = fn (start) {
   {
     val: start,
-    bump: fn (by = 1, mult = 1) { (this.val + by) * mult }
+    bump: fn (by = 1, mult = 1) { (self.val + by) * mult }
   }
 }
 let c = counter(10)

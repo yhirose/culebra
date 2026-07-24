@@ -5,7 +5,7 @@
 // The builtin must still apply when the receiver is an Array/String.
 
 class Box {
-  new(tag) { this._tag = tag }
+  new(tag) { self._tag = tag }
   // shadows Array.find / String.split / Array.map / Tensor.relu / ...
   find(x) { "box-find:" + to_string(x) }
   split(x) { "box-split:" + to_string(x) }

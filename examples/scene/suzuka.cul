@@ -263,8 +263,8 @@ fn make_livery(view) {
 # --- A car: scene subtree + centerline-following auto-driver. ----------------
 class Car {
   new(view, cl, body_mat) {
-    this.node = view.add_node().name("car")
-    let body = this.node.add_node()                      # body subtree (built once)
+    self.node = view.add_node().name("car")
+    let body = self.node.add_node()                      # body subtree (built once)
     loft_body(body, body_mat)                            # smooth lofted body + livery
     body.add_box(1.0, 0.42, 1.5).tint(40, 44, 52).move(0.0, 1.05, -0.45)  # cockpit/airbox
     for sx in [-1.0, 1.0] {
@@ -273,101 +273,101 @@ class Car {
             .move(sx * 1.0, 0.5, sz * 1.5).spin(0.0, 0.0, 1.0, 90.0 * DEG)
       }
     }
-    this.cl = cl
-    this.wp = 1
+    self.cl = cl
+    self.wp = 1
     let s = cl[0]
-    this.x = s[0]
-    this.z = s[1]
+    self.x = s[0]
+    self.z = s[1]
     # face down the track at the start line (tangent cl[0]->cl[1])
-    this.heading = Math.atan2(cl[1][1] - cl[0][1], cl[1][0] - cl[0][0])
-    this.speed = 0.0
-    this.y = 0.0
-    this.steer_smooth = 0.0
-    this.ti = 0                                          # tracked centerline index (branch-aware)
+    self.heading = Math.atan2(cl[1][1] - cl[0][1], cl[1][0] - cl[0][0])
+    self.speed = 0.0
+    self.y = 0.0
+    self.steer_smooth = 0.0
+    self.ti = 0                                          # tracked centerline index (branch-aware)
   }
 
   drive(dt) {
-    let target = this.cl[this.wp]
-    let dx = target[0] - this.x
-    let dz = target[1] - this.z
-    if Math.sqrt(dx * dx + dz * dz) < 12.0 { this.wp = (this.wp + 3) % this.cl.size() }
+    let target = self.cl[self.wp]
+    let dx = target[0] - self.x
+    let dz = target[1] - self.z
+    if Math.sqrt(dx * dx + dz * dz) < 12.0 { self.wp = (self.wp + 3) % self.cl.size() }
     let want = Math.atan2(dz, dx)
-    this.heading = this.heading + shortest_angle(want - this.heading) * (1.0 - Math.exp(-6.0 * dt))
-    this.speed = this.speed + (55.0 - this.speed) * (1.0 - Math.exp(-1.5 * dt))
-    this.x = this.x + Math.cos(this.heading) * this.speed * dt
-    this.z = this.z + Math.sin(this.heading) * this.speed * dt
+    self.heading = self.heading + shortest_angle(want - self.heading) * (1.0 - Math.exp(-6.0 * dt))
+    self.speed = self.speed + (55.0 - self.speed) * (1.0 - Math.exp(-1.5 * dt))
+    self.x = self.x + Math.cos(self.heading) * self.speed * dt
+    self.z = self.z + Math.sin(self.heading) * self.speed * dt
     # Smooth the height toward the target waypoint's road elevation. The
     # waypoint advances in 18 m jumps, so sampling road_h(wp) directly would
     # pop the car ~2.5 m per jump on the bridge ramp; easing removes the pop.
-    let s = to_float(this.wp) * SPACING
+    let s = to_float(self.wp) * SPACING
     let target_y = road_h(s)
-    this.y = this.y + (target_y - this.y) * (1.0 - Math.exp(-2.5 * dt))
+    self.y = self.y + (target_y - self.y) * (1.0 - Math.exp(-2.5 * dt))
     let slope = (road_h(s + 6.0) - road_h(s - 6.0)) / 12.0
-    this.node.move(this.x, this.y, this.z).yaw(face_yaw(this.heading)).pitch(Math.atan(slope))
+    self.node.move(self.x, self.y, self.z).yaw(face_yaw(self.heading)).pitch(Math.atan(slope))
   }
 
   # Player driving: throttle/brake change speed, steer turns (scaled by speed so
   # the car can't pivot in place); height follows the road under the car.
   drive_manual(throttle, brake, steer, dt) {
-    this.speed = this.speed + 40.0 * throttle * dt
-    this.speed = this.speed - 60.0 * brake * dt
-    this.speed = this.speed * (1.0 - 0.5 * dt)             # rolling drag
-    if this.speed > 78.0 { this.speed = 78.0 }             # ~280 km/h top
-    if this.speed < 0.0 { this.speed = 0.0 }
+    self.speed = self.speed + 40.0 * throttle * dt
+    self.speed = self.speed - 60.0 * brake * dt
+    self.speed = self.speed * (1.0 - 0.5 * dt)             # rolling drag
+    if self.speed > 78.0 { self.speed = 78.0 }             # ~280 km/h top
+    if self.speed < 0.0 { self.speed = 0.0 }
     # Steering feel: a square response curve (gentle near centre, full lock at
     # full deflection) so a slammed stick or on/off key doesn't snap; then ease
     # the applied angle toward it (ramps keyboard on/off into a natural sweep);
     # and reduce authority with speed so it isn't twitchy / oversteery fast.
     let target = steer * Math.abs(steer)
-    this.steer_smooth = this.steer_smooth + (target - this.steer_smooth) * (1.0 - Math.exp(-7.0 * dt))
-    let grip = if this.speed > 6.0 { 1.0 } else { this.speed / 6.0 }
-    let authority = 1.0 / (1.0 + this.speed * 0.025)
-    this.heading = this.heading + this.steer_smooth * 1.5 * dt * grip * authority
-    this.x = this.x + Math.cos(this.heading) * this.speed * dt
-    this.z = this.z + Math.sin(this.heading) * this.speed * dt
+    self.steer_smooth = self.steer_smooth + (target - self.steer_smooth) * (1.0 - Math.exp(-7.0 * dt))
+    let grip = if self.speed > 6.0 { 1.0 } else { self.speed / 6.0 }
+    let authority = 1.0 / (1.0 + self.speed * 0.025)
+    self.heading = self.heading + self.steer_smooth * 1.5 * dt * grip * authority
+    self.x = self.x + Math.cos(self.heading) * self.speed * dt
+    self.z = self.z + Math.sin(self.heading) * self.speed * dt
     # branch-aware height: track the centerline index locally (so the bridge and
     # the road beneath it aren't confused at the crossover), then read the road
     # height at the car's CONTINUOUS arc position — projecting onto the local
     # segment avoids both the easing lag (which sank the car under the deck) and
     # the index-quantization bob of sampling road_h at a jittering integer index.
-    this.ti = nearest_idx_near(this.cl, this.x, this.z, this.ti, 40)
-    let n = this.cl.size()
-    let a = this.cl[this.ti]
-    let b = this.cl[(this.ti + 1) % n]
+    self.ti = nearest_idx_near(self.cl, self.x, self.z, self.ti, 40)
+    let n = self.cl.size()
+    let a = self.cl[self.ti]
+    let b = self.cl[(self.ti + 1) % n]
     let ex = b[0] - a[0]
     let ez = b[1] - a[1]
-    mut t = ((this.x - a[0]) * ex + (this.z - a[1]) * ez) / (ex * ex + ez * ez + 0.0001)
+    mut t = ((self.x - a[0]) * ex + (self.z - a[1]) * ez) / (ex * ex + ez * ez + 0.0001)
     if t < 0.0 - 1.0 { t = 0.0 - 1.0 }
     if t > 1.0 { t = 1.0 }
-    let s = (to_float(this.ti) + t) * SPACING
-    this.y = road_h(s)
+    let s = (to_float(self.ti) + t) * SPACING
+    self.y = road_h(s)
     # pitch the body to the road gradient so its tail doesn't sink through the
     # descending ramp. Measure the slope along the car's TRAVEL direction (not
     # the centerline's +s sense) so it stays correct when driving the wrong way.
-    let dir = if Math.cos(this.heading) * ex + Math.sin(this.heading) * ez >= 0.0 { 1.0 } else { 0.0 - 1.0 }
+    let dir = if Math.cos(self.heading) * ex + Math.sin(self.heading) * ez >= 0.0 { 1.0 } else { 0.0 - 1.0 }
     let slope = (road_h(s + 6.0) - road_h(s - 6.0)) / 12.0 * dir
-    this.node.move(this.x, this.y, this.z).yaw(face_yaw(this.heading)).pitch(Math.atan(slope))
+    self.node.move(self.x, self.y, self.z).yaw(face_yaw(self.heading)).pitch(Math.atan(slope))
   }
 
-  height() { this.y }
+  height() { self.y }
 
-  kmh() { to_long(this.speed * 3.6) }
+  kmh() { to_long(self.speed * 3.6) }
 }
 
 class CameraRig {
-  new() { this.yaw = 0.0; this.px = 0.0; this.py = 0.0; this.pz = 0.0 }
+  new() { self.yaw = 0.0; self.px = 0.0; self.py = 0.0; self.pz = 0.0 }
   update(view, cx, cy, cz, heading, dt) {
-    this.yaw = this.yaw + shortest_angle(heading - this.yaw) * (1.0 - Math.exp(-7.0 * dt))
-    this.px = this.px + (cx - this.px) * (1.0 - Math.exp(-9.0 * dt))
-    this.py = this.py + (cy - this.py) * (1.0 - Math.exp(-9.0 * dt))
-    this.pz = this.pz + (cz - this.pz) * (1.0 - Math.exp(-9.0 * dt))
+    self.yaw = self.yaw + shortest_angle(heading - self.yaw) * (1.0 - Math.exp(-7.0 * dt))
+    self.px = self.px + (cx - self.px) * (1.0 - Math.exp(-9.0 * dt))
+    self.py = self.py + (cy - self.py) * (1.0 - Math.exp(-9.0 * dt))
+    self.pz = self.pz + (cz - self.pz) * (1.0 - Math.exp(-9.0 * dt))
     let t = 26.0 * DEG
     let behind = 34.0 * Math.cos(t)
     let height = 34.0 * Math.sin(t)
-    let fx = Math.cos(this.yaw)
-    let fz = Math.sin(this.yaw)
-    view.camera(this.px - fx * behind, this.py + height, this.pz - fz * behind,
-                this.px + fx * 12.0, this.py + 1.5, this.pz + fz * 12.0,
+    let fx = Math.cos(self.yaw)
+    let fz = Math.sin(self.yaw)
+    view.camera(self.px - fx * behind, self.py + height, self.pz - fz * behind,
+                self.px + fx * 12.0, self.py + 1.5, self.pz + fz * 12.0,
                 0.0, 1.0, 0.0, 58.0)
   }
 }

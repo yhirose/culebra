@@ -20,7 +20,7 @@
 inline void _culebra_cell_release(JitCell* c);
 
 // RAII drop: if `o` has a 0-arg `drop` Function property, invoke it
-// with `this` bound to `o` before any child values are released.
+// with `self` bound to `o` before any child values are released.
 // Called from the normal refcount-0 path and from the cycle collector.
 // The contract (drop must be a 0-arg Function) is validated at
 // assignment time, so a mis-shaped drop is silently skipped here as a
@@ -28,7 +28,7 @@ inline void _culebra_cell_release(JitCell* c);
 //
 // Refcount trick (matches interpreter's shared_ptr + no-op deleter):
 // bump high enough that the drop body's function-frame release of its
-// owned `this` slot — plus any retain/release pairs in the body —
+// owned `self` slot — plus any retain/release pairs in the body —
 // can't drive refcount back to 0 and re-enter destruction. The frame
 // release subtracts 1, so 2 is the minimum safe baseline. After drop
 // returns the entry count is restored (see below) — any NET retain or
@@ -52,8 +52,8 @@ inline void _culebra_call_drop_if_present(JitObject* o) {
 
   // Pin the object across its own drop so a re-entrant release inside the
   // drop body can't free it mid-call. The pin must absorb not just the
-  // frame's `this` release but ANY number of releases the body performs
-  // (e.g. `this.me = nil` breaking its own cycle edge), so use a value
+  // frame's `self` release but ANY number of releases the body performs
+  // (e.g. `self.me = nil` breaking its own cycle edge), so use a value
   // no real refcount can reach. RESTORE the entry count afterwards: on
   // the release-to-zero path that's the 0 the caller's teardown expects,
   // but an explicit `obj.drop()` (or a scope-exit / finalize firing)

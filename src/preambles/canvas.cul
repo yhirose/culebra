@@ -20,20 +20,20 @@ let _canvas_module = fn () {
   class Sprite {
     new(pixels, w, h, palette = nil) {
       let rgba_px = if palette == nil { pixels } else { pixels.map(|i| palette[i]) }
-      this._id = _Canvas.sprite_load(rgba_px, w, h)
-      this._w = w
-      this._h = h
+      self._id = _Canvas.sprite_load(rgba_px, w, h)
+      self._w = w
+      self._h = h
     }
-    width() { this._w }
-    height() { this._h }
+    width() { self._w }
+    height() { self._h }
     # Blit the whole sprite to (x, y). flip_x/flip_y mirror; transpose swaps
     # X/Y. Transparent (alpha 0) pixels are skipped.
     draw(x, y, flip_x = false, flip_y = false, transpose = false) {
-      _Canvas.blit(this._id, x, y, 0, 0, this._w, this._h, _blit_flags(flip_x, flip_y, transpose))
+      _Canvas.blit(self._id, x, y, 0, 0, self._w, self._h, _blit_flags(flip_x, flip_y, transpose))
     }
     # Blit a sub-rectangle (sx, sy, sw, sh) of the sprite to (x, y) — for sheets.
     draw_sub(x, y, sx, sy, sw, sh, flip_x = false, flip_y = false, transpose = false) {
-      _Canvas.blit(this._id, x, y, sx, sy, sw, sh, _blit_flags(flip_x, flip_y, transpose))
+      _Canvas.blit(self._id, x, y, sx, sy, sw, sh, _blit_flags(flip_x, flip_y, transpose))
     }
   }
 
@@ -106,10 +106,10 @@ let _canvas_module = fn () {
   # on the frame a button goes down (the natural "flap" trigger). Call update()
   # once per frame, after reading input.
   class Input {
-    new() { this._prev = 0; this._cur = 0 }
-    update() { this._prev = this._cur; this._cur = _Canvas.buttons(); this }
-    down(btn) { (this._cur & btn) != 0 }                       # held now
-    pressed(btn) { (this._cur & btn) != 0 && (this._prev & btn) == 0 }  # just went down
+    new() { self._prev = 0; self._cur = 0 }
+    update() { self._prev = self._cur; self._cur = _Canvas.buttons(); self }
+    down(btn) { (self._cur & btn) != 0 }                       # held now
+    pressed(btn) { (self._cur & btn) != 0 && (self._prev & btn) == 0 }  # just went down
   }
 
   # --- audio --------------------------------------------------------------

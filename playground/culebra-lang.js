@@ -23,7 +23,7 @@ const KEYWORDS = new Set([
 ]);
 const CONSTANTS = new Set(["true", "false", "nil"]);
 // === END AUTO-KEYWORDS
-const LANG_VARS = new Set(["self", "this", "__ARGS__"]);
+const LANG_VARS = new Set(["self", "__ARGS__"]);
 
 // A tiny explicit stack gives StringStream nested modes: string/regex bodies
 // push their closing delimiter, {expr}/${expr} interpolation pushes "interp"

@@ -13,8 +13,8 @@
 mut drop_count = 0
 
 class R {
-  new(n) { this.name = n }
-  drop() { drop_count = drop_count + 1; puts("DROP:" + this.name) }
+  new(n) { self.name = n }
+  drop() { drop_count = drop_count + 1; puts("DROP:" + self.name) }
 }
 
 fn make_inner() {

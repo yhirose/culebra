@@ -185,7 +185,7 @@
       ]
     },
     "language-constants": {
-      "match": "\\b(self|this|__ARGS__)\\b",
+      "match": "\\b(self|__ARGS__)\\b",
       "name": "variable.language.culebra"
     },
     "function-call": {

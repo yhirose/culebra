@@ -8,8 +8,8 @@
 # binding-order errors (missing-required vs unknown-keyword) match too.
 
 class Point {
-  new(x, y) { this.x = x; this.y = y }
-  sum() { this.x + this.y }
+  new(x, y) { self.x = x; self.y = y }
+  sum() { self.x + self.y }
 }
 
 # All-keyword, mixed, reordered, positional — all reach the same instance.
@@ -20,7 +20,7 @@ assert_eq(Point.new(1, 2).sum(), 3)
 
 # Defaults fill from a keyword that skips them, and per-call default eval.
 class Box {
-  new(w, h = 10, d = 100) { this.v = w + h + d }
+  new(w, h = 10, d = 100) { self.v = w + h + d }
 }
 assert_eq(Box.new(1).v, 111)
 assert_eq(Box.new(w: 1).v, 111)
@@ -35,7 +35,7 @@ assert_eq(Point.new(**opts).sum(), 9)
 
 # Type checking on a kwarg-bound constructor param.
 class Typed {
-  new(n: Long) { this.n = n }
+  new(n: Long) { self.n = n }
 }
 let te = try { Typed.new(n: "s"); nil } catch e { e }
 assert_eq(te.kind, 'TypeError')
@@ -85,7 +85,7 @@ assert_true(e_m.message.contains("missing required argument 'a'"))
 # as a positional arg (which misbound `add(bad: 1)` to a=bad and reported
 # 'b' missing under the JIT's set-mutate fast path).
 class Acc {
-  new() { this.total = 0 }
+  new() { self.total = 0 }
   add(a, b) { a + b }
 }
 let acc = Acc.new()

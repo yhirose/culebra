@@ -48,13 +48,13 @@ assert_eq(handle([1, 2, 3]), "generic")
 
 // --- Generic class declaration ---
 class Box<T> {
-  new (v) { this.v = v }
+  new (v) { self.v = v }
 }
 let b = Box.new(42)
 assert_true(b.class == "Box" && b.v == 42)
 
 class Pair<K, V> {
-  new (k, v) { this.k = k; this.v = v }
+  new (k, v) { self.k = k; self.v = v }
 }
 let p = Pair.new("a", 1)
 assert_true(p.class == "Pair" && p.k == "a" && p.v == 1)
@@ -64,8 +64,8 @@ assert_eq(unbox(Box.new(7)), 7)
 
 // --- Type-param in method signature is Any-equivalent ---
 class Cell<T> {
-  new (v: T) { this.v = v }
-  set(v: T) { this.v = v }
+  new (v: T) { self.v = v }
+  set(v: T) { self.v = v }
 }
 let c = Cell.new(1)
 c.set("now a string")
@@ -74,7 +74,7 @@ assert_eq(c.v, "now a string")
 // Introspection preserves declared T (runtime sees Any).
 assert_eq(c.set.params[0].type, "T")
 class Bagged<T> {
-  fill(xs: Array<T>) { this.xs = xs }
+  fill(xs: Array<T>) { self.xs = xs }
 }
 assert_eq(Bagged.new().fill.params[0].type, "Array<T>")
 
@@ -93,8 +93,8 @@ assert_eq(classify(nil), "other")
 
 // --- Composite type-param (Array<T>, T | Long) neutralizes too ---
 class Bag<T> {
-  put(v: T | Long) { this.v = v }
-  fill(xs: Array<T>) { this.xs = xs }
+  put(v: T | Long) { self.v = v }
+  fill(xs: Array<T>) { self.xs = xs }
 }
 let bag = Bag.new()
 bag.put("anything")

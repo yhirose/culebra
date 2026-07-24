@@ -1950,7 +1950,7 @@ inline ZeroKind zero_kind_for_type(std::string_view type) {
 
 struct TraitMethod {
   std::string name;
-  size_t arity;          // declared positional arity (excluding `this`)
+  size_t arity;          // declared positional arity (excluding `self`)
   bool has_default;
 };
 
@@ -2143,14 +2143,14 @@ trait Stringer {
 }
 trait Eq {
   eq(other) -> Bool
-  neq(other) -> Bool { !this.eq(other) }
+  neq(other) -> Bool { !self.eq(other) }
 }
 trait Comparable {
   cmp(other) -> Long
-  lt(other) -> Bool { this.cmp(other) < 0 }
-  le(other) -> Bool { this.cmp(other) <= 0 }
-  gt(other) -> Bool { this.cmp(other) > 0 }
-  ge(other) -> Bool { this.cmp(other) >= 0 }
+  lt(other) -> Bool { self.cmp(other) < 0 }
+  le(other) -> Bool { self.cmp(other) <= 0 }
+  gt(other) -> Bool { self.cmp(other) > 0 }
+  ge(other) -> Bool { self.cmp(other) >= 0 }
 }
 trait StringLike {
   to_string_view() -> StringView

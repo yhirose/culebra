@@ -70,9 +70,9 @@ puts("test_send_errors_jit: all assertions passed")
 # instances share one rebuilt meta), mirroring interp instances whose
 # methods are own props.
 class SendP {
-  new(x) { this.x = x }
-  get() { this.x }
-  add(d) { this.x + d }
+  new(x) { self.x = x }
+  get() { self.x }
+  add(d) { self.x + d }
 }
 let sp = SendP.new(7)
 assert_eq(Isolate.spawn(fn () { sp.get() }).join(), 7)
@@ -101,8 +101,8 @@ puts("test_send_errors_jit: instance-send assertions passed")
 # on the class's member declaration order (`drop` declared after `peek`).
 class DropOrder {
   peek() { drop_registry }
-  drop() { puts('dropped ' + to_string(this.x)) }
-  new(x) { this.x = x }
+  drop() { puts('dropped ' + to_string(self.x)) }
+  new(x) { self.x = x }
 }
 let drop_registry = [DropOrder.new(1)]
 let dc = DropOrder.new(2)

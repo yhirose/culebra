@@ -17,8 +17,8 @@
 let log = []
 
 class R {
-  new(lg) { this.log = lg }
-  drop() { this.log.push(1) }
+  new(lg) { self.log = lg }
+  drop() { self.log.push(1) }
 }
 
 fn expect(n) { assert_eq(log.size(), n) }

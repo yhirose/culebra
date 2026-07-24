@@ -1,13 +1,13 @@
-// A class instance method read as a VALUE must carry its `this` so a later
+// A class instance method read as a VALUE must carry its `self` so a later
 // call sees the right receiver — matching the interp's _wrap_method_with_this.
-// Before the fix the JIT dropped `this` (the method body saw `this` = Nil) and
+// Before the fix the JIT dropped `self` (the method body saw `self` = Nil) and
 // crashed on repeated calls. Own-slot functions (ns methods, ctors, lambda
 // fields) and builtins keep their raw value.
 class C {
-  new(n) { this.n = n }
-  get() { this.n }
-  add(x) { this.n + x }
-  inc() { this.n = this.n + 1 }
+  new(n) { self.n = n }
+  get() { self.n }
+  add(x) { self.n + x }
+  inc() { self.n = self.n + 1 }
 }
 let c = C.new(5)
 
@@ -31,13 +31,13 @@ bump()
 bump()
 assert_eq(c.get(), 8)
 
-// Passed to a higher-order function, with a `this`-using body.
-class D { new(b) { this.b = b } addb(x) { this.b + x } }
+// Passed to a higher-order function, with a `self`-using body.
+class D { new(b) { self.b = b } addb(x) { self.b + x } }
 let d = D.new(100)
 assert_eq([1, 2, 3].map(d.addb), [101, 102, 103])
 
 // Keyword and defaulted-param calls through a bound value.
-class K { new(n) { this.n = n } combine(x, y = 100) { this.n + x + y } }
+class K { new(n) { self.n = n } combine(x, y = 100) { self.n + x + y } }
 let kb = K.new(5).combine
 assert_eq(kb(3), 108)
 assert_eq(kb(x: 3), 108)
@@ -47,17 +47,17 @@ assert_eq(kb(3, y: 20), 28)
 assert_eq(c.get.name, "get")
 assert_eq(c.add.params.size(), 1)
 
-// Control: own-slot function values are NOT this-bound (lambda field, ctor).
-class Box { new(fn) { this.fn = fn } }
+// Control: own-slot function values are NOT self-bound (lambda field, ctor).
+class Box { new(func) { self.func = func } }
 let bx = Box.new(|x| x + 1)
-let bf = bx.fn
+let bf = bx.func
 assert_eq(bf(9), 10)
 let mk = C.new
 assert_eq(mk(7).get(), 7)
 
 // A bound method is NOT Sendable (like the interp's wrapper) — capturing one
 // into an isolate must raise the same SendError on both backends, rather than
-// the JIT silently shipping it without its `this`.
+// the JIT silently shipping it without its `self`.
 let bm = C.new(5).get
 let sent = try { Isolate.spawn(|| bm()).join(); "shipped" } catch e { e.kind }
 assert_eq(sent, "SendError")

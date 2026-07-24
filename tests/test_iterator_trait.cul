@@ -6,12 +6,12 @@
 // --- User class conforming to Iterator + Iterable ---
 class Counter {
   new (start, stop) {
-    this.cur = start
-    this.stop = stop
+    self.cur = start
+    self.stop = stop
   }
-  iter () { this }
-  has_next () { this.cur < this.stop }
-  next () { let v = this.cur; this.cur = this.cur + 1; v }
+  iter () { self }
+  has_next () { self.cur < self.stop }
+  next () { let v = self.cur; self.cur = self.cur + 1; v }
 }
 
 mut collected = []
@@ -21,12 +21,12 @@ assert_true(collected[0] == 0 && collected[1] == 1 && collected[2] == 2)
 
 // --- nil yield works (the key advantage over a T?-terminator design) ---
 class NilYielder {
-  new () { this.i = 0 }
-  iter () { this }
-  has_next () { this.i < 3 }
+  new () { self.i = 0 }
+  iter () { self }
+  has_next () { self.i < 3 }
   next () {
-    let v = this.i
-    this.i = this.i + 1
+    let v = self.i
+    self.i = self.i + 1
     if v == 1 { nil } else { v }
   }
 }

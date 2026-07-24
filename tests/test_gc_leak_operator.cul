@@ -8,7 +8,7 @@ fn measure(work) {
   while i < 30 { work(); i = i + 1 }
   GC.stat().live_objects - base
 }
-class Num { new(d) { this.data = d }  __add__(o) { Num.new(this.data + o.data) } }
+class Num { new(d) { self.data = d }  __add__(o) { Num.new(self.data + o.data) } }
 assert_lt(measure(fn () {
   mut acc = Num.new(0)
   mut k = 0

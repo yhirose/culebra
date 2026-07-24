@@ -3970,7 +3970,7 @@ fn run_with(ns, x) { ns.puts(x) }
 run_with(IO, "via parameter")
 ```
 
-Both backends honor this. The JIT/AOT slow path goes through a
+Both backends honor self. The JIT/AOT slow path goes through a
 runtime dispatcher (`stdlib_jit.h::kNsMethods`) while the syntactic
 fast path (`IO.puts(x)` directly) keeps its inlined IR emission.
 

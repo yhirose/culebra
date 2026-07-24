@@ -19,10 +19,10 @@ fn measure(work) {
   while i < 30 { work(); i = i + 1 }
   GC.stat().live_objects - base
 }
-class Box { new(d) { this.data = d } }
+class Box { new(d) { self.data = d } }
 assert_lt(measure(fn () {
   mut topo = []
-  build = |n| if n > 0 { topo.push(Box.new(n)); self(n - 1) } else { 0 }
+  build = |n| if n > 0 { topo.push(Box.new(n)); fn(n - 1) } else { 0 }
   build(200)
   topo.size()
 }), 1000)

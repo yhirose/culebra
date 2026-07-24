@@ -308,7 +308,7 @@ assert_eq(th_gen().collect(), ["g:boom"])
 
 // --- top-level `defer` in an effect / handle body ---
 // A `defer` at the body's statement level registers into the computation's
-// defer list (rewritten to `this.`) and runs, LIFO, when the body completes or
+// defer list (rewritten to `self.`) and runs, LIFO, when the body completes or
 // throws — not when the `_step` invocation returns at a suspension. Block-scope
 // semantics (a defer nested in if / while / for) and a `perform` inside a defer
 // are rejected symmetrically.
@@ -972,12 +972,12 @@ let cap_g = handle {
 } with cap_out(k) { k(5) }
 assert_eq(cap_g, 105)
 
-// a `this.` in a string literal is NOT a capture (detection walks the AST, not
+// a `self.` in a string literal is NOT a capture (detection walks the AST, not
 // the raw text) — a top-level handle carrying such text must not synthesize a
-// `_eff_self` wrapper over a nonexistent `this`.
+// `_eff_self` wrapper over a nonexistent `self`.
 effect fn cap_ask()
 let cap_h = handle {
-  let msg = "path is this.foo"
+  let msg = "path is self.foo"
   let v = perform cap_ask()
   v + msg.size()
 } with cap_ask(k) { k(3) }
@@ -1028,18 +1028,18 @@ effect fn cl_inner() { let a = perform cl_g(); a + 1 }
 effect fn cl_outer() { let b = cl_inner(); b * 10 }
 assert_eq(handle { cl_outer() } with cl_g(k) { k(5) }, 60)
 
-// `this.`-lookalike text inside a string survives a capturing nested handle
+// `self.`-lookalike text inside a string survives a capturing nested handle
 // (the capture redirects are string-aware, like the locals rewrite)
 effect fn sc2_o()
 effect fn sc2_i()
 effect fn sc2_body() {
   let base = perform sc2_o()
   handle {
-    let m = "path is this.foo"
+    let m = "path is self.foo"
     to_string(base) + "|" + m + "|" + to_string(perform sc2_i())
   } with sc2_i(k) { k(1) }
 }
-assert_eq(handle { sc2_body() } with sc2_o(k) { k(5) }, "5|path is this.foo|1")
+assert_eq(handle { sc2_body() } with sc2_o(k) { k(5) }, "5|path is self.foo|1")
 
 // --- named fns and generators inside effect / handle bodies ---------------
 // A named fn declared at the body's statement level persists across

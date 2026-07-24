@@ -675,7 +675,7 @@ inline Value channel_iter(long id) {
 
 // A shared-resource handle (channel endpoint / SharedBuffer) can be dropped
 // both explicitly (`x.drop()`) and again by the GC at heap teardown, so its
-// refcount must move exactly once. Returns true if `self` was already dropped;
+// refcount must move exactly once. Returns true if `fn` was already dropped;
 // otherwise marks it dropped (via the `_dropped` flag on the shared property
 // map both call paths see) and returns false.
 inline bool _handle_drop_consumed(const Value& self) {
@@ -703,7 +703,7 @@ inline Value make_channel_endpoint(long id, int role) {
   h.initialize("_dropped", Value(false), true);
   h.initialize("drop",
       Value(FunctionValue({}, [id, role](std::shared_ptr<Environment> env) -> Value {
-        return _chan_drop_once(env->get("this"), id, role);
+        return _chan_drop_once(env->get("self"), id, role);
       }, "Nil"sv)), false);
   h.initialize("clone",
       Value(FunctionValue({}, [id, role](std::shared_ptr<Environment>) -> Value {
@@ -784,7 +784,7 @@ inline Value make_shared_buffer_handle(long id, long count) {
   h.initialize("_dropped", Value(false), true);
   h.initialize("drop",
       Value(FunctionValue({}, [id](std::shared_ptr<Environment> env) -> Value {
-        return _shared_buffer_drop_once(env->get("this"), id);
+        return _shared_buffer_drop_once(env->get("self"), id);
       }, "Nil"sv)), false);
   // `with_lock(fn)` runs `fn()` while holding the buffer's lock (a std::mutex
   // for heap, a PROCESS_SHARED pthread mutex in the mapped header for

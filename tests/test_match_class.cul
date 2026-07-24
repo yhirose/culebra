@@ -3,9 +3,9 @@
 # `match v { x: ClassName => ... }` — type-pattern arms against
 # user-defined classes. Works on both interp and JIT.
 
-class Dog { new(name) { this.name = name } }
-class Cat { new(name) { this.name = name } }
-class Bird { new(name) { this.name = name } }
+class Dog { new(name) { self.name = name } }
+class Cat { new(name) { self.name = name } }
+class Bird { new(name) { self.name = name } }
 
 let describe = fn(animal) {
   match animal {

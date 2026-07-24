@@ -222,7 +222,7 @@ inline long _jit_fa_arg_index(JitValue a) {
        : a.tag == TAG_FLOAT   ? static_cast<long>(_culebra_float_to_double(a.data))
                               : 0;
 }
-// Releases the bound `this` (the native-method ABI passes it +1) on scope
+// Releases the bound `self` (the native-method ABI passes it +1) on scope
 // exit — success or exception — so a throwing native method can't leak it.
 // An alias: the semantics are exactly an owned value never consumed; the name
 // records the ABI contract at each method's entry.
@@ -1493,7 +1493,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_mark_class(
 // borrowed TAG_FUNC JitValue, or Nil for a non-class. Gated on `is_class`
 // (set only by CLASS_DECL) so a plain dict holding a "new" key stays
 // non-callable, matching the interp is_class gate. The constructor needs no
-// `this` (it builds its own instance), so the caller invokes it with a nil
+// `self` (it builds its own instance), so the caller invokes it with a nil
 // receiver — the twin of class_call_method but for the class object itself.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_class_new_method(
     int8_t tag, int64_t data) {
@@ -1565,11 +1565,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_build_class_meta(
   return meta;
 }
 
-// Invoke a class's synthetic field-init closure on a freshly bound `this`.
+// Invoke a class's synthetic field-init closure on a freshly bound `self`.
 // Emitted into the `new` body's prologue right after parameter binding
 // (see compile_fn_common), so declared-field initializers run only once
 // the ctor args bound successfully — interp's init_instance_fields timing.
-// `this` arrives borrowed; the retain feeds the callee's slot +1.
+// `self` arrives borrowed; the retain feeds the callee's slot +1.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_run_field_init(
     JitClosure* finit, int8_t this_tag, int64_t this_data) {
   culebra_runtime_value_retain(this_tag, this_data);
@@ -1585,16 +1585,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_run_field_init(
 //   3. Wire the instance's `proto` at the shared class meta object;
 //      method lookups fall through to it via _lookup_special /
 //      culebra_runtime_object_get / object_has.
-//   4. Invoke the synthetic field-init closure with `this` bound —
+//   4. Invoke the synthetic field-init closure with `self` bound —
 //      declaration-order, per-instance initializers, mirroring interp's
 //      init_instance_fields. Only a `new`-less class passes one here; a
 //      user `new` body invokes it itself right after parameter binding
 //      (culebra_runtime_run_field_init above), so finit and body are
 //      never both non-nil.
-//   5. Invoke the user's `new` body (if any) with `this` bound to the
+//   5. Invoke the user's `new` body (if any) with `self` bound to the
 //      new instance. Args are forwarded with +1 ownership intact
 //      (JIT ABI); the body's return value is discarded.
-//   6. Promote every own property to mutable so later `this.x = y`
+//   6. Promote every own property to mutable so later `self.x = y`
 //      calls don't trip the immutable-property guard.
 //
 // `finit_tag`/`finit_data` and `body_tag`/`body_data` describe the
@@ -1625,7 +1625,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
                              reinterpret_cast<int64_t>(class_name), 0, 0);
 
   JitValue this_val = {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
-  // Each _jit_invoke consumes one retained `this` ref (the callee's slot
+  // Each _jit_invoke consumes one retained `self` ref (the callee's slot
   // release); the single unwind guard covers the instance's original +1
   // across both calls.
   JitUnwindRelease g{this_val};
@@ -1652,7 +1652,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
 
   if (body_tag == TAG_FUNC) {
     auto* body_cls = reinterpret_cast<JitClosure*>(body_data);
-    // Body consumes `this` via the slot +1 on function exit, so retain
+    // Body consumes `self` via the slot +1 on function exit, so retain
     // before handing it off. If the body throws, the instance's +1 is
     // otherwise stranded — the guard releases it on the unwind edge.
     culebra_runtime_value_retain(this_val.tag, this_val.data);

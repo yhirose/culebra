@@ -41,7 +41,7 @@ for x in count_to(3) { puts(x) }
 
 # Generator whose yield lives inside a for-in over a range literal. The
 # transform desugars this to `(0..n).iter()`, and the range bound `n` (a
-# param) must be rewritten to `this.n` across the `..` operator.
+# param) must be rewritten to `self.n` across the `..` operator.
 fn range_gen(n) {
   for i in 0..n { yield i * 10 }
 }

@@ -80,11 +80,11 @@ assert_eq(log_e, '1;closed;caught;')
 // --- (7) defer accesses locals set during body execution ---
 // The defer { f.close() } pattern: `f` is a local set by `let f = ...`
 // before the defer registration is reached. At dispose time, f is the
-// open resource; the closure sees the current value via `this.f`.
+// open resource; the closure sees the current value via `self.f`.
 mut log_f = ''
 class FakeResource {
-  new(name) { this.name = name }
-  close() { log_f = "{log_f}close:{this.name};" }
+  new(name) { self.name = name }
+  close() { log_f = "{log_f}close:{self.name};" }
 }
 fn gen_f() {
   let f = FakeResource.new('alpha')

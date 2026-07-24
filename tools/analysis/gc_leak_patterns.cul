@@ -18,16 +18,16 @@ let N = if Sys.argv.size() > 1 { to_long(Sys.argv[1]) } else { 50000 }
 # A small class exercising constructors, defaults, operators, and methods.
 class V {
   new(data, children = [], grads = []) {
-    this.data = data
-    this.children = children
-    this.grads = grads
+    self.data = data
+    self.children = children
+    self.grads = grads
   }
-  __add__(o) { V.new(this.data + o.data, [this, o], [1.0, 1.0]) }
-  __mul__(o) { V.new(this.data * o.data, [this, o], [o.data, this.data]) }
-  __lt__(o)  { this.data < o.data }
-  __eq__(o)  { this.data == o.data }
-  __neg__()  { V.new(-this.data, [this], [-1.0]) }
-  twice()    { V.new(this.data * 2, [this], [2.0]) }
+  __add__(o) { V.new(self.data + o.data, [self, o], [1.0, 1.0]) }
+  __mul__(o) { V.new(self.data * o.data, [self, o], [o.data, self.data]) }
+  __lt__(o)  { self.data < o.data }
+  __eq__(o)  { self.data == o.data }
+  __neg__()  { V.new(-self.data, [self], [-1.0]) }
+  twice()    { V.new(self.data * 2, [self], [2.0]) }
 }
 
 fn run(which, N) {
@@ -74,7 +74,7 @@ fn run(which, N) {
   } else if which == "neg_op" {
     # overloaded unary minus `-x` (num_neg slow path → user __neg__): the heap
     # operand is dead after the call. microgpt's dominant leak — `__sub__` is
-    # `this + (-other)` and the loss term is `-(...).log()`.
+    # `self + (-other)` and the loss term is `-(...).log()`.
     for i in 0..N { let _ = -V.new(i, [], []) }
   } else if which == "defer_obj" {
     # a deferred block whose body produces a heap value (the defer thunk's
@@ -225,8 +225,8 @@ fn mk_proto(v) {
     iter: fn () {
       {
         mut i: 0,
-        has_next: fn () { this.i < 2 },
-        next: fn () { this.i = this.i + 1; this.i },
+        has_next: fn () { self.i < 2 },
+        next: fn () { self.i = self.i + 1; self.i },
         dispose: fn () { 0 },
       }
     },
@@ -249,8 +249,8 @@ fn mk_proto_throwing(v) {
     iter: fn () {
       {
         mut i: 0,
-        has_next: fn () { this.i < 2 },
-        next: fn () { this.i = this.i + 1; this.i },
+        has_next: fn () { self.i < 2 },
+        next: fn () { self.i = self.i + 1; self.i },
         dispose: fn () { throw "boom" },
       }
     },
@@ -265,10 +265,10 @@ fn forin_ret(n) { let r = 0..8; for j in r { if j == 3 { return j } }; -1 }
 # fresh closure per method. Exercises build_class_meta's ref transfer.
 fn mk_local(x) {
   class Local {
-    new(v) { this.v = v }
-    a() { this.v }
-    b() { this.v + 1 }
-    c() { this.v + 2 }
+    new(v) { self.v = v }
+    a() { self.v }
+    b() { self.v + 1 }
+    c() { self.v + 2 }
   }
   Local.new(x)
 }

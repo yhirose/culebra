@@ -65,7 +65,7 @@ assert_eq(p3[4], 5)
 
 // --- P4: bare yield + for-in with yield-from (preorder tree walk) ---
 class TNode {
-  new(val, kids) { this.val = val; this.kids = kids }
+  new(val, kids) { self.val = val; self.kids = kids }
 }
 fn preorder(node) {
   yield node.val
@@ -91,8 +91,8 @@ assert_eq(pre[4], 3)
 // --- yield from cooperates with early break (dispose forwards) ---
 mut leaf_log = ''
 class Leaf {
-  new(id) { this.id = id }
-  visit() { leaf_log = "{leaf_log}v{this.id};" }
+  new(id) { self.id = id }
+  visit() { leaf_log = "{leaf_log}v{self.id};" }
 }
 fn visit_leaves(leaves) {
   for l in leaves {

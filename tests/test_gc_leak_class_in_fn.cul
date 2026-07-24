@@ -22,9 +22,9 @@ fn measure(work) {
 }
 fn make_a_class() {
   class Local {
-    new(v) { this.v = v }
-    a() { this.v }
-    b() { this.v + 1 }
+    new(v) { self.v = v }
+    a() { self.v }
+    b() { self.v + 1 }
   }
   Local.new(1)
 }
@@ -41,8 +41,8 @@ puts("gc leak [class-in-fn]: no leak")
 // wrapper) `let mk = Cls.new` leaked ~2 objects/call even bound-but-uncalled.
 fn make_and_bind() {
   class Local {
-    new(v) { this.v = v }
-    m() { this.v }
+    new(v) { self.v = v }
+    m() { self.v }
   }
   let mk = Local.new     // wrapper over the ctor — the leak site
   mk(1).m()

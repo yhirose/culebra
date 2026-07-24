@@ -917,7 +917,7 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
         if (slot.value.tag != TAG_FUNC) continue;
         auto* cls = reinterpret_cast<JitClosure*>(slot.value.data);
         // JitClosure::arity counts user-visible params (excluding __cls__
-        // and `this`); for an overloaded method (a dispatcher) report the
+        // and `self`); for an overloaded method (a dispatcher) report the
         // widest overload so conformance sees the real arities (mirrors the
         // interp walk). Helper is defined after the multimethod registry.
         class_methods.emplace(o->shape->names[i],
@@ -1030,7 +1030,7 @@ struct JitUnwindRelease {
   }
 };
 
-// Invoke a method closure with an explicit `this`. Retains both the
+// Invoke a method closure with an explicit `self`. Retains both the
 // receiver and the argument so the callee can consume them per the
 // JIT's closure ABI. Returns the +1 result.
 // Callee-consumes ABI: these helpers hand `self` and each arg to the method at

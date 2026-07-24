@@ -3,8 +3,8 @@
 
 // --- basic construction ---
 class Point {
-    new(x, y) { this.x = x; this.y = y }
-    sum() { this.x + this.y }
+    new(x, y) { self.x = x; self.y = y }
+    sum() { self.x + self.y }
 }
 let p = Point(3, 4)
 assert_eq(p.x, 3)
@@ -21,7 +21,7 @@ assert_eq(Empty().greet(), "hi")
 
 // --- keyword arguments forward to `new` ---
 class Config {
-    new(host, port = 80) { this.host = host; this.port = port }
+    new(host, port = 80) { self.host = host; self.port = port }
 }
 let c = Config("localhost", port: 8080)
 assert_eq(c.host, "localhost")
@@ -31,8 +31,8 @@ assert_eq(Config(port: 9, host: "x").port, 9)
 
 // --- callable class composes: chaining, higher-order use ---
 class Adder {
-    new(n) { this.n = n }
-    add(x) { this.x = x; this.n + x }
+    new(n) { self.n = n }
+    add(x) { self.x = x; self.n + x }
 }
 assert_eq(Adder(10).add(5), 15)
 let makers = [Point, Empty]

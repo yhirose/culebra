@@ -6,8 +6,8 @@ let sub = fn (a, b) { a - b }
 let helper_internal = fn () { 'should not be visible' }
 
 class Pair {
-  new (x, y) { this.x = x; this.y = y }
-  swap ()    { Pair.new(this.y, this.x) }
+  new (x, y) { self.x = x; self.y = y }
+  swap ()    { Pair.new(self.y, self.x) }
 }
 
 export { add, sub, Pair }

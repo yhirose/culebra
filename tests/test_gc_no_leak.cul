@@ -25,7 +25,7 @@ let s = GC.stat()
 assert_ge(s.live_objects, 0)
 assert_ge(s.heap_bytes, 0)
 
-class Box { new(d) { this.data = d } }
+class Box { new(d) { self.data = d } }
 
 fn measure_delta(work) {
   work()                       // warm up one-time allocations

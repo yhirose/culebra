@@ -52,7 +52,7 @@ assert_lt(measure(nonstring_key_cycle), 1000)
 
 fn instance_data_cycle() {
   class Node {
-    new() { this.link = nil }
+    new() { self.link = nil }
   }
   let a = Node.new()
   let b = Node.new()
@@ -72,7 +72,7 @@ assert_lt(measure(instance_data_cycle), 1000)
 # one-collect reclamation lag doesn't count against it.
 fn ctor_only_local_class() {
   class Lone {
-    new() { this.x = 1 }
+    new() { self.x = 1 }
   }
   Lone.new()
 }

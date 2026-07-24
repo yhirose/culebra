@@ -1,9 +1,9 @@
 # Ownership accounting of the for-in iterator protocol: the dispose call gets
-# its own `this` +1 and the iterable's ref is released by the loop scope, so
+# its own `self` +1 and the iterable's ref is released by the loop scope, so
 # drop/dispose fire at the same points as the interpreter for BOTH a
 # self-returning iterator (a generator: iterable == iterator) and a distinct
 # iterator. The JIT used to pair two defects here (an orphaned iterable ref
-# and a double-consumed dispose `this`) that cancelled only for generators.
+# and a double-consumed dispose `self`) that cancelled only for generators.
 
 # Distinct iterator: the iterator's drop fires at loop exit (after dispose),
 # the iterable's drop at its scope exit.
@@ -13,8 +13,8 @@ fn mk_distinct() {
     iter: fn () {
       {
         mut i: 0,
-        has_next: fn () { this.i < 3 },
-        next: fn () { this.i = this.i + 1; this.i },
+        has_next: fn () { self.i < 3 },
+        next: fn () { self.i = self.i + 1; self.i },
         dispose: fn () { puts("distinct: disposed") },
         drop: fn () { puts("distinct: iter dropped") },
       }
@@ -47,9 +47,9 @@ puts("fresh: after run")
 fn mk_self() {
   {
     mut i: 0,
-    iter: fn () { this },
-    has_next: fn () { this.i < 3 },
-    next: fn () { this.i = this.i + 1; this.i },
+    iter: fn () { self },
+    has_next: fn () { self.i < 3 },
+    next: fn () { self.i = self.i + 1; self.i },
     dispose: fn () { puts("self: disposed") },
     drop: fn () { puts("self: dropped") },
   }

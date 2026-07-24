@@ -20,8 +20,8 @@ fn mk_proto() {
     iter: fn () {
       {
         mut i: 0,
-        has_next: fn () { this.i < 3 },
-        next: fn () { this.i = this.i + 1; this.i },
+        has_next: fn () { self.i < 3 },
+        next: fn () { self.i = self.i + 1; self.i },
         dispose: fn () { puts("proto: disposed") },
         drop: fn () { puts("proto: iter dropped") },
       }
@@ -44,8 +44,8 @@ fn mk_throwing() {
     iter: fn () {
       {
         mut i: 0,
-        has_next: fn () { this.i < 3 },
-        next: fn () { this.i = this.i + 1; this.i },
+        has_next: fn () { self.i < 3 },
+        next: fn () { self.i = self.i + 1; self.i },
         dispose: fn () { throw "dboom" },
         drop: fn () { puts("dthrow: iter dropped") },
       }

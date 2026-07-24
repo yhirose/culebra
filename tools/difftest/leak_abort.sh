@@ -81,7 +81,7 @@ fi
 # transitively-held (refcount balances the internal edge), not inflated — so
 # the detector must classify it as a keep, not a leak.
 cat > "$WORK/abort_cycle.cul" <<'EOF'
-class Node { new() { this.link = nil } }
+class Node { new() { self.link = nil } }
 fn mkcycle() { let a = Node.new(); a.link = a }
 mut i = 0
 while i < 200 { mkcycle(); i = i + 1 }
@@ -136,8 +136,8 @@ fi
 # callee, which owns it on every exit (the old per-arm retain + merge release
 # stranded the outer +1 whenever the callee threw).
 cat > "$WORK/abort_chain_ufcs.cul" <<'EOF'
-class V { new(x) { this.x = x }  __lt__(o) { this.x < o.x } }
-class T { new(x) { this.x = x }  __lt__(o) { throw "lt!" } }
+class V { new(x) { self.x = x }  __lt__(o) { self.x < o.x } }
+class T { new(x) { self.x = x }  __lt__(o) { throw "lt!" } }
 fn boom() { throw "x" }
 fn validate(data, strict) { throw "invalid" }
 fn shapes() {

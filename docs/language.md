@@ -1132,7 +1132,7 @@ A method call `receiver.name(args)` resolves in this order:
    invoke it. For `Object` / `Array`, user-defined properties win
    over built-ins; built-ins fill in otherwise. String methods are
    the only choice for `String` receivers. When the resolved value is
-   a `Function`, `this` is bound to `receiver` for the duration of
+   a `Function`, `self` is bound to `receiver` for the duration of
    the call.
 2. Otherwise, if a free function named `name` is visible in the
    enclosing scope, call it with `receiver` as the first argument and
@@ -1142,8 +1142,8 @@ A method call `receiver.name(args)` resolves in this order:
    fails with a type error.
 
 ```culebra
-o = { n: 10, add: fn (x) { x + this.n } }
-puts(o.add(5))                   # 15  (method, this = o)
+o = { n: 10, add: fn (x) { x + self.n } }
+puts(o.add(5))                   # 15  (method, self = o)
 
 double = fn (x) { x * 2 }
 42.double()                      # UFCS → double(42) → 84
@@ -1158,7 +1158,7 @@ size = fn (x) { 99 }
 ```
 
 UFCS only fires when DOT is immediately followed by an argument list;
-bare property access (`x.name` without `()`) never uses UFCS. `this`
+bare property access (`x.name` without `()`) never uses UFCS. `self`
 is **not** bound inside UFCS invocations — the call is semantically a
 free-function call with the receiver in the first positional slot.
 
@@ -1173,9 +1173,9 @@ Closure-based objects remain the canonical OO idiom. The `class` form
 is a lightweight alternative that desugars to the same runtime shape:
 
     class Car {
-      new(mpr)  { this.miles = 0; this.mpr = mpr }
-      run(n)    { this.miles = this.miles + this.mpr * n }
-      total()   { this.miles }
+      new(mpr)  { self.miles = 0; self.mpr = mpr }
+      run(n)    { self.miles = self.miles + self.mpr * n }
+      total()   { self.miles }
     }
     c = Car.new(5); c.run(3); puts(c.total())
     puts(c.class)            # 'Car' — nominal tag for match / debugging
@@ -1184,16 +1184,16 @@ Semantics:
 
 * The decl binds `Car` to an `Object` with a single `new` property.
 * `Car.new(...)` returns a fresh `Object` carrying `class: 'Car'` plus
-  every non-`new` method as a property. `this` is bound to that object
+  every non-`new` method as a property. `self` is bound to that object
   for the duration of the constructor body.
-* Fields created via `this.x = y` inside constructors and methods are
+* Fields created via `self.x = y` inside constructors and methods are
   **mutable by default** (unlike bare `o.x = y`, which creates an
   immutable property). This matches the idiom of classes whose methods
   routinely mutate instance state.
 * The `new` method is optional; without it the class accepts no
   arguments and returns an instance with only methods and `class:`.
-* `this` is immutable inside the constructor body. Attempting
-  `this = newObj` raises `ImmutableError` (matching Java, Crystal,
+* `self` is immutable inside the constructor body. Attempting
+  `self = newObj` raises `ImmutableError` (matching Java, Crystal,
   Ruby). The constructor always returns the originally allocated
   instance — an explicit `return value` discards `value`. Identity-swap
   factories live as `static` methods (below) or as plain top-level
@@ -1202,11 +1202,11 @@ Semantics:
   (not on instances), providing class-as-namespace for factories,
   constants-as-functions, and helpers. `Shape.create(...)` resolves
   via the usual property-access mechanism; the receiver is the
-  class object, not an instance, so `this` is unavailable inside
+  class object, not an instance, so `self` is unavailable inside
   a static body:
 
       class Shape {
-        new ()                  { this.kind = 'unknown' }
+        new ()                  { self.kind = 'unknown' }
         area ()                 { 0 }
         static circle (r)       {
           let s = Shape.new()
@@ -1229,10 +1229,10 @@ Semantics:
   installed as a property of the class object alongside static methods:
 
       class Circle {
-        new (r)         { this.radius = r }
+        new (r)         { self.radius = r }
         static PI       = 3.14
         static MAX      = 100
-        area ()         { this.radius * this.radius * Circle.PI }
+        area ()         { self.radius * self.radius * Circle.PI }
       }
       puts(Circle.PI)         # 3.14
       puts(Circle.MAX)        # 100
@@ -1250,8 +1250,8 @@ Semantics:
         score = 0
         name:  String
         tags  = []
-        best  = this.score + 10
-        new (name) { this.name = name }
+        best  = self.score + 10
+        new (name) { self.name = name }
       }
       let p = Player.new('rocci')
       puts(p.score)           # 0
@@ -1263,7 +1263,7 @@ Semantics:
   - **Per instance**: the initializer expression runs once for every
     `C.new(...)` call — `tags: Array = []` gives each instance an
     independent Array (no Python-style shared class attribute).
-  - **Declaration order, `this` in scope**: an initializer may read
+  - **Declaration order, `self` in scope**: an initializer may read
     fields declared above it and call methods (`best` above). Reading a
     field declared *below* yields `nil` — order is meaningful.
   - **After argument binding, before the `new` body**: initializers see
@@ -1273,14 +1273,14 @@ Semantics:
     visible inside initializers (initializers close over the class's
     defining scope, like Kotlin property initializers vs
     secondary-constructor parameters); pass ctor args to fields
-    explicitly with `this.x = a` in the body.
+    explicitly with `self.x = a` in the body.
   - A typed field without an initializer (`name: String` above) takes
     its type's zero value: `0` / `0.0` / `''` / `false`; reference
     types (`Array`, `Object`, ...) default to `nil`. The untyped form
     always carries an initializer (there is no type to infer a zero
     value from).
   - Declared fields are mutable instance state, exactly like fields
-    created via `this.x = y` in the constructor.
+    created via `self.x = y` in the constructor.
 
   The declared type is documentation (like parameter annotations on the
   runtime-check model, §14); `@packable` classes (§21) additionally read
@@ -1290,15 +1290,15 @@ Semantics:
   that is invoked on a bare property read, with no call parentheses:
 
       class Circle {
-        new (r)      { this.radius = r }
-        get area ()  { this.radius * this.radius * 3.14 }
+        new (r)      { self.radius = r }
+        get area ()  { self.radius * self.radius * 3.14 }
         get name ()  { "circle" }
       }
       let c = Circle.new(4)
       puts(c.area)          # 50.24  — reads like a field
       puts(c.area())        # 50.24  — the call spelling also works
 
-  A getter reads `this` like any method but presents as a property, so a
+  A getter reads `self` like any method but presents as a property, so a
   fluent chain drops its parentheses (`p.parent.name` rather than
   `p.parent().name()`). Reserve getters for pure, total, O(1) derivations
   (an inherent quality of the value); anything that does I/O or can fail
@@ -1316,7 +1316,7 @@ Semantics:
   class methods. Under the JIT, methods are held on a shared per-class
   meta object via prototype delegation, but the auto-drop lookup walks
   the proto chain — `class C { drop() { ... } }` fires as expected
-  with `this` bound to the instance.
+  with `self` bound to the instance.
 
 ### Operator overloading
 
@@ -1347,10 +1347,10 @@ their instances are plain `Object`s with methods attached.
 Example:
 
     class Vec {
-      new(x, y)   { this.x = x; this.y = y }
-      __add__(r)  { Vec.new(this.x + r.x, this.y + r.y) }
-      __mul__(r)  { Vec.new(this.x * r, this.y * r) }    # scalar
-      __eq__(r)   { this.x == r.x && this.y == r.y }
+      new(x, y)   { self.x = x; self.y = y }
+      __add__(r)  { Vec.new(self.x + r.x, self.y + r.y) }
+      __mul__(r)  { Vec.new(self.x * r, self.y * r) }    # scalar
+      __eq__(r)   { self.x == r.x && self.y == r.y }
     }
     a = Vec.new(1, 2)
     b = Vec.new(3, 4)
@@ -1378,9 +1378,9 @@ identically.
 
 ```culebra
 class Grid {
-  new()          { this.d = [10, 20, 30] }
-  __index__(i)   { this.d[i] }
-  __setindex__(i, v) { this.d[i] = v }
+  new()          { self.d = [10, 20, 30] }
+  __index__(i)   { self.d[i] }
+  __setindex__(i, v) { self.d[i] = v }
 }
 let g = Grid.new()
 g[1] = 99
@@ -1389,7 +1389,7 @@ puts(g[1])                  # => 99
 
 **Calling (`__call__`).** A class instance can define `__call__(*args)`
 so `obj(args)` invokes it — the twin of `__index__`. `obj(x)` is exactly
-`obj.__call__(x)`, with the instance bound as `this`. This gives the
+`obj.__call__(x)`, with the instance bound as `self`. This gives the
 `model(x)` idiom for layered/composable values (a model whose `__call__`
 runs its sub-layers' `__call__`). Like the subscript hooks it fires only
 on class instances, so a plain dict holding a `__call__` key stays an
@@ -1397,8 +1397,8 @@ ordinary value. Both backends dispatch identically.
 
 ```culebra
 class Adder {
-  new(b)       { this.b = b }
-  __call__(x)  { this.b + x }
+  new(b)       { self.b = b }
+  __call__(x)  { self.b + x }
 }
 let add3 = Adder.new(3)
 puts(add3(10))              # => 13
@@ -1412,7 +1412,7 @@ to any `Function`-annotated parameter, and it is invoked through its
 `__call__`.
 
 ```culebra
-class Scale { new(k) { this.k = k } __call__(x) { x * this.k } }
+class Scale { new(k) { self.k = k } __call__(x) { x * self.k } }
 puts([1, 2, 3].map(Scale.new(10)))   # => [10, 20, 30]
 
 fn apply_twice(f: Function, x) { f(f(x)) }
@@ -1432,8 +1432,8 @@ return a `String`; anything else is a type error. `Object`s
 without `__str__` use the default formatter (`{key: value, ...}`).
 
     class Matrix {
-      new(r, c)  { this.rows = r; this.cols = c }
-      __str__()  { "Matrix {this.rows}x{this.cols}" }
+      new(r, c)  { self.rows = r; self.cols = c }
+      __str__()  { "Matrix {self.rows}x{self.cols}" }
     }
     m = Matrix.new(2, 3)
     puts(m)                        # Matrix 2x3
@@ -1447,10 +1447,10 @@ form only appears for the operand passed directly to the display
 hook. Deeper customization can be layered on once a concrete need
 arises.
 
-`__str__` bodies should **not** recursively invoke `puts(this)` or
-interpolate `"{this}"` — there is no built-in recursion guard, so
+`__str__` bodies should **not** recursively invoke `puts(self)` or
+interpolate `"{self}"` — there is no built-in recursion guard, so
 that form loops until the call stack is exhausted. Produce the
-final string via direct property access (`this.x`) instead.
+final string via direct property access (`self.x`) instead.
 
 ### Auto-reflection
 
@@ -1464,8 +1464,8 @@ expected to handle it (typically with a `match` on the argument type):
     class Vec { ...
       __mul__(r) {
         match r {
-          n: Long => Vec.new(this.x * n, this.y * n),   # scalar
-          _       => Vec.new(this.x * r.x, this.y * r.y) # elementwise
+          n: Long => Vec.new(self.x * n, self.y * n),   # scalar
+          _       => Vec.new(self.x * r.x, self.y * r.y) # elementwise
         }
       }
     }
@@ -1486,15 +1486,15 @@ as a leaf without recursing into it. Skipped during the walk: the
 as private/cache state). Iteration is in insertion order on both
 backends.
 
-    class Value { new(x) { this.x = x } }
+    class Value { new(x) { self.x = x } }
     class GPT {
       new() {
-        this.layers = range(2).map(|_| {
+        self.layers = range(2).map(|_| {
           W: range(4).map(|_|
             range(4).map(|_| Value.new(0.0)).collect()
           ).collect()
         }).collect()
-        this.wte = range(8).map(|_| Value.new(0.0)).collect()
+        self.wte = range(8).map(|_| Value.new(0.0)).collect()
       }
     }
     let model = GPT.new()
@@ -1813,18 +1813,18 @@ JIT limitations:
   against `T` before control leaves the function, both for natural
   fallthrough and explicit `return`.
 
-### Recursion: `self`
+### Recursion: `fn`
 
-Within a function body, `self` refers to the function value currently
+Within a function body, `fn` refers to the function value currently
 being executed. Recursion without giving the function a name:
 
-    fib = fn (x) { if x < 2 { x } else { self(x - 1) + self(x - 2) } }
+    fib = fn (x) { if x < 2 { x } else { fn(x - 1) + fn(x - 2) } }
 
-### Methods: `this`
+### Methods: `self`
 
-`this` is bound for the duration of a method call. Outside a method
-call, `this` is not in scope; accessing it raises
-`undefined variable 'this'`.
+`self` is bound for the duration of a method call. Outside a method
+call, `self` is not in scope; accessing it raises
+`undefined variable 'self'`.
 
 ### Closures
 
@@ -2340,11 +2340,11 @@ and `export`, and inner helpers by free functions / UFCS.
 A class can declare type parameters:
 
     class Box<T> {
-      new (v: T) { this.v = v }
+      new (v: T) { self.v = v }
     }
 
     class Pair<K, V> {
-      new (k, v) { this.k = k; this.v = v }
+      new (k, v) { self.k = k; self.v = v }
     }
 
 An unbounded type parameter is documentation — it makes method
@@ -2372,8 +2372,8 @@ parameter. Inside the body, the bound's default methods are available
 on object arguments (`a.gt(b)` for a `Comparable` class).
 
     class Money {
-      new(amount) { this.amount = amount }
-      cmp(other) { this.amount - other.amount }   # conforms to Comparable
+      new(amount) { self.amount = amount }
+      cmp(other) { self.amount - other.amount }   # conforms to Comparable
     }
     fn pick_max<T: Comparable>(a: T, b: T) {
       if a.gt(b) { a } else { b }                 # gt is a Comparable default
@@ -2465,10 +2465,10 @@ method (a field-level `??=` is a future extension — `??=` currently
 targets simple variables):
 
     class Cache {
-      new() { this._data = nil }
+      new() { self._data = nil }
       data() {
-        if this._data == nil { this._data = load() }
-        this._data
+        if self._data == nil { self._data = load() }
+        self._data
       }
     }
 
@@ -2553,8 +2553,8 @@ no `impl Foo for Bar` block needed. The model mirrors Go interfaces
 and Python's `__str__`-style magic methods.
 
     class Bob {
-      new(name) { this.name = name }
-      hello() { "hi, {this.name}" }
+      new(name) { self.name = name }
+      hello() { "hi, {self.name}" }
     }
 
     fn greet(x: Greeter) { IO.puts(x.hello()) }
@@ -2570,7 +2570,7 @@ free; defining the same name on the class overrides:
 
     trait Counter {
       current() -> Long
-      next() -> Long { this.current() + 1 }     # default
+      next() -> Long { self.current() + 1 }     # default
     }
 
     class Zero {
@@ -2707,7 +2707,7 @@ each mapping to one method:
 
     @derive(Eq, Hash, Show, Comparable)
     class Point {
-      new(x, y) { this.x = x; this.y = y }
+      new(x, y) { self.x = x; self.y = y }
     }
 
     let a = Point.new(1, 2)
@@ -2754,7 +2754,7 @@ tag), so they stay correct as fields change. Details:
   internal hash map iterates first. Avoid declaring same-named
   defaults across overlapping traits.
 * **Self-recursive trait defaults are user responsibility**:
-  `trait X { foo() { this.foo() } }` will stack-overflow if a
+  `trait X { foo() { self.foo() } }` will stack-overflow if a
   conforming class doesn't override `foo`. No depth guard is
   installed yet.
 * **JIT trait-default closure refcount**: each declared default
@@ -2940,7 +2940,7 @@ AOT builds (unless noted).
 | `TypeError` | Arithmetic / comparison on incompatible operand types; calling a non-callable; failing `: T` annotation; `to_long`/`to_float` on non-coercible value; `__str__` returning non-String; `*` splat of non-Array / `**` splat of non-Object; built-in arg-type check failure; mixed positional + keyword targeting the same parameter; duplicate keyword. | yes |
 | `ZeroDivisionError` | Integer `/`, `%`, `**` with negative exponent collapsing to division; float `/` or `%` with RHS == 0. | yes |
 | `NameError` | Read of an undefined identifier; compound assignment (`x += rhs`) on undefined `x`; REPL global lookup miss. A name bound in *no* scope (and not a builtin) is caught before evaluation — see Compile-time errors; a name read before its own later declaration runs (use-before-def) stays a runtime error. | yes¹ |
-| `ImmutableError` | Assignment to a `let` (non-`mut`) binding; assignment to an immutable Object property or `Dict` entry; rebinding `this` inside a constructor body. | yes |
+| `ImmutableError` | Assignment to a `let` (non-`mut`) binding; assignment to an immutable Object property or `Dict` entry; rebinding `self` inside a constructor body. | yes |
 | `KeyError` | Dict subscript on absent key; Object subscript on absent key. | yes |
 | `IndexError` | Array / String / Tensor index out of range; Tensor slice out of bounds; Tensor reduction axis out of range. | yes |
 | `ValueError` | Destructure pattern mismatch (`[a, b] = ...` shape mismatch); Tensor shape / dtype mismatch; `[].min()` or other empty-collection reductions; numeric conversion of malformed string; JSON parse failure. | yes |
@@ -3684,8 +3684,8 @@ puts(p)                   # {b: 2}
 
 | Identifier | Visibility               | Meaning                              |
 |------------|--------------------------|--------------------------------------|
-| `self`     | Inside every function    | The currently-executing function.    |
-| `this`     | Inside method calls      | The method's receiver.               |
+| `fn`       | Inside every function    | The currently-executing function.    |
+| `self`     | Inside method calls      | The method's receiver.               |
 
 ### 17.5 Iterator protocol
 
@@ -3695,7 +3695,7 @@ on `Object` (and its subtype `Array`):
 
 | Method | Shape | Called on | Returns |
 |---|---|---|---|
-| `iter` | `fn () -> Object` | an **Iterable** | an **Iterator** (may be `this`) |
+| `iter` | `fn () -> Object` | an **Iterable** | an **Iterator** (may be `self`) |
 | `next` | `fn () -> Object` | an **Iterator** | a step object `{ done: Bool, value: Any }` |
 
 **Contract, enforced at property assignment**: binding `iter` or
@@ -3829,7 +3829,7 @@ range(1000000).filter(f).map(g).take(4).collect()
 countdown = fn (start) {
   mut i = start
   {
-    iter:     fn () { this },                 # Iterator is its own Iterable
+    iter:     fn () { self },                 # Iterator is its own Iterable
     has_next: fn () { i > 0 },
     next:     fn () {
       v = i
@@ -4150,8 +4150,8 @@ Instances created by `class` declarations (§10) dispatch on their
 class name:
 
 ```
-class Square { new(side) { this.side = side } }
-class Circle { new(r)    { this.r    = r    } }
+class Square { new(side) { self.side = side } }
+class Circle { new(r)    { self.r    = r    } }
 
 fn shape_area(s: Square) { s.side * s.side }
 fn shape_area(c: Circle) { 3.14 * c.r * c.r }
@@ -4182,7 +4182,7 @@ greet("alice")  # → "hello, alice"
 * Ordinary local bindings `let f = fn(...) {...}` continue to work
   unchanged.
 * Method dispatch on `obj.method()` is unaffected. Methods are still
-  defined inside a `class` body and called through `this.`.
+  defined inside a `class` body and called through `self.`.
 * A method whose parameters are all `Any` serves as a catch-all.
 
 ### Constraints
@@ -4221,7 +4221,7 @@ A class may declare several instance methods with the **same name but
 different positional-param-type signatures**. They merge into one
 dispatcher; `obj.method(args)` then picks the overload on the runtime
 types of the explicit arguments. The receiver is fixed by the property
-lookup — only the arguments are scored — and `this` is bound into the
+lookup — only the arguments are scored — and `self` is bound into the
 picked overload:
 
 ```culebra
@@ -4253,7 +4253,7 @@ duplicate field. Constructors (`new`) and operator/dunder methods
 Static methods overload the same way. Same-named `static` methods with
 different positional-param-type signatures merge into one dispatcher on
 the class object; `Cls.method(args)` picks on the argument types. No
-`this` participates — a static call binds none:
+`self` participates — a static call binds none:
 
 ```culebra
 class Vec {
@@ -4319,7 +4319,7 @@ object the variable will hold:
 let mark = fn(cls) { cls.marked = true; cls }
 
 @mark
-class Point { new(x, y) { this.x = x; this.y = y } }
+class Point { new(x, y) { self.x = x; self.y = y } }
 
 Point.marked  # true
 ```
@@ -4459,7 +4459,7 @@ through one or more `export` statements:
     let helper = fn () { ... }      # internal, not exported
 
     class Pair {
-      new (x, y) { this.x = x; this.y = y }
+      new (x, y) { self.x = x; self.y = y }
     }
 
     export { add, sub, Pair }
@@ -4628,7 +4628,7 @@ AOT builds:
   same trigger condition on both backends; `e.message`, `e.line`,
   and `e.col` are populated identically. Uncaught errors print as
   `Kind: message at L:C.`.
-* **Class sugar (§10), `static` methods, immutable `this`, and the
+* **Class sugar (§10), `static` methods, immutable `self`, and the
   auto-synthesized `parameters()` reflection.**
 * **Module-scope evaluation.** Statement order, top-level closures,
   forward-reference resolution, and decorator application all

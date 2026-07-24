@@ -31,15 +31,15 @@ assert_eq(rank([1]), "unbounded")    // Array conforms to neither -> catch-all
 // --- User class conforming to Comparable dispatches to bounded fn ---
 // and trait default methods (gt/lt built on cmp) work in the body.
 class Money {
-  new(amount) { this.amount = amount }
-  cmp(other) { this.amount - other.amount }
+  new(amount) { self.amount = amount }
+  cmp(other) { self.amount - other.amount }
 }
 fn pick_max<T: Comparable>(a: T, b: T) { if a.gt(b) { a } else { b } }
 assert_eq(pick_max(Money.new(10), Money.new(25)).amount, 25)
 assert_eq(pick_max(Money.new(40), Money.new(7)).amount, 40)
 
 // A class WITHOUT cmp does not conform -> rejected by the bound.
-class Plain { new(v) { this.v = v } }
+class Plain { new(v) { self.v = v } }
 let e_plain = try { needs_cmp(Plain.new(1)); nil } catch e { e }
 assert_eq(e_plain != nil, true)
 
@@ -61,9 +61,9 @@ assert_eq(pick_max.params[0].type, "T")
 
 // --- Bounded class type-param enforces on methods too ---
 class Box<T: Comparable> {
-  new(v) { this.v = v }
-  set(v: T) { this.v = v }
-  get() { this.v }
+  new(v) { self.v = v }
+  set(v: T) { self.v = v }
+  get() { self.v }
 }
 let b = Box.new(1)
 b.set(42)
@@ -88,15 +88,15 @@ assert_eq(kc([1]), "unbounded")   // Array conforms to neither
 
 // User class conforming to both built-in traits.
 class Tag {
-  new(n) { this.n = n }
-  hash() { this.n }
+  new(n) { self.n = n }
+  hash() { self.n }
   to_s() { "Tag" }
 }
 fn need_both<T: Hashable + Stringer>(x: T) { x.n }
 assert_eq(need_both(Tag.new(7)), 7)
 
 // User class missing one part is rejected.
-class HashOnly { new(n) { this.n = n } hash() { this.n } }
+class HashOnly { new(n) { self.n = n } hash() { self.n } }
 let e_ho = try { need_both(HashOnly.new(1)); nil } catch e { e }
 assert_eq(e_ho != nil, true)
 

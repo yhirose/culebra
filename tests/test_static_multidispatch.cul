@@ -1,7 +1,7 @@
 # Conformance: §19 (multimethods) extended to class STATIC methods.
 # A class may declare several static methods with the SAME name but different
 # positional-param-type signatures; `Cls.method(args)` dispatches on the
-# runtime types of the explicit args. No `this` participates (a static call
+# runtime types of the explicit args. No `self` participates (a static call
 # binds none, and the picked body ignores the receiver). interp / JIT / AOT.
 
 # --- type dispatch on a static method ---
@@ -33,7 +33,7 @@ assert_eq(Srv.handle(5, scale: 10), 50)
 assert_eq(Srv.handle("hey"), 3)
 
 # --- dispatch on a class-instance-typed param ---
-class Animal { new(n) { this.n = n } }
+class Animal { new(n) { self.n = n } }
 class Reg {
   static of(a: Animal) { "animal" }
   static of(x: Long)   { "count" }
@@ -52,9 +52,9 @@ assert_eq(S.only(21), 42)
 
 # --- static overloads coexist with same-named instance overloads ---
 class Both {
-  new(n) { this.n = n }
-  tag(x: Long)   { "inst-long:{this.n}" }
-  tag(x: String) { "inst-str:{this.n}" }
+  new(n) { self.n = n }
+  tag(x: Long)   { "inst-long:{self.n}" }
+  tag(x: String) { "inst-str:{self.n}" }
   static tag(x: Long)   { "static-long" }
   static tag(x: String) { "static-str" }
 }

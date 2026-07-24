@@ -1051,7 +1051,7 @@ shape が単調増加します。そのようなワークロードでは非 Stri
 1. `receiver` が `name` という名前のプロパティ / 組み込みメソッドを
    持てばそれを呼ぶ。`Object` / `Array` ではユーザ定義プロパティが
    組み込みを上書きできる。`String` は専用のメソッドテーブルのみ。
-   解決された値が `Function` であれば、呼出の間 `this` は `receiver`
+   解決された値が `Function` であれば、呼出の間 `self` は `receiver`
    に束縛されます。
 2. 存在しない場合、外側スコープに `name` という名前の自由関数が
    あれば、`receiver` を第一引数として `name(receiver, args)` を
@@ -1061,8 +1061,8 @@ shape が単調増加します。そのようなワークロードでは非 Stri
    型エラーで失敗します。
 
 ```culebra
-o = { n: 10, add: fn (x) { x + this.n } }
-puts(o.add(5))                   # 15  (メソッド、this = o)
+o = { n: 10, add: fn (x) { x + self.n } }
+puts(o.add(5))                   # 15  (メソッド、self = o)
 
 double = fn (x) { x * 2 }
 42.double()                      # UFCS → double(42) → 84
@@ -1078,7 +1078,7 @@ size = fn (x) { 99 }
 
 UFCS は **DOT の直後に引数リストがある場合のみ**適用されます。裸の
 プロパティ参照（`x.name` だけ）では UFCS は起動しません。UFCS 呼出
-内では `this` は**バインドされません** — 意味的には自由関数呼出で、
+内では `self` は**バインドされません** — 意味的には自由関数呼出で、
 レシーバは単に第一引数の位置にあります。
 
 **JIT**: UFCS は `--jit` でもサポートされます。解決は実行時に行われ、
@@ -1092,9 +1092,9 @@ UFCS は **DOT の直後に引数リストがある場合のみ**適用されま
 代替として `class` 形式があり、同じランタイム表現に脱糖されます:
 
     class Car {
-      new(mpr)  { this.miles = 0; this.mpr = mpr }
-      run(n)    { this.miles = this.miles + this.mpr * n }
-      total()   { this.miles }
+      new(mpr)  { self.miles = 0; self.mpr = mpr }
+      run(n)    { self.miles = self.miles + self.mpr * n }
+      total()   { self.miles }
     }
     c = Car.new(5); c.run(3); puts(c.total())
     puts(c.class)            # 'Car' — match やデバッグ用の名義タグ
@@ -1104,14 +1104,14 @@ UFCS は **DOT の直後に引数リストがある場合のみ**適用されま
 * 宣言は `Car` を `new` プロパティのみを持つ `Object` に束縛します。
 * `Car.new(...)` は `class: 'Car'` と non-`new` メソッドをプロパティ
   として持つ新しい `Object` を返します。コンストラクタ本体の実行中は
-  `this` がその新オブジェクトに束縛されます。
-* コンストラクタ/メソッド内で `this.x = y` で作られるフィールドは
+  `self` がその新オブジェクトに束縛されます。
+* コンストラクタ/メソッド内で `self.x = y` で作られるフィールドは
   **デフォルトで可変**です（通常の `o.x = y` は不変プロパティを作る
   のと異なります）。メソッドが頻繁にインスタンス状態を書き換える
   クラスの慣習に合わせています。
 * `new` メソッドは省略可能で、省略時は無引数・メソッドと `class:` のみ
   を持つインスタンスを返します。
-* コンストラクタ本体内の `this` は不変です。`this = newObj` への
+* コンストラクタ本体内の `self` は不変です。`self = newObj` への
   代入は `ImmutableError` を投げます（Java / Crystal / Ruby と同じ
   方針）。コンストラクタは常に最初に確保されたインスタンスを返し、
   明示的な `return value` は `value` を捨てます。識別子差し替えが
@@ -1121,10 +1121,10 @@ UFCS は **DOT の直後に引数リストがある場合のみ**適用されま
   され（インスタンスには付かない）、factory・定数的なヘルパ・
   名前空間としての用途に使えます。`Shape.create(...)` 形式で
   通常のプロパティ参照と同じく解決され、receiver はクラスオブジェクト
-  そのものなので static 本体内で `this` は使えません:
+  そのものなので static 本体内で `self` は使えません:
 
       class Shape {
-        new ()                  { this.kind = 'unknown' }
+        new ()                  { self.kind = 'unknown' }
         area ()                 { 0 }
         static circle (r)       {
           let s = Shape.new()
@@ -1147,10 +1147,10 @@ UFCS は **DOT の直後に引数リストがある場合のみ**適用されま
   クラスオブジェクトのプロパティとして登録されます:
 
       class Circle {
-        new (r)         { this.radius = r }
+        new (r)         { self.radius = r }
         static PI       = 3.14
         static MAX      = 100
-        area ()         { this.radius * this.radius * Circle.PI }
+        area ()         { self.radius * self.radius * Circle.PI }
       }
       puts(Circle.PI)         # 3.14
       puts(Circle.MAX)        # 100
@@ -1167,8 +1167,8 @@ UFCS は **DOT の直後に引数リストがある場合のみ**適用されま
         score = 0
         name:  String
         tags  = []
-        best  = this.score + 10
-        new (name) { this.name = name }
+        best  = self.score + 10
+        new (name) { self.name = name }
       }
       let p = Player.new('rocci')
       puts(p.score)           # 0
@@ -1180,7 +1180,7 @@ UFCS は **DOT の直後に引数リストがある場合のみ**適用されま
   - **インスタンス毎**: 初期化子式は `C.new(...)` の呼び出しごとに
     評価されます — `tags: Array = []` は各インスタンスに独立した
     Array を与えます（Python 流のクラス属性共有は起きません）。
-  - **宣言順・`this` 参照可**: 初期化子は自分より上で宣言された field
+  - **宣言順・`self` 参照可**: 初期化子は自分より上で宣言された field
     を読め、メソッドも呼べます（上の `best`）。*下で* 宣言された field
     を読むと `nil` — 宣言順に意味があります。
   - **引数バインド後・`new` 本体の前**: 初期化子はバインド完了後に
@@ -1189,12 +1189,12 @@ UFCS は **DOT の直後に引数リストがある場合のみ**適用されま
     コンストラクタのパラメータは初期化子からは*見えません*（初期化子は
     class の定義スコープを閉じ込めます。Kotlin の property initializer と
     secondary-constructor パラメータの関係と同じ）。ctor 引数を field に
-    入れるには本体で `this.x = a` と明示します。
+    入れるには本体で `self.x = a` と明示します。
   - 初期化子なしの typed field（上の `name: String`）は型のゼロ値に
     なります: `0` / `0.0` / `''` / `false`。参照型（`Array`, `Object`
     等）は `nil` です。untyped 形は常に初期化子を伴います（ゼロ値を
     推論する型がないため）。
-  - 宣言 field は、コンストラクタ内の `this.x = y` で作った field と
+  - 宣言 field は、コンストラクタ内の `self.x = y` で作った field と
     全く同じ可変インスタンス状態です。
 
   宣言型は documentation です（§14 の runtime-check モデルのパラメータ
@@ -1205,14 +1205,14 @@ UFCS は **DOT の直後に引数リストがある場合のみ**適用されま
   括弧なしのプロパティ読み取りで呼び出されます:
 
       class Circle {
-        new (r)      { this.radius = r }
-        get area ()  { this.radius * this.radius * 3.14 }
+        new (r)      { self.radius = r }
+        get area ()  { self.radius * self.radius * 3.14 }
       }
       let c = Circle.new(4)
       puts(c.area)          # 50.24  — field のように読める
       puts(c.area())        # 50.24  — 呼び出し表記も動く
 
-  getter は他のメソッド同様 `this` を読みますが property として振る舞う
+  getter は他のメソッド同様 `self` を読みますが property として振る舞う
   ので、fluent chain の括弧が消えます（`p.parent().name()` ではなく
   `p.parent.name`）。getter は純粋・全域・O(1) の導出（値の本質的な性質）
   に限り、I/O や失敗しうる処理は通常メソッドに残します。こうして括弧の
@@ -1227,7 +1227,7 @@ UFCS は **DOT の直後に引数リストがある場合のみ**適用されま
 * `drop` 等の well-known メソッドも通常のメソッドと同じ形で書けます
   （§17）。JIT ではメソッドはクラス共有メタオブジェクト経由のプロト
   委譲で持たれますが、auto-drop ルックアップは proto chain を辿るため
-  `class C { drop() { ... } }` も期待通り発火し、`this` はインスタンス
+  `class C { drop() { ... } }` も期待通り発火し、`self` はインスタンス
   に束縛されます。
 
 ### 演算子オーバーロード
@@ -1258,10 +1258,10 @@ UFCS は **DOT の直後に引数リストがある場合のみ**適用されま
 例:
 
     class Vec {
-      new(x, y)   { this.x = x; this.y = y }
-      __add__(r)  { Vec.new(this.x + r.x, this.y + r.y) }
-      __mul__(r)  { Vec.new(this.x * r, this.y * r) }    # スカラー
-      __eq__(r)   { this.x == r.x && this.y == r.y }
+      new(x, y)   { self.x = x; self.y = y }
+      __add__(r)  { Vec.new(self.x + r.x, self.y + r.y) }
+      __mul__(r)  { Vec.new(self.x * r, self.y * r) }    # スカラー
+      __eq__(r)   { self.x == r.x && self.y == r.y }
     }
     a = Vec.new(1, 2)
     b = Vec.new(3, 4)
@@ -1288,9 +1288,9 @@ trait のメソッドにフォールバックします。`==` / `!=` は `eq(oth
 
 ```culebra
 class Grid {
-  new()          { this.d = [10, 20, 30] }
-  __index__(i)   { this.d[i] }
-  __setindex__(i, v) { this.d[i] = v }
+  new()          { self.d = [10, 20, 30] }
+  __index__(i)   { self.d[i] }
+  __setindex__(i, v) { self.d[i] = v }
 }
 let g = Grid.new()
 g[1] = 99
@@ -1299,7 +1299,7 @@ puts(g[1])                  # => 99
 
 **呼び出し (`__call__`)。** クラスインスタンスに `__call__(*args)` を
 定義すると `obj(args)` で呼び出せます — `__index__` の双子です。
-`obj(x)` は `obj.__call__(x)` とまったく同じで、インスタンスが `this`
+`obj(x)` は `obj.__call__(x)` とまったく同じで、インスタンスが `self`
 に束縛されます。これにより層を合成する値の `model(x)` イディオム
 （`__call__` が下位層の `__call__` を呼ぶモデル）が書けます。添字フック
 と同様にクラスインスタンスでのみ発火するので、`__call__` キーを持つだけ
@@ -1308,8 +1308,8 @@ puts(g[1])                  # => 99
 
 ```culebra
 class Adder {
-  new(b)       { this.b = b }
-  __call__(x)  { this.b + x }
+  new(b)       { self.b = b }
+  __call__(x)  { self.b + x }
 }
 let add3 = Adder.new(3)
 puts(add3(10))              # => 13
@@ -1322,7 +1322,7 @@ puts(add3.__call__(10))     # => 13
 束縛しても、その `__call__` 経由で呼ばれます:
 
 ```culebra
-class Scale { new(k) { this.k = k } __call__(x) { x * this.k } }
+class Scale { new(k) { self.k = k } __call__(x) { x * self.k } }
 puts([1, 2, 3].map(Scale.new(10)))   # => [10, 20, 30]
 
 fn apply_twice(f: Function, x) { f(f(x)) }
@@ -1342,8 +1342,8 @@ puts(apply_twice(Scale.new(2), 5))   # => 20
 デフォルト表示 (`{key: value, ...}`) になります。
 
     class Matrix {
-      new(r, c)  { this.rows = r; this.cols = c }
-      __str__()  { "Matrix {this.rows}x{this.cols}" }
+      new(r, c)  { self.rows = r; self.cols = c }
+      __str__()  { "Matrix {self.rows}x{self.cols}" }
     }
     m = Matrix.new(2, 3)
     puts(m)                        # Matrix 2x3
@@ -1356,10 +1356,10 @@ puts(apply_twice(Scale.new(2), 5))   # => 20
 形式は表示フックに直接渡されたオペランドにのみ現れます。より深い
 カスタマイズは具体的な必要性が出てから検討。
 
-`__str__` 本体では `puts(this)` や `"{this}"` といった再帰呼出は
+`__str__` 本体では `puts(self)` や `"{self}"` といった再帰呼出は
 **避けてください** — 組み込みの再帰ガードがないため、コールスタック
 を使い切るまでループします。最終文字列はプロパティを直接参照
-(`this.x`) して組み立ててください。
+(`self.x`) して組み立ててください。
 
 ### 自動反射
 
@@ -1372,8 +1372,8 @@ puts(apply_twice(Scale.new(2), 5))   # => 20
     class Vec { ...
       __mul__(r) {
         match r {
-          n: Long => Vec.new(this.x * n, this.y * n),   # スカラー
-          _       => Vec.new(this.x * r.x, this.y * r.y) # 要素ごと
+          n: Long => Vec.new(self.x * n, self.y * n),   # スカラー
+          _       => Vec.new(self.x * r.x, self.y * r.y) # 要素ごと
         }
       }
     }
@@ -1394,15 +1394,15 @@ LHS が対応する特殊メソッドを持つ `Object` である必要があり
 および名前が `_` で始まるフィールド (private/キャッシュ用とみなす)。
 反復順序は挿入順で、両バックエンドで揃います。
 
-    class Value { new(x) { this.x = x } }
+    class Value { new(x) { self.x = x } }
     class GPT {
       new() {
-        this.layers = range(2).map(|_| {
+        self.layers = range(2).map(|_| {
           W: range(4).map(|_|
             range(4).map(|_| Value.new(0.0)).collect()
           ).collect()
         }).collect()
-        this.wte = range(8).map(|_| Value.new(0.0)).collect()
+        self.wte = range(8).map(|_| Value.new(0.0)).collect()
       }
     }
     let model = GPT.new()
@@ -1707,17 +1707,17 @@ JIT 制限:
 * 戻り値型 `-> T` が宣言されている場合、自然な落ち抜けでも明示的な
   `return` でも、関数を離れる前に `T` で検査されます。
 
-### 再帰: `self`
+### 再帰: `fn`
 
-関数本体では `self` が現在実行中の関数値を指します。名前を付けずに
+関数本体では `fn` が現在実行中の関数値を指します。名前を付けずに
 再帰できます:
 
-    fib = fn (x) { if x < 2 { x } else { self(x - 1) + self(x - 2) } }
+    fib = fn (x) { if x < 2 { x } else { fn(x - 1) + fn(x - 2) } }
 
-### メソッド: `this`
+### メソッド: `self`
 
-`this` はメソッド呼出の期間中だけ束縛されます。メソッド呼出の外で
-`this` を使うとスコープに存在しないため `undefined variable 'this'`
+`self` はメソッド呼出の期間中だけ束縛されます。メソッド呼出の外で
+`self` を使うとスコープに存在しないため `undefined variable 'self'`
 になります。
 
 ### クロージャ
@@ -2207,11 +2207,11 @@ lambda / lexical-scope (`{ ... }`) の中 (新しい scope を開く) のみ
 クラスも型パラメータを宣言できます:
 
     class Box<T> {
-      new (v: T) { this.v = v }
+      new (v: T) { self.v = v }
     }
 
     class Pair<K, V> {
-      new (k, v) { this.k = k; this.v = v }
+      new (k, v) { self.k = k; self.v = v }
     }
 
 制約なしの型パラメータはドキュメント — メソッドのシグネチャを
@@ -2270,10 +2270,10 @@ nil 可能値を辿り、`!!` で非 nil をアサート（`NilError`）、`??` 
 現状 `??=` は単純変数のみ）:
 
     class Cache {
-      new() { this._data = nil }
+      new() { self._data = nil }
       data() {
-        if this._data == nil { this._data = load() }
-        this._data
+        if self._data == nil { self._data = load() }
+        self._data
       }
     }
 
@@ -2353,8 +2353,8 @@ constructor pattern が idiomatic なアクセサ。
 Foo for Bar` block 不要。 Go interface / Python `__str__` 流。
 
     class Bob {
-      new(name) { this.name = name }
-      hello() { "hi, {this.name}" }
+      new(name) { self.name = name }
+      hello() { "hi, {self.name}" }
     }
 
     fn greet(x: Greeter) { IO.puts(x.hello()) }
@@ -2369,7 +2369,7 @@ trait method に body を付けると default 実装になり、 適合クラス
 
     trait Counter {
       current() -> Long
-      next() -> Long { this.current() + 1 }     # default
+      next() -> Long { self.current() + 1 }     # default
     }
 
     class Zero {
@@ -2448,8 +2448,8 @@ class の両方で使え、 **呼び出し境界で強制**される (bound に 
 しない値はその param の引数にならない):
 
     class Money {
-      new(amount) { this.amount = amount }
-      cmp(other) { this.amount - other.amount }   # Comparable に conform
+      new(amount) { self.amount = amount }
+      cmp(other) { self.amount - other.amount }   # Comparable に conform
     }
     fn pick_max<T: Comparable>(a: T, b: T) {
       if a.gt(b) { a } else { b }                 # gt は Comparable の default
@@ -2531,7 +2531,7 @@ table) なので、 trait 継承は **構造的 (class) conformance のみ**に
 
     @derive(Eq, Hash, Show, Comparable)
     class Point {
-      new(x, y) { this.x = x; this.y = y }
+      new(x, y) { self.x = x; self.y = y }
     }
 
     let a = Point.new(1, 2)
@@ -2575,7 +2575,7 @@ field を走査する (method と内部 class tag は除外) ので、 field 変
   dispatch は内部 hash map の iteration 順で勝者決定。 同名 default
   を持つ trait の併用は避ける。
 * **自己再帰 trait default は user 責任**: `trait X { foo() {
-  this.foo() } }` で conform class が `foo` を override しないと
+  self.foo() } }` で conform class が `foo` を override しないと
   stack overflow。 depth guard 未実装。
 * **JIT trait default closure の refcount**: 各 default method は
   JIT module の lifetime ぶん +1 reference を保持。 single-shot JIT
@@ -2753,7 +2753,7 @@ shutdown パターン）は、`Signal.notify` でチャネルを登録します�
 | `TypeError` | 演算子・比較における型不一致；非 callable の呼出；`: T` 型注釈失敗；`to_long`/`to_float` の非変換可能値；`__str__` が String 以外を返す；`*` splat の非 Array / `**` splat の非 Object；組み込み引数チェックの失敗；同一パラメータへ positional + keyword 重複；duplicate keyword | はい |
 | `ZeroDivisionError` | 整数 `/`, `%`, 負指数の `**` で除算になるケース；浮動小数 `/` または `%` の RHS == 0 | はい |
 | `NameError` | 未定義識別子の読み取り；compound 代入（`x += rhs`）の `x` が未定義；REPL global 検索の miss。どのスコープにも無く builtin でもない名前は評価前に検出（コンパイル時エラー参照）；自身の後続宣言より前に読む（use-before-def）場合は runtime エラーのまま | はい¹ |
-| `ImmutableError` | `let`（非 `mut`）束縛への代入；immutable Object プロパティまたは Dict エントリへの代入；コンストラクタ本体内の `this` 再代入 | はい |
+| `ImmutableError` | `let`（非 `mut`）束縛への代入；immutable Object プロパティまたは Dict エントリへの代入；コンストラクタ本体内の `self` 再代入 | はい |
 | `KeyError` | Dict の存在しないキー subscript；Object の存在しないキー subscript | はい |
 | `IndexError` | Array / String / Tensor の範囲外 index；Tensor slice 範囲外；Tensor reduction axis 範囲外 | はい |
 | `ValueError` | Destructure pattern mismatch；Tensor の shape / dtype 不一致；`[].min()` 等空コレクションへの reduce；不正な数値文字列；JSON parse 失敗 | はい |
@@ -3468,8 +3468,8 @@ puts(p)          # {b: 2}
 
 | 識別子 | 可視性                    | 意味                           |
 |--------|--------------------------|--------------------------------|
-| `self` | すべての関数本体で有効      | 現在実行中の関数自身             |
-| `this` | メソッド呼出時のみ         | メソッドのレシーバ               |
+| `fn`   | すべての関数本体で有効      | 現在実行中の関数自身             |
+| `self` | メソッド呼出時のみ         | メソッドのレシーバ               |
 
 ### 17.5 イテレータプロトコル
 
@@ -3479,7 +3479,7 @@ puts(p)          # {b: 2}
 
 | メソッド | 形状 | 呼び出される型 | 戻り値 |
 |---|---|---|---|
-| `iter` | `fn () -> Object` | **Iterable** | **Iterator** (`this` で可) |
+| `iter` | `fn () -> Object` | **Iterable** | **Iterator** (`self` で可) |
 | `next` | `fn () -> Object` | **Iterator** | ステップオブジェクト `{ done: Bool, value: Any }` |
 
 **契約（プロパティ代入時に検査）**: `iter` / `next` を非 `Function`
@@ -3609,7 +3609,7 @@ range(1000000).filter(f).map(g).take(4).collect()
 countdown = fn (start) {
   mut i = start
   {
-    iter:     fn () { this },                 # Iterator は自身が Iterable
+    iter:     fn () { self },                 # Iterator は自身が Iterable
     has_next: fn () { i > 0 },
     next:     fn () {
       v = i
@@ -3916,8 +3916,8 @@ label("x", "y")     # → "any-any"
 できます:
 
 ```
-class Square { new(side) { this.side = side } }
-class Circle { new(r)    { this.r    = r    } }
+class Square { new(side) { self.side = side } }
+class Circle { new(r)    { self.r    = r    } }
 
 fn shape_area(s: Square) { s.side * s.side }
 fn shape_area(c: Circle) { 3.14 * c.r * c.r }
@@ -3947,7 +3947,7 @@ greet("alice")  # → "hello, alice"
 
 * 通常のローカル束縛 `let f = fn(...) {...}` はそのまま動作します。
 * クラスメソッド `obj.method()` のディスパッチには干渉しません。
-  メソッドは引き続き `class` ボディ内で定義し、`this.` 経由で
+  メソッドは引き続き `class` ボディ内で定義し、`self.` 経由で
   呼び出します。
 * `Any` 全引数のメソッドはキャッチオールとして利用できます。
 
@@ -3986,7 +3986,7 @@ paint(7, **{color: "gold"})  # → "gold 7"
 メソッドを複数宣言できます。これらは 1 つのディスパッチャにまとまり、
 `obj.method(args)` は明示引数のランタイム型で overload を選びます。
 レシーバは property lookup で確定済み（スコアされるのは引数のみ）で、
-`this` は選ばれた overload に束縛されます。
+`self` は選ばれた overload に束縛されます。
 
 ```culebra
 class Calc {
@@ -4017,7 +4017,7 @@ free 関数のマルチメソッドと同じ（キーワード引数は選ばれ
 static メソッドも同様に overload できます。位置パラメータ型シグネチャ
 が異なる同名 `static` メソッドは、クラスオブジェクト上の 1 つの
 ディスパッチャにまとまり、`Cls.method(args)` は引数型で選びます。
-`this` は関与しません（static 呼び出しは `this` を束縛しません）:
+`self` は関与しません(static 呼び出しは `self` を束縛しません):
 
 ```culebra
 class Vec {
@@ -4081,7 +4081,7 @@ greet()  # "[hello]"
 let mark = fn(cls) { cls.marked = true; cls }
 
 @mark
-class Point { new(x, y) { this.x = x; this.y = y } }
+class Point { new(x, y) { self.x = x; self.y = y } }
 
 Point.marked  # true
 ```
@@ -4214,7 +4214,7 @@ import/export はトップレベル限定、実行時に名前を解決し直す
     let helper = fn () { ... }      # 公開しない
 
     class Pair {
-      new (x, y) { this.x = x; this.y = y }
+      new (x, y) { self.x = x; self.y = y }
     }
 
     export { add, sub, Pair }
@@ -4352,7 +4352,7 @@ AOT バンドリングと tree-shaking 解析が成り立つ前提になりま�
 * **エラー報告.** §15 に列挙された各 `kind` は両 backend で同じ
   条件で発生し、`e.message` / `e.line` / `e.col` が同一値で populated。
   未捕捉エラーは `Kind: message at L:C.` 形式で表示。
-* **`class` 構文 (§10)、`static` メソッド、不変な `this`、
+* **`class` 構文 (§10)、`static` メソッド、不変な `self`、
   自動合成される `parameters()` リフレクション。**
 * **モジュールスコープ評価.** 文の実行順、トップレベル closure、
   forward-reference 解決、デコレータ適用すべて同一ルール。

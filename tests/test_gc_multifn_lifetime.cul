@@ -11,7 +11,7 @@
 // collector's transient stack retention while still catching a regression
 // (pre-fix delta was 16 for this 4-site batch; fixed is 0).
 
-class Box { new(d) { this.data = d } }
+class Box { new(d) { self.data = d } }
 fn a1() { let b = Box.new(1); fn g1() { b.data }; g1() }
 fn a2() { let b = Box.new(2); fn g2() { b.data }; g2() }
 fn a3() { let b = Box.new(3); fn g3() { b.data }; g3() }

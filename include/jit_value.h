@@ -427,7 +427,7 @@ inline constexpr size_t JIT_VARIADIC_ARITY = static_cast<size_t>(-1);
 // LLVM's raw-IR aggregate return disagrees with the Win64 C ABI (which returns
 // a 16-byte struct via a hidden sret pointer), so a JIT→C++-thunk call would
 // mis-place every argument. A plain pointer is unambiguous on every target, so
-// the receiver `this` likewise crosses as two scalars (tag, data). See JitValue.
+// the receiver `self` likewise crosses as two scalars (tag, data). See JitValue.
 using JitFn =
     void (*)(JitValue* /*__ret*/, JitClosure*, int8_t /*this_tag*/,
              int64_t /*this_data*/, int64_t /*n_args*/, JitValue* /*args*/);

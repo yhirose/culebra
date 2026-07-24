@@ -1941,8 +1941,8 @@ inline void _http_setup_body(JitValue bodyv, JitValue jsonv, JitValue formv,
 
 // --- Proc.spawn live handle (JIT) ---
 // The handle is a JitObject with data slots (_pid/_out/_err/_done/_result) and
-// method-closure slots; each method reads `this` (the handle) via the JitFn
-// `this` argument. Result is cached on first wait/poll (idempotent); `drop`
+// method-closure slots; each method reads `self` (the handle) via the JitFn
+// `self` argument. Result is cached on first wait/poll (idempotent); `drop`
 // (GC) best-effort reaps a child that was never waited on.
 
 CULEBRA_RT_INLINE JitObject* _culebra_proc_result_to_object(

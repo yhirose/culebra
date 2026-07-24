@@ -15,10 +15,10 @@ mut log = []
 
 class Res {
   new(n) {
-    this.n = n
+    self.n = n
   }
   drop() {
-    log.push("drop" + this.n.to_string())
+    log.push("drop" + self.n.to_string())
   }
 }
 

@@ -154,7 +154,7 @@ let _term_module = fn () {
   # occupy two cells. Glyph and style are kept in parallel arrays so reuse
   # stays alloc-free (see clear()).
   class Screen {
-    new() { this._w = 0; this._h = 0; this._back = []; this._front = []; this._bstyle = []; this._fstyle = [] }
+    new() { self._w = 0; self._h = 0; self._back = []; self._front = []; self._bstyle = []; self._fstyle = [] }
     cols() { _Term.cols() }
     rows() { _Term.rows() }
     size() { (_Term.cols(), _Term.rows()) }
@@ -162,68 +162,68 @@ let _term_module = fn () {
       let w = _Term.cols()
       let h = _Term.rows()
       let n = w * h
-      this._w = w
-      this._h = h
+      self._w = w
+      self._h = h
       # Reuse the buffers on the common path (size unchanged); only reallocate
       # when the terminal was resized.
-      if this._back.size() == n {
+      if self._back.size() == n {
         mut i = 0
-        while i < n { this._back[i] = " "; this._bstyle[i] = ""; i = i + 1 }
+        while i < n { self._back[i] = " "; self._bstyle[i] = ""; i = i + 1 }
       } else {
-        this._back = []
-        this._bstyle = []
-        for _ in 0..n { this._back.push(" "); this._bstyle.push("") }
+        self._back = []
+        self._bstyle = []
+        for _ in 0..n { self._back.push(" "); self._bstyle.push("") }
       }
-      this
+      self
     }
     set(x, y, g, style = "") {
       let gs = to_string(g)   # graphemes()/slices yield StringView
-      if x >= 0 && x < this._w && y >= 0 && y < this._h {
-        let idx = y * this._w + x
-        this._back[idx] = gs
-        this._bstyle[idx] = style
-        if _Term.width(gs) == 2 && x + 1 < this._w { this._back[idx + 1] = ""; this._bstyle[idx + 1] = style }
+      if x >= 0 && x < self._w && y >= 0 && y < self._h {
+        let idx = y * self._w + x
+        self._back[idx] = gs
+        self._bstyle[idx] = style
+        if _Term.width(gs) == 2 && x + 1 < self._w { self._back[idx + 1] = ""; self._bstyle[idx + 1] = style }
       }
-      this
+      self
     }
     put(x, y, s, style = "") {
       mut cx = x
       for g in s.graphemes() {
-        this.set(cx, y, to_string(g), style)
+        self.set(cx, y, to_string(g), style)
         # set() marks the next cell "" for a wide glyph; reuse that instead of
         # measuring the width again.
-        let wide = cx + 1 < this._w && this._back[cx + 1] == ""
+        let wide = cx + 1 < self._w && self._back[cx + 1] == ""
         cx = cx + (if wide { 2 } else { 1 })
       }
-      this
+      self
     }
     # Minimal escape string to turn the displayed frame into the built one;
     # updates the front buffer. Empty when nothing changed. Returned (not
     # printed) so it is testable; flush() prints it.
     render() {
-      let n = this._w * this._h
+      let n = self._w * self._h
       mut out = ""
-      if this._front.size() != n {
-        this._front = []
-        this._fstyle = []
-        for _ in 0..n { this._front.push("\x00"); this._fstyle.push("") }   # force a full repaint
+      if self._front.size() != n {
+        self._front = []
+        self._fstyle = []
+        for _ in 0..n { self._front.push("\x00"); self._fstyle.push("") }   # force a full repaint
         out = "\x1b[2J"                                                     # wipe stale content
       }
       mut cy = -1
       mut cx = -1
       mut pen = ""   # SGR currently applied at the terminal ("" = default)
       mut y = 0
-      while y < this._h {
+      while y < self._h {
         mut x = 0
-        while x < this._w {
-          let idx = y * this._w + x
-          let back = this._back[idx]
+        while x < self._w {
+          let idx = y * self._w + x
+          let back = self._back[idx]
           if back == "" {
-            this._front[idx] = ""
-            this._fstyle[idx] = this._bstyle[idx]
+            self._front[idx] = ""
+            self._fstyle[idx] = self._bstyle[idx]
           } else {
-            let st = this._bstyle[idx]
-            if back != this._front[idx] || st != this._fstyle[idx] {
+            let st = self._bstyle[idx]
+            if back != self._front[idx] || st != self._fstyle[idx] {
               if cy != y || cx != x { out = out + "\x1b[" + to_string(y + 1) + ";" + to_string(x + 1) + "H" }
               if st != pen {
                 out = out + "\x1b[0m"
@@ -231,15 +231,15 @@ let _term_module = fn () {
                 pen = st
               }
               out = out + back
-              this._front[idx] = back
-              this._fstyle[idx] = st
+              self._front[idx] = back
+              self._fstyle[idx] = st
               # Advance the tracked cursor by the glyph's real display width, the
               # same measure set() uses to blank the continuation cell. Keying off
               # the neighbour cell instead under-counts when overlapping draws have
               # since filled it, drifting cx and stranding a later cell's erase.
-              let wide = x + 1 < this._w && _Term.width(back) == 2
+              let wide = x + 1 < self._w && _Term.width(back) == 2
               cy = y
-              if wide { cx = x + 2; this._front[idx + 1] = ""; this._fstyle[idx + 1] = st } else { cx = x + 1 }
+              if wide { cx = x + 2; self._front[idx + 1] = ""; self._fstyle[idx + 1] = st } else { cx = x + 1 }
             }
           }
           x = x + 1
@@ -249,7 +249,7 @@ let _term_module = fn () {
       if pen != "" { out = out + "\x1b[0m" }   # leave the terminal at default
       out
     }
-    flush() { IO.print(this.render()); _Term.flush(); this }
+    flush() { IO.print(self.render()); _Term.flush(); self }
     poll(timeout) { _poll(timeout) }
   }
   {

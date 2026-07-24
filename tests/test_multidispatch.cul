@@ -36,10 +36,10 @@ assert_eq(label("x", "y"), "any-any")
 # --- Class-instance dispatch ---
 
 class Square {
-  new(side) { this.side = side }
+  new(side) { self.side = side }
 }
 class Circle {
-  new(r) { this.r = r }
+  new(r) { self.r = r }
 }
 
 fn shape_area(s: Square) { s.side * s.side }
@@ -79,8 +79,8 @@ assert_eq(helper(7), 14)
 # dispatch via `obj.method()`.
 
 class Box {
-  new(v) { this.v = v }
-  squared() { this.v * this.v }
+  new(v) { self.v = v }
+  squared() { self.v * self.v }
 }
 let b = Box.new(5)
 assert_eq(b.squared(), 25)

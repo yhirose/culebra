@@ -6,7 +6,7 @@
 
 @derive(Eq, Hash, Show, Comparable)
 class Point {
-  new(x, y) { this.x = x; this.y = y }
+  new(x, y) { self.x = x; self.y = y }
 }
 
 let a = Point.new(1, 2)
@@ -16,7 +16,7 @@ let c = Point.new(1, 3)
 // --- Eq: field-by-field over data fields ---
 assert_eq(a.eq(b), true)
 assert_eq(a.eq(c), false)
-// neq comes from the Eq trait default (!this.eq(other)).
+// neq comes from the Eq trait default (!self.eq(other)).
 assert_eq(a.neq(c), true)
 assert_eq(a.neq(b), false)
 // A non-Point compares unequal (nominal: class tag must match).
@@ -51,14 +51,14 @@ assert_eq(s.size(), 2)
 // --- String fields are quoted in to_s (value repr) ---
 @derive(Show)
 class Named {
-  new(n) { this.n = n }
+  new(n) { self.n = n }
 }
 assert_eq(Named.new("bob").to_s(), "Named('bob')")
 
 // --- User definitions win over derived ones ---
 @derive(Show)
 class Custom {
-  new(v) { this.v = v }
+  new(v) { self.v = v }
   to_s() { "custom!" }
 }
 assert_eq(Custom.new(1).to_s(), "custom!")
@@ -66,7 +66,7 @@ assert_eq(Custom.new(1).to_s(), "custom!")
 // --- Partial derive: only requested traits get methods ---
 @derive(Eq)
 class OnlyEq {
-  new(v) { this.v = v }
+  new(v) { self.v = v }
 }
 let oe = OnlyEq.new(5)
 assert_eq(oe.eq(OnlyEq.new(5)), true)

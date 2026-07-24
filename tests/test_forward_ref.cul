@@ -17,7 +17,7 @@ assert_eq(calls_f(), 42)
 let make_point = fn(x) { Point.new(x, x) }
 
 class Point {
-  new(a, b) { this.a = a; this.b = b }
+  new(a, b) { self.a = a; self.b = b }
 }
 
 let p = make_point(3)

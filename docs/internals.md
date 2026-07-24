@@ -1125,9 +1125,9 @@ The computation object and driver share a return-tag protocol: each
 `_step(rv)` returns a tag that tells the driver what happened.
 
 ```
-0 = DONE      this._eff_val holds the computation's result
-1 = SUSPEND   this._eff_op / this._eff_args describe a perform
-2 = DELEGATE  this._eff_delegate is a sub-computation to drive
+0 = DONE      self._eff_val holds the computation's result
+1 = SUSPEND   self._eff_op / self._eff_args describe a perform
+2 = DELEGATE  self._eff_delegate is a sub-computation to drive
 ```
 
 Two constructs are rejected at transform time — symmetrically, so no
