@@ -12896,7 +12896,7 @@ struct JIT {
     // Callee must be a closure (matches compile_function_call_raw's
     // guard) — or a callable class instance (`obj(kwargs)` → `__call__`
     // with `self` bound to the instance, Phase 2b) — or a class object
-    // (`C(kwargs)` → its `new` constructor, nil `self`). Resolve cls/this
+    // (`C(kwargs)` → its `new` constructor, nil `self`). Resolve cls/self
     // on all three arms and merge.
     auto tag = extract_tag(callee);
     auto isFunc = builder_.CreateICmpEQ(tag,

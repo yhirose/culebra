@@ -1571,10 +1571,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_build_class_meta(
 // the ctor args bound successfully — interp's init_instance_fields timing.
 // `self` arrives borrowed; the retain feeds the callee's slot +1.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_run_field_init(
-    JitClosure* finit, int8_t this_tag, int64_t this_data) {
-  culebra_runtime_value_retain(this_tag, this_data);
-  JitValue this_val = {this_tag, this_data};
-  auto r = _jit_invoke(finit, this_val, 0, nullptr);
+    JitClosure* finit, int8_t self_tag, int64_t self_data) {
+  culebra_runtime_value_retain(self_tag, self_data);
+  JitValue self_val = {self_tag, self_data};
+  auto r = _jit_invoke(finit, self_val, 0, nullptr);
   _culebra_value_release_impl(r.tag, r.data);
 }
 
@@ -1624,15 +1624,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
   culebra_runtime_object_set(inst, "class", /*mut*/ false, TAG_STRING,
                              reinterpret_cast<int64_t>(class_name), 0, 0);
 
-  JitValue this_val = {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
+  JitValue self_val = {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
   // Each _jit_invoke consumes one retained `self` ref (the callee's slot
   // release); the single unwind guard covers the instance's original +1
   // across both calls.
-  JitUnwindRelease g{this_val};
+  JitUnwindRelease g{self_val};
 
   if (finit_tag == TAG_FUNC) {
     auto* finit_cls = reinterpret_cast<JitClosure*>(finit_data);
-    culebra_runtime_value_retain(this_val.tag, this_val.data);
+    culebra_runtime_value_retain(self_val.tag, self_val.data);
     // A field-init throw unwinds before anything has consumed the
     // caller-transferred arg +1s (the `new` body normally absorbs them,
     // but it never runs) — release them on that edge only.
@@ -1646,7 +1646,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
           culebra_runtime_value_release(a[i].tag, a[i].data);
       }
     } args_guard{n_args, args};
-    auto r = _jit_invoke(finit_cls, this_val, 0, nullptr);
+    auto r = _jit_invoke(finit_cls, self_val, 0, nullptr);
     _culebra_value_release_impl(r.tag, r.data);
   }
 
@@ -1655,8 +1655,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
     // Body consumes `self` via the slot +1 on function exit, so retain
     // before handing it off. If the body throws, the instance's +1 is
     // otherwise stranded — the guard releases it on the unwind edge.
-    culebra_runtime_value_retain(this_val.tag, this_val.data);
-    auto result = _jit_invoke(body_cls, this_val, n_args, args);
+    culebra_runtime_value_retain(self_val.tag, self_val.data);
+    auto result = _jit_invoke(body_cls, self_val, n_args, args);
     _culebra_value_release_impl(result.tag, result.data);
   } else {
     // Default constructor: release any args the caller transferred.

@@ -429,8 +429,8 @@ inline constexpr size_t JIT_VARIADIC_ARITY = static_cast<size_t>(-1);
 // mis-place every argument. A plain pointer is unambiguous on every target, so
 // the receiver `self` likewise crosses as two scalars (tag, data). See JitValue.
 using JitFn =
-    void (*)(JitValue* /*__ret*/, JitClosure*, int8_t /*this_tag*/,
-             int64_t /*this_data*/, int64_t /*n_args*/, JitValue* /*args*/);
+    void (*)(JitValue* /*__ret*/, JitClosure*, int8_t /*self_tag*/,
+             int64_t /*self_data*/, int64_t /*n_args*/, JitValue* /*args*/);
 
 // One place that hands a receiver to a closure's fn_ptr through the JitFn ABI
 // and recovers the result from the out-pointer. Callers own retain/release

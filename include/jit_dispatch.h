@@ -136,16 +136,16 @@ _jit_variant_ctor_info() {
 // JitFn-ABI shared thunk installed as `fn_ptr` on every payload-variant
 // constructor closure. Recovers the variant/enum names from the side
 // table and builds the instance from the call args.
-inline void _jit_variant_ctor_thunk(JitValue* __ret, JitClosure* cls, int8_t this_tag,
-                                         int64_t this_data, int64_t n_args,
+inline void _jit_variant_ctor_thunk(JitValue* __ret, JitClosure* cls, int8_t self_tag,
+                                         int64_t self_data, int64_t n_args,
                                          JitValue* args) {
-  JitValue this_val{this_tag, this_data};
+  JitValue self_val{self_tag, self_data};
   // A direct `E.V(x)` call reaches here through the method-call ABI, which
   // hands `self` (the enum namespace) at +1 for the callee to consume. This
   // thunk builds a fresh variant instead of forwarding `self` to a body, so
   // it must drop that +1 or the namespace strands one reference per call.
   // (An indirect `let f = E.V; f(x)` passes nil — a no-op release.)
-  _culebra_value_release_impl(this_val.tag, this_val.data);
+  _culebra_value_release_impl(self_val.tag, self_val.data);
   auto& info = _jit_variant_ctor_info();
   auto it = info.find(cls);
   if (it == info.end()) { *__ret = {TAG_NIL, 0}; return; }
@@ -529,7 +529,7 @@ inline const std::string* _jit_first_mut_capture(void* fn_ptr) {
 // closure, so the regular meta-lookup path runs. Ownership of the +1 on
 // each positional/kwarg/splat transfers to the hook when it returns true.
 inline bool (*_jit_ns_kwarg_hook)(
-    JitClosure* cls, JitValue this_val, int64_t n_pos, JitValue* positional,
+    JitClosure* cls, JitValue self_val, int64_t n_pos, JitValue* positional,
     int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
     int64_t n_splat, JitValue* splat_objs, int64_t line, int64_t col,
     JitValue* out) = nullptr;
@@ -1109,25 +1109,25 @@ inline MultifnPick _jit_multifn_resolve(
 // resolved through `_jit_multifn_dispatcher_names()` to recover the
 // multimethod name, then dispatched via `_jit_multifn_resolve`.
 inline void _jit_multifn_dispatcher_thunk(JitValue* __ret, JitClosure* cls,
-                                          int8_t this_val_tag,
-                                          int64_t this_val_data,
+                                          int8_t self_val_tag,
+                                          int64_t self_val_data,
                                           int64_t n_args, JitValue* args) {
-  JitValue this_val{this_val_tag, this_val_data};
-  // On a normal dispatch `this_val` (a method receiver) and every arg are
+  JitValue self_val{self_val_tag, self_val_data};
+  // On a normal dispatch `self_val` (a method receiver) and every arg are
   // forwarded to the picked body, which consumes them (callee-consumes). A
   // DispatchError throws before that hand-off, so the receiver + args would
   // strand — release them on the failure path (callee-cleans-on-dispatch-
   // error). A free-function dispatcher passes nil `self` (a no-op release).
   auto picked = _jit_multifn_resolve(
       cls, args, n_args, _jit_call_site_line, _jit_call_site_col, [&]() {
-        _culebra_value_release_impl(this_val.tag, this_val.data);
+        _culebra_value_release_impl(self_val.tag, self_val.data);
         for (int64_t i = 0; i < n_args; i++)
           _culebra_value_release_impl(args[i].tag, args[i].data);
       });
-  // Forward `this_val` to the picked body. For a free-function dispatcher the
+  // Forward `self_val` to the picked body. For a free-function dispatcher the
   // call site passes nil and the body ignores it; for a class method-overload
   // dispatcher it carries the receiver, so the picked overload sees `self`.
-  *__ret = _jit_invoke(picked.body, this_val, n_args, args);
+  *__ret = _jit_invoke(picked.body, self_val, n_args, args);
 }
 
 // Record the call-site position read by `_jit_multifn_dispatcher_thunk` on
@@ -1398,8 +1398,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
 // body sees the right `self`. It forwards args/arity unchanged, so it composes
 // with every existing invoke path and with the callee's own arg handling.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void _jit_bound_method_thunk(JitValue* __ret, 
-    JitClosure* self, int8_t /*this_tag: Nil on a value call*/,
-    int64_t /*this_data*/, int64_t n_args, JitValue* args) {
+    JitClosure* self, int8_t /*self_tag: Nil on a value call*/,
+    int64_t /*self_data*/, int64_t n_args, JitValue* args) {
   JitValue receiver = self->captures[0]->value;
   auto* method = reinterpret_cast<JitClosure*>(self->captures[1]->value.data);
   // The callee frame takes ownership of `self` on entry (a direct call retains
@@ -1507,12 +1507,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_getter_or_value(
 // the dispatched call (consumed by the callee frame) or are released
 // here on the throw paths.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
-    JitClosure* cls, int8_t this_val_tag, int64_t this_val_data,
+    JitClosure* cls, int8_t self_val_tag, int64_t self_val_data,
     int64_t n_pos, JitValue* positional,
     int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
     int64_t n_splat, JitValue* splat_objs,
     int64_t line, int64_t col) {
-  JitValue this_val{this_val_tag, this_val_data};
+  JitValue self_val{self_val_tag, self_val_data};
   auto release_owned = [&](size_t skip_pos = 0) {
     // Drop every +1 the caller transferred to us that hasn't already
     // been consumed downstream. `skip_pos` lets us skip positionals
@@ -1532,7 +1532,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     // aborts before that hand-off, so the receiver would strand (a method
     // receiver on `obj.m(bad: 1)`). release_owned runs only on the throw /
     // dispatch-failure paths — never before a hand-off — so this is safe.
-    _culebra_value_release_impl(this_val.tag, this_val.data);
+    _culebra_value_release_impl(self_val.tag, self_val.data);
   };
 
   // A bound method value (`obj.m` read as a value) wraps [receiver, method];
@@ -1559,7 +1559,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
   // dispatchers, handled after, are splat-first like the interp's user binder.)
   if (_jit_ns_kwarg_hook) {
     JitValue out;
-    if (_jit_ns_kwarg_hook(cls, this_val, n_pos, positional, n_kw, kw_keys,
+    if (_jit_ns_kwarg_hook(cls, self_val, n_pos, positional, n_kw, kw_keys,
                            kw_vals, n_splat, splat_objs, line, col, &out)) {
       return out;
     }
@@ -1607,7 +1607,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     auto picked = _jit_multifn_resolve(
         cls, positional, n_pos, line, col, release_owned, kwarg_keys);
     return culebra_runtime_call_with_kwargs(
-        picked.body, static_cast<int8_t>(this_val.tag), this_val.data, n_pos,
+        picked.body, static_cast<int8_t>(self_val.tag), self_val.data, n_pos,
         positional, n_kw, kw_keys, kw_vals,
         n_splat, splat_objs, line, col);
   }
@@ -1683,7 +1683,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
       for (int64_t k = 0; k < n_splat; k++) {
         _culebra_value_release_impl(splat_objs[k].tag, splat_objs[k].data);
       }
-      _culebra_value_release_impl(this_val.tag, this_val.data);
+      _culebra_value_release_impl(self_val.tag, self_val.data);
       throw culebra::CulebraError("TypeError",
           culebra::positional_kw_conflict_message(meta->names[i]), line, col);
     }
@@ -1729,7 +1729,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
       for (int64_t k = 0; k < n_splat; k++) {
         _culebra_value_release_impl(splat_objs[k].tag, splat_objs[k].data);
       }
-      _culebra_value_release_impl(this_val.tag, this_val.data);
+      _culebra_value_release_impl(self_val.tag, self_val.data);
       throw culebra::CulebraError("ArityError",
           culebra::missing_required_arg_message(missing), line, col);
     }
@@ -1762,7 +1762,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     for (int64_t i = 0; i < n_splat; i++) {
       _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
     }
-    _culebra_value_release_impl(this_val.tag, this_val.data);
+    _culebra_value_release_impl(self_val.tag, self_val.data);
     throw culebra::CulebraError("TypeError",
         culebra::unknown_kwarg_message(bad_name), line, col);
   }
@@ -1779,7 +1779,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
   }
 
-  return _jit_invoke(cls, this_val, static_cast<int64_t>(slab.size()),
+  return _jit_invoke(cls, self_val, static_cast<int64_t>(slab.size()),
                      slab.data());
 }
 

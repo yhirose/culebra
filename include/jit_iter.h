@@ -76,9 +76,9 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray*
 culebra_runtime_object_keys(JitObject* obj);
 
 // Generic "iter returns self" — used by every wrapper we build.
-inline void _iter_self_iter_fn(JitValue* __ret, JitClosure*, int8_t this_val_tag, int64_t this_val_data,
+inline void _iter_self_iter_fn(JitValue* __ret, JitClosure*, int8_t self_val_tag, int64_t self_val_data,
                                    int64_t, JitValue*) {
-  JitValue this_val{this_val_tag, this_val_data};
+  JitValue self_val{self_val_tag, self_val_data};
   // iter() on a wrapped iterator returns self. The Iterator-protocol calling
   // convention (see compile_for_protocol_loop / _iter_coerce_iterable /
   // object_iter_dispatch) has every caller retain `self` before the call so a
@@ -87,7 +87,7 @@ inline void _iter_self_iter_fn(JitValue* __ret, JitClosure*, int8_t this_val_tag
   // `self` directly, transferring the caller's +1 to the result. (A stray
   // `retain` here instead of the transfer leaked one ref per `.iter()` on
   // every native wrapped iterator — the for-in protocol loop's ref B.)
-  { *__ret = this_val; return; }
+  { *__ret = self_val; return; }
 }
 
 // Look up a 0-arg method closure on an iterator Object. Returns nullptr
@@ -290,7 +290,7 @@ inline void _iter_trampoline_has_next_fn(JitValue* __ret, JitClosure* cls, int8_
   // `while _g_it.has_next()`) doesn't strand the iterator. Without it the
   // iterator (and its transitively-held source + closures) leaked once per
   // drained iterator.
-  JitOwnedVal this_guard(iv);
+  JitOwnedVal self_guard(iv);
   size_t n = cls->n_captures;
   JitCell* state_cell = cls->captures[n - 2];
   JitCell* value_cell = cls->captures[n - 1];
@@ -321,7 +321,7 @@ inline void _iter_trampoline_next_fn(JitValue* __ret, JitClosure* cls, int8_t iv
   // Consume the caller's `self` +1 on every exit — see the note on
   // _iter_trampoline_has_next_fn. Released after the lookahead value is copied
   // out (the returned +1 is independent of `iv`'s captures).
-  JitOwnedVal this_guard(iv);
+  JitOwnedVal self_guard(iv);
   size_t n = cls->n_captures;
   JitCell* state_cell = cls->captures[n - 2];
   JitCell* value_cell = cls->captures[n - 1];

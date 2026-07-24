@@ -6037,8 +6037,8 @@ inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
 }
 
 inline void _jit_ns_method_trampoline(
-    JitValue* __ret, JitClosure* cls, int8_t /*this_tag*/,
-    int64_t /*this_data*/, int64_t n_args, JitValue* args) {
+    JitValue* __ret, JitClosure* cls, int8_t /*self_tag*/,
+    int64_t /*self_data*/, int64_t n_args, JitValue* args) {
   const auto* m = reinterpret_cast<const NsMethod*>(
       cls->captures[0]->value.data);
   // As-value call (`let g = ns.method; g(...)`): the indirect-call codegen
@@ -6290,7 +6290,7 @@ inline bool _jit_ns_kwarg_resolve_core(
 // Closure-ABI wrapper: extract the NsMethod from the closure and resolve.
 // Returns false (the hook's "not mine" signal) for non-ns closures.
 inline bool _jit_ns_kwarg_resolve(
-    JitClosure* cls, JitValue /*this_val*/, int64_t n_pos, JitValue* positional,
+    JitClosure* cls, JitValue /*self_val*/, int64_t n_pos, JitValue* positional,
     int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
     int64_t n_splat, JitValue* splat_objs, int64_t line, int64_t col,
     JitValue* out) {

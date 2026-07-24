@@ -62,9 +62,9 @@ inline void _culebra_call_drop_if_present(JitObject* o) {
   // dropped object free it from under its remaining holders.
   const int64_t entry_rc = o->refcount;
   o->refcount = int64_t{1} << 40;
-  JitValue this_val{GC_TAG_OBJECT, reinterpret_cast<int64_t>(o)};
+  JitValue self_val{GC_TAG_OBJECT, reinterpret_cast<int64_t>(o)};
   try {
-    auto r = _jit_invoke(cls, this_val, 0, nullptr);
+    auto r = _jit_invoke(cls, self_val, 0, nullptr);
     _culebra_value_release_impl(r.tag, r.data);
   } catch (const std::exception& e) {
     std::cerr << "drop: " << e.what() << std::endl;

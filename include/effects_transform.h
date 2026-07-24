@@ -882,7 +882,7 @@ class EffectsLowerer {
         "fn " + name + rewrite_locals_to_self(slice(decl).substr(after), rw);
     auto self_name =
         std::format("_eff_self_{}_{}", decl.line, decl.column);
-    text = redirect_this_to_self(text, self_name);
+    text = redirect_self_to_local(text, self_name);
     return std::format("self.{0} = (fn ({1}) {{\n{2}\n{0} }})(self)", name,
                        self_name, text);
   }
@@ -1414,7 +1414,7 @@ class EffectsLowerer {
   // outer instance passed to its ctor. Idempotent per nesting level: a second
   // pass over `self._eff_outer.x` lengthens the chain (`self._eff_outer._eff_outer.x`),
   // which is exactly the walk a doubly-nested capture needs.
-  static std::string redirect_this_to_outer(std::string_view src) {
+  static std::string redirect_self_to_outer(std::string_view src) {
     return rewrite_outside_strings(src, [](std::string_view code) {
       return std::regex_replace(std::string(code), self_field_access(),
                                 "$1self._eff_outer.");
@@ -1424,11 +1424,11 @@ class EffectsLowerer {
   // closure inside the `<self>` IIFE, so it captures the enclosing instance as a
   // plain local (both backends), not via lexical `self`. `<self>` is unique per
   // handle so nested handles' IIFE params don't shadow one another.
-  static std::string redirect_this_to_self(std::string_view src,
-                                           const std::string& self) {
+  static std::string redirect_self_to_local(std::string_view src,
+                                            const std::string& local) {
     return rewrite_outside_strings(src, [&](std::string_view code) {
       return std::regex_replace(std::string(code), self_field_access(),
-                                "$1" + self + ".");
+                                "$1" + local + ".");
     });
   }
   // True when the handle reads an enclosing-computation binding: a genuine
@@ -1486,7 +1486,7 @@ class EffectsLowerer {
       inner = annotate_line_markers(inner, first);
       inner += '\n';  // a trailing marker comment needs a newline to parse
     }
-    if (capture_outer) inner = redirect_this_to_outer(inner);
+    if (capture_outer) inner = redirect_self_to_outer(inner);
     std::shared_ptr<std::string> src =
         std::make_shared<std::string>(std::move(inner));
     std::shared_ptr<peg::Ast> prog = parse_registered_source("<eff-body>", src);
@@ -1739,7 +1739,7 @@ class EffectsLowerer {
         }
         auto vn = view_parameter(*params.nodes[0]).name;
         std::string ret_src(strip_block_braces(slice(*clause.nodes[1])));
-        if (captures) ret_src = redirect_this_to_self(ret_src, self_name);
+        if (captures) ret_src = redirect_self_to_local(ret_src, self_name);
         reattach_marker(ret_src, *clause.nodes[1]);
         return_fn = std::format(
             "fn(_eh_val) {{\n      let {} = _eh_val\n      {}\n    }}",
@@ -1774,7 +1774,7 @@ class EffectsLowerer {
       auto resume_name = view_parameter(*params.nodes[nparams - 1]).name;
       binds += std::format("      let {} = _eh_resume\n", std::string(resume_name));
       std::string handler_src(strip_block_braces(slice(handler_body)));
-      if (captures) handler_src = redirect_this_to_self(handler_src, self_name);
+      if (captures) handler_src = redirect_self_to_local(handler_src, self_name);
       reattach_marker(handler_src, handler_body);
       if (!first_op) frame += ",";
       first_op = false;
