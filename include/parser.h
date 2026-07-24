@@ -526,6 +526,11 @@ struct MethodView {
   const std::shared_ptr<peg::Ast>* body;  // nullptr unless method
   const peg::Ast* value;          // static field value OR typed field
                                   // default; nullptr when neither
+  const std::shared_ptr<peg::Ast>* value_sp;  // shared_ptr slot backing
+                                  // `value` — instance-field initializers
+                                  // outlive the declaration (evaluated per
+                                  // instance), so holders keep the subtree
+                                  // alive through this instead of the raw ptr
 };
 
 inline MethodView view_method(const peg::Ast& m) {
@@ -536,12 +541,14 @@ inline MethodView view_method(const peg::Ast& m) {
   bool is_getter = m.nodes[0]->token == "get";
   const auto& third = *m.nodes[2];
   if (third.tag == "TYPE_ANNOTATION"_) {
+    bool has_default = m.nodes.size() == 4;
     return MethodView{
         is_static, is_getter, ident.token, ident.line, ident.column,
         /*is_field=*/false, /*is_typed_field=*/true,
         /*type_annotation=*/third.token,
         /*params=*/nullptr, /*body=*/nullptr,
-        /*value=*/m.nodes.size() == 4 ? m.nodes[3].get() : nullptr,
+        /*value=*/has_default ? m.nodes[3].get() : nullptr,
+        /*value_sp=*/has_default ? &m.nodes[3] : nullptr,
     };
   }
   if (third.tag == "PARAMETERS"_) {
@@ -549,6 +556,7 @@ inline MethodView view_method(const peg::Ast& m) {
         is_static, is_getter, ident.token, ident.line, ident.column,
         /*is_field=*/false, /*is_typed_field=*/false, /*type_annotation=*/{},
         /*params=*/m.nodes[2].get(), /*body=*/&m.nodes[3], /*value=*/nullptr,
+        /*value_sp=*/nullptr,
     };
   }
   // Bare `= EXPRESSION`: static field.
@@ -556,6 +564,7 @@ inline MethodView view_method(const peg::Ast& m) {
       is_static, is_getter, ident.token, ident.line, ident.column,
       /*is_field=*/true, /*is_typed_field=*/false, /*type_annotation=*/{},
       /*params=*/nullptr, /*body=*/nullptr, /*value=*/m.nodes[2].get(),
+      /*value_sp=*/&m.nodes[2],
   };
 }
 

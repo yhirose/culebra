@@ -1916,6 +1916,21 @@ inline bool is_well_known_prop(std::string_view name) {
   return name == "drop" || name == "iter" || name == "next";
 }
 
+// The zero value a typed instance field (`x: T` with no initializer) takes
+// at construction. Single source for the interp's zero_value_for_type and
+// the JIT's emit_zero_value so a declared type maps to the same default on
+// every backend.
+enum class ZeroKind { Float, Bool, String, Long, Nil };
+inline ZeroKind zero_kind_for_type(std::string_view type) {
+  if (type == "Float32" || type == "Float64" || type == "Float")
+    return ZeroKind::Float;
+  if (type == "Bool") return ZeroKind::Bool;
+  if (type == "String") return ZeroKind::String;
+  if (type == "Long" || type == "Byte" || type.starts_with("Int"))
+    return ZeroKind::Long;
+  return ZeroKind::Nil;  // reference types default to nil
+}
+
 [[noreturn]] inline void throw_well_known_prop_contract_error(
     std::string_view name) {
   throw CulebraError(

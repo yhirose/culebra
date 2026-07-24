@@ -351,3 +351,135 @@ fn test_class_decl_throw_catchable() {
 test_class_decl_throw_catchable()
 
 puts('class-sugar throw-catch OK')
+
+# --- Declared instance fields (`x: T = e`) ----------------------------------
+# Initializers run per instance — declaration order, `this` in scope, after
+# the ctor args bind, before the `new` body (Kotlin's model). The JIT used
+# to drop typed fields entirely (every declared field read nil).
+
+fn test_field_defaults() {
+  class P {
+    x: Long = 5
+    y: Float = 2.5
+    s: String = 'hi'
+    b: Bool = true
+    a: Array = [1, 2]
+  }
+  let p = P.new()
+  assert_eq(p.x, 5)
+  assert_eq(p.y, 2.5)
+  assert_eq(p.s, 'hi')
+  assert_eq(p.b, true)
+  assert_eq(p.a, [1, 2])
+}
+test_field_defaults()
+
+fn test_field_zero_values() {
+  class Z {
+    n: Long
+    f: Float
+    s: String
+    b: Bool
+    arr: Array
+  }
+  let z = Z.new()
+  assert_eq(z.n, 0)
+  assert_eq(z.f, 0.0)
+  assert_eq(z.s, '')
+  assert_eq(z.b, false)
+  assert_eq(z.arr, nil)
+}
+test_field_zero_values()
+
+fn test_field_per_instance() {
+  # A mutable default is evaluated per instance — no Python-style sharing.
+  class Box {
+    items: Array = []
+  }
+  let a = Box.new()
+  let b = Box.new()
+  a.items.push(1)
+  assert_eq(a.items, [1])
+  assert_eq(b.items, [])
+}
+test_field_per_instance()
+
+fn test_field_this_and_order() {
+  # Declaration order; `this` sees earlier fields and methods.
+  let base = 100
+  class K {
+    a: Long = base + 1
+    b: Long = this.a * 2
+    c: Long = this.calc()
+    calc() { this.a + this.b }
+  }
+  let k = K.new()
+  assert_eq(k.a, 101)
+  assert_eq(k.b, 202)
+  assert_eq(k.c, 303)
+}
+test_field_this_and_order()
+
+fn test_field_before_new_body() {
+  class N {
+    x: Long = 5
+    new(m) { this.y = this.x * m }
+  }
+  assert_eq(N.new(10).y, 50)
+}
+test_field_before_new_body()
+
+fn test_field_mutable_in_methods() {
+  class C {
+    n: Long = 0
+    bump() { this.n = this.n + 1 }
+  }
+  let c = C.new()
+  c.bump(); c.bump()
+  assert_eq(c.n, 2)
+}
+test_field_mutable_in_methods()
+
+fn test_field_captures_enclosing() {
+  # A class declared inside a fn: field inits capture enclosing locals and
+  # stay live after the fn returns.
+  fn make(start) {
+    class Counter {
+      n: Long = start * 10
+    }
+    Counter
+  }
+  let C = make(5)
+  assert_eq(C.new().n, 50)
+}
+test_field_captures_enclosing()
+
+fn test_field_init_throw_at_construction() {
+  # A throwing initializer fires at construction (catchable), not at the
+  # class declaration.
+  class Boom {
+    x: Long = to_long('nope')
+  }
+  let r = try { Boom.new(); 'no error' } catch e { e.kind }
+  assert_eq(r, 'TypeError')
+}
+test_field_init_throw_at_construction()
+
+fn test_field_init_after_arg_binding() {
+  # Initializers run only once the ctor args bound successfully: an arity
+  # error fires first, with no field side effects (interp/JIT symmetric).
+  mut ran = 0
+  fn noisy() { ran = ran + 1; 1 }
+  class A {
+    x: Long = noisy()
+    new(a, b) { this.s = a + b }
+  }
+  let r = try { A.new(1); 'built' } catch e { e.kind }
+  assert_eq(r, 'ArityError')
+  assert_eq(ran, 0)
+  A.new(1, 2)
+  assert_eq(ran, 1)
+}
+test_field_init_after_arg_binding()
+
+puts('class-fields OK')

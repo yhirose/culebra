@@ -130,6 +130,34 @@ case("ctor-call-kw-default", kwclass_pre + "C(a: 7).s")
 case("ctor-call-nullary", 'class C { new() { this.x = 9 } }; C().x')
 case("ctor-call-plaindict", 'let d = { new: fn (x) { x } }; d(1)')
 
+# --- Dimension 6d: declared instance fields (`x: T = e`) --------------------
+# Initializers run per instance, declaration order, `this` in scope, after
+# ctor-arg binding, before the `new` body. The JIT compiles them into a
+# synthetic closure invoked from the `new` prologue (or the instance builder
+# for a `new`-less class) — value, error kind/position, and init-vs-binding
+# ordering must all mirror the interp.
+let field_pre = 'class F { a: Long = 3  b: Long = this.a * 2  z: Long  ' +
+                's: String  arr: Array = [] }; '
+case("field-default", field_pre + "F.new().a")
+case("field-this-order", field_pre + "F.new().b")
+case("field-zero-long", field_pre + "F.new().z")
+case("field-zero-string", field_pre + "F.new().s")
+case("field-fresh-array",
+     field_pre + "let x = F.new(); let y = F.new(); x.arr.push(1); y.arr")
+case("field-before-new",
+     'class F { a: Long = 3  new(m) { this.r = this.a * m } }; F.new(5).r')
+case("field-init-throws",
+     'class F { a: Long = to_long("x") }; F.new()')
+case("field-init-after-binding",
+     'class F { a: Long = to_long("x")  new(p, q) { } }; F.new(1)')
+case("field-method-call-init",
+     'class F { a: Long = this.base()  base() { 41 } }; F.new().a + 1')
+case("field-forward-read",
+     'class F { a: Long = this.later  later: Long = 9 }; F.new().a')
+case("field-packable-defaults",
+     '@packable class P { x: Int32 = 7  y: Float32 = 0.5 }; ' +
+     'let p = P.new(); [p.x, p.y]')
+
 # --- Dimension 6b: class getters (`get name()` read as `obj.name`) ----------
 # A getter fires on a bare property read AND when spelled with call parens;
 # both must agree across backends (the JIT resolves getters through a separate

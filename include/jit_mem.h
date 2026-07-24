@@ -767,6 +767,8 @@ inline constexpr auto is_shared_val       = "culebra_runtime_is_shared_val";
 inline constexpr auto object_remove_any   = "culebra_runtime_object_remove_any";
 inline constexpr auto build_class_instance
     = "culebra_runtime_build_class_instance";
+inline constexpr auto run_field_init
+    = "culebra_runtime_run_field_init";
 inline constexpr auto build_variant       = "culebra_runtime_build_variant";
 inline constexpr auto make_variant_ctor   = "culebra_runtime_make_variant_ctor";
 inline constexpr auto make_derived_method

@@ -7173,13 +7173,14 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // false, String "", and any reference type nil — the Go/C#/Java
   // "zero value" rule. Mirrored in the JIT backend.
   Value zero_value_for_type(std::string_view type) {
-    if (type == "Float32" || type == "Float64" || type == "Float")
-      return Value(0.0);
-    if (type == "Bool") return Value(false);
-    if (type == "String") return Value(std::string());
-    if (type == "Long" || type == "Byte" || type.starts_with("Int"))
-      return Value(static_cast<long>(0));
-    return Value();  // reference types default to nil
+    switch (culebra::zero_kind_for_type(type)) {
+      case culebra::ZeroKind::Float: return Value(0.0);
+      case culebra::ZeroKind::Bool: return Value(false);
+      case culebra::ZeroKind::String: return Value(std::string());
+      case culebra::ZeroKind::Long: return Value(static_cast<long>(0));
+      case culebra::ZeroKind::Nil: return Value();
+    }
+    return Value();
   }
 
   // --- @packable SharedBuffer: raw bytes <-> Value bridge ---------------
@@ -7878,8 +7879,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // Method names and the class name are `string_view`s into the source AST
   // (stable for the program's lifetime), matching how Environment and
   // ObjectValue store keys and avoiding dangling views from moved strings in
-  // captured lambdas. Field defaults and static-field values are already
-  // eval'd against `env`. Mirrors JIT's collect_class_members.
+  // captured lambdas. Static-field values are already eval'd against `env`;
+  // instance-field initializers stay as ASTs (evaluated per instance at
+  // construction time). Mirrors JIT's collect_class_members.
   struct ClassMembers {
     std::string_view class_name;
     std::vector<std::string_view> type_params;
@@ -7893,9 +7895,17 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     std::vector<std::pair<std::string_view, Value>> static_template;
     std::vector<std::pair<std::string_view, Value>> static_field_template;
     // Typed instance fields (`x: Float32 = 0.0`) in declaration order (the
-    // field order the @packable layout reads). Default value, or the type's
-    // zero value when omitted.
-    std::vector<std::pair<std::string_view, Value>> field_template;
+    // field order the @packable layout reads). The initializer runs once per
+    // instance — declaration order, `this` in scope, before the `new` body
+    // (Kotlin's model) — so it is kept as an AST here, not a Value. A bare
+    // `x: T` (init == nullptr) falls back to the type's zero value. The
+    // shared_ptr keeps the subtree alive past the declaring input (REPL).
+    struct FieldDecl {
+      std::string_view name;
+      std::shared_ptr<peg::Ast> init;
+      std::string_view type;
+    };
+    std::vector<FieldDecl> field_template;
     // Declared (name, type) pairs in field order — the @packable layout
     // reads this to compute byte offsets.
     std::vector<std::pair<std::string, std::string>> packable_fields;
@@ -7951,10 +7961,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       // A getter must be a no-parameter method — reject `get x: T` /
       // `get x = e` (field forms) and `get f(a)` (has params) up front.
       if (mv.is_getter) culebra::require_getter_no_params(mv, out.class_name);
+      // (Duplicate-member rejection lives in the shared static pass —
+      // lint.h's class-body member-name rules — and fires pre-eval.)
       if (mv.is_typed_field) {
-        Value init = mv.value ? eval(*mv.value, env)
-                              : zero_value_for_type(mv.type_annotation);
-        out.field_template.push_back({mv.name, std::move(init)});
+        out.field_template.push_back(
+            {mv.name, mv.value_sp ? *mv.value_sp : nullptr,
+             mv.type_annotation});
         out.packable_fields.push_back(
             {std::string(mv.name), std::string(mv.type_annotation)});
         continue;
@@ -7980,6 +7992,28 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       }
     }
     return out;
+  }
+
+  // Run the declared instance-field initializers on a fresh instance:
+  // declaration order, `this` bound (immutable, like the ctor body), before
+  // the `new` body runs. Evaluated against the class's defining scope — not
+  // the constructor call env — so `new` parameters are not visible (Kotlin's
+  // model: property initializers see `this` but not secondary-ctor params).
+  // Sets overwrite an existing own property (a method called from an earlier
+  // initializer may have created it) — mirrors the JIT's object_set.
+  void init_instance_fields(
+      const std::vector<ClassMembers::FieldDecl>& fields,
+      const std::shared_ptr<Environment>& def_env, const Value& inst) {
+    if (fields.empty()) return;
+    auto fieldEnv = std::make_shared<Environment>(def_env);
+    fieldEnv->append_outer(def_env);
+    fieldEnv->initialize("this", inst, false);
+    for (const auto& f : fields) {
+      Value v =
+          f.init ? eval(*f.init, fieldEnv) : zero_value_for_type(f.type);
+      inst.to_object().properties->insert_or_assign(f.name,
+                                                    Symbol{std::move(v), true});
+    }
   }
 
   // Group same-named instance methods into one method-multidispatch
@@ -8041,24 +8075,22 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
     // Hold the templates in shared vectors so build_instance and the
     // cycle-collector hook (for_each_captured_value, below) reference the
-    // SAME method/field Values — not private copies. Each extra copy of a
+    // SAME method Values — not private copies. Each extra copy of a
     // method closure would hold its own def_env ref, inflating the env's
     // gc_refs beyond what the walk subtracts (an under-count that leaks).
+    // Field initializers are ASTs (no Values, nothing for the collector).
     using Template = std::vector<std::pair<std::string_view, Value>>;
     auto shared_methods = std::make_shared<Template>(std::move(method_template));
-    auto shared_fields = std::make_shared<Template>(std::move(field_template));
+    auto shared_fields =
+        std::make_shared<std::vector<ClassMembers::FieldDecl>>(
+            std::move(field_template));
 
-    auto build_instance = [class_name, shared_methods, shared_fields,
-                           has_drop_method]() {
+    auto build_instance = [class_name, shared_methods, has_drop_method]() {
       ObjectValue instance;
       instance.properties->emplace(
           "class", Symbol{Value(std::string(class_name)), false});
       for (const auto& [name, val] : *shared_methods) {
         instance.properties->emplace(name, Symbol{val, false});
-      }
-      // Typed fields are mutable instance state (like `this.x = ...`).
-      for (const auto& [name, val] : *shared_fields) {
-        instance.properties->emplace(name, Symbol{val, true});
       }
       if (has_drop_method) _owned_register(instance);
       return instance;
@@ -8093,8 +8125,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           ctor_params,
           // const&: no extra callEnv ref from this frame (see
           // make_function_value's eval lambda for why).
-          [self = std::move(self), body, env, build_instance, promote_all_mut](
-              const std::shared_ptr<Environment>& callEnv) {
+          [self = std::move(self), body, env, build_instance, promote_all_mut,
+           shared_fields](const std::shared_ptr<Environment>& callEnv) {
             callEnv->append_outer(env);
             // `this` is immutable inside the constructor body — match
             // Java / Crystal / Ruby and the JIT backend. Attempts to
@@ -8104,6 +8136,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
             // allocated object (so `this.x = ...` is the supported way
             // to populate fields). See project_constructor_semantics.md.
             auto inst = Value(build_instance());
+            // Declared-field initializers run first — against the class's
+            // defining scope, not callEnv, so `new` params stay invisible.
+            self->init_instance_fields(*shared_fields, env, inst);
             callEnv->initialize("this", inst, false);
             try {
               self->eval(*body, callEnv);
@@ -8125,32 +8160,36 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       // The eval lambda above also closes over `env` (the capture list), so
       // this constructor holds TWO shared_ptr refs to `def_env` — flag it so
       // the cycle collector subtracts both (see def_env_multiplicity). The
-      // default constructor below captures `env` only via its `def_env` field
-      // (its `[=]` body uses build_instance/promote_all_mut, not env), so it
-      // stays at multiplicity 1.
+      // default constructor below now also captures `env` (for the field
+      // initializers), so both paths sit at multiplicity 2.
       constructor.get<FunctionValue>().eval_captures_def_env = true;
     } else {
+      auto self = shared_from_this();
       constructor = Value(FunctionValue(
           {},
-          [=](std::shared_ptr<Environment>) {
+          [self = std::move(self), env, build_instance, promote_all_mut,
+           shared_fields](std::shared_ptr<Environment>) {
             auto inst = Value(build_instance());
+            self->init_instance_fields(*shared_fields, env, inst);
             promote_all_mut(inst);
             return inst;
           },
           {},
           env));
+      // The eval lambda captures `env` alongside the `def_env` field — two
+      // shared_ptr refs, same as the user-`new` path above.
+      constructor.get<FunctionValue>().eval_captures_def_env = true;
     }
 
-    // Both constructors hide the instance methods (and any field defaults)
-    // inside `build_instance`. Enumerate them for the cycle collector so it
-    // can subtract their def_env edges — otherwise a class declared inside a
-    // function leaks its call env + class value on every invocation. Capture
-    // the templates by value exactly like build_instance does.
+    // Both constructors hide the instance methods inside `build_instance`.
+    // Enumerate them for the cycle collector so it can subtract their
+    // def_env edges — otherwise a class declared inside a function leaks
+    // its call env + class value on every invocation. Capture the template
+    // by value exactly like build_instance does. (Field initializers are
+    // ASTs, not Values — nothing to enumerate.)
     constructor.get<FunctionValue>().for_each_captured_value =
-        [shared_methods, shared_fields](
-            const std::function<void(const Value&)>& emit) {
+        [shared_methods](const std::function<void(const Value&)>& emit) {
           for (const auto& [_, val] : *shared_methods) emit(val);
-          for (const auto& [_, val] : *shared_fields) emit(val);
         };
     // Dedup key so an aliased constructor's hidden edges are counted once.
     constructor.get<FunctionValue>().captured_group_key = shared_methods;

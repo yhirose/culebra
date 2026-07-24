@@ -1156,10 +1156,49 @@ UFCS は **DOT の直後に引数リストがある場合のみ**適用されま
       puts(Circle.MAX)        # 100
 
   値の式は任意（`static SUM = [1,2,3].sum()` 等）で、class 宣言時の
-  外側スコープで評価されます。field 宣言には `static` キーワードが必須
-  — class 本体内で `FOO = expr` のみは構文エラーです。static メソッドと
-  同じく、static field は immutable（`Circle.PI = 2` は `ImmutableError`
-  を投げる）かつインスタンス経由では参照できません。
+  外側スコープで評価されます。class 本体内で `FOO = expr` のみは構文
+  エラーです — クラスレベル定数には `static`、インスタンス field には
+  型注釈（下記）が必要です。static メソッドと同じく、static field は
+  immutable（`Circle.PI = 2` は `ImmutableError` を投げる）かつ
+  インスタンス経由では参照できません。
+* `NAME: Type` / `NAME: Type = EXPRESSION` は **インスタンス field** を
+  宣言します — `new` 本体の前に初期化される per-instance の可変状態です:
+
+      class Player {
+        score: Long = 0
+        name:  String
+        tags:  Array = []
+        best:  Long = this.score + 10
+        new (name) { this.name = name }
+      }
+      let p = Player.new('rocci')
+      puts(p.score)           # 0
+      puts(p.best)            # 10
+      p.tags.push('bird')     # Array は各インスタンス独立
+
+  初期化子の意味論（Kotlin のモデル）:
+
+  - **インスタンス毎**: 初期化子式は `C.new(...)` の呼び出しごとに
+    評価されます — `tags: Array = []` は各インスタンスに独立した
+    Array を与えます（Python 流のクラス属性共有は起きません）。
+  - **宣言順・`this` 参照可**: 初期化子は自分より上で宣言された field
+    を読め、メソッドも呼べます（上の `best`）。*下で* 宣言された field
+    を読むと `nil` — 宣言順に意味があります。
+  - **引数バインド後・`new` 本体の前**: 初期化子はバインド完了後に
+    走ります — ctor 呼び出しの arity/型/デフォルトのエラーが先に発火し、
+    field 副作用は起きません。`new` 本体からは全宣言 field が見えます。
+    コンストラクタのパラメータは初期化子からは*見えません*（初期化子は
+    class の定義スコープを閉じ込めます。Kotlin の property initializer と
+    secondary-constructor パラメータの関係と同じ）。ctor 引数を field に
+    入れるには本体で `this.x = a` と明示します。
+  - 初期化子を省略すると型のゼロ値になります: `0` / `0.0` / `''` /
+    `false`。参照型（`Array`, `Object` 等）は `nil` です。
+  - 宣言 field は、コンストラクタ内の `this.x = y` で作った field と
+    全く同じ可変インスタンス状態です。
+
+  宣言型は documentation です（§14 の runtime-check モデルのパラメータ
+  注釈と同じ）。`@packable` クラス（§21）はこれに加えて固定バイト
+  レイアウトの計算に型を読みます。
 * `get NAME () { ... }` は **getter**（引数なしメソッド）を宣言します。
   括弧なしのプロパティ読み取りで呼び出されます:
 

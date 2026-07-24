@@ -1799,6 +1799,16 @@ struct JIT {
   std::map<const peg::Ast*, FuncInfo> func_info_;
   FuncInfo main_info_;
 
+  // Hidden scope-slot name binding a class's synthetic field-init closure
+  // for its `new` body to capture. Keyed by the CLASS_DECL node address so
+  // the analysis pass and compile_class_decl agree, two classes in one
+  // scope never collide, and user code can never name it (identifiers
+  // cannot contain \x1f).
+  static std::string field_init_slot_name(const peg::Ast& class_decl) {
+    return std::format("\x1f__finit_{:x}",
+                       reinterpret_cast<uintptr_t>(&class_decl));
+  }
+
   // Holds the active function's Generic type-params ({"T", "U"}) while
   // its param annotations are compiled, so each can be lowered
   // (unbounded -> "Any", bounded -> bound trait; see lower_type_params).
@@ -3094,6 +3104,26 @@ struct JIT {
                       builder_.CreatePtrToInt(ptr, builder_.getInt64Ty()));
   }
 
+  // Zero value for a declared field type (`x: T` with no initializer),
+  // single-sourced with the interp's zero_value_for_type through
+  // culebra::zero_kind_for_type.
+  Owned emit_zero_value(std::string_view type) {
+    switch (culebra::zero_kind_for_type(type)) {
+      case culebra::ZeroKind::Float:
+        return own(make_float(
+            llvm::ConstantFP::get(builder_.getDoubleTy(), 0.0)));
+      case culebra::ZeroKind::Bool:
+        return own(make_bool(builder_.getInt1(false)));
+      case culebra::ZeroKind::String:
+        return own(make_string(emit_str_literal("")));
+      case culebra::ZeroKind::Long:
+        return own(make_long(builder_.getInt64(0)));
+      case culebra::ZeroKind::Nil:
+        break;
+    }
+    return own(make_nil());
+  }
+
   llvm::Value* make_func(llvm::Value* ptr) { return make_ptr_value(TAG_FUNC, ptr); }
   llvm::Value* make_string(llvm::Value* ptr) { return make_ptr_value(TAG_STRING, ptr); }
   llvm::Value* make_stringview(llvm::Value* ptr) { return make_ptr_value(TAG_STRINGVIEW, ptr); }
@@ -3598,17 +3628,18 @@ struct JIT {
         visit_for_frees(*node.nodes[i], my_locals, outer, info);
         i++;
       }
-      for (size_t j = i + 1; j < node.nodes.size(); j++) {
-        const auto& method = *node.nodes[j];
-        auto mv = culebra::view_method(method);
-        if (mv.is_field || mv.is_typed_field) {
-          if (mv.value) visit_for_frees(*mv.value, my_locals, outer, info);
-          continue;
-        }
-        outer.push_back(&my_locals);
-        auto method_info = analyze_method(method, outer);
-        outer.pop_back();
-        for (const auto& fv : method_info.free_vars) {
+      // Typed-field initializers execute per instance inside a synthetic
+      // field-init function (invoked after the `new` body's parameter
+      // binding, or by build_class_instance for a class with no `new`),
+      // not at declaration time — analyze them as one nested function
+      // whose FuncInfo is keyed by the CLASS_DECL node itself so
+      // compile_class_decl can recover it. It has no locals; `this` is a
+      // builtin. Static-field values still evaluate at declaration time
+      // in the enclosing scope.
+      FuncInfo field_info;
+      std::set<std::string> field_locals;
+      auto propagate = [&](const FuncInfo& nested) {
+        for (const auto& fv : nested.free_vars) {
           if (my_locals.contains(fv)) {
             info.captured_locals.insert(fv);
           } else {
@@ -3617,6 +3648,47 @@ struct JIT {
               info.free_vars.push_back(fv);
             }
           }
+        }
+      };
+      bool has_typed_fields = false;
+      const peg::Ast* new_method_ast = nullptr;
+      for (size_t j = i + 1; j < node.nodes.size(); j++) {
+        const auto& method = *node.nodes[j];
+        auto mv = culebra::view_method(method);
+        if (mv.is_typed_field) {
+          has_typed_fields = true;
+          if (mv.value) {
+            outer.push_back(&my_locals);
+            visit_for_frees(*mv.value, field_locals, outer, field_info);
+            scan_eh_defer(*mv.value, /*at_fn_top=*/true, field_info);
+            outer.pop_back();
+          }
+          continue;
+        }
+        if (mv.is_field) {
+          if (mv.value) visit_for_frees(*mv.value, my_locals, outer, info);
+          continue;
+        }
+        if (!mv.is_static && mv.name == "new") new_method_ast = &method;
+        outer.push_back(&my_locals);
+        auto method_info = analyze_method(method, outer);
+        outer.pop_back();
+        propagate(method_info);
+      }
+      propagate(field_info);
+      func_info_[&node] = std::move(field_info);
+      // The `new` body invokes the field-init closure right after its
+      // parameter binding (interp parity: initializers run only once the
+      // ctor args bound successfully). It reaches the closure through a
+      // synthetic capture compile_class_decl binds in the class's scope;
+      // added AFTER propagate so the hidden name never leaks into the
+      // enclosing function's free list (nothing outside resolves it).
+      if (has_typed_fields && new_method_ast) {
+        auto& new_info = func_info_[new_method_ast];
+        auto slot_name = field_init_slot_name(node);
+        if (std::find(new_info.free_vars.begin(), new_info.free_vars.end(),
+                      slot_name) == new_info.free_vars.end()) {
+          new_info.free_vars.push_back(slot_name);
         }
       }
       return;
@@ -8419,16 +8491,19 @@ struct JIT {
   //
   //   1. Reads its captured cells to recover (a) the shared class
   //      meta object (built once per class declaration; holds the
-  //      method closures via proto delegation) and (b) the user's
-  //      `new` body closure if present.
+  //      method closures via proto delegation), (b) the user's
+  //      `new` body closure if present, and (c) the synthetic
+  //      field-init closure if the class declares typed fields.
   //   2. Calls `rt::build_class_instance` to allocate the instance,
-  //      wire its proto at the meta, run the user body if any, and
-  //      promote the instance's own data slots to mutable.
+  //      wire its proto at the meta, run the field initializers, run
+  //      the user body if any, and promote the instance's own data
+  //      slots to mutable.
   //
   // The caller's `this` (the class namespace, carried with +1 per ABI)
   // is released up front since the constructor has no use for it.
   llvm::Function* emit_constructor_fn(std::string_view class_name,
-                                       bool has_new, size_t arity) {
+                                       bool has_new, bool has_fields,
+                                       size_t arity) {
     using namespace llvm;
     auto ptrTy = PointerType::get(ctx_, 0);
     auto i64Ty = builder_.getInt64Ty();
@@ -8481,7 +8556,11 @@ struct JIT {
     };
 
     // Capture[0] is the shared class meta (TAG_OBJECT). Capture[1] is
-    // the user `new` body (TAG_FUNC) when present.
+    // the user `new` body (TAG_FUNC) when present, or the synthetic
+    // field-init closure for a `new`-less class with typed fields
+    // (has_new and has_fields are mutually exclusive here — a `new`
+    // body reaches the field-init through its own hidden capture; see
+    // compile_class_decl's pass_finit).
     auto metaVal = load_capture(0);
     auto metaPtr = builder_.CreateIntToPtr(
         builder_.CreateExtractValue(metaVal, {1}), ptrTy, "meta.ptr");
@@ -8497,6 +8576,17 @@ struct JIT {
       bodyData = builder_.getInt64(0);
     }
 
+    llvm::Value* finitTag;
+    llvm::Value* finitData;
+    if (has_fields) {
+      auto finitVal = load_capture(has_new ? 2 : 1);
+      finitTag = extract_tag(finitVal);
+      finitData = builder_.CreateExtractValue(finitVal, {1});
+    } else {
+      finitTag = builder_.getInt8(TAG_NIL);
+      finitData = builder_.getInt64(0);
+    }
+
     // Header-backed: stored as the instance's "class" TAG_STRING value.
     auto classNameGlobal = emit_str_literal(class_name);
 
@@ -8505,9 +8595,10 @@ struct JIT {
     // SysV / with no active landingpad this is the same plain call as before.
     auto result = emit_value_call(
         module_->getOrInsertFunction(rt::build_class_instance, valueType_,
-                                     ptrTy, ptrTy, i8Ty, i64Ty, i64Ty,
-                                     ptrTy),
-        {classNameGlobal, metaPtr, bodyTag, bodyData, nArgsArg, argsArg});
+                                     ptrTy, ptrTy, i8Ty, i64Ty, i8Ty, i64Ty,
+                                     i64Ty, ptrTy),
+        {classNameGlobal, metaPtr, finitTag, finitData, bodyTag, bodyData,
+         nArgsArg, argsArg});
     builder_.CreateStore(result, current_sret_);
     builder_.CreateRetVoid();
 
@@ -8574,7 +8665,7 @@ struct JIT {
         // Compile the default-method body as a closure. analyze_fn_body
         // has already populated func_info_[&m] via visit_for_frees.
         Owned fn_val = compile_fn_common(
-            &m, *tv.params, tv.body, /*returnType=*/{},
+            &m, tv.params, tv.body, /*returnType=*/{},
             std::string(tv.name));
         // fn_val is a JitValue (struct {i8 tag, i64 data}); the data
         // is the JitClosure*. Pull it out and register the default into
@@ -8730,6 +8821,15 @@ struct JIT {
     return own(make_nil());
   }
 
+  // A declared instance field compiled into the synthetic field-init
+  // function: name, initializer AST (nullptr → the type's zero value),
+  // declared type.
+  struct JitFieldInit {
+    std::string_view name;
+    const peg::Ast* init;
+    std::string_view type;
+  };
+
   // Parsed structure of a CLASS_DECL AST — the front-end of compile_class_decl.
   // Holds the decorator span, class head (Generic params stripped to the outer
   // name), and per-member AST pointers grouped by kind. Method bodies are NOT
@@ -8747,6 +8847,10 @@ struct JIT {
     std::vector<const peg::Ast*> static_asts;
     std::vector<std::string> static_field_names;
     std::vector<const peg::Ast*> static_field_asts;
+    // Typed instance fields in declaration order — compiled into the
+    // synthetic field-init function (per-instance evaluation, `this` in
+    // scope, before the `new` body; mirrors interp's field_template).
+    std::vector<JitFieldInit> field_inits;
     // Declared (name, type) pairs in field order, for the @packable layout.
     std::vector<std::pair<std::string, std::string>> packable_fields;
     // Resolved @derive (method name, kind) pairs; user definitions win.
@@ -8794,9 +8898,7 @@ struct JIT {
       // `get x: T` / `get x = e` field forms and `get f(a)`).
       if (mv.is_getter) culebra::require_getter_no_params(mv, out.class_name);
       if (mv.is_typed_field) {
-        // Typed instance fields don't materialize as JIT instance slots
-        // yet (interp-first; see C3 plan), but @packable reads their
-        // declared type to lay out the byte record.
+        out.field_inits.push_back({mv.name, mv.value, mv.type_annotation});
         out.packable_fields.push_back(
             {std::string(mv.name), std::string(mv.type_annotation)});
         continue;
@@ -8993,6 +9095,31 @@ struct JIT {
       method_vals.push_back(own(make_func(closPtr)));
       method_names.push_back(mname);
     }
+    // Synthetic field-init function: assigns each declared field on `this`
+    // (declaration order, per instance). Its FuncInfo is keyed by the
+    // CLASS_DECL node (see the CLASS_DECL branch of visit_for_frees).
+    // With a user `new`, the closure is bound under a hidden scope slot the
+    // `new` body captures and invokes right after its parameter binding —
+    // interp parity: initializers run only once the ctor args bound
+    // successfully (arity/type/default errors fire first, with no field
+    // side effects). Without a `new` there is no binding step, so the
+    // closure rides the ctor captures and build_class_instance calls it.
+    // Compiled BEFORE the `new` body so the hidden slot exists when the
+    // body's closure captures it.
+    Owned field_init_val;
+    if (!members.field_inits.empty()) {
+      field_init_val =
+          compile_fn_common(&ast, /*params_ast=*/nullptr,
+                            /*body_ast=*/nullptr, /*returnType=*/{},
+                            /*declName=*/{}, /*outParamMeta=*/nullptr,
+                            &members.field_inits);
+      if (new_ast) {
+        auto slot_name = field_init_slot_name(ast);
+        auto slot = make_cell_slot(slot_name, field_init_val.consume());
+        define_var(slot_name, slot);
+      }
+    }
+
     Owned body_val;
     size_t new_arity = 0;
     llvm::Constant* new_param_meta = nullptr;
@@ -9057,8 +9184,12 @@ struct JIT {
     }
     Owned metaVal = own(make_object(metaPtr));
 
-    auto ctor_fn =
-        emit_constructor_fn(class_name, new_ast != nullptr, new_arity);
+    // The ctor captures carry the field-init closure only for a class with
+    // no user `new` (otherwise the `new` body owns it via its hidden
+    // capture and invokes it after parameter binding).
+    const bool pass_finit = !members.field_inits.empty() && !new_ast;
+    auto ctor_fn = emit_constructor_fn(class_name, new_ast != nullptr,
+                                       pass_finit, new_arity);
 
     // The synthesized ctor is native on the interp side (body == nullptr,
     // not rebuildable), so neither backend ships it: register the compiled
@@ -9084,10 +9215,12 @@ struct JIT {
           {ctor_fn, new_param_meta});
     }
 
-    // Captures: meta first, then body if present. (Methods themselves
-    // were transferred into the meta object above and don't need to
-    // live separately in the closure.)
-    size_t n_captures = 1 + (new_ast ? 1 : 0);
+    // Captures: meta first, then the `new` body OR the field-init closure
+    // (never both — see pass_finit above). (Methods themselves were
+    // transferred into the meta object above and don't need to live
+    // separately in the closure.) emit_constructor_fn reads the same
+    // layout: body at [1]; field-init at [1] when there is no body.
+    size_t n_captures = 1 + (new_ast ? 1 : 0) + (pass_finit ? 1 : 0);
     auto closurePtr = emit_call(
         module_->getOrInsertFunction(rt::closure_new, ptrTy, ptrTy,
                                      builder_.getInt64Ty(),
@@ -9117,6 +9250,8 @@ struct JIT {
     install_capture(0, metaVal.consume());
     if (body_val.borrow()) {
       install_capture(1, body_val.consume());
+    } else if (pass_finit) {
+      install_capture(1, field_init_val.consume());
     }
 
     // Wrap the constructor closure into a Value(TAG_FUNC) for storage.
@@ -9390,7 +9525,7 @@ struct JIT {
     // compile_fn_common neutralizes `T` in the param type_checks (it
     // moves+clears class_type_params_, so nested fns don't inherit).
     class_type_params_ = mf_type_params;
-    Owned bodyVal = compile_fn_common(&ast, *params_ast, body_ast, returnType,
+    Owned bodyVal = compile_fn_common(&ast, params_ast, body_ast, returnType,
                                        name);
 
     // Decorated fns bypass the multimethod register/install path —
@@ -9461,7 +9596,7 @@ struct JIT {
       returnType = fv.return_type;
       body_ast = fv.body;
     }
-    return compile_fn_common(&ast, *params_ast, body_ast, returnType,
+    return compile_fn_common(&ast, params_ast, body_ast, returnType,
                               declName, outParamMeta);
   }
 
@@ -9470,7 +9605,7 @@ struct JIT {
   // bodies; use `fn (...) { ... }` for block bodies).
   Owned compile_lambda(const peg::Ast& ast) {
     auto fv = culebra::view_lambda(ast);
-    return compile_fn_common(&ast, *fv.params, fv.body, fv.return_type, {});
+    return compile_fn_common(&ast, fv.params, fv.body, fv.return_type, {});
   }
 
   // Emit the LLVM function for a FUNCTION / METHOD / synthetic-ctor AST.
@@ -9478,7 +9613,7 @@ struct JIT {
   // lookup finds the free-var / captured-local sets.
   Owned compile_fn_common(
       const peg::Ast* info_key,
-      const peg::Ast& params_ast,
+      const peg::Ast* params_ast,  // nullptr → zero params (field-init fn)
       std::shared_ptr<peg::Ast> body_ast,
       std::string_view returnType,
       std::string_view declName = {},
@@ -9486,7 +9621,13 @@ struct JIT {
       // caller can register it under a *second* fn_ptr. A class constructor
       // reuses its `new` body's meta on the synthesized ctor wrapper, which
       // is what makes `C.new(x: 1)` bind kwargs the same way the interp does.
-      llvm::Constant** outParamMeta = nullptr) {
+      llvm::Constant** outParamMeta = nullptr,
+      // Field-init mode (`body_ast == nullptr`): instead of a user body,
+      // the function assigns each declared field on `this` in declaration
+      // order — the per-instance evaluation compile_class_decl hands to
+      // build_class_instance. Everything else (captures, EH scaffolding,
+      // scope teardown) is the regular function machinery.
+      const std::vector<JitFieldInit>* field_inits = nullptr) {
     using namespace llvm;
     auto ptrTy = PointerType::get(ctx_, 0);
 
@@ -9542,7 +9683,7 @@ struct JIT {
     // must be the last parameter, so nothing follows it in paramNames
     // and the overflow boundary stays at declaredArity.
     std::optional<std::string> argsRestName;
-    for (auto& node : params_ast.nodes) {
+    if (params_ast) for (auto& node : params_ast->nodes) {
       auto pv = culebra::view_parameter(*node);
       if (argsRestName) {
         throw culebra::CulebraError("SyntaxError",
@@ -9979,9 +10120,37 @@ struct JIT {
       builder_.SetInsertPoint(okBB);
     }
 
+    // A class `new` body carries a hidden free var binding its class's
+    // field-init closure (see field_init_slot_name): invoke it here, after
+    // parameter binding but before the first body statement — interp
+    // parity (init_instance_fields runs between arg binding and the body;
+    // arity/type/default errors above fire with no field side effects).
+    for (const auto& fv : info.free_vars) {
+      if (!fv.starts_with('\x1f')) continue;
+      auto finitSlot = lookup_var(fv);
+      auto thisSlot = lookup_var("this");
+      if (!finitSlot || !thisSlot) continue;
+      auto finitVal = load_slot_raw(*finitSlot, "finit");
+      auto thisVal = load_slot_raw(*thisSlot, "this");
+      auto finitPtr = builder_.CreateIntToPtr(extract_data(finitVal), ptrTy,
+                                              "finit.cls");
+      emit_call(
+          module_->getOrInsertFunction(rt::run_field_init,
+                                       builder_.getVoidTy(), ptrTy,
+                                       builder_.getInt8Ty(),
+                                       builder_.getInt64Ty()),
+          {finitPtr, extract_tag(thisVal), extract_data(thisVal)});
+    }
+
     // Forward-reference support: closure capture happens lazily through
     // pre-allocated cells. See `pre_allocate_forward_refs` doc.
-    pre_allocate_forward_refs(*body_ast);
+    if (body_ast) {
+      pre_allocate_forward_refs(*body_ast);
+    } else if (field_inits) {
+      for (const auto& f : *field_inits) {
+        if (f.init) pre_allocate_forward_refs(*f.init);
+      }
+    }
 
     // The body's result stays in its Owned across the epilogue: the scope
     // teardown below branches through owned.exit/owned.cont blocks, so a
@@ -9989,7 +10158,28 @@ struct JIT {
     // ret. (On the unfixable niche path — a drop that throws during a
     // *normal* return, which propagates out of the frame with no pad — the
     // value still strands; see the current_lpad_ note below.)
-    Owned bodyOwned = compile(*body_ast);
+    Owned bodyOwned;
+    if (body_ast) {
+      bodyOwned = compile(*body_ast);
+    } else {
+      // Field-init mode: assign each declared field on `this`, declaration
+      // order. is_init=true mirrors the interp's insert_or_assign — a
+      // property an earlier initializer's method call may have created is
+      // overwritten regardless of its mut flag, and ends up mut like any
+      // `this.x = ...` field (promote_all_mut equivalent).
+      auto thisSlot = lookup_var("this");
+      auto thisVal = load_slot_raw(*thisSlot, "this");
+      auto thisPtr = builder_.CreateIntToPtr(extract_data(thisVal),
+                                             ptrTy, "this.obj");
+      for (const auto& f : *field_inits) {
+        Owned v = f.init ? compile(*f.init) : emit_zero_value(f.type);
+        emit_object_set(thisPtr, std::string(f.name), /*mut=*/true,
+                        extract_tag(v.borrow()), extract_data(v.borrow()),
+                        /*is_init=*/true);
+        v.consume();  // the property slot absorbed the +1
+      }
+      bodyOwned = own(make_nil());
+    }
 
     // The body is done: the normal-exit epilogue below is not an unwind, so its
     // scope-exit owned-region resolution runs as a plain call, not an invoke
