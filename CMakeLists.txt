@@ -6,10 +6,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(CULEBRA_ENABLE_JIT "Enable LLVM JIT compilation" OFF)
 
-# Minimum LLVM version. ORC JIT APIs used by jit.h have been stable
-# since LLVM 17; routinely tested against current (22.x). Override
-# with -DCULEBRA_MIN_LLVM_VERSION=<n> if needed.
-set(CULEBRA_MIN_LLVM_VERSION 17 CACHE STRING
+# Minimum LLVM version. jit.h uses ORC APIs that landed in LLVM 20;
+# routinely tested against current (22.x). Override with
+# -DCULEBRA_MIN_LLVM_VERSION=<n> if needed.
+set(CULEBRA_MIN_LLVM_VERSION 20 CACHE STRING
     "Minimum required LLVM major version for the JIT build")
 
 if(MSVC)

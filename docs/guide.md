@@ -89,7 +89,7 @@ Part I — The Language Core
 
 ## 1. Hello & setup
 
-Build the interpreter (and JIT, if LLVM 17+ is installed):
+Build the interpreter (and JIT, if LLVM 20+ is installed):
 
 ```bash
 just build              # with JIT

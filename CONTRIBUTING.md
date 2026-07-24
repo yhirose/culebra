@@ -5,7 +5,7 @@ Building from source
 --------------------
 
 Requires a C++23 compiler and [`just`](https://github.com/casey/just).
-The JIT and AOT (`culebra build`) backends also need LLVM 17+; the
+The JIT and AOT (`culebra build`) backends also need LLVM 20+; the
 interpreter-only build has no LLVM dependency.
 
 ```bash

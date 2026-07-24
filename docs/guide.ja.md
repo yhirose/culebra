@@ -85,7 +85,7 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
 
 ## 1. Hello & セットアップ
 
-インタプリタ (LLVM 17+ があれば JIT も) をビルド:
+インタプリタ (LLVM 20+ があれば JIT も) をビルド:
 
 ```bash
 just build              # JIT 付き
