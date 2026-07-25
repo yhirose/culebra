@@ -350,6 +350,28 @@ inline PlaceAssignView view_place_assign(const peg::Ast& a) {
   return PlaceAssignView{a.nodes.size() - 1, a.nodes.back().get()};
 }
 
+// Split a PLACE_ASSIGN's targets into the two kinds every static walker has to
+// treat differently: a chain target (`p[i]`, `o.a`) is a *read* of its own
+// receiver and index subexpressions, while a plain-name target is a *write*
+// with `x = v` semantics (reassign if visible, else declare). Calls
+// `on_chain(node)` / `on_name(node)` per target; the RHS is not visited.
+// `_` binds nothing, so it reaches neither callback — same rule as
+// for_each_pattern_binding, which every one of these walkers also feeds from.
+template <class OnChain, class OnName>
+inline void for_each_place_target(const peg::Ast& a, OnChain on_chain,
+                                  OnName on_name) {
+  using namespace peg::udl;
+  auto pv = view_place_assign(a);
+  for (size_t i = 0; i < pv.count; i++) {
+    const auto& t = *a.nodes[i];
+    if (t.tag == "PLACE"_) {
+      on_chain(t);
+    } else if (t.token != "_") {
+      on_name(t);
+    }
+  }
+}
+
 // A PLACE node's children are exactly an ASSIGNMENT's lvalue chain (a head
 // followed by INDEX / DOT / ARGUMENTS postfixes), so both backends can hand
 // one to their existing complex-lvalue assignment path by viewing it as a

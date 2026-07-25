@@ -762,6 +762,18 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
         collect_idents(*node.nodes[2], scopes_.back().muts);
       return;
     }
+    case "PLACE_ASSIGN"_: {
+      // [target..., EXPRESSION]. A chain target's subexpressions are ordinary
+      // reads; a plain-name target binds mutable-side, like the pattern names
+      // above (conservative — never flag its later reassignment).
+      walk(*node.nodes.back());
+      culebra::for_each_place_target(
+          node, [&](const peg::Ast& chain) { walk(chain); },
+          [&](const peg::Ast& name) {
+            scopes_.back().muts.insert(std::string(name.token));
+          });
+      return;
+    }
     default:
       walk_children(node);
       return;
@@ -943,6 +955,17 @@ inline void collect_locals(const peg::Ast& node, NameSet& locals,
           locals.insert(std::string(name));
         });
     collect_locals(*node.nodes[2], locals, outer);
+    return;
+  }
+
+  // PLACE_ASSIGN: a plain-name target may declare, so it is a local of this
+  // scope; a chain target only reads.
+  if (node.tag == "PLACE_ASSIGN"_) {
+    culebra::for_each_place_target(
+        node,
+        [&](const peg::Ast& chain) { collect_locals(chain, locals, outer); },
+        [&](const peg::Ast& name) { locals.insert(std::string(name.token)); });
+    collect_locals(*node.nodes.back(), locals, outer);
     return;
   }
 
@@ -1168,6 +1191,15 @@ inline void collect_scope(const peg::Ast& node, NameSet& out) {
             if (!is_sink(n)) out.insert(std::string(n));
           });
       collect_scope(*node.nodes[3], out);
+      return;
+    }
+    case "PLACE_ASSIGN"_: {
+      // A plain-name target declares when nothing visible holds the name, so
+      // it belongs to this scope; a chain target only reads.
+      culebra::for_each_place_target(
+          node, [&](const peg::Ast& chain) { collect_scope(chain, out); },
+          [&](const peg::Ast& name) { out.insert(std::string(name.token)); });
+      collect_scope(*node.nodes.back(), out);
       return;
     }
     case "FOR"_:
@@ -1415,6 +1447,15 @@ inline void walk(const peg::Ast& node, Chain& chain, const NameSet& globals,
       // walk only the RHS.
       walk(*node.nodes.back(), chain, globals, diags);
       return;
+    case "PLACE_ASSIGN"_:
+      // Plain-name targets were collected by collect_scope (they may declare),
+      // so only the chain targets' subexpressions and the RHS are reads.
+      culebra::for_each_place_target(
+          node,
+          [&](const peg::Ast& c) { walk(c, chain, globals, diags); },
+          [](const peg::Ast&) {});
+      walk(*node.nodes.back(), chain, globals, diags);
+      return;
     case "KWARG"_:
       // [name, value]: the kwarg name is not a read — walk only the value.
       if (node.nodes.size() >= 2) walk(*node.nodes[1], chain, globals, diags);
@@ -1537,6 +1578,13 @@ inline void collect_reads(const peg::Ast& node, NameSet& reads) {
     }
     case "DESTRUCTURE_ASSIGN"_:
       collect_reads(*node.nodes.back(), reads);  // pattern = write; walk RHS
+      return;
+    case "PLACE_ASSIGN"_:
+      // Plain-name target = write; a chain target reads its receiver and index.
+      culebra::for_each_place_target(
+          node, [&](const peg::Ast& c) { collect_reads(c, reads); },
+          [](const peg::Ast&) {});
+      collect_reads(*node.nodes.back(), reads);
       return;
     case "KWARG"_:
       if (node.nodes.size() >= 2) collect_reads(*node.nodes[1], reads);

@@ -6136,6 +6136,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         return _make_range(std::nullopt, std::nullopt, ast.token == "..=");
       case "DESTRUCTURE_ASSIGN"_:
         return eval_destructure_assign(ast, env);
+      case "PLACE_ASSIGN"_:
+        return eval_place_assign(ast, env);
       case "POWER"_:
         return eval_power(ast, env);
       case "IDENTIFIER"_:
@@ -6421,6 +6423,16 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // eval_destructure_assign; defaults to declare for every other caller.
   bool pattern_declare_ = true;
 
+  // Array and Tuple share one `shared_ptr<vector<Value>>` storage, so every
+  // form that destructures an indexed sequence accepts either: `[a, b]` works
+  // on a tuple just as `(a, b)` works on a list. Returns nullptr for any other
+  // type. Single source for the pattern matcher and PLACE_ASSIGN.
+  const std::vector<Value>* indexed_sequence(const Value& val) const {
+    return val.type == Value::Array   ? val.to_array().values.get()
+         : val.type == Value::Tuple   ? val.get<TupleValue>().elements.get()
+                                      : nullptr;
+  }
+
   void bind_pattern_name(const std::shared_ptr<Environment>& env,
                          const peg::Ast& ident_node, Value val,
                          bool mut = true) {
@@ -6514,13 +6526,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         return true;
       }
       case "ARRAY_PATTERN"_: {
-        // Unified destructuring: a pattern matches any indexed sequence —
-        // Array or Tuple share the same `shared_ptr<vector<Value>>` storage,
-        // so `[a, b]` works on a tuple just as bare `a, b` works on a list.
-        const std::vector<Value>* seq =
-            val.type == Value::Array   ? val.to_array().values.get()
-            : val.type == Value::Tuple ? val.get<TupleValue>().elements.get()
-                                       : nullptr;
+        const std::vector<Value>* seq = indexed_sequence(val);
         if (!seq) return false;
         const auto& items = *seq;
         const auto& elems = pattern.nodes;
@@ -6595,12 +6601,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       }
       case "FOR_BINDING"_:  // multi-target `for k, v in …` — same shape as a tuple
       case "TUPLE_PATTERN"_: {
-        // Same unification as ARRAY_PATTERN: bare `a, b` (which parses to a
-        // TUPLE_PATTERN) matches a list too, not only a tuple.
-        const std::vector<Value>* seq =
-            val.type == Value::Array   ? val.to_array().values.get()
-            : val.type == Value::Tuple ? val.get<TupleValue>().elements.get()
-                                       : nullptr;
+        const std::vector<Value>* seq = indexed_sequence(val);
         if (!seq) return false;
         const auto& items = *seq;
         const auto& elems = pattern.nodes;
@@ -9939,6 +9940,18 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return culebra::is_keyword(ident);  // single source in parser.h
   }
 
+  // An assignment target that names a variable must be an identifier that is
+  // not a reserved word. A non-IDENTIFIER node (`1 = 2`) carries an empty
+  // token, which used to be declared as a nameless slot — a silent no-op.
+  // Also hoisted into lint::check_module (rejected pre-eval on every backend);
+  // this copy is what the REPL, which skips that pass, relies on.
+  void check_assignable_name(const peg::Ast& node) const {
+    if (!culebra::is_assignable_name(node)) {
+      throw CulebraError("SyntaxError",
+                         "left-hand side is invalid variable name.");
+    }
+  }
+
   // DESTRUCTURE_ASSIGN children: [LET, MUTABLE, PATTERN, EXPRESSION].
   // `let`/`let mut` declares; a bare `(a, b) = …` (LET empty) reassigns
   // existing variables (parallel / swap assignment). Evaluates RHS once,
@@ -9964,6 +9977,43 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       // location the JIT path attaches — see shared.h.
       throw_destructure_mismatch_at(static_cast<long>(ast.line),
                                     static_cast<long>(ast.column));
+    }
+    return rval;
+  }
+
+  // PLACE_ASSIGN children: [target..., EXPRESSION] (see parser.h
+  // `view_place_assign`). Each target is assigned exactly as the single-target
+  // form would: a PLACE node (an lvalue chain) goes through the same
+  // eval_assign_complex that runs `p[i] = v`, a bare IDENTIFIER through the
+  // same declare-or-assign that runs `x = v`. So this form introduces one new
+  // rule and no new write semantics — the arity check.
+  //
+  // The RHS is evaluated once and its elements are snapshotted before any
+  // write: a target may alias the RHS (`(p[0], p[1]) = p`) or resize it from a
+  // user `__setindex__`, and reading lazily would let an earlier write change
+  // what a later target receives. Checking arity first also means a mismatch
+  // never writes anything.
+  Value eval_place_assign(const peg::Ast& ast,
+                          const std::shared_ptr<Environment>& env) {
+    using namespace peg::udl;
+    auto pv = culebra::view_place_assign(ast);
+    auto rval = eval(*pv.rhs, env);
+    const auto* seq = indexed_sequence(rval);
+    if (!seq || seq->size() != pv.count) {
+      // Same helper (kind + message + location) as DESTRUCTURE_ASSIGN, so the
+      // two parallel-assignment forms report a shape mismatch identically.
+      throw_destructure_mismatch_at(static_cast<long>(ast.line),
+                                    static_cast<long>(ast.column));
+    }
+    std::vector<Value> vals(seq->begin(), seq->end());
+    for (size_t i = 0; i < pv.count; i++) {
+      const auto& target = *ast.nodes[i];
+      if (target.tag == "PLACE"_) {
+        eval_assign_complex(target, culebra::view_place_as_assignment(target),
+                            env, std::move(vals[i]));
+      } else {
+        assign_name(target, std::move(vals[i]), env);
+      }
     }
     return rval;
   }
@@ -10028,15 +10078,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     auto base_op = av.op_base;
     bool let = av.is_let, mut = av.is_mut;
     const auto& ident = ast.nodes[lvaloff]->token;
-    // A non-IDENTIFIER target (`1 = 2`) has an empty token, which used to be
-    // declared as a nameless slot — a silent no-op. Both guards are also
-    // hoisted into lint::check_module (rejected pre-eval on every backend);
-    // they stay here for the REPL, which skips that pass.
-    if (ast.nodes[lvaloff]->tag != "IDENTIFIER"_ || is_keyword(ident)) {
-      throw CulebraError("SyntaxError",
-                         "left-hand side is invalid variable name.");
-    }
     if (compound) {
+      // The plain path checks this inside assign_name below; only the compound
+      // path, which never reaches it, needs its own guard — and it must run
+      // before the undefined-name NameError.
+      check_assignable_name(*ast.nodes[lvaloff]);
       if (!env->has(ident)) {
         throw CulebraError("NameError", std::format(
             "compound assignment on undefined name '{}'", ident));
@@ -10056,15 +10102,26 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       env->assign(ident, new_val);
       return new_val;
     }
-    auto declare = let || mut;
-    if (declare) {
-      env->initialize(ident, rval, mut);
-    } else if (env->has(ident)) {
-      env->assign(ident, rval);
+    return assign_name(*ast.nodes[lvaloff], std::move(rval), env, let || mut,
+                       mut);
+  }
+
+  // Write `val` to the plain name `ident_node` names, with `x = v` semantics:
+  // `let`/`mut` declares in the current scope, otherwise an existing binding
+  // anywhere in the scope chain is reassigned (mut-checked by env->assign) and
+  // a fresh name is declared. Shared by scalar assignment and PLACE_ASSIGN's
+  // plain-name targets, so both agree on declare-or-assign.
+  Value assign_name(const peg::Ast& ident_node, Value val,
+                    const std::shared_ptr<Environment>& env,
+                    bool declare = false, bool mut = false) {
+    check_assignable_name(ident_node);
+    const auto& ident = ident_node.token;
+    if (!declare && env->has(ident)) {
+      env->assign(ident, val);
     } else {
-      env->initialize(ident, rval, mut);
+      env->initialize(ident, val, mut);
     }
-    return rval;
+    return val;
   }
 
   // Complex lvalue: `obj.prop = e`, `arr[idx] = e`, and chains

@@ -257,6 +257,14 @@ class FreeVarWalker {
         if (node.nodes.size() >= 3)
           collect_binding_idents(*node.nodes[2], scopes_.back());
         return;
+      case "PLACE_ASSIGN"_:
+        // A chain target reads its receiver (so it can capture a free
+        // variable); a plain-name target binds, like a destructured name.
+        walk(*node.nodes.back());
+        culebra::for_each_place_target(
+            node, [&](const peg::Ast& chain) { walk(chain); },
+            [&](const peg::Ast& name) { bind(name.token); });
+        return;
       default:
         walk_children(node);
         return;
