@@ -18,7 +18,7 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
 > **Status ラベル。** ラベル無しの見出しは現時点の実装を記述します。
 > 出現するラベル: **Draft** (実装中、API 変更あり)、**Planned**
 > (採用決定、未実装)、**Deprecated** (将来削除予定)。 採用せずと
-> 決定した機能は [`record.ja.md`](record.ja.md) に集約。
+> 決定した機能は [`_history.ja.md`](_history.ja.md) に集約。
 
 目次
 ----
@@ -57,24 +57,27 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
   LLVM ORC JIT が同じ AST を共有。 インタプリタは LLVM 非依存
   (~1 MB バイナリ、埋め込み向き)、JIT は `-O2` で同じプログラムを
   実行。 両方を維持 — どちらも捨てません。
-- **8 つの組み込み型。** `Nil` / `Bool` / `Long` / `Float` / `String` /
-  `Array` / `Object` / `Function`。 クラス・モジュール・エラーなど
-  はすべて `Object` 上に構築。
+- **日常的に使う 8 つの型。** `Nil` / `Bool` / `Long` / `Float` /
+  `String` / `Array` / `Object` / `Function`、加えて用途特化の 4 つ
+  (`StringView` / `Tuple` / `Set` / `Tensor`)。 クラス・モジュール・
+  エラーなどはすべて `Object` 上に構築。
 - **Rust 風の表面構文。** `let` / `mut` / `fn` / `match` / ブロッ
   クは式。 クロージャは第一級、エラーは値、隠れたグローバル無し。
 - **UFCS、パイプライン不採用。** 任意の自由関数 `f(x, ...)` を
   `x.f(...)` として呼べる。 パイプライン演算子は検討の上不採用 (詳細
-  は [`record.ja.md`](record.ja.md))。
-- **暗黙 import、明示 `import` 文無し。** トップレベル識別子への
-  bare な参照がモジュールビルド内でファイル境界を越える (Ch.13)。
-  明示 `import` は検討の上不採用。
+  は [`_history.ja.md`](_history.ja.md))。
+- **明示的で静的なモジュール。** ファイルは `export { ... }` で束縛
+  を公開し、利用側は `import name from './path.cul'` で束縛する。
+  どちらもトップレベル専用なので依存グラフはパース時に確定し、
+  それが AOT バンドルと tree-shaking を可能にしている (Ch.13)。
 - **async/await 無し。** I/O はブロッキング設計、並行はスレッドで。
   HTTP 等のネットワークスタックはブロッキング、典型的なスケール
   上限は数千接続。
-- **batteries-included、ティア制。** コア stdlib
-  (Math/IO/Sys/Random/String/FS/Time/Args) と Tier 1
-  (Regex/Http/Hash+Encoding) はどちらも出荷済み。 Tier 2/3
-  (Crypto、Sockets) は需要次第 — Ch.15 参照。
+- **batteries-included、ティア制。** コア
+  (Math/IO/FS/File/Sys/Random/String/Time/Args) と Tier 1
+  (Regex/Http/Hash/Encoding/Compress/JSON/CSV/TOML/SQLite/UUID/
+  Log/Term/Canvas) はどちらも出荷済み。 Tier 2/3 (Crypto、Sockets)
+  は需要次第 — Ch.15 参照。
 - **1.0 前。** ソース・API は変わる可能性。 リリース機構 (バージョン
   タグ、CHANGELOG、Homebrew formula 等) は 1.0 後。
 
@@ -130,7 +133,7 @@ inspect('hello')          # => 'hello'
 
 ## 2. 値・束縛・制御フロー
 
-### 2.1 8 つの型
+### 2.1 日常的に使う 8 つの型
 
 ```culebra
 inspect(type_of(nil))            # => 'Nil'
@@ -142,6 +145,10 @@ inspect(type_of([1, 2]))         # => 'Array'
 inspect(type_of({a: 1}))         # => 'Object'
 inspect(type_of(fn () { 1 }))    # => 'Function'
 ```
+
+残り 4 つは必要になったときに出てきます: `StringView` (Ch.4.4)、
+`Tuple` と `Set` (Ch.14.2)、`Tensor` (Ch.16)。 全体の表は
+[language.ja.md §4](language.ja.md)。
 
 ### 2.2 束縛: bare / `let` / `mut`
 
@@ -212,9 +219,59 @@ for n in 0..=2  { inspect(n) }   # 包含レンジ
 # 0
 # 1
 # 2
+
+for n in 0..10 by 3 { inspect(n) }   # ステップ付きレンジ
+# => |
+# 0
+# 3
+# 6
+# 9
+
+for k, v in {a: 1, b: 2} { inspect("{k}={v}") }   # Object は key, value を返す
+# => |
+# 'a=1'
+# 'b=2'
 ```
 
 `break` / `continue` は `while` / `for` 内で動作。
+
+### 2.5 `nobreak` / init 節 / `cond` / `? :`
+
+ループには `nobreak` ブロックを付けられます。 `break` せずに完走した
+ときだけ走る — Python の `for ... else` を紛らわしくない名前にした
+もの:
+
+```culebra
+mut found = nil
+for n in [1, 3, 5] {
+  if n % 2 == 0 { found = n; break }
+} nobreak {
+  inspect('偶数なし')            # => '偶数なし'
+}
+```
+
+`while` / `if` / `match` は **init 節** — `;` で区切る、その構文
+だけにスコープする束縛 — を取れるので、ループ変数が外側スコープに
+漏れません:
+
+```culebra
+while mut i = 0; i < 3 { i = i + 1 }
+if let n = 6; n > 5 { inspect('大きい') }     # => '大きい'
+```
+
+多分岐には `cond` (主語のない `match`)、2 分岐には三項 `? :`:
+
+```culebra
+grade = fn (n) {
+  cond {
+    n >= 90 => 'A',
+    n >= 80 => 'B',
+    _       => 'C'
+  }
+}
+inspect(grade(85))               # => 'B'
+inspect(grade(50) == 'C' ? 'ok' : 'no')   # => 'ok'
+```
 
 クロージャベースのオブジェクトパターン (Ch.9) では、捕捉された状態が
 そのままオブジェクトの状態なので、silent shadow はオブジェクトを壊す。
@@ -280,9 +337,20 @@ inspect(greet('carol', **opts))               # => 'yo, carol'
 ```
 
 `*` マーカーは呼び出し側にオプション名を書かせるので、長いパラメー
-タリストが読みやすくなり、再配置・拡張もコール側を壊さない。 free
-な positional rest (`*args`) は意図的に不採用 — Array リテラルが
-その役割を果たす。パラメータ・デフォルト値・splat の完全な仕様は
+タリストが読みやすくなり、再配置・拡張もコール側を壊さない。 末尾の
+`*rest` パラメータはその位置引数版で、余った位置引数を Array に
+集めます:
+
+```culebra
+sum_all = fn (first, *rest) {
+  mut t = first
+  for v in rest { t = t + v }
+  t
+}
+inspect(sum_all(1, 2, 3, 4))                  # => 10
+```
+
+パラメータ・デフォルト値・splat の完全な仕様は
 [language.ja.md §11](language.ja.md)。
 
 ## 4. 文字列
@@ -427,6 +495,14 @@ inspect(flat)                    # => [1, 2, 3, 4, 5, 6]
 
 head = range(100).skip(10).take_while(|x| x < 15).collect()
 inspect(head)                    # => [10, 11, 12, 13, 14]
+
+# chunks: 固定長のグループ (最後だけ短くなりうる)
+inspect([1, 2, 3, 4, 5].iter().chunks(2).collect())
+# => [[1, 2], [3, 4], [5]]
+
+# windows: 1 要素ずつずらすスライディングビュー
+inspect([1, 2, 3, 4].iter().windows(2).collect())
+# => [[1, 2], [2, 3], [3, 4]]
 ```
 
 ### 5.4 ユーザー定義イテレータ
@@ -608,9 +684,10 @@ inspect(safe(-99))               # => 0
 ### 7.3 `defer`
 
 `defer { ... }` は囲むブロックの**全 exit パス** (通常終了 /
-`return` / `throw`) で LIFO に実行されるクリーンアップ登録。
-保護対象を `{ }` で囲むことで、本体が throw してもクリーンアップが
-発火する。 exit パスと順序の完全なルールは
+`return` / `throw`) で LIFO に実行されるクリーンアップ登録。 ブロッ
+ク直下・関数本体直下・トップレベル直下のいずれでも、どのバックエンド
+でも同じように発火する。 関数の残りが動く前に後始末したいときだけ、
+内側の `{ }` に入れる。 exit パスと順序の完全なルールは
 [language.ja.md §15](language.ja.md)。
 
 ```culebra
@@ -806,6 +883,24 @@ inspect(car.class)               # => 'Car'
 class Point { new(x, y) { self.x = x; self.y = y } }
 p = Point(3, 4)               # Point.new(3, 4) と同じ
 inspect("{p.x},{p.y}")           # => '3,4'
+```
+
+フィールドは class 本体でデフォルト値つきに**宣言**することもできる。
+各インスタンスが自分のコピーを持ち、`new` の実行前に実体化されるので、
+コンストラクタが触らない経路でもフィールドは既知の値で存在する。 `get`
+メソッドは計算プロパティで、括弧なしで呼ぶ:
+
+```culebra
+class Temp {
+  celsius = 0.0
+  scale   = 'C'
+  new(c) { self.celsius = c }
+  get fahrenheit() { self.celsius * 9.0 / 5.0 + 32.0 }
+}
+
+t = Temp.new(100.0)
+inspect(t.fahrenheit)            # => 212.0
+inspect(t.scale)                 # => 'C'
 ```
 
 ### 9.2 クロージャベースの別解
@@ -1068,47 +1163,56 @@ inspect(add_typed.return_type)               # => 'Long'
 
 ## 13. モジュール
 
-### 13.1 暗黙 import
+### 13.1 `export` と `import`
 
-Culebra の「モジュールビルド」は 1 つのエントリファイルから始まり、
-そこからトップレベル識別子を辿って参照される全ての兄弟 `.cul` を
-取り込む。
+モジュールは公開するものを `export` で列挙し、利用側は `import` で
+モジュール全体を 1 つの名前に束縛する。
 
 ```culebra
+# doctest: skip
 # lib.cul
-greet = fn (name) { "hello, {name}" }
-PI    = 3.14159
+let greet = fn (name) { "hello, {name}" }
+let PI    = 3.14159
+let helper = fn () { 'internal' }   # export しない
+
+export { greet, PI }
 ```
 
 ```culebra
 # doctest: skip
 # main.cul — lib.cul と同じディレクトリ
-inspect(greet('world'))          # => hello, world
-inspect(PI)                      # => 3.14159
+import lib from './lib.cul'
+
+inspect(lib.greet('world'))      # => 'hello, world'
+inspect(lib.PI)                  # => 3.14159
+inspect(lib.helper)              # => nil — export Object に載っていない
 ```
 
-`culebra main.cul` を実行すると、未解決の名前 `greet` を辿って
-`lib.cul` を自動発見する。 `import` 文は無い。
+パスはシングルクォートのリテラルで、import する側のファイルの
+ディレクトリを基準に解決される。 1 ファイル内の複数の `export` は
+マージされるので、ヘルパを宣言 → export → さらに宣言、と書ける。
 
-### 13.2 エントリ環境の隔離と循環
+### 13.2 トップレベル限定・1 度だけ評価
 
-エントリファイルで導入された束縛は import されたファイルからは見え
-ない。 import されたファイル内で導入された束縛はビルドから到達可能
-などこからでも見える — Go の直観 (パッケージ内全ファイルが「パッ
-ケージ」) に揃え、エントリだけは最上位 main 扱い。 ファイル間の循環
-参照はモジュールビルド時に検出され、ファイル/行付きで拒絶される
-(共通の第三ファイルで分解)。 完全な解決規則と循環検出は
+`import` と `export` はトップレベル文としてのみ書ける — 関数内や
+`if` の枝に書くと `SyntaxError`。 これによりローダはパース時に依存
+グラフ全体を確定でき、AOT バンドラと tree-shaker がそれに依存して
+いる (Ch.20)。
+
+各モジュールはプログラム中で 1 度だけ、依存順に、それぞれ独自の
+スコープで評価される。 トップレベル束縛は export Object 以外は非公開。
+循環 import (A が B を、B が A を) は循環を示す `ImportError` で
+拒絶される。 完全な解決規則・キャッシュ・エラーは
 [language.ja.md §24](language.ja.md)。
 
-### Why 暗黙か
+### Why 明示か
 
-1500 行のプログラムで 30 個のヘルパファイルを取り込むケースを想像
-する。 個別 `import` を要求する得は無い — 未解決識別子からツールが
-同じグラフを導けるから。 著作ループが速く・単純になる代わりに、
-tree-shaking もちゃんと効く (リーチャブルなトップレベルがツールで
-分かるため、Ch.18)。
+明示的な `import` 行があれば、そのファイルが何に依存しているかは
+—読者にとってもツールにとっても— そこだけ見れば分かる。 `culebra
+lint` の未使用 import 警告 (と `--fix`、Ch.18) が曖昧さなく出せるのも、
+AOT ビルドが推測なしにバンドルできるのも同じ理由。
 
-リゾルバ設計と循環検出アルゴリズムの詳細は [`internals.ja.md` §11](internals.ja.md)。
+ローダ設計と循環検出アルゴリズムの詳細は [`internals.ja.md` §10](internals.ja.md)。
 
 ---
 
@@ -1164,7 +1268,7 @@ inspect(pair == (1, 'one'))       # => true
 メソッドも持てて `@derive` で導出できる。 完全な仕様は
 [language.ja.md §14](language.ja.md) (Traits and protocols)。
 nominal (class) 継承がこの structural モデルのために不採用になった
-経緯は [`record.ja.md`](record.ja.md) 参照 (Ch.11.3)。
+経緯は [`_history.ja.md`](_history.ja.md) 参照 (Ch.11.3)。
 
 ```culebra
 trait Greeter { hello() -> String }
@@ -1254,7 +1358,7 @@ inspect(Random.int(0, 100) >= 0)          # => true
 ```
 
 完全リファレンス: `Sys` [`stdlib.ja.md` §7](stdlib.ja.md)、`Random` §6、
-`FS`/`Path` §3、`Time` §5、`Args` §11。
+`FS`/`Path` §3、`Time` §5、`Args` §10。
 
 ### 15.5 `Regex`
 
@@ -1270,7 +1374,7 @@ inspect(re.test('order #42'))    # => true
 inspect(re'\d+'.test('abc 123')) # => true
 ```
 
-完全な API: [`stdlib.ja.md` §15](stdlib.ja.md)。
+完全な API: [`stdlib.ja.md` §14](stdlib.ja.md)。
 
 ### 15.6 `Hash` / `Encoding` / `Compress`
 
@@ -1279,13 +1383,13 @@ inspect(re'\d+'.test('abc 123')) # => true
 `.encode`/`.decode` を持つ。 `Compress.gzip`/`gunzip` がデータ系
 namespace を締めくくる。 JSON は独立の top-level `JSON.parse`/
 `JSON.stringify` — `Encoding.json` は無い。 完全リファレンス:
-[`stdlib.ja.md`](stdlib.ja.md) §17 (Encoding)、§18 (Compress)、
-§19 (Hash)。
+[`stdlib.ja.md`](stdlib.ja.md) §16 (Encoding)、§17 (Compress)、
+§18 (Hash)。
 
 ### 15.7 `Http`
 
 Blocking なクライアントとサーバ、SSE / WebSocket 含む、TLS は
-statically link した BoringSSL。 `async` / `await` 無し — 並行は
+statically link した OpenSSL。 `async` / `await` 無し — 並行は
 スレッドで、スケール上限は数千接続。
 
 ```culebra
@@ -1300,9 +1404,19 @@ srv.listen('127.0.0.1', 8080)
 ```
 
 streaming・ルーティング・クライアントセッション API:
-[`stdlib.ja.md` §16](stdlib.ja.md)。
+[`stdlib.ja.md` §15](stdlib.ja.md)。
 
-### 15.8 さらに計画中
+### 15.8 ライブラリの残り
+
+上で触れていないもの（すべて [`stdlib.ja.md`](stdlib.ja.md) に記載）:
+`JSON` (§9)、`Proc` (§11 — 外部コマンド実行)、`Isolate` / `Channel` /
+`Parallel` / `Shared` (§12 — スレッドとメッセージパッシング)、
+`CSV` (§19)、`Env` (§20 — dotenv)、`UUID` (§21)、`Term` (§22 — TUI)、
+`Log` (§23)、`TOML` (§24)、`SQLite` (§25)、`Canvas` (§26 — 2D ゲーム)、
+`Scene` (§27 — 3D、opt-in)、`Desktop` / `Webview` (§28 — ネイティブ
+WebView のデスクトップアプリを 1 呼び出しで)。
+
+### 15.9 まだ計画中
 
 > **Status: Planned (Tier 2/3).** `Crypto` (`Hash` を超える非対称鍵/TLS
 > プリミティブ) と `Sockets` (raw TCP/UDP)。 順序未確定、Ch.0 のティア
@@ -1312,12 +1426,13 @@ streaming・ルーティング・クライアントセッション API:
 
 ### 16.1 構築・matmul・ブロードキャスト
 
-`Tensor` は組み込みの n 次元配列で、BLAS にルーティングされる
-(macOS は Apple Accelerate、Linux は OpenBLAS)。 格納は F32 で、
-スカラー結果は `Float` として返る。 matmul (`dot`) は遅延グラフを
-作り、`Tensor.eval` が単一の BLAS カーネルとして実行する。要素ごと
-の演算は NumPy 同様にブロードキャストする。 完全な API (shape・
-reduction・autograd) は [`stdlib.ja.md` §9](stdlib.ja.md)。
+`Tensor` は組み込みの n 次元配列で、vendored な `cpp-tensorlib`
+エンジン (ベクトル化 CPU カーネル、macOS は Metal、Linux/Windows は
+CUDA) が実行する。 格納は F32 で、スカラー結果は `Float` として返る。
+matmul (`dot`) は遅延グラフを作り、`Tensor.eval` が融合された単一
+カーネルとして実行する。要素ごとの演算は NumPy 同様にブロードキャスト
+する。 完全な API (shape・reduction・autograd・デバイス選択) は
+[`stdlib.ja.md` §8](stdlib.ja.md)。
 
 ```culebra
 a = Tensor.from([1.0, 2.0, 3.0])
@@ -1331,23 +1446,34 @@ Tensor.eval(c)
 inspect(c.to_array())            # => [[7.0, 10.0], [15.0, 22.0]]
 ```
 
-### 16.2 GPU プリミティブ
+### 16.2 デバイスの選択
 
-> **Status: Planned.** CUDA / Metal Shading Language 用のバックエ
-> ンドを別の `Matrix` (または `GTensor`) として用意する計画 —
-> `Tensor` 自体は CPU 専用のまま。
+GPU でも同じ `Tensor` 型を使う — GPU 専用の型は無い。 デバイス選択は
+プロセスグローバルで、実行時に切り替えられる:
 
-### Why BLAS にルーティングするか
+```culebra
+inspect(type_of(Tensor.gpu_available()))   # => 'Bool'
+# Tensor.use_gpu()    # GPU バックエンド (Metal / CUDA) を強制
+# Tensor.use_cpu()    # CPU バックエンドを強制
+# Tensor.use_auto()   # 問題サイズごとに選択 (デフォルト)
+```
+
+`Tensor.gpu_available()` は GPU バックエンドがビルドに含まれ、かつ
+到達可能かを返す。 含まれない場合 `use_auto` は CPU にフォールバック
+する。 GPU が勝つかは形状次第 (小さいテンソルはカーネル起動コストに
+負ける) なので、デフォルトの `use_auto` が無難。
+
+### Why 専用エンジンなのか
 
 行列重視のコード (MLP 推論、microgpt) を手書きの O(n³) ループで
-出荷したら NumPy より桁違いに遅かった。 BLAS にすると、このコード
-ベースが実際に学習する MNIST サイズで PyTorch CPU の ~1.2× 以内に
-収まる。 ベンチ詳細は
+出荷したら NumPy より桁違いに遅かった。 チューニング済みカーネルに
+通すと、このコードベースが実際に学習する MNIST サイズで PyTorch CPU
+の ~1.2× 以内に収まる。 ベンチ詳細は
 [`benchmarks/mnist/README.md`](../benchmarks/mnist/README.md) と
 [`benchmarks/microgpt/README.md`](../benchmarks/microgpt/README.md)。
 
 dtype の根拠、アロケータ選定、lazy shape の議論は
-[`internals.ja.md` §9](internals.ja.md)。
+[`internals.ja.md` §8](internals.ja.md)。
 
 ---
 
@@ -1475,7 +1601,7 @@ assert_close(0.1 + 0.2, 0.3, 1e-9)      # |a - b| <= tol
 
 完全な matcher 一覧 (`assert_true`/`false`/`ne`/`lt`/`le`/`gt`/`ge`
 と `__eq__`/`__lt__` dispatch の規則) は
-[`stdlib.ja.md` §14](stdlib.ja.md)。
+[`stdlib.ja.md` §13](stdlib.ja.md)。
 
 **production の不変条件**。 テストスイート外で `if (!cond) throw {...}`
 を書くときは `if`/`throw` を直接書きます (Go 流儀、
@@ -1489,7 +1615,7 @@ disable する別の `assert` キーワードは存在しません。
 **ambient global** として注入されます — `import` 不要。 matcher 一族は
 3 backend で常時 global なので追加注入は不要です。 これは script 実行
 モード下でだけ `inspect` / `print` が ambient で、 `culebra::environment()`
-には注入されない設計と同じ流儀 ([stdlib.ja.md §12](stdlib.ja.md) 参照)。
+には注入されない設計と同じ流儀 ([stdlib.ja.md §29](stdlib.ja.md) 参照)。
 
 ```sh
 culebra test                       # 現在ディレクトリから探索・実行
@@ -1525,12 +1651,14 @@ JSON モードでは test 内の `inspect(...)` は event の `stdout` フィー
 global なので `culebra test` を介さずに 3 backend で同じファイルが
 回ります。
 
-### 17.4 今後の拡張
+### 17.4 doctest と今後の拡張
+
+`culebra test --doc <path>` は `<path>` 以下の markdown から
+` ```culebra ` ブロックを抽出し、17.1 のマーカーに対して実行します
+(`just doctest` が `docs/` に対して回します)。 今後の予定:
 
 - **明示 `import { test } from "std/test"`** — `culebra test` 経由でない
   コード (embedded test helper 等) で使うため
-- **`culebra test --doc docs/`** — 16.1 の規約に従って markdown から
-  ` ```culebra ` ブロックを抽出・実行
 - **`--backend interp|jit|aot`** — 現状 runner は interp のみ。
   backend 選択は今後
 - **並列実行** — 現状逐次。 JIT/AOT が入った時の parallel default は
@@ -1643,12 +1771,13 @@ exit 0 の時だけ結果を適用する (parse/安全網エラー時はバッ�
 `culebra build` は `.cul` ソースを ahead-of-time で自己完結バイナ
 リにコンパイルする。 ランタイムに LLVM 不要。 tree-shaking で使われ
 ないランタイムヘルパを落とす。 Tensor を使わないプログラムでは
-Accelerate / BLAS フレームワーク依存も外せる。
+tensor エンジンが必要とする Accelerate / Metal フレームワーク依存も
+外せる。
 
 ```bash
 ./build/culebra build my-program.cul -o ./out
 ./out                                     # standalone、~350 KB on macOS
-otool -L ./out                            # Accelerate も LLVM も無し
+otool -L ./out                            # Accelerate も Metal も LLVM も無し
 ```
 
 ### 20.1 クロスコンパイル
@@ -1666,9 +1795,9 @@ otool -L ./out                            # Accelerate も LLVM も無し
 
 ### Why tree-shaking が効くか
 
-`inspect` だけ使う "hello world" は FFT も HTTP ランタイムも要らない。
+`inspect` だけ使う "hello world" は tensor も HTTP ランタイムも要らない。
 エントリファイルから call graph を辿ることで、参照されていないラン
-タイムヘルパ (~200 個) を落とせる。 `Tensor` 参照が無ければ no-BLAS
+タイムヘルパ (~200 個) を落とせる。 `Tensor` 参照が無ければ tensor 抜きの
 archive に差し替わるので、数 MB が数百 KB になる。
 
 ## 21. 埋め込み概観

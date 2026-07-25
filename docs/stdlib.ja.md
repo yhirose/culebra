@@ -5,20 +5,20 @@
 （`Math`, `IO`, `Sys`, `FS`, `Time`, `Args`, `Random`, `String`）
 を対象とします。 ここに記載のものは `import` 文なしで利用できます。
 
-実例つきの導入とイディオムは [`guide.ja.md` §14](guide.ja.md#14-標準ライブラリ巡り)、
+実例つきの導入とイディオムは [`guide.ja.md` §15](guide.ja.md#15-標準ライブラリ巡り)、
 ライブラリの実装詳細と設計理由は [`internals.ja.md`](internals.ja.md) を
 参照してください。
 
 言語レベルの組み込み関数（`to_long`, `to_float`, `to_string`,
-`type_of`, `range`, `iota`）は [言語仕様 §18](language.ja.md)
+`type_of`, `range`, `iota`）は [言語仕様 §19](language.ja.md)
 を参照してください。 matcher 一族 (`assert_true` / `assert_eq` /
 `assert_throws` 等) は [§13 Matchers](#13-matchers) で扱います。
 組み込み型（`String`, `Array`, `Object`）のメソッドは
-[言語仕様 §17](language.ja.md) に規定されています。
+[言語仕様 §18](language.ja.md) に規定されています。
 
 CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println` を
 `IO.inspect` / `IO.print` / `IO.println` のエイリアスとしてグローバルに
-配置します（[言語仕様 §20](language.ja.md) 参照）。`culebra::environment()`
+配置します（[言語仕様 §22](language.ja.md) 参照）。`culebra::environment()`
 を直接呼び出す埋め込み用途では、これらのエイリアスは導入されず
 名前空間はクリーンなままです。
 
@@ -66,8 +66,9 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println` を
 26. [`Canvas`](#26-canvas) — ゲーム向けイミディエイトモード 2D フレームバッファ（ピクセル / スプライト / フォント / 入力 / tone）
 27. [`Scene`](#27-scene) — 手続きジオメトリ向けの retained-mode 3D レンダラ（opt-in、macOS 限定）
 28. [`Net`](#28-net) — 生の TCP / UDP ソケットと名前解決（`Http` の下位レイヤ）
-29. [設計上の注記](#29-設計上の注記)
-30. [未収録（将来検討）](#30-未収録将来検討)
+29. [`Desktop` / `Webview`](#29-desktop--webview) — ネイティブ WebView のデスクトップアプリ: ローカル HTTP サーバ + ウィンドウを 1 呼び出しで
+30. [設計上の注記](#30-設計上の注記)
+31. [未収録（将来検討）](#31-未収録将来検討)
 
 **目的別索引**
 
@@ -102,11 +103,12 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println` を
 | 固定レイアウトデータをスレッド/プロセス間で共有（zero copy） | [§12 SharedBuffer](#sharedbuffer--zero-copy-で共有する固定レイアウトデータ) — `SharedBuffer.new(n, Vec2)` / `.file` / `.shared` |
 | 可変長の read-only データをスレッド間で共有（コピーなし） | [§12 Shared](#shared--参照共有する-immutable-値) — `Shared.new(value)` |
 | Ctrl+C / SIGINT を綺麗に扱う | [§12 Signal](#signal--signalnotify--signalreset) — `Signal.notify(tx)` / `Signal.reset()` |
+| デスクトップ GUI（ネイティブ WebView + ローカルサーバ） | [§29 Desktop](#29-desktop--webview) — `Desktop.run({title, assets, routes})` |
 | ヒープ情報・リークチェック | [§7 GC](#gc--ヒープ情報の取得) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes}` |
 | 行列・テンソル演算（BLAS 対応） | [§8 Tensor](#8-tensor) |
-| String / Array / Object のメソッド | [言語仕様 §17](language.ja.md) |
-| 整数列（`range`, `iota`） | [言語仕様 §18](language.ja.md) |
-| 変換（`to_long`、`to_float`、`to_string`、`type_of`） | [言語仕様 §18](language.ja.md) |
+| String / Array / Object のメソッド | [言語仕様 §18](language.ja.md) |
+| 整数列（`range`, `iota`） | [言語仕様 §19](language.ja.md) |
+| 変換（`to_long`、`to_float`、`to_string`、`type_of`） | [言語仕様 §19](language.ja.md) |
 
 ---
 
@@ -122,7 +124,7 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println` を
 `log`、`exp`、`sqrt`、`floor`、`ceil`、`round`、`pow`、`sign`、
 `clamp`） — **三角関数**（`sin`、`cos`、`tan`、`asin`、`acos`、
 `atan`、`atan2`、ラジアン）。整数列ファクトリ `range` / `iota` は
-言語コアグローバルで、[言語仕様 §18](language.ja.md#18-コア組み込み関数) を参照。
+言語コアグローバルで、[言語仕様 §19](language.ja.md#19-コア組み込み関数) を参照。
 
 ### 定数
 
@@ -686,7 +688,7 @@ for line in File.open(cfg).lines() { }  # File.open(String | Path)
 （テキストモードの改行変換なし）で、`String` は byte string なので
 任意の内容が往復します。
 
-ハンドルは4つのメソッド群を実装します — **Reader**（`read` /
+ハンドル（以下 `f`）は4つのメソッド群を実装します — **Reader**（`read` /
 `lines` / `chunks`）、**Writer**（`write` / `flush`）、**Seekable**
 （`seek` / `tell`）、**Closeable**（`close`）。どれが有効かは open
 モードに依ります。
@@ -723,13 +725,13 @@ let head = File.with('big.log', 'r', fn (f) { f.read(256) })
 
 ### Reader メソッド
 
-#### `File.read() -> String` / `File.read(n: Long) -> String`
+#### `f.read() -> String` / `f.read(n: Long) -> String`
 
 現在位置からのストリーミング読み: `read()` は残り全部、`read(n)`
 は最大 `n` バイト（EOF では少なくなる）。ハンドル不要の一発全読みは
 `FS.read(path)` を使います。
 
-#### `File.lines() -> Iterator<String>`
+#### `f.lines() -> Iterator<String>`
 
 行を反復、各行は末尾改行を剥がします（`\n` / `\r\n` / `\r` 全対応）。
 iterator がハンドルを所有し、ループ終了・break で閉じます。
@@ -741,36 +743,36 @@ for line in File.open('access.log').lines() {
 }
 ```
 
-#### `File.chunks(n: Long) -> Iterator<String>`
+#### `f.chunks(n: Long) -> Iterator<String>`
 
 最大 `n` バイトの固定長チャンクを反復（最後は短いことあり）。
 `lines()` と同じ close-on-exit 契約。
 
 ### Writer メソッド
 
-#### `File.write(data: String) -> Nil`
+#### `f.write(data: String) -> Nil`
 
 現在位置に `data` を書き込み（生バイト、改行変換なし）。読み取り
 専用ハンドルでは `IOError`。
 
-#### `File.flush() -> Nil`
+#### `f.flush() -> Nil`
 
 バッファした書き込みを OS にフラッシュ。
 
 ### Seekable メソッド
 
-#### `File.seek(offset: Long, whence: String = "set") -> Nil`
+#### `f.seek(offset: Long, whence: String = "set") -> Nil`
 
 カーソル移動。`whence` は `"set"`（先頭から）/ `"cur"`（相対）/
 `"end"`（末尾から；負の `offset` を使う）。
 
-#### `File.tell() -> Long`
+#### `f.tell() -> Long`
 
 現在のバイトオフセット。
 
 ### Closeable
 
-#### `File.close() -> Nil`
+#### `f.close() -> Nil`
 
 ハンドルを閉じ、書き込みをフラッシュ。冪等 — 二重 close は no-op。
 閉じたハンドルへの操作は `IOError`。
@@ -1113,6 +1115,20 @@ inspect(Sys.executable)           # '/usr/local/bin/culebra'
 inspect(Sys.script)               # '/Users/alice/project/build.cul'
 ```
 
+### `Sys.time() -> Float`
+
+**単調時計**の経過秒数。原点はプロセス内での最初の呼び出し。壁時計の
+補正で巻き戻ることがないので、コード区間の計測にはこちらを使います
+（日時が必要なら `Time.now()`、§5）。`Time.monotonic()`（§5）も同じ
+単調時計を読みますが、原点はそれぞれの関数の初回呼び出しなので、
+2 つを混ぜず同じ関数の 2 点の差を取ってください。
+
+```culebra
+let t0 = Sys.time()
+let sum = range(1000).reduce(0, |a, x| a + x)
+inspect(Sys.time() - t0 >= 0.0)   # => true
+```
+
 ### `GC` — ヒープ情報の取得
 
 `GC.stat()` はフルコレクションを実行し、その直後の生きたヒープを表す
@@ -1369,16 +1385,36 @@ Tensor で意味づけしておらず、`@` は出力形状が変わるため in
   今は明示的に `Tensor.from((...).to_array())` を経由）
 - `.softmax()` も連続入力のみ
 
-### バックエンド
+### バックエンドとデバイス選択
 
-Phase 1 では **CPU** のみ。
+評価は vendored な `cpp-tensorlib` エンジン（`vendor/cpp-tensorlib`）に
+委譲されます。lazy graph・カーネル融合・デバイスバックエンドはすべて
+そちら側の責務です:
 
-- macOS: Accelerate framework（`cblas_sgemm/dgemm`、scalar fallback で sigmoid）
-- Linux: OpenBLAS（`find_package(BLAS)`）
+- **CPU** — ベクトル化カーネル（AVX2 / NEON）。macOS では BLAS 形状の
+  カーネルに Accelerate を使用
+- **GPU** — macOS は Metal、Linux / Windows は CUDA
 
-将来 Metal / CUDA を `tensor_backend.h` の dispatch table 経由で
-追加予定。API は変わらず、`use_cpu()` / `use_metal()` /
-`use_cuda()` のグローバル切替で動作先を選ぶ silarray 流。
+デバイスはプロセスグローバル（interp / JIT / AOT で共有）で、実行時に
+切り替えられます:
+
+| 関数 | 効果 |
+| --- | --- |
+| `Tensor.use_cpu() -> Nil` | すべての演算を CPU で評価 |
+| `Tensor.use_gpu() -> Nil` | GPU バックエンドで評価 |
+| `Tensor.use_auto() -> Nil` | 演算ごとに問題サイズで選択（デフォルト） |
+| `Tensor.gpu_available() -> Bool` | GPU バックエンドがビルドに含まれ到達可能か |
+
+```culebra
+inspect(type_of(Tensor.gpu_available()))    # => 'Bool'
+```
+
+GPU が無いビルドで `use_gpu()` を呼んでも throw せず CPU 経路に
+フォールバックするので、プログラムは可搬なままです。選択が結果を
+左右する場合は `gpu_available()` を確認してください。小さいテンソルは
+カーネル起動コストに負けるのが普通で、それが `use_auto` をデフォルトに
+している理由です。格納はどのデバイスでも F32 のまま（上の dtype 制約
+参照）。
 
 ---
 
@@ -3432,9 +3468,11 @@ let st = Term.style(fg: (255, 128, 0), bold: true)   # Screen セル用
 
 ### 入力イベント
 
-入力は単一のイベントモデル: `Screen.poll(timeout)`（と `Term.parse(raw)`）は
-1 つのイベント **Object**、または入力なしで `nil` を返します。`kind` で種別を
-判別し、修飾子は bool です。
+入力は単一のイベントモデル: `Term.poll(timeout)` —— `Term.app` の
+コールバック内では `screen.poll(timeout)` としても届きます —— が 1 つの
+イベント **Object** を返し、`timeout` 秒の間に何も来なければ `nil` を
+返します。既に読み込んだエスケープ列を同じ形に変換するのが
+`Term.parse(raw)` です。`kind` で種別を判別し、修飾子は bool です。
 
 | `kind` | フィールド |
 | --- | --- |
@@ -4132,7 +4170,80 @@ inspect(Net.resolve("localhost"))       # => ["127.0.0.1", "::1"]
 
 ---
 
-## 29. 設計上の注記
+## 29. `Desktop` / `Webview`
+
+Web 技術で書くデスクトップ GUI: ローカル HTTP サーバが UI を配信し、
+**ネイティブ WebView** ウィンドウがそれを表示し、全体が 1 バイナリに
+なります。`Webview` は OS 自身のエンジン（macOS は WKWebView、Linux は
+WebKitGTK、Windows は WebView2）をラップするので、ブラウザは同梱しません。
+どちらの名前空間もデフォルトビルドに含まれます（`-DCULEBRA_ENABLE_WEBVIEW=OFF`
+で無効化。Linux では GTK4 / WebKitGTK の dev パッケージが無ければ自動で
+無効化）。`culebra build` は実際に参照しているプログラムに対してのみ
+WebView フレームワークをリンクします。
+
+### `Desktop.run(config: Object) -> Nil`
+
+1 呼び出しの facade: サーバを起動し、その上にウィンドウを開き、ウィンドウが
+閉じるまでブロックし、閉じたらサーバを止めます。
+
+| キー | デフォルト | 意味 |
+| --- | --- | --- |
+| `title` | `'culebra'` | ウィンドウタイトル |
+| `size` | ウィンドウ既定値 | `[width, height]`（ピクセル） |
+| `assets` | — | `/` に配信する静的ルート。通常は `Embed.dir('dist')` — dev ではディスクから読み、`culebra build` ではバイナリに焼き込まれる |
+| `routes` | — | `fn (srv) { ... }`。アプリ自身のルートを `Http` サーバ（§15）に登録する |
+| `port` | `8731` | サーバが bind する loopback ポート |
+| `workers` | `4` | サーバのワーカースレッド数 |
+
+`POST /__quit` ルートが自動登録されるので、ページ側からアプリを閉じられます
+（`fetch('/__quit', {method: 'POST'})`）。culebra 側からは `Desktop.quit()`。
+
+```culebra
+# doctest: skip
+Desktop.run({
+  title: 'culebra desktop',
+  size: [720, 560],
+  assets: Embed.dir('dist'),
+  routes: fn (srv) {
+    srv.get('/api/hello', fn (req) {
+      { content_type: 'application/json',
+        body: JSON.stringify({ message: 'hello' }) }
+    })
+  }
+})
+```
+
+### `Webview.Window` — 生のバインディング
+
+サーバが要らない場合（インライン HTML、あるいはリモート URL）はこちらを
+直接使います。
+
+| メソッド | 効果 |
+| --- | --- |
+| `Webview.Window.new()` | ウィンドウを生成 |
+| `w.set_title(title)` | タイトル設定 |
+| `w.set_size(width, height)` | サイズ変更 |
+| `w.set_html(html)` | HTML 文字列を読み込む |
+| `w.navigate(url)` | URL を読み込む |
+| `w.run()` | ネイティブイベントループを実行（終了までブロック） |
+| `w.terminate()` | このウィンドウの `run()` を終了 |
+| `Webview.Window.quit()` | いま `run()` 中のウィンドウを終了 — 別スレッド（例: HTTP ハンドラ）から呼べる |
+
+```culebra
+# doctest: skip
+let w = Webview.Window.new()
+w.set_title('hello')
+w.set_size(480, 320)
+w.set_html('<h1>hi from culebra</h1>')
+w.run()
+```
+
+完全な実例は `examples/webview/`（`desktop_app.cul` と、その `dist/`
+フロントエンド）にあります。
+
+---
+
+## 30. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -4174,7 +4285,7 @@ run_with(IO, "via parameter")
 自由関数（名前空間内）は、無から値を構築する場合（`iota`,
 `IO.input`）、複数の型に等しく適用される場合（`type_of`,
 `to_string`）に使います。特定の型に関する操作はメソッド構文を
-用いますが、その設計方針は言語仕様 §17（String/Array/Object
+用いますが、その設計方針は言語仕様 §18（String/Array/Object
 メソッド）を参照してください。
 
 ### エラー送出 vs `nil` 戻り値
@@ -4186,7 +4297,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 30. 未収録（将来検討）
+## 31. 未収録（将来検討）
 
 ### 重量級データ構造
 

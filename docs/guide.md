@@ -20,7 +20,7 @@ internals see [`internals.md`](internals.md).
 > implementation as of today. Labels that appear: **Draft** (under
 > implementation, API may change), **Planned** (decided, not yet
 > implemented), **Deprecated** (slated for removal). Features that
-> were considered and rejected live in [`record.md`](record.md).
+> were considered and rejected live in [`_history.md`](_history.md).
 
 Contents
 --------
@@ -59,24 +59,28 @@ Read this once; the rest of the guide assumes these choices.
   ORC JIT share the same AST. The interpreter has no LLVM dependency
   (~1 MB binary, good for embedding); the JIT runs the same program
   at `-O2`. Both are maintained — neither is going away.
-- **Eight built-in types.** `Nil`, `Bool`, `Long`, `Float`, `String`,
-  `Array`, `Object`, `Function`. Everything else (classes, modules,
-  errors) builds on `Object`.
+- **Eight everyday types.** `Nil`, `Bool`, `Long`, `Float`, `String`,
+  `Array`, `Object`, `Function`, plus four specialized ones
+  (`StringView`, `Tuple`, `Set`, `Tensor`). Everything else (classes,
+  modules, errors) builds on `Object`.
 - **Rust-inspired surface.** `let` / `mut` / `fn` / `match` / block-as-
   expression. Closures are first-class, errors are values, no hidden
   globals.
 - **UFCS, not pipeline.** Any free function `f(x, ...)` can be called
   as `x.f(...)`. A pipeline operator was considered and rejected (see
-  [`record.md`](record.md)).
-- **Implicit imports, no explicit `import` statement.** Bare references
-  to top-level identifiers cross file boundaries within a module
-  build (Ch.13). Explicit `import` was considered and rejected.
+  [`_history.md`](_history.md)).
+- **Explicit, static modules.** A file exposes bindings with
+  `export { ... }` and a consumer binds them with
+  `import name from './path.cul'`. Both forms are top-level only, so
+  the dependency graph is known at parse time — which is what makes
+  AOT bundling and tree-shaking possible (Ch.13).
 - **No async/await.** I/O is blocking by design; concurrency comes
   from threads, not coroutines. HTTP and similar networked stacks are
   blocking with the typical scale ceiling of a few thousand
   connections.
-- **Batteries-included, tiered.** Core stdlib (Math/IO/Sys/Random/
-  String/FS/Time/Args) and Tier 1 (Regex/Http/Hash+Encoding) both ship
+- **Batteries-included, tiered.** The core (Math/IO/FS/File/Sys/
+  Random/String/Time/Args) and Tier 1 (Regex/Http/Hash/Encoding/
+  Compress/JSON/CSV/TOML/SQLite/UUID/Log/Term/Canvas) both ship
   today; Tier 2/3 (Crypto, Sockets) follows demand — see Ch.15.
 - **Pre-1.0.** Source and APIs may change. There is no release
   machinery (no version tags, no CHANGELOG, no Homebrew formula) yet
@@ -137,7 +141,7 @@ shape. Use `println` for raw, unquoted text with a trailing newline, or
 
 ## 2. Values, bindings, and control flow
 
-### 2.1 The eight types
+### 2.1 The eight everyday types
 
 ```culebra
 inspect(type_of(nil))            # => 'Nil'
@@ -149,6 +153,10 @@ inspect(type_of([1, 2]))         # => 'Array'
 inspect(type_of({a: 1}))         # => 'Object'
 inspect(type_of(fn () { 1 }))    # => 'Function'
 ```
+
+Four more show up once you reach for them: `StringView` (Ch.4.4),
+`Tuple` and `Set` (Ch.14.2), and `Tensor` (Ch.16). The full table is
+[language.md §4](language.md).
 
 ### 2.2 Bindings: bare, `let`, `mut`
 
@@ -221,9 +229,60 @@ for n in 0..=2  { inspect(n) }   # inclusive range
 # 0
 # 1
 # 2
+
+for n in 0..10 by 3 { inspect(n) }   # stepped range
+# => |
+# 0
+# 3
+# 6
+# 9
+
+for k, v in {a: 1, b: 2} { inspect("{k}={v}") }   # Objects yield key, value
+# => |
+# 'a=1'
+# 'b=2'
 ```
 
 `break` and `continue` work inside `while` and `for`.
+
+### 2.5 `nobreak`, init clauses, `cond`, and `? :`
+
+A loop may carry a `nobreak` block that runs only when the loop
+finished without a `break` — Python's `for ... else` without the
+confusing keyword:
+
+```culebra
+mut found = nil
+for n in [1, 3, 5] {
+  if n % 2 == 0 { found = n; break }
+} nobreak {
+  inspect('no even number')      # => 'no even number'
+}
+```
+
+`while`, `if`, and `match` accept an **init clause** — a binding
+scoped to the construct, separated by `;` — so a loop variable doesn't
+leak into the surrounding scope:
+
+```culebra
+while mut i = 0; i < 3 { i = i + 1 }
+if let n = 6; n > 5 { inspect('big') }     # => 'big'
+```
+
+For multi-way choices there is `cond` (a subjectless `match`) and the
+ternary `? :` for the two-way case:
+
+```culebra
+grade = fn (n) {
+  cond {
+    n >= 90 => 'A',
+    n >= 80 => 'B',
+    _       => 'C'
+  }
+}
+inspect(grade(85))               # => 'B'
+inspect(grade(50) == 'C' ? 'ok' : 'no')   # => 'ok'
+```
 
 Captured state *is* the object's state in the closure-based pattern
 (Ch.9), so silently shadowing it would break the object; block-local
@@ -290,10 +349,21 @@ inspect(greet('carol', **opts))               # => 'yo, carol'
 ```
 
 A `*` marker forces the caller to name the option, keeping long
-parameter lists readable across reorders and extensions; free
-positional rest (`*args`) is intentionally omitted since Array
-literals already fill that role. Full parameter, default, and splat
-semantics: [language.md §11](language.md).
+parameter lists readable across reorders and extensions. A final
+`*rest` parameter is the positional counterpart — it collects the
+extra positional arguments into an Array:
+
+```culebra
+sum_all = fn (first, *rest) {
+  mut t = first
+  for v in rest { t = t + v }
+  t
+}
+inspect(sum_all(1, 2, 3, 4))                  # => 10
+```
+
+Full parameter, default, and splat semantics: [language.md
+§11](language.md).
 
 ## 4. Strings
 
@@ -439,6 +509,14 @@ inspect(flat)                    # => [1, 2, 3, 4, 5, 6]
 
 head = range(100).skip(10).take_while(|x| x < 15).collect()
 inspect(head)                    # => [10, 11, 12, 13, 14]
+
+# chunks: fixed-size groups (last may be shorter)
+inspect([1, 2, 3, 4, 5].iter().chunks(2).collect())
+# => [[1, 2], [3, 4], [5]]
+
+# windows: sliding view, advancing one element at a time
+inspect([1, 2, 3, 4].iter().windows(2).collect())
+# => [[1, 2], [2, 3], [3, 4]]
 ```
 
 ### 5.4 User-defined iterators
@@ -621,9 +699,10 @@ inspect(safe(-99))               # => 0
 
 `defer { ... }` registers a cleanup that runs on every exit path from
 the *enclosing block* (normal fall-through, `return`, or `throw`) in
-LIFO order. Wrap the protected code in `{ }` so the cleanups also fire
-when the body throws. Full exit-path and ordering rules:
-[language.md §15](language.md).
+LIFO order — at block, function-body, and top level alike, on every
+backend. Put the `defer` in an inner `{ }` when the cleanup should
+happen before the rest of the function continues. Full exit-path and
+ordering rules: [language.md §15](language.md).
 
 ```culebra
 demo = fn (fail) {
@@ -820,6 +899,25 @@ class is callable the way its constructor is.
 class Point { new(x, y) { self.x = x; self.y = y } }
 p = Point(3, 4)               # same as Point.new(3, 4)
 inspect("{p.x},{p.y}")           # => '3,4'
+```
+
+Fields can also be **declared** in the class body with a default.
+Every instance gets its own copy, materialized before `new` runs, so a
+field exists (with a known value) even on a path the constructor
+doesn't touch. A `get` method is a computed property — called without
+parentheses:
+
+```culebra
+class Temp {
+  celsius = 0.0
+  scale   = 'C'
+  new(c) { self.celsius = c }
+  get fahrenheit() { self.celsius * 9.0 / 5.0 + 32.0 }
+}
+
+t = Temp.new(100.0)
+inspect(t.fahrenheit)            # => 212.0
+inspect(t.scale)                 # => 'C'
 ```
 
 ### 9.2 The closure-based alternative
@@ -1085,49 +1183,58 @@ rule: [language.md §21](language.md)).
 
 ## 13. Modules
 
-### 13.1 Implicit imports
+### 13.1 `export` and `import`
 
-A Culebra "module build" starts at one entry file and pulls in every
-sibling `.cul` file the entry transitively references by top-level
-identifier.
+A module lists what it exposes with `export`; a consumer binds the
+whole module under one name with `import`.
 
 ```culebra
+# doctest: skip
 # lib.cul
-greet = fn (name) { "hello, {name}" }
-PI    = 3.14159
+let greet = fn (name) { "hello, {name}" }
+let PI    = 3.14159
+let helper = fn () { 'internal' }   # not exported
+
+export { greet, PI }
 ```
 
 ```culebra
 # doctest: skip
 # main.cul — same directory as lib.cul
-inspect(greet('world'))          # => hello, world
-inspect(PI)                      # => 3.14159
+import lib from './lib.cul'
+
+inspect(lib.greet('world'))      # => 'hello, world'
+inspect(lib.PI)                  # => 3.14159
+inspect(lib.helper)              # => nil — not on the export Object
 ```
 
-Running `culebra main.cul` discovers `lib.cul` automatically by
-following the unresolved name `greet`. There is no `import`
-statement.
+The path is a single-quoted literal resolved relative to the
+importing file's directory. Several `export` statements in one file
+are merged, so a module can declare a few helpers, export them,
+and keep going.
 
-### 13.2 Entry-env isolation and cycles
+### 13.2 Top-level only, evaluated once
 
-Bindings introduced *in the entry file* are not visible from imported
-files; bindings introduced *in imported files* become visible
-everywhere the build can reach — matching Go's intuition that every
-file in a package is "the package," with the entry file treated like
-a top-level main. Cyclic references between files are rejected at
-module-build time with a precise file/line; refactor through a shared
-third file. Full resolution and cycle-detection rules:
-[language.md §24](language.md).
+`import` and `export` may appear only as top-level statements — inside
+a function or an `if` branch they are a `SyntaxError`. That is what
+lets the loader determine the whole dependency graph at parse time,
+which both the AOT bundler and the tree-shaker rely on (Ch.20).
 
-### Why implicit?
+Each module is evaluated once per program, in dependency order, in its
+own scope: its top-level bindings stay private except for the export
+Object. A circular import (A imports B imports A) is rejected with an
+`ImportError` naming the cycle. Full resolution, caching, and error
+rules: [language.md §24](language.md).
 
-A 1500-line program may pull in 30 helper files. Forcing each
-`import` saves nothing — the tool can derive the same graph from
-the unresolved identifiers. The cost is a faster, simpler authoring
-loop, and tree-shaking still works because the resolver knows which
-top-levels are reachable (Ch.18).
+### Why explicit?
 
-See [`internals.md` §11](internals.md) for the resolver design and
+An explicit `import` line is the only place a reader — or a tool —
+has to look to know what a file depends on. It also gives `culebra
+lint` an unambiguous unused-import warning (and a `--fix` for it,
+Ch.18), and gives the AOT build a graph it can bundle without
+guessing.
+
+See [`internals.md` §10](internals.md) for the loader design and
 cycle-detection algorithm.
 
 ---
@@ -1142,7 +1249,7 @@ Part III — Types and libraries
 Annotations are *runtime* checks at three boundaries: variable
 assignment, function parameter passing, and function return. There is
 no static narrowing. Full annotation semantics: [language.md
-§15](language.md).
+§14](language.md).
 
 ```culebra
 add = fn (a: Long, b: Long) -> Long { a + b }
@@ -1183,7 +1290,7 @@ match (by name and arity) conforms — no explicit `impl` needed, and a
 class missing a required method fails dispatch (`DispatchError`)
 rather than matching silently. Traits can also carry default-
 implemented methods and be derived with `@derive`. Full spec: [language.md
-§15](language.md) (Traits and protocols). See [`record.md`](record.md)
+§14](language.md) (Traits and protocols). See [`_history.md`](_history.md)
 for why nominal (class) inheritance was rejected in favor of this
 structural model (Ch.11.3).
 
@@ -1276,7 +1383,7 @@ inspect(Random.int(0, 100) >= 0)          # => true
 ```
 
 Full reference: `Sys` [`stdlib.md` §7](stdlib.md), `Random` §6, `FS`/`Path`
-§3, `Time` §5, `Args` §11.
+§3, `Time` §5, `Args` §10.
 
 ### 15.5 `Regex`
 
@@ -1292,7 +1399,7 @@ inspect(re.test('order #42'))    # => true
 inspect(re'\d+'.test('abc 123')) # => true
 ```
 
-Full API: [`stdlib.md` §15](stdlib.md).
+Full API: [`stdlib.md` §14](stdlib.md).
 
 ### 15.6 `Hash`, `Encoding`, `Compress`
 
@@ -1301,12 +1408,12 @@ hex digests; `Encoding.base64`/`hex`/`url`/`html` each expose
 `.encode`/`.decode`; `Compress.gzip`/`gunzip` round out the data
 namespaces. JSON is its own top-level `JSON.parse`/`JSON.stringify` —
 there is no `Encoding.json`. Full reference: [`stdlib.md`](stdlib.md)
-§17 (Encoding), §18 (Compress), §19 (Hash).
+§16 (Encoding), §17 (Compress), §18 (Hash).
 
 ### 15.7 `Http`
 
 Blocking client and server, SSE and WebSocket included, TLS via
-statically linked BoringSSL. No `async`/`await` — concurrency is via
+statically linked OpenSSL. No `async`/`await` — concurrency is via
 threads; scale ceiling is a few thousand connections.
 
 ```culebra
@@ -1321,9 +1428,19 @@ srv.listen('127.0.0.1', 8080)
 ```
 
 Streaming, routing, and the client session API: [`stdlib.md`
-§16](stdlib.md).
+§15](stdlib.md).
 
-### 15.8 More planned
+### 15.8 The rest of the library
+
+Not covered above, all documented in [`stdlib.md`](stdlib.md):
+`JSON` (§9), `Proc` (§11 — run external commands), `Isolate` /
+`Channel` / `Parallel` / `Shared` (§12 — threads and message passing),
+`CSV` (§19), `Env` (§20 — dotenv), `UUID` (§21), `Term` (§22 — TUIs),
+`Log` (§23), `TOML` (§24), `SQLite` (§25), `Canvas` (§26 — 2D games),
+`Scene` (§27 — 3D, opt-in), and `Desktop` / `Webview` (§28 — a native
+WebView desktop app in one call).
+
+### 15.9 Still planned
 
 > **Status: Planned (Tier 2/3).** `Crypto` (asymmetric/TLS primitives
 > beyond `Hash`) and `Sockets` (raw TCP/UDP). No firm ordering yet —
@@ -1333,12 +1450,13 @@ Streaming, routing, and the client session API: [`stdlib.md`
 
 ### 16.1 Construction, matmul, broadcasting
 
-`Tensor` is a built-in n-dimensional array routed through BLAS
-(Apple Accelerate on macOS, OpenBLAS on Linux). Storage is F32;
-scalar results surface as `Float`. Matmul (`dot`) builds a lazy graph
-that `Tensor.eval` runs as a single BLAS kernel; elementwise ops
-broadcast like NumPy. Full API (shapes, reductions, autograd):
-[`stdlib.md` §9](stdlib.md).
+`Tensor` is a built-in n-dimensional array backed by the vendored
+`cpp-tensorlib` engine (vectorized CPU kernels, Metal on macOS, CUDA
+on Linux/Windows). Storage is F32; scalar results surface as `Float`.
+Matmul (`dot`) builds a lazy graph that `Tensor.eval` runs as one
+fused kernel; elementwise ops broadcast like NumPy. Full API (shapes,
+reductions, autograd, device selection):
+[`stdlib.md` §8](stdlib.md).
 
 ```culebra
 a = Tensor.from([1.0, 2.0, 3.0])
@@ -1352,23 +1470,34 @@ Tensor.eval(c)
 inspect(c.to_array())            # => [[7.0, 10.0], [15.0, 22.0]]
 ```
 
-### 16.2 GPU primitive
+### 16.2 Choosing a device
 
-> **Status: Planned.** A CUDA / Metal Shading Language backend is
-> on the roadmap, exposed as a separate `Matrix` (or `GTensor`)
-> primitive — `Tensor` stays CPU-only.
+The same `Tensor` type runs on the GPU — there is no separate GPU
+type. Device selection is process-global and switchable at runtime:
 
-### Why route through BLAS?
+```culebra
+inspect(type_of(Tensor.gpu_available()))   # => 'Bool'
+# Tensor.use_gpu()    # force the GPU backend (Metal / CUDA)
+# Tensor.use_cpu()    # force the CPU backend
+# Tensor.use_auto()   # per-op choice by problem size (the default)
+```
+
+`Tensor.gpu_available()` reports whether a GPU backend was compiled in
+and is reachable; `use_auto` falls back to CPU when it isn't. Whether
+the GPU wins depends on shape — small tensors lose to kernel-launch
+overhead — so `use_auto` is the right default.
+
+### Why a dedicated engine?
 
 Matrix-heavy code (MLP inference, microgpt) shipped with a hand-
-written O(n³) loop was orders of magnitude slower than NumPy. BLAS
-gets us within ~1.2× of PyTorch CPU on the MNIST sizes that this
-codebase actually trains. The full benchmark is in
+written O(n³) loop was orders of magnitude slower than NumPy. Routing
+through tuned kernels gets us within ~1.2× of PyTorch CPU on the MNIST
+sizes that this codebase actually trains. The full benchmark is in
 [`benchmarks/mnist/README.md`](../benchmarks/mnist/README.md) and
 [`benchmarks/microgpt/README.md`](../benchmarks/microgpt/README.md).
 
 For the dtype rationale, allocator choice, and lazy-shape
-discussion, see [`internals.md` §9](internals.md).
+discussion, see [`internals.md` §8](internals.md).
 
 ---
 
@@ -1497,11 +1626,11 @@ assert_close(0.1 + 0.2, 0.3, 1e-9)      # |a - b| <= tol
 ```
 
 Full matcher list (`assert_true`/`false`/`ne`/`lt`/`le`/`gt`/`ge` and
-the `__eq__`/`__lt__` dispatch rule): [`stdlib.md` §14](stdlib.md).
+the `__eq__`/`__lt__` dispatch rule): [`stdlib.md` §13](stdlib.md).
 
 **Production invariants.** For `if (!cond) throw {...}` checks outside
 the test suite, write the `if`/`throw` directly (Go-style, see
-[language §16](language.md)). There is no separate `assert` keyword to
+[language §15](language.md)). There is no separate `assert` keyword to
 disable in production builds.
 
 ### 17.3 Running
@@ -1511,7 +1640,7 @@ subcommand, `test` / `@test` / `@parametrize` become **ambient
 globals** alongside the always-available matcher family — no `import`
 required. This mirrors how `inspect` / `print` are ambient under
 script-execution mode but absent from `culebra::environment()` (see
-[stdlib §12](stdlib.md)).
+[stdlib §29](stdlib.md)).
 
 ```sh
 culebra test                       # discover & run from current dir
@@ -1548,12 +1677,14 @@ The legacy `tests/*.cul` suite under `just test` (matchers + no
 globals, so the same file is exercised under all three backends
 without going through `culebra test`.
 
-### 17.4 Planned extensions
+### 17.4 Doctests and planned extensions
+
+`culebra test --doc <path>` extracts every ` ```culebra ` block from
+the markdown under `<path>` and runs it against the markers in 17.1
+(`just doctest` runs it over `docs/`). Still planned:
 
 - **Explicit `import { test } from "std/test"`** — for code that
   doesn't run under `culebra test` (e.g. embedded test helpers).
-- **`culebra test --doc docs/`** — extract and run ` ```culebra `
-  blocks from markdown using the convention in 16.1.
 - **`--backend interp|jit|aot`** — currently the runner uses interp;
   selecting backends per run is on the roadmap.
 - **Parallel execution** — sequential today; parallel default is
@@ -1681,12 +1812,12 @@ zero, leaving the buffer untouched on a parse/safety error.
 `culebra build` compiles a `.cul` source ahead-of-time into a
 self-contained executable. No LLVM at runtime; tree-shaking drops the
 runtime helpers your program doesn't reference. Tensor-free programs
-also drop the Accelerate / BLAS framework dependency.
+also drop the Accelerate / Metal frameworks the tensor engine needs.
 
 ```bash
 ./build/culebra build my-program.cul -o ./out
 ./out                                     # standalone, ~350 KB on macOS
-otool -L ./out                            # no Accelerate, no LLVM
+otool -L ./out                            # no Accelerate, no Metal, no LLVM
 ```
 
 ### 20.1 Cross-compile
@@ -1704,11 +1835,11 @@ build, sysroot expectations, and the full cross-compile workflow.
 
 ### Why tree-shaking matters
 
-A "hello world" using `inspect` doesn't need the FFT or HTTP runtime
-glue. Tracing the call graph from the entry file lets the linker
-drop unreferenced runtime helpers (~200 of them) and, when no
-`Tensor` reference is found, swap in a no-BLAS archive. The result is
-a few hundred KB instead of a few MB.
+A "hello world" using `inspect` doesn't need the tensor or HTTP
+runtime glue. Tracing the call graph from the entry file lets the
+linker drop unreferenced runtime helpers (~200 of them) and, when no
+`Tensor` reference is found, swap in a no-tensor archive. The result
+is a few hundred KB instead of a few MB.
 
 ## 21. Embedding overview
 

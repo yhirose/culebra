@@ -9,7 +9,7 @@
 API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳細
 (パーサ、JIT codegen、AOT tree-shaking) は [`internals.ja.md`](internals.ja.md)
 を参照してください。 検討したが採用しなかった設計は
-[`record.ja.md`](record.ja.md) にあります。
+[`_history.ja.md`](_history.ja.md) にあります。
 
 ## 目次
 
@@ -92,12 +92,15 @@ Culebra は Rust 風の構文を持つ、小さな動的型付けスクリプト
 識別子として使えない予約語:
 
     nil  true  false  mut  debugger  return  while  for  in  if  else
-    fn  match  cond  break  continue  throw  try  catch  defer  yield
-    class  trait  enum  import  export  from
+    fn  match  cond  break  continue  nobreak  throw  try  catch
+    defer  yield  class  trait  enum  import  export  from
+    effect  perform  handle  with
 
 パーサは代入における `let` もオプショナルな接頭辞として認識します。
-型注釈の型名（`Nil`, `Bool`, `Long`, `Float`, `String`, `Array`,
-`Object`, `Function`, `Any`）は予約語ではなく、`:` や `->` の後に
+`static` と `get` は class 本体内の、`by` は range リテラル内
+（`0..10 by 2`）の文脈依存マーカーで、いずれもそれ以外の場所では
+予約語ではありません。型注釈の型名（`Nil`, `Bool`, `Long`, `Float`,
+`String`, `Array`, `Object`, `Function`, `Any`）も予約語ではなく、`:` や `->` の後に
 現れる場合のみ文脈的に認識されます。
 
 ### リテラル
@@ -207,21 +210,25 @@ JS の慣習。差分や並べ替えが綺麗になる）。先頭カンマや�
 
 ## 4. 型
 
-Culebra の型は厳密に 11 種類です:
+Culebra の型は厳密に 12 種類 — `type_of` が返しうる名前がすべてです:
 
-| 型         | 説明                                                          |
-|-----------|--------------------------------------------------------------|
-| `Nil`     | 単一の値 `nil`                                                |
-| `Bool`    | `true` または `false`                                         |
-| `Long`    | 64 ビット符号付き整数                                           |
-| `Float`   | IEEE 754 binary64（倍精度浮動小数点）                           |
-| `String`  | イミュータブルなヒープ文字列                                      |
-| `Array`   | ミュータブルな順序付きコレクション                                |
-| `Object`  | ハッシュ可能なキーと値のミュータブルな対応（String キーは shape 経由の高速パス） |
-| `Function`| クロージャ（関数ポインタ + 捕捉セル）                              |
-| `Tensor`  | N 次元数値テンソル、BLAS 対応 lazy graph（[stdlib §5](stdlib.ja.md#5-tensor)） |
-| `Tuple`   | イミュータブルなハッシュ可能シーケンス（`(1, 2)`）。Object / Set のキーに使える |
-| `Set`     | 挿入順を保持する一意ハッシュ可能値の集合（`{1, 2, 3}`）             |
+| 型           | 説明                                                          |
+|-------------|--------------------------------------------------------------|
+| `Nil`       | 単一の値 `nil`                                                |
+| `Bool`      | `true` または `false`                                         |
+| `Long`      | 64 ビット符号付き整数                                           |
+| `Float`     | IEEE 754 binary64（倍精度浮動小数点）                           |
+| `String`    | イミュータブルなヒープ文字列                                      |
+| `StringView`| 他の文字列のバイト列を zero-copy で借用するイミュータブルなビュー。`slice` / `split` / `view` が返す（§18.1） |
+| `Array`     | ミュータブルな順序付きコレクション                                |
+| `Object`    | ハッシュ可能なキーと値のミュータブルな対応（String キーは shape 経由の高速パス） |
+| `Function`  | クロージャ（関数ポインタ + 捕捉セル）                              |
+| `Tensor`    | N 次元数値テンソル。lazy graph を CPU / GPU で評価する（[stdlib §8](stdlib.ja.md#8-tensor)） |
+| `Tuple`     | イミュータブルなハッシュ可能シーケンス（`(1, 2)`）。Object / Set のキーに使える |
+| `Set`       | 挿入順を保持する一意ハッシュ可能値の集合（`{1, 2, 3}`）             |
+
+class・enum バリアント・モジュール・イテレータ・stdlib namespace は
+すべて `Object` で、`type_of` は `'Object'` を返します。
 
 `Long` と `Float` の間では算術・比較時に自動的に `Float` へ昇格します
 （§7 参照）。これ以外の型間の暗黙変換はなく、算術・比較・論理演算子が
@@ -453,7 +460,7 @@ Culebra はシャドウを 3 つの軸で独立に扱います:
 オブジェクト」イディオムにおいて、各軸が異なる意味を持つためです:
 
 * **キャプチャされた状態 = オブジェクトの状態**。クロージャベース
-  のオブジェクトパターン（[`guide.ja.md` §8.2](guide.ja.md#82-クロージャベースの別解) 参照）では、外側関数
+  のオブジェクトパターン（[`guide.ja.md` §9.2](guide.ja.md#92-クロージャベースの別解) 参照）では、外側関数
   の可変束縛がオブジェクトの private フィールドに相当します。
   `mut x = ...` を新規ローカル宣言のつもりで書いてしまうと、
   **静かにオブジェクトが壊れる**。これをコンパイル時エラーに
@@ -1668,8 +1675,8 @@ kwargs を Object として受け取ります。位置はパラメータリス�
   `SyntaxError`。
 * 同じ名前を明示 kwarg で 2 回書くことはできません。
 * 同じ名前を位置引数と kwarg の両方で渡すこともできません。
-* 未知の kwarg 名は `TypeError`。定義側に `**rest` キャッチオールは
-  本マイルストーンでは未対応です。
+* 未知の kwarg 名は `TypeError`。ただし呼び出し先が `**rest`
+  キャッチオールを宣言していれば、そこに吸収されます。
 * `**` splat の右辺は `String` キーのみを持つ `Object` でなければ
   なりません。
 * デフォルト値は呼び出しごとに再評価されます（Ruby / Scala 流。
@@ -2264,7 +2271,7 @@ opt-in できます。3 段階:
   強制（`x: Long?` は Long か nil、String は不可）。
 
 これは **runtime** ポリシーで、静的 null 検査器は持ちません（設計上。
-[`record.ja.md`](record.ja.md) 参照）。null 安全演算子が対になります: `?.` / `?[]` で
+[`_history.ja.md`](_history.ja.md) 参照）。null 安全演算子が対になります: `?.` / `?[]` で
 nil 可能値を辿り、`!!` で非 nil をアサート（`NilError`）、`??` / `??=`
 でフォールバックを供給／保存。
 
@@ -2769,7 +2776,7 @@ shutdown パターン）は、`Signal.notify` でチャネルを登録します�
 | `AssertionError` | matcher の失敗 (`assert_true` / `assert_eq` 等) もしくはユーザ `throw {kind: "AssertionError", ...}`。 比較系 matcher は両辺を message に含めます | はい |
 | `SyntaxError` | AST lowering で検出される構造エラー：`**rest` が末尾でない、`*` 区切りの重複、デフォルト値後に非デフォルト、`let` 付き compound、ループ外の `break` / `continue` 等。該当 function の宣言評価時に発火 | はい |
 | `ShadowError` | §6 のシャドウ解析でキャプチャ済み外側名と衝突する束縛を検出。ユーザの `try` が走る前に発火 | **いいえ**（eval 前の analyzer） |
-| `IOError` | `read_file` / `write_file` 等 stdlib ファイル操作失敗；`Tensor.load` 失敗 | はい |
+| `IOError` | `FS` / `File` 等 stdlib ファイル操作の失敗（パス不在・権限・クローズ済みハンドル）；`Tensor.from_csv` 失敗 | はい |
 | `ProcessError` | `Proc.run` の起動失敗（実行ファイルが存在しない等）、または `check: true` での非 0 終了 / シグナル死 | はい |
 | `SendError` | Sendable でない値を isolate 境界（`Isolate.spawn` / `tx.send`）で渡した — ネイティブハンドル、`Tensor`、`mut` を捕獲したクロージャ、循環参照 | はい |
 | `ChannelError` | 全 endpoint が消えた（closed）channel への `tx.send` | はい |
@@ -2826,14 +2833,11 @@ JIT バックエンドは `throw` / `try` / `catch` / `defer` を主要な
 
 * `throw` / `try` / `catch` は LLVM の `invoke` / `landingpad` と
   Itanium C++ personality を使って関数境界を超えて伝播
-* `defer` はレキシカルスコープ（`{ defer { ... } ... }`）内で動作。
-  scope の cleanup landingpad により、正常終了・`return`・throw の
-  全経路で発火
-* **制限事項**: 関数本体直下やトップレベル直下（ブロックに入れて
-  いない）`defer` は**正常終了または `return` のみ**発火します。
-  未 catch の throw で関数／プログラムを抜けた場合はスキップされ
-  ます。throw 経路でも cleanup したければブロック `{ }` で囲んで
-  ください (`fn () { { defer { ... } ... } }`)
+* `defer` は defer スタックにクロージャを登録し、scope の cleanup
+  landingpad が正常終了・`return`・throw の全経路で発火させます。
+  これはレキシカルスコープ（`{ defer { ... } ... }`）内・関数本体
+  直下・トップレベル直下のいずれでも同じで、未 catch の throw で
+  関数やプログラムを抜ける場合も cleanup は走ります
 
 内部ランタイムエラー（`TypeError`, `ZeroDivisionError` など）は
 両バックエンドでユーザの `try/catch` に構造化 Error Object として
@@ -3252,10 +3256,11 @@ matcher 一族 `assert_true` / `assert_eq` 等）は
 * 型注釈は §14 に従います。`Any` は任意の値。
 * 位置インデックスは 0 起点。負のインデックスは末尾からの数え
   （`-1` が最後）。
-* `String` の長さ・インデックスは**バイト**単位で、Unicode は
-  意識しません。
+* `String` の長さ・インデックスは**バイト**単位です（Go 流）。
+  Unicode 単位の走査は明示的に行います — `iter()` / `code_points()`
+  がスカラー、`graphemes()` が書記素クラスタです。
 
-### 17.1 文字列メソッド
+### 18.1 文字列メソッド
 
 すべての文字列メソッドは `String` または `StringView` をレシーバ
 に取り、引数も `StringLike` の場所では両方を受ける。 戻り値は
@@ -3361,7 +3366,7 @@ upper = 'Hello World'.code_points()
 Array や String スカラーを回す場合は `for c in s { ... }`
 （native loop）を推奨。
 
-### 17.2 配列メソッド
+### 18.2 配列メソッド
 
 **破壊的**と記したメソッドはレシーバを直接変更し、`nil` を返します
 （`pop` だけは取り除いた要素を返します）。それ以外は新しい `Array`
@@ -3448,7 +3453,7 @@ inspect([1, 2, 3].reduce(0, fn (a, *xs) { a + xs.size() }))  # => 3
 [1, 'x'].map(fn (v: Long) { v * 2 })   # !! parameter 'v' expects Long
 ```
 
-### 17.3 オブジェクトメソッド
+### 18.3 オブジェクトメソッド
 
 | シグネチャ                        | 説明                                       |
 |----------------------------------|--------------------------------------------|
@@ -3470,32 +3475,46 @@ p.remove('a')
 inspect(p)          # {b: 2}
 ```
 
-### 17.4 特殊識別子
+### 18.4 特殊識別子
 
 | 識別子 | 可視性                    | 意味                           |
 |--------|--------------------------|--------------------------------|
 | `fn`   | すべての関数本体で有効      | 現在実行中の関数自身             |
 | `self` | メソッド呼出時のみ         | メソッドのレシーバ               |
 
-### 17.5 イテレータプロトコル
+### 18.5 イテレータプロトコル
 
 `for x in expr { ... }`（§12）は `expr` がイテレータプロトコルに
 参加していることを要求します。プロトコルは `Object`（サブ型の
-`Array` 含む）上の 2 つの **well-known メソッド名**を使います:
+`Array` 含む）上の 3 つの **well-known メソッド名**を使います —
+各 `next` の手前に `has_next` のゲートを置く Kotlin 流の形です:
 
 | メソッド | 形状 | 呼び出される型 | 戻り値 |
 |---|---|---|---|
 | `iter` | `fn () -> Object` | **Iterable** | **Iterator** (`self` で可) |
-| `next` | `fn () -> Object` | **Iterator** | ステップオブジェクト `{ done: Bool, value: Any }` |
+| `has_next` | `fn () -> Bool` | **Iterator** | 次の要素があるか |
+| `next` | `fn () -> Any` | **Iterator** | 次の要素（`has_next()` が真だったときだけ呼ばれる） |
+
+`has_next` か `next` を欠くイテレータ Object は、`for`-in の位置で
+`TypeError: type error: iterator missing has_next()/next()` を送出します。
 
 **契約（プロパティ代入時に検査）**: `iter` / `next` を非 `Function`
 値、または引数ありの Function に束縛すると、代入時点で `type error`
 が送出されます（§17 の `drop` 契約と同じ）。
 
-**ステップオブジェクトの形状**:
+**省略可能な `dispose`**: イテレータが引数なしの `dispose` を持つ場合、
+全 exit パス（正常な drain・`break`・ループを抜ける例外）で呼ばれます。
+ジェネレータはこれを使って、中断された本体に登録された defer を走らせます。
 
-- `done`: 真 → iteration 完了。ループは `value` を束縛せず終了。
-- `value`: このステップで yield される値。`done` が真のとき省略可。
+    let countdown = fn (start) {
+      mut i = start
+      {
+        iter:     fn () { self },
+        has_next: fn () { i > 0 },
+        next:     fn () { let v = i; i = i - 1; v }
+      }
+    }
+    for v in countdown(3) { inspect(v) }   # 3, 2, 1
 
 **Iterator は Iterable でもある**: イテレータの `iter` は自身を返す
 べきで、これにより `for x in some_iterator { ... }` が別途
@@ -4175,7 +4194,8 @@ fn ...` は前の式の matmul 継続ではなく、独立した 2 statement と
 
 ## 22. コマンドラインインタフェース
 
-    culebra [flags] [script.cul ...] [arg ...]
+    culebra [flags] [script.cul] [arg ...]
+    culebra <command> [command-flags]
 
 スクリプトパスより後の引数はそのまま `Sys.argv` としてスクリプトに
 渡されます（Python / Node 流 — `--` 不要。[`docs/stdlib.ja.md`](stdlib.ja.md)
@@ -4186,13 +4206,23 @@ fn ...` は前の式の matmul 継続ではなく、独立した 2 statement と
 
 | フラグ          | 効果                                                 |
 |----------------|-----------------------------------------------------|
-| `--shell`      | スクリプト実行後に REPL に入る                         |
-| `--ast`        | 解析した AST を実行前に出力                             |
-| `--debug`      | CLI デバッガを有効化、`debugger` 文でブレーク            |
+| `--shell`      | REPL を起動（スクリプト未指定時のデフォルト）            |
+| `--ast`        | 実行せず、解析した AST を出力                           |
+| `--debug`      | 実行しながらデバッグ診断を出力                           |
 | `--jit`        | インタープリタではなく LLVM ORC JIT を使用               |
 | `--jit-faststart` | `--jit` と同様だが IR と機械語の両方の最適化を省き、JIT のウォームアップ時間を約40分の1にする代わりに定常状態のスループットが小さく低下する（純スクリプトのホットループで約12%、ホット処理が C++/BLAS ランタイム側にある場合は約0%）。`-O0` を含意。出力は `--jit` / インタプリタと一致 |
 | `--emit-llvm`  | `--jit` と併用で生成された IR を出力して終了             |
 | `-O0`〜`-O3`   | `--jit` の最適化レベル（デフォルトは `-O2`）            |
+| `-h`, `--help` | オプションとコマンドの一覧を出力して終了                 |
+
+### サブコマンド
+
+| コマンド | 効果 |
+|---|---|
+| `build <in.cul> -o <out>` | AOT コンパイルして単体実行ファイルを生成（バンドルされるモジュールグラフは §24、クロスコンパイル用フラグは `culebra build --help`） |
+| `test [paths...]` | テストと doctest を実行（`--filter`, `--doc`, `--reporter`, `--bail`, `--list`） |
+| `lint [paths...]` | 実行せずに静的エラーと警告を報告（`--fix` は未使用 import を削除） |
+| `fmt [paths...]` | 正準スタイルに整形（`-i` in-place、`-l` 一覧、`--check`） |
 
 スクリプトを指定しない場合、自動的に REPL が起動します。インタプリタ
 REPL と JIT REPL のどちらも入力間でセッション状態を保持します — 一つの
@@ -4243,9 +4273,6 @@ CLI バイナリはユーザコード実行前に、以下 3 つのグローバ�
   Unicode 処理は `code_points()` / `graphemes()` イテレータを使う。
 * `Array` / `Object` / `Tuple` / `Set` の等価比較は構造的（値）比較。
   参照同一性で比較するのは `Function` / `Tensor` のみ。
-* JIT の `defer` を関数直下・トップレベルに置くと、throw の巻き戻し
-  経路では発火しない（§15）。throw 安全な後処理が必要な場合は
-  `defer` をネストしたブロック内に書く。
 * 型注釈は関数境界と注釈付き代入でのみ検査され、言語を静的にする
   ものではない。
 * パターンマッチに網羅性検査はない。
@@ -4503,11 +4530,11 @@ smoke を 1 度に回します。AOT 差分のみなら `just test aot`。下表
 | `tests/test_set.cul` | §10 (Set) |
 | `tests/test_tuple.cul` | §10 (Tuple、destructuring) |
 | `tests/test_ufcs.cul` | §10 (メソッド、UFCS)、§19 (`__ARGS__`) |
-| `tests/test_args.cul` | stdlib §9 (`Args`) |
+| `tests/test_args.cul` | stdlib §10 (`Args`) |
 | `tests/test_fs.cul` | stdlib §3 (`FS`) |
-| `tests/test_json.cul` | stdlib §8 (`JSON`) |
-| `tests/test_tensor.cul` | stdlib §7 (`Tensor`) |
-| `tests/test_time.cul` | stdlib §4 (`Time`) |
+| `tests/test_json.cul` | stdlib §9 (`JSON`) |
+| `tests/test_tensor.cul` | stdlib §8 (`Tensor`) |
+| `tests/test_time.cul` | stdlib §5 (`Time`) |
 | `tests/test_import.cul` | §24 (モジュール) — `tests/test_import_helpers/*.cul` が依存先 |
 
 `tests/` 配下のすべてのテストファイルは両 backend で同一 stdout

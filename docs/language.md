@@ -10,7 +10,7 @@ For an introductory tour with runnable examples, see
 [`guide.md`](guide.md). For API reference of the standard library see
 [`stdlib.md`](stdlib.md). For implementation internals (parser, JIT
 codegen, AOT tree-shaking) see [`internals.md`](internals.md). Designs
-that were considered and not adopted are in [`record.md`](record.md).
+that were considered and not adopted are in [`_history.md`](_history.md).
 
 ## Table of contents
 
@@ -94,13 +94,17 @@ Identifiers are case-sensitive.
 Reserved words that cannot be used as identifiers in declarations:
 
     nil  true  false  mut  debugger  return  while  for  in  if  else
-    fn  match  cond  break  continue  throw  try  catch  defer  yield
-    class  trait  enum  import  export  from
+    fn  match  cond  break  continue  nobreak  throw  try  catch
+    defer  yield  class  trait  enum  import  export  from
+    effect  perform  handle  with
 
 The parser also recognizes `let` as an optional prefix in assignments.
-Type annotation names (`Nil`, `Bool`, `Long`, `Float`, `String`,
-`Array`, `Object`, `Function`, `Any`) are *not* reserved; they are
-contextual and only recognized after `:` or `->`.
+`static` and `get` are contextual markers inside a class body, and
+`by` is contextual inside a range literal (`0..10 by 2`); none of the
+three is reserved elsewhere. Type annotation names (`Nil`, `Bool`,
+`Long`, `Float`, `String`, `Array`, `Object`, `Function`, `Any`) are
+*not* reserved either; they are contextual and only recognized after
+`:` or `->`.
 
 ### Literals
 
@@ -223,21 +227,25 @@ Most constructs are expressions that yield a value:
 
 ## 4. Types
 
-Culebra has exactly eleven types:
+Culebra has exactly twelve types — the names `type_of` can return:
 
-| Type       | Description                                                                          |
-|------------|--------------------------------------------------------------------------------------|
-| `Nil`      | Single value `nil`                                                                   |
-| `Bool`     | `true` or `false`                                                                    |
-| `Long`     | 64-bit signed integer                                                                |
-| `Float`    | IEEE 754 binary64 (double precision)                                                 |
-| `String`   | Immutable heap-allocated byte string                                                 |
-| `Array`    | Mutable ordered collection of values                                                 |
-| `Object`   | Mutable map of hashable keys to values (String keys go through a fast shape path)    |
-| `Function` | Closure (function pointer + captures)                                                |
-| `Tensor`   | N-dimensional numeric tensor with BLAS-backed lazy graph (see [stdlib §5](stdlib.md#5-tensor)) |
-| `Tuple`    | Immutable, hashable sequence (`(1, 2)`) — usable as an Object/Set key                |
-| `Set`      | Insertion-ordered collection of unique hashable values (`{1, 2, 3}`)                 |
+| Type         | Description                                                                          |
+|--------------|--------------------------------------------------------------------------------------|
+| `Nil`        | Single value `nil`                                                                   |
+| `Bool`       | `true` or `false`                                                                    |
+| `Long`       | 64-bit signed integer                                                                |
+| `Float`      | IEEE 754 binary64 (double precision)                                                 |
+| `String`     | Immutable heap-allocated byte string                                                 |
+| `StringView` | Immutable zero-copy borrow of another string's bytes, produced by `slice` / `split` / `view` (§18.1) |
+| `Array`      | Mutable ordered collection of values                                                 |
+| `Object`     | Mutable map of hashable keys to values (String keys go through a fast shape path)    |
+| `Function`   | Closure (function pointer + captures)                                                |
+| `Tensor`     | N-dimensional numeric tensor with a lazy graph evaluated on CPU or GPU (see [stdlib §8](stdlib.md#8-tensor)) |
+| `Tuple`      | Immutable, hashable sequence (`(1, 2)`) — usable as an Object/Set key                |
+| `Set`        | Insertion-ordered collection of unique hashable values (`{1, 2, 3}`)                 |
+
+Classes, enum variants, modules, iterators, and stdlib namespaces are
+all `Object`s; `type_of` reports `'Object'` for them.
 
 Arithmetic and comparison between `Long` and `Float` promote the
 `Long` operand to `Float` automatically — see §7. Outside that
@@ -484,7 +492,7 @@ Culebra splits them because each axis serves a different purpose in a
 Scheme-influenced, closure-as-object idiom:
 
 * **Captured state is object state.** In the closure-based object
-  pattern (see [`guide.md` §8.2](guide.md#82-the-closure-based-alternative)), an enclosing function's mutable
+  pattern (see [`guide.md` §9.2](guide.md#92-the-closure-based-alternative)), an enclosing function's mutable
   binding is the object's private field. Accidentally shadowing it —
   typically by writing `mut x = ...` intending a new local — silently
   breaks the object. Making this a compile-time error is worth the
@@ -1773,8 +1781,8 @@ Rules:
   the other way (`f(x: 1, 2)`) is a `SyntaxError`.
 * The same name may not appear twice as an explicit kwarg.
 * A name cannot appear both positionally and as a kwarg.
-* Unknown kwarg names are a `TypeError` — there is no `**rest`
-  catch-all on the definition side in this milestone.
+* Unknown kwarg names are a `TypeError` unless the callee declares a
+  `**rest` catch-all, which absorbs them.
 * A `**` splat operand must be an `Object` with `String` keys only.
 * Defaults are re-evaluated on every call (Ruby/Scala flavor — no
   Python-style "evaluated at def time" trap).
@@ -2458,7 +2466,7 @@ null safety, in three tiers:
   a String).
 
 This is a **runtime** policy — there is no static null checker (by
-design; see [`record.md`](record.md)). The null-safe operators pair with it:
+design; see [`_history.md`](_history.md)). The null-safe operators pair with it:
 `?.` / `?[]` navigate possibly-nil values, `!!` asserts non-nil
 (raising `NilError`), and `??` / `??=` supply or store fallbacks.
 
@@ -2956,7 +2964,7 @@ AOT builds (unless noted).
 | `AssertionError` | Matcher failure (`assert_true` / `assert_eq` / etc.) or user `throw {kind: "AssertionError", ...}`. Message names both operands for comparison matchers. | yes |
 | `SyntaxError` | Structural errors raised during AST lowering: `**rest` not last param, duplicate `*` separator, non-default param after default, `compound let`, `break` / `continue` outside loop. Surfaces at function decl evaluation, before that function runs. | yes |
 | `ShadowError` | Static shadow analyzer (§6) detected a binding that shadows a captured outer name. Fires before any user `try` block can observe it. | **no** (pre-eval analyzer) |
-| `IOError` | `read_file` / `write_file` / stdlib file ops failing; `Tensor.load` failure. | yes |
+| `IOError` | `FS` / `File` / stdlib file ops failing (missing path, permission, closed handle); `Tensor.from_csv` failure. | yes |
 | `ProcessError` | `Proc.run` spawn failure (e.g. the executable doesn't exist), or a non-zero exit / signal death under `check: true`. | yes |
 | `SendError` | A value that is not Sendable was passed across an isolate boundary (`Isolate.spawn` / `tx.send`) — a native handle, a `Tensor`, a closure capturing a `mut`, or a cyclic value. | yes |
 | `ChannelError` | `tx.send` on a channel whose receivers/senders have all gone (closed). | yes |
@@ -3017,15 +3025,12 @@ semantics matching the tree interpreter for the common cases:
 
 * `throw` / `try` / `catch` propagate across function boundaries via
   LLVM `invoke` / `landingpad` and the Itanium C++ personality.
-* `defer` inside a lexical-scope block (`{ defer { ... } ... }`)
-  registers a closure on a global defer stack; a scope cleanup
+* `defer` registers a closure on a defer stack; a scope cleanup
   landingpad runs it on fall-through, `return`, and throw-unwind
-  paths.
-* **Limitation**: `defer` written directly in a function body or at
-  the top level (not inside a nested `{ }`) only runs on *normal*
-  exit or `return`. An uncaught throw that escapes the function or
-  program skips it. For throw-path cleanup, wrap the defer in a
-  block (`fn () { { defer { ... } ... } }`).
+  paths. This holds at every level — inside a lexical-scope block
+  (`{ defer { ... } ... }`), directly in a function body, and at the
+  top level — so cleanup fires even when an uncaught throw escapes
+  the function or the program.
 
 Internal runtime errors (`TypeError`, `ZeroDivisionError`, etc.) flow
 through user `try/catch` as structured Error Objects on both backends
@@ -3456,10 +3461,11 @@ Conventions:
 * Types follow §14. `Any` denotes any value.
 * Positional indices are zero-based. Negative indices where noted
   count from the end (`-1` is the last element).
-* Length and indexing for `String` are in **bytes**; Culebra strings
-  are not Unicode-aware.
+* Length and indexing for `String` are in **bytes** (the Go model).
+  Unicode-aware traversal is explicit: `iter()` / `code_points()` walk
+  scalars and `graphemes()` walks extended grapheme clusters.
 
-### 17.1 String methods
+### 18.1 String methods
 
 All string methods accept `String` or `StringView` as receiver (and
 where shown, as argument — `StringLike`). They return new values; the
@@ -3564,7 +3570,7 @@ iterators. Semantics match the interpreter; throughput is dominated
 by the per-step closure dispatch. For maximum speed over Arrays and
 direct String scalars, prefer `for c in s { ... }` (native loop).
 
-### 17.2 Array methods
+### 18.2 Array methods
 
 Methods marked **mutating** modify the receiver in place and return
 `nil` (except `pop`, which returns the removed element); others
@@ -3653,7 +3659,7 @@ wrong-typed element raises a `TypeError`:
 [1, 'x'].map(fn (v: Long) { v * 2 })   # !! parameter 'v' expects Long
 ```
 
-### 17.3 Object methods
+### 18.3 Object methods
 
 | Signature                        | Description                                |
 |----------------------------------|--------------------------------------------|
@@ -3686,35 +3692,49 @@ p.remove('a')
 inspect(p)                   # {b: 2}
 ```
 
-### 17.4 Special identifiers
+### 18.4 Special identifiers
 
 | Identifier | Visibility               | Meaning                              |
 |------------|--------------------------|--------------------------------------|
 | `fn`       | Inside every function    | The currently-executing function.    |
 | `self`     | Inside method calls      | The method's receiver.               |
 
-### 17.5 Iterator protocol
+### 18.5 Iterator protocol
 
 `for x in expr { ... }` (§12) requires `expr` to participate in the
-iterator protocol. The protocol uses two **well-known method names**
-on `Object` (and its subtype `Array`):
+iterator protocol. The protocol uses three **well-known method names**
+on `Object` (and its subtype `Array`) — the Kotlin shape, a `has_next`
+gate in front of each `next`:
 
 | Method | Shape | Called on | Returns |
 |---|---|---|---|
 | `iter` | `fn () -> Object` | an **Iterable** | an **Iterator** (may be `self`) |
-| `next` | `fn () -> Object` | an **Iterator** | a step object `{ done: Bool, value: Any }` |
+| `has_next` | `fn () -> Bool` | an **Iterator** | whether another element is available |
+| `next` | `fn () -> Any` | an **Iterator** | the next element (called only when `has_next()` was truthy) |
+
+An iterator Object missing either `has_next` or `next` raises
+`TypeError: type error: iterator missing has_next()/next()` at the
+`for`-in site.
 
 **Contract, enforced at property assignment**: binding `iter` or
 `next` to a non-`Function` value, or to a function with non-zero
 arity, raises `type error` at the assignment site (mirrors the `drop`
 contract — §17).
 
-**Step object shape**:
+**Optional `dispose`**: if the iterator has a zero-arity `dispose`, it
+is called on every exit path — normal drain, `break`, or an exception
+leaving the loop. Generators use it to run the defers registered
+inside a suspended body.
 
-- `done`: truthy → iteration is complete; the loop exits without
-  binding `value`.
-- `value`: the value yielded for this step. Absent when `done` is
-  truthy.
+    let countdown = fn (start) {
+      mut i = start
+      {
+        iter:     fn () { self },
+        has_next: fn () { i > 0 },
+        next:     fn () { let v = i; i = i - 1; v }
+      }
+    }
+    for v in countdown(3) { inspect(v) }   # 3, 2, 1
 
 **Iterators are also Iterables**: an iterator's `iter` should return
 itself, so `for x in some_iterator { ... }` works without a separate
@@ -4416,7 +4436,8 @@ expression.
 
 ## 22. Command-line interface
 
-    culebra [flags] [script.cul ...] [arg ...]
+    culebra [flags] [script.cul] [arg ...]
+    culebra <command> [command-flags]
 
 Everything after the script path is captured verbatim and exposed to the
 script as `Sys.argv` (the Python / Node convention — no `--` needed; see
@@ -4428,13 +4449,23 @@ as the script even if it begins with a dash.
 
 | Flag           | Effect                                                    |
 |----------------|-----------------------------------------------------------|
-| `--shell`      | Drop into the REPL after running any scripts.             |
-| `--ast`        | Print the parsed AST before running.                      |
-| `--debug`      | Enable the CLI debugger; `debugger` statements break in.  |
+| `--shell`      | Start the REPL (the default when no script is given).     |
+| `--ast`        | Print the parsed AST instead of running it.               |
+| `--debug`      | Print debug diagnostics while running.                    |
 | `--jit`        | Use the LLVM ORC JIT instead of the tree-walking interpreter. |
 | `--jit-faststart` | Like `--jit`, but skips both the IR and the machine-code optimizers, cutting JIT warmup time ~40x at a small steady-state throughput cost (~12% on pure-script hot loops, ~0% when hot work is in the C++/BLAS runtime). Implies `-O0`. Output matches `--jit`/interp. |
 | `--emit-llvm`  | With `--jit`, print the generated IR and exit.            |
 | `-O0`..`-O3`   | With `--jit`, select the LLVM optimization level. Default `-O2`. |
+| `-h`, `--help` | Print the option / command summary and exit.              |
+
+### Subcommands
+
+| Command | Effect |
+|---|---|
+| `build <in.cul> -o <out>` | Compile ahead-of-time into a standalone executable (§24 covers the module graph it bundles; `culebra build --help` lists the cross-compile flags). |
+| `test [paths...]` | Run tests and doctests (`--filter`, `--doc`, `--reporter`, `--bail`, `--list`). |
+| `lint [paths...]` | Report static errors and warnings without running (`--fix` removes unused imports). |
+| `fmt [paths...]` | Reformat source to the canonical style (`-i` in place, `-l` list, `--check`). |
 
 If no script is provided, the REPL is launched automatically. Both
 the interpreter REPL and the JIT REPL preserve session state across
@@ -4489,9 +4520,6 @@ built-ins from §19.
   work goes through `code_points()` / `graphemes()` iterators.
 * `Array` / `Object` / `Tuple` / `Set` equality is structural (by value);
   only `Function` / `Tensor` compare by reference identity.
-* JIT `defer` at function / top-level scope does not run on the
-  throw-unwind path (see §15); wrap the defer in a nested block for
-  throw-safe cleanup.
 * Type annotations are enforced only at function boundaries and
   annotated assignments; they do not make the language static.
 * Pattern matching has no exhaustiveness check.
@@ -4786,11 +4814,11 @@ touch multiple sections, marked "(broad)".
 | `tests/test_set.cul` | §10 (sets) |
 | `tests/test_tuple.cul` | §10 (tuples, destructuring) |
 | `tests/test_ufcs.cul` | §10 (methods, UFCS), §19 (`__ARGS__`) |
-| `tests/test_args.cul` | stdlib §9 (`Args`) |
+| `tests/test_args.cul` | stdlib §10 (`Args`) |
 | `tests/test_fs.cul` | stdlib §3 (`FS`) |
-| `tests/test_json.cul` | stdlib §8 (`JSON`) |
-| `tests/test_tensor.cul` | stdlib §7 (`Tensor`) |
-| `tests/test_time.cul` | stdlib §4 (`Time`) |
+| `tests/test_json.cul` | stdlib §9 (`JSON`) |
+| `tests/test_tensor.cul` | stdlib §8 (`Tensor`) |
+| `tests/test_time.cul` | stdlib §5 (`Time`) |
 | `tests/test_import.cul` | §24 (Modules) — uses `tests/test_import_helpers/*.cul` as dependencies |
 
 Every test file in `tests/` is required to pass on both backends

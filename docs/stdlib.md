@@ -7,21 +7,21 @@ Everything described here is available without any `import`
 statement.
 
 For an introductory tour and usage idioms see
-[`guide.md` §14](guide.md#14-standard-library-tour). For library
+[`guide.md` §15](guide.md#15-standard-library-tour). For library
 implementation details and rationale see
 [`internals.md`](internals.md).
 
 Language-level built-ins — `to_long`, `to_float`, `to_string`,
 `type_of`, `range`, `iota` — are specified in
-[§18 of the language spec](language.md). The matcher family
+[§19 of the language spec](language.md). The matcher family
 (`assert_true` / `assert_eq` / `assert_throws` / etc.) is documented
 in [§13 below](#13-matchers). Methods on built-in types (`String`,
 `Array`, `Object`) are specified in
-[§17 of the language spec](language.md).
+[§18 of the language spec](language.md).
 
 The CLI (`src/main.cc`) additionally installs `inspect`, `print`, and
 `println` as globals aliased to `IO.inspect` / `IO.print` / `IO.println`
-(see [§20 of the language spec](language.md)). Embedders that use
+(see [§22 of the language spec](language.md)). Embedders that use
 `culebra::environment()` directly get a clean namespace without those
 aliases.
 
@@ -69,8 +69,9 @@ Conventions used below:
 26. [`Canvas`](#26-canvas) — immediate-mode 2D framebuffer for games (pixels, sprites, font, input, tone)
 27. [`Scene`](#27-scene) — retained-mode 3D renderer for procedural geometry (opt-in, macOS-only)
 28. [`Net`](#28-net) — raw TCP / UDP sockets and name resolution (the layer under `Http`)
-29. [Design notes](#29-design-notes)
-30. [Not included (yet)](#30-not-included-yet)
+29. [`Desktop` / `Webview`](#29-desktop--webview) — native WebView desktop app: local HTTP server + window, one call
+30. [Design notes](#30-design-notes)
+31. [Not included (yet)](#31-not-included-yet)
 
 **Where to find what**
 
@@ -106,10 +107,11 @@ Conventions used below:
 | Share fixed-layout data across threads/processes (zero copy) | [§12 SharedBuffer](#sharedbuffer--zero-copy-shared-fixed-layout-data) — `SharedBuffer.new(n, Vec2)` / `.file` / `.shared` |
 | Share variable-length read-only data across threads (no copy) | [§12 Shared](#shared--immutable-values-shared-by-reference) — `Shared.new(value)` |
 | Handle Ctrl+C / SIGINT gracefully | [§12 Signal](#signal--signalnotify--signalreset) — `Signal.notify(tx)` / `Signal.reset()` |
+| Desktop GUI (native WebView + local server) | [§29 Desktop](#29-desktop--webview) — `Desktop.run({title, assets, routes})` |
 | Heap introspection / leak checks | [§7 GC](#gc--heap-introspection) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes}` |
-| String / Array / Object methods | [language spec §17](language.md) |
-| Integer sequences (`range`, `iota`) | [language spec §18](language.md) |
-| Conversion (`to_long`, `to_float`, `to_string`, `type_of`) | [language spec §18](language.md) |
+| String / Array / Object methods | [language spec §18](language.md) |
+| Integer sequences (`range`, `iota`) | [language spec §19](language.md) |
+| Conversion (`to_long`, `to_float`, `to_string`, `type_of`) | [language spec §19](language.md) |
 
 ---
 
@@ -127,7 +129,7 @@ Sub-groups in this section: **constants** (`Math.pi`, `Math.e`,
 `log`, `exp`, `sqrt`, `floor`, `ceil`, `round`, `pow`, `sign`,
 `clamp`) — **trigonometry** (`sin`, `cos`, `tan`, `asin`, `acos`,
 `atan`, `atan2`, in radians). Integer-sequence factories `range` / `iota`
-are language-core globals — see [§18](language.md#18-core-built-in-functions).
+are language-core globals — see [§19](language.md#19-core-built-in-functions).
 
 ### Constants
 
@@ -707,7 +709,7 @@ Open one with `File.open` or the scoped `File.with`. All I/O is binary
 (no text-mode newline translation); `String` is a byte string, so any
 content round-trips.
 
-The handle implements four method groups — **Reader** (`read` /
+The handle (`f` below) implements four method groups — **Reader** (`read` /
 `lines` / `chunks`), **Writer** (`write` / `flush`), **Seekable**
 (`seek` / `tell`), **Closeable** (`close`). Which are valid depends on
 the open mode.
@@ -745,13 +747,13 @@ rely on it — prefer one of the three patterns above.
 
 ### Reader methods
 
-#### `File.read() -> String` / `File.read(n: Long) -> String`
+#### `f.read() -> String` / `f.read(n: Long) -> String`
 
 Streaming read from the current position: `read()` returns the rest of
 the file, `read(n)` at most `n` bytes (fewer at EOF). For a one-shot
 whole-file read without a handle, use `FS.read(path)`.
 
-#### `File.lines() -> Iterator<String>`
+#### `f.lines() -> Iterator<String>`
 
 Iterate lines, each with its trailing newline stripped (`\n`, `\r\n`,
 and `\r` are all recognized). The iterator owns the handle and closes
@@ -764,36 +766,36 @@ for line in File.open('access.log').lines() {
 }
 ```
 
-#### `File.chunks(n: Long) -> Iterator<String>`
+#### `f.chunks(n: Long) -> Iterator<String>`
 
 Iterate fixed-size byte chunks of at most `n` bytes (the last may be
 shorter). Same close-on-exit contract as `lines()`.
 
 ### Writer methods
 
-#### `File.write(data: String) -> Nil`
+#### `f.write(data: String) -> Nil`
 
 Write `data` at the current position (raw bytes, no newline
 translation). Throws `IOError` on a read-only handle.
 
-#### `File.flush() -> Nil`
+#### `f.flush() -> Nil`
 
 Flush buffered writes to the OS.
 
 ### Seekable methods
 
-#### `File.seek(offset: Long, whence: String = "set") -> Nil`
+#### `f.seek(offset: Long, whence: String = "set") -> Nil`
 
 Move the cursor. `whence` is `"set"` (from start), `"cur"` (relative),
 or `"end"` (from end; use a negative `offset`).
 
-#### `File.tell() -> Long`
+#### `f.tell() -> Long`
 
 Current byte offset.
 
 ### Closeable
 
-#### `File.close() -> Nil`
+#### `f.close() -> Nil`
 
 Close the handle, flushing writes. Idempotent — closing twice is a
 no-op. Operating on a closed handle throws `IOError`.
@@ -1146,6 +1148,22 @@ carries no `.cul`; use `Sys.executable` there).
 inspect(Sys.script)               # '/Users/alice/project/build.cul'
 ```
 
+### `Sys.time() -> Float`
+
+Seconds elapsed on a **monotonic** clock, anchored at the first call in
+the process. It never jumps backwards with a wall-clock adjustment, which
+makes it the right tool for timing a block of code; use `Time.now()` (§5)
+when you need an actual date. `Time.monotonic()` (§5) reads the same
+monotonic clock; each function anchors its own origin at its first
+call, so subtract two readings of the *same* function rather than
+mixing the two.
+
+```culebra
+let t0 = Sys.time()
+let sum = range(1000).reduce(0, |a, x| a + x)
+inspect(Sys.time() - t0 >= 0.0)   # => true
+```
+
 ### `GC` — heap introspection
 
 `GC.stat()` runs a full collection and returns an `Object` describing the
@@ -1409,18 +1427,35 @@ in-place is unsafe).
   `Tensor.from((...).to_array())` explicitly).
 - `.softmax()` also requires contiguous input.
 
-### Backends
+### Backends and device selection
 
-Phase 1 is **CPU only**.
+Evaluation is delegated to the vendored `cpp-tensorlib` engine
+(`vendor/cpp-tensorlib`), which owns the lazy graph, kernel fusion,
+and the device backends:
 
-- macOS: Accelerate framework (`cblas_sgemm/dgemm`, scalar fallback
-  for `sigmoid`).
-- Linux: OpenBLAS (`find_package(BLAS)`).
+- **CPU** — vectorized kernels (AVX2 / NEON); Accelerate supplies the
+  BLAS-shaped kernels on macOS.
+- **GPU** — Metal on macOS, CUDA on Linux / Windows.
 
-Future Metal / CUDA support will be added through the dispatch table
-in `tensor_backend.h`. The API stays the same; the silarray-style
-globals `use_cpu()` / `use_metal()` / `use_cuda()` will toggle the
-target.
+The device is process-global (shared by interpreter, JIT, and AOT) and
+switchable at runtime:
+
+| Function | Effect |
+| --- | --- |
+| `Tensor.use_cpu() -> Nil` | evaluate every op on the CPU |
+| `Tensor.use_gpu() -> Nil` | evaluate on the GPU backend |
+| `Tensor.use_auto() -> Nil` | choose per op by problem size (the default) |
+| `Tensor.gpu_available() -> Bool` | whether a GPU backend is compiled in and reachable |
+
+```culebra
+inspect(type_of(Tensor.gpu_available()))    # => 'Bool'
+```
+
+`use_gpu()` on a build with no reachable GPU falls back to the CPU
+path rather than throwing, so a program stays portable; check
+`gpu_available()` when the choice matters. Small tensors usually lose
+to kernel-launch overhead, which is why `use_auto` is the default.
+Storage stays F32 on every device (see the dtype constraints above).
 
 ---
 
@@ -3561,9 +3596,11 @@ let st = Term.style(fg: (255, 128, 0), bold: true)   # for a Screen cell
 
 ### Input events
 
-Input is a single event model: `Screen.poll(timeout)` (and `Term.parse(raw)`)
-returns one event **Object**, or `nil` for no input. A `kind` field
-discriminates; modifiers are booleans.
+Input is a single event model: `Term.poll(timeout)` — also reachable as
+`screen.poll(timeout)` inside a `Term.app` callback — returns one event
+**Object**, or `nil` when nothing arrived within `timeout` seconds.
+`Term.parse(raw)` turns an already-read escape sequence into the same
+shape. A `kind` field discriminates; modifiers are booleans.
 
 | `kind` | Fields |
 | --- | --- |
@@ -4277,7 +4314,81 @@ raises `NetError: networking is not available in this build`.
 
 ---
 
-## 29. Design notes
+## 29. `Desktop` / `Webview`
+
+A desktop GUI written in web tech: a local HTTP server supplies the UI, a
+**native WebView** window displays it, and the whole thing ships as one
+binary. `Webview` wraps the OS's own engine (WKWebView on macOS, WebKitGTK
+on Linux, WebView2 on Windows) — no bundled browser. Both namespaces are
+in the default build (`-DCULEBRA_ENABLE_WEBVIEW=OFF` opts out; on Linux
+they self-disable when the GTK4 / WebKitGTK dev packages are absent), and
+`culebra build` links the WebView frameworks only for programs that
+actually reference them.
+
+### `Desktop.run(config: Object) -> Nil`
+
+The one-call facade: start the server, open the window on it, block until
+the window closes, then stop the server.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `title` | `'culebra'` | window title |
+| `size` | window default | `[width, height]` in pixels |
+| `assets` | — | static root served at `/` — typically `Embed.dir('dist')`, which reads from disk in dev and is baked into the binary under `culebra build` |
+| `routes` | — | `fn (srv) { ... }` to register the app's own routes on the `Http` server (§15) |
+| `port` | `8731` | loopback port the server binds |
+| `workers` | `4` | server worker threads |
+
+A `POST /__quit` route is registered for you, so the page can close the
+app (`fetch('/__quit', {method: 'POST'})`); `Desktop.quit()` does the same
+from culebra code.
+
+```culebra
+# doctest: skip
+Desktop.run({
+  title: 'culebra desktop',
+  size: [720, 560],
+  assets: Embed.dir('dist'),
+  routes: fn (srv) {
+    srv.get('/api/hello', fn (req) {
+      { content_type: 'application/json',
+        body: JSON.stringify({ message: 'hello' }) }
+    })
+  }
+})
+```
+
+### `Webview.Window` — the raw binding
+
+Use it directly when you don't want a server at all (inline HTML, or a
+remote URL).
+
+| Method | Effect |
+| --- | --- |
+| `Webview.Window.new()` | create a window |
+| `w.set_title(title)` | set the title |
+| `w.set_size(width, height)` | resize |
+| `w.set_html(html)` | load an HTML string |
+| `w.navigate(url)` | load a URL |
+| `w.run()` | run the native event loop; blocks until terminated |
+| `w.terminate()` | end this window's `run()` |
+| `Webview.Window.quit()` | terminate whichever window is currently in `run()` — callable from another thread, e.g. an HTTP handler |
+
+```culebra
+# doctest: skip
+let w = Webview.Window.new()
+w.set_title('hello')
+w.set_size(480, 320)
+w.set_html('<h1>hi from culebra</h1>')
+w.run()
+```
+
+`examples/webview/` holds the full worked example (`desktop_app.cul` plus
+its `dist/` frontend).
+
+---
+
+## 30. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -4318,7 +4429,7 @@ fast path (`IO.inspect(x)` directly) keeps its inlined IR emission.
 Free functions (in namespaces) are used when the operation either
 constructs a value from nothing (`iota`, `IO.input`) or applies
 uniformly to multiple types (`type_of`, `to_string`). Operations
-that are *about* a specific type use method syntax — see §17 of the
+that are *about* a specific type use method syntax — see §18 of the
 language spec for String/Array/Object methods.
 
 ### Error-by-throw versus `nil` returns
@@ -4331,7 +4442,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 30. Not included (yet)
+## 31. Not included (yet)
 
 ### Heavier data structures
 
