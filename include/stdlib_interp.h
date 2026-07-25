@@ -3646,6 +3646,12 @@ inline Value make_net_socket_handle(int64_t id) {
   return Value(std::move(h));
 }
 
+// Defined after isolate.h is included (it needs sendable::serialize, since the
+// handler runs on a worker pool); forward-declared here so the listener handle
+// method can call it. Serves until interrupted; throws on a Sendable error.
+inline Value _net_serve_impl(int64_t id, const Value& handler, long workers,
+                             long line, long col);
+
 // Build a Listener handle: `port`/`host` of the bound address (so a port-0 bind
 // can report the ephemeral port it got) plus accept, and `iter` so
 // `for conn in listener` accepts in a loop.
@@ -3678,6 +3684,23 @@ inline Value make_net_listener_handle(int64_t id, const std::string& host,
             return make_net_socket_handle(cid);
           },
           "Object"sv)),
+      false);
+
+  // serve(handler, workers=0) — accept on this thread, run `handler(conn)` on a
+  // worker pool. Blocks until interrupted. The handler must be Sendable (each
+  // worker rebuilds it on its own heap), so this is the concurrent counterpart
+  // to the sequential `accept` / `for conn in listener`.
+  h.initialize(
+      "serve",
+      Value(FunctionValue(
+          {{"handler", false, "Function"sv},
+           {"workers", false, "Long"sv, nullptr,
+            std::make_shared<Value>(Value(static_cast<long>(0)))}},
+          [hid, loc](std::shared_ptr<Environment> env) -> Value {
+            long line, col; loc(env, line, col);
+            return _net_serve_impl(hid(env), env->get("handler"),
+                                   env->get("workers").to_long(), line, col);
+          })),
       false);
 
   // iter() — the Iterable trait: an endless accept loop. It never ends on its
@@ -7026,6 +7049,51 @@ inline void install_undefined_var_lint() {
 #include "isolate.h"
 
 namespace culebra {
+
+// Per-worker state for Net's `listener.serve`: each worker thread rebuilds the
+// handler onto its own heap here, and the on_conn trampoline calls into it.
+// thread_local — one set per worker thread (same shape as the Http server's).
+inline thread_local std::shared_ptr<Interpreter> g_net_w_interp;
+inline thread_local std::shared_ptr<Environment> g_net_w_base;
+inline thread_local Value g_net_w_handler;
+
+inline Value _net_serve_impl(int64_t id, const Value& handler, long workers,
+                             long line, long col) {
+  // Serialize once here, so a non-Sendable handler is an error at serve() —
+  // not a surprise on the first connection. Each worker rebuilds it on its own
+  // heap in setup().
+  auto snode = std::make_shared<sendable::SendNode>();
+  try {
+    sendable::SerCtx sc;
+    *snode = sendable::serialize(handler, sc);
+  } catch (CulebraError& e) {
+    throw CulebraError(
+        "SendError",
+        std::format("Net.serve: handler is not Sendable: {}", e.what()), line,
+        col);
+  }
+  culebra::net::ServeHooks hooks;
+  hooks.setup = [snode]() {
+    g_net_w_interp = std::make_shared<Interpreter>();
+    g_net_w_base = sendable::isolate_base_env();
+    sendable::DeCtx dc;
+    g_net_w_handler =
+        sendable::deserialize(*snode, *g_net_w_interp, g_net_w_base, dc);
+  };
+  hooks.teardown = []() {
+    g_net_w_handler = Value();
+    g_net_w_base.reset();
+    g_net_w_interp.reset();
+  };
+  hooks.on_conn = [](int64_t sid) {
+    g_net_w_interp->call_closure(g_net_w_handler, g_net_w_base,
+                                 {make_net_socket_handle(sid)});
+  };
+  std::string err;
+  if (!culebra::net::serve(id, static_cast<int>(workers), hooks, &err))
+    _net_throw("Net.serve", err, line, col);
+  return Value();
+}
 
 #if defined(CULEBRA_HTTP_ENABLED)
 // Per-worker dispatch state for a concurrent Http server (workers > 1): each

@@ -1218,6 +1218,26 @@ thread. Every raw fd is owned by an `FdGuard` until it is interned,
 so no error path — including the `Interrupted` thrown out of
 `wait_ready()` — can leak one.
 
+### Concurrent serve: the fd crosses, the handle doesn't
+
+`listener.serve(handler, workers:)` accepts on the calling thread and
+runs handlers on a pool, each worker owning its own culebra runtime —
+the `Http.server` model, minus httplib. The subtle part: a socket
+handle is `__nonsendable__` and lives in a thread-local table, so it
+*cannot* be handed to a worker. What crosses the boundary is the raw
+accepted **fd**; the worker interns it into its own table and builds
+the handle there. The invariant is preserved rather than excepted.
+
+The handler is serialized once at `serve` — so a non-Sendable handler
+fails there, not on the first connection — and rebuilt per worker,
+exactly as the Http server's route handlers are.
+
+Backpressure is the queue: `submit` blocks while the job queue is
+full, so a fast accept loop cannot outrun the workers without bound
+(the kernel's listen backlog is the real buffer). On the way out — a
+Ctrl+C leaves through the `Interrupted` throw — the pool's destructor
+drops connections that never started and joins the in-flight ones.
+
 ### No AOT usage-gating axis
 
 Unlike Tensor / Http / Compress / SQLite, `Net` pulls in no external

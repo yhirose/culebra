@@ -37,13 +37,18 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -801,6 +806,154 @@ inline bool shutdown_write(int64_t id, std::string* err) {
     return false;
   }
   return true;
+}
+
+// ---- Concurrent serve ------------------------------------------------------
+//
+// accept() on the calling thread, handlers on a pool of workers. Each worker
+// owns its own culebra runtime (a heap/GC is thread_local and non-sendable),
+// built by hooks.setup — which deserializes the Sendable handler onto that
+// heap — and released by hooks.teardown. What crosses the thread boundary is
+// the accepted *fd*, never a handle: the worker interns it into its OWN table,
+// so a Socket handle still never leaves the thread that made it, and the
+// __nonsendable__ contract holds unchanged. Mirrors http.h's CulebraWorkerPool
+// without the httplib::TaskQueue interface.
+
+struct ServeHooks {
+  std::function<void()> setup;           // build this worker's runtime + handler
+  std::function<void()> teardown;        // release them before the runtime dies
+  std::function<void(int64_t)> on_conn;  // run the script handler for one socket
+};
+
+// Pool size when the script doesn't pass `workers:`. Scaled with the machine
+// but bounded: each worker carries its own culebra runtime, so don't spawn one
+// per core on a big box (same reasoning, and the same window, as Http.server).
+inline size_t default_serve_workers() {
+  unsigned hw = std::thread::hardware_concurrency();
+  if (hw < 4) return 4;
+  if (hw > 8) return 8;
+  return hw;
+}
+
+class ServePool {
+ public:
+  ServePool(size_t n, const ServeHooks& hooks, std::atomic<bool>* interrupt_flag,
+            long conn_timeout_ms)
+      : hooks_(hooks),
+        interrupt_flag_(interrupt_flag),
+        conn_timeout_ms_(conn_timeout_ms),
+        cap_(n * 8) {
+    for (size_t i = 0; i < n; i++) threads_.emplace_back([this] { worker(); });
+  }
+
+  // Drops connections that never started, then waits for the in-flight ones.
+  // Runs on every exit path out of serve(), including the Interrupted throw.
+  ~ServePool() {
+    {
+      std::lock_guard<std::mutex> lk(m_);
+      shutdown_ = true;
+      for (socket_t fd : jobs_) detail::close_fd(fd);
+      jobs_.clear();
+    }
+    cv_.notify_all();
+    room_.notify_all();
+    for (auto& t : threads_)
+      if (t.joinable()) t.join();
+  }
+
+  ServePool(const ServePool&) = delete;
+  ServePool& operator=(const ServePool&) = delete;
+
+  // Blocks while the queue is full so a fast accept loop can't outrun the
+  // workers without bound — the kernel's listen backlog is the real buffer.
+  void submit(socket_t fd) {
+    std::unique_lock<std::mutex> lk(m_);
+    room_.wait(lk, [this] { return shutdown_ || jobs_.size() < cap_; });
+    if (shutdown_) {
+      detail::close_fd(fd);
+      return;
+    }
+    jobs_.push_back(fd);
+    lk.unlock();
+    cv_.notify_one();
+  }
+
+ private:
+  void worker() {
+    culebra::Runtime rt;
+    culebra::RuntimeScope scope(rt);
+    rt.interrupt_flag = interrupt_flag_;  // honor cancel in nested blocking ops
+    if (hooks_.setup) hooks_.setup();
+    for (;;) {
+      socket_t fd;
+      {
+        std::unique_lock<std::mutex> lk(m_);
+        cv_.wait(lk, [this] { return shutdown_ || !jobs_.empty(); });
+        if (shutdown_ && jobs_.empty()) break;
+        fd = jobs_.front();
+        jobs_.pop_front();
+      }
+      room_.notify_one();
+      auto s = std::make_unique<detail::Sock>();
+      s->kind = Kind::Tcp;
+      s->fd = fd;
+      s->timeout_ms = conn_timeout_ms_;
+      int64_t id = detail::intern(std::move(s));
+      try {
+        if (hooks_.on_conn) hooks_.on_conn(id);
+      } catch (...) {
+        // One handler raising closes that connection only — it must not take
+        // down the worker or the server (there is no response to turn into a
+        // 500, unlike Http.server).
+      }
+      close_handle(id);
+    }
+    if (hooks_.teardown) hooks_.teardown();
+  }
+
+  ServeHooks hooks_;
+  std::atomic<bool>* interrupt_flag_;
+  long conn_timeout_ms_;
+  size_t cap_;
+  std::vector<std::thread> threads_;
+  std::deque<socket_t> jobs_;
+  std::mutex m_;
+  std::condition_variable cv_;    // a job is ready
+  std::condition_variable room_;  // the queue has room
+  bool shutdown_ = false;
+};
+
+// Accept until interrupted, handing each connection to a worker. `n_workers`
+// < 1 picks the CPU-scaled default. Accepted sockets inherit the listener's
+// timeout. Returns false with *err on a listener error; a Ctrl+C / isolate
+// cancel leaves through the cooperative Interrupted (the pool's destructor
+// joins the workers on the way out).
+inline bool serve(int64_t lid, int n_workers, const ServeHooks& hooks,
+                  std::string* err) {
+  detail::Sock* l = detail::get(lid, Kind::Listener, err);
+  if (!l) return false;
+  socket_t lfd = l->fd;
+  long conn_timeout = l->timeout_ms;
+  size_t nw = n_workers >= 1 ? static_cast<size_t>(n_workers)
+                             : default_serve_workers();
+  ServePool pool(nw, hooks, culebra::current_runtime().interrupt_flag,
+                 conn_timeout);
+  for (;;) {
+    IoStatus st = detail::wait_ready(lfd, false, -1, err);  // may throw
+    if (st != IoStatus::Ok) return false;
+    sockaddr_storage ss{};
+    socklen_t len = sizeof(ss);
+    socket_t fd = ::accept(lfd, reinterpret_cast<sockaddr*>(&ss), &len);
+    if (fd == kInvalidSocket) {
+      int e = detail::last_error();
+      if (detail::is_eintr(e) || detail::is_wouldblock(e)) continue;
+      if (err) *err = detail::error_string(e);
+      return false;
+    }
+    detail::suppress_sigpipe(fd);
+    detail::set_nonblocking(fd);
+    pool.submit(fd);
+  }
 }
 
 // ---- UDP -------------------------------------------------------------------

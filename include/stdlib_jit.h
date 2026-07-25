@@ -3023,13 +3023,74 @@ CULEBRA_RT_INLINE void _jit_net_listener_iter(JitValue* __ret, JitClosure*, int8
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
 
+// Per-worker handler for `listener.serve`: each worker thread deserializes the
+// Sendable handler onto its own heap here, and the on_conn trampoline calls it.
+// thread_local — one per worker thread. JitOwnedVal so teardown's reset()
+// releases it (no hand-placed RC op), mirroring the interp's g_net_w_handler.
+inline thread_local std::optional<JitOwnedVal> g_jit_net_w_handler;
+
+CULEBRA_RT_INLINE void _jit_net_listener_serve(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                                   int64_t n, JitValue* args) {
+  JitValue self{self_tag, self_data};
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "handler");
+  if (args[0].tag != TAG_FUNC)
+    _jit_file_param_type_error(self, "handler", "Function", 0);
+  const bool has_workers = _jit_file_arg_present(n, args, 1);
+  if (has_workers && args[1].tag != TAG_LONG)
+    _jit_file_param_type_error(self, "workers", "Long", 1);
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  int64_t id = _jit_net_id(self);
+  int64_t workers = has_workers ? args[1].data : 0;
+
+  // Serialize once here, so a non-Sendable handler is an error at serve() —
+  // not a surprise on the first connection (mirrors the interp).
+  auto snode = std::make_shared<culebra::sendable::SendNode>();
+  try {
+    culebra::JitSerCtx sc;
+    *snode = culebra::jit_serialize(args[0], sc);
+  } catch (culebra::CulebraError& e) {
+    throw culebra::CulebraError(
+        "SendError",
+        std::format("Net.serve: handler is not Sendable: {}", e.what()),
+        _jit_call_site_line, _jit_call_site_col);
+  }
+  culebra::net::ServeHooks hooks;
+  hooks.setup = [snode]() {
+    culebra::JitDeCtx dc;
+    JitValue h = culebra::jit_deserialize(*snode, dc);  // +1
+    // Held only in this C++ slot → pin so the GC backstop won't sweep it.
+    _gc_heap().pin(reinterpret_cast<void*>(h.data));
+    g_jit_net_w_handler.emplace(h);
+  };
+  hooks.teardown = []() {
+    if (g_jit_net_w_handler) {
+      _gc_heap().unpin(
+          reinterpret_cast<void*>(g_jit_net_w_handler->borrow().data));
+    }
+    g_jit_net_w_handler.reset();  // RAII release of the deserialized handler
+  };
+  hooks.on_conn = [](int64_t sid) {
+    auto* cb =
+        reinterpret_cast<JitClosure*>(g_jit_net_w_handler->borrow().data);
+    JitOwnedVal ret{_culebra_invoke1(  // invoke consumes the socket handle's +1
+        cb, _culebra_net_build_socket_handle(sid))};
+  };
+  std::string err;
+  if (!culebra::net::serve(id, static_cast<int>(workers), hooks, &err))
+    _jit_net_throw("Net.serve", err, _jit_call_site_line, _jit_call_site_col);
+  { *__ret = {TAG_NIL, 0}; return; }
+}
+
 CULEBRA_RT_INLINE JitValue _culebra_net_build_listener_handle(
     int64_t id, const std::string& host, int port) {
   auto* h = culebra_runtime_object_new();
   _jit_net_bind_common(h, id);
   h->set_or_append("host", _jit_net_str(host), false);
   h->set_or_append("port", JitValue{TAG_LONG, port}, false);
+  static const JitParamMeta* serve_meta =
+      _jit_make_handle_meta({"handler", "workers"}, {false, true});
   _jit_handle_bind_method(h, "accept", _jit_net_listener_accept, 0);
+  _jit_handle_bind_method(h, "serve", _jit_net_listener_serve, 1, serve_meta);
   _jit_handle_bind_method(h, "iter", _jit_net_listener_iter, 0);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }

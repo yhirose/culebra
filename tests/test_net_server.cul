@@ -1,0 +1,79 @@
+// Net: `listener.serve(handler, workers:)` — accept on one thread, run the
+// handler on a worker pool. The server blocks in serve(), so it runs in an
+// Isolate (its own thread + runtime) while the main thread drives connections
+// over loopback; dropping the isolate sets its interrupt flag, which the accept
+// loop polls and stops on. Same shape as tests/test_http_server.cul.
+//
+// A fixed port is used because the isolate can't hand its ephemeral port back
+// to the main thread here; the sequential-API test (test_net.cul) covers port 0.
+// Output is identical across interp/JIT — no address, port or timing is
+// printed.
+
+PORT = 18811
+HOST = "127.0.0.1"
+
+iso = Isolate.spawn(fn() {
+  let l = Net.listen(PORT, host: HOST)
+  // Each connection: read one line, echo it back uppercased. "boom" raises, to
+  // prove one failing handler doesn't take the server (or its worker) down.
+  l.serve(fn(conn) {
+    let line = conn.read_line()
+    if line == "boom" { throw "handler exploded" }
+    if line != nil { conn.write(line.upper() + "\n") }
+  }, workers: 4)
+})
+
+// The isolate may not have bound the port yet — retry until it answers.
+fn ask(msg) {
+  mut attempt = 0
+  while attempt < 400 {
+    mut reply = nil
+    try {
+      let c = Net.connect(HOST, PORT, timeout: 2000)
+      c.set_timeout(2000)
+      c.write(msg + "\n")
+      reply = c.read_line()
+      c.close()
+    } catch e {
+      reply = nil
+    }
+    if reply != nil { return reply }
+    attempt = attempt + 1
+  }
+  return nil
+}
+
+// --- the pool serves connection after connection ---
+assert_eq(ask("hello"), "HELLO")
+assert_eq(ask("second"), "SECOND")
+
+// --- concurrent connections are all served (4 workers, 8 requests) ---
+let replies = []
+for i in 0..8 {
+  replies.push(ask("n" + i.to_string()))
+}
+assert_eq(replies, ["N0", "N1", "N2", "N3", "N4", "N5", "N6", "N7"])
+
+// --- a handler that raises drops only its own connection ---
+let c = Net.connect(HOST, PORT, timeout: 2000)
+c.set_timeout(2000)
+c.write("boom\n")
+assert_eq(c.read_line(), nil)        // connection closed, no reply
+c.close()
+
+// ... and the server is still serving afterwards.
+assert_eq(ask("after"), "AFTER")
+
+// --- a non-Sendable handler is rejected at serve(), naming the problem ---
+mut captured = 0
+let kind = try {
+  let l2 = Net.listen(0, host: HOST)
+  l2.serve(fn(conn) { captured = captured + 1 })
+  ""
+} catch e {
+  e.kind
+}
+assert_eq(kind, "SendError")
+
+iso.drop()                           // stops the accept loop, joins the thread
+puts("net server ok")

@@ -13,9 +13,13 @@
 
 #include <net.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <future>
+#include <stdexcept>
 #include <string>
+#include <thread>
 
 namespace nt = culebra::net;
 
@@ -411,6 +415,90 @@ static void test_no_fd_leak() {
   }
 }
 
+// serve(): accept on one thread, handle on a pool. The listener lives in the
+// serving thread's handle table (handles are thread-local), so the whole server
+// — listen included — runs inside the spawned thread, exactly as a script's
+// isolate would. A handler that throws must close only its own connection.
+static void test_serve() {
+  std::atomic<bool> cancel{false};
+  std::promise<int> port_promise;
+  auto port_future = port_promise.get_future();
+
+  std::thread server([&] {
+    culebra::Runtime rt;
+    culebra::RuntimeScope scope(rt);
+    rt.interrupt_flag = &cancel;  // the "Ctrl+C" that stops the accept loop
+
+    std::string err;
+    int64_t lid = nt::listen("127.0.0.1", 0, 0, &err);
+    if (lid < 0) {
+      port_promise.set_value(-1);
+      return;
+    }
+    std::string host;
+    int port = 0;
+    nt::local_addr(lid, host, port, &err);
+    port_promise.set_value(port);
+
+    nt::ServeHooks hooks;
+    hooks.on_conn = [](int64_t id) {
+      std::string line, e;
+      if (nt::read_line(id, line, &e) != nt::IoStatus::Ok) return;
+      if (line == "boom") throw std::runtime_error("handler failed");
+      std::string reply = line + "\n";
+      nt::write_all(id, reply.data(), reply.size(), &e);
+    };
+    try {
+      nt::serve(lid, 2, hooks, &err);
+    } catch (const culebra::CulebraError&) {
+      // Cooperative Interrupted — the expected way out.
+    }
+    nt::close_handle(lid);
+  });
+
+  int port = port_future.get();
+  CHECK(port > 0);
+  if (port > 0) {
+    std::string err, out;
+    // Several connections in a row, each echoed by some worker.
+    for (int i = 0; i < 6; i++) {
+      int64_t c = nt::connect("127.0.0.1", port, 3000, &err);
+      CHECK_OK(c >= 0, err);
+      if (c < 0) break;
+      std::string msg = "msg" + std::to_string(i) + "\n";
+      CHECK_OK(nt::write_all(c, msg.data(), msg.size(), &err) == nt::IoStatus::Ok,
+               err);
+      nt::set_timeout(c, 3000, &err);
+      CHECK_OK(nt::read_line(c, out, &err) == nt::IoStatus::Ok, err);
+      CHECK(out == "msg" + std::to_string(i));
+      nt::close_handle(c);
+    }
+
+    // A throwing handler drops its connection (EOF, no reply) but leaves the
+    // server serving.
+    int64_t bad = nt::connect("127.0.0.1", port, 3000, &err);
+    CHECK_OK(bad >= 0, err);
+    if (bad >= 0) {
+      nt::write_all(bad, "boom\n", 5, &err);
+      nt::set_timeout(bad, 3000, &err);
+      CHECK(nt::read_line(bad, out, &err) == nt::IoStatus::Eof);
+      nt::close_handle(bad);
+    }
+    int64_t after = nt::connect("127.0.0.1", port, 3000, &err);
+    CHECK_OK(after >= 0, err);
+    if (after >= 0) {
+      nt::write_all(after, "still-here\n", 11, &err);
+      nt::set_timeout(after, 3000, &err);
+      CHECK_OK(nt::read_line(after, out, &err) == nt::IoStatus::Ok, err);
+      CHECK(out == "still-here");
+      nt::close_handle(after);
+    }
+  }
+
+  cancel.store(true);  // stops the accept loop within one poll slice
+  server.join();
+}
+
 // Closing a handle must return its slot to the free list, so a long-running
 // accept loop doesn't grow the table forever.
 static void test_slot_reuse() {
@@ -436,6 +524,7 @@ int main() {
   test_resolve();
   test_interrupt();
   test_no_fd_leak();
+  test_serve();
   test_slot_reuse();
 
   if (g_failures == 0) {

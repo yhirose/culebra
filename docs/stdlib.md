@@ -4194,12 +4194,43 @@ for conn in server {                    # accept in a loop
 | `port` / `host` | the address actually bound (an ephemeral port shows up here) |
 | `accept()` | block until a connection arrives, returning a `Socket` |
 | `for conn in listener` | accept in a loop; the body `break`s to stop |
-| `set_timeout(ms)` | bound how long `accept` waits before raising |
+| `serve(handler, workers = 0)` | accept in a loop and run `handler(conn)` on a worker pool; blocks until interrupted |
+| `set_timeout(ms)` | bound how long `accept` waits before raising; accepted sockets inherit it |
 | `is_open()` / `close()` | as on `Socket` |
 
-Handlers run on the accepting thread, so one slow connection blocks the next.
-For concurrency, accept in one isolate per connection, or reach for
-[`Http.server`](#httpserver---object), which carries its own worker pool.
+`accept` and `for conn in listener` are sequential — the handling runs on the
+accepting thread, so one slow connection blocks the next.
+
+### `listener.serve(handler, workers = 0)` — the concurrent form
+
+`serve` keeps accepting while handlers run on a pool of worker threads, so a
+slow connection can't stall the accept loop:
+
+```culebra
+# doctest: skip
+let server = Net.listen(7000)
+server.serve(fn(conn) {
+  for line in conn.lines() { conn.write(line.upper() + "\n") }
+}, workers: 8)                      # blocks until Ctrl+C
+```
+
+- `workers: 0` (the default) picks a CPU-scaled pool (at least 4, at most 8);
+  a positive count fixes it. Requests are handled in **true parallel** — each
+  worker has its own runtime, with no global lock.
+- Because each worker rebuilds the handler on its own heap, the handler must be
+  **Sendable**: it can't capture mutable variables or non-Sendable values. A
+  non-Sendable handler is a `SendError` raised by `serve` itself, not on the
+  first connection. Share read-only data with [`Shared.new`](#12-isolate) and
+  open per-connection resources inside the handler.
+- The connection is closed when the handler returns. A handler that raises
+  closes **only its own** connection — the worker and the server keep going
+  (there is no response to turn into a `500`, unlike `Http.server`).
+- `serve` blocks; Ctrl+C (or dropping the isolate it runs in) stops the accept
+  loop, waits for the in-flight handlers, and raises `Interrupted`. To serve
+  while the main thread works, run it inside an [`Isolate`](#12-isolate).
+
+For HTTP specifically, prefer [`Http.server`](#httpserver---object) — it carries
+routing, static files, streaming and WebSocket over the same worker model.
 
 ### `Net.udp(port: Long = 0, host: String = "0.0.0.0") -> UdpSocket`
 

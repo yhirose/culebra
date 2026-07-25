@@ -4048,12 +4048,44 @@ for conn in server {                    # ループで accept
 | `port` / `host` | 実際に bind したアドレス（エフェメラルポートもここに出る） |
 | `accept()` | 接続が来るまでブロックし、`Socket` を返す |
 | `for conn in listener` | ループで accept する。止めるときは本体で `break` |
-| `set_timeout(ms)` | `accept` が待つ上限（超えたら送出） |
+| `serve(handler, workers = 0)` | ループで accept し、`handler(conn)` をワーカープールで実行する。中断されるまでブロック |
+| `set_timeout(ms)` | `accept` が待つ上限（超えたら送出）。accept したソケットもこれを引き継ぐ |
 | `is_open()` / `close()` | `Socket` と同じ |
 
-ハンドラは accept したスレッドで動くので、遅い接続が次の接続をブロックする。
-並行に捌くなら接続ごとにアイソレートを立てるか、ワーカープールを内蔵する
-[`Http.server`](#httpserver---object) を使う。
+`accept` と `for conn in listener` は逐次処理で、ハンドリングも accept した
+スレッドで走る — 遅い接続が次の接続をブロックする。
+
+### `listener.serve(handler, workers = 0)` — 並行版
+
+`serve` は accept を続けながら、ハンドラをワーカースレッドのプールで実行する。
+遅い接続が accept ループを止めることはない:
+
+```culebra
+# doctest: skip
+let server = Net.listen(7000)
+server.serve(fn(conn) {
+  for line in conn.lines() { conn.write(line.upper() + "\n") }
+}, workers: 8)                      # Ctrl+C までブロック
+```
+
+- `workers: 0`（既定）は CPU 数に応じたプール（最小 4、最大 8）。正の数を渡せば
+  固定できる。各ワーカーが自分のランタイムを持つのでグローバルロックはなく、
+  **真に並列**に処理される。
+- 各ワーカーがハンドラを自分のヒープに再構築するため、ハンドラは **Sendable**
+  でなければならない（可変変数や非 Sendable な値をキャプチャできない）。非
+  Sendable なハンドラは最初の接続時ではなく `serve` 自身が `SendError` を送出
+  する。読み取り専用データの共有は [`Shared.new`](#12-isolate)、接続ごとの
+  リソースはハンドラの中で開く。
+- ハンドラが return すると接続は閉じられる。ハンドラが送出した場合は **その
+  接続だけ** が閉じられ、ワーカーもサーバも動き続ける（`Http.server` と違い、
+  `500` に変換できるレスポンスが存在しないため）。
+- `serve` はブロックする。Ctrl+C（またはこれを動かしているアイソレートの drop）
+  で accept ループが止まり、実行中のハンドラを待ってから `Interrupted` を送出
+  する。メインスレッドで別の作業を続けたいなら
+  [`Isolate`](#12-isolate) の中で動かす。
+
+HTTP を話すなら [`Http.server`](#httpserver---object) を使う — 同じワーカー
+モデルの上に、ルーティング・静的ファイル・ストリーミング・WebSocket を備える。
 
 ### `Net.udp(port: Long = 0, host: String = "0.0.0.0") -> UdpSocket`
 
