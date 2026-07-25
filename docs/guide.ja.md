@@ -842,12 +842,10 @@ inspect(handle { safeDiv(10, 0) } with raise(m, k) { -1 })   # => -1
 中に `handle` を書けば、外側の計算をキャプチャしてそこから再開できます。完全な
 リファレンスと制約は [language.ja.md §16](language.ja.md) を参照。
 
-動く実例が
-[`examples/effects/queen.cul`](../examples/effects/queen.cul) にあります。
-バックトラッキングを一言も書かない N-クイーン探索で、`search` は
-`perform choose(...)` で列を尋ね `perform reject()` で失敗を告げるだけ。その
-意味は外側の `handle` が与えるので、同じ本体が全解の列挙にも、最初の解での
-短絡にも、配置数のカウントにもなります。
+効果が一番はっきり出るのは探索です。列を `perform choose(...)` で尋ね、
+行き止まりを `perform reject()` で告げる N-クイーン探索は、バックトラッキング
+を一言も書きません。その意味は外側の `handle` が与えるので、同じ本体が全解の
+列挙にも、最初の解での短絡にも、配置数のカウントにもなります。
 
 ---
 

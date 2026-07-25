@@ -502,8 +502,7 @@ const 性やこのフラグの誤宣言は著者の契約違反（sol2/pybind11 
 
 コンテナ（`std::vector`/`std::map`）とコールバックは未対応です。
 
-動く完全版は `examples/wrap/`、パイプラインの end-to-end 検証は
-`tests/wrap_test.sh` を参照してください。
+このワークフローの end-to-end 検証は `tests/wrap_test.sh` が行います。
 
 ## 4. 共有 runtime archive レイアウト
 

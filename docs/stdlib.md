@@ -3669,9 +3669,6 @@ Term.app(fn (s) {
 })
 ```
 
-See `examples/donut.cul` (a no-input render loop) and `examples/froggy.cul`
-(a full keyboard-driven game) for complete programs.
-
 ---
 
 ## 23. `Log`
@@ -3999,9 +3996,6 @@ Canvas.run(160, 160, fn () {
 })
 ```
 
-See `examples/games/rocci-bird.cul` for a complete game (a flappy-bird clone
-with sprites, the font, input, sound, and a saved best score).
-
 ---
 
 ## 27. `Scene`
@@ -4018,8 +4012,9 @@ flat-shaded primitives.
 model/texture import (geometry is procedural or built vertex-by-vertex, and
 textures are generated in-process), no skeletal animation, and no mouse input.
 It targets 3D you *construct* — visualisations, procedural scenes, vehicle or
-flight demos with a chase camera — rather than asset-driven games.
-`examples/scene/suzuka.cul` (a racing demo) is the reference use case.
+flight demos with a chase camera — rather than asset-driven games. A
+racing demo — circuit mesh, chase camera, gamepad steering — is the
+shape it is designed around.
 
 `Scene` is **opt-in and currently macOS-only**. It is not in the default build;
 enable it with `-DCULEBRA_ENABLE_SCENE=ON`, which builds the vendored static
@@ -4158,11 +4153,6 @@ while !view.closing() {
 }
 view.drop()
 ```
-
-`examples/scene/suzuka.cul` is the full reference: a hand-traced circuit
-rendered as a road mesh, a lofted car with a procedural livery, a chase camera,
-gamepad + keyboard driving with force feedback, and a speed-tracking engine
-note.
 
 ---
 
@@ -4382,9 +4372,6 @@ w.set_size(480, 320)
 w.set_html('<h1>hi from culebra</h1>')
 w.run()
 ```
-
-`examples/webview/` holds the full worked example (`desktop_app.cul` plus
-its `dist/` frontend).
 
 ---
 

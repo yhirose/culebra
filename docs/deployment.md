@@ -501,8 +501,8 @@ stale error, never memory-unsafety on the culebra side.
 Containers (`std::vector`/`std::map`) and callbacks are not yet
 marshalled.
 
-See `examples/wrap/` for the complete working demo this page is based
-on, and `tests/wrap_test.sh` for the end-to-end pipeline check.
+`tests/wrap_test.sh` runs the end-to-end pipeline check for this
+workflow.
 
 ## 4. Shared runtime archive layout
 

@@ -283,8 +283,10 @@ Strings are `std::string` underneath (UTF-8). Byte indexing is
 `utf8` namespace to walk codepoint by codepoint.
 
 Methods like `split`, `replace`, `trim` operate at the byte level by
-default. `length()` returns scalars; `size()` returns bytes; this
-distinction is documented in `guide.md` §4.2.
+default. `size()` returns bytes; there is no scalar-counting `length()`
+— counting scalars or grapheme clusters goes through the iterators
+(`code_points()`, `graphemes()`), which keeps the O(n) cost visible at
+the call site. The user-facing side of this split is `guide.md` §4.2.
 
 ### JIT/AOT representation: inline length header
 
@@ -319,22 +321,46 @@ pointer mis-tagged as `TAG_STRING`.
 tracing backstop, not by RC release-to-zero (Ch.13–14 cover why and
 how; see Ch.13's "traced-only" note).
 
-### Planned: StringView, StringLike, lazy graphemes
+### StringView, StringLike, lazy graphemes
 
-[[project_string_model]] decided:
+All three shipped ([[project_string_model]]).
 
-- **`StringView`** is a `std::string_view`-like type — a borrow over
-  an existing `String`'s bytes, with the same byte/scalar API. It is
-  parameter-only (cannot be stored in an Object), to avoid lifetime
-  hazards.
-- **`StringLike`** is a multimethod dispatch tag (Ch.10 of `guide.md`):
-  functions can be defined for `StringLike`, picking up both `String`
-  and `StringView` callers without copying.
-- **`graphemes()`** returns a lazy iterator over grapheme clusters
-  (UAX #29), using cpp-unicodelib's grapheme break table.
+**`StringView`** is a borrow over another string's bytes with the same
+byte/scalar API, and its own `type_of` name. It is a first-class value,
+not a parameter-only one: it can be stored in an Object or Array,
+returned, and outlive the binding it was sliced from. Each backend
+keeps the backing alive its own way, so no view can dangle:
 
-Implementation order: `StringView` (interp + JIT) → `StringLike`
-multimethod hook (depends on Ch.10 dispatch IC) → `graphemes()`.
+- **Interp** — `Value::StringView` holds a `StringViewPayload
+  { shared_ptr<const std::string> source; string_view sv; }`. The
+  `shared_ptr` is the ownership edge; many views share one source.
+- **JIT/AOT** — `TAG_STRINGVIEW` points at a heap `JitStringView
+  { const char* ptr; uint64_t len; const char* owner_base; }` (24 bytes,
+  `ptr`@0 / `len`@8 fixed because codegen loads the length at offset 8).
+  `owner_base` is the registered GC base pointer of the backing String,
+  or `nullptr` when the bytes are not GC-tracked (a literal's `.rodata`,
+  an interned name). Strings are traced-only, so that edge is what roots
+  the backing during a sweep (`_jit_gc_enumerate_children`).
+
+The producers are `slice` / `split` / `split_iter` / `view` / `iter` /
+`graphemes`, which is why iterating a large string allocates no
+per-step copy.
+
+**`StringLike`** is an annotation tag, not a type: `x: StringLike`
+accepts both `String` and `StringView` (`Value::is_stringlike`), so a
+helper reads a view without forcing a copy. Because multimethod
+specificity scores annotations, it also serves as the dispatch tag for
+"either string flavor".
+
+**`graphemes()`** is a lazy iterator over extended grapheme clusters
+(UAX #29) built on cpp-unicodelib's grapheme break table; it yields
+one-cluster `StringView`s, so a clustered walk is allocation-free per
+step as well.
+
+Residual cost: `contains` / `starts_with` / `ends_with` on a
+`StringView` materialize a temporary NUL-terminated copy per call. It
+is reclaimed by the tracing backstop like any other String, but hot
+loops over many views should `.to_string()` once instead.
 
 ## 7. Regex
 
@@ -370,29 +396,40 @@ results carry byte offsets, scalar offsets, and captured groups.
 
 ## 8. Tensor
 
-### TNode
+### TensorImpl
 
-`Tensor` is a `shared_ptr<TNode>`. A `TNode` holds:
+`Tensor` is a `shared_ptr<TensorImpl>` — an Op-tagged autograd tape
+node whose value is a `tl::array` (the vendored `cpp-tensorlib` array
+handle):
 
-- `shape: vector<int64_t>`
-- `strides: vector<int64_t>`
-- `data: shared_ptr<float[]>` (F32)
-- `offset: int64_t`
+- `op: Op` + `inputs: vector<shared_ptr<TensorImpl>>` — the tape edge
+- `shape: TensorShape`, `dtype: Dtype` (F32 only)
+- `value: tl::array` — a lazy graph node, a zero-copy view, or a
+  materialized buffer, depending on how it was built
+- `grad`, `requires_grad`, `is_view`
 
-Views (transpose, slice, broadcast) reuse the same `data` with
-adjusted shape/stride/offset, so most operations are zero-copy.
+Cycles are impossible by construction: `inputs` only points
+input-ward, and `grad` is always a materialized `Const` with no
+inputs, so RC alone reclaims a tape.
 
-### BLAS routing
+Views (transpose, reshape, slice) set `is_view` and share the base
+buffer, so they stay zero-copy; `tensor_inplace_binop` refuses an
+in-place write through one, since it would mutate the base.
 
-Element-wise ops use small inline loops with autovectorization hints.
-Matmul (`@`) routes through `cblas_sgemm` after laying out contiguous
-buffers if needed. The BLAS provider is platform-dependent:
+### Kernel routing
 
-- macOS: Apple Accelerate (linked at runtime by default).
-- Linux: OpenBLAS.
+Culebra owns the autograd (VJP) rules, the `TensorNoGradGuard`, the
+language bindings, and the broadcast rules; `cpp-tensorlib` owns the
+lazy graph, peephole fusion, `eval` (topological), the device
+backends, and the buffer pool. Every evaluation funnels through the
+`tensor_eval_node` choke point, which is what let the engine swap
+underneath without touching the binding layer.
 
-The choice is in `CMakeLists.txt`; AOT builds pick it up via the
-appropriate runtime archive.
+The device backends are CPU (AVX2 / NEON kernels; Accelerate supplies
+the BLAS-shaped ones on macOS) and GPU (Metal on macOS, CUDA on
+Linux / Windows). AOT builds pick up the matching runtime archive;
+the per-binary gating goes through the `TL_RUNTIME_HOOKS` opt-in so a
+tensor-free program links neither the GPU frameworks nor the kernels.
 
 ### Broadcast
 
@@ -416,25 +453,30 @@ been a CPU-only dtype. The `Dtype` enum remains as the seam for a
 future BF16 storage type; scalar entry/exit points (`.item()`,
 `.sum()`, `.to_array()`) surface `Float`.
 
-### GPU (planned)
+### GPU
 
-[[project_matrix_gpu_roadmap]] — a separate `Matrix` (or `GTensor`)
-primitive will host the CUDA / Metal Shading Language path, leaving
-`Tensor` as the CPU/BLAS primitive. Two reasons for the split:
+There is no separate GPU type: the same `Tensor` runs on either
+device, because `tl::array` — not culebra — owns the buffer and knows
+which device it lives on. The split into a distinct `Matrix` /
+`GTensor` primitive was planned while `TNode` held a raw
+`shared_ptr<float[]>`; adopting `cpp-tensorlib` removed the reason for
+it (see [`_history.md`](_history.md)).
 
-- CPU and GPU have radically different memory ownership semantics.
-- Tensor's `shared_ptr<Float[]>` does not map onto GPU device memory
-  without a host/device aware wrapper.
+Selection is process-global and switchable at runtime —
+`Tensor.use_cpu()` / `use_gpu()` / `use_auto()`, with
+`Tensor.gpu_available()` reporting whether a backend is compiled in
+and reachable. `use_auto` (the default) picks per op by problem size,
+since small tensors lose to kernel-launch overhead.
 
 ## 9. HTTP
 
-> Status: Planned (Tier 1, [[project_http_strategy]]).
-
 ### Library choice
 
-cpp-httplib provides blocking HTTP/1.1, HTTP/2, SSE, and WebSocket in
-one header. TLS via statically-linked BoringSSL. async/await is *not*
-adopted — concurrency is via threads.
+cpp-httplib (vendored) provides blocking HTTP/1.1, SSE, and WebSocket
+in one header. TLS is statically-linked OpenSSL — on macOS from
+Homebrew's `openssl@3`, on Linux from the distro dev package — behind
+the `CULEBRA_ENABLE_HTTP` option. async/await is *not* adopted —
+concurrency is via threads.
 
 ### Why blocking + threads, not async/await
 

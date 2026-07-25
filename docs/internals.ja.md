@@ -289,8 +289,10 @@ LLVM の `AllTargets*` コンポーネントがホストの `culebra` ドライ�
 namespace を使ってコードポイントを 1 つずつウォークします。
 
 `split`、`replace`、`trim` などのメソッドは既定でバイトレベルで動作し
-ます。`length()` はスカラー数を、`size()` はバイト数を返します。この
-区別は `guide.ja.md` §4.2 に記載されています。
+ます。`size()` はバイト数を返します。スカラー数を数える `length()` は
+**存在しません** — スカラーや書記素クラスタの数え上げはイテレータ
+(`code_points()` / `graphemes()`) を通すので、O(n) のコストが呼び出し側
+で見えます。ユーザ向けの説明は `guide.ja.md` §4.2 です。
 
 ### JIT/AOT 表現: インライン長さヘッダ
 
@@ -326,23 +328,44 @@ release-to-zero ではなく、tracing バックストップのみが回収し�
 (Ch.13〜14 で理由と仕組みを扱います。Ch.13 の「traced-only」の注記を参
 照)。
 
-### 計画中: StringView、StringLike、lazy graphemes
+### StringView、StringLike、lazy graphemes
 
-[[project_string_model]] が決定した内容:
+3 つとも実装済みです ([[project_string_model]])。
 
-- **`StringView`** は `std::string_view` に似た型です — 既存の
-  `String` のバイトに対する借用で、同じバイト/スカラー API を持ちま
-  す。寿命の危険を避けるため、パラメータ専用 (Object に格納不可) で
-  す。
-- **`StringLike`** はマルチメソッドのディスパッチタグ (`guide.ja.md` の
-  Ch.10) です。`StringLike` に対して定義された関数は、コピーなしで
-  `String` と `StringView` の両呼び出し元を拾います。
-- **`graphemes()`** は、cpp-unicodelib の grapheme break テーブルを使
-  って、書記素クラスタ (UAX #29) に対する lazy なイテレータを返しま
-  す。
+**`StringView`** は他の文字列のバイトに対する借用で、同じバイト/スカラー
+API と独自の `type_of` 名を持ちます。パラメータ専用ではなく**第一級の値**
+です — Object や Array に格納でき、返り値にでき、slice 元の束縛より長生き
+できます。バッキングを生かし続ける方法は backend ごとに違いますが、
+どちらも view が dangle しない形です:
 
-実装順序: `StringView` (interp + JIT) → `StringLike` マルチメソッドフ
-ック (Ch.10 のディスパッチ IC に依存) → `graphemes()`。
+- **interp** — `Value::StringView` が `StringViewPayload
+  { shared_ptr<const std::string> source; string_view sv; }` を持ちます。
+  `shared_ptr` が所有権のエッジで、複数の view が 1 つの source を共有します。
+- **JIT/AOT** — `TAG_STRINGVIEW` はヒープ上の `JitStringView
+  { const char* ptr; uint64_t len; const char* owner_base; }` (24 バイト。
+  codegen が長さを offset 8 で読むので `ptr`@0 / `len`@8 は固定) を指します。
+  `owner_base` はバッキング String の登録済み GC base ポインタで、バイト列が
+  GC 管理外 (リテラルの `.rodata`、intern 済みの名前) のときは `nullptr` です。
+  文字列は traced-only なので、sweep 中にバッキングを root するのはこの
+  エッジです (`_jit_gc_enumerate_children`)。
+
+生成元は `slice` / `split` / `split_iter` / `view` / `iter` / `graphemes` で、
+大きな文字列を反復してもステップごとのコピーが発生しないのはこのためです。
+
+**`StringLike`** は型ではなく注釈タグです。`x: StringLike` は `String` と
+`StringView` の両方を受けます (`Value::is_stringlike`)。多重ディスパッチの
+特異度は注釈でスコアリングするので、「文字列のどちらの形でも」を表す
+ディスパッチタグとしても機能します。
+
+**`graphemes()`** は cpp-unicodelib の grapheme break テーブルを使った、
+拡張書記素クラスタ (UAX #29) の lazy イテレータです。1 クラスタ分の
+`StringView` を yield するので、クラスタ単位の走査もステップごとの
+アロケーションなしで回ります。
+
+残るコスト: `StringView` に対する `contains` / `starts_with` / `ends_with`
+は呼び出しごとに NUL 終端の一時コピーを materialize します。他の String と
+同じく tracing backstop が回収するのでリークではありませんが、多数の view を
+ホットループで回す場合は先に `.to_string()` で 1 度だけ実体化してください。
 
 ## 7. Regex
 
@@ -378,30 +401,39 @@ release-to-zero ではなく、tracing バックストップのみが回収し�
 
 ## 8. Tensor
 
-### TNode
+### TensorImpl
 
-`Tensor` は `shared_ptr<TNode>` です。`TNode` が保持するもの:
+`Tensor` は `shared_ptr<TensorImpl>` — Op でタグ付けされた autograd
+テープのノードで、その値は `tl::array` (vendored な `cpp-tensorlib` の
+配列ハンドル) です:
 
-- `shape: vector<int64_t>`
-- `strides: vector<int64_t>`
-- `data: shared_ptr<float[]>` (F32)
-- `offset: int64_t`
+- `op: Op` + `inputs: vector<shared_ptr<TensorImpl>>` — テープの辺
+- `shape: TensorShape`、`dtype: Dtype` (F32 のみ)
+- `value: tl::array` — 構築のされ方に応じて、遅延グラフノード /
+  zero-copy ビュー / materialize 済みバッファのいずれか
+- `grad`、`requires_grad`、`is_view`
 
-ビュー (transpose、slice、broadcast) は同じ `data` を shape/stride/
-offset を調整して再利用するため、ほとんどの操作は zero-copy です。
+循環は構造上できません: `inputs` は入力方向にしか向かわず、`grad` は
+常に入力を持たない materialize 済みの `Const` なので、テープは RC だけ
+で回収されます。
 
-### BLAS ルーティング
+ビュー (transpose、reshape、slice) は `is_view` を立てて base バッファ
+を共有するので zero-copy のままです。ビュー越しの in-place 書き込みは
+base を壊すため、`tensor_inplace_binop` が拒否します。
 
-要素ごとの演算は、autovectorization ヒント付きの小さなインラインルー
-プを使います。Matmul (`@`) は、必要なら連続バッファをレイアウトした後
-に `cblas_sgemm` を経由します。BLAS プロバイダはプラットフォーム依存で
-す:
+### カーネルのルーティング
 
-- macOS: Apple Accelerate (既定でランタイムリンク)。
-- Linux: OpenBLAS。
+culebra 側が autograd (VJP) 規則・`TensorNoGradGuard`・言語バインディング・
+broadcast 規則を持ち、`cpp-tensorlib` 側が遅延グラフ・peephole fusion・
+`eval` (トポロジカル)・デバイスバックエンド・buffer pool を持ちます。
+評価はすべて `tensor_eval_node` の choke point を通るので、バインディング
+層に触れずにエンジンを差し替えられました。
 
-選択は `CMakeLists.txt` にあります。AOT ビルドは適切なランタイムアーカ
-イブを介してこれを拾います。
+デバイスバックエンドは CPU (AVX2 / NEON カーネル。macOS では BLAS 形状の
+カーネルを Accelerate が担当) と GPU (macOS は Metal、Linux / Windows は
+CUDA) です。AOT ビルドは対応するランタイムアーカイブを拾います。バイナリ
+単位のゲーティングは `TL_RUNTIME_HOOKS` の opt-in を通るので、Tensor を
+使わないプログラムは GPU フレームワークもカーネルもリンクしません。
 
 ### Broadcast
 
@@ -424,25 +456,28 @@ F32 のみ。F64 は削除されました (2026-07): Metal には存在せず、
 めの seam として残ります。スカラーの入口/出口点 (`.item()`、
 `.sum()`、`.to_array()`) は `Float` を surface します。
 
-### GPU (計画中)
+### GPU
 
-[[project_matrix_gpu_roadmap]] — 別の `Matrix` (または `GTensor`) プリ
-ミティブが CUDA / Metal Shading Language 経路をホストし、`Tensor` は
-CPU/BLAS プリミティブとして残ります。分割の理由は 2 つ:
+GPU 専用の型はありません。同じ `Tensor` がどちらのデバイスでも動きます —
+バッファを所有しどのデバイス上にあるかを知っているのが culebra ではなく
+`tl::array` だからです。`Matrix` / `GTensor` として別プリミティブに分ける
+案は `TNode` が生の `shared_ptr<float[]>` を持っていた頃の計画で、
+`cpp-tensorlib` の採用でその理由が消えました ([`_history.ja.md`](_history.ja.md) 参照)。
 
-- CPU と GPU はメモリ所有権の意味論が根本的に異なる。
-- Tensor の `shared_ptr<Float[]>` は、host/device を意識したラッパな
-  しでは GPU デバイスメモリにマップできない。
+選択はプロセスグローバルで実行時に切り替えられます — `Tensor.use_cpu()` /
+`use_gpu()` / `use_auto()`、および backend がビルドに含まれ到達可能かを返す
+`Tensor.gpu_available()`。デフォルトの `use_auto` は演算ごとに問題サイズで
+選びます (小さいテンソルはカーネル起動コストに負けるため)。
 
 ## 9. HTTP
 
-> ステータス: 計画中 (Tier 1、[[project_http_strategy]])。
-
 ### ライブラリ選択
 
-cpp-httplib は、ブロッキングの HTTP/1.1、HTTP/2、SSE、WebSocket を 1
-つのヘッダで提供します。TLS は静的リンクされた BoringSSL 経由。
-async/await は採用*しません* — 並行はスレッド経由です。
+cpp-httplib (vendored) は、ブロッキングの HTTP/1.1、SSE、WebSocket を 1
+つのヘッダで提供します。TLS は静的リンクの OpenSSL (macOS は Homebrew の
+`openssl@3`、Linux はディストリの dev パッケージ) で、`CULEBRA_ENABLE_HTTP`
+オプションの背後にあります。async/await は採用*しません* — 並行はスレッド
+経由です。
 
 ### なぜ async/await でなくブロッキング + スレッドなのか
 
