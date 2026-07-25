@@ -46,6 +46,17 @@ option(CULEBRA_LTO "Enable ThinLTO for the culebra driver (Release)" ON)
 # main.cc recompiles + relinks; `culebra build` (AOT) then errors
 # cleanly. `just dev` passes this; `just build`/`just test all` do not.
 option(CULEBRA_DEV_NO_RT "Skip AOT runtime archives for fast inner-loop builds" OFF)
+# The other inner-loop dev switch: two thirds of the -O3 compile of main.cc is
+# the optimizer, and none of it shows in test wall-clock (the JIT's codegen is
+# in prebuilt LLVM). -O0 is faster still but slows the interpreter 2.4x.
+# A build with this ON is not a build to benchmark with.
+option(CULEBRA_DEV_O1 "Compile at -O1 for fast inner-loop rebuilds" OFF)
+if(CULEBRA_DEV_O1)
+  string(REGEX REPLACE "-O[0-9gsz]+" "-O1"
+         CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
+  string(REGEX REPLACE "-O[0-9gsz]+" "-O1"
+         CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
+endif()
 include(CheckIPOSupported)
 check_ipo_supported(RESULT _ipo_supported OUTPUT _ipo_err)
 if(CULEBRA_LTO AND _ipo_supported AND CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -419,10 +430,8 @@ if(CULEBRA_ENABLE_JIT)
   endif()
 
   # `culebra wrap` rebuilds this tree with CULEBRA_WRAP_SOURCES; the
-  # baked source path is the default when CULEBRA_HOME is unset.
-  # Scoped to the one-line source_dir.cc, not the whole target: this is an
-  # absolute per-worktree path, and putting it on main.cc's command line
-  # would make that (huge) object worktree-specific in ccache.
+  # baked source path is the default when CULEBRA_HOME is unset. Scoped to
+  # source_dir.cc, not the target — see include/source_dir.h.
   set_source_files_properties(./src/source_dir.cc PROPERTIES
     COMPILE_DEFINITIONS "CULEBRA_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
 

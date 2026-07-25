@@ -1038,12 +1038,8 @@ int run_wrap(int argc, const char** argv) {
 
   // The source tree to rebuild. $CULEBRA_HOME wins; the baked path is the
   // checkout this binary came from (a dev install).
-  string src_dir;
-  if (const char* home = std::getenv("CULEBRA_HOME"); home && *home) {
-    src_dir = home;
-  } else {
-    src_dir = culebra::source_dir();
-  }
+  const char* home = std::getenv("CULEBRA_HOME");
+  string src_dir = (home && *home) ? home : culebra::source_dir();
   if (src_dir.empty() ||
       !std::filesystem::exists(
           std::filesystem::path(src_dir) / "CMakeLists.txt")) {
