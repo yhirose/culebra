@@ -917,6 +917,20 @@ if(CULEBRA_ENABLE_SQLITE)
   add_test(NAME sqlite_test COMMAND sqlite_test)
 endif()
 
+# net.h core test: loopback TCP/UDP on ephemeral ports drives the value-neutral
+# socket core (connect/accept, the buffered stream reader, timeouts, UDP,
+# resolve, error paths). Single-threaded, offline, no interpreter/JIT linkage.
+add_executable(net_test test/net_test.cc)
+target_compile_features(net_test PRIVATE cxx_std_23)
+target_include_directories(net_test PRIVATE include)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_libraries(net_test Threads::Threads)
+endif()
+if(WIN32)
+  target_link_libraries(net_test ws2_32)
+endif()
+add_test(NAME net_test COMMAND net_test)
+
 # GC unit tests — the standalone collector (include/jit_gc.h) validated in
 # isolation (pointer-validation, conservative root scanning, mark-sweep), no
 # JIT/LLVM link, independent of the in-tree jit.h wiring.
