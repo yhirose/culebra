@@ -1449,4 +1449,52 @@ for c in itercases {
   case("iterproto|" + c, c)
 }
 
+# --- Dimension: iterator producer / accumulator throw paths ---------------
+# The corpus only ever threw from a loop *body* or from a broken protocol, so
+# the "producer itself throws mid-drain" family went unmeasured — and with it
+# the leak-abort gate's coverage of who owns the iterator and the reduce seed
+# while `has_next()` / `next()` runs. Each case fails from a different position
+# (producer, body, dispose, count expression, seed-before-open) with a heap
+# value in flight, so a stranded +1 shows up in the suite-wide audit as well as
+# in this diff.
+#
+# Failures are built-in errors (`1 / 0`, `[1][9]`), not `throw "..."`: `_p`
+# renders kind/message/line/col, which a raw thrown String has none of.
+# Bodies are single-quote raw (literal `{...}` decl braces).
+let iterthrows = [
+  'mut n = 0; let it = { iter: fn () { self }, has_next: fn () { true }, next: fn () { n = n + 1; if n > 2 { 1 / 0 }; n } }; mut s = 0; for x in it { s = s + x }; s',
+  'let it = { iter: fn () { self }, has_next: fn () { true }, next: fn () { 1 / 0 } }; for x in it { }; 1',
+  'mut n = 0; let it = { iter: fn () { self }, has_next: fn () { n = n + 1; if n > 2 { 1 / 0 }; true }, next: fn () { n } }; mut s = 0; for x in it { s = s + x }; s',
+  'mut n = 0; let it = { iter: fn () { self }, has_next: fn () { true }, next: fn () { n = n + 1; if n > 2 { [1][9] }; [n, n] } }; mut r = []; for x in it { r.push(x) }; r',
+  'mut n = 0; let it = { iter: fn () { self }, has_next: fn () { n < 5 }, next: fn () { n = n + 1; [n, n] } }; for x in it { [1][9] }; 1',
+  'mut n = 0; let it = { iter: fn () { self }, has_next: fn () { true }, next: fn () { n = n + 1; if n > 2 { 1 / 0 }; [n, n] } }; mut s = 0; try { for x in it { s = s + x[0] } } catch e { s = s + 100 }; s',
+  'fn mk(k) { mut n = 0; { iter: fn () { self }, has_next: fn () { true }, next: fn () { n = n + 1; if n > k { 1 / 0 }; [n, n] } } }; mut s = 0; for a in [1, 2] { try { for x in mk(a) { s = s + x[0] } } catch e { s = s + 10 } }; s',
+  'fn g() { for v in [1, 2, 3] { if v == 2 { [1][9] }; yield [v, v] } }; mut r = []; for x in g() { r.push(x) }; r',
+  # Accumulator seed: live from before the protocol open until the first
+  # iteration hands it to the body scope.
+  'let it = { iter: fn () { self }, has_next: fn () { 1 / 0 }, next: fn () { 1 } }; it.reduce([0, 0], |a, b| a)',
+  'mut n = 0; let it = { iter: fn () { self }, has_next: fn () { true }, next: fn () { n = n + 1; if n > 2 { 1 / 0 }; n } }; it.reduce([0, 0], |a, b| [a[0] + b, a[1]])',
+  'mut n = 0; let it = { iter: fn () { self }, has_next: fn () { n < 5 }, next: fn () { n = n + 1; n } }; it.reduce([0, 0], |a, b| b > 2 ? [1][9] : [a[0] + b, a[1]])',
+  'let it = { iter: fn () { self }, next: 1 }; it.reduce([0, 0], |a, b| a)',
+  'fn boom() { 1 / 0 }; range(boom()).reduce([0, 0], |a, b| a)',
+  'range("x").reduce([0, 0], |a, b| a)',
+  'range(5).reduce([0, 0], |a, b| b > 2 ? [1][9] : [a[0] + b, a[1]])',
+  'range(4).reduce([0, 0], |a, b| [a[0] + b, a[1]])',
+  # dispose x exit path (drain / break / body throw / early return), plus a
+  # dispose that itself throws — propagating on drain, swallowed by the
+  # in-flight body error.
+  'mut d = 0; let it = { iter: fn () { self }, has_next: fn () { false }, next: fn () { 1 }, dispose: fn () { d = d + 1 } }; for x in it { }; d',
+  'mut n = 0; mut d = 0; let it = { iter: fn () { self }, has_next: fn () { true }, next: fn () { n = n + 1; [n, n] }, dispose: fn () { d = d + 1 } }; for x in it { break }; d',
+  'mut n = 0; mut d = 0; let it = { iter: fn () { self }, has_next: fn () { true }, next: fn () { n = n + 1; [n, n] }, dispose: fn () { d = d + 1 } }; try { for x in it { [1][9] } } catch e { nil }; d',
+  'mut d = 0; fn f() { mut n = 0; let it = { iter: fn () { self }, has_next: fn () { true }, next: fn () { n = n + 1; [n, n] }, dispose: fn () { d = d + 1 } }; for x in it { if x[0] >= 2 { return x[0] } }; 0 }; [f(), d]',
+  'mut n = 0; let it = { iter: fn () { self }, has_next: fn () { n < 2 }, next: fn () { n = n + 1; [n, n] }, dispose: fn () { 1 / 0 } }; for x in it { }; 1',
+  'mut n = 0; let it = { iter: fn () { self }, has_next: fn () { true }, next: fn () { n = n + 1; [n, n] }, dispose: fn () { 1 / 0 } }; for x in it { [1][9] }; 1',
+  # One for-in statement driven by a protocol source and an Array in turn: the
+  # cursor must not carry an iterator over into the Array run.
+  'fn mk() { mut n = 0; { iter: fn () { self }, has_next: fn () { n < 2 }, next: fn () { n = n + 1; [n, n] } } }; mut s = 0; for k in [0, 1, 2, 3] { let src = k % 2 == 0 ? mk() : [[7, 7], [8, 8]]; for x in src { s = s + x[0] } }; s',
+]
+for c in iterthrows {
+  case("iterthrow|" + c, c)
+}
+
 print(out.join("\n"))

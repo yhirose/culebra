@@ -261,6 +261,20 @@ advance を選び、どの advance も要素を1つの body へ渡します。�
 す。イテレータの dispose はカーソルのイテレータスロットでガードされ、
 array/string カーソルはそこを nil のままにします。
 
+ループが所有する3つの値 — iterable、プロトコルの導出元、`iter()` が返し
+たイテレータ — はいずれも文自身のスコープのスロットです。この順で宣言さ
+れるので、LIFO の解体はイテレータを導出元より先に落とします。これが出口
+を一様にします。drain・`break`・早期 `return`・あらゆる throw (drain 途中
+の `next()` / `has_next()` からの throw を含む) で、通常のスコープ機構が
+3つとも release するため、カーソル自身の cleanup は `dispose()` の呼び出
+しだけに縮みます。以前のイテレータはカーソルの素の alloca で、どの
+cleanup pad からも見えず、producer が throw するとループ1回につきイテレー
+タが1個 strand していました (Ch.15 §15.5 の不変条件 3。スロット化がこれ
+を回復します)。インライン `reduce` ループのアキュムレータも同じ扱いです。
+seed はプロトコル open の前から最初の反復が body スコープへ引き渡すまで
+生きているので、construction cleanup に登録し、open・`has_next()`・件数式
+のいずれかが throw したときに release されるようにしています。
+
 body を1回だけ emit することがネストを現実的にします。容器の各アームに
 body を inline すると1段ごとに6倍され、3重ネストでは最内 body が 216 回
 emit されていました。IR は1段あたり約 6.4 倍に増え、4重ネストの4行プログ

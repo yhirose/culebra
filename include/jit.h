@@ -306,13 +306,14 @@ struct JIT {
   std::vector<LoopBlocks> loop_stack_;
 
   // Active for-in protocol-loop iterators, innermost last. Each holds the
-  // {iterAlloca, objAlloca} a `return` inside the body must dispose+release
-  // before exiting the function (break/throw/natural exit are handled by the
-  // loop's own cleanup / landingpad), plus that loop body's per-iteration
-  // defer mark so the `return` runs the body's defers *before* the dispose —
-  // interp order (eval_for runs run_deferred, then dispose_iter). The mark is
-  // filled by emit_for_body_with_owned_binding (which creates it) via
-  // fill_pending, since the push happens before the body is compiled.
+  // iterator slot a `return` inside the body must dispose before exiting the
+  // function (break/throw/natural exit are handled by the loop's own cleanup /
+  // landingpad; the release is the slot's own), plus that loop body's
+  // per-iteration defer mark so the `return` runs the body's defers *before*
+  // the dispose — interp order (eval_for runs run_deferred, then
+  // dispose_iter). The mark is filled by emit_for_body_with_owned_binding
+  // (which creates it) via fill_pending, since the push happens before the
+  // body is compiled.
   std::vector<IterCleanup> iter_cleanup_stack_;
 
   // Unified call-site emitter: `invoke` if inside a try, else `call`.
@@ -8044,6 +8045,15 @@ struct JIT {
     auto ownSlot = make_stack_slot("for.iterable.own", make_nil());
     define_var("for.iterable.own", ownSlot);
 
+    // The iterator `iter()` hands back is a scope slot for the same reason,
+    // declared after `ownSlot` so LIFO teardown drops it before its source. As
+    // a bare cursor alloca it was invisible to every cleanup pad, so a throwing
+    // `next()` / `has_next()` stranded its +1 — and, being zero-initialised
+    // once per frame, it could hand a stale iterator to a later Array run of
+    // the same statement.
+    auto protoIterSlot = make_stack_slot("for.iter", make_nil());
+    define_var("for.iter", protoIterSlot);
+
     // Exception edge for the whole statement: without it, a throw unwinding
     // out of the loop strands the slot's +1 (the enclosing pads only know
     // their own scopes) — the iterable leaked and its drop never fired.
@@ -8054,6 +8064,7 @@ struct JIT {
 
     ForCursor cursor = make_for_cursor();
     cursor.obj = ownSlot.alloca;
+    cursor.iter = protoIterSlot.alloca;
 
     auto arrayBB = llvm::BasicBlock::Create(ctx_, "for.array", fn);
     auto setBB    = llvm::BasicBlock::Create(ctx_, "for.set", fn);
@@ -8184,13 +8195,13 @@ struct JIT {
     builder_.SetInsertPoint(bodyBB);
     emit_safepoint();
     auto elemVal = builder_.CreateLoad(valueType_, cursor.elem, "for.elem");
-    // Route in-body exceptions through excBB so a protocol iterator's
-    // dispose + release fire before unwinding continues; restore the prior
-    // landingpad afterwards so the exit / break paths inherit the outer one.
+    // Route in-body exceptions through excBB so a protocol iterator's dispose
+    // fires before unwinding continues; restore the prior landingpad
+    // afterwards so the exit / break paths inherit the outer one.
     auto bodyOuterLpad = current_lpad_;
     current_lpad_ = excBB;
     // Make this cursor's cleanup reachable by an early `return` inside the
-    // body: compile_return emits the same dispose+release for every active
+    // body: compile_return emits the same dispose for every active
     // for-in before it exits the function (mirrors the interpreter, which
     // disposes on early return). break / natural exit / throw are covered by
     // exitBB / excBB below.
@@ -8209,10 +8220,10 @@ struct JIT {
     emit_iter_dispose_if_active(cursor.iter, "for.exit");
     builder_.CreateBr(endBB);
 
-    // Exception path: same dispose + release (swallowing a throwing dispose
-    // so the in-flight body exception survives, as the interpreter does),
-    // then rethrow so the original exception keeps unwinding. Gated on
-    // can-throw via pred_empty, like every other cleanup block.
+    // Exception path: the same dispose (swallowing a throwing dispose so the
+    // in-flight body exception survives, as the interpreter does), then rethrow
+    // so the original exception keeps unwinding — into forCleanupBB, which
+    // releases the scope. Gated on can-throw via pred_empty, as everywhere.
     if (llvm::pred_empty(excBB)) {
       excBB->eraseFromParent();
     } else {
@@ -8414,7 +8425,8 @@ struct JIT {
     llvm::Value* src;       // ptr   — array storage / string bytes
     llvm::Value* pos;       // i64   — element index / byte offset
     llvm::Value* count;     // i64   — element count / byte length
-    llvm::Value* iter;      // Value — protocol iterator, nil for the others
+    llvm::Value* iter;      // Value — scope slot owning the protocol iterator
+                            //         (nil for the array / string cursors)
     llvm::Value* obj;       // Value — scope slot owning the derived-from value
     llvm::Value* has_next;  // ptr   — hoisted has_next closure
     llvm::Value* next;      // ptr   — hoisted next closure
@@ -8436,9 +8448,8 @@ struct JIT {
     c.src = entryB.CreateAlloca(ptrTy, nullptr, "for.src");
     c.pos = entryB.CreateAlloca(i64Ty, nullptr, "for.pos");
     c.count = entryB.CreateAlloca(i64Ty, nullptr, "for.count");
-    c.iter = entryB.CreateAlloca(valueType_, nullptr, "for.iter");
-    entryB.CreateStore(zeroVal, c.iter);
-    c.obj = nullptr;  // compile_for points this at the scope slot
+    c.iter = nullptr;  // both hold a +1: compile_for points them at scope slots
+    c.obj = nullptr;
     c.has_next = entryB.CreateAlloca(ptrTy, nullptr, "for.has_next.cls");
     c.next = entryB.CreateAlloca(ptrTy, nullptr, "for.next.cls");
     c.elem = entryB.CreateAlloca(valueType_, nullptr, "for.elem.slot");
@@ -8498,66 +8509,65 @@ struct JIT {
     builder_.CreateBr(bodyBB);
   }
 
-  // Drive the iterator protocol for objects that carry a user-defined
-  // `iter` property (Math.range, `.code_points()`, custom iterators).
-  // Semantics match `_get_iterator` / `eval_for`'s protocol branch in
-  // the interpreter: `obj.iter()` yields an iterator Object; then each
-  // `next()` returns `{done, value}` until `done == true`.
-  //
-  // Refcount flow: `iter()` returns a fresh `+1` iterator value stored
-  // in a local slot so it survives across iterations. Each method call
-  // retains its receiver before invocation (the callee frame releases
-  // on exit via the owned `self` slot). `step` — the {done, value}
-  // object — is released on every loop path before branching.
-  // Iterator trait dispose + release, at the current insertion point. Calls
-  // `iter.dispose()` if the iterator carries one (built-in iterators have no
-  // dispose, so trait-only coverage skips the call), then releases the iterator
-  // slot and, for a caller-owned iterable (range_iter / object_iter's fresh
-  // +1), the second reference held in `objAlloca`. Shared by the for-in
-  // protocol loop's natural-exit / break (cleanupBB), exception (excLpadBB), and
-  // early-`return` (compile_return, via iter_cleanup_stack_) paths — the last
-  // is what keeps dispose-on-early-return symmetric with the interpreter.
-  void emit_iter_dispose_and_release(llvm::Value* iterAlloca,
-                                     const char* label_prefix,
-                                     bool swallow_dispose = false) {
+  // Iterator trait dispose: call `iter.dispose()` if the cursor holds an
+  // iterator and it carries one. The array and string cursors leave the slot
+  // nil, so they skip the whole sequence, and built-in iterators have no
+  // dispose. Releasing the iterator is not this function's job — `iterAlloca`
+  // is a scope slot, so the ordinary teardown frees it on every exit, which is
+  // also why a throw out of dispose needs no local pad here. Shared by the
+  // for-in protocol loop's natural-exit / break (exitBB), exception (excBB),
+  // and early-`return` (compile_return, via iter_cleanup_stack_) paths — the
+  // last is what keeps dispose-on-early-return symmetric with the interpreter.
+  void emit_iter_dispose_if_active(llvm::Value* iterAlloca,
+                                   const char* label_prefix,
+                                   bool swallow_dispose = false) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
-    auto disposeKeyPtr = get_or_create_global_str("dispose", ".dispose.key");
-    auto iterFinal = builder_.CreateLoad(valueType_, iterAlloca,
-                                         (std::string(label_prefix) + ".iter").c_str());
-    auto iterFinalPtr = builder_.CreateIntToPtr(
-        extract_data(iterFinal), ptrTy,
-        (std::string(label_prefix) + ".iter.ptr").c_str());
+    // Returned by value: each call feeds one Twine parameter, consumed within
+    // that full expression.
+    auto name = [&](const char* suffix) {
+      return std::string(label_prefix) + suffix;
+    };
+    auto iterFinal =
+        builder_.CreateLoad(valueType_, iterAlloca, name(".iter"));
+    auto activeBB = llvm::BasicBlock::Create(ctx_, name(".active"), fn);
+    auto disposeBB = llvm::BasicBlock::Create(ctx_, name(".dispose"), fn);
+    auto doneBB = llvm::BasicBlock::Create(ctx_, name(".done"), fn);
+    builder_.CreateCondBr(
+        builder_.CreateICmpNE(extract_tag(iterFinal),
+                              builder_.getInt8(TAG_NIL), name(".alive")),
+        activeBB, doneBB);
+
+    // object_has is safe only once the iterator is known non-nil.
+    builder_.SetInsertPoint(activeBB);
     auto hasDispose = emit_object_has(
-        iterFinalPtr, disposeKeyPtr,
-        (std::string(label_prefix) + ".has_dispose").c_str());
-    auto disposeBB = llvm::BasicBlock::Create(
-        ctx_, (std::string(label_prefix) + ".dispose").c_str(), fn);
-    auto skipBB = llvm::BasicBlock::Create(
-        ctx_, (std::string(label_prefix) + ".skip").c_str(), fn);
-    builder_.CreateCondBr(hasDispose, disposeBB, skipBB);
+        builder_.CreateIntToPtr(extract_data(iterFinal), ptrTy,
+                                name(".iter.ptr")),
+        get_or_create_global_str("dispose", ".dispose.key"),
+        name(".has_dispose"));
+    builder_.CreateCondBr(hasDispose, disposeBB, doneBB);
 
     builder_.SetInsertPoint(disposeBB);
     auto dispose_fn_val = emit_property_get(iterFinal, "dispose");
     // Hand the dispose frame its own +1 for `self` (same convention as the
-    // iter() call in compile_for_protocol_loop) — the skipBB release below
-    // frees the alloca's ref, not the frame's.
+    // iter() call in emit_for_open_protocol) — the slot keeps holding its own
+    // ref until scope teardown, so this retain is the frame's alone.
     emit_value_retain(iterFinal);
     if (!fn->hasPersonalityFn()) fn->setPersonalityFn(get_personality_fn());
     if (swallow_dispose) {
       // On the exception / early-return exit paths the interpreter swallows a
       // throwing dispose() (it must not turn an in-flight throw or a `return`
       // into the dispose's exception). Route the dispose call to a local
-      // catch-and-discard landingpad, then continue to the release. (break /
-      // natural drain propagate a throwing dispose, matching the interpreter.)
+      // catch-and-discard landingpad, then carry on. (break / natural drain
+      // propagate a throwing dispose, matching the interpreter.)
       // The thrown-value carrier is a global that a culebra throw from
       // dispose() OVERWRITES — swallowing the C++ exception alone still lets
       // the outer catch read dispose's payload instead of the original one.
       // Save the carrier before the call and restore it on both paths.
-      auto swallowBB = llvm::BasicBlock::Create(
-          ctx_, (std::string(label_prefix) + ".dispose.swallow").c_str(), fn);
-      auto restoreBB = llvm::BasicBlock::Create(
-          ctx_, (std::string(label_prefix) + ".dispose.rest").c_str(), fn);
+      auto swallowBB =
+          llvm::BasicBlock::Create(ctx_, name(".dispose.swallow"), fn);
+      auto restoreBB =
+          llvm::BasicBlock::Create(ctx_, name(".dispose.rest"), fn);
       llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
                                fn->getEntryBlock().begin());
       auto i8Ty = builder_.getInt8Ty();
@@ -8574,8 +8584,7 @@ struct JIT {
       compile_function_call_raw(dispose_fn_val, iterFinal, {});
       current_lpad_ = savedLpad;
       builder_.CreateBr(restoreBB);
-      emit_catch_all_prologue(swallowBB,
-                              (std::string(label_prefix) + ".dispose.lpad").c_str());
+      emit_catch_all_prologue(swallowBB, name(".dispose.lpad").c_str());
       builder_.CreateCall(
           module_->getOrInsertFunction("__cxa_end_catch", builder_.getVoidTy()),
           {});
@@ -8587,26 +8596,15 @@ struct JIT {
                 {builder_.CreateLoad(i8Ty, flagA),
                  builder_.CreateLoad(i8Ty, tagA),
                  builder_.CreateLoad(i64Ty, dataA)});
-      builder_.CreateBr(skipBB);
     } else {
-      // A throwing dispose propagates (interp-symmetric), but must not strand
-      // the alloca's +1 (the frame consumes the retain above, not the
-      // alloca's ref): release iter/iterable in a local lpad, then rethrow.
-      auto throwBB = llvm::BasicBlock::Create(
-          ctx_, (std::string(label_prefix) + ".dispose.throw").c_str(), fn);
-      auto savedLpad = current_lpad_;
-      current_lpad_ = throwBB;
+      // A throwing dispose propagates (interp-symmetric) straight into the
+      // enclosing pad, which releases the iterator slot along with the rest of
+      // the statement's scope — no local unwind edge to hand-place here.
       compile_function_call_raw(dispose_fn_val, iterFinal, {});
-      current_lpad_ = savedLpad;
-      builder_.CreateBr(skipBB);
-      emit_catch_all_prologue(
-          throwBB, (std::string(label_prefix) + ".dispose.thr.lpad").c_str());
-      emit_value_release(iterFinal);
-      emit_rethrow(savedLpad);
     }
+    builder_.CreateBr(doneBB);
 
-    builder_.SetInsertPoint(skipBB);
-    emit_value_release(iterFinal);
+    builder_.SetInsertPoint(doneBB);
   }
 
   // Iterator protocol: `c.obj.iter()` yields the iterator, then each `next()`
@@ -8638,8 +8636,7 @@ struct JIT {
     //
     // Opened while the iterator is still in its Owned handle: rejecting a
     // broken one throws, and the §4.8 unwind-temp window frees the handle on
-    // that edge. Consuming first would strand it — `c.iter` is a bare alloca
-    // no cleanup pad knows about.
+    // that edge — the slot has not taken ownership yet at this point.
     emit_call(
         module_->getOrInsertFunction(
             rt::iter_protocol_open, builder_.getVoidTy(), builder_.getInt8Ty(),
@@ -8723,31 +8720,6 @@ struct JIT {
     builder_.CreateStore(emit_borrow_to_owned(make_stringview(scalarView)),
                          c.elem);
     builder_.CreateBr(bodyBB);
-  }
-
-  // Dispose + release the cursor's iterator when it has one. The array and
-  // string cursors leave `iter` nil, so they skip the whole sequence — one
-  // guard instead of a separate cleanup per container kind.
-  void emit_iter_dispose_if_active(llvm::Value* iterAlloca, const char* prefix,
-                                   bool swallow_dispose = false) {
-    auto fn = builder_.GetInsertBlock()->getParent();
-    auto cur = builder_.CreateLoad(valueType_, iterAlloca,
-                                   (std::string(prefix) + ".iter.cur").c_str());
-    auto active = builder_.CreateICmpNE(extract_tag(cur),
-                                        builder_.getInt8(TAG_NIL),
-                                        (std::string(prefix) + ".active").c_str());
-    auto disposeBB = llvm::BasicBlock::Create(
-        ctx_, (std::string(prefix) + ".dispose").c_str(), fn);
-    auto doneBB = llvm::BasicBlock::Create(
-        ctx_, (std::string(prefix) + ".done").c_str(), fn);
-    builder_.CreateCondBr(active, disposeBB, doneBB);
-
-    builder_.SetInsertPoint(disposeBB);
-    emit_iter_dispose_and_release(iterAlloca, prefix, swallow_dispose);
-    if (!builder_.GetInsertBlock()->getTerminator()) {
-      builder_.CreateBr(doneBB);
-    }
-    builder_.SetInsertPoint(doneBB);
   }
 
   // --- Lexical scope ---
@@ -13632,8 +13604,8 @@ struct JIT {
     }
     // When returning out of one or more for-in bodies, current_lpad_ is the
     // innermost loop's own exception landingpad (it drives that loop's
-    // dispose+release). Emitting the exit cleanup under it would route a
-    // throwing dispose()/drop back into that same landingpad and re-run the
+    // dispose). Emitting the exit cleanup under it would route a throwing
+    // dispose()/drop back into that same landingpad and re-run the
     // cleanup — a double dispose + double release (UAF). A cleanup that throws
     // during `return` must instead propagate out of the function (matching the
     // "we're exiting, no invoke" intent below), so drop the landingpad for the
@@ -13641,11 +13613,11 @@ struct JIT {
     llvm::BasicBlock* savedExitLpad = current_lpad_;
     if (!iter_cleanup_stack_.empty()) current_lpad_ = nullptr;
 
-    // Dispose + release every active for-in iterator we're returning out of
-    // (innermost first), matching the interpreter's dispose-on-early-return.
-    // Their raw allocas live outside the scope machinery, so they'd otherwise
-    // both leak and skip dispose. break/throw/natural exit are handled by the
-    // loop's own cleanup / landingpad, so this only fires for `return`.
+    // Dispose every active for-in iterator we're returning out of (innermost
+    // first), matching the interpreter's dispose-on-early-return; the
+    // release_all_scopes_for_exit below then frees them with their scopes.
+    // break/throw/natural exit are handled by the loop's own cleanup /
+    // landingpad, so this only fires for `return`.
     // Each loop's body defers run *before* its dispose (interp's eval_for does
     // run_deferred, then dispose_iter), interleaved per loop for nesting.
     for (auto it = iter_cleanup_stack_.rbegin();
@@ -14233,12 +14205,14 @@ inline llvm::Value* JIT::emit_inlined_array_reduce(
   auto ptrTy = PointerType::get(ctx_, 0);
   auto fn = builder_.GetInsertBlock()->getParent();
 
-  // Accumulator alloca outside the loop. Lives in entry block to keep
-  // it out of the loop hot path.
-  IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
-  auto accAlloca = entryB.CreateAlloca(valueType_, nullptr, "ired.acc");
-  builder_.CreateStore(init, accAlloca);
+  // Guard the accumulator: `size` is read once, so a body that shrinks the
+  // receiver makes the loop head's array_get throw with the accumulator live.
+  auto accAlloca = make_build_guard(init);
+  auto cleanupBB = BasicBlock::Create(ctx_, "ired.cleanup", fn);
+  auto savedLpad = current_lpad_;
+  current_lpad_ = cleanupBB;
 
+  IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
   auto size = emit_call(
       module_->getOrInsertFunction(rt::array_size, builder_.getInt64Ty(),
                                    ptrTy),
@@ -14281,6 +14255,8 @@ inline llvm::Value* JIT::emit_inlined_array_reduce(
   // the alloca's value is always +1 owned, ownership transfers
   // through the body as if the runtime helper called `_culebra_invoke2`.
   auto curAcc = builder_.CreateLoad(valueType_, accAlloca, "ired.acc.cur");
+  // Disarm across the body — the acc param slot owns it; the store re-arms.
+  clear_pending_guard(accAlloca);
 
   emit_binary_lambda_body(
       lambda_ast, curAcc, elem,
@@ -14298,6 +14274,8 @@ inline llvm::Value* JIT::emit_inlined_array_reduce(
   builder_.CreateBr(condBB);
 
   builder_.SetInsertPoint(endBB);
+  current_lpad_ = savedLpad;
+  finish_construction_cleanup(cleanupBB, {accAlloca}, savedLpad);
   return builder_.CreateLoad(valueType_, accAlloca, "ired.result");
 }
 
@@ -14570,12 +14548,15 @@ inline llvm::Value* JIT::emit_inlined_range_reduce(
   auto fn = builder_.GetInsertBlock()->getParent();
   auto i64Ty = builder_.getInt64Ty();
 
-  // acc alloca seeded with init's +1.
-  IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
-  auto accAlloca = entryB.CreateAlloca(valueType_, nullptr, "rrd.acc");
-  builder_.CreateStore(compile(init_ast).consume(), accAlloca);
+  // Guard the accumulator: the count expression is compiled after the seed and
+  // both it and its Long coercion can throw (`range(f())…`, `range('x')…`).
+  auto accAlloca = make_build_guard(compile(init_ast).consume());
+  auto cleanupBB = BasicBlock::Create(ctx_, "rrd.cleanup", fn);
+  auto savedLpad = current_lpad_;
+  current_lpad_ = cleanupBB;
 
   auto n_val = value_to_long(compile(n_ast).consume());
+  IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
   auto iAlloca = entryB.CreateAlloca(i64Ty, nullptr, "rrd.i");
   builder_.CreateStore(builder_.getInt64(0), iAlloca);
 
@@ -14593,6 +14574,8 @@ inline llvm::Value* JIT::emit_inlined_range_reduce(
   auto i_cur = builder_.CreateLoad(i64Ty, iAlloca, "rrd.i.body");
   auto i_val = make_long(i_cur);
   auto acc_val = builder_.CreateLoad(valueType_, accAlloca, "rrd.acc.cur");
+  // Disarm across the body — the acc param slot owns it; the store re-arms.
+  clear_pending_guard(accAlloca);
 
   emit_binary_lambda_body(
       lambda_ast, acc_val, i_val,
@@ -14613,6 +14596,8 @@ inline llvm::Value* JIT::emit_inlined_range_reduce(
   }
 
   builder_.SetInsertPoint(endBB);
+  current_lpad_ = savedLpad;
+  finish_construction_cleanup(cleanupBB, {accAlloca}, savedLpad);
   return builder_.CreateLoad(valueType_, accAlloca, "rrd.acc.final");
 }
 
@@ -14624,8 +14609,12 @@ inline llvm::Value* JIT::emit_inlined_iter_reduce(
   auto fn = builder_.GetInsertBlock()->getParent();
 
   IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
-  auto accAlloca = entryB.CreateAlloca(valueType_, nullptr, "iri.acc");
-  builder_.CreateStore(init, accAlloca);
+  // Guard the accumulator: the protocol open and `has_next()` below can throw
+  // while it is still a codegen temp — nobody's property (§4.3).
+  auto accAlloca = make_build_guard(init);
+  auto cleanupBB = BasicBlock::Create(ctx_, "iri.cleanup", fn);
+  auto savedLpad = current_lpad_;
+  current_lpad_ = cleanupBB;
 
   auto iterTag = extract_tag(iter_val);
   auto iterData = extract_data(iter_val);
@@ -14638,10 +14627,6 @@ inline llvm::Value* JIT::emit_inlined_iter_reduce(
   auto nextAlloca = entryB.CreateAlloca(ptrTy, nullptr, "iri.next.cls");
 
   // Protocol open (validated, once) — see emit_iter_unary_inline_loop.
-  // Like the `has_next()` call in the loop head below, a throw from here
-  // leaves the seed in `accAlloca` with no owner until the first iteration
-  // hands it to the body scope — a pre-existing gap in this loop's shape,
-  // not one to paper over per-call-site.
   emit_call(
       module_->getOrInsertFunction(
           rt::iter_protocol_open, builder_.getVoidTy(), builder_.getInt8Ty(),
@@ -14677,6 +14662,8 @@ inline llvm::Value* JIT::emit_inlined_iter_reduce(
   // dance as emit_inlined_array_reduce). iter_advance handed elem in
   // +1 so val slot can absorb it directly.
   auto curAcc = builder_.CreateLoad(valueType_, accAlloca, "iri.acc.cur");
+  // Disarm across the body — the acc param slot owns it; the store re-arms.
+  clear_pending_guard(accAlloca);
 
   emit_binary_lambda_body(
       lambda_ast, curAcc, elem,
@@ -14687,6 +14674,8 @@ inline llvm::Value* JIT::emit_inlined_iter_reduce(
   }
 
   builder_.SetInsertPoint(endBB);
+  current_lpad_ = savedLpad;
+  finish_construction_cleanup(cleanupBB, {accAlloca}, savedLpad);
   return builder_.CreateLoad(valueType_, accAlloca, "iri.result");
 }
 

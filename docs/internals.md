@@ -263,6 +263,21 @@ to pick the matching advance, and every advance hands its element to one
 body. Exit is shared too: the iterator dispose is guarded on the cursor's
 iterator slot, which the array and string cursors leave nil.
 
+The three values the loop owns — the iterable, the value the protocol is
+derived from, and the iterator `iter()` returned — are scope slots of the
+statement's own scope, declared in that order so LIFO teardown drops the
+iterator before its source. That is what makes the exits uniform: the
+ordinary scope machinery releases all three on drain, `break`, early
+`return`, and any throw, including one out of `next()` / `has_next()`
+mid-drain — so the cursor's own cleanup shrinks to calling `dispose()`.
+The iterator used to be a bare cursor alloca instead, invisible to every
+cleanup pad, and a throwing producer stranded one iterator per loop run
+(Ch.15 §15.5 invariant 3, which the slot restores). The inline
+`reduce` loops hold their accumulator the same way — the seed is live
+from before the protocol is opened until the first iteration hands it to
+the body scope, so it is registered with a construction cleanup that
+releases it if the open, `has_next()`, or the count expression throws.
+
 Emitting the body once is what makes nesting affordable. Inlining it under
 each container arm instead multiplies it by six per level — a triple nest
 emitted the innermost body 216 times, IR grew about 6.4x per level, and a
