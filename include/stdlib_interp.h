@@ -28,6 +28,7 @@
 #include <uuid.h>
 #include <vfs.h>
 #include <interpreter.h>
+#include <net.h>
 #include <proc.h>
 #if defined(CULEBRA_HTTP_ENABLED)
 #include <http.h>
@@ -3380,6 +3381,523 @@ inline Value make_sqlite_namespace() {
 }
 #endif  // CULEBRA_SQLITE_ENABLED
 
+// Net — TCP/UDP sockets over the value-neutral socket core (net.h). Three
+// handle shapes (Socket / Listener / UdpSocket) each carry `_id` into the core's
+// thread-local table; `close`/`drop` release it (idempotent). Framing lives in
+// the core, so these adapters only translate values and errors.
+
+[[noreturn]] inline void _net_throw(const char* ctx, const std::string& msg,
+                                    long line, long col) {
+  throw CulebraError("NetError", std::format("{}: {}", ctx, msg), line, col);
+}
+
+// Map a failed IoStatus to NetError. Eof is never an error here — each reader
+// gives it its own meaning ("" / nil / a short-read error).
+inline void _net_check(culebra::net::IoStatus st, const char* ctx,
+                       const std::string& err, long line, long col) {
+  if (st == culebra::net::IoStatus::Timeout ||
+      st == culebra::net::IoStatus::Error) {
+    _net_throw(ctx, culebra::net::status_message(st, err), line, col);
+  }
+}
+
+inline Value _net_addr_object(const std::string& host, int port) {
+  ObjectValue o;
+  o.initialize("host", Value(std::string(host)), false);
+  o.initialize("port", Value(static_cast<long>(port)), false);
+  return Value(std::move(o));
+}
+
+// The `_id` + set_timeout/is_open/close/drop set every Net handle shares.
+inline void _net_add_common(ObjectValue& h, int64_t id) {
+  using namespace std::literals;
+  h.initialize("_id", Value(static_cast<long>(id)), false);
+  // A native handle (the fd lives in a thread-local table) is not Sendable —
+  // reject it at the serialize boundary the same way the JIT handle does.
+  h.initialize("__nonsendable__", Value(true), false);
+
+  auto hid = [](const std::shared_ptr<Environment>& env) -> int64_t {
+    return env->get("self").to_object().get("_id").to_long();
+  };
+
+  // set_timeout(ms) — 0 waits forever (still interruptible by Ctrl+C).
+  h.initialize(
+      "set_timeout",
+      Value(FunctionValue({{"ms", false, "Long"sv}},
+                          [hid](std::shared_ptr<Environment> env) {
+                            long line = env->get("__LINE__").to_long();
+                            long col = env->get("__COLUMN__").to_long();
+                            std::string err;
+                            if (!culebra::net::set_timeout(
+                                    hid(env), env->get("ms").to_long(), &err))
+                              _net_throw("Net.set_timeout", err, line, col);
+                            return Value();
+                          })),
+      false);
+
+  h.initialize(
+      "is_open",
+      Value(FunctionValue({},
+                          [hid](std::shared_ptr<Environment> env) {
+                            return Value(culebra::net::is_open(hid(env)));
+                          },
+                          "Bool"sv)),
+      false);
+
+  h.initialize(
+      "close",
+      Value(FunctionValue({}, [hid](std::shared_ptr<Environment> env) {
+        culebra::net::close_handle(hid(env));
+        return Value();
+      })),
+      false);
+
+  // GC backstop: close a socket that was never explicitly closed.
+  h.initialize(
+      "drop",
+      Value(FunctionValue({}, [hid](std::shared_ptr<Environment> env) {
+        culebra::net::close_handle(hid(env));
+        return Value();
+      })),
+      false);
+}
+
+// Build a Socket handle (a connected TCP stream): the File-shaped reader/writer
+// set (read / read_line / read_exact / lines / write) plus socket specifics.
+inline Value make_net_socket_handle(int64_t id) {
+  using namespace std::literals;
+  ObjectValue h;
+  _net_add_common(h, id);
+
+  auto hid = [](const std::shared_ptr<Environment>& env) -> int64_t {
+    return env->get("self").to_object().get("_id").to_long();
+  };
+  auto loc = [](const std::shared_ptr<Environment>& env, long& line, long& col) {
+    line = env->get("__LINE__").to_long();
+    col = env->get("__COLUMN__").to_long();
+  };
+
+  // read(n=nil) — nil reads until the peer closes; a Long reads up to n bytes
+  // (a short read is normal on a socket). "" at EOF, mirroring File.read.
+  h.initialize(
+      "read",
+      Value(FunctionValue(
+          {{"n", false, ""sv, nullptr, kw_default_nil()}},
+          [hid, loc](std::shared_ptr<Environment> env) -> Value {
+            long line, col; loc(env, line, col);
+            const auto& n = env->get("n");
+            std::string out, err;
+            culebra::net::IoStatus st;
+            if (n.type == Value::Nil) {
+              st = culebra::net::read_all(hid(env), out, &err);
+            } else {
+              long want = n.to_long();
+              st = culebra::net::read(hid(env),
+                                      static_cast<size_t>(want < 0 ? 0 : want),
+                                      out, &err);
+            }
+            _net_check(st, "Net.read", err, line, col);
+            return Value(std::move(out));  // Eof -> ""
+          },
+          "String"sv)),
+      false);
+
+  // read_line() — one line, terminator stripped; nil once the stream ends.
+  h.initialize(
+      "read_line",
+      Value(FunctionValue(
+          {},
+          [hid, loc](std::shared_ptr<Environment> env) -> Value {
+            long line, col; loc(env, line, col);
+            std::string out, err;
+            auto st = culebra::net::read_line(hid(env), out, &err);
+            if (st == culebra::net::IoStatus::Eof) return Value();
+            _net_check(st, "Net.read_line", err, line, col);
+            return Value(std::move(out));
+          },
+          "String?"sv)),
+      false);
+
+  // read_exact(n) — exactly n bytes; a peer that closes early is an error, not
+  // a short read (the point of asking for an exact frame).
+  h.initialize(
+      "read_exact",
+      Value(FunctionValue(
+          {{"n", false, "Long"sv}},
+          [hid, loc](std::shared_ptr<Environment> env) -> Value {
+            long line, col; loc(env, line, col);
+            long want = env->get("n").to_long();
+            if (want < 0) want = 0;
+            std::string out, err;
+            auto st = culebra::net::read_exact(
+                hid(env), static_cast<size_t>(want), out, &err);
+            if (st == culebra::net::IoStatus::Eof) {
+              _net_throw("Net.read_exact",
+                         std::format("unexpected EOF ({} of {} bytes)",
+                                     out.size(), want),
+                         line, col);
+            }
+            _net_check(st, "Net.read_exact", err, line, col);
+            return Value(std::move(out));
+          },
+          "String"sv)),
+      false);
+
+  // lines() — line iterator, ending when the peer closes. Unlike File.lines it
+  // does not close on exit: a socket is usually still written to afterwards.
+  h.initialize(
+      "lines",
+      Value(FunctionValue(
+          {},
+          [hid, loc](std::shared_ptr<Environment> env) {
+            long line, col; loc(env, line, col);
+            int64_t id = hid(env);
+            // Capture the handle so the iterator keeps it alive — otherwise an
+            // anonymous `Net.connect(...).lines()` would be GC'd (drop → close)
+            // before the loop runs.
+            Value self = env->get("self");
+            return _make_iterator(
+                [self, id, line, col](
+                    std::shared_ptr<Environment>) -> std::optional<Value> {
+                  std::string out, err;
+                  auto st = culebra::net::read_line(id, out, &err);
+                  if (st == culebra::net::IoStatus::Eof)
+                    return _iter_step_done();
+                  _net_check(st, "Net.lines", err, line, col);
+                  return _iter_step_value(Value(std::move(out)));
+                });
+          },
+          "Object"sv)),
+      false);
+
+  h.initialize(
+      "write",
+      Value(FunctionValue(
+          {{"data", false, "String"sv}},
+          [hid, loc](std::shared_ptr<Environment> env) {
+            long line, col; loc(env, line, col);
+            const std::string& data = env->get("data").to_string();
+            std::string err;
+            auto st = culebra::net::write_all(hid(env), data.data(),
+                                              data.size(), &err);
+            _net_check(st, "Net.write", err, line, col);
+            return Value();
+          })),
+      false);
+
+  // shutdown_write() — half-close: signal EOF to the peer while still reading
+  // its reply (the request/response idiom of line protocols).
+  h.initialize(
+      "shutdown_write",
+      Value(FunctionValue({}, [hid, loc](std::shared_ptr<Environment> env) {
+        long line, col; loc(env, line, col);
+        std::string err;
+        if (!culebra::net::shutdown_write(hid(env), &err))
+          _net_throw("Net.shutdown_write", err, line, col);
+        return Value();
+      })),
+      false);
+
+  h.initialize(
+      "set_nodelay",
+      Value(FunctionValue(
+          {{"on", false, "Bool"sv, nullptr,
+            std::make_shared<Value>(Value(true))}},
+          [hid, loc](std::shared_ptr<Environment> env) {
+            long line, col; loc(env, line, col);
+            std::string err;
+            if (!culebra::net::set_nodelay(hid(env), env->get("on").to_bool(),
+                                           &err))
+              _net_throw("Net.set_nodelay", err, line, col);
+            return Value();
+          })),
+      false);
+
+  h.initialize(
+      "local_addr",
+      Value(FunctionValue(
+          {},
+          [hid, loc](std::shared_ptr<Environment> env) -> Value {
+            long line, col; loc(env, line, col);
+            std::string host, err;
+            int port = 0;
+            if (!culebra::net::local_addr(hid(env), host, port, &err))
+              _net_throw("Net.local_addr", err, line, col);
+            return _net_addr_object(host, port);
+          },
+          "Object"sv)),
+      false);
+
+  h.initialize(
+      "peer_addr",
+      Value(FunctionValue(
+          {},
+          [hid, loc](std::shared_ptr<Environment> env) -> Value {
+            long line, col; loc(env, line, col);
+            std::string host, err;
+            int port = 0;
+            if (!culebra::net::peer_addr(hid(env), host, port, &err))
+              _net_throw("Net.peer_addr", err, line, col);
+            return _net_addr_object(host, port);
+          },
+          "Object"sv)),
+      false);
+
+  return Value(std::move(h));
+}
+
+// Build a Listener handle: `port`/`host` of the bound address (so a port-0 bind
+// can report the ephemeral port it got) plus accept, and `iter` so
+// `for conn in listener` accepts in a loop.
+inline Value make_net_listener_handle(int64_t id, const std::string& host,
+                                      int port) {
+  using namespace std::literals;
+  ObjectValue h;
+  _net_add_common(h, id);
+  h.initialize("host", Value(std::string(host)), false);
+  h.initialize("port", Value(static_cast<long>(port)), false);
+
+  auto hid = [](const std::shared_ptr<Environment>& env) -> int64_t {
+    return env->get("self").to_object().get("_id").to_long();
+  };
+  auto loc = [](const std::shared_ptr<Environment>& env, long& line, long& col) {
+    line = env->get("__LINE__").to_long();
+    col = env->get("__COLUMN__").to_long();
+  };
+
+  h.initialize(
+      "accept",
+      Value(FunctionValue(
+          {},
+          [hid, loc](std::shared_ptr<Environment> env) -> Value {
+            long line, col; loc(env, line, col);
+            int64_t cid = -1;
+            std::string err;
+            auto st = culebra::net::accept(hid(env), &cid, &err);
+            _net_check(st, "Net.accept", err, line, col);
+            return make_net_socket_handle(cid);
+          },
+          "Object"sv)),
+      false);
+
+  // iter() — the Iterable trait: an endless accept loop. It never ends on its
+  // own (a listener has no EOF), so the body breaks out; closing the listener
+  // raises rather than silently ending the loop.
+  h.initialize(
+      "iter",
+      Value(FunctionValue(
+          {},
+          [hid, loc](std::shared_ptr<Environment> env) {
+            long line, col; loc(env, line, col);
+            int64_t id = hid(env);
+            Value self = env->get("self");
+            return _make_iterator(
+                [self, id, line, col](
+                    std::shared_ptr<Environment>) -> std::optional<Value> {
+                  int64_t cid = -1;
+                  std::string err;
+                  auto st = culebra::net::accept(id, &cid, &err);
+                  _net_check(st, "Net.accept", err, line, col);
+                  return _iter_step_value(make_net_socket_handle(cid));
+                });
+          },
+          "Object"sv)),
+      false);
+
+  return Value(std::move(h));
+}
+
+// Build a UdpSocket handle: bound `host`/`port` plus send_to / recv_from.
+inline Value make_net_udp_handle(int64_t id, const std::string& host, int port) {
+  using namespace std::literals;
+  ObjectValue h;
+  _net_add_common(h, id);
+  h.initialize("host", Value(std::string(host)), false);
+  h.initialize("port", Value(static_cast<long>(port)), false);
+
+  auto hid = [](const std::shared_ptr<Environment>& env) -> int64_t {
+    return env->get("self").to_object().get("_id").to_long();
+  };
+  auto loc = [](const std::shared_ptr<Environment>& env, long& line, long& col) {
+    line = env->get("__LINE__").to_long();
+    col = env->get("__COLUMN__").to_long();
+  };
+
+  h.initialize(
+      "send_to",
+      Value(FunctionValue(
+          {{"data", false, "String"sv},
+           {"host", false, "String"sv},
+           {"port", false, "Long"sv}},
+          [hid, loc](std::shared_ptr<Environment> env) {
+            long line, col; loc(env, line, col);
+            const std::string& data = env->get("data").to_string();
+            std::string err;
+            if (!culebra::net::udp_send_to(
+                    hid(env), data.data(), data.size(),
+                    env->get("host").to_string(),
+                    static_cast<int>(env->get("port").to_long()), &err))
+              _net_throw("Net.send_to", err, line, col);
+            return Value();
+          })),
+      false);
+
+  // recv_from(max=65536) -> {data, host, port}. An oversized datagram is
+  // truncated to `max`, as UDP dictates.
+  h.initialize(
+      "recv_from",
+      Value(FunctionValue(
+          {{"max", false, "Long"sv, nullptr,
+            std::make_shared<Value>(Value(static_cast<long>(65536)))}},
+          [hid, loc](std::shared_ptr<Environment> env) -> Value {
+            long line, col; loc(env, line, col);
+            long max = env->get("max").to_long();
+            if (max < 0) max = 0;
+            std::string data, host, err;
+            int port = 0;
+            auto st = culebra::net::udp_recv_from(
+                hid(env), static_cast<size_t>(max), data, host, port, &err);
+            _net_check(st, "Net.recv_from", err, line, col);
+            ObjectValue o;
+            o.initialize("data", Value(std::move(data)), false);
+            o.initialize("host", Value(std::move(host)), false);
+            o.initialize("port", Value(static_cast<long>(port)), false);
+            return Value(std::move(o));
+          },
+          "Object"sv)),
+      false);
+
+  h.initialize(
+      "set_broadcast",
+      Value(FunctionValue(
+          {{"on", false, "Bool"sv, nullptr,
+            std::make_shared<Value>(Value(true))}},
+          [hid, loc](std::shared_ptr<Environment> env) {
+            long line, col; loc(env, line, col);
+            std::string err;
+            if (!culebra::net::set_broadcast(hid(env), env->get("on").to_bool(),
+                                             &err))
+              _net_throw("Net.set_broadcast", err, line, col);
+            return Value();
+          })),
+      false);
+
+  return Value(std::move(h));
+}
+
+// Read back the address a fresh listener / UDP socket actually bound, so the
+// handle can report the ephemeral port chosen for a port-0 bind.
+inline void _net_bound_addr(int64_t id, const char* ctx, std::string& host,
+                            int& port, long line, long col) {
+  std::string err;
+  if (!culebra::net::local_addr(id, host, port, &err)) {
+    culebra::net::close_handle(id);
+    _net_throw(ctx, err, line, col);
+  }
+}
+
+inline Value make_net_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+  auto timeout_param = FunctionValue::Parameter{
+      "timeout", false, "Long"sv, nullptr,
+      std::make_shared<Value>(Value(static_cast<long>(0)))};
+
+  // connect(host, port, timeout=0) -> Socket. `timeout` (ms, 0 = none) bounds
+  // the connect and becomes the socket's read/write timeout.
+  ns.initialize(
+      "connect",
+      Value(FunctionValue(
+          {{"host", false, "String"sv}, {"port", false, "Long"sv},
+           timeout_param},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            std::string err;
+            int64_t id = culebra::net::connect(
+                env->get("host").to_string(),
+                static_cast<int>(env->get("port").to_long()),
+                env->get("timeout").to_long(), &err);
+            if (id < 0) _net_throw("Net.connect", err, line, col);
+            return make_net_socket_handle(id);
+          },
+          "Object"sv)),
+      false);
+
+  // listen(port, host="0.0.0.0", backlog=0) -> Listener. Port 0 binds an
+  // ephemeral port, readable as `listener.port`.
+  ns.initialize(
+      "listen",
+      Value(FunctionValue(
+          {{"port", false, "Long"sv},
+           {"host", false, "String"sv, nullptr,
+            std::make_shared<Value>(std::string("0.0.0.0"))},
+           {"backlog", false, "Long"sv, nullptr,
+            std::make_shared<Value>(Value(static_cast<long>(0)))}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            std::string err;
+            int64_t id = culebra::net::listen(
+                env->get("host").to_string(),
+                static_cast<int>(env->get("port").to_long()),
+                static_cast<int>(env->get("backlog").to_long()), &err);
+            if (id < 0) _net_throw("Net.listen", err, line, col);
+            std::string host;
+            int port = 0;
+            _net_bound_addr(id, "Net.listen", host, port, line, col);
+            return make_net_listener_handle(id, host, port);
+          },
+          "Object"sv)),
+      false);
+
+  // udp(port=0, host="0.0.0.0") -> UdpSocket.
+  ns.initialize(
+      "udp",
+      Value(FunctionValue(
+          {{"port", false, "Long"sv, nullptr,
+            std::make_shared<Value>(Value(static_cast<long>(0)))},
+           {"host", false, "String"sv, nullptr,
+            std::make_shared<Value>(std::string("0.0.0.0"))}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            std::string err;
+            int64_t id = culebra::net::udp_open(
+                env->get("host").to_string(),
+                static_cast<int>(env->get("port").to_long()), &err);
+            if (id < 0) _net_throw("Net.udp", err, line, col);
+            std::string host;
+            int port = 0;
+            _net_bound_addr(id, "Net.udp", host, port, line, col);
+            return make_net_udp_handle(id, host, port);
+          },
+          "Object"sv)),
+      false);
+
+  // resolve(host) -> [String]: the numeric addresses `host` resolves to.
+  ns.initialize(
+      "resolve",
+      Value(FunctionValue(
+          {{"host", false, "String"sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            std::vector<std::string> addrs;
+            std::string err;
+            if (!culebra::net::resolve(env->get("host").to_string(), addrs,
+                                       &err))
+              _net_throw("Net.resolve", err, line, col);
+            ArrayValue av;
+            for (auto& a : addrs) av.values->emplace_back(Value(std::move(a)));
+            return Value(std::move(av));
+          },
+          "Array"sv)),
+      false);
+
+  return Value(std::move(ns));
+}
+
 // Build the Proc.spawn live handle: data fields `_pid/_out/_err/_done/_result`
 // plus `wait`/`poll`/`kill`/`drop` methods. The result is cached on first
 // wait/poll so the methods are idempotent; `drop` (called on GC) best-effort
@@ -6138,6 +6656,7 @@ inline void setup_built_in_functions(
   ns_init("String", make_string_namespace());
   ns_init("_Regex", make_regex_primitives_namespace());
   ns_init("Proc", make_proc_namespace());
+  ns_init("Net", make_net_namespace());
 #if defined(CULEBRA_HTTP_ENABLED)
   ns_init("Http", make_http_namespace());
 #endif

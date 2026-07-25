@@ -162,6 +162,23 @@ static void test_read_exact_and_eof() {
   close_pair(p);
 }
 
+static void test_read_all() {
+  Pair p;
+  if (!make_pair(p)) return;
+  std::string err, out;
+
+  CHECK_OK(nt::write_all(p.client, "one", 3, &err) == nt::IoStatus::Ok, err);
+  CHECK_OK(nt::write_all(p.client, "two", 3, &err) == nt::IoStatus::Ok, err);
+  CHECK_OK(nt::shutdown_write(p.client, &err), err);
+  CHECK_OK(nt::read_all(p.server, out, &err) == nt::IoStatus::Ok, err);
+  CHECK(out == "onetwo");
+  // Already at EOF: an empty result, not an error.
+  CHECK_OK(nt::read_all(p.server, out, &err) == nt::IoStatus::Ok, err);
+  CHECK(out.empty());
+
+  close_pair(p);
+}
+
 static void test_timeouts() {
   std::string err, out;
 
@@ -411,6 +428,7 @@ int main() {
   test_roundtrip();
   test_read_line();
   test_read_exact_and_eof();
+  test_read_all();
   test_timeouts();
   test_addresses();
   test_errors();

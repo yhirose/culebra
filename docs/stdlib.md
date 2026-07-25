@@ -68,8 +68,9 @@ Conventions used below:
 25. [`SQLite`](#25-sqlite) — embedded SQL database (query / execute / prepared statements / transactions)
 26. [`Canvas`](#26-canvas) — immediate-mode 2D framebuffer for games (pixels, sprites, font, input, tone)
 27. [`Scene`](#27-scene) — retained-mode 3D renderer for procedural geometry (opt-in, macOS-only)
-28. [Design notes](#28-design-notes)
-29. [Not included (yet)](#29-not-included-yet)
+28. [`Net`](#28-net) — raw TCP / UDP sockets and name resolution (the layer under `Http`)
+29. [Design notes](#29-design-notes)
+30. [Not included (yet)](#30-not-included-yet)
 
 **Where to find what**
 
@@ -90,6 +91,7 @@ Conventions used below:
 | Process info | `Sys.argv`, `Sys.exit`, `Sys.env`, `Sys.set_env`, `Sys.getcwd`, `Sys.chdir`, `Sys.executable`, `Sys.script` |
 | Run an external command | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
 | Call an HTTP/HTTPS API | [§15 Http](#15-http) — `Http.get("https://api.example/x")` |
+| Speak a raw TCP / UDP protocol, resolve a hostname | [§28 Net](#28-net) — `Net.connect(host, port)` / `Net.listen(port)` / `Net.udp()` / `Net.resolve(host)` |
 | Escape / unescape HTML entities | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
 | Encode / decode base64, hex, url | [§16 Encoding](#16-encoding) — `Encoding.base64.encode(s)` |
 | gzip / gunzip data or files | [§17 Compress](#17-compress) — `Compress.gzip(s)` / `Compress.gunzip(z)` |
@@ -4122,7 +4124,124 @@ note.
 
 ---
 
-## 28. Design notes
+## 28. `Net`
+
+Raw TCP and UDP sockets, plus name resolution — the layer under
+[§15 Http](#15-http). Blocking, with an optional per-socket timeout: the same
+threads-not-async model as `Http`, so a server that must not block the main
+thread runs inside an [`Isolate`](#12-isolate).
+
+A transport failure — refused connect, unresolvable host, reset peer, timeout —
+raises `NetError`. The message is the OS's own wording, except a timeout, which
+always reads `timed out`. A blocked `read` / `accept` / `recv_from` stays
+interruptible: one Ctrl+C raises `Interrupted` rather than hanging.
+
+Socket handles are **not Sendable** — a socket belongs to the thread that opened
+it. To serve from another thread, open it inside that isolate.
+
+### `Net.connect(host: String, port: Long, timeout: Long = 0) -> Socket`
+
+Connect to `host:port`. `timeout` is in milliseconds (`0` = wait forever) and
+bounds the connect, then becomes the socket's read/write timeout.
+
+```culebra
+# doctest: skip
+let s = Net.connect("example.com", 80, timeout: 5000)
+s.write("GET / HTTP/1.0\r\nHost: example.com\r\n\r\n")
+s.shutdown_write()                  # tell the server the request is complete
+puts(s.read())                      # read until the server closes
+s.close()
+```
+
+**The `Socket` handle** — the reader/writer shape of [§4 File](#4-file), so
+code that only reads works over either:
+
+| Method | Effect |
+| --- | --- |
+| `read(n = nil)` | up to `n` bytes (a short read is normal on a socket); `nil` reads until the peer closes. `""` at EOF |
+| `read_line()` | one line, terminator stripped; `nil` once the stream ends |
+| `read_exact(n)` | exactly `n` bytes; a peer that closes early is a `NetError`, not a short read |
+| `lines()` | line iterator, ending when the peer closes. Unlike `File.lines` it does **not** close the socket (you usually reply afterwards) |
+| `write(data)` | write every byte of `data` |
+| `shutdown_write()` | half-close: signal EOF to the peer while still reading its reply |
+| `local_addr()` / `peer_addr()` | `{host, port}` of this end / the other end |
+| `set_timeout(ms)` | read/write timeout in ms; `0` waits forever |
+| `set_nodelay(on = true)` | disable Nagle's algorithm (send small writes immediately) |
+| `is_open()` / `close()` | liveness; `close` is idempotent (the GC also closes one that goes out of scope) |
+
+A line ends at `\n` only, and a trailing `\r` is stripped — so CRLF protocols
+read cleanly. (`File.lines` also splits on a lone `\r`; a socket cannot, because
+that would need a one-byte lookahead that can block when a CRLF arrives split
+across two packets.)
+
+### `Net.listen(port: Long, host: String = "0.0.0.0", backlog: Long = 0) -> Listener`
+
+Bind and listen. `port: 0` asks the OS for a free port, readable back as
+`listener.port` — the reliable way to avoid a fixed-port collision in tests.
+
+```culebra
+# doctest: skip
+let server = Net.listen(7000)
+puts("listening on " + server.port.to_string())
+for conn in server {                    # accept in a loop
+  conn.write("hello " + conn.peer_addr().host + "\n")
+  conn.close()
+}
+```
+
+| Member | Effect |
+| --- | --- |
+| `port` / `host` | the address actually bound (an ephemeral port shows up here) |
+| `accept()` | block until a connection arrives, returning a `Socket` |
+| `for conn in listener` | accept in a loop; the body `break`s to stop |
+| `set_timeout(ms)` | bound how long `accept` waits before raising |
+| `is_open()` / `close()` | as on `Socket` |
+
+Handlers run on the accepting thread, so one slow connection blocks the next.
+For concurrency, accept in one isolate per connection, or reach for
+[`Http.server`](#httpserver---object), which carries its own worker pool.
+
+### `Net.udp(port: Long = 0, host: String = "0.0.0.0") -> UdpSocket`
+
+Open a datagram socket bound to `host:port` (`port: 0` = ephemeral).
+
+```culebra
+# doctest: skip
+let sock = Net.udp(9000)
+sock.set_timeout(2000)
+let msg = sock.recv_from()              # {data, host, port}
+sock.send_to("ack", msg.host, msg.port)
+```
+
+| Member | Effect |
+| --- | --- |
+| `port` / `host` | the bound address |
+| `send_to(data, host, port)` | send one datagram (whole or not at all — no partial write) |
+| `recv_from(max = 65536)` | receive one datagram as `{data, host, port}`; an oversized datagram is truncated to `max`, as UDP dictates |
+| `set_broadcast(on = true)` | allow sending to a broadcast address |
+| `set_timeout(ms)` / `is_open()` / `close()` | as on `Socket` |
+
+UDP has no EOF and no connection: an empty datagram is data, and a peer that
+went away is silence, not an error.
+
+### `Net.resolve(host: String) -> Array<String>`
+
+The numeric addresses `host` resolves to, in resolver order, deduplicated. A
+numeric address resolves to itself; a name that doesn't resolve is a `NetError`.
+
+```culebra
+# doctest: skip
+puts(Net.resolve("localhost"))       # => ["127.0.0.1", "::1"]
+```
+
+### Not available in the Playground
+
+The browser has no raw sockets, so every `Net` call in a WebAssembly build
+raises `NetError: networking is not available in this build`.
+
+---
+
+## 29. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -4176,7 +4295,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 29. Not included (yet)
+## 30. Not included (yet)
 
 ### Heavier data structures
 
@@ -4184,10 +4303,11 @@ No `Queue`, `Deque`, or priority-heap type. `Set` and `Tuple` are
 language built-ins (see [`docs/language.md`](language.md)); reach for
 `Array` and `Object` for everything else.
 
-### Networking / OS extras
+### OS extras
 
-No raw TCP/UDP sockets, DNS resolver, or file watcher. Shell
-out through [§11 Proc](#11-proc) when you need them.
+No file watcher, and no TLS on a raw socket (`Net` is plaintext;
+[§15 Http](#15-http) carries its own TLS). Shell out through
+[§11 Proc](#11-proc) when you need them.
 
 ---
 

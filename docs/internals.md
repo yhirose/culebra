@@ -1175,3 +1175,60 @@ Because the feature is entirely source-to-source, its cost surfaces as
 extra generated source for the parser to chew on, not as backend
 complexity; `CULEBRA_TRANSFORM_STATS=1` reports the culebra source volume
 each transform emits (`=2` dumps the lowered source itself).
+
+## 17. Net: raw sockets
+
+### Where the logic lives
+
+`include/net.h` is a value-neutral core in the shape of `http.h` /
+`sqlite.h` / `proc.h`: no `Value` / `JitValue` / GC types, so both
+`stdlib_interp.h` and `stdlib_jit.h` include it without pulling in
+each other. The backends only marshal values and map an `IoStatus`
+onto culebra semantics.
+
+Framing (`read` / `read_line` / `read_exact` / `read_all`) lives in
+the core, over a per-socket read buffer — not in the two adapters.
+That is the difference between "the backends agree because both were
+written carefully" and "the backends agree because there is one
+implementation". Only the error *wording* is duplicated (a `ctx`
+string per call site), and the sweep in `tests/test_net.cul` locks
+that down.
+
+### Blocking, non-blocking, and Ctrl+C
+
+Sockets are non-blocking underneath, and every operation is
+`wait_ready()` then retry. Two reasons:
+
+- a poll/select readiness hint is advisory — a blocking `recv()`
+  behind one can still stall past its timeout;
+- `wait_ready()` polls in 100 ms slices and calls
+  `throw_if_interrupted()`, so a blocked `accept` / `read` raises the
+  cooperative `Interrupted` under interp, JIT, and AOT alike. The JIT
+  has no inter-statement safepoint, so a post-call check would not be
+  symmetric (same reasoning as `proc.h`).
+
+### Handle table
+
+A script handle is an `int64` index into a thread-local table, never
+a raw fd — a forged or stale index is bounds-checked into a graceful
+error and can never be dereferenced (the posture of `sqlite.h` and
+File). Thread-local is correct because a socket handle is
+`__nonsendable__`: it never crosses an isolate, so it never crosses a
+thread. Every raw fd is owned by an `FdGuard` until it is interned,
+so no error path — including the `Interrupted` thrown out of
+`wait_ready()` — can leak one.
+
+### No AOT usage-gating axis
+
+Unlike Tensor / Http / Compress / SQLite, `Net` pulls in no external
+library: plain BSD sockets (plus `ws2_32` on Windows). There is
+nothing to weak-stub and nothing to force-load, so it sits in the
+base runtime archive and `aot_scan.h` gains no `aot_uses_net`.
+
+### Platform notes
+
+Windows waits with `select()` rather than `WSAPoll()`, which does not
+report a failed non-blocking connect. SIGPIPE is suppressed per
+socket (`SO_NOSIGPIPE`) or per send (`MSG_NOSIGNAL`). The Emscripten
+(Playground) build has no raw sockets, so every entry point reports
+that up front instead of half-working on emulated calls.

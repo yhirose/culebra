@@ -1214,3 +1214,60 @@ computation オブジェクトとドライバは return-tag プロトコルを�
 雑さではなく、パーサが噛み砕く生成ソース量として現れます。
 `CULEBRA_TRANSFORM_STATS=1` は各変換が emit する culebra ソース量を報告
 します (`=2` は lowering 後のソースそのものを出力します)。
+
+## 17. Net: 生ソケット
+
+### ロジックの置き場所
+
+`include/net.h` は `http.h` / `sqlite.h` / `proc.h` と同じ形の値中立
+コアです。`Value` / `JitValue` / GC 型に依存しないので、
+`stdlib_interp.h` と `stdlib_jit.h` が互いを引き込まずに include でき
+ます。バックエンド側は値のマーシャリングと `IoStatus` の解釈だけを行い
+ます。
+
+フレーミング (`read` / `read_line` / `read_exact` / `read_all`) は、
+2 つのアダプタではなくコア側にソケット単位の読み取りバッファとともに
+置いています。これが「両方を注意深く書いたからバックエンドが一致する」
+と「実装が 1 つしかないから一致する」の違いです。重複するのはエラーの
+*文言* だけ (呼び出し地点ごとの `ctx` 文字列) で、そこは
+`tests/test_net.cul` のスイープが固定します。
+
+### ブロッキング、ノンブロッキング、Ctrl+C
+
+ソケットは内部的にノンブロッキングで、すべての操作が「`wait_ready()`
+してからリトライ」です。理由は 2 つ:
+
+- poll/select の ready 通知はあくまで助言的 — その裏でブロッキング
+  `recv()` を呼ぶとタイムアウトを超えて止まりうる。
+- `wait_ready()` は 100 ms 刻みでポーリングして `throw_if_interrupted()`
+  を呼ぶので、ブロック中の `accept` / `read` が interp・JIT・AOT のいず
+  れでも協調的 `Interrupted` を送出する。JIT には文と文の間のセーフ
+  ポイントがないため、呼び出し後のチェックでは対称にならない
+  (`proc.h` と同じ理屈)。
+
+### ハンドルテーブル
+
+スクリプト側のハンドルは生 fd ではなく thread-local テーブルへの
+`int64` インデックスです。偽造・失効したインデックスは境界チェックで
+穏当なエラーになり、決して参照解決されません (`sqlite.h` や File と同
+じ姿勢)。thread-local で正しいのは、ソケットハンドルが
+`__nonsendable__` だからです — アイソレートを越えない、つまりスレッド
+を越えません。生 fd は intern されるまで `FdGuard` が所有するので、
+`wait_ready()` から送出される `Interrupted` を含め、どのエラー経路でも
+リークしません。
+
+### AOT の usage-gating 軸を増やさない
+
+Tensor / Http / Compress / SQLite と違い、`Net` は外部ライブラリを一切
+引き込みません (素の BSD ソケット、Windows では `ws2_32` のみ)。weak
+スタブにするものも force-load するものもないので、base ランタイム
+アーカイブに同居し、`aot_scan.h` に `aot_uses_net` は増えません。
+
+### プラットフォーム上の注意
+
+Windows では `WSAPoll()` ではなく `select()` で待ちます (`WSAPoll` は
+ノンブロッキング connect の失敗を報告しないため)。SIGPIPE はソケット
+単位 (`SO_NOSIGPIPE`) か送信単位 (`MSG_NOSIGNAL`) で抑止します。
+Emscripten (Playground) ビルドに生ソケットはないので、エミュレートされた
+呼び出しで中途半端に動くのではなく、全エントリポイントが最初にその旨を
+報告します。

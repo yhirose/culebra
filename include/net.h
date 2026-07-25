@@ -397,6 +397,12 @@ inline IoStatus fill(Sock& s, std::string* err) {
 
 }  // namespace detail
 
+// The text both backends put in a NetError for a failed IoStatus, so the
+// wording of a timeout can't drift between interp and JIT.
+inline std::string status_message(IoStatus st, const std::string& err) {
+  return st == IoStatus::Timeout ? "timed out" : err;
+}
+
 // ---- Lifecycle -------------------------------------------------------------
 
 // Close a handle of any kind and free its slot. Idempotent; a stale or forged
@@ -699,6 +705,24 @@ inline IoStatus read_exact(int64_t id, size_t n, std::string& out,
   }
   out.assign(s->rbuf, s->rpos, n);
   s->rpos += n;
+  return IoStatus::Ok;
+}
+
+// Read until the peer closes its write end. The natural read for a protocol
+// whose response ends at EOF (HTTP/1.0 and friends); bounded only by the peer
+// and this socket's timeout. On Timeout/Error what has arrived stays buffered
+// for the next call rather than being dropped.
+inline IoStatus read_all(int64_t id, std::string& out, std::string* err) {
+  out.clear();
+  detail::Sock* s = detail::get(id, Kind::Tcp, err);
+  if (!s) return IoStatus::Error;
+  for (;;) {
+    IoStatus st = detail::fill(*s, err);
+    if (st == IoStatus::Eof) break;
+    if (st != IoStatus::Ok) return st;
+  }
+  out.assign(s->rbuf, s->rpos, detail::avail(*s));
+  s->rpos = s->rbuf.size();
   return IoStatus::Ok;
 }
 

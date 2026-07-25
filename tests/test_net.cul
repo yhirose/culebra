@@ -1,0 +1,180 @@
+// Net namespace: TCP/UDP sockets over the value-neutral core (net.h), shared by
+// the interp and the JIT/AOT handle thunks. Running under tests/*.cul checks
+// interp/JIT/AOT agree byte-for-byte.
+//
+// Everything binds port 0 on loopback (the OS picks a free port, read back as
+// `listener.port`), so the test needs no fixed port, no network, and no second
+// thread — a TCP connect completes into the accept queue before accept() runs.
+// No address or port is ever printed, so the output is identical across
+// backends; OS-worded errors are checked by kind, never by text.
+
+// --- listen on an ephemeral port ---
+let l = Net.listen(0, host: "127.0.0.1")
+assert_true(l.port > 0)
+assert_eq(l.host, "127.0.0.1")
+assert_true(l.is_open())
+
+// --- connect + accept ---
+let c = Net.connect("127.0.0.1", l.port, timeout: 2000)
+let s = l.accept()
+assert_true(s.is_open())
+
+// --- line round-trip, both directions ---
+c.write("hello\n")
+assert_eq(s.read_line(), "hello")
+s.write("hi there\r\n")
+assert_eq(c.read_line(), "hi there")   // a trailing \r is stripped
+
+// --- read(n) is a short read; read_exact(n) waits for exactly n ---
+c.write("abcdef")
+assert_eq(s.read_exact(3), "abc")
+assert_eq(s.read(3), "def")
+
+// --- an empty line is a line, not the end of the stream ---
+c.write("\n")
+assert_eq(s.read_line(), "")
+
+// --- addresses ---
+assert_eq(s.peer_addr().host, "127.0.0.1")
+assert_eq(c.peer_addr().port, l.port)
+assert_eq(s.local_addr().port, l.port)
+assert_eq(c.local_addr().port, s.peer_addr().port)
+
+// --- set_nodelay / set_timeout are accepted on a live socket ---
+c.set_nodelay(true)
+s.set_timeout(0)
+
+// --- timeout: a silent peer raises NetError rather than blocking forever ---
+s.set_timeout(120)
+let mut tkind = ""
+let mut tmsg = ""
+try {
+  s.read(16)
+} catch e {
+  tkind = e.kind
+  tmsg = e.message
+}
+assert_eq(tkind, "NetError")
+assert_true(tmsg.contains("timed out"))
+// The socket survives its own timeout.
+c.write("late\n")
+s.set_timeout(2000)
+assert_eq(s.read_line(), "late")
+
+// --- half-close: shutdown_write ends the peer's stream, reply still flows ---
+c.write("l1\nl2\n")
+c.shutdown_write()
+let collected = []
+for line in s.lines() {
+  collected.push(line)
+}
+assert_eq(collected, ["l1", "l2"])
+assert_eq(s.read_line(), nil)          // nil once the stream ends
+assert_eq(s.read(16), "")              // "" at EOF, mirroring File.read
+s.write("bye\n")
+assert_eq(c.read_line(), "bye")
+
+// --- read_exact past EOF is an error, not a short read ---
+s.close()
+let mut ekind = ""
+let mut emsg = ""
+try {
+  c.read_exact(8)
+} catch e {
+  ekind = e.kind
+  emsg = e.message
+}
+assert_eq(ekind, "NetError")
+assert_true(emsg.contains("unexpected EOF"))
+c.close()
+assert_true(!c.is_open())
+
+// --- read() with no argument drains until the peer closes ---
+let c2 = Net.connect("127.0.0.1", l.port, timeout: 2000)
+let s2 = l.accept()
+c2.write("all")
+c2.write("-of-it")
+c2.shutdown_write()
+assert_eq(s2.read(), "all-of-it")
+s2.close()
+c2.close()
+
+// --- `for conn in listener` accepts in a loop ---
+let c3 = Net.connect("127.0.0.1", l.port, timeout: 2000)
+for conn in l {
+  conn.write("via-iter\n")
+  conn.close()
+  break
+}
+assert_eq(c3.read_line(), "via-iter")
+c3.close()
+
+// --- operations on a closed handle raise, they never crash ---
+l.close()
+assert_true(!l.is_open())
+let mut ckind = ""
+let mut cmsg = ""
+try {
+  l.accept()
+} catch e {
+  ckind = e.kind
+  cmsg = e.message
+}
+assert_eq(ckind, "NetError")
+assert_true(cmsg.contains("closed socket"))
+l.close()                              // close is idempotent
+
+// --- connect failures raise NetError (message is OS-worded, so kind only) ---
+let mut fkind = ""
+try {
+  Net.connect("no-such-host.invalid", 80, timeout: 2000)
+} catch e {
+  fkind = e.kind
+}
+assert_eq(fkind, "NetError")
+
+// --- UDP: datagram round-trip and sender identity ---
+let u1 = Net.udp(0, host: "127.0.0.1")
+let u2 = Net.udp(0, host: "127.0.0.1")
+assert_true(u1.port > 0)
+u1.send_to("ping", "127.0.0.1", u2.port)
+u2.set_timeout(2000)
+let got = u2.recv_from()
+assert_eq(got.data, "ping")
+assert_eq(got.host, "127.0.0.1")
+assert_eq(got.port, u1.port)
+
+// Reply to the reported sender.
+u2.send_to("pong", got.host, got.port)
+u1.set_timeout(2000)
+assert_eq(u1.recv_from().data, "pong")
+
+// An oversized datagram is truncated to `max`, as UDP dictates.
+u1.send_to("0123456789", "127.0.0.1", u2.port)
+assert_eq(u2.recv_from(4).data, "0123")
+
+// UDP timeout is the same NetError as TCP.
+u2.set_timeout(120)
+let mut ukind = ""
+try {
+  u2.recv_from()
+} catch e {
+  ukind = e.kind
+}
+assert_eq(ukind, "NetError")
+
+u1.close()
+u2.close()
+
+// --- DNS: a numeric address resolves to itself (no lookup, so offline-safe) ---
+assert_eq(Net.resolve("127.0.0.1"), ["127.0.0.1"])
+assert_true(Net.resolve("::1").size() > 0)
+let mut rkind = ""
+try {
+  Net.resolve("no-such-host.invalid")
+} catch e {
+  rkind = e.kind
+}
+assert_eq(rkind, "NetError")
+
+puts("net ok")

@@ -17,6 +17,7 @@
 #include <uuid.h>
 #include <vfs.h>
 #include <jit.h>
+#include <net.h>
 #include <proc.h>
 #include <canvas.h>
 #include <term.h>
@@ -2712,6 +2713,406 @@ CULEBRA_RT_INLINE JitValue _culebra_sqlite_build_db_handle(int64_t db_id) {
 }
 #endif  // CULEBRA_SQLITE_ENABLED
 
+// ===========================================================================
+// Net — JIT/AOT mirror of the interp Socket/Listener/UdpSocket handles (see
+// stdlib_interp.h). The value-neutral socket core (net.h) is shared, framing
+// and all: only the value marshalling differs (JitValue/JitObject here,
+// Value/ObjectValue there). The debug drift check (_check_ns_drift_once)
+// catches a forgotten JIT registration.
+// ===========================================================================
+
+[[noreturn]] CULEBRA_RT_INLINE void _jit_net_throw(const char* ctx,
+                                                   const std::string& msg,
+                                                   int64_t line, int64_t col) {
+  throw culebra::CulebraError("NetError", std::format("{}: {}", ctx, msg), line,
+                              col);
+}
+
+// Mirrors the interp `_net_check`: Eof is the caller's business, only
+// Timeout/Error become NetError (with the core's shared wording).
+CULEBRA_RT_INLINE void _jit_net_check(culebra::net::IoStatus st, const char* ctx,
+                                      const std::string& err, int64_t line,
+                                      int64_t col) {
+  if (st == culebra::net::IoStatus::Timeout ||
+      st == culebra::net::IoStatus::Error) {
+    _jit_net_throw(ctx, culebra::net::status_message(st, err), line, col);
+  }
+}
+
+CULEBRA_RT_INLINE int64_t _jit_net_id(JitValue self) {
+  return _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
+}
+
+CULEBRA_RT_INLINE JitValue _jit_net_str(const std::string& s) {
+  return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(s))};
+}
+
+CULEBRA_RT_INLINE JitValue _jit_net_addr_object(const std::string& host,
+                                                int port) {
+  auto* o = culebra_runtime_object_new();
+  o->set_or_append("host", _jit_net_str(host), false);
+  o->set_or_append("port", JitValue{TAG_LONG, port}, false);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(o)};
+}
+
+// --- Shared handle methods (all three shapes) -------------------------------
+
+CULEBRA_RT_INLINE void _jit_net_set_timeout(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                                int64_t n, JitValue* args) {
+  JitValue self{self_tag, self_data};
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "ms");
+  if (args[0].tag != TAG_LONG)
+    _jit_file_param_type_error(self, "ms", "Long", 0);
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  std::string err;
+  if (!culebra::net::set_timeout(_jit_net_id(self), args[0].data, &err))
+    _jit_net_throw("Net.set_timeout", err, _jit_call_site_line,
+                   _jit_call_site_col);
+  { *__ret = {TAG_NIL, 0}; return; }
+}
+CULEBRA_RT_INLINE void _jit_net_is_open(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                            int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  bool open = culebra::net::is_open(_jit_net_id(self));
+  { *__ret = {TAG_BOOL, open ? 1 : 0}; return; }
+}
+CULEBRA_RT_INLINE void _jit_net_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                          int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  culebra::net::close_handle(_jit_net_id(self));
+  { *__ret = {TAG_NIL, 0}; return; }
+}
+CULEBRA_RT_INLINE void _jit_net_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                         int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
+  // drop runs from the destructor's drop protocol — must NOT release self.
+  culebra::net::close_handle(_jit_net_id(self));
+  { *__ret = {TAG_NIL, 0}; return; }
+}
+
+// Bind the `_id` + set_timeout/is_open/close/drop set every Net handle shares.
+CULEBRA_RT_INLINE void _jit_net_bind_common(JitObject* h, int64_t id) {
+  h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
+  // A native handle is not Sendable — reject it at the serialize boundary
+  // (jit_serialize checks __nonsendable__), mirroring the interp handle.
+  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
+  static const JitParamMeta* ms_meta = _jit_make_handle_meta({"ms"}, {false});
+  _jit_handle_bind_method(h, "set_timeout", _jit_net_set_timeout, 1, ms_meta);
+  _jit_handle_bind_method(h, "is_open", _jit_net_is_open, 0);
+  _jit_handle_bind_method(h, "close", _jit_net_close, 0);
+  _jit_handle_bind_method(h, "drop", _jit_net_drop, 0);
+  // Through the bind chokepoint, not a bare `has_drop`: the handle must also
+  // register on the owned stack or a cycle-held socket would miss its
+  // deterministic scope-exit drop.
+  _jit_owned_bind_drop(h);
+}
+
+// --- Socket (connected TCP stream) ------------------------------------------
+
+CULEBRA_RT_INLINE JitValue _culebra_net_build_socket_handle(int64_t id);
+
+CULEBRA_RT_INLINE void _jit_net_sock_read(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                              int64_t n, JitValue* args) {
+  JitValue self{self_tag, self_data};
+  const bool has_n = _jit_file_arg_present(n, args, 0) && args[0].tag != TAG_NIL;
+  if (has_n && args[0].tag != TAG_LONG)
+    _jit_file_body_type_error(self, "Long", args[0].tag);
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  std::string out, err;
+  culebra::net::IoStatus st;
+  if (has_n) {
+    int64_t want = args[0].data;
+    st = culebra::net::read(_jit_net_id(self),
+                            static_cast<size_t>(want < 0 ? 0 : want), out, &err);
+  } else {
+    st = culebra::net::read_all(_jit_net_id(self), out, &err);
+  }
+  _jit_net_check(st, "Net.read", err, _jit_call_site_line, _jit_call_site_col);
+  { *__ret = _jit_net_str(out); return; }  // Eof -> ""
+}
+CULEBRA_RT_INLINE void _jit_net_sock_read_line(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                                   int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  std::string out, err;
+  auto st = culebra::net::read_line(_jit_net_id(self), out, &err);
+  if (st == culebra::net::IoStatus::Eof) { *__ret = {TAG_NIL, 0}; return; }
+  _jit_net_check(st, "Net.read_line", err, _jit_call_site_line,
+                 _jit_call_site_col);
+  { *__ret = _jit_net_str(out); return; }
+}
+CULEBRA_RT_INLINE void _jit_net_sock_read_exact(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                                    int64_t n, JitValue* args) {
+  JitValue self{self_tag, self_data};
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "n");
+  if (args[0].tag != TAG_LONG) _jit_file_param_type_error(self, "n", "Long", 0);
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  int64_t want = args[0].data;
+  if (want < 0) want = 0;
+  std::string out, err;
+  auto st = culebra::net::read_exact(_jit_net_id(self),
+                                     static_cast<size_t>(want), out, &err);
+  if (st == culebra::net::IoStatus::Eof) {
+    _jit_net_throw("Net.read_exact",
+                   std::format("unexpected EOF ({} of {} bytes)", out.size(),
+                               want),
+                   _jit_call_site_line, _jit_call_site_col);
+  }
+  _jit_net_check(st, "Net.read_exact", err, _jit_call_site_line,
+                 _jit_call_site_col);
+  { *__ret = _jit_net_str(out); return; }
+}
+
+// lines() iterator FastFn. captures: [handle_cell, id_cell, line_cell,
+// col_cell] — the handle keeps an anonymous `Net.connect(...).lines()` alive,
+// and the captured call site keeps a mid-iteration NetError's position
+// identical to the interp's (which captures it the same way).
+inline void _net_lines_fast_fn(JitClosure* cls, JitValue, bool* done,
+                               int8_t* out_tag, int64_t* out_data) {
+  int64_t id = cls->captures[1]->value.data;
+  std::string out, err;
+  auto st = culebra::net::read_line(id, out, &err);
+  if (st == culebra::net::IoStatus::Eof) { *done = true; return; }
+  _jit_net_check(st, "Net.lines", err, cls->captures[2]->value.data,
+                 cls->captures[3]->value.data);
+  *done = false;
+  *out_tag = TAG_STRING;
+  *out_data = reinterpret_cast<int64_t>(_culebra_heap_str(out));
+}
+CULEBRA_RT_INLINE void _jit_net_sock_lines(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                               int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
+  int64_t id = _jit_net_id(self);
+  // The method ABI hands self at +1; that reference moves straight into the
+  // iterator's keep-alive cell (no retain/release pair needed, and no dispose
+  // to close it — unlike File.lines a socket is usually written to after the
+  // loop, mirroring the interp handle).
+  auto* handle_cell = culebra_runtime_cell_new(self.tag, self.data);
+  auto* id_cell = culebra_runtime_cell_new(TAG_LONG, id);
+  auto* line_cell = culebra_runtime_cell_new(TAG_LONG, _jit_call_site_line);
+  auto* col_cell = culebra_runtime_cell_new(TAG_LONG, _jit_call_site_col);
+  auto* it = _iter_wrap_fast<&_net_lines_fast_fn>(
+      {handle_cell, id_cell, line_cell, col_cell});
+  { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
+}
+
+CULEBRA_RT_INLINE void _jit_net_sock_write(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                               int64_t n, JitValue* args) {
+  JitValue self{self_tag, self_data};
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "data");
+  if (args[0].tag != TAG_STRING && args[0].tag != TAG_STRINGVIEW)
+    _jit_file_param_type_error(self, "data", "String", 0);
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  std::string_view data = _culebra_str_view(args[0].tag, args[0].data);
+  std::string err;
+  auto st = culebra::net::write_all(_jit_net_id(self), data.data(), data.size(),
+                                    &err);
+  _jit_net_check(st, "Net.write", err, _jit_call_site_line, _jit_call_site_col);
+  { *__ret = {TAG_NIL, 0}; return; }
+}
+CULEBRA_RT_INLINE void _jit_net_sock_shutdown_write(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                                        int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  std::string err;
+  if (!culebra::net::shutdown_write(_jit_net_id(self), &err))
+    _jit_net_throw("Net.shutdown_write", err, _jit_call_site_line,
+                   _jit_call_site_col);
+  { *__ret = {TAG_NIL, 0}; return; }
+}
+CULEBRA_RT_INLINE void _jit_net_sock_set_nodelay(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                                     int64_t n, JitValue* args) {
+  JitValue self{self_tag, self_data};
+  const bool has_on = _jit_file_arg_present(n, args, 0);
+  if (has_on && args[0].tag != TAG_BOOL)
+    _jit_file_param_type_error(self, "on", "Bool", 0);
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  std::string err;
+  if (!culebra::net::set_nodelay(_jit_net_id(self),
+                                 has_on ? args[0].data != 0 : true, &err))
+    _jit_net_throw("Net.set_nodelay", err, _jit_call_site_line,
+                   _jit_call_site_col);
+  { *__ret = {TAG_NIL, 0}; return; }
+}
+CULEBRA_RT_INLINE void _jit_net_sock_local_addr(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                                    int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  std::string host, err;
+  int port = 0;
+  if (!culebra::net::local_addr(_jit_net_id(self), host, port, &err))
+    _jit_net_throw("Net.local_addr", err, _jit_call_site_line,
+                   _jit_call_site_col);
+  { *__ret = _jit_net_addr_object(host, port); return; }
+}
+CULEBRA_RT_INLINE void _jit_net_sock_peer_addr(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                                   int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  std::string host, err;
+  int port = 0;
+  if (!culebra::net::peer_addr(_jit_net_id(self), host, port, &err))
+    _jit_net_throw("Net.peer_addr", err, _jit_call_site_line,
+                   _jit_call_site_col);
+  { *__ret = _jit_net_addr_object(host, port); return; }
+}
+
+CULEBRA_RT_INLINE JitValue _culebra_net_build_socket_handle(int64_t id) {
+  auto* h = culebra_runtime_object_new();
+  _jit_net_bind_common(h, id);
+  static const JitParamMeta* read_meta = _jit_make_handle_meta({"n"}, {true});
+  static const JitParamMeta* exact_meta = _jit_make_handle_meta({"n"}, {false});
+  static const JitParamMeta* write_meta =
+      _jit_make_handle_meta({"data"}, {false});
+  static const JitParamMeta* on_meta = _jit_make_handle_meta({"on"}, {true});
+  _jit_handle_bind_method(h, "read", _jit_net_sock_read, 0, read_meta);
+  _jit_handle_bind_method(h, "read_line", _jit_net_sock_read_line, 0);
+  _jit_handle_bind_method(h, "read_exact", _jit_net_sock_read_exact, 1,
+                          exact_meta);
+  _jit_handle_bind_method(h, "lines", _jit_net_sock_lines, 0);
+  _jit_handle_bind_method(h, "write", _jit_net_sock_write, 1, write_meta);
+  _jit_handle_bind_method(h, "shutdown_write", _jit_net_sock_shutdown_write, 0);
+  _jit_handle_bind_method(h, "set_nodelay", _jit_net_sock_set_nodelay, 0,
+                          on_meta);
+  _jit_handle_bind_method(h, "local_addr", _jit_net_sock_local_addr, 0);
+  _jit_handle_bind_method(h, "peer_addr", _jit_net_sock_peer_addr, 0);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+}
+
+// --- Listener ---------------------------------------------------------------
+
+CULEBRA_RT_INLINE void _jit_net_listener_accept(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                                    int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  int64_t cid = -1;
+  std::string err;
+  auto st = culebra::net::accept(_jit_net_id(self), &cid, &err);
+  _jit_net_check(st, "Net.accept", err, _jit_call_site_line,
+                 _jit_call_site_col);
+  { *__ret = _culebra_net_build_socket_handle(cid); return; }
+}
+
+// iter() FastFn — an endless accept loop; same captures as lines().
+inline void _net_accept_fast_fn(JitClosure* cls, JitValue, bool* done,
+                                int8_t* out_tag, int64_t* out_data) {
+  int64_t id = cls->captures[1]->value.data;
+  int64_t cid = -1;
+  std::string err;
+  auto st = culebra::net::accept(id, &cid, &err);
+  _jit_net_check(st, "Net.accept", err, cls->captures[2]->value.data,
+                 cls->captures[3]->value.data);
+  JitValue conn = _culebra_net_build_socket_handle(cid);
+  *done = false;
+  *out_tag = static_cast<int8_t>(conn.tag);
+  *out_data = conn.data;
+}
+CULEBRA_RT_INLINE void _jit_net_listener_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                                  int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
+  int64_t id = _jit_net_id(self);
+  // self's +1 moves into the keep-alive cell, as in lines() above.
+  auto* handle_cell = culebra_runtime_cell_new(self.tag, self.data);
+  auto* id_cell = culebra_runtime_cell_new(TAG_LONG, id);
+  auto* line_cell = culebra_runtime_cell_new(TAG_LONG, _jit_call_site_line);
+  auto* col_cell = culebra_runtime_cell_new(TAG_LONG, _jit_call_site_col);
+  auto* it = _iter_wrap_fast<&_net_accept_fast_fn>(
+      {handle_cell, id_cell, line_cell, col_cell});
+  { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
+}
+
+CULEBRA_RT_INLINE JitValue _culebra_net_build_listener_handle(
+    int64_t id, const std::string& host, int port) {
+  auto* h = culebra_runtime_object_new();
+  _jit_net_bind_common(h, id);
+  h->set_or_append("host", _jit_net_str(host), false);
+  h->set_or_append("port", JitValue{TAG_LONG, port}, false);
+  _jit_handle_bind_method(h, "accept", _jit_net_listener_accept, 0);
+  _jit_handle_bind_method(h, "iter", _jit_net_listener_iter, 0);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+}
+
+// --- UdpSocket --------------------------------------------------------------
+
+CULEBRA_RT_INLINE void _jit_net_udp_send_to(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                                int64_t n, JitValue* args) {
+  JitValue self{self_tag, self_data};
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "data");
+  if (args[0].tag != TAG_STRING && args[0].tag != TAG_STRINGVIEW)
+    _jit_file_param_type_error(self, "data", "String", 0);
+  if (!_jit_file_arg_present(n, args, 1)) _jit_file_missing_arg(self, "host");
+  if (args[1].tag != TAG_STRING && args[1].tag != TAG_STRINGVIEW)
+    _jit_file_param_type_error(self, "host", "String", 1);
+  if (!_jit_file_arg_present(n, args, 2)) _jit_file_missing_arg(self, "port");
+  if (args[2].tag != TAG_LONG)
+    _jit_file_param_type_error(self, "port", "Long", 2);
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  std::string_view data = _culebra_str_view(args[0].tag, args[0].data);
+  std::string err;
+  if (!culebra::net::udp_send_to(
+          _jit_net_id(self), data.data(), data.size(),
+          std::string(_culebra_str_view(args[1].tag, args[1].data)),
+          static_cast<int>(args[2].data), &err))
+    _jit_net_throw("Net.send_to", err, _jit_call_site_line, _jit_call_site_col);
+  { *__ret = {TAG_NIL, 0}; return; }
+}
+CULEBRA_RT_INLINE void _jit_net_udp_recv_from(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                                  int64_t n, JitValue* args) {
+  JitValue self{self_tag, self_data};
+  const bool has_max = _jit_file_arg_present(n, args, 0);
+  if (has_max && args[0].tag != TAG_LONG)
+    _jit_file_param_type_error(self, "max", "Long", 0);
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  int64_t max = has_max ? args[0].data : 65536;
+  if (max < 0) max = 0;
+  std::string data, host, err;
+  int port = 0;
+  auto st = culebra::net::udp_recv_from(_jit_net_id(self),
+                                        static_cast<size_t>(max), data, host,
+                                        port, &err);
+  _jit_net_check(st, "Net.recv_from", err, _jit_call_site_line,
+                 _jit_call_site_col);
+  auto* o = culebra_runtime_object_new();
+  o->set_or_append("data", _jit_net_str(data), false);
+  o->set_or_append("host", _jit_net_str(host), false);
+  o->set_or_append("port", JitValue{TAG_LONG, port}, false);
+  { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(o)}; return; }
+}
+CULEBRA_RT_INLINE void _jit_net_udp_set_broadcast(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                                      int64_t n, JitValue* args) {
+  JitValue self{self_tag, self_data};
+  const bool has_on = _jit_file_arg_present(n, args, 0);
+  if (has_on && args[0].tag != TAG_BOOL)
+    _jit_file_param_type_error(self, "on", "Bool", 0);
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  std::string err;
+  if (!culebra::net::set_broadcast(_jit_net_id(self),
+                                   has_on ? args[0].data != 0 : true, &err))
+    _jit_net_throw("Net.set_broadcast", err, _jit_call_site_line,
+                   _jit_call_site_col);
+  { *__ret = {TAG_NIL, 0}; return; }
+}
+
+CULEBRA_RT_INLINE JitValue _culebra_net_build_udp_handle(int64_t id,
+                                                         const std::string& host,
+                                                         int port) {
+  auto* h = culebra_runtime_object_new();
+  _jit_net_bind_common(h, id);
+  h->set_or_append("host", _jit_net_str(host), false);
+  h->set_or_append("port", JitValue{TAG_LONG, port}, false);
+  static const JitParamMeta* send_meta =
+      _jit_make_handle_meta({"data", "host", "port"}, {false, false, false});
+  static const JitParamMeta* recv_meta = _jit_make_handle_meta({"max"}, {true});
+  static const JitParamMeta* on_meta = _jit_make_handle_meta({"on"}, {true});
+  _jit_handle_bind_method(h, "send_to", _jit_net_udp_send_to, 3, send_meta);
+  _jit_handle_bind_method(h, "recv_from", _jit_net_udp_recv_from, 0, recv_meta);
+  _jit_handle_bind_method(h, "set_broadcast", _jit_net_udp_set_broadcast, 0,
+                          on_meta);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+}
+
 // Spawn core: parse argv, spawn detached, return a live handle (or throw).
 CULEBRA_RT_INLINE JitValue _culebra_proc_spawn_build(
     int8_t cmd_tag, int64_t cmd_data, const std::string* cwd,
@@ -3504,6 +3905,85 @@ inline bool env_slot(JitValue v,
   return true;
 }
 }  // namespace _proc_adapt
+
+// --- Net ---------------------------------------------------------------------
+// Net.connect / listen / udp build handles; Net.resolve returns [String]. The
+// defaults restated here (timeout 0, host "0.0.0.0", backlog 0) match the
+// canonical interp params — a nil slab slot means the caller omitted it.
+
+inline JitValue _ns_net_connect(JitValue* a, int64_t n) {
+  std::string host(_ns_adapt::require_sv(a[0], "host"));
+  int64_t port = _ns_adapt::require_long(_proc_adapt::at(a, n, 1), "port");
+  JitValue tv = _proc_adapt::at(a, n, 2);
+  int64_t timeout =
+      tv.tag == TAG_NIL ? 0 : _ns_adapt::require_long(tv, "timeout");
+  std::string err;
+  int64_t id =
+      culebra::net::connect(host, static_cast<int>(port), timeout, &err);
+  if (id < 0) _jit_net_throw("Net.connect", err, 0, 0);
+  return _culebra_net_build_socket_handle(id);
+}
+
+// Read back the address a fresh listener / UDP socket actually bound, so the
+// handle reports the ephemeral port a port-0 bind was given (mirrors the interp
+// `_net_bound_addr`).
+inline void _ns_net_bound_addr(int64_t id, const char* ctx, std::string& host,
+                               int& port) {
+  std::string err;
+  if (!culebra::net::local_addr(id, host, port, &err)) {
+    culebra::net::close_handle(id);
+    _jit_net_throw(ctx, err, 0, 0);
+  }
+}
+
+inline JitValue _ns_net_listen(JitValue* a, int64_t n) {
+  int64_t port = _ns_adapt::require_long(a[0], "port");
+  JitValue hv = _proc_adapt::at(a, n, 1);
+  std::string host = hv.tag == TAG_NIL
+                         ? std::string("0.0.0.0")
+                         : std::string(_ns_adapt::require_sv(hv, "host"));
+  JitValue bv = _proc_adapt::at(a, n, 2);
+  int64_t backlog =
+      bv.tag == TAG_NIL ? 0 : _ns_adapt::require_long(bv, "backlog");
+  std::string err;
+  int64_t id = culebra::net::listen(host, static_cast<int>(port),
+                                    static_cast<int>(backlog), &err);
+  if (id < 0) _jit_net_throw("Net.listen", err, 0, 0);
+  std::string bound_host;
+  int bound_port = 0;
+  _ns_net_bound_addr(id, "Net.listen", bound_host, bound_port);
+  return _culebra_net_build_listener_handle(id, bound_host, bound_port);
+}
+
+inline JitValue _ns_net_udp(JitValue* a, int64_t n) {
+  JitValue pv = _proc_adapt::at(a, n, 0);
+  int64_t port = pv.tag == TAG_NIL ? 0 : _ns_adapt::require_long(pv, "port");
+  JitValue hv = _proc_adapt::at(a, n, 1);
+  std::string host = hv.tag == TAG_NIL
+                         ? std::string("0.0.0.0")
+                         : std::string(_ns_adapt::require_sv(hv, "host"));
+  std::string err;
+  int64_t id = culebra::net::udp_open(host, static_cast<int>(port), &err);
+  if (id < 0) _jit_net_throw("Net.udp", err, 0, 0);
+  std::string bound_host;
+  int bound_port = 0;
+  _ns_net_bound_addr(id, "Net.udp", bound_host, bound_port);
+  return _culebra_net_build_udp_handle(id, bound_host, bound_port);
+}
+
+inline JitValue _ns_net_resolve(JitValue* a, int64_t) {
+  std::string host(_ns_adapt::require_sv(a[0], "host"));
+  std::vector<std::string> addrs;
+  std::string err;
+  if (!culebra::net::resolve(host, addrs, &err))
+    _jit_net_throw("Net.resolve", err, 0, 0);
+  auto* arr = culebra_runtime_array_new();
+  for (const auto& s : addrs) {
+    culebra_runtime_array_push(
+        arr, TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(s)));
+  }
+  return {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
+}
 
 inline JitValue _ns_proc_run(JitValue* a, int64_t n) {
   // slab: cmd, cwd, env, stdin, check, timeout
@@ -5635,6 +6115,7 @@ inline bool _ns_method_uses_kwarg_slab(const NsMethod* m) {
   if (ns == "Parallel") return nm == "map" || nm == "each" ||
                                 nm == "map_settled" || nm == "race";
   if (ns == "Http")     return true;  // all Http methods take kwargs
+  if (ns == "Net")      return true;  // host/timeout/backlog all bind by name
   if (ns == "JSON")     return nm == "stringify" || nm == "parse";
   if (ns == "CSV")      return nm == "parse" || nm == "stringify";
   if (ns == "TOML")     return nm == "stringify";  // sort_keys default
@@ -5788,6 +6269,10 @@ inline const NsMethod kNsMethods[] = {
   {"_Regex", "replace_all", 3, &_ns_regex_replace_all},
   {"_Regex", "split",       2, &_ns_regex_split},
 
+  {"Net",    "connect", 2, &_ns_net_connect},
+  {"Net",    "listen",  1, &_ns_net_listen},
+  {"Net",    "udp",     0, &_ns_net_udp},
+  {"Net",    "resolve", 1, &_ns_net_resolve},
   {"Proc",   "run",   1, &_ns_proc_run},
   {"Proc",   "all",   1, &_ns_proc_all},
   {"Proc",   "race",  1, &_ns_proc_race},
@@ -8533,7 +9018,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "__eff_abort", "__eff_catch_abort",
       "Math",    "IO",        "FS",        "File",     "Embed",   "_Time",
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
-      "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel",
+      "_Regex",  "Proc",      "Net",       "Isolate",   "Channel",  "Parallel",
       "Signal",  "Encoding", "Compress",  "SharedBuffer", "Shared",
       "Hash",    "CSV",       "TOML",      "Env",       "UUID",       "String",
       "_Term",   "_Canvas",

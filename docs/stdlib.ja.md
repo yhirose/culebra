@@ -65,8 +65,9 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println` を
 25. [`SQLite`](#25-sqlite) — 組み込み SQL データベース（query / execute / プリペアド文 / トランザクション）
 26. [`Canvas`](#26-canvas) — ゲーム向けイミディエイトモード 2D フレームバッファ（ピクセル / スプライト / フォント / 入力 / tone）
 27. [`Scene`](#27-scene) — 手続きジオメトリ向けの retained-mode 3D レンダラ（opt-in、macOS 限定）
-28. [設計上の注記](#28-設計上の注記)
-29. [未収録（将来検討）](#29-未収録将来検討)
+28. [`Net`](#28-net) — 生の TCP / UDP ソケットと名前解決（`Http` の下位レイヤ）
+29. [設計上の注記](#29-設計上の注記)
+30. [未収録（将来検討）](#30-未収録将来検討)
 
 **目的別索引**
 
@@ -87,6 +88,7 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println` を
 | プロセス情報 | `Sys.argv`、`Sys.exit`、`Sys.env`、`Sys.set_env`、`Sys.getcwd`、`Sys.chdir`、`Sys.executable`、`Sys.script` |
 | 外部コマンド実行 | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
 | HTTP/HTTPS API を呼ぶ | [§15 Http](#15-http) — `Http.get("https://api.example/x")` |
+| 生の TCP / UDP を話す、ホスト名を解決する | [§28 Net](#28-net) — `Net.connect(host, port)` / `Net.listen(port)` / `Net.udp()` / `Net.resolve(host)` |
 | HTML エンティティの escape / unescape | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
 | base64 / hex / url のエンコード・デコード | [§16 Encoding](#16-encoding) — `Encoding.base64.encode(s)` |
 | データ・ファイルの gzip / gunzip | [§17 Compress](#17-compress) — `Compress.gzip(s)` / `Compress.gunzip(z)` |
@@ -3977,7 +3979,123 @@ view.drop()
 
 ---
 
-## 28. 設計上の注記
+## 28. `Net`
+
+生の TCP / UDP ソケットと名前解決 — [§15 Http](#15-http) の下位レイヤ。
+ブロッキング + ソケット単位のタイムアウトで、`Http` と同じ「async ではなく
+スレッド」モデル。メインスレッドを止めたくないサーバは
+[`Isolate`](#12-isolate) の中で動かす。
+
+転送の失敗（接続拒否・名前解決失敗・切断・タイムアウト）は `NetError` を
+送出する。メッセージは OS の文言をそのまま使うが、タイムアウトだけは常に
+`timed out`。ブロック中の `read` / `accept` / `recv_from` は割り込み可能で、
+Ctrl+C 一回で `Interrupted` になる（ハングしない）。
+
+ソケットハンドルは **Sendable ではない** — ソケットはそれを開いたスレッドに
+属する。別スレッドで待ち受けるなら、そのアイソレートの中で開くこと。
+
+### `Net.connect(host: String, port: Long, timeout: Long = 0) -> Socket`
+
+`host:port` へ接続する。`timeout` はミリ秒（`0` = 無制限）で、接続の待ち時間を
+制限し、そのままこのソケットの読み書きタイムアウトになる。
+
+```culebra
+# doctest: skip
+let s = Net.connect("example.com", 80, timeout: 5000)
+s.write("GET / HTTP/1.0\r\nHost: example.com\r\n\r\n")
+s.shutdown_write()                  # リクエスト完了をサーバに伝える
+puts(s.read())                      # サーバが閉じるまで読む
+s.close()
+```
+
+**`Socket` ハンドル** — [§4 File](#4-file) と同じ reader/writer の形なので、
+読むだけのコードは両方で動く:
+
+| メソッド | 効果 |
+| --- | --- |
+| `read(n = nil)` | 最大 `n` バイト（ソケットでは短い読み取りが正常）。`nil` は相手が閉じるまで読む。EOF では `""` |
+| `read_line()` | 1 行（行末は除去）。ストリームが終わったら `nil` |
+| `read_exact(n)` | ちょうど `n` バイト。相手が途中で閉じたら短い読み取りではなく `NetError` |
+| `lines()` | 行イテレータ。相手が閉じると終了する。`File.lines` と違いソケットは閉じない（通常この後に返信するため） |
+| `write(data)` | `data` を全バイト書く |
+| `shutdown_write()` | ハーフクローズ: 返信を読みながら相手に EOF を伝える |
+| `local_addr()` / `peer_addr()` | 自分側 / 相手側の `{host, port}` |
+| `set_timeout(ms)` | 読み書きのタイムアウト（ms）。`0` は無制限 |
+| `set_nodelay(on = true)` | Nagle アルゴリズムを無効化（小さい書き込みを即送信） |
+| `is_open()` / `close()` | 生存確認 / クローズ（冪等。スコープを抜けたハンドルは GC も閉じる） |
+
+行の終端は `\n` のみで、末尾の `\r` は除去される — CRLF プロトコルがそのまま
+読める。（`File.lines` は単独の `\r` でも区切るが、ソケットでは不可能: CRLF が
+2 つのパケットに分かれて届いたときにブロックしうる 1 バイト先読みが必要になる。）
+
+### `Net.listen(port: Long, host: String = "0.0.0.0", backlog: Long = 0) -> Listener`
+
+bind して listen する。`port: 0` は OS に空きポートを選ばせ、`listener.port` で
+読み戻せる — テストで固定ポートの衝突を避ける確実な方法。
+
+```culebra
+# doctest: skip
+let server = Net.listen(7000)
+puts("listening on " + server.port.to_string())
+for conn in server {                    # ループで accept
+  conn.write("hello " + conn.peer_addr().host + "\n")
+  conn.close()
+}
+```
+
+| メンバ | 効果 |
+| --- | --- |
+| `port` / `host` | 実際に bind したアドレス（エフェメラルポートもここに出る） |
+| `accept()` | 接続が来るまでブロックし、`Socket` を返す |
+| `for conn in listener` | ループで accept する。止めるときは本体で `break` |
+| `set_timeout(ms)` | `accept` が待つ上限（超えたら送出） |
+| `is_open()` / `close()` | `Socket` と同じ |
+
+ハンドラは accept したスレッドで動くので、遅い接続が次の接続をブロックする。
+並行に捌くなら接続ごとにアイソレートを立てるか、ワーカープールを内蔵する
+[`Http.server`](#httpserver---object) を使う。
+
+### `Net.udp(port: Long = 0, host: String = "0.0.0.0") -> UdpSocket`
+
+`host:port` に bind したデータグラムソケットを開く（`port: 0` = エフェメラル）。
+
+```culebra
+# doctest: skip
+let sock = Net.udp(9000)
+sock.set_timeout(2000)
+let msg = sock.recv_from()              # {data, host, port}
+sock.send_to("ack", msg.host, msg.port)
+```
+
+| メンバ | 効果 |
+| --- | --- |
+| `port` / `host` | bind したアドレス |
+| `send_to(data, host, port)` | データグラムを 1 つ送る（全部送るか送らないかで、部分書き込みはない） |
+| `recv_from(max = 65536)` | データグラムを 1 つ `{data, host, port}` で受け取る。UDP の仕様どおり、`max` を超えた分は切り捨てられる |
+| `set_broadcast(on = true)` | ブロードキャストアドレスへの送信を許可 |
+| `set_timeout(ms)` / `is_open()` / `close()` | `Socket` と同じ |
+
+UDP には EOF も接続もない。空のデータグラムはデータであり、相手がいなくなっても
+エラーではなく単に無音になる。
+
+### `Net.resolve(host: String) -> Array<String>`
+
+`host` が解決する数値アドレスを、リゾルバの順序で重複を除いて返す。数値
+アドレスはそれ自身に解決する。解決できない名前は `NetError`。
+
+```culebra
+# doctest: skip
+puts(Net.resolve("localhost"))       # => ["127.0.0.1", "::1"]
+```
+
+### Playground では使えない
+
+ブラウザに生のソケットはないので、WebAssembly ビルドでは `Net` のすべての
+呼び出しが `NetError: networking is not available in this build` を送出する。
+
+---
+
+## 29. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -4031,7 +4149,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 29. 未収録（将来検討）
+## 30. 未収録（将来検討）
 
 ### 重量級データ構造
 
@@ -4039,10 +4157,11 @@ run_with(IO, "via parameter")
 言語組込みです（[`docs/language.ja.md`](language.ja.md) 参照）。それ以外は
 `Array` と `Object` で代用してください。
 
-### ネットワーク / OS 拡張
+### OS 拡張
 
-生 TCP/UDP ソケット・DNS リゾルバ・SQLite・ファイル監視はありません。
-必要なら [§11 Proc](#11-proc) でサブプロセスに委譲してください。
+ファイル監視はありません。生ソケットの TLS もありません（`Net` は平文で、
+TLS は [§15 Http](#15-http) が自前で持ちます）。必要なら
+[§11 Proc](#11-proc) でサブプロセスに委譲してください。
 
 ---
 
