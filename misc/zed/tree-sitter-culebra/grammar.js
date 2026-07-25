@@ -85,7 +85,7 @@ module.exports = grammar({
     storage: ($) => choice("let", "mut", "static", "get"),
     boolean: ($) => choice("true", "false"),
     nil: ($) => "nil",
-    self: ($) => choice("self", "this", "__ARGS__"),
+    self: ($) => choice("self", "__ARGS__"),
 
     // --- numbers ---
     number: ($) =>

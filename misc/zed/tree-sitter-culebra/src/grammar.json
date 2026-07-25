@@ -349,10 +349,6 @@
         },
         {
           "type": "STRING",
-          "value": "this"
-        },
-        {
-          "type": "STRING",
           "value": "__ARGS__"
         }
       ]
