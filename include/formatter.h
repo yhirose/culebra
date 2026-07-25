@@ -898,16 +898,22 @@ class Printer {
     return doc_group(doc_concat({receiver, doc_indent(kIndent, doc_concat(std::move(cont)))}));
   }
 
+  // An lvalue chain held in `node`'s children [off, off + cnt): the head
+  // target followed by its postfix segments. Shared by ASSIGNMENT and
+  // PLACE_ASSIGN, whose targets have exactly this shape.
+  DocP print_lvalue_chain(const peg::Ast& node, size_t off, int cnt) {
+    std::vector<DocP> parts{print(*node.nodes[off])};
+    for (int k = 1; k < cnt; k++)
+      parts.push_back(print_postfix(*node.nodes[off + k]));
+    return doc_concat(std::move(parts));
+  }
+
   DocP print_assignment(const peg::Ast& node) {
     auto v = view_assignment(node);
     std::vector<DocP> parts;
     if (v.is_let) parts.push_back(doc_text("let "));
     if (v.is_mut) parts.push_back(doc_text("mut "));
-    // lvalue chain: children [lvaloff .. lvaloff + lvalcnt). First is the
-    // PRIMARY target, the rest are postfix segments.
-    parts.push_back(print(*node.nodes[v.lvaloff]));
-    for (int k = 1; k < v.lvalcnt; k++)
-      parts.push_back(print_postfix(*node.nodes[v.lvaloff + k]));
+    parts.push_back(print_lvalue_chain(node, v.lvaloff, v.lvalcnt));
     if (!v.type_annotation.empty())
       parts.push_back(doc_text(": " + std::string(v.type_annotation)));
     parts.push_back(doc_text(" " + std::string(v.op_token) + " "));
@@ -938,14 +944,19 @@ class Printer {
     return print_delimited("{", std::move(items), "}");
   }
 
-  DocP print_tuple(const peg::Ast& node) {
-    std::vector<DocP> items;
-    for (auto& e : node.nodes) items.push_back(print(*e));
-    // A 1-tuple must keep its trailing comma (`(a,)`); print_delimited would
-    // drop it and turn the tuple into a plain parenthesized expression.
+  // A 1-tuple must keep its trailing comma (`(a,)`); print_delimited would
+  // drop it and turn the tuple into a plain parenthesized expression. Shared
+  // with PLACE_ASSIGN's target list, which is parenthesized the same way.
+  DocP print_tuple_items(std::vector<DocP> items) {
     if (items.size() == 1)
       return doc_concat({doc_text("("), items[0], doc_text(",)")});
     return print_delimited("(", std::move(items), ")");
+  }
+
+  DocP print_tuple(const peg::Ast& node) {
+    std::vector<DocP> items;
+    for (auto& e : node.nodes) items.push_back(print(*e));
+    return print_tuple_items(std::move(items));
   }
 
   DocP print_object(const peg::Ast& node) {
@@ -1047,6 +1058,25 @@ class Printer {
     parts.push_back(doc_text(" = "));
     parts.push_back(print(*node.nodes[3]));
     return doc_concat(std::move(parts));
+  }
+
+  // [target..., EXPRESSION]. A target is an lvalue chain (PLACE) or, with no
+  // postfix, the bare IDENTIFIER it collapsed to. Chains print through the
+  // same helper as ASSIGNMENT's lvalue, so `p[ 0 ]` normalizes the way
+  // `p[ 0 ] = v` already does.
+  DocP print_place_assign(const peg::Ast& node) {
+    using namespace peg::udl;
+    auto pv = view_place_assign(node);
+    std::vector<DocP> targets;
+    for (size_t i = 0; i < pv.count; i++) {
+      const auto& t = *node.nodes[i];
+      targets.push_back(
+          t.tag == "PLACE"_
+              ? print_lvalue_chain(t, 0, static_cast<int>(t.nodes.size()))
+              : print(t));
+    }
+    return doc_concat({print_tuple_items(std::move(targets)), doc_text(" = "),
+                       print(*pv.rhs)});
   }
 
   DocP print_import(const peg::Ast& node) {
@@ -1388,6 +1418,7 @@ class Printer {
     if (n == "TRAIT_DECL") return print_trait(node);
     if (n == "ENUM_DECL") return print_enum(node);
     if (n == "DESTRUCTURE_ASSIGN") return print_destructure(node);
+    if (n == "PLACE_ASSIGN") return print_place_assign(node);
     if (n == "IMPORT_STMT") return print_import(node);
     if (n == "EXPORT_STMT") return print_export(node);
     if (n == "RETURN") return print_keyword_expr("return", node);
