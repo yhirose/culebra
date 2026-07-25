@@ -3620,10 +3620,12 @@ return a new `Array` and leave the receiver unchanged.
 | `a.any(f: Function) -> Bool`                | `true` if `f(x)` is truthy for any element, else `false`. `f` must take one parameter. |
 | `a.all(f: Function) -> Bool`                | `true` if `f(x)` is truthy for every element (or if empty), else `false`. `f` must take one parameter. |
 | `a.flat_map(f: Function) -> Array`          | Concatenate `f(x)` for each element; each `f(x)` must be an `Array`. `f` must take one parameter. |
-| `a.sum() -> Long`                           | Sum of all elements. All elements must be `Long`. Empty → `0`. |
-| `a.product() -> Long`                       | Product of all elements. All elements must be `Long`. Empty → `1`. |
-| `a.min() -> Long`                           | Smallest element. All elements must be `Long`. Throws on empty. |
-| `a.max() -> Long`                           | Largest element. All elements must be `Long`. Throws on empty. |
+| `a.sum() -> Long \| Float`                  | Sum of all elements, each `Long` or `Float`. Stays `Long` while every element is a `Long`, becomes `Float` once any element is one. Empty → `0`. |
+| `a.product() -> Long \| Float`              | Product of all elements, promoting like `sum`. Empty → `1`. |
+| `a.min() -> Any`                            | Smallest element, compared numerically across `Long` / `Float`. The element itself is returned, so its own type survives. Throws on empty. |
+| `a.max() -> Any`                            | Largest element. Same rule as `min`. |
+| `a.min_by(f: Function) -> Any`              | Element whose key `f(x)` is smallest; `f` must take one parameter and return a `Long` or `Float`. Each key is computed once, and ties keep the earlier element. Throws on empty. |
+| `a.max_by(f: Function) -> Any`              | Element whose key `f(x)` is largest. Same rules as `min_by`. |
 | `a.sort(reverse: Bool = false) -> Nil` *(mutating)* | Stable-sort in place in natural order — elements compare by the same rule as `<`, so an Object's `__lt__` / `cmp` is honored (a `Path` array sorts) and incomparable elements throw. Keyword-only `reverse: true` sorts descending (still stable). |
 | `a.sorted(reverse: Bool = false) -> Array` | Like `sort` but returns a new sorted Array, leaving the receiver unchanged — so it chains (`xs.sorted().join(",")`). `reverse: true` for stable descending. |
 | `a.sort_by(key: Function, reverse: Bool = false) -> Nil` *(mutating)* | Stable-sort in place using `key(x)` as the comparison key (ascending). `key` must take one parameter and return a comparable value (`Long` / `String` / `Bool`). Keyword-only `reverse: true` sorts descending (still stable). |
@@ -3857,10 +3859,12 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 | `it.nth(n)` | Any \| `nil` | element at 0-based `n`, else `nil`; pulls only `n + 1`. Negative `n` raises `ValueError` |
 | `it.position(p)` | `Long` \| `nil` | 0-based index of the first `x` where `p(x)` is truthy, else `nil` (unlike `Array.index_of`, which answers `-1`) |
 | `it.contains(v)` | `Bool` | `true` if some element equals `v` (structural equality, as `Array.contains`) |
-| `it.sum()` | `Long` | sum of all elements (all must be `Long`; empty → `0`) |
-| `it.product()` | `Long` | product of all elements (all must be `Long`; empty → `1`) |
-| `it.min()` | `Long` | smallest element (all must be `Long`; throws on empty) |
-| `it.max()` | `Long` | largest element (all must be `Long`; throws on empty) |
+| `it.sum()` | `Long` \| `Float` | sum of all elements; `Long` while every element is a `Long`, `Float` once any element is one (empty → `0`) |
+| `it.product()` | `Long` \| `Float` | product of all elements, promoting like `sum` (empty → `1`) |
+| `it.min()` | Any | smallest element, compared numerically; the element is returned, so its own type survives. Throws on empty |
+| `it.max()` | Any | largest element, same rule as `min` |
+| `it.min_by(f)` | Any | element with the smallest key `f(x)`; ties keep the earlier one. Throws on empty |
+| `it.max_by(f)` | Any | element with the largest key `f(x)`; ties keep the earlier one. Throws on empty |
 
 **Eager vs lazy**: `Array` has its own eager `map` / `filter` /
 `for_each` / `reduce` / `find` / `any` / `all` / `flat_map` (§18.2)

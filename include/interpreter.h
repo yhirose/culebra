@@ -3205,6 +3205,51 @@ inline Value _index_value_pair(long index, Value v) {
   return Value(TupleValue(std::move(pair)));
 }
 
+// --- Numeric aggregates (sum/product/min/max) --------------------------
+//
+// Shared by the eager Array methods and the lazy Iterator terminals so both
+// spell the Long/Float rule once. Elements may be Long or Float; anything
+// else reports through Value::to_double_coerce ("expected Long or Float,
+// got X").
+
+// Fold into a sum (`mul` false) or product. Stays a Long while every element
+// is a Long and promotes at the first Float, so `[1, 2].sum()` is 3, not 3.0.
+inline Value _numeric_fold(const std::vector<Value>& vs, bool mul) {
+  long acc_i = mul ? 1 : 0;
+  double acc_d = 0;
+  bool is_float = false;
+  for (const auto& v : vs) {
+    if (v.type == Value::Long && !is_float) {
+      if (mul) acc_i *= v.get<long>(); else acc_i += v.get<long>();
+      continue;
+    }
+    double x = v.to_double_coerce();
+    if (!is_float) {
+      acc_d = static_cast<double>(acc_i);
+      is_float = true;
+    }
+    if (mul) acc_d *= x; else acc_d += x;
+  }
+  return is_float ? Value(acc_d) : Value(acc_i);
+}
+
+// Smallest (`want_max` false) or largest element. Comparison is numeric
+// across Long/Float, but the ELEMENT is returned, so its own type survives.
+// Ties keep the earlier element. Callers reject an empty input first, since
+// the "of empty Array"/"of empty Iterator" wording differs.
+inline Value _numeric_extreme(const std::vector<Value>& vs, bool want_max) {
+  const Value* best = &vs[0];
+  double bestd = best->to_double_coerce();
+  for (size_t i = 1; i < vs.size(); i++) {
+    double x = vs[i].to_double_coerce();
+    if (want_max ? (x > bestd) : (x < bestd)) {
+      best = &vs[i];
+      bestd = x;
+    }
+  }
+  return *best;
+}
+
 // Single driver for Object iteration: for-in / .iter() (Pairs), .values()
 // (Values) and for-in / .iter() (Pairs). The keys are snapshotted at loop
 // start, so iteration is over that stable snapshot: entries ADDED during
@@ -3542,6 +3587,45 @@ inline std::optional<Value> _iter_next_value(const Value& upstream) {
     return std::nullopt;
   }
   return _invoke_method_no_args(upstream, "next");
+}
+
+// Streaming twins of the two helpers above, for the Iterator terminals.
+inline Value _iter_numeric_fold(Value upstream, bool mul) {
+  long acc_i = mul ? 1 : 0;
+  double acc_d = 0;
+  bool is_float = false;
+  while (auto v = _iter_next_value(upstream)) {
+    if (v->type == Value::Long && !is_float) {
+      if (mul) acc_i *= v->get<long>(); else acc_i += v->get<long>();
+      continue;
+    }
+    double x = v->to_double_coerce();
+    if (!is_float) {
+      acc_d = static_cast<double>(acc_i);
+      is_float = true;
+    }
+    if (mul) acc_d *= x; else acc_d += x;
+  }
+  return is_float ? Value(acc_d) : Value(acc_i);
+}
+
+inline Value _iter_numeric_extreme(Value upstream, bool want_max,
+                                   const char* what) {
+  auto first = _iter_next_value(upstream);
+  if (!first) {
+    throw CulebraError("ValueError",
+                       std::string(what) + " of empty Iterator");
+  }
+  Value best = std::move(*first);
+  double bestd = best.to_double_coerce();
+  while (auto v = _iter_next_value(upstream)) {
+    double x = v->to_double_coerce();
+    if (want_max ? (x > bestd) : (x < bestd)) {
+      best = std::move(*v);
+      bestd = x;
+    }
+  }
+  return best;
 }
 
 // Bind positional callback args into a function frame (defined below, after
@@ -3999,6 +4083,43 @@ inline FunctionValue as_callback(const Value& cb) {
     }
   }
   return cb.to_function();
+}
+
+// Keyed twins of _numeric_extreme / _iter_numeric_extreme: the KEY `f(x)`
+// is compared numerically, but the ELEMENT is what comes back. Ties keep
+// the earlier element, and `f` is called exactly once per element (so a
+// costly key is not recomputed). Callers reject an empty input first.
+inline Value _numeric_extreme_by(const std::vector<Value>& vs, const Value& f,
+                                 bool want_max) {
+  const Value* best = &vs[0];
+  double bestd = _invoke_callback(f, vs[0]).to_double_coerce();
+  for (size_t i = 1; i < vs.size(); i++) {
+    double x = _invoke_callback(f, vs[i]).to_double_coerce();
+    if (want_max ? (x > bestd) : (x < bestd)) {
+      best = &vs[i];
+      bestd = x;
+    }
+  }
+  return *best;
+}
+
+inline Value _iter_numeric_extreme_by(Value upstream, const Value& f,
+                                      bool want_max, const char* what) {
+  auto first = _iter_next_value(upstream);
+  if (!first) {
+    throw CulebraError("ValueError",
+                       std::string(what) + " of empty Iterator");
+  }
+  Value best = std::move(*first);
+  double bestd = _invoke_callback(f, best).to_double_coerce();
+  while (auto v = _iter_next_value(upstream)) {
+    double x = _invoke_callback(f, *v).to_double_coerce();
+    if (want_max ? (x > bestd) : (x < bestd)) {
+      best = std::move(*v);
+      bestd = x;
+    }
+  }
+  return best;
 }
 
 // Sets up a function-frame environment with `fn` bound to the callback,
@@ -4469,44 +4590,55 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
       {"sum"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          const auto& arr = callEnv->get("self").to_array();
-         long acc = 0;
-         for (const auto& v : *arr.values) acc += v.to_long();
-         return Value(acc);
+         return _numeric_fold(*arr.values, false);
        }))},
       {"product"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          const auto& arr = callEnv->get("self").to_array();
-         long acc = 1;
-         for (const auto& v : *arr.values) acc *= v.to_long();
-         return Value(acc);
+         return _numeric_fold(*arr.values, true);
        }))},
       {"min"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          const auto& arr = callEnv->get("self").to_array();
          if (arr.values->empty()) {
            throw CulebraError("ValueError",
-                              "min of empty Array.");
+                              "min of empty Array");
          }
-         long best = (*arr.values)[0].to_long();
-         for (size_t i = 1; i < arr.values->size(); i++) {
-           long x = (*arr.values)[i].to_long();
-           if (x < best) best = x;
-         }
-         return Value(best);
+         return _numeric_extreme(*arr.values, false);
        }))},
       {"max"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          const auto& arr = callEnv->get("self").to_array();
          if (arr.values->empty()) {
            throw CulebraError("ValueError",
-                              "max of empty Array.");
+                              "max of empty Array");
          }
-         long best = (*arr.values)[0].to_long();
-         for (size_t i = 1; i < arr.values->size(); i++) {
-           long x = (*arr.values)[i].to_long();
-           if (x > best) best = x;
+         return _numeric_extreme(*arr.values, true);
+       }))},
+      // Keyed min/max: `f(x)` supplies the ordering, the element comes back.
+      {"min_by"sv,
+       Value(FunctionValue({{"f", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         const auto& arr = callEnv->get("self").to_array();
+         auto f = Value(as_callback(callEnv->get("f")));
+         check_callback_arity(f.to_function(), 1, "min_by");
+         if (arr.values->empty()) {
+           throw CulebraError("ValueError",
+                              "min_by of empty Array");
          }
-         return Value(best);
+         return _numeric_extreme_by(*arr.values, f, false);
+       }))},
+      {"max_by"sv,
+       Value(FunctionValue({{"f", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         const auto& arr = callEnv->get("self").to_array();
+         auto f = Value(as_callback(callEnv->get("f")));
+         check_callback_arity(f.to_function(), 1, "max_by");
+         if (arr.values->empty()) {
+           throw CulebraError("ValueError",
+                              "max_by of empty Array");
+         }
+         return _numeric_extreme_by(*arr.values, f, true);
        }))},
       {"sort_by"sv,
        Value(FunctionValue({{"f", false, "Function"sv},
@@ -5821,52 +5953,45 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
          return Value(n);
        }))},
 
+      // Same Long/Float rule as the eager Array forms (see _numeric_fold /
+      // _numeric_extreme); spelled streaming here so an unbounded source is
+      // never materialized.
       {"sum"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("self");
-         long acc = 0;
-         while (auto v = _iter_next_value(upstream)) acc += v->to_long();
-         return Value(acc);
+         return _iter_numeric_fold(callEnv->get("self"), false);
        }))},
 
       {"product"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("self");
-         long acc = 1;
-         while (auto v = _iter_next_value(upstream)) acc *= v->to_long();
-         return Value(acc);
+         return _iter_numeric_fold(callEnv->get("self"), true);
        }))},
 
       {"min"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("self");
-         auto first = _iter_next_value(upstream);
-         if (!first) {
-           throw CulebraError("ValueError",
-                              "min of empty Iterator.");
-         }
-         long best = first->to_long();
-         while (auto v = _iter_next_value(upstream)) {
-           long x = v->to_long();
-           if (x < best) best = x;
-         }
-         return Value(best);
+         return _iter_numeric_extreme(callEnv->get("self"), false, "min");
        }))},
 
       {"max"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto upstream = callEnv->get("self");
-         auto first = _iter_next_value(upstream);
-         if (!first) {
-           throw CulebraError("ValueError",
-                              "max of empty Iterator.");
-         }
-         long best = first->to_long();
-         while (auto v = _iter_next_value(upstream)) {
-           long x = v->to_long();
-           if (x > best) best = x;
-         }
-         return Value(best);
+         return _iter_numeric_extreme(callEnv->get("self"), true, "max");
+       }))},
+
+      {"min_by"sv,
+       Value(FunctionValue({{"f", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto f = Value(as_callback(callEnv->get("f")));
+         check_callback_arity(f.to_function(), 1, "min_by");
+         return _iter_numeric_extreme_by(callEnv->get("self"), f, false,
+                                         "min_by");
+       }))},
+
+      {"max_by"sv,
+       Value(FunctionValue({{"f", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto f = Value(as_callback(callEnv->get("f")));
+         check_callback_arity(f.to_function(), 1, "max_by");
+         return _iter_numeric_extreme_by(callEnv->get("self"), f, true,
+                                         "max_by");
        }))},
   };
   return props_;

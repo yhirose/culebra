@@ -7614,11 +7614,21 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                i8, i64, i64, i64, i64, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::iter_any, i64, i8, i64, i8, i64, i64,
                                i64);
-  // sum/product/min/max: (it, id, line, col) -> i64
-  jit.module_->getOrInsertFunction(rt::iter_sum, i64, i8, i64, i64, i64);
-  jit.module_->getOrInsertFunction(rt::iter_product, i64, i8, i64, i64, i64);
-  jit.module_->getOrInsertFunction(rt::iter_min, i64, i8, i64, i64, i64);
-  jit.module_->getOrInsertFunction(rt::iter_max, i64, i8, i64, i64, i64);
+  // sum/product/min/max: (it, id, line, col) -> %Value (see the Array decls
+  // in jit.h — the result tag is data-dependent).
+  jit.module_->getOrInsertFunction(rt::iter_sum, jit.valueType_, i8, i64, i64,
+                               i64);
+  jit.module_->getOrInsertFunction(rt::iter_product, jit.valueType_, i8, i64,
+                               i64, i64);
+  jit.module_->getOrInsertFunction(rt::iter_min, jit.valueType_, i8, i64, i64,
+                               i64);
+  jit.module_->getOrInsertFunction(rt::iter_max, jit.valueType_, i8, i64, i64,
+                               i64);
+  // min_by/max_by: (it, id, ft, fd, line, col) -> %Value
+  jit.module_->getOrInsertFunction(rt::iter_min_by, jit.valueType_, i8, i64,
+                               i8, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::iter_max_by, jit.valueType_, i8, i64,
+                               i8, i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::iter_all, i64, i8, i64, i8, i64, i64,
                                i64);
 

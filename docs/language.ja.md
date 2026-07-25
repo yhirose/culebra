@@ -3414,10 +3414,12 @@ Array や String スカラーを回す場合は `for c in s { ... }`
 | `a.any(f: Function) -> Bool`                | いずれかの要素で `f(x)` が真なら `true`、そうでなければ `false`。`f` は 1 引数を受け取る |
 | `a.all(f: Function) -> Bool`                | すべての要素で `f(x)` が真なら `true`（空配列でも `true`）、そうでなければ `false`。`f` は 1 引数を受け取る |
 | `a.flat_map(f: Function) -> Array`          | 各要素に `f(x)` を適用し、その結果配列を連結。各 `f(x)` は `Array` を返す必要あり。`f` は 1 引数を受け取る |
-| `a.sum() -> Long`                           | 全要素の合計。全要素が `Long` である必要あり。空 → `0` |
-| `a.product() -> Long`                       | 全要素の積。全要素が `Long` である必要あり。空 → `1` |
-| `a.min() -> Long`                           | 最小値。全要素が `Long` である必要あり。空配列では例外 |
-| `a.max() -> Long`                           | 最大値。全要素が `Long` である必要あり。空配列では例外 |
+| `a.sum() -> Long \| Float`                  | 全要素（`Long` または `Float`）の合計。全要素が `Long` の間は `Long`、一つでも `Float` があれば `Float` になる。空 → `0` |
+| `a.product() -> Long \| Float`              | 全要素の積。昇格規則は `sum` と同じ。空 → `1` |
+| `a.min() -> Any`                            | 最小の要素。比較は `Long` / `Float` をまたいで数値で行うが、返すのは要素そのものなのでその型が保たれる。空配列では例外 |
+| `a.max() -> Any`                            | 最大の要素。規則は `min` と同じ |
+| `a.min_by(f: Function) -> Any`              | キー `f(x)` が最小の要素。`f` は 1 引数を受け取り `Long` か `Float` を返す必要あり。キーは各要素につき 1 回だけ計算し、同値なら先に現れた方を返す。空配列では例外 |
+| `a.max_by(f: Function) -> Any`              | キー `f(x)` が最大の要素。規則は `min_by` と同じ |
 | `a.sort(reverse: Bool = false) -> Nil` *(破壊的)* | 自然順で in-place 安定ソート。要素は `<` と同じ規則で比較し、Object の `__lt__` / `cmp` を尊重する（`Path` 配列もソート可）。比較不能な要素は throw。キーワード専用 `reverse: true` で降順（安定のまま） |
 | `a.sorted(reverse: Bool = false) -> Array` | `sort` の非破壊版。新しいソート済み Array を返し、受け手は不変＝チェーン可（`xs.sorted().join(",")`）。`reverse: true` で安定降順 |
 | `a.sort_by(key: Function, reverse: Bool = false) -> Nil` *(破壊的)* | `key(x)` を比較キーとして昇順に in-place で安定ソート。`key` は 1 引数を受け取り、比較可能な値（`Long` / `String` / `Bool`）を返す必要あり。キーワード専用 `reverse: true` で降順（安定のまま） |
@@ -3633,10 +3635,12 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 | `it.nth(n)` | Any \| `nil` | 0 起点で `n` 番目の要素、無ければ `nil`。`n + 1` 個しか引かない。負の `n` は `ValueError` |
 | `it.position(p)` | `Long` \| `nil` | 最初に `p(x)` が真になる 0 起点の添字、無ければ `nil`（`-1` を返す `Array.index_of` とは異なる） |
 | `it.contains(v)` | `Bool` | `v` と等しい要素があれば `true`（`Array.contains` と同じ構造的等価） |
-| `it.sum()` | `Long` | 合計（全要素が `Long`、空は `0`） |
-| `it.product()` | `Long` | 積（全要素が `Long`、空は `1`） |
-| `it.min()` | `Long` | 最小値（全要素が `Long`、空では例外） |
-| `it.max()` | `Long` | 最大値（全要素が `Long`、空では例外） |
+| `it.sum()` | `Long` \| `Float` | 合計。全要素が `Long` なら `Long`、一つでも `Float` があれば `Float`（空は `0`） |
+| `it.product()` | `Long` \| `Float` | 積。昇格規則は `sum` と同じ（空は `1`） |
+| `it.min()` | Any | 最小の要素。比較は数値だが返すのは要素なので、その型が保たれる。空では例外 |
+| `it.max()` | Any | 最大の要素。規則は `min` と同じ |
+| `it.min_by(f)` | Any | キー `f(x)` が最小の要素。同値なら先に現れた方。空では例外 |
+| `it.max_by(f)` | Any | キー `f(x)` が最大の要素。同値なら先に現れた方。空では例外 |
 
 **eager vs lazy**: `Array` には独自の eager 版 `map` / `filter` /
 `for_each` / `reduce` / `find` / `any` / `all` / `flat_map`（§18.2）

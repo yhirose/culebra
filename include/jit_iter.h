@@ -598,88 +598,159 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_all(
 }
 
 // Sum/product/min/max share the same iterate-and-accumulate shape.
-// Non-Long elements raise `type error at L:C.`, matching the interp's
-// `Value::to_long`. `min` / `max` on an empty input also throw, since
-// there's no natural identity for them.
+// `min` / `max` on an empty input throw, since there's no natural
+// identity for them.
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_sum(
+// Numeric accumulator shared by sum/product over both receiver kinds. It
+// stays integral while every element is a Long and promotes at the first
+// Float, so an all-Long input still answers a Long (`[1, 2].sum()` is 3,
+// not 3.0). Mirrors the interp, which accumulates into a Value and lets
+// its Long/Float arithmetic promote.
+struct _JitNumAcc {
+  int64_t i;
+  double d;
+  bool is_float;
+
+  explicit _JitNumAcc(int64_t init) : i(init), d(0), is_float(false) {}
+
+  void promote() {
+    if (!is_float) {
+      d = static_cast<double>(i);
+      is_float = true;
+    }
+  }
+  JitValue value() const {
+    return is_float ? JitValue{TAG_FLOAT, _culebra_double_to_bits(d)}
+                    : JitValue{TAG_LONG, i};
+  }
+};
+
+// Coerce one aggregate element to double, reporting a non-numeric like the
+// interp's Value::to_double_coerce ("expected Long or Float, got X"). The
+// element's +1 is released before throwing, so the unwind edge strands
+// nothing.
+inline double _iter_agg_num(JitValue v, int64_t line, int64_t col) {
+  if (v.tag == TAG_LONG) return static_cast<double>(v.data);
+  if (v.tag == TAG_FLOAT) return _culebra_float_to_double(v.data);
+  auto tag = v.tag;
+  _culebra_value_release_impl(v.tag, v.data);
+  culebra_runtime_type_error_typed(line, col, "Long or Float", tag);
+  return 0;  // unreachable
+}
+
+// Fold one element into a sum/product accumulator. `mul` selects product.
+inline void _iter_agg_step(_JitNumAcc& acc, JitValue v, bool mul,
+                           int64_t line, int64_t col) {
+  if (v.tag == TAG_LONG && !acc.is_float) {
+    if (mul) acc.i *= v.data; else acc.i += v.data;
+    return;
+  }
+  double x = _iter_agg_num(v, line, col);
+  acc.promote();
+  if (mul) acc.d *= x; else acc.d += x;
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_iter_sum(
     int8_t it, int64_t id, int64_t line, int64_t col) {
-  int64_t acc = 0;
+  _JitNumAcc acc(0);
   JitValue v;
   auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
   while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
-    if (v.tag != TAG_LONG) {
-      _culebra_value_release_impl(v.tag, v.data);
-      culebra::throw_type_error_at(line, col);
-    }
-    acc += v.data;
+    _iter_agg_step(acc, v, false, line, col);
   }
-  return acc;
+  return acc.value();
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_product(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_iter_product(
     int8_t it, int64_t id, int64_t line, int64_t col) {
-  int64_t acc = 1;
+  _JitNumAcc acc(1);
   JitValue v;
   auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
   while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
-    if (v.tag != TAG_LONG) {
-      _culebra_value_release_impl(v.tag, v.data);
-      culebra::throw_type_error_at(line, col);
-    }
-    acc *= v.data;
+    _iter_agg_step(acc, v, true, line, col);
   }
-  return acc;
+  return acc.value();
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_min(
-    int8_t it, int64_t id, int64_t line, int64_t col) {
+// min/max return the winning ELEMENT, so a Float input answers a Float and
+// a Long input a Long; comparison itself is numeric across both. Ties keep
+// the earlier element. Long/Float are immediates, so the retained best
+// needs no RC handling.
+inline JitValue _iter_minmax(int8_t it, int64_t id, bool want_max,
+                             const char* what, int64_t line, int64_t col) {
   JitValue v;
   auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
   if (!_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
-    throw culebra::CulebraError("ValueError", "min of empty Iterator",
-                                line, col);
+    throw culebra::CulebraError(
+        "ValueError", std::string(what) + " of empty Iterator", line, col);
   }
-  if (v.tag != TAG_LONG) {
-    _culebra_value_release_impl(v.tag, v.data);
-    culebra::throw_type_error_at(line, col);
-  }
-  int64_t best = v.data;
+  JitValue best = v;
+  double bestd = _iter_agg_num(v, line, col);
   while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
-    if (v.tag != TAG_LONG) {
-      _culebra_value_release_impl(v.tag, v.data);
-      culebra::throw_type_error_at(line, col);
+    double x = _iter_agg_num(v, line, col);
+    if (want_max ? (x > bestd) : (x < bestd)) {
+      best = v;
+      bestd = x;
     }
-    if (v.data < best) best = v.data;
   }
   return best;
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_max(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_iter_min(
     int8_t it, int64_t id, int64_t line, int64_t col) {
+  return _iter_minmax(it, id, false, "min", line, col);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_iter_max(
+    int8_t it, int64_t id, int64_t line, int64_t col) {
+  return _iter_minmax(it, id, true, "max", line, col);
+}
+
+// Keyed min/max: the callback supplies the ordering key, the ELEMENT is
+// returned. `f` runs once per element. The pulled value carries a +1 that
+// the callback call consumes, so the winner is retained explicitly and the
+// loser released -- mirroring culebra_runtime_iter_find's handling.
+inline JitValue _iter_minmax_by(int8_t it, int64_t id, int8_t ft, int64_t fd,
+                                bool want_max, const char* what,
+                                int64_t line, int64_t col) {
+  JitHofCallback fn(ft, fd, 1, what, "f", line, col);
   JitValue v;
   auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
   if (!_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
-    throw culebra::CulebraError("ValueError", "max of empty Iterator",
-                                line, col);
+    throw culebra::CulebraError(
+        "ValueError", std::string(what) + " of empty Iterator", line, col);
   }
-  if (v.tag != TAG_LONG) {
-    _culebra_value_release_impl(v.tag, v.data);
-    culebra::throw_type_error_at(line, col);
-  }
-  int64_t best = v.data;
+  auto key_of = [&](JitValue e) {
+    culebra_runtime_value_retain(e.tag, e.data);   // the call consumes one
+    auto k = _culebra_invoke1_at(fn, e, line, col);
+    JitOwnedVal kg(k);
+    return _iter_agg_num(k, line, col);
+  };
+  JitOwnedVal best(v);
+  double bestd = key_of(best.borrow());
   while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
-    if (v.tag != TAG_LONG) {
-      _culebra_value_release_impl(v.tag, v.data);
-      culebra::throw_type_error_at(line, col);
+    JitOwnedVal cand(v);
+    double x = key_of(cand.borrow());
+    if (want_max ? (x > bestd) : (x < bestd)) {
+      best = std::move(cand);   // releases the old best
+      bestd = x;
     }
-    if (v.data > best) best = v.data;
   }
-  return best;
+  return best.consume();
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_iter_min_by(
+    int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
+  return _iter_minmax_by(it, id, ft, fd, false, "min_by", line, col);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_iter_max_by(
+    int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
+  return _iter_minmax_by(it, id, ft, fd, true, "max_by", line, col);
 }
 
 // --- Lazy iterator wrappers: each factory returns a new iterator Object.
@@ -2232,71 +2303,110 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_reduce(
 }
 
 // Eager Array variants of sum/product/min/max. Same semantics as the
-// iterator methods above; non-Long elements and empty min/max raise a
-// type error at L:C.
+// iterator methods above (Long stays Long, a Float promotes the result,
+// min/max return the winning element); empty min/max raise ValueError.
+// Elements are borrowed from the Array, so a non-numeric throws without
+// any release.
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_sum(
-    JitArray* arr, int64_t line, int64_t col) {
-  int64_t acc = 0;
-  for (size_t i = 0; i < arr->size; i++) {
-    auto& e = arr->items[i];
-    if (e.tag != TAG_LONG) {
-      culebra::throw_type_error_at(line, col);
-    }
-    acc += e.data;
-  }
-  return acc;
+inline double _arr_agg_num(JitValue v, int64_t line, int64_t col) {
+  if (v.tag == TAG_LONG) return static_cast<double>(v.data);
+  if (v.tag == TAG_FLOAT) return _culebra_float_to_double(v.data);
+  culebra_runtime_type_error_typed(line, col, "Long or Float", v.tag);
+  return 0;  // unreachable
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_product(
-    JitArray* arr, int64_t line, int64_t col) {
-  int64_t acc = 1;
+inline JitValue _arr_sum_product(JitArray* arr, bool mul, int64_t line,
+                                 int64_t col) {
+  _JitNumAcc acc(mul ? 1 : 0);
   for (size_t i = 0; i < arr->size; i++) {
     auto& e = arr->items[i];
-    if (e.tag != TAG_LONG) {
-      culebra::throw_type_error_at(line, col);
+    if (e.tag == TAG_LONG && !acc.is_float) {
+      if (mul) acc.i *= e.data; else acc.i += e.data;
+      continue;
     }
-    acc *= e.data;
+    double x = _arr_agg_num(e, line, col);
+    acc.promote();
+    if (mul) acc.d *= x; else acc.d += x;
   }
-  return acc;
+  return acc.value();
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_min(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_array_sum(
     JitArray* arr, int64_t line, int64_t col) {
+  return _arr_sum_product(arr, false, line, col);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_array_product(
+    JitArray* arr, int64_t line, int64_t col) {
+  return _arr_sum_product(arr, true, line, col);
+}
+
+inline JitValue _arr_minmax(JitArray* arr, bool want_max, const char* what,
+                            int64_t line, int64_t col) {
   if (arr->size == 0) {
-    throw culebra::CulebraError("ValueError", "min of empty Array", line, col);
+    throw culebra::CulebraError(
+        "ValueError", std::string(what) + " of empty Array", line, col);
   }
-  if (arr->items[0].tag != TAG_LONG) {
-    culebra::throw_type_error_at(line, col);
-  }
-  int64_t best = arr->items[0].data;
+  JitValue best = arr->items[0];
+  double bestd = _arr_agg_num(best, line, col);
   for (size_t i = 1; i < arr->size; i++) {
     auto& e = arr->items[i];
-    if (e.tag != TAG_LONG) {
-      culebra::throw_type_error_at(line, col);
+    double x = _arr_agg_num(e, line, col);
+    if (want_max ? (x > bestd) : (x < bestd)) {
+      best = e;
+      bestd = x;
     }
-    if (e.data < best) best = e.data;
   }
   return best;
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_max(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_array_min(
     JitArray* arr, int64_t line, int64_t col) {
+  return _arr_minmax(arr, false, "min", line, col);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_array_max(
+    JitArray* arr, int64_t line, int64_t col) {
+  return _arr_minmax(arr, true, "max", line, col);
+}
+
+// Keyed twin of _arr_minmax. Elements are borrowed from the Array, so only
+// the callback's own argument ref and its result need handling.
+inline JitValue _arr_minmax_by(JitArray* arr, int8_t ft, int64_t fd,
+                               bool want_max, const char* what,
+                               int64_t line, int64_t col) {
+  JitHofCallback fn(ft, fd, 1, what, "f", line, col);
   if (arr->size == 0) {
-    throw culebra::CulebraError("ValueError", "max of empty Array", line, col);
+    throw culebra::CulebraError(
+        "ValueError", std::string(what) + " of empty Array", line, col);
   }
-  if (arr->items[0].tag != TAG_LONG) {
-    culebra::throw_type_error_at(line, col);
-  }
-  int64_t best = arr->items[0].data;
+  auto key_of = [&](JitValue e) {
+    culebra_runtime_value_retain(e.tag, e.data);   // the call consumes one
+    auto k = _culebra_invoke1_at(fn, e, line, col);
+    JitOwnedVal kg(k);
+    return _arr_agg_num(k, line, col);
+  };
+  JitValue best = arr->items[0];
+  double bestd = key_of(best);
   for (size_t i = 1; i < arr->size; i++) {
-    auto& e = arr->items[i];
-    if (e.tag != TAG_LONG) {
-      culebra::throw_type_error_at(line, col);
+    double x = key_of(arr->items[i]);
+    if (want_max ? (x > bestd) : (x < bestd)) {
+      best = arr->items[i];
+      bestd = x;
     }
-    if (e.data > best) best = e.data;
   }
+  culebra_runtime_value_retain(best.tag, best.data);  // +1 for the caller
   return best;
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_array_min_by(
+    JitArray* arr, int8_t ft, int64_t fd, int64_t line, int64_t col) {
+  return _arr_minmax_by(arr, ft, fd, false, "min_by", line, col);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_array_max_by(
+    JitArray* arr, int8_t ft, int64_t fd, int64_t line, int64_t col) {
+  return _arr_minmax_by(arr, ft, fd, true, "max_by", line, col);
 }
 
 // Length in UTF-8 bytes of the next scalar at `offset`. Returns 0

@@ -4387,18 +4387,29 @@ struct JIT {
     module_->getOrInsertFunction(
         rt::array_sorted, ptrTy, ptrTy, builder_.getInt1Ty(),
         builder_.getInt64Ty(), builder_.getInt64Ty());
-    // sum/product/min/max: (arr, line, col) -> i64
-    module_->getOrInsertFunction(rt::array_sum, builder_.getInt64Ty(),
+    // sum/product/min/max: (arr, line, col) -> %Value. The result tag is
+    // data-dependent (a Float element promotes sum/product; min/max return
+    // the winning element), so these cannot return a bare i64.
+    module_->getOrInsertFunction(rt::array_sum, valueType_,
                                  ptrTy, builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
-    module_->getOrInsertFunction(rt::array_product, builder_.getInt64Ty(),
+    module_->getOrInsertFunction(rt::array_product, valueType_,
                                  ptrTy, builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
-    module_->getOrInsertFunction(rt::array_min, builder_.getInt64Ty(),
+    module_->getOrInsertFunction(rt::array_min, valueType_,
                                  ptrTy, builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
-    module_->getOrInsertFunction(rt::array_max, builder_.getInt64Ty(),
+    module_->getOrInsertFunction(rt::array_max, valueType_,
                                  ptrTy, builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    // min_by/max_by: (arr, ft, fd, line, col) -> %Value
+    module_->getOrInsertFunction(rt::array_min_by, valueType_, ptrTy,
+                                 builder_.getInt8Ty(), builder_.getInt64Ty(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::array_max_by, valueType_, ptrTy,
+                                 builder_.getInt8Ty(), builder_.getInt64Ty(),
+                                 builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
 
     // Core globals: range/iota are language-level integer iterator/array
@@ -15742,6 +15753,31 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
         }));
   }
 
+  // min_by / max_by — keyed aggregates over Array or Iterator. The callback
+  // supplies the ordering key; the winning ELEMENT comes back, so the result
+  // is a %Value, not an i64.
+  if ((method == "min_by" || method == "max_by") &&
+      argsAst.nodes.size() == 1) {
+    hof_cb = argsAst.nodes[0].get();
+    // Callee-consumes (see map above).
+    auto fv = compile(*argsAst.nodes[0]).consume();
+    auto ft = extract_tag(fv);
+    auto fd = extract_data(fv);
+    hof_owned.push_back(fv);
+    auto arr_rt = method == "min_by" ? rt::array_min_by : rt::array_max_by;
+    auto iter_rt = method == "min_by" ? rt::iter_min_by : rt::iter_max_by;
+    return own(dispatch_arr_iter(
+        method.c_str(),
+        [&](llvm::Value* arrPtr) {
+          return emit_value_call(module_->getFunction(arr_rt),
+                                 {arrPtr, ft, fd, ho_line, ho_col});
+        },
+        [&](llvm::Value* it, llvm::Value* id) {
+          return emit_value_call(module_->getFunction(iter_rt),
+                                 {it, id, ft, fd, ho_line, ho_col});
+        }));
+  }
+
   if (method == "flat_map" && argsAst.nodes.size() == 1) {
     hof_cb = argsAst.nodes[0].get();
     // Callee-consumes (see map above).
@@ -15764,9 +15800,12 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
         }));
   }
 
-  // sum / product / min / max — integer aggregates, same shape for
-  // Array and Iterator receivers. Non-Long elements raise a type
-  // error; min/max additionally throw on empty input.
+  // sum / product / min / max — numeric aggregates, same shape for Array
+  // and Iterator receivers. Elements may be Long or Float: sum/product
+  // answer a Long while every element is a Long and promote to Float at
+  // the first Float; min/max return the winning element, so its own type
+  // survives. A non-numeric element raises a type error; min/max
+  // additionally throw on empty input.
   // sum / max also accept TAG_TENSOR (the axis-less Tensor reduction
   // returns a Float); product / min stay 2-way (no Tensor support).
   if ((method == "sum" || method == "product" ||
@@ -15792,18 +15831,17 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
       return own(dispatch_arr_iter(
           method.c_str(),
           [&](llvm::Value* arrPtr) {
-            auto n = emit_call(module_->getFunction(arr_rt_name),
-                               {arrPtr, ho_line, ho_col});
-            return make_long(n);
+            return emit_value_call(module_->getFunction(arr_rt_name),
+                                   {arrPtr, ho_line, ho_col});
           },
           [&](llvm::Value* it, llvm::Value* id) {
-            auto n = emit_call(module_->getFunction(iter_rt_name),
-                               {it, id, ho_line, ho_col});
-            return make_long(n);
+            return emit_value_call(module_->getFunction(iter_rt_name),
+                                   {it, id, ho_line, ho_col});
           }));
     }
-    // 3-way dispatch for sum / max: TAG_ARRAY → Long, TAG_OBJECT
-    // (iterator) → Long, TAG_TENSOR → Float (axis-less reduction).
+    // 3-way dispatch for sum / max: TAG_ARRAY and TAG_OBJECT (iterator)
+    // answer Long or Float per their elements, TAG_TENSOR → Float
+    // (axis-less reduction).
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto arrBB = llvm::BasicBlock::Create(
@@ -15824,15 +15862,13 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     OwnedPhi redMerge(this, std::string(method) + ".res");
     builder_.SetInsertPoint(arrBB);
     auto arrPtr = builder_.CreateIntToPtr(d, ptrTy);
-    auto arrN = emit_call(module_->getFunction(arr_rt_name),
-                          {arrPtr, ho_line, ho_col});
-    redMerge.add_incoming(make_long(arrN));
+    redMerge.add_incoming(emit_value_call(module_->getFunction(arr_rt_name),
+                                         {arrPtr, ho_line, ho_col}));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(iterBB);
-    auto iterN = emit_call(module_->getFunction(iter_rt_name),
-                           {t, d, ho_line, ho_col});
-    redMerge.add_incoming(make_long(iterN));
+    redMerge.add_incoming(emit_value_call(module_->getFunction(iter_rt_name),
+                                          {t, d, ho_line, ho_col}));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(tenBB);

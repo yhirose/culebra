@@ -516,6 +516,8 @@ namespace rt {
 inline constexpr auto array_all           = "culebra_runtime_array_all";
 inline constexpr auto array_any           = "culebra_runtime_array_any";
 inline constexpr auto array_contains      = "culebra_runtime_array_contains";
+inline constexpr auto array_min_by        = "culebra_runtime_array_min_by";
+inline constexpr auto array_max_by        = "culebra_runtime_array_max_by";
 inline constexpr auto array_filter        = "culebra_runtime_array_filter";
 inline constexpr auto array_find          = "culebra_runtime_array_find";
 inline constexpr auto array_flat_map      = "culebra_runtime_array_flat_map";
@@ -808,6 +810,8 @@ inline constexpr auto iter_nth             = "culebra_runtime_iter_nth";
 inline constexpr auto iter_any             = "culebra_runtime_iter_any";
 inline constexpr auto iter_all             = "culebra_runtime_iter_all";
 inline constexpr auto iter_max             = "culebra_runtime_iter_max";
+inline constexpr auto iter_min_by          = "culebra_runtime_iter_min_by";
+inline constexpr auto iter_max_by          = "culebra_runtime_iter_max_by";
 inline constexpr auto iter_min             = "culebra_runtime_iter_min";
 inline constexpr auto iter_product         = "culebra_runtime_iter_product";
 inline constexpr auto iter_sum             = "culebra_runtime_iter_sum";
