@@ -64,25 +64,47 @@ Interpreter  JIT (LLVM ORC)      AOT codegen
 
 ヘッダのルート:
 
-- `include/ast.h` — AST ノード階層。
-- `include/interp.h` — ツリーウォーキング型インタプリタ。
-- `include/jit.h` — ORC JIT (`CULEBRA_ENABLE_JIT` のときのみコンパイ
-  ル)。
-- `include/aot.h` — LLVM `.o` への AOT コンパイル、システム cc 経由で
-  リンク。
-- `include/runtime/` — JIT と AOT から見えるランタイムヘルパ。
+- `include/grammar_def.h` — PEG 文法。単一の真実源。
+- `include/parser.h` — cpp-peglib のパーサと、全 backend がノードを読
+  むための AST アクセサ (`view_for`、`view_match`、`view_method` 等)。
+  `ast.h` は無く、
+  AST は `peg::Ast` そのもの。
+- `include/interpreter.h` — ツリーウォーキング型インタプリタ。
+- `include/jit.h` — ORC JIT **および** AOT のオブジェクト出力
+  (`CULEBRA_ENABLE_JIT` のときのみコンパイル)。lowering を共有している
+  ので 2 経路がドリフトしない。
+- `include/jit_*.h` — 関心事で分割した JIT: `jit_value` (タグ付け)、
+  `jit_mem` / `jit_slab` / `jit_gc` / `jit_owned` (メモリ)、
+  `jit_string`、`jit_iter`、`jit_dispatch`、`jit_runtime` (生成コード
+  から呼べるヘルパ)。
+- `include/stdlib_interp.h` / `include/stdlib_jit.h` — 標準ライブラリ
+  の 2 つの半分。後述の drift チェックで対称性を保つ。
+- `include/runtime/` — AOT 側のランタイム入口 (`runtime_aot.h`、
+  `aot_scan.h`、`rt_macros.h`)。
 
 メモリ管理 (参照カウント、tracing バックストップ、JIT の構造的リーク
 自由の規律) は横断的な関心事であり、Ch.13〜15 でまとめて扱います。
 
 ## 2. パーサ (cpp-peglib)
 
-文法は `include/grammar.h` に単一の PEG 仕様として置かれ、
+文法は `include/grammar_def.h` に単一の PEG 仕様として置かれ、
 `peg::parser` に供給されます。cpp-peglib が提供するもの:
 
 - PEG の意味論 (greedy、左再帰は禁止ルール)。
-- 各文法プロダクションが semantic action を通じて AST ビルダに対応。
+- パーサ自身が構築する汎用 AST (`peg::Ast`) — プロダクションごとに
+  C++ のノードクラスを用意する必要がない。
 - ソース位置がすべての AST ノードに自動的に伝播される。
+
+### grammar blob
+
+文法テキストのメタパースには ~10 ms かかり、そのままだと毎回の
+プロセス起動で払うことになります。`tools/gen_grammar_blob.cc` が
+コンパイル済み文法を `include/grammar_blob.h` にシリアライズし
+(`just gen-blob`)、`parser.h` はそちらをロードします。ガードは文法
+ソースのハッシュ `grammar_blob_key()`: 文法を編集して再生成し忘れた
+場合や cpp-peglib の bump でレイアウトが変わった場合はキーが一致せず、
+`load_grammar()` にフォールバックします。どちらの経路でも AST と
+packrat は同じように有効化されます ([[project_startup_grammar_snapshot]])。
 
 cpp-peglib を選んだ理由 (手書きの再帰下降との比較):
 
@@ -93,21 +115,41 @@ cpp-peglib を選んだ理由 (手書きの再帰下降との比較):
 - 性能はボトルネックになっていない — パース時間はパーサではなくイン
   タプリタ/JIT のコンパイルが支配的。
 
-AST ノードはパースコールバックから `shared_ptr` として構築されま
-す。識別子解決はパース後のパスへ遅延され、パーサは文脈自由でいられ
-ます。
+AST ノードは cpp-peglib 自身が生成する `shared_ptr<peg::Ast>` です。
+識別子解決はパース後のパスへ遅延され、パーサは文脈自由でいられます。
 
-`ParseError` は `file`、`line`、`col`、および短いメッセージを保持し、
-CLI ドライバが `clang` 風の固定幅スタイルで整形します。
+文法に触る前に知っておくべき帰結が 2 つあります:
+
+- **トークンのテキストはソースバッファへの `string_view`。** AST を
+  持つ側がソース文字列を一緒に生かし続ける必要があります。
+  `LoadedModule` が `source` (と、splice した preamble のための
+  `aux_sources`) を AST の隣に保持しているのはこのためです
+  ([[feedback_ast_source_lifetime]])。
+- **全 backend は `ast.nodes[i]` の添字ではなく `parser.h` の `view_*`
+  アクセサ経由でノードを読むこと。** cpp-peglib の `AstOptimizer` は
+  単一子ノードを畳むので、プロダクションに省略可能要素が増えると生の
+  添字がずれます — 「文法を変えたのに walker を 1 つ更新し忘れた」系
+  バグの常習犯です ([[project_grammar_accessor]])。
+
+パース失敗はファイル・行・列とパーサの診断を持つ `SyntaxError` として
+表面化し、CLI ドライバが `clang` 風の固定幅スタイルで整形します。
 
 ## 3. インタプリタ
 
 ### Value レイアウト
 
-`Value` は 8 つの組み込み型に対する tagged union (実質的には
-`std::variant`) です。4 つの参照型 (`String`、`Array`、`Object`、
-`Function`) は `shared_ptr` を介して boxing され、4 つのスカラーはイ
-ンラインです。
+`Value` は `Type` タグ (`type_of` が返しうる 12 個の名前) と
+`std::any` のペイロードです。`Nil` / `Bool` / `Long` / `Float` は
+ペイロードに直接入り、`String` は `std::string` を値で持ちます。
+コンテナ型は**内部**が `shared_ptr` の struct を持ち
+(`ArrayValue::values` は `shared_ptr<vector<Value>>`、Object のプロパ
+ティマップも同様)、これが `Value` 自体を copyable に保ったまま参照
+セマンティクスを与えています。
+
+`Value` の move コンストラクタは `std::any` を必ず `std::move` する
+必要があります — コピーする「move」は、引数バインド・return・swap の
+たびに boxing されたペイロードを deep copy します (move が多いループで
+実測 ~13%)。コピーする move は最適化不足ではなく**欠陥**です。
 
 参照カウントは `shared_ptr` の既定に従います — 自動かつ厳密なので、
 このバックエンドではリークと二重解放は構造的に起こり得ません。RC だ
@@ -136,11 +178,24 @@ Ch.13 の「ルーティング」節を参照してください。
 
 ### エラー伝播
 
-`throw` は、投げられた Value とソース位置を保持する
-`culebra::ThrowSignal` (C++ 例外) を送出します。`try`/`catch`/`defer`
-は、`BlockStmt`、`TryStmt`、`DeferStmt` の AST ノードをウォークする
-visitor によって実装され、フレームごとの defer スタックと、あらゆる離
-脱経路での LIFO 実行を維持します。
+2 種類の throw を 2 つの C++ 例外型が運びます:
+
+- **ユーザの `throw expr`** は `Value` そのものを投げます
+  (`eval_throw` は文字どおり `throw eval(...)`)。どんな culebra 値も
+  そのまま投げて受け取れます。
+- **ランタイムエラー**は `culebra::CulebraError` (`kind` / `line` /
+  `col` を持つ `std::runtime_error` の派生) を投げます。コンストラクタ
+  **とコピー/ムーブコンストラクタ**が thread-local の pending スロット
+  にエラーを publish するので、JIT の catch pad は飛行中の例外を再検査
+  せずに Object を作れます。isolate が保存済みエラーをコピーで再送出
+  する経路があるため、コピーコンストラクタは defaulted にできません。
+
+`catch` はどちらも言語仕様どおりの `{kind, message, line, col}` Object
+に変換します。defer は `Environment` (`env->deferred`) に積まれ、
+`run_deferred` があらゆる離脱経路で LIFO に実行します。defer 自身が
+throw した場合はそれが伝播し、そのスコープの残りの defer は破棄されます
+(Go ではなく Swift のルール)。スコープ終端の drop 解決は同じ関数の末尾に
+乗っているので、defer は常にスコープの資源解放より先に走ります。
 
 ## 4. JIT (LLVM ORC)
 
@@ -159,12 +214,17 @@ PIE/-fPIC の経緯は [[project_aot_no_pie]] を参照。
 
 ### インラインキャッシュ
 
-プロパティアクセスとメソッドディスパッチは、呼び出し箇所ごとの IC を
-使います。最初のルックアップで Object レイアウトをウォークし、解決さ
-れた offset (または Function ポインタ) を `JITCallSite` スロットに書き
-込みます。以降の呼び出しは、レシーバの shape が一致すればスロットを介
-して fast path を通ります。ミスすると slow path に戻り、スロットを更
-新します。
+プロパティアクセスは V8 / SpiderMonkey 流の**モノモーフィック**な
+インラインキャッシュを使います。呼び出し箇所ごとに `{Shape*,
+slot_offset}` を持つ専用の IC グローバルがあり (`JitPropIC`。書き込み
+側は `JitPropSetIC` で、プロパティの可変性もキャッシュします)、fast
+path はランタイム呼び出しを一切出しません — `obj->shape` をロードして
+キャッシュ済みの `Shape*` と比較し、ヒットならスロットベクタへ直接
+インデックスします。ミス時は `culebra_runtime_object_get_ic` を呼んで
+本来のルックアップを行い、IC を詰め直します。
+
+Shape はプロセス全体で intern されている (`ShapeRegistry`) ので比較は
+ポインタ等価で済み、同じ作り方をした object は 1 つの shape を共有します。
 
 ### namespace ディスパッチテーブル
 
@@ -249,20 +309,34 @@ Array、Func、Set、Tensor、Cell、String) を `shared_ptr` ではなく、手
 
 ### ランタイムアーカイブ (base + 機能別)
 
-- `libculebra_rt.a` — base ランタイム。`Tensor` / `Http` / `Compress`
-  の choke は **weak-symbol stub** なので、単体では BLAS、OpenSSL、
-  zlib のいずれも参照しません。
-- `libculebra_rt_tensor.a` / `libculebra_rt_http.a` /
-  `libculebra_rt_compress.a` — 各機能の strong choke (それぞれ BLAS /
-  OpenSSL+zlib / zlib を引き込む)。
+- `libculebra_rt.a` — base ランタイム。機能の choke はすべて
+  **weak-symbol stub** なので、単体では tensor カーネル、OpenSSL、
+  zlib、SQLite、ウィンドウ/GPU フレームワークのいずれも参照しません。
+- 機能ごとに 1 アーカイブ。それぞれが weak stub を上書きする strong
+  choke を持ちます:
 
-`culebra build` は常に base をリンクし、AST がその namespace
-(`Tensor` / `Http` / `Compress`) を参照したときのみ機能アーカイブを
-**force-load** します — strong choke が weak stub を上書きします。し
-たがって未使用の機能は、そのアーカイブも外部ライブラリもリンクしませ
-ん。これは 2^N のマトリクスではなく N+1 のアーカイブです。`culebra
-wrap` アーカイブ (`libculebra_rt_wrap.a`) も同じ使用ゲートに乗りま
-す。
+  | アーカイブ | ゲートする namespace | 引き込むもの |
+  |---|---|---|
+  | `libculebra_rt_tensor.a` | `Tensor` | cpp-tensorlib。macOS では Accelerate + Metal |
+  | `libculebra_rt_http.a` | `Http` | cpp-httplib + 静的 OpenSSL |
+  | `libculebra_rt_compress.a` | `Compress` | zlib |
+  | `libculebra_rt_sqlite.a` | `SQLite` | vendored な SQLite amalgamation |
+  | `libculebra_rt_canvas.a` | `Canvas` (窓ありビルド) | raylib + SDL3 |
+  | `libculebra_rt_scene.a` | `Scene` | raylib + SDL3 |
+  | `libculebra_rt_webview.a` | `Webview` / `Desktop` | OS の WebView フレームワーク |
+  | `libculebra_rt_wrap.a` | ラップした C++ クラス | ラップ先ライブラリの依存 |
+
+`culebra build` は常に base をリンクし、AST がその namespace を参照した
+ときのみ機能アーカイブを **force-load** します — strong choke が weak
+stub を上書きします。したがって未使用の機能は、そのアーカイブも外部
+ライブラリもリンクしません。これは 2^N のマトリクスではなく N+1 の
+アーカイブです ([[project_linear_rt_archives]])。
+
+このゲート契約は**外から**壊れやすい: vendored ライブラリが自前の
+ランタイムフックを経由せずデバイスアロケータを無条件に呼ぶと、その参照が
+全バイナリにコンパイルされ、`Tensor` に一切触れないプログラムがリンク
+できなくなります。submodule を bump したら毎回 AOT 込みのフルゲートを
+回すこと — diff が小さくても契約は壊れえます。
 
 ### Linux -no-pie
 
@@ -369,35 +443,40 @@ API と独自の `type_of` 名を持ちます。パラメータ専用ではな�
 
 ## 7. Regex
 
-> ステータス: 計画中 ([[project_regex_self_hosted]])。
-
 ### ライブラリ選択
 
-自前ホストの `cpp-regexlib` が計画です。まずこのリポジトリの
-`include/regex/` 内で regex エンジンを育て、API が安定したらスタンドア
-ロンの `yhirose/cpp-regexlib` ライブラリへ分離します。RE2 も検討しま
-したが、次の理由で見送りました:
-
-- 1 つの stdlib namespace のために Google プロジェクトを vendor ツリ
-  ーへ加えるのは重い依存になる。
-- 既定で書記素クラスタマッチングを望んでいる。それを RE2 に後付けする
-  のは、自前エンジンを書くより多くのコードになる。
+エンジンは `vendor/cpp-regexlib` — culebra のために書き、その後
+単一ヘッダの独立ライブラリとして切り出したものです
+([[project_regex_self_hosted]])。RE2 は検討の上見送りました: 1 つの
+stdlib namespace のために重い vendor 依存になり、書記素クラスタ
+マッチングを後付けするのは自前エンジンを書くより多くのコードになる
+ためです。
 
 ### エンジンモデル
 
-- NFA ベースで線形時間保証 (catastrophic backtracking なし)。
-- `.` と文字クラスの単位を書記素クラスタとし、`String.graphemes()`
-  (Ch.6) と grapheme break テーブルを共有。
-- MVP では PCRE 互換のサブセット。lookaround と backreference は先送り
-  — これらは線形時間を壊し、ほとんどのユーザーコードは必要としませ
-  ん。
+- **構造的に線形時間。** マッチングは leftmost-first (Perl の
+  alternation / quantifier 優先度) で、lazy DFA が走り、意味論の
+  フォールバックとして Thompson-NFA の Pike VM が走ります。どちらも
+  backtrack しないので catastrophic backtracking は起こりえません —
+  backreference が非対応なのも同じ設計判断の帰結です。
+- **マッチ単位はコードポイントではなく拡張書記素クラスタ**: `.` は
+  ユーザーが 1 文字と感じる単位を消費するので、絵文字の ZWJ 列に対する
+  `.` はクラスタ全体にマッチします。オフセットは元の UTF-8 subject への
+  バイトオフセットで、常にクラスタ境界に落ちます。コードポイント単位も
+  選択できます。
+- Unicode テーブルはヘッダに生成済みなので、エンジンは何もリンクしません。
 
 ### surface area
 
-`Regex.compile(pattern)` はコンパイル済み regex オブジェクトを返しま
-す。`re.match(s)` / `re.find_all(s)` / `re.replace(s, repl)`。マッチ結
-果はバイトオフセット、スカラーオフセット、キャプチャグループを保持し
-ます。
+`Regex.compile(pattern, flags?)` が Regex オブジェクトを返し、
+`re.test/match/find/find_all/split/replace_all` がそのメソッドです。
+`Regex.escape` はリテラルをクォートします。`re"..."` リテラルは、flags を
+インライングループとしてパターンに畳み込んだ `compile` の糖衣です。
+
+Match はただのデータ Object — `{value, start, end, groups, named}` で、
+オフセットはバイト、名前付きキャプチャは `named` の下です。この形は
+`stdlib_interp.h` で組み立てられ JIT がミラーするので、どの backend でも
+同じように読めます。
 
 ## 8. Tensor
 
@@ -492,61 +571,65 @@ cpp-httplib (vendored) は、ブロッキングの HTTP/1.1、SSE、WebSocket �
 ### surface area
 
 ```
-HTTP.get(url, **opts)
-HTTP.post(url, body, **opts)
-HTTP.request(method, url, **opts)
-HTTP.serve(host, port, handler)
-HTTP.sse(host, port, handler)
-HTTP.websocket(...)
+Http.get / post / put / delete / head / request   # 1 回きりのクライアント
+Http.client(base_url, **opts)                     # セッション (keep-alive, cookie)
+Http.server()                                     # -> srv.get/post/... + listen
+Http.sse(...) / Http.ws(...)                      # ストリーミングクライアント
 ```
 
-サーバー側は、`**opts` でサイズ指定されるスレッドプール上で走りま
-す。
+`Http.server()` はルーティング付きのサーバーオブジェクトを返します。
+`listen` はブロックし、`listen_async` はワーカープール上で走らせます
+(`Desktop` facade は async 側を使います)。どちらの側もブロッキング +
+スレッドで、async にはなりません。
 
 ## 10. モジュールシステム
 
-### リゾルバ
+### ローダ
 
-モジュールビルドは 1 つのエントリファイルから始まります。リゾルバは反
-復します:
+`ModuleLoader` (`include/module_loader.h`) は interp / JIT / AOT が
+共有します。したがって 3 者は同じ評価順・同じキャッシュ・同じ I/O /
+パース / サイクルエラーを観測します。ローダ自身は何も評価せず、パース
+済みモジュールを返して各 backend に歩かせます。
 
-1. エントリをパースし、未解決のトップレベル識別子を収集する。
-2. 未解決の各識別子 `x` について、兄弟の `.cul` ファイル (同一ディレク
-   トリ) から `x` という名前のトップレベル束縛を探す。見つかれば、そ
-   のファイルをビルドセットに追加する。
-3. 新たに追加されたファイルをパースし、それらの未解決識別子を収集す
-   る。
-4. 不動点に達するまで繰り返す。
+`load_recursive` は `import` 文をたどる深さ優先探索です:
 
-グラフは有向です。辺は「参照を含むファイル」から「束縛を含むファイ
-ル」へ向かいます。
+1. パスを正準化する (`resolve_module_path`。全コンポーネントがこのキー
+   で一致しないと register と lookup がすれ違う)。
+2. そのパスが進行中スタックにあればサイクルエラー、既にロード済みなら
+   キャッシュ済みインデックスを返す。
+3. ソースを**ヒープ確保した** `shared_ptr<string>` に読み込む。囲む
+   `LoadedModule` が move されても `data()` が生き残る必要があるため —
+   AST のトークンはそのバイト列への `string_view` です。
+4. パース → `validate_module` → そのファイルの import を抽出し、自分を
+   記録する**前に**各依存へ再帰する。こうすると依存が低いインデックス
+   に並び、結果のベクタがトポロジカルソート済みになります。
+
+探索後、全ロード済みモジュールに `lint::check_module` を走らせます。
+健全な静的診断はどの backend が評価するより前にプログラムを中断する —
+これが診断を backend 非依存にしています。
 
 ### サイクル検出
 
-ファイルグラフの強連結成分は Tarjan のアルゴリズムで計算されます。非自
-明な SCC はサイクルであり、サイクル内の 1 つの参照を指す正確な file/
-line の引用付きで拒否されます。共有の第 3 のファイルを介してリファクタ
-してください。
+進行中の `stack_` がそのままサイクル検出器です。まだスタック上にある
+パスに再入すると、サイクルを明示した `ImportError` を投げます。SCC の
+専用パスはありません — import グラフの DFS なら無償で得られます。共有の
+第 3 のファイルを介してリファクタしてください。
 
-### エントリ env の隔離
+### モジュールのスコープ
 
-エントリファイル内の束縛は、import されたファイルからは可視*ではあり
-ません*。import されたファイル内の束縛は、ビルドのどこからでも可視で
-す。これは Go のパッケージモデル (main 以外の全ファイルが「そのパッケ
-ージ」) に一致し、エントリはトップレベルの `main` のように扱われま
-す。
+各依存は自分のスコープで評価され、トップレベル束縛は `export` が集めた
+名前を除いて非公開のままです。集められた名前は 1 つの immutable な
+export Object になり、import 側が選んだ名前に束縛されます。エントリ
+モジュールは最後に評価され、呼び出し側のスコープを共有するので、その
+トップレベルは起動した側から見え続けます。
 
-この非対称性は意図的です。エントリスクリプトは、import するヘルパを汚
-染することなく、使い捨ての名前 (`mut tmp = ...`) を使えるということで
-す。
+### なぜ明示的な import なのか
 
-### なぜ明示的な `import` 文が無いのか
-
-1500 行のプログラムが 30 個のヘルパファイルを引き込むこともありま
-す。各 `import` を強制しても何も得られません — ツールは未解決識別子か
-ら同じグラフを導出します。コスト (リゾルバの追加パス 1 回) はビルド時
-に 1 度支払われ、利得はより速い執筆ループと無償の tree-shaking です
-([[project_module_system]])。
+未解決識別子からグラフを導出する方式は試して取り下げました。明示的な
+文は、読者にとってもツールにとっても、そのファイルの依存を知るために
+見る場所が 1 箇所で済みます。`culebra lint` の未使用 import 警告 (と
+安全な `--fix`) が曖昧さなく出せるのも、AOT のバンドラと tree-shaker が
+推論ではなくパース時に確定したグラフで動けるのも同じ理由です。
 
 ## 11. ビルドと vendor
 
@@ -554,16 +637,20 @@ line の引用付きで拒否されます。共有の第 3 のファイルを介
 
 | ライブラリ | 目的 | リンケージ |
 |---|---|---|
-| `cpp-peglib` | PEG パーサ | header-only |
+| `cpp-peglib` | PEG パーサ (Ch.2) | header-only |
 | `cpp-linenoise` | REPL 行エディタ | header-only |
 | `cpp-unicodelib` | Unicode テーブル (scalar、grapheme、case) | header-only |
 | `cpp-embedlib` | 静的アーカイブをドライババイナリに焼き込む (`cpp_embedlib_add()`) | header-only |
-| `cpp-regexlib` *(計画中)* | Regex エンジン (Ch.7) | header-only (計画中) |
-| `cpp-httplib` *(計画中)* | HTTP スタック (Ch.9) | header-only (計画中) |
-| BoringSSL *(計画中)* | HTTP 用 TLS (Ch.9) | static archive |
+| `cpp-regexlib` | Regex エンジン (Ch.7) | header-only |
+| `cpp-httplib` | HTTP スタック (Ch.9) | header-only (+ TLS 用の静的 OpenSSL) |
+| `cpp-tensorlib` | Tensor エンジンとデバイスバックエンド (Ch.8) | header-only |
+| `raylib` + `SDL` | `Canvas` (opt-in) と `Scene` のウィンドウ / 入力バックエンド | ソースからビルドする静的アーカイブ |
+| `webview` | `Webview` / `Desktop` のネイティブ WebView ウィンドウ | header-only (+ OS の WebView フレームワーク) |
+| `sqlite` | `SQLite` namespace 用の SQLite amalgamation | in-tree でコンパイル |
 
-非自明な依存はすべて header-only または静的リンクなので、`culebra
-build` は自己完結型のバイナリを生成します。
+OpenSSL と OS 提供のフレームワークを除き、すべての依存は header-only か
+vendored なソースからのビルドなので、`culebra build` は自己完結型の
+バイナリを生成します。
 
 ### CMake 構造
 
@@ -574,38 +661,52 @@ build` は自己完結型のバイナリを生成します。
   `_compress`) をドライバに焼き込むための `cpp_embedlib_add()` を提
   供。
 
-`option(CULEBRA_ENABLE_JIT)` が LLVM リンケージを制御します。JIT を
-off にすると、ドライバは ~1 MB で LLVM 依存を持ちません。
+機能オプションは namespace とそのアーカイブの両方をゲートします:
+`CULEBRA_ENABLE_JIT` (LLVM リンケージ。off ならドライバは ~1 MB で
+LLVM 依存なし)、`CULEBRA_ENABLE_HTTP`、`CULEBRA_ENABLE_SQLITE`、
+`CULEBRA_ENABLE_WEBVIEW` (既定 ON。GTK4 / WebKitGTK の dev パッケージ
+が無い Linux では自動的に無効化)、そして窓ありの 2 つの opt-in
+`CULEBRA_ENABLE_SCENE` / `CULEBRA_ENABLE_CANVAS_WINDOW`。
 
 ### 依存ポリシー
 
 - パッケージ管理される依存よりも header-only の vendor ライブラリを優
   先する。リポジトリは、C++23 コンパイラ (と JIT 用に任意で LLVM) 以外
-  のシステムパッケージなしで clone-and-build できるべき。
-- git submodule なし — `vendor/` はコミット済み。
+  のシステムパッケージなしで clone-and-build できるべき。HTTP 機能の
+  OpenSSL だけが唯一の例外。
+- `vendor/` は commit ごとに pin された git submodule。clone 直後は
+  `git submodule update --init --recursive` を先に走らせないとビルド
+  できない。(`sqlite` と `webview` は単一ファイルなので submodule では
+  なくコミット済みソース。)
 - 新しい vendor ライブラリの追加には、この章に Why エントリが必要。
 
 ## 12. テストランナー
 
-> ステータス: Draft。並行の作業サイクルで設計中
-> ([[project_culebra_test_docs_dependency]])。この節は CLI が確定した
-> 時点で書き直されます。
+`culebra test [paths...]` (`include/test_runner.h`) は、ディレクトリ
+引数を `test_*.cul` で走査し、ファイル引数はそのまま採用します。実行中
+だけ `test` / `@test` / `@parametrize` を ambient global として登録
+します — matcher 一族は言語レベルの global なので注入は不要です。
+フラグは `--filter` (名前の部分一致)、`--bail [n]`、`--list`、
+`--reporter json`。
 
-方向性 (変更の可能性あり):
+レポータは 2 つ (`Reporter::Default` / `Reporter::Json`)。JSON 側は
+NDJSON — 1 イベント 1 オブジェクト — を吐き、テスト自身の stdout は
+ストリームに混ぜずイベントの中に取り込みます。これが出力を機械可読に
+しています。
 
-- `culebra test [path]` は `*_spec.cul` を発見し、フラットな
-  `test "..." { }` ブロックを走らせる。`describe` のネストは無し。階層
-  はディレクトリから来る。
-- `culebra test --doc <markdown>` は、doctest 規約
-  ([[project_doctest_convention]]) に従って ` ```culebra ` ブロックを
-  抽出し、各ブロックを隔離スコープで走らせる。
-- バックエンド選択: `--interp` / `--jit` / `--aot` (既定: all)。
-- レポータ: TAP 互換に加えて、色付きの人間向けフォーマット。
+**fixture は名前による依存性注入です。** テストの位置パラメータは
+周囲の環境に対して解決されるので、スコープ内の任意の `fn` が decorator
+なしで fixture になります。解決はテストごとにメモ化され (直接参照と
+推移参照が同じインスタンスを共有し、テストをまたぐと作り直し)、fixture
+の循環は連鎖を添えた `CycleError` で検出されます。
 
-最も興味深い内部は doctest 抽出器です。markdown から `culebra` タグ付
-きの fenced ブロックをパースし、ブロック先頭の `# doctest:` 行を走査し
-てディレクティブを読み取り、`# =>` と `# => |` マーカーから期待される
-stdout を組み立てます。
+doctest ランナー (`include/doctest_runner.h`) がもう半分です。markdown
+から ` ```culebra ` の fenced ブロックを走査し、ブロック先頭の
+`# doctest:` ディレクティブを読み、`# =>` / `# => |` マーカー (throw 期待は
+`# !!`) から期待 stdout を組み立てます ([[project_doctest_convention]])。
+現在解釈されるのは `skip` のみで、`compile-only` と backend フィルタは
+予約済み — それらを持つブロックは通常どおり走ります。各ブロックは
+新しいインタプリタで走り、ランナーは interp 専用です。
 
 ## 13. メモリモデル: RC、GC、決定的 drop
 

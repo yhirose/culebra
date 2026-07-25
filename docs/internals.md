@@ -61,11 +61,23 @@ Why this layout:
 
 Header roots:
 
-- `include/ast.h` — AST node hierarchy.
-- `include/interp.h` — tree-walking interpreter.
-- `include/jit.h` — ORC JIT (compiled only with `CULEBRA_ENABLE_JIT`).
-- `include/aot.h` — AOT compile to LLVM `.o`, link via system cc.
-- `include/runtime/` — runtime helpers visible from JIT and AOT.
+- `include/grammar_def.h` — the PEG grammar, single source of truth.
+- `include/parser.h` — the cpp-peglib parser plus the AST accessors
+  (`view_for`, `view_match`, `view_method`, …) every backend reads nodes
+  through.
+  There is no `ast.h`: the AST *is* `peg::Ast`.
+- `include/interpreter.h` — tree-walking interpreter.
+- `include/jit.h` — ORC JIT **and** the AOT object emitter (compiled
+  only with `CULEBRA_ENABLE_JIT`); they share one lowering, so the two
+  paths cannot drift.
+- `include/jit_*.h` — the JIT split by concern: `jit_value` (tagging),
+  `jit_mem` / `jit_slab` / `jit_gc` / `jit_owned` (memory), `jit_string`,
+  `jit_iter`, `jit_dispatch`, `jit_runtime` (helpers callable from
+  emitted code).
+- `include/stdlib_interp.h` / `include/stdlib_jit.h` — the two halves
+  of the standard library, kept symmetric by the drift check below.
+- `include/runtime/` — the AOT-side runtime entry points
+  (`runtime_aot.h`, `aot_scan.h`, `rt_macros.h`).
 
 Memory management (reference counting, the tracing backstop, and the
 JIT's structural leak-freedom discipline) is a cross-cutting concern
@@ -73,13 +85,25 @@ covered on its own in Ch.13–15.
 
 ## 2. Parser (cpp-peglib)
 
-The grammar lives in `include/grammar.h` as a single PEG specification
-fed to `peg::parser`. cpp-peglib gives us:
+The grammar lives in `include/grammar_def.h` as a single PEG
+specification fed to `peg::parser`. cpp-peglib gives us:
 
 - PEG semantics (greedy, no left recursion as a hard rule).
-- Each grammar production maps to an AST builder via a semantic
-  action.
+- A generic AST (`peg::Ast`) built by the parser itself — productions
+  do not need per-node C++ classes.
 - Source position is propagated to every AST node automatically.
+
+### Grammar blob
+
+Meta-parsing the grammar text costs ~10 ms, which every process start
+would otherwise pay. `tools/gen_grammar_blob.cc` serializes the
+compiled grammar into `include/grammar_blob.h` (`just gen-blob`), and
+`parser.h` loads that blob instead — guarded by
+`grammar_blob_key()`, a hash of the grammar source: if the grammar was
+edited without regenerating, or a cpp-peglib bump changed the layout,
+the key mismatches and the parser falls back to `load_grammar()`. Both
+paths then enable the AST and packrat parsing identically
+([[project_startup_grammar_snapshot]]).
 
 Why cpp-peglib (vs hand-written recursive descent):
 
@@ -90,21 +114,43 @@ Why cpp-peglib (vs hand-written recursive descent):
 - Performance has not been a bottleneck — parsing time is dominated
   by interpreter/JIT compile, not by the parser.
 
-AST nodes are constructed as `shared_ptr` from the parse callbacks.
+AST nodes are `shared_ptr<peg::Ast>` produced by cpp-peglib itself.
 Identifier resolution is deferred to a post-parse pass so the parser
 can be context-free.
 
-`ParseError` carries `file`, `line`, `col`, and a short message; it is
-formatted by the CLI driver in a `clang`-like fixed-width style.
+Two consequences worth knowing before touching the grammar:
+
+- **Token text is a `string_view` into the source buffer.** Whoever
+  owns the AST must keep the source string alive alongside it — that
+  is why `LoadedModule` holds `source` (and `aux_sources` for spliced
+  preamble text) next to the AST ([[feedback_ast_source_lifetime]]).
+- **Every backend must read nodes through the `view_*` accessors** in
+  `parser.h`, not by indexing `ast.nodes[i]`. cpp-peglib's
+  `AstOptimizer` collapses single-child nodes, so raw indices shift
+  when a production gains an optional element — the recurring source
+  of "grammar changed, one walker not updated" bugs
+  ([[project_grammar_accessor]]).
+
+Parse failures surface as a `SyntaxError` carrying file, line, column,
+and the parser's diagnostic, formatted by the CLI driver in a
+`clang`-like fixed-width style.
 
 ## 3. Interpreter
 
 ### Value layout
 
-`Value` is a tagged union (`std::variant` in practice) over the eight
-built-in types. Boxing happens via `shared_ptr` for the four reference
-types (`String`, `Array`, `Object`, `Function`); the four scalars are
-in-line.
+`Value` is a `Type` tag (the twelve names `type_of` can return) plus a
+`std::any` payload. `Nil` / `Bool` / `Long` / `Float` sit in the
+payload directly; `String` holds a `std::string` by value; the
+container types hold a struct whose *interior* is a `shared_ptr`
+(`ArrayValue::values` is a `shared_ptr<vector<Value>>`, an object's
+property map likewise), which is what gives them reference semantics
+while `Value` itself stays copyable.
+
+`Value`'s move constructor must `std::move` the `std::any` — a "move"
+that copies deep-copies the boxed payload on every argument bind,
+return, and swap (measured ~13% on a move-heavy loop). A move that
+copies is a defect, not a pessimization.
 
 Refcounting is `shared_ptr`'s default — automatic and exact, so leaks
 and double-frees cannot occur by construction on this backend. A
@@ -132,11 +178,26 @@ incident.
 
 ### Error propagation
 
-`throw` raises a `culebra::ThrowSignal` (C++ exception) carrying the
-thrown Value and source location. `try`/`catch`/`defer` are
-implemented by the visitor walking AST nodes for `BlockStmt`,
-`TryStmt`, and `DeferStmt`, maintaining a per-frame defer stack and
-LIFO execution on every exit path.
+Two C++ exception types carry the two kinds of throw:
+
+- **User `throw expr`** throws the `Value` itself (`eval_throw` is
+  literally `throw eval(...)`), so any culebra value can be thrown and
+  caught unchanged.
+- **Runtime errors** throw `culebra::CulebraError` (a
+  `std::runtime_error` subclass carrying `kind` / `line` / `col`). Its
+  constructor *and its copy/move constructors* publish the error to a
+  thread-local pending slot, so a JIT catch pad can materialize the
+  Object without re-inspecting the in-flight exception — an isolate
+  re-throwing a stored error by copy has to publish too, which is why
+  the copy constructor is not defaulted.
+
+`catch` translates either into the `{kind, message, line, col}` Object
+the language specifies. Defers live on the `Environment`
+(`env->deferred`) and `run_deferred` pops them LIFO on every exit
+path; a defer that itself throws propagates and abandons the rest of
+that scope's defers (Swift's rule, not Go's). Scope-exit drop
+resolution piggybacks on the tail of the same function, so defers
+always run before the scope's resources are released.
 
 ## 4. JIT (LLVM ORC)
 
@@ -155,11 +216,17 @@ macOS they are visible by default; on ELF/Linux they require
 
 ### Inline cache
 
-Property access and method dispatch use a per-callsite IC: the first
-lookup walks the Object layout and writes the resolved offset (or
-Function pointer) into a `JITCallSite` slot. Subsequent calls fast-
-path through the slot if the receiver's shape matches. Miss reverts
-to a slow path and updates the slot.
+Property access uses a V8/SpiderMonkey-style **monomorphic** inline
+cache: every call site owns a private IC global holding
+`{Shape*, slot_offset}` (`JitPropIC`; the write side is
+`JitPropSetIC`, which also caches the property's mutability). The fast
+path emits no runtime call at all — load `obj->shape`, compare against
+the cached `Shape*`, and on a hit index straight into the slot vector.
+A miss calls `culebra_runtime_object_get_ic`, which performs the real
+lookup and refills the IC.
+
+Shapes are interned process-wide (`ShapeRegistry`), so the comparison
+is a pointer equality, and objects built the same way share one shape.
 
 ### Namespace dispatch table
 
@@ -245,19 +312,35 @@ Long printer, and nothing else.
 
 ### Runtime archives (base + per-feature)
 
-- `libculebra_rt.a` — base runtime. The `Tensor` / `Http` / `Compress`
-  chokes are **weak-symbol stubs**, so on its own it references no BLAS,
-  OpenSSL, or zlib.
-- `libculebra_rt_tensor.a` / `libculebra_rt_http.a` /
-  `libculebra_rt_compress.a` — the strong chokes for each feature
-  (pulling BLAS / OpenSSL+zlib / zlib respectively).
+- `libculebra_rt.a` — base runtime. Every feature choke in it is a
+  **weak-symbol stub**, so on its own it references no tensor kernels,
+  OpenSSL, zlib, SQLite, or window/GPU frameworks.
+- One archive per feature, each holding the strong choke that
+  overrides the weak stub:
+
+  | archive | namespace it gates | what it drags in |
+  |---|---|---|
+  | `libculebra_rt_tensor.a` | `Tensor` | cpp-tensorlib; Accelerate + Metal on macOS |
+  | `libculebra_rt_http.a` | `Http` | cpp-httplib + static OpenSSL |
+  | `libculebra_rt_compress.a` | `Compress` | zlib |
+  | `libculebra_rt_sqlite.a` | `SQLite` | the vendored SQLite amalgamation |
+  | `libculebra_rt_canvas.a` | `Canvas` (windowed build) | raylib + SDL3 |
+  | `libculebra_rt_scene.a` | `Scene` | raylib + SDL3 |
+  | `libculebra_rt_webview.a` | `Webview` / `Desktop` | the OS WebView framework |
+  | `libculebra_rt_wrap.a` | wrapped C++ classes | whatever the wrapped library needs |
 
 `culebra build` always links the base, then **force-loads** a feature
-archive only when the AST references its namespace (`Tensor` / `Http` /
-`Compress`) — the strong choke overrides the weak stub. So an unused
-feature links neither its archive nor its external libraries. This is
-N+1 archives, not a 2^N matrix; the `culebra wrap` archive
-(`libculebra_rt_wrap.a`) rides the same usage gate.
+archive only when the AST references its namespace — the strong choke
+overrides the weak stub. So an unused feature links neither its archive
+nor its external libraries. This is N+1 archives, not a 2^N matrix
+([[project_linear_rt_archives]]).
+
+The gating contract is easy to break from the *outside*: a vendored
+library that calls a device allocator unconditionally (rather than
+through its own runtime hook) compiles that reference into every
+binary, and a program that never mentions `Tensor` then fails to link.
+Re-run the full gate, AOT included, after every submodule bump — a
+small diff can still break the contract.
 
 ### Linux -no-pie
 
@@ -364,35 +447,40 @@ loops over many views should `.to_string()` once instead.
 
 ## 7. Regex
 
-> Status: Planned ([[project_regex_self_hosted]]).
-
 ### Library choice
 
-A self-hosted `cpp-regexlib` is the plan: incubate the regex engine
-inside `include/regex/` of this repo, then split into a standalone
-`yhirose/cpp-regexlib` library once the API stabilizes. RE2 was
-considered but ruled out because:
-
-- Adding a Google project to the vendor tree is a heavy dependency
-  for one stdlib namespace.
-- We want grapheme-cluster matching as the default; bolting it onto
-  RE2 would be more code than writing our own engine.
+The engine is `vendor/cpp-regexlib` — written for culebra, then split
+out as a standalone single-header library ([[project_regex_self_hosted]]).
+RE2 was considered and ruled out: it is a heavy vendor dependency for
+one stdlib namespace, and bolting grapheme-cluster matching onto it
+would have been more code than writing the engine.
 
 ### Engine model
 
-- NFA-based with linear-time guarantees (no catastrophic
-  backtracking).
-- Grapheme-cluster as the unit of `.` and character classes, sharing
-  the grapheme break table with `String.graphemes()` (Ch.6).
-- PCRE-compatible subset for the MVP. Lookaround and backreferences
-  are deferred — they break linear time and most user code does not
-  need them.
+- **Linear time by construction.** Matching is leftmost-first (Perl
+  alternation / quantifier priority), run by a lazy DFA with a
+  Thompson-NFA Pike VM as the semantic fallback. Neither backtracks,
+  so catastrophic backtracking cannot occur — backreferences are
+  therefore not supported, by the same design choice.
+- **The match unit is the extended grapheme cluster**, not the code
+  point: `.` consumes one user-perceived character, so `.` against an
+  emoji ZWJ sequence matches the whole cluster. Offsets are byte
+  offsets into the original UTF-8 subject and always land on cluster
+  boundaries. A code-point unit is selectable.
+- The Unicode tables are generated into the header, so the engine
+  links nothing.
 
 ### Surface area
 
-`Regex.compile(pattern)` returns a compiled regex object;
-`re.match(s)` / `re.find_all(s)` / `re.replace(s, repl)`. Match
-results carry byte offsets, scalar offsets, and captured groups.
+`Regex.compile(pattern, flags?)` returns a Regex object;
+`re.test/match/find/find_all/split/replace_all` are its methods, and
+`Regex.escape` quotes a literal. `re"..."` literals are sugar for
+`compile` with the flags folded into the pattern as an inline group.
+
+A Match is a plain data Object — `{value, start, end, groups, named}`,
+with byte offsets and named captures under `named`. That shape is
+built in `stdlib_interp.h` and mirrored by the JIT, so a match reads
+identically on every backend.
 
 ## 8. Tensor
 
@@ -492,56 +580,65 @@ concurrency is via threads.
 ### Surface area
 
 ```
-HTTP.get(url, **opts)
-HTTP.post(url, body, **opts)
-HTTP.request(method, url, **opts)
-HTTP.serve(host, port, handler)
-HTTP.sse(host, port, handler)
-HTTP.websocket(...)
+Http.get / post / put / delete / head / request   # one-shot client
+Http.client(base_url, **opts)                     # session (keep-alive, cookies)
+Http.server()                                     # -> srv.get/post/... + listen
+Http.sse(...) / Http.ws(...)                      # streaming clients
 ```
 
-Server side runs on a thread pool sized by `**opts`.
+`Http.server()` returns a routed server object; `listen` blocks while
+`listen_async` runs it on a worker pool (the `Desktop` facade uses the
+async form). Both sides are blocking-with-threads, never async.
 
 ## 10. Module system
 
-### Resolver
+### Loader
 
-Module build starts with one entry file. The resolver iterates:
+`ModuleLoader` (`include/module_loader.h`) is shared by interp, JIT,
+and AOT, so all three observe the same evaluation order, the same
+caching, and the same I/O / parse / cycle errors. It does not evaluate
+anything — it returns parsed modules and lets each backend walk them.
 
-1. Parse entry; collect unresolved top-level identifiers.
-2. For each unresolved identifier `x`, search sibling `.cul` files
-   (same directory) for a top-level binding named `x`. If found,
-   add that file to the build set.
-3. Parse newly-added files; collect their unresolved identifiers.
-4. Repeat until a fixed point.
+`load_recursive` is a depth-first walk over `import` statements:
 
-The graph is directed: edges go from "file containing the reference"
-to "file containing the binding".
+1. Canonicalize the path (`resolve_module_path` — every component
+   agrees on this key, or the register/lookup pair would miss).
+2. If the path is already on the in-progress stack → cycle error; if
+   it is already loaded → return the cached index.
+3. Read the source into a **heap-allocated** `shared_ptr<string>`, so
+   its `data()` survives moves of the enclosing `LoadedModule` — the
+   AST's tokens are `string_view`s into those bytes.
+4. Parse, `validate_module`, then extract the file's imports and
+   recurse into each **before** recording self, so dependencies land
+   at lower indices and the result vector is topologically sorted.
+
+After the walk, `lint::check_module` runs over every loaded module:
+the sound static diagnostics abort the program before any backend
+evaluates, which is what makes them backend-independent.
 
 ### Cycle detection
 
-Strongly connected components in the file graph are computed via
-Tarjan's algorithm. Any non-trivial SCC is a cycle and is rejected
-with a precise file/line citation pointing to one reference in the
-cycle. Refactor through a shared third file.
+The in-progress `stack_` is the cycle detector: re-entering a path
+still on it throws `ImportError` with the cycle spelled out. There is
+no separate SCC pass — a DFS over an import graph gets this for free.
+Refactor through a shared third file.
 
-### Entry env isolation
+### Module scope
 
-Bindings in the entry file are *not* visible from imported files;
-bindings in imported files are visible from everywhere in the build.
-This matches Go's package model (every non-main file is "the
-package") with the entry treated like a top-level `main`.
+Each dependency is evaluated in its own scope; its top-level bindings
+stay private except for the names collected by `export`, which become
+one immutable export Object bound under the importer's chosen name.
+The entry module evaluates last and shares the caller-facing scope, so
+its top-levels remain visible to whoever invoked the program.
 
-The asymmetry is intentional. It means an entry script can use throw-
-away names (`mut tmp = ...`) without polluting the helpers it imports.
+### Why explicit imports
 
-### Why no explicit `import` statement
-
-A 1500-line program may pull in 30 helper files. Forcing each
-`import` saves nothing — the tool derives the same graph from the
-unresolved identifiers. The cost (an extra resolver pass) is paid
-once at build time; the gain is a faster authoring loop and free
-tree-shaking ([[project_module_system]]).
+Deriving the graph from unresolved identifiers was tried and dropped.
+An explicit statement is the only place a reader or a tool has to look
+to know a file's dependencies; it gives `culebra lint` an unambiguous
+unused-import warning (and a safe `--fix`), and it lets the AOT
+bundler and tree-shaker work from a graph that is known at parse time
+rather than inferred.
 
 ## 11. Build & vendor
 
@@ -549,16 +646,20 @@ tree-shaking ([[project_module_system]]).
 
 | Library | Purpose | Linkage |
 |---|---|---|
-| `cpp-peglib` | PEG parser | header-only |
+| `cpp-peglib` | PEG parser (Ch.2) | header-only |
 | `cpp-linenoise` | REPL line editor | header-only |
 | `cpp-unicodelib` | Unicode tables (scalar, grapheme, case) | header-only |
 | `cpp-embedlib` | Bake static archives into the driver binary (`cpp_embedlib_add()`) | header-only |
-| `cpp-regexlib` *(planned)* | Regex engine (Ch.7) | header-only (planned) |
-| `cpp-httplib` *(planned)* | HTTP stack (Ch.9) | header-only (planned) |
-| BoringSSL *(planned)* | TLS for HTTP (Ch.9) | static archive |
+| `cpp-regexlib` | Regex engine (Ch.7) | header-only |
+| `cpp-httplib` | HTTP stack (Ch.9) | header-only (+ static OpenSSL for TLS) |
+| `cpp-tensorlib` | Tensor engine and device backends (Ch.8) | header-only |
+| `raylib` + `SDL` | Window / input backend for `Canvas` (opt-in) and `Scene` | static archives, built from source |
+| `webview` | Native WebView window for `Webview` / `Desktop` | header-only (+ the OS WebView framework) |
+| `sqlite` | SQLite amalgamation for the `SQLite` namespace | compiled in-tree |
 
-All non-trivial dependencies are header-only or statically linked, so
-`culebra build` produces self-contained binaries.
+Except for OpenSSL and the OS-provided frameworks, every dependency is
+header-only or built from vendored source, so `culebra build` produces
+self-contained binaries.
 
 ### CMake structure
 
@@ -566,43 +667,57 @@ All non-trivial dependencies are header-only or statically linked, so
   optional LLVM linkage, the base + per-feature runtime archives, and
   embed tests.
 - `vendor/cpp-embedlib/cmake/cpp-embedlib.cmake` — provides
-  `cpp_embedlib_add()` used to bake `libculebra_rt.a` and its
-  per-feature archives (`libculebra_rt_tensor.a`, `_http`, `_compress`)
-  into the driver.
+  `cpp_embedlib_add()` used to bake `libculebra_rt.a` and every
+  per-feature archive (Ch.5) into the driver.
 
-`option(CULEBRA_ENABLE_JIT)` controls LLVM linkage. With JIT off, the
-driver is ~1 MB and has no LLVM dependency.
+Feature options gate both the namespace and its archive:
+`CULEBRA_ENABLE_JIT` (LLVM linkage — off gives a ~1 MB driver with no
+LLVM dependency), `CULEBRA_ENABLE_HTTP`, `CULEBRA_ENABLE_SQLITE`,
+`CULEBRA_ENABLE_WEBVIEW` (on by default; self-disables on Linux
+without the GTK4 / WebKitGTK dev packages), and the two windowed
+opt-ins `CULEBRA_ENABLE_SCENE` / `CULEBRA_ENABLE_CANVAS_WINDOW`.
 
 ### Dependency policy
 
 - Prefer header-only vendor libraries over package-managed
   dependencies. The repo should clone-and-build with no system
   packages besides a C++23 compiler (and optionally LLVM for the
-  JIT).
-- No git submodules — `vendor/` is committed.
+  JIT); OpenSSL for the HTTP feature is the one exception.
+- `vendor/` is git submodules, pinned per commit — a fresh clone needs
+  `git submodule update --init --recursive` before it will build.
+  (`sqlite` and `webview` are committed sources rather than
+  submodules, being single amalgamated files.)
 - Adding a new vendor lib requires a Why entry in this chapter.
 
 ## 12. Test runner
 
-> Status: Draft. Designed in a parallel work cycle
-> ([[project_culebra_test_docs_dependency]]). This section will be
-> rewritten once the CLI is finalized.
+`culebra test [paths...]` (`include/test_runner.h`) walks each
+directory argument for `test_*.cul`, takes file arguments as-is, and
+registers `test` / `@test` / `@parametrize` as ambient globals for the
+duration — the matcher family is a language-level global and needs no
+such injection. Flags: `--filter` (name substring), `--bail [n]`,
+`--list`, and `--reporter json`.
 
-Direction (subject to change):
+Two reporters exist (`Reporter::Default`, `Reporter::Json`). The JSON
+one emits NDJSON — one object per event — and captures the test's own
+stdout into the event rather than interleaving it with the stream,
+which is what makes the output machine-consumable.
 
-- `culebra test [path]` discovers `*_spec.cul` and runs flat
-  `test "..." { }` blocks. No `describe` nesting; hierarchy comes
-  from directories.
-- `culebra test --doc <markdown>` extracts ` ```culebra ` blocks per
-  the doctest convention ([[project_doctest_convention]]) and runs
-  each block in an isolated scope.
-- Backend selection: `--interp` / `--jit` / `--aot` (default: all).
-- Reporter: TAP-compatible plus a colored human format.
+**Fixtures are dependency-injected by name.** A test's positional
+parameters are resolved against the surrounding environment, so any
+`fn` in scope can be a fixture with no decorator. Resolution is
+memoized per test (one instance shared by direct and transitive
+mentions, fresh across tests) and detects fixture cycles, throwing
+`CycleError` with the chain.
 
-The doctest extractor is the most interesting internal: it parses
-the markdown for fenced blocks tagged `culebra`, scans block-leading
-`# doctest:` lines for directives, and assembles expected stdout
-from `# =>` and `# => |` markers.
+The doctest runner (`include/doctest_runner.h`) is the other half:
+it scans markdown for fenced ` ```culebra ` blocks, reads a
+block-leading `# doctest:` directive, and assembles expected stdout
+from `# =>` / `# => |` markers with `# !!` for an expected throw
+([[project_doctest_convention]]). Only `skip` is honored today; the
+`compile-only` and backend-filter directives are reserved, and blocks
+carrying them run normally. Every block runs in a fresh interpreter —
+the runner is interp-only.
 
 ## 13. Memory model: RC, GC, and deterministic drop
 

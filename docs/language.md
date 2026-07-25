@@ -4742,9 +4742,13 @@ These change how the program executes but not what it observes:
   per-class meta object reached via prototype delegation; the
   interpreter copies methods onto each instance. `obj.m` returns a
   bound function on either backend.
-* **Generational cycle collector.** Both backends mark-and-sweep
-  the young set every 10,000 new allocations; the JIT additionally
-  splits young/old with vector-backed tracking.
+* **Cycle-collector scheduling.** Both backends run a full,
+  non-generational mark-sweep on an adaptive threshold — the
+  interpreter re-arms at twice the surviving live set (floored at
+  10,000 allocations), the JIT additionally weighs live bytes — so the
+  collect *timing* differs between backends and between runs. What a
+  program observes does not: cycle members still fire `drop` in the
+  pre-sweep pass either way (§17).
 * **Forward-reference pre-allocation.** The JIT scans each function
   body and pre-allocates capture cells so closures compiled before
   their `let` declaration still see the post-declaration value.
