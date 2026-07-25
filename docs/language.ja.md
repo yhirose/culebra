@@ -3547,10 +3547,9 @@ arguments.` が送出されます（§17 の `drop` 契約と同じ）。3 つ�
 全 exit パス（正常な drain・`break`・早期 `return`・ループを抜ける例外）で
 呼ばれます。例外はどちら側が投げたかを問いません — ループ本体、
 `has_next()` / `next()`、中断中に throw したジェネレータ本体のいずれでも
-同じです。ジェネレータはこれを使って中断された本体に登録された defer を
-走らせるので、producer 自身の失敗でも dispose する必要があります。すでに
-例外が unwind 中の exit パスで `dispose` 自身が throw した場合は握り潰され、
-外側の `catch` には元のエラーが渡ります。
+同じです。ジェネレータはこれを使って、中断された本体に登録された defer を
+走らせます。すでに例外が unwind 中の exit パスで `dispose` 自身が throw した
+場合は握り潰され、外側の `catch` には元のエラーが渡ります。
 
     let countdown = fn (start) {
       mut i = start

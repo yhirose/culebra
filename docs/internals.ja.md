@@ -261,13 +261,13 @@ advance を選び、どの advance も要素を1つの body へ渡します。�
 す。イテレータの dispose はカーソルのイテレータスロットでガードされ、
 array/string カーソルはそこを nil のままにします。
 
-throw しうる側ごとに cleanup pad が1つずつ、計2つループにぶら下がります —
-body 用と producer 用 (advance ブロック) です。どちらもイテレータを dispose
-してから再送出します。これが §18.5 の「ループを抜けるあらゆる例外で dispose」
-を `next()` / `has_next()` の throw についても成立させ、中断中に throw した
-ジェネレータ本体 (登録済み defer はこの dispose 経由でしか走らない) もカバー
-します。インタプリタの `eval_for` が producer 呼び出しを try で包むのも同じ
-理由です。
+throw しうる2つの側 — advance ブロックと body — を1つの cleanup pad が
+まとめて覆い、再送出の前にイテレータを dispose します。この覆う範囲が
+§18.5 の「ループを抜けるあらゆる例外で dispose」を、`next()` / `has_next()`
+の throw、ループ safepoint での interrupt、中断中に throw したジェネレータ
+本体 (登録済み defer はこの dispose 経由でしか走らない) について成立させ
+ます。インタプリタの `eval_for` が producer 呼び出しと safepoint を try で
+包むのも同じ理由です。
 
 ループが所有する3つの値 — iterable、プロトコルの導出元、`iter()` が返し
 たイテレータ — はいずれも文自身のスコープのスロットです。この順で宣言さ

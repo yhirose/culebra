@@ -6847,19 +6847,20 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // funnel through here, so the per-iteration scope, break / continue /
     // defer / interrupt handling and the nobreak verdict exist once.
     auto drive = [&](auto&& pull, auto&& dispose) {
+      // On an unwinding exit a throwing dispose is swallowed, so the in-flight
+      // error is the one the enclosing catch sees (drain / break propagate it —
+      // the JIT's swallow_dispose flag draws the same line).
+      auto dispose_quietly = [&]() { try { dispose(); } catch (...) {} };
       bool completed = true;  // set false when the loop exits via break
       for (;;) {
         // The producer is an exit path too (docs §18.5: dispose runs on any
-        // exception leaving the loop). A throwing has_next() / next() — or a
-        // generator body that throws while suspended — must still dispose,
-        // since that is what runs the defers registered inside that body.
-        std::optional<Value> v;
-        try {
-          v = pull();
-        } catch (...) {
-          try { dispose(); } catch (...) {}  // preserve in-flight throw
-          throw;
-        }
+        // exception leaving the loop — a throwing has_next() / next(), or a
+        // generator body that throws while suspended). Returned as a prvalue
+        // so the optional is still built in place — this runs once per element.
+        auto v = [&]() -> std::optional<Value> {
+          try { return pull(); }
+          catch (...) { dispose_quietly(); throw; }
+        }();
         if (!v) { dispose(); break; }
 
         auto scopeEnv = make_scope(env);
@@ -6886,7 +6887,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           // fall through (loop continues; dispose only at final exit)
         } catch (...) {
           run_deferred(scopeEnv);
-          try { dispose(); } catch (...) {}  // preserve in-flight throw
+          dispose_quietly();
           throw;
         }
       }

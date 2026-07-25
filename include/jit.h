@@ -8179,7 +8179,6 @@ struct JIT {
     auto bodyBB = llvm::BasicBlock::Create(ctx_, "for.body", fn);
     auto exitBB = llvm::BasicBlock::Create(ctx_, "for.exit", fn);
     auto excBB = llvm::BasicBlock::Create(ctx_, "for.exc", fn);
-    auto prodExcBB = llvm::BasicBlock::Create(ctx_, "for.prod.exc", fn);
 
     builder_.SetInsertPoint(headBB);
     auto kindV =
@@ -8189,27 +8188,21 @@ struct JIT {
     kindSw->addCase(builder_.getInt8(FOR_PROTO), advProtoBB);
     kindSw->addCase(builder_.getInt8(FOR_STRING), advStringBB);
 
-    // The producer is an exit path too (docs §18.5: dispose runs on any
-    // exception leaving the loop) — a throwing next() / has_next(), or a
-    // generator body that throws while suspended, must still dispose, which is
-    // what runs the defers registered inside that body. Route the advances
-    // through their own pad; the array / string cursors reach it as well (a
-    // bad index throws), where the nil guard makes it a plain rethrow.
-    auto outerLpad = current_lpad_;
-    current_lpad_ = prodExcBB;
+    // excBB spans the producer as well as the body: docs §18.5 disposes on any
+    // exception leaving the loop, whichever side raised it — a throwing next()
+    // / has_next(), a generator body that throws while suspended (which is what
+    // runs the defers registered inside it), an interrupt at the safepoint, or
+    // the body. The array / string cursors reach the pad too (a bad index
+    // throws), where the nil guard makes it a plain rethrow.
+    auto bodyOuterLpad = current_lpad_;
+    current_lpad_ = excBB;
     emit_for_advance_array(cursor, advArrayBB, bodyBB, exitBB);
     emit_for_advance_protocol(cursor, advProtoBB, bodyBB, exitBB);
     emit_for_advance_string(cursor, advStringBB, bodyBB, exitBB);
-    current_lpad_ = outerLpad;
 
     builder_.SetInsertPoint(bodyBB);
     emit_safepoint();
     auto elemVal = builder_.CreateLoad(valueType_, cursor.elem, "for.elem");
-    // Route in-body exceptions through excBB so a protocol iterator's dispose
-    // fires before unwinding continues; restore the prior landingpad
-    // afterwards so the exit / break paths inherit the outer one.
-    auto bodyOuterLpad = current_lpad_;
-    current_lpad_ = excBB;
     // Make this cursor's cleanup reachable by an early `return` inside the
     // body: compile_return emits the same dispose for every active
     // for-in before it exits the function (mirrors the interpreter, which
@@ -8231,9 +8224,9 @@ struct JIT {
     builder_.CreateBr(endBB);
 
     // Exception path: the same dispose (swallowing a throwing dispose so the
-    // in-flight body exception survives, as the interpreter does), then rethrow
-    // so the original exception keeps unwinding — into forCleanupBB, which
-    // releases the scope. Gated on can-throw via pred_empty, as everywhere.
+    // in-flight exception survives, as the interpreter does), then rethrow so
+    // the original keeps unwinding — into forCleanupBB, which releases the
+    // scope. Gated on can-throw via pred_empty, as everywhere.
     if (llvm::pred_empty(excBB)) {
       excBB->eraseFromParent();
     } else {
@@ -8241,16 +8234,6 @@ struct JIT {
       emit_iter_dispose_if_active(cursor.iter, "for.exc",
                                   /*swallow_dispose=*/true);
       emit_rethrow(bodyOuterLpad);
-    }
-
-    // Producer path: same shape, one block earlier in the loop.
-    if (llvm::pred_empty(prodExcBB)) {
-      prodExcBB->eraseFromParent();
-    } else {
-      emit_catch_all_prologue(prodExcBB, "for.prod.lpad");
-      emit_iter_dispose_if_active(cursor.iter, "for.prod",
-                                  /*swallow_dispose=*/true);
-      emit_rethrow(outerLpad);
     }
 
     builder_.SetInsertPoint(endBB);

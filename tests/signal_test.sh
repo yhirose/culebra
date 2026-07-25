@@ -61,6 +61,24 @@ check() {
 UNCAUGHT_OUT='DEFER|interrupted|'
 CAUGHT_OUT='DEFER|CAUGHT Interrupted 0:0|CONT|'
 
+# An interrupt is an exception leaving the loop, so the iterator's dispose runs
+# on the way out (docs §18.5) — for a generator that is what closes whatever the
+# suspended body holds. This only holds if the loop safepoint sits inside the
+# same cleanup span as the body; the JIT emitted it one block too early and
+# skipped dispose here while the interp ran it.
+cat > "$TMP/iterdispose.cul" <<'EOF'
+defer { IO.eprint("DEFER\n") }
+let it = {
+  iter: fn () { self },
+  has_next: fn () { true },
+  next: fn () { 1 },
+  dispose: fn () { IO.eprint("DISPOSE\n") },
+}
+for x in it { }
+EOF
+
+ITERDISPOSE_OUT='DISPOSE|DEFER|interrupted|'
+
 # A program blocked in IO.stdin().read() is interruptible by a single Ctrl+C,
 # not just the force-killing second press (the read polls the flag while
 # waiting).
@@ -277,6 +295,7 @@ run_interp_group() {
   fail=0
   check "interp uncaught" 130 "$UNCAUGHT_OUT" -- "$CULEBRA" "$TMP/uncaught.cul"
   check "interp caught"     0 "$CAUGHT_OUT"   -- "$CULEBRA" "$TMP/caught.cul"
+  check "interp iterdispose" 130 "$ITERDISPOSE_OUT" -- "$CULEBRA" "$TMP/iterdispose.cul"
   check_stdin "interp stdin" -- "$CULEBRA" "$TMP/stdin.cul"
   check_http  "interp http"  -- "$CULEBRA" "$TMP/http.cul"
   check_proc  "interp proc"  -- "$CULEBRA" "$TMP/proc.cul"
@@ -290,6 +309,7 @@ run_jit_group() {
   fail=0
   check "jit uncaught" 130 "$UNCAUGHT_OUT" -- "$CULEBRA" --jit "$TMP/uncaught.cul"
   check "jit caught"     0 "$CAUGHT_OUT"   -- "$CULEBRA" --jit "$TMP/caught.cul"
+  check "jit iterdispose" 130 "$ITERDISPOSE_OUT" -- "$CULEBRA" --jit "$TMP/iterdispose.cul"
   check_stdin "jit stdin" -- "$CULEBRA" --jit "$TMP/stdin.cul"
   check_http  "jit http"  -- "$CULEBRA" --jit "$TMP/http.cul"
   check_proc  "jit proc"  -- "$CULEBRA" --jit "$TMP/proc.cul"
@@ -308,6 +328,7 @@ run_jit_group() {
 aot_ok=0
 if "$CULEBRA" build "$TMP/uncaught.cul" -o "$TMP/uncaught_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/caught.cul" -o "$TMP/caught_aot" >/dev/null 2>&1 \
+   && "$CULEBRA" build "$TMP/iterdispose.cul" -o "$TMP/iterdispose_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/stdin.cul" -o "$TMP/stdin_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/http.cul" -o "$TMP/http_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/proc.cul" -o "$TMP/proc_aot" >/dev/null 2>&1 \
@@ -319,6 +340,7 @@ run_aot_group() {
   if [ "$aot_ok" = 1 ]; then
     check "aot uncaught" 130 "$UNCAUGHT_OUT" -- "$TMP/uncaught_aot"
     check "aot caught"     0 "$CAUGHT_OUT"   -- "$TMP/caught_aot"
+    check "aot iterdispose" 130 "$ITERDISPOSE_OUT" -- "$TMP/iterdispose_aot"
     check_stdin "aot stdin" -- "$TMP/stdin_aot"
     check_http  "aot http"  -- "$TMP/http_aot"
     check_proc  "aot proc"  -- "$TMP/proc_aot"
