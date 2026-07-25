@@ -7651,6 +7651,19 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                i64, i64);
   jit.module_->getOrInsertFunction(rt::iter_skip_while, ptrTy, i8, i64, i8, i64,
                                i64, i64);
+  // flatten/distinct carry line+col for the not-iterable / unhashable errors.
+  jit.module_->getOrInsertFunction(rt::iter_flatten, ptrTy, i8, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::iter_distinct, ptrTy, i8, i64, i64, i64);
+  // scan takes the seed as a value pair before the callback.
+  jit.module_->getOrInsertFunction(rt::iter_scan, ptrTy, i8, i64, i8, i64, i8,
+                               i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::iter_tap, ptrTy, i8, i64, i8, i64, i64,
+                               i64);
+  jit.module_->getOrInsertFunction(rt::iter_chunk_by, ptrTy, i8, i64, i8, i64,
+                               i64, i64);
+  // step_by carries line+col for the "n must be at least 1" error.
+  jit.module_->getOrInsertFunction(rt::iter_step_by, ptrTy, i8, i64, i64, i64,
+                               i64);
   // chunks/windows carry line+col for the "n must be at least 1" error.
   jit.module_->getOrInsertFunction(rt::iter_chunks, ptrTy, i8, i64, i64, i64,
                                i64);

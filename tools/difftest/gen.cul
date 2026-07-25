@@ -53,7 +53,8 @@ let methods = ['size', 'push', 'pop', 'slice', 'map', 'filter', 'reduce',
                'reverse', 'keys', 'values', 'has', 'remove', 'upper', 'lower',
                'trim', 'split', 'code_points', 'iter', 'take', 'skip',
                'take_while', 'skip_while', 'chunks', 'windows', 'collect',
-               'count', 'first', 'last', 'nth', 'position',
+               'count', 'first', 'last', 'nth', 'position', 'flatten',
+               'scan', 'distinct', 'tap', 'step_by', 'chunk_by',
                'enumerate', 'union', 'to_array', 'view']
 let argshapes = ['', '0', '"x"', '1, 2', '0, 1, 2', '|x| x', '|x| x > 0',
                  '0, |a, b| a + b', 'fn (a, b) { a }', '[1]']
@@ -208,7 +209,7 @@ case("iterjoin-filter", 'range(1, 10).filter(|x| x % 2 == 0).join("-")')
 # kind / message / *position* through the lazy pipeline (the eager forms
 # are covered by D3's v-map). Terminal `collect`/`count`/`for_each`.
 let lazycbs = ['map(to_long)', 'filter(to_long)', 'take_while(to_long)',
-               'skip_while(to_long)',
+               'skip_while(to_long)', 'tap(to_long)', 'chunk_by(to_long)',
                'flat_map(to_long)', 'map(Math.abs)', 'map(|x| x + 1)']
 for c in lazycbs {
   case("lazyerr-collect|" + c, '[1, "x"].iter().' + c + ".collect()")
@@ -799,6 +800,17 @@ let tps = [
   '[1, "x"].iter().take_while(fn (v: Long) { true }).collect()',
   '[1, "x"].iter().skip_while(fn (v: Long) { true }).collect()',
   '[1, "x"].iter().position(fn (v: Long) { false })',
+  '[1, "x"].iter().tap(fn (v: Long) { v }).collect()',
+  '[1, "x"].iter().chunk_by(fn (v: Long) { v }).collect()',
+  '[1, "x"].iter().scan(0, fn (a: Long, v: Long) { a }).collect()',
+  '[[1], "x"].iter().flatten().collect()', '[1, 2].iter().flatten().collect()',
+  '["ab"].iter().flatten().collect()', '[[1, 2]].iter().flatten().collect()',
+  '[1, 1, 2].iter().distinct().collect()', '[[1]].iter().distinct().collect()',
+  '[1, 1.0, true].iter().distinct().collect()',
+  '[1, 2, 3].iter().step_by(2).collect()', '[1].iter().step_by(0).collect()',
+  '[1].iter().step_by(-1).collect()', '[1].iter().step_by("x").collect()',
+  '[1, 1, 2, 1].iter().chunk_by(|x| x).collect()',
+  '[1, 2].iter().scan(0, |a, x| a + x).collect()',
   '[1, 2.5].sum()', '[1, 2.5].iter().sum()', '[1, 2.5].product()',
   '[1, 2.5].min()', '[1, 2.5].max()', '[2.5, 3].iter().max()',
   '[1, "x"].sum()', '[1, "x"].min()', '[1, "x"].iter().product()',

@@ -3617,6 +3617,12 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 | `it.skip(n)` | Iterator | 最初の `next()` で先頭 `n` 個を捨てる |
 | `it.take_while(p)` | Iterator | 最初に `p(x)` が偽になるまで yield |
 | `it.skip_while(p)` | Iterator | 先頭の `p(x)` が真である連続分を捨て、以降は無条件に yield |
+| `it.step_by(n)` | Iterator | 先頭要素と、その後 `n` 個おきの要素。`n` は 1 以上 |
+| `it.distinct()` | Iterator | 各要素の初出のみ yield し、以降の重複は捨てる（要素はハッシュ可能である必要あり） |
+| `it.tap(f)` | Iterator | `f(x)` を副作用のために呼び、`x` はそのまま流す。遅延チェーンの観測用 |
+| `it.scan(init, f)` | Iterator | running fold。各ステップで `acc = f(acc, x)` を yield（`init` から開始）。`init` 自体は yield しないので、出力の個数は入力と一致する |
+| `it.flatten()` | Iterator | ネストを 1 段外す。各要素は iterable である必要あり（`flat_map` と同じ変換規則） |
+| `it.chunk_by(f)` | Iterator | キー `f(x)` が同じ**隣接**要素を Array にまとめる。別のキーを挟んで再登場したキーは新しい run になる — 位置に関係なくキーでまとめる `group_by` との違い |
 | `it.chunks(n)` | Iterator | `n` 個ずつ Array にまとめて yield（最後のグループは短くなりうる）。`n` は 1 以上 |
 | `it.windows(n)` | Iterator | 直近 `n` 個のスライディングウィンドウを Array で yield、1つずつ進む。`n` は 1 以上 |
 | `it.flat_map(f)` | Iterator | `f(x)` は iterable を返す必要あり、結果を連結 |

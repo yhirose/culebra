@@ -5726,6 +5726,150 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
              });
        }))},
 
+      // Yields f(acc, x) for each element, threading acc — a running fold
+      // whose intermediate results are visible (`reduce` only surfaces the
+      // last one). `init` itself is not yielded, so the output length
+      // matches the input's.
+      {"scan"sv,
+       Value(FunctionValue({{"init", false}, {"f", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("self");
+         auto f = Value(as_callback(callEnv->get("f")));
+         check_callback_arity(f.to_function(), 2, "scan");
+         auto acc = std::make_shared<Value>(callEnv->get("init"));
+         return _make_iterator(
+             [upstream, f, acc](std::shared_ptr<Environment>) {
+               auto v = _iter_next_value(upstream);
+               if (!v) return _iter_step_done();
+               *acc = _invoke_callback(f, *acc, *v);
+               return _iter_step_value(Value(*acc));
+             });
+       }))},
+
+      // flat_map(|x| x): one level of nesting removed. Each element must be
+      // iterable; the inner iterator drains before the upstream advances.
+      {"flatten"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("self");
+         auto inner = std::make_shared<Value>();
+         auto line = callEnv->get("__LINE__").to_long();
+         auto col = callEnv->get("__COLUMN__").to_long();
+         return _make_iterator(
+             [upstream, inner, line, col](std::shared_ptr<Environment>) {
+               for (;;) {
+                 if (inner->type == Value::Nil) {
+                   auto outer = _iter_next_value(upstream);
+                   if (!outer) return _iter_step_done();
+                   *inner = _get_iterator(*outer, line, col);
+                 }
+                 auto v = _iter_next_value(*inner);
+                 if (!v) { *inner = Value(); continue; }
+                 return _iter_step_value(std::move(*v));
+               }
+             });
+       }))},
+
+      // First occurrence of each element wins; later duplicates are skipped.
+      // Holds the seen values (hashable required, as for a Set), but never
+      // the elements themselves, so it still streams and short-circuits.
+      {"distinct"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("self");
+         auto seen = std::make_shared<SetValue>();
+         return _make_iterator(
+             [upstream, seen](std::shared_ptr<Environment>) {
+               for (;;) {
+                 auto v = _iter_next_value(upstream);
+                 if (!v) return _iter_step_done();
+                 if (seen->add(*v)) return _iter_step_value(std::move(*v));
+               }
+             });
+       }))},
+
+      // Runs `f(x)` for its side effect and passes `x` through unchanged —
+      // a probe for a lazy chain (`.tap(println)`), since inserting a
+      // `map` that returns its argument is the same thing spelled longer.
+      {"tap"sv,
+       Value(FunctionValue({{"f", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("self");
+         auto f = Value(as_callback(callEnv->get("f")));
+         check_callback_arity(f.to_function(), 1, "tap");
+         return _make_iterator(
+             [upstream, f](std::shared_ptr<Environment>) {
+               auto v = _iter_next_value(upstream);
+               if (!v) return _iter_step_done();
+               _invoke_callback(f, *v);
+               return _iter_step_value(std::move(*v));
+             });
+       }))},
+
+      // Yields the first element and then every n-th one after it. n < 1
+      // would never advance, so reject it like chunks/windows do.
+      {"step_by"sv,
+       Value(FunctionValue({{"n", false, "Long"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("self");
+         auto step = callEnv->get("n").to_long();
+         if (step < 1) {
+           throw CulebraError("ValueError", "step_by() n must be at least 1",
+                              callEnv->get("__LINE__").to_long(),
+                              callEnv->get("__COLUMN__").to_long());
+         }
+         auto started = std::make_shared<bool>(false);
+         return _make_iterator(
+             [upstream, step, started](std::shared_ptr<Environment>) {
+               if (*started) {
+                 for (long i = 1; i < step; i++) {
+                   if (!_iter_next_value(upstream)) return _iter_step_done();
+                 }
+               }
+               *started = true;
+               auto v = _iter_next_value(upstream);
+               if (!v) return _iter_step_done();
+               return _iter_step_value(std::move(*v));
+             });
+       }))},
+
+      // Groups *adjacent* elements sharing a key into Arrays. Unlike
+      // group_by (a terminal that hashes everything into one bucket per
+      // key), a key that reappears after a different one starts a new run,
+      // so this stays lazy and suits sorted or time-ordered streams.
+      {"chunk_by"sv,
+       Value(FunctionValue({{"f", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("self");
+         auto f = Value(as_callback(callEnv->get("f")));
+         check_callback_arity(f.to_function(), 1, "chunk_by");
+         // Carries the element that ended the previous run (Nil sentinel =
+         // nothing held), so each step starts from what it already pulled.
+         auto held = std::make_shared<std::optional<Value>>();
+         auto done = std::make_shared<bool>(false);
+         return _make_iterator(
+             [upstream, f, held, done](std::shared_ptr<Environment>) {
+               if (*done) return _iter_step_done();
+               if (!held->has_value()) {
+                 auto v = _iter_next_value(upstream);
+                 if (!v) { *done = true; return _iter_step_done(); }
+                 *held = std::move(*v);
+               }
+               ArrayValue run;
+               Value key = _invoke_callback(f, **held);
+               run.values->push_back(std::move(**held));
+               held->reset();
+               for (;;) {
+                 auto v = _iter_next_value(upstream);
+                 if (!v) { *done = true; break; }
+                 if (!(_invoke_callback(f, *v) == key)) {
+                   *held = std::move(*v);
+                   break;
+                 }
+                 run.values->push_back(std::move(*v));
+               }
+               return _iter_step_value(Value(std::move(run)));
+             });
+       }))},
+
       // Groups upstream values into Arrays of `n` (the last group may be
       // shorter). n < 1 would never advance the upstream, so reject it
       // up front rather than yielding an infinite stream of nothing.

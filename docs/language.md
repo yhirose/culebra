@@ -3841,6 +3841,12 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 | `it.skip(n)` | Iterator | discards first `n` elements on first `next()` |
 | `it.take_while(p)` | Iterator | yields until the first `p(x)` that is falsy |
 | `it.skip_while(p)` | Iterator | discards the leading run where `p(x)` is truthy, then yields the rest unconditionally |
+| `it.step_by(n)` | Iterator | the first element, then every `n`-th one after it; `n` must be at least 1 |
+| `it.distinct()` | Iterator | first occurrence of each element, later duplicates dropped (elements must be hashable) |
+| `it.tap(f)` | Iterator | runs `f(x)` for its side effect and passes `x` through unchanged — a probe for a lazy chain |
+| `it.scan(init, f)` | Iterator | running fold: yields `acc = f(acc, x)` at each step, starting from `init`. `init` itself is not yielded, so the output length matches the input's |
+| `it.flatten()` | Iterator | removes one level of nesting; each element must be iterable (same coercion as `flat_map`) |
+| `it.chunk_by(f)` | Iterator | groups **adjacent** elements sharing a key `f(x)` into Arrays. A key that reappears after a different one starts a new run — unlike `group_by`, which buckets by key regardless of position |
 | `it.chunks(n)` | Iterator | groups elements into Arrays of `n` (the last group may be shorter); `n` must be at least 1 |
 | `it.windows(n)` | Iterator | sliding window of the last `n` elements as an Array, advancing by one each step; `n` must be at least 1 |
 | `it.flat_map(f)` | Iterator | `f(x)` must return an iterable; results concatenated |

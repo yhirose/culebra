@@ -16012,6 +16012,57 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     return own(make_object(out));
   }
 
+  // flatten / distinct: argument-less lazy combinators.
+  if ((method == "flatten" || method == "distinct") &&
+      argsAst.nodes.size() == 0) {
+    expect_receiver_tag(receiver, TAG_OBJECT, method.c_str());
+    auto rt_name = method == "flatten" ? rt::iter_flatten : rt::iter_distinct;
+    auto out = emit_call(module_->getFunction(rt_name),
+                         {extract_tag(receiver), extract_data(receiver),
+                          ho_line, ho_col});
+    return own(make_object(out));
+  }
+
+  // tap / chunk_by: one callback, same ownership shape as take_while.
+  if ((method == "tap" || method == "chunk_by") &&
+      argsAst.nodes.size() == 1) {
+    expect_receiver_tag(receiver, TAG_OBJECT, method.c_str());
+    Owned f = compile(*argsAst.nodes[0]);
+    emit_set_callback_arg_site(*argsAst.nodes[0]);
+    auto fv = f.consume();  // callee-consumes
+    auto rt_name = method == "tap" ? rt::iter_tap : rt::iter_chunk_by;
+    auto out = emit_call(module_->getFunction(rt_name),
+                         {extract_tag(receiver), extract_data(receiver),
+                          extract_tag(fv), extract_data(fv),
+                          ho_line, ho_col});
+    return own(make_object(out));
+  }
+
+  if (method == "step_by" && argsAst.nodes.size() == 1) {
+    expect_receiver_tag(receiver, TAG_OBJECT, "step_by");
+    auto n = compile_iter_long_arg(*argsAst.nodes[0]);
+    auto out = emit_call(module_->getFunction(rt::iter_step_by),
+                         {extract_tag(receiver), extract_data(receiver), n,
+                          ho_line, ho_col});
+    return own(make_object(out));
+  }
+
+  // scan(init, f): the seed is callee-consumed alongside the callback, so
+  // both are compiled before the factory call takes ownership of each.
+  if (method == "scan" && argsAst.nodes.size() == 2) {
+    expect_receiver_tag(receiver, TAG_OBJECT, "scan");
+    auto seed = compile(*argsAst.nodes[0]).consume();
+    Owned f = compile(*argsAst.nodes[1]);
+    emit_set_callback_arg_site(*argsAst.nodes[1]);
+    auto fv = f.consume();
+    auto out = emit_call(module_->getFunction(rt::iter_scan),
+                         {extract_tag(receiver), extract_data(receiver),
+                          extract_tag(seed), extract_data(seed),
+                          extract_tag(fv), extract_data(fv),
+                          ho_line, ho_col});
+    return own(make_object(out));
+  }
+
   if (method == "skip_while" && argsAst.nodes.size() == 1) {
     expect_receiver_tag(receiver, TAG_OBJECT, "skip_while");
     // Callback ownership as in take_while above.
