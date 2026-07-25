@@ -10,6 +10,8 @@ fn rgba(r, g, b, a) { r + g * 256 + b * 65536 + a * 16777216 }
 let RED = rgba(255, 0, 0, 255)
 let GREEN = rgba(0, 255, 0, 255)
 let BLUE = rgba(0, 0, 255, 255)
+let WHITE = rgba(255, 255, 255, 255)
+let BLACK = rgba(0, 0, 0, 255)
 
 // --- framebuffer: init / clear / set_pixel / get_pixel / bounds ---
 _Canvas.init(4, 4)
@@ -76,7 +78,8 @@ fn dump() {
     while x < _Canvas.width() {
       let p = _Canvas.get_pixel(x, y)
       s = s + (if p == RED { "." } else if p == BLUE { "#" }
-               else if p == GREEN { "o" } else { " " })
+               else if p == GREEN { "o" } else if p == WHITE { "w" }
+               else { " " })
       x = x + 1
     }
     rows.push(s)
@@ -185,6 +188,31 @@ assert_eq(_Canvas.get_pixel(0, 0), rgba(0, 127, 127, 255))   // whole strip aver
 _Canvas.clear(CLEAR)
 _Canvas.blit_scaled(strip, 0, 0, 1, 1, 0, 0, 4, 1, 0, 255)   // nearest instead
 assert_eq(_Canvas.get_pixel(0, 0), BLUE)
+// Shrinking in both axes at once: a 5x5 down to 2x2 splits the source into
+// boxes of columns 0..1 / 2..4 and rows 0..1 / 2..4, so a source laid out in
+// exactly those blocks survives the average unchanged.
+mut blocks = []
+for y in 0..5 {
+  for x in 0..5 {
+    blocks.push(if y < 2 { if x < 2 { RED } else { GREEN } }
+                else { if x < 2 { BLUE } else { WHITE } })
+  }
+}
+let quad = _Canvas.sprite_load(blocks, 5, 5)
+_Canvas.init(2, 2)
+_Canvas.clear(CLEAR)
+_Canvas.blit_scaled(quad, 0, 0, 2, 2, 0, 0, 5, 5, 8, 255)
+assert_eq(dump(), ".o/#w")                   // RED GREEN / BLUE WHITE
+// Averaging a 2-D box that isn't uniform, and the same box composited at
+// alpha=128 over red — sampling then blending, each integer-only.
+_Canvas.init(1, 1)
+_Canvas.clear(CLEAR)
+_Canvas.blit_scaled(chk, 0, 0, 1, 1, 0, 0, 2, 2, 8, 255)
+assert_eq(_Canvas.get_pixel(0, 0), rgba(0, 127, 127, 255))
+_Canvas.clear(RED)
+_Canvas.blit_scaled(chk, 0, 0, 1, 1, 0, 0, 2, 2, 8, 128)
+assert_eq(_Canvas.get_pixel(0, 0), rgba(127, 64, 64, 255))
+
 // A transparent source pixel never joins the average, and a wholly transparent
 // box leaves the destination alone.
 let edge = _Canvas.sprite_load([CLEAR, BLUE, BLUE, BLUE], 4, 1)
@@ -226,8 +254,6 @@ fn png_pixels(hex) {
   px
 }
 
-let WHITE = rgba(255, 255, 255, 255)
-let BLACK = rgba(0, 0, 0, 255)
 // Every colour type lands on the same packed-RGBA layout the framebuffer uses.
 assert_eq(png_pixels(PNG_RGBA), [RED, GREEN, BLUE, CLEAR])
 assert_eq(png_pixels(PNG_RGB), [RED, GREEN, BLUE, WHITE])   // no alpha = opaque
