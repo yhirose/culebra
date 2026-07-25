@@ -3395,6 +3395,19 @@ struct JIT {
       // fall through to walk the RHS
     }
 
+    if (node.tag == "PLACE_ASSIGN"_) {
+      // A plain-name target declares when nothing visible holds the name, so
+      // it is a local of the enclosing function for the same reason as the
+      // destructure patterns above. Chain targets bind nothing and are walked
+      // as ordinary expressions below.
+      culebra::for_each_place_target(
+          node, [](const peg::Ast&) {},
+          [&](const peg::Ast& name) {
+            locals.insert(std::string(name.token));
+          });
+      // fall through to walk the targets' subexpressions and the RHS
+    }
+
     if (node.tag == "TRY"_) {
       // TRY = [body_block, catch_ident, catch_body]. The catch binding
       // introduces a new local in the enclosing function; register it
@@ -4496,6 +4509,8 @@ struct JIT {
         return compile_assignment(ast);
       case "DESTRUCTURE_ASSIGN"_:
         return compile_destructure_assign(ast);
+      case "PLACE_ASSIGN"_:
+        return compile_place_assign(ast);
       case "RANGE"_:
         return compile_range(ast);
       case "RANGE_OPERATOR"_:
@@ -5449,8 +5464,34 @@ struct JIT {
     // interp's `declare = let || mut` rule. Implicit `x = ...`
     // first-occurrence is also a declaration.
     bool declare = let || mut;
-    // Check if the variable already exists in the current (innermost) scope.
-    // If so, reuse the slot (avoid alloca accumulation in loops with `let`).
+    bool declared_new =
+        emit_assign_name(name, rval, declare, mut, ast.line, ast.column);
+    emit_value_retain(rval);
+    if (declared_new) {
+      // Record direct `let f = fn (...) {...}` bindings so a later
+      // `f(x, y: 2)` can resolve kwargs against the FUNCTION AST at
+      // compile time. The RHS lives at ast.nodes.back(); its `tag`
+      // (post-optimizer) is "FUNCTION" for a function literal.
+      using namespace peg::udl;
+      const auto& rhs = *ast.nodes.back();
+      if (rhs.tag == "FUNCTION"_ && !scopes_.empty()) {
+        scopes_.back().fn_asts[name] = &rhs;
+      }
+    }
+    return own(rval);
+  }
+
+  // Write the +1 `rval` to the plain name `name`, with `x = v` semantics:
+  // `declare` binds in the current scope, otherwise an existing slot anywhere
+  // in the chain is reassigned (mut-checked) and an unseen name is declared.
+  // Consumes rval's +1 into the slot; the caller mints its own result ref if it
+  // needs one. Returns true when a new local was declared rather than an
+  // existing slot reused — only compile_assign_var cares, to record a
+  // `let f = fn …` binding. Mirrors interp's assign_name.
+  bool emit_assign_name(const std::string& name, llvm::Value* rval,
+                        bool declare, bool mut, size_t line, size_t column) {
+    // Check the innermost scope first: reusing the slot avoids alloca
+    // accumulation in loops with `let`.
     if (!scopes_.empty()) {
       auto& slots = scopes_.back().slots;
       auto it = slots.find(name);
@@ -5462,42 +5503,23 @@ struct JIT {
           it->second.mut = mut;
         } else {
           // Reassignment (`x = expr`) on an existing same-scope slot.
-          if (!it->second.mut) {
-            emit_immutable_assign_throw(name, ast.line, ast.column);
-          }
+          if (!it->second.mut) emit_immutable_assign_throw(name, line, column);
         }
         store_slot(it->second, rval);
-        emit_value_retain(rval);
-        return own(rval);
+        return false;
       }
     }
 
     if (!declare) {
-      auto existing = lookup_var(name);
-      if (existing) {
-        if (!existing->mut) {
-          emit_immutable_assign_throw(name, ast.line, ast.column);
-        }
+      if (auto existing = lookup_var(name)) {
+        if (!existing->mut) emit_immutable_assign_throw(name, line, column);
         store_slot(*existing, rval);
-        emit_value_retain(rval);
-        return own(rval);
+        return false;
       }
     }
 
     declare_local(name, rval, /*is_mut=*/mut);
-    emit_value_retain(rval);
-    // Record direct `let f = fn (...) {...}` bindings so a later
-    // `f(x, y: 2)` can resolve kwargs against the FUNCTION AST at
-    // compile time. The RHS lives at ast.nodes.back(); its `tag`
-    // (post-optimizer) is "FUNCTION" for a function literal.
-    {
-      using namespace peg::udl;
-      const auto& rhs = *ast.nodes.back();
-      if (rhs.tag == "FUNCTION"_ && !scopes_.empty()) {
-        scopes_.back().fn_asts[name] = &rhs;
-      }
-    }
-    return own(rval);
+    return true;
   }
 
   // Complex lvalue: `obj.prop = e`, `arr[idx] = e`, and chains
@@ -5902,6 +5924,107 @@ struct JIT {
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(okBB);
+    return rvalO;
+  }
+
+  // PLACE_ASSIGN children: [target..., EXPRESSION] (see parser.h
+  // `view_place_assign`). Mirrors interp's eval_place_assign: check the RHS is
+  // an indexed sequence of the right arity, snapshot its elements, then assign
+  // each target exactly as the single-target form would — a chain through
+  // compile_assign_complex (`p[i] = v`), a plain name through emit_assign_name
+  // (`x = v`).
+  Owned compile_place_assign(const peg::Ast& ast) {
+    using namespace peg::udl;
+    auto pv = culebra::view_place_assign(ast);
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    // Stash this node's position before compiling the rval, which advances
+    // current_line_ / current_column_ into the rval expression; the mismatch
+    // error must report the statement position the interp reports.
+    auto stmt_line = builder_.getInt64(ast.line);
+    auto stmt_col = builder_.getInt64(ast.column);
+    // Stays Owned across the element reads and every target write (their
+    // helpers may throw; a bare +1 would strand on that edge — §4.9), and is
+    // consumed into the return.
+    Owned rvalO = compile(*pv.rhs);
+
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto sizeBB = llvm::BasicBlock::Create(ctx_, "place.size", fn);
+    auto failBB = llvm::BasicBlock::Create(ctx_, "place.fail", fn);
+    auto okBB = llvm::BasicBlock::Create(ctx_, "place.ok", fn);
+
+    // Array and Tuple share one JitArray storage (different tag), so either is
+    // accepted — the same unification interp's indexed_sequence applies.
+    auto tag = extract_tag(rvalO.borrow());
+    auto isSeq = builder_.CreateOr(
+        builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_ARRAY)),
+        builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_TUPLE)),
+        "place.is_seq");
+    builder_.CreateCondBr(isSeq, sizeBB, failBB);
+
+    builder_.SetInsertPoint(sizeBB);
+    auto arrPtr = builder_.CreateIntToPtr(extract_data(rvalO.borrow()), ptrTy);
+    auto size = emit_call(
+        module_->getOrInsertFunction(rt::array_size, builder_.getInt64Ty(),
+                                     ptrTy),
+        {arrPtr}, "place.n");
+    auto sizeOk = builder_.CreateICmpEQ(
+        size, builder_.getInt64(static_cast<uint64_t>(pv.count)));
+    builder_.CreateCondBr(sizeOk, okBB, failBB);
+
+    builder_.SetInsertPoint(failBB);
+    emit_call(
+        module_->getOrInsertFunction(rt::destructure_mismatch,
+                                     builder_.getVoidTy(),
+                                     builder_.getInt64Ty(),
+                                     builder_.getInt64Ty()),
+        {stmt_line, stmt_col});
+    builder_.CreateUnreachable();
+
+    builder_.SetInsertPoint(okBB);
+    // Snapshot every element to its own +1 before the first write: a target may
+    // alias the RHS (`(p[0], p[1]) = p`) or resize it from a user
+    // __setindex__, so reading lazily would let an earlier write change what a
+    // later target receives. Holding them in Owneds also means a throw from any
+    // target's write releases the ones not yet stored (§4.8).
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    auto outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "place.tag");
+    auto outData =
+        entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "place.data");
+    std::vector<Owned> elems;
+    elems.reserve(pv.count);  // no reallocation: Owned registers its address
+    for (size_t i = 0; i < pv.count; i++) {
+      emit_call(
+          module_->getOrInsertFunction(
+              rt::array_get, builder_.getVoidTy(), ptrTy,
+              builder_.getInt64Ty(), ptrTy, ptrTy, builder_.getInt64Ty(),
+              builder_.getInt64Ty()),
+          {arrPtr, builder_.getInt64(static_cast<uint64_t>(i)), outTag, outData,
+           current_line_val(), current_column_val()});
+      auto t = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
+      auto d = builder_.CreateLoad(builder_.getInt64Ty(), outData);
+      llvm::Value* v = make_value(t, d);
+      // array_get hands back a borrow; the write below consumes a +1.
+      emit_value_retain(v);
+      elems.push_back(own(v));
+    }
+
+    for (size_t i = 0; i < pv.count; i++) {
+      const auto& target = *ast.nodes[i];
+      if (target.tag == "PLACE"_) {
+        // consume() in the same block the call runs in, matching
+        // compile_assignment's handoff; the result ref is unused here.
+        compile_assign_complex(target,
+                               culebra::view_place_as_assignment(target),
+                               elems[i].consume())
+            .drop();
+      } else if (is_sink_name(target.token)) {
+        elems[i].drop();  // `_`: the element is simply discarded
+      } else {
+        emit_assign_name(std::string(target.token), elems[i].consume(),
+                         /*declare=*/false, /*mut=*/false, target.line,
+                         target.column);
+      }
+    }
     return rvalO;
   }
 
