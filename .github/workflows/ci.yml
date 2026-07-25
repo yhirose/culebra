@@ -43,6 +43,9 @@ jobs:
             # ~3 GB-per-TU parallel compile). Ubuntu runs the full test suite.
             build_jobs: ""
             skip_heavy: ""
+            # The wrap lane is opt-in locally (it rebuilds the whole tree, so
+            # it doubles the pre-commit gate); Ubuntu CI keeps running it.
+            test_wrap: "1"
           - os: macos-latest
             linker_flag: ""
             # The 7 GB macOS runner swaps when compiling >2 LLVM-header-heavy
@@ -55,12 +58,16 @@ jobs:
             # the clean-env build + interp/JIT symmetry + ctest + isolate +
             # microgpt smoke.
             skip_heavy: "1"
+            # wrap was already part of the SKIP_HEAVY set here — stays off.
+            test_wrap: ""
     runs-on: ${{ matrix.os }}
     env:
       # `just build`'s `make -j${CULEBRA_BUILD_JOBS:-<ncpu>}` honors this.
       CULEBRA_BUILD_JOBS: ${{ matrix.build_jobs }}
       # `just test` skips difftest + AOT when this is non-empty.
       CULEBRA_TEST_SKIP_HEAVY: ${{ matrix.skip_heavy }}
+      # `just test` runs the wrap lane only when this is non-empty.
+      CULEBRA_TEST_WRAP: ${{ matrix.test_wrap }}
       # ccache as the compiler launcher via env (job-wide) — not just the build
       # step's -D flags — so EVERY cmake configure agrees, including the
       # `just build` prereq that `just test` / `just smoke-microgpt` re-run.

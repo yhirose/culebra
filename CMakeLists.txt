@@ -372,7 +372,7 @@ if(CULEBRA_ENABLE_WEBVIEW)
   message(STATUS "Webview: enabled (native WebView, vendored webview.h)")
 endif()
 
-add_executable(culebra ./src/main.cc)
+add_executable(culebra ./src/main.cc ./src/source_dir.cc)
 if(_culebra_enable_lto)
   set_target_properties(culebra PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
@@ -420,8 +420,11 @@ if(CULEBRA_ENABLE_JIT)
 
   # `culebra wrap` rebuilds this tree with CULEBRA_WRAP_SOURCES; the
   # baked source path is the default when CULEBRA_HOME is unset.
-  target_compile_definitions(culebra PRIVATE
-    CULEBRA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+  # Scoped to the one-line source_dir.cc, not the whole target: this is an
+  # absolute per-worktree path, and putting it on main.cc's command line
+  # would make that (huge) object worktree-specific in ccache.
+  set_source_files_properties(./src/source_dir.cc PROPERTIES
+    COMPILE_DEFINITIONS "CULEBRA_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
 
   if(CULEBRA_DEV_NO_RT)
   # Fast inner-loop build: don't compile or embed the runtime archives.

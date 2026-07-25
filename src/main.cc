@@ -2,6 +2,7 @@
 #include <dap.h>
 #include <doctest_runner.h>
 #include <formatter.h>
+#include <source_dir.h>
 #include <stdlib_interp.h>
 #include <test_runner.h>
 #include <vfs.h>  // main_script_dir() — set here for Embed's dev disk fallback
@@ -661,12 +662,12 @@ int run_build(const BuildOptions& opts) {
     for (const auto& m : modules)
       culebra::aot_collect_embed_dirs(*m.ast, embed_dirs);
     if (!embed_dirs.empty()) {
-#ifndef CULEBRA_SOURCE_DIR
-      std::println(stderr,
-          "culebra build: Embed.dir needs a culebra source checkout for "
-          "headers; set CULEBRA_HOME");
-      return 1;
-#else
+      if (*culebra::source_dir() == '\0') {
+        std::println(stderr,
+            "culebra build: Embed.dir needs a culebra source checkout for "
+            "headers; set CULEBRA_HOME");
+        return 1;
+      }
       namespace fs = std::filesystem;
       fs::path base = fs::path(opts.input).parent_path();
       auto cstr = [](std::string_view s) {
@@ -732,14 +733,13 @@ int run_build(const BuildOptions& opts) {
                       .string();
       { std::ofstream(acpp) << src; }
       auto ccmd = std::format("c++ -std=c++23 -O2 -I {}/include -c {} -o {}",
-                              shq(CULEBRA_SOURCE_DIR), shq(acpp), shq(aobj));
+                              shq(culebra::source_dir()), shq(acpp), shq(aobj));
       if (verbose) std::println(stderr, "culebra build: assets: {}", ccmd);
       if (std::system(ccmd.c_str()) != 0) {
         std::println(stderr, "culebra build: failed to compile embedded assets");
         return 1;
       }
       assets_obj = shq(aobj);  // pre-quoted for the link line
-#endif
     }
   }
 
@@ -1042,9 +1042,7 @@ int run_wrap(int argc, const char** argv) {
   if (const char* home = std::getenv("CULEBRA_HOME"); home && *home) {
     src_dir = home;
   } else {
-#ifdef CULEBRA_SOURCE_DIR
-    src_dir = CULEBRA_SOURCE_DIR;
-#endif
+    src_dir = culebra::source_dir();
   }
   if (src_dir.empty() ||
       !std::filesystem::exists(

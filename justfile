@@ -8,6 +8,19 @@ set shell := ["bash", "-cu"]
 # it at the default since nothing else competes for cores there either).
 nice_cmd := "nice -n " + env_var_or_default("CULEBRA_NICE", "10")
 
+# Make ccache keys worktree-independent. Every -I and -D CMake generates is an
+# absolute path into this checkout, so without a base_dir the same commit built
+# in `culebra-<topic>/` and `culebra-<other>/` shares no cache entries at all —
+# each new worktree pays a full cold build (~2.5 min of main.cc). ccache
+# rewrites absolute paths under base_dir relative to the compiler's cwd, which
+# is the build dir in both trees, so `-I<wt>/include` normalizes to `../include`
+# everywhere and the objects are shared. Pointing it at this worktree's root
+# rather than a shared parent keeps paths outside the checkout untouched.
+# Safe only because no cacheable TU bakes in an absolute path any more — the
+# one that did (CULEBRA_SOURCE_DIR) now lives in src/source_dir.cc, which
+# CMake compiles with the define scoped to that file.
+export CCACHE_BASEDIR := justfile_directory()
+
 # List recipes
 default:
     @just --list
@@ -24,17 +37,25 @@ build *extra:
     # LLVM-header-heavy TU peaks at ~3 GB, so too many at once swap.
     cd build && {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}
 
-# Fast dev build: LTO off (saves ~15-25 s link), still Release + JIT,
-# uses a separate `build-dev/` so it doesn't fight `just build`'s cache.
+# Fast dev build: LTO off (saves ~15-25 s link), -O1 instead of -O3, still
+# Release + JIT, uses a separate `build-dev/` so it doesn't fight `just
+# build`'s cache.
 # CULEBRA_DEV_NO_RT skips the four AOT runtime archives (each a full
 # culebra_rt.cc recompile), so a header touch rebuilds one TU instead of
 # five. `culebra build` (AOT) is disabled here — use `just build` for it.
+# -O1: ~two thirds of the -O3 compile is GCC's optimizer on the one huge
+# main.cc TU, and none of it shows up in test wall-clock — the test suite's
+# cost is LLVM's own codegen inside the JIT (prebuilt, unaffected) plus
+# process startup. Measured on this tree: build 2:20 -> 1:33, tests
+# unchanged. -O0 would save another 35 s but slows the interpreter 2.4x,
+# which does show. Benchmarks and the pre-commit gate stay -O3 (`just
+# build` / `just build-gate`) — don't measure performance with build-dev/.
 # Pair with ccache (auto-detected by CMake) for near-instant rebuilds
 # when only ephemeral mtimes changed.
 [group("build")]
 dev *extra:
     mkdir -p build-dev
-    cd build-dev && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF -DCULEBRA_DEV_NO_RT=ON {{extra}} .. > /dev/null
+    cd build-dev && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF -DCULEBRA_DEV_NO_RT=ON -DCMAKE_CXX_FLAGS_RELEASE="-O1 -DNDEBUG" {{extra}} .. > /dev/null
     cd build-dev && {{nice_cmd}} make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8) culebra
 
 # Gate build for `just test`: Release + JIT like `just build`, but LTO OFF.
@@ -142,8 +163,9 @@ check-preambles:
 #   aot               — every tests/*.cul through `culebra build`,
 #                       assert stdout matches `--jit`.
 #   embed             — C++ ctest (mt_smoke, mi_smoke, define_smoke).
+#   wrap              — `culebra wrap` end-to-end (rebuilds the tree).
 # The single-backend modes are for focused debugging.
-[doc("Full gate (no-LTO gate build). BACKEND=all|fast|interp|jit|aot|embed|isolate (default: all). JOBS=N controls parallelism (default: CPU cores). CULEBRA_TEST_SKIP_HEAVY=1 skips difftest + gc-stress + AOT (set on the slow macOS CI runner).")]
+[doc("Full gate (no-LTO gate build). BACKEND=all|fast|interp|jit|aot|embed|isolate|wrap (default: all). JOBS=N controls parallelism (default: CPU cores). CULEBRA_TEST_SKIP_HEAVY=1 skips difftest + gc-stress + AOT (set on the slow macOS CI runner); CULEBRA_TEST_WRAP=1 adds the wrap lane (set on Ubuntu CI).")]
 [group("test")]
 test BACKEND='all': build-gate
     @BIN=./build-gate/culebra just _run-tests {{BACKEND}}
@@ -282,9 +304,14 @@ _run-tests BACKEND:
     # The second group throws through deep preamble call chains — the shape
     # that hid a backend miscompile from this gate until 2026-07 precisely
     # because the list above never exercised it.
+    # Runs one file per job like the other per-file phases: three culebra
+    # invocations each, and the list is dominated by one heavy file
+    # (test_effects), so serially it cost more than the whole 161-file
+    # symmetry sweep next to it.
     run_codegen_backends() {
-        local fail=0
-        for f in tests/test_forin_codegen.cul \
+        local d="$job_dir/codegen"
+        mkdir -p "$d"
+        printf '%s\n' tests/test_forin_codegen.cul \
                  tests/test_forin_unwind_drop.cul \
                  tests/test_destructure_seq_unify.cul \
                  tests/test_match_block_arm.cul \
@@ -298,21 +325,34 @@ _run-tests BACKEND:
                  tests/test_transform_error_lines.cul \
                  tests/test_path.cul \
                  tests/test_regex.cul \
-                 tests/test_args.cul; do
-            local ref; ref=$(cul "$f") || { echo "interp failed: $f" >&2; fail=1; continue; }
+                 tests/test_args.cul \
+            | xargs -P "$JOBS" -I '{}' bash -c '
+            f="$1"; d="$2"
+            name=$(basename "$f" .cul)
+            if ! ref=$(cul "$f" 2>/dev/null); then
+                echo "interp failed: $f" > "$d/$name.err"; touch "$d/$name.fail"; exit 0
+            fi
             for flags in "--jit -O0" "--jit-faststart"; do
-                local got
                 if ! got=$(cul $flags "$f" 2>&1); then
-                    echo "FAIL ($flags aborted): $f" >&2; fail=1; continue
+                    echo "FAIL ($flags aborted): $f" >> "$d/$name.err"
+                    touch "$d/$name.fail"; continue
                 fi
                 if [[ "$got" != "$ref" ]]; then
-                    echo "FAIL ($flags != interp): $f" >&2
-                    diff <(printf "%s" "$ref") <(printf "%s" "$got") >&2 || true
-                    fail=1
+                    {
+                        echo "FAIL ($flags != interp): $f"
+                        diff <(printf "%s" "$ref") <(printf "%s" "$got") || true
+                    } >> "$d/$name.err"
+                    touch "$d/$name.fail"
                 fi
             done
-        done
-        [[ "$fail" == 0 ]] || { echo "test (codegen backends) FAIL" >&2; exit 1; }
+        ' _ '{}' "$d"
+        local fails=("$d"/*.fail)
+        if (( ${#fails[@]} > 0 )); then
+            for fail in "${fails[@]}"; do
+                cat "${fail%.fail}.err" >&2
+            done
+            echo "test (codegen backends) FAIL" >&2; exit 1
+        fi
         echo "test (codegen backends: -O0, fast) OK"
     }
 
@@ -395,23 +435,44 @@ _run-tests BACKEND:
     # Isolate.spawn, Channel, and Parallel are all symmetric across backends now;
     # the interp-only files (no `_jit` suffix) cover surface that doesn't apply
     # under --jit (e.g. the runtime mut-capture SendError and the `limit:` kwarg).
+    # Over-cap runs (the `overcap-*` modes below) force the isolate cap to 1 so
+    # every spawned producer takes the over-cap path, which must still run on a
+    # real thread. Inline-over-cap would deadlock a streaming producer (it fills
+    # a bounded channel with no consumer yet) — the cause of an intermittent
+    # macOS-CI hang on the 3-core runner. `cul`'s timeout makes a regression
+    # fail fast instead of hanging.
+    #
+    # Parallelism is capped at 4 rather than $JOBS: unlike the other per-file
+    # phases these spawn real OS threads per case, and the point of the over-cap
+    # guard is scheduler pressure — running 20 at once oversubscribes the box in
+    # a way that adds flake risk without buying much (the phase is ~12 s serial,
+    # and 4 lanes already hide all but the two 0.5 s outliers).
     run_isolate() {
-        for f in tests/isolate/*.cul; do
-            cul "$f" > /dev/null || { echo "test isolate FAIL (or timed out): $f" >&2; exit 1; }
-        done
-        for f in tests/isolate/*_jit.cul; do
-            cul --jit "$f" > /dev/null || { echo "test isolate FAIL (or timed out): --jit $f" >&2; exit 1; }
-        done
-        # Over-cap regression guard (both backends): force the isolate cap to 1 so
-        # every spawned producer takes the over-cap path, which must still run on
-        # a real thread. Inline-over-cap would deadlock a streaming producer (it
-        # fills a bounded channel with no consumer yet) — the cause of an
-        # intermittent macOS-CI hang on the 3-core runner. `cul`'s timeout makes a
-        # regression fail fast instead of hanging.
-        for f in tests/isolate/test_spawn_overcap*.cul; do
-            CULEBRA_ISOLATE_LIMIT=1 cul "$f" > /dev/null || { echo "test isolate FAIL (over-cap interp): $f" >&2; exit 1; }
-            CULEBRA_ISOLATE_LIMIT=1 cul --jit "$f" > /dev/null || { echo "test isolate FAIL (over-cap jit): $f" >&2; exit 1; }
-        done
+        local d="$job_dir/isolate"
+        mkdir -p "$d"
+        {
+            for f in tests/isolate/*.cul; do echo "interp $f"; done
+            for f in tests/isolate/*_jit.cul; do echo "jit $f"; done
+            for f in tests/isolate/test_spawn_overcap*.cul; do
+                echo "overcap-interp $f"; echo "overcap-jit $f"
+            done
+        } | xargs -P "$(( JOBS < 4 ? JOBS : 4 ))" -I '{}' bash -c '
+            mode=${1%% *}; f=${1#* }; d="$2"
+            name=$(basename "$f" .cul).$mode
+            case "$mode" in
+                interp)         cul "$f" > /dev/null 2> "$d/$name.err" ;;
+                jit)            cul --jit "$f" > /dev/null 2> "$d/$name.err" ;;
+                overcap-interp) CULEBRA_ISOLATE_LIMIT=1 cul "$f" > /dev/null 2> "$d/$name.err" ;;
+                overcap-jit)    CULEBRA_ISOLATE_LIMIT=1 cul --jit "$f" > /dev/null 2> "$d/$name.err" ;;
+            esac || { echo "test isolate FAIL (or timed out) [$mode]: $f" >> "$d/$name.err"; touch "$d/$name.fail"; }
+        ' _ '{}' "$d"
+        local fails=("$d"/*.fail)
+        if (( ${#fails[@]} > 0 )); then
+            for fail in "${fails[@]}"; do
+                cat "${fail%.fail}.err" >&2
+            done
+            echo "test isolate FAIL" >&2; exit 1
+        fi
         echo "test isolate OK (interp + jit symmetry)"
     }
 
@@ -548,7 +609,13 @@ _run-tests BACKEND:
         phase "culebra-test self"; run_culebra_test_self
         phase "isolate (interp + jit)"; run_isolate
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "AOT (== jit)"; run_aot; }
-        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "wrap (extended binary, 3 backends)"; run_wrap_test; }
+        # Opt-in, not skip-by-flag: wrap rebuilds the whole source tree into
+        # its own cache dir, so it costs a second full main.cc compile — 239 s
+        # of this gate's 497 s locally, for a lane nothing but a wrap/CMake/AOT
+        # change can break. CI (Ubuntu) sets CULEBRA_TEST_WRAP=1 so coverage is
+        # unchanged there; run `just test wrap` locally when touching
+        # `culebra wrap`, CMakeLists, or the AOT runtime archives.
+        [[ -z "${CULEBRA_TEST_WRAP:-}" ]] || { phase "wrap (extended binary, 3 backends)"; run_wrap_test; }
         phase "done"; echo "test OK"
         ;;
       # Inner-loop core: the interp==JIT correctness invariant plus the two
@@ -568,7 +635,8 @@ _run-tests BACKEND:
       aot)    run_aot ;;
       embed)  run_embed ;;
       isolate) run_isolate ;;
-      *) echo "test: unknown backend '{{BACKEND}}' (expected: all|fast|interp|jit|aot|embed|isolate)" >&2; exit 2 ;;
+      wrap)   run_wrap_test ;;
+      *) echo "test: unknown backend '{{BACKEND}}' (expected: all|fast|interp|jit|aot|embed|isolate|wrap)" >&2; exit 2 ;;
     esac
 
 # Run the doctest examples in the public docs (interp). Both en and ja
