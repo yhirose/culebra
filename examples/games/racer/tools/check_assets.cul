@@ -1,0 +1,150 @@
+// Verify the generated art against the contract the port depends on: the atlas
+// rectangles from the upstream common.js. Loads the real PNGs through the same
+// Canvas.Sprite.from_png the game will use, so a decode regression fails here
+// too.
+//
+// Run: culebra examples/games/racer/tools/check_assets.cul
+
+let dir = FS.dirname(FS.dirname(Sys.script)) + "/assets"
+
+// x, y, w, h — verbatim from javascript-racer's common.js.
+let SPRITES = {
+  PALM_TREE: [5, 5, 215, 540],
+  BILLBOARD08: [230, 5, 385, 265],
+  TREE1: [625, 5, 360, 360],
+  DEAD_TREE1: [5, 555, 135, 332],
+  BILLBOARD09: [150, 555, 328, 282],
+  BOULDER3: [230, 280, 320, 220],
+  COLUMN: [995, 5, 200, 315],
+  BILLBOARD01: [625, 375, 300, 170],
+  BILLBOARD06: [488, 555, 298, 190],
+  BILLBOARD05: [5, 897, 298, 190],
+  BILLBOARD07: [313, 897, 298, 190],
+  BOULDER2: [621, 897, 298, 140],
+  TREE2: [1205, 5, 282, 295],
+  BILLBOARD04: [1205, 310, 268, 170],
+  DEAD_TREE2: [1205, 490, 150, 260],
+  BOULDER1: [1205, 760, 168, 248],
+  BUSH1: [5, 1097, 240, 155],
+  CACTUS: [929, 897, 235, 118],
+  BUSH2: [255, 1097, 232, 152],
+  BILLBOARD03: [5, 1262, 230, 220],
+  BILLBOARD02: [245, 1262, 215, 220],
+  STUMP: [995, 330, 195, 140],
+  SEMI: [1365, 490, 122, 144],
+  TRUCK: [1365, 644, 100, 78],
+  CAR03: [1383, 760, 88, 55],
+  CAR02: [1383, 825, 80, 59],
+  CAR04: [1383, 894, 80, 57],
+  CAR01: [1205, 1018, 80, 56],
+  PLAYER_UPHILL_LEFT: [1383, 961, 80, 45],
+  PLAYER_UPHILL_STRAIGHT: [1295, 1018, 80, 45],
+  PLAYER_UPHILL_RIGHT: [1385, 1018, 80, 45],
+  PLAYER_LEFT: [995, 480, 80, 41],
+  PLAYER_STRAIGHT: [1085, 480, 80, 41],
+  PLAYER_RIGHT: [995, 531, 80, 41]
+}
+
+let BACKGROUND = {
+  HILLS: [5, 5, 1280, 480],
+  SKY: [5, 495, 1280, 480],
+  TREES: [5, 985, 1280, 480]
+}
+
+mut failures = 0
+let check = fn (ok, what) {
+  if !ok {
+    println("FAIL " + what)
+    failures = failures + 1
+  }
+}
+
+// Count the opaque pixels of a sprite rect by blitting it alone and reading back.
+let opaque_in = fn (sprite, r) {
+  let x = r[0]
+  let y = r[1]
+  let w = r[2]
+  let h = r[3]
+  Canvas.init(w, h)
+  Canvas.clear(0)
+  sprite.draw_sub(0, 0, x, y, w, h)
+  mut n = 0
+  mut py = 0
+  while py < h {
+    mut px = 0
+    while px < w {
+      if Canvas.get_pixel(px, py) != 0 {
+        n = n + 1
+      }
+      px = px + 1
+    }
+    py = py + 1
+  }
+  n
+}
+
+// --- sprites.png -------------------------------------------------------------
+let sheet = Canvas.Sprite.from_png(FS.read(dir + "/sprites.png"))
+check(
+  sheet.width() == 1492 && sheet.height() == 1487,
+  "sprites.png is {sheet.width()}x{sheet.height()}, want 1492x1487"
+)
+
+mut drawn = 0
+for (name, r) in SPRITES {
+  let n = opaque_in(sheet, r)
+  check(n > 0, "{name} is empty")
+  // Art must not fill the whole rect: these are silhouettes on transparency,
+  // and a fully opaque rect would mean the shape overflowed its box.
+  check(n < r[2] * r[3], "{name} covers its whole rect (no transparent margin)")
+  drawn = drawn + 1
+}
+check(drawn == 34, "expected 34 sprites, checked {drawn}")
+
+// --- background_<scene>.png --------------------------------------------------
+// The cross-fade blends the four scenes pixel for pixel, so their opaque masks
+// must coincide exactly and their geometry must be identical.
+mut masks = []
+for scene in ["asayake", "hiru", "yuugure", "twilight"] {
+  let bg = Canvas.Sprite.from_png(FS.read(dir + "/background_{scene}.png"))
+  check(
+    bg.width() == 1290 && bg.height() == 1470,
+    "background_{scene} is {bg.width()}x{bg.height()}, want 1290x1470"
+  )
+  for (layer, r) in BACKGROUND {
+    check(opaque_in(bg, r) > 0, "background_{scene} layer {layer} is empty")
+  }
+  // Sample the alpha mask on a coarse grid; identical across scenes.
+  Canvas.init(1290, 1470)
+  Canvas.clear(0)
+  bg.draw(0, 0)
+  mut mask = ""
+  mut y = 0
+  while y < 1470 {
+    mut x = 0
+    while x < 1290 {
+      mask = mask + if Canvas.get_pixel(x, y) == 0 {
+          "."
+        } else {
+          "#"
+        }
+      x = x + 13
+    }
+    y = y + 11
+  }
+  masks.push(mask)
+}
+for i in 1..masks.size() {
+  check(
+    masks[i] == masks[0],
+    "background scene {i} has a different opaque mask than asayake"
+  )
+}
+
+if failures == 0 {
+  println(
+    "assets ok: 34 sprites at the common.js rectangles, 4 backgrounds sharing one geometry"
+  )
+} else {
+  println("{failures} check(s) failed")
+}

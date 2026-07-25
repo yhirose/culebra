@@ -76,3 +76,7 @@ scratchpad/
 docs/_history.md
 docs/_history.ja.md
 docs/_internal/*
+
+# Python bytecode from the asset generator
+__pycache__/
+*.pyc
