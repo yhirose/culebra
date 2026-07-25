@@ -3808,9 +3808,9 @@ packed RGBA `Long`、または `palette` を与えたときはそのパレット
 （コンパクトなインデックスカラー画像）。blit は透過ピクセルをスキップするので
 スプライトは合成される。
 
-`Canvas.Sprite.new(png: String)` は代わりに PNG のバイト列（例えば画像ファイルの
-`FS.read_bytes`）をデコードする。サイズは画像から得るのでデータ以外に渡すものは
-無い。`Canvas.Sprite.from_png(data)` は呼び出し側で意図が読める名前を付けた同じ
+`Canvas.Sprite.new(png: String)` は代わりに PNG のバイト列をデコードする。`String`
+はバイト列なので、例えば画像ファイルの `FS.read` をそのまま渡せる。サイズは画像から
+得るのでデータ以外に渡すものは無い。`Canvas.Sprite.from_png(data)` は呼び出し側で意図が読める名前を付けた同じ
 もの。グレースケール / パレット（`tRNS` 込み）/ トゥルーカラー / 16bit/ch のいずれも
 フレームバッファと同じ packed RGBA になる。デコードできない入力は
 `ValueError: not a valid PNG image`。
