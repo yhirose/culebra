@@ -782,10 +782,16 @@ class Printer {
   }
 
   DocP print_range(const peg::Ast& node) {
-    // `a..b`, `a..=b`, `a..`, `..b`, `..` — no spaces around the operator.
+    // `a..b`, `a..=b`, `a..`, `..b`, `..` — no spaces around the operator; the
+    // optional step tail keeps its spaces (`0..n by 2`, never `0..nby 2`).
     std::vector<DocP> parts;
     for (auto& c : node.nodes) {
       if (c->name == "RANGE_OPERATOR") parts.push_back(doc_text(std::string(c->token)));
+      else if (c->name == "BY_STEP")
+        parts.push_back(doc_concat({
+            doc_text(" by "),
+            print_operand(*c->nodes[0], prec("RANGE"), /*assoc_safe=*/true),
+        }));
       else parts.push_back(print_operand(*c, prec("RANGE"), /*assoc_safe=*/true));
     }
     return doc_concat(std::move(parts));
