@@ -52,7 +52,7 @@ split -l "$CHUNK" "$WORK/cases.cul" "$chunkdir/c."
 chunks=( "$chunkdir"/c.* )
 
 # Prepend the probe preamble to each chunk once (cheap, serial).
-for cf in "${chunks[@]}"; do cat "$HERE/preamble.cul" "$cf" > "$cf.cul"; done
+for cf in "${chunks[@]}"; do cat "$HERE/preamble.cul" "$HERE/canvas_fixtures.cul" "$cf" > "$cf.cul"; done
 
 # Run every (chunk × backend) as an independent parallel job — this is the bulk
 # of the wall-clock (each chunk's JIT module compile dominates), and the chunks

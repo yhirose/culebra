@@ -1,0 +1,41 @@
+# Shared fixtures for the corpus's Canvas cases. Concatenated after whichever
+# preamble a driver uses (probe / leak / leak-abort), because the cases
+# reference these by name and every lane runs the same generated cases.
+
+# Opaque-alpha bias. A colour in those cases is `_CA + <digit>`: alpha must be
+# 255 or a sprite's pixels read as transparent and every blit draws nothing, and
+# _CA is a multiple of 10 so the digit survives `% 10`.
+let _CA = 255 * 16777216
+
+# Framebuffer signature: one character per pixel, rows joined by "/". The cases
+# only ever draw with colours _CA+1.._CA+9, so the low digit names the colour
+# and "." marks an untouched (0) pixel — a whole rasterized shape then fits in
+# one record.
+fn _cdump() {
+  mut rows = []
+  mut y = 0
+  while y < _Canvas.height() {
+    mut s = ""
+    mut x = 0
+    while x < _Canvas.width() {
+      let p = _Canvas.get_pixel(x, y)
+      s = s + (if p == 0 { "." } else { to_string(p % 10) })
+      x = x + 1
+    }
+    rows.push(s)
+    y = y + 1
+  }
+  rows.join("/")
+}
+
+# PNG fixtures for the sprite_from_png cases: one 2-pixel-wide image per colour
+# type the decoder accepts, plus a truncated header. Hex so the bytes survive as
+# source; the pixels are red, green / blue, transparent where the format can say
+# "transparent".
+let _PNG_RGBA = Encoding.hex.decode("89504e470d0a1a0a0000000d494844520000000200000002080600000072b60d240000001349444154789c63f8cfc0f01f0c8134886000003fd205fbcb17a6ce0000000049454e44ae426082")
+let _PNG_RGB = Encoding.hex.decode("89504e470d0a1a0a0000000d4948445200000002000000020802000000fdd49a730000001249444154789c63f8cfc0c000c20cff8100001fee05fb0bd9688b0000000049454e44ae426082")
+let _PNG_GREY = Encoding.hex.decode("89504e470d0a1a0a0000000d4948445200000002000000010800000000d14920560000000b49444154789c6360f80f000102010042bebc680000000049454e44ae426082")
+let _PNG_GREYA = Encoding.hex.decode("89504e470d0a1a0a0000000d49484452000000020000000108040000005e2bb7010000000d49444154789c63f8ffbf81010007fe027f72dd80350000000049454e44ae426082")
+let _PNG_PAL = Encoding.hex.decode("89504e470d0a1a0a0000000d49484452000000020000000208030000004568fd160000000c504c5445ff000000ff000000ff0909095c717e860000000474524e53ffffff00402aa9f40000000e49444154789c6360606460620600001100079ea22a120000000049454e44ae426082")
+let _PNG_I16 = Encoding.hex.decode("89504e470d0a1a0a0000000d4948445200000002000000011006000000a4b2a3c90000001149444154789c63f8ff9f010840240403003fd107f968446ef10000000049454e44ae426082")
+let _PNG_TRUNCATED = Encoding.hex.decode("89504e470d0a1a0a0000000d4948445200000002")

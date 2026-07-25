@@ -91,6 +91,41 @@ if ! diff -u "$TMP/blk_want.cul" "$TMP/blk_got.cul" > "$TMP/blk_diff" 2>&1; then
   fail=1
 fi
 
+# --- 1c. Golden fixture: same-precedence parentheses -----------------------
+# The grammar folds a run of same-precedence operators into ONE flat node, so
+# `(a * b) / c` and `a * b / c` mean the same thing but are different trees.
+# Associativity once made fmt drop those parentheses, which reshaped the AST
+# and made the re-parse safety net refuse the whole file — see
+# include/formatter.h print_operand.
+cat > "$TMP/par_in.cul" <<'EOF'
+let a=1
+let b=2
+let c=3
+let p = (a*b)/c
+let q = a+(b*c)*a
+let r = (a-b)-c
+let s = a**(b**c)
+let t = a*(b*c)/a
+let u = a*b/c
+EOF
+cat > "$TMP/par_want.cul" <<'EOF'
+let a = 1
+let b = 2
+let c = 3
+let p = (a * b) / c
+let q = a + (b * c) * a
+let r = (a - b) - c
+let s = a ** (b ** c)
+let t = a * (b * c) / a
+let u = a * b / c
+EOF
+"$CULEBRA" fmt "$TMP/par_in.cul" > "$TMP/par_got.cul" 2>"$TMP/par_err"
+if ! diff -u "$TMP/par_want.cul" "$TMP/par_got.cul" > "$TMP/par_diff" 2>&1; then
+  echo "FAIL golden (same-precedence parens): formatted output differs from expected"
+  cat "$TMP/par_diff"
+  fail=1
+fi
+
 # --- 2 + 3. Corpus safety + idempotency (parallel) ------------------------
 # Format every corpus file twice — once to check the re-parse/comment safety
 # net doesn't refuse (exit 2), once more to assert idempotency. The files are

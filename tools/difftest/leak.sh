@@ -47,7 +47,7 @@ CHUNK="${LEAKFUZZ_CHUNK:-400}"
 chunkdir="$WORK/chunks"; rm -rf "$chunkdir"; mkdir -p "$chunkdir"
 split -l "$CHUNK" "$WORK/cases.cul" "$chunkdir/c."
 chunks=( "$chunkdir"/c.* )
-for cf in "${chunks[@]}"; do cat "$HERE/leak_preamble.cul" "$cf" > "$cf.cul"; done
+for cf in "${chunks[@]}"; do cat "$HERE/leak_preamble.cul" "$HERE/canvas_fixtures.cul" "$cf" > "$cf.cul"; done
 
 JOBS="${LEAKFUZZ_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
 run_one() {

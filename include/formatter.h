@@ -731,9 +731,18 @@ class Printer {
 
   // Print `node` as an operand of a binary/unary context, parenthesizing when
   // its own precedence would otherwise re-associate against `parent_prec`.
-  DocP print_operand(const peg::Ast& node, int parent_prec, bool assoc_safe) {
+  // `parent_name` is the enclosing binary rule, when there is one.
+  DocP print_operand(const peg::Ast& node, int parent_prec, bool assoc_safe,
+                     std::string_view parent_name = {}) {
     int cp = prec(node.name);
     bool paren = cp < parent_prec || (cp == parent_prec && !assoc_safe);
+    // Parentheses around an operand of the SAME rule stay even when
+    // associativity makes them redundant: the grammar folds a run of
+    // same-precedence operators into one flat node, so `(a * b) / c` and
+    // `a * b / c` mean the same thing but are different trees. Dropping them
+    // would reshape the AST, and the re-parse safety net would then refuse the
+    // whole file rather than emit a differently-shaped program.
+    if (!paren && cp == parent_prec && node.name == parent_name) paren = true;
     DocP d = print(node);
     if (paren) return doc_concat({doc_text("("), d, doc_text(")")});
     return d;
@@ -773,10 +782,10 @@ class Printer {
       bool assoc_safe = right_assoc ? (k == m - 1) : false;
       cont.push_back(doc_text(" " + ops[k - 1]));
       cont.push_back(doc_line());
-      cont.push_back(print_operand(*operands[k], P, assoc_safe));
+      cont.push_back(print_operand(*operands[k], P, assoc_safe, node.name));
     }
     return doc_group(doc_concat({
-        print_operand(*operands[0], P, /*assoc_safe=*/!right_assoc),
+        print_operand(*operands[0], P, /*assoc_safe=*/!right_assoc, node.name),
         doc_indent(kIndent, doc_concat(std::move(cont))),
     }));
   }

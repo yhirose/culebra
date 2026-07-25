@@ -55,7 +55,7 @@ CHUNK="${LEAKABORT_CHUNK:-471}"
 chunkdir="$WORK/chunks"; rm -rf "$chunkdir"; mkdir -p "$chunkdir"
 split -l "$CHUNK" "$WORK/cases.cul" "$chunkdir/c."
 chunks=( "$chunkdir"/c.* )
-for cf in "${chunks[@]}"; do cat "$PREAMBLE" "$cf" > "$cf.cul"; done
+for cf in "${chunks[@]}"; do cat "$PREAMBLE" "$HERE/canvas_fixtures.cul" "$cf" > "$cf.cul"; done
 
 JOBS="${LEAKABORT_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
 
@@ -84,7 +84,7 @@ while IFS= read -r cf; do
   while IFS= read -r line; do
     case "$line" in _p\(*) ;; *) continue ;; esac
     f="$casedir/c_$n.cul"
-    cat "$PREAMBLE" > "$f"
+    cat "$PREAMBLE" "$HERE/canvas_fixtures.cul" > "$f"
     printf '%s\n' "$line" >> "$f"
     label=$(printf '%s\n' "$line" | sed "s/^_p('\([^']*\)'.*/\1/")
     printf '%s\t%s\n' "$f" "$label" >> "$WORK/casemap.txt"
