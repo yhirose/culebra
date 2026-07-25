@@ -3209,6 +3209,11 @@ its `index.html`, and a path not in the directory falls through to the
 registered routes (so an API route always wins). `Embed.dir` is independent of
 `Http` — it produces a plain descriptor any consumer could serve.
 
+`culebra build` compiles the baked assets against the culebra headers, so it
+needs a source checkout: the one the binary was built from by default, or
+`$CULEBRA_HOME` when that is set. With neither it stops with an error rather
+than producing a binary.
+
 ---
 
 ## 16. `Encoding`

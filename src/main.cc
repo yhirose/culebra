@@ -349,7 +349,10 @@ void print_build_usage(ostream& os) {
         "                     for most cross-compile targets.\n"
         "  --rt-lib=<path>    Override the runtime archive path. Use to\n"
         "                     point at a libculebra_rt.a built for the\n"
-        "                     target. Defaults to the host build.\n";
+        "                     target. Defaults to the host build.\n"
+        "  CULEBRA_HOME       Source checkout to take headers from when the\n"
+        "                     program uses Embed.dir (default: the path this\n"
+        "                     binary was built from)\n";
 }
 
 // Triple chars per LLVM convention (alnum + `-_.+`). Strict-enough to
@@ -662,13 +665,14 @@ int run_build(const BuildOptions& opts) {
     for (const auto& m : modules)
       culebra::aot_collect_embed_dirs(*m.ast, embed_dirs);
     if (!embed_dirs.empty()) {
-      if (*culebra::source_dir() == '\0') {
+      namespace fs = std::filesystem;
+      auto src_dir = culebra::resolved_source_dir();
+      if (src_dir.empty() || !fs::exists(fs::path(src_dir) / "include")) {
         std::println(stderr,
-            "culebra build: Embed.dir needs a culebra source checkout for "
-            "headers; set CULEBRA_HOME");
+            "culebra build: Embed.dir needs the culebra headers; no include/ "
+            "at '{}' — set CULEBRA_HOME to a checkout", src_dir);
         return 1;
       }
-      namespace fs = std::filesystem;
       fs::path base = fs::path(opts.input).parent_path();
       auto cstr = [](std::string_view s) {
         std::string o;
@@ -733,7 +737,7 @@ int run_build(const BuildOptions& opts) {
                       .string();
       { std::ofstream(acpp) << src; }
       auto ccmd = std::format("c++ -std=c++23 -O2 -I {}/include -c {} -o {}",
-                              shq(culebra::source_dir()), shq(acpp), shq(aobj));
+                              shq(src_dir), shq(acpp), shq(aobj));
       if (verbose) std::println(stderr, "culebra build: assets: {}", ccmd);
       if (std::system(ccmd.c_str()) != 0) {
         std::println(stderr, "culebra build: failed to compile embedded assets");
@@ -1036,10 +1040,9 @@ int run_wrap(int argc, const char** argv) {
     return 1;
   }
 
-  // The source tree to rebuild. $CULEBRA_HOME wins; the baked path is the
-  // checkout this binary came from (a dev install).
-  const char* home = std::getenv("CULEBRA_HOME");
-  string src_dir = (home && *home) ? home : culebra::source_dir();
+  // The source tree to rebuild. `wrap` needs a buildable tree, not just the
+  // headers `build` needs, so it checks for CMakeLists.txt.
+  string src_dir = culebra::resolved_source_dir();
   if (src_dir.empty() ||
       !std::filesystem::exists(
           std::filesystem::path(src_dir) / "CMakeLists.txt")) {

@@ -1,5 +1,7 @@
 #include "source_dir.h"
 
+#include <cstdlib>
+
 namespace culebra {
 
 const char* source_dir() {
@@ -8,6 +10,11 @@ const char* source_dir() {
 #else
   return "";
 #endif
+}
+
+std::string resolved_source_dir() {
+  const char* home = std::getenv("CULEBRA_HOME");
+  return (home && *home) ? home : source_dir();
 }
 
 }  // namespace culebra

@@ -345,6 +345,19 @@ _run-tests BACKEND:
         rm -rf "$out_dir" && mkdir -p "$out_dir"
         local d="$job_dir/aot"
         mkdir -p "$d"
+        # `culebra build` reads $CULEBRA_HOME for the Embed.dir headers (it
+        # ignored the env var until 2026-07 while telling the user to set it).
+        # The rest of the phase covers the baked-path default; this covers the
+        # override, which must fail cleanly rather than in the asset compile.
+        local bogus
+        if bogus=$(CULEBRA_HOME=/nonexistent-culebra-home \
+                cul build tests/test_embed_static.cul -o "$out_dir/home_check" 2>&1); then
+            echo "test aot FAIL: build ignored a bogus CULEBRA_HOME" >&2; exit 1
+        fi
+        case "$bogus" in
+            *"set CULEBRA_HOME"*) ;;
+            *) echo "test aot FAIL: unclear CULEBRA_HOME error: $bogus" >&2; exit 1 ;;
+        esac
         printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
             f="$1"; d="$2"; out_dir="$3"
             name=$(basename "$f" .cul)
