@@ -45,6 +45,7 @@
 #include <numbers>  // std::numbers::pi / ::e (Math.pi / Math.e; portable vs M_PI)
 #include <fstream>
 #include <unordered_map>
+#include <unordered_set>
 #include <iostream>
 #include <limits>
 #include <chrono>
@@ -6268,17 +6269,30 @@ inline std::string _wrap_lazy_ns_module(std::string_view src, const char* pub,
   return "_lazy_ns_register(\"" + std::string(pub) + "\", fn(){ " + s + " });";
 }
 
-inline std::string stdlib_preamble_for(std::string_view user_src) {
-  auto has = [&](std::string_view m) {
-    return user_src.find(m) != std::string_view::npos;
-  };
-  // Each module is pulled in when its marker appears anywhere in the
-  // source; `assert_` pulls the whole matcher family (no other stdlib
+// Every token the parsed program carries. Comments and whitespace are gone
+// by this point, and a token is a whole lexeme — which is what makes the
+// module selection below name-exact instead of substring-based.
+inline void collect_ast_tokens(const peg::Ast& ast,
+                               std::unordered_set<std::string_view>& out) {
+  if (ast.is_token) {
+    if (!ast.token.empty()) out.insert(ast.token);
+    return;
+  }
+  for (const auto& n : ast.nodes) collect_ast_tokens(*n, out);
+}
+
+inline std::string stdlib_preamble_for(
+    const std::unordered_set<std::string_view>& names) {
+  auto has = [&](std::string_view m) { return names.contains(m); };
+  // Each module is pulled in when the program names it. Matching the parsed
+  // token set rather than the raw source keeps a mention in a comment — or a
+  // longer identifier that merely contains the name — from inlining a whole
+  // module: "Terminal" in a comment used to pull in Term, and `side_effect`
+  // the effects runtime, each about a second of JIT compile for nothing.
+  // `assert_` still pulls the whole matcher family by prefix (no other stdlib
   // symbol starts with it). A `re'...'` / `re"..."` / `` re`...` `` regex
-  // literal desugars to `Regex.compile(...)` (see parser.h) but leaves no
-  // `Regex` substring in the source, so its prefixes are extra markers for
-  // the Regex module. Over-approximation is safe — a false positive (e.g.
-  // "there's" matching `re'`) just inlines an unused module.
+  // literal desugars to `Regex.compile(...)` in the parser, so it shows up as
+  // a plain `Regex` token here and needs no extra marker.
   //
   // The five namespace modules (Time/Term/Args/Regex/Log) are wrapped as lazy
   // builder registrations (see _wrap_lazy_ns_module); the matcher family and
@@ -6296,8 +6310,11 @@ inline std::string stdlib_preamble_for(std::string_view user_src) {
   if (has("Args"))
     preamble.append(_wrap_lazy_ns_module(ARGS_MODULE_SOURCE, "Args",
                                          "_args_module"));
-  if (has("assert_")) preamble.append(MATCHERS_MODULE_SOURCE);
-  if (has("Regex") || has("re'") || has("re\"") || has("re`"))
+  if (std::any_of(names.begin(), names.end(), [](std::string_view n) {
+        return n.starts_with("assert_");
+      }))
+    preamble.append(MATCHERS_MODULE_SOURCE);
+  if (has("Regex"))
     preamble.append(_wrap_lazy_ns_module(REGEX_MODULE_SOURCE, "Regex",
                                          "_regex_module"));
   if (has("replace")) preamble.append(STRING_REPLACE_MODULE_SOURCE);
@@ -6307,9 +6324,10 @@ inline std::string stdlib_preamble_for(std::string_view user_src) {
   if (has("Path"))
     preamble.append(_wrap_lazy_ns_module(PATH_MODULE_SOURCE, "Path",
                                          "_path_module"));
-  // Algebraic-effects runtime — pulled in when the source uses any effect
-  // construct (lowered code calls `__Eff.handle`). See effects_transform.h.
-  if (has("perform") || has("handle") || has("effect"))
+  // Algebraic-effects runtime. The transform has already lowered every effect
+  // construct into `__Eff.*` calls by the time we see the AST, so that one
+  // token is the exact marker (see effects_transform.h).
+  if (has("__Eff"))
     preamble.append(_wrap_lazy_ns_module(EFFECTS_MODULE_SOURCE, "__Eff",
                                          "_eff_module"));
 #ifdef CULEBRA_ENABLE_WEBVIEW
@@ -6344,10 +6362,11 @@ inline std::vector<std::shared_ptr<peg::Ast>> collect_top_level_statements(
 // interpreter, which never prepends. Instead we parse the preamble on its
 // own and splice its statements ahead of the user's in a fresh STATEMENTS
 // root: user nodes keep the exact line/column they were parsed with.
-inline void splice_stdlib_preamble(std::vector<LoadedModule>& modules,
-                                   std::string_view user_src) {
+inline void splice_stdlib_preamble(std::vector<LoadedModule>& modules) {
   if (modules.empty()) return;
-  std::string preamble = stdlib_preamble_for(user_src);
+  std::unordered_set<std::string_view> names;
+  if (modules.back().ast) collect_ast_tokens(*modules.back().ast, names);
+  std::string preamble = stdlib_preamble_for(names);
   if (preamble.empty()) return;
 
   // Retain the preamble bytes for the module's lifetime — the spliced

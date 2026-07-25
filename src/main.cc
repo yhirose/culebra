@@ -494,7 +494,7 @@ int run_build(const BuildOptions& opts) {
     // source text would shift every user line and desync error
     // locations from the interpreter (see splice_stdlib_preamble).
     modules = loader.load_program(opts.input, user_src, msgs);
-    culebra::splice_stdlib_preamble(modules, user_src);
+    culebra::splice_stdlib_preamble(modules);
   } catch (const culebra::CulebraError& e) {
     cerr << e.kind << ": " << e.what();
     if (e.line > 0 || e.col > 0)
@@ -1210,7 +1210,7 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
     try {
       modules = loader.load_program(path, user_src, msgs);
 #ifdef CULEBRA_JIT_ENABLED
-      if (options.jit) culebra::splice_stdlib_preamble(modules, user_src);
+      if (options.jit) culebra::splice_stdlib_preamble(modules);
 #endif
     } catch (const culebra::CulebraError& e) {
       cerr << e.kind << ": " << e.what();
