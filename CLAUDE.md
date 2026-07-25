@@ -23,15 +23,18 @@ culebra は個人の趣味プロジェクト（未公開のプログラミング
 
 ## ビルド
 
-- inner loop（修正→実行→修正）は **`just dev`**（LTO off、AOT archive スキップ、`main.cc` 単体 rebuild）。`CCACHE_DIR=$TMPDIR` を設定しておくこと（未設定だとサンドボックスで build が即失敗する）。
-- **`just build`** はコミット前の最終確認、または AOT runtime archive 自体を触った変更のときのみ。
+- inner loop（修正→実行→修正）は **`just dev`**（LTO off、`-O1`、AOT archive スキップ、`main.cc` 単体 rebuild）。ヘッダを実質変更した場合の再ビルドは約 1 分半。
+- ccache は既定の `~/.cache/ccache` をそのまま使う（`CCACHE_DIR` を設定しない）。justfile が `CCACHE_BASEDIR` を worktree root に export するので、同じ commit なら別 worktree の初回ビルドがキャッシュに当たる（実測 90s → 32s）。**絶対パスを焼き込む define を `main.cc` 側に足さないこと** — worktree 間共有が壊れる（`src/source_dir.cc` に隔離してある）。
+- **`just build`** はコミット前の最終確認、または AOT runtime archive 自体を触った変更のときのみ。**性能計測は必ず `just build`（`-O3` + LTO）で**。`build-dev/` は `-O1` なので数字が出ない。
+- このマシンは 20 スレッド / 15 GB。`just build-gate` は `-j20` でピーク約 11 GB 使うので、**別 worktree セッションと build を同時に走らせるとスワップする**。並走するときは片方を `CULEBRA_BUILD_JOBS=8` 程度に絞る。
 - `build`/`dev`/`build-gate`/`build-no-jit` の make、および `_run-tests`（`test`/`test-dev` 共通）の culebra 実行・ctest はデフォルトで `nice -n 10` 経由。複数 worktree セッション並走時の CPU 専有で通常の Mac 操作が詰まる問題への対処（単独実行時は速度低下なし、競合時のみ譲る）。`CULEBRA_NICE=0` で無効化可。
 
 ## テスト（速い順に段階的に）
 
 1. 単発確認: `./build-dev/culebra <file>.cul`（+ `--jit`）
-2. 両 backend 対称確認: **`just test-dev`**（~48s、no-LTO）— 通常はここまで
-3. フルゲート **`just test`**: PR 直前 / AOT・build path に触った変更のみ。毎修正では回さない
+2. 両 backend 対称確認: **`just test-dev`**（テスト部 ~25s、no-LTO）— 通常はここまで
+3. フルゲート **`just test`**（~4分）: PR 直前 / AOT・build path に触った変更のみ。毎修正では回さない
+   - `culebra wrap` / CMakeLists / AOT runtime archive を触ったときは **`just test wrap`** も回す（`just test` からは外してある。ツリー全体を再ビルドするので単体で 4 分。CI の Ubuntu では従来どおり毎回走る）
 4. **docs を触ったら必ず `just doctest`**（`just test` には含まれない別ステップ）
 5. LTO/静的リンク/ABI 等 toolchain 差異が出うる変更は、ローカル green だけで安心せず **CI の両 OS（macOS clang / Ubuntu GCC）を確認**してから採否判断する
 
