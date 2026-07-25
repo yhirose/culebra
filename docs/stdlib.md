@@ -4149,7 +4149,7 @@ bounds the connect, then becomes the socket's read/write timeout.
 let s = Net.connect("example.com", 80, timeout: 5000)
 s.write("GET / HTTP/1.0\r\nHost: example.com\r\n\r\n")
 s.shutdown_write()                  # tell the server the request is complete
-puts(s.read())                      # read until the server closes
+inspect(s.read())                      # read until the server closes
 s.close()
 ```
 
@@ -4182,7 +4182,7 @@ Bind and listen. `port: 0` asks the OS for a free port, readable back as
 ```culebra
 # doctest: skip
 let server = Net.listen(7000)
-puts("listening on " + server.port.to_string())
+println("listening on " + server.port.to_string())
 for conn in server {                    # accept in a loop
   conn.write("hello " + conn.peer_addr().host + "\n")
   conn.close()
@@ -4262,7 +4262,7 @@ numeric address resolves to itself; a name that doesn't resolve is a `NetError`.
 
 ```culebra
 # doctest: skip
-puts(Net.resolve("localhost"))       # => ["127.0.0.1", "::1"]
+inspect(Net.resolve("localhost"))       # => ["127.0.0.1", "::1"]
 ```
 
 ### Not available in the Playground

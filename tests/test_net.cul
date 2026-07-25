@@ -177,4 +177,4 @@ try {
 }
 assert_eq(rkind, "NetError")
 
-puts("net ok")
+inspect("net ok")

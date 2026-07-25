@@ -76,4 +76,4 @@ let kind = try {
 assert_eq(kind, "SendError")
 
 iso.drop()                           // stops the accept loop, joins the thread
-puts("net server ok")
+inspect("net server ok")

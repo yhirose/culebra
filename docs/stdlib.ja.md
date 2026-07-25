@@ -4004,7 +4004,7 @@ Ctrl+C 一回で `Interrupted` になる（ハングしない）。
 let s = Net.connect("example.com", 80, timeout: 5000)
 s.write("GET / HTTP/1.0\r\nHost: example.com\r\n\r\n")
 s.shutdown_write()                  # リクエスト完了をサーバに伝える
-puts(s.read())                      # サーバが閉じるまで読む
+inspect(s.read())                      # サーバが閉じるまで読む
 s.close()
 ```
 
@@ -4036,7 +4036,7 @@ bind して listen する。`port: 0` は OS に空きポートを選ばせ、`l
 ```culebra
 # doctest: skip
 let server = Net.listen(7000)
-puts("listening on " + server.port.to_string())
+println("listening on " + server.port.to_string())
 for conn in server {                    # ループで accept
   conn.write("hello " + conn.peer_addr().host + "\n")
   conn.close()
@@ -4117,7 +4117,7 @@ UDP には EOF も接続もない。空のデータグラムはデータであ�
 
 ```culebra
 # doctest: skip
-puts(Net.resolve("localhost"))       # => ["127.0.0.1", "::1"]
+inspect(Net.resolve("localhost"))       # => ["127.0.0.1", "::1"]
 ```
 
 ### Playground では使えない
