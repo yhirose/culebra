@@ -184,6 +184,43 @@ runs; the JIT then emits a tight loop in IR. The interpreter does not
 fuse; its iterator chain implementation is also lazy but allocates a
 small wrapper per stage.
 
+### for-in cursor
+
+`for x in xs` has to work over Array, Tuple, Set, Object keys, a Range,
+any object carrying an `iter` property, and String — seven surfaces with
+three ways to step: an indexed array walk, a UTF-8 scalar walk, and the
+`has_next`/`next` iterator protocol. They share one cursor. The tag
+dispatch at the top of the loop only *opens* the cursor (recording a kind
+plus the state that kind needs), a single loop head switches on the kind
+to pick the matching advance, and every advance hands its element to one
+body. Exit is shared too: the iterator dispose is guarded on the cursor's
+iterator slot, which the array and string cursors leave nil.
+
+Emitting the body once is what makes nesting affordable. Inlining it under
+each container arm instead multiplies it by six per level — a triple nest
+emitted the innermost body 216 times, IR grew about 6.4x per level, and a
+four-deep nest over a four-line program produced a million lines of IR.
+
+`for v in a..b` over a literal range skips all of this and compiles to a
+direct Long counter loop: no Range object, no heap iterator, and no
+`{done,value}` object per step.
+
+### Stdlib preamble splicing
+
+Several stdlib modules (`Time`, `Term`, `Args`, `Regex`, `Log`, `Path`,
+`Canvas`, the matcher family, `__Eff`) are written in culebra rather than
+C++ so all three backends share one implementation. The interpreter binds
+them lazily per environment; the JIT and AOT paths instead splice the ones
+a program uses into the entry module's AST, as statements ahead of the
+user's. Spliced, not concatenated onto the source text — user nodes keep
+the line and column they were parsed with, so error locations match the
+interpreter.
+
+Which modules get spliced is decided from the entry module's parsed token
+set, which makes the match name-exact: a module's name in a comment, or
+inside a longer identifier, does not pull it in. Each module costs roughly
+a second of JIT compile time, so the distinction is not academic.
+
 Unlike the interpreter, JIT-generated code manages heap values (Object,
 Array, Func, Set, Tensor, Cell, String) through hand-emitted retain/
 release IR rather than `shared_ptr`. That discipline — how ownership is
