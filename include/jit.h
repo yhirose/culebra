@@ -16142,16 +16142,20 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   }
 
   // scan(init, f): the seed is callee-consumed alongside the callback, so
-  // both are compiled before the factory call takes ownership of each.
+  // both are compiled before the factory call takes ownership of each. The
+  // seed stays in its Owned until the call — compiling the callback can end
+  // the block (a heap seed made it an invoke), and a raw +1 may not cross one
+  // (§4.9); the §4.8 window covers the handle in the meantime.
   if (method == "scan" && argsAst.nodes.size() == 2) {
     expect_receiver_tag(receiver, TAG_OBJECT, "scan");
-    auto seed = compile(*argsAst.nodes[0]).consume();
+    Owned seed = compile(*argsAst.nodes[0]);
     Owned f = compile(*argsAst.nodes[1]);
     emit_set_callback_arg_site(*argsAst.nodes[1]);
     auto fv = f.consume();
+    auto sv = seed.consume();
     auto out = emit_call(module_->getFunction(rt::iter_scan),
                          {extract_tag(receiver), extract_data(receiver),
-                          extract_tag(seed), extract_data(seed),
+                          extract_tag(sv), extract_data(sv),
                           extract_tag(fv), extract_data(fv),
                           ho_line, ho_col});
     return own(make_object(out));

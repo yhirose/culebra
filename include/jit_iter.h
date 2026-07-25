@@ -2085,10 +2085,17 @@ inline void _iter_distinct_fast_fn(JitClosure* cls, JitValue, bool* done,
     });
     if (!fresh) continue;  // vg releases the duplicate
     culebra_runtime_value_retain(v.tag, v.data);  // one for the set
-    _culebra_hash_at(line, col, [&] {
-      culebra_runtime_set_add(seen, v.tag, v.data);
-      return 0;
-    });
+    {
+      // set_add is callee-consumes, but it hashes on insert and an unhashable
+      // element throws from inside it — before it has taken the retain above.
+      // The throw-edge releaser is what the §4.7 contract requires there;
+      // without it `[[1]].iter().distinct()` stranded one +1 per element.
+      JitUnwindRelease set_ref({v});
+      _culebra_hash_at(line, col, [&] {
+        culebra_runtime_set_add(seen, v.tag, v.data);
+        return 0;
+      });
+    }
     *done = false;
     auto kept = vg.consume();  // the original +1 goes to the caller
     *out_tag = kept.tag;
