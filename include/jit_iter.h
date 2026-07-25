@@ -829,18 +829,20 @@ inline void _iter_filter_fast_fn(JitClosure* cls, JitValue, bool* done,
       return;
     }
     JitValue v = {tag, data};
-    culebra_runtime_value_retain(v.tag, v.data);  // for callback
+    JitOwnedVal vg(v);                            // the pulled +1
+    culebra_runtime_value_retain(v.tag, v.data);  // an extra one for the call
     _iter_publish_call_site(cls);
     auto r = _culebra_invoke1(fn_cls, v);
+    JitOwnedVal rg(r);
     bool keep = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
-    _culebra_value_release_impl(r.tag, r.data);
     if (keep) {
       *done = false;
-      *out_tag = v.tag;
-      *out_data = v.data;
+      auto kept = vg.consume();
+      *out_tag = kept.tag;
+      *out_data = kept.data;
       return;
     }
-    _culebra_value_release_impl(v.tag, v.data);
+    // vg releases the rejected element (and the throw edge above)
   }
 }
 
@@ -950,20 +952,21 @@ inline void _iter_take_while_fast_fn(JitClosure* cls, JitValue, bool* done,
     return;
   }
   JitValue v = {tag, data};
-  culebra_runtime_value_retain(v.tag, v.data);
+  JitOwnedVal vg(v);                            // the pulled +1
+  culebra_runtime_value_retain(v.tag, v.data);  // an extra one for the call
   _iter_publish_call_site(cls);
   auto r = _culebra_invoke1(fn_cls, v);
+  JitOwnedVal rg(r);
   bool keep = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
-  _culebra_value_release_impl(r.tag, r.data);
   if (!keep) {
     stopped_cell->value.data = 1;
-    _culebra_value_release_impl(v.tag, v.data);
     *done = true;
-    return;
+    return;  // vg releases the rejected element
   }
   *done = false;
-  *out_tag = v.tag;
-  *out_data = v.data;
+  auto kept = vg.consume();
+  *out_tag = kept.tag;
+  *out_data = kept.data;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_take_while(
@@ -1006,19 +1009,21 @@ inline void _iter_skip_while_fast_fn(JitClosure* cls, JitValue, bool* done,
       *out_data = v.data;
       return;
     }
-    culebra_runtime_value_retain(v.tag, v.data);
+    JitOwnedVal vg(v);                            // the pulled +1
+    culebra_runtime_value_retain(v.tag, v.data);  // an extra one for the call
     _iter_publish_call_site(cls);
     auto r = _culebra_invoke1(fn_cls, v);
+    JitOwnedVal rg(r);
     bool skip = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
-    _culebra_value_release_impl(r.tag, r.data);
     if (!skip) {
       skipping_cell->value.data = 0;
       *done = false;
-      *out_tag = v.tag;
-      *out_data = v.data;
+      auto kept = vg.consume();
+      *out_tag = kept.tag;
+      *out_data = kept.data;
       return;
     }
-    _culebra_value_release_impl(v.tag, v.data);
+    // vg releases the skipped element (and the throw edge above)
   }
 }
 
@@ -1192,6 +1197,11 @@ inline void _iter_chain_fast_fn(JitClosure* cls, JitValue, bool* done,
 }
 
 inline JitObject* _iter_from_array_obj(int8_t at, int64_t ad);
+// Defined further down; the String arm of _iter_coerce_iterable needs them.
+extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_scalars(
+    const char* s);
+extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char*
+culebra_runtime_strlike_to_cstr(int8_t tag, int64_t data);
 
 // Coerce any iterable (Array / Object-with-iter / already-iterator) into an
 // iterator Object Value. Returns a fresh +1 (caller owns the result).
@@ -1232,6 +1242,24 @@ inline JitValue _iter_coerce_iterable(int8_t t, int64_t d, int64_t line,
     auto* wrapped =
         _iter_from_array_obj(t, d);
     return {TAG_OBJECT, reinterpret_cast<int64_t>(wrapped)};
+  }
+  // A Set iterates its members, a String its 1-scalar StringViews — both are
+  // named in the error below and both work in the interp, so the coercion
+  // used by flat_map / chain / zip has to accept them too.
+  if (t == TAG_SET) {
+    auto* members = culebra_runtime_set_to_array(reinterpret_cast<JitSet*>(d));
+    auto* wrapped = _iter_from_array_obj(
+        TAG_ARRAY, reinterpret_cast<int64_t>(members));
+    // _iter_from_array_obj took its own +1; drop set_to_array's fresh one so
+    // the snapshot dies with the iterator (mirrors the `.iter()` call site).
+    _culebra_value_release_impl(TAG_ARRAY,
+                                reinterpret_cast<int64_t>(members));
+    return {TAG_OBJECT, reinterpret_cast<int64_t>(wrapped)};
+  }
+  if (t == TAG_STRING || t == TAG_STRINGVIEW) {
+    auto* walker =
+        culebra_runtime_str_scalars(culebra_runtime_strlike_to_cstr(t, d));
+    return {TAG_OBJECT, reinterpret_cast<int64_t>(walker)};
   }
   if (t == TAG_OBJECT) {
     auto* o = reinterpret_cast<JitObject*>(d);
