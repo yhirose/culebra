@@ -284,8 +284,24 @@ if(CULEBRA_ENABLE_JIT)
   add_compile_definitions(CULEBRA_JIT_ENABLED)
 endif()
 
+# The commit a vendored submodule is checked out at, or "" when that can't be
+# determined (source tarball, uninitialized submodule). Keys the shared
+# dependency cache below. The .git check matters: `git -C` inside an empty
+# submodule dir would answer with the *superproject's* HEAD, which changes on
+# every culebra commit.
+function(_culebra_dep_rev out dir)
+  set(rev "")
+  find_program(GIT_EXE git)
+  if(GIT_EXE AND EXISTS "${dir}/.git")
+    execute_process(COMMAND ${GIT_EXE} -C "${dir}" rev-parse --short=12 HEAD
+                    OUTPUT_VARIABLE rev OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET)
+  endif()
+  set(${out} "${rev}" PARENT_SCOPE)
+endfunction()
+
 # --- Builtin Scene namespace (raylib + SDL): config ---------------------
-# Heavy, GUI/platform-bound, so OFF by default (normal/headless builds + CI stay
+# A 3D namespace nothing else needs, so OFF by default (normal builds + CI stay
 # lean). Computed before the runtime/embed block so the feature archive + the
 # AOT link string can be registered there. Both SDL3 and raylib (SDL backend)
 # are built statically from vendored submodules further below; here we only
@@ -294,10 +310,25 @@ endif()
 # macOS gamepad subsystem is broken and which has no haptics API at all.
 option(CULEBRA_ENABLE_SCENE "Enable builtin Scene namespace (raylib + SDL)" OFF)
 # The native Canvas desktop window (2D framebuffer) rides on the same vendored
-# raylib + SDL3 statics as the 3D Scene namespace. OFF by default: a normal
-# build keeps Canvas headless (no raylib, all current tests + CI unchanged).
+# raylib + SDL3 statics as the 3D Scene namespace. ON wherever a window is known
+# to work — macOS today; Linux and Windows keep the toolchain work Scene needs —
+# so a plain `just build` runs a Canvas game in a window with no knob to
+# remember. It costs nothing at runtime: the framebuffer core is identical and
+# CULEBRA_CANVAS_HEADLESS turns the window off per run, no rebuild. A build that
+# wants raylib gone entirely (a lean container, a displayless server) passes
+# -DCULEBRA_ENABLE_CANVAS_WINDOW=OFF; CULEBRA_CANVAS_WINDOW_DEFAULT in the
+# environment flips the default for every configure in a job, which is how CI
+# skips the vendored SDL3 + raylib build it has no display for.
+set(_canvas_window_default OFF)
+if(APPLE)
+  set(_canvas_window_default ON)
+endif()
+if(DEFINED ENV{CULEBRA_CANVAS_WINDOW_DEFAULT})
+  set(_canvas_window_default "$ENV{CULEBRA_CANVAS_WINDOW_DEFAULT}")
+endif()
 option(CULEBRA_ENABLE_CANVAS_WINDOW
-  "Enable a native desktop window for the Canvas namespace (raylib + SDL)" OFF)
+  "Enable a native desktop window for the Canvas namespace (raylib + SDL)"
+  ${_canvas_window_default})
 set(_scene_link "")
 set(_canvas_link "")
 
@@ -305,9 +336,48 @@ set(_canvas_link "")
 # namespace is on, so the ExternalProject build + the driver link below are
 # single-sourced across both knobs.
 if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
-  set(_sdl_install "${CMAKE_CURRENT_BINARY_DIR}/sdl_ext")
+  # Where the two statics live. They depend only on their own sources and the
+  # target platform — never on culebra's build type, LTO or JIT settings — so
+  # building them under each build dir made every fresh build/, build-dev/,
+  # build-gate/ (and every new worktree) pay ~3.5 min for the same bytes.
+  # Install them once into a cache keyed on the submodule commits + platform
+  # instead: a vendor bump lands under a new key, so a stale artifact can never
+  # be picked up, and the build below skips ExternalProject entirely on a hit.
+  # ~10 MB per key; old keys are inert (delete with `rm -rf ~/.cache/culebra/deps`).
+  # The root is a cache entry seeded from $CULEBRA_DEPS_CACHE, so it stays put for
+  # a build dir once configured (CI, or a sandbox that can't write $HOME, sets the
+  # variable; -DCULEBRA_DEPS_CACHE= moves an existing one).
+  # Without git (a source tarball) there is no key, so we keep the old per-build
+  # dir location rather than risk sharing across unknown sources.
+  _culebra_dep_rev(_sdl_rev "${CMAKE_CURRENT_SOURCE_DIR}/vendor/SDL")
+  _culebra_dep_rev(_raylib_rev "${CMAKE_CURRENT_SOURCE_DIR}/vendor/raylib")
+  if(_sdl_rev AND _raylib_rev)
+    if(DEFINED ENV{CULEBRA_DEPS_CACHE})
+      set(_deps_root_default "$ENV{CULEBRA_DEPS_CACHE}")
+    else()
+      set(_deps_root_default "$ENV{HOME}/.cache/culebra/deps")
+    endif()
+    set(CULEBRA_DEPS_CACHE "${_deps_root_default}" CACHE PATH
+      "Where the vendored SDL3 + raylib statics are built and shared from")
+    set(_deps_root "${CULEBRA_DEPS_CACHE}")
+    set(_deps_key "${CMAKE_SYSTEM_NAME}" "${CMAKE_SYSTEM_PROCESSOR}")
+    if(CMAKE_OSX_ARCHITECTURES)
+      list(APPEND _deps_key "${CMAKE_OSX_ARCHITECTURES}")
+    endif()
+    if(CMAKE_OSX_DEPLOYMENT_TARGET)
+      list(APPEND _deps_key "macos${CMAKE_OSX_DEPLOYMENT_TARGET}")
+    endif()
+    list(APPEND _deps_key "sdl${_sdl_rev}" "raylib${_raylib_rev}")
+    string(REPLACE ";" "-" _deps_key "${_deps_key}")
+    set(_sdl_install "${_deps_root}/${_deps_key}/sdl")
+    set(_raylib_install "${_deps_root}/${_deps_key}/raylib")
+    message(STATUS "SDL3 + raylib deps cache: ${_deps_root}/${_deps_key}")
+  else()
+    set(_sdl_install "${CMAKE_CURRENT_BINARY_DIR}/sdl_ext")
+    set(_raylib_install "${CMAKE_CURRENT_BINARY_DIR}/raylib_ext")
+    message(STATUS "SDL3 + raylib deps: this build dir (no submodule revision)")
+  endif()
   set(_sdl_a "${_sdl_install}/lib/libSDL3.a")
-  set(_raylib_install "${CMAKE_CURRENT_BINARY_DIR}/raylib_ext")
   set(_raylib_a "${_raylib_install}/lib/libraylib.a")
   if(APPLE)
     # Frameworks SDL3 needs (window/input/audio/haptics) + raylib's GL path,
@@ -780,41 +850,70 @@ endif()
 # at the final link (a static archive records no link deps of its own).
 if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
   include(ExternalProject)
-  ExternalProject_Add(sdl_ext
-    SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/SDL"
-    PREFIX "${CMAKE_CURRENT_BINARY_DIR}/sdl_ext_build"
-    CMAKE_ARGS
-      -DSDL_STATIC=ON -DSDL_SHARED=OFF
-      -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF
-      -DSDL_INSTALL_CPACK=OFF
-      -DCMAKE_BUILD_TYPE=Release
-      -DCMAKE_INSTALL_PREFIX=${_sdl_install}
-      -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
-      -DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
-      -DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}
-    BUILD_BYPRODUCTS "${_sdl_a}")
+  # Each dependency is built only when its static isn't already at the cache
+  # path resolved above — a hit means some earlier build dir, possibly in
+  # another worktree, published these exact sources for this platform. Builds
+  # install into a staging dir and publish_dep.cmake renames that into place, so
+  # a cache entry only ever appears complete: a concurrent cold build elsewhere
+  # sees either nothing yet or a finished tree, never a half-written archive.
+  set(_deps_stage "${CMAKE_CURRENT_BINARY_DIR}/deps_stage")
+  if(NOT EXISTS "${_sdl_a}")
+    ExternalProject_Add(sdl_ext
+      SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/SDL"
+      PREFIX "${CMAKE_CURRENT_BINARY_DIR}/sdl_ext_build"
+      CMAKE_ARGS
+        -DSDL_STATIC=ON -DSDL_SHARED=OFF
+        -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF
+        -DSDL_INSTALL_CPACK=OFF
+        -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_INSTALL_PREFIX=${_deps_stage}/sdl
+        -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
+        -DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
+        -DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}
+      BUILD_BYPRODUCTS "${_sdl_a}")
+    ExternalProject_Add_Step(sdl_ext publish
+      COMMAND ${CMAKE_COMMAND} -DSTAGE=${_deps_stage}/sdl -DDEST=${_sdl_install}
+              -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/publish_dep.cmake"
+      COMMENT "Publishing SDL3 to ${_sdl_install}"
+      DEPENDEES install)
+  endif()
 
-  ExternalProject_Add(raylib_ext
-    SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/raylib"
-    PREFIX "${CMAKE_CURRENT_BINARY_DIR}/raylib_ext_build"
-    DEPENDS sdl_ext
-    CMAKE_ARGS
-      -DPLATFORM=SDL -DBUILD_EXAMPLES=OFF -DBUILD_SHARED_LIBS=OFF
-      -DCMAKE_BUILD_TYPE=Release
-      # SDL3_DIR pins raylib's find_package(SDL3) to the vendored install. A
-      # system/homebrew SDL3 would otherwise be a candidate, and linking one
-      # SDL's headers against another's static archive fails at the final link.
-      -DSDL3_DIR=${_sdl_install}/lib/cmake/SDL3
-      -DCMAKE_PREFIX_PATH=${_sdl_install}
-      -DCMAKE_INSTALL_PREFIX=${_raylib_install}
-      -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
-      -DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
-      -DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}
-    BUILD_BYPRODUCTS "${_raylib_a}")
+  if(NOT EXISTS "${_raylib_a}")
+    set(_raylib_dep "")
+    if(TARGET sdl_ext)
+      set(_raylib_dep DEPENDS sdl_ext)
+    endif()
+    ExternalProject_Add(raylib_ext
+      SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/raylib"
+      PREFIX "${CMAKE_CURRENT_BINARY_DIR}/raylib_ext_build"
+      ${_raylib_dep}
+      CMAKE_ARGS
+        -DPLATFORM=SDL -DBUILD_EXAMPLES=OFF -DBUILD_SHARED_LIBS=OFF
+        -DCMAKE_BUILD_TYPE=Release
+        # SDL3_DIR pins raylib's find_package(SDL3) to the vendored install. A
+        # system/homebrew SDL3 would otherwise be a candidate, and linking one
+        # SDL's headers against another's static archive fails at the final link.
+        -DSDL3_DIR=${_sdl_install}/lib/cmake/SDL3
+        -DCMAKE_PREFIX_PATH=${_sdl_install}
+        -DCMAKE_INSTALL_PREFIX=${_deps_stage}/raylib
+        -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
+        -DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
+        -DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}
+      BUILD_BYPRODUCTS "${_raylib_a}")
+    ExternalProject_Add_Step(raylib_ext publish
+      COMMAND ${CMAKE_COMMAND} -DSTAGE=${_deps_stage}/raylib -DDEST=${_raylib_install}
+              -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/publish_dep.cmake"
+      COMMENT "Publishing raylib to ${_raylib_install}"
+      DEPENDEES install)
+  endif()
 
   # Shared raylib headers + link (built once, used by both bindings).
   target_include_directories(culebra PRIVATE ./vendor/raylib/src)
-  add_dependencies(culebra raylib_ext)
+  foreach(_dep sdl_ext raylib_ext)
+    if(TARGET ${_dep})
+      add_dependencies(culebra ${_dep})
+    endif()
+  endforeach()
   target_link_libraries(culebra "${_raylib_a}" "${_sdl_a}")
   if(APPLE)
     foreach(_fw IN LISTS _scene_frameworks)   # same single source as _scene_link

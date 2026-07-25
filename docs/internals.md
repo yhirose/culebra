@@ -663,7 +663,7 @@ rather than inferred.
 | `cpp-regexlib` | Regex engine (Ch.7) | header-only |
 | `cpp-httplib` | HTTP stack (Ch.9) | header-only (+ static OpenSSL for TLS) |
 | `cpp-tensorlib` | Tensor engine and device backends (Ch.8) | header-only |
-| `raylib` + `SDL` | Window / input backend for `Canvas` (opt-in) and `Scene` | static archives, built from source |
+| `raylib` + `SDL` | Window / input backend for `Canvas` and `Scene` | static archives, built from source (cached, below) |
 | `webview` | Native WebView window for `Webview` / `Desktop` | header-only (+ the OS WebView framework) |
 | `sqlite` | SQLite amalgamation for the `SQLite` namespace | compiled in-tree |
 
@@ -684,8 +684,23 @@ Feature options gate both the namespace and its archive:
 `CULEBRA_ENABLE_JIT` (LLVM linkage — off gives a ~1 MB driver with no
 LLVM dependency), `CULEBRA_ENABLE_HTTP`, `CULEBRA_ENABLE_SQLITE`,
 `CULEBRA_ENABLE_WEBVIEW` (on by default; self-disables on Linux
-without the GTK4 / WebKitGTK dev packages), and the two windowed
-opt-ins `CULEBRA_ENABLE_SCENE` / `CULEBRA_ENABLE_CANVAS_WINDOW`.
+without the GTK4 / WebKitGTK dev packages),
+`CULEBRA_ENABLE_CANVAS_WINDOW` (on by default where a window works —
+macOS today; the environment variable `CULEBRA_CANVAS_WINDOW_DEFAULT=OFF`
+flips that default for every configure in a job, which is how CI opts
+out), and the windowed opt-in `CULEBRA_ENABLE_SCENE`.
+
+Both windowed namespaces link the same vendored SDL3 + raylib statics.
+Those depend only on their own sources and the target platform — never
+on culebra's build type, LTO or JIT settings — so they are installed
+once into `~/.cache/culebra/deps/<platform>-sdl<rev>-raylib<rev>/`
+(root overridable with `CULEBRA_DEPS_CACHE`) and every build dir and
+worktree that resolves the same key links them without rebuilding;
+a submodule bump lands under a new key, so a stale artifact can't be
+picked up. A cold build installs into a staging dir and
+`cmake/publish_dep.cmake` renames that into place, so the cache entry
+appears atomically and a concurrent cold build elsewhere never reads a
+half-written archive.
 
 ### Dependency policy
 

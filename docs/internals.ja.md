@@ -654,7 +654,7 @@ export Object になり、import 側が選んだ名前に束縛されます。�
 | `cpp-regexlib` | Regex エンジン (Ch.7) | header-only |
 | `cpp-httplib` | HTTP スタック (Ch.9) | header-only (+ TLS 用の静的 OpenSSL) |
 | `cpp-tensorlib` | Tensor エンジンとデバイスバックエンド (Ch.8) | header-only |
-| `raylib` + `SDL` | `Canvas` (opt-in) と `Scene` のウィンドウ / 入力バックエンド | ソースからビルドする静的アーカイブ |
+| `raylib` + `SDL` | `Canvas` と `Scene` のウィンドウ / 入力バックエンド | ソースからビルドする静的アーカイブ (下記のキャッシュ付き) |
 | `webview` | `Webview` / `Desktop` のネイティブ WebView ウィンドウ | header-only (+ OS の WebView フレームワーク) |
 | `sqlite` | `SQLite` namespace 用の SQLite amalgamation | in-tree でコンパイル |
 
@@ -675,8 +675,23 @@ vendored なソースからのビルドなので、`culebra build` は自己完�
 `CULEBRA_ENABLE_JIT` (LLVM リンケージ。off ならドライバは ~1 MB で
 LLVM 依存なし)、`CULEBRA_ENABLE_HTTP`、`CULEBRA_ENABLE_SQLITE`、
 `CULEBRA_ENABLE_WEBVIEW` (既定 ON。GTK4 / WebKitGTK の dev パッケージ
-が無い Linux では自動的に無効化)、そして窓ありの 2 つの opt-in
-`CULEBRA_ENABLE_SCENE` / `CULEBRA_ENABLE_CANVAS_WINDOW`。
+が無い Linux では自動的に無効化)、`CULEBRA_ENABLE_CANVAS_WINDOW` (ウィ
+ンドウが動くプラットフォーム — 現状は macOS — では既定 ON。環境変数
+`CULEBRA_CANVAS_WINDOW_DEFAULT=OFF` はジョブ内の全 configure でこの既定
+を反転させる。CI はこれで opt-out している)、そして窓ありの opt-in
+`CULEBRA_ENABLE_SCENE`。
+
+窓ありの 2 つの namespace は同じ vendored SDL3 + raylib の静的ライブラリ
+をリンクします。これらは自分自身のソースとターゲットプラットフォームに
+のみ依存し、culebra 側の build type / LTO / JIT 設定には依存しないので、
+`~/.cache/culebra/deps/<platform>-sdl<rev>-raylib<rev>/` に一度だけイン
+ストールされます (root は `CULEBRA_DEPS_CACHE` で変更可能)。同じキーに
+解決される build dir や worktree はすべて再ビルドせずにリンクし、
+submodule を bump すれば新しいキーの下に入るので stale な成果物を拾うこ
+とはありません。cold ビルドは staging dir にインストールし、
+`cmake/publish_dep.cmake` がそれを rename して置くので、キャッシュエン
+トリは原子的に出現し、別 worktree の並行 cold ビルドが書きかけのアーカ
+イブを読むことはありません。
 
 ### 依存ポリシー
 

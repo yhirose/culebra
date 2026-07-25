@@ -3755,15 +3755,18 @@ Database / Statement ハンドルは生成したスレッド（isolate）に紐�
 色は packed RGBA `Long`、バッファは任意サイズ（WASM-4 流の 160×160 が典型）。
 WASM Playground では Canvas プログラムは **Canvas タブ**で動く — フレームは
 `<canvas>` に表示され、キーボード / ポインタが入力になり、`tone` は WebAudio で
-鳴る。ネイティブでは**デフォルトはヘッドレス**: ピクセル / スプライト操作は同一に
-動く（振る舞いは interpreter / JIT / AOT で一致し `Canvas.get_pixel` で検証可能）が、
-何も表示されず、入力は「ボタンなし」を返し、`tone` は無音。`-DCULEBRA_ENABLE_CANVAS_WINDOW=ON`
-でビルドすると（macOS、`Scene` と同じ vendored 静的 raylib + SDL3）、代わりに実際の
-デスクトップウィンドウを開く: 各 `present` はフレームをアップロードし、最近傍で
-見やすいサイズに整数倍拡大し、60fps で vsync までブロックする。キーボードとマウスが
+鳴る。ネイティブでは、ウィンドウが動くと分かっているプラットフォーム（現状は
+macOS、`Scene` と同じ vendored 静的 raylib + SDL3）では**実際のデスクトップ
+ウィンドウを開く**: 各 `present` はフレームをアップロードし、最近傍で見やすい
+サイズに整数倍拡大し、60fps で vsync までブロックする。キーボードとマウスが
 `Canvas.buttons` / `Canvas.mouse` になり、ウィンドウを閉じる（または Esc）と `run`
-ループが終わる。これは opt-in で、デフォルトビルドには影響しない。ネイティブ `tone`
-音声は後続（今は無音）。
+ループが終わる。それ以外のプラットフォーム、および `CULEBRA_CANVAS_HEADLESS` が
+`0` / `off` 以外に設定された実行では**ヘッドレス**: ピクセル / スプライト操作は同一に
+動く（振る舞いは interpreter / JIT / AOT で一致し `Canvas.get_pixel` で検証可能）が、
+何も表示されず、入力は「ボタンなし」を返し、`tone` は無音。この環境変数が、
+ディスプレイの無いサーバや（`just` の全レシピが export するので）テストスイートが
+ウィンドウ対応バイナリを走らせる方法。`-DCULEBRA_ENABLE_CANVAS_WINDOW=OFF` は
+さらに踏み込んで raylib 自体をビルドから外す。ネイティブ `tone` 音声は後続（今は無音）。
 
 ### 色
 

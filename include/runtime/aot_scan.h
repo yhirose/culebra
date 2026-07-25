@@ -158,14 +158,13 @@ inline bool aot_uses_scene(const peg::Ast& node) {
   return false;
 }
 
-// Does the program reference the `Canvas` namespace? In a window build
-// (-DCULEBRA_ENABLE_CANVAS_WINDOW=ON) this force-loads libculebra_rt_canvas.a
-// (the strong raylib present/input bodies that override the base archive's weak
-// headless stubs) and appends the raylib/SDL link deps — only when true, so a
-// non-Canvas program in a window build references no raylib symbol and links
-// none. In a default (headless) build there is no canvas archive and the base
-// archive's Canvas ops are real, so the flag is inert. Same conservative
-// bare-identifier match as the peers.
+// Does the program reference the `Canvas` namespace? In a window build (the
+// default on macOS) this force-loads libculebra_rt_canvas.a (the strong raylib
+// present/input bodies that override the base archive's weak headless stubs) and
+// appends the raylib/SDL link deps — only when true, so a non-Canvas program in
+// a window build references no raylib symbol and links none. In a headless build
+// there is no canvas archive and the base archive's Canvas ops are real, so the
+// flag is inert. Same conservative bare-identifier match as the peers.
 inline bool aot_uses_canvas(const peg::Ast& node) {
   using namespace peg::udl;
   if (node.tag == "IDENTIFIER"_ && node.token == "Canvas") return true;

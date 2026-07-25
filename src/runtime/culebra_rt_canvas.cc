@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <string_view>
 
 #include "raylib.h"
 
@@ -41,14 +42,22 @@ int pick_scale(int w, int h) {
   return std::max(1, 640 / longest);
 }
 
-// Forced-headless mode for the windowed build: with CULEBRA_CANVAS_HEADLESS set,
-// no window is ever opened and present/input become no-ops, exactly like the
-// default headless backend. This keeps the PPM-md5 diff tests (and displayless
-// CI / SSH runs) working against a window-enabled binary — the "headless path
-// and window mode coexist" requirement — without depending on the OS failing
-// window creation cleanly (some backends crash instead).
+// Forced-headless mode for the windowed build: with CULEBRA_CANVAS_HEADLESS set
+// to anything but ""/"0"/"off", no window is ever opened and present/input
+// become no-ops, exactly like the default headless backend. This keeps the
+// PPM-md5 diff tests (and displayless CI / SSH runs) working against a
+// window-enabled binary — the "headless path and window mode coexist"
+// requirement — without depending on the OS failing window creation cleanly
+// (some backends crash instead). Reading the value rather than just its presence
+// (the CULEBRA_JIT_CACHE convention) lets the justfile export it for every
+// recipe while a single run opts back into the window with =0.
 bool forced_headless() {
-  static const bool h = std::getenv("CULEBRA_CANVAS_HEADLESS") != nullptr;
+  static const bool h = [] {
+    const char* v = std::getenv("CULEBRA_CANVAS_HEADLESS");
+    if (!v) return false;
+    std::string_view s(v);
+    return !(s.empty() || s == "0" || s == "off");
+  }();
   return h;
 }
 

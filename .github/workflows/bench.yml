@@ -17,6 +17,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # No display on a runner, and the benchmarks never open a window: keep the
+      # macOS default off so the job skips the vendored SDL3 + raylib build.
+      CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
 
     steps:
       - uses: actions/checkout@v5

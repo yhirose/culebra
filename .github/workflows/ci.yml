@@ -68,6 +68,11 @@ jobs:
       CULEBRA_TEST_SKIP_HEAVY: ${{ matrix.skip_heavy }}
       # `just test` runs the wrap lane only when this is non-empty.
       CULEBRA_TEST_WRAP: ${{ matrix.test_wrap }}
+      # macOS defaults the Canvas desktop window ON; a runner has no display and
+      # building the vendored SDL3 + raylib statics would add ~4 min per job.
+      # Job-wide env, not a -D on the build step, so every cmake configure
+      # agrees — including the gate build `just test` runs.
+      CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
       # ccache as the compiler launcher via env (job-wide) — not just the build
       # step's -D flags — so EVERY cmake configure agrees, including the
       # `just build` prereq that `just test` / `just smoke-microgpt` re-run.

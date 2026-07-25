@@ -17,15 +17,15 @@
 // the byte order [r, g, b, a] — exactly what the browser's putImageData
 // consumes — so `present` hands the framebuffer to JS with no repacking.
 //
-// The native backend is headless by default: the pixel buffer and sprite ops
-// run identically to the browser (so interp/JIT symmetry is verifiable
-// off-screen via get_pixel), but `present` shows nothing and input reads as "no
-// button". Building with -DCULEBRA_ENABLE_CANVAS_WINDOW=ON instead links a real
-// raylib desktop window (present shows the frame and blocks to vsync, input
-// polls the keyboard/mouse) — the backend-specific present/input/tone/closing
-// are then declarations here, defined in src/runtime/culebra_rt_canvas.cc, so
-// this widely-included framebuffer header still pulls in no raylib on a default
-// build.
+// The native backend is headless when built without CULEBRA_ENABLE_CANVAS_WINDOW
+// (the default off macOS): the pixel buffer and sprite ops run identically to
+// the browser (so interp/JIT symmetry is verifiable off-screen via get_pixel),
+// but `present` shows nothing and input reads as "no button". With the window
+// enabled a real raylib desktop window is linked instead (present shows the
+// frame and blocks to vsync, input polls the keyboard/mouse) — the
+// backend-specific present/input/tone/closing are then declarations here,
+// defined in src/runtime/culebra_rt_canvas.cc, so this widely-included
+// framebuffer header still pulls in no raylib either way.
 
 #include <algorithm>
 #include <cstdint>

@@ -14,6 +14,12 @@ nice_cmd := "nice -n " + env_var_or_default("CULEBRA_NICE", "10")
 # an absolute path — see include/source_dir.h.
 export CCACHE_BASEDIR := justfile_directory()
 
+# Keep Canvas headless under every recipe. A window-enabled build (the default
+# where a window works) must not open one here: the gate compares framebuffer
+# bytes (PPM md5), and no test should steal focus mid-run. Run a game with its
+# window by invoking the binary directly, or with CULEBRA_CANVAS_HEADLESS=0.
+export CULEBRA_CANVAS_HEADLESS := env_var_or_default("CULEBRA_CANVAS_HEADLESS", "1")
+
 # List recipes
 default:
     @just --list
