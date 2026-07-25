@@ -216,10 +216,35 @@ o.a ??= 9'
 expect_param_reject "keyword LHS (if)"         "left-hand side is invalid variable name" 'if = 1'
 expect_param_reject "keyword LHS (true)"       "left-hand side is invalid variable name" 'true = 1'
 expect_param_reject "keyword LHS (match)"      "left-hand side is invalid variable name" 'match = 1'
+# A lone non-identifier target used to be declared as a nameless slot, so the
+# statement silently did nothing.
+expect_param_reject "literal LHS"              "left-hand side is invalid variable name" '1 = 2'
+expect_param_reject "compound tuple LHS"       "left-hand side is invalid variable name" 'mut a = 1
+mut b = 2
+(a, b) += (1, 2)'
+# A call has no storage to write; both backends used to abort with a
+# non-CulebraError (and with different text) instead of rejecting it.
+expect_param_reject "call target"              "cannot assign to a function call result" 'let f = fn () { [1] }
+f() = 3'
+# `(f(), x)` is a CTOR_PATTERN tuple (`Ok(v)` style), so a call target only
+# reaches PLACE_ASSIGN when the chain starts with something no pattern matches.
+expect_param_reject "call target in place assign" "cannot assign to a function call result" 'mut fs = [fn () { 1 }]
+mut x = 0
+(fs[0].call(), x) = (1, 2)'
 
 # Accepted (sound-negative): well-formed assignments must still run.
 expect_accept "plain reassign"          'mut x = 0
 x = 5'
+# Place assignment: a chain target reads its receiver / index, a plain-name
+# target writes (and may declare). Getting either wrong makes the sound
+# undefined-variable pass reject a correct program at load.
+expect_accept "place assign swap"       'mut p = [1, 2]
+mut i = 0
+mut j = 1
+(p[i], p[j]) = (p[j], p[i])'
+expect_accept "place assign declares"   'mut q = [1]
+(fresh, q[0]) = (7, 6)
+inspect(fresh)'
 expect_accept "compound on mut"         'mut x = 1
 x += 2'
 expect_accept "??= on simple var"       'mut x = nil

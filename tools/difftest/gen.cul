@@ -414,7 +414,27 @@ let assigns = ['let o = {a: 1}; o.a += 5; o.a',
                # keys, plain + compound). The JIT used to drop the position.
                'mut o = {a: 1}; o["a"] = 9; o.a',
                'mut o = {a: 1}; o["a"] += 9; o.a',
-               'mut o = {1: "x"}; o[1] = "y"; o[1]']
+               'mut o = {1: "x"}; o[1] = "y"; o[1]',
+               # PLACE_ASSIGN. `(a, b) = t` (all plain names) and
+               # `(a, b[0]) = t` take different paths — the pattern matcher vs
+               # eval_place_assign — so pair them on the same RHS to pin that
+               # both accept the same shapes and report the same mismatch.
+               'mut p = [1, 2]; (p[0], p[1]) = (p[1], p[0]); p',
+               'mut p = [1, 2]; (p[0], p[1]) = [9, 8]; p',
+               'mut p = [1, 2]; (p[1], p[0]) = p; p',
+               'mut a = 1; mut p = [0]; (a, p[0]) = (2, 3); [a, p[0]]',
+               'mut a = 1; mut b = 2; (a, b) = (3, 4); [a, b]',
+               'mut p = [1, 2]; (p[0], p[1]) = (1, 2, 3); p',
+               'mut a = 1; mut b = 2; (a, b) = (1, 2, 3); [a, b]',
+               'mut p = [1, 2]; (p[0], p[1]) = 5; p',
+               'mut a = 1; mut b = 2; (a, b) = 5; [a, b]',
+               'mut p = [1]; (p[0], _) = (7, 8); p',
+               'mut p = [1]; (p[0],) = (7,); p',
+               'mut o = {mut a: 1, mut b: 2}; (o.a, o.b) = (o.b, o.a); [o.a, o.b]',
+               'let o = {a: 1}; mut x = 0; (o.a, x) = (9, 9); o.a',
+               'mut m = [[1, 2], [3, 4]]; (m[0][1], m[1][0]) = (m[1][0], m[0][1]); m',
+               'mut p = [[1], [2]]; (p[0], p[1]) = (p[1], p[0]); p[0].push(9); p',
+               'mut p = [1, 2]; (p[0], p[3]) = (1, 2); p']
 for a in assigns {
   case("assign|" + a, a)
 }

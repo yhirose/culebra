@@ -768,7 +768,18 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       // above (conservative — never flag its later reassignment).
       walk(*node.nodes.back());
       culebra::for_each_place_target(
-          node, [&](const peg::Ast& chain) { walk(chain); },
+          node,
+          [&](const peg::Ast& chain) {
+            // Same certain-to-fail shape the ASSIGNMENT case rejects: a call
+            // has no storage to write.
+            if (chain.nodes.back()->original_tag == "ARGUMENTS"_) {
+              diags_.push_back(Diagnostic{
+                  "SyntaxError", "cannot assign to a function call result.",
+                  static_cast<long>(node.line),
+                  static_cast<long>(node.column), Severity::Error});
+            }
+            walk(chain);
+          },
           [&](const peg::Ast& name) {
             scopes_.back().muts.insert(std::string(name.token));
           });

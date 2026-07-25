@@ -1590,9 +1590,35 @@ before any binding, so swaps and rotates need no temporary:
     (a, b) = (b, a)              # swap → a == 2, b == 1
     (x, y, z) = (y, z, x)        # rotate
 
-A target must already exist and be `mut` (assigning to an immutable
-binding raises `ImmutableError`). Array and object patterns work too:
-`[p, q, _] = xs`, `{g, h} = rec`.
+Each target behaves exactly as it would on its own: an existing binding
+is reassigned (an immutable one raises `ImmutableError`), and a name
+that is not visible is declared, just as bare `x = v` does. Array and
+object patterns work too: `[p, q, _] = xs`, `{g, h} = rec`.
+
+**Index and property targets.** A target may also be an index or
+property chain, so swapping elements needs no temporary either:
+
+    (p[i], p[j]) = (p[j], p[i])              # swap two elements
+    (m[0][1], m[1][0]) = (m[1][0], m[0][1])
+    (self.front, self.back) = (self.back, self.front)
+    (a, o.count) = f()                       # names and chains may mix
+
+A chain target writes through the same rules as the single-target form
+(`p[i] = v`, `o.a = v`) — including `__setindex__` on a class instance,
+and including the fact that an immutable *binding* holding a mutable
+container still permits `xs[0] = v`.
+
+The right-hand side is evaluated once, must be an `Array` or `Tuple`,
+and must hold exactly one element per target; anything else raises
+`ValueError`. Its elements are read before any target is written, so a
+target may safely refer to the right-hand side itself
+(`(p[1], p[0]) = p`), and a mismatch writes nothing at all. Targets are
+then written left to right, each evaluating its own receiver and index
+at that point.
+
+Targets are a flat list: nested patterns and `...rest` belong to the
+pattern forms above and do not mix with chains. A call is never a
+target (`f() = v` is a `SyntaxError`).
 
 ---
 
