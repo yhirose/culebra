@@ -498,17 +498,17 @@ jobs:
           # (getter_or_value helper), and a callable class object `C(args)`
           # (class_new_method helper) — the last two are 16-byte-return helpers
           # too. Method bodies also exercise the ___chkstk_ms stack probe.
-          run JIT_CLASS 'class P { new(x) { this.x = x }
-          val() { return this.x + 1 } }
+          run JIT_CLASS 'class P { new(x) { self.x = x }
+          val() { return self.x + 1 } }
           print(P.new(7).val())'
           run JIT_CLASS_METH0 'class P { new(x) {}
           m() { return 42 } }
           print(P.new(1).m())'
-          run JIT_GETTER 'class P { new(x) { this.x = x }
-          get val() { return this.x + 1 } }
+          run JIT_GETTER 'class P { new(x) { self.x = x }
+          get val() { return self.x + 1 } }
           print(P.new(7).val)'
-          run JIT_CLASSCALL 'class P { new(x) { this.x = x }
-          v() { return this.x } }
+          run JIT_CLASSCALL 'class P { new(x) { self.x = x }
+          v() { return self.x } }
           print(P(9).v())'
           exit $fail
 
@@ -630,14 +630,14 @@ jobs:
           run AOT_NUMSTR 'print(42.to_string())' '42'
           run AOT_CATCHVAL 'try { throw "x" } catch e { print(e) }' 'x'
           run AOT_CATCHCAT 'try { throw "x" } catch e { print("got: " + e) }' 'got: x'
-          run AOT_CLASS 'class P { new(x) { this.x = x }
-          val() { return this.x + 1 } }
+          run AOT_CLASS 'class P { new(x) { self.x = x }
+          val() { return self.x + 1 } }
           print(P.new(7).val())' '8'
-          run AOT_GETTER 'class P { new(x) { this.x = x }
-          get val() { return this.x + 1 } }
+          run AOT_GETTER 'class P { new(x) { self.x = x }
+          get val() { return self.x + 1 } }
           print(P.new(7).val)' '8'
-          run AOT_CLASSCALL 'class P { new(x) { this.x = x }
-          v() { return this.x } }
+          run AOT_CLASSCALL 'class P { new(x) { self.x = x }
+          v() { return self.x } }
           print(P(9).v())' '9'
           # Full EH (defer + catch + concat), the original failing case.
           cat > aot_eh.cul <<'EOF'

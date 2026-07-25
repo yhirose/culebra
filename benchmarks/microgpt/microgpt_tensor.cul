@@ -107,7 +107,7 @@ let ce_loss = fn (logits, target, n) {
 # scalar version's distribution.
 
 class Param {
-  new(t) { this.t = t }
+  new(t) { self.t = t }
 }
 
 let make_param = fn (out_dim, in_dim) {

@@ -33,49 +33,49 @@ inspect("vocab size: {vocab_size}")
 # Let there be Autograd to recursively apply the chain rule through a computation graph
 class Value {
   new(data, children = [], local_grads = []) {
-    this.data = data                # scalar value of this node calculated during forward pass
-    this.grad = 0.0                 # derivative of the loss w.r.t. this node, calculated in backward pass
-    this._children = children       # children of this node in the computation graph
-    this._local_grads = local_grads # local derivative of this node w.r.t. its children
-    this._visited = false
+    self.data = data                # scalar value of this node calculated during forward pass
+    self.grad = 0.0                 # derivative of the loss w.r.t. this node, calculated in backward pass
+    self._children = children       # children of this node in the computation graph
+    self._local_grads = local_grads # local derivative of this node w.r.t. its children
+    self._visited = false
   }
   __add__(other) {
     match other {
-      o: Object => Value.new(this.data + o.data, [this, o], [1.0, 1.0]),
-      _         => Value.new(this.data + other, [this], [1.0])
+      o: Object => Value.new(self.data + o.data, [self, o], [1.0, 1.0]),
+      _         => Value.new(self.data + other, [self], [1.0])
     }
   }
   __mul__(other) {
     match other {
-      o: Object => Value.new(this.data * o.data, [this, o], [o.data, this.data]),
-      _         => Value.new(this.data * other, [this], [other])
+      o: Object => Value.new(self.data * o.data, [self, o], [o.data, self.data]),
+      _         => Value.new(self.data * other, [self], [other])
     }
   }
-  __pow__(n)     { Value.new(this.data ** n, [this], [n * this.data ** (n - 1)]) }
-  __neg__()      { this * (-1.0) }
-  __sub__(other) { this + (-other) }
+  __pow__(n)     { Value.new(self.data ** n, [self], [n * self.data ** (n - 1)]) }
+  __neg__()      { self * (-1.0) }
+  __sub__(other) { self + (-other) }
   __div__(other) {
     match other {
-      o: Object => this * (o ** -1.0),
-      _         => this * (1.0 / other)
+      o: Object => self * (o ** -1.0),
+      _         => self * (1.0 / other)
     }
   }
-  log()  { Value.new(Math.log(this.data), [this], [1.0 / this.data]) }
-  exp()  { d = Math.exp(this.data); Value.new(d, [this], [d]) }
+  log()  { Value.new(Math.log(self.data), [self], [1.0 / self.data]) }
+  exp()  { d = Math.exp(self.data); Value.new(d, [self], [d]) }
   relu() {
-    d = if this.data > 0.0 { this.data } else { 0.0 }
-    g = if this.data > 0.0 { 1.0 } else { 0.0 }
-    Value.new(d, [this], [g])
+    d = if self.data > 0.0 { self.data } else { 0.0 }
+    g = if self.data > 0.0 { 1.0 } else { 0.0 }
+    Value.new(d, [self], [g])
   }
   backward() {
     mut topo = []
     build_topo = |node| if !node._visited {
       node._visited = true
-      for ch in node._children { self(ch) }
+      for ch in node._children { fn(ch) }
       topo.push(node)
     }
-    build_topo(this)
-    this.grad = 1.0
+    build_topo(self)
+    self.grad = 1.0
     topo.reverse()
     topo.for_each(fn (v) {
       range(v._children.size()).for_each(fn (j) {
@@ -118,9 +118,9 @@ matrix = |nout, nin, std = 0.08|
 # overall convergence behavior matches.
 class GPT {
   new() {
-    this.wte = matrix(vocab_size, n_embd)
-    this.wpe = matrix(block_size, n_embd)
-    this.lm_head = matrix(vocab_size, n_embd)
+    self.wte = matrix(vocab_size, n_embd)
+    self.wpe = matrix(block_size, n_embd)
+    self.lm_head = matrix(vocab_size, n_embd)
     mut layers = []
     for _ in 0..n_layer {
       layers.push({
@@ -132,7 +132,7 @@ class GPT {
         mlp_fc2: matrix(n_embd, 4 * n_embd)
       })
     }
-    this.layers = layers
+    self.layers = layers
   }
 }
 
