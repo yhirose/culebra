@@ -50,13 +50,17 @@ Canvas.run(8, 8, fn () {
   s.draw_sub_scaled(0, 0, 1, 1, 0, 0, 2, 1, smooth: true)   // both reds averaged
   assert_eq(Canvas.get_pixel(0, 0), RED)
 
-  // trapezoid: rows [y_top, y_bot), sides interpolated between the two spans.
+  // triangle / polygon: even-odd fill, half-open rows and spans.
   Canvas.clear(GREEN)
-  Canvas.trapezoid(0, 3, 5, 4, 1, 7, BLUE)
+  Canvas.triangle(0, 0, 8, 0, 0, 8, BLUE)
+  assert_eq(Canvas.get_pixel(0, 0), BLUE)
+  assert_eq(Canvas.get_pixel(7, 7), GREEN)          // past the hypotenuse
+  Canvas.clear(GREEN)
+  Canvas.polygon([3, 0, 5, 0, 7, 4, 1, 4], BLUE)
   assert_eq(Canvas.get_pixel(3, 0), BLUE)
-  assert_eq(Canvas.get_pixel(2, 0), GREEN)          // outside the top span
+  assert_eq(Canvas.get_pixel(2, 0), GREEN)          // outside the top edge
   assert_eq(Canvas.get_pixel(1, 3), BLUE)           // the widened bottom row
-  assert_eq(Canvas.get_pixel(0, 4), GREEN)          // y_bot itself is excluded
+  assert_eq(Canvas.get_pixel(0, 4), GREEN)          // the closing row is excluded
 
   // Indexed sprite: indices into a palette resolve to the same pixels.
   let si = Canvas.Sprite.new([1, 1, 2, 0], 2, 2, [clear, RED, BLUE])

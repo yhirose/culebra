@@ -704,11 +704,37 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_rect(
                                 static_cast<int>(w), static_cast<int>(h),
                                 static_cast<uint32_t>(rgba));
 }
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_trapezoid(
-    int64_t y_top, int64_t xl_top, int64_t xr_top, int64_t y_bot,
-    int64_t xl_bot, int64_t xr_bot, int64_t rgba) {
-  culebra::_canvas_detail::trapezoid(y_top, xl_top, xr_top, y_bot, xl_bot,
-                                     xr_bot, static_cast<uint32_t>(rgba));
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_triangle(
+    int64_t x1, int64_t y1, int64_t x2, int64_t y2, int64_t x3, int64_t y3,
+    int64_t rgba) {
+  culebra::_canvas_detail::triangle(x1, y1, x2, y2, x3, y3,
+                                    static_cast<uint32_t>(rgba));
+}
+// The `points` elements carry the same Long|Float contract the scalar geometry
+// arguments do, so the tags are checked here rather than narrowed blindly.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_polygon(
+    JitArray* points, int64_t rgba, int64_t line, int64_t col) {
+  std::vector<int64_t> pts;
+  if (points) {
+    pts.reserve(points->size);
+    for (size_t i = 0; i < points->size; i++) {
+      const auto& e = points->items[i];
+      if (e.tag == TAG_LONG) {
+        pts.push_back(e.data);
+      } else if (e.tag == TAG_FLOAT) {
+        double d;
+        std::memcpy(&d, &e.data, sizeof(d));
+        pts.push_back(culebra::_canvas_detail::coord(d));
+      } else {
+        throw culebra::CulebraError(
+            "TypeError", culebra::_canvas_detail::kPolygonPointsError, line,
+            col);
+      }
+    }
+  }
+  culebra::_canvas_detail::polygon(pts.data(),
+                                   static_cast<int64_t>(pts.size() / 2),
+                                   static_cast<uint32_t>(rgba));
 }
 // A JitArray of Longs as a packed integer vector (null or empty -> empty), the
 // upload-once shape both Canvas table prims take. The shims around it are the
@@ -7581,8 +7607,10 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::canvas_set_pixel, vt, i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_get_pixel, i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_rect, vt, i64, i64, i64, i64, i64);
-  jit.module_->getOrInsertFunction(rt::canvas_trapezoid, vt, i64, i64, i64, i64,
+  jit.module_->getOrInsertFunction(rt::canvas_triangle, vt, i64, i64, i64, i64,
                                    i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_polygon, vt, ptrTy, i64, i64,
+                                   i64);
   jit.module_->getOrInsertFunction(rt::canvas_font_load, i64, ptrTy);
   jit.module_->getOrInsertFunction(rt::canvas_glyph, vt, i64, i64, i64, i64,
                                    i64);
@@ -8666,11 +8694,23 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
       if (auto v = args({{"x", Coord}, {"y", Coord}, {"w", Coord}, {"h", Coord},
                          {"rgba"}}))
         return call_void(rt::canvas_rect, *v);
-    if (method == "trapezoid")
-      if (auto v = args({{"y_top", Coord}, {"xl_top", Coord}, {"xr_top", Coord},
-                         {"y_bot", Coord}, {"xl_bot", Coord}, {"xr_bot", Coord},
+    if (method == "triangle")
+      if (auto v = args({{"x1", Coord}, {"y1", Coord}, {"x2", Coord},
+                         {"y2", Coord}, {"x3", Coord}, {"y3", Coord},
                          {"rgba"}}))
-        return call_void(rt::canvas_trapezoid, *v);
+        return call_void(rt::canvas_triangle, *v);
+    if (method == "polygon" && a.size() == 2) {
+      auto pts = jit.compile(*a[0]);
+      emit_type_check(pts.borrow(), "Array", "parameter 'points'", a[0].get());
+      auto pp = builder_.CreateIntToPtr(extract_data(pts.borrow()), ptrTy);
+      auto col_ = jit.compile(*a[1]);
+      emit_type_check(col_.borrow(), "Long", "parameter 'rgba'", a[1].get());
+      auto rgba = value_to_long(col_.consume());
+      emit_call(module_->getFunction(rt::canvas_polygon),
+                {pp, rgba, line, col});
+      pts.drop();
+      return jit.own(make_nil());
+    }
     if (method == "font_load" && a.size() == 1) {
       auto rows = jit.compile(*a[0]);
       emit_type_check(rows.borrow(), "Array", "parameter 'rows'", a[0].get());

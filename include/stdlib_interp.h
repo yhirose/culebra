@@ -1833,21 +1833,50 @@ inline Value make_canvas_primitives_namespace() {
           })),
       false);
 
-  // _Canvas.trapezoid(y_top, xl_top, xr_top, y_bot, xl_bot, xr_bot, rgba)
-  // -> Nil (filled, clipped; horizontal top and bottom edges)
-  ns.initialize("trapezoid",
-      Value(FunctionValue({{"y_top", false, "Long|Float"sv},
-                           {"xl_top", false, "Long|Float"sv},
-                           {"xr_top", false, "Long|Float"sv},
-                           {"y_bot", false, "Long|Float"sv},
-                           {"xl_bot", false, "Long|Float"sv},
-                           {"xr_bot", false, "Long|Float"sv},
+  // _Canvas.triangle(x1, y1, x2, y2, x3, y3, rgba) -> Nil (filled, clipped)
+  ns.initialize("triangle",
+      Value(FunctionValue({{"x1", false, "Long|Float"sv},
+                           {"y1", false, "Long|Float"sv},
+                           {"x2", false, "Long|Float"sv},
+                           {"y2", false, "Long|Float"sv},
+                           {"x3", false, "Long|Float"sv},
+                           {"y3", false, "Long|Float"sv},
                            {"rgba", false, "Long"sv}},
           [](std::shared_ptr<Environment> env) {
-            _canvas_detail::trapezoid(
-                canvas_coord_arg(env, "y_top"), canvas_coord_arg(env, "xl_top"),
-                canvas_coord_arg(env, "xr_top"), canvas_coord_arg(env, "y_bot"),
-                canvas_coord_arg(env, "xl_bot"), canvas_coord_arg(env, "xr_bot"),
+            _canvas_detail::triangle(
+                canvas_coord_arg(env, "x1"), canvas_coord_arg(env, "y1"),
+                canvas_coord_arg(env, "x2"), canvas_coord_arg(env, "y2"),
+                canvas_coord_arg(env, "x3"), canvas_coord_arg(env, "y3"),
+                static_cast<uint32_t>(env->get("rgba").to_long()));
+            return Value();
+          })),
+      false);
+
+  // _Canvas.polygon(points: Array, rgba) -> Nil (filled, clipped, even-odd).
+  // points is a flat x0, y0, x1, y1, ... of Long|Float; the outline closes
+  // automatically.
+  ns.initialize("polygon",
+      Value(FunctionValue({{"points", false, "Array"sv},
+                           {"rgba", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            const auto& arr = *env->get("points").to_array().values;
+            std::vector<int64_t> pts;
+            pts.reserve(arr.size());
+            for (const auto& v : arr) {
+              if (v.type == Value::Long) {
+                pts.push_back(static_cast<int64_t>(v.to_long()));
+              } else if (v.type == Value::Float) {
+                pts.push_back(_canvas_detail::coord(v.get<double>()));
+              } else {
+                throw CulebraError("TypeError",
+                                   _canvas_detail::kPolygonPointsError, line,
+                                   col);
+              }
+            }
+            _canvas_detail::polygon(
+                pts.data(), static_cast<int64_t>(pts.size() / 2),
                 static_cast<uint32_t>(env->get("rgba").to_long()));
             return Value();
           })),

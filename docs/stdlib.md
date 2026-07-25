@@ -3922,7 +3922,8 @@ alpha of 0 is transparent (skipped by sprite blits).
 | `Canvas.set_pixel(x, y, color)` | set one pixel (off-buffer writes are ignored) |
 | `Canvas.get_pixel(x, y) -> Long` | read a pixel (0 off-buffer) — for pixel-readback collision |
 | `Canvas.rect(x, y, w, h, color)` | filled rectangle, clipped |
-| `Canvas.trapezoid(y_top, xl_top, xr_top, y_bot, xl_bot, xr_bot, color)` | filled trapezoid with horizontal top and bottom edges |
+| `Canvas.triangle(x1, y1, x2, y2, x3, y3, color)` | filled triangle |
+| `Canvas.polygon(points, color)` | filled polygon from a flat vertex list |
 | `Canvas.width()` / `Canvas.height() -> Long` | framebuffer dimensions |
 | `Canvas.present()` | show the frame (see the loop below) |
 
@@ -3934,12 +3935,21 @@ reads as 0. This lets a program that computes positions in floating point — a
 projection, a scroll offset — pass them straight in instead of rounding each
 one itself. Colours, blit flags, alpha and sprite handles remain `Long`.
 
-`Canvas.trapezoid` fills the rows `[y_top, y_bot)`, interpolating the left and
-right edges from the top span down to the bottom one; each row covers
-`[xl, xr)`, the same half-open convention as `rect`, so trapezoids sharing an
-edge tile with no seam and no double-drawn column. Nothing is drawn when
-`y_bot <= y_top`, as with a `rect` of non-positive height. The interpolation is
-integer throughout, so every backend rasterizes the identical shape.
+`Canvas.polygon` takes `points` as a flat `[x0, y0, x1, y1, …]` list of at
+least three vertices — Longs or Floats, like every other coordinate — and
+closes the outline itself; a trailing half-pair is ignored. It fills by the
+even-odd rule, so a concave outline hollows out the way you would draw it.
+`Canvas.triangle` is the same fill from three vertices spelled out, which is
+what the conventional shape call looks like (raylib, SDL and GPU rasterizers
+all take three) and avoids building an `Array` per call on a hot path.
+
+Rows and spans are half-open, the same convention as `rect`: a row belongs to
+the edge whose vertical span contains it, and each filled span covers
+`[xl, xr)`. Shapes sharing an edge therefore tile with no seam and no
+double-drawn pixel — a rectangle cut along its diagonal into two triangles
+rasterizes back to exactly the rectangle. The interpolation is integer
+throughout, so every backend produces the identical shape, and coordinates
+saturate into a ±2³⁰ guard band so no input can overflow it.
 
 ### Sprites
 

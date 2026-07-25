@@ -1310,9 +1310,9 @@ for c in selfcases {
   case("self|" + c, c)
 }
 
-# --- Dimension: Canvas rasterization (Float coords / trapezoid / blit_scaled) --
+# --- Dimension: Canvas rasterization (Float coords / shapes / blit_scaled) ----
 # The framebuffer prims take `Long|Float` geometry and round a Float in one
-# shared place (canvas.h coord(), toward -inf); trapezoid and blit_scaled then
+# shared place (canvas.h coord(), toward -inf); the shape fills and blit_scaled
 # rasterize with integer-only arithmetic. All three must produce the identical
 # shape on every backend, so each case draws and dumps the whole framebuffer.
 # The coordinate sweep runs fractional, negative, non-finite and out-of-range
@@ -1327,8 +1327,8 @@ for c in cvcoords {
   case("cvrect|" + c, cvinit + '_Canvas.rect(' + c + ', 0, 3, 2, _CA+5); _cdump()')
   case("cvpix|" + c, cvinit + '_Canvas.set_pixel(' + c + ', 1, _CA+5); _cdump()')
   case("cvget|" + c, '_Canvas.init(6, 4); _Canvas.clear(_CA+7); to_string(_Canvas.get_pixel(' + c + ', 0))')
-  case("cvtzl|" + c, cvinit + '_Canvas.trapezoid(0, ' + c + ', 4, 3, 1, 5, _CA+5); _cdump()')
-  case("cvtzy|" + c, cvinit + '_Canvas.trapezoid(' + c + ', 1, 5, 3, 0, 6, _CA+5); _cdump()')
+  case("cvtri|" + c, cvinit + '_Canvas.triangle(' + c + ', 0, 5, 0, 0, 3, _CA+5); _cdump()')
+  case("cvpolyv|" + c, cvinit + '_Canvas.polygon([1, 0, 5, 0, ' + c + ', 3, 0, 3], _CA+5); _cdump()')
   case("cvblit|" + c, cvinit + '_Canvas.blit(' + cvsprite + ', ' + c + ', 0, 0, 0, 2, 2, 0); _cdump()')
   case("cvbsd|" + c, cvinit + '_Canvas.blit_scaled(' + cvsprite + ', ' + c + ', 0, 4, 4, 0, 0, 2, 2, 0, 255); _cdump()')
   case("cvbss|" + c, cvinit + '_Canvas.blit_scaled(' + cvsprite + ', 0, 0, 4, 4, 0, 0, ' + c + ', 2, 0, 255); _cdump()')
@@ -1347,14 +1347,20 @@ for g in ['999, 0', '_CFONT, -1', '_CFONT, 2', '_CFONT, 99999',
   case("cvglyphoob|" + g, cvinit + '_Canvas.glyph(' + g + ', 0, 0, _CA+5); _cdump()')
 }
 # Degenerate and inverted extents: a non-positive height/width draws nothing
-# rather than wrapping, and trapezoids that share an edge tile with no seam and
-# no double-drawn row.
+# rather than wrapping, and shapes that share an edge tile with no seam and no
+# double-drawn row.
 let cvshapes = [
-  '_Canvas.trapezoid(3, 0, 6, 1, 0, 6, _CA+5)',
-  '_Canvas.trapezoid(1, 0, 6, 1, 0, 6, _CA+5)',
-  '_Canvas.trapezoid(0, 4, 2, 4, 4, 2, _CA+5)',
-  '_Canvas.trapezoid(-2, -4, 2, 6, 2, 9, _CA+5)',
-  '_Canvas.trapezoid(0, 2, 4, 2, 1, 5, _CA+5); _Canvas.trapezoid(2, 1, 5, 4, 0, 6, _CA+6)',
+  '_Canvas.triangle(0, 0, 6, 0, 0, 4, _CA+5)',
+  '_Canvas.triangle(0, 0, 6, 0, 6, 0, _CA+5)',
+  '_Canvas.triangle(2, 2, 2, 2, 2, 2, _CA+5)',
+  '_Canvas.triangle(-3, -2, 9, -2, 3, 7, _CA+5)',
+  '_Canvas.triangle(0, 0, 6, 0, 0, 4, _CA+5); _Canvas.triangle(6, 0, 6, 4, 0, 4, _CA+6)',
+  '_Canvas.polygon([], _CA+5)',
+  '_Canvas.polygon([1, 1], _CA+5)',
+  '_Canvas.polygon([1, 1, 4, 4], _CA+5)',
+  '_Canvas.polygon([1, 1, 4, 1, 4], _CA+5)',
+  '_Canvas.polygon([0, 0, 6, 0, 6, 4, 4, 4, 4, 1, 2, 1, 2, 4, 0, 4], _CA+5)',
+  '_Canvas.polygon([2, 0, 5, 0, 6, 2, 1, 2], _CA+5); _Canvas.polygon([1, 2, 6, 2, 6, 4, 0, 4], _CA+6)',
   '_Canvas.blit_scaled(' + cvsprite + ', 0, 0, 0, 4, 0, 0, 2, 2, 0, 255)',
   '_Canvas.blit_scaled(' + cvsprite + ', 0, 0, 4, 4, 0, 0, 2, 0, 0, 255)',
   '_Canvas.blit_scaled(' + cvsprite + ', -1, -1, 8, 8, 0, 0, 2, 2, 0, 255)',
@@ -1364,6 +1370,11 @@ let cvshapes = [
 ]
 for s in cvshapes {
   case("cvshape|" + s, cvinit + s + '; _cdump()')
+}
+# `points` itself must be an Array — the element sweep above covers what may be
+# inside one.
+for p in ['5', '1.5', 'nil', '"xy"', '{a: 1}', '(1, 2)'] {
+  case("cvpolyarg|" + p, cvinit + '_Canvas.polygon(' + p + ', _CA+5); _cdump()')
 }
 # flags x alpha: the flip / box-average bits, and the integer compositing rule
 # read back over a filled buffer so the blended channels show up in the dump.

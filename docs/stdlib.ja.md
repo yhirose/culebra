@@ -3783,7 +3783,8 @@ macOS、`Scene` と同じ vendored 静的 raylib + SDL3）では**実際のデ�
 | `Canvas.set_pixel(x, y, color)` | 1 ピクセルを設定（範囲外は無視） |
 | `Canvas.get_pixel(x, y) -> Long` | ピクセルを読む（範囲外は 0）— ピクセル読み戻しの当たり判定用 |
 | `Canvas.rect(x, y, w, h, color)` | 塗り矩形（クリップ） |
-| `Canvas.trapezoid(y_top, xl_top, xr_top, y_bot, xl_bot, xr_bot, color)` | 上辺・下辺が水平な塗り台形 |
+| `Canvas.triangle(x1, y1, x2, y2, x3, y3, color)` | 塗り三角形 |
+| `Canvas.polygon(points, color)` | 平坦な頂点列からの塗り多角形 |
 | `Canvas.width()` / `Canvas.height() -> Long` | フレームバッファ寸法 |
 | `Canvas.present()` | フレームを提示（下記ループ参照） |
 
@@ -3794,11 +3795,18 @@ macOS、`Scene` と同じ vendored 静的 raylib + SDL3）では**実際のデ�
 スクロールオフセット）は 1 つずつ丸めずそのまま渡せる。色 / blit フラグ /
 アルファ / スプライトハンドルは `Long` のまま。
 
-`Canvas.trapezoid` は行 `[y_top, y_bot)` を塗り、左右の辺を上のスパンから下の
-スパンへ補間する。各行は `rect` と同じ半開区間 `[xl, xr)` を覆うので、辺を共有
-する台形は継ぎ目なく、二重描画もなく敷き詰まる。`y_bot <= y_top` のときは高さ
-が非正の `rect` と同じく何も描かない。補間は全て整数なので、どの backend でも
-同一の形にラスタライズされる。
+`Canvas.polygon` の `points` は平坦な `[x0, y0, x1, y1, …]` の頂点列（3 頂点
+以上、他の座標と同じく Long か Float）で、輪郭は自動で閉じる。末尾の半端な 1 個
+は無視される。塗りは even-odd 規則なので、凹んだ輪郭は見たとおりに凹む。
+`Canvas.triangle` は同じ塗りを 3 頂点で直接書く形で、慣習的な形状呼び出し
+（raylib / SDL / GPU ラスタライザはいずれも 3 頂点を取る）に合わせるとともに、
+ホットパスで呼び出しごとに `Array` を作らずに済む。
+
+行とスパンは `rect` と同じ半開区間 — 行は「その行を縦スパンに含む辺」に属し、
+塗るスパンは `[xl, xr)`。したがって辺を共有する図形は継ぎ目なく、二重描画もなく
+敷き詰まる（矩形を対角線で 2 つの三角形に切ると、ラスタライズ結果は元の矩形に
+正確に戻る）。補間は全て整数なので、どの backend でも同一の形になる。座標は
+±2³⁰ のガードバンドに飽和するので、どんな入力でも桁あふれしない。
 
 ### スプライト
 

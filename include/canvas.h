@@ -71,19 +71,28 @@ inline void init(int w, int h) {
 inline int width() { return _fb_w(); }
 inline int height() { return _fb_h(); }
 
+// Geometry saturates into a guard band. 2^30 pixels is far outside any
+// framebuffer, and clamping there keeps the edge interpolation's products
+// (a coordinate difference times a row offset) inside int64 — so the shape
+// rasterizers can stay integer without a single overflow case to reason about.
+inline constexpr int64_t kGuard = int64_t{1} << 30;
+inline int64_t guard(int64_t v) {
+  return v < -kGuard ? -kGuard : (v > kGuard ? kGuard : v);
+}
+
 // The pixel index a Float geometry argument names. Rounding is toward -inf,
 // the rasterization convention (pixel n covers [n, n+1)): adjacent spans then
 // tile with no gap or overlap, and a negative coordinate stays off-buffer
 // instead of snapping onto column 0 the way truncation would. Non-finite and
-// out-of-range values saturate into int32 rather than trap, since every
-// consumer below narrows to int. Long arguments never reach here — they are
-// already pixel indices — so this is the whole Float->pixel contract, shared
-// by the interpreter, the JIT and AOT.
+// out-of-range values saturate into the guard band rather than trap, so Long
+// and Float arguments land on one rule. Long arguments never reach here — they
+// are already pixel indices — so this is the whole Float->pixel contract,
+// shared by the interpreter, the JIT and AOT.
 inline int64_t coord(double d) {
   if (std::isnan(d)) return 0;
   double f = std::floor(d);
-  if (f < -2147483648.0) return -2147483648;
-  if (f > 2147483647.0) return 2147483647;
+  if (f < -static_cast<double>(kGuard)) return -kGuard;
+  if (f > static_cast<double>(kGuard)) return kGuard;
   return static_cast<int64_t>(f);
 }
 
@@ -120,29 +129,60 @@ inline int64_t floor_div(int64_t a, int64_t b) {
   return (a % b != 0 && ((a < 0) != (b < 0))) ? q - 1 : q;
 }
 
-// Filled trapezoid with horizontal top and bottom edges: rows [y_top, y_bot),
-// the left and right edges interpolated linearly from (xl_top, xr_top) down to
-// (xl_bot, xr_bot). Each row fills [xl, xr), the same half-open convention as
-// rect, so trapezoids that share an edge tile with no seam and no double-drawn
-// column. Nothing is drawn when y_bot <= y_top, as with a rect of non-positive
-// height. The interpolation is integer throughout, so every backend rasterizes
-// the identical shape.
-inline void trapezoid(int64_t y_top, int64_t xl_top, int64_t xr_top,
-                      int64_t y_bot, int64_t xl_bot, int64_t xr_bot,
-                      uint32_t rgba) {
-  int64_t h = y_bot - y_top;
-  if (h <= 0) return;
-  int64_t dl = xl_bot - xl_top;
-  int64_t dr = xr_bot - xr_top;
-  int64_t y0 = std::max<int64_t>(y_top, 0);
-  int64_t y1 = std::min<int64_t>(y_bot, _fb_h());
-  for (int64_t y = y0; y < y1; y++) {
-    int64_t t = y - y_top;
-    int64_t x0 = std::max<int64_t>(xl_top + floor_div(dl * t, h), 0);
-    int64_t x1 = std::min<int64_t>(xr_top + floor_div(dr * t, h), _fb_w());
-    uint32_t* row = _fb().data() + static_cast<size_t>(y) * _fb_w();
-    for (int64_t x = x0; x < x1; x++) row[x] = rgba;
+// The one message both backends raise for a `points` element that is neither
+// Long nor Float, so the polygon contract reads identically everywhere.
+inline constexpr auto kPolygonPointsError =
+    "type error: parameter 'points' expects an Array of Long|Float";
+
+// Filled polygon, even-odd rule. `pts` is a flat x0,y0,x1,y1,... of `n`
+// vertices; the outline closes automatically. Rows are half-open and each
+// filled span is [xl, xr), the same convention as rect, so polygons that share
+// an edge tile with no seam and no double-drawn pixel: a row belongs to the
+// edge whose y-span contains it, so a shared vertex is counted exactly once.
+// The interpolation is integer throughout, so every backend rasterizes the
+// identical shape. Fewer than 3 vertices draws nothing.
+inline void polygon(const int64_t* pts, int64_t n, uint32_t rgba) {
+  if (pts == nullptr || n < 3) return;
+  auto vx = [&](int64_t i) { return guard(pts[2 * i]); };
+  auto vy = [&](int64_t i) { return guard(pts[2 * i + 1]); };
+  int64_t ymin = vy(0), ymax = vy(0);
+  for (int64_t i = 1; i < n; i++) {
+    ymin = std::min(ymin, vy(i));
+    ymax = std::max(ymax, vy(i));
   }
+  int64_t y0 = std::max<int64_t>(ymin, 0);
+  int64_t y1 = std::min<int64_t>(ymax, _fb_h());
+  if (y0 >= y1) return;
+  // Reused across calls: the framebuffer is already process-wide state, so a
+  // per-call crossings buffer would be the only allocation in the draw path.
+  static std::vector<int64_t> xs;
+  for (int64_t y = y0; y < y1; y++) {
+    xs.clear();
+    for (int64_t i = 0; i < n; i++) {
+      int64_t j = (i + 1 == n) ? 0 : i + 1;
+      int64_t ay = vy(i), by = vy(j);
+      if (ay == by) continue;  // horizontal edge crosses no row
+      if (y < std::min(ay, by) || y >= std::max(ay, by)) continue;
+      int64_t ax = vx(i), bx = vx(j);
+      xs.push_back(ax + floor_div((bx - ax) * (y - ay), by - ay));
+    }
+    if (xs.size() < 2) continue;
+    std::sort(xs.begin(), xs.end());
+    uint32_t* row = _fb().data() + static_cast<size_t>(y) * _fb_w();
+    for (size_t k = 0; k + 1 < xs.size(); k += 2) {
+      int64_t x0 = std::max<int64_t>(xs[k], 0);
+      int64_t x1 = std::min<int64_t>(xs[k + 1], _fb_w());
+      for (int64_t x = x0; x < x1; x++) row[x] = rgba;
+    }
+  }
+}
+
+// Filled triangle — the conventional general shape (raylib, SDL and every GPU
+// rasterizer take three vertices), and the same even-odd fill as polygon.
+inline void triangle(int64_t x1, int64_t y1, int64_t x2, int64_t y2, int64_t x3,
+                     int64_t y3, uint32_t rgba) {
+  const int64_t pts[6] = {x1, y1, x2, y2, x3, y3};
+  polygon(pts, 3, rgba);
 }
 
 // Registered 8x8 bitmap fonts: a flat table of 8 row-bytes per glyph, MSB the

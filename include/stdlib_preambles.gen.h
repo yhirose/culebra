@@ -341,7 +341,7 @@ let _canvas_module = fn () {
       self._w = _Canvas.sprite_width(self._id)
       self._h = _Canvas.sprite_height(self._id)
     }
-    # Decode a PNG image (its bytes as a String, e.g. from `FS.read_bytes`) and
+    # Decode a PNG image (its bytes as a String, e.g. from `FS.read`) and
     # upload it. The size comes from the image, so there is nothing to pass.
     # Raises ValueError on anything that isn't a decodable PNG.
     new(png: String) {
@@ -506,12 +506,14 @@ let _canvas_module = fn () {
     set_pixel: fn (x, y, color) { _Canvas.set_pixel(x, y, color) },
     get_pixel: fn (x, y) { _Canvas.get_pixel(x, y) },
     rect: fn (x, y, w, h, color) { _Canvas.rect(x, y, w, h, color) },
-    # Filled trapezoid with horizontal top and bottom edges: rows [y_top, y_bot)
-    # with the sides interpolated between the two spans. Each row covers
-    # [xl, xr), like rect, so stacked trapezoids tile with no seam.
-    trapezoid: fn (y_top, xl_top, xr_top, y_bot, xl_bot, xr_bot, color) {
-      _Canvas.trapezoid(y_top, xl_top, xr_top, y_bot, xl_bot, xr_bot, color)
+    # Filled triangle from three vertices — the conventional general shape.
+    triangle: fn (x1, y1, x2, y2, x3, y3, color) {
+      _Canvas.triangle(x1, y1, x2, y2, x3, y3, color)
     },
+    # Filled polygon from a flat x0, y0, x1, y1, ... vertex list (even-odd
+    # rule; the outline closes itself). Each row covers [xl, xr), like rect,
+    # so polygons sharing an edge tile with no seam.
+    polygon: fn (points, color) { _Canvas.polygon(points, color) },
     present: fn () { _Canvas.present() },
     width: fn () { _Canvas.width() },
     height: fn () { _Canvas.height() },
