@@ -114,6 +114,34 @@ inline JitClosure* _iter_next_closure(JitValue iter_val) {
   return _iter_method_closure(iter_val, "next");
 }
 
+// `dispose()` on a lazy wrapper: close the upstream iterator(s) it pulls from.
+// Its captures are exactly those upstreams (see _iter_wrap_new); the interp
+// twin is the forwarding dispose _make_iterator attaches.
+inline void _iter_dispose_upstreams_fn(JitValue* __ret, JitClosure* cls,
+                                       int8_t self_tag, int64_t self_data,
+                                       int64_t, JitValue*) {
+  // Native iterator method: `self` arrives +1-owned (callee-consumes), like
+  // _iter_self_iter_fn and the has_next/next trampolines.
+  JitOwnedVal self_guard(JitValue{self_tag, self_data});
+  // Close every upstream even if one throws (zip/chain hold two); the first
+  // error is the one the caller sees.
+  std::exception_ptr first;
+  for (size_t i = 0; i < cls->n_captures; i++) {
+    JitValue up = cls->captures[i]->value;
+    auto* dispose_cls = _iter_method_closure(up, "dispose");
+    if (!dispose_cls || dispose_cls->arity != 0) continue;
+    try {
+      culebra_runtime_value_retain(up.tag, up.data);  // the callee consumes it
+      auto r = _jit_invoke(dispose_cls, up, 0, nullptr);
+      _culebra_value_release_impl(r.tag, r.data);
+    } catch (...) {
+      if (!first) first = std::current_exception();
+    }
+  }
+  if (first) std::rethrow_exception(first);
+  *__ret = {TAG_NIL, 0};
+}
+
 // Open the iterator protocol on `iter`: validate the contract
 // (docs/language.md §18.5) and hand back both closures. Every protocol
 // open — the for-in head, the inlined iterator HOFs — goes through here,
@@ -247,10 +275,15 @@ CULEBRA_RT_KEEP void culebra_runtime_cell_retain(JitCell* c);
 // Captures layout: [user's captures..., state_cell, value_cell].
 // state_cell.value.data ∈ { _ITER_LA_EMPTY, _ITER_LA_FILLED, _ITER_LA_DRAINED }.
 // value_cell holds a +1-owned lookahead while state == FILLED.
+// `n_upstreams` is how many of the leading `captures` hold the iterator(s) this
+// wrapper pulls from (0 for a source iterator, 2 for zip/chain). They get a
+// forwarding `dispose`, since from the consumer's side a lazy chain is one
+// iterator: closing it must close its source, or `for x in gen().map(f)
+// { break }` would skip gen()'s defers (§18.5).
 inline JitObject* _iter_wrap_new(
     void (*has_next_fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*),
     void (*next_fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*),
-    std::initializer_list<JitCell*> captures) {
+    std::initializer_list<JitCell*> captures, size_t n_upstreams = 0) {
   auto* state_cell = culebra_runtime_cell_new(TAG_LONG, _ITER_LA_EMPTY);
   auto* value_cell = culebra_runtime_cell_new(TAG_NIL, 0);
   size_t total = captures.size() + 2;
@@ -276,6 +309,23 @@ inline JitObject* _iter_wrap_new(
   auto* next_cls = culebra_runtime_closure_new(
       reinterpret_cast<void*>(next_fn), total, 0);
   write_captures(next_cls);
+  // Only attach the forwarding dispose when something upstream actually has
+  // one, so a built-in chain keeps a dispose-free wrapper (and the for-in exit
+  // keeps skipping the call) — same rule as the interp wrapper.
+  JitClosure* dispose_cls = nullptr;
+  size_t n_up = n_upstreams < captures.size() ? n_upstreams : captures.size();
+  for (size_t i = 0; i < n_up && !dispose_cls; i++) {
+    if (_iter_method_closure(captures.begin()[i]->value, "dispose")) {
+      _jit_register_native_fn(
+          reinterpret_cast<const void*>(&_iter_dispose_upstreams_fn));
+      dispose_cls = culebra_runtime_closure_new(
+          reinterpret_cast<void*>(&_iter_dispose_upstreams_fn), n_up, 0);
+      for (size_t j = 0; j < n_up; j++) {
+        culebra_runtime_cell_retain(captures.begin()[j]);
+        dispose_cls->captures[j] = captures.begin()[j];
+      }
+    }
+  }
   // Caller transferred +1 on each user cell — release the originals
   // since we now hold one retain per cell per closure (above).
   for (auto* c : captures) _culebra_cell_release(c);
@@ -288,6 +338,10 @@ inline JitObject* _iter_wrap_new(
                              reinterpret_cast<int64_t>(has_next_cls), 0, 0);
   culebra_runtime_object_set(obj, "next", /*mut*/ false, GC_TAG_FUNC,
                              reinterpret_cast<int64_t>(next_cls), 0, 0);
+  if (dispose_cls) {
+    culebra_runtime_object_set(obj, "dispose", /*mut*/ false, GC_TAG_FUNC,
+                               reinterpret_cast<int64_t>(dispose_cls), 0, 0);
+  }
   return obj;
 }
 
@@ -367,9 +421,11 @@ inline void _iter_trampoline_next_fn(JitValue* __ret, JitClosure* cls, int8_t iv
 // exposes `FastFn` directly so `_iter_advance_raw` can take the fast
 // path while still respecting any cached peek.
 template <JitIterFastFn FastFn>
-inline JitObject* _iter_wrap_fast(std::initializer_list<JitCell*> captures) {
+inline JitObject* _iter_wrap_fast(std::initializer_list<JitCell*> captures,
+                                  size_t n_upstreams = 0) {
   auto* obj = _iter_wrap_new(&_iter_trampoline_has_next_fn<FastFn>,
-                              &_iter_trampoline_next_fn<FastFn>, captures);
+                              &_iter_trampoline_next_fn<FastFn>, captures,
+                              n_upstreams);
   obj->fast_next_fn = FastFn;
   return obj;
 }
@@ -829,7 +885,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_map(
   auto* up_has_next_cell = up_cells.has_next;
   auto* up_next_cell = up_cells.next;
   return _iter_wrap_fast<&_iter_map_fast_fn>(
-      {up, f, up_has_next_cell, up_next_cell, _iter_pos_cell(line, col)});
+      {up, f, up_has_next_cell, up_next_cell, _iter_pos_cell(line, col)}, /*n_upstreams=*/1);
 }
 
 // filter: captures upstream + predicate + cached upstream next.
@@ -875,7 +931,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_filter(
   auto* up_has_next_cell = up_cells.has_next;
   auto* up_next_cell = up_cells.next;
   return _iter_wrap_fast<&_iter_filter_fast_fn>(
-      {up, f, up_has_next_cell, up_next_cell, _iter_pos_cell(line, col)});
+      {up, f, up_has_next_cell, up_next_cell, _iter_pos_cell(line, col)}, /*n_upstreams=*/1);
 }
 
 // take: captures upstream + remaining (Long cell, decremented each step)
@@ -911,7 +967,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_take(
   auto* up_has_next_cell = up_cells.has_next;
   auto* up_next_cell = up_cells.next;
   return _iter_wrap_fast<&_iter_take_fast_fn>(
-      {up, rem, up_has_next_cell, up_next_cell});
+      {up, rem, up_has_next_cell, up_next_cell}, /*n_upstreams=*/1);
 }
 
 // skip: captures upstream + remaining-to-skip + cached upstream next.
@@ -947,7 +1003,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_skip(
   auto* up_has_next_cell = up_cells.has_next;
   auto* up_next_cell = up_cells.next;
   return _iter_wrap_fast<&_iter_skip_fast_fn>(
-      {up, rem, up_has_next_cell, up_next_cell});
+      {up, rem, up_has_next_cell, up_next_cell}, /*n_upstreams=*/1);
 }
 
 // take_while: captures upstream + predicate + stopped flag + cached upstream
@@ -1000,7 +1056,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_take_while(
   auto* up_next_cell = up_cells.next;
   return _iter_wrap_fast<&_iter_take_while_fast_fn>(
       {up, p, stopped, up_has_next_cell, up_next_cell,
-       _iter_pos_cell(line, col)});
+       _iter_pos_cell(line, col)}, /*n_upstreams=*/1);
 }
 
 // skip_while: captures upstream + predicate + "still skipping" flag + cached
@@ -1058,7 +1114,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_skip_while(
   auto* up_next_cell = up_cells.next;
   return _iter_wrap_fast<&_iter_skip_while_fast_fn>(
       {up, p, skipping, up_has_next_cell, up_next_cell,
-       _iter_pos_cell(line, col)});
+       _iter_pos_cell(line, col)}, /*n_upstreams=*/1);
 }
 
 // chunks: captures upstream + size + cached upstream next. Each step pulls
@@ -1100,7 +1156,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_chunks(
   auto* up_has_next_cell = up_cells.has_next;
   auto* up_next_cell = up_cells.next;
   return _iter_wrap_fast<&_iter_chunks_fast_fn>(
-      {up, size, up_has_next_cell, up_next_cell});
+      {up, size, up_has_next_cell, up_next_cell}, /*n_upstreams=*/1);
 }
 
 // windows: captures upstream + size + a buffer Array (holds the current
@@ -1152,7 +1208,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_windows(
   auto* up_has_next_cell = up_cells.has_next;
   auto* up_next_cell = up_cells.next;
   return _iter_wrap_fast<&_iter_windows_fast_fn>(
-      {up, size, buf_cell, up_has_next_cell, up_next_cell});
+      {up, size, buf_cell, up_has_next_cell, up_next_cell}, /*n_upstreams=*/1);
 }
 
 // enumerate: captures upstream + index + cached upstream next.
@@ -1188,7 +1244,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_enumerate(
   auto* up_has_next_cell = up_cells.has_next;
   auto* up_next_cell = up_cells.next;
   return _iter_wrap_fast<&_iter_enumerate_fast_fn>(
-      {up, idx, up_has_next_cell, up_next_cell});
+      {up, idx, up_has_next_cell, up_next_cell}, /*n_upstreams=*/1);
 }
 
 // chain: captures iter1 + iter2 + phase + has_next/next pair for each.
@@ -1281,12 +1337,13 @@ inline JitValue _iter_coerce_iterable(int8_t t, int64_t d, int64_t line,
     return {TAG_OBJECT, reinterpret_cast<int64_t>(walker)};
   }
   if (t == TAG_OBJECT) {
-    auto* o = reinterpret_cast<JitObject*>(d);
-    auto idx = o->find_slot("iter");
-    if (idx != static_cast<size_t>(-1) &&
-        o->slots[idx].value.tag == TAG_FUNC) {
-      auto iv = o->slots[idx].value;
-      auto* iv_cls = reinterpret_cast<JitClosure*>(iv.data);
+    // Proto-walking lookup, like every other `iter` resolution in this file: a
+    // generator (or class instance) carries `iter` on its class meta, so the
+    // instance-slots-only probe this used rejected `gen().zip(xs)` as
+    // non-iterable on this backend while the interp accepted it.
+    auto* entry = _find_property(reinterpret_cast<JitObject*>(d), "iter");
+    if (entry && entry->value.tag == TAG_FUNC) {
+      auto* iv_cls = reinterpret_cast<JitClosure*>(entry->value.data);
       culebra_runtime_value_retain(t, d);
       return _jit_invoke(iv_cls, JitValue{t, d}, 0, nullptr);
     }
@@ -1310,7 +1367,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_chain(
   auto c1 = _iter_cache_closure_cells(iv1);
   auto c2 = _iter_cache_closure_cells(iv2);
   return _iter_wrap_fast<&_iter_chain_fast_fn>(
-      {u1, u2, phase, c1.has_next, c1.next, c2.has_next, c2.next});
+      {u1, u2, phase, c1.has_next, c1.next, c2.has_next, c2.next}, /*n_upstreams=*/2);
 }
 
 // zip: captures iter1 + iter2 + has_next/next pair for each.
@@ -1351,7 +1408,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_zip(
   auto c1 = _iter_cache_closure_cells(iv1);
   auto c2 = _iter_cache_closure_cells(iv2);
   return _iter_wrap_fast<&_iter_zip_fast_fn>(
-      {u1, u2, c1.has_next, c1.next, c2.has_next, c2.next});
+      {u1, u2, c1.has_next, c1.next, c2.has_next, c2.next}, /*n_upstreams=*/2);
 }
 
 // --- String iterator wrappers --------------------------------------------
@@ -1888,7 +1945,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_flat_map(
       TAG_LONG, (line << 32) | (col & 0xFFFFFFFF));
   return _iter_wrap_fast<&_iter_flat_map_fast_fn>(
       {up, f, inner, up_cells.has_next, up_cells.next,
-       inner_has_next, inner_next, loc});
+       inner_has_next, inner_next, loc}, /*n_upstreams=*/1);
 }
 
 // flatten: flat_map's shape without the callback -- the upstream element IS
@@ -1951,7 +2008,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_flatten(
       TAG_LONG, (line << 32) | (col & 0xFFFFFFFF));
   return _iter_wrap_fast<&_iter_flatten_fast_fn>(
       {up, inner, up_cells.has_next, up_cells.next,
-       inner_has_next, inner_next, loc});
+       inner_has_next, inner_next, loc}, /*n_upstreams=*/1);
 }
 
 // scan: threads an accumulator cell, yielding f(acc, x) each step. The cell
@@ -1998,7 +2055,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_scan(
   auto up_cells = _iter_cache_closure_cells({it, id});
   return _iter_wrap_fast<&_iter_scan_fast_fn>(
       {up, f, acc, up_cells.has_next, up_cells.next,
-       _iter_pos_cell(line, col)});
+       _iter_pos_cell(line, col)}, /*n_upstreams=*/1);
 }
 
 // distinct: a Set cell records what has been yielded. set_add absorbs the
@@ -2050,7 +2107,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_distinct(
   auto* loc = culebra_runtime_cell_new(
       TAG_LONG, (line << 32) | (col & 0xFFFFFFFF));
   return _iter_wrap_fast<&_iter_distinct_fast_fn>(
-      {up, seen, up_cells.has_next, up_cells.next, loc});
+      {up, seen, up_cells.has_next, up_cells.next, loc}, /*n_upstreams=*/1);
 }
 
 // tap: run the callback for its side effect, pass the element through.
@@ -2088,7 +2145,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_tap(
   auto* f = culebra_runtime_cell_new(TAG_FUNC, reinterpret_cast<int64_t>(fn));
   auto up_cells = _iter_cache_closure_cells({it, id});
   return _iter_wrap_fast<&_iter_tap_fast_fn>(
-      {up, f, up_cells.has_next, up_cells.next, _iter_pos_cell(line, col)});
+      {up, f, up_cells.has_next, up_cells.next, _iter_pos_cell(line, col)}, /*n_upstreams=*/1);
 }
 
 // step_by: yield the first element, then discard step-1 before each later
@@ -2134,7 +2191,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_step_by(
   auto* started = culebra_runtime_cell_new(TAG_BOOL, 0);
   auto up_cells = _iter_cache_closure_cells({it, id});
   return _iter_wrap_fast<&_iter_step_by_fast_fn>(
-      {up, step, started, up_cells.has_next, up_cells.next});
+      {up, step, started, up_cells.has_next, up_cells.next}, /*n_upstreams=*/1);
 }
 
 // chunk_by: groups ADJACENT elements sharing a key (unlike the group_by
@@ -2209,7 +2266,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_chunk_by(
   auto up_cells = _iter_cache_closure_cells({it, id});
   return _iter_wrap_fast<&_iter_chunk_by_fast_fn>(
       {up, f, held, done, up_cells.has_next, up_cells.next,
-       _iter_pos_cell(line, col)});
+       _iter_pos_cell(line, col)}, /*n_upstreams=*/1);
 }
 
 inline void _math_range_fast_fn(JitClosure* cls, JitValue, bool* done,

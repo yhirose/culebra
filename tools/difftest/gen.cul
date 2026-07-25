@@ -1505,6 +1505,27 @@ let iterthrows = [
   # Nested: inner producer throw disposes inner, then outer as it leaves.
   'mut t = []; fn mk(tag, n, bad) { mut i = 0; { iter: fn () { self }, has_next: fn () { i < n }, next: fn () { i = i + 1; if bad && i == 2 { [1][9] }; [i, i] }, dispose: fn () { t.push(tag) } } }; try { for a in mk(1, 9, false) { for b in mk(2, 9, true) { } } } catch e { nil }; t',
   'mut t = []; fn mk(tag, n, bad) { mut i = 0; { iter: fn () { self }, has_next: fn () { i < n }, next: fn () { i = i + 1; if bad && i == 2 { [1][9] }; [i, i] }, dispose: fn () { t.push(tag) } } }; for a in mk(1, 2, false) { try { for b in mk(2, 9, true) { } } catch e { nil } }; t',
+  # dispose forwarding through a lazy chain: from the consumer's side the chain
+  # is one iterator, so for-in closing it closes the source. Also pins that a
+  # dispose-less source stays dispose-less (the wrapper must not grow one).
+  'mut d = 0; fn mk() { mut n = 0; { iter: fn () { self }, has_next: fn () { true }, next: fn () { n = n + 1; [n, n] }, dispose: fn () { d = d + 1 } } }; for x in mk().map(|v| v) { break }; d',
+  'mut d = 0; fn mk() { mut n = 0; { iter: fn () { self }, has_next: fn () { true }, next: fn () { n = n + 1; [n, n] }, dispose: fn () { d = d + 1 } } }; for x in mk().map(|v| v).filter(|v| true).enumerate() { break }; d',
+  'mut d = 0; fn mk() { mut n = 0; { iter: fn () { self }, has_next: fn () { n < 4 }, next: fn () { n = n + 1; [n, n] }, dispose: fn () { d = d + 1 } } }; for x in mk().take(2) { }; d',
+  'mut d = 0; fn mk() { mut n = 0; { iter: fn () { self }, has_next: fn () { true }, next: fn () { n = n + 1; [n, n] }, dispose: fn () { d = d + 1 } } }; for x in mk().zip([9, 9].iter()) { break }; d',
+  'mut d = 0; fn mk(k) { mut n = 0; { iter: fn () { self }, has_next: fn () { n < k }, next: fn () { n = n + 1; [n, n] }, dispose: fn () { d = d + 1 } } }; for x in mk(1).chain(mk(1)) { }; d',
+  'mut d = 0; fn mk() { mut n = 0; { iter: fn () { self }, has_next: fn () { true }, next: fn () { n = n + 1; if n > 2 { [1][9] }; [n, n] }, dispose: fn () { d = d + 1 } } }; try { for x in mk().map(|v| v) { } } catch e { nil }; d',
+  '[1, 2].iter().map(|v| v).has("dispose")',
+  'mut d = 0; fn mk() { mut n = 0; { iter: fn () { self }, has_next: fn () { true }, next: fn () { n = n + 1; [n, n] }, dispose: fn () { d = d + 1 } } }; for x in mk().skip_while(|v| v[0] < 3) { break }; d',
+  '[1, 2].iter().skip_while(|v| false).has("dispose")',
+  'fn g() { for v in [1, 2, 3] { yield v } }; for x in g().zip([9, 9].iter()) { break }; 1',
+  # Each new lazy combinator upstream has added since must forward too — a
+  # generator caught mid-stride, not just a happens-to-pass smoke case.
+  'mut d = 0; fn mk() { mut n = 0; { iter: fn () { self }, has_next: fn () { true }, next: fn () { n = n + 1; [n, n] }, dispose: fn () { d = d + 1 } } }; for x in mk().scan(0, |a, b| a + b[0]) { break }; d',
+  'mut d = 0; fn mk() { mut n = 0; { iter: fn () { self }, has_next: fn () { true }, next: fn () { n = n + 1; [[n, n]] }, dispose: fn () { d = d + 1 } } }; for x in mk().flatten() { break }; d',
+  'mut d = 0; fn mk() { mut n = 0; { iter: fn () { self }, has_next: fn () { true }, next: fn () { n = n + 1; n }, dispose: fn () { d = d + 1 } } }; for x in mk().distinct() { break }; d',
+  'mut d = 0; fn mk() { mut n = 0; { iter: fn () { self }, has_next: fn () { true }, next: fn () { n = n + 1; [n, n] }, dispose: fn () { d = d + 1 } } }; for x in mk().tap(|v| v) { break }; d',
+  'mut d = 0; fn mk() { mut n = 0; { iter: fn () { self }, has_next: fn () { true }, next: fn () { n = n + 1; [n, n] }, dispose: fn () { d = d + 1 } } }; for x in mk().step_by(2) { break }; d',
+  'mut d = 0; fn mk() { mut n = 0; { iter: fn () { self }, has_next: fn () { true }, next: fn () { n = n + 1; [n, n] }, dispose: fn () { d = d + 1 } } }; for x in mk().chunk_by(|v| v) { break }; d',
 ]
 for c in iterthrows {
   case("iterthrow|" + c, c)

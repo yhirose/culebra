@@ -3551,6 +3551,13 @@ arguments.` が送出されます（§17 の `drop` 契約と同じ）。3 つ�
 走らせます。すでに例外が unwind 中の exit パスで `dispose` 自身が throw した
 場合は握り潰され、外側の `catch` には元のエラーが渡ります。
 
+遅延チェーンは消費側から見れば1つのイテレータなので、閉じればソースも閉じ
+ます。`map` / `filter` / `take` / `zip` などは自分が引いているイテレータへ
+`dispose` を転送します（2ソースの combinator は両方へ）。したがって
+`for x in gen().map(f) { break }` は `for x in gen() { break }` と同様に
+`gen()` の defer を走らせます。`dispose` を持たないソース上のチェーンは、
+自身も `dispose` を持ちません。
+
     let countdown = fn (start) {
       mut i = start
       {

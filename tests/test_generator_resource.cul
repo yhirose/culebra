@@ -173,4 +173,87 @@ try {
 } catch e { }
 assert_eq(log_j, 'in;out;')
 
+// --- (10) dispose forwards through a lazy chain ---
+// A chain is one iterator from the consumer's side, so for-in closing it has
+// to close the source: without forwarding, `for x in gen().map(f) { break }`
+// silently skipped the generator's defers while the bare `for x in gen()`
+// above ran them.
+mut log_k = ''
+fn gen_k(tag) {
+  defer { log_k = "{log_k}{tag};" }
+  for v in [1, 2, 3, 4, 5] { yield v }
+}
+for v in gen_k('map').map(|x| x) { break }
+assert_eq(log_k, 'map;')
+
+log_k = ''
+for v in gen_k('take').take(2) { }
+assert_eq(log_k, 'take;')
+
+// Cascades through every stage of a multi-stage chain.
+log_k = ''
+for v in gen_k('deep').map(|x| x).filter(|x| true).enumerate() { break }
+assert_eq(log_k, 'deep;')
+
+// Both sides of a two-source combinator are closed.
+log_k = ''
+for v in gen_k('z').zip([9, 9, 9].iter()) { break }
+assert_eq(log_k, 'z;')
+
+// A throw leaving the loop forwards the same way — body and producer alike.
+log_k = ''
+try { for v in gen_k('body').map(|x| x) { throw 'b' } } catch e { }
+assert_eq(log_k, 'body;')
+
+log_k = ''
+fn gen_bad(tag) {
+  defer { log_k = "{log_k}{tag};" }
+  for v in [1, 2] { throw 'producer'; yield v }
+}
+try { for v in gen_bad('prod').map(|x| x) { } } catch e { }
+assert_eq(log_k, 'prod;')
+
+// A chain over a dispose-less source stays dispose-less (no wrapper cost, and
+// the for-in exit keeps skipping the call).
+assert_eq([1, 2].iter().map(|x| x).has('dispose'), false)
+assert_eq(gen_k('probe').map(|x| x).has('dispose'), true)
+
+// Every lazy combinator forwards. A new one whose upstream is not wired into
+// the wrapper factory is a silent hole in everything asserted above, so keep
+// this in step with the combinator list.
+assert_eq([1, 2].iter().skip_while(|x| false).has('dispose'), false)
+log_k = ''
+for v in gen_k('skip_while').skip_while(|x| x < 3) { break }
+assert_eq(log_k, 'skip_while;')
+
+assert_eq([1, 2].iter().scan(0, |a, b| a + b).has('dispose'), false)
+log_k = ''
+for v in gen_k('scan').scan(0, |a, b| a + b) { break }
+assert_eq(log_k, 'scan;')
+
+assert_eq([1, 2].iter().map(|v| [v]).flatten().has('dispose'), false)
+log_k = ''
+for v in gen_k('flatten').map(|v| [v]).flatten() { break }
+assert_eq(log_k, 'flatten;')
+
+assert_eq([1, 2].iter().distinct().has('dispose'), false)
+log_k = ''
+for v in gen_k('distinct').distinct() { break }
+assert_eq(log_k, 'distinct;')
+
+assert_eq([1, 2].iter().tap(|v| v).has('dispose'), false)
+log_k = ''
+for v in gen_k('tap').tap(|v| v) { break }
+assert_eq(log_k, 'tap;')
+
+assert_eq([1, 2].iter().step_by(2).has('dispose'), false)
+log_k = ''
+for v in gen_k('step_by').step_by(2) { break }
+assert_eq(log_k, 'step_by;')
+
+assert_eq([1, 2].iter().chunk_by(|v| v).has('dispose'), false)
+log_k = ''
+for v in gen_k('chunk_by').chunk_by(|v| v) { break }
+assert_eq(log_k, 'chunk_by;')
+
 IO.inspect('test_generator_resource OK')

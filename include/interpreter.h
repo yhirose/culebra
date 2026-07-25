@@ -3123,8 +3123,17 @@ inline std::optional<Value> _iter_step_value(Value v) {
 // cache the lookahead so `has_next()` and `next()` stay idempotent in
 // either order (Kotlin/Java contract) without requiring every advance
 // closure to expose two callbacks.
+//
+// `upstreams` are the iterators this wrapper pulls from (none for a source
+// iterator, two for zip/chain): from the consumer's side a lazy chain is one
+// iterator, so closing it has to close them — `for x in gen().map(f) { break }`
+// must run gen()'s defers, and §18.5's exit-path promise says nothing about how
+// many combinators sit in between. The dispose is attached only when something
+// upstream actually carries one, so built-in chains keep a dispose-free wrapper
+// (and the for-in exit keeps skipping the call).
 template <typename AdvanceFn>
-inline Value _make_iterator(AdvanceFn&& advance) {
+inline Value _make_iterator(AdvanceFn&& advance,
+                            std::vector<Value> upstreams = {}) {
   // - cached empty + ready=false → lookahead not yet pulled.
   // - cached empty + ready=true  → drained (advance returned nullopt).
   // - cached filled              → next value to surrender.
@@ -3178,6 +3187,32 @@ inline Value _make_iterator(AdvanceFn&& advance) {
         return v;
       })),
       false);
+
+  std::vector<Value> disposable;
+  for (auto& u : upstreams) {
+    if (u.type == Value::Object && u.to_object().has("dispose")) {
+      disposable.push_back(u);
+    }
+  }
+  if (!disposable.empty()) {
+    iter_obj.initialize(
+        "dispose",
+        Value(FunctionValue({}, [disposable](std::shared_ptr<Environment>) {
+          // Close every upstream even if one throws (zip/chain hold two); the
+          // first error is the one the caller sees.
+          std::exception_ptr first;
+          for (const auto& u : disposable) {
+            try {
+              _invoke_method_no_args(u, "dispose");
+            } catch (...) {
+              if (!first) first = std::current_exception();
+            }
+          }
+          if (first) std::rethrow_exception(first);
+          return Value();
+        })),
+        false);
+  }
   return Value(std::move(iter_obj));
 }
 
@@ -5701,7 +5736,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                auto v = _iter_next_value(upstream);
                if (!v) return _iter_step_done();
                return _iter_step_value(_invoke_callback(f, *v));
-             });
+             }, {upstream});
        }))},
 
       {"filter"sv,
@@ -5719,7 +5754,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                    return _iter_step_value(std::move(*v));
                  }
                }
-             });
+             }, {upstream});
        }))},
 
       {"take"sv,
@@ -5735,7 +5770,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                if (!v) return _iter_step_done();
                (*count)++;
                return _iter_step_value(std::move(*v));
-             });
+             }, {upstream});
        }))},
 
       {"skip"sv,
@@ -5755,7 +5790,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                auto v = _iter_next_value(upstream);
                if (!v) return _iter_step_done();
                return _iter_step_value(std::move(*v));
-             });
+             }, {upstream});
        }))},
 
       {"take_while"sv,
@@ -5774,7 +5809,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                  return _iter_step_done();
                }
                return _iter_step_value(std::move(*v));
-             });
+             }, {upstream});
        }))},
 
       // The complement of take_while: drop the leading run for which `p(x)`
@@ -5798,7 +5833,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                    return _iter_step_value(std::move(*v));
                  }
                }
-             });
+             }, {upstream});
        }))},
 
       // Yields f(acc, x) for each element, threading acc — a running fold
@@ -5818,7 +5853,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                if (!v) return _iter_step_done();
                *acc = _invoke_callback(f, *acc, *v);
                return _iter_step_value(Value(*acc));
-             });
+             }, {upstream});
        }))},
 
       // flat_map(|x| x): one level of nesting removed. Each element must be
@@ -5841,7 +5876,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                  if (!v) { *inner = Value(); continue; }
                  return _iter_step_value(std::move(*v));
                }
-             });
+             }, {upstream});
        }))},
 
       // First occurrence of each element wins; later duplicates are skipped.
@@ -5858,7 +5893,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                  if (!v) return _iter_step_done();
                  if (seen->add(*v)) return _iter_step_value(std::move(*v));
                }
-             });
+             }, {upstream});
        }))},
 
       // Runs `f(x)` for its side effect and passes `x` through unchanged —
@@ -5876,7 +5911,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                if (!v) return _iter_step_done();
                _invoke_callback(f, *v);
                return _iter_step_value(std::move(*v));
-             });
+             }, {upstream});
        }))},
 
       // Yields the first element and then every n-th one after it. n < 1
@@ -5903,7 +5938,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                auto v = _iter_next_value(upstream);
                if (!v) return _iter_step_done();
                return _iter_step_value(std::move(*v));
-             });
+             }, {upstream});
        }))},
 
       // Groups *adjacent* elements sharing a key into Arrays. Unlike
@@ -5942,7 +5977,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                  run.values->push_back(std::move(*v));
                }
                return _iter_step_value(Value(std::move(run)));
-             });
+             }, {upstream});
        }))},
 
       // Groups upstream values into Arrays of `n` (the last group may be
@@ -5968,7 +6003,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                }
                if (chunk.values->empty()) return _iter_step_done();
                return _iter_step_value(Value(std::move(chunk)));
-             });
+             }, {upstream});
        }))},
 
       // Sliding window of the last `n` upstream values as an Array,
@@ -5995,7 +6030,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                window.values->assign(buf->begin(), buf->end());
                buf->pop_front();
                return _iter_step_value(Value(std::move(window)));
-             });
+             }, {upstream});
        }))},
 
       // f(x) must return an iterable; inner iterator is consumed
@@ -6024,7 +6059,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                  if (!v) { *inner = Value(); continue; }
                  return _iter_step_value(std::move(*v));
                }
-             });
+             }, {upstream});
        }))},
 
       {"chain"sv,
@@ -6047,7 +6082,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                auto v = _iter_next_value(second);
                if (!v) return _iter_step_done();
                return _iter_step_value(std::move(*v));
-             });
+             }, {first, second});
        }))},
 
       // Pairs elements from both iterators as {first, second} Objects;
@@ -6068,7 +6103,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
            pair.initialize("first", std::move(*va), false);
            pair.initialize("second", std::move(*vb), false);
            return _iter_step_value(Value(std::move(pair)));
-         });
+         }, {a, b});
        }))},
 
       // Yields {index, value} Objects with index starting at 0.
@@ -6083,7 +6118,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                auto pair = _index_value_pair(*index, std::move(*v));
                (*index)++;
                return _iter_step_value(std::move(pair));
-             });
+             }, {upstream});
        }))},
 
       // --- Terminal: consume the iterator and return a value -------

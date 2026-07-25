@@ -3770,6 +3770,13 @@ Generators use it to run the defers registered inside a suspended body.
 A `dispose` that itself throws while an exception is already unwinding is
 swallowed, so the enclosing `catch` still sees the original error.
 
+A lazy chain is one iterator from the consumer's side, so closing it closes
+its source: `map` / `filter` / `take` / `zip` / … forward `dispose` to the
+iterator(s) they pull from (both, for the two-source combinators). So
+`for x in gen().map(f) { break }` runs `gen()`'s defers just like
+`for x in gen() { break }` does. A chain over a source with no `dispose`
+carries none itself.
+
     let countdown = fn (start) {
       mut i = start
       {
