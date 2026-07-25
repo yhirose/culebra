@@ -27,12 +27,18 @@ rel=$(grep "emit_value_release(" include/jit.h \
       | grep -v "void emit_value_release" | grep -vc "^[[:space:]]*//")
 ret=$(grep "emit_value_retain(" include/jit.h \
       | grep -v "void emit_value_retain" | grep -vc "^[[:space:]]*//")
-ratchet "bare emit_value_release sites (jit.h)" "$rel" 53
+ratchet "bare emit_value_release sites (jit.h)" "$rel" 51
 # 29 includes the ctor-overload shared-meta multi-capture retain in
 # compile_class_decl: one class meta fans out into N `new` overload closures,
 # each capture needing its own +1 (a genuine fan-out, not a throw-safety
 # carve-out). Reviewed against jit_ownership.md §4.2/§4.7.
 ratchet "bare emit_value_retain sites (jit.h)" "$ret" 29
+# The borrow -> +1 seam funnels its retain through one call, so its call sites
+# are invisible to the grep above. Count them here on their own ceiling —
+# otherwise the seam becomes a way to add hand-placed retains unnoticed.
+brw=$(grep "emit_borrow_to_owned(" include/jit.h \
+      | grep -v "llvm::Value\* emit_borrow_to_owned" | grep -vc "^[[:space:]]*//")
+ratchet "borrow->owned conversions (jit.h)" "$brw" 4
 
 # Native-method endpoints consume self via RAII (JitMethodSelf at entry), not
 # a tail release a throw would skip. sendable_jit.h is fully converted; keep
@@ -108,7 +114,8 @@ tassign=$(grep -cE '(llvm::Value|auto) ?\* ?[A-Za-z_]+ ?= ?[^;]*\.consume\(\);' 
 ratchet "typed consume assignments (jit.h)" "$tassign" 0
 
 if (( fail )); then exit 1; fi
-echo "rc-discipline OK (release=$rel/53 retain=$ret/28 tail-self=$tail_self/0" \
+echo "rc-discipline OK (release=$rel/51 retain=$ret/29 borrow=$brw/4" \
+     "tail-self=$tail_self/0" \
      "stdlib=$(count_bare include/stdlib_jit.h)/98" \
      "sendable=$(count_bare include/sendable_jit.h)/17 throwguard=$tg/21" \
      "unchecked=$cu/14 vphi=$vphi/0 typed-consume=$tassign/0 rawcompile=$rawc/0)"

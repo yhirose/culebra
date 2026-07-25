@@ -184,7 +184,6 @@ struct JIT {
   // Active for-in protocol-loop iterator record (see iter_cleanup_stack_).
   struct IterCleanup {
     llvm::Value* iterAlloca;
-    llvm::Value* objAlloca;
     llvm::Value* body_defer_mark = nullptr;
     bool fill_pending = false;
   };
@@ -2710,6 +2709,16 @@ struct JIT {
         {tag, data});
   }
 
+  // Borrow → +1. The caller passes a value it does not own (an element read
+  // straight out of a container, a receiver it only borrows) and takes
+  // ownership of the result, so whatever slot receives it releases
+  // symmetrically. One named seam for the conversion instead of a bare retain
+  // at each site (docs/jit_ownership.md §4.2).
+  llvm::Value* emit_borrow_to_owned(llvm::Value* val) {
+    emit_value_retain(val);
+    return val;
+  }
+
   void emit_value_release(llvm::Value* val) {
     // An undef %Value carries no ownership, so there is nothing to release.
     // Emitting release(undef,undef) is actively unsafe: at -O0 the call reads
@@ -3829,8 +3838,8 @@ struct JIT {
       // subtree) so nested closures inside the body can capture it
       // while closures outside the body don't see it. Also register
       // the binding in `info.captured_locals` if any nested closure
-      // references it — that flag is what triggers cell promotion at
-      // emit_for_body_iteration time.
+      // references it — that flag is what triggers cell promotion when the
+      // loop body is emitted.
       auto fv = culebra::view_for(node);
       visit_for_frees(*fv.iter, my_locals, outer, info);
       auto extended = my_locals;
@@ -7850,6 +7859,20 @@ struct JIT {
     auto tag = extract_tag(iterable);
     auto data = extract_data(iterable);
 
+    // A Set walks a temporary Array of its members. Declaring the slot here
+    // (nil on every other branch) keeps one release on every exit path —
+    // normal, break, return and throw — instead of a bare release BB that
+    // stranded it on unwind and early return.
+    auto setSlot = make_stack_slot("for.set.arr", make_nil());
+    define_var("for.set.arr", setSlot);
+
+    // The value the iterator protocol derives from — a fresh range/key
+    // iterator, or the receiver itself — is a scope slot too. `iter()` runs
+    // user code and can throw before the loop even starts; a bare alloca
+    // would strand its +1 there, since the enclosing pads only know slots.
+    auto ownSlot = make_stack_slot("for.iterable.own", make_nil());
+    define_var("for.iterable.own", ownSlot);
+
     // Exception edge for the whole statement: without it, a throw unwinding
     // out of the loop strands the slot's +1 (the enclosing pads only know
     // their own scopes) — the iterable leaked and its drop never fired.
@@ -7858,11 +7881,15 @@ struct JIT {
         llvm::BasicBlock::Create(ctx_, "for.iterable.cleanup", fn);
     current_lpad_ = forCleanupBB;
 
+    ForCursor cursor = make_for_cursor();
+    cursor.obj = ownSlot.alloca;
+
     auto arrayBB = llvm::BasicBlock::Create(ctx_, "for.array", fn);
     auto setBB    = llvm::BasicBlock::Create(ctx_, "for.set", fn);
     auto objectBB = llvm::BasicBlock::Create(ctx_, "for.object", fn);
     auto stringBB = llvm::BasicBlock::Create(ctx_, "for.string", fn);
     auto badBB = llvm::BasicBlock::Create(ctx_, "for.bad_type", fn);
+    auto headBB = llvm::BasicBlock::Create(ctx_, "for.head", fn);
     auto endBB = llvm::BasicBlock::Create(ctx_, "for.end", fn);
 
     auto sw = builder_.CreateSwitch(tag, badBB, 6);
@@ -7883,36 +7910,34 @@ struct JIT {
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(arrayBB);
-    compile_for_array_loop(builder_.CreateIntToPtr(data, ptrTy),
-                           id, body, endBB, brokeFlag);
+    emit_for_open_array(cursor, builder_.CreateIntToPtr(data, ptrTy));
+    builder_.CreateBr(headBB);
 
-    // Set: materialize members into a fresh Array, then reuse the array
-    // walker. The temporary Array's +1 lives in a scope slot beside the
-    // iterable, so every exit path (normal, break, return, throw) releases
-    // it through the same machinery (a bare release BB stranded it on
-    // unwind and early return).
+    // Set: materialize members into a fresh Array, then walk it with the
+    // array cursor.
     builder_.SetInsertPoint(setBB);
     auto setSrcPtr = builder_.CreateIntToPtr(data, ptrTy);
     auto setMembersArr = emit_call(
         module_->getOrInsertFunction(rt::set_to_array, ptrTy, ptrTy),
         {setSrcPtr}, "for.set.arr");
-    define_var("for.set.arr",
-               make_stack_slot("for.set.arr", make_array(setMembersArr)));
-    compile_for_array_loop(setMembersArr, id, body, endBB, brokeFlag);
+    store_slot(setSlot, make_array(setMembersArr));
+    emit_for_open_array(cursor, setMembersArr);
+    builder_.CreateBr(headBB);
 
-    // Object branch splits on whether the receiver carries its own
-    // `iter` property:
-    //   yes → drive the iterator protocol (Math.range, user-defined
-    //         iterators, `.code_points()`/`.graphemes()` et al.)
-    //   no  → materialize keys and reuse the native array loop
-    // The keys path is unchanged from before, so plain `for k in obj`
-    // pays zero overhead vs the prior compiler output.
+    // Object branch picks which value drives the iterator protocol:
+    //   range        → its own range_iter (a fresh +1)
+    //   `iter` prop  → the object itself (Math.range, user iterators,
+    //                  generators, `.code_points()`/`.graphemes()` et al.)
+    //   otherwise    → the builtin key iterator (a fresh +1)
+    // All three converge on one protocol setup, so the loop below is
+    // emitted once no matter which arm ran.
     builder_.SetInsertPoint(objectBB);
     auto objPtr = builder_.CreateIntToPtr(data, ptrTy);
     // A range value iterates start..end (errors if unbounded). It carries
     // no `iter` property, so it must be handled before the keys fallback.
     auto rangeBB = llvm::BasicBlock::Create(ctx_, "for.obj.range", fn);
     auto notRangeBB = llvm::BasicBlock::Create(ctx_, "for.obj.notrange", fn);
+    auto protoOpenBB = llvm::BasicBlock::Create(ctx_, "for.obj.open", fn);
     builder_.CreateCondBr(emit_is_range(iterable), rangeBB, notRangeBB);
 
     builder_.SetInsertPoint(rangeBB);
@@ -7920,14 +7945,8 @@ struct JIT {
         module_->getOrInsertFunction(rt::range_iter, ptrTy, builder_.getInt64Ty(),
                                      builder_.getInt64Ty(), builder_.getInt64Ty()),
         {data, current_line_val(), current_column_val()});
-    // Build via make_value so the tag fills the whole i64 field. The old
-    // hand-rolled insert put an i8 tag in the i64 slot, leaving the upper
-    // 56 bits undef -> FastISel read a garbage tag and "got ?". Same for
-    // the keys/proto values below.
-    llvm::Value* rangeIterVal = make_value(
-        TAG_OBJECT, builder_.CreatePtrToInt(rangeIt, builder_.getInt64Ty()));
-    compile_for_protocol_loop(rangeIterVal, id, body, endBB, /*owns_obj=*/true,
-                              brokeFlag);
+    store_slot(ownSlot, make_object(rangeIt));
+    builder_.CreateBr(protoOpenBB);
 
     builder_.SetInsertPoint(notRangeBB);
     auto iterKeyPtr = get_or_create_global_str("iter", ".iter.key");
@@ -7939,33 +7958,96 @@ struct JIT {
     builder_.SetInsertPoint(keysBB);
     // No user-defined `iter`: drive the builtin object_iter so the same
     // mut_count fail-fast that protects `obj.iter()` also covers the
-    // `for k in obj` sugar. Reuses the protocol loop below.
+    // `for k in obj` sugar.
     auto objIter = emit_call(module_->getFunction(rt::object_iter),
                              {objPtr});
-    llvm::Value* keysIterVal = make_value(
-        TAG_OBJECT, builder_.CreatePtrToInt(objIter, builder_.getInt64Ty()));
-    compile_for_protocol_loop(keysIterVal, id, body, endBB, /*owns_obj=*/true,
-                              brokeFlag);
+    store_slot(ownSlot, make_object(objIter));
+    builder_.CreateBr(protoOpenBB);
 
     builder_.SetInsertPoint(protoBB);
-    // User-defined `iter` (including generators): the protocol machinery
-    // borrows the iterable and owns only the iterator it derives (the
-    // dispose call hands the frame its own +1 — see
-    // emit_iter_dispose_and_release), so the scope slot keeps the
-    // iterable's +1 and pop_scope releases it exactly once, same as the
-    // range / keys branches. For a self-returning iterator (a generator's
-    // iter() = this) that makes two refs on one object, released once by
-    // the protocol cleanup and once by pop_scope.
-    llvm::Value* objVal = make_value(TAG_OBJECT, data);
-    compile_for_protocol_loop(objVal, id, body, endBB, /*owns_obj=*/false,
-                              brokeFlag);
+    // The slot owns the value the iterator is derived from, so the borrowed
+    // receiver is retained to match the fresh +1 the other two arms hand
+    // over. For a self-returning iterator (a generator's iter() = this) that
+    // makes two refs on one object, released once each by the two slots.
+    store_slot(ownSlot, emit_borrow_to_owned(make_value(TAG_OBJECT, data)));
+    builder_.CreateBr(protoOpenBB);
+
+    builder_.SetInsertPoint(protoOpenBB);
+    emit_for_open_protocol(cursor);
+    builder_.CreateBr(headBB);
 
     builder_.SetInsertPoint(stringBB);
     // For StringView, materialize via strlike_to_cstr (TAG_STRING input
     // returns the same ptr — no copy).
     auto strDataPtr = emit_call(
         module_->getFunction(rt::strlike_to_cstr), {tag, data});
-    compile_for_string_loop(strDataPtr, id, body, endBB, brokeFlag);
+    emit_for_open_string(cursor, strDataPtr);
+    builder_.CreateBr(headBB);
+
+    // One head, one body. The head switches on the cursor kind and each
+    // advance branches to the shared body with this iteration's element in
+    // cursor.elem — which is what keeps the body emitted exactly once. The
+    // old shape inlined the body under every container arm, so a loop nest
+    // multiplied it by six per level (a triple nest emitted it 216 times).
+    auto advArrayBB = llvm::BasicBlock::Create(ctx_, "for.next.array", fn);
+    auto advProtoBB = llvm::BasicBlock::Create(ctx_, "for.next.proto", fn);
+    auto advStringBB = llvm::BasicBlock::Create(ctx_, "for.next.string", fn);
+    auto bodyBB = llvm::BasicBlock::Create(ctx_, "for.body", fn);
+    auto exitBB = llvm::BasicBlock::Create(ctx_, "for.exit", fn);
+    auto excBB = llvm::BasicBlock::Create(ctx_, "for.exc", fn);
+
+    builder_.SetInsertPoint(headBB);
+    auto kindV =
+        builder_.CreateLoad(builder_.getInt8Ty(), cursor.kind, "for.kind");
+    auto kindSw = builder_.CreateSwitch(kindV, advArrayBB, 3);
+    kindSw->addCase(builder_.getInt8(FOR_ARRAY), advArrayBB);
+    kindSw->addCase(builder_.getInt8(FOR_PROTO), advProtoBB);
+    kindSw->addCase(builder_.getInt8(FOR_STRING), advStringBB);
+
+    emit_for_advance_array(cursor, advArrayBB, bodyBB, exitBB);
+    emit_for_advance_protocol(cursor, advProtoBB, bodyBB, exitBB);
+    emit_for_advance_string(cursor, advStringBB, bodyBB, exitBB);
+
+    builder_.SetInsertPoint(bodyBB);
+    emit_safepoint();
+    auto elemVal = builder_.CreateLoad(valueType_, cursor.elem, "for.elem");
+    // Route in-body exceptions through excBB so a protocol iterator's
+    // dispose + release fire before unwinding continues; restore the prior
+    // landingpad afterwards so the exit / break paths inherit the outer one.
+    auto bodyOuterLpad = current_lpad_;
+    current_lpad_ = excBB;
+    // Make this cursor's cleanup reachable by an early `return` inside the
+    // body: compile_return emits the same dispose+release for every active
+    // for-in before it exits the function (mirrors the interpreter, which
+    // disposes on early return). break / natural exit / throw are covered by
+    // exitBB / excBB below.
+    iter_cleanup_stack_.push_back(
+        {cursor.iter, nullptr, /*fill_pending=*/true});
+    emit_for_body_with_owned_binding(
+        id, elemVal, body, headBB,
+        for_break_target(exitBB, brokeFlag, "for"));
+    iter_cleanup_stack_.pop_back();
+    current_lpad_ = bodyOuterLpad;
+
+    // Natural drain and break both land here. The dispose is guarded on the
+    // iterator slot, so the array / string cursors (which leave it nil) skip
+    // it.
+    builder_.SetInsertPoint(exitBB);
+    emit_iter_dispose_if_active(cursor.iter, "for.exit");
+    builder_.CreateBr(endBB);
+
+    // Exception path: same dispose + release (swallowing a throwing dispose
+    // so the in-flight body exception survives, as the interpreter does),
+    // then rethrow so the original exception keeps unwinding. Gated on
+    // can-throw via pred_empty, like every other cleanup block.
+    if (llvm::pred_empty(excBB)) {
+      excBB->eraseFromParent();
+    } else {
+      emit_catch_all_prologue(excBB, "for.lpad");
+      emit_iter_dispose_if_active(cursor.iter, "for.exc",
+                                  /*swallow_dispose=*/true);
+      emit_rethrow(bodyOuterLpad);
+    }
 
     builder_.SetInsertPoint(endBB);
     // The nobreak block runs here (before the iterable scope is released) only
@@ -8074,20 +8156,6 @@ struct JIT {
     }
   }
 
-  // Borrowed-input variant: retains `elemVal` once (to balance the
-  // slot release) and delegates. Used by the Array / String for-in
-  // loops where `elemVal` is read directly out of the container with
-  // no owning ref of its own.
-  void emit_for_body_iteration(const peg::Ast& var,
-                               llvm::Value* elemVal,
-                               const peg::Ast& body,
-                               llvm::BasicBlock* continue_bb,
-                               llvm::BasicBlock* break_bb) {
-    emit_value_retain(elemVal);
-    emit_for_body_with_owned_binding(var, elemVal, body, continue_bb,
-                                     break_bb);
-  }
-
   // Direct Long counter loop for `for v in start..end` (see compile_for's
   // fast path). `startV`/`endV` are i64 values dominating this point;
   // `inclusive` picks `<=` over `<` (testing the bound directly rather than
@@ -8121,9 +8189,9 @@ struct JIT {
 
     builder_.SetInsertPoint(bodyBB);
     emit_safepoint();
-    emit_for_body_iteration(var, make_value(builder_.getInt8(TAG_LONG), idx),
-                            body, incBB,
-                            for_break_target(endBB, brokeFlag, "for.r"));
+    emit_for_body_with_owned_binding(
+        var, emit_borrow_to_owned(make_value(builder_.getInt8(TAG_LONG), idx)),
+        body, incBB, for_break_target(endBB, brokeFlag, "for.r"));
 
     builder_.SetInsertPoint(incBB);
     auto next = builder_.CreateAdd(
@@ -8132,61 +8200,99 @@ struct JIT {
     builder_.CreateBr(condBB);
   }
 
-  void compile_for_array_loop(llvm::Value* arrPtr,
-                              const peg::Ast& var,
-                              const peg::Ast& body,
-                              llvm::BasicBlock* endBB,
-                              llvm::Value* brokeFlag = nullptr) {
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    auto fn = builder_.GetInsertBlock()->getParent();
+  // Cursor kinds the unified for-in head switches on (see compile_for).
+  enum ForKind : int8_t { FOR_ARRAY = 0, FOR_PROTO = 1, FOR_STRING = 2 };
 
+  // Per-loop iteration state. One set of allocas per for-in statement; each
+  // container kind fills the subset it needs and the shared head dispatches
+  // on `kind`. Uniform state is what lets the body be emitted once.
+  struct ForCursor {
+    llvm::Value* kind;      // i8    — ForKind
+    llvm::Value* src;       // ptr   — array storage / string bytes
+    llvm::Value* pos;       // i64   — element index / byte offset
+    llvm::Value* count;     // i64   — element count / byte length
+    llvm::Value* iter;      // Value — protocol iterator, nil for the others
+    llvm::Value* obj;       // Value — scope slot owning the derived-from value
+    llvm::Value* has_next;  // ptr   — hoisted has_next closure
+    llvm::Value* next;      // ptr   — hoisted next closure
+    llvm::Value* elem;      // Value — this iteration's element, +1
+    llvm::Value* out_tag;   // i8    — array_get / iter_advance scratch
+    llvm::Value* out_data;  // i64
+  };
+
+  ForCursor make_for_cursor() {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto i8Ty = builder_.getInt8Ty();
+    auto i64Ty = builder_.getInt64Ty();
+    auto fn = builder_.GetInsertBlock()->getParent();
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                             fn->getEntryBlock().begin());
+    auto zeroVal = llvm::ConstantAggregateZero::get(valueType_);
+    ForCursor c;
+    c.kind = entryB.CreateAlloca(i8Ty, nullptr, "for.kind");
+    c.src = entryB.CreateAlloca(ptrTy, nullptr, "for.src");
+    c.pos = entryB.CreateAlloca(i64Ty, nullptr, "for.pos");
+    c.count = entryB.CreateAlloca(i64Ty, nullptr, "for.count");
+    c.iter = entryB.CreateAlloca(valueType_, nullptr, "for.iter");
+    entryB.CreateStore(zeroVal, c.iter);
+    c.obj = nullptr;  // compile_for points this at the scope slot
+    c.has_next = entryB.CreateAlloca(ptrTy, nullptr, "for.has_next.cls");
+    c.next = entryB.CreateAlloca(ptrTy, nullptr, "for.next.cls");
+    c.elem = entryB.CreateAlloca(valueType_, nullptr, "for.elem.slot");
+    entryB.CreateStore(zeroVal, c.elem);
+    c.out_tag = entryB.CreateAlloca(i8Ty, nullptr, "for.out.tag");
+    c.out_data = entryB.CreateAlloca(i64Ty, nullptr, "for.out.data");
+    return c;
+  }
+
+  // Array / Tuple / Set: a direct indexed walk. `size` is read once, so a
+  // body that grows the container does not extend the loop (interp-symmetric).
+  // Shared tail of the two counted cursors: an array walk and a UTF-8 scalar
+  // walk differ only in what they count.
+  void open_counted_cursor(const ForCursor& c, llvm::Value* ptr,
+                           llvm::Value* count, ForKind kind) {
+    builder_.CreateStore(ptr, c.src);
+    builder_.CreateStore(count, c.count);
+    builder_.CreateStore(builder_.getInt64(0), c.pos);
+    builder_.CreateStore(builder_.getInt8(kind), c.kind);
+  }
+
+  void emit_for_open_array(const ForCursor& c, llvm::Value* arrPtr) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto size = emit_call(
         module_->getOrInsertFunction(rt::array_size, builder_.getInt64Ty(),
                                      ptrTy),
         {arrPtr}, "for.size");
+    open_counted_cursor(c, arrPtr, size, FOR_ARRAY);
+  }
 
-    llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
-                             fn->getEntryBlock().begin());
-    auto idxAlloca =
-        entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "for.idx");
-    auto outTag =
-        entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "for.out.tag");
-    auto outData =
-        entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "for.out.data");
-    builder_.CreateStore(builder_.getInt64(0), idxAlloca);
+  void emit_for_advance_array(const ForCursor& c, llvm::BasicBlock* advBB,
+                              llvm::BasicBlock* bodyBB,
+                              llvm::BasicBlock* exitBB) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto i64Ty = builder_.getInt64Ty();
+    auto fn = advBB->getParent();
+    auto stepBB = llvm::BasicBlock::Create(ctx_, "for.next.array.step", fn);
 
-    auto condBB = llvm::BasicBlock::Create(ctx_, "for.a.cond", fn);
-    auto bodyBB = llvm::BasicBlock::Create(ctx_, "for.a.body", fn);
-    auto incBB = llvm::BasicBlock::Create(ctx_, "for.a.inc", fn);
+    builder_.SetInsertPoint(advBB);
+    auto idx = builder_.CreateLoad(i64Ty, c.pos, "for.i");
+    auto size = builder_.CreateLoad(i64Ty, c.count, "for.n");
+    builder_.CreateCondBr(builder_.CreateICmpSGE(idx, size), exitBB, stepBB);
 
-    builder_.CreateBr(condBB);
-
-    builder_.SetInsertPoint(condBB);
-    auto idx = builder_.CreateLoad(builder_.getInt64Ty(), idxAlloca, "for.i");
-    builder_.CreateCondBr(builder_.CreateICmpSGE(idx, size), endBB, bodyBB);
-
-    builder_.SetInsertPoint(bodyBB);
-    emit_safepoint();
+    builder_.SetInsertPoint(stepBB);
+    builder_.CreateStore(builder_.CreateAdd(idx, builder_.getInt64(1)), c.pos);
     emit_call(
         module_->getOrInsertFunction(
-            rt::array_get, builder_.getVoidTy(), ptrTy,
-            builder_.getInt64Ty(), ptrTy, ptrTy, builder_.getInt64Ty(),
-            builder_.getInt64Ty()),
-        {arrPtr, idx, outTag, outData, current_line_val(),
-         current_column_val()});
-    auto t = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
-    auto d = builder_.CreateLoad(builder_.getInt64Ty(), outData);
-    llvm::Value* elem = make_value(t, d);
-
-    emit_for_body_iteration(var, elem, body, incBB,
-                            for_break_target(endBB, brokeFlag, "for.a"));
-
-    builder_.SetInsertPoint(incBB);
-    auto next = builder_.CreateAdd(
-        builder_.CreateLoad(builder_.getInt64Ty(), idxAlloca),
-        builder_.getInt64(1));
-    builder_.CreateStore(next, idxAlloca);
-    builder_.CreateBr(condBB);
+            rt::array_get, builder_.getVoidTy(), ptrTy, i64Ty, ptrTy, ptrTy,
+            i64Ty, i64Ty),
+        {builder_.CreateLoad(ptrTy, c.src), idx, c.out_tag, c.out_data,
+         current_line_val(), current_column_val()});
+    auto t = builder_.CreateLoad(builder_.getInt8Ty(), c.out_tag);
+    auto d = builder_.CreateLoad(i64Ty, c.out_data);
+    // The element is read straight out of the container (a borrow); the body
+    // slot releases on scope exit, so hand it a matching +1.
+    builder_.CreateStore(emit_borrow_to_owned(make_value(t, d)), c.elem);
+    builder_.CreateBr(bodyBB);
   }
 
   // Drive the iterator protocol for objects that carry a user-defined
@@ -8209,7 +8315,6 @@ struct JIT {
   // early-`return` (compile_return, via iter_cleanup_stack_) paths — the last
   // is what keeps dispose-on-early-return symmetric with the interpreter.
   void emit_iter_dispose_and_release(llvm::Value* iterAlloca,
-                                     llvm::Value* objAlloca,
                                      const char* label_prefix,
                                      bool swallow_dispose = false) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
@@ -8294,192 +8399,142 @@ struct JIT {
       emit_catch_all_prologue(
           throwBB, (std::string(label_prefix) + ".dispose.thr.lpad").c_str());
       emit_value_release(iterFinal);
-      if (objAlloca) {
-        emit_value_release(builder_.CreateLoad(valueType_, objAlloca));
-      }
       emit_rethrow(savedLpad);
     }
 
     builder_.SetInsertPoint(skipBB);
     emit_value_release(iterFinal);
-    if (objAlloca) {
-      auto objFinal = builder_.CreateLoad(
-          valueType_, objAlloca,
-          (std::string(label_prefix) + ".iterable").c_str());
-      emit_value_release(objFinal);
-    }
   }
 
-  void compile_for_protocol_loop(llvm::Value* objVal,
-                                 const peg::Ast& var,
-                                 const peg::Ast& body,
-                                 llvm::BasicBlock* endBB,
-                                 bool owns_obj = false,
-                                 llvm::Value* brokeFlag = nullptr) {
-    auto fn = builder_.GetInsertBlock()->getParent();
+  // Iterator protocol: `c.obj.iter()` yields the iterator, then each `next()`
+  // returns `{done, value}` until done. Semantics match `_get_iterator` /
+  // `eval_for`'s protocol branch in the interpreter.
+  //
+  // Refcount flow: the caller has already parked a +1 iterable in `c.obj`
+  // (range_iter / object_iter build a fresh one; the user-`iter` arm retains),
+  // so every exit path frees it. `iter()` returns a fresh +1 stored in
+  // `c.iter`; each method call retains its receiver before invocation (the
+  // callee frame releases via its owned `self` slot).
+  void emit_for_open_protocol(const ForCursor& c) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto objVal = builder_.CreateLoad(valueType_, c.obj, "for.proto.src");
 
-    llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
-                             fn->getEntryBlock().begin());
-
-    // When the caller hands us a +1-owned iterable (range_iter / object_iter
-    // build a fresh iterator per loop), we own that reference and must release
-    // it on every exit path. Park it in an alloca so the cleanup / exception
-    // landingpad below can free it. Borrowed iterables (the user-`iter` proto
-    // branch) pass owns_obj=false and leave this null.
-    llvm::Value* objAlloca = nullptr;
-    if (owns_obj) {
-      objAlloca = entryB.CreateAlloca(valueType_, nullptr, "for.iterable.own");
-      entryB.CreateStore(llvm::ConstantAggregateZero::get(valueType_),
-                         objAlloca);
-      builder_.CreateStore(objVal, objAlloca);
-    }
-
-    // iter_val = obj.iter()
     auto iter_fn_val = emit_property_get(objVal, "iter");
     emit_value_retain(objVal);  // handed off to `self` slot
     Owned iter_owned = compile_function_call_raw(iter_fn_val, objVal, {});
-
-    auto iterAlloca = entryB.CreateAlloca(valueType_, nullptr, "for.iter");
-    entryB.CreateStore(llvm::ConstantAggregateZero::get(valueType_),
-                       iterAlloca);
-    // The alloca owns the iterator from here (every exit path releases it);
-    // the raw deliberately crosses the property-get blocks below with the
-    // alloca slot as its per-edge releaser (§4.3) — hence unchecked.
+    // The slot owns the iterator from here (every exit path releases it); the
+    // raw deliberately crosses the property-get blocks below with the slot as
+    // its per-edge releaser (§4.3) — hence unchecked.
     llvm::Value* iter_val = iter_owned.consume_unchecked();
-    builder_.CreateStore(iter_val, iterAlloca);
+    builder_.CreateStore(iter_val, c.iter);
 
-    // `has_next` + `next` are fixed for an iterator's lifetime — hoist
-    // both lookups so each step is a pair of cached closure dispatches
-    // rather than a per-iteration `find_slot`.
+    // `has_next` + `next` are fixed for an iterator's lifetime — hoist both
+    // lookups so each step is a pair of cached closure dispatches rather than
+    // a per-iteration `find_slot`.
     auto has_next_fn_val = emit_property_get(iter_val, "has_next");
-    auto has_next_cls_ptr =
+    builder_.CreateStore(
         builder_.CreateIntToPtr(extract_data(has_next_fn_val), ptrTy,
-                                "has_next.cls");
+                                "has_next.cls"),
+        c.has_next);
     auto next_fn_val = emit_property_get(iter_val, "next");
-    auto next_cls_ptr =
-        builder_.CreateIntToPtr(extract_data(next_fn_val), ptrTy, "next.cls");
-
-    auto outTagAlloca =
-        entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "for.p.out_tag");
-    auto outDataAlloca =
-        entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "for.p.out_data");
-
-    auto condBB = llvm::BasicBlock::Create(ctx_, "for.p.cond", fn);
-    auto bodyBB = llvm::BasicBlock::Create(ctx_, "for.p.body", fn);
-    auto cleanupBB = llvm::BasicBlock::Create(ctx_, "for.p.cleanup", fn);
-    auto excLpadBB = llvm::BasicBlock::Create(ctx_, "for.p.exc", fn);
-
-    builder_.CreateBr(condBB);
-
-    builder_.SetInsertPoint(condBB);
-    auto iterCur = builder_.CreateLoad(valueType_, iterAlloca, "iter.cur");
-    auto iterTag = extract_tag(iterCur);
-    auto iterData = extract_data(iterCur);
-    auto ok = emit_call(
-        module_->getFunction(rt::iter_advance),
-        {has_next_cls_ptr, next_cls_ptr, iterTag, iterData,
-         outTagAlloca, outDataAlloca},
-        "for.p.ok");
-    auto alive = builder_.CreateICmpNE(ok, builder_.getInt64(0),
-                                       "for.p.alive");
-    builder_.CreateCondBr(alive, bodyBB, cleanupBB);
-
-    builder_.SetInsertPoint(bodyBB);
-    emit_safepoint();
-    auto outTag =
-        builder_.CreateLoad(builder_.getInt8Ty(), outTagAlloca, "for.p.tag");
-    auto outData = builder_.CreateLoad(builder_.getInt64Ty(), outDataAlloca,
-                                       "for.p.data");
-    llvm::Value* loop_val = make_value(outTag, outData);
-    // Route in-body exceptions through excLpadBB so iter dispose + release
-    // fire before unwinding continues. Restore the prior landingpad after
-    // the body finishes so the cleanupBB / break paths still inherit the
-    // outer one for any post-cleanup exceptions.
-    auto savedLpad = current_lpad_;
-    current_lpad_ = excLpadBB;
-    // Make this iterator's cleanup reachable by an early `return` inside the
-    // body: compile_return emits the same dispose+release for every active
-    // for-in before it exits the function (mirrors the interpreter, which
-    // disposes on early return). break / natural exit / throw are covered by
-    // cleanupBB / excLpadBB below.
-    iter_cleanup_stack_.push_back(
-        {iterAlloca, objAlloca, nullptr, /*fill_pending=*/true});
-    emit_for_body_with_owned_binding(var, loop_val, body, condBB,
-                                     for_break_target(cleanupBB, brokeFlag,
-                                                      "for.p"));
-    iter_cleanup_stack_.pop_back();
-    current_lpad_ = savedLpad;
-
-    // cleanupBB: natural-exit and break path.
-    builder_.SetInsertPoint(cleanupBB);
-    emit_iter_dispose_and_release(iterAlloca, objAlloca, "for.p");
-    builder_.CreateBr(endBB);
-
-    // excLpadBB: exception path. Catches, runs the same dispose + release
-    // (swallowing a throwing dispose so the in-flight body exception survives,
-    // as the interpreter does), then rethrows so that original exception keeps
-    // unwinding to whatever outer landingpad (or function exit) is active.
-    emit_catch_all_prologue(excLpadBB, "for.p.lpad");
-    emit_iter_dispose_and_release(iterAlloca, objAlloca, "for.p.exc",
-                                 /*swallow_dispose=*/true);
-    emit_rethrow(savedLpad);
+    builder_.CreateStore(
+        builder_.CreateIntToPtr(extract_data(next_fn_val), ptrTy, "next.cls"),
+        c.next);
+    builder_.CreateStore(builder_.getInt8(FOR_PROTO), c.kind);
   }
 
-  void compile_for_string_loop(llvm::Value* strPtr,
-                               const peg::Ast& var,
-                               const peg::Ast& body,
-                               llvm::BasicBlock* endBB,
-                               llvm::Value* brokeFlag = nullptr) {
+  void emit_for_advance_protocol(const ForCursor& c, llvm::BasicBlock* advBB,
+                                 llvm::BasicBlock* bodyBB,
+                                 llvm::BasicBlock* exitBB) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    auto fn = builder_.GetInsertBlock()->getParent();
+    auto fn = advBB->getParent();
+    auto stepBB = llvm::BasicBlock::Create(ctx_, "for.next.proto.step", fn);
 
+    builder_.SetInsertPoint(advBB);
+    auto iterCur = builder_.CreateLoad(valueType_, c.iter, "iter.cur");
+    auto ok = emit_call(
+        module_->getFunction(rt::iter_advance),
+        {builder_.CreateLoad(ptrTy, c.has_next),
+         builder_.CreateLoad(ptrTy, c.next), extract_tag(iterCur),
+         extract_data(iterCur), c.out_tag, c.out_data},
+        "for.p.ok");
+    builder_.CreateCondBr(
+        builder_.CreateICmpNE(ok, builder_.getInt64(0), "for.p.alive"), stepBB,
+        exitBB);
+
+    builder_.SetInsertPoint(stepBB);
+    // iter_advance already transferred the step value's +1.
+    auto t = builder_.CreateLoad(builder_.getInt8Ty(), c.out_tag, "for.p.tag");
+    auto d =
+        builder_.CreateLoad(builder_.getInt64Ty(), c.out_data, "for.p.data");
+    builder_.CreateStore(make_value(t, d), c.elem);
+    builder_.CreateBr(bodyBB);
+  }
+
+  void emit_for_open_string(const ForCursor& c, llvm::Value* strPtr) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto len = emit_call(
         module_->getOrInsertFunction(rt::str_size, builder_.getInt64Ty(),
                                      ptrTy),
         {strPtr}, "for.slen");
+    open_counted_cursor(c, strPtr, len, FOR_STRING);
+  }
 
-    llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
-                             fn->getEntryBlock().begin());
-    auto offAlloca =
-        entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "for.off");
-    builder_.CreateStore(builder_.getInt64(0), offAlloca);
+  void emit_for_advance_string(const ForCursor& c, llvm::BasicBlock* advBB,
+                               llvm::BasicBlock* bodyBB,
+                               llvm::BasicBlock* exitBB) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto i64Ty = builder_.getInt64Ty();
+    auto fn = advBB->getParent();
+    auto stepBB = llvm::BasicBlock::Create(ctx_, "for.next.string.step", fn);
 
-    auto condBB = llvm::BasicBlock::Create(ctx_, "for.s.cond", fn);
-    auto bodyBB = llvm::BasicBlock::Create(ctx_, "for.s.body", fn);
-    auto incBB = llvm::BasicBlock::Create(ctx_, "for.s.inc", fn);
-
-    builder_.CreateBr(condBB);
-
-    builder_.SetInsertPoint(condBB);
-    auto off = builder_.CreateLoad(builder_.getInt64Ty(), offAlloca, "for.o");
+    builder_.SetInsertPoint(advBB);
+    auto strPtr = builder_.CreateLoad(ptrTy, c.src);
+    auto off = builder_.CreateLoad(i64Ty, c.pos, "for.o");
     auto scalarLen = emit_call(
-        module_->getOrInsertFunction(rt::utf8_scalar_len,
-                                     builder_.getInt64Ty(), ptrTy,
-                                     builder_.getInt64Ty(),
-                                     builder_.getInt64Ty()),
-        {strPtr, off, len}, "for.slen1");
+        module_->getOrInsertFunction(rt::utf8_scalar_len, i64Ty, ptrTy, i64Ty,
+                                     i64Ty),
+        {strPtr, off, builder_.CreateLoad(i64Ty, c.count)}, "for.slen1");
     builder_.CreateCondBr(
-        builder_.CreateICmpEQ(scalarLen, builder_.getInt64(0)), endBB,
-        bodyBB);
+        builder_.CreateICmpEQ(scalarLen, builder_.getInt64(0)), exitBB, stepBB);
 
-    builder_.SetInsertPoint(bodyBB);
-    emit_safepoint();
+    builder_.SetInsertPoint(stepBB);
+    builder_.CreateStore(builder_.CreateAdd(off, scalarLen), c.pos);
     // Yield a 1-scalar StringView into the source buffer (matches interp
     // and `s.iter()`), not a copied String.
     auto scalarView = emit_call(
-        module_->getOrInsertFunction(rt::str_scalar_view, ptrTy, ptrTy,
-                                     builder_.getInt64Ty(),
-                                     builder_.getInt64Ty()),
+        module_->getOrInsertFunction(rt::str_scalar_view, ptrTy, ptrTy, i64Ty,
+                                     i64Ty),
         {strPtr, off, scalarLen}, "for.sview");
-    emit_for_body_iteration(var, make_stringview(scalarView), body, incBB,
-                            for_break_target(endBB, brokeFlag, "for.s"));
+    // A view into the source buffer; the body slot releases it.
+    builder_.CreateStore(emit_borrow_to_owned(make_stringview(scalarView)),
+                         c.elem);
+    builder_.CreateBr(bodyBB);
+  }
 
-    builder_.SetInsertPoint(incBB);
-    auto next = builder_.CreateAdd(
-        builder_.CreateLoad(builder_.getInt64Ty(), offAlloca), scalarLen);
-    builder_.CreateStore(next, offAlloca);
-    builder_.CreateBr(condBB);
+  // Dispose + release the cursor's iterator when it has one. The array and
+  // string cursors leave `iter` nil, so they skip the whole sequence — one
+  // guard instead of a separate cleanup per container kind.
+  void emit_iter_dispose_if_active(llvm::Value* iterAlloca, const char* prefix,
+                                   bool swallow_dispose = false) {
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto cur = builder_.CreateLoad(valueType_, iterAlloca,
+                                   (std::string(prefix) + ".iter.cur").c_str());
+    auto active = builder_.CreateICmpNE(extract_tag(cur),
+                                        builder_.getInt8(TAG_NIL),
+                                        (std::string(prefix) + ".active").c_str());
+    auto disposeBB = llvm::BasicBlock::Create(
+        ctx_, (std::string(prefix) + ".dispose").c_str(), fn);
+    auto doneBB = llvm::BasicBlock::Create(
+        ctx_, (std::string(prefix) + ".done").c_str(), fn);
+    builder_.CreateCondBr(active, disposeBB, doneBB);
+
+    builder_.SetInsertPoint(disposeBB);
+    emit_iter_dispose_and_release(iterAlloca, prefix, swallow_dispose);
+    if (!builder_.GetInsertBlock()->getTerminator()) {
+      builder_.CreateBr(doneBB);
+    }
+    builder_.SetInsertPoint(doneBB);
   }
 
   // --- Lexical scope ---
@@ -13375,8 +13430,8 @@ struct JIT {
         builder_.CreateCall(module_->getFunction(rt::defer_run_to),
                             {it->body_defer_mark});
       }
-      emit_iter_dispose_and_release(it->iterAlloca, it->objAlloca, "for.p.ret",
-                                   /*swallow_dispose=*/true);
+      emit_iter_dispose_if_active(it->iterAlloca, "for.ret",
+                                  /*swallow_dispose=*/true);
     }
     // Run any defers registered in this function's scopes before
     // returning to the caller. No invoke needed: we're exiting.
