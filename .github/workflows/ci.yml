@@ -598,30 +598,38 @@ jobs:
         env:
           CULEBRA_VERBOSE: "1"
         run: |
+          fail=0
           printf 'print(1 + 2)\n' > triv.cul
           echo "=== culebra build triv.cul ==="
           if ./build-win-aot/culebra.exe build triv.cul -o triv.exe; then
             echo "=== run triv.exe ==="
-            ./triv.exe && echo "AOT_TRIVIAL_PASS" || echo "AOT_TRIVIAL_RUN_FAIL rc=$?"
+            ./triv.exe && echo "AOT_TRIVIAL_PASS" \
+              || { echo "AOT_TRIVIAL_RUN_FAIL rc=$?"; fail=1; }
           else
             echo "AOT_TRIVIAL_BUILD_FAIL rc=$?"
+            fail=1
           fi
+          exit $fail
       # AOT regression smoke: string concat + caught-value integrity (16-byte
       # runtime helpers, sret ABI), classes, getters and callable class objects.
-      # Informative (echo PASS/FAIL); set +e so one case's non-zero exit doesn't
-      # abort the whole step.
+      # set +e so every case still runs and gets listed, but any failure is
+      # carried into the step's exit code — as informative-only this step stayed
+      # green through a total AOT link break (missing -lws2_32).
       - name: Smoke — AOT (regression)
         run: |
           set +e
+          fail=0
           run() {  # $1=label $2=source $3=expected
             printf '%s' "$2" > p.cul
             echo "=== $1 ==="
             if ./build-win-aot/culebra.exe build p.cul -o p.exe; then
               out=$(./p.exe 2>&1); rc=$?
               echo "out=[$out] rc=$rc"
-              [ "$out" = "$3" ] && echo "${1}_PASS" || echo "${1}_FAIL"
+              [ "$out" = "$3" ] && echo "${1}_PASS" \
+                || { echo "${1}_FAIL"; fail=1; }
             else
               echo "${1}_BUILD_FAIL rc=$?"
+              fail=1
             fi
           }
           run AOT_STRCAT 'print("a" + "b")' 'ab'
@@ -648,7 +656,10 @@ jobs:
           EOF
           echo "=== AOT_EH_FULL ==="
           if ./build-win-aot/culebra.exe build aot_eh.cul -o aot_eh.exe; then
-            ./aot_eh.exe 2>&1 && echo "AOT_EH_FULL_done rc=$?" || echo "AOT_EH_FULL_RUN_FAIL rc=$?"
+            ./aot_eh.exe 2>&1 && echo "AOT_EH_FULL_done rc=$?" \
+              || { echo "AOT_EH_FULL_RUN_FAIL rc=$?"; fail=1; }
           else
             echo "AOT_EH_FULL_BUILD_FAIL rc=$?"
+            fail=1
           fi
+          exit $fail

@@ -945,8 +945,11 @@ int run_build(const BuildOptions& opts) {
   // -static-libstdc++); the runtime archive's `culebra_runtime_print` uses
   // std::print, so the AOT'd binary needs it too. Placed before the driver's
   // implicit -lstdc++ so the experimental lib resolves against the base.
+  // ws2_32 mirrors the driver link (see CMakeLists WIN32 block): net.h reaches
+  // the base runtime archive via stdlib_interp.h, so even a socket-free program
+  // pulls Winsock out of libculebra_rt.a.
   const char* win_static =
-      "-static -static-libgcc -static-libstdc++ -lstdc++exp";
+      "-static -static-libgcc -static-libstdc++ -lstdc++exp -lws2_32";
 #else
   const char* no_pie = target_is_macho ? "" : "-no-pie";
   const char* win_static = "";
