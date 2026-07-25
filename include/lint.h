@@ -697,7 +697,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       auto av = culebra::view_assignment(node);
       // Well-formedness — certain-to-fail shapes the interp's eval_assignment
       // throws before any write. The JIT mirrored the first two but lacked the
-      // keyword-LHS check (it silently ran `if = 1`); hoisting all three here
+      // keyword-LHS check (it silently ran `if = 1`); hoisting all of them here
       // makes every backend reject them pre-eval at the ASSIGNMENT node, which
       // is the position the interp ends up with. First match only, as the
       // interp's throwing path does.
@@ -711,9 +711,20 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
         syntax("compound assignment cannot declare a new variable.");
       } else if (av.compound && av.op_base == "??" && av.lvalcnt != 1) {
         syntax("`??=` is only supported on a simple variable target.");
-      } else if (av.lvalcnt == 1 && node.nodes[av.lvaloff]->is_token &&
-                 culebra::is_keyword(node.nodes[av.lvaloff]->token)) {
+      } else if (av.lvalcnt == 1 &&
+                 !culebra::is_assignable_name(*node.nodes[av.lvaloff])) {
+        // Same test as the interp's check_assignable_name. A lone
+        // non-identifier target (`1 = 2`) carries an empty token, which
+        // eval_assign_var read as the variable name and declared, so the write
+        // landed on an unnameable slot instead of erroring.
         syntax("left-hand side is invalid variable name.");
+      } else if (av.lvalcnt > 1 &&
+                 node.nodes[av.lvaloff + av.lvalcnt - 1]->original_tag ==
+                     "ARGUMENTS"_) {
+        // `f() = v`: the final postfix is a call, which has no storage. Both
+        // backends fell through their lvalue switch's default and aborted
+        // with a non-CulebraError (interp `logic_error`, JIT `runtime_error`).
+        syntax("cannot assign to a function call result.");
       }
       walk(*av.rhs);
       if (av.lvalcnt == 1) {

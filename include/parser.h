@@ -743,6 +743,14 @@ inline bool is_keyword(std::string_view ident) {
   return keywords.contains(ident);
 }
 
+// An assignment target that names a variable: an identifier that is not a
+// reserved word. Single source for the interpreter's runtime guard and the
+// static lint pass, like is_keyword itself.
+inline bool is_assignable_name(const peg::Ast& node) {
+  using namespace peg::udl;
+  return node.tag == "IDENTIFIER"_ && !is_keyword(node.token);
+}
+
 // A malformed call argument list, detected purely from the AST: a positional
 // argument after a keyword/`**` splat (SyntaxError) or a duplicate keyword
 // (TypeError). Single source of these two rules, shared by the interpreter and

@@ -5785,7 +5785,11 @@ struct JIT {
         return own(to_store);
       }
       default:
-        throw std::runtime_error("invalid lvalue postfix");
+        // Final postfix is a call (`f() = v`) — no storage to write. Rejected
+        // pre-eval by lint::check_module on every backend; position omitted so
+        // compile()'s wrapper backfills this node's line/col.
+        throw culebra::CulebraError(
+            "SyntaxError", "cannot assign to a function call result.");
     }
   }
 

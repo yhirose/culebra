@@ -10028,7 +10028,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     auto base_op = av.op_base;
     bool let = av.is_let, mut = av.is_mut;
     const auto& ident = ast.nodes[lvaloff]->token;
-    if (is_keyword(ident)) {
+    // A non-IDENTIFIER target (`1 = 2`) has an empty token, which used to be
+    // declared as a nameless slot — a silent no-op. Both guards are also
+    // hoisted into lint::check_module (rejected pre-eval on every backend);
+    // they stay here for the REPL, which skips that pass.
+    if (ast.nodes[lvaloff]->tag != "IDENTIFIER"_ || is_keyword(ident)) {
       throw CulebraError("SyntaxError",
                          "left-hand side is invalid variable name.");
     }
@@ -10250,7 +10254,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         return rval;
       }
       default:
-        throw std::logic_error("invalid internal condition.");
+        // Final postfix is a call (`f() = v`) — no storage to write. Rejected
+        // pre-eval by lint::check_module on every backend; reachable only
+        // where that pass is skipped (the REPL). Position backfilled by the
+        // eval wrapper.
+        throw CulebraError("SyntaxError",
+                           "cannot assign to a function call result.");
     }
   }
 
