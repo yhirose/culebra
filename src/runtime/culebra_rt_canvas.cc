@@ -129,10 +129,12 @@ int64_t buttons() {
   ensure_window();
   if (!g_window_ready) return 0;
   int64_t m = 0;
-  m |= held_button(KEY_LEFT, 1);
-  m |= held_button(KEY_RIGHT, 2);
-  m |= held_button(KEY_UP, 4);
-  m |= held_button(KEY_DOWN, 8);
+  // WASD doubles the d-pad, so a game that wants a hand on each side of the
+  // keyboard (steering left, action right) works without remapping.
+  m |= held_button(KEY_LEFT, 1) | held_button(KEY_A, 1);
+  m |= held_button(KEY_RIGHT, 2) | held_button(KEY_D, 2);
+  m |= held_button(KEY_UP, 4) | held_button(KEY_W, 4);
+  m |= held_button(KEY_DOWN, 8) | held_button(KEY_S, 8);
   m |= (IsKeyDown(KEY_SPACE) || IsKeyDown(KEY_Z)) ? 16 : 0;   // A
   m |= IsKeyDown(KEY_X) ? 32 : 0;                             // B
   return m;

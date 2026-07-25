@@ -3917,12 +3917,29 @@ alpha of 0 is transparent (skipped by sprite blits).
 
 | Function | Effect |
 | --- | --- |
+| `Canvas.init(w, h)` | allocate (or resize) the framebuffer; `Canvas.run` does this for you |
 | `Canvas.clear(color)` | fill the whole framebuffer |
 | `Canvas.set_pixel(x, y, color)` | set one pixel (off-buffer writes are ignored) |
 | `Canvas.get_pixel(x, y) -> Long` | read a pixel (0 off-buffer) — for pixel-readback collision |
 | `Canvas.rect(x, y, w, h, color)` | filled rectangle, clipped |
+| `Canvas.trapezoid(y_top, xl_top, xr_top, y_bot, xl_bot, xr_bot, color)` | filled trapezoid with horizontal top and bottom edges |
 | `Canvas.width()` / `Canvas.height() -> Long` | framebuffer dimensions |
 | `Canvas.present()` | show the frame (see the loop below) |
+
+Every position and size argument is `Long|Float`. A `Float` is rounded toward
+−∞ (pixel *n* covers `[n, n+1)`), so adjacent spans tile without a gap and a
+negative coordinate stays off-buffer instead of snapping onto column 0.
+Non-finite and out-of-range values saturate rather than trap, and `Math.nan`
+reads as 0. This lets a program that computes positions in floating point — a
+projection, a scroll offset — pass them straight in instead of rounding each
+one itself. Colours, blit flags, alpha and sprite handles remain `Long`.
+
+`Canvas.trapezoid` fills the rows `[y_top, y_bot)`, interpolating the left and
+right edges from the top span down to the bottom one; each row covers
+`[xl, xr)`, the same half-open convention as `rect`, so trapezoids sharing an
+edge tile with no seam and no double-drawn column. Nothing is drawn when
+`y_bot <= y_top`, as with a `rect` of non-positive height. The interpolation is
+integer throughout, so every backend rasterizes the identical shape.
 
 ### Sprites
 
@@ -3936,7 +3953,20 @@ composite.
 | --- | --- |
 | `sprite.draw(x, y, flip_x = false, flip_y = false, transpose = false)` | blit the whole sprite to `(x, y)`; `transpose` swaps X/Y (a diagonal reflection — combine with a flip for a 90° rotation) |
 | `sprite.draw_sub(x, y, sx, sy, sw, sh, flip_x = false, flip_y = false, transpose = false)` | blit a sub-rectangle (for sprite sheets) |
+| `sprite.draw_scaled(x, y, w, h, flip_x = false, flip_y = false, smooth = false, alpha = 255)` | blit into the `w`×`h` rectangle at `(x, y)`, resampling to fit |
+| `sprite.draw_sub_scaled(x, y, w, h, sx, sy, sw, sh, flip_x = false, flip_y = false, smooth = false, alpha = 255)` | the same from a sub-rectangle |
 | `sprite.width()` / `sprite.height()` | sprite dimensions |
+
+The scaling blits sample nearest-neighbour, so pixel art scaled up stays crisp;
+`smooth` box-averages the source instead when the sprite shrinks (it is ignored
+when neither axis shrinks). There is no scaled `transpose`. `alpha` (0–255)
+composites the whole blit over what is already there: 255 writes the source
+pixel unchanged, 0 draws nothing, and in between each channel becomes
+`(src*alpha + dst*(255-alpha) + 127) / 255` — integer only, so the three
+backends round identically. Source alpha stays the shape mask it is for
+sprites: a fully transparent source pixel is skipped and never contributes,
+whether it is sampled directly or averaged over. A destination or source
+rectangle with a non-positive side draws nothing.
 
 ### Text
 
@@ -3955,8 +3985,9 @@ Input is polled each frame (it reflects the current state, not an event queue).
 | `Canvas.buttons() -> Long` | bitmask of held buttons |
 | `Canvas.mouse() -> Object` | `{x, y, buttons}` in framebuffer pixels |
 
-Button bits are the constants `Canvas.LEFT`, `RIGHT`, `UP`, `DOWN` (arrow keys)
-and `Canvas.A`, `B` (action keys — `A` is Space/Z, `B` is X). For edge
+Button bits are the constants `Canvas.LEFT`, `RIGHT`, `UP`, `DOWN` (arrow keys,
+and WASD as a second set) and `Canvas.A`, `B` (action keys — `A` is Space/Z,
+`B` is X). For edge
 detection, `Canvas.Input.new()` tracks the previous frame:
 
 | Method | Result |

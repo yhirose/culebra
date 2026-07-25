@@ -3778,12 +3778,27 @@ macOS、`Scene` と同じ vendored 静的 raylib + SDL3）では**実際のデ�
 
 | 関数 | 効果 |
 | --- | --- |
+| `Canvas.init(w, h)` | フレームバッファを確保（またはリサイズ）する。`Canvas.run` が代わりに行う |
 | `Canvas.clear(color)` | フレームバッファ全体を塗る |
 | `Canvas.set_pixel(x, y, color)` | 1 ピクセルを設定（範囲外は無視） |
 | `Canvas.get_pixel(x, y) -> Long` | ピクセルを読む（範囲外は 0）— ピクセル読み戻しの当たり判定用 |
 | `Canvas.rect(x, y, w, h, color)` | 塗り矩形（クリップ） |
+| `Canvas.trapezoid(y_top, xl_top, xr_top, y_bot, xl_bot, xr_bot, color)` | 上辺・下辺が水平な塗り台形 |
 | `Canvas.width()` / `Canvas.height() -> Long` | フレームバッファ寸法 |
 | `Canvas.present()` | フレームを提示（下記ループ参照） |
+
+位置とサイズの引数はすべて `Long|Float`。`Float` は −∞ 方向に丸める（ピクセル
+*n* が `[n, n+1)` を覆う）ので、隣接するスパンは隙間なく敷き詰まり、負の座標は
+0 列目に吸着せず範囲外のままになる。非有限値と範囲外の値は例外を投げず飽和し、
+`Math.nan` は 0 になる。これにより、位置を浮動小数で計算するプログラム（投影、
+スクロールオフセット）は 1 つずつ丸めずそのまま渡せる。色 / blit フラグ /
+アルファ / スプライトハンドルは `Long` のまま。
+
+`Canvas.trapezoid` は行 `[y_top, y_bot)` を塗り、左右の辺を上のスパンから下の
+スパンへ補間する。各行は `rect` と同じ半開区間 `[xl, xr)` を覆うので、辺を共有
+する台形は継ぎ目なく、二重描画もなく敷き詰まる。`y_bot <= y_top` のときは高さ
+が非正の `rect` と同じく何も描かない。補間は全て整数なので、どの backend でも
+同一の形にラスタライズされる。
 
 ### スプライト
 
@@ -3797,7 +3812,18 @@ packed RGBA `Long`、または `palette` を与えたときはそのパレット
 | --- | --- |
 | `sprite.draw(x, y, flip_x = false, flip_y = false, transpose = false)` | スプライト全体を `(x, y)` に blit。`transpose` は X/Y 入替（対角反射 — flip と組み合わせれば 90° 回転） |
 | `sprite.draw_sub(x, y, sx, sy, sw, sh, flip_x = false, flip_y = false, transpose = false)` | サブ矩形を blit（スプライトシート用） |
+| `sprite.draw_scaled(x, y, w, h, flip_x = false, flip_y = false, smooth = false, alpha = 255)` | `(x, y)` の `w`×`h` 矩形に、収まるようリサンプルして blit |
+| `sprite.draw_sub_scaled(x, y, w, h, sx, sy, sw, sh, flip_x = false, flip_y = false, smooth = false, alpha = 255)` | 同じくサブ矩形から |
 | `sprite.width()` / `sprite.height()` | スプライト寸法 |
+
+拡縮 blit のサンプリングは最近傍なので、ドット絵を拡大しても輪郭は鮮明なまま。
+`smooth` は縮小時にソースをボックス平均する（どちらの軸も縮小しないときは無視）。
+拡縮版に `transpose` は無い。`alpha`（0–255）は blit 全体を既存の内容の上に合成
+する: 255 はソースピクセルをそのまま書き、0 は何も描かず、その間は各チャンネルが
+`(src*alpha + dst*(255-alpha) + 127) / 255` になる — 整数のみなので 3 backend で
+丸めが一致する。ソース側のアルファはスプライトの形マスクのままで、完全透過の
+ソースピクセルは直接サンプルされてもボックス平均されてもスキップされ、寄与しない。
+転送先・転送元の矩形の辺が非正なら何も描かない。
 
 ### テキスト
 
@@ -3815,7 +3841,8 @@ packed RGBA `Long`、または `palette` を与えたときはそのパレット
 | `Canvas.buttons() -> Long` | 押下中ボタンのビットマスク |
 | `Canvas.mouse() -> Object` | フレームバッファ座標の `{x, y, buttons}` |
 
-ボタンビットは定数 `Canvas.LEFT` / `RIGHT` / `UP` / `DOWN`（矢印キー）と
+ボタンビットは定数 `Canvas.LEFT` / `RIGHT` / `UP` / `DOWN`（矢印キー、および
+第 2 のセットとして WASD）と
 `Canvas.A` / `B`（アクションキー — `A` は Space/Z、`B` は X）。エッジ検出には
 `Canvas.Input.new()` が前フレームを覚える:
 

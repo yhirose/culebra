@@ -1741,6 +1741,21 @@ inline Value make_term_primitives_namespace() {
 // (colours, `Sprite`, the bitmap font, the `run` loop — `CANVAS_MODULE_SOURCE`
 // below) is culebra source layered on top. Underscore-prefixed: the wrapper's
 // ABI, not stable API. All positional-only so the JIT fast path stays simple.
+//
+// Geometry parameters are annotated `Long|Float` and read through `coord_arg`,
+// so a caller that computes positions in floating point (a projection, a
+// scroll offset) hands them over directly instead of paying a `Math.floor` per
+// argument. Colours, flags and handles stay `Long`.
+// A `_Canvas` geometry argument as a pixel index: a Long is already one, a
+// Float goes through the single shared rounding rule in canvas.h. The param is
+// annotated `Long|Float`, so nothing else reaches here.
+inline int64_t canvas_coord_arg(const std::shared_ptr<Environment>& env,
+                                const char* name) {
+  const auto& v = env->get(name);
+  return v.type == Value::Long ? static_cast<int64_t>(v.to_long())
+                               : _canvas_detail::coord(v.get<double>());
+}
+
 inline Value make_canvas_primitives_namespace() {
   using namespace std::literals;
   ObjectValue ns;
@@ -1767,11 +1782,12 @@ inline Value make_canvas_primitives_namespace() {
 
   // _Canvas.set_pixel(x, y, rgba) -> Nil
   ns.initialize("set_pixel",
-      Value(FunctionValue({{"x", false, "Long"sv}, {"y", false, "Long"sv},
+      Value(FunctionValue({{"x", false, "Long|Float"sv},
+                           {"y", false, "Long|Float"sv},
                            {"rgba", false, "Long"sv}},
           [](std::shared_ptr<Environment> env) {
             _canvas_detail::set_pixel(
-                env->get("x").to_long(), env->get("y").to_long(),
+                canvas_coord_arg(env, "x"), canvas_coord_arg(env, "y"),
                 static_cast<uint32_t>(env->get("rgba").to_long()));
             return Value();
           })),
@@ -1779,23 +1795,46 @@ inline Value make_canvas_primitives_namespace() {
 
   // _Canvas.get_pixel(x, y) -> Long (packed RGBA; 0 off-buffer)
   ns.initialize("get_pixel",
-      Value(FunctionValue({{"x", false, "Long"sv}, {"y", false, "Long"sv}},
+      Value(FunctionValue({{"x", false, "Long|Float"sv},
+                           {"y", false, "Long|Float"sv}},
           [](std::shared_ptr<Environment> env) {
             return Value(static_cast<long>(_canvas_detail::get_pixel(
-                env->get("x").to_long(), env->get("y").to_long())));
+                canvas_coord_arg(env, "x"), canvas_coord_arg(env, "y"))));
           },
           "Long"sv)),
       false);
 
   // _Canvas.rect(x, y, w, h, rgba) -> Nil (filled, clipped)
   ns.initialize("rect",
-      Value(FunctionValue({{"x", false, "Long"sv}, {"y", false, "Long"sv},
-                           {"w", false, "Long"sv}, {"h", false, "Long"sv},
+      Value(FunctionValue({{"x", false, "Long|Float"sv},
+                           {"y", false, "Long|Float"sv},
+                           {"w", false, "Long|Float"sv},
+                           {"h", false, "Long|Float"sv},
                            {"rgba", false, "Long"sv}},
           [](std::shared_ptr<Environment> env) {
             _canvas_detail::rect(
-                env->get("x").to_long(), env->get("y").to_long(),
-                env->get("w").to_long(), env->get("h").to_long(),
+                canvas_coord_arg(env, "x"), canvas_coord_arg(env, "y"),
+                canvas_coord_arg(env, "w"), canvas_coord_arg(env, "h"),
+                static_cast<uint32_t>(env->get("rgba").to_long()));
+            return Value();
+          })),
+      false);
+
+  // _Canvas.trapezoid(y_top, xl_top, xr_top, y_bot, xl_bot, xr_bot, rgba)
+  // -> Nil (filled, clipped; horizontal top and bottom edges)
+  ns.initialize("trapezoid",
+      Value(FunctionValue({{"y_top", false, "Long|Float"sv},
+                           {"xl_top", false, "Long|Float"sv},
+                           {"xr_top", false, "Long|Float"sv},
+                           {"y_bot", false, "Long|Float"sv},
+                           {"xl_bot", false, "Long|Float"sv},
+                           {"xr_bot", false, "Long|Float"sv},
+                           {"rgba", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            _canvas_detail::trapezoid(
+                canvas_coord_arg(env, "y_top"), canvas_coord_arg(env, "xl_top"),
+                canvas_coord_arg(env, "xr_top"), canvas_coord_arg(env, "y_bot"),
+                canvas_coord_arg(env, "xl_bot"), canvas_coord_arg(env, "xr_bot"),
                 static_cast<uint32_t>(env->get("rgba").to_long()));
             return Value();
           })),
@@ -1821,16 +1860,46 @@ inline Value make_canvas_primitives_namespace() {
 
   // _Canvas.blit(id, dx, dy, sx, sy, sw, sh, flags) -> Nil
   ns.initialize("blit",
-      Value(FunctionValue({{"id", false, "Long"sv}, {"dx", false, "Long"sv},
-                           {"dy", false, "Long"sv}, {"sx", false, "Long"sv},
-                           {"sy", false, "Long"sv}, {"sw", false, "Long"sv},
-                           {"sh", false, "Long"sv}, {"flags", false, "Long"sv}},
+      Value(FunctionValue({{"id", false, "Long"sv},
+                           {"dx", false, "Long|Float"sv},
+                           {"dy", false, "Long|Float"sv},
+                           {"sx", false, "Long|Float"sv},
+                           {"sy", false, "Long|Float"sv},
+                           {"sw", false, "Long|Float"sv},
+                           {"sh", false, "Long|Float"sv},
+                           {"flags", false, "Long"sv}},
           [](std::shared_ptr<Environment> env) {
             _canvas_detail::blit(
-                env->get("id").to_long(), env->get("dx").to_long(),
-                env->get("dy").to_long(), env->get("sx").to_long(),
-                env->get("sy").to_long(), env->get("sw").to_long(),
-                env->get("sh").to_long(), env->get("flags").to_long());
+                env->get("id").to_long(), canvas_coord_arg(env, "dx"),
+                canvas_coord_arg(env, "dy"), canvas_coord_arg(env, "sx"),
+                canvas_coord_arg(env, "sy"), canvas_coord_arg(env, "sw"),
+                canvas_coord_arg(env, "sh"), env->get("flags").to_long());
+            return Value();
+          })),
+      false);
+
+  // _Canvas.blit_scaled(id, dx, dy, dw, dh, sx, sy, sw, sh, flags, alpha)
+  // -> Nil (resampling blit; flags adds 8 = box-average when shrinking)
+  ns.initialize("blit_scaled",
+      Value(FunctionValue({{"id", false, "Long"sv},
+                           {"dx", false, "Long|Float"sv},
+                           {"dy", false, "Long|Float"sv},
+                           {"dw", false, "Long|Float"sv},
+                           {"dh", false, "Long|Float"sv},
+                           {"sx", false, "Long|Float"sv},
+                           {"sy", false, "Long|Float"sv},
+                           {"sw", false, "Long|Float"sv},
+                           {"sh", false, "Long|Float"sv},
+                           {"flags", false, "Long"sv},
+                           {"alpha", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            _canvas_detail::blit_scaled(
+                env->get("id").to_long(), canvas_coord_arg(env, "dx"),
+                canvas_coord_arg(env, "dy"), canvas_coord_arg(env, "dw"),
+                canvas_coord_arg(env, "dh"), canvas_coord_arg(env, "sx"),
+                canvas_coord_arg(env, "sy"), canvas_coord_arg(env, "sw"),
+                canvas_coord_arg(env, "sh"), env->get("flags").to_long(),
+                env->get("alpha").to_long());
             return Value();
           })),
       false);

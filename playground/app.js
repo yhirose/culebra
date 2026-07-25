@@ -450,11 +450,13 @@ function playTone(m) {
 }
 
 // Keyboard → button bitmask (bits match src/preambles/canvas.cul: LEFT=1,
-// RIGHT=2, UP=4, DOWN=8, A=16, B=32). Captured on the focused Canvas pane so
-// arrows/space don't also scroll the page. The worker keeps the held mask in
-// self.__canvasButtons for the wasm side to poll.
+// RIGHT=2, UP=4, DOWN=8, A=16, B=32). WASD doubles the d-pad so a game that
+// wants a hand on each side of the keyboard works without remapping. Captured
+// on the focused Canvas pane so arrows/space don't also scroll the page. The
+// worker keeps the held mask in self.__canvasButtons for the wasm side to poll.
 const KEY_BITS = {
   ArrowLeft: 1, ArrowRight: 2, ArrowUp: 4, ArrowDown: 8,
+  a: 1, A: 1, d: 2, D: 2, w: 4, W: 4, s: 8, S: 8,
   " ": 16, z: 16, Z: 16, x: 32, X: 32,
 };
 let heldButtons = 0;

@@ -17,6 +17,9 @@
 // the byte order [r, g, b, a] — exactly what the browser's putImageData
 // consumes — so `present` hands the framebuffer to JS with no repacking.
 //
+// Geometry arguments (positions and sizes) are Long or Float; `coord()` below
+// is the one rounding rule all three backends share.
+//
 // The native backend is headless when built without CULEBRA_ENABLE_CANVAS_WINDOW
 // (the default off macOS): the pixel buffer and sprite ops run identically to
 // the browser (so interp/JIT symmetry is verifiable off-screen via get_pixel),
@@ -28,6 +31,7 @@
 // framebuffer header still pulls in no raylib either way.
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <vector>
 #if defined(__EMSCRIPTEN__)
@@ -67,6 +71,22 @@ inline void init(int w, int h) {
 inline int width() { return _fb_w(); }
 inline int height() { return _fb_h(); }
 
+// The pixel index a Float geometry argument names. Rounding is toward -inf,
+// the rasterization convention (pixel n covers [n, n+1)): adjacent spans then
+// tile with no gap or overlap, and a negative coordinate stays off-buffer
+// instead of snapping onto column 0 the way truncation would. Non-finite and
+// out-of-range values saturate into int32 rather than trap, since every
+// consumer below narrows to int. Long arguments never reach here — they are
+// already pixel indices — so this is the whole Float->pixel contract, shared
+// by the interpreter, the JIT and AOT.
+inline int64_t coord(double d) {
+  if (std::isnan(d)) return 0;
+  double f = std::floor(d);
+  if (f < -2147483648.0) return -2147483648;
+  if (f > 2147483647.0) return 2147483647;
+  return static_cast<int64_t>(f);
+}
+
 inline void clear(uint32_t rgba) { std::fill(_fb().begin(), _fb().end(), rgba); }
 
 inline void set_pixel(int x, int y, uint32_t rgba) {
@@ -90,6 +110,39 @@ inline void rect(int x, int y, int w, int h, uint32_t rgba) {
   for (int yy = y0; yy < y1; yy++)
     for (int xx = x0; xx < x1; xx++)
       _fb()[static_cast<size_t>(yy) * _fb_w() + xx] = rgba;
+}
+
+// Division rounding toward -inf. Edge interpolation uses it so an edge that
+// crosses x = 0 keeps its slope instead of kinking the way C's truncation
+// toward zero would.
+inline int64_t floor_div(int64_t a, int64_t b) {
+  int64_t q = a / b;
+  return (a % b != 0 && ((a < 0) != (b < 0))) ? q - 1 : q;
+}
+
+// Filled trapezoid with horizontal top and bottom edges: rows [y_top, y_bot),
+// the left and right edges interpolated linearly from (xl_top, xr_top) down to
+// (xl_bot, xr_bot). Each row fills [xl, xr), the same half-open convention as
+// rect, so trapezoids that share an edge tile with no seam and no double-drawn
+// column. Nothing is drawn when y_bot <= y_top, as with a rect of non-positive
+// height. The interpolation is integer throughout, so every backend rasterizes
+// the identical shape.
+inline void trapezoid(int64_t y_top, int64_t xl_top, int64_t xr_top,
+                      int64_t y_bot, int64_t xl_bot, int64_t xr_bot,
+                      uint32_t rgba) {
+  int64_t h = y_bot - y_top;
+  if (h <= 0) return;
+  int64_t dl = xl_bot - xl_top;
+  int64_t dr = xr_bot - xr_top;
+  int64_t y0 = std::max<int64_t>(y_top, 0);
+  int64_t y1 = std::min<int64_t>(y_bot, _fb_h());
+  for (int64_t y = y0; y < y1; y++) {
+    int64_t t = y - y_top;
+    int64_t x0 = std::max<int64_t>(xl_top + floor_div(dl * t, h), 0);
+    int64_t x1 = std::min<int64_t>(xr_top + floor_div(dr * t, h), _fb_w());
+    uint32_t* row = _fb().data() + static_cast<size_t>(y) * _fb_w();
+    for (int64_t x = x0; x < x1; x++) row[x] = rgba;
+  }
 }
 
 // Register a sprite from a flat array of packed-RGBA pixels (row-major, w*h).
@@ -133,6 +186,89 @@ inline void blit(int64_t id, int dx, int dy, int sx, int sy, int sw, int sh,
         set_pixel(dx + ly, dy + lx, p);
       else
         set_pixel(dx + lx, dy + ly, p);
+    }
+  }
+}
+
+// Blit the sub-rectangle (sx, sy, sw, sh) of sprite `id` into the destination
+// rectangle (dx, dy, dw, dh), resampling to fit.
+//
+// flags: 1 = flip X, 2 = flip Y, 8 = box-average the source when shrinking
+// (ignored when neither axis shrinks; the default is nearest-neighbour, so
+// pixel art scaled up stays crisp and existing 1:1 callers are unaffected).
+// Transpose has no scaled form — swapping axes here would need two source
+// extents per destination axis.
+//
+// `alpha` (0..255) composites the whole blit: 255 writes the source pixel
+// unchanged (the fast path, bit-identical to blit), 0 draws nothing, and in
+// between each channel becomes (src*a + dst*(255-a) + 127) / 255 — integer
+// only, so the three backends round identically. Source alpha stays the shape
+// mask it is for sprites: a fully transparent source pixel is skipped and never
+// contributes, whether it is sampled directly or averaged over.
+//
+// The loop walks the (clipped) destination and maps back to the source, so
+// cost is the pixels actually written, and nothing is drawn for a degenerate
+// destination or source rectangle.
+inline void blit_scaled(int64_t id, int64_t dx, int64_t dy, int64_t dw,
+                        int64_t dh, int64_t sx, int64_t sy, int64_t sw,
+                        int64_t sh, int64_t flags, int64_t alpha) {
+  if (id < 0 || static_cast<size_t>(id) >= _sprites().size()) return;
+  if (dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0 || alpha <= 0) return;
+  if (alpha > 255) alpha = 255;
+  const Sprite& s = _sprites()[id];
+  bool flip_x = (flags & 1) != 0;
+  bool flip_y = (flags & 2) != 0;
+  bool smooth = (flags & 8) != 0 && (dw < sw || dh < sh);
+  int64_t x0 = std::max<int64_t>(dx, 0);
+  int64_t x1 = std::min<int64_t>(dx + dw, _fb_w());
+  int64_t y0 = std::max<int64_t>(dy, 0);
+  int64_t y1 = std::min<int64_t>(dy + dh, _fb_h());
+  for (int64_t y = y0; y < y1; y++) {
+    int64_t v = flip_y ? dy + dh - 1 - y : y - dy;
+    int64_t j0 = v * sh / dh;
+    int64_t j1 = smooth ? std::max((v + 1) * sh / dh, j0 + 1) : j0 + 1;
+    uint32_t* row = _fb().data() + static_cast<size_t>(y) * _fb_w();
+    for (int64_t x = x0; x < x1; x++) {
+      int64_t u = flip_x ? dx + dw - 1 - x : x - dx;
+      int64_t i0 = u * sw / dw;
+      int64_t i1 = smooth ? std::max((u + 1) * sw / dw, i0 + 1) : i0 + 1;
+      // Average the source box (a single pixel unless shrinking with box
+      // averaging on), counting only the opaque samples so a sprite's
+      // transparent margin doesn't bleed into its edge.
+      uint32_t acc[4] = {0, 0, 0, 0};
+      uint32_t n = 0;
+      for (int64_t j = j0; j < j1; j++) {
+        int64_t srcy = sy + j;
+        if (srcy < 0 || srcy >= s.h) continue;
+        for (int64_t i = i0; i < i1; i++) {
+          int64_t srcx = sx + i;
+          if (srcx < 0 || srcx >= s.w) continue;
+          uint32_t p = s.px[static_cast<size_t>(srcy) * s.w + srcx];
+          if ((p >> 24) == 0) continue;  // alpha 0 = transparent
+          acc[0] += p & 0xff;
+          acc[1] += (p >> 8) & 0xff;
+          acc[2] += (p >> 16) & 0xff;
+          acc[3] += p >> 24;
+          n++;
+        }
+      }
+      if (n == 0) continue;
+      uint32_t src = (acc[0] / n) | ((acc[1] / n) << 8) |
+                     ((acc[2] / n) << 16) | ((acc[3] / n) << 24);
+      if (alpha == 255) {
+        row[x] = src;
+        continue;
+      }
+      uint32_t dst = row[x];
+      uint32_t out = 0;
+      for (int c = 0; c < 4; c++) {
+        uint32_t sc = (src >> (c * 8)) & 0xff;
+        uint32_t dc = (dst >> (c * 8)) & 0xff;
+        uint32_t m = (sc * static_cast<uint32_t>(alpha) +
+                      dc * (255 - static_cast<uint32_t>(alpha)) + 127) / 255;
+        out |= m << (c * 8);
+      }
+      row[x] = out;
     }
   }
 }

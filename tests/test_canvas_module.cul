@@ -30,6 +30,34 @@ Canvas.run(8, 8, fn () {
   assert_eq(Canvas.get_pixel(0, 1), BLUE)
   assert_eq(Canvas.get_pixel(1, 1), GREEN)          // transparent showed through
 
+  // draw_scaled / draw_sub_scaled: nearest by default, `smooth` box-averages on
+  // the way down, `alpha` composites over what is already there.
+  Canvas.clear(GREEN)
+  s.draw_scaled(0, 0, 4, 4)
+  assert_eq(Canvas.get_pixel(1, 1), RED)            // top row, doubled
+  assert_eq(Canvas.get_pixel(0, 3), BLUE)
+  assert_eq(Canvas.get_pixel(3, 3), GREEN)          // transparent showed through
+  Canvas.clear(GREEN)
+  s.draw_scaled(0, 0, 4, 4, flip_y: true)
+  assert_eq(Canvas.get_pixel(0, 0), BLUE)
+  Canvas.clear(GREEN)
+  s.draw_scaled(0, 0, 4, 4, alpha: 0)               // fully transparent: no-op
+  assert_eq(Canvas.get_pixel(0, 0), GREEN)
+  Canvas.clear(GREEN)
+  s.draw_sub_scaled(0, 0, 2, 2, 0, 0, 1, 1)         // top-left pixel, doubled
+  assert_eq(Canvas.get_pixel(1, 1), RED)
+  Canvas.clear(GREEN)
+  s.draw_sub_scaled(0, 0, 1, 1, 0, 0, 2, 1, smooth: true)   // both reds averaged
+  assert_eq(Canvas.get_pixel(0, 0), RED)
+
+  // trapezoid: rows [y_top, y_bot), sides interpolated between the two spans.
+  Canvas.clear(GREEN)
+  Canvas.trapezoid(0, 3, 5, 4, 1, 7, BLUE)
+  assert_eq(Canvas.get_pixel(3, 0), BLUE)
+  assert_eq(Canvas.get_pixel(2, 0), GREEN)          // outside the top span
+  assert_eq(Canvas.get_pixel(1, 3), BLUE)           // the widened bottom row
+  assert_eq(Canvas.get_pixel(0, 4), GREEN)          // y_bot itself is excluded
+
   // Indexed sprite: indices into a palette resolve to the same pixels.
   let si = Canvas.Sprite.new([1, 1, 2, 0], 2, 2, [clear, RED, BLUE])
   Canvas.clear(GREEN)
@@ -49,6 +77,13 @@ Canvas.run(8, 8, fn () {
 
   false                                        // stop after one frame
 })
+
+// Canvas.init sizes the framebuffer without going through run — for a program
+// that drives its own frame loop.
+Canvas.init(5, 3)
+assert_eq(Canvas.width(), 5)
+assert_eq(Canvas.height(), 3)
+assert_eq(Canvas.get_pixel(0, 0), 0)          // a fresh buffer is transparent
 
 // Input edge detector (headless: buttons read 0, so nothing is pressed).
 let inp = Canvas.Input.new()

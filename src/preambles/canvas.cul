@@ -12,6 +12,12 @@ let _canvas_module = fn () {
     (if flip_x { 1 } else { 0 }) + (if flip_y { 2 } else { 0 }) + (if transpose { 4 } else { 0 })
   }
 
+  # Flags for the scaling blit. Same flip bits; there is no transpose, and bit 3
+  # asks for box averaging when the sprite shrinks (ignored when it doesn't).
+  let _scale_flags = fn (flip_x, flip_y, smooth) {
+    (if flip_x { 1 } else { 0 }) + (if flip_y { 2 } else { 0 }) + (if smooth { 8 } else { 0 })
+  }
+
   # A registered sprite. `pixels` is a flat row-major array; if `palette` is
   # given they are indices into it (WASM-4-style indexed art), otherwise they
   # are packed-RGBA Longs. Either way the pixels are normalised to RGBA and
@@ -34,6 +40,20 @@ let _canvas_module = fn () {
     # Blit a sub-rectangle (sx, sy, sw, sh) of the sprite to (x, y) — for sheets.
     draw_sub(x, y, sx, sy, sw, sh, flip_x = false, flip_y = false, transpose = false) {
       _Canvas.blit(self._id, x, y, sx, sy, sw, sh, _blit_flags(flip_x, flip_y, transpose))
+    }
+    # Blit the whole sprite into the w×h rectangle at (x, y), resampling to fit.
+    # Sampling is nearest-neighbour (pixel art stays crisp); `smooth` box-averages
+    # instead when the sprite shrinks. `alpha` (0..255) composites the whole blit
+    # over what is already there — 255 draws it opaque.
+    draw_scaled(x, y, w, h, flip_x = false, flip_y = false, smooth = false, alpha = 255) {
+      _Canvas.blit_scaled(self._id, x, y, w, h, 0, 0, self._w, self._h,
+                          _scale_flags(flip_x, flip_y, smooth), alpha)
+    }
+    # draw_scaled from a sub-rectangle (sx, sy, sw, sh) — for sheets.
+    draw_sub_scaled(x, y, w, h, sx, sy, sw, sh, flip_x = false, flip_y = false,
+                    smooth = false, alpha = 255) {
+      _Canvas.blit_scaled(self._id, x, y, w, h, sx, sy, sw, sh,
+                          _scale_flags(flip_x, flip_y, smooth), alpha)
     }
   }
 
@@ -165,10 +185,19 @@ let _canvas_module = fn () {
 
   {
     rgba: rgba,
+    # Allocate (or resize) the framebuffer. `run` does this for you; call it
+    # directly when you drive the frame loop yourself.
+    init: fn (w, h) { _Canvas.init(w, h) },
     clear: fn (color) { _Canvas.clear(color) },
     set_pixel: fn (x, y, color) { _Canvas.set_pixel(x, y, color) },
     get_pixel: fn (x, y) { _Canvas.get_pixel(x, y) },
     rect: fn (x, y, w, h, color) { _Canvas.rect(x, y, w, h, color) },
+    # Filled trapezoid with horizontal top and bottom edges: rows [y_top, y_bot)
+    # with the sides interpolated between the two spans. Each row covers
+    # [xl, xr), like rect, so stacked trapezoids tile with no seam.
+    trapezoid: fn (y_top, xl_top, xr_top, y_bot, xl_bot, xr_bot, color) {
+      _Canvas.trapezoid(y_top, xl_top, xr_top, y_bot, xl_bot, xr_bot, color)
+    },
     present: fn () { _Canvas.present() },
     width: fn () { _Canvas.width() },
     height: fn () { _Canvas.height() },

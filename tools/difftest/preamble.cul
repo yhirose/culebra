@@ -4,6 +4,30 @@
 # kind/message/line/column — so the driver can diff interp vs --jit vs AOT
 # structurally (success values AND error shape) line by line.
 fn _show(v) { type_of(v) + ":" + to_string(v) }
+# Opaque-alpha bias for the Canvas cases. A colour there is `_CA + <digit>`:
+# alpha must be 255 or a sprite's pixels read as transparent and every blit
+# draws nothing, and _CA is a multiple of 10 so the digit survives `% 10`.
+let _CA = 255 * 16777216
+# Framebuffer signature for the Canvas cases: one character per pixel, rows
+# joined by "/". Those cases only ever draw with colours _CA+1.._CA+9, so the
+# low digit names the colour and "." marks an untouched (0) pixel — a whole
+# rasterized shape then fits in one record.
+fn _cdump() {
+  mut rows = []
+  mut y = 0
+  while y < _Canvas.height() {
+    mut s = ""
+    mut x = 0
+    while x < _Canvas.width() {
+      let p = _Canvas.get_pixel(x, y)
+      s = s + (if p == 0 { "." } else { to_string(p % 10) })
+      x = x + 1
+    }
+    rows.push(s)
+    y = y + 1
+  }
+  rows.join("/")
+}
 fn _p(label, thunk) {
   # `print` writes the string raw (no quoting, no newline); append "\n"
   # ourselves so each case is one line. (`inspect` would quote the String.)

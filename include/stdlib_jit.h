@@ -671,6 +671,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_term_read_key(
 // Immediate-mode 2D framebuffer thin wrappers (logic in canvas.h, shared with
 // interp). All positional. sprite_load reads its pixels straight off the
 // JitArray runtime struct (packed-RGBA Longs), mirroring tensor_from.
+// A Float geometry argument goes through canvas_coord — the same canvas.h
+// rule interp uses — rather than an inlined fptosi, so rounding can't drift
+// between backends.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_coord(
+    double d) {
+  return culebra::_canvas_detail::coord(d);
+}
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_init(int64_t w,
                                                                    int64_t h) {
   culebra::_canvas_detail::init(static_cast<int>(w), static_cast<int>(h));
@@ -696,6 +703,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_rect(
                                 static_cast<int>(w), static_cast<int>(h),
                                 static_cast<uint32_t>(rgba));
 }
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_trapezoid(
+    int64_t y_top, int64_t xl_top, int64_t xr_top, int64_t y_bot,
+    int64_t xl_bot, int64_t xr_bot, int64_t rgba) {
+  culebra::_canvas_detail::trapezoid(y_top, xl_top, xr_top, y_bot, xl_bot,
+                                     xr_bot, static_cast<uint32_t>(rgba));
+}
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_sprite_load(
     JitArray* pixels, int64_t w, int64_t h) {
   std::vector<uint32_t> px;
@@ -715,6 +728,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_blit(
                                 static_cast<int>(sx), static_cast<int>(sy),
                                 static_cast<int>(sw), static_cast<int>(sh),
                                 flags);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_blit_scaled(
+    int64_t id, int64_t dx, int64_t dy, int64_t dw, int64_t dh, int64_t sx,
+    int64_t sy, int64_t sw, int64_t sh, int64_t flags, int64_t alpha) {
+  culebra::_canvas_detail::blit_scaled(id, dx, dy, dw, dh, sx, sy, sw, sh,
+                                       flags, alpha);
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_present() {
   culebra::_canvas_detail::present();
@@ -7519,14 +7538,20 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                    jit.builder_.getDoubleTy());
   // _Canvas (immediate-mode 2D framebuffer primitives).
   auto vt = jit.builder_.getVoidTy();
+  jit.module_->getOrInsertFunction(rt::canvas_coord, i64,
+                                   jit.builder_.getDoubleTy());
   jit.module_->getOrInsertFunction(rt::canvas_init, vt, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_clear, vt, i64);
   jit.module_->getOrInsertFunction(rt::canvas_set_pixel, vt, i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_get_pixel, i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_rect, vt, i64, i64, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_trapezoid, vt, i64, i64, i64, i64,
+                                   i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_sprite_load, i64, ptrTy, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_blit, vt, i64, i64, i64, i64, i64,
                                    i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_blit_scaled, vt, i64, i64, i64,
+                                   i64, i64, i64, i64, i64, i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_present, vt);
   jit.module_->getOrInsertFunction(rt::canvas_buttons, i64);
   jit.module_->getOrInsertFunction(rt::canvas_mouse_x, i64);
@@ -8525,20 +8550,55 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
 
   if (ns == "_Canvas") {
     auto& a = argsAst.nodes;
-    // Compile a fixed run of Long arguments, type-checking each against its
-    // stdlib param name so the message matches interp ("parameter 'x' expects
-    // Long"). Longs are primitive (no refcount), so no drop bookkeeping. nullopt
-    // on arity mismatch, so the method's `if` falls through like the others.
-    auto longs = [&](std::initializer_list<const char*> names)
+    // Compile a fixed run of arguments, type-checking each against its stdlib
+    // param name so the message matches interp ("parameter 'x' expects Long").
+    // `Coord` params are geometry: they accept `Long|Float` and a Float is
+    // rounded by canvas_coord, the rule canvas.h defines once for all three
+    // backends. Both kinds arrive as primitive i64 (no refcount), so there is
+    // no drop bookkeeping. nullopt on arity mismatch, so the method's `if`
+    // falls through like the others.
+    enum ArgKind { Int, Coord };
+    struct Arg { const char* name; ArgKind kind = Int; };
+    // A geometry argument as a pixel index: a Long is already one and passes
+    // straight through, a Float goes to canvas_coord. The `Long|Float` check
+    // has already run when this emits, so there is no error edge.
+    auto value_to_canvas_coord = [&](llvm::Value* v) -> llvm::Value* {
+      auto fn = builder_.GetInsertBlock()->getParent();
+      auto longBB = llvm::BasicBlock::Create(ctx_, "coord.long", fn);
+      auto floatBB = llvm::BasicBlock::Create(ctx_, "coord.float", fn);
+      auto mergeBB = llvm::BasicBlock::Create(ctx_, "coord.merge", fn);
+      auto data = extract_data(v);
+      builder_.CreateCondBr(
+          builder_.CreateICmpEQ(extract_tag(v), builder_.getInt8(TAG_LONG)),
+          longBB, floatBB);
+
+      builder_.SetInsertPoint(longBB);
+      builder_.CreateBr(mergeBB);
+
+      builder_.SetInsertPoint(floatBB);
+      auto d = builder_.CreateBitCast(data, builder_.getDoubleTy(), "c.bitcast");
+      auto rounded = emit_call(module_->getFunction(rt::canvas_coord), {d});
+      auto floatEnd = builder_.GetInsertBlock();
+      builder_.CreateBr(mergeBB);
+
+      builder_.SetInsertPoint(mergeBB);
+      auto phi = builder_.CreatePHI(builder_.getInt64Ty(), 2, "coord");
+      phi->addIncoming(data, longBB);
+      phi->addIncoming(rounded, floatEnd);
+      return phi;
+    };
+    auto args = [&](std::initializer_list<Arg> params)
         -> std::optional<std::vector<llvm::Value*>> {
-      if (a.size() != names.size()) return std::nullopt;
+      if (a.size() != params.size()) return std::nullopt;
       std::vector<llvm::Value*> out;
       size_t i = 0;
-      for (const char* nm : names) {
+      for (const Arg& p : params) {
         auto v = jit.compile(*a[i]);
-        std::string w = std::string("parameter '") + nm + "'";
-        emit_type_check(v.borrow(), "Long", w, a[i].get());
-        out.push_back(value_to_long(v.consume()));
+        std::string w = std::string("parameter '") + p.name + "'";
+        emit_type_check(v.borrow(), p.kind == Coord ? "Long|Float" : "Long", w,
+                        a[i].get());
+        out.push_back(p.kind == Coord ? value_to_canvas_coord(v.consume())
+                                      : value_to_long(v.consume()));
         i++;
       }
       return out;
@@ -8549,19 +8609,25 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
       return jit.own(make_nil());
     };
     if (method == "init")
-      if (auto v = longs({"w", "h"})) return call_void(rt::canvas_init, *v);
+      if (auto v = args({{"w"}, {"h"}})) return call_void(rt::canvas_init, *v);
     if (method == "clear")
-      if (auto v = longs({"rgba"})) return call_void(rt::canvas_clear, *v);
+      if (auto v = args({{"rgba"}})) return call_void(rt::canvas_clear, *v);
     if (method == "set_pixel")
-      if (auto v = longs({"x", "y", "rgba"}))
+      if (auto v = args({{"x", Coord}, {"y", Coord}, {"rgba"}}))
         return call_void(rt::canvas_set_pixel, *v);
     if (method == "get_pixel")
-      if (auto v = longs({"x", "y"}))
+      if (auto v = args({{"x", Coord}, {"y", Coord}}))
         return jit.own(make_long(
             emit_call(module_->getFunction(rt::canvas_get_pixel), *v)));
     if (method == "rect")
-      if (auto v = longs({"x", "y", "w", "h", "rgba"}))
+      if (auto v = args({{"x", Coord}, {"y", Coord}, {"w", Coord}, {"h", Coord},
+                         {"rgba"}}))
         return call_void(rt::canvas_rect, *v);
+    if (method == "trapezoid")
+      if (auto v = args({{"y_top", Coord}, {"xl_top", Coord}, {"xr_top", Coord},
+                         {"y_bot", Coord}, {"xl_bot", Coord}, {"xr_bot", Coord},
+                         {"rgba"}}))
+        return call_void(rt::canvas_trapezoid, *v);
     if (method == "sprite_load" && a.size() == 3) {
       auto px = jit.compile(*a[0]);
       emit_type_check(px.borrow(), "Array", "parameter 'pixels'", a[0].get());
@@ -8578,8 +8644,15 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
       return jit.own(make_long(id));
     }
     if (method == "blit")
-      if (auto v = longs({"id", "dx", "dy", "sx", "sy", "sw", "sh", "flags"}))
+      if (auto v = args({{"id"}, {"dx", Coord}, {"dy", Coord}, {"sx", Coord},
+                         {"sy", Coord}, {"sw", Coord}, {"sh", Coord},
+                         {"flags"}}))
         return call_void(rt::canvas_blit, *v);
+    if (method == "blit_scaled")
+      if (auto v = args({{"id"}, {"dx", Coord}, {"dy", Coord}, {"dw", Coord},
+                         {"dh", Coord}, {"sx", Coord}, {"sy", Coord},
+                         {"sw", Coord}, {"sh", Coord}, {"flags"}, {"alpha"}}))
+        return call_void(rt::canvas_blit_scaled, *v);
     if (method == "present" && a.empty())
       return call_void(rt::canvas_present, {});
     if (method == "buttons" && a.empty())
@@ -8598,9 +8671,9 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
       return jit.own(make_bool(
           emit_call(module_->getFunction(rt::canvas_closing), {})));
     if (method == "tone")
-      if (auto v = longs({"start_freq", "end_freq", "attack", "decay",
-                          "sustain", "release", "vol", "peak", "channel",
-                          "duty"}))
+      if (auto v = args({{"start_freq"}, {"end_freq"}, {"attack"}, {"decay"},
+                         {"sustain"}, {"release"}, {"vol"}, {"peak"},
+                         {"channel"}, {"duty"}}))
         return call_void(rt::canvas_tone, *v);
     if (method == "width" && a.empty())
       return jit.own(make_long(

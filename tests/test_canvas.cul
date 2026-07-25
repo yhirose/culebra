@@ -40,9 +40,78 @@ assert_eq(_Canvas.get_pixel(3, 3), RED)
 _Canvas.rect(3, 3, 5, 5, GREEN)              // spills past the edge, clipped
 assert_eq(_Canvas.get_pixel(3, 3), GREEN)
 
+let CLEAR = rgba(0, 0, 0, 0)
+
+// --- Float geometry: rounds toward -inf, one rule for all three backends ---
+_Canvas.clear(RED)
+_Canvas.rect(1.7, 1.2, 2.9, 2.9, BLUE)       // -> rect(1, 1, 2, 2)
+assert_eq(_Canvas.get_pixel(1, 1), BLUE)
+assert_eq(_Canvas.get_pixel(2, 2), BLUE)
+assert_eq(_Canvas.get_pixel(3, 3), RED)
+assert_eq(_Canvas.get_pixel(1.9, 1.9), BLUE) // readback rounds the same way
+// A negative float floors off-buffer instead of snapping onto column 0.
+_Canvas.clear(RED)
+_Canvas.set_pixel(-0.5, 0.0, BLUE)
+assert_eq(_Canvas.get_pixel(0, 0), RED)
+// Non-finite and out-of-range values saturate rather than trap.
+_Canvas.set_pixel(1e30, 0, BLUE)
+_Canvas.set_pixel(-Math.inf, 0, BLUE)
+assert_eq(_Canvas.get_pixel(0, 0), RED)
+_Canvas.set_pixel(Math.nan, 0, BLUE)         // NaN -> 0
+assert_eq(_Canvas.get_pixel(0, 0), BLUE)
+// Colours, flags and handles are still Long-only.
+assert_eq(try { _Canvas.rect(0, 0, 1, 1, 1.5) } catch e { e.message },
+          "type error: parameter 'rgba' expects Long")
+assert_eq(try { _Canvas.rect("x", 0, 1, 1, 1) } catch e { e.message },
+          "type error: parameter 'x' expects Long|Float")
+
+// --- trapezoid: horizontal top and bottom edges, rows [y_top, y_bot) ---
+// Renders the framebuffer as one string per row so a whole shape asserts at once.
+fn dump() {
+  mut rows = []
+  mut y = 0
+  while y < _Canvas.height() {
+    mut s = ""
+    mut x = 0
+    while x < _Canvas.width() {
+      let p = _Canvas.get_pixel(x, y)
+      s = s + (if p == RED { "." } else if p == BLUE { "#" }
+               else if p == GREEN { "o" } else { " " })
+      x = x + 1
+    }
+    rows.push(s)
+    y = y + 1
+  }
+  rows.join("/")
+}
+
+_Canvas.init(8, 6)
+_Canvas.clear(RED)
+_Canvas.trapezoid(1, 3, 5, 5, 1, 7, BLUE)
+assert_eq(dump(), "......../...##.../..###.../..####../.#####../........")
+// Floats floor like every other coordinate — same shape.
+_Canvas.clear(RED)
+_Canvas.trapezoid(1.9, 3.5, 5.5, 5.5, 1.2, 7.7, BLUE)
+assert_eq(dump(), "......../...##.../..###.../..####../.#####../........")
+// Non-positive height draws nothing, as with a rect.
+_Canvas.clear(RED)
+_Canvas.trapezoid(3, 0, 8, 3, 0, 8, BLUE)
+_Canvas.trapezoid(4, 0, 8, 2, 0, 8, BLUE)
+assert_eq(dump(), "......../......../......../......../......../........")
+// Trapezoids sharing an edge tile with no seam and no double-drawn row.
+_Canvas.clear(CLEAR)
+_Canvas.trapezoid(0, 2, 6, 3, 1, 7, BLUE)
+_Canvas.trapezoid(3, 1, 7, 6, 0, 8, GREEN)
+assert_eq(dump(), "  ####  / #####  / #####  / oooooo /ooooooo /ooooooo ")
+// Clipped on all four sides; edges crossing x = 0 keep their slope.
+_Canvas.clear(RED)
+_Canvas.trapezoid(-2, -6, 2, 8, 4, 12, BLUE)
+assert_eq(dump(), "####..../#####.../######../#######./########/.#######")
+
+_Canvas.init(4, 4)
+
 // --- sprite: load + blit, with transparency and flips ---
 // A 2x2 sprite: top row RED, bottom-left BLUE, bottom-right transparent.
-let CLEAR = rgba(0, 0, 0, 0)
 let spr = _Canvas.sprite_load([RED, RED, BLUE, CLEAR], 2, 2)
 
 _Canvas.init(4, 4)
@@ -64,6 +133,74 @@ assert_eq(_Canvas.get_pixel(0, 1), RED)
 _Canvas.clear(GREEN)
 _Canvas.blit(999, 0, 0, 0, 0, 2, 2, 0)
 assert_eq(_Canvas.get_pixel(0, 0), GREEN)
+
+// --- blit_scaled: resample, flip, box-average, alpha ---
+// A 2x2 checker: blue, green / green, blue.
+let chk = _Canvas.sprite_load([BLUE, GREEN, GREEN, BLUE], 2, 2)
+_Canvas.init(4, 4)
+_Canvas.clear(CLEAR)
+_Canvas.blit_scaled(chk, 0, 0, 4, 4, 0, 0, 2, 2, 0, 255)     // 2x, nearest
+assert_eq(dump(), "##oo/##oo/oo##/oo##")
+_Canvas.clear(CLEAR)
+_Canvas.blit_scaled(chk, 0, 0, 4, 4, 0, 0, 2, 2, 1, 255)     // flip X
+assert_eq(dump(), "oo##/oo##/##oo/##oo")
+_Canvas.clear(CLEAR)
+_Canvas.blit_scaled(chk, 0, 0, 4, 4, 0, 0, 2, 2, 2, 255)     // flip Y
+assert_eq(dump(), "oo##/oo##/##oo/##oo")
+// Clipped on all four sides.
+_Canvas.clear(CLEAR)
+_Canvas.blit_scaled(chk, -2, -2, 8, 8, 0, 0, 2, 2, 0, 255)
+assert_eq(dump(), "##oo/##oo/oo##/oo##")
+// A degenerate destination or source rectangle is a no-op.
+_Canvas.clear(RED)
+_Canvas.blit_scaled(chk, 0, 0, 0, 4, 0, 0, 2, 2, 0, 255)
+_Canvas.blit_scaled(chk, 0, 0, 4, -1, 0, 0, 2, 2, 0, 255)
+_Canvas.blit_scaled(chk, 0, 0, 4, 4, 0, 0, 0, 2, 0, 255)
+_Canvas.blit_scaled(999, 0, 0, 4, 4, 0, 0, 2, 2, 0, 255)
+assert_eq(dump(), "..../..../..../....")
+
+// alpha: 0 draws nothing, 255 is the plain blit, and in between each channel
+// is (src*a + dst*(255-a) + 127) / 255.
+_Canvas.init(2, 1)
+_Canvas.clear(RED)
+_Canvas.blit_scaled(chk, 0, 0, 2, 1, 0, 0, 2, 1, 0, 0)
+assert_eq(_Canvas.get_pixel(0, 0), RED)
+_Canvas.blit_scaled(chk, 0, 0, 2, 1, 0, 0, 2, 1, 0, 255)
+assert_eq(_Canvas.get_pixel(0, 0), BLUE)
+_Canvas.clear(RED)
+_Canvas.blit_scaled(chk, 0, 0, 2, 1, 0, 0, 2, 1, 0, 128)
+assert_eq(_Canvas.get_pixel(0, 0), rgba(127, 0, 128, 255))
+
+// Box averaging (flag 8) only when shrinking. A 4x1 half-blue half-green strip:
+let strip = _Canvas.sprite_load([BLUE, BLUE, GREEN, GREEN], 4, 1)
+_Canvas.init(2, 1)
+_Canvas.clear(CLEAR)
+_Canvas.blit_scaled(strip, 0, 0, 2, 1, 0, 0, 4, 1, 8, 255)
+assert_eq(_Canvas.get_pixel(0, 0), BLUE)     // each box is one pure colour
+assert_eq(_Canvas.get_pixel(1, 0), GREEN)
+_Canvas.init(1, 1)
+_Canvas.clear(CLEAR)
+_Canvas.blit_scaled(strip, 0, 0, 1, 1, 0, 0, 4, 1, 8, 255)
+assert_eq(_Canvas.get_pixel(0, 0), rgba(0, 127, 127, 255))   // whole strip averaged
+_Canvas.clear(CLEAR)
+_Canvas.blit_scaled(strip, 0, 0, 1, 1, 0, 0, 4, 1, 0, 255)   // nearest instead
+assert_eq(_Canvas.get_pixel(0, 0), BLUE)
+// A transparent source pixel never joins the average, and a wholly transparent
+// box leaves the destination alone.
+let edge = _Canvas.sprite_load([CLEAR, BLUE, BLUE, BLUE], 4, 1)
+_Canvas.clear(RED)
+_Canvas.blit_scaled(edge, 0, 0, 1, 1, 0, 0, 4, 1, 8, 255)
+assert_eq(_Canvas.get_pixel(0, 0), BLUE)
+let hole = _Canvas.sprite_load([CLEAR, CLEAR, CLEAR, CLEAR], 4, 1)
+_Canvas.clear(RED)
+_Canvas.blit_scaled(hole, 0, 0, 1, 1, 0, 0, 4, 1, 8, 255)
+assert_eq(_Canvas.get_pixel(0, 0), RED)
+
+assert_eq(try { _Canvas.blit_scaled(chk, 0, 0, 1, 1, 0, 0, 1, 1, 0, "x") }
+          catch e { e.message },
+          "type error: parameter 'alpha' expects Long")
+assert_eq(try { _Canvas.trapezoid(0, 0, 1, 1, 0, 1, 1.5) } catch e { e.message },
+          "type error: parameter 'rgba' expects Long")
 
 // --- host-driven prims: headless returns 0 / no-ops (called for symmetry) ---
 assert_eq(_Canvas.buttons(), 0)

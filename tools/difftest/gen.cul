@@ -1310,4 +1310,56 @@ for c in selfcases {
   case("self|" + c, c)
 }
 
+# --- Dimension: Canvas rasterization (Float coords / trapezoid / blit_scaled) --
+# The framebuffer prims take `Long|Float` geometry and round a Float in one
+# shared place (canvas.h coord(), toward -inf); trapezoid and blit_scaled then
+# rasterize with integer-only arithmetic. All three must produce the identical
+# shape on every backend, so each case draws and dumps the whole framebuffer.
+# The coordinate sweep runs fractional, negative, non-finite and out-of-range
+# values through every prim, which pins the rounding, the clipping and the type
+# errors (colour/flags/handle stay Long-only) in one place.
+let cvcoords = ['0', '1', '2.0', '1.5', '-0.5', '-1.5', '2.75', '4.5',
+                'Math.nan', 'Math.inf', '-Math.inf', '1e30', '"x"', 'nil',
+                'true']
+let cvinit = '_Canvas.init(6, 4); _Canvas.clear(0); '
+let cvsprite = '_Canvas.sprite_load([_CA+1, _CA+2, _CA+3, _CA+4], 2, 2)'
+for c in cvcoords {
+  case("cvrect|" + c, cvinit + '_Canvas.rect(' + c + ', 0, 3, 2, _CA+5); _cdump()')
+  case("cvpix|" + c, cvinit + '_Canvas.set_pixel(' + c + ', 1, _CA+5); _cdump()')
+  case("cvget|" + c, '_Canvas.init(6, 4); _Canvas.clear(_CA+7); to_string(_Canvas.get_pixel(' + c + ', 0))')
+  case("cvtzl|" + c, cvinit + '_Canvas.trapezoid(0, ' + c + ', 4, 3, 1, 5, _CA+5); _cdump()')
+  case("cvtzy|" + c, cvinit + '_Canvas.trapezoid(' + c + ', 1, 5, 3, 0, 6, _CA+5); _cdump()')
+  case("cvblit|" + c, cvinit + '_Canvas.blit(' + cvsprite + ', ' + c + ', 0, 0, 0, 2, 2, 0); _cdump()')
+  case("cvbsd|" + c, cvinit + '_Canvas.blit_scaled(' + cvsprite + ', ' + c + ', 0, 4, 4, 0, 0, 2, 2, 0, 255); _cdump()')
+  case("cvbss|" + c, cvinit + '_Canvas.blit_scaled(' + cvsprite + ', 0, 0, 4, 4, 0, 0, ' + c + ', 2, 0, 255); _cdump()')
+  case("cvcolor|" + c, cvinit + '_Canvas.rect(0, 0, 2, 2, ' + c + '); _cdump()')
+}
+# Degenerate and inverted extents: a non-positive height/width draws nothing
+# rather than wrapping, and trapezoids that share an edge tile with no seam and
+# no double-drawn row.
+let cvshapes = [
+  '_Canvas.trapezoid(3, 0, 6, 1, 0, 6, _CA+5)',
+  '_Canvas.trapezoid(1, 0, 6, 1, 0, 6, _CA+5)',
+  '_Canvas.trapezoid(0, 4, 2, 4, 4, 2, _CA+5)',
+  '_Canvas.trapezoid(-2, -4, 2, 6, 2, 9, _CA+5)',
+  '_Canvas.trapezoid(0, 2, 4, 2, 1, 5, _CA+5); _Canvas.trapezoid(2, 1, 5, 4, 0, 6, _CA+6)',
+  '_Canvas.blit_scaled(' + cvsprite + ', 0, 0, 0, 4, 0, 0, 2, 2, 0, 255)',
+  '_Canvas.blit_scaled(' + cvsprite + ', 0, 0, 4, 4, 0, 0, 2, 0, 0, 255)',
+  '_Canvas.blit_scaled(' + cvsprite + ', -1, -1, 8, 8, 0, 0, 2, 2, 0, 255)',
+  '_Canvas.blit_scaled(999, 0, 0, 4, 4, 0, 0, 2, 2, 0, 255)',
+  '_Canvas.blit_scaled(' + cvsprite + ', 0, 0, 6, 4, 0, 0, 2, 2, 8, 255)',
+  '_Canvas.blit_scaled(' + cvsprite + ', 0, 0, 1, 1, 0, 0, 2, 2, 8, 255)',
+]
+for s in cvshapes {
+  case("cvshape|" + s, cvinit + s + '; _cdump()')
+}
+# flags x alpha: the flip / box-average bits, and the integer compositing rule
+# read back over a filled buffer so the blended channels show up in the dump.
+for f in ['0', '1', '2', '3', '8', '9', '4', '16', '-1'] {
+  case("cvflags|" + f, cvinit + '_Canvas.blit_scaled(' + cvsprite + ', 0, 0, 4, 4, 0, 0, 2, 2, ' + f + ', 255); _cdump()')
+}
+for al in ['0', '1', '64', '128', '191', '254', '255', '256', '-1', '1.5', '"x"'] {
+  case("cvalpha|" + al, '_Canvas.init(2, 1); _Canvas.clear(_CA+9); _Canvas.blit_scaled(' + cvsprite + ', 0, 0, 2, 1, 0, 0, 2, 1, 0, ' + al + '); to_string(_Canvas.get_pixel(0, 0)) + "," + to_string(_Canvas.get_pixel(1, 0))')
+}
+
 print(out.join("\n"))
