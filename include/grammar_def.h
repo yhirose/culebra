@@ -414,7 +414,13 @@ const auto grammar_ = R"(
   OBJECT_PROPERTY          <-  MUTABLE _ (STRING / RAW_STRING / INTERPOLATED_STRING / FLOAT / NUMBER / NIL / BOOLEAN / TUPLE) _ ':' _ EXPRESSION
                             /  MUTABLE _ IDENTIFIER (_ ':' _ EXPRESSION)?
 
-  ARRAY                    <-  '[' _ SEQUENCE _ ']' (_ '(' _ EXPRESSION (_ ',' _ EXPRESSION)? _ ')')?
+  # The trailing `(n[, default])` / `(rows, cols)` shape suffix binds with
+  # horizontal space only (`_h_`, like the postfix chain in ASSIGNMENT /
+  # POSTFIX): with `_` it crossed newlines, so a statement ending in an array
+  # literal swallowed the next line's parenthesized statement as its shape
+  # (`mut q = [1, 2]` followed by `(a, b) = (b, a)` silently assigned to the
+  # shaped array instead of swapping).
+  ARRAY                    <-  '[' _ SEQUENCE _ ']' (_h_ '(' _ EXPRESSION (_ ',' _ EXPRESSION)? _ ')')?
 
   NIL                      <-  K('nil')
   BOOLEAN                  <-  K('true' / 'false')
