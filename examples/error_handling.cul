@@ -4,8 +4,8 @@ fn risky(n) {
 }
 
 try {
-  print("risky(21) = {risky(21)}\n")
+  println("risky(21) = {risky(21)}")
   risky(-1)
 } catch e {
-  print("caught {e.kind}: {e.message}\n")
+  println("caught {e.kind}: {e.message}")
 }

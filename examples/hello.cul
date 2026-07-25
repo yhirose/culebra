@@ -1,9 +1,9 @@
 let hello = "Hello"
 let world = "World"
 
-let s = "{hello}, {world}\n"
+let s = "{hello}, {world}"
 
-print("This is a test\n")
-print("Start\n")
-print(s)
-print("Done\n")
+println("This is a test")
+println("Start")
+println(s)
+println("Done")

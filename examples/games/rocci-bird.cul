@@ -81,7 +81,7 @@ class Anim {
   update(fc) {
     let fpu = self.cells[self.index][0]
     if fc - self.last_updated < fpu { return }
-    let ni = if self.index + 1 == self.cells.size() { 0 } else { self.index + 1 }
+    let ni = (self.index + 1) % self.cells.size()
     match self.state {
       s: Completed => { self.last_updated = fc },
       s: Loop      => { self.index = ni; self.last_updated = fc },
@@ -134,7 +134,11 @@ let draw_pipes = fn (pipes) {
   }
 }
 let draw_score = fn (score, base_x, y) {
-  let x = if score < 10 { base_x + 8 } else if score < 100 { base_x + 4 } else { base_x }
+  let x = cond {
+    score < 10  => base_x + 8,
+    score < 100 => base_x + 4,
+    _           => base_x,
+  }
   Canvas.text(to_string(score), x, y, C4)
 }
 
@@ -169,9 +173,7 @@ class App {
   }
 
   starting_plants() {
-    mut ps = []
-    for i in 0..15 { ps.push({ x: i * 12, type: Random.int(0, PLANT_TYPES) }) }
-    ps
+    iota(15).map(fn (i) { { x: i * 12, type: Random.int(0, PLANT_TYPES) } })
   }
 
   enter_title() {
@@ -191,7 +193,7 @@ class App {
     self.player_vel = JUMP
     self.pipes = []
     self.last_pipe = self.fc
-    self.last_plant = if self.fc >= 4 { self.fc - 4 } else { 0 }
+    self.last_plant = Math.max(self.fc - 4, 0)
     self.last_flap = true
     self.rocci = flap_anim(self.fc)
     self.ground_x = 0
@@ -215,22 +217,19 @@ class App {
   # In-game flap and title start read the action, with a simple autopilot when
   # input is not interactive so a CI / headless run still plays the game.
   flap_input() {
-    if self.interactive { self.action_held() } else { self.player_vel > 0.0 && self.player_y > 70.0 }
+    self.interactive ? self.action_held() : self.player_vel > 0.0 && self.player_y > 70.0
   }
-  start_input() {
-    if self.interactive { self.action_held() } else { true }
-  }
+  start_input() { self.interactive ? self.action_held() : true }
   restart_input() {
-    if self.interactive {
-      let m = Canvas.mouse()
-      self.input.down(Canvas.B) || self.input.down(Canvas.RIGHT) || (m.buttons & 2) != 0
-    } else { true }
+    if !self.interactive { return true }
+    let m = Canvas.mouse()
+    self.input.down(Canvas.B) || self.input.down(Canvas.RIGHT) || (m.buttons & 2) != 0
   }
 
   tick() {
     Canvas.clear(C1)
     self.input.update()
-    self.fc = self.fc + 1
+    self.fc += 1
     match self.mode {
       m: Title => self.tick_title(),
       m: Game  => self.tick_game(),
@@ -270,7 +269,7 @@ class App {
       self.player_vel = JUMP
       self.rocci.reset(self.fc, 0, AnimState.RunOnce)
     } else {
-      self.player_vel = self.player_vel + GRAVITY
+      self.player_vel += GRAVITY
       self.rocci.update(self.fc)
     }
     self.last_flap = flap
@@ -280,28 +279,18 @@ class App {
       self.pipes.push({ x: W, gap_start: Random.int(0, 16) * 5 + 10 })
       self.last_pipe = self.fc
     }
-    mut next_pipes = []
-    mut gained = 0
-    for pp in self.pipes {
-      let nx = pp.x - 1
-      if nx == PLAYER_X - 2 { gained = gained + 1 }
-      if nx >= -20 { next_pipes.push({ ...pp, x: nx }) }
-    }
-    self.pipes = next_pipes
+    let moved_pipes = self.pipes.map(fn (p) { { ...p, x: p.x - 1 } })
+    let gained = moved_pipes.filter(|p| p.x == PLAYER_X - 2).size()
+    self.pipes = moved_pipes.filter(|p| p.x >= -20)
 
     # plants: spawn, move, cull
     if self.fc - self.last_plant > 12 {
       self.plants.push({ x: W, type: Random.int(0, PLANT_TYPES) })
       self.last_plant = self.fc
     }
-    mut next_plants = []
-    for pl in self.plants {
-      let nx = pl.x - 1
-      if nx >= -12 { next_plants.push({ ...pl, x: nx }) }
-    }
-    self.plants = next_plants
+    self.plants = self.plants.map(fn (p) { { ...p, x: p.x - 1 } }).filter(|p| p.x >= -12)
 
-    self.player_y = self.player_y + self.player_vel
+    self.player_y += self.player_vel
     self.score = Math.min(self.score + gained, 255)
     self.max_score = Math.max(self.score, self.max_score)
     self.ground_x = (self.ground_x - 1) % W
@@ -320,7 +309,7 @@ class App {
   }
 
   tick_over() {
-    self.player_vel = self.player_vel + GRAVITY
+    self.player_vel += GRAVITY
     self.rocci.update(self.fc)
     self.hiscore.update(self.fc)
     self.player_y = Math.min(self.player_y + self.player_vel, 134.0)

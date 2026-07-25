@@ -13,7 +13,7 @@ let SZ = W * H
 
 # Optional frame count (so the example terminates under a smoke test);
 # absent => spin forever.
-let max_frames = if Sys.argv.size() > 0 { to_long(Sys.argv[0]) } else { -1 }
+let max_frames = Sys.argv.size() > 0 ? to_long(Sys.argv[0]) : -1
 
 mut a = 0.0   # rotation about one axis
 mut b = 0.0   # rotation about the other
@@ -22,11 +22,9 @@ mut b = 0.0   # rotation about the other
 let s = Term.Screen.new()
 IO.print(Term.hide())
 
-mut frame_no = 0
-while max_frames < 0 || frame_no < max_frames {
+while mut frame_no = 0; max_frames < 0 || frame_no < max_frames {
   s.clear()
-  mut depth = []
-  for _ in 0..SZ { depth.push(0.0) }
+  mut depth = [](SZ, 0.0)
 
   mut j = 0.0
   while j < 6.28 {
@@ -49,19 +47,19 @@ while max_frames < 0 || frame_no < max_frames {
       let lum = to_long(8.0 * ((f * e - c * d * g) * m - c * d * e - f * g - l * d * n))
       if y > 0 && y < H && x > 0 && x < W && inv > depth[o] {
         depth[o] = inv
-        let ci = if lum > 0 { lum } else { 0 }
+        let ci = Math.max(lum, 0)
         s.set(x, y, chars[ci..ci + 1])
       }
-      i = i + 0.02
+      i += 0.02
     }
-    j = j + 0.07
+    j += 0.07
   }
 
   s.flush()                 # redraws only the cells that changed
   Time.sleep(0.03)
-  a = a + 0.07
-  b = b + 0.03
-  frame_no = frame_no + 1
+  a += 0.07
+  b += 0.03
+  frame_no += 1
 }
 
 IO.print(Term.show())

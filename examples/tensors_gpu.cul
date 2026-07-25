@@ -5,22 +5,17 @@ fn bench(label, n) {
   let a = Tensor.randn([n, n])
   let b = Tensor.randn([n, n])
   Tensor.eval(a); Tensor.eval(b)
-  mut warm = a.dot(b)
+  let warm = a.dot(b)
   Tensor.eval(warm)                     # compile shaders / first dispatch
   let t0 = Time.monotonic()
-  mut i = 0
-  while i < 5 {
-    mut c = a.dot(b)
-    Tensor.eval(c)
-    i += 1
-  }
-  print("{label} {n}x{n}: {(Time.monotonic() - t0) * 200.0} ms/iter\n")
+  for _ in 0..5 { Tensor.eval(a.dot(b)) }
+  println("{label} {n}x{n}: {(Time.monotonic() - t0) * 200.0} ms/iter")
 }
 
-print("GPU available: {Tensor.gpu_available()}\n\n")
+println("GPU available: {Tensor.gpu_available()}\n")
 for n in [64, 512] {
   Tensor.use_cpu();  bench("cpu ", n)
   Tensor.use_gpu();  bench("gpu ", n)
   Tensor.use_auto(); bench("auto", n)
-  print("\n")
+  println("")
 }

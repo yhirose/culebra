@@ -18,7 +18,7 @@ effect fn choose(options)   # pick one option; the handler decides how many
 effect fn reject()          # this branch is a dead end
 effect fn visit()           # one placement considered (for instrumentation)
 
-let N = if Sys.argv.size() > 0 { to_long(Sys.argv[0]) } else { 6 }
+let N = Sys.argv.size() > 0 ? to_long(Sys.argv[0]) : 6
 
 # `cols[r]` is the column of the queen on row r; a partial solution is a
 # prefix. A new queen at column `c` on row `cols.size()` is safe if it shares
@@ -48,7 +48,7 @@ effect fn search(cols) {
 }
 
 fn board_of(cols) {
-  cols.map(|c| iota(N).map(|i| if i == c { "Q" } else { "." }).join("")).join("\n")
+  cols.map(|c| iota(N).map(|i| i == c ? "Q" : ".").join("")).join("\n")
 }
 
 # --- handler A: enumerate every solution --------------------------------
@@ -70,12 +70,12 @@ let all = handle {
     []
   }
 } with visit(resume) {
-  nodes_all = nodes_all + 1
+  nodes_all += 1
   resume(nil)   # tail-resumptive: no continuation captured, just a callback
 }
 
-print("{N} queens: {all.size()} solutions, {nodes_all} placements considered\n\n")
-if all.size() > 0 { print(board_of(all[0]) + "\n\n") }
+println("{N} queens: {all.size()} solutions, {nodes_all} placements considered\n")
+if all.size() > 0 { println(board_of(all[0]) + "\n") }
 
 # --- handler B: same search, stop at the first solution ------------------
 # Only the `choose` clause changes — it stops resuming once a branch has
@@ -95,12 +95,12 @@ let one = handle {
     []
   }
 } with visit(resume) {
-  nodes_one = nodes_one + 1
+  nodes_one += 1
   resume(nil)
 }
 
-let answer = if one.size() > 0 { one[0].to_string() } else { "none" }
-print("first solution only: {answer}, {nodes_one} placements considered\n")
+let answer = one.size() > 0 ? one[0].to_string() : "none"
+println("first solution only: {answer}, {nodes_one} placements considered")
 if nodes_one < nodes_all {
-  print("(same search, {nodes_all - nodes_one} fewer placements — the handler pruned it)\n")
+  println("(same search, {nodes_all - nodes_one} fewer placements — the handler pruned it)")
 }

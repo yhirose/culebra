@@ -1,4 +1,4 @@
 let t = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
-print("tensor : {t.to_string()}\n")
-print("shape  : {t.shape()}\n")
-print("GPU    : {Tensor.gpu_available()}\n")
+println("tensor : {t.to_string()}")
+println("shape  : {t.shape()}")
+println("GPU    : {Tensor.gpu_available()}")
