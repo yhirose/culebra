@@ -3544,8 +3544,13 @@ arguments.` が送出されます（§17 の `drop` 契約と同じ）。3 つ�
 | イテレータが `has_next` / `next` を欠く | `TypeError: type error: iterator missing has_next()/next()` | iterable 式、またはチェーンを駆動した終端 |
 
 **省略可能な `dispose`**: イテレータが引数なしの `dispose` を持つ場合、
-全 exit パス（正常な drain・`break`・ループを抜ける例外）で呼ばれます。
-ジェネレータはこれを使って、中断された本体に登録された defer を走らせます。
+全 exit パス（正常な drain・`break`・早期 `return`・ループを抜ける例外）で
+呼ばれます。例外はどちら側が投げたかを問いません — ループ本体、
+`has_next()` / `next()`、中断中に throw したジェネレータ本体のいずれでも
+同じです。ジェネレータはこれを使って中断された本体に登録された defer を
+走らせるので、producer 自身の失敗でも dispose する必要があります。すでに
+例外が unwind 中の exit パスで `dispose` 自身が throw した場合は握り潰され、
+外側の `catch` には元のエラーが渡ります。
 
     let countdown = fn (start) {
       mut i = start

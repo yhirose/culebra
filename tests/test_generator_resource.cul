@@ -111,4 +111,66 @@ assert_eq(cls[0], '20')
 assert_eq(cls[1], 'err')
 assert_eq(cls[2], '5')
 
+// --- (9) defer runs when the *producer* throws ---
+// docs §18.5: dispose fires on any exception leaving the loop, not only one
+// raised by the body. A generator body that throws while suspended surfaces as
+// a throw out of next(); its registered defers must still run.
+mut log_g = ''
+fn gen_g() {
+  defer { log_g = "{log_g}closed;" }
+  for v in [1, 2, 3] {
+    if v == 2 { throw 'from-generator' }
+    yield v
+  }
+}
+try {
+  for v in gen_g() { log_g = "{log_g}{v};" }
+} catch e { log_g = "{log_g}caught:{e};" }
+assert_eq(log_g, '1;closed;caught:from-generator;')
+
+// Same for a hand-written iterator: next() and has_next() alike.
+mut log_h = ''
+fn iter_h(thrower) {
+  mut i = 0
+  {
+    iter: fn () { self },
+    has_next: fn () { if thrower == 'has_next' && i == 1 { throw 'hn' }; true },
+    next: fn () { i = i + 1; if thrower == 'next' && i == 2 { throw 'nx' }; i },
+    dispose: fn () { log_h = "{log_h}disposed;" },
+  }
+}
+try { for v in iter_h('next') { } } catch e { log_h = "{log_h}c:{e};" }
+assert_eq(log_h, 'disposed;c:nx;')
+log_h = ''
+try { for v in iter_h('has_next') { } } catch e { log_h = "{log_h}c:{e};" }
+assert_eq(log_h, 'disposed;c:hn;')
+
+// A dispose that throws on this path must not replace the in-flight error.
+let iter_i = {
+  iter: fn () { self },
+  has_next: fn () { true },
+  next: fn () { throw 'original' },
+  dispose: fn () { throw 'from-dispose' },
+}
+mut log_i = ''
+try { for v in iter_i { } } catch e { log_i = "{log_i}{e};" }
+assert_eq(log_i, 'original;')
+
+// Nested loops: the inner iterator disposes first, then the outer one as the
+// exception leaves it.
+mut log_j = ''
+fn iter_j(tag, bad) {
+  mut i = 0
+  {
+    iter: fn () { self },
+    has_next: fn () { i < 4 },
+    next: fn () { i = i + 1; if bad && i == 2 { throw 'inner' }; i },
+    dispose: fn () { log_j = "{log_j}{tag};" },
+  }
+}
+try {
+  for a in iter_j('out', false) { for b in iter_j('in', true) { } }
+} catch e { }
+assert_eq(log_j, 'in;out;')
+
 IO.inspect('test_generator_resource OK')

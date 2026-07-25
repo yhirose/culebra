@@ -3763,9 +3763,13 @@ nothing, so that is where the error appears:
 | iterator missing `has_next` or `next` | `TypeError: type error: iterator missing has_next()/next()` | the iterable expression, or the terminal that drove the chain |
 
 **Optional `dispose`**: if the iterator has a zero-arity `dispose`, it
-is called on every exit path — normal drain, `break`, or an exception
-leaving the loop. Generators use it to run the defers registered
-inside a suspended body.
+is called on every exit path — normal drain, `break`, early `return`, or
+an exception leaving the loop, whichever side raised it: the loop body,
+`has_next()` / `next()`, or a generator body that throws while suspended.
+Generators use it to run the defers registered inside a suspended body,
+which is why the producer's own failure must dispose too. A `dispose`
+that itself throws while an exception is already unwinding is swallowed,
+so the enclosing `catch` still sees the original error.
 
     let countdown = fn (start) {
       mut i = start

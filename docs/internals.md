@@ -263,6 +263,14 @@ to pick the matching advance, and every advance hands its element to one
 body. Exit is shared too: the iterator dispose is guarded on the cursor's
 iterator slot, which the array and string cursors leave nil.
 
+Two cleanup pads hang off the loop, one per side that can throw: the body's
+and the producer's (the advance blocks). Both dispose the iterator and
+re-raise, which is what makes §18.5's "dispose on any exception leaving the
+loop" true of a throwing `next()` / `has_next()` — and of a generator body
+that throws while suspended, whose registered defers only run through that
+dispose. The interpreter's `eval_for` wraps its producer call for the same
+reason.
+
 The three values the loop owns — the iterable, the value the protocol is
 derived from, and the iterator `iter()` returned — are scope slots of the
 statement's own scope, declared in that order so LIFO teardown drops the

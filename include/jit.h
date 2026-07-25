@@ -8179,6 +8179,7 @@ struct JIT {
     auto bodyBB = llvm::BasicBlock::Create(ctx_, "for.body", fn);
     auto exitBB = llvm::BasicBlock::Create(ctx_, "for.exit", fn);
     auto excBB = llvm::BasicBlock::Create(ctx_, "for.exc", fn);
+    auto prodExcBB = llvm::BasicBlock::Create(ctx_, "for.prod.exc", fn);
 
     builder_.SetInsertPoint(headBB);
     auto kindV =
@@ -8188,9 +8189,18 @@ struct JIT {
     kindSw->addCase(builder_.getInt8(FOR_PROTO), advProtoBB);
     kindSw->addCase(builder_.getInt8(FOR_STRING), advStringBB);
 
+    // The producer is an exit path too (docs §18.5: dispose runs on any
+    // exception leaving the loop) — a throwing next() / has_next(), or a
+    // generator body that throws while suspended, must still dispose, which is
+    // what runs the defers registered inside that body. Route the advances
+    // through their own pad; the array / string cursors reach it as well (a
+    // bad index throws), where the nil guard makes it a plain rethrow.
+    auto outerLpad = current_lpad_;
+    current_lpad_ = prodExcBB;
     emit_for_advance_array(cursor, advArrayBB, bodyBB, exitBB);
     emit_for_advance_protocol(cursor, advProtoBB, bodyBB, exitBB);
     emit_for_advance_string(cursor, advStringBB, bodyBB, exitBB);
+    current_lpad_ = outerLpad;
 
     builder_.SetInsertPoint(bodyBB);
     emit_safepoint();
@@ -8231,6 +8241,16 @@ struct JIT {
       emit_iter_dispose_if_active(cursor.iter, "for.exc",
                                   /*swallow_dispose=*/true);
       emit_rethrow(bodyOuterLpad);
+    }
+
+    // Producer path: same shape, one block earlier in the loop.
+    if (llvm::pred_empty(prodExcBB)) {
+      prodExcBB->eraseFromParent();
+    } else {
+      emit_catch_all_prologue(prodExcBB, "for.prod.lpad");
+      emit_iter_dispose_if_active(cursor.iter, "for.prod",
+                                  /*swallow_dispose=*/true);
+      emit_rethrow(outerLpad);
     }
 
     builder_.SetInsertPoint(endBB);

@@ -1492,6 +1492,19 @@ let iterthrows = [
   # One for-in statement driven by a protocol source and an Array in turn: the
   # cursor must not carry an iterator over into the Array run.
   'fn mk() { mut n = 0; { iter: fn () { self }, has_next: fn () { n < 2 }, next: fn () { n = n + 1; [n, n] } } }; mut s = 0; for k in [0, 1, 2, 3] { let src = k % 2 == 0 ? mk() : [[7, 7], [8, 8]]; for x in src { s = s + x[0] } }; s',
+  # dispose x *producer* throw (§18.5: any exception leaving the loop disposes).
+  # The observed `d` / defer trace is the point here — these lock the exit-path
+  # promise itself, not just its leak-freedom.
+  'mut n = 0; mut d = 0; let it = { iter: fn () { self }, has_next: fn () { true }, next: fn () { n = n + 1; if n > 2 { [1][9] }; [n, n] }, dispose: fn () { d = d + 1 } }; try { for x in it { } } catch e { nil }; d',
+  'mut d = 0; let it = { iter: fn () { self }, has_next: fn () { [1][9] }, next: fn () { 1 }, dispose: fn () { d = d + 1 } }; try { for x in it { } } catch e { nil }; d',
+  'mut n = 0; mut d = 0; let it = { iter: fn () { self }, has_next: fn () { n = n + 1; if n > 2 { 1 / 0 }; true }, next: fn () { [n, n] }, dispose: fn () { d = d + 1 } }; mut k = nil; try { for x in it { } } catch e { k = e.kind }; [d, k]',
+  # A dispose that throws on this path must not replace the in-flight error.
+  'let it = { iter: fn () { self }, has_next: fn () { true }, next: fn () { [1][9] }, dispose: fn () { 1 / 0 } }; mut k = nil; try { for x in it { } } catch e { k = e.kind }; k',
+  # Generator body throwing while suspended: dispose is what runs its defers.
+  'mut g = 0; fn gen() { defer { g = g + 1 }; defer { g = g + 10 }; for v in [1, 2, 3] { if v == 2 { [1][9] }; yield [v, v] } }; try { for x in gen() { } } catch e { nil }; g',
+  # Nested: inner producer throw disposes inner, then outer as it leaves.
+  'mut t = []; fn mk(tag, n, bad) { mut i = 0; { iter: fn () { self }, has_next: fn () { i < n }, next: fn () { i = i + 1; if bad && i == 2 { [1][9] }; [i, i] }, dispose: fn () { t.push(tag) } } }; try { for a in mk(1, 9, false) { for b in mk(2, 9, true) { } } } catch e { nil }; t',
+  'mut t = []; fn mk(tag, n, bad) { mut i = 0; { iter: fn () { self }, has_next: fn () { i < n }, next: fn () { i = i + 1; if bad && i == 2 { [1][9] }; [i, i] }, dispose: fn () { t.push(tag) } } }; for a in mk(1, 2, false) { try { for b in mk(2, 9, true) { } } catch e { nil } }; t',
 ]
 for c in iterthrows {
   case("iterthrow|" + c, c)

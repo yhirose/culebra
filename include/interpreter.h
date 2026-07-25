@@ -6849,7 +6849,17 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     auto drive = [&](auto&& pull, auto&& dispose) {
       bool completed = true;  // set false when the loop exits via break
       for (;;) {
-        auto v = pull();
+        // The producer is an exit path too (docs §18.5: dispose runs on any
+        // exception leaving the loop). A throwing has_next() / next() — or a
+        // generator body that throws while suspended — must still dispose,
+        // since that is what runs the defers registered inside that body.
+        std::optional<Value> v;
+        try {
+          v = pull();
+        } catch (...) {
+          try { dispose(); } catch (...) {}  // preserve in-flight throw
+          throw;
+        }
         if (!v) { dispose(); break; }
 
         auto scopeEnv = make_scope(env);
