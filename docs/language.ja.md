@@ -2806,7 +2806,7 @@ shutdown パターン）は、`Signal.notify` でチャネルを登録します�
 | `SendError` | Sendable でない値を isolate 境界（`Isolate.spawn` / `tx.send`）で渡した — ネイティブハンドル、`Tensor`、`mut` を捕獲したクロージャ、循環参照 | はい |
 | `ChannelError` | 全 endpoint が消えた（closed）channel への `tx.send` | はい |
 | `ParallelError` | `Parallel.map` / `Parallel.each` の要素が例外を投げた。失敗要素の index と原因を保持（fail-fast） | はい |
-| `DropContractError` | `drop` / `iter` / `next` プロパティが非 Function または非 0 引数 Function | はい |
+| `DropContractError` | `drop` / `iter` / `has_next` / `next` プロパティが非 Function または非 0 引数 Function | はい |
 | `RuntimeError` | 未変換 throw site から伝播した `std::runtime_error` をインタプリタが拾うフォールバック；JIT REPL の session 外 `repl_set`。この場合のみ `e.line == 0` / `e.col == 0` がありうる | はい |
 
 未 catch のエラーは `Kind: message` 形式で表示し非ゼロ終了します。
@@ -3248,8 +3248,8 @@ JIT ではスコープ離脱で解決します（インタープリタは次の�
 繰り延べ。バックストップ限定の形は上記参照）。トップレベルの孤児は
 両方とも GC バックストップ行きで、トップレベルの*束縛*はプログラム
 終了時に drop されずに leak したまま。well-known
-プロパティの契約（`drop` / `iter` / `next` は 0 引数の `Function`
-であること）も両バックエンドで代入時に強制されます。
+プロパティの契約（`drop` / `iter` / `has_next` / `next` は 0 引数の
+`Function` であること）も両バックエンドで代入時に強制されます。
 
 ---
 
@@ -3525,12 +3525,23 @@ inspect(p)          # {b: 2}
 | `has_next` | `fn () -> Bool` | **Iterator** | 次の要素があるか |
 | `next` | `fn () -> Any` | **Iterator** | 次の要素（`has_next()` が真だったときだけ呼ばれる） |
 
-`has_next` か `next` を欠くイテレータ Object は、`for`-in の位置で
-`TypeError: type error: iterator missing has_next()/next()` を送出します。
+**契約（プロパティ代入時に検査）**: `iter` / `has_next` / `next` を
+非 `Function` 値、または引数ありの Function に束縛すると、代入時点で
+`DropContractError: type error: '<name>' must be a Function taking no
+arguments.` が送出されます（§17 の `drop` 契約と同じ）。3 つの名前は
+セットで予約されているので、プロトコルのメンバーは常に呼び出し可能な
+値を保持します。名前が似ているだけのデータフィールド（`has_next_at`）
+は影響を受けません。
 
-**契約（プロパティ代入時に検査）**: `iter` / `next` を非 `Function`
-値、または引数ありの Function に束縛すると、代入時点で `type error`
-が送出されます（§17 の `drop` 契約と同じ）。
+**イテレータを開くときに検査**: `for`-in はヘッドで最初のステップの
+前に、遅延チェーンは終端（`collect` / `count` …）が最初に駆動した
+時点で検査します。チェーンの構築自体は何も引かないので、エラーは
+終端側に現れます:
+
+| 状況 | エラー | 報告位置 |
+|---|---|---|
+| `iter()` が `Object` 以外を返した | `TypeError: type error: iter() did not return an Object` | iterable 式 |
+| イテレータが `has_next` / `next` を欠く | `TypeError: type error: iterator missing has_next()/next()` | iterable 式、またはチェーンを駆動した終端 |
 
 **省略可能な `dispose`**: イテレータが引数なしの `dispose` を持つ場合、
 全 exit パス（正常な drain・`break`・ループを抜ける例外）で呼ばれます。

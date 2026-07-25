@@ -785,6 +785,11 @@ struct ObjectValue {
   // (which expects an existing slot) instead of `initialize()`.
   bool has_own(std::string_view name) const;
   const Value& get(std::string_view name) const;
+  // `get` without the throw on a miss: one lookup, nullptr when absent
+  // (own properties then the builtin table, exactly like `get`). Lets a
+  // caller that must diagnose a miss itself — the iterator protocol —
+  // avoid probing with `has` first.
+  const Value* get_ptr(std::string_view name) const;
   void assign(std::string_view name, const Value& val);
   void initialize(std::string_view name, const Value& val, bool mut);
 
@@ -2697,6 +2702,15 @@ inline const Value& ObjectValue::get(std::string_view name) const {
   return properties->at(name).val;
 }
 
+inline const Value* ObjectValue::get_ptr(std::string_view name) const {
+  if (auto it = properties->find(name); it != properties->end()) {
+    return &it->second.val;
+  }
+  const auto& props = const_cast<ObjectValue*>(this)->builtins();
+  auto it = props.find(name);
+  return it == props.end() ? nullptr : &it->second;
+}
+
 // Validate the well-known-property contract (see shared.h)
 // for a freshly-bound interpreter Value: must be a 0-arg Function.
 inline void _check_drop_contract(std::string_view name, const Value& val) {
@@ -3342,20 +3356,24 @@ inline std::shared_ptr<Environment> _make_method_call_env(
   return env;
 }
 
-// Invoke a 0-parameter method stored on an iterator-shaped Object
-// (receiver plays the iterator role). `receiver.next()` style call.
-inline Value _invoke_method_no_args(const Value& receiver,
-                                    std::string_view method_name) {
-  const auto& fn = receiver.to_object().get(method_name);
-  // Method bodies use `return X` (generator-synthesized next() does,
-  // and any user iterator with an early return). `FunctionValue::eval`
-  // raises ReturnValue rather than returning the value, so catch it
-  // here — without this, the surrounding for-in would unwind silently.
+// Call an already-resolved 0-parameter method with `receiver` as its
+// `self`. Method bodies use `return X` (generator-synthesized next()
+// does, and any user iterator with an early return). `FunctionValue::eval`
+// raises ReturnValue rather than returning the value, so catch it here —
+// without this, the surrounding for-in would unwind silently.
+inline Value _invoke_fn_no_args(const Value& fn, const Value& receiver) {
   try {
     return fn.to_function().eval(_make_method_call_env(receiver, 0, 0));
   } catch (const ReturnValue& r) {
     return r.value;
   }
+}
+
+// Invoke a 0-parameter method stored on an iterator-shaped Object
+// (receiver plays the iterator role). `receiver.next()` style call.
+inline Value _invoke_method_no_args(const Value& receiver,
+                                    std::string_view method_name) {
+  return _invoke_fn_no_args(receiver.to_object().get(method_name), receiver);
 }
 
 // Pair to `ValueEq` (forward-declared earlier): invoke `a.eq(b)` for
@@ -3578,15 +3596,48 @@ inline std::string str_quoted_with_special(const Value& v) {
   return v.str();
 }
 
+// Resolve `has_next` / `next` on an iterator Object, enforcing the
+// protocol contract (docs/language.md §18.5). Returns nullptr when the
+// receiver is not an Object, lacks the member, or holds something that is
+// not a 0-arg Function — the three ways an iterator can be broken; callers
+// turn that into the shared protocol error. One lookup, like the plain
+// `get` it replaces, so a well-formed iterator pays nothing extra.
+inline const Value* _iter_protocol_member(const Value& iter_val,
+                                          std::string_view name) {
+  if (iter_val.type != Value::Object) return nullptr;
+  const auto* v = iter_val.to_object().get_ptr(name);
+  if (!v || v->type != Value::Function) return nullptr;
+  return v->template get<FunctionValue>().params->empty() ? v : nullptr;
+}
+
+// Open the iterator protocol: validate `iter_val` before anything drives
+// it. The for-in head calls this with the iterable expression's position;
+// the JIT's culebra_runtime_iter_protocol_open is the twin, so a broken
+// iterator reports the same error on every backend.
+inline void _check_iter_protocol(const Value& iter_val, long line, long col) {
+  if (iter_val.type != Value::Object) throw_iter_not_object(line, col);
+  if (!_iter_protocol_member(iter_val, "has_next") ||
+      !_iter_protocol_member(iter_val, "next")) {
+    throw_iter_missing_protocol(line, col);
+  }
+}
+
 // Advance an iterator one step. Returns the yielded value, or
 // `std::nullopt` when the iterator is drained. Built on the Kotlin-
 // style `Iterator { has_next() -> Bool, next() -> Any }` contract so
 // each upstream advance is one `has_next()` + (when true) `next()`.
+// A lazy chain reaches its upstream for the first time here (no separate
+// open), so a broken upstream raises the protocol error rather than
+// escaping as a raw map lookup failure.
 inline std::optional<Value> _iter_next_value(const Value& upstream) {
-  if (!_invoke_method_no_args(upstream, "has_next").to_bool()) {
+  const auto* has_next = _iter_protocol_member(upstream, "has_next");
+  if (!has_next) throw_iter_missing_protocol();
+  if (!_invoke_fn_no_args(*has_next, upstream).to_bool()) {
     return std::nullopt;
   }
-  return _invoke_method_no_args(upstream, "next");
+  const auto* next = _iter_protocol_member(upstream, "next");
+  if (!next) throw_iter_missing_protocol();
+  return _invoke_fn_no_args(*next, upstream);
 }
 
 // Streaming twins of the two helpers above, for the Iterator terminals.
@@ -6855,20 +6906,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           [] {});
     } else {
       auto iter_val = _get_iterator(iterable, iter_expr.line, iter_expr.column);
-      auto iter_proto_error = [&](std::string_view what) -> CulebraError {
-        return CulebraError(
-            "TypeError",
-            std::format("type error: {}", what),
-            static_cast<long>(iter_expr.line),
-            static_cast<long>(iter_expr.column));
-      };
-      if (iter_val.type != Value::Object) {
-        throw iter_proto_error("iter() did not return an Object");
-      }
-      const auto& iter_obj = iter_val.to_object();
-      if (!iter_obj.has("has_next") || !iter_obj.has("next")) {
-        throw iter_proto_error("iterator missing has_next()/next()");
-      }
+      _check_iter_protocol(iter_val, static_cast<long>(iter_expr.line),
+                           static_cast<long>(iter_expr.column));
 
       // Iterator dispose protocol: call iter.dispose() on every exit path
       // (drain / break / exception). Default trait impl is a no-op, so

@@ -2996,7 +2996,7 @@ AOT builds (unless noted).
 | `SendError` | A value that is not Sendable was passed across an isolate boundary (`Isolate.spawn` / `tx.send`) — a native handle, a `Tensor`, a closure capturing a `mut`, or a cyclic value. | yes |
 | `ChannelError` | `tx.send` on a channel whose receivers/senders have all gone (closed). | yes |
 | `ParallelError` | A `Parallel.map` / `Parallel.each` element threw; carries the failing element's index and cause (fail-fast). | yes |
-| `DropContractError` | `drop` / `iter` / `next` property bound to a non-Function or non-zero-arity function. | yes |
+| `DropContractError` | `drop` / `iter` / `has_next` / `next` property bound to a non-Function or non-zero-arity function. | yes |
 | `RuntimeError` | Fallback when interp catches an unconverted `std::runtime_error` from a not-yet-migrated throw site; JIT REPL `repl_set` outside a session. `e.line == 0` and `e.col == 0` are possible in this case only. | yes |
 
 Uncaught errors print as `Kind: message` and exit with non-zero
@@ -3454,7 +3454,7 @@ shapes also resolve at scope exit under the JIT (the interpreter
 defers those to its next collection; backstop-only shapes as above);
 top-level orphans go to the GC backstop on both, and top-level
 *bindings* still leak un-dropped at program exit. The well-known property contract
-(`drop`/`iter`/`next` must be a 0-arg `Function`) is enforced at
+(`drop`/`iter`/`has_next`/`next` must be a 0-arg `Function`) is enforced at
 assignment time on both backends.
 
 ---
@@ -3744,14 +3744,23 @@ gate in front of each `next`:
 | `has_next` | `fn () -> Bool` | an **Iterator** | whether another element is available |
 | `next` | `fn () -> Any` | an **Iterator** | the next element (called only when `has_next()` was truthy) |
 
-An iterator Object missing either `has_next` or `next` raises
-`TypeError: type error: iterator missing has_next()/next()` at the
-`for`-in site.
+**Contract, enforced at property assignment**: binding `iter`,
+`has_next` or `next` to a non-`Function` value, or to a function with
+non-zero arity, raises `DropContractError: type error: '<name>' must be
+a Function taking no arguments.` at the assignment site (mirrors the
+`drop` contract — §17). The three names are reserved as a set, so a
+protocol member always holds something callable; a lookalike data field
+(`has_next_at`) is unaffected.
 
-**Contract, enforced at property assignment**: binding `iter` or
-`next` to a non-`Function` value, or to a function with non-zero
-arity, raises `type error` at the assignment site (mirrors the `drop`
-contract — §17).
+**Checked when the iterator is opened**: the `for`-in head validates
+before the first step, and a lazy chain validates when a terminal
+(`collect`, `count`, ...) first drives it — building the chain pulls
+nothing, so that is where the error appears:
+
+| Situation | Error | Reported at |
+|---|---|---|
+| `iter()` returned a non-`Object` | `TypeError: type error: iter() did not return an Object` | the iterable expression |
+| iterator missing `has_next` or `next` | `TypeError: type error: iterator missing has_next()/next()` | the iterable expression, or the terminal that drove the chain |
 
 **Optional `dispose`**: if the iterator has a zero-arity `dispose`, it
 is called on every exit path — normal drain, `break`, or an exception

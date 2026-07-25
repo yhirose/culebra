@@ -1942,14 +1942,23 @@ inline std::mt19937_64& random_engine() {
 // --- Well-known property contract ---
 
 // Property names the runtime invokes behind the scenes:
-//   drop  - RAII destructor (called on last release / cycle break)
-//   iter  - iterator constructor (returns an object with `next`)
-//   next  - iterator advance (returns `{done, value}`)
+//   drop      - RAII destructor (called on last release / cycle break)
+//   iter      - iterator constructor (returns an Iterator Object)
+//   has_next  - iterator gate (Bool, called before each next)
+//   next      - iterator advance (returns the next element)
 // Each must be a 0-arg Function. The name set and error wording live
 // here so the two backends can't drift; per-backend type checks stay
 // in each backend (Value vs JitClosure aren't interchangeable).
+//
+// The three protocol names are checked as a set: `has_next` was the one
+// left out, which let a broken one reach a raw closure cast in the JIT (a
+// jump through a Long payload). Binding is the first of two lines — the
+// protocol open (see `_check_iter_protocol` / iter_protocol_open) is what
+// makes the cast safe even for objects built by paths that bypass this
+// check, e.g. a native builder writing slots directly.
 inline bool is_well_known_prop(std::string_view name) {
-  return name == "drop" || name == "iter" || name == "next";
+  return name == "drop" || name == "iter" || name == "has_next" ||
+         name == "next";
 }
 
 // The zero value a typed instance field (`x: T` with no initializer) takes
@@ -1973,6 +1982,24 @@ inline ZeroKind zero_kind_for_type(std::string_view type) {
       "DropContractError",
       std::format("type error: '{}' must be a Function taking no arguments.",
                   name));
+}
+
+// --- Iterator protocol diagnostics (docs/language.md §18.5) ---
+//
+// Raised where an iterator is OPENED — the for-in iterable expression, or
+// the point a lazy chain first drives its upstream. Single-sourced here so
+// interp and JIT/AOT report the identical kind and wording; each backend
+// supplies the position (0/0 leaves it to the positionless-error backfill).
+[[noreturn]] inline void throw_iter_not_object(long line = 0, long col = 0) {
+  throw CulebraError("TypeError",
+                     "type error: iter() did not return an Object", line, col);
+}
+
+[[noreturn]] inline void throw_iter_missing_protocol(long line = 0,
+                                                     long col = 0) {
+  throw CulebraError("TypeError",
+                     "type error: iterator missing has_next()/next()", line,
+                     col);
 }
 
 // --- trait / protocol registry (§15) ---

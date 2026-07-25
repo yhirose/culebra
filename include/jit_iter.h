@@ -114,6 +114,25 @@ inline JitClosure* _iter_next_closure(JitValue iter_val) {
   return _iter_method_closure(iter_val, "next");
 }
 
+// Open the iterator protocol on `iter`: validate the contract
+// (docs/language.md §18.5) and hand back both closures. Every protocol
+// open — the for-in head, the inlined iterator HOFs — goes through here,
+// so no call site turns a raw property value into a JitClosure* on its
+// own. `_iter_method_closure` already rejects a non-Function member, so a
+// broken `has_next` can never reach a call through its payload.
+// The interp twin is `_check_iter_protocol`; both raise the shared errors.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_protocol_open(
+    int8_t tag, int64_t data, int64_t line, int64_t col,
+    JitClosure** out_has_next, JitClosure** out_next) {
+  JitValue iter_val{tag, data};
+  if (tag != TAG_OBJECT) culebra::throw_iter_not_object(line, col);
+  auto* has_next = _iter_has_next_closure(iter_val);
+  auto* next = _iter_next_closure(iter_val);
+  if (!has_next || !next) culebra::throw_iter_missing_protocol(line, col);
+  *out_has_next = has_next;
+  *out_next = next;
+}
+
 // Pre-resolve an upstream's has_next / next closures into a pair of
 // TAG_LONG cells the lazy factories below thread into their captures.
 // Folds the 4-line "cell_new for has_next, cell_new for next" pattern
@@ -177,13 +196,13 @@ inline bool _iter_advance_raw(JitClosure* has_next_cls, JitClosure* next_cls,
   }
   // Slow path: user-built iterator. Drive its has_next() / next()
   // closures directly; the user owns any caching they need. A non-iterator
-  // receiver (no has_next/next) yields null closures — e.g. a terminal
-  // method called by name on a builtin namespace like `GC.collect()`.
-  // Reject it cleanly instead of calling through a null fn_ptr.
-  if (!has_next_cls || !next_cls) {
-    throw culebra::CulebraError("TypeError",
-                                "type error: target is not iterable");
-  }
+  // receiver (no has_next/next, or one of them bound to a non-Function)
+  // yields null closures — this is where a lazy chain first meets a broken
+  // upstream, since the combinator factories resolve without validating
+  // (throwing there would move the error to chain-build time, which the
+  // interp does not do). Positionless: the op-position backfill reports it
+  // at the advance that hit it, like the interp's own throw here.
+  if (!has_next_cls || !next_cls) culebra::throw_iter_missing_protocol();
   culebra_runtime_value_retain(iter_val.tag, iter_val.data);
   auto hn = _jit_invoke(has_next_cls, iter_val, 0, nullptr);
   bool has = (hn.tag == TAG_BOOL && hn.data != 0);

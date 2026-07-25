@@ -4904,6 +4904,11 @@ struct JIT {
     auto i8Ty = builder_.getInt8Ty();
     auto i64Ty = builder_.getInt64Ty();
     if (is_well_known_prop(name)) {
+      // The contract error carries no position of its own; publish this
+      // bind's so the backfill reports at the property being bound, which
+      // is where the interpreter's own throw lands. Confined to the four
+      // protocol names — a plain property write pays nothing.
+      emit_set_op_pos();
       auto wkKey = get_or_create_global_str(name, ".wkkey");
       emit_call(
           module_->getOrInsertFunction(rt::check_well_known_prop,
@@ -8139,7 +8144,9 @@ struct JIT {
     builder_.CreateBr(protoOpenBB);
 
     builder_.SetInsertPoint(protoOpenBB);
-    emit_for_open_protocol(cursor);
+    emit_for_open_protocol(
+        cursor, builder_.getInt64(static_cast<int64_t>(iter_expr.line)),
+        builder_.getInt64(static_cast<int64_t>(iter_expr.column)));
     builder_.CreateBr(headBB);
 
     builder_.SetInsertPoint(stringBB);
@@ -8611,31 +8618,41 @@ struct JIT {
   // so every exit path frees it. `iter()` returns a fresh +1 stored in
   // `c.iter`; each method call retains its receiver before invocation (the
   // callee frame releases via its owned `self` slot).
-  void emit_for_open_protocol(const ForCursor& c) {
+  // `open_line` / `open_col` are the iterable expression's position — where
+  // the interpreter reports a broken protocol from, so a bad iterator points
+  // at the same source on every backend.
+  void emit_for_open_protocol(const ForCursor& c, llvm::Value* open_line,
+                              llvm::Value* open_col) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto objVal = builder_.CreateLoad(valueType_, c.obj, "for.proto.src");
 
     auto iter_fn_val = emit_property_get(objVal, "iter");
     emit_value_retain(objVal);  // handed off to `self` slot
     Owned iter_owned = compile_function_call_raw(iter_fn_val, objVal, {});
+
+    // `has_next` + `next` are fixed for an iterator's lifetime — resolve both
+    // once so each step is a pair of cached closure dispatches rather than a
+    // per-iteration `find_slot`. The runtime open validates the protocol and
+    // writes the two slots; it is the only place that turns those property
+    // values into closure pointers (see culebra_runtime_iter_protocol_open).
+    //
+    // Opened while the iterator is still in its Owned handle: rejecting a
+    // broken one throws, and the §4.8 unwind-temp window frees the handle on
+    // that edge. Consuming first would strand it — `c.iter` is a bare alloca
+    // no cleanup pad knows about.
+    emit_call(
+        module_->getOrInsertFunction(
+            rt::iter_protocol_open, builder_.getVoidTy(), builder_.getInt8Ty(),
+            builder_.getInt64Ty(), builder_.getInt64Ty(),
+            builder_.getInt64Ty(), ptrTy, ptrTy),
+        {extract_tag(iter_owned.borrow()), extract_data(iter_owned.borrow()),
+         open_line, open_col, c.has_next, c.next});
+
     // The slot owns the iterator from here (every exit path releases it); the
-    // raw deliberately crosses the property-get blocks below with the slot as
-    // its per-edge releaser (§4.3) — hence unchecked.
+    // raw deliberately crosses the blocks below with the slot as its per-edge
+    // releaser (§4.3) — hence unchecked.
     llvm::Value* iter_val = iter_owned.consume_unchecked();
     builder_.CreateStore(iter_val, c.iter);
-
-    // `has_next` + `next` are fixed for an iterator's lifetime — hoist both
-    // lookups so each step is a pair of cached closure dispatches rather than
-    // a per-iteration `find_slot`.
-    auto has_next_fn_val = emit_property_get(iter_val, "has_next");
-    builder_.CreateStore(
-        builder_.CreateIntToPtr(extract_data(has_next_fn_val), ptrTy,
-                                "has_next.cls"),
-        c.has_next);
-    auto next_fn_val = emit_property_get(iter_val, "next");
-    builder_.CreateStore(
-        builder_.CreateIntToPtr(extract_data(next_fn_val), ptrTy, "next.cls"),
-        c.next);
     builder_.CreateStore(builder_.getInt8(FOR_PROTO), c.kind);
   }
 
@@ -11592,6 +11609,17 @@ struct JIT {
                                    llvm::PointerType::get(ctx_, 0));
   }
 
+  // Head of an iterator-only method (`collect`, `take`, ...): require an
+  // iterator Object receiver, then publish this call's position. Driving the
+  // chain can raise the protocol error, which carries no position of its own
+  // (the broken upstream was built elsewhere) — the interp reports such a
+  // throw at the expression it is evaluating, i.e. this call. One publish per
+  // call; the eager/lazy dispatcher does the same for its own family.
+  void expect_iter_receiver(llvm::Value* receiver, const char* name) {
+    expect_receiver_tag(receiver, TAG_OBJECT, name);
+    emit_set_op_pos();
+  }
+
   // Coerce a String/StringView receiver to a null-terminated cstr.
   // StringView is materialized via strlike_to_cstr (leak-bounded).
   // `as_receiver` makes a wrong type report interp's method-resolution
@@ -14285,12 +14313,6 @@ inline void JIT::emit_iter_unary_inline_loop(
   auto ptrTy = PointerType::get(ctx_, 0);
   auto fn = builder_.GetInsertBlock()->getParent();
 
-  auto has_next_fn_val = emit_property_get(iter_val, "has_next");
-  auto has_next_cls_ptr = builder_.CreateIntToPtr(
-      extract_data(has_next_fn_val), ptrTy, "ihof.has_next.cls");
-  auto next_fn_val = emit_property_get(iter_val, "next");
-  auto next_cls_ptr =
-      builder_.CreateIntToPtr(extract_data(next_fn_val), ptrTy, "ihof.next.cls");
   auto iterTag = extract_tag(iter_val);
   auto iterData = extract_data(iter_val);
 
@@ -14299,6 +14321,22 @@ inline void JIT::emit_iter_unary_inline_loop(
       entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "ihof.it.tag");
   auto outDataAlloca =
       entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "ihof.it.data");
+  auto hasNextAlloca =
+      entryB.CreateAlloca(ptrTy, nullptr, "ihof.has_next.cls");
+  auto nextAlloca = entryB.CreateAlloca(ptrTy, nullptr, "ihof.next.cls");
+
+  // Same protocol open as the for-in head: validated once, outside the loop.
+  // Reports at the HOF call site, where the interp's own throw lands.
+  emit_call(
+      module_->getOrInsertFunction(
+          rt::iter_protocol_open, builder_.getVoidTy(), builder_.getInt8Ty(),
+          builder_.getInt64Ty(), builder_.getInt64Ty(), builder_.getInt64Ty(),
+          ptrTy, ptrTy),
+      {iterTag, iterData, current_line_val(), current_column_val(),
+       hasNextAlloca, nextAlloca});
+  auto has_next_cls_ptr =
+      builder_.CreateLoad(ptrTy, hasNextAlloca, "ihof.has_next");
+  auto next_cls_ptr = builder_.CreateLoad(ptrTy, nextAlloca, "ihof.next");
 
   auto condBB = BasicBlock::Create(ctx_, "ihofi.cond", fn);
   auto bodyBB = BasicBlock::Create(ctx_, "ihofi.body", fn);
@@ -14589,12 +14627,6 @@ inline llvm::Value* JIT::emit_inlined_iter_reduce(
   auto accAlloca = entryB.CreateAlloca(valueType_, nullptr, "iri.acc");
   builder_.CreateStore(init, accAlloca);
 
-  auto has_next_fn_val = emit_property_get(iter_val, "has_next");
-  auto has_next_cls_ptr = builder_.CreateIntToPtr(
-      extract_data(has_next_fn_val), ptrTy, "iri.has_next.cls");
-  auto next_fn_val = emit_property_get(iter_val, "next");
-  auto next_cls_ptr =
-      builder_.CreateIntToPtr(extract_data(next_fn_val), ptrTy, "iri.next.cls");
   auto iterTag = extract_tag(iter_val);
   auto iterData = extract_data(iter_val);
 
@@ -14602,6 +14634,24 @@ inline llvm::Value* JIT::emit_inlined_iter_reduce(
       entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "iri.it.tag");
   auto outDataAlloca =
       entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "iri.it.data");
+  auto hasNextAlloca = entryB.CreateAlloca(ptrTy, nullptr, "iri.has_next.cls");
+  auto nextAlloca = entryB.CreateAlloca(ptrTy, nullptr, "iri.next.cls");
+
+  // Protocol open (validated, once) — see emit_iter_unary_inline_loop.
+  // Like the `has_next()` call in the loop head below, a throw from here
+  // leaves the seed in `accAlloca` with no owner until the first iteration
+  // hands it to the body scope — a pre-existing gap in this loop's shape,
+  // not one to paper over per-call-site.
+  emit_call(
+      module_->getOrInsertFunction(
+          rt::iter_protocol_open, builder_.getVoidTy(), builder_.getInt8Ty(),
+          builder_.getInt64Ty(), builder_.getInt64Ty(), builder_.getInt64Ty(),
+          ptrTy, ptrTy),
+      {iterTag, iterData, current_line_val(), current_column_val(),
+       hasNextAlloca, nextAlloca});
+  auto has_next_cls_ptr =
+      builder_.CreateLoad(ptrTy, hasNextAlloca, "iri.has_next");
+  auto next_cls_ptr = builder_.CreateLoad(ptrTy, nextAlloca, "iri.next");
 
   auto condBB = BasicBlock::Create(ctx_, "iri.cond", fn);
   auto bodyBB = BasicBlock::Create(ctx_, "iri.body", fn);
@@ -15525,6 +15575,12 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(objBB);
+    // Publish this method's position for the iterator arm: a terminal that
+    // drives a broken upstream raises the protocol error without one (the
+    // chain was built elsewhere), and the interp reports such a throw at the
+    // expression it is evaluating — this call. One publish per call, not per
+    // element.
+    emit_set_op_pos();
     // The iterator path BORROWS the source, same as the eager Array path:
     // lazy factories (iter_map/filter/flat_map) retain what they store into
     // their capture cells, and terminal drivers (iter_reduce/for_each/...)
@@ -16007,7 +16063,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   // Iterator-only methods — require an iterator-protocol Object
   // receiver (Array users call `.iter()` first, matching interp).
   if (method == "collect" && argsAst.nodes.size() == 0) {
-    expect_receiver_tag(receiver, TAG_OBJECT, "collect");
+    expect_iter_receiver(receiver, "collect");
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto out = emit_call(module_->getFunction(rt::iter_collect), {t, d});
@@ -16015,7 +16071,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "count" && argsAst.nodes.size() == 0) {
-    expect_receiver_tag(receiver, TAG_OBJECT, "count");
+    expect_iter_receiver(receiver, "count");
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto n = emit_call(module_->getFunction(rt::iter_count), {t, d});
@@ -16023,7 +16079,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "take" && argsAst.nodes.size() == 1) {
-    expect_receiver_tag(receiver, TAG_OBJECT, "take");
+    expect_iter_receiver(receiver, "take");
     auto n = compile_iter_long_arg(*argsAst.nodes[0]);
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
@@ -16033,7 +16089,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "skip" && argsAst.nodes.size() == 1) {
-    expect_receiver_tag(receiver, TAG_OBJECT, "skip");
+    expect_iter_receiver(receiver, "skip");
     auto n = compile_iter_long_arg(*argsAst.nodes[0]);
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
@@ -16043,7 +16099,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "take_while" && argsAst.nodes.size() == 1) {
-    expect_receiver_tag(receiver, TAG_OBJECT, "take_while");
+    expect_iter_receiver(receiver, "take_while");
     // The callback stays Owned across the site-publish call (§4.9), then
     // callee-consumes: the factory call is the very next runtime step and
     // owns the +1 from entry.
@@ -16185,7 +16241,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "chunks" && argsAst.nodes.size() == 1) {
-    expect_receiver_tag(receiver, TAG_OBJECT, "chunks");
+    expect_iter_receiver(receiver, "chunks");
     auto n = compile_iter_long_arg(*argsAst.nodes[0]);
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
@@ -16195,7 +16251,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "windows" && argsAst.nodes.size() == 1) {
-    expect_receiver_tag(receiver, TAG_OBJECT, "windows");
+    expect_iter_receiver(receiver, "windows");
     auto n = compile_iter_long_arg(*argsAst.nodes[0]);
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
@@ -16218,7 +16274,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "chain" && argsAst.nodes.size() == 1) {
-    expect_receiver_tag(receiver, TAG_OBJECT, "chain");
+    expect_iter_receiver(receiver, "chain");
     auto other = compile(*argsAst.nodes[0]);
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
@@ -16230,7 +16286,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "zip" && argsAst.nodes.size() == 1) {
-    expect_receiver_tag(receiver, TAG_OBJECT, "zip");
+    expect_iter_receiver(receiver, "zip");
     auto other = compile(*argsAst.nodes[0]);
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);

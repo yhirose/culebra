@@ -851,6 +851,7 @@ inline constexpr auto iter_enumerate       = "culebra_runtime_iter_enumerate";
 inline constexpr auto enumerate_any        = "culebra_runtime_enumerate_any";
 inline constexpr auto iter_flat_map        = "culebra_runtime_iter_flat_map";
 inline constexpr auto iter_advance         = "culebra_runtime_iter_advance";
+inline constexpr auto iter_protocol_open   = "culebra_runtime_iter_protocol_open";
 inline constexpr auto str_code_points      = "culebra_runtime_str_code_points";
 inline constexpr auto str_scalars          = "culebra_runtime_str_scalars";
 inline constexpr auto str_scalar_view      = "culebra_runtime_str_scalar_view";

@@ -462,6 +462,46 @@ mut threw = false
 try { GC.collect() } catch e { threw = true }
 assert_true(threw)
 
+# --- Iterator protocol contract (language.md §18.5) ---
+# `iter` / `has_next` / `next` are well-known properties: binding one to
+# anything but a 0-arg Function is rejected where it is bound. That is what
+# keeps every protocol call site safe — a `has_next` holding a Long used to
+# be cast to a closure and called (JIT/AOT segfault), and a 1-arg `has_next`
+# was invoked with nothing bound, which looped forever on the interpreter.
+assert_throws("DropContractError", fn () { let o = { has_next: 1 }; o })
+assert_throws("DropContractError", fn () { let o = { has_next: fn (a) { a } }; o })
+assert_throws("DropContractError", fn () { let o = { next: 1 }; o })
+assert_throws("DropContractError", fn () { let o = { iter: 1 }; o })
+# Only the protocol names are reserved; a lookalike field is still data.
+assert_eq({ has_next_at: 1 }.has_next_at, 1)
+
+# Opening an iterator validates the protocol, so every backend reports the
+# same error: `iter()` must return an Object carrying the pair.
+mut perr = nil
+try {
+  let bad = { iter: fn () { 42 } }
+  for x in bad { }
+} catch e { perr = e }
+assert_eq(perr.kind, "TypeError")
+assert_eq(perr.message, "type error: iter() did not return an Object")
+
+perr = nil
+try {
+  let bad = { iter: fn () { let it = { a: 1 }; it } }
+  for x in bad { }
+} catch e { perr = e }
+assert_eq(perr.kind, "TypeError")
+assert_eq(perr.message, "type error: iterator missing has_next()/next()")
+
+# The same error surfaces from a lazy chain — at the terminal that drives it,
+# since building the chain pulls nothing.
+perr = nil
+let half = { next: fn () { 1 }, iter: fn () { self } }
+let half_chain = half.map(|x| x)
+try { half_chain.take(2).collect() } catch e { perr = e }
+assert_eq(perr.kind, "TypeError")
+assert_eq(perr.message, "type error: iterator missing has_next()/next()")
+
 # Terminal join on a lazy iterator — no intermediate .collect() needed.
 # Mirrors Array.join (str_display of each element, joined by sep).
 assert_eq(nums().map(|x| x * 10).join(","), "10,20,30,40")
