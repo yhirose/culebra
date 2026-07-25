@@ -335,6 +335,41 @@ inline AssignmentView view_assignment(const peg::Ast& a) {
   };
 }
 
+// View of a PLACE_ASSIGN AST node — see grammar:
+//   PLACE_ASSIGN <- '(' PLACE (',' PLACE)+ ','? ')' '=' EXPRESSION
+// Children are the targets followed by the RHS, so the target count is one
+// less than the child count. Each target is a PLACE node (an lvalue chain) or,
+// when it carries no postfix and the AstOptimizer collapsed it, the bare
+// IDENTIFIER itself.
+struct PlaceAssignView {
+  size_t count;         // number of targets
+  const peg::Ast* rhs;  // node.back() — EXPRESSION
+};
+
+inline PlaceAssignView view_place_assign(const peg::Ast& a) {
+  return PlaceAssignView{a.nodes.size() - 1, a.nodes.back().get()};
+}
+
+// A PLACE node's children are exactly an ASSIGNMENT's lvalue chain (a head
+// followed by INDEX / DOT / ARGUMENTS postfixes), so both backends can hand
+// one to their existing complex-lvalue assignment path by viewing it as a
+// plain `chain = value`. The fields eval_assign_complex / compile_assign_complex
+// read are the chain span plus the operator flags; there is no RHS node to
+// point at (PLACE_ASSIGN evaluates its own RHS once for all targets).
+inline AssignmentView view_place_as_assignment(const peg::Ast& place) {
+  return AssignmentView{
+      /*is_let=*/false,
+      /*is_mut=*/false,
+      /*compound=*/false,
+      /*op_token=*/"=",
+      /*op_base=*/std::string_view{},
+      /*type_annotation=*/std::string_view{},
+      /*lvalcnt=*/static_cast<int>(place.nodes.size()),
+      /*lvaloff=*/0,
+      /*rhs=*/nullptr,
+  };
+}
+
 // A loop's optional trailing NOBREAK_CLAUSE node, or nullptr when absent.
 // NOBREAK_CLAUSE is kept by the AstOptimizer, so a loop's last child is a
 // NOBREAK_CLAUSE tag exactly when a `nobreak { … }` is present. Callers that

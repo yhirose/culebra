@@ -99,16 +99,31 @@
   DEFER                    <-  defer _ BLOCK
   LEXICAL_SCOPE            <-  BLOCK
 
-  EXPRESSION               <-  DESTRUCTURE_ASSIGN / ASSIGNMENT / TRY / CONDITIONAL
+  EXPRESSION               <-  DESTRUCTURE_ASSIGN / PLACE_ASSIGN / ASSIGNMENT / TRY / CONDITIONAL
   # Bit-or-free EXPRESSION used by parameter defaults (`|x = e|`), where a
   # top-level bit-or `|` would be ambiguous with the lambda close delimiter.
-  ND_EXPRESSION            <-  DESTRUCTURE_ASSIGN / ASSIGNMENT / TRY / ND_CONDITIONAL
+  ND_EXPRESSION            <-  DESTRUCTURE_ASSIGN / PLACE_ASSIGN / ASSIGNMENT / TRY / ND_CONDITIONAL
   TRY                      <-  try _ BLOCK _ catch _ IDENTIFIER _ BLOCK
 
   ASSIGNMENT               <-  LET _ MUTABLE _ PRIMARY (_h_ (ARGUMENTS / INDEX) / _ DOT)* (_ TYPE_ANNOTATION)? _ ASSIGN_OP _ EXPRESSION
   # `let` is optional: `let (a, b) = …` declares; bare `(a, b) = (b, a)`
   # (parallel / swap assignment) reassigns existing variables.
   DESTRUCTURE_ASSIGN       <-  LET _ MUTABLE _ (OBJECT_PATTERN / ARRAY_PATTERN / TUPLE_PATTERN) _ '=' _ EXPRESSION
+  # Parallel assignment whose targets may be index / property chains:
+  # `(p[i], p[j]) = (p[j], p[i])`, `(self.front, self.back) = …`. Sits after
+  # DESTRUCTURE_ASSIGN, so an all-plain-name tuple still takes that (pattern)
+  # path — a PATTERN cannot match a postfix chain, so only a target list with
+  # at least one chain reaches here. Each target is assigned exactly as the
+  # single-target form would (see interpreter.h eval_place_assign), so this
+  # form declares nothing new beyond what `x = v` does.
+  PLACE_ASSIGN             <-  '(' _ PLACE _ ',' _ PLACE (_ ',' _ PLACE)* _ ','? _ ')' _ '=' _ EXPRESSION
+                            /  '(' _ PLACE _ ',' _ ')' _ '=' _ EXPRESSION
+  # An assignable location. Same postfix set as ASSIGNMENT's lvalue chain, but
+  # anchored on IDENTIFIER rather than PRIMARY: PRIMARY would make every
+  # pattern-position identifier speculatively try WHILE / IF / MATCH / … first.
+  # With no postfix the node collapses to its lone IDENTIFIER child, which is
+  # how both backends tell a plain name from a chain.
+  PLACE                    <-  IDENTIFIER (_h_ (ARGUMENTS / INDEX) / _ DOT)*
   # ASSIGN_OP captures the literal so eval_assignment can dispatch on
   # `=` (plain) vs the compound forms. `**=` precedes `*=` so the
   # alternation chooses the longer match. `??=` is the nil-coalescing
