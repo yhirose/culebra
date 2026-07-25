@@ -469,6 +469,104 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_find(
   *out_data = 0;
 }
 
+// position: index of the first match, or nil (out_tag 0) when none matches.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_position(
+    int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col,
+    int8_t* out_tag, int64_t* out_data) {
+  JitHofCallback fn(ft, fd, 1, "position", "p", line, col);
+  JitValue v;
+  int64_t i = 0;
+  auto* has_next_cls = _iter_has_next_closure({it, id});
+  auto* next_cls = _iter_next_closure({it, id});
+  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
+    auto r = _culebra_invoke1_at(fn, v, line, col);
+    bool hit = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
+    _culebra_value_release_impl(r.tag, r.data);
+    if (hit) {
+      *out_tag = TAG_LONG;
+      *out_data = i;
+      return;
+    }
+    i++;
+  }
+  *out_tag = 0;
+  *out_data = 0;
+}
+
+// contains: short-circuiting membership using the same value equality as
+// culebra_runtime_array_contains. The needle is borrowed (never stored).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_contains(
+    int8_t it, int64_t id, int8_t nt, int64_t nd) {
+  JitValue v;
+  auto* has_next_cls = _iter_has_next_closure({it, id});
+  auto* next_cls = _iter_next_closure({it, id});
+  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
+    bool hit = _culebra_value_equal(v.tag, v.data, nt, nd);
+    _culebra_value_release_impl(v.tag, v.data);
+    if (hit) return 1;
+  }
+  return 0;
+}
+
+// first/last/nth hand the pulled value's +1 straight to the out-param; an
+// exhausted iterator answers nil (out_tag 0), matching `find`.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_first(
+    int8_t it, int64_t id, int8_t* out_tag, int64_t* out_data) {
+  JitValue v;
+  auto* has_next_cls = _iter_has_next_closure({it, id});
+  auto* next_cls = _iter_next_closure({it, id});
+  if (!_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
+    *out_tag = 0;
+    *out_data = 0;
+    return;
+  }
+  *out_tag = v.tag;
+  *out_data = v.data;
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_last(
+    int8_t it, int64_t id, int8_t* out_tag, int64_t* out_data) {
+  JitValue v;
+  // Holds the newest pulled value; each replacement releases the previous one,
+  // and an unwind out of the pull frees whatever is held.
+  JitOwnedVal best(TAG_NIL, 0);
+  auto* has_next_cls = _iter_has_next_closure({it, id});
+  auto* next_cls = _iter_next_closure({it, id});
+  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
+    best = JitOwnedVal(v);
+  }
+  auto kept = best.consume();
+  *out_tag = kept.tag;
+  *out_data = kept.data;
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_nth(
+    int8_t it, int64_t id, int64_t n, int64_t line, int64_t col,
+    int8_t* out_tag, int64_t* out_data) {
+  if (n < 0) {
+    throw culebra::CulebraError("ValueError", "nth() n must not be negative",
+                                line, col);
+  }
+  JitValue v;
+  auto* has_next_cls = _iter_has_next_closure({it, id});
+  auto* next_cls = _iter_next_closure({it, id});
+  for (int64_t i = 0; i < n; i++) {
+    if (!_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
+      *out_tag = 0;
+      *out_data = 0;
+      return;
+    }
+    _culebra_value_release_impl(v.tag, v.data);
+  }
+  if (!_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
+    *out_tag = 0;
+    *out_data = 0;
+    return;
+  }
+  *out_tag = v.tag;
+  *out_data = v.data;
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_any(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
   JitHofCallback fn(ft, fd, 1, "any", "p", line, col);
@@ -809,6 +907,62 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_take_while(
   auto* up_next_cell = up_cells.next;
   return _iter_wrap_fast<&_iter_take_while_fast_fn>(
       {up, p, stopped, up_has_next_cell, up_next_cell,
+       _iter_pos_cell(line, col)});
+}
+
+// skip_while: captures upstream + predicate + "still skipping" flag + cached
+// upstream next. Once the predicate rejects an element, the flag clears and
+// every later step forwards blindly without calling the predicate again.
+inline void _iter_skip_while_fast_fn(JitClosure* cls, JitValue, bool* done,
+                                     int8_t* out_tag, int64_t* out_data) {
+  auto* skipping_cell = cls->captures[2];
+  auto upstream = cls->captures[0]->value;
+  auto pv = cls->captures[1]->value;
+  auto* up_has_next = reinterpret_cast<JitClosure*>(cls->captures[3]->value.data);
+  auto* up_next = reinterpret_cast<JitClosure*>(cls->captures[4]->value.data);
+  auto* fn_cls = reinterpret_cast<JitClosure*>(pv.data);
+  for (;;) {
+    int8_t tag;
+    int64_t data;
+    if (!_iter_advance_raw(up_has_next, up_next, upstream, &tag, &data)) {
+      *done = true;
+      return;
+    }
+    JitValue v = {tag, data};
+    if (!skipping_cell->value.data) {
+      *done = false;
+      *out_tag = v.tag;
+      *out_data = v.data;
+      return;
+    }
+    culebra_runtime_value_retain(v.tag, v.data);
+    _iter_publish_call_site(cls);
+    auto r = _culebra_invoke1(fn_cls, v);
+    bool skip = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
+    _culebra_value_release_impl(r.tag, r.data);
+    if (!skip) {
+      skipping_cell->value.data = 0;
+      *done = false;
+      *out_tag = v.tag;
+      *out_data = v.data;
+      return;
+    }
+    _culebra_value_release_impl(v.tag, v.data);
+  }
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_skip_while(
+    int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
+  auto* fn = _culebra_capture_callback(ft, fd, 1, "skip_while", "p", line, col);
+  culebra_runtime_value_retain(it, id);
+  auto* up = culebra_runtime_cell_new(it, id);
+  auto* p = culebra_runtime_cell_new(TAG_FUNC, reinterpret_cast<int64_t>(fn));
+  auto* skipping = culebra_runtime_cell_new(TAG_BOOL, 1);
+  auto up_cells = _iter_cache_closure_cells({it, id});
+  auto* up_has_next_cell = up_cells.has_next;
+  auto* up_next_cell = up_cells.next;
+  return _iter_wrap_fast<&_iter_skip_while_fast_fn>(
+      {up, p, skipping, up_has_next_cell, up_next_cell,
        _iter_pos_cell(line, col)});
 }
 

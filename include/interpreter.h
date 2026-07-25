@@ -5491,6 +5491,30 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
              });
        }))},
 
+      // The complement of take_while: drop the leading run for which `p(x)`
+      // holds, then yield the first rejected element and everything after it
+      // without consulting `p` again.
+      {"skip_while"sv,
+       Value(FunctionValue({{"p", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("self");
+         auto p = Value(as_callback(callEnv->get("p")));
+         check_callback_arity(p.to_function(), 1, "skip_while");
+         auto skipping = std::make_shared<bool>(true);
+         return _make_iterator(
+             [upstream, p, skipping](std::shared_ptr<Environment>) {
+               for (;;) {
+                 auto v = _iter_next_value(upstream);
+                 if (!v) return _iter_step_done();
+                 if (!*skipping) return _iter_step_value(std::move(*v));
+                 if (!_invoke_callback(p, *v).to_bool()) {
+                   *skipping = false;
+                   return _iter_step_value(std::move(*v));
+                 }
+               }
+             });
+       }))},
+
       // Groups upstream values into Arrays of `n` (the last group may be
       // shorter). n < 1 would never advance the upstream, so reject it
       // up front rather than yielding an infinite stream of nothing.
@@ -5696,6 +5720,73 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
            if (_invoke_callback(p, *v).to_bool()) return *v;
          }
          return Value();
+       }))},
+
+      // Index of the first match, or nil when nothing matches. Array's
+      // index_of answers -1 for a *value*; position takes a predicate and
+      // follows `find` in spelling "absent" as nil.
+      {"position"sv,
+       Value(FunctionValue({{"p", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("self");
+         auto p = Value(as_callback(callEnv->get("p")));
+         check_callback_arity(p.to_function(), 1, "position");
+         long i = 0;
+         while (auto v = _iter_next_value(upstream)) {
+           if (_invoke_callback(p, *v).to_bool()) return Value(i);
+           i++;
+         }
+         return Value();
+       }))},
+
+      // Short-circuiting membership test — `any(|e| e == x)` with the intent
+      // in the name. Same value equality as Array.contains.
+      {"contains"sv,
+       Value(FunctionValue({{"v", false}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("self");
+         const auto& needle = callEnv->get("v");
+         while (auto v = _iter_next_value(upstream)) {
+           if (*v == needle) return Value(true);
+         }
+         return Value(false);
+       }))},
+
+      // first/nth stop as soon as they have their element; last has to drain.
+      // All three answer nil on an exhausted iterator rather than throwing,
+      // matching `find` (and unlike `min`/`max`, which have no such answer).
+      {"first"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("self");
+         auto v = _iter_next_value(upstream);
+         if (!v) return Value();
+         return std::move(*v);
+       }))},
+
+      {"last"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("self");
+         Value out;
+         while (auto v = _iter_next_value(upstream)) out = std::move(*v);
+         return out;
+       }))},
+
+      {"nth"sv,
+       Value(FunctionValue({{"n", false, "Long"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("self");
+         auto n = callEnv->get("n").to_long();
+         if (n < 0) {
+           throw CulebraError("ValueError", "nth() n must not be negative",
+                              callEnv->get("__LINE__").to_long(),
+                              callEnv->get("__COLUMN__").to_long());
+         }
+         for (long i = 0; i < n; i++) {
+           if (!_iter_next_value(upstream)) return Value();
+         }
+         auto v = _iter_next_value(upstream);
+         if (!v) return Value();
+         return std::move(*v);
        }))},
 
       {"any"sv,

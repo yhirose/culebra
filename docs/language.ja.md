@@ -3610,6 +3610,7 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 | `it.take(n)` | Iterator | 先頭 `n` 個、以降 `done` |
 | `it.skip(n)` | Iterator | 最初の `next()` で先頭 `n` 個を捨てる |
 | `it.take_while(p)` | Iterator | 最初に `p(x)` が偽になるまで yield |
+| `it.skip_while(p)` | Iterator | 先頭の `p(x)` が真である連続分を捨て、以降は無条件に yield |
 | `it.chunks(n)` | Iterator | `n` 個ずつ Array にまとめて yield（最後のグループは短くなりうる）。`n` は 1 以上 |
 | `it.windows(n)` | Iterator | 直近 `n` 個のスライディングウィンドウを Array で yield、1つずつ進む。`n` は 1 以上 |
 | `it.flat_map(f)` | Iterator | `f(x)` は iterable を返す必要あり、結果を連結 |
@@ -3627,6 +3628,11 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 | `it.any(p)` | `Bool` | 一つでも `p(x)` が真なら `true` |
 | `it.all(p)` | `Bool` | すべて `p(x)` が真なら `true`（空は `true`） |
 | `it.count()` | `Long` | 要素数 |
+| `it.first()` | Any \| `nil` | 先頭要素、空なら `nil`。1個しか引かない |
+| `it.last()` | Any \| `nil` | 末尾要素、空なら `nil` |
+| `it.nth(n)` | Any \| `nil` | 0 起点で `n` 番目の要素、無ければ `nil`。`n + 1` 個しか引かない。負の `n` は `ValueError` |
+| `it.position(p)` | `Long` \| `nil` | 最初に `p(x)` が真になる 0 起点の添字、無ければ `nil`（`-1` を返す `Array.index_of` とは異なる） |
+| `it.contains(v)` | `Bool` | `v` と等しい要素があれば `true`（`Array.contains` と同じ構造的等価） |
 | `it.sum()` | `Long` | 合計（全要素が `Long`、空は `0`） |
 | `it.product()` | `Long` | 積（全要素が `Long`、空は `1`） |
 | `it.min()` | `Long` | 最小値（全要素が `Long`、空では例外） |

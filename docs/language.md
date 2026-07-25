@@ -3834,6 +3834,7 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 | `it.take(n)` | Iterator | first `n` elements, then `done` |
 | `it.skip(n)` | Iterator | discards first `n` elements on first `next()` |
 | `it.take_while(p)` | Iterator | yields until the first `p(x)` that is falsy |
+| `it.skip_while(p)` | Iterator | discards the leading run where `p(x)` is truthy, then yields the rest unconditionally |
 | `it.chunks(n)` | Iterator | groups elements into Arrays of `n` (the last group may be shorter); `n` must be at least 1 |
 | `it.windows(n)` | Iterator | sliding window of the last `n` elements as an Array, advancing by one each step; `n` must be at least 1 |
 | `it.flat_map(f)` | Iterator | `f(x)` must return an iterable; results concatenated |
@@ -3851,6 +3852,11 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 | `it.any(p)` | `Bool` | `true` if any `p(x)` is truthy |
 | `it.all(p)` | `Bool` | `true` if every `p(x)` is truthy (empty → `true`) |
 | `it.count()` | `Long` | number of elements consumed |
+| `it.first()` | Any \| `nil` | first element, else `nil`; pulls only one |
+| `it.last()` | Any \| `nil` | last element, else `nil` |
+| `it.nth(n)` | Any \| `nil` | element at 0-based `n`, else `nil`; pulls only `n + 1`. Negative `n` raises `ValueError` |
+| `it.position(p)` | `Long` \| `nil` | 0-based index of the first `x` where `p(x)` is truthy, else `nil` (unlike `Array.index_of`, which answers `-1`) |
+| `it.contains(v)` | `Bool` | `true` if some element equals `v` (structural equality, as `Array.contains`) |
 | `it.sum()` | `Long` | sum of all elements (all must be `Long`; empty → `0`) |
 | `it.product()` | `Long` | product of all elements (all must be `Long`; empty → `1`) |
 | `it.min()` | `Long` | smallest element (all must be `Long`; throws on empty) |

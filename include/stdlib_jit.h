@@ -7601,6 +7601,17 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::iter_find, jit.builder_.getVoidTy(),
                                i8, i64, i8, i64, i64, i64, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::iter_position, jit.builder_.getVoidTy(),
+                               i8, i64, i8, i64, i64, i64, ptrTy, ptrTy);
+  // contains borrows the needle, so it needs no position for an error.
+  jit.module_->getOrInsertFunction(rt::iter_contains, i64, i8, i64, i8, i64);
+  jit.module_->getOrInsertFunction(rt::iter_first, jit.builder_.getVoidTy(),
+                               i8, i64, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::iter_last, jit.builder_.getVoidTy(),
+                               i8, i64, ptrTy, ptrTy);
+  // nth carries line+col for the "n must not be negative" error.
+  jit.module_->getOrInsertFunction(rt::iter_nth, jit.builder_.getVoidTy(),
+                               i8, i64, i64, i64, i64, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::iter_any, i64, i8, i64, i8, i64, i64,
                                i64);
   // sum/product/min/max: (it, id, line, col) -> i64
@@ -7621,6 +7632,8 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::iter_take, ptrTy, i8, i64, i64);
   jit.module_->getOrInsertFunction(rt::iter_skip, ptrTy, i8, i64, i64);
   jit.module_->getOrInsertFunction(rt::iter_take_while, ptrTy, i8, i64, i8, i64,
+                               i64, i64);
+  jit.module_->getOrInsertFunction(rt::iter_skip_while, ptrTy, i8, i64, i8, i64,
                                i64, i64);
   // chunks/windows carry line+col for the "n must be at least 1" error.
   jit.module_->getOrInsertFunction(rt::iter_chunks, ptrTy, i8, i64, i64, i64,

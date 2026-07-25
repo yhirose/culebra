@@ -15086,21 +15086,25 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     return own(make_long(idx));
   }
 
-  // contains works on Array, String, Set, and Tuple (different arg types).
+  // contains works on Array, String, Set, Tuple, and an iterator Object
+  // (different arg types). The iterator arm streams and short-circuits, so
+  // `it.map(f).contains(x)` needs no intermediate `.collect()`.
   if (method == "contains" && argsAst.nodes.size() == 1) {
     auto arrBB = llvm::BasicBlock::Create(ctx_, "ct.arr", fn);
     auto strBB = llvm::BasicBlock::Create(ctx_, "ct.str", fn);
     auto setBB = llvm::BasicBlock::Create(ctx_, "ct.set", fn);
     auto tupBB = llvm::BasicBlock::Create(ctx_, "ct.tup", fn);
+    auto iterBB = llvm::BasicBlock::Create(ctx_, "ct.iter", fn);
     auto errBB = llvm::BasicBlock::Create(ctx_, "ct.err", fn);
     auto mergeBB = llvm::BasicBlock::Create(ctx_, "ct.merge", fn);
 
-    auto sw = builder_.CreateSwitch(tag, errBB, 5);
+    auto sw = builder_.CreateSwitch(tag, errBB, 6);
     sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
     sw->addCase(builder_.getInt8(TAG_STRING), strBB);
     sw->addCase(builder_.getInt8(TAG_STRINGVIEW), strBB);
     sw->addCase(builder_.getInt8(TAG_SET), setBB);
     sw->addCase(builder_.getInt8(TAG_TUPLE), tupBB);
+    sw->addCase(builder_.getInt8(TAG_OBJECT), iterBB);
 
     OwnedPhi ctMerge(this, "ct");
     builder_.SetInsertPoint(arrBB);
@@ -15170,6 +15174,20 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     vt.drop();
     ctMerge.add_incoming(make_bool(
         builder_.CreateICmpNE(tupFound, builder_.getInt8(0))));
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(iterBB);
+    // The needle is only compared (never stored). Pulling from the iterator
+    // runs user callbacks that can throw, but `vi` stays Owned across the
+    // call, so the automatic unwind-temp window covers that edge.
+    auto vi = compile(*argsAst.nodes[0]);
+    auto iterFound = emit_call(
+        module_->getFunction(rt::iter_contains),
+        {tag, extract_data(receiver), extract_tag(vi.borrow()),
+         extract_data(vi.borrow())});
+    vi.drop();
+    ctMerge.add_incoming(make_bool(
+        builder_.CreateICmpNE(iterFound, builder_.getInt64(0))));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(errBB);
@@ -15839,6 +15857,18 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   // For now these error on Array receivers. Phase B2 may add eager
   // fallbacks so `arr.take(n)` becomes `arr.slice(0, n)` natively.
 
+  // An iterator method's `n` argument. The interp declares these params as
+  // `{"n", false, "Long"}` and rejects through its binder ("parameter 'n'
+  // expects Long"), so check before converting — a bare value_to_long would
+  // report "expected Long, got String" and break message symmetry.
+  auto compile_iter_long_arg = [&](const peg::Ast& argAst) -> llvm::Value* {
+    // `v` stays Owned across the check, so the automatic unwind-temp window
+    // (internals.md, JIT ownership) releases it if the check throws.
+    auto v = compile(argAst);
+    emit_type_check(v.borrow(), "Long", "parameter 'n'", &argAst);
+    return value_to_long(v.consume());
+  };
+
   // Iterator-only methods — require an iterator-protocol Object
   // receiver (Array users call `.iter()` first, matching interp).
   if (method == "collect" && argsAst.nodes.size() == 0) {
@@ -15859,7 +15889,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
 
   if (method == "take" && argsAst.nodes.size() == 1) {
     expect_receiver_tag(receiver, TAG_OBJECT, "take");
-    auto n = value_to_long(compile(*argsAst.nodes[0]).consume());
+    auto n = compile_iter_long_arg(*argsAst.nodes[0]);
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto out =
@@ -15869,7 +15899,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
 
   if (method == "skip" && argsAst.nodes.size() == 1) {
     expect_receiver_tag(receiver, TAG_OBJECT, "skip");
-    auto n = value_to_long(compile(*argsAst.nodes[0]).consume());
+    auto n = compile_iter_long_arg(*argsAst.nodes[0]);
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto out =
@@ -15893,9 +15923,84 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     return own(make_object(out));
   }
 
+  if (method == "skip_while" && argsAst.nodes.size() == 1) {
+    expect_receiver_tag(receiver, TAG_OBJECT, "skip_while");
+    // Callback ownership as in take_while above.
+    Owned f = compile(*argsAst.nodes[0]);
+    emit_set_callback_arg_site(*argsAst.nodes[0]);
+    auto fv = f.consume();
+    auto t = extract_tag(receiver);
+    auto d = extract_data(receiver);
+    auto out = emit_call(module_->getFunction(rt::iter_skip_while),
+                         {t, d, extract_tag(fv), extract_data(fv),
+                          ho_line, ho_col});
+    return own(make_object(out));
+  }
+
+  // first/last/nth/position: iterator-only terminals. Arrays already index
+  // (`xs[0]` / `xs[-1]`) and have index_of, so adding eager arms here would
+  // be a second way to spell the same thing. All four answer nil on an
+  // exhausted iterator, so they load through out-params like `find`.
+  if ((method == "first" || method == "last") &&
+      argsAst.nodes.size() == 0) {
+    expect_receiver_tag(receiver, TAG_OBJECT, method.c_str());
+    auto t = extract_tag(receiver);
+    auto d = extract_data(receiver);
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    auto outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr,
+                                      method + ".tag");
+    auto outData = entryB.CreateAlloca(builder_.getInt64Ty(), nullptr,
+                                       method + ".data");
+    auto rt_name = method == "first" ? rt::iter_first : rt::iter_last;
+    emit_call(module_->getFunction(rt_name), {t, d, outTag, outData});
+    auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
+    auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
+    return own(make_value(tagLoaded, dataLoaded));
+  }
+
+  if (method == "nth" && argsAst.nodes.size() == 1) {
+    expect_receiver_tag(receiver, TAG_OBJECT, "nth");
+    auto n = compile_iter_long_arg(*argsAst.nodes[0]);
+    auto t = extract_tag(receiver);
+    auto d = extract_data(receiver);
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    auto outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "nth.tag");
+    auto outData = entryB.CreateAlloca(builder_.getInt64Ty(), nullptr,
+                                       "nth.data");
+    emit_call(module_->getFunction(rt::iter_nth),
+              {t, d, n, ho_line, ho_col, outTag, outData});
+    auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
+    auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
+    return own(make_value(tagLoaded, dataLoaded));
+  }
+
+  if (method == "position" && argsAst.nodes.size() == 1) {
+    expect_receiver_tag(receiver, TAG_OBJECT, "position");
+    llvm::Value* outTag;
+    llvm::Value* outData;
+    {
+      // Scope the callback so its Owned dtor releases after the call but
+      // before the out-param loads (same shape as `find`).
+      Owned f = compile(*argsAst.nodes[0]);
+      emit_set_callback_arg_site(*argsAst.nodes[0]);
+      auto fv = f.consume();  // callee-consumes
+      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                               fn->getEntryBlock().begin());
+      outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "pos.tag");
+      outData = entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "pos.data");
+      emit_call(module_->getFunction(rt::iter_position),
+                {extract_tag(receiver), extract_data(receiver),
+                 extract_tag(fv), extract_data(fv), ho_line, ho_col,
+                 outTag, outData});
+    }
+    auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
+    auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
+    return own(make_value(tagLoaded, dataLoaded));
+  }
+
   if (method == "chunks" && argsAst.nodes.size() == 1) {
     expect_receiver_tag(receiver, TAG_OBJECT, "chunks");
-    auto n = value_to_long(compile(*argsAst.nodes[0]).consume());
+    auto n = compile_iter_long_arg(*argsAst.nodes[0]);
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto out = emit_call(module_->getFunction(rt::iter_chunks),
@@ -15905,7 +16010,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
 
   if (method == "windows" && argsAst.nodes.size() == 1) {
     expect_receiver_tag(receiver, TAG_OBJECT, "windows");
-    auto n = value_to_long(compile(*argsAst.nodes[0]).consume());
+    auto n = compile_iter_long_arg(*argsAst.nodes[0]);
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto out = emit_call(module_->getFunction(rt::iter_windows),

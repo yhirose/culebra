@@ -50,7 +50,8 @@ let methods = ['size', 'push', 'pop', 'slice', 'map', 'filter', 'reduce',
                'product', 'min', 'max', 'join', 'contains', 'index_of',
                'reverse', 'keys', 'values', 'has', 'remove', 'upper', 'lower',
                'trim', 'split', 'code_points', 'iter', 'take', 'skip',
-               'take_while', 'chunks', 'windows', 'collect', 'count',
+               'take_while', 'skip_while', 'chunks', 'windows', 'collect',
+               'count', 'first', 'last', 'nth', 'position',
                'enumerate', 'union', 'to_array', 'view']
 let argshapes = ['', '0', '"x"', '1, 2', '0, 1, 2', '|x| x', '|x| x > 0',
                  '0, |a, b| a + b', 'fn (a, b) { a }', '[1]']
@@ -205,6 +206,7 @@ case("iterjoin-filter", 'range(1, 10).filter(|x| x % 2 == 0).join("-")')
 # kind / message / *position* through the lazy pipeline (the eager forms
 # are covered by D3's v-map). Terminal `collect`/`count`/`for_each`.
 let lazycbs = ['map(to_long)', 'filter(to_long)', 'take_while(to_long)',
+               'skip_while(to_long)',
                'flat_map(to_long)', 'map(Math.abs)', 'map(|x| x + 1)']
 for c in lazycbs {
   case("lazyerr-collect|" + c, '[1, "x"].iter().' + c + ".collect()")
@@ -793,6 +795,8 @@ let tps = [
   '[1, "x"].iter().map(fn (v: Long) { v }).collect()',
   '[1, "x"].iter().filter(fn (v: Long) { true }).collect()',
   '[1, "x"].iter().take_while(fn (v: Long) { true }).collect()',
+  '[1, "x"].iter().skip_while(fn (v: Long) { true }).collect()',
+  '[1, "x"].iter().position(fn (v: Long) { false })',
   '[1, "x"].iter().for_each(fn (v: Long) { v })',
   '[1, "x"].iter().any(fn (v: Long) { false })',
   '[1, "x"].iter().reduce(0, fn (a: Long, v: Long) { a })',

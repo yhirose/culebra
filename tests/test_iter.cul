@@ -470,3 +470,64 @@ assert_eq(range(0, 0).map(|x| x).join(","), "")          # empty iterator
 assert_eq(range(1, 4).join(""), "123")                   # range is lazy
 # Array.join still works (eager receiver, same dispatch site)
 assert_eq([1, 2, 3].map(|x| x + 1).join(" "), "2 3 4")
+
+# --- skip_while: the complement of take_while ------------------------------
+# Drops the leading run, then forwards everything (predicate not consulted
+# again, so a later element that matches is still emitted).
+assert_eq([1, 2, 3, 8, 2, 1].iter().skip_while(|x| x < 5).collect(), [8, 2, 1])
+assert_eq(range(10).skip_while(|x| x < 7).collect(), [7, 8, 9])
+assert_eq([1, 2, 3].iter().skip_while(|x| x < 99).collect(), [])   # all skipped
+assert_eq([9, 1, 2].iter().skip_while(|x| x < 5).collect(), [9, 1, 2])  # none
+assert_eq([].iter().skip_while(|x| true).collect(), [])
+# take_while / skip_while split the same stream in two
+mut src = [1, 2, 3, 8, 2]
+mut head = src.iter().take_while(|x| x < 5).collect()
+mut tail = src.iter().skip_while(|x| x < 5).collect()
+assert_eq([...head, ...tail], src)
+
+# --- contains: short-circuiting membership on a lazy receiver ---------------
+assert_true([1, 2, 3].iter().contains(2))
+assert_true(![1, 2, 3].iter().contains(9))
+assert_true([1, 2, 3].iter().map(|x| x * 2).contains(6))
+assert_true(![].iter().contains(1))
+assert_true([[1, 2], [3]].iter().contains([1, 2]))    # structural equality
+assert_true(['a', 'b'].iter().contains('b'))
+# the eager receivers still route to their own arms
+assert_true([1, 2, 3].contains(2))
+assert_true('hello'.contains('ell'))
+assert_true({1, 2}.contains(2))
+
+# --- first / last / nth: nil when the iterator runs out --------------------
+assert_eq([5, 6, 7].iter().first(), 5)
+assert_eq([5, 6, 7].iter().last(), 7)
+assert_eq([].iter().first(), nil)
+assert_eq([].iter().last(), nil)
+assert_eq([10, 20, 30, 40].iter().nth(0), 10)
+assert_eq([10, 20, 30, 40].iter().nth(2), 30)
+assert_eq([10, 20].iter().nth(5), nil)
+try {
+  [1].iter().nth(-1)
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "ValueError")
+}
+
+# --- position: index of the first match, nil when none ---------------------
+assert_eq([1, 5, 12, 3].iter().position(|v| v > 10), 2)
+assert_eq([1, 2, 3].iter().position(|v| v == 1), 0)
+assert_eq([1, 2].iter().position(|v| v > 10), nil)
+assert_eq([].iter().position(|v| true), nil)
+
+# --- laziness: none of these may drain an unbounded source -----------------
+fn naturals() {
+  mut n = 0
+  { has_next: fn () { true }, next: fn () { n = n + 1; n - 1 } }
+}
+assert_eq(naturals().skip_while(|x| x < 3).first(), 3)
+assert_eq(naturals().position(|x| x == 4), 4)
+assert_true(naturals().contains(2))
+assert_eq(naturals().nth(6), 6)
+# only as many pulls as the answer needs
+mut pulls = 0
+assert_eq(range(1000000).map(fn (x) { pulls = pulls + 1; x }).nth(3), 3)
+assert_eq(pulls, 4)
