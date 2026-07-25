@@ -1757,6 +1757,18 @@ inline int64_t canvas_coord_arg(const std::shared_ptr<Environment>& env,
                                : _canvas_detail::coord(v.get<double>());
 }
 
+// A `_Canvas` Array parameter as a packed integer vector. The param is
+// annotated `Array`, so only the per-element narrowing happens here.
+template <typename T>
+inline std::vector<T> canvas_int_array_arg(
+    const std::shared_ptr<Environment>& env, const char* name) {
+  const auto& arr = *env->get(name).to_array().values;
+  std::vector<T> out;
+  out.reserve(arr.size());
+  for (const auto& v : arr) out.push_back(static_cast<T>(v.to_long()));
+  return out;
+}
+
 inline Value make_canvas_primitives_namespace() {
   using namespace std::literals;
   ObjectValue ns;
@@ -1841,17 +1853,42 @@ inline Value make_canvas_primitives_namespace() {
           })),
       false);
 
+  // _Canvas.font_load(rows: Array) -> Long (handle). rows is a flat array of
+  // 8 row-bytes per glyph; the table is uploaded once and glyph() re-references
+  // it, the same upload-once shape as sprite_load.
+  ns.initialize("font_load",
+      Value(FunctionValue({{"rows", false, "Array"sv}},
+          [](std::shared_ptr<Environment> env) {
+            auto rows = canvas_int_array_arg<uint8_t>(env, "rows");
+            return Value(static_cast<long>(_canvas_detail::font_load(
+                rows.data(), static_cast<int64_t>(rows.size()))));
+          },
+          "Long"sv)),
+      false);
+
+  // _Canvas.glyph(font, index, x, y, rgba) -> Nil (one 8x8 glyph, clipped)
+  ns.initialize("glyph",
+      Value(FunctionValue({{"font", false, "Long"sv},
+                           {"index", false, "Long"sv},
+                           {"x", false, "Long|Float"sv},
+                           {"y", false, "Long|Float"sv},
+                           {"rgba", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            _canvas_detail::glyph(
+                env->get("font").to_long(), env->get("index").to_long(),
+                canvas_coord_arg(env, "x"), canvas_coord_arg(env, "y"),
+                static_cast<uint32_t>(env->get("rgba").to_long()));
+            return Value();
+          })),
+      false);
+
   // _Canvas.sprite_load(pixels: Array, w, h) -> Long (handle). pixels is a
   // flat row-major array of packed-RGBA Longs.
   ns.initialize("sprite_load",
       Value(FunctionValue({{"pixels", false, "Array"sv}, {"w", false, "Long"sv},
                            {"h", false, "Long"sv}},
           [](std::shared_ptr<Environment> env) {
-            const auto& arr = *env->get("pixels").to_array().values;
-            std::vector<uint32_t> px;
-            px.reserve(arr.size());
-            for (const auto& v : arr)
-              px.push_back(static_cast<uint32_t>(v.to_long()));
+            auto px = canvas_int_array_arg<uint32_t>(env, "pixels");
             return Value(static_cast<long>(_canvas_detail::sprite_load(
                 px.data(), static_cast<int64_t>(px.size()),
                 env->get("w").to_long(), env->get("h").to_long())));

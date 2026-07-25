@@ -230,6 +230,39 @@ assert_eq(try { _Canvas.blit_scaled(chk, 0, 0, 1, 1, 0, 0, 1, 1, 0, "x") }
 assert_eq(try { _Canvas.trapezoid(0, 0, 1, 1, 0, 1, 1.5) } catch e { e.message },
           "type error: parameter 'rgba' expects Long")
 
+// --- font_load / glyph: an 8x8 bitmap cell, one call per character ---
+// Two glyphs: index 0 is a solid block, index 1 a single top-left pixel.
+// A ZERO bit is lit, so 0x00 is solid and 0x7f lights only the leftmost pixel.
+let font = _Canvas.font_load([0, 0, 0, 0, 0, 0, 0, 0,
+                              127, 255, 255, 255, 255, 255, 255, 255])
+_Canvas.init(10, 8)
+_Canvas.clear(CLEAR)
+_Canvas.glyph(font, 0, 0, 0, BLUE)
+_Canvas.glyph(font, 1, 8, 0, GREEN)
+assert_eq(dump(), "########o /########  /########  /########  /" +
+                  "########  /########  /########  /########  ")
+// Clipped at every edge, and the coordinates take Floats like the rest.
+_Canvas.clear(CLEAR)
+_Canvas.glyph(font, 0, -6, -6, BLUE)
+_Canvas.glyph(font, 0, 8.9, 6.9, BLUE)
+assert_eq(dump(), "##        /##        /          /          /" +
+                  "          /          /        ##/        ##")
+// An unknown handle, a negative index and an index past the table all draw
+// nothing rather than reading out of bounds.
+_Canvas.clear(RED)
+_Canvas.glyph(999, 0, 0, 0, BLUE)
+_Canvas.glyph(font, -1, 0, 0, BLUE)
+_Canvas.glyph(font, 2, 0, 0, BLUE)
+_Canvas.glyph(_Canvas.font_load([]), 0, 0, 0, BLUE)
+// Indices where `index * 8` wraps a 64-bit product: a bound computed from that
+// product would let them through and read off the front of the table.
+_Canvas.glyph(font, 2305843009213693951, 0, 0, BLUE)
+_Canvas.glyph(font, 2305843009213693952, 0, 0, BLUE)
+_Canvas.glyph(font, 9223372036854775807, 0, 0, BLUE)
+assert_eq(_Canvas.get_pixel(0, 0), RED)
+
+_Canvas.init(4, 4)
+
 // --- sprite_from_png: decode, and read the size back from the decode ---
 // Hand-built fixtures (see the PNG spec's colour types), hex so the bytes
 // survive as source. Every one is 2 pixels wide: red, green / blue, transparent

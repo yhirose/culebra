@@ -1333,6 +1333,18 @@ for c in cvcoords {
   case("cvbsd|" + c, cvinit + '_Canvas.blit_scaled(' + cvsprite + ', ' + c + ', 0, 4, 4, 0, 0, 2, 2, 0, 255); _cdump()')
   case("cvbss|" + c, cvinit + '_Canvas.blit_scaled(' + cvsprite + ', 0, 0, 4, 4, 0, 0, ' + c + ', 2, 0, 255); _cdump()')
   case("cvcolor|" + c, cvinit + '_Canvas.rect(0, 0, 2, 2, ' + c + '); _cdump()')
+  case("cvglyph|" + c, cvinit + '_Canvas.glyph(_CFONT, 0, ' + c + ', 0, _CA+5); _cdump()')
+  case("cvglyphi|" + c, cvinit + '_Canvas.glyph(_CFONT, ' + c + ', 0, 0, _CA+5); _cdump()')
+}
+# font_load / glyph: an unknown handle, a negative index and an index past the
+# table must all draw nothing rather than read out of bounds. The two huge
+# indices are the ones where `index * 8` wraps a 64-bit product, so a bound
+# computed from that product would let them through.
+for g in ['999, 0', '_CFONT, -1', '_CFONT, 2', '_CFONT, 99999',
+          '_CFONT, 2305843009213693951', '_CFONT, 2305843009213693952',
+          '_CFONT, 9223372036854775807',
+          '_Canvas.font_load([]), 0', '_Canvas.font_load([1, 2]), 0'] {
+  case("cvglyphoob|" + g, cvinit + '_Canvas.glyph(' + g + ', 0, 0, _CA+5); _cdump()')
 }
 # Degenerate and inverted extents: a non-positive height/width draws nothing
 # rather than wrapping, and trapezoids that share an edge tile with no seam and

@@ -145,6 +145,39 @@ inline void trapezoid(int64_t y_top, int64_t xl_top, int64_t xr_top,
   }
 }
 
+// Registered 8x8 bitmap fonts: a flat table of 8 row-bytes per glyph, MSB the
+// leftmost pixel. Handles index the registry, so a font crosses the FFI
+// boundary once at module load instead of per character drawn.
+inline std::vector<std::vector<uint8_t>>& _fonts() {
+  static std::vector<std::vector<uint8_t>> f;
+  return f;
+}
+
+inline int64_t font_load(const uint8_t* rows, int64_t n) {
+  if (n < 0) n = 0;
+  _fonts().emplace_back(rows, rows + n);
+  return static_cast<int64_t>(_fonts().size() - 1);
+}
+
+// Draw glyph `index` of font `id` at (x, y), clipped. A ZERO bit is a lit
+// pixel — the WASM-4 runtime font's convention, which is the font the Canvas
+// preamble ships. An unknown handle or an index past the table draws nothing,
+// so a bad glyph can't read out of bounds.
+inline void glyph(int64_t id, int64_t index, int x, int y, uint32_t rgba) {
+  if (id < 0 || static_cast<size_t>(id) >= _fonts().size()) return;
+  const std::vector<uint8_t>& f = _fonts()[id];
+  // Bound the index against the glyph COUNT, never against `index * 8`: that
+  // product wraps for a large index, which would let the check pass and read
+  // off the front of the table.
+  if (index < 0 || static_cast<size_t>(index) >= f.size() / 8) return;
+  size_t base = static_cast<size_t>(index) * 8;
+  for (int ry = 0; ry < 8; ry++) {
+    uint8_t bits = f[base + static_cast<size_t>(ry)];
+    for (int rx = 0; rx < 8; rx++)
+      if (((bits >> (7 - rx)) & 1) == 0) set_pixel(x + rx, y + ry, rgba);
+  }
+}
+
 // Register a sprite from a flat array of packed-RGBA pixels (row-major, w*h).
 // Returns its handle. The pixel count is normalised to w*h (padded with
 // transparent / truncated) so a short or long array can't read out of bounds
