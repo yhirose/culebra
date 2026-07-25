@@ -7,9 +7,12 @@ racer 移植の既定値（解像度 / drawDistance / totalCars / backend）を�
 
 - 忠実設定（200台 / dd=300 / 640×480）のロジックは **native でも Playground でも約 12 ms/frame**。
   **設定を分ける必要はない**
+- **フル 1 フレーム**（道路・fog・スプライト・背景の描画込み）は、現行 prim のままで
+  **native 25.6 ms / wasm 31.8 ms ＝ 31fps**。30fps は成立するが 60fps には
+  Phase 2 の prim 改善 2 つ（`trapezoid`、座標の `Double` 受け入れ）が要る
 - 律速は充填でも Canvas prim でもなく **interp のロジック実行**。その中の最大の単一要因は
   **`return` / `break` / `continue` が C++ 例外であること**（早期 return 1 回 ≈ 22 µs）
-- **wasm interp は native interp とほぼ同速**（比 0.8〜1.1）
+- **wasm interp は native interp とほぼ同速**（ロジックだけなら比 1.06、描画込みで 1.24）
 - native **JIT は余裕**（1024×768 / dd=300 で 0.58 ms/frame）
 - 原作の AI 早期 return は片側しか見ておらず、**update が 1 周かけて 2.7 倍に増える**（周回ごとにリセット）
 
@@ -31,6 +34,7 @@ racer 移植の既定値（解像度 / drawDistance / totalCars / backend）を�
 
 | ファイル | 何を測るか |
 |---|---|
+| `draw.cul` | **第2ラウンド**。`opt.cul` の L3 に実際の `_Canvas.*` 呼び出しを足し、道路・fog・スプライト・背景を 1 つずつ積んで**フル 1 フレーム**の値段を出す。道路は「台形 prim 想定」と「スキャンライン rect」の 2 通り |
 | `opt.cul` | **第2ラウンド**。`logic.cul` と同じ世界・同じ算術のまま、update/render を段階的に書き換えて各段のコストを分離する。section D が `return` のコストを切り出した場所 |
 | `logic.cul` | 第1ラウンド。`update()`（200台 + 20セグメント先読み）と `render()` の投影ループ。描画呼び出しは全部外し、算術だけ |
 | `fill.cul` | 既存 Canvas prim の充填レート（`clear` / `rect` / `blit`）と、道路帯 200×4 span の実測 |
@@ -50,17 +54,24 @@ Playground は `site/playground` の既存 wasm（2026-07-25 01:05 ビルド、`
 3〜5 倍ぶれた。`logic.cul` / `opt.cul` は best-of-N（`REPS`）にしてあるが、それでも残ノイズは
 あるので、表の数字は**桁と比**を読むこと。計測前に `uptime` で load を確認する。
 
-`opt.cul` を Playground で走らせるコピーの作り方（section A だけに絞り、`println` を戻す）:
+Playground で走らせるコピーの作り方（`QUICK` を立てて短い表に絞り、`println` を戻す）:
 
 ```
-perl -ne 'last if /^# B\. how the best level/; s/^let QUICK = false/let QUICK = true/;
-          s/\bprintln\b/puts/g; print' \
-  examples/games/racer/spike/opt.cul > site/playground/examples/greeting.cul
+perl -pe 's/^let QUICK = false/let QUICK = true/; s/\bprintln\b/puts/g' \
+  examples/games/racer/spike/draw.cul > site/playground/examples/greeting.cul
 ```
 
-（`examples/greeting.cul` を差し替えて Run する。エディタへの巨大ペーストを避けるため。
-macOS の `sed` は `\b` 非対応なので `perl` を使う。`http://[::]` は非 secure 扱いになり
-WebGPU が落ちて basic 側が崩れるので、**必ず localhost で開く**。）
+（`opt.cul` は section B 以降が `QUICK` で囲まれていないので、
+`perl -ne 'last if /^# B\. how the best level/; …'` で末尾を切ること。）
+
+Playground 側の手順と罠:
+
+- `examples/greeting.cul` を差し替えて Run する（エディタへの巨大ペーストを避けるため）
+- macOS の `sed` は `\b` 非対応なので `perl` を使う
+- `http://[::]` は非 secure 扱いになり WebGPU が落ちて basic 側が崩れる。**必ず localhost で開く**
+- **Run ボタンのクリックが効かないことがある。`Ctrl/Cmd+Enter` なら確実に走る**
+- **公開済みの wasm は `0xFF6ABC5A` を `integer literal out of range` で撥ねる**
+  （現行 master の interp は通す）。色は `r + g*256 + b*65536 + a*16777216` の式で書く
 
 ## 1. 最適化レベル（`opt.cul`、第2ラウンド）
 
@@ -118,7 +129,60 @@ render はほぼ dd に線形。解像度には**ほぼ非依存**（投影は�
 
 台数に完全線形（≈ 0.017 ms/台。L0 では 0.069 ms/台だった）。
 
-## 2. `return` / `break` / `continue` は C++ 例外
+## 2. フル 1 フレーム（`draw.cul`）
+
+`opt.cul` は描画呼び出しを全部外した算術だけの数字。`draw.cul` はそこに実際の
+`_Canvas.*` 呼び出しを足して、**1 フレーム全部**の値段を積み上げる。
+
+640×480 / dd=300 / 200台 / プレイヤー 50%。native は `just build`（-O3）、
+wasm は Playground（full/JSPI）:
+
+| 積み上げ | native TOTAL | wasm TOTAL | 呼び出し/f |
+|---|---|---|---|
+| ロジックのみ | 14.4 | 15.2 | 0 |
+| ＋ 道路（台形 prim 想定＝1呼び出し/span） | 16.6 | 17.8 | 557 |
+| ＋ fog 色 lerp | 18.1 | 21.6 | 557 |
+| ＋ スプライト | 22.3 | 26.2 | 727 |
+| ＋ 背景 3 層 | **22.0** | **27.2** | 736 |
+| 道路をスキャンライン rect に（現行 prim のみ） | **25.6** | **31.8** | 1449 |
+
+- wasm/native 比は **1.06〜1.24**。ロジックだけなら 1.06 だが、描画が増えるほど
+  比が上がる（prim 呼び出しと充填が wasm でやや高い）
+- **現行 prim のままだと wasm 31.8ms = 31fps。**30fps は成立するが 60fps は無理
+- fog 色 lerp は wasm で +3.5ms（native +1.5ms）。**整数演算で書いてこの値**なので、
+  浮動小数 + `Math.round` で書くと数倍になる
+
+### 60fps に必要な 2 つの prim 改善
+
+| 施策 | 削減（wasm 換算） |
+|---|---|
+| `Canvas.trapezoid`（要望 F） | 約 4.6 ms |
+| **prim の座標引数を `Double` 受け入れに**（計画書に無かった項目） | 約 8.8 ms |
+
+両方入れれば **wasm ≈ 18ms（54fps）/ native ≈ 15ms（65fps）**。
+
+`Double` 受け入れの根拠: `_Canvas.rect(10.5, ...)` は今
+`TypeError: parameter 'x' expects Long` で落ちる。culebra 側の変換手段は
+`Math.floor` / `Math.ceil` / `Math.round` だけで、1 回約 3µs。投影で 6回/segment
+（1800回 = 5.4ms）＋ スプライトで 4回/個（644回 = 1.9ms）が毎フレーム乗る。
+丸めを prim の内側でやれば全部消える。
+
+**drawDistance を下げて逃げる手は、台形 prim があるときしか効かない**:
+
+| dd | 300 | 200 | 150 | 100 | 50 |
+|---|---|---|---|---|---|
+| 台形 呼び出し/f | 578 | 566 | 481 | 334 | 203 |
+| スキャンライン 呼び出し/f | 1250 | 1239 | 1153 | 1006 | **876** |
+
+スキャンラインの呼び出し数は「道路が覆う画面行数」で決まるので dd にほとんど依存しない。
+
+### 計測に含まれていないもの
+
+拡縮 blit（Phase 2 A″）が無いので、スプライトは**同じピクセル数の 1:1 blit** で
+代用している。呼び出し回数と充填量は実物どおりだが、拡縮の内部コストは別。
+デイサイクルのクロスフェード（背景をもう 1 セット重ね描き）も入っていない。
+
+## 3. `return` / `break` / `continue` は C++ 例外
 
 `interpreter.h` の `throw ReturnValue{...}` / `BreakSignal` / `ContinueSignal`。
 関数の早期脱出もループの脱出も、毎回スタック unwind を伴う。
@@ -149,7 +213,7 @@ render はほぼ dd に線形。解像度には**ほぼ非依存**（投影は�
 
 `-fwasm-exceptions` は macOS arm64 の Itanium ABI unwind より安い。
 
-## 3. AI 窓（第1ラウンド、`logic.cul`）
+## 4. AI 窓（第1ラウンド、`logic.cul`）
 
 **update ms/frame — プレイヤーのトラック上の位置別、dd=300、native -O1**
 
@@ -165,7 +229,7 @@ render はほぼ dd に線形。解像度には**ほぼ非依存**（投影は�
 周回のたびにリセットする**（JS では JIT が効くので誰も気づいていない）。
 周回距離で窓にすると 15ms 前後で平坦になる。**採用**。
 
-## 4. 充填レート（`fill.cul`）— 問題ではない
+## 5. 充填レート（`fill.cul`）— 問題ではない
 
 | 項目 | native | wasm |
 |---|---|---|
@@ -175,7 +239,7 @@ render はほぼ dd に線形。解像度には**ほぼ非依存**（投影は�
 デイサイクル遷移中の背景 3 層 ×2 ＝ 480×360 で ~1.2M px/frame は **wasm でも 3ms 程度**。
 hold:transition 比（3:4）を切り詰める必要はない。
 
-## 5. 呼び出し単価（`callcost.cul`）
+## 6. 呼び出し単価（`callcost.cul`）
 
 道路帯テスト（200 帯 × 4 span = 800 呼び出し）は native 4.9ms / wasm 5.5ms で、
 **解像度を 4.5 倍にしても時間が変わらない** ＝ ピクセルでなく呼び出し回数が支配項。
@@ -192,7 +256,7 @@ _Canvas.rect (prim, 320x2 = 640px) 3684 ns   ← 640px 塗っても +0.5us
   `_Canvas.*` を直接叩くだけで描画コストが約 1.8 倍速くなる
 - `Canvas.trapezoid`（要望 F）が効くとすれば「速いから」ではなく「呼び出し回数を減らすから」
 
-## 6. interp の素の単価（`ops*.cul`、native interp）
+## 7. interp の素の単価（`ops*.cul`、native interp）
 
 ```
 empty for  (0..N)   588 ns/iter     ← ループ機構だけでこれ
@@ -207,7 +271,7 @@ early return     +22000 ns          ← 第2ラウンドで判明（§2）
 - **`for x in 0..N` は `while` より 1 反復あたり ~240ns 高い**（range が iterator プロトコル経由）
 - これらは racer 固有でなく **interp 全体の天井**。Playground の他の例にも同じ制約がかかる
 
-## 7. 移植時の実装注意（この spike で踏んだもの）
+## 8. 移植時の実装注意（この spike で踏んだもの）
 
 - **投影は割る前に cull する。** `cameraDepth / p.camera.z` は、プレイヤーがセグメント境界に
   ちょうど乗ると `z == 0` になる。JS は Infinity を返して次行の `p1.camera.z <= cameraDepth`
