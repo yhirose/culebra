@@ -162,6 +162,30 @@ inline int64_t sprite_load(const uint32_t* px, int64_t n, int w, int h) {
   return static_cast<int64_t>(_sprites().size() - 1);
 }
 
+// Register a sprite from already-decoded pixels, taking ownership of the
+// buffer — the PNG path, where the pixels never pass through a culebra Array.
+inline int64_t sprite_adopt(std::vector<uint32_t>&& px, int w, int h) {
+  Sprite s;
+  s.w = w < 0 ? 0 : w;
+  s.h = h < 0 ? 0 : h;
+  s.px = std::move(px);
+  s.px.resize(static_cast<size_t>(s.w) * static_cast<size_t>(s.h), 0u);
+  _sprites().push_back(std::move(s));
+  return static_cast<int64_t>(_sprites().size() - 1);
+}
+
+// A registered sprite's dimensions, or 0 for an unknown handle. `from_png`
+// learns its size from the decode, so the preamble reads it back through these
+// rather than being told it at construction.
+inline int64_t sprite_width(int64_t id) {
+  if (id < 0 || static_cast<size_t>(id) >= _sprites().size()) return 0;
+  return _sprites()[id].w;
+}
+inline int64_t sprite_height(int64_t id) {
+  if (id < 0 || static_cast<size_t>(id) >= _sprites().size()) return 0;
+  return _sprites()[id].h;
+}
+
 // Blit the sub-rectangle (sx, sy, sw, sh) of sprite `id` to (dx, dy).
 // flags: 1 = flip X, 2 = flip Y, 4 = transpose (swap X/Y — a diagonal
 // reflection; combine with a flip for a 90° rotation). Transparent source

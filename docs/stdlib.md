@@ -3949,6 +3949,14 @@ array: packed-RGBA `Long`s, or — when `palette` is given — indices into that
 palette (compact indexed art). Blits skip transparent pixels, so sprites
 composite.
 
+`Canvas.Sprite.new(png: String)` instead decodes PNG bytes — `FS.read_bytes` of
+an image file, say — and takes the size from the image, so there is nothing to
+pass alongside the data. `Canvas.Sprite.from_png(data)` is the same thing under
+a name that reads as one at the call site. Greyscale, palette (with `tRNS`),
+truecolour and 16-bit-per-channel images all decode to the same packed-RGBA
+layout the framebuffer uses; anything undecodable raises
+`ValueError: not a valid PNG image`.
+
 | Method | Effect |
 | --- | --- |
 | `sprite.draw(x, y, flip_x = false, flip_y = false, transpose = false)` | blit the whole sprite to `(x, y)`; `transpose` swaps X/Y (a diagonal reflection — combine with a flip for a 90° rotation) |

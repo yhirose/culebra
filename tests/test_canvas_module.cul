@@ -78,6 +78,24 @@ Canvas.run(8, 8, fn () {
   false                                        // stop after one frame
 })
 
+// Sprite from PNG bytes: the String constructor and its named form. The size
+// comes from the image, so nothing is passed alongside the data. (2x2 RGBA:
+// red, green / blue, transparent.)
+let PNG = Encoding.hex.decode(
+  "89504e470d0a1a0a0000000d494844520000000200000002080600000072b60d24" +
+  "0000001349444154789c63f8cfc0f01f0c8134886000003fd205fbcb17a6ce0000" +
+  "000049454e44ae426082")
+let png_sprite = Canvas.Sprite.from_png(PNG)
+assert_eq(png_sprite.width(), 2)
+assert_eq(png_sprite.height(), 2)
+assert_eq(Canvas.Sprite.new(PNG).width(), 2)      // same thing, String ctor
+Canvas.init(2, 2)
+Canvas.clear(GREEN)
+png_sprite.draw(0, 0)
+assert_eq(Canvas.get_pixel(0, 0), RED)
+assert_eq(Canvas.get_pixel(1, 1), GREEN)          // transparent showed through
+assert_throws("ValueError", fn() { Canvas.Sprite.from_png("not a png") })
+
 // Canvas.init sizes the framebuffer without going through run — for a program
 // that drives its own frame loop.
 Canvas.init(5, 3)

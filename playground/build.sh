@@ -50,6 +50,7 @@ COMMON=(
   -Iinclude
   -Ivendor/cpp-peglib -Ivendor/cpp-unicodelib -Ivendor/cpp-regexlib
   -Ivendor/cpp-tensorlib/include -Ivendor/cpp-tensorlib/kernels
+  -Ivendor/stb
 )
 
 echo "[playground] compiling culebra-basic.wasm…"

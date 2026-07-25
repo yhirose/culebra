@@ -81,6 +81,10 @@ include_directories(./vendor/cpp-linenoise)
 include_directories(./vendor/cpp-unicodelib)
 include_directories(./vendor/cpp-regexlib)
 include_directories(./vendor/cpp-httplib)
+# stb_image (vendor/stb/stb_image.h, public domain) — the PNG decoder behind
+# Canvas.Sprite.from_png. Header-only with its own inflate, so it adds no link
+# dependency; see include/image.h for how it is compiled in.
+include_directories(./vendor/stb)
 # Builtin SQLite namespace. OFF drops the amalgamation entirely (no sqlite3
 # object, no link, no `SQLite` name in either backend) — the WASM playground
 # build uses this to shed ~1.2 MB. Mirrors the CULEBRA_ENABLE_HTTP gate.

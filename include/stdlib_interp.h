@@ -15,6 +15,7 @@
 // `culebra::environment(argv)` or `culebra::setup_built_in_functions(env)`.
 
 #include <compress.h>
+#include <image.h>
 #include <csv.h>
 #include <env.h>
 #include <foreign.h>
@@ -1854,6 +1855,43 @@ inline Value make_canvas_primitives_namespace() {
             return Value(static_cast<long>(_canvas_detail::sprite_load(
                 px.data(), static_cast<int64_t>(px.size()),
                 env->get("w").to_long(), env->get("h").to_long())));
+          },
+          "Long"sv)),
+      false);
+
+  // _Canvas.sprite_from_png(data: String) -> Long (handle). Raises ValueError
+  // on anything stb won't decode.
+  ns.initialize("sprite_from_png",
+      Value(FunctionValue({{"data", false, "String"sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            auto d = culebra::image::decode_png(
+                env->get("data").to_string_view());
+            if (!d.error.empty())
+              throw CulebraError("ValueError", d.error, line, col);
+            return Value(static_cast<long>(_canvas_detail::sprite_adopt(
+                std::move(d.px), d.w, d.h)));
+          },
+          "Long"sv)),
+      false);
+
+  // _Canvas.sprite_width(id) / sprite_height(id) -> Long (0 for an unknown
+  // handle). from_png learns its size from the decode, so the preamble reads
+  // it back rather than being told it.
+  ns.initialize("sprite_width",
+      Value(FunctionValue({{"id", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            return Value(static_cast<long>(
+                _canvas_detail::sprite_width(env->get("id").to_long())));
+          },
+          "Long"sv)),
+      false);
+  ns.initialize("sprite_height",
+      Value(FunctionValue({{"id", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            return Value(static_cast<long>(
+                _canvas_detail::sprite_height(env->get("id").to_long())));
           },
           "Long"sv)),
       false);

@@ -24,12 +24,23 @@ let _canvas_module = fn () {
   # uploaded once (`_Canvas.sprite_load`); draw() re-references the handle so
   # nothing is re-marshalled per frame.
   class Sprite {
-    new(pixels, w, h, palette = nil) {
+    new(pixels: Array, w: Long, h: Long, palette = nil) {
       let rgba_px = if palette == nil { pixels } else { pixels.map(|i| palette[i]) }
       self._id = _Canvas.sprite_load(rgba_px, w, h)
-      self._w = w
-      self._h = h
+      self._w = _Canvas.sprite_width(self._id)
+      self._h = _Canvas.sprite_height(self._id)
     }
+    # Decode a PNG image (its bytes as a String, e.g. from `FS.read_bytes`) and
+    # upload it. The size comes from the image, so there is nothing to pass.
+    # Raises ValueError on anything that isn't a decodable PNG.
+    new(png: String) {
+      self._id = _Canvas.sprite_from_png(png)
+      self._w = _Canvas.sprite_width(self._id)
+      self._h = _Canvas.sprite_height(self._id)
+    }
+    # Named form of the String constructor, for call sites where `Sprite(data)`
+    # would not read as "this is a PNG".
+    static from_png(data) { Sprite(data) }
     width() { self._w }
     height() { self._h }
     # Blit the whole sprite to (x, y). flip_x/flip_y mirror; transpose swaps

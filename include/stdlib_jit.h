@@ -20,6 +20,7 @@
 #include <net.h>
 #include <proc.h>
 #include <canvas.h>
+#include <image.h>
 #include <term.h>
 #if defined(CULEBRA_HTTP_ENABLED)
 #include <http.h>
@@ -720,6 +721,22 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_sprite_load(
   return culebra::_canvas_detail::sprite_load(
       px.data(), static_cast<int64_t>(px.size()), static_cast<int>(w),
       static_cast<int>(h));
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t
+culebra_runtime_canvas_sprite_from_png(uint8_t tag, int64_t data, int64_t line,
+                                       int64_t col) {
+  auto d = culebra::image::decode_png(_culebra_str_view(tag, data));
+  if (!d.error.empty())
+    throw culebra::CulebraError("ValueError", d.error, line, col);
+  return culebra::_canvas_detail::sprite_adopt(std::move(d.px), d.w, d.h);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_sprite_width(
+    int64_t id) {
+  return culebra::_canvas_detail::sprite_width(id);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_sprite_height(
+    int64_t id) {
+  return culebra::_canvas_detail::sprite_height(id);
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_blit(
     int64_t id, int64_t dx, int64_t dy, int64_t sx, int64_t sy, int64_t sw,
@@ -7548,6 +7565,10 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::canvas_trapezoid, vt, i64, i64, i64, i64,
                                    i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_sprite_load, i64, ptrTy, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_sprite_from_png, i64,
+                                   jit.builder_.getInt8Ty(), i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_sprite_width, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_sprite_height, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_blit, vt, i64, i64, i64, i64, i64,
                                    i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_blit_scaled, vt, i64, i64, i64,
@@ -8643,6 +8664,23 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
       px.drop();
       return jit.own(make_long(id));
     }
+    if (method == "sprite_from_png" && a.size() == 1) {
+      auto png = jit.compile(*a[0]);
+      emit_type_check(png.borrow(), "String", "parameter 'data'", a[0].get());
+      auto id = emit_call(module_->getFunction(rt::canvas_sprite_from_png),
+                          {extract_tag(png.borrow()),
+                           extract_data(png.borrow()), line, col});
+      png.drop();
+      return jit.own(make_long(id));
+    }
+    if (method == "sprite_width")
+      if (auto v = args({{"id"}}))
+        return jit.own(make_long(
+            emit_call(module_->getFunction(rt::canvas_sprite_width), *v)));
+    if (method == "sprite_height")
+      if (auto v = args({{"id"}}))
+        return jit.own(make_long(
+            emit_call(module_->getFunction(rt::canvas_sprite_height), *v)));
     if (method == "blit")
       if (auto v = args({{"id"}, {"dx", Coord}, {"dy", Coord}, {"sx", Coord},
                          {"sy", Coord}, {"sw", Coord}, {"sh", Coord},

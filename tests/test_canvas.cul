@@ -202,6 +202,55 @@ assert_eq(try { _Canvas.blit_scaled(chk, 0, 0, 1, 1, 0, 0, 1, 1, 0, "x") }
 assert_eq(try { _Canvas.trapezoid(0, 0, 1, 1, 0, 1, 1.5) } catch e { e.message },
           "type error: parameter 'rgba' expects Long")
 
+// --- sprite_from_png: decode, and read the size back from the decode ---
+// Hand-built fixtures (see the PNG spec's colour types), hex so the bytes
+// survive as source. Every one is 2 pixels wide: red, green / blue, transparent
+// where the format can express transparency.
+let PNG_RGBA = "89504e470d0a1a0a0000000d494844520000000200000002080600000072b60d240000001349444154789c63f8cfc0f01f0c8134886000003fd205fbcb17a6ce0000000049454e44ae426082"
+let PNG_RGB = "89504e470d0a1a0a0000000d4948445200000002000000020802000000fdd49a730000001249444154789c63f8cfc0c000c20cff8100001fee05fb0bd9688b0000000049454e44ae426082"
+let PNG_GREY = "89504e470d0a1a0a0000000d4948445200000002000000010800000000d14920560000000b49444154789c6360f80f000102010042bebc680000000049454e44ae426082"
+let PNG_GREYA = "89504e470d0a1a0a0000000d49484452000000020000000108040000005e2bb7010000000d49444154789c63f8ffbf81010007fe027f72dd80350000000049454e44ae426082"
+let PNG_PAL = "89504e470d0a1a0a0000000d49484452000000020000000208030000004568fd160000000c504c5445ff000000ff000000ff0909095c717e860000000474524e53ffffff00402aa9f40000000e49444154789c6360606460620600001100079ea22a120000000049454e44ae426082"
+let PNG_I16 = "89504e470d0a1a0a0000000d4948445200000002000000011006000000a4b2a3c90000001149444154789c63f8ff9f010840240403003fd107f968446ef10000000049454e44ae426082"
+
+// Decode `hex`, blit the whole image at the origin and read the pixels back.
+fn png_pixels(hex) {
+  let id = _Canvas.sprite_from_png(Encoding.hex.decode(hex))
+  let w = _Canvas.sprite_width(id)
+  let h = _Canvas.sprite_height(id)
+  _Canvas.init(w, h)
+  _Canvas.clear(0)
+  _Canvas.blit(id, 0, 0, 0, 0, w, h, 0)
+  mut px = []
+  for y in 0..h { for x in 0..w { px.push(_Canvas.get_pixel(x, y)) } }
+  px
+}
+
+let WHITE = rgba(255, 255, 255, 255)
+let BLACK = rgba(0, 0, 0, 255)
+// Every colour type lands on the same packed-RGBA layout the framebuffer uses.
+assert_eq(png_pixels(PNG_RGBA), [RED, GREEN, BLUE, CLEAR])
+assert_eq(png_pixels(PNG_RGB), [RED, GREEN, BLUE, WHITE])   // no alpha = opaque
+assert_eq(png_pixels(PNG_GREY), [BLACK, WHITE])
+assert_eq(png_pixels(PNG_GREYA), [WHITE, CLEAR])
+assert_eq(png_pixels(PNG_PAL), [RED, GREEN, BLUE, CLEAR])   // palette + tRNS
+assert_eq(png_pixels(PNG_I16), [RED, GREEN])                // 16 bpc, narrowed
+
+// Anything that isn't a decodable PNG raises the one shared ValueError.
+let truncated = "89504e470d0a1a0a0000000d4948445200000002"
+assert_eq(try { _Canvas.sprite_from_png(Encoding.hex.decode(truncated)) }
+          catch e { e.kind + "|" + e.message },
+          "ValueError|not a valid PNG image")
+assert_eq(try { _Canvas.sprite_from_png("") } catch e { e.message },
+          "not a valid PNG image")
+assert_eq(try { _Canvas.sprite_from_png(5) } catch e { e.message },
+          "type error: parameter 'data' expects String")
+// An unknown handle has no dimensions (rather than reading out of bounds).
+assert_eq(_Canvas.sprite_width(-1), 0)
+assert_eq(_Canvas.sprite_height(9999), 0)
+
+_Canvas.init(4, 4)
+
 // --- host-driven prims: headless returns 0 / no-ops (called for symmetry) ---
 assert_eq(_Canvas.buttons(), 0)
 assert_eq(_Canvas.mouse_x(), 0)
