@@ -1633,9 +1633,10 @@ comma) so it doesn't collide with the empty-Object literal `{}` or the
     let one = {42,}                  # trailing comma forces a 1-element Set
     let mixed = {1, 'two', 3.14, true}
 
-Duplicate elements collapse on construction; numerically-equivalent
-keys collide the same way Object keys do (`{1, 1.0, true}` keeps one
-element).
+Duplicate elements collapse on construction. Membership uses the same
+key identity as Object keys, which distinguishes types rather than
+numeric value — so `{1, 1.0, true}` keeps all three elements, exactly
+as those three are three distinct Object keys.
 
 Equality ignores order:
 
@@ -3626,6 +3627,9 @@ return a new `Array` and leave the receiver unchanged.
 | `a.max() -> Any`                            | Largest element. Same rule as `min`. |
 | `a.min_by(f: Function) -> Any`              | Element whose key `f(x)` is smallest; `f` must take one parameter and return a `Long` or `Float`. Each key is computed once, and ties keep the earlier element. Throws on empty. |
 | `a.max_by(f: Function) -> Any`              | Element whose key `f(x)` is largest. Same rules as `min_by`. |
+| `a.to_set() -> Set`                         | Fresh `Set` of the elements in first-seen order, duplicates dropped. Set literals aside, this is how a `Set` is built from a collection. Unhashable elements throw. |
+| `a.group_by(f: Function) -> Object`         | Buckets elements into Arrays keyed by `f(x)`, in first-seen key order; `f` must take one parameter and return a hashable key. |
+| `a.partition(p: Function) -> Tuple`         | One-pass split into `(matching, non_matching)`, order preserved in both halves. `p` must take one parameter. Destructures: `let (yes, no) = xs.partition(p)`. |
 | `a.sort(reverse: Bool = false) -> Nil` *(mutating)* | Stable-sort in place in natural order — elements compare by the same rule as `<`, so an Object's `__lt__` / `cmp` is honored (a `Path` array sorts) and incomparable elements throw. Keyword-only `reverse: true` sorts descending (still stable). |
 | `a.sorted(reverse: Bool = false) -> Array` | Like `sort` but returns a new sorted Array, leaving the receiver unchanged — so it chains (`xs.sorted().join(",")`). `reverse: true` for stable descending. |
 | `a.sort_by(key: Function, reverse: Bool = false) -> Nil` *(mutating)* | Stable-sort in place using `key(x)` as the comparison key (ascending). `key` must take one parameter and return a comparable value (`Long` / `String` / `Bool`). Keyword-only `reverse: true` sorts descending (still stable). |
@@ -3865,6 +3869,9 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 | `it.max()` | Any | largest element, same rule as `min` |
 | `it.min_by(f)` | Any | element with the smallest key `f(x)`; ties keep the earlier one. Throws on empty |
 | `it.max_by(f)` | Any | element with the largest key `f(x)`; ties keep the earlier one. Throws on empty |
+| `it.to_set()` | `Set` | members in first-seen order, duplicates dropped |
+| `it.group_by(f)` | `Object` | buckets elements into Arrays keyed by `f(x)`, in first-seen key order |
+| `it.partition(p)` | `Tuple` | `(matching, non_matching)` in one pass, order preserved in both halves |
 
 **Eager vs lazy**: `Array` has its own eager `map` / `filter` /
 `for_each` / `reduce` / `find` / `any` / `all` / `flat_map` (§18.2)

@@ -57,7 +57,7 @@ inline const std::unordered_set<std::string_view>& builtin_method_names() {
       "any",        "all",         "flat_map",   "sort_by",    "sorted_by",
       "sort",       "sorted",
       "sum",        "product",     "min",        "max",        "collect",
-      "min_by",     "max_by",
+      "min_by",     "max_by",     "to_set",     "group_by",   "partition",
       "count",      "take",        "skip",       "take_while", "chain",
       "zip",        "enumerate",   "code_points","graphemes",  "iter",
       "chunks",     "windows",     "skip_while", "first",      "last",

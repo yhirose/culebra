@@ -1535,8 +1535,9 @@ RHS は 1 度だけ評価され、`Array` または `Tuple` で、対象と同�
     let one = {42,}                  # 末尾カンマで 1 要素 Set
     let mixed = {1, 'two', 3.14, true}
 
-重複要素は構築時に潰されます。Object キーと同じく数値的に等価なキー
-は衝突します（`{1, 1.0, true}` は 1 要素のみ残る）。
+重複要素は構築時に潰されます。メンバーの同一性は Object キーと同じ規則で、
+数値としての値ではなく型を区別します。したがって `{1, 1.0, true}` は 3 要素
+とも残ります（この 3 つが Object キーとしても別々のキーになるのと同じ）。
 
 等価性は順序を無視:
 
@@ -3420,6 +3421,9 @@ Array や String スカラーを回す場合は `for c in s { ... }`
 | `a.max() -> Any`                            | 最大の要素。規則は `min` と同じ |
 | `a.min_by(f: Function) -> Any`              | キー `f(x)` が最小の要素。`f` は 1 引数を受け取り `Long` か `Float` を返す必要あり。キーは各要素につき 1 回だけ計算し、同値なら先に現れた方を返す。空配列では例外 |
 | `a.max_by(f: Function) -> Any`              | キー `f(x)` が最大の要素。規則は `min_by` と同じ |
+| `a.to_set() -> Set`                         | 要素を初出順に持つ新しい `Set`（重複は除去）。Set リテラル以外でコレクションから `Set` を作る唯一の手段。ハッシュ不可の要素は例外 |
+| `a.group_by(f: Function) -> Object`         | `f(x)` をキーに要素を Array へ振り分ける（キーは初出順）。`f` は 1 引数を受け取り、ハッシュ可能なキーを返す必要あり |
+| `a.partition(p: Function) -> Tuple`         | 1 パスで `(条件を満たす, 満たさない)` に分割し、両方とも順序を保つ。`p` は 1 引数を受け取る。分配束縛できる: `let (yes, no) = xs.partition(p)` |
 | `a.sort(reverse: Bool = false) -> Nil` *(破壊的)* | 自然順で in-place 安定ソート。要素は `<` と同じ規則で比較し、Object の `__lt__` / `cmp` を尊重する（`Path` 配列もソート可）。比較不能な要素は throw。キーワード専用 `reverse: true` で降順（安定のまま） |
 | `a.sorted(reverse: Bool = false) -> Array` | `sort` の非破壊版。新しいソート済み Array を返し、受け手は不変＝チェーン可（`xs.sorted().join(",")`）。`reverse: true` で安定降順 |
 | `a.sort_by(key: Function, reverse: Bool = false) -> Nil` *(破壊的)* | `key(x)` を比較キーとして昇順に in-place で安定ソート。`key` は 1 引数を受け取り、比較可能な値（`Long` / `String` / `Bool`）を返す必要あり。キーワード専用 `reverse: true` で降順（安定のまま） |
@@ -3641,6 +3645,9 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 | `it.max()` | Any | 最大の要素。規則は `min` と同じ |
 | `it.min_by(f)` | Any | キー `f(x)` が最小の要素。同値なら先に現れた方。空では例外 |
 | `it.max_by(f)` | Any | キー `f(x)` が最大の要素。同値なら先に現れた方。空では例外 |
+| `it.to_set()` | `Set` | 初出順のメンバー、重複は除去 |
+| `it.group_by(f)` | `Object` | `f(x)` をキーに要素を Array へ振り分ける。キーは初出順 |
+| `it.partition(p)` | `Tuple` | 1 パスで `(条件を満たす, 満たさない)` に分割。両方とも順序を保つ |
 
 **eager vs lazy**: `Array` には独自の eager 版 `map` / `filter` /
 `for_each` / `reduce` / `find` / `any` / `all` / `flat_map`（§18.2）

@@ -7629,6 +7629,12 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                i8, i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::iter_max_by, jit.valueType_, i8, i64,
                                i8, i64, i64, i64);
+  // to_set/group_by/partition return a fresh Set / Object / Tuple pointer.
+  jit.module_->getOrInsertFunction(rt::iter_to_set, ptrTy, i8, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::iter_group_by, ptrTy, i8, i64, i8, i64,
+                               i64, i64);
+  jit.module_->getOrInsertFunction(rt::iter_partition, ptrTy, i8, i64, i8, i64,
+                               i64, i64);
   jit.module_->getOrInsertFunction(rt::iter_all, i64, i8, i64, i8, i64, i64,
                                i64);
 

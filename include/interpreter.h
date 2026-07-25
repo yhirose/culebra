@@ -4122,6 +4122,64 @@ inline Value _iter_numeric_extreme_by(Value upstream, const Value& f,
   return best;
 }
 
+// to_set / group_by / partition, written once over an element source so the
+// eager Array forms and the streaming Iterator terminals cannot drift. The
+// source calls `emit` per element; the Array form walks its vector, the
+// Iterator form pulls until exhausted.
+
+// Drain into a Set: duplicates collapse, first-seen order is kept.
+template <typename ForEach>
+inline Value _collect_set(ForEach each) {
+  SetValue out;
+  each([&](Value v) { out.add(std::move(v)); });
+  return Value(std::move(out));
+}
+
+// Bucket elements under `f(x)`. Buckets are Arrays, in first-seen key order,
+// so the result reads like the hand-written accumulator loop it replaces.
+template <typename ForEach>
+inline Value _collect_group_by(ForEach each, const Value& f) {
+  ObjectValue out;
+  each([&](Value v) {
+    Value key = _invoke_callback(f, v);
+    if (!out.has(key)) out.initialize(key, Value(ArrayValue()), false);
+    out.get(key).to_array().values->push_back(std::move(v));
+  });
+  return Value(std::move(out));
+}
+
+// Split into `(matching, non_matching)` in one pass, preserving order in
+// both halves. A Tuple (not two Arrays) so it destructures.
+template <typename ForEach>
+inline Value _collect_partition(ForEach each, const Value& p) {
+  ArrayValue yes;
+  ArrayValue no;
+  each([&](Value v) {
+    if (_invoke_callback(p, v).to_bool()) {
+      yes.values->push_back(std::move(v));
+    } else {
+      no.values->push_back(std::move(v));
+    }
+  });
+  std::vector<Value> pair;
+  pair.reserve(2);
+  pair.push_back(Value(std::move(yes)));
+  pair.push_back(Value(std::move(no)));
+  return Value(TupleValue(std::move(pair)));
+}
+
+// Element sources for the two receiver kinds.
+inline auto _each_of_array(const std::vector<Value>& vs) {
+  return [&vs](auto emit) {
+    for (const auto& v : vs) emit(v);
+  };
+}
+inline auto _each_of_iter(Value upstream) {
+  return [upstream](auto emit) {
+    while (auto v = _iter_next_value(upstream)) emit(std::move(*v));
+  };
+}
+
 // Sets up a function-frame environment with `fn` bound to the callback,
 // and treats an early return (`return x` compiled as a thrown Value) as
 // the callback's result.
@@ -4639,6 +4697,27 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                               "max_by of empty Array");
          }
          return _numeric_extreme_by(*arr.values, f, true);
+       }))},
+      {"to_set"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         const auto& arr = callEnv->get("self").to_array();
+         return _collect_set(_each_of_array(*arr.values));
+       }))},
+      {"group_by"sv,
+       Value(FunctionValue({{"f", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         const auto& arr = callEnv->get("self").to_array();
+         auto f = Value(as_callback(callEnv->get("f")));
+         check_callback_arity(f.to_function(), 1, "group_by");
+         return _collect_group_by(_each_of_array(*arr.values), f);
+       }))},
+      {"partition"sv,
+       Value(FunctionValue({{"p", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         const auto& arr = callEnv->get("self").to_array();
+         auto p = Value(as_callback(callEnv->get("p")));
+         check_callback_arity(p.to_function(), 1, "partition");
+         return _collect_partition(_each_of_array(*arr.values), p);
        }))},
       {"sort_by"sv,
        Value(FunctionValue({{"f", false, "Function"sv},
@@ -5992,6 +6071,27 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
          check_callback_arity(f.to_function(), 1, "max_by");
          return _iter_numeric_extreme_by(callEnv->get("self"), f, true,
                                          "max_by");
+       }))},
+
+      {"to_set"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         return _collect_set(_each_of_iter(callEnv->get("self")));
+       }))},
+
+      {"group_by"sv,
+       Value(FunctionValue({{"f", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto f = Value(as_callback(callEnv->get("f")));
+         check_callback_arity(f.to_function(), 1, "group_by");
+         return _collect_group_by(_each_of_iter(callEnv->get("self")), f);
+       }))},
+
+      {"partition"sv,
+       Value(FunctionValue({{"p", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto p = Value(as_callback(callEnv->get("p")));
+         check_callback_arity(p.to_function(), 1, "partition");
+         return _collect_partition(_each_of_iter(callEnv->get("self")), p);
        }))},
   };
   return props_;

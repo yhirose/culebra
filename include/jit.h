@@ -4411,6 +4411,18 @@ struct JIT {
                                  builder_.getInt8Ty(), builder_.getInt64Ty(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
+    // to_set/group_by/partition return a fresh Set / Object / Tuple pointer.
+    module_->getOrInsertFunction(rt::array_to_set, ptrTy, ptrTy,
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::array_group_by, ptrTy, ptrTy,
+                                 builder_.getInt8Ty(), builder_.getInt64Ty(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::array_partition, ptrTy, ptrTy,
+                                 builder_.getInt8Ty(), builder_.getInt64Ty(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
 
     // Core globals: range/iota are language-level integer iterator/array
     // factories (`for i in range(n) {}`). math_range backs the `..`
@@ -15775,6 +15787,47 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
         [&](llvm::Value* it, llvm::Value* id) {
           return emit_value_call(module_->getFunction(iter_rt),
                                  {it, id, ft, fd, ho_line, ho_col});
+        }));
+  }
+
+  // to_set / group_by / partition — one-pass collectors over Array or
+  // Iterator. to_set is the only way to build a Set from a collection (set
+  // literals are the only other spelling), so it serves both receivers too.
+  if (method == "to_set" && argsAst.nodes.size() == 0) {
+    return own(dispatch_arr_iter(
+        "to_set",
+        [&](llvm::Value* arrPtr) {
+          return make_set(emit_call(module_->getFunction(rt::array_to_set),
+                                    {arrPtr, ho_line, ho_col}));
+        },
+        [&](llvm::Value* it, llvm::Value* id) {
+          return make_set(emit_call(module_->getFunction(rt::iter_to_set),
+                                    {it, id, ho_line, ho_col}));
+        }));
+  }
+
+  if ((method == "group_by" || method == "partition") &&
+      argsAst.nodes.size() == 1) {
+    hof_cb = argsAst.nodes[0].get();
+    // Callee-consumes (see map above).
+    auto fv = compile(*argsAst.nodes[0]).consume();
+    auto ft = extract_tag(fv);
+    auto fd = extract_data(fv);
+    hof_owned.push_back(fv);
+    bool grouping = (method == "group_by");
+    auto arr_rt = grouping ? rt::array_group_by : rt::array_partition;
+    auto iter_rt = grouping ? rt::iter_group_by : rt::iter_partition;
+    return own(dispatch_arr_iter(
+        method.c_str(),
+        [&](llvm::Value* arrPtr) {
+          auto out = emit_call(module_->getFunction(arr_rt),
+                               {arrPtr, ft, fd, ho_line, ho_col});
+          return grouping ? make_object(out) : make_tuple(out);
+        },
+        [&](llvm::Value* it, llvm::Value* id) {
+          auto out = emit_call(module_->getFunction(iter_rt),
+                               {it, id, ft, fd, ho_line, ho_col});
+          return grouping ? make_object(out) : make_tuple(out);
         }));
   }
 

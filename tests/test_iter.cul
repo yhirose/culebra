@@ -590,3 +590,44 @@ try { [].min_by(|x| x); assert_true(false) } catch e { assert_eq(e.kind, "ValueE
 try { [].iter().max_by(|x| x); assert_true(false) } catch e { assert_eq(e.kind, "ValueError") }
 # A non-numeric key reports like the unkeyed forms.
 try { [1, 2].min_by(|x| 'k'); assert_true(false) } catch e { assert_eq(e.kind, "TypeError") }
+
+# --- to_set / group_by / partition ---------------------------------------
+# to_set is the only way to build a Set from a collection (set literals are
+# the only other spelling), so it serves Array receivers as well.
+assert_eq([1, 2, 2, 3, 1].to_set(), {1, 2, 3})
+assert_eq([1, 2, 2, 3, 1].iter().to_set(), {1, 2, 3})
+assert_eq([].to_set().size(), 0)
+assert_eq([].iter().to_set().size(), 0)
+assert_eq(range(5).map(|x| x % 2).to_set(), {0, 1})
+assert_eq([(1, 2), (1, 2), (3, 4)].to_set(), {(1, 2), (3, 4)})
+# First-seen order is kept. Member identity follows Object-key identity,
+# which distinguishes types rather than numeric value, so these stay three.
+assert_eq(['b', 'a', 'b'].to_set().to_array(), ['b', 'a'])
+assert_eq([1, 1.0, true].to_set().size(), 3)
+assert_eq([1, 1.0, true].to_set(), {1, 1.0, true})
+# An unhashable element reports like any other unhashable key.
+try { [[1]].to_set(); assert_true(false) } catch e { assert_eq(e.kind, "TypeError") }
+try { [[1]].iter().to_set(); assert_true(false) } catch e { assert_eq(e.kind, "TypeError") }
+
+# group_by buckets into Arrays under f(x), in first-seen key order.
+mut staff = [{n: 'a', d: 'eng'}, {n: 'b', d: 'ops'}, {n: 'c', d: 'eng'}]
+assert_eq(staff.group_by(|p| p.d).eng.size(), 2)
+assert_eq(staff.iter().group_by(|p| p.d).ops.size(), 1)
+assert_eq([1, 2, 3, 4, 5].group_by(|x| x % 2)[1], [1, 3, 5])
+assert_eq([1, 2, 3, 4, 5].iter().group_by(|x| x % 2)[0], [2, 4])
+assert_eq(['aa', 'b', 'cc'].group_by(|s| s.size())[2], ['aa', 'cc'])
+assert_eq([].group_by(|x| x).keys().size(), 0)
+try { [1].group_by(|x| [x]); assert_true(false) } catch e { assert_eq(e.kind, "TypeError") }
+
+# partition splits in one pass and returns a Tuple, so it destructures.
+assert_eq([1, 2, 3, 4, 5].partition(|x| x % 2 == 0), ([2, 4], [1, 3, 5]))
+assert_eq([1, 2, 3, 4, 5].iter().partition(|x| x % 2 == 0), ([2, 4], [1, 3, 5]))
+mut evens = nil
+mut odds = nil
+(evens, odds) = [1, 2, 3, 4].partition(|x| x % 2 == 0)
+assert_eq(evens, [2, 4])
+assert_eq(odds, [1, 3])
+# Order is preserved in both halves, and an all-or-nothing predicate is fine.
+assert_eq([1, 2, 3].partition(|x| true), ([1, 2, 3], []))
+assert_eq([1, 2, 3].partition(|x| false), ([], [1, 2, 3]))
+assert_eq([].iter().partition(|x| true), ([], []))

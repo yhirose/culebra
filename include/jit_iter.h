@@ -2844,4 +2844,146 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove_any(
 
 }  // extern "C" (close briefly for C++ impl helpers)
 
+// --- to_set / group_by / partition ---------------------------------------
+//
+// Each is written once over an element source. A source hands `emit` a value
+// that already carries a +1, so every sink below simply consumes it (stores
+// it or lets a guard release it) without caring which receiver it came from:
+// the Array source retains each borrowed element, the iterator source passes
+// the +1 its pull produced.
+
+template <typename Emit>
+inline void _each_of_jit_array(JitArray* arr, Emit emit) {
+  for (size_t i = 0; i < arr->size; i++) {
+    auto e = arr->items[i];
+    culebra_runtime_value_retain(e.tag, e.data);
+    emit(e);
+  }
+}
+
+template <typename Emit>
+inline void _each_of_jit_iter(int8_t it, int64_t id, Emit emit) {
+  JitValue v;
+  auto* has_next_cls = _iter_has_next_closure({it, id});
+  auto* next_cls = _iter_next_closure({it, id});
+  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) emit(v);
+}
+
+// Duplicates collapse; first-seen order is kept. set_add absorbs the +1 on
+// insert and releases it on a duplicate, so the guard only covers the throw
+// edge (an unhashable element).
+template <typename Each>
+inline JitSet* _collect_set_jit(Each each, int64_t line, int64_t col) {
+  auto* out = culebra_runtime_set_new();
+  JitOwnedVal out_guard(JitValue{TAG_SET, reinterpret_cast<int64_t>(out)});
+  each([&](JitValue v) {
+    JitOwnedVal vg(v);
+    _culebra_hash_at(line, col, [&] {
+      culebra_runtime_set_add(out, v.tag, v.data);
+      return 0;
+    });
+    vg.consume();
+  });
+  out_guard.consume();
+  return out;
+}
+
+// Buckets are Arrays in first-seen key order. The key's hashability is
+// checked up front so an unhashable key reports at this call site (and so
+// neither the key nor the fresh bucket is stranded when it does).
+template <typename Each>
+inline JitObject* _collect_group_by_jit(Each each, int8_t ft, int64_t fd,
+                                        int64_t line, int64_t col) {
+  JitHofCallback fn(ft, fd, 1, "group_by", "f", line, col);
+  auto* out = culebra_runtime_object_new();
+  JitOwnedVal out_guard(JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(out)});
+  each([&](JitValue v) {
+    JitOwnedVal vg(v);
+    culebra_runtime_value_retain(v.tag, v.data);  // the call consumes one
+    auto k = _culebra_invoke1_at(fn, v, line, col);
+    JitOwnedVal kg(k);
+    auto* fresh = culebra_runtime_array_new();
+    JitOwnedVal fg(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(fresh)});
+    _culebra_hash_at(line, col, [&] { return JitValueHash{}(k); });
+    kg.consume();
+    fg.consume();
+    // get_or_put consumes the key and the fresh bucket, and hands back the
+    // stored bucket with a +1 (the fresh one when this key is new).
+    auto bucket = culebra_runtime_object_get_or_put(
+        out, k.tag, k.data, TAG_ARRAY, reinterpret_cast<int64_t>(fresh),
+        line, col);
+    JitOwnedVal bg(bucket);
+    auto owned = vg.consume();
+    culebra_runtime_array_push(reinterpret_cast<JitArray*>(bucket.data),
+                               owned.tag, owned.data);
+  });
+  out_guard.consume();
+  return out;
+}
+
+// One pass into `(matching, non_matching)`, order preserved in both halves.
+template <typename Each>
+inline JitArray* _collect_partition_jit(Each each, int8_t pt, int64_t pd,
+                                        int64_t line, int64_t col) {
+  JitHofCallback fn(pt, pd, 1, "partition", "p", line, col);
+  auto* yes = culebra_runtime_array_new();
+  JitOwnedVal yg(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(yes)});
+  auto* no = culebra_runtime_array_new();
+  JitOwnedVal ng(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(no)});
+  each([&](JitValue v) {
+    JitOwnedVal vg(v);
+    culebra_runtime_value_retain(v.tag, v.data);  // the call consumes one
+    auto r = _culebra_invoke1_at(fn, v, line, col);
+    JitOwnedVal rg(r);
+    bool hit = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
+    auto owned = vg.consume();
+    culebra_runtime_array_push(hit ? yes : no, owned.tag, owned.data);
+  });
+  auto* out = culebra_runtime_tuple_new();
+  culebra_runtime_tuple_push(out, TAG_ARRAY, yg.consume().data);
+  culebra_runtime_tuple_push(out, TAG_ARRAY, ng.consume().data);
+  return out;
+}
+
+// The six exported entry points; the templates above stay C++.
+extern "C" {
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_iter_to_set(
+    int8_t it, int64_t id, int64_t line, int64_t col) {
+  return _collect_set_jit(
+      [&](auto emit) { _each_of_jit_iter(it, id, emit); }, line, col);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_array_to_set(
+    JitArray* arr, int64_t line, int64_t col) {
+  return _collect_set_jit(
+      [&](auto emit) { _each_of_jit_array(arr, emit); }, line, col);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_group_by(
+    int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
+  return _collect_group_by_jit(
+      [&](auto emit) { _each_of_jit_iter(it, id, emit); }, ft, fd, line, col);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_array_group_by(
+    JitArray* arr, int8_t ft, int64_t fd, int64_t line, int64_t col) {
+  return _collect_group_by_jit(
+      [&](auto emit) { _each_of_jit_array(arr, emit); }, ft, fd, line, col);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_iter_partition(
+    int8_t it, int64_t id, int8_t pt, int64_t pd, int64_t line, int64_t col) {
+  return _collect_partition_jit(
+      [&](auto emit) { _each_of_jit_iter(it, id, emit); }, pt, pd, line, col);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_partition(
+    JitArray* arr, int8_t pt, int64_t pd, int64_t line, int64_t col) {
+  return _collect_partition_jit(
+      [&](auto emit) { _each_of_jit_array(arr, emit); }, pt, pd, line, col);
+}
+
+}  // extern "C"
+
 #endif  // CULEBRA_JIT_ENABLED
