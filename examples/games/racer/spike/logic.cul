@@ -19,6 +19,7 @@ let FOG_DENSITY = 5
 let CENTRIFUGAL = 0.3
 let TOTAL_CARS = 200
 let LOOKAHEAD = 20
+let REPS = 5           # best-of-N, to survive other sessions competing for CPU
 let FPS = 60
 let STEP = 1.0 / FPS
 let SKY_SPEED = 0.001
@@ -244,9 +245,11 @@ let reset_sprites = fn () {
   }
 }
 
+mut total_cars = TOTAL_CARS
+
 let reset_cars = fn () {
   cars = []
-  for _ in 0..TOTAL_CARS {
+  for _ in 0..total_cars {
     let side = if Random.int(0, 2) == 0 { -0.8 } else { 0.8 }
     let offset = Random.uniform(0.0, 1.0) * side
     let z = Random.int(0, segments.size()) * SEGMENT_LENGTH * 1.0
@@ -299,13 +302,30 @@ mut tree_offset = 0.0
 # curve/centrifugal and off-road branches all get exercised
 mut key_left = false
 mut key_right = false
+# how many segments behind the player still get AI steering. -1 selects v4's
+# original forward-only test (see update_car_offset).
+mut ai_lookbehind = -1
 
 # --- update ----------------------------------------------------------------
+mut scans = 0        # lookahead segment visits, to check the skip actually fires
+mut skips = 0
+
 let update_car_offset = fn (car, car_segment, player_segment, player_w) {
   let car_w = car.sprite[0] * SPRITE_SCALE
-  if (car_segment.index - player_segment.index) > draw_distance { return 0.0 }
+  if ai_lookbehind < 0 {
+    # v4 as written: the test is signed, so it only skips cars *ahead* of the
+    # player. Everything behind — almost the whole field — still scans.
+    if (car_segment.index - player_segment.index) > draw_distance { skips = skips + 1; return 0.0 }
+  } else {
+    # circular window: drawDistance ahead plus ai_lookbehind behind, so a car
+    # that is about to overtake the player is still steering when it appears.
+    let n = segments.size()
+    let ahead = (car_segment.index - player_segment.index + n) % n
+    if ahead > draw_distance && ahead < n - ai_lookbehind { skips = skips + 1; return 0.0 }
+  }
 
   for i in 1..LOOKAHEAD {
+    scans = scans + 1
     let segment = segments[(car_segment.index + i) % segments.size()]
 
     if segment.index == player_segment.index && car.speed > speed &&
@@ -507,35 +527,62 @@ let render = fn () {
 }
 
 # --- benchmark -------------------------------------------------------------
-let bench = fn (w, h, dd, frames) {
+# v4's AI early-out test is signed: it skips a car when its segment index is
+# more than drawDistance *greater* than the player's. How much of the field
+# that covers therefore depends on where the player is on the track — nearly
+# all of it at the start line, none of it at the finish. So the benchmark has
+# to sweep the player's position, not start every run at zero.
+let clear_cars = fn () {
+  for segment in segments { segment.cars = [] }
+}
+
+let bench = fn (w, h, dd, frames, start_frac) {
   width = w
   height = h
   draw_distance = dd
-  position = 0.0
   speed = MAX_SPEED / 2.0
   player_x = 0.0
+  clear_cars()
+  Random.seed(2)
+  reset_cars()
+  # +0.1 keeps the camera off an exact segment boundary. JS gets Infinity from
+  # cameraDepth/0 there and culls it a line later; culebra raises
+  # ZeroDivisionError, so the port has to cull *before* it divides.
+  position = track_length * start_frac + 0.1
 
   # warm up: two frames so the JIT has compiled and the caches are hot
   update(STEP); render()
   update(STEP); render()
 
-  let t_update_start = Time.monotonic()
-  for i in 0..frames {
-    key_left = (i / 20) % 2 == 0
-    key_right = !key_left
-    update(STEP)
-  }
-  let t_update = Time.monotonic() - t_update_start
+  # Other sessions on this machine can steal most of the CPU, so take the best
+  # of REPS runs rather than a mean — contention only ever adds time.
+  scans = 0
+  skips = 0
+  mut best_update = 1e9
+  mut best_render = 1e9
+  mut rep = 0
+  while rep < REPS {
+    let t_u = Time.monotonic()
+    for i in 0..frames {
+      key_left = (i / 20) % 2 == 0
+      key_right = !key_left
+      update(STEP)
+    }
+    let u = (Time.monotonic() - t_u) * 1000.0 / frames
+    if u < best_update { best_update = u }
 
-  let t_render_start = Time.monotonic()
-  for _ in 0..frames {
-    render()
+    let t_r = Time.monotonic()
+    for _ in 0..frames { render() }
+    let r = (Time.monotonic() - t_r) * 1000.0 / frames
+    if r < best_render { best_render = r }
+    rep = rep + 1
   }
-  let t_render = Time.monotonic() - t_render_start
 
   {
-    update_ms: t_update * 1000.0 / frames,
-    render_ms: t_render * 1000.0 / frames,
+    update_ms: best_update,
+    render_ms: best_render,
+    scans: scans / (frames * REPS),
+    skips: skips / (frames * REPS),
   }
 }
 
@@ -552,16 +599,51 @@ reset_road()
 println("track: {segments.size()} segments, {cars.size()} cars, " +
         "build {(Time.monotonic() - t_build) * 1000.0:.0f} ms")
 println("")
-println("     res    dd  update/f  render/f   total/f       fps")
+let frames = 20
+let W = 640
+let H = 480
 
-let frames = 60
-for res in [[1024, 768], [640, 480], [480, 360]] {
-  for dd in [300, 200, 100] {
-    let r = bench(res[0], res[1], dd, frames)
-    let total = r.update_ms + r.render_ms
-    println(pad("{res[0]}x{res[1]}", 8) + pad(dd, 6) + ms(r.update_ms) +
-            ms(r.render_ms) + ms(total) + pad("{1000.0 / total:.1f}", 10))
+# A. update cost against where the player is, for each AI-window policy.
+println("A. update ms/frame at 640x480, dd=300 — by player position on the track")
+println("  behind   lap 0%    25%      50%      75%      95%   scans/f(95%)")
+for behind in [-1, 100, 0] {
+  ai_lookbehind = behind
+  mut row = pad(if behind < 0 { "v4" } else { to_string(behind) }, 8)
+  mut last_scans = 0
+  for frac in [0.0, 0.25, 0.5, 0.75, 0.95] {
+    let r = bench(W, H, 300, frames, frac)
+    row = row + ms(r.update_ms)
+    last_scans = r.scans
   }
+  println(row + pad(last_scans, 15))
 }
+
+# B. render cost against drawDistance (position-independent apart from how many
+# props happen to sit in the visible window).
+println("")
+println("C. render ms/frame at 640x480 — by drawDistance, player at 50%")
+ai_lookbehind = -1
+mut rrow = pad("render", 8)
+for dd in [300, 200, 100, 50] {
+  rrow = rrow + ms(bench(W, H, dd, frames, 0.5).render_ms)
+}
+println("      dd     300      200      100       50")
+println(rrow)
+
+# C. update cost against the size of the field — the only knob that moves the
+# floor, since most of update_cars is per-car bookkeeping, not the lookahead.
+println("")
+println("D. update ms/frame by totalCars (640x480, dd=300, player at 75%)")
+println("    cars     200      100       50       20")
+for behind in [-1, 0] {
+  ai_lookbehind = behind
+  mut crow = pad(if behind < 0 { "v4" } else { "win" }, 8)
+  for n in [200, 100, 50, 20] {
+    total_cars = n
+    crow = crow + ms(bench(W, H, 300, frames, 0.75).update_ms)
+  }
+  println(crow)
+}
+total_cars = TOTAL_CARS
 println("")
 println("(sink {sink})")
