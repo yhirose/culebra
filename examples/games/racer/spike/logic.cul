@@ -1,0 +1,567 @@
+# racer port — Phase 0 spike: how much does the *logic* cost?
+#
+# A faithful port of javascript-racer v4's update()/render() arithmetic with
+# every draw call removed. What remains is exactly the work culebra has to do
+# per frame no matter how fast the Canvas primitives are: 200 AI cars each
+# scanning 20 segments ahead, and drawDistance segment projections plus the
+# back-to-front sprite pass. Fill cost is measured separately (fill.cul).
+#
+# Sweeps resolution x drawDistance and prints ms/frame, so the same file gives
+# the number on native JIT, native interp and the Playground's wasm interp.
+
+# --- constants (v4.final.html) ---------------------------------------------
+let SEGMENT_LENGTH = 200
+let RUMBLE_LENGTH = 3
+let ROAD_WIDTH = 2000
+let CAMERA_HEIGHT = 1000
+let FIELD_OF_VIEW = 100
+let FOG_DENSITY = 5
+let CENTRIFUGAL = 0.3
+let TOTAL_CARS = 200
+let LOOKAHEAD = 20
+let FPS = 60
+let STEP = 1.0 / FPS
+let SKY_SPEED = 0.001
+let HILL_SPEED = 0.002
+let TREE_SPEED = 0.003
+
+let CAMERA_DEPTH = 1.0 / Math.tan((FIELD_OF_VIEW / 2.0) * Math.pi / 180.0)
+let PLAYER_Z = CAMERA_HEIGHT * CAMERA_DEPTH
+let MAX_SPEED = SEGMENT_LENGTH / STEP
+let ACCEL = MAX_SPEED / 5.0
+let BREAKING = -MAX_SPEED
+let DECEL = -MAX_SPEED / 5.0
+let OFF_ROAD_DECEL = -MAX_SPEED / 2.0
+let OFF_ROAD_LIMIT = MAX_SPEED / 4.0
+
+# sprite sheet geometry (common.js SPRITES) — only w/h matter to the logic
+let SPRITE_SCALE = 0.3 * (1.0 / 80.0)      # 1/PLAYER_STRAIGHT.w
+let PLAYER_W = 80.0 * SPRITE_SCALE
+# [w, h] of everything that gets placed along the road
+let CAR_SPRITES = [[80.0, 56.0], [80.0, 59.0], [88.0, 55.0], [80.0, 57.0],
+                   [122.0, 144.0], [100.0, 78.0]]     # CAR01..04, SEMI, TRUCK
+let SEMI_INDEX = 4
+let BILLBOARDS = [[300.0, 170.0], [215.0, 220.0], [230.0, 220.0], [268.0, 170.0],
+                  [298.0, 190.0], [298.0, 190.0], [298.0, 190.0], [385.0, 265.0],
+                  [328.0, 282.0]]
+let PLANTS = [[360.0, 360.0], [282.0, 295.0], [135.0, 332.0], [150.0, 260.0],
+              [215.0, 540.0], [240.0, 155.0], [232.0, 152.0], [235.0, 118.0],
+              [195.0, 140.0], [168.0, 248.0], [298.0, 140.0], [320.0, 220.0]]
+let PALM_TREE = [215.0, 540.0]
+let COLUMN = [200.0, 315.0]
+let TREE1 = [360.0, 360.0]
+let TREE2 = [282.0, 295.0]
+
+# --- Util (common.js) ------------------------------------------------------
+let limit_f = fn (v, lo, hi) { if v < lo { lo } else if v > hi { hi } else { v } }
+let interpolate = fn (a, b, percent) { a + (b - a) * percent }
+let ease_in = fn (a, b, percent) { a + (b - a) * percent * percent }
+let ease_out = fn (a, b, percent) { a + (b - a) * (1.0 - (1.0 - percent) * (1.0 - percent)) }
+let ease_in_out = fn (a, b, percent) { a + (b - a) * ((-Math.cos(percent * Math.pi) / 2.0) + 0.5) }
+let percent_remaining = fn (n, total) { (n % total) / total }
+let exponential_fog = fn (distance, density) { 1.0 / Math.exp(distance * distance * density) }
+
+let increase = fn (start, increment, max) {
+  mut result = start + increment
+  while result >= max { result = result - max }
+  while result < 0 { result = result + max }
+  result
+}
+
+# `percent` is the fraction of each width that counts as a hit (v4 passes 0.8
+# for the player/car test and 1.2 for the AI steering test).
+let overlap = fn (x1, w1, x2, w2, percent) {
+  let half = percent / 2.0
+  let min1 = x1 - w1 * half
+  let max1 = x1 + w1 * half
+  let min2 = x2 - w2 * half
+  let max2 = x2 + w2 * half
+  !((max1 < min2) || (min1 > max2))
+}
+
+# --- world -----------------------------------------------------------------
+# p1/p2 are flattened into fields rather than nested objects: the projection
+# loop touches ten of them per segment per frame and this is the hot path.
+class Segment {
+  new (index, y1, y2, curve) {
+    self.index = index
+    self.p1_wy = y1
+    self.p1_wz = index * SEGMENT_LENGTH * 1.0
+    self.p2_wy = y2
+    self.p2_wz = (index + 1) * SEGMENT_LENGTH * 1.0
+    self.curve = curve
+    self.p1_cx = 0.0; self.p1_cy = 0.0; self.p1_cz = 0.0
+    self.p1_sx = 0; self.p1_sy = 0; self.p1_sw = 0; self.p1_scale = 0.0
+    self.p2_cx = 0.0; self.p2_cy = 0.0; self.p2_cz = 0.0
+    self.p2_sx = 0; self.p2_sy = 0; self.p2_sw = 0; self.p2_scale = 0.0
+    self.looped = false
+    self.fog = 1.0
+    self.clip = 0
+    self.sprites = []
+    self.cars = []
+  }
+}
+
+class Car {
+  new (offset, z, sprite, speed) {
+    self.offset = offset
+    self.z = z
+    self.sprite = sprite     # [w, h]
+    self.speed = speed
+    self.percent = 0.0
+  }
+}
+
+class Prop {
+  new (source, offset) { self.source = source; self.offset = offset }
+}
+
+mut segments = []
+mut cars = []
+mut track_length = 0.0
+
+let last_y = fn () {
+  if segments.size() == 0 { 0.0 } else { segments[segments.size() - 1].p2_wy }
+}
+
+let add_segment = fn (curve, y) {
+  segments.push(Segment.new(segments.size(), last_y(), y, curve))
+}
+
+let add_road = fn (enter, hold, leave, curve, y) {
+  let start_y = last_y()
+  let end_y = start_y + y * SEGMENT_LENGTH * 1.0
+  let total = (enter + hold + leave) * 1.0
+  for n in 0..enter {
+    add_segment(ease_in(0.0, curve, n / (enter * 1.0)),
+                ease_in_out(start_y, end_y, n / total))
+  }
+  for n in 0..hold {
+    add_segment(curve, ease_in_out(start_y, end_y, (enter + n) / total))
+  }
+  for n in 0..leave {
+    add_segment(ease_in_out(curve, 0.0, n / (leave * 1.0)),
+                ease_in_out(start_y, end_y, (enter + hold + n) / total))
+  }
+}
+
+let L_SHORT = 25
+let L_MEDIUM = 50
+let L_LONG = 100
+let H_LOW = 20.0
+let H_MEDIUM = 40.0
+let H_HIGH = 60.0
+let C_EASY = 2.0
+let C_MEDIUM = 4.0
+
+let add_straight = fn (num) { add_road(num, num, num, 0.0, 0.0) }
+let add_hill = fn (num, height) { add_road(num, num, num, 0.0, height) }
+let add_curve = fn (num, curve, height) { add_road(num, num, num, curve, height) }
+
+let add_low_rolling_hills = fn (num, height) {
+  add_road(num, num, num, 0.0, height / 2.0)
+  add_road(num, num, num, 0.0, -height)
+  add_road(num, num, num, C_EASY, height)
+  add_road(num, num, num, 0.0, 0.0)
+  add_road(num, num, num, -C_EASY, height / 2.0)
+  add_road(num, num, num, 0.0, 0.0)
+}
+
+let add_s_curves = fn () {
+  add_road(L_MEDIUM, L_MEDIUM, L_MEDIUM, -C_EASY, 0.0)
+  add_road(L_MEDIUM, L_MEDIUM, L_MEDIUM, C_MEDIUM, H_MEDIUM)
+  add_road(L_MEDIUM, L_MEDIUM, L_MEDIUM, C_EASY, -H_LOW)
+  add_road(L_MEDIUM, L_MEDIUM, L_MEDIUM, -C_EASY, H_MEDIUM)
+  add_road(L_MEDIUM, L_MEDIUM, L_MEDIUM, -C_MEDIUM, -H_MEDIUM)
+}
+
+let add_bumps = fn () {
+  add_road(10, 10, 10, 0.0, 5.0)
+  add_road(10, 10, 10, 0.0, -2.0)
+  add_road(10, 10, 10, 0.0, -5.0)
+  add_road(10, 10, 10, 0.0, 8.0)
+  add_road(10, 10, 10, 0.0, 5.0)
+  add_road(10, 10, 10, 0.0, -7.0)
+  add_road(10, 10, 10, 0.0, 5.0)
+  add_road(10, 10, 10, 0.0, -2.0)
+}
+
+let add_downhill_to_end = fn (num) {
+  add_road(num, num, num, -C_EASY, -last_y() / SEGMENT_LENGTH)
+}
+
+let find_segment = fn (z) { segments[Math.floor(z / SEGMENT_LENGTH) % segments.size()] }
+
+let add_sprite = fn (n, sprite, offset) { segments[n].sprites.push(Prop.new(sprite, offset)) }
+
+let reset_sprites = fn () {
+  add_sprite(20, BILLBOARDS[6], -1.0)
+  add_sprite(40, BILLBOARDS[5], -1.0)
+  add_sprite(60, BILLBOARDS[7], -1.0)
+  add_sprite(80, BILLBOARDS[8], -1.0)
+  add_sprite(100, BILLBOARDS[0], -1.0)
+  add_sprite(120, BILLBOARDS[1], -1.0)
+  add_sprite(140, BILLBOARDS[2], -1.0)
+  add_sprite(160, BILLBOARDS[3], -1.0)
+  add_sprite(180, BILLBOARDS[4], -1.0)
+
+  add_sprite(240, BILLBOARDS[6], -1.2)
+  add_sprite(240, BILLBOARDS[5], 1.2)
+  add_sprite(segments.size() - 25, BILLBOARDS[6], -1.2)
+  add_sprite(segments.size() - 25, BILLBOARDS[5], 1.2)
+
+  mut n = 10
+  while n < 200 {
+    add_sprite(n, PALM_TREE, 0.5 + Random.uniform(0.0, 0.5))
+    add_sprite(n, PALM_TREE, 1.0 + Random.uniform(0.0, 2.0))
+    n = n + 4 + n / 100
+  }
+
+  n = 250
+  while n < 1000 {
+    add_sprite(n, COLUMN, 1.1)
+    add_sprite(n + Random.int(0, 6), TREE1, -1.0 - Random.uniform(0.0, 2.0))
+    add_sprite(n + Random.int(0, 6), TREE2, -1.0 - Random.uniform(0.0, 2.0))
+    n = n + 5
+  }
+
+  n = 200
+  while n < segments.size() {
+    let side = if Random.int(0, 2) == 0 { 1.0 } else { -1.0 }
+    add_sprite(n, PLANTS[Random.int(0, PLANTS.size())], side * (2.0 + Random.uniform(0.0, 5.0)))
+    n = n + 3
+  }
+
+  n = 1000
+  while n < segments.size() - 50 {
+    let side = if Random.int(0, 2) == 0 { 1.0 } else { -1.0 }
+    add_sprite(n + Random.int(0, 51), BILLBOARDS[Random.int(0, BILLBOARDS.size())], -side)
+    for _ in 0..20 {
+      add_sprite(n + Random.int(0, 51), PLANTS[Random.int(0, PLANTS.size())],
+                 side * (1.5 + Random.uniform(0.0, 1.0)))
+    }
+    n = n + 100
+  }
+}
+
+let reset_cars = fn () {
+  cars = []
+  for _ in 0..TOTAL_CARS {
+    let side = if Random.int(0, 2) == 0 { -0.8 } else { 0.8 }
+    let offset = Random.uniform(0.0, 1.0) * side
+    let z = Random.int(0, segments.size()) * SEGMENT_LENGTH * 1.0
+    let idx = Random.int(0, CAR_SPRITES.size())
+    let spread = if idx == SEMI_INDEX { 4.0 } else { 2.0 }
+    let speed = MAX_SPEED / 4.0 + Random.uniform(0.0, MAX_SPEED / spread)
+    let car = Car.new(offset, z, CAR_SPRITES[idx], speed)
+    find_segment(car.z).cars.push(car)
+    cars.push(car)
+  }
+}
+
+let reset_road = fn () {
+  segments = []
+  add_straight(L_SHORT)
+  add_low_rolling_hills(L_SHORT, H_LOW)
+  add_s_curves()
+  add_curve(L_MEDIUM, C_MEDIUM, H_LOW)
+  add_bumps()
+  add_low_rolling_hills(L_SHORT, H_LOW)
+  add_curve(L_LONG * 2, C_MEDIUM, H_MEDIUM)
+  add_straight(L_MEDIUM)
+  add_hill(L_MEDIUM, H_HIGH)
+  add_s_curves()
+  add_curve(L_LONG, -C_MEDIUM, 0.0)
+  add_hill(L_LONG, H_HIGH)
+  add_curve(L_LONG, C_MEDIUM, -H_LOW)
+  add_bumps()
+  add_hill(L_LONG, -H_MEDIUM)
+  add_straight(L_MEDIUM)
+  add_s_curves()
+  add_downhill_to_end(200)
+
+  reset_sprites()
+  reset_cars()
+  track_length = segments.size() * SEGMENT_LENGTH * 1.0
+}
+
+# --- game state ------------------------------------------------------------
+mut width = 640
+mut height = 480
+mut draw_distance = 300
+mut position = 0.0
+mut speed = 0.0
+mut player_x = 0.0
+mut sky_offset = 0.0
+mut hill_offset = 0.0
+mut tree_offset = 0.0
+# synthetic input for the benchmark: hold accelerate, weave left/right so the
+# curve/centrifugal and off-road branches all get exercised
+mut key_left = false
+mut key_right = false
+
+# --- update ----------------------------------------------------------------
+let update_car_offset = fn (car, car_segment, player_segment, player_w) {
+  let car_w = car.sprite[0] * SPRITE_SCALE
+  if (car_segment.index - player_segment.index) > draw_distance { return 0.0 }
+
+  for i in 1..LOOKAHEAD {
+    let segment = segments[(car_segment.index + i) % segments.size()]
+
+    if segment.index == player_segment.index && car.speed > speed &&
+       overlap(player_x, player_w, car.offset, car_w, 1.2) {
+      let dir = if player_x > 0.5 { -1.0 }
+                else if player_x < -0.5 { 1.0 }
+                else if car.offset > player_x { 1.0 } else { -1.0 }
+      return dir * (1.0 / i) * (car.speed - speed) / MAX_SPEED
+    }
+
+    for other in segment.cars {
+      let other_w = other.sprite[0] * SPRITE_SCALE
+      if car.speed > other.speed && overlap(car.offset, car_w, other.offset, other_w, 1.2) {
+        let dir = if other.offset > 0.5 { -1.0 }
+                  else if other.offset < -0.5 { 1.0 }
+                  else if car.offset > other.offset { 1.0 } else { -1.0 }
+        return dir * (1.0 / i) * (car.speed - other.speed) / MAX_SPEED
+      }
+    }
+  }
+
+  if car.offset < -0.9 { 0.1 } else if car.offset > 0.9 { -0.1 } else { 0.0 }
+}
+
+# v4 splices the car out of its old segment; order inside a segment is not
+# observable (they are all drawn in the same z band), so swap-pop is enough.
+let remove_car = fn (list, car) {
+  let i = list.index_of(car)
+  if i >= 0 {
+    list[i] = list[list.size() - 1]
+    list.pop()
+  }
+}
+
+let update_cars = fn (dt, player_segment, player_w) {
+  for car in cars {
+    let old_segment = find_segment(car.z)
+    car.offset = car.offset + update_car_offset(car, old_segment, player_segment, player_w)
+    car.z = increase(car.z, dt * car.speed, track_length)
+    car.percent = percent_remaining(car.z, SEGMENT_LENGTH * 1.0)
+    let new_segment = find_segment(car.z)
+    if old_segment.index != new_segment.index {
+      remove_car(old_segment.cars, car)
+      new_segment.cars.push(car)
+    }
+  }
+}
+
+let update = fn (dt) {
+  let player_segment = find_segment(position + PLAYER_Z)
+  let speed_percent = speed / MAX_SPEED
+  let dx = dt * 2.0 * speed_percent
+  let start_position = position
+
+  update_cars(dt, player_segment, PLAYER_W)
+
+  position = increase(position, dt * speed, track_length)
+
+  if key_left { player_x = player_x - dx }
+  else if key_right { player_x = player_x + dx }
+  player_x = player_x - (dx * speed_percent * player_segment.curve * CENTRIFUGAL)
+
+  speed = speed + ACCEL * dt          # the benchmark always accelerates
+
+  if player_x < -1.0 || player_x > 1.0 {
+    if speed > OFF_ROAD_LIMIT { speed = speed + OFF_ROAD_DECEL * dt }
+    for prop in player_segment.sprites {
+      let prop_w = prop.source[0] * SPRITE_SCALE
+      let side = if prop.offset > 0.0 { 1.0 } else { -1.0 }
+      if overlap(player_x, PLAYER_W, prop.offset + prop_w / 2.0 * side, prop_w, 1.0) {
+        speed = MAX_SPEED / 5.0
+        position = increase(player_segment.p1_wz, -PLAYER_Z, track_length)
+        break
+      }
+    }
+  }
+
+  for car in player_segment.cars {
+    let car_w = car.sprite[0] * SPRITE_SCALE
+    if speed > car.speed && overlap(player_x, PLAYER_W, car.offset, car_w, 0.8) {
+      speed = car.speed * (car.speed / speed)
+      position = increase(car.z, -PLAYER_Z, track_length)
+      break
+    }
+  }
+
+  player_x = limit_f(player_x, -3.0, 3.0)
+  speed = limit_f(speed, 0.0, MAX_SPEED)
+
+  let scroll = player_segment.curve * (position - start_position) / SEGMENT_LENGTH
+  sky_offset = increase(sky_offset, SKY_SPEED * scroll, 1.0)
+  hill_offset = increase(hill_offset, HILL_SPEED * scroll, 1.0)
+  tree_offset = increase(tree_offset, TREE_SPEED * scroll, 1.0)
+}
+
+# --- render (arithmetic only; every draw call removed) ----------------------
+# `sink` accumulates what the draw calls would have consumed so nothing can be
+# optimised away, and so the segment/sprite counts are reportable.
+mut sink = 0
+
+let project = fn (segment, first, camera_x, camera_y, camera_z) {
+  if first {
+    let cx = -camera_x
+    let cy = segment.p1_wy - camera_y
+    let cz = segment.p1_wz - camera_z
+    let scale = CAMERA_DEPTH / cz
+    segment.p1_cx = cx; segment.p1_cy = cy; segment.p1_cz = cz
+    segment.p1_scale = scale
+    segment.p1_sx = Math.round((width / 2.0) + (scale * cx * width / 2.0))
+    segment.p1_sy = Math.round((height / 2.0) - (scale * cy * height / 2.0))
+    segment.p1_sw = Math.round(scale * ROAD_WIDTH * width / 2.0)
+  } else {
+    let cx = -camera_x
+    let cy = segment.p2_wy - camera_y
+    let cz = segment.p2_wz - camera_z
+    let scale = CAMERA_DEPTH / cz
+    segment.p2_cx = cx; segment.p2_cy = cy; segment.p2_cz = cz
+    segment.p2_scale = scale
+    segment.p2_sx = Math.round((width / 2.0) + (scale * cx * width / 2.0))
+    segment.p2_sy = Math.round((height / 2.0) - (scale * cy * height / 2.0))
+    segment.p2_sw = Math.round(scale * ROAD_WIDTH * width / 2.0)
+  }
+}
+
+let render = fn () {
+  let base_segment = find_segment(position)
+  let base_percent = percent_remaining(position, SEGMENT_LENGTH * 1.0)
+  let player_segment = find_segment(position + PLAYER_Z)
+  let player_percent = percent_remaining(position + PLAYER_Z, SEGMENT_LENGTH * 1.0)
+  let player_y = interpolate(player_segment.p1_wy, player_segment.p2_wy, player_percent)
+  mut maxy = height
+  mut x = 0.0
+  mut dx = -(base_segment.curve * base_percent)
+  let n_segments = segments.size()
+
+  for n in 0..draw_distance {
+    let segment = segments[(base_segment.index + n) % n_segments]
+    segment.looped = segment.index < base_segment.index
+    segment.fog = exponential_fog(n / (draw_distance * 1.0), FOG_DENSITY)
+    segment.clip = maxy
+
+    let camera_z = position - (if segment.looped { track_length } else { 0.0 })
+    let camera_y = player_y + CAMERA_HEIGHT
+    project(segment, true, (player_x * ROAD_WIDTH) - x, camera_y, camera_z)
+    project(segment, false, (player_x * ROAD_WIDTH) - x - dx, camera_y, camera_z)
+
+    x = x + dx
+    dx = dx + segment.curve
+
+    if segment.p1_cz <= CAMERA_DEPTH || segment.p2_sy >= segment.p1_sy || segment.p2_sy >= maxy {
+      continue
+    }
+
+    # Render.segment() would fire here: grass rect + 2 rumble + road + lanes.
+    sink = sink + segment.p1_sy + segment.p2_sy + segment.p1_sw
+    maxy = segment.p1_sy
+  }
+
+  mut n = draw_distance - 1
+  while n > 0 {
+    let segment = segments[(base_segment.index + n) % n_segments]
+
+    for car in segment.cars {
+      let scale = interpolate(segment.p1_scale, segment.p2_scale, car.percent)
+      let sx = interpolate(segment.p1_sx * 1.0, segment.p2_sx * 1.0, car.percent) +
+               (scale * car.offset * ROAD_WIDTH * width / 2.0)
+      let sy = interpolate(segment.p1_sy * 1.0, segment.p2_sy * 1.0, car.percent)
+      # Render.sprite(): destW/destH, the -0.5/-1 anchor and the hill clip
+      let dw = (car.sprite[0] * scale * width / 2.0) * (SPRITE_SCALE * ROAD_WIDTH)
+      let dh = (car.sprite[1] * scale * width / 2.0) * (SPRITE_SCALE * ROAD_WIDTH)
+      let dxp = sx - dw * 0.5
+      let dyp = sy - dh
+      let clip_h = Math.max(0.0, dyp + dh - segment.clip)
+      if clip_h < dh { sink = sink + Math.floor(dxp) + Math.floor(dyp) }
+    }
+
+    for prop in segment.sprites {
+      let scale = segment.p1_scale
+      let sx = segment.p1_sx + (scale * prop.offset * ROAD_WIDTH * width / 2.0)
+      let sy = segment.p1_sy * 1.0
+      let dw = (prop.source[0] * scale * width / 2.0) * (SPRITE_SCALE * ROAD_WIDTH)
+      let dh = (prop.source[1] * scale * width / 2.0) * (SPRITE_SCALE * ROAD_WIDTH)
+      let dxp = sx + (if prop.offset < 0.0 { -dw } else { 0.0 })
+      let dyp = sy - dh
+      let clip_h = Math.max(0.0, dyp + dh - segment.clip)
+      if clip_h < dh { sink = sink + Math.floor(dxp) + Math.floor(dyp) }
+    }
+
+    if segment.index == player_segment.index {
+      let scale = CAMERA_DEPTH / PLAYER_Z
+      let cy = interpolate(player_segment.p1_wy - (player_y + CAMERA_HEIGHT),
+                           player_segment.p2_wy - (player_y + CAMERA_HEIGHT), player_percent)
+      let dyp = (height / 2.0) - (scale * cy * height / 2.0)
+      sink = sink + Math.floor(dyp)
+    }
+
+    n = n - 1
+  }
+}
+
+# --- benchmark -------------------------------------------------------------
+let bench = fn (w, h, dd, frames) {
+  width = w
+  height = h
+  draw_distance = dd
+  position = 0.0
+  speed = MAX_SPEED / 2.0
+  player_x = 0.0
+
+  # warm up: two frames so the JIT has compiled and the caches are hot
+  update(STEP); render()
+  update(STEP); render()
+
+  let t_update_start = Time.monotonic()
+  for i in 0..frames {
+    key_left = (i / 20) % 2 == 0
+    key_right = !key_left
+    update(STEP)
+  }
+  let t_update = Time.monotonic() - t_update_start
+
+  let t_render_start = Time.monotonic()
+  for _ in 0..frames {
+    render()
+  }
+  let t_render = Time.monotonic() - t_render_start
+
+  {
+    update_ms: t_update * 1000.0 / frames,
+    render_ms: t_render * 1000.0 / frames,
+  }
+}
+
+let pad = fn (s, n) {
+  mut out = to_string(s)
+  while out.size() < n { out = " " + out }
+  out
+}
+let ms = fn (v) { pad("{v:.2f}", 8) }
+
+Random.seed(1)
+let t_build = Time.monotonic()
+reset_road()
+println("track: {segments.size()} segments, {cars.size()} cars, " +
+        "build {(Time.monotonic() - t_build) * 1000.0:.0f} ms")
+println("")
+println("     res    dd  update/f  render/f   total/f       fps")
+
+let frames = 60
+for res in [[1024, 768], [640, 480], [480, 360]] {
+  for dd in [300, 200, 100] {
+    let r = bench(res[0], res[1], dd, frames)
+    let total = r.update_ms + r.render_ms
+    println(pad("{res[0]}x{res[1]}", 8) + pad(dd, 6) + ms(r.update_ms) +
+            ms(r.render_ms) + ms(total) + pad("{1000.0 / total:.1f}", 10))
+  }
+}
+println("")
+println("(sink {sink})")

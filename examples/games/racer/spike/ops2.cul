@@ -1,0 +1,36 @@
+# Narrow down the 880 ns/iter baseline: closure vs top level, for vs while.
+let N = 200000
+
+let t0 = Time.monotonic()
+mut s = 0.0
+mut i = 0
+while i < N { s = s + 1.0; i = i + 1 }
+println("top-level while    {(Time.monotonic() - t0) * 1e9 / N:8.1f} ns/iter  s={s}")
+
+let t1 = Time.monotonic()
+mut s2 = 0.0
+for _ in 0..N { s2 = s2 + 1.0 }
+println("top-level for      {(Time.monotonic() - t1) * 1e9 / N:8.1f} ns/iter  s={s2}")
+
+let in_fn = fn () {
+  let t = Time.monotonic()
+  mut a = 0.0
+  mut j = 0
+  while j < N { a = a + 1.0; j = j + 1 }
+  println("fn-local while     {(Time.monotonic() - t) * 1e9 / N:8.1f} ns/iter  s={a}")
+}
+in_fn()
+
+let in_fn_for = fn () {
+  let t = Time.monotonic()
+  mut a = 0.0
+  for _ in 0..N { a = a + 1.0 }
+  println("fn-local for       {(Time.monotonic() - t) * 1e9 / N:8.1f} ns/iter  s={a}")
+}
+in_fn_for()
+
+# integer, not float
+let t2 = Time.monotonic()
+mut n = 0
+for _ in 0..N { n = n + 1 }
+println("top-level for int  {(Time.monotonic() - t2) * 1e9 / N:8.1f} ns/iter  s={n}")
