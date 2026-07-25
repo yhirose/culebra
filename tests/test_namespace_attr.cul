@@ -3,7 +3,9 @@
 // A builtin namespace (IO, FS, Sys, ...) has a closed member set: reading a
 // member it doesn't have raises AttributeError at the access site — naming the
 // member — instead of silently yielding nil and failing later at the call.
-// Plain dicts keep the permissive "missing key is nil" semantics. Interp and
+// The culebra-source namespaces (Time, Regex, ...) are closed on the same
+// terms, so the C++/culebra split behind them stays invisible. Plain dicts keep
+// the permissive "missing key is nil" semantics, and so do classes. Interp and
 // JIT behave identically (see tests/jit_error_pos_test.sh for the position).
 
 // --- A5: unknown namespace member raises AttributeError ---
@@ -23,11 +25,38 @@ let mut probed = false
 try { IO.read_all() } catch e { probed = (e.kind == "AttributeError") }
 assert_true(probed)
 
+// --- The culebra-source namespaces are closed too ---
+// Time/Term/Canvas/Args/Regex/Log/Desktop/__Eff come from src/preambles/*.cul,
+// so they are plain object literals rather than C++-built namespace objects.
+// They are tagged where they are built (interp: resolve_from_lazy, JIT:
+// _jit_namespace_get_or_build) so a typo raises here just like IO's does —
+// the split used to be invisible to callers and yielded nil on this side.
+// Naming a module here splices it into the JIT entry module (seconds of
+// compile time each), so the per-module cases live in that module's own test;
+// Time and Log are the cheap two and cover the shared path.
+assert_throws("AttributeError", fn() { Time.time() })     // Python name, absent
+assert_throws("AttributeError", fn() { Log.warning("x") })
+
+// The marker travels with the value here as well.
+let t = Time
+assert_throws("AttributeError", fn() { t.typo })
+
+// A miss no longer escapes as nil to fail somewhere else: reading the bad name
+// raises at the read, not inside whatever consumes the nil.
+fn deadline(now) { now + 60 }
+assert_throws("AttributeError", fn() { deadline(Time.time) })
+
+// (`Path` is a class rather than a namespace, so it keeps the permissive rule;
+// that exclusion is pinned in tests/test_path.cul, which already splices it.)
+
 // --- Real members and dict builtins still resolve on a namespace ---
 assert_true(IO.keys().size() > 0)            // dict builtin over a namespace
 assert_true(IO.has("print"))                 // dict builtin
 assert_true(FS.exists("tests/test_namespace_attr.cul"))
 assert_true(Math.pi > 3.14 && Math.pi < 3.15)
+assert_eq(Time.seconds(2).seconds(), 2.0)    // lazy namespace, real member
+assert_true(Time.keys().size() > 0)          // dict builtin over a lazy one
+assert_true(Time.has("now"))
 
 // --- Plain dicts are UNCHANGED: a missing key reads as nil ---
 let d = {a: 1}

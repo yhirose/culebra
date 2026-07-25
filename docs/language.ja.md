@@ -2794,7 +2794,7 @@ shutdown パターン）は、`Signal.notify` でチャネルを登録します�
 | `KeyError` | Dict の存在しないキー subscript；Object の存在しないキー subscript | はい |
 | `IndexError` | Array / String / Tensor の範囲外 index；Tensor slice 範囲外；Tensor reduction axis 範囲外 | はい |
 | `ValueError` | Destructure pattern mismatch；Tensor の shape / dtype 不一致；`[].min()` 等空コレクションへの reduce；不正な数値文字列；JSON parse 失敗 | はい |
-| `AttributeError` | compound 代入（`o.x += ...`）で `x` が存在しない | はい |
+| `AttributeError` | compound 代入（`o.x += ...`）で `x` が存在しない；組み込み名前空間が持たないメンバーの読み取り（名前空間は閉じている — クラスやプレーンな dict は `nil` のまま） | はい |
 | `ArityError` | 必須引数の欠如；positional の過不足；class new の arity 不一致 | はい |
 | `DispatchError` | 多重ディスパッチ（§20）でマッチなし、または specificity 同点 | はい |
 | `AssertionError` | matcher の失敗 (`assert_true` / `assert_eq` 等) もしくはユーザ `throw {kind: "AssertionError", ...}`。 比較系 matcher は両辺を message に含めます | はい |

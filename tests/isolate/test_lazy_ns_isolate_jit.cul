@@ -34,4 +34,12 @@ let outs = Parallel.map([0, 1, 2, 3], fn (i) {
 })
 assert_eq(outs.sum(), 18)
 
+# The child rebuilds the module on its own Runtime, so it must re-apply the
+# closed-namespace marker too — otherwise an unknown member would read as nil
+# inside an isolate while raising on the parent.
+let closed = Isolate.spawn(fn () {
+  try { Time.typo; "no throw" } catch e { e.kind }
+})
+assert_eq(closed.join(), "AttributeError")
+
 inspect("lazy-ns isolate OK")

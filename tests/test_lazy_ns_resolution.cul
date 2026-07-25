@@ -41,4 +41,11 @@ assert_eq(Regex.compile("a").replace_all("aaa", "b"), "bbb")
 let w = "ab"
 assert_eq((re"^${w}c$").test("abc"), true)
 
+# --- A resolved module is closed, like the C++ namespaces ---
+# The marker is applied where the module is built, so it has to come out of
+# both resolution paths this file covers: the interp's lazy binder and the
+# JIT's per-Runtime builder thunk.
+assert_throws("AttributeError", fn () { Regex.typo })
+assert_true(Regex.has("Regex"))          # the class the namespace holds
+
 inspect("lazy-ns resolution OK")

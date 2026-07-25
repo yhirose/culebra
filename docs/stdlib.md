@@ -37,7 +37,9 @@ Conventions used below:
   removed API into an immediate, catchable error instead of a confusing
   failure at a later call. (Plain dicts keep the permissive rule — a missing
   key reads as `nil`.) The dict builtins `keys`/`values`/`has`/`get`/`size`
-  still work on a namespace.
+  still work on a namespace. `Path` is the one exception: it is a class, not
+  a namespace, so a missing property reads as `nil` the way it does on any
+  other class.
 
 ## Index
 

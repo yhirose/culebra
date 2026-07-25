@@ -285,6 +285,16 @@ emit されていました。IR は1段あたり約 6.4 倍に増え、4重ネ�
 としてのモジュール名では引き込まれません。1モジュールあたり JIT コンパイ
 ル時間で約1秒かかるので、この違いは机上の話ではありません。
 
+モジュールが返すのはただのオブジェクトリテラルなので、それ自体は名前空間
+マーカーを持ちません。各 backend がモジュールを構築する箇所でマーカーを立
+てます — インタプリタは `Environment::resolve_from_lazy`、JIT/AOT は
+`_jit_namespace_get_or_build` (子 isolate も同じ関数で再構築します)。両者
+とも `lazy_namespace_static_name` (shared.h) を参照するので経路がドリフト
+することはなく、このマーカーによって未定義メンバーの読み取りは C++ 製名前
+空間と同じ `AttributeError` になります。`Path` が意図的にこのリストに無い
+のは、そのモジュールが返すのがクラスであり、クラスのプロパティ miss は
+`nil` を返すためです。
+
 インタプリタと異なり、JIT が生成するコードは heap 値 (Object、
 Array、Func、Set、Tensor、Cell、String) を `shared_ptr` ではなく、手書
 きで emit した retain/release IR を通じて管理します。その規律 — 所有

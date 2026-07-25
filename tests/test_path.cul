@@ -5,6 +5,11 @@
 // (or String for components). Tested on interp, JIT, and AOT via `just
 // test`; identical stdout (asserts are silent on success).
 
+// Unlike the stdlib namespaces, `Path` is a class, so a missing property reads
+// as nil rather than raising AttributeError — the same rule user classes get.
+// Pinned here so the exclusion from the closed-namespace list stays deliberate.
+assert_eq(Path.typo, nil)
+
 // --- construction / display ---
 let p = Path.new("/home/user/project")
 assert_eq("{p}", "/home/user/project")          // __str__ yields raw path

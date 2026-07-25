@@ -10763,6 +10763,18 @@ inline bool interpret(const std::shared_ptr<peg::Ast>& ast,
   return false;
 }
 
+// Tag a just-resolved culebra-source module (Time/Regex/Term/...) as a closed
+// namespace so an unknown member raises AttributeError instead of reading as
+// nil, the way ns_init tags the C++ ones in stdlib_interp.h. The name list
+// lives in shared.h.
+inline void tag_lazy_namespace(std::string_view name, Value& val) {
+  const char* ns = lazy_namespace_static_name(name);
+  if (!ns || val.type != Value::Object) return;
+  auto& o = val.to_object();
+  o.is_namespace = true;
+  o.ns_name = ns;
+}
+
 // Resolve a lazy-registered module: parse + interpret the source against
 // this env so the placeholder binding is replaced by the real value. The
 // pending entry is removed before evaluation to short-circuit re-entry
@@ -10778,6 +10790,9 @@ inline void Environment::resolve_from_lazy(
   if (auto it = dictionary.find(name); it != dictionary.end()) {
     if (it->second.val.type != Value::Nil) {
       lazy_pending.erase(std::string(name));
+      // Group-bound sibling: matchers bind functions today, but tag in case a
+      // group ever binds a namespace.
+      tag_lazy_namespace(name, it->second.val);
       return;
     }
   }
@@ -10801,6 +10816,10 @@ inline void Environment::resolve_from_lazy(
     for (auto& m : eval_msgs) std::fprintf(stderr, "  %s", m.c_str());
     std::abort();
   }
+  // The module's `let <name> = ...` has overwritten the placeholder; tag it
+  // before `get` hands the value out, so no untagged copy can escape.
+  if (auto it = dictionary.find(name); it != dictionary.end())
+    tag_lazy_namespace(name, it->second.val);
 }
 
 // --- Cycle collector implementation ---

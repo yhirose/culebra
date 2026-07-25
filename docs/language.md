@@ -2984,7 +2984,7 @@ AOT builds (unless noted).
 | `KeyError` | Dict subscript on absent key; Object subscript on absent key. | yes |
 | `IndexError` | Array / String / Tensor index out of range; Tensor slice out of bounds; Tensor reduction axis out of range. | yes |
 | `ValueError` | Destructure pattern mismatch (`[a, b] = ...` shape mismatch); Tensor shape / dtype mismatch; `[].min()` or other empty-collection reductions; numeric conversion of malformed string; JSON parse failure. | yes |
-| `AttributeError` | Compound assignment (`o.x += ...`) on a missing property. | yes |
+| `AttributeError` | Compound assignment (`o.x += ...`) on a missing property; reading a member a builtin namespace doesn't have (namespaces are closed — a class or plain dict still reads `nil`). | yes |
 | `ArityError` | Call missing a required argument; too few or too many positional args; class instantiation arity mismatch. | yes |
 | `DispatchError` | Multimethod call with no matching method or with ambiguous specificity tie (§20). | yes |
 | `AssertionError` | Matcher failure (`assert_true` / `assert_eq` / etc.) or user `throw {kind: "AssertionError", ...}`. Message names both operands for comparison matchers. | yes |

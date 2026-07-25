@@ -138,5 +138,15 @@ check_same "ns array-method name"     'IO.push(1)'
 check_same "ns via bound value"       'let x = IO
 x.read_all()'
 
+# Same for the culebra-source namespaces (src/preambles/*.cul). These are built
+# by a different path on each backend — the interp's lazy binder vs the JIT's
+# builder thunk — so the position agreement is worth pinning separately. One
+# module (the cheapest) covers it: naming another only re-splices a second
+# preamble into the JIT entry module.
+check_same "lazy ns missing call"     'Time.time()'
+check_same "lazy ns missing bare"     'let x = Time.typo'
+check_same "lazy ns via bound value"  'let x = Time
+x.typo'
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

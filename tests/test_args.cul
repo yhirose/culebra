@@ -138,3 +138,8 @@ assert_true(help.contains("--help"))
 let h = try { Args.try_parse(["--help"], spec) } catch e { e }
 assert_eq(h.kind, "ArgParseHelp")
 assert_true(h.help.contains("Usage: demo"))
+
+# --- Closed namespace: an unknown member raises instead of reading as nil.
+# Lives here rather than in test_namespace_attr.cul, which would have to splice
+# this whole module into the JIT entry module to say it.
+assert_throws("AttributeError", fn() { Args.typo })

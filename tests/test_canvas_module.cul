@@ -65,4 +65,9 @@ Canvas.tone(440, 8, 100, Canvas.PULSE)
 let m = Canvas.mouse()
 assert_eq(m.x, 0)
 
+// Closed like the C++ namespaces: an unknown member raises instead of reading
+// as nil. Lives here rather than in test_namespace_attr.cul, which would have
+// to splice this whole module into the JIT entry module to say it.
+assert_throws("AttributeError", fn() { Canvas.typo })
+
 print("canvas module ok\n")

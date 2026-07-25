@@ -88,6 +88,22 @@ inline bool is_object_builtin_method_name(std::string_view name) {
   return kNames.count(name) > 0;
 }
 
+// The culebra-source stdlib modules (src/preambles/*.cul) whose public binding
+// is a namespace object, so their unknown members raise like a C++ namespace's
+// instead of reading as nil. `Path` is absent on purpose: its module returns a
+// class, and class property misses stay nil (user classes included). `replace`
+// and the matcher family bind bare functions, not objects.
+//
+// Returns the module's static name, which the tagging sites keep as
+// ObjectValue::ns_name / JitObject::ns_name for the error message.
+inline const char* lazy_namespace_static_name(std::string_view name) {
+  static constexpr const char* kNames[] = {"Time",  "Term", "Canvas",  "Args",
+                                           "Regex", "Log",  "Desktop", "__Eff"};
+  for (const char* n : kNames)
+    if (name == n) return n;
+  return nullptr;
+}
+
 // Transparent hash/eq for std::string-keyed unordered_map that allows
 // std::string_view lookups without constructing a temporary std::string
 // on every find (C++20 heterogeneous lookup needs is_transparent on

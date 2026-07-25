@@ -288,6 +288,16 @@ set, which makes the match name-exact: a module's name in a comment, or
 inside a longer identifier, does not pull it in. Each module costs roughly
 a second of JIT compile time, so the distinction is not academic.
 
+The object a module returns is a plain object literal, so it carries no
+namespace marker of its own; each backend stamps one on where it builds the
+module — `Environment::resolve_from_lazy` for the interpreter,
+`_jit_namespace_get_or_build` for the JIT and AOT (child isolates rebuild
+through the same function). Both consult `lazy_namespace_static_name`
+(shared.h) so the two paths cannot drift, and the marker makes unknown-member
+reads raise the same `AttributeError` a C++ namespace's do. `Path` is absent
+from that list on purpose: its module returns a class, and class property
+misses read as `nil`.
+
 Unlike the interpreter, JIT-generated code manages heap values (Object,
 Array, Func, Set, Tensor, Cell, String) through hand-emitted retain/
 release IR rather than `shared_ptr`. That discipline — how ownership is

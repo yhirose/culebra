@@ -7203,6 +7203,13 @@ inline JitObject* _jit_namespace_get_or_build(const std::string& name) {
       return nullptr;  // a builder must return its namespace Object
     }
     auto* obj = reinterpret_cast<JitObject*>(r.data);
+    // Tag it as a closed namespace like the native path below does. Every
+    // reference (entry module, closure, child isolate) resolves through here,
+    // so one write per Runtime covers them all.
+    if (const char* ns = culebra::lazy_namespace_static_name(name)) {
+      obj->is_namespace = true;
+      obj->ns_name = ns;  // static storage, outlives every Runtime
+    }
     table.emplace(name, obj);
     _gc_heap().pin(obj);
     return obj;
