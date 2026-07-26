@@ -180,6 +180,12 @@ static void prune_stale_cache_dirs(const std::filesystem::path& current) {
        it.increment(ec)) {
     if (ec) return;
     if (!it->is_directory(ec)) continue;
+    // The build-time SDL/raylib statics cache (CMake's CULEBRA_DEPS_CACHE)
+    // shares this root by default. It is keyed and bounded on its own terms
+    // and is NOT a fingerprint sibling — pruning it silently breaks every
+    // AOT link that force-loads a windowed feature archive until the ~3.5min
+    // deps build is redone.
+    if (it->path().filename() == "deps") continue;
     auto t = std::filesystem::last_write_time(it->path(), ec);
     if (ec) continue;
     dirs.emplace_back(t, it->path());
