@@ -24,6 +24,7 @@ Value shared_val_make_iter(const Value& view);
 #include <charconv>
 #include <cmath>
 #include <deque>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
