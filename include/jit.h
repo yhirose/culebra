@@ -4950,10 +4950,12 @@ struct JIT {
     return own(make_set(setPtr));
   }
 
-  // Object property bind. The runtime well-known check (drop/iter/
-  // next must be 0-arg Function) is emitted only when the literal
-  // name is one of the three — keeping the hot path for ordinary
-  // literal properties free of any name comparison at runtime.
+  // Object property bind. A well-known literal name (drop/iter/
+  // has_next/next) bypasses the IC and calls the plain runtime setter,
+  // whose chokepoint runs the contract check in the interp's order
+  // (immutable gate first) and registers `drop` binds on the owned
+  // stack — keeping the hot path for ordinary literal properties free
+  // of any name comparison at runtime.
   //
   // Inlines a per-callsite write IC: load `obj->shape` and compare
   // with the cached expected shape. Match → fast helper that knows
@@ -4967,20 +4969,23 @@ struct JIT {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto i8Ty = builder_.getInt8Ty();
     auto i64Ty = builder_.getInt64Ty();
+    auto keyPtr = get_or_create_global_str(name, ".key");
     if (is_well_known_prop(name)) {
       // The contract error carries no position of its own; publish this
       // bind's so the backfill reports at the property being bound, which
       // is where the interpreter's own throw lands. Confined to the four
       // protocol names — a plain property write pays nothing.
       emit_set_op_pos();
-      auto wkKey = get_or_create_global_str(name, ".wkkey");
       emit_call(
-          module_->getOrInsertFunction(rt::check_well_known_prop,
-                                       builder_.getVoidTy(), ptrTy,
-                                       i8Ty, i64Ty),
-          {wkKey, tag, data});
+          module_->getOrInsertFunction(
+              rt::object_set, builder_.getVoidTy(), ptrTy, ptrTy,
+              builder_.getInt1Ty(), i8Ty, i64Ty, i64Ty, i64Ty,
+              builder_.getInt1Ty()),
+          {objPtr, keyPtr, builder_.getInt1(mut), tag, data,
+           current_line_val(), current_column_val(),
+           builder_.getInt1(is_init)});
+      return;
     }
-    auto keyPtr = get_or_create_global_str(name, ".key");
 
     // IC: { void* expected, void* result, i64 offset, i8 prop_mut }.
     // PrivateLinkage so each module owns its own cache cells. Initial
@@ -5039,19 +5044,8 @@ struct JIT {
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(mergeBB);
-    // `obj->has_drop` is consulted by the destructor to decide whether
-    // to look up `drop` and call it; binding `drop` also registers the
-    // object on the owned stack (deterministic drop). With the IC split
-    // `name` is known at compile time, so emit the combined runtime
-    // call only when needed. After the merge so it doesn't fire if the
-    // slow path threw an immutable-property error (the throw skips
-    // merge via the landingpad).
-    if (name == "drop") {
-      emit_call(module_->getOrInsertFunction(rt::owned_register_drop,
-                                             builder_.getVoidTy(),
-                                             llvm::PointerType::get(ctx_, 0)),
-                {objPtr});
-    }
+    // `drop` binds never reach the IC (well-known branch above); the
+    // runtime setter registers the object on the owned stack itself.
   }
 
   // Set property `name` to an owned value: the property slot absorbs the +1.
@@ -9503,6 +9497,24 @@ struct JIT {
       method_vals.push_back(std::move(mval));
     }
 
+    // An overload set on a well-known name can't satisfy the 0-arg
+    // contract (the interp rejects the grouped dispatcher via its params
+    // check); emit the contract error so it fires when the declaration
+    // executes — the same timing as the single-method check inside
+    // build_class_meta.
+    {
+      std::set<std::string> seen, thrown;
+      for (const auto& n : method_names) {
+        if (!seen.insert(n).second && is_well_known_prop(n) &&
+            thrown.insert(n).second) {
+          emit_set_op_pos();
+          emit_call(module_->getOrInsertFunction(rt::wk_contract_error,
+                                                 builder_.getVoidTy(),
+                                                 llvm::PointerType::get(ctx_, 0)),
+                    {get_or_create_global_str(n, ".wkname")});
+        }
+      }
+    }
     // Done before the @derive append; a derived method whose name a user
     // overloads is already skipped (user_defined check in collect).
     group_method_overloads(method_names, method_vals, method_asts, class_name);
@@ -9728,14 +9740,26 @@ struct JIT {
     emit_call(module_->getOrInsertFunction(rt::mark_class,
                                            builder_.getVoidTy(), ptrTy),
               {classObj});
-    emit_object_set_owned(classObj, "new", /*mut=*/false, std::move(ctorOwned));
+    // Namespace fill goes through the raw bind (interp: `emplace`), not
+    // emit_object_set — statics named `drop` are ordinary functions, so
+    // neither the well-known contract nor the owned/drop registration
+    // applies to the class object.
+    auto emit_bind_static = [&](const std::string& name, Owned val) {
+      emit_call(
+          module_->getOrInsertFunction(rt::object_bind_static,
+                                       builder_.getVoidTy(), ptrTy, ptrTy,
+                                       builder_.getInt8Ty(),
+                                       builder_.getInt64Ty()),
+          {classObj, get_or_create_global_str(name, ".key"),
+           extract_tag(val.borrow()), extract_data(val.borrow())});
+      val.consume();  // the slot absorbs the +1
+    };
+    emit_bind_static("new", std::move(ctorOwned));
     for (size_t i = 0; i < static_vals.size(); i++) {
-      emit_object_set_owned(classObj, static_names[i], /*mut=*/false,
-                            std::move(static_vals[i]));
+      emit_bind_static(static_names[i], std::move(static_vals[i]));
     }
     for (size_t i = 0; i < static_field_vals.size(); i++) {
-      emit_object_set_owned(classObj, static_field_names[i], /*mut=*/false,
-                            std::move(static_field_vals[i]));
+      emit_bind_static(static_field_names[i], std::move(static_field_vals[i]));
     }
     // @packable: register the fixed C-ABI layout and mark the class object
     // so SharedBuffer.new can recover the class name. Registration is
@@ -9755,8 +9779,7 @@ struct JIT {
           {get_or_create_global_str(class_name, ".pkg.name"),
            get_or_create_global_str(spec, ".pkg.spec")});
       auto markerVal = make_string(emit_str_literal(class_name));
-      emit_object_set(classObj, "__packable__", /*mut=*/false,
-                      extract_tag(markerVal), extract_data(markerVal));
+      emit_bind_static("__packable__", own(markerVal));
     }
     Owned classVal = own(make_object(classObj));
 

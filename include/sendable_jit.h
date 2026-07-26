@@ -285,7 +285,12 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
         JitValue val = jit_deserialize(n.entries[k].second, ctx);
         bool mut = k < n.entry_mut.size() ? n.entry_mut[k] : true;
         if (n.entries[k].first.kind == sendable::SendNode::K::Str) {
-          o->set_or_append(n.entries[k].first.s, val, mut);
+          // Through the chokepoint, not set_or_append: mirrors the interp's
+          // `initialize` (well-known contract check + owned `drop`
+          // registration for a plain object's own slot).
+          culebra_runtime_object_set(o, n.entries[k].first.s.c_str(), mut,
+                                     val.tag, val.data, 0, 0,
+                                     /*is_init=*/true);
         } else {
           // Non-string key: rebuild the key value and store via the
           // value-key path (consumes both +1s).

@@ -87,14 +87,6 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_explicit_drop(
 
 // --- Deterministic drop: scope-exit resolution ---
 
-// Codegen helper behind the compile-time-known `obj.drop = ...` IC fast
-// path: set the gate and register on the owned stack — the same effect
-// the slow-path runtime setter has.
-extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
-culebra_runtime_owned_register_drop(JitObject* o) {
-  if (o) _jit_owned_bind_drop(o);
-}
-
 // GC backstop finalize (exactly-once backstop, PEP 442
 // style): runs once per collection, before any sweep, over the intact
 // dead set. Pin every dead struct's refcount first — a drop body that
@@ -770,7 +762,6 @@ inline constexpr auto mark_class          = "culebra_runtime_mark_class";
 inline constexpr auto explicit_drop       = "culebra_runtime_explicit_drop";
 inline constexpr auto owned_hot           = "culebra_runtime_owned_hot";
 inline constexpr auto owned_scope_exit    = "culebra_runtime_owned_scope_exit";
-inline constexpr auto owned_register_drop = "culebra_runtime_owned_register_drop";
 inline constexpr auto object_has          = "culebra_runtime_object_has";
 inline constexpr auto object_has_own_field
     = "culebra_runtime_object_has_own_field";
@@ -794,6 +785,8 @@ inline constexpr auto make_derived_method
 inline constexpr auto build_class_meta
     = "culebra_runtime_build_class_meta";
 inline constexpr auto object_set          = "culebra_runtime_object_set";
+inline constexpr auto object_bind_static  = "culebra_runtime_object_bind_static";
+inline constexpr auto wk_contract_error   = "culebra_runtime_wk_contract_error";
 inline constexpr auto object_set_fast     = "culebra_runtime_object_set_fast";
 inline constexpr auto object_set_ic       = "culebra_runtime_object_set_ic";
 inline constexpr auto object_set_any      = "culebra_runtime_object_set_any";
@@ -802,8 +795,6 @@ inline constexpr auto object_has_any      = "culebra_runtime_object_has_any";
 inline constexpr auto register_packable   = "culebra_runtime_register_packable";
 inline constexpr auto register_packable_enum =
     "culebra_runtime_register_packable_enum";
-inline constexpr auto check_well_known_prop =
-    "culebra_runtime_check_well_known_prop";
 inline constexpr auto object_size         = "culebra_runtime_object_size";
 inline constexpr auto print               = "culebra_runtime_print";
 inline constexpr auto println             = "culebra_runtime_println";

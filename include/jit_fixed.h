@@ -1553,10 +1553,23 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_build_class_meta(
     const char* const* method_names, const JitValue* method_vals,
     int64_t n_methods) {
   auto* meta = culebra_runtime_object_new();
-  for (int64_t i = 0; i < n_methods; i++) {
-    culebra_runtime_object_set(meta, method_names[i], /*mut*/ false,
-                               method_vals[i].tag, method_vals[i].data, 0,
-                               0);
+  int64_t i = 0;
+  try {
+    for (; i < n_methods; i++) {
+      culebra_runtime_object_set(meta, method_names[i], /*mut*/ false,
+                                 method_vals[i].tag, method_vals[i].data, 0,
+                                 0);
+    }
+  } catch (...) {
+    // Well-known contract error mid-build: the failing bind released its
+    // own +1; release the not-yet-bound tail and the half-built meta.
+    // Unbind drop first so the release can't fire a user `drop` on the
+    // meta (it isn't an instance; the interp's decl throw runs none).
+    for (int64_t j = i + 1; j < n_methods; j++)
+      _culebra_value_release_impl(method_vals[j].tag, method_vals[j].data);
+    _jit_owned_unbind_drop(meta);
+    _culebra_value_release_impl(TAG_OBJECT, reinterpret_cast<int64_t>(meta));
+    throw;
   }
   // The meta isn't an instance; undo the `has_drop` side-effect (and the
   // owned-stack registration) that `culebra_runtime_object_set` applied

@@ -8808,6 +8808,14 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // dispatcher's free-function path handles them.
     group_method_overloads(static_template);
 
+    // Well-known contract (see shared.h) for proto methods: build_instance
+    // bypasses `initialize`, so enforce the bind contract here at
+    // declaration time — the JIT's build_class_meta hits it via the
+    // object_set chokepoint.
+    for (const auto& [name, val] : method_template) {
+      _check_drop_contract(name, val);
+    }
+
     // Instances of a drop-having class register on the owned stack at
     // construction (the method loop below bypasses `initialize`, so the
     // registration chokepoint there doesn't see them).

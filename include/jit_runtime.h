@@ -2334,9 +2334,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_release_overflow_args(
 }
 
 // Validate the well-known-property contract (see shared.h)
-// for a freshly-bound JIT value: must be a 0-arg Function. The arg's
-// +1 is released before throwing — codegen passes ownership and
-// expects either store-into-map or release.
+// for a freshly-bound JIT value: must be a 0-arg Function. No-op for
+// ordinary names. The arg's +1 is released before throwing — callers
+// pass ownership and expect either store-into-slot or release.
 inline void _culebra_check_well_known_prop(std::string_view name,
                                            int8_t tag, int64_t data) {
   if (!culebra::is_well_known_prop(name)) return;
@@ -2349,33 +2349,48 @@ inline void _culebra_check_well_known_prop(std::string_view name,
   if (!cls || cls->arity != 0) bad();
 }
 
-// Standalone version of the well-known check for codegen to call only
-// when the property name is statically "drop" / "iter" / "next".
-// Frees the regular object_set hot path from a name comparison on
-// every property bind.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_check_well_known_prop(
-    const char* key, int8_t tag, int64_t data) {
-  _culebra_check_well_known_prop(key, tag, data);
-}
-
 // Overwrite an existing String-keyed object slot last-wins. Shared by the
 // three set paths (plain / IC fast / IC slow). is_init (object-literal
 // construction) bypasses the immutable gate and replaces the slot's mut
 // flag, like the interp's `initialize`; otherwise an immutable slot raises
 // ImmutableError. Caller owns the +1 on (tag, data); it's consumed here.
+// check_wk runs the well-known contract check between the immutable gate
+// and the store — the interp's `assign` order (ImmutableError wins, and a
+// failed check leaves the old value in place). The IC paths pass false:
+// codegen routes well-known literal names around the IC entirely.
 CULEBRA_RT_INLINE void _jit_overwrite_slot(JitObjectEntry& entry,
                                            const char* key, int8_t tag,
                                            int64_t data, bool mut, bool is_init,
-                                           int64_t line, int64_t col) {
+                                           int64_t line, int64_t col,
+                                           bool check_wk = false) {
   if (!is_init && !entry.mut) {
     _culebra_value_release_impl(tag, data);
     throw culebra::CulebraError("ImmutableError", std::format(
         "immutable property '{}'", key), line, col);
   }
+  if (check_wk) _culebra_check_well_known_prop(key, tag, data);
   _culebra_value_release_impl(entry.value.tag, entry.value.data);
   entry.value.tag = tag;
   entry.value.data = data;
   if (is_init) entry.mut = mut;
+}
+
+// Raise the well-known contract error at declaration execution time.
+// Emitted by compile_class_decl when a well-known name has an overload
+// set — the grouped dispatcher can't satisfy the 0-arg contract (the
+// interp rejects it via the dispatcher's params check).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_wk_contract_error(
+    const char* name) {
+  culebra::throw_well_known_prop_contract_error(name);
+}
+
+// Class-namespace fill (`new`, statics, static fields, markers): a plain
+// immutable append mirroring the interp's `properties->emplace`. No
+// well-known contract and no owned/drop registration — statics are a
+// namespace, not part of the instance drop/iterator protocol.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_bind_static(
+    JitObject* obj, const char* key, int8_t tag, int64_t data) {
+  obj->set_or_append(key, JitValue{tag, data}, /*mut=*/false);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(
@@ -2388,12 +2403,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(
     throw culebra::CulebraError("ImmutableError",
                                 "Shared values are immutable", line, col);
   }
+  // Runtime chokepoint for the well-known contract (see shared.h): every
+  // String-keyed bind lands here — codegen literal names, dynamic subscript
+  // keys via object_set_any, and native builders (JSON.parse etc.) — so the
+  // check can't be bypassed the way a codegen-only check could.
   auto idx = obj->find_slot(key);
   if (idx == static_cast<size_t>(-1)) {
+    _culebra_check_well_known_prop(key, tag, data);
     obj->append_slot(key, JitValue{tag, data}, mut);
   } else {
     _jit_overwrite_slot(obj->slots[idx], key, tag, data, mut, is_init, line,
-                        col);
+                        col, /*check_wk=*/true);
   }
   if (std::string_view(key) == "drop") _jit_owned_bind_drop(obj);
 }

@@ -3474,7 +3474,17 @@ defers those to its next collection; backstop-only shapes as above);
 top-level orphans go to the GC backstop on both, and top-level
 *bindings* still leak un-dropped at program exit. The well-known property contract
 (`drop`/`iter`/`has_next`/`next` must be a 0-arg `Function`) is enforced at
-assignment time on both backends.
+assignment time on both backends, on every write surface: literal
+properties, computed subscript keys (`o[k] = v`), native builders
+(`JSON.parse` etc.), values rebuilt on the receiving side of a channel
+transfer, and class declarations (a class whose method template binds a
+well-known name to a non-conforming function — wrong arity, or an
+overload set — raises `DropContractError` when the declaration runs).
+When the target slot is immutable, `ImmutableError` wins over the
+contract check, and a failed check leaves the old value in place.
+`static` members are a namespace, not part of the instance protocol:
+a static named `drop` (any arity) is an ordinary function — it is not
+contract-checked and is never auto-invoked.
 
 ---
 

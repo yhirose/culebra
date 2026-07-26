@@ -1,0 +1,98 @@
+# Conformance: well-known property contract (drop/iter/has_next/next).
+# See docs/language.md §Auto-drop and §Iteration protocol. The bind-time
+# contract (0-arg Function) must hold on every write surface, with the
+# interp's check order: immutable gate first, then the contract.
+# The difftest corpus (dimension `wkprop|`) pins backend symmetry; this
+# file pins the contract itself with expected values.
+
+# --- (1) dynamic and literal subscript keys ---
+let r1 = try { mut o = {mut x: 1}; let k = "drop"; o[k] = 42; nil } catch e { e }
+assert_eq(r1.kind, 'DropContractError')
+assert_eq(r1.message, "type error: 'drop' must be a Function taking no arguments.")
+
+let r1b = try { mut o = {mut x: 1}; o["iter"] = 42; nil } catch e { e }
+assert_eq(r1b.kind, 'DropContractError')
+
+# a conforming function through a dynamic key is accepted
+mut o1 = {mut x: 1}
+let k1 = "dro" + "p"
+o1[k1] = fn () { nil }
+assert_eq(o1.x, 1)
+
+# --- (2) native builders route through the same chokepoint ---
+let r2 = try { JSON.parse('{"drop": 42}'); nil } catch e { e }
+assert_eq(r2.kind, 'DropContractError')
+let r2b = try { JSON.parse('{"has_next": true}'); nil } catch e { e }
+assert_eq(r2b.kind, 'DropContractError')
+assert_eq(JSON.parse('{"x": 7}').x, 7)
+
+# --- (3) check order: immutable gate wins over the contract ---
+let r3 = try { let o = {drop: fn () { nil }}; o.drop = 42; nil } catch e { e }
+assert_eq(r3.kind, 'ImmutableError')
+
+# a mutable well-known slot: the contract still rejects a bad overwrite,
+# and the old value stays in place (failed check must not clobber it)
+mut log3 = []
+mut o3 = {mut drop: fn () { log3.push("old") }}
+let r3b = try { o3.drop = 42; nil } catch e { e }
+assert_eq(r3b.kind, 'DropContractError')
+o3 = nil
+assert_eq(log3, ["old"])
+
+# --- (4) class declarations enforce the contract on proto methods ---
+let r4 = try { class B4a { new() { self.x = 1 } drop(a) { a } }; nil } catch e { e }
+assert_eq(r4.kind, 'DropContractError')
+let r4b = try { class B4b { next(n) { n } }; nil } catch e { e }
+assert_eq(r4b.kind, 'DropContractError')
+# an overload set can't satisfy the 0-arg contract either
+let r4c = try { class B4c { drop() { nil } drop(a) { a } }; nil } catch e { e }
+assert_eq(r4c.kind, 'DropContractError')
+# ctor own-slot binds stay checked
+let r4d = try { class B4d { new() { self.drop = 42 } }; B4d.new(); nil } catch e { e }
+assert_eq(r4d.kind, 'DropContractError')
+
+# a legit 0-arg drop method still runs at scope exit
+mut log4 = []
+class OK4 {
+  new() { self.x = 1 }
+  drop() { log4.push("dropped") }
+}
+fn scope4() { let v = OK4.new(); nil }
+scope4()
+assert_eq(log4, ["dropped"])
+
+# --- (5) statics are a namespace: no contract, no drop protocol ---
+class S5 {
+  new() { self.x = 1 }
+  static drop(a) { a + 1 }
+}
+assert_eq(S5.drop(1), 2)
+
+# a 0-arg static drop is never auto-called (not an instance destructor)
+mut log5 = []
+fn scope5() {
+  class T5 {
+    new() { self.x = 1 }
+    static drop() { log5.push("static") }
+  }
+  let v = T5.new()
+  nil
+}
+scope5()
+assert_eq(log5, [])
+
+# --- (6) channel transfer: the receiver copy keeps the drop protocol ---
+# (captures are deep-copied on send, so observe the drops via a channel)
+let (ntx6, nrx6) = Channel.new(2)
+fn roundtrip6() {
+  let (tx, rx) = Channel.new(1)
+  tx.send({x: 1, drop: fn () { ntx6.send("dropped") }})
+  let o = rx.recv()
+  assert_eq(o.x, 1)
+  nil  # sender's copy and the received copy both drop by here
+}
+roundtrip6()
+assert_eq(nrx6.recv(), "dropped")
+assert_eq(nrx6.recv(), "dropped")
+
+IO.inspect('test_wellknown_contract OK')

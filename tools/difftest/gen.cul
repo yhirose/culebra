@@ -1772,4 +1772,43 @@ for c in selflex {
   case("selflex|" + c, c)
 }
 
+# --- Dimension: well-known property contract (drop/iter/has_next/next) ----
+# Bind-time enforcement must hold on every write surface (literal prop,
+# dynamic/literal subscript, native builder, class decl) with the interp's
+# ordering: immutable gate first, then the contract check. Statics are a
+# namespace — exempt. See shared.h is_well_known_prop.
+let wkprop = [
+  # dynamic + literal subscript keys reach the same chokepoint
+  'mut o = {mut x: 1}; let k = "drop"; try { o[k] = 42; 0 } catch e { e.kind }',
+  'mut o = {mut x: 1}; let k = "iter"; try { o[k] = 42; 0 } catch e { e.kind }',
+  'mut o = {mut x: 1}; let k = "has_next"; try { o[k] = 42; 0 } catch e { e.kind }',
+  'mut o = {mut x: 1}; let k = "next"; try { o[k] = 42; 0 } catch e { e.kind }',
+  'mut o = {mut x: 1}; try { o["drop"] = 42; 0 } catch e { e.kind }',
+  'mut o = {mut x: 1}; let k = "dro" + "p"; try { o[k] = fn () { nil }; 1 } catch e { e.kind }',
+  # native builder (JSON.parse) writes through the same chokepoint
+  'try { JSON.parse("\{\"drop\": 42}"); 0 } catch e { e.kind }',
+  'try { JSON.parse("\{\"iter\": 1, \"x\": 2}"); 0 } catch e { e.kind }',
+  'let o = JSON.parse("\{\"x\": 1}"); o.x',
+  # ordering: the immutable gate wins over the contract check
+  'let o = {drop: fn () { nil }}; try { o.drop = 42; 0 } catch e { e.kind }',
+  'mut o = {mut drop: fn () { nil }}; try { o.drop = 42; 0 } catch e { e.kind }',
+  'mut o = {mut drop: fn () { nil }}; o.drop = fn () { nil }; 1',
+  # duplicate literal key: is_init overwrite still checks the contract
+  'try { let _ = { drop: fn () { nil }, drop: 42 }; 0 } catch e { e.kind }',
+  # class decl: proto methods carry the bind contract (decl-time error)
+  'try { class Wd { new() { self.x = 1 } drop(a) { a } }; 0 } catch e { e.kind }',
+  'try { class Wn { next(n) { n } }; 0 } catch e { e.kind }',
+  'try { class Wo { drop() { nil } drop(a) { a } }; 0 } catch e { e.kind }',
+  'class Wg { new() { self.x = 1 } drop() { nil } }; Wg.new(); 1',
+  # statics are a namespace: no contract, no drop protocol
+  'class Ws { static drop(a) { a + 1 } }; Ws.drop(1)',
+  'class Wf { static next(n) { n * 2 } }; Wf.next(3)',
+  # instance own-slot binds in a ctor stay checked
+  'try { class Wc { new() { self.drop = 42 } }; Wc.new(); 0 } catch e { e.kind }',
+  'try { class Wi { new() { self.iter = 1 } }; Wi.new(); 0 } catch e { e.kind }',
+]
+for c in wkprop {
+  case("wkprop|" + c, c)
+}
+
 print(out.join("\n"))
