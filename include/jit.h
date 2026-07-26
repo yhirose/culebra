@@ -15760,17 +15760,23 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
                                             cb_ast);
           }));
     }
-    auto init = compile(*argsAst.nodes[0]).consume();
+    // The seed's +1 crosses the callback's compilation (which opens new
+    // blocks) as re-assembled {tag, data} scalars — the same §4.9
+    // scalar-crossing idiom as the inlined arm above. A raw consume()d
+    // %Value held across compile(cb_ast) aborted codegen for a heap seed
+    // with a non-inlinable callback.
+    auto initP = compile(*argsAst.nodes[0]).consume();
+    auto it_tag = extract_tag(initP);
+    auto it_data = extract_data(initP);
+    auto init = make_value(it_tag, it_data);
     // Callee-consumes: the runtime reduce owns both the seed and the callback
-    // from entry (its init_guard covers a callback-reject throw); only the
+    // from entry (its acc guard covers a callback-reject throw); only the
     // receiver-error edge — where no helper runs — releases them, via
     // hof_owned.
     llvm::Value* outTag;
     llvm::Value* outData;
     {
       auto fv = compile(cb_ast).consume();
-      auto it_tag = extract_tag(init);
-      auto it_data = extract_data(init);
       auto ft = extract_tag(fv);
       auto fd = extract_data(fv);
       llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
