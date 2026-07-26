@@ -564,7 +564,7 @@ _run-tests BACKEND:
 
     # RC-discipline ratchet (GAP3/GAP4-lite): source-level ceilings on the
     # hand-placed retain/release forms, so migration debt can only shrink and
-    # a new bare RC op fails the gate (docs/jit_ownership.md §4.7).
+    # a new bare RC op fails the gate.
     run_rc_discipline() { bash tools/check_rc_discipline.sh; }
 
     # Dispatch-tag symmetry gate: the AST tag sets handled by the interp

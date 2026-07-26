@@ -427,7 +427,7 @@ class Heap {
   // diagnostic discriminator for crashes: one that persists with collects off
   // cannot be a GC rooting/sweep problem — it is an RC over-release. This is
   // how the two reverted lazy-combinator "fixes" were shown to be refcount
-  // bugs, not rooting gaps (docs/jit_ownership.md §4.5).
+  // bugs, not rooting gaps.
   static bool never() {
     static const bool s = std::getenv("CULEBRA_GC_NEVER") != nullptr;
     return s;
@@ -716,9 +716,9 @@ class Heap {
     collect();
     // The backstop is only the reclaimer of reference CYCLES — RC frees
     // everything acyclic immediately and deterministically (now leak-free on
-    // the normal path, see docs/jit_ownership.md), so the whole-heap
-    // subtraction pass can run far less often than the per-object allocation
-    // rate. Cycles accumulate slowly, so amortise it over ~16× the live set:
+    // the normal path), so the whole-heap subtraction pass can run far less
+    // often than the per-object allocation rate. Cycles accumulate slowly,
+    // so amortise it over ~16× the live set:
     // a scalar-autograd profile spends ~19% in GC bookkeeping, and raising the
     // threshold from 2 to 16 recovers ~11% wall-clock on microgpt with the
     // heap staying bounded (RC reclaims the acyclic residue regardless). The

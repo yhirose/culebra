@@ -39,7 +39,7 @@ inline double _culebra_coerce_num(int8_t tag, int64_t data) {
 // Borrow-contract: never touches the operands' refs — each caller arms a
 // `JitUnwindRelease` over its direct-error section (after user dispatch has
 // declined), which is the sole releaser of the codegen-owned operand temps
-// on this throw (callee-cleans-on-direct-throw, docs/jit_ownership.md §6).
+// on this throw (callee-cleans-on-direct-throw).
 inline void _arith_guard_numeric(const char* op, int8_t lt, int8_t rt,
                                  int64_t line, int64_t col) {
   bool ln = (lt == TAG_LONG || lt == TAG_FLOAT);
@@ -1012,7 +1012,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_div_zero(int64_t line,
 
 // Releases its values IFF the enclosing scope exits via C++ exception unwind
 // (std::uncaught_exceptions grew since construction) — the single RAII form of
-// the callee-cleans-on-direct-throw convention (docs/jit_ownership.md §6).
+// the callee-cleans-on-direct-throw convention.
 // Arm it only over a region whose throws are all DIRECT errors: after user
 // dispatch has declined or returned (a user-dispatch throw is cleaned by the
 // callee frame + the invoker's own guard, so releasing here too would

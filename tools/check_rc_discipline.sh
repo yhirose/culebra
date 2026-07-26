@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# RC-discipline ratchet (GAP3/GAP4-lite, docs/jit_ownership.md §4.7).
+# RC-discipline ratchet (GAP3/GAP4-lite).
 #
 # Source-level gate on the ownership discipline: the hand-placed RC forms are
 # migration debt / documented carve-outs, so their COUNT may only shrink. A
 # new bare retain/release (instead of the Owned / JitOwnedVal /
 # JitUnwindRelease / ThrowGuard layer) fails this check — lower a ceiling when
-# you convert a site, never raise one without a review of docs/jit_ownership.md.
+# you convert a site, never raise one without review.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -13,16 +13,16 @@ fail=0
 ratchet() { # name actual ceiling
   if (( $2 > $3 )); then
     echo "rc-discipline FAIL: $1 = $2 (ceiling $3) — new hand-placed RC ops?" >&2
-    echo "  Use the ownership layer instead (docs/jit_ownership.md §4.2/§4.7)." >&2
+    echo "  Use the ownership layer instead." >&2
     fail=1
   fi
 }
 
 # Codegen-side bare RC emissions in jit.h (excluding the emitters' own
 # definitions and comment lines). Every remaining site is a documented
-# carve-out class (jit_ownership.md §6) or ownership-layer infrastructure
-# (the §4.8 unwind-temp pool release in release_unwind_temps, like the
-# cleanup-pad loops); the set must not grow.
+# carve-out class or ownership-layer infrastructure (the unwind-temp pool
+# release in release_unwind_temps, like the cleanup-pad loops); the set must
+# not grow.
 rel=$(grep "emit_value_release(" include/jit.h \
       | grep -v "void emit_value_release" | grep -vc "^[[:space:]]*//")
 ret=$(grep "emit_value_retain(" include/jit.h \
@@ -34,7 +34,7 @@ ratchet "bare emit_value_release sites (jit.h)" "$rel" 49
 # 29 includes the ctor-overload shared-meta multi-capture retain in
 # compile_class_decl: one class meta fans out into N `new` overload closures,
 # each capture needing its own +1 (a genuine fan-out, not a throw-safety
-# carve-out). Reviewed against jit_ownership.md §4.2/§4.7.
+# carve-out).
 ratchet "bare emit_value_retain sites (jit.h)" "$ret" 29
 # The borrow -> +1 seam funnels its retain through one call, so its call sites
 # are invisible to the grep above. Count them here on their own ceiling —

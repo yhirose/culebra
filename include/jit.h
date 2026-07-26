@@ -453,7 +453,7 @@ struct JIT {
   // finish_construction_cleanup. The value is passed to the cleanup through
   // this alloca (loaded there) rather than as an SSA value live across the
   // invoke unwind edges — a call-result SSA live into a landingpad crashes
-  // SDAG-O0's register coalescer. See docs/jit_ownership.md §4.3.
+  // SDAG-O0's register coalescer.
   llvm::Value* make_build_guard(llvm::Value* containerVal) {
     auto a = make_pending_guard();
     builder_.CreateStore(containerVal, a);
@@ -549,7 +549,7 @@ struct JIT {
   // frame level, not here) — before re-raising to `outerLpad`. This is what
   // makes deterministic `drop` and RC release fire on `throw` exactly as they
   // do on fall-through / early `return`, closing the JIT's last exception-path
-  // leak (docs/jit_ownership.md §4.3).
+  // leak.
   //
   // Gated on can-throw via pred_empty: a region whose body has no throwing
   // sub-call leaves `cleanupBB` predecessor-less, so it is erased — zero
@@ -2295,7 +2295,7 @@ struct JIT {
     emit_value_release(old);
   }
 
-  // Block-pinned raw `+1` (docs/jit_ownership.md §4.9): the checked form of
+  // Block-pinned raw `+1`: the checked form of
   // a consumed value. Once a `+1` leaves its Owned handle it is invisible to
   // every ownership layer, so it may only be used inside the basic block
   // where it was consumed — emit_call turns every may-throw call into an
@@ -2342,8 +2342,8 @@ struct JIT {
     // Index into jit_->live_owned_ while this handle owns a heap-capable
     // value; SIZE_MAX when unregistered (empty, consumed, constant scalar).
     // The registry is what lets emit_call spill every live +1 across a
-    // may-throw call (the automatic unwind-temp window, docs/jit_ownership.md
-    // §4.8) — registration is pure codegen bookkeeping and emits no IR.
+    // may-throw call (the automatic unwind-temp window) — registration is
+    // pure codegen bookkeeping and emits no IR.
     size_t live_idx_ = SIZE_MAX;
 
     Owned() = default;
@@ -2448,8 +2448,7 @@ struct JIT {
     auto* cur = builder_.GetInsertBlock();
     fprintf(stderr,
             "[rc-pin] %s at %zu:%zu (fn %s: %s -> %s) — hold it in an Owned "
-            "or a scope slot across the boundary (docs/jit_ownership.md "
-            "§4.9)\n",
+            "or a scope slot across the boundary\n",
             what, current_line_, current_column_,
             cur ? cur->getParent()->getName().str().c_str() : "?",
             pin ? pin->getName().str().c_str() : "?",
@@ -2511,7 +2510,7 @@ struct JIT {
     ThrowGuard& operator=(const ThrowGuard&) = delete;
   };
 
-  // --- The automatic unwind-temp window (docs/jit_ownership.md §4.8) ---
+  // --- The automatic unwind-temp window ---
   //
   // A codegen-owned `+1` held in an `Owned` is released by a C++ destructor,
   // which the runtime's LLVM-level throw cannot run — historically every
@@ -2722,7 +2721,7 @@ struct JIT {
   // straight out of a container, a receiver it only borrows) and takes
   // ownership of the result, so whatever slot receives it releases
   // symmetrically. One named seam for the conversion instead of a bare retain
-  // at each site (docs/jit_ownership.md §4.2).
+  // at each site.
   llvm::Value* emit_borrow_to_owned(llvm::Value* val) {
     emit_value_retain(val);
     return val;
@@ -4483,8 +4482,8 @@ struct JIT {
   // `+1` handle: consumers either hand the ref on (`.consume()` — a slot
   // store, a raw call emitter), read it non-destructively (`.borrow()`),
   // or let the handle's dtor release it; a double hand-off asserts at
-  // codegen time (§5, docs/jit_ownership.md). `nullptr` stays the "token
-  // handled by parent" sentinel (the handle is inert).
+  // codegen time. `nullptr` stays the "token handled by parent" sentinel
+  // (the handle is inert).
   //
   // interp/JIT symmetry table: this switch and the interpreter's
   // _eval_dispatch are parallel walkers over the same AST, and their case
@@ -4762,7 +4761,7 @@ struct JIT {
     // Route any throw from a size/element expression to a cleanup that releases
     // the partial array (and the elements already pushed into it), so a
     // container literal cannot leak when a later element throws. The block is
-    // erased if nothing inside can throw. See docs/jit_ownership.md §4.3.
+    // erased if nothing inside can throw.
     auto buildGuard = make_build_guard(make_array(arrPtr));
     auto cleanupBB = llvm::BasicBlock::Create(ctx_, "arr.build.cleanup", fn);
     auto savedLpad = current_lpad_;
@@ -6150,8 +6149,8 @@ struct JIT {
     // would triple-free (ASan-confirmed). A *builtin*-operator TypeError
     // (`1 + "a"`) does strand the operand, but closing that needs the operator
     // helpers to release on their direct-throw path (uniform callee-cleans),
-    // not a codegen guard that can't tell the two dispatch paths apart. See
-    // docs/jit_ownership.md §4.3 (operator throw-path, deferred).
+    // not a codegen guard that can't tell the two dispatch paths apart. That
+    // operator throw-path is deferred.
     merge.add_incoming(emit_value_call(
         module_->getOrInsertFunction(rt_name, valueType_,
                                      builder_.getInt8Ty(),
@@ -11090,7 +11089,7 @@ struct JIT {
           // here — where the rolling handle proves we own the +1 — rather than
           // inside compile_function_call_raw is deliberate: that raw helper is
           // also reached with a +0-borrowed method value, which a guard would
-          // double-free (docs/jit_ownership.md §4.3).
+          // double-free.
           Owned result;
           {
             ThrowGuard guard(this, {callee.borrow()});
@@ -11677,7 +11676,7 @@ struct JIT {
       // `"ab".split([9,9])`. Guard it: the throw-cleanup releases it on the
       // unwind edge, mutually exclusive with the ok branch's normal release, so
       // exactly once. The receiver branch above is never guarded here — its `+1`
-      // is covered by the caller's builtin-arm ThrowGuard (jit_ownership.md §4.3).
+      // is covered by the caller's builtin-arm ThrowGuard.
       ThrowGuard arg_guard(this, {val});
       emit_type_check(val, "StringLike",
                       std::string("parameter '") + arg_param + "'", arg_ast);
@@ -11962,7 +11961,7 @@ struct JIT {
       // Function/Array member). On that edge neither `arg` nor `receiver` is
       // released by the straight-line code below, so guard both — mutually
       // exclusive with the normal releases (remove) / the add's absorb of the
-      // arg `+1`, so each frees exactly once (jit_ownership.md §4.3).
+      // arg `+1`, so each frees exactly once.
       ThrowGuard set_guard(this, {arg, receiver});
       setR = emit_call(
           module_->getOrInsertFunction(
@@ -12016,7 +12015,7 @@ struct JIT {
       // BEFORE consuming — so on that edge both the key `arg` and this frame's
       // `receiver` strand (neither the helper's consume nor the release below
       // runs). Guard both; mutually exclusive with the normal consume/release,
-      // so each frees exactly once (jit_ownership.md §4.3).
+      // so each frees exactly once.
       {
         ThrowGuard rm_guard(this, {arg, receiver});
         emit_call(
@@ -12256,8 +12255,7 @@ struct JIT {
   // under a receiver cleanup pad (they sit inside compile_builtin_method, under
   // the builtin-arm guard), so a second guard here would double-free; they pass
   // false. The subsequent compile_function_call consumes `receiver` and its
-  // callee frame cleans `self` on throw, so it is never guarded either way
-  // (docs/jit_ownership.md §4.3).
+  // callee frame cleans `self` on throw, so it is never guarded either way.
   Owned emit_unresolved_builtin_method(const std::string& method,
                                               const peg::Ast& argsAst,
                                               llvm::Value* receiver,
@@ -12275,7 +12273,7 @@ struct JIT {
     // A method miss here (`{a:1}.map(f)`, or a method the receiver type lacks
     // whose name isn't in the arity table so the check above fell through —
     // `[1,2,3].to_array(9)`) lowers to `call nil`. Whether this throw edge must
-    // release the receiver depends on the caller (jit_ownership.md §4.3):
+    // release the receiver depends on the caller:
     //   - guard_arity_receiver=true (compile_user_method_over_builtin's
     //     fallthrough): the builtin-arm guard already closed and the arity guard
     //     above wraps only the arity check, so nothing else frees the receiver on
@@ -12373,7 +12371,7 @@ struct JIT {
       // `.map(f).collect()` whose callback throws mid-pull — skips that
       // straight-line release and strands the receiver (an iterator wrapper
       // whose capture cells transitively hold the whole chain). Guard the
-      // borrow on the unwind edge (docs/jit_ownership.md §4.3). Safe *here*,
+      // borrow on the unwind edge. Safe *here*,
       // unlike the general call chain: a builtin never hands `receiver` to a
       // callee frame, so this is the sole throw-path releaser — the user arm
       // (compile_function_call) is left untouched because its callee frame
@@ -12674,7 +12672,7 @@ struct JIT {
       // receiver on this edge via its own machinery but strands the callback arg,
       // so it opts into args-only — releasing its receiver too would double-free.
       // Most callers pass a nil/borrowed `selfVal` and opt into neither. `selfVal`
-      // may be null (releasing nil is a no-op). See docs/jit_ownership.md §4.3.
+      // may be null (releasing nil is a no-op).
       if (own_self_on_error && selfVal) emit_value_release(selfVal);
       if (own_args_on_error)
         for (auto* a : userArgs) emit_value_release(a);
@@ -14180,7 +14178,7 @@ inline llvm::Value* JIT::emit_inlined_array_map(
       emit_call(module_->getFunction(rt::array_new_reserved), {size});
   // Guard the `out` accumulator on the throw edge: a throwing inline map body
   // would strand it (and the results pushed so far) — a codegen temp, not a
-  // scope slot (docs/jit_ownership.md §4.3); pred-empty ⇒ erased.
+  // scope slot; pred-empty ⇒ erased.
   auto cleanupBB = llvm::BasicBlock::Create(ctx_, "imap.cleanup", fn);
   auto outGuard = make_build_guard(make_array(out));
   auto savedLpad = current_lpad_;
@@ -14209,7 +14207,7 @@ inline llvm::Value* JIT::emit_inlined_array_filter(
   auto fn = builder_.GetInsertBlock()->getParent();
   auto out = emit_call(module_->getFunction(rt::array_new), {});
   // Guard the `out` accumulator on the throw edge (a throwing predicate would
-  // strand it — a codegen temp, not a scope slot; docs/jit_ownership.md §4.3).
+  // strand it — a codegen temp, not a scope slot).
   auto cleanupBB = BasicBlock::Create(ctx_, "ifil.cleanup", fn);
   auto outGuard = make_build_guard(make_array(out));
   auto savedLpad = current_lpad_;
@@ -14536,7 +14534,7 @@ inline llvm::Value* JIT::emit_inlined_iter_map_collect(
   // unwind edge — the `out` accumulator (plus the results pushed so far) and the
   // borrowed iterator receiver (whose caller drops it only on the normal path,
   // at try_fuse's emit_value_release). Neither is a scope slot, so guard both on
-  // a per-region cleanup pad (docs/jit_ownership.md §4.3); pred-empty ⇒ erased,
+  // a per-region cleanup pad; pred-empty ⇒ erased,
   // so a non-throwing body pays nothing. The normal-path receiver release and
   // this throw-path release are mutually exclusive (cleanupBB is only entered on
   // the unwind edge), so the +1 is dropped exactly once on each path.
@@ -14623,8 +14621,8 @@ inline llvm::Value* JIT::emit_inlined_range_map_collect(
       module_->getOrInsertFunction(rt::array_new, ptrTy), {}, "rmc.out");
   // Guard the `out` accumulator on the throw edge (a throwing map body would
   // otherwise strand it — a codegen temp, not a scope slot). No receiver to
-  // guard here: the range source is an i64 counter, not a heap value. See
-  // docs/jit_ownership.md §4.3; pred-empty ⇒ erased.
+  // guard here: the range source is an i64 counter, not a heap value.
+  // pred-empty ⇒ erased.
   auto cleanupBB = llvm::BasicBlock::Create(ctx_, "rmc.cleanup", fn);
   auto outGuard = make_build_guard(make_array(outPtr));
   auto savedLpad = current_lpad_;
@@ -15152,7 +15150,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     {
       // `other` is `+1`-owned and dropped on the normal path below; guard it so
       // the type check's throw (`{1,2}.union(|x| x)`) releases it on the unwind
-      // edge instead of stranding (same as `join`, jit_ownership.md §4.3).
+      // edge instead of stranding (same as `join`).
       ThrowGuard other_guard(this, {other.borrow()});
       emit_type_check(other.borrow(), "Set", "parameter 'other'",
                       argsAst.nodes[0].get());
@@ -15262,7 +15260,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
       // A valid slice takes Long bounds (scalars, nothing to free), but a
       // non-Long argument (`[1,2,3].slice(0, |a,b| a+b)`) is a heap `+1` the
       // type check strands on its throw edge. Guard both across both checks;
-      // on the valid path they're scalars and this DCEs (jit_ownership.md §4.3).
+      // on the valid path they're scalars and this DCEs.
       ThrowGuard bounds_guard(this, {startO.borrow(), endO.borrow()});
       emit_type_check(startO.borrow(), "Long", "parameter 'start'",
                       argsAst.nodes[0].get());
@@ -15349,7 +15347,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     {
       // array_contains hashes the value (`{... }.contains(|x| x)` → "unhashable
       // type") and can throw; guard the borrowed `+1` so it isn't stranded on
-      // that edge, mutually exclusive with the drop below (jit_ownership.md §4.3).
+      // that edge, mutually exclusive with the drop below.
       ThrowGuard v_guard(this, {v.borrow()});
       arrFound = emit_call(
           module_->getFunction(rt::array_contains),
@@ -15652,7 +15650,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   // Values the call site has already consume()d for the HOF runtime
   // (callee-consumes: the callback, reduce's seed). The helper owns them from
   // entry, but the receiver-resolution error fires before any helper runs, so
-  // that cold edge is their sole releaser (docs/jit_ownership.md 4.7).
+  // that cold edge is their sole releaser.
   llvm::SmallVector<llvm::Value*, 2> hof_owned;
 
   // Emit Array-or-Iterator dispatch with the supplied eager/lazy body

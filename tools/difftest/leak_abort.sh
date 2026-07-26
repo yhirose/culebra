@@ -97,8 +97,8 @@ else
 fi
 
 # --- Case 4: in-flight +1 across a throwing sub-expression must NOT leak ----
-# Pins the automatic unwind-temp window (docs/jit_ownership.md §4.8): a heap
-# operand held while a LATER operand/argument/key throws used to strand on the
+# Pins the automatic unwind-temp window: a heap operand held while a LATER
+# operand/argument/key throws used to strand on the
 # unwind edge in every one of these shapes (binop lhs, call argument, index
 # receiver, `==` lhs, method-call receiver, bitwise lhs). The window spills it
 # around each may-throw call and the scope-chain cleanup pads release it.
