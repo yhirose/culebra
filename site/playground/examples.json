@@ -21,7 +21,18 @@
       "name": "Apps",
       "examples": [
         { "title": "TUI: Same Game", "path": "examples/games/samegame.cul" },
-        { "title": "Canvas: Rocci Bird", "path": "examples/games/rocci-bird.cul" }
+        { "title": "Canvas: Rocci Bird", "path": "examples/games/rocci-bird.cul" },
+        {
+          "title": "Canvas: Racer",
+          "path": "examples/games/racer/racer.cul",
+          "assets": [
+            "examples/games/racer/assets/sprites.png",
+            "examples/games/racer/assets/background_asayake.png",
+            "examples/games/racer/assets/background_hiru.png",
+            "examples/games/racer/assets/background_yuugure.png",
+            "examples/games/racer/assets/background_twilight.png"
+          ]
+        }
       ]
     }
   ]
