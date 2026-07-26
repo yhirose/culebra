@@ -765,6 +765,8 @@ inline constexpr auto owned_scope_exit    = "culebra_runtime_owned_scope_exit";
 inline constexpr auto object_has          = "culebra_runtime_object_has";
 inline constexpr auto object_has_own_field
     = "culebra_runtime_object_has_own_field";
+inline constexpr auto bare_builtin_reject
+    = "culebra_runtime_bare_builtin_reject";
 inline constexpr auto object_class_matches
     = "culebra_runtime_object_class_matches";
 inline constexpr auto object_has_value    = "culebra_runtime_object_has_value";

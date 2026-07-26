@@ -2862,12 +2862,17 @@ struct JIT {
   // Reject a bare reference to a value-type built-in method (`let m = x.map`):
   // it is dispatched inline with no closure to hand back, so it's not a
   // first-class value on either backend. `propResult` is the property-get
-  // result — Nil for such a method (and for an Object lacking an own property
-  // of this name); a user-defined own property resolves to a non-Nil value (or,
-  // when nil-valued, is caught by `hasOwnField`) and stays first-class, so only
-  // the absent case throws. No-op when `name` isn't a built-in method name.
+  // result — Nil for such a method (and for any receiver simply lacking the
+  // property); a user-defined own property resolves to a non-Nil value (or,
+  // when nil-valued, is caught by `hasOwnField`) and stays first-class. The
+  // Nil-and-absent case branches to a cold runtime check that consults the
+  // receiver's actual builtin table (the interp's reject fires per receiver
+  // type): it throws only when the interp would, so `C.join` / `{}.map` read
+  // as nil like every other miss. `receiver` must still be owned-live at this
+  // point. No-op when `name` isn't a built-in method name.
   void emit_reject_bare_builtin_method(llvm::Value* propResult,
                                        llvm::Value* hasOwnField,
+                                       llvm::Value* receiver,
                                        const std::string& name,
                                        const peg::Ast& postfix) {
     if (!culebra::is_builtin_method_name(name)) return;
@@ -2876,20 +2881,25 @@ struct JIT {
                                        builder_.getInt8(TAG_NIL));
     // A user Object with an own property of this name — even nil-valued — is a
     // first-class field, not a built-in method handle (interp returns it via
-    // `obj.has` precedence). Reject only a genuinely absent property: Nil
+    // `obj.has` precedence). Check only a genuinely absent property: Nil
     // result AND no own slot (non-Object receivers never have own slots).
     auto reject = builder_.CreateAnd(
         isNil, builder_.CreateNot(hasOwnField), "bm.reject");
-    auto throwBB = llvm::BasicBlock::Create(ctx_, "bm.throw", fn);
+    auto coldBB = llvm::BasicBlock::Create(ctx_, "bm.check", fn);
     auto contBB = llvm::BasicBlock::Create(ctx_, "bm.cont", fn);
-    builder_.CreateCondBr(reject, throwBB, contBB);
-    builder_.SetInsertPoint(throwBB);
-    emit_throw_error("TypeError",
-                     "built-in method '" + name +
-                         "' cannot be used as a value (call it, or wrap it in "
-                         "a lambda)",
-                     postfix.line, postfix.column);
-    builder_.CreateUnreachable();
+    builder_.CreateCondBr(reject, coldBB, contBB);
+    builder_.SetInsertPoint(coldBB);
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto keyPtr = get_or_create_global_str(name, ".bm.key");
+    emit_call(
+        module_->getOrInsertFunction(
+            rt::bare_builtin_reject, builder_.getVoidTy(),
+            builder_.getInt8Ty(), builder_.getInt64Ty(), ptrTy,
+            builder_.getInt64Ty(), builder_.getInt64Ty()),
+        {extract_tag(receiver), extract_data(receiver), keyPtr,
+         builder_.getInt64(static_cast<int64_t>(postfix.line)),
+         builder_.getInt64(static_cast<int64_t>(postfix.column))});
+    builder_.CreateBr(contBB);
     builder_.SetInsertPoint(contBB);
   }
 
@@ -11325,17 +11335,22 @@ struct JIT {
             i++;  // consume ARGUMENTS
           } else {
             auto name = std::string(postfix.token);
-            auto receiver = callee.borrow();
-            // The rolling handle owns the receiver's +1; a direct-error throw
-            // out of the cold read path (dropped Shared view, closed namespace)
-            // would strand it, so let the helper release it on the unwind edge.
+            // Park the receiver's +1 in its own handle: it must outlive the
+            // value read AND the bare-builtin check (whose cold arm reads the
+            // receiver's builtin tables). recv.drop() releases it right after
+            // — the same point the move-assign into `callee` used to.
+            Owned recv = std::move(callee);
+            auto receiver = recv.borrow();
+            // A direct-error throw out of the cold read path (dropped Shared
+            // view, closed namespace) would strand the +1, so let the helper
+            // release it on the unwind edge.
             auto view = emit_property_get(receiver, name,
                                              /*own_receiver=*/true);
-            // Capture own-slot presence before the receiver is released below.
             auto hasOwn = emit_has_own_field(receiver, name);
             callee = own(emit_property_value_read(receiver, view, name));
-            emit_reject_bare_builtin_method(callee.borrow(), hasOwn, name,
-                                            postfix);
+            emit_reject_bare_builtin_method(callee.borrow(), hasOwn, receiver,
+                                            name, postfix);
+            recv.drop();
           }
           break;
         }
@@ -13771,17 +13786,22 @@ struct JIT {
             i++;
           } else {
             auto name = std::string(postfix.token);
-            auto receiver = callee.borrow();
-            // The rolling handle owns the receiver's +1; a direct-error throw
-            // out of the cold read path (dropped Shared view, closed namespace)
-            // would strand it, so let the helper release it on the unwind edge.
+            // Park the receiver's +1 in its own handle: it must outlive the
+            // value read AND the bare-builtin check (whose cold arm reads the
+            // receiver's builtin tables). recv.drop() releases it right after
+            // — the same point the move-assign into `callee` used to.
+            Owned recv = std::move(callee);
+            auto receiver = recv.borrow();
+            // A direct-error throw out of the cold read path (dropped Shared
+            // view, closed namespace) would strand the +1, so let the helper
+            // release it on the unwind edge.
             auto view = emit_property_get(receiver, name,
                                              /*own_receiver=*/true);
-            // Capture own-slot presence before the receiver is released below.
             auto hasOwn = emit_has_own_field(receiver, name);
             callee = own(emit_property_value_read(receiver, view, name));
-            emit_reject_bare_builtin_method(callee.borrow(), hasOwn, name,
-                                            postfix);
+            emit_reject_bare_builtin_method(callee.borrow(), hasOwn, receiver,
+                                            name, postfix);
+            recv.drop();
           }
           break;
         }

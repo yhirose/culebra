@@ -1171,6 +1171,15 @@ invocation does **not** bind `self` to the receiver — the call is
 semantically a free-function call with the receiver in the first
 positional slot.
 
+A bare read of a **built-in** method (`let m = [1, 2].map`, no parens)
+is not a first-class value — it raises `TypeError: built-in method
+'map' cannot be used as a value (call it, or wrap it in a lambda)`.
+The reject applies only when the receiver's own built-in table carries
+the name; a built-in-*named* property the receiver simply lacks reads
+as `nil` like any other miss (`{a: 1}.map`, or `C.join` on a class
+object whose `join` is an instance method). User-defined methods read
+as bound, first-class values (see `self` below).
+
 `self` resolves in two steps. A call that supplied a receiver binds it
 for the duration of the call, and that dynamic binding always wins. A
 body reached without one — a plain `f(x)`, a UFCS invocation, a

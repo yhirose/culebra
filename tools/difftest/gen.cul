@@ -84,6 +84,22 @@ for v in vals {
   case("v-reduce|" + v, "[1, 2, 3].reduce(0, " + v + ")")
 }
 
+# --- Dimension 3b: bare builtin-NAME property reads x receiver types ------
+# `x.map` with no call parens is rejected only when the receiver's own builtin
+# table would dispatch it; any other miss reads as nil like an absent property
+# (the JIT decides via culebra_runtime_bare_builtin_reject — pin the two
+# backends together across every receiver shape). `zzz` is the non-builtin
+# control: a plain nil miss everywhere.
+let bare_recvs = ['1', '"abc"', '[1, 2]', '{a: 1}', '(1, 2)', '{1, 2}', '0..3',
+                  '[1, 2].iter()',
+                  '{has_next: fn () { false }, next: fn () { nil }}']
+let bare_names = ['map', 'size', 'join', 'collect', 'upper', 'union', 'zzz']
+for r in bare_recvs {
+  for n in bare_names {
+    case("bareread|" + r + "|" + n, "(" + r + ")." + n)
+  }
+}
+
 # --- Dimension 4: indexing and slicing x receiver types -------------------
 let indices = ['0', '1', '-1', '100', '"a"', '"missing"']
 for recv in recvs {

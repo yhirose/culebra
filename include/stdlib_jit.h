@@ -7413,6 +7413,71 @@ culebra_runtime_lazy_ns_register(const char* name, int8_t builder_tag,
   _lazy_ns_register_builder(name ? name : "", c->fn_ptr);
 }
 
+// Cold arm of jit.h's emit_reject_bare_builtin_method. The codegen filter
+// (builtin method name + Nil read + no own slot) is receiver-blind, but the
+// interp rejects a bare `x.map` only when the receiver's own builtin table
+// would have dispatched it (eval_property's reject_if_bare sites); any other
+// miss — class object, class instance, plain dict, range — reads as nil.
+// Decide with the interp's tables themselves so the two can never drift:
+// throw the shared TypeError when the interp would, else return and the Nil
+// read stands. Lives here (not jit_dispatch.h) because only this header sees
+// interpreter.h via the embedding TU, like _check_ns_drift_once.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_bare_builtin_reject(
+    int8_t tag, int64_t data, const char* key, int64_t line, int64_t col) {
+  std::string_view name(key);
+  bool would_dispatch = false;
+  switch (tag) {
+    case TAG_STRING:
+    case TAG_STRINGVIEW:
+      would_dispatch = culebra::string_builtins().contains(name);
+      break;
+    case TAG_SET:
+      would_dispatch = culebra::set_builtins().contains(name);
+      break;
+    case TAG_TUPLE:
+      would_dispatch = culebra::tuple_builtins().contains(name);
+      break;
+    case TAG_ARRAY:
+      // Throwaway instances reach the static tables, as the drift check in
+      // culebra.h does; the ctor cost is fine on this throw-candidate path.
+      would_dispatch = culebra::ArrayValue().builtins().contains(name);
+      break;
+    case TAG_TENSOR:
+      would_dispatch =
+          culebra::TensorValue(culebra::TensorPtr{}).builtins().contains(name);
+      break;
+    case TAG_OBJECT: {
+      auto* obj = reinterpret_cast<JitObject*>(data);
+      // Shared.new views bypass every reject site in the interp (misses read
+      // the frozen tree, nil on absence) — mirror that.
+      if (obj->is_shared_val) return;
+      // A user property — own or proto, e.g. a getter that returned nil —
+      // is first-class on both backends; never reject it.
+      if (_find_property(obj, key)) return;
+      // interp's ObjectValue::has(): own props ∪ the dict builtins.
+      auto has = [&](const char* k) {
+        return _find_property(obj, k) != nullptr ||
+               culebra::is_object_builtin_method_name(k);
+      };
+      would_dispatch =
+          culebra::is_object_builtin_method_name(name) ||
+          (has("next") && (has("has_next") || has("iter")) &&
+           culebra::iterator_builtins().contains(name));
+      break;
+    }
+    default:
+      return;  // scalar receivers dispatch no builtin table
+  }
+  if (would_dispatch) {
+    throw culebra::CulebraError(
+        "TypeError",
+        std::format("built-in method '{}' cannot be used as a value "
+                    "(call it, or wrap it in a lambda)",
+                    name),
+        line, col);
+  }
+}
+
 // Direct ns-method call entry used by compile_ns_call's typed-positional fast
 // path (Http + the nested Encoding codecs). The method is identified by
 // ns/method/sub *names* (not a baked NsMethod* — that would be invalid under
