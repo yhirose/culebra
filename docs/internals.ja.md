@@ -54,7 +54,7 @@ Interpreter  JIT (LLVM ORC)      AOT codegen
 
 - **AST の共有**により、バックエンド間で意味論が同一に保たれます。
   新しい言語機能はまず AST + インタプリタに実装され、その後 JIT と
-  AOT 経路が追随します ([[project_dual_backend_policy]])。
+  AOT 経路が追随します。
 - **bytecode 層は無し。** インタプリタは AST ノードを直接ウォークし、
   JIT は AST を LLVM IR へ lower します。bytecode の中間層は、この規
   模では計測可能な利点なしに複雑さを増すため不採用です。
@@ -104,7 +104,7 @@ Interpreter  JIT (LLVM ORC)      AOT codegen
 ソースのハッシュ `grammar_blob_key()`: 文法を編集して再生成し忘れた
 場合や cpp-peglib の bump でレイアウトが変わった場合はキーが一致せず、
 `load_grammar()` にフォールバックします。どちらの経路でも AST と
-packrat は同じように有効化されます ([[project_startup_grammar_snapshot]])。
+packrat は同じように有効化されます。
 
 cpp-peglib を選んだ理由 (手書きの再帰下降との比較):
 
@@ -123,13 +123,12 @@ AST ノードは cpp-peglib 自身が生成する `shared_ptr<peg::Ast>` です�
 - **トークンのテキストはソースバッファへの `string_view`。** AST を
   持つ側がソース文字列を一緒に生かし続ける必要があります。
   `LoadedModule` が `source` (と、splice した preamble のための
-  `aux_sources`) を AST の隣に保持しているのはこのためです
-  ([[feedback_ast_source_lifetime]])。
+  `aux_sources`) を AST の隣に保持しているのはこのためです。
 - **全 backend は `ast.nodes[i]` の添字ではなく `parser.h` の `view_*`
   アクセサ経由でノードを読むこと。** cpp-peglib の `AstOptimizer` は
   単一子ノードを畳むので、プロダクションに省略可能要素が増えると生の
   添字がずれます — 「文法を変えたのに walker を 1 つ更新し忘れた」系
-  バグの常習犯です ([[project_grammar_accessor]])。
+  バグの常習犯です。
 
 パース失敗はファイル・行・列とパーサの診断を持つ `SyntaxError` として
 表面化し、CLI ドライバが `clang` 風の固定幅スタイルで整形します。
@@ -173,8 +172,7 @@ Ch.13 の「ルーティング」節を参照してください。
 れらのラムダは `[self = shared_from_this(), ...]` をキャプチャするた
 め、escape したコールバックが 1 つでも生存する限りインタプリタオブジ
 ェクト自身が生存し続けます。このコードベースで新規のランタイムコール
-バックラムダは、必ず同じパターンに従わなければなりません。元となった
-インシデントは [[project_interpreter_lifetime]] を参照。
+バックラムダは、必ず同じパターンに従わなければなりません。
 
 ### エラー伝播
 
@@ -209,8 +207,7 @@ JIT は AST を関数粒度で LLVM IR へ lower し (スクリプトのトッ�
 
 ランタイムヘルパ (`culebra_runtime_*`) はリンク時に可視です。macOS で
 は既定で可視ですが、ELF/Linux では `-rdynamic` (CMake の
-`ENABLE_EXPORTS` プロパティ) が必要です。関連する Linux の
-PIE/-fPIC の経緯は [[project_aot_no_pie]] を参照。
+`ENABLE_EXPORTS` プロパティ) が必要です。
 
 ### インラインキャッシュ
 
@@ -233,12 +230,11 @@ Shape はプロセス全体で intern されている (`ShapeRegistry`) ので�
 のテーブルです。裸の namespace メソッド (`Math.abs`、`IO.inspect`) は
 codegen 時にここで引かれ、汎用ルックアップのオーバーヘッドを回避しま
 す。新しい stdlib メソッドを追加するには、ここに 1 行と対応するインタ
-プリタ実装が必要です。[[project_jit_namespace_dispatch]] と
-`add-stdlib-namespace` skill を参照。
+プリタ実装が必要です。`add-stdlib-namespace` skill を参照。
 
 起動時の debug 専用ドリフトチェックが、`kNsMethods` の全メソッドがイ
 ンタプリタテーブルに存在することを検証し、2 つのバックエンドがサイレ
-ントに乖離するのを防ぎます ([[feedback_check_jit_interp_symmetry]])。
+ントに乖離するのを防ぎます。
 
 ### HOF fusion
 
@@ -374,7 +370,7 @@ Array、Func、Set、Tensor、Cell、String) を `shared_ptr` ではなく、手
 ときのみ機能アーカイブを **force-load** します — strong choke が weak
 stub を上書きします。したがって未使用の機能は、そのアーカイブも外部
 ライブラリもリンクしません。これは 2^N のマトリクスではなく N+1 の
-アーカイブです ([[project_linear_rt_archives]])。
+アーカイブです。
 
 このゲート契約は**外から**壊れやすい: vendored ライブラリが自前の
 ランタイムフックを経由せずデバイスアロケータを無条件に呼ぶと、その参照が
@@ -387,7 +383,7 @@ stub を上書きします。したがって未使用の機能は、そのアー
 LLVM の `TargetMachine` は non-PIC な `.o` を emit します。Ubuntu の
 `gcc` は既定で PIE リンクを行い、"failed to set dynamic section
 sizes" で失敗します。ドライバは Linux でリンカに `-no-pie` を渡してこ
-れを解消します。診断の連鎖は [[project_aot_no_pie]] を参照。
+れを解消します。
 
 ### クロスコンパイル
 
@@ -395,8 +391,7 @@ sizes" で失敗します。ドライバは Linux でリンカに `-no-pie` を�
 LLVM の `AllTargets*` コンポーネントがホストの `culebra` ドライバにリ
 ンクされているため、任意の LLVM サポート triple 向けに emit できま
 す。ランタイムアーカイブ自体はターゲット向けにビルドされている必要が
-あります — バンドルされた sysroot はまだありません
-([[project_binary_build_roadmap]] Phase E MVP)。
+あります — バンドルされた sysroot はまだありません。
 
 ## 6. 文字列 / Unicode
 
@@ -418,8 +413,7 @@ namespace を使ってコードポイントを 1 つずつウォークします�
 NUL は普通のバイトです。JIT/AOT バックエンドはそれに一致させなければ
 なりませんが、`JitValue` は 1 つの `{tag, i64}` スロットです — 長さは
 値に載せられないため、heap/`.rodata` オブジェクトに存在します。
-`TAG_STRING` の payload は、長さ前置バッファのバイト列を指します
-([[project_jit_string_repr]]):
+`TAG_STRING` の payload は、長さ前置バッファのバイト列を指します:
 
 ```
 [ uint64_t len ][ bytes... ][ '\0' ]
@@ -448,7 +442,7 @@ release-to-zero ではなく、tracing バックストップのみが回収し�
 
 ### StringView、StringLike、lazy graphemes
 
-3 つとも実装済みです ([[project_string_model]])。
+3 つとも実装済みです。
 
 **`StringView`** は他の文字列のバイトに対する借用で、同じバイト/スカラー
 API と独自の `type_of` 名を持ちます。パラメータ専用ではなく**第一級の値**
@@ -490,8 +484,8 @@ API と独自の `type_of` 名を持ちます。パラメータ専用ではな�
 ### ライブラリ選択
 
 エンジンは `vendor/cpp-regexlib` — culebra のために書き、その後
-単一ヘッダの独立ライブラリとして切り出したものです
-([[project_regex_self_hosted]])。RE2 は検討の上見送りました: 1 つの
+単一ヘッダの独立ライブラリとして切り出したものです。RE2 は検討の上
+見送りました: 1 つの
 stdlib namespace のために重い vendor 依存になり、書記素クラスタ
 マッチングを後付けするのは自前エンジンを書くより多くのコードになる
 ためです。
@@ -568,8 +562,7 @@ CUDA) です。AOT ビルドは対応するランタイムアーカイブを拾�
 
 reduction (軸に対する `sum`、`mean`) は、reshape-then-reduce が要求さ
 れると現状では中間バッファを materialize します。これらを fusion する
-lazy な shape-graph パスは、Tensor の定常状態チューニングの候補です
-([[project_roadmap]] §② performance)。
+lazy な shape-graph パスは、Tensor の定常状態チューニングの候補です。
 
 ### dtype
 
@@ -762,7 +755,7 @@ NDJSON — 1 イベント 1 オブジェクト — を吐き、テスト自身�
 doctest ランナー (`include/doctest_runner.h`) がもう半分です。markdown
 から ` ```culebra ` の fenced ブロックを走査し、ブロック先頭の
 `# doctest:` ディレクティブを読み、`# =>` / `# => |` マーカー (throw 期待は
-`# !!`) から期待 stdout を組み立てます ([[project_doctest_convention]])。
+`# !!`) から期待 stdout を組み立てます。
 現在解釈されるのは `skip` のみで、`compile-only` と backend フィルタは
 予約済み — それらを持つブロックは通常どおり走ります。各ブロックは
 新しいインタプリタで走り、ランナーは interp 専用です。
@@ -1338,8 +1331,7 @@ per-*iteration* な release、`Owned` レイヤより下に位置するスロッ
   業そのものを圧倒してしまいます。
 - **2 つのバックエンドは対称であり続けなければならない。** 所有権の
   変更は JIT 内部のものであり、インタプリタと比べた観測可能な挙動、
-  エラーメッセージ、チェックのタイミング/順序を変えてはならない
-  ([[feedback_check_jit_interp_symmetry]])。
+  エラーメッセージ、チェックのタイミング/順序を変えてはならない。
 - **動的ディスパッチ。** メソッド/演算子のターゲットは実行時に解決さ
   れるため、所有権の規約は callee の静的な型によってではなく、呼び出
   し境界で動的に強制されます。
@@ -1360,7 +1352,7 @@ per-*iteration* な release、`Owned` レイヤより下に位置するスロッ
 と `__Eff` ランタイム preamble への呼び出し — へ書き換えられ、再パース
 された上で、インタプリタ・JIT・AOT の各パスがエフェクト固有のサポート
 を一切持たずにそのまま実行します。これにより3バックエンドの対称性が無償
-で保たれます ([[feedback_check_jit_interp_symmetry]])。ジェネレータも同
+で保たれます。ジェネレータも同
 じ lowering 機構を使うため、このパスとジェネレータ変換は source-slice /
 local-rewrite のヘルパーを共有します。
 
@@ -1387,8 +1379,7 @@ lowering は動的スコープ・one-shot resume のモデルに従います:
   `__Eff.handle(<computation としての BODY>, "op", <ハンドラアダプタ>)`
   へ lowering されます。ドライバは動的スコープのハンドラスタックを辿り、
   `resume` は one-shot の継続 — 通常の RC 値なので、リーク安全性はこれ
-  が模倣するジェネレータ機構から継承されます
-  ([[project_rc_gc_correct_model]])。プレーンな (エフェクトでない) fn
+  が模倣するジェネレータ機構から継承されます。プレーンな (エフェクトでない) fn
   も `__Eff.perform_direct` 経由で操作を `perform` でき、エフェクトフル
   な呼び出しは `effect fn` の本体に閉じ込められません。
 

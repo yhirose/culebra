@@ -52,7 +52,7 @@ Why this layout:
 
 - **Sharing the AST** keeps semantics identical across backends. New
   language features land in the AST + interpreter first, then are
-  matched by the JIT and AOT paths ([[project_dual_backend_policy]]).
+  matched by the JIT and AOT paths.
 - **No bytecode tier.** The interpreter walks AST nodes directly; the
   JIT lowers AST to LLVM IR. A bytecode middle layer is rejected as
   added complexity without measured benefit at this scale.
@@ -102,8 +102,7 @@ compiled grammar into `include/grammar_blob.h` (`just gen-blob`), and
 `grammar_blob_key()`, a hash of the grammar source: if the grammar was
 edited without regenerating, or a cpp-peglib bump changed the layout,
 the key mismatches and the parser falls back to `load_grammar()`. Both
-paths then enable the AST and packrat parsing identically
-([[project_startup_grammar_snapshot]]).
+paths then enable the AST and packrat parsing identically.
 
 Why cpp-peglib (vs hand-written recursive descent):
 
@@ -123,13 +122,12 @@ Two consequences worth knowing before touching the grammar:
 - **Token text is a `string_view` into the source buffer.** Whoever
   owns the AST must keep the source string alive alongside it — that
   is why `LoadedModule` holds `source` (and `aux_sources` for spliced
-  preamble text) next to the AST ([[feedback_ast_source_lifetime]]).
+  preamble text) next to the AST.
 - **Every backend must read nodes through the `view_*` accessors** in
   `parser.h`, not by indexing `ast.nodes[i]`. cpp-peglib's
   `AstOptimizer` collapses single-child nodes, so raw indices shift
   when a production gains an optional element — the recurring source
-  of "grammar changed, one walker not updated" bugs
-  ([[project_grammar_accessor]]).
+  of "grammar changed, one walker not updated" bugs.
 
 Parse failures surface as a `SyntaxError` carrying file, line, column,
 and the parser's diagnostic, formatted by the CLI driver in a
@@ -173,8 +171,7 @@ caller (callbacks installed into runtime values). These lambdas
 capture `[self = shared_from_this(), ...]` so the interpreter object
 itself is kept alive as long as any escaped callback survives. New
 runtime-callback lambdas in this codebase MUST follow the same
-pattern; see [[project_interpreter_lifetime]] for the original
-incident.
+pattern.
 
 ### Error propagation
 
@@ -211,8 +208,7 @@ allocator, BLAS) are exposed to JIT'd code via ORC's
 
 Runtime helpers (`culebra_runtime_*`) are visible at link time. On
 macOS they are visible by default; on ELF/Linux they require
-`-rdynamic` (CMake's `ENABLE_EXPORTS` property). See
-[[project_aot_no_pie]] for the related Linux PIE/-fPIC story.
+`-rdynamic` (CMake's `ENABLE_EXPORTS` property).
 
 ### Inline cache
 
@@ -235,12 +231,11 @@ is a pointer equality, and objects built the same way share one shape.
 Bare namespace methods (`Math.abs`, `IO.inspect`) are looked up here at
 codegen time, sidestepping the general lookup overhead. Adding a new
 stdlib method requires one row here plus the corresponding interp
-implementation; see [[project_jit_namespace_dispatch]] and the
-`add-stdlib-namespace` skill.
+implementation; see the `add-stdlib-namespace` skill.
 
 A debug-only drift check at startup verifies that every method in
 `kNsMethods` exists in the interpreter table — preventing the two
-backends from silently diverging ([[feedback_check_jit_interp_symmetry]]).
+backends from silently diverging.
 
 ### HOF fusion
 
@@ -379,8 +374,7 @@ Long printer, and nothing else.
 `culebra build` always links the base, then **force-loads** a feature
 archive only when the AST references its namespace — the strong choke
 overrides the weak stub. So an unused feature links neither its archive
-nor its external libraries. This is N+1 archives, not a 2^N matrix
-([[project_linear_rt_archives]]).
+nor its external libraries. This is N+1 archives, not a 2^N matrix.
 
 The gating contract is easy to break from the *outside*: a vendored
 library that calls a device allocator unconditionally (rather than
@@ -394,7 +388,6 @@ small diff can still break the contract.
 LLVM's `TargetMachine` emits non-PIC `.o`. Ubuntu's `gcc` defaults to
 PIE linking, which fails with "failed to set dynamic section sizes".
 The driver passes `-no-pie` to the linker on Linux to resolve this.
-See [[project_aot_no_pie]] for the diagnostic chain.
 
 ### Cross-compile
 
@@ -402,7 +395,7 @@ See [[project_aot_no_pie]] for the diagnostic chain.
 LLVM `AllTargets*` components are linked into the host `culebra`
 driver so it can emit for any LLVM-supported triple. The runtime
 archive itself must be built for the target — there is no bundled
-sysroot yet ([[project_binary_build_roadmap]] Phase E MVP).
+sysroot yet.
 
 ## 6. String / Unicode
 
@@ -424,8 +417,7 @@ The interpreter's `std::string` carries its length, so an embedded NUL
 is an ordinary byte. The JIT/AOT backend must match that, but a
 `JitValue` is one `{tag, i64}` slot — the length cannot ride in the
 value, so it lives in the heap/`.rodata` object. A `TAG_STRING` payload
-points at the bytes of a length-prefixed buffer
-([[project_jit_string_repr]]):
+points at the bytes of a length-prefixed buffer:
 
 ```
 [ uint64_t len ][ bytes... ][ '\0' ]
@@ -453,7 +445,7 @@ how; see Ch.13's "traced-only" note).
 
 ### StringView, StringLike, lazy graphemes
 
-All three shipped ([[project_string_model]]).
+All three shipped.
 
 **`StringView`** is a borrow over another string's bytes with the same
 byte/scalar API, and its own `type_of` name. It is a first-class value,
@@ -497,7 +489,7 @@ loops over many views should `.to_string()` once instead.
 ### Library choice
 
 The engine is `vendor/cpp-regexlib` — written for culebra, then split
-out as a standalone single-header library ([[project_regex_self_hosted]]).
+out as a standalone single-header library.
 RE2 was considered and ruled out: it is a heavy vendor dependency for
 one stdlib namespace, and bolting grapheme-cluster matching onto it
 would have been more code than writing the engine.
@@ -578,7 +570,7 @@ generic n-dim loop.
 Reductions (`sum`, `mean` over axes) currently materialize an
 intermediate buffer when reshape-then-reduce is requested. A lazy
 shape-graph pass that fuses these is on the table for Tensor steady-
-state tuning ([[project_roadmap]] §② performance).
+state tuning.
 
 ### dtype
 
@@ -775,10 +767,10 @@ mentions, fresh across tests) and detects fixture cycles, throwing
 The doctest runner (`include/doctest_runner.h`) is the other half:
 it scans markdown for fenced ` ```culebra ` blocks, reads a
 block-leading `# doctest:` directive, and assembles expected stdout
-from `# =>` / `# => |` markers with `# !!` for an expected throw
-([[project_doctest_convention]]). Only `skip` is honored today; the
-`compile-only` and backend-filter directives are reserved, and blocks
-carrying them run normally. Every block runs in a fresh interpreter —
+from `# =>` / `# => |` markers with `# !!` for an expected throw. Only
+`skip` is honored today; the `compile-only` and backend-filter
+directives are reserved, and blocks carrying them run normally. Every
+block runs in a fresh interpreter —
 the runner is interp-only.
 
 ## 13. Memory model: RC, GC, and deterministic drop
@@ -1324,8 +1316,7 @@ a different arm releases the same value.
   value-ABI rewrite to support them would dwarf the ownership work.
 - **The two backends must stay symmetric.** An ownership change is
   JIT-internal and must not alter observable behavior, error messages,
-  or check timing/order versus the interpreter
-  ([[feedback_check_jit_interp_symmetry]]).
+  or check timing/order versus the interpreter.
 - **Dynamic dispatch.** Method/operator targets are resolved at
   runtime, so ownership conventions are enforced dynamically at the
   call boundary, not by a static type of the callee.
@@ -1345,9 +1336,9 @@ backend. They are rewritten *at parse time* into plain culebra source —
 synthesized classes plus calls into the `__Eff` runtime preamble — which
 is then re-parsed and run by the interpreter, JIT, and AOT paths with no
 effects-specific support of their own. The three backends stay symmetric
-for free ([[feedback_check_jit_interp_symmetry]]). Generators use the
-same lowering machinery, so this pass and the generator transform share
-their source-slice and local-rewrite helpers.
+for free. Generators use the same lowering machinery, so this pass and
+the generator transform share their source-slice and local-rewrite
+helpers.
 
 Header root: `include/effects_transform.h` (the pass). The driver runtime
 lives in `src/preambles/effects.cul` as the `__Eff` module.
@@ -1372,10 +1363,10 @@ Lowering follows a dynamic-scope, one-shot-resume model:
   `__Eff.handle(<BODY as a computation>, "op", <handler adapter>)`. The
   driver walks the dynamically-scoped handler stack; `resume` is the
   one-shot continuation — an ordinary RC value, so leak-safety is
-  inherited from the generator machinery it mirrors
-  ([[project_rc_gc_correct_model]]). A plain (non-effect) fn can still
-  `perform` an operation via `__Eff.perform_direct`, so effectful calls
-  are not confined to `effect fn` bodies.
+  inherited from the generator machinery it mirrors. A plain
+  (non-effect) fn can still `perform` an operation via
+  `__Eff.perform_direct`, so effectful calls are not confined to
+  `effect fn` bodies.
 
 The computation object and driver share a return-tag protocol: each
 `_step(rv)` returns a tag that tells the driver what happened.
