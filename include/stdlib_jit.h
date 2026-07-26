@@ -1170,7 +1170,7 @@ class _JitKwargResolver {
       // The map holds only splat-retained copies — release those, then
       // the caller-side +1s nobody consumed yet: every kwarg slot and
       // every splat operand. The JIT callers emit no slab cleanup of
-      // their own (consume-at-store, §4.7 callee-consumes), so this is
+      // their own (consume-at-store, callee-consumes), so this is
       // the sole releaser on the throw edge.
       release_merged();
       for (int64_t i = 0; i < n_kw; i++) {
@@ -7964,7 +7964,7 @@ inline JIT::Owned JitExtension::compile_global(JIT& jit,
                              const peg::Ast* a = nullptr) {                   \
     return jit.emit_type_check(v, t, w, a);                                   \
   };                                                                          \
-  /* Block-pinned (§4.9): the raw is usable only in the block it was        \
+  /* Block-pinned: the raw is usable only in the block it was              \
      consumed in. A value held across another compile / arg-check emission  \
      stays in an Owned instead: `Owned v = jit.compile(a);`. */              \
   auto compile = [&](const peg::Ast& a) { return jit.compile(a).consume(); };\
@@ -8067,7 +8067,7 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
 
   // Compile all positional args into an entry-block Value slab and call
   // `rt_name(slab, n, line, col)`. Each arg stays Owned across the later
-  // compiles and the call (§4.9): the window releases them on a throw
+  // compiles and the call: the window releases them on a throw
   // edge; all are dropped after the call returns.
   auto emit_value_slab_call = [&](const char* rt_name,
                                   const char* slab_name) -> llvm::Value* {
@@ -8317,7 +8317,7 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
     }
 
     if (method == "pow" && argsAst.nodes.size() == 2) {
-      // Each arg stays Owned across the next compile / check (§4.9); a
+      // Each arg stays Owned across the next compile / check; a
       // checked value is a scalar, so the consume needs no release.
       JIT::Owned baseV = jit.compile(*argsAst.nodes[0]);
       emit_canon_arg_check(0, baseV.borrow());
@@ -9067,7 +9067,7 @@ inline JIT::Owned JitExtension::compile_single_positional_kwargs(
   }
 
   // Every compiled argument stays in an Owned while the later ones compile
-  // and their checks emit (§4.9): the window releases them on a throw edge.
+  // and their checks emit: the window releases them on a throw edge.
   // The kw/splat +1s are consumed into the slab stores below (the _kw entry
   // owns them); cmd is borrowed by the entry and dropped after the call.
   JIT::Owned cmd_val = jit.compile(*positional[0]);
@@ -9171,7 +9171,7 @@ inline JIT::Owned JitExtension::compile_ns_method_kwargs(
   // many/too-few call raises ArityError before any positional type error. We
   // therefore defer the type checks until after the arity gate below.
   // Every compiled argument stays in an Owned while the later ones compile
-  // and the arity/type checks emit (§4.9): the window releases them on a
+  // and the arity/type checks emit: the window releases them on a
   // throw edge. All are consumed into the slab stores below — the runtime
   // entry owns them on every exit.
   std::vector<JIT::Owned> posVals;

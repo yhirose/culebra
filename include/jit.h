@@ -196,7 +196,7 @@ struct JIT {
   };
 
  private:
-  struct Owned;  // defined below (the +1 ownership handle, §4.2)
+  struct Owned;  // defined below (the +1 ownership handle)
 
  public:
   // RAII snapshot of compiler per-function state. Entering a nested
@@ -218,7 +218,7 @@ struct JIT {
     llvm::Value* fn_defer_mark;
     llvm::Value* owned_hot;
     std::vector<IterCleanup> iter_cleanup;
-    // The unwind-temp window state (§4.8) is per LLVM function: the outer
+    // The unwind-temp window state is per LLVM function: the outer
     // frame's live handles, slot pool and coverage belong to the outer
     // function's IR and must not leak into a nested body's windows.
     std::vector<Owned*> live_owned;
@@ -334,7 +334,7 @@ struct JIT {
     auto* f = llvm::dyn_cast<llvm::Function>(callee.getCallee());
     bool may_throw = !f || !f->doesNotThrow();
     if (current_lpad_ && may_throw) {
-      // Automatic unwind-temp window (§4.8): spill the live Owned +1s around
+      // Automatic unwind-temp window: spill the live Owned +1s around
       // this one invoke so the cleanup-pad chain releases them on a throw.
       auto armed = open_unwind_window();
       auto fn = builder_.GetInsertBlock()->getParent();
@@ -529,7 +529,7 @@ struct JIT {
     if (!fn->hasPersonalityFn()) fn->setPersonalityFn(get_personality_fn());
     UnwindCleanupEmission cleanup_scope(this);
     emit_catch_all_prologue(cleanupBB, "build.lpad");
-    // In-flight expression temporaries die first (§4.8), then the partial
+    // In-flight expression temporaries die first, then the partial
     // container — the same order as finish_scope_cleanup / the fn-level pad.
     // Required here too: at top level (__culebra_main has no fn-level pad) a
     // bare statement's construction pad re-raises straight out of the frame
@@ -577,7 +577,7 @@ struct JIT {
     if (!fn->hasPersonalityFn()) fn->setPersonalityFn(get_personality_fn());
     UnwindCleanupEmission cleanup_scope(this);
     emit_catch_all_prologue(cleanupBB, excName);
-    // The throwing expression's in-flight temporaries die first (§4.8) —
+    // The throwing expression's in-flight temporaries die first —
     // in the interpreter they are freed as its eval frames unwind, before
     // any enclosing block's defers run.
     release_unwind_temps();
@@ -833,7 +833,7 @@ struct JIT {
   //
   // We stay outside that threshold structurally rather than by luck: our
   // own codegen never puts a phi in a landing pad — every value crossing
-  // an unwind edge goes through an alloca (§4.3) — so at IR-O0 the pads
+  // an unwind edge goes through an alloca — so at IR-O0 the pads
   // carry zero phis. Only mem2reg/SROA, which run from IR-O1 up, promote
   // those allocas into pad phis (measured: 26-47 of them on the tests that
   // used to crash). Hence `--jit-faststart` pins the IR pipeline to O0
@@ -2307,7 +2307,7 @@ struct JIT {
   // means "no unwind edge and no branch can strand it". The conversion
   // operators enforce that pin; a violation is a compiler bug and aborts
   // loudly (all build modes) rather than shipping a silent leak. Values that
-  // must cross a block go through a scope slot (§4.3), an OwnedPhi merge, or
+  // must cross a block go through a scope slot, an OwnedPhi merge, or
   // a justified consume_unchecked().
   struct Pinned {
     llvm::Value* val_ = nullptr;
@@ -2407,7 +2407,7 @@ struct JIT {
     // coercion); ownership stays with the handle.
     llvm::Value* borrow() const { return val_; }
 
-    // Hand the `+1` on: returns the raw Value block-pinned (§4.9 — usable
+    // Hand the `+1` on: returns the raw Value block-pinned (usable
     // only inside the current basic block; see Pinned) and marks the handle
     // spent so its destructor stays silent. Consuming twice is a
     // codegen-time bug.
@@ -2415,7 +2415,7 @@ struct JIT {
       return Pinned(jit_, consume_unchecked());
     }
 
-    // The unpinned escape hatch (§4.9): hands the raw `+1` on with no
+    // The unpinned escape hatch: hands the raw `+1` on with no
     // block-crossing check. Legal only where a documented contract names
     // another releaser for every CFG edge the raw can cross (a batch handoff
     // into mutually-exclusive dispatch arms, a region-scope slot that owns
@@ -2469,7 +2469,7 @@ struct JIT {
   // destructor cannot run on an LLVM-level `throw`, so without this the value
   // leaks whenever the callee throws.
   //
-  // Reuses the container-literal cleanup machinery (§4.3): spill each value to
+  // Reuses the container-literal cleanup machinery: spill each value to
   // an entry alloca (never an SSA value live across the unwind edge — SDAG-O0's
   // register coalescer crashes on that form), redirect `current_lpad_` to a
   // fresh cleanup pad for the guard's lifetime, and on close fill that pad
@@ -2485,7 +2485,7 @@ struct JIT {
 
     // The guard's own pad is the sole unwind-edge releaser for its values, so
     // they are also declared unwind-covered for its lifetime — the automatic
-    // unwind-temp window (§4.8) must not spill them a second time.
+    // unwind-temp window must not spill them a second time.
     std::vector<llvm::Value*> covered_;
 
     ThrowGuard(JIT* jit, std::initializer_list<llvm::Value*> vals) : jit_(jit) {
@@ -2531,8 +2531,9 @@ struct JIT {
   // CompilerStateSaver swaps it), unwind_temp_slots_ the slot pool (slot i is
   // reused across calls — windows never overlap at runtime, a frame executes
   // one call at a time), and unwind_covered_ the values currently excluded
-  // from windows because a §4.7 contract names another unwind-edge releaser
-  // (a ThrowGuard pad, a callee-cleans helper, an invoker guard) — spilling
+  // from windows because a callee-cleans contract names another
+  // unwind-edge releaser (a ThrowGuard pad, a callee-cleans helper, an
+  // invoker guard) — spilling
   // those too would double-free, the ASan-confirmed overlap trap.
   std::vector<Owned*> live_owned_;
   std::vector<llvm::Value*> unwind_temp_slots_;
@@ -2554,7 +2555,7 @@ struct JIT {
     }
   }
 
-  // Scoped §4.7 contract declaration: while alive, the calls emitted have a
+  // Scoped callee-cleans declaration: while alive, the calls emitted have a
   // callee/invoker-side cleaner for `vals` on the unwind edge (an operator
   // helper's direct-error release, an invoke_method* guard over user
   // dispatch, a pending-guard window), so the automatic unwind-temp window
@@ -2637,7 +2638,7 @@ struct JIT {
     return raw;
   }
 
-  // Owned merge (§4.9): the checked way to join per-arm `+1` results into a
+  // Owned merge: the checked way to join per-arm `+1` results into a
   // `%Value` phi. Each incoming is captured *in its arm block* — either
   // consumed out of an Owned on the spot (window-covered until that instant)
   // or, for a raw, proven to be a constant or produced in the current block
@@ -3252,7 +3253,7 @@ struct JIT {
   // culebra_runtime_to_bool, which keeps the strict-truthiness semantics (Nil
   // and other tags raise the same TypeError as the interpreter) in one place.
   llvm::Value* value_to_bool(llvm::Value* v) {
-    // §4.7 callee-cleans: culebra_runtime_to_bool releases the operand on its
+    // Callee-cleans: culebra_runtime_to_bool releases the operand on its
     // direct TypeError, so the unwind-temp window must not spill it too.
     UnwindCovered cover(this, {v});
     auto tag = extract_tag(v);
@@ -4857,7 +4858,7 @@ struct JIT {
       if (has_spread && seqNodes[i]->tag == "SPREAD_ELEM"_) {
         // extend borrows the source (retaining each copied element); the
         // handle's dtor releases the source +1 on the normal path, and the
-        // unwind-temp window (§4.8) frees it if extend throws (`[...1]`) —
+        // unwind-temp window frees it if extend throws (`[...1]`) —
         // this used to need a hand-placed pending-guard store.
         Owned v = compile(*seqNodes[i]->nodes[0]);
         emit_call(
@@ -5098,7 +5099,7 @@ struct JIT {
 
     // Release the partial object if a later key/value expression throws
     // (see compile_array). In-flight spread sources and heap keys are covered
-    // by the unwind-temp window (§4.8) via their Owned handles.
+    // by the unwind-temp window via their Owned handles.
     auto buildGuard = make_build_guard(make_object(objPtr));
     auto cleanupBB = llvm::BasicBlock::Create(ctx_, "obj.build.cleanup", fn);
     auto savedLpad = current_lpad_;
@@ -5113,7 +5114,7 @@ struct JIT {
         // `{...obj}` — merge another Object's entries (later keys win).
         // merge borrows the source (retaining each copied entry); the
         // handle's dtor releases the source +1 on the normal path, and the
-        // unwind-temp window (§4.8) frees it if merge throws.
+        // unwind-temp window frees it if merge throws.
         Owned v = compile(*prop->nodes[0]);
         emit_call(
             module_->getOrInsertFunction(
@@ -5132,7 +5133,7 @@ struct JIT {
         // duplicate key overwrites last-wins (like the interp), rather than
         // tripping the immutable-entry guard meant for `o[k] = v`.
         // The key's +1 is live until object_set_any consumes it; its Owned
-        // handle keeps it under the unwind-temp window (§4.8), so a throwing
+        // handle keeps it under the unwind-temp window, so a throwing
         // value expression can't orphan a heap key (`{(1,2): boom()}`).
         Owned key = compile(*pv.key);
         Owned val = compile(*pv.value);
@@ -5171,7 +5172,7 @@ struct JIT {
         val = compile(*pv.value);
       }
       {
-        // §4.7 callee-cleans: emit_object_set's well-known-property check
+        // Callee-cleans: emit_object_set's well-known-property check
         // (`{next: 5}`) releases the value's +1 on its contract throw —
         // exclude it from the unwind-temp window.
         UnwindCovered cover(this, {val.borrow()});
@@ -5456,7 +5457,7 @@ struct JIT {
     // its compound / `??=` / declare variants) and a complex lvalue
     // (`obj.prop`, `arr[idx]`, chains). Split so each keeps its own local
     // reasoning — the complex path threads a single Owned receiver across
-    // throw-guarded steps (§4.8/§4.9).
+    // throw-guarded steps.
     if (av.lvalcnt == 1)
       return compile_assign_var(ast, av, rval, nil_coalesce, compile_rhs);
     return compile_assign_complex(ast, av, rval);
@@ -5652,7 +5653,7 @@ struct JIT {
     // +1 and move-assigning the step's fresh +1 releases the previous link
     // at the same insertion point the hand-placed releases used to occupy.
     // While a step compiles (its helpers may throw), the +1 stays registered
-    // and the unwind-temp window (§4.8) releases it on the throw edge — a
+    // and the unwind-temp window releases it on the throw edge — a
     // bare intermediate receiver used to strand whenever a later step threw
     // (`a[i][j] = v` with an OOB inner index).
     Owned lvalOwned = compile(*ast.nodes[lvaloff]);
@@ -5704,7 +5705,7 @@ struct JIT {
     // instead of stranding it. The guard fires only on the throw edge, so it
     // does not double-release the normal-path `emit_value_release(lval)`.
     // The raw deliberately crosses the per-case dispatch blocks below with the
-    // guard as its sole unwind-edge releaser (§4.7) — hence unchecked.
+    // guard as its sole unwind-edge releaser — hence unchecked.
     llvm::Value* lval = lvalOwned.consume_unchecked();
     ThrowGuard lval_guard(this, {lval});
     const auto& finalPostfix = *ast.nodes[end];
@@ -5791,7 +5792,7 @@ struct JIT {
         // The key rides the compound read-modify sequence in an Owned: it
         // crosses the object_get_any invoke (KeyError on a missing slot)
         // and the arith step (a user __add__ may throw), and a bare +1
-        // used to strand on both edges (§4.9). The window spills it around
+        // used to strand on both edges. The window spills it around
         // each call; it is consumed at the object_set_any handoff below.
         Owned keyO = compile(finalPostfix);
         llvm::Value* to_store_obj = rval;
@@ -6013,7 +6014,7 @@ struct JIT {
     auto stmt_line = builder_.getInt64(ast.line);
     auto stmt_col = builder_.getInt64(ast.column);
     // The rval stays Owned across the pattern emission (its helpers may
-    // throw; a bare +1 would strand on that edge — §4.9) and the mismatch
+    // throw; a bare +1 would strand on that edge) and the mismatch
     // branch, and is consumed into the ok-path return.
     Owned rvalO = compile(*ast.nodes[3]);
 
@@ -6056,7 +6057,7 @@ struct JIT {
     auto stmt_line = builder_.getInt64(ast.line);
     auto stmt_col = builder_.getInt64(ast.column);
     // Stays Owned across the element reads and every target write (their
-    // helpers may throw; a bare +1 would strand on that edge — §4.9), and is
+    // helpers may throw; a bare +1 would strand on that edge), and is
     // consumed into the return.
     Owned rvalO = compile(*pv.rhs);
 
@@ -6098,7 +6099,7 @@ struct JIT {
     // alias the RHS (`(p[0], p[1]) = p`) or resize it from a user
     // __setindex__, so reading lazily would let an earlier write change what a
     // later target receives. Holding them in Owneds also means a throw from any
-    // target's write releases the ones not yet stored (§4.8).
+    // target's write releases the ones not yet stored.
     llvm::IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
     auto outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "place.tag");
     auto outData =
@@ -6166,8 +6167,9 @@ struct JIT {
                                    const char* rt_name,
                                    LongPath long_path,
                                    FloatPath float_path) {
-    // §4.7: on the helper's unwind edge the operands already have exactly one
-    // releaser — the arith helper itself on a direct type error, the callee
+    // Callee-cleans: on the helper's unwind edge the operands already have
+    // exactly one releaser — the arith helper itself on a direct type
+    // error, the callee
     // frame + invoker guard on a user `__op__` dispatch — so the unwind-temp
     // window must not spill them (the ASan-confirmed overlap trap).
     UnwindCovered cover(this, {lhs, rhs});
@@ -6248,7 +6250,7 @@ struct JIT {
   // in-place doesn't apply).
   llvm::Value* emit_arith_step(llvm::Value* lhs, llvm::Value* rhs,
                                std::string_view op, bool inplace = false) {
-    // §4.7 callee-cleans (same as emit_binop_dispatch, which covers again for
+    // Callee-cleans (same as emit_binop_dispatch, which covers again for
     // its own callers): matmul/pow below call their helpers directly.
     UnwindCovered cover(this, {lhs, rhs});
     if (op == "@") {
@@ -6363,7 +6365,7 @@ struct JIT {
       // because it has no built-in numeric meaning (dispatch only via
       // `__matmul__`). Emit directly, then skip the dispatch below.
       if (ope == '@') {
-        // §4.7 callee-cleans: num_matmul releases both operands on its direct
+        // Callee-cleans: num_matmul releases both operands on its direct
         // type error, user `__matmul__` via the invoker guard.
         UnwindCovered cover(this, {acc.borrow(), rhs.borrow()});
         auto ptrTy = llvm::PointerType::get(ctx_, 0);
@@ -6444,7 +6446,7 @@ struct JIT {
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(slowBB);
-    // §4.7 callee-cleans: num_neg releases the operand on its direct type
+    // Callee-cleans: num_neg releases the operand on its direct type
     // error, a user `__neg__` dispatch via the callee frame + invoker guard —
     // exclude it from the unwind-temp window (see emit_binop_dispatch).
     UnwindCovered cover(this, {val.borrow()});
@@ -6615,7 +6617,7 @@ struct JIT {
     }
 
     Owned exp = compile(*ast.nodes[2]);
-    // §4.7 callee-cleans: num_pow releases both operands on its direct type
+    // Callee-cleans: num_pow releases both operands on its direct type
     // error (via _arith_guard_numeric), user `__pow__` via the invoker guard.
     UnwindCovered cover(this, {base.borrow(), exp.borrow()});
     auto result = emit_value_call(
@@ -6640,8 +6642,9 @@ struct JIT {
   // `(a < b) && (b < c)` with each middle operand evaluated once.
   llvm::Value* emit_comparison_i1(llvm::Value* lhs, llvm::Value* rhs,
                                      const std::string& ope_str) {
-    // §4.7: every throw edge of the eq/ordering helpers already has exactly
-    // one releaser for the operands (the helper on a direct type error /
+    // Callee-cleans: every throw edge of the eq/ordering helpers already
+    // has exactly one releaser for the operands (the helper on a direct
+    // type error /
     // non-Bool coercion, the callee frame + invoker guard on a user
     // `__eq__`/`__lt__` dispatch) — exclude them from the unwind-temp window.
     UnwindCovered cover(this, {lhs, rhs});
@@ -6818,7 +6821,7 @@ struct JIT {
       builder_.restoreIP(saveIP);
     }
     // The raws deliberately cross the chain's short-circuit blocks with the
-    // region's owned slots as their per-edge releaser (§4.3) — hence
+    // region's owned slots as their per-edge releaser — hence
     // unchecked; the slot stores just below are what make that sound.
     llvm::Value* prev = lhs.consume_unchecked();
     VarSlot prevSlot = operand_slot(prev);
@@ -6869,7 +6872,7 @@ struct JIT {
   // a release, which looks like the comparison-chain leak but is not one —
   // no heap +1 can be overwritten on any reachable path (GAP5-verified).
   // For `||`/`&&`, `keep_if` is strict truthiness: a heap candidate throws
-  // TypeError in `to_bool`, which releases it (§4.7 callee-cleans), so only
+  // TypeError in `to_bool`, which releases it (callee-cleans), so only
   // scalars proceed to be overwritten. For `??`, a heap candidate is never
   // nil, so it is always kept (returned +1) — only a nil is replaced. The
   // kept candidate's +1 escapes through the merge load as the result.
@@ -7742,7 +7745,7 @@ struct JIT {
       }
       current_lpad_ = arm_cleanupBB;
       // The arm value stays in its Owned across the defer-run below (an
-      // invoke — a throwing defer would strand a bare +1, §4.9): the window
+      // invoke — a throwing defer would strand a bare +1): the window
       // spills it around that call, and it is consumed into the store.
       Owned body_owned = compile(body_node);
       // Restore the enclosing lpad for the normal-exit epilogue (its store /
@@ -8106,7 +8109,7 @@ struct JIT {
     // Without this the iterable leaked one reference per loop — and for an
     // array of heap elements, that pinned the whole array's contents alive.
     push_scope();
-    // The slot defined just below is the +1's owner on every path (§4.3);
+    // The slot defined just below is the +1's owner on every path;
     // the raw crossing the tag-dispatch arms after that is a borrow of the
     // slot's value, so the block-pin check does not apply.
     auto iterable = compile(iter_expr).consume_unchecked();
@@ -8758,7 +8761,7 @@ struct JIT {
     // values into closure pointers (see culebra_runtime_iter_protocol_open).
     //
     // Opened while the iterator is still in its Owned handle: rejecting a
-    // broken one throws, and the §4.8 unwind-temp window frees the handle on
+    // broken one throws, and the unwind-temp window frees the handle on
     // that edge — the slot has not taken ownership yet at this point.
     emit_call(
         module_->getOrInsertFunction(
@@ -8770,7 +8773,7 @@ struct JIT {
 
     // The slot owns the iterator from here (every exit path releases it); the
     // raw deliberately crosses the blocks below with the slot as its per-edge
-    // releaser (§4.3) — hence unchecked.
+    // releaser — hence unchecked.
     llvm::Value* iter_val = iter_owned.consume_unchecked();
     builder_.CreateStore(iter_val, c.iter);
     builder_.CreateStore(builder_.getInt8(FOR_PROTO), c.kind);
@@ -10517,7 +10520,7 @@ struct JIT {
 
         builder_.SetInsertPoint(mergeBB);
         // The merged +1 crosses the remaining prologue emissions (type
-        // check) into declare_local, which absorbs it (§4.7 transfer) — the
+        // check) into declare_local, which absorbs it (a transfer) — the
         // pre-existing prologue choreography, hence unchecked.
         argVal = merge.finish(mergeBB).consume_unchecked();
       }
@@ -10665,7 +10668,7 @@ struct JIT {
 
     // The body's result stays in its Owned across the epilogue: the scope
     // teardown below branches through owned.exit/owned.cont blocks, so a
-    // bare +1 would cross them (§4.9) — it is consumed directly into the
+    // bare +1 would cross them — it is consumed directly into the
     // ret. (On the unfixable niche path — a drop that throws during a
     // *normal* return, which propagates out of the frame with no pad — the
     // value still strands; see the current_lpad_ note below.)
@@ -10736,7 +10739,7 @@ struct JIT {
       if (!fn->hasPersonalityFn()) fn->setPersonalityFn(get_personality_fn());
       UnwindCleanupEmission cleanup_scope(this);
       emit_catch_all_prologue(fnCleanupBB, "fn.exc");
-      // In-flight expression temporaries first (§4.8), then the frame's
+      // In-flight expression temporaries first, then the frame's
       // defers and slots — the same order as finish_scope_cleanup.
       release_unwind_temps();
       if (fnMark) {
@@ -11132,7 +11135,7 @@ struct JIT {
   llvm::Value* emit_property_value_read(llvm::Value* receiver,
                                         llvm::Value* view,
                                         const std::string& name) {
-    // §4.7 invoker-cleans: a getter body's throw is cleaned by the invoke
+    // Invoker-cleans: a getter body's throw is cleaned by the invoke
     // helper's unwind guard, which releases the owner-side receiver +1 —
     // exclude it from the unwind-temp window.
     UnwindCovered cover(this, {receiver});
@@ -11282,7 +11285,7 @@ struct JIT {
             if (method == "map" && postfix.original_tag == "DOT"_) {
               // The fused emission hands the receiver's +1 to exactly one
               // runtime consumer per arm, so consume() BEFORE emitting: a
-              // stale-live handle would let the unwind-temp window (§4.8)
+              // stale-live handle would let the unwind-temp window
               // spill a value the emitted code already released. Declines on
               // AST shape alone (no IR emitted), so re-owning on null is
               // sound.
@@ -11337,8 +11340,9 @@ struct JIT {
   llvm::Value* emit_property_get(llvm::Value* receiver,
                                     const std::string& name,
                                     bool own_receiver = false) {
-    // §4.7: with own_receiver the slow-path helper (culebra_runtime_prop_get)
-    // is the sole releaser of the receiver on its direct-error unwind edge —
+    // Callee-cleans: with own_receiver the slow-path helper
+    // (culebra_runtime_prop_get) is the sole releaser of the receiver on
+    // its direct-error unwind edge —
     // exclude it from the unwind-temp window. A borrow caller's receiver
     // (own_receiver=false) keeps its own cleaner and needs no window either
     // way; covering only the owning form keeps the declaration precise.
@@ -11675,7 +11679,7 @@ struct JIT {
     // must not.
     Owned keyH = compile(postfix);
     auto cond = emit_is_range(keyH.borrow());
-    // Raw handoff into the mutually-exclusive dispatch arms below (§4.7,
+    // Raw handoff into the mutually-exclusive dispatch arms below (
     // the consume_all pattern): each arm is the sole releaser of both +1s
     // on its runtime path, so the block-pin check does not apply.
     auto key = keyH.consume_unchecked();
@@ -11954,7 +11958,7 @@ struct JIT {
       // Hook contract: a non-null result means the hook's emitted code
       // consumed the receiver's +1; a null result (no IR emitted) leaves it
       // untouched. consume() before the hook runs so the unwind-temp window
-      // (§4.8) can't spill a value the emitted code already released; re-own
+      // can't spill a value the emitted code already released; re-own
       // on decline.
       auto rawReceiver = receiver.consume();
       Owned r = h.compile_ufcs_builtin(*this, method, argsAst, rawReceiver);
@@ -12068,7 +12072,7 @@ struct JIT {
                                            llvm::Value* receiver) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
-    // Raw handoff into the mutually-exclusive dispatch arms below (§4.7):
+    // Raw handoff into the mutually-exclusive dispatch arms below:
     // every arm releases or hands off the +1 on its runtime path (see the
     // errBB note), so the block-pin check does not apply.
     auto arg = compile(*argsAst.nodes[0]).consume_unchecked();
@@ -12592,8 +12596,9 @@ struct JIT {
       // single-ownership hand-off the positional path below uses. The callee
       // (compile_function_call_runtime_kwargs) owns it on EVERY exit: its
       // self_guard / posVals[0] Owned covers the argument-expression compiles
-      // (§4.8 window), emit_arg_list_check releases it on a malformed-list
-      // throw, and call_with_kwargs owns the dispatch edges. The old shape —
+      // (the unwind-temp window), emit_arg_list_check releases it on a
+      // malformed-list throw, and call_with_kwargs owns the dispatch
+      // edges. The old shape —
       // retain per arm + release at the merge — leaked the outer +1 whenever
       // the callee threw (the merge release sits past the unwind edge), and
       // guarding it was impossible: the retained copy shares the receiver's
@@ -12849,7 +12854,7 @@ struct JIT {
       // its own +1 (the original ref stays borrowed, the convention the
       // normal path shares — see the leak note in the kwargs path).
       emit_value_retain(callee);
-      // Late-merge arm raw (§4.9): the value lives only on this arm's
+      // Late-merge arm raw: the value lives only on this arm's
       // runtime path and is re-owned when the builder revisits the arm to
       // declare it into call.phi below — holding it in an Owned across the
       // other arms' emission would spill a non-dominating SSA value.
@@ -13800,7 +13805,7 @@ struct JIT {
   Owned compile_return(const peg::Ast& ast) {
     // The return value stays in its Owned across the exit sequence below
     // (iterator disposes, defer runs, scope teardown — all may throw, and a
-    // bare +1 would strand on those edges, §4.9): the window spills it
+    // bare +1 would strand on those edges): the window spills it
     // around each invoke, and it is consumed directly into the ret.
     Owned valOwned = ast.nodes.empty() ? own(make_nil())
                                        : compile(*ast.nodes[0]);
@@ -14015,7 +14020,7 @@ struct JIT {
     };
     // The body value stays in its Owned across the scope teardown (which
     // branches through owned.exit/cont and may invoke a throwing drop —
-    // §4.9): the window releases it on that edge, and it is consumed
+    // the window releases it on that edge, and it is consumed
     // directly into the result store.
     Owned tryOwned = compile(*ast.nodes[0]);
     // Fill/erase the body cleanup while the scope is live; it re-raises to the
@@ -14859,7 +14864,7 @@ inline llvm::Value* JIT::emit_inlined_iter_reduce(
 
   IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
   // Guard the accumulator: the protocol open and `has_next()` below can throw
-  // while it is still a codegen temp — nobody's property (§4.3).
+  // while it is still a codegen temp — nobody's property.
   auto accAlloca = make_build_guard(init);
   auto cleanupBB = BasicBlock::Create(ctx_, "iri.cleanup", fn);
   auto savedLpad = current_lpad_;
@@ -15401,7 +15406,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     // message (`start`/`end` are declared `: Long` on the interp methods).
     builder_.SetInsertPoint(argBB);
     // `start` stays Owned while `end` compiles (its evaluation may throw; a
-    // bare +1 first argument used to strand on that edge — §4.9, the window
+    // bare +1 first argument used to strand on that edge, the window
     // covers it), and both stay Owned through the type checks below.
     Owned startO = compile(*argsAst.nodes[0]);
     Owned endO = compile(*argsAst.nodes[1]);
@@ -15738,7 +15743,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   if (method == "get" && argsAst.nodes.size() == 2) {
     auto objPtr = expect_receiver_tag(receiver, TAG_OBJECT, "get");
     // The key stays Owned while the fallback compiles (its evaluation may
-    // throw; a bare +1 key used to strand on that edge — §4.9), then both
+    // throw; a bare +1 key used to strand on that edge), then both
     // are consumed at the handoff: the runtime fn consumes the key's +1 and
     // (on a hit) the fallback's +1, returning the stored value (+1) or the
     // fallback. No IR-level release.
@@ -16013,7 +16018,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     if (is_inlinable_lambda(cb_ast, /*expected_arity=*/2)) {
       // The seed's +1 crosses into the dispatch arms as a re-assembled
       // {tag,data} value (the scalar-crossing idiom — a Pinned raw would
-      // trip the §4.9 block check here): each runtime path consumes it
+      // trip the block check here): each runtime path consumes it
       // exactly once — the inline loops absorb it as the accumulator, and
       // the receiver-error arm releases it via hof_owned (a heap seed used
       // to strand on that edge).
@@ -16032,7 +16037,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
           }));
     }
     // The seed's +1 crosses the callback's compilation (which opens new
-    // blocks) as re-assembled {tag, data} scalars — the same §4.9
+    // blocks) as re-assembled {tag, data} scalars — the same
     // scalar-crossing idiom as the inlined arm above. A raw consume()d
     // %Value held across compile(cb_ast) aborted codegen for a heap seed
     // with a non-inlinable callback.
@@ -16369,7 +16374,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
 
   if (method == "take_while" && argsAst.nodes.size() == 1) {
     expect_iter_receiver(receiver, "take_while");
-    // The callback stays Owned across the site-publish call (§4.9), then
+    // The callback stays Owned across the site-publish call, then
     // callee-consumes: the factory call is the very next runtime step and
     // owns the +1 from entry.
     Owned f = compile(*argsAst.nodes[0]);
@@ -16421,8 +16426,8 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   // scan(init, f): the seed is callee-consumed alongside the callback, so
   // both are compiled before the factory call takes ownership of each. The
   // seed stays in its Owned until the call — compiling the callback can end
-  // the block (a heap seed made it an invoke), and a raw +1 may not cross one
-  // (§4.9); the §4.8 window covers the handle in the meantime.
+  // the block (a heap seed made it an invoke), and a raw +1 may not cross
+  // one; the window covers the handle in the meantime.
   if (method == "scan" && argsAst.nodes.size() == 2) {
     expect_receiver_tag(receiver, TAG_OBJECT, "scan");
     Owned seed = compile(*argsAst.nodes[0]);

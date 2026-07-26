@@ -52,7 +52,7 @@ ratchet "tail self-releases (sendable_jit.h)" "$tail_self" 0
 
 # Helper-side (runtime C++) bare RC calls per file (GAP3-ENFORCE ratchet). A
 # helper that owns a value across a may-throw region uses the RAII forms
-# (JitOwnedVal / JitMethodSelf / JitMethodArgs / JitUnwindRelease, §4.7); a
+# (JitOwnedVal / JitMethodSelf / JitMethodArgs / JitUnwindRelease); a
 # new bare call is either a normal-path consume that belongs in one of those
 # or fresh migration debt — justify it in review before raising a ceiling.
 count_bare() { # file
@@ -61,19 +61,19 @@ count_bare() { # file
 }
 # 96 -> 98 (2026-07-12, reviewed): the two additions are the kwarg
 # resolver's ctor-catch releases of the un-consumed kw/splat slab +1s on a
-# mid-merge throw — the throw-edge releaser the §4.7 callee-consumes
+# mid-merge throw — the throw-edge releaser the callee-consumes
 # contract requires (a leak FIX inside the owning RAII class, not new debt;
 # JitUnwindRelease is fixed-arity and cannot hold a variable slab).
 ratchet "bare RC calls (stdlib_jit.h)" "$(count_bare include/stdlib_jit.h)" 98
 ratchet "bare RC calls (sendable_jit.h)" "$(count_bare include/sendable_jit.h)" 17
 
 # Codegen-side hand-placed throw guards: the automatic unwind-temp window
-# (§4.8) is the default cleaner for a codegen-owned +1, so the hand-placed
+# is the default cleaner for a codegen-owned +1, so the hand-placed
 # ThrowGuard population should only shrink as sites migrate onto it.
 tg=$(grep -cE "ThrowGuard [a-z_]+\(this" include/jit.h)
 ratchet "ThrowGuard sites (jit.h)" "$tg" 21
 
-# Raw-across-BB ENFORCE (§4.9). consume() is block-pinned (using the raw
+# Raw-across-BB ENFORCE. consume() is block-pinned (using the raw
 # outside its pin block aborts codegen), so the only ways a bare +1 can
 # still cross a basic block are the forms counted here — each must shrink
 # as sites migrate onto Pinned / OwnedPhi / scope slots:
@@ -102,7 +102,7 @@ vphi=$(grep -v "jit_->builder_" include/jit.h | grep -c "CreatePHI(valueType_" \
        || true)
 ratchet "hand-built %Value phis (jit.h)" "$vphi" 0
 
-# compile_* raw-return seam (§4.9, closed 2026-07-12): every compile_* helper
+# compile_* raw-return seam (closed 2026-07-12): every compile_* helper
 # and extension compile hook returns Owned — a raw llvm::Value* return type on
 # a compile_* function reopens the untyped +1 seam between the node compilers
 # and compile()'s dispatch. Borrowed-contract emitters were renamed emit_*

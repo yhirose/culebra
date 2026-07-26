@@ -812,7 +812,7 @@ let tps = [
   '[1, 1, 2, 1].iter().chunk_by(|x| x).collect()',
   '[1, 2].iter().scan(0, |a, x| a + x).collect()',
   # A heap seed keeps the +1 alive across the callback compile, which ends the
-  # block — the raw form tripped the §4.9 pin check and aborted codegen.
+  # block — the raw form tripped the pin check and aborted codegen.
   '[1, 2].iter().scan([0], |a, x| [a[0] + x]).collect()',
   'range(3).scan([0], |a, x| [a[0] + x]).collect()',
   '[1, 2.5].sum()', '[1, 2.5].iter().sum()', '[1, 2.5].product()',

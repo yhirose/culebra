@@ -161,7 +161,7 @@ else
   echo "leak-abort: chain-and-ufcs-kwargs no-leak OK"
 fi
 
-# --- Case 6: block-pinned raws (§4.9) — argument pairs and compound keys ----
+# --- Case 6: block-pinned raws — argument pairs and compound keys ---------
 # Pins the raw-across-BB ENFORCE's Phase-2 strand fixes: a heap +1 held
 # while a LATER argument's evaluation throws (slice bounds, obj.get /
 # get_or_put keys, stdlib-extension argument pairs), and a compound-assign
@@ -180,7 +180,7 @@ fn shapes() {
   try { Math.pow(mk(), boom()) } catch e {}
   try { Math.min(mk(), boom(), 1) } catch e {}
   // Inlined-lambda reduce with a HEAP seed: the seed +1 crosses the
-  // receiver-dispatch arms (merely compiling this pins §4.9 — the shape
+  // receiver-dispatch arms (merely compiling this pins the raw — the shape
   // used to abort codegen; the error arm releases it via hof_owned) and
   // the normal path absorbs it as the accumulator.
   try { (1).reduce(mk(), |a, b| a + b) } catch e {}

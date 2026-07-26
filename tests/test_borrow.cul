@@ -43,7 +43,7 @@ fn closed_msg(thunk) {
             'ClosedError: Counter borrow is no longer valid (its owner was dropped or mutated)')
 }
 
-# --- An escaped borrow keeps its owner alive (escape-based ownership §6):
+# --- An escaped borrow keeps its owner alive (escape-based ownership):
 # the borrow's parent reference makes the Box reachable, so scope exit
 # does NOT drop it — the borrow stays valid, and the Box's drop falls to
 # the GC backstop once the borrow itself dies. ClosedError is for

@@ -95,7 +95,7 @@ culebra_runtime_owned_register_drop(JitObject* o) {
   if (o) _jit_owned_bind_drop(o);
 }
 
-// GC backstop finalize (design Â§9 exactly-once backstop, PEP 442
+// GC backstop finalize (design §9 exactly-once backstop, PEP 442
 // style): runs once per collection, before any sweep, over the intact
 // dead set. Pin every dead struct's refcount first — a drop body that
 // breaks its own cycle would otherwise free a sibling ahead of its
