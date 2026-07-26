@@ -8,10 +8,9 @@ common.js names, because SPRITES.w feeds both collision (Util.overlap) and
 scale (SPRITES.SCALE = 0.3 / PLAYER_STRAIGHT.w). Swap the pictures, keep the
 rectangles, and the game plays identically.
 
-Palette comes from the swatch sessions (reference/palette/): base colours, a
-saturation boost, and a narrowing of each light/dark pair. The recipe is
-reproduced here rather than imported so this file is the single thing the
-assets depend on.
+Palette is base colours, a saturation boost, and a narrowing of each light/dark
+pair. The whole recipe lives here, so this file is the single thing the assets
+depend on.
 
 The four day-cycle backgrounds must be geometry-identical — the cross-fade
 blends them pixel for pixel, so a ridge line one pixel out would ghost. That is
@@ -30,7 +29,6 @@ import sys
 import zlib
 
 # --- palette -----------------------------------------------------------------
-# Verified in the colour-swatch sessions; see reference/palette/README.md.
 SAT_K = 0.85
 NARROW = 0.30
 NO_BOOST = {"INK", "INK2", "CLOUD", "LANE", "CREAM", "PLATE"}

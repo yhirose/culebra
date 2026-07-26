@@ -7,7 +7,7 @@ the AI traffic, collision, and lap timing all come from the original. What's
 different: the art (generated, not lifted — see `assets/README.md`), a
 four-scene day cycle that cross-fades once per lap, and the shape of the hot
 loops, rewritten for a tree-walking interpreter rather than a JIT'd browser
-(see `racer.cul`'s header comment and `spike/README.md` for why).
+(see `racer.cul`'s header comment for why).
 
 ## Run
 
@@ -48,5 +48,4 @@ frame (well past 60fps); the interpreter runs at 17–25 ms a frame (40–60fps)
 built by discarding the C++ exceptions that `return`/`break`/`continue` cost
 a tree-walking interpreter, culling a screen row's worth of road at a time
 instead of a segment at a time, and skipping the `Canvas` preamble wrappers
-in the draw loop. Numbers and the reasoning behind each change are in
-`spike/README.md`.
+in the draw loop.

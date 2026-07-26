@@ -44,11 +44,10 @@ backgrounds still share one mask.
 
 ## Palette
 
-From the colour-swatch sessions (`../reference/palette/`): warm pastel, plum-ish
-ink instead of black, dithering instead of intermediate tones. The base values,
-the saturation boost and the light/dark narrowing all live at the top of
-`gen_assets.py`, which is the single source for both the art and `racer.cul`'s
-road colours.
+Warm pastel, plum-ish ink instead of black, dithering instead of intermediate
+tones. The base values, the saturation boost and the light/dark narrowing all
+live at the top of `gen_assets.py`, which is the single source for both the art
+and `racer.cul`'s road colours.
 
 `sprites.png` is baked once with the **day** palette and is not recoloured per
 scene — only the backgrounds have four variants.
