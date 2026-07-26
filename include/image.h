@@ -15,11 +15,12 @@
 // hash) that every binary simply carries. The cost is ~65 KB of code: the
 // runtime helper is `used`, so it is retained rather than dead-stripped.
 //
-// The implementation is compiled STBI_STATIC, so every translation unit that
-// includes this header gets its own private copy of stb's internals and no two
-// can collide. Only the PNG loader is compiled in (STBI_ONLY_PNG), and stb's
-// stdio path is off (STBI_NO_STDIO): input is always a string already in
-// memory.
+// The implementation is compiled STB_IMAGE_STATIC, so every translation unit
+// that includes this header gets its own private copy of stb's internals and no
+// two can collide — including raylib's own bundled stb_image, which is linked
+// into the same binary whenever the Canvas window backend is on. Only the PNG
+// loader is compiled in (STBI_ONLY_PNG), and stb's stdio path is off
+// (STBI_NO_STDIO): input is always a string already in memory.
 
 #include <climits>
 #include <cstdint>
@@ -28,7 +29,7 @@
 #include <string_view>
 #include <vector>
 
-#define STBI_STATIC
+#define STB_IMAGE_STATIC
 #define STBI_NO_STDIO
 #define STBI_ONLY_PNG
 #define STB_IMAGE_IMPLEMENTATION
