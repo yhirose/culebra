@@ -149,6 +149,10 @@ struct JIT {
     // building the Array entirely — saves a heap allocation per call
     // for the common no-varargs case.
     bool uses_args = false;
+    // True if the body reads the `fn` recursion handle. Gates the
+    // per-frame bound-handle cache slot (see compile_identifier's `fn`
+    // path); frames that never mention `fn` pay nothing.
+    bool uses_fn = false;
   };
 
   // LEXICAL_SCOPE nodes that contain a DEFER within their own scope level
@@ -3345,13 +3349,15 @@ struct JIT {
 
   // --- Free variable analysis ---
 
-  // `self` is the implicit method receiver; `fn` is the implicit
-  // recursion handle (the enclosing function's own value). Both are
-  // language-core keywords bound in every function frame. `range`/`iota`
-  // are core globals (see `try_compile_core_global`); everything else
-  // (inspect/Math/IO/...) is supplied by the registered extension.
+  // `fn` is the implicit recursion handle (the enclosing function's own
+  // value), bound in every function frame. `self` is NOT here: it is a
+  // lexically capturable binding (note_free_var special-cases it) so a
+  // nested closure inherits the enclosing frame's receiver, interp-style.
+  // `range`/`iota` are core globals (see `try_compile_core_global`);
+  // everything else (inspect/Math/IO/...) is supplied by the registered
+  // extension.
   static bool is_builtin_var(const std::string& name) {
-    if (name == "fn" || name == "self") return true;
+    if (name == "fn") return true;
     if (name == "range" || name == "iota") return true;
     auto& h = current_hooks();
     return h.is_builtin_var && h.is_builtin_var(name);
@@ -3581,6 +3587,20 @@ struct JIT {
                      std::vector<const std::set<std::string>*>& outer,
                      FuncInfo& info) {
     if (my_locals.contains(name)) return;
+    // `self` is always capturable: every frame defines a self slot (the
+    // receiver, or the lexical fallback), so the outer-scope scan below
+    // would never see it in a locals set. Register it unconditionally;
+    // the enclosing frame cell-promotes its slot via the merge loop's
+    // matching special case, and a frame with no lexical self feeds the
+    // capture a NO_SELF cell (emit_closure_build's fallback) so the read
+    // guard still raises the interp's NameError.
+    if (name == "self") {
+      if (std::find(info.free_vars.begin(), info.free_vars.end(), name) ==
+          info.free_vars.end()) {
+        info.free_vars.push_back(name);
+      }
+      return;
+    }
     for (auto* scope : outer) {
       if (scope->contains(name)) {
         if (std::find(info.free_vars.begin(), info.free_vars.end(), name) ==
@@ -3633,6 +3653,17 @@ struct JIT {
       for (const auto& fv : nested_info.free_vars) {
         if (my_locals.contains(fv)) {
           info.captured_locals.insert(fv);
+        } else if (fv == "self") {
+          // A nested closure captures THIS frame's self slot (dynamic
+          // receiver, or our own lexical fallback) — cell-promote it AND
+          // keep propagating so our fallback is wired the same way.
+          // (An explicit `let self` shadow lands in my_locals and takes
+          // the plain-local arm above instead.)
+          info.captured_locals.insert(fv);
+          if (std::find(info.free_vars.begin(), info.free_vars.end(), fv) ==
+              info.free_vars.end()) {
+            info.free_vars.push_back(fv);
+          }
         } else {
           if (std::find(info.free_vars.begin(), info.free_vars.end(), fv) ==
               info.free_vars.end()) {
@@ -3750,6 +3781,13 @@ struct JIT {
         outer.pop_back();
         propagate(method_info);
       }
+      // The field-init frame is a receiver frame (build_class_instance /
+      // the `new` body always invoke it with the instance as `self`), so
+      // its lexical-fallback capture is dead weight — drop it like
+      // analyze_fn_common does for METHOD bodies. Must happen before
+      // propagate: the enclosing frame would otherwise carry a free
+      // `self` without the cell promotion the capture needs.
+      std::erase(field_info.free_vars, "self");
       propagate(field_info);
       func_info_[&node] = std::move(field_info);
       // Each `new` body invokes the field-init closure right after its
@@ -3848,6 +3886,8 @@ struct JIT {
       // `__ARGS__` is auto-bound by the function prologue; flag use so
       // the prologue can skip the Array allocation when nothing reads it.
       if (name == "__ARGS__") info.uses_args = true;
+      // Reading the `fn` handle allocates the bound-handle cache slot.
+      if (name == "fn") info.uses_fn = true;
       note_free_var(name, my_locals, outer, info);
       return;
     }
@@ -4076,6 +4116,19 @@ struct JIT {
     visit_for_frees(body_ast, my_locals, outer, info);
     scan_eh_defer(body_ast, true, info);
 
+    // Receiver frames (methods, trait defaults) always arrive with a
+    // dispatched receiver — every invoke path passes one, and a detached
+    // read binds it into the wrapper (culebra_runtime_bind_method_value).
+    // Their lexical-fallback capture of an enclosing `self` is therefore
+    // dead weight: drop it. captured_locals keeps "self" so a nested
+    // closure inside the method still cell-captures the receiver slot.
+    {
+      using namespace peg::udl;
+      if (info_key->tag == "METHOD"_ || info_key->tag == "TRAIT_METHOD"_) {
+        std::erase(info.free_vars, "self");
+      }
+    }
+
     func_info_[info_key] = info;
     return info;
   }
@@ -4090,8 +4143,8 @@ struct JIT {
   }
 
   // METHOD ast: [IDENTIFIER, PARAMETERS, BLOCK]. Analyzed just like a
-  // nested FUNCTION — method-dispatch's implicit `self` is already
-  // classified as a builtin by `is_builtin_var`, so no extra setup.
+  // nested FUNCTION — the implicit `self` arrives as the dispatched
+  // receiver (analyze_fn_common drops the lexical-fallback capture).
   FuncInfo analyze_method(
       const peg::Ast& methodAst,
       std::vector<const std::set<std::string>*>& outer) {
@@ -5235,6 +5288,28 @@ struct JIT {
   Owned compile_identifier(const peg::Ast& ast) {
     auto name = std::string(ast.token);
     auto slot = lookup_var(name);
+    // A value-read of the `fn` handle in a frame that has a receiver (or
+    // a lexical fallback) yields the receiver-bound wrapper, like the
+    // interp, where a method call's `fn` IS the bound wrapper. The helper
+    // caches the thunk in `fn.bound` so repeated reads compare equal and
+    // the frame exit releases exactly one. With no receiver it returns
+    // the raw closure (+1) — a plain call's `fn` stays the raw function.
+    if (name == "fn" && slot) {
+      if (auto cache = lookup_var("fn.bound")) {
+        auto ptrTy = llvm::PointerType::get(ctx_, 0);
+        auto selfSlot = lookup_var("self");
+        auto selfVal = load_slot_raw(*selfSlot, "self.forfn");
+        // 16-byte by-value return — route through emit_value_call so the
+        // Win64 sret ABI matches the C++ side (no-op on SysV).
+        return own(emit_value_call(
+            module_->getOrInsertFunction(
+                rt::fn_handle, valueType_, builder_.getInt8Ty(),
+                builder_.getInt64Ty(), ptrTy, ptrTy),
+            {extract_tag(selfVal), extract_data(selfVal),
+             current_closure_arg_, cache->alloca},
+            "fn.handle"));
+      }
+    }
     if (slot) return own(load_slot(*slot, name));
     // bare stdlib namespace (e.g. `let m = IO`) — fetch its lazy-built
     // sentinel Object so the value can be passed around like any user
@@ -10292,10 +10367,44 @@ struct JIT {
       emit_value_retain(fnVal);
       define_var("fn", make_stack_slot("fn", fnVal));
     }
+    // Cache for the receiver-bound `fn` handle (interp parity: a method
+    // call's `fn` is the bound wrapper, so an escaped handle keeps its
+    // receiver). Built lazily on the first value-read of `fn`
+    // (culebra_runtime_fn_handle); a direct `fn(...)` call bypasses it.
+    // The owned slot releases the cached thunk on frame exit.
+    if (info.uses_fn) {
+      define_var("fn.bound", make_stack_slot("fn.bound", make_nil()));
+    }
 
-    // `self` is from arg; if captured, allocate cell. The arg's +1 was
-    // pre-retained by the caller (via load/compile of the receiver) and
-    // is transferred into the slot — no extra retain needed.
+    // Lexical fallback: a frame whose body (or nested closure) reads
+    // `self` captures the enclosing frame's self cell. A dynamic receiver
+    // still wins — the merge picks the arg unless it is NO_SELF, mirroring
+    // the interp, where a receiver call binds `self` in the callEnv and a
+    // plain call falls through the def_env chain. Receiver frames never
+    // carry the capture (analyze_fn_common strips it), so methods keep the
+    // arg-only path below.
+    auto selfFvIt =
+        std::find(info.free_vars.begin(), info.free_vars.end(), "self");
+    if (selfFvIt != info.free_vars.end()) {
+      size_t selfIdx = selfFvIt - info.free_vars.begin();
+      auto capturesFieldPtr =
+          builder_.CreateStructGEP(closureType_, clsArg, 3, "caps.ptr");
+      auto capturesArr = builder_.CreateLoad(ptrTy, capturesFieldPtr, "caps");
+      auto cellSlotPtr = builder_.CreateInBoundsGEP(
+          ptrTy, capturesArr, {builder_.getInt64(selfIdx)}, "self.cellslot");
+      auto cellPtr = builder_.CreateLoad(ptrTy, cellSlotPtr, "self.cell");
+      // The helper picks the receiver (its +1 transfers through) or the
+      // captured cell's value (retained inside — the RC stays behind the
+      // runtime seam, not a bare codegen retain).
+      selfArg = emit_value_call(
+          module_->getOrInsertFunction(rt::self_merge, valueType_,
+                                       builder_.getInt8Ty(),
+                                       builder_.getInt64Ty(), ptrTy),
+          {extract_tag(selfArg), extract_data(selfArg), cellPtr}, "self");
+    }
+
+    // `self` is from arg (or the lexical merge above); if captured,
+    // allocate cell. The slot owns a +1 either way.
     if (info.captured_locals.contains("self")) {
       define_var("self", make_cell_slot("self", selfArg));
     } else {
@@ -10307,6 +10416,9 @@ struct JIT {
     // borrowed cell refs — the closure object owns them.
     for (size_t i = 0; i < info.free_vars.size(); i++) {
       const auto& fv = info.free_vars[i];
+      // `self`'s capture feeds the lexical merge above; the merged value
+      // lives in the frame's own self slot, never as a borrowed cell ref.
+      if (fv == "self") continue;
       auto capturesFieldPtr =
           builder_.CreateStructGEP(closureType_, clsArg, 3, "caps.ptr");
       auto capturesArr =
@@ -10870,6 +10982,23 @@ struct JIT {
       for (size_t i = 0; i < n; i++) {
         const auto& fv = info.free_vars[i];
         auto slot = lookup_var(fv);
+        if (!slot && fv == "self") {
+          // No enclosing self slot (top-level closure, incl. imported
+          // module bodies): feed the capture a fresh NO_SELF cell so the
+          // frame's lexical merge keeps the sentinel and a read raises
+          // the interp's NameError. cell_new returns +1, which becomes
+          // the closure's ref — no extra retain.
+          auto noSelf = make_no_self();
+          auto cellPtr = emit_call(
+              module_->getOrInsertFunction(rt::cell_new, ptrTy,
+                                           builder_.getInt8Ty(),
+                                           builder_.getInt64Ty()),
+              {extract_tag(noSelf), extract_data(noSelf)}, "self.nocell");
+          auto dstSlot = builder_.CreateInBoundsGEP(
+              ptrTy, capturesArr, {builder_.getInt64(i)});
+          builder_.CreateStore(cellPtr, dstSlot);
+          continue;
+        }
         if (!slot) {
           throw std::runtime_error(
               std::format("cannot find free var '{}' in scope", fv));
@@ -11030,11 +11159,21 @@ struct JIT {
     using namespace peg::udl;
     auto calleeNode = ast.nodes[0];
     CallRootSaver call_root(*this, ast);
+    // Direct `fn(...)` recursion re-passes the frame's (merged) self so the
+    // callee sees the same receiver — interp parity, where a method call's
+    // `fn` is the bound wrapper. Reading the raw slot here (not
+    // compile_identifier's fn.handle path) keeps recursion allocation-free.
+    bool fn_direct_call =
+        calleeNode->tag == "IDENTIFIER"_ && calleeNode->token == "fn" &&
+        ast.nodes.size() > 1 &&
+        ast.nodes[1]->original_tag == "ARGUMENTS"_ &&
+        lookup_var("fn.bound") != nullptr;
     // The chain value rolls through one Owned handle: each postfix either
     // consumes the current +1 into its step or borrows it, and move-assigning
     // the step's fresh +1 releases the previous link at the same insertion
     // point the hand-placed releases used to occupy.
-    Owned callee = compile(*calleeNode);
+    Owned callee = fn_direct_call ? own(load_slot(*lookup_var("fn"), "fn"))
+                                  : compile(*calleeNode);
     auto sn = begin_safe_nav(ast);
 
     for (auto i = 1u; i < ast.nodes.size(); i++) {
@@ -11092,11 +11231,22 @@ struct JIT {
           Owned result;
           {
             ThrowGuard guard(this, {callee.borrow()});
+            // `fn(...)`: thread the frame's self through (+1; the callee
+            // consumes it). load_slot under a synthetic name mints the +1
+            // inside the emitter and skips the NameError guard — passing
+            // NO_SELF through to the callee's own fallback is legal here.
+            llvm::Value* fnSelf = nullptr;
+            if (fn_direct_call && i == 1) {
+              auto selfSlot = lookup_var("self");
+              fnSelf = load_slot(*selfSlot, "self.fnrec");
+            }
             if (fnAst && !has_dynamic_splat && need_kwarg_path) {
               result = compile_function_call_with_kwargs(
                   postfix, callee.borrow(), *fnAst);
             } else {
-              result = compile_function_call(postfix, callee.borrow());
+              result = compile_function_call(postfix, callee.borrow(), fnSelf,
+                                             /*own_self_on_error=*/fnSelf !=
+                                                 nullptr);
             }
           }
           callee = std::move(result);

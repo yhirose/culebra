@@ -2484,6 +2484,11 @@ inline void _culebra_callable_adapter(JitValue* __ret, JitClosure* self, int8_t,
 // the real arity. A user closure consults its registered param meta's
 // cb_min/cb_max; absent meta (rare) falls back to exact match.
 inline bool _culebra_callback_arity_ok(JitClosure* cls, size_t expected) {
+  // A bound-method wrapper (detached read / `fn` handle) carries no meta of
+  // its own; judge the underlying method, like the interp's wrapper, which
+  // copies the underlying params. The call itself still goes through the
+  // wrapper so `self` stays bound.
+  cls = _jit_unwrap_bound_method(cls);
   // ns-method closures share one trampoline fn_ptr (no per-fn JitParamMeta)
   // and a kwarg-capable method is JIT_VARIADIC_ARITY, which would wrongly
   // accept any callback arity. Consult the hook for its real bounds first so

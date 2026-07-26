@@ -1166,15 +1166,34 @@ size = fn (x) { 99 }
 ```
 
 UFCS only fires when DOT is immediately followed by an argument list;
-bare property access (`x.name` without `()`) never uses UFCS. `self`
-is **not** bound inside UFCS invocations — the call is semantically a
-free-function call with the receiver in the first positional slot.
+bare property access (`x.name` without `()`) never uses UFCS. A UFCS
+invocation does **not** bind `self` to the receiver — the call is
+semantically a free-function call with the receiver in the first
+positional slot.
 
-`self` exists only for a call that supplied a receiver. Reading it in
-a body reached without one — a plain `f(x)`, a UFCS invocation, a
-function handed to a built-in like `map` — raises `NameError:
-undefined variable 'self'`, exactly as any other unbound name does,
-and at the point of the read rather than on entry to the body.
+`self` resolves in two steps. A call that supplied a receiver binds it
+for the duration of the call, and that dynamic binding always wins. A
+body reached without one — a plain `f(x)`, a UFCS invocation, a
+function handed to a built-in like `map`, a `defer` block — falls back
+to the `self` of the lexically enclosing function, walking outward as
+far as needed, so a nested `fn`, lambda, or closure returned from a
+method keeps seeing the method's receiver. Only when neither a
+receiver nor an enclosing `self` exists does the read raise
+`NameError: undefined variable 'self'`, exactly as any other unbound
+name does, and at the point of the read rather than on entry to the
+body.
+
+Reading a function-valued property *as a value* (`let m = o.f`, no
+call parens) returns a **bound method**: a fresh wrapper that carries
+`o` as its `self`. The binding is permanent — attaching the wrapper to
+another object and calling it as a method still runs with the original
+receiver — and each read mints a new wrapper, so `o.f == o.f` is
+`false`. This applies uniformly to object-literal properties, class
+methods, statics, and constructors (`let mk = C.new`). Inside a body,
+the implicit recursion handle `fn` refers to the value the call was
+made through, so in a method-invoked frame `fn` is the bound wrapper —
+recursing through `fn(...)` or returning `fn` keeps the current
+receiver.
 
 **JIT**: UFCS is supported under `--jit`. Resolution happens at
 runtime: if the receiver carries a property by that name the method

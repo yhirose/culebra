@@ -237,6 +237,38 @@ A debug-only drift check at startup verifies that every method in
 `kNsMethods` exists in the interpreter table — preventing the two
 backends from silently diverging.
 
+### `self` binding
+
+The interpreter gets `self`'s two-step resolution (receiver first,
+lexical fallback second — see language.md §Methods and UFCS) for free:
+a receiver call binds `self` in the callEnv, a plain call binds
+nothing, and the def_env chain supplies the enclosing method's binding.
+The JIT reproduces it structurally. Every frame receives `self` as two
+scalar ABI args; a frame whose body (or nested closure) reads `self`
+lists it as a free variable, so the closure captures the enclosing
+frame's self cell like any other variable. The prologue then merges:
+if the incoming receiver is the NO_SELF sentinel, the captured cell's
+value takes its place (`culebra_runtime_self_merge`). Method and
+trait-method frames skip all of this — every path that can invoke them
+passes a receiver, so the analysis strips their fallback capture and
+their prologue binds the arg directly, keeping the hot path unchanged.
+Reads still guard on the sentinel, which is what turns "no receiver,
+no enclosing self" into the interp's NameError at the read site.
+
+A function-valued property read (`let m = o.f`) binds permanently:
+`culebra_runtime_bind_method_value` wraps every TAG_FUNC view on an
+Object receiver — own slot, proto method, static, ctor alike — in a
+`[receiver, method]` thunk, the twin of the interp's
+`_wrap_method_with_this`. The thunk ignores (and releases) any
+receiver a later call supplies, so re-attaching a bound method never
+rebinds; introspection-style consumers (callback-arity checks) unwrap
+to the underlying method instead, since the shared thunk fn_ptr
+carries no param metadata of its own. The `fn` recursion handle
+follows the same model: a direct `fn(...)` call re-passes the frame's
+merged self, and a value-read materializes the bound wrapper once per
+frame (`culebra_runtime_fn_handle`, cached in an owned slot) so `fn`
+escapes with its receiver like the interp's wrapper-as-`fn` does.
+
 ### HOF fusion
 
 `range(n).filter(p).map(f).take(k).collect()` is recognized as a

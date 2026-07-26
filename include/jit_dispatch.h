@@ -1405,22 +1405,42 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
 // `self` = Nil; this thunk substitutes the captured receiver so the method
 // body sees the right `self`. It forwards args/arity unchanged, so it composes
 // with every existing invoke path and with the callee's own arg handling.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void _jit_bound_method_thunk(JitValue* __ret, 
-    JitClosure* self, int8_t /*self_tag: Nil on a value call*/,
-    int64_t /*self_data*/, int64_t n_args, JitValue* args) {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void _jit_bound_method_thunk(JitValue* __ret,
+    JitClosure* self, int8_t in_self_tag, int64_t in_self_data,
+    int64_t n_args, JitValue* args) {
+  // The binding is permanent: an incoming receiver (the wrapper attached to
+  // another object and method-called) is IGNORED, but its +1 was transferred
+  // to this callee — consume it. Held to scope exit, NOT released eagerly:
+  // the incoming +1 may be the last ref to the object whose slot holds THIS
+  // wrapper, and freeing it up front frees the capture cells mid-call
+  // (ASan-confirmed UAF). NO_SELF/nil value calls make the release a no-op.
+  JitOwnedVal in_self_guard(JitValue{in_self_tag, in_self_data});
   JitValue receiver = self->captures[0]->value;
   auto* method = reinterpret_cast<JitClosure*>(self->captures[1]->value.data);
   // The callee frame takes ownership of `self` on entry (a direct call retains
   // the receiver before passing it). Retain the captured receiver per call so
   // repeated invocations don't drain the wrapper's single held reference.
+  // The callee consumes that +1 on EVERY exit — a compiled frame's self slot
+  // releases on a normal return AND via its fn-level cleanup pad on a throw,
+  // and native endpoints hold self in RAII (JitMethodSelf) — so no throw
+  // guard belongs here. (Same contract as _culebra_callable_adapter, where
+  // an extra guard release was an ASan-confirmed use-after-free.)
   culebra_runtime_value_retain(receiver.tag, receiver.data);
-  // The method (a user proto method — never a builtin) frame consumes `self` on
-  // a normal return; on a C++ throw the caller cleans up, so free the retained
-  // receiver here if the body throws (callee-consumes / caller-cleans-on-throw).
-  JitOwnedVal recv_guard(receiver);
-  auto r = _jit_invoke(method, receiver, n_args, args);
-  recv_guard.consume();
-  { *__ret = r; return; }
+  { *__ret = _jit_invoke(method, receiver, n_args, args); return; }
+}
+
+// See through bound-method wrappers to the underlying method for
+// introspection-style checks (callback arity bounds, param metadata):
+// the thunk's own fn_ptr carries no meta, the wrapped method's does —
+// the interp's wrapper copies the underlying params the same way.
+// Invocation is NOT unwrapped; calls go through the thunk so `self`
+// stays bound.
+inline JitClosure* _jit_unwrap_bound_method(JitClosure* cls) {
+  while (cls->fn_ptr ==
+         reinterpret_cast<void*>(&_jit_bound_method_thunk)) {
+    cls = reinterpret_cast<JitClosure*>(cls->captures[1]->value.data);
+  }
+  return cls;
 }
 
 // Resolve a property read AS A VALUE (`obj.name`, not `obj.name(...)`). When it
@@ -1442,38 +1462,82 @@ CULEBRA_RT_INLINE JitValue _jit_invoke_getter(JitClosure* method,
   return _culebra_invoke_method0(method, {recv_tag, recv_data});
 }
 
+// Build the [receiver, method] bound wrapper (shared by property value
+// reads and the `fn` handle). Registers the thunk as native so
+// sendable_jit rejects an escapee with the interp's SendError (a bound
+// method has no params_ast there). Returns a +1-owned TAG_FUNC value.
+CULEBRA_RT_INLINE JitValue _jit_make_bound_method(int8_t recv_tag,
+                                                  int64_t recv_data,
+                                                  JitClosure* method) {
+  _jit_register_native_fn(
+      reinterpret_cast<const void*>(&_jit_bound_method_thunk));
+  auto* bound = culebra_runtime_closure_new(
+      reinterpret_cast<void*>(&_jit_bound_method_thunk), 2, method->arity);
+  culebra_runtime_value_retain(recv_tag, recv_data);
+  bound->captures[0] = culebra_runtime_cell_new(recv_tag, recv_data);
+  JitValue mval{TAG_FUNC, reinterpret_cast<int64_t>(method)};
+  culebra_runtime_value_retain(mval.tag, mval.data);
+  bound->captures[1] = culebra_runtime_cell_new(mval.tag, mval.data);
+  return {TAG_FUNC, reinterpret_cast<int64_t>(bound)};
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_bind_method_value(
     int8_t recv_tag, int64_t recv_data, int8_t view_tag, int64_t view_data,
-    const char* key) {
+    const char* /*key*/) {
   if (view_tag == TAG_FUNC && recv_tag == TAG_OBJECT) {
-    auto* obj = reinterpret_cast<JitObject*>(recv_data);
-    if (obj->proto &&
-        obj->find_slot(key) == static_cast<size_t>(-1)) {  // proto method
-      auto* method = reinterpret_cast<JitClosure*>(view_data);
-      // A getter read as a value auto-invokes 0-arg with `self`=receiver
-      // (interp's eval_property getter branch). Reached only on the bare-read
-      // path; `obj.name()` compiles as a method call and never lands here, so
-      // both spellings yield the same value. `view` is borrowed here (the
-      // caller releases the receiver separately), so nothing to release.
-      if (_jit_is_getter_fn(method->fn_ptr)) {
-        return _jit_invoke_getter(method, recv_tag, recv_data);
-      }
-      // The interp makes a bound method non-Sendable (its wrapper has no
-      // params_ast), so an escapee is rejected rather than shipped without its
-      // `self`. Register the thunk as native so sendable_jit's _jit_is_native_fn
-      // rejects it with the same SendError. Cheap after the first (memoized).
-      _jit_register_native_fn(reinterpret_cast<const void*>(&_jit_bound_method_thunk));
-      auto* bound = culebra_runtime_closure_new(
-          reinterpret_cast<void*>(&_jit_bound_method_thunk), 2, method->arity);
-      culebra_runtime_value_retain(recv_tag, recv_data);
-      bound->captures[0] = culebra_runtime_cell_new(recv_tag, recv_data);
-      culebra_runtime_value_retain(view_tag, view_data);
-      bound->captures[1] = culebra_runtime_cell_new(view_tag, view_data);
-      return {TAG_FUNC, reinterpret_cast<int64_t>(bound)};
+    auto* method = reinterpret_cast<JitClosure*>(view_data);
+    // A getter read as a value auto-invokes 0-arg with `self`=receiver
+    // (interp's eval_property getter branch). Reached only on the bare-read
+    // path; `obj.name()` compiles as a method call and never lands here, so
+    // both spellings yield the same value. `view` is borrowed here (the
+    // caller releases the receiver separately), so nothing to release.
+    // Only class-compiled getters register; own-slot lambdas never match.
+    if (_jit_is_getter_fn(method->fn_ptr)) {
+      return _jit_invoke_getter(method, recv_tag, recv_data);
     }
+    // Bind `self`=receiver for EVERY function-valued property read — own
+    // slot, proto method, static, ctor alike. The interp's
+    // _wrap_method_with_this wraps them all, a fresh wrapper per read
+    // (so `o.f == o.f` is false there, and now here).
+    return _jit_make_bound_method(recv_tag, recv_data, method);
   }
   culebra_runtime_value_retain(view_tag, view_data);
   return {view_tag, view_data};
+}
+
+// Value-read of the `fn` recursion handle (see compile_identifier). With a
+// receiver (or lexical fallback) in `self`, the handle is the bound wrapper
+// — interp parity: a method call's `fn` IS the wrapper, so recursion and
+// escapees keep the original receiver, and a later dynamic receiver does
+// NOT override it (the thunk ignores the incoming self). Cached per frame
+// in `*cache` (an owned slot: reads compare equal, the frame exit releases
+// the single +1). Without a receiver the raw closure is returned — a plain
+// call's `fn` stays the raw, still-Sendable function.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_fn_handle(
+    int8_t self_tag, int64_t self_data, JitClosure* cls, JitValue* cache) {
+  if (self_tag == TAG_NO_SELF) {
+    JitValue raw{TAG_FUNC, reinterpret_cast<int64_t>(cls)};
+    culebra_runtime_value_retain(raw.tag, raw.data);
+    return raw;
+  }
+  if (cache->tag != TAG_FUNC) {
+    *cache = _jit_make_bound_method(self_tag, self_data, cls);
+  }
+  culebra_runtime_value_retain(cache->tag, cache->data);
+  return *cache;
+}
+
+// Frame-prologue lexical merge for `self` (see compile_fn_common): a
+// dynamic receiver wins (its +1 transfers straight through); with none,
+// fall back to the captured enclosing frame's self cell, minting the
+// slot's +1 here. NO_SELF in both means the frame keeps the sentinel and
+// a read raises the interp's NameError via the read guard.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_self_merge(
+    int8_t self_tag, int64_t self_data, JitCell* lex_cell) {
+  if (self_tag != TAG_NO_SELF) return {self_tag, self_data};
+  JitValue v = lex_cell->value;
+  culebra_runtime_value_retain(v.tag, v.data);
+  return v;
 }
 
 // The `.name` / `.params` / `.return_type` value-read path skips

@@ -622,6 +622,8 @@ inline constexpr auto param_pos           = "culebra_runtime_param_pos";
 inline constexpr auto type_check_param    = "culebra_runtime_type_check_param";
 // Trailing underscore on `throw_` dodges C++ keyword collision.
 inline constexpr auto cell_new            = "culebra_runtime_cell_new";
+inline constexpr auto fn_handle           = "culebra_runtime_fn_handle";
+inline constexpr auto self_merge          = "culebra_runtime_self_merge";
 inline constexpr auto cell_release        = "culebra_runtime_cell_release";
 inline constexpr auto cell_retain         = "culebra_runtime_cell_retain";
 inline constexpr auto closure_new         = "culebra_runtime_closure_new";

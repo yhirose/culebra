@@ -1724,4 +1724,52 @@ for c in elemwin {
   case("elemwin|" + c, c)
 }
 
+# --- Dimension: `self` resolution (dynamic receiver > lexical fallback) ----
+# docs §Methods and UFCS. Nested frames (fn / lambda / HOF callback / defer /
+# returned closure) inherit the enclosing method's receiver; a receiver call
+# rebinds; a bound-method value read carries its receiver permanently; the
+# `fn` handle in a method frame is the bound wrapper. NameError shapes use the
+# built-in unbound-self error so `_p` records kind+position symmetrically.
+let selflex = [
+  # lexical fallback shapes inside a method
+  'class A1 { new(n){ self.n = n } m(){ let f = fn (x) { x + self.n }; f(10) } }; A1.new(7).m()',
+  'class A2 { new(n){ self.n = n } m(){ let g = |x| x + self.n; g(10) } }; A2.new(7).m()',
+  'class A3 { new(n){ self.n = n } m(){ [1, 2].map(|x| x * self.n) } }; A3.new(7).m()',
+  'class A4 { new(n){ self.n = n } m(){ let cb = fn (x) { x * self.n }; [1, 2].map(cb) } }; A4.new(7).m()',
+  'class A5 { new(n){ self.n = n } m(){ |x| x + self.n } }; let a = A5.new(7).m(); a(1)',
+  'class A6 { new(n){ self.n = n } m(out){ out.push(0); defer { out.push(self.n) } } }; let o = []; A6.new(7).m(o); o',
+  'class A7 { new(n){ self.n = n } m(){ let mid = fn () { let inner = fn () { self.n }; inner() }; mid() } }; A7.new(42).m()',
+  'class A8 { new(n){ self.n = n } m(){ let f = fn (x) { x + self.n }; 5.f() } }; A8.new(10).m()',
+  # object-literal method: same fallback, no class involved
+  'let ol = { n: 3, m: fn () { let f = fn () { self.n }; f() } }; ol.m()',
+  # dynamic receiver wins over the lexical capture
+  'class W1 { new(n){ self.n = n } mk(){ let g = fn () { self.n }; g } }; let gg = W1.new(1).mk(); gg()',
+  'class W2 { new(n){ self.n = n } mk(){ let g = fn () { self.n }; g } }; let gg = W2.new(1).mk(); let w = { n: 99, g: gg }; w.g()',
+  # no receiver anywhere: NameError at the read
+  'let f = fn () { self }; f()',
+  'let outer = fn () { let f = fn () { self.x }; f() }; outer()',
+  '5.size() + (fn () { self })()',
+  # `fn` handle: recursion / escape keep the receiver; rebind does not override
+  'class R1 { new(n){ self.n = n } m(k){ if k == 0 { self.n } else { fn(k - 1) } } }; R1.new(5).m(2)',
+  'class R2 { new(n){ self.n = n } m(k){ if k == 0 { self.n } else { fn(k - 1) } } }; let b = R2.new(5).m; b(1)',
+  'class R3 { new(n){ self.n = n } m(k){ if k == 0 { self.n } else { fn(k - 1) } } }; let b = R3.new(5).m; let w = { n: 100, h: b }; w.h(1)',
+  # bound-method value reads: proto method / static / ctor / own slot
+  'class K1 { new(v){ self.v = v } g(){ self.v } }; let d = K1.new(7).g; d()',
+  'class K2 { new(){ self.z = 0 } static who(){ type_of(self) } }; let s = K2.who; s()',
+  'class K3 { new(v){ self.v = v } g(){ self.v } }; let mk = K3.new; mk(9).g()',
+  'let os = { n: 3, f: fn () { self.n } }; let m = os.f; m()',
+  'class K4 { new(){ self.cb = fn () { type_of(self) } } }; let c = K4.new().cb; c()',
+  # each read mints a fresh wrapper
+  'let oi = { n: 3, f: fn () { self.n } }; oi.f == oi.f',
+  'class K5 { new(v){ self.v = v } }; K5.new == K5.new',
+  # shadowing and reassignment keep their existing semantics
+  'class S1 { new(n){ self.n = n } m(){ let self = 99; self } }; S1.new(1).m()',
+  'class S2 { new(n){ self.n = n } m(){ self = 1 } }; S2.new(1).m()',
+  # getter reached from a nested frame
+  'class G1 { new(n){ self.n = n } get twice(){ self.n * 2 } m(){ let f = fn () { self.twice }; f() } }; G1.new(7).m()',
+]
+for c in selflex {
+  case("selflex|" + c, c)
+}
+
 print(out.join("\n"))

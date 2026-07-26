@@ -236,6 +236,39 @@ codegen 時にここで引かれ、汎用ルックアップのオーバーヘッ
 ンタプリタテーブルに存在することを検証し、2 つのバックエンドがサイレ
 ントに乖離するのを防ぎます。
 
+### `self` の束縛
+
+`self` の 2 段階解決（レシーバ優先・字句フォールバック —
+language.md §メソッドと UFCS）は、インタプリタでは自然に成立します:
+レシーバ呼出は callEnv に `self` を束縛し、素の呼出は何も束縛せず、
+def_env チェーンが外側メソッドの束縛を供給します。JIT はこれを構造
+的に再現します。全フレームは `self` を 2 つのスカラ ABI 引数として
+受け取り、本体（またはネストしたクロージャ）が `self` を読むフレーム
+はそれを自由変数として列挙するので、クロージャは外側フレームの
+self セルを通常の変数と同じ機構で capture します。prologue はこれを
+マージします: 到着したレシーバが NO_SELF センチネルなら captured
+セルの値が代わりに入ります（`culebra_runtime_self_merge`）。メソッド
+と trait メソッドのフレームはこの一切をスキップします — それらを
+呼び得る全経路がレシーバを渡すため、解析がフォールバック capture を
+strip し、prologue は引数を直接束縛します（ホットパス無変化）。読み
+取りは引き続きセンチネルを guard し、それが「レシーバも外側 self も
+ない」を interp と同じ読み取り箇所の NameError に変えます。
+
+関数値プロパティの値読み（`let m = o.f`）は恒久束縛です:
+`culebra_runtime_bind_method_value` は Object レシーバ上の TAG_FUNC
+view を own slot・proto メソッド・static・ctor の別なく
+`[receiver, method]` thunk（interp の `_wrap_method_with_this` の
+双子）で包みます。thunk は後続の呼出が渡すレシーバを無視して
+（release して）自分の束縛を使うため、束縛メソッドの付け替えでは
+再束縛されません。introspection 系の消費者（callback arity 検査）は
+逆に thunk を unwrap して下のメソッドを判定します — 共有 thunk の
+fn_ptr は自前の param metadata を持たないためです。再帰ハンドル
+`fn` も同じモデルです: 直接の `fn(...)` 呼出はフレームのマージ済み
+self を渡し直し、値読みはフレームごとに一度だけ束縛ラッパを実体化
+します（`culebra_runtime_fn_handle`、owned slot にキャッシュ）。
+これにより interp の「wrapper が fn」と同じく、escape した `fn` も
+レシーバを保持します。
+
 ### HOF fusion
 
 `range(n).filter(p).map(f).take(k).collect()` は fusable なチェーンと
