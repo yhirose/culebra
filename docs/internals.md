@@ -280,6 +280,19 @@ small wrapper per stage. A callback whose body contains `return` or
 `defer` is never inlined — those need a real callee frame — and takes
 the runtime-helper path instead.
 
+### Iterator-only method table
+
+The lazy combinators and terminals with no eager Array arm (`take`,
+`scan`, `chunks`, `first`, `zip`, ...) are emitted from one descriptor
+table (`kIterMethods` in jit.h): a row names the runtime symbol, the
+receiver gate, the argument shape, whether the symbol takes the call
+position, and the result wrapping. Adding an operator is one row plus
+the runtime fn and the interp lambda; `tools/check_iter_wiring.sh`
+still gates the runtime side's upstream forwarding. The
+receiver-dispatch specials (`iter`, `enumerate`, the string sources)
+and the dual eager/lazy family (`map`, `reduce`, ...) stay
+hand-written.
+
 ### for-in cursor
 
 `for x in xs` has to work over Array, Tuple, Set, Object keys, a Range,

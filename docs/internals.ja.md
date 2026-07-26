@@ -280,6 +280,18 @@ self を渡し直し、値読みはフレームごとに一度だけ束縛ラッ
 inline されず（本物の callee frame が必要なため）、runtime helper
 経路を通ります。
 
+### iterator 専用メソッドの descriptor table
+
+eager な Array 側の腕を持たない lazy combinator / terminal（`take`、
+`scan`、`chunks`、`first`、`zip` など）は 1 つの descriptor table
+（jit.h の `kIterMethods`）から emit されます。1 行が runtime シンボル、
+receiver ゲート、引数の形、シンボルが呼び出し位置を取るか、結果の
+ラップを指定します。オペレータの追加は「表 1 行 + runtime fn +
+interp ラムダ」で、runtime 側の上流転送は従来どおり
+`tools/check_iter_wiring.sh` がゲートします。receiver ディスパッチが
+特殊なもの（`iter`、`enumerate`、文字列ソース系）と eager/lazy 両対応
+の族（`map`、`reduce` など）は手書きのままです。
+
 ### for-in カーソル
 
 `for x in xs` は Array、Tuple、Set、Object のキー、Range、`iter` プロパ

@@ -1530,6 +1530,28 @@ struct JIT {
                                       const peg::Ast& argsAst,
                                       llvm::Value* receiver);
 
+  // One row per iterator-only method (no eager Array equivalent): receiver
+  // gate, argument shape, whether the runtime symbol takes the call
+  // position, and the result wrapping fully determine the emit. Rows are
+  // consumed by try_compile_iter_table_method.
+  struct IterMethodDesc {
+    enum class Gate : uint8_t { IterProtocol, ObjectTag };
+    enum class Args : uint8_t { None, Long, Callback, SeedCallback, Iterable };
+    enum class Res : uint8_t { Iter, Array, Long, OutParam };
+    const char* name;
+    const char* rt_symbol;
+    Gate gate;
+    Args args;
+    bool line_col;  // append the ho_line/ho_col call-position arguments
+    Res res;
+  };
+  llvm::Value* emit_iter_long_arg(const peg::Ast& argAst);
+  Owned try_compile_iter_table_method(const std::string& method,
+                                      const peg::Ast& argsAst,
+                                      llvm::Value* receiver,
+                                      llvm::Value* ho_line,
+                                      llvm::Value* ho_col);
+
   // Publish the current node's source position (current_line_/column_, which
   // PosGuard keeps pointing at the innermost compiling node — the method-call
   // node here, since arg compiles restore it) just before a fallible runtime
@@ -15000,6 +15022,161 @@ inline llvm::Value* JIT::emit_inlined_iter_reduce(
   return builder_.CreateLoad(valueType_, accAlloca, "iri.result");
 }
 
+// An iterator method's `n` argument. The interp declares these params as
+// `{"n", false, "Long"}` and rejects through its binder ("parameter 'n'
+// expects Long"), so check before converting — a bare value_to_long would
+// report "expected Long, got String" and break message symmetry.
+inline llvm::Value* JIT::emit_iter_long_arg(const peg::Ast& argAst) {
+  // `v` stays Owned across the check, so the automatic unwind-temp window
+  // (internals.md, JIT ownership) releases it if the check throws.
+  auto v = compile(argAst);
+  emit_type_check(v.borrow(), "Long", "parameter 'n'", &argAst);
+  return value_to_long(v.consume());
+}
+
+// Iterator-only methods (no eager Array equivalent), one kIterMethods row
+// each. Adding an operator = one row + the runtime fn + the interp lambda
+// (iterator_builtins); check_iter_wiring.sh keeps gating the runtime side's
+// upstream forwarding. Rows reproduce the previously hand-written emits 1:1;
+// the two gate styles are historical (IterProtocol publishes the op position
+// for protocol errors raised while driving, ObjectTag relies on the symbol's
+// own line/col arguments), so each row pins whichever its runtime fn expects.
+// Declines (empty Owned) on an unknown name OR an arity mismatch, so those
+// keep their generic error paths.
+inline JIT::Owned JIT::try_compile_iter_table_method(const std::string& method,
+                                                     const peg::Ast& argsAst,
+                                                     llvm::Value* receiver,
+                                                     llvm::Value* ho_line,
+                                                     llvm::Value* ho_col) {
+  using G = IterMethodDesc::Gate;
+  using A = IterMethodDesc::Args;
+  using R = IterMethodDesc::Res;
+  static constexpr IterMethodDesc kIterMethods[] = {
+      // name          runtime symbol        gate             args             pos    result
+      {"collect",    rt::iter_collect,    G::IterProtocol, A::None,         false, R::Array},
+      {"count",      rt::iter_count,      G::IterProtocol, A::None,         false, R::Long},
+      {"take",       rt::iter_take,       G::IterProtocol, A::Long,         false, R::Iter},
+      {"skip",       rt::iter_skip,       G::IterProtocol, A::Long,         false, R::Iter},
+      {"take_while", rt::iter_take_while, G::IterProtocol, A::Callback,     true,  R::Iter},
+      {"skip_while", rt::iter_skip_while, G::ObjectTag,    A::Callback,     true,  R::Iter},
+      {"flatten",    rt::iter_flatten,    G::ObjectTag,    A::None,         true,  R::Iter},
+      {"distinct",   rt::iter_distinct,   G::ObjectTag,    A::None,         true,  R::Iter},
+      {"tap",        rt::iter_tap,        G::ObjectTag,    A::Callback,     true,  R::Iter},
+      {"chunk_by",   rt::iter_chunk_by,   G::ObjectTag,    A::Callback,     true,  R::Iter},
+      {"step_by",    rt::iter_step_by,    G::ObjectTag,    A::Long,         true,  R::Iter},
+      {"scan",       rt::iter_scan,       G::ObjectTag,    A::SeedCallback, true,  R::Iter},
+      // first/last/nth/position answer nil on an exhausted iterator, so they
+      // load through out-params like `find`. Arrays already index and have
+      // index_of, so no eager arms — a second spelling of the same thing.
+      {"first",      rt::iter_first,      G::ObjectTag,    A::None,         false, R::OutParam},
+      {"last",       rt::iter_last,       G::ObjectTag,    A::None,         false, R::OutParam},
+      {"nth",        rt::iter_nth,        G::ObjectTag,    A::Long,         true,  R::OutParam},
+      {"position",   rt::iter_position,   G::ObjectTag,    A::Callback,     true,  R::OutParam},
+      {"chunks",     rt::iter_chunks,     G::IterProtocol, A::Long,         true,  R::Iter},
+      {"windows",    rt::iter_windows,    G::IterProtocol, A::Long,         true,  R::Iter},
+      {"chain",      rt::iter_chain,      G::IterProtocol, A::Iterable,     true,  R::Iter},
+      {"zip",        rt::iter_zip,        G::IterProtocol, A::Iterable,     true,  R::Iter},
+  };
+  const IterMethodDesc* row = nullptr;
+  for (const auto& r : kIterMethods) {
+    if (method == r.name) {
+      row = &r;
+      break;
+    }
+  }
+  if (!row) return {};
+  size_t arity =
+      row->args == A::None ? 0 : row->args == A::SeedCallback ? 2 : 1;
+  if (argsAst.nodes.size() != arity) return {};
+
+  // Receiver gate first: the resolution error fires before any argument is
+  // evaluated (order pinned by the difftest method x arg-shape dimension).
+  if (row->gate == G::IterProtocol) {
+    expect_iter_receiver(receiver, row->name);
+  } else {
+    expect_receiver_tag(receiver, TAG_OBJECT, row->name);
+  }
+
+  Owned other;  // Iterable: borrowed by the factory, dropped after the call
+  llvm::SmallVector<llvm::Value*, 6> vals;
+  switch (row->args) {
+    case A::None:
+      break;
+    case A::Long:
+      vals.push_back(emit_iter_long_arg(*argsAst.nodes[0]));
+      break;
+    case A::Callback: {
+      // The callback stays Owned across the site-publish call, then
+      // callee-consumes: the factory call is the very next runtime step and
+      // owns the +1 from entry.
+      Owned f = compile(*argsAst.nodes[0]);
+      emit_set_callback_arg_site(*argsAst.nodes[0]);
+      auto fv = f.consume();
+      vals.push_back(extract_tag(fv));
+      vals.push_back(extract_data(fv));
+      break;
+    }
+    case A::SeedCallback: {
+      // scan(init, f): both callee-consumed. The seed stays in its Owned
+      // until the call — compiling the callback can end the block (a heap
+      // seed makes it an invoke), and a raw +1 may not cross one; the window
+      // covers the handle in the meantime.
+      Owned seed = compile(*argsAst.nodes[0]);
+      Owned f = compile(*argsAst.nodes[1]);
+      emit_set_callback_arg_site(*argsAst.nodes[1]);
+      auto fv = f.consume();
+      auto sv = seed.consume();
+      vals.push_back(extract_tag(sv));
+      vals.push_back(extract_data(sv));
+      vals.push_back(extract_tag(fv));
+      vals.push_back(extract_data(fv));
+      break;
+    }
+    case A::Iterable:
+      other = compile(*argsAst.nodes[0]);
+      vals.push_back(extract_tag(other.borrow()));
+      vals.push_back(extract_data(other.borrow()));
+      break;
+  }
+
+  llvm::SmallVector<llvm::Value*, 9> args{extract_tag(receiver),
+                                          extract_data(receiver)};
+  args.append(vals.begin(), vals.end());
+  if (row->line_col) {
+    args.push_back(ho_line);
+    args.push_back(ho_col);
+  }
+  llvm::Value* outTag = nullptr;
+  llvm::Value* outData = nullptr;
+  if (row->res == R::OutParam) {
+    auto fn = builder_.GetInsertBlock()->getParent();
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                             fn->getEntryBlock().begin());
+    outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr,
+                                 std::string(row->name) + ".tag");
+    outData = entryB.CreateAlloca(builder_.getInt64Ty(), nullptr,
+                                  std::string(row->name) + ".data");
+    args.push_back(outTag);
+    args.push_back(outData);
+  }
+  auto out = emit_call(module_->getFunction(row->rt_symbol), args);
+  other.drop();  // no-op unless Iterable
+  switch (row->res) {
+    case R::Iter:
+      return own(make_object(out));
+    case R::Array:
+      return own(make_array(out));
+    case R::Long:
+      return own(make_long(out));
+    case R::OutParam: {
+      auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
+      auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
+      return own(make_value(tagLoaded, dataLoaded));
+    }
+  }
+  return {};  // unreachable: every Res is handled above
+}
+
 inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
                                                 const peg::Ast& argsAst,
                                                 llvm::Value* receiver) {
@@ -16363,221 +16540,13 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   // --- Iterator-only methods (no eager Array equivalent) ---
   // For now these error on Array receivers. Phase B2 may add eager
   // fallbacks so `arr.take(n)` becomes `arr.slice(0, n)` natively.
-
-  // An iterator method's `n` argument. The interp declares these params as
-  // `{"n", false, "Long"}` and rejects through its binder ("parameter 'n'
-  // expects Long"), so check before converting — a bare value_to_long would
-  // report "expected Long, got String" and break message symmetry.
-  auto compile_iter_long_arg = [&](const peg::Ast& argAst) -> llvm::Value* {
-    // `v` stays Owned across the check, so the automatic unwind-temp window
-    // (internals.md, JIT ownership) releases it if the check throws.
-    auto v = compile(argAst);
-    emit_type_check(v.borrow(), "Long", "parameter 'n'", &argAst);
-    return value_to_long(v.consume());
-  };
-
-  // Iterator-only methods — require an iterator-protocol Object
-  // receiver (Array users call `.iter()` first, matching interp).
-  if (method == "collect" && argsAst.nodes.size() == 0) {
-    expect_iter_receiver(receiver, "collect");
-    auto t = extract_tag(receiver);
-    auto d = extract_data(receiver);
-    auto out = emit_call(module_->getFunction(rt::iter_collect), {t, d});
-    return own(make_array(out));
-  }
-
-  if (method == "count" && argsAst.nodes.size() == 0) {
-    expect_iter_receiver(receiver, "count");
-    auto t = extract_tag(receiver);
-    auto d = extract_data(receiver);
-    auto n = emit_call(module_->getFunction(rt::iter_count), {t, d});
-    return own(make_long(n));
-  }
-
-  if (method == "take" && argsAst.nodes.size() == 1) {
-    expect_iter_receiver(receiver, "take");
-    auto n = compile_iter_long_arg(*argsAst.nodes[0]);
-    auto t = extract_tag(receiver);
-    auto d = extract_data(receiver);
-    auto out =
-        emit_call(module_->getFunction(rt::iter_take), {t, d, n});
-    return own(make_object(out));
-  }
-
-  if (method == "skip" && argsAst.nodes.size() == 1) {
-    expect_iter_receiver(receiver, "skip");
-    auto n = compile_iter_long_arg(*argsAst.nodes[0]);
-    auto t = extract_tag(receiver);
-    auto d = extract_data(receiver);
-    auto out =
-        emit_call(module_->getFunction(rt::iter_skip), {t, d, n});
-    return own(make_object(out));
-  }
-
-  if (method == "take_while" && argsAst.nodes.size() == 1) {
-    expect_iter_receiver(receiver, "take_while");
-    // The callback stays Owned across the site-publish call, then
-    // callee-consumes: the factory call is the very next runtime step and
-    // owns the +1 from entry.
-    Owned f = compile(*argsAst.nodes[0]);
-    emit_set_callback_arg_site(*argsAst.nodes[0]);
-    auto fv = f.consume();
-    auto t = extract_tag(receiver);
-    auto d = extract_data(receiver);
-    auto out = emit_call(module_->getFunction(rt::iter_take_while),
-                         {t, d, extract_tag(fv), extract_data(fv),
-                          ho_line, ho_col});
-    return own(make_object(out));
-  }
-
-  // flatten / distinct: argument-less lazy combinators.
-  if ((method == "flatten" || method == "distinct") &&
-      argsAst.nodes.size() == 0) {
-    expect_receiver_tag(receiver, TAG_OBJECT, method.c_str());
-    auto rt_name = method == "flatten" ? rt::iter_flatten : rt::iter_distinct;
-    auto out = emit_call(module_->getFunction(rt_name),
-                         {extract_tag(receiver), extract_data(receiver),
-                          ho_line, ho_col});
-    return own(make_object(out));
-  }
-
-  // tap / chunk_by: one callback, same ownership shape as take_while.
-  if ((method == "tap" || method == "chunk_by") &&
-      argsAst.nodes.size() == 1) {
-    expect_receiver_tag(receiver, TAG_OBJECT, method.c_str());
-    Owned f = compile(*argsAst.nodes[0]);
-    emit_set_callback_arg_site(*argsAst.nodes[0]);
-    auto fv = f.consume();  // callee-consumes
-    auto rt_name = method == "tap" ? rt::iter_tap : rt::iter_chunk_by;
-    auto out = emit_call(module_->getFunction(rt_name),
-                         {extract_tag(receiver), extract_data(receiver),
-                          extract_tag(fv), extract_data(fv),
-                          ho_line, ho_col});
-    return own(make_object(out));
-  }
-
-  if (method == "step_by" && argsAst.nodes.size() == 1) {
-    expect_receiver_tag(receiver, TAG_OBJECT, "step_by");
-    auto n = compile_iter_long_arg(*argsAst.nodes[0]);
-    auto out = emit_call(module_->getFunction(rt::iter_step_by),
-                         {extract_tag(receiver), extract_data(receiver), n,
-                          ho_line, ho_col});
-    return own(make_object(out));
-  }
-
-  // scan(init, f): the seed is callee-consumed alongside the callback, so
-  // both are compiled before the factory call takes ownership of each. The
-  // seed stays in its Owned until the call — compiling the callback can end
-  // the block (a heap seed made it an invoke), and a raw +1 may not cross
-  // one; the window covers the handle in the meantime.
-  if (method == "scan" && argsAst.nodes.size() == 2) {
-    expect_receiver_tag(receiver, TAG_OBJECT, "scan");
-    Owned seed = compile(*argsAst.nodes[0]);
-    Owned f = compile(*argsAst.nodes[1]);
-    emit_set_callback_arg_site(*argsAst.nodes[1]);
-    auto fv = f.consume();
-    auto sv = seed.consume();
-    auto out = emit_call(module_->getFunction(rt::iter_scan),
-                         {extract_tag(receiver), extract_data(receiver),
-                          extract_tag(sv), extract_data(sv),
-                          extract_tag(fv), extract_data(fv),
-                          ho_line, ho_col});
-    return own(make_object(out));
-  }
-
-  if (method == "skip_while" && argsAst.nodes.size() == 1) {
-    expect_receiver_tag(receiver, TAG_OBJECT, "skip_while");
-    // Callback ownership as in take_while above.
-    Owned f = compile(*argsAst.nodes[0]);
-    emit_set_callback_arg_site(*argsAst.nodes[0]);
-    auto fv = f.consume();
-    auto t = extract_tag(receiver);
-    auto d = extract_data(receiver);
-    auto out = emit_call(module_->getFunction(rt::iter_skip_while),
-                         {t, d, extract_tag(fv), extract_data(fv),
-                          ho_line, ho_col});
-    return own(make_object(out));
-  }
-
-  // first/last/nth/position: iterator-only terminals. Arrays already index
-  // (`xs[0]` / `xs[-1]`) and have index_of, so adding eager arms here would
-  // be a second way to spell the same thing. All four answer nil on an
-  // exhausted iterator, so they load through out-params like `find`.
-  if ((method == "first" || method == "last") &&
-      argsAst.nodes.size() == 0) {
-    expect_receiver_tag(receiver, TAG_OBJECT, method.c_str());
-    auto t = extract_tag(receiver);
-    auto d = extract_data(receiver);
-    llvm::IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
-    auto outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr,
-                                      method + ".tag");
-    auto outData = entryB.CreateAlloca(builder_.getInt64Ty(), nullptr,
-                                       method + ".data");
-    auto rt_name = method == "first" ? rt::iter_first : rt::iter_last;
-    emit_call(module_->getFunction(rt_name), {t, d, outTag, outData});
-    auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
-    auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
-    return own(make_value(tagLoaded, dataLoaded));
-  }
-
-  if (method == "nth" && argsAst.nodes.size() == 1) {
-    expect_receiver_tag(receiver, TAG_OBJECT, "nth");
-    auto n = compile_iter_long_arg(*argsAst.nodes[0]);
-    auto t = extract_tag(receiver);
-    auto d = extract_data(receiver);
-    llvm::IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
-    auto outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "nth.tag");
-    auto outData = entryB.CreateAlloca(builder_.getInt64Ty(), nullptr,
-                                       "nth.data");
-    emit_call(module_->getFunction(rt::iter_nth),
-              {t, d, n, ho_line, ho_col, outTag, outData});
-    auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
-    auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
-    return own(make_value(tagLoaded, dataLoaded));
-  }
-
-  if (method == "position" && argsAst.nodes.size() == 1) {
-    expect_receiver_tag(receiver, TAG_OBJECT, "position");
-    llvm::Value* outTag;
-    llvm::Value* outData;
-    {
-      // Scope the callback so its Owned dtor releases after the call but
-      // before the out-param loads (same shape as `find`).
-      Owned f = compile(*argsAst.nodes[0]);
-      emit_set_callback_arg_site(*argsAst.nodes[0]);
-      auto fv = f.consume();  // callee-consumes
-      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
-                               fn->getEntryBlock().begin());
-      outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "pos.tag");
-      outData = entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "pos.data");
-      emit_call(module_->getFunction(rt::iter_position),
-                {extract_tag(receiver), extract_data(receiver),
-                 extract_tag(fv), extract_data(fv), ho_line, ho_col,
-                 outTag, outData});
-    }
-    auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
-    auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
-    return own(make_value(tagLoaded, dataLoaded));
-  }
-
-  if (method == "chunks" && argsAst.nodes.size() == 1) {
-    expect_iter_receiver(receiver, "chunks");
-    auto n = compile_iter_long_arg(*argsAst.nodes[0]);
-    auto t = extract_tag(receiver);
-    auto d = extract_data(receiver);
-    auto out = emit_call(module_->getFunction(rt::iter_chunks),
-                         {t, d, n, ho_line, ho_col});
-    return own(make_object(out));
-  }
-
-  if (method == "windows" && argsAst.nodes.size() == 1) {
-    expect_iter_receiver(receiver, "windows");
-    auto n = compile_iter_long_arg(*argsAst.nodes[0]);
-    auto t = extract_tag(receiver);
-    auto d = extract_data(receiver);
-    auto out = emit_call(module_->getFunction(rt::iter_windows),
-                         {t, d, n, ho_line, ho_col});
-    return own(make_object(out));
+  // The mechanical shapes live as kIterMethods rows (see
+  // try_compile_iter_table_method); only the receiver-dispatch specials
+  // (enumerate, iter, the string sources) stay hand-written below.
+  if (auto r = try_compile_iter_table_method(method, argsAst, receiver,
+                                             ho_line, ho_col);
+      r.borrow()) {
+    return r;
   }
 
   if (method == "enumerate" && argsAst.nodes.size() == 0) {
@@ -16590,30 +16559,6 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
                                      builder_.getInt8Ty(),
                                      builder_.getInt64Ty()),
         {t, d});
-    return own(make_object(out));
-  }
-
-  if (method == "chain" && argsAst.nodes.size() == 1) {
-    expect_iter_receiver(receiver, "chain");
-    auto other = compile(*argsAst.nodes[0]);
-    auto t = extract_tag(receiver);
-    auto d = extract_data(receiver);
-    auto out = emit_call(module_->getFunction(rt::iter_chain),
-                         {t, d, extract_tag(other.borrow()),
-                          extract_data(other.borrow()), ho_line, ho_col});
-    other.drop();
-    return own(make_object(out));
-  }
-
-  if (method == "zip" && argsAst.nodes.size() == 1) {
-    expect_iter_receiver(receiver, "zip");
-    auto other = compile(*argsAst.nodes[0]);
-    auto t = extract_tag(receiver);
-    auto d = extract_data(receiver);
-    auto out = emit_call(module_->getFunction(rt::iter_zip),
-                         {t, d, extract_tag(other.borrow()),
-                          extract_data(other.borrow()), ho_line, ho_col});
-    other.drop();
     return own(make_object(out));
   }
 
