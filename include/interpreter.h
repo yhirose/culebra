@@ -1910,7 +1910,7 @@ struct Environment : std::enable_shared_from_this<Environment> {
   // `get(name)`. The source must `let <name> = ...` so the eval pass
   // overwrites the placeholder binding in `dictionary`. Used for stdlib
   // modules that are expensive to parse but rarely touched in short
-  // scripts — see [[project-startup-overhead]].
+  // scripts.
   void initialize_lazy(std::string_view name, std::string source) {
     initialize(name, Value{}, /*mut=*/false);
     if (is_sink_name(name)) return;
@@ -9092,7 +9092,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         [](const std::string& variant, const std::string& en) {
           // Fields are mutable, matching class instances (promote_all_mut)
           // and the JIT build_variant path — keeps the two backends in
-          // lockstep ([[feedback-check-jit-interp-symmetry]]).
+          // lockstep.
           ObjectValue inst;
           inst.properties->emplace(
               "class", Symbol{Value(std::string(variant)), true});

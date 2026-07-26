@@ -7258,7 +7258,7 @@ struct JIT {
 
         // Union match: OR the predicate over each alternative. Must
         // mirror interp's type_matches recursion to keep both backends
-        // in lockstep ([[feedback-check-jit-interp-symmetry]]).
+        // in lockstep.
         llvm::Value* tag_match;
         if (type_name.find('|') != std::string_view::npos) {
           tag_match = nullptr;

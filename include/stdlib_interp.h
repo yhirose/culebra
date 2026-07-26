@@ -2611,8 +2611,7 @@ inline Value make_shared_buffer_handle(long id, long count);
 // and returns a buffer handle. `buf[i]` yields a packed view whose
 // `.field` reads/writes the backing bytes directly (zero copy). The
 // native storage lives in a global registry; the handle just carries its
-// integer id (a Value can't hold a raw shared_ptr). See
-// [[project_packable_c3]].
+// integer id (a Value can't hold a raw shared_ptr).
 inline Value make_shared_buffer_namespace() {
   using namespace std::literals;
   ObjectValue ns;
@@ -6866,7 +6865,7 @@ inline void setup_built_in_functions(
 
 // Embedded culebra source for stdlib modules that are easier to express
 // in culebra than in C++. Both Time and Args are registered lazily by
-// `environment()` — see [[project-startup-overhead]]. The JIT path
+// `environment()`. The JIT path
 // still pre-concats them via `STDLIB_PREAMBLE_SOURCE` until it adopts
 // the env's lazy bindings. Each module is single-line so user-code
 // error positions are only off-by-one.
@@ -6934,7 +6933,7 @@ inline void setup_built_in_functions(
 // shifts user-code error lines by only one, matching the other modules.
 
 // Transitional concatenation used by the JIT path until it adopts the
-// env's lazy bindings (Phase 3 of [[project-startup-overhead]]). The
+// env's lazy bindings (Phase 3). The
 // interp path is already preamble-free.
 inline const char* _stdlib_preamble_concat() {
   static const std::string s =
@@ -6948,8 +6947,8 @@ inline const char* STDLIB_PREAMBLE_SOURCE = _stdlib_preamble_concat();
 // Build the selective stdlib preamble for a script: only the modules the
 // source appears to reference (substring match). The JIT/AOT backends
 // need these helpers inlined into the entry module because they don't
-// honour the env's lazy bindings (see Phase 3 of
-// [[project-startup-overhead]]); the interpreter binds them lazily and
+// honour the env's lazy bindings (Phase 3); the interpreter binds them
+// lazily and
 // never calls this. A substring hit is a safe over-approximation: false
 // positives (e.g. `let myTime = 1`) just include an unneeded module; only
 // true negatives skip a module, preserving correctness.
@@ -7111,8 +7110,7 @@ inline void splice_stdlib_preamble(std::vector<LoadedModule>& modules) {
 
 // Register stdlib modules that should not be parsed/evaluated up front.
 // Each module is bound lazily so scripts that never touch it pay zero
-// cost. See [[project-startup-overhead]] for the measurement that
-// motivated this.
+// cost.
 inline void register_stdlib_lazy_modules(Environment& env) {
   env.initialize_lazy("Time", TIME_MODULE_SOURCE);
   env.initialize_lazy("Term", TERM_MODULE_SOURCE);

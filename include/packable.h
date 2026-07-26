@@ -39,7 +39,7 @@
 // @packable fixed-layout structs and the SharedBuffer backing store.
 // This header is pure metadata + raw byte storage — it knows nothing
 // about Value (the Value<->bytes bridge lives in interpreter.h, where
-// Value is complete). See [[project_packable_c3]].
+// Value is complete).
 namespace culebra {
 
 // Byte size + alignment of a packable scalar type. Reference types

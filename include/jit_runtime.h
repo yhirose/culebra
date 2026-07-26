@@ -2404,8 +2404,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(
 // store lives in culebra::shared_buffer_registry(), referenced by id.
 // These helpers are called from the object get/set/index runtime helpers
 // below, mirroring the interp's eval_property / eval_array_reference hooks
-// — same logical interception points in both backends. See
-// [[project_packable_c3]].
+// — same logical interception points in both backends.
 inline bool _jit_is_packed_view(JitObject* obj) { return obj->is_packed_view; }
 inline bool _jit_is_shared_buffer(JitObject* obj) {
   return obj->is_shared_buffer;

@@ -1,5 +1,5 @@
 // Conformance: Union types in parameter and return annotations.
-// Phase 1 of [[project-type-system]] (Rust/Swift V-Subset).
+// Phase 1 (Rust/Swift V-Subset).
 
 // --- Param Union accepts either alternative ---
 fn show(x: Long | Float) -> String {

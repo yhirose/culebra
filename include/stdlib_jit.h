@@ -5212,8 +5212,7 @@ inline JitValue _ns_signal_reset(JitValue*, int64_t) {
 
 // SharedBuffer.new(count, Cls): allocate a zero-initialized byte store of
 // `count` @packable records and return a buffer handle. Slow-path only (no
-// compile_ns_call fast path); the adapter builds everything directly. See
-// [[project_packable_c3]].
+// compile_ns_call fast path); the adapter builds everything directly.
 // Shared.new(value): freeze through the Sendable serializer (jit side)
 // and hand back the root view. Slow-path only, like the other isolate-
 // family namespaces. Rejections release the in-flight refs the

@@ -1,6 +1,6 @@
 #pragma once
 
-// Sendable: the value-transfer layer for isolates ([[project-concurrency-c2]]).
+// Sendable: the value-transfer layer for isolates.
 //
 // An isolate runs on its own OS thread with its own GC heap (thread_local
 // Runtime + InterpGC, see shared.h). Script Values therefore CANNOT be moved

@@ -26,8 +26,7 @@ const auto grammar_ = R"(
   # declares an effect operation that `perform op(...)` may invoke; with a
   # body it is an effectful function whose calls to other effect fns /
   # `perform` are suspension points. Both shapes are lowered, at parse
-  # time, onto the generator CPS engine (see effects_transform.h). See
-  # [[project-algebraic-effects]].
+  # time, onto the generator CPS engine (see effects_transform.h).
   EFFECT_FN_DECL           <-  effect _ fn _ CLASS_HEAD _ PARAMETERS (_ RETURN_TYPE)? (_ BLOCK)?
 
   CLASS_DECL               <-  (DECORATOR (_ DECORATOR)* _)? class _ CLASS_HEAD _ '{' _ (METHOD (_ METHOD)*)? _ '}'

@@ -1,7 +1,7 @@
 #pragma once
 
 // Isolate: CPU-parallel execution units, each on its own OS thread with its
-// own GC heap ([[project-concurrency-c2]], milestone C2-a, interpreter only).
+// own GC heap (milestone C2-a, interpreter only).
 //
 //   let h = Isolate.spawn(|| fib(40))      # run a closure on a new thread
 //   let h = Isolate.spawn(|n| fib(n), 40)  # with positional args

@@ -53,7 +53,7 @@ namespace culebra {
 }  // namespace culebra
 
 // Startup profiler — gated by CULEBRA_PROFILE_STARTUP=1. Prints each
-// phase mark to stderr immediately. See [[project-startup-overhead]].
+// phase mark to stderr immediately.
 namespace startup_profile {
 using clk = std::chrono::steady_clock;
 inline clk::time_point& t0() { static clk::time_point v; return v; }
@@ -1169,7 +1169,7 @@ Options parse_command_line(int argc, const char** argv) {
 bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
   // Time / Args are registered lazily by `environment()` — no eager
   // preamble load needed here. The JIT path still pre-concats the
-  // preamble (handled in Phase 3 of [[project-startup-overhead]]).
+  // preamble (handled in Phase 3).
   startup_profile::mark("run_scripts begin");
 
   // Cooperative Ctrl+C: install the SIGINT handler and point this thread's
@@ -1201,7 +1201,7 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
     // feeds both backends — JIT bundles every module into one IR,
     // interp evaluates them sequentially. The JIT path needs the
     // stdlib preamble inlined because it doesn't currently honour
-    // the env's lazy bindings (see Phase 3 of [[project-startup-overhead]]).
+    // the env's lazy bindings (Phase 3).
     // It's spliced into the entry module's AST *after* parse so user line
     // numbers stay natural and error locations match interp (see
     // splice_stdlib_preamble).

@@ -44,9 +44,8 @@ namespace culebra {
 
 // Storage for synthesized generator source fragments. peg::Ast holds
 // `string_view`s into the parsed source, so anything the transform
-// re-parses needs process-lifetime backing. See
-// [[feedback-ast-source-lifetime]] — same fix the lazy-module path
-// uses.
+// re-parses needs process-lifetime backing — the same fix the lazy-module
+// path uses.
 inline std::vector<std::shared_ptr<std::string>>&
 generator_transform_sources() {
   static std::vector<std::shared_ptr<std::string>> sources;

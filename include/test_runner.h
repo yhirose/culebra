@@ -58,9 +58,8 @@ class StdoutCapture {
 };
 
 // Convert a runtime error line (1-based) to a user-file line, returning
-// 0 for unknown locations. Preamble offset removed in Phase 2 of
-// [[project-startup-overhead]] when the interp test path stopped
-// prepending stdlib source.
+// 0 for unknown locations. Preamble offset removed in Phase 2, when the
+// interp test path stopped prepending stdlib source.
 inline int to_user_line(long raw) {
   return raw > 0 ? static_cast<int>(raw) : 0;
 }
@@ -422,7 +421,7 @@ inline TestRunSummary run_tests(
     ModuleLoader loader;
     std::vector<LoadedModule> modules;
     // Time / Args come from the env's lazy bindings — no preamble
-    // prepend needed (Phase 2 of [[project-startup-overhead]]).
+    // prepend needed (Phase 2).
     try {
       modules = loader.load_program(path_str, buff, msgs);
     } catch (const CulebraError& e) {

@@ -1,6 +1,6 @@
 #pragma once
 
-// JIT side of the isolate value transfer ([[project-concurrency-c2]], C2-c).
+// JIT side of the isolate value transfer (C2-c).
 //
 // The interpreter and the JIT share the same isolate architecture, matching
 // every isolate-based runtime (V8 Workers, Ruby Ractor, Java, Go, Erlang):

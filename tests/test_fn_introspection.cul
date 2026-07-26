@@ -1,5 +1,5 @@
 // Conformance: function introspection via `fn.name`, `fn.params`,
-// `fn.return_type`. Phase 1 of [[project-fn-params-introspection]].
+// `fn.return_type`. Phase 1.
 // Both backends + AOT must agree.
 
 // --- fn.name on declared function ---

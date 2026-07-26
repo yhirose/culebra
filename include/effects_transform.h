@@ -4,8 +4,7 @@
 // into plain culebra source (synthesized classes + calls into the `__Eff`
 // runtime preamble), then re-parsed — the interp / JIT / AOT backends run
 // the lowered code with no effects-specific support of their own, so the
-// three backends stay symmetric for free (see [[project-algebraic-effects]],
-// [[feedback-check-jit-interp-symmetry]]).
+// three backends stay symmetric for free.
 //
 // Design (dynamic scope, one-shot resume):
 //   * An `effect fn f(...) { BODY }` (with body) lowers to a normal fn that
@@ -28,7 +27,7 @@
 //     driver (`__Eff.drive`, in src/preambles/effects.cul) walks the
 //     dynamically-scoped handler stack; `resume` is the one-shot continuation
 //     (an ordinary RC value, so leak-safety is inherited from the generator
-//     machinery it mirrors — [[project-rc-gc-correct-model]]). Handles may
+//     machinery it mirrors). Handles may
 //     nest; each computation's `_step` resume parameter is uniquely named so an
 //     inner computation doesn't shadow an enclosing one.
 //
@@ -393,7 +392,7 @@ class EffectsLowerer {
   // receiver would need freezing) is rejected with a symmetric SyntaxError —
   // generated-`if` guards and receiver freezing are the next sub-cycle.
   // Because this is a parse-time rewrite, interp / JIT / AOT stay in step
-  // for free, rejections included ([[feedback-check-jit-interp-symmetry]]).
+  // for free, rejections included.
 
   static bool is_operator_node(const peg::Ast& n) {
     // Operator leaves in the precedence chain are named `*_OPERATOR`
@@ -629,8 +628,8 @@ class EffectsLowerer {
       }
       if (post.original_tag == "INDEX"_) {
         // `[ EXPR ]` collapses onto EXPR but leaves its span covering the
-        // brackets (the AstOptimizer single-child pos/len trap — see
-        // [[peglib-ast-optimizer]]), so slicing/splicing it directly would
+        // brackets (the AstOptimizer single-child pos/len trap), so
+        // slicing/splicing it directly would
         // eat the brackets. Re-parse the bracket-trimmed index as a
         // standalone expression for clean positions, ANF it, and rebuild
         // `base[<residual>]`.
@@ -1043,7 +1042,7 @@ class EffectsLowerer {
 
   // Compile a control-flow block's statements. A single-statement block
   // collapses onto its lone statement, whose span then covers the enclosing
-  // braces (the AstOptimizer pos/len trap — [[peglib-ast-optimizer]]); re-parse
+  // braces (the AstOptimizer pos/len trap); re-parse
   // the brace-stripped inner for clean positions. A sub-lowerer bound to the
   // fresh buffer feeds states into the shared `st`. Multi-statement blocks
   // re-parse too — uniform and cheap.
@@ -1476,8 +1475,8 @@ class EffectsLowerer {
           err_line(*y), static_cast<long>(y->column));
     }
     // Parse the brace-stripped inner source so a single-statement BLOCK's
-    // pos/len doesn't span the enclosing braces (the AstOptimizer trap —
-    // [[peglib-ast-optimizer]]); uniform for single/multi-statement bodies.
+    // pos/len doesn't span the enclosing braces (the AstOptimizer trap);
+    // uniform for single/multi-statement bodies.
     auto inner_sv = strip_block_braces(slice(body_node));
     std::string inner(inner_sv);
     if (src_is_original_) {
