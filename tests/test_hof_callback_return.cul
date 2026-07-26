@@ -1,0 +1,88 @@
+# `return` / `defer` inside an HOF callback body must behave like a real
+# call frame on every backend: `return` exits the callback (not the
+# enclosing function) and `defer` fires at callback exit. The JIT's inline
+# fusion used to splice the body into the caller, so `return` returned
+# from the enclosing function (or crashed codegen when the whole body was
+# a `return`) and `defer` landed on the caller's defer list.
+#
+# Run with:  ./build/culebra tests/test_hof_callback_return.cul
+#            ./build/culebra --jit tests/test_hof_callback_return.cul
+
+# --- early return: for_each over array / iter / range ----------------------
+fn fe_array() {
+  mut n = 0
+  [1, 2, 3].for_each(fn (x) { if x == 2 { return nil }; n = n + 1 })
+  n
+}
+assert_eq(fe_array(), 2)
+
+fn fe_iter() {
+  mut n = 0
+  [1, 2, 3].iter().for_each(fn (x) { if x == 2 { return nil }; n = n + 1 })
+  n
+}
+assert_eq(fe_iter(), 2)
+
+fn fe_range() {
+  mut n = 0
+  range(3).for_each(fn (x) { if x == 1 { return nil }; n = n + 1 })
+  n
+}
+assert_eq(fe_range(), 2)
+
+# --- return value becomes the element result -------------------------------
+fn m_array() { [1, 2, 3].map(fn (x) { if x == 2 { return 99 }; x * 10 }) }
+assert_eq(m_array(), [10, 99, 30])
+
+fn m_iter() { [1, 2, 3].iter().map(fn (x) { if x == 2 { return 99 }; x }).collect() }
+assert_eq(m_iter(), [1, 99, 3])
+
+fn m_range() { range(3).map(fn (x) { if x == 1 { return 99 }; x }).collect() }
+assert_eq(m_range(), [0, 99, 2])
+
+fn f_array() { [1, 2, 3].filter(fn (x) { if x == 2 { return true }; false }) }
+assert_eq(f_array(), [2])
+
+fn r_array() { [1, 2, 3].reduce(0, fn (a, x) { if x == 2 { return a }; a + x }) }
+assert_eq(r_array(), 4)
+
+fn r_range() { range(3).reduce(0, fn (acc, x) { if x == 1 { return acc }; acc + x }) }
+assert_eq(r_range(), 2)
+
+# --- whole body is a return (used to crash JIT codegen) --------------------
+fn m_tail() { [1, 2].map(fn (x) { return x * 2 }) }
+assert_eq(m_tail(), [2, 4])
+
+# --- defer fires at callback exit, once per element ------------------------
+fn fe_defer() {
+  mut log = []
+  [1, 2].for_each(fn (x) { defer { log.push(-x) }; log.push(x) })
+  log.push(0)
+  log
+}
+assert_eq(fe_defer(), [1, -1, 2, -2, 0])
+
+# --- return in a nested callback exits the inner callback only -------------
+fn fe_nested() {
+  mut n = 0
+  [1, 2, 3].for_each(fn (x) {
+    [x].for_each(fn (y) { if y == 2 { return nil }; n = n + 1 })
+  })
+  n
+}
+assert_eq(fe_nested(), 2)
+
+# --- variable-bound callback (runtime helper path) pins the same results ---
+fn fe_bound() {
+  mut n = 0
+  let cb = fn (x) { if x == 2 { return nil }; n = n + 1 }
+  [1, 2, 3].for_each(cb)
+  n
+}
+assert_eq(fe_bound(), 2)
+
+fn r_bound() {
+  let cb = fn (a, x) { if x == 2 { return a }; a + x }
+  [1, 2, 3].reduce(0, cb)
+}
+assert_eq(r_bound(), 4)

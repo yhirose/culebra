@@ -247,7 +247,9 @@ codegen 時にここで引かれ、汎用ルックアップのオーバーヘッ
 れます。パターンはパーサ実行後の AST shape 上でマッチされ、JIT はその
 後 IR でタイトなループを emit します。インタプリタは fusion しませ
 ん。そのイテレータチェーン実装も lazy ですが、ステージごとに小さな
-ラッパを確保します。
+ラッパを確保します。body に `return` / `defer` を含む callback は
+inline されず（本物の callee frame が必要なため）、runtime helper
+経路を通ります。
 
 ### for-in カーソル
 

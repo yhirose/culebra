@@ -249,7 +249,9 @@ fusable chain and lowered to a single counter loop with `p` and `f`
 inlined. The pattern is matched on the AST shape after the parser
 runs; the JIT then emits a tight loop in IR. The interpreter does not
 fuse; its iterator chain implementation is also lazy but allocates a
-small wrapper per stage.
+small wrapper per stage. A callback whose body contains `return` or
+`defer` is never inlined — those need a real callee frame — and takes
+the runtime-helper path instead.
 
 ### for-in cursor
 

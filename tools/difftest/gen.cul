@@ -1624,4 +1624,36 @@ for c in iterterms {
   case("iterterm|" + c, c)
 }
 
+# --- Dimension: return / defer inside HOF callbacks ------------------------
+# `_p` wraps each body in `fn () { ... }`, so a `return` that escapes the
+# callback frame changes the thunk's result — exactly the bug shape. The
+# JIT's inline fusion used to splice the callback body into the caller:
+# `return` returned from the enclosing fn (or crashed codegen when the whole
+# body was one `return`) and `defer` fired at the caller's exit. Sweeps
+# every fused path (array / iter / range x for_each / map / filter / reduce)
+# plus the variable-bound form that pins the runtime-helper path.
+let cbrets = [
+  'mut n = 0; [1, 2, 3].for_each(fn (x) { if x == 2 { return nil }; n = n + 1 }); n',
+  'mut n = 0; [1, 2, 3].iter().for_each(fn (x) { if x == 2 { return nil }; n = n + 1 }); n',
+  'mut n = 0; range(3).for_each(fn (x) { if x == 1 { return nil }; n = n + 1 }); n',
+  '[1, 2, 3].map(fn (x) { if x == 2 { return 99 }; x * 10 })',
+  '[1, 2, 3].iter().map(fn (x) { if x == 2 { return 99 }; x }).collect()',
+  'range(3).map(fn (x) { if x == 1 { return 99 }; x }).collect()',
+  '[1, 2, 3].filter(fn (x) { if x == 2 { return true }; false })',
+  '[1, 2, 3].reduce(0, fn (a, x) { if x == 2 { return a }; a + x })',
+  'range(3).reduce(0, fn (a, x) { if x == 1 { return a }; a + x })',
+  # Whole body is a return (used to crash JIT codegen).
+  '[1, 2].map(fn (x) { return x * 2 })',
+  # Defer fires at callback exit, once per element.
+  'mut t = []; [1, 2].for_each(fn (x) { defer { t.push(-x) }; t.push(x) }); t.push(0); t',
+  # Return in a nested callback exits the inner callback only.
+  'mut n = 0; [1, 2, 3].for_each(fn (x) { [x].for_each(fn (y) { if y == 2 { return nil }; n = n + 1 }) }); n',
+  # Variable-bound callbacks take the runtime-helper path; pin it too.
+  'mut n = 0; let cb = fn (x) { if x == 2 { return nil }; n = n + 1 }; [1, 2, 3].for_each(cb); n',
+  'let cb = fn (a, x) { if x == 2 { return a }; a + x }; [1, 2, 3].reduce(0, cb)',
+]
+for c in cbrets {
+  case("cbret|" + c, c)
+}
+
 print(out.join("\n"))

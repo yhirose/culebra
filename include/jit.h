@@ -141,6 +141,9 @@ struct JIT {
                                 // when the only defers live in a lexical scope
                                 // or a match block arm (interp runs these via
                                 // its unwind catch-all).
+    bool has_return = false;    // contains RETURN at any depth (stopping at
+                                // nested fns). With has_any_defer, gates HOF
+                                // callback inlining (is_inlinable_lambda).
     // True if the function body references the auto-bound `__ARGS__`
     // identifier (overflow args Array). When false, the prologue skips
     // building the Array entirely — saves a heap allocation per call
@@ -3926,6 +3929,8 @@ struct JIT {
   bool scan_eh_defer(const peg::Ast& node, bool at_fn_top, FuncInfo& info) {
     using namespace peg::udl;
     if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_) return false;
+    // Flag only; recurse below — the returned expression may contain TRY etc.
+    if (node.tag == "RETURN"_) info.has_return = true;
     if (node.tag == "DEFER"_) {
       info.has_any_defer = true;
       if (at_fn_top) {
@@ -14037,7 +14042,13 @@ inline bool JIT::is_inlinable_lambda(const peg::Ast& ast,
       if (sub->tag == "DEFAULT_VALUE"_) return false;
     }
   }
-  return func_info_.count(&ast) > 0;
+  auto it = func_info_.find(&ast);
+  if (it == func_info_.end()) return false;
+  // `return`/`defer` in the body need a real callee frame: inlined, the
+  // return would exit the *enclosing* function and the defer would land on
+  // its defer list (has_any_defer is over-conservative for loop-scoped
+  // defers, which is fine — the runtime helper path is always correct).
+  return !it->second.has_return && !it->second.has_any_defer;
 }
 
 // Shared loop scaffold for unary inlined HOFs (map / filter / for_each).
