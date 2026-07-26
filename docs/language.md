@@ -3603,6 +3603,20 @@ Methods marked **mutating** modify the receiver in place and return
 `nil` (except `pop`, which returns the removed element); others
 return a new `Array` and leave the receiver unchanged.
 
+A callback that mutates the receiver is allowed, and the walk follows
+the live array: the size is re-read before every step, so the walk ends
+where the array ends. Shrinking the receiver ends the walk early;
+growing it keeps the walk going. This is the same rule `for x in a`
+follows (§12), and it covers `map`, `filter`, `for_each`, `reduce`,
+`find`, `any`, `all`, and `flat_map`.
+
+```culebra
+mut a = [1, 2, 3, 4]
+mut seen = []
+a.for_each(fn (x) { seen.push(x); a.pop() })
+inspect(seen)   # => [1, 2]
+```
+
 | Signature                                   | Description                           |
 |---------------------------------------------|---------------------------------------|
 | `a.size() -> Long`                          | Number of elements.                   |

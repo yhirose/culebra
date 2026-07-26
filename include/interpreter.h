@@ -4298,6 +4298,24 @@ inline auto _each_of_iter(Value upstream) {
   };
 }
 
+// Walk an Array receiver for a HOF whose callback can mutate that same
+// Array. Two rules, both forced by the callback running mid-walk:
+//   - re-read the size every step, so the walk ends where the live array
+//     ends (`for x in a` already does this; the JIT's loops match);
+//   - hand the body a *copy*, never a reference into the vector — a
+//     `push` can reallocate the backing store out from under it.
+// A range-for here is undefined behaviour: `pop` leaves `end()` stale and
+// the walk reads destroyed slots, `push` dangles the whole iterator pair.
+// `body` returns false to stop early.
+template <class Body>
+inline void each_live_array_element(
+    const std::shared_ptr<std::vector<Value>>& vals, Body&& body) {
+  for (size_t i = 0; i < vals->size(); i++) {
+    Value v = (*vals)[i];
+    if (!body(v)) return;
+  }
+}
+
 // Sets up a function-frame environment with `fn` bound to the callback,
 // and treats an early return (`return x` compiled as a thrown Value) as
 // the callback's result.
@@ -4648,10 +4666,12 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                              check_callback_arity(f, 1, "map");
                              ArrayValue out;
                              out.values->reserve(arr.values->size());
-                             for (const auto& v : *arr.values) {
-                               out.values->push_back(
-                                   invoke_unary_callback(callEnv, f, v));
-                             }
+                             each_live_array_element(
+                                 arr.values, [&](const Value& v) {
+                                   out.values->push_back(
+                                       invoke_unary_callback(callEnv, f, v));
+                                   return true;
+                                 });
                              return Value(std::move(out));
                            }))},
       {"filter"sv,
@@ -4661,12 +4681,14 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                              auto f = as_callback(callEnv->get("f"));
                              check_callback_arity(f, 1, "filter");
                              ArrayValue out;
-                             for (const auto& v : *arr.values) {
-                               if (invoke_unary_callback(callEnv, f, v)
-                                       .to_bool()) {
-                                 out.values->push_back(v);
-                               }
-                             }
+                             each_live_array_element(
+                                 arr.values, [&](const Value& v) {
+                                   if (invoke_unary_callback(callEnv, f, v)
+                                           .to_bool()) {
+                                     out.values->push_back(v);
+                                   }
+                                   return true;
+                                 });
                              return Value(std::move(out));
                            }))},
       {"for_each"sv,
@@ -4675,9 +4697,11 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                              const auto& arr = callEnv->get("self").to_array();
                              auto f = as_callback(callEnv->get("f"));
                              check_callback_arity(f, 1, "for_each");
-                             for (const auto& v : *arr.values) {
-                               invoke_unary_callback(callEnv, f, v);
-                             }
+                             each_live_array_element(
+                                 arr.values, [&](const Value& v) {
+                                   invoke_unary_callback(callEnv, f, v);
+                                   return true;
+                                 });
                              return Value();
                            }))},
       {"reduce"sv,
@@ -4688,7 +4712,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
              auto f = as_callback(callEnv->get("f"));
              check_callback_arity(f, 2, "reduce");
              Value acc = callEnv->get("init");
-             for (const auto& v : *arr.values) {
+             each_live_array_element(arr.values, [&](const Value& v) {
                auto inner = std::make_shared<Environment>(callEnv);
                inner->is_function_frame = true;
                inner->initialize("fn", callEnv->get("f"), false);
@@ -4704,7 +4728,8 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                } catch (const ReturnValue& r) {
                  acc = r.value;
                }
-             }
+               return true;
+             });
              return acc;
            }))},
       {"find"sv,
@@ -4713,11 +4738,15 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                              const auto& arr = callEnv->get("self").to_array();
                              auto f = as_callback(callEnv->get("f"));
                              check_callback_arity(f, 1, "find");
-                             for (const auto& v : *arr.values) {
-                               if (invoke_unary_callback(callEnv, f, v)
-                                       .to_bool()) return v;
-                             }
-                             return Value();
+                             Value found;
+                             each_live_array_element(
+                                 arr.values, [&](const Value& v) {
+                                   if (!invoke_unary_callback(callEnv, f, v)
+                                            .to_bool()) return true;
+                                   found = v;
+                                   return false;
+                                 });
+                             return found;
                            }))},
       {"any"sv,
        Value(FunctionValue({{"f", false, "Function"sv}},
@@ -4725,11 +4754,14 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                              const auto& arr = callEnv->get("self").to_array();
                              auto f = as_callback(callEnv->get("f"));
                              check_callback_arity(f, 1, "any");
-                             for (const auto& v : *arr.values) {
-                               if (invoke_unary_callback(callEnv, f, v)
-                                       .to_bool()) return Value(true);
-                             }
-                             return Value(false);
+                             bool hit = false;
+                             each_live_array_element(
+                                 arr.values, [&](const Value& v) {
+                                   hit = invoke_unary_callback(callEnv, f, v)
+                                             .to_bool();
+                                   return !hit;
+                                 });
+                             return Value(hit);
                            }))},
       {"all"sv,
        Value(FunctionValue({{"f", false, "Function"sv}},
@@ -4737,11 +4769,14 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                              const auto& arr = callEnv->get("self").to_array();
                              auto f = as_callback(callEnv->get("f"));
                              check_callback_arity(f, 1, "all");
-                             for (const auto& v : *arr.values) {
-                               if (!invoke_unary_callback(callEnv, f, v)
-                                        .to_bool()) return Value(false);
-                             }
-                             return Value(true);
+                             bool ok = true;
+                             each_live_array_element(
+                                 arr.values, [&](const Value& v) {
+                                   ok = invoke_unary_callback(callEnv, f, v)
+                                            .to_bool();
+                                   return ok;
+                                 });
+                             return Value(ok);
                            }))},
       {"flat_map"sv,
        Value(FunctionValue({{"f", false, "Function"sv}},
@@ -4750,17 +4785,20 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                              auto f = as_callback(callEnv->get("f"));
                              check_callback_arity(f, 1, "flat_map");
                              ArrayValue out;
-                             for (const auto& v : *arr.values) {
-                               auto r = invoke_unary_callback(callEnv, f, v);
-                               if (r.type != Value::Array) {
-                                 throw CulebraError("TypeError",
-                                     "type error: flat_map callback must "
-                                     "return an Array");
-                               }
-                               for (const auto& e : *r.to_array().values) {
-                                 out.values->push_back(e);
-                               }
-                             }
+                             each_live_array_element(
+                                 arr.values, [&](const Value& v) {
+                                   auto r =
+                                       invoke_unary_callback(callEnv, f, v);
+                                   if (r.type != Value::Array) {
+                                     throw CulebraError("TypeError",
+                                         "type error: flat_map callback must "
+                                         "return an Array");
+                                   }
+                                   for (const auto& e : *r.to_array().values) {
+                                     out.values->push_back(e);
+                                   }
+                                   return true;
+                                 });
                              return Value(std::move(out));
                            }))},
       {"sum"sv,

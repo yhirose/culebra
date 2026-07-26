@@ -8485,6 +8485,9 @@ struct JIT {
         module_->getOrInsertFunction(rt::array_size, builder_.getInt64Ty(),
                                      ptrTy),
         {arrPtr}, "for.size");
+    // The array advance re-reads the size rather than reading `c.count`
+    // back (the body can resize the receiver); only the string walk, whose
+    // subject cannot change under it, consumes the stored count.
     open_counted_cursor(c, arrPtr, size, FOR_ARRAY);
   }
 
@@ -8498,7 +8501,14 @@ struct JIT {
 
     builder_.SetInsertPoint(advBB);
     auto idx = builder_.CreateLoad(i64Ty, c.pos, "for.i");
-    auto size = builder_.CreateLoad(i64Ty, c.count, "for.n");
+    // Re-read the size instead of trusting the cursor's opening count: the
+    // body may shrink the receiver, and the walk has to end where the live
+    // array ends (interp's rule). Tuples are immutable and the Set branch
+    // walks a private materialized copy, so only Array can actually move.
+    auto size = emit_call(
+        module_->getOrInsertFunction(rt::array_size, builder_.getInt64Ty(),
+                                     ptrTy),
+        {builder_.CreateLoad(ptrTy, c.src)}, "for.n");
     builder_.CreateCondBr(builder_.CreateICmpSGE(idx, size), exitBB, stepBB);
 
     builder_.SetInsertPoint(stepBB);
@@ -14071,11 +14081,6 @@ inline void JIT::emit_array_unary_inline_loop(
   auto ptrTy = PointerType::get(ctx_, 0);
   auto fn = builder_.GetInsertBlock()->getParent();
 
-  auto size = emit_call(
-      module_->getOrInsertFunction(rt::array_size, builder_.getInt64Ty(),
-                                   ptrTy),
-      {arrPtr}, "ihof.size");
-
   IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
   auto idxAlloca =
       entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "ihof.idx");
@@ -14094,6 +14099,13 @@ inline void JIT::emit_array_unary_inline_loop(
 
   builder_.SetInsertPoint(condBB);
   auto i = builder_.CreateLoad(builder_.getInt64Ty(), idxAlloca, "ihof.i");
+  // Re-read the size every iteration: the body may mutate the receiver, and
+  // the loop then has to end where the live array ends (interp's for-in rule
+  // and the runtime helper's, so all four HOF paths agree).
+  auto size = emit_call(
+      module_->getOrInsertFunction(rt::array_size, builder_.getInt64Ty(),
+                                   ptrTy),
+      {arrPtr}, "ihof.size");
   builder_.CreateCondBr(builder_.CreateICmpSLT(i, size), bodyBB, endBB);
 
   builder_.SetInsertPoint(bodyBB);
@@ -14228,19 +14240,13 @@ inline llvm::Value* JIT::emit_inlined_array_reduce(
   auto ptrTy = PointerType::get(ctx_, 0);
   auto fn = builder_.GetInsertBlock()->getParent();
 
-  // Guard the accumulator: `size` is read once, so a body that shrinks the
-  // receiver makes the loop head's array_get throw with the accumulator live.
+  // Guard the accumulator: the body can still throw with it live.
   auto accAlloca = make_build_guard(init);
   auto cleanupBB = BasicBlock::Create(ctx_, "ired.cleanup", fn);
   auto savedLpad = current_lpad_;
   current_lpad_ = cleanupBB;
 
   IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
-  auto size = emit_call(
-      module_->getOrInsertFunction(rt::array_size, builder_.getInt64Ty(),
-                                   ptrTy),
-      {arrPtr}, "ired.size");
-
   auto idxAlloca =
       entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "ired.idx");
   auto eTagAlloca =
@@ -14258,6 +14264,11 @@ inline llvm::Value* JIT::emit_inlined_array_reduce(
 
   builder_.SetInsertPoint(condBB);
   auto i = builder_.CreateLoad(builder_.getInt64Ty(), idxAlloca, "ired.i");
+  // Re-read the size every iteration (see emit_array_unary_inline_loop).
+  auto size = emit_call(
+      module_->getOrInsertFunction(rt::array_size, builder_.getInt64Ty(),
+                                   ptrTy),
+      {arrPtr}, "ired.size");
   builder_.CreateCondBr(builder_.CreateICmpSLT(i, size), bodyBB, endBB);
 
   builder_.SetInsertPoint(bodyBB);

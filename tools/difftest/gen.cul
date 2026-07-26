@@ -1656,4 +1656,40 @@ for c in cbrets {
   case("cbret|" + c, c)
 }
 
+# --- Dimension: HOF callback mutates the receiver --------------------------
+# The walk re-reads the size every step, so it ends where the live array ends
+# (the rule `for x in a` already used). Three behaviours used to coexist: the
+# interp range-for'd over the live std::vector (undefined — `pop` read
+# destroyed slots, `push` dangled the iterators), the JIT's inlined loops
+# hoisted the size and threw IndexError, and its runtime helpers already
+# re-read. Both the inline shape and the variable-bound (helper) shape are
+# swept, plus the grow direction that used to corrupt interp values.
+let mutrecv = [
+  'mut a = [1,2,3,4]; mut s = []; for x in a { s.push(x); a.pop() }; s',
+  'mut a = [1,2,3,4]; mut s = []; a.for_each(fn (x) { s.push(x); a.pop() }); s',
+  'mut a = [1,2,3,4]; mut s = []; a.map(fn (x) { s.push(x); a.pop(); x }); s',
+  'mut a = [1,2,3,4]; mut s = []; a.filter(fn (x) { s.push(x); a.pop(); true }); s',
+  'mut a = [1,2,3,4]; mut s = []; a.reduce(0, fn (acc, x) { s.push(x); a.pop(); acc }); s',
+  'mut a = [1,2,3,4]; mut s = []; a.find(fn (x) { s.push(x); a.pop(); false }); s',
+  'mut a = [1,2,3,4]; mut s = []; a.any(fn (x) { s.push(x); a.pop(); false }); s',
+  'mut a = [1,2,3,4]; mut s = []; a.all(fn (x) { s.push(x); a.pop(); true }); s',
+  'mut a = [1,2,3,4]; mut s = []; a.flat_map(fn (x) { s.push(x); a.pop(); [x] }); s',
+  'mut a = [1,2,3,4]; a.reduce([0, 0], |acc, x| [acc[0] + a.pop(), acc[1]])',
+  # Variable-bound callbacks take the runtime-helper path.
+  'mut a = [1,2,3,4]; mut s = []; let cb = fn (x) { s.push(x); a.pop() }; a.for_each(cb); s',
+  'mut a = [1,2,3,4]; mut s = []; let cb = fn (x) { s.push(x); a.pop(); x }; a.map(cb); s',
+  'mut a = [1,2,3,4]; mut s = []; let cb = fn (acc, x) { s.push(x); a.pop(); acc }; a.reduce(0, cb); s',
+  # Growing: reallocation used to corrupt the interp's values.
+  'mut a = [1,2]; mut n = 0; a.for_each(fn (x) { n = n + 1; if n < 20 { a.push(n) } }); [n, a.size()]',
+  'mut a = [1,2]; mut n = 0; for x in a { n = n + 1; if n < 20 { a.push(n) } }; [n, a.size()]',
+  'mut a = [1,2]; mut n = 0; a.map(fn (x) { n = n + 1; if n < 20 { a.push(n) }; x }).size()',
+  # Draining faster than the walk advances ends it after one step.
+  'mut a = [1,2,3,4]; mut s = []; a.for_each(fn (x) { s.push(x); a.pop(); a.pop(); a.pop() }); [s, a.size()]',
+  # A receiver the callback does not touch is unaffected.
+  'mut a = [1,2,3]; mut b = []; a.for_each(fn (x) { b.push(x * 2) }); b',
+]
+for c in mutrecv {
+  case("mutrecv|" + c, c)
+}
+
 print(out.join("\n"))
