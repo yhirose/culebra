@@ -15,6 +15,7 @@
 #include <interpreter.h>
 #include <module_loader.h>
 #include <stdlib_interp.h>
+#include <vfs.h>
 
 #include <emscripten.h>
 #include <emscripten/emscripten.h>
@@ -68,16 +69,29 @@ extern "C" {
 // Run one program; returns 0 on success, 1 on error. Output (including
 // error text) has already streamed to JS as "output" messages by the time
 // this returns — see StreamingBuf above.
-EMSCRIPTEN_KEEPALIVE int run_culebra(const char* src_c) {
+//
+// `path_c` is where the program lives in the worker's in-memory filesystem,
+// which worker.js mirrors from the repo layout. It does two jobs, and both are
+// what let a program's source be byte-identical here and natively:
+//   - it is the entry path the module loader resolves `import "./x.cul"`
+//     against, so a multi-file program works;
+//   - it becomes `Sys.script`, so a program finds its assets the same way in
+//     both places (FS.dirname(Sys.script) + "/assets/...").
+// Natively this is set from the command line in main.cc; leaving it unset here
+// is why `Sys.script` used to read back as nil in the Playground.
+EMSCRIPTEN_KEEPALIVE int run_culebra(const char* src_c, const char* path_c) {
   (void)g_tensor_auto;
   (void)g_streams_installed;
+
+  std::string path = (path_c && *path_c) ? path_c : "/work/main.cul";
+  culebra::main_script_path() = path;
 
   int rc = 0;
   std::vector<std::string> msgs;
   culebra::ModuleLoader loader;
   std::vector<culebra::LoadedModule> modules;
   try {
-    modules = loader.load_program("<playground>", src_c, msgs);
+    modules = loader.load_program(path, src_c, msgs);
     if (modules.empty()) {
       for (auto& m : msgs) std::cerr << m << "\n";
       rc = 1;

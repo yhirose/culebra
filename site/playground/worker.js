@@ -120,6 +120,49 @@ postMessage({ type: "ready", backend: useFullBuild ? "full" : "basic" });
 // onmessage handler at all. This handler only owns the run/key protocol.
 let running = false;
 
+// --- in-memory filesystem ----------------------------------------------------
+// MEMFS mirrors the repository layout under /work, so a program's own path and
+// the paths it reads are the same strings they would be in a checkout. That is
+// what lets an example's source be byte-identical here and natively:
+// `FS.dirname(Sys.script) + "/assets/x.png"` resolves either way.
+const MEMFS_ROOT = "/work";
+
+function mkdirp(dir) {
+  let cur = "";
+  for (const part of dir.split("/")) {
+    if (!part) continue;
+    cur += "/" + part;
+    try { mod.FS.mkdir(cur); } catch (err) { /* already there */ }
+  }
+}
+
+function writeFile(path, data) {
+  mkdirp(path.slice(0, path.lastIndexOf("/")));
+  mod.FS.writeFile(path, data);
+}
+
+// Fetch every extra file the catalog lists for this example and drop it where
+// the program expects it — imported modules as much as data, since the loader
+// opens both the same way. They are named repo-relative in examples.json, which
+// is also how build.sh mirrors them next to the page, so one list serves both
+// the copy at build time and the fetch here and neither can drift.
+const staged = new Set();
+
+async function stageProgram(msg) {
+  const rel = msg.path || "main.cul";
+  const path = MEMFS_ROOT + "/" + rel;
+  writeFile(path, msg.src);          // so FS.read(Sys.script) works too
+  for (const asset of msg.assets || []) {
+    const dst = MEMFS_ROOT + "/" + asset;
+    if (staged.has(dst)) continue;   // assets are immutable; fetch each once
+    const res = await fetch("./" + asset);
+    if (!res.ok) throw new Error("asset " + asset + ": HTTP " + res.status);
+    writeFile(dst, new Uint8Array(await res.arrayBuffer()));
+    staged.add(dst);
+  }
+  return path;
+}
+
 onmessage = async (e) => {
   const { type } = e.data;
   if (type === "key") {
@@ -161,7 +204,9 @@ onmessage = async (e) => {
   try {
     // JSPI makes run_culebra return a promise in the full build; TUI/GPU
     // waits suspend beneath it. Nothing in the C++ call chain is async.
-    rc = await mod.ccall("run_culebra", "number", ["string"], [e.data.src], { async: useFullBuild });
+    const path = await stageProgram(e.data);
+    rc = await mod.ccall("run_culebra", "number", ["string", "string"],
+                         [e.data.src, path], { async: useFullBuild });
   } catch (err) {
     postMessage({ type: "output", text: "internal error: " + err });
   }

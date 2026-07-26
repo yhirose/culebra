@@ -46,7 +46,11 @@ COMMON=(
   -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createCulebra
   -sENVIRONMENT=web,worker
   -sEXPORTED_FUNCTIONS=_run_culebra,_malloc,_free
-  -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString
+  -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString,FS
+  # A program reads its assets with FS.read, and resolves `import` against its
+  # own path — both need a filesystem. Nothing is preloaded: worker.js fetches
+  # what examples.json lists and writes it into MEMFS before the run.
+  -sFORCE_FILESYSTEM=1
   -Iinclude
   -Ivendor/cpp-peglib -Ivendor/cpp-unicodelib -Ivendor/cpp-regexlib
   -Ivendor/cpp-tensorlib/include -Ivendor/cpp-tensorlib/kernels
@@ -72,21 +76,32 @@ cp playground/index.html playground/app.js playground/worker.js \
    playground/editor.js playground/culebra-lang.js playground/styles.css \
    playground/examples.json "$OUT/"
 
-# examples.json's "path" fields double as both the source location (relative
-# to the repo root) and the fetch path the browser uses (relative to $OUT) —
-# mirror each referenced .cul under $OUT/examples/ so both readings hold.
-echo "[playground] copying example sources…"
+# examples.json's "path" and "assets" fields double as both the source location
+# (relative to the repo root) and the fetch path the browser uses (relative to
+# $OUT) — mirror everything they name under $OUT so both readings hold. The
+# worker fetches from this same list, so nothing can be copied but not fetched,
+# or fetched but not copied.
+echo "[playground] copying example sources and assets…"
 python3 - "$OUT" <<'PY'
 import json, pathlib, shutil, sys
 
 out = pathlib.Path(sys.argv[1])
 catalog = json.loads((out / "examples.json").read_text())
+missing, n = [], 0
 for category in catalog["categories"]:
   for example in category["examples"]:
-    src = pathlib.Path(example["path"])
-    dst = out / example["path"]
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(src, dst)
+    for rel in [example["path"]] + example.get("assets", []):
+      src = pathlib.Path(rel)
+      if not src.is_file():
+        missing.append("%s (%s)" % (rel, example["title"]))
+        continue
+      dst = out / rel
+      dst.parent.mkdir(parents=True, exist_ok=True)
+      shutil.copyfile(src, dst)
+      n += 1
+if missing:
+  sys.exit("examples.json names files that do not exist:\n  " + "\n  ".join(missing))
+print("[playground]   %d file(s)" % n)
 PY
 
 echo "[playground] done → $OUT/ (basic $(du -h "$OUT/culebra-basic.wasm" | cut -f1), full $(du -h "$OUT/culebra-full.wasm" | cut -f1))"

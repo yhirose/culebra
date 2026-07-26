@@ -115,11 +115,17 @@ function routeOutput(text) {
 
 // --- examples ---------------------------------------------------------------
 //
-// examples.json lists {title, path} per category; path doubles as the fetch
-// URL (relative to this file) and, at build time, the repo-root source path
-// build.sh copies from — see playground/build.sh.
+// examples.json lists {title, path, assets?} per category. `assets` is every
+// extra file the program needs beside its entry source — imported modules as
+// well as data — since both are just files it opens at run time. `path` and
+// each entry of `assets` double as the fetch URL (relative to this file) and,
+// at build time, the repo-root source path build.sh copies from — one list, so
+// the copy and the fetch cannot drift. The worker mirrors them into its
+// in-memory filesystem under the same relative paths before the program runs.
 
-let EXAMPLE_PATHS = {}; // title -> path
+let EXAMPLE_PATHS = {};  // title -> path
+let EXAMPLE_ASSETS = {}; // title -> [path]
+let currentExample = null;
 
 async function loadExampleCatalog() {
   const res = await fetch("./examples.json");
@@ -129,6 +135,7 @@ async function loadExampleCatalog() {
     group.label = category.name;
     for (const example of category.examples) {
       EXAMPLE_PATHS[example.title] = example.path;
+      EXAMPLE_ASSETS[example.title] = example.assets || [];
       const opt = document.createElement("option");
       opt.value = example.title;
       opt.textContent = example.title;
@@ -139,6 +146,7 @@ async function loadExampleCatalog() {
 }
 
 async function loadExample(title) {
+  currentExample = title;
   const res = await fetch(EXAMPLE_PATHS[title]);
   return res.text();
 }
@@ -226,7 +234,15 @@ function run() {
   resetToOutput();
   startRafPump();   // drives Canvas present()'s frame wait; harmless otherwise
   setStatus("running…");
-  worker.postMessage({ type: "run", src: editor.getValue() });
+  // The path travels with the source: it is what the program sees as
+  // `Sys.script` and what `import` resolves against, so an example finds its
+  // assets by the same expression it would use natively.
+  worker.postMessage({
+    type: "run",
+    src: editor.getValue(),
+    path: EXAMPLE_PATHS[currentExample] || "main.cul",
+    assets: EXAMPLE_ASSETS[currentExample] || [],
+  });
 }
 
 // culebra errors end with `at LINE:COL`; surface the first such location in the
