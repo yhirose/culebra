@@ -287,6 +287,52 @@ inline void blit(int64_t id, int dx, int dy, int sx, int sy, int sw, int sh,
   }
 }
 
+// Walks a source axis in lockstep with a destination axis: `pos` is exactly
+// (u * num) / den for the current u, carried forward by an add and a compare.
+// A scaling blit maps every destination pixel back to the source, and doing
+// that with a division costs more than fetching the pixel it names.
+struct SourceWalk {
+  int64_t pos;    // (u * num) / den
+  int64_t err;    // (u * num) % den — what the floor dropped
+  int64_t step;   // num / den
+  int64_t rem;    // num % den
+  int64_t den;
+
+  SourceWalk(int64_t u, int64_t num, int64_t d)
+      : pos(u * num / d), err(u * num % d), step(num / d), rem(num % d),
+        den(d) {}
+
+  void next() {  // u + 1
+    pos += step;
+    err += rem;
+    if (err >= den) {
+      err -= den;
+      pos++;
+    }
+  }
+  void prev() {  // u - 1
+    pos -= step;
+    err -= rem;
+    if (err < 0) {
+      err += den;
+      pos--;
+    }
+  }
+};
+
+// Composite `src` over `dst` at `alpha`/255, channel by channel and in
+// integers only, so the three backends round identically.
+inline uint32_t blend_over(uint32_t src, uint32_t dst, uint32_t alpha) {
+  uint32_t out = 0;
+  for (int c = 0; c < 4; c++) {
+    uint32_t sc = (src >> (c * 8)) & 0xff;
+    uint32_t dc = (dst >> (c * 8)) & 0xff;
+    uint32_t m = (sc * alpha + dc * (255 - alpha) + 127) / 255;
+    out |= m << (c * 8);
+  }
+  return out;
+}
+
 // Blit the sub-rectangle (sx, sy, sw, sh) of sprite `id` into the destination
 // rectangle (dx, dy, dw, dh), resampling to fit.
 //
@@ -320,18 +366,54 @@ inline void blit_scaled(int64_t id, int64_t dx, int64_t dy, int64_t dw,
   int64_t x1 = std::min<int64_t>(dx + dw, _fb_w());
   int64_t y0 = std::max<int64_t>(dy, 0);
   int64_t y1 = std::min<int64_t>(dy + dh, _fb_h());
+  // u and v are the destination offsets read back through the flips; both stay
+  // within [0, dw) and [0, dh) after the clip, so the divisions floor.
+  int64_t u0 = flip_x ? dx + dw - 1 - x0 : x0 - dx;
+  uint32_t a = static_cast<uint32_t>(alpha);
   for (int64_t y = y0; y < y1; y++) {
     int64_t v = flip_y ? dy + dh - 1 - y : y - dy;
     int64_t j0 = v * sh / dh;
     int64_t j1 = smooth ? std::max((v + 1) * sh / dh, j0 + 1) : j0 + 1;
     uint32_t* row = _fb().data() + static_cast<size_t>(y) * _fb_w();
+    SourceWalk u(u0, sw, dw);
+
+    if (!smooth) {
+      // Nearest neighbour, which is every caller that isn't shrinking with
+      // averaging asked for: one source pixel per destination pixel, and one
+      // source row for the whole destination row.
+      int64_t srcy = sy + j0;
+      if (srcy < 0 || srcy >= s.h) continue;
+      const uint32_t* src_row =
+          s.px.data() + static_cast<size_t>(srcy) * s.w;
+      for (int64_t x = x0; x < x1; x++) {
+        int64_t srcx = sx + u.pos;
+        if (flip_x)
+          u.prev();
+        else
+          u.next();
+        if (srcx < 0 || srcx >= s.w) continue;
+        uint32_t src = src_row[srcx];
+        if ((src >> 24) == 0) continue;  // alpha 0 = transparent
+        row[x] = a == 255 ? src : blend_over(src, row[x], a);
+      }
+      continue;
+    }
+
+    // Box average: the source span each destination pixel covers, which the
+    // walk one step ahead names.
+    SourceWalk un(u0 + 1, sw, dw);
     for (int64_t x = x0; x < x1; x++) {
-      int64_t u = flip_x ? dx + dw - 1 - x : x - dx;
-      int64_t i0 = u * sw / dw;
-      int64_t i1 = smooth ? std::max((u + 1) * sw / dw, i0 + 1) : i0 + 1;
-      // Average the source box (a single pixel unless shrinking with box
-      // averaging on), counting only the opaque samples so a sprite's
-      // transparent margin doesn't bleed into its edge.
+      int64_t i0 = u.pos;
+      int64_t i1 = std::max(un.pos, i0 + 1);
+      if (flip_x) {
+        u.prev();
+        un.prev();
+      } else {
+        u.next();
+        un.next();
+      }
+      // Count only the opaque samples, so a sprite's transparent margin
+      // doesn't bleed into its edge.
       uint32_t acc[4] = {0, 0, 0, 0};
       uint32_t n = 0;
       for (int64_t j = j0; j < j1; j++) {
@@ -341,7 +423,7 @@ inline void blit_scaled(int64_t id, int64_t dx, int64_t dy, int64_t dw,
           int64_t srcx = sx + i;
           if (srcx < 0 || srcx >= s.w) continue;
           uint32_t p = s.px[static_cast<size_t>(srcy) * s.w + srcx];
-          if ((p >> 24) == 0) continue;  // alpha 0 = transparent
+          if ((p >> 24) == 0) continue;
           acc[0] += p & 0xff;
           acc[1] += (p >> 8) & 0xff;
           acc[2] += (p >> 16) & 0xff;
@@ -352,20 +434,7 @@ inline void blit_scaled(int64_t id, int64_t dx, int64_t dy, int64_t dw,
       if (n == 0) continue;
       uint32_t src = (acc[0] / n) | ((acc[1] / n) << 8) |
                      ((acc[2] / n) << 16) | ((acc[3] / n) << 24);
-      if (alpha == 255) {
-        row[x] = src;
-        continue;
-      }
-      uint32_t dst = row[x];
-      uint32_t out = 0;
-      for (int c = 0; c < 4; c++) {
-        uint32_t sc = (src >> (c * 8)) & 0xff;
-        uint32_t dc = (dst >> (c * 8)) & 0xff;
-        uint32_t m = (sc * static_cast<uint32_t>(alpha) +
-                      dc * (255 - static_cast<uint32_t>(alpha)) + 127) / 255;
-        out |= m << (c * 8);
-      }
-      row[x] = out;
+      row[x] = a == 255 ? src : blend_over(src, row[x], a);
     }
   }
 }

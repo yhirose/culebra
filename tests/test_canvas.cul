@@ -201,6 +201,43 @@ _Canvas.blit_scaled(chk, 0, 0, 4, 4, 0, 0, 0, 2, 0, 255)
 _Canvas.blit_scaled(999, 0, 0, 4, 4, 0, 0, 2, 2, 0, 255)
 assert_eq(dump(), "..../..../..../....")
 
+// A ratio that doesn't divide. Destination column u samples source column
+// floor(u * sw / dw), which the blit carries forward incrementally instead of
+// dividing per pixel, so a 7 -> 5 shrink pins that it floors the same way.
+let ramp = _Canvas.sprite_load([rgba(0, 0, 0, 255), rgba(10, 0, 0, 255),
+                                rgba(20, 0, 0, 255), rgba(30, 0, 0, 255),
+                                rgba(40, 0, 0, 255), rgba(50, 0, 0, 255),
+                                rgba(60, 0, 0, 255)], 7, 1)
+let ramp_row = fn (w) {
+  mut out = []
+  for x in 0..w { out.push(_Canvas.get_pixel(x, 0) % 256 / 10) }
+  out
+}
+_Canvas.init(5, 1)
+_Canvas.clear(CLEAR)
+_Canvas.blit_scaled(ramp, 0, 0, 5, 1, 0, 0, 7, 1, 0, 255)
+assert_eq(ramp_row(5), [0, 1, 2, 4, 5])
+_Canvas.clear(CLEAR)
+_Canvas.blit_scaled(ramp, 0, 0, 5, 1, 0, 0, 7, 1, 1, 255)     // flip X
+assert_eq(ramp_row(5), [5, 4, 2, 1, 0])
+// Clipped on the left, so the walk starts part way along the destination.
+_Canvas.init(3, 1)
+_Canvas.clear(CLEAR)
+_Canvas.blit_scaled(ramp, -2, 0, 5, 1, 0, 0, 7, 1, 0, 255)
+assert_eq(ramp_row(3), [2, 4, 5])
+_Canvas.clear(CLEAR)
+_Canvas.blit_scaled(ramp, -2, 0, 5, 1, 0, 0, 7, 1, 1, 255)    // flip X, clipped
+assert_eq(ramp_row(3), [2, 1, 0])
+// A source rectangle reaching past the sprite draws only the rows that exist.
+let two_rows = _Canvas.sprite_load([BLUE, BLUE, GREEN, GREEN], 2, 2)
+_Canvas.init(2, 4)
+_Canvas.clear(RED)
+_Canvas.blit_scaled(two_rows, 0, 0, 2, 4, 0, 0, 2, 4, 0, 255)
+assert_eq(_Canvas.get_pixel(0, 0), BLUE)
+assert_eq(_Canvas.get_pixel(0, 1), GREEN)
+assert_eq(_Canvas.get_pixel(0, 2), RED)      // source row 2 is off the sprite
+assert_eq(_Canvas.get_pixel(0, 3), RED)
+
 // alpha: 0 draws nothing, 255 is the plain blit, and in between each channel
 // is (src*a + dst*(255-a) + 127) / 255.
 _Canvas.init(2, 1)
