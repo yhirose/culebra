@@ -546,7 +546,7 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   # namespace + culebra_runtime_tensor_* helpers stay real. The strong
   # body is force-loaded from culebra_rt_tensor (below) only when the
   # program uses Tensor — collapsing the tensor axis from 2 variants to
-  # this one stub flag (see DESIGN_linear_rt.md).
+  # this one stub flag.
   target_compile_definitions(culebra_rt PRIVATE
     LLVM_DISABLE_ABI_BREAKING_CHECKS_ENFORCING=1
     CULEBRA_RT_DEFINE_RUNTIME=1

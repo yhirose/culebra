@@ -5707,7 +5707,7 @@ inline Value make_json_namespace() {
 // that breaks class-instance methods in the JIT. A compiled-Regex cache keyed
 // by pattern gives reuse. A Match is a data object
 // { value, start, end, groups: [Group|nil], named: {name: Group} }; no-match
-// is nil. Flags are inline ((?i)/(?m)/(?s)). See docs/regex_stdlib_api.md.
+// is nil. Flags are inline ((?i)/(?m)/(?s)).
 //===--------------------------------------------------------------------===//
 
 // A capture group -> { value, start, end }, or nil if it did not participate.

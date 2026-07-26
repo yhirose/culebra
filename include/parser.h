@@ -739,7 +739,7 @@ inline void require_getter_no_params(const MethodView& mv,
 // the caller applies as a function). The eval/compile side validates the
 // names against the supported set. Used by both interp (`eval_class_decl`)
 // and JIT (`compile_class_decl`) so the directive is recognized
-// identically — see project_type_system.md §D.
+// identically.
 inline std::vector<std::string_view> view_derive(const peg::Ast& decorator) {
   std::vector<std::string_view> traits;
   if (decorator.nodes.empty()) return traits;
@@ -770,7 +770,7 @@ inline bool is_packable_decorator(const peg::Ast& decorator) {
 // runtime selector the JIT uses (`make_derived_method`). Throws the
 // canonical SyntaxError on an unknown name so interp / JIT diagnostics
 // stay identical — same rationale as require_static_field. Shared by
-// both backends; see project_type_system.md §D.
+// both backends.
 struct DerivedMethod {
   std::string_view name;  // generated method name (static-lifetime literal)
   int kind;               // 0=eq, 1=hash, 2=show, 3=cmp

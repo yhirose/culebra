@@ -704,7 +704,7 @@ struct FunctionValue {
   // (check_callback_arity) can't decode multimethod_table since MultiMethod
   // is defined later — so eval_multifn_decl bakes this predicate, closing
   // over the shared (live) method table so later overloads are reflected.
-  // Empty for non-dispatchers. See [[project_jit_error_symmetry]].
+  // Empty for non-dispatchers.
   std::function<bool(long expected)> multimethod_accepts_arity;
   // Cycle-collector hook: enumerates each overload body's captured def_env
   // with the body's own multiplicity (2 when the body's `eval` also captures
@@ -752,7 +752,7 @@ struct FunctionValue {
   // (value-type / dict / iterator) — the cases the JIT can match. Gates
   // the positional-arity check so interp and JIT stay symmetric;
   // trait-default and namespace wrappers (not in any builtin table) are
-  // excluded. See [[project_jit_error_symmetry]].
+  // excluded.
   bool builtin_arity_checked = false;
   // True for the root stdlib functions (namespace methods like `Math.abs`
   // and bare globals like `type_of`) that declare a fixed positional
@@ -967,7 +967,7 @@ struct Value {
   // StringView: borrowed bytes view with shared-ownership lifetime.
   // The `source` shared_ptr keeps the bytes alive — multiple views can
   // share the same source so chained substr / split / iter pay only one
-  // source-copy alloc total. See [[project_string_model]].
+  // source-copy alloc total.
   explicit Value(std::shared_ptr<const std::string> source,
                  std::string_view sv)
       : type(StringView),
@@ -2882,7 +2882,7 @@ inline bool type_matches(const Value& val, std::string_view name) {
     return type_matches(val, name.substr(0, name.size() - 1));
   }
   // Generic outer-match: `Array<Long>` checks `Array` only (element
-  // type is documentation in the MVP, see [[project_type_system]]).
+  // type is documentation in the MVP).
   if (name.find('<') != std::string_view::npos) {
     name = parse_generic_head(name).outer;
   }
@@ -3466,7 +3466,7 @@ inline bool _ordering_less(const Value& a, const Value& b) {
   return a < b;
 }
 
-// --- @derive support (project_type_system.md §D) ----------------------
+// --- @derive support --------------------------------------------------
 //
 // `@derive(Eq, Hash, Show, Comparable)` is a compiler-recognized class
 // directive (not a user function). The generated methods are reflective:
@@ -8883,7 +8883,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
               // silently swapping the returned instance, and the
               // constructor's return value is always the originally
               // allocated object (so `self.x = ...` is the supported way
-              // to populate fields). See project_constructor_semantics.md.
+              // to populate fields).
               auto inst = Value(build_instance());
               // Declared-field initializers run first — against the class's
               // defining scope, not callEnv, so `new` params stay invisible.

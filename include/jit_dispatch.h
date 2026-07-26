@@ -171,7 +171,7 @@ culebra_runtime_make_variant_ctor(const char* variant_name,
   return cls;
 }
 
-// --- @derive reflective methods (project_type_system.md §D) ----------
+// --- @derive reflective methods ---------------------------------------
 //
 // `@derive(Eq, Hash, Show, Comparable)` injects methods that walk an
 // instance's own data fields at call time. The JIT mirrors the variant

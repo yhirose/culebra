@@ -99,7 +99,7 @@ Most of the GC cost is **over-retention by the conservative stack scan**:
 each collect marks ~200–400k objects (wildly varying) while the true working
 set is ~36k. The high-leverage fix is **precise rooting** (a Julia-style
 tagged-value shadow stack) so RC reclaims the bulk and the collector only
-handles real cycles — tracked in `.claude/plans/jit-precise-gc-shadow-stack.md`.
+handles real cycles.
 The structural answer that sidesteps per-scalar Values entirely is the
 **Tensor** port above (one node per layer-level op + BLAS).
 

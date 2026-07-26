@@ -222,7 +222,7 @@ assert_eq(r_type.col, 28)
 # many positional args with the same ArityError on interp, JIT, and AOT
 # (this file runs under all three). Too-many used to be silently dropped
 # on interp and surfaced as "expected Function, got Nil" on the JIT;
-# both now match. See [[project_jit_error_symmetry]].
+# both now match.
 let r_af = try { [1].push(); nil } catch e { e }
 assert_eq(r_af.kind, 'ArityError')
 assert_eq(r_af.message, "'push' takes 1 argument but 0 given")

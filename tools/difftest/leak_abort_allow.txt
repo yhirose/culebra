@@ -8,7 +8,7 @@
 # legitimate reference cycle (the backstop's job), so the acyclic-leak-freedom
 # milestone is reached. Blank lines and `#` comments are ignored. Regenerate
 # the abort set with `just leak-abort-suite-update`, but keep the "why"
-# comments by hand. Rationale is in memory/project_leak_fuzzer.md (C⑥–C⑧).
+# comments by hand.
 
 # --- legitimate reference cycles (the backstop's job, not RC bugs) -----------
 # A drop-object reachable through a hashable key's back-edge; the cycle balances

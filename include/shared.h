@@ -1708,7 +1708,7 @@ inline void _consume_sigint() {
 // latching the throw flag, so the running code keeps going and the program
 // drives its own shutdown by reading the channel. Both are plain host-side
 // atomics (no JIT IR references them). The registry + delivery thread live in
-// isolate.h; here is only the handler's branch. See [[project_concurrency]].
+// isolate.h; here is only the handler's branch.
 inline std::atomic<bool> culebra_g_signal_notify{false};
 inline std::atomic<bool> culebra_g_signal_pending{false};
 

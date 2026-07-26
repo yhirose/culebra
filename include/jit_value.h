@@ -544,7 +544,7 @@ static constexpr int8_t TAG_SET = 10;
 // struct; the struct itself leaks for the program's lifetime (cycle-
 // bounded leak, identical to TAG_STRING char arrays). Refcounting is
 // a no-op because lifetime is governed by the owning String, not by
-// the view. See [[project_string_model]].
+// the view.
 static constexpr int8_t TAG_STRINGVIEW = 11;
 // Sentinel tag used in the kwargs-resolved slab to mark a middle gap
 // (a defaulted slot that the caller did not fill while a later slot

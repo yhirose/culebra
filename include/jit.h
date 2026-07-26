@@ -9276,7 +9276,6 @@ struct JIT {
     // `derive_method_for` validates the trait name and yields the runtime
     // selector (shared with the interpreter). User definitions win (a
     // derived method whose name the class already declares is skipped).
-    // See project_type_system.md §D.
     for (size_t i = 0; i < out.dec_end; i++) {
       for (auto trait : culebra::view_derive(*ast.nodes[i])) {
         auto dm = culebra::derive_method_for(trait);
@@ -12094,7 +12093,7 @@ struct JIT {
   // `.map(...)`) falls through to "expected Function, got Nil", matching
   // interp. Mirrors eval_property's dispatch order: value-type tables by
   // tag, then dict builtins on any Object, then iterator builtins on an
-  // iterator-shaped Object. See [[project_jit_error_symmetry]].
+  // iterator-shaped Object.
   void emit_builtin_arity_check(const std::string& method,
                                 const peg::Ast& argsAst,
                                 llvm::Value* receiver) {
