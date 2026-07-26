@@ -2,7 +2,7 @@
 #
 # The pseudo-3D road, the projection, the road geometry, the AI and every
 # constant come from the original; what changed is the art (generated, see
-# assets/README.md), the day cycle (four scenes, one per lap) and the shape of
+# assets/README.md), the day cycle (four scenes over one lap) and the shape of
 # the hot loops. The interpreter charges a C++ stack unwind for `return`,
 # `break` and `continue`, so the loops that run per car or per segment carry a
 # `done` flag instead, and the drawing calls go straight to the `_Canvas.*`
@@ -136,6 +136,7 @@ let ART_DIR = if FS.exists(HOME + "/images/sprites.png") {
     HOME + "/assets"
   }
 let SCENES = ["asayake", "hiru", "yuugure", "twilight"]
+let SCENE_COUNT = SCENES.size()
 
 let sheet = Canvas.Sprite.from_png(FS.read(ART_DIR + "/sprites.png"))
 let SHEET = sheet._id
@@ -179,7 +180,8 @@ let SCENE_COLORS = [
   [140, 117, 78, 158, 135, 95, 133, 90, 152, 145, 105, 168,
    210, 147, 182, 223, 115, 142, 202, 102, 144, 49, 27, 148],
 ]
-# How much of a lap holds one scene before the cross-fade into the next starts.
+# How much of a scene's stretch of road holds still before the cross-fade into
+# the next one starts.
 let SCENE_HOLD = 3.0 / 7.0
 let LANE_R = 252
 let LANE_G = 248
@@ -449,7 +451,6 @@ mut key_slower = false
 mut current_lap_time = 0.0
 mut last_lap_time = 0.0
 mut fast_lap_time = 180.0             # v4's starting target, session-lived
-mut scene_lap = 0                     # which of the four scenes this lap shows
 
 # --- BGM ---------------------------------------------------------------
 # v4's own music is a quiet `music.volume = 0.05` loop playing under the
@@ -583,7 +584,6 @@ let update = fn (dt) {
   update_cars(dt, player_segment.index)
 
   position = increase(position, dt * speed, track_length)
-  if position < start_position { scene_lap = (scene_lap + 1) % 4 }
 
   if key_left { player_x = player_x - dx }
   else if key_right { player_x = player_x + dx }
@@ -670,7 +670,7 @@ mut sky_color = 0
 
 let build_palette = fn (scene, blend) {
   let a = SCENE_COLORS[scene]
-  let b = SCENE_COLORS[(scene + 1) % 4]
+  let b = SCENE_COLORS[(scene + 1) % SCENE_COUNT]
   let f = blend
   let g = 256 - blend
   let c = fn (i) { (a[i] * g + b[i] * f) / 256 }
@@ -896,21 +896,25 @@ let render = fn () {
   let player_y = player_segment.p1_wy +
                  (player_segment.p2_wy - player_segment.p1_wy) * player_percent
 
-  # The day cycle runs on laps, not on the clock, so it reads the same however
-  # fast the car is driven: one scene per lap, held for the first stretch and
-  # cross-faded into the next over the rest.
-  let local = position / track_length
+  # The day cycle runs on distance, not on the clock, so it reads the same
+  # however fast the car is driven. Each scene owns an equal stretch of the
+  # track — the four together are exactly one lap — held for the first part of
+  # its stretch and cross-faded into the next over the rest.
+  let cycle = position * SCENE_COUNT / track_length
+  let scene = to_long(cycle)
+  let local = cycle - scene
   let blend = if local < SCENE_HOLD {
       0
     } else {
       Math.round((local - SCENE_HOLD) / (1.0 - SCENE_HOLD) * 256.0)
     }
-  build_palette(scene_lap, blend)
+  build_palette(scene, blend)
 
   _Canvas.clear(sky_color)
-  draw_background(backgrounds[scene_lap], player_y, 255)
+  draw_background(backgrounds[scene], player_y, 255)
   if blend > 0 {
-    draw_background(backgrounds[(scene_lap + 1) % 4], player_y, blend * 255 / 256)
+    draw_background(backgrounds[(scene + 1) % SCENE_COUNT], player_y,
+                    blend * 255 / 256)
   }
   draw_road(base_index, base_percent, player_y)
 

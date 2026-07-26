@@ -5,9 +5,9 @@ A culebra port of Jake Gordon's
 (`v4.final.html`, MIT) — the pseudo-3D road, the segment/curve/hill geometry,
 the AI traffic, collision, and lap timing all come from the original. What's
 different: the art (generated, not lifted — see `assets/README.md`), a
-four-scene day cycle that cross-fades once per lap, and the shape of the hot
-loops, rewritten for a tree-walking interpreter rather than a JIT'd browser
-(see `retro-run.cul`'s header comment for why).
+four-scene day cycle that gives each scene a quarter of the track, and the
+shape of the hot loops, rewritten for a tree-walking interpreter rather than a
+JIT'd browser (see `retro-run.cul`'s header comment for why).
 
 ## Run
 
