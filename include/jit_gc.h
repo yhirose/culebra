@@ -1,5 +1,5 @@
 #pragma once
-// Phase 0 of the JIT GC rewrite — see docs/jit_gc_design.md.
+// Phase 0 of the JIT GC rewrite.
 //
 // Self-contained, ALLOCATE-ONLY conservative GC heap. Its job is to let
 // the two genuinely dangerous parts of a conservative collector be built
@@ -47,9 +47,9 @@ static inline char** backtrace_symbols(void* const*, int) { return nullptr; }
 
 namespace culebra::gc {
 
-// 8-byte per-object collector metadata. Under plan A (docs/jit_gc_design.md
-// §2 revision) this lives OUTSIDE the object, in the heap's address→metadata
-// registry — offset 0 of a GC struct stays its `int64_t refcount`, so the
+// 8-byte per-object collector metadata. Under plan A this lives OUTSIDE the
+// object, in the heap's address→metadata registry — offset 0 of a GC struct
+// stays its `int64_t refcount`, so the
 // existing retain/release IR is undisturbed. `type_tag` drives sweep's
 // per-type destructor / enumerate_children dispatch — sweep only holds the
 // raw pointer, not the JitValue tag.
@@ -66,7 +66,7 @@ static_assert(sizeof(GcHeader) == 8, "GcHeader must stay 8 bytes");
 // {key, header} inline in a flat array (16 bytes/slot), so registering and
 // de-registering an object is a probe + slot write with NO per-entry heap
 // allocation — std::unordered_map's per-object node malloc/free was the
-// measured alloc-churn cost (docs/jit_gc_design.md §4). Linear probing with
+// measured alloc-churn cost. Linear probing with
 // tombstones; inserts reuse tombstone slots, so steady-state churn (insert on
 // birth, erase on death) keeps tombstones bounded and rarely rehashes.
 class GcRegistry {
@@ -382,7 +382,7 @@ class Heap {
     });
   }
 
-  // GAP5 (docs/gc_model.md §5) entry point. When CULEBRA_GC_LEAK_ABORT=1,
+  // GAP5 entry point. When CULEBRA_GC_LEAK_ABORT=1,
   // classify the heap for inflated-RC leaks and, if any survive, abort with
   // their birth sites. No-op otherwise (zero cost when off).
   //
@@ -510,7 +510,7 @@ class Heap {
     return s;
   }
 
-  // GAP5 (docs/gc_model.md §5) — loud leak detection. With
+  // GAP5 — loud leak detection. With
   // CULEBRA_GC_LEAK_ABORT=1, the teardown quiescent-point audit (see
   // maybe_audit_leaks) classifies the conservative-dead-but-refcount-reachable
   // objects; any *inflated-RC* one (a phantom +1 = a definite acyclic RC leak,

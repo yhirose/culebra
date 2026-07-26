@@ -707,8 +707,8 @@ struct JitSet {
 static_assert(sizeof(JitSet) <= 48 && !std::is_polymorphic_v<JitSet>);
 
 
-// Conservative backstop collector (docs/jit_gc_design.md). Lives in the
-// kSlotJitGc per-Runtime slot; default-constructible for runtime_substate.
+// Conservative backstop collector. Lives in the kSlotJitGc per-Runtime slot;
+// default-constructible for runtime_substate.
 // Callbacks (defined below, after the runtime types they walk) are
 // forward-declared so _gc_heap() can wire them on first use. extern "C++":
 // this sits inside the surrounding extern "C" block, but the definitions

@@ -1,4 +1,4 @@
-# GAP2 (docs/gc_model.md §5): the interpreter's cycle collector must reclaim a
+# GAP2: the interpreter's cycle collector must reclaim a
 # cycle routed entirely through Object property maps / Tuples — the shape the
 # JIT's conservative collector always handled but InterpGC used to miss (it
 # tracked only Array backings + closure Environments, so a pure Object↔Object

@@ -835,7 +835,7 @@ struct ObjectValue {
   // no-op-deleter control block aliasing an existing map's raw pointer, and
   // its sidecars are null. The cycle collectors must emit NO edge for such an
   // occurrence — it carries no primary `use_count` bump, so counting it would
-  // over-subtract and free a live node (gc_model.md GAP2 §4b). Skipping it is
+  // over-subtract and free a live node (GAP2). Skipping it is
   // a symmetric under-count = leak-safe.
   bool is_synthetic = false;
   // Shared.new view (sharedval.h): set at handle construction, so view
@@ -2067,7 +2067,7 @@ inline long _owned_scope_binding_refs(const Environment& env,
 }
 
 // --- Shared cycle-collector enumeration (single-sourced; used by both
-// InterpGC::collect and _owned_resolve_ambiguous — gc_model.md GAP2 §3a).
+// InterpGC::collect and _owned_resolve_ambiguous — GAP2).
 // The two collectors' container edge models had already drifted (the Set
 // `index` edge below existed in neither), so the enumeration lives in one
 // place; each collector keeps its own graph policy (force-pins, credits,

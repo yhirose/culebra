@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GAP5 smoke test (docs/gc_model.md §5): verify the loud inflated-RC leak
+# GAP5 smoke test: verify the loud inflated-RC leak
 # detector. With CULEBRA_GC_LEAK_ABORT=1 the JIT audits for inflated-RC leaks
 # at the teardown quiescent safepoint and aborts with the leaked object's
 # birth site. This checks the detector itself — that it FIRES (with a birth

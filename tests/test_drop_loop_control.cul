@@ -1,4 +1,4 @@
-# GAP1 (docs/gc_model.md §5): break / continue must release the abandoned
+# GAP1: break / continue must release the abandoned
 # iteration's owned slots and fire `drop` at the loop-control point — exactly
 # as fall-through does — not leak them to the GC backstop until frame exit.
 # Before the fix the JIT's compile_break / compile_continue ran only the

@@ -2,7 +2,7 @@
 
 #ifdef CULEBRA_JIT_ENABLED
 
-// Conservative backstop collector (docs/jit_gc_design.md).
+// Conservative backstop collector.
 #include <jit_gc.h>
 #include <jit_slab.h>
 #include <module_loader.h>
@@ -303,7 +303,7 @@ struct JIT {
     // pushed just before the loop_stack_ entry). break/continue release the
     // owned slots of every scope from the innermost open one down to this one
     // (inclusive), mirroring the body's normal pop_scope — see
-    // emit_loop_scope_exit / GAP1 in docs/gc_model.md.
+    // emit_loop_scope_exit / GAP1.
     size_t body_scope_index = 0;
   };
   std::vector<LoopBlocks> loop_stack_;
@@ -2064,9 +2064,9 @@ struct JIT {
   // one down to (and including) the loop body scope recorded at loop entry.
   // Without this the per-iteration owned slots leak to the backstop and, because
   // the stale slot alloca keeps the object conservatively rooted, a drop-bearing
-  // binding exited by break/continue never fires `drop` (GAP1, docs/gc_model.md
-  // §5). Slots are only released in IR — scopes_ is left intact, so the loop's
-  // own finish_and_pop_scope still runs on the (now dead) fall-through path.
+  // binding exited by break/continue never fires `drop` (GAP1). Slots are only
+  // released in IR — scopes_ is left intact, so the loop's own
+  // finish_and_pop_scope still runs on the (now dead) fall-through path.
   // Slot release precedes the owned-region exit so non-escaped resources die
   // through the ordinary refcount-0 path first, matching pop_scope's order. The
   // body scope's mark is the lowest of the abandoned scopes, so it covers them
