@@ -3904,8 +3904,9 @@ across interpreter / JIT / AOT and testable via `Canvas.get_pixel`), but nothing
 is displayed, input reads as "no button", and `tone` is silent. That variable is
 how a displayless server — or the test suite, since every `just` recipe exports
 it — runs a window-capable binary; `-DCULEBRA_ENABLE_CANVAS_WINDOW=OFF` goes
-further and leaves raylib out of the build entirely. Native `tone` audio is a
-later step (silent for now).
+further and leaves raylib out of the build entirely. Outside headless, native
+`tone` plays through a small software APU mixed on raylib's audio thread (see
+Audio below), lazily opening the audio device on first use.
 
 ### Colour
 
@@ -4026,8 +4027,18 @@ volume from 0 up to `peak`, down to the sustain `vol` (0–100), and back to 0.
 `wave` selects the channel — `Canvas.PULSE` / `PULSE2` (with a `duty` cycle:
 `Canvas.DUTY_EIGHTH` / `DUTY_QUARTER` / `DUTY_HALF` / `DUTY_THREE_QUARTER`),
 `Canvas.TRIANGLE`, `Canvas.NOISE`, or the culebra extension `Canvas.SAWTOOTH`.
-Each channel is monophonic (a new note cuts the previous one). Audio is silent
-on the headless native backend.
+Each channel is monophonic (a new note cuts the previous one).
+
+In the browser, `tone` plays through WebAudio (an oscillator per channel, a
+`PeriodicWave` for the pulse duty cycle, a filtered noise buffer). Natively it
+plays through a small software synth mixed on raylib's audio thread (naive —
+not band-limited — oscillators; noise is a filtered PRNG), started lazily on
+first use so a program that never calls `tone` never opens an audio device.
+Audio is silent on the headless native backend, and stays silent (no device
+opened, no crash) on a machine with no audio hardware. Native audio and
+WebAudio are independent implementations tuned to sound similar, not
+sample-identical — unlike the pixel ops, `tone` isn't required to produce
+bit-identical output across backends.
 
 ### The game loop
 

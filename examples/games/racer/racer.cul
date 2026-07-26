@@ -451,6 +451,36 @@ mut last_lap_time = 0.0
 mut fast_lap_time = 180.0             # v4's starting target, session-lived
 mut scene_lap = 0                     # which of the four scenes this lap shows
 
+# --- BGM ---------------------------------------------------------------
+# v4's own music is a quiet `music.volume = 0.05` loop playing under the
+# engine sound; this is the culebra-native equivalent — a short retro-arcade
+# riff over Am-F-C-G, ticked from `update()` so its rhythm is exact regardless
+# of display framerate. `tone()` is fire-and-forget (the APU keeps playing the
+# note on its own), so the sequencer is just "is it this note's turn yet".
+let LEAD_STEP = 8            # frames per sixteenth-note lead step
+let BASS_STEP = 16           # frames per eighth-note bass step
+let BGM_LOOP = 128           # one loop = 4 chords x 32 frames each
+# Root-third-fifth-octave arpeggio per chord (Am / F / C / G), 4 steps each.
+let LEAD_NOTES = [440, 523, 659, 880, 349, 440, 523, 698,
+                  262, 330, 392, 523, 392, 494, 587, 784]
+# Root then fifth of each chord, one octave down from the lead.
+let BASS_NOTES = [220, 330, 175, 262, 131, 196, 196, 294]
+mut bgm_frame = 0
+
+let tick_bgm = fn () {
+  if bgm_frame % LEAD_STEP == 0 {
+    let note = LEAD_NOTES[(bgm_frame / LEAD_STEP) % LEAD_NOTES.size()]
+    Canvas.tone(note, LEAD_STEP - 3, vol: 40, wave: Canvas.PULSE,
+                decay: 2, release: 2, duty: Canvas.DUTY_QUARTER)
+  }
+  if bgm_frame % BASS_STEP == 0 {
+    let note = BASS_NOTES[(bgm_frame / BASS_STEP) % BASS_NOTES.size()]
+    Canvas.tone(note, BASS_STEP - 4, vol: 55, wave: Canvas.PULSE2,
+                decay: 3, release: 4, duty: Canvas.DUTY_EIGHTH)
+  }
+  bgm_frame = (bgm_frame + 1) % BGM_LOOP
+}
+
 # --- update ----------------------------------------------------------------
 # How far a car steers this frame to get around whatever is in front of it.
 # Written without an early exit: `return` is a C++ stack unwind in the
@@ -616,6 +646,8 @@ let update = fn (dt) {
       current_lap_time = current_lap_time + dt
     }
   }
+
+  tick_bgm()
 }
 
 # --- render ----------------------------------------------------------------
