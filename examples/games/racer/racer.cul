@@ -9,13 +9,21 @@
 # primitives rather than through the preamble wrappers.
 #
 # Controls: arrows or WASD. Run with --jit for the smoothest frame time.
+# An optional first argument overrides the draw distance, e.g.
+#   culebra --jit racer.cul 150
+# Shortening it trims the far road/background/sprites and, since v4's own AI
+# window is sized off the same constant, cars that far ahead stop steering
+# around each other — the same coupling the original has. The fog table is a
+# fraction of the window rather than an absolute distance (also v4's formula),
+# so it very slightly shifts on segments that stay in view either way.
 
 # --- configuration ---------------------------------------------------------
 let W = 640
 let H = 480
 let FPS = 60
 let STEP = 1.0 / FPS
-let DRAW_DISTANCE = 300           # segments drawn ahead of the camera
+# Segments drawn ahead of the camera. v4's own tweak UI allows 100..500.
+let DRAW_DISTANCE = if Sys.argv.size() > 0 { to_long(Sys.argv[0]) } else { 300 }
 let LANES = 3
 let SEGMENT_LENGTH = 200
 let RUMBLE_LENGTH = 3             # segments per light/dark stripe
