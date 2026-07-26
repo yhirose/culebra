@@ -729,8 +729,8 @@ let build_palette = fn (scene, blend) {
   fog_r = c(18)
   fog_g = c(19)
   fog_b = c(20)
-  # The parallax layers are offset vertically by the hill the player is on, so
-  # the strip they uncover at the top is filled with the sky's own colour.
+  # Backstop clear colour behind the parallax stack (the strip the layers
+  # uncover when climbing is filled from the sky art itself in draw_layer).
   sky_color = c(21) + c(22) * 256 + c(23) * 65536 + OPAQUE
 }
 
@@ -747,6 +747,19 @@ let draw_layer = fn (id, layer, rotation, offset, alpha) {
   if source_w < image_w {
     _Canvas.blit_scaled(id, dest_w, offset, W - dest_w, H,
                         layer.x, layer.y, image_w - source_w, layer.h, 0, alpha)
+  }
+  # Climbing slides the layer down and uncovers a strip above it. Fill it by
+  # stretching the layer's own top row, so any art matches itself — the
+  # palette sky colour only matches the generated backgrounds, and foreign
+  # art (--assets) showed it as a solid wrong-coloured band. A transparent
+  # top row (hills, trees) draws nothing, so only the sky actually pays.
+  if offset >= 1.0 {
+    _Canvas.blit_scaled(id, 0, 0, dest_w, offset,
+                        source_x, layer.y, source_w, 1, 0, alpha)
+    if source_w < image_w {
+      _Canvas.blit_scaled(id, dest_w, 0, W - dest_w, offset,
+                          layer.x, layer.y, image_w - source_w, 1, 0, alpha)
+    }
   }
 }
 
