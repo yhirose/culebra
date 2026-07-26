@@ -23,9 +23,9 @@ let H = 480
 let FPS = 60
 let STEP = 1.0 / FPS
 # Arguments: `[--assets <dir>] [draw-distance]`. The directory is where the art
-# is read from, so upstream's own `images/` can be pointed at without copying it
-# in; the number is how many segments are drawn ahead of the camera (v4's own
-# tweak UI allows 100..500).
+# is read from, so a copy of upstream's own can be played with where it lies;
+# the number is how many segments are drawn ahead of the camera (v4's own tweak
+# UI allows 100..500).
 let args = fn () {
   mut dir = nil
   mut distance = 300
@@ -152,18 +152,11 @@ let BG_SKY = Art.new(5, 495, 1280, 480)
 let BG_TREES = Art.new(5, 985, 1280, 480)
 
 # --- assets ----------------------------------------------------------------
-# `--assets <dir>` wins, then upstream's own art if it is sitting next to the
-# script (images/), so anyone holding a copy can play with it; otherwise the
-# generated stand-ins in assets/ are used. `Sys.script` reads the same in the
-# Playground as it does natively, so there is no branch on the backend here.
+# `--assets <dir>` points at art held elsewhere — upstream's own, say; without
+# it the generated stand-ins in assets/ are used. `Sys.script` reads the same in
+# the Playground as it does natively, so there is no branch on the backend here.
 let HOME = FS.dirname(Sys.script)
-let ART_DIR = if args.dir != nil {
-    args.dir
-  } else if FS.exists(HOME + "/images/sprites.png") {
-    HOME + "/images"
-  } else {
-    HOME + "/assets"
-  }
+let ART_DIR = if args.dir != nil { args.dir } else { HOME + "/assets" }
 let SCENES = ["asayake", "hiru", "yuugure", "twilight"]
 let SCENE_COUNT = SCENES.size()
 

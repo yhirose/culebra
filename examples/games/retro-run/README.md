@@ -38,12 +38,11 @@ culebra --jit examples/games/retro-run/retro-run.cul --assets ~/art/racer 150
 fixed (sprite/background rectangles, which the game's scale and collision
 depend on) versus free to redraw.
 
-Art is looked for in three places, first match wins: the `--assets` directory,
-then an `images/` directory next to `retro-run.cul`, then `assets/`. The middle
-one is where a copy of upstream's own art goes (personal use, not
-redistribution — see the note in `assets/README.md`); both it and `assets-*/`
-are gitignored. The Playground build has neither, so it always uses the
-generated set.
+`--assets` reads from somewhere else instead — a copy of upstream's own art,
+say (personal use, not redistribution — see the note in `assets/README.md`).
+Point it anywhere; an `assets-*/` directory here is gitignored so a local copy
+cannot be committed by accident. The Playground build passes no arguments, so
+it always uses the generated set.
 
 A directory needs `sprites.png` and either one `background.png` or a
 `background_<scene>.png` per scene — a missing file names itself and the

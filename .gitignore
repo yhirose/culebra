@@ -82,5 +82,4 @@ __pycache__/
 *.pyc
 
 # Upstream art dropped in locally to play with — not redistributable
-examples/games/retro-run/images/
 examples/games/retro-run/assets-*/
