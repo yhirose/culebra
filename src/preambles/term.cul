@@ -167,8 +167,7 @@ let _term_module = fn () {
       # Reuse the buffers on the common path (size unchanged); only reallocate
       # when the terminal was resized.
       if self._back.size() == n {
-        mut i = 0
-        while i < n { self._back[i] = " "; self._bstyle[i] = ""; i = i + 1 }
+        for i in 0..n { self._back[i] = " "; self._bstyle[i] = "" }
       } else {
         self._back = []
         self._bstyle = []
@@ -212,10 +211,8 @@ let _term_module = fn () {
       mut cy = -1
       mut cx = -1
       mut pen = ""   # SGR currently applied at the terminal ("" = default)
-      mut y = 0
-      while y < self._h {
-        mut x = 0
-        while x < self._w {
+      for y in 0..self._h {
+        for x in 0..self._w {
           let idx = y * self._w + x
           let back = self._back[idx]
           if back == "" {
@@ -242,9 +239,7 @@ let _term_module = fn () {
               if wide { cx = x + 2; self._front[idx + 1] = ""; self._fstyle[idx + 1] = st } else { cx = x + 1 }
             }
           }
-          x = x + 1
         }
-        y = y + 1
       }
       if pen != "" { out = out + "\x1b[0m" }   # leave the terminal at default
       out

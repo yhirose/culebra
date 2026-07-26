@@ -59,8 +59,7 @@ inspect("[culebra-tensor-train] loaded train={n} test={Xt.shape()[0]} in {t_load
 let lr = ETA / to_float(BATCH)
 
 let run_epoch = fn (W1, b1, W2, b2) {
-  mut s = 0
-  while s < n {
+  for s in 0..n by BATCH {
     let xb = X.slice(s, s + BATCH).transpose()        # [784, BATCH]
     let tb = Y.slice(s, s + BATCH).transpose()        # [10,  BATCH]
 
@@ -77,7 +76,6 @@ let run_epoch = fn (W1, b1, W2, b2) {
     b1 -= d1.sum(1).reshape([N_HID, 1]) * lr
 
     Tensor.eval(W1, b1, W2, b2)
-    s = s + BATCH
   }
 }
 

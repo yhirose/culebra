@@ -49,8 +49,7 @@ let make_weights = fn () {
 }
 
 let run_epoch = fn (Ws, bs) {
-  mut s = 0
-  while s + BATCH <= n {
+  for s in 0..=(n - BATCH) by BATCH {           # whole batches only
     let xb = X.slice(s, s + BATCH).transpose()  # [784, BATCH]
 
     mut outs = []
@@ -64,8 +63,7 @@ let run_epoch = fn (Ws, bs) {
     let inv_n = 2.0 / to_float(BATCH * 784)
     mut dout = (h - xb) * inv_n
 
-    mut l = N_LAYERS - 1
-    while l >= 0 {
+    for l in (N_LAYERS - 1)..=0 by -1 {
       let out_l = outs[l]
       let dnet = dout * out_l * (Tensor.ones(L[l + 1], BATCH) - out_l)
       let input_l = if l > 0 { outs[l - 1] } else { xb }
@@ -76,11 +74,9 @@ let run_epoch = fn (Ws, bs) {
       }
       Ws[l] = Ws[l] - dW * LR
       bs[l] = bs[l] - db * LR
-      l = l - 1
     }
 
     Tensor.eval(Ws[0], Ws[1], Ws[2], Ws[3], Ws[4], Ws[5])
-    s = s + BATCH
   }
 }
 

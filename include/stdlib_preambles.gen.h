@@ -174,8 +174,7 @@ let _term_module = fn () {
       # Reuse the buffers on the common path (size unchanged); only reallocate
       # when the terminal was resized.
       if self._back.size() == n {
-        mut i = 0
-        while i < n { self._back[i] = " "; self._bstyle[i] = ""; i = i + 1 }
+        for i in 0..n { self._back[i] = " "; self._bstyle[i] = "" }
       } else {
         self._back = []
         self._bstyle = []
@@ -219,10 +218,8 @@ let _term_module = fn () {
       mut cy = -1
       mut cx = -1
       mut pen = ""   # SGR currently applied at the terminal ("" = default)
-      mut y = 0
-      while y < self._h {
-        mut x = 0
-        while x < self._w {
+      for y in 0..self._h {
+        for x in 0..self._w {
           let idx = y * self._w + x
           let back = self._back[idx]
           if back == "" {
@@ -249,9 +246,7 @@ let _term_module = fn () {
               if wide { cx = x + 2; self._front[idx + 1] = ""; self._fstyle[idx + 1] = st } else { cx = x + 1 }
             }
           }
-          x = x + 1
         }
-        y = y + 1
       }
       if pen != "" { out = out + "\x1b[0m" }   # leave the terminal at default
       out
@@ -390,12 +385,10 @@ let _canvas_module = fn () {
   let _font_bytes = fn () {
     let chars = _font_hex.graphemes().collect()
     mut out = []
-    mut i = 0
-    while i < chars.size() {
+    for i in 0..chars.size() by 2 {
       let hi = _hex_digits.index_of(chars[i])
       let lo = _hex_digits.index_of(chars[i + 1])
       out.push(hi * 16 + lo)
-      i = i + 2
     }
     out
   }()
@@ -740,9 +733,7 @@ let _eff_module = fn() {
 
   # Run each abandoned frame's deferred cleanup, innermost (deepest) first.
   fn _finalize_stack(stack) {
-    mut i = stack.size()
-    while i > 0 {
-      i = i - 1
+    for i in (stack.size() - 1)..=0 by -1 {
       stack[i]._eff_finalize()
     }
   }

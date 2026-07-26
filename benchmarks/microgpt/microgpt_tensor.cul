@@ -224,8 +224,7 @@ let num_steps = if Sys.argv.size() > 0 { to_long(Sys.argv[0]) } else { 50 }
 mut final_loss = 0.0
 
 let train_t0 = Sys.time()
-mut step = 0
-while step < num_steps {
+for step in 0..num_steps {
   let doc = docs[step % docs.size()]
   mut tokens = [BOS]
   for c in doc { tokens.push(uchars.index_of(c)) }
@@ -253,7 +252,6 @@ while step < num_steps {
     inspect("step {step+1} / {num_steps} | loss {l_val}")
   }
   final_loss = l_val
-  step = step + 1
 }
 
 let train_time = Sys.time() - train_t0
@@ -268,8 +266,7 @@ if n_samples > 0 {
   inspect('--- inference (new, hallucinated names) ---')
   let pop = range(vocab_size).collect()
 
-  mut sample_idx = 0
-  while sample_idx < n_samples {
+  for sample_idx in 0..n_samples {
     mut keys2 = []
     mut values2 = []
     for _ in 0..n_layer { keys2.push([]); values2.push([]) }
@@ -289,6 +286,5 @@ if n_samples > 0 {
       sample.push(uchars[token_id])
     }
     inspect("sample {sample_idx+1}: {sample.join('')}")
-    sample_idx = sample_idx + 1
   }
 }

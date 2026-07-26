@@ -1,6 +1,5 @@
 fn countdown(start) {
-  mut i = start
-  while i > 0 { yield i; i -= 1 }
+  for i in start..=1 by -1 { yield i }
 }
 for v in countdown(3) { println("{v}...") }
 

@@ -73,9 +73,7 @@ let _eff_module = fn() {
 
   # Run each abandoned frame's deferred cleanup, innermost (deepest) first.
   fn _finalize_stack(stack) {
-    mut i = stack.size()
-    while i > 0 {
-      i = i - 1
+    for i in (stack.size() - 1)..=0 by -1 {
       stack[i]._eff_finalize()
     }
   }

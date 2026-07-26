@@ -79,12 +79,10 @@ let _canvas_module = fn () {
   let _font_bytes = fn () {
     let chars = _font_hex.graphemes().collect()
     mut out = []
-    mut i = 0
-    while i < chars.size() {
+    for i in 0..chars.size() by 2 {
       let hi = _hex_digits.index_of(chars[i])
       let lo = _hex_digits.index_of(chars[i + 1])
       out.push(hi * 16 + lo)
-      i = i + 2
     }
     out
   }()
