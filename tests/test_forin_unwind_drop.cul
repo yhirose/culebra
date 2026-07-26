@@ -70,4 +70,47 @@ fn run_set() {
 }
 try { run_set() } catch e { inspect("set: caught " + e) }
 
+# The element itself, not just the iterable: a destructuring loop variable
+# whose pattern misses throws while the cursor still holds this iteration's
+# +1 and no slot has taken it over yet. That element must die on the unwind
+# too. The JIT used to strand it (one leaked element per throw) because the
+# cursor's element guard was outside the loop's cleanup pad.
+fn mk_elem(n) {
+  { at: n, drop: fn () { inspect("elem: dropped " + self.at.to_string()) } }
+}
+fn run_elem_mismatch() {
+  for (a, b) in [mk_elem(1)] {
+    inspect("elem: body ran")
+  }
+}
+try { run_elem_mismatch() } catch e { inspect("elem: caught " + e.kind) }
+
+# Same window on the protocol cursor, where the element comes from next().
+fn mk_elem_gen() {
+  {
+    iter: fn () {
+      {
+        mut done: false,
+        has_next: fn () { !self.done },
+        next: fn () { self.done = true; mk_elem(2) },
+      }
+    },
+  }
+}
+fn run_elem_proto() {
+  for (a, b) in mk_elem_gen() {
+    inspect("proto: body ran")
+  }
+}
+try { run_elem_proto() } catch e { inspect("elem: caught " + e.kind) }
+
+# A matching pattern hands the element to the body slot, so it dies at the
+# end of the iteration — the guard must not release it a second time.
+fn run_elem_ok() {
+  for (a, b) in [(mk_elem(3), 9)] {
+    inspect("ok: body ran")
+  }
+}
+run_elem_ok()
+
 inspect("done")

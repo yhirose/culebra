@@ -480,6 +480,14 @@ struct JIT {
     builder_.CreateStore(llvm::ConstantAggregateZero::get(valueType_), guard);
   }
 
+  // Release whatever a guard slot still holds, then nil it so an outer pad on
+  // the same unwind chain no-ops. Slot is nil outside its window, and
+  // releasing nil is a no-op, so this is unconditional at any cleanup site.
+  void release_pending_guard(llvm::Value* guard) {
+    emit_value_release(builder_.CreateLoad(valueType_, guard, "pending.temp"));
+    clear_pending_guard(guard);
+  }
+
   // Catch-all cleanup-landingpad prologue at `cleanupBB`: landingpad + null
   // clause + `__cxa_begin_catch`, leaving the insertion point in `cleanupBB`.
   // Shared by every hand-rolled cleanup landingpad.
@@ -2591,10 +2599,7 @@ struct JIT {
   // any enclosing block's defers. Outside a window every slot is nil, so the
   // cold-path cost is a handful of no-op releases.
   void release_unwind_temps() {
-    for (auto* slot : unwind_temp_slots_) {
-      emit_value_release(builder_.CreateLoad(valueType_, slot, "unwind.temp"));
-      clear_pending_guard(slot);
-    }
+    for (auto* slot : unwind_temp_slots_) release_pending_guard(slot);
   }
 
   // RAII flag for emitting a cleanup pad's contents (scope teardown,
@@ -8217,7 +8222,7 @@ struct JIT {
         {cursor.iter, nullptr, /*fill_pending=*/true});
     emit_for_body_with_owned_binding(
         id, elemVal, body, headBB,
-        for_break_target(exitBB, brokeFlag, "for"));
+        for_break_target(exitBB, brokeFlag, "for"), cursor.elem);
     iter_cleanup_stack_.pop_back();
     current_lpad_ = bodyOuterLpad;
 
@@ -8236,6 +8241,11 @@ struct JIT {
       excBB->eraseFromParent();
     } else {
       emit_catch_all_prologue(excBB, "for.lpad");
+      // This iteration's element dies first, ahead of the iterator's dispose
+      // — the interp order, where the element's temporary goes as the body
+      // frame unwinds and dispose runs on the way out of the loop. Nil unless
+      // the throw landed inside the advance-to-binding window.
+      release_pending_guard(cursor.elem);
       emit_iter_dispose_if_active(cursor.iter, "for.exc",
                                   /*swallow_dispose=*/true);
       emit_rethrow(bodyOuterLpad);
@@ -8261,19 +8271,30 @@ struct JIT {
   // and releases on scope exit. Useful when the caller has already
   // arranged ownership (e.g. the protocol loop pre-retains the step
   // value before releasing the enclosing {done,value} object).
+  //
+  // `pending_slot` is the cursor's element guard holding the same +1 (null
+  // for the counted-range loop, whose element is a Long). Every arm below
+  // ends the guard's window the instant ownership moves on, which is what
+  // keeps `for.exc`'s unconditional release exactly-once.
   void emit_for_body_with_owned_binding(const peg::Ast& var,
                                         llvm::Value* elemVal,
                                         const peg::Ast& body,
                                         llvm::BasicBlock* continue_bb,
-                                        llvm::BasicBlock* break_bb) {
+                                        llvm::BasicBlock* break_bb,
+                                        llvm::Value* pending_slot = nullptr) {
     using namespace peg::udl;
+    auto close_pending_window = [&] {
+      if (pending_slot) clear_pending_guard(pending_slot);
+    };
     push_scope();
     if (var.tag == "IDENTIFIER"_) {
       if (is_sink_name(std::string(var.token))) {
         // `for _ in iter`: drop the per-iteration +1 transfer that the
         // caller already emitted (no slot will release it for us).
+        close_pending_window();
         emit_value_release(elemVal);
       } else {
+        close_pending_window();
         declare_local(std::string(var.token), elemVal);
       }
     } else {
@@ -8294,8 +8315,11 @@ struct JIT {
                                        builder_.getInt64Ty(),
                                        builder_.getInt64Ty()),
           {builder_.getInt64(var.line), builder_.getInt64(var.column)});
+      // failBB throws with the guard still armed on purpose: `for.exc` owns
+      // the release from there. Only the matched path takes the ref over.
       builder_.CreateUnreachable();
       builder_.SetInsertPoint(okBB);
+      close_pending_window();
       emit_value_release(elemVal);
     }
 
@@ -8438,7 +8462,13 @@ struct JIT {
     llvm::Value* obj;       // Value — scope slot owning the derived-from value
     llvm::Value* has_next;  // ptr   — hoisted has_next closure
     llvm::Value* next;      // ptr   — hoisted next closure
-    llvm::Value* elem;      // Value — this iteration's element, +1
+    // A pending guard (make_pending_guard's contract): holds this iteration's
+    // element at +1 only between the advance's store and the body binding
+    // taking it over, and nil everywhere else. The advance-to-binding window
+    // has throw points (the safepoint, a destructure mismatch), so `for.exc`
+    // releases this slot; the nil outside the window is what makes that
+    // release unconditional and exactly-once.
+    llvm::Value* elem;      // Value — this iteration's element, +1 | nil
     llvm::Value* out_tag;   // i8    — array_get / iter_advance scratch
     llvm::Value* out_data;  // i64
   };
@@ -8467,8 +8497,9 @@ struct JIT {
     return c;
   }
 
-  // Array / Tuple / Set: a direct indexed walk. `size` is read once, so a
-  // body that grows the container does not extend the loop (interp-symmetric).
+  // Array / Tuple / Set: a direct indexed walk, re-reading the size every
+  // step so the walk ends where the live container ends (interp-symmetric;
+  // see emit_for_advance_array).
   // Shared tail of the two counted cursors: an array walk and a UTF-8 scalar
   // walk differ only in what they count.
   void open_counted_cursor(const ForCursor& c, llvm::Value* ptr,

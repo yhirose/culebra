@@ -1692,4 +1692,36 @@ for c in mutrecv {
   case("mutrecv|" + c, c)
 }
 
+# --- Dimension: for-in element in flight when the binding throws -----------
+# The cursor stores this iteration's element at +1, then the body binding
+# takes it over; a throw between the two (a destructure mismatch, the loop
+# safepoint) must release it. The leak-abort gate is the real consumer here
+# — the JIT used to strand one element per throw — so every cursor kind
+# gets the mismatch, and the matching / sink / body-throw shapes pin that
+# the guard does *not* release a ref the body slot already owns.
+let elemwin = [
+  'mut n = 0; try { for (a, b) in [[1, 2], [3, 4, 5]] { n = n + a } } catch e { n = n + 1 }; n',
+  'mut n = 0; try { for (a, b) in ([1, 2], [3, 4, 5]) { n = n + a } } catch e { n = n + 1 }; n',
+  'mut n = 0; try { for (a, b) in {[1, 2], [3, 4, 5]} { n = n + a } } catch e { n = n + 1 }; n',
+  'mut n = 0; try { for (a, b, c) in {x: 1, y: 2} { n = n + 1 } } catch e { n = n + 1 }; n',
+  'mut n = 0; try { for (a, b) in "abc" { n = n + 1 } } catch e { n = n + 1 }; n',
+  'fn g() { yield [1, 2]; yield [3, 4, 5] }; mut n = 0; try { for (a, b) in g() { n = n + a } } catch e { n = n + 1 }; n',
+  # The first element already mismatches: the throw lands on iteration 0.
+  'mut n = 0; try { for (a, b) in [[1, 2, 3]] { n = n + a } } catch e { n = n + 1 }; n',
+  # Heap elements, so a stranded ref is a real object leak.
+  'mut n = 0; try { for (a, b) in [{x: 1}] { n = n + 1 } } catch e { n = n + 1 }; n',
+  'fn g2() { yield {x: 1} }; mut n = 0; try { for (a, b) in g2() { n = n + 1 } } catch e { n = n + 1 }; n',
+  # Matched pattern / sink / body throw: the body slot owns the ref by then.
+  'mut n = 0; for (a, b) in [(1, 2), (3, 4)] { n = n + a + b }; n',
+  'mut n = 0; try { for x in [{x: 1}, {x: 2}] { n = n + x.y.z } } catch e { n = n + 1 }; n',
+  'mut n = 0; try { for _ in [{x: 1}, {x: 2}] { n = n + [0][9] } } catch e { n = n + 1 }; n',
+  'fn g3() { yield {x: 1}; yield {x: 2} }; mut n = 0; try { for x in g3() { n = n + x.y.z } } catch e { n = n + 1 }; n',
+  # break / return leave the loop with the element already handed over.
+  'mut n = 0; for x in [{x: 1}, {x: 2}] { n = n + 1; break }; n',
+  'fn r() { for x in [{x: 1}, {x: 2}] { return x.x } ; 0 }; r()',
+]
+for c in elemwin {
+  case("elemwin|" + c, c)
+}
+
 print(out.join("\n"))
