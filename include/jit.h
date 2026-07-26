@@ -7968,25 +7968,41 @@ struct JIT {
       builder_.CreateStore(builder_.getInt1(false), brokeFlag);
     }
 
-    // Fast path: `for <ident> in <a>..<b>` (or `..=`) — a bounded literal
-    // range bound to a plain identifier compiles to a direct Long counter
-    // loop. The generic path below would build a `{class:"Range",...}`
-    // object and a heap iterator, then allocate a `{done,value}` step
-    // object per iteration — pure garbage that churns the cycle GC every
-    // pass (the dominant cost in tight numeric loops). The counter loop
-    // yields the identical Long sequence with the identical endpoint
-    // coercion (value_to_long, as in compile_range), so behaviour, errors,
-    // and check timing stay symmetric with the interpreter. Open-ended
-    // ranges, pattern loop variables, and stepped (`by`) ranges keep the
-    // generic path — compile_for_counted_range only knows how to count by 1.
+    // Fast path: `for <ident> in <a>..<b>` (or `..=`, with or without
+    // `by <s>`) — a bounded literal range bound to a plain identifier
+    // compiles to a direct Long counter loop. The generic path below would
+    // build a `{class:"Range",...}` object and a heap iterator, then
+    // allocate a `{done,value}` step object per iteration — pure garbage
+    // that churns the cycle GC every pass (the dominant cost in tight
+    // numeric loops). The counter loop yields the identical Long sequence
+    // with the identical endpoint coercion (value_to_long, as in
+    // compile_range), so behaviour, errors, and check timing stay
+    // symmetric with the interpreter. Open-ended ranges and pattern loop
+    // variables keep the generic path.
     if (id.tag == "IDENTIFIER"_ && iter_expr.tag == "RANGE"_) {
       auto lay = decode_range_layout(iter_expr);
-      if (lay.start && lay.end && !lay.step) {
+      if (lay.start && lay.end) {
         auto startV = value_to_long(compile(*lay.start).consume());
         auto endV = value_to_long(compile(*lay.end).consume());
+        llvm::Value* stepV =
+            lay.step ? value_to_long(compile(*lay.step).consume()) : nullptr;
+        // A zero step never terminates: reject it before the first
+        // iteration, as range_iter does on the generic path. Reported at
+        // the range's own position (the interpreter's `iter_expr`), not
+        // the enclosing `for`. A literal non-zero step is already proven
+        // safe here, so skip the call.
+        if (stepV && !is_nonzero_constant(stepV)) {
+          emit_call(
+              module_->getOrInsertFunction(
+                  rt::range_step_check, builder_.getVoidTy(),
+                  builder_.getInt64Ty(), builder_.getInt64Ty(),
+                  builder_.getInt64Ty()),
+              {stepV, builder_.getInt64(static_cast<int64_t>(iter_expr.line)),
+               builder_.getInt64(static_cast<int64_t>(iter_expr.column))});
+        }
         auto endBB = llvm::BasicBlock::Create(ctx_, "for.r.end", fn);
-        compile_for_counted_range(startV, endV, lay.inclusive, id, body, endBB,
-                                  brokeFlag);
+        compile_for_counted_range(startV, endV, lay.inclusive, stepV, id, body,
+                                  endBB, brokeFlag);
         builder_.SetInsertPoint(endBB);
         emit_for_nobreak_tail(fv.nobreak, brokeFlag);
         return own(make_nil());
@@ -8312,9 +8328,21 @@ struct JIT {
   // bumping it, so `..=` to INT64_MAX can't overflow). Allocates nothing on
   // the heap — the sole alloca is the loop counter. Yields math_range's
   // `[start, end)` / `[start, end]` sequence, identical to range_iter.
+  // A literal step needs no runtime zero check — the constant is the proof.
+  static bool is_nonzero_constant(llvm::Value* v) {
+    auto* c = llvm::dyn_cast<llvm::ConstantInt>(v);
+    return c && !c->isZero();
+  }
+
+  // `stepV` null is the plain (step 1) form and compares against the raw
+  // end. A stepped range instead normalizes to an exclusive end and picks
+  // the comparison by the step's sign, the same arithmetic `range_bounds`
+  // does in the interpreter — both loop-invariant, so they are emitted in
+  // the preheader and the whole thing folds to a constant stride whenever
+  // the step is a literal.
   void compile_for_counted_range(llvm::Value* startV, llvm::Value* endV,
-                                 bool inclusive, const peg::Ast& var,
-                                 const peg::Ast& body,
+                                 bool inclusive, llvm::Value* stepV,
+                                 const peg::Ast& var, const peg::Ast& body,
                                  llvm::BasicBlock* endBB,
                                  llvm::Value* brokeFlag = nullptr) {
     auto i64Ty = builder_.getInt64Ty();
@@ -8325,6 +8353,18 @@ struct JIT {
     auto idxAlloca = entryB.CreateAlloca(i64Ty, nullptr, "for.r.idx");
     builder_.CreateStore(startV, idxAlloca);
 
+    llvm::Value* stepPos = nullptr;
+    if (stepV) {
+      stepPos = builder_.CreateICmpSGT(stepV, builder_.getInt64(0),
+                                       "for.r.step.pos");
+      if (inclusive) {
+        endV = builder_.CreateAdd(
+            endV, builder_.CreateSelect(stepPos, builder_.getInt64(1),
+                                        builder_.getInt64(-1)),
+            "for.r.end.excl");
+      }
+    }
+
     auto condBB = llvm::BasicBlock::Create(ctx_, "for.r.cond", fn);
     auto bodyBB = llvm::BasicBlock::Create(ctx_, "for.r.body", fn);
     auto incBB = llvm::BasicBlock::Create(ctx_, "for.r.inc", fn);
@@ -8333,8 +8373,14 @@ struct JIT {
 
     builder_.SetInsertPoint(condBB);
     auto idx = builder_.CreateLoad(i64Ty, idxAlloca, "for.r.i");
-    auto cond = inclusive ? builder_.CreateICmpSLE(idx, endV)
-                          : builder_.CreateICmpSLT(idx, endV);
+    llvm::Value* cond;
+    if (stepV) {
+      cond = builder_.CreateSelect(stepPos, builder_.CreateICmpSLT(idx, endV),
+                                   builder_.CreateICmpSGT(idx, endV));
+    } else {
+      cond = inclusive ? builder_.CreateICmpSLE(idx, endV)
+                       : builder_.CreateICmpSLT(idx, endV);
+    }
     builder_.CreateCondBr(cond, bodyBB, endBB);
 
     builder_.SetInsertPoint(bodyBB);
@@ -8344,8 +8390,8 @@ struct JIT {
         body, incBB, for_break_target(endBB, brokeFlag, "for.r"));
 
     builder_.SetInsertPoint(incBB);
-    auto next = builder_.CreateAdd(
-        builder_.CreateLoad(i64Ty, idxAlloca), builder_.getInt64(1));
+    auto next = builder_.CreateAdd(builder_.CreateLoad(i64Ty, idxAlloca),
+                                  stepV ? stepV : builder_.getInt64(1));
     builder_.CreateStore(next, idxAlloca);
     builder_.CreateBr(condBB);
   }

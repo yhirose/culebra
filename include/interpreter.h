@@ -3686,36 +3686,60 @@ inline Value _invoke_callback(const Value& fn_val, const Value& a,
   }
 }
 
+// The counted sequence a bounded range iterates: `cur` walks by `step`
+// until it passes `end_exclusive`. Sole owner of the bounds/step rules,
+// so the for-in fast path and the generic iterator below cannot drift
+// apart on which values a range yields.
+struct RangeBounds {
+  long cur;
+  long end_exclusive;
+  long step;
+
+  bool done() const {
+    return step > 0 ? cur >= end_exclusive : cur <= end_exclusive;
+  }
+  // Surrender the current value and advance. Only valid when !done().
+  long take() {
+    long v = cur;
+    cur += step;
+    return v;
+  }
+};
+
+// Decode a Range value into its iteration bounds. An open start or end
+// has no defined bound, so an unbounded range is not iterable; a zero
+// step never terminates. Both raise here — before the first iteration —
+// at the iterable's source position.
+inline RangeBounds range_bounds(const ObjectValue& obj, size_t line,
+                                size_t col) {
+  const auto& s = obj.get("start");
+  const auto& e = obj.get("end");
+  if (s.type == Value::Nil || e.type == Value::Nil) {
+    throw CulebraError("TypeError", "cannot iterate an unbounded range",
+        static_cast<long>(line), static_cast<long>(col));
+  }
+  const auto& step_v = obj.get("step");
+  long step = step_v.type == Value::Nil ? 1 : step_v.to_long();
+  if (step == 0) {
+    throw CulebraError("ValueError", "range() step must not be zero",
+        static_cast<long>(line), static_cast<long>(col));
+  }
+  bool inclusive = obj.get("inclusive").to_bool();
+  long end = e.to_long() + (inclusive ? (step > 0 ? 1 : -1) : 0);
+  return RangeBounds{s.to_long(), end, step};
+}
+
 // Resolve the `iter` method on an iterable value (Object/Array/String)
 // and call it to obtain an iterator Object. Throws `type error` with
 // the given source location if the value is not iterable.
 inline Value _get_iterator(const Value& iterable, size_t line, size_t col) {
   Value iter_fn;
-  // A range value iterates start..end (an open start or end has no defined
-  // iteration bound, so an unbounded range is not iterable).
   if (auto ct = class_tag(iterable); ct && *ct == "Range") {
-    const auto& obj = iterable.to_object();
-    const auto& s = obj.get("start");
-    const auto& e = obj.get("end");
-    if (s.type == Value::Nil || e.type == Value::Nil) {
-      throw CulebraError("TypeError", "cannot iterate an unbounded range",
-          static_cast<long>(line), static_cast<long>(col));
-    }
-    const auto& step_v = obj.get("step");
-    long step = step_v.type == Value::Nil ? 1 : step_v.to_long();
-    if (step == 0) {
-      throw CulebraError("ValueError", "range() step must not be zero",
-          static_cast<long>(line), static_cast<long>(col));
-    }
-    bool inclusive = obj.get("inclusive").to_bool();
-    long end = e.to_long() + (inclusive ? (step > 0 ? 1 : -1) : 0);
-    auto current = std::make_shared<long>(s.to_long());
-    return _make_iterator([current, end, step](std::shared_ptr<Environment>) {
-      bool done = step > 0 ? *current >= end : *current <= end;
-      if (done) return _iter_step_done();
-      auto v = Value(*current);
-      *current += step;
-      return _iter_step_value(std::move(v));
+    auto state =
+        std::make_shared<RangeBounds>(range_bounds(iterable.to_object(), line, col));
+    return _make_iterator([state](std::shared_ptr<Environment>) {
+      if (state->done()) return _iter_step_done();
+      return _iter_step_value(Value(state->take()));
     });
   }
   if (iterable.type == Value::String ||
@@ -6767,70 +6791,99 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     const auto& body = *fv.body;
     bool var_is_ident = var.tag == "IDENTIFIER"_;
 
+    // Run the body once per value `pull` yields (`nullopt` drains the
+    // loop); `dispose` runs on every exit path. Both loop sources below
+    // funnel through here, so the per-iteration scope, break / continue /
+    // defer / interrupt handling and the nobreak verdict exist once.
+    auto drive = [&](auto&& pull, auto&& dispose) {
+      bool completed = true;  // set false when the loop exits via break
+      for (;;) {
+        auto v = pull();
+        if (!v) { dispose(); break; }
+
+        auto scopeEnv = make_scope(env);
+        if (var_is_ident) {
+          scopeEnv->initialize(var.token, std::move(*v), false);
+        } else if (!try_pattern(var, *v, scopeEnv, /*mut=*/false)) {
+          dispose();
+          throw_destructure_mismatch_at(static_cast<long>(var.line),
+                                        static_cast<long>(var.column));
+        }
+        try {
+          check_interrupt();  // inside the try so an interrupt still disposes
+          if (debugger_ && is_collapsed_single_statement(body))
+            statement_boundary(body, scopeEnv);  // breakpoint on a 1-stmt body
+          eval(body, scopeEnv);
+          run_deferred(scopeEnv);
+        } catch (const BreakSignal&) {
+          run_deferred(scopeEnv);
+          completed = false;
+          dispose();
+          break;
+        } catch (const ContinueSignal&) {
+          run_deferred(scopeEnv);
+          // fall through (loop continues; dispose only at final exit)
+        } catch (...) {
+          run_deferred(scopeEnv);
+          try { dispose(); } catch (...) {}  // preserve in-flight throw
+          throw;
+        }
+      }
+      return completed;
+    };
+
     auto iterable = eval(iter_expr, env);
-    auto iter_val = _get_iterator(iterable, iter_expr.line, iter_expr.column);
-    auto iter_proto_error = [&](std::string_view what) -> CulebraError {
-      return CulebraError(
-          "TypeError",
-          std::format("type error: {}", what),
-          static_cast<long>(iter_expr.line),
-          static_cast<long>(iter_expr.column));
-    };
-    if (iter_val.type != Value::Object) {
-      throw iter_proto_error("iter() did not return an Object");
-    }
-    const auto& iter_obj = iter_val.to_object();
-    if (!iter_obj.has("has_next") || !iter_obj.has("next")) {
-      throw iter_proto_error("iterator missing has_next()/next()");
-    }
-
-    // Iterator dispose protocol: call iter.dispose() on every exit path
-    // (drain / break / exception). Default trait impl is a no-op, so
-    // built-in iterators pay just a method lookup; generators override
-    // to run registered defers. See [[generator-design]] §dispose.
-    auto dispose_iter = [&]() {
-      if (iter_val.type != Value::Object) return;
-      const auto& iter_obj = iter_val.to_object();
-      if (!iter_obj.has("dispose")) return;
-      _invoke_method_no_args(iter_val, "dispose");
-    };
-
     const peg::Ast* nb = fv.nobreak;
-    bool completed = true;  // set false when the loop exits via break
+    bool completed;
 
-    // Drive via the Kotlin-style protocol: `has_next()` gates each
-    // `next()`. `_iter_next_value` already encapsulates that pair.
-    for (;;) {
-      auto v = _iter_next_value(iter_val);
-      if (!v) { dispose_iter(); break; }
+    if (auto ct = class_tag(iterable); ct && *ct == "Range") {
+      // A bounded range walks a plain counter: the generic path below
+      // would allocate an iterator Object per loop entry and route every
+      // step through has_next()/next() method calls, which dominates a
+      // tight `for i in a..b` and an inner loop re-entered per outer
+      // iteration. The bounds come from the same `range_bounds` the
+      // generic range iterator uses, so the sequence and the errors are
+      // identical; range iterators carry no `dispose`, matching the
+      // no-op here. This mirrors the JIT's counted-range fast path.
+      auto bounds =
+          range_bounds(iterable.to_object(), iter_expr.line, iter_expr.column);
+      completed = drive(
+          [&bounds]() -> std::optional<Value> {
+            if (bounds.done()) return std::nullopt;
+            return Value(bounds.take());
+          },
+          [] {});
+    } else {
+      auto iter_val = _get_iterator(iterable, iter_expr.line, iter_expr.column);
+      auto iter_proto_error = [&](std::string_view what) -> CulebraError {
+        return CulebraError(
+            "TypeError",
+            std::format("type error: {}", what),
+            static_cast<long>(iter_expr.line),
+            static_cast<long>(iter_expr.column));
+      };
+      if (iter_val.type != Value::Object) {
+        throw iter_proto_error("iter() did not return an Object");
+      }
+      const auto& iter_obj = iter_val.to_object();
+      if (!iter_obj.has("has_next") || !iter_obj.has("next")) {
+        throw iter_proto_error("iterator missing has_next()/next()");
+      }
 
-      auto scopeEnv = make_scope(env);
-      if (var_is_ident) {
-        scopeEnv->initialize(var.token, std::move(*v), false);
-      } else if (!try_pattern(var, *v, scopeEnv, /*mut=*/false)) {
-        dispose_iter();
-        throw_destructure_mismatch_at(static_cast<long>(var.line),
-                                      static_cast<long>(var.column));
-      }
-      try {
-        check_interrupt();  // inside the try so an interrupt still disposes
-        if (debugger_ && is_collapsed_single_statement(body))
-          statement_boundary(body, scopeEnv);  // breakpoint on a 1-stmt body
-        eval(body, scopeEnv);
-        run_deferred(scopeEnv);
-      } catch (const BreakSignal&) {
-        run_deferred(scopeEnv);
-        completed = false;
-        dispose_iter();
-        break;
-      } catch (const ContinueSignal&) {
-        run_deferred(scopeEnv);
-        // fall through (loop continues; dispose only at final exit)
-      } catch (...) {
-        run_deferred(scopeEnv);
-        try { dispose_iter(); } catch (...) {}  // preserve in-flight throw
-        throw;
-      }
+      // Iterator dispose protocol: call iter.dispose() on every exit path
+      // (drain / break / exception). Default trait impl is a no-op, so
+      // built-in iterators pay just a method lookup; generators override
+      // to run registered defers. See [[generator-design]] §dispose.
+      auto dispose_iter = [&]() {
+        if (iter_val.type != Value::Object) return;
+        const auto& iter_obj = iter_val.to_object();
+        if (!iter_obj.has("dispose")) return;
+        _invoke_method_no_args(iter_val, "dispose");
+      };
+
+      // Drive via the Kotlin-style protocol: `has_next()` gates each
+      // `next()`. `_iter_next_value` already encapsulates that pair.
+      completed = drive([&] { return _iter_next_value(iter_val); }, dispose_iter);
     }
     // `nobreak { … }` runs only when the iterator is exhausted normally, after
     // dispose (so the block runs in a released-iterator world); a break skips

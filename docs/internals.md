@@ -268,9 +268,21 @@ each container arm instead multiplies it by six per level — a triple nest
 emitted the innermost body 216 times, IR grew about 6.4x per level, and a
 four-deep nest over a four-line program produced a million lines of IR.
 
-`for v in a..b` over a literal range skips all of this and compiles to a
-direct Long counter loop: no Range object, no heap iterator, and no
-`{done,value}` object per step.
+`for v in a..b` (with or without `by <step>`) skips all of this and runs
+a direct Long counter instead: no Range object, no heap iterator, and no
+`{done,value}` object per step. Both backends do it, on different
+evidence — the JIT fuses the range *literal* at compile time, the
+interpreter fuses any range *value* it is handed — so a range that
+reaches the loop through a variable is fused on one backend and generic
+on the other. That is safe only because the counted loop is not a second
+implementation of range semantics: the bounds, the step's sign, the
+inclusive-end adjustment and the two errors (unbounded range, zero step)
+come from the same decoder the generic range iterator uses, and the loop
+body, scope, defer and break handling are shared with the generic path
+rather than copied. The interpreter's win is the loop *entry*: opening a
+generic cursor allocates a Range object plus an iterator object, about
+3 µs, which is what made an inner loop re-entered per outer iteration
+cost more than the work inside it.
 
 ### Stdlib preamble splicing
 

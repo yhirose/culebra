@@ -1213,11 +1213,19 @@ for c in eff {
 }
 
 # --- Dimension: range step (`a..b by n`) ------------------------------------
-# Ascending/descending/inclusive/exclusive, the for-in counted fast path
-# (compile_for skips it when a step is present — see jit.h) vs the generic
-# iterator path (`for` over a pattern-bound var can't take the fast path
-# either), display (`by n` suffix, and its absence for step 1), and the
-# step == 0 error.
+# Ascending/descending/inclusive/exclusive, display (`by n` suffix, and its
+# absence for step 1), and the step == 0 error.
+#
+# Both backends compile `for <ident> in a..b [by s]` to a counter loop
+# instead of building a range object and a heap iterator, but they decide on
+# different evidence: the JIT fuses the range *literal* (compile_for), the
+# interpreter fuses any range *value* (eval_for). A range reaching the loop
+# through a variable therefore takes the fused path on one backend and the
+# generic iterator on the other — the cases below pin the two together,
+# along with the boundaries the fused loop has to reproduce: an empty span,
+# a descending inclusive end, a runtime step (zero included), and the
+# loop-control paths (break / nobreak / defer / closure capture / generator,
+# plus a pattern binding, which stays generic everywhere).
 let rangestep = [
   '(0..10 by 2).iter().collect()',
   '(0..=10 by 2).iter().collect()',
@@ -1229,6 +1237,21 @@ let rangestep = [
   'to_string(0..10)',
   'try { (0..10 by 0).iter().collect() } catch e { e.kind }',
   'try { for i in 0..10 by 0 { i } } catch e { e.kind }',
+  'let r = 0..10 by 4; mut o = []; for i in r { o.push(i) }; to_string(o)',
+  'let r = 0..; try { for i in r { } } catch e { e.kind + ":" + e.message }',
+  'let s = 3; mut o = []; for i in 0..10 by s { o.push(i) }; to_string(o)',
+  'let s = 0; try { for i in 0..10 by s { } } catch e { e.kind + ":" + e.message }',
+  'let n = 3; let b = 4; mut o = []; for i in 0..=(n - b) by b { o.push(i) }; to_string(o)',
+  'mut o = []; for i in -1..=0 by -1 { o.push(i) }; to_string(o)',
+  'mut o = []; for i in 3..=0 by -1 { o.push(i) }; to_string(o)',
+  'mut o = []; for i in 0..20 by 3 { if i == 9 { break }; o.push(i) }; to_string(o)',
+  'mut o = []; for i in 0..6 by 2 { o.push(i) } nobreak { o.push(99) }; to_string(o)',
+  'mut o = []; for i in 0..6 by 2 { defer { o.push(-i) }; o.push(i) }; to_string(o)',
+  'mut o = []; mut fs = []; for i in 0..6 by 2 { fs.push(fn () { i }) }; for f in fs { o.push(f()) }; to_string(o)',
+  'fn g() { for i in 0..6 by 2 { yield i * i } }; to_string(g().collect())',
+  'try { for (a, b) in 0..3 by 1 { } } catch e { e.kind }',
+  'mut o = []; for i in 0..7 by 2 { for j in i..=0 by -3 { o.push(i * 10 + j) } }; to_string(o)',
+  'let lo = 2; let hi = 9; mut o = []; for i in lo..hi by (hi - lo) { o.push(i) }; to_string(o)',
 ]
 for c in rangestep {
   case("rangestep|" + c, c)

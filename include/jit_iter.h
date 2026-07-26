@@ -2223,12 +2223,21 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_advance(
                             out_tag, out_data) ? 1 : 0;
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_math_range(
-    int64_t start, int64_t end, int64_t step, int64_t line, int64_t col) {
+// A zero step never terminates. Sole owner of that diagnostic on this
+// backend: both the iterator-building path below and the counted-range
+// loop the JIT emits for `for i in a..b by s` call it, so the two cannot
+// disagree on the message or the position it is reported at.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_range_step_check(
+    int64_t step, int64_t line, int64_t col) {
   if (step == 0) {
     throw culebra::CulebraError("ValueError",
         "range() step must not be zero", line, col);
   }
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_math_range(
+    int64_t start, int64_t end, int64_t step, int64_t line, int64_t col) {
+  culebra_runtime_range_step_check(step, line, col);
   auto* current_cell = culebra_runtime_cell_new(TAG_LONG, start);
   auto* end_cell = culebra_runtime_cell_new(TAG_LONG, end);
   auto* step_cell = culebra_runtime_cell_new(TAG_LONG, step);
