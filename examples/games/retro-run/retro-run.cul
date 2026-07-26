@@ -22,8 +22,35 @@ let W = 640
 let H = 480
 let FPS = 60
 let STEP = 1.0 / FPS
-# Segments drawn ahead of the camera. v4's own tweak UI allows 100..500.
-let DRAW_DISTANCE = if Sys.argv.size() > 0 { to_long(Sys.argv[0]) } else { 300 }
+# Arguments: `[--assets <dir>] [draw-distance]`. The directory is where the art
+# is read from, so upstream's own `images/` can be pointed at without copying it
+# in; the number is how many segments are drawn ahead of the camera (v4's own
+# tweak UI allows 100..500).
+let args = fn () {
+  mut dir = nil
+  mut distance = 300
+  mut i = 0
+  while i < Sys.argv.size() {
+    let a = Sys.argv[i]
+    if a == "--assets" {
+      if i + 1 >= Sys.argv.size() {
+        println("retro-run: --assets needs a directory")
+        Sys.exit(2)
+      }
+      dir = Sys.argv[i + 1]
+      i = i + 2
+    } else if a.starts_with("-") {
+      println("retro-run: unknown option {a}")
+      println("usage: retro-run.cul [--assets <dir>] [draw-distance]")
+      Sys.exit(2)
+    } else {
+      distance = to_long(a)
+      i = i + 1
+    }
+  }
+  { dir: dir, distance: distance }
+}()
+let DRAW_DISTANCE = args.distance
 let LANES = 3
 let SEGMENT_LENGTH = 200
 let RUMBLE_LENGTH = 3             # segments per light/dark stripe
@@ -125,12 +152,14 @@ let BG_SKY = Art.new(5, 495, 1280, 480)
 let BG_TREES = Art.new(5, 985, 1280, 480)
 
 # --- assets ----------------------------------------------------------------
-# Upstream's own art wins when it is sitting next to the script (images/), so
-# anyone holding a copy can play with it; otherwise the generated stand-ins in
-# assets/ are used. `Sys.script` reads the same in the Playground as it does
-# natively, so there is no branch on the backend here.
+# `--assets <dir>` wins, then upstream's own art if it is sitting next to the
+# script (images/), so anyone holding a copy can play with it; otherwise the
+# generated stand-ins in assets/ are used. `Sys.script` reads the same in the
+# Playground as it does natively, so there is no branch on the backend here.
 let HOME = FS.dirname(Sys.script)
-let ART_DIR = if FS.exists(HOME + "/images/sprites.png") {
+let ART_DIR = if args.dir != nil {
+    args.dir
+  } else if FS.exists(HOME + "/images/sprites.png") {
     HOME + "/images"
   } else {
     HOME + "/assets"
@@ -138,7 +167,17 @@ let ART_DIR = if FS.exists(HOME + "/images/sprites.png") {
 let SCENES = ["asayake", "hiru", "yuugure", "twilight"]
 let SCENE_COUNT = SCENES.size()
 
-let sheet = Canvas.Sprite.from_png(FS.read(ART_DIR + "/sprites.png"))
+# A missing file is what a mistyped `--assets` looks like, so say which one.
+let art = fn (name) {
+  let path = ART_DIR + "/" + name
+  if !FS.exists(path) {
+    println("retro-run: {ART_DIR} has no {name}")
+    Sys.exit(2)
+  }
+  path
+}
+
+let sheet = Canvas.Sprite.from_png(FS.read(art("sprites.png")))
 let SHEET = sheet._id
 
 # Upstream ships one background; the generated set has one per scene. Loading
@@ -148,7 +187,7 @@ let backgrounds = fn () {
   mut sprites = []
   for scene in SCENES {
     let scened = ART_DIR + "/background_" + scene + ".png"
-    let path = if FS.exists(scened) { scened } else { ART_DIR + "/background.png" }
+    let path = if FS.exists(scened) { scened } else { art("background.png") }
     let seen = paths.index_of(path)
     paths.push(path)
     if seen >= 0 {

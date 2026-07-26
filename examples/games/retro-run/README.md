@@ -23,23 +23,33 @@ instead of the local filesystem, everything else is identical. Open it as
 `http://localhost:...`, not `http://[::]`: the latter is treated as
 non-secure and breaks WebGPU.
 
-Controls are arrow keys or WASD. An optional first argument overrides the
-draw distance (default 300, matching v4's own default; its tweak UI allows
-100..500):
+Controls are arrow keys or WASD. A bare number overrides the draw distance
+(default 300, matching v4's own default; its tweak UI allows 100..500), and
+`--assets <dir>` reads the art from somewhere else:
 
 ```sh
 culebra --jit examples/games/retro-run/retro-run.cul 150
+culebra --jit examples/games/retro-run/retro-run.cul --assets ~/art/racer 150
 ```
 
 ## Assets
 
 `assets/` holds generated placeholder art — see `assets/README.md` for what's
 fixed (sprite/background rectangles, which the game's scale and collision
-depend on) versus free to redraw. If a copy of upstream's own
-`images/sprites.png` sits next to `retro-run.cul` (personal use, not
-redistribution — see the note in `assets/README.md`), the game finds it via
-`FS.exists` and uses it instead; the Playground build never has one, so it
-always uses the generated set.
+depend on) versus free to redraw.
+
+Art is looked for in three places, first match wins: the `--assets` directory,
+then an `images/` directory next to `retro-run.cul`, then `assets/`. The middle
+one is where a copy of upstream's own art goes (personal use, not
+redistribution — see the note in `assets/README.md`); both it and `assets-*/`
+are gitignored. The Playground build has neither, so it always uses the
+generated set.
+
+A directory needs `sprites.png` and either one `background.png` or a
+`background_<scene>.png` per scene — a missing file names itself and the
+directory it was looked for in. Upstream ships a single background, so pointing
+at its art leaves the day cycle to the road, fog and sky colours while the
+picture behind them stays put.
 
 ## Performance
 
