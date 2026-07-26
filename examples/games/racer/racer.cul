@@ -681,7 +681,15 @@ let draw_road = fn (base_index, base_percent, player_y) {
   let cz_here = position
   let cz_looped = position - track_length
 
-  mut maxy = H * 1.0
+  # The road is painted in whole screen rows, from the bottom of the frame
+  # upward, so the band boundary is carried as a row number rather than as the
+  # projected y. That makes the bands tile exactly (the grass rectangle and the
+  # trapezoids share one edge), and it drops a segment whose band would land
+  # inside a row it has already painted — which is most of the far half of the
+  # window, and what the original gets for free by rounding its coordinates.
+  # `edge` is an integer, so `sy2 < edge` is `floor(sy2) < edge`: the test costs
+  # a float compare and only a drawn band pays for a conversion.
+  mut edge = H
   mut x = 0.0
   mut dx = -(segments[base_index].curve * base_percent)
   mut n = 0
@@ -689,7 +697,7 @@ let draw_road = fn (base_index, base_percent, player_y) {
   while n < DRAW_DISTANCE {
     let segment = segments[si]
     let looped = si < base_index
-    segment.clip = maxy
+    segment.clip = edge
     let camera_z = if looped { cz_looped } else { cz_here }
 
     # Cull before dividing: with the camera exactly on a segment boundary the
@@ -713,7 +721,7 @@ let draw_road = fn (base_index, base_percent, player_y) {
       segment.p2_sx = W2 + scale2 * (x + dx - px_road) * W2
       segment.p2_sy = sy2
       segment.p2_sw = scale2 * SW_K
-      visible = sy2 < sy1 && sy2 < maxy
+      visible = sy2 < sy1 && sy2 < edge
     }
 
     x = x + dx
@@ -736,18 +744,21 @@ let draw_road = fn (base_index, base_percent, player_y) {
                    ((p[7] * f + fog_g * g) / 256) * 256 +
                    ((p[8] * f + fog_b * g) / 256) * 65536 + OPAQUE
 
+      # The band runs from `top` (this segment's far edge, snapped up to a row)
+      # down to `edge`, the first row nothing has painted yet.
+      let top = Math.floor(sy2)
       let x1 = segment.p1_sx
       let w1 = segment.p1_sw
       let x2 = segment.p2_sx
       let w2 = segment.p2_sw
       let r1 = w1 / 6.0
       let r2 = w2 / 6.0
-      _Canvas.rect(0, sy2, W, sy1 - sy2, c_grass)
-      _Canvas.polygon([x1 - w1 - r1, sy1, x1 - w1, sy1, x2 - w2, sy2,
-                       x2 - w2 - r2, sy2], c_rumble)
-      _Canvas.polygon([x1 + w1 + r1, sy1, x1 + w1, sy1, x2 + w2, sy2,
-                       x2 + w2 + r2, sy2], c_rumble)
-      _Canvas.polygon([x1 - w1, sy1, x1 + w1, sy1, x2 + w2, sy2, x2 - w2, sy2],
+      _Canvas.rect(0, top, W, edge - top, c_grass)
+      _Canvas.polygon([x1 - w1 - r1, edge, x1 - w1, edge, x2 - w2, top,
+                       x2 - w2 - r2, top], c_rumble)
+      _Canvas.polygon([x1 + w1 + r1, edge, x1 + w1, edge, x2 + w2, top,
+                       x2 + w2 + r2, top], c_rumble)
+      _Canvas.polygon([x1 - w1, edge, x1 + w1, edge, x2 + w2, top, x2 - w2, top],
                       c_road)
       if segment.kind == KIND_LIGHT {
         let c_lane = (p[9] * f + fog_r * g) / 256 +
@@ -761,14 +772,14 @@ let draw_road = fn (base_index, base_percent, player_y) {
         mut lx2 = x2 - w2 + lw2
         mut lane = 1
         while lane < LANES {
-          _Canvas.polygon([lx1 - l1, sy1, lx1 + l1, sy1, lx2 + l2, sy2,
-                           lx2 - l2, sy2], c_lane)
+          _Canvas.polygon([lx1 - l1, edge, lx1 + l1, edge, lx2 + l2, top,
+                           lx2 - l2, top], c_lane)
           lx1 = lx1 + lw1
           lx2 = lx2 + lw2
           lane = lane + 1
         }
       }
-      maxy = sy1
+      edge = top
     }
   }
 }
