@@ -62,6 +62,31 @@ for line in File.open(big, "r").lines() {
   if first_two.size() == 2 { break }
 }
 assert_eq(first_two, ["line0", "line1"])
+
+// The break's dispose really closed the fd: a later read on the same handle
+// reports IOError on every backend (the JIT's dispose used to be a no-op —
+// it read `self._id` off the iterator wrapper, which has none).
+let fb = File.open(big, "r")
+for line in fb.lines() { break }
+let e_broken = try { fb.read(); "no-err" } catch e { e.kind }
+assert_eq(e_broken, "IOError")
+
+// Terminal methods dispose the lines()/chunks() iterator too (§18.5, same
+// rule as break): draining and early-exiting terminals both close the fd.
+let ft1 = File.open(big, "r")
+assert_eq(ft1.lines().count(), 100)
+let e_t1 = try { ft1.read(); "no-err" } catch e { e.kind }
+assert_eq(e_t1, "IOError")
+
+let ft2 = File.open(big, "r")
+assert_eq(ft2.lines().find(|l| l == "line1"), "line1")
+let e_t2 = try { ft2.read(); "no-err" } catch e { e.kind }
+assert_eq(e_t2, "IOError")
+
+let ft3 = File.open(big, "r")
+assert_eq(ft3.chunks(4096).count(), 1)
+let e_t3 = try { ft3.read(); "no-err" } catch e { e.kind }
+assert_eq(e_t3, "IOError")
 FS.remove(big)
 
 // --- chunks(n): fixed-size byte chunks ---

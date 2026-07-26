@@ -1535,4 +1535,93 @@ for c in iterthrows {
   case("iterthrow|" + c, c)
 }
 
+# --- Dimension: terminal methods dispose the iterator (C# rule) ------------
+# Every terminal — draining or early-exiting — closes the chain on the way
+# out, like for-in's drain/break. `d` counts dispose calls; `t` traces the
+# pull/dispose interleaving so the "dispose after the last pull, before the
+# result is handed back" ordering is pinned across backends, not just the
+# count. Failures are built-in errors (`1 / 0`, `[1][9]`), never thrown
+# strings (corpus rule: `_p` needs kind/position).
+let mkd = 'fn mk(lim) { mut n = 0; { iter: fn () { self }, has_next: fn () { n < lim }, next: fn () { n = n + 1; n }, dispose: fn () { d = d + 1 } } }; '
+let iterterms = [
+  # Full drain x all 22 terminals: dispose exactly once.
+  'mut d = 0; ' + mkd + 'let r = mk(3).collect(); [d, r.size()]',
+  'mut d = 0; ' + mkd + 'let r = mk(3).join(","); [d, r]',
+  'mut d = 0; ' + mkd + 'mk(3).for_each(|x| x); d',
+  'mut d = 0; ' + mkd + 'let r = mk(3).reduce(0, |a, b| a + b); [d, r]',
+  'mut d = 0; ' + mkd + 'let r = mk(3).find(|x| false); [d, r]',
+  'mut d = 0; ' + mkd + 'let r = mk(3).position(|x| false); [d, r]',
+  'mut d = 0; ' + mkd + 'let r = mk(3).contains(99); [d, r]',
+  'mut d = 0; ' + mkd + 'let r = mk(3).first(); [d, r]',
+  'mut d = 0; ' + mkd + 'let r = mk(3).last(); [d, r]',
+  'mut d = 0; ' + mkd + 'let r = mk(3).nth(1); [d, r]',
+  'mut d = 0; ' + mkd + 'let r = mk(3).any(|x| false); [d, r]',
+  'mut d = 0; ' + mkd + 'let r = mk(3).all(|x| true); [d, r]',
+  'mut d = 0; ' + mkd + 'let r = mk(3).count(); [d, r]',
+  'mut d = 0; ' + mkd + 'let r = mk(3).sum(); [d, r]',
+  'mut d = 0; ' + mkd + 'let r = mk(3).product(); [d, r]',
+  'mut d = 0; ' + mkd + 'let r = mk(3).min(); [d, r]',
+  'mut d = 0; ' + mkd + 'let r = mk(3).max(); [d, r]',
+  'mut d = 0; ' + mkd + 'let r = mk(3).min_by(|x| x); [d, r]',
+  'mut d = 0; ' + mkd + 'let r = mk(3).max_by(|x| x); [d, r]',
+  'mut d = 0; ' + mkd + 'let r = mk(3).to_set(); [d, r.size()]',
+  'mut d = 0; ' + mkd + 'let r = mk(3).group_by(|x| x); [d, r.size()]',
+  'mut d = 0; ' + mkd + 'let r = mk(3).partition(|x| true); [d, r.size()]',
+  # Early exit: the terminal stops mid-stream; dispose still runs, and the
+  # source really was left mid-stream (n pinned via a second drain-less probe).
+  'mut d = 0; ' + mkd + 'let r = mk(9).find(|x| x == 2); [d, r]',
+  'mut d = 0; ' + mkd + 'let r = mk(9).position(|x| x == 2); [d, r]',
+  'mut d = 0; ' + mkd + 'let r = mk(9).contains(2); [d, r]',
+  'mut d = 0; ' + mkd + 'let r = mk(9).first(); [d, r]',
+  'mut d = 0; ' + mkd + 'let r = mk(9).nth(2); [d, r]',
+  'mut d = 0; ' + mkd + 'let r = mk(9).any(|x| x == 2); [d, r]',
+  'mut d = 0; ' + mkd + 'let r = mk(9).all(|x| x != 2); [d, r]',
+  # Ordering: dispose fires after the last pull, before the caller sees the
+  # result — the trace is [pulls..., "d"] on every backend.
+  'mut t = []; let it = { iter: fn () { self }, has_next: fn () { t.size() < 2 }, next: fn () { t.push("n"); 1 }, dispose: fn () { t.push("d") } }; it.collect(); t',
+  'mut t = []; let it = { iter: fn () { self }, has_next: fn () { true }, next: fn () { t.push("n"); t.size() }, dispose: fn () { t.push("d") } }; it.find(|x| x == 2); t',
+  # Resume after an early-exit terminal on a generator: dispose broke the
+  # source, so the rest is [] (same as resuming after a for-in break).
+  'fn g() { for v in [1, 2, 3] { yield v } }; let x = g(); x.find(|v| v == 2); to_string(x.collect())',
+  # Terminal through a lazy chain: forwarding + terminal dispose, once.
+  'mut d = 0; ' + mkd + 'let r = mk(9).map(|x| x).take(2).collect(); [d, r.size()]',
+  'mut d = 0; ' + mkd + 'let r = mk(9).skip_while(|x| x < 2).take(1).count(); [d, r]',
+  # Fused inline paths (map+collect / for_each / reduce): same contract, and
+  # the body-throw edge disposes with the original error kind surviving.
+  'mut d = 0; ' + mkd + 'let r = mk(3).map(|x| x + 1).collect(); [d, r.size()]',
+  'mut d = 0; ' + mkd + 'mut s = 0; mk(3).for_each(fn (x) { s = s + x }); [d, s]',
+  'mut d = 0; ' + mkd + 'mut k = nil; try { mk(9).map(|x| x == 2 ? [1][9] : x).collect() } catch e { k = e.kind }; [d, k]',
+  'mut d = 0; ' + mkd + 'mut k = nil; try { mk(9).reduce(0, |a, b| b == 2 ? 1 / 0 : a + b) } catch e { k = e.kind }; [d, k]',
+  # Producer throws mid-terminal: dispose runs, original error propagates.
+  'mut d = 0; mut n = 0; let it = { iter: fn () { self }, has_next: fn () { true }, next: fn () { n = n + 1; if n > 2 { 1 / 0 }; n }, dispose: fn () { d = d + 1 } }; mut k = nil; try { it.collect() } catch e { k = e.kind }; [d, k]',
+  'mut d = 0; mut n = 0; let it = { iter: fn () { self }, has_next: fn () { n = n + 1; if n > 2 { [1][9] }; true }, next: fn () { n }, dispose: fn () { d = d + 1 } }; mut k = nil; try { it.count() } catch e { k = e.kind }; [d, k]',
+  # Callback throws mid-terminal: dispose runs (quietly), original error kind.
+  'mut d = 0; ' + mkd + 'mut k = nil; try { mk(9).find(|x| x == 2 ? [1][9] : false) } catch e { k = e.kind }; [d, k]',
+  'mut d = 0; ' + mkd + 'mut k = nil; try { mk(9).group_by(|x| x == 2 ? 1 / 0 : x) } catch e { k = e.kind }; [d, k]',
+  # A throwing dispose: drain propagates it; an unwinding terminal keeps the
+  # original error (same lines as for-in).
+  'mut n = 0; let it = { iter: fn () { self }, has_next: fn () { n < 2 }, next: fn () { n = n + 1; n }, dispose: fn () { 1 / 0 } }; mut k = nil; try { it.collect() } catch e { k = e.kind }; k',
+  'let it = { iter: fn () { self }, has_next: fn () { true }, next: fn () { [1][9] }, dispose: fn () { 1 / 0 } }; mut k = nil; try { it.collect() } catch e { k = e.kind }; k',
+  # Terminal then explicit dispose: no hidden extra dispose anywhere (a
+  # hand-written dispose has no once-guard, so exactly 2 is the contract).
+  'mut d = 0; ' + mkd + 'let x = mk(3); x.count(); x.dispose(); d',
+  # Dispose-less sources stay dispose-less through eager terminals.
+  'to_string([1, 2, 3].iter().map(|x| x).collect())',
+  # Empty-input terminals that throw (min/max): dispose still runs.
+  'mut d = 0; ' + mkd + 'mut k = nil; try { mk(0).min() } catch e { k = e.kind }; [d, k]',
+  'mut d = 0; ' + mkd + 'mut k = nil; try { mk(0).max_by(|x| x) } catch e { k = e.kind }; [d, k]',
+  # Callback validation straddles the dispose boundary: a non-Function is the
+  # bind-time typed-param error (NO dispose), a wrong-arity Function is the
+  # in-body arity check (dispose runs) — interp's split, pinned per backend.
+  'mut d = 0; ' + mkd + 'mut m = nil; try { mk(3).for_each(42) } catch e { m = e.message }; [d, m]',
+  'mut d = 0; ' + mkd + 'mut m = nil; try { mk(3).for_each(fn (a, b) { a }) } catch e { m = e.message }; [d, m]',
+  'mut d = 0; ' + mkd + 'mut m = nil; try { mk(3).group_by(42) } catch e { m = e.message }; [d, m]',
+  'mut d = 0; ' + mkd + 'mut m = nil; try { mk(3).partition(fn (a, b) { a }) } catch e { m = e.message }; [d, m]',
+  'mut d = 0; ' + mkd + 'mut m = nil; try { mk(3).reduce([0, 0], fn (a, b, c) { a }) } catch e { m = e.message }; [d, m]',
+  'mut d = 0; ' + mkd + 'mut m = nil; try { mk(3).min_by(42) } catch e { m = e.message }; [d, m]',
+]
+for c in iterterms {
+  case("iterterm|" + c, c)
+}
+
 print(out.join("\n"))

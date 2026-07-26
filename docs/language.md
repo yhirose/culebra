@@ -3770,6 +3770,15 @@ Generators use it to run the defers registered inside a suspended body.
 A `dispose` that itself throws while an exception is already unwinding is
 swallowed, so the enclosing `catch` still sees the original error.
 
+The same contract covers the **terminal iterator methods** (C#'s rule:
+whoever drives the protocol closes it). Every terminal — draining
+(`collect`, `count`, ...), early-exiting (`find`, `any`, `first`, ...),
+or one that throws mid-drain (from its callback or the producer) —
+calls `dispose` exactly once on the way out, after the result is
+computed and before it is handed back. On the throwing paths the
+original error propagates and a throwing `dispose` is swallowed; on a
+successful drain a throwing `dispose` propagates, like `break`.
+
 A lazy chain is one iterator from the consumer's side, so closing it closes
 its source: `map` / `filter` / `take` / `zip` / … forward `dispose` to the
 iterator(s) they pull from (both, for the two-source combinators). So
@@ -3897,6 +3906,21 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 | `it.to_set()` | `Set` | members in first-seen order, duplicates dropped |
 | `it.group_by(f)` | `Object` | buckets elements into Arrays keyed by `f(x)`, in first-seen key order |
 | `it.partition(p)` | `Tuple` | `(matching, non_matching)` in one pass, order preserved in both halves |
+
+Every terminal disposes the iterator it drove (see **Optional
+`dispose`** above), including the early-exiting ones — so after
+`it.find(p)` the source is closed, and a follow-up terminal on the same
+`it` yields nothing (`[]` from `collect`), exactly as after a `break`:
+
+```culebra
+fn g() { yield 1; yield 2; yield 3 }
+let it = g()
+inspect(it.find(|x| x == 2))    # => 2
+inspect(it.collect())           # => []
+```
+
+The `find` also ran `g()`'s defers; the empty second answer is the
+disposed source reporting done.
 
 **Eager vs lazy**: `Array` has its own eager `map` / `filter` /
 `for_each` / `reduce` / `find` / `any` / `all` / `flat_map` (§18.2)

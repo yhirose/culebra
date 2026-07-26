@@ -256,4 +256,143 @@ log_k = ''
 for v in gen_k('chunk_by').chunk_by(|v| v) { break }
 assert_eq(log_k, 'chunk_by;')
 
+// --- (11) terminal methods dispose the iterator (C# rule) ---
+// Every terminal — draining or early-exiting — closes the chain on the way
+// out, exactly like for-in's break/drain. A new terminal must appear here
+// AND in the drain sweep below (the check_iter_wiring.sh ratchet pins the
+// wiring side).
+mut log_t = ''
+fn gen_t() {
+  defer { log_t = "{log_t}closed;" }
+  for v in [1, 2, 3] { yield v }
+}
+
+// Full drain sweep over all 22 terminals: dispose exactly once per call.
+let terminals = [
+  |it| it.collect(),
+  |it| it.join(','),
+  |it| it.for_each(|x| x),
+  |it| it.reduce(0, |acc, x| acc + x),
+  |it| it.find(|x| false),
+  |it| it.position(|x| false),
+  |it| it.contains(99),
+  |it| it.first(),
+  |it| it.last(),
+  |it| it.nth(1),
+  |it| it.any(|x| false),
+  |it| it.all(|x| true),
+  |it| it.count(),
+  |it| it.sum(),
+  |it| it.product(),
+  |it| it.min(),
+  |it| it.max(),
+  |it| it.min_by(|x| x),
+  |it| it.max_by(|x| x),
+  |it| it.to_set(),
+  |it| it.group_by(|x| x),
+  |it| it.partition(|x| true),
+]
+mut ti = 0
+for t in terminals {
+  log_t = ''
+  t(gen_t())
+  assert_eq("{ti}:{log_t}", "{ti}:closed;")
+  ti = ti + 1
+}
+
+// Early-exit terminals dispose too — the match is found mid-stream and the
+// rest of the input is never pulled, but the chain still closes.
+let early = [
+  |it| it.find(|x| x == 2),
+  |it| it.position(|x| x == 2),
+  |it| it.contains(2),
+  |it| it.first(),
+  |it| it.nth(1),
+  |it| it.any(|x| x == 2),
+  |it| it.all(|x| x != 2),
+]
+ti = 0
+for t in early {
+  log_t = ''
+  t(gen_t())
+  assert_eq("early {ti}:{log_t}", "early {ti}:closed;")
+  ti = ti + 1
+}
+
+// Consequence pinned: resuming after an early-exit terminal yields nothing
+// (the dispose broke the source — same as resuming after a for-in break).
+log_t = ''
+let g_t = gen_t()
+assert_eq(g_t.find(|x| x == 1), 1)
+assert_eq(log_t, 'closed;')
+assert_eq(g_t.collect().size(), 0)
+assert_eq(log_t, 'closed;')          // and the second terminal didn't re-dispose
+
+// Terminal + explicit dispose: the generator's once-guard still holds.
+log_t = ''
+let g_t2 = gen_t()
+g_t2.count()
+g_t2.dispose()
+assert_eq(log_t, 'closed;')
+
+// Dispose runs when the terminal's callback throws (quietly — the original
+// error is the one caught), for both an eagerly-drained and a short-circuit
+// terminal.
+log_t = ''
+try { gen_t().for_each(fn (x) { if x == 2 { throw 'boom' } }) }
+catch e { log_t = "{log_t}caught:{e};" }
+assert_eq(log_t, 'closed;caught:boom;')
+
+log_t = ''
+try { gen_t().find(fn (x) { if x == 2 { throw 'boom' }; false }) }
+catch e { log_t = "{log_t}caught:{e};" }
+assert_eq(log_t, 'closed;caught:boom;')
+
+// Dispose runs when the producer throws mid-drain (generator defers run).
+log_t = ''
+fn gen_bad_t() {
+  defer { log_t = "{log_t}closed;" }
+  for v in [1, 2] {
+    if v == 2 { throw 'prod' }
+    yield v
+  }
+}
+try { gen_bad_t().collect() } catch e { log_t = "{log_t}caught:{e};" }
+assert_eq(log_t, 'closed;caught:prod;')
+
+// Terminal through a lazy chain: forwarding + terminal dispose, once.
+log_t = ''
+assert_eq(gen_t().map(|x| x * 2).take(2).collect().size(), 2)
+assert_eq(log_t, 'closed;')
+
+// Fused inline paths (map+collect / for_each / reduce with an inlinable
+// lambda) share the same contract.
+log_t = ''
+assert_eq(gen_t().map(|x| x + 1).collect().size(), 3)
+assert_eq(log_t, 'closed;')
+log_t = ''
+assert_eq(gen_t().reduce(0, |acc, x| acc + x), 6)
+assert_eq(log_t, 'closed;')
+
+// A throwing dispose: natural drain propagates it; an unwinding terminal
+// keeps the original error (same lines for-in draws).
+fn make_bad_dispose(thrower) {
+  mut i = 0
+  {
+    iter: fn () { self },
+    has_next: fn () { i < 2 },
+    next: fn () { i = i + 1; if thrower && i == 2 { throw 'original' }; i },
+    dispose: fn () { throw 'from-dispose' },
+  }
+}
+mut caught_t = ''
+try { make_bad_dispose(false).collect() } catch e { caught_t = "{e}" }
+assert_eq(caught_t, 'from-dispose')
+caught_t = ''
+try { make_bad_dispose(true).collect() } catch e { caught_t = "{e}" }
+assert_eq(caught_t, 'original')
+
+// Array-sourced chains stay dispose-free: nothing to close, nothing thrown.
+assert_eq([1, 2, 3].iter().map(|x| x).collect().size(), 3)
+
 IO.inspect('test_generator_resource OK')

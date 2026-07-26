@@ -3551,6 +3551,14 @@ arguments.` が送出されます（§17 の `drop` 契約と同じ）。3 つ�
 走らせます。すでに例外が unwind 中の exit パスで `dispose` 自身が throw した
 場合は握り潰され、外側の `catch` には元のエラーが渡ります。
 
+同じ契約は**終端イテレータメソッド**にも適用されます（C# の規則:
+プロトコルを駆動した者が閉じる）。すべての終端 — drain するもの
+（`collect`、`count`、…）、早期終了するもの（`find`、`any`、`first`、…）、
+途中で throw したもの（callback からでも producer からでも） — は、
+結果を計算し終えてから返す前に、`dispose` をちょうど 1 回呼びます。
+throw する経路では元のエラーが伝播し、`dispose` 自身の throw は握り潰され
+ます。正常な drain では `dispose` の throw は伝播します（`break` と同じ）。
+
 遅延チェーンは消費側から見れば1つのイテレータなので、閉じればソースも閉じ
 ます。`map` / `filter` / `take` / `zip` などは自分が引いているイテレータへ
 `dispose` を転送します（2ソースの combinator は両方へ）。したがって
@@ -3676,6 +3684,21 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 | `it.to_set()` | `Set` | 初出順のメンバー、重複は除去 |
 | `it.group_by(f)` | `Object` | `f(x)` をキーに要素を Array へ振り分ける。キーは初出順 |
 | `it.partition(p)` | `Tuple` | 1 パスで `(条件を満たす, 満たさない)` に分割。両方とも順序を保つ |
+
+すべての終端は自分が駆動したイテレータを dispose します（上記
+**省略可能な `dispose`** 参照）。早期終了する終端も同様なので、
+`it.find(p)` の後はソースが閉じており、同じ `it` への後続の終端は何も
+返しません（`collect` は `[]`）— `break` の後とまったく同じです:
+
+```culebra
+fn g() { yield 1; yield 2; yield 3 }
+let it = g()
+inspect(it.find(|x| x == 2))    # => 2
+inspect(it.collect())           # => []
+```
+
+この `find` の時点で `g()` の defer が走っています。2 つ目が空なのは、
+dispose 済みのソースが done を返しているためです。
 
 **eager vs lazy**: `Array` には独自の eager 版 `map` / `filter` /
 `for_each` / `reduce` / `find` / `any` / `all` / `flat_map`（§18.2）

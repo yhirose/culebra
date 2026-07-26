@@ -430,23 +430,117 @@ inline JitObject* _iter_wrap_fast(std::initializer_list<JitCell*> captures,
   return obj;
 }
 
+// Bind-time mirror of the interp's `f: Function` typed-param check: reject a
+// non-callable callback BEFORE the terminal's JitIterDrive opens, so this
+// edge does NOT dispose — the interp raises it at argument binding, outside
+// the dispatch wrapper's dispose fold. (A wrong-ARITY function is the other
+// case: the interp checks it inside the terminal body, so it DOES dispose —
+// which falls out of JitHofCallback running after the drive below.) Accepts
+// exactly what _culebra_expect_callback accepts; a pass consumes nothing.
+inline void _culebra_callback_type_precheck(int8_t fn_tag, int64_t fn_data,
+                                            const char* param_name) {
+  if (fn_tag == TAG_FUNC) return;
+  if (fn_tag == TAG_OBJECT) {
+    auto* obj = reinterpret_cast<JitObject*>(fn_data);
+    auto* e = obj->proto ? _find_property(obj, "__call__") : nullptr;
+    if (e && e->value.tag == TAG_FUNC) return;
+  }
+  _culebra_value_release_impl(fn_tag, fn_data);  // the callee-consumes +1
+  throw culebra::CulebraError("TypeError",
+      std::format("type error: parameter '{}' expects Function", param_name),
+      _jit_callback_arg_line, _jit_callback_arg_col);
+}
+
+// Owns one terminal drain over an iterator (docs §18.5): resolves the
+// protocol closures once, pulls via `pull()`, and guarantees the iterator's
+// dispose() runs exactly once on every exit — drain, early exit, or unwind.
+// Every terminal goes through this (the ratchet in tools/check_iter_wiring.sh
+// pins raw `_iter_pull` loops to the audited set), so the runtime helper is
+// the single choke point covering all call shapes for all three backends.
+//
+// Protocol: construct FIRST in the helper (before the JitHofCallback / any
+// accumulator guard) so on unwind the dtor disposes AFTER the guards release
+// — the interp order, where the terminal's locals die before the dispatch
+// wrapper's catch runs dispose. Call `finish()` after the last pull and
+// BEFORE handing the result out (+1 out-params / return): it disposes with
+// the result still guarded, so a throwing dispose propagates without
+// stranding it (the interp twin disposes between the method body and the
+// return). The dtor covers the unwind edge — swallowing a throwing dispose
+// there so the in-flight error survives, the same line the for-in pads draw.
+class JitIterDrive {
+ public:
+  JitIterDrive(int8_t it, int64_t id)
+      : iter_{it, id},
+        has_next_cls_(_iter_has_next_closure(iter_)),
+        next_cls_(_iter_next_closure(iter_)),
+        uncaught_(std::uncaught_exceptions()) {}
+  JitIterDrive(const JitIterDrive&) = delete;
+  JitIterDrive& operator=(const JitIterDrive&) = delete;
+
+  bool pull(JitValue& out_v) {
+    return _iter_pull(has_next_cls_, next_cls_, iter_, out_v);
+  }
+
+  // Dispose eagerly on the normal path (drain or early exit); a throw here
+  // propagates while the caller's result is still guarded.
+  void finish() {
+    if (done_) return;
+    done_ = true;
+    dispose();
+  }
+
+  ~JitIterDrive() noexcept(false) {
+    if (done_) return;
+    if (std::uncaught_exceptions() > uncaught_) {
+      // Unwinding: swallow a throwing dispose so the in-flight error
+      // survives. The thrown/pending carriers are globals a culebra throw
+      // from dispose() overwrites even when its C++ exception is swallowed
+      // — save/restore them, as the codegen swallow pad does.
+      int8_t flag, tag;
+      int64_t data;
+      culebra_runtime_save_thrown(&flag, &tag, &data);
+      try { dispose(); } catch (...) {}
+      culebra_runtime_restore_thrown(flag, tag, data);
+    } else {
+      dispose();  // early exit that skipped finish(): drain rule, propagate
+    }
+  }
+
+ private:
+  // One lookup; a dispose-free iterator (any built-in-source chain) returns
+  // immediately, so the per-drive cost stays a single property probe.
+  void dispose() {
+    auto* dispose_cls = _iter_method_closure(iter_, "dispose");
+    if (!dispose_cls || dispose_cls->arity != 0) return;
+    culebra_runtime_value_retain(iter_.tag, iter_.data);  // callee consumes
+    auto r = _jit_invoke(dispose_cls, iter_, 0, nullptr);
+    _culebra_value_release_impl(r.tag, r.data);
+  }
+
+  JitValue iter_;
+  JitClosure* has_next_cls_;
+  JitClosure* next_cls_;
+  int uncaught_;
+  bool done_ = false;
+};
+
 extern "C" {
 
 // --- Terminal iterator methods --------------------------------------------
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_iter_collect(
     int8_t it, int64_t id) {
+  JitIterDrive drive{it, id};
   auto* out = culebra_runtime_array_new();
   // Helper-owned accumulator: if a lazy map/filter callback in the chain throws
   // while pulling, this frees `out` (and the elements collected so far) on the
   // unwind edge instead of stranding it. Same shape as array_map's out_guard.
   JitOwnedVal out_guard(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(out)});
   JitValue v;
-  auto* has_next_cls = _iter_has_next_closure({it, id});
-  auto* next_cls = _iter_next_closure({it, id});
-  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
+  while (drive.pull(v)) {
     culebra_runtime_array_push(out, v.tag, v.data);  // consumes +1
   }
+  drive.finish();
   out_guard.consume();
   return out;
 }
@@ -456,12 +550,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_iter_collect(
 // intermediate `.collect()`. Each pulled value carries a +1 ref we release.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_iter_join(
     int8_t it, int64_t id, const char* sep) {
+  JitIterDrive drive{it, id};
   std::string out;
   bool first = true;
   JitValue v;
-  auto* has_next_cls = _iter_has_next_closure({it, id});
-  auto* next_cls = _iter_next_closure({it, id});
-  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
+  while (drive.pull(v)) {
     if (!first) out += sep;
     first = false;
     if (v.tag == TAG_STRING || v.tag == TAG_STRINGVIEW) {
@@ -471,145 +564,153 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_iter_join(
     }
     _culebra_value_release_impl(v.tag, v.data);
   }
+  drive.finish();
   return _culebra_heap_str(out);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_count(
     int8_t it, int64_t id) {
+  JitIterDrive drive{it, id};
   int64_t n = 0;
   JitValue v;
-  auto* has_next_cls = _iter_has_next_closure({it, id});
-  auto* next_cls = _iter_next_closure({it, id});
-  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
+  while (drive.pull(v)) {
     _culebra_value_release_impl(v.tag, v.data);
     n++;
   }
+  drive.finish();
   return n;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_for_each(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
+  // Callback checks straddle the drive on purpose: the TYPE precheck mirrors
+  // the interp's bind-time typed-param error (before the wrapper body — no
+  // dispose), while JitHofCallback's ARITY check mirrors the in-body
+  // check_callback_arity (dispose runs, via the drive's dtor).
+  _culebra_callback_type_precheck(ft, fd, "f");
+  JitIterDrive drive{it, id};
   JitHofCallback fn(ft, fd, 1, "for_each", "f", line, col);
   JitValue v;
-  auto* has_next_cls = _iter_has_next_closure({it, id});
-  auto* next_cls = _iter_next_closure({it, id});
-  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
+  while (drive.pull(v)) {
     auto r = _culebra_invoke1_at(fn, v, line, col);
     _culebra_value_release_impl(r.tag, r.data);
   }
+  drive.finish();
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_reduce(
     int8_t it, int64_t id, int8_t init_tag, int64_t init_data,
     int8_t ft, int64_t fd, int64_t line, int64_t col, int8_t* out_tag,
     int64_t* out_data) {
-  // See culebra_runtime_array_reduce: own the codegen-consumed seed across the
-  // callback validation so an invalid callback releases it instead of stranding.
-  JitOwnedVal init_guard{init_tag, init_data};
+  // Own the codegen-consumed seed / running accumulator across every throw
+  // point — the callback checks, a throwing pull, the finish() dispose — so
+  // the unwind edge releases it instead of stranding (the bare-JitValue form
+  // leaked the accumulator when the producer threw between callback calls).
+  JitOwnedVal acc{init_tag, init_data};
+  _culebra_callback_type_precheck(ft, fd, "f");
+  JitIterDrive drive{it, id};
   JitHofCallback fn(ft, fd, 2, "reduce", "f", line, col);
-  init_guard.consume();
-  JitValue acc = {init_tag, init_data};
   JitValue v;
-  auto* has_next_cls = _iter_has_next_closure({it, id});
-  auto* next_cls = _iter_next_closure({it, id});
-  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
-    acc = _culebra_invoke2_at(fn, acc, v, line, col);
+  while (drive.pull(v)) {
+    acc = JitOwnedVal(_culebra_invoke2_at(fn, acc.consume(), v, line, col));
   }
-  *out_tag = acc.tag;
-  *out_data = acc.data;
+  drive.finish();
+  auto out = acc.consume();
+  *out_tag = out.tag;
+  *out_data = out.data;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_find(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col,
     int8_t* out_tag, int64_t* out_data) {
+  _culebra_callback_type_precheck(ft, fd, "p");
+  JitIterDrive drive{it, id};
   JitHofCallback fn(ft, fd, 1, "find", "p", line, col);
   JitValue v;
-  auto* has_next_cls = _iter_has_next_closure({it, id});
-  auto* next_cls = _iter_next_closure({it, id});
-  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
+  // Holds the match across finish(): the dispose runs before the +1 handoff
+  // to the out-params, and a throwing dispose releases the match via this
+  // guard instead of stranding it. Nil doubles as the no-match answer.
+  JitOwnedVal found(TAG_NIL, 0);
+  while (drive.pull(v)) {
     JitOwnedVal owned(v);                          // v's original +1 (POC: RAII)
     culebra_runtime_value_retain(v.tag, v.data);   // an extra +1 for the call
     auto r = _culebra_invoke1_at(fn, v, line, col);  // consumes the extra +1
     JitOwnedVal rg(r);                             // result +1
     bool keep = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
     if (keep) {
-      JitValue kept = owned.consume();            // hand v's +1 to the out-param
-      *out_tag = kept.tag;
-      *out_data = kept.data;
-      return;
+      found = std::move(owned);
+      break;
     }
     // owned releases v, rg releases r on loop-body scope exit (incl. throw)
   }
-  *out_tag = 0;
-  *out_data = 0;
+  drive.finish();
+  auto kept = found.consume();
+  *out_tag = kept.tag;
+  *out_data = kept.data;
 }
 
 // position: index of the first match, or nil (out_tag 0) when none matches.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_position(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col,
     int8_t* out_tag, int64_t* out_data) {
+  _culebra_callback_type_precheck(ft, fd, "p");
+  JitIterDrive drive{it, id};
   JitHofCallback fn(ft, fd, 1, "position", "p", line, col);
   JitValue v;
   int64_t i = 0;
-  auto* has_next_cls = _iter_has_next_closure({it, id});
-  auto* next_cls = _iter_next_closure({it, id});
-  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
+  bool hit = false;
+  while (!hit && drive.pull(v)) {
     auto r = _culebra_invoke1_at(fn, v, line, col);
-    bool hit = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
+    hit = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
     _culebra_value_release_impl(r.tag, r.data);
-    if (hit) {
-      *out_tag = TAG_LONG;
-      *out_data = i;
-      return;
-    }
-    i++;
+    if (!hit) i++;
   }
-  *out_tag = 0;
-  *out_data = 0;
+  drive.finish();
+  *out_tag = hit ? TAG_LONG : 0;
+  *out_data = hit ? i : 0;
 }
 
 // contains: short-circuiting membership using the same value equality as
 // culebra_runtime_array_contains. The needle is borrowed (never stored).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_contains(
     int8_t it, int64_t id, int8_t nt, int64_t nd) {
+  JitIterDrive drive{it, id};
   JitValue v;
-  auto* has_next_cls = _iter_has_next_closure({it, id});
-  auto* next_cls = _iter_next_closure({it, id});
-  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
-    bool hit = _culebra_value_equal(v.tag, v.data, nt, nd);
+  bool hit = false;
+  while (!hit && drive.pull(v)) {
+    hit = _culebra_value_equal(v.tag, v.data, nt, nd);
     _culebra_value_release_impl(v.tag, v.data);
-    if (hit) return 1;
   }
-  return 0;
+  drive.finish();
+  return hit ? 1 : 0;
 }
 
 // first/last/nth hand the pulled value's +1 straight to the out-param; an
 // exhausted iterator answers nil (out_tag 0), matching `find`.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_first(
     int8_t it, int64_t id, int8_t* out_tag, int64_t* out_data) {
+  JitIterDrive drive{it, id};
   JitValue v;
-  auto* has_next_cls = _iter_has_next_closure({it, id});
-  auto* next_cls = _iter_next_closure({it, id});
-  if (!_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
-    *out_tag = 0;
-    *out_data = 0;
-    return;
-  }
-  *out_tag = v.tag;
-  *out_data = v.data;
+  // Guard the result across finish() — dispose runs before the +1 handoff.
+  JitOwnedVal found(TAG_NIL, 0);
+  if (drive.pull(v)) found = JitOwnedVal(v);
+  drive.finish();
+  auto kept = found.consume();
+  *out_tag = kept.tag;
+  *out_data = kept.data;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_last(
     int8_t it, int64_t id, int8_t* out_tag, int64_t* out_data) {
+  JitIterDrive drive{it, id};
   JitValue v;
   // Holds the newest pulled value; each replacement releases the previous one,
   // and an unwind out of the pull frees whatever is held.
   JitOwnedVal best(TAG_NIL, 0);
-  auto* has_next_cls = _iter_has_next_closure({it, id});
-  auto* next_cls = _iter_next_closure({it, id});
-  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
+  while (drive.pull(v)) {
     best = JitOwnedVal(v);
   }
+  drive.finish();
   auto kept = best.consume();
   *out_tag = kept.tag;
   *out_data = kept.data;
@@ -618,58 +719,61 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_last(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_nth(
     int8_t it, int64_t id, int64_t n, int64_t line, int64_t col,
     int8_t* out_tag, int64_t* out_data) {
+  JitIterDrive drive{it, id};
   if (n < 0) {
+    // The dtor disposes on this unwind too — the interp wrapper does the
+    // same (the ValueError is raised inside the wrapped terminal body).
     throw culebra::CulebraError("ValueError", "nth() n must not be negative",
                                 line, col);
   }
   JitValue v;
-  auto* has_next_cls = _iter_has_next_closure({it, id});
-  auto* next_cls = _iter_next_closure({it, id});
-  for (int64_t i = 0; i < n; i++) {
-    if (!_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
-      *out_tag = 0;
-      *out_data = 0;
-      return;
+  JitOwnedVal found(TAG_NIL, 0);
+  bool short_input = false;
+  for (int64_t i = 0; i < n && !short_input; i++) {
+    if (!drive.pull(v)) {
+      short_input = true;
+    } else {
+      _culebra_value_release_impl(v.tag, v.data);
     }
-    _culebra_value_release_impl(v.tag, v.data);
   }
-  if (!_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
-    *out_tag = 0;
-    *out_data = 0;
-    return;
-  }
-  *out_tag = v.tag;
-  *out_data = v.data;
+  if (!short_input && drive.pull(v)) found = JitOwnedVal(v);
+  drive.finish();
+  auto kept = found.consume();
+  *out_tag = kept.tag;
+  *out_data = kept.data;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_any(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
+  _culebra_callback_type_precheck(ft, fd, "p");
+  JitIterDrive drive{it, id};
   JitHofCallback fn(ft, fd, 1, "any", "p", line, col);
   JitValue v;
-  auto* has_next_cls = _iter_has_next_closure({it, id});
-  auto* next_cls = _iter_next_closure({it, id});
-  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
+  bool hit = false;
+  while (!hit && drive.pull(v)) {
     auto r = _culebra_invoke1_at(fn, v, line, col);
-    bool keep = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
+    hit = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
     _culebra_value_release_impl(r.tag, r.data);
-    if (keep) return 1;
   }
-  return 0;
+  drive.finish();
+  return hit ? 1 : 0;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_all(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
+  _culebra_callback_type_precheck(ft, fd, "p");
+  JitIterDrive drive{it, id};
   JitHofCallback fn(ft, fd, 1, "all", "p", line, col);
   JitValue v;
-  auto* has_next_cls = _iter_has_next_closure({it, id});
-  auto* next_cls = _iter_next_closure({it, id});
-  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
+  bool miss = false;
+  while (!miss && drive.pull(v)) {
     auto r = _culebra_invoke1_at(fn, v, line, col);
     bool keep = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
     _culebra_value_release_impl(r.tag, r.data);
-    if (!keep) return 0;
+    miss = !keep;
   }
-  return 1;
+  drive.finish();
+  return miss ? 0 : 1;
 }
 
 // Sum/product/min/max share the same iterate-and-accumulate shape.
@@ -727,25 +831,25 @@ inline void _iter_agg_step(_JitNumAcc& acc, JitValue v, bool mul,
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_iter_sum(
     int8_t it, int64_t id, int64_t line, int64_t col) {
+  JitIterDrive drive{it, id};
   _JitNumAcc acc(0);
   JitValue v;
-  auto* has_next_cls = _iter_has_next_closure({it, id});
-  auto* next_cls = _iter_next_closure({it, id});
-  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
+  while (drive.pull(v)) {
     _iter_agg_step(acc, v, false, line, col);
   }
+  drive.finish();
   return acc.value();
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_iter_product(
     int8_t it, int64_t id, int64_t line, int64_t col) {
+  JitIterDrive drive{it, id};
   _JitNumAcc acc(1);
   JitValue v;
-  auto* has_next_cls = _iter_has_next_closure({it, id});
-  auto* next_cls = _iter_next_closure({it, id});
-  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
+  while (drive.pull(v)) {
     _iter_agg_step(acc, v, true, line, col);
   }
+  drive.finish();
   return acc.value();
 }
 
@@ -755,22 +859,23 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_iter_product(
 // needs no RC handling.
 inline JitValue _iter_minmax(int8_t it, int64_t id, bool want_max,
                              const char* what, int64_t line, int64_t col) {
+  JitIterDrive drive{it, id};
   JitValue v;
-  auto* has_next_cls = _iter_has_next_closure({it, id});
-  auto* next_cls = _iter_next_closure({it, id});
-  if (!_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
+  if (!drive.pull(v)) {
+    // The dtor disposes on this unwind (interp raises inside the wrapper).
     throw culebra::CulebraError(
         "ValueError", std::string(what) + " of empty Iterator", line, col);
   }
   JitValue best = v;
   double bestd = _iter_agg_num(v, line, col);
-  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
+  while (drive.pull(v)) {
     double x = _iter_agg_num(v, line, col);
     if (want_max ? (x > bestd) : (x < bestd)) {
       best = v;
       bestd = x;
     }
   }
+  drive.finish();
   return best;
 }
 
@@ -791,11 +896,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_iter_max(
 inline JitValue _iter_minmax_by(int8_t it, int64_t id, int8_t ft, int64_t fd,
                                 bool want_max, const char* what,
                                 int64_t line, int64_t col) {
+  _culebra_callback_type_precheck(ft, fd, "f");
+  JitIterDrive drive{it, id};
   JitHofCallback fn(ft, fd, 1, what, "f", line, col);
   JitValue v;
-  auto* has_next_cls = _iter_has_next_closure({it, id});
-  auto* next_cls = _iter_next_closure({it, id});
-  if (!_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
+  if (!drive.pull(v)) {
+    // The dtor disposes on this unwind (interp raises inside the wrapper).
     throw culebra::CulebraError(
         "ValueError", std::string(what) + " of empty Iterator", line, col);
   }
@@ -807,7 +913,7 @@ inline JitValue _iter_minmax_by(int8_t it, int64_t id, int8_t ft, int64_t fd,
   };
   JitOwnedVal best(v);
   double bestd = key_of(best.borrow());
-  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
+  while (drive.pull(v)) {
     JitOwnedVal cand(v);
     double x = key_of(cand.borrow());
     if (want_max ? (x > bestd) : (x < bestd)) {
@@ -815,6 +921,7 @@ inline JitValue _iter_minmax_by(int8_t it, int64_t id, int8_t ft, int64_t fd,
       bestd = x;
     }
   }
+  drive.finish();
   return best.consume();
 }
 
@@ -3302,12 +3409,17 @@ inline void _each_of_jit_array(JitArray* arr, Emit emit) {
   }
 }
 
+// The drive is built by the ENTRY POINT (after the callback type precheck,
+// before the sink's arity check) so the dispose boundary matches the interp:
+// a non-callable callback reports without disposing, a wrong-arity one
+// disposes via the drive's dtor.
 template <typename Emit>
-inline void _each_of_jit_iter(int8_t it, int64_t id, Emit emit) {
+inline void _each_of_jit_iter(JitIterDrive& drive, Emit emit) {
   JitValue v;
-  auto* has_next_cls = _iter_has_next_closure({it, id});
-  auto* next_cls = _iter_next_closure({it, id});
-  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) emit(v);
+  while (drive.pull(v)) emit(v);
+  // finish() before returning into the sink's consume/handoff: the sink's
+  // own accumulator guard is still armed, so a throwing dispose frees it.
+  drive.finish();
 }
 
 // Duplicates collapse; first-seen order is kept. set_add absorbs the +1 on
@@ -3391,8 +3503,9 @@ extern "C" {
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_iter_to_set(
     int8_t it, int64_t id, int64_t line, int64_t col) {
+  JitIterDrive drive{it, id};
   return _collect_set_jit(
-      [&](auto emit) { _each_of_jit_iter(it, id, emit); }, line, col);
+      [&](auto emit) { _each_of_jit_iter(drive, emit); }, line, col);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_array_to_set(
@@ -3403,8 +3516,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_array_to_set(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_group_by(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
+  _culebra_callback_type_precheck(ft, fd, "f");
+  JitIterDrive drive{it, id};
   return _collect_group_by_jit(
-      [&](auto emit) { _each_of_jit_iter(it, id, emit); }, ft, fd, line, col);
+      [&](auto emit) { _each_of_jit_iter(drive, emit); }, ft, fd, line, col);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_array_group_by(
@@ -3415,8 +3530,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_array_group_by(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_iter_partition(
     int8_t it, int64_t id, int8_t pt, int64_t pd, int64_t line, int64_t col) {
+  _culebra_callback_type_precheck(pt, pd, "p");
+  JitIterDrive drive{it, id};
   return _collect_partition_jit(
-      [&](auto emit) { _each_of_jit_iter(it, id, emit); }, pt, pd, line, col);
+      [&](auto emit) { _each_of_jit_iter(drive, emit); }, pt, pd, line, col);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_partition(

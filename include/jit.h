@@ -12084,12 +12084,21 @@ struct JIT {
     // (declares a defaulted / keyword-only / **rest param, e.g. sort_by's
     // `reverse:`) mirrors interp's general binder, so adding a keyword-only
     // param to any builtin method stays interp/JIT-symmetric with no
-    // per-method JIT error code.
-    auto error_for = [&](const Table& tbl) -> std::optional<Err> {
+    // per-method JIT error code. Generic over the mapped type: the value
+    // tables map to Value, iterator_builtins() to IterBuiltin{fn, kind}.
+    auto error_for = [&](const auto& tbl) -> std::optional<Err> {
       auto it = tbl.find(method);
-      if (it == tbl.end() || it->second.type != Value::Function)
-        return std::nullopt;
-      const auto& params = *it->second.to_function().params;
+      if (it == tbl.end()) return std::nullopt;
+      const Value& fnv = [&]() -> const Value& {
+        if constexpr (std::is_same_v<std::decay_t<decltype(it->second)>,
+                                     culebra::IterBuiltin>) {
+          return it->second.fn;
+        } else {
+          return it->second;
+        }
+      }();
+      if (fnv.type != Value::Function) return std::nullopt;
+      const auto& params = *fnv.to_function().params;
       auto b = builtin_arity_bounds(params);
       bool kwcap = b.min != b.max;
       for (const auto& p : params)
@@ -14287,6 +14296,13 @@ inline llvm::Value* JIT::emit_inlined_array_reduce(
 // `culebra_runtime_iter_advance` (mirroring the for-in protocol
 // loop). `per_iter` runs after the body compiles, with the lambda
 // param's slot still bound.
+//
+// This loop opens the protocol itself (it never reaches the runtime
+// terminal helpers, so JitIterDrive can't cover it) — per docs §18.5 the
+// opener owns the dispose. Reuses the for-in pads: natural drain disposes
+// at the exit (a throwing dispose propagates), the exception edge disposes
+// quietly and rethrows, and an early `return` inside the body disposes via
+// iter_cleanup_stack_ (compile_return).
 template <class PerIter>
 inline void JIT::emit_iter_unary_inline_loop(
     llvm::Value* iter_val, const peg::Ast& lambda_ast, PerIter&& per_iter) {
@@ -14305,6 +14321,10 @@ inline void JIT::emit_iter_unary_inline_loop(
   auto hasNextAlloca =
       entryB.CreateAlloca(ptrTy, nullptr, "ihof.has_next.cls");
   auto nextAlloca = entryB.CreateAlloca(ptrTy, nullptr, "ihof.next.cls");
+  // emit_iter_dispose_if_active reads the iterator from an alloca (like the
+  // for-in cursor slot). Borrow only — the caller keeps the receiver's +1.
+  auto iterAlloca = entryB.CreateAlloca(valueType_, nullptr, "ihof.iter.slot");
+  builder_.CreateStore(iter_val, iterAlloca);
 
   // Same protocol open as the for-in head: validated once, outside the loop.
   // Reports at the HOF call site, where the interp's own throw lands.
@@ -14322,8 +14342,14 @@ inline void JIT::emit_iter_unary_inline_loop(
   auto condBB = BasicBlock::Create(ctx_, "ihofi.cond", fn);
   auto bodyBB = BasicBlock::Create(ctx_, "ihofi.body", fn);
   auto endBB = BasicBlock::Create(ctx_, "ihofi.end", fn);
+  auto excBB = BasicBlock::Create(ctx_, "ihofi.exc", fn);
 
   builder_.CreateBr(condBB);
+
+  // excBB spans the producer and the body, like the for-in loop's pad: a
+  // throwing advance (a lazy callback upstream) must dispose too.
+  auto outerLpad = current_lpad_;
+  current_lpad_ = excBB;
 
   builder_.SetInsertPoint(condBB);
   auto ok = emit_call(
@@ -14339,15 +14365,35 @@ inline void JIT::emit_iter_unary_inline_loop(
   auto t = builder_.CreateLoad(builder_.getInt8Ty(), outTagAlloca);
   auto d = builder_.CreateLoad(builder_.getInt64Ty(), outDataAlloca);
   llvm::Value* elem = make_value(t, d);
+  // An early `return` inside the body must dispose this iterator on the way
+  // out, exactly like a for-in body (compile_return walks this stack).
+  iter_cleanup_stack_.push_back({iterAlloca, nullptr, /*fill_pending=*/false});
   // iter_advance returns a +1-owned Value; we hand that ref to the
   // param slot directly (no extra retain).
   emit_unary_lambda_body(lambda_ast, elem, std::forward<PerIter>(per_iter));
+  iter_cleanup_stack_.pop_back();
 
   if (!builder_.GetInsertBlock()->getTerminator()) {
     builder_.CreateBr(condBB);
   }
+  current_lpad_ = outerLpad;
 
+  // Exception edge: dispose quietly (the in-flight error must survive a
+  // throwing dispose), then rethrow into the caller's pad.
+  if (llvm::pred_empty(excBB)) {
+    excBB->eraseFromParent();
+  } else {
+    emit_catch_all_prologue(excBB, "ihofi.lpad");
+    emit_iter_dispose_if_active(iterAlloca, "ihofi.exc",
+                                /*swallow_dispose=*/true);
+    emit_rethrow(outerLpad);
+  }
+
+  // Natural drain: dispose after the loop, before the caller materializes
+  // its result — a throwing dispose propagates into the caller's pad, whose
+  // guards still own the accumulator/receiver.
   builder_.SetInsertPoint(endBB);
+  emit_iter_dispose_if_active(iterAlloca, "ihofi.exit");
 }
 
 inline llvm::Value* JIT::emit_inlined_iter_for_each(
@@ -14628,6 +14674,10 @@ inline llvm::Value* JIT::emit_inlined_iter_reduce(
       entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "iri.it.data");
   auto hasNextAlloca = entryB.CreateAlloca(ptrTy, nullptr, "iri.has_next.cls");
   auto nextAlloca = entryB.CreateAlloca(ptrTy, nullptr, "iri.next.cls");
+  // Dispose reads the iterator from an alloca (for-in cursor idiom); borrow
+  // only — the dispatch keeps the receiver's +1.
+  auto iterAlloca = entryB.CreateAlloca(valueType_, nullptr, "iri.iter.slot");
+  builder_.CreateStore(iter_val, iterAlloca);
 
   // Protocol open (validated, once) — see emit_iter_unary_inline_loop.
   emit_call(
@@ -14644,8 +14694,13 @@ inline llvm::Value* JIT::emit_inlined_iter_reduce(
   auto condBB = BasicBlock::Create(ctx_, "iri.cond", fn);
   auto bodyBB = BasicBlock::Create(ctx_, "iri.body", fn);
   auto endBB = BasicBlock::Create(ctx_, "iri.end", fn);
+  auto excBB = BasicBlock::Create(ctx_, "iri.exc", fn);
 
   builder_.CreateBr(condBB);
+
+  // excBB spans the producer and the body (docs §18.5): dispose quietly on
+  // any exception leaving the loop, then rethrow into the acc cleanup.
+  current_lpad_ = excBB;
 
   builder_.SetInsertPoint(condBB);
   auto ok = emit_call(
@@ -14668,15 +14723,31 @@ inline llvm::Value* JIT::emit_inlined_iter_reduce(
   // Disarm across the body — the acc param slot owns it; the store re-arms.
   clear_pending_guard(accAlloca);
 
+  // An early `return` inside the body disposes via compile_return.
+  iter_cleanup_stack_.push_back({iterAlloca, nullptr, /*fill_pending=*/false});
   emit_binary_lambda_body(
       lambda_ast, curAcc, elem,
       [&](llvm::Value* result) { builder_.CreateStore(result, accAlloca); });
+  iter_cleanup_stack_.pop_back();
 
   if (!builder_.GetInsertBlock()->getTerminator()) {
     builder_.CreateBr(condBB);
   }
+  current_lpad_ = cleanupBB;
 
+  if (llvm::pred_empty(excBB)) {
+    excBB->eraseFromParent();
+  } else {
+    emit_catch_all_prologue(excBB, "iri.lpad");
+    emit_iter_dispose_if_active(iterAlloca, "iri.exc",
+                                /*swallow_dispose=*/true);
+    emit_rethrow(cleanupBB);
+  }
+
+  // Natural drain: dispose before the acc handoff — a throwing dispose lands
+  // in cleanupBB while the guard still owns the accumulator.
   builder_.SetInsertPoint(endBB);
+  emit_iter_dispose_if_active(iterAlloca, "iri.exit");
   current_lpad_ = savedLpad;
   finish_construction_cleanup(cleanupBB, {accAlloca}, savedLpad);
   return builder_.CreateLoad(valueType_, accAlloca, "iri.result");

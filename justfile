@@ -573,6 +573,11 @@ _run-tests BACKEND:
     # of becoming a one-backend bug (tools/check_dispatch_symmetry.sh).
     run_dispatch_symmetry() { bash tools/check_dispatch_symmetry.sh; }
 
+    # Iterator wiring ratchet: terminals drive through JitIterDrive (which
+    # owns dispose-on-every-exit) and lazy combinators forward their
+    # upstream(s) to the wrapper factory (tools/check_iter_wiring.sh).
+    run_iter_wiring() { bash tools/check_iter_wiring.sh; }
+
     # Announce each phase with the running elapsed time, so a slow/stalled CI
     # run shows where it is (otherwise the silent phases — difftest, the
     # interp/jit sweep — emit nothing until they finish).
@@ -587,6 +592,7 @@ _run-tests BACKEND:
       all)
         phase "rc-discipline (bare retain/release ratchet)"; run_rc_discipline
         phase "dispatch symmetry (eval_X vs compile_X tag sets)"; run_dispatch_symmetry
+        phase "iter wiring (JitIterDrive + upstream forwarding ratchet)"; run_iter_wiring
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
         phase "codegen backends (-O0, fast vs interp)"; run_codegen_backends
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "difftest (5114 generated cases)"; run_difftest; }
@@ -612,6 +618,7 @@ _run-tests BACKEND:
       fast)
         phase "rc-discipline (bare retain/release ratchet)"; run_rc_discipline
         phase "dispatch symmetry (eval_X vs compile_X tag sets)"; run_dispatch_symmetry
+        phase "iter wiring (JitIterDrive + upstream forwarding ratchet)"; run_iter_wiring
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
         phase "culebra-test self"; run_culebra_test_self
         phase "isolate (interp + jit)"; run_isolate

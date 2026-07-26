@@ -2312,6 +2312,19 @@ inline void _file_chunks_fast_fn(JitClosure* cls, JitValue, bool* done,
   *out_data = reinterpret_cast<int64_t>(_culebra_heap_str(chunk));
 }
 
+// dispose() for a lines()/chunks() iterator: closes the handle by the id
+// held in a capture cell. `self` here is the iterator wrapper (no `_id`
+// property), so a handle-method thunk reading `self._id` silently no-ops —
+// the interp twin captures the id in its dispose closure the same way.
+inline void _file_iter_dispose_fn(JitValue* __ret, JitClosure* cls,
+                                  int8_t self_tag, int64_t self_data,
+                                  int64_t, JitValue*) {
+  // Native iterator method: self arrives +1-owned (callee-consumes).
+  JitOwnedVal self_guard(JitValue{self_tag, self_data});
+  culebra::_file_close(cls->captures[0]->value.data);
+  *__ret = {TAG_NIL, 0};
+}
+
 // Build an iterator over a File handle, adding a `dispose` method that
 // closes the handle so a broken for-in still releases the fd.
 inline JitObject* _file_iter_build(JitValue self, bool chunks, int64_t n) {
@@ -2327,9 +2340,14 @@ inline JitObject* _file_iter_build(JitValue self, bool chunks, int64_t n) {
   } else {
     it = _iter_wrap_fast<&_file_lines_fast_fn>({handle_cell, id_cell});
   }
+  _jit_register_native_fn(
+      reinterpret_cast<const void*>(&_file_iter_dispose_fn));
+  auto* dispose_cls = culebra_runtime_closure_new(
+      reinterpret_cast<void*>(&_file_iter_dispose_fn), 1, 0);
+  culebra_runtime_cell_retain(id_cell);  // wrap_fast's closures keep it alive
+  dispose_cls->captures[0] = id_cell;
   it->set_or_append("dispose",
-      JitValue{TAG_FUNC, reinterpret_cast<int64_t>(
-          _jit_make_handle_method(_jit_file_close, 0))}, false);
+      JitValue{TAG_FUNC, reinterpret_cast<int64_t>(dispose_cls)}, false);
   return it;
 }
 CULEBRA_RT_INLINE void _jit_file_lines(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,

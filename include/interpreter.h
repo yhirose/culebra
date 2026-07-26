@@ -80,7 +80,15 @@ inline bool _invoke_user_eq(const Value& a, const Value& b);
 // `iter` and `next` properties picks these up via duck-typed fallback
 // in eval_property.
 inline std::unordered_map<std::string_view, Value>& string_builtins();
-inline std::unordered_map<std::string_view, Value>& iterator_builtins();
+
+// Every iterator_builtins() entry declares whether it returns a new lazy
+// Iterator or drains the receiver. A Terminal's dispatch wrapper disposes
+// the receiver after the drain (docs §18.5's exit-path contract, C# rule);
+// a Lazy relies on the wrapper factory's forwarding dispose instead.
+// IterBuiltin itself is defined next to the table (it needs Value complete).
+enum class IterMethodKind { Lazy, Terminal };
+struct IterBuiltin;
+inline std::unordered_map<std::string_view, IterBuiltin>& iterator_builtins();
 
 // The static shadow analyzer now lives in lint.h (`lint::check_shadow`),
 // the shared home for pre-eval static checks. The interpreter invokes it
@@ -5718,15 +5726,27 @@ inline std::unordered_map<std::string_view, Value>& tuple_builtins() {
 // properties picks these up as methods via the duck-typed fallback in
 // eval_property. The lazy non-terminal methods (map/filter/take/...)
 // return a new iterator wrapping the receiver; the terminal methods
-// (collect/for_each/reduce/...) consume the iterator and return a
+// (collect/for_each/reduce/...) consume the iterator, dispose it (via
+// the dispatch wrapper — see _wrap_method_with_this), and return a
 // concrete value.
-inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
+//
+// The two-arg ctor (no default, no aggregate init) is deliberate: a new
+// entry that doesn't decide Lazy vs Terminal must not compile.
+struct IterBuiltin {
+  Value fn;
+  IterMethodKind kind;
+  IterBuiltin(Value f, IterMethodKind k) : fn(std::move(f)), kind(k) {}
+};
+
+inline std::unordered_map<std::string_view, IterBuiltin>& iterator_builtins() {
   using namespace std::literals;
-  static std::unordered_map<std::string_view, Value> props_ = {
+  constexpr auto Lazy = IterMethodKind::Lazy;
+  constexpr auto Terminal = IterMethodKind::Terminal;
+  static std::unordered_map<std::string_view, IterBuiltin> props_ = {
       // --- Non-terminal: return a new lazy Iterator ----------------
 
       {"map"sv,
-       Value(FunctionValue({{"f", false, "Function"sv}},
+       {Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto f = Value(as_callback(callEnv->get("f")));
@@ -5737,10 +5757,10 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                if (!v) return _iter_step_done();
                return _iter_step_value(_invoke_callback(f, *v));
              }, {upstream});
-       }))},
+       })), Lazy}},
 
       {"filter"sv,
-       Value(FunctionValue({{"p", false, "Function"sv}},
+       {Value(FunctionValue({{"p", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto p = Value(as_callback(callEnv->get("p")));
@@ -5755,10 +5775,10 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                  }
                }
              }, {upstream});
-       }))},
+       })), Lazy}},
 
       {"take"sv,
-       Value(FunctionValue({{"n", false, "Long"sv}},
+       {Value(FunctionValue({{"n", false, "Long"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto limit = callEnv->get("n").to_long();
@@ -5771,10 +5791,10 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                (*count)++;
                return _iter_step_value(std::move(*v));
              }, {upstream});
-       }))},
+       })), Lazy}},
 
       {"skip"sv,
-       Value(FunctionValue({{"n", false, "Long"sv}},
+       {Value(FunctionValue({{"n", false, "Long"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto limit = callEnv->get("n").to_long();
@@ -5791,10 +5811,10 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                if (!v) return _iter_step_done();
                return _iter_step_value(std::move(*v));
              }, {upstream});
-       }))},
+       })), Lazy}},
 
       {"take_while"sv,
-       Value(FunctionValue({{"p", false, "Function"sv}},
+       {Value(FunctionValue({{"p", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto p = Value(as_callback(callEnv->get("p")));
@@ -5810,13 +5830,13 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                }
                return _iter_step_value(std::move(*v));
              }, {upstream});
-       }))},
+       })), Lazy}},
 
       // The complement of take_while: drop the leading run for which `p(x)`
       // holds, then yield the first rejected element and everything after it
       // without consulting `p` again.
       {"skip_while"sv,
-       Value(FunctionValue({{"p", false, "Function"sv}},
+       {Value(FunctionValue({{"p", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto p = Value(as_callback(callEnv->get("p")));
@@ -5834,14 +5854,14 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                  }
                }
              }, {upstream});
-       }))},
+       })), Lazy}},
 
       // Yields f(acc, x) for each element, threading acc — a running fold
       // whose intermediate results are visible (`reduce` only surfaces the
       // last one). `init` itself is not yielded, so the output length
       // matches the input's.
       {"scan"sv,
-       Value(FunctionValue({{"init", false}, {"f", false, "Function"sv}},
+       {Value(FunctionValue({{"init", false}, {"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto f = Value(as_callback(callEnv->get("f")));
@@ -5854,12 +5874,12 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                *acc = _invoke_callback(f, *acc, *v);
                return _iter_step_value(Value(*acc));
              }, {upstream});
-       }))},
+       })), Lazy}},
 
       // flat_map(|x| x): one level of nesting removed. Each element must be
       // iterable; the inner iterator drains before the upstream advances.
       {"flatten"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+       {Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto inner = std::make_shared<Value>();
          auto line = callEnv->get("__LINE__").to_long();
@@ -5877,13 +5897,13 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                  return _iter_step_value(std::move(*v));
                }
              }, {upstream});
-       }))},
+       })), Lazy}},
 
       // First occurrence of each element wins; later duplicates are skipped.
       // Holds the seen values (hashable required, as for a Set), but never
       // the elements themselves, so it still streams and short-circuits.
       {"distinct"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+       {Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto seen = std::make_shared<SetValue>();
          return _make_iterator(
@@ -5894,13 +5914,13 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                  if (seen->add(*v)) return _iter_step_value(std::move(*v));
                }
              }, {upstream});
-       }))},
+       })), Lazy}},
 
       // Runs `f(x)` for its side effect and passes `x` through unchanged —
       // a probe for a lazy chain (`.tap(println)`), since inserting a
       // `map` that returns its argument is the same thing spelled longer.
       {"tap"sv,
-       Value(FunctionValue({{"f", false, "Function"sv}},
+       {Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto f = Value(as_callback(callEnv->get("f")));
@@ -5912,12 +5932,12 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                _invoke_callback(f, *v);
                return _iter_step_value(std::move(*v));
              }, {upstream});
-       }))},
+       })), Lazy}},
 
       // Yields the first element and then every n-th one after it. n < 1
       // would never advance, so reject it like chunks/windows do.
       {"step_by"sv,
-       Value(FunctionValue({{"n", false, "Long"sv}},
+       {Value(FunctionValue({{"n", false, "Long"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto step = callEnv->get("n").to_long();
@@ -5939,14 +5959,14 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                if (!v) return _iter_step_done();
                return _iter_step_value(std::move(*v));
              }, {upstream});
-       }))},
+       })), Lazy}},
 
       // Groups *adjacent* elements sharing a key into Arrays. Unlike
       // group_by (a terminal that hashes everything into one bucket per
       // key), a key that reappears after a different one starts a new run,
       // so this stays lazy and suits sorted or time-ordered streams.
       {"chunk_by"sv,
-       Value(FunctionValue({{"f", false, "Function"sv}},
+       {Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto f = Value(as_callback(callEnv->get("f")));
@@ -5978,13 +5998,13 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                }
                return _iter_step_value(Value(std::move(run)));
              }, {upstream});
-       }))},
+       })), Lazy}},
 
       // Groups upstream values into Arrays of `n` (the last group may be
       // shorter). n < 1 would never advance the upstream, so reject it
       // up front rather than yielding an infinite stream of nothing.
       {"chunks"sv,
-       Value(FunctionValue({{"n", false, "Long"sv}},
+       {Value(FunctionValue({{"n", false, "Long"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto size = callEnv->get("n").to_long();
@@ -6004,12 +6024,12 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                if (chunk.values->empty()) return _iter_step_done();
                return _iter_step_value(Value(std::move(chunk)));
              }, {upstream});
-       }))},
+       })), Lazy}},
 
       // Sliding window of the last `n` upstream values as an Array,
       // advancing by one each step. Stops once fewer than n remain.
       {"windows"sv,
-       Value(FunctionValue({{"n", false, "Long"sv}},
+       {Value(FunctionValue({{"n", false, "Long"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto size = callEnv->get("n").to_long();
@@ -6031,12 +6051,12 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                buf->pop_front();
                return _iter_step_value(Value(std::move(window)));
              }, {upstream});
-       }))},
+       })), Lazy}},
 
       // f(x) must return an iterable; inner iterator is consumed
       // before advancing the upstream.
       {"flat_map"sv,
-       Value(FunctionValue({{"f", false, "Function"sv}},
+       {Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto f = Value(as_callback(callEnv->get("f")));
@@ -6060,10 +6080,10 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                  return _iter_step_value(std::move(*v));
                }
              }, {upstream});
-       }))},
+       })), Lazy}},
 
       {"chain"sv,
-       Value(FunctionValue({{"other", false}},
+       {Value(FunctionValue({{"other", false}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto first = callEnv->get("self");
          auto line = callEnv->get("__LINE__").to_long();
@@ -6083,12 +6103,12 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                if (!v) return _iter_step_done();
                return _iter_step_value(std::move(*v));
              }, {first, second});
-       }))},
+       })), Lazy}},
 
       // Pairs elements from both iterators as {first, second} Objects;
       // stops at the shorter side.
       {"zip"sv,
-       Value(FunctionValue({{"other", false}},
+       {Value(FunctionValue({{"other", false}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto a = callEnv->get("self");
          auto line = callEnv->get("__LINE__").to_long();
@@ -6104,11 +6124,11 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
            pair.initialize("second", std::move(*vb), false);
            return _iter_step_value(Value(std::move(pair)));
          }, {a, b});
-       }))},
+       })), Lazy}},
 
       // Yields {index, value} Objects with index starting at 0.
       {"enumerate"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+       {Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto index = std::make_shared<long>(0);
          return _make_iterator(
@@ -6119,24 +6139,24 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                (*index)++;
                return _iter_step_value(std::move(pair));
              }, {upstream});
-       }))},
+       })), Lazy}},
 
       // --- Terminal: consume the iterator and return a value -------
 
       {"collect"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+       {Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          ArrayValue out;
          while (auto v = _iter_next_value(upstream)) {
            out.values->push_back(std::move(*v));
          }
          return Value(std::move(out));
-       }))},
+       })), Terminal}},
 
       // Terminal join: drain the iterator and concatenate elements with `sep`,
       // matching Array.join so `xs.map(...).join(",")` needs no `.collect()`.
       {"join"sv,
-       Value(FunctionValue({{"sep", false, "String"sv}},
+       {Value(FunctionValue({{"sep", false, "String"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          const auto& sep = callEnv->get("sep").to_string();
@@ -6148,10 +6168,10 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
            out += v->str_display();
          }
          return Value(std::move(out));
-       }))},
+       })), Terminal}},
 
       {"for_each"sv,
-       Value(FunctionValue({{"f", false, "Function"sv}},
+       {Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto f = Value(as_callback(callEnv->get("f")));
@@ -6160,10 +6180,10 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
            _invoke_callback(f, *v);
          }
          return Value();
-       }))},
+       })), Terminal}},
 
       {"reduce"sv,
-       Value(FunctionValue({{"init", false}, {"f", false, "Function"sv}},
+       {Value(FunctionValue({{"init", false}, {"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto acc = callEnv->get("init");
@@ -6173,10 +6193,10 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
            acc = _invoke_callback(f, acc, *v);
          }
          return acc;
-       }))},
+       })), Terminal}},
 
       {"find"sv,
-       Value(FunctionValue({{"p", false, "Function"sv}},
+       {Value(FunctionValue({{"p", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto p = Value(as_callback(callEnv->get("p")));
@@ -6185,13 +6205,13 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
            if (_invoke_callback(p, *v).to_bool()) return *v;
          }
          return Value();
-       }))},
+       })), Terminal}},
 
       // Index of the first match, or nil when nothing matches. Array's
       // index_of answers -1 for a *value*; position takes a predicate and
       // follows `find` in spelling "absent" as nil.
       {"position"sv,
-       Value(FunctionValue({{"p", false, "Function"sv}},
+       {Value(FunctionValue({{"p", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto p = Value(as_callback(callEnv->get("p")));
@@ -6202,12 +6222,12 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
            i++;
          }
          return Value();
-       }))},
+       })), Terminal}},
 
       // Short-circuiting membership test — `any(|e| e == x)` with the intent
       // in the name. Same value equality as Array.contains.
       {"contains"sv,
-       Value(FunctionValue({{"v", false}},
+       {Value(FunctionValue({{"v", false}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          const auto& needle = callEnv->get("v");
@@ -6215,29 +6235,29 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
            if (*v == needle) return Value(true);
          }
          return Value(false);
-       }))},
+       })), Terminal}},
 
       // first/nth stop as soon as they have their element; last has to drain.
       // All three answer nil on an exhausted iterator rather than throwing,
       // matching `find` (and unlike `min`/`max`, which have no such answer).
       {"first"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+       {Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto v = _iter_next_value(upstream);
          if (!v) return Value();
          return std::move(*v);
-       }))},
+       })), Terminal}},
 
       {"last"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+       {Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          Value out;
          while (auto v = _iter_next_value(upstream)) out = std::move(*v);
          return out;
-       }))},
+       })), Terminal}},
 
       {"nth"sv,
-       Value(FunctionValue({{"n", false, "Long"sv}},
+       {Value(FunctionValue({{"n", false, "Long"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto n = callEnv->get("n").to_long();
@@ -6252,10 +6272,10 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
          auto v = _iter_next_value(upstream);
          if (!v) return Value();
          return std::move(*v);
-       }))},
+       })), Terminal}},
 
       {"any"sv,
-       Value(FunctionValue({{"p", false, "Function"sv}},
+       {Value(FunctionValue({{"p", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto p = Value(as_callback(callEnv->get("p")));
@@ -6264,10 +6284,10 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
            if (_invoke_callback(p, *v).to_bool()) return Value(true);
          }
          return Value(false);
-       }))},
+       })), Terminal}},
 
       {"all"sv,
-       Value(FunctionValue({{"p", false, "Function"sv}},
+       {Value(FunctionValue({{"p", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto p = Value(as_callback(callEnv->get("p")));
@@ -6276,77 +6296,77 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
            if (!_invoke_callback(p, *v).to_bool()) return Value(false);
          }
          return Value(true);
-       }))},
+       })), Terminal}},
 
       {"count"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+       {Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          long n = 0;
          while (_iter_next_value(upstream)) n++;
          return Value(n);
-       }))},
+       })), Terminal}},
 
       // Same Long/Float rule as the eager Array forms (see _numeric_fold /
       // _numeric_extreme); spelled streaming here so an unbounded source is
       // never materialized.
       {"sum"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+       {Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          return _iter_numeric_fold(callEnv->get("self"), false);
-       }))},
+       })), Terminal}},
 
       {"product"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+       {Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          return _iter_numeric_fold(callEnv->get("self"), true);
-       }))},
+       })), Terminal}},
 
       {"min"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+       {Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          return _iter_numeric_extreme(callEnv->get("self"), false, "min");
-       }))},
+       })), Terminal}},
 
       {"max"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+       {Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          return _iter_numeric_extreme(callEnv->get("self"), true, "max");
-       }))},
+       })), Terminal}},
 
       {"min_by"sv,
-       Value(FunctionValue({{"f", false, "Function"sv}},
+       {Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto f = Value(as_callback(callEnv->get("f")));
          check_callback_arity(f.to_function(), 1, "min_by");
          return _iter_numeric_extreme_by(callEnv->get("self"), f, false,
                                          "min_by");
-       }))},
+       })), Terminal}},
 
       {"max_by"sv,
-       Value(FunctionValue({{"f", false, "Function"sv}},
+       {Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto f = Value(as_callback(callEnv->get("f")));
          check_callback_arity(f.to_function(), 1, "max_by");
          return _iter_numeric_extreme_by(callEnv->get("self"), f, true,
                                          "max_by");
-       }))},
+       })), Terminal}},
 
       {"to_set"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+       {Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          return _collect_set(_each_of_iter(callEnv->get("self")));
-       }))},
+       })), Terminal}},
 
       {"group_by"sv,
-       Value(FunctionValue({{"f", false, "Function"sv}},
+       {Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto f = Value(as_callback(callEnv->get("f")));
          check_callback_arity(f.to_function(), 1, "group_by");
          return _collect_group_by(_each_of_iter(callEnv->get("self")), f);
-       }))},
+       })), Terminal}},
 
       {"partition"sv,
-       Value(FunctionValue({{"p", false, "Function"sv}},
+       {Value(FunctionValue({{"p", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto p = Value(as_callback(callEnv->get("p")));
          check_callback_arity(p.to_function(), 1, "partition");
          return _collect_partition(_each_of_iter(callEnv->get("self")), p);
-       }))},
+       })), Terminal}},
   };
   return props_;
 }
@@ -9612,9 +9632,25 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // (Array/String/Set/Tuple/iterator builtins) that parse positionally
   // and reject kwargs. Namespace/user-object methods (own Function
   // properties) pass false so their kwargs/defaults still work.
+  // Dispose an iterator receiver after a Terminal drain (docs §18.5). One
+  // property lookup; receivers without a dispose return immediately, so an
+  // Array-sourced chain pays nothing extra.
+  static void _dispose_iter_receiver(const Value& v) {
+    if (v.type != Value::Object) return;
+    if (!v.to_object().has("dispose")) return;
+    _invoke_method_no_args(v, "dispose");
+  }
+
+  // `dispose_receiver`: set by the iterator-fallback dispatch for Terminal
+  // methods. The dispose is folded into the SAME wrapper closure (no extra
+  // lambda layer / alloc): it runs after the terminal's result materializes
+  // and propagates its own throw, while an unwinding terminal disposes
+  // quietly so the in-flight error survives — the exact lines eval_for's
+  // dispose_iter / dispose_quietly draw.
   static Value _wrap_method_with_this(const Value& prop, const Value& val,
                                       bool is_builtin = true,
-                                      std::string_view method_name = {}) {
+                                      std::string_view method_name = {},
+                                      bool dispose_receiver = false) {
     const auto& pf = prop.to_function();
     // Hold the underlying function in a shared Value so the eval closure and
     // the cycle-collector hook (for_each_captured_value, below) reference the
@@ -9631,7 +9667,21 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // object, once it became a tracked node) spuriously rooted by the
     // unaccounted second ref (GAP2). One shared copy, one emitted edge.
     auto receiver = std::make_shared<Value>(val);
-    Value wrapped = Value(
+    Value wrapped = dispose_receiver
+        ? Value(FunctionValue(*pf.params, [receiver, underlying](
+                                              std::shared_ptr<Environment> callEnv) {
+            callEnv->initialize("self", *receiver, false);
+            Value result;
+            try {
+              result = underlying->get<FunctionValue>().eval(callEnv);
+            } catch (...) {
+              try { _dispose_iter_receiver(*receiver); } catch (...) {}
+              throw;
+            }
+            _dispose_iter_receiver(*receiver);
+            return result;
+          }))
+        : Value(
         FunctionValue(*pf.params, [receiver, underlying](std::shared_ptr<Environment> callEnv) {
           callEnv->initialize("self", *receiver, false);
           // get<>() returns a reference (prop is already a validated Function);
@@ -9918,7 +9968,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       auto it = methods.find(name);
       if (it != methods.end()) {
         reject_if_bare(name);
-        return _wrap_method_with_this(it->second, val, true, name);
+        // A Terminal drains the receiver, so its bound wrapper also owns
+        // the dispose (docs §18.5) — the one dispatch point every call
+        // shape (method call, UFCS, `let f = it.collect`) funnels through.
+        return _wrap_method_with_this(
+            it->second.fn, val, true, name,
+            /*dispose_receiver=*/it->second.kind == IterMethodKind::Terminal);
       }
     }
     return Value();
