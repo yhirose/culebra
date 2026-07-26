@@ -23,12 +23,17 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
 8. [文字列と補間](#8-文字列と補間)
 9. [配列](#9-配列)
 10. [オブジェクト](#10-オブジェクト)
+    * [`class` 構文](#class-構文)
+    * [演算子オーバーロード](#演算子オーバーロード)
     * [タプル](#タプル)
     * [集合-set](#集合-set)
 11. [関数とクロージャ](#11-関数とクロージャ)
+    * [ジェネレータ (`yield`)](#ジェネレータ-yield)
 12. [制御フロー](#12-制御フロー-if-while-for)
 13. [パターンマッチ](#13-パターンマッチ)
 14. [オプショナル型注釈](#14-オプショナル型注釈)
+    * [Sum type (`enum`)](#sum-type-enum)
+    * [trait と protocol](#trait-と-protocol)
 15. [エラー処理](#15-エラー処理)
 16. [代数的エフェクト](#16-代数的エフェクト)
 17. [メモリモデル](#17-メモリモデル)
@@ -164,17 +169,33 @@ JS の慣習。差分や並べ替えが綺麗になる）。先頭カンマや�
 
 ## 3. 文法
 
-完全な PEG 文法は [`include/parser.h`](../include/parser.h) にあります。
-主なルール:
+完全な PEG 文法は単一の真実源である
+[`include/grammar_def.h`](../include/grammar_def.h) にあります
+（`parser.h` はこれを読み込みます）。トップレベルのルール:
 
     PROGRAM     <- STATEMENTS
-    STATEMENT   <- DEBUGGER / RETURN / LEXICAL_SCOPE / EXPRESSION
-    EXPRESSION  <- ASSIGNMENT / LOGICAL_OR
+    STATEMENTS  <- (STATEMENT ((';' / newline) STATEMENT?)*)?
+    STATEMENT   <- DEBUGGER / RETURN / THROW / YIELD_FROM / YIELD / BREAK
+                 / CONTINUE / DEFER / IMPORT_STMT / EXPORT_STMT
+                 / EFFECT_FN_DECL / MULTIFN_DECL / ENUM_DECL / CLASS_DECL
+                 / TRAIT_DECL / LEXICAL_SCOPE / EXPRESSION
+    EXPRESSION  <- DESTRUCTURE_ASSIGN / PLACE_ASSIGN / ASSIGNMENT / TRY
+                 / CONDITIONAL
     ASSIGNMENT  <- LET MUTABLE PRIMARY (ARGUMENTS / INDEX / DOT)*
-                   TYPE_ANNOTATION? '=' EXPRESSION
-    PRIMARY     <- WHILE / IF / MATCH / FUNCTION / OBJECT / ARRAY
-                 / NIL / BOOLEAN / FLOAT / NUMBER / IDENTIFIER
-                 / STRING / INTERPOLATED_STRING / '(' EXPRESSION ')'
+                   TYPE_ANNOTATION? ASSIGN_OP EXPRESSION
+    CALL        <- PRIMARY (ARGUMENTS / INDEX / SAFE_DOT / SAFE_INDEX
+                            / DOT / NONNULL)*
+    PRIMARY     <- WHILE / FOR / IF / MATCH / COND / HANDLE / PERFORM
+                 / FUNCTION / LAMBDA / OBJECT / SET / ARRAY / NIL
+                 / BOOLEAN / FLOAT / NUMBER / REGEX_LIT / IDENTIFIER
+                 / TRIPLE_STRING / STRING / RAW_STRING
+                 / INTERPOLATED_STRING / TUPLE / '(' EXPRESSION ')'
+
+文 (STATEMENT) は式の位置に置けない構文 — 各種宣言形式、制御を移す形式
+(`return` / `throw` / `yield` / `break` / `continue` / `defer`)、および
+モジュール形式 — です。それ以外は `if`・`while`・`for`・`match`・`cond`・
+`handle`・`perform` を含めてすべて `PRIMARY` であり、これが値として
+使える理由です (§7)。
 
 ### 演算子の優先順位
 
@@ -915,6 +936,14 @@ inspect(xs[1..100])    # => [20, 30, 40, 50]
 inspect(xs[3..1])      # => []
 let r = 1..3
 inspect(xs[r])         # => [20, 30]
+```
+
+```culebra
+# 浅いコピー: 元の配列を書き換えてもスライスには影響しない。
+mut xs = [10, 20, 30]
+let s = xs[0..2]
+xs[0] = 99
+inspect(s)            # => [10, 20]
 ```
 
 ```culebra
@@ -1809,6 +1838,105 @@ JIT 制限:
 
 JIT では捕捉された可変変数はヒープの**セル**に配置され、複数の
 クロージャが同じスロットを共有できます。§17 参照。
+
+### ジェネレータ (`yield`)
+
+本体に `yield` を含む `fn` 宣言は**ジェネレータ関数**です。呼び出しても
+本体は実行されず、イテレータ (§18.5) が返ります。本体は消費側が値を
+引き出すたびに、`yield` 1 個分ずつ進みます。
+
+```culebra
+fn counter() {
+  yield 1
+  yield 2
+  yield 3
+}
+inspect(counter().collect())   # => [1, 2, 3]
+```
+
+`yield expr` は式ではなく**文**です。消費側に値を渡すだけで自身は何にも
+評価されないため、`let x = yield 1` は構文エラーになります。値は
+ジェネレータから出ていく一方向のみで、`send()` に相当するものはなく、
+中断中の本体に値を渡して再開することはできません。
+
+`yield from expr` は任意の反復可能オブジェクト — `Array`、`String`、
+遅延チェーン、別のジェネレータ — に委譲し、その全要素を送り出してから
+委譲元の本体を再開します:
+
+```culebra
+fn inner() { yield 'x' }
+fn mixed() {
+  yield from [1, 2]
+  yield from inner()
+  yield 'done'
+}
+inspect(mixed().collect())   # => [1, 2, 'x', 'done']
+```
+
+委譲を使う主な理由である再帰的な走査もこれで組み立てられます:
+
+```culebra
+fn walk(node) {
+  yield node.value
+  for kid in node.kids { yield from walk(kid) }
+}
+let leaf = {value: 3, kids: []}
+inspect(walk({value: 1, kids: [{value: 2, kids: [leaf]}]}).collect())   # => [1, 2, 3]
+```
+
+**ジェネレータオブジェクト。** 呼び出しが返すのは通常のイテレータです。
+`iter` / `has_next` / `next` / `dispose` を備えるので、`for`-in、遅延
+コンビネータ群 (§18.5)、その他プロトコルを駆動するあらゆる消費側から
+使えます。中断できることで、終わりのないソースも実用的になります:
+
+```culebra
+fn nat() { mut i = 0; while true { yield i; i = i + 1 } }
+inspect(nat().map(|x| x * x).take(5).collect())   # => [0, 1, 4, 9, 16]
+```
+
+本体が動き出すのは呼び出し時ではなく最初の `has_next()` です。ジェネレータ
+は**一度きり**で、汲み尽くしたらそのまま尽きた状態を保ち、同じオブジェクト
+を再び反復しても何も出てきません。新しく回すには関数を呼び直します。
+
+**本体の中では**、`while`・`for`・`if` の本体の任意の深さに `yield` を
+置け、`break` / `continue` / `return` は通常の関数と同じように働きます
+（`return` は生成を終了します）。中断点より前に登録された `defer` は、
+ジェネレータが**破棄 (dispose)** されるとき — ループ脱出、`break`、早期
+`return`、例外、または終端メソッドが汲み尽くしを終えたとき (§18.5) — に
+実行されます。つまり後始末は本体が最後まで到達したかどうかではなく、
+消費側の脱出経路に結び付いています。
+
+```culebra
+fn two() {
+  defer { inspect('closed') }
+  yield 1
+  yield 2
+}
+for v in two() { inspect(v); break }
+# => |
+# 1
+# 'closed'
+```
+
+**制約。**
+
+* `yield` は `try` / `catch` ブロックおよび `defer` ブロックの中には
+  置けません。パーサが `SyntaxError: yield cannot appear inside a
+  try-catch or defer block.` で拒否します。送り出す値を保護したい場合は
+  `try` を式の側に置き (`yield try { ... } catch e { ... }`)、後始末には
+  上記のように本体トップレベルの `defer` を使います。
+* ジェネレータに変換されるのは `fn name(...) { ... }` という**宣言**
+  だけです（トップレベル・他の関数の内側のいずれも可）。クラスの
+  メソッド、オブジェクトのプロパティに置いた関数、変数に代入した
+  `fn` 式の中の `yield` は、現状では診断もされず、イテレータにも
+  なりません (§23)。
+* ジェネレータ本体では裸のエフェクト操作を `perform` すること、および
+  `effect fn` を宣言することはできません。本体の中に自己完結した
+  `handle { ... }` 式を書くのは動作します (§16)。
+
+ジェネレータは 3 つのバックエンドが共有するソースレベル変換で
+コンパイルされるため、同一のプログラムはインタプリタ・JIT・AOT
+バイナリのいずれでも同じ値を生成します。
 
 ---
 
@@ -3679,8 +3807,8 @@ inspect(books.has('alpha'))   # => true
 ——`next` と `has_next`、または `iter` を持つもの——は、以下の遅延
 メソッド群を獲得します。これらは受け手を `has_next()` / `next()` で
 駆動するため、ユーザの `iter()` 結果（素の `{has_next, next}` オブ
-ジェクト）やジェネレータも、組み込みイテレータと同じく combinator を
-連結できます（`range`・配列イテレータに限りません）。非終端メソッド
+ジェクト）やジェネレータ（§11「ジェネレータ」）も、組み込みイテレータと
+同じく combinator を連結できます（`range`・配列イテレータに限りません）。非終端メソッド
 は新しい Iterator を返し、終端メソッドはイテレータを消費して具体値を
 返します。
 
@@ -4424,6 +4552,11 @@ CLI バイナリはユーザコード実行前に、以下 3 つのグローバ�
   ランタイム `String` キーは `obj[k]` 経由でも shape に統合され、
   `obj['x']` と `obj.x` は同じスロットに到達します。詳細は §10
   「添字代入」を参照。
+* `fn` 宣言の外 — クラスのメソッド、オブジェクトのプロパティに置いた
+  関数、`fn` 式 — に書いた `yield` は、ジェネレータに変換されず拒否も
+  されない。囲んでいる呼び出しは黙ってイテレータでない値を返し、その
+  値はインタプリタと JIT で異なる。ジェネレータは `fn name(...)` として
+  宣言すること（§11「ジェネレータ」）。
 
 ---
 
@@ -4547,6 +4680,15 @@ AOT バンドリングと tree-shaking 解析が成り立つ前提になりま�
 モジュールテーブルは絶対パスをキーとする `thread_local` map なので、
 同一スレッド上で複数の JIT セッションが走っても互いに干渉せず、
 スレッド間で状態を共有することもありません。
+
+### conformance テスト
+
+`tests/test_import.cul` が両 backend で正常系（基本的な import、
+関数とクラスの混在 export、複数の `export` 文、import の連鎖）を
+検査します。補助モジュールは `tests/test_import_helpers/` 配下に
+あります。エラー系（循環 import、トップレベル以外での使用、重複
+export）は同じファイル内のインライン `try { ... } catch { ... }` で
+カバーし、失敗するソース自体も別の補助モジュールとして置いています。
 
 ---
 

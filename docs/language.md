@@ -24,12 +24,17 @@ that were considered and not adopted are in [`_history.md`](_history.md).
 8. [Strings and interpolation](#8-strings-and-interpolation)
 9. [Arrays](#9-arrays)
 10. [Objects](#10-objects)
+    * [`class` sugar](#class-sugar)
+    * [Operator overloading](#operator-overloading)
     * [Tuples](#tuples)
     * [Sets](#sets)
 11. [Functions and closures](#11-functions-and-closures)
+    * [Generators (`yield`)](#generators-yield)
 12. [Control flow (`if`, `while`, `for`)](#12-control-flow)
 13. [Pattern matching (`match`)](#13-pattern-matching)
 14. [Optional type annotations](#14-optional-type-annotations)
+    * [Sum types (`enum`)](#sum-types-enum)
+    * [Traits and protocols](#traits-and-protocols)
 15. [Error handling](#15-error-handling)
 16. [Algebraic effects](#16-algebraic-effects)
 17. [Memory model (RC + cycle collector)](#17-memory-model)
@@ -174,17 +179,34 @@ between statements are fine.
 
 ## 3. Grammar
 
-The full PEG grammar is in [`include/parser.h`](../include/parser.h).
-Selected rules:
+The full PEG grammar is in
+[`include/grammar_def.h`](../include/grammar_def.h), the single source
+of truth that `parser.h` loads. Its top-level rules:
 
     PROGRAM     <- STATEMENTS
-    STATEMENT   <- DEBUGGER / RETURN / LEXICAL_SCOPE / EXPRESSION
-    EXPRESSION  <- ASSIGNMENT / LOGICAL_OR
+    STATEMENTS  <- (STATEMENT ((';' / newline) STATEMENT?)*)?
+    STATEMENT   <- DEBUGGER / RETURN / THROW / YIELD_FROM / YIELD / BREAK
+                 / CONTINUE / DEFER / IMPORT_STMT / EXPORT_STMT
+                 / EFFECT_FN_DECL / MULTIFN_DECL / ENUM_DECL / CLASS_DECL
+                 / TRAIT_DECL / LEXICAL_SCOPE / EXPRESSION
+    EXPRESSION  <- DESTRUCTURE_ASSIGN / PLACE_ASSIGN / ASSIGNMENT / TRY
+                 / CONDITIONAL
     ASSIGNMENT  <- LET MUTABLE PRIMARY (ARGUMENTS / INDEX / DOT)*
-                   TYPE_ANNOTATION? '=' EXPRESSION
-    PRIMARY     <- WHILE / IF / MATCH / FUNCTION / OBJECT / ARRAY
-                 / NIL / BOOLEAN / FLOAT / NUMBER / IDENTIFIER
-                 / STRING / INTERPOLATED_STRING / '(' EXPRESSION ')'
+                   TYPE_ANNOTATION? ASSIGN_OP EXPRESSION
+    CALL        <- PRIMARY (ARGUMENTS / INDEX / SAFE_DOT / SAFE_INDEX
+                            / DOT / NONNULL)*
+    PRIMARY     <- WHILE / FOR / IF / MATCH / COND / HANDLE / PERFORM
+                 / FUNCTION / LAMBDA / OBJECT / SET / ARRAY / NIL
+                 / BOOLEAN / FLOAT / NUMBER / REGEX_LIT / IDENTIFIER
+                 / TRIPLE_STRING / STRING / RAW_STRING
+                 / INTERPOLATED_STRING / TUPLE / '(' EXPRESSION ')'
+
+Statements are the constructs that may not appear in expression
+position: the declaration forms, the control-transfer forms
+(`return` / `throw` / `yield` / `break` / `continue` / `defer`), and the
+module forms. Everything else — including `if`, `while`, `for`, `match`,
+`cond`, `handle` and `perform` — is a `PRIMARY`, which is what makes
+them usable as values (§7).
 
 ### Operator precedence
 
@@ -1921,6 +1943,107 @@ Example:
 
 In the JIT, captured mutable variables are allocated in heap **cells**
 so that multiple closures can share the same slot. See §17.
+
+### Generators (`yield`)
+
+A `fn` declaration whose body contains `yield` is a **generator
+function**. Calling it does not run the body: it returns an Iterator
+(§18.5), and the body advances one `yield` at a time as the consumer
+pulls values out of it.
+
+```culebra
+fn counter() {
+  yield 1
+  yield 2
+  yield 3
+}
+inspect(counter().collect())   # => [1, 2, 3]
+```
+
+`yield expr` is a **statement**, not an expression. It hands a value to
+the consumer and evaluates to nothing itself, so `let x = yield 1` is a
+syntax error. Values travel out of a generator only — there is no
+`send()` and no way to resume a suspended body with a value.
+
+`yield from expr` delegates to any iterable — an `Array`, a `String`,
+a lazy chain, or another generator — yielding each of its elements
+before the delegating body resumes:
+
+```culebra
+fn inner() { yield 'x' }
+fn mixed() {
+  yield from [1, 2]
+  yield from inner()
+  yield 'done'
+}
+inspect(mixed().collect())   # => [1, 2, 'x', 'done']
+```
+
+Recursive traversals compose from it, which is the usual reason to
+reach for delegation:
+
+```culebra
+fn walk(node) {
+  yield node.value
+  for kid in node.kids { yield from walk(kid) }
+}
+let leaf = {value: 3, kids: []}
+inspect(walk({value: 1, kids: [{value: 2, kids: [leaf]}]}).collect())   # => [1, 2, 3]
+```
+
+**The generator object.** What the call returns is an ordinary
+Iterator: it carries `iter` / `has_next` / `next` / `dispose`, so it
+drives `for`-in, the lazy combinator set (§18.5), and any other
+consumer of the protocol. Suspension makes unbounded sources practical:
+
+```culebra
+fn nat() { mut i = 0; while true { yield i; i = i + 1 } }
+inspect(nat().map(|x| x * x).take(5).collect())   # => [0, 1, 4, 9, 16]
+```
+
+The body starts on the first `has_next()`, not at the call. A generator
+is **one-shot**: once drained it stays exhausted, and iterating the same
+object again produces nothing. Call the function again for a fresh run.
+
+**Inside the body**, `yield` may appear at any depth in `while`, `for`
+and `if` bodies, and `break` / `continue` / `return` behave as they do
+in a normal function — `return` ends the generation. A `defer`
+registered before a suspension point runs when the generator is
+**disposed**: loop exit, `break`, an early `return`, an exception, or a
+terminal method finishing the drain (§18.5). Cleanup is therefore tied
+to the consumer's exit path, not to the body reaching its end.
+
+```culebra
+fn two() {
+  defer { inspect('closed') }
+  yield 1
+  yield 2
+}
+for v in two() { inspect(v); break }
+# => |
+# 1
+# 'closed'
+```
+
+**Restrictions.**
+
+* `yield` may not appear inside a `try` / `catch` or a `defer` block.
+  The parser rejects it with `SyntaxError: yield cannot appear inside a
+  try-catch or defer block.` To guard a yielded value, put the `try`
+  in the expression (`yield try { ... } catch e { ... }`); to clean up,
+  use a `defer` at the top level of the body as above.
+* Only `fn name(...) { ... }` **declarations** are transformed into
+  generators — at the top level or nested inside another function. A
+  `yield` in a class method, in an object property's function, or in a
+  `fn` expression assigned to a variable is not diagnosed today and does
+  not produce an iterator (§23).
+* A generator body cannot `perform` a bare effect operation or declare
+  an `effect fn`; a self-contained `handle { ... }` expression inside
+  the body does work (§16).
+
+Generators are compiled by a source-level transform shared by all three
+backends, so an identical program yields identical values under the
+interpreter, the JIT, and an AOT binary.
 
 ---
 
@@ -3907,8 +4030,8 @@ inspect(books.has('alpha'))   # => true
 `next` together with `has_next`, or `iter` — picks up the lazy iterator
 method set below, which drives the receiver through `has_next()` /
 `next()`. This means a user `iter()` result (a plain `{has_next, next}`
-object) and a generator chain the same combinators as a built-in
-iterator, not just `range`/array iterators. Non-terminal methods return
+object) and a generator (§11 "Generators") chain the same combinators
+as a built-in iterator, not just `range`/array iterators. Non-terminal methods return
 a new Iterator; terminal methods consume the iterator and return a
 concrete value.
 
@@ -4676,6 +4799,12 @@ built-ins from §19.
   Object via the subscript path (`obj[k]`) and live in a sidecar map.
   Runtime `String` keys via `obj[k]` unify with the shape — `obj['x']`
   and `obj.x` reach the same slot. See §10 "Subscript assignment".
+* `yield` outside a `fn` declaration — in a class method, an object
+  property's function, or a `fn` expression — is neither transformed
+  into a generator nor rejected; the enclosing call silently returns a
+  non-iterator value, and what that value is differs between the
+  interpreter and the JIT. Declare generators as `fn name(...)`
+  (§11 "Generators").
 
 ---
 

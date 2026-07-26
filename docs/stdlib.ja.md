@@ -556,6 +556,12 @@ FS.chown('data', 'deploy', 'deploy')     # 両方を名前で（root）
 リンク自体を、他フィールドはリンク先を見ます。存在しなければ
 `IOError`。
 
+```culebra
+# doctest: skip
+let st = FS.stat('config.toml')
+inspect(st.size)
+```
+
 ### 再帰探索
 
 #### `FS.walk(path: String) -> Array<String>`
@@ -2607,6 +2613,14 @@ catastrophic backtracking が原理的に起きないため backreference はあ
 | `Regex.split(pat, s)` | `[String]` |
 | `Regex.replace_all(pat, s, repl)` | `String` — テンプレート または `fn (Match) -> String` の repl |
 
+```culebra
+inspect(Regex.find('(\d+)', "ab12")[1])            # => '12'
+inspect(Regex.test('(?i)hello', "HELLO"))          # => true
+inspect(Regex.replace_all('[;；]', "a;b；c", "、"))  # => 'a、b、c'
+# ミスは nil なので `?.` / `??` と合成できます:
+inspect(Regex.find('x', "y")?.value ?? "none")     # => 'none'
+```
+
 | メソッド | 結果 |
 | --- | --- |
 | `re.test(s)` | `Bool` — `s` のどこかにマッチするか |
@@ -2648,29 +2662,44 @@ lean な変種を使う: 個数だけなら `count`、byte span なら `find_all
 
 ```culebra
 let d = Regex.compile('\d+')
-d.test("abc 123")                                // => true
-Regex.compile('\w+').find("  hello world").value // => "hello"
-d.find("no digits")                              // => nil
-d.find_all("a1 b22 c333").size()                 // => 3
+inspect(d.test("abc 123"))                                # => true
+inspect(Regex.compile('\w+').find("  hello world").value) # => 'hello'
+inspect(d.find("no digits"))                              # => nil
+inspect(d.find_all("a1 b22 c333").size())                 # => 3
+```
 
+キャプチャは位置（`m[1]`）でも名前（`m["year"]`）でも取れます。`m[0]` は
+マッチ全体、ミスは `nil`。`m.groups` / `m.named` の `Group` オブジェクトは
+文字列に加えて span も持ちます:
+
+```culebra
 let m = Regex.compile('(?<year>\d{4})-(\d{2})').find("2026-05")
-m[1]                                             // => "2026"（位置キャプチャ）
-m["year"]                                        // => "2026"（名前付きキャプチャ）
-m[0]                                             // => "2026-05"（マッチ全体）
-m[9] ?? "none"                                   // => "none"（ミス -> nil）
-m.groups[1].value                                // => "2026"（Group オブジェクト、span 用）
-m.named["year"].value                            // => "2026"（(?<name>...) で名前付き）
+inspect(m[1])                    # => '2026'
+inspect(m["year"])               # => '2026'
+inspect(m[0])                    # => '2026-05'
+inspect(m[9] ?? "none")          # => 'none'
+inspect(m.groups[1].value)       # => '2026'
+inspect(m.named["year"].value)   # => '2026'
+```
 
-d.replace_all("a1 b22 c333", "#")                // => "a# b# c#"
-Regex.compile('(\w+)@(\w+)').replace_all("x@y", '$2.$1') // => "y.x"
-d.replace_all("a1 b22", fn (m) { "<{m.value}>" })// => "a<1> b<22>"（コールバック）
-Regex.compile('\s+').split("the quick  brown")   // => ["the", "quick", "brown"]
-Regex.compile('hello', "i").test("HELLO world")  // => true（フラグ引数）
-d.find("xyz")?.value ?? "none"                   // ?. / ?? と合成可
+置換と分割 — 置換文字列は `$n` テンプレートか、`Match` を受け取る関数です:
 
-for m in d.find_iter("a1 b22") { break }         // 遅延。いつでも途中終了可
-d.find_iter("1 2 3").take(2).collect().size()    // => 2（全走査しない）
-Regex.escape("a.b(c)")                           // => `a\.b\(c\)`（リテラル一致）
+```culebra
+let d = Regex.compile('\d+')
+inspect(d.replace_all("a1 b22 c333", "#"))                        # => 'a# b# c#'
+inspect(Regex.compile('(\w+)@(\w+)').replace_all("x@y", '$2.$1')) # => 'y.x'
+inspect(d.replace_all("a1 b22", fn (m) { "<{m.value}>" }))        # => 'a<1> b<22>'
+inspect(Regex.compile('\s+').split("the quick  brown"))           # => ['the', 'quick', 'brown']
+inspect(Regex.compile('hello', "i").test("HELLO world"))          # => true
+```
+
+`find_iter` は遅延なので走査を途中で止められます。
+`for m in d.find_iter(s) { break }` は break したマッチより先には進みません:
+
+```culebra
+let d = Regex.compile('\d+')
+inspect(d.find_iter("1 2 3").take(2).collect().size())   # => 2
+inspect(Regex.escape("a.b(c)"))                          # => 'a\.b\(c\)'
 ```
 
 対応構文（literal / `.` / 文字クラス / `* + ? {n,m}` greedy・lazy / `|` /
@@ -4107,7 +4136,7 @@ s.close()
 | `read(n = nil)` | 最大 `n` バイト（ソケットでは短い読み取りが正常）。`nil` は相手が閉じるまで読む。EOF では `""` |
 | `read_line()` | 1 行（行末は除去）。ストリームが終わったら `nil` |
 | `read_exact(n)` | ちょうど `n` バイト。相手が途中で閉じたら短い読み取りではなく `NetError` |
-| `lines()` | 行イテレータ。相手が閉じると終了する。`File.lines` と違いソケットは閉じない（通常この後に返信するため） |
+| `lines()` | 行イテレータ。相手が閉じると終了する。ファイルの `f.lines()` と違いソケットは閉じない（通常この後に返信するため） |
 | `write(data)` | `data` を全バイト書く |
 | `shutdown_write()` | ハーフクローズ: 返信を読みながら相手に EOF を伝える |
 | `local_addr()` / `peer_addr()` | 自分側 / 相手側の `{host, port}` |
@@ -4116,7 +4145,7 @@ s.close()
 | `is_open()` / `close()` | 生存確認 / クローズ（冪等。スコープを抜けたハンドルは GC も閉じる） |
 
 行の終端は `\n` のみで、末尾の `\r` は除去される — CRLF プロトコルがそのまま
-読める。（`File.lines` は単独の `\r` でも区切るが、ソケットでは不可能: CRLF が
+読める。（ファイルの `f.lines()` は単独の `\r` でも区切るが、ソケットでは不可能: CRLF が
 2 つのパケットに分かれて届いたときにブロックしうる 1 バイト先読みが必要になる。）
 
 ### `Net.listen(port: Long, host: String = "0.0.0.0", backlog: Long = 0) -> Listener`

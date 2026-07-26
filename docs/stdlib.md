@@ -2698,10 +2698,11 @@ caches by pattern so the one-shot forms pay no recompile. Put flags inline
 | `Regex.replace_all(pat, s, repl)` | `String` — template or `fn (Match) -> String` repl |
 
 ```culebra
-Regex.find('(\d+)', "ab12")[1]                   // => "12"
-Regex.test('(?i)hello', "HELLO")                 // => true (inline flag)
-Regex.replace_all('[;；]', "a;b；c", "、")        // => "a、b、c"
-Regex.find('x', "y")?.value ?? "none"            // => "none" (composes with ?. / ??)
+inspect(Regex.find('(\d+)', "ab12")[1])            # => '12'
+inspect(Regex.test('(?i)hello', "HELLO"))          # => true
+inspect(Regex.replace_all('[;；]', "a;b；c", "、"))  # => 'a、b、c'
+# A miss is nil, so it composes with `?.` and `??`:
+inspect(Regex.find('x', "y")?.value ?? "none")     # => 'none'
 ```
 
 | Method | Result |
@@ -2746,29 +2747,45 @@ you need spans (`m.groups[i].start`).
 
 ```culebra
 let d = Regex.compile('\d+')
-d.test("abc 123")                                // => true
-Regex.compile('\w+').find("  hello world").value // => "hello"
-d.find("no digits")                              // => nil
-d.find_all("a1 b22 c333").size()                 // => 3
+inspect(d.test("abc 123"))                                # => true
+inspect(Regex.compile('\w+').find("  hello world").value) # => 'hello'
+inspect(d.find("no digits"))                              # => nil
+inspect(d.find_all("a1 b22 c333").size())                 # => 3
+```
 
+Captures reach by position (`m[1]`) and by name (`m["year"]`); `m[0]` is
+the whole match and a miss reads as `nil`. The `Group` objects under
+`m.groups` / `m.named` carry spans as well as the text:
+
+```culebra
 let m = Regex.compile('(?<year>\d{4})-(\d{2})').find("2026-05")
-m[1]                                             // => "2026" (positional capture)
-m["year"]                                        // => "2026" (named capture)
-m[0]                                             // => "2026-05" (whole match)
-m[9] ?? "none"                                   // => "none" (miss -> nil)
-m.groups[1].value                                // => "2026" (Group object, for spans)
-m.named["year"].value                            // => "2026" (named via (?<name>...))
+inspect(m[1])                    # => '2026'
+inspect(m["year"])               # => '2026'
+inspect(m[0])                    # => '2026-05'
+inspect(m[9] ?? "none")          # => 'none'
+inspect(m.groups[1].value)       # => '2026'
+inspect(m.named["year"].value)   # => '2026'
+```
 
-d.replace_all("a1 b22 c333", "#")                // => "a# b# c#"
-Regex.compile('(\w+)@(\w+)').replace_all("x@y", '$2.$1') // => "y.x"
-d.replace_all("a1 b22", fn (m) { "<{m.value}>" })// => "a<1> b<22>" (callback)
-Regex.compile('\s+').split("the quick  brown")   // => ["the", "quick", "brown"]
-Regex.compile('hello', "i").test("HELLO world")  // => true (flag arg)
-d.find("xyz")?.value ?? "none"                   // composes with ?. / ??
+Replacing and splitting — a replacement is either a `$n` template or a
+function of the `Match`:
 
-for m in d.find_iter("a1 b22") { break }         // lazy; stop early any time
-d.find_iter("1 2 3").take(2).collect().size()    // => 2 (no full scan)
-Regex.escape("a.b(c)")                           // => `a\.b\(c\)` (literal match)
+```culebra
+let d = Regex.compile('\d+')
+inspect(d.replace_all("a1 b22 c333", "#"))                        # => 'a# b# c#'
+inspect(Regex.compile('(\w+)@(\w+)').replace_all("x@y", '$2.$1')) # => 'y.x'
+inspect(d.replace_all("a1 b22", fn (m) { "<{m.value}>" }))        # => 'a<1> b<22>'
+inspect(Regex.compile('\s+').split("the quick  brown"))           # => ['the', 'quick', 'brown']
+inspect(Regex.compile('hello', "i").test("HELLO world"))          # => true
+```
+
+`find_iter` is lazy, so a scan can stop early — `for m in d.find_iter(s) { break }`
+walks no further than the match it broke on:
+
+```culebra
+let d = Regex.compile('\d+')
+inspect(d.find_iter("1 2 3").take(2).collect().size())   # => 2
+inspect(Regex.escape("a.b(c)"))                          # => 'a\.b\(c\)'
 ```
 
 The supported syntax (literal / `.` / character classes / `* + ? {n,m}` greedy
@@ -4259,7 +4276,7 @@ code that only reads works over either:
 | `read(n = nil)` | up to `n` bytes (a short read is normal on a socket); `nil` reads until the peer closes. `""` at EOF |
 | `read_line()` | one line, terminator stripped; `nil` once the stream ends |
 | `read_exact(n)` | exactly `n` bytes; a peer that closes early is a `NetError`, not a short read |
-| `lines()` | line iterator, ending when the peer closes. Unlike `File.lines` it does **not** close the socket (you usually reply afterwards) |
+| `lines()` | line iterator, ending when the peer closes. Unlike a file's `f.lines()` it does **not** close the socket (you usually reply afterwards) |
 | `write(data)` | write every byte of `data` |
 | `shutdown_write()` | half-close: signal EOF to the peer while still reading its reply |
 | `local_addr()` / `peer_addr()` | `{host, port}` of this end / the other end |
@@ -4268,7 +4285,7 @@ code that only reads works over either:
 | `is_open()` / `close()` | liveness; `close` is idempotent (the GC also closes one that goes out of scope) |
 
 A line ends at `\n` only, and a trailing `\r` is stripped — so CRLF protocols
-read cleanly. (`File.lines` also splits on a lone `\r`; a socket cannot, because
+read cleanly. (A file's `f.lines()` also splits on a lone `\r`; a socket cannot, because
 that would need a one-byte lookahead that can block when a CRLF arrives split
 across two packets.)
 
