@@ -256,6 +256,7 @@ void audio_callback(void* buffer_data, unsigned int frames) {
 void ensure_audio() {
   if (forced_headless() || g_audio_failed) return;
   if (g_audio_ready) return;
+  SetTraceLogLevel(LOG_WARNING);  // audio may come up before any window does
   InitAudioDevice();
   if (!IsAudioDeviceReady()) {
     g_audio_failed = true;  // no device (headless server/CI): stay silent
@@ -277,9 +278,48 @@ struct AudioCloser {
 };
 AudioCloser g_audio_closer;
 
+// --- music: one streamed-file slot ------------------------------------------
+//
+// A single Music at a time, pygame-mixer style: music_play replaces whatever
+// was playing, music_stop unloads it, process exit reclaims the slot. No
+// handle ever reaches the script, so there is no lifetime to manage there.
+// raylib's memory decoders (drmp3 / stb_vorbis) keep POINTERS into the byte
+// buffer they were opened on rather than copying it, so the slot owns the
+// bytes and the Music together and releases them together — separating them
+// is a use-after-free that only surfaces once playback reads the freed pages.
+// Everything here runs on the main thread (decoding happens in the
+// UpdateMusicStream pump, not the audio callback), so no lock of ours needed.
+struct MusicSlot {
+  Music music{};
+  std::vector<uint8_t> bytes;
+  bool loaded = false;
+
+  void unload() {
+    if (!loaded) return;
+    UnloadMusicStream(music);
+    music = Music{};
+    bytes.clear();
+    bytes.shrink_to_fit();
+    loaded = false;
+  }
+  ~MusicSlot() { unload(); }
+};
+// Defined after g_audio_closer on purpose: statics destroy in reverse order,
+// so the slot's UnloadMusicStream runs before CloseAudioDevice.
+MusicSlot g_music;
+
+// Refill the stream's buffers — called from present(), the one place every
+// frame loop passes through, so no pump API needs exposing.
+void music_pump() {
+  if (g_music.loaded) UpdateMusicStream(g_music.music);
+}
+
 }  // namespace
 
 void present() {
+  // Pump the music stream before anything window-related: a display-less (but
+  // audible) run degrades to no window, and must still keep playing.
+  music_pump();
   ensure_window();
   if (!g_window_ready) return;
   const std::vector<uint32_t>& fb = _fb();
@@ -378,6 +418,58 @@ void tone(int64_t start_freq, int64_t end_freq, int64_t attack, int64_t decay,
   std::lock_guard<std::mutex> lock(g_audio_mutex);
   n.id = g_notes[channel].id + 1;
   g_notes[channel] = n;
+}
+
+// The format sniff (and its ValueError) has already run in the caller's
+// backend-neutral shim; `fmt` is its verdict. A stream the sniff accepted but
+// the decoder rejects stays silent, like the browser's failed decodeAudioData.
+void music_play(const uint8_t* data, int64_t len, const char* fmt,
+                int64_t looping, int64_t vol, double start) {
+  ensure_audio();
+  if (!g_audio_ready) return;
+  g_music.unload();
+  g_music.bytes.assign(data, data + len);
+  Music m = LoadMusicStreamFromMemory(fmt, g_music.bytes.data(),
+                                      static_cast<int>(g_music.bytes.size()));
+  if (!IsMusicValid(m)) {
+    // A null ctx means raylib already freed its partial state; a non-null one
+    // (a decodable but empty stream) still owns a decoder to unload.
+    if (m.ctxData != nullptr) UnloadMusicStream(m);
+    g_music.bytes.clear();
+    g_music.bytes.shrink_to_fit();
+    return;
+  }
+  m.looping = looping != 0;
+  SetMusicVolume(m, static_cast<float>(gain_of(vol)));
+  PlayMusicStream(m);
+  if (start > 0) SeekMusicStream(m, static_cast<float>(start));
+  g_music.music = m;
+  g_music.loaded = true;
+}
+
+void music_stop() { g_music.unload(); }
+
+void music_pause() {
+  if (g_music.loaded) PauseMusicStream(g_music.music);
+}
+
+void music_resume() {
+  if (g_music.loaded) ResumeMusicStream(g_music.music);
+}
+
+void music_volume(int64_t vol) {
+  if (g_music.loaded)
+    SetMusicVolume(g_music.music, static_cast<float>(gain_of(vol)));
+}
+
+void music_seek(double seconds) {
+  if (!g_music.loaded) return;
+  if (!(seconds > 0)) seconds = 0;  // NaN and negatives land at the start
+  SeekMusicStream(g_music.music, static_cast<float>(seconds));
+}
+
+bool music_playing() {
+  return g_music.loaded && IsMusicStreamPlaying(g_music.music);
 }
 
 }  // namespace _canvas_detail

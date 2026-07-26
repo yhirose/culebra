@@ -192,9 +192,14 @@ function spawnWorker() {
       playTone(msg);
       return;
     }
+    if (msg.type === "music") {
+      handleMusic(msg);
+      return;
+    }
     if (msg.type === "done") {
       running = false;
       stopRafPump();
+      resetMusic();   // the native analogue: process exit silences the slot
       stopBtn.disabled = true;
       runBtn.disabled = false;
       if (!inTui && !inCanvas && output.textContent === "") output.textContent = "(no output)";
@@ -224,6 +229,7 @@ function spawnWorker() {
 function run() {
   if (running || runBtn.disabled) return;
   ensureAudio();    // this click is a user gesture — unlock audio for any tones
+  resetMusic();     // a fresh run must not inherit the previous run's BGM
   running = true;
   runBtn.disabled = true;
   stopBtn.disabled = false;
@@ -257,6 +263,7 @@ function stop() {
   worker.terminate();
   running = false;
   stopRafPump();
+  resetMusic();     // terminating the worker must also silence a looping BGM
   stopBtn.disabled = true;
   runBtn.disabled = true; // until the fresh worker reports ready
   resetToOutput();
@@ -460,6 +467,122 @@ function playTone(m) {
     src.stop(now + total);
     activeVoices[channel] = src;
     src.onended = () => { if (activeVoices[channel] === src) activeVoices[channel] = null; };
+  } catch {
+    // Audio unavailable (autoplay policy, no device) — a game stays playable.
+  }
+}
+
+// --- Canvas.music: one streamed-file slot, decoded and driven here ----------
+// The worker posts play/stop/pause/resume/volume/seek commands (canvas.h's
+// EM_JS side keeps the script-visible playing flags optimistically, in sync
+// with the call); this side owns the decoded AudioBuffer and the live source
+// node. What only this side can observe — a failed decode, a non-looping file
+// running out — is pushed back as a "musicState" correction. A paused voice is
+// just a remembered offset: an AudioBufferSourceNode can't restart, so resume
+// builds a fresh one, which is also how seek works.
+let musicBuffer = null;   // decoded audio, while a file is loaded
+let musicVoice = null;    // { src, gain, startedAt } while audible
+let musicLoop = true;
+let musicGain = 0.2;
+let musicPausedAt = null; // seconds into the buffer, while paused
+let musicSeq = 0;         // play generation: a stale decode must not resurrect
+
+const musicG = (v) => Math.max(0, Math.min(1, v / 100)) * 0.2; // tone's scale
+
+function musicNotify(playing, loaded) {
+  if (worker) worker.postMessage({ type: "musicState", playing, loaded });
+}
+
+function stopMusicVoice() {
+  if (!musicVoice) return;
+  const v = musicVoice;
+  musicVoice = null;               // cleared first: onended sees it was told to
+  try { v.src.stop(); } catch {}
+}
+
+function startMusicVoice(offset) {
+  if (!musicBuffer || !ensureAudio()) return;
+  stopMusicVoice();
+  const src = audioCtx.createBufferSource();
+  src.buffer = musicBuffer;
+  src.loop = musicLoop;
+  const gain = audioCtx.createGain();
+  gain.gain.value = musicGain;
+  src.connect(gain).connect(audioCtx.destination);
+  const at = musicBuffer.duration > 0 ? offset % musicBuffer.duration : 0;
+  const v = { src, gain, startedAt: audioCtx.currentTime - at };
+  src.onended = () => {
+    if (musicVoice === v) {        // ran out on its own (non-looping)
+      musicVoice = null;
+      musicBuffer = null;
+      musicNotify(false, false);
+    }
+  };
+  src.start(0, at);
+  musicVoice = v;
+  musicPausedAt = null;
+}
+
+function musicPosition() {
+  if (musicVoice && musicBuffer && musicBuffer.duration > 0) {
+    return (audioCtx.currentTime - musicVoice.startedAt) % musicBuffer.duration;
+  }
+  return musicPausedAt ?? 0;
+}
+
+function resetMusic() {
+  stopMusicVoice();
+  musicBuffer = null;
+  musicPausedAt = null;
+  musicSeq++;
+}
+
+function handleMusic(m) {
+  try {
+    switch (m.cmd) {
+      case "play": {
+        resetMusic();
+        musicLoop = !!m.loop;
+        musicGain = musicG(m.vol);
+        if (!ensureAudio()) { musicNotify(false, false); return; }
+        // If the context is still suspended (no gesture yet) the voice is
+        // created anyway: currentTime is frozen, so playback simply begins
+        // when the first click/keydown resumes the context.
+        const seq = musicSeq;
+        audioCtx.decodeAudioData(m.buf.buffer).then((buf) => {
+          if (seq !== musicSeq) return;   // superseded while decoding
+          musicBuffer = buf;
+          startMusicVoice(Math.max(0, m.start || 0));
+        }).catch(() => {
+          if (seq === musicSeq) musicNotify(false, false);
+        });
+        break;
+      }
+      case "stop":
+        resetMusic();
+        break;
+      case "pause":
+        if (musicVoice) {
+          musicPausedAt = musicPosition();
+          stopMusicVoice();
+        }
+        break;
+      case "resume":
+        if (!musicVoice && musicBuffer && musicPausedAt !== null) {
+          startMusicVoice(musicPausedAt);
+        }
+        break;
+      case "volume":
+        musicGain = musicG(m.vol);
+        if (musicVoice) musicVoice.gain.gain.value = musicGain;
+        break;
+      case "seek": {
+        const s = Math.max(0, m.seconds || 0);
+        if (musicVoice) startMusicVoice(s);
+        else if (musicBuffer) musicPausedAt = s;
+        break;
+      }
+    }
   } catch {
     // Audio unavailable (autoplay policy, no device) — a game stays playable.
   }

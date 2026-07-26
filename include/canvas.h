@@ -439,6 +439,27 @@ inline void blit_scaled(int64_t id, int64_t dx, int64_t dy, int64_t dw,
   }
 }
 
+// The audio container `data` opens with, named as the extension string
+// raylib's decoder dispatch keys on: an ID3v2 tag or an MPEG frame sync
+// (0xFF then the top three bits set — MPEG2/mono encodes don't start 0xFF
+// 0xFB) is MP3, an "OggS" capture pattern is Ogg, anything else (or a byte
+// count past raylib's int size) is nullptr. This sniff runs before any
+// backend branch: the browser's own decodeAudioData is asynchronous, so
+// leaving detection to it would give wasm a different error site than the
+// other backends.
+inline const char* music_format(const uint8_t* p, size_t n) {
+  if (p == nullptr || n < 4 || n > static_cast<size_t>(INT32_MAX))
+    return nullptr;
+  if (p[0] == 'O' && p[1] == 'g' && p[2] == 'g' && p[3] == 'S') return ".ogg";
+  if (p[0] == 'I' && p[1] == 'D' && p[2] == '3') return ".mp3";
+  if (p[0] == 0xff && (p[1] & 0xe0) == 0xe0) return ".mp3";
+  return nullptr;
+}
+
+// The one message both backends raise for bytes that are neither MP3 nor Ogg,
+// the music analogue of Sprite.from_png's ValueError.
+inline constexpr auto kMusicFormatError = "not a valid MP3 or Ogg audio stream";
+
 #if defined(__EMSCRIPTEN__)
 
 // Browser backend for the Playground. present posts the framebuffer to the
@@ -483,6 +504,40 @@ EM_JS(void, _wasm_canvas_tone,
                 release: release, vol: vol, peak: peak, channel: channel,
                 duty: duty });
 });
+// Music playback lives on the main thread (app.js decodes and drives WebAudio);
+// these post the commands over. __musicLoaded/__musicPlaying are updated
+// optimistically here, synchronously with the call — the state a script reads
+// right back — and the main thread pushes corrections (a failed decode, a
+// non-looping file ending) as "musicState" messages worker.js applies.
+EM_JS(void, _wasm_canvas_music_play,
+      (const uint8_t* buf, int len, int looping, int vol, double start), {
+  self.__musicLoaded = true;
+  self.__musicPlaying = true;
+  postMessage({ type: "music", cmd: "play", buf: HEAPU8.slice(buf, buf + len),
+                loop: looping !== 0, vol: vol, start: start });
+});
+EM_JS(void, _wasm_canvas_music_stop, (), {
+  self.__musicLoaded = false;
+  self.__musicPlaying = false;
+  postMessage({ type: "music", cmd: "stop" });
+});
+EM_JS(void, _wasm_canvas_music_pause, (), {
+  self.__musicPlaying = false;
+  postMessage({ type: "music", cmd: "pause" });
+});
+EM_JS(void, _wasm_canvas_music_resume, (), {
+  if (self.__musicLoaded) self.__musicPlaying = true;
+  postMessage({ type: "music", cmd: "resume" });
+});
+EM_JS(void, _wasm_canvas_music_volume, (int vol), {
+  postMessage({ type: "music", cmd: "volume", vol: vol });
+});
+EM_JS(void, _wasm_canvas_music_seek, (double seconds), {
+  postMessage({ type: "music", cmd: "seek", seconds: seconds });
+});
+EM_JS(int, _wasm_canvas_music_playing, (), {
+  return self.__musicPlaying ? 1 : 0;
+});
 
 inline void present() {
   auto& fb = _fb();
@@ -504,6 +559,21 @@ inline void tone(int64_t start_freq, int64_t end_freq, int64_t attack,
                     static_cast<int>(vol), static_cast<int>(peak),
                     static_cast<int>(channel), static_cast<int>(duty));
 }
+// `fmt` is for raylib's decoder dispatch; the browser sniffs the bytes itself.
+inline void music_play(const uint8_t* data, int64_t len, const char* /*fmt*/,
+                       int64_t looping, int64_t vol, double start) {
+  _wasm_canvas_music_play(data, static_cast<int>(len),
+                          static_cast<int>(looping), static_cast<int>(vol),
+                          start);
+}
+inline void music_stop() { _wasm_canvas_music_stop(); }
+inline void music_pause() { _wasm_canvas_music_pause(); }
+inline void music_resume() { _wasm_canvas_music_resume(); }
+inline void music_volume(int64_t vol) {
+  _wasm_canvas_music_volume(static_cast<int>(vol));
+}
+inline void music_seek(double seconds) { _wasm_canvas_music_seek(seconds); }
+inline bool music_playing() { return _wasm_canvas_music_playing() != 0; }
 
 #elif defined(CULEBRA_CANVAS_WINDOW)  // native raylib desktop window
 
@@ -522,6 +592,14 @@ __attribute__((weak)) int64_t mouse_buttons() { return 0; }
 __attribute__((weak)) bool closing() { return false; }
 __attribute__((weak)) void tone(int64_t, int64_t, int64_t, int64_t, int64_t,
                                 int64_t, int64_t, int64_t, int64_t, int64_t) {}
+__attribute__((weak)) void music_play(const uint8_t*, int64_t, const char*,
+                                      int64_t, int64_t, double) {}
+__attribute__((weak)) void music_stop() {}
+__attribute__((weak)) void music_pause() {}
+__attribute__((weak)) void music_resume() {}
+__attribute__((weak)) void music_volume(int64_t) {}
+__attribute__((weak)) void music_seek(double) {}
+__attribute__((weak)) bool music_playing() { return false; }
 
 #else
 
@@ -536,6 +614,14 @@ int64_t mouse_buttons();
 bool closing();
 void tone(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,
           int64_t, int64_t, int64_t);
+void music_play(const uint8_t* data, int64_t len, const char* fmt,
+                int64_t looping, int64_t vol, double start);
+void music_stop();
+void music_pause();
+void music_resume();
+void music_volume(int64_t vol);
+void music_seek(double seconds);
+bool music_playing();
 
 #endif  // CULEBRA_RT_CANVAS_WEAK
 
@@ -549,6 +635,14 @@ inline int64_t mouse_buttons() { return 0; }
 inline bool closing() { return false; }
 inline void tone(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,
                  int64_t, int64_t, int64_t) {}
+inline void music_play(const uint8_t*, int64_t, const char*, int64_t, int64_t,
+                       double) {}
+inline void music_stop() {}
+inline void music_pause() {}
+inline void music_resume() {}
+inline void music_volume(int64_t) {}
+inline void music_seek(double) {}
+inline bool music_playing() { return false; }
 
 #endif  // __EMSCRIPTEN__
 

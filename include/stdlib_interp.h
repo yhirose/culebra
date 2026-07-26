@@ -2083,6 +2083,83 @@ inline Value make_canvas_primitives_namespace() {
           })),
       false);
 
+  // _Canvas.music_play(data: String, loop, vol, start) -> Nil. The format
+  // sniff (MP3/Ogg) runs here, before any backend branch, so unplayable bytes
+  // raise the same ValueError at the same site on every backend — playable,
+  // headless or browser alike. Everything past the sniff clamps or no-ops.
+  ns.initialize("music_play",
+      Value(FunctionValue({{"data", false, "String"sv},
+                           {"loop", false, "Long"sv}, {"vol", false, "Long"sv},
+                           {"start", false, "Long|Float"sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            auto sv = env->get("data").to_string_view();
+            auto p = reinterpret_cast<const uint8_t*>(sv.data());
+            const char* fmt = _canvas_detail::music_format(p, sv.size());
+            if (fmt == nullptr)
+              throw CulebraError("ValueError",
+                                 _canvas_detail::kMusicFormatError, line, col);
+            _canvas_detail::music_play(
+                p, static_cast<int64_t>(sv.size()), fmt,
+                env->get("loop").to_long(), env->get("vol").to_long(),
+                env->get("start").to_double_coerce());
+            return Value();
+          })),
+      false);
+
+  // _Canvas.music_stop() / music_pause() / music_resume() -> Nil (no-op when
+  // nothing is loaded)
+  ns.initialize("music_stop",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            _canvas_detail::music_stop();
+            return Value();
+          })),
+      false);
+  ns.initialize("music_pause",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            _canvas_detail::music_pause();
+            return Value();
+          })),
+      false);
+  ns.initialize("music_resume",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            _canvas_detail::music_resume();
+            return Value();
+          })),
+      false);
+
+  // _Canvas.music_volume(vol) -> Nil (0..100, the tone scale)
+  ns.initialize("music_volume",
+      Value(FunctionValue({{"vol", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            _canvas_detail::music_volume(env->get("vol").to_long());
+            return Value();
+          })),
+      false);
+
+  // _Canvas.music_seek(seconds) -> Nil
+  ns.initialize("music_seek",
+      Value(FunctionValue({{"seconds", false, "Long|Float"sv}},
+          [](std::shared_ptr<Environment> env) {
+            _canvas_detail::music_seek(
+                env->get("seconds").to_double_coerce());
+            return Value();
+          })),
+      false);
+
+  // _Canvas.music_playing() -> Bool (false when nothing is loaded / headless)
+  ns.initialize("music_playing",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            return Value(_canvas_detail::music_playing());
+          },
+          "Bool"sv)),
+      false);
+
   // _Canvas.width() / height() -> Long (current framebuffer dimensions)
   ns.initialize("width",
       Value(FunctionValue({},

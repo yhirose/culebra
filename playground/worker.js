@@ -111,6 +111,11 @@ self.__canvasButtons = 0;
 self.__canvasMouseX = 0;
 self.__canvasMouseY = 0;
 self.__canvasMouseButtons = 0;
+// Music playback state: set optimistically by canvas.h's music EM_JS calls,
+// corrected by the main thread's "musicState" messages (failed decode, a
+// non-looping file ending).
+self.__musicLoaded = false;
+self.__musicPlaying = false;
 
 postMessage({ type: "ready", backend: useFullBuild ? "full" : "basic" });
 
@@ -183,6 +188,11 @@ onmessage = async (e) => {
     self.__canvasMouseButtons = e.data.buttons;
     return;
   }
+  if (type === "musicState") {
+    self.__musicPlaying = e.data.playing;
+    self.__musicLoaded = e.data.loaded;
+    return;
+  }
   if (type === "termSize") {
     // Read synchronously by _wasm_term_cols/rows (term.h) — a Worker has its
     // own global scope, so app.js can't set these directly and sends them
@@ -198,6 +208,8 @@ onmessage = async (e) => {
   pendingFrameResolve = null;
   self.__canvasButtons = 0;
   self.__canvasMouseButtons = 0;
+  self.__musicLoaded = false;
+  self.__musicPlaying = false;
 
   const t0 = performance.now();
   let rc = 1;

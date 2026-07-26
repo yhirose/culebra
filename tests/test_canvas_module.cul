@@ -122,6 +122,43 @@ Canvas.tone(440, 8, 100, Canvas.PULSE)
 let m = Canvas.mouse()
 assert_eq(m.x, 0)
 
+// Music: a self-made 0.2 s sine MP3 (Python wave + lame, MPEG 2.5 mono — its
+// 0xff 0xe3 frame sync is exactly the header the format sniff must accept
+// beyond the common 0xff 0xfb). Under the test harness the backend is headless
+// (CULEBRA_CANVAS_HEADLESS), so playback state stays false and every control
+// is a no-op — what this pins is the sniff, the argument contracts and the
+// unloaded/no-op behaviour, identically on both backends.
+let MP3 = Encoding.hex.decode(
+  "ffe318c4000d38be802158000127fffffffffeb0c30c30c30a7a7a7a7cfbb74d09" +
+  "664116b1d52e799526b59a4a5d3808b865c753777e5f6f3cf3b180000002be1e1e" +
+  "5b2cbdfe9918ffe318c4060e00b2800195c00039a31d552f06813030b8e00f84e8" +
+  "03478588685bc01fdd640286880b81c0f71890315804d6e656fc46655765378779" +
+  "20690afffe976ef0301682f8ffe318c4090f80ca2c019738000353b61a6030cf81" +
+  "e88180d01bb81946931081837a0f4c0c1010e400c7fe99f00c0bf06c201df02bf0" +
+  "4ffffd1eaf5fffffecfd9f92ffa531fc9f37ffe318c4060df0da8c019580003591" +
+  "c38a0381206c1b680d004b80040c037e3c0028ee2fc800184c6006310a7e01f90a" +
+  "c689b837e1cf1c26270dbca3b0a84e48eb115ff1d44b86a4ffe318c4090ee14a18" +
+  "0195a8000480ffe0638348186862108480c4c85ff03202041ca40141309b858863" +
+  "7ffcc49d21c91b14568ffff9929231241402ffe498ba4c414d45332e3130")
+Canvas.music(MP3)                              // defaults: loop, vol 100
+Canvas.music(MP3, loop: false, vol: 30, start: 0.1)  // replaces the first
+Canvas.music_volume(50)
+Canvas.music_seek(0.05)
+Canvas.music_seek(1)                           // Long seconds also accepted
+Canvas.music_pause()
+Canvas.music_resume()
+assert_eq(Canvas.music_playing(), false)       // headless: never audible
+Canvas.music_stop()
+assert_eq(Canvas.music_playing(), false)
+// Unloaded controls are no-ops, not errors.
+Canvas.music_pause()
+Canvas.music_resume()
+Canvas.music_volume(80)
+Canvas.music_seek(2.5)
+// Bytes that are neither MP3 nor Ogg refuse identically everywhere.
+assert_throws("ValueError", fn() { Canvas.music("not audio") })
+assert_throws("ValueError", fn() { Canvas.music("") })
+
 // Closed like the C++ namespaces: an unknown member raises instead of reading
 // as nil. Lives here rather than in test_namespace_attr.cul, which would have
 // to splice this whole module into the JIT entry module to say it.

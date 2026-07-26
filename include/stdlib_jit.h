@@ -823,6 +823,40 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_tone(
   culebra::_canvas_detail::tone(start_freq, end_freq, attack, decay, sustain,
                                 release, vol, peak, channel, duty);
 }
+// The MP3/Ogg sniff runs here, before the backend branch, mirroring interp —
+// same ValueError, same site, on every backend (see stdlib_interp.h).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_music_play(
+    uint8_t tag, int64_t data, int64_t looping, int64_t vol, double start,
+    int64_t line, int64_t col) {
+  auto sv = _culebra_str_view(tag, data);
+  auto p = reinterpret_cast<const uint8_t*>(sv.data());
+  const char* fmt = culebra::_canvas_detail::music_format(p, sv.size());
+  if (fmt == nullptr)
+    throw culebra::CulebraError(
+        "ValueError", culebra::_canvas_detail::kMusicFormatError, line, col);
+  culebra::_canvas_detail::music_play(p, static_cast<int64_t>(sv.size()), fmt,
+                                      looping, vol, start);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_music_stop() {
+  culebra::_canvas_detail::music_stop();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_music_pause() {
+  culebra::_canvas_detail::music_pause();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_music_resume() {
+  culebra::_canvas_detail::music_resume();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_music_volume(
+    int64_t vol) {
+  culebra::_canvas_detail::music_volume(vol);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_music_seek(
+    double seconds) {
+  culebra::_canvas_detail::music_seek(seconds);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_canvas_music_playing() {
+  return culebra::_canvas_detail::music_playing();
+}
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_width() {
   return culebra::_canvas_detail::width();
 }
@@ -7713,6 +7747,17 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::canvas_closing, jit.builder_.getInt1Ty());
   jit.module_->getOrInsertFunction(rt::canvas_tone, vt, i64, i64, i64, i64, i64,
                                    i64, i64, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_music_play, vt,
+                                   jit.builder_.getInt8Ty(), i64, i64, i64,
+                                   jit.builder_.getDoubleTy(), i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_music_stop, vt);
+  jit.module_->getOrInsertFunction(rt::canvas_music_pause, vt);
+  jit.module_->getOrInsertFunction(rt::canvas_music_resume, vt);
+  jit.module_->getOrInsertFunction(rt::canvas_music_volume, vt, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_music_seek, vt,
+                                   jit.builder_.getDoubleTy());
+  jit.module_->getOrInsertFunction(rt::canvas_music_playing,
+                                   jit.builder_.getInt1Ty());
   jit.module_->getOrInsertFunction(rt::canvas_width, i64);
   jit.module_->getOrInsertFunction(rt::canvas_height, i64);
   }
@@ -8869,6 +8914,50 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
                          {"sustain"}, {"release"}, {"vol"}, {"peak"},
                          {"channel"}, {"duty"}}))
         return call_void(rt::canvas_tone, *v);
+    if (method == "music_play" && a.size() == 4) {
+      // The shim sniffs the bytes and raises ValueError like interp; loop and
+      // vol are plain Longs, start is geometry-style Long|Float but kept as a
+      // double (seconds), so it goes through coerce rather than canvas_coord.
+      auto dat = jit.compile(*a[0]);
+      emit_type_check(dat.borrow(), "String", "parameter 'data'", a[0].get());
+      auto lp = jit.compile(*a[1]);
+      emit_type_check(lp.borrow(), "Long", "parameter 'loop'", a[1].get());
+      auto lv = value_to_long(lp.consume());
+      auto vol = jit.compile(*a[2]);
+      emit_type_check(vol.borrow(), "Long", "parameter 'vol'", a[2].get());
+      auto vv = value_to_long(vol.consume());
+      auto st = jit.compile(*a[3]);
+      emit_type_check(st.borrow(), "Long|Float", "parameter 'start'",
+                      a[3].get());
+      auto sd = jit.coerce_to_double(st.borrow());
+      emit_call(module_->getFunction(rt::canvas_music_play),
+                {extract_tag(dat.borrow()), extract_data(dat.borrow()), lv, vv,
+                 sd, line, col});
+      st.drop();
+      dat.drop();
+      return jit.own(make_nil());
+    }
+    if (method == "music_stop" && a.empty())
+      return call_void(rt::canvas_music_stop, {});
+    if (method == "music_pause" && a.empty())
+      return call_void(rt::canvas_music_pause, {});
+    if (method == "music_resume" && a.empty())
+      return call_void(rt::canvas_music_resume, {});
+    if (method == "music_volume")
+      if (auto v = args({{"vol"}}))
+        return call_void(rt::canvas_music_volume, *v);
+    if (method == "music_seek" && a.size() == 1) {
+      auto secs = jit.compile(*a[0]);
+      emit_type_check(secs.borrow(), "Long|Float", "parameter 'seconds'",
+                      a[0].get());
+      auto d = jit.coerce_to_double(secs.borrow());
+      emit_call(module_->getFunction(rt::canvas_music_seek), {d});
+      secs.drop();
+      return jit.own(make_nil());
+    }
+    if (method == "music_playing" && a.empty())
+      return jit.own(make_bool(
+          emit_call(module_->getFunction(rt::canvas_music_playing), {})));
     if (method == "width" && a.empty())
       return jit.own(make_long(
           emit_call(module_->getFunction(rt::canvas_width), {})));

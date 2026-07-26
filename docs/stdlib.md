@@ -68,7 +68,7 @@ Conventions used below:
 23. [`Log`](#23-log) — leveled, structured logging to stderr (text / JSON, child loggers)
 24. [`TOML`](#24-toml) — parse / stringify TOML configuration
 25. [`SQLite`](#25-sqlite) — embedded SQL database (query / execute / prepared statements / transactions)
-26. [`Canvas`](#26-canvas) — immediate-mode 2D framebuffer for games (pixels, sprites, font, input, tone)
+26. [`Canvas`](#26-canvas) — immediate-mode 2D framebuffer for games (pixels, sprites, font, input, tone, music)
 27. [`Scene`](#27-scene) — retained-mode 3D renderer for procedural geometry (opt-in, macOS-only)
 28. [`Net`](#28-net) — raw TCP / UDP sockets and name resolution (the layer under `Http`)
 29. [`Desktop` / `Webview`](#29-desktop--webview) — native WebView desktop app: local HTTP server + window, one call
@@ -4056,6 +4056,36 @@ opened, no crash) on a machine with no audio hardware. Native audio and
 WebAudio are independent implementations tuned to sound similar, not
 sample-identical — unlike the pixel ops, `tone` isn't required to produce
 bit-identical output across backends.
+
+### Music
+
+`Canvas.music(data, loop = true, vol = 100, start = 0.0)` plays an MP3 or Ogg
+Vorbis file from its bytes (a `String`, e.g. from `FS.read` — the same
+bytes-in convention as `Sprite.from_png`). There is **one slot**, in the
+manner of pygame's `mixer.music`: playing a new file replaces the old one, and
+no handle reaches the script. `vol` is 0–100 on the same scale as `tone`;
+`start` is seconds into the file. Bytes that are neither MP3 nor Ogg raise
+`ValueError: not a valid MP3 or Ogg audio stream` on every backend; a stream
+that passes that check but fails to decode stays silent.
+
+| Function | Effect |
+| --- | --- |
+| `Canvas.music(data, loop = true, vol = 100, start = 0.0)` | decode and play (replaces the current file) |
+| `Canvas.music_stop()` | stop and unload |
+| `Canvas.music_pause()` / `Canvas.music_resume()` | pause / pick up where it left off |
+| `Canvas.music_volume(vol)` | change the volume (0–100) |
+| `Canvas.music_seek(seconds)` | jump to a position |
+| `Canvas.music_playing() -> Bool` | is anything audible right now |
+
+With nothing loaded, the controls are no-ops and `music_playing()` is `false`
+— matching `tone`'s clamp-don't-throw convention, the format check is the one
+error. Natively the stream is decoded incrementally and its buffers are
+refilled from `present()`, so music only advances while frames are being
+presented — a program that stops presenting pauses its music with it.
+Headless (and on a machine with no audio device) everything no-ops. In the
+browser the file is decoded by WebAudio; note Ogg support there depends on
+the browser (Safari historically decodes only MP3), while natively both
+formats always work.
 
 ### The game loop
 

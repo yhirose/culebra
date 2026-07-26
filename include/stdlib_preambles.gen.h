@@ -467,6 +467,16 @@ let _canvas_module = fn () {
     _Canvas.tone(freq, ef, attack, decay, dur, release, vol, pk, wave, duty)
   }
 
+  # --- music ---------------------------------------------------------------
+  # Play an MP3 or Ogg Vorbis file from its bytes (a String, e.g. from
+  # FS.read) — one slot, so a new call replaces whatever was playing. `vol` is
+  # 0..100 on the same scale as tone; `start` is seconds into the file. The
+  # stream is fed from present(), so it only advances while frames are shown.
+  # Raises ValueError when the bytes are neither MP3 nor Ogg.
+  let music = fn (data, loop = true, vol = 100, start = 0.0) {
+    _Canvas.music_play(data, if loop { 1 } else { 0 }, vol, start)
+  }
+
   # --- game loop ----------------------------------------------------------
   # Set up a w×h framebuffer and drive `tick` once per frame, presenting after
   # each. `tick()` returns false to stop (e.g. the player quit). present()
@@ -517,6 +527,13 @@ let _canvas_module = fn () {
     mouse: mouse,
     Input: Input,
     tone: tone,
+    music: music,
+    music_stop: fn () { _Canvas.music_stop() },
+    music_pause: fn () { _Canvas.music_pause() },
+    music_resume: fn () { _Canvas.music_resume() },
+    music_volume: fn (vol) { _Canvas.music_volume(vol) },
+    music_seek: fn (seconds) { _Canvas.music_seek(seconds) },
+    music_playing: fn () { _Canvas.music_playing() },
     run: run,
     LEFT: LEFT, RIGHT: RIGHT, UP: UP, DOWN: DOWN, A: A, B: B,
     PULSE: PULSE, PULSE2: PULSE2, TRIANGLE: TRIANGLE, SAWTOOTH: SAWTOOTH,

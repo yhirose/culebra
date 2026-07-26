@@ -65,7 +65,7 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println` を
 23. [`Log`](#23-log) — stderr へのレベル付き構造化ログ（text / JSON、child logger）
 24. [`TOML`](#24-toml) — TOML 設定を parse / stringify
 25. [`SQLite`](#25-sqlite) — 組み込み SQL データベース（query / execute / プリペアド文 / トランザクション）
-26. [`Canvas`](#26-canvas) — ゲーム向けイミディエイトモード 2D フレームバッファ（ピクセル / スプライト / フォント / 入力 / tone）
+26. [`Canvas`](#26-canvas) — ゲーム向けイミディエイトモード 2D フレームバッファ（ピクセル / スプライト / フォント / 入力 / tone / music）
 27. [`Scene`](#27-scene) — 手続きジオメトリ向けの retained-mode 3D レンダラ（opt-in、macOS 限定）
 28. [`Net`](#28-net) — 生の TCP / UDP ソケットと名前解決（`Http` の下位レイヤ）
 29. [`Desktop` / `Webview`](#29-desktop--webview) — ネイティブ WebView のデスクトップアプリ: ローカル HTTP サーバ + ウィンドウを 1 呼び出しで
@@ -3920,6 +3920,35 @@ decay = 0, release = 0, peak = nil, duty = 2)` は WASM-4 流の小さな APU �
 しない）。ネイティブ音声と WebAudio は**似た音になるよう調整した別実装**であって
 サンプル単位で同一ではない — ピクセル操作と違い `tone` は backend 間でビット完全一致
 である必要はない。
+
+### 音楽
+
+`Canvas.music(data, loop = true, vol = 100, start = 0.0)` は MP3 / Ogg Vorbis
+ファイルをそのバイト列（`String`、例えば `FS.read` の結果 — `Sprite.from_png` と
+同じバイト列渡しの流儀）から再生する。スロットは pygame の `mixer.music` と同じく
+**1 つだけ**: 新しいファイルを再生すると前のものは置き換わり、ハンドルは
+スクリプトに渡らない。`vol` は `tone` と同じ 0–100 スケール、`start` は
+ファイル内の秒位置。MP3 でも Ogg でもないバイト列はどの backend でも
+`ValueError: not a valid MP3 or Ogg audio stream` を投げ、この検査を通ったのに
+デコードに失敗したストリームは無音のままになる。
+
+| 関数 | 効果 |
+| --- | --- |
+| `Canvas.music(data, loop = true, vol = 100, start = 0.0)` | デコードして再生（再生中のファイルは置換） |
+| `Canvas.music_stop()` | 停止してアンロード |
+| `Canvas.music_pause()` / `Canvas.music_resume()` | 一時停止 / 停止位置から再開 |
+| `Canvas.music_volume(vol)` | 音量変更（0–100） |
+| `Canvas.music_seek(seconds)` | 位置ジャンプ |
+| `Canvas.music_playing() -> Bool` | いま鳴っているか |
+
+何もロードされていないときの各操作は no-op で `music_playing()` は `false` —
+`tone` の「clamp して投げない」流儀に合わせ、フォーマット検査だけが唯一の
+エラー。ネイティブではストリームを逐次デコードし、そのバッファは `present()`
+から補充されるので、**音楽はフレームを present している間だけ進む** — present
+しなくなったプログラムは音楽も一緒に止まる。ヘッドレス（および音声デバイスの
+無いマシン）ではすべて no-op。ブラウザではファイルのデコードは WebAudio が行い、
+Ogg 対応はブラウザ依存（Safari は歴史的に MP3 のみ）である点に注意。ネイティブは
+両フォーマットとも常に再生できる。
 
 ### ゲームループ
 

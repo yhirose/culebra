@@ -1379,6 +1379,20 @@ for c in cvcoords {
   case("cvglyph|" + c, cvinit + '_Canvas.glyph(_CFONT, 0, ' + c + ', 0, _CA+5); _cdump()')
   case("cvglyphi|" + c, cvinit + '_Canvas.glyph(_CFONT, ' + c + ', 0, 0, _CA+5); _cdump()')
 }
+# music: the format sniff (MP3 frame sync / ID3 / OggS) and its ValueError run
+# before any backend branch, so message and position must match everywhere; the
+# controls are unloaded no-ops under the corpus's headless backend. Sniffable
+# headers with garbage after them pass the sniff and fail the decoder silently.
+for d in ['"x"', '""', '"RIFF...."', '"\xff\x00abcd"', '"\xff\xfbjunk"',
+          '"\xff\xe3junk"', '"ID3 junk"', '"OggS junk"', '42', 'nil'] {
+  case("cvmusic|" + d, '_Canvas.music_play(' + d + ', 1, 100, 0); _Canvas.music_playing()')
+}
+for c in cvcoords {
+  case("cvmusicstart|" + c, '_Canvas.music_play("\xff\xfbok", 1, 100, ' + c + '); "ok"')
+  case("cvmusicseek|" + c, '_Canvas.music_seek(' + c + '); _Canvas.music_playing()')
+}
+case("cvmusic|noop", '_Canvas.music_stop(); _Canvas.music_pause(); _Canvas.music_resume(); _Canvas.music_volume(55); _Canvas.music_playing()')
+
 # font_load / glyph: an unknown handle, a negative index and an index past the
 # table must all draw nothing rather than read out of bounds. The two huge
 # indices are the ones where `index * 8` wraps a 64-bit product, so a bound
