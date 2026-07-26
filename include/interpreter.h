@@ -1758,7 +1758,7 @@ inline ObjectValue::ObjectValue() {
   gc.track_map(properties, non_string_props, key_order);
 }
 
-// --- Deterministic drop: the owned-resource stack (design §14.3) ---
+// --- Deterministic drop: the owned-resource stack ---
 //
 // Drop-having objects are registered here the moment `drop` is bound
 // (class instantiation / object literal / later property write). Every
@@ -2037,7 +2037,7 @@ struct DapFrameGuard {
   DapFrameGuard& operator=(const DapFrameGuard&) = delete;
 };
 
-// --- Scope-exit resolution for the owned stack (design §14.3) ---
+// --- Scope-exit resolution for the owned stack ---
 
 // How many of `env`'s direct bindings hold exactly this object. Drives
 // the scope-exit fast path: when the candidate's whole refcount is its
@@ -2653,7 +2653,7 @@ inline void _owned_process_scope_exit(
   }
 }
 
-// GC backstop finalize (design §9 exactly-once backstop, PEP 442
+// GC backstop finalize (exactly-once backstop, PEP 442
 // style): called by InterpGC::collect after its mark phase, BEFORE the
 // suppressed clear cascade — the whole garbage structure is still
 // intact, so drop bodies resolve their captures normally. Scans every
@@ -7016,7 +7016,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       // Iterator dispose protocol: call iter.dispose() on every exit path
       // (drain / break / exception). Default trait impl is a no-op, so
       // built-in iterators pay just a method lookup; generators override
-      // to run registered defers. See [[generator-design]] §dispose.
+      // to run registered defers.
       auto dispose_iter = [&]() {
         if (iter_val.type != Value::Object) return;
         const auto& iter_obj = iter_val.to_object();
@@ -11219,7 +11219,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // (matches Swift; Go would run all, but we keep it simple).
   //
   // Every scope-exit path funnels through here, so the owned-stack
-  // resolution (deterministic drop, design §14.3) piggybacks on the
+  // resolution (deterministic drop) piggybacks on the
   // tail: defers run first — they may still use the scope's resources —
   // then the resources created under this scope are dropped/inherited.
   // A throwing defer skips the resolution; the entries stay on the
@@ -11693,7 +11693,7 @@ inline void InterpGC::collect(Environment* current) {
     walk_node(p, n.kind, n.side1, n.side2, mark);
   }
 
-  // GC backstop finalize (PEP-442 *style* — fire-before-clear, design §9):
+  // GC backstop finalize (PEP-442 *style* — fire-before-clear):
   // before breaking anything, fire the pending `drop` of every owned resource
   // that the unreachable set orphaned — the structure is still intact, so drop
   // bodies see their captures. The clear cascade below then reclaims memory

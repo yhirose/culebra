@@ -1,6 +1,6 @@
 #pragma once
 // The Phase 3 PoC binding, restated as a Phase 4 declaration: this is
-// the thin TU shape a user writes for their own class (design §10.1).
+// the thin TU shape a user writes for their own class.
 // Compiling it instantiates the glue via wrap.h; the static initializer
 // below registers `__Foreign.Counter` before the stdlib setup walks the
 // registry. tests/test_foreign.cul (and difftest Dim25) are the spec —
@@ -26,7 +26,7 @@ inline const bool _foreign_counter_wrapped = [] {
   return true;
 }();
 
-// Phase 5: borrowing (§10.4). `inner` / `read_inner` return references
+// Phase 5: borrowing. `inner` / `read_inner` return references
 // INTO the Box — borrowing handles checked against the parent's closed
 // flag and generation. `reset` is non-const (generation bump: existing
 // borrows go stale); `touch` is non-const but declared harmless.

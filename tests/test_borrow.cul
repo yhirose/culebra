@@ -1,7 +1,7 @@
-# Phase 5 (design §10.4): borrowing handles. `box.inner()` returns a
+# Phase 5: borrowing handles. `box.inner()` returns a
 # reference INTO the Box — a non-owning handle validated on every access
 # against the parent's closed flag and generation counter. The single
-# user-visible failure is ClosedError (§7), for both "parent dropped"
+# user-visible failure is ClosedError, for both "parent dropped"
 # and "parent mutated since the borrow was taken".
 
 fn closed_msg(thunk) {

@@ -1,5 +1,5 @@
 #pragma once
-// The "user's own C++ asset" for the wrap demo (design §1): a plain
+// The "user's own C++ asset" for the wrap demo: a plain
 // header-only class culebra never heard of. Nothing here knows about
 // culebra — the binding lives entirely in vec2_binding.cpp.
 
@@ -21,7 +21,7 @@ class Vec2 {
     y_ *= k;
   }
   std::string show() const { return std::format("Vec2({}, {})", x_, y_); }
-  // By-value return — the §10.3 owning shape.
+  // By-value return — the owning shape.
   Vec2 unit() const {
     double l = len();
     return Vec2(x_ / l, y_ / l);

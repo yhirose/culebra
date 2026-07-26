@@ -1,6 +1,6 @@
 # Phase 2-4: the GC backstop fires `drop` exactly once on resources whose
 # owner was orphaned — the narrow residue deterministic scope-exit drop
-# cannot reach (design §9 / §14.3 "option 2 backstop", PEP 442 style).
+# cannot reach (the "option 2 backstop", PEP 442 style).
 #
 # Closure-held cycles used to be a backstop case on both backends; the
 # JIT now resolves them at scope exit (the owned walker follows closure

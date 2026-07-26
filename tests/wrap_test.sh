@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end test for `culebra wrap` (design §14.3 Phase 4 / P4-3): build
+# End-to-end test for `culebra wrap` (Phase 4 / P4-3): build
 # an extended binary from the examples/wrap declaration, then assert the
 # wrapped class behaves identically under interp, --jit, and an AOT
 # binary produced BY the extended binary. Requires a source checkout

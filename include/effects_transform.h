@@ -815,8 +815,8 @@ class EffectsLowerer {
   // --- CPS: flat-dispatch state machine over control flow ----------------
   //
   // The body lowers to a flat list of states — the same shape and reasoning as
-  // the generator's `CpsBuilder` ([[project-generator-design]] §CPS): each
-  // basic block is a state, control flow becomes `self._eff_state = K; continue`
+  // the generator's `CpsBuilder`: each basic block is a state, control flow
+  // becomes `self._eff_state = K; continue`
   // jumps over one `while true` dispatch loop, and every local lives on the
   // instance (all-locals-on-heap, so no liveness analysis). The transition
   // primitives differ from the generator's: a `perform` returns SUSPEND (and

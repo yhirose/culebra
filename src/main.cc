@@ -979,7 +979,7 @@ int run_build(const BuildOptions& opts) {
 
 // `culebra wrap decl.cpp [decl2.cpp ...] [-o out] [--link "<flags>"] [--lto]`
 // — build an EXTENDED culebra binary with the wrap.h declarations compiled
-// in (design §10.1 P3 / §14.3 Phase 4). The "codegen" already happened in
+// in (P3 / Phase 4). The "codegen" already happened in
 // the C++ templates; this subcommand is pure build orchestration: it
 // rebuilds the culebra source tree with CULEBRA_WRAP_SOURCES into a cache
 // dir and copies out the product. Requires a source checkout — the path

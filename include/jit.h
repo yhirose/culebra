@@ -1962,7 +1962,7 @@ struct JIT {
   void push_scope() {
     scopes_.emplace_back();
     // Capture the owned-stack watermark at scope entry (deterministic
-    // drop, design §14.3). Object creation is a runtime event, so
+    // drop). Object creation is a runtime event, so
     // every scope carries a mark: a plain load of the hot next_id.
     auto i64Ty = builder_.getInt64Ty();
     auto ptrTy = llvm::PointerType::get(ctx_, 0);

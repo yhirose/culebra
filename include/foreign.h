@@ -1,11 +1,11 @@
 #pragma once
-// Foreign instances — wrapped C++ objects (design §9 / §10, Phase 3).
+// Foreign instances — wrapped C++ objects (Phase 3).
 //
 // A wrapped C++ object lives in a per-Runtime, per-type id table; the
 // script-visible handle is an ordinary drop-having Object carrying the
 // id, so the whole Phase 1/2 lifetime machinery (owned stack,
 // deterministic scope-exit drop, cycles, GC backstop, exactly-once)
-// applies to it unmodified. The two-layer split of §9 falls out of the
+// applies to it unmodified. The two-layer split falls out of the
 // table representation directly:
 //
 //   drop event   = erase the table entry -> ~T() runs NOW (or the
@@ -13,12 +13,12 @@
 //                  erase of the same id is a no-op.
 //   memory event = the handle Object itself is reclaimed by the GC
 //                  whenever its references end — "dropped but still
-//                  addressable" is a legal state (§7).
+//                  addressable" is a legal state.
 //   closed check = a method finding no entry for its id raises
 //                  ClosedError instead of touching freed memory: the
-//                  single user-visible safety check of §7.
+//                  single user-visible safety check.
 //
-// Ownership shapes a binding maps return values through (§10.3):
+// Ownership shapes a binding maps return values through:
 //   T (by value)   -> adopt(make_unique<T>(std::move(v)))  — culebra owns
 //   unique_ptr<T>  -> adopt(std::move(p))                  — culebra owns
 //   shared_ptr<T>  -> adopt_shared(std::move(p))           — one share held
@@ -65,7 +65,7 @@ class ForeignTable {
                             : it->second.shared.get();
   }
 
-  // Generation counter (§10.4): non-const method dispatch bumps it;
+  // Generation counter: non-const method dispatch bumps it;
   // borrows snapshot it at creation and go stale on mismatch. -1 means
   // the entry is closed — a snapshot is never negative, so one compare
   // covers both "parent dropped" and "parent mutated".
@@ -124,7 +124,7 @@ inline ForeignTable<T>& table() {
   return *cached;
 }
 
-// Method-entry guard: the live instance, or the §7 safety error. The
+// Method-entry guard: the live instance, or the safety error. The
 // wording is shared by both backends so messages stay symmetric.
 template <class T>
 inline T* get_or_throw(int64_t id, std::string_view type_name, long line,
@@ -138,7 +138,7 @@ inline T* get_or_throw(int64_t id, std::string_view type_name, long line,
   return p;
 }
 
-// Type-erased per-T state read for the borrow validation chain (§10.4):
+// Type-erased per-T state read for the borrow validation chain:
 // the current generation, or -1 when the entry is closed.
 template <class T>
 inline int64_t entry_state(int64_t id) {
@@ -169,7 +169,7 @@ inline int64_t owner_gen_via(int64_t state_id, int64_t owner_id) {
   return v[state_id](owner_id);
 }
 
-// The single user-visible borrow failure (§7: closed, one check): both
+// The single user-visible borrow failure (closed, one check): both
 // "parent dropped" and "parent mutated since the borrow" land here, on
 // both backends, byte-identically.
 [[noreturn]] inline void throw_borrow_invalid(std::string_view type_name,
@@ -181,7 +181,7 @@ inline int64_t owner_gen_via(int64_t state_id, int64_t owner_id) {
       line, col);
 }
 
-// Borrow registry (§10.4). A borrowing handle stores only an opaque id;
+// Borrow registry. A borrowing handle stores only an opaque id;
 // the raw pointer and the parent link live HERE, in C++ memory a script
 // can't forge — so validation and dereference never trust a
 // script-writable slot, the same invariant owning handles get from the

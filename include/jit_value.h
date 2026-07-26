@@ -255,8 +255,8 @@ struct JitObject {
   // A Regex match: `m[i]` / `m["name"]` subscripts hit its capture groups
   // (mirrors interp's ObjectValue::is_match). Trailing, like the flags above.
   bool is_match = false;
-  // Index into the owned-resource stack (deterministic drop, design
-  // §14.3), -1 when unregistered. Set when `drop` is bound; the
+  // Index into the owned-resource stack (deterministic drop), -1 when
+  // unregistered. Set when `drop` is bound; the
   // release/sweep paths tombstone the entry through it. Trailing field —
   // codegen only GEPs earlier members.
   int64_t owned_idx = -1;

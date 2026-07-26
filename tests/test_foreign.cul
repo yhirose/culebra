@@ -1,8 +1,8 @@
-# Phase 3 (design §14.5): a hand-bound C++ class behind the `__Foreign`
+# Phase 3: a hand-bound C++ class behind the `__Foreign`
 # namespace — Counter from include/foreign_fixture.h. End to end this
 # exercises: construction, method dispatch through the shared thunk
 # table, eager-copy marshalling (Long / String), the three return-value
-# ownership shapes (§10.3), the `closed` safety contract (§7), and the
+# ownership shapes, the `closed` safety contract, and the
 # Phase 1/2 drop machinery the handle rides on (deterministic scope-exit
 # drop, cycles included, exactly-once).
 #
@@ -20,10 +20,10 @@ assert_eq(__Foreign.Counter.live(), 0)
   assert_eq(c.value(), 15)
   assert_eq(c.label(), 'Counter(15)')
 }
-# Scope exit dropped the instance: ~Counter ran (deterministic, §14.3).
+# Scope exit dropped the instance: ~Counter ran (deterministic).
 assert_eq(__Foreign.Counter.live(), 0)
 
-# --- Return-value ownership (§10.3): by value / unique_ptr / shared_ptr.
+# --- Return-value ownership: by value / unique_ptr / shared_ptr.
 {
   let a = __Foreign.Counter.new(1)
   let b = a.clone()      # by value -> a NEW owning Foreign
@@ -38,7 +38,7 @@ assert_eq(__Foreign.Counter.live(), 0)
 }
 assert_eq(__Foreign.Counter.live(), 0)   # every shape released its own
 
-# --- Explicit drop: eager close, then `closed` safety (§7), exactly once.
+# --- Explicit drop: eager close, then `closed` safety, exactly once.
 {
   let c = __Foreign.Counter.new(7)
   c.drop()

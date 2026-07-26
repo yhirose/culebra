@@ -1,5 +1,5 @@
 // The thin declaration TU a user writes to wrap their own class
-// (design §10.1 / §14.3 Phase 4). Build an extended culebra with:
+// (Phase 4). Build an extended culebra with:
 //
 //   culebra wrap examples/wrap/vec2_binding.cpp -o ext-culebra
 //

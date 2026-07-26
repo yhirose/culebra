@@ -80,7 +80,7 @@ fn rebind_cycle() {
 rebind_cycle()
 assert_eq(log.size(), 6)
 
-# --- Escape must NOT drop early (design §6's example): pushing into an
+# --- Escape must NOT drop early: pushing into an
 # outer-scope container moves ownership out; the resource drops when the
 # container's scope exits, not when the inner scope does.
 fn escape_check() {

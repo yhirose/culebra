@@ -1,5 +1,5 @@
 #pragma once
-// Declarative C++ class wrapping — design §10 / §14.3 Phase 4 (P4-1).
+// Declarative C++ class wrapping — Phase 4 (P4-1).
 //
 // The "codegen" is the C++ compiler, pybind11-style: a thin declaration
 // instantiates the glue (conversion thunks, method prototypes, Foreign
@@ -22,7 +22,7 @@
 // entry (~T() runs NOW), a dropped instance's method raises ClosedError,
 // and the handle — an ordinary drop-having Object — gets the whole
 // Phase 1/2 lifetime machinery (scope-exit drop, cycles, GC backstop,
-// exactly-once) for free. Return values lower per §10.3: a by-value or
+// exactly-once) for free. Return values lower by ownership shape: a by-value or
 // unique_ptr<U> return becomes an owning handle of U, shared_ptr<U>
 // holds one share, primitives go through cpp_to_value. U must itself be
 // wrapped (its class_info carries the display name the handle shows).
@@ -86,7 +86,7 @@ inline int64_t handle_id(const std::shared_ptr<Environment>& env) {
       env->get("self").to_object().get("_id").to_long());
 }
 
-// Generation of a handle, or -1 when it is no longer valid (§10.4).
+// Generation of a handle, or -1 when it is no longer valid.
 // Owning handles read their table entry through the type-erased
 // _state_fn; a borrowing handle (`_bid`) resolves through the borrow
 // table — both indirections, so a forged slot is a table miss, never a
@@ -100,7 +100,7 @@ inline int64_t handle_gen(const ObjectValue& h) {
   return -1;
 }
 
-// The live instance, or ClosedError (§7) — every method's first step. A
+// The live instance, or ClosedError — every method's first step. A
 // borrowing handle resolves its raw pointer from the borrow table only
 // after the parent chain validates; the pointer is never read from a
 // script-writable slot.
@@ -120,7 +120,7 @@ inline T* handle_self(const std::shared_ptr<Environment>& env) {
 }
 
 // The per-instance handle: data slots + the shared method prototypes +
-// the §9 drop event (erase the table entry — ~T() runs NOW; idempotent,
+// the drop event (erase the table entry — ~T() runs NOW; idempotent,
 // exactly-once via the Phase 1 `dropped` flag on the handle).
 template <class T>
 Value make_foreign_handle(int64_t id) {
@@ -159,7 +159,7 @@ inline void parent_link(const ObjectValue& parent, int64_t* state,
   }
 }
 
-// A borrowing handle (§10.4): the raw pointer + parent link live in the
+// A borrowing handle: the raw pointer + parent link live in the
 // borrow table (forgery-safe — the handle holds only the opaque id).
 // `__parent__` is an ordinary GC reference keeping the whole chain
 // alive. The handle owns nothing, but it DOES carry an internal `drop`
@@ -191,7 +191,7 @@ inline Value make_borrow_handle(T2* p, const Value& parent, int64_t pgen) {
   return Value(std::move(h));
 }
 
-// Non-const method dispatch bumps the instance's generation (§10.4),
+// Non-const method dispatch bumps the instance's generation,
 // staling its outstanding borrows: the foreign table entry for an
 // owning handle, the borrow table entry for a borrow (a mutation
 // through a borrow stales its children, not its siblings).
@@ -205,7 +205,7 @@ inline void bump_handle_gen(const std::shared_ptr<Environment>& env) {
   }
 }
 
-// Return-value lowering (§10.3). `R` decayed: handles for wrapped
+// Return-value lowering. `R` decayed: handles for wrapped
 // class values / unique_ptr / shared_ptr, cpp_to_value for the rest.
 template <class R>
 inline Value lower_return(R r) {
@@ -221,7 +221,7 @@ inline Value lower_return(R r) {
   } else if constexpr (requires(D v) { _detail::cpp_to_value(std::move(v)); }) {
     return _detail::cpp_to_value(std::move(r));
   } else {
-    // A wrapped-class reference return is not a §10.3 ownership shape:
+    // A wrapped-class reference return is not an ownership shape:
     // lowering it by value would silently move from (T&) or shadow-copy
     // (const T&) the live instance. Borrowing is Phase 5.
     static_assert(!std::is_reference_v<R>,
@@ -303,7 +303,7 @@ inline Value make_method_proto(Mf mf, std::vector<std::string> names,
                              std::move(eval), return_annotation<R>()));
 }
 
-// A borrowed-return method (§10.4): the reference points INTO self, so
+// A borrowed-return method: the reference points INTO self, so
 // the result is a borrowing handle snapshotting the parent's current
 // generation. Taking a borrow never bumps — the declaration already
 // states the method returns a view, and multiple live borrows are the
@@ -656,7 +656,7 @@ void jit_method_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t sel
   { *__ret = invoke(std::index_sequence_for<Args...>{}); return; }
 }
 
-// A borrowed-return method thunk (§10.4): the parent's generation is
+// A borrowed-return method thunk: the parent's generation is
 // snapshotted after validation, and the result is a borrowing handle.
 // Taking a borrow never bumps.
 template <class T, auto Mf, class T2, class... Args>
@@ -730,7 +730,7 @@ inline std::vector<WrappedNsRow>& wrapped_ns_rows() {
 }
 #endif  // CULEBRA_JIT_ENABLED
 
-// Per-method dispatch policy (§10.4). `standard` derives the generation
+// Per-method dispatch policy. `standard` derives the generation
 // bump from C++ const-ness (non-const = bump); `preserves_borrows` is
 // the author's opt-out for non-const methods that don't invalidate
 // outstanding borrows. Misdeclaring const-ness or this flag is a
@@ -806,7 +806,7 @@ class ClassBinder {
 
   // A method returning a reference INTO self (`T2&` / `const T2&` of a
   // wrapped class): the result is a borrowing handle validated against
-  // this instance's closed flag and generation on every access (§10.4).
+  // this instance's closed flag and generation on every access.
   // Taking a borrow never bumps the generation.
   template <auto Mf>
   ClassBinder& borrowed_method(std::string name,

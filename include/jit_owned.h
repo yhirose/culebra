@@ -8,7 +8,7 @@
 // fragments rely on jit.h's #include block and are included by jit.h in a
 // fixed sequence (see jit.h); they are not standalone headers.
 
-// --- Deterministic drop: the owned-resource stack (design §14.3) ---
+// --- Deterministic drop: the owned-resource stack ---
 //
 // JIT mirror of the interp's owned_stack (interpreter.h). Drop-having
 // objects are registered the moment `drop` is bound (instance

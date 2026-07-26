@@ -1,9 +1,9 @@
 #pragma once
-// The Foreign-binding PoC fixture (design §14.5): a deliberately plain,
+// The Foreign-binding PoC fixture: a deliberately plain,
 // header-only C++ class with everything Phase 3's hand-written binding
 // must exercise end to end — an observable constructor/destructor pair,
 // const and mutating methods over primitive and string types, and the
-// three return-value ownership shapes (§10.3): by value, unique_ptr,
+// three return-value ownership shapes: by value, unique_ptr,
 // shared_ptr. It stands in for "the user's own C++ asset"; the binding
 // that wraps it (stdlib_interp.h / stdlib_jit.h, `__Foreign` namespace)
 // is the shape Phase 4's codegen will emit.
@@ -28,7 +28,7 @@ class Counter {
   void add(long n) { value_ += n; }
   std::string label() const { return "Counter(" + std::to_string(value_) + ")"; }
 
-  // The three §10.3 return-ownership shapes.
+  // The three return-ownership shapes.
   Counter clone() const { return Counter(value_); }            // by value
   std::unique_ptr<Counter> fork() const {                      // unique_ptr
     return std::make_unique<Counter>(value_);
@@ -46,7 +46,7 @@ class Counter {
   static inline thread_local long live_ = 0;
 };
 
-// Phase 5 fixture: a class whose methods BORROW (§10.4) — `inner()`
+// Phase 5 fixture: a class whose methods BORROW — `inner()`
 // returns a reference into self, so the wrap layer must produce a
 // borrowing handle (parent `closed` + generation checks) rather than an
 // owning copy. `reset` is the non-const mutation that bumps the

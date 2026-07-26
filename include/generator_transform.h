@@ -20,8 +20,7 @@
 // loop, and every local lives on the instance (all-locals-on-heap, so no
 // liveness analysis). Two source-level pre-passes run first: the C# rule
 // rejects yield inside try-catch/defer, and yielding for-in loops are
-// desugared to `while it.has_next()` form. See
-// [[project-generator-design]] for the design axes and the frozen spec.
+// desugared to `while it.has_next()` form.
 
 #pragma once
 
@@ -852,8 +851,7 @@ inline void emit_ctor_param_and_local_inits(
 // (self.X), the linearizer works statement-by-statement with no
 // expression splitting and no liveness analysis; "flat" dispatch (every
 // basic block is a state, edges set a counter) sidesteps the relooper
-// problem of reconstructing structured loops. See
-// [[project-generator-design]] §CPS.
+// problem of reconstructing structured loops.
 //
 // Handles plain stmts / yield / yield from / if-elseif-else / while
 // (incl. nested) / break / continue / return / defer. for-in is
@@ -1202,9 +1200,9 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
   if (!fn_body_has_yield(*ast->nodes.back())) return ast;
 
   // C# rule (CS1626): a yield statement may not appear inside a try-catch
-  // or defer block. yield-spanning try is permanently out of scope
-  // ([[project-generator-design]] §仕様凍結項目). Cleanup belongs in a
-  // top-level `defer { ... }`; value-level recovery in the yielded
+  // or defer block. yield-spanning try is permanently out of scope.
+  // Cleanup belongs in a top-level `defer { ... }`; value-level recovery
+  // in the yielded
   // expression (`yield try { ... } catch e { ... }`).
   if (auto* bad = find_yield_inside_try_or_defer(*ast->nodes.back())) {
     throw CulebraError(

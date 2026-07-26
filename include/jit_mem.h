@@ -85,7 +85,7 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_explicit_drop(
     _culebra_call_drop_if_present(reinterpret_cast<JitObject*>(data));
 }
 
-// --- Deterministic drop: scope-exit resolution (design §14.3) ---
+// --- Deterministic drop: scope-exit resolution ---
 
 // Codegen helper behind the compile-time-known `obj.drop = ...` IC fast
 // path: set the gate and register on the owned stack — the same effect
@@ -95,7 +95,7 @@ culebra_runtime_owned_register_drop(JitObject* o) {
   if (o) _jit_owned_bind_drop(o);
 }
 
-// GC backstop finalize (design §9 exactly-once backstop, PEP 442
+// GC backstop finalize (exactly-once backstop, PEP 442
 // style): runs once per collection, before any sweep, over the intact
 // dead set. Pin every dead struct's refcount first — a drop body that
 // breaks its own cycle would otherwise free a sibling ahead of its
