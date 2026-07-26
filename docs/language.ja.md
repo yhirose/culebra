@@ -2632,10 +2632,9 @@ field を走査する (method と内部 class tag は除外) ので、 field 変
   self.foo() } }` で conform class が `foo` を override しないと
   stack overflow。 depth guard 未実装。
 * **JIT trait default closure の refcount**: 各 default method は
-  JIT module の lifetime ぶん +1 reference を保持。 single-shot JIT
-  / AOT (1 度の main → exit) は影響なし、 long-running JIT host で
-  多 session 再 compile すると slow growth。 Phase 4+ で cleanup
-  予定。
+  per-Runtime table に +1 reference で保持。 trait 再宣言で displaced
+  body は release され、 残りは Runtime 破棄時に release されるため、
+  long-running JIT host で多 session 再 compile しても蓄積しない。
 * **多重 dispatch overhead**: trait 引数を持たない関数でも、 呼び出し
   毎に trait_registry × args の walk が発生 (cache 後は安いが、
   warmup 3 × n_args の probe コストがホットループで露呈)。 Phase 4+

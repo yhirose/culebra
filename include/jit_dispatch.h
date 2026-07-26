@@ -590,18 +590,29 @@ inline std::string_view _jit_multifn_display(std::string_view key) {
 }
 
 // Trait default-method bodies on the JIT side. Outer map keyed by
-// trait name, inner by method name. Holds a +1 reference on each
-// closure for the program's lifetime.
-// thread_local: per-thread JIT closures (see _jit_variant_ctor_info
-// note). The shared trait *definitions* live in culebra::trait_registry
-// (mutex-guarded); only the compiled default-method closures are
-// per-thread, so this table is isolated rather than locked.
+// trait name, inner by method name; each slot holds a +1 on its
+// closure, released when the Runtime dies. Per-Runtime substate (same
+// rationale as _jit_multimethods above; see the kSlotJitTraitDefaults
+// note for the teardown ordering). The shared trait *definitions* live
+// in culebra::trait_registry (mutex-guarded); only the compiled
+// default-method closures are per-Runtime, so this table is isolated
+// rather than locked.
+struct _JitTraitDefaultTable {
+  std::unordered_map<std::string,
+                     std::unordered_map<std::string, JitClosure*>> entries;
+  ~_JitTraitDefaultTable() {
+    for (auto& [_, methods] : entries)
+      for (auto& [__, cls] : methods)
+        if (cls)
+          _culebra_value_release_impl(TAG_FUNC,
+                                      reinterpret_cast<int64_t>(cls));
+  }
+};
 inline std::unordered_map<std::string,
                           std::unordered_map<std::string, JitClosure*>>&
 _jit_trait_default_impls() {
-  static thread_local std::unordered_map<
-      std::string, std::unordered_map<std::string, JitClosure*>> tbl;
-  return tbl;
+  return culebra::runtime_substate<_JitTraitDefaultTable>(
+             culebra::kSlotJitTraitDefaults).entries;
 }
 
 // Runtime registration hook called from compile_trait_decl's emitted
@@ -627,6 +638,22 @@ culebra_runtime_register_trait_default(const char* trait_name,
     _culebra_value_release_impl(TAG_FUNC,
                                 reinterpret_cast<int64_t>(displaced));
   }
+}
+
+// Drop every registered default for `trait_name`, releasing each held +1.
+// Called when a trait declaration is re-compiled so the re-declared trait
+// starts clean instead of stranding the old bodies' refs. Detach before
+// release, same order as the register above.
+inline void _jit_trait_defaults_reset(const std::string& trait_name) {
+  auto& tbl = _jit_trait_default_impls();
+  auto it = tbl.find(trait_name);
+  if (it == tbl.end()) return;
+  auto doomed = std::move(it->second);
+  it->second.clear();
+  for (auto& [_, cls] : doomed)
+    if (cls)
+      _culebra_value_release_impl(TAG_FUNC,
+                                  reinterpret_cast<int64_t>(cls));
 }
 
 // Add (or refresh) a method entry on the registered trait. Called

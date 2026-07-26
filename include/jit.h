@@ -9045,8 +9045,7 @@ struct JIT {
     culebra::TraitDef def;
     def.name = trait_name;
     for (auto super : th.supertraits) def.supertraits.emplace_back(super);
-    auto& defaults = _jit_trait_default_impls()[trait_name];
-    defaults.clear();
+    _jit_trait_defaults_reset(trait_name);
 
     for (size_t i = k + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];

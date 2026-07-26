@@ -1528,6 +1528,12 @@ enum RuntimeSlot : size_t {
   // registry instead of a destroyed thread_local. See _jit_multifn_forget.
   kSlotJitMultifnNames,
   kSlotJitMultimethods,
+  // JIT trait default-method table (trait → method → closure), holding a +1
+  // on each compiled default body. Same placement rationale as the multifn
+  // registries above: it outlives the JitValue-holding tables (a teardown
+  // `drop` can still dispatch a trait default) while its own destructor's
+  // release cascade still sees a live multifn registry, GC heap, and slab.
+  kSlotJitTraitDefaults,
   kSlotShapeRegistry,  // reserved/unused: the Shape intern table is now a
                        // process-global singleton (see jit.h ShapeRegistry) —
                        // Shapes are shared immutable metadata, not isolated heap

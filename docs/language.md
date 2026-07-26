@@ -2818,10 +2818,10 @@ tag), so they stay correct as fields change. Details:
   conforming class doesn't override `foo`. No depth guard is
   installed yet.
 * **JIT trait-default closure refcount**: each declared default
-  method retains +1 reference for the lifetime of the JIT module.
-  Single-shot JIT or AOT (one main → exit) is unaffected; long-
-  running JIT hosts re-compiling many sessions accumulate slow
-  growth. Phase 4+ refcount cleanup pending.
+  method is held at +1 in a per-Runtime table. Re-declaring a trait
+  releases the displaced bodies, and the rest are released when the
+  Runtime is destroyed, so long-running JIT hosts re-compiling many
+  sessions do not accumulate them.
 * **multifn dispatch overhead**: every call walks the full
   trait_registry × args matrix once per warmup, even for functions
   with no trait-typed parameters. Cache amortizes repeats, but
