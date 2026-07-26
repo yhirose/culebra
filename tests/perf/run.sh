@@ -12,6 +12,9 @@
 # a sub-1× threshold honestly — JIT startup overhead dominates tiny
 # benches.
 #
+# Size a new bench so the interp run lands well above 0.1s: `time -p`
+# reports hundredths, so below that the ratio measures the timer.
+#
 # Usage:
 #   tests/perf/run.sh
 #   CULEBRA=./build/culebra tests/perf/run.sh

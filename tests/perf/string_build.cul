@@ -1,8 +1,10 @@
 # String concatenation via interpolation (heavy allocator churn)
+# Cost is O(n^2) in the loop count. 5000 left interp at 0.02s, where the
+# timer's resolution decided the ratio rather than the workload.
 # perf: min_speedup 0.35
 mut i = 0
 mut s = ''
-while i < 5000 {
+while i < 30000 {
   s = "{s}{i},"
   i = i + 1
 }
