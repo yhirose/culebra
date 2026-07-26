@@ -1,4 +1,4 @@
-# racer — a port of Jake Gordon's javascript-racer (MIT), v4.final.
+# retro-run — a port of Jake Gordon's javascript-racer (MIT), v4.final.
 #
 # The pseudo-3D road, the projection, the road geometry, the AI and every
 # constant come from the original; what changed is the art (generated, see
@@ -10,7 +10,7 @@
 #
 # Controls: arrows or WASD. Run with --jit for the smoothest frame time.
 # An optional first argument overrides the draw distance, e.g.
-#   culebra --jit racer.cul 150
+#   culebra --jit retro-run.cul 150
 # Shortening it trims the far road/background/sprites and, since v4's own AI
 # window is sized off the same constant, cars that far ahead stop steering
 # around each other — the same coupling the original has. The fog table is a

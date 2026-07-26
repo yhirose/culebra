@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the racer's placeholder art.
+"""Generate retro-run's placeholder art.
 
 The upstream javascript-racer ships sprites lifted from OutRun and music that
 may not be redistributed, so this draws stand-ins from scratch. What is NOT a

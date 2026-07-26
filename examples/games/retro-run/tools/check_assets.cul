@@ -3,7 +3,7 @@
 // Canvas.Sprite.from_png the game will use, so a decode regression fails here
 // too.
 //
-// Run: culebra examples/games/racer/tools/check_assets.cul
+// Run: culebra examples/games/retro-run/tools/check_assets.cul
 
 let dir = FS.dirname(FS.dirname(Sys.script)) + "/assets"
 

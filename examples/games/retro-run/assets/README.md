@@ -1,4 +1,4 @@
-# racer assets
+# retro-run assets
 
 Generated, not drawn by hand — run `python3 ../tools/gen_assets.py` to rebuild
 them. The generator only needs the Python standard library.
@@ -47,7 +47,7 @@ backgrounds still share one mask.
 Warm pastel, plum-ish ink instead of black, dithering instead of intermediate
 tones. The base values, the saturation boost and the light/dark narrowing all
 live at the top of `gen_assets.py`, which is the single source for both the art
-and `racer.cul`'s road colours.
+and `retro-run.cul`'s road colours.
 
 `sprites.png` is baked once with the **day** palette and is not recoloured per
 scene — only the backgrounds have four variants.

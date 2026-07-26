@@ -1,4 +1,4 @@
-# Racer
+# Retro Run
 
 A culebra port of Jake Gordon's
 [javascript-racer](https://github.com/jakesgordon/javascript-racer)
@@ -7,17 +7,17 @@ the AI traffic, collision, and lap timing all come from the original. What's
 different: the art (generated, not lifted — see `assets/README.md`), a
 four-scene day cycle that cross-fades once per lap, and the shape of the hot
 loops, rewritten for a tree-walking interpreter rather than a JIT'd browser
-(see `racer.cul`'s header comment for why).
+(see `retro-run.cul`'s header comment for why).
 
 ## Run
 
 ```sh
-culebra --jit examples/games/racer/racer.cul     # native window, smoothest
-culebra examples/games/racer/racer.cul           # interpreter (also fine)
+culebra --jit examples/games/retro-run/retro-run.cul  # native window, smoothest
+culebra examples/games/retro-run/retro-run.cul        # interpreter (also fine)
 ```
 
 Or serve `site/playground` (`bash playground/build.sh` first, if it isn't
-already built) and open it in a browser — pick "Canvas: Racer" from the
+already built) and open it in a browser — pick "Canvas: Retro Run" from the
 Examples menu. It runs the same source; the art streams in over `fetch`
 instead of the local filesystem, everything else is identical. Open it as
 `http://localhost:...`, not `http://[::]`: the latter is treated as
@@ -28,7 +28,7 @@ draw distance (default 300, matching v4's own default; its tweak UI allows
 100..500):
 
 ```sh
-culebra --jit examples/games/racer/racer.cul 150
+culebra --jit examples/games/retro-run/retro-run.cul 150
 ```
 
 ## Assets
@@ -36,7 +36,7 @@ culebra --jit examples/games/racer/racer.cul 150
 `assets/` holds generated placeholder art — see `assets/README.md` for what's
 fixed (sprite/background rectangles, which the game's scale and collision
 depend on) versus free to redraw. If a copy of upstream's own
-`images/sprites.png` sits next to `racer.cul` (personal use, not
+`images/sprites.png` sits next to `retro-run.cul` (personal use, not
 redistribution — see the note in `assets/README.md`), the game finds it via
 `FS.exists` and uses it instead; the Playground build never has one, so it
 always uses the generated set.

@@ -23,14 +23,14 @@
         { "title": "TUI: Same Game", "path": "examples/games/samegame.cul" },
         { "title": "Canvas: Rocci Bird", "path": "examples/games/rocci-bird.cul" },
         {
-          "title": "Canvas: Racer",
-          "path": "examples/games/racer/racer.cul",
+          "title": "Canvas: Retro Run",
+          "path": "examples/games/retro-run/retro-run.cul",
           "assets": [
-            "examples/games/racer/assets/sprites.png",
-            "examples/games/racer/assets/background_asayake.png",
-            "examples/games/racer/assets/background_hiru.png",
-            "examples/games/racer/assets/background_yuugure.png",
-            "examples/games/racer/assets/background_twilight.png"
+            "examples/games/retro-run/assets/sprites.png",
+            "examples/games/retro-run/assets/background_asayake.png",
+            "examples/games/retro-run/assets/background_hiru.png",
+            "examples/games/retro-run/assets/background_yuugure.png",
+            "examples/games/retro-run/assets/background_twilight.png"
           ]
         }
       ]
