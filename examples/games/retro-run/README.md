@@ -50,6 +50,12 @@ directory it was looked for in. Upstream ships a single background, so pointing
 at its art leaves the day cycle to the road, fog and sky colours while the
 picture behind them stays put.
 
+A `music.ogg` or `music.mp3` in the directory (looked for in that order) loops
+under the run via `Canvas.music`, replacing the built-in chiptune riff —
+upstream's own soundtrack, if you have it. Either way the volume sits at v4's
+quiet `music.volume = 0.05` level. The generated set ships no music, so the
+chiptune is the default.
+
 ## Performance
 
 640×480, `drawDistance` 300, 200 cars, `-O3`: the JIT runs at 2.4–4.5 ms a

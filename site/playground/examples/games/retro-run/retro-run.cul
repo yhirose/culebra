@@ -485,11 +485,24 @@ mut last_lap_time = 0.0
 mut fast_lap_time = 180.0             # v4's starting target, session-lived
 
 # --- BGM ---------------------------------------------------------------
-# v4's own music is a quiet `music.volume = 0.05` loop playing under the
-# engine sound; this is the culebra-native equivalent — a short retro-arcade
-# riff over Am-F-C-G, ticked from `update()` so its rhythm is exact regardless
-# of display framerate. `tone()` is fire-and-forget (the APU keeps playing the
-# note on its own), so the sequencer is just "is it this note's turn yet".
+# A music.ogg / music.mp3 next to the art (upstream's own soundtrack, say)
+# loops under the run instead of the chiptune; the generated assets ship no
+# music, so the riff below is the default. Either way the level sits at v4's
+# own quiet `music.volume = 0.05` (= vol 25 on Canvas's 0..100 scale).
+let MUSIC_FILE = fn () {
+  mut found = nil
+  for name in ["music.ogg", "music.mp3"] {
+    let path = ART_DIR + "/" + name
+    if found == nil && FS.exists(path) { found = path }
+  }
+  found
+}()
+if MUSIC_FILE != nil { Canvas.music(FS.read(MUSIC_FILE), vol: 25) }
+
+# The chiptune fallback — a short retro-arcade riff over Am-F-C-G, ticked from
+# `update()` so its rhythm is exact regardless of display framerate. `tone()`
+# is fire-and-forget (the APU keeps playing the note on its own), so the
+# sequencer is just "is it this note's turn yet".
 let LEAD_STEP = 8            # frames per sixteenth-note lead step
 let BASS_STEP = 16           # frames per eighth-note bass step
 let BGM_LOOP = 128           # one loop = 4 chords x 32 frames each
@@ -503,12 +516,12 @@ mut bgm_frame = 0
 let tick_bgm = fn () {
   if bgm_frame % LEAD_STEP == 0 {
     let note = LEAD_NOTES[(bgm_frame / LEAD_STEP) % LEAD_NOTES.size()]
-    Canvas.tone(note, LEAD_STEP - 3, vol: 40, wave: Canvas.PULSE,
+    Canvas.tone(note, LEAD_STEP - 3, vol: 20, wave: Canvas.PULSE,
                 decay: 2, release: 2, duty: Canvas.DUTY_QUARTER)
   }
   if bgm_frame % BASS_STEP == 0 {
     let note = BASS_NOTES[(bgm_frame / BASS_STEP) % BASS_NOTES.size()]
-    Canvas.tone(note, BASS_STEP - 4, vol: 55, wave: Canvas.PULSE2,
+    Canvas.tone(note, BASS_STEP - 4, vol: 28, wave: Canvas.PULSE2,
                 decay: 3, release: 4, duty: Canvas.DUTY_EIGHTH)
   }
   bgm_frame = (bgm_frame + 1) % BGM_LOOP
@@ -679,7 +692,7 @@ let update = fn (dt) {
     }
   }
 
-  tick_bgm()
+  if MUSIC_FILE == nil { tick_bgm() }
 }
 
 # --- render ----------------------------------------------------------------
