@@ -986,6 +986,12 @@ one_hour / 2                          # → Duration
 a < b, a <= b, a == b                 # natural ordering on both types
 ```
 
+Both classes wrap a nanosecond count, but they are not interchangeable:
+a combination with no meaning — `t1 + t2`, `t < one_hour`, or a bare
+number on either side — raises a `TypeError` naming what it got instead
+of quietly doing the arithmetic. Equality is the exception: `==` against
+any other type is `false`, never an error.
+
 ---
 
 ## 6. `Random`
