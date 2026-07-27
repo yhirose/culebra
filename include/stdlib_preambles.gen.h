@@ -194,11 +194,12 @@ let _term_module = fn () {
     put(x, y, s, style = "") {
       mut cx = x
       for g in s.graphemes() {
-        self.set(cx, y, to_string(g), style)
-        # set() marks the next cell "" for a wide glyph; reuse that instead of
-        # measuring the width again.
-        let wide = cx + 1 < self._w && self._back[cx + 1] == ""
-        cx = cx + (if wide { 2 } else { 1 })
+        let gs = to_string(g)
+        self.set(cx, y, gs, style)
+        # Advance by the glyph's own display width, the same measure set() uses
+        # to blank the continuation cell. Reading that cell back instead misses
+        # the row offset and breaks whenever the draw was clipped.
+        cx = cx + (if _Term.width(gs) == 2 { 2 } else { 1 })
       }
       self
     }

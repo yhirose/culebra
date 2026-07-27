@@ -121,6 +121,25 @@ w.set(1, 0, "z")                    // refill the continuation cell
 w.set(3, 0, "Q")                    // later cell that reveals cursor drift
 assert_eq(w.render(), "\x1b[1;1H🐸\x1b[1;2Hz\x1b[1;4HQ")
 
+// put() advances by each glyph's own width on every row: two wide glyphs land
+// on columns 1-2 and 3-4, so the second needs no cursor move.
+let p = Term.Screen.new()
+p.clear()
+p.render()                          // full repaint of blanks (discard)
+p.clear()
+p.put(0, 2, "🐸🐸")
+assert_eq(p.render(), "\x1b[3;1H🐸🐸")
+
+// ...and row 0 has no say in it. A wide glyph up there blanks its continuation
+// cell; a narrow put() on another row must still advance one column.
+let q = Term.Screen.new()
+q.clear()
+q.render()                          // full repaint of blanks (discard)
+q.clear()
+q.set(1, 0, "🐸")                   // blanks (2, 0)
+q.put(1, 4, "ab")
+assert_eq(q.render(), "\x1b[1;2H🐸\x1b[5;2Hab")
+
 // Screen.size mirrors the namespace size
 assert_eq(s.cols(), 80)
 assert_eq(s.rows(), 24)
