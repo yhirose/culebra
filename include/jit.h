@@ -9658,6 +9658,12 @@ struct JIT {
         methodSlab = llvm::ConstantPointerNull::get(ptrTy);
         nameArrayPtr = llvm::ConstantPointerNull::get(ptrTy);
       }
+      // build_class_meta runs the well-known contract over the method
+      // template, so publish the declaration's position for that throw —
+      // the interp stamps it with the CLASS_DECL node. PosGuard keeps
+      // current_line_ on that node here, even after the method bodies
+      // above compiled.
+      emit_set_op_pos();
       metaPtr = emit_call(
           module_->getOrInsertFunction(rt::build_class_meta, ptrTy, ptrTy,
                                        ptrTy, builder_.getInt64Ty()),
