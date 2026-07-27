@@ -5,17 +5,22 @@ let _canvas_module = fn () {
   # is the colour every Canvas call takes.
   let rgba = fn (r, g, b, a = 255) { r + g * 256 + b * 65536 + a * 16777216 }
 
-  # Pack the blit transform flags. flip_x/flip_y mirror; transpose swaps the X
-  # and Y axes — a reflection across the main diagonal (combine it with a flip
-  # for a true 90° rotation).
-  let _blit_flags = fn (flip_x, flip_y, transpose) {
-    (if flip_x { 1 } else { 0 }) + (if flip_y { 2 } else { 0 }) + (if transpose { 4 } else { 0 })
+  # The mirror bits, shared by both blit paths.
+  let _flip_bits = fn (flip_x, flip_y) {
+    (if flip_x { 1 } else { 0 }) + (if flip_y { 2 } else { 0 })
   }
 
-  # Flags for the scaling blit. Same flip bits; there is no transpose, and bit 3
-  # asks for box averaging when the sprite shrinks (ignored when it doesn't).
+  # Pack the blit transform flags. transpose swaps the X and Y axes — a
+  # reflection across the main diagonal (combine it with a flip for a true 90°
+  # rotation).
+  let _blit_flags = fn (flip_x, flip_y, transpose) {
+    _flip_bits(flip_x, flip_y) + (if transpose { 4 } else { 0 })
+  }
+
+  # Flags for the scaling blit. There is no transpose, and bit 3 asks for box
+  # averaging when the sprite shrinks (ignored when it doesn't).
   let _scale_flags = fn (flip_x, flip_y, smooth) {
-    (if flip_x { 1 } else { 0 }) + (if flip_y { 2 } else { 0 }) + (if smooth { 8 } else { 0 })
+    _flip_bits(flip_x, flip_y) + (if smooth { 8 } else { 0 })
   }
 
   # A registered sprite. `pixels` is a flat row-major array; if `palette` is

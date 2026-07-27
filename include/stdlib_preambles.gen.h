@@ -113,24 +113,23 @@ let _term_module = fn () {
   # SGR parameter fragments (no escape wrapper), already downsampled to the
   # active level — "" means "no colour at this level". `Term.style` joins
   # these with attributes; the wrapping helpers below add `\x1b[..m`/reset.
-  let _16fg = fn (i) { to_string(if i < 8 { 30 + i } else { 90 + i - 8 }) }
-  let _16bg = fn (i) { to_string(if i < 8 { 40 + i } else { 100 + i - 8 }) }
-  let _fg_params = fn (n) {
-    if _level >= 2 { "38;5;" + to_string(n) }
-    else { if _level == 1 { if n < 16 { _16fg(n) } else { let c = _idx_rgb(n); _16fg(_rgb16(c[0], c[1], c[2])) } } else { "" } }
+  # Foreground and background differ only by ground: the 16-colour bases are
+  # 30/90 vs 40/100 (each +10) and the extended-colour introducer is 38 vs 48.
+  # Both grounds share one downsample ladder so a fix to it can't reach only one.
+  let _16sgr = fn (i, base) { to_string(if i < 8 { base + i } else { base + 60 + i - 8 }) }
+  let _16fg = fn (i) { _16sgr(i, 30) }
+  let _idx_params = fn (n, base, ext) {
+    if _level >= 2 { ext + ";5;" + to_string(n) }
+    else { if _level == 1 { if n < 16 { _16sgr(n, base) } else { let c = _idx_rgb(n); _16sgr(_rgb16(c[0], c[1], c[2]), base) } } else { "" } }
   }
-  let _bg_params = fn (n) {
-    if _level >= 2 { "48;5;" + to_string(n) }
-    else { if _level == 1 { if n < 16 { _16bg(n) } else { let c = _idx_rgb(n); _16bg(_rgb16(c[0], c[1], c[2])) } } else { "" } }
+  let _rgb_params = fn (r, g, b, base, ext) {
+    if _level >= 3 { ext + ";2;" + to_string(r) + ";" + to_string(g) + ";" + to_string(b) }
+    else { if _level == 2 { ext + ";5;" + to_string(_rgb256(r, g, b)) } else { if _level == 1 { _16sgr(_rgb16(r, g, b), base) } else { "" } } }
   }
-  let _rgbfg_params = fn (r, g, b) {
-    if _level >= 3 { "38;2;" + to_string(r) + ";" + to_string(g) + ";" + to_string(b) }
-    else { if _level == 2 { "38;5;" + to_string(_rgb256(r, g, b)) } else { if _level == 1 { _16fg(_rgb16(r, g, b)) } else { "" } } }
-  }
-  let _rgbbg_params = fn (r, g, b) {
-    if _level >= 3 { "48;2;" + to_string(r) + ";" + to_string(g) + ";" + to_string(b) }
-    else { if _level == 2 { "48;5;" + to_string(_rgb256(r, g, b)) } else { if _level == 1 { _16bg(_rgb16(r, g, b)) } else { "" } } }
-  }
+  let _fg_params = fn (n) { _idx_params(n, 30, "38") }
+  let _bg_params = fn (n) { _idx_params(n, 40, "48") }
+  let _rgbfg_params = fn (r, g, b) { _rgb_params(r, g, b, 30, "38") }
+  let _rgbbg_params = fn (r, g, b) { _rgb_params(r, g, b, 40, "48") }
   # Wrap text in `\x1b[<params>m ... \x1b[<reset>m` (passthrough when empty).
   let _wrap = fn (s, params, reset) { if params == "" { s } else { "\x1b[" + params + "m" + s + "\x1b[" + reset + "m" } }
   let _named = fn (s, i) { if _level == 0 { s } else { _wrap(s, _16fg(i), "39") } }
@@ -311,17 +310,22 @@ let _canvas_module = fn () {
   # is the colour every Canvas call takes.
   let rgba = fn (r, g, b, a = 255) { r + g * 256 + b * 65536 + a * 16777216 }
 
-  # Pack the blit transform flags. flip_x/flip_y mirror; transpose swaps the X
-  # and Y axes — a reflection across the main diagonal (combine it with a flip
-  # for a true 90° rotation).
-  let _blit_flags = fn (flip_x, flip_y, transpose) {
-    (if flip_x { 1 } else { 0 }) + (if flip_y { 2 } else { 0 }) + (if transpose { 4 } else { 0 })
+  # The mirror bits, shared by both blit paths.
+  let _flip_bits = fn (flip_x, flip_y) {
+    (if flip_x { 1 } else { 0 }) + (if flip_y { 2 } else { 0 })
   }
 
-  # Flags for the scaling blit. Same flip bits; there is no transpose, and bit 3
-  # asks for box averaging when the sprite shrinks (ignored when it doesn't).
+  # Pack the blit transform flags. transpose swaps the X and Y axes — a
+  # reflection across the main diagonal (combine it with a flip for a true 90°
+  # rotation).
+  let _blit_flags = fn (flip_x, flip_y, transpose) {
+    _flip_bits(flip_x, flip_y) + (if transpose { 4 } else { 0 })
+  }
+
+  # Flags for the scaling blit. There is no transpose, and bit 3 asks for box
+  # averaging when the sprite shrinks (ignored when it doesn't).
   let _scale_flags = fn (flip_x, flip_y, smooth) {
-    (if flip_x { 1 } else { 0 }) + (if flip_y { 2 } else { 0 }) + (if smooth { 8 } else { 0 })
+    _flip_bits(flip_x, flip_y) + (if smooth { 8 } else { 0 })
   }
 
   # A registered sprite. `pixels` is a flat row-major array; if `palette` is
