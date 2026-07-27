@@ -344,14 +344,74 @@ IO.print, Random.uniform, ...).
 
 ### Bundling the AOT pathway from your own embedder
 
-If your embedder also wants to drive `culebra::JIT::build_object` for
-AOT compilation (as `culebra build` does, [§1](#1-standalone-binary-build-culebra-build)),
-link the same runtime archive described in [§4](#4-shared-runtime-archive-layout)
-and tell `culebra build` where to find it via `CULEBRA_RT_LIBPATH` (set
-at compile time by CMake — see [`CMakeLists.txt`](../CMakeLists.txt)
-for the macro definition). For most embedders the archive is
-irrelevant — header-only inclusion is the supported path. The archive
-only matters for the AOT subprocess that links the standalone binary.
+For most embedders `libculebra_rt.a` is irrelevant — header-only
+inclusion is the supported path, and running scripts in-process needs
+no archive at all. It matters in exactly one case: your embedder wants
+to *emit standalone binaries*, driving `culebra::JIT::build_object`
+the way `culebra build` does ([§1](#1-standalone-binary-build-culebra-build)).
+The archive supplies `culebra_aot_bootstrap` and the runtime helpers
+the emitted object calls into; its layout is
+[§4](#4-shared-runtime-archive-layout).
+
+**Where to get it.** A CMake build configured with
+`-DCULEBRA_ENABLE_JIT=ON` writes `libculebra_rt.a` (and the feature
+archives) into the build directory. The distributed `culebra` driver
+carries the same archives embedded, and materializes them on the first
+`culebra build` into `$HOME/.cache/culebra/<fingerprint>/` — a path you
+can point your own link step at.
+
+**Emitting the object.** Load the program through `ModuleLoader` and
+splice the stdlib preamble *before* handing the modules to
+`build_object` — the preamble is what defines `println` / `inspect` and
+the trait declarations:
+
+```cpp
+#include <culebra.h>
+#include <module_loader.h>
+#include <stdlib_interp.h>
+#include <stdlib_jit.h>
+
+int main() {
+  std::vector<std::string> msgs;
+  culebra::ModuleLoader loader;
+  auto modules = loader.load_program("prog.cul", src, msgs);
+  culebra::splice_stdlib_preamble(modules);   // required — see below
+
+  culebra::install_jit_stdlib();
+  return culebra::JIT::build_object(modules, "prog.o", /*opt_level=*/2);
+}
+```
+
+> **Skipping `splice_stdlib_preamble` fails silently.** The object still
+> emits and links, and the binary still exits 0 — it just produces no
+> output, because `println` resolved to nothing. There is no diagnostic;
+> if your AOT binary runs quietly and does nothing, this is why.
+
+**Linking it.** The emitted object needs the archive, dead-stripping,
+and the C++ runtime — nothing else for a program that uses no heavy
+feature:
+
+```bash
+# macOS
+cc prog.o libculebra_rt.a -Wl,-dead_strip -Wl,-x -lc++ -o prog
+
+# Linux (the object is non-PIC, so -no-pie is required on PIE-by-default distros)
+cc prog.o libculebra_rt.a -Wl,--gc-sections -Wl,-x -no-pie -lstdc++ -lm -o prog
+```
+
+A program that references `Tensor`, `Http`, `Compress` or `SQLite`
+additionally needs that feature's archive **force-loaded** —
+`-Wl,-force_load,<archive>` on Mach-O, `-Wl,--whole-archive <archive>
+-Wl,--no-whole-archive` on ELF — plus the feature's own external
+libraries. A plain append does *not* work: the base archive's weak stub
+already satisfies the symbol, so the member would never be pulled in
+([§4](#4-shared-runtime-archive-layout) covers the gating).
+
+Rather than transcribing these rules, run the driver once with
+`CULEBRA_VERBOSE=1 culebra build prog.cul -o prog` — it prints the exact
+`link:` command line it used, feature archives and all, which is the
+same shape your embedder needs. (`--rt-lib=<path>` is the CLI's own
+override for pointing at a non-default archive, e.g. a cross-built one.)
 
 The macro `CULEBRA_RT_DEFINE_RUNTIME` switches every
 `CULEBRA_RT_INLINE`-tagged helper from `inline` to `extern "C"` so the

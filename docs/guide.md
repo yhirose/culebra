@@ -121,7 +121,7 @@ the C++/BLAS runtime (e.g. `Tensor`). It implies `-O0`; passing another
 `-O` alongside it is an error. Prefer it for short scripts or BLAS-bound
 runs; the default `--jit` (`-O2`) keeps the best steady-state throughput.
 
-Comments start with `#` (line) or `/* ... */` (block). Statements may
+Comments start with `#` or `//` (line), or `/* ... */` (block). Statements may
 end with `;`; newlines also separate statements. The recommended style
 is to omit `;` at end-of-line.
 
@@ -207,6 +207,13 @@ x = 7
 sign = if x > 0 { 1 } else if x < 0 { -1 } else { 0 }
 inspect(sign)                    # => 1
 
+size = match x {                 # match is an expression too (Ch.6)
+  0           => 'zero',
+  n if n < 10 => 'small',
+  _           => 'large'
+}
+inspect(size)                    # => 'small'
+
 mut i = 0
 while i < 3 { inspect(i); i = i + 1 }
 # => |
@@ -239,7 +246,20 @@ for k, v in {a: 1, b: 2} { inspect("{k}={v}") }   # Objects yield key, value
 # 'b=2'
 ```
 
-`break` and `continue` work inside `while` and `for`.
+`break` leaves the loop; `continue` skips to the next iteration. Both
+work inside `while` and `for`.
+
+```culebra
+for n in 0..10 {
+  if n % 2 == 1 { continue }      # skip the odd numbers
+  if n > 4 { break }              # stop once past 4
+  inspect(n)
+}
+# => |
+# 0
+# 2
+# 4
+```
 
 ### 2.5 `nobreak`, init clauses, `cond`, and `? :`
 
@@ -851,9 +871,23 @@ inspect(handle { safeDiv(10, 2) } with raise(m, k) { -1 })   # => 5
 inspect(handle { safeDiv(10, 0) } with raise(m, k) { -1 })   # => -1
 ```
 
-Add `with return(v) { … }` to map the normal-completion value, and write a
-`handle` inside an effectful body to capture and resume from an enclosing
-computation. Full reference and limitations: [language.md §16](language.md).
+Add `with return(v) { … }` to map the normal-completion value. It runs only on
+*normal* completion, so a clause that aborts bypasses it:
+
+```culebra
+effect fn ask()
+
+let out = handle {
+  let n = perform ask()
+  n + 1
+} with ask(k) { k(41) }
+  with return(v) { "final={v}" }
+inspect(out)   # => 'final=42'
+```
+
+A `handle` may also be written inside an effectful body, to capture and resume
+from an enclosing computation. Full reference and limitations:
+[language.md §16](language.md).
 
 The pattern that pays off most is search. An N-queens `search` that
 performs `choose(...)` for a column and `reject()` for a dead end never
@@ -989,6 +1023,26 @@ inspect((b - a).show())          # => '(2, 2)'
 inspect((a * 3).show())          # => '(3, 6)'
 inspect((-a).show())             # => '(-1, -2)'
 inspect(a == Vec2.new(1, 2))     # => true
+```
+
+#### Subscripting
+
+`__index__(key)` and `__setindex__(key, value)` make `obj[k]` and
+`obj[k] = v` delegate to the class, so a wrapper subscripts like a
+built-in. They fire only for keys the object doesn't hold as a direct
+property.
+
+```culebra
+class Grid {
+  new()               { self.d = [10, 20, 30] }
+  __index__(i)        { self.d[i] }
+  __setindex__(i, v)  { self.d[i] = v }
+}
+
+g = Grid.new()
+g[1] = 99
+inspect(g[0])                    # => 10
+inspect(g[1])                    # => 99
 ```
 
 ### 9.5 `__call__` for callable instances
@@ -1260,12 +1314,13 @@ inspect(describe([1, 2], 'array'))     # => 'array: [1, 2]'
 `match` arms with `n: ClassName` (Ch.6) match instances of that
 class.
 
-### 13.2 Union, Optional, Tuple
+### 13.2 Union, Optional, Tuple, Set
 
 `Long | String` accepts either alternative; `T?` is sugar for
 `T | Nil`; `(Long, String)` is a fixed-size, immutable, element-wise-
 equal `Tuple`. Full semantics: [language.md §14](language.md) (Union
-types / Optional types) and [language.md §10](language.md) (Tuples).
+types / Optional types) and [language.md §10](language.md) (Tuples /
+Sets).
 
 ```culebra
 show = fn (x: Long | String) -> String { to_string(x) }
@@ -1275,6 +1330,28 @@ inspect(show('hi'))               # => 'hi'
 pair = (1, 'one')
 inspect(type_of(pair))            # => 'Tuple'
 inspect(pair == (1, 'one'))       # => true
+```
+
+A `Set` is an insertion-ordered collection of unique hashable values.
+Its literal needs two elements — or a trailing comma — so it can't be
+confused with the empty Object `{}` or the `{key: value}` shorthand.
+Duplicates collapse on construction and equality ignores order.
+
+```culebra
+s = {1, 2, 3, 3}
+inspect(s.size())                 # => 3
+inspect(s.contains(2))            # => true
+inspect({1, 2, 3} == {3, 2, 1})   # => true
+inspect({42,})                    # => {42}
+```
+
+Set operations are methods, not operators (`|` is taken by lambda
+parameters):
+
+```culebra
+inspect({1, 2}.union({2, 3}))            # => {1, 2, 3}
+inspect({1, 2, 3}.intersect({2, 3, 4}))  # => {2, 3}
+inspect({1, 2, 3}.diff({3,}))            # => {1, 2}
 ```
 
 ### 13.3 Trait / Protocol
@@ -1298,6 +1375,35 @@ class Bob {
 
 greet = fn (x: Greeter) -> String { x.hello() }
 inspect(greet(Bob.new('Alice')))   # => 'hi, Alice'
+```
+
+A trait method with a body is a **default**: conforming classes inherit
+it, and declaring the same name on the class overrides it.
+
+```culebra
+trait Counter {
+  current() -> Long
+  next() -> Long { self.current() + 1 }   # default body
+}
+
+class Zero {
+  new()      {}
+  current()  { 0 }
+}
+inspect(Zero.new().next())         # => 1
+```
+
+`@derive(...)` generates the conformance methods a data class would
+otherwise spell out — `Eq` → `eq`, `Hash` → `hash`, `Show` → `to_s`,
+`Comparable` → `cmp`. A method the class declares itself is never
+overwritten, so you can derive most and hand-write one.
+
+```culebra
+@derive(Eq, Hash, Show)
+class Point { new(x, y) { self.x = x; self.y = y } }
+
+inspect(Point.new(1, 2).eq(Point.new(1, 2)))   # => true
+inspect(Point.new(1, 2).to_s())                # => 'Point(1, 2)'
 ```
 
 ### 13.4 Generics

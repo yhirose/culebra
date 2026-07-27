@@ -115,7 +115,7 @@ echo "inspect('hello, culebra!')" > hello.cul
 短命スクリプトや BLAS 律速の実行に向く。
 既定の `--jit` (`-O2`) は steady-state スループットが最良。
 
-コメントは `#` (行) または `/* ... */` (ブロック)。 文は `;` で
+コメントは `#` / `//` (行) または `/* ... */` (ブロック)。 文は `;` で
 区切る (省略時は改行)。 行末 `;` は通常は省略。
 
 ```culebra
@@ -198,6 +198,13 @@ x = 7
 sign = if x > 0 { 1 } else if x < 0 { -1 } else { 0 }
 inspect(sign)                    # => 1
 
+size = match x {                 # match も式 (Ch.6)
+  0           => 'zero',
+  n if n < 10 => 'small',
+  _           => 'large'
+}
+inspect(size)                    # => 'small'
+
 mut i = 0
 while i < 3 { inspect(i); i = i + 1 }
 # => |
@@ -230,7 +237,20 @@ for k, v in {a: 1, b: 2} { inspect("{k}={v}") }   # Object は key, value を返
 # 'b=2'
 ```
 
-`break` / `continue` は `while` / `for` 内で動作。
+`break` はループを抜け、`continue` は次の反復へ飛ぶ。 どちらも
+`while` / `for` 内で動作。
+
+```culebra
+for n in 0..10 {
+  if n % 2 == 1 { continue }      # 奇数は飛ばす
+  if n > 4 { break }              # 4 を超えたら止める
+  inspect(n)
+}
+# => |
+# 0
+# 2
+# 4
+```
 
 ### 2.5 `nobreak` / init 節 / `cond` / `? :`
 
@@ -836,9 +856,23 @@ inspect(handle { safeDiv(10, 2) } with raise(m, k) { -1 })   # => 5
 inspect(handle { safeDiv(10, 0) } with raise(m, k) { -1 })   # => -1
 ```
 
-正常完了値を写すには `with return(v) { … }` を加えます。エフェクトフルな本体の
-中に `handle` を書けば、外側の計算をキャプチャしてそこから再開できます。完全な
-リファレンスと制約は [language.ja.md §16](language.ja.md) を参照。
+正常完了値を写すには `with return(v) { … }` を加えます。 これが走るのは*正常*
+完了のときだけで、中断する clause は通りません:
+
+```culebra
+effect fn ask()
+
+let out = handle {
+  let n = perform ask()
+  n + 1
+} with ask(k) { k(41) }
+  with return(v) { "final={v}" }
+inspect(out)   # => 'final=42'
+```
+
+エフェクトフルな本体の中に `handle` を書けば、外側の計算をキャプチャしてそこ
+から再開できます。完全なリファレンスと制約は
+[language.ja.md §16](language.ja.md) を参照。
 
 効果が一番はっきり出るのは探索です。列を `perform choose(...)` で尋ね、
 行き止まりを `perform reject()` で告げる N-クイーン探索は、バックトラッキング
@@ -971,6 +1005,26 @@ inspect((b - a).show())          # => '(2, 2)'
 inspect((a * 3).show())          # => '(3, 6)'
 inspect((-a).show())             # => '(-1, -2)'
 inspect(a == Vec2.new(1, 2))     # => true
+```
+
+#### 添字アクセス
+
+`__index__(key)` と `__setindex__(key, value)` を定義すると `obj[k]` /
+`obj[k] = v` がクラス側へ委譲され、ラッパ型が組み込みと同じ書き味で
+添字アクセスできる。 発火するのは、そのキーを直接のプロパティとして
+持たない場合だけ。
+
+```culebra
+class Grid {
+  new()               { self.d = [10, 20, 30] }
+  __index__(i)        { self.d[i] }
+  __setindex__(i, v)  { self.d[i] = v }
+}
+
+g = Grid.new()
+g[1] = 99
+inspect(g[0])                    # => 10
+inspect(g[1])                    # => 99
 ```
 
 ### 9.5 `__call__` で callable インスタンス
@@ -1236,12 +1290,13 @@ inspect(describe([1, 2], 'array'))     # => 'array: [1, 2]'
 `match` 節の `n: ClassName` (Ch.6) はそのクラスのインスタンスに
 マッチ。
 
-### 13.2 Union / Optional / Tuple
+### 13.2 Union / Optional / Tuple / Set
 
 `Long | String` はどちらの型も受け付け、`T?` は `T | Nil` の糖衣、
 `(Long, String)` は固定長・不変・要素ごと等価な `Tuple`。 完全な
 仕様は [language.ja.md §14](language.ja.md) (Union types /
-Optional types) と [language.ja.md §10](language.ja.md) (Tuples)。
+Optional types) と [language.ja.md §10](language.ja.md) (Tuples /
+Sets)。
 
 ```culebra
 show = fn (x: Long | String) -> String { to_string(x) }
@@ -1251,6 +1306,27 @@ inspect(show('hi'))               # => 'hi'
 pair = (1, 'one')
 inspect(type_of(pair))            # => 'Tuple'
 inspect(pair == (1, 'one'))       # => true
+```
+
+`Set` は挿入順を保つ、ハッシュ可能な値の重複なしコレクション。
+リテラルは 2 要素以上 — または末尾カンマ — が必要で、空 Object の
+`{}` や `{key: value}` の短縮形と衝突しないようになっている。
+重複は構築時に潰れ、等価比較は順序を無視する。
+
+```culebra
+s = {1, 2, 3, 3}
+inspect(s.size())                 # => 3
+inspect(s.contains(2))            # => true
+inspect({1, 2, 3} == {3, 2, 1})   # => true
+inspect({42,})                    # => {42}
+```
+
+集合演算は演算子でなくメソッド (`|` はラムダ引数に取られている):
+
+```culebra
+inspect({1, 2}.union({2, 3}))            # => {1, 2, 3}
+inspect({1, 2, 3}.intersect({2, 3, 4}))  # => {2, 3}
+inspect({1, 2, 3}.diff({3,}))            # => {1, 2}
 ```
 
 ### 13.3 Trait / Protocol
@@ -1274,6 +1350,35 @@ class Bob {
 
 greet = fn (x: Greeter) -> String { x.hello() }
 inspect(greet(Bob.new('Alice')))   # => 'hi, Alice'
+```
+
+本体を持つ trait メソッドは**デフォルト実装**。 conform したクラスは
+それを継承し、同名をクラス側で宣言すれば上書きになる。
+
+```culebra
+trait Counter {
+  current() -> Long
+  next() -> Long { self.current() + 1 }   # デフォルト実装
+}
+
+class Zero {
+  new()      {}
+  current()  { 0 }
+}
+inspect(Zero.new().next())         # => 1
+```
+
+`@derive(...)` はデータクラスが手書きすることになる conformance
+メソッドを生成する — `Eq` → `eq`、`Hash` → `hash`、`Show` → `to_s`、
+`Comparable` → `cmp`。 クラス自身が宣言したメソッドは上書きされない
+ので、大半を derive して 1 つだけ手書き、ができる。
+
+```culebra
+@derive(Eq, Hash, Show)
+class Point { new(x, y) { self.x = x; self.y = y } }
+
+inspect(Point.new(1, 2).eq(Point.new(1, 2)))   # => true
+inspect(Point.new(1, 2).to_s())                # => 'Point(1, 2)'
 ```
 
 ### 13.4 Generic

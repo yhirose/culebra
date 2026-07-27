@@ -349,15 +349,71 @@ Random.uniform 等に多数あります。
 
 ### 自分の embedder から AOT 経路を組み込む
 
-自分の embedder からも `culebra::JIT::build_object` で AOT コンパイル
-を駆動したい場合（`culebra build` がやっていること、
-[§1](#1-standalone-バイナリビルドculebra-build)）は、
-[§4](#4-共有-runtime-archive-レイアウト) で説明する runtime archive を
-同じく link し、`culebra build` に位置を伝える: `CULEBRA_RT_LIBPATH`
-を compile-time に渡す（CMake は [`CMakeLists.txt`](../CMakeLists.txt)
-でこの define を自動セットしている）。通常の embedder は archive と
-は無関係 — ヘッダオンリー include がサポート経路。archive は AOT
-subprocess が standalone バイナリを link する時だけ必要。
+通常の embedder に `libculebra_rt.a` は無関係 — ヘッダオンリー
+include がサポート経路で、スクリプトを in-process で走らせるだけなら
+archive は要らない。 必要になるのは 1 ケースだけ: `culebra build` と
+同じく `culebra::JIT::build_object` を駆動して **standalone バイナリを
+出力したい**とき（[§1](#1-standalone-バイナリビルドculebra-build)）。
+archive は `culebra_aot_bootstrap` と、生成オブジェクトが呼ぶ
+ランタイムヘルパを供給する。 レイアウトは
+[§4](#4-共有-runtime-archive-レイアウト)。
+
+**入手先。** `-DCULEBRA_ENABLE_JIT=ON` で configure した CMake ビルド
+は `libculebra_rt.a`（と機能別 archive）をビルドディレクトリに出力する。
+配布される `culebra` ドライバは同じ archive を埋め込んで持っていて、
+最初の `culebra build` で `$HOME/.cache/culebra/<fingerprint>/` に
+materialize する — 自前の link 手順からそのパスを指してもよい。
+
+**オブジェクトの生成。** プログラムは `ModuleLoader` 経由で読み込み、
+`build_object` に渡す**前に** stdlib preamble を splice する。 この
+preamble が `println` / `inspect` と trait 宣言を定義している:
+
+```cpp
+#include <culebra.h>
+#include <module_loader.h>
+#include <stdlib_interp.h>
+#include <stdlib_jit.h>
+
+int main() {
+  std::vector<std::string> msgs;
+  culebra::ModuleLoader loader;
+  auto modules = loader.load_program("prog.cul", src, msgs);
+  culebra::splice_stdlib_preamble(modules);   // 必須 — 下記参照
+
+  culebra::install_jit_stdlib();
+  return culebra::JIT::build_object(modules, "prog.o", /*opt_level=*/2);
+}
+```
+
+> **`splice_stdlib_preamble` を飛ばすと黙って失敗する。** オブジェクト
+> の生成も link も通り、バイナリは exit 0 で終わる — ただし何も出力
+> しない。`println` が何にも解決されなかったため。 診断は一切出ない
+> ので、AOT バイナリが静かに何もしないならこれを疑う。
+
+**リンク。** 生成オブジェクトに必要なのは archive と dead-strip と
+C++ ランタイムだけ（重い機能を使わないプログラムの場合）:
+
+```bash
+# macOS
+cc prog.o libculebra_rt.a -Wl,-dead_strip -Wl,-x -lc++ -o prog
+
+# Linux (オブジェクトは非 PIC なので PIE 既定のディストロでは -no-pie が要る)
+cc prog.o libculebra_rt.a -Wl,--gc-sections -Wl,-x -no-pie -lstdc++ -lm -o prog
+```
+
+`Tensor` / `Http` / `Compress` / `SQLite` を参照するプログラムは、
+その機能の archive を **force-load** する必要がある — Mach-O なら
+`-Wl,-force_load,<archive>`、ELF なら `-Wl,--whole-archive <archive>
+-Wl,--no-whole-archive` — さらにその機能の外部ライブラリも要る。
+単に append しても効かない: base archive の弱シンボルスタブが既に
+シンボルを満たしてしまい、メンバが load されない
+（gating は [§4](#4-共有-runtime-archive-レイアウト)）。
+
+これらの規則を書き写すより、ドライバを一度
+`CULEBRA_VERBOSE=1 culebra build prog.cul -o prog` で走らせるのが早い。
+実際に使った `link:` コマンドラインが機能 archive 込みでそのまま
+表示され、embedder に必要なのも同じ形。 (`--rt-lib=<path>` は CLI 側
+の上書き用オプションで、cross ビルドした archive などを指すのに使う。)
 
 `CULEBRA_RT_DEFINE_RUNTIME` マクロは、`CULEBRA_RT_INLINE` タグ付き
 ヘルパを `inline` から `extern "C"` に切り替えて archive 側 TU が唯一
