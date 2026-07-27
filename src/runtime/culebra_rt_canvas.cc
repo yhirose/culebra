@@ -105,8 +105,10 @@ bool forced_headless() {
 // on first use and again if the framebuffer is re-init()'d at a new size.
 void ensure_window() {
   if (forced_headless()) return;
-  int w = width();
-  int h = height();
+  // The window mirrors the FRAMEBUFFER — width()/height() report the current
+  // draw target, which inside Canvas.draw_to is an offscreen sprite.
+  int w = _fb_w();
+  int h = _fb_h();
   if (w <= 0 || h <= 0) return;  // nothing sized yet
   if (g_window_ready && w == g_tex_w && h == g_tex_h) return;
 

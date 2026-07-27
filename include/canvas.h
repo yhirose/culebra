@@ -43,12 +43,20 @@
 namespace culebra {
 namespace _canvas_detail {
 
-// A registered sprite: RGBA pixels plus its dimensions. Handles are indices
-// into the registry, so registration is upload-once and blit re-references it
-// (no per-frame pixel marshalling across the FFI boundary).
+// A registered sprite: RGBA pixels plus its dimensions. Registration is
+// upload-once and blit re-references the handle (no per-frame pixel
+// marshalling across the FFI boundary).
+//
+// A handle packs (slot index + 1) in the low 32 bits and the slot's
+// generation in the high 32; freeing a sprite bumps the generation and
+// recycles the slot through a free list, so a stale handle resolves to
+// nothing rather than to whichever sprite the slot holds next. 0 is never a
+// sprite handle — it names the framebuffer as the draw target.
 struct Sprite {
   int w = 0;
   int h = 0;
+  uint32_t gen = 0;
+  bool alive = false;
   std::vector<uint32_t> px;
 };
 
@@ -56,6 +64,27 @@ inline int& _fb_w() { static int w = 0; return w; }
 inline int& _fb_h() { static int h = 0; return h; }
 inline std::vector<uint32_t>& _fb() { static std::vector<uint32_t> b; return b; }
 inline std::vector<Sprite>& _sprites() { static std::vector<Sprite> s; return s; }
+inline std::vector<size_t>& _sprite_free_slots() {
+  static std::vector<size_t> f;
+  return f;
+}
+
+inline int64_t sprite_handle(size_t index, uint32_t gen) {
+  return static_cast<int64_t>(index + 1) |
+         (static_cast<int64_t>(gen) << 32);
+}
+
+// The live sprite a handle names, or nullptr for anything else (freed, stale
+// generation, never valid). The pointer is only good until the registry next
+// mutates — resolve per call, never cache.
+inline Sprite* sprite_of(int64_t id) {
+  int64_t index = (id & 0xffffffff) - 1;
+  if (index < 0 || static_cast<size_t>(index) >= _sprites().size())
+    return nullptr;
+  Sprite& s = _sprites()[static_cast<size_t>(index)];
+  if (!s.alive || s.gen != static_cast<uint32_t>(id >> 32)) return nullptr;
+  return &s;
+}
 
 // (Re)allocate the framebuffer to w*h transparent pixels. The sprite registry
 // is deliberately NOT cleared: sprites are typically registered once at top
@@ -70,8 +99,11 @@ inline void init(int w, int h) {
   _fb().assign(static_cast<size_t>(w) * static_cast<size_t>(h), 0u);
 }
 
-inline int width() { return _fb_w(); }
-inline int height() { return _fb_h(); }
+// Declared ahead: width/height report the CURRENT draw target (the
+// framebuffer, or the sprite draw_to switched to), so centring code keeps
+// working offscreen.
+inline int width();
+inline int height();
 
 // Geometry saturates into a guard band. 2^30 pixels is far outside any
 // framebuffer, and clamping there keeps the edge interpolation's products
@@ -99,16 +131,38 @@ inline int64_t coord(double d) {
 }
 
 // The drawing target every draw call resolves before writing: the framebuffer
-// today, a sprite once render targets exist. Held as an id and resolved per
-// call — never cached as a pointer, because the sprite registry vector can
-// reallocate between calls.
+// (id 0) or a sprite draw_to switched to. Held as an id and resolved per call
+// — never cached as a pointer, because the sprite registry vector can
+// reallocate between calls (registering a sprite inside draw_to must not
+// leave the target dangling).
 struct Target {
   uint32_t* px;
   int w;
   int h;
 };
 inline int64_t& _target_id() { static int64_t id = 0; return id; }
-inline Target resolve_target() { return {_fb().data(), _fb_w(), _fb_h()}; }
+inline Target resolve_target() {
+  if (_target_id() != 0) {
+    // Freeing the current target is refused at the seam, so this resolves as
+    // long as the id is set.
+    if (Sprite* s = sprite_of(_target_id())) return {s->px.data(), s->w, s->h};
+    _target_id() = 0;
+  }
+  return {_fb().data(), _fb_w(), _fb_h()};
+}
+
+inline int width() { return resolve_target().w; }
+inline int height() { return resolve_target().h; }
+
+// Switch the draw target: 0 for the framebuffer, a sprite handle for its
+// pixels. Returns the previous target id, or -1 when `id` names no live
+// sprite (the caller raises; the target is left unchanged).
+inline int64_t target(int64_t id) {
+  if (id != 0 && sprite_of(id) == nullptr) return -1;
+  int64_t prev = _target_id();
+  _target_id() = id;
+  return prev;
+}
 
 // Composite `src` over `dst` at `alpha`/255 — straight-alpha source-over,
 // integer only, so the three backends round identically. Colour channels mix
@@ -395,56 +449,96 @@ inline void glyph(int64_t id, int64_t index, int x, int y, uint32_t rgba,
   }
 }
 
+// Register a sprite from already-decoded pixels, taking ownership of the
+// buffer. Slots freed by sprite_free are recycled first (their generation
+// already bumped), so the registry doesn't grow monotonically under
+// create-per-frame use.
+inline int64_t sprite_adopt(std::vector<uint32_t>&& px, int w, int h) {
+  Sprite s;
+  s.w = w < 0 ? 0 : w;
+  s.h = h < 0 ? 0 : h;
+  s.alive = true;
+  s.px = std::move(px);
+  s.px.resize(static_cast<size_t>(s.w) * static_cast<size_t>(s.h), 0u);
+  size_t index;
+  if (!_sprite_free_slots().empty()) {
+    index = _sprite_free_slots().back();
+    _sprite_free_slots().pop_back();
+    s.gen = _sprites()[index].gen;
+    _sprites()[index] = std::move(s);
+  } else {
+    index = _sprites().size();
+    _sprites().push_back(std::move(s));
+  }
+  return sprite_handle(index, _sprites()[index].gen);
+}
+
 // Register a sprite from a flat array of packed-RGBA pixels (row-major, w*h).
 // Returns its handle. The pixel count is normalised to w*h (padded with
 // transparent / truncated) so a short or long array can't read out of bounds
 // at blit time.
 inline int64_t sprite_load(const uint32_t* px, int64_t n, int w, int h) {
-  if (w < 0) w = 0;
-  if (h < 0) h = 0;
-  Sprite s;
-  s.w = w;
-  s.h = h;
   if (n < 0) n = 0;
-  s.px.assign(px, px + n);
-  s.px.resize(static_cast<size_t>(w) * static_cast<size_t>(h), 0u);
-  _sprites().push_back(std::move(s));
-  return static_cast<int64_t>(_sprites().size() - 1);
+  return sprite_adopt(std::vector<uint32_t>(px, px + n), w, h);
 }
 
-// Register a sprite from already-decoded pixels, taking ownership of the
-// buffer — the PNG path, where the pixels never pass through a culebra Array.
-inline int64_t sprite_adopt(std::vector<uint32_t>&& px, int w, int h) {
-  Sprite s;
-  s.w = w < 0 ? 0 : w;
-  s.h = h < 0 ? 0 : h;
-  s.px = std::move(px);
-  s.px.resize(static_cast<size_t>(s.w) * static_cast<size_t>(s.h), 0u);
-  _sprites().push_back(std::move(s));
-  return static_cast<int64_t>(_sprites().size() - 1);
+// A blank sprite filled with one colour — the raw material of an offscreen
+// draw target (Canvas.Sprite.blank + Canvas.draw_to).
+inline int64_t sprite_blank(int w, int h, uint32_t rgba) {
+  if (w < 0) w = 0;
+  if (h < 0) h = 0;
+  return sprite_adopt(
+      std::vector<uint32_t>(static_cast<size_t>(w) * static_cast<size_t>(h),
+                            rgba),
+      w, h);
+}
+
+// Free a sprite's pixels and retire its handle. Returns false when `id` is
+// the current draw target (the caller raises — freeing what is being drawn
+// to would leave the target dangling); an unknown or already-freed handle is
+// a no-op, like blitting one.
+inline constexpr auto kFreeTargetError =
+    "cannot free the sprite currently drawn to";
+inline bool sprite_free(int64_t id) {
+  if (id != 0 && id == _target_id()) return false;
+  Sprite* s = sprite_of(id);
+  if (s == nullptr) return true;
+  s->alive = false;
+  s->gen++;
+  s->px.clear();
+  s->px.shrink_to_fit();
+  _sprite_free_slots().push_back(static_cast<size_t>((id & 0xffffffff) - 1));
+  return true;
 }
 
 // A registered sprite's dimensions, or 0 for an unknown handle. `from_png`
 // learns its size from the decode, so the preamble reads it back through these
 // rather than being told it at construction.
 inline int64_t sprite_width(int64_t id) {
-  if (id < 0 || static_cast<size_t>(id) >= _sprites().size()) return 0;
-  return _sprites()[id].w;
+  Sprite* s = sprite_of(id);
+  return s == nullptr ? 0 : s->w;
 }
 inline int64_t sprite_height(int64_t id) {
-  if (id < 0 || static_cast<size_t>(id) >= _sprites().size()) return 0;
-  return _sprites()[id].h;
+  Sprite* s = sprite_of(id);
+  return s == nullptr ? 0 : s->h;
 }
+
+// The one refusal shared by both blits: reading and writing the same pixels
+// in one pass would see its own writes.
+inline constexpr auto kSelfBlitError = "cannot draw a sprite onto itself";
 
 // Blit the sub-rectangle (sx, sy, sw, sh) of sprite `id` to (dx, dy).
 // flags: 1 = flip X, 2 = flip Y, 4 = transpose (swap X/Y — a diagonal
 // reflection; combine with a flip for a 90° rotation). Source alpha
 // composites through put(): 0 is skipped, 255 written as-is, and a partial
-// alpha (a PNG's anti-aliased edge) blends over what is there.
-inline void blit(int64_t id, int dx, int dy, int sx, int sy, int sw, int sh,
+// alpha (a PNG's anti-aliased edge) blends over what is there. Returns false
+// when `id` is the current draw target (the caller raises).
+inline bool blit(int64_t id, int dx, int dy, int sx, int sy, int sw, int sh,
                  int64_t flags) {
-  if (id < 0 || static_cast<size_t>(id) >= _sprites().size()) return;
-  const Sprite& s = _sprites()[id];
+  if (id != 0 && id == _target_id()) return false;
+  const Sprite* sp = sprite_of(id);
+  if (sp == nullptr) return true;
+  const Sprite& s = *sp;
   Target t = resolve_target();
   bool flip_x = (flags & 1) != 0;
   bool flip_y = (flags & 2) != 0;
@@ -463,6 +557,7 @@ inline void blit(int64_t id, int dx, int dy, int sx, int sy, int sw, int sh,
         put(t, dx + lx, dy + ly, p);
     }
   }
+  return true;
 }
 
 // Walks a source axis in lockstep with a destination axis: `pos` is exactly
@@ -517,13 +612,15 @@ struct SourceWalk {
 // The loop walks the (clipped) destination and maps back to the source, so
 // cost is the pixels actually written, and nothing is drawn for a degenerate
 // destination or source rectangle.
-inline void blit_scaled(int64_t id, int64_t dx, int64_t dy, int64_t dw,
+inline bool blit_scaled(int64_t id, int64_t dx, int64_t dy, int64_t dw,
                         int64_t dh, int64_t sx, int64_t sy, int64_t sw,
                         int64_t sh, int64_t flags, int64_t alpha) {
-  if (id < 0 || static_cast<size_t>(id) >= _sprites().size()) return;
-  if (dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0 || alpha <= 0) return;
+  if (id != 0 && id == _target_id()) return false;
+  const Sprite* sp = sprite_of(id);
+  if (sp == nullptr) return true;
+  if (dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0 || alpha <= 0) return true;
   if (alpha > 255) alpha = 255;
-  const Sprite& s = _sprites()[id];
+  const Sprite& s = *sp;
   Target t = resolve_target();
   bool flip_x = (flags & 1) != 0;
   bool flip_y = (flags & 2) != 0;
@@ -606,6 +703,7 @@ inline void blit_scaled(int64_t id, int64_t dx, int64_t dy, int64_t dw,
       row[x] = ea == 255 ? src : blend_over(src, row[x], ea);
     }
   }
+  return true;
 }
 
 // The audio container `data` opens with, named as the extension string

@@ -2006,7 +2006,50 @@ inline Value make_canvas_primitives_namespace() {
           "Long"sv)),
       false);
 
-  // _Canvas.blit(id, dx, dy, sx, sy, sw, sh, flags) -> Nil
+  // _Canvas.sprite_blank(w, h, rgba) -> Long (handle; a one-colour sprite,
+  // the raw material of an offscreen draw target)
+  ns.initialize("sprite_blank",
+      Value(FunctionValue({{"w", false, "Long"sv}, {"h", false, "Long"sv},
+                           {"rgba", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            return Value(static_cast<long>(_canvas_detail::sprite_blank(
+                env->get("w").to_long(), env->get("h").to_long(),
+                static_cast<uint32_t>(env->get("rgba").to_long()))));
+          },
+          "Long"sv)),
+      false);
+
+  // _Canvas.sprite_free(id) -> Nil. Raises when `id` is the current draw
+  // target; an unknown/already-freed handle is a no-op.
+  ns.initialize("sprite_free",
+      Value(FunctionValue({{"id", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            if (!_canvas_detail::sprite_free(env->get("id").to_long()))
+              throw CulebraError("ValueError",
+                                 _canvas_detail::kFreeTargetError,
+                                 env->get("__LINE__").to_long(),
+                                 env->get("__COLUMN__").to_long());
+            return Value();
+          })),
+      false);
+
+  // _Canvas.target(id) -> Long (the previous target). 0 = the framebuffer;
+  // raises when `id` names no live sprite.
+  ns.initialize("target",
+      Value(FunctionValue({{"id", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            int64_t prev = _canvas_detail::target(env->get("id").to_long());
+            if (prev < 0)
+              throw CulebraError("ValueError", "not a live sprite handle",
+                                 env->get("__LINE__").to_long(),
+                                 env->get("__COLUMN__").to_long());
+            return Value(static_cast<long>(prev));
+          },
+          "Long"sv)),
+      false);
+
+  // _Canvas.blit(id, dx, dy, sx, sy, sw, sh, flags) -> Nil. Raises when `id`
+  // is the current draw target (a blit would read its own writes).
   ns.initialize("blit",
       Value(FunctionValue({{"id", false, "Long"sv},
                            {"dx", false, "Long|Float"sv},
@@ -2016,12 +2059,15 @@ inline Value make_canvas_primitives_namespace() {
                            {"sw", false, "Long|Float"sv},
                            {"sh", false, "Long|Float"sv},
                            {"flags", false, "Long"sv}},
-          [](std::shared_ptr<Environment> env) {
-            _canvas_detail::blit(
-                env->get("id").to_long(), canvas_coord_arg(env, "dx"),
-                canvas_coord_arg(env, "dy"), canvas_coord_arg(env, "sx"),
-                canvas_coord_arg(env, "sy"), canvas_coord_arg(env, "sw"),
-                canvas_coord_arg(env, "sh"), env->get("flags").to_long());
+          [](std::shared_ptr<Environment> env) -> Value {
+            if (!_canvas_detail::blit(
+                    env->get("id").to_long(), canvas_coord_arg(env, "dx"),
+                    canvas_coord_arg(env, "dy"), canvas_coord_arg(env, "sx"),
+                    canvas_coord_arg(env, "sy"), canvas_coord_arg(env, "sw"),
+                    canvas_coord_arg(env, "sh"), env->get("flags").to_long()))
+              throw CulebraError("ValueError", _canvas_detail::kSelfBlitError,
+                                 env->get("__LINE__").to_long(),
+                                 env->get("__COLUMN__").to_long());
             return Value();
           })),
       false);
@@ -2040,14 +2086,17 @@ inline Value make_canvas_primitives_namespace() {
                            {"sh", false, "Long|Float"sv},
                            {"flags", false, "Long"sv},
                            {"alpha", false, "Long"sv}},
-          [](std::shared_ptr<Environment> env) {
-            _canvas_detail::blit_scaled(
-                env->get("id").to_long(), canvas_coord_arg(env, "dx"),
-                canvas_coord_arg(env, "dy"), canvas_coord_arg(env, "dw"),
-                canvas_coord_arg(env, "dh"), canvas_coord_arg(env, "sx"),
-                canvas_coord_arg(env, "sy"), canvas_coord_arg(env, "sw"),
-                canvas_coord_arg(env, "sh"), env->get("flags").to_long(),
-                env->get("alpha").to_long());
+          [](std::shared_ptr<Environment> env) -> Value {
+            if (!_canvas_detail::blit_scaled(
+                    env->get("id").to_long(), canvas_coord_arg(env, "dx"),
+                    canvas_coord_arg(env, "dy"), canvas_coord_arg(env, "dw"),
+                    canvas_coord_arg(env, "dh"), canvas_coord_arg(env, "sx"),
+                    canvas_coord_arg(env, "sy"), canvas_coord_arg(env, "sw"),
+                    canvas_coord_arg(env, "sh"), env->get("flags").to_long(),
+                    env->get("alpha").to_long()))
+              throw CulebraError("ValueError", _canvas_detail::kSelfBlitError,
+                                 env->get("__LINE__").to_long(),
+                                 env->get("__COLUMN__").to_long());
             return Value();
           })),
       false);

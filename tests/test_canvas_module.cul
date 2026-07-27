@@ -229,6 +229,44 @@ mut lit0 = 0
 for y in 0..16 { for x in 0..16 { if Canvas.get_pixel(x, y) == RED { lit0 = lit0 + 1 } } }
 assert_eq(lit0, 0)
 
+// Offscreen drawing: Canvas.draw_to redirects every drawing call (and
+// width/height/get_pixel) into a blank sprite; present() still shows the
+// framebuffer. The previous target is restored on every exit path.
+Canvas.init(8, 8)
+Canvas.clear(GREEN)
+let bg = Canvas.Sprite.blank(4, 3, BLUE)
+assert_eq(bg.width(), 4)
+assert_eq(bg.height(), 3)
+Canvas.draw_to(bg, fn () {
+  assert_eq(Canvas.width(), 4)                // the sprite's size, not 8
+  assert_eq(Canvas.height(), 3)
+  assert_eq(Canvas.get_pixel(0, 0), BLUE)     // blank fill colour
+  Canvas.set_pixel(1, 1, RED)
+  assert_eq(Canvas.get_pixel(1, 1), RED)      // readback addresses the sprite
+})
+assert_eq(Canvas.width(), 8)                  // restored
+assert_eq(Canvas.get_pixel(1, 1), GREEN)      // framebuffer untouched
+bg.draw(0, 0)                                 // and the sprite blits back
+assert_eq(Canvas.get_pixel(1, 1), RED)
+assert_eq(Canvas.get_pixel(0, 0), BLUE)
+assert_eq(Canvas.get_pixel(5, 5), GREEN)      // outside the blit
+// A throw inside draw_to still restores the target.
+try {
+  Canvas.draw_to(bg, fn () { throw {kind: "boom"} })
+} catch _ {}
+assert_eq(Canvas.width(), 8)
+// Drawing a sprite onto itself raises (it would read its own writes).
+assert_throws("ValueError", fn () {
+  Canvas.draw_to(bg, fn () { bg.draw(0, 0) })
+})
+assert_eq(Canvas.width(), 8)                  // the throw restored the target
+// Nested draw_to composes like a call stack.
+let layer = Canvas.Sprite.blank(2, 2)
+Canvas.draw_to(bg, fn () {
+  Canvas.draw_to(layer, fn () { assert_eq(Canvas.width(), 2) })
+  assert_eq(Canvas.width(), 4)
+})
+
 // Input edge detector (headless: buttons read 0, so nothing is pressed).
 let inp = Canvas.Input.new()
 inp.update()

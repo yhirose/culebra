@@ -1367,17 +1367,17 @@ let cvcoords = ['0', '1', '2.0', '1.5', '-0.5', '-1.5', '2.75', '4.5',
 let cvinit = '_Canvas.init(6, 4); _Canvas.clear(0); '
 let cvsprite = '_Canvas.sprite_load([_CA+1, _CA+2, _CA+3, _CA+4], 2, 2)'
 for c in cvcoords {
-  case("cvrect|" + c, cvinit + '_Canvas.rect(' + c + ', 0, 3, 2, _CA+5); _cdump()')
+  case("cvrect|" + c, cvinit + '_Canvas.rect(' + c + ', 0, 3, 2, _CA+5, 1); _cdump()')
   case("cvpix|" + c, cvinit + '_Canvas.set_pixel(' + c + ', 1, _CA+5); _cdump()')
   case("cvget|" + c, '_Canvas.init(6, 4); _Canvas.clear(_CA+7); to_string(_Canvas.get_pixel(' + c + ', 0))')
-  case("cvtri|" + c, cvinit + '_Canvas.triangle(' + c + ', 0, 5, 0, 0, 3, _CA+5); _cdump()')
-  case("cvpolyv|" + c, cvinit + '_Canvas.polygon([1, 0, 5, 0, ' + c + ', 3, 0, 3], _CA+5); _cdump()')
+  case("cvtri|" + c, cvinit + '_Canvas.triangle(' + c + ', 0, 5, 0, 0, 3, _CA+5, 1); _cdump()')
+  case("cvpolyv|" + c, cvinit + '_Canvas.polygon([1, 0, 5, 0, ' + c + ', 3, 0, 3], _CA+5, 1); _cdump()')
   case("cvblit|" + c, cvinit + '_Canvas.blit(' + cvsprite + ', ' + c + ', 0, 0, 0, 2, 2, 0); _cdump()')
   case("cvbsd|" + c, cvinit + '_Canvas.blit_scaled(' + cvsprite + ', ' + c + ', 0, 4, 4, 0, 0, 2, 2, 0, 255); _cdump()')
   case("cvbss|" + c, cvinit + '_Canvas.blit_scaled(' + cvsprite + ', 0, 0, 4, 4, 0, 0, ' + c + ', 2, 0, 255); _cdump()')
-  case("cvcolor|" + c, cvinit + '_Canvas.rect(0, 0, 2, 2, ' + c + '); _cdump()')
-  case("cvglyph|" + c, cvinit + '_Canvas.glyph(_CFONT, 0, ' + c + ', 0, _CA+5); _cdump()')
-  case("cvglyphi|" + c, cvinit + '_Canvas.glyph(_CFONT, ' + c + ', 0, 0, _CA+5); _cdump()')
+  case("cvcolor|" + c, cvinit + '_Canvas.rect(0, 0, 2, 2, ' + c + ', 1); _cdump()')
+  case("cvglyph|" + c, cvinit + '_Canvas.glyph(_CFONT, 0, ' + c + ', 0, _CA+5, 1); _cdump()')
+  case("cvglyphi|" + c, cvinit + '_Canvas.glyph(_CFONT, ' + c + ', 0, 0, _CA+5, 1); _cdump()')
 }
 # music: the format sniff (MP3 frame sync / ID3 / OggS) and its ValueError run
 # before any backend branch, so message and position must match everywhere; the
@@ -1401,23 +1401,23 @@ for g in ['999, 0', '_CFONT, -1', '_CFONT, 2', '_CFONT, 99999',
           '_CFONT, 2305843009213693951', '_CFONT, 2305843009213693952',
           '_CFONT, 9223372036854775807',
           '_Canvas.font_load([]), 0', '_Canvas.font_load([1, 2]), 0'] {
-  case("cvglyphoob|" + g, cvinit + '_Canvas.glyph(' + g + ', 0, 0, _CA+5); _cdump()')
+  case("cvglyphoob|" + g, cvinit + '_Canvas.glyph(' + g + ', 0, 0, _CA+5, 1); _cdump()')
 }
 # Degenerate and inverted extents: a non-positive height/width draws nothing
 # rather than wrapping, and shapes that share an edge tile with no seam and no
 # double-drawn row.
 let cvshapes = [
-  '_Canvas.triangle(0, 0, 6, 0, 0, 4, _CA+5)',
-  '_Canvas.triangle(0, 0, 6, 0, 6, 0, _CA+5)',
-  '_Canvas.triangle(2, 2, 2, 2, 2, 2, _CA+5)',
-  '_Canvas.triangle(-3, -2, 9, -2, 3, 7, _CA+5)',
-  '_Canvas.triangle(0, 0, 6, 0, 0, 4, _CA+5); _Canvas.triangle(6, 0, 6, 4, 0, 4, _CA+6)',
-  '_Canvas.polygon([], _CA+5)',
-  '_Canvas.polygon([1, 1], _CA+5)',
-  '_Canvas.polygon([1, 1, 4, 4], _CA+5)',
-  '_Canvas.polygon([1, 1, 4, 1, 4], _CA+5)',
-  '_Canvas.polygon([0, 0, 6, 0, 6, 4, 4, 4, 4, 1, 2, 1, 2, 4, 0, 4], _CA+5)',
-  '_Canvas.polygon([2, 0, 5, 0, 6, 2, 1, 2], _CA+5); _Canvas.polygon([1, 2, 6, 2, 6, 4, 0, 4], _CA+6)',
+  '_Canvas.triangle(0, 0, 6, 0, 0, 4, _CA+5, 1)',
+  '_Canvas.triangle(0, 0, 6, 0, 6, 0, _CA+5, 1)',
+  '_Canvas.triangle(2, 2, 2, 2, 2, 2, _CA+5, 1)',
+  '_Canvas.triangle(-3, -2, 9, -2, 3, 7, _CA+5, 1)',
+  '_Canvas.triangle(0, 0, 6, 0, 0, 4, _CA+5, 1); _Canvas.triangle(6, 0, 6, 4, 0, 4, _CA+6, 1)',
+  '_Canvas.polygon([], _CA+5, 1)',
+  '_Canvas.polygon([1, 1], _CA+5, 1)',
+  '_Canvas.polygon([1, 1, 4, 4], _CA+5, 1)',
+  '_Canvas.polygon([1, 1, 4, 1, 4], _CA+5, 1)',
+  '_Canvas.polygon([0, 0, 6, 0, 6, 4, 4, 4, 4, 1, 2, 1, 2, 4, 0, 4], _CA+5, 1)',
+  '_Canvas.polygon([2, 0, 5, 0, 6, 2, 1, 2], _CA+5, 1); _Canvas.polygon([1, 2, 6, 2, 6, 4, 0, 4], _CA+6, 1)',
   '_Canvas.blit_scaled(' + cvsprite + ', 0, 0, 0, 4, 0, 0, 2, 2, 0, 255)',
   '_Canvas.blit_scaled(' + cvsprite + ', 0, 0, 4, 4, 0, 0, 2, 0, 0, 255)',
   '_Canvas.blit_scaled(' + cvsprite + ', -1, -1, 8, 8, 0, 0, 2, 2, 0, 255)',
@@ -1431,8 +1431,70 @@ for s in cvshapes {
 # `points` itself must be an Array — the element sweep above covers what may be
 # inside one.
 for p in ['5', '1.5', 'nil', '"xy"', '{a: 1}', '(1, 2)'] {
-  case("cvpolyarg|" + p, cvinit + '_Canvas.polygon(' + p + ', _CA+5); _cdump()')
+  case("cvpolyarg|" + p, cvinit + '_Canvas.polygon(' + p + ', _CA+5, 1); _cdump()')
 }
+# line / ellipse: the same coordinate sweep through the new prims (rounding,
+# clipping, type errors), then shape-specific degenerates — reversed endpoints
+# draw the same pixels, outlines leave the interior, non-positive radii/scales
+# draw nothing, and a doubled glyph doubles.
+for c in cvcoords {
+  case("cvline|" + c, cvinit + '_Canvas.line(' + c + ', 0, 5, 3, _CA+5); _cdump()')
+  case("cvellip|" + c, cvinit + '_Canvas.ellipse(3, 2, ' + c + ', 2, _CA+5, 1); _cdump()')
+}
+let cvnew = [
+  '_Canvas.line(5, 3, 0, 0, _CA+5); _Canvas.line(0, 0, 5, 3, _CA+6)',
+  '_Canvas.line(2, 2, 2, 2, _CA+5)',
+  '_Canvas.line(-4, 1, 9, 2, _CA+5)',
+  '_Canvas.rect(1, 0, 4, 3, _CA+5, 0)',
+  '_Canvas.rect(1, 0, 1, 3, _CA+5, 0)',
+  '_Canvas.rect(1, 0, 4, 2, _CA+5, 0)',
+  '_Canvas.ellipse(3, 2, 2, 2, _CA+5, 0)',
+  '_Canvas.ellipse(3, 2, 2, 2, _CA+5, 1)',
+  '_Canvas.ellipse(3, 2, -1, 2, _CA+5, 1)',
+  '_Canvas.ellipse(3, 2, 8, 0, _CA+5, 1)',
+  '_Canvas.ellipse(3, 2, 0, 8, _CA+5, 1)',
+  '_Canvas.triangle(0, 0, 5, 0, 0, 3, _CA+5, 0)',
+  '_Canvas.polygon([1, 0, 5, 0, 3, 3], _CA+5, 0)',
+  '_Canvas.glyph(_CFONT, 1, 0, 0, _CA+5, 2)',
+  '_Canvas.glyph(_CFONT, 0, 0, 0, _CA+5, 0)',
+  '_Canvas.glyph(_CFONT, 1, -3, -3, _CA+5, 3)',
+]
+for s in cvnew {
+  case("cvnew|" + s, cvinit + s + '; _cdump()')
+}
+# Shape-colour alpha composites on every drawing call (integer source-over);
+# raw pixel values in the record so the blended channels are pinned exactly.
+for al in ['0', '1', '128', '255'] {
+  case("cvshapealpha|" + al,
+       '_Canvas.init(3, 1); _Canvas.clear(_CA+9); ' +
+       '_Canvas.rect(0, 0, 2, 1, 12345 + ' + al + ' * 16777216, 1); ' +
+       'to_string(_Canvas.get_pixel(0, 0)) + "," + to_string(_Canvas.get_pixel(2, 0))')
+}
+# Offscreen target: draw_to semantics at the prim level — width/height/get
+# follow the target, the framebuffer is untouched until the blit back, a
+# self-blit and freeing the live target both raise, and a stale handle
+# resolves to nothing after free.
+case("cvtarget|roundtrip",
+     '_Canvas.init(4, 2); _Canvas.clear(_CA+1); ' +
+     'let s = _Canvas.sprite_blank(2, 2, _CA+2); let prev = _Canvas.target(s); ' +
+     'let inw = _Canvas.width(); _Canvas.set_pixel(0, 0, _CA+3); ' +
+     'let inp = _Canvas.get_pixel(0, 0); _Canvas.target(prev); ' +
+     '_Canvas.blit(s, 0, 0, 0, 0, 2, 2, 0); ' +
+     'to_string(inw) + ":" + to_string(inp % 10) + ":" + _cdump()')
+case("cvtarget|selfblit",
+     '_Canvas.init(4, 2); let s = _Canvas.sprite_blank(2, 2, _CA+2); ' +
+     '_Canvas.target(s); _Canvas.blit(s, 0, 0, 0, 0, 2, 2, 0)')
+case("cvtarget|freetarget",
+     '_Canvas.init(4, 2); let s = _Canvas.sprite_blank(2, 2, _CA+2); ' +
+     '_Canvas.target(s); _Canvas.sprite_free(s)')
+case("cvtarget|stale",
+     '_Canvas.init(4, 2); let s = _Canvas.sprite_blank(2, 2, _CA+2); ' +
+     '_Canvas.sprite_free(s); to_string(_Canvas.sprite_width(s)) + ":" + ' +
+     'to_string(_Canvas.sprite_height(s))')
+case("cvtarget|deadhandle",
+     '_Canvas.init(4, 2); let s = _Canvas.sprite_blank(2, 2, _CA+2); ' +
+     '_Canvas.sprite_free(s); _Canvas.target(s)')
+case("cvtarget|blank_neg", '_Canvas.sprite_blank(-1, -1, _CA+2)')
 # flags x alpha: the flip / box-average bits, and the integer compositing rule
 # read back over a filled buffer so the blended channels show up in the dump.
 for f in ['0', '1', '2', '3', '8', '9', '4', '16', '-1'] {

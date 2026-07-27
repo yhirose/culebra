@@ -344,9 +344,22 @@ let _canvas_module = fn () {
       self._w = _Canvas.sprite_width(self._id)
       self._h = _Canvas.sprite_height(self._id)
     }
+    # A blank w×h sprite in one colour — the raw material of an offscreen
+    # draw target (see Canvas.draw_to).
+    new(w: Long, h: Long, color = 0) {
+      self._id = _Canvas.sprite_blank(w, h, color)
+      self._w = w
+      self._h = h
+    }
     # Named form of the String constructor, for call sites where `Sprite(data)`
     # would not read as "this is a PNG".
     static from_png(data) { Sprite(data) }
+    # Named form of the blank constructor, mirroring from_png.
+    static blank(w, h, color = 0) { Sprite(w, h, color) }
+    # Sprites free their native pixels when the last reference drops, so a
+    # program that creates them per frame doesn't grow the registry. A
+    # constructor that threw (bad PNG bytes) drops before _id was ever set.
+    drop() { if self._id != nil { _Canvas.sprite_free(self._id) } }
     width() { self._w }
     height() { self._h }
     # Blit the whole sprite to (x, y). flip_x/flip_y mirror; transpose swaps
@@ -504,6 +517,18 @@ let _canvas_module = fn () {
     _Canvas.music_play(data, if loop { 1 } else { 0 }, vol, start)
   }
 
+  # --- offscreen drawing --------------------------------------------------
+  # Redirect drawing into `sprite` for the duration of `f`: the drawing calls,
+  # width()/height() and get_pixel all address the sprite; present() still
+  # shows the framebuffer. The previous target is restored on every exit path
+  # (defer), so a throw inside `f` can't leave drawing redirected. Drawing a
+  # sprite onto itself (sprite.draw inside its own draw_to) raises.
+  let draw_to = fn (sprite, f) {
+    let prev = _Canvas.target(sprite._id)
+    defer { _Canvas.target(prev) }
+    f()
+  }
+
   # --- game loop ----------------------------------------------------------
   # Set up a w×h framebuffer and drive `tick` once per frame, presenting after
   # each. `tick()` returns false to stop (e.g. the player quit). present()
@@ -563,6 +588,7 @@ let _canvas_module = fn () {
     width: fn () { _Canvas.width() },
     height: fn () { _Canvas.height() },
     Sprite: Sprite,
+    draw_to: draw_to,
     text: text,
     text_width: text_width,
     buttons: buttons,

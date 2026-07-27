@@ -787,6 +787,26 @@ culebra_runtime_canvas_sprite_from_png(uint8_t tag, int64_t data, int64_t line,
     throw culebra::CulebraError("ValueError", d.error, line, col);
   return culebra::_canvas_detail::sprite_adopt(std::move(d.px), d.w, d.h);
 }
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_sprite_blank(
+    int64_t w, int64_t h, int64_t rgba) {
+  return culebra::_canvas_detail::sprite_blank(static_cast<int>(w),
+                                               static_cast<int>(h),
+                                               static_cast<uint32_t>(rgba));
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_sprite_free(
+    int64_t id, int64_t line, int64_t col) {
+  if (!culebra::_canvas_detail::sprite_free(id))
+    throw culebra::CulebraError(
+        "ValueError", culebra::_canvas_detail::kFreeTargetError, line, col);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_target(
+    int64_t id, int64_t line, int64_t col) {
+  int64_t prev = culebra::_canvas_detail::target(id);
+  if (prev < 0)
+    throw culebra::CulebraError("ValueError", "not a live sprite handle", line,
+                                col);
+  return prev;
+}
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_sprite_width(
     int64_t id) {
   return culebra::_canvas_detail::sprite_width(id);
@@ -795,19 +815,30 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_sprite_height(
     int64_t id) {
   return culebra::_canvas_detail::sprite_height(id);
 }
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void _culebra_canvas_blit_check(
+    bool ok, int64_t line, int64_t col) {
+  if (!ok)
+    throw culebra::CulebraError(
+        "ValueError", culebra::_canvas_detail::kSelfBlitError, line, col);
+}
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_blit(
     int64_t id, int64_t dx, int64_t dy, int64_t sx, int64_t sy, int64_t sw,
-    int64_t sh, int64_t flags) {
-  culebra::_canvas_detail::blit(id, static_cast<int>(dx), static_cast<int>(dy),
-                                static_cast<int>(sx), static_cast<int>(sy),
-                                static_cast<int>(sw), static_cast<int>(sh),
-                                flags);
+    int64_t sh, int64_t flags, int64_t line, int64_t col) {
+  _culebra_canvas_blit_check(
+      culebra::_canvas_detail::blit(id, static_cast<int>(dx),
+                                    static_cast<int>(dy), static_cast<int>(sx),
+                                    static_cast<int>(sy), static_cast<int>(sw),
+                                    static_cast<int>(sh), flags),
+      line, col);
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_blit_scaled(
     int64_t id, int64_t dx, int64_t dy, int64_t dw, int64_t dh, int64_t sx,
-    int64_t sy, int64_t sw, int64_t sh, int64_t flags, int64_t alpha) {
-  culebra::_canvas_detail::blit_scaled(id, dx, dy, dw, dh, sx, sy, sw, sh,
-                                       flags, alpha);
+    int64_t sy, int64_t sw, int64_t sh, int64_t flags, int64_t alpha,
+    int64_t line, int64_t col) {
+  _culebra_canvas_blit_check(
+      culebra::_canvas_detail::blit_scaled(id, dx, dy, dw, dh, sx, sy, sw, sh,
+                                           flags, alpha),
+      line, col);
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_present() {
   culebra::_canvas_detail::present();
@@ -7763,10 +7794,14 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                    jit.builder_.getInt8Ty(), i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_sprite_width, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_sprite_height, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_sprite_blank, i64, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_sprite_free, vt, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_target, i64, i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_blit, vt, i64, i64, i64, i64, i64,
-                                   i64, i64, i64);
+                                   i64, i64, i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_blit_scaled, vt, i64, i64, i64,
-                                   i64, i64, i64, i64, i64, i64, i64, i64);
+                                   i64, i64, i64, i64, i64, i64, i64, i64, i64,
+                                   i64);
   jit.module_->getOrInsertFunction(rt::canvas_present, vt);
   jit.module_->getOrInsertFunction(rt::canvas_buttons, i64);
   jit.module_->getOrInsertFunction(rt::canvas_mouse_x, i64);
@@ -8925,16 +8960,39 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
       if (auto v = args({{"id"}}))
         return jit.own(make_long(
             emit_call(module_->getFunction(rt::canvas_sprite_height), *v)));
+    if (method == "sprite_blank")
+      if (auto v = args({{"w"}, {"h"}, {"rgba"}}))
+        return jit.own(make_long(
+            emit_call(module_->getFunction(rt::canvas_sprite_blank), *v)));
+    if (method == "sprite_free")
+      if (auto v = args({{"id"}})) {
+        v->push_back(line);
+        v->push_back(col);
+        return call_void(rt::canvas_sprite_free, *v);
+      }
+    if (method == "target")
+      if (auto v = args({{"id"}})) {
+        v->push_back(line);
+        v->push_back(col);
+        return jit.own(make_long(
+            emit_call(module_->getFunction(rt::canvas_target), *v)));
+      }
     if (method == "blit")
       if (auto v = args({{"id"}, {"dx", Coord}, {"dy", Coord}, {"sx", Coord},
                          {"sy", Coord}, {"sw", Coord}, {"sh", Coord},
-                         {"flags"}}))
+                         {"flags"}})) {
+        v->push_back(line);
+        v->push_back(col);
         return call_void(rt::canvas_blit, *v);
+      }
     if (method == "blit_scaled")
       if (auto v = args({{"id"}, {"dx", Coord}, {"dy", Coord}, {"dw", Coord},
                          {"dh", Coord}, {"sx", Coord}, {"sy", Coord},
-                         {"sw", Coord}, {"sh", Coord}, {"flags"}, {"alpha"}}))
+                         {"sw", Coord}, {"sh", Coord}, {"flags"}, {"alpha"}})) {
+        v->push_back(line);
+        v->push_back(col);
         return call_void(rt::canvas_blit_scaled, *v);
+      }
     if (method == "present" && a.empty())
       return call_void(rt::canvas_present, {});
     if (method == "buttons" && a.empty())
