@@ -781,15 +781,33 @@ int run_build(const BuildOptions& opts) {
               root.string());
           return 1;
         }
+        // Every asset has to make it into the table. A walk that stops early or
+        // a file that won't open used to be skipped in silence, baking a table
+        // with holes in it: the build reports success and the binary 404s the
+        // missing files at runtime.
+        auto fail_read = [&](const fs::path& p, std::string_view why) {
+          std::println(stderr,
+              "culebra build: Embed.dir(\"{}\"): can't read '{}': {}", dir,
+              p.string(), why);
+          return 1;
+        };
         std::vector<std::pair<std::string, std::string>> files;  // rel, bytes
-        for (auto it = fs::recursive_directory_iterator(root, ec);
-             !ec && it != fs::recursive_directory_iterator();
-             it.increment(ec)) {
-          if (!it->is_regular_file()) continue;
+        // The error check has to come before the end test: a failed increment
+        // (a subdirectory that won't open) leaves the iterator equal to end, so
+        // testing that first would exit the walk as if it had finished.
+        for (fs::recursive_directory_iterator it(root, ec), end;; it.increment(ec)) {
+          if (ec) return fail_read(root, ec.message());
+          if (it == end) break;
+          bool regular = it->is_regular_file(ec);
+          if (ec) return fail_read(it->path(), ec.message());
+          if (!regular) continue;
           auto rel = fs::relative(it->path(), root, ec).generic_string();
+          if (ec || rel.empty()) return fail_read(it->path(), "no path under the directory");
           std::ifstream f(it->path(), std::ios::binary);
+          if (!f) return fail_read(it->path(), "open failed");
           std::string bytes((std::istreambuf_iterator<char>(f)),
                             std::istreambuf_iterator<char>());
+          if (f.bad()) return fail_read(it->path(), "read failed");
           files.emplace_back(std::move(rel), std::move(bytes));
         }
         std::sort(files.begin(), files.end());
