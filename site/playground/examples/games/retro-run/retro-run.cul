@@ -861,10 +861,23 @@ let draw_road = fn (base_index, base_percent, player_y) {
       # The band runs from `top` (this segment's far edge, snapped up to a row)
       # down to `edge`, the first row nothing has painted yet.
       let top = Math.floor(sy2)
-      let x1 = segment.p1_sx
-      let w1 = segment.p1_sw
       let x2 = segment.p2_sx
       let w2 = segment.p2_sw
+      # The nearest segment straddles the bottom of the frame: its near edge
+      # projects a dozen rows below it (p1 is behind the camera's near plane).
+      # Painting that vertex AT the bottom row would widen the band and tilt
+      # both its edges, which shows up as the road and the lane dashes
+      # visibly kinking in the last few rows. A segment is drawn as a straight
+      # edge from p1 to p2, so the geometry at the bottom row is that line
+      # interpolated to it. Only this one band needs it — every later band
+      # starts where the previous one stopped, on a shared vertex.
+      mut x1 = segment.p1_sx
+      mut w1 = segment.p1_sw
+      if edge == H && sy1 > edge {
+        let t = (edge - sy1) / (sy2 - sy1)
+        x1 = x1 + (x2 - x1) * t
+        w1 = w1 + (w2 - w1) * t
+      }
       let r1 = w1 / 6.0
       let r2 = w2 / 6.0
       _Canvas.rect(0, top, W, edge - top, c_grass)
