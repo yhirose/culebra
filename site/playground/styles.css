@@ -29,17 +29,24 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   padding: 0.15rem 0.5rem; border: 1px solid var(--border); border-radius: 999px;
 }
 .pg-toolbar .status.err { color: var(--danger); }
+/* One height for every toolbar control, border-box so the value is the final
+   row height regardless of each element's own font metrics — a <select> and a
+   <button> don't share line-height math, so matching padding alone left them a
+   few px apart. */
+.pg-toolbar select, .pg-toolbar .btn, .pg-toolbar #args {
+  box-sizing: border-box; height: 2.1rem;
+}
 .pg-toolbar select {
-  font: inherit; font-size: 0.88rem; padding: 0.4rem 0.5rem;
+  font: inherit; font-size: 0.88rem; padding: 0 0.5rem;
   border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--surface); color: var(--text);
 }
 /* Narrower than brand.css's .btn, which is sized for the landing page's calls
    to action rather than for a row of controls. Scoped so that page keeps its. */
-.pg-toolbar .btn { padding: 0.35rem 0.8rem; }
+.pg-toolbar .btn { padding: 0 0.8rem; }
 .pg-toolbar #args {
   font: inherit; font-size: 0.85rem; font-family: var(--mono, ui-monospace, monospace);
-  padding: 0.4rem 0.55rem; min-width: 14rem; flex: 0 1 22rem;
+  padding: 0 0.55rem; min-width: 14rem; flex: 0 1 22rem;
   border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--surface); color: var(--text);
 }
