@@ -1,0 +1,66 @@
+// Surplus positional args are part of the calling convention, not an error:
+// they overflow into __ARGS__. Pins the §15 error-table claims about which
+// callee kinds reject a surplus and with which error kind.
+
+// --- user functions accept surplus; it lands in __ARGS__ ---
+let lam = fn (a, b) { [a, b, __ARGS__] }
+assert_eq(lam(1, 2), [1, 2, []])
+assert_eq(lam(1, 2, 3), [1, 2, [3]])
+assert_eq(lam(1, 2, 3, 4), [1, 2, [3, 4]])
+
+// the §19 example
+let logger = fn (level) { "[{level}] " + __ARGS__.join(' ') }
+assert_eq(logger('info', 'building', 'fizzbuzz'), '[info] building fizzbuzz')
+
+// same for a lambda, a class method, and a constructor
+let arrow = |a| __ARGS__
+assert_eq(arrow(1, 2, 3), [2, 3])
+
+class C {
+  new(a) { self.a = a; self.extras = __ARGS__ }
+  m(a) { __ARGS__ }
+}
+assert_eq(C(1, 2, 3).extras, [2, 3])
+assert_eq(C(1).m(1, 9), [9])
+// too few is an ArityError there too, before any instance is built
+let e_ctor = try { C(); nil } catch e { e }
+assert_eq(e_ctor.kind, 'ArityError')
+assert_eq(e_ctor.message, "missing required argument 'a'")
+
+// too FEW is still an error, on the same functions
+let e_few = try { lam(1); nil } catch e { e }
+assert_eq(e_few.kind, 'ArityError')
+assert_eq(e_few.message, "missing required argument 'b'")
+
+// --- a bare `*` caps positionals: TypeError, and __ARGS__ is never reached ---
+let capped = fn (a, *, k = 1) { [a, k, __ARGS__] }
+assert_eq(capped(1), [1, 1, []])
+assert_eq(capped(1, k: 5), [1, 5, []])
+let e_cap = try { capped(1, 2); nil } catch e { e }
+assert_eq(e_cap.kind, 'TypeError')
+assert_eq(e_cap.message, 'takes 1 positional argument but 2 given')
+
+// --- a `*args` catch-all removes the cap entirely ---
+let variadic = fn (a, *rest) { [a, rest] }
+assert_eq(variadic(1, 2, 3), [1, [2, 3]])
+
+// --- built-ins and namespace fns DO reject a surplus (ArityError) ---
+let e_builtin = try { "ab".upper(1, 2); nil } catch e { e }
+assert_eq(e_builtin.kind, 'ArityError')
+assert_eq(e_builtin.message, "'upper' takes 0 arguments but 2 given")
+
+let e_ns = try { JSON.stringify(1, 2, 3, 4, 5); nil } catch e { e }
+assert_eq(e_ns.kind, 'ArityError')
+assert_eq(e_ns.message, 'expected 4 positional arguments, got 5')
+
+// a built-in whose cap comes from a kw-only param reports the TypeError form
+let e_builtin_kw = try { [3, 1].sort(1); nil } catch e { e }
+assert_eq(e_builtin_kw.kind, 'TypeError')
+assert_eq(e_builtin_kw.message, 'takes 0 positional arguments but 1 given')
+
+// --- a `fn name(...)` declaration dispatches, so a surplus finds no method ---
+fn decl(a, b) { a }
+let e_decl = try { decl(1, 2, 3); nil } catch e { e }
+assert_eq(e_decl.kind, 'DispatchError')
+
+IO.inspect("test_positional_overflow OK")

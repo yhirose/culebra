@@ -3139,7 +3139,7 @@ AOT builds (unless noted).
 
 | Kind | Trigger | Catchable |
 |---|---|---|
-| `TypeError` | Arithmetic / comparison on incompatible operand types; calling a non-callable; failing `: T` annotation; `to_long`/`to_float` on non-coercible value; `__str__` returning non-String; `*` splat of non-Array / `**` splat of non-Object; built-in arg-type check failure; mixed positional + keyword targeting the same parameter; duplicate keyword. | yes |
+| `TypeError` | Arithmetic / comparison on incompatible operand types; calling a non-callable; failing `: T` annotation; `to_long`/`to_float` on non-coercible value; `__str__` returning non-String; `*` splat of non-Array / `**` splat of non-Object; built-in arg-type check failure; mixed positional + keyword targeting the same parameter; duplicate keyword; more positionals than the `*` separator allows (`takes N positional arguments but M given`). | yes |
 | `ZeroDivisionError` | Integer `/`, `%`, `**` with negative exponent collapsing to division; float `/` or `%` with RHS == 0. | yes |
 | `NameError` | Read of an undefined identifier; compound assignment (`x += rhs`) on undefined `x`; REPL global lookup miss. A name bound in *no* scope (and not a builtin) is caught before evaluation — see Compile-time errors; a name read before its own later declaration runs (use-before-def) stays a runtime error. | yes¹ |
 | `ImmutableError` | Assignment to a `let` (non-`mut`) binding; assignment to an immutable Object property or `Dict` entry; rebinding `self` inside a constructor body. | yes |
@@ -3147,7 +3147,7 @@ AOT builds (unless noted).
 | `IndexError` | Array / String / Tensor index out of range; Tensor slice out of bounds; Tensor reduction axis out of range. | yes |
 | `ValueError` | Destructure pattern mismatch (`[a, b] = ...` shape mismatch); Tensor shape / dtype mismatch; `[].min()` or other empty-collection reductions; numeric conversion of malformed string; JSON parse failure. | yes |
 | `AttributeError` | Compound assignment (`o.x += ...`) on a missing property; reading a member a builtin namespace doesn't have (namespaces are closed — a class or plain dict still reads `nil`). | yes |
-| `ArityError` | Call missing a required argument; too few or too many positional args; class instantiation arity mismatch. | yes |
+| `ArityError` | Call missing a required argument — too few positional args to a function or a class constructor; more positional args than a *built-in* or namespace function accepts. Surplus positionals to a **user** function are not an error: they overflow into `__ARGS__` (§19). | yes |
 | `DispatchError` | Multimethod call with no matching method or with ambiguous specificity tie (§20). | yes |
 | `AssertionError` | Matcher failure (`assert_true` / `assert_eq` / etc.) or user `throw {kind: "AssertionError", ...}`. Message names both operands for comparison matchers. | yes |
 | `SyntaxError` | Structural errors raised during AST lowering: `**rest` not last param, duplicate `*` separator, non-default param after default, `compound let`, `break` / `continue` outside loop. Surfaces at function decl evaluation, before that function runs. | yes |
@@ -4336,6 +4336,12 @@ let logger = fn (level) {
 }
 logger('info', 'building', 'fizzbuzz')   # → '[info] building fizzbuzz'
 ```
+
+Because that overflow always has somewhere to land, passing a user
+function more positional args than it declares is **not** an error —
+unlike a built-in, which raises `ArityError` (§15). A bare `*` in the
+parameter list is the way to cap positionals on a user function:
+overflow past it is a `TypeError` rather than reaching `__ARGS__`.
 
 `__ARGS__` does **not** receive keyword arguments — those go through
 the explicit param list or `**rest`. Prefer the explicit `*args`

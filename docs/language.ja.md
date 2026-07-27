@@ -2953,7 +2953,7 @@ shutdown パターン）は、`Signal.notify` でチャネルを登録します�
 
 | Kind | 発生条件 | catch 可能 |
 |---|---|---|
-| `TypeError` | 演算子・比較における型不一致；非 callable の呼出；`: T` 型注釈失敗；`to_long`/`to_float` の非変換可能値；`__str__` が String 以外を返す；`*` splat の非 Array / `**` splat の非 Object；組み込み引数チェックの失敗；同一パラメータへ positional + keyword 重複；duplicate keyword | はい |
+| `TypeError` | 演算子・比較における型不一致；非 callable の呼出；`: T` 型注釈失敗；`to_long`/`to_float` の非変換可能値；`__str__` が String 以外を返す；`*` splat の非 Array / `**` splat の非 Object；組み込み引数チェックの失敗；同一パラメータへ positional + keyword 重複；duplicate keyword；`*` 区切りが許す数を超えた positional（`takes N positional arguments but M given`） | はい |
 | `ZeroDivisionError` | 整数 `/`, `%`, 負指数の `**` で除算になるケース；浮動小数 `/` または `%` の RHS == 0 | はい |
 | `NameError` | 未定義識別子の読み取り；compound 代入（`x += rhs`）の `x` が未定義；REPL global 検索の miss。どのスコープにも無く builtin でもない名前は評価前に検出（コンパイル時エラー参照）；自身の後続宣言より前に読む（use-before-def）場合は runtime エラーのまま | はい¹ |
 | `ImmutableError` | `let`（非 `mut`）束縛への代入；immutable Object プロパティまたは Dict エントリへの代入；コンストラクタ本体内の `self` 再代入 | はい |
@@ -2961,7 +2961,7 @@ shutdown パターン）は、`Signal.notify` でチャネルを登録します�
 | `IndexError` | Array / String / Tensor の範囲外 index；Tensor slice 範囲外；Tensor reduction axis 範囲外 | はい |
 | `ValueError` | Destructure pattern mismatch；Tensor の shape / dtype 不一致；`[].min()` 等空コレクションへの reduce；不正な数値文字列；JSON parse 失敗 | はい |
 | `AttributeError` | compound 代入（`o.x += ...`）で `x` が存在しない；組み込み名前空間が持たないメンバーの読み取り（名前空間は閉じている — クラスやプレーンな dict は `nil` のまま） | はい |
-| `ArityError` | 必須引数の欠如；positional の過不足；class new の arity 不一致 | はい |
+| `ArityError` | 必須引数の欠如 — 関数や class constructor への positional 不足；**組み込み**・名前空間関数が受け取れる数を超えた positional。**ユーザ定義**関数への余分な positional はエラーではなく `__ARGS__`（§19）に溢れる | はい |
 | `DispatchError` | 多重ディスパッチ（§20）でマッチなし、または specificity 同点 | はい |
 | `AssertionError` | matcher の失敗 (`assert_true` / `assert_eq` 等) もしくはユーザ `throw {kind: "AssertionError", ...}`。 比較系 matcher は両辺を message に含めます | はい |
 | `SyntaxError` | AST lowering で検出される構造エラー：`**rest` が末尾でない、`*` 区切りの重複、デフォルト値後に非デフォルト、`let` 付き compound、ループ外の `break` / `continue` 等。該当 function の宣言評価時に発火 | はい |
@@ -4118,6 +4118,12 @@ let logger = fn (level) {
 }
 logger('info', 'building', 'fizzbuzz')   # → '[info] building fizzbuzz'
 ```
+
+あふれた分に必ず行き先があるので、ユーザ定義関数を宣言より多い
+位置引数で呼ぶことは**エラーではありません**。組み込みが
+`ArityError`（§15）を出すのとは異なります。ユーザ定義関数で
+positional を制限したい場合はパラメータリストに単独の `*` を置きます
+— それを超えた分は `__ARGS__` に届かず `TypeError` になります。
 
 `__ARGS__` はキーワード引数を受け取りません — そちらは明示的な
 パラメータリストか `**rest` 経由です。引数を取らないと宣言した
