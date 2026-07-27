@@ -68,7 +68,7 @@ Conventions used below:
 23. [`Log`](#23-log) — leveled, structured logging to stderr (text / JSON, child loggers)
 24. [`TOML`](#24-toml) — parse / stringify TOML configuration
 25. [`SQLite`](#25-sqlite) — embedded SQL database (query / execute / prepared statements / transactions)
-26. [`Canvas`](#26-canvas) — immediate-mode 2D framebuffer for games (pixels, sprites, font, input, tone, music)
+26. [`Canvas`](#26-canvas) — immediate-mode 2D framebuffer for games (shapes, sprites, offscreen targets, text, keys/mouse, tone, sound, music)
 27. [`Scene`](#27-scene) — retained-mode 3D renderer for procedural geometry (opt-in, macOS-only)
 28. [`Net`](#28-net) — raw TCP / UDP sockets and name resolution (the layer under `Http`)
 29. [`Desktop` / `Webview`](#29-desktop--webview) — native WebView desktop app: local HTTP server + window, one call
@@ -3957,22 +3957,42 @@ Audio below), lazily opening the audio device on first use.
 ### Colour
 
 `Canvas.rgba(r, g, b, a = 255) -> Long` packs four 0–255 channels into one
-`Long` (byte order `[r, g, b, a]`). Every drawing call takes such a colour; an
-alpha of 0 is transparent (skipped by sprite blits).
+`Long` (byte order `[r, g, b, a]`). Every drawing call takes such a colour,
+and **the alpha composites**: 255 draws opaque, 0 draws nothing, and anything
+between blends the shape over what is already there (integer source-over —
+`(src*a + dst*(255-a) + 127) / 255` per colour channel, so all three backends
+round identically, and an opaque buffer stays opaque). `rgba(0, 0, 0, 128)`
+is a half-dark overlay; drawing it twice darkens twice. The two exceptions
+are `clear`, which replaces every pixel with the given value (a frame reset,
+not a wash), and `set_pixel`, which stores the value raw so it pairs with
+`get_pixel` (writing transparency is what those two are for).
 
 ### Drawing
 
 | Function | Effect |
 | --- | --- |
 | `Canvas.init(w, h)` | allocate (or resize) the framebuffer; `Canvas.run` does this for you |
-| `Canvas.clear(color)` | fill the whole framebuffer |
-| `Canvas.set_pixel(x, y, color)` | set one pixel (off-buffer writes are ignored) |
+| `Canvas.clear(color)` | replace the whole target with `color` (no compositing) |
+| `Canvas.set_pixel(x, y, color)` | store one pixel raw (off-buffer writes are ignored) |
 | `Canvas.get_pixel(x, y) -> Long` | read a pixel (0 off-buffer) — for pixel-readback collision |
-| `Canvas.rect(x, y, w, h, color)` | filled rectangle, clipped |
-| `Canvas.triangle(x1, y1, x2, y2, x3, y3, color)` | filled triangle |
-| `Canvas.polygon(points, color)` | filled polygon from a flat vertex list |
-| `Canvas.width()` / `Canvas.height() -> Long` | framebuffer dimensions |
+| `Canvas.rect(x, y, w, h, color, fill = true)` | rectangle, clipped |
+| `Canvas.line(x1, y1, x2, y2, color)` | line, both endpoints included |
+| `Canvas.circle(cx, cy, r, color, fill = true)` | circle centred on `(cx, cy)` |
+| `Canvas.ellipse(cx, cy, rx, ry, color, fill = true)` | ellipse with per-axis radii |
+| `Canvas.triangle(x1, y1, x2, y2, x3, y3, color, fill = true)` | triangle |
+| `Canvas.polygon(points, color, fill = true)` | polygon from a flat vertex list |
+| `Canvas.width()` / `Canvas.height() -> Long` | current draw-target dimensions |
 | `Canvas.present()` | show the frame (see the loop below) |
+
+Every shape takes `fill: false` to draw its one-pixel outline instead of the
+filled interior: for `rect` that is the outermost ring of the same fill, for
+`circle` / `ellipse` the connected edge, and for `triangle` / `polygon` the
+closed chain of `line`-drawn edges (whose vertices, unlike the half-open
+fill, are included). `line` walks its major axis one pixel at a time with the
+minor coordinate rounded to nearest, and sorts its endpoints first, so
+`line(a, b)` and `line(b, a)` draw identical pixels. A circle of radius `r`
+spans `2r + 1` pixels across its centre row — `(cx ± r, cy)` lies on the
+circle — and a radius of 0 is a single pixel; negative radii draw nothing.
 
 Every position and size argument is `Long|Float`. A `Float` is rounded toward
 −∞ (pixel *n* covers `[n, n+1)`), so adjacent spans tile without a gap and a
@@ -3989,6 +4009,9 @@ even-odd rule, so a concave outline hollows out the way you would draw it.
 `Canvas.triangle` is the same fill from three vertices spelled out, which is
 what the conventional shape call looks like (raylib, SDL and GPU rasterizers
 all take three) and avoids building an `Array` per call on a hot path.
+`Canvas.circle` is `ellipse` with one radius; both compute each row's
+half-width with an exact integer square root, so every backend rasterizes the
+identical curve.
 
 Rows and spans are half-open, the same convention as `rect`: a row belongs to
 the edge whose vertical span contains it, and each filled span covers
@@ -4003,8 +4026,10 @@ saturate into a ±2³⁰ guard band so no input can overflow it.
 `Canvas.Sprite.new(pixels, w, h, palette = nil)` uploads a sprite once and
 returns a handle to blit cheaply each frame. `pixels` is a flat, row-major
 array: packed-RGBA `Long`s, or — when `palette` is given — indices into that
-palette (compact indexed art). Blits skip transparent pixels, so sprites
-composite.
+palette (compact indexed art). A fully transparent source pixel is skipped
+(the shape mask), a partially transparent one — a PNG's anti-aliased edge —
+blends over what is there, so sprites composite. A sprite frees its pixels
+when the last reference to it goes away.
 
 `Canvas.Sprite.new(png: String)` instead decodes PNG bytes — `FS.read` of an
 image file, say, since a `String` is a byte string — and takes the size from
@@ -4025,21 +4050,49 @@ layout the framebuffer uses; anything undecodable raises
 The scaling blits sample nearest-neighbour, so pixel art scaled up stays crisp;
 `smooth` box-averages the source instead when the sprite shrinks (it is ignored
 when neither axis shrinks). There is no scaled `transpose`. `alpha` (0–255)
-composites the whole blit over what is already there: 255 writes the source
-pixel unchanged, 0 draws nothing, and in between each channel becomes
-`(src*alpha + dst*(255-alpha) + 127) / 255` — integer only, so the three
-backends round identically. Source alpha stays the shape mask it is for
-sprites: a fully transparent source pixel is skipped and never contributes,
-whether it is sampled directly or averaged over. A destination or source
-rectangle with a non-positive side draws nothing.
+scales the whole blit: each pixel composites at its own source alpha times
+`alpha`, so an opaque sprite at `alpha: 128` is half-blended and a
+half-transparent edge pixel under it blends at a quarter. A fully transparent
+source pixel is skipped and never contributes, whether it is sampled directly
+or averaged over. A destination or source rectangle with a non-positive side
+draws nothing.
+
+### Offscreen drawing
+
+`Canvas.Sprite.blank(w, h, color = 0)` creates an empty sprite, and
+`Canvas.draw_to(sprite, fn () { ... })` redirects every drawing call into it
+for the duration of the closure — `clear`, the shapes, `text`, other
+sprites' `draw`, plus `Canvas.width()` / `height()` and `get_pixel`, which
+follow the target so centring code keeps working offscreen. `present()`
+always shows the framebuffer. The previous target is restored on every exit
+path (including a throw), and `draw_to` nests like the call stack it is.
+
+```culebra
+# doctest: skip
+let bgd = Canvas.Sprite.blank(320, 240)
+Canvas.draw_to(bgd, fn () {          # render the backdrop once…
+  Canvas.clear(sky)
+  for i in 0..50 { Canvas.circle(Random.below(320), Random.below(240), 2, star) }
+})
+Canvas.run(320, 240, fn () {
+  bgd.draw(0, 0)                     # …then each frame is one blit
+  true
+})
+```
+
+Two things refuse with a `ValueError`: drawing a sprite onto itself (a blit
+would read its own writes), and freeing the sprite currently drawn to. Both
+are backend-symmetric, like every Canvas error.
 
 ### Text
 
-`Canvas.text(s, x, y, color)` draws `s` in the built-in 8×8 bitmap font (the
-WASM-4 runtime font, covering printable ASCII 32–126, upper- and lower-case;
-characters outside that range are skipped). Advance is a fixed 8px per
-character. `Canvas.text_width(s) -> Long` gives the pixel width, for centring or
-right-aligning a HUD.
+`Canvas.text(s, x, y, color, scale = 1)` draws `s` in the built-in 8×8 bitmap
+font (the WASM-4 runtime font, covering printable ASCII 32–126, upper- and
+lower-case; characters outside that range are skipped). Each font pixel
+becomes a `scale`×`scale` block and the advance follows at `8 * scale` px per
+character — `scale: 2` is the title-screen size. A non-positive scale draws
+nothing. `Canvas.text_width(s, scale = 1) -> Long` gives the pixel width, for
+centring or right-aligning.
 
 ### Input
 
@@ -4049,6 +4102,9 @@ Input is polled each frame (it reflects the current state, not an event queue).
 | --- | --- |
 | `Canvas.buttons() -> Long` | bitmask of held buttons |
 | `Canvas.mouse() -> Object` | `{x, y, buttons}` in framebuffer pixels |
+| `Canvas.key(name) -> Bool` | one named key is held now |
+| `Canvas.key_queue() -> Array` | drain this frame's key presses (names) |
+| `Canvas.typed() -> String` | drain the characters the user typed |
 
 Button bits are the constants `Canvas.LEFT`, `RIGHT`, `UP`, `DOWN` (arrow keys,
 and WASD as a second set) and `Canvas.A`, `B` (action keys — `A` is Space/Z,
@@ -4060,6 +4116,24 @@ detection, `Canvas.Input.new()` tracks the previous frame:
 | `input.update()` | sample this frame's buttons (call once per frame) |
 | `input.down(btn) -> Bool` | button is held now |
 | `input.pressed(btn) -> Bool` | button went down **this** frame (the flap trigger) |
+
+Beyond the six buttons, `Canvas.key` reports any key by name — **the same
+vocabulary `Term.read_key` uses**, so key handling code moves between the two
+namespaces unchanged: a printable character (`"a"`, `" "`, `"-"`) or a
+special-key name (`"up"` / `"down"` / `"left"` / `"right"`, `"enter"`,
+`"escape"`, `"tab"`, `"backspace"`, `"insert"`, `"delete"`, `"home"`,
+`"end"`, `"pageup"`, `"pagedown"`, `"f1"`…`"f12"`). `"space"` is accepted as
+a readable alias for `" "`; an unknown name is simply never held. Letters
+name the physical key regardless of Shift (`"a"` covers both cases).
+
+`Canvas.key_queue()` returns the keys pressed since it was last called — the
+edge events, for bindings that must not repeat while held — and
+`Canvas.typed()` returns the characters typed (Shift, layout and IME
+applied), which is what a name-entry screen reads. Both drain destructively
+and are capped at 256 entries (oldest first out), so call each from one place
+per frame and hand the result around. Natively, the first `typed()` call
+turns the platform's text input on — a program that only polls keys never
+sees an IME popup. Headless, nothing is held and the queues are empty.
 
 ### Audio
 
@@ -4085,6 +4159,27 @@ opened, no crash) on a machine with no audio hardware. Native audio and
 WebAudio are independent implementations tuned to sound similar, not
 sample-identical — unlike the pixel ops, `tone` isn't required to produce
 bit-identical output across backends.
+
+### Sound effects
+
+`Canvas.Sound.new(data)` decodes a one-shot sample from its bytes — WAV, MP3
+or Ogg Vorbis, the bytes-in convention of `Sprite.from_png` — and plays it
+per call, which is the recorded-sample counterpart to `tone`'s synthesis (an
+explosion from a file rather than a swept square wave).
+
+| Method | Effect |
+| --- | --- |
+| `sound.play(vol = 100)` | play from the start (restarts if still playing) |
+| `sound.stop()` | stop the voice |
+| `sound.playing() -> Bool` | still audible? |
+
+Each `Sound` is one voice — `play` while playing restarts it, like the host
+samplers underneath — and the decoded sample is freed with the last
+reference. Bytes that are none of the three formats raise
+`ValueError: not a valid WAV, MP3 or Ogg audio stream` on every backend;
+past that check, an undecodable stream stays silent, and headless (or with no
+audio device) everything no-ops with `playing()` false, exactly like
+`music`.
 
 ### Music
 

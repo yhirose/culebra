@@ -65,7 +65,7 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println` を
 23. [`Log`](#23-log) — stderr へのレベル付き構造化ログ（text / JSON、child logger）
 24. [`TOML`](#24-toml) — TOML 設定を parse / stringify
 25. [`SQLite`](#25-sqlite) — 組み込み SQL データベース（query / execute / プリペアド文 / トランザクション）
-26. [`Canvas`](#26-canvas) — ゲーム向けイミディエイトモード 2D フレームバッファ（ピクセル / スプライト / フォント / 入力 / tone / music）
+26. [`Canvas`](#26-canvas) — ゲーム向けイミディエイトモード 2D フレームバッファ（図形 / スプライト / オフスクリーン描画先 / テキスト / キー・マウス / tone / 効果音 / music）
 27. [`Scene`](#27-scene) — 手続きジオメトリ向けの retained-mode 3D レンダラ（opt-in、macOS 限定）
 28. [`Net`](#28-net) — 生の TCP / UDP ソケットと名前解決（`Http` の下位レイヤ）
 29. [`Desktop` / `Webview`](#29-desktop--webview) — ネイティブ WebView のデスクトップアプリ: ローカル HTTP サーバ + ウィンドウを 1 呼び出しで
@@ -3832,22 +3832,41 @@ macOS、`Scene` と同じ vendored 静的 raylib + SDL3）では**実際のデ�
 ### 色
 
 `Canvas.rgba(r, g, b, a = 255) -> Long` は 0–255 の 4 チャンネルを 1 つの `Long`
-に詰める（バイト順 `[r, g, b, a]`）。すべての描画呼び出しがこの色を取る。アルファ
-0 は透過（スプライト blit でスキップ）。
+に詰める（バイト順 `[r, g, b, a]`）。すべての描画呼び出しがこの色を取り、
+**アルファは合成される**: 255 は不透明に描き、0 は何も描かず、その間は図形が
+既存の内容の上にブレンドされる（整数 source-over — 色チャンネルごとに
+`(src*a + dst*(255-a) + 127) / 255`。3 backend で丸めが一致し、不透明な
+バッファは不透明のまま）。`rgba(0, 0, 0, 128)` は半暗のオーバーレイで、
+2 回描けば 2 回暗くなる。例外は 2 つ: `clear` は全ピクセルを与えた値で
+**置き換える**（フレームのリセットであって薄塗りではない）。`set_pixel` は
+値をそのまま格納し `get_pixel` と対になる（透過を書き込むのはこの 2 つの
+役目）。
 
 ### 描画
 
 | 関数 | 効果 |
 | --- | --- |
 | `Canvas.init(w, h)` | フレームバッファを確保（またはリサイズ）する。`Canvas.run` が代わりに行う |
-| `Canvas.clear(color)` | フレームバッファ全体を塗る |
-| `Canvas.set_pixel(x, y, color)` | 1 ピクセルを設定（範囲外は無視） |
+| `Canvas.clear(color)` | 描画先全体を `color` で置き換える（合成なし） |
+| `Canvas.set_pixel(x, y, color)` | 1 ピクセルをそのまま格納（範囲外は無視） |
 | `Canvas.get_pixel(x, y) -> Long` | ピクセルを読む（範囲外は 0）— ピクセル読み戻しの当たり判定用 |
-| `Canvas.rect(x, y, w, h, color)` | 塗り矩形（クリップ） |
-| `Canvas.triangle(x1, y1, x2, y2, x3, y3, color)` | 塗り三角形 |
-| `Canvas.polygon(points, color)` | 平坦な頂点列からの塗り多角形 |
-| `Canvas.width()` / `Canvas.height() -> Long` | フレームバッファ寸法 |
+| `Canvas.rect(x, y, w, h, color, fill = true)` | 矩形（クリップ） |
+| `Canvas.line(x1, y1, x2, y2, color)` | 線分（両端点を含む） |
+| `Canvas.circle(cx, cy, r, color, fill = true)` | `(cx, cy)` 中心の円 |
+| `Canvas.ellipse(cx, cy, rx, ry, color, fill = true)` | 軸ごとの半径を持つ楕円 |
+| `Canvas.triangle(x1, y1, x2, y2, x3, y3, color, fill = true)` | 三角形 |
+| `Canvas.polygon(points, color, fill = true)` | 平坦な頂点列からの多角形 |
+| `Canvas.width()` / `Canvas.height() -> Long` | 現在の描画先の寸法 |
 | `Canvas.present()` | フレームを提示（下記ループ参照） |
+
+すべての図形は `fill: false` で塗りの代わりに 1 ピクセル幅の輪郭を描く:
+`rect` は同じ塗りの最外周リング、`circle` / `ellipse` はつながった縁、
+`triangle` / `polygon` は `line` で描いた辺の閉じた連鎖（半開区間の塗りと
+違い頂点を含む）。`line` は長軸を 1 ピクセルずつ歩き短軸座標を最近傍に
+丸める。先に端点をソートするので `line(a, b)` と `line(b, a)` は同一の
+ピクセルを描く。半径 `r` の円は中心行で `2r + 1` ピクセルにわたり —
+`(cx ± r, cy)` が円周上に乗る — 半径 0 は 1 ピクセル。負の半径は何も
+描かない。
 
 位置とサイズの引数はすべて `Long|Float`。`Float` は −∞ 方向に丸める（ピクセル
 *n* が `[n, n+1)` を覆う）ので、隣接するスパンは隙間なく敷き詰まり、負の座標は
@@ -3861,7 +3880,9 @@ macOS、`Scene` と同じ vendored 静的 raylib + SDL3）では**実際のデ�
 は無視される。塗りは even-odd 規則なので、凹んだ輪郭は見たとおりに凹む。
 `Canvas.triangle` は同じ塗りを 3 頂点で直接書く形で、慣習的な形状呼び出し
 （raylib / SDL / GPU ラスタライザはいずれも 3 頂点を取る）に合わせるとともに、
-ホットパスで呼び出しごとに `Array` を作らずに済む。
+ホットパスで呼び出しごとに `Array` を作らずに済む。`Canvas.circle` は半径を
+1 つにした `ellipse`。どちらも各行の半幅を正確な整数平方根で求めるので、
+どの backend でも同一の曲線になる。
 
 行とスパンは `rect` と同じ半開区間 — 行は「その行を縦スパンに含む辺」に属し、
 塗るスパンは `[xl, xr)`。したがって辺を共有する図形は継ぎ目なく、二重描画もなく
@@ -3874,8 +3895,10 @@ macOS、`Scene` と同じ vendored 静的 raylib + SDL3）では**実際のデ�
 `Canvas.Sprite.new(pixels, w, h, palette = nil)` はスプライトを一度アップロード
 し、毎フレーム安価に blit できるハンドルを返す。`pixels` は行優先の平坦配列:
 packed RGBA `Long`、または `palette` を与えたときはそのパレットへのインデックス
-（コンパクトなインデックスカラー画像）。blit は透過ピクセルをスキップするので
-スプライトは合成される。
+（コンパクトなインデックスカラー画像）。完全透過のソースピクセルはスキップされ
+（形マスク）、部分透過のピクセル — PNG のアンチエイリアス縁 — は既存の内容に
+ブレンドされるので、スプライトは合成される。スプライトのピクセルは最後の参照が
+消えたときに解放される。
 
 `Canvas.Sprite.new(png: String)` は代わりに PNG のバイト列をデコードする。`String`
 はバイト列なので、例えば画像ファイルの `FS.read` をそのまま渡せる。サイズは画像から
@@ -3894,19 +3917,48 @@ packed RGBA `Long`、または `palette` を与えたときはそのパレット
 
 拡縮 blit のサンプリングは最近傍なので、ドット絵を拡大しても輪郭は鮮明なまま。
 `smooth` は縮小時にソースをボックス平均する（どちらの軸も縮小しないときは無視）。
-拡縮版に `transpose` は無い。`alpha`（0–255）は blit 全体を既存の内容の上に合成
-する: 255 はソースピクセルをそのまま書き、0 は何も描かず、その間は各チャンネルが
-`(src*alpha + dst*(255-alpha) + 127) / 255` になる — 整数のみなので 3 backend で
-丸めが一致する。ソース側のアルファはスプライトの形マスクのままで、完全透過の
-ソースピクセルは直接サンプルされてもボックス平均されてもスキップされ、寄与しない。
-転送先・転送元の矩形の辺が非正なら何も描かない。
+拡縮版に `transpose` は無い。`alpha`（0–255）は blit 全体をスケールする: 各
+ピクセルは自身のソースアルファ × `alpha` で合成されるので、不透明なスプライトの
+`alpha: 128` は半分ブレンド、その中の半透明の縁ピクセルは 4 分の 1 でブレンド
+される。完全透過のソースピクセルは直接サンプルされてもボックス平均されても
+スキップされ、寄与しない。転送先・転送元の矩形の辺が非正なら何も描かない。
+
+### オフスクリーン描画
+
+`Canvas.Sprite.blank(w, h, color = 0)` は空のスプライトを作り、
+`Canvas.draw_to(sprite, fn () { ... })` はクロージャの間だけすべての描画
+呼び出しをそこへ向ける — `clear`、図形、`text`、他スプライトの `draw`、
+さらに `Canvas.width()` / `height()` と `get_pixel` も描画先に従うので、
+中央寄せのコードはオフスクリーンでもそのまま動く。`present()` は常に
+フレームバッファを表示する。前の描画先はどの脱出経路でも（throw でも）
+復元され、`draw_to` は呼び出しスタックのようにネストする。
+
+```culebra
+# doctest: skip
+let bgd = Canvas.Sprite.blank(320, 240)
+Canvas.draw_to(bgd, fn () {          # 背景は一度だけ描く…
+  Canvas.clear(sky)
+  for i in 0..50 { Canvas.circle(Random.below(320), Random.below(240), 2, star) }
+})
+Canvas.run(320, 240, fn () {
+  bgd.draw(0, 0)                     # …毎フレームは blit 1 回
+  true
+})
+```
+
+`ValueError` になるのは 2 つ: スプライトを自分自身に描くこと（blit が自分の
+書き込みを読んでしまう）と、いま描画先になっているスプライトを解放すること。
+どちらも他の Canvas エラーと同じく backend 対称。
 
 ### テキスト
 
-`Canvas.text(s, x, y, color)` は内蔵 8×8 ビットマップフォント（WASM-4 ランタイム
-のフォント、印字可能 ASCII 32–126 の大文字・小文字を収録、範囲外の文字はスキップ）
-で `s` を描く。送りは 1 文字固定 8px。`Canvas.text_width(s) -> Long` はピクセル幅
-を返す（HUD の中央寄せ / 右寄せ用）。
+`Canvas.text(s, x, y, color, scale = 1)` は内蔵 8×8 ビットマップフォント
+（WASM-4 ランタイムのフォント、印字可能 ASCII 32–126 の大文字・小文字を収録、
+範囲外の文字はスキップ）で `s` を描く。フォントの各ピクセルは `scale`×`scale`
+のブロックになり、送りも 1 文字 `8 * scale` px で追随する — `scale: 2` が
+タイトル画面サイズ。非正の scale は何も描かない。
+`Canvas.text_width(s, scale = 1) -> Long` はピクセル幅を返す（中央寄せ /
+右寄せ用）。
 
 ### 入力
 
@@ -3916,6 +3968,9 @@ packed RGBA `Long`、または `palette` を与えたときはそのパレット
 | --- | --- |
 | `Canvas.buttons() -> Long` | 押下中ボタンのビットマスク |
 | `Canvas.mouse() -> Object` | フレームバッファ座標の `{x, y, buttons}` |
+| `Canvas.key(name) -> Bool` | 名前で指したキーが今押されているか |
+| `Canvas.key_queue() -> Array` | このフレームのキー押下（名前）を引き取る |
+| `Canvas.typed() -> String` | ユーザーが打った文字を引き取る |
 
 ボタンビットは定数 `Canvas.LEFT` / `RIGHT` / `UP` / `DOWN`（矢印キー、および
 第 2 のセットとして WASD）と
@@ -3927,6 +3982,24 @@ packed RGBA `Long`、または `palette` を与えたときはそのパレット
 | `input.update()` | このフレームのボタンをサンプル（毎フレーム 1 回） |
 | `input.down(btn) -> Bool` | 今押されている |
 | `input.pressed(btn) -> Bool` | **このフレーム**に押された（フラップのトリガ） |
+
+6 ボタンの外側は `Canvas.key` が任意のキーを名前で報告する — **`Term.read_key`
+と同じ語彙**なので、キー処理コードは 2 つの namespace 間をそのまま移動できる:
+印字可能文字（`"a"`、`" "`、`"-"`）か特殊キー名（`"up"` / `"down"` / `"left"` /
+`"right"`、`"enter"`、`"escape"`、`"tab"`、`"backspace"`、`"insert"`、
+`"delete"`、`"home"`、`"end"`、`"pageup"`、`"pagedown"`、`"f1"`…`"f12"`）。
+`" "` の読みやすい別名として `"space"` も受け付ける。未知の名前は単に
+押されていない扱い。英字は Shift に関係なく物理キーを指す（`"a"` が両方の
+ケースを覆う）。
+
+`Canvas.key_queue()` は前回呼び出し以降に押されたキーを返し（エッジイベント —
+押しっぱなしでリピートさせないバインディング用）、`Canvas.typed()` は打たれた
+文字（Shift / 配列 / IME 適用済み）を返す — 名前入力画面が読むのはこちら。
+どちらも破壊的に引き取り、上限 256 件（古い方から溢れる）なので、フレームごとに
+1 箇所で呼んで結果を配ること。ネイティブでは最初の `typed()` 呼び出しが
+プラットフォームのテキスト入力を有効化する — キーだけをポーリングする
+プログラムが IME ポップアップを見ることはない。ヘッドレスでは何も押されず
+キューは空。
 
 ### 音声
 
@@ -3950,6 +4023,26 @@ decay = 0, release = 0, peak = nil, duty = 2)` は WASM-4 流の小さな APU �
 しない）。ネイティブ音声と WebAudio は**似た音になるよう調整した別実装**であって
 サンプル単位で同一ではない — ピクセル操作と違い `tone` は backend 間でビット完全一致
 である必要はない。
+
+### 効果音
+
+`Canvas.Sound.new(data)` はワンショットのサンプルをバイト列 — WAV / MP3 /
+Ogg Vorbis、`Sprite.from_png` と同じバイト列渡しの流儀 — からデコードし、
+呼び出しごとに再生する。`tone` の合成に対する録音サンプル側の対応物
+（スイープする矩形波でなくファイルの爆発音）。
+
+| メソッド | 効果 |
+| --- | --- |
+| `sound.play(vol = 100)` | 先頭から再生（再生中なら先頭からやり直し） |
+| `sound.stop()` | 停止 |
+| `sound.playing() -> Bool` | まだ鳴っているか |
+
+各 `Sound` は 1 ボイス — 再生中の `play` はやり直しになる。下にいるホストの
+サンプラーと同じ挙動 — で、デコード済みサンプルは最後の参照とともに解放される。
+3 形式のどれでもないバイト列はどの backend でも
+`ValueError: not a valid WAV, MP3 or Ogg audio stream` を投げる。検査を通った
+のにデコードできないストリームは無音のまま。ヘッドレス（および音声デバイスの
+無いマシン）ではすべて no-op で `playing()` は false — `music` と同じ。
 
 ### 音楽
 
