@@ -4499,8 +4499,6 @@ fn ...` は前の式の matmul 継続ではなく、独立した 2 statement と
 | `build <in.cul> -o <out>` | AOT コンパイルして単体実行ファイルを生成（バンドルされるモジュールグラフは §24、クロスコンパイル用フラグは `culebra build --help`） | [`deployment.ja.md` §1](deployment.ja.md#1-standalone-バイナリビルドculebra-build) |
 | `wrap` | 自前の C++ クラスを組み込みとして公開する拡張 `culebra` バイナリを作る | [`deployment.ja.md` §3](deployment.ja.md#3-c-ライブラリのラッピングculebra-wrap) |
 
-`culebra --help` が列挙するのは現在 `build` / `test` / `lint` / `fmt` の
-4 つだけで、`dap` と `wrap` は動作しますがこの要約には出てきません。
 
 スクリプトを指定しない場合、自動的に REPL が起動します。インタプリタ
 REPL と JIT REPL のどちらも入力間でセッション状態を保持します — 一つの

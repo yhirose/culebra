@@ -320,6 +320,12 @@ void print_usage(ostream& os) {
         "                            (--fix removes unused imports; `culebra lint --help`)\n"
         "  fmt [paths...]            Reformat source to canonical style\n"
         "                            (-i in-place, -l list, --check; `culebra fmt --help`)\n"
+        "  dap                       Speak the Debug Adapter Protocol over\n"
+        "                            stdin/stdout (your editor launches this)\n"
+#ifdef CULEBRA_JIT_ENABLED
+        "  wrap <decl.cpp> ...       Build an extended culebra binary exposing\n"
+        "                            your C++ classes (`culebra wrap --help`)\n"
+#endif
         "\n"
         "Examples:\n"
         "  culebra hello.cul              Run a script (interpreter)\n"
@@ -1278,6 +1284,17 @@ int run_test(int argc, const char** argv) {
   };
   for (int i = 2; i < argc; i++) {
     std::string arg(argv[i]);
+    if (arg == "-h" || arg == "--help") {
+      std::println("Usage: culebra test [options] [paths...]\n"
+                   "  (no flags)      discover test_*.cul and run every test\n"
+                   "  --filter <s>    run only tests whose name contains <s>\n"
+                   "  --reporter <r>  default (human) or json (NDJSON events)\n"
+                   "  --bail [n]      stop after the first failure, or after n\n"
+                   "  --list          print the discovered test names, run none\n"
+                   "  --doc           run the ```culebra blocks in *.md instead\n"
+                   "  paths           files, or directories scanned recursively");
+      return 0;
+    }
     if (arg.starts_with("--filter=")) {
       filter = arg.substr(9);
     } else if (arg == "--filter" && i + 1 < argc) {

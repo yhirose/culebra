@@ -4743,8 +4743,6 @@ packaging ones in [`deployment.md`](deployment.md).
 | `build <in.cul> -o <out>` | Compile ahead-of-time into a standalone executable (§24 covers the module graph it bundles; `culebra build --help` lists the cross-compile flags). | [`deployment.md` §1](deployment.md#1-standalone-binary-build-culebra-build) |
 | `wrap` | Build an extended `culebra` binary that exposes your own C++ classes as builtins. | [`deployment.md` §3](deployment.md#3-wrapping-c-libraries-culebra-wrap) |
 
-`culebra --help` currently lists only `build` / `test` / `lint` / `fmt`;
-`dap` and `wrap` work but are absent from that summary.
 
 If no script is provided, the REPL is launched automatically. Both
 the interpreter REPL and the JIT REPL preserve session state across
