@@ -1,0 +1,307 @@
+# nano-code-mini — a port of https://github.com/1rgs/nanocode (MIT-spirit,
+# single-file Python "minimal Claude Code alternative").
+#
+# Same shape as the original: one file, a hand-rolled tool schema, and a
+# REPL that loops "call the API, run any tool calls, repeat" until the model
+# stops asking for tools. What's simplified for the port: `bash` captures
+# the whole process instead of streaming lines live (Proc.run buffers in
+# full — see docs/stdlib.md §11), and interleaved stdout/stderr ordering is
+# not preserved (they're captured on separate pipes).
+#
+# Usage:
+#   export ANTHROPIC_API_KEY="..."      # or OPENROUTER_API_KEY
+#   culebra nano-code-mini.cul
+#
+# Commands: /c (clear conversation), /q or exit (quit).
+
+# --- setup -------------------------------------------------------------
+
+let ESC = "\x1b"
+let RESET = ESC + "[0m"
+let BOLD = ESC + "[1m"
+let DIM = ESC + "[2m"
+let BLUE = ESC + "[34m"
+let CYAN = ESC + "[36m"
+let GREEN = ESC + "[32m"
+let RED = ESC + "[31m"
+
+let openrouter_key = Sys.env('OPENROUTER_API_KEY')
+let use_openrouter = openrouter_key.size() > 0
+let api_url = if use_openrouter {
+  'https://openrouter.ai/api/v1/messages'
+} else {
+  'https://api.anthropic.com/v1/messages'
+}
+let env_model = Sys.env('MODEL')
+let default_model = if use_openrouter { 'anthropic/claude-opus-4.5' } else { 'claude-opus-4-5' }
+let model = if env_model.size() > 0 { env_model } else { default_model }
+
+# --- small helpers -------------------------------------------------------
+
+let repeat_str = fn (s, n) {
+  mut out = ''
+  mut i = 0
+  while i < n { out = out + s; i = i + 1 }
+  out
+}
+
+let capitalize = fn (s) {
+  if s.size() == 0 { s } else { s.slice(0, 1).upper() + s.slice(1, s.size()).lower() }
+}
+
+let separator = fn () {
+  let cols = if IO.stdout_is_terminal() { Term.size()[0] } else { 80 }
+  DIM + repeat_str("\u{2500}", Math.min(cols, 80)) + RESET
+}
+
+let render_markdown = fn (text) {
+  text.replace(re'\*\*(.+?)\*\*', BOLD + '$1' + RESET)
+}
+
+# --- tool implementations -------------------------------------------------
+
+let tool_read = fn (args) {
+  let text = FS.read(args.path)
+  mut lines = text.split("\n")
+  if lines.size() > 0 && lines[lines.size() - 1] == '' {
+    lines = lines.slice(0, lines.size() - 1)
+  }
+  let offset = args.offset ?? 0
+  let limit = args.limit ?? lines.size()
+  let selected = lines.slice(offset, offset + limit)
+  selected.enumerate().map(|(i, line)| "{offset + i + 1:4}| {line}").join("\n")
+}
+
+let tool_write = fn (args) {
+  FS.write(args.path, args.content)
+  'ok'
+}
+
+let tool_edit = fn (args) {
+  let text = FS.read(args.path)
+  let old = args.old
+  let new = args.new
+  let all = args.all ?? false
+  if !text.contains(old) { return 'error: old_string not found' }
+  let parts = text.split(old)
+  let count = parts.size() - 1
+  if !all && count > 1 {
+    return "error: old_string appears {count} times, must be unique (use all=true)"
+  }
+  # count is 1 here whenever !all, so join-with-new already replaces just that
+  # one occurrence — no separate first-vs-all branch needed.
+  FS.write(args.path, parts.join(new))
+  'ok'
+}
+
+let tool_glob = fn (args) {
+  let base = args.path ?? '.'
+  let pattern = FS.join(base, args.pat)
+  let files = FS.glob(pattern)
+  let sorted = files.sorted_by(|f| if FS.is_file(f) { FS.stat(f).mtime } else { 0 }, reverse: true)
+  if sorted.size() == 0 { 'none' } else { sorted.join("\n") }
+}
+
+let tool_grep = fn (args) {
+  let re = Regex.compile(args.pat)
+  let base = args.path ?? '.'
+  mut hits = []
+  for p in FS.walk(base) {
+    if !FS.is_file(p) { continue }
+    try {
+      let text = FS.read(p)
+      for i, line in text.split("\n").enumerate() {
+        if re.test(line) {
+          hits.push("{p}:{i + 1}:{line}")
+          if hits.size() >= 50 { return hits.join("\n") }
+        }
+      }
+    } catch _ { }
+  }
+  if hits.size() == 0 { 'none' } else { hits.slice(0, 50).join("\n") }
+}
+
+let tool_bash = fn (args) {
+  let r = Proc.run(['sh', '-c', args.cmd], timeout: 30000)
+  let combined = (r.stdout + r.stderr).trim_end("\n")
+  if combined.size() > 0 {
+    for line in combined.split("\n") {
+      IO.println("  {DIM}\u{2502} {line}{RESET}")
+    }
+  }
+  if r.timed_out { return combined + "\n(timed out after 30s)" }
+  let out = combined.trim()
+  if out.size() == 0 { '(empty)' } else { out }
+}
+
+# --- tool registry + schema ------------------------------------------------
+
+let TOOL_LIST = [
+  {
+    name: 'read',
+    description: 'Read file with line numbers (file path, not directory)',
+    params: {path: 'string', offset: 'number?', limit: 'number?'},
+    run: tool_read,
+  },
+  {
+    name: 'write',
+    description: 'Write content to file',
+    params: {path: 'string', content: 'string'},
+    run: tool_write,
+  },
+  {
+    name: 'edit',
+    description: 'Replace old with new in file (old must be unique unless all=true)',
+    params: {path: 'string', old: 'string', new: 'string', all: 'boolean?'},
+    run: tool_edit,
+  },
+  {
+    name: 'glob',
+    description: 'Find files by pattern, sorted by mtime',
+    params: {pat: 'string', path: 'string?'},
+    run: tool_glob,
+  },
+  {
+    name: 'grep',
+    description: 'Search files for regex pattern',
+    params: {pat: 'string', path: 'string?'},
+    run: tool_grep,
+  },
+  {
+    name: 'bash',
+    description: 'Run shell command',
+    params: {cmd: 'string'},
+    run: tool_bash,
+  },
+]
+
+mut TOOLS = {}
+for t in TOOL_LIST { TOOLS[t.name] = t }
+
+let run_tool = fn (name, args) {
+  let tool = TOOLS[name]
+  if tool == nil { return "error: unknown tool {name}" }
+  try {
+    tool.run(args)
+  } catch e {
+    "error: {e}"
+  }
+}
+
+# Built once — TOOL_LIST is static, so every call_api turn reuses this.
+let TOOL_SCHEMA = TOOL_LIST.map(fn (t) {
+  mut properties = {}
+  mut required = []
+  for k in t.params.keys() {
+    let param_type = t.params[k]
+    let is_optional = param_type.ends_with('?')
+    let base_type = if is_optional { param_type.slice(0, param_type.size() - 1).to_string() } else { param_type }
+    properties[k] = {type: if base_type == 'number' { 'integer' } else { base_type }}
+    if !is_optional { required.push(k) }
+  }
+  {
+    name: t.name,
+    description: t.description,
+    input_schema: {type: 'object', properties: properties, required: required},
+  }
+})
+
+# --- API call --------------------------------------------------------------
+
+let build_headers = fn () {
+  mut headers = {"anthropic-version": '2023-06-01'}
+  if use_openrouter {
+    headers["Authorization"] = 'Bearer ' + openrouter_key
+  } else {
+    headers["x-api-key"] = Sys.env('ANTHROPIC_API_KEY')
+  }
+  headers
+}
+
+let call_api = fn (messages, system_prompt) {
+  let body = {
+    model: model,
+    max_tokens: 8192,
+    system: system_prompt,
+    messages: messages,
+    tools: TOOL_SCHEMA,
+  }
+  let r = Http.post(api_url, json: body, headers: build_headers(), timeout: 120)
+  if !r.ok {
+    throw {kind: 'LLMApiError', message: "API error {r.status}: {r.body}", status: r.status}
+  }
+  r.json()
+}
+
+# --- REPL --------------------------------------------------------------
+
+let main = fn () {
+  let provider = if use_openrouter { 'OpenRouter' } else { 'Anthropic' }
+  IO.println("{BOLD}nanocode{RESET} | {DIM}{model} ({provider}) | {Sys.getcwd()}{RESET}\n")
+  mut messages = []
+  let system_prompt = "Concise coding assistant. cwd: {Sys.getcwd()}"
+
+  while true {
+    try {
+      IO.println(separator())
+      IO.print("{BOLD}{BLUE}\u{276f}{RESET} ")
+      let user_input = IO.input().trim()
+      IO.println(separator())
+      if user_input.size() == 0 {
+        if !IO.stdin_is_terminal() { break }
+        continue
+      }
+      if user_input == '/q' || user_input == 'exit' { break }
+      if user_input == '/c' {
+        messages = []
+        IO.println("{GREEN}\u{23fa} Cleared conversation{RESET}")
+        continue
+      }
+
+      messages.push({role: 'user', content: user_input})
+
+      while true {
+        let response = call_api(messages, system_prompt)
+        let content_blocks = response.content ?? []
+        mut tool_results = []
+
+        for block in content_blocks {
+          if block.type == 'text' {
+            IO.println("\n{CYAN}\u{23fa}{RESET} {render_markdown(block.text)}")
+          }
+          if block.type == 'tool_use' {
+            let tool_name = block.name
+            let tool_args = block.input
+            let first_value = tool_args.values().first()
+            let arg_preview = if first_value == nil { '' } else { "{first_value}".slice(0, 50) }
+            IO.println("\n{GREEN}\u{23fa} {capitalize(tool_name)}{RESET}({DIM}{arg_preview}{RESET})")
+
+            let result = run_tool(tool_name, tool_args)
+            let result_lines = result.split("\n")
+            mut preview = result_lines[0].slice(0, 60).to_string()
+            if result_lines.size() > 1 {
+              preview = preview + " ... +{result_lines.size() - 1} lines"
+            } else if result_lines[0].size() > 60 {
+              preview = preview + "..."
+            }
+            IO.println("  {DIM}\u{23bf}  {preview}{RESET}")
+
+            tool_results.push({type: 'tool_result', tool_use_id: block.id, content: result})
+          }
+        }
+
+        messages.push({role: 'assistant', content: content_blocks})
+
+        if tool_results.size() == 0 { break }
+        messages.push({role: 'user', content: tool_results})
+      }
+
+      IO.println('')
+    } catch e {
+      if e.kind == 'Interrupted' { break }
+      IO.println("{RED}\u{23fa} Error: {e}{RESET}")
+    }
+  }
+}
+
+main()
