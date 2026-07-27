@@ -6,6 +6,10 @@ let _desktop_module = fn () {
     let base = "http://127.0.0.1:" + port.to_string()
 
     let srv = Http.server()
+    # The server outlives every early exit from here on — a throw out of the
+    # WebView (or a route registration) would otherwise leave its workers
+    # holding the port for the rest of the process.
+    defer { srv.stop() }
     if config.has("assets") { srv.static("/", config["assets"]) }
     if config.has("routes") { config["routes"](srv) }
     srv.post("/__quit", fn(req) { Webview.Window.quit(); "" })
@@ -19,7 +23,6 @@ let _desktop_module = fn () {
     }
     w.navigate(base + "/")
     w.run()
-    srv.stop()
   }
 
   let quit = fn() { Webview.Window.quit() }
