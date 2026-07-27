@@ -791,9 +791,8 @@ let draw_road = fn (base_index, base_percent, player_y) {
   mut edge = H
   mut x = 0.0
   mut dx = -(segments[base_index].curve * base_percent)
-  mut n = 0
   mut si = base_index
-  while n < DRAW_DISTANCE {
+  for n in 0..DRAW_DISTANCE {
     let segment = segments[si]
     let looped = si < base_index
     segment.clip = edge
@@ -827,11 +826,10 @@ let draw_road = fn (base_index, base_percent, player_y) {
     dx = dx + segment.curve
     si = si + 1
     if si >= n_segments { si = 0 }
-    n = n + 1
 
     if visible {
       let p = pal[segment.kind]
-      let f = fog_i[n - 1]
+      let f = fog_i[n]
       let g = 256 - f
       let c_grass = (p[0] * f + fog_r * g) / 256 +
                     ((p[1] * f + fog_g * g) / 256) * 256 +
@@ -882,13 +880,11 @@ let draw_road = fn (base_index, base_percent, player_y) {
         let l2 = w2 / 64.0
         mut lx1 = x1 - w1 + lw1
         mut lx2 = x2 - w2 + lw2
-        mut lane = 1
-        while lane < LANES {
+        for _ in 1..LANES {
           _Canvas.polygon([lx1 - l1, edge, lx1 + l1, edge, lx2 + l2, top,
                            lx2 - l2, top], c_lane, 1)
           lx1 = lx1 + lw1
           lx2 = lx2 + lw2
-          lane = lane + 1
         }
       }
       # Road markings go on last, over the tarmac and the lane dashes both,
@@ -915,13 +911,11 @@ let draw_road = fn (base_index, base_percent, player_y) {
           let cw2 = w2 * 2.0 / CHECKER_COLS
           let bx1 = x1 - w1
           let bx2 = x2 - w2
-          mut i = segment.index % 2
-          while i < CHECKER_COLS {
+          for i in segment.index % 2..CHECKER_COLS by 2 {
             let a1 = bx1 + cw1 * i
             let a2 = bx2 + cw2 * i
             _Canvas.polygon([a1, edge, a1 + cw1, edge, a2 + cw2, top, a2, top],
                             c_light, 1)
-            i = i + 2
           }
         }
       }
@@ -1021,10 +1015,9 @@ let render = fn () {
   draw_road(base_index, base_percent, player_y)
 
   # Back to front over the same window, so nearer sprites overlap farther ones.
-  mut m = DRAW_DISTANCE - 1
-  mut mi = base_index + m
+  mut mi = base_index + DRAW_DISTANCE - 1
   while mi >= n_segments { mi = mi - n_segments }
-  while m > 0 {
+  for _ in 1..DRAW_DISTANCE {
     let segment = segments[mi]
     if segment.vis {
       let s1x = segment.p1_sx
@@ -1056,7 +1049,6 @@ let render = fn () {
                   if key_left { -1.0 } else if key_right { 1.0 } else { 0.0 },
                   player_segment.p2_wy - player_segment.p1_wy)
     }
-    m = m - 1
     mi = mi - 1
     if mi < 0 { mi = n_segments - 1 }
   }
