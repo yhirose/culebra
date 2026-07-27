@@ -33,7 +33,7 @@ let api_url = if use_openrouter {
   'https://api.anthropic.com/v1/messages'
 }
 let env_model = Sys.env('MODEL')
-let default_model = if use_openrouter { 'anthropic/claude-opus-4.5' } else { 'claude-opus-4-5' }
+let default_model = if use_openrouter { 'anthropic/claude-opus-5' } else { 'claude-opus-5' }
 let model = if env_model.size() > 0 { env_model } else { default_model }
 
 # --- small helpers -------------------------------------------------------
@@ -213,10 +213,14 @@ let build_headers = fn () {
   headers
 }
 
+# Thinking is on by default on this model and `max_tokens` caps thinking plus
+# reply together, so the budget needs headroom a reply-only one would not.
+let MAX_TOKENS = 16000
+
 let call_api = fn (messages, system_prompt) {
   let body = {
     model: model,
-    max_tokens: 8192,
+    max_tokens: MAX_TOKENS,
     system: system_prompt,
     messages: messages,
     tools: TOOL_SCHEMA,
@@ -257,6 +261,12 @@ let main = fn () {
 
       while true {
         let response = call_api(messages, system_prompt)
+        # A safety classifier can decline the request: HTTP 200, no content.
+        # Say so rather than looping back with an empty turn.
+        if response.stop_reason == 'refusal' {
+          IO.println("{RED}\u{23fa} Declined ({response.stop_details?.category ?? 'no category'}){RESET}")
+          break
+        }
         let content_blocks = response.content ?? []
         mut tool_results = []
 
