@@ -1478,6 +1478,14 @@ int run_lint(int argc, const char** argv) {
       return 0;
     }
     if (arg == "--fix") { fix = true; continue; }
+    // A misspelled flag must not fall through to the path list: linting the
+    // remaining files while the flag the user asked for silently did nothing
+    // is the worst of both outcomes. (A path really named `-x` is reachable
+    // as `./-x`.)
+    if (arg.size() > 1 && arg[0] == '-') {
+      std::println(stderr, "culebra lint: unknown option '{}'", arg);
+      return 2;
+    }
     files.push_back(arg);
   }
   if (files.empty()) {
@@ -1609,50 +1617,68 @@ int run_lint(int argc, const char** argv) {
 
 // `culebra fmt [paths...]` — reformat Culebra source to the canonical style.
 // Default: write the formatted result to stdout. `-i`/`--in-place` rewrites
-// files in place. `-l`/`--list` prints the names of files that would change
-// (and exits 1). `--check` is like `-l` but prints nothing. A directory
-// argument is expanded to the `.cul` files under it (recursively). With no
-// paths (or `-`) it formats stdin to stdout (for editor format-on-save). Exit
-// code: 0 clean, 1 when `-l`/`--check` found changes, 2 on parse / read /
-// safety failure.
+// files in place. `-l`/`--list` prints the names of files whose formatting
+// differs (and exits 1). `--check` is like `-l` but prints nothing. The three
+// compose — `-i -l` rewrites and names what it rewrote, like `gofmt -l -w`. A
+// directory argument is expanded to the `.cul` files under it (recursively).
+// With no paths (or `-`) it formats stdin to stdout (for editor
+// format-on-save); `-` is exclusive, since neither a second input nor an
+// in-place rewrite has a meaning there. Exit code: 0 clean, 1 when
+// `-l`/`--check` found changes, 2 on a bad argument or a parse / read / safety
+// failure.
 int run_fmt(int argc, const char** argv) {
-  bool in_place = false, list = false, check = false;
+  bool in_place = false, list = false, check = false, has_stdin = false;
   vector<string> files;
   for (int i = 2; i < argc; i++) {
     string arg = argv[i];
     if (arg == "-h" || arg == "--help") {
       std::println("Usage: culebra fmt [-i|--in-place] [-l|--list] [--check] "
                    "[paths...]\n"
-                   "  (no flags)     write formatted source to stdout\n"
+                   "  (no flags)      write formatted source to stdout\n"
                    "  -i, --in-place  rewrite each file in place\n"
-                   "  -l, --list      list files that would change (exit 1)\n"
-                   "  --check         exit 1 if any file would change (no output)\n"
+                   "  -l, --list      list files whose formatting differs "
+                   "(exit 1)\n"
+                   "  --check         exit 1 if any file's formatting differs "
+                   "(no output)\n"
                    "  paths           files, or directories scanned for *.cul\n"
-                   "  -               read from stdin, write to stdout");
+                   "  -               read from stdin, write to stdout "
+                   "(no paths)");
       return 0;
     }
     if (arg == "-i" || arg == "--in-place") { in_place = true; continue; }
     if (arg == "-l" || arg == "--list") { list = true; continue; }
     if (arg == "--check") { check = true; continue; }
+    // `-` selects stdin as the input; it is not a path to open or expand.
+    if (arg == "-") { has_stdin = true; continue; }
+    // See run_lint: an unknown flag is an error, not a file name.
+    if (!arg.empty() && arg[0] == '-') {
+      std::println(stderr, "culebra fmt: unknown option '{}'", arg);
+      return 2;
+    }
     files.push_back(arg);
   }
 
-  // Decide the mode once, before expanding anything: `-` (or no arguments at
-  // all) means stdin -> stdout, and pairing it with paths has no meaning.
-  bool use_stdin = files.empty();
-  for (const auto& f : files) if (f == "-") use_stdin = true;
-  if (use_stdin && files.size() > 1) {
-    std::println(stderr,
-                 "culebra fmt: '-' reads stdin and can't be combined with "
-                 "file arguments");
+  // Two inputs and one stdout has no honest reading, so refuse the mix instead
+  // of letting either side quietly win.
+  if (has_stdin && !files.empty()) {
+    std::println(stderr, "culebra fmt: can't mix '-' (stdin) with file paths");
+    return 2;
+  }
+  // Decided before expansion, while the answer is still known: a directory
+  // holding no `.cul` files expands to nothing, which has to stay the reported
+  // mistake below instead of decaying into the no-arguments case and blocking
+  // on stdin.
+  bool use_stdin = has_stdin || files.empty();
+  if (use_stdin && in_place) {
+    std::println(stderr, "culebra fmt: -i has nothing to rewrite when the "
+                         "input is stdin");
     return 2;
   }
 
   bool expand_ok = true;
   if (!use_stdin) {
     files = expand_cul_paths("fmt", files, expand_ok);
-    // Paths that expand to nothing must not reach the stdin branch below —
-    // formatting would block on a terminal instead of reporting the mistake.
+    // Named paths that hold no `.cul` file are a mistake, not a clean run.
     if (files.empty()) {
       std::println(stderr, "culebra fmt: no *.cul files in the given paths");
       return 2;
@@ -1680,10 +1706,9 @@ int run_fmt(int argc, const char** argv) {
         r.status == culebra::fmt::FormatStatus::Refused)
       return 2;
     bool changed = r.status == culebra::fmt::FormatStatus::Ok;
-    if (check) return changed ? 1 : 0;
-    if (list) { if (changed) std::println("<stdin>"); return changed ? 1 : 0; }
-    std::print("{}", r.output);
-    return 0;
+    if (list && changed) std::println("<stdin>");
+    if (!list && !check) std::print("{}", r.output);
+    return (list || check) && changed ? 1 : 0;
   }
 
   int rc = expand_ok ? 0 : 2;
@@ -1704,8 +1729,10 @@ int run_fmt(int argc, const char** argv) {
     }
     bool changed = r.status == culebra::fmt::FormatStatus::Ok;
     if (changed) any_changed = true;
-    if (check) continue;
-    if (list) { if (changed) std::println("{}", path); continue; }
+    // The three output modes compose: `-l` names what changed, `-i` writes it,
+    // and stdout is the fallback when neither reporting flag asked for
+    // something quieter (`gofmt -l -w` works the same way).
+    if (list && changed) std::println("{}", path);
     if (in_place) {
       if (changed) {
         ofstream ofs(path, ios::out | ios::binary | ios::trunc);
@@ -1716,7 +1743,7 @@ int run_fmt(int argc, const char** argv) {
           rc = 2;
         }
       }
-    } else {
+    } else if (!list && !check) {
       std::print("{}", r.output);
     }
   }

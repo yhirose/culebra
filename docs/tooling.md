@@ -284,6 +284,10 @@ culebra lint --fix joined.cul
 # joined.cul:1:8: warning: unused import 'Math'
 ```
 
+An unrecognized flag is an error (exit 2), not a path: `culebra lint
+--fixx app.cul` reports the typo instead of linting the file with the fix
+silently disabled.
+
 Planned: a `--format json` mode for editor / LSP integration, and inline
 `# lint: ignore` suppression.
 
@@ -307,9 +311,22 @@ cat app.cul | culebra fmt -  # stdin -> stdout (editor format-on-save)
 
 A directory argument is scanned recursively for `.cul` files, so
 `culebra fmt -i .` formats a whole project and `culebra fmt --check .`
-gates it in CI. Paths holding no `.cul` file are an error (exit 2), and
-`-` reads stdin so it can't be combined with file arguments — a mistyped
-path fails loudly instead of silently formatting nothing.
+gates it in CI. Paths holding no `.cul` file are an error (exit 2), so a
+mistyped path fails loudly instead of silently formatting nothing.
+
+The output modes compose: `culebra fmt -i -l .` rewrites every file *and*
+prints the ones it changed (like `gofmt -l -w`), and `-i --check` does the
+same silently. With `-l` or `--check`, the exit code is 1 whenever some
+file's formatting differed — so it still gates CI after a rewrite. The
+formatted source goes to stdout only when no other output mode was asked
+for.
+
+`-` reads stdin and stands alone: combining it with file paths (two
+inputs, one stdout) or with `-i` (no file to rewrite) exits 2 rather than
+letting one side quietly win. `culebra fmt -i` with no paths is the same
+case. An unrecognized flag is an error too, instead of being taken for a
+file name — `culebra fmt --wirte app.cul` exits 2 and formats nothing, so
+a typo can't look like a successful run.
 
 Comments are preserved: a leading comment stays above the statement it
 introduces, a trailing comment stays on the same line, and a single blank

@@ -647,5 +647,16 @@ if [[ $rc -ne 2 ]]; then
 fi
 rm -rf "$EMPTYTMP"
 
+# --- unknown flags are an error, not a file name ---
+# `lint --fixx a.cul` used to report "can't open '--fixx'" and then lint a.cul
+# anyway, so a typo looked like a successful run that just didn't fix anything.
+printf "import Math from 'std/math'\ninspect(1)\n" > "$TMP/opt.cul"
+for bad in --fixx -f --help=1; do
+  out=$("$CULEBRA" lint "$bad" "$TMP/opt.cul" 2>&1); rc=$?
+  if [[ $rc -ne 2 || "$out" != *"unknown option '$bad'"* || "$out" == *"unused import"* ]]; then
+    echo "FAIL lint-unknown-option [$bad]: rc=$rc out=$out"; fail=1
+  fi
+done
+
 if [[ $fail -eq 0 ]]; then echo "lint_test OK"; exit 0; fi
 exit 1

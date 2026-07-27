@@ -191,5 +191,69 @@ printf 'let  z=3\n' | "$CULEBRA" fmt > "$TMP/stdin_bare" 2>/dev/null
 grep -qx 'let z = 3' "$TMP/stdin_dash" || { echo "FAIL fmt -: stdin not formatted"; fail=1; }
 cmp -s "$TMP/stdin_dash" "$TMP/stdin_bare" || { echo "FAIL fmt: '-' and no-args disagree"; fail=1; }
 
+# --- 6. Argument handling -------------------------------------------------
+# A misspelled flag must stop the run instead of being taken for a file name:
+# formatting the *other* arguments while the requested flag silently did
+# nothing is how a typo goes unnoticed.
+printf 'let  x=1\n' > "$TMP/arg.cul"
+for bad in --wirte -x --in_place; do
+  out=$("$CULEBRA" fmt "$bad" "$TMP/arg.cul" 2>"$TMP/arg.err"); rc=$?
+  err=$(cat "$TMP/arg.err")
+  if [[ $rc -ne 2 || -n "$out" || "$err" != *"unknown option '$bad'"* ]]; then
+    echo "FAIL unknown-flag [$bad]: rc=$rc out=$out err=$err"; fail=1
+  fi
+done
+
+# `-` is stdin; combining it with real paths would mean two inputs and one
+# stdout, so it is refused rather than letting either side win silently.
+out=$(printf 'let   Z=9\n' | "$CULEBRA" fmt - "$TMP/arg.cul" 2>"$TMP/arg.err"); rc=$?
+if [[ $rc -ne 2 || -n "$out" || "$(cat "$TMP/arg.err")" != *"can't mix"* ]]; then
+  echo "FAIL stdin-plus-path: rc=$rc out=$out err=$(cat "$TMP/arg.err")"; fail=1
+fi
+# Likewise `-i` with stdin: there is no file to rewrite. Both the explicit `-`
+# and the implicit no-paths form must say so instead of ignoring `-i`.
+for args in "-i -" "-i"; do
+  out=$(printf 'let   Z=9\n' | "$CULEBRA" fmt $args 2>"$TMP/arg.err"); rc=$?
+  if [[ $rc -ne 2 || -n "$out" || "$(cat "$TMP/arg.err")" != *"nothing to rewrite"* ]]; then
+    echo "FAIL stdin-in-place [$args]: rc=$rc out=$out err=$(cat "$TMP/arg.err")"; fail=1
+  fi
+done
+
+# `-i` composes with the reporting flags (as `gofmt -l -w` does): the file is
+# rewritten AND named. Before this, list/check won and nothing was written.
+printf 'let  x=1\n' > "$TMP/arg.cul"
+out=$("$CULEBRA" fmt -i -l "$TMP/arg.cul" 2>&1); rc=$?
+if [[ $rc -ne 1 || "$out" != "$TMP/arg.cul" ]]; then
+  echo "FAIL -i -l: rc=$rc out=$out"; fail=1
+fi
+[[ "$(cat "$TMP/arg.cul")" == "let x = 1" ]] || {
+  echo "FAIL -i -l: file not rewritten: $(cat "$TMP/arg.cul")"; fail=1; }
+# Already formatted: nothing to list, exit 0.
+out=$("$CULEBRA" fmt -i -l "$TMP/arg.cul" 2>&1); rc=$?
+if [[ $rc -ne 0 || -n "$out" ]]; then
+  echo "FAIL -i -l (clean): rc=$rc out=$out"; fail=1
+fi
+
+printf 'let  y=2\n' > "$TMP/arg2.cul"
+out=$("$CULEBRA" fmt -i --check "$TMP/arg2.cul" 2>&1); rc=$?
+if [[ $rc -ne 1 || -n "$out" ]]; then
+  echo "FAIL -i --check: rc=$rc out=$out"; fail=1
+fi
+[[ "$(cat "$TMP/arg2.cul")" == "let y = 2" ]] || {
+  echo "FAIL -i --check: file not rewritten: $(cat "$TMP/arg2.cul")"; fail=1; }
+out=$("$CULEBRA" fmt -i --check "$TMP/arg2.cul" 2>&1); rc=$?
+if [[ $rc -ne 0 || -n "$out" ]]; then
+  echo "FAIL -i --check (clean): rc=$rc out=$out"; fail=1
+fi
+
+# Without `-i`, the reporting flags still only report (no stdout dump).
+printf 'let  z=3\n' > "$TMP/arg3.cul"
+out=$("$CULEBRA" fmt -l "$TMP/arg3.cul" 2>&1); rc=$?
+if [[ $rc -ne 1 || "$out" != "$TMP/arg3.cul" ]]; then
+  echo "FAIL -l alone: rc=$rc out=$out"; fail=1
+fi
+[[ "$(cat "$TMP/arg3.cul")" == "let  z=3" ]] || {
+  echo "FAIL -l alone: file was rewritten"; fail=1; }
+
 if [[ $fail -eq 0 ]]; then echo "fmt_test OK"; exit 0; fi
 echo "fmt_test FAILED"; exit 1
