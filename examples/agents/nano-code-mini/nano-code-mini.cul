@@ -38,12 +38,7 @@ let model = if env_model.size() > 0 { env_model } else { default_model }
 
 # --- small helpers -------------------------------------------------------
 
-let repeat_str = fn (s, n) {
-  mut out = ''
-  mut i = 0
-  while i < n { out = out + s; i = i + 1 }
-  out
-}
+let repeat_str = fn (s, n) { [](n, s).join('') }
 
 let capitalize = fn (s) {
   if s.size() == 0 { s } else { s.slice(0, 1).upper() + s.slice(1, s.size()).lower() }
@@ -118,7 +113,8 @@ let tool_grep = fn (args) {
       }
     } catch _ { }
   }
-  if hits.size() == 0 { 'none' } else { hits.slice(0, 50).join("\n") }
+  # The walk returns at 50, so whatever is left here is already under the cap.
+  if hits.size() == 0 { 'none' } else { hits.join("\n") }
 }
 
 let tool_bash = fn (args) {
@@ -189,16 +185,15 @@ let run_tool = fn (name, args) {
 }
 
 # Built once — TOOL_LIST is static, so every call_api turn reuses this.
+# A trailing '?' in the param spec marks it optional; everything else is required.
 let TOOL_SCHEMA = TOOL_LIST.map(fn (t) {
   mut properties = {}
-  mut required = []
-  for k in t.params.keys() {
-    let param_type = t.params[k]
-    let is_optional = param_type.ends_with('?')
-    let base_type = if is_optional { param_type.slice(0, param_type.size() - 1).to_string() } else { param_type }
-    properties[k] = {type: if base_type == 'number' { 'integer' } else { base_type }}
-    if !is_optional { required.push(k) }
+  for name, spec in t.params {
+    let base = spec.trim_end('?')
+    properties[name] = {type: base == 'number' ? 'integer' : base}
   }
+  let required = t.params.keys().filter(|k| !t.params[k].ends_with('?'))
+
   {
     name: t.name,
     description: t.description,
@@ -272,17 +267,16 @@ let main = fn () {
           if block.type == 'tool_use' {
             let tool_name = block.name
             let tool_args = block.input
-            let first_value = tool_args.values().first()
-            let arg_preview = if first_value == nil { '' } else { "{first_value}".slice(0, 50) }
+            let arg_preview = "{tool_args.values().first() ?? ''}".slice(0, 50)
             IO.println("\n{GREEN}\u{23fa} {capitalize(tool_name)}{RESET}({DIM}{arg_preview}{RESET})")
 
             let result = run_tool(tool_name, tool_args)
-            let result_lines = result.split("\n")
-            mut preview = result_lines[0].slice(0, 60).to_string()
-            if result_lines.size() > 1 {
-              preview = preview + " ... +{result_lines.size() - 1} lines"
-            } else if result_lines[0].size() > 60 {
-              preview = preview + "..."
+            let lines = result.split("\n")
+            let head = lines[0].slice(0, 60)
+            let preview = cond {
+              lines.size() > 1     => "{head} ... +{lines.size() - 1} lines",
+              lines[0].size() > 60 => "{head}...",
+              _                    => head.to_string(),
             }
             IO.println("  {DIM}\u{23bf}  {preview}{RESET}")
 
