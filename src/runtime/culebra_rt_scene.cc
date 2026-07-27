@@ -11,11 +11,9 @@
 // the parent/child hierarchy composes through raymath instead of the rlgl stack.
 // Node handles stay owning (shared_ptr); fluent setters stay borrowed_method.
 //
-//   culebra wrap examples/gfx/raylib/gfx_raylib.cpp \
-//     --link "-L/opt/homebrew/opt/raylib/lib -lraylib \
-//             -Wl,-framework,Cocoa -Wl,-framework,IOKit \
-//             -Wl,-framework,CoreVideo -Wl,-framework,OpenGL" \
-//     -o culebra-gfx
+// Built into the driver (and force-loaded into `culebra build` outputs that name
+// Scene) with -DCULEBRA_ENABLE_SCENE=ON; raylib + SDL3 come from the vendored
+// submodules and CULEBRA_SCENE_LINK. No `culebra wrap` step.
 
 #include <wrap.h>
 
@@ -285,6 +283,22 @@ static RenderTexture2D LoadShadowmap(int w, int h) {
 
 enum class Shape { Group, Box, Sphere, Cylinder, Plane, Mesh };
 
+// Everything Node::render needs from the View that doesn't vary within a pass:
+// the shared material, the cached primitive meshes and the material / texture
+// registries. `lit` is the one per-pass bit — the depth pass's shader reads only
+// vertex positions, so resolving a node's colour/texture there is wasted work.
+struct RenderCtx {
+  Material& mat;
+  const Mesh& cube;
+  const Mesh& sphere;
+  const Mesh& cyl;
+  const Mesh& plane;
+  const std::vector<MatDesc>& mats;
+  const std::vector<TexEntry>& texs;
+  Texture2D white;
+  bool lit;
+};
+
 class Node {
  public:
   Shape shape = Shape::Group;
@@ -434,44 +448,39 @@ class Node {
   }
 
   // Draw with the shared lit material (colour + texture set per node from the
-  // material registry) and the cached primitive meshes passed down by the View.
-  void render(const Matrix& parent, Material& mat, const Mesh& cube,
-              const Mesh& sphere, const Mesh& cyl, const Mesh& plane,
-              const std::vector<MatDesc>& mats,
-              const std::vector<TexEntry>& texs, Texture2D white, bool lit) const {
+  // material registry) and the cached primitive meshes the View passes in.
+  void render(const Matrix& parent, const RenderCtx& ctx) const {
     if (!visible) return;
     Matrix world = MatrixMultiply(local(), parent);          // children inherit this
     Matrix draw = MatrixMultiply(shape_scale(), world);      // own mesh only
-    // The depth pass shader only reads vertex position, so resolving the
-    // colour/texture is wasted there — only do it for the lit pass.
-    if (lit) {
+    if (ctx.lit) {
       Color c = color;
-      Texture2D tex = white;
+      Texture2D tex = ctx.white;
       float metallic = 0.0f, roughness = 0.85f;
-      if (mat_id >= 0 && (size_t)mat_id < mats.size()) {     // reusable material wins
-        c = mats[mat_id].color;
-        metallic = mats[mat_id].metallic;
-        roughness = mats[mat_id].roughness;
-        int ti = mats[mat_id].tex;
-        if (ti >= 0 && (size_t)ti < texs.size()) tex = texs[ti].tex;
+      if (mat_id >= 0 && (size_t)mat_id < ctx.mats.size()) {  // reusable material wins
+        const MatDesc& md = ctx.mats[mat_id];
+        c = md.color;
+        metallic = md.metallic;
+        roughness = md.roughness;
+        if (md.tex >= 0 && (size_t)md.tex < ctx.texs.size())
+          tex = ctx.texs[md.tex].tex;
       }
-      mat.maps[MATERIAL_MAP_DIFFUSE].color = c;
-      mat.maps[MATERIAL_MAP_DIFFUSE].texture = tex;
-      SetShaderValue(mat.shader, g_loc_metallic, &metallic, SHADER_UNIFORM_FLOAT);
-      SetShaderValue(mat.shader, g_loc_rough, &roughness, SHADER_UNIFORM_FLOAT);
+      ctx.mat.maps[MATERIAL_MAP_DIFFUSE].color = c;
+      ctx.mat.maps[MATERIAL_MAP_DIFFUSE].texture = tex;
+      SetShaderValue(ctx.mat.shader, g_loc_metallic, &metallic, SHADER_UNIFORM_FLOAT);
+      SetShaderValue(ctx.mat.shader, g_loc_rough, &roughness, SHADER_UNIFORM_FLOAT);
     }
     switch (shape) {
-      case Shape::Box: DrawMesh(cube, mat, draw); break;
-      case Shape::Sphere: DrawMesh(sphere, mat, draw); break;
-      case Shape::Cylinder: DrawMesh(cyl, mat, draw); break;
-      case Shape::Plane: DrawMesh(plane, mat, draw); break;
+      case Shape::Box: DrawMesh(ctx.cube, ctx.mat, draw); break;
+      case Shape::Sphere: DrawMesh(ctx.sphere, ctx.mat, draw); break;
+      case Shape::Cylinder: DrawMesh(ctx.cyl, ctx.mat, draw); break;
+      case Shape::Plane: DrawMesh(ctx.plane, ctx.mat, draw); break;
       case Shape::Mesh:
-        if (mesh_built) DrawMesh(mesh_model.meshes[0], mat, world);
+        if (mesh_built) DrawMesh(mesh_model.meshes[0], ctx.mat, world);
         break;
       case Shape::Group: break;
     }
-    for (const auto& ch : children)
-      ch->render(world, mat, cube, sphere, cyl, plane, mats, texs, white, lit);
+    for (const auto& ch : children) ch->render(world, ctx);
   }
 
  private:
@@ -610,18 +619,20 @@ class View {
   }
 
   // --- materials (reusable) + procedural textures -------------------------
-  long material(long r, long g, long b) { mats_.push_back({col(r, g, b), -1}); return (long)mats_.size() - 1; }
+  // The four script-facing entries differ only in which of tex / metallic /
+  // roughness they expose; MatDesc's defaults cover the rest (matte dielectric,
+  // untextured).
+  long material(long r, long g, long b) { return add_material({col(r, g, b), -1}); }
   long material_tex(long tex, long r, long g, long b) {
-    mats_.push_back({col(r, g, b), (int)(tex - TEX_BASE)}); return (long)mats_.size() - 1;
+    return add_material({col(r, g, b), tex_index(tex)});
   }
   // PBR variants: metallic 0..1, roughness 0..1 (glossy paint, matte rubber, metal).
   long material_pbr(long r, long g, long b, double metallic, double roughness) {
-    mats_.push_back({col(r, g, b), -1, (float)metallic, (float)roughness});
-    return (long)mats_.size() - 1;
+    return add_material({col(r, g, b), -1, (float)metallic, (float)roughness});
   }
   long material_tex_pbr(long tex, long r, long g, long b, double metallic, double roughness) {
-    mats_.push_back({col(r, g, b), (int)(tex - TEX_BASE), (float)metallic, (float)roughness});
-    return (long)mats_.size() - 1;
+    return add_material(
+        {col(r, g, b), tex_index(tex), (float)metallic, (float)roughness});
   }
   // Upload a CPU image as a mipmapped, repeat-wrapped texture; register + return
   // its id. Mipmaps + trilinear keep tiled high-frequency textures (e.g. the
@@ -703,8 +714,8 @@ class View {
     BeginMode3D(light_);
     Matrix lv = rlGetMatrixModelview();
     Matrix lp = rlGetMatrixProjection();
-    for (const auto& n : roots_)
-      n->render(id, depth_mat_, cube_, sphere_, cyl_, plane_, mats_, texs_, white_, false);
+    auto ctx = pass_ctx(depth_mat_, false);
+    for (const auto& n : roots_) n->render(id, ctx);
     EndMode3D();
     EndTextureMode();
     return MatrixMultiply(lv, lp);
@@ -742,8 +753,8 @@ class View {
     rlDisableColorBlend();
     BeginMode3D(cam_);
     // cascades are bound automatically via mat_.maps[SPECULAR/NORMAL]
-    for (const auto& n : roots_)
-      n->render(id, mat_, cube_, sphere_, cyl_, plane_, mats_, texs_, white_, true);
+    auto ctx = pass_ctx(mat_, true);
+    for (const auto& n : roots_) n->render(id, ctx);
     EndMode3D();
     rlEnableColorBlend();
     EndTextureMode();
@@ -794,6 +805,17 @@ class View {
 
  private:
   std::shared_ptr<Node> push(std::shared_ptr<Node> n) { roots_.push_back(n); return n; }
+  long add_material(MatDesc m) {
+    mats_.push_back(m);
+    return (long)mats_.size() - 1;   // the id IS the index into mats_
+  }
+  // Texture ids are offset by TEX_BASE (see there); undo it to index texs_.
+  static int tex_index(long tex) { return (int)(tex - TEX_BASE); }
+  // Bind one pass's invariants. `m` is the pass's material (lit or depth).
+  RenderCtx pass_ctx(Material& m, bool lit) {
+    return RenderCtx{m, cube_, sphere_, cyl_, plane_,
+                     mats_, texs_, white_, lit};
+  }
   void set_sun_uniform() {
     SetShaderValue(lit_, loc_dir_, &dir_, SHADER_UNIFORM_VEC3);
     SetShaderValue(lit_, loc_lcol_, &lcol_, SHADER_UNIFORM_VEC3);
