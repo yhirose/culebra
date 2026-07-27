@@ -22,7 +22,6 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   padding: 0.55rem 1.1rem; border-bottom: 1px solid var(--border);
   background: var(--surface-2); flex-wrap: wrap;
 }
-.pg-toolbar .hint { color: var(--muted); font-size: 0.82rem; margin-left: 0.4rem; }
 .pg-toolbar .spacer { flex: 1; }
 .pg-toolbar .status { color: var(--muted); font-size: 0.85rem; font-variant-numeric: tabular-nums; }
 .pg-toolbar .backend {
