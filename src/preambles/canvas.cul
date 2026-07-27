@@ -201,6 +201,21 @@ let _canvas_module = fn () {
     _Canvas.tone(freq, ef, attack, decay, dur, release, vol, pk, wave, duty)
   }
 
+  # --- sound effects -------------------------------------------------------
+  # A one-shot sample decoded once from its bytes (WAV, MP3 or Ogg — a String,
+  # e.g. from FS.read) and played per call. Each Sound is one voice: play()
+  # restarts it, like the underlying host samplers. Raises ValueError when the
+  # bytes are none of the three formats; silent on the headless backend.
+  class Sound {
+    new(data: String) { self._id = _Canvas.sound_load(data) }
+    play(vol = 100) { _Canvas.sound_play(self._id, vol) }
+    stop() { _Canvas.sound_stop(self._id) }
+    playing() { _Canvas.sound_playing(self._id) }
+    # Free the decoded sample with the last reference (a constructor that
+    # threw drops before _id was ever set).
+    drop() { if self._id != nil { _Canvas.sound_free(self._id) } }
+  }
+
   # --- music ---------------------------------------------------------------
   # Play an MP3 or Ogg Vorbis file from its bytes (a String, e.g. from
   # FS.read) — one slot, so a new call replaces whatever was playing. `vol` is
@@ -292,6 +307,7 @@ let _canvas_module = fn () {
     typed: typed,
     Input: Input,
     tone: tone,
+    Sound: Sound,
     music: music,
     music_stop: fn () { _Canvas.music_stop() },
     music_pause: fn () { _Canvas.music_pause() },

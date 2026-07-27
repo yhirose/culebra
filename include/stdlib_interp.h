@@ -2285,6 +2285,63 @@ inline Value make_canvas_primitives_namespace() {
           "Bool"sv)),
       false);
 
+  // _Canvas.sound_load(data: String) -> Long (handle). WAV joins music's
+  // MP3/Ogg; the sniff runs here so unplayable bytes raise the same
+  // ValueError at the same site on every backend. Undecodable-past-the-sniff
+  // stays silent, like music.
+  ns.initialize("sound_load",
+      Value(FunctionValue({{"data", false, "String"sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            auto sv = env->get("data").to_string_view();
+            auto p = reinterpret_cast<const uint8_t*>(sv.data());
+            const char* fmt = _canvas_detail::sound_format(p, sv.size());
+            if (fmt == nullptr)
+              throw CulebraError("ValueError",
+                                 _canvas_detail::kSoundFormatError,
+                                 env->get("__LINE__").to_long(),
+                                 env->get("__COLUMN__").to_long());
+            int64_t id = _canvas_detail::sound_alloc_id();
+            _canvas_detail::sound_load(id, p, static_cast<int64_t>(sv.size()),
+                                       fmt);
+            return Value(static_cast<long>(id));
+          },
+          "Long"sv)),
+      false);
+
+  // _Canvas.sound_play(id, vol) / sound_stop(id) / sound_free(id) -> Nil,
+  // _Canvas.sound_playing(id) -> Bool. All no-ops / false for an unknown
+  // handle or on the headless backend.
+  ns.initialize("sound_play",
+      Value(FunctionValue({{"id", false, "Long"sv}, {"vol", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            _canvas_detail::sound_play(env->get("id").to_long(),
+                                       env->get("vol").to_long());
+            return Value();
+          })),
+      false);
+  ns.initialize("sound_stop",
+      Value(FunctionValue({{"id", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            _canvas_detail::sound_stop(env->get("id").to_long());
+            return Value();
+          })),
+      false);
+  ns.initialize("sound_playing",
+      Value(FunctionValue({{"id", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            return Value(_canvas_detail::sound_playing(
+                env->get("id").to_long()));
+          },
+          "Bool"sv)),
+      false);
+  ns.initialize("sound_free",
+      Value(FunctionValue({{"id", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            _canvas_detail::sound_free(env->get("id").to_long());
+            return Value();
+          })),
+      false);
+
   // _Canvas.width() / height() -> Long (current framebuffer dimensions)
   ns.initialize("width",
       Value(FunctionValue({},

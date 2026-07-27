@@ -331,6 +331,26 @@ Canvas.music_seek(2.5)
 assert_throws("ValueError", fn() { Canvas.music("not audio") })
 assert_throws("ValueError", fn() { Canvas.music("") })
 
+// Sound effects: a 4-sample PCM WAV (hand-assembled header). Headless the
+// backend never plays, so what this pins is the sniff (WAV joins music's
+// MP3/Ogg), the handle lifecycle and the argument contracts, identically on
+// both backends.
+let WAV = Encoding.hex.decode(
+  "524946462800000057415645666d7420100000000100010040" +
+  "1f0000401f000001000800646174610400000080c8803c")
+let snd = Canvas.Sound.new(WAV)
+snd.play()                                     // defaults: vol 100
+snd.play(vol: 30)                              // restarts the voice
+assert_eq(snd.playing(), false)                // headless: never audible
+snd.stop()
+assert_eq(snd.playing(), false)
+let snd2 = Canvas.Sound.new(MP3)               // music's formats work too
+snd2.play()
+// Bytes that are none of WAV/MP3/Ogg refuse identically everywhere.
+assert_throws("ValueError", fn() { Canvas.Sound.new("not audio") })
+assert_throws("ValueError", fn() { Canvas.Sound.new("") })
+assert_throws("TypeError", fn() { Canvas.Sound.new(42) })
+
 // Closed like the C++ namespaces: an unknown member raises instead of reading
 // as nil. Lives here rather than in test_namespace_attr.cul, which would have
 // to splice this whole module into the JIT entry module to say it.

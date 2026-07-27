@@ -198,10 +198,15 @@ function spawnWorker() {
       handleMusic(msg);
       return;
     }
+    if (msg.type === "sound") {
+      handleSound(msg);
+      return;
+    }
     if (msg.type === "done") {
       running = false;
       stopRafPump();
       resetMusic();   // the native analogue: process exit silences the slot
+      resetSounds();
       stopBtn.disabled = true;
       runBtn.disabled = false;
       if (!inTui && !inCanvas && output.textContent === "") output.textContent = "(no output)";
@@ -232,6 +237,7 @@ function run() {
   if (running || runBtn.disabled) return;
   ensureAudio();    // this click is a user gesture — unlock audio for any tones
   resetMusic();     // a fresh run must not inherit the previous run's BGM
+  resetSounds();
   running = true;
   runBtn.disabled = true;
   stopBtn.disabled = false;
@@ -267,6 +273,7 @@ function stop() {
   running = false;
   stopRafPump();
   resetMusic();     // terminating the worker must also silence a looping BGM
+  resetSounds();
   stopBtn.disabled = true;
   runBtn.disabled = true; // until the fresh worker reports ready
   resetToOutput();
@@ -585,6 +592,71 @@ function handleMusic(m) {
         else if (musicBuffer) musicPausedAt = s;
         break;
       }
+    }
+  } catch {
+    // Audio unavailable (autoplay policy, no device) — a game stays playable.
+  }
+}
+
+// Sound effects: many decoded buffers keyed by the wasm-side handle, one live
+// voice per handle (play restarts it, like raylib's PlaySound). Only what
+// this side can observe — a one-shot running out, a failed decode — goes back
+// as a "soundState" correction.
+const soundBuffers = new Map();  // id -> AudioBuffer
+const soundVoices = new Map();   // id -> { src } while audible
+
+function soundNotify(id, playing) {
+  if (worker) worker.postMessage({ type: "soundState", id, playing });
+}
+
+function stopSoundVoice(id) {
+  const v = soundVoices.get(id);
+  if (!v) return;
+  soundVoices.delete(id);          // cleared first: onended sees it was told to
+  try { v.src.stop(); } catch {}
+}
+
+function resetSounds() {
+  for (const id of [...soundVoices.keys()]) stopSoundVoice(id);
+  soundBuffers.clear();
+}
+
+function handleSound(m) {
+  try {
+    switch (m.cmd) {
+      case "load":
+        if (!ensureAudio()) return;
+        audioCtx.decodeAudioData(m.buf.buffer)
+          .then((buf) => soundBuffers.set(m.id, buf))
+          .catch(() => soundNotify(m.id, false));
+        break;
+      case "play": {
+        const buf = soundBuffers.get(m.id);
+        if (!buf || !ensureAudio()) { soundNotify(m.id, false); break; }
+        stopSoundVoice(m.id);
+        const src = audioCtx.createBufferSource();
+        src.buffer = buf;
+        const gain = audioCtx.createGain();
+        gain.gain.value = musicG(m.vol);   // the same 0..100 scale as tone
+        src.connect(gain).connect(audioCtx.destination);
+        const v = { src };
+        src.onended = () => {
+          if (soundVoices.get(m.id) === v) {   // ran out on its own
+            soundVoices.delete(m.id);
+            soundNotify(m.id, false);
+          }
+        };
+        src.start();
+        soundVoices.set(m.id, v);
+        break;
+      }
+      case "stop":
+        stopSoundVoice(m.id);
+        break;
+      case "free":
+        stopSoundVoice(m.id);
+        soundBuffers.delete(m.id);
+        break;
     }
   } catch {
     // Audio unavailable (autoplay policy, no device) — a game stays playable.

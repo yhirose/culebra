@@ -208,6 +208,12 @@ onmessage = async (e) => {
     self.__musicLoaded = e.data.loaded;
     return;
   }
+  if (type === "soundState") {
+    // A one-shot ended (or failed to decode) on the main thread; correct the
+    // optimistic play-state the wasm side wrote.
+    if (self.__soundsPlaying) self.__soundsPlaying[e.data.id] = e.data.playing;
+    return;
+  }
   if (type === "termSize") {
     // Read synchronously by _wasm_term_cols/rows (term.h) — a Worker has its
     // own global scope, so app.js can't set these directly and sends them
@@ -228,6 +234,7 @@ onmessage = async (e) => {
   self.__canvasCharQueue = [];
   self.__musicLoaded = false;
   self.__musicPlaying = false;
+  self.__soundsPlaying = {};
 
   const t0 = performance.now();
   let rc = 1;

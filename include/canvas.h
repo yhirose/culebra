@@ -727,6 +727,25 @@ inline const char* music_format(const uint8_t* p, size_t n) {
 // the music analogue of Sprite.from_png's ValueError.
 inline constexpr auto kMusicFormatError = "not a valid MP3 or Ogg audio stream";
 
+// Sound effects (Canvas.Sound) accept WAV on top of music's MP3/Ogg — the
+// natural container for a one-shot sample. Same sniff-before-backend shape.
+inline const char* sound_format(const uint8_t* p, size_t n) {
+  if (p != nullptr && n >= 12 && p[0] == 'R' && p[1] == 'I' && p[2] == 'F' &&
+      p[3] == 'F' && p[8] == 'W' && p[9] == 'A' && p[10] == 'V' && p[11] == 'E')
+    return ".wav";
+  return music_format(p, n);
+}
+inline constexpr auto kSoundFormatError =
+    "not a valid WAV, MP3 or Ogg audio stream";
+
+// Sound handles are allocated here, one counter for every backend, so the
+// script-visible lifecycle (load -> play/stop -> free) reads identically
+// whether or not a host can actually decode and play the bytes.
+inline int64_t sound_alloc_id() {
+  static int64_t n = 0;
+  return ++n;
+}
+
 #if defined(__EMSCRIPTEN__)
 
 // Browser backend for the Playground. present posts the framebuffer to the
@@ -828,6 +847,29 @@ EM_JS(void, _wasm_canvas_music_seek, (double seconds), {
 EM_JS(int, _wasm_canvas_music_playing, (), {
   return self.__musicPlaying ? 1 : 0;
 });
+// Sound effects: decoded and played on the main thread like music, but many
+// slots keyed by the wasm-side handle. __soundsPlaying is optimistic on play
+// (the state a script reads right back) and corrected by "soundState"
+// messages when a one-shot ends.
+EM_JS(void, _wasm_canvas_sound_load, (int id, const uint8_t* buf, int len), {
+  postMessage({ type: "sound", cmd: "load", id: id,
+                buf: HEAPU8.slice(buf, buf + len) });
+});
+EM_JS(void, _wasm_canvas_sound_play, (int id, int vol), {
+  (self.__soundsPlaying = self.__soundsPlaying || {})[id] = true;
+  postMessage({ type: "sound", cmd: "play", id: id, vol: vol });
+});
+EM_JS(void, _wasm_canvas_sound_stop, (int id), {
+  if (self.__soundsPlaying) self.__soundsPlaying[id] = false;
+  postMessage({ type: "sound", cmd: "stop", id: id });
+});
+EM_JS(int, _wasm_canvas_sound_playing, (int id), {
+  return self.__soundsPlaying && self.__soundsPlaying[id] ? 1 : 0;
+});
+EM_JS(void, _wasm_canvas_sound_free, (int id), {
+  if (self.__soundsPlaying) delete self.__soundsPlaying[id];
+  postMessage({ type: "sound", cmd: "free", id: id });
+});
 
 inline void present() {
   auto& fb = _fb();
@@ -877,6 +919,23 @@ inline void music_volume(int64_t vol) {
 }
 inline void music_seek(double seconds) { _wasm_canvas_music_seek(seconds); }
 inline bool music_playing() { return _wasm_canvas_music_playing() != 0; }
+// `fmt` is for raylib's decoder dispatch; the browser sniffs the bytes itself.
+inline void sound_load(int64_t id, const uint8_t* data, int64_t len,
+                       const char* /*fmt*/) {
+  _wasm_canvas_sound_load(static_cast<int>(id), data, static_cast<int>(len));
+}
+inline void sound_play(int64_t id, int64_t vol) {
+  _wasm_canvas_sound_play(static_cast<int>(id), static_cast<int>(vol));
+}
+inline void sound_stop(int64_t id) {
+  _wasm_canvas_sound_stop(static_cast<int>(id));
+}
+inline bool sound_playing(int64_t id) {
+  return _wasm_canvas_sound_playing(static_cast<int>(id)) != 0;
+}
+inline void sound_free(int64_t id) {
+  _wasm_canvas_sound_free(static_cast<int>(id));
+}
 
 #elif defined(CULEBRA_CANVAS_WINDOW)  // native raylib desktop window
 
@@ -906,6 +965,12 @@ __attribute__((weak)) void music_resume() {}
 __attribute__((weak)) void music_volume(int64_t) {}
 __attribute__((weak)) void music_seek(double) {}
 __attribute__((weak)) bool music_playing() { return false; }
+__attribute__((weak)) void sound_load(int64_t, const uint8_t*, int64_t,
+                                      const char*) {}
+__attribute__((weak)) void sound_play(int64_t, int64_t) {}
+__attribute__((weak)) void sound_stop(int64_t) {}
+__attribute__((weak)) bool sound_playing(int64_t) { return false; }
+__attribute__((weak)) void sound_free(int64_t) {}
 
 #else
 
@@ -931,6 +996,11 @@ void music_resume();
 void music_volume(int64_t vol);
 void music_seek(double seconds);
 bool music_playing();
+void sound_load(int64_t id, const uint8_t* data, int64_t len, const char* fmt);
+void sound_play(int64_t id, int64_t vol);
+void sound_stop(int64_t id);
+bool sound_playing(int64_t id);
+void sound_free(int64_t id);
 
 #endif  // CULEBRA_RT_CANVAS_WEAK
 
@@ -955,6 +1025,11 @@ inline void music_resume() {}
 inline void music_volume(int64_t) {}
 inline void music_seek(double) {}
 inline bool music_playing() { return false; }
+inline void sound_load(int64_t, const uint8_t*, int64_t, const char*) {}
+inline void sound_play(int64_t, int64_t) {}
+inline void sound_stop(int64_t) {}
+inline bool sound_playing(int64_t) { return false; }
+inline void sound_free(int64_t) {}
 
 #endif  // __EMSCRIPTEN__
 

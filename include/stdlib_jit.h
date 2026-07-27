@@ -911,6 +911,35 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_music_seek(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_canvas_music_playing() {
   return culebra::_canvas_detail::music_playing();
 }
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_sound_load(
+    uint8_t tag, int64_t data, int64_t line, int64_t col) {
+  auto sv = _culebra_str_view(tag, data);
+  auto p = reinterpret_cast<const uint8_t*>(sv.data());
+  const char* fmt = culebra::_canvas_detail::sound_format(p, sv.size());
+  if (fmt == nullptr)
+    throw culebra::CulebraError(
+        "ValueError", culebra::_canvas_detail::kSoundFormatError, line, col);
+  int64_t id = culebra::_canvas_detail::sound_alloc_id();
+  culebra::_canvas_detail::sound_load(id, p, static_cast<int64_t>(sv.size()),
+                                      fmt);
+  return id;
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_sound_play(
+    int64_t id, int64_t vol) {
+  culebra::_canvas_detail::sound_play(id, vol);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_sound_stop(
+    int64_t id) {
+  culebra::_canvas_detail::sound_stop(id);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_canvas_sound_playing(
+    int64_t id) {
+  return culebra::_canvas_detail::sound_playing(id);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_sound_free(
+    int64_t id) {
+  culebra::_canvas_detail::sound_free(id);
+}
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_width() {
   return culebra::_canvas_detail::width();
 }
@@ -7825,6 +7854,13 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                    jit.builder_.getDoubleTy());
   jit.module_->getOrInsertFunction(rt::canvas_music_playing,
                                    jit.builder_.getInt1Ty());
+  jit.module_->getOrInsertFunction(rt::canvas_sound_load, i64,
+                                   jit.builder_.getInt8Ty(), i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_sound_play, vt, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_sound_stop, vt, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_sound_playing,
+                                   jit.builder_.getInt1Ty(), i64);
+  jit.module_->getOrInsertFunction(rt::canvas_sound_free, vt, i64);
   jit.module_->getOrInsertFunction(rt::canvas_width, i64);
   jit.module_->getOrInsertFunction(rt::canvas_height, i64);
   }
@@ -9074,6 +9110,26 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
     if (method == "music_playing" && a.empty())
       return jit.own(make_bool(
           emit_call(module_->getFunction(rt::canvas_music_playing), {})));
+    if (method == "sound_load" && a.size() == 1) {
+      auto data = jit.compile(*a[0]);
+      emit_type_check(data.borrow(), "String", "parameter 'data'", a[0].get());
+      auto id = emit_call(module_->getFunction(rt::canvas_sound_load),
+                          {extract_tag(data.borrow()),
+                           extract_data(data.borrow()), line, col});
+      data.drop();
+      return jit.own(make_long(id));
+    }
+    if (method == "sound_play")
+      if (auto v = args({{"id"}, {"vol"}}))
+        return call_void(rt::canvas_sound_play, *v);
+    if (method == "sound_stop")
+      if (auto v = args({{"id"}})) return call_void(rt::canvas_sound_stop, *v);
+    if (method == "sound_playing")
+      if (auto v = args({{"id"}}))
+        return jit.own(make_bool(
+            emit_call(module_->getFunction(rt::canvas_sound_playing), *v)));
+    if (method == "sound_free")
+      if (auto v = args({{"id"}})) return call_void(rt::canvas_sound_free, *v);
     if (method == "width" && a.empty())
       return jit.own(make_long(
           emit_call(module_->getFunction(rt::canvas_width), {})));

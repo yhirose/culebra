@@ -437,6 +437,18 @@ struct MusicSlot {
 // so the slot's UnloadMusicStream runs before CloseAudioDevice.
 MusicSlot g_music;
 
+// Loaded sound effects, keyed by the canvas.h-allocated handle. One live
+// instance per handle (raylib PlaySound restarts the sound), matching the
+// browser side. Also after g_audio_closer, so the sounds unload before
+// CloseAudioDevice.
+struct SoundRegistry {
+  std::unordered_map<int64_t, Sound> sounds;
+  ~SoundRegistry() {
+    for (auto& [id, s] : sounds) UnloadSound(s);
+  }
+};
+SoundRegistry g_sounds;
+
 // Refill the stream's buffers — called from present(), the one place every
 // frame loop passes through, so no pump API needs exposing.
 void music_pump() {
@@ -624,6 +636,45 @@ void music_seek(double seconds) {
 
 bool music_playing() {
   return g_music.loaded && IsMusicStreamPlaying(g_music.music);
+}
+
+// --- sound effects: decoded once, played per call ---------------------------
+
+void sound_load(int64_t id, const uint8_t* data, int64_t len, const char* fmt) {
+  ensure_audio();
+  if (!g_audio_ready) return;
+  // Past the sniff but undecodable: the handle stays silent, the music-slot
+  // convention for a stream that fails to decode.
+  Wave w = LoadWaveFromMemory(fmt, data, static_cast<int>(len));
+  if (w.data == nullptr) return;
+  Sound s = LoadSoundFromWave(w);
+  UnloadWave(w);
+  g_sounds.sounds[id] = s;
+}
+
+void sound_play(int64_t id, int64_t vol) {
+  auto it = g_sounds.sounds.find(id);
+  if (it == g_sounds.sounds.end()) return;
+  SetSoundVolume(it->second, static_cast<float>(gain_of(vol)));
+  PlaySound(it->second);  // restarts if already playing
+}
+
+void sound_stop(int64_t id) {
+  auto it = g_sounds.sounds.find(id);
+  if (it != g_sounds.sounds.end()) StopSound(it->second);
+}
+
+bool sound_playing(int64_t id) {
+  auto it = g_sounds.sounds.find(id);
+  return it != g_sounds.sounds.end() && IsSoundPlaying(it->second);
+}
+
+void sound_free(int64_t id) {
+  auto it = g_sounds.sounds.find(id);
+  if (it == g_sounds.sounds.end()) return;
+  StopSound(it->second);
+  UnloadSound(it->second);
+  g_sounds.sounds.erase(it);
 }
 
 }  // namespace _canvas_detail
