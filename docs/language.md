@@ -2035,8 +2035,15 @@ for v in two() { inspect(v); break }
   generators — at the top level or nested inside another function. A
   `yield` anywhere else — in a class method, in an object property's
   function, in a `fn` expression assigned to a variable, or at the top
-  level — is rejected at parse time with a `SyntaxError`. Declare a
-  named fn and call it from the method instead.
+  level of a file — is rejected at parse time:
+
+      SyntaxError: yield can only appear inside a `fn name(...) { ... }`
+      declaration body — a class method, an object property's function,
+      or a fn expression cannot be a generator. Declare a named fn and
+      call it instead.
+
+  The check runs over what the transform pass leaves behind, so every
+  backend rejects the same programs at the same position.
 * A generator body cannot `perform` a bare effect operation or declare
   an `effect fn`; a self-contained `handle { ... }` expression inside
   the body does work (§16).
@@ -4807,8 +4814,10 @@ built-ins from §19.
   Runtime `String` keys via `obj[k]` unify with the shape — `obj['x']`
   and `obj.x` reach the same slot. See §10 "Subscript assignment".
 * Only `fn name(...)` declarations can be generators; `yield` anywhere
-  else (a class method, an object property's function, a `fn`
-  expression) is a parse-time `SyntaxError` (§11 "Generators").
+  else — a class method, an object property's function, a `fn`
+  expression, or the top level of a file — is a parse-time
+  `SyntaxError` (§11 "Generators"). A method that needs to yield
+  delegates to a named fn declared beside it.
 
 ---
 
