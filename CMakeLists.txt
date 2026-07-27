@@ -690,7 +690,8 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   if(CULEBRA_ENABLE_CANVAS_WINDOW)
     add_library(culebra_rt_canvas STATIC ./src/runtime/culebra_rt_canvas.cc)
     target_compile_features(culebra_rt_canvas PRIVATE cxx_std_23)
-    target_include_directories(culebra_rt_canvas PRIVATE ./vendor/raylib/src)
+    target_include_directories(culebra_rt_canvas PRIVATE ./vendor/raylib/src
+                                                         ./vendor/SDL/include)
     target_compile_definitions(culebra_rt_canvas PRIVATE CULEBRA_CANVAS_WINDOW=1)
     target_compile_options(culebra_rt_canvas PRIVATE -ffunction-sections -fdata-sections)
     list(APPEND _rt_embed_files
@@ -911,8 +912,11 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
       DEPENDEES install)
   endif()
 
-  # Shared raylib headers + link (built once, used by both bindings).
-  target_include_directories(culebra PRIVATE ./vendor/raylib/src)
+  # Shared raylib headers + link (built once, used by both bindings). The SDL
+  # headers come from the submodule's own include/ (self-contained, no build
+  # step) so the Canvas binding can reach past raylib's API to SDL — see
+  # stop_text_input() in culebra_rt_canvas.cc.
+  target_include_directories(culebra PRIVATE ./vendor/raylib/src ./vendor/SDL/include)
   foreach(_dep sdl_ext raylib_ext)
     if(TARGET ${_dep})
       add_dependencies(culebra ${_dep})

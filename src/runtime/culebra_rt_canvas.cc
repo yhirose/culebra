@@ -22,6 +22,8 @@
 #include <string_view>
 
 #include "raylib.h"
+#include <SDL3/SDL_keyboard.h>
+#include <SDL3/SDL_video.h>
 
 namespace culebra {
 namespace _canvas_detail {
@@ -43,6 +45,24 @@ int pick_scale(int w, int h) {
   int longest = std::max(w, h);
   if (longest <= 0) return 1;
   return std::max(1, 640 / longest);
+}
+
+// raylib's SDL backend turns text input on for every window it opens, which
+// makes the window an active text-input client. Canvas polls key state and
+// never consumes text, and being a text client is what routes a held key
+// through the platform's compose/IME machinery: macOS pops up its
+// press-and-hold accent picker, and a CJK input method would open its
+// candidate window over the game. Turn it back off — raylib exposes no API
+// for this, so it goes through SDL directly (raylib is built on the same
+// vendored static SDL3 this links). The process has exactly one window, and
+// asking SDL for its window list keeps this independent of focus, which the
+// window may not have yet at creation.
+void stop_text_input() {
+  int count = 0;
+  SDL_Window** windows = SDL_GetWindows(&count);
+  if (windows == nullptr) return;
+  for (int i = 0; i < count; i++) SDL_StopTextInput(windows[i]);
+  SDL_free(windows);
 }
 
 // Forced-headless mode for the windowed build: with CULEBRA_CANVAS_HEADLESS set
@@ -81,6 +101,7 @@ void ensure_window() {
     // and IsWindowReady() stays false. Degrade to the headless backend rather
     // than driving GL on a dead context — present/input become no-ops.
     if (!IsWindowReady()) return;
+    stop_text_input();
     SetTargetFPS(60);  // pin the game clock to 60 fps like the browser loop
     g_window_ready = true;
   } else {
