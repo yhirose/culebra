@@ -53,6 +53,9 @@ function switchTab(name) {
     tabButtons[k].setAttribute("aria-selected", k === name ? "true" : "false");
     panes[k].classList.toggle("active", k === name);
   }
+  // Clear empties the Output pane and nothing else, so it rides the tab strip
+  // and leaves with the pane it belongs to.
+  clearBtn.hidden = name !== "output";
   if (name === "tui") term.focus();
   if (name === "canvas") canvasPane.focus();
 }

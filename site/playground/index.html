@@ -37,7 +37,6 @@
   <div class="pg-toolbar">
     <button id="run" class="btn btn-primary" disabled>Run</button>
     <button id="stop" class="btn" disabled>Stop</button>
-    <button id="clear" class="btn">Clear</button>
     <select id="examples" aria-label="Load an example">
       <option value="">Examples…</option>
     </select>
@@ -53,6 +52,8 @@
         <button id="tab-output" class="pg-tab active" data-pane="output" role="tab" aria-selected="true">Output</button>
         <button id="tab-tui" class="pg-tab" data-pane="tui" role="tab" aria-selected="false">TUI</button>
         <button id="tab-canvas" class="pg-tab" data-pane="canvas" role="tab" aria-selected="false">Canvas</button>
+        <span class="spacer"></span>
+        <button id="clear" class="pg-tab-action">Clear</button>
       </div>
       <div class="pg-panes">
         <pre id="output" class="pg-output pg-pane active"><span class="placeholder">Output appears here. Press Run.</span></pre>
