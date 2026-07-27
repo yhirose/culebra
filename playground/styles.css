@@ -34,6 +34,16 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--surface); color: var(--text);
 }
+/* Narrower than brand.css's .btn, which is sized for the landing page's calls
+   to action rather than for a row of controls. Scoped so that page keeps its. */
+.pg-toolbar .btn { padding: 0.35rem 0.8rem; }
+.pg-toolbar #args {
+  font: inherit; font-size: 0.85rem; font-family: var(--mono, ui-monospace, monospace);
+  padding: 0.4rem 0.55rem; min-width: 14rem; flex: 0 1 22rem;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); color: var(--text);
+}
+.pg-toolbar #args::placeholder { color: var(--muted); opacity: 0.8; }
 .btn:disabled { opacity: 0.5; cursor: default; }
 .btn:disabled:hover { border-color: var(--border); }
 

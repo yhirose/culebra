@@ -11,6 +11,7 @@ const runBtn = $("run");
 const stopBtn = $("stop");
 const clearBtn = $("clear");
 const examplesSel = $("examples");
+const argsInput = $("args");
 const status = $("status");
 const backendEl = $("backend");
 
@@ -152,8 +153,44 @@ async function loadExampleCatalog() {
 
 async function loadExample(title) {
   currentExample = title;
+  // Show the example's own arguments rather than applying them invisibly: an
+  // example tuned for this host (Retro Run asks for fewer cars and a shorter
+  // draw distance) should say so, and stay editable from there.
+  argsInput.value = formatArgs(EXAMPLE_ARGS[title] || []);
   const res = await fetch(EXAMPLE_PATHS[title]);
   return res.text();
+}
+
+// The box holds a command line, so an argument containing a space has to
+// survive the round trip: quote it going in, honour quotes coming out. Single
+// and double both, no escapes and no expansion — this is a text field, not sh.
+function formatArgs(list) {
+  return list.map((a) => (/[\s"']/.test(a) ? JSON.stringify(a) : a)).join(" ");
+}
+
+function parseArgs(text) {
+  const out = [];
+  let cur = "";
+  let quote = null;
+  let started = false;   // distinguishes an empty quoted "" from no argument
+  for (const ch of text) {
+    if (quote) {
+      if (ch === quote) quote = null;
+      else cur += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      started = true;
+    } else if (/\s/.test(ch)) {
+      if (started || cur) out.push(cur);
+      cur = "";
+      started = false;
+    } else {
+      cur += ch;
+      started = true;
+    }
+  }
+  if (started || cur) out.push(cur);
+  return out;
 }
 
 // --- worker lifecycle -----------------------------------------------------
@@ -259,7 +296,7 @@ function run() {
     src: editor.getValue(),
     path: EXAMPLE_PATHS[currentExample] || "main.cul",
     assets: EXAMPLE_ASSETS[currentExample] || [],
-    args: EXAMPLE_ARGS[currentExample] || [],
+    args: parseArgs(argsInput.value),
   });
 }
 
@@ -300,6 +337,13 @@ examplesSel.addEventListener("change", () => {
     editor.setValue(src);
     editor.focus();
   });
+});
+// Enter in a command line runs it, the way it would in a shell.
+argsInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    run();
+  }
 });
 
 document.addEventListener("keydown", (e) => {
