@@ -80,18 +80,35 @@ inline void mark(const char* name) {
 }
 }  // namespace startup_profile
 
-// Read a whole file as bytes. nullopt when it can't be opened — every caller
+// Read a whole file as bytes. nullopt when it can't be read — every caller
 // prints its own message, since the phrasing is per-subcommand.
 optional<string> read_file(const char* path) {
+  std::error_code ec;
+  // A directory opens like a file and then fails every read — libstdc++ throws
+  // out of underflow rather than setting badbit. Reject it up front so callers
+  // report it in their own words like any other unreadable path.
+  if (std::filesystem::is_directory(path, ec) && !ec) return nullopt;
+
   ifstream ifs(path, ios::in | ios::binary);
   if (ifs.fail()) return nullopt;
 
   string buff;
-  auto size = static_cast<streamoff>(ifs.seekg(0, ios::end).tellg());
-  if (size > 0) {
-    buff.resize(static_cast<size_t>(size));
-    ifs.seekg(0, ios::beg).read(buff.data(), static_cast<streamsize>(size));
+  if (std::filesystem::is_regular_file(path, ec) && !ec) {
+    // Sizing the buffer up front, the fast path for the file every caller
+    // actually passes.
+    auto size = static_cast<streamoff>(ifs.seekg(0, ios::end).tellg());
+    if (ifs.good() && size > 0) {
+      buff.resize(static_cast<size_t>(size));
+      ifs.seekg(0, ios::beg).read(buff.data(), static_cast<streamsize>(size));
+      if (!ifs) return nullopt;   // shrank or errored between sizing and reading
+    }
+    return buff;
   }
+  // A pipe or process substitution (`culebra <(gen.sh)`) can't seek, so it has
+  // no size to size a buffer with; reporting the empty string there ran an
+  // empty program in place of the caller's script. Stream it instead.
+  buff.assign(istreambuf_iterator<char>(ifs), istreambuf_iterator<char>());
+  if (ifs.bad()) return nullopt;
   return buff;
 }
 
