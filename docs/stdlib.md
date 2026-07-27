@@ -1627,8 +1627,12 @@ consumes no value (`--verbose` / `-v`). All other types consume the
 next token (`--count 5` / `--count=5`).
 
 An argument is **positional** unless it has `short` or `default`.
-Positional args are matched in spec order; a positional with a
-`default` is optional.
+Positionals are matched in spec order and every one of them is
+required. A `default` makes the argument an **option** instead, given
+by its long form (`--encoding utf-8`); `short` adds the one-letter form
+(`-l`). An optional *positional* is therefore not expressible — an
+argument that may be omitted carries a `default` and is spelled
+`--name value`.
 
 ### Example
 

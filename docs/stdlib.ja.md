@@ -1587,7 +1587,10 @@ parse / exit せずに help 文字列だけ取得。広めのメッセージに�
 の型は次のトークンを値として消費する (`--count 5` / `--count=5`)。
 
 `short` も `default` も無い引数は **positional** 扱い。spec 順にマッチし、
-`default` 付きの positional は optional。
+positional は全て必須。`default` を付けた引数は positional ではなく
+**option** になり、long 形 (`--encoding utf-8`) で渡す。`short` はそれに
+1 文字形 (`-l`) を足す。つまり省略可能な *positional* は表現できない —
+省略可能にしたい引数は `default` を持たせて `--name value` の形で渡す。
 
 ### 例
 
