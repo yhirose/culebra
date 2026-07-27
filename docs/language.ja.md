@@ -4487,12 +4487,21 @@ fn ...` は前の式の matmul 継続ではなく、独立した 2 statement と
 
 ### サブコマンド
 
-| コマンド | 効果 |
-|---|---|
-| `build <in.cul> -o <out>` | AOT コンパイルして単体実行ファイルを生成（バンドルされるモジュールグラフは §24、クロスコンパイル用フラグは `culebra build --help`） |
-| `test [paths...]` | テストと doctest を実行（`--filter`, `--doc`, `--reporter`, `--bail`, `--list`） |
-| `lint [paths...]` | 実行せずに静的エラーと警告を報告（`--fix` は未使用 import を削除） |
-| `fmt [paths...]` | 正準スタイルに整形（`-i` in-place、`-l` 一覧、`--check`） |
+バイナリはツールチェーンも兼ねています。サブコマンドは 6 つあり、開発用の
+4 つは [`tooling.ja.md`](tooling.ja.md)、配布用の 2 つは
+[`deployment.ja.md`](deployment.ja.md) が扱います。
+
+| コマンド | 効果 | 参照 |
+|---|---|---|
+| `test [paths...]` | テストと doctest を実行（`--filter`, `--doc`, `--reporter`, `--bail`, `--list`） | [`tooling.ja.md` §1](tooling.ja.md#1-テスト-culebra-test) |
+| `lint [paths...]` | 実行せずに静的エラーと警告を報告（`--fix` は未使用 import を削除） | [`tooling.ja.md` §2](tooling.ja.md#2-lint-culebra-lint) |
+| `fmt [paths...]` | 正準スタイルに整形（`-i` in-place、`-l` 一覧、`--check`） | [`tooling.ja.md` §3](tooling.ja.md#3-フォーマット-culebra-fmt) |
+| `dap` | Debug Adapter Protocol を stdin/stdout で話す（起動するのはエディタ） | [`tooling.ja.md` §4](tooling.ja.md#4-デバッグ-culebra-dap) |
+| `build <in.cul> -o <out>` | AOT コンパイルして単体実行ファイルを生成（バンドルされるモジュールグラフは §24、クロスコンパイル用フラグは `culebra build --help`） | [`deployment.ja.md` §1](deployment.ja.md#1-standalone-バイナリビルドculebra-build) |
+| `wrap` | 自前の C++ クラスを組み込みとして公開する拡張 `culebra` バイナリを作る | [`deployment.ja.md` §3](deployment.ja.md#3-c-ライブラリのラッピングculebra-wrap) |
+
+`culebra --help` が列挙するのは現在 `build` / `test` / `lint` / `fmt` の
+4 つだけで、`dap` と `wrap` は動作しますがこの要約には出てきません。
 
 スクリプトを指定しない場合、自動的に REPL が起動します。インタプリタ
 REPL と JIT REPL のどちらも入力間でセッション状態を保持します — 一つの

@@ -13,7 +13,7 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
 > は `throw` の期待値。 ブロック先頭の `# doctest: skip` は説明用
 > （複数ファイル・ネットワークアクセス・`culebra test` ランナーが
 > 必要な場合が多い）。 ブロック間は独立スコープです。 規約とディレ
-> クティブ一覧の全体は第16.1節。
+> クティブ一覧の全体は [`tooling.ja.md` §1](tooling.ja.md#doctest)。
 
 > **Status ラベル。** ラベル無しの見出しは現時点の実装を記述します。
 > 出現するラベル: **Draft** (実装中、API 変更あり)、**Planned**
@@ -43,11 +43,9 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
   15. [標準ライブラリ巡り](#15-標準ライブラリ巡り)
   16. [Tensor プリミティブ](#16-tensor-プリミティブ)
 - **第 IV 部 — 検証とデプロイ**
-  17. [テスト (`culebra test`)](#17-テスト-culebra-test)
-  18. [リント (`culebra lint`)](#18-リント-culebra-lint)
-  19. [フォーマット (`culebra fmt`)](#19-フォーマット-culebra-fmt)
-  20. [AOT バイナリビルド](#20-aot-バイナリビルド)
-  21. [埋め込み概観](#21-埋め込み概観)
+  17. [ツール (`test`, `lint`, `fmt`, デバッグ)](#17-ツール-test-lint-fmt-デバッグ)
+  18. [AOT バイナリビルド](#18-aot-バイナリビルド)
+  19. [埋め込み概観](#19-埋め込み概観)
 
 ## 0. 設計哲学
 
@@ -1195,7 +1193,7 @@ inspect(lib.helper)              # => nil — export Object に載っていな�
 `import` と `export` はトップレベル文としてのみ書ける — 関数内や
 `if` の枝に書くと `SyntaxError`。 これによりローダはパース時に依存
 グラフ全体を確定でき、AOT バンドラと tree-shaker がそれに依存して
-いる (Ch.20)。
+いる (Ch.18)。
 
 各モジュールはプログラム中で 1 度だけ、依存順に、それぞれ独自の
 スコープで評価される。 トップレベル束縛は export Object 以外は非公開。
@@ -1207,7 +1205,7 @@ inspect(lib.helper)              # => nil — export Object に載っていな�
 
 明示的な `import` 行があれば、そのファイルが何に依存しているかは
 —読者にとってもツールにとっても— そこだけ見れば分かる。 `culebra
-lint` の未使用 import 警告 (と `--fix`、Ch.18) が曖昧さなく出せるのも、
+lint` の未使用 import 警告 (と `--fix`、Ch.17) が曖昧さなく出せるのも、
 AOT ビルドが推測なしにバンドルできるのも同じ理由。
 
 ローダ設計と循環検出アルゴリズムの詳細は [`internals.ja.md` §10](internals.ja.md)。
@@ -1478,293 +1476,81 @@ dtype の根拠、アロケータ選定、lazy shape の議論は
 第 IV 部 — 検証とデプロイ
 =========================
 
-## 17. テスト (`culebra test`)
+## 17. ツール (`test`, `lint`, `fmt`, デバッグ)
 
-> `test()` / `@test` / `@parametrize` と matcher 群、 引数で DI 解決
-> される fixture (decorator 不要、 env 内の任意の fn) が実装済で、
-> `culebra test [path]` で動きます。
+`culebra` バイナリはツールチェーンそのものでもあります。テストランナー・
+リンタ・フォーマッタ・デバッグアダプタは同じ実行ファイルのサブコマンドなので、
+追加でインストールするものはありません。この章は概観です。フラグ単位の
+リファレンスは [`tooling.ja.md`](tooling.ja.md) にあります。
 
-### 17.1 doctest 規約 (確定)
+### 17.1 テスト
 
-本ガイド、 `language.ja.md`、 `stdlib.ja.md` の各 ` ```culebra `
-ブロックは以下の規約に従う:
-
-- `# => <value>` — 期待 stdout (1 行)
-- `# => |` + 続く `# <line>` 行 — 複数行期待 stdout
-- `# !! <pattern>` — 期待 `throw` (部分一致)
-- `# doctest: <directive>` (ブロック先頭) — 制御:
-  - `skip` — 説明用、実行しない (主に *Planned* 機能)
-  - `compile-only` — 構文チェックのみ
-  - `interp-only` / `jit-only` / `aot-only` — backend 限定
-
-ブロック間は独立、`setup` / `teardown` は無し。
-
-実行は `culebra test --doc <path>` (または `just doctest`)。各ブロックを
-抽出し、新しいインタプリタで実行してマーカーと出力を照合する。現状
-honor されるのは `skip` のみ。`compile-only` と backend 限定ディレクティブ
-は予約済み (該当ブロックは当面そのまま実行される)。
-
-### 17.2 テストの書き方
-
-3 つの書き方があります — `test()` 呼出形と `@test` デコレータ形は
-等価。 `@parametrize` は cases ごとに 1 テストを登録します。
+テストファイルは `test_*.cul` という名前の `.cul` ファイルです。その中では
+`test()`・`@test` デコレータ・`@parametrize` が環境に備わっており
+（import 不要）、表明にはマッチャ群を使います:
 
 ```culebra
 # doctest: skip
-# tests/test_string.cul
-
-# 呼び出し形
-test("interpolation embeds Long", fn() {
-  let x = 42
-  assert_eq("hi {x}", "hi 42")
-})
-
-# デコレータ形 — 関数名がテスト名になる
+# tests/test_math.cul
 @test
-fn interpolation_embeds_float() {
-  let pi = 3.14
-  assert_eq("π = {pi}", "π = 3.14")
+fn adds_correctly() {
+  assert_eq(1 + 2, 3)
 }
 
-# Parametrize — case ごとに 1 テスト、`<fn>[i]` という名前
-@parametrize([(1, 2, 3), (2, 3, 5), (10, 20, 30)])
-fn adds_correctly(a, b, want) {
+@parametrize([(1, 2, 3), (10, 20, 30)])
+fn adds_each(a, b, want) {
   assert_eq(a + b, want)
 }
 ```
 
-**`describe` ネストは採用しない**。 グルーピングはディレクトリ
-(`tests/strings/`) とテスト名の `/` 区切り
-(`"Array/push: appends element"`) で表現します。
-
-**DI による fixture**。 test の positional 引数は名前で env から
-resolve されます — env 内の任意の fn が fixture として使えます
-(decorator 不要)。 fixture が fixture を引数で取ることも可能です。
-
-```culebra
-# doctest: skip
-fn db()       { { users: [], next_id: 1 } }
-fn user(db)   { db.users.push({ id: 1, name: "alice" }); db.users[0] }
-
-@test
-fn user_has_name(user) {
-  assert_eq(user.name, "alice")
-}
-```
-
-1 つの test 内では、 fixture は **1 回だけ評価** されます — 直接 +
-推移的に複数回 mention されても同じ instance を共有します。 test
-間では fresh。
-
-**class `drop` での cleanup**。 teardown が必要なリソースは class に
-ラップして `drop` メソッドを置きます (§7.4)。 ランタイムの ref count
-管理が test 終わりに per-test cache の release を契機に発火します。
-
-```culebra
-# doctest: skip
-class TestDB {
-  new()    { self.conn = Database.connect("memory") }
-  drop()   { self.conn.close() }
-  users()  { self.conn.users }
-}
-
-fn db() { TestDB.new() }
-
-@test
-fn user_count(db) {
-  db.users().create("alice")
-  assert_eq(db.users().count(), 1)
-  # test 末で db が drop → conn.close()
-}
-```
-
-fixture 関数本体内の `defer` は fixture fn が return した瞬間に発火
-してしまう (test 本体実行前) ので、 cleanup には class `drop` を
-使います。 複数の test ファイルで共有したい長寿命 state (例: 1 回
-ロードした model) は module top-level に置きます — モジュールシス
-テム (Ch.13) が binding を cache するためです。
-
-**matchers**。 アサーションは matcher 一族を使います — `assert`
-キーワード / builtin は存在しません。 matcher は **3 backend の
-global** として bind されており (`inspect` / `Math` と同じ立場)、
-`culebra script.cul`、 `culebra --jit script.cul`、 `culebra build`、
-`culebra test` のいずれでも同じく動きます:
-
-```culebra
-# doctest: skip
-assert_eq(arr.len(), 3)                 # == ; 失敗時に両辺を表示
-assert_throws("TypeError", fn() { let _ = 1 + 'b' })
-assert_close(0.1 + 0.2, 0.3, 1e-9)      # |a - b| <= tol
-```
-
-完全な matcher 一覧 (`assert_true`/`false`/`ne`/`lt`/`le`/`gt`/`ge`
-と `__eq__`/`__lt__` dispatch の規則) は
-[`stdlib.ja.md` §13](stdlib.ja.md)。
-
-**production の不変条件**。 テストスイート外で `if (!cond) throw {...}`
-を書くときは `if`/`throw` を直接書きます (Go 流儀、
-[language.ja.md §15](language.ja.md) 参照)。 production build で
-disable する別の `assert` キーワードは存在しません。
-
-### 17.3 実行
-
-`culebra test [path]` がテストファイルを discover します。 このサブコマンド
-経由で起動した場合のみ、 `test` / `@test` / `@parametrize` が
-**ambient global** として注入されます — `import` 不要。 matcher 一族は
-3 backend で常時 global なので追加注入は不要です。 これは script 実行
-モード下でだけ `inspect` / `print` が ambient で、 `culebra::environment()`
-には注入されない設計と同じ流儀 ([stdlib.ja.md §29](stdlib.ja.md) 参照)。
-
 ```sh
-culebra test                       # 現在ディレクトリから探索・実行
-culebra test tests/strings/        # サブツリー指定
-culebra test --filter "Array/push" # テスト名部分一致
-culebra test --reporter json       # NDJSON 出力 (1 行 1 JSON)
-culebra test --bail                # 最初の failure で停止
-culebra test --bail 3              # 3 個失敗で停止
-culebra test --list                # 実行せず discovery のみ
+culebra test                        # カレントディレクトリから探索して実行
+culebra test --filter "Array/push"  # 名前で絞って実行
 ```
 
-Discovery: 指定されたパスがファイルならそれを使用。 ディレクトリなら
-`test_*.cul` 一致を再帰的に walk。 終了コードは全 pass で `0`、何か
-fail で `1`。
+テストの引数は周囲の環境から名前で解決されるので、スコープにある任意の
+関数がフィクスチャになります。クラスインスタンスを返すフィクスチャは
+テスト終了時に `drop` が呼ばれます (Ch.7.4)。同じランナーはこのガイドの
+例も実行します — `culebra test --doc docs` — 本書のすべての
+` ```culebra ` ブロックが期待出力を持っているのはそのためです。
 
-**reporter**。 default は人間向け。 `--reporter json` で NDJSON
-(1 行 1 JSON object) — agent loop / CI 連携向け:
+### 17.2 lint とフォーマット
 
-```
-{"event":"test_pass","name":"adds_correctly","source":"tests/test_math.cul","stdout":""}
-{"event":"test_fail","name":"divides_correctly","kind":"AssertionError",
- "message":"assert_eq failed:\n  left:  3\n  right: 4","line":12,"col":3,"stdout":""}
-{"event":"run_end","passed":42,"failed":1,"errored_files":0,"bailed":false}
-```
-
-JSON モードでは test 内の `inspect(...)` は event の `stdout` フィールド
-に capture され NDJSON ストリームに interleave しません。 失敗 event
-には `snippet` が付き、 失敗行を `>` で marker した文脈が含まれます。
-
-`just test` 経由の従来 `tests/*.cul` スイート (matcher 使用、`test()`
-呼出なし) は各ファイルを `./build/culebra <f>` / `--jit <f>` /
-`culebra build <f>` で直接実行します。 matcher は language-level
-global なので `culebra test` を介さずに 3 backend で同じファイルが
-回ります。
-
-### 17.4 doctest と今後の拡張
-
-`culebra test --doc <path>` は `<path>` 以下の markdown から
-` ```culebra ` ブロックを抽出し、17.1 のマーカーに対して実行します
-(`just doctest` が `docs/` に対して回します)。 今後の予定:
-
-- **明示 `import { test } from "std/test"`** — `culebra test` 経由でない
-  コード (embedded test helper 等) で使うため
-- **`--backend interp|jit|aot`** — 現状 runner は interp のみ。
-  backend 選択は今後
-- **並列実行** — 現状逐次。 JIT/AOT が入った時の parallel default は
-  optional
-
-## 18. リント (`culebra lint`)
-
-`culebra lint [paths...]` はプログラムを**実行せずに**静的な問題を
-報告し、CI でゲートできるよう非ゼロ終了する (0 = クリーン、1 = 警告のみ、
-2 = エラー)。全 backend が load 段で走らせている静的解析を再利用する
-(報告されるエラーは実行時に abort するものと厳密に同じ) 上に、助言的な
-警告を追加する。
+`culebra lint` は、プログラムを実行せずに静的解析で分かることを報告します。
+実行すればどのみち中断されるエラーに加えて、助言的な警告（未使用の変数・
+import、到達不能コード）も出します。終了コードは clean が 0、警告のみが 1、
+エラーが 2 なので CI のゲートに使えます。
 
 ```bash
-culebra lint app.cul
-# app.cul:12:7: warning: unused variable 'tmp'
-# app.cul:20:3: error: undefined variable 'reuslt'
-
-culebra lint .           # `culebra fmt -i .` と同様、カレント以下の
-                         # .cul を再帰的に走査
+culebra lint .          # カレントディレクトリ配下の .cul を再帰的に
+culebra lint --fix .    # 加えて未使用 import 行を削除する
 ```
 
-現状の報告対象:
-
-- **エラー** — 健全で必ず失敗する集合: ループ外の `break`/`continue`、
-  関数外の `return`、不正なパラメータ/代入形、重複パラメータ/メンバ、
-  shadowing、どこにも束縛されない名前の読み (未定義変数の sound subset)。
-  これらは元々あらゆる実行を abort させる。`lint` は最初の1件で止まらず
-  まとめて表示するだけ。
-- **警告** — 実行を止めない助言的な指摘:
-  - **未使用ローカル変数** — 関数内の `let`/`mut` 束縛で一度も読まれない
-    もの。
-  - **未使用トップレベル束縛** — トップレベルの `let`/`mut` で、モジュール
-    が一度も読まず re-export もしないもの。関数/クラス/enum/trait 宣言は
-    モジュールの export 面なので報告しない。
-  - **未使用 import** — `import` した名前をモジュールが一度も使わないもの。
-  - **到達不能コード** — 同じブロック内で `return`/`throw`/`break`/
-    `continue` の後に置かれ、決して実行されない文。
-
-  先頭アンダースコア (`_x`、または素の sink `_`) は意図的な未使用の印で、
-  決して報告しない。**パラメータは報告しない**: Culebra では未使用
-  パラメータはほぼ意図的 — 多重ディスパッチの節やメソッド署名が arity を
-  固定し、高階コールバック (ルートハンドラ `fn(req)` や `|i| 4.0`) は宣言
-  必須だが使わない引数を持つ — ため、検査してもノイズにしかならない。
-
-`culebra lint --fix <paths...>` は未使用 import の行を機械的に削除する —
-自動修正の対象は現状これだけ: 死んだ `import` の削除は挙動を変えない
-(未使用の `let`/`mut` と違い、import には初期化式の副作用が無いため)。
-他の警告はすべて報告のみに留まる。編集後は修正済みソースを再パース・
-再リントし、import が消えて新規エラーが出ていないことを確認できた場合
-だけ書き換える — `culebra fmt` と同じ再パース安全網。
+`culebra fmt` は設定不要のフォーマッタです（スタイルフラグはありません）。
+パース → 再出力 → **再パースして比較**してから書き出すので、意味を変えたり
+コメントを落としたりするフォーマットは適用せず拒否します。
 
 ```bash
-culebra lint --fix app.cul
-# app.cul: fixed 1 unused import
+culebra fmt -i .        # プロジェクトをその場で整形
+culebra fmt --check .   # 未整形があれば exit 1（CI ゲート）
 ```
 
-予定: エディタ/LSP 連携用の `--format json`、インライン
-`# lint: ignore` 抑制。
+エディタは stdin 形式 (`culebra fmt -`) でフォーマッタを呼びます。同梱の
+VSCode・Zed・Vim 統合はすでにこれに繋いであります。
 
-## 19. フォーマット (`culebra fmt`)
+### 17.3 デバッグ
 
-`culebra fmt [files...]` はソースを唯一の正準スタイルに整形する: 演算子
-周りの空白正規化、2スペースインデント、ブレースブロックの複数行化、行幅を
-超えた引数リスト/コレクションリテラルの折り返し。`gofmt` と同じく opinionated
-かつ zero-config (スタイル設定フラグ無し)。
+`culebra dap` は Debug Adapter Protocol を stdio で話します。ブレークポイント、
+ステップ実行、コールスタック、ウォッチ式、実行中の `mut` 変数の書き換えが、
+DAP に対応した任意のエディタで動きます。アダプタを起動するのはエディタ側で、
+手で走らせることはまずありません。デバッグはインタプリタで動くので `--jit`
+は付けないでください。
 
-```bash
-culebra fmt app.cul          # 整形結果を stdout に出力
-culebra fmt -i app.cul       # ファイルをその場で書き換え
-culebra fmt -i .             # カレント以下の .cul を全整形
-culebra fmt --check app.cul  # 未整形なら exit 1 (CI ゲート)
-culebra fmt -l src/*.cul     # 変更が必要なファイル名を列挙
-cat app.cul | culebra fmt -  # stdin -> stdout (エディタの保存時整形)
-```
+ソース中に裸の `debugger` 文を置けば、設定なしでもその場所で必ず停止します。
+エディタ別のセットアップ（VSCode・Vim・Zed）は
+[`tooling.ja.md` §4](tooling.ja.md#4-デバッグ-culebra-dap) にあります。
 
-ディレクトリ引数は再帰的に `.cul` を走査するので、`culebra fmt -i .` で
-プロジェクト全体を整形、`culebra fmt --check .` で CI ゲートにできる。
-
-コメントは保持される: 行頭コメントは導く文の上に、行末コメントは同じ行に
-残り、文と文の間の空行は1つ保持する (空行が連続する場合は1つに圧縮)。
-match / cond の腕、class / trait / enum のメンバ、分配パターン、パラメータ
-リストも正規化され、長い二項式やメソッドチェーンは行幅で折り返す。
-
-仕組み: ソースを構文木にパースして再出力し、その結果を**再パースして元と
-照合**する。整形がプログラムの意味を変えてしまう、またはコメントを脱落・重複
-させてしまう場合は整形を拒否し、ファイルを書き換えずに残す (コード破壊を絶対に
-避ける)。整形は冪等で、2回かけても1回と同じ結果になる。
-
-### エディタ統合
-
-stdin 形式 (`culebra fmt -`) が整形フック。各統合はバッファ全体を整形し、
-exit 0 の時だけ結果を適用する (parse/安全網エラー時はバッファ不変)。
-
-- **VSCode** — 同梱拡張 (`misc/vscode/`) が document formatting provider
-  を登録するので、`.cul` で **Format Document** と `editor.formatOnSave`
-  がそのまま動く (`build-vsix.sh` / `install.sh` で再ビルド・再インストール)。
-- **Zed** — `settings.json` の `"languages": { "Culebra": { ... } }` に
-  `"formatter": { "external": { "command": "culebra", "arguments": ["fmt", "-"] } }`
-  を追加。
-- **Vim/Neovim** — 同梱 `ftplugin` が `:CulebraFmt` コマンドを提供 (全体
-  整形・カーソル保持・エラー時不変)。保存時整形は
-  `let g:culebra_fmt_autosave = 1`。`gq` / `'formatprg'` には**あえて紐付
-  けない** (パース不能な部分範囲を空出力で置換してしまうため)。
-- 他のエディタも「保存時整形」機構があれば同様にバッファを
-  `culebra fmt -` に通せる。
-
-## 20. AOT バイナリビルド
+## 18. AOT バイナリビルド
 
 `culebra build` は `.cul` ソースを ahead-of-time で自己完結バイナ
 リにコンパイルする。 ランタイムに LLVM 不要。 tree-shaking で使われ
@@ -1778,7 +1564,7 @@ tensor エンジンが必要とする Accelerate / Metal フレームワーク�
 otool -L ./out                            # Accelerate も Metal も LLVM も無し
 ```
 
-### 20.1 クロスコンパイル
+### 18.1 クロスコンパイル
 
 ```bash
 ./build/culebra build my-program.cul \
@@ -1798,7 +1584,7 @@ otool -L ./out                            # Accelerate も Metal も LLVM も無
 タイムヘルパ (~200 個) を落とせる。 `Tensor` 参照が無ければ tensor 抜きの
 archive に差し替わるので、数 MB が数百 KB になる。
 
-## 21. 埋め込み概観
+## 19. 埋め込み概観
 
 Culebra は header-friendly な C++23 ライブラリ。 最小埋め込み例:
 

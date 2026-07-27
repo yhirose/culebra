@@ -4731,12 +4731,21 @@ as the script even if it begins with a dash.
 
 ### Subcommands
 
-| Command | Effect |
-|---|---|
-| `build <in.cul> -o <out>` | Compile ahead-of-time into a standalone executable (§24 covers the module graph it bundles; `culebra build --help` lists the cross-compile flags). |
-| `test [paths...]` | Run tests and doctests (`--filter`, `--doc`, `--reporter`, `--bail`, `--list`). |
-| `lint [paths...]` | Report static errors and warnings without running (`--fix` removes unused imports). |
-| `fmt [paths...]` | Reformat source to the canonical style (`-i` in place, `-l` list, `--check`). |
+The binary carries the toolchain as well. Six subcommands exist; the
+development four are documented in [`tooling.md`](tooling.md) and the two
+packaging ones in [`deployment.md`](deployment.md).
+
+| Command | Effect | Reference |
+|---|---|---|
+| `test [paths...]` | Run tests and doctests (`--filter`, `--doc`, `--reporter`, `--bail`, `--list`). | [`tooling.md` §1](tooling.md#1-testing-culebra-test) |
+| `lint [paths...]` | Report static errors and warnings without running (`--fix` removes unused imports). | [`tooling.md` §2](tooling.md#2-linting-culebra-lint) |
+| `fmt [paths...]` | Reformat source to the canonical style (`-i` in place, `-l` list, `--check`). | [`tooling.md` §3](tooling.md#3-formatting-culebra-fmt) |
+| `dap` | Speak the Debug Adapter Protocol over stdin/stdout; an editor launches it. | [`tooling.md` §4](tooling.md#4-debugging-culebra-dap) |
+| `build <in.cul> -o <out>` | Compile ahead-of-time into a standalone executable (§24 covers the module graph it bundles; `culebra build --help` lists the cross-compile flags). | [`deployment.md` §1](deployment.md#1-standalone-binary-build-culebra-build) |
+| `wrap` | Build an extended `culebra` binary that exposes your own C++ classes as builtins. | [`deployment.md` §3](deployment.md#3-wrapping-c-libraries-culebra-wrap) |
+
+`culebra --help` currently lists only `build` / `test` / `lint` / `fmt`;
+`dap` and `wrap` work but are absent from that summary.
 
 If no script is provided, the REPL is launched automatically. Both
 the interpreter REPL and the JIT REPL preserve session state across

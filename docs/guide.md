@@ -14,7 +14,7 @@ internals see [`internals.md`](internals.md).
 > with `# doctest: skip` is illustrative only (typically because it
 > needs multiple files, network access, or the `culebra test` runner).
 > Blocks are independent: each runs in a fresh scope. Full convention
-> and directive list: Ch.17.1.
+> and directive list: [`tooling.md` §1](tooling.md#doctests).
 
 > **Status labels.** Section headings without a label describe the
 > implementation as of today. Labels that appear: **Draft** (under
@@ -45,11 +45,9 @@ Contents
   15. [Standard library tour](#15-standard-library-tour)
   16. [Tensor primitive](#16-tensor-primitive)
 - **Part IV — Verification and deployment**
-  17. [Testing (`culebra test`)](#17-testing-culebra-test)
-  18. [Linting (`culebra lint`)](#18-linting-culebra-lint)
-  19. [Formatting (`culebra fmt`)](#19-formatting-culebra-fmt)
-  20. [AOT binary build](#20-aot-binary-build)
-  21. [Embedding overview](#21-embedding-overview)
+  17. [Tooling (`test`, `lint`, `fmt`, debug)](#17-tooling-test-lint-fmt-debug)
+  18. [AOT binary build](#18-aot-binary-build)
+  19. [Embedding overview](#19-embedding-overview)
 
 ## 0. Design philosophy
 
@@ -1217,7 +1215,7 @@ and keep going.
 `import` and `export` may appear only as top-level statements — inside
 a function or an `if` branch they are a `SyntaxError`. That is what
 lets the loader determine the whole dependency graph at parse time,
-which both the AOT bundler and the tree-shaker rely on (Ch.20).
+which both the AOT bundler and the tree-shaker rely on (Ch.18).
 
 Each module is evaluated once per program, in dependency order, in its
 own scope: its top-level bindings stay private except for the export
@@ -1230,7 +1228,7 @@ rules: [language.md §24](language.md).
 An explicit `import` line is the only place a reader — or a tool —
 has to look to know what a file depends on. It also gives `culebra
 lint` an unambiguous unused-import warning (and a `--fix` for it,
-Ch.18), and gives the AOT build a graph it can bundle without
+Ch.17), and gives the AOT build a graph it can bundle without
 guessing.
 
 See [`internals.md` §10](internals.md) for the loader design and
@@ -1503,310 +1501,83 @@ discussion, see [`internals.md` §8](internals.md).
 Part IV — Verification and deployment
 ======================================
 
-## 17. Testing (`culebra test`)
+## 17. Tooling (`test`, `lint`, `fmt`, debug)
 
-> `test()` / `@test` / `@parametrize`, the matcher family, and
-> dependency-injected fixtures (any fn in env, no decorator) are
-> implemented and work via `culebra test [path]`.
+The `culebra` binary is also the toolchain. The test runner, the linter,
+the formatter and the debug adapter are subcommands of the same
+executable, so there is nothing extra to install. This chapter is a tour;
+the flag-by-flag reference is [`tooling.md`](tooling.md).
 
-### 17.1 Doctest convention (final)
+### 17.1 Tests
 
-Every ` ```culebra ` block in this guide, in `language.md`, and in
-`stdlib.md` follows this convention:
-
-- `# => <value>` — expected stdout (one line)
-- `# => |` followed by `# <line>` lines — expected multi-line stdout
-- `# !! <pattern>` — expected `throw`, matched as substring
-- `# doctest: <directive>` (block-leading line) — modes:
-  - `skip` — illustration only, do not run (e.g. *Planned* features)
-  - `compile-only` — syntax check only
-  - `interp-only` / `jit-only` / `aot-only` — backend filter
-
-Blocks are independent; no `setup`/`teardown` across blocks.
-
-Run them with `culebra test --doc <path>` (or `just doctest`), which
-extracts every block, runs it in a fresh interpreter, and checks output
-against the markers. The runner currently honors `skip`; the
-`compile-only` and backend-filter directives are reserved (such blocks
-run normally for now).
-
-### 17.2 Writing tests
-
-Three forms are available — the call form and the `@test` decorator
-are equivalent; pick whichever reads better at the call site.
-`@parametrize` registers one test per case.
+A test file is a `.cul` file named `test_*.cul`. Inside it, `test()`, the
+`@test` decorator and `@parametrize` are ambient — no import — and
+assertions use the matcher family:
 
 ```culebra
 # doctest: skip
-# tests/test_string.cul
-
-# Call form
-test("interpolation embeds Long", fn() {
-  let x = 42
-  assert_eq("hi {x}", "hi 42")
-})
-
-# Decorator form — fn name becomes the test name
+# tests/test_math.cul
 @test
-fn interpolation_embeds_float() {
-  let pi = 3.14
-  assert_eq("π = {pi}", "π = 3.14")
+fn adds_correctly() {
+  assert_eq(1 + 2, 3)
 }
 
-# Parametrize — one test per case, named `<fn>[i]`
-@parametrize([(1, 2, 3), (2, 3, 5), (10, 20, 30)])
-fn adds_correctly(a, b, want) {
+@parametrize([(1, 2, 3), (10, 20, 30)])
+fn adds_each(a, b, want) {
   assert_eq(a + b, want)
 }
 ```
 
-**No `describe` nesting.** Group by file path (`tests/strings/`) and
-by `/` in the test name (`"Array/push: appends element"`).
-
-**Fixtures by DI.** A test's positional parameters are resolved by
-name against the surrounding env: any fn in env can be a fixture, no
-decorator required. Fixtures can themselves take fixtures.
-
-```culebra
-# doctest: skip
-fn db()       { { users: [], next_id: 1 } }
-fn user(db)   { db.users.push({ id: 1, name: "alice" }); db.users[0] }
-
-@test
-fn user_has_name(user) {
-  assert_eq(user.name, "alice")
-}
-```
-
-Within one test, each fixture is evaluated **once** — multiple
-mentions (direct + transitive) share the same instance. Across tests,
-fixtures are fresh.
-
-**Cleanup via class `drop`.** Resources needing teardown wrap
-themselves in a class with a `drop` method (§7.4). The runtime's
-ref-count finalization fires when the per-test fixture cache is
-released at test end.
-
-```culebra
-# doctest: skip
-class TestDB {
-  new()    { self.conn = Database.connect("memory") }
-  drop()   { self.conn.close() }
-  users()  { self.conn.users }
-}
-
-fn db() { TestDB.new() }
-
-@test
-fn user_count(db) {
-  db.users().create("alice")
-  assert_eq(db.users().count(), 1)
-  # db drops at test end -> conn.close()
-}
-```
-
-`defer` inside a fixture body would fire when the fixture fn returns
-(before the test runs), so class `drop` is the right tool for cleanup.
-Long-lived state shared across files (e.g. a model loaded once) goes
-at module top level instead, since the module system (Ch.13) caches
-the binding.
-
-**Matchers.** Assertions in tests use the matcher family — there is
-no `assert` keyword or builtin. Matchers are **3-backend globals**
-(bound on every environment, same as `inspect` / `Math`), so they work
-identically under `culebra script.cul`, `culebra --jit script.cul`,
-`culebra build`, and `culebra test`:
-
-```culebra
-# doctest: skip
-assert_eq(arr.len(), 3)                 # == ; shows both sides on failure
-assert_throws("TypeError", fn() { let _ = 1 + 'b' })
-assert_close(0.1 + 0.2, 0.3, 1e-9)      # |a - b| <= tol
-```
-
-Full matcher list (`assert_true`/`false`/`ne`/`lt`/`le`/`gt`/`ge` and
-the `__eq__`/`__lt__` dispatch rule): [`stdlib.md` §13](stdlib.md).
-
-**Production invariants.** For `if (!cond) throw {...}` checks outside
-the test suite, write the `if`/`throw` directly (Go-style, see
-[language §15](language.md)). There is no separate `assert` keyword to
-disable in production builds.
-
-### 17.3 Running
-
-`culebra test [path]` discovers test files. When invoked through this
-subcommand, `test` / `@test` / `@parametrize` become **ambient
-globals** alongside the always-available matcher family — no `import`
-required. This mirrors how `inspect` / `print` are ambient under
-script-execution mode but absent from `culebra::environment()` (see
-[stdlib §29](stdlib.md)).
-
 ```sh
-culebra test                       # discover & run from current dir
-culebra test tests/strings/        # run a subtree
-culebra test --filter "Array/push" # name-substring filter
-culebra test --reporter json       # NDJSON output (one JSON per line)
-culebra test --bail                # stop after the first failure
-culebra test --bail 3              # stop after 3 failures
-culebra test --list                # discover only; print test names
+culebra test                        # discover & run from the current dir
+culebra test --filter "Array/push"  # run a subset by name
 ```
 
-Discovery: any path that is a file is included as-is; any path that
-is a directory is walked recursively for files matching `test_*.cul`.
-Exit code is `0` when all tests pass, `1` when any fail.
+A test's parameters are resolved by name against the surrounding
+environment, so any function in scope can serve as a fixture, and a
+fixture that returns a class instance gets its `drop` called at test end
+(Ch.7.4). The same runner also executes the examples in this guide —
+`culebra test --doc docs` — which is why every ` ```culebra ` block here
+carries its expected output.
 
-**Reporters.** Default is human-readable. `--reporter json` emits one
-JSON object per line (NDJSON) — useful for agent loops and CI:
+### 17.2 Lint and format
 
-```
-{"event":"test_pass","name":"adds_correctly","source":"tests/test_math.cul","stdout":""}
-{"event":"test_fail","name":"divides_correctly","kind":"AssertionError",
- "message":"assert_eq failed:\n  left:  3\n  right: 4","line":12,"col":3,"stdout":""}
-{"event":"run_end","passed":42,"failed":1,"errored_files":0,"bailed":false}
-```
-
-User `inspect(...)` from inside a test is captured into the event's
-`stdout` field rather than interleaved with the NDJSON stream, and
-failure events carry a `snippet` with the failing line marked `>` for
-context.
-
-The legacy `tests/*.cul` suite under `just test` (matchers + no
-`test()` calls) runs each file directly via `./build/culebra <f>`,
-`--jit <f>`, and `culebra build <f>`. Matchers are language-level
-globals, so the same file is exercised under all three backends
-without going through `culebra test`.
-
-### 17.4 Doctests and planned extensions
-
-`culebra test --doc <path>` extracts every ` ```culebra ` block from
-the markdown under `<path>` and runs it against the markers in 17.1
-(`just doctest` runs it over `docs/`). Still planned:
-
-- **Explicit `import { test } from "std/test"`** — for code that
-  doesn't run under `culebra test` (e.g. embedded test helpers).
-- **`--backend interp|jit|aot`** — currently the runner uses interp;
-  selecting backends per run is on the roadmap.
-- **Parallel execution** — sequential today; parallel default is
-  optional once the JIT/AOT backends are wired in.
-
-## 18. Linting (`culebra lint`)
-
-`culebra lint [paths...]` reports static problems **without running**
-the program, and exits non-zero so CI can gate on it (0 = clean, 1 =
-warnings only, 2 = errors). It reuses the same load-stage static analysis
-every backend already runs (so the errors it reports are exactly the ones
-that would abort a run) and adds advisory warnings on top.
+`culebra lint` reports what static analysis can see without running the
+program: errors that would abort a run anyway, plus advisory warnings
+(unused variable / import / unreachable code). It exits 0 clean, 1 for
+warnings, 2 for errors, so CI can gate on it.
 
 ```bash
-culebra lint app.cul
-# app.cul:12:7: warning: unused variable 'tmp'
-# app.cul:20:3: error: undefined variable 'reuslt'
-
-culebra lint .          # recurse into every .cul under the current directory,
-                         # like `culebra fmt -i .`
+culebra lint .          # recurse over every .cul below the current dir
+culebra lint --fix .    # additionally delete unused import lines
 ```
 
-What it reports today:
-
-- **Errors** — the sound, certain-to-fail set: `break` / `continue` /
-  `return` out of place, malformed parameter or assignment forms,
-  duplicate parameters or class members, shadowing, and reads of a name
-  bound nowhere (the undefined-variable subset). These already abort any
-  run; `lint` just surfaces them all at once instead of stopping at the
-  first.
-- **Warnings** — advisory findings that don't stop a run:
-  - **Unused local variable** — a `let` / `mut` binding inside a function
-    that is never read.
-  - **Unused top-level binding** — a top-level `let` / `mut` that the
-    module never reads and never re-exports. Function / class / enum /
-    trait declarations are the module's export surface and are never
-    flagged.
-  - **Unused import** — an `import`ed name the module never uses.
-  - **Unreachable code** — a statement that can never run because a
-    `return` / `throw` / `break` / `continue` precedes it in the same
-    block.
-
-  A leading underscore (`_x`, or the bare sink `_`) marks a binding as
-  intentionally unused and is never flagged. **Parameters are not
-  flagged**: an unused parameter is overwhelmingly intentional in Culebra
-  — a multidispatch clause or method signature fixes the arity, and a
-  higher-order callback (a route handler `fn(req)`, an `|i| 4.0`) ignores
-  an argument it must still declare — so the check would be all noise.
-
-`culebra lint --fix <paths...>` mechanically removes unused-import lines —
-the only warning safe to autofix unattended, since deleting a dead
-`import` can never change behavior (unlike an unused `let`/`mut`, whose
-initializer may carry a side effect). Every other warning stays
-report-only. After editing, the fixed source is re-parsed and re-linted;
-the rewrite is written only if that re-check confirms the imports are
-gone and no new error appeared — the same re-parse safety net `culebra
-fmt` uses.
+`culebra fmt` is the zero-config formatter — no style flags. It parses,
+re-prints, then **re-parses and compares** before writing, so a format
+that would change meaning or drop a comment is refused rather than
+applied.
 
 ```bash
-culebra lint --fix app.cul
-# app.cul: fixed 1 unused import
+culebra fmt -i .        # format the project in place
+culebra fmt --check .   # exit 1 if anything is unformatted (CI gate)
 ```
 
-Planned: a `--format json` mode for editor / LSP integration, and inline
-`# lint: ignore` suppression.
+Editors hook the formatter through the stdin form (`culebra fmt -`); the
+bundled VSCode, Zed and Vim integrations are already wired to it.
 
-## 19. Formatting (`culebra fmt`)
+### 17.3 Debugging
 
-`culebra fmt [files...]` reformats source to one canonical style:
-normalized operator spacing, two-space indentation, brace blocks laid out
-multi-line, and argument lists / collection literals wrapped when they
-exceed the line width. It is opinionated and zero-config (no style flags),
-in the spirit of `gofmt`.
+`culebra dap` speaks the Debug Adapter Protocol over stdio, so
+breakpoints, stepping, call stacks, watch expressions and editing a `mut`
+variable mid-run all work in any DAP-capable editor. Your editor launches
+the adapter; you rarely run it by hand. Debugging runs in the interpreter
+— don't pass `--jit`.
 
-```bash
-culebra fmt app.cul          # write the formatted source to stdout
-culebra fmt -i app.cul       # rewrite the file in place
-culebra fmt -i .             # format every .cul under the current directory
-culebra fmt --check app.cul  # exit 1 if it isn't already formatted (CI gate)
-culebra fmt -l src/*.cul     # list the files that would change
-cat app.cul | culebra fmt -  # stdin -> stdout (editor format-on-save)
-```
+A bare `debugger` statement in the source forces a stop wherever you put
+it, with no configuration at all. Per-editor setup (VSCode, Vim,
+Zed) is in [`tooling.md` §4](tooling.md#4-debugging-culebra-dap).
 
-A directory argument is scanned recursively for `.cul` files, so
-`culebra fmt -i .` formats a whole project and `culebra fmt --check .`
-gates it in CI.
-
-Comments are preserved: a leading comment stays above the statement it
-introduces, a trailing comment stays on the same line, and a single blank
-line between statements is kept (runs of blank lines collapse to one).
-match / cond arms, class / trait / enum members, destructuring patterns,
-and parameter lists are all normalized; long binary expressions and method
-chains wrap at the line width.
-
-How it works: the source is parsed, re-printed from the syntax tree, and
-then **re-parsed and compared** against the original — if formatting would
-change the program's meaning, or would drop or duplicate a comment, `fmt`
-refuses and leaves the file untouched rather than risk corrupting it.
-Formatting is idempotent: running it twice yields the same result as
-running it once.
-
-### Editor integration
-
-The stdin form (`culebra fmt -`) is the format hook: each integration
-formats the whole buffer and applies the result only when it exits
-zero, leaving the buffer untouched on a parse/safety error.
-
-- **VSCode** — the bundled extension (`misc/vscode/`) registers a
-  document formatting provider, so **Format Document** and
-  `editor.formatOnSave` work for `.cul` files out of the box (rebuild
-  with `build-vsix.sh` / `install.sh`).
-- **Zed** — add an external formatter in `settings.json`:
-  `"formatter": { "external": { "command": "culebra", "arguments": ["fmt", "-"] } }`
-  under `"languages": { "Culebra": { ... } }`.
-- **Vim/Neovim** — the bundled `ftplugin` provides a `:CulebraFmt`
-  command (cursor preserved, untouched on error); set
-  `let g:culebra_fmt_autosave = 1` for format-on-save. It deliberately
-  skips `gq` / `'formatprg'`, which would replace an unparseable range
-  with empty output.
-- Any other editor with a format-on-save hook can pipe the buffer
-  through `culebra fmt -` the same way.
-
-## 20. AOT binary build
+## 18. AOT binary build
 
 `culebra build` compiles a `.cul` source ahead-of-time into a
 self-contained executable. No LLVM at runtime; tree-shaking drops the
@@ -1819,7 +1590,7 @@ also drop the Accelerate / Metal frameworks the tensor engine needs.
 otool -L ./out                            # no Accelerate, no Metal, no LLVM
 ```
 
-### 20.1 Cross-compile
+### 18.1 Cross-compile
 
 ```bash
 ./build/culebra build my-program.cul \
@@ -1840,7 +1611,7 @@ linker drop unreferenced runtime helpers (~200 of them) and, when no
 `Tensor` reference is found, swap in a no-tensor archive. The result
 is a few hundred KB instead of a few MB.
 
-## 21. Embedding overview
+## 19. Embedding overview
 
 Culebra is a header-friendly C++23 library. Minimal embed:
 

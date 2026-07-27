@@ -28,6 +28,7 @@ Culebra 内部構造
 14. [JIT GC バックストップ](#14-jit-gc-バックストップ)
 15. [JIT 所有権: 構造的リーク自由](#15-jit-所有権-構造的リーク自由)
 16. [代数的エフェクト (source transform)](#16-代数的エフェクト-source-transform)
+17. [Net: 生ソケット](#17-net-生ソケット)
 
 不採用・撤回した設計は [`_history.ja.md`](_history.ja.md) に集約してあり
 ます。

@@ -7,6 +7,17 @@ own C++ classes as builtins (`culebra wrap`). They share one runtime
 archive layout, described once in [§4](#4-shared-runtime-archive-layout)
 and cross-referenced from each chapter.
 
+Contents
+--------
+
+1. [Standalone binary build (`culebra build`)](#1-standalone-binary-build-culebra-build)
+2. [Embedding Culebra in a C++ host](#2-embedding-culebra-in-a-c-host)
+3. [Wrapping C++ libraries (`culebra wrap`)](#3-wrapping-c-libraries-culebra-wrap)
+4. [Shared runtime archive layout](#4-shared-runtime-archive-layout)
+
+The development subcommands — `test`, `lint`, `fmt` and `dap` — are the
+subject of [`tooling.md`](tooling.md) instead.
+
 ## 1. Standalone binary build (`culebra build`)
 
 `culebra build` compiles a `.cul` source into a standalone executable

@@ -181,8 +181,10 @@ Documentation
   / [日本語](docs/language.ja.md)
 * Standard library reference: [`docs/stdlib.md`](docs/stdlib.md)
   / [日本語](docs/stdlib.ja.md)
-* Debugging in VSCode / Vim / Zed (`culebra dap`): [`docs/debugging.md`](docs/debugging.md)
-  / [日本語](docs/debugging.ja.md)
+* Tooling — the test runner, linter, formatter and debug adapter
+  (`culebra test` / `lint` / `fmt` / `dap`):
+  [`docs/tooling.md`](docs/tooling.md)
+  / [日本語](docs/tooling.ja.md)
 * Deployment — standalone binary build, embedding from C++, wrapping
   C++ libraries (`culebra build` / `culebra wrap`):
   [`docs/deployment.md`](docs/deployment.md)

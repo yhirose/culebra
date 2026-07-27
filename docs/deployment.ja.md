@@ -6,6 +6,17 @@ C++ クラスをビルトインとして公開する拡張 `culebra` バイナ�
 （`culebra wrap`）。3 つは 1 つの runtime archive レイアウトを共有し、
 [§4](#4-共有-runtime-archive-レイアウト) にまとめて記述し各章から参照する。
 
+目次
+----
+
+1. [Standalone バイナリビルド（`culebra build`）](#1-standalone-バイナリビルドculebra-build)
+2. [C++ ホストへの Culebra 埋め込み](#2-c-ホストへの-culebra-埋め込み)
+3. [C++ ライブラリのラッピング（`culebra wrap`）](#3-c-ライブラリのラッピングculebra-wrap)
+4. [共有 runtime archive レイアウト](#4-共有-runtime-archive-レイアウト)
+
+開発用サブコマンド — `test`・`lint`・`fmt`・`dap` — は
+[`tooling.ja.md`](tooling.ja.md) が扱います。
+
 ## 1. Standalone バイナリビルド（`culebra build`）
 
 `culebra build` は `.cul` ソースを **LLVM AOT codegen + システム

@@ -27,6 +27,7 @@ Contents
 14. [JIT GC backstop](#14-jit-gc-backstop)
 15. [JIT ownership: structural leak-freedom](#15-jit-ownership-structural-leak-freedom)
 16. [Algebraic effects (source transform)](#16-algebraic-effects-source-transform)
+17. [Net: raw sockets](#17-net-raw-sockets)
 
 Rejected and withdrawn designs are collected in [`_history.md`](_history.md).
 
