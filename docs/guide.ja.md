@@ -1278,21 +1278,25 @@ inspect(greet(Bob.new('Alice')))   # => 'hi, Alice'
 ### 13.4 Generic
 
 `Array<Long>` のような注釈は要素型をドキュメント化し、マルチメソッ
-ドの specificity (Ch.10.2) にも使われる。 要素チェック自体は no-op
-— Rust/Swift の generic を精神的に踏襲するが、アクセスの度に要素を
-ランタイムチェックするコストは払わない。 bound 制約と generic クラ
-ス宣言は [language.ja.md §14](language.ja.md)。
+ドの specificity (Ch.10.2) にも使われる。 要素チェック自体は no-op。
+型引数は読み手とディスパッチのために書くもので、これを強制すると
+呼び出しの度にコレクションを走査することになる — この注釈はそのため
+のものではない。 bound 制約と generic クラス宣言は
+[language.ja.md §14](language.ja.md)。
 
 ```culebra
 first = fn (xs: Array<Long>) -> Long { xs[0] }
 inspect(first([1, 2, 3]))         # => 1
 ```
 
-### TypeScript から意図的に取り入れない要素
+### 注釈がどこで止まるか
 
-Conditional types、mapped types、template literal types、ユーティリ
-ティ型群 (`Pick` / `Omit` 等) は、小さな動的言語には複雑すぎる。
-目標は Rust/Swift の表現力であって、TS の表現力ではない。
+型から型を計算する仕組み — 型に対する条件分岐、ある形から別の形への
+変換、文字列パターンから組み立てる型 — は意図的に持たない。 どれも
+学習・実装・デバッグの対象がもう一つ増えることを意味する一方、ここで
+の注釈にはもっと狭い仕事しかない: 境界を越える値が違っていたら捕まえ
+る、それだけである。 型レベルのプログラムで表現することは、ランタイム
+の検査でもっと直接に書ける。
 
 ## 14. 標準ライブラリ
 

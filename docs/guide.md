@@ -1303,21 +1303,24 @@ inspect(greet(Bob.new('Alice')))   # => 'hi, Alice'
 
 `Array<Long>` and similar annotations document the element type and
 feed multimethod specificity (Ch.10.2); the element check itself is a
-no-op — Culebra follows Rust/Swift generics in spirit but does not pay
-for runtime element checking on every access. Bound constraints and
-generic class declarations: [language.md §14](language.md).
+no-op. The parameter is there for the reader and for dispatch —
+enforcing it would mean walking the collection on every call, which is
+not what these annotations are for. Bound constraints and generic class
+declarations: [language.md §14](language.md).
 
 ```culebra
 first = fn (xs: Array<Long>) -> Long { xs[0] }
 inspect(first([1, 2, 3]))         # => 1
 ```
 
-### What Culebra deliberately does *not* take from TypeScript
+### Where the annotations stop
 
-Conditional types, mapped types, template literal types, and the
-suite of utility types (`Pick`, `Omit`, ...) sit at a complexity
-level that is too high for a small dynamic language. The target is
-Rust/Swift expressiveness, not TS expressiveness.
+Types that compute other types — conditions over types, transformations
+of one shape into another, types built from string patterns — are
+deliberately absent. Each is a small language of its own to learn,
+implement and debug, and annotations here have a narrower job: catching
+a wrong value where it crosses a boundary. Anything a type-level
+program would express, a runtime check expresses more directly.
 
 ## 14. Standard library
 
