@@ -235,6 +235,18 @@ inp.update()
 assert_eq(inp.down(Canvas.A), false)
 assert_eq(inp.pressed(Canvas.A), false)
 
+// Arbitrary keys (headless: nothing held, queues empty). "space" aliases " ";
+// an unknown name is simply not held. The argument contract is checked
+// identically on both backends.
+assert_eq(Canvas.key("a"), false)
+assert_eq(Canvas.key(" "), false)
+assert_eq(Canvas.key("space"), false)
+assert_eq(Canvas.key("f1"), false)
+assert_eq(Canvas.key("no-such-key"), false)
+assert_eq(Canvas.key_queue(), [])
+assert_eq(Canvas.typed(), "")
+assert_throws("TypeError", fn() { Canvas.key(42) })
+
 // Button/wave constants are distinct bits/codes.
 assert_eq(Canvas.LEFT + Canvas.RIGHT + Canvas.UP + Canvas.DOWN, 15)
 assert_eq(Canvas.NOISE, 3)

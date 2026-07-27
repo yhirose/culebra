@@ -17,9 +17,11 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <deque>
 #include <mutex>
 #include <numbers>
 #include <string_view>
+#include <unordered_map>
 
 #include "raylib.h"
 #include <SDL3/SDL_keyboard.h>
@@ -62,6 +64,21 @@ void stop_text_input() {
   SDL_Window** windows = SDL_GetWindows(&count);
   if (windows == nullptr) return;
   for (int i = 0; i < count; i++) SDL_StopTextInput(windows[i]);
+  SDL_free(windows);
+}
+
+// char_pop() (Canvas.typed) needs those same text-input events, so the first
+// call turns text input back on — a program that reads typed characters opts
+// into the platform's text machinery, and one that only polls keys never sees
+// an IME popup. Latched: the flip happens once.
+bool g_text_input_on = false;
+void start_text_input() {
+  if (g_text_input_on) return;
+  g_text_input_on = true;
+  int count = 0;
+  SDL_Window** windows = SDL_GetWindows(&count);
+  if (windows == nullptr) return;
+  for (int i = 0; i < count; i++) SDL_StartTextInput(windows[i]);
   SDL_free(windows);
 }
 
@@ -132,6 +149,95 @@ WindowCloser g_closer;
 // One held-key -> Canvas button bit (bits match src/preambles/canvas.cul and
 // the Playground's KEY_BITS: LEFT=1, RIGHT=2, UP=4, DOWN=8, A=16, B=32).
 int64_t held_button(int key, int64_t bit) { return IsKeyDown(key) ? bit : 0; }
+
+// --- arbitrary keys: Term's key vocabulary over raylib key codes ------------
+//
+// A name is a printable character ("a", " ", "-") or a special-key name
+// ("left", "enter", "f1", …) — the same vocabulary Term.read_key reports, so
+// key handling code moves between the two namespaces unchanged. raylib's
+// printable key codes are upper-case ASCII, so single characters map by
+// arithmetic and only the specials need a table.
+const std::unordered_map<std::string_view, int>& special_keys() {
+  static const std::unordered_map<std::string_view, int> m = {
+      {"up", KEY_UP},           {"down", KEY_DOWN},
+      {"left", KEY_LEFT},       {"right", KEY_RIGHT},
+      {"enter", KEY_ENTER},     {"escape", KEY_ESCAPE},
+      {"tab", KEY_TAB},         {"backspace", KEY_BACKSPACE},
+      {"insert", KEY_INSERT},   {"delete", KEY_DELETE},
+      {"home", KEY_HOME},       {"end", KEY_END},
+      {"pageup", KEY_PAGE_UP},  {"pagedown", KEY_PAGE_DOWN},
+      {"f1", KEY_F1},  {"f2", KEY_F2},   {"f3", KEY_F3},  {"f4", KEY_F4},
+      {"f5", KEY_F5},  {"f6", KEY_F6},   {"f7", KEY_F7},  {"f8", KEY_F8},
+      {"f9", KEY_F9},  {"f10", KEY_F10}, {"f11", KEY_F11}, {"f12", KEY_F12},
+  };
+  return m;
+}
+
+int key_code_of(std::string_view name) {
+  if (name.size() == 1) {
+    unsigned char c = static_cast<unsigned char>(name[0]);
+    if (c >= 'a' && c <= 'z') return c - 32;
+    if (c >= ' ' && c <= '~') return c;
+    return 0;
+  }
+  auto it = special_keys().find(name);
+  return it == special_keys().end() ? 0 : it->second;
+}
+
+// The queue direction: a pressed key code back to its name. Unmapped codes
+// (modifiers, keypad) produce "" and are dropped from the queue, the same
+// keys Term's parser has no name for.
+std::string key_name_of(int code) {
+  if (code >= 'A' && code <= 'Z') return std::string(1, static_cast<char>(code + 32));
+  if (code >= ' ' && code <= '~') return std::string(1, static_cast<char>(code));
+  for (const auto& [name, c] : special_keys())
+    if (c == code) return std::string(name);
+  return "";
+}
+
+// A unicode code point as UTF-8, for the typed-characters queue.
+std::string utf8_of(int cp) {
+  std::string out;
+  if (cp < 0) return out;
+  if (cp < 0x80) {
+    out += static_cast<char>(cp);
+  } else if (cp < 0x800) {
+    out += static_cast<char>(0xc0 | (cp >> 6));
+    out += static_cast<char>(0x80 | (cp & 0x3f));
+  } else if (cp < 0x10000) {
+    out += static_cast<char>(0xe0 | (cp >> 12));
+    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3f));
+    out += static_cast<char>(0x80 | (cp & 0x3f));
+  } else {
+    out += static_cast<char>(0xf0 | (cp >> 18));
+    out += static_cast<char>(0x80 | ((cp >> 12) & 0x3f));
+    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3f));
+    out += static_cast<char>(0x80 | (cp & 0x3f));
+  }
+  return out;
+}
+
+// Pressed-key and typed-character queues, drained by the script through
+// key_pop/char_pop. Capped so a program that never reads them stays bounded;
+// the oldest events fall off first (matching worker.js's cap).
+constexpr size_t kKeyQueueCap = 256;
+std::deque<std::string> g_key_queue;
+std::deque<std::string> g_char_queue;
+
+// Pull raylib's per-frame pressed/typed events into the queues. Called from
+// present(), right after EndDrawing has pumped the platform events.
+void drain_key_events() {
+  for (int c = GetKeyPressed(); c != 0; c = GetKeyPressed()) {
+    std::string n = key_name_of(c);
+    if (n.empty()) continue;
+    if (g_key_queue.size() >= kKeyQueueCap) g_key_queue.pop_front();
+    g_key_queue.push_back(std::move(n));
+  }
+  for (int c = GetCharPressed(); c != 0; c = GetCharPressed()) {
+    if (g_char_queue.size() >= kKeyQueueCap) g_char_queue.pop_front();
+    g_char_queue.push_back(utf8_of(c));
+  }
+}
 
 // --- audio: a small WASM-4-style APU, mixed in software ---------------------
 //
@@ -352,6 +458,7 @@ void present() {
                            (float)(g_tex_h * g_scale)},
                  Vector2{0, 0}, 0.0f, WHITE);
   EndDrawing();  // blocks to vsync / the 60 fps target
+  drain_key_events();
 }
 
 int64_t buttons() {
@@ -394,6 +501,30 @@ int64_t mouse_buttons() {
   if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) m |= 2;
   if (IsMouseButtonDown(MOUSE_BUTTON_MIDDLE)) m |= 4;
   return m;
+}
+
+// Held state of one named key; unknown names are simply not held.
+bool key(const char* name) {
+  ensure_window();
+  if (!g_window_ready || name == nullptr) return false;
+  int code = key_code_of(name);
+  return code != 0 && IsKeyDown(code);
+}
+
+std::string key_pop() {
+  if (g_key_queue.empty()) return "";
+  std::string s = std::move(g_key_queue.front());
+  g_key_queue.pop_front();
+  return s;
+}
+
+std::string char_pop() {
+  ensure_window();
+  if (g_window_ready) start_text_input();  // opt into text events on first use
+  if (g_char_queue.empty()) return "";
+  std::string s = std::move(g_char_queue.front());
+  g_char_queue.pop_front();
+  return s;
 }
 
 // True once the window's close box (or Esc) has been used, so the run loop

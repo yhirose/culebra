@@ -33,6 +33,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <string>
 #include <vector>
 #if defined(__EMSCRIPTEN__)
 #include <emscripten.h>
@@ -659,6 +661,29 @@ EM_JS(int, _wasm_canvas_buttons, (), { return self.__canvasButtons || 0; });
 EM_JS(int, _wasm_canvas_mouse_x, (), { return self.__canvasMouseX || 0; });
 EM_JS(int, _wasm_canvas_mouse_y, (), { return self.__canvasMouseY || 0; });
 EM_JS(int, _wasm_canvas_mouse_buttons, (), { return self.__canvasMouseButtons || 0; });
+// Arbitrary keyboard state in Term's key vocabulary ("a", " ", "left", "f1",
+// …). worker.js keeps the held set and the pressed/typed queues current from
+// the page's normalized key events; the pops hand back "" when empty.
+EM_JS(int, _wasm_canvas_key, (const char* name), {
+  const held = self.__canvasKeysHeld;
+  return held && held.has(UTF8ToString(name)) ? 1 : 0;
+});
+EM_JS(char*, _wasm_canvas_key_pop, (), {
+  const q = self.__canvasKeyQueue;
+  const s = q && q.length ? q.shift() : "";
+  const len = lengthBytesUTF8(s) + 1;
+  const ptr = _malloc(len);
+  stringToUTF8(s, ptr, len);
+  return ptr;
+});
+EM_JS(char*, _wasm_canvas_char_pop, (), {
+  const q = self.__canvasCharQueue;
+  const s = q && q.length ? q.shift() : "";
+  const len = lengthBytesUTF8(s) + 1;
+  const ptr = _malloc(len);
+  stringToUTF8(s, ptr, len);
+  return ptr;
+});
 // A WASM-4-style tone: a note that slides start->end frequency over its life
 // under an ADSR envelope, on one of four channels (two pulse waves with a duty
 // cycle, a triangle, and noise). Times are in frames at ~60fps; volume/peak are
@@ -715,6 +740,19 @@ inline int64_t buttons() { return _wasm_canvas_buttons(); }
 inline int64_t mouse_x() { return _wasm_canvas_mouse_x(); }
 inline int64_t mouse_y() { return _wasm_canvas_mouse_y(); }
 inline int64_t mouse_buttons() { return _wasm_canvas_mouse_buttons(); }
+inline bool key(const char* name) { return _wasm_canvas_key(name) != 0; }
+inline std::string key_pop() {
+  char* p = _wasm_canvas_key_pop();
+  std::string out(p);
+  std::free(p);
+  return out;
+}
+inline std::string char_pop() {
+  char* p = _wasm_canvas_char_pop();
+  std::string out(p);
+  std::free(p);
+  return out;
+}
 // The browser loop ends via tick()/frames, not a window-close event.
 inline bool closing() { return false; }
 inline void tone(int64_t start_freq, int64_t end_freq, int64_t attack,
@@ -756,6 +794,9 @@ __attribute__((weak)) int64_t buttons() { return 0; }
 __attribute__((weak)) int64_t mouse_x() { return 0; }
 __attribute__((weak)) int64_t mouse_y() { return 0; }
 __attribute__((weak)) int64_t mouse_buttons() { return 0; }
+__attribute__((weak)) bool key(const char*) { return false; }
+__attribute__((weak)) std::string key_pop() { return ""; }
+__attribute__((weak)) std::string char_pop() { return ""; }
 __attribute__((weak)) bool closing() { return false; }
 __attribute__((weak)) void tone(int64_t, int64_t, int64_t, int64_t, int64_t,
                                 int64_t, int64_t, int64_t, int64_t, int64_t) {}
@@ -778,6 +819,9 @@ int64_t buttons();
 int64_t mouse_x();
 int64_t mouse_y();
 int64_t mouse_buttons();
+bool key(const char* name);
+std::string key_pop();
+std::string char_pop();
 bool closing();
 void tone(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,
           int64_t, int64_t, int64_t);
@@ -799,6 +843,9 @@ inline int64_t buttons() { return 0; }
 inline int64_t mouse_x() { return 0; }
 inline int64_t mouse_y() { return 0; }
 inline int64_t mouse_buttons() { return 0; }
+inline bool key(const char*) { return false; }
+inline std::string key_pop() { return ""; }
+inline std::string char_pop() { return ""; }
 inline bool closing() { return false; }
 inline void tone(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,
                  int64_t, int64_t, int64_t) {}

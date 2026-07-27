@@ -825,6 +825,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t
 culebra_runtime_canvas_mouse_buttons() {
   return culebra::_canvas_detail::mouse_buttons();
 }
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_canvas_key(uint8_t tag,
+                                                                  int64_t data) {
+  auto sv = _culebra_str_view(tag, data);
+  return culebra::_canvas_detail::key(std::string(sv).c_str());
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_canvas_key_pop() {
+  return _culebra_heap_str(culebra::_canvas_detail::key_pop());
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_canvas_char_pop() {
+  return _culebra_heap_str(culebra::_canvas_detail::char_pop());
+}
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_canvas_closing() {
   return culebra::_canvas_detail::closing();
 }
@@ -7761,6 +7772,10 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::canvas_mouse_x, i64);
   jit.module_->getOrInsertFunction(rt::canvas_mouse_y, i64);
   jit.module_->getOrInsertFunction(rt::canvas_mouse_buttons, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_key, jit.builder_.getInt1Ty(),
+                                   jit.builder_.getInt8Ty(), i64);
+  jit.module_->getOrInsertFunction(rt::canvas_key_pop, ptrTy);
+  jit.module_->getOrInsertFunction(rt::canvas_char_pop, ptrTy);
   jit.module_->getOrInsertFunction(rt::canvas_closing, jit.builder_.getInt1Ty());
   jit.module_->getOrInsertFunction(rt::canvas_tone, vt, i64, i64, i64, i64, i64,
                                    i64, i64, i64, i64, i64);
@@ -8934,6 +8949,21 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
     if (method == "mouse_buttons" && a.empty())
       return jit.own(make_long(
           emit_call(module_->getFunction(rt::canvas_mouse_buttons), {})));
+    if (method == "key" && a.size() == 1) {
+      auto name = jit.compile(*a[0]);
+      emit_type_check(name.borrow(), "String", "parameter 'name'", a[0].get());
+      auto held = emit_call(module_->getFunction(rt::canvas_key),
+                            {extract_tag(name.borrow()),
+                             extract_data(name.borrow())});
+      name.drop();
+      return jit.own(make_bool(held));
+    }
+    if (method == "key_pop" && a.empty())
+      return jit.own(make_string(
+          emit_call(module_->getFunction(rt::canvas_key_pop), {})));
+    if (method == "char_pop" && a.empty())
+      return jit.own(make_string(
+          emit_call(module_->getFunction(rt::canvas_char_pop), {})));
     if (method == "closing" && a.empty())
       return jit.own(make_bool(
           emit_call(module_->getFunction(rt::canvas_closing), {})));

@@ -602,19 +602,65 @@ const KEY_BITS = {
   " ": 16, z: 16, Z: 16, x: 32, X: 32,
 };
 let heldButtons = 0;
+
+// e.code → the culebra key name (Term.read_key's vocabulary): a printable
+// character or a special-key name. Keyed on the physical code so a key's
+// identity survives Shift changing e.key between its down and up events;
+// e.key fills in printable keys the table doesn't list (other layouts).
+const CODE_NAMES = {
+  Space: " ", ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up",
+  ArrowDown: "down", Enter: "enter", Escape: "escape", Tab: "tab",
+  Backspace: "backspace", Insert: "insert", Delete: "delete", Home: "home",
+  End: "end", PageUp: "pageup", PageDown: "pagedown",
+  Minus: "-", Equal: "=", Comma: ",", Period: ".", Slash: "/",
+  Semicolon: ";", Quote: "'", BracketLeft: "[", BracketRight: "]",
+  Backslash: "\\", Backquote: "`",
+};
+function keyName(e) {
+  const c = e.code;
+  if (CODE_NAMES[c] !== undefined) return CODE_NAMES[c];
+  if (/^Key[A-Z]$/.test(c)) return c.slice(3).toLowerCase();
+  if (/^Digit[0-9]$/.test(c)) return c.slice(5);
+  if (/^F([1-9]|1[0-2])$/.test(c)) return c.toLowerCase();
+  if (e.key.length === 1) return e.key.toLowerCase();
+  return null;
+}
+// Held names + this frame's presses/typed characters ride the same "input"
+// message as the button mask; worker.js keeps the wasm-visible state.
+const heldKeys = new Set();
+function sendInput(extra) {
+  if (worker) worker.postMessage(Object.assign(
+      { type: "input", buttons: heldButtons, keys: [...heldKeys] }, extra));
+}
 canvasPane.addEventListener("keydown", (e) => {
+  const name = keyName(e);
   const bit = KEY_BITS[e.key];
-  if (bit === undefined) return;
+  if (bit === undefined && name === null) return;
   e.preventDefault();
-  heldButtons |= bit;
-  if (worker) worker.postMessage({ type: "input", buttons: heldButtons });
+  if (bit !== undefined) heldButtons |= bit;
+  const extra = {};
+  if (name !== null) {
+    heldKeys.add(name);
+    if (!e.repeat) extra.keyEvents = [name];
+    // The typed character respects Shift/layout (e.key), unlike the name.
+    if (e.key.length === 1) extra.chars = [e.key];
+  }
+  sendInput(extra);
 });
 canvasPane.addEventListener("keyup", (e) => {
+  const name = keyName(e);
   const bit = KEY_BITS[e.key];
-  if (bit === undefined) return;
+  if (bit === undefined && name === null) return;
   e.preventDefault();
-  heldButtons &= ~bit;
-  if (worker) worker.postMessage({ type: "input", buttons: heldButtons });
+  if (bit !== undefined) heldButtons &= ~bit;
+  if (name !== null) heldKeys.delete(name);
+  sendInput({});
+});
+// Alt-tab / focus loss never delivers the keyup: release everything.
+window.addEventListener("blur", () => {
+  heldButtons = 0;
+  heldKeys.clear();
+  sendInput({});
 });
 
 // Pointer → framebuffer coordinates (accounting for the CSS scale-up).

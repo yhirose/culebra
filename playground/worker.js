@@ -180,6 +180,21 @@ onmessage = async (e) => {
   }
   if (type === "input") {
     self.__canvasButtons = e.data.buttons;
+    // Arbitrary-key state (Canvas.key / key_queue / typed): the held names
+    // replace wholesale; presses and typed characters append to capped queues
+    // (oldest first out), matching the native backend's 256-entry cap.
+    if (e.data.keys) self.__canvasKeysHeld = new Set(e.data.keys);
+    const KEY_QUEUE_CAP = 256;
+    if (e.data.keyEvents) {
+      const q = self.__canvasKeyQueue || (self.__canvasKeyQueue = []);
+      q.push(...e.data.keyEvents);
+      if (q.length > KEY_QUEUE_CAP) q.splice(0, q.length - KEY_QUEUE_CAP);
+    }
+    if (e.data.chars) {
+      const q = self.__canvasCharQueue || (self.__canvasCharQueue = []);
+      q.push(...e.data.chars);
+      if (q.length > KEY_QUEUE_CAP) q.splice(0, q.length - KEY_QUEUE_CAP);
+    }
     return;
   }
   if (type === "canvasMouse") {
@@ -208,6 +223,9 @@ onmessage = async (e) => {
   pendingFrameResolve = null;
   self.__canvasButtons = 0;
   self.__canvasMouseButtons = 0;
+  self.__canvasKeysHeld = new Set();
+  self.__canvasKeyQueue = [];
+  self.__canvasCharQueue = [];
   self.__musicLoaded = false;
   self.__musicPlaying = false;
 

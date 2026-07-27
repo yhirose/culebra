@@ -123,6 +123,33 @@ let _canvas_module = fn () {
   let buttons = fn () { _Canvas.buttons() }
   let mouse = fn () { { x: _Canvas.mouse_x(), y: _Canvas.mouse_y(), buttons: _Canvas.mouse_buttons() } }
 
+  # Arbitrary keys, in Term.read_key's vocabulary: a printable character
+  # ("a", " ", "-") or a special-key name ("left", "enter", "escape", "tab",
+  # "backspace", "insert", "delete", "home", "end", "pageup", "pagedown",
+  # "f1".."f12"). "space" is accepted as a readable alias for " ".
+  # key(name) is the held state now; key_queue() drains this frame's presses
+  # (so call it from one place per frame); typed() drains the characters the
+  # user typed (shift/layout/IME applied) — for name entry, not movement.
+  let key = fn (name) { _Canvas.key(if name == "space" { " " } else { name }) }
+  let key_queue = fn () {
+    mut out = []
+    mut k = _Canvas.key_pop()
+    while k != "" {
+      out.push(k)
+      k = _Canvas.key_pop()
+    }
+    out
+  }
+  let typed = fn () {
+    mut out = ""
+    mut c = _Canvas.char_pop()
+    while c != "" {
+      out = out + c
+      c = _Canvas.char_pop()
+    }
+    out
+  }
+
   # Edge detector: remembers last frame's bitmask so pressed(btn) is true only
   # on the frame a button goes down (the natural "flap" trigger). Call update()
   # once per frame, after reading input.
@@ -234,6 +261,9 @@ let _canvas_module = fn () {
     text_width: text_width,
     buttons: buttons,
     mouse: mouse,
+    key: key,
+    key_queue: key_queue,
+    typed: typed,
     Input: Input,
     tone: tone,
     music: music,

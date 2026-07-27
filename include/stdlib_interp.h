@@ -2094,6 +2094,38 @@ inline Value make_canvas_primitives_namespace() {
           "Long"sv)),
       false);
 
+  // _Canvas.key(name: String) -> Bool. Held state of one key in Term's key
+  // vocabulary (a printable character, or "left"/"enter"/"f1"/…); an unknown
+  // name is simply not held. False on the headless backend.
+  ns.initialize("key",
+      Value(FunctionValue({{"name", false, "String"sv}},
+          [](std::shared_ptr<Environment> env) {
+            return Value(_canvas_detail::key(
+                std::string(env->get("name").to_string_view()).c_str()));
+          },
+          "Bool"sv)),
+      false);
+
+  // _Canvas.key_pop() -> String. One pressed-key event (same vocabulary), ""
+  // when the queue is empty. The queue is capped; oldest events fall off.
+  ns.initialize("key_pop",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            return Value(_canvas_detail::key_pop());
+          },
+          "String"sv)),
+      false);
+
+  // _Canvas.char_pop() -> String. One typed character (text input, so shift /
+  // layout / IME apply), "" when the queue is empty.
+  ns.initialize("char_pop",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            return Value(_canvas_detail::char_pop());
+          },
+          "String"sv)),
+      false);
+
   // _Canvas.closing() -> Bool (the window's close box was clicked; false on the
   // headless/browser backends, where the loop stops via tick()/frames)
   ns.initialize("closing",
