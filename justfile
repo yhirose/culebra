@@ -8,6 +8,14 @@ set shell := ["bash", "-cu"]
 # it at the default since nothing else competes for cores there either).
 nice_cmd := "nice -n " + env_var_or_default("CULEBRA_NICE", "10")
 
+# Serialize the heavy lanes machine-wide. `nice` above shares the cores kindly
+# but does not stop two full gates from thrashing the same 15 GB box; this puts
+# them in a queue, which finishes the same work sooner and keeps only one
+# session blocked. Wraps the -O3 build, the gate build and the gate itself —
+# never `dev`/`test-dev`, which must stay responsive while a gate runs.
+# CULEBRA_GATE_LOCK=0 opts out (see misc/one_at_a_time.sh).
+lock_cmd := justfile_directory() / "misc/one_at_a_time.sh"
+
 # Share ccache entries between worktrees of the same commit: every -I CMake
 # generates is an absolute path into this checkout, so without a base_dir each
 # new worktree pays a full cold build. Only sound while no cacheable TU bakes in
@@ -34,7 +42,7 @@ build *extra:
     # CULEBRA_BUILD_JOBS overrides the parallel job count (defaults to all
     # cores). CI sets it to cap RAM on the memory-tight macOS runner — an
     # LLVM-header-heavy TU peaks at ~3 GB, so too many at once swap.
-    cd build && {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}
+    cd build && {{lock_cmd}} {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}
 
 # Fast dev build: LTO off (saves ~15-25 s link) and -O1, still Release + JIT,
 # uses a separate `build-dev/` so it doesn't fight `just build`'s cache.
@@ -64,7 +72,7 @@ dev *extra:
 build-gate *extra:
     mkdir -p build-gate
     cd build-gate && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF {{extra}} .. > /dev/null
-    cd build-gate && {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}
+    cd build-gate && {{lock_cmd}} {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}
 
 # Regenerate include/grammar_blob.h — the serialized grammar that lets
 # get_parser() skip peglib's ~10 ms meta-parse on startup. Run after editing the
@@ -161,7 +169,7 @@ check-preambles:
 [doc("Full gate (no-LTO gate build). BACKEND=all|fast|interp|jit|aot|embed|isolate|wrap (default: all). JOBS=N controls parallelism (default: CPU cores). CULEBRA_TEST_SKIP_HEAVY=1 skips difftest + gc-stress + AOT (set on the slow macOS CI runner); CULEBRA_TEST_WRAP=1 adds the wrap lane (set on Ubuntu CI).")]
 [group("test")]
 test BACKEND='all': build-gate
-    @BIN=./build-gate/culebra just _run-tests {{BACKEND}}
+    @BIN=./build-gate/culebra {{lock_cmd}} just _run-tests {{BACKEND}}
 
 # Fast inner-loop tests against the no-LTO build-dev/ binary (`just dev`).
 # Runs only the phases that don't need LTO/AOT/embed exes: the interp==JIT
@@ -262,11 +270,16 @@ _run-tests BACKEND:
         collect_results "$d" "jit"
     }
 
+    # Where this phase parks each file's JIT output for the AOT phase to reuse
+    # (see run_aot): the two phases both need `culebra --jit <file>`, and for
+    # the slowest file that is 27 s of JIT compile paid twice.
+    jit_out="$job_dir/jit-out"
+
     run_diff_interp_jit() {
         local d="$job_dir/diff"
-        mkdir -p "$d"
+        mkdir -p "$d" "$jit_out"
         printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
-            f="$1"; d="$2"
+            f="$1"; d="$2"; jit_out="$3"
             name=$(basename "$f" .cul)
             out_interp=$(cul "$f" 2> "$d/$name.interp.err") || \
                 { touch "$d/$name.fail"; echo "interp crashed for $f:" > "$d/$name.err"; \
@@ -274,6 +287,11 @@ _run-tests BACKEND:
             out_jit=$(cul --jit "$f" 2> "$d/$name.jit.err") || \
                 { touch "$d/$name.fail"; echo "jit crashed for $f:" > "$d/$name.err"; \
                   cat "$d/$name.jit.err" >> "$d/$name.err"; exit 0; }
+            # Only a run that agreed with interp is worth reusing; a mismatch
+            # fails the gate here anyway.
+            if [[ "$out_interp" == "$out_jit" ]]; then
+                printf "%s" "$out_jit" > "$jit_out/$name.txt"
+            fi
             if [[ "$out_interp" != "$out_jit" ]]; then
                 {
                     echo "interpreter and JIT outputs differ for $f:"
@@ -281,7 +299,7 @@ _run-tests BACKEND:
                 } > "$d/$name.err"
                 touch "$d/$name.fail"
             fi
-        ' _ '{}' "$d"
+        ' _ '{}' "$d" "$jit_out"
         if ! collect_results "$d" "(interp vs jit)"; then
             echo "test (interp vs jit) FAIL" >&2
             exit 1
@@ -365,7 +383,7 @@ _run-tests BACKEND:
             *) echo "test aot FAIL: unclear CULEBRA_HOME error: $bogus" >&2; exit 1 ;;
         esac
         printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
-            f="$1"; d="$2"; out_dir="$3"
+            f="$1"; d="$2"; out_dir="$3"; jit_out="$4"
             name=$(basename "$f" .cul)
             bin="$out_dir/$name"
             if ! cul build "$f" -o "$bin" 2> "$d/$name.build.err"; then
@@ -377,7 +395,15 @@ _run-tests BACKEND:
                 exit 0
             fi
             out_aot=$(${TIMEOUT_BIN:+$TIMEOUT_BIN "$CULEBRA_TEST_TIMEOUT"} "$bin")
-            out_jit=$(cul --jit "$f")
+            # The symmetry phase already ran this file under the JIT and kept
+            # the output; recompiling it here costs 27 s on the worst file for
+            # a byte-identical result. Standalone `just test aot` has no such
+            # file and falls back to running it.
+            if [[ -f "$jit_out/$name.txt" ]]; then
+                out_jit=$(cat "$jit_out/$name.txt")
+            else
+                out_jit=$(cul --jit "$f")
+            fi
             if [[ "$out_aot" != "$out_jit" ]]; then
                 {
                     echo "AOT and JIT outputs differ for $f:"
@@ -385,7 +411,7 @@ _run-tests BACKEND:
                 } > "$d/$name.err"
                 touch "$d/$name.fail"
             fi
-        ' _ '{}' "$d" "$out_dir"
+        ' _ '{}' "$d" "$out_dir" "$jit_out"
         if ! collect_results "$d" "aot"; then
             echo "test aot FAIL" >&2
             exit 1

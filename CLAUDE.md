@@ -16,7 +16,7 @@ culebra は個人の趣味プロジェクト（未公開のプログラミング
 1. `git worktree add ~/Projects/culebra-<topic> -b <topic>`
 2. `git -C ~/Projects/culebra-<topic> submodule update --init --recursive`（必須。未初期化だと build が死ぬ）
 3. 以後そのセッションの全パスは worktree の絶対パスで統一する
-4. マージ = **rebase → 再 build/test → ff-only**。textual に無衝突でも意味的に正しいとは限らないので rebase 後は必ず再テスト
+4. マージ = **rebase → 再テスト → ff-only**。textual に無衝突でも意味的に正しいとは限らないので rebase 後は必ず再テストする。ただし**再テストは既定で `just test-dev`（~80s）**であって全ゲートではない（下の「どこまで回すか」）。master は他セッションで頻繁に動くので、rebase のたびに全ゲートを回すとマシンが占有され全員が止まる
 5. 完了後 `git worktree remove --force` + `git branch -d`
 
 複数セッションが同じ repo で並行作業しうる。作業開始時は `git log --oneline master` と `git worktree list` を確認し、`git status` に自分が作っていない未コミット変更がある場合はそれを触らずユーザーに確認する。
@@ -26,17 +26,41 @@ culebra は個人の趣味プロジェクト（未公開のプログラミング
 - inner loop（修正→実行→修正）は **`just dev`**（LTO off、`-O1`、AOT archive スキップ、`main.cc` 単体 rebuild）。ヘッダを実質変更した場合の再ビルドは約 1 分半。
 - ccache は既定の `~/.cache/ccache` をそのまま使う（`CCACHE_DIR` を設定しない）。justfile が `CCACHE_BASEDIR` を worktree root に export するので、同じ commit なら別 worktree の初回ビルドがキャッシュに当たる（実測 90s → 32s）。**絶対パスを焼き込む define を `main.cc` 側に足さないこと** — worktree 間共有が壊れる（`src/source_dir.cc` に隔離してある）。
 - **`just build`** はコミット前の最終確認、または AOT runtime archive 自体を触った変更のときのみ。**性能計測は必ず `just build`（`-O3` + LTO）で**。`build-dev/` は `-O1` なので数字が出ない。
-- このマシンは 20 スレッド / 15 GB。`just build-gate` は `-j20` でピーク約 11 GB 使うので、**別 worktree セッションと build を同時に走らせるとスワップする**。並走するときは片方を `CULEBRA_BUILD_JOBS=8` 程度に絞る。
+- このマシンは 20 スレッド / 15 GB。`just build-gate` は `-j20` でピーク約 11 GB 使うので、**別 worktree セッションと build を同時に走らせるとスワップする** — これは `misc/one_at_a_time.sh` のロックで直列化済み（下記「並走時のマシン占有」）。ロックを外して並走させるなら片方を `CULEBRA_BUILD_JOBS=8` 程度に絞る。
 - `build`/`dev`/`build-gate`/`build-no-jit` の make、および `_run-tests`（`test`/`test-dev` 共通）の culebra 実行・ctest はデフォルトで `nice -n 10` 経由。複数 worktree セッション並走時の CPU 専有で通常の Mac 操作が詰まる問題への対処（単独実行時は速度低下なし、競合時のみ譲る）。`CULEBRA_NICE=0` で無効化可。
 
 ## テスト（速い順に段階的に）
 
 1. 単発確認: `./build-dev/culebra <file>.cul`（+ `--jit`）
-2. 両 backend 対称確認: **`just test-dev`**（テスト部 ~25s、no-LTO）— 通常はここまで
-3. フルゲート **`just test`**（~4分）: PR 直前 / AOT・build path に触った変更のみ。毎修正では回さない
-   - `culebra wrap` / CMakeLists / AOT runtime archive を触ったときは **`just test wrap`** も回す（`just test` からは外してある。ツリー全体を再ビルドするので単体で 4 分。CI の Ubuntu では従来どおり毎回走る）
+2. 両 backend 対称確認: **`just test-dev`**（~80s、no-LTO）— 通常はここまで
+3. フルゲート **`just test`**（実測 450〜880s、うち 95% は difftest + leak 系 + AOT）
 4. **docs を触ったら必ず `just doctest`**（`just test` には含まれない別ステップ）
-5. LTO/静的リンク/ABI 等 toolchain 差異が出うる変更は、ローカル green だけで安心せず **CI の両 OS（macOS clang / Ubuntu GCC）を確認**してから採否判断する
+
+### どこまで回すか（変更内容に比例させる）
+
+**ローカル全ゲートは既定にしない。** Ubuntu CI が `just test` を skip なしで回すので、
+difftest・AOT・leak 系・wrap はそこで必ず走る。ローカルで全ゲートを回す価値があるのは、
+**CI が構造的に見られない部分に触ったとき**だけ:
+
+| 変更 / 状況 | ローカルで回すもの |
+|---|---|
+| rebase 後の再検証（textual 無衝突） | `just test-dev` |
+| 通常のコード変更 | `just test-dev` |
+| **Canvas/Scene の window backend、AOT gating、runtime archive** | **`just test`**（+ CMakeLists/wrap なら `just test wrap`） |
+| docs | `just doctest` |
+| push 後 | **CI の両 OS を確認**（toolchain 差異はここでしか出ない） |
+
+**CI の穴（ローカルでしか塞げない 2 点）**:
+- CI は全ジョブで `CULEBRA_CANVAS_WINDOW_DEFAULT=OFF`。**raylib window backend を一度もビルドしていない**
+- macOS CI は `CULEBRA_TEST_SKIP_HEAVY=1`。**macOS の AOT と difftest は走らない**（Ubuntu で代替。ただし
+  「macOS だけで壊れる AOT リンク」は CI では出ない — 実例あり）
+
+### 並走時のマシン占有
+
+`just build` / `just build-gate` / `just test` は **machine-wide ロックで直列化**される
+（`misc/one_at_a_time.sh`）。2 本目は "waiting: another culebra build/gate holds this machine…" と
+出して待つ。重いレーンの並走は実測 2.4〜2.8 倍遅くなるので、待つほうが速く終わる。
+`just dev` / `just test-dev` は**ロックしない**（他人のゲート中でも即動く）。`CULEBRA_GATE_LOCK=0` で解除可。
 
 ## 最重要要件
 
