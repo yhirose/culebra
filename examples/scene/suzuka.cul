@@ -454,13 +454,16 @@ build_track(view, cl, road_mat, line_mat)
 # pit lane: a separate grey ribbon along the pit spline
 add_ribbon(view, pit, |i| 4.0, |i| -4.0, |i| 0.12, 6.0, pit_mat, false)
 
-# red/white kerbs at every corner — alternating boxes hugging both edges.
-# Skip "S/F": it is the start line, not a corner, so kerbing it would lay kerbs
-# down both sides of the main straight.
 let n = cl.size()
-for [name, corner_s] in corners {
-  if name == "S/F" { continue }
-  let ki = to_long(to_float(corner_s) / SPACING)
+
+# The centerline index of every real corner. "S/F" is the start line, not a
+# corner, so it is dropped here once — kerbing or gravelling it would lay them
+# down both sides of the main straight.
+let corner_indices = corners.filter(|[name, _]| name != "S/F")
+                            .map(|[_, corner_s]| to_long(to_float(corner_s) / SPACING))
+
+# red/white kerbs at every corner — alternating boxes hugging both edges.
+for ki in corner_indices {
   for j in 0..18 {
     let idx = (ki - 9 + j + n) % n
     let [px, pz] = cl[idx]
@@ -476,12 +479,9 @@ for [name, corner_s] in corners {
   }
 }
 
-# gravel run-off on the outside of each corner (S/F is the start line, not a
-# corner — skip it so no run-off lands on the main straight)
+# gravel run-off on the outside of each corner
 let gravel_mat = view.material(196, 172, 122)
-for [name, corner_s] in corners {
-  if name == "S/F" { continue }
-  let ki = to_long(to_float(corner_s) / SPACING)
+for ki in corner_indices {
   add_gravel(view, cl, ki, turn_sign(cl, ki) > 0.0 ? -1.0 : 1.0, gravel_mat)
 }
 
@@ -494,27 +494,17 @@ add_pits(view, cl, 0, 12, 1.0, garage_mat, roof_mat)
 place_stand(view, cl, 8, -1.0, seat_mat, roof_mat)
 
 # minimap: precompute a normalised, sampled outline once (drawn each frame)
-mut MM = []
-mut MM_cx = 0.0
-mut MM_cz = 0.0
-mut MM_scale = 1.0
-mut mmnx = 1000000.0
-mut mmxx = -1000000.0
-mut mmnz = 1000000.0
-mut mmxz = -1000000.0
-for [px, pz] in cl {
-  mmnx = Math.min(mmnx, px)
-  mmxx = Math.max(mmxx, px)
-  mmnz = Math.min(mmnz, pz)
-  mmxz = Math.max(mmxz, pz)
-}
-MM_cx = (mmnx + mmxx) / 2.0
-MM_cz = (mmnz + mmxz) / 2.0
-MM_scale = 190.0 / Math.max(mmxx - mmnx, mmxz - mmnz)
-for mi in 0..n by 6 {
-  let [mx, mz] = cl[mi]
-  MM.push(((mx - MM_cx) * MM_scale, (mz - MM_cz) * MM_scale))
-}
+let track_x = cl.map(|p| p[0])
+let track_z = cl.map(|p| p[1])
+
+let MM_cx = (track_x.min() + track_x.max()) / 2.0
+let MM_cz = (track_z.min() + track_z.max()) / 2.0
+let MM_scale = 190.0 / Math.max(track_x.max() - track_x.min(),
+                                track_z.max() - track_z.min())
+
+let MM = range(0, n, step: 6)
+  .map(|mi| ((cl[mi][0] - MM_cx) * MM_scale, (cl[mi][1] - MM_cz) * MM_scale))
+  .collect()
 
 fn current_corner(corners, s) {
   mut name = corners[0][0]

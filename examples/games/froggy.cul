@@ -29,12 +29,11 @@ fn build_perm(seed) {
   for i in 255..0 by -1 {
     st = (st * 1103515245 + 12345) % 2147483648
     let j = st % (i + 1)
-    let tmp = p[i]
-    p[i] = p[j]
-    p[j] = tmp
+    (p[i], p[j]) = (p[j], p[i])
   }
   p
 }
+
 fn fade(t) { t * t * t * (t * (t * 6.0 - 15.0) + 10.0) }
 fn lerp(a, b, t) { a + t * (b - a) }
 fn grad(h, x) { h % 2 == 0 ? x : -x }
@@ -75,11 +74,10 @@ fn settle(start, speed, margin) {
 # the horizontal coordinate is doubled — mirroring froggy.py's `* 2`.
 fn offsets(s) {
   let cols = (s.cols() - 1) / 2
-  let offx = (cols - COLS) / 2
-  let offy = (s.rows() - ROWS) / 2
-  (offx, offy)
+  ((cols - COLS) / 2, (s.rows() - ROWS) / 2)
 }
-fn output(s, off, y, x, str) { s.put((x + off[0]) * 2, y + off[1], str) }
+
+fn output(s, (offx, offy), y, x, str) { s.put((x + offx) * 2, y + offy, str) }
 
 # --- entities --------------------------------------------------------------
 class Frog {

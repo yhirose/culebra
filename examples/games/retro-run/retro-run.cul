@@ -162,7 +162,7 @@ let BG_TREES = Art.new(5, 985, 1280, 480)
 # it the generated stand-ins in assets/ are used. `Sys.script` reads the same in
 # the Playground as it does natively, so there is no branch on the backend here.
 let HOME = FS.dirname(Sys.script)
-let ART_DIR = if args.dir != nil { args.dir } else { HOME + "/assets" }
+let ART_DIR = args.dir ?? HOME + "/assets"
 let SCENES = ["asayake", "hiru", "yuugure", "twilight"]
 let SCENE_COUNT = SCENES.size()
 
@@ -180,22 +180,15 @@ let sheet = Canvas.Sprite.from_png(FS.read(art("sprites.png")))
 let SHEET = sheet._id
 
 # Upstream ships one background; the generated set has one per scene. Loading
-# the same file four times would cost 7.5 MB apiece, so a repeat is aliased.
+# the same file four times would cost 7.5 MB apiece, so a repeat is aliased —
+# get_or_put only calls the loader on a path it has not seen.
 let backgrounds = fn () {
-  mut paths = []
-  mut sprites = []
-  for scene in SCENES {
+  mut loaded = {}
+  SCENES.map(fn (scene) {
     let scened = ART_DIR + "/background_" + scene + ".png"
-    let path = if FS.exists(scened) { scened } else { art("background.png") }
-    let seen = paths.index_of(path)
-    paths.push(path)
-    if seen >= 0 {
-      sprites.push(sprites[seen])
-    } else {
-      sprites.push(Canvas.Sprite.from_png(FS.read(path)))
-    }
-  }
-  sprites.map(|s| s._id)
+    let path = FS.exists(scened) ? scened : art("background.png")
+    loaded.get_or_put(path, || Canvas.Sprite.from_png(FS.read(path)))._id
+  })
 }()
 
 # --- colours ---------------------------------------------------------------
@@ -409,31 +402,25 @@ let reset_props = fn () {
     n = n + 4 + n / 100
   }
 
-  n = 250
-  while n < 1000 {
+  for n in 250..1000 by 5 {
     add_prop(n, COLUMN, 1.1)
     add_prop(n + Random.int(0, 6), TREE1, -1.0 - Random.uniform(0.0, 2.0))
     add_prop(n + Random.int(0, 6), TREE2, -1.0 - Random.uniform(0.0, 2.0))
-    n = n + 5
   }
 
-  n = 200
-  while n < segments.size() {
+  for n in 200..segments.size() by 3 {
     let side = if Random.int(0, 2) == 0 { 1.0 } else { -1.0 }
     add_prop(n, PLANTS[Random.int(0, PLANTS.size())],
              side * (2.0 + Random.uniform(0.0, 5.0)))
-    n = n + 3
   }
 
-  n = 1000
-  while n < segments.size() - 50 {
+  for n in 1000..segments.size() - 50 by 100 {
     let side = if Random.int(0, 2) == 0 { 1.0 } else { -1.0 }
     add_prop(n + Random.int(0, 51), BILLBOARDS[Random.int(0, BILLBOARDS.size())], -side)
     for _ in 0..20 {
       add_prop(n + Random.int(0, 51), PLANTS[Random.int(0, PLANTS.size())],
                side * (1.5 + Random.uniform(0.0, 1.0)))
     }
-    n = n + 100
   }
 }
 
@@ -504,14 +491,8 @@ mut fast_lap_time = 180.0             # v4's starting target, session-lived
 # loops under the run instead of the chiptune; the generated assets ship no
 # music, so the riff below is the default. Either way the level sits at v4's
 # own quiet `music.volume = 0.05` (= vol 25 on Canvas's 0..100 scale).
-let MUSIC_FILE = fn () {
-  mut found = nil
-  for name in ["music.ogg", "music.mp3"] {
-    let path = ART_DIR + "/" + name
-    if found == nil && FS.exists(path) { found = path }
-  }
-  found
-}()
+let MUSIC_FILE = ["music.ogg", "music.mp3"].map(|n| ART_DIR + "/" + n)
+                                           .find(|p| FS.exists(p))
 if MUSIC_FILE != nil { Canvas.music(FS.read(MUSIC_FILE), vol: 25) }
 
 # The chiptune fallback — a short retro-arcade riff over Am-F-C-G, ticked from
@@ -713,10 +694,8 @@ let update = fn (dt) {
 # --- render ----------------------------------------------------------------
 # The fog factor only depends on how far down the draw window a segment is, so
 # it is tabulated once, as 0..256 for the integer colour lerp.
-mut fog_i = []
-for n in 0..DRAW_DISTANCE {
-  fog_i.push(Math.round(exponential_fog(n / (DRAW_DISTANCE * 1.0), FOG_DENSITY) * 256.0))
-}
+let fog_i = iota(DRAW_DISTANCE).map(|n|
+  Math.round(exponential_fog(n / (DRAW_DISTANCE * 1.0), FOG_DENSITY) * 256.0))
 
 # Per-frame road colours: the current scene lerped toward the next one, then
 # each segment lerped toward the fog colour. Both are integer arithmetic —
@@ -997,11 +976,7 @@ let format_time = fn (t) {
   let minutes = Math.floor(t / 60.0)
   let seconds = Math.floor(t - minutes * 60.0)
   let tenths = Math.floor(10.0 * (t - Math.floor(t)))
-  if minutes > 0 {
-    "{minutes}:{if seconds < 10 { "0" } else { "" }}{seconds}.{tenths}"
-  } else {
-    "{seconds}.{tenths}"
-  }
+  minutes > 0 ? "{minutes}:{seconds:02}.{tenths}" : "{seconds}.{tenths}"
 }
 
 let draw_hud = fn () {

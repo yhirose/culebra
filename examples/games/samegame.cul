@@ -32,24 +32,22 @@ fn new_board() {
 # All cells orthogonally connected to (r,c) sharing its colour.
 fn group_at(b, r, c) {
   let color = b[r][c]
+  if color == 0 { return [] }
+
   mut out = []
-  if color == 0 { return out }
-  mut seen = {}
+  mut seen = [].to_set()          # (row, col) tuples — Sets take any hashable
   mut stack = [(r, c)]
   while stack.size() > 0 {
     let (pr, pc) = stack.pop()
-    if pr >= 0 && pr < ROWS && pc >= 0 && pc < COLS {
-      let key = "{pr},{pc}"
-      if !seen.has(key) {
-        mut seen[key] = true
-        if b[pr][pc] == color {
-          out.push((pr, pc))
-          stack.push((pr - 1, pc))
-          stack.push((pr + 1, pc))
-          stack.push((pr, pc - 1))
-          stack.push((pr, pc + 1))
-        }
-      }
+    let inside = pr >= 0 && pr < ROWS && pc >= 0 && pc < COLS
+    # `add` reports whether the cell was new, so the visited test and the mark
+    # it leaves behind are one call.
+    if inside && seen.add((pr, pc)) && b[pr][pc] == color {
+      out.push((pr, pc))
+      stack.push((pr - 1, pc))
+      stack.push((pr + 1, pc))
+      stack.push((pr, pc - 1))
+      stack.push((pr, pc + 1))
     }
   }
   out
@@ -59,15 +57,13 @@ fn remove_cells(b, cells) {
   for (r, c) in cells { b[r][c] = 0 }
 }
 
-# Tiles fall to the bottom of each column.
+# Tiles fall to the bottom of each column: the survivors keep their order and
+# the gap they leave lands on top.
 fn gravity(b) {
   for c in 0..COLS {
-    mut col = []
-    for r in ROWS - 1..=0 by -1 { if b[r][c] != 0 { col.push(b[r][c]) } }
-    for r in ROWS - 1..=0 by -1 {
-      let i = ROWS - 1 - r
-      b[r][c] = i < col.size() ? col[i] : 0
-    }
+    let col = iota(ROWS).map(|r| b[r][c]).filter(|v| v != 0)
+    let gap = ROWS - col.size()
+    for r in 0..ROWS { b[r][c] = r < gap ? 0 : col[r - gap] }
   }
 }
 
@@ -100,11 +96,7 @@ fn has_moves(b) {
   false
 }
 
-fn count_tiles(b) {
-  mut n = 0
-  for row in b { for v in row { if v != 0 { n += 1 } } }
-  n
-}
+fn count_tiles(b) { b.iter().flatten().filter(|v| v != 0).count() }
 
 # First cell whose group is removable (used by the auto-demo).
 fn find_move(b) {
@@ -165,38 +157,41 @@ fn record_score(score) {
   (list, made_top5 ? entry : nil)
 }
 
-fn spaces(n) {
-  mut out = ""
-  for _ in 0..n { out += " " }
-  out
+fn spaces(n) { [](n, " ").join("") }
+
+let BOX_BODY = Term.style(bg: 236, fg: 255)
+let BOX_TITLE = Term.style(bg: 236, fg: 226, bold: true)
+let BOX_FOOTER = Term.style(bg: 236, fg: 244)
+let BOX_PICK = Term.style(bg: 226, fg: 16, bold: true)
+
+# A centred `w`-wide panel: title, body lines, footer. `pick` is the index of
+# the body line to single out, or -1 for none.
+fn draw_box(s, w, title, lines, pick, footer) {
+  let list_start = 3
+  let footer_row = list_start + lines.size() + 1
+  let h = footer_row + 2
+  let bx = (s.cols() - w) / 2
+  let by = (s.rows() - h) / 2
+
+  let blank = spaces(w)
+  for r in 0..h { s.put(bx, by + r, blank, BOX_BODY) }
+
+  s.put(bx + 2, by + 1, title, BOX_TITLE)
+  for i, line in lines.enumerate() {
+    s.put(bx + 2, by + list_start + i, line, i == pick ? BOX_PICK : BOX_BODY)
+  }
+  s.put(bx + 2, by + footer_row, footer, BOX_FOOTER)
+  s.flush()
 }
 
 fn draw_score_box(s, scores, highlight, footer) {
-  let cols = s.cols()
-  let rows = s.rows()
-  let w = 40
-  let n = Math.max(scores.size(), 1)
-  let list_start = 3
-  let footer_row = list_start + n + 1
-  let h = footer_row + 2
-  let bx = (cols - w) / 2
-  let by = (rows - h) / 2
-  let blank = spaces(w)
-  let box_style = Term.style(bg: 236, fg: 255)
-  for r in 0..h { s.put(bx, by + r, blank, box_style) }
-  s.put(bx + 2, by + 1, "BEST 5", Term.style(bg: 236, fg: 226, bold: true))
-  if scores.size() == 0 {
-    s.put(bx + 2, by + list_start, "no scores yet", box_style)
-  } else {
-    for i, e in scores.enumerate() {
-      let row = "{i + 1}. {e.score}   {e.date} {e.time}"
-      let style = highlight != nil && e == highlight
-                    ? Term.style(bg: 226, fg: 16, bold: true) : box_style
-      s.put(bx + 2, by + list_start + i, row, style)
-    }
-  }
-  s.put(bx + 2, by + footer_row, footer, Term.style(bg: 236, fg: 244))
-  s.flush()
+  let lines = scores.size() == 0
+    ? ["no scores yet"]
+    : scores.enumerate()
+            .map(fn ((i, e)) { "{i + 1}. {e.score}   {e.date} {e.time}" })
+            .collect()
+  # index_of answers -1 for a nil highlight and for the empty board alike.
+  draw_box(s, 40, "BEST 5", lines, scores.index_of(highlight), footer)
 }
 
 # Shows the persisted top 5, plus the live in-progress score (highlighted)
@@ -211,10 +206,7 @@ fn show_scores(s, board, cur_r, cur_c, score, msg) {
 }
 
 fn draw_help_box(s) {
-  let cols = s.cols()
-  let rows = s.rows()
-  let w = 44
-  let lines = [
+  draw_box(s, 44, "HELP", [
     "Click 2+ same-colored tiles to clear them.",
     "",
     "arrows    move cursor",
@@ -223,21 +215,7 @@ fn draw_help_box(s) {
     "s         best scores",
     "h         this help",
     "q         quit",
-  ]
-  let list_start = 3
-  let footer_row = list_start + lines.size() + 1
-  let h = footer_row + 2
-  let bx = (cols - w) / 2
-  let by = (rows - h) / 2
-  let blank = spaces(w)
-  let box_style = Term.style(bg: 236, fg: 255)
-  for r in 0..h { s.put(bx, by + r, blank, box_style) }
-  s.put(bx + 2, by + 1, "HELP", Term.style(bg: 236, fg: 226, bold: true))
-  for i, line in lines.enumerate() {
-    s.put(bx + 2, by + list_start + i, line, box_style)
-  }
-  s.put(bx + 2, by + footer_row, "press any key", Term.style(bg: 236, fg: 244))
-  s.flush()
+  ], -1, "press any key")
 }
 
 # Shows the help overlay. Blocks until any key is pressed.
