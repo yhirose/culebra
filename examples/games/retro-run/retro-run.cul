@@ -180,14 +180,14 @@ let sheet = Canvas.Sprite.from_png(FS.read(art("sprites.png")))
 let SHEET = sheet._id
 
 # Upstream ships one background; the generated set has one per scene. Loading
-# the same file four times would cost 7.5 MB apiece, so a repeat is aliased —
-# get_or_put only calls the loader on a path it has not seen.
+# the same file four times would cost 7.5 MB apiece, so a repeat is aliased.
 let backgrounds = fn () {
   mut loaded = {}
   SCENES.map(fn (scene) {
     let scened = ART_DIR + "/background_" + scene + ".png"
     let path = FS.exists(scened) ? scened : art("background.png")
-    loaded.get_or_put(path, || Canvas.Sprite.from_png(FS.read(path)))._id
+    if !loaded.has(path) { loaded[path] = Canvas.Sprite.from_png(FS.read(path)) }
+    loaded[path]._id
   })
 }()
 
