@@ -1,0 +1,104 @@
+# Regression: a HOF callback written as a literal (`xs.map(fn (x) {...})`) is
+# inlined into the caller's frame on the JIT path. The inlined body is still
+# the callback's own frame, so a local that one of ITS nested closures captures
+# has to be cell-promoted from the callback's analysis — not the caller's,
+# which knows nothing about that local. Getting it from the caller left the
+# local in a plain stack slot and the nested closure build aborted the whole
+# compile with "free var 'x' is not a cell" (interp was unaffected).
+#
+# Only the literal form inlines: `let cb = fn (x) {...}; xs.map(cb)` always
+# took the ordinary closure path and always worked.
+
+test_map_local_captured_by_nested_closure = fn () {
+  let r = ['a', 'b'].map(fn (n) {
+    let path = '/' + n
+    [1].map(|_| path.upper())[0]
+  })
+  assert_eq(r, ['/A', '/B'])
+}
+
+test_map_mut_local_captured = fn () {
+  let r = ['a', 'b'].map(fn (n) {
+    mut path = '/' + n
+    [1].map(|_| path.upper())[0]
+  })
+  assert_eq(r, ['/A', '/B'])
+}
+
+# The closure may be bound before it is handed over, and the callee may be a
+# user-defined higher-order function rather than a builtin.
+test_map_capture_via_let_and_user_hof = fn () {
+  let apply = fn (f) { f() }
+  let via_let = ['a'].map(fn (n) {
+    let path = '/' + n
+    let f = || path.upper()
+    f()
+  })
+  let via_user_hof = ['a'].map(fn (n) {
+    let path = '/' + n
+    apply(|| path.upper())
+  })
+  assert_eq(via_let, ['/A'])
+  assert_eq(via_user_hof, ['/A'])
+}
+
+# get_or_put's lazy initializer is the shape this was found through.
+test_get_or_put_lazy_init_captures_local = fn () {
+  mut loaded = {}
+  let ids = ['a', 'b', 'a'].map(fn (n) {
+    let path = '/' + n
+    loaded.get_or_put(path, || path.upper())
+  })
+  assert_eq(ids, ['/A', '/B', '/A'])
+  assert_eq(loaded.size(), 2)
+}
+
+# Binary HOFs (reduce) inline through the same helper.
+test_reduce_local_captured_by_nested_closure = fn () {
+  let total = [1, 2, 3].reduce(0, fn (acc, v) {
+    let doubled = v * 2
+    acc + [1].map(|_| doubled)[0]
+  })
+  assert_eq(total, 12)
+}
+
+test_filter_find_for_each_capture = fn () {
+  let kept = ['a', 'bb'].filter(fn (s) { let n = s.size(); [1].any(|_| n > 1) })
+  assert_eq(kept, ['bb'])
+
+  let found = ['a', 'bb'].find(fn (s) { let n = s.size(); [1].any(|_| n > 1) })
+  assert_eq(found, 'bb')
+
+  mut seen = []
+  ['a', 'bb'].for_each(fn (s) { let n = s.size(); seen.push([1].map(|_| n)[0]) })
+  assert_eq(seen, [1, 2])
+}
+
+# Two inlined frames deep: the inner callback's own local must be promoted
+# against the inner callback's analysis, not the outer one's.
+test_nested_inlined_callbacks = fn () {
+  let r = ['a'].map(fn (n) {
+    let outer = '/' + n
+    [1].map(fn (_) {
+      let inner = outer + '!'
+      [1].map(|_| inner.upper())[0]
+    })[0]
+  })
+  assert_eq(r, ['/A!'])
+}
+
+# The lazy-iterator side fuses through the same emitters.
+test_iterator_chain_capture = fn () {
+  let r = range(3).map(fn (i) { let k = i * 2; [1].map(|_| k)[0] }).collect()
+  assert_eq(r, [0, 2, 4])
+}
+
+test_map_local_captured_by_nested_closure()
+test_map_mut_local_captured()
+test_map_capture_via_let_and_user_hof()
+test_get_or_put_lazy_init_captures_local()
+test_reduce_local_captured_by_nested_closure()
+test_filter_find_for_each_capture()
+test_nested_inlined_callbacks()
+test_iterator_chain_capture()
+inspect('inlined-hof-capture OK')

@@ -1631,6 +1631,19 @@ struct JIT {
                     std::string("parameter '") + std::string(pv.name) + "'");
   }
 
+  // An inlined HOF body is the *callback's* frame emitted into the caller's,
+  // so while it compiles, the callback's analysis — not the caller's — is what
+  // says which of its locals a nested closure captures. Without the swap a
+  // `let` in the inlined body lands in a plain stack slot and building that
+  // nested closure fails with "free var 'x' is not a cell".
+  struct InlinedInfoGuard {
+    JIT& jit;
+    const FuncInfo* saved;
+    InlinedInfoGuard(JIT& j, const FuncInfo* info)
+        : jit(j), saved(std::exchange(j.current_info_, info)) {}
+    ~InlinedInfoGuard() { jit.current_info_ = saved; }
+  };
+
   template <class PerIter>
   void emit_unary_lambda_body(const peg::Ast& lambda_ast,
                               llvm::Value* elem, PerIter&& per_iter) {
@@ -1650,6 +1663,7 @@ struct JIT {
         llvm::BasicBlock::Create(ctx_, "ihof.body.cleanup", ihofFn);
     auto savedLpad = current_lpad_;
     push_scope();
+    InlinedInfoGuard info_guard(*this, &info);
     current_lpad_ = cleanupBB;
     bool captured = info.captured_locals.contains(param_name);
     define_var(param_name,
@@ -1680,6 +1694,7 @@ struct JIT {
         llvm::BasicBlock::Create(ctx_, "ihof.body2.cleanup", ihofFn);
     auto savedLpad = current_lpad_;
     push_scope();
+    InlinedInfoGuard info_guard(*this, &info);
     current_lpad_ = cleanupBB;
     bool acc_captured = info.captured_locals.contains(acc_name);
     define_var(acc_name,
