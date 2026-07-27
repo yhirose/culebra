@@ -80,19 +80,53 @@ inline void mark(const char* name) {
 }
 }  // namespace startup_profile
 
-bool read_file(const char* path, vector<char>& buff) {
+// Read a whole file as bytes. nullopt when it can't be opened — every caller
+// prints its own message, since the phrasing is per-subcommand.
+optional<string> read_file(const char* path) {
   ifstream ifs(path, ios::in | ios::binary);
-  if (ifs.fail()) {
+  if (ifs.fail()) return nullopt;
+
+  string buff;
+  auto size = static_cast<streamoff>(ifs.seekg(0, ios::end).tellg());
+  if (size > 0) {
+    buff.resize(static_cast<size_t>(size));
+    ifs.seekg(0, ios::beg).read(buff.data(), static_cast<streamsize>(size));
+  }
+  return buff;
+}
+
+// Report a CulebraError on stderr in the CLI's canonical shape —
+// `Kind: message at LINE:COL.`, position omitted when unknown. Shared so the
+// `build`, script-run and top-level handlers can't drift apart.
+void print_culebra_error(const culebra::CulebraError& e) {
+  cerr << e.kind << ": " << e.what();
+  if (e.line > 0 || e.col > 0) cerr << " at " << e.line << ":" << e.col << ".";
+  cerr << endl;
+}
+
+// Load the entry script plus its import graph. `splice_preamble` inlines the
+// stdlib preamble into the entry module's AST, which the JIT/AOT path needs
+// because it doesn't honour the env's lazy bindings; it happens *after* parse so
+// user line numbers stay natural and error locations match interp (see
+// splice_stdlib_preamble). Returns false having already reported the failure —
+// `build` and a script run differ only in what they return, so sharing this
+// keeps their diagnostics identical.
+bool load_entry_program(const string& path, std::string_view src,
+                        bool splice_preamble,
+                        std::vector<culebra::LoadedModule>& modules) {
+  vector<string> msgs;
+  culebra::ModuleLoader loader;
+  try {
+    modules = loader.load_program(path, src, msgs);
+    if (splice_preamble) culebra::splice_stdlib_preamble(modules);
+  } catch (const culebra::CulebraError& e) {
+    print_culebra_error(e);
     return false;
   }
-
-  auto size = static_cast<unsigned int>(ifs.seekg(0, ios::end).tellg());
-
-  if (size > 0) {
-    buff.resize(size);
-    ifs.seekg(0, ios::beg).read(&buff[0], static_cast<streamsize>(buff.size()));
+  if (modules.empty()) {
+    for (const auto& msg : msgs) cerr << msg << endl;
+    return false;
   }
-
   return true;
 }
 
@@ -117,9 +151,25 @@ struct Options {
 #endif
   vector<string> script_path_list;
   vector<string> script_argv;
+  string error;  // non-empty: a malformed flag; main reports it and exits
 };
 
 #ifdef CULEBRA_JIT_ENABLED
+// Quote a path so $TMPDIR / paths with spaces survive verbatim through
+// std::system (validate_build_path rejects the quote char, so it can't escape).
+// POSIX `system()` runs the command via /bin/sh (single-quote quoting); mingw
+// `system()` runs it via cmd.exe, where single quotes are literal and double
+// quotes are the quoting form. Pick per-platform so paths with spaces survive on
+// both. (mingw g++ itself accepts forward-slash paths.) Shared by the
+// embedded-assets compile, the `build` link and the `wrap` cmake invocations.
+static std::string shq(std::string_view s) {
+#ifdef _WIN32
+  return std::format("\"{}\"", s);
+#else
+  return std::format("'{}'", s);
+#endif
+}
+
 // Content-fingerprint of the embedded runtime archives, used as a
 // cache-directory name so a freshly-built culebra picks up its own
 // runtime instead of an older one left behind on disk. FNV-1a 64-bit,
@@ -266,6 +316,83 @@ static std::filesystem::path materialize_archive(
   return cache;
 }
 
+// Does this driver embed the feature's archive? CMake appends each gated
+// archive to _rt_embed_files under the same switch, and force-loading an
+// archive that isn't embedded aborts the build — so the axis table carries the
+// bit. Normalized to bools here to keep the table one row per axis.
+static constexpr bool kEmbedsSqlite =
+#if defined(CULEBRA_SQLITE_ENABLED)
+    true;
+#else
+    false;
+#endif
+static constexpr bool kEmbedsScene =
+#if defined(CULEBRA_ENABLE_SCENE)
+    true;
+#else
+    false;
+#endif
+static constexpr bool kEmbedsCanvas =
+#if defined(CULEBRA_CANVAS_WINDOW)
+    true;
+#else
+    false;
+#endif
+static constexpr bool kEmbedsWebview =
+#if defined(CULEBRA_ENABLE_WEBVIEW)
+    true;
+#else
+    false;
+#endif
+
+// One AOT feature axis: a stdlib namespace whose use pulls an extra runtime
+// archive and its link flags into the built binary. The core archive is
+// axis-free — every heavy dependency sits behind a weak stub there (cblas via
+// tensor_eval_node, OpenSSL/zlib via http_request, …) — so the strong bodies
+// are force-loaded from these per-feature objects only when the program names
+// the axis. One core archive, N feature objects; no 2^N variant matrix.
+//
+// A `-l`/archive append would NOT do it: the weak definition already satisfies
+// the symbol, so the member is never loaded (verified). The object has to be
+// force-loaded, which is what run_build's force_load_feature emits.
+//
+// Adding an axis is one row here plus its CMake link fragment — the scan, the
+// force-load and the link append all read this table.
+struct FeatureAxis {
+  const char* names[2];    // namespaces that trigger it (second may be null)
+  const char* archive;     // force-loaded on a hit
+  const char* link_flags;  // appended on a hit ("" when built out)
+  bool embedded;           // this driver carries `archive`
+};
+
+static constexpr FeatureAxis kFeatureAxes[] = {
+    // BLAS is reachable only through the tensor_eval_node choke, so a non-Tensor
+    // program references no cblas symbol and drops the link entirely.
+    {{"Tensor"}, "libculebra_rt_tensor.a", CULEBRA_BLAS_LINK, true},
+    // CULEBRA_SSL_LINK carries OpenSSL *and* zlib; a non-Http binary is ~4 MB
+    // lighter for skipping it.
+    {{"Http"}, "libculebra_rt_http.a", CULEBRA_SSL_LINK, true},
+    // A duplicate -lz when Http is also used is harmless (the linker dedupes).
+    {{"Compress"}, "libculebra_rt_compress.a", CULEBRA_ZLIB_LINK, true},
+    // The archive bundles the amalgamation object too, so a force-loaded
+    // culebra_rt_sqlite is self-contained; the flags are its platform deps.
+    {{"SQLite"}, "libculebra_rt_sqlite.a", CULEBRA_SQLITE_LINK, kEmbedsSqlite},
+    // Scene and Webview have no weak choke — they simply aren't in the core
+    // archive, so a program that names neither references no raylib/WebKit
+    // symbol. What gets force-loaded is the wrap registrar nothing calls by name.
+    {{"Scene"}, "libculebra_rt_scene.a", CULEBRA_SCENE_LINK, kEmbedsScene},
+    // Canvas does have a weak choke: the headless present/input stubs in the
+    // core archive, overridden by the raylib bodies in this archive.
+    {{"Canvas"}, "libculebra_rt_canvas.a", CULEBRA_CANVAS_LINK, kEmbedsCanvas},
+    // `Desktop` is the facade that drives Webview, so naming it has to trigger
+    // the axis even when the program never says `Webview`.
+    {{"Webview", "Desktop"}, "libculebra_rt_webview.a", CULEBRA_WEBVIEW_LINK,
+     kEmbedsWebview},
+};
+// Cross-compiling with Tensor would need a target-specific BLAS link, which we
+// don't bundle — run_build rejects that pair up front by this row.
+static constexpr size_t kTensorAxis = 0;
+
 struct BuildOptions {
   string input;
   string output;
@@ -410,6 +537,19 @@ static bool validate_build_path(const char* flag, const string& v, string& err) 
   return true;
 }
 
+// Parse a `-O<level>` flag. Rejects a non-numeric or out-of-range level rather
+// than letting std::stoi throw: both command-line parsers run before main's try
+// block, so an escaping exception would abort the process instead of printing.
+static bool parse_opt_level(std::string_view arg, int& level, string& err) {
+  auto digits = arg.substr(2);
+  if (digits.size() != 1 || digits[0] < '0' || digits[0] > '3') {
+    err = std::format("-O: expected a level 0-3, got '{}'", digits);
+    return false;
+  }
+  level = digits[0] - '0';
+  return true;
+}
+
 bool parse_build_command_line(int argc, const char** argv, BuildOptions& opts,
                               string& err) {
   for (int i = 2; i < argc; ++i) {
@@ -431,7 +571,7 @@ bool parse_build_command_line(int argc, const char** argv, BuildOptions& opts,
     } else if (arg.starts_with("--rt-lib=")) {
       opts.rt_lib = arg.substr(9);
     } else if (arg.starts_with("-O")) {
-      opts.opt_level = std::stoi(arg.substr(2));
+      if (!parse_opt_level(arg, opts.opt_level, err)) return false;
     } else if (arg == "-h" || arg == "--help") {
       print_build_usage(cout);
       std::exit(0);
@@ -495,33 +635,14 @@ bool parse_build_command_line(int argc, const char** argv, BuildOptions& opts,
 }
 
 int run_build(const BuildOptions& opts) {
-  vector<char> buff;
-  if (!read_file(opts.input.c_str(), buff)) {
+  auto user_src = read_file(opts.input.c_str());
+  if (!user_src) {
     std::println(stderr, "culebra build: can't open '{}'", opts.input);
     return 1;
   }
-  std::string_view user_src(buff.data(), buff.size());
-  vector<string> msgs;
-  culebra::ModuleLoader loader;
+  // AOT always needs the preamble spliced in — it runs the JIT's lowering.
   std::vector<culebra::LoadedModule> modules;
-  try {
-    // Parse the user source with its natural line numbers, then splice
-    // the stdlib preamble into the entry module's AST. Prepending it as
-    // source text would shift every user line and desync error
-    // locations from the interpreter (see splice_stdlib_preamble).
-    modules = loader.load_program(opts.input, user_src, msgs);
-    culebra::splice_stdlib_preamble(modules);
-  } catch (const culebra::CulebraError& e) {
-    cerr << e.kind << ": " << e.what();
-    if (e.line > 0 || e.col > 0)
-      cerr << " at " << e.line << ":" << e.col << ".";
-    cerr << endl;
-    return 1;
-  }
-  if (modules.empty()) {
-    for (const auto& msg : msgs) cerr << msg << endl;
-    return 1;
-  }
+  if (!load_entry_program(opts.input, *user_src, true, modules)) return 1;
 
   // Scratch object goes in the platform temp dir. temp_directory_path()
   // honours TMPDIR/TMP/TEMP and falls back to /tmp on POSIX; on Windows it
@@ -539,129 +660,61 @@ int run_build(const BuildOptions& opts) {
   if (verbose) std::println(stderr, "culebra build: object -> {}", obj);
 
   bool cross = !opts.target.empty();
+  if (cross && opts.target == llvm::sys::getDefaultTargetTriple()) {
+    cross = false;  // a no-op cross is just a host build
+  }
 
-  // Tensor reachability across the whole dependency graph drives both
-  // the cross-compile reject and the runtime-archive choice below.
-  auto any_uses_tensor = [&]() {
+  // Walk the whole dependency graph once per axis.
+  bool used[std::size(kFeatureAxes)] = {};
+  for (size_t i = 0; i < std::size(kFeatureAxes); i++) {
+    std::vector<std::string_view> names;
+    for (const char* n : kFeatureAxes[i].names)
+      if (n) names.push_back(n);
     for (const auto& m : modules) {
-      if (culebra::aot_uses_tensor(*m.ast)) return true;
+      if (culebra::aot_uses_any_name(*m.ast, names)) {
+        used[i] = true;
+        break;
+      }
     }
-    return false;
-  };
-  // Http reachability picks the no-http archive (drops OpenSSL + zlib),
-  // mirroring the tensor axis.
-  auto any_uses_http = [&]() {
-    for (const auto& m : modules) {
-      if (culebra::aot_uses_http(*m.ast)) return true;
-    }
-    return false;
-  };
-  // Compress reachability force-loads the zlib choke object and appends libz,
-  // mirroring the tensor/http axes.
-  auto any_uses_compress = [&]() {
-    for (const auto& m : modules) {
-      if (culebra::aot_uses_compress(*m.ast)) return true;
-    }
-    return false;
-  };
-  // SQLite reachability force-loads libculebra_rt_sqlite.a (the strong sqlite3
-  // wrappers + the bundled amalgamation object) and appends the SQLite link
-  // deps, mirroring the tensor/http/compress axes.
-  auto any_uses_sqlite = [&]() {
-    for (const auto& m : modules) {
-      if (culebra::aot_uses_sqlite(*m.ast)) return true;
-    }
-    return false;
-  };
-  // Wrap reachability force-loads the wrap archive and appends the wrapped
-  // library's link flags only when the program names one of the namespaces
-  // the embedded `culebra wrap` declarations registered — same usage axis as
-  // tensor/http, so a binary built by a wrap-extended driver links none of the
-  // wrapped library unless the script actually uses it (mirrors Http/OpenSSL).
-  // The namespace set is the driver's own registry (empty for a stock binary).
-  std::vector<std::string> wrap_namespaces;
+  }
+
+  // Reject early: cross-compile + Tensor would need a target-specific BLAS
+  // link flag, which Phase E doesn't bundle.
+  if (cross && used[kTensorAxis]) {
+    std::println(stderr,
+        "culebra build: --target=<triple> with Tensor not yet "
+        "supported. Drop Tensor references for now.");
+    return 1;
+  }
+  // A cross build carries its feature support in --rt-lib, so none of the
+  // embedded feature objects is force-loaded and no host link flag is appended.
+  if (cross) {
+    for (auto& u : used) u = false;
+  }
+
+  // The wrap axis rides the same usage gate but can't be a table row: its
+  // namespaces come from the driver's own registry (empty for a stock binary)
+  // rather than a literal, so a binary built by a wrap-extended driver links
+  // none of the wrapped library unless the script names one of its namespaces.
+  std::vector<std::string_view> wrap_namespaces;
   for (const auto& wc : culebra::wrapped_classes()) {
     if (std::find(wrap_namespaces.begin(), wrap_namespaces.end(), wc.ns) ==
         wrap_namespaces.end())
       wrap_namespaces.push_back(wc.ns);
   }
-  auto any_uses_wrap = [&]() {
-    if (wrap_namespaces.empty()) return false;
+  bool uses_wrap = false;
+  if (!cross && !wrap_namespaces.empty()) {
     for (const auto& m : modules) {
-      if (culebra::aot_uses_any_name(*m.ast, wrap_namespaces)) return true;
-    }
-    return false;
-  };
-#ifdef CULEBRA_ENABLE_SCENE
-  // Scene reachability force-loads libculebra_rt_scene.a (the wrap
-  // registration whose registrar pulls in raylib) and appends the raylib/SDL
-  // link deps, mirroring the tensor/http/compress/sqlite axes. Compiled only
-  // into a scene-enabled driver: a stock build never embeds that archive, so
-  // it must not try to force-load it (doing so aborts on a missing archive).
-  auto any_uses_scene = [&]() {
-    for (const auto& m : modules) {
-      if (culebra::aot_uses_scene(*m.ast)) return true;
-    }
-    return false;
-  };
-#endif
-#ifdef CULEBRA_CANVAS_WINDOW
-  // Canvas reachability (window build) force-loads libculebra_rt_canvas.a (the
-  // strong raylib present/input bodies overriding the base archive's weak
-  // headless stubs) and appends the raylib/SDL link deps, mirroring the sqlite
-  // weak choke. Compiled only into a window-enabled driver: a stock build never
-  // embeds that archive, so it must not try to force-load it.
-  auto any_uses_canvas = [&]() {
-    for (const auto& m : modules) {
-      if (culebra::aot_uses_canvas(*m.ast)) return true;
-    }
-    return false;
-  };
-#endif
-#ifdef CULEBRA_ENABLE_WEBVIEW
-  // Webview reachability force-loads libculebra_rt_webview.a and appends the OS
-  // WebView framework link deps, mirroring the Scene axis. Compiled only into
-  // a webview-enabled driver (a stock build never embeds that archive).
-  auto any_uses_webview = [&]() {
-    for (const auto& m : modules) {
-      if (culebra::aot_uses_webview(*m.ast)) return true;
-    }
-    return false;
-  };
-#endif
-
-  // Reject early: cross-compile + Tensor would need a target-specific
-  // BLAS link flag, which Phase E doesn't bundle. Skipping the walk
-  // for this case keeps `culebra build --target=...` fast on the
-  // failure path.
-  if (cross) {
-    auto host_triple = llvm::sys::getDefaultTargetTriple();
-    if (opts.target == host_triple) {
-      cross = false;  // no-op cross is just a host build
-    } else if (any_uses_tensor()) {
-      std::println(stderr,
-          "culebra build: --target=<triple> with Tensor not yet "
-          "supported. Drop Tensor references for now.");
-      return 1;
+      if (culebra::aot_uses_any_name(*m.ast, wrap_namespaces)) {
+        uses_wrap = true;
+        break;
+      }
     }
   }
 
   int rc = culebra::JIT::build_object(modules, obj, opts.opt_level,
                                        opts.emit_llvm, opts.target);
   if (rc != 0) return rc;
-
-  // Single-quote a path so $TMPDIR / paths with spaces survive verbatim through
-  // std::system (validate_build_path rejects the quote char, so it can't escape).
-  // Used by both the embedded-assets compile and the final link below.
-  // POSIX `system()` runs the command via /bin/sh (single-quote quoting);
-  // mingw `system()` runs it via cmd.exe, where single quotes are literal and
-  // double quotes are the quoting form. Pick per-platform so paths with spaces
-  // survive on both. (mingw g++ itself accepts forward-slash paths.)
-#ifdef _WIN32
-  auto shq = [](std::string_view s) { return std::format("\"{}\"", s); };
-#else
-  auto shq = [](std::string_view s) { return std::format("'{}'", s); };
-#endif
 
   // --- Embedded assets: bake each `Embed.dir("...")` directory into an object
   // file linked alongside the program. The object reproduces the directory as a
@@ -759,33 +812,8 @@ int run_build(const BuildOptions& opts) {
     }
   }
 
-  bool uses_tensor = cross ? false : any_uses_tensor();
-  bool uses_http = cross ? false : any_uses_http();
-  bool uses_compress = cross ? false : any_uses_compress();
-  bool uses_sqlite = cross ? false : any_uses_sqlite();
-#ifdef CULEBRA_ENABLE_SCENE
-  bool uses_scene = cross ? false : any_uses_scene();
-#else
-  bool uses_scene = false;  // scene archive isn't embedded in a stock build
-#endif
-#ifdef CULEBRA_CANVAS_WINDOW
-  bool uses_canvas = cross ? false : any_uses_canvas();
-#else
-  bool uses_canvas = false;  // canvas archive isn't embedded in a headless build
-#endif
-#ifdef CULEBRA_ENABLE_WEBVIEW
-  bool uses_webview = cross ? false : any_uses_webview();
-#else
-  bool uses_webview = false;  // webview archive isn't embedded in a stock build
-#endif
-  bool uses_wrap = cross ? false : any_uses_wrap();
-
-  // The core archive is feature-axis-free: both heavy deps (cblas via
-  // tensor_eval_node, OpenSSL/zlib via http_request) are weak stubs here,
-  // so the same archive serves every program. The strong bodies are
-  // force-loaded from the per-feature objects below only when the scan
-  // reports the feature in use. One core archive, N feature objects — no
-  // 2^N variant matrix.
+  // The core archive is feature-axis-free (see kFeatureAxes), so the same
+  // archive serves every program.
   std::string lib;
   if (!opts.rt_lib.empty()) {
     lib = opts.rt_lib;
@@ -836,17 +864,17 @@ int run_build(const BuildOptions& opts) {
   // binary still runs. --keep-symbols opts out for debugging.
   const char* strip_syms = opts.keep_symbols ? "" : "-Wl,-x";
 
-  // A feature object's strong choke (tensor_eval_node / http_request)
-  // overrides the core archive's weak stub only if it is actually pulled
-  // into the link. A plain `-l`/archive append won't do it — the weak def
-  // already satisfies the symbol, so the member is never loaded (verified)
-  // — the object must be *force-loaded*: ld64 -force_load / GNU ld
-  // --whole-archive. Returns the link fragment, or sets feature_failed + prints.
+  // Emit the force-load fragment for one feature archive (see kFeatureAxes for
+  // why a plain `-l`/archive append won't pull it in). `optional` reports a
+  // missing archive as "no fragment" rather than an error — the wrap axis, whose
+  // archive only a `culebra wrap`-extended driver embeds.
   bool feature_failed = false;
-  auto force_load_feature = [&](const char* archive) -> std::string {
+  auto force_load_feature = [&](const char* archive,
+                                bool optional = false) -> std::string {
     std::string err;
     auto path = materialize_archive(archive, err);
     if (path.empty()) {
+      if (optional) return "";
       std::println(stderr, "culebra build: {}", err);
       feature_failed = true;
       return "";
@@ -857,89 +885,27 @@ int run_build(const BuildOptions& opts) {
         : std::format("-Wl,--whole-archive {} -Wl,--no-whole-archive", q);
   };
 
-  // Cross builds rely on --rt-lib carrying the feature support, so skip
-  // force-loading the embedded feature objects there.
+  // Every force-load fragment precedes every plain link flag on the command
+  // line, so collect the two runs separately and splice them in below. A
+  // --rt-lib build gets the flags but none of the embedded objects: the archive
+  // it points at is expected to carry the feature bodies itself.
   bool host_build = opts.rt_lib.empty() && !cross;
-  std::string tensor_lib =
-      (uses_tensor && host_build) ? force_load_feature("libculebra_rt_tensor.a")
-                                  : "";
-  std::string http_lib =
-      (uses_http && host_build) ? force_load_feature("libculebra_rt_http.a")
-                                : "";
-  std::string compress_lib =
-      (uses_compress && host_build)
-          ? force_load_feature("libculebra_rt_compress.a")
-          : "";
-  std::string sqlite_lib =
-      (uses_sqlite && host_build)
-          ? force_load_feature("libculebra_rt_sqlite.a")
-          : "";
-  std::string scene_lib =
-      (uses_scene && host_build)
-          ? force_load_feature("libculebra_rt_scene.a")
-          : "";
-  std::string canvas_lib =
-      (uses_canvas && host_build)
-          ? force_load_feature("libculebra_rt_canvas.a")
-          : "";
-  std::string webview_lib =
-      (uses_webview && host_build)
-          ? force_load_feature("libculebra_rt_webview.a")
-          : "";
-  // Wrap declarations (out-of-tree bindings, `culebra wrap`): static
-  // registrars nothing references by name, so the archive member must be
-  // force-loaded for the binding to register — but only when the program
-  // actually names a wrapped namespace, so a script that uses none links
-  // none of the wrapped library (the Http/OpenSSL gating, applied to wrap).
-  // materialize_archive returns empty when the asset doesn't exist (a stock
-  // binary) — skip.
-  std::string wrap_lib;
-  if (host_build && uses_wrap) {
-    std::string err;
-    auto path = materialize_archive("libculebra_rt_wrap.a", err);
-    if (!path.empty()) {
-      auto q = std::format("'{}'", path.string());
-      wrap_lib = target_is_macho
-          ? std::format("-Wl,-force_load,{}", q)
-          : std::format("-Wl,--whole-archive {} -Wl,--no-whole-archive", q);
-    }
+  std::vector<std::string> feature_objs, feature_links;
+  for (size_t i = 0; i < std::size(kFeatureAxes); i++) {
+    if (!used[i]) continue;
+    const auto& ax = kFeatureAxes[i];
+    if (host_build && ax.embedded)
+      feature_objs.push_back(force_load_feature(ax.archive));
+    feature_links.push_back(ax.link_flags);
   }
+  // The wrap archive holds static registrars nothing references by name, so it
+  // needs the same force-load for the binding to register at all; its flags are
+  // whatever `culebra wrap --link` baked in.
+  if (host_build && uses_wrap)
+    feature_objs.push_back(force_load_feature("libculebra_rt_wrap.a", true));
+  if (uses_wrap) feature_links.push_back(CULEBRA_WRAP_LINK_FLAGS);
   if (feature_failed) return 1;
 
-  std::string blas = uses_tensor ? CULEBRA_BLAS_LINK : "";
-  // OpenSSL (+ zlib, both in CULEBRA_SSL_LINK) is linked only when the program
-  // references Http. The cblas/ssl reachability is broken in the core archive
-  // by the weak choke stubs (tensor_eval_node / http_request), so a non-Http
-  // program references no httplib TLS/zlib symbol and can omit these. The
-  // strong http_request is force-loaded via http_lib above when needed, which
-  // is what pulls in the symbols these flags resolve. CULEBRA_SSL_LINK is ""
-  // when Http is disabled at build time.
-  std::string ssl = uses_http ? CULEBRA_SSL_LINK : "";
-  // libz: appended when the program references Compress. Http already pulls zlib
-  // via CULEBRA_SSL_LINK; a duplicate -lz when both are used is harmless (the
-  // linker dedupes). The strong gzip/gunzip are force-loaded via compress_lib
-  // above, which is what references the symbols this flag resolves.
-  std::string zlib = uses_compress ? CULEBRA_ZLIB_LINK : "";
-  // SQLite's own link deps (pthread/dl/m on Linux; none on macOS). The strong
-  // sqlite3 wrappers + amalgamation are force-loaded via sqlite_lib above; this
-  // resolves the amalgamation's platform deps. "" when SQLite is unused.
-  std::string sqlite_link = uses_sqlite ? CULEBRA_SQLITE_LINK : "";
-  // raylib + SDL3 statics' platform deps (GUI/audio frameworks). Appended only
-  // when the program references Scene; the wrap registrar force-loaded via
-  // scene_lib is what references the symbols these flags resolve. "" when
-  // Scene is unused or built out.
-  std::string scene_link = uses_scene ? CULEBRA_SCENE_LINK : "";
-  // raylib + SDL3 statics' platform deps for the native Canvas window, appended
-  // only when the program references Canvas in a window build. The strong
-  // present/input bodies force-loaded via canvas_lib above are what reference
-  // the symbols these flags resolve. "" when Canvas is unused or headless.
-  std::string canvas_link = uses_canvas ? CULEBRA_CANVAS_LINK : "";
-  std::string webview_link = uses_webview ? CULEBRA_WEBVIEW_LINK : "";
-  // The wrapped library's own link flags (`culebra wrap --link`, baked at
-  // wrap time) ride the same usage axis as wrap_lib above: appended only when
-  // the program names a wrapped namespace, so an unused wrapped library adds
-  // nothing to the binary. "" for a stock driver.
-  std::string wrap_link_flags = uses_wrap ? CULEBRA_WRAP_LINK_FLAGS : "";
   std::string libcxx = target_is_macho ? "-lc++" : "-lstdc++ -lm";
   // LLVM's TargetMachine emits a non-PIC object by default. Modern
   // Linux distros (Ubuntu, Fedora) configure their `cc` to link as a
@@ -967,16 +933,33 @@ int run_build(const BuildOptions& opts) {
   const char* win_static = "";
 #endif
 
-  std::string extra;
-  if (cross) extra += std::format(" --target={}", shq(opts.target));
+  // Assembled in link order: driver, target selection, inputs, force-loaded
+  // feature objects, link-wide flags, then the libraries those objects need.
+  // Empty parts (a flag that doesn't apply, a feature built out) drop out at
+  // the join rather than leaving runs of blanks in the command.
+  std::vector<std::string> parts{cc};
+  if (cross) parts.push_back(std::format("--target={}", shq(opts.target)));
   if (!opts.sysroot.empty())
-    extra += std::format(" --sysroot={}", shq(opts.sysroot));
+    parts.push_back(std::format("--sysroot={}", shq(opts.sysroot)));
+  parts.push_back(shq(obj));
+  parts.push_back(assets_obj);
+  parts.push_back(shq(lib));
+  parts.insert(parts.end(), feature_objs.begin(), feature_objs.end());
+  parts.push_back(dead_strip);
+  parts.push_back(strip_syms);
+  parts.push_back(no_pie);
+  parts.push_back(win_static);
+  parts.push_back(libcxx);
+  parts.insert(parts.end(), feature_links.begin(), feature_links.end());
+  parts.push_back("-o");
+  parts.push_back(shq(opts.output));
 
-  std::string cmd = std::format(
-      "{}{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} -o {}", cc, extra,
-      shq(obj), assets_obj, shq(lib), tensor_lib, http_lib, compress_lib, sqlite_lib,
-      scene_lib, canvas_lib, webview_lib, wrap_lib, dead_strip, strip_syms, no_pie, win_static, libcxx, blas, ssl, zlib,
-      sqlite_link, scene_link, canvas_link, webview_link, wrap_link_flags, shq(opts.output));
+  std::string cmd;
+  for (const auto& p : parts) {
+    if (p.empty()) continue;
+    if (!cmd.empty()) cmd += ' ';
+    cmd += p;
+  }
 
   if (verbose) std::println(stderr, "culebra build: link: {}", cmd);
   int link_rc = std::system(cmd.c_str());
@@ -1087,7 +1070,6 @@ int run_wrap(int argc, const char** argv) {
     wrap_sources += s;
   }
 
-  auto shq = [](std::string_view v) { return std::format("'{}'", v); };
   bool verbose = std::getenv("CULEBRA_VERBOSE") != nullptr;
   auto configure = std::format(
       "cmake -S {} -B {} -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON "
@@ -1161,7 +1143,7 @@ Options parse_command_line(int argc, const char** argv) {
       }
       if (arg == "--emit-llvm") { options.emit_llvm = true; continue; }
       if (arg.starts_with("-O")) {
-        options.opt_level = std::stoi(arg.substr(2));
+        if (!parse_opt_level(arg, options.opt_level, options.error)) return options;
         options.opt_level_explicit = true;
         continue;
       }
@@ -1199,41 +1181,22 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
   }
 
   for (auto path : options.script_path_list) {
-    vector<char> buff;
-    if (!read_file(path.c_str(), buff)) {
+    auto user_src = read_file(path.c_str());
+    if (!user_src) {
       std::println(stderr, "can't open '{}'.", path);
       return false;
     }
     startup_profile::mark("read_file");
 
-    vector<string> msgs;
-    std::string_view user_src(buff.data(), buff.size());
-
-    // Walk the dependency graph via ModuleLoader. The same vector
-    // feeds both backends — JIT bundles every module into one IR,
-    // interp evaluates them sequentially. The JIT path needs the
-    // stdlib preamble inlined because it doesn't currently honour
-    // the env's lazy bindings (Phase 3).
-    // It's spliced into the entry module's AST *after* parse so user line
-    // numbers stay natural and error locations match interp (see
-    // splice_stdlib_preamble).
-    culebra::ModuleLoader loader;
-    std::vector<culebra::LoadedModule> modules;
-    try {
-      modules = loader.load_program(path, user_src, msgs);
+    // Walk the dependency graph via ModuleLoader. The same vector feeds both
+    // backends — JIT bundles every module into one IR, interp evaluates them
+    // sequentially — but only the JIT path needs the preamble spliced in.
+    bool splice = false;
 #ifdef CULEBRA_JIT_ENABLED
-      if (options.jit) culebra::splice_stdlib_preamble(modules);
+    splice = options.jit;
 #endif
-    } catch (const culebra::CulebraError& e) {
-      cerr << e.kind << ": " << e.what();
-      if (e.line > 0 || e.col > 0) cerr << " at " << e.line << ":" << e.col << ".";
-      cerr << endl;
-      return false;
-    }
-    if (modules.empty()) {
-      for (const auto& msg : msgs) cerr << msg << endl;
-      return false;
-    }
+    std::vector<culebra::LoadedModule> modules;
+    if (!load_entry_program(path, *user_src, splice, modules)) return false;
     startup_profile::mark("ModuleLoader::load_program (parse)");
 
     if (options.print_ast) {
@@ -1253,13 +1216,14 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
 #endif
 
     culebra::Value val;
+    vector<string> run_msgs;
     auto dbg =
         options.debug ? culebra::CommandLineDebugger() : culebra::Debugger();
-    if (culebra::interpret_modules(modules, env, val, msgs, dbg)) {
+    if (culebra::interpret_modules(modules, env, val, run_msgs, dbg)) {
       startup_profile::mark("interpret_modules");
       continue;
     }
-    for (const auto& msg : msgs) cerr << msg << endl;
+    for (const auto& msg : run_msgs) cerr << msg << endl;
     return false;
   }
 
@@ -1477,13 +1441,13 @@ int run_lint(int argc, const char** argv) {
   int errors = 0, warnings = 0;
   bool had_failure = !expand_ok;
   for (const auto& path : files) {
-    vector<char> buff;
-    if (!read_file(path.c_str(), buff)) {
+    auto contents = read_file(path.c_str());
+    if (!contents) {
       std::println(stderr, "culebra lint: can't open '{}'", path);
       had_failure = true;
       continue;
     }
-    std::string src(buff.begin(), buff.end());
+    std::string src = std::move(*contents);
     // `collect_module` wants both views of the program: the lowered AST the
     // backends run (sound error checks) and the source as written (advisory
     // warnings). See its comment for why neither alone is enough.
@@ -1635,14 +1599,13 @@ int run_fmt(int argc, const char** argv) {
   int rc = expand_ok ? 0 : 2;
   bool any_changed = false;
   for (const auto& path : files) {
-    vector<char> buff;
-    if (!read_file(path.c_str(), buff)) {
+    auto src = read_file(path.c_str());
+    if (!src) {
       std::println(stderr, "culebra fmt: can't open '{}'", path);
       rc = 2;
       continue;
     }
-    std::string src(buff.begin(), buff.end());
-    auto r = fmt(path, src);
+    auto r = fmt(path, *src);
     report(path, r);
     if (r.status == culebra::fmt::FormatStatus::ParseError ||
         r.status == culebra::fmt::FormatStatus::Refused) {
@@ -1710,6 +1673,10 @@ int main(int argc, const char** argv) {
   auto options = parse_command_line(argc, argv);
   startup_profile::mark("parse_command_line");
 
+  if (!options.error.empty()) {
+    std::println(stderr, "culebra: {}", options.error);
+    return 1;
+  }
   if (options.help) {
     print_usage(cout);
     return 0;
@@ -1778,11 +1745,7 @@ int main(int argc, const char** argv) {
       cerr << "interrupted" << endl;
       return 130;
     }
-    cerr << e.kind << ": " << e.what();
-    if (e.line > 0 || e.col > 0) {
-      cerr << " at " << e.line << ":" << e.col << ".";
-    }
-    cerr << endl;
+    print_culebra_error(e);
     return -1;
   } catch (const exception& e) {
     cerr << e.what() << endl;
