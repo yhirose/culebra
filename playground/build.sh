@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Build the culebra playground (interp-only, WebAssembly) into site/playground/.
 # The wasm artifacts are committed so GitHub Pages ("deploy from branch") serves
-# them directly. Run from the repo root (via `just site-build`).
+# them directly. Run from the repo root (via `just site-build`). Only a changed
+# input triggers a recompile, so editing the frontend and re-running
+# `just site-serve` costs a copy rather than two interpreter builds.
 #
 # Two builds, and worker.js picks one at load time:
 #
@@ -36,6 +38,15 @@ if [ ! -f "$EMSDK/emsdk_env.sh" ]; then
 fi
 # shellcheck disable=SC1091
 source "$EMSDK/emsdk_env.sh" >/dev/null 2>&1
+EMCC_VERSION="$(emcc --version | sed -n 1p)"
+
+# emcc routes clang through EM_COMPILER_WRAPPER, so a content-identical TU (a
+# fresh worktree, a reverted edit) reuses the object instead of recompiling.
+# CCACHE_BASEDIR — exported by the justfile — is what makes entries shared
+# across worktrees rather than keyed on each checkout's absolute paths.
+if command -v ccache >/dev/null; then
+  export EM_COMPILER_WRAPPER=ccache
+fi
 
 OUT="site/playground"
 mkdir -p "$OUT"
@@ -57,19 +68,49 @@ COMMON=(
   -Ivendor/stb
 )
 
-echo "[playground] compiling culebra-basic.wasm…"
-emcc "${COMMON[@]}" playground/wasm_main.cc -o "$OUT/culebra-basic.js"
+# Each build is the whole interpreter in one TU, and `just site-serve` asks for
+# one on every invocation, so skip a compile whose inputs are all unchanged.
+# The file list comes from the compiler (-MD) rather than being enumerated
+# here, which is what covers the generated preambles and the vendored headers;
+# a header that newly enters the TU can only arrive through a file already in
+# the list, so a stale list cannot hide an edit.
+fingerprint() {  # $1 = dep file, $2 = output .js, $3… = the emcc command line
+  local dep=$1 out=$2; shift 2
+  { printf '%s\n' "$EMCC_VERSION" "$@"
+    # "out.o: a.cc b.h \" + continuation lines → one path per line. The outputs
+    # ride along because they are committed: checking out an older wasm has to
+    # invalidate the stamp too, not just an edited input.
+    { sed -e 's/^[^:]*://' -e 's/\\$//' "$dep"
+      printf '%s\n%s\n' "$out" "${out%.js}.wasm"; } |
+      tr ' ' '\n' | sed '/^$/d' | sort -u | tr '\n' '\0' | xargs -0 shasum -a 256 2>/dev/null
+  } | shasum -a 256 | cut -d' ' -f1
+}
+
+compile() {  # $1 = label, $2 = output .js, $3… = flags on top of COMMON
+  local label=$1 out=$2; shift 2
+  local dep="${out%.js}.d" stamp="${out%.js}.stamp" want
+  local cmd=("${COMMON[@]}" "$@" playground/wasm_main.cc -o "$out")
+  # A vanished input makes fingerprint fail, which reads as "rebuild".
+  if [ -s "$dep" ] && [ -f "$stamp" ] && [ -f "${out%.js}.wasm" ] &&
+     want=$(fingerprint "$dep" "$out" "${cmd[@]}") && [ "$want" = "$(cat "$stamp")" ]; then
+    echo "[playground] $label is up to date"
+    return
+  fi
+  echo "[playground] compiling ${label}…"
+  emcc "${cmd[@]}" -MD -MF "$dep"
+  fingerprint "$dep" "$out" "${cmd[@]}" >"$stamp" || rm -f "$stamp"
+}
+
+compile "culebra-basic.wasm" "$OUT/culebra-basic.js"
 
 # JSPI (not Asyncify) because it composes with -fwasm-exceptions, which the
 # interpreter needs. JSPI_EXPORTS makes run_culebra return a Promise, so
 # worker.js awaits it — harmless for the basic build, where it stays
 # synchronous. CULEBRA_WASM_JSPI switches on the real Term.read_key (term.h)
 # and IO.*_is_terminal (os_compat.h) instead of their "not interactive" stubs.
-echo "[playground] compiling culebra-full.wasm (WebGPU + TUI, JSPI)…"
-emcc "${COMMON[@]}" \
+compile "culebra-full.wasm (WebGPU + TUI, JSPI)" "$OUT/culebra-full.js" \
   --use-port=emdawnwebgpu -DTENSORLIB_WEBGPU -DCULEBRA_WASM_JSPI \
-  -sJSPI=1 -sJSPI_EXPORTS=run_culebra \
-  playground/wasm_main.cc -o "$OUT/culebra-full.js"
+  -sJSPI=1 -sJSPI_EXPORTS=run_culebra
 
 # Copy the static frontend alongside the wasm (brand.css lives in site/assets/).
 cp playground/index.html playground/app.js playground/worker.js \
