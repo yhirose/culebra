@@ -298,12 +298,13 @@ Array と iterator プロトコル Object の両方を receiver に取るメソ�
 lazy 側が新しい iterator、`find` は両腕とも out-param 経由）。行は
 inline fusion の emitter も腕ごとに指定できます。callback が literal
 lambda のときに使われ、`map` / `filter` は Array 側だけ fusion し
-（lazy 側は factory に本物の closure を渡す必要がある）、`for_each` は
-両腕とも fusion します。
-
-`reduce`（seed + out-param + fusion）、`join`（両腕で共有する型付き
-引数）、`sum` / `product` / `min` / `max`（Tensor という第 3 の receiver
-タグ）は固有の形が残るため手書きのままです。
+（lazy 側は factory に本物の closure を渡す必要がある）、`for_each` と
+`reduce` は両腕とも fusion します（`reduce` の emitter は seed も
+受け取ります）。残りの行の軸は `join`（型検査付き引数のポインタを両腕で
+borrow し、シンボルは呼び出し位置を取らない）と `sum` / `max`
+（`tensor_op` が TAG_TENSOR を第 3 の receiver 腕として共有の軸なし
+reduction に振り分ける。`product` / `min` は 2-way のまま）を
+カバーします。
 
 ### for-in カーソル
 

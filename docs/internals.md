@@ -301,12 +301,12 @@ Array eagerly and a new iterator lazily, `find` writes through
 out-params on both. A row may also name an inline-fusion emitter per
 arm, used when the callback is a literal lambda: `map` and `filter` fuse
 on the Array arm only (the lazy arm has to hand a real closure to its
-factory), while `for_each` fuses on both.
-
-`reduce` (a seed plus out-params plus fusion), `join` (a typed argument
-shared by both arms) and `sum`/`product`/`min`/`max` (a third receiver
-tag for Tensor) still carry enough of their own shape to stay
-hand-written.
+factory), while `for_each` and `reduce` fuse on both (`reduce`'s
+emitters additionally take the seed). The remaining row axes cover
+`join` (a type-checked argument whose pointer both arms borrow, and
+symbols that take no call position) and `sum`/`max` (a `tensor_op`
+marking TAG_TENSOR as a third receiver arm, served by the shared
+axis-less reduction; `product`/`min` stay 2-way).
 
 ### for-in cursor
 

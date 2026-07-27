@@ -1559,13 +1559,19 @@ struct JIT {
   // receiver-resolution error — is shared. Consumed by the table emitter
   // inside compile_builtin_method.
   struct DualMethodDesc {
-    enum class Args : uint8_t { None, Callback };
+    // SeedCallback = (seed, λ) as in reduce; TypedValue = one type-checked,
+    // borrowed argument as in join.
+    enum class Args : uint8_t { None, Callback, SeedCallback, TypedValue };
     // How an arm's return value becomes a %Value. Object covers both a
     // lazy iterator and a dict (group_by); OutParam means the arm writes
     // through {tag,data} allocas and its return value is ignored.
     enum class Res : uint8_t { Array, Object, Set, Tuple, Bool, Value, Nil,
-                               OutParam };
+                               OutParam, String };
     using Fuse = llvm::Value* (JIT::*)(llvm::Value*, const peg::Ast&);
+    // Fusion emitter for SeedCallback methods: the extra %Value is the
+    // seed, re-assembled {tag,data} by the caller.
+    using SeedFuse =
+        llvm::Value* (JIT::*)(llvm::Value*, llvm::Value*, const peg::Ast&);
     const char* name;
     const char* arr_symbol;
     const char* iter_symbol;
@@ -1577,6 +1583,18 @@ struct JIT {
     // through the runtime helper.
     Fuse arr_fuse = nullptr;
     Fuse iter_fuse = nullptr;
+    SeedFuse arr_seed_fuse = nullptr;
+    SeedFuse iter_seed_fuse = nullptr;
+    // Runtime symbols take a trailing (line, col) except join's, whose only
+    // throw (the sep type check) fires before dispatch.
+    bool line_col = true;
+    // TypedValue only: the expected type and the parameter label its
+    // rejection names.
+    const char* arg_type = nullptr;
+    const char* arg_name = nullptr;
+    // >= 0: TAG_TENSOR is a third receiver arm, served by the shared
+    // axis-less reduction with this culebra::Op (sum/max only).
+    int tensor_op = -1;
   };
 
   // Publish the current node's source position (current_line_/column_, which
@@ -16083,12 +16101,61 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
           std::function<llvm::Value*(llvm::Value* arrPtr)> eager,
           std::function<llvm::Value*(llvm::Value* iterTag,
                                      llvm::Value* iterData)>
-              lazy) -> llvm::Value* {
+              lazy,
+          std::function<llvm::Value*(llvm::Value* tenPtr)> tensor =
+              nullptr) -> llvm::Value* {
     // The callback (if any) is already compiled by now, so this runs after
     // the argument is evaluated and before the HOF runtime call.
     if (hof_cb) emit_set_callback_arg_site(*hof_cb);
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
+    if (tensor) {
+      // TAG_TENSOR joins the switch as a third receiver arm. Kept a
+      // separate shape rather than folded into the 2-way below: the error
+      // names all three types, and this arm predates the op-pos publish in
+      // the iterator branch — both are pinned by interp symmetry, so
+      // unifying them would shift observable errors.
+      auto arrBB = llvm::BasicBlock::Create(
+          ctx_, std::string(label) + ".arr", fn);
+      auto iterBB = llvm::BasicBlock::Create(
+          ctx_, std::string(label) + ".iter", fn);
+      auto tenBB = llvm::BasicBlock::Create(
+          ctx_, std::string(label) + ".ten", fn);
+      auto errBB = llvm::BasicBlock::Create(
+          ctx_, std::string(label) + ".err", fn);
+      auto mergeBB = llvm::BasicBlock::Create(
+          ctx_, std::string(label) + ".merge", fn);
+      auto sw = builder_.CreateSwitch(t, errBB, 3);
+      sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
+      sw->addCase(builder_.getInt8(TAG_OBJECT), iterBB);
+      sw->addCase(builder_.getInt8(TAG_TENSOR), tenBB);
+
+      OwnedPhi redMerge(this, std::string(label) + ".res");
+      builder_.SetInsertPoint(arrBB);
+      auto arrPtr = builder_.CreateIntToPtr(d, ptrTy);
+      redMerge.add_incoming(own(eager(arrPtr)));
+      builder_.CreateBr(mergeBB);
+
+      builder_.SetInsertPoint(iterBB);
+      redMerge.add_incoming(own(lazy(t, d)));
+      builder_.CreateBr(mergeBB);
+
+      builder_.SetInsertPoint(tenBB);
+      auto tenPtr = builder_.CreateIntToPtr(d, ptrTy);
+      redMerge.add_incoming(own(tensor(tenPtr)));
+      builder_.CreateBr(mergeBB);
+
+      builder_.SetInsertPoint(errBB);
+      // No hof_owned release here: every tensor-capable row is Args::None
+      // (sum/max), so there is nothing to strand on this edge. A row with
+      // arguments would need the 2-way arm's release loop first.
+      assert(hof_owned.empty() && "tensor-armed dispatch with owned args");
+      emit_type_error_typed("Array, Object, or Tensor", t);
+      builder_.CreateUnreachable();
+
+      builder_.SetInsertPoint(mergeBB);
+      return redMerge.finish(mergeBB).consume();
+    }
     auto arrBB = llvm::BasicBlock::Create(
         ctx_, std::string(label) + ".arr", fn);
     auto objBB = llvm::BasicBlock::Create(
@@ -16136,9 +16203,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
 
   // Dual eager/lazy methods whose emit is fully described by a row (see
   // DualMethodDesc). Adding one = a row + the two runtime fns + the interp
-  // lambda. Methods that additionally carry an inline fusion path
-  // (map/filter/for_each/reduce), a typed argument (join), or a third
-  // receiver tag (sum/product/min/max) stay hand-written below.
+  // lambda.
   using DA = DualMethodDesc::Args;
   using DR = DualMethodDesc::Res;
   static constexpr DualMethodDesc kDualMethods[] = {
@@ -16167,6 +16232,32 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
       {"to_set",    rt::array_to_set,    rt::iter_to_set,    DA::None,     DR::Set,      DR::Set},
       // find answers nil when nothing matches, so it loads through out-params.
       {"find",      rt::array_find,      rt::iter_find,      DA::Callback, DR::OutParam, DR::OutParam},
+      // reduce fuses on BOTH arms (its emitters share the (receiver, seed,
+      // λ) shape); the runtime fallback answers through out-params.
+      {.name = "reduce", .arr_symbol = rt::array_reduce,
+       .iter_symbol = rt::iter_reduce, .args = DA::SeedCallback,
+       .arr_res = DR::OutParam, .iter_res = DR::OutParam,
+       .arr_seed_fuse = &JIT::emit_inlined_array_reduce,
+       .iter_seed_fuse = &JIT::emit_inlined_iter_reduce},
+      // Both join arms borrow the same sep pointer; the String check throws
+      // before dispatch, so the symbols take no position.
+      {.name = "join", .arr_symbol = rt::array_join,
+       .iter_symbol = rt::iter_join, .args = DA::TypedValue,
+       .arr_res = DR::String, .iter_res = DR::String, .line_col = false,
+       .arg_type = "String", .arg_name = "parameter 'sep'"},
+      // sum/max also reduce a Tensor (third receiver tag, axis-less →
+      // Float); product/min stay 2-way.
+      {.name = "sum", .arr_symbol = rt::array_sum, .iter_symbol = rt::iter_sum,
+       .args = DA::None, .arr_res = DR::Value, .iter_res = DR::Value,
+       .tensor_op = static_cast<int>(culebra::Op::Sum)},
+      {.name = "product", .arr_symbol = rt::array_product,
+       .iter_symbol = rt::iter_product, .args = DA::None,
+       .arr_res = DR::Value, .iter_res = DR::Value},
+      {.name = "min", .arr_symbol = rt::array_min, .iter_symbol = rt::iter_min,
+       .args = DA::None, .arr_res = DR::Value, .iter_res = DR::Value},
+      {.name = "max", .arr_symbol = rt::array_max, .iter_symbol = rt::iter_max,
+       .args = DA::None, .arr_res = DR::Value, .iter_res = DR::Value,
+       .tensor_op = static_cast<int>(culebra::Op::Max)},
   };
 
   // Declines (empty Owned) on an unknown name OR an arity mismatch, so
@@ -16180,19 +16271,31 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
       }
     }
     if (!row) return {};
-    if (argsAst.nodes.size() != (row->args == DA::None ? 0u : 1u)) return {};
+    size_t want = row->args == DA::None           ? 0u
+                  : row->args == DA::SeedCallback ? 2u
+                                                  : 1u;
+    if (argsAst.nodes.size() != want) return {};
 
-    // Both arms append the same tail: callback, call position, out-params.
+    // Receiver-adjacent extras an arm inserts before the callback pair:
+    // reduce's seed scalars, join's sep pointer. Filled by the non-fused
+    // path below.
+    llvm::SmallVector<llvm::Value*, 2> extra;
+
+    // Both arms append the same tail: extras, callback, call position,
+    // out-params.
     auto arm = [&](const char* sym, DualMethodDesc::Res res,
                    llvm::SmallVector<llvm::Value*, 8> args, llvm::Value* ft,
                    llvm::Value* fd, llvm::Value* outTag,
                    llvm::Value* outData) -> llvm::Value* {
+      args.append(extra.begin(), extra.end());
       if (ft) {
         args.push_back(ft);
         args.push_back(fd);
       }
-      args.push_back(ho_line);
-      args.push_back(ho_col);
+      if (row->line_col) {
+        args.push_back(ho_line);
+        args.push_back(ho_col);
+      }
       if (res == DR::OutParam) {
         args.push_back(outTag);
         args.push_back(outData);
@@ -16205,6 +16308,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
         case DR::Object: return make_object(out);
         case DR::Set:    return make_set(out);
         case DR::Tuple:  return make_tuple(out);
+        case DR::String: return make_string(out);
         case DR::Bool:
           return make_bool(builder_.CreateICmpNE(out, builder_.getInt64(0)));
         case DR::Nil:      return make_nil();  // for_each: no result
@@ -16238,15 +16342,70 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
             }));
       }
     }
+    if (row->arr_seed_fuse) {
+      const auto& cb_ast = *argsAst.nodes[1];
+      hof_cb = &cb_ast;
+      if (is_inlinable_lambda(cb_ast, /*expected_arity=*/2)) {
+        // The seed's +1 crosses into the dispatch arms as a re-assembled
+        // {tag,data} value (the scalar-crossing idiom — a Pinned raw would
+        // trip the block check here): each inline loop absorbs it as the
+        // accumulator, and the receiver-error arm releases it via hof_owned
+        // (a heap seed used to strand on that edge).
+        auto initP = compile(*argsAst.nodes[0]).consume();
+        auto initV = make_value(extract_tag(initP), extract_data(initP));
+        hof_owned.push_back(initV);
+        return own(dispatch_arr_iter(
+            row->name,
+            [&](llvm::Value* arrPtr) {
+              return (this->*row->arr_seed_fuse)(arrPtr, initV, cb_ast);
+            },
+            [&](llvm::Value* it, llvm::Value* id) {
+              // Same as for_each: the inline loop borrows the iterator.
+              return (this->*row->iter_seed_fuse)(make_value(it, id), initV,
+                                                  cb_ast);
+            }));
+      }
+    }
+
+    Owned typed_arg;
+    if (row->args == DA::SeedCallback) {
+      // The seed's +1 crosses the callback's compilation (which opens new
+      // blocks) as re-assembled {tag, data} scalars — the same
+      // scalar-crossing idiom as the fused arm above. A raw consume()d
+      // %Value held across compile(cb_ast) aborted codegen for a heap seed
+      // with a non-inlinable callback.
+      auto initP = compile(*argsAst.nodes[0]).consume();
+      auto st = extract_tag(initP);
+      auto sd = extract_data(initP);
+      // Callee-consumes, like the callback: the runtime helper owns the
+      // seed from entry (its acc guard covers a callback-reject throw).
+      hof_owned.push_back(make_value(st, sd));
+      extra.append({st, sd});
+    } else if (row->args == DA::TypedValue) {
+      // Borrowed by both arms (its data ptr is read, never stored) and
+      // dropped once after dispatch. The guard covers the type-check throw
+      // (`[1,2,3].join([9,9])`), where the normal drop is skipped — exactly
+      // once, since the normal drop and the guard are mutually exclusive.
+      typed_arg = compile(*argsAst.nodes[0]);
+      {
+        ThrowGuard arg_guard(this, {typed_arg.borrow()});
+        emit_type_check(typed_arg.borrow(), row->arg_type, row->arg_name,
+                        argsAst.nodes[0].get());
+      }
+      extra.push_back(
+          builder_.CreateIntToPtr(extract_data(typed_arg.borrow()), ptrTy));
+    }
 
     llvm::Value* ft = nullptr;
     llvm::Value* fd = nullptr;
-    if (row->args == DA::Callback) {
-      hof_cb = argsAst.nodes[0].get();
+    if (row->args == DA::Callback || row->args == DA::SeedCallback) {
+      const auto* cb =
+          argsAst.nodes[row->args == DA::SeedCallback ? 1 : 0].get();
+      hof_cb = cb;
       // Callee-consumes: the HOF runtime owns the callback's +1 from entry
       // on every exit. Only one arm runs, so it is consumed exactly once;
       // the receiver-error edge (no helper runs) releases it via hof_owned.
-      auto fv = compile(*argsAst.nodes[0]).consume();
+      auto fv = compile(*cb).consume();
       ft = extract_tag(fv);
       fd = extract_data(fv);
       hof_owned.push_back(fv);
@@ -16261,6 +16420,13 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
       outData = entryB.CreateAlloca(builder_.getInt64Ty(), nullptr,
                                     std::string(row->name) + ".data");
     }
+    std::function<llvm::Value*(llvm::Value*)> tensor;
+    if (row->tensor_op >= 0)
+      tensor = [&](llvm::Value* tenPtr) {
+        return emit_value_call(
+            module_->getFunction(rt::tensor_reduce_all),
+            {tenPtr, builder_.getInt64(row->tensor_op)});
+      };
     auto res = dispatch_arr_iter(
         row->name,
         [&](llvm::Value* arrPtr) {
@@ -16270,7 +16436,9 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
         [&](llvm::Value* it, llvm::Value* id) {
           return arm(row->iter_symbol, row->iter_res, {it, id}, ft, fd, outTag,
                      outData);
-        });
+        },
+        tensor);
+    if (typed_arg.borrow()) typed_arg.drop();
     if (row->arr_res == DR::OutParam) {
       auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
       auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
@@ -16279,196 +16447,6 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     return own(res);
   };
   if (auto r = try_dual_table_method(); r.borrow()) return r;
-
-  if (method == "join" && argsAst.nodes.size() == 1) {
-    // Array (eager) and Iterator (lazy) both join, so `xs.map(...).join(sep)`
-    // works with no intermediate `.collect()`. sep is borrowed by both arms
-    // (its data ptr is read, never stored) and dropped once after dispatch.
-    auto sep = compile(*argsAst.nodes[0]);
-    {
-      // `sep` is `+1`-owned; `.drop()` below releases it on the normal path but
-      // that is skipped when the type check throws (`[1,2,3].join([9,9])`).
-      // Guard the borrow so the unwind edge releases it — exactly once, since
-      // the normal drop and the guard are mutually exclusive.
-      ThrowGuard sep_guard(this, {sep.borrow()});
-      emit_type_check(sep.borrow(), "String", "parameter 'sep'",
-                      argsAst.nodes[0].get());
-    }
-    auto sepPtr = builder_.CreateIntToPtr(extract_data(sep.borrow()), ptrTy);
-    auto res = dispatch_arr_iter(
-        "join",
-        [&](llvm::Value* arrPtr) {
-          auto s = emit_call(module_->getFunction(rt::array_join),
-                             {arrPtr, sepPtr});
-          return make_string(s);
-        },
-        [&](llvm::Value* it, llvm::Value* id) {
-          auto s = emit_call(module_->getFunction(rt::iter_join),
-                             {it, id, sepPtr});
-          return make_string(s);
-        });
-    sep.drop();
-    return own(res);
-  }
-
-  if (method == "reduce" && argsAst.nodes.size() == 2) {
-    const auto& cb_ast = *argsAst.nodes[1];
-    hof_cb = &cb_ast;
-    if (is_inlinable_lambda(cb_ast, /*expected_arity=*/2)) {
-      // The seed's +1 crosses into the dispatch arms as a re-assembled
-      // {tag,data} value (the scalar-crossing idiom — a Pinned raw would
-      // trip the block check here): each runtime path consumes it
-      // exactly once — the inline loops absorb it as the accumulator, and
-      // the receiver-error arm releases it via hof_owned (a heap seed used
-      // to strand on that edge).
-      auto initP = compile(*argsAst.nodes[0]).consume();
-      auto initV = make_value(extract_tag(initP), extract_data(initP));
-      hof_owned.push_back(initV);
-      return own(dispatch_arr_iter(
-          "reduce",
-          [&](llvm::Value* arrPtr) {
-            return emit_inlined_array_reduce(arrPtr, initV, cb_ast);
-          },
-          [&](llvm::Value* it, llvm::Value* id) {
-            // Same as for_each: the inline loop borrows the iterator.
-            return emit_inlined_iter_reduce(make_value(it, id), initV,
-                                            cb_ast);
-          }));
-    }
-    // The seed's +1 crosses the callback's compilation (which opens new
-    // blocks) as re-assembled {tag, data} scalars — the same
-    // scalar-crossing idiom as the inlined arm above. A raw consume()d
-    // %Value held across compile(cb_ast) aborted codegen for a heap seed
-    // with a non-inlinable callback.
-    auto initP = compile(*argsAst.nodes[0]).consume();
-    auto it_tag = extract_tag(initP);
-    auto it_data = extract_data(initP);
-    auto init = make_value(it_tag, it_data);
-    // Callee-consumes: the runtime reduce owns both the seed and the callback
-    // from entry (its acc guard covers a callback-reject throw); only the
-    // receiver-error edge — where no helper runs — releases them, via
-    // hof_owned.
-    llvm::Value* outTag;
-    llvm::Value* outData;
-    {
-      auto fv = compile(cb_ast).consume();
-      auto ft = extract_tag(fv);
-      auto fd = extract_data(fv);
-      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
-                               fn->getEntryBlock().begin());
-      outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "red.tag");
-      outData = entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "red.data");
-      hof_owned.push_back(init);
-      hof_owned.push_back(fv);
-      dispatch_arr_iter(
-          "reduce",
-          [&](llvm::Value* arrPtr) {
-            emit_call(module_->getFunction(rt::array_reduce),
-                      {arrPtr, it_tag, it_data, ft, fd, ho_line, ho_col,
-                       outTag, outData});
-            return make_nil();  // ignored; real result via out-params
-          },
-          [&](llvm::Value* it, llvm::Value* id) {
-            emit_call(module_->getFunction(rt::iter_reduce),
-                      {it, id, it_tag, it_data, ft, fd, ho_line, ho_col,
-                       outTag, outData});
-            return make_nil();
-          });
-    }
-    auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
-    auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
-    llvm::Value* result = make_value(tagLoaded, dataLoaded);
-    return own(result);
-  }
-
-  // sum / product / min / max — numeric aggregates, same shape for Array
-  // and Iterator receivers. Elements may be Long or Float: sum/product
-  // answer a Long while every element is a Long and promote to Float at
-  // the first Float; min/max return the winning element, so its own type
-  // survives. A non-numeric element raises a type error; min/max
-  // additionally throw on empty input.
-  // sum / max also accept TAG_TENSOR (the axis-less Tensor reduction
-  // returns a Float); product / min stay 2-way (no Tensor support).
-  if ((method == "sum" || method == "product" ||
-       method == "min" || method == "max") &&
-      argsAst.nodes.size() == 0) {
-    const char* arr_rt_name;
-    const char* iter_rt_name;
-    if (method == "sum") {
-      arr_rt_name = rt::array_sum;
-      iter_rt_name = rt::iter_sum;
-    } else if (method == "product") {
-      arr_rt_name = rt::array_product;
-      iter_rt_name = rt::iter_product;
-    } else if (method == "min") {
-      arr_rt_name = rt::array_min;
-      iter_rt_name = rt::iter_min;
-    } else {
-      arr_rt_name = rt::array_max;
-      iter_rt_name = rt::iter_max;
-    }
-    bool tensor_capable = (method == "sum" || method == "max");
-    if (!tensor_capable) {
-      return own(dispatch_arr_iter(
-          method.c_str(),
-          [&](llvm::Value* arrPtr) {
-            return emit_value_call(module_->getFunction(arr_rt_name),
-                                   {arrPtr, ho_line, ho_col});
-          },
-          [&](llvm::Value* it, llvm::Value* id) {
-            return emit_value_call(module_->getFunction(iter_rt_name),
-                                   {it, id, ho_line, ho_col});
-          }));
-    }
-    // 3-way dispatch for sum / max: TAG_ARRAY and TAG_OBJECT (iterator)
-    // answer Long or Float per their elements, TAG_TENSOR → Float
-    // (axis-less reduction).
-    auto t = extract_tag(receiver);
-    auto d = extract_data(receiver);
-    auto arrBB = llvm::BasicBlock::Create(
-        ctx_, std::string(method) + ".arr", fn);
-    auto iterBB = llvm::BasicBlock::Create(
-        ctx_, std::string(method) + ".iter", fn);
-    auto tenBB = llvm::BasicBlock::Create(
-        ctx_, std::string(method) + ".ten", fn);
-    auto errBB = llvm::BasicBlock::Create(
-        ctx_, std::string(method) + ".err", fn);
-    auto mergeBB = llvm::BasicBlock::Create(
-        ctx_, std::string(method) + ".merge", fn);
-    auto sw = builder_.CreateSwitch(t, errBB, 3);
-    sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
-    sw->addCase(builder_.getInt8(TAG_OBJECT), iterBB);
-    sw->addCase(builder_.getInt8(TAG_TENSOR), tenBB);
-
-    OwnedPhi redMerge(this, std::string(method) + ".res");
-    builder_.SetInsertPoint(arrBB);
-    auto arrPtr = builder_.CreateIntToPtr(d, ptrTy);
-    redMerge.add_incoming(emit_value_call(module_->getFunction(arr_rt_name),
-                                         {arrPtr, ho_line, ho_col}));
-    builder_.CreateBr(mergeBB);
-
-    builder_.SetInsertPoint(iterBB);
-    redMerge.add_incoming(emit_value_call(module_->getFunction(iter_rt_name),
-                                          {t, d, ho_line, ho_col}));
-    builder_.CreateBr(mergeBB);
-
-    builder_.SetInsertPoint(tenBB);
-    auto tenPtr = builder_.CreateIntToPtr(d, ptrTy);
-    int op_id = (method == "sum") ? static_cast<int>(culebra::Op::Sum)
-                                  : static_cast<int>(culebra::Op::Max);
-    auto tenV = emit_value_call(
-        module_->getFunction(rt::tensor_reduce_all),
-        {tenPtr, builder_.getInt64(op_id)});
-    redMerge.add_incoming(tenV);
-    builder_.CreateBr(mergeBB);
-
-    builder_.SetInsertPoint(errBB);
-    emit_type_error_typed("Array, Object, or Tensor", t);
-    builder_.CreateUnreachable();
-
-    builder_.SetInsertPoint(mergeBB);
-    return redMerge.finish(mergeBB);
-  }
 
   // --- Iterator-only methods (no eager Array equivalent) ---
   // For now these error on Array receivers. Phase B2 may add eager
