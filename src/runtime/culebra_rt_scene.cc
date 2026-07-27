@@ -317,7 +317,7 @@ class Node {
   std::vector<float> mv;   // vertices xyz
   std::vector<float> mn;   // normals xyz
   std::vector<float> mt;   // texcoords uv
-  std::vector<unsigned short> mi;  // indices
+  std::vector<long> mi;    // indices (range-checked at build())
   bool mesh_built = false;
   ::Model mesh_model{};
 
@@ -357,8 +357,7 @@ class Node {
     return *this;
   }
   Node& tri(long a, long b, long c) {
-    mi.push_back((unsigned short)a); mi.push_back((unsigned short)b);
-    mi.push_back((unsigned short)c);
+    mi.push_back(a); mi.push_back(b); mi.push_back(c);
     return *this;
   }
   Node& build() {
@@ -368,6 +367,18 @@ class Node {
                "Scene: mesh has %zu vertices; raylib's 16-bit index buffer "
                "caps at 65535 — split it across multiple nodes.", mv.size() / 3);
       return *this;   // refuse rather than silently wrap indices into garbage
+    }
+    // Every index must name a vertex that was pushed. That subsumes the 16-bit
+    // range check (the cap above bounds the count), so the narrowing cast below
+    // is the only place a value can reach the GPU and it is provably in range.
+    long verts = (long)(mv.size() / 3);
+    for (long i : mi) {
+      if (i < 0 || i >= verts) {
+        TraceLog(LOG_ERROR,
+                 "Scene: triangle index %ld names no vertex (%ld pushed) — "
+                 "mesh not built.", i, verts);
+        return *this;
+      }
     }
     ::Mesh m{};
     m.vertexCount = (int)(mv.size() / 3);
@@ -383,15 +394,16 @@ class Node {
       for (size_t i = 0; i < mt.size(); i++) m.texcoords[i] = mt[i];
     }
     m.indices = (unsigned short*)MemAlloc((unsigned)(mi.size() * sizeof(unsigned short)));
-    for (size_t i = 0; i < mi.size(); i++) m.indices[i] = mi[i];
+    for (size_t i = 0; i < mi.size(); i++) m.indices[i] = (unsigned short)mi[i];
     UploadMesh(&m, false);
+    if (mesh_built) UnloadModel(mesh_model);   // rebuilt: drop the older upload
     mesh_model = LoadModelFromMesh(m);
     mesh_built = true;
     // the data now lives in the GPU mesh; release the CPU-side build buffers
     std::vector<float>().swap(mv);
     std::vector<float>().swap(mn);
     std::vector<float>().swap(mt);
-    std::vector<unsigned short>().swap(mi);
+    std::vector<long>().swap(mi);
     return *this;
   }
 
@@ -564,6 +576,13 @@ class View {
       // reclaimed at process exit. Sound/Music unload their own buffers.
       CloseWindow();
     }
+    // Plain heap (raylib allocates one MaterialMap array per material), so it
+    // is reclaimed even when the window is already gone. UnloadMaterial would
+    // be wrong here: it also unloads the shader and every non-default texture,
+    // including the shadowmaps parked in the SPECULAR/NORMAL slots that the
+    // block above owns and has already unloaded.
+    MemFree(mat_.maps);
+    MemFree(depth_mat_.maps);
   }
 
   void target_fps(long fps) { SetTargetFPS((int)fps); }
