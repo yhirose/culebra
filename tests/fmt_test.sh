@@ -166,6 +166,61 @@ if ! diff -u "$TMP/brc_want.cul" "$TMP/brc_got.cul" > "$TMP/brc_diff" 2>&1; then
   fail=1
 fi
 
+# --- 1e. Golden fixture: comment above a lone bare-literal statement -------
+# A block whose single statement is a bare literal collapses onto that leaf, so
+# the leaf's span carries the block's `{ }` AND any comment inside it.
+# tight_span sheds the brackets but used to leave the comment in the literal —
+# while the enclosing statement list emitted it too, so it appeared twice and
+# the preservation net refused the file. Only bare-atom bodies hit this: a
+# `return`/`let`/call/binary statement is a node the block can't collapse onto.
+# See include/formatter.h tight_span.
+cat > "$TMP/atom_in.cul" <<'EOF'
+fn f() {
+  # why the literal
+  1
+}
+let g = fn () {
+  # lambda body
+  "hi"
+}
+if true {
+  # branch
+  2
+}
+fn t() {
+  3   # trailing
+}
+inspect(f())
+inspect(g())
+inspect(t())
+EOF
+cat > "$TMP/atom_want.cul" <<'EOF'
+fn f() {
+  # why the literal
+  1
+}
+let g = fn () {
+  # lambda body
+  "hi"
+}
+if true {
+  # branch
+  2
+}
+fn t() {
+  3  # trailing
+}
+inspect(f())
+inspect(g())
+inspect(t())
+EOF
+"$CULEBRA" fmt "$TMP/atom_in.cul" > "$TMP/atom_got.cul" 2>"$TMP/atom_err"
+if ! diff -u "$TMP/atom_want.cul" "$TMP/atom_got.cul" > "$TMP/atom_diff" 2>&1; then
+  echo "FAIL golden (bare-literal body comment): formatted output differs from expected"
+  cat "$TMP/atom_diff"
+  fail=1
+fi
+
 # --- 2 + 3. Corpus safety + idempotency (parallel) ------------------------
 # Format every corpus file twice — once to check the re-parse/comment safety
 # net doesn't refuse (exit 2), once more to assert idempotency. The files are

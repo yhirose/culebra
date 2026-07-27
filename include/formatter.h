@@ -380,6 +380,27 @@ class Printer {
 
   std::string_view tight_span(const peg::Ast& a) const {
     std::string_view t = src_.substr(a.position, a.length);
+    // A comment the optimizer folded into the span goes with the brackets it
+    // came wrapped in. `fn f() { # why \n 1 }` collapses BLOCK onto the NUMBER
+    // leaf, so the span carries the body's comment; the enclosing statement
+    // list also emits that comment (it sits before the item's first token), so
+    // leaving it here duplicates it and the preservation net refuses the file.
+    // Only a whole comment at either edge is shed — one *between* tokens is not
+    // the wrapper's, and the caller keeps the span verbatim to preserve it.
+    auto shed_edge_comment = [&] {
+      size_t off = static_cast<size_t>(t.data() - src_.data());
+      for (const auto& c : comments_) {
+        if (c.start == off && c.end <= off + t.size()) {
+          t.remove_prefix(c.end - c.start);
+          return true;
+        }
+        if (c.end == off + t.size() && c.start >= off) {
+          t.remove_suffix(c.end - c.start);
+          return true;
+        }
+      }
+      return false;
+    };
     for (;;) {
       while (!t.empty() && (t.front() == ' ' || t.front() == '\t' ||
                             t.front() == '\n' || t.front() == '\r'))
@@ -387,6 +408,7 @@ class Printer {
       while (!t.empty() && (t.back() == ' ' || t.back() == '\t' ||
                             t.back() == '\n' || t.back() == '\r'))
         t.remove_suffix(1);
+      if (shed_edge_comment()) continue;
       // `?[ expr ]` (a collapsed SAFE_INDEX) wraps with a two-char prefix.
       if (t.size() >= 3 && t[0] == '?' && t[1] == '[' && t.back() == ']' &&
           encloses_whole(t.substr(1), '[', ']')) {
