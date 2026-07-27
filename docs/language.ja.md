@@ -1097,7 +1097,8 @@ shape が単調増加します。そのようなワークロードでは非 Stri
 
 ```culebra
 o = { n: 10, add: fn (x) { x + self.n } }
-inspect(o.add(5))                   # 15  (メソッド、self = o)
+# レシーバ呼び出しは self を束縛するので `add` は o.n を読む:
+inspect(o.add(5))                   # => 15
 
 double = fn (x) { x * 2 }
 42.double()                      # UFCS → double(42) → 84
@@ -3507,10 +3508,12 @@ view は有効:
 
 ```culebra
 let v = 'hello world'.slice(6, 11)
-inspect(v)                              # 'world'
-inspect(v == 'world')                   # true  (両 flavor 間のバイト等価)
-inspect(type_of(v))                     # 'StringView'
-inspect(v.to_string())                  # 'world' (materialize した String)
+inspect(v)                              # => 'world'
+# 等価比較はバイト単位なので view と String は等しい:
+inspect(v == 'world')                   # => true
+inspect(type_of(v))                     # => 'StringView'
+# to_string() は所有権を持つ String を実体化する:
+inspect(v.to_string())                  # => 'world'
 ```
 
 所有権付き `String` が必要な場面 (data structure に格納、 長寿命の
@@ -3526,21 +3529,21 @@ cstr コピーが発生する。これは他の `String` と同様トレーシ�
 `StringView` の Object key 正規化は制約ではない — §18.3 参照。）
 
 ```culebra
-inspect('hello'.size())              # 5
-inspect('HeLLo'.lower())             # 'hello'
-inspect('  hi  '.trim())             # 'hi'
-inspect('a,b,c'.split(','))          # ['a', 'b', 'c']
-inspect('hello'.slice(1, 4))         # 'ell'
-inspect('hello'.slice(-3, -1))       # 'll'
+inspect('hello'.size())              # => 5
+inspect('HeLLo'.lower())             # => 'hello'
+inspect('  hi  '.trim())             # => 'hi'
+inspect('a,b,c'.split(','))          # => ['a', 'b', 'c']
+inspect('hello'.slice(1, 4))         # => 'ell'
+inspect('hello'.slice(-3, -1))       # => 'll'
 
 # 同じ文字列の3つのビュー
-inspect('café'.size())                # 5（バイト）
-inspect('café'.code_points().count()) # 4（スカラー）
-inspect('café'.graphemes().count())   # 4（クラスタ）
+inspect('café'.size())                # => 5
+inspect('café'.code_points().count()) # => 4
+inspect('café'.graphemes().count())   # => 4
 
 # 絵文字 ZWJ シーケンス: 5 スカラー、1 grapheme
-inspect('👨‍👩‍👧'.code_points().count())  # 5
-inspect('👨‍👩‍👧'.graphemes().count())    # 1
+inspect('👨‍👩‍👧'.code_points().count())  # => 5
+inspect('👨‍👩‍👧'.graphemes().count())    # => 1
 
 # code_points なら数値演算が自然
 upper = 'Hello World'.code_points()
@@ -3617,24 +3620,24 @@ inspect(seen)   # => [1, 2]
 ```culebra
 mut a = [1, 2, 3]
 a.push(4)
-inspect(a.pop())                      # 4
-inspect([10, 20, 30, 40].slice(1, 3)) # [20, 30]
-inspect(['a', 'b', 'c'].join('-'))    # 'a-b-c'
-inspect([1, 2, 3].contains(2))        # true
-inspect([10, 20, 30].index_of(99))    # -1
+inspect(a.pop())                      # => 4
+inspect([10, 20, 30, 40].slice(1, 3)) # => [20, 30]
+inspect(['a', 'b', 'c'].join('-'))    # => 'a-b-c'
+inspect([1, 2, 3].contains(2))        # => true
+inspect([10, 20, 30].index_of(99))    # => -1
 
-inspect([1, 2, 3].map(fn (x) { x * x }))           # [1, 4, 9]
-inspect([1, 2, 3, 4].filter(fn (x) { x % 2 == 0 })) # [2, 4]
-inspect([1, 2, 3, 4].reduce(0, fn (acc, x) { acc + x })) # 10
+inspect([1, 2, 3].map(fn (x) { x * x }))           # => [1, 4, 9]
+inspect([1, 2, 3, 4].filter(fn (x) { x % 2 == 0 })) # => [2, 4]
+inspect([1, 2, 3, 4].reduce(0, fn (acc, x) { acc + x })) # => 10
 
-inspect([3, 1, 4, 1, 5].find(fn (x) { x > 3 }))    # 4
-inspect([1, 2, 3].any(fn (x) { x > 2 }))           # true
-inspect([1, 2, 3].all(fn (x) { x > 0 }))           # true
-inspect([1, 2, 3].flat_map(fn (x) { [x, x * 10] })) # [1, 10, 2, 20, 3, 30]
+inspect([3, 1, 4, 1, 5].find(fn (x) { x > 3 }))    # => 4
+inspect([1, 2, 3].any(fn (x) { x > 2 }))           # => true
+inspect([1, 2, 3].all(fn (x) { x > 0 }))           # => true
+inspect([1, 2, 3].flat_map(fn (x) { [x, x * 10] })) # => [1, 10, 2, 20, 3, 30]
 
 mut words = ['banana', 'fig', 'apple']
 words.sort_by(fn (s) { s.size() })
-inspect(words)                                      # ['fig', 'apple', 'banana']
+inspect(words)                                      # => ['fig', 'apple', 'banana']
 ```
 
 **コールバックの引数個数。** 高階メソッドはコールバックを固定個数の引数で呼ぶ
@@ -3682,12 +3685,23 @@ inspect([1, 2, 3].reduce(0, fn (a, *xs) { a + xs.size() }))  # => 3
 
 ```culebra
 o = {b: 2, a: 1, c: 3}
-inspect(o.keys())            # ['b', 'a', 'c']  (挿入順)
-inspect(o.values().collect()) # [2, 1, 3]
-inspect(o.has('a')) # true
+# keys() と values() はどちらも挿入順に走査する:
+inspect(o.keys())             # => ['b', 'a', 'c']
+inspect(o.values().collect()) # => [2, 1, 3]
+inspect(o.has('a'))           # => true
+# 無いキーはフォールバックを返すだけで、挿入はしない:
+inspect(o.get('z', 0))        # => 0
+
+# 先頭 1 文字でグループ化する（キーは StringView）:
+mut groups = {}
+for w in ['apple', 'avocado', 'banana'] {
+  groups.get_or_put(w[0..1], || []).push(w)
+}
+inspect(groups)               # => {a: ['apple', 'avocado'], b: ['banana']}
+
 mut p = {a: 1, b: 2}
 p.remove('a')
-inspect(p)          # {b: 2}
+inspect(p)                    # => {b: 2}
 ```
 
 ### 18.4 特殊識別子
@@ -3984,9 +3998,9 @@ inspect(f(0, 10, step: 2).collect())                # => [0, 2, 4, 6, 8]
 `type error at L:C.`。
 
 ```culebra
-inspect(to_long('42'))    # 42
-inspect(to_long('-7'))    # -7
-inspect(to_long(3.9))     # 3
+inspect(to_long('42'))    # => 42
+inspect(to_long('-7'))    # => -7
+inspect(to_long(3.9))     # => 3
 ```
 
 ### `to_float(v: Any) -> Float`
@@ -4001,9 +4015,9 @@ inspect(to_long(3.9))     # 3
 * 上記以外の型は `type error`。
 
 ```culebra
-inspect(to_float(3))         # 3.0
-inspect(to_float('1.5'))     # 1.5
-inspect(to_float('1e-5'))    # 1e-05
+inspect(to_float(3))         # => 3.0
+inspect(to_float('1.5'))     # => 1.5
+inspect(to_float('1e-5'))    # => 1e-05
 ```
 
 ### `to_string(v: Any) -> String`
@@ -4013,11 +4027,11 @@ inspect(to_float('1e-5'))    # 1e-05
 表現で、必ず小数点か指数を伴うため `Long` と視覚的に区別できます。
 
 ```culebra
-inspect(to_string(42))         # '42'
-inspect(to_string(1.0))        # '1.0'
-inspect(to_string(1e-5))       # '1e-05'
-inspect(to_string([1, 2]))     # '[1, 2]'
-inspect(to_string('hi'))       # 'hi'
+inspect(to_string(42))         # => '42'
+inspect(to_string(1.0))        # => '1.0'
+inspect(to_string(1e-5))       # => '1e-05'
+inspect(to_string([1, 2]))     # => '[1, 2]'
+inspect(to_string('hi'))       # => 'hi'
 ```
 
 ### `type_of(v: Any) -> String`
@@ -4027,12 +4041,12 @@ inspect(to_string('hi'))       # 'hi'
 `'Object'`, `'Function'`, `'Tensor'`, `'Tuple'`, `'Set'` のいずれか。
 
 ```culebra
-inspect(type_of(42))          # 'Long'
-inspect(type_of(1.5))         # 'Float'
-inspect(type_of('hi'))        # 'String'
-inspect(type_of([1, 2]))      # 'Array'
-inspect(type_of((1, 2)))      # 'Tuple'
-inspect(type_of({1, 2}))      # 'Set'
+inspect(type_of(42))          # => 'Long'
+inspect(type_of(1.5))         # => 'Float'
+inspect(type_of('hi'))        # => 'String'
+inspect(type_of([1, 2]))      # => 'Array'
+inspect(type_of((1, 2)))      # => 'Tuple'
+inspect(type_of({1, 2}))      # => 'Set'
 ```
 
 ### `range(n: Long, *, step: Long = 1) -> Iterator` / `range(start: Long, end: Long, *, step: Long = 1) -> Iterator`
@@ -4076,9 +4090,9 @@ C++ `std::iota` / Scheme SRFI-1 から命名。`for`-in ループには `range` 
   なら空配列。
 
 ```culebra
-inspect(iota(3))         # [0, 1, 2]
-inspect(iota(2, 5))      # [2, 3, 4]
-inspect(iota(5, 2))      # []
+inspect(iota(3))         # => [0, 1, 2]
+inspect(iota(2, 5))      # => [2, 3, 4]
+inspect(iota(5, 2))      # => []
 ```
 
 ### `__ARGS__` (可変長 catch-all バインディング)
@@ -4113,14 +4127,14 @@ fn が引数付きで呼ばれた場合、全ての引数が `__ARGS__` に入�
 ```culebra
 fn greet(name: String, *, prefix = "hi") { "{prefix}, {name}" }
 
-inspect(greet.name)                  # → 'greet'
-inspect(greet.return_type)           # → ''
+inspect(greet.name)                  # => 'greet'
+inspect(greet.return_type)           # => ''
 let ps = greet.params
-inspect(ps.size())                   # → 2
-inspect(ps[0].name)                  # → 'name'
-inspect(ps[0].type)                  # → 'String'
-inspect(ps[1].kw_only)               # → true
-inspect(ps[1].has_default)           # → true
+inspect(ps.size())                   # => 2
+inspect(ps[0].name)                  # => 'name'
+inspect(ps[0].type)                  # => 'String'
+inspect(ps[1].kw_only)               # => true
+inspect(ps[1].has_default)           # => true
 ```
 
 `fn.params` はアクセス毎に新規 `Array` を返します。これを書き換えても

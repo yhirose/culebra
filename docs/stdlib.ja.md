@@ -151,10 +151,10 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println` を
 quiet NaN。`Math.nan == Math.nan` は IEEE-754 通り `false`。
 
 ```culebra
-inspect(Math.pi)              # 3.141592653589793
-inspect(Math.e)               # 2.718281828459045
-inspect(Math.inf > 1e308)     # true
-inspect(Math.nan == Math.nan) # false
+inspect(Math.pi)              # => 3.141592653589793
+inspect(Math.e)               # => 2.718281828459045
+inspect(Math.inf > 1e308)     # => true
+inspect(Math.nan == Math.nan) # => false
 ```
 
 ### スカラー演算
@@ -164,8 +164,8 @@ inspect(Math.nan == Math.nan) # false
 絶対値。`Long` 入力なら `Long`、`Float` 入力なら `Float` を返します。
 
 ```culebra
-inspect(Math.abs(-7))     # 7
-inspect(Math.abs(-7.5))   # 7.5
+inspect(Math.abs(-7))     # => 7
+inspect(Math.abs(-7.5))   # => 7.5
 ```
 
 ### `Math.min(a, b, ...) -> Long|Float`、`Math.max(a, b, ...) -> Long|Float`
@@ -175,8 +175,8 @@ inspect(Math.abs(-7.5))   # 7.5
 数値以外が混じれば `type error`。
 
 ```culebra
-inspect(Math.min(3, 1, 4, 1, 5))   # 1
-inspect(Math.max(1.5, 2, 0.5))     # 2.0
+inspect(Math.min(3, 1, 4, 1, 5))   # => 1
+inspect(Math.max(1.5, 2, 0.5))     # => 2.0
 ```
 
 ### `Math.log(x: Long|Float) -> Float`
@@ -219,10 +219,11 @@ inspect(Math.atan2(1.0, 1.0))    # => 0.7853981633974483
 **偶数丸め（bankers' rounding）** — Python の `round()` と同じ挙動。
 
 ```culebra
-inspect(Math.floor(-1.5))   # -2
-inspect(Math.ceil(-1.5))    # -1
-inspect(Math.round(2.5))    # 2      (偶数側へ丸める)
-inspect(Math.round(3.5))    # 4
+inspect(Math.floor(-1.5))   # => -2
+inspect(Math.ceil(-1.5))    # => -1
+# ちょうど半分は偶数側へ丸めるので 2.5 も 3.5 も偶数になる:
+inspect(Math.round(2.5))    # => 2
+inspect(Math.round(3.5))    # => 4
 ```
 
 ### `Math.pow(base: Long, exp: Long) -> Long`
@@ -236,9 +237,9 @@ inspect(Math.round(3.5))    # 4
 （`Float`・負指数も扱えます。言語仕様 §7）。
 
 ```culebra
-inspect(Math.pow(2, 10))    # 1024
-inspect(Math.pow(7, 0))     # 1
-inspect(Math.pow(-3, 3))    # -27
+inspect(Math.pow(2, 10))    # => 1024
+inspect(Math.pow(7, 0))     # => 1
+inspect(Math.pow(-3, 3))    # => -27
 ```
 
 ### `Math.sign(x: Long) -> Long`
@@ -246,9 +247,9 @@ inspect(Math.pow(-3, 3))    # -27
 負数で `-1`、ゼロで `0`、正数で `1` を返します。
 
 ```culebra
-inspect(Math.sign(-5))      # -1
-inspect(Math.sign(0))       # 0
-inspect(Math.sign(42))      # 1
+inspect(Math.sign(-5))      # => -1
+inspect(Math.sign(0))       # => 0
+inspect(Math.sign(42))      # => 1
 ```
 
 ### `Math.clamp(x: Long, lo: Long, hi: Long) -> Long`
@@ -257,9 +258,9 @@ inspect(Math.sign(42))      # 1
 ならず `hi` を返します。
 
 ```culebra
-inspect(Math.clamp(5, 0, 10))   # 5
-inspect(Math.clamp(-5, 0, 10))  # 0
-inspect(Math.clamp(15, 0, 10))  # 10
+inspect(Math.clamp(5, 0, 10))   # => 5
+inspect(Math.clamp(-5, 0, 10))  # => 0
+inspect(Math.clamp(15, 0, 10))  # => 10
 ```
 
 ---
@@ -1036,6 +1037,7 @@ Random.weighted_choice(['hit', 'miss'], [1, 9])   # ~10% 'hit'
 ます。末尾引数が無い場合や REPL 実行時は空配列です。
 
 ```culebra
+# doctest: skip
 # $ culebra run.cul hello world
 inspect(Sys.argv)        # ['hello', 'world']
 # $ culebra --jit run.cul hello   →  ['hello']   (--jit は culebra 用)
@@ -1061,6 +1063,7 @@ if error_occurred { Sys.exit(1) }
 未設定と空文字列設定を区別したい場合は `.size() > 0` を使用。
 
 ```culebra
+# doctest: skip
 inspect(Sys.env('HOME'))          # '/Users/alice'
 inspect(Sys.env('NOT_A_VAR'))     # ''
 ```
@@ -1073,7 +1076,7 @@ inspect(Sys.env('NOT_A_VAR'))     # ''
 
 ```culebra
 Sys.set_env('CULEBRA_MODE', 'fast')
-inspect(Sys.env('CULEBRA_MODE'))  # 'fast'
+inspect(Sys.env('CULEBRA_MODE'))  # => 'fast'
 ```
 
 ### `Sys.getcwd() -> String`
@@ -1175,11 +1178,11 @@ BLAS / vDSP 経由のカーネルを起動して値を確定します。dtype �
 
 ```culebra
 let A = Tensor.from([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])  # [2, 3]
-let B = Tensor.randn(3, 2)
+let B = Tensor.from([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]) # [3, 2]
 let C = A.dot(B) + 1.0                # lazy: グラフを作るだけ
 Tensor.eval(C)                        # ここで BLAS GEMM が走る
-inspect(C.shape())                       # [2, 2]
-inspect(C.to_array())                    # [[..., ...], [..., ...]]
+inspect(C.shape())                    # => [2, 2]
+inspect(C.to_array())                 # => [[5.0, 6.0], [11.0, 12.0]]
 ```
 
 ### 構築（名前空間関数）
@@ -1486,27 +1489,48 @@ JSON 文字列を Culebra の値に変換します。
 
 ```culebra
 let r = try { JSON.parse('{"a": ,}'); nil } catch e { e }
-inspect(r.message)           # JSON.parse: expected value at 1:7.
-inspect("{r.line}:{r.col}")  # 1:7
+inspect(r.message)           # => 'JSON.parse: expected value'
+inspect("{r.line}:{r.col}")  # => '1:7'
 ```
 
 例:
 
 ```culebra
 let v = {name: 'alice', age: 30, tags: ['admin', 'staff']}
-inspect(JSON.stringify(v))                              # コンパクト
-inspect(JSON.stringify(v, indent: 2))                   # pretty
-inspect(JSON.stringify(v, sort_keys: true))             # 辞書順
-inspect(JSON.stringify([1, 2, 3], lines: true))         # JSONL
+# 既定はコンパクト。`sort_keys` はキーを辞書順に並べる。
+inspect(JSON.stringify(v))                  # => '{"name":"alice","age":30,"tags":["admin","staff"]}'
+inspect(JSON.stringify(v, sort_keys: true)) # => '{"age":30,"name":"alice","tags":["admin","staff"]}'
 let back = JSON.parse(JSON.stringify(v))
-inspect(back.name)                                      # alice
+inspect(back.name)                          # => 'alice'
 let arr = JSON.parse("1\n2\n3\n", lines: true)
-inspect(arr)                                            # [1, 2, 3]
+inspect(arr)                                # => [1, 2, 3]
 let cfg = JSON.parse('{
   // コメントと末尾カンマを許容
   "port": 8080,
 }', jsonc: true)
-inspect(cfg.port)                                       # 8080
+inspect(cfg.port)                           # => 8080
+```
+
+`indent` は整形出力、`lines` は JSON Lines を出します。どちらも複数行に
+なります:
+
+```culebra
+let v = {name: 'alice', age: 30, tags: ['admin', 'staff']}
+inspect(JSON.stringify(v, indent: 2))
+inspect(JSON.stringify([1, 2, 3], lines: true))
+# => |
+# '{
+#   "name": "alice",
+#   "age": 30,
+#   "tags": [
+#     "admin",
+#     "staff"
+#   ]
+# }'
+# '1
+# 2
+# 3
+# '
 ```
 
 JIT メモ: ビルトインの `JSON.{stringify, parse}` は他の名前空間
@@ -2134,11 +2158,11 @@ buf.flush()                   # ディスクへ永続化
   y: Float32 = 0.0
 }
 let buf = SharedBuffer.new(3, Vec2)
-inspect(buf.size)                # 3
+inspect(buf.size)                # => 3
 buf[0].x = 1.5                # その場でバイトを書く
 let v = buf[0]                # 保持した view は同じ要素を指す
 v.y = 2.5
-inspect([buf[0].x, buf[0].y])    # [1.5, 2.5]
+inspect([buf[0].x, buf[0].y])    # => [1.5, 2.5]
 ```
 
 要素まるごとの代入（`buf[i] = ...`）は `TypeError` — レコードは単独の値
@@ -3657,8 +3681,8 @@ log.error("upstream failed", {status: 502})
 
 ```culebra
 let r = try { TOML.parse("x = "); nil } catch e { e }
-inspect(r.message)            # TOML.parse: expected value
-inspect("{r.line}:{r.col}")   # 1:5
+inspect(r.message)            # => 'TOML.parse: expected value'
+inspect("{r.line}:{r.col}")   # => '1:5'
 ```
 
 `stringify` は `Object`（TOML 文書は常にテーブル）を取り、まずスカラ / 配列 /
@@ -3676,13 +3700,20 @@ ports = [80, 443]
 [server]
 host = "localhost"
 """)
-inspect(cfg.title)            # demo
-inspect(cfg.server.host)      # localhost
+inspect(cfg.title)            # => 'demo'
+inspect(cfg.server.host)      # => 'localhost'
+```
+
+`stringify` は、裸のキーを、それを飲み込んでしまうヘッダより前に出します:
+
+```culebra
 inspect(TOML.stringify({a: 1, b: {c: 2}}))
-# a = 1
+# => |
+# 'a = 1
 #
 # [b]
 # c = 2
+# '
 ```
 
 ---
@@ -3753,7 +3784,7 @@ db.execute("CREATE TABLE users (id INTEGER, name TEXT)")
 db.execute("INSERT INTO users VALUES (?, ?)", [1, "Alice"])
 
 let rows = db.query("SELECT * FROM users")
-inspect(rows[0]["name"])      # Alice
+inspect(rows[0]["name"])      # => 'Alice'
 
 # 再利用可能なプリペアド文
 let ins = db.prepare("INSERT INTO users VALUES (?, ?)")
@@ -3766,7 +3797,7 @@ db.transaction(fn () {
 })
 
 let r = try { db.query("SELECT * FROM missing"); nil } catch e { e }
-inspect(r.kind)               # SQLiteError
+inspect(r.kind)               # => 'SQLiteError'
 
 db.close()
 ```

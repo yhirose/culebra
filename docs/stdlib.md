@@ -156,10 +156,10 @@ Positive infinity (`Math.inf > 1e308 == true`). Negate with `-Math.inf`.
 Quiet NaN. Note `Math.nan == Math.nan` is `false` per IEEE-754.
 
 ```culebra
-inspect(Math.pi)              # 3.141592653589793
-inspect(Math.e)               # 2.718281828459045
-inspect(Math.inf > 1e308)     # true
-inspect(Math.nan == Math.nan) # false
+inspect(Math.pi)              # => 3.141592653589793
+inspect(Math.e)               # => 2.718281828459045
+inspect(Math.inf > 1e308)     # => true
+inspect(Math.nan == Math.nan) # => false
 ```
 
 ### Scalar operations
@@ -170,8 +170,8 @@ Absolute value. Returns `Long` for `Long` input, `Float` for `Float`
 input.
 
 ```culebra
-inspect(Math.abs(-7))     # 7
-inspect(Math.abs(-7.5))   # 7.5
+inspect(Math.abs(-7))     # => 7
+inspect(Math.abs(-7.5))   # => 7.5
 ```
 
 ### `Math.min(a, b, ...) -> Long|Float`, `Math.max(a, b, ...) -> Long|Float`
@@ -182,8 +182,8 @@ result to `Float`. At least two arguments are required; fewer — or
 any non-numeric argument — raises `type error`.
 
 ```culebra
-inspect(Math.min(3, 1, 4, 1, 5))   # 1
-inspect(Math.max(1.5, 2, 0.5))     # 2.0
+inspect(Math.min(3, 1, 4, 1, 5))   # => 1
+inspect(Math.max(1.5, 2, 0.5))     # => 2.0
 ```
 
 ### `Math.log(x: Long|Float) -> Float`
@@ -228,10 +228,11 @@ and `Math.round` uses **banker's rounding** (round half to even,
 matching Python's built-in `round()`).
 
 ```culebra
-inspect(Math.floor(-1.5))   # -2
-inspect(Math.ceil(-1.5))    # -1
-inspect(Math.round(2.5))    # 2      (ties to even)
-inspect(Math.round(3.5))    # 4
+inspect(Math.floor(-1.5))   # => -2
+inspect(Math.ceil(-1.5))    # => -1
+# A tie rounds to the even neighbour, so 2.5 and 3.5 both land on even:
+inspect(Math.round(2.5))    # => 2
+inspect(Math.round(3.5))    # => 4
 ```
 
 ### `Math.pow(base: Long, exp: Long) -> Long`
@@ -245,9 +246,9 @@ Kept for back-compat; **prefer the `**` operator** which also handles
 `Float` and negative exponents (see language spec §7).
 
 ```culebra
-inspect(Math.pow(2, 10))    # 1024
-inspect(Math.pow(7, 0))     # 1
-inspect(Math.pow(-3, 3))    # -27
+inspect(Math.pow(2, 10))    # => 1024
+inspect(Math.pow(7, 0))     # => 1
+inspect(Math.pow(-3, 3))    # => -27
 ```
 
 ### `Math.sign(x: Long) -> Long`
@@ -255,9 +256,9 @@ inspect(Math.pow(-3, 3))    # -27
 Returns `-1` for negative, `0` for zero, `1` for positive.
 
 ```culebra
-inspect(Math.sign(-5))      # -1
-inspect(Math.sign(0))       # 0
-inspect(Math.sign(42))      # 1
+inspect(Math.sign(-5))      # => -1
+inspect(Math.sign(0))       # => 0
+inspect(Math.sign(42))      # => 1
 ```
 
 ### `Math.clamp(x: Long, lo: Long, hi: Long) -> Long`
@@ -266,9 +267,9 @@ Clamp `x` to the inclusive range `[lo, hi]`. No error is raised when
 `lo > hi`; the result in that case is `hi`.
 
 ```culebra
-inspect(Math.clamp(5, 0, 10))   # 5
-inspect(Math.clamp(-5, 0, 10))  # 0
-inspect(Math.clamp(15, 0, 10))  # 10
+inspect(Math.clamp(5, 0, 10))   # => 5
+inspect(Math.clamp(-5, 0, 10))  # => 0
+inspect(Math.clamp(15, 0, 10))  # => 10
 ```
 
 ---
@@ -1061,6 +1062,7 @@ path. Empty when the script is invoked with no trailing arguments or
 when running in the REPL.
 
 ```culebra
+# doctest: skip
 # $ culebra run.cul hello world
 inspect(Sys.argv)        # ['hello', 'world']
 # $ culebra --jit run.cul hello   →  ['hello']   (--jit is culebra's)
@@ -1087,6 +1089,7 @@ string) if it is not set. Use `.size() > 0` to distinguish an unset
 variable from one set to the empty string.
 
 ```culebra
+# doctest: skip
 inspect(Sys.env('HOME'))          # '/Users/alice'
 inspect(Sys.env('NOT_A_VAR'))     # ''
 ```
@@ -1100,7 +1103,7 @@ processes spawned afterwards (e.g. `Proc.run`). Raises `IOError` on failure
 
 ```culebra
 Sys.set_env('CULEBRA_MODE', 'fast')
-inspect(Sys.env('CULEBRA_MODE'))  # 'fast'
+inspect(Sys.env('CULEBRA_MODE'))  # => 'fast'
 ```
 
 ### `Sys.getcwd() -> String`
@@ -1205,12 +1208,12 @@ Shapes can be supplied as variadic args or as an `[m, n]` Array.
 `transpose`, `slice`, and `reshape` produce zero-copy views.
 
 ```culebra
-let A = Tensor.from([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])  # [2, 3]
-let B = Tensor.randn(3, 2)
+let A = Tensor.from([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])   # [2, 3]
+let B = Tensor.from([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]) # [3, 2]
 let C = A.dot(B) + 1.0                # lazy: builds the graph only
 Tensor.eval(C)                        # BLAS GEMM runs here
-inspect(C.shape())                       # [2, 2]
-inspect(C.to_array())                    # [[..., ...], [..., ...]]
+inspect(C.shape())                    # => [2, 2]
+inspect(C.to_array())                 # => [[5.0, 6.0], [11.0, 12.0]]
 ```
 
 ### Construction (namespace functions)
@@ -1523,27 +1526,48 @@ exposes the JSON-internal position via `e.line` / `e.col` (both
 
 ```culebra
 let r = try { JSON.parse('{"a": ,}'); nil } catch e { e }
-inspect(r.message)           # JSON.parse: expected value at 1:7.
-inspect("{r.line}:{r.col}")  # 1:7
+inspect(r.message)           # => 'JSON.parse: expected value'
+inspect("{r.line}:{r.col}")  # => '1:7'
 ```
 
 Examples:
 
 ```culebra
 let v = {name: 'alice', age: 30, tags: ['admin', 'staff']}
-inspect(JSON.stringify(v))                              # compact
-inspect(JSON.stringify(v, indent: 2))                   # pretty
-inspect(JSON.stringify(v, sort_keys: true))             # alphabetical
-inspect(JSON.stringify([1, 2, 3], lines: true))         # JSONL
+# The default is compact; `sort_keys` orders the keys alphabetically.
+inspect(JSON.stringify(v))                  # => '{"name":"alice","age":30,"tags":["admin","staff"]}'
+inspect(JSON.stringify(v, sort_keys: true)) # => '{"age":30,"name":"alice","tags":["admin","staff"]}'
 let back = JSON.parse(JSON.stringify(v))
-inspect(back.name)                                      # alice
+inspect(back.name)                          # => 'alice'
 let arr = JSON.parse("1\n2\n3\n", lines: true)
-inspect(arr)                                            # [1, 2, 3]
+inspect(arr)                                # => [1, 2, 3]
 let cfg = JSON.parse('{
   // comments and trailing commas are allowed
   "port": 8080,
 }', jsonc: true)
-inspect(cfg.port)                                       # 8080
+inspect(cfg.port)                           # => 8080
+```
+
+`indent` pretty-prints and `lines` emits JSON Lines; both produce
+multi-line output:
+
+```culebra
+let v = {name: 'alice', age: 30, tags: ['admin', 'staff']}
+inspect(JSON.stringify(v, indent: 2))
+inspect(JSON.stringify([1, 2, 3], lines: true))
+# => |
+# '{
+#   "name": "alice",
+#   "age": 30,
+#   "tags": [
+#     "admin",
+#     "staff"
+#   ]
+# }'
+# '1
+# 2
+# 3
+# '
 ```
 
 JIT note: built-in `JSON.{stringify, parse}` route through the same
@@ -2199,11 +2223,11 @@ per-record object is materialized:
   y: Float32 = 0.0
 }
 let buf = SharedBuffer.new(3, Vec2)
-inspect(buf.size)                # 3
+inspect(buf.size)                # => 3
 buf[0].x = 1.5                # writes the bytes in place
 let v = buf[0]                # a stored view aliases the same element
 v.y = 2.5
-inspect([buf[0].x, buf[0].y])    # [1.5, 2.5]
+inspect([buf[0].x, buf[0].y])    # => [1.5, 2.5]
 ```
 
 Whole-element assignment (`buf[i] = ...`) is a `TypeError` — a record has no
@@ -3780,8 +3804,8 @@ character:
 
 ```culebra
 let r = try { TOML.parse("x = "); nil } catch e { e }
-inspect(r.message)            # TOML.parse: expected value
-inspect("{r.line}:{r.col}")   # 1:5
+inspect(r.message)            # => 'TOML.parse: expected value'
+inspect("{r.line}:{r.col}")   # => '1:5'
 ```
 
 `stringify` takes an `Object` (a TOML document is always a table) and renders
@@ -3800,13 +3824,20 @@ ports = [80, 443]
 [server]
 host = "localhost"
 """)
-inspect(cfg.title)            # demo
-inspect(cfg.server.host)      # localhost
+inspect(cfg.title)            # => 'demo'
+inspect(cfg.server.host)      # => 'localhost'
+```
+
+`stringify` renders bare keys before the headers that would capture them:
+
+```culebra
 inspect(TOML.stringify({a: 1, b: {c: 2}}))
-# a = 1
+# => |
+# 'a = 1
 #
 # [b]
 # c = 2
+# '
 ```
 
 ---
@@ -3878,7 +3909,7 @@ db.execute("CREATE TABLE users (id INTEGER, name TEXT)")
 db.execute("INSERT INTO users VALUES (?, ?)", [1, "Alice"])
 
 let rows = db.query("SELECT * FROM users")
-inspect(rows[0]["name"])      # Alice
+inspect(rows[0]["name"])      # => 'Alice'
 
 # a reusable prepared statement
 let ins = db.prepare("INSERT INTO users VALUES (?, ?)")
@@ -3891,7 +3922,7 @@ db.transaction(fn () {
 })
 
 let r = try { db.query("SELECT * FROM missing"); nil } catch e { e }
-inspect(r.kind)               # SQLiteError
+inspect(r.kind)               # => 'SQLiteError'
 
 db.close()
 ```
