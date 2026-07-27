@@ -59,6 +59,18 @@ check_same "*args not last"     'fn f(*xs, y) { y }'
 check_same "break outside loop" 'break'
 check_same "continue in fn"     'fn f() { continue }'
 
+# A yield outside a `fn name(...)` declaration (class method, object
+# property fn, fn expression, top level) is never generator-transformed;
+# it used to run silently with backend-dependent results (interp '' vs
+# JIT last yield value). Now a shared parse-time SyntaxError.
+check_same "yield top level"      'yield 1'
+check_same "yield in class method" 'class B { m() { yield 1 } }
+B().m()'
+check_same "yield in object prop" 'let o = {g: fn () { yield 7 }}
+o.g()'
+check_same "yield in fn expr"     'let g = fn () { yield 9 }
+g()'
+
 # UFCS calls to the unary global builtins (to_string/hash/type_of/to_long/
 # to_float). The JIT used to fall through to a property-get TypeError on a
 # wrong-arity call (and lacked hash/to_float entirely); now it raises the

@@ -96,6 +96,20 @@ inline std::vector<const peg::Ast*> collect_defers(const peg::Ast& body) {
   return out;
 }
 
+// First YIELD or YIELD_FROM anywhere in the tree, crossing fn boundaries.
+// Run after the transform pass, when every generator body has been lowered:
+// any yield still present belongs to no `fn name(...)` declaration (a class
+// method, an object property's fn, a fn expression, top level) and would
+// otherwise run as a plain statement with backend-dependent results.
+inline const peg::Ast* find_orphan_yield(const peg::Ast& node) {
+  using namespace peg::udl;
+  if (node.tag == "YIELD"_ || node.tag == "YIELD_FROM"_) return &node;
+  for (auto& c : node.nodes) {
+    if (auto* y = find_orphan_yield(*c)) return y;
+  }
+  return nullptr;
+}
+
 // Locate the first YIELD reachable from inside a TRY's try-block / catch
 // block, or from inside a DEFER's body. Returns nullptr if no such yield
 // exists. Used by the dispatcher to enforce the C# rule (CS1626): yield
@@ -1343,7 +1357,17 @@ inline std::shared_ptr<peg::Ast> parse_with_generator_transforms(
     std::vector<std::string>& msgs) {
   auto ast = parse(path, expr, len, msgs);
   if (!ast) return ast;
-  return transform_generators_in(ast, expr, len);
+  ast = transform_generators_in(ast, expr, len);
+  if (auto* y = find_orphan_yield(*ast)) {
+    throw CulebraError(
+        "SyntaxError",
+        "yield can only appear inside a `fn name(...) { ... }` declaration "
+        "body — a class method, an object property's function, or a fn "
+        "expression cannot be a generator. Declare a named fn and call it "
+        "instead.",
+        static_cast<long>(y->line), static_cast<long>(y->column));
+  }
+  return ast;
 }
 
 }  // namespace culebra

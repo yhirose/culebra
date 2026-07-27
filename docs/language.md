@@ -2033,9 +2033,10 @@ for v in two() { inspect(v); break }
   use a `defer` at the top level of the body as above.
 * Only `fn name(...) { ... }` **declarations** are transformed into
   generators — at the top level or nested inside another function. A
-  `yield` in a class method, in an object property's function, or in a
-  `fn` expression assigned to a variable is not diagnosed today and does
-  not produce an iterator (§23).
+  `yield` anywhere else — in a class method, in an object property's
+  function, in a `fn` expression assigned to a variable, or at the top
+  level — is rejected at parse time with a `SyntaxError`. Declare a
+  named fn and call it from the method instead.
 * A generator body cannot `perform` a bare effect operation or declare
   an `effect fn`; a self-contained `handle { ... }` expression inside
   the body does work (§16).
@@ -4805,12 +4806,9 @@ built-ins from §19.
   Object via the subscript path (`obj[k]`) and live in a sidecar map.
   Runtime `String` keys via `obj[k]` unify with the shape — `obj['x']`
   and `obj.x` reach the same slot. See §10 "Subscript assignment".
-* `yield` outside a `fn` declaration — in a class method, an object
-  property's function, or a `fn` expression — is neither transformed
-  into a generator nor rejected; the enclosing call silently returns a
-  non-iterator value, and what that value is differs between the
-  interpreter and the JIT. Declare generators as `fn name(...)`
-  (§11 "Generators").
+* Only `fn name(...)` declarations can be generators; `yield` anywhere
+  else (a class method, an object property's function, a `fn`
+  expression) is a parse-time `SyntaxError` (§11 "Generators").
 
 ---
 
