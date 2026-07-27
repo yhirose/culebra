@@ -38,15 +38,9 @@ let model = if env_model.size() > 0 { env_model } else { default_model }
 
 # --- small helpers -------------------------------------------------------
 
-let repeat_str = fn (s, n) { [](n, s).join('') }
-
-let capitalize = fn (s) {
-  if s.size() == 0 { s } else { s.slice(0, 1).upper() + s.slice(1, s.size()).lower() }
-}
-
 let separator = fn () {
   let cols = if IO.stdout_is_terminal() { Term.size()[0] } else { 80 }
-  DIM + repeat_str("\u{2500}", Math.min(cols, 80)) + RESET
+  DIM + "\u{2500}".repeat(Math.min(cols, 80)) + RESET
 }
 
 let render_markdown = fn (text) {
@@ -56,11 +50,7 @@ let render_markdown = fn (text) {
 # --- tool implementations -------------------------------------------------
 
 let tool_read = fn (args) {
-  let text = FS.read(args.path)
-  mut lines = text.split("\n")
-  if lines.size() > 0 && lines[lines.size() - 1] == '' {
-    lines = lines.slice(0, lines.size() - 1)
-  }
+  let lines = FS.read(args.path).lines()
   let offset = args.offset ?? 0
   let limit = args.limit ?? lines.size()
   let selected = lines.slice(offset, offset + limit)
@@ -203,14 +193,13 @@ let TOOL_SCHEMA = TOOL_LIST.map(fn (t) {
 
 # --- API call --------------------------------------------------------------
 
-let build_headers = fn () {
-  mut headers = {"anthropic-version": '2023-06-01'}
-  if use_openrouter {
-    headers["Authorization"] = 'Bearer ' + openrouter_key
+let HEADERS = {
+  "anthropic-version": '2023-06-01',
+  ...(if use_openrouter {
+    {"Authorization": 'Bearer ' + openrouter_key}
   } else {
-    headers["x-api-key"] = Sys.env('ANTHROPIC_API_KEY')
-  }
-  headers
+    {"x-api-key": Sys.env('ANTHROPIC_API_KEY')}
+  }),
 }
 
 # Thinking is on by default on this model and `max_tokens` caps thinking plus
@@ -225,7 +214,7 @@ let call_api = fn (messages, system_prompt) {
     messages: messages,
     tools: TOOL_SCHEMA,
   }
-  let r = Http.post(api_url, json: body, headers: build_headers(), timeout: 120)
+  let r = Http.post(api_url, json: body, headers: HEADERS, timeout: 120)
   if !r.ok {
     throw {kind: 'LLMApiError', message: "API error {r.status}: {r.body}", status: r.status}
   }
@@ -278,7 +267,7 @@ let main = fn () {
             let tool_name = block.name
             let tool_args = block.input
             let arg_preview = "{tool_args.values().first() ?? ''}".slice(0, 50)
-            IO.println("\n{GREEN}\u{23fa} {capitalize(tool_name)}{RESET}({DIM}{arg_preview}{RESET})")
+            IO.println("\n{GREEN}\u{23fa} {tool_name.capitalize()}{RESET}({DIM}{arg_preview}{RESET})")
 
             let result = run_tool(tool_name, tool_args)
             let lines = result.split("\n")
