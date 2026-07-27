@@ -1443,6 +1443,11 @@ int run_lint(int argc, const char** argv) {
   }
   bool expand_ok = true;
   files = expand_cul_paths("lint", files, expand_ok);
+  // Directories that hold no .cul files would otherwise report a clean run.
+  if (files.empty()) {
+    std::println(stderr, "culebra lint: no *.cul files in the given paths");
+    return 2;
+  }
 
   int errors = 0, warnings = 0;
   bool had_failure = !expand_ok;
@@ -1566,11 +1571,27 @@ int run_fmt(int argc, const char** argv) {
     files.push_back(arg);
   }
 
+  // Decide the mode once, before expanding anything: `-` (or no arguments at
+  // all) means stdin -> stdout, and pairing it with paths has no meaning.
+  bool use_stdin = files.empty();
+  for (const auto& f : files) if (f == "-") use_stdin = true;
+  if (use_stdin && files.size() > 1) {
+    std::println(stderr,
+                 "culebra fmt: '-' reads stdin and can't be combined with "
+                 "file arguments");
+    return 2;
+  }
+
   bool expand_ok = true;
-  // `-` (stdin) is not a path to expand; only expand when there are real paths.
-  bool has_stdin = false;
-  for (auto& f : files) if (f == "-") has_stdin = true;
-  if (!has_stdin) files = expand_cul_paths("fmt", files, expand_ok);
+  if (!use_stdin) {
+    files = expand_cul_paths("fmt", files, expand_ok);
+    // Paths that expand to nothing must not reach the stdin branch below —
+    // formatting would block on a terminal instead of reporting the mistake.
+    if (files.empty()) {
+      std::println(stderr, "culebra fmt: no *.cul files in the given paths");
+      return 2;
+    }
+  }
 
   auto report = [](const string& path, const culebra::fmt::FormatResult& r) {
     if (r.status == culebra::fmt::FormatStatus::ParseError) {
@@ -1584,9 +1605,6 @@ int run_fmt(int argc, const char** argv) {
     return culebra::fmt::format_source(p, s);
   };
 
-  // stdin -> stdout when no file arguments (or the lone `-`).
-  bool use_stdin = files.empty();
-  for (auto& f : files) if (f == "-") use_stdin = true;
   if (use_stdin) {
     std::string src((std::istreambuf_iterator<char>(cin)),
                     std::istreambuf_iterator<char>());

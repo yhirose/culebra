@@ -230,6 +230,9 @@ culebra lint .          # recurse into every .cul under the current directory,
                         # like `culebra fmt -i .`
 ```
 
+Paths holding no `.cul` file exit 2 rather than reporting a clean run, so a
+mistyped directory can't pass the gate.
+
 What it reports today:
 
 - **Errors** — the sound, certain-to-fail set: `break` / `continue` /
@@ -294,7 +297,9 @@ cat app.cul | culebra fmt -  # stdin -> stdout (editor format-on-save)
 
 A directory argument is scanned recursively for `.cul` files, so
 `culebra fmt -i .` formats a whole project and `culebra fmt --check .`
-gates it in CI.
+gates it in CI. Paths holding no `.cul` file are an error (exit 2), and
+`-` reads stdin so it can't be combined with file arguments — a mistyped
+path fails loudly instead of silently formatting nothing.
 
 Comments are preserved: a leading comment stays above the statement it
 introduces, a trailing comment stays on the same line, and a single blank

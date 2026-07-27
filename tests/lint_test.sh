@@ -604,5 +604,14 @@ if [[ $rc -ne 0 || -n "$out" ]]; then
 fi
 rm -rf "$FIXTMP"
 
+# A directory holding no .cul file is a mistake, not a clean run — reporting
+# exit 0 here would make lint a silent no-op in a CI gate.
+EMPTYTMP=$(mktemp -d)
+out=$("$CULEBRA" lint "$EMPTYTMP" 2>&1); rc=$?
+if [[ $rc -ne 2 ]]; then
+  echo "FAIL lint-empty-dir: expected exit 2, got rc=$rc out=$out"; fail=1
+fi
+rm -rf "$EMPTYTMP"
+
 if [[ $fail -eq 0 ]]; then echo "lint_test OK"; exit 0; fi
 exit 1

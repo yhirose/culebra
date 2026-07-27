@@ -176,5 +176,20 @@ printf 'plain text\n' > "$TMP/dir/note.txt"
 [[ $? -eq 0 ]] || { echo "FAIL dir -i: tree not clean after write"; fail=1; }
 grep -q 'plain text' "$TMP/dir/note.txt" || { echo "FAIL dir: .txt was touched"; fail=1; }
 
+# --- 5. Input selection ----------------------------------------------------
+# stdin mode is chosen from the arguments alone, never as a fallback: paths
+# that expand to no .cul file used to land here and block on the terminal.
+# Every case reads /dev/null so a regression shows up as a wrong exit code
+# rather than a hung gate.
+mkdir -p "$TMP/emptydir"
+"$CULEBRA" fmt "$TMP/emptydir" >/dev/null 2>&1 < /dev/null
+[[ $? -eq 2 ]] || { echo "FAIL empty dir: expected exit 2, not stdin mode"; fail=1; }
+"$CULEBRA" fmt "$TMP/dir/a.cul" - >/dev/null 2>&1 < /dev/null
+[[ $? -eq 2 ]] || { echo "FAIL '-' with a path: expected exit 2"; fail=1; }
+printf 'let  z=3\n' | "$CULEBRA" fmt - > "$TMP/stdin_dash" 2>/dev/null
+printf 'let  z=3\n' | "$CULEBRA" fmt > "$TMP/stdin_bare" 2>/dev/null
+grep -qx 'let z = 3' "$TMP/stdin_dash" || { echo "FAIL fmt -: stdin not formatted"; fail=1; }
+cmp -s "$TMP/stdin_dash" "$TMP/stdin_bare" || { echo "FAIL fmt: '-' and no-args disagree"; fail=1; }
+
 if [[ $fail -eq 0 ]]; then echo "fmt_test OK"; exit 0; fi
 echo "fmt_test FAILED"; exit 1
