@@ -5,7 +5,7 @@
 （`Math`, `IO`, `Sys`, `FS`, `Time`, `Args`, `Random`, `String`）
 を対象とします。 ここに記載のものは `import` 文なしで利用できます。
 
-実例つきの導入とイディオムは [`guide.ja.md` §15](guide.ja.md#15-標準ライブラリ巡り)、
+実例つきの導入とイディオムは [`guide.ja.md` §14](guide.ja.md#14-標準ライブラリ)、
 ライブラリの実装詳細と設計理由は [`internals.ja.md`](internals.ja.md) を
 参照してください。
 

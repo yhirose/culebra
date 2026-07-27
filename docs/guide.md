@@ -36,18 +36,16 @@ Contents
   8. [Algebraic effects](#8-algebraic-effects)
 - **Part II — Tools for abstraction**
   9. [Classes](#9-classes)
-  10. [Operator overloading](#10-operator-overloading)
-  11. [UFCS and multimethods](#11-ufcs-and-multimethods)
-  12. [Decorators](#12-decorators)
-  13. [Modules](#13-modules)
+  10. [UFCS and multimethods](#10-ufcs-and-multimethods)
+  11. [Decorators](#11-decorators)
+  12. [Modules](#12-modules)
 - **Part III — Types and libraries**
-  14. [Type system](#14-type-system)
-  15. [Standard library tour](#15-standard-library-tour)
-  16. [Tensor primitive](#16-tensor-primitive)
+  13. [Type system](#13-type-system)
+  14. [Standard library](#14-standard-library)
 - **Part IV — Verification and deployment**
-  17. [Tooling (`test`, `lint`, `fmt`, debug)](#17-tooling-test-lint-fmt-debug)
-  18. [AOT binary build](#18-aot-binary-build)
-  19. [Embedding overview](#19-embedding-overview)
+  15. [Tooling (`test`, `lint`, `fmt`, debug)](#15-tooling-test-lint-fmt-debug)
+  16. [AOT binary build](#16-aot-binary-build)
+  17. [Embedding overview](#17-embedding-overview)
 
 ## 0. Design philosophy
 
@@ -71,7 +69,7 @@ Read this once; the rest of the guide assumes these choices.
   `export { ... }` and a consumer binds them with
   `import name from './path.cul'`. Both forms are top-level only, so
   the dependency graph is known at parse time — which is what makes
-  AOT bundling and tree-shaking possible (Ch.13).
+  AOT bundling and tree-shaking possible (Ch.12).
 - **No async/await.** I/O is blocking by design; concurrency comes
   from threads, not coroutines. HTTP and similar networked stacks are
   blocking with the typical scale ceiling of a few thousand
@@ -79,7 +77,7 @@ Read this once; the rest of the guide assumes these choices.
 - **Batteries-included, tiered.** The core (Math/IO/FS/File/Sys/
   Random/String/Time/Args) and Tier 1 (Regex/Http/Hash/Encoding/
   Compress/JSON/CSV/TOML/SQLite/UUID/Log/Term/Canvas) both ship
-  today; Tier 2/3 (Crypto, Sockets) follows demand — see Ch.15.
+  today; Tier 2/3 (Crypto, Sockets) follows demand — see Ch.14.
 - **Pre-1.0.** Source and APIs may change. There is no release
   machinery (no version tags, no CHANGELOG, no Homebrew formula) yet
   — that comes after 1.0.
@@ -135,7 +133,7 @@ inspect('hello')          # => 'hello'
 `inspect` prints values in quoted, inspectable form, so strings appear
 with surrounding quotes (`'hello'`) and reference types in their literal
 shape. Use `println` for raw, unquoted text with a trailing newline, or
-`print` to omit the newline too — see Ch.15.
+`print` to omit the newline too — see Ch.14.
 
 ## 2. Values, bindings, and control flow
 
@@ -153,7 +151,7 @@ inspect(type_of(fn () { 1 }))    # => 'Function'
 ```
 
 Four more show up once you reach for them: `StringView` (Ch.4.4),
-`Tuple` and `Set` (Ch.14.2), and `Tensor` (Ch.16). The full table is
+`Tuple` and `Set` (Ch.13.2), and `Tensor` (Ch.14.2). The full table is
 [language.md §4](language.md).
 
 ### 2.2 Bindings: bare, `let`, `mut`
@@ -295,7 +293,7 @@ rule set and design rationale: [language.md §6](language.md).
 add = fn (a, b) { a + b }
 inspect(add(2, 3))               # => 5
 
-# Type annotations are optional; see Ch.14
+# Type annotations are optional; see Ch.13
 add_typed = fn (a: Long, b: Long) -> Long { a + b }
 inspect(add_typed(2, 3))         # => 5
 
@@ -961,16 +959,7 @@ inspect(Circle.PI)               # => 3.14
 
 Static fields are eagerly evaluated once, at class declaration time.
 
-### Why support both `class` and closure-based OO?
-
-Closures-as-objects came first and remain the right answer for
-disposable encapsulation (e.g. one-off iterators, scope guards). The
-`class` form earns its keep when an object travels far and needs an
-identity (the `class:` tag, used by `match` and debug output).
-
-## 10. Operator overloading
-
-### 10.1 Special methods
+### 9.4 Operator overloading
 
 Arithmetic, comparison, indexing, and call operators each map to a
 dunder method (`__add__`, `__eq__`, `__lt__`, `__index__`, `__call__`,
@@ -979,7 +968,7 @@ reverse-side method (`__radd__`, ...) is *not* supported — place your
 overload on the type that owns the operation. Full method table and
 dispatch rules: [language.md §10](language.md) (Operator overloading).
 
-### 10.2 A worked example: 2-D vectors
+#### A worked example: 2-D vectors
 
 ```culebra
 class Vec2 {
@@ -1001,7 +990,7 @@ inspect((-a).show())             # => '(-1, -2)'
 inspect(a == Vec2.new(1, 2))     # => true
 ```
 
-### 10.3 `__call__` for callable instances
+### 9.5 `__call__` for callable instances
 
 A class that defines `__call__` makes its instances directly callable.
 
@@ -1016,9 +1005,16 @@ inspect(add5(10))                # => 15
 inspect(add5(99))                # => 104
 ```
 
-## 11. UFCS and multimethods
+### Why support both `class` and closure-based OO?
 
-### 11.1 UFCS resolution order
+Closures-as-objects came first and remain the right answer for
+disposable encapsulation (e.g. one-off iterators, scope guards). The
+`class` form earns its keep when an object travels far and needs an
+identity (the `class:` tag, used by `match` and debug output).
+
+## 10. UFCS and multimethods
+
+### 10.1 UFCS resolution order
 
 For `x.name(args)`, an existing property/method named `name` always
 wins; otherwise a free function `name` in scope is called as
@@ -1038,7 +1034,7 @@ a.reverse()
 inspect(a)                                            # => [3, 2, 1]
 ```
 
-### 11.2 Multimethods (free function multiple dispatch)
+### 10.2 Multimethods (free function multiple dispatch)
 
 Define several functions with the same name but different parameter
 types. The runtime picks the most specific match based on the
@@ -1059,7 +1055,7 @@ inspect(area(10))                               # => 10
 
 The dispatch covers free positional arguments, keyword arguments, and
 `**splat`, and a Union-annotated parameter (`x: Long | String`,
-Ch.14.2) also participates. Full dispatch/specificity rules:
+Ch.13.2) also participates. Full dispatch/specificity rules:
 [language.md §20](language.md).
 
 Instance methods dispatch the same way — a class may declare several
@@ -1076,13 +1072,13 @@ inspect(c.go(1))                  # => 'long'
 inspect(c.go('a'))                # => 'string'
 ```
 
-### 11.3 Dispatch extensions
+### 10.3 Dispatch extensions
 
 > **Status: Planned.** Per-callsite inline caching for hot dispatch
 > paths is on the roadmap; today each call re-resolves the overload
 > set. Class-based (nominal) inheritance was considered and rejected —
 > polymorphism over a family of types goes through trait dispatch
-> (Ch.14.3) instead, since it composes with UFCS without adding a
+> (Ch.13.3) instead, since it composes with UFCS without adding a
 > subtyping story.
 
 ### Why free functions first?
@@ -1092,9 +1088,9 @@ namespaces without surprises (no implicit subtyping). Method
 multimethods need a precedence story (own-class vs UFCS vs free)
 that we'd rather lock down with a real workload than guess.
 
-## 12. Decorators
+## 11. Decorators
 
-### 12.1 `@deco`
+### 11.1 `@deco`
 
 `@deco` before a `fn` (or `class`) binds the result of `deco(original)`
 to the original name. Full semantics, incl. the multimethod
@@ -1117,7 +1113,7 @@ inspect(double(7))
 # 14
 ```
 
-### 12.2 Factories and stacking
+### 11.2 Factories and stacking
 
 ```culebra
 prefix = fn (tag) {
@@ -1143,7 +1139,7 @@ greet()
 Outer decorator wraps the result of the inner; reading top-to-bottom
 matches the execution order.
 
-### 12.3 Memoize, a real example
+### 11.3 Memoize, a real example
 
 ```culebra
 memoize = fn (f) {
@@ -1162,7 +1158,7 @@ inspect(slow_square(7))          # => 49
 inspect(slow_square(7))          # => 49
 ```
 
-### 12.4 `fn.params` introspection
+### 11.4 `fn.params` introspection
 
 A `Function` value exposes its declared signature, which decorators
 can use to write signature-aware wrappers (`@autograd`, `@trace`, ...).
@@ -1178,9 +1174,9 @@ closure), which is incompatible with the "many `fn`s sharing one
 name" shape of multimethods — choose one or the other per name (full
 rule: [language.md §21](language.md)).
 
-## 13. Modules
+## 12. Modules
 
-### 13.1 `export` and `import`
+### 12.1 `export` and `import`
 
 A module lists what it exposes with `export`; a consumer binds the
 whole module under one name with `import`.
@@ -1210,12 +1206,12 @@ importing file's directory. Several `export` statements in one file
 are merged, so a module can declare a few helpers, export them,
 and keep going.
 
-### 13.2 Top-level only, evaluated once
+### 12.2 Top-level only, evaluated once
 
 `import` and `export` may appear only as top-level statements — inside
 a function or an `if` branch they are a `SyntaxError`. That is what
 lets the loader determine the whole dependency graph at parse time,
-which both the AOT bundler and the tree-shaker rely on (Ch.18).
+which both the AOT bundler and the tree-shaker rely on (Ch.16).
 
 Each module is evaluated once per program, in dependency order, in its
 own scope: its top-level bindings stay private except for the export
@@ -1228,7 +1224,7 @@ rules: [language.md §24](language.md).
 An explicit `import` line is the only place a reader — or a tool —
 has to look to know what a file depends on. It also gives `culebra
 lint` an unambiguous unused-import warning (and a `--fix` for it,
-Ch.17), and gives the AOT build a graph it can bundle without
+Ch.15), and gives the AOT build a graph it can bundle without
 guessing.
 
 See [`internals.md` §10](internals.md) for the loader design and
@@ -1239,9 +1235,9 @@ cycle-detection algorithm.
 Part III — Types and libraries
 ==============================
 
-## 14. Type system
+## 13. Type system
 
-### 14.1 Today: optional annotations + `Any`
+### 13.1 Today: optional annotations + `Any`
 
 Annotations are *runtime* checks at three boundaries: variable
 assignment, function parameter passing, and function return. There is
@@ -1263,7 +1259,7 @@ inspect(describe([1, 2], 'array'))     # => 'array: [1, 2]'
 `match` arms with `n: ClassName` (Ch.6) match instances of that
 class.
 
-### 14.2 Union, Optional, Tuple
+### 13.2 Union, Optional, Tuple
 
 `Long | String` accepts either alternative; `T?` is sugar for
 `T | Nil`; `(Long, String)` is a fixed-size, immutable, element-wise-
@@ -1280,7 +1276,7 @@ inspect(type_of(pair))            # => 'Tuple'
 inspect(pair == (1, 'one'))       # => true
 ```
 
-### 14.3 Trait / Protocol
+### 13.3 Trait / Protocol
 
 `trait` declares a set of required methods; any class whose methods
 match (by name and arity) conforms — no explicit `impl` needed, and a
@@ -1288,7 +1284,7 @@ class missing a required method fails dispatch (`DispatchError`)
 rather than matching silently. Traits can also carry default-
 implemented methods and be derived with `@derive`. Nominal (class)
 inheritance was considered and rejected in favour of this structural
-model (Ch.11.3). Full spec: [language.md §14](language.md) (Traits and
+model (Ch.10.3). Full spec: [language.md §14](language.md) (Traits and
 protocols).
 
 ```culebra
@@ -1303,10 +1299,10 @@ greet = fn (x: Greeter) -> String { x.hello() }
 inspect(greet(Bob.new('Alice')))   # => 'hi, Alice'
 ```
 
-### 14.4 Generics
+### 13.4 Generics
 
 `Array<Long>` and similar annotations document the element type and
-feed multimethod specificity (Ch.11.2); the element check itself is a
+feed multimethod specificity (Ch.10.2); the element check itself is a
 no-op — Culebra follows Rust/Swift generics in spirit but does not pay
 for runtime element checking on every access. Bound constraints and
 generic class declarations: [language.md §14](language.md).
@@ -1323,120 +1319,32 @@ suite of utility types (`Pick`, `Omit`, ...) sit at a complexity
 level that is too high for a small dynamic language. The target is
 Rust/Swift expressiveness, not TS expressiveness.
 
-## 15. Standard library tour
+## 14. Standard library
 
-The CLI driver exposes `inspect` / `print` / `println` as aliases for
-`IO.inspect` / `IO.print` / `IO.println`. Embedders that build their own
-environment see the namespaces but not the bare aliases.
-
-### 15.1 Core built-ins
-
-```culebra
-inspect(to_long('42'))           # => 42
-inspect(to_string([1, 2]))       # => '[1, 2]'
-inspect(iota(2, 5))              # => [2, 3, 4]
-assert_eq(1 + 1, 2)           # passes silently; throws on failure
-```
-
-Full list: [language.md §19](language.md).
-
-### 15.2 `Math`
+Every namespace below is available without an `import`. The CLI driver
+additionally installs `inspect` / `print` / `println` as aliases for
+`IO.inspect` / `IO.print` / `IO.println`; embedders that build their own
+environment get the namespaces but not the bare aliases.
 
 ```culebra
-inspect(Math.abs(-7))            # => 7
-inspect(Math.min(3, 5))          # => 3
-inspect(Math.max(3, 5))          # => 5
-inspect(Math.pow(2, 10))         # => 1024
-inspect(Math.sign(-42))          # => -1
-inspect(Math.clamp(15, 0, 10))   # => 10
+inspect(to_long('42'))               # => 42
+inspect(Math.clamp(15, 0, 10))       # => 10
+inspect(re'\d+'.test('order #42'))   # => true
+inspect(JSON.stringify({a: 1}))      # => '{"a":1}'
 ```
 
-Full reference: [`stdlib.md` §1](stdlib.md#1-math).
+### 14.1 What ships
 
-### 15.3 `IO`
-
-```culebra
-print('Hello, '); print('world!'); print("\n")   # => Hello, world!
-# IO.input()                 # read a line from stdin
-# FS.write('out.txt', 'hi')  # write a file
-# FS.read('in.txt')          # read a file
-```
-
-Full reference: [`stdlib.md` §2](stdlib.md#2-io).
-
-### 15.4 `Sys`, `Random`, `FS`, `Time`, `Args`
-
-```culebra
-inspect(Sys.argv)                # => []
-# Sys.env('HOME')             # process env
-# Sys.exit(0)                 # terminate
-
-inspect(Random.int(0, 100) >= 0)          # => true
-
-# Path — a fluent wrapper over FS that carries a path around:
-#   let cfg = Path.new('/etc') / 'app.conf'   # `/` joins
-#   cfg.parent().name(); cfg.read()           # properties + FS ops
-# FS.* and File.open also accept a Path directly.
-```
-
-Full reference in [`stdlib.md`](stdlib.md): [`Sys` §7](stdlib.md#7-sys),
-[`Random` §6](stdlib.md#6-random), [`FS`/`Path` §3](stdlib.md#3-fs),
-[`Time` §5](stdlib.md#5-time), [`Args` §10](stdlib.md#10-args).
-
-### 15.5 `Regex`
-
-Linear-time matching (NFA-based, no catastrophic backtracking),
-grapheme-cluster–aware by default — no `/u` flag needed.
-
-```culebra
-re = Regex.compile('\d+')
-inspect(re.test('order #42'))    # => true
-
-# `re"..."` literals are sugar for Regex.compile(pattern, flags);
-# the body is raw, so `\d` passes through as-is.
-inspect(re'\d+'.test('abc 123')) # => true
-```
-
-Full API: [`stdlib.md` §14](stdlib.md#14-regex).
-
-### 15.6 `Hash`, `Encoding`, `Compress`
-
-`Hash.sha256`/`sha1`/`sha512`/`md5` and their `hmac_*` variants return
-hex digests; `Encoding.base64`/`hex`/`url`/`html` each expose
-`.encode`/`.decode`; `Compress.gzip`/`gunzip` round out the data
-namespaces. JSON is its own top-level `JSON.parse`/`JSON.stringify` —
-there is no `Encoding.json`. Full reference:
-[`Encoding` §16](stdlib.md#16-encoding),
-[`Compress` §17](stdlib.md#17-compress), [`Hash` §18](stdlib.md#18-hash).
-
-### 15.7 `Http`
-
-Blocking client and server, SSE and WebSocket included, TLS via
-statically linked OpenSSL. No `async`/`await` — concurrency is via
-threads; scale ceiling is a few thousand connections.
-
-```culebra
-# doctest: skip
-res = Http.get('https://example.com')
-inspect(res.status)              # => 200
-
-# Server
-srv = Http.server()
-srv.get('/', fn (req) { 'hello' })
-srv.listen('127.0.0.1', 8080)
-```
-
-Streaming, routing, and the client session API:
-[`stdlib.md` §15](stdlib.md#15-http).
-
-### 15.8 The rest of the library
-
-The namespaces this tour skipped are data formats (`JSON`, `CSV`,
-`TOML`), process and concurrency (`Proc`, `Isolate`, `Channel`,
-`Parallel`, `Shared`), configuration and identity (`Env`, `UUID`,
-`Log`), storage (`SQLite`), raw networking (`Net`), and the graphical
-ones (`Term` for TUIs, `Canvas` for 2D games, `Scene` for 3D,
-`Desktop` for a native WebView app).
+| Area | Namespaces |
+|---|---|
+| Numbers and text | `Math`, `Regex` |
+| Files, processes, environment | `FS`, `File`, `Path`, `Proc`, `Sys`, `Env` |
+| Data formats | `JSON`, `CSV`, `TOML`, `Encoding`, `Compress`, `Hash`, `UUID` |
+| Network | `Http`, `Net` |
+| Concurrency | `Isolate`, `Channel`, `Parallel`, `Shared`, `SharedBuffer` |
+| Storage | `SQLite` |
+| Time, CLI, logging | `Time`, `Args`, `Log` |
+| Terminal and graphics | `Term`, `Canvas`, `Scene`, `Desktop` |
 
 [`stdlib.md`](stdlib.md) documents each of them. Its index lists the
 namespaces in order, and the "Where to find what" table right below it
@@ -1444,23 +1352,22 @@ maps a task — hash something, parse a config file, run a subprocess —
 onto the section that does it. What is deliberately *not* included yet
 is recorded there too, at the end.
 
-## 16. Tensor primitive
+The built-ins that are not namespaced — `to_long`, `to_string`,
+`type_of`, `range`, `iota`, and the matcher family — are specified in
+[language.md §19](language.md#19-core-built-in-functions).
 
-### 16.1 Construction, matmul, broadcasting
+### 14.2 `Tensor`
 
-`Tensor` is a built-in n-dimensional array backed by the vendored
-`cpp-tensorlib` engine (vectorized CPU kernels, Metal on macOS, CUDA
-on Linux/Windows). Storage is F32; scalar results surface as `Float`.
-Matmul (`dot`) builds a lazy graph that `Tensor.eval` runs as one
-fused kernel; elementwise ops broadcast like NumPy. Full API (shapes,
-reductions, autograd, device selection):
-[`stdlib.md` §8](stdlib.md#8-tensor).
+`Tensor` is an n-dimensional array built into the language rather than
+a namespace over it, backed by the vendored `cpp-tensorlib` engine
+(vectorized CPU kernels, Metal on macOS, CUDA on Linux/Windows).
+Storage is F32 and scalar results surface as `Float`. Elementwise ops
+broadcast like NumPy; `dot` builds a lazy graph that `Tensor.eval` runs
+as one fused kernel.
 
 ```culebra
 a = Tensor.from([1.0, 2.0, 3.0])
-b = Tensor.from([10.0, 20.0, 30.0])
-inspect((a + b).to_array())      # => [11.0, 22.0, 33.0]
-inspect(a.sum())                 # => 6.0
+inspect((a + a).to_array())      # => [2.0, 4.0, 6.0]
 
 m = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
 c = m.dot(m)
@@ -1468,48 +1375,22 @@ Tensor.eval(c)
 inspect(c.to_array())            # => [[7.0, 10.0], [15.0, 22.0]]
 ```
 
-### 16.2 Choosing a device
+The same type runs on the GPU — there is no separate GPU type.
+`Tensor.use_gpu()` / `use_cpu()` / `use_auto()` switch the backend
+process-wide, and `use_auto` (the default) picks per operation by
+problem size, since small tensors lose to kernel-launch overhead.
+Shapes, reductions, autograd and device details:
+[`stdlib.md` §8](stdlib.md#8-tensor). The dtype, allocator and
+lazy-shape rationale is in [`internals.md` §8](internals.md).
 
-The same `Tensor` type runs on the GPU — there is no separate GPU
-type. Device selection is process-global and switchable at runtime:
-
-```culebra
-inspect(type_of(Tensor.gpu_available()))   # => 'Bool'
-# Tensor.use_gpu()    # force the GPU backend (Metal / CUDA)
-# Tensor.use_cpu()    # force the CPU backend
-# Tensor.use_auto()   # per-op choice by problem size (the default)
-```
-
-`Tensor.gpu_available()` reports whether a GPU backend was compiled in
-and is reachable; `use_auto` falls back to CPU when it isn't. Whether
-the GPU wins depends on shape — small tensors lose to kernel-launch
-overhead — so `use_auto` is the right default.
-
-### Why a dedicated engine?
-
-Matrix-heavy code (MLP inference, microgpt) shipped with a hand-
-written O(n³) loop was orders of magnitude slower than NumPy. Routing
-through tuned kernels gets us within ~1.2× of PyTorch CPU on the MNIST
-sizes that this codebase actually trains. The full benchmark is in
-[`benchmarks/mnist/README.md`](../benchmarks/mnist/README.md) and
-[`benchmarks/microgpt/README.md`](../benchmarks/microgpt/README.md).
-
-For the dtype rationale, allocator choice, and lazy-shape
-discussion, see [`internals.md` §8](internals.md).
-
----
-
-Part IV — Verification and deployment
-======================================
-
-## 17. Tooling (`test`, `lint`, `fmt`, debug)
+## 15. Tooling (`test`, `lint`, `fmt`, debug)
 
 The `culebra` binary is also the toolchain. The test runner, the linter,
 the formatter and the debug adapter are subcommands of the same
 executable, so there is nothing extra to install. This chapter is a tour;
 the flag-by-flag reference is [`tooling.md`](tooling.md).
 
-### 17.1 Tests
+### 15.1 Tests
 
 A test file is a `.cul` file named `test_*.cul`. Inside it, `test()`, the
 `@test` decorator and `@parametrize` are ambient — no import — and
@@ -1541,7 +1422,7 @@ fixture that returns a class instance gets its `drop` called at test end
 `culebra test --doc docs` — which is why every ` ```culebra ` block here
 carries its expected output.
 
-### 17.2 Lint and format
+### 15.2 Lint and format
 
 `culebra lint` reports what static analysis can see without running the
 program: errors that would abort a run anyway, plus advisory warnings
@@ -1566,7 +1447,7 @@ culebra fmt --check .   # exit 1 if anything is unformatted (CI gate)
 Editors hook the formatter through the stdin form (`culebra fmt -`); the
 bundled VSCode, Zed and Vim integrations are already wired to it.
 
-### 17.3 Debugging
+### 15.3 Debugging
 
 `culebra dap` speaks the Debug Adapter Protocol over stdio, so
 breakpoints, stepping, call stacks, watch expressions and editing a `mut`
@@ -1578,7 +1459,7 @@ A bare `debugger` statement in the source forces a stop wherever you put
 it, with no configuration at all. Per-editor setup (VSCode, Vim,
 Zed) is in [`tooling.md` §4](tooling.md#4-debugging-culebra-dap).
 
-## 18. AOT binary build
+## 16. AOT binary build
 
 `culebra build` compiles a `.cul` source ahead-of-time into a
 self-contained executable. No LLVM at runtime; tree-shaking drops the
@@ -1591,7 +1472,7 @@ also drop the Accelerate / Metal frameworks the tensor engine needs.
 otool -L ./out                            # no Accelerate, no Metal, no LLVM
 ```
 
-### 18.1 Cross-compile
+### 16.1 Cross-compile
 
 ```bash
 ./build/culebra build my-program.cul \
@@ -1612,7 +1493,7 @@ linker drop unreferenced runtime helpers (~200 of them) and, when no
 `Tensor` reference is found, swap in a no-tensor archive. The result
 is a few hundred KB instead of a few MB.
 
-## 19. Embedding overview
+## 17. Embedding overview
 
 Culebra is a header-friendly C++23 library. Minimal embed:
 

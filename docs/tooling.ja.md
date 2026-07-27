@@ -17,7 +17,7 @@
 `--shell` など — は
 [言語仕様 §22](language.ja.md#22-コマンドラインインタフェース) が規定します。
 同じツール群の読み物としての導入は
-[`guide.ja.md` §17](guide.ja.md#17-ツール-test-lint-fmt-デバッグ) にあります。
+[`guide.ja.md` §15](guide.ja.md#15-ツール-test-lint-fmt-デバッグ) にあります。
 
 目次
 ----

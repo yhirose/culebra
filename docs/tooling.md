@@ -18,7 +18,7 @@ The plain `culebra [flags] script.cul` form — `--jit`, `-O0`..`-O3`,
 `--ast`, `--shell` and the rest — is specified in
 [§22 of the language spec](language.md#22-command-line-interface).
 For a narrative introduction to the same tools see
-[`guide.md` §17](guide.md#17-tooling-test-lint-fmt-debug).
+[`guide.md` §15](guide.md#15-tooling-test-lint-fmt-debug).
 
 Contents
 --------
