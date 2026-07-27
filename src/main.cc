@@ -1214,19 +1214,23 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
     // Walk the dependency graph via ModuleLoader. The same vector feeds both
     // backends — JIT bundles every module into one IR, interp evaluates them
     // sequentially — but only the JIT path needs the preamble spliced in.
+    // --ast never reaches either, and the splice would make the dump differ by
+    // backend for one program.
     bool splice = false;
 #ifdef CULEBRA_JIT_ENABLED
-    splice = options.jit;
+    splice = options.jit && !options.print_ast;
 #endif
     std::vector<culebra::LoadedModule> modules;
     if (!load_entry_program(path, *user_src, splice, modules)) return false;
     startup_profile::mark("ModuleLoader::load_program (parse)");
 
+    // "Print the parsed AST instead of running it" — dump and stop.
     if (options.print_ast) {
       for (const auto& m : modules) {
         cout << "// " << m.abs_path.string() << "\n";
         cout << peg::ast_to_s(m.ast);
       }
+      continue;
     }
 
 #ifdef CULEBRA_JIT_ENABLED
