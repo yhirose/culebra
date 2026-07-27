@@ -153,7 +153,7 @@ let _term_module = fn () {
   # occupy two cells. Glyph and style are kept in parallel arrays so reuse
   # stays alloc-free (see clear()).
   class Screen {
-    new() { self._w = 0; self._h = 0; self._back = []; self._front = []; self._bstyle = []; self._fstyle = [] }
+    new() { self._w = 0; self._h = 0; self._fw = 0; self._back = []; self._front = []; self._bstyle = []; self._fstyle = [] }
     cols() { _Term.cols() }
     rows() { _Term.rows() }
     size() { (_Term.cols(), _Term.rows()) }
@@ -180,7 +180,13 @@ let _term_module = fn () {
         let idx = y * self._w + x
         self._back[idx] = gs
         self._bstyle[idx] = style
-        if _Term.width(gs) == 2 && x + 1 < self._w { self._back[idx + 1] = ""; self._bstyle[idx + 1] = style }
+        if x + 1 < self._w {
+          # "" marks the right half of a wide glyph, so it must be written and
+          # taken back with its owner: a narrow glyph landing here frees the
+          # cell the previous wide one held.
+          if _Term.width(gs) == 2 { self._back[idx + 1] = ""; self._bstyle[idx + 1] = style }
+          else if self._back[idx + 1] == "" { self._back[idx + 1] = " "; self._bstyle[idx + 1] = style }
+        }
       }
       self
     }
@@ -202,10 +208,13 @@ let _term_module = fn () {
     render() {
       let n = self._w * self._h
       mut out = ""
-      if self._front.size() != n {
+      # A reshape that keeps the cell count (80x24 -> 48x40) moves every cell to
+      # a new column, so the width has to invalidate the front buffer too.
+      if self._front.size() != n || self._fw != self._w {
         self._front = []
         self._fstyle = []
         for _ in 0..n { self._front.push("\x00"); self._fstyle.push("") }   # force a full repaint
+        self._fw = self._w
         out = "\x1b[2J"                                                     # wipe stale content
       }
       mut cy = -1
@@ -220,7 +229,11 @@ let _term_module = fn () {
             self._fstyle[idx] = self._bstyle[idx]
           } else {
             let st = self._bstyle[idx]
-            if back != self._front[idx] || st != self._fstyle[idx] {
+            # A wide glyph owns the cell to its right, so it is stale when that
+            # cell shows anything but a continuation — an overlapping draw wrote
+            # there last frame and only the owner can paint over it.
+            let half_lost = x + 1 < self._w && self._back[idx + 1] == "" && self._front[idx + 1] != ""
+            if back != self._front[idx] || st != self._fstyle[idx] || half_lost {
               if cy != y || cx != x { out = out + "\x1b[" + to_string(y + 1) + ";" + to_string(x + 1) + "H" }
               if st != pen {
                 out = out + "\x1b[0m"

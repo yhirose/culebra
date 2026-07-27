@@ -140,6 +140,48 @@ q.set(1, 0, "🐸")                   // blanks (2, 0)
 q.put(1, 4, "ab")
 assert_eq(q.render(), "\x1b[1;2H🐸\x1b[5;2Hab")
 
+// A wide glyph whose continuation cell was covered last frame has to repaint
+// even though its own cell is unchanged — only the glyph can paint over the
+// half it owns, and the diff would otherwise leave the stale cell on screen.
+let c = Term.Screen.new()
+c.clear()
+c.render()                          // full repaint of blanks (discard)
+c.clear()
+c.set(0, 0, "🐸")
+c.set(1, 0, "z")                    // covers the frog's right half
+assert_eq(c.render(), "\x1b[1;1H🐸\x1b[1;2Hz")
+c.clear()
+c.set(0, 0, "🐸")                   // same glyph, but the "z" is still displayed
+assert_eq(c.render(), "\x1b[1;1H🐸")
+
+// "" marks the right half of a wide glyph, so a narrow glyph replacing that
+// glyph frees the cell again. Leaving the marker behind made the next frame
+// emit a stray blank there.
+let d = Term.Screen.new()
+d.clear()
+d.render()                          // full repaint of blanks (discard)
+d.clear()
+d.set(0, 0, "🐸")
+d.set(0, 0, "a")                    // narrow glyph takes the wide one's place
+assert_eq(d.render(), "\x1b[1;1Ha")
+d.clear()
+d.set(0, 0, "a")                    // identical frame: nothing left to emit
+assert_eq(d.render(), "")
+
+// A resize that keeps the cell count still moves every cell to a new column,
+// so the front buffer must be invalidated on the width, not just the size.
+// (_w/_h are poked directly: the size comes from the terminal, and a test can't
+// resize one.)
+let z = Term.Screen.new()
+z.clear()
+z.render()                          // full repaint at 80x24 (discard)
+z.clear()
+assert_eq(z.render(), "")           // steady state
+z._w = 48                           // 48x40 == 1920 cells == 80x24
+z._h = 40
+z.set(0, 0, "X")
+assert_eq(z.render().starts_with("\x1b[2J"), true)
+
 // Screen.size mirrors the namespace size
 assert_eq(s.cols(), 80)
 assert_eq(s.rows(), 24)
