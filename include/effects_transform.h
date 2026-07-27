@@ -1890,6 +1890,7 @@ inline std::shared_ptr<peg::Ast> parse_with_transforms(
   auto ast = parse_with_generator_transforms(path, expr, len, msgs);
   if (!ast) return ast;
   auto out = transform_effects_in(ast, expr, len);
+  reject_orphan_yield(*out);
   // CULEBRA_TRANSFORM_STATS=1 reports how much culebra source the generator +
   // effects passes synthesized for this module — the input to every backend's
   // compile, so it bounds what any codegen-side change can save.

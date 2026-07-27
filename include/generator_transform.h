@@ -1364,8 +1364,14 @@ inline std::shared_ptr<peg::Ast> parse_with_generator_transforms(
     std::vector<std::string>& msgs) {
   auto ast = parse(path, expr, len, msgs);
   if (!ast) return ast;
-  ast = transform_generators_in(ast, expr, len);
-  if (auto* y = find_orphan_yield(*ast)) {
+  return transform_generators_in(ast, expr, len);
+}
+
+// Reject the yields no pass claimed. Runs from `parse_with_transforms` once
+// both passes are done, so the effects pass gets to diagnose its own bodies
+// first, and the yields it re-parses into fragments are covered too.
+inline void reject_orphan_yield(const peg::Ast& ast) {
+  if (auto* y = find_orphan_yield(ast)) {
     throw CulebraError(
         "SyntaxError",
         "yield can only appear inside a `fn name(...) { ... }` declaration "
@@ -1374,7 +1380,6 @@ inline std::shared_ptr<peg::Ast> parse_with_generator_transforms(
         "instead.",
         static_cast<long>(y->line), static_cast<long>(y->column));
   }
-  return ast;
 }
 
 }  // namespace culebra
