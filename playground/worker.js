@@ -217,8 +217,11 @@ onmessage = async (e) => {
     // JSPI makes run_culebra return a promise in the full build; TUI/GPU
     // waits suspend beneath it. Nothing in the C++ call chain is async.
     const path = await stageProgram(e.data);
-    rc = await mod.ccall("run_culebra", "number", ["string", "string"],
-                         [e.data.src, path], { async: useFullBuild });
+    // Newline-separated rather than an array: ccall marshals one string, and an
+    // argument that contains a newline is not a thing examples.json can spell.
+    const args = (e.data.args || []).join("\n");
+    rc = await mod.ccall("run_culebra", "number", ["string", "string", "string"],
+                         [e.data.src, path, args], { async: useFullBuild });
   } catch (err) {
     postMessage({ type: "output", text: "internal error: " + err });
   }

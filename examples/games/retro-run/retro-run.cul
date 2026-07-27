@@ -22,33 +22,39 @@ let W = 640
 let H = 480
 let FPS = 60
 let STEP = 1.0 / FPS
-# Arguments: `[--assets <dir>] [draw-distance]`. The directory is where the art
-# is read from, so a copy of upstream's own can be played with where it lies;
-# the number is how many segments are drawn ahead of the camera (v4's own tweak
-# UI allows 100..500).
+# Arguments: `[--assets <dir>] [--cars <n>] [draw-distance]`. The directory is
+# where the art is read from, so a copy of upstream's own can be played with
+# where it lies; the number is how many segments are drawn ahead of the camera
+# (v4's own tweak UI allows 100..500). Both defaults are v4's.
+#
+# The two knobs are what a host without a JIT is given instead of a smaller
+# game: the frame cost is dominated by how many segments the loops walk, and
+# the catch-up below by how much one car step costs, so the browser runs the
+# same source with both turned down (see playground/examples.json).
 let args = fn () {
   mut dir = nil
   mut distance = 300
+  mut cars = 200
   mut i = 0
   while i < Sys.argv.size() {
     let a = Sys.argv[i]
-    if a == "--assets" {
+    if a == "--assets" || a == "--cars" {
       if i + 1 >= Sys.argv.size() {
-        println("retro-run: --assets needs a directory")
+        println("retro-run: {a} needs a value")
         Sys.exit(2)
       }
-      dir = Sys.argv[i + 1]
+      if a == "--assets" { dir = Sys.argv[i + 1] } else { cars = to_long(Sys.argv[i + 1]) }
       i = i + 2
     } else if a.starts_with("-") {
       println("retro-run: unknown option {a}")
-      println("usage: retro-run.cul [--assets <dir>] [draw-distance]")
+      println("usage: retro-run.cul [--assets <dir>] [--cars <n>] [draw-distance]")
       Sys.exit(2)
     } else {
       distance = to_long(a)
       i = i + 1
     }
   }
-  { dir: dir, distance: distance }
+  { dir: dir, distance: distance, cars: cars }
 }()
 let DRAW_DISTANCE = args.distance
 let LANES = 3
@@ -59,7 +65,7 @@ let CAMERA_HEIGHT = 1000
 let FIELD_OF_VIEW = 100           # degrees
 let FOG_DENSITY = 5
 let CENTRIFUGAL = 0.3
-let TOTAL_CARS = 200
+let TOTAL_CARS = args.cars
 let LOOKAHEAD = 20                # segments an AI car looks ahead to steer
 # The original skips the AI for a car more than drawDistance segments *ahead*,
 # a signed test that leaves every car behind the player scanning: update then
@@ -1092,7 +1098,12 @@ mut gdt = 0.0
 
 let frame = fn () {
   let now = Time.monotonic()
-  let dt = Math.min(1.0, now - last)     # a hidden tab can hand us a huge one
+  # Bound the catch-up, not just the clock: a second of arrears is 60 physics
+  # steps in one frame, which on a host that was already behind makes the next
+  # frame later still and never recovers. Falling behind has to cost slow
+  # motion, not a spiral. Native never reaches the bound (it runs one or two
+  # steps a frame), so this only changes what happens once a host cannot keep up.
+  let dt = Math.min(4.0 * STEP, now - last)
   last = now
 
   let held = _Canvas.buttons()

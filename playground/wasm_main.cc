@@ -79,12 +79,31 @@ extern "C" {
 //     both places (FS.dirname(Sys.script) + "/assets/...").
 // Natively this is set from the command line in main.cc; leaving it unset here
 // is why `Sys.script` used to read back as nil in the Playground.
-EMSCRIPTEN_KEEPALIVE int run_culebra(const char* src_c, const char* path_c) {
+//
+// `args_c` becomes `Sys.argv`, newline-separated because a program's arguments
+// here are written in examples.json rather than typed at a shell. It is what
+// lets an example be tuned for the browser without forking its source: the
+// wasm build has no JIT, so a program whose cost scales with a setting can be
+// handed a smaller one and stay byte-identical to the file that runs natively.
+EMSCRIPTEN_KEEPALIVE int run_culebra(const char* src_c, const char* path_c,
+                                     const char* args_c) {
   (void)g_tensor_auto;
   (void)g_streams_installed;
 
   std::string path = (path_c && *path_c) ? path_c : "/work/main.cul";
   culebra::main_script_path() = path;
+
+  std::vector<std::string> argv;
+  if (args_c && *args_c) {
+    std::string rest = args_c;
+    size_t start = 0;
+    while (start <= rest.size()) {
+      size_t nl = rest.find('\n', start);
+      if (nl == std::string::npos) nl = rest.size();
+      if (nl > start) argv.push_back(rest.substr(start, nl - start));
+      start = nl + 1;
+    }
+  }
 
   int rc = 0;
   std::vector<std::string> msgs;
@@ -96,7 +115,7 @@ EMSCRIPTEN_KEEPALIVE int run_culebra(const char* src_c, const char* path_c) {
       for (auto& m : msgs) std::cerr << m << "\n";
       rc = 1;
     } else {
-      auto env = culebra::environment({});
+      auto env = culebra::environment(argv);
       culebra::install_cli_aliases(*env);
       culebra::Value val;
       culebra::Debugger dbg;

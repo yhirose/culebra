@@ -31,7 +31,8 @@
             "examples/games/retro-run/assets/background_hiru.png",
             "examples/games/retro-run/assets/background_yuugure.png",
             "examples/games/retro-run/assets/background_twilight.png"
-          ]
+          ],
+          "args": ["--cars", "80", "150"]
         }
       ]
     }

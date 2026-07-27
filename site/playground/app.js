@@ -125,6 +125,7 @@ function routeOutput(text) {
 
 let EXAMPLE_PATHS = {};  // title -> path
 let EXAMPLE_ASSETS = {}; // title -> [path]
+let EXAMPLE_ARGS = {};   // title -> [arg], the program's Sys.argv here
 let currentExample = null;
 
 async function loadExampleCatalog() {
@@ -136,6 +137,7 @@ async function loadExampleCatalog() {
     for (const example of category.examples) {
       EXAMPLE_PATHS[example.title] = example.path;
       EXAMPLE_ASSETS[example.title] = example.assets || [];
+      EXAMPLE_ARGS[example.title] = (example.args || []).map(String);
       const opt = document.createElement("option");
       opt.value = example.title;
       opt.textContent = example.title;
@@ -248,6 +250,7 @@ function run() {
     src: editor.getValue(),
     path: EXAMPLE_PATHS[currentExample] || "main.cul",
     assets: EXAMPLE_ASSETS[currentExample] || [],
+    args: EXAMPLE_ARGS[currentExample] || [],
   });
 }
 
