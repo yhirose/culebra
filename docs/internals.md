@@ -3,8 +3,8 @@ Culebra Internals
 
 This document is the developer-facing companion to the user-facing
 guide. It records the *how* (implementation strategy, library choices,
-internal data structures). Designs that were considered and not
-adopted live in [`_history.md`](_history.md), not here. Every doc is
+internal data structures) — what the implementation does today, not the
+alternatives that were weighed along the way. Every doc is
 bilingual; the Japanese mirror of this file is
 [`internals.ja.md`](internals.ja.md) and must be kept in sync with it.
 
@@ -28,8 +28,6 @@ Contents
 15. [JIT ownership: structural leak-freedom](#15-jit-ownership-structural-leak-freedom)
 16. [Algebraic effects (source transform)](#16-algebraic-effects-source-transform)
 17. [Net: raw sockets](#17-net-raw-sockets)
-
-Rejected and withdrawn designs are collected in [`_history.md`](_history.md).
 
 ---
 
@@ -633,7 +631,7 @@ device, because `tl::array` — not culebra — owns the buffer and knows
 which device it lives on. The split into a distinct `Matrix` /
 `GTensor` primitive was planned while `TNode` held a raw
 `shared_ptr<float[]>`; adopting `cpp-tensorlib` removed the reason for
-it (see [`_history.md`](_history.md)).
+it.
 
 Selection is process-global and switchable at runtime —
 `Tensor.use_cpu()` / `use_gpu()` / `use_auto()`, with

@@ -17,8 +17,7 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
 
 > **Status ラベル。** ラベル無しの見出しは現時点の実装を記述します。
 > 出現するラベル: **Draft** (実装中、API 変更あり)、**Planned**
-> (採用決定、未実装)、**Deprecated** (将来削除予定)。 採用せずと
-> 決定した機能は [`_history.ja.md`](_history.ja.md) に集約。
+> (採用決定、未実装)、**Deprecated** (将来削除予定)。
 
 目次
 ----
@@ -62,8 +61,7 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
 - **Rust 風の表面構文。** `let` / `mut` / `fn` / `match` / ブロッ
   クは式。 クロージャは第一級、エラーは値、隠れたグローバル無し。
 - **UFCS、パイプライン不採用。** 任意の自由関数 `f(x, ...)` を
-  `x.f(...)` として呼べる。 パイプライン演算子は検討の上不採用 (詳細
-  は [`_history.ja.md`](_history.ja.md))。
+  `x.f(...)` として呼べる。 パイプライン演算子は検討の上不採用。
 - **明示的で静的なモジュール。** ファイルは `export { ... }` で束縛
   を公開し、利用側は `import name from './path.cul'` で束縛する。
   どちらもトップレベル専用なので依存グラフはパース時に確定し、
@@ -1261,10 +1259,10 @@ inspect(pair == (1, 'one'))       # => true
 マッチするメソッドを持つクラスなら、明示 `impl` 無しで conform し
 (structural conformance)、必須メソッドを欠くクラスは黙って通らず
 ディスパッチが失敗する (`DispatchError`)。 trait はデフォルト実装
-メソッドも持てて `@derive` で導出できる。 完全な仕様は
-[language.ja.md §14](language.ja.md) (Traits and protocols)。
-nominal (class) 継承がこの structural モデルのために不採用になった
-経緯は [`_history.ja.md`](_history.ja.md) 参照 (Ch.11.3)。
+メソッドも持てて `@derive` で導出できる。 nominal (class) 継承は
+検討の上、この structural モデルを採って不採用とした (Ch.11.3)。
+完全な仕様は [language.ja.md §14](language.ja.md) (Traits and
+protocols)。
 
 ```culebra
 trait Greeter { hello() -> String }

@@ -8,8 +8,7 @@
 実例つき入門は [`guide.ja.md`](guide.ja.md)、 標準ライブラリの
 API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳細
 (パーサ、JIT codegen、AOT tree-shaking) は [`internals.ja.md`](internals.ja.md)
-を参照してください。 検討したが採用しなかった設計は
-[`_history.ja.md`](_history.ja.md) にあります。
+を参照してください。
 
 ## 目次
 
@@ -2449,8 +2448,8 @@ opt-in できます。3 段階:
 * **`T?`（optional）** — `nil` を**許容**しつつ、非 nil 値には基底型を
   強制（`x: Long?` は Long か nil、String は不可）。
 
-これは **runtime** ポリシーで、静的 null 検査器は持ちません（設計上。
-[`_history.ja.md`](_history.ja.md) 参照）。null 安全演算子が対になります: `?.` / `?[]` で
+これは **runtime** ポリシーで、静的 null 検査器は持ちません（設計上の
+判断）。null 安全演算子が対になります: `?.` / `?[]` で
 nil 可能値を辿り、`!!` で非 nil をアサート（`NilError`）、`??` / `??=`
 でフォールバックを供給／保存。
 

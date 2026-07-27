@@ -19,8 +19,7 @@ internals see [`internals.md`](internals.md).
 > **Status labels.** Section headings without a label describe the
 > implementation as of today. Labels that appear: **Draft** (under
 > implementation, API may change), **Planned** (decided, not yet
-> implemented), **Deprecated** (slated for removal). Features that
-> were considered and rejected live in [`_history.md`](_history.md).
+> implemented), **Deprecated** (slated for removal).
 
 Contents
 --------
@@ -65,8 +64,7 @@ Read this once; the rest of the guide assumes these choices.
   expression. Closures are first-class, errors are values, no hidden
   globals.
 - **UFCS, not pipeline.** Any free function `f(x, ...)` can be called
-  as `x.f(...)`. A pipeline operator was considered and rejected (see
-  [`_history.md`](_history.md)).
+  as `x.f(...)`. A pipeline operator was considered and rejected.
 - **Explicit, static modules.** A file exposes bindings with
   `export { ... }` and a consumer binds them with
   `import name from './path.cul'`. Both forms are top-level only, so
@@ -1286,10 +1284,10 @@ inspect(pair == (1, 'one'))       # => true
 match (by name and arity) conforms — no explicit `impl` needed, and a
 class missing a required method fails dispatch (`DispatchError`)
 rather than matching silently. Traits can also carry default-
-implemented methods and be derived with `@derive`. Full spec: [language.md
-§14](language.md) (Traits and protocols). See [`_history.md`](_history.md)
-for why nominal (class) inheritance was rejected in favor of this
-structural model (Ch.11.3).
+implemented methods and be derived with `@derive`. Nominal (class)
+inheritance was considered and rejected in favour of this structural
+model (Ch.11.3). Full spec: [language.md §14](language.md) (Traits and
+protocols).
 
 ```culebra
 trait Greeter { hello() -> String }

@@ -9,8 +9,7 @@ tracks its behavior.
 For an introductory tour with runnable examples, see
 [`guide.md`](guide.md). For API reference of the standard library see
 [`stdlib.md`](stdlib.md). For implementation internals (parser, JIT
-codegen, AOT tree-shaking) see [`internals.md`](internals.md). Designs
-that were considered and not adopted are in [`_history.md`](_history.md).
+codegen, AOT tree-shaking) see [`internals.md`](internals.md).
 
 ## Table of contents
 
@@ -2644,7 +2643,7 @@ null safety, in three tiers:
   a String).
 
 This is a **runtime** policy — there is no static null checker (by
-design; see [`_history.md`](_history.md)). The null-safe operators pair with it:
+design). The null-safe operators pair with it:
 `?.` / `?[]` navigate possibly-nil values, `!!` asserts non-nil
 (raising `NilError`), and `??` / `??=` supply or store fallbacks.
 
