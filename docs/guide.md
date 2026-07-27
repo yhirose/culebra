@@ -244,8 +244,8 @@ for k, v in {a: 1, b: 2} { inspect("{k}={v}") }   # Objects yield key, value
 ### 2.5 `nobreak`, init clauses, `cond`, and `? :`
 
 A loop may carry a `nobreak` block that runs only when the loop
-finished without a `break` — Python's `for ... else` without the
-confusing keyword:
+finished without a `break`. The keyword names the condition it tests,
+so the block needs no comment to say when it runs:
 
 ```culebra
 mut found = nil
@@ -435,13 +435,14 @@ inspect('café'.graphemes().collect().size())        # => 4
 Full `StringView`/grapheme API: [language.md §18.1](language.md). Design
 discussion: [`internals.md` §6](internals.md).
 
-### Why Go-style byte indexing?
+### Why byte indexing?
 
-Swift/Python 3 hide the bytes-vs-scalars distinction behind an
-opaque `Character` / `str` index, convenient until you interop with
-sockets or files. Go exposes byte offsets and offers explicit `rune`
-iteration on top; Culebra follows that model, adding lazy grapheme
-iteration (above) for display work.
+Hiding the bytes-vs-scalars distinction behind an opaque character
+index reads well until the string meets a socket or a file, where
+every length and offset is a byte count and the two models have to be
+reconciled at each boundary. Culebra exposes the byte offsets directly
+and puts the other views beside them: explicit code-point iteration
+for scalar work, and the lazy grapheme iteration above for display.
 
 ## 5. Iterators
 

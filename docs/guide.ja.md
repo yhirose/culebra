@@ -235,8 +235,8 @@ for k, v in {a: 1, b: 2} { inspect("{k}={v}") }   # Object は key, value を返
 ### 2.5 `nobreak` / init 節 / `cond` / `? :`
 
 ループには `nobreak` ブロックを付けられます。 `break` せずに完走した
-ときだけ走る — Python の `for ... else` を紛らわしくない名前にした
-もの:
+ときだけ走ります。 キーワードが検査する条件そのものを名乗っているので、
+いつ走るのかを説明するコメントは要りません:
 
 ```culebra
 mut found = nil
@@ -423,13 +423,14 @@ inspect('café'.graphemes().collect().size())        # => 4
 `StringView`/grapheme の完全な API は [language.ja.md §18.1](language.ja.md)。
 設計議論は [`internals.ja.md` §6](internals.ja.md) 参照。
 
-### Why Go 流のバイトインデックス
+### なぜバイトインデックスなのか
 
-Swift / Python 3 は bytes vs scalar の区別を不透明な `Character` /
-`str` インデックスで隠す。 ソケット・ファイル I/O と相互運用する
-までは便利だが、その時点で破綻する。 Go はバイトオフセットを露出
-させ、`rune` 反復をその上に置く。 Culebra は同じモデルに、表示用の
-lazy grapheme 反復 (上記) を足したもの。
+bytes と scalar の区別を不透明な文字インデックスで隠す設計は、その
+文字列がソケットやファイルに出会うまではよく読める。 そこでは長さも
+オフセットもバイト数なので、境界のたびに 2 つのモデルを突き合わせる
+ことになる。 Culebra はバイトオフセットをそのまま見せ、他のビューを
+その隣に置く: スカラー単位の処理には明示的なコードポイント反復、
+表示には上記の lazy grapheme 反復。
 
 ## 5. イテレータ
 
