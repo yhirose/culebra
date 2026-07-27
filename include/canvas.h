@@ -96,29 +96,55 @@ inline int64_t coord(double d) {
   return static_cast<int64_t>(f);
 }
 
-inline void clear(uint32_t rgba) { std::fill(_fb().begin(), _fb().end(), rgba); }
+// The drawing target every draw call resolves before writing: the framebuffer
+// today, a sprite once render targets exist. Held as an id and resolved per
+// call — never cached as a pointer, because the sprite registry vector can
+// reallocate between calls.
+struct Target {
+  uint32_t* px;
+  int w;
+  int h;
+};
+inline int64_t& _target_id() { static int64_t id = 0; return id; }
+inline Target resolve_target() { return {_fb().data(), _fb_w(), _fb_h()}; }
+
+// The two write seams every draw call goes through: one pixel (clipped) and
+// one row span [x0, x1). Plain stores.
+inline void put(const Target& t, int64_t x, int64_t y, uint32_t rgba) {
+  if (x < 0 || y < 0 || x >= t.w || y >= t.h) return;
+  t.px[static_cast<size_t>(y) * t.w + x] = rgba;
+}
+inline void span(const Target& t, int64_t y, int64_t x0, int64_t x1,
+                 uint32_t rgba) {
+  if (y < 0 || y >= t.h) return;
+  x0 = std::max<int64_t>(x0, 0);
+  x1 = std::min<int64_t>(x1, t.w);
+  uint32_t* row = t.px + static_cast<size_t>(y) * t.w;
+  for (int64_t x = x0; x < x1; x++) row[x] = rgba;
+}
+
+inline void clear(uint32_t rgba) {
+  Target t = resolve_target();
+  std::fill(t.px, t.px + static_cast<size_t>(t.w) * t.h, rgba);
+}
 
 inline void set_pixel(int x, int y, uint32_t rgba) {
-  if (x < 0 || y < 0 || x >= _fb_w() || y >= _fb_h()) return;
-  _fb()[static_cast<size_t>(y) * _fb_w() + x] = rgba;
+  put(resolve_target(), x, y, rgba);
 }
 
-// The framebuffer pixel at (x, y), or 0 (transparent) off-buffer. Exposed as
+// The target pixel at (x, y), or 0 (transparent) off-buffer. Exposed as
 // `Canvas.get` for pixel-readback collision (reading back what was drawn).
 inline uint32_t get_pixel(int x, int y) {
-  if (x < 0 || y < 0 || x >= _fb_w() || y >= _fb_h()) return 0;
-  return _fb()[static_cast<size_t>(y) * _fb_w() + x];
+  Target t = resolve_target();
+  if (x < 0 || y < 0 || x >= t.w || y >= t.h) return 0;
+  return t.px[static_cast<size_t>(y) * t.w + x];
 }
 
-// Filled rectangle, clipped to the framebuffer.
+// Filled rectangle, clipped to the target.
 inline void rect(int x, int y, int w, int h, uint32_t rgba) {
-  int x0 = std::max(0, x);
-  int y0 = std::max(0, y);
-  int x1 = std::min(_fb_w(), x + w);
-  int y1 = std::min(_fb_h(), y + h);
-  for (int yy = y0; yy < y1; yy++)
-    for (int xx = x0; xx < x1; xx++)
-      _fb()[static_cast<size_t>(yy) * _fb_w() + xx] = rgba;
+  Target t = resolve_target();
+  for (int yy = std::max(0, y); yy < std::min(t.h, y + h); yy++)
+    span(t, yy, x, static_cast<int64_t>(x) + w, rgba);
 }
 
 // Division rounding toward -inf. Edge interpolation uses it so an edge that
@@ -143,6 +169,7 @@ inline constexpr auto kPolygonPointsError =
 // identical shape. Fewer than 3 vertices draws nothing.
 inline void polygon(const int64_t* pts, int64_t n, uint32_t rgba) {
   if (pts == nullptr || n < 3) return;
+  Target t = resolve_target();
   auto vx = [&](int64_t i) { return guard(pts[2 * i]); };
   auto vy = [&](int64_t i) { return guard(pts[2 * i + 1]); };
   int64_t ymin = vy(0), ymax = vy(0);
@@ -151,7 +178,7 @@ inline void polygon(const int64_t* pts, int64_t n, uint32_t rgba) {
     ymax = std::max(ymax, vy(i));
   }
   int64_t y0 = std::max<int64_t>(ymin, 0);
-  int64_t y1 = std::min<int64_t>(ymax, _fb_h());
+  int64_t y1 = std::min<int64_t>(ymax, t.h);
   if (y0 >= y1) return;
   // Reused across calls: the framebuffer is already process-wide state, so a
   // per-call crossings buffer would be the only allocation in the draw path.
@@ -168,12 +195,8 @@ inline void polygon(const int64_t* pts, int64_t n, uint32_t rgba) {
     }
     if (xs.size() < 2) continue;
     std::sort(xs.begin(), xs.end());
-    uint32_t* row = _fb().data() + static_cast<size_t>(y) * _fb_w();
-    for (size_t k = 0; k + 1 < xs.size(); k += 2) {
-      int64_t x0 = std::max<int64_t>(xs[k], 0);
-      int64_t x1 = std::min<int64_t>(xs[k + 1], _fb_w());
-      for (int64_t x = x0; x < x1; x++) row[x] = rgba;
-    }
+    for (size_t k = 0; k + 1 < xs.size(); k += 2)
+      span(t, y, xs[k], xs[k + 1], rgba);
   }
 }
 
@@ -211,10 +234,11 @@ inline void glyph(int64_t id, int64_t index, int x, int y, uint32_t rgba) {
   // off the front of the table.
   if (index < 0 || static_cast<size_t>(index) >= f.size() / 8) return;
   size_t base = static_cast<size_t>(index) * 8;
+  Target t = resolve_target();
   for (int ry = 0; ry < 8; ry++) {
     uint8_t bits = f[base + static_cast<size_t>(ry)];
     for (int rx = 0; rx < 8; rx++)
-      if (((bits >> (7 - rx)) & 1) == 0) set_pixel(x + rx, y + ry, rgba);
+      if (((bits >> (7 - rx)) & 1) == 0) put(t, x + rx, y + ry, rgba);
   }
 }
 
@@ -267,6 +291,7 @@ inline void blit(int64_t id, int dx, int dy, int sx, int sy, int sw, int sh,
                  int64_t flags) {
   if (id < 0 || static_cast<size_t>(id) >= _sprites().size()) return;
   const Sprite& s = _sprites()[id];
+  Target t = resolve_target();
   bool flip_x = (flags & 1) != 0;
   bool flip_y = (flags & 2) != 0;
   bool transpose = (flags & 4) != 0;
@@ -280,9 +305,9 @@ inline void blit(int64_t id, int dx, int dy, int sx, int sy, int sw, int sh,
       int lx = flip_x ? sw - 1 - i : i;
       int ly = flip_y ? sh - 1 - j : j;
       if (transpose)
-        set_pixel(dx + ly, dy + lx, p);
+        put(t, dx + ly, dy + lx, p);
       else
-        set_pixel(dx + lx, dy + ly, p);
+        put(t, dx + lx, dy + ly, p);
     }
   }
 }
@@ -359,13 +384,14 @@ inline void blit_scaled(int64_t id, int64_t dx, int64_t dy, int64_t dw,
   if (dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0 || alpha <= 0) return;
   if (alpha > 255) alpha = 255;
   const Sprite& s = _sprites()[id];
+  Target t = resolve_target();
   bool flip_x = (flags & 1) != 0;
   bool flip_y = (flags & 2) != 0;
   bool smooth = (flags & 8) != 0 && (dw < sw || dh < sh);
   int64_t x0 = std::max<int64_t>(dx, 0);
-  int64_t x1 = std::min<int64_t>(dx + dw, _fb_w());
+  int64_t x1 = std::min<int64_t>(dx + dw, t.w);
   int64_t y0 = std::max<int64_t>(dy, 0);
-  int64_t y1 = std::min<int64_t>(dy + dh, _fb_h());
+  int64_t y1 = std::min<int64_t>(dy + dh, t.h);
   // u and v are the destination offsets read back through the flips; both stay
   // within [0, dw) and [0, dh) after the clip, so the divisions floor.
   int64_t u0 = flip_x ? dx + dw - 1 - x0 : x0 - dx;
@@ -374,7 +400,7 @@ inline void blit_scaled(int64_t id, int64_t dx, int64_t dy, int64_t dw,
     int64_t v = flip_y ? dy + dh - 1 - y : y - dy;
     int64_t j0 = v * sh / dh;
     int64_t j1 = smooth ? std::max((v + 1) * sh / dh, j0 + 1) : j0 + 1;
-    uint32_t* row = _fb().data() + static_cast<size_t>(y) * _fb_w();
+    uint32_t* row = t.px + static_cast<size_t>(y) * t.w;
     SourceWalk u(u0, sw, dw);
 
     if (!smooth) {
