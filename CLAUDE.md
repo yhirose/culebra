@@ -15,9 +15,10 @@ culebra は個人の趣味プロジェクト（未公開のプログラミング
 
 1. `git worktree add ~/Projects/culebra-<topic> -b <topic>`
 2. `git -C ~/Projects/culebra-<topic> submodule update --init --recursive`（必須。未初期化だと build が死ぬ）
-3. 以後そのセッションの全パスは worktree の絶対パスで統一する
-4. マージ = **rebase → 再テスト → ff-only**。textual に無衝突でも意味的に正しいとは限らないので rebase 後は必ず再テストする。ただし**再テストは既定で `just test-dev`（~80s）**であって全ゲートではない（下の「どこまで回すか」）。master は他セッションで頻繁に動くので、rebase のたびに全ゲートを回すとマシンが占有され全員が止まる
-5. 完了後 `git worktree remove --force` + `git branch -d`
+3. `EnterWorktree` に `path` でその worktree を渡し、セッションの cwd 自体を移す（`name` での新規作成は使わない — submodule init が入らず build が死ぬ）
+4. **以後そのセッションの全パスは worktree の絶対パスで統一する。** `EnterWorktree` は cwd を移すだけで、Edit/Write に渡した絶対パスは worktree 内へ正規化されない（main tree を直接汚した実例あり）
+5. マージ = **rebase → 再テスト → ff-only**。textual に無衝突でも意味的に正しいとは限らないので rebase 後は必ず再テストする。ただし**再テストは既定で `just test-dev`（~80s）**であって全ゲートではない（下の「どこまで回すか」）。master は他セッションで頻繁に動くので、rebase のたびに全ゲートを回すとマシンが占有され全員が止まる
+6. 完了後 `git worktree remove --force` + `git branch -d`
 
 複数セッションが同じ repo で並行作業しうる。作業開始時は `git log --oneline master` と `git worktree list` を確認し、`git status` に自分が作っていない未コミット変更がある場合はそれを触らずユーザーに確認する。
 
@@ -90,7 +91,5 @@ difftest・AOT・leak 系・wrap はそこで必ず走る。ローカルで全�
 ## その他の運用ルール
 
 - 動作確認用の一時ファイルは Bash heredoc でなく Write ツールで書く。
-- ツール呼び出しは1つずつ逐次実行。依存のある処理を並列バッチにしない。
-- 設計判断で `/meeting` は使わない（キャラ演じ分けの多視点は実質同一モデルの焼き直しで低価値）。申し送り+最新コード+他言語実装を見て直接判断する。
 - `/code-review` の指摘は全件即 fix しない。「実害確認済み」「理論的ドリフト」「誤検出」に仕分けし、failing test か実際に踏まれるコード経路がないものは保留してよい。
 - 強い設計推奨を出す前に、安い実証（spike・最小再現・小さい計測）で裏取りする。
