@@ -74,18 +74,27 @@ build-gate *extra:
     cd build-gate && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF {{extra}} .. > /dev/null
     cd build-gate && {{lock_cmd}} {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}
 
-# Regenerate include/grammar_blob.h — the serialized grammar that lets
-# get_parser() skip peglib's ~10 ms meta-parse on startup. Run after editing the
-# grammar (grammar_def.h) or bumping vendor/cpp-peglib (the blob layout is
-# peglib-version-specific). Skipping it is safe: get_parser() guards the blob
-# with a grammar hash and falls back to load_grammar() on mismatch.
-[group("build")]
-gen-blob:
+[private]
+_gen-blob-tool:
     mkdir -p build-dev
     {{ if path_exists("/opt/homebrew/opt/llvm/bin/clang++") == "true" { "/opt/homebrew/opt/llvm/bin/clang++" } else { env_var_or_default("CXX", "c++") } }} \
         -std=c++23 -O2 -I include -I vendor/cpp-peglib \
         tools/gen_grammar_blob.cc -o build-dev/gen_grammar_blob
+
+# Regenerate include/grammar_blob.h — the serialized grammar that lets
+# get_parser() skip peglib's ~10 ms meta-parse on startup. Run after editing the
+# grammar (grammar_def.h) or bumping vendor/cpp-peglib (the blob layout is
+# peglib-version-specific). Skipping it still runs correctly — get_parser()
+# falls back to load_grammar() on hash mismatch — but costs that ~10 ms on every
+# startup, silently. `just check-blob` is the gate that catches it.
+[group("build")]
+gen-blob: _gen-blob-tool
     ./build-dev/gen_grammar_blob include/grammar_blob.h
+
+# Verify include/grammar_blob.h is in sync with the grammar (CI gate).
+[group("build")]
+check-blob: _gen-blob-tool
+    ./build-dev/gen_grammar_blob --check include/grammar_blob.h
 
 # Build without JIT (interpreter only, no LLVM). Builds just the `culebra`
 # driver — the only TU with CULEBRA_JIT_ENABLED #ifdef gating, so this is the

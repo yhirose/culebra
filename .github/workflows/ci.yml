@@ -149,6 +149,11 @@ jobs:
       - name: Check stdlib preambles sync (src/preambles -> gen.h)
         run: just check-preambles
 
+      # A stale blob still runs correctly, it just falls back to load_grammar()
+      # and costs ~10 ms on every startup — no other gate can see that.
+      - name: Check grammar blob sync (grammar_def.h -> grammar_blob.h)
+        run: just check-blob
+
       - name: Build (interpreter + JIT)
         run: just build ${{ matrix.linker_flag }}
 
