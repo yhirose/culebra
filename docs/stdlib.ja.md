@@ -216,7 +216,7 @@ inspect(Math.atan2(1.0, 1.0))    # => 0.7853981633974483
 
 整数への丸め。`Long` 入力はそのまま返します。`Math.floor` は
 `-∞` 方向、`Math.ceil` は `+∞` 方向、`Math.round` は
-**偶数丸め（bankers' rounding）** — Python の `round()` と同じ挙動。
+**偶数丸め（bankers' rounding）**。
 
 ```culebra
 inspect(Math.floor(-1.5))   # => -2
@@ -362,8 +362,7 @@ IO.eprintln("done")
 
 指定した標準ストリームが端末に接続されているか（POSIX `isatty`）を返し
 ます。対話性に応じた分岐に使えます。stdin ならプロンプト表示かパイプ
-読み取りか、stdout / stderr なら色付けかプレーン出力か。Rust の
-`io::stdin().is_terminal()` / Node の `process.stdin.isTTY` 相当。スト
+読み取りか、stdout / stderr なら色付けかプレーン出力か。スト
 リームがファイルやパイプにリダイレクトされている場合は `false` を返し
 ます。
 
@@ -1032,7 +1031,7 @@ Random.weighted_choice(['hit', 'miss'], [1, 9])   # ~10% 'hit'
 
 スクリプトにコマンドラインで渡された `String` 引数の配列。最初の
 非フラグ引数がスクリプトパスで、**それより後ろ**がすべて `argv`
-として取り込まれます（Python / Node の慣習）。culebra 自身のフラグ
+として取り込まれます。culebra 自身のフラグ
 （`--jit`・`--debug` など）はスクリプトパスより前に置く必要があり
 ます。末尾引数が無い場合や REPL 実行時は空配列です。
 
@@ -1700,8 +1699,8 @@ throw 値の `kind` は次のいずれか:
   返す代わりに `ProcessError` を throw します（既定: `false`）。
 - `timeout: Long` — ミリ秒。これを超えて走るとコマンドは kill され（`SIGTERM` →
   短い猶予の後 `SIGKILL`）、結果は `ok: false` / `timed_out: true` になります
-  （既定: `0` = 無制限）。**直接の子だけを kill**し、その子が生んだ孫は kill しません
-  （Python/Node 既定と同じ）。stdout/stderr を早期に閉じて走り続けるプロセスには
+  （既定: `0` = 無制限）。**直接の子だけを kill**し、その子が生んだ孫は kill しません。
+  stdout/stderr を早期に閉じて走り続けるプロセスには
   timeout が届かないことがあります。
 
 **非 0 終了**や**シグナル死**はエラーではなく通常の結果です — `ok` / `code` /
@@ -1924,7 +1923,7 @@ GC が回収する）と isolate に停止が伝わり、次の文境界また�
 ### Channel — `Channel.new(cap = 1) -> (tx, rx)`
 
 channel は isolate 間で値を渡す有界・ブロッキングのキューです。**(tx, rx)** の組を
-返します（Rust `mpsc` 流）。`tx.send(v)` で投入、`rx` で取り出し。channel の
+返します。`tx.send(v)` で投入、`rx` で取り出し。channel の
 endpoint は Sendable 規則の唯一の例外で、（参照で）共有されます — クロージャが
 `tx`/`rx` を捕獲して spawn した isolate に持ち込めます。値そのものはコピーで渡り、
 共有されるのは channel だけです。
@@ -2521,8 +2520,8 @@ if (!cond) {
 
 * **`assert_true(x: Bool) -> Nil`** — `x` が truthy なら pass。 失敗
   時は `assert_true failed:\n  value: {x}`。 `x` は `Bool` / `Long` /
-  `Float` のみ — それ以外は `TypeError`。 culebra に Python 流の
-  truthiness はありません (空文字列・空配列は falsy ではない)。
+  `Float` のみ — それ以外は `TypeError`。 暗黙の truthiness は無く、
+  空文字列・空配列は falsy ではありません。
 * **`assert_false(x: Bool) -> Nil`** — `assert_true` の逆。
 
 ### 比較 matcher
@@ -2599,7 +2598,7 @@ catastrophic backtracking が原理的に起きないため backreference はあ
 
 **パターンはシングルクォートの raw 文字列で書きます**（`'\d+'`、`"\\d+"` ではなく）:
 シングルクォートはエスケープ処理も `{...}` 補間も行わないので `\d` や `{n}` がそのまま
-通ります（Python の `r"..."` と同じ）。アポストロフィを含むパターン（トークナイザの
+通ります。アポストロフィを含むパターン（トークナイザの
 `'s`/`'t` など）はバッククォート raw 文字列 `` `...` `` を使います（同じく raw で、
 `'`・`"`・`{` も含められる）。フラグは `compile` に文字列で渡す
 （`Regex.compile('hello', "i")`）か、パターン内にインライン: `(?i)` 大文字小文字
@@ -2624,7 +2623,7 @@ catastrophic backtracking が原理的に起きないため backreference はあ
 | `Regex.interp(x)` | `String` — `re"...${x}..."` 用の合成ヘルパ: `Regex` → `(?:src)`、それ以外 → エスケープしてリテラル一致 |
 
 その場限りの利用には、下の namespace メソッドがパターンを直接受け取り `compile` を隠します
-（Python `re.search` / `re.sub` と同様）。1 つのパターンを多数の入力に再利用するなら
+。1 つのパターンを多数の入力に再利用するなら
 `Regex.compile(pat)` を使いますが、エンジンがパターンでキャッシュするので one-shot 形に再コンパイルの
 コストはありません。フラグはインライン（`(?i)` / `(?m)` / `(?s)`）で。
 
@@ -3096,8 +3095,8 @@ WebSocket 接続はその寿命の間 worker を占有するので、`workers: N
 - `workers: 0`（既定）— CPU 連動のプール（最小 4・最大 8）。ブラウザはページ読み込みで
   複数接続を開き各 keep-alive 接続が worker を短時間占有するため最小 4、各 worker は専用
   ランタイムを持つため上限あり。
-- `workers: N` — N 固定のプール。リクエストは**真の並列**で処理（プロセス全体ロック無し
-  ＝単一プロセスの Python サーバと違う）。
+- `workers: N` — N 固定のプール。リクエストは**真の並列**で処理されます:
+  あいだにグローバルなインタプリタロックは挟まりません。
 
 各 worker は専用ランタイムを持つため、ハンドラは **Sendable** 必須（可変変数や非 Sendable
 値をキャプチャ不可）。巨大な read-only データは [`Shared.new`](#12-isolate) で共有（全

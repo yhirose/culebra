@@ -51,8 +51,8 @@ codegen, AOT tree-shaking) see [`internals.md`](internals.md).
 
 ## 1. Overview and philosophy
 
-Culebra is a small, dynamically-typed scripting language with a
-Rust-flavored syntax. Its priorities are:
+Culebra is a small, dynamically-typed scripting language. Its
+priorities are:
 
 * **Small surface area.** A few orthogonal features: first-class
   functions, closures, arrays, objects, pattern matching, optional
@@ -139,7 +139,7 @@ three is reserved elsewhere. Type annotation names (`Nil`, `Bool`,
 element of an array `[1, 2,]`, object `{a: 1,}`, set `{1, 2,}`, tuple
 `(1, 2,)`, argument list `f(1, 2,)`, parameter list `fn g(a, b,)`,
 lambda params `|a, b,|`, and destructuring pattern `let [a, b,] = …`
-(the Python / Rust / JS convention — cleaner diffs and reordering).
+(cleaner diffs, and reordering without touching the neighbours).
 A leading or doubled comma is still a syntax error. Note `(x,)` and
 `{x,}` are *not* merely cosmetic: the comma marks a one-element tuple
 and a one-element set respectively.
@@ -223,7 +223,7 @@ and `x = c ? a : b` is `x = (c ? a : b)`.
 7. `**` (right-associative). Binds tighter than unary minus —
    `-2**2 == -4` — but the RHS of `**` itself accepts a unary
    prefix, so `2 ** -1 == 0.5` and `2 ** -3 ** 2 == 0.00195…` both
-   parse as in Python.
+   parse.
 8. Call / index / dot (`x(...)`, `x[i]`, `x.k`) — left-associative
 
 `=` is right-associative but appears only in `ASSIGNMENT`, not as a
@@ -235,8 +235,8 @@ Most constructs are expressions that yield a value:
 
 * `if { a } else { b }` yields the taken branch's value.
 * `match x { ... }` yields the matching arm's body value (or `nil`).
-* `cond { test => a, _ => b }` — the subjectless multi-way conditional
-  (Elixir-style): yields the body of the first truthy `test` (`_` is the
+* `cond { test => a, _ => b }` — the subjectless multi-way conditional:
+  yields the body of the first truthy `test` (`_` is the
   always-match default), or `nil` if none match. Use it instead of a
   `match true { _ if … }` guard chain when there is nothing to match on.
 * `while` always yields `nil`.
@@ -298,7 +298,7 @@ semantics bit-for-bit.
 
 * `String`: compares by contents.
 * `Array`, `Object`, `Tuple`, `Set`: compare by **value** (structural,
-  recursing through elements), like Python/Ruby. Only `Function` and
+  recursing through elements). Only `Function` and
   `Tensor` compare by reference identity. (Value equality does not make
   arrays hashable — they still can't be Object/Set keys.)
 
@@ -449,8 +449,8 @@ the ambiguity.
 Shadowing is *allowed* in two cases:
 
 * **Globals and builtins** (`inspect`, `min`, or any top-level binding)
-  may always be shadowed. This keeps the Ruby-style feel of writing
-  `mut min = arr[0]` in a local function without friction.
+  may always be shadowed, so writing `mut min = arr[0]` in a local
+  function costs nothing.
 * **Block-scope shadowing within the same function** is allowed. A
   `{ ... }` block may introduce a new `let`/`mut` binding of a name
   already declared in the enclosing function body:
@@ -460,10 +460,9 @@ Shadowing is *allowed* in two cases:
           { let a = 1; ... }   # OK: new binding scoped to the block
         }
 
-The restriction applies only at function boundaries. The design
-follows the spirit of C++'s `-Wshadow` and mirrors Scheme's
-`set!`/`define` distinction: closure-captured state is mutated via
-bare `x = v`, and a new local is declared with `let`/`mut`.
+The restriction applies only at function boundaries: closure-captured
+state is mutated via bare `x = v`, and a new local is declared with
+`let`/`mut`.
 
 ### Mutability
 
@@ -507,10 +506,8 @@ Culebra treats the three shadow axes independently:
 | Within the same function (block scope) | Allowed | Warning or allowed |
 | A global / builtin name | Allowed | Warning or allowed |
 
-Most languages apply one policy to all three (either all-allowed like
-Rust/Swift, or all-warned like C++ `-Wshadow` / ESLint `no-shadow`).
-Culebra splits them because each axis serves a different purpose in a
-Scheme-influenced, closure-as-object idiom:
+The three positions get different policies because each serves a
+different purpose in the closure-as-object idiom:
 
 * **Captured state is object state.** In the closure-based object
   pattern (see [`guide.md` §9.2](guide.md#92-the-closure-based-alternative)), an enclosing function's mutable
@@ -530,18 +527,7 @@ Scheme-influenced, closure-as-object idiom:
 The effect is that the rule catches the bug class it is designed to
 catch — confusion between "new local" and "outer reassignment" —
 without interfering with the two situations where shadowing is
-natural. Prior-art summary:
-
-* Python's `nonlocal` solves the same problem by declaring at function
-  entry that a name refers to an outer binding. Culebra's default
-  (bare `x = v` reaching outer) already expresses this at the use
-  site, so the declaration is unnecessary — but the risk of
-  accidental rebinding remains, and that is what shadow prohibition
-  closes.
-* Scheme's `set!` / `define` split avoids the same confusion by giving
-  mutation and binding different names. Culebra expresses the same
-  distinction through `let`/`mut` vs. bare `=`, and the shadow check
-  enforces it.
+natural.
 
 ---
 
@@ -553,14 +539,15 @@ natural. Prior-art summary:
 `Float`); a non-numeric operand raises `type error`.
 
 * **Both `Long` → `Long`.** Integer arithmetic; division and modulo
-  truncate toward zero (C semantics, not Python's floor division).
+  truncate toward zero (not floored, so the sign of the operands does
+  not change the direction).
   `7 / 2 == 3`, `-7 % 3 == -1`. Overflow wraps (no bignum).
 * **Either operand `Float` → `Float`.** The `Long` operand is
   promoted to `Float` and the operation runs in IEEE 754 binary64.
   `1 + 2.0 == 3.0`, `3 / 2.0 == 1.5`.
 
 Division or modulo by zero raises `divide by 0 error at L:C` for both
-`Long / 0` and `Float / 0.0` (matches Python's `ZeroDivisionError`).
+`Long / 0` and `Float / 0.0`.
 
 `**` (exponentiation) has a slightly richer rule:
 
@@ -572,7 +559,7 @@ Division or modulo by zero raises `divide by 0 error at L:C` for both
   1.4142`.
 * `**` is right-associative and binds tighter than unary minus. Its
   RHS accepts a unary prefix, so both `2 ** 3 ** 4 == 2 ** 81` and
-  `2 ** -1 == 0.5` parse as in Python.
+  `2 ** -1 == 0.5` parse.
 
 ### Bitwise
 
@@ -612,7 +599,7 @@ parentheses there: `|x = (A | B)|`. `||` remains logical-or.
   other cross-type ordering raises `type error`.
 * **Chaining**: `a < b < c` means `(a < b) && (b < c)` — the middle
   operand `b` is evaluated once, and the chain short-circuits to `false`
-  at the first failing link (Python semantics). Any mix of comparison
+  at the first failing link. Any mix of comparison
   operators chains: `0 <= i < n`, `lo < x <= hi`, `a == b == c`.
 
 ### Logical
@@ -652,8 +639,8 @@ Only `Bool`, `Long`, and `Float` are convertible to bool:
 * `Bool`: itself.
 * `Long`: `0` is false, all others true.
 * `Float`: `0.0` (and `-0.0`) are false. Every other finite value is
-  true, and `NaN` is true (Python's `bool(float('nan'))` also
-  returns `True`).
+  true, and `NaN` is true — truthiness asks "is this a number at all",
+  not "is this a usable number".
 * `Nil`, `String`, `Array`, `Object`, `Function`: **not convertible** —
   using one in a boolean context (e.g., `if s { ... }`) raises
   `type error`.
@@ -699,8 +686,8 @@ intermediate IR but must preserve the observable effect order.
   evaluated.
 * **Assignment `lval = rhs`.** RHS evaluates first, then the LHS
   target chain (and its final subscript key for `obj[k] = ...`),
-  then the store is performed. This is the opposite of Python's
-  "LHS targets first" rule — culebra matches Lua / Ruby here.
+  then the store is performed — the value is computed before the
+  place it lands in is resolved.
 * **Compound assignment `lval op= rhs`.** RHS evaluates first; the
   LHS target chain (including any subscript key) is then evaluated
   **exactly once**, the implicit read and the store both reuse the
@@ -808,7 +795,7 @@ forms and `\n` / `\{` escapes) but single and double quotes inside need
 no escaping — only `"""` closes it. Handy for embedded LLM prompts and
 snippets that contain quotes. Use `\{` for a literal open brace.
 
-#### Block form (Swift-style dedent)
+#### Block form (dedented)
 
 When the opening `"""` is immediately followed by a newline, the string is
 a *block string*. The newline after the opening `"""` and the newline before
@@ -870,7 +857,7 @@ operation preserves it — a `String` never terminates at a NUL.
 ### Format specs
 
 An interpolation may carry a format spec after a colon — `{expr:spec}`.
-The spec is the C++ `std::format` mini-language (Python-derived):
+The spec is the C++ `std::format` mini-language:
 `[[fill]align][sign][#][0][width][.precision][type]`.
 
     "{pi:.2f}"        # → 3.14   (fixed-point, 2 decimals)
@@ -884,9 +871,9 @@ Numeric values honor the spec's type char: a float type (`f`/`e`/`g`)
 formats Longs and Floats as floating-point, an integer type
 (`d`/`x`/`o`/`b`) formats as an integer. Other values format their
 display string (so width / alignment apply). An invalid spec for the
-value's type raises `ValueError`. Note this is `std::format`, not Python
-exactly — e.g. `,` digit grouping is not supported (std::format uses the
-locale `L` option instead).
+value's type raises `ValueError`. `std::format` is followed exactly, so
+`,` digit grouping is not supported (the locale `L` option covers that
+case instead).
 
 ### Display conversion
 
@@ -972,8 +959,8 @@ endpoint may be negative (counted from the end). Either endpoint may also
 be **omitted** — an open start defaults to `0`, an open end to the
 sequence length: `xs[2..]` drops the first two, `xs[..3]` keeps the first
 three, `xs[..]` copies the whole sequence. Out-of-range endpoints
-**clamp** and a start past the end yields an empty result (matching
-Python/JS/Ruby), so slicing never raises on bounds.
+**clamp**, and a start past the end yields an empty result, so slicing
+never raises on bounds.
 
 Arrays return a **shallow copy** — the slice's spine is independent of
 the source, but elements are shared (a reference-semantic array sliced
@@ -1021,7 +1008,7 @@ inspect("hello"[1..=3])   # => 'ell'
 ### Equality and ordering
 
 Arrays compare by **value** (structural): `[1, 2] == [1, 2]` is true,
-recursing through nested elements, like Python/Ruby. Tuples, Sets, and
+recursing through nested elements. Tuples, Sets, and
 Objects are likewise value-equal; only `Function` and `Tensor` keep
 reference identity. (Arrays remain *unhashable* — value equality does
 not make them usable as Object/Set keys.) Ordering operators (`<` etc.)
@@ -1039,8 +1026,8 @@ are not defined on arrays.
     {name, age}                            # shorthand — same as {name: name, age: age}
 
 Property order in the source is irrelevant for equality or access,
-but the order is preserved for display and iteration (insertion
-order, matching Python 3.7+ dict and Ruby Hash).
+but the order is preserved for display and iteration: keys come back
+in the order they were first written.
 
 The shorthand form `{x}` is equivalent to `{x: x}`: it reuses the
 identifier as both key and value, looking up `x` in the current scope.
@@ -1106,17 +1093,17 @@ Non-String keys live in a sidecar map and are read with `obj[k]`:
     grid[(0, 0)]   # 'origin'
     by_id[1]       # 'one'
 
-Key identity is type-strict — Ruby's `eql?`, deliberately *finer* than
-the `==` operator. Keys of different types are never the same key, so
+Key identity is type-strict, deliberately *finer* than the `==`
+operator. Keys of different types are never the same key, so
 `1`, `1.0`, and `true` are three distinct keys even though `1 == 1.0`
-holds for the `==` operator. (Unlike Python, which collapses them into
-one bucket.) A literal that *repeats* a key keeps the last write —
+holds for the `==` operator. A literal that *repeats* a key keeps the
+last write —
 `{1: 'a', 1: 'b'}` is `{1: 'b'}` — the same last-wins rule a literal
 always uses for a duplicated key, including String keys.
 
 String and non-String keys share a single insertion-order record, so
 `to_string` renders mixed-key Objects with the keys interleaved in
-their actual write order — matching Python and Ruby Hash semantics.
+their actual write order.
 
 ### Subscript assignment
 
@@ -1257,8 +1244,8 @@ Semantics:
 * The `new` method is optional; without it the class accepts no
   arguments and returns an instance with only methods and `class:`.
 * `self` is immutable inside the constructor body. Attempting
-  `self = newObj` raises `ImmutableError` (matching Java, Crystal,
-  Ruby). The constructor always returns the originally allocated
+  `self = newObj` raises `ImmutableError`. The constructor always
+  returns the originally allocated
   instance — an explicit `return value` discards `value`. Identity-swap
   factories live as `static` methods (below) or as plain top-level
   functions.
@@ -1286,8 +1273,8 @@ Semantics:
       inspect(c.kind)              # 'circle'
 
   Static methods are not visible through instances (`c.circle(...)`
-  raises `TypeError` because the instance has no `circle` property).
-  This mirrors Java / C# / Kotlin / Crystal class-method semantics.
+  raises `TypeError` because the instance has no `circle` property):
+  a static is reached through the class, never through an instance.
 * `static NAME = EXPRESSION` declares a class-level immutable constant
   (a static field), evaluated eagerly at class declaration time and
   installed as a property of the class object alongside static methods:
@@ -1322,11 +1309,11 @@ Semantics:
       inspect(p.best)            # 10
       p.tags.push('bird')     # each instance gets its own Array
 
-  Initializer semantics (Kotlin's model):
+  Initializer semantics:
 
   - **Per instance**: the initializer expression runs once for every
     `C.new(...)` call — `tags: Array = []` gives each instance an
-    independent Array (no Python-style shared class attribute).
+    independent Array — nothing is shared between instances.
   - **Declaration order, `self` in scope**: an initializer may read
     fields declared above it and call methods (`best` above). Reading a
     field declared *below* yields `nil` — order is meaningful.
@@ -1335,8 +1322,8 @@ Semantics:
     fires first, with no field side effects — and the `new` body in
     turn sees every declared field. Constructor parameters are *not*
     visible inside initializers (initializers close over the class's
-    defining scope, like Kotlin property initializers vs
-    secondary-constructor parameters); pass ctor args to fields
+    defining scope, not over the constructor call); pass ctor args to
+    fields
     explicitly with `self.x = a` in the body.
   - A typed field without an initializer (`name: String` above) takes
     its type's zero value: `0` / `0.0` / `''` / `false`; reference
@@ -1367,7 +1354,7 @@ Semantics:
   `p.parent().name()`). Reserve getters for pure, total, O(1) derivations
   (an inherent quality of the value); anything that does I/O or can fail
   should stay an ordinary method, so the absence of parentheses signals
-  "no side effects" — the same guidance Swift/Kotlin give. A getter takes
+  "no side effects". A getter takes
   no parameters (`get f (x)` is a syntax error), and `get` is contextual:
   a member literally named `get` (`get () { ... }`) is still an ordinary
   method. Both spellings (`obj.name` and `obj.name()`) invoke the getter
@@ -1861,8 +1848,9 @@ Rules:
 * Unknown kwarg names are a `TypeError` unless the callee declares a
   `**rest` catch-all, which absorbs them.
 * A `**` splat operand must be an `Object` with `String` keys only.
-* Defaults are re-evaluated on every call (Ruby/Scala flavor — no
-  Python-style "evaluated at def time" trap).
+* Defaults are re-evaluated on every call, so a mutable default
+  (`fn f(xs = [])`) is a fresh value each time rather than one
+  accumulating across calls.
 
 JIT support: kwargs and `**` splat work on both backends for the
 common patterns:
@@ -1927,7 +1915,7 @@ Function literals capture their lexical environment by reference.
   exists in an outer scope; otherwise creates a new local.
 * Captured mutable variables (e.g., via `mut x` in an outer scope) are
   shared: changes are visible to every closure that captured them and
-  to the outer scope itself. This mirrors JavaScript/Ruby, not Python.
+  to the outer scope itself — capture is by reference, not by value.
 
 Example:
 
@@ -2070,8 +2058,7 @@ if no branch is taken (no `else` and the `if` was false).
 
 Like `while`, `if` accepts an optional **init clause** — declarations
 before the condition, split by `;` — scoped to the whole `if` / `else
-if` / `else` chain (the same form as [`while`](#while), and matching
-C++17's `if (init; cond)`):
+if` / `else` chain (the same form as [`while`](#while)):
 
 ```culebra
 # doctest: skip
@@ -2205,9 +2192,9 @@ An optional `nobreak { … }` block after a `while` or `for` runs **only
 when the loop finishes normally** — the condition became false, or the
 iterator was exhausted — and is **skipped when the loop exits via
 `break`** (and also by `return` or a throw, which unwind past it). These
-are the same semantics as Python's / Zig's loop-`else`; `nobreak` names
-the condition directly (it runs when no `break` happened) to avoid the
-`else` misreading. It carries no value (the loop stays `nil`).
+`nobreak` names the condition it tests — it runs when no `break`
+happened — so the block needs no comment to say when it fires. It
+carries no value (the loop stays `nil`).
 
 The canonical use is search — the block is the "not found" branch, with
 no flag variable:
@@ -2261,8 +2248,7 @@ the value is `nil`.
 
 Like `while` and `if`, `match` accepts an optional **init clause** —
 declarations before the subject, split by `;` — scoped to the subject
-and every arm (the same form as [`while`](#while), matching C++17's
-`if (init; cond)`):
+and every arm (the same form as [`while`](#while)):
 
     match mut x = compute(n); x {
       0 => "zero",
@@ -2317,8 +2303,8 @@ fall-through, or an exception).
 ### Arm bodies
 
 An arm body is normally a single expression. To run several statements,
-write a brace **block** — the arm evaluates to the block's last statement
-value (Rust-style):
+write a brace **block** — the arm evaluates to the block's last
+statement value:
 
     let kind = match tok {
       '+' => { let p = prec(tok); register(p); "op" },
@@ -2497,9 +2483,10 @@ built-in container type today is `Array`; other Generic outer names
     fn first(xs: Array<Long>) -> Long { xs[0] }
     fn lookup(k: String) -> Array<Long> | Nil { ... }
 
-Like Rust and Swift's monomorphized generics, **element-level
-runtime checks are no-ops**: only the outer type is checked at
-the boundary. The args exist for documentation and for multimethod
+**Element-level runtime checks are no-ops**: only the outer type is
+checked at the boundary — verifying the element type would mean walking
+the collection on every call. The args exist for documentation and for
+multimethod
 dispatch tie-breaks.
 
     fn first(xs: Array<Long>) { xs[0] }
@@ -2749,8 +2736,8 @@ Bound positions.
 
 **Structural conformance**: any class whose methods cover the trait's
 required ones (name + arity) automatically satisfies the trait —
-no `impl Foo for Bar` block needed. The model mirrors Go interfaces
-and Python's `__str__`-style magic methods.
+no `impl Foo for Bar` block needed: conformance is decided by the
+methods a class actually has.
 
     class Bob {
       new(name) { self.name = name }
@@ -2810,8 +2797,8 @@ contract `Object` / `Set` keys check at insertion: a user class
 becomes a valid key by defining `hash()` (returning `Long`) and
 `eq(other)`.
 
-`Iterator` + `Iterable` formalize the for-in protocol (Kotlin /
-Java style). A class that exposes `iter() -> Iterator`,
+`Iterator` + `Iterable` formalize the for-in protocol. A class that
+exposes `iter() -> Iterator`,
 `has_next() -> Bool`, and `next() -> Any` is iterable and works
 with every pipeline method (`map` / `filter` / `take` / `collect` /
 ...). `has_next()` is required to be idempotent on repeat calls —
@@ -2849,7 +2836,7 @@ equality check stays consistent with the hash.
 #### Generic Bound
 
 A type parameter may carry a single trait as its bound, declared
-inline (Rust style):
+inline:
 
     fn min<T: Comparable>(a: T, b: T) -> T {
       if a.lt(b) { a } else { b }
@@ -3039,8 +3026,8 @@ propagates as a regular exception.
 
 ### Interruption (Ctrl+C)
 
-Ctrl+C raises a cooperative, catchable `Interrupted` — Python's
-`KeyboardInterrupt` model rather than an abrupt kill:
+Ctrl+C raises a cooperative, catchable `Interrupted` rather than
+killing the process outright:
 
     try {
       serve()                       # long-running loop
@@ -3200,9 +3187,8 @@ if (!cond) {
 }
 ```
 
-This mirrors Go's `if x == nil { return errors.New(...) }` and Ruby's
-`raise` style — assertion control flow is explicit rather than a magic
-keyword.
+Assertion control flow is written out rather than hidden behind a
+keyword that a build flag can switch off.
 
 ### JIT support
 
@@ -3484,8 +3470,8 @@ JIT internal `Cell`s and `Closure`s) are reference-counted.
 
 Pure reference counting cannot reclaim cycles (`a.c = a`). Both
 backends register every refcounted heap object with an auxiliary
-cycle collector that runs a Python-style mark-and-sweep periodically
-(every 10,000 new allocations) and at program exit.
+cycle collector that runs a mark-and-sweep periodically (every 10,000
+new allocations) and at program exit.
 
 * Subject to collection: `Array`, `Object`, `Tuple`, `Set`, and the
   environments captured by closures (plus `Closure` / `Cell` in the
@@ -3679,10 +3665,10 @@ receiver is never mutated.
 | `s.trim() -> String`                            | Remove leading/trailing whitespace (` `, `\t`, `\n`, `\r`). |
 | `s.trim_start(chars: StringLike = "") -> String` | Trim from the start. No arg → whitespace; `chars` → leading scalars in that set (no ranges). |
 | `s.trim_end(chars: StringLike = "") -> String`  | Trim from the end. e.g. `s.trim_end("\n")`. |
-| `s.tr(from: StringLike, to: StringLike) -> String` | Per-scalar translation (Ruby `tr`, character-list form — no `a-z` ranges or `^`). Each scalar of `s` found in `from` becomes the scalar at the same position in `to`; a shorter `to` repeats its last scalar, an empty `to` deletes. `s.tr("０１２３４５６７８９", "0123456789")`. |
+| `s.tr(from: StringLike, to: StringLike) -> String` | Per-scalar translation, character-list form — no `a-z` ranges or `^`. Each scalar of `s` found in `from` becomes the scalar at the same position in `to`; a shorter `to` repeats its last scalar, an empty `to` deletes. `s.tr("０１２３４５６７８９", "0123456789")`. |
 | `s.split(sep: StringLike) -> Array<StringView>` | Split on every occurrence of `sep`. Empty `sep` → `[s]`. Elements share a single source. |
 | `s.split_iter(sep: StringLike) -> Iterator<StringView>` | Lazy variant of `split`. Short-circuits with `.take(n)` over huge inputs. |
-| `s.replace(pat: String \| Regex, repl: String \| Function) -> String` | Replace **every** occurrence (like Python `str.replace`); chains. `pat` a `String` → literal; `pat` a `Regex` (incl. `re'…'`) → regex, so `repl` may be a `$1` / `$<name>` template or a `fn (Match) -> String`. A stdlib helper reached by UFCS — `s.replace(p, r)` is `replace(s, p, r)`. |
+| `s.replace(pat: String \| Regex, repl: String \| Function) -> String` | Replace **every** occurrence; chains. `pat` a `String` → literal; `pat` a `Regex` (incl. `re'…'`) → regex, so `repl` may be a `$1` / `$<name>` template or a `fn (Match) -> String`. A stdlib helper reached by UFCS — `s.replace(p, r)` is `replace(s, p, r)`. |
 | `s.contains(sub: StringLike) -> Bool`           | Whether `sub` appears anywhere. Empty `sub` → `true`. |
 | `s.starts_with(prefix: StringLike) -> Bool`     | Whether `s` begins with `prefix`.    |
 | `s.ends_with(suffix: StringLike) -> Bool`       | Whether `s` ends with `suffix`.      |
@@ -3692,10 +3678,10 @@ receiver is never mutated.
 | `s.iter() -> Iterator<StringView>`              | Lazy walk yielding **one-scalar `StringView`s** (UTF-8 scalar). What `for c in s { ... }` uses internally. Invalid bytes yield as one-byte substrings. |
 | `s.code_points() -> Iterator<Long>`             | Lazy walk yielding **Unicode scalar values** as `Long` (`U+0000`–`U+10FFFF`). For numeric / range / classification work where the per-scalar allocation of `iter` is wasteful. Invalid bytes yield as `0`–`255`. |
 | `s.graphemes() -> Iterator<StringView>`         | Lazy walk yielding **Extended Grapheme Clusters** (UAX #29) — one user-perceived character per step (e.g. an emoji ZWJ sequence is a single element). |
-| `s.bytes() -> Iterator<Long>`                   | Lazy walk yielding the receiver's **raw UTF-8 bytes** as `Long` (`0`–`255`), one byte per step — no decoding, unlike `code_points`. For when the encoding itself is wanted (hashing, tokenizer vocabularies, wire formats); mirrors Python's `list(s.encode())`. |
-| `String.from_code_point(cp: Long) -> String`    | The inverse of `code_points()`: one Unicode scalar value in, a one-character `String` out (Python's `chr`, Rust's `char::from_u32`). Raises `ValueError` for `cp` above `U+10FFFF` or in the surrogate range `U+D800`–`U+DFFF` — the same boundary the `\u{...}` literal escape (§4.1) rejects at parse time. |
+| `s.bytes() -> Iterator<Long>`                   | Lazy walk yielding the receiver's **raw UTF-8 bytes** as `Long` (`0`–`255`), one byte per step — no decoding, unlike `code_points`. For when the encoding itself is wanted (hashing, tokenizer vocabularies, wire formats). |
+| `String.from_code_point(cp: Long) -> String`    | The inverse of `code_points()`: one Unicode scalar value in, a one-character `String` out. Raises `ValueError` for `cp` above `U+10FFFF` or in the surrogate range `U+D800`–`U+DFFF` — the same boundary the `\u{...}` literal escape (§4.1) rejects at parse time. |
 | `String.from_code_points(cps: Array) -> String` | The plural inverse of `code_points()`: an `Array` of Unicode scalar values in, a `String` out. Each element passes through the same gate as `from_code_point`, so `String.from_code_points([cp]) == String.from_code_point(cp)`; a non-`Long` element is a `TypeError`, an out-of-range one a `ValueError`. |
-| `String.from_bytes(bytes: Array) -> String`     | The inverse of `bytes()`: an `Array` of raw byte values (`0`–`255`) in, a `String` out. **No UTF-8 validation** (unlike Python's `bytes(ids).decode()`, which raises on malformed input): culebra `String`s tolerate invalid UTF-8 (same as `iter()`), so `String.from_bytes(s.bytes().collect()) == s` holds for every `String`, including ones with invalid sequences. A non-`Long` element is a `TypeError`, an out-of-range one (outside `0`–`255`) a `ValueError`. |
+| `String.from_bytes(bytes: Array) -> String`     | The inverse of `bytes()`: an `Array` of raw byte values (`0`–`255`) in, a `String` out. **No UTF-8 validation**, and no error on malformed input: culebra `String`s tolerate invalid UTF-8 (same as `iter()`), so `String.from_bytes(s.bytes().collect()) == s` holds for every `String`, including ones with invalid sequences. A non-`Long` element is a `TypeError`, an out-of-range one (outside `0`–`255`) a `ValueError`. |
 
 ```culebra
 # 'é' is 2 UTF-8 bytes, so 'café' is 5 bytes
@@ -3926,8 +3912,8 @@ inspect(p)                    # => {b: 2}
 
 `for x in expr { ... }` (§12) requires `expr` to participate in the
 iterator protocol. The protocol uses three **well-known method names**
-on `Object` (and its subtype `Array`) — the Kotlin shape, a `has_next`
-gate in front of each `next`:
+on `Object` (and its subtype `Array`), with a `has_next` gate in front
+of each `next`:
 
 | Method | Shape | Called on | Returns |
 |---|---|---|---|
@@ -3961,8 +3947,8 @@ Generators use it to run the defers registered inside a suspended body.
 A `dispose` that itself throws while an exception is already unwinding is
 swallowed, so the enclosing `catch` still sees the original error.
 
-The same contract covers the **terminal iterator methods** (C#'s rule:
-whoever drives the protocol closes it). Every terminal — draining
+The same contract covers the **terminal iterator methods**: whoever
+drives the protocol closes it. Every terminal — draining
 (`collect`, `count`, ...), early-exiting (`find`, `any`, `first`, ...),
 or one that throws mid-drain (from its callback or the producer) —
 calls `dispose` exactly once on the way out, after the result is
@@ -4005,7 +3991,7 @@ rest. The yielded values are 1-scalar `String`s, not integer code
 points — use `.map` on the iterator to project into whatever shape
 you need.
 
-Iterating an `Object` yields `(key, value)` pairs (Ruby-style), so the
+Iterating an `Object` yields `(key, value)` pairs, so the
 natural loop is `for k, v in obj` and `obj.iter()` is the entries view
 (it chains and `collect`s like any iterator). The single-axis views are
 `obj.keys()` (an `Array`) and `obj.values()` (a lazy iterator):
@@ -4017,8 +4003,8 @@ for v in {a: 1, b: 2}.values() { inspect(v) }     # 1 then 2
 ```
 
 **Object iter and mutation**: iteration is over a snapshot of the keys
-taken at loop start, so mutating the object in the loop body is safe (no
-fail-fast guard, unlike Python `dict`). Keys **added** during the loop
+taken at loop start, so mutating the object in the loop body is safe —
+there is no fail-fast guard. Keys **added** during the loop
 are not visited; keys **removed** are skipped; each value is read **live**
 at its step. This makes the setdefault pattern — adding derived entries
 while iterating — work without copying. The `for k, v in obj` sugar uses
@@ -4117,8 +4103,9 @@ disposed source reporting done.
 `for_each` / `reduce` / `find` / `any` / `all` / `flat_map` (§18.2)
 which all return a new `Array`. Calling them on an `Array` dispatches
 to the eager versions; call `.iter()` first to opt into the lazy
-chain. This mirrors Swift's `arr` vs `arr.lazy`, Kotlin's `list` vs
-`list.asSequence()`, and Python's list comprehension vs generator.
+chain. The eager form is the default because a chain that materialises
+each step is easier to reason about; laziness is what you ask for when
+the sequence is large or unbounded.
 
 ```culebra
 # doctest: skip
@@ -4203,7 +4190,7 @@ closure too (`range(0, 10, **{step: 2})` works), with the same
 Convert `v` to `Long`:
 
 * `Long` → itself.
-* `Float` → truncated toward zero (matches Python's `int()`).
+* `Float` → truncated toward zero.
   `to_long(3.7) == 3`, `to_long(-3.7) == -3`.
 * `String` → parsed as a base-10 signed integer; leading/trailing
   whitespace is allowed, anything else fails.
@@ -4723,8 +4710,8 @@ expression.
     culebra <command> [command-flags]
 
 Everything after the script path is captured verbatim and exposed to the
-script as `Sys.argv` (the Python / Node convention — no `--` needed; see
-[`docs/stdlib.md`](stdlib.md)). A standalone `--` before the script is an
+script as `Sys.argv` — no `--` needed; see
+[`docs/stdlib.md`](stdlib.md). A standalone `--` before the script is an
 optional escape hatch: it stops flag parsing, so the next argument is taken
 as the script even if it begins with a dash.
 
@@ -4776,8 +4763,7 @@ unaffected.
 The REPL persists input history across sessions. The path is
 `$CULEBRA_HISTFILE` if set, otherwise `$XDG_STATE_HOME/culebra/history`
 when defined, otherwise `~/.culebra_history`. History is rewritten
-after each accepted line so a crash mid-session doesn't lose it
-(matching Python and Node REPL convention).
+after each accepted line so a crash mid-session doesn't lose it.
 
 ### CLI-installed globals
 

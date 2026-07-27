@@ -224,8 +224,7 @@ inspect(Math.atan2(1.0, 1.0))    # => 0.7853981633974483
 
 Round a numeric value to an integer. `Long` input is returned
 unchanged. `Math.floor` rounds toward `-∞`, `Math.ceil` toward `+∞`,
-and `Math.round` uses **banker's rounding** (round half to even,
-matching Python's built-in `round()`).
+and `Math.round` uses **banker's rounding** (round half to even).
 
 ```culebra
 inspect(Math.floor(-1.5))   # => -2
@@ -374,8 +373,7 @@ IO.eprintln("done")
 Whether the given standard stream is connected to a terminal (POSIX
 `isatty`). Lets a script branch on interactivity: prompt vs. read a
 pipe (stdin), colorize vs. emit plain output (stdout / stderr).
-Equivalent to Rust `io::stdin().is_terminal()` / Node
-`process.stdin.isTTY`. Each returns `false` when the stream is
+Each returns `false` when the stream is
 redirected to a file or pipe.
 
 ```culebra
@@ -1056,7 +1054,7 @@ Process-level information.
 
 Array of `String` arguments passed to the script on the command
 line. The first non-flag argument is the script path; **everything
-after it** is captured as `argv` (the Python / Node convention).
+after it** is captured as `argv`.
 culebra's own flags (`--jit`, `--debug`, …) must precede the script
 path. Empty when the script is invoked with no trailing arguments or
 when running in the REPL.
@@ -1746,8 +1744,8 @@ Keyword arguments:
 - `timeout: Long` — milliseconds; if the command runs longer it is killed
   (`SIGTERM`, then `SIGKILL` after a short grace) and the result has
   `ok: false` and `timed_out: true` (default: `0` = no limit). Only the
-  command itself is killed, not any grandchildren it spawned (matching
-  Python/Node defaults). A process that closes stdout/stderr but keeps
+  command itself is killed, not any grandchildren it spawned. A process
+  that closes stdout/stderr but keeps
   running may not be reached by the timeout.
 
 A **non-zero exit** or **signal death** is a normal result, not an error —
@@ -1982,7 +1980,7 @@ hangs the program.
 ### Channels — `Channel.new(cap = 1) -> (tx, rx)`
 
 A channel is a bounded, blocking queue for passing values between isolates. It
-returns a **(tx, rx)** pair (Rust `mpsc` style): `tx.send(v)` enqueues, `rx`
+returns a **(tx, rx)** pair: `tx.send(v)` enqueues, `rx`
 yields values. A channel endpoint is the one exception to the Sendable rules —
 it is shared (by reference), so a closure can capture `tx`/`rx` and carry it
 into a spawned isolate. Values still cross by copy; only the channel itself is
@@ -2600,8 +2598,8 @@ if (!cond) {
 * **`assert_true(x: Bool) -> Nil`** — pass if `x` is truthy. Throws
   `AssertionError` with message `assert_true failed:\n  value: {x}`
   on failure. `x` must be `Bool`, `Long`, or `Float`; other types
-  raise `TypeError` (culebra has no Python-style truthiness — empty
-  strings / arrays are not falsy).
+  raise `TypeError`: there is no implicit truthiness, so empty strings
+  and arrays are not falsy.
 * **`assert_false(x: Bool) -> Nil`** — mirror of `assert_true`.
 
 ### Comparison matchers
@@ -2682,7 +2680,7 @@ program is the expensive part), then queried with methods:
 
 **Write patterns as single-quoted raw strings** (`'\d+'`, not `"\\d+"`): single
 quotes do no escape processing and no `{...}` interpolation, so `\d` and `{n}`
-pass through verbatim (the Python `r"..."` idiom). For a pattern that also
+pass through verbatim. For a pattern that also
 contains an apostrophe (e.g. a tokenizer's `'s`/`'t`), use a backtick raw
 string `` `...` `` — also raw, but it may hold `'`, `"`, and `{`. Flags are
 either passed to `compile` as a string (`Regex.compile('hello', "i")`) or inline
@@ -2707,7 +2705,7 @@ so the `StringView` results of `String.split` / `.slice` compose directly:
 | `Regex.interp(x)` | `String` — splice helper for `re"...${x}..."`: a `Regex` → `(?:src)`, anything else → escaped to match literally |
 
 For a single use, the namespace methods below take the pattern directly and
-hide the `compile` step (like Python `re.search` / `re.sub`). Reusing one
+hide the `compile` step. Reusing one
 pattern across many inputs still wants `Regex.compile(pat)`, but the engine
 caches by pattern so the one-shot forms pay no recompile. Put flags inline
 (`(?i)` / `(?m)` / `(?s)`).
@@ -3193,8 +3191,8 @@ sets the pool size:
   because a browser opens several connections to load a page and each keep-alive
   connection holds a worker briefly; capped because each worker carries its own
   runtime.
-- `workers: N` — a fixed pool of N. Requests are handled in **true parallel** (no
-  global lock — unlike a single-process Python server).
+- `workers: N` — a fixed pool of N. Requests are handled in **true
+  parallel**: no global interpreter lock stands between them.
 
 Each worker has its own runtime, so handlers must be **Sendable**: they can't
 capture mutable variables or non-Sendable values. Share large read-only data with

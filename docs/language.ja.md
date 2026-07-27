@@ -50,8 +50,7 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
 
 ## 1. 概要と設計思想
 
-Culebra は Rust 風の構文を持つ、小さな動的型付けスクリプト言語です。
-設計上の優先事項:
+Culebra は小さな動的型付けスクリプト言語です。設計上の優先事項:
 
 * **機能の直交性。** 第一級関数、クロージャ、配列、オブジェクト、
   パターンマッチ、オプショナル型注釈といった少数の独立した機能で
@@ -131,8 +130,8 @@ Culebra は Rust 風の構文を持つ、小さな動的型付けスクリプト
 **末尾カンマ。** 配列 `[1, 2,]`・オブジェクト `{a: 1,}`・Set
 `{1, 2,}`・タプル `(1, 2,)`・引数リスト `f(1, 2,)`・パラメータリスト
 `fn g(a, b,)`・ラムダ引数 `|a, b,|`・分配パターン `let [a, b,] = …`
-で、最後の要素の後ろに単一の末尾カンマを置けます（Python / Rust /
-JS の慣習。差分や並べ替えが綺麗になる）。先頭カンマや二重カンマは
+で、最後の要素の後ろに単一の末尾カンマを置けます（差分が綺麗になり、
+隣の要素に触れずに並べ替えできる）。先頭カンマや二重カンマは
 依然 syntax error。なお `(x,)` と `{x,}` は飾りではなく、カンマが
 1要素タプル・1要素 Set を表す点に注意。
 
@@ -208,7 +207,7 @@ JS の慣習。差分や並べ替えが綺麗になる）。先頭カンマや�
 6. 単項 `+`, `-`, `!`（右結合）
 7. `**`（右結合）。単項マイナスより強く結合（`-2**2 == -4`）する一方、
    右辺は単項プレフィックスを受理するので `2 ** -1 == 0.5`、
-   `2 ** -3 ** 2 == 0.00195…` は Python と同様にパースされる。
+   `2 ** -3 ** 2 == 0.00195…` はいずれもパースされる。
 8. 呼出/添字/ドット (`x(...)`, `x[i]`, `x.k`) — 左結合
 
 `=` は右結合ですが、一般的な式演算子ではなく `ASSIGNMENT` 内でのみ
@@ -276,8 +275,8 @@ LLVM ORC JIT のどちらでも完全にサポートされています。Long �
 `==` の挙動:
 
 * `String`: 内容で比較。
-* `Array`, `Object`, `Tuple`, `Set`: **値（構造的）等価**（Python/Ruby
-  と同様、要素を再帰比較）。`Function` と `Tensor` のみ参照同一性。
+* `Array`, `Object`, `Tuple`, `Set`: **値（構造的）等価**（要素を
+  再帰比較）。`Function` と `Tensor` のみ参照同一性。
   （値等価でも Array はハッシュ不可のまま＝キーには使えない。）
 
 型をまたぐ数値等価性：`Long` と `Float` は数値として比較されます。
@@ -420,8 +419,8 @@ SGD の重み更新のような巨大テンソルのループでは `-=` のほ�
 次の 2 ケースではシャドウが**許可**されます:
 
 * **グローバル・組み込み関数**（`inspect`、`min`、トップレベル変数
-  など）は常にシャドウ可能。`mut min = arr[0]` のような Ruby 風の
-  気軽な書き方ができます。
+  など）は常にシャドウ可能。ローカル関数で `mut min = arr[0]` と
+  書くのに何のコストもかかりません。
 * **同関数内のブロックスコープ**内のシャドウは許可されます:
 
         fn () {
@@ -429,9 +428,8 @@ SGD の重み更新のような巨大テンソルのループでは `-=` のほ�
           { let a = 1; ... }   # OK: ブロック限定の新規束縛
         }
 
-制約は**関数境界を越える場合のみ**適用されます。この設計は C++ の
-`-Wshadow` の慣行に沿うとともに、Scheme の `set!`/`define` の区別
-にも通じます — クロージャでキャプチャした状態は裸の `x = v` で
+制約は**関数境界を越える場合のみ**適用されます — クロージャで
+キャプチャした状態は裸の `x = v` で
 変異させ、新規ローカルは `let`/`mut` で宣言します。
 
 ### 可変性
@@ -474,10 +472,8 @@ Culebra はシャドウを 3 つの軸で独立に扱います:
 | 同関数内（ブロックスコープ） | 許可 | 警告 or 許可 |
 | グローバル / 組み込み名 | 許可 | 警告 or 許可 |
 
-主要言語の多くは 3 軸に一律のポリシーを適用します（Rust/Swift の
-ように全面許可、C++ `-Wshadow` や ESLint `no-shadow` のように全面
-警告）。Culebra が分けて扱うのは、Scheme 由来の「クロージャによる
-オブジェクト」イディオムにおいて、各軸が異なる意味を持つためです:
+3 つの位置に別々のポリシーを当てているのは、「クロージャによる
+オブジェクト」イディオムにおいて各位置が異なる役割を持つためです:
 
 * **キャプチャされた状態 = オブジェクトの状態**。クロージャベース
   のオブジェクトパターン（[`guide.ja.md` §9.2](guide.ja.md#92-クロージャベースの別解) 参照）では、外側関数
@@ -499,13 +495,6 @@ Culebra はシャドウを 3 つの軸で独立に扱います:
 と「外側再代入」の取り違え — を捕捉しつつ、シャドウが自然な
 2 つのシチュエーションには干渉しません。先行技術との対比:
 
-* **Python の `nonlocal`** は同じ問題を「関数冒頭での宣言」で解決
-  します。Culebra のデフォルト（裸の `x = v` が外側に届く）は
-  使用箇所で意図を表現しており宣言は不要ですが、**取り違えの
-  リスクは残る**。シャドウ禁止はそこを閉じます。
-* **Scheme の `set!` / `define`** は変異と束縛を別の名前で扱うこと
-  で混同を防いでいます。Culebra は `let`/`mut` と裸の `=` で
-  同じ区別を表現し、シャドウ検査がそれを強制します。
 
 ---
 
@@ -517,15 +506,15 @@ Culebra はシャドウを 3 つの軸で独立に扱います:
 受け取ります。数値以外が混ざると `type error` です。
 
 * **両辺 `Long` → `Long`**。整数演算。除算と剰余は 0 方向への切り
-  捨て（C と同じ。Python の床除算ではない）。`7 / 2 == 3`、
+  捨て（床方向ではないので、符号によって丸め方向は変わらない）。
+  `7 / 2 == 3`、
   `-7 % 3 == -1`。オーバーフローはラップ（多倍長なし）。
 * **いずれかが `Float` → `Float`**。`Long` 側は `Float` に昇格し、
   IEEE 754 binary64 で計算します。`1 + 2.0 == 3.0`、
   `3 / 2.0 == 1.5`。
 
 0 除算 / 剰余は `Long / 0` でも `Float / 0.0` でも
-`divide by 0 error at L:C` を投げます（Python の
-`ZeroDivisionError` と同挙動）。
+`divide by 0 error at L:C` を投げます。
 
 `**`（冪乗）はやや複雑なルールです：
 
@@ -537,7 +526,7 @@ Culebra はシャドウを 3 つの軸で独立に扱います:
   `2.0 ** 0.5 ≈ 1.4142`。
 * `**` は右結合で、単項マイナスより強く結合します。右辺は単項
   プレフィックスを受理するので `2 ** 3 ** 4 == 2 ** 81` と
-  `2 ** -1 == 0.5` はいずれも Python と同じに解釈されます。
+  `2 ** -1 == 0.5` はいずれもそう解釈されます。
 
 ### ビット演算
 
@@ -572,7 +561,7 @@ Culebra はシャドウを 3 つの軸で独立に扱います:
   `Float` は数値として比較できます（`1 < 1.5` が有効）。これ以外
   の型をまたぐ順序比較は `type error`。
 * **チェーン**: `a < b < c` は `(a < b) && (b < c)` の意味。中間の
-  `b` は一度だけ評価され、最初に偽になった所で短絡（Python と同じ）。
+  `b` は一度だけ評価され、最初に偽になった所で短絡します。
   比較演算子は混在可: `0 <= i < n`、`lo < x <= hi`、`a == b == c`。
 
 ### 論理
@@ -609,7 +598,8 @@ Culebra はシャドウを 3 つの軸で独立に扱います:
 * `Bool`: そのまま。
 * `Long`: `0` は偽、それ以外は真。
 * `Float`: `0.0`（および `-0.0`）が偽、それ以外の有限値は真、
-  `NaN` は真（Python の `bool(float('nan'))` と同じ）。
+  `NaN` は真 — 真偽値変換が問うのは「そもそも数値か」であって
+  「使える数値か」ではありません。
 * `Nil`, `String`, `Array`, `Object`, `Function`: **変換不可** — 真偽値
   文脈（例: `if s { ... }`）に渡すと `type error`。
 
@@ -651,8 +641,7 @@ backend で規範的なルール。JIT は中間 IR を並べ替えてよいが�
   以降のオペランドは評価しない。
 * **代入 `lval = rhs`.** RHS を先に評価し、その後 LHS の target
   chain（`obj[k] = ...` なら最終キー `k` も含めて）を評価して
-  store。Python の「LHS targets first」とは逆方向で、culebra は
-  Lua / Ruby と同じ。
+  store — 値が先に決まり、その置き場所は後から解決されます。
 * **複合代入 `lval op= rhs`.** RHS を先に評価。LHS chain は
   subscript キーを含めて**1回だけ**評価し、暗黙の read と store の
   両方で同じ評価結果を使い回す。キーが再評価されることはない。
@@ -757,7 +746,7 @@ re"id=${digits};".test("id=123;")         # => true — 合成
 エスケープ不要 — `"""` だけが終端。埋め込み LLM prompt や引用符を
 含むスニペットに便利。リテラルの開き波括弧は `\{`。
 
-#### ブロック形式（Swift 流 dedent）
+#### ブロック形式（dedent あり）
 
 開きの `"""` の直後が改行のとき、その文字列は *ブロック文字列* になります。
 開き `"""` 直後の改行と、閉じ `"""` 直前の改行は値に含まれず、各行は閉じ
@@ -816,7 +805,7 @@ UTF-8 になるバイト（例 `"\xff"`）も生成できます。`\u{...}` は�
 ### フォーマット指定
 
 補間はコロンの後にフォーマット指定を付けられる — `{expr:spec}`。
-spec は C++ `std::format` のミニ言語（Python 由来）:
+spec は C++ `std::format` のミニ言語:
 `[[fill]align][sign][#][0][width][.precision][type]`。
 
     "{pi:.2f}"        # → 3.14   (固定小数点、2 桁)
@@ -829,8 +818,8 @@ spec は C++ `std::format` のミニ言語（Python 由来）:
 数値は spec の型文字に従う: float 型（`f`/`e`/`g`）は Long/Float を
 浮動小数で、整数型（`d`/`x`/`o`/`b`）は整数で整形。その他の値は表示
 文字列を整形（幅・寄せが効く）。型に不正な spec は `ValueError`。
-なお Python 完全互換ではなく `std::format` ベース — 例えば `,` の桁
-区切りは非対応（std::format はロケール `L` オプションを使う）。
+`std::format` にそのまま従うので `,` の桁区切りは非対応です
+（その用途はロケール `L` オプションが担当）。
 
 ### 表示変換
 
@@ -906,8 +895,8 @@ range 添字（`seq[a..b]`, `seq[a..=b]`）は単一要素でなく部分列を�
 ます。`..` は終端排他、`..=` は終端包含。両端とも負値可（末尾から数え
 る）。両端は**省略可**で、開始省略は `0`、終端省略は長さになります:
 `xs[2..]` は先頭2つを落とし、`xs[..3]` は先頭3つ、`xs[..]` は全体コピー。
-範囲外の端は**クランプ**され、開始が終端を超えると空を返す
-（Python/JS/Ruby と同様）ので、スライスは境界で例外を投げません。
+範囲外の端は**クランプ**され、開始が終端を超えると空を返すので、
+スライスは境界で例外を投げません。
 
 Array は**浅いコピー**を返します（背骨は元と独立、要素は共有）。参照
 セマンティクスの配列をビューでスライスすると別名化で驚くため、コピー
@@ -953,7 +942,7 @@ inspect("hello"[1..=3])   # => 'ell'
 ### 等価性・順序
 
 配列は**値（構造的）**で比較されます: `[1, 2] == [1, 2]` は真で、入れ子
-要素も再帰的に比較（Python/Ruby と同様）。Tuple / Set / Object も値等価で、
+要素も再帰的に比較。Tuple / Set / Object も値等価で、
 参照同一性は `Function` と `Tensor` のみ。（値等価でも Array はハッシュ
 不可のまま＝Object/Set のキーには使えない。）順序演算子は配列に未定義。
 
@@ -969,7 +958,7 @@ inspect("hello"[1..=3])   # => 'ell'
     {name, age}                            # 短縮形 — {name: name, age: age} と等価
 
 ソース上のプロパティ順は等価性・アクセスに影響しませんが、表示と
-反復には挿入順が保持されます (Python 3.7+ dict、Ruby Hash と同じ)。
+反復には挿入順が保持されます — キーは最初に書かれた順で返ります。
 
 短縮形 `{x}` は `{x: x}` と等価で、識別子をキーと値の両方として再利用し、
 現在のスコープから `x` を参照します。`mut` も使え（`{mut n}`）、
@@ -1033,16 +1022,15 @@ String キー（`{name: 'alice'}`）に加え、Object リテラルは `Long`,
     grid[(0, 0)]   # 'origin'
     by_id[1]       # 'one'
 
-キーの同一性は**型厳密**です（Ruby の `eql?`。`==` 演算子より意図的に
-細かい）。型が違うキーは決して同一キーになりません。よって `1 == 1.0`
-が `==` 演算子では真でも、`1` / `1.0` / `true` は**別々のキー**です
-（Python はこれらを 1 つに畳みますが culebra は畳みません）。リテラル内で
+キーの同一性は**型厳密**で、`==` 演算子より意図的に細かい規則です。
+型が違うキーは決して同一キーになりません。よって `1 == 1.0`
+が `==` 演算子では真でも、`1` / `1.0` / `true` は**別々のキー**です。
+リテラル内で
 **同じキーを繰り返した**場合は後勝ち（`{1: 'a', 1: 'b'}` は `{1: 'b'}`。
 String キーを含め、リテラルの重複キーは常に last-wins）。
 
 String キーと非 String キーは単一の挿入順を共有するので、`to_string`
-出力では混在キーの Object が実際の書き込み順で interleave されます
-（Python の dict / Ruby Hash と同じ挙動）。
+出力では混在キーの Object が実際の書き込み順で interleave されます。
 
 ### 添字代入
 
@@ -1180,8 +1168,8 @@ variable 'self'` になります。送出されるのは本体に入った時点
 * `new` メソッドは省略可能で、省略時は無引数・メソッドと `class:` のみ
   を持つインスタンスを返します。
 * コンストラクタ本体内の `self` は不変です。`self = newObj` への
-  代入は `ImmutableError` を投げます（Java / Crystal / Ruby と同じ
-  方針）。コンストラクタは常に最初に確保されたインスタンスを返し、
+  代入は `ImmutableError` を投げます。コンストラクタは常に最初に
+  確保されたインスタンスを返し、
   明示的な `return value` は `value` を捨てます。識別子差し替えが
   必要な factory は `static` メソッド（下記）またはクラス外の関数
   として書いてください。
@@ -1208,8 +1196,8 @@ variable 'self'` になります。送出されるのは本体に入った時点
       inspect(c.kind)              # 'circle'
 
   static メソッドはインスタンス経由では参照できません（`c.circle(...)`
-  は instance に `circle` プロパティが無いため `TypeError` を投げる）。
-  Java / C# / Kotlin / Crystal のクラスメソッド規則と同じです。
+  は instance に `circle` プロパティが無いため `TypeError` を投げる）:
+  static はクラス経由でのみ到達でき、インスタンス経由では届きません。
 * `static NAME = EXPRESSION` でクラスレベルの不変定数（static field）を
   宣言できます。class 宣言時に eager に評価され、static メソッドと同じ
   クラスオブジェクトのプロパティとして登録されます:
@@ -1243,20 +1231,20 @@ variable 'self'` になります。送出されるのは本体に入った時点
       inspect(p.best)            # 10
       p.tags.push('bird')     # Array は各インスタンス独立
 
-  初期化子の意味論（Kotlin のモデル）:
+  初期化子の意味論:
 
   - **インスタンス毎**: 初期化子式は `C.new(...)` の呼び出しごとに
     評価されます — `tags: Array = []` は各インスタンスに独立した
-    Array を与えます（Python 流のクラス属性共有は起きません）。
+    Array を与えます — インスタンス間で共有されるものはありません。
   - **宣言順・`self` 参照可**: 初期化子は自分より上で宣言された field
     を読め、メソッドも呼べます（上の `best`）。*下で* 宣言された field
     を読むと `nil` — 宣言順に意味があります。
   - **引数バインド後・`new` 本体の前**: 初期化子はバインド完了後に
     走ります — ctor 呼び出しの arity/型/デフォルトのエラーが先に発火し、
     field 副作用は起きません。`new` 本体からは全宣言 field が見えます。
-    コンストラクタのパラメータは初期化子からは*見えません*（初期化子は
-    class の定義スコープを閉じ込めます。Kotlin の property initializer と
-    secondary-constructor パラメータの関係と同じ）。ctor 引数を field に
+    コンストラクタのパラメータは初期化子からは*見えません*（初期化子が
+    閉じ込めるのは class の定義スコープであって、コンストラクタ呼び出し
+    ではありません）。ctor 引数を field に
     入れるには本体で `self.x = a` と明示します。
   - 初期化子なしの typed field（上の `name: String`）は型のゼロ値に
     なります: `0` / `0.0` / `''` / `false`。参照型（`Array`, `Object`
@@ -1284,7 +1272,7 @@ variable 'self'` になります。送出されるのは本体に入った時点
   ので、fluent chain の括弧が消えます（`p.parent().name()` ではなく
   `p.parent.name`）。getter は純粋・全域・O(1) の導出（値の本質的な性質）
   に限り、I/O や失敗しうる処理は通常メソッドに残します。こうして括弧の
-  不在が「副作用なし」を表します（Swift/Kotlin と同じ指針）。getter は
+  不在が「副作用なし」を表します。getter は
   引数を取れません（`get f (x)` は構文エラー）。`get` は contextual で、
   `get` という名のメンバー（`get () { ... }`）は通常メソッドのままです。
   `obj.name` と `obj.name()` の両表記は interp・JIT・AOT で同一に発火します。
@@ -1759,8 +1747,9 @@ kwargs を Object として受け取ります。位置はパラメータリス�
   キャッチオールを宣言していれば、そこに吸収されます。
 * `**` splat の右辺は `String` キーのみを持つ `Object` でなければ
   なりません。
-* デフォルト値は呼び出しごとに再評価されます（Ruby / Scala 流。
-  Python の「def 時に 1 回評価」トラップは回避）。
+* デフォルト値は呼び出しごとに再評価されます。可変なデフォルト
+  （`fn f(xs = [])`）は毎回新しい値になり、呼び出しをまたいで
+  溜まっていくことはありません。
 
 JIT サポート: kwargs と `**` splat は次の主要パターンで両バック
 エンド共に動作します:
@@ -1821,8 +1810,8 @@ JIT 制限:
 * 内側で `x = v` と書いた場合、外側に `x` があれば外側の束縛を
   更新し、なければ新しいローカルを作ります。
 * 捕捉された可変変数（例: 外側の `mut x`）は共有されます。捕捉した
-  全てのクロージャと外側スコープ自身から更新が見えます。これは
-  JavaScript/Ruby 風で、Python とは異なります。
+  全てのクロージャと外側スコープ自身から更新が見えます — 捕捉は
+  値ではなく参照で行われます。
 
 例:
 
@@ -2084,8 +2073,7 @@ for i, v in xs.enumerate() { ... }                  # (index, value) タプル
 **ループが正常に終了したとき**（条件が false になった、または
 イテレータが尽きた）**のみ**実行され、**`break` で抜けたときは
 スキップ**されます（`return` や throw で抜けたときも通り抜けて実行
-されません）。これは Python / Zig の loop-`else` と同じ意味論です。
-`else` の誤読を避けるため、条件を直接表す `nobreak`（break しなかった
+されません）。条件を直接表す `nobreak`（break しなかった
 ときに走る）という名前にしています。値は運びません（ループは `nil`
 のまま）。
 
@@ -2190,8 +2178,7 @@ fn find(xs, target) {
 ### アーム本体
 
 アーム本体は通常は単一の式です。複数の文を実行したいときは波括弧の
-**ブロック**を書きます — アームの値はブロックの最後の文の値になります
-（Rust 流）:
+**ブロック**を書きます — アームの値はブロックの最後の文の値になります:
 
     let kind = match tok {
       '+' => { let p = prec(tok); register(p); "op" },
@@ -2365,8 +2352,9 @@ class から (後述「Generic クラス宣言」)。
     fn first(xs: Array<Long>) -> Long { xs[0] }
     fn lookup(k: String) -> Array<Long> | Nil { ... }
 
-Rust / Swift のモノモーフィゼーションと同じく、**要素レベルの
-runtime チェックは行いません** — 境界でチェックされるのは外側の型
+**要素レベルの runtime チェックは行いません** — 要素型まで検証すると
+呼び出しのたびにコレクションを走査することになります。境界で
+チェックされるのは外側の型
 のみ。型パラメータはドキュメントと多重ディスパッチの tie-break の
 ために存在します。
 
@@ -2550,7 +2538,8 @@ constructor pattern が idiomatic なアクセサ。
 
 **構造的 conformance**: クラスが trait の required method を全て
 (name + arity 一致で) 持てば、 自動的に trait に conform — `impl
-Foo for Bar` block 不要。 Go interface / Python `__str__` 流。
+Foo for Bar` block 不要。 conform するかどうかは class が実際に持つ
+メソッドで決まります。
 
     class Bob {
       new(name) { self.name = name }
@@ -2608,8 +2597,8 @@ runtime は preamble として 7 つの基本 trait を ship — `import` 不要
 user class は `hash()` (戻り値 `Long`) と `eq(other)` を定義すれば
 key として使える。
 
-`Iterator` + `Iterable` は for-in protocol を formal 化 (Kotlin /
-Java 流)。 `iter() -> Iterator` / `has_next() -> Bool` /
+`Iterator` + `Iterable` は for-in protocol を formal 化。
+`iter() -> Iterator` / `has_next() -> Bool` /
 `next() -> Any` を持つ class は iterable で、全 pipeline method
 (`map` / `filter` / `take` / `collect` / ...) で使える。
 `has_next()` は idempotent (連続呼び出しで次値を消費しない) — runtime
@@ -2643,7 +2632,7 @@ class を Object / Set key にする場合は対応する `eq(other)` の同時
 
 #### Generic Bound
 
-型パラメータに trait 制約を付けられる (Rust inline 流)。 free 関数・
+型パラメータに trait 制約をインラインで付けられる。 free 関数・
 class の両方で使え、 **呼び出し境界で強制**される (bound に conform
 しない値はその param の引数にならない):
 
@@ -2854,8 +2843,8 @@ defer 本体内の `return` は**defer 閉包のみ**を抜けます（外側の
 
 ### 割り込み（Ctrl+C）
 
-Ctrl+C は協調的で catch 可能な `Interrupted` を発生させます。即座に
-kill するのではなく、Python の `KeyboardInterrupt` と同じモデルです:
+Ctrl+C は協調的で catch 可能な `Interrupted` を発生させます。プロセスを
+即座に kill することはありません:
 
     try {
       serve()                       # 長時間ループ
@@ -3009,8 +2998,8 @@ if (!cond) {
 }
 ```
 
-Go の `if x == nil { return errors.New(...) }` や Ruby の `raise` と
-同じ流儀 — 制御フローを明示的に書きます。
+表明の制御フローは、ビルドフラグで消えるキーワードの裏に隠さず
+明示的に書きます。
 
 ### JIT サポート
 
@@ -3285,7 +3274,7 @@ inspect(doubled().collect())    # => [20, 7]
 
 純粋な参照カウントは循環（`a.c = a`）を回収できません。両方の
 バックエンドは全てのヒープ refcount オブジェクトを補助のサイクル
-コレクタに登録し、Python スタイルのマーク＆スイープを定期的
+コレクタに登録し、マーク＆スイープを定期的
 （新規アロケ 10,000 回ごと）およびプログラム終了時に実行します。
 
 * 対象: `Array`, `Object`, `Tuple`, `Set`、およびクロージャが捕獲
@@ -3472,10 +3461,10 @@ matcher 一族 `assert_true` / `assert_eq` 等）は
 | `s.trim() -> String`                            | 前後の空白（` `, `\t`, `\n`, `\r`）を除去 |
 | `s.trim_start(chars: StringLike = "") -> String` | 先頭側を除去。引数なし → 空白、`chars` → その集合の先頭 scalar（範囲非対応） |
 | `s.trim_end(chars: StringLike = "") -> String`  | 末尾側を除去。例 `s.trim_end("\n")` |
-| `s.tr(from: StringLike, to: StringLike) -> String` | scalar 単位の変換（Ruby `tr`、文字リスト形式 — `a-z` 範囲や `^` は非対応）。`s` の各 scalar が `from` にあれば `to` の同位置 scalar に置換。`to` が短ければ末尾 scalar を繰り返し、空 `to` は削除。`s.tr("０１２３４５６７８９", "0123456789")` |
+| `s.tr(from: StringLike, to: StringLike) -> String` | scalar 単位の変換（文字リスト形式 — `a-z` 範囲や `^` は非対応）。`s` の各 scalar が `from` にあれば `to` の同位置 scalar に置換。`to` が短ければ末尾 scalar を繰り返し、空 `to` は削除。`s.tr("０１２３４５６７８９", "0123456789")` |
 | `s.split(sep: StringLike) -> Array<StringView>` | `sep` の出現ごとに分割。 `sep` が空なら `[s]`。 要素は 1 個の source を共有 |
 | `s.split_iter(sep: StringLike) -> Iterator<StringView>` | `split` の遅延版。 巨大入力で `.take(n)` する場合の早期終了に |
-| `s.replace(pat: String \| Regex, repl: String \| Function) -> String` | **全**出現を置換（Python `str.replace` と同じ）。 連鎖可。 `pat` が `String` → リテラル置換、 `Regex`（`re'…'` 含む）→ 正規表現置換で `repl` は `$1` / `$<name>` テンプレートか `fn (Match) -> String`。 UFCS で呼ぶ stdlib ヘルパ — `s.replace(p, r)` は `replace(s, p, r)`。 |
+| `s.replace(pat: String \| Regex, repl: String \| Function) -> String` | **全**出現を置換。 連鎖可。 `pat` が `String` → リテラル置換、 `Regex`（`re'…'` 含む）→ 正規表現置換で `repl` は `$1` / `$<name>` テンプレートか `fn (Match) -> String`。 UFCS で呼ぶ stdlib ヘルパ — `s.replace(p, r)` は `replace(s, p, r)`。 |
 | `s.contains(sub: StringLike) -> Bool`           | `sub` がどこかに現れるか。 空の `sub` は `true` |
 | `s.starts_with(prefix: StringLike) -> Bool`     | `prefix` で始まるか                   |
 | `s.ends_with(suffix: StringLike) -> Bool`       | `suffix` で終わるか                   |
@@ -3485,10 +3474,10 @@ matcher 一族 `assert_true` / `assert_eq` 等）は
 | `s.iter() -> Iterator<StringView>`              | UTF-8 をスカラー単位で walk し**1 スカラー `StringView`** を yield。 `for c in s { ... }` の内部実装。 不正バイトは 1 バイト部分 view |
 | `s.code_points() -> Iterator<Long>`             | **Unicode スカラー値**を `Long`（`U+0000`–`U+10FFFF`）として yield する遅延イテレータ。 `iter` の毎反復アロケが無駄になる数値・範囲・分類処理向け。 不正バイトは生バイト値（0–255） |
 | `s.graphemes() -> Iterator<StringView>`         | **Extended Grapheme Cluster**（UAX #29）を 1 つずつ yield。 1 ステップが 1 ユーザー知覚文字（絵文字 ZWJ シーケンス等は 1 要素にまとまる） |
-| `s.bytes() -> Iterator<Long>`                   | レシーバの**生 UTF-8 バイト**を `Long`（`0`–`255`）として 1 バイトずつ yield — `code_points` と違いデコードしない。エンコーディングそのものが欲しい場面向け（ハッシュ計算、tokenizer の語彙、ワイヤーフォーマット等）。Python の `list(s.encode())` 相当 |
-| `String.from_code_point(cp: Long) -> String`    | `code_points()` の逆演算: Unicode スカラー値 1 つを受け取り 1 文字の `String` を返す（Python の `chr`、Rust の `char::from_u32` 相当）。`cp` が `U+10FFFF` 超過またはサロゲート範囲 `U+D800`–`U+DFFF` の場合 `ValueError`（`\u{...}` リテラルエスケープ §4.1 がパース時に拒否するのと同じ境界） |
+| `s.bytes() -> Iterator<Long>`                   | レシーバの**生 UTF-8 バイト**を `Long`（`0`–`255`）として 1 バイトずつ yield — `code_points` と違いデコードしない。エンコーディングそのものが欲しい場面向け（ハッシュ計算、tokenizer の語彙、ワイヤーフォーマット等） |
+| `String.from_code_point(cp: Long) -> String`    | `code_points()` の逆演算: Unicode スカラー値 1 つを受け取り 1 文字の `String` を返す。`cp` が `U+10FFFF` 超過またはサロゲート範囲 `U+D800`–`U+DFFF` の場合 `ValueError`（`\u{...}` リテラルエスケープ §4.1 がパース時に拒否するのと同じ境界） |
 | `String.from_code_points(cps: Array) -> String` | `code_points()` の複数形の逆演算: Unicode スカラー値の `Array` を受け取り `String` を返す。各要素は `from_code_point` と同じゲートを通るので `String.from_code_points([cp]) == String.from_code_point(cp)`。要素が `Long` でなければ `TypeError`、範囲外なら `ValueError` |
-| `String.from_bytes(bytes: Array) -> String`     | `bytes()` の逆演算: 生バイト値（`0`–`255`）の `Array` を受け取り `String` を返す。**UTF-8 の検証は行わない**（不正入力で例外を投げる Python の `bytes(ids).decode()` とは異なる）: culebra の `String` は不正な UTF-8 を許容する（`iter()` と同様）ため、不正なバイト列を含むあらゆる `String` について `String.from_bytes(s.bytes().collect()) == s` が成立する。要素が `Long` でなければ `TypeError`、範囲外（`0`–`255` の外）なら `ValueError` |
+| `String.from_bytes(bytes: Array) -> String`     | `bytes()` の逆演算: 生バイト値（`0`–`255`）の `Array` を受け取り `String` を返す。**UTF-8 の検証は行わず**、不正入力でも例外を投げない: culebra の `String` は不正な UTF-8 を許容する（`iter()` と同様）ため、不正なバイト列を含むあらゆる `String` について `String.from_bytes(s.bytes().collect()) == s` が成立する。要素が `Long` でなければ `TypeError`、範囲外（`0`–`255` の外）なら `ValueError` |
 
 ```culebra
 # 'é' は UTF-8 で 2 バイトなので 'café' は 5 バイト
@@ -3716,7 +3705,7 @@ inspect(p)                    # => {b: 2}
 `for x in expr { ... }`（§12）は `expr` がイテレータプロトコルに
 参加していることを要求します。プロトコルは `Object`（サブ型の
 `Array` 含む）上の 3 つの **well-known メソッド名**を使います —
-各 `next` の手前に `has_next` のゲートを置く Kotlin 流の形です:
+各 `next` の手前に `has_next` のゲートを置く形です:
 
 | メソッド | 形状 | 呼び出される型 | 戻り値 |
 |---|---|---|---|
@@ -3750,7 +3739,7 @@ arguments.` が送出されます（§17 の `drop` 契約と同じ）。3 つ�
 走らせます。すでに例外が unwind 中の exit パスで `dispose` 自身が throw した
 場合は握り潰され、外側の `catch` には元のエラーが渡ります。
 
-同じ契約は**終端イテレータメソッド**にも適用されます（C# の規則:
+同じ契約は**終端イテレータメソッド**にも適用されます（
 プロトコルを駆動した者が閉じる）。すべての終端 — drain するもの
 （`collect`、`count`、…）、早期終了するもの（`find`、`any`、`first`、…）、
 途中で throw したもの（callback からでも producer からでも） — は、
@@ -3792,7 +3781,7 @@ Iterable ラッパなしで動作します。
 値は 1-scalar の `String` で、整数の code point ではありません。
 `.map` で必要な形に変換してください。
 
-`Object` の反復は `(key, value)` ペアを yield します（Ruby 流）。なので
+`Object` の反復は `(key, value)` ペアを yield します。なので
 自然なループは `for k, v in obj` で、`obj.iter()` はエントリのビュー
 （他のイテレータ同様に連鎖・`collect` できる）です。片側だけのビューは
 `obj.keys()`（`Array`）と `obj.values()`（遅延イテレータ）:
@@ -3804,7 +3793,7 @@ for v in {a: 1, b: 2}.values() { inspect(v) }     # 1 then 2
 ```
 
 **Object iter と変更**: 反復はループ開始時に取ったキーのスナップショット
-を回すので、ループ本体で対象を変更しても安全（Python `dict` と違い
+を回すので、ループ本体で対象を変更しても安全（
 fail-fast ガードは無い）。反復中に**追加**したキーは対象に入らず、
 **削除**したキーはスキップ、各値はその時点で**ライブ**に読む。これにより
 「反復しながら派生エントリを追加する」setdefault 的パターンがコピー無しで
@@ -3903,8 +3892,8 @@ dispose 済みのソースが done を返しているためです。
 `for_each` / `reduce` / `find` / `any` / `all` / `flat_map`（§18.2）
 があり、すべて新しい `Array` を返します。`Array` に対してこれらを
 呼ぶと eager 版にディスパッチされます。遅延チェーンに切り替えるには
-先に `.iter()` を呼びます。Swift の `arr` vs `arr.lazy`、Kotlin の
-`list` vs `list.asSequence()`、Python のリスト内包 vs ジェネレータ
+先に `.iter()` を呼びます。既定を eager にしているのは、各段で実体化
+される連鎖のほうが追いやすいからです。遅延は、列が大きい/無限のときに
 と同じ二層構造です。
 
 ```culebra
@@ -3988,7 +3977,7 @@ inspect(f(0, 10, step: 2).collect())                # => [0, 2, 4, 6, 8]
 `v` を `Long` に変換します:
 
 * `Long` → そのまま。
-* `Float` → 0 方向への切り捨て（Python の `int()` と同じ）。
+* `Float` → 0 方向への切り捨て。
   `to_long(3.7) == 3`、`to_long(-3.7) == -3`。
 * `String` → 10 進の符号付き整数としてパース。前後の空白は許容、
   それ以外は失敗。
@@ -4489,7 +4478,7 @@ fn ...` は前の式の matmul 継続ではなく、独立した 2 statement と
     culebra <command> [command-flags]
 
 スクリプトパスより後の引数はそのまま `Sys.argv` としてスクリプトに
-渡されます（Python / Node 流 — `--` 不要。[`docs/stdlib.ja.md`](stdlib.ja.md)
+渡されます（`--` 不要。[`docs/stdlib.ja.md`](stdlib.ja.md)
 参照）。スクリプトより前の単独の `--` は任意のエスケープハッチで、フラグ
 解析を止めるため、ダッシュ始まりの名前でも次の引数がスクリプトとして扱われます。
 
@@ -4539,8 +4528,7 @@ REPL で定義されたクロージャ内の自由変数参照は、アクセス
 REPL の入力履歴はセッション間で永続化されます。保存先は
 `$CULEBRA_HISTFILE` があればそれ、なければ `$XDG_STATE_HOME/culebra/history`、
 さらになければ `~/.culebra_history`。1 行受理ごとに書き出すため、
-セッション途中でクラッシュしても履歴は失われません（Python / Node
-REPL と同様）。
+セッション途中でクラッシュしても履歴は失われません。
 
 ### CLI が追加するグローバル
 
