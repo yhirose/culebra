@@ -625,6 +625,28 @@ jobs:
             fail=1
           fi
           exit $fail
+      # The one Windows-only path nothing else covers: a feature archive is
+      # force-loaded by absolute path, and that path goes through cmd.exe. The
+      # trivial smoke above never reaches it (no feature is named, so no archive
+      # is force-loaded) and the runner's own paths have no spaces, so the
+      # quoting can be wrong and still link. Name SQLite (embedded in this
+      # configuration) and point the cache at a directory with spaces to put
+      # both halves in play — with single-quote quoting this step fails to link.
+      - name: Smoke — AOT force-load from a cache path with spaces
+        env:
+          CULEBRA_CACHE: ${{ github.workspace }}/cache dir with spaces
+          CULEBRA_VERBOSE: "1"
+        run: |
+          printf 'let db = SQLite.open(":memory:")\nprint("sqlite ok")\n' > sq.cul
+          if ./build-win-aot/culebra.exe build sq.cul -o sq.exe; then
+            out=$(./sq.exe 2>&1); rc=$?
+            echo "out=[$out] rc=$rc"
+            [ "$out" = "sqlite ok" ] && echo "AOT_SPACED_CACHE_PASS" \
+              || { echo "AOT_SPACED_CACHE_RUN_FAIL"; exit 1; }
+          else
+            echo "AOT_SPACED_CACHE_BUILD_FAIL rc=$?"
+            exit 1
+          fi
       # AOT regression smoke: string concat + caught-value integrity (16-byte
       # runtime helpers, sret ABI), classes, getters and callable class objects.
       # set +e so every case still runs and gets listed, but any failure is

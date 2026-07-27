@@ -922,7 +922,7 @@ int run_build(const BuildOptions& opts) {
       feature_failed = true;
       return "";
     }
-    auto q = std::format("'{}'", path.string());
+    auto q = shq(path.string());   // the cache path can hold spaces on any OS
     return target_is_macho
         ? std::format("-Wl,-force_load,{}", q)
         : std::format("-Wl,--whole-archive {} -Wl,--no-whole-archive", q);
