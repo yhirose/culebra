@@ -381,10 +381,12 @@ inspect("two plus three is {2 + 3}")        # => 'two plus three is 5'
 inspect('a' + 'b' + 'c')                    # => 'abc'
 ```
 
-### 4.2 反復とインデックス
+### 4.2 反復とスライス
 
 文字列は Unicode スカラ単位で反復 (1 コードポイント = 1 ステップ)。
-インデックスは UTF-8 上のバイトオフセット — 範囲外はエラー。
+`s[i]` という添字は**ありません** — String は添字可能なコンテナでは
+なく、`'café'[0]` は `TypeError` です。部分文字列は `slice` で取り、
+そのオフセットは UTF-8 上のバイトオフセットです (§4.4)。
 
 ```culebra
 for c in 'café' { inspect(c) }

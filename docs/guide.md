@@ -392,11 +392,13 @@ inspect("two plus three is {2 + 3}")        # => 'two plus three is 5'
 inspect('a' + 'b' + 'c')                    # => 'abc'
 ```
 
-### 4.2 Iteration and indexing
+### 4.2 Iteration and slicing
 
 Strings iterate by Unicode *scalar* (one codepoint per step), not by
-byte. Indexing is by byte offset into the UTF-8 representation; out-
-of-bounds raises.
+byte. There is no `s[i]` subscript — a String is not an indexable
+container, and `'café'[0]` is a `TypeError`. Substrings come from
+`slice`, whose offsets are byte offsets into the UTF-8 representation
+(§4.4).
 
 ```culebra
 for c in 'café' { inspect(c) }
