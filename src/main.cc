@@ -1533,10 +1533,16 @@ int run_lint(int argc, const char** argv) {
         if (verified) {
           ofstream ofs(path, ios::out | ios::binary | ios::trunc);
           ofs << fixed_src;
-          std::println("{}: fixed {} unused import{}", path,
-                      import_lines.size(), import_lines.size() == 1 ? "" : "s");
-          src = std::move(fixed_src);
-          diags = std::move(fixed_diags);
+          ofs.close();   // close before the check: flushing is where ENOSPC lands
+          if (!ofs) {
+            std::println(stderr, "culebra lint: can't write '{}'", path);
+            had_failure = true;   // the file still holds the unfixed source
+          } else {
+            std::println("{}: fixed {} unused import{}", path,
+                        import_lines.size(), import_lines.size() == 1 ? "" : "s");
+            src = std::move(fixed_src);
+            diags = std::move(fixed_diags);
+          }
         } else {
           std::println(stderr,
                       "{}: --fix left {} unused import{} unresolved "
@@ -1665,6 +1671,11 @@ int run_fmt(int argc, const char** argv) {
       if (changed) {
         ofstream ofs(path, ios::out | ios::binary | ios::trunc);
         ofs << r.output;
+        ofs.close();   // close before the check: flushing is where ENOSPC lands
+        if (!ofs) {
+          std::println(stderr, "culebra fmt: can't write '{}'", path);
+          rc = 2;
+        }
       }
     } else {
       std::print("{}", r.output);

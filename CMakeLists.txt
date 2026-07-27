@@ -1109,3 +1109,10 @@ add_test(NAME log_test
 add_test(NAME args_cli_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/args_cli_test.sh
                  $<TARGET_FILE:culebra>)
+
+# How the driver takes its input (a piped script, a directory), what --ast does
+# instead of running, and that a rewrite it can't write says so rather than
+# reporting success. All process-level, so no .cul sweep reaches it.
+add_test(NAME cli_input_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_input_test.sh
+                 $<TARGET_FILE:culebra>)
