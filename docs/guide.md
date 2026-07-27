@@ -1,8 +1,9 @@
 The Culebra Guide
 =================
 
-A small, dynamically-typed scripting language with Rust-inspired
-syntax. Two backends share one AST: a tree-walking interpreter and an
+A small, dynamically-typed scripting language: immutable bindings by
+default, blocks that evaluate to a value, and pattern matching in the
+core. Two backends share one AST — a tree-walking interpreter and an
 LLVM ORC JIT. This guide walks you from "hello" to embedding Culebra
 in a C++ host. For the formal grammar see [`language.md`](language.md);
 for the API reference see [`stdlib.md`](stdlib.md); for implementation
@@ -60,9 +61,10 @@ Read this once; the rest of the guide assumes these choices.
   `Array`, `Object`, `Function`, plus four specialized ones
   (`StringView`, `Tuple`, `Set`, `Tensor`). Everything else (classes,
   modules, errors) builds on `Object`.
-- **Rust-inspired surface.** `let` / `mut` / `fn` / `match` / block-as-
-  expression. Closures are first-class, errors are values, no hidden
-  globals.
+- **Immutable by default, `mut` to opt in.** A binding cannot be
+  reassigned unless it says so, and a block evaluates to its last
+  expression, so `let x = if c { a } else { b }` is ordinary code.
+  Closures are first-class, errors are values, no hidden globals.
 - **UFCS, not pipeline.** Any free function `f(x, ...)` can be called
   as `x.f(...)`. A pipeline operator was considered and rejected.
 - **Explicit, static modules.** A file exposes bindings with
@@ -1349,7 +1351,7 @@ inspect(Math.sign(-42))          # => -1
 inspect(Math.clamp(15, 0, 10))   # => 10
 ```
 
-Full reference: [`stdlib.md` §1](stdlib.md).
+Full reference: [`stdlib.md` §1](stdlib.md#1-math).
 
 ### 15.3 `IO`
 
@@ -1360,7 +1362,7 @@ print('Hello, '); print('world!'); print("\n")   # => Hello, world!
 # FS.read('in.txt')          # read a file
 ```
 
-Full reference: [`stdlib.md` §2](stdlib.md).
+Full reference: [`stdlib.md` §2](stdlib.md#2-io).
 
 ### 15.4 `Sys`, `Random`, `FS`, `Time`, `Args`
 
@@ -1377,8 +1379,9 @@ inspect(Random.int(0, 100) >= 0)          # => true
 # FS.* and File.open also accept a Path directly.
 ```
 
-Full reference: `Sys` [`stdlib.md` §7](stdlib.md), `Random` §6, `FS`/`Path`
-§3, `Time` §5, `Args` §10.
+Full reference in [`stdlib.md`](stdlib.md): [`Sys` §7](stdlib.md#7-sys),
+[`Random` §6](stdlib.md#6-random), [`FS`/`Path` §3](stdlib.md#3-fs),
+[`Time` §5](stdlib.md#5-time), [`Args` §10](stdlib.md#10-args).
 
 ### 15.5 `Regex`
 
@@ -1394,7 +1397,7 @@ inspect(re.test('order #42'))    # => true
 inspect(re'\d+'.test('abc 123')) # => true
 ```
 
-Full API: [`stdlib.md` §14](stdlib.md).
+Full API: [`stdlib.md` §14](stdlib.md#14-regex).
 
 ### 15.6 `Hash`, `Encoding`, `Compress`
 
@@ -1402,8 +1405,9 @@ Full API: [`stdlib.md` §14](stdlib.md).
 hex digests; `Encoding.base64`/`hex`/`url`/`html` each expose
 `.encode`/`.decode`; `Compress.gzip`/`gunzip` round out the data
 namespaces. JSON is its own top-level `JSON.parse`/`JSON.stringify` —
-there is no `Encoding.json`. Full reference: [`stdlib.md`](stdlib.md)
-§16 (Encoding), §17 (Compress), §18 (Hash).
+there is no `Encoding.json`. Full reference:
+[`Encoding` §16](stdlib.md#16-encoding),
+[`Compress` §17](stdlib.md#17-compress), [`Hash` §18](stdlib.md#18-hash).
 
 ### 15.7 `Http`
 
@@ -1422,24 +1426,23 @@ srv.get('/', fn (req) { 'hello' })
 srv.listen('127.0.0.1', 8080)
 ```
 
-Streaming, routing, and the client session API: [`stdlib.md`
-§15](stdlib.md).
+Streaming, routing, and the client session API:
+[`stdlib.md` §15](stdlib.md#15-http).
 
 ### 15.8 The rest of the library
 
-Not covered above, all documented in [`stdlib.md`](stdlib.md):
-`JSON` (§9), `Proc` (§11 — run external commands), `Isolate` /
-`Channel` / `Parallel` / `Shared` (§12 — threads and message passing),
-`CSV` (§19), `Env` (§20 — dotenv), `UUID` (§21), `Term` (§22 — TUIs),
-`Log` (§23), `TOML` (§24), `SQLite` (§25), `Canvas` (§26 — 2D games),
-`Scene` (§27 — 3D, opt-in), and `Desktop` / `Webview` (§28 — a native
-WebView desktop app in one call).
+The namespaces this tour skipped are data formats (`JSON`, `CSV`,
+`TOML`), process and concurrency (`Proc`, `Isolate`, `Channel`,
+`Parallel`, `Shared`), configuration and identity (`Env`, `UUID`,
+`Log`), storage (`SQLite`), raw networking (`Net`), and the graphical
+ones (`Term` for TUIs, `Canvas` for 2D games, `Scene` for 3D,
+`Desktop` for a native WebView app).
 
-### 15.9 Still planned
-
-> **Status: Planned (Tier 2/3).** `Crypto` (asymmetric/TLS primitives
-> beyond `Hash`) and `Sockets` (raw TCP/UDP). No firm ordering yet —
-> demand-driven, per the tiering in Ch.0.
+[`stdlib.md`](stdlib.md) documents each of them. Its index lists the
+namespaces in order, and the "Where to find what" table right below it
+maps a task — hash something, parse a config file, run a subprocess —
+onto the section that does it. What is deliberately *not* included yet
+is recorded there too, at the end.
 
 ## 16. Tensor primitive
 
@@ -1451,7 +1454,7 @@ on Linux/Windows). Storage is F32; scalar results surface as `Float`.
 Matmul (`dot`) builds a lazy graph that `Tensor.eval` runs as one
 fused kernel; elementwise ops broadcast like NumPy. Full API (shapes,
 reductions, autograd, device selection):
-[`stdlib.md` §8](stdlib.md).
+[`stdlib.md` §8](stdlib.md#8-tensor).
 
 ```culebra
 a = Tensor.from([1.0, 2.0, 3.0])

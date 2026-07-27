@@ -1,7 +1,8 @@
 Culebra ガイド
 ================
 
-Rust 風シンタックスを持つ小さな動的型付けスクリプト言語。 ツリー
+小さな動的型付けスクリプト言語。 束縛は既定で不変、ブロックは値に
+評価され、パターンマッチが言語の中核にあります。 ツリー
 ウォーキング型インタプリタと LLVM ORC JIT の 2 バックエンドが 1 つの
 AST を共有します。 このガイドは "hello" から C++ ホストへの埋め込み
 までを案内します。 厳密な文法は [`language.ja.md`](language.ja.md)、
@@ -58,8 +59,10 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
   `String` / `Array` / `Object` / `Function`、加えて用途特化の 4 つ
   (`StringView` / `Tuple` / `Set` / `Tensor`)。 クラス・モジュール・
   エラーなどはすべて `Object` 上に構築。
-- **Rust 風の表面構文。** `let` / `mut` / `fn` / `match` / ブロッ
-  クは式。 クロージャは第一級、エラーは値、隠れたグローバル無し。
+- **既定で不変、`mut` で可変にする。** 束縛はそう書かない限り再代入
+  できず、ブロックは最後の式に評価される。 だから
+  `let x = if c { a } else { b }` が普通のコードになる。 クロージャは
+  第一級、エラーは値、隠れたグローバル無し。
 - **UFCS、パイプライン不採用。** 任意の自由関数 `f(x, ...)` を
   `x.f(...)` として呼べる。 パイプライン演算子は検討の上不採用。
 - **明示的で静的なモジュール。** ファイルは `export { ... }` で束縛
@@ -1323,7 +1326,7 @@ inspect(Math.sign(-42))          # => -1
 inspect(Math.clamp(15, 0, 10))   # => 10
 ```
 
-完全リファレンス: [`stdlib.ja.md` §1](stdlib.ja.md)。
+完全リファレンス: [`stdlib.ja.md` §1](stdlib.ja.md#1-math)。
 
 ### 15.3 `IO`
 
@@ -1334,7 +1337,7 @@ print('Hello, '); print('world!'); print("\n")   # => Hello, world!
 # FS.read('in.txt')          # ファイル読み込み
 ```
 
-完全リファレンス: [`stdlib.ja.md` §2](stdlib.ja.md)。
+完全リファレンス: [`stdlib.ja.md` §2](stdlib.ja.md#2-io)。
 
 ### 15.4 `Sys` / `Random` / `FS` / `Time` / `Args`
 
@@ -1368,7 +1371,7 @@ inspect(re.test('order #42'))    # => true
 inspect(re'\d+'.test('abc 123')) # => true
 ```
 
-完全な API: [`stdlib.ja.md` §14](stdlib.ja.md)。
+完全な API: [`stdlib.ja.md` §14](stdlib.ja.md#14-regex)。
 
 ### 15.6 `Hash` / `Encoding` / `Compress`
 
@@ -1398,23 +1401,21 @@ srv.listen('127.0.0.1', 8080)
 ```
 
 streaming・ルーティング・クライアントセッション API:
-[`stdlib.ja.md` §15](stdlib.ja.md)。
+[`stdlib.ja.md` §15](stdlib.ja.md#15-http)。
 
 ### 15.8 ライブラリの残り
 
-上で触れていないもの（すべて [`stdlib.ja.md`](stdlib.ja.md) に記載）:
-`JSON` (§9)、`Proc` (§11 — 外部コマンド実行)、`Isolate` / `Channel` /
-`Parallel` / `Shared` (§12 — スレッドとメッセージパッシング)、
-`CSV` (§19)、`Env` (§20 — dotenv)、`UUID` (§21)、`Term` (§22 — TUI)、
-`Log` (§23)、`TOML` (§24)、`SQLite` (§25)、`Canvas` (§26 — 2D ゲーム)、
-`Scene` (§27 — 3D、opt-in)、`Desktop` / `Webview` (§28 — ネイティブ
-WebView のデスクトップアプリを 1 呼び出しで)。
+この巡りで飛ばした名前空間は、データ形式 (`JSON`・`CSV`・`TOML`)、
+プロセスと並行 (`Proc`・`Isolate`・`Channel`・`Parallel`・`Shared`)、
+設定と識別子 (`Env`・`UUID`・`Log`)、ストレージ (`SQLite`)、生の
+ネットワーク (`Net`)、そしてグラフィカルなもの (TUI の `Term`、2D
+ゲームの `Canvas`、3D の `Scene`、ネイティブ WebView アプリの
+`Desktop`) です。
 
-### 15.9 まだ計画中
-
-> **Status: Planned (Tier 2/3).** `Crypto` (`Hash` を超える非対称鍵/TLS
-> プリミティブ) と `Sockets` (raw TCP/UDP)。 順序未確定、Ch.0 のティア
-> 方針どおり demand-driven で。
+いずれも [`stdlib.ja.md`](stdlib.ja.md) が記述します。目次が名前空間を
+順に並べ、その直下の「用途から探す」表が、やりたいこと — ハッシュを
+取る、設定ファイルを読む、サブプロセスを走らせる — をそれを行う節に
+対応付けます。意図的にまだ入れていないものも、末尾に記録してあります。
 
 ## 16. Tensor プリミティブ
 
@@ -1426,7 +1427,7 @@ CUDA) が実行する。 格納は F32 で、スカラー結果は `Float` と�
 matmul (`dot`) は遅延グラフを作り、`Tensor.eval` が融合された単一
 カーネルとして実行する。要素ごとの演算は NumPy 同様にブロードキャスト
 する。 完全な API (shape・reduction・autograd・デバイス選択) は
-[`stdlib.ja.md` §8](stdlib.ja.md)。
+[`stdlib.ja.md` §8](stdlib.ja.md#8-tensor)。
 
 ```culebra
 a = Tensor.from([1.0, 2.0, 3.0])
