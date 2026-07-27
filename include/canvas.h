@@ -108,19 +108,49 @@ struct Target {
 inline int64_t& _target_id() { static int64_t id = 0; return id; }
 inline Target resolve_target() { return {_fb().data(), _fb_w(), _fb_h()}; }
 
+// Composite `src` over `dst` at `alpha`/255 — straight-alpha source-over,
+// integer only, so the three backends round identically. Colour channels mix
+// at alpha; the alpha channel follows Porter-Duff (a + da*(1-a)), so drawing
+// something translucent on an opaque buffer leaves it opaque instead of
+// eroding it toward the page background at present() time. For opaque src
+// and dst every channel reduces to a plain weighted mix.
+inline uint32_t blend_over(uint32_t src, uint32_t dst, uint32_t alpha) {
+  uint32_t out = 0;
+  for (int c = 0; c < 3; c++) {
+    uint32_t sc = (src >> (c * 8)) & 0xff;
+    uint32_t dc = (dst >> (c * 8)) & 0xff;
+    uint32_t m = (sc * alpha + dc * (255 - alpha) + 127) / 255;
+    out |= m << (c * 8);
+  }
+  uint32_t da = dst >> 24;
+  return out | ((alpha + (da * (255 - alpha) + 127) / 255) << 24);
+}
+
 // The two write seams every draw call goes through: one pixel (clipped) and
-// one row span [x0, x1). Plain stores.
+// one row span [x0, x1). The colour's own alpha composites: 255 stores it
+// as-is (the fast path), 0 draws nothing, and in between it blends over what
+// is there — so rgba(r, g, b, 128) means a translucent shape everywhere, not
+// just on sprite blits. Erasing to transparent is what clear() is for.
 inline void put(const Target& t, int64_t x, int64_t y, uint32_t rgba) {
   if (x < 0 || y < 0 || x >= t.w || y >= t.h) return;
-  t.px[static_cast<size_t>(y) * t.w + x] = rgba;
+  uint32_t a = rgba >> 24;
+  if (a == 0) return;
+  uint32_t* p = t.px + static_cast<size_t>(y) * t.w + x;
+  *p = a == 255 ? rgba : blend_over(rgba, *p, a);
 }
 inline void span(const Target& t, int64_t y, int64_t x0, int64_t x1,
                  uint32_t rgba) {
   if (y < 0 || y >= t.h) return;
   x0 = std::max<int64_t>(x0, 0);
   x1 = std::min<int64_t>(x1, t.w);
+  uint32_t a = rgba >> 24;
+  if (a == 0) return;
   uint32_t* row = t.px + static_cast<size_t>(y) * t.w;
-  for (int64_t x = x0; x < x1; x++) row[x] = rgba;
+  if (a == 255) {
+    for (int64_t x = x0; x < x1; x++) row[x] = rgba;
+  } else {
+    for (int64_t x = x0; x < x1; x++) row[x] = blend_over(rgba, row[x], a);
+  }
 }
 
 inline void clear(uint32_t rgba) {
@@ -128,8 +158,13 @@ inline void clear(uint32_t rgba) {
   std::fill(t.px, t.px + static_cast<size_t>(t.w) * t.h, rgba);
 }
 
+// Store one pixel exactly as given — the raw poke that pairs with get_pixel.
+// Unlike the drawing calls it does not composite, so a program can write a
+// transparent or half-transparent value and read the same value back.
 inline void set_pixel(int x, int y, uint32_t rgba) {
-  put(resolve_target(), x, y, rgba);
+  Target t = resolve_target();
+  if (x < 0 || y < 0 || x >= t.w || y >= t.h) return;
+  t.px[static_cast<size_t>(y) * t.w + x] = rgba;
 }
 
 // The target pixel at (x, y), or 0 (transparent) off-buffer. Exposed as
@@ -392,8 +427,9 @@ inline int64_t sprite_height(int64_t id) {
 
 // Blit the sub-rectangle (sx, sy, sw, sh) of sprite `id` to (dx, dy).
 // flags: 1 = flip X, 2 = flip Y, 4 = transpose (swap X/Y — a diagonal
-// reflection; combine with a flip for a 90° rotation). Transparent source
-// pixels (alpha 0) are skipped, so sprites composite.
+// reflection; combine with a flip for a 90° rotation). Source alpha
+// composites through put(): 0 is skipped, 255 written as-is, and a partial
+// alpha (a PNG's anti-aliased edge) blends over what is there.
 inline void blit(int64_t id, int dx, int dy, int sx, int sy, int sw, int sh,
                  int64_t flags) {
   if (id < 0 || static_cast<size_t>(id) >= _sprites().size()) return;
@@ -408,7 +444,6 @@ inline void blit(int64_t id, int dx, int dy, int sx, int sy, int sw, int sh,
       int srcy = sy + j;
       if (srcx < 0 || srcy < 0 || srcx >= s.w || srcy >= s.h) continue;
       uint32_t p = s.px[static_cast<size_t>(srcy) * s.w + srcx];
-      if ((p >> 24) == 0) continue;  // alpha 0 = transparent
       int lx = flip_x ? sw - 1 - i : i;
       int ly = flip_y ? sh - 1 - j : j;
       if (transpose)
@@ -452,19 +487,6 @@ struct SourceWalk {
   }
 };
 
-// Composite `src` over `dst` at `alpha`/255, channel by channel and in
-// integers only, so the three backends round identically.
-inline uint32_t blend_over(uint32_t src, uint32_t dst, uint32_t alpha) {
-  uint32_t out = 0;
-  for (int c = 0; c < 4; c++) {
-    uint32_t sc = (src >> (c * 8)) & 0xff;
-    uint32_t dc = (dst >> (c * 8)) & 0xff;
-    uint32_t m = (sc * alpha + dc * (255 - alpha) + 127) / 255;
-    out |= m << (c * 8);
-  }
-  return out;
-}
-
 // Blit the sub-rectangle (sx, sy, sw, sh) of sprite `id` into the destination
 // rectangle (dx, dy, dw, dh), resampling to fit.
 //
@@ -474,12 +496,12 @@ inline uint32_t blend_over(uint32_t src, uint32_t dst, uint32_t alpha) {
 // Transpose has no scaled form — swapping axes here would need two source
 // extents per destination axis.
 //
-// `alpha` (0..255) composites the whole blit: 255 writes the source pixel
-// unchanged (the fast path, bit-identical to blit), 0 draws nothing, and in
-// between each channel becomes (src*a + dst*(255-a) + 127) / 255 — integer
-// only, so the three backends round identically. Source alpha stays the shape
-// mask it is for sprites: a fully transparent source pixel is skipped and never
-// contributes, whether it is sampled directly or averaged over.
+// `alpha` (0..255) scales the whole blit: each pixel composites at its own
+// source alpha times `alpha` (integer, (sa*a + 127)/255), so an opaque pixel
+// under alpha 255 is written unchanged (the fast path, bit-identical to blit)
+// and a PNG's anti-aliased edge blends the same way it does un-scaled. A
+// fully transparent source pixel is skipped and never contributes, whether it
+// is sampled directly or averaged over.
 //
 // The loop walks the (clipped) destination and maps back to the source, so
 // cost is the pixels actually written, and nothing is drawn for a degenerate
@@ -526,8 +548,9 @@ inline void blit_scaled(int64_t id, int64_t dx, int64_t dy, int64_t dw,
           u.next();
         if (srcx < 0 || srcx >= s.w) continue;
         uint32_t src = src_row[srcx];
-        if ((src >> 24) == 0) continue;  // alpha 0 = transparent
-        row[x] = a == 255 ? src : blend_over(src, row[x], a);
+        uint32_t ea = ((src >> 24) * a + 127) / 255;
+        if (ea == 0) continue;
+        row[x] = ea == 255 ? src : blend_over(src, row[x], ea);
       }
       continue;
     }
@@ -567,7 +590,9 @@ inline void blit_scaled(int64_t id, int64_t dx, int64_t dy, int64_t dw,
       if (n == 0) continue;
       uint32_t src = (acc[0] / n) | ((acc[1] / n) << 8) |
                      ((acc[2] / n) << 16) | ((acc[3] / n) << 24);
-      row[x] = a == 255 ? src : blend_over(src, row[x], a);
+      uint32_t ea = ((acc[3] / n) * a + 127) / 255;
+      if (ea == 0) continue;
+      row[x] = ea == 255 ? src : blend_over(src, row[x], ea);
     }
   }
 }

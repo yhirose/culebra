@@ -886,13 +886,13 @@ let draw_road = fn (base_index, base_percent, player_y) {
       }
       let r1 = w1 / 6.0
       let r2 = w2 / 6.0
-      _Canvas.rect(0, top, W, edge - top, c_grass)
+      _Canvas.rect(0, top, W, edge - top, c_grass, 1)
       _Canvas.polygon([x1 - w1 - r1, edge, x1 - w1, edge, x2 - w2, top,
-                       x2 - w2 - r2, top], c_rumble)
+                       x2 - w2 - r2, top], c_rumble, 1)
       _Canvas.polygon([x1 + w1 + r1, edge, x1 + w1, edge, x2 + w2, top,
-                       x2 + w2 + r2, top], c_rumble)
+                       x2 + w2 + r2, top], c_rumble, 1)
       _Canvas.polygon([x1 - w1, edge, x1 + w1, edge, x2 + w2, top, x2 - w2, top],
-                      c_road)
+                      c_road, 1)
       if segment.kind == KIND_LIGHT {
         let c_lane = (p[9] * f + fog_r * g) / 256 +
                      ((p[10] * f + fog_g * g) / 256) * 256 +
@@ -906,7 +906,7 @@ let draw_road = fn (base_index, base_percent, player_y) {
         mut lane = 1
         while lane < LANES {
           _Canvas.polygon([lx1 - l1, edge, lx1 + l1, edge, lx2 + l2, top,
-                           lx2 - l2, top], c_lane)
+                           lx2 - l2, top], c_lane, 1)
           lx1 = lx1 + lw1
           lx2 = lx2 + lw2
           lane = lane + 1
@@ -925,13 +925,13 @@ let draw_road = fn (base_index, base_percent, player_y) {
                       ((mark_rgb[2] * f + fog_b * g) / 256) * 65536 + OPAQUE
         if segment.mark == MARK_START {
           _Canvas.polygon([x1 - w1, edge, x1 + w1, edge, x2 + w2, top,
-                           x2 - w2, top], c_light)
+                           x2 - w2, top], c_light, 1)
         } else {
           let c_dark = (mark_rgb[3] * f + fog_r * g) / 256 +
                        ((mark_rgb[4] * f + fog_g * g) / 256) * 256 +
                        ((mark_rgb[5] * f + fog_b * g) / 256) * 65536 + OPAQUE
           _Canvas.polygon([x1 - w1, edge, x1 + w1, edge, x2 + w2, top,
-                           x2 - w2, top], c_dark)
+                           x2 - w2, top], c_dark, 1)
           let cw1 = w1 * 2.0 / CHECKER_COLS
           let cw2 = w2 * 2.0 / CHECKER_COLS
           let bx1 = x1 - w1
@@ -941,7 +941,7 @@ let draw_road = fn (base_index, base_percent, player_y) {
             let a1 = bx1 + cw1 * i
             let a2 = bx2 + cw2 * i
             _Canvas.polygon([a1, edge, a1 + cw1, edge, a2 + cw2, top, a2, top],
-                            c_light)
+                            c_light, 1)
             i = i + 2
           }
         }
@@ -1005,7 +1005,7 @@ let format_time = fn (t) {
 }
 
 let draw_hud = fn () {
-  _Canvas.rect(0, 0, W, 14, HUD_BG)
+  _Canvas.rect(0, 0, W, 14, HUD_BG, 1)
   Canvas.text("{5 * Math.round(speed / 500.0)} MPH", 8, 3, HUD_FG)
   Canvas.text("TIME {format_time(current_lap_time)}", 152, 3, HUD_FG)
   Canvas.text("LAST {format_time(last_lap_time)}", 320, 3, HUD_FG)

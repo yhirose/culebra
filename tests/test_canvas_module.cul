@@ -115,6 +115,44 @@ Canvas.run(8, 8, fn () {
   assert_eq(Canvas.get_pixel(6, 6), BLUE)     // closing edge drawn
   assert_eq(Canvas.get_pixel(3, 3), GREEN)
 
+  // Alpha composites on every drawing call: colour channels mix at a
+  // ((src*a + dst*(255-a) + 127)/255, integer only) and the alpha channel
+  // follows source-over, so an opaque buffer stays opaque. set_pixel stays a
+  // raw store (pairs with get_pixel), and an alpha-0 colour draws nothing
+  // instead of erasing.
+  let BLACK = Canvas.rgba(0, 0, 0)
+  Canvas.clear(BLACK)
+  Canvas.rect(0, 0, 4, 4, Canvas.rgba(255, 0, 0, 128))
+  assert_eq(Canvas.get_pixel(0, 0), Canvas.rgba(128, 0, 0))
+  Canvas.rect(0, 0, 4, 4, Canvas.rgba(255, 0, 0, 128))     // composites again
+  assert_eq(Canvas.get_pixel(0, 0), Canvas.rgba(192, 0, 0))
+  Canvas.clear(BLACK)
+  Canvas.rect(0, 0, 4, 4, Canvas.rgba(10, 20, 30, 0))      // a=0: draws nothing
+  assert_eq(Canvas.get_pixel(0, 0), BLACK)
+  Canvas.clear(BLACK)
+  Canvas.line(0, 5, 7, 5, Canvas.rgba(0, 255, 0, 128))
+  assert_eq(Canvas.get_pixel(3, 5), Canvas.rgba(0, 128, 0))
+  Canvas.clear(BLACK)
+  Canvas.circle(4, 4, 2, Canvas.rgba(0, 0, 255, 128))
+  assert_eq(Canvas.get_pixel(4, 4), Canvas.rgba(0, 0, 128))
+  Canvas.set_pixel(0, 0, Canvas.rgba(9, 9, 9, 3))          // raw store
+  assert_eq(Canvas.get_pixel(0, 0), Canvas.rgba(9, 9, 9, 3))
+  Canvas.set_pixel(0, 0, 0)                                // raw store of 0
+  assert_eq(Canvas.get_pixel(0, 0), 0)
+
+  // A sprite pixel with partial alpha composites at 1:1 too (a PNG's
+  // anti-aliased edge), scaled by the blit's own alpha argument.
+  let half = Canvas.Sprite.new([Canvas.rgba(255, 0, 0, 128)], 1, 1)
+  Canvas.clear(BLACK)
+  half.draw(0, 0)
+  assert_eq(Canvas.get_pixel(0, 0), Canvas.rgba(128, 0, 0))
+  Canvas.clear(BLACK)
+  half.draw_scaled(0, 0, 2, 2)
+  assert_eq(Canvas.get_pixel(1, 1), Canvas.rgba(128, 0, 0))
+  Canvas.clear(BLACK)
+  half.draw_scaled(0, 0, 2, 2, alpha: 128)                 // 128*128/255 -> 64
+  assert_eq(Canvas.get_pixel(0, 0), Canvas.rgba(64, 0, 0))
+
   // Indexed sprite: indices into a palette resolve to the same pixels.
   let si = Canvas.Sprite.new([1, 1, 2, 0], 2, 2, [clear, RED, BLUE])
   Canvas.clear(GREEN)
