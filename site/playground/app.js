@@ -198,10 +198,15 @@ function spawnWorker() {
       handleMusic(msg);
       return;
     }
+    if (msg.type === "sound") {
+      handleSound(msg);
+      return;
+    }
     if (msg.type === "done") {
       running = false;
       stopRafPump();
       resetMusic();   // the native analogue: process exit silences the slot
+      resetSounds();
       stopBtn.disabled = true;
       runBtn.disabled = false;
       if (!inTui && !inCanvas && output.textContent === "") output.textContent = "(no output)";
@@ -232,6 +237,7 @@ function run() {
   if (running || runBtn.disabled) return;
   ensureAudio();    // this click is a user gesture — unlock audio for any tones
   resetMusic();     // a fresh run must not inherit the previous run's BGM
+  resetSounds();
   running = true;
   runBtn.disabled = true;
   stopBtn.disabled = false;
@@ -267,6 +273,7 @@ function stop() {
   running = false;
   stopRafPump();
   resetMusic();     // terminating the worker must also silence a looping BGM
+  resetSounds();
   stopBtn.disabled = true;
   runBtn.disabled = true; // until the fresh worker reports ready
   resetToOutput();
@@ -591,6 +598,71 @@ function handleMusic(m) {
   }
 }
 
+// Sound effects: many decoded buffers keyed by the wasm-side handle, one live
+// voice per handle (play restarts it, like raylib's PlaySound). Only what
+// this side can observe — a one-shot running out, a failed decode — goes back
+// as a "soundState" correction.
+const soundBuffers = new Map();  // id -> AudioBuffer
+const soundVoices = new Map();   // id -> { src } while audible
+
+function soundNotify(id, playing) {
+  if (worker) worker.postMessage({ type: "soundState", id, playing });
+}
+
+function stopSoundVoice(id) {
+  const v = soundVoices.get(id);
+  if (!v) return;
+  soundVoices.delete(id);          // cleared first: onended sees it was told to
+  try { v.src.stop(); } catch {}
+}
+
+function resetSounds() {
+  for (const id of [...soundVoices.keys()]) stopSoundVoice(id);
+  soundBuffers.clear();
+}
+
+function handleSound(m) {
+  try {
+    switch (m.cmd) {
+      case "load":
+        if (!ensureAudio()) return;
+        audioCtx.decodeAudioData(m.buf.buffer)
+          .then((buf) => soundBuffers.set(m.id, buf))
+          .catch(() => soundNotify(m.id, false));
+        break;
+      case "play": {
+        const buf = soundBuffers.get(m.id);
+        if (!buf || !ensureAudio()) { soundNotify(m.id, false); break; }
+        stopSoundVoice(m.id);
+        const src = audioCtx.createBufferSource();
+        src.buffer = buf;
+        const gain = audioCtx.createGain();
+        gain.gain.value = musicG(m.vol);   // the same 0..100 scale as tone
+        src.connect(gain).connect(audioCtx.destination);
+        const v = { src };
+        src.onended = () => {
+          if (soundVoices.get(m.id) === v) {   // ran out on its own
+            soundVoices.delete(m.id);
+            soundNotify(m.id, false);
+          }
+        };
+        src.start();
+        soundVoices.set(m.id, v);
+        break;
+      }
+      case "stop":
+        stopSoundVoice(m.id);
+        break;
+      case "free":
+        stopSoundVoice(m.id);
+        soundBuffers.delete(m.id);
+        break;
+    }
+  } catch {
+    // Audio unavailable (autoplay policy, no device) — a game stays playable.
+  }
+}
+
 // Keyboard → button bitmask (bits match src/preambles/canvas.cul: LEFT=1,
 // RIGHT=2, UP=4, DOWN=8, A=16, B=32). WASD doubles the d-pad so a game that
 // wants a hand on each side of the keyboard works without remapping. Captured
@@ -602,19 +674,65 @@ const KEY_BITS = {
   " ": 16, z: 16, Z: 16, x: 32, X: 32,
 };
 let heldButtons = 0;
+
+// e.code → the culebra key name (Term.read_key's vocabulary): a printable
+// character or a special-key name. Keyed on the physical code so a key's
+// identity survives Shift changing e.key between its down and up events;
+// e.key fills in printable keys the table doesn't list (other layouts).
+const CODE_NAMES = {
+  Space: " ", ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up",
+  ArrowDown: "down", Enter: "enter", Escape: "escape", Tab: "tab",
+  Backspace: "backspace", Insert: "insert", Delete: "delete", Home: "home",
+  End: "end", PageUp: "pageup", PageDown: "pagedown",
+  Minus: "-", Equal: "=", Comma: ",", Period: ".", Slash: "/",
+  Semicolon: ";", Quote: "'", BracketLeft: "[", BracketRight: "]",
+  Backslash: "\\", Backquote: "`",
+};
+function keyName(e) {
+  const c = e.code;
+  if (CODE_NAMES[c] !== undefined) return CODE_NAMES[c];
+  if (/^Key[A-Z]$/.test(c)) return c.slice(3).toLowerCase();
+  if (/^Digit[0-9]$/.test(c)) return c.slice(5);
+  if (/^F([1-9]|1[0-2])$/.test(c)) return c.toLowerCase();
+  if (e.key.length === 1) return e.key.toLowerCase();
+  return null;
+}
+// Held names + this frame's presses/typed characters ride the same "input"
+// message as the button mask; worker.js keeps the wasm-visible state.
+const heldKeys = new Set();
+function sendInput(extra) {
+  if (worker) worker.postMessage(Object.assign(
+      { type: "input", buttons: heldButtons, keys: [...heldKeys] }, extra));
+}
 canvasPane.addEventListener("keydown", (e) => {
+  const name = keyName(e);
   const bit = KEY_BITS[e.key];
-  if (bit === undefined) return;
+  if (bit === undefined && name === null) return;
   e.preventDefault();
-  heldButtons |= bit;
-  if (worker) worker.postMessage({ type: "input", buttons: heldButtons });
+  if (bit !== undefined) heldButtons |= bit;
+  const extra = {};
+  if (name !== null) {
+    heldKeys.add(name);
+    if (!e.repeat) extra.keyEvents = [name];
+    // The typed character respects Shift/layout (e.key), unlike the name.
+    if (e.key.length === 1) extra.chars = [e.key];
+  }
+  sendInput(extra);
 });
 canvasPane.addEventListener("keyup", (e) => {
+  const name = keyName(e);
   const bit = KEY_BITS[e.key];
-  if (bit === undefined) return;
+  if (bit === undefined && name === null) return;
   e.preventDefault();
-  heldButtons &= ~bit;
-  if (worker) worker.postMessage({ type: "input", buttons: heldButtons });
+  if (bit !== undefined) heldButtons &= ~bit;
+  if (name !== null) heldKeys.delete(name);
+  sendInput({});
+});
+// Alt-tab / focus loss never delivers the keyup: release everything.
+window.addEventListener("blur", () => {
+  heldButtons = 0;
+  heldKeys.clear();
+  sendInput({});
 });
 
 // Pointer → framebuffer coordinates (accounting for the CSS scale-up).
