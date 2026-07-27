@@ -547,11 +547,13 @@ static bool validate_build_triple(const string& v, string& err) {
   return true;
 }
 
-// Path values are single-quoted before reaching `cc` via std::system,
-// so the validator's job is to reject anything that breaks out of the
-// quote (the quote char itself) plus control chars. Other shell
-// metacharacters are harmless inside single quotes but rejected
-// defensively — none appear in realistic file paths.
+// Path values are quoted by shq() before reaching `cc` via std::system, so the
+// validator's job is to reject anything that breaks out of that quoting plus
+// control chars. Other shell metacharacters are harmless inside quotes but
+// rejected defensively — none appear in realistic file paths. The two shells
+// part ways on two characters: `\` is Windows' path separator, so `-o
+// build\out.exe` has to be accepted there, while `%` expands inside cmd.exe's
+// double quotes the way `$` does inside /bin/sh's.
 static bool validate_build_path(const char* flag, const string& v, string& err) {
   if (v.empty()) {
     err = string(flag) + " requires a non-empty path";
@@ -562,7 +564,12 @@ static bool validate_build_path(const char* flag, const string& v, string& err) 
                uc == '`' || uc == '$' || uc == ';' || uc == '|' ||
                uc == '&' || uc == '<' || uc == '>' || uc == '(' ||
                uc == ')' || uc == '{' || uc == '}' || uc == '!' ||
-               uc == '*' || uc == '?' || uc == '\\';
+               uc == '*' || uc == '?';
+#ifdef _WIN32
+    bad = bad || uc == '%';
+#else
+    bad = bad || uc == '\\';
+#endif
     if (bad) {
       err = string(flag) + ": path contains unsupported character";
       return false;
