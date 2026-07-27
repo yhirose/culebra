@@ -382,6 +382,23 @@ _run-tests BACKEND:
             *"set CULEBRA_HOME"*) ;;
             *) echo "test aot FAIL: unclear CULEBRA_HOME error: $bogus" >&2; exit 1 ;;
         esac
+        # Every build garbage-collects the runtime-archive cache. It may only
+        # delete the fingerprint directories it wrote itself: an earlier version
+        # pruned the cache dir's PARENT, so `CULEBRA_CACHE=/tmp/x` swept /tmp.
+        # Both roots below hold more entries than the collector keeps, so a
+        # regression deletes something here instead of going unnoticed.
+        local cdir="$out_dir/cache-safety"
+        mkdir -p "$cdir"/sib_{1,2,3,4,5} "$cdir"/root/{deps,notes,a,b,c}
+        printf 'IO.inspect(1)\n' > "$cdir/p.cul"
+        if ! CULEBRA_CACHE="$cdir/root" cul build "$cdir/p.cul" -o "$cdir/p" \
+                > "$d/cache.err" 2>&1; then
+            echo "test aot FAIL: build with CULEBRA_CACHE set" >&2
+            cat "$d/cache.err" >&2; exit 1
+        fi
+        for keep in "$cdir"/sib_* "$cdir"/root/{deps,notes,a,b,c}; do
+            [[ -d "$keep" ]] && continue
+            echo "test aot FAIL: cache prune deleted $keep" >&2; exit 1
+        done
         printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
             f="$1"; d="$2"; out_dir="$3"; jit_out="$4"
             name=$(basename "$f" .cul)

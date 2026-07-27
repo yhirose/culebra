@@ -203,12 +203,14 @@ static std::filesystem::path home_cache_root(const char* name) {
   return std::filesystem::path(home) / ".cache" / name;
 }
 
+// $CULEBRA_CACHE wins over $HOME/.cache/culebra — useful for CI, sandboxes
+// that can't write under $HOME, or hermetic test runs that want a clean cache
+// per invocation. The archives land in a fingerprint subdirectory either way,
+// so an override names a root we fill rather than a directory we overwrite.
 static std::filesystem::path culebra_cache_dir() {
-  // Explicit override wins — useful for CI, sandboxes that can't
-  // write under $HOME, or hermetic test runs that want a clean
-  // cache per invocation.
-  if (const char* c = std::getenv("CULEBRA_CACHE"); c && *c) return c;
-  return home_cache_root("culebra") / asset_fingerprint();
+  const char* c = std::getenv("CULEBRA_CACHE");
+  auto root = (c && *c) ? std::filesystem::path(c) : home_cache_root("culebra");
+  return root / asset_fingerprint();
 }
 
 // Bound a content-addressed cache directory so it never grows without limit.
@@ -230,12 +232,16 @@ static void prune_stale_cache_dirs(const std::filesystem::path& current) {
        it.increment(ec)) {
     if (ec) return;
     if (!it->is_directory(ec)) continue;
-    // The build-time SDL/raylib statics cache (CMake's CULEBRA_DEPS_CACHE)
-    // shares this root by default. It is keyed and bounded on its own terms
-    // and is NOT a fingerprint sibling — pruning it silently breaks every
-    // AOT link that force-loads a windowed feature archive until the ~3.5min
-    // deps build is redone.
-    if (it->path().filename() == "deps") continue;
+    // Only ever delete a directory shaped like the fingerprints we write (8 or
+    // 16 lowercase hex digits), because the root can hold entries we don't own:
+    // the build-time SDL/raylib statics cache (CMake's CULEBRA_DEPS_CACHE) is a
+    // `deps` sibling by default, and $CULEBRA_CACHE can name a directory with
+    // unrelated contents. Pruning `deps` alone would silently break every AOT
+    // link that force-loads a windowed feature archive until the ~3.5min deps
+    // build is redone.
+    auto name = it->path().filename().string();
+    if (name.find_first_not_of("0123456789abcdef") != std::string::npos)
+      continue;
     auto t = std::filesystem::last_write_time(it->path(), ec);
     if (ec) continue;
     dirs.emplace_back(t, it->path());
