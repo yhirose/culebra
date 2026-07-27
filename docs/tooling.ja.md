@@ -262,9 +262,18 @@ culebra lint .          # カレントディレクトリ配下の .cul を再帰
 再パース・再 lint し、import が消えて新しいエラーも出ていないと確認できた
 場合にだけ書き出します — `culebra fmt` と同じ再パースの安全網です。
 
+削除は行単位なので、対象になるのは import 1 つだけがある行に限られます。
+`;` で他の文とつながった import は報告のみで手つかずのまま残します:
+その行を消すと隣の文まで巻き添えになり、しかも文が 1 つ消えてもファイルは
+同じようにパースも lint も通るため、再チェックでは気づけないからです。
+
 ```bash
 culebra lint --fix app.cul
 # app.cul: fixed 1 unused import
+
+culebra lint --fix joined.cul
+# joined.cul: --fix skipped 1 unused import sharing a line with other code
+# joined.cul:1:8: warning: unused import 'Math'
 ```
 
 予定: エディタ／LSP 統合向けの `--format json` モードと、インラインの

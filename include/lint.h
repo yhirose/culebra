@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <format>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -1851,6 +1852,44 @@ inline void analyze_module(const peg::Ast& ast,
 
 }  // namespace unreachable
 
+// Which source lines an autofix may delete outright. `culebra lint --fix`
+// removes an unused `import` by dropping its line, so the line has to belong
+// to that import alone: the grammar lets `;` join statements, and a dead
+// import sharing a line with a live statement would be deleted along with it.
+namespace autofix {
+
+struct LineUse {
+  int imports = 0;    // import statements starting on this line
+  int foreign = 0;    // tokens on this line that belong to something else
+  bool spills = false;  // an import here whose tokens run onto other lines
+};
+
+inline void note_spill(const peg::Ast& n, long start, bool& spills) {
+  if (n.nodes.empty()) {
+    if (static_cast<long>(n.line) != start) spills = true;
+    return;
+  }
+  for (const auto& c : n.nodes) note_spill(*c, start, spills);
+}
+
+inline void scan(const peg::Ast& n, std::map<long, LineUse>& out) {
+  using namespace peg::udl;
+  auto line = static_cast<long>(n.line);
+  if (n.tag == "IMPORT_STMT"_) {
+    auto& use = out[line];
+    use.imports++;
+    note_spill(n, line, use.spills);
+    return;  // an import's own tokens aren't foreign to its line
+  }
+  if (n.nodes.empty()) {
+    out[line].foreign++;
+    return;
+  }
+  for (const auto& c : n.nodes) scan(*c, out);
+}
+
+}  // namespace autofix
+
 }  // namespace _detail
 
 // Cross-layer provider for the builtin / global names the undefined-var
@@ -1938,6 +1977,21 @@ inline std::vector<Diagnostic> collect_module(const peg::Ast& lowered,
     return a.line != b.line ? a.line < b.line : a.col < b.col;
   });
   return diags;
+}
+
+// The lines `culebra lint --fix` may delete to remove an unused import: ones
+// holding exactly one import statement, all of its tokens, and nothing else.
+// An import that shares its line with another statement (`import A from 'a';
+// f()`) is reported but left for the author — a line-wise delete would take
+// the neighbour with it, and no re-parse check can notice, since dropping a
+// statement leaves the rest of the file parsing and linting just as cleanly.
+inline std::set<long> removable_import_lines(const peg::Ast& root) {
+  std::map<long, _detail::autofix::LineUse> uses;
+  _detail::autofix::scan(root, uses);
+  std::set<long> out;
+  for (const auto& [line, use] : uses)
+    if (use.imports == 1 && use.foreign == 0 && !use.spills) out.insert(line);
+  return out;
 }
 
 // Static shadow check over an entire script AST before evaluation begins.

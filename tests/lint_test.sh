@@ -602,6 +602,40 @@ out=$("$CULEBRA" lint "$FIXTMP/dead.cul" 2>&1); rc=$?
 if [[ $rc -ne 0 || -n "$out" ]]; then
   echo "FAIL lint-fix-removes-unused: file not clean after fix: rc=$rc out=$out"; fail=1
 fi
+
+# `--fix` deletes whole lines, so it must leave alone any dead import that
+# shares its line with something else (the grammar allows `;`-joined
+# statements). Deleting such a line drops the neighbour, and no re-parse check
+# can catch it: the rest of the file still parses and lints just as cleanly.
+# Three shapes, all of which must survive untouched:
+#   a statement neighbour, a live import, a live import that shadows a builtin.
+for shape in "import Math from 'std/math'; inspect(42)" \
+             "import Alpha from './alpha'; import Beta from './beta'
+inspect(Beta.x)" \
+             "import Math from 'std/math'; import IO from 'std/io'
+IO.inspect(1)"; do
+  printf '%s\n' "$shape" > "$FIXTMP/shared.cul"
+  before=$(cat "$FIXTMP/shared.cul")
+  out=$("$CULEBRA" lint --fix "$FIXTMP/shared.cul" 2>&1); rc=$?
+  if [[ "$(cat "$FIXTMP/shared.cul")" != "$before" ]]; then
+    echo "FAIL lint-fix-shared-line: rewrote [$shape] -> [$(cat "$FIXTMP/shared.cul")]"; fail=1
+  fi
+  if [[ $rc -ne 1 || "$out" != *"skipped 1 unused import sharing a line"* ]]; then
+    echo "FAIL lint-fix-shared-line: rc=$rc out=$out"; fail=1
+  fi
+done
+
+# A write that fails must not be reported as a fix. (Skipped as root, which
+# can write through a read-only mode.)
+if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
+  printf "import Math from 'std/math'\ninspect(1)\n" > "$FIXTMP/ro.cul"
+  chmod 444 "$FIXTMP/ro.cul"
+  out=$("$CULEBRA" lint --fix "$FIXTMP/ro.cul" 2>&1); rc=$?
+  if [[ $rc -ne 2 || "$out" != *"can't write"* || "$out" == *"fixed 1 unused import"* ]]; then
+    echo "FAIL lint-fix-unwritable: rc=$rc out=$out"; fail=1
+  fi
+  chmod 644 "$FIXTMP/ro.cul"
+fi
 rm -rf "$FIXTMP"
 
 # A directory holding no .cul file is a mistake, not a clean run — reporting

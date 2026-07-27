@@ -1427,11 +1427,9 @@ static vector<string> expand_cul_paths(const string& tool,
 // statements (`import _ IDENTIFIER _ from _ STRING`, see grammar_def.h) in
 // the style the corpus and `culebra fmt` both produce. The grammar does
 // allow `;`-joining two statements onto one physical line, so a dead import
-// sharing a line with a live one is a real (if unstyled) possibility —
-// deleting that line would take the live statement with it. The caller's
-// re-parse-and-re-lint verification after this runs is what actually
-// guarantees safety: that case surfaces as a fresh undefined-variable error
-// (the live import's binding is gone) and the caller refuses to write.
+// can share a line with something else — the caller passes only the lines
+// `lint::removable_import_lines` cleared as belonging to one import and
+// nothing else, which is what keeps a line-wise delete honest.
 static std::string remove_source_lines(const std::string& src,
                                        const std::set<long>& targets) {
   std::string out;
@@ -1507,10 +1505,12 @@ int run_lint(int argc, const char** argv) {
     // `collect_module` wants both views of the program: the lowered AST the
     // backends run (sound error checks) and the source as written (advisory
     // warnings). See its comment for why neither alone is enough.
-    auto lint_source = [&](const std::string& s, vector<string>& parse_msgs)
+    auto lint_source = [&](const std::string& s, vector<string>& parse_msgs,
+                           std::shared_ptr<peg::Ast>* authored_out = nullptr)
         -> std::optional<vector<culebra::lint::Diagnostic>> {
       auto authored = culebra::parse(path, s.data(), s.size(), parse_msgs);
       if (!authored) return std::nullopt;
+      if (authored_out) *authored_out = authored;
       // The lowering itself rejects malformed effects (two `return` clauses,
       // a duplicate handler clause, …) by throwing. Report those as ordinary
       // error diagnostics instead of letting them escape the CLI — a linter
@@ -1528,7 +1528,8 @@ int run_lint(int argc, const char** argv) {
     };
 
     vector<string> parse_msgs;
-    auto diags = lint_source(src, parse_msgs);
+    std::shared_ptr<peg::Ast> authored;
+    auto diags = lint_source(src, parse_msgs, &authored);
     if (!diags) {
       for (const auto& m : parse_msgs) std::print(stderr, "{}", m);
       had_failure = true;
@@ -1536,9 +1537,23 @@ int run_lint(int argc, const char** argv) {
     }
 
     if (fix) {
+      // Only lines that hold one import and nothing else can be deleted
+      // wholesale; an import sharing its line stays reported but untouched.
+      auto removable = culebra::lint::removable_import_lines(*authored);
       std::set<long> import_lines;
+      int shared_lines = 0;
       for (const auto& d : *diags)
-        if (d.kind == "UnusedImport") import_lines.insert(d.line);
+        if (d.kind == "UnusedImport") {
+          if (removable.contains(d.line))
+            import_lines.insert(d.line);
+          else
+            shared_lines++;
+        }
+      if (shared_lines > 0)
+        std::println(stderr,
+                     "{}: --fix skipped {} unused import{} sharing a line with "
+                     "other code",
+                     path, shared_lines, shared_lines == 1 ? "" : "s");
       if (!import_lines.empty()) {
         auto fixed_src = remove_source_lines(src, import_lines);
         vector<string> fix_msgs;

@@ -269,9 +269,19 @@ the rewrite is written only if that re-check confirms the imports are
 gone and no new error appeared — the same re-parse safety net `culebra
 fmt` uses.
 
+The fix deletes whole lines, so it only touches a line holding one
+`import` and nothing else. An import `;`-joined to another statement is
+reported and left for you: deleting its line would take the neighbour
+with it, and the re-check cannot see that, since the file parses and
+lints just as cleanly with a statement missing.
+
 ```bash
 culebra lint --fix app.cul
 # app.cul: fixed 1 unused import
+
+culebra lint --fix joined.cul
+# joined.cul: --fix skipped 1 unused import sharing a line with other code
+# joined.cul:1:8: warning: unused import 'Math'
 ```
 
 Planned: a `--format json` mode for editor / LSP integration, and inline
