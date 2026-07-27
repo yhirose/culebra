@@ -1273,6 +1273,31 @@ int run_test(int argc, const char** argv) {
     }
     return true;
   };
+  // `--bail`'s count is optional, so the parser has to tell a count from the
+  // next path. Digits only: std::stoi stopped at the first non-digit, which
+  // made `--bail 3rd_party/` mean "bail after 3" and swallow the path.
+  auto all_digits = [](std::string_view v) {
+    return !v.empty() &&
+           v.find_first_not_of("0123456789") == std::string_view::npos;
+  };
+  auto parse_bail = [&](std::string_view v) {
+    int n = 0;
+    if (all_digits(v)) {
+      try {
+        n = std::stoi(std::string(v));   // digits checked; this catches overflow
+      } catch (...) {
+        n = 0;
+      }
+    }
+    if (n < 1) {
+      std::println(stderr,
+                   "culebra test: --bail needs a count of 1 or more, got '{}'",
+                   v);
+      return false;
+    }
+    bail_after = n;
+    return true;
+  };
   for (int i = 2; i < argc; i++) {
     std::string arg(argv[i]);
     if (arg == "-h" || arg == "--help") {
@@ -1295,25 +1320,14 @@ int run_test(int argc, const char** argv) {
     } else if (arg == "--reporter" && i + 1 < argc) {
       if (!parse_reporter(argv[++i])) return 2;
     } else if (arg == "--bail") {
-      // Optional numeric argument: `--bail` means 1; `--bail 3` means 3.
-      if (i + 1 < argc) {
-        try {
-          bail_after = std::stoi(argv[i + 1]);
-          i++;
-        } catch (...) {
-          bail_after = 1;
-        }
+      // `--bail` alone means 1; anything but a count after it is a path.
+      if (i + 1 < argc && all_digits(argv[i + 1])) {
+        if (!parse_bail(argv[++i])) return 2;
       } else {
         bail_after = 1;
       }
     } else if (arg.starts_with("--bail=")) {
-      try {
-        bail_after = std::stoi(arg.substr(7));
-      } catch (...) {
-        std::println(stderr, "culebra test: invalid --bail value '{}'",
-                      arg.substr(7));
-        return 2;
-      }
+      if (!parse_bail(arg.substr(7))) return 2;
     } else if (arg == "--list") {
       list_only = true;
     } else if (arg == "--doc") {
