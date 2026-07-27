@@ -3486,9 +3486,13 @@ top-level orphans go to the GC backstop on both, and top-level
 assignment time on both backends, on every write surface: literal
 properties, computed subscript keys (`o[k] = v`), native builders
 (`JSON.parse` etc.), values rebuilt on the receiving side of a channel
-transfer, and class declarations (a class whose method template binds a
+transfer, class declarations (a class whose method template binds a
 well-known name to a non-conforming function — wrong arity, or an
-overload set — raises `DropContractError` when the declaration runs).
+overload set — raises `DropContractError` when the declaration runs),
+and trait default implementations, which reach every conforming
+instance and are checked where the `trait` is declared. A body-less
+trait method only states a requirement, so it binds nothing and is not
+checked.
 When the target slot is immutable, `ImmutableError` wins over the
 contract check, and a failed check leaves the old value in place.
 `static` members are a namespace, not part of the instance protocol:

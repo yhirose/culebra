@@ -9068,6 +9068,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         auto fn_val =
             make_function_value(*tv.params, tv.body, tv.return_type, env);
         fn_val.get<FunctionValue>().name = std::string(tv.name);
+        // A default impl lands on every conforming instance without ever
+        // passing `initialize`, so the well-known contract (see shared.h)
+        // has to be enforced at declaration time — same as a class's
+        // method_template.
+        _check_drop_contract(tv.name, fn_val);
         defaults.emplace(std::string(tv.name), std::move(fn_val));
       }
     }

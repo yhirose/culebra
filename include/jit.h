@@ -9076,12 +9076,16 @@ struct JIT {
     for (size_t i = k + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
       auto tv = culebra::view_trait_method(m);
-      // Arity count (positional only).
+      // Arity count (positional only). `has_param` instead tracks what the
+      // interp's FunctionValue::params holds — everything but the `*`
+      // separator — so the well-known check below rejects `next(*args)`
+      // on both backends.
       size_t arity = 0;
+      bool has_param = false;
       for (const auto& p : tv.params->nodes) {
-        if (culebra::is_kw_only_sep(*p) || culebra::is_kwargs_rest(*p) ||
-            culebra::is_args_rest(*p))
-          continue;
+        if (culebra::is_kw_only_sep(*p)) continue;
+        has_param = true;
+        if (culebra::is_kwargs_rest(*p) || culebra::is_args_rest(*p)) continue;
         arity++;
       }
       bool has_body = static_cast<bool>(tv.body);
@@ -9108,6 +9112,19 @@ struct JIT {
       }
 
       if (tv.body) {
+        // A default impl lands on every conforming instance without passing
+        // the object_set chokepoint, so enforce the well-known contract
+        // here. Emitted before the body compiles: the throw fires when the
+        // declaration executes (interp's timing) and no closure is built
+        // for the +1 to strand on.
+        if (is_well_known_prop(tv.name) && has_param) {
+          emit_set_op_pos();
+          emit_call(module_->getOrInsertFunction(
+                        rt::wk_contract_error, builder_.getVoidTy(),
+                        llvm::PointerType::get(ctx_, 0)),
+                    {get_or_create_global_str(std::string(tv.name),
+                                              ".wkname")});
+        }
         // Compile the default-method body as a closure. analyze_fn_body
         // has already populated func_info_[&m] via visit_for_frees.
         Owned fn_val = compile_fn_common(

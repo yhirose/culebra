@@ -1822,6 +1822,22 @@ let wkprop = [
   # instance own-slot binds in a ctor stay checked
   'try { class Wc { new() { self.drop = 42 } }; Wc.new(); 0 } catch e { e.kind }',
   'try { class Wi { new() { self.iter = 1 } }; Wi.new(); 0 } catch e { e.kind }',
+  # trait defaults reach every conforming instance without passing
+  # `initialize`, so the contract is enforced where they are declared
+  'try { trait Wta { tag() -> Long  next(x) { x } }; 0 } catch e { e.kind }',
+  'try { trait Wtb { tag() -> Long  drop(a) { a } }; 0 } catch e { e.kind }',
+  'try { trait Wtc { tag() -> Long  iter(x) { x } }; 0 } catch e { e.kind }',
+  'try { trait Wtd { tag() -> Long  has_next(x) { x } }; 0 } catch e { e.kind }',
+  # a rest/kwargs/defaulted/destructured param is still a param
+  'try { trait Wte { tag() -> Long  next(*args) { 1 } }; 0 } catch e { e.kind }',
+  'try { trait Wtf { tag() -> Long  next(**kw) { 1 } }; 0 } catch e { e.kind }',
+  'try { trait Wtg { tag() -> Long  next(x = 1) { x } }; 0 } catch e { e.kind }',
+  'try { trait Wth { tag() -> Long  next([a, b]) { a } }; 0 } catch e { e.kind }',
+  'try { trait Wti { tag() -> Long  next(*, k = 1) { 1 } }; 0 } catch e { e.kind }',
+  # 0-arg default, non-well-known name, and body-less requirement stay legal
+  'trait Wtj { current() -> Long  next() { self.current() + 1 } }; class Wtk { new() {} current() { 41 } }; Wtk.new().next()',
+  'try { trait Wtl { tag() -> Long  step(x) { x } }; 1 } catch e { e.kind }',
+  'try { trait Wtm { next(x) }; 1 } catch e { e.kind }',
 ]
 for c in wkprop {
   case("wkprop|" + c, c)

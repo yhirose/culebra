@@ -3277,9 +3277,12 @@ JIT ではスコープ離脱で解決します（インタープリタは次の�
 `Function` であること）も両バックエンドで代入時に強制されます。対象は
 すべての書き込み面: リテラルプロパティ、計算添字キー（`o[k] = v`）、
 native ビルダー（`JSON.parse` 等）、channel 転送の受信側で再構築される
-値、そして class 宣言（method テンプレートが well-known 名を非適合な
+値、class 宣言（method テンプレートが well-known 名を非適合な
 関数 — arity 違い、または overload セット — に束縛する class は宣言
-実行時に `DropContractError`）。対象スロットが immutable の場合は
+実行時に `DropContractError`）、そして trait のデフォルト実装（適合
+する全インスタンスに届くため、`trait` 宣言の位置で検査されます）。
+body を持たない trait メソッドは要求を宣言するだけで値を束縛しないので
+検査対象外です。対象スロットが immutable の場合は
 契約検査より `ImmutableError` が優先され、検査に失敗しても旧値は
 そのまま残ります。`static` メンバーは名前空間であってインスタンス
 プロトコルの一部ではありません: `drop` という名前の static（arity

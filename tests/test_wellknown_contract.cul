@@ -95,4 +95,32 @@ roundtrip6()
 assert_eq(nrx6.recv(), "dropped")
 assert_eq(nrx6.recv(), "dropped")
 
+# --- (7) trait defaults enforce the contract at declaration time ---
+# A default impl reaches every conforming instance without passing
+# `initialize`, so it is checked where it is declared.
+let r7 = try { trait T7a { tag() -> Long  next(x) { x } }; nil } catch e { e }
+assert_eq(r7.kind, 'DropContractError')
+assert_eq(r7.message, "type error: 'next' must be a Function taking no arguments.")
+
+# a rest param is a param: this mirrors the interp's `params->empty()`
+let r7b = try { trait T7b { tag() -> Long  drop(*args) { 1 } }; nil } catch e { e }
+assert_eq(r7b.kind, 'DropContractError')
+let r7c = try { trait T7c { tag() -> Long  iter(**kw) { 1 } }; nil } catch e { e }
+assert_eq(r7c.kind, 'DropContractError')
+
+# a 0-arg default on a well-known name stays legal and still dispatches
+trait Counter7 {
+  current() -> Long
+  next() { self.current() + 1 }
+}
+class Z7 {
+  new() {}
+  current() { 41 }
+}
+assert_eq(Z7.new().next(), 42)
+
+# a body-less declaration states a requirement; it binds no value
+let r7d = try { trait Req7 { next(x) }; 'ok' } catch e { e.kind }
+assert_eq(r7d, 'ok')
+
 IO.inspect('test_wellknown_contract OK')
