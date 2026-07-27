@@ -170,6 +170,7 @@ Canvas.run(8, 8, fn () {
   for y in 0..8 { for x in 0..8 { if Canvas.get_pixel(x, y) == RED { lit = lit + 1 } } }
   assert_eq(lit > 0, true)
 
+
   false                                        // stop after one frame
 })
 
@@ -197,6 +198,36 @@ Canvas.init(5, 3)
 assert_eq(Canvas.width(), 5)
 assert_eq(Canvas.height(), 3)
 assert_eq(Canvas.get_pixel(0, 0), 0)          // a fresh buffer is transparent
+
+// Text scale: each font pixel becomes a scale x scale block and the advance
+// follows (8 * scale px); a non-positive scale draws nothing.
+Canvas.init(16, 16)
+Canvas.clear(0)
+Canvas.text("1", 0, 0, RED)
+mut lit1 = []
+for y in 0..8 { for x in 0..8 {
+  if Canvas.get_pixel(x, y) == RED { lit1.push([x, y]) }
+} }
+Canvas.clear(0)
+Canvas.text("1", 0, 0, RED, scale: 2)
+mut blocks_ok = true
+mut lit2 = 0
+for y in 0..16 { for x in 0..16 {
+  if Canvas.get_pixel(x, y) == RED { lit2 = lit2 + 1 }
+} }
+for p in lit1 {
+  for d in [[0, 0], [1, 0], [0, 1], [1, 1]] {
+    if Canvas.get_pixel(p[0] * 2 + d[0], p[1] * 2 + d[1]) != RED { blocks_ok = false }
+  }
+}
+assert_eq(blocks_ok, true)                    // every 1x pixel became a 2x2 block
+assert_eq(lit2, lit1.size() * 4)              // and nothing else lit
+assert_eq(Canvas.text_width("AB", scale: 2), 32)
+Canvas.clear(0)
+Canvas.text("1", 0, 0, RED, scale: 0)
+mut lit0 = 0
+for y in 0..16 { for x in 0..16 { if Canvas.get_pixel(x, y) == RED { lit0 = lit0 + 1 } } }
+assert_eq(lit0, 0)
 
 // Input edge detector (headless: buttons read 0, so nothing is pressed).
 let inp = Canvas.Input.new()

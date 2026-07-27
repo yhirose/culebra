@@ -399,21 +399,21 @@ let _canvas_module = fn () {
   # than one per lit pixel (a 42-character HUD line went 5.1 ms -> 0.2 ms).
   let _font_id = _Canvas.font_load(_font_bytes)
 
-  # Draw `s` at (x, y) in `color`, left to right (8px per glyph). Characters
-  # outside the printable range are skipped (advance still applies), so layout
-  # stays stable.
-  let text = fn (s, x, y, color) {
+  # Draw `s` at (x, y) in `color`, left to right (8 * scale px per glyph, each
+  # font pixel a scale x scale block). Characters outside the printable range
+  # are skipped (advance still applies), so layout stays stable.
+  let text = fn (s, x, y, color, scale = 1) {
     mut cx = x
     for ch in s.graphemes() {
       let code = ch.bytes().collect()[0]
       if code >= _font_first && code <= _font_last {
-        _Canvas.glyph(_font_id, code - _font_first, cx, y, color)
+        _Canvas.glyph(_font_id, code - _font_first, cx, y, color, scale)
       }
-      cx = cx + _char_w
+      cx = cx + _char_w * scale
     }
   }
   # Pixel width a string will occupy — for right-aligning / centring HUD text.
-  let text_width = fn (s) { s.graphemes().collect().size() * _char_w }
+  let text_width = fn (s, scale = 1) { s.graphemes().collect().size() * _char_w * scale }
 
   # --- input --------------------------------------------------------------
   # Button bitmask bits (also mapped by the Playground frontend). A/B are the

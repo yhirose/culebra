@@ -1936,18 +1936,21 @@ inline Value make_canvas_primitives_namespace() {
           "Long"sv)),
       false);
 
-  // _Canvas.glyph(font, index, x, y, rgba) -> Nil (one 8x8 glyph, clipped)
+  // _Canvas.glyph(font, index, x, y, rgba, scale) -> Nil (one 8x8 glyph,
+  // clipped, each font pixel a scale x scale block)
   ns.initialize("glyph",
       Value(FunctionValue({{"font", false, "Long"sv},
                            {"index", false, "Long"sv},
                            {"x", false, "Long|Float"sv},
                            {"y", false, "Long|Float"sv},
-                           {"rgba", false, "Long"sv}},
+                           {"rgba", false, "Long"sv},
+                           {"scale", false, "Long"sv}},
           [](std::shared_ptr<Environment> env) {
             _canvas_detail::glyph(
                 env->get("font").to_long(), env->get("index").to_long(),
                 canvas_coord_arg(env, "x"), canvas_coord_arg(env, "y"),
-                static_cast<uint32_t>(env->get("rgba").to_long()));
+                static_cast<uint32_t>(env->get("rgba").to_long()),
+                env->get("scale").to_long());
             return Value();
           })),
       false);

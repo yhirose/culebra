@@ -352,28 +352,28 @@ let font = _Canvas.font_load([0, 0, 0, 0, 0, 0, 0, 0,
                               127, 255, 255, 255, 255, 255, 255, 255])
 _Canvas.init(10, 8)
 _Canvas.clear(CLEAR)
-_Canvas.glyph(font, 0, 0, 0, BLUE)
-_Canvas.glyph(font, 1, 8, 0, GREEN)
+_Canvas.glyph(font, 0, 0, 0, BLUE, 1)
+_Canvas.glyph(font, 1, 8, 0, GREEN, 1)
 assert_eq(dump(), "########o /########  /########  /########  /" +
                   "########  /########  /########  /########  ")
 // Clipped at every edge, and the coordinates take Floats like the rest.
 _Canvas.clear(CLEAR)
-_Canvas.glyph(font, 0, -6, -6, BLUE)
-_Canvas.glyph(font, 0, 8.9, 6.9, BLUE)
+_Canvas.glyph(font, 0, -6, -6, BLUE, 1)
+_Canvas.glyph(font, 0, 8.9, 6.9, BLUE, 1)
 assert_eq(dump(), "##        /##        /          /          /" +
                   "          /          /        ##/        ##")
 // An unknown handle, a negative index and an index past the table all draw
 // nothing rather than reading out of bounds.
 _Canvas.clear(RED)
-_Canvas.glyph(999, 0, 0, 0, BLUE)
-_Canvas.glyph(font, -1, 0, 0, BLUE)
-_Canvas.glyph(font, 2, 0, 0, BLUE)
-_Canvas.glyph(_Canvas.font_load([]), 0, 0, 0, BLUE)
+_Canvas.glyph(999, 0, 0, 0, BLUE, 1)
+_Canvas.glyph(font, -1, 0, 0, BLUE, 1)
+_Canvas.glyph(font, 2, 0, 0, BLUE, 1)
+_Canvas.glyph(_Canvas.font_load([]), 0, 0, 0, BLUE, 1)
 // Indices where `index * 8` wraps a 64-bit product: a bound computed from that
 // product would let them through and read off the front of the table.
-_Canvas.glyph(font, 2305843009213693951, 0, 0, BLUE)
-_Canvas.glyph(font, 2305843009213693952, 0, 0, BLUE)
-_Canvas.glyph(font, 9223372036854775807, 0, 0, BLUE)
+_Canvas.glyph(font, 2305843009213693951, 0, 0, BLUE, 1)
+_Canvas.glyph(font, 2305843009213693952, 0, 0, BLUE, 1)
+_Canvas.glyph(font, 9223372036854775807, 0, 0, BLUE, 1)
 assert_eq(_Canvas.get_pixel(0, 0), RED)
 
 _Canvas.init(4, 4)

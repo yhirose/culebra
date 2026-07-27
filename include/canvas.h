@@ -364,11 +364,14 @@ inline int64_t font_load(const uint8_t* rows, int64_t n) {
   return static_cast<int64_t>(_fonts().size() - 1);
 }
 
-// Draw glyph `index` of font `id` at (x, y), clipped. A ZERO bit is a lit
-// pixel — the WASM-4 runtime font's convention, which is the font the Canvas
-// preamble ships. An unknown handle or an index past the table draws nothing,
-// so a bad glyph can't read out of bounds.
-inline void glyph(int64_t id, int64_t index, int x, int y, uint32_t rgba) {
+// Draw glyph `index` of font `id` at (x, y), clipped, each font pixel as a
+// scale x scale block. A ZERO bit is a lit pixel — the WASM-4 runtime font's
+// convention, which is the font the Canvas preamble ships. An unknown handle
+// or an index past the table draws nothing, so a bad glyph can't read out of
+// bounds; a non-positive scale draws nothing (the draw_scaled convention).
+inline void glyph(int64_t id, int64_t index, int x, int y, uint32_t rgba,
+                  int64_t scale) {
+  if (scale <= 0) return;
   if (id < 0 || static_cast<size_t>(id) >= _fonts().size()) return;
   const std::vector<uint8_t>& f = _fonts()[id];
   // Bound the index against the glyph COUNT, never against `index * 8`: that
@@ -377,10 +380,16 @@ inline void glyph(int64_t id, int64_t index, int x, int y, uint32_t rgba) {
   if (index < 0 || static_cast<size_t>(index) >= f.size() / 8) return;
   size_t base = static_cast<size_t>(index) * 8;
   Target t = resolve_target();
-  for (int ry = 0; ry < 8; ry++) {
-    uint8_t bits = f[base + static_cast<size_t>(ry)];
+  // Walk the clipped destination rows and read the bit row back, so a huge
+  // scale costs the rows visible, not 8 * scale iterations.
+  scale = std::min(scale, kGuard);
+  int64_t y0 = std::max<int64_t>(y, 0);
+  int64_t y1 = std::min<int64_t>(y + 8 * scale, t.h);
+  for (int64_t yy = y0; yy < y1; yy++) {
+    uint8_t bits = f[base + static_cast<size_t>((yy - y) / scale)];
     for (int rx = 0; rx < 8; rx++)
-      if (((bits >> (7 - rx)) & 1) == 0) put(t, x + rx, y + ry, rgba);
+      if (((bits >> (7 - rx)) & 1) == 0)
+        span(t, yy, x + rx * scale, x + (rx + 1) * scale, rgba);
   }
 }
 

@@ -766,10 +766,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_font_load(
       bytes.data(), static_cast<int64_t>(bytes.size()));
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_glyph(
-    int64_t font, int64_t index, int64_t x, int64_t y, int64_t rgba) {
+    int64_t font, int64_t index, int64_t x, int64_t y, int64_t rgba,
+    int64_t scale) {
   culebra::_canvas_detail::glyph(font, index, static_cast<int>(x),
                                  static_cast<int>(y),
-                                 static_cast<uint32_t>(rgba));
+                                 static_cast<uint32_t>(rgba), scale);
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_sprite_load(
     JitArray* pixels, int64_t w, int64_t h) {
@@ -7745,7 +7746,7 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                    i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_font_load, i64, ptrTy);
   jit.module_->getOrInsertFunction(rt::canvas_glyph, vt, i64, i64, i64, i64,
-                                   i64);
+                                   i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_sprite_load, i64, ptrTy, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_sprite_from_png, i64,
                                    jit.builder_.getInt8Ty(), i64, i64, i64);
@@ -8875,7 +8876,7 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
     }
     if (method == "glyph")
       if (auto v = args({{"font"}, {"index"}, {"x", Coord}, {"y", Coord},
-                         {"rgba"}}))
+                         {"rgba"}, {"scale"}}))
         return call_void(rt::canvas_glyph, *v);
     if (method == "sprite_load" && a.size() == 3) {
       auto px = jit.compile(*a[0]);
