@@ -287,8 +287,23 @@ receiver ゲート、引数の形、シンボルが呼び出し位置を取る�
 ラップを指定します。オペレータの追加は「表 1 行 + runtime fn +
 interp ラムダ」で、runtime 側の上流転送は従来どおり
 `tools/check_iter_wiring.sh` がゲートします。receiver ディスパッチが
-特殊なもの（`iter`、`enumerate`、文字列ソース系）と eager/lazy 両対応
-の族（`map`、`reduce` など）は手書きのままです。
+特殊なもの（`iter`、`enumerate`、文字列ソース系）は手書きのままです。
+
+### eager/lazy 両対応メソッドの descriptor table
+
+Array と iterator プロトコル Object の両方を receiver に取るメソッドは
+2 つ目の表（`kDualMethods`）から emit されます。2 つの腕は receiver
+オペランド・runtime シンボル・結果のラップ方だけが違うので、1 行は
+シンボルと結果種別を腕ごとに持ちます（`flat_map` は eager 側が Array・
+lazy 側が新しい iterator、`find` は両腕とも out-param 経由）。行は
+inline fusion の emitter も腕ごとに指定できます。callback が literal
+lambda のときに使われ、`map` / `filter` は Array 側だけ fusion し
+（lazy 側は factory に本物の closure を渡す必要がある）、`for_each` は
+両腕とも fusion します。
+
+`reduce`（seed + out-param + fusion）、`join`（両腕で共有する型付き
+引数）、`sum` / `product` / `min` / `max`（Tensor という第 3 の receiver
+タグ）は固有の形が残るため手書きのままです。
 
 ### for-in カーソル
 

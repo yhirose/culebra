@@ -289,7 +289,23 @@ position, and the result wrapping. Adding an operator is one row plus
 the runtime fn and the interp lambda; `tools/check_iter_wiring.sh`
 still gates the runtime side's upstream forwarding. The
 receiver-dispatch specials (`iter`, `enumerate`, the string sources)
-and the dual eager/lazy family (`map`, `reduce`, ...) stay
+stay hand-written.
+
+### Dual eager/lazy method table
+
+Methods that serve both an Array and an iterator-protocol Object come
+from a second table (`kDualMethods`). The two arms differ only in the
+receiver operand, the runtime symbol, and how the result is wrapped, so
+a row carries a symbol and a result kind per arm — `flat_map` answers an
+Array eagerly and a new iterator lazily, `find` writes through
+out-params on both. A row may also name an inline-fusion emitter per
+arm, used when the callback is a literal lambda: `map` and `filter` fuse
+on the Array arm only (the lazy arm has to hand a real closure to its
+factory), while `for_each` fuses on both.
+
+`reduce` (a seed plus out-params plus fusion), `join` (a typed argument
+shared by both arms) and `sum`/`product`/`min`/`max` (a third receiver
+tag for Tensor) still carry enough of their own shape to stay
 hand-written.
 
 ### for-in cursor

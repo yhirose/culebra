@@ -1552,6 +1552,33 @@ struct JIT {
                                       llvm::Value* ho_line,
                                       llvm::Value* ho_col);
 
+  // One row per method that serves BOTH an Array (eager) and an
+  // iterator-protocol Object (lazy) receiver. The two arms differ only in
+  // the receiver operand, the runtime symbol, and how the result is
+  // wrapped; everything else — callback ownership, the call position, the
+  // receiver-resolution error — is shared. Consumed by the table emitter
+  // inside compile_builtin_method.
+  struct DualMethodDesc {
+    enum class Args : uint8_t { None, Callback };
+    // How an arm's return value becomes a %Value. Object covers both a
+    // lazy iterator and a dict (group_by); OutParam means the arm writes
+    // through {tag,data} allocas and its return value is ignored.
+    enum class Res : uint8_t { Array, Object, Set, Tuple, Bool, Value, Nil,
+                               OutParam };
+    using Fuse = llvm::Value* (JIT::*)(llvm::Value*, const peg::Ast&);
+    const char* name;
+    const char* arr_symbol;
+    const char* iter_symbol;
+    Args args;
+    Res arr_res;
+    Res iter_res;
+    // Inline-fusion emitters for a literal-lambda callback, per arm. Left
+    // null (the default) when that arm has no fusion path and always goes
+    // through the runtime helper.
+    Fuse arr_fuse = nullptr;
+    Fuse iter_fuse = nullptr;
+  };
+
   // Publish the current node's source position (current_line_/column_, which
   // PosGuard keeps pointing at the innermost compiling node — the method-call
   // node here, since arg compiles restore it) just before a fallible runtime
@@ -16107,6 +16134,152 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     return elMerge.finish(mergeBB).consume();
   };
 
+  // Dual eager/lazy methods whose emit is fully described by a row (see
+  // DualMethodDesc). Adding one = a row + the two runtime fns + the interp
+  // lambda. Methods that additionally carry an inline fusion path
+  // (map/filter/for_each/reduce), a typed argument (join), or a third
+  // receiver tag (sum/product/min/max) stay hand-written below.
+  using DA = DualMethodDesc::Args;
+  using DR = DualMethodDesc::Res;
+  static constexpr DualMethodDesc kDualMethods[] = {
+      // name        eager symbol           lazy symbol           args          eager result   lazy result
+      // A literal-lambda callback fuses into the loop instead of building a
+      // closure. map/filter fuse on the Array arm only — the lazy arm has to
+      // hand a real closure to its factory — so their closure is emitted
+      // inside that branch alone.
+      {"map",       rt::array_map,       rt::iter_map,       DA::Callback, DR::Array,    DR::Object,
+       &JIT::emit_inlined_array_map},
+      {"filter",    rt::array_filter,    rt::iter_filter,    DA::Callback, DR::Array,    DR::Object,
+       &JIT::emit_inlined_array_filter},
+      {"for_each",  rt::array_for_each,  rt::iter_for_each,  DA::Callback, DR::Nil,      DR::Nil,
+       &JIT::emit_inlined_array_for_each, &JIT::emit_inlined_iter_for_each},
+      {"any",       rt::array_any,       rt::iter_any,       DA::Callback, DR::Bool,     DR::Bool},
+      {"all",       rt::array_all,       rt::iter_all,       DA::Callback, DR::Bool,     DR::Bool},
+      // The winning ELEMENT comes back, so the arm returns a %Value directly.
+      {"min_by",    rt::array_min_by,    rt::iter_min_by,    DA::Callback, DR::Value,    DR::Value},
+      {"max_by",    rt::array_max_by,    rt::iter_max_by,    DA::Callback, DR::Value,    DR::Value},
+      {"group_by",  rt::array_group_by,  rt::iter_group_by,  DA::Callback, DR::Object,   DR::Object},
+      {"partition", rt::array_partition, rt::iter_partition, DA::Callback, DR::Tuple,    DR::Tuple},
+      // The eager arm answers a new Array; the lazy arm a new iterator.
+      {"flat_map",  rt::array_flat_map,  rt::iter_flat_map,  DA::Callback, DR::Array,    DR::Object},
+      // to_set is the only way to build a Set from a collection, so it
+      // serves both receivers too.
+      {"to_set",    rt::array_to_set,    rt::iter_to_set,    DA::None,     DR::Set,      DR::Set},
+      // find answers nil when nothing matches, so it loads through out-params.
+      {"find",      rt::array_find,      rt::iter_find,      DA::Callback, DR::OutParam, DR::OutParam},
+  };
+
+  // Declines (empty Owned) on an unknown name OR an arity mismatch, so
+  // those keep their existing error paths.
+  auto try_dual_table_method = [&]() -> Owned {
+    const DualMethodDesc* row = nullptr;
+    for (const auto& r : kDualMethods) {
+      if (method == r.name) {
+        row = &r;
+        break;
+      }
+    }
+    if (!row) return {};
+    if (argsAst.nodes.size() != (row->args == DA::None ? 0u : 1u)) return {};
+
+    // Both arms append the same tail: callback, call position, out-params.
+    auto arm = [&](const char* sym, DualMethodDesc::Res res,
+                   llvm::SmallVector<llvm::Value*, 8> args, llvm::Value* ft,
+                   llvm::Value* fd, llvm::Value* outTag,
+                   llvm::Value* outData) -> llvm::Value* {
+      if (ft) {
+        args.push_back(ft);
+        args.push_back(fd);
+      }
+      args.push_back(ho_line);
+      args.push_back(ho_col);
+      if (res == DR::OutParam) {
+        args.push_back(outTag);
+        args.push_back(outData);
+      }
+      auto callee = module_->getFunction(sym);
+      if (res == DR::Value) return emit_value_call(callee, args);
+      auto out = emit_call(callee, args);
+      switch (res) {
+        case DR::Array:  return make_array(out);
+        case DR::Object: return make_object(out);
+        case DR::Set:    return make_set(out);
+        case DR::Tuple:  return make_tuple(out);
+        case DR::Bool:
+          return make_bool(builder_.CreateICmpNE(out, builder_.getInt64(0)));
+        case DR::Nil:      return make_nil();  // for_each: no result
+        case DR::OutParam: return make_nil();  // ignored; result via out-params
+        case DR::Value: break;                 // returned above
+      }
+      return make_nil();  // unreachable
+    };
+
+    // Fused arm: skip the closure build entirely where a fusion emitter
+    // exists. An arm without one still needs a real closure, so it compiles
+    // the callback inside its own branch.
+    if (row->arr_fuse) {
+      const auto& cb_ast = *argsAst.nodes[0];
+      hof_cb = &cb_ast;
+      if (is_inlinable_lambda(cb_ast, /*expected_arity=*/1)) {
+        return own(dispatch_arr_iter(
+            row->name,
+            [&](llvm::Value* arrPtr) {
+              return (this->*row->arr_fuse)(arrPtr, cb_ast);
+            },
+            [&](llvm::Value* it, llvm::Value* id) {
+              // The inline loop borrows the iterator, like the runtime
+              // drivers; the dispatch hands no ref to release.
+              if (row->iter_fuse)
+                return (this->*row->iter_fuse)(make_value(it, id), cb_ast);
+              // Callee-consumes: the lazy factory captures the callback's +1.
+              auto fv = compile(cb_ast).consume();
+              return arm(row->iter_symbol, row->iter_res, {it, id},
+                         extract_tag(fv), extract_data(fv), nullptr, nullptr);
+            }));
+      }
+    }
+
+    llvm::Value* ft = nullptr;
+    llvm::Value* fd = nullptr;
+    if (row->args == DA::Callback) {
+      hof_cb = argsAst.nodes[0].get();
+      // Callee-consumes: the HOF runtime owns the callback's +1 from entry
+      // on every exit. Only one arm runs, so it is consumed exactly once;
+      // the receiver-error edge (no helper runs) releases it via hof_owned.
+      auto fv = compile(*argsAst.nodes[0]).consume();
+      ft = extract_tag(fv);
+      fd = extract_data(fv);
+      hof_owned.push_back(fv);
+    }
+    llvm::Value* outTag = nullptr;
+    llvm::Value* outData = nullptr;
+    if (row->arr_res == DR::OutParam) {
+      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                               fn->getEntryBlock().begin());
+      outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr,
+                                   std::string(row->name) + ".tag");
+      outData = entryB.CreateAlloca(builder_.getInt64Ty(), nullptr,
+                                    std::string(row->name) + ".data");
+    }
+    auto res = dispatch_arr_iter(
+        row->name,
+        [&](llvm::Value* arrPtr) {
+          return arm(row->arr_symbol, row->arr_res, {arrPtr}, ft, fd, outTag,
+                     outData);
+        },
+        [&](llvm::Value* it, llvm::Value* id) {
+          return arm(row->iter_symbol, row->iter_res, {it, id}, ft, fd, outTag,
+                     outData);
+        });
+    if (row->arr_res == DR::OutParam) {
+      auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
+      auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
+      return own(make_value(tagLoaded, dataLoaded));
+    }
+    return own(res);
+  };
+  if (auto r = try_dual_table_method(); r.borrow()) return r;
+
   if (method == "join" && argsAst.nodes.size() == 1) {
     // Array (eager) and Iterator (lazy) both join, so `xs.map(...).join(sep)`
     // works with no intermediate `.collect()`. sep is borrowed by both arms
@@ -16136,122 +16309,6 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
         });
     sep.drop();
     return own(res);
-  }
-
-  if (method == "map" && argsAst.nodes.size() == 1) {
-    const auto& cb_ast = *argsAst.nodes[0];
-    hof_cb = &cb_ast;
-    if (is_inlinable_lambda(cb_ast, /*expected_arity=*/1)) {
-      // Skip the closure construction entirely on the eager path; the
-      // iterator (lazy) path still needs a closure, so we only emit
-      // it inside that branch.
-      return own(dispatch_arr_iter(
-          "map",
-          [&](llvm::Value* arrPtr) {
-            return emit_inlined_array_map(arrPtr, cb_ast);
-          },
-          [&](llvm::Value* it, llvm::Value* id) {
-            // Callee-consumes: the lazy factory captures the callback's +1.
-            auto fv = compile(cb_ast).consume();
-            auto out = emit_call(module_->getFunction(rt::iter_map),
-                                 {it, id, extract_tag(fv),
-                                  extract_data(fv), ho_line, ho_col});
-            return make_object(out);
-          }));
-    }
-    // Callee-consumes: the HOF runtime owns the callback's +1 from entry on
-    // every exit (normal, reject, mid-iteration throw). Only one dispatch arm
-    // runs, so the +1 is consumed exactly once per runtime path; the
-    // receiver-error edge (no helper runs) releases it via hof_owned.
-    auto fv = compile(cb_ast).consume();
-    auto ft = extract_tag(fv);
-    auto fd = extract_data(fv);
-    hof_owned.push_back(fv);
-    return own(dispatch_arr_iter(
-        "map",
-        [&](llvm::Value* arrPtr) {
-          auto out = emit_call(
-              module_->getFunction(rt::array_map),
-              {arrPtr, ft, fd, ho_line, ho_col});
-          return make_array(out);
-        },
-        [&](llvm::Value* it, llvm::Value* id) {
-          auto out = emit_call(module_->getFunction(rt::iter_map),
-                               {it, id, ft, fd, ho_line, ho_col});
-          return make_object(out);
-        }));
-  }
-
-  if (method == "filter" && argsAst.nodes.size() == 1) {
-    const auto& cb_ast = *argsAst.nodes[0];
-    hof_cb = &cb_ast;
-    if (is_inlinable_lambda(cb_ast, /*expected_arity=*/1)) {
-      return own(dispatch_arr_iter(
-          "filter",
-          [&](llvm::Value* arrPtr) {
-            return emit_inlined_array_filter(arrPtr, cb_ast);
-          },
-          [&](llvm::Value* it, llvm::Value* id) {
-            // Callee-consumes: the lazy factory captures the callback's +1.
-            auto fv = compile(cb_ast).consume();
-            auto out = emit_call(module_->getFunction(rt::iter_filter),
-                                 {it, id, extract_tag(fv),
-                                  extract_data(fv), ho_line, ho_col});
-            return make_object(out);
-          }));
-    }
-    // Callee-consumes (see map above).
-    auto fv = compile(cb_ast).consume();
-    auto ft = extract_tag(fv);
-    auto fd = extract_data(fv);
-    hof_owned.push_back(fv);
-    return own(dispatch_arr_iter(
-        "filter",
-        [&](llvm::Value* arrPtr) {
-          auto out = emit_call(
-              module_->getFunction(rt::array_filter),
-              {arrPtr, ft, fd, ho_line, ho_col});
-          return make_array(out);
-        },
-        [&](llvm::Value* it, llvm::Value* id) {
-          auto out = emit_call(module_->getFunction(rt::iter_filter),
-                               {it, id, ft, fd, ho_line, ho_col});
-          return make_object(out);
-        }));
-  }
-
-  if (method == "for_each" && argsAst.nodes.size() == 1) {
-    const auto& cb_ast = *argsAst.nodes[0];
-    hof_cb = &cb_ast;
-    if (is_inlinable_lambda(cb_ast, /*expected_arity=*/1)) {
-      return own(dispatch_arr_iter(
-          "foreach",
-          [&](llvm::Value* arrPtr) {
-            return emit_inlined_array_for_each(arrPtr, cb_ast);
-          },
-          [&](llvm::Value* it, llvm::Value* id) {
-            // The inline loop borrows the iterator, like the runtime
-            // drivers; the dispatch hands no ref to release.
-            return emit_inlined_iter_for_each(make_value(it, id), cb_ast);
-          }));
-    }
-    // Callee-consumes (see map above).
-    auto fv = compile(cb_ast).consume();
-    auto ft = extract_tag(fv);
-    auto fd = extract_data(fv);
-    hof_owned.push_back(fv);
-    return own(dispatch_arr_iter(
-        "foreach",
-        [&](llvm::Value* arrPtr) {
-          emit_call(module_->getFunction(rt::array_for_each),
-                    {arrPtr, ft, fd, ho_line, ho_col});
-          return make_nil();
-        },
-        [&](llvm::Value* it, llvm::Value* id) {
-          emit_call(module_->getFunction(rt::iter_for_each),
-                    {it, id, ft, fd, ho_line, ho_col});
-          return make_nil();
-        }));
   }
 
   if (method == "reduce" && argsAst.nodes.size() == 2) {
@@ -16322,153 +16379,6 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
     llvm::Value* result = make_value(tagLoaded, dataLoaded);
     return own(result);
-  }
-
-  if (method == "find" && argsAst.nodes.size() == 1) {
-    hof_cb = argsAst.nodes[0].get();
-    // Scope the callback so its Owned dtor releases after dispatch but before
-    // the out-param loads — exactly where the hand-placed release stood.
-    llvm::Value* outTag;
-    llvm::Value* outData;
-    {
-      auto fv = compile(*argsAst.nodes[0]).consume();  // callee-consumes
-      auto ft = extract_tag(fv);
-      auto fd = extract_data(fv);
-      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
-                               fn->getEntryBlock().begin());
-      outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "find.tag");
-      outData = entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "find.data");
-      hof_owned.push_back(fv);
-      dispatch_arr_iter(
-          "find",
-          [&](llvm::Value* arrPtr) {
-            emit_call(module_->getFunction(rt::array_find),
-                      {arrPtr, ft, fd, ho_line, ho_col, outTag, outData});
-            return make_nil();
-          },
-          [&](llvm::Value* it, llvm::Value* id) {
-            emit_call(module_->getFunction(rt::iter_find),
-                      {it, id, ft, fd, ho_line, ho_col, outTag, outData});
-            return make_nil();
-          });
-    }
-    auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
-    auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
-    llvm::Value* result = make_value(tagLoaded, dataLoaded);
-    return own(result);
-  }
-
-  if ((method == "any" || method == "all") && argsAst.nodes.size() == 1) {
-    hof_cb = argsAst.nodes[0].get();
-    // Callee-consumes (see map above).
-    auto fv = compile(*argsAst.nodes[0]).consume();
-    auto ft = extract_tag(fv);
-    auto fd = extract_data(fv);
-    hof_owned.push_back(fv);
-    auto arr_rt = method == "any" ? rt::array_any : rt::array_all;
-    auto iter_rt = method == "any" ? rt::iter_any : rt::iter_all;
-    return own(dispatch_arr_iter(
-        method.c_str(),
-        [&](llvm::Value* arrPtr) {
-          auto r = emit_call(module_->getFunction(arr_rt),
-                             {arrPtr, ft, fd, ho_line, ho_col});
-          return make_bool(
-              builder_.CreateICmpNE(r, builder_.getInt64(0)));
-        },
-        [&](llvm::Value* it, llvm::Value* id) {
-          auto r = emit_call(module_->getFunction(iter_rt),
-                             {it, id, ft, fd, ho_line, ho_col});
-          return make_bool(
-              builder_.CreateICmpNE(r, builder_.getInt64(0)));
-        }));
-  }
-
-  // min_by / max_by — keyed aggregates over Array or Iterator. The callback
-  // supplies the ordering key; the winning ELEMENT comes back, so the result
-  // is a %Value, not an i64.
-  if ((method == "min_by" || method == "max_by") &&
-      argsAst.nodes.size() == 1) {
-    hof_cb = argsAst.nodes[0].get();
-    // Callee-consumes (see map above).
-    auto fv = compile(*argsAst.nodes[0]).consume();
-    auto ft = extract_tag(fv);
-    auto fd = extract_data(fv);
-    hof_owned.push_back(fv);
-    auto arr_rt = method == "min_by" ? rt::array_min_by : rt::array_max_by;
-    auto iter_rt = method == "min_by" ? rt::iter_min_by : rt::iter_max_by;
-    return own(dispatch_arr_iter(
-        method.c_str(),
-        [&](llvm::Value* arrPtr) {
-          return emit_value_call(module_->getFunction(arr_rt),
-                                 {arrPtr, ft, fd, ho_line, ho_col});
-        },
-        [&](llvm::Value* it, llvm::Value* id) {
-          return emit_value_call(module_->getFunction(iter_rt),
-                                 {it, id, ft, fd, ho_line, ho_col});
-        }));
-  }
-
-  // to_set / group_by / partition — one-pass collectors over Array or
-  // Iterator. to_set is the only way to build a Set from a collection (set
-  // literals are the only other spelling), so it serves both receivers too.
-  if (method == "to_set" && argsAst.nodes.size() == 0) {
-    return own(dispatch_arr_iter(
-        "to_set",
-        [&](llvm::Value* arrPtr) {
-          return make_set(emit_call(module_->getFunction(rt::array_to_set),
-                                    {arrPtr, ho_line, ho_col}));
-        },
-        [&](llvm::Value* it, llvm::Value* id) {
-          return make_set(emit_call(module_->getFunction(rt::iter_to_set),
-                                    {it, id, ho_line, ho_col}));
-        }));
-  }
-
-  if ((method == "group_by" || method == "partition") &&
-      argsAst.nodes.size() == 1) {
-    hof_cb = argsAst.nodes[0].get();
-    // Callee-consumes (see map above).
-    auto fv = compile(*argsAst.nodes[0]).consume();
-    auto ft = extract_tag(fv);
-    auto fd = extract_data(fv);
-    hof_owned.push_back(fv);
-    bool grouping = (method == "group_by");
-    auto arr_rt = grouping ? rt::array_group_by : rt::array_partition;
-    auto iter_rt = grouping ? rt::iter_group_by : rt::iter_partition;
-    return own(dispatch_arr_iter(
-        method.c_str(),
-        [&](llvm::Value* arrPtr) {
-          auto out = emit_call(module_->getFunction(arr_rt),
-                               {arrPtr, ft, fd, ho_line, ho_col});
-          return grouping ? make_object(out) : make_tuple(out);
-        },
-        [&](llvm::Value* it, llvm::Value* id) {
-          auto out = emit_call(module_->getFunction(iter_rt),
-                               {it, id, ft, fd, ho_line, ho_col});
-          return grouping ? make_object(out) : make_tuple(out);
-        }));
-  }
-
-  if (method == "flat_map" && argsAst.nodes.size() == 1) {
-    hof_cb = argsAst.nodes[0].get();
-    // Callee-consumes (see map above).
-    auto fv = compile(*argsAst.nodes[0]).consume();
-    auto ft = extract_tag(fv);
-    auto fd = extract_data(fv);
-    hof_owned.push_back(fv);
-    return own(dispatch_arr_iter(
-        "flat_map",
-        [&](llvm::Value* arrPtr) {
-          auto out = emit_call(
-              module_->getFunction(rt::array_flat_map),
-              {arrPtr, ft, fd, ho_line, ho_col});
-          return make_array(out);
-        },
-        [&](llvm::Value* it, llvm::Value* id) {
-          auto out = emit_call(module_->getFunction(rt::iter_flat_map),
-                               {it, id, ft, fd, ho_line, ho_col});
-          return make_object(out);
-        }));
   }
 
   // sum / product / min / max — numeric aggregates, same shape for Array
