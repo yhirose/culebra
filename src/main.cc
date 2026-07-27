@@ -189,6 +189,15 @@ static std::string shq(std::string_view s) {
 #endif
 }
 
+// Where a std::system() command's chatter goes when it isn't wanted. Same split
+// as shq: cmd.exe has no /dev/null, and redirecting there makes the command
+// fail on a missing directory instead of going quiet.
+#ifdef _WIN32
+constexpr std::string_view kNullDevice = "NUL";
+#else
+constexpr std::string_view kNullDevice = "/dev/null";
+#endif
+
 // Content-fingerprint of the embedded runtime archives, used as a
 // cache-directory name so a freshly-built culebra picks up its own
 // runtime instead of an older one left behind on disk. FNV-1a 64-bit,
@@ -1119,7 +1128,7 @@ int run_wrap(int argc, const char** argv) {
       "-DCULEBRA_LTO={} -DCULEBRA_WRAP_SOURCES={} -DCULEBRA_WRAP_LINK={}{}",
       shq(src_dir), shq(build_dir.string()), opts.lto ? "ON" : "OFF",
       shq(wrap_sources), shq(opts.link_flags),
-      verbose ? "" : " > /dev/null");
+      verbose ? "" : std::format(" > {}", kNullDevice));
   if (verbose) std::println(stderr, "culebra wrap: configure: {}", configure);
   if (std::system(configure.c_str()) != 0) {
     std::println(stderr, "culebra wrap: cmake configure failed");
@@ -1128,7 +1137,7 @@ int run_wrap(int argc, const char** argv) {
   auto build = std::format("cmake --build {} --target culebra -j{}{}",
                            shq(build_dir.string()),
                            std::thread::hardware_concurrency(),
-                           verbose ? "" : " > /dev/null");
+                           verbose ? "" : std::format(" > {}", kNullDevice));
   if (verbose) std::println(stderr, "culebra wrap: build: {}", build);
   if (std::system(build.c_str()) != 0) {
     std::println(stderr, "culebra wrap: build failed (re-run with "
