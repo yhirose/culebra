@@ -1,0 +1,198 @@
+# Regenerate the signature index inside docs/llm.md and docs/llm.ja.md from
+# the reference docs, so the context pack can never drift from them.
+#
+#   just gen-llm-context           rewrite the generated section
+#   just check-llm-context         exit 1 if it is stale (CI gate)
+#
+# Signatures live in three markdown shapes in docs/:
+#   heading   ### `Math.abs(x) -> Long`
+#   table     | `Hash.sha256(s) -> String` | desc |
+#             | `Regex.escape(s)`          | `String` — desc |   (return in cell 2)
+#   bullet    * **`assert_eq(a, b) -> Nil`** — desc
+
+BEGIN_MARK = '<!-- BEGIN GENERATED: signature index -->'
+END_MARK = '<!-- END GENERATED -->'
+
+HEADING = re'^#{3,5} (.+)$'
+TABLE = re'^\|\s*`([^`]+)`([^`|]*)\|(.*)$'
+BULLET = re'^\s*[*-]\s+\*\*`([^`]+)`\*\*'
+BARE = re'^`[A-Za-z_][A-Za-z0-9_.]*`$'
+CELL_RET = re'^\s*`([^`]+)`\s*(—|-|$)'
+# A signature is a (possibly dotted, possibly receiver-less) name applied to
+# arguments, or a bare constant. Reference tables also hold worked idioms
+# (`let f = File.open(p, m); defer { f.close() }`) — those are not signatures,
+# and their `;` would collide with the separator this index joins on.
+SIG_SHAPE = re'^\.?[A-Za-z_][A-Za-z0-9_.]*(\(|$)'
+SPAN = re'`[^`]+`'
+NS_HEADING = re'^## \d+\. (.+)$'
+
+# The six built-in-type groups live in language.md; every other group is one
+# stdlib.md namespace. Only the Set anchor differs between en and ja — the
+# rest are numbered headings, which translation preserves.
+fn builtin_groups(ja) {
+  [
+    {title: ja ? '文字列メソッド' : 'String methods', from: '### 18.1 ', to: '### 18.2 '},
+    {title: ja ? '配列メソッド' : 'Array methods', from: '### 18.2 ', to: '### 18.3 '},
+    {title: ja ? 'オブジェクトメソッド' : 'Object methods', from: '### 18.3 ', to: '### 18.4 '},
+    {title: ja ? 'セットのメソッド' : 'Set methods', from: ja ? '## 集合' : '## Sets', to: '## 11. '},
+    {title: ja ? 'イテレータメソッド' : 'Iterator methods', from: '### 18.5 ', to: '## 19. '},
+    {title: ja ? 'コア組み込み関数' : 'Core built-ins', from: '## 19. ', to: '## 20. '},
+  ]
+}
+
+fn strip_ticks(t) { t.slice(1, t.size() - 1).to_string() }
+
+fn unescape(s) { s.replace('\|', '|').to_string() }
+
+fn ret_of(cell) {
+  m = CELL_RET.find(cell)
+  if m == nil {
+    nil
+  } else {
+    r = m[1]
+    r.contains('(') || r.size() > 40 ? nil : r.to_string()
+  }
+}
+
+# Every signature in `lines`, in source order, with duplicates dropped.
+fn harvest(lines) {
+  mut seen = {}
+  mut out = []
+  for line in lines {
+    mut cands = []
+    hm = HEADING.find(line)
+    if hm != nil {
+      title = hm[1].trim()
+      # one heading may carry several: ### `Math.sin(x)`, `Math.cos(x)`
+      for span in SPAN.find_all_str(title) {
+        inner = strip_ticks(span)
+        if inner.contains('(') { cands.push(unescape(inner)) }
+      }
+      # a bare `Math.pi` heading is a constant, worth listing
+      if cands.size() == 0 && BARE.test(title) { cands.push(strip_ticks(title)) }
+    } else {
+      tm = TABLE.find(line)
+      if tm != nil && tm[1].contains('(') {
+        mut sig = unescape(tm[1])
+        if !sig.contains('->') {
+          r = ret_of(tm[3])
+          if r != nil { sig = sig + ' -> ' + r }
+        }
+        # a trailing `*(mutating)*` on the same cell is worth carrying over
+        note = tm[2].replace('*', '').trim()
+        if note.size() > 0 && note.size() <= 20 { sig = sig + ' ' + note.to_string() }
+        cands.push(sig)
+      } else {
+        bm = BULLET.find(line)
+        if bm != nil && bm[1].contains('(') { cands.push(unescape(bm[1])) }
+      }
+    }
+    for sig in cands {
+      if SIG_SHAPE.test(sig) && !sig.contains('…') && !seen.has(sig) {
+        seen[sig] = true
+        out.push(sig)
+      }
+    }
+  }
+  out
+}
+
+fn slice_lines(lines, from, to) {
+  mut out = []
+  mut inside = false
+  for line in lines {
+    if inside {
+      if line.starts_with(to) { break }
+      out.push(line)
+    } else if line.starts_with(from) {
+      inside = true
+    }
+  }
+  out
+}
+
+fn read_lines(path) {
+  mut out = []
+  for raw in FS.read(path).split("\n") { out.push(raw.to_string()) }
+  out
+}
+
+# One group per `## N. Name` section of stdlib.md.
+fn namespace_groups(lines) {
+  mut out = []
+  mut title = nil
+  mut buf = []
+  for line in lines {
+    if line.starts_with('## ') {
+      if title != nil { out.push({title: title, sigs: harvest(buf)}) }
+      m = NS_HEADING.find(line)
+      title = m == nil ? nil : m[1].replace('`', '').trim().to_string()
+      buf = []
+    } else if title != nil {
+      buf.push(line)
+    }
+  }
+  if title != nil { out.push({title: title, sigs: harvest(buf)}) }
+  out
+}
+
+fn collect(ja) {
+  suffix = ja ? '.ja' : ''
+  lang = read_lines("docs/language{suffix}.md")
+  mut out = []
+  for g in builtin_groups(ja) {
+    out.push({title: g.title, sigs: harvest(slice_lines(lang, g.from, g.to))})
+  }
+  for g in namespace_groups(read_lines("docs/stdlib{suffix}.md")) { out.push(g) }
+  out
+}
+
+fn render(groups) {
+  mut out = []
+  for g in groups {
+    if g.sigs.size() > 0 { out.push('**' + g.title + '** — ' + g.sigs.join('; ')) }
+  }
+  out.join("\n\n")
+}
+
+fn splice(text, body) {
+  mut out = []
+  mut state = 'before'
+  for raw in text.split("\n") {
+    line = raw.to_string()
+    if state == 'before' {
+      out.push(line)
+      if line.starts_with(BEGIN_MARK) { out.push(''); out.push(body); out.push(''); state = 'inside' }
+    } else if state == 'inside' {
+      if line.starts_with(END_MARK) { out.push(line); state = 'after' }
+    } else {
+      out.push(line)
+    }
+  }
+  if state != 'after' { throw "missing generated-section markers" }
+  out.join("\n")
+}
+
+check = Sys.argv.contains('--check')
+mut stale = []
+
+for ja in [false, true] {
+  path = ja ? 'docs/llm.ja.md' : 'docs/llm.md'
+  groups = collect(ja)
+  want = splice(FS.read(path), render(groups))
+  total = groups.iter().map(|g| g.sigs.size()).sum()
+  if want == FS.read(path) {
+    println("{path}: up to date ({total} signatures)")
+  } else if check {
+    stale.push(path)
+    println("{path}: STALE")
+  } else {
+    FS.write(path, want)
+    println("{path}: regenerated ({total} signatures)")
+  }
+}
+
+if stale.size() > 0 {
+  IO.eprintln("run `just gen-llm-context` to refresh: {stale.join(', ')}")
+  Sys.exit(1)
+}

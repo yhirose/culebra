@@ -191,6 +191,10 @@ Documentation
   / [日本語](docs/deployment.ja.md)
 * Implementation internals: [`docs/internals.md`](docs/internals.md)
   / [日本語](docs/internals.ja.md)
+* Context pack — the syntax, the carried-over mistakes and every stdlib
+  signature condensed into one file to paste into an LLM prompt:
+  [`docs/llm.md`](docs/llm.md)
+  / [日本語](docs/llm.ja.md)
 
 Building from source and running the tests: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 

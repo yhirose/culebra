@@ -180,6 +180,11 @@ jobs:
       - name: Doctest (docs examples, interp)
         run: ./build/culebra test --doc tests/doctest docs
 
+      # docs/llm.md's signature index is generated from language.md and
+      # stdlib.md; fail if a reference edit landed without regenerating it.
+      - name: Check the generated signature index (docs/llm.md)
+        run: ./build/culebra misc/gen_llm_context.cul --check
+
       - name: Smoke test microgpt (5 steps, both backends)
         run: just smoke-microgpt
 
