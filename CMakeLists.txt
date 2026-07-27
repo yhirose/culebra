@@ -462,6 +462,15 @@ if(_culebra_enable_lto)
   set_target_properties(culebra PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
 
+# Discard local symbols (the same -Wl,-x the AOT link has used since f90a3cc):
+# __LINKEDIT 16.8 -> 4.6 MB, binary 112.7 -> 101.0 MB on macOS arm64. The ORC
+# JIT resolves its culebra_runtime_* helpers as *global* symbols, so those
+# survive. Sanitizer builds keep the locals for readable stack traces; Windows
+# is excluded because its PE export table is tuned separately below.
+if(NOT WIN32 AND NOT CMAKE_CXX_FLAGS MATCHES "sanitize")
+  target_link_options(culebra PRIVATE -Wl,-x)
+endif()
+
 # Out-of-tree binding declarations (`culebra wrap` drives these): each
 # TU is a wrap.h declaration whose static initializer registers a
 # wrapped C++ class. The TUs compile into the main binary (the linker
