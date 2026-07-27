@@ -166,7 +166,9 @@ struct Options {
   int opt_level = 2;
   bool opt_level_explicit = false;
 #endif
-  vector<string> script_path_list;
+  // The entry script, if one was given. At most one: the first non-flag
+  // argument is the script and everything after it is its argv.
+  optional<string> script_path;
   vector<string> script_argv;
   string error;  // non-empty: a malformed flag; main reports it and exits
 };
@@ -1190,12 +1192,12 @@ Options parse_command_line(int argc, const char** argv) {
       }
 #endif
     }
-    options.script_path_list.push_back(std::move(arg));
+    options.script_path = std::move(arg);
     seen_script = true;
   }
 
   if (!options.shell) {
-    options.shell = options.script_path_list.empty();
+    options.shell = !options.script_path.has_value();
   }
 
   return options;
@@ -1210,69 +1212,59 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
   // Cooperative Ctrl+C: install the SIGINT handler and point this thread's
   // Runtime at the global flag. The interpreter's statement poll and the JIT's
   // loop safepoint observe it and throw a catchable `Interrupted`.
-  if (!options.script_path_list.empty()) {
-    culebra::install_sigint_handler();
-    // Base for `Embed.dir(...)`'s disk fallback (dev): the entry script's
-    // directory, so embedded-asset paths resolve the same way the AOT build
-    // walks them (relative to the source), regardless of the cwd.
-    std::error_code ec;
-    auto entry = std::filesystem::absolute(options.script_path_list.front(), ec);
-    culebra::main_script_dir() =
-        ec ? std::string() : entry.parent_path().string();
-  }
+  if (options.script_path) culebra::install_sigint_handler();
 
-  for (auto path : options.script_path_list) {
-    auto user_src = read_file(path.c_str());
-    if (!user_src) {
-      std::println(stderr, "can't open '{}'.", path);
-      return false;
-    }
-    startup_profile::mark("read_file");
+  if (!options.script_path) return true;
+  const string& path = *options.script_path;
 
-    // Walk the dependency graph via ModuleLoader. The same vector feeds both
-    // backends — JIT bundles every module into one IR, interp evaluates them
-    // sequentially — but only the JIT path needs the preamble spliced in.
-    // --ast never reaches either, and the splice would make the dump differ by
-    // backend for one program.
-    bool splice = false;
-#ifdef CULEBRA_JIT_ENABLED
-    splice = options.jit && !options.print_ast;
-#endif
-    std::vector<culebra::LoadedModule> modules;
-    if (!load_entry_program(path, *user_src, splice, modules)) return false;
-    startup_profile::mark("ModuleLoader::load_program (parse)");
-
-    // "Print the parsed AST instead of running it" — dump and stop.
-    if (options.print_ast) {
-      for (const auto& m : modules) {
-        cout << "// " << m.abs_path.string() << "\n";
-        cout << peg::ast_to_s(m.ast);
-      }
-      continue;
-    }
-
-#ifdef CULEBRA_JIT_ENABLED
-    if (options.jit) {
-      culebra::_culebra_sys_argv_holder() = options.script_argv;
-      culebra::JIT::run_modules(modules, options.emit_llvm, options.debug,
-                                 options.opt_level, options.jit_faststart);
-      continue;
-    }
-#endif
-
-    culebra::Value val;
-    vector<string> run_msgs;
-    auto dbg =
-        options.debug ? culebra::CommandLineDebugger() : culebra::Debugger();
-    if (culebra::interpret_modules(modules, env, val, run_msgs, dbg)) {
-      startup_profile::mark("interpret_modules");
-      continue;
-    }
-    for (const auto& msg : run_msgs) cerr << msg << endl;
+  auto user_src = read_file(path.c_str());
+  if (!user_src) {
+    std::println(stderr, "can't open '{}'.", path);
     return false;
   }
+  startup_profile::mark("read_file");
 
-  return true;
+  // Walk the dependency graph via ModuleLoader. The same vector feeds both
+  // backends — JIT bundles every module into one IR, interp evaluates them
+  // sequentially — but only the JIT path needs the preamble spliced in.
+  // --ast never reaches either, and the splice would make the dump differ by
+  // backend for one program.
+  bool splice = false;
+#ifdef CULEBRA_JIT_ENABLED
+  splice = options.jit && !options.print_ast;
+#endif
+  std::vector<culebra::LoadedModule> modules;
+  if (!load_entry_program(path, *user_src, splice, modules)) return false;
+  startup_profile::mark("ModuleLoader::load_program (parse)");
+
+  // "Print the parsed AST instead of running it" — dump and stop.
+  if (options.print_ast) {
+    for (const auto& m : modules) {
+      cout << "// " << m.abs_path.string() << "\n";
+      cout << peg::ast_to_s(m.ast);
+    }
+    return true;
+  }
+
+#ifdef CULEBRA_JIT_ENABLED
+  if (options.jit) {
+    culebra::_culebra_sys_argv_holder() = options.script_argv;
+    culebra::JIT::run_modules(modules, options.emit_llvm, options.debug,
+                               options.opt_level, options.jit_faststart);
+    return true;
+  }
+#endif
+
+  culebra::Value val;
+  vector<string> run_msgs;
+  auto dbg =
+      options.debug ? culebra::CommandLineDebugger() : culebra::Debugger();
+  if (culebra::interpret_modules(modules, env, val, run_msgs, dbg)) {
+    startup_profile::mark("interpret_modules");
+    return true;
+  }
+  for (const auto& msg : run_msgs) cerr << msg << endl;
+  return false;
 }
 
 int run_test(int argc, const char** argv) {
@@ -1793,13 +1785,19 @@ int main(int argc, const char** argv) {
   // `Sys.script` — the entry script's absolute path, baked into the Sys
   // namespace when it is built (below). Set before `environment()` so the
   // interpreter sees it; the JIT reads the same holder when it materializes
-  // Sys. Left empty (→ nil) for the REPL and stdin.
-  if (!options.script_path_list.empty()) {
+  // Sys. Its directory is the base for `Embed.dir(...)`'s disk fallback (dev),
+  // so embedded-asset paths resolve the way the AOT build walks them —
+  // relative to the source — whatever the cwd is. Both are left empty (→ nil)
+  // for the REPL and stdin.
+  culebra::main_script_path().clear();
+  culebra::main_script_dir().clear();
+  if (options.script_path) {
     std::error_code ec;
-    auto abs = std::filesystem::absolute(options.script_path_list.front(), ec);
-    culebra::main_script_path() = ec ? std::string() : abs.string();
-  } else {
-    culebra::main_script_path().clear();
+    auto abs = std::filesystem::absolute(*options.script_path, ec);
+    if (!ec) {
+      culebra::main_script_path() = abs.string();
+      culebra::main_script_dir() = abs.parent_path().string();
+    }
   }
 
   try {
