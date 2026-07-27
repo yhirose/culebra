@@ -698,22 +698,33 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_get_pixel(
       culebra::_canvas_detail::get_pixel(static_cast<int>(x),
                                          static_cast<int>(y)));
 }
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_line(
+    int64_t x1, int64_t y1, int64_t x2, int64_t y2, int64_t rgba) {
+  culebra::_canvas_detail::line(x1, y1, x2, y2,
+                                static_cast<uint32_t>(rgba));
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_ellipse(
+    int64_t cx, int64_t cy, int64_t rx, int64_t ry, int64_t rgba,
+    int64_t fill) {
+  culebra::_canvas_detail::ellipse(cx, cy, rx, ry,
+                                   static_cast<uint32_t>(rgba), fill != 0);
+}
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_rect(
-    int64_t x, int64_t y, int64_t w, int64_t h, int64_t rgba) {
+    int64_t x, int64_t y, int64_t w, int64_t h, int64_t rgba, int64_t fill) {
   culebra::_canvas_detail::rect(static_cast<int>(x), static_cast<int>(y),
                                 static_cast<int>(w), static_cast<int>(h),
-                                static_cast<uint32_t>(rgba));
+                                static_cast<uint32_t>(rgba), fill != 0);
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_triangle(
     int64_t x1, int64_t y1, int64_t x2, int64_t y2, int64_t x3, int64_t y3,
-    int64_t rgba) {
+    int64_t rgba, int64_t fill) {
   culebra::_canvas_detail::triangle(x1, y1, x2, y2, x3, y3,
-                                    static_cast<uint32_t>(rgba));
+                                    static_cast<uint32_t>(rgba), fill != 0);
 }
 // The `points` elements carry the same Long|Float contract the scalar geometry
 // arguments do, so the tags are checked here rather than narrowed blindly.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_polygon(
-    JitArray* points, int64_t rgba, int64_t line, int64_t col) {
+    JitArray* points, int64_t rgba, int64_t fill, int64_t line, int64_t col) {
   std::vector<int64_t> pts;
   if (points) {
     pts.reserve(points->size);
@@ -734,7 +745,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_polygon(
   }
   culebra::_canvas_detail::polygon(pts.data(),
                                    static_cast<int64_t>(pts.size() / 2),
-                                   static_cast<uint32_t>(rgba));
+                                   static_cast<uint32_t>(rgba), fill != 0);
 }
 // A JitArray of Longs as a packed integer vector (null or empty -> empty), the
 // upload-once shape both Canvas table prims take. The shims around it are the
@@ -7722,11 +7733,16 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::canvas_clear, vt, i64);
   jit.module_->getOrInsertFunction(rt::canvas_set_pixel, vt, i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_get_pixel, i64, i64, i64);
-  jit.module_->getOrInsertFunction(rt::canvas_rect, vt, i64, i64, i64, i64, i64);
-  jit.module_->getOrInsertFunction(rt::canvas_triangle, vt, i64, i64, i64, i64,
-                                   i64, i64, i64);
-  jit.module_->getOrInsertFunction(rt::canvas_polygon, vt, ptrTy, i64, i64,
+  jit.module_->getOrInsertFunction(rt::canvas_rect, vt, i64, i64, i64, i64, i64,
                                    i64);
+  jit.module_->getOrInsertFunction(rt::canvas_line, vt, i64, i64, i64, i64,
+                                   i64);
+  jit.module_->getOrInsertFunction(rt::canvas_ellipse, vt, i64, i64, i64, i64,
+                                   i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_triangle, vt, i64, i64, i64, i64,
+                                   i64, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_polygon, vt, ptrTy, i64, i64,
+                                   i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_font_load, i64, ptrTy);
   jit.module_->getOrInsertFunction(rt::canvas_glyph, vt, i64, i64, i64, i64,
                                    i64);
@@ -8819,22 +8835,33 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
             emit_call(module_->getFunction(rt::canvas_get_pixel), *v)));
     if (method == "rect")
       if (auto v = args({{"x", Coord}, {"y", Coord}, {"w", Coord}, {"h", Coord},
-                         {"rgba"}}))
+                         {"rgba"}, {"fill"}}))
         return call_void(rt::canvas_rect, *v);
+    if (method == "line")
+      if (auto v = args({{"x1", Coord}, {"y1", Coord}, {"x2", Coord},
+                         {"y2", Coord}, {"rgba"}}))
+        return call_void(rt::canvas_line, *v);
+    if (method == "ellipse")
+      if (auto v = args({{"cx", Coord}, {"cy", Coord}, {"rx", Coord},
+                         {"ry", Coord}, {"rgba"}, {"fill"}}))
+        return call_void(rt::canvas_ellipse, *v);
     if (method == "triangle")
       if (auto v = args({{"x1", Coord}, {"y1", Coord}, {"x2", Coord},
                          {"y2", Coord}, {"x3", Coord}, {"y3", Coord},
-                         {"rgba"}}))
+                         {"rgba"}, {"fill"}}))
         return call_void(rt::canvas_triangle, *v);
-    if (method == "polygon" && a.size() == 2) {
+    if (method == "polygon" && a.size() == 3) {
       auto pts = jit.compile(*a[0]);
       emit_type_check(pts.borrow(), "Array", "parameter 'points'", a[0].get());
       auto pp = builder_.CreateIntToPtr(extract_data(pts.borrow()), ptrTy);
       auto col_ = jit.compile(*a[1]);
       emit_type_check(col_.borrow(), "Long", "parameter 'rgba'", a[1].get());
       auto rgba = value_to_long(col_.consume());
+      auto fill_ = jit.compile(*a[2]);
+      emit_type_check(fill_.borrow(), "Long", "parameter 'fill'", a[2].get());
+      auto fill = value_to_long(fill_.consume());
       emit_call(module_->getFunction(rt::canvas_polygon),
-                {pp, rgba, line, col});
+                {pp, rgba, fill, line, col});
       pts.drop();
       return jit.own(make_nil());
     }

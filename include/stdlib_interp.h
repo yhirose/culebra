@@ -1817,23 +1817,60 @@ inline Value make_canvas_primitives_namespace() {
           "Long"sv)),
       false);
 
-  // _Canvas.rect(x, y, w, h, rgba) -> Nil (filled, clipped)
+  // _Canvas.rect(x, y, w, h, rgba, fill) -> Nil (clipped; fill 0 = outline)
   ns.initialize("rect",
       Value(FunctionValue({{"x", false, "Long|Float"sv},
                            {"y", false, "Long|Float"sv},
                            {"w", false, "Long|Float"sv},
                            {"h", false, "Long|Float"sv},
-                           {"rgba", false, "Long"sv}},
+                           {"rgba", false, "Long"sv},
+                           {"fill", false, "Long"sv}},
           [](std::shared_ptr<Environment> env) {
             _canvas_detail::rect(
                 canvas_coord_arg(env, "x"), canvas_coord_arg(env, "y"),
                 canvas_coord_arg(env, "w"), canvas_coord_arg(env, "h"),
+                static_cast<uint32_t>(env->get("rgba").to_long()),
+                env->get("fill").to_long() != 0);
+            return Value();
+          })),
+      false);
+
+  // _Canvas.line(x1, y1, x2, y2, rgba) -> Nil (both endpoints included)
+  ns.initialize("line",
+      Value(FunctionValue({{"x1", false, "Long|Float"sv},
+                           {"y1", false, "Long|Float"sv},
+                           {"x2", false, "Long|Float"sv},
+                           {"y2", false, "Long|Float"sv},
+                           {"rgba", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            _canvas_detail::line(
+                canvas_coord_arg(env, "x1"), canvas_coord_arg(env, "y1"),
+                canvas_coord_arg(env, "x2"), canvas_coord_arg(env, "y2"),
                 static_cast<uint32_t>(env->get("rgba").to_long()));
             return Value();
           })),
       false);
 
-  // _Canvas.triangle(x1, y1, x2, y2, x3, y3, rgba) -> Nil (filled, clipped)
+  // _Canvas.ellipse(cx, cy, rx, ry, rgba, fill) -> Nil (clipped; circle when
+  // rx == ry)
+  ns.initialize("ellipse",
+      Value(FunctionValue({{"cx", false, "Long|Float"sv},
+                           {"cy", false, "Long|Float"sv},
+                           {"rx", false, "Long|Float"sv},
+                           {"ry", false, "Long|Float"sv},
+                           {"rgba", false, "Long"sv},
+                           {"fill", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            _canvas_detail::ellipse(
+                canvas_coord_arg(env, "cx"), canvas_coord_arg(env, "cy"),
+                canvas_coord_arg(env, "rx"), canvas_coord_arg(env, "ry"),
+                static_cast<uint32_t>(env->get("rgba").to_long()),
+                env->get("fill").to_long() != 0);
+            return Value();
+          })),
+      false);
+
+  // _Canvas.triangle(x1, y1, x2, y2, x3, y3, rgba, fill) -> Nil (clipped)
   ns.initialize("triangle",
       Value(FunctionValue({{"x1", false, "Long|Float"sv},
                            {"y1", false, "Long|Float"sv},
@@ -1841,23 +1878,26 @@ inline Value make_canvas_primitives_namespace() {
                            {"y2", false, "Long|Float"sv},
                            {"x3", false, "Long|Float"sv},
                            {"y3", false, "Long|Float"sv},
-                           {"rgba", false, "Long"sv}},
+                           {"rgba", false, "Long"sv},
+                           {"fill", false, "Long"sv}},
           [](std::shared_ptr<Environment> env) {
             _canvas_detail::triangle(
                 canvas_coord_arg(env, "x1"), canvas_coord_arg(env, "y1"),
                 canvas_coord_arg(env, "x2"), canvas_coord_arg(env, "y2"),
                 canvas_coord_arg(env, "x3"), canvas_coord_arg(env, "y3"),
-                static_cast<uint32_t>(env->get("rgba").to_long()));
+                static_cast<uint32_t>(env->get("rgba").to_long()),
+                env->get("fill").to_long() != 0);
             return Value();
           })),
       false);
 
-  // _Canvas.polygon(points: Array, rgba) -> Nil (filled, clipped, even-odd).
+  // _Canvas.polygon(points: Array, rgba, fill) -> Nil (clipped, even-odd).
   // points is a flat x0, y0, x1, y1, ... of Long|Float; the outline closes
   // automatically.
   ns.initialize("polygon",
       Value(FunctionValue({{"points", false, "Array"sv},
-                           {"rgba", false, "Long"sv}},
+                           {"rgba", false, "Long"sv},
+                           {"fill", false, "Long"sv}},
           [](std::shared_ptr<Environment> env) -> Value {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
@@ -1877,7 +1917,8 @@ inline Value make_canvas_primitives_namespace() {
             }
             _canvas_detail::polygon(
                 pts.data(), static_cast<int64_t>(pts.size() / 2),
-                static_cast<uint32_t>(env->get("rgba").to_long()));
+                static_cast<uint32_t>(env->get("rgba").to_long()),
+                env->get("fill").to_long() != 0);
             return Value();
           })),
       false);

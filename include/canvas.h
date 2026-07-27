@@ -140,11 +140,23 @@ inline uint32_t get_pixel(int x, int y) {
   return t.px[static_cast<size_t>(y) * t.w + x];
 }
 
-// Filled rectangle, clipped to the target.
-inline void rect(int x, int y, int w, int h, uint32_t rgba) {
+// Rectangle, clipped to the target: filled, or just the one-pixel outline
+// ring (the outermost pixels of the same fill, so outline + fill tile).
+inline void rect(int x, int y, int w, int h, uint32_t rgba, bool fill) {
+  if (w <= 0 || h <= 0) return;
   Target t = resolve_target();
-  for (int yy = std::max(0, y); yy < std::min(t.h, y + h); yy++)
-    span(t, yy, x, static_cast<int64_t>(x) + w, rgba);
+  int64_t x1 = static_cast<int64_t>(x) + w;
+  if (fill || h <= 2) {
+    for (int yy = std::max(0, y); yy < std::min(t.h, y + h); yy++)
+      span(t, yy, x, x1, rgba);
+    return;
+  }
+  span(t, y, x, x1, rgba);
+  span(t, static_cast<int64_t>(y) + h - 1, x, x1, rgba);
+  for (int yy = std::max(0, y + 1); yy < std::min(t.h, y + h - 1); yy++) {
+    put(t, x, yy, rgba);
+    if (w > 1) put(t, x1 - 1, yy, rgba);
+  }
 }
 
 // Division rounding toward -inf. Edge interpolation uses it so an edge that
@@ -153,6 +165,52 @@ inline void rect(int x, int y, int w, int h, uint32_t rgba) {
 inline int64_t floor_div(int64_t a, int64_t b) {
   int64_t q = a / b;
   return (a % b != 0 && ((a < 0) != (b < 0))) ? q - 1 : q;
+}
+
+// Exact integer square root (floor of the real root). The double sqrt is only
+// a seed; the fixup loops make the result exact, so every platform and
+// optimization level lands on the same pixel.
+inline int64_t isqrt(int64_t v) {
+  if (v <= 0) return 0;
+  int64_t r = static_cast<int64_t>(std::sqrt(static_cast<double>(v)));
+  while (r > 0 && r * r > v) r--;
+  while ((r + 1) * (r + 1) <= v) r++;
+  return r;
+}
+
+// Line between two points, both endpoints included. The major axis is walked
+// one pixel at a time and the minor coordinate is the interpolated value
+// rounded to nearest (ties toward -inf); endpoints are sorted on the major
+// axis first, so line(A, B) and line(B, A) draw the same pixels. The walk
+// covers only the clipped major range, so a line crossing a small viewport
+// costs the pixels visible, and with coordinates in the guard band every
+// product below stays inside int64.
+inline void line(int64_t x1, int64_t y1, int64_t x2, int64_t y2,
+                 uint32_t rgba) {
+  Target t = resolve_target();
+  x1 = guard(x1);
+  y1 = guard(y1);
+  x2 = guard(x2);
+  y2 = guard(y2);
+  bool ymajor = std::llabs(y2 - y1) > std::llabs(x2 - x1);
+  if (ymajor) {
+    std::swap(x1, y1);
+    std::swap(x2, y2);
+  }
+  if (x1 > x2) {
+    std::swap(x1, x2);
+    std::swap(y1, y2);
+  }
+  int64_t dx = x2 - x1, dy = y2 - y1;  // dx >= |dy|
+  int64_t m0 = std::max<int64_t>(x1, 0);
+  int64_t m1 = std::min<int64_t>(x2, (ymajor ? t.h : t.w) - 1);
+  for (int64_t m = m0; m <= m1; m++) {
+    int64_t n = dx == 0 ? y1 : y1 + floor_div((m - x1) * dy + dx / 2, dx);
+    if (ymajor)
+      put(t, n, m, rgba);
+    else
+      put(t, m, n, rgba);
+  }
 }
 
 // The one message both backends raise for a `points` element that is neither
@@ -167,11 +225,19 @@ inline constexpr auto kPolygonPointsError =
 // edge whose y-span contains it, so a shared vertex is counted exactly once.
 // The interpolation is integer throughout, so every backend rasterizes the
 // identical shape. Fewer than 3 vertices draws nothing.
-inline void polygon(const int64_t* pts, int64_t n, uint32_t rgba) {
+inline void polygon(const int64_t* pts, int64_t n, uint32_t rgba, bool fill) {
   if (pts == nullptr || n < 3) return;
-  Target t = resolve_target();
   auto vx = [&](int64_t i) { return guard(pts[2 * i]); };
   auto vy = [&](int64_t i) { return guard(pts[2 * i + 1]); };
+  if (!fill) {
+    // The outline is the closed chain of edges as line() draws them.
+    for (int64_t i = 0; i < n; i++) {
+      int64_t j = (i + 1 == n) ? 0 : i + 1;
+      line(vx(i), vy(i), vx(j), vy(j), rgba);
+    }
+    return;
+  }
+  Target t = resolve_target();
   int64_t ymin = vy(0), ymax = vy(0);
   for (int64_t i = 1; i < n; i++) {
     ymin = std::min(ymin, vy(i));
@@ -200,12 +266,53 @@ inline void polygon(const int64_t* pts, int64_t n, uint32_t rgba) {
   }
 }
 
-// Filled triangle — the conventional general shape (raylib, SDL and every GPU
+// Triangle — the conventional general shape (raylib, SDL and every GPU
 // rasterizer take three vertices), and the same even-odd fill as polygon.
 inline void triangle(int64_t x1, int64_t y1, int64_t x2, int64_t y2, int64_t x3,
-                     int64_t y3, uint32_t rgba) {
+                     int64_t y3, uint32_t rgba, bool fill) {
   const int64_t pts[6] = {x1, y1, x2, y2, x3, y3};
-  polygon(pts, 3, rgba);
+  polygon(pts, 3, rgba, fill);
+}
+
+// Ellipse centred on (cx, cy) with radii (rx, ry) — a circle when they are
+// equal. The half-width of the row at offset dy from the centre is
+// w = floor(rx * floor(sqrt(ry^2 - dy^2)) / ry), integer throughout (isqrt is
+// exact), and the row then covers [cx-w, cx+w] — 2r+1 pixels across the
+// middle, matching the midpoint-circle convention that (cx±r, cy) lies on the
+// circle. The outline is the fill minus the next row outward's fill, plus the
+// edge pixel each side, so it is one pixel thick and connected everywhere.
+// A negative radius draws nothing; a zero radius degenerates to a segment.
+inline void ellipse(int64_t cx, int64_t cy, int64_t rx, int64_t ry,
+                    uint32_t rgba, bool fill) {
+  if (rx < 0 || ry < 0) return;
+  Target t = resolve_target();
+  cx = guard(cx);
+  cy = guard(cy);
+  rx = guard(rx);
+  ry = guard(ry);
+  // Row half-width at |dy| <= ry. rx * isqrt <= 2^60, inside int64.
+  auto half_w = [&](int64_t ady) {
+    return ry == 0 ? rx : rx * isqrt(ry * ry - ady * ady) / ry;
+  };
+  int64_t y0 = std::max<int64_t>(cy - ry, 0);
+  int64_t y1 = std::min<int64_t>(cy + ry, t.h - 1);
+  for (int64_t y = y0; y <= y1; y++) {
+    int64_t ady = std::llabs(y - cy);
+    int64_t w = half_w(ady);
+    if (fill) {
+      span(t, y, cx - w, cx + w + 1, rgba);
+      continue;
+    }
+    // wn = the next row outward's half-width (monotonically narrower toward
+    // the poles; -1 on the pole rows, which then fill entirely). The left
+    // span covers this row's fill that the next row lacks — at least the edge
+    // pixel — and the right span starts no earlier than the left one ended,
+    // so no pixel is ever written twice (compositing would double up).
+    int64_t wn = ady == ry ? -1 : half_w(ady + 1);
+    int64_t le = std::min(std::max(cx - wn, cx - w + 1), cx + w + 1);
+    span(t, y, cx - w, le, rgba);
+    span(t, y, std::max(std::min(cx + wn + 1, cx + w), le), cx + w + 1, rgba);
+  }
 }
 
 // Registered 8x8 bitmap fonts: a flat table of 8 row-bytes per glyph, MSB the

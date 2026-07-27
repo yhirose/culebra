@@ -34,19 +34,19 @@ assert_eq(_Canvas.get_pixel(-1, -1), 0)
 
 // --- rect: filled, clipped ---
 _Canvas.clear(RED)
-_Canvas.rect(1, 1, 2, 2, BLUE)
+_Canvas.rect(1, 1, 2, 2, BLUE, 1)
 assert_eq(_Canvas.get_pixel(1, 1), BLUE)
 assert_eq(_Canvas.get_pixel(2, 2), BLUE)
 assert_eq(_Canvas.get_pixel(0, 0), RED)      // outside the rect
 assert_eq(_Canvas.get_pixel(3, 3), RED)
-_Canvas.rect(3, 3, 5, 5, GREEN)              // spills past the edge, clipped
+_Canvas.rect(3, 3, 5, 5, GREEN, 1)              // spills past the edge, clipped
 assert_eq(_Canvas.get_pixel(3, 3), GREEN)
 
 let CLEAR = rgba(0, 0, 0, 0)
 
 // --- Float geometry: rounds toward -inf, one rule for all three backends ---
 _Canvas.clear(RED)
-_Canvas.rect(1.7, 1.2, 2.9, 2.9, BLUE)       // -> rect(1, 1, 2, 2)
+_Canvas.rect(1.7, 1.2, 2.9, 2.9, BLUE, 1)       // -> rect(1, 1, 2, 2)
 assert_eq(_Canvas.get_pixel(1, 1), BLUE)
 assert_eq(_Canvas.get_pixel(2, 2), BLUE)
 assert_eq(_Canvas.get_pixel(3, 3), RED)
@@ -62,9 +62,9 @@ assert_eq(_Canvas.get_pixel(0, 0), RED)
 _Canvas.set_pixel(Math.nan, 0, BLUE)         // NaN -> 0
 assert_eq(_Canvas.get_pixel(0, 0), BLUE)
 // Colours, flags and handles are still Long-only.
-assert_eq(try { _Canvas.rect(0, 0, 1, 1, 1.5) } catch e { e.message },
+assert_eq(try { _Canvas.rect(0, 0, 1, 1, 1.5, 1) } catch e { e.message },
           "type error: parameter 'rgba' expects Long")
-assert_eq(try { _Canvas.rect("x", 0, 1, 1, 1) } catch e { e.message },
+assert_eq(try { _Canvas.rect("x", 0, 1, 1, 1, 1) } catch e { e.message },
           "type error: parameter 'x' expects Long|Float")
 
 // --- triangle / polygon: even-odd scanline fill ---
@@ -90,64 +90,105 @@ fn dump() {
 
 _Canvas.init(8, 6)
 _Canvas.clear(CLEAR)
-_Canvas.triangle(0, 0, 8, 0, 0, 6, BLUE)
+_Canvas.triangle(0, 0, 8, 0, 0, 6, BLUE, 1)
 assert_eq(dump(), "########/######  /#####   /####    /##      /#       ")
 // Floats floor like every other coordinate — same shape.
 _Canvas.clear(CLEAR)
-_Canvas.triangle(0.5, 0.9, 8.2, 0.4, 0.7, 6.8, BLUE)
+_Canvas.triangle(0.5, 0.9, 8.2, 0.4, 0.7, 6.8, BLUE, 1)
 assert_eq(dump(), "########/######  /#####   /####    /##      /#       ")
 // Zero-area input draws nothing.
 _Canvas.clear(RED)
-_Canvas.triangle(0, 0, 4, 0, 8, 0, BLUE)     // collinear
-_Canvas.triangle(2, 2, 2, 2, 2, 2, BLUE)     // a point
+_Canvas.triangle(0, 0, 4, 0, 8, 0, BLUE, 1)     // collinear
+_Canvas.triangle(2, 2, 2, 2, 2, 2, BLUE, 1)     // a point
 assert_eq(dump(), "......../......../......../......../......../........")
 // The seam property, stated as an identity: a rectangle cut along its diagonal
 // into two triangles must rasterize back to exactly the rectangle — no gap
 // along the shared edge, and no pixel claimed twice.
 _Canvas.clear(CLEAR)
-_Canvas.triangle(1, 1, 7, 1, 1, 5, BLUE)
-_Canvas.triangle(7, 1, 7, 5, 1, 5, BLUE)
+_Canvas.triangle(1, 1, 7, 1, 1, 5, BLUE, 1)
+_Canvas.triangle(7, 1, 7, 5, 1, 5, BLUE, 1)
 let halves = dump()
 _Canvas.clear(CLEAR)
-_Canvas.rect(1, 1, 6, 4, BLUE)
+_Canvas.rect(1, 1, 6, 4, BLUE, 1)
 assert_eq(halves, dump())
 
 // polygon: flat x0, y0, x1, y1, ... with the outline closing itself.
 _Canvas.clear(CLEAR)
-_Canvas.polygon([3, 1, 5, 1, 7, 5, 1, 5], BLUE)
+_Canvas.polygon([3, 1, 5, 1, 7, 5, 1, 5], BLUE, 1)
 assert_eq(dump(), "        /   ##   /  ###   /  ####  / #####  /        ")
 // Float vertices floor the same way.
 _Canvas.clear(CLEAR)
-_Canvas.polygon([3.5, 1.2, 5.9, 1.7, 7.4, 5.5, 1.8, 5.1], BLUE)
+_Canvas.polygon([3.5, 1.2, 5.9, 1.7, 7.4, 5.5, 1.8, 5.1], BLUE, 1)
 assert_eq(dump(), "        /   ##   /  ###   /  ####  / #####  /        ")
 // Polygons sharing an edge tile with no seam and no double-drawn row.
 _Canvas.clear(CLEAR)
-_Canvas.polygon([2, 0, 6, 0, 7, 3, 1, 3], BLUE)
-_Canvas.polygon([1, 3, 7, 3, 8, 6, 0, 6], GREEN)
+_Canvas.polygon([2, 0, 6, 0, 7, 3, 1, 3], BLUE, 1)
+_Canvas.polygon([1, 3, 7, 3, 8, 6, 0, 6], GREEN, 1)
 assert_eq(dump(), "  ####  / #####  / #####  / oooooo /ooooooo /ooooooo ")
 // Clipped on all four sides.
 _Canvas.clear(CLEAR)
-_Canvas.polygon([-6, -2, 2, -2, 12, 8, 4, 8], BLUE)
+_Canvas.polygon([-6, -2, 2, -2, 12, 8, 4, 8], BLUE, 1)
 assert_eq(dump(), "####    /#####   /######  /####### /########/ #######")
 // Concave outlines fill by the even-odd rule.
 _Canvas.clear(CLEAR)
-_Canvas.polygon([0, 0, 8, 0, 8, 6, 6, 6, 6, 2, 2, 2, 2, 6, 0, 6], BLUE)
+_Canvas.polygon([0, 0, 8, 0, 8, 6, 6, 6, 6, 2, 2, 2, 2, 6, 0, 6], BLUE, 1)
 assert_eq(dump(), "########/########/##    ##/##    ##/##    ##/##    ##")
 // Fewer than 3 vertices draws nothing; a trailing half-pair is ignored.
 _Canvas.clear(RED)
-_Canvas.polygon([], BLUE)
-_Canvas.polygon([1, 1], BLUE)
-_Canvas.polygon([1, 1, 5, 5], BLUE)
-_Canvas.polygon([1, 1, 5, 1, 5], BLUE)       // 2 vertices + a stray x
+_Canvas.polygon([], BLUE, 1)
+_Canvas.polygon([1, 1], BLUE, 1)
+_Canvas.polygon([1, 1, 5, 5], BLUE, 1)
+_Canvas.polygon([1, 1, 5, 1, 5], BLUE, 1)       // 2 vertices + a stray x
 assert_eq(dump(), "......../......../......../......../......../........")
 // Vertices carry the same Long|Float contract the scalar arguments do.
-assert_eq(try { _Canvas.polygon([1, 1, "x", 1, 5, 5], BLUE) } catch e { e.message },
+assert_eq(try { _Canvas.polygon([1, 1, "x", 1, 5, 5], BLUE, 1) } catch e { e.message },
           "type error: parameter 'points' expects an Array of Long|Float")
-assert_eq(try { _Canvas.polygon(5, BLUE) } catch e { e.message },
+assert_eq(try { _Canvas.polygon(5, BLUE, 1) } catch e { e.message },
           "type error: parameter 'points' expects Array")
-assert_eq(try { _Canvas.polygon([1, 1, 5, 1, 5, 5], 1.5) } catch e { e.message },
+assert_eq(try { _Canvas.polygon([1, 1, 5, 1, 5, 5], 1.5, 1) } catch e { e.message },
           "type error: parameter 'rgba' expects Long")
-assert_eq(try { _Canvas.triangle(0, 0, 1, 1, 2, 2, 1.5) } catch e { e.message },
+assert_eq(try { _Canvas.triangle(0, 0, 1, 1, 2, 2, 1.5, 1) } catch e { e.message },
+          "type error: parameter 'rgba' expects Long")
+
+// --- line / ellipse primitives ---
+// line carries the same Long|Float coordinate contract; both endpoints are
+// pixels, and both argument orders draw the same pixels.
+_Canvas.init(6, 6)
+_Canvas.clear(0)
+_Canvas.line(0, 0, 5, 5, BLUE)
+assert_eq(_Canvas.get_pixel(0, 0), BLUE)
+assert_eq(_Canvas.get_pixel(5, 5), BLUE)
+_Canvas.line(5, 5, 0, 0, RED)
+assert_eq(_Canvas.get_pixel(2, 2), RED)      // reverse overdrew every pixel
+mut leftover = 0
+for y in 0..6 { for x in 0..6 {
+  if _Canvas.get_pixel(x, y) == BLUE { leftover = leftover + 1 }
+} }
+assert_eq(leftover, 0)
+_Canvas.clear(0)
+_Canvas.line(0.9, 2.1, 4.2, 2.8, BLUE)       // Floats floor like other coords
+assert_eq(_Canvas.get_pixel(0, 2), BLUE)
+assert_eq(try { _Canvas.line(0, 0, "x", 1, 1) } catch e { e.message },
+          "type error: parameter 'x2' expects Long|Float")
+assert_eq(try { _Canvas.line(0, 0, 1, 1, 1.5) } catch e { e.message },
+          "type error: parameter 'rgba' expects Long")
+
+// ellipse: centre-and-radii, fill and outline; negative radius draws nothing.
+_Canvas.init(7, 7)
+_Canvas.clear(0)
+_Canvas.ellipse(3, 3, 3, 3, BLUE, 1)
+assert_eq(_Canvas.get_pixel(0, 3), BLUE)     // (cx - r, cy)
+assert_eq(_Canvas.get_pixel(3, 0), BLUE)     // (cx, cy - r)
+assert_eq(_Canvas.get_pixel(0, 0), 0)        // the corner stays outside
+_Canvas.clear(0)
+_Canvas.ellipse(3, 3, 3, 3, BLUE, 0)
+assert_eq(_Canvas.get_pixel(0, 3), BLUE)
+assert_eq(_Canvas.get_pixel(3, 3), 0)        // interior untouched
+_Canvas.ellipse(3, 3, -1, 2, RED, 1)
+assert_eq(_Canvas.get_pixel(3, 3), 0)        // negative radius: nothing
+assert_eq(try { _Canvas.ellipse(0, 0, "r", 1, 1, 1) } catch e { e.message },
+          "type error: parameter 'rx' expects Long|Float")
+assert_eq(try { _Canvas.ellipse(0, 0, 1, 1, 1.5, 1) } catch e { e.message },
           "type error: parameter 'rgba' expects Long")
 
 _Canvas.init(4, 4)

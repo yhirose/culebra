@@ -508,15 +508,30 @@ let _canvas_module = fn () {
     clear: fn (color) { _Canvas.clear(color) },
     set_pixel: fn (x, y, color) { _Canvas.set_pixel(x, y, color) },
     get_pixel: fn (x, y) { _Canvas.get_pixel(x, y) },
-    rect: fn (x, y, w, h, color) { _Canvas.rect(x, y, w, h, color) },
-    # Filled triangle from three vertices — the conventional general shape.
-    triangle: fn (x1, y1, x2, y2, x3, y3, color) {
-      _Canvas.triangle(x1, y1, x2, y2, x3, y3, color)
+    # Shapes take `fill: false` to draw just the one-pixel outline instead.
+    rect: fn (x, y, w, h, color, fill = true) {
+      _Canvas.rect(x, y, w, h, color, if fill { 1 } else { 0 })
     },
-    # Filled polygon from a flat x0, y0, x1, y1, ... vertex list (even-odd
-    # rule; the outline closes itself). Each row covers [xl, xr), like rect,
-    # so polygons sharing an edge tile with no seam.
-    polygon: fn (points, color) { _Canvas.polygon(points, color) },
+    # Line between two points, both endpoints included.
+    line: fn (x1, y1, x2, y2, color) { _Canvas.line(x1, y1, x2, y2, color) },
+    # Circle / ellipse centred on (cx, cy). The row through the centre spans
+    # 2r+1 pixels, so (cx ± r, cy) lies on the circle.
+    circle: fn (cx, cy, r, color, fill = true) {
+      _Canvas.ellipse(cx, cy, r, r, color, if fill { 1 } else { 0 })
+    },
+    ellipse: fn (cx, cy, rx, ry, color, fill = true) {
+      _Canvas.ellipse(cx, cy, rx, ry, color, if fill { 1 } else { 0 })
+    },
+    # Triangle from three vertices — the conventional general shape.
+    triangle: fn (x1, y1, x2, y2, x3, y3, color, fill = true) {
+      _Canvas.triangle(x1, y1, x2, y2, x3, y3, color, if fill { 1 } else { 0 })
+    },
+    # Polygon from a flat x0, y0, x1, y1, ... vertex list (even-odd rule; the
+    # outline closes itself). Each filled row covers [xl, xr), like rect, so
+    # polygons sharing an edge tile with no seam.
+    polygon: fn (points, color, fill = true) {
+      _Canvas.polygon(points, color, if fill { 1 } else { 0 })
+    },
     present: fn () { _Canvas.present() },
     width: fn () { _Canvas.width() },
     height: fn () { _Canvas.height() },
