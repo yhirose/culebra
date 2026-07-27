@@ -101,9 +101,16 @@ inline std::vector<const peg::Ast*> collect_defers(const peg::Ast& body) {
 // any yield still present belongs to no `fn name(...)` declaration (a class
 // method, an object property's fn, a fn expression, top level) and would
 // otherwise run as a plain statement with backend-dependent results.
+// Matches original_tag too: a lone `yield` in a block collapses onto its
+// parent (`BLOCK[YIELD]`, `STATEMENT/4[YIELD]`), which carries the parent's
+// tag and keeps YIELD only in original_tag.
 inline const peg::Ast* find_orphan_yield(const peg::Ast& node) {
   using namespace peg::udl;
-  if (node.tag == "YIELD"_ || node.tag == "YIELD_FROM"_) return &node;
+  auto is_yield = [](const peg::Ast& n) {
+    return n.tag == "YIELD"_ || n.tag == "YIELD_FROM"_ ||
+           n.original_tag == "YIELD"_ || n.original_tag == "YIELD_FROM"_;
+  };
+  if (is_yield(node)) return &node;
   for (auto& c : node.nodes) {
     if (auto* y = find_orphan_yield(*c)) return y;
   }
