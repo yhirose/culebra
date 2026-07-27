@@ -3473,14 +3473,18 @@ matcher 一族 `assert_true` / `assert_eq` 等）は
 | `s.size() -> Long`                              | バイト長                              |
 | `s.upper() -> String`                           | ASCII の大文字化                      |
 | `s.lower() -> String`                           | ASCII の小文字化                      |
+| `s.capitalize() -> String`                      | 先頭の ASCII 文字を大文字に、残りを小文字に。`upper`/`lower` と同じく ASCII のみなので、先頭が非 ASCII scalar ならそのまま |
+| `s.repeat(n: Long) -> String`                   | `n` 個連結。`n == 0` は `""`、負の `n` は `ValueError`。確保できない大きさの結果も `ValueError` |
 | `s.trim() -> String`                            | 前後の空白（` `, `\t`, `\n`, `\r`）を除去 |
 | `s.trim_start(chars: StringLike = "") -> String` | 先頭側を除去。引数なし → 空白、`chars` → その集合の先頭 scalar（範囲非対応） |
 | `s.trim_end(chars: StringLike = "") -> String`  | 末尾側を除去。例 `s.trim_end("\n")` |
 | `s.tr(from: StringLike, to: StringLike) -> String` | scalar 単位の変換（文字リスト形式 — `a-z` 範囲や `^` は非対応）。`s` の各 scalar が `from` にあれば `to` の同位置 scalar に置換。`to` が短ければ末尾 scalar を繰り返し、空 `to` は削除。`s.tr("０１２３４５６７８９", "0123456789")` |
 | `s.split(sep: StringLike) -> Array<StringView>` | `sep` の出現ごとに分割。 `sep` が空なら `[s]`。 要素は 1 個の source を共有 |
 | `s.split_iter(sep: StringLike) -> Iterator<StringView>` | `split` の遅延版。 巨大入力で `.take(n)` する場合の早期終了に |
+| `s.lines() -> Array<StringView>`                | `\n` / `\r\n` / `\r` で分割。終端記号は落とし、末尾の終端は空要素を生まないので `"a\nb\n".lines()` は `["a", "b"]` — `File.lines()` と同じ行境界。`split` と同じく eager |
 | `s.replace(pat: String \| Regex, repl: String \| Function) -> String` | **全**出現を置換。 連鎖可。 `pat` が `String` → リテラル置換、 `Regex`（`re'…'` 含む）→ 正規表現置換で `repl` は `$1` / `$<name>` テンプレートか `fn (Match) -> String`。 UFCS で呼ぶ stdlib ヘルパ — `s.replace(p, r)` は `replace(s, p, r)`。 |
 | `s.contains(sub: StringLike) -> Bool`           | `sub` がどこかに現れるか。 空の `sub` は `true` |
+| `s.count(sub: StringLike) -> Long`              | `sub` の重ならない出現数。`"aaaa".count("aa")` は `2`。空の `sub` は `0`（`split("")` がレシーバ全体を返すのに合わせた）。リテラルのみ — パターンはコンパイル済み `Regex` 側が数える |
 | `s.starts_with(prefix: StringLike) -> Bool`     | `prefix` で始まるか                   |
 | `s.ends_with(suffix: StringLike) -> Bool`       | `suffix` で終わるか                   |
 | `s.slice(start: Long, end: Long) -> StringView` | `[start, end)` の部分ビュー (レシーバのバイトを借用)。 負の値は末尾から、 `start` は `[0, size()]`、 `end` は `[start, size()]` にクランプ |

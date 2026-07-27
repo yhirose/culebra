@@ -5316,6 +5316,22 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
          return Value(culebra::ascii_lower(
              callEnv->get("self").to_string()));
        }))},
+      // First ASCII letter up, the rest down (Python/Ruby `capitalize`).
+      // ASCII-only, like upper/lower.
+      {"capitalize"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         return Value(culebra::ascii_capitalize(
+             callEnv->get("self").to_string()));
+       }))},
+      // `n` copies concatenated. Negative `n` is a ValueError; 0 is empty.
+      {"repeat"sv,
+       Value(FunctionValue(
+           {{"n", false, "Long"sv}},
+           [](std::shared_ptr<Environment> callEnv) {
+             return Value(culebra::str_repeat(
+                 callEnv->get("self").to_string_view(),
+                 callEnv->get("n").to_long()));
+           }))},
       {"trim"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          const auto& s = callEnv->get("self").to_string();
@@ -5408,6 +5424,18 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
                    return _iter_step_value(Value(src, sv));
                  });
            }))},
+      // Array<StringView> of the receiver's lines — `\n` / `\r\n` / `\r`
+      // terminators dropped, no trailing empty for a trailing terminator.
+      // Same line boundaries as `File.lines()`, eager like `split`.
+      {"lines"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto [src, base] = callEnv->get("self").share_source_and_view();
+         ArrayValue out;
+         for (auto piece : culebra::str_lines(base)) {
+           out.values->push_back(Value(src, piece));
+         }
+         return Value(std::move(out));
+       }))},
       {"contains"sv,
        Value(FunctionValue({{"sub", false, "StringLike"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
@@ -5415,6 +5443,14 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
                              auto sub =
                                  callEnv->get("sub").to_string_view();
                              return Value(s.find(sub) != std::string_view::npos);
+                           }))},
+      // Non-overlapping occurrences. Regex counting is `re.count(s)`.
+      {"count"sv,
+       Value(FunctionValue({{"sub", false, "StringLike"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+                             return Value(static_cast<long>(culebra::str_count(
+                                 callEnv->get("self").to_string_view(),
+                                 callEnv->get("sub").to_string_view())));
                            }))},
       {"starts_with"sv,
        Value(FunctionValue(

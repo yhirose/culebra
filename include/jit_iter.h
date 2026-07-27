@@ -2995,6 +2995,24 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_lower(
   return _culebra_heap_str(culebra::ascii_lower(std::string(_str_sv(s))));
 }
 
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_capitalize(
+    const char* s) {
+  return _culebra_heap_str(culebra::ascii_capitalize(std::string(_str_sv(s))));
+}
+
+// `s.repeat(n)` — shares culebra::str_repeat with the interp, including its
+// negative-n / oversize ValueErrors (positioned at the call site).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_repeat(
+    const char* s, int64_t n, int64_t line, int64_t col) {
+  return _culebra_heap_str(culebra::str_repeat(
+      _str_sv(s), n, static_cast<long>(line), static_cast<long>(col)));
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_str_count(
+    const char* s, const char* sub) {
+  return culebra::str_count(_str_sv(s), _str_sv(sub));
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_trim(
     const char* s) {
   auto trimmed = culebra::trim_ascii(_str_sv(s));
@@ -3045,6 +3063,18 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_str_split(
     }
     push_view(sv.substr(pos, p - pos));
     pos = p + sp.size();
+  }
+  return r;
+}
+
+// `s.lines()` — Array<StringView> over the receiver's bytes, same boundaries
+// as culebra::str_lines (and so as File.lines()). Views borrow `s`, like split.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_str_lines(
+    const char* s) {
+  auto* r = culebra_runtime_array_new();
+  for (auto piece : culebra::str_lines(_str_sv(s))) {
+    auto* v = _culebra_heap_view(piece.data(), piece.size(), s);
+    culebra_runtime_array_push(r, TAG_STRINGVIEW, reinterpret_cast<int64_t>(v));
   }
   return r;
 }

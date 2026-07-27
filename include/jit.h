@@ -1545,7 +1545,7 @@ struct JIT {
     bool line_col;  // append the ho_line/ho_col call-position arguments
     Res res;
   };
-  llvm::Value* emit_iter_long_arg(const peg::Ast& argAst);
+  llvm::Value* emit_builtin_long_arg(const peg::Ast& argAst);
   Owned try_compile_iter_table_method(const std::string& method,
                                       const peg::Ast& argsAst,
                                       llvm::Value* receiver,
@@ -4440,6 +4440,13 @@ struct JIT {
                                  builder_.getInt64Ty(), ptrTy);
     module_->getOrInsertFunction(rt::str_upper, ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::str_lower, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::str_capitalize, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::str_repeat, ptrTy, ptrTy,
+                                 builder_.getInt64Ty(), builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::str_lines, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::str_count, builder_.getInt64Ty(), ptrTy,
+                                 ptrTy);
     module_->getOrInsertFunction(rt::str_trim, ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::str_tr, ptrTy, ptrTy, ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::str_trim_start, ptrTy, ptrTy, ptrTy);
@@ -15105,11 +15112,12 @@ inline llvm::Value* JIT::emit_inlined_iter_reduce(
   return builder_.CreateLoad(valueType_, accAlloca, "iri.result");
 }
 
-// An iterator method's `n` argument. The interp declares these params as
-// `{"n", false, "Long"}` and rejects through its binder ("parameter 'n'
-// expects Long"), so check before converting — a bare value_to_long would
-// report "expected Long, got String" and break message symmetry.
-inline llvm::Value* JIT::emit_iter_long_arg(const peg::Ast& argAst) {
+// A builtin method's `n` argument (iterator `take`/`nth`/…, `String.repeat`).
+// The interp declares these params as `{"n", false, "Long"}` and rejects
+// through its binder ("parameter 'n' expects Long"), so check before
+// converting — a bare value_to_long would report "expected Long, got String"
+// and break message symmetry.
+inline llvm::Value* JIT::emit_builtin_long_arg(const peg::Ast& argAst) {
   // `v` stays Owned across the check, so the automatic unwind-temp window
   // (internals.md, JIT ownership) releases it if the check throws.
   auto v = compile(argAst);
@@ -15186,7 +15194,7 @@ inline JIT::Owned JIT::try_compile_iter_table_method(const std::string& method,
     case A::None:
       break;
     case A::Long:
-      vals.push_back(emit_iter_long_arg(*argsAst.nodes[0]));
+      vals.push_back(emit_builtin_long_arg(*argsAst.nodes[0]));
       break;
     case A::Callback: {
       // The callback stays Owned across the site-publish call, then
@@ -15283,10 +15291,27 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   // unresolved-method path, so every per-method path stays symmetric.
   if (iterator_builtins().contains(method)) {
     // Value-type tags whose builtin table holds this method (the eager
-    // form). Derived from the shared table list so it can't drift.
+    // form). Derived from the shared table list so it can't drift. A tag
+    // whose eager spelling can't take this many positional args is NOT a
+    // valid receiver here — `"ab".count()` is String.count(sub) called at
+    // the wrong arity, not Iterator.count() — so it drops to badBB, where
+    // emit_builtin_arity_check raises interp's ArityError instead of the
+    // iterator codegen running on a String. Kwarg-capable spellings keep
+    // their runtime binding (bounds alone don't decide them).
     std::vector<int8_t> valueTags;
+    long argc = static_cast<long>(argsAst.nodes.size());
     for (auto& [t, tbl] : builtin_value_tables()) {
-      if (tbl->find(method) != tbl->end()) valueTags.push_back(t);
+      auto it = tbl->find(method);
+      if (it == tbl->end()) continue;
+      if (it->second.type == Value::Function) {
+        const auto& params = *it->second.to_function().params;
+        auto b = culebra::builtin_arity_bounds(params);
+        bool kwcap = b.min != b.max;
+        for (const auto& p : params)
+          if (p.kw_only || p.kwargs_rest) kwcap = true;
+        if (!kwcap && !b.variadic && (argc < b.min || argc > b.max)) continue;
+      }
+      valueTags.push_back(t);
     }
 
     auto okBB = llvm::BasicBlock::Create(ctx_, "iter.valid", fn);
@@ -15919,6 +15944,24 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     return own(make_string(s));
   }
 
+  if (method == "capitalize" && argsAst.nodes.size() == 0) {
+    auto strPtr = coerce_strlike_cstr(receiver, "cap", true);
+    auto s = emit_call(
+        module_->getFunction(rt::str_capitalize), {strPtr});
+    return own(make_string(s));
+  }
+
+  // `n` is checked the same way iterator `n` args are, so a non-Long reports
+  // the interp binder's "parameter 'n' expects Long" on both backends.
+  if (method == "repeat" && argsAst.nodes.size() == 1) {
+    auto strPtr = coerce_strlike_cstr(receiver, "rep", true);
+    auto n = emit_builtin_long_arg(*argsAst.nodes[0]);
+    auto s = emit_call(
+        module_->getFunction(rt::str_repeat),
+        {strPtr, n, current_line_val(), current_column_val()});
+    return own(make_string(s));
+  }
+
   if (method == "trim" && argsAst.nodes.size() == 0) {
     auto strPtr = coerce_strlike_cstr(receiver, "tr", true);
     auto s = emit_call(
@@ -15970,6 +16013,40 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
         module_->getFunction(rt::str_split), {strPtr, sepPtr});
     sep.drop();
     return own(make_array(arr));
+  }
+
+  if (method == "lines" && argsAst.nodes.size() == 0) {
+    auto strPtr = coerce_strlike_cstr(receiver, "ln", true);
+    auto arr = emit_call(module_->getFunction(rt::str_lines), {strPtr});
+    return own(make_array(arr));
+  }
+
+  // 1 arg only — the 0-arg spelling is Iterator.count(), handled by the
+  // iterator table above. `count` is the one String method whose name is
+  // shared with a different arity, so a non-String receiver can't take the
+  // flat resolution error: `it.count(9)` must report the iterator's
+  // ArityError, which only the unresolved path reproduces.
+  if (method == "count" && argsAst.nodes.size() == 1) {
+    auto sokBB = llvm::BasicBlock::Create(ctx_, "cnt.str", fn);
+    auto sbadBB = llvm::BasicBlock::Create(ctx_, "cnt.other", fn);
+    auto sw = builder_.CreateSwitch(tag, sbadBB, 2);
+    sw->addCase(builder_.getInt8(TAG_STRING), sokBB);
+    sw->addCase(builder_.getInt8(TAG_STRINGVIEW), sokBB);
+    builder_.SetInsertPoint(sbadBB);
+    emit_unresolved_builtin_method(method, argsAst, receiver);  // always throws
+    builder_.CreateUnreachable();
+
+    builder_.SetInsertPoint(sokBB);
+    // Tag is proven String/StringView by the switch — convert directly
+    // rather than re-testing it through coerce_strlike_cstr.
+    auto strPtr = emit_call(module_->getFunction(rt::strlike_to_cstr),
+                            {tag, extract_data(receiver)});
+    auto sub = compile(*argsAst.nodes[0]);
+    auto subPtr = coerce_strlike_cstr(sub.borrow(), "cnt.sub", false, "sub",
+                                      argsAst.nodes[0].get());
+    auto n = emit_call(module_->getFunction(rt::str_count), {strPtr, subPtr});
+    sub.drop();
+    return own(make_long(n));
   }
 
   // split_iter is "lazy in API, eager underneath" for now: build the

@@ -51,6 +51,7 @@ inline const std::unordered_set<std::string_view>& builtin_method_names() {
       "size",       "push",        "pop",        "reverse",    "slice",
       "join",       "index_of",    "contains",   "upper",      "lower",
       "trim",       "tr",          "trim_start", "trim_end",   "split",
+      "repeat",     "capitalize",  "lines",
       "starts_with","ends_with",   "keys",       "values",     "has",
       "remove",     "get",         "get_or_put", "map",        "filter",
       "reduce",     "for_each",    "find",
@@ -872,6 +873,17 @@ inline std::string ascii_lower(std::string s) {
   return s;
 }
 
+// First ASCII letter uppercased, the rest lowercased — Python/Ruby
+// `capitalize`. ASCII-only like ascii_upper/ascii_lower, so a leading
+// multi-byte scalar passes through unchanged (its lead byte is >= 0x80).
+inline std::string ascii_capitalize(std::string s) {
+  s = ascii_lower(std::move(s));
+  if (!s.empty() && s[0] >= 'a' && s[0] <= 'z') {
+    s[0] = static_cast<char>(s[0] - 'a' + 'A');
+  }
+  return s;
+}
+
 // Byte length of the UTF-8 scalar that starts at leading byte `c`. A
 // continuation or invalid byte reports 1, so callers always advance.
 inline size_t utf8_scalar_len(unsigned char c) {
@@ -954,6 +966,57 @@ inline std::string str_tr(std::string_view s, std::string_view from,
     i += n;
   }
   return out;
+}
+
+// `s.repeat(n)` — `n` copies of `s` concatenated. `n == 0` is the empty
+// String; a negative `n` is a ValueError rather than a silent empty, and an
+// oversized result is caught before the allocation is attempted. Shared by
+// the interp String method and the JIT runtime so both agree.
+inline std::string str_repeat(std::string_view s, int64_t n, long line = 0,
+                              long col = 0) {
+  if (n < 0) {
+    throw CulebraError("ValueError", "repeat() n must not be negative", line,
+                       col);
+  }
+  if (s.empty() || n == 0) return {};
+  // Bound against what a String can hold, not just against size_t overflow —
+  // a result past max_size would otherwise reach reserve() and escape as a
+  // std::length_error instead of a catchable culebra error.
+  if (static_cast<uint64_t>(n) > std::string().max_size() / s.size()) {
+    throw CulebraError("ValueError", "repeat() result is too large", line, col);
+  }
+  std::string out;
+  out.reserve(s.size() * static_cast<size_t>(n));
+  for (int64_t i = 0; i < n; i++) out += s;
+  return out;
+}
+
+// Split into lines on `\n`, `\r\n`, or `\r`. The terminator is dropped and a
+// trailing one does not yield a final empty line, so `f.lines()` and
+// `s.lines()` agree line-for-line. Returns views into `s`.
+inline std::vector<std::string_view> str_lines(std::string_view s) {
+  std::vector<std::string_view> out;
+  for (size_t i = 0; i < s.size();) {
+    size_t j = i;
+    while (j < s.size() && s[j] != '\n' && s[j] != '\r') j++;
+    out.push_back(s.substr(i, j - i));
+    if (j == s.size()) break;
+    i = j + (s[j] == '\r' && j + 1 < s.size() && s[j + 1] == '\n' ? 2 : 1);
+  }
+  return out;
+}
+
+// Non-overlapping occurrences of `sub` in `s`. An empty `sub` counts 0,
+// matching this String family's own `split("")` (which yields the receiver
+// whole) rather than Python's len+1.
+inline int64_t str_count(std::string_view s, std::string_view sub) {
+  if (sub.empty()) return 0;
+  int64_t n = 0;
+  for (size_t pos = s.find(sub); pos != std::string_view::npos;
+       pos = s.find(sub, pos + sub.size())) {
+    n++;
+  }
+  return n;
 }
 
 // Advance the bracket-nesting `depth` for one character. `<...>` Generic

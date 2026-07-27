@@ -1,0 +1,62 @@
+// String primitives: repeat / capitalize / lines / count.
+
+// --- repeat ---------------------------------------------------------
+assert_eq("-".repeat(3), "---")
+assert_eq("ab".repeat(2), "abab")
+assert_eq("x".repeat(0), "")
+assert_eq("".repeat(5), "")
+// multibyte scalars survive intact
+assert_eq("─".repeat(3), "───")
+// the separator-line use case
+assert_eq("=".repeat(10).size(), 10)
+assert_throws("ValueError", || "x".repeat(-1))
+// a result past String's max_size is a ValueError, not a std::length_error
+assert_throws("ValueError", || "abcd".repeat(3000000000000000000))
+// a StringView receiver repeats its own bytes, not the source's
+assert_eq("abcd".slice(1, 3).repeat(2), "bcbc")
+
+// --- capitalize -----------------------------------------------------
+assert_eq("read".capitalize(), "Read")
+assert_eq("READ".capitalize(), "Read")
+assert_eq("rEaD mE".capitalize(), "Read me")
+assert_eq("".capitalize(), "")
+// leading non-letter, and non-ASCII passthrough (ASCII-only, like upper)
+assert_eq("1st".capitalize(), "1st")
+assert_eq("éa".capitalize(), "éa")
+
+// --- lines ----------------------------------------------------------
+assert_eq("a\nb\nc".lines(), ["a", "b", "c"])
+// a trailing terminator does not yield a final empty line
+assert_eq("a\nb\n".lines(), ["a", "b"])
+assert_eq("".lines(), [])
+assert_eq("\n".lines(), [""])
+assert_eq("a\n\nb".lines(), ["a", "", "b"])
+// \r\n and bare \r are boundaries too
+assert_eq("a\r\nb".lines(), ["a", "b"])
+assert_eq("a\rb".lines(), ["a", "b"])
+assert_eq("a\r\n".lines(), ["a"])
+// same boundaries as File.lines()
+let tmp_dir = Sys.env("TMPDIR") == "" ? "/tmp" : Sys.env("TMPDIR")
+let tmp = FS.join(tmp_dir, "culebra_lines_test.txt")
+FS.write(tmp, "one\ntwo\n\nthree\n")
+assert_eq(FS.read(tmp).lines(), File.with(tmp, "r", |f| f.lines().collect()))
+FS.remove(tmp)
+
+// --- count ----------------------------------------------------------
+assert_eq("aXbXc".count("X"), 2)
+assert_eq("abc".count("z"), 0)
+// non-overlapping, like Python's str.count
+assert_eq("aaaa".count("aa"), 2)
+assert_eq("abc".count("abc"), 1)
+// empty needle counts 0, matching this family's split("")
+assert_eq("abc".count(""), 0)
+assert_eq("".count("a"), 0)
+
+// --- interop --------------------------------------------------------
+// count agrees with the split-based spelling it replaces
+let text = "a,b,,c"
+assert_eq(text.count(","), text.split(",").size() - 1)
+// Iterator.count() still resolves at zero args
+assert_eq([1, 2, 3].iter().count(), 3)
+
+IO.inspect("test_string_prims OK")

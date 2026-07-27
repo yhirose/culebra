@@ -3677,14 +3677,18 @@ receiver is never mutated.
 | `s.size() -> Long`                              | Byte length.                         |
 | `s.upper() -> String`                           | ASCII uppercase.                     |
 | `s.lower() -> String`                           | ASCII lowercase.                     |
+| `s.capitalize() -> String`                      | First ASCII letter uppercase, the rest lowercase. ASCII-only like `upper`/`lower`, so a leading non-ASCII scalar passes through. |
+| `s.repeat(n: Long) -> String`                   | `n` copies concatenated. `n == 0` → `""`; a negative `n` is a `ValueError`, as is a result too large to allocate. |
 | `s.trim() -> String`                            | Remove leading/trailing whitespace (` `, `\t`, `\n`, `\r`). |
 | `s.trim_start(chars: StringLike = "") -> String` | Trim from the start. No arg → whitespace; `chars` → leading scalars in that set (no ranges). |
 | `s.trim_end(chars: StringLike = "") -> String`  | Trim from the end. e.g. `s.trim_end("\n")`. |
 | `s.tr(from: StringLike, to: StringLike) -> String` | Per-scalar translation, character-list form — no `a-z` ranges or `^`. Each scalar of `s` found in `from` becomes the scalar at the same position in `to`; a shorter `to` repeats its last scalar, an empty `to` deletes. `s.tr("０１２３４５６７８９", "0123456789")`. |
 | `s.split(sep: StringLike) -> Array<StringView>` | Split on every occurrence of `sep`. Empty `sep` → `[s]`. Elements share a single source. |
 | `s.split_iter(sep: StringLike) -> Iterator<StringView>` | Lazy variant of `split`. Short-circuits with `.take(n)` over huge inputs. |
+| `s.lines() -> Array<StringView>`                | Split on `\n`, `\r\n`, or `\r`. The terminator is dropped and a trailing one yields no final empty element, so `"a\nb\n".lines()` is `["a", "b"]` — the same line boundaries as `File.lines()`. Eager like `split`. |
 | `s.replace(pat: String \| Regex, repl: String \| Function) -> String` | Replace **every** occurrence; chains. `pat` a `String` → literal; `pat` a `Regex` (incl. `re'…'`) → regex, so `repl` may be a `$1` / `$<name>` template or a `fn (Match) -> String`. A stdlib helper reached by UFCS — `s.replace(p, r)` is `replace(s, p, r)`. |
 | `s.contains(sub: StringLike) -> Bool`           | Whether `sub` appears anywhere. Empty `sub` → `true`. |
+| `s.count(sub: StringLike) -> Long`              | Non-overlapping occurrences of `sub`, so `"aaaa".count("aa")` is `2`. Empty `sub` → `0`, matching `split("")` yielding the receiver whole. Literal only — a compiled `Regex` counts its own matches. |
 | `s.starts_with(prefix: StringLike) -> Bool`     | Whether `s` begins with `prefix`.    |
 | `s.ends_with(suffix: StringLike) -> Bool`       | Whether `s` ends with `suffix`.      |
 | `s.slice(start: Long, end: Long) -> StringView` | Substring `[start, end)` borrowing from the receiver's bytes. Negative indices count from end; `start` clamped to `[0, size()]`, `end` to `[start, size()]`. |
