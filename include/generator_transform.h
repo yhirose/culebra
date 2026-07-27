@@ -79,6 +79,37 @@ inline bool fn_body_has_yield(const peg::Ast& node) {
   return find_yield_in_fn_body(node) != nullptr;
 }
 
+// First bare `self` reference in a generator's immediate fn body. The body
+// is lowered into methods of the synthesized state class, so `self` there
+// could only ever name the internal state object — never the enclosing
+// receiver the user means. Stops at fn boundaries (a nested fn value's
+// `self` follows its own call shape, e.g. an object-literal method) and at
+// class/trait decls (their methods bind a real receiver). Skips
+// non-reference identifiers: property names (`x.self`), object keys, and
+// kwarg labels.
+inline const peg::Ast* find_self_ref_in_fn_body(const peg::Ast& node) {
+  using namespace peg::udl;
+  if (is_fn_boundary(node.tag) || node.tag == "CLASS_DECL"_ ||
+      node.tag == "TRAIT_DECL"_)
+    return nullptr;
+  if (node.tag == "IDENTIFIER"_ && node.original_tag != "DOT"_ &&
+      node.token == "self")
+    return &node;
+  for (size_t i = 0; i < node.nodes.size(); i++) {
+    const auto& c = *node.nodes[i];
+    // A plain-identifier key is a label, not a reference: OBJECT_PROPERTY
+    // `{self: v}` (key at 1, after MUTABLE; the 2-child shorthand `{self}`
+    // IS a reference and falls through) and KWARG `f(self: v)` (key at 0).
+    if (c.tag == "IDENTIFIER"_ &&
+        ((node.tag == "OBJECT_PROPERTY"_ && i == 1 &&
+          node.nodes.size() >= 3) ||
+         (node.tag == "KWARG"_ && i == 0)))
+      continue;
+    if (auto* s = find_self_ref_in_fn_body(c)) return s;
+  }
+  return nullptr;
+}
+
 // Collect every DEFER node in a fn body in source order, stopping at
 // inner fn boundaries. Used by the dispatcher to verify that all defers
 // live at the body's top level (where Stage 3 emits them into the
@@ -1273,6 +1304,20 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
         "generator.",
         static_cast<long>(fd->line),
         static_cast<long>(fd->column));
+  }
+
+  // `self` in a generator body would resolve to the synthesized state
+  // object (the body runs inside its methods), never to anything the user
+  // can mean — a generator is a named fn, so no receiver survives the
+  // lowering. Reject it uniformly (like the rules above); the enclosing
+  // value is one binding away.
+  if (auto* s = find_self_ref_in_fn_body(*ast->nodes.back())) {
+    throw CulebraError(
+        "SyntaxError",
+        "self is not available inside a generator body (a function that "
+        "uses yield) — bind it outside first (let me = self) and use that "
+        "variable, or pass it as a parameter.",
+        static_cast<long>(s->line), static_cast<long>(s->column));
   }
 
   // Annotate every body line with a `#@culebra:<original-line>` provenance marker

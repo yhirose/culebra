@@ -71,6 +71,21 @@ o.g()'
 check_same "yield in fn expr"     'let g = fn () { yield 9 }
 g()'
 
+# `self` in a generator's immediate body used to silently resolve to the
+# synthesized state object (never the enclosing receiver). Now a shared
+# parse-time SyntaxError pointing at the self token. Nested fn values and
+# labels (keys, kwargs, `x.self`) stay legal — see test_generator_self.cul.
+check_same "self in generator"        'fn g() { yield self }
+g()'
+check_same "self.prop in generator"   'fn g() { yield self.name }
+g()'
+check_same "self write in generator"  'fn g() { self.x = 1
+yield 1 }
+g()'
+check_same "let self in generator"    'fn g() { let self = 1
+yield self }
+g()'
+
 # UFCS calls to the unary global builtins (to_string/hash/type_of/to_long/
 # to_float). The JIT used to fall through to a property-get TypeError on a
 # wrong-arity call (and lacked hash/to_float entirely); now it raises the

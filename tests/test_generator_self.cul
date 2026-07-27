@@ -1,0 +1,44 @@
+// `self` and generators: the state-machine lowering runs the body inside
+// the synthesized class's methods, so a bare `self` there could only name
+// the internal state object — it is rejected at parse time (see
+// jit_error_pos_test.sh for the rejection side). This file pins what stays
+// LEGAL: non-reference spellings of `self`, nested fn values (whose `self`
+// follows their own call shape), and the sanctioned capture idiom.
+
+// A property named `self` is a label, not a reference.
+fn g_key() {
+  let o = { self: 1 }
+  yield o.self
+}
+assert_eq(g_key().collect()[0], 1)
+
+// A kwarg label named `self` likewise.
+fn kw(**opts) { opts["self"] }
+fn g_kwarg() { yield kw(self: 5) }
+assert_eq(g_kwarg().collect()[0], 5)
+
+// A nested fn value keeps its own dynamic-receiver contract: called as an
+// object-literal method, its `self` is that object.
+fn g_method() {
+  let o = { name: "obj", m: fn () { self.name } }
+  yield o.m()
+}
+assert_eq(g_method().collect()[0], "obj")
+
+// The sanctioned idiom: bind the enclosing receiver outside the generator
+// and capture the variable.
+class Holder {
+  new() { self.tag = "held" }
+  run() {
+    let me = self
+    fn g() { yield me.tag }
+    return g().collect()
+  }
+}
+assert_eq(Holder.new().run()[0], "held")
+
+// The word `self` inside string content is untouched.
+fn g_str() { yield "self service" }
+assert_eq(g_str().collect()[0], "self service")
+
+println("test_generator_self ok")

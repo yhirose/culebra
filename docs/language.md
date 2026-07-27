@@ -2033,6 +2033,21 @@ for v in two() { inspect(v); break }
 
   The check runs over what the transform pass leaves behind, so every
   backend rejects the same programs at the same position.
+* `self` may not be referenced in a generator's immediate body. The
+  body is lowered into methods of a synthesized state class, so a bare
+  `self` there could only name that internal object — never a receiver
+  (a generator is a named fn and cannot be a method). The parser
+  rejects it:
+
+      SyntaxError: self is not available inside a generator body (a
+      function that uses yield) — bind it outside first (let me = self)
+      and use that variable, or pass it as a parameter.
+
+  Only the immediate body is restricted. A nested `fn` / lambda value
+  keeps its normal `self` contract (bound by how it is called, §10), and
+  a property name, object key, or kwarg label spelled `self` is not a
+  reference. To reach an enclosing receiver, capture it first:
+  `let me = self` outside the generator, then use `me` inside.
 * A generator body cannot `perform` a bare effect operation or declare
   an `effect fn`; a self-contained `handle { ... }` expression inside
   the body does work (§16).

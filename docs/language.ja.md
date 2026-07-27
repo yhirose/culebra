@@ -1927,6 +1927,21 @@ for v in two() { inspect(v); break }
 
   この検査は変換パスが処理し終えた木に対して走るので、どのバックエンド
   でも同じプログラムを同じ位置で拒否します。
+* ジェネレータ本体の直下では `self` を参照できません。本体は合成された
+  ステートクラスのメソッド群に下ろされるため、そこでの裸の `self` は
+  その内部オブジェクトしか指せず、受け手 (receiver) には決してなりません
+  （ジェネレータは名前付き fn であり、メソッドにはできません）。パーサが
+  拒否します:
+
+      SyntaxError: self is not available inside a generator body (a
+      function that uses yield) — bind it outside first (let me = self)
+      and use that variable, or pass it as a parameter.
+
+  制約されるのは直下の本体だけです。入れ子の `fn` / lambda 値の `self`
+  は通常どおり呼び出し方に従って束縛され (§10)、`self` という綴りの
+  プロパティ名・オブジェクトキー・kwarg ラベルは参照ではないので
+  合法です。外側の receiver に触れたいときは、ジェネレータの外で
+  `let me = self` と束縛してから `me` を使います。
 * ジェネレータ本体では裸のエフェクト操作を `perform` すること、および
   `effect fn` を宣言することはできません。本体の中に自己完結した
   `handle { ... }` 式を書くのは動作します (§16)。
