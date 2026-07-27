@@ -192,6 +192,23 @@ assert_eq(Canvas.get_pixel(0, 0), RED)
 assert_eq(Canvas.get_pixel(1, 1), GREEN)          // transparent showed through
 assert_throws("ValueError", fn() { Canvas.Sprite.from_png("not a png") })
 
+// to_png is from_png's inverse: encode a sprite and load it straight back.
+let reloaded = Canvas.Sprite.from_png(png_sprite.to_png())
+assert_eq(reloaded.width(), 2)
+assert_eq(reloaded.height(), 2)
+Canvas.init(2, 2)
+Canvas.clear(GREEN)
+reloaded.draw(0, 0)
+assert_eq(Canvas.get_pixel(0, 0), RED)
+assert_eq(Canvas.get_pixel(1, 1), GREEN)          // transparency survived
+// PNG bytes hold NULs, so the round trip also pins that FS.write writes the
+// whole byte string rather than stopping at the first one.
+let png_path = FS.join(Sys.env('TMPDIR'), 'culebra_to_png_test.png')
+FS.write(png_path, png_sprite.to_png())
+assert_eq(FS.size(png_path), png_sprite.to_png().size())
+assert_eq(Canvas.Sprite.from_png(FS.read(png_path)).width(), 2)
+FS.remove(png_path)
+
 // Canvas.init sizes the framebuffer without going through run — for a program
 // that drives its own frame loop.
 Canvas.init(5, 3)
@@ -246,6 +263,11 @@ Canvas.draw_to(bg, fn () {
 })
 assert_eq(Canvas.width(), 8)                  // restored
 assert_eq(Canvas.get_pixel(1, 1), GREEN)      // framebuffer untouched
+// Canvas.to_png follows the draw target, like width/height/get_pixel.
+mut inside = ""
+Canvas.draw_to(bg, fn () { inside = Canvas.to_png() })
+assert_eq(Canvas.Sprite.from_png(inside).width(), 4)          // the sprite
+assert_eq(Canvas.Sprite.from_png(Canvas.to_png()).width(), 8) // the framebuffer
 bg.draw(0, 0)                                 // and the sprite blits back
 assert_eq(Canvas.get_pixel(1, 1), RED)
 assert_eq(Canvas.get_pixel(0, 0), BLUE)

@@ -89,6 +89,7 @@ Conventions used below:
 | Stat / walk / glob / copy / rename / symlink / chmod / chown | [§3 FS](#3-fs) |
 | Directory listing / create / remove | `FS.list_dir`, `FS.mkdir`, `FS.remove` |
 | `Instant` / `Duration`, ISO 8601, calendar arithmetic | [§5 Time](#5-time) |
+| Wrap an index that can go negative into `0..n` | [§1 Math](#1-math) — `Math.wrap(i, n)` (`%` truncates, so it stays negative) |
 | Random numbers | `Random.int`, `.uniform`, `.gauss`, `.shuffle`, `.weighted_choice` |
 | CLI argument parsing | [§10 Args](#10-args) |
 | Process info | `Sys.argv`, `Sys.exit`, `Sys.env`, `Sys.set_env`, `Sys.getcwd`, `Sys.chdir`, `Sys.executable`, `Sys.script` |
@@ -119,8 +120,8 @@ Conventions used below:
 
 ## 1. `Math`
 
-Numeric utilities. Integer-only routines (`pow`, `sign`, `clamp`)
-preserve `Long` input; the Float-domain routines (`log`, `exp`,
+Numeric utilities. Integer-only routines (`pow`, `sign`, `clamp`,
+`wrap`) preserve `Long` input; the Float-domain routines (`log`, `exp`,
 `sqrt`, …) accept either `Long` or `Float` and return the shape
 documented below. See [§4](language.md#4-types) and
 [§7](language.md#7-expressions) of the language spec for how `Long`
@@ -129,7 +130,7 @@ and `Float` interact.
 Sub-groups in this section: **constants** (`Math.pi`, `Math.e`,
 `Math.inf`, `Math.nan`) — **scalar ops** (`abs`, `min`, `max`,
 `log`, `exp`, `sqrt`, `floor`, `ceil`, `round`, `pow`, `sign`,
-`clamp`) — **trigonometry** (`sin`, `cos`, `tan`, `asin`, `acos`,
+`clamp`, `wrap`) — **trigonometry** (`sin`, `cos`, `tan`, `asin`, `acos`,
 `atan`, `atan2`, in radians). Integer-sequence factories `range` / `iota`
 are language-core globals — see [§19](language.md#19-core-built-in-functions).
 
@@ -270,6 +271,35 @@ inspect(Math.clamp(5, 0, 10))   # => 5
 inspect(Math.clamp(-5, 0, 10))  # => 0
 inspect(Math.clamp(15, 0, 10))  # => 10
 ```
+
+### `Math.wrap(x: Long, n: Long) -> Long`
+
+Wrap `x` into a span of `n` — the **floored** remainder, which `%` does
+not give: `%` truncates, so its result carries the sign of `x`
+([language spec §7](language.md#arithmetic)). `Math.wrap`'s result carries
+the sign of `n`, so a positive `n` always lands it in `[0, n)`. That is
+what a circular index wants: the element before index 0 is the last one,
+not a negative subscript.
+
+```culebra
+inspect(Math.wrap(3, 320))     # => 3
+inspect(Math.wrap(-3, 320))    # => 317
+inspect(-3 % 320)              # => -3
+inspect(Math.wrap(320, 320))   # => 0
+```
+
+The two agree wherever `x` is non-negative, so `Math.wrap` is only worth
+reaching for when `x` can go below zero — a scroll offset, a wrapped
+tile coordinate, an angle stepped backwards:
+
+```culebra
+let frames = ['a', 'b', 'c']
+let prev = fn (i) { frames[Math.wrap(i - 1, frames.size())] }
+inspect(prev(0))               # => 'c'
+```
+
+A negative `n` mirrors the whole thing — the result lands in `(n, 0]` —
+and `n` of `0` raises `divide by 0 error`, exactly as `x % 0` does.
 
 ---
 
@@ -3992,6 +4022,7 @@ not a wash), and `set_pixel`, which stores the value raw so it pairs with
 | `Canvas.triangle(x1, y1, x2, y2, x3, y3, color, fill = true)` | triangle |
 | `Canvas.polygon(points, color, fill = true)` | polygon from a flat vertex list |
 | `Canvas.width()` / `Canvas.height() -> Long` | current draw-target dimensions |
+| `Canvas.to_png() -> String` | the current draw target's pixels as PNG bytes |
 | `Canvas.present()` | show the frame (see the loop below) |
 
 Every shape takes `fill: false` to draw its one-pixel outline instead of the
@@ -4055,6 +4086,7 @@ layout the framebuffer uses; anything undecodable raises
 | `sprite.draw_sub(x, y, sx, sy, sw, sh, flip_x = false, flip_y = false, transpose = false)` | blit a sub-rectangle (for sprite sheets) |
 | `sprite.draw_scaled(x, y, w, h, flip_x = false, flip_y = false, smooth = false, alpha = 255)` | blit into the `w`×`h` rectangle at `(x, y)`, resampling to fit |
 | `sprite.draw_sub_scaled(x, y, w, h, sx, sy, sw, sh, flip_x = false, flip_y = false, smooth = false, alpha = 255)` | the same from a sub-rectangle |
+| `sprite.to_png() -> String` | the sprite's pixels as PNG bytes — `from_png`'s inverse |
 | `sprite.width()` / `sprite.height()` | sprite dimensions |
 
 The scaling blits sample nearest-neighbour, so pixel art scaled up stays crisp;
@@ -4093,6 +4125,31 @@ Canvas.run(320, 240, fn () {
 Two things refuse with a `ValueError`: drawing a sprite onto itself (a blit
 would read its own writes), and freeing the sprite currently drawn to. Both
 are backend-symmetric, like every Canvas error.
+
+### Saving an image
+
+`sprite.to_png()` and `Canvas.to_png()` answer PNG bytes, so writing one out
+is `FS.write` of the result and reading it back is the `from_png` that already
+existed. `Canvas.to_png()` follows the **current draw target**, the way
+`width` / `height` / `get_pixel` do — inside a `draw_to` it encodes the sprite
+being drawn into, outside it encodes the framebuffer.
+
+```culebra
+# doctest: skip
+Canvas.init(320, 240)
+Canvas.clear(Canvas.rgba(24, 24, 32))
+Canvas.circle(160, 120, 40, Canvas.rgba(240, 180, 90))
+FS.write("shot.png", Canvas.to_png())          # a screenshot
+
+let tile = Canvas.Sprite.blank(16, 16)         # or render one offscreen
+Canvas.draw_to(tile, fn () { Canvas.clear(Canvas.rgba(80, 200, 120)) })
+FS.write("tile.png", tile.to_png())
+```
+
+Output is 8-bit truecolour with alpha, one `IDAT`, each row filtered by the
+choice that scores smallest — so flat, dithered pixel art compresses close to
+what a dedicated encoder gets. An image with no pixels (`Canvas.init(0, 0)`)
+and a sprite handle that has been freed both raise `ValueError`.
 
 ### Text
 

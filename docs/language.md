@@ -542,6 +542,9 @@ natural.
   truncate toward zero (not floored, so the sign of the operands does
   not change the direction).
   `7 / 2 == 3`, `-7 % 3 == -1`. Overflow wraps (no bignum).
+  For the floored remainder — the one that wraps a negative index into
+  `0..n` instead of leaving it negative — use
+  [`Math.wrap`](stdlib.md#mathwrapx-long-n-long---long).
 * **Either operand `Float` → `Float`.** The `Long` operand is
   promoted to `Float` and the operation runs in IEEE 754 binary64.
   `1 + 2.0 == 3.0`, `3 / 2.0 == 1.5`.
@@ -3822,6 +3825,7 @@ inspect(seen)   # => [1, 2]
 | `a.min_by(f: Function) -> Any`              | Element whose key `f(x)` is smallest; `f` must take one parameter and return a `Long` or `Float`. Each key is computed once, and ties keep the earlier element. Throws on empty. |
 | `a.max_by(f: Function) -> Any`              | Element whose key `f(x)` is largest. Same rules as `min_by`. |
 | `a.to_set() -> Set`                         | Fresh `Set` of the elements in first-seen order, duplicates dropped. Set literals aside, this is how a `Set` is built from a collection. Unhashable elements throw. |
+| `a.to_object() -> Object`                   | Fresh `Object` from `(key, value)` tuples — the inverse of `Object.iter()`, so a table can be built as an expression instead of a `mut` + loop. Keys keep first-seen order and a repeat overwrites in place (last value, first position). Entries are **immutable**, like `group_by`'s; `{...built}` is the mutable copy. An element that is not a 2-tuple raises `TypeError`; an unhashable key throws like any other. |
 | `a.group_by(f: Function) -> Object`         | Buckets elements into Arrays keyed by `f(x)`, in first-seen key order; `f` must take one parameter and return a hashable key. |
 | `a.partition(p: Function) -> Tuple`         | One-pass split into `(matching, non_matching)`, order preserved in both halves. `p` must take one parameter. Destructures: `let (yes, no) = xs.partition(p)`. |
 | `a.sort(reverse: Bool = false) -> Nil` *(mutating)* | Stable-sort in place in natural order — elements compare by the same rule as `<`, so an Object's `__lt__` / `cmp` is honored (a `Path` array sorts) and incomparable elements throw. Keyword-only `reverse: true` sorts descending (still stable). |
@@ -3918,6 +3922,19 @@ inspect(groups)               # => {a: ['apple', 'avocado'], b: ['banana']}
 mut p = {a: 1, b: 2}
 p.remove('a')
 inspect(p)                    # => {b: 2}
+```
+
+`o.iter()` yields `(key, value)` tuples and `to_object()` consumes them, so
+a whole table is one expression — no `mut` accumulator to declare:
+
+```culebra
+mut prices = {apple: 100, banana: 80}
+# Remap the values:
+inspect(prices.iter().map(|(k, v)| (k, v * 2)).to_object())
+# => {apple: 200, banana: 160}
+# Invert it:
+inspect(prices.iter().map(|(k, v)| (v, k)).to_object())
+# => {100: 'apple', 80: 'banana'}
 ```
 
 ### 18.4 Special identifiers
@@ -4100,6 +4117,7 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 | `it.min_by(f)` | Any | element with the smallest key `f(x)`; ties keep the earlier one. Throws on empty |
 | `it.max_by(f)` | Any | element with the largest key `f(x)`; ties keep the earlier one. Throws on empty |
 | `it.to_set()` | `Set` | members in first-seen order, duplicates dropped |
+| `it.to_object()` | `Object` | `(key, value)` tuples into an Object — the inverse of `Object.iter()`. Keys in first-seen order, a repeat overwriting in place; entries immutable. A non-2-tuple element raises `TypeError` |
 | `it.group_by(f)` | `Object` | buckets elements into Arrays keyed by `f(x)`, in first-seen key order |
 | `it.partition(p)` | `Tuple` | `(matching, non_matching)` in one pass, order preserved in both halves |
 

@@ -840,6 +840,12 @@ let tps = [
   '[1, 2].max_by(|x| "k")', '[].min_by(|x| x)', '[].iter().max_by(|x| x)',
   '[1, 2, 2].to_set()', '[1, 2, 2].iter().to_set()', '[[1]].to_set()',
   '[1, 1.0, true].to_set()', '[].to_set()',
+  '[("a", 1), ("b", 2)].to_object()', '[("a", 1), ("b", 2)].iter().to_object()',
+  '[("a", 1), ("a", 9)].to_object()', '[].to_object()', '[].iter().to_object()',
+  '[(1, "x"), (true, "y"), (1.5, "z")].to_object()',
+  '[1, 2].to_object()', '[("a", 1, 2)].iter().to_object()',
+  '[([1], "v")].to_object()', '[nil].to_object()',
+  '{a: 1, b: 2}.iter().map(|(k, v)| (k, v * 2)).to_object()',
   '[1, 2, 3].group_by(|x| x % 2)', '[1, 2, 3].iter().group_by(|x| x % 2)',
   '[1, 2].group_by(|x| [x])', '[1, "x"].group_by(fn (v: Long) { v })',
   '[1, 2, 3].partition(|x| x > 1)', '[1, 2, 3].iter().partition(|x| x > 1)',
@@ -1509,6 +1515,17 @@ let cvpngs = ['_PNG_RGBA', '_PNG_RGB', '_PNG_GREY', '_PNG_GREYA', '_PNG_PAL',
 for p in cvpngs {
   case("cvpng|" + p, 'let id = _Canvas.sprite_from_png(' + p + '); let w = _Canvas.sprite_width(id); let h = _Canvas.sprite_height(id); _Canvas.init(w, h); _Canvas.clear(0); _Canvas.blit(id, 0, 0, 0, 0, w, h, 0); to_string(w) + "x" + to_string(h) + ":" + to_string(_Canvas.get_pixel(0, 0)) + "," + to_string(_Canvas.get_pixel(w - 1, h - 1))')
 }
+# PNG encoding: the round trip has to reproduce the pixels, and the two
+# rejections (stale handle, empty target) have to be the shared ValueError.
+for p in ['_PNG_RGBA', '_PNG_RGB', '_PNG_GREY', '_PNG_PAL'] {
+  case("cvtopng|" + p, 'let a = _Canvas.sprite_from_png(' + p + '); let b = _Canvas.sprite_from_png(_Canvas.sprite_to_png(a)); let w = _Canvas.sprite_width(b); let h = _Canvas.sprite_height(b); _Canvas.init(w, h); _Canvas.clear(0); _Canvas.blit(b, 0, 0, 0, 0, w, h, 0); to_string(w) + "x" + to_string(h) + ":" + to_string(_Canvas.get_pixel(0, 0)) + "," + to_string(_Canvas.get_pixel(w - 1, h - 1))')
+}
+for id in ['0', '9999', '-1', 'nil', '"x"'] {
+  case("cvtopngerr|" + id, '_Canvas.init(2, 1); _Canvas.clear(_CA+9); _Canvas.sprite_to_png(' + id + ').size()')
+}
+case("cvtopng|empty", '_Canvas.init(0, 0); _Canvas.sprite_to_png(0).size()')
+case("cvtopng|target", '_Canvas.init(4, 4); _Canvas.clear(_CA+1); let s = _Canvas.sprite_blank(2, 3, _CA+2); _Canvas.target(s); let inner = _Canvas.sprite_to_png(0).size(); _Canvas.target(0); [inner > 0, _Canvas.sprite_to_png(0).size() > 0]')
+
 for al in ['0', '1', '64', '128', '191', '254', '255', '256', '-1', '1.5', '"x"'] {
   case("cvalpha|" + al, '_Canvas.init(2, 1); _Canvas.clear(_CA+9); _Canvas.blit_scaled(' + cvsprite + ', 0, 0, 2, 1, 0, 0, 2, 1, 0, ' + al + '); to_string(_Canvas.get_pixel(0, 0)) + "," + to_string(_Canvas.get_pixel(1, 0))')
 }

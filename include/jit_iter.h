@@ -3476,6 +3476,37 @@ inline JitSet* _collect_set_jit(Each each, int64_t line, int64_t col) {
   return out;
 }
 
+// `(key, value)` pairs into an Object. Keys keep first-seen order and a
+// repeat overwrites in place (is_init, matching the interp's `initialize`);
+// entries are immutable, like group_by's. The hashability check runs before
+// either half is handed off, so an unhashable key strands nothing.
+template <typename Each>
+inline JitObject* _collect_to_object_jit(Each each, int64_t line, int64_t col) {
+  auto* out = culebra_runtime_object_new();
+  JitOwnedVal out_guard(JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(out)});
+  each([&](JitValue v) {
+    JitOwnedVal vg(v);
+    auto* pair =
+        v.tag == TAG_TUPLE ? reinterpret_cast<JitArray*>(v.data) : nullptr;
+    if (pair == nullptr || pair->size != 2) {
+      throw culebra::CulebraError(
+          "TypeError", "type error: to_object expects (key, value) tuples",
+          line, col);
+    }
+    auto k = pair->items[0];
+    auto val = pair->items[1];
+    _culebra_hash_at(line, col, [&] { return JitValueHash{}(k); });
+    // set_any consumes one ref of each half; the tuple still holds its own.
+    culebra_runtime_value_retain(k.tag, k.data);
+    culebra_runtime_value_retain(val.tag, val.data);
+    culebra_runtime_object_set_any(out, k.tag, k.data, /*mut*/ false,
+                                   val.tag, val.data, line, col,
+                                   /*is_init*/ true);
+  });
+  out_guard.consume();
+  return out;
+}
+
 // Buckets are Arrays in first-seen key order. The key's hashability is
 // checked up front so an unhashable key reports at this call site (and so
 // neither the key nor the fresh bucket is stranded when it does).
@@ -3546,6 +3577,19 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_iter_to_set(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_array_to_set(
     JitArray* arr, int64_t line, int64_t col) {
   return _collect_set_jit(
+      [&](auto emit) { _each_of_jit_array(arr, emit); }, line, col);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_to_object(
+    int8_t it, int64_t id, int64_t line, int64_t col) {
+  JitIterDrive drive{it, id};
+  return _collect_to_object_jit(
+      [&](auto emit) { _each_of_jit_iter(drive, emit); }, line, col);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_array_to_object(
+    JitArray* arr, int64_t line, int64_t col) {
+  return _collect_to_object_jit(
       [&](auto emit) { _each_of_jit_array(arr, emit); }, line, col);
 }
 

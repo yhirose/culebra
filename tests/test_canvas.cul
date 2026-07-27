@@ -423,6 +423,43 @@ assert_eq(try { _Canvas.sprite_from_png(5) } catch e { e.message },
 assert_eq(_Canvas.sprite_width(-1), 0)
 assert_eq(_Canvas.sprite_height(9999), 0)
 
+// --- sprite_to_png: the inverse, byte-exact through a decode round trip ---
+// Encode each decoded fixture back out and decode again: the pixels must be
+// the ones the framebuffer holds, whatever colour type came in (everything
+// encodes as 8-bit truecolour + alpha).
+fn reencoded_pixels(hex) {
+  let id = _Canvas.sprite_from_png(Encoding.hex.decode(hex))
+  png_pixels(Encoding.hex.encode(_Canvas.sprite_to_png(id)))
+}
+assert_eq(reencoded_pixels(PNG_RGBA), [RED, GREEN, BLUE, CLEAR])
+assert_eq(reencoded_pixels(PNG_RGB), [RED, GREEN, BLUE, WHITE])
+assert_eq(reencoded_pixels(PNG_GREY), [BLACK, WHITE])
+assert_eq(reencoded_pixels(PNG_PAL), [RED, GREEN, BLUE, CLEAR])
+
+// The output is a real PNG: signature, then IHDR's big-endian w/h. A String is
+// a byte string, so the embedded NULs are bytes like any other.
+let encoded = _Canvas.sprite_to_png(_Canvas.sprite_from_png(
+    Encoding.hex.decode(PNG_RGBA)))
+assert_eq(encoded.bytes().collect().slice(0, 8), [137, 80, 78, 71, 13, 10, 26, 10])
+assert_eq(encoded.bytes().collect().slice(12, 16), [73, 72, 68, 82])   // "IHDR"
+assert_eq(encoded.bytes().collect().slice(16, 24), [0, 0, 0, 2, 0, 0, 0, 2])
+assert_true(encoded.size() > 24)
+
+// id 0 encodes the CURRENT draw target, which is what Canvas.to_png() passes.
+_Canvas.init(3, 2)
+_Canvas.clear(RED)
+assert_eq(png_pixels(Encoding.hex.encode(_Canvas.sprite_to_png(0))),
+          [RED, RED, RED, RED, RED, RED])
+
+// A stale handle raises rather than reading freed pixels; an empty target has
+// nothing to encode.
+assert_eq(try { _Canvas.sprite_to_png(9999) } catch e { e.kind + "|" + e.message },
+          "ValueError|not a live sprite handle")
+_Canvas.init(0, 0)
+assert_eq(try { _Canvas.sprite_to_png(0) } catch e { e.message },
+          "image has no pixels")
+_Canvas.init(4, 4)
+
 _Canvas.init(4, 4)
 
 // --- host-driven prims: headless returns 0 / no-ops (called for symmetry) ---

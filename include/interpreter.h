@@ -4241,16 +4241,35 @@ inline Value _iter_numeric_extreme_by(Value upstream, const Value& f,
   return best;
 }
 
-// to_set / group_by / partition, written once over an element source so the
-// eager Array forms and the streaming Iterator terminals cannot drift. The
-// source calls `emit` per element; the Array form walks its vector, the
-// Iterator form pulls until exhausted.
+// to_set / to_object / group_by / partition, written once over an element
+// source so the eager Array forms and the streaming Iterator terminals cannot
+// drift. The source calls `emit` per element; the Array form walks its vector,
+// the Iterator form pulls until exhausted.
 
 // Drain into a Set: duplicates collapse, first-seen order is kept.
 template <typename ForEach>
 inline Value _collect_set(ForEach each) {
   SetValue out;
   each([&](Value v) { out.add(std::move(v)); });
+  return Value(std::move(out));
+}
+
+// Drain `(key, value)` pairs into an Object — the inverse of `Object.iter()`,
+// so a table can be built as an expression instead of a `mut` + loop. Keys
+// keep first-seen order and a repeat overwrites in place, matching `o[k] = v`.
+// Entries are immutable, like `group_by`'s: the result is a fresh value, and
+// `{...built}` is how you ask for a mutable copy.
+template <typename ForEach>
+inline Value _collect_to_object(ForEach each) {
+  ObjectValue out;
+  each([&](Value v) {
+    if (v.type != Value::Tuple || v.to_tuple().elements->size() != 2) {
+      throw CulebraError("TypeError",
+                         "type error: to_object expects (key, value) tuples");
+    }
+    auto& pair = *v.to_tuple().elements;
+    out.initialize(pair[0], pair[1], false);  // insert, or overwrite in place
+  });
   return Value(std::move(out));
 }
 
@@ -4859,6 +4878,11 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          const auto& arr = callEnv->get("self").to_array();
          return _collect_set(_each_of_array(*arr.values));
+       }))},
+      {"to_object"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         const auto& arr = callEnv->get("self").to_array();
+         return _collect_to_object(_each_of_array(*arr.values));
        }))},
       {"group_by"sv,
        Value(FunctionValue({{"f", false, "Function"sv}},
@@ -6425,6 +6449,11 @@ inline std::unordered_map<std::string_view, IterBuiltin>& iterator_builtins() {
       {"to_set"sv,
        {Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          return _collect_set(_each_of_iter(callEnv->get("self")));
+       })), Terminal}},
+
+      {"to_object"sv,
+       {Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         return _collect_to_object(_each_of_iter(callEnv->get("self")));
        })), Terminal}},
 
       {"group_by"sv,

@@ -393,7 +393,7 @@ static constexpr bool kEmbedsWebview =
 // Adding an axis is one row here plus its CMake link fragment — the scan, the
 // force-load and the link append all read this table.
 struct FeatureAxis {
-  const char* names[2];    // namespaces that trigger it (second may be null)
+  const char* names[3];    // namespaces that trigger it (trailing may be null)
   const char* archive;     // force-loaded on a hit
   const char* link_flags;  // appended on a hit ("" when built out)
   bool embedded;           // this driver carries `archive`
@@ -407,7 +407,13 @@ static constexpr FeatureAxis kFeatureAxes[] = {
     // lighter for skipping it.
     {{"Http"}, "libculebra_rt_http.a", CULEBRA_SSL_LINK, true},
     // A duplicate -lz when Http is also used is harmless (the linker dedupes).
-    {{"Compress"}, "libculebra_rt_compress.a", CULEBRA_ZLIB_LINK, true},
+    // `to_png` rides this axis: the PNG encoder deflates through the same zlib
+    // choke (see image.h), so a program that encodes an image needs the archive
+    // even when it never names `Compress`. Both spellings are listed — the
+    // public method and the `_Canvas` primitive the Canvas tests call — because
+    // missing one links the weak stub and the call raises "runtime not linked".
+    {{"Compress", "to_png", "sprite_to_png"},
+     "libculebra_rt_compress.a", CULEBRA_ZLIB_LINK, true},
     // The archive bundles the amalgamation object too, so a force-loaded
     // culebra_rt_sqlite is self-contained; the flags are its platform deps.
     {{"SQLite"}, "libculebra_rt_sqlite.a", CULEBRA_SQLITE_LINK, kEmbedsSqlite},

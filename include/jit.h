@@ -4574,8 +4574,12 @@ struct JIT {
                                  builder_.getInt8Ty(), builder_.getInt64Ty(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
-    // to_set/group_by/partition return a fresh Set / Object / Tuple pointer.
+    // to_set/to_object/group_by/partition return a fresh Set / Object /
+    // Object / Tuple pointer.
     module_->getOrInsertFunction(rt::array_to_set, ptrTy, ptrTy,
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::array_to_object, ptrTy, ptrTy,
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::array_group_by, ptrTy, ptrTy,
@@ -16320,8 +16324,10 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
       // The eager arm answers a new Array; the lazy arm a new iterator.
       {"flat_map",  rt::array_flat_map,  rt::iter_flat_map,  DA::Callback, DR::Array,    DR::Object},
       // to_set is the only way to build a Set from a collection, so it
-      // serves both receivers too.
+      // serves both receivers too — and to_object is its Object twin, the
+      // only way back from `(key, value)` pairs.
       {"to_set",    rt::array_to_set,    rt::iter_to_set,    DA::None,     DR::Set,      DR::Set},
+      {"to_object", rt::array_to_object, rt::iter_to_object, DA::None,     DR::Object,   DR::Object},
       // find answers nil when nothing matches, so it loads through out-params.
       {"find",      rt::array_find,      rt::iter_find,      DA::Callback, DR::OutParam, DR::OutParam},
       // reduce fuses on BOTH arms (its emitters share the (receiver, seed,

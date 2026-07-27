@@ -509,6 +509,9 @@ Culebra はシャドウを 3 つの軸で独立に扱います:
   捨て（床方向ではないので、符号によって丸め方向は変わらない）。
   `7 / 2 == 3`、
   `-7 % 3 == -1`。オーバーフローはラップ（多倍長なし）。
+  床剰余 — 負のインデックスを負のままにせず `0..n` に巻き戻す方 —
+  が欲しい場合は
+  [`Math.wrap`](stdlib.ja.md#mathwrapx-long-n-long---long) を使います。
 * **いずれかが `Float` → `Float`**。`Long` 側は `Float` に昇格し、
   IEEE 754 binary64 で計算します。`1 + 2.0 == 3.0`、
   `3 / 2.0 == 1.5`。
@@ -3618,6 +3621,7 @@ inspect(seen)   # => [1, 2]
 | `a.min_by(f: Function) -> Any`              | キー `f(x)` が最小の要素。`f` は 1 引数を受け取り `Long` か `Float` を返す必要あり。キーは各要素につき 1 回だけ計算し、同値なら先に現れた方を返す。空配列では例外 |
 | `a.max_by(f: Function) -> Any`              | キー `f(x)` が最大の要素。規則は `min_by` と同じ |
 | `a.to_set() -> Set`                         | 要素を初出順に持つ新しい `Set`（重複は除去）。Set リテラル以外でコレクションから `Set` を作る唯一の手段。ハッシュ不可の要素は例外 |
+| `a.to_object() -> Object`                   | `(key, value)` タプル列から新しい `Object` を作る。`Object.iter()` の逆なので、テーブルを `mut` + ループでなく式として組める。キーは初出順を保ち、重複したキーはその位置のまま値だけ上書き（後勝ち）。エントリは `group_by` と同じく **immutable**（可変コピーが要るなら `{...built}`）。要素が 2 要素タプルでなければ `TypeError`、ハッシュ不可のキーは通常どおり例外 |
 | `a.group_by(f: Function) -> Object`         | `f(x)` をキーに要素を Array へ振り分ける（キーは初出順）。`f` は 1 引数を受け取り、ハッシュ可能なキーを返す必要あり |
 | `a.partition(p: Function) -> Tuple`         | 1 パスで `(条件を満たす, 満たさない)` に分割し、両方とも順序を保つ。`p` は 1 引数を受け取る。分配束縛できる: `let (yes, no) = xs.partition(p)` |
 | `a.sort(reverse: Bool = false) -> Nil` *(破壊的)* | 自然順で in-place 安定ソート。要素は `<` と同じ規則で比較し、Object の `__lt__` / `cmp` を尊重する（`Path` 配列もソート可）。比較不能な要素は throw。キーワード専用 `reverse: true` で降順（安定のまま） |
@@ -3712,6 +3716,19 @@ inspect(groups)               # => {a: ['apple', 'avocado'], b: ['banana']}
 mut p = {a: 1, b: 2}
 p.remove('a')
 inspect(p)                    # => {b: 2}
+```
+
+`o.iter()` が `(key, value)` タプルを返し、`to_object()` がそれを受けるので、
+テーブル 1 つが式で書けます（`mut` のアキュムレータを宣言する必要がない）:
+
+```culebra
+mut prices = {apple: 100, banana: 80}
+# 値を変換する:
+inspect(prices.iter().map(|(k, v)| (k, v * 2)).to_object())
+# => {apple: 200, banana: 160}
+# 反転する:
+inspect(prices.iter().map(|(k, v)| (v, k)).to_object())
+# => {100: 'apple', 80: 'banana'}
 ```
 
 ### 18.4 特殊識別子
@@ -3891,6 +3908,7 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 | `it.min_by(f)` | Any | キー `f(x)` が最小の要素。同値なら先に現れた方。空では例外 |
 | `it.max_by(f)` | Any | キー `f(x)` が最大の要素。同値なら先に現れた方。空では例外 |
 | `it.to_set()` | `Set` | 初出順のメンバー、重複は除去 |
+| `it.to_object()` | `Object` | `(key, value)` タプルを Object へ — `Object.iter()` の逆。キーは初出順、重複はその位置で上書き、エントリは immutable。2 要素タプルでない要素は `TypeError` |
 | `it.group_by(f)` | `Object` | `f(x)` をキーに要素を Array へ振り分ける。キーは初出順 |
 | `it.partition(p)` | `Tuple` | 1 パスで `(条件を満たす, 満たさない)` に分割。両方とも順序を保つ |
 

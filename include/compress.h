@@ -7,8 +7,10 @@
 // representation (mirrors http.h / proc.h). Errors are reported in a
 // value-neutral Result.error so this header needs no culebra error type.
 //
-// gzip()/gunzip() are the single zlib choke: deflate/inflate (the only code
-// that pulls in libz) is reached only from these bodies. Their linkage is
+// gzip()/gunzip()/deflate_zlib() are the single zlib choke: deflate/inflate
+// (the only code that pulls in libz) is reached only from these bodies —
+// including from the PNG encoder in image.h, which is why `to_png` is gated on
+// the same AST scan as the Compress namespace. Their linkage is
 // partitioned across the AOT runtime archives exactly like http_request /
 // tensor_eval_node:
 //   - core archive     (CULEBRA_RT_COMPRESS_WEAK):   weak stub, no zlib symbol,
@@ -61,6 +63,41 @@ CULEBRA_RT_COMPRESS_LINKAGE Result gzip(std::string_view data) {
   std::string out;
   // deflateBound is a tight upper bound on the compressed size — reserve it so
   // the chunk-append loop never reallocates.
+  out.reserve(deflateBound(&zs, static_cast<uLong>(data.size())));
+  unsigned char buf[16384];
+  int ret;
+  do {
+    zs.next_out = buf;
+    zs.avail_out = sizeof(buf);
+    ret = deflate(&zs, Z_FINISH);
+    out.append(reinterpret_cast<char*>(buf), sizeof(buf) - zs.avail_out);
+  } while (ret == Z_OK);
+  deflateEnd(&zs);
+  if (ret != Z_STREAM_END) return {{}, "deflate failed"};
+  return {std::move(out), {}};
+#endif
+}
+
+// Deflate `data` into an RFC 1950 (zlib) stream — the wrapper a PNG `IDAT`
+// holds, so image.h's encoder reaches deflate only through this same choke
+// and a program that encodes no PNG links no libz. `level` is 0-9.
+CULEBRA_RT_COMPRESS_LINKAGE Result deflate_zlib(std::string_view data,
+                                                int level) {
+#if defined(CULEBRA_RT_COMPRESS_WEAK)
+  (void)data;
+  (void)level;
+  return {{}, "runtime not linked (no Compress use detected at build)"};
+#else
+  if (data.size() > 0xFFFFFFFFull) return {{}, "input too large"};
+  z_stream zs{};
+  // windowBits 15 (no +16) selects the zlib wrapper — the adler32 trailer a
+  // PNG decoder checks.
+  if (deflateInit2(&zs, level, Z_DEFLATED, 15, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+    return {{}, "deflate init failed"};
+  }
+  zs.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(data.data()));
+  zs.avail_in = static_cast<uInt>(data.size());
+  std::string out;
   out.reserve(deflateBound(&zs, static_cast<uLong>(data.size())));
   unsigned char buf[16384];
   int ret;

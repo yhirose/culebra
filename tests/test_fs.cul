@@ -63,6 +63,21 @@ assert_true(FS.is_file(f1))
 assert_eq(FS.size(f1), 3)
 assert_eq(FS.size(f2), 19)
 
+// A String is a byte string, so FS.write writes ALL of it — embedded NULs are
+// content, not a terminator. (The JIT used to strlen the buffer here and
+// truncate every binary write to its first NUL, while interp wrote it whole.)
+let binary = "AB" + String.from_bytes([0, 0, 67]) + "DE"
+FS.write(f1, binary)
+assert_eq(FS.size(f1), 7)
+assert_eq(FS.read(f1), binary)
+assert_eq(FS.read(f1).bytes().collect(), [65, 66, 0, 0, 67, 68, 69])
+// A leading NUL leaves nothing before it, and an all-NUL body is still bytes.
+FS.write(f1, String.from_bytes([0, 1, 2]))
+assert_eq(FS.size(f1), 3)
+FS.write(f1, "")
+assert_eq(FS.size(f1), 0)
+FS.write(f1, "hi\n")
+
 let names = FS.list_dir(dir)
 assert_eq(names.size(), 2)
 // Order isn't guaranteed across platforms, so check containment.

@@ -649,6 +649,36 @@ assert_eq([1, 1.0, true].to_set(), {1, 1.0, true})
 try { [[1]].to_set(); assert_true(false) } catch e { assert_eq(e.kind, "TypeError") }
 try { [[1]].iter().to_set(); assert_true(false) } catch e { assert_eq(e.kind, "TypeError") }
 
+# to_object is to_set's Object twin: the way back from (key, value) pairs,
+# so a lookup table is an expression (a `let`) instead of a `mut` + loop.
+assert_eq([('a', 1), ('b', 2)].to_object(), {a: 1, b: 2})
+assert_eq([('a', 1), ('b', 2)].iter().to_object(), {a: 1, b: 2})
+assert_eq([].to_object().size(), 0)
+assert_eq([].iter().to_object().size(), 0)
+# It inverts Object.iter(), so the pair round-trips and a value remap is a chain.
+mut src = {a: 1, b: 2, c: 3}
+assert_eq(src.iter().to_object(), src)
+assert_eq(src.iter().map(|(k, v)| (k, v * 10)).to_object(), {a: 10, b: 20, c: 30})
+assert_eq(['x', 'y'].enumerate().map(|(i, n)| (n, i)).to_object(), {x: 0, y: 1})
+# A repeated key overwrites in place: last value, first-seen position.
+assert_eq([('a', 1), ('b', 2), ('a', 9)].to_object(), {a: 9, b: 2})
+assert_eq([('a', 1), ('b', 2), ('a', 9)].to_object().keys(), ['a', 'b'])
+# Non-String keys work, exactly as `o[k] = v` does.
+assert_eq([(1, 'x'), (2, 'y')].to_object()[1], 'x')
+assert_eq([(1, 'x'), ('s', 'y'), (true, 'z')].to_object().size(), 3)
+# Entries are immutable, like group_by's — `{...built}` is the mutable copy.
+mut built = [('a', 1)].to_object()
+try { built.a = 2; assert_true(false) } catch e { assert_eq(e.kind, "ImmutableError") }
+mut copied = {...built}
+copied.a = 2
+assert_eq(copied.a, 2)
+# An element that is not a 2-tuple, and an unhashable key, both report here.
+try { [1, 2].to_object(); assert_true(false) }
+catch e { assert_eq(e.message, "type error: to_object expects (key, value) tuples") }
+try { [('a', 1, 2)].iter().to_object(); assert_true(false) }
+catch e { assert_eq(e.message, "type error: to_object expects (key, value) tuples") }
+try { [([1], 'v')].to_object(); assert_true(false) } catch e { assert_eq(e.kind, "TypeError") }
+
 # group_by buckets into Arrays under f(x), in first-seen key order.
 mut staff = [{n: 'a', d: 'eng'}, {n: 'b', d: 'ops'}, {n: 'c', d: 'eng'}]
 assert_eq(staff.group_by(|p| p.d).eng.size(), 2)

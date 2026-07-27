@@ -58,7 +58,8 @@ inline const std::unordered_set<std::string_view>& builtin_method_names() {
       "any",        "all",         "flat_map",   "sort_by",    "sorted_by",
       "sort",       "sorted",
       "sum",        "product",     "min",        "max",        "collect",
-      "min_by",     "max_by",     "to_set",     "group_by",   "partition",
+      "min_by",     "max_by",     "to_set",     "to_object",  "group_by",
+      "partition",
       "count",      "take",        "skip",       "take_while", "chain",
       "zip",        "enumerate",   "code_points","graphemes",  "iter",
       "chunks",     "windows",     "skip_while", "first",      "last",
@@ -844,6 +845,16 @@ inline long ipow_nonneg(long base, long exp) {
     if (exp > 0) base *= base;
   }
   return r;
+}
+
+// Floored remainder — the one `%` does not give, since `%` truncates.
+// The result carries the sign of `n`, so a positive `n` lands it in
+// `[0, n)`: the wrap a circular index wants. `n == 0` is the caller's
+// to reject. Single source for interp and JIT.
+inline long floored_mod(long x, long n) {
+  if (n == -1) return 0;  // LONG_MIN % -1 overflows; the answer is 0 anyway
+  long r = x % n;
+  return (r != 0 && (r < 0) != (n < 0)) ? r + n : r;
 }
 
 // Trim ASCII whitespace from both ends of a string view, returning the

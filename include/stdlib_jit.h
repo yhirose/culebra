@@ -140,21 +140,32 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_read_file(
   return _culebra_heap_str(s);
 }
 
+// The content arrives as (tag, data), not a bare `const char*`: a culebra
+// String is a BYTE string, so its length has to come from the string's own
+// header rather than strlen — which stopped at the first NUL and truncated
+// every binary write (a PNG, a gzip blob) to its first few bytes under the
+// JIT while the interp wrote it whole.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_write_file(
-    const char* path, const char* content, int64_t line, int64_t col) {
+    const char* path, int8_t tag, int64_t data, int64_t line, int64_t col) {
   std::ofstream ofs(path, std::ios::binary);
   if (!ofs) {
     throw culebra::CulebraError("IOError",
         std::format("FS.write: cannot open '{}'", path), line, col);
   }
-  auto len = std::strlen(content);
-  ofs.write(content, static_cast<std::streamsize>(len));
+  auto sv = _culebra_str_view(tag, data);
+  ofs.write(sv.data(), static_cast<std::streamsize>(sv.size()));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_math_pow(
     int64_t base, int64_t exp, int64_t line, int64_t col) {
   if (exp < 0) culebra::throw_type_error_at(line, col);
   return culebra::ipow_nonneg(base, exp);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_math_wrap(
+    int64_t x, int64_t n, int64_t line, int64_t col) {
+  if (n == 0) culebra_runtime_div_zero(line, col);
+  return culebra::floored_mod(x, n);
 }
 
 #define CUL_MATH_F2F(name, call)                                        \
@@ -786,6 +797,18 @@ culebra_runtime_canvas_sprite_from_png(uint8_t tag, int64_t data, int64_t line,
   if (!d.error.empty())
     throw culebra::CulebraError("ValueError", d.error, line, col);
   return culebra::_canvas_detail::sprite_adopt(std::move(d.px), d.w, d.h);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char*
+culebra_runtime_canvas_sprite_to_png(
+    int64_t id, int64_t line, int64_t col) {
+  auto t = culebra::_canvas_detail::readback_target(id);
+  if (t.px == nullptr)
+    throw culebra::CulebraError("ValueError", "not a live sprite handle", line,
+                                col);
+  auto e = culebra::image::encode_png(t.px, t.w, t.h);
+  if (!e.error.empty())
+    throw culebra::CulebraError("ValueError", e.error, line, col);
+  return _culebra_heap_str(e.data);
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_sprite_blank(
     int64_t w, int64_t h, int64_t rgba) {
@@ -3812,8 +3835,8 @@ inline JitValue _ns_fs_read(JitValue* a, int64_t) {
       culebra_runtime_read_file(_ns_adapt::take_path(a[0]), 0, 0));
 }
 inline JitValue _ns_fs_write(JitValue* a, int64_t) {
-  culebra_runtime_write_file(_ns_adapt::take_path(a[0]),
-                              _ns_adapt::take_str(a[1]), 0, 0);
+  culebra_runtime_write_file(_ns_adapt::take_path(a[0]), a[1].tag, a[1].data,
+                             0, 0);
   return _ns_adapt::v_nil();
 }
 
@@ -3933,6 +3956,10 @@ inline JitValue _ns_math_clamp(JitValue* a, int64_t) {
   auto lo = _ns_adapt::take_long(a[1]);
   auto hi = _ns_adapt::take_long(a[2]);
   return _ns_adapt::v_long(x < lo ? lo : (x > hi ? hi : x));
+}
+inline JitValue _ns_math_wrap(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_math_wrap(
+      _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1]), 0, 0));
 }
 
 // FS
@@ -6484,6 +6511,7 @@ inline const NsMethod kNsMethods[] = {
   {"Math",   "pow",       2, &_ns_math_pow},
   {"Math",   "sign",      1, &_ns_math_sign},
   {"Math",   "clamp",     3, &_ns_math_clamp},
+  {"Math",   "wrap",      2, &_ns_math_wrap},
 
   {"FS",     "join",     -1, &_ns_fs_join},
   {"FS",     "basename",  1, &_ns_fs_basename, nullptr, "String|Path", "path"},
@@ -7651,9 +7679,14 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::read_file, ptrTy, ptrTy,
                                jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::write_file,
-                               jit.builder_.getVoidTy(), ptrTy, ptrTy,
+                               jit.builder_.getVoidTy(), ptrTy,
+                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
                                jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::math_pow,
+                               jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::math_wrap,
                                jit.builder_.getInt64Ty(),
                                jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty(),
                                jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
@@ -7821,6 +7854,8 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::canvas_sprite_load, i64, ptrTy, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_sprite_from_png, i64,
                                    jit.builder_.getInt8Ty(), i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_sprite_to_png, ptrTy, i64, i64,
+                                   i64);
   jit.module_->getOrInsertFunction(rt::canvas_sprite_width, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_sprite_height, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_sprite_blank, i64, i64, i64, i64);
@@ -7955,8 +7990,10 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                i8, i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::iter_max_by, jit.valueType_, i8, i64,
                                i8, i64, i64, i64);
-  // to_set/group_by/partition return a fresh Set / Object / Tuple pointer.
+  // to_set/to_object/group_by/partition return a fresh Set / Object /
+  // Object / Tuple pointer.
   jit.module_->getOrInsertFunction(rt::iter_to_set, ptrTy, i8, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::iter_to_object, ptrTy, i8, i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::iter_group_by, ptrTy, i8, i64, i8, i64,
                                i64, i64);
   jit.module_->getOrInsertFunction(rt::iter_partition, ptrTy, i8, i64, i8, i64,
@@ -8541,6 +8578,18 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
                                    {base, exp, line, col});
       return jit.own(make_long(r));
     }
+    if (method == "wrap" && argsAst.nodes.size() == 2) {
+      // Same Owned-across-checks discipline as Math.pow above.
+      JIT::Owned xV = jit.compile(*argsAst.nodes[0]);
+      emit_canon_arg_check(0, xV.borrow());
+      JIT::Owned nV = jit.compile(*argsAst.nodes[1]);
+      emit_canon_arg_check(1, nV.borrow());
+      auto x = value_to_long(xV.consume());
+      auto n = value_to_long(nV.consume());
+      auto r = emit_call(module_->getFunction(rt::math_wrap),
+                                   {x, n, line, col});
+      return jit.own(make_long(r));
+    }
     if (method == "sign" && argsAst.nodes.size() == 1) {
       auto x = value_to_long(compile(*argsAst.nodes[0]));
       auto zero = builder_.getInt64(0);
@@ -8611,8 +8660,9 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
       emit_type_check(c.borrow(), "String", "parameter 'content'",
                       argsAst.nodes[1].get());
       auto pp = emit_pathlike(p.borrow());
-      auto cp = builder_.CreateIntToPtr(extract_data(c.borrow()), ptrTy);
-      emit_call(module_->getFunction(rt::write_file), {pp, cp, line, col});
+      emit_call(module_->getFunction(rt::write_file),
+                {pp, extract_tag(c.borrow()), extract_data(c.borrow()), line,
+                 col});
       p.drop();
       c.drop();
       return jit.own(make_nil());
@@ -8988,6 +9038,13 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
       png.drop();
       return jit.own(make_long(id));
     }
+    if (method == "sprite_to_png")
+      if (auto v = args({{"id"}})) {
+        v->push_back(line);
+        v->push_back(col);
+        return jit.own(jit.make_string(
+            emit_call(module_->getFunction(rt::canvas_sprite_to_png), *v)));
+      }
     if (method == "sprite_width")
       if (auto v = args({{"id"}}))
         return jit.own(make_long(

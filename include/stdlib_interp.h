@@ -184,6 +184,23 @@ inline Value make_math_namespace() {
                           "Long"sv)),
       false);
 
+  ns.initialize(
+      "wrap",
+      Value(FunctionValue({{"x", false, "Long"sv}, {"n", false, "Long"sv}},
+                          [](std::shared_ptr<Environment> env) {
+                            auto x = env->get("x").to_long();
+                            auto n = env->get("n").to_long();
+                            if (n == 0) {
+                              auto line = env->get("__LINE__").to_long();
+                              auto col = env->get("__COLUMN__").to_long();
+                              throw CulebraError("ZeroDivisionError",
+                                                 "divide by 0 error", line, col);
+                            }
+                            return Value(floored_mod(x, n));
+                          },
+                          "Long"sv)),
+      false);
+
   auto float_to_float = [](auto fn) {
     return Value(FunctionValue(
         {{"x", false}},
@@ -1984,6 +2001,26 @@ inline Value make_canvas_primitives_namespace() {
                 std::move(d.px), d.w, d.h)));
           },
           "Long"sv)),
+      false);
+
+  // _Canvas.sprite_to_png(id) -> String (PNG bytes). The inverse of
+  // sprite_from_png; id 0 names the current draw target, which is what
+  // Canvas.to_png() passes.
+  ns.initialize("sprite_to_png",
+      Value(FunctionValue({{"id", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            auto t = _canvas_detail::readback_target(env->get("id").to_long());
+            if (t.px == nullptr)
+              throw CulebraError("ValueError", "not a live sprite handle",
+                                 line, col);
+            auto e = culebra::image::encode_png(t.px, t.w, t.h);
+            if (!e.error.empty())
+              throw CulebraError("ValueError", e.error, line, col);
+            return Value(std::move(e.data));
+          },
+          "String"sv)),
       false);
 
   // _Canvas.sprite_width(id) / sprite_height(id) -> Long (0 for an unknown

@@ -84,6 +84,10 @@ let _canvas_module = fn () {
       _Canvas.blit_scaled(self._id, x, y, w, h, sx, sy, sw, sh,
                           _scale_flags(flip_x, flip_y, smooth), alpha)
     }
+    # Encode the sprite's pixels as PNG bytes — the inverse of from_png, so
+    # `FS.write(path, sprite.to_png())` saves what `Sprite.from_png(FS.read(
+    # path))` loads back.
+    to_png() { _Canvas.sprite_to_png(self._id) }
   }
 
   # --- built-in 8x8 bitmap font -------------------------------------------
@@ -301,6 +305,9 @@ let _canvas_module = fn () {
     present: fn () { _Canvas.present() },
     width: fn () { _Canvas.width() },
     height: fn () { _Canvas.height() },
+    # PNG bytes for the current draw target — the framebuffer, or the sprite
+    # a surrounding draw_to switched to, following width/height/get_pixel.
+    to_png: fn () { _Canvas.sprite_to_png(0) },
     Sprite: Sprite,
     draw_to: draw_to,
     text: text,

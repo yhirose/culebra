@@ -86,6 +86,7 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println` を
 | stat / walk / glob / copy / rename / symlink / chmod / chown | [§3 FS](#3-fs) |
 | ディレクトリ列挙・作成・削除 | `FS.list_dir`、`FS.mkdir`、`FS.remove` |
 | `Instant` / `Duration` クラス、ISO 8601、カレンダー算術 | [§5 Time](#5-time) |
+| 負になりうるインデックスを `0..n` に巻き戻す | [§1 Math](#1-math) — `Math.wrap(i, n)`（`%` は切り捨てなので負のまま） |
 | 乱数 | `Random.int`、`.uniform`、`.gauss`、`.shuffle`、`.weighted_choice` |
 | CLI 引数解析 | [§10 Args](#10-args) |
 | プロセス情報 | `Sys.argv`、`Sys.exit`、`Sys.env`、`Sys.set_env`、`Sys.getcwd`、`Sys.chdir`、`Sys.executable`、`Sys.script` |
@@ -116,15 +117,15 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println` を
 
 ## 1. `Math`
 
-数値ユーティリティ群。整数専用ルーチン（`pow`・`sign`・`clamp`）
-は `Long` 入力を保ち、浮動小数点ルーチン（`log` ほか）は `Long` /
+数値ユーティリティ群。整数専用ルーチン（`pow`・`sign`・`clamp`・
+`wrap`）は `Long` 入力を保ち、浮動小数点ルーチン（`log` ほか）は `Long` /
 `Float` のいずれかを受け取ります。`Long` と `Float` の相互作用は
 言語仕様 §4 / §7 を参照。
 
 このセクションのサブグループ: **定数**（`Math.pi`、`Math.e`、
 `Math.inf`、`Math.nan`） — **スカラー演算**（`abs`、`min`、`max`、
 `log`、`exp`、`sqrt`、`floor`、`ceil`、`round`、`pow`、`sign`、
-`clamp`） — **三角関数**（`sin`、`cos`、`tan`、`asin`、`acos`、
+`clamp`、`wrap`） — **三角関数**（`sin`、`cos`、`tan`、`asin`、`acos`、
 `atan`、`atan2`、ラジアン）。整数列ファクトリ `range` / `iota` は
 言語コアグローバルで、[言語仕様 §19](language.ja.md#19-コア組み込み関数) を参照。
 
@@ -262,6 +263,34 @@ inspect(Math.clamp(5, 0, 10))   # => 5
 inspect(Math.clamp(-5, 0, 10))  # => 0
 inspect(Math.clamp(15, 0, 10))  # => 10
 ```
+
+### `Math.wrap(x: Long, n: Long) -> Long`
+
+`x` を幅 `n` に巻き戻します。`%` では得られない **floor 剰余** です
+（`%` は切り捨てなので結果は `x` の符号を持つ。[言語仕様 §7](language.ja.md#算術)）。
+`Math.wrap` の結果は `n` の符号を持つので、`n` が正なら必ず `[0, n)`
+に入ります。巡回インデックスが欲しいのはこちらで、インデックス 0 の
+1 つ手前は負の添字ではなく末尾の要素になります。
+
+```culebra
+inspect(Math.wrap(3, 320))     # => 3
+inspect(Math.wrap(-3, 320))    # => 317
+inspect(-3 % 320)              # => -3
+inspect(Math.wrap(320, 320))   # => 0
+```
+
+`x` が非負の範囲では両者は一致するので、`Math.wrap` が効くのは `x` が
+負になりうるとき — スクロール量、折り返すタイル座標、逆向きに進めた
+角度 — だけです。
+
+```culebra
+let frames = ['a', 'b', 'c']
+let prev = fn (i) { frames[Math.wrap(i - 1, frames.size())] }
+inspect(prev(0))               # => 'c'
+```
+
+`n` が負なら全体が反転し、結果は `(n, 0]` に入ります。`n` が `0` の
+場合は `x % 0` と同じく `divide by 0 error` を送出します。
 
 ---
 
@@ -3865,6 +3894,7 @@ macOS、`Scene` と同じ vendored 静的 raylib + SDL3）では**実際のデ�
 | `Canvas.triangle(x1, y1, x2, y2, x3, y3, color, fill = true)` | 三角形 |
 | `Canvas.polygon(points, color, fill = true)` | 平坦な頂点列からの多角形 |
 | `Canvas.width()` / `Canvas.height() -> Long` | 現在の描画先の寸法 |
+| `Canvas.to_png() -> String` | 現在の描画先のピクセルを PNG バイト列で返す |
 | `Canvas.present()` | フレームを提示（下記ループ参照） |
 
 すべての図形は `fill: false` で塗りの代わりに 1 ピクセル幅の輪郭を描く:
@@ -3921,6 +3951,7 @@ packed RGBA `Long`、または `palette` を与えたときはそのパレット
 | `sprite.draw_sub(x, y, sx, sy, sw, sh, flip_x = false, flip_y = false, transpose = false)` | サブ矩形を blit（スプライトシート用） |
 | `sprite.draw_scaled(x, y, w, h, flip_x = false, flip_y = false, smooth = false, alpha = 255)` | `(x, y)` の `w`×`h` 矩形に、収まるようリサンプルして blit |
 | `sprite.draw_sub_scaled(x, y, w, h, sx, sy, sw, sh, flip_x = false, flip_y = false, smooth = false, alpha = 255)` | 同じくサブ矩形から |
+| `sprite.to_png() -> String` | スプライトのピクセルを PNG バイト列で返す（`from_png` の逆） |
 | `sprite.width()` / `sprite.height()` | スプライト寸法 |
 
 拡縮 blit のサンプリングは最近傍なので、ドット絵を拡大しても輪郭は鮮明なまま。
@@ -3957,6 +3988,31 @@ Canvas.run(320, 240, fn () {
 `ValueError` になるのは 2 つ: スプライトを自分自身に描くこと（blit が自分の
 書き込みを読んでしまう）と、いま描画先になっているスプライトを解放すること。
 どちらも他の Canvas エラーと同じく backend 対称。
+
+### 画像の保存
+
+`sprite.to_png()` と `Canvas.to_png()` は PNG バイト列を返すので、書き出しは
+その結果を `FS.write` するだけ、読み戻しは既存の `from_png` です。
+`Canvas.to_png()` は `width` / `height` / `get_pixel` と同じく **現在の描画先**
+に追随します — `draw_to` の中なら描画中のスプライト、外なら framebuffer。
+
+```culebra
+# doctest: skip
+Canvas.init(320, 240)
+Canvas.clear(Canvas.rgba(24, 24, 32))
+Canvas.circle(160, 120, 40, Canvas.rgba(240, 180, 90))
+FS.write("shot.png", Canvas.to_png())          # スクリーンショット
+
+let tile = Canvas.Sprite.blank(16, 16)         # オフスクリーンで描いてもよい
+Canvas.draw_to(tile, fn () { Canvas.clear(Canvas.rgba(80, 200, 120)) })
+FS.write("tile.png", tile.to_png())
+```
+
+出力は 8bit truecolour + アルファ、`IDAT` は 1 個で、各行はスコアが最小に
+なるフィルタで符号化されます — 平坦でディザのかかったピクセルアートなら
+専用エンコーダに近いところまで縮みます。ピクセルが 1 つもない画像
+（`Canvas.init(0, 0)`）と、解放済みのスプライトハンドルはどちらも
+`ValueError` です。
 
 ### テキスト
 

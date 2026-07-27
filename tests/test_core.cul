@@ -1148,6 +1148,21 @@ test_stdlib = fn () {
   assert_eq(Math.clamp(5, 0, 10), 5)
   assert_eq(Math.clamp(-5, 0, 10), 0)
   assert_eq(Math.clamp(15, 0, 10), 10)
+  # wrap is the floored remainder `%` does not give: a negative index
+  # lands inside 0..n instead of staying negative.
+  assert_eq(Math.wrap(3, 320), 3)
+  assert_eq(Math.wrap(-3, 320), 317)
+  assert_eq(Math.wrap(320, 320), 0)
+  assert_eq(Math.wrap(-320, 320), 0)
+  assert_eq(Math.wrap(-321, 320), 319)
+  assert_eq(Math.wrap(0, 5), 0)
+  # A negative n mirrors it: the result carries n's sign.
+  assert_eq(Math.wrap(3, -320), -317)
+  assert_eq(Math.wrap(-3, -320), -3)
+  # |n| == 1 is always 0, including the LONG_MIN % -1 overflow case.
+  assert_eq(Math.wrap(7, -1), 0)
+  assert_eq(Math.wrap(-9223372036854775807 - 1, -1), 0)
+  assert_throws('ZeroDivisionError', fn () { Math.wrap(1, 0) })
   assert_eq(iota(3).size(), 3)
   assert_true(iota(3)[0] == 0 && iota(3)[2] == 2)
   assert_eq(iota(2, 5).size(), 3)

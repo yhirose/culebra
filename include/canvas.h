@@ -154,6 +154,16 @@ inline Target resolve_target() {
 inline int width() { return resolve_target().w; }
 inline int height() { return resolve_target().h; }
 
+// The pixels an id names for readback (PNG encoding): 0 follows the CURRENT
+// draw target, the way width/height/get_pixel do, so `Canvas.to_png()` inside
+// `draw_to` encodes the sprite being drawn into; any other id is that sprite.
+// `px` is null for a stale handle — the caller raises.
+inline Target readback_target(int64_t id) {
+  if (id == 0) return resolve_target();
+  if (Sprite* s = sprite_of(id)) return {s->px.data(), s->w, s->h};
+  return {nullptr, 0, 0};
+}
+
 // Switch the draw target: 0 for the framebuffer, a sprite handle for its
 // pixels. Returns the previous target id, or -1 when `id` names no live
 // sprite (the caller raises; the target is left unchanged).
