@@ -126,6 +126,46 @@ if ! diff -u "$TMP/par_want.cul" "$TMP/par_got.cul" > "$TMP/par_diff" 2>&1; then
   fail=1
 fi
 
+# --- 1d. Golden fixture: comments inside brace literals --------------------
+# `{...}` opens an object/set literal as well as a block, so statement-level
+# comment attachment hands an interior comment to the literal — which prints
+# from the AST through print_delimited and has nowhere to put it. One such
+# comment used to make the safety net refuse the WHOLE file (`[...]` / `(...)`
+# were never affected: their brackets don't count toward that brace depth).
+# A brace literal holding a comment is now emitted verbatim, so its interior
+# keeps the author's spacing while the rest of the file still normalizes —
+# see include/formatter.h holds_comment.
+cat > "$TMP/brc_in.cul" <<'EOF'
+let  o = {a: 1,
+  # inside an object literal
+  b: 2}
+let  s = {1,
+  // inside a set literal
+  2}
+let  plain={a:1,b:2}
+inspect(o)
+inspect(s)
+inspect(plain)
+EOF
+cat > "$TMP/brc_want.cul" <<'EOF'
+let o = {a: 1,
+  # inside an object literal
+  b: 2}
+let s = {1,
+  // inside a set literal
+  2}
+let plain = {a: 1, b: 2}
+inspect(o)
+inspect(s)
+inspect(plain)
+EOF
+"$CULEBRA" fmt "$TMP/brc_in.cul" > "$TMP/brc_got.cul" 2>"$TMP/brc_err"
+if ! diff -u "$TMP/brc_want.cul" "$TMP/brc_got.cul" > "$TMP/brc_diff" 2>&1; then
+  echo "FAIL golden (brace-literal comments): formatted output differs from expected"
+  cat "$TMP/brc_diff"
+  fail=1
+fi
+
 # --- 2 + 3. Corpus safety + idempotency (parallel) ------------------------
 # Format every corpus file twice — once to check the re-parse/comment safety
 # net doesn't refuse (exit 2), once more to assert idempotency. The files are

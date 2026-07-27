@@ -333,7 +333,10 @@ introduces, a trailing comment stays on the same line, and a single blank
 line between statements is kept (runs of blank lines collapse to one).
 match / cond arms, class / trait / enum members, destructuring patterns,
 and parameter lists are all normalized; long binary expressions and method
-chains wrap at the line width.
+chains wrap at the line width. An object or set literal that holds a comment
+between its entries is written out exactly as it appears in the source — its
+interior keeps the spacing you gave it, while the rest of the file is still
+normalized.
 
 How it works: the source is parsed, re-printed from the syntax tree, and
 then **re-parsed and compared** against the original — if formatting would

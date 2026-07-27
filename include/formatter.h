@@ -947,7 +947,33 @@ class Printer {
     return print(e);
   }
 
+  // True when a comment sits inside `n`'s own token extent.
+  //
+  // Statement-level comment attachment hands a comment to whoever owns the
+  // enclosing `{`, on the assumption that a brace opens a block whose printer
+  // recurses with its own range. Object and set literals also open with `{`,
+  // but they render through print_delimited, which receives finished Docs and
+  // no source positions — so nobody emits the comment and the whole file is
+  // refused by the comment-preservation net. `[...]` / `(...)` never hit this:
+  // their brackets don't count toward that brace depth, so the comment stays
+  // attached to the enclosing statement, which then slices verbatim.
+  //
+  // Emitting a brace literal that holds a comment verbatim gives it the same
+  // treatment, at the same cost: its interior spacing is left as written
+  // rather than normalized. Comment-aware brace-literal printing needs the
+  // group to hard-break whenever a line comment lands inside it, which is a
+  // layout change rather than a plumbing one.
+  bool holds_comment(const peg::Ast& n) const {
+    auto [lo, hi] = real_span(n);
+    for (const auto& c : comments_) {
+      if (c.start >= hi) break;  // comments_ is sorted by start
+      if (c.start >= lo) return true;
+    }
+    return false;
+  }
+
   DocP print_set(const peg::Ast& node) {
+    if (holds_comment(node)) return verbatim(node);
     std::vector<DocP> items;
     for (auto& e : node.nodes) items.push_back(print(*e));
     return print_delimited("{", std::move(items), "}");
@@ -969,6 +995,7 @@ class Printer {
   }
 
   DocP print_object(const peg::Ast& node) {
+    if (holds_comment(node)) return verbatim(node);
     if (node.nodes.empty()) return doc_text("{}");
     std::vector<DocP> items;
     for (auto& p : node.nodes) {
