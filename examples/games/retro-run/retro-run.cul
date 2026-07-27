@@ -220,12 +220,20 @@ let LANE_G = 248
 let LANE_B = 242
 let OPAQUE = 255 * 16777216
 
-# Segment kinds. 0/1 alternate every RUMBLE_LENGTH; the start line and the
-# finish line replace all three road colours (v4's COLORS.START / COLORS.FINISH).
+# Segment kinds: 0/1, alternating every RUMBLE_LENGTH.
 let KIND_DARK = 0
 let KIND_LIGHT = 1
-let KIND_START = 2
-let KIND_FINISH = 3
+
+# Road markings, painted over a segment's road surface and nothing else. v4
+# gives the start and finish their own colour *kinds*, which replace the road,
+# the grass and the rumble alike — so the goal arrives as a white or black band
+# spanning the whole frame rather than a line across the track. Here they are
+# markings on the tarmac: the scenery beside them keeps the stripe colours it
+# would have had, and the finish gets a checkered flag instead of flat black.
+let MARK_NONE = 0
+let MARK_START = 1
+let MARK_FINISH = 2
+let CHECKER_COLS = 8              # squares across the road on a finish segment
 
 # --- Util (common.js) ------------------------------------------------------
 let limit = fn (v, lo, hi) { if v < lo { lo } else if v > hi { hi } else { v } }
@@ -264,6 +272,7 @@ class Segment {
     self.clip = 0.0
     self.vis = false            # projected this frame (i.e. in front of us)
     self.kind = if (index / RUMBLE_LENGTH) % 2 == 0 { KIND_LIGHT } else { KIND_DARK }
+    self.mark = MARK_NONE
     self.sprites = []
     self.cars = []
   }
@@ -461,10 +470,10 @@ let reset_road = fn () {
   reset_props()
   reset_cars()
 
-  segments[find_segment(PLAYER_Z).index + 2].kind = KIND_START
-  segments[find_segment(PLAYER_Z).index + 3].kind = KIND_START
+  segments[find_segment(PLAYER_Z).index + 2].mark = MARK_START
+  segments[find_segment(PLAYER_Z).index + 3].mark = MARK_START
   for n in 0..RUMBLE_LENGTH {
-    segments[segments.size() - 1 - n].kind = KIND_FINISH
+    segments[segments.size() - 1 - n].mark = MARK_FINISH
   }
   track_length = segments.size() * SEGMENT_LENGTH * 1.0
 }
@@ -707,7 +716,15 @@ for n in 0..DRAW_DISTANCE {
 # each segment lerped toward the fog colour. Both are integer arithmetic —
 # floats would need a Math.round per channel to reach the Long the primitive
 # takes, and that is 3 us a call.
-mut pal = [[], [], [], []]      # by segment kind: grass, rumble, road, lane
+mut pal = [[], []]              # by segment kind: grass, rumble, road, lane
+# Road marking colours for this frame: light r,g,b then dark r,g,b. White and
+# black would be the obvious choice and they punch a hole in a pastel scene,
+# so the pair is built out of the palette instead — the light half is mostly
+# the warm cream the lane dashes use with a fifth of the road's own colour
+# mixed back in, the dark half is that colour at half strength. Every scene of
+# the day cycle then gets a marking in its own family, and it moves with the
+# crossfade.
+mut mark_rgb = [0, 0, 0, 0, 0, 0]
 mut fog_r = 0
 mut fog_g = 0
 mut fog_b = 0
@@ -723,9 +740,8 @@ let build_palette = fn (scene, blend) {
                     LANE_R, LANE_G, LANE_B]
   pal[KIND_LIGHT] = [c(3), c(4), c(5), c(15), c(16), c(17), c(9), c(10), c(11),
                      LANE_R, LANE_G, LANE_B]
-  pal[KIND_START] = [255, 255, 255, 255, 255, 255, 255, 255, 255,
-                     LANE_R, LANE_G, LANE_B]
-  pal[KIND_FINISH] = [0, 0, 0, 0, 0, 0, 0, 0, 0, LANE_R, LANE_G, LANE_B]
+  mark_rgb = [(LANE_R * 4 + c(9)) / 5, (LANE_G * 4 + c(10)) / 5,
+              (LANE_B * 4 + c(11)) / 5, c(6) / 2, c(7) / 2, c(8) / 2]
   fog_r = c(18)
   fog_g = c(19)
   fog_b = c(20)
@@ -875,6 +891,40 @@ let draw_road = fn (base_index, base_percent, player_y) {
           lx1 = lx1 + lw1
           lx2 = lx2 + lw2
           lane = lane + 1
+        }
+      }
+      # Road markings go on last, over the tarmac and the lane dashes both,
+      # and never wider than the road: the start line is solid white, the
+      # finish a checkered flag. The flag lays its dark squares down as one
+      # black trapezoid and overlays the light ones, so a column that rounds a
+      # hair short shows black rather than grass. Its phase flips with the
+      # segment index, making the three segments of the stripe the rows of the
+      # check.
+      if segment.mark != MARK_NONE {
+        let c_light = (mark_rgb[0] * f + fog_r * g) / 256 +
+                      ((mark_rgb[1] * f + fog_g * g) / 256) * 256 +
+                      ((mark_rgb[2] * f + fog_b * g) / 256) * 65536 + OPAQUE
+        if segment.mark == MARK_START {
+          _Canvas.polygon([x1 - w1, edge, x1 + w1, edge, x2 + w2, top,
+                           x2 - w2, top], c_light)
+        } else {
+          let c_dark = (mark_rgb[3] * f + fog_r * g) / 256 +
+                       ((mark_rgb[4] * f + fog_g * g) / 256) * 256 +
+                       ((mark_rgb[5] * f + fog_b * g) / 256) * 65536 + OPAQUE
+          _Canvas.polygon([x1 - w1, edge, x1 + w1, edge, x2 + w2, top,
+                           x2 - w2, top], c_dark)
+          let cw1 = w1 * 2.0 / CHECKER_COLS
+          let cw2 = w2 * 2.0 / CHECKER_COLS
+          let bx1 = x1 - w1
+          let bx2 = x2 - w2
+          mut i = segment.index % 2
+          while i < CHECKER_COLS {
+            let a1 = bx1 + cw1 * i
+            let a2 = bx2 + cw2 * i
+            _Canvas.polygon([a1, edge, a1 + cw1, edge, a2 + cw2, top, a2, top],
+                            c_light)
+            i = i + 2
+          }
         }
       }
       edge = top
