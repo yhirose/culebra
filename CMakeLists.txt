@@ -1102,3 +1102,10 @@ add_test(NAME io_stdin_test
 add_test(NAME log_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/log_test.sh
                  $<TARGET_FILE:culebra>)
+
+# Args.parse's process contract — help on stdout + exit 0, `error: <message>`
+# on stderr + exit 2, both raw. test_args.cul only reaches try_parse, which
+# raises instead of exiting, so none of that is observable in-process.
+add_test(NAME args_cli_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/args_cli_test.sh
+                 $<TARGET_FILE:culebra>)
