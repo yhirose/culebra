@@ -314,9 +314,9 @@ A directory argument is scanned recursively for `.cul` files, so
 gates it in CI. Paths holding no `.cul` file are an error (exit 2), so a
 mistyped path fails loudly instead of silently formatting nothing.
 
-The output modes compose: `culebra fmt -i -l .` rewrites every file *and*
-prints the ones it changed (like `gofmt -l -w`), and `-i --check` does the
-same silently. With `-l` or `--check`, the exit code is 1 whenever some
+The output modes compose: `culebra fmt -i -l .` rewrites the files that
+need it *and* prints their names (like `gofmt -l -w`), and `-i --check`
+does the same silently. With `-l` or `--check`, the exit code is 1 whenever some
 file's formatting differed — so it still gates CI after a rewrite. The
 formatted source goes to stdout only when no other output mode was asked
 for.

@@ -1642,7 +1642,7 @@ int run_fmt(int argc, const char** argv) {
                    "(no output)\n"
                    "  paths           files, or directories scanned for *.cul\n"
                    "  -               read from stdin, write to stdout "
-                   "(no paths)");
+                   "(no paths, no -i)");
       return 0;
     }
     if (arg == "-i" || arg == "--in-place") { in_place = true; continue; }
@@ -1670,8 +1670,8 @@ int run_fmt(int argc, const char** argv) {
   // on stdin.
   bool use_stdin = has_stdin || files.empty();
   if (use_stdin && in_place) {
-    std::println(stderr, "culebra fmt: -i has nothing to rewrite when the "
-                         "input is stdin");
+    std::println(stderr, "culebra fmt: -i needs file paths; stdin has nothing "
+                         "to rewrite");
     return 2;
   }
 
@@ -1729,9 +1729,8 @@ int run_fmt(int argc, const char** argv) {
     }
     bool changed = r.status == culebra::fmt::FormatStatus::Ok;
     if (changed) any_changed = true;
-    // The three output modes compose: `-l` names what changed, `-i` writes it,
-    // and stdout is the fallback when neither reporting flag asked for
-    // something quieter (`gofmt -l -w` works the same way).
+    // The modes compose: `-l` names what changed, `-i` writes it, stdout is
+    // the fallback when neither reporting flag was given.
     if (list && changed) std::println("{}", path);
     if (in_place) {
       if (changed) {

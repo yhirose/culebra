@@ -203,6 +203,11 @@ for bad in --wirte -x --in_place; do
     echo "FAIL unknown-flag [$bad]: rc=$rc out=$out err=$err"; fail=1
   fi
 done
+# The guard runs before any file is touched, so a typo can't half-apply.
+out=$("$CULEBRA" fmt -i --wirte "$TMP/arg.cul" 2>/dev/null); rc=$?
+if [[ $rc -ne 2 || "$(cat "$TMP/arg.cul")" != 'let  x=1' ]]; then
+  echo "FAIL unknown-flag with -i: rc=$rc file=$(cat "$TMP/arg.cul")"; fail=1
+fi
 
 # `-` is stdin; combining it with real paths would mean two inputs and one
 # stdout, so it is refused rather than letting either side win silently.
@@ -218,6 +223,13 @@ for args in "-i -" "-i"; do
     echo "FAIL stdin-in-place [$args]: rc=$rc out=$out err=$(cat "$TMP/arg.err")"; fail=1
   fi
 done
+# The editor hook itself (`culebra fmt -`, used by misc/vim and misc/vscode):
+# stdin formats to stdout and exits 0. Every other stdin case here asserts a
+# refusal, so without this one the success path has no coverage at all.
+out=$(printf 'let   Z=9\n' | "$CULEBRA" fmt - 2>"$TMP/arg.err"); rc=$?
+if [[ $rc -ne 0 || "$out" != 'let Z = 9' ]]; then
+  echo "FAIL stdin-to-stdout: rc=$rc out=$out err=$(cat "$TMP/arg.err")"; fail=1
+fi
 
 # `-i` composes with the reporting flags (as `gofmt -l -w` does): the file is
 # rewritten AND named. Before this, list/check won and nothing was written.
