@@ -7024,14 +7024,20 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         statement_boundary(body, scopeEnv);  // breakpoint on a 1-stmt body
       eval(body, scopeEnv);
       run_deferred(scopeEnv);
-      // The loop consumes break/continue here; a `return` keeps travelling to
-      // the function boundary untouched.
+      // The loop consumes break/continue here; a `return` also ends the loop
+      // but keeps travelling to the function boundary untouched. It has to
+      // stop the loop right here: driving one more step would run the
+      // iterator's has_next()/next() at a call boundary, which delivers the
+      // pending return as *their* result.
       if (flow_is_break()) {
         flow_discard();
         return LoopStep::Break;
       }
-      if (flow_is_continue()) flow_discard();
-      return LoopStep::Next;
+      if (flow_is_continue()) {
+        flow_discard();
+        return LoopStep::Next;
+      }
+      return flow_pending() ? LoopStep::Break : LoopStep::Next;
     } catch (...) {
       run_deferred(scopeEnv);
       on_unwind();
@@ -7180,6 +7186,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         if (iter_val.type != Value::Object) return;
         const auto& iter_obj = iter_val.to_object();
         if (!iter_obj.has("dispose")) return;
+        FlowPark park;  // as in run_deferred: a `return` on its way out must
+                        // not be delivered as dispose()'s own result
         _invoke_method_no_args(iter_val, "dispose");
       };
 
