@@ -10,14 +10,18 @@
 # unusable meanwhile. Queueing is strictly better than overlapping: the same
 # work finishes sooner and only one session is blocked at a time.
 #
-# The lock is advisory and per-machine (one file in TMPDIR, shared by every
-# worktree). It is held only for the wrapped command and released when it
-# exits, including on Ctrl-C — lockf/flock lock through the kernel, which drops
-# the lock with the process, so a killed run cannot leave it behind.
+# The lock is advisory. By default it's one file in TMPDIR, shared by every
+# worktree; CULEBRA_LOCK_PATH overrides the path (`just land` points it at a
+# path under the shared .git dir instead, so it's the same file regardless of
+# each session's own TMPDIR). It is held only for the wrapped command and
+# released when it exits, including on Ctrl-C — lockf/flock lock through the
+# kernel, which drops the lock with the process, so a killed run cannot leave
+# it behind.
 #
 # Escape hatch: CULEBRA_GATE_LOCK=0 (or "off") runs unlocked. The fast inner
 # loop (`just dev` / `just test-dev`) is deliberately NOT wrapped: it has to
-# stay responsive even while someone else's gate is running.
+# stay responsive even while someone else's gate — or a `just land` — is
+# running.
 
 set -euo pipefail
 
@@ -30,7 +34,8 @@ case "${CULEBRA_GATE_LOCK:-1}" in
   ""|0|off) exec "$@" ;;
 esac
 
-lock="${TMPDIR:-/tmp}/culebra-heavy-lane.lock"
+lock="${CULEBRA_LOCK_PATH:-${TMPDIR:-/tmp}/culebra-heavy-lane.lock}"
+wait_msg="${CULEBRA_LOCK_WAIT_MSG:-waiting: another culebra build/gate holds this machine…}"
 
 # BSD lockf (macOS) and util-linux flock (Linux) both take "lockfile command".
 # Probing with `true` rather than with the real command keeps the two concerns
@@ -39,12 +44,10 @@ lock="${TMPDIR:-/tmp}/culebra-heavy-lane.lock"
 # Neither tool exists everywhere (a bare container, say); without one the
 # command simply runs, which is the behaviour these recipes had before.
 if command -v lockf >/dev/null 2>&1; then
-  lockf -k -s -t 0 "$lock" true \
-    || echo "waiting: another culebra build/gate holds this machine…" >&2
+  lockf -k -s -t 0 "$lock" true || echo "$wait_msg" >&2
   exec lockf -k "$lock" "$@"
 elif command -v flock >/dev/null 2>&1; then
-  flock -n "$lock" true \
-    || echo "waiting: another culebra build/gate holds this machine…" >&2
+  flock -n "$lock" true || echo "$wait_msg" >&2
   exec flock "$lock" "$@"
 else
   exec "$@"
