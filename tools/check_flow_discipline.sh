@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Control-flow discipline ratchet.
 #
-# `return` completes through the thread-local slot in interpreter.h
-# (flow_pending / flow_set_return / flow_take_return), not a C++ exception. The
+# return / break / continue complete through the thread-local slot in
+# interpreter.h (flow_pending / flow_set_* / flow_take_return), not exceptions. The
 # guard at the top of eval() makes that safe for call sites that simply pass a
 # value along: once a return is pending, eval() hands back nil and the
 # completion travels up on its own.
@@ -46,21 +46,18 @@ ret_catch=$(grep -c "catch (const ReturnValue" include/interpreter.h || true)
 ratchet "catch ReturnValue sites" "$ret_catch" 0 \
   "Use deliver_call(f.eval(env)) at a call boundary instead."
 
-# break / continue are still exceptions, caught only by run_loop_body. Keeping
-# this at 1 each stops the four-handler block from being copied back into a
-# loop, which is what made a missing run_deferred possible before.
-brk=$(grep -c "catch (const BreakSignal" include/interpreter.h || true)
-ratchet "catch BreakSignal sites" "$brk" 1 \
-  "Loop bodies go through run_loop_body(), which handles break and defers."
-
-cont=$(grep -c "catch (const ContinueSignal" include/interpreter.h || true)
-ratchet "catch ContinueSignal sites" "$cont" 1 \
-  "Loop bodies go through run_loop_body(), which handles continue and defers."
+# break / continue are consumed in run_loop_body, the single place that pairs a
+# loop body with its defers. Keeping this at zero stops a handler block from
+# being copied back into a loop, which is what made a missing run_deferred
+# possible before.
+sig=$(grep -cE "BreakSignal|ContinueSignal" include/interpreter.h || true)
+ratchet "Break/ContinueSignal references" "$sig" 0 \
+  "break/continue complete via flow_set_break() / flow_set_continue()."
 
 # run_deferred must stay reachable from one guarded place per scope kind. A new
 # bare call usually means a hand-rolled scope that will miss an exit path.
 deferred=$(grep -c "run_deferred(" include/interpreter.h || true)
-ratchet "run_deferred call sites (interpreter.h)" "$deferred" 21 \
+ratchet "run_deferred call sites (interpreter.h)" "$deferred" 19 \
   "Prefer run_loop_body()/existing scope helpers over a new handler block."
 
 if (( fail )); then
@@ -68,4 +65,4 @@ if (( fail )); then
   exit 1
 fi
 echo "flow-discipline OK (conv=$conv/1 ret-throw=$ret_throw/0 ret-catch=$ret_catch/0" \
-     "brk=$brk/1 cont=$cont/1 deferred=$deferred/21)"
+     "signals=$sig/0 deferred=$deferred/19)"

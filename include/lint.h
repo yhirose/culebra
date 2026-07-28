@@ -111,8 +111,8 @@ class ScopeWalker {
   // bumps it (+1), a function / lambda / method / class / trait body resets
   // it to 0 — break/continue cannot cross a function boundary, matching the
   // JIT's per-function loop_stack_ and every mainstream language. (The interp
-  // instead lets a BreakSignal propagate dynamically through a call, the
-  // divergence this rule removes.)
+  // completes them through its flow slot, which likewise travels only to the
+  // nearest enclosing loop, so this rule is the same shape in both backends.)
   struct LoopDepthGuard {
     int& slot;
     int saved;
@@ -647,10 +647,10 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
     case "BREAK"_:
     case "CONTINUE"_:
       // Sound static check: a break/continue with no enclosing loop (within
-      // the same function) is certain to fail. The JIT already raises this
-      // at compile time; the interp throws an uncaught Break/ContinueSignal
-      // and aborts the process. Hoisting it here gives all backends the same
-      // SyntaxError + position before eval.
+      // the same function) is certain to fail. The JIT raises it at compile
+      // time and the interp would otherwise leave the completion pending with
+      // no loop to consume it; hoisting the check here gives all backends the
+      // same SyntaxError + position before eval.
       if (loop_depth_ == 0) {
         diags_.push_back(Diagnostic{
             "SyntaxError",

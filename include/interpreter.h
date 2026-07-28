@@ -1737,22 +1737,37 @@ struct ReturnValue {
 // The type tag is a plain integer so the check at the top of eval() is a
 // single thread-local load with no initialization guard; the payload is only
 // touched when a `return` is actually in flight.
-inline thread_local uint8_t _flow_type = 0;  // 0 = normal, 1 = return pending
-inline thread_local Value _flow_value;
+enum : uint8_t {
+  kFlowNormal = 0,
+  kFlowReturn = 1,
+  kFlowBreak = 2,
+  kFlowContinue = 3,
+};
 
-inline bool flow_pending() { return _flow_type != 0; }
+inline thread_local uint8_t _flow_type = kFlowNormal;
+inline thread_local Value _flow_value;  // only meaningful for kFlowReturn
+
+inline bool flow_pending() { return _flow_type != kFlowNormal; }
+inline bool flow_is_break() { return _flow_type == kFlowBreak; }
+inline bool flow_is_continue() { return _flow_type == kFlowContinue; }
 
 inline void flow_set_return(Value v) {
-  _flow_type = 1;
+  _flow_type = kFlowReturn;
   _flow_value = std::move(v);
 }
+
+// break / continue carry no value and travel only to the nearest enclosing
+// loop in the same function — `lint.h` rejects one that has no such loop
+// before eval starts, for every backend.
+inline void flow_set_break() { _flow_type = kFlowBreak; }
+inline void flow_set_continue() { _flow_type = kFlowContinue; }
 
 // Consume a pending `return` at a function boundary. Leaves `out` untouched
 // when nothing was pending, so the body's own trailing value stands.
 inline bool flow_take_return(Value& out) {
-  if (_flow_type == 0) return false;
+  if (_flow_type != kFlowReturn) return false;
   out = std::move(_flow_value);
-  _flow_type = 0;
+  _flow_type = kFlowNormal;
   _flow_value = Value();
   return true;
 }
@@ -1760,7 +1775,7 @@ inline bool flow_take_return(Value& out) {
 // Drop a pending completion without delivering it: a bare `return` inside a
 // constructor body, or inside a defer closure, ends only that body.
 inline void flow_discard() {
-  _flow_type = 0;
+  _flow_type = kFlowNormal;
   _flow_value = Value();
 }
 
@@ -1777,7 +1792,7 @@ struct FlowPark {
   int depth = std::uncaught_exceptions();
 
   FlowPark() {
-    _flow_type = 0;
+    _flow_type = kFlowNormal;
     _flow_value = Value();
   }
   ~FlowPark() {
@@ -1800,13 +1815,6 @@ inline Value deliver_call(Value body_result) {
   flow_take_return(body_result);
   return body_result;
 }
-
-// Internal control-flow signals for `break` / `continue`. Caught by the
-// nearest enclosing loop; uncaught occurrences are a language error
-// (checked at eval time via a stack-depth guard). Distinct types so a
-// user `throw` cannot be mistaken for a loop signal.
-struct BreakSignal {};
-struct ContinueSignal {};
 
 // Defined out-of-line so OrderedSymbolMap is complete here.
 inline ObjectValue::ObjectValue() {
@@ -6812,7 +6820,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   //   ADDITIVE/MULTIPL. -> eval_bin_expression  / compile_additive + _multiplicative
   //   CONDITIONAL       -> inline ternary here  / compile_if (same node shape)
   //   TUPLE/SET/NIL     -> inline or eval_nil   / compile_tuple/_set/make_nil
-  //   BREAK/CONTINUE    -> throw Break/ContinueSignal / compile_break/_continue
+  //   BREAK/CONTINUE    -> flow_set_break/_continue / compile_break/_continue
   //   STRING/INTERPOLATED_CONTENT -> is_token fallthrough below / explicit cases
   // Property/index/slice/UFCS reads have no tag case: both walkers reach them
   // through CALL (eval_call / compile_call_with_builtins subtrees).
@@ -6926,9 +6934,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         eval_throw(ast, env);
         std::unreachable();
       case "BREAK"_:
-        throw BreakSignal{};
+        flow_set_break();
+        return Value();
       case "CONTINUE"_:
-        throw ContinueSignal{};
+        flow_set_continue();
+        return Value();
       case "TRY"_:
         return eval_try(ast, env);
       case "DEFER"_:
@@ -7014,12 +7024,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         statement_boundary(body, scopeEnv);  // breakpoint on a 1-stmt body
       eval(body, scopeEnv);
       run_deferred(scopeEnv);
-      return LoopStep::Next;
-    } catch (const BreakSignal&) {
-      run_deferred(scopeEnv);
-      return LoopStep::Break;
-    } catch (const ContinueSignal&) {
-      run_deferred(scopeEnv);
+      // The loop consumes break/continue here; a `return` keeps travelling to
+      // the function boundary untouched.
+      if (flow_is_break()) {
+        flow_discard();
+        return LoopStep::Break;
+      }
+      if (flow_is_continue()) flow_discard();
       return LoopStep::Next;
     } catch (...) {
       run_deferred(scopeEnv);
