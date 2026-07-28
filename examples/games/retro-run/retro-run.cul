@@ -495,30 +495,68 @@ let MUSIC_FILE = ["music.ogg", "music.mp3"].map(|n| ART_DIR + "/" + n)
                                            .find(|p| FS.exists(p))
 if MUSIC_FILE != nil { Canvas.music(FS.read(MUSIC_FILE), vol: 25) }
 
-# The chiptune fallback — a short retro-arcade riff over Am-F-C-G, ticked from
-# `update()` so its rhythm is exact regardless of display framerate. `tone()`
-# is fire-and-forget (the APU keeps playing the note on its own), so the
-# sequencer is just "is it this note's turn yet".
-let LEAD_STEP = 8            # frames per sixteenth-note lead step
-let BASS_STEP = 16           # frames per eighth-note bass step
-let BGM_LOOP = 128           # one loop = 4 chords x 32 frames each
-# Root-third-fifth-octave arpeggio per chord (Am / F / C / G), 4 steps each.
-let LEAD_NOTES = [440, 523, 659, 880, 349, 440, 523, 698,
-                  262, 330, 392, 523, 392, 494, 587, 784]
-# Root then fifth of each chord, one octave down from the lead.
-let BASS_NOTES = [220, 330, 175, 262, 131, 196, 196, 294]
+# The chiptune fallback — a bossa-flavored run, not a transcription of any
+# particular tune: a brisk ii-V-I-ish turnaround (F△7-Dm7-Gm7-C7, one bar
+# each) with jazzy 6th/7th colour tones and a syncopated "boom-chick" bass in
+# place of the original riff's straight minor arpeggio. Ticked from `update()`
+# so its rhythm is exact regardless of display framerate. `tone()` is
+# fire-and-forget (the APU keeps playing the note on its own), so the
+# sequencer is just "is it this note's turn yet"; a `0` in a note table is a
+# rest, not a pitch, and is skipped rather than triggered.
+let LEAD_STEP = 7            # frames per sixteenth-note step (~129 bpm)
+let BASS_STEP = LEAD_STEP * 2    # eighth notes
+let PAD_STEP = LEAD_STEP * 4     # quarter notes
+let BGM_LOOP = LEAD_STEP * 64    # 4 bars of 16 sixteenths
+# A phrase per chord built from its 3rd/5th/6th/7th rather than a plain
+# arpeggio, sequenced down a step bar to bar and dipping to a lower register
+# for the Gm7 bar before C7's dominant run resolves it back down to F.
+let LEAD_NOTES = [
+  # F△7 (F-A-C-E)
+  440, 0, 523, 0, 659, 0, 587, 523, 0, 466, 0, 440, 349, 0, 0, 0,
+  # Dm7 (D-F-A-C)
+  392, 0, 466, 0, 587, 0, 523, 466, 0, 440, 0, 392, 330, 0, 0, 0,
+  # Gm7 (G-Bb-D-F), an octave down for contrast
+  294, 0, 349, 0, 466, 0, 440, 392, 0, 349, 0, 294, 233, 0, 0, 0,
+  # C7 (C-E-G-Bb), the dominant run home
+  330, 0, 392, 0, 466, 0, 440, 392, 0, 330, 0, 262, 196, 0, 0, 0]
+# A syncopated "boom-chick" bossa pattern per bar: root on 1, a chord tone
+# anticipating beat 3 (the classic bossa push), the 5th sustained through
+# beat 3, then the 7th as a pickup into the next bar's root.
+let BASS_NOTES = [
+  175, 0, 0, 220, 262, 0, 0, 330,     # F△7: F root, A, C 5th, E 7th pickup
+  147, 0, 0, 175, 220, 0, 0, 262,     # Dm7: D root, F, A 5th, C 7th pickup
+  196, 0, 0, 233, 294, 0, 0, 349,     # Gm7: G root, Bb, D 5th, F 7th pickup
+  131, 0, 0, 165, 196, 0, 0, 233]     # C7: C root, E, G 5th, Bb pickup (b7 into F)
+# An airy chime on beats 1 and 3 only — the 5th then the 6th/7th colour tone
+# of each chord — for the lounge-jazz shimmer a plain lead/bass duo lacks.
+let PAD_NOTES = [523, 0, 659, 0, 440, 0, 523, 0, 466, 0, 587, 0, 392, 0, 466, 0]
 mut bgm_frame = 0
 
 let tick_bgm = fn () {
   if bgm_frame % LEAD_STEP == 0 {
     let note = LEAD_NOTES[(bgm_frame / LEAD_STEP) % LEAD_NOTES.size()]
-    Canvas.tone(note, LEAD_STEP - 3, vol: 20, wave: Canvas.PULSE,
-                decay: 2, release: 2, duty: Canvas.DUTY_QUARTER)
+    if note != 0 {
+      Canvas.tone(note, LEAD_STEP - 2, vol: 16, wave: Canvas.PULSE,
+                  attack: 1, decay: 1, release: 3, duty: Canvas.DUTY_QUARTER)
+    }
   }
   if bgm_frame % BASS_STEP == 0 {
     let note = BASS_NOTES[(bgm_frame / BASS_STEP) % BASS_NOTES.size()]
-    Canvas.tone(note, BASS_STEP - 4, vol: 28, wave: Canvas.PULSE2,
-                decay: 3, release: 4, duty: Canvas.DUTY_EIGHTH)
+    if note != 0 {
+      Canvas.tone(note, BASS_STEP - 4, vol: 22, wave: Canvas.PULSE2,
+                  attack: 1, decay: 2, release: 5, duty: Canvas.DUTY_HALF)
+    }
+  } else if bgm_frame % BASS_STEP == LEAD_STEP {
+    # A soft shaker tick on the offbeat eighth, for a bit of groove under the
+    # melody without it reading as a drum kit.
+    Canvas.tone(2400, 2, vol: 5, wave: Canvas.NOISE, decay: 1, release: 1)
+  }
+  if bgm_frame % PAD_STEP == 0 {
+    let note = PAD_NOTES[(bgm_frame / PAD_STEP) % PAD_NOTES.size()]
+    if note != 0 {
+      Canvas.tone(note, PAD_STEP - 6, vol: 9, wave: Canvas.TRIANGLE,
+                  attack: 3, decay: 6, release: 12)
+    }
   }
   bgm_frame = (bgm_frame + 1) % BGM_LOOP
 }
