@@ -700,3 +700,90 @@ jobs:
             fail=1
           fi
           exit $fail
+
+  # Regression for issue #13: Arch's `llvm` package ships only the combined
+  # libLLVM.so (no per-component .a archives), which the plain
+  # `llvm_map_components_to_libnames()` -lLLVMCore/-lLLVMSupport/... list
+  # can't link against. CMakeLists.txt falls back to the shared `LLVM`
+  # imported target when the static archives are missing; this job proves
+  # that path on a real Arch userland instead of just simulating it with
+  # -DCULEBRA_LLVM_SHARED=ON on another distro. DEV_NO_RT + the other
+  # features OFF keep it a narrow, fast check of the link step alone —
+  # not a full-feature Arch gate.
+  arch-jit-build:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    timeout-minutes: 30
+    steps:
+      - name: Install toolchain (pacman)
+        run: pacman -Syu --noconfirm git cmake ninja llvm ccache
+
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Toolchain versions
+        run: |
+          g++ --version | head -1
+          cmake --version | head -1
+          llvm-config --version
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: arch-jit-ccache-${{ github.sha }}
+          restore-keys: |
+            arch-jit-ccache-
+
+      # Fails loudly (not just an informative smoke) if the shared-libLLVM
+      # fallback didn't engage: that would mean Arch started shipping
+      # per-component static libs again and this job stopped exercising
+      # the issue #13 path, silently.
+      - name: Configure (JIT ON, Arch's shared-only libLLVM, no AOT runtime)
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: |
+          cmake -S . -B build-arch-jit -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCULEBRA_ENABLE_JIT=ON \
+            -DCULEBRA_ENABLE_HTTP=OFF \
+            -DCULEBRA_ENABLE_GRAPHICS=OFF \
+            -DCULEBRA_ENABLE_WEBVIEW=OFF \
+            -DCULEBRA_DEV_NO_RT=ON \
+            -DCULEBRA_LTO=OFF \
+            | tee configure.log
+          grep -q "Linking against the shared libLLVM" configure.log || {
+            echo "::error::Arch's llvm package now ships per-component static libs — this job no longer exercises the issue #13 shared-libLLVM fallback. Update or drop arch-jit-build."
+            exit 1
+          }
+
+      - name: Build (culebra driver, JIT enabled)
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: cmake --build build-arch-jit --target culebra -j
+
+      - name: Report ccache stats
+        run: ccache -s || true
+
+      - name: Smoke — JIT + interp (regression)
+        run: |
+          fail=0
+          run() {  # $1=label $2=source $3=expected
+            printf '%s' "$2" > p.cul
+            for flag in "" "--jit"; do
+              out=$(./build-arch-jit/culebra $flag p.cul 2>&1); rc=$?
+              if [ "$out" = "$3" ]; then
+                echo "${1}${flag:+_JIT}_PASS"
+              else
+                echo "${1}${flag:+_JIT}_FAIL out=[$out] rc=$rc"
+                fail=1
+              fi
+            done
+          }
+          run PRINT_STR 'print("hi")' 'hi'
+          run ARITH 'print(20 + 22)' '42'
+          run CATCHVAL 'try { throw "x" } catch e { print(e) }' 'x'
+          exit $fail
