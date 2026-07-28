@@ -21,10 +21,9 @@ Highlights
 ### Small, fast, runs anywhere
 
 - **CLI script.** Cold start in tens of milliseconds.
-- **Standalone binary.** ~6 MB on macOS arm64 for a script that stays
-  off Http and Tensor, no runtime dependencies.
-- **Embedded library.** Embeds the interpreter into a C++ host, no
-  LLVM dependency.
+- **Standalone binary.** `culebra build` emits a single executable —
+  nothing to install alongside it, no runtime dependencies.
+- **Embedded library.** Embeds the interpreter into a C++ host.
 - **Cross-platform.** macOS / Linux / Windows; cross-compile to any
   LLVM target from any host.
 
@@ -103,10 +102,10 @@ programs also drop the Accelerate / Metal framework dependency.
 
 ```bash
 culebra build path/to/script.cul -o ./out
-./out                       # standalone, no LLVM at runtime
+./out
 ```
 
-Cross-compile is also supported — see
+Cross-compile is also supported. Binary sizes per feature axis are in
 [`docs/deployment.md`](docs/deployment.md#1-standalone-binary-build-culebra-build).
 
 Embedding in a C++ host
