@@ -658,6 +658,15 @@ _run-tests BACKEND:
     # upstream(s) to the wrapper factory (tools/check_iter_wiring.sh).
     run_iter_wiring() { bash tools/check_iter_wiring.sh; }
 
+    # Runtime-archive TLS ownership: a dynamically-initialized namespace-scope
+    # thread_local must be defined by the core archive or by a force-loaded
+    # feature archive, never both — mingw's ld rejects the duplicate TLS init
+    # and the Windows AOT link fails (tools/check_rt_archive_tls.sh). Needs the
+    # built archives, so this is a gate-only phase (`test-dev` has none).
+    run_rt_archive_tls() {
+        bash tools/check_rt_archive_tls.sh "$(dirname "$BIN")"
+    }
+
     # Announce each phase with the running elapsed time, so a slow/stalled CI
     # run shows where it is (otherwise the silent phases — difftest, the
     # interp/jit sweep — emit nothing until they finish).
@@ -674,6 +683,7 @@ _run-tests BACKEND:
         phase "flow-discipline (return-completion ratchet)"; run_flow_discipline
         phase "dispatch symmetry (eval_X vs compile_X tag sets)"; run_dispatch_symmetry
         phase "iter wiring (JitIterDrive + upstream forwarding ratchet)"; run_iter_wiring
+        phase "rt-archive TLS ownership (core vs force-loaded features)"; run_rt_archive_tls
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
         phase "codegen backends (-O0, fast vs interp)"; run_codegen_backends
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "difftest (5114 generated cases)"; run_difftest; }
