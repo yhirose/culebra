@@ -162,7 +162,7 @@ let BG_TREES = Art.new(5, 985, 1280, 480)
 # it the generated stand-ins in assets/ are used. `Sys.script` reads the same in
 # the Playground as it does natively, so there is no branch on the backend here.
 let HOME = FS.dirname(Sys.script)
-let ART_DIR = if args.dir != nil { args.dir } else { HOME + "/assets" }
+let ART_DIR = args.dir ?? HOME + "/assets"
 let SCENES = ["asayake", "hiru", "yuugure", "twilight"]
 let SCENE_COUNT = SCENES.size()
 
@@ -180,30 +180,23 @@ let sheet = Canvas.Sprite.from_png(FS.read(art("sprites.png")))
 let SHEET = sheet._id
 
 # Upstream ships one background; the generated set has one per scene. Loading
-# the same file four times would cost 7.5 MB apiece, so a repeat is aliased.
+# the same file four times would cost 7.5 MB apiece, so a repeat is aliased —
+# get_or_put only calls the loader on a path it has not seen.
 let backgrounds = fn () {
-  mut paths = []
-  mut sprites = []
-  for scene in SCENES {
+  mut loaded = {}
+  SCENES.map(fn (scene) {
     let scened = ART_DIR + "/background_" + scene + ".png"
-    let path = if FS.exists(scened) { scened } else { art("background.png") }
-    let seen = paths.index_of(path)
-    paths.push(path)
-    if seen >= 0 {
-      sprites.push(sprites[seen])
-    } else {
-      sprites.push(Canvas.Sprite.from_png(FS.read(path)))
-    }
-  }
-  sprites.map(|s| s._id)
+    let path = FS.exists(scened) ? scened : art("background.png")
+    loaded.get_or_put(path, || Canvas.Sprite.from_png(FS.read(path)))._id
+  })
 }()
 
 # --- colours ---------------------------------------------------------------
 # One palette per scene, in the order SCENES lists them, as flat r,g,b triples:
 # grass dark, grass light, road dark, road light, rumble dark, rumble light,
-# fog, sky. These are the values gen_assets.py bakes the matching background
-# with, so the road meets the horizon in the colour the picture ends in
-# (`python3 tools/gen_assets.py --colours` reprints them).
+# fog, sky. These are the values tools/gen_assets.cul bakes the matching
+# background with, so the road meets the horizon in the colour the picture
+# ends in.
 let SCENE_COLORS = [
   # asayake
   [182, 159, 4, 198, 174, 31, 190, 140, 108, 203, 158, 126,
@@ -409,31 +402,25 @@ let reset_props = fn () {
     n = n + 4 + n / 100
   }
 
-  n = 250
-  while n < 1000 {
+  for n in 250..1000 by 5 {
     add_prop(n, COLUMN, 1.1)
     add_prop(n + Random.int(0, 6), TREE1, -1.0 - Random.uniform(0.0, 2.0))
     add_prop(n + Random.int(0, 6), TREE2, -1.0 - Random.uniform(0.0, 2.0))
-    n = n + 5
   }
 
-  n = 200
-  while n < segments.size() {
+  for n in 200..segments.size() by 3 {
     let side = if Random.int(0, 2) == 0 { 1.0 } else { -1.0 }
     add_prop(n, PLANTS[Random.int(0, PLANTS.size())],
              side * (2.0 + Random.uniform(0.0, 5.0)))
-    n = n + 3
   }
 
-  n = 1000
-  while n < segments.size() - 50 {
+  for n in 1000..segments.size() - 50 by 100 {
     let side = if Random.int(0, 2) == 0 { 1.0 } else { -1.0 }
     add_prop(n + Random.int(0, 51), BILLBOARDS[Random.int(0, BILLBOARDS.size())], -side)
     for _ in 0..20 {
       add_prop(n + Random.int(0, 51), PLANTS[Random.int(0, PLANTS.size())],
                side * (1.5 + Random.uniform(0.0, 1.0)))
     }
-    n = n + 100
   }
 }
 
@@ -504,40 +491,72 @@ mut fast_lap_time = 180.0             # v4's starting target, session-lived
 # loops under the run instead of the chiptune; the generated assets ship no
 # music, so the riff below is the default. Either way the level sits at v4's
 # own quiet `music.volume = 0.05` (= vol 25 on Canvas's 0..100 scale).
-let MUSIC_FILE = fn () {
-  mut found = nil
-  for name in ["music.ogg", "music.mp3"] {
-    let path = ART_DIR + "/" + name
-    if found == nil && FS.exists(path) { found = path }
-  }
-  found
-}()
+let MUSIC_FILE = ["music.ogg", "music.mp3"].map(|n| ART_DIR + "/" + n)
+                                           .find(|p| FS.exists(p))
 if MUSIC_FILE != nil { Canvas.music(FS.read(MUSIC_FILE), vol: 25) }
 
-# The chiptune fallback — a short retro-arcade riff over Am-F-C-G, ticked from
-# `update()` so its rhythm is exact regardless of display framerate. `tone()`
-# is fire-and-forget (the APU keeps playing the note on its own), so the
-# sequencer is just "is it this note's turn yet".
-let LEAD_STEP = 8            # frames per sixteenth-note lead step
-let BASS_STEP = 16           # frames per eighth-note bass step
-let BGM_LOOP = 128           # one loop = 4 chords x 32 frames each
-# Root-third-fifth-octave arpeggio per chord (Am / F / C / G), 4 steps each.
-let LEAD_NOTES = [440, 523, 659, 880, 349, 440, 523, 698,
-                  262, 330, 392, 523, 392, 494, 587, 784]
-# Root then fifth of each chord, one octave down from the lead.
-let BASS_NOTES = [220, 330, 175, 262, 131, 196, 196, 294]
+# The chiptune fallback — a bossa-flavored run, not a transcription of any
+# particular tune: a brisk ii-V-I-ish turnaround (F△7-Dm7-Gm7-C7, one bar
+# each) with jazzy 6th/7th colour tones and a syncopated "boom-chick" bass in
+# place of the original riff's straight minor arpeggio. Ticked from `update()`
+# so its rhythm is exact regardless of display framerate. `tone()` is
+# fire-and-forget (the APU keeps playing the note on its own), so the
+# sequencer is just "is it this note's turn yet"; a `0` in a note table is a
+# rest, not a pitch, and is skipped rather than triggered.
+let LEAD_STEP = 7            # frames per sixteenth-note step (~129 bpm)
+let BASS_STEP = LEAD_STEP * 2    # eighth notes
+let PAD_STEP = LEAD_STEP * 4     # quarter notes
+let BGM_LOOP = LEAD_STEP * 64    # 4 bars of 16 sixteenths
+# A phrase per chord built from its 3rd/5th/6th/7th rather than a plain
+# arpeggio, sequenced down a step bar to bar and dipping to a lower register
+# for the Gm7 bar before C7's dominant run resolves it back down to F.
+let LEAD_NOTES = [
+  # F△7 (F-A-C-E)
+  440, 0, 523, 0, 659, 0, 587, 523, 0, 466, 0, 440, 349, 0, 0, 0,
+  # Dm7 (D-F-A-C)
+  392, 0, 466, 0, 587, 0, 523, 466, 0, 440, 0, 392, 330, 0, 0, 0,
+  # Gm7 (G-Bb-D-F), an octave down for contrast
+  294, 0, 349, 0, 466, 0, 440, 392, 0, 349, 0, 294, 233, 0, 0, 0,
+  # C7 (C-E-G-Bb), the dominant run home
+  330, 0, 392, 0, 466, 0, 440, 392, 0, 330, 0, 262, 196, 0, 0, 0]
+# A syncopated "boom-chick" bossa pattern per bar: root on 1, a chord tone
+# anticipating beat 3 (the classic bossa push), the 5th sustained through
+# beat 3, then the 7th as a pickup into the next bar's root.
+let BASS_NOTES = [
+  175, 0, 0, 220, 262, 0, 0, 330,     # F△7: F root, A, C 5th, E 7th pickup
+  147, 0, 0, 175, 220, 0, 0, 262,     # Dm7: D root, F, A 5th, C 7th pickup
+  196, 0, 0, 233, 294, 0, 0, 349,     # Gm7: G root, Bb, D 5th, F 7th pickup
+  131, 0, 0, 165, 196, 0, 0, 233]     # C7: C root, E, G 5th, Bb pickup (b7 into F)
+# An airy chime on beats 1 and 3 only — the 5th then the 6th/7th colour tone
+# of each chord — for the lounge-jazz shimmer a plain lead/bass duo lacks.
+let PAD_NOTES = [523, 0, 659, 0, 440, 0, 523, 0, 466, 0, 587, 0, 392, 0, 466, 0]
 mut bgm_frame = 0
 
 let tick_bgm = fn () {
   if bgm_frame % LEAD_STEP == 0 {
     let note = LEAD_NOTES[(bgm_frame / LEAD_STEP) % LEAD_NOTES.size()]
-    Canvas.tone(note, LEAD_STEP - 3, vol: 20, wave: Canvas.PULSE,
-                decay: 2, release: 2, duty: Canvas.DUTY_QUARTER)
+    if note != 0 {
+      Canvas.tone(note, LEAD_STEP - 2, vol: 16, wave: Canvas.PULSE,
+                  attack: 1, decay: 1, release: 3, duty: Canvas.DUTY_QUARTER)
+    }
   }
   if bgm_frame % BASS_STEP == 0 {
     let note = BASS_NOTES[(bgm_frame / BASS_STEP) % BASS_NOTES.size()]
-    Canvas.tone(note, BASS_STEP - 4, vol: 28, wave: Canvas.PULSE2,
-                decay: 3, release: 4, duty: Canvas.DUTY_EIGHTH)
+    if note != 0 {
+      Canvas.tone(note, BASS_STEP - 4, vol: 22, wave: Canvas.PULSE2,
+                  attack: 1, decay: 2, release: 5, duty: Canvas.DUTY_HALF)
+    }
+  } else if bgm_frame % BASS_STEP == LEAD_STEP {
+    # A soft shaker tick on the offbeat eighth, for a bit of groove under the
+    # melody without it reading as a drum kit.
+    Canvas.tone(2400, 2, vol: 5, wave: Canvas.NOISE, decay: 1, release: 1)
+  }
+  if bgm_frame % PAD_STEP == 0 {
+    let note = PAD_NOTES[(bgm_frame / PAD_STEP) % PAD_NOTES.size()]
+    if note != 0 {
+      Canvas.tone(note, PAD_STEP - 6, vol: 9, wave: Canvas.TRIANGLE,
+                  attack: 3, decay: 6, release: 12)
+    }
   }
   bgm_frame = (bgm_frame + 1) % BGM_LOOP
 }
@@ -713,10 +732,8 @@ let update = fn (dt) {
 # --- render ----------------------------------------------------------------
 # The fog factor only depends on how far down the draw window a segment is, so
 # it is tabulated once, as 0..256 for the integer colour lerp.
-mut fog_i = []
-for n in 0..DRAW_DISTANCE {
-  fog_i.push(Math.round(exponential_fog(n / (DRAW_DISTANCE * 1.0), FOG_DENSITY) * 256.0))
-}
+let fog_i = iota(DRAW_DISTANCE).map(|n|
+  Math.round(exponential_fog(n / (DRAW_DISTANCE * 1.0), FOG_DENSITY) * 256.0))
 
 # Per-frame road colours: the current scene lerped toward the next one, then
 # each segment lerped toward the fog colour. Both are integer arithmetic —
@@ -812,9 +829,8 @@ let draw_road = fn (base_index, base_percent, player_y) {
   mut edge = H
   mut x = 0.0
   mut dx = -(segments[base_index].curve * base_percent)
-  mut n = 0
   mut si = base_index
-  while n < DRAW_DISTANCE {
+  for n in 0..DRAW_DISTANCE {
     let segment = segments[si]
     let looped = si < base_index
     segment.clip = edge
@@ -848,11 +864,10 @@ let draw_road = fn (base_index, base_percent, player_y) {
     dx = dx + segment.curve
     si = si + 1
     if si >= n_segments { si = 0 }
-    n = n + 1
 
     if visible {
       let p = pal[segment.kind]
-      let f = fog_i[n - 1]
+      let f = fog_i[n]
       let g = 256 - f
       let c_grass = (p[0] * f + fog_r * g) / 256 +
                     ((p[1] * f + fog_g * g) / 256) * 256 +
@@ -903,13 +918,11 @@ let draw_road = fn (base_index, base_percent, player_y) {
         let l2 = w2 / 64.0
         mut lx1 = x1 - w1 + lw1
         mut lx2 = x2 - w2 + lw2
-        mut lane = 1
-        while lane < LANES {
+        for _ in 1..LANES {
           _Canvas.polygon([lx1 - l1, edge, lx1 + l1, edge, lx2 + l2, top,
                            lx2 - l2, top], c_lane, 1)
           lx1 = lx1 + lw1
           lx2 = lx2 + lw2
-          lane = lane + 1
         }
       }
       # Road markings go on last, over the tarmac and the lane dashes both,
@@ -936,13 +949,11 @@ let draw_road = fn (base_index, base_percent, player_y) {
           let cw2 = w2 * 2.0 / CHECKER_COLS
           let bx1 = x1 - w1
           let bx2 = x2 - w2
-          mut i = segment.index % 2
-          while i < CHECKER_COLS {
+          for i in segment.index % 2..CHECKER_COLS by 2 {
             let a1 = bx1 + cw1 * i
             let a2 = bx2 + cw2 * i
             _Canvas.polygon([a1, edge, a1 + cw1, edge, a2 + cw2, top, a2, top],
                             c_light, 1)
-            i = i + 2
           }
         }
       }
@@ -997,11 +1008,7 @@ let format_time = fn (t) {
   let minutes = Math.floor(t / 60.0)
   let seconds = Math.floor(t - minutes * 60.0)
   let tenths = Math.floor(10.0 * (t - Math.floor(t)))
-  if minutes > 0 {
-    "{minutes}:{if seconds < 10 { "0" } else { "" }}{seconds}.{tenths}"
-  } else {
-    "{seconds}.{tenths}"
-  }
+  minutes > 0 ? "{minutes}:{seconds:02}.{tenths}" : "{seconds}.{tenths}"
 }
 
 let draw_hud = fn () {
@@ -1046,10 +1053,9 @@ let render = fn () {
   draw_road(base_index, base_percent, player_y)
 
   # Back to front over the same window, so nearer sprites overlap farther ones.
-  mut m = DRAW_DISTANCE - 1
-  mut mi = base_index + m
+  mut mi = base_index + DRAW_DISTANCE - 1
   while mi >= n_segments { mi = mi - n_segments }
-  while m > 0 {
+  for _ in 1..DRAW_DISTANCE {
     let segment = segments[mi]
     if segment.vis {
       let s1x = segment.p1_sx
@@ -1081,7 +1087,6 @@ let render = fn () {
                   if key_left { -1.0 } else if key_right { 1.0 } else { 0.0 },
                   player_segment.p2_wy - player_segment.p1_wy)
     }
-    m = m - 1
     mi = mi - 1
     if mi < 0 { mi = n_segments - 1 }
   }

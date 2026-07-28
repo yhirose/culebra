@@ -20,24 +20,15 @@ let SPRITE_PAL = [CLEAR, C2, C3, C4]     # set_draw_colors: None, C2, C3, C4
 let GROUND_PAL = [C1, C2, C3, C4]        # set_draw_colors: C1, C2, C3, C4
 
 # --- 2BPP sprite decoding --------------------------------------------------
-let _hexd = "0123456789abcdef".graphemes().collect()
-let hex_bytes = fn (s) {
-  s.graphemes().chunks(2)
-    .map(fn ([hi, lo]) { _hexd.index_of(hi) * 16 + _hexd.index_of(lo) })
-    .collect()
-}
 # WASM-4 2BPP: a continuous bitstream, MSB first, 4 pixels per byte, each pixel
 # a palette index 0..3. All our sheet widths are byte-aligned per row.
 let decode2bpp = fn (bytes, w, h) {
-  mut out = []
-  for n in 0..(w * h) {
-    let b = bytes[n / 4]
-    out.push((b >> (6 - 2 * (n % 4))) & 3)
-  }
-  out
+  iota(w * h).map(|n| (bytes[n / 4] >> (6 - 2 * (n % 4))) & 3)
 }
+
 let load_sprite = fn (hex, w, h, pal) {
-  Canvas.Sprite.new(decode2bpp(hex_bytes(hex), w, h), w, h, pal)
+  let bytes = Encoding.hex.decode(hex).bytes().collect()
+  Canvas.Sprite.new(decode2bpp(bytes, w, h), w, h, pal)
 }
 
 let rocci_sheet = load_sprite("0000000000000000000000000000000000000000155600001000000000000000000081000000804005568180140001800000018000028500000281400156a5a0150005a0000005a0000a9500000a85400056a9001556a5000000150000065500000655400006aa00155aaa001556aa00001695000006950000095500156aa9000556a900001694000016950000095400056a94000156a400001a940000169400000950000069500000569000001aa000001aa000002940000029400000264000000aa000000aa000002900000029000000290000000a8000000a8000002a0000002a0000002a0000000540000005400000280000002800000028000000a5000000a50000002000000020000000200000002400000024000000000000000000000000000000000000000000000000000000000000000000000000000000000000", 80, 16, SPRITE_PAL)
