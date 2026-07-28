@@ -94,6 +94,7 @@ just dev                # LTO 無し -O1 の高速ビルド → build-dev/ (内�
 just test-dev           # build-dev/ で interp==JIT を素早く確認 (各編集ごと)
 just test               # 全 backend + embed スモークテスト (並列; JOBS=1 で逐次化)
 just test wrap          # `culebra wrap` の端から端まで (`just test` には含まれない)
+just install            # Release バイナリを /usr/local/bin へ (`just install ~/.local` でユーザー install)
 ./build/culebra --shell # REPL (--jit で JIT REPL)
 ```
 

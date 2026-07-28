@@ -107,6 +107,33 @@ build-no-jit:
     cd build-no-jit && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=OFF .. > /dev/null
     cd build-no-jit && {{nice_cmd}} make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8) culebra
 
+# Install the Release binary (`just build`) into PREFIX/bin, with sudo only when
+# that directory isn't already writable. PREFIX defaults to /usr/local: on macOS
+# /usr/bin is read-only even for root (SIP), so a system-wide install goes here.
+# Pass it positionally for a user-local one: `just install ~/.local`.
+# The AOT runtime archives are embedded in the binary, so it needs nothing else
+# to run scripts or to `culebra build`. Only `Embed.dir` and `culebra wrap` read
+# a source checkout — from the path baked in at build time, or $CULEBRA_HOME
+# (include/source_dir.h) — so keep this tree, or point CULEBRA_HOME at one.
+[doc("Install the Release binary into PREFIX/bin (default /usr/local, sudo only if needed).")]
+[group("build")]
+install PREFIX='/usr/local': build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dest="{{PREFIX}}/bin"
+    # Writability of the nearest existing ancestor: PREFIX itself may not exist
+    # yet (`PREFIX=~/.local` on a fresh account creates two levels).
+    probe="$dest"
+    while [[ ! -e "$probe" ]]; do probe="$(dirname "$probe")"; done
+    sudo=""
+    [[ -w "$probe" ]] || sudo=sudo
+    $sudo mkdir -p "$dest"
+    $sudo install -m 755 build/culebra "$dest/culebra"
+    echo "installed -> $dest/culebra"
+    case ":${PATH}:" in *":$dest:"*) ;;
+      *) echo "note: $dest is not on your PATH" >&2 ;;
+    esac
+
 # Build with ASan+UBSan (no-LTO Release) and smoke the JIT GC paths.
 # The conservative stack scanner (scan_range, jit_gc.h) is exempted from
 # ASan via no_sanitize("address"); without that, every JIT GC collect
