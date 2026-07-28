@@ -172,6 +172,34 @@ Ch.13 の「ルーティング」節を参照してください。
 ェクト自身が生存し続けます。このコードベースで新規のランタイムコール
 バックラムダは、必ず同じパターンに従わなければなりません。
 
+### 制御フローとエラー
+
+インタプリタはこの 2 つを意図的に分離しており、機構も異なります。
+
+**`return` / `break` / `continue` は thread-local スロットで完了しま
+す** — ECMAScript の completion record を、すべての `eval()` シグネチャ
+に引き回す代わりに、CPython が pending 例外を保持するのと同じ形で持ち
+ます。`eval()` は入口でスロットを見て即座に制御を返すので、値を素通し
+するだけの約 100 箇所の呼び出しサイトは伝播コードを持ちません。関数呼
+び出し境界が `return` を消費し (`deliver_call`)、最も近い囲みループが
+`break` / `continue` を消費します (`run_loop_body`)。
+
+途中のサイトがしてはいけないのは、完了が pending の状態で `eval()` の
+結果を*変換*することです。`to_bool` / `to_long` / `to_string` は入口
+ガードが返す nil に対して `TypeError` を投げるため、それらのサイトは
+`eval_operand` を経由して pending を呼び出し元に報告します。この規則は
+`tools/check_flow_discipline.sh` が ratchet します。
+
+**ユーザの `throw` は C++ 例外のままです。** 頻度が低く unwind コスト
+が問題にならないうえ、throw する `defer` は実行中の例外を置き換えられ
+る必要があり、これは戻り値プロトコルでは表現できません。`return` が
+unwind しなくなったため、`run_deferred` はスコープの defer 実行中だけ
+pending の完了を退避します (`FlowPark`)。そうしないと入口ガードがすべ
+ての defer 本体を no-op にしてしまいます。
+
+この分離により、制御フローは通常の文と同じコストになり、`throw` は
+unwind の意味論をそのまま保ちます。
+
 ### エラー伝播
 
 2 種類の throw を 2 つの C++ 例外型が運びます:

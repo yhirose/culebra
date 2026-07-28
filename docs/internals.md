@@ -172,6 +172,38 @@ itself is kept alive as long as any escaped callback survives. New
 runtime-callback lambdas in this codebase MUST follow the same
 pattern.
 
+### Control flow vs. errors
+
+The interpreter splits the two on purpose, and they use different
+mechanisms.
+
+**`return` / `break` / `continue` complete through a thread-local slot**
+— the ECMAScript completion record, held the way CPython holds its
+pending exception rather than threaded through every `eval()`
+signature. `eval()` checks the slot on entry and hands control straight
+back, so the ~100 call sites that merely pass a value along need no
+propagation code of their own. A function-call boundary consumes a
+pending `return` (`deliver_call`); the nearest enclosing loop consumes
+`break` / `continue` (`run_loop_body`).
+
+The one thing an intermediate site must not do is *convert* an
+`eval()` result while a completion is pending: `to_bool` / `to_long` /
+`to_string` raise a `TypeError` on the nil the entry guard produces, so
+those sites go through `eval_operand`, which reports the pending
+completion instead. `tools/check_flow_discipline.sh` ratchets that
+rule.
+
+**User `throw` stays a C++ exception.** It is rare enough that unwind
+cost does not matter, and a `defer` body that throws has to be able to
+replace an in-flight exception — semantics a return-value protocol
+cannot express. Because a `return` no longer unwinds, `run_deferred`
+parks the pending completion for the duration of a scope's defers
+(`FlowPark`); otherwise the entry guard would turn every defer body
+into a no-op.
+
+The split is why control flow costs what an ordinary statement costs
+while `throw` keeps its unwind semantics intact.
+
 ### Error propagation
 
 Two C++ exception types carry the two kinds of throw:
