@@ -401,10 +401,15 @@ assert_eq(to_float(ag_zg[1][1]), 1.0)
 # order — GPU and CPU must agree bit for bit.
 assert_eq(type_of(Tensor.gpu_available()), "Bool")
 
+# Nothing above pinned a device, so the documented default is what is in
+# effect. device() reports the selection, not where an op happened to run.
+assert_eq(Tensor.device(), "auto")
+
 let dev_a = Tensor.from([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).reshape([2, 3])
 let dev_b = Tensor.from([0.5, -1.0, 2.0, 1.5, -0.5, 0.25]).reshape([3, 2])
 
 Tensor.use_gpu()
+assert_eq(Tensor.device(), "gpu")
 let dev_m = dev_a.dot(dev_b)
 Tensor.eval(dev_m)
 assert_eq(to_string(dev_m.to_array()), "[[3.0, 2.75], [9.0, 5.0]]")
@@ -413,11 +418,13 @@ Tensor.eval(dev_r)
 assert_eq(to_string(dev_r.to_array()), "[15.0, 33.0]")
 
 Tensor.use_auto()
+assert_eq(Tensor.device(), "auto")
 let dev_m2 = dev_a.dot(dev_b)
 Tensor.eval(dev_m2)
 assert_eq(to_string(dev_m2.to_array()), "[[3.0, 2.75], [9.0, 5.0]]")
 
 Tensor.use_cpu()
+assert_eq(Tensor.device(), "cpu")
 let dev_m3 = dev_a.dot(dev_b)
 Tensor.eval(dev_m3)
 assert_eq(to_string(dev_m3.to_array()), "[[3.0, 2.75], [9.0, 5.0]]")

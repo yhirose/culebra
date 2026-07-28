@@ -1448,10 +1448,16 @@ Tensor で意味づけしておらず、`@` は出力形状が変わるため in
 | `Tensor.use_gpu() -> Nil` | GPU バックエンドで評価 |
 | `Tensor.use_auto() -> Nil` | 演算ごとに問題サイズで選択（デフォルト） |
 | `Tensor.gpu_available() -> Bool` | GPU バックエンドがビルドに含まれ到達可能か |
+| `Tensor.device() -> String` | 現在の選択: `'cpu'` / `'gpu'` / `'auto'` |
 
 ```culebra
 inspect(type_of(Tensor.gpu_available()))    # => 'Bool'
+inspect(Tensor.device())                    # => 'auto'
 ```
+
+`device()` が返すのは選択であって、個々の演算がどこで走ったかではありま
+せん。`'auto'` では演算ごとに決まりますし、GPU に送った演算も到達できな
+ければ CPU で実行されます。
 
 `use_auto` がデフォルトなのは、小さいテンソルがカーネル起動コストに
 負けるからです。小さい演算は CPU に留め、移送コストに見合う大きさの

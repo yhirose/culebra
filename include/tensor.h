@@ -172,6 +172,23 @@ inline void tensor_use_gpu() { tensor_device_chosen = true; tl::use_gpu(); }
 inline void tensor_use_auto() { tensor_device_chosen = true; tl::use_auto(); }
 CULEBRA_RT_TENSOR_EVAL_LINKAGE bool tensor_gpu_available();
 
+// Tensor.device — the selection in effect, not the device a given op ran on
+// (under "auto" that is decided per op). Bootstraps first: the default is
+// installed lazily, so reading tl directly would answer "cpu" for a program
+// that has not built a tensor yet and "auto" for the same program one line
+// later. Going through the choke keeps one source of truth for the default.
+inline const char* tensor_device() {
+  tensor_rt_bootstrap();
+  switch (tl::device_) {
+    case tl::device_type::gpu:
+      return "gpu";
+    case tl::device_type::auto_:
+      return "auto";
+    default:
+      return "cpu";
+  }
+}
+
 // Tensor — an Op-tagged autograd tape node whose value is a tl::array
 // (lazy graph node, zero-copy view, or materialized buffer).
 //

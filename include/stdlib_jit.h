@@ -6093,6 +6093,11 @@ inline JitValue _ns_tensor_use_auto(JitValue*, int64_t) {
 inline JitValue _ns_tensor_gpu_available(JitValue*, int64_t) {
   return _ns_adapt::v_bool(culebra::tensor_gpu_available());
 }
+inline JitValue _ns_tensor_device(JitValue*, int64_t) {
+  // tensor_device returns a static literal; intern it so the surfaced
+  // TAG_STRING carries a length header like any other String.
+  return _ns_adapt::v_string(_intern_str(culebra::tensor_device()));
+}
 
 // --- The dispatch table ---
 
@@ -6666,6 +6671,7 @@ inline const NsMethod kNsMethods[] = {
   {"Tensor", "use_gpu",       0, &_ns_tensor_use_gpu},
   {"Tensor", "use_auto",      0, &_ns_tensor_use_auto},
   {"Tensor", "gpu_available", 0, &_ns_tensor_gpu_available},
+  {"Tensor", "device",        0, &_ns_tensor_device},
 };
 
 // Namespace-level constants (Math.pi, etc). Slot values are immutable

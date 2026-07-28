@@ -1485,10 +1485,16 @@ switchable at runtime:
 | `Tensor.use_gpu() -> Nil` | evaluate on the GPU backend |
 | `Tensor.use_auto() -> Nil` | choose per op by problem size (the default) |
 | `Tensor.gpu_available() -> Bool` | whether a GPU backend is compiled in and reachable |
+| `Tensor.device() -> String` | the selection in effect: `'cpu'`, `'gpu'` or `'auto'` |
 
 ```culebra
 inspect(type_of(Tensor.gpu_available()))    # => 'Bool'
+inspect(Tensor.device())                    # => 'auto'
 ```
+
+`device()` reports the selection, not where a given op ran — under
+`'auto'` that is decided per op, and an op sent to a GPU that turned
+out to be unreachable still lands on the CPU.
 
 `use_auto` is the default because small tensors lose to kernel-launch
 overhead: it keeps those on the CPU and sends only the ops big enough

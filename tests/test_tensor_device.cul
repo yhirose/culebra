@@ -1,0 +1,35 @@
+# Conformance: stdlib §8 (Tensor) — the device default and how it is pinned.
+# See docs/stdlib.md "Backends and device selection".
+#
+# Its own file because the default installs once per process (a lazy
+# bootstrap, so a tensor-free binary installs nothing). Ordering is what
+# this file is for, and tests/test_tensor.cul has already built tensors by
+# the time it reaches its own device section, so it can only cover the
+# other side: a pin made after the default is already in place.
+
+# Pinned before a single tensor exists — the ordinary way to ask for a
+# device — so the bootstrap that installs the default must not undo it.
+Tensor.use_cpu()
+assert_eq(Tensor.device(), "cpu")
+
+let a = Tensor.from([1.0, 2.0, 3.0, 4.0]).reshape([2, 2])
+Tensor.eval(a)
+assert_eq(Tensor.device(), "cpu")
+
+# Pins made later still win, and every op agrees on the result whichever
+# device answered: the values below are exact in f32.
+Tensor.use_gpu()
+assert_eq(Tensor.device(), "gpu")
+let g = a.dot(a)
+Tensor.eval(g)
+assert_eq(to_string(g.to_array()), "[[7.0, 10.0], [15.0, 22.0]]")
+
+Tensor.use_auto()
+assert_eq(Tensor.device(), "auto")
+let t = a.dot(a)
+Tensor.eval(t)
+assert_eq(to_string(t.to_array()), "[[7.0, 10.0], [15.0, 22.0]]")
+
+assert_eq(type_of(Tensor.device()), "String")
+
+inspect("test_tensor_device: OK")

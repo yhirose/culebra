@@ -2741,6 +2741,15 @@ inline Value make_tensor_namespace() {
           },
           "Bool"sv)),
       false);
+  ns.initialize(
+      "device",
+      Value(FunctionValue(
+          {},
+          [](std::shared_ptr<Environment>) {
+            return Value(std::string(tensor_device()));
+          },
+          "String"sv)),
+      false);
 
   return Value(std::move(ns));
 }
