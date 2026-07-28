@@ -12,6 +12,9 @@ overloading via special methods, auto-reflection, `Math.*`, `Random.*`).
                           C++ Tensor primitive (native reverse-mode), so the
                           forward records the graph and `loss.backward()` walks it
                           in C++. ~50–100× faster per step than the scalar version.
+- `microgpt_tensor.py`  — Same Tensor architecture, PyTorch reference (CPU,
+                          single-threaded via `torch.set_num_threads(1)`) for
+                          per-step comparison against `microgpt_tensor.cul`.
 - `names.txt`           — Training data (gitignored). Run `just fetch-names`.
 - `sidebyside.html`     — Static side-by-side viewer: Python ↔ Culebra scalar
                           (algorithm correspondence).
@@ -24,8 +27,11 @@ overloading via special methods, auto-reflection, `Math.*`, `Random.*`).
 ```
 just fetch-names
 python3 benchmarks/microgpt/microgpt.py [num_steps]
+python3 benchmarks/microgpt/microgpt_tensor.py [num_steps]
 ./build/culebra       benchmarks/microgpt/microgpt.cul [num_steps]
 ./build/culebra --jit benchmarks/microgpt/microgpt.cul [num_steps]
+./build/culebra       benchmarks/microgpt/microgpt_tensor.cul [num_steps]
+./build/culebra --jit benchmarks/microgpt/microgpt_tensor.cul [num_steps]
 ```
 
 `num_steps` defaults to 1000. Pass a second arg to `n_samples` (default
