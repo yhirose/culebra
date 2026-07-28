@@ -281,9 +281,41 @@ if(CULEBRA_ENABLE_JIT)
     set(_extra_target_libs
       WebAssemblyAsmParser WebAssemblyCodeGen WebAssemblyDesc
       WebAssemblyInfo)
+    if(NOT "WebAssembly" IN_LIST LLVM_TARGETS_TO_BUILD)
+      message(FATAL_ERROR
+        "This LLVM build was not configured with the WebAssembly target "
+        "(LLVM_TARGETS_TO_BUILD lacks it), but jit.h always registers it "
+        "for `culebra build --target=wasm32-…`. Either install/build an "
+        "LLVM with WebAssembly support, or pass "
+        "-DCULEBRA_LLVM_ALL_TARGETS=ON to link every backend instead.")
+    endif()
   endif()
   llvm_map_components_to_libnames(llvm_libs
     core support orcjit native passes ${_extra_target_libs})
+
+  # Some distros (e.g. Arch Linux) package only the combined libLLVM.so
+  # and omit per-component static archives — or ship a handful of stale
+  # leftover ones `ld` can't even parse (see culebra issue #13). Detect
+  # that by checking whether the core component's static archive is
+  # actually installed; if not, fall back to the single shared library
+  # that LLVMConfig.cmake exposes as the imported target `LLVM`.
+  option(CULEBRA_LLVM_SHARED
+    "Force linking against libLLVM.so instead of per-component static \
+libs (auto-detected when the static libs are missing)" OFF)
+  find_library(CULEBRA_LLVM_CORE_ARCHIVE NAMES LLVMCore
+    PATHS ${LLVM_LIBRARY_DIRS} NO_DEFAULT_PATH)
+  if(CULEBRA_LLVM_SHARED OR NOT CULEBRA_LLVM_CORE_ARCHIVE)
+    if(NOT TARGET LLVM)
+      message(FATAL_ERROR
+        "Per-component LLVM static libraries were not found under "
+        "${LLVM_LIBRARY_DIRS}, and no combined libLLVM shared library "
+        "is available either (no `LLVM` imported target). This LLVM "
+        "install looks incomplete — reinstall LLVM ${CULEBRA_MIN_LLVM_VERSION}+ "
+        "or point CMAKE_PREFIX_PATH at a complete one.")
+    endif()
+    message(STATUS "Linking against the shared libLLVM (no per-component static libs found)")
+    set(llvm_libs LLVM)
+  endif()
 
   add_compile_definitions(CULEBRA_JIT_ENABLED)
 endif()
