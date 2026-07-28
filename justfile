@@ -618,6 +618,7 @@ _run-tests BACKEND:
     # hand-placed retain/release forms, so migration debt can only shrink and
     # a new bare RC op fails the gate.
     run_rc_discipline() { bash tools/check_rc_discipline.sh; }
+    run_flow_discipline() { bash tools/check_flow_discipline.sh; }
 
     # Dispatch-tag symmetry gate: the AST tag sets handled by the interp
     # _eval_dispatch and the JIT compile() switches must stay equal, so a
@@ -643,6 +644,7 @@ _run-tests BACKEND:
       # Linux CI and in local dev.
       all)
         phase "rc-discipline (bare retain/release ratchet)"; run_rc_discipline
+        phase "flow-discipline (return-completion ratchet)"; run_flow_discipline
         phase "dispatch symmetry (eval_X vs compile_X tag sets)"; run_dispatch_symmetry
         phase "iter wiring (JitIterDrive + upstream forwarding ratchet)"; run_iter_wiring
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
@@ -669,6 +671,7 @@ _run-tests BACKEND:
       # check after a single edit; `all` is the pre-commit gate.
       fast)
         phase "rc-discipline (bare retain/release ratchet)"; run_rc_discipline
+        phase "flow-discipline (return-completion ratchet)"; run_flow_discipline
         phase "dispatch symmetry (eval_X vs compile_X tag sets)"; run_dispatch_symmetry
         phase "iter wiring (JitIterDrive + upstream forwarding ratchet)"; run_iter_wiring
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit

@@ -1724,6 +1724,83 @@ struct ReturnValue {
   Value value;
 };
 
+// The pending completion of the statement being evaluated — the ECMAScript
+// "completion record" ([[Type]], [[Value]]) held in a thread-local slot rather
+// than threaded through every eval() signature, the way CPython keeps its
+// pending exception. `return` sets it and unwinds by ordinary returns; eval()
+// checks it on entry and hands control straight back, so no landing pad runs.
+//
+// Only *control flow* lives here. A user `throw`, a defer body that throws and
+// an Interrupted stay C++ exceptions: they are rare enough that unwind cost
+// does not matter, and a throwing defer has to be able to replace an in-flight
+// exception, which a return-value protocol cannot express.
+// The type tag is a plain integer so the check at the top of eval() is a
+// single thread-local load with no initialization guard; the payload is only
+// touched when a `return` is actually in flight.
+inline thread_local uint8_t _flow_type = 0;  // 0 = normal, 1 = return pending
+inline thread_local Value _flow_value;
+
+inline bool flow_pending() { return _flow_type != 0; }
+
+inline void flow_set_return(Value v) {
+  _flow_type = 1;
+  _flow_value = std::move(v);
+}
+
+// Consume a pending `return` at a function boundary. Leaves `out` untouched
+// when nothing was pending, so the body's own trailing value stands.
+inline bool flow_take_return(Value& out) {
+  if (_flow_type == 0) return false;
+  out = std::move(_flow_value);
+  _flow_type = 0;
+  _flow_value = Value();
+  return true;
+}
+
+// Drop a pending completion without delivering it: a bare `return` inside a
+// constructor body, or inside a defer closure, ends only that body.
+inline void flow_discard() {
+  _flow_type = 0;
+  _flow_value = Value();
+}
+
+// Park the pending completion for the duration of a scope's defers. A
+// `return` in flight must not suppress the defers it is unwinding past — the
+// entry guard in eval() would otherwise turn every defer body into a no-op.
+//
+// A throw escaping a defer body drops the parked completion instead of
+// restoring it, matching the old behavior where the defer's exception
+// replaced the in-flight ReturnValue.
+struct FlowPark {
+  uint8_t saved_type = _flow_type;
+  Value saved_value = std::move(_flow_value);
+  int depth = std::uncaught_exceptions();
+
+  FlowPark() {
+    _flow_type = 0;
+    _flow_value = Value();
+  }
+  ~FlowPark() {
+    if (std::uncaught_exceptions() == depth) {
+      _flow_type = saved_type;
+      _flow_value = std::move(saved_value);
+    }
+  }
+
+  FlowPark(const FlowPark&) = delete;
+  FlowPark& operator=(const FlowPark&) = delete;
+};
+
+// Deliver a function body's result at a call boundary: a pending `return`
+// supplies the value, otherwise the body's own trailing expression does. Every
+// site that used to write `try { return f.eval(env); } catch (const
+// ReturnValue& r) { return r.value; }` funnels through here, so a `return`
+// stops at exactly the boundaries it used to stop at.
+inline Value deliver_call(Value body_result) {
+  flow_take_return(body_result);
+  return body_result;
+}
+
 // Internal control-flow signals for `break` / `continue`. Caught by the
 // nearest enclosing loop; uncaught occurrences are a language error
 // (checked at eval time via a stack-depth guard). Distinct types so a
@@ -3406,11 +3483,8 @@ inline std::shared_ptr<Environment> _make_method_call_env(
 // raises ReturnValue rather than returning the value, so catch it here —
 // without this, the surrounding for-in would unwind silently.
 inline Value _invoke_fn_no_args(const Value& fn, const Value& receiver) {
-  try {
-    return fn.to_function().eval(_make_method_call_env(receiver, 0, 0));
-  } catch (const ReturnValue& r) {
-    return r.value;
-  }
+  return deliver_call(
+      fn.to_function().eval(_make_method_call_env(receiver, 0, 0)));
 }
 
 // Invoke a 0-parameter method stored on an iterator-shaped Object
@@ -3429,7 +3503,7 @@ inline bool _invoke_user_eq(const Value& a, const Value& b) {
   if (!fn.params->empty()) {
     env->initialize((*fn.params)[0].name, b, false);
   }
-  return fn.eval(env).to_bool();
+  return deliver_call(fn.eval(env)).to_bool();
 }
 
 // `a < b` honoring the same ordering dispatch as the `<` operator: an Object
@@ -3446,11 +3520,7 @@ inline Value _invoke_binary_method(const Value& receiver,
   if (!fn.params->empty()) env->initialize((*fn.params)[0].name, arg, false);
   // A method body may `return` (raises ReturnValue) rather than fall off its
   // last expression — catch it like _invoke_method_no_args.
-  try {
-    return fn.eval(env);
-  } catch (const ReturnValue& r) {
-    return r.value;
-  }
+  return deliver_call(fn.eval(env));
 }
 inline bool _ordering_less(const Value& a, const Value& b) {
   if (a.type == Value::Object) {
@@ -3743,11 +3813,7 @@ inline Value _invoke_callback(const Value& fn_val) {
   bind_callback_params(*env, fn, {});
   env->initialize("__LINE__", Value(0L), false);
   env->initialize("__COLUMN__", Value(0L), false);
-  try {
-    return fn.eval(env);
-  } catch (const ReturnValue& r) {
-    return r.value;
-  }
+  return deliver_call(fn.eval(env));
 }
 
 inline Value _invoke_callback(const Value& fn_val, const Value& a) {
@@ -3758,11 +3824,7 @@ inline Value _invoke_callback(const Value& fn_val, const Value& a) {
   bind_callback_params(*env, fn, {a});
   env->initialize("__LINE__", Value(0L), false);
   env->initialize("__COLUMN__", Value(0L), false);
-  try {
-    return fn.eval(env);
-  } catch (const ReturnValue& r) {
-    return r.value;
-  }
+  return deliver_call(fn.eval(env));
 }
 
 inline Value _invoke_callback(const Value& fn_val, const Value& a,
@@ -3774,11 +3836,7 @@ inline Value _invoke_callback(const Value& fn_val, const Value& a,
   bind_callback_params(*env, fn, {a, b});
   env->initialize("__LINE__", Value(0L), false);
   env->initialize("__COLUMN__", Value(0L), false);
-  try {
-    return fn.eval(env);
-  } catch (const ReturnValue& r) {
-    return r.value;
-  }
+  return deliver_call(fn.eval(env));
 }
 
 // The counted sequence a bounded range iterates: `cur` walks by `step`
@@ -4353,11 +4411,7 @@ inline Value invoke_unary_callback(std::shared_ptr<Environment> callEnv,
   // when handed to a HOF (`map(to_float)`). Seed 0 like _invoke_callback.
   inner->initialize("__LINE__", Value(0L), false);
   inner->initialize("__COLUMN__", Value(0L), false);
-  try {
-    return f.eval(inner);
-  } catch (const ReturnValue& r) {
-    return r.value;
-  }
+  return deliver_call(f.eval(inner));
 }
 
 // Default-valued params aren't resolved — pass all positional args.
@@ -4415,11 +4469,7 @@ inline Value call(const std::shared_ptr<Environment>& env, std::string_view name
   callEnv->initialize("__LINE__", Value(0L), false);
   callEnv->initialize("__COLUMN__", Value(0L), false);
 
-  try {
-    return f.eval(callEnv);
-  } catch (const ReturnValue& r) {
-    return r.value;
-  }
+  return deliver_call(f.eval(callEnv));
 }
 
 namespace _detail {
@@ -4743,11 +4793,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                // __LINE__/__COLUMN__ would NameError without these.
                inner->initialize("__LINE__", Value(0L), false);
                inner->initialize("__COLUMN__", Value(0L), false);
-               try {
-                 acc = f.eval(inner);
-               } catch (const ReturnValue& r) {
-                 acc = r.value;
-               }
+               acc = deliver_call(f.eval(inner));
                return true;
              });
              return acc;
@@ -6681,6 +6727,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   std::vector<std::filesystem::path> module_stack_;
 
   Value eval(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
+    // A `return` already in flight: hand control back without evaluating
+    // anything further. This one check is what lets the ~100 call sites below
+    // stay written as straight-line code — they run, produce nothing, and the
+    // completion travels up to the nearest function boundary.
+    if (flow_pending()) return Value();
     try {
       return _eval_dispatch(ast, env);
     } catch (CulebraError& e) {
@@ -6781,9 +6832,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         return eval_for(ast, env);
       case "IF"_:
         return eval_if(ast, env);
-      case "CONDITIONAL"_:  // C-style ternary `c ? a : b`
-        return eval(*ast.nodes[0], env).to_bool() ? eval(*ast.nodes[1], env)
-                                                  : eval(*ast.nodes[2], env);
+      case "CONDITIONAL"_: {  // C-style ternary `c ? a : b`
+        Value cond;
+        if (!eval_operand(*ast.nodes[0], env, cond)) return Value();
+        return cond.to_bool() ? eval(*ast.nodes[1], env)
+                              : eval(*ast.nodes[2], env);
+      }
       case "MATCH"_:
         return eval_match(ast, env);
       case "COND"_:
@@ -6866,8 +6920,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       case "DEBUGGER"_:
         return Value();
       case "RETURN"_:
-        eval_return(ast, env);
-        std::unreachable();
+        eval_return(ast, env);  // sets the pending completion; no value here
+        return Value();
       case "THROW"_:
         eval_throw(ast, env);
         std::unreachable();
@@ -6919,9 +6973,25 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     auto it = ast.nodes.begin();
     while (it != ast.nodes.end() - 1) {
       eval(**it, env);
+      // The entry guard would make each remaining statement a no-op anyway;
+      // stopping here is what makes an early `return` cost O(1) rather than
+      // walking the rest of the block.
+      if (flow_pending()) return Value();
       ++it;
     }
     return eval(**it, env);
+  }
+
+  // Evaluate an operand the caller is about to convert (to_bool / to_long /
+  // to_string). Those conversions raise a TypeError on nil, and the entry
+  // guard in eval() hands back a nil placeholder once a `return` is pending —
+  // so the completion has to be checked *before* the conversion runs, not
+  // after. Returns false when flow is pending and the value must not be used.
+  [[nodiscard]] bool eval_operand(const peg::Ast& ast,
+                                  const std::shared_ptr<Environment>& env,
+                                  Value& out) {
+    out = eval(ast, env);
+    return !flow_pending();
   }
 
   // How one loop-body iteration ended. A `return`, a user `throw` or an
@@ -6974,7 +7044,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     bool completed = true;  // set false when the loop exits via break
     for (;;) {
       check_interrupt();
-      auto cond = eval(*wv.cond, loopEnv);
+      Value cond;
+      if (!eval_operand(*wv.cond, loopEnv, cond)) return Value();
       if (!cond.to_bool()) {
         break;
       }
@@ -7132,7 +7203,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           statement_boundary(*nodes[i], scope);  // breakpoint on a 1-stmt else
         return eval(*nodes[i], scope);
       } else {
-        auto cond = eval(*nodes[i], scope);
+        Value cond;
+        if (!eval_operand(*nodes[i], scope, cond)) return Value();
         if (cond.to_bool()) {
           if (debugger_ && is_collapsed_single_statement(*nodes[i + 1]))
             statement_boundary(*nodes[i + 1], scope);  // 1-stmt then-body
@@ -7356,9 +7428,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     using namespace peg::udl;
     for (const auto& arm : ast.nodes) {  // each COND_ARM: [test, body]
       const auto& test = *arm->nodes[0];
-      if (test.tag == "WILDCARD"_ || eval(test, env).to_bool()) {
-        return eval(*arm->nodes[1], env);
+      bool matched = test.tag == "WILDCARD"_;
+      if (!matched) {
+        Value t;
+        if (!eval_operand(test, env, t)) return Value();
+        matched = t.to_bool();
       }
+      if (matched) return eval(*arm->nodes[1], env);
     }
     return Value();  // no arm matched → nil
   }
@@ -7385,7 +7461,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       if (!try_pattern(pattern, subject, armEnv)) continue;
 
       if (next < arm->nodes.size() && arm->nodes[next]->tag == "GUARD"_) {
-        auto guard_val = eval(*arm->nodes[next]->nodes[0], armEnv);
+        Value guard_val;
+        if (!eval_operand(*arm->nodes[next]->nodes[0], armEnv, guard_val))
+          return Value();
         next++;
         if (!guard_val.to_bool()) continue;
       }
@@ -8976,11 +9054,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
               callEnv->initialize("self", inst, false);
               try {
                 self->eval(*body, callEnv);
-                self->run_deferred(callEnv);
-              } catch (const ReturnValue&) {
                 // Explicit `return` inside `new` is fine — we still hand
                 // back the allocated instance; the returned value is
                 // discarded.
+                flow_discard();
                 self->run_deferred(callEnv);
               } catch (...) {
                 self->run_deferred(callEnv);
@@ -9272,9 +9349,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // body). Splits children into positional / kwarg / splat buckets,
   // enforcing "positional must precede any kwarg/splat" at the AST
   // scan (yields a real line/col for the SyntaxError).
-  void split_call_args(const peg::Ast& args_ast,
-                       const std::shared_ptr<Environment>& env,
-                       CallArgs& out) {
+  // Returns false when evaluating an argument completed with a `return`
+  // (`f(if c { return 1 } else { 2 })`): the call itself must not run, or a
+  // native callee would be handed the entry guard's nil and raise a TypeError
+  // instead of letting the return through.
+  [[nodiscard]] bool split_call_args(const peg::Ast& args_ast,
+                                     const std::shared_ptr<Environment>& env,
+                                     CallArgs& out) {
     using namespace peg::udl;
     // Validate the argument-list shape (positional-after-keyword / duplicate
     // keyword) before evaluating any argument, via the shared single source so
@@ -9314,7 +9395,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           break;
         }
       }
+      if (flow_pending()) return false;
     }
+    return true;
   }
 
   // Resolves the three argument buckets against `fn_val`'s formal
@@ -9498,12 +9581,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     callEnv->initialize("__LINE__", Value((long)call_line), false);
     callEnv->initialize("__COLUMN__", Value((long)call_column), false);
 
-    Value result;
-    try {
-      result = f.eval(callEnv);
-    } catch (const ReturnValue& r) {
-      result = r.value;
-    }
+    Value result = deliver_call(f.eval(callEnv));
     check_type(result, f.return_type, "return value", call_line, call_column);
     return result;
   }
@@ -9573,7 +9651,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       }
     }
     CallArgs args;
-    split_call_args(ast, env, args);
+    if (!split_call_args(ast, env, args)) return Value();
     // Callable class instance: `obj(args)` dispatches to the instance's
     // `__call__` method, the twin of `__index__`. resolve_class_method
     // gates on class_tag (a plain dict holding a "__call__" key stays
@@ -9610,7 +9688,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     CallArgs args;
     args.positional.push_back(receiver);
     args.positional_locs.emplace_back(dot_line, dot_column);
-    split_call_args(args_ast, env, args);
+    if (!split_call_args(args_ast, env, args)) return Value();
     return invoke_user_function_with_args(fn_val, env, std::move(args),
                                           args_ast.line, args_ast.column,
                                           args_ast.path, &args_ast);
@@ -9644,7 +9722,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   Value eval_array_reference(const peg::Ast& ast,
                              const std::shared_ptr<Environment>& env,
                              const Value& val) {
-    auto key = eval(ast, env);
+    Value key;
+    if (!eval_operand(ast, env, key)) return Value();
     // `seq[r]` where r is a range value slices instead of a point lookup:
     // Array -> shallow copy, String/StringView -> byte-unit zero-copy view,
     // Tuple -> new tuple. Works for literal (`xs[1..3]`) and stored ranges.
@@ -10256,7 +10335,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
            1);  // if the size is 1, thes node will be hoisted.
     Value val;
     for (auto node : ast.nodes) {
-      val = eval(*node, env);
+      if (!eval_operand(*node, env, val)) return Value();
       if (val.to_bool()) {
         return val;
       }
@@ -10268,7 +10347,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                          const std::shared_ptr<Environment>& env) {
     Value val;
     for (auto node : ast.nodes) {
-      val = eval(*node, env);
+      if (!eval_operand(*node, env, val)) return Value();
       if (!val.to_bool()) {
         return val;
       }
@@ -10280,9 +10359,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // Each middle operand is evaluated once (the rhs becomes the next lhs);
   // short-circuits to false at the first failing link (Python semantics).
   Value eval_condition(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
-    auto prev = eval(*ast.nodes[0], env);
+    Value prev;
+    if (!eval_operand(*ast.nodes[0], env, prev)) return Value();
     for (size_t i = 1; i + 1 < ast.nodes.size(); i += 2) {
-      auto rhs = eval(*ast.nodes[i + 1], env);
+      Value rhs;
+      if (!eval_operand(*ast.nodes[i + 1], env, rhs)) return Value();
       auto r = compare_values(prev, rhs, ast.nodes[i]->token, env);
       if (!r.to_bool()) return Value(false);
       prev = std::move(rhs);
@@ -10382,7 +10463,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   }
 
   Value eval_unary_not(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
-    return Value(!eval(*ast.nodes[1], env).to_bool());
+    Value v;
+    if (!eval_operand(*ast.nodes[1], env, v)) return Value();
+    return Value(!v.to_bool());
   }
 
   // `~x` — bitwise complement. Integer-only (Long); Float / others are a
@@ -10462,9 +10545,20 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     size_t end_limit = has_step ? n - 1 : n;
     bool has_end = op_idx + 1 < end_limit;
     std::optional<long> start, end;
-    if (has_start) start = eval(*ast.nodes[0], env).to_long();
-    if (has_end) end = eval(*ast.nodes[op_idx + 1], env).to_long();
-    long step = has_step ? eval(*ast.nodes[n - 1]->nodes[0], env).to_long() : 1;
+    Value bound;
+    if (has_start) {
+      if (!eval_operand(*ast.nodes[0], env, bound)) return Value();
+      start = bound.to_long();
+    }
+    if (has_end) {
+      if (!eval_operand(*ast.nodes[op_idx + 1], env, bound)) return Value();
+      end = bound.to_long();
+    }
+    long step = 1;
+    if (has_step) {
+      if (!eval_operand(*ast.nodes[n - 1]->nodes[0], env, bound)) return Value();
+      step = bound.to_long();
+    }
     return _make_range(start, end, ast.nodes[op_idx]->token == "..=", step);
   }
 
@@ -10656,8 +10750,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     auto ret = eval(*ast.nodes[0], env);
     for (auto i = 1u; i < ast.nodes.size(); i += 2) {
       auto rhs = eval(*ast.nodes[i + 1], env);
-      auto ope = eval(*ast.nodes[i], env).to_string()[0];
-      ret = eval_bin_op_step(ret, rhs, ope, env);
+      Value op_tok;
+      if (!eval_operand(*ast.nodes[i], env, op_tok)) return Value();
+      ret = eval_bin_op_step(ret, rhs, op_tok.to_string()[0], env);
     }
     return ret;
   }
@@ -10955,7 +11050,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         // FixedArray view `arr[i] = v` (and compound `arr[i] += v`): write
         // element i into the inline bytes.
         if (is_fixed_array_view(lval)) {
-          long i = eval(postfix, env).to_long();
+          Value iv;
+          if (!eval_operand(postfix, env, iv)) return Value();
+          long i = iv.to_long();
           if (compound) {
             Value cur = fa_get(lval, i);
             Value nv = apply_compound_op(cur, rval, base_op, env);
@@ -11022,7 +11119,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           return rval;
         }
         const auto& arr = lval.to_array();
-        auto idx = eval(postfix, env).to_long();
+        Value idxv;
+        if (!eval_operand(postfix, env, idxv)) return Value();
+        auto idx = idxv.to_long();
         if (idx < 0 || idx >= static_cast<long>(arr.values->size())) {
           throw CulebraError("IndexError", "index out of range");
         }
@@ -11169,7 +11268,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     ArrayValue arr;
 
     if (ast.nodes.size() >= 2) {
-      auto count = eval(*ast.nodes[1], env).to_long();
+      Value countv;
+      if (!eval_operand(*ast.nodes[1], env, countv)) return Value();
+      auto count = countv.to_long();
       if (ast.nodes.size() == 3) {
         auto val = eval(*ast.nodes[2], env);
         arr.values->resize(count, std::move(val));
@@ -11294,9 +11395,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
   void eval_return(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     if (ast.nodes.empty()) {
-      throw ReturnValue{Value()};
+      flow_set_return(Value());
     } else {
-      throw ReturnValue{eval(*ast.nodes[0], env)};
+      // Evaluate first: the operand may itself complete with a `return`
+      // (`return if c { return 1 } else { 2 }`), and that inner one wins.
+      auto v = eval(*ast.nodes[0], env);
+      if (flow_pending()) return;
+      flow_set_return(std::move(v));
     }
   }
 
@@ -11315,6 +11420,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // A throwing defer skips the resolution; the entries stay on the
   // stack and the parent scope's exit picks them up.
   void run_deferred(const std::shared_ptr<Environment>& env) {
+    FlowPark park;  // defers run even when a `return` is unwinding past them
     while (!env->deferred.empty()) {
       auto fn = std::move(env->deferred.back());
       env->deferred.pop_back();
@@ -11377,10 +11483,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       // A `return` inside a defer body exits only the defer closure,
       // not the enclosing function. This matches the JIT's semantics
       // (the defer body compiles to its own LLVM function whose `ret`
-      // stays local).
-      try {
-        self->eval(*body, scopeEnv);
-      } catch (const ReturnValue&) {}
+      // stays local). A user `throw` from here still propagates.
+      self->eval(*body, scopeEnv);
+      flow_discard();
     });
   }
 
@@ -11452,12 +11557,9 @@ inline bool interpret_modules(const std::vector<LoadedModule>& orig_modules,
     // sessions can read its top-level bindings afterwards.
     const auto& entry = modules.back();
     interp->module_stack_.push_back(entry.abs_path);
-    val = interp->eval(*entry.ast, env);
+    // A bare `return` at module top level supplies the program's value.
+    val = deliver_call(interp->eval(*entry.ast, env));
     interp->module_stack_.pop_back();
-    flush_top_defers();
-    return true;
-  } catch (const ReturnValue& r) {
-    val = r.value;
     flush_top_defers();
     return true;
   } catch (const Value& e) {
@@ -11513,12 +11615,8 @@ inline bool interpret(const std::shared_ptr<peg::Ast>& ast,
     if (auto pre = parse_builtin_traits_preamble()) {
       try { interp->eval(*pre, env); } catch (...) {}
     }
-    val = interp->eval(*ast, env);
-    flush_top_defers();
-    return true;
-  } catch (const ReturnValue& r) {
     // bare `return` at top level is unusual but harmless — use its value
-    val = r.value;
+    val = deliver_call(interp->eval(*ast, env));
     flush_top_defers();
     return true;
   } catch (const Value& e) {
