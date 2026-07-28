@@ -1481,20 +1481,31 @@ switchable at runtime:
 
 | Function | Effect |
 | --- | --- |
-| `Tensor.use_cpu() -> Nil` | evaluate every op on the CPU |
+| `Tensor.use_cpu() -> Nil` | evaluate every op on the CPU (the default) |
 | `Tensor.use_gpu() -> Nil` | evaluate on the GPU backend |
-| `Tensor.use_auto() -> Nil` | choose per op by problem size (the default) |
+| `Tensor.use_auto() -> Nil` | choose per op by problem size |
 | `Tensor.gpu_available() -> Bool` | whether a GPU backend is compiled in and reachable |
 
 ```culebra
 inspect(type_of(Tensor.gpu_available()))    # => 'Bool'
 ```
 
+Evaluation starts on the CPU; reaching the GPU is an explicit
+`use_gpu()` or `use_auto()`. Small tensors lose to kernel-launch
+overhead, so `use_auto` is the one to prefer when a program mixes
+sizes.
+
 `use_gpu()` on a build with no reachable GPU falls back to the CPU
 path rather than throwing, so a program stays portable; check
-`gpu_available()` when the choice matters. Small tensors usually lose
-to kernel-launch overhead, which is why `use_auto` is the default.
-Storage stays F32 on every device (see the dtype constraints above).
+`gpu_available()` when the choice matters. Storage stays F32 on every
+device (see the dtype constraints above).
+
+Metal needs nothing at build time. CUDA is compiled in when `nvcc` is
+found (`CULEBRA_TENSOR_CUDA=AUTO`, the default; `ON` turns a missing
+`nvcc` into a configure error and `OFF` skips the backend). The CUDA
+driver itself is loaded at run time, so a CUDA-enabled binary still
+runs on a machine with no GPU — `gpu_available()` just reports
+`false`.
 
 ---
 

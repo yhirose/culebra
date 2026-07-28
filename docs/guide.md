@@ -1489,8 +1489,9 @@ inspect(c.to_array())            # => [[7.0, 10.0], [15.0, 22.0]]
 
 The same type runs on the GPU — there is no separate GPU type.
 `Tensor.use_gpu()` / `use_cpu()` / `use_auto()` switch the backend
-process-wide, and `use_auto` (the default) picks per operation by
-problem size, since small tensors lose to kernel-launch overhead.
+process-wide. Evaluation starts on the CPU; `use_auto` picks per
+operation by problem size, since small tensors lose to kernel-launch
+overhead.
 Shapes, reductions, autograd and device details:
 [`stdlib.md` §8](stdlib.md#8-tensor). The dtype, allocator and
 lazy-shape rationale is in [`internals.md` §8](internals.md).

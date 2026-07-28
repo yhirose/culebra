@@ -639,6 +639,21 @@ CUDA) です。AOT ビルドは対応するランタイムアーカイブを拾�
 単位のゲーティングは `TL_RUNTIME_HOOKS` の opt-in を通るので、Tensor を
 使わないプログラムは GPU フレームワークもカーネルもリンクしません。
 
+ビルド時の手順を持つのは CUDA だけです。`nvcc` が
+`kernels/tensorlib_cuda.cu` を PTX にコンパイルし、`bin2c` がそれを
+`cuda.h` の埋め込むバイト配列に変換します。CUDA 自体はリンクしません —
+ドライバは `dlopen`（Windows は `LoadLibrary` で `nvcuda.dll`）でロード
+され、PTX はそのドライバが JIT するので、リンク依存は `libdl` だけです。
+`CULEBRA_TENSOR_CUDA` が `AUTO` 既定なのはこのためで、ビルドには `nvcc`
+が要る一方、出来たバイナリは GPU もドライバも無い環境でそのまま動きます。
+
+このスイッチはドライバと `culebra_rt_tensor` に必ず揃えて適用し、core
+archive には付けません。前者 2 つは tensorlib のバックエンド本体を実体化
+するので、揃っていないと interp/JIT と AOT で別デバイスに解決されます。
+core archive の weak choke (`tensor_eval_node`・`tensor_gpu_available`) は
+`tl` を odr-use しないので、Tensor を触らないバイナリからバックエンドも
+埋め込み PTX も外れたままになります。
+
 ### Broadcast
 
 標準的な NumPy スタイルの broadcasting: shape は右揃えされ、欠けた次元

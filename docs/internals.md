@@ -650,6 +650,23 @@ Linux / Windows). AOT builds pick up the matching runtime archive;
 the per-binary gating goes through the `TL_RUNTIME_HOOKS` opt-in so a
 tensor-free program links neither the GPU frameworks nor the kernels.
 
+CUDA is the one backend with a build-time step: `nvcc` compiles
+`kernels/tensorlib_cuda.cu` to PTX, which `bin2c` turns into the byte
+array `cuda.h` embeds. Nothing links against CUDA — the driver is
+`dlopen`'d (`nvcuda.dll` via `LoadLibrary` on Windows) and the PTX is
+JIT'd by it, so the only link dependency is `libdl`. That is why
+`CULEBRA_TENSOR_CUDA` defaults to `AUTO`: it needs `nvcc` present to
+build, but the resulting binary still runs where no GPU or driver
+exists.
+
+The switch is applied to the driver and to `culebra_rt_tensor`
+together, never to the core archive. Both of the former instantiate
+tensorlib backend bodies, so they must agree or interp/JIT and AOT
+would resolve to different devices; the core archive's weak chokes
+(`tensor_eval_node`, `tensor_gpu_available`) never odr-use `tl`, which
+is what keeps the backend — and the embedded PTX — out of binaries
+that do not touch Tensor.
+
 ### Broadcast
 
 Standard NumPy-style broadcasting: shapes are right-aligned, missing

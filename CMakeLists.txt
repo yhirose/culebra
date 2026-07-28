@@ -766,9 +766,9 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
 endif()
 
 # Tensor primitive: since M4 the execution engine is cpp-tensorlib
-# (lazy graph + fusion + Accelerate/Metal backends; own CPU/CUDA kernels
-# on other platforms land in M5/M6). Header-only — the only link deps
-# are macOS OS frameworks, which the static-link policy allows.
+# (lazy graph + fusion; Accelerate/Metal on macOS, own CPU kernels plus the
+# CUDA backend below elsewhere). Header-only — the only link deps are macOS
+# OS frameworks and libdl, which the static-link policy allows.
 option(CULEBRA_ENABLE_TENSOR "Enable builtin Tensor type" ON)
 
 if(CULEBRA_ENABLE_TENSOR)
@@ -779,11 +779,90 @@ if(CULEBRA_ENABLE_TENSOR)
       "-DCULEBRA_TENSORLIB_DIR=<path> to a checkout.")
   endif()
   add_compile_definitions(CULEBRA_TENSOR_ENABLED)
+
+  # GPU backend off macOS (macOS gets Metal from the frameworks below, with no
+  # build-time dependency). nvcc is needed only to compile the kernels to PTX;
+  # the driver is dlopen'd at run time, so a CUDA-enabled binary still runs —
+  # on the CPU backend — where no GPU or driver exists. AUTO therefore costs
+  # nothing on a machine without the toolkit and needs no flag on one with it.
+  set(CULEBRA_TENSOR_CUDA AUTO CACHE STRING
+      "CUDA GPU backend for Tensor off macOS: ON, OFF, or AUTO (nvcc found)")
+  set_property(CACHE CULEBRA_TENSOR_CUDA PROPERTY STRINGS AUTO ON OFF)
+
+  set(_tensor_cuda OFF)
+  if(NOT APPLE AND NOT CULEBRA_TENSOR_CUDA STREQUAL "OFF")
+    find_program(CULEBRA_NVCC NAMES nvcc
+      HINTS ENV CUDA_PATH ENV CUDA_HOME /usr/local/cuda
+      PATH_SUFFIXES bin)
+    if(CULEBRA_NVCC)
+      set(_tensor_cuda ON)
+    elseif(CULEBRA_TENSOR_CUDA STREQUAL "ON")
+      message(FATAL_ERROR
+        "CULEBRA_TENSOR_CUDA=ON but nvcc was not found. Add it to PATH or "
+        "set CUDA_PATH.")
+    else()
+      message(STATUS
+        "Tensor: CUDA backend off (no nvcc) — Tensor.use_gpu() falls back to CPU")
+    endif()
+  endif()
+
+  if(_tensor_cuda)
+    # compute_80 PTX JITs onto any sm_80+ device, so one blob covers recent
+    # GPUs. bin2c turns it into the byte array cuda.h #includes (off-Apple
+    # compilers predate C23 #embed).
+    if(NOT CULEBRA_TENSOR_CUDA_PTX_ARCH)
+      set(CULEBRA_TENSOR_CUDA_PTX_ARCH sm_80)
+    endif()
+    set(_tl_dir "${CMAKE_CURRENT_SOURCE_DIR}/vendor/cpp-tensorlib")
+    set(_tl_ptx "${CMAKE_CURRENT_BINARY_DIR}/tensorlib_cuda.ptx")
+    set(_tl_ptx_inc "${CMAKE_CURRENT_BINARY_DIR}/tensorlib_cuda_ptx.inc")
+    set(_nvcc_args -arch=${CULEBRA_TENSOR_CUDA_PTX_ARCH} -ptx)
+    if(WIN32)
+      # nvcc's host-compiler version gate hard-errors on a Visual Studio newer
+      # than its supported window. PTX is device code — the host compiler only
+      # preprocesses — so skipping the gate is safe.
+      list(APPEND _nvcc_args -allow-unsupported-compiler)
+    endif()
+    add_custom_command(OUTPUT ${_tl_ptx}
+      COMMAND ${CULEBRA_NVCC} ${_nvcc_args}
+              ${_tl_dir}/kernels/tensorlib_cuda.cu -o ${_tl_ptx}
+      DEPENDS ${_tl_dir}/kernels/tensorlib_cuda.cu
+      COMMENT "nvcc: tensorlib_cuda.cu -> PTX (${CULEBRA_TENSOR_CUDA_PTX_ARCH})"
+      VERBATIM)
+    add_custom_command(OUTPUT ${_tl_ptx_inc}
+      COMMAND ${CMAKE_COMMAND} -DINPUT=${_tl_ptx} -DOUTPUT=${_tl_ptx_inc}
+              -P ${_tl_dir}/cmake/bin2c.cmake
+      DEPENDS ${_tl_ptx}
+      COMMENT "bin2c: PTX -> tensorlib_cuda_ptx.inc"
+      VERBATIM)
+    add_custom_target(culebra_tensor_cuda_ptx DEPENDS ${_tl_ptx_inc})
+
+    # Applied to every target that instantiates a tensorlib backend body. The
+    # driver (interp/JIT) and culebra_rt_tensor (AOT) must agree, or the same
+    # program would pick a different device per backend. The core archive is
+    # deliberately excluded: its weak chokes never odr-use tl, so it stays free
+    # of both the backend and the embedded PTX.
+    function(culebra_enable_tensor_cuda tgt)
+      add_dependencies(${tgt} culebra_tensor_cuda_ptx)
+      target_include_directories(${tgt} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+      target_compile_definitions(${tgt} PRIVATE TENSORLIB_CUDA)
+    endfunction()
+    culebra_enable_tensor_cuda(culebra)
+    if(TARGET culebra_rt_tensor)
+      culebra_enable_tensor_cuda(culebra_rt_tensor)
+    endif()
+  endif()
+
   if(APPLE)
     set(_blas_link
         "-framework Accelerate -framework Metal -framework Foundation")
     target_link_libraries(culebra
         "-framework Accelerate" "-framework Metal" "-framework Foundation")
+  elseif(_tensor_cuda AND CMAKE_DL_LIBS)
+    # Nothing links against CUDA itself — libdl is only for the driver probe.
+    # (Windows loads nvcuda.dll through kernel32, so CMAKE_DL_LIBS is empty.)
+    set(_blas_link "-ldl")
+    target_link_libraries(culebra ${CMAKE_DL_LIBS})
   else()
     set(_blas_link "")
   endif()
@@ -1022,6 +1101,12 @@ if(CULEBRA_ENABLE_TENSOR AND APPLE)
   # cpp-tensorlib backends (in-process embedding uses tensors directly)
   target_link_libraries(smoke_suite
       "-framework Accelerate" "-framework Metal" "-framework Foundation")
+endif()
+if(_tensor_cuda)
+  # Same backend as the driver, so an embedded interpreter reports the same
+  # Tensor.gpu_available() the CLI does.
+  culebra_enable_tensor_cuda(smoke_suite)
+  target_link_libraries(smoke_suite ${CMAKE_DL_LIBS})
 endif()
 if(CULEBRA_ENABLE_JIT)
   target_link_libraries(smoke_suite ${llvm_libs})

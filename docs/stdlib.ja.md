@@ -1444,21 +1444,29 @@ Tensor で意味づけしておらず、`@` は出力形状が変わるため in
 
 | 関数 | 効果 |
 | --- | --- |
-| `Tensor.use_cpu() -> Nil` | すべての演算を CPU で評価 |
+| `Tensor.use_cpu() -> Nil` | すべての演算を CPU で評価（デフォルト） |
 | `Tensor.use_gpu() -> Nil` | GPU バックエンドで評価 |
-| `Tensor.use_auto() -> Nil` | 演算ごとに問題サイズで選択（デフォルト） |
+| `Tensor.use_auto() -> Nil` | 演算ごとに問題サイズで選択 |
 | `Tensor.gpu_available() -> Bool` | GPU バックエンドがビルドに含まれ到達可能か |
 
 ```culebra
 inspect(type_of(Tensor.gpu_available()))    # => 'Bool'
 ```
 
+評価は CPU から始まり、GPU に載せるには `use_gpu()` か `use_auto()` を
+明示的に呼びます。小さいテンソルはカーネル起動コストに負けるので、
+サイズが混在するプログラムでは `use_auto` を選んでください。
+
 GPU が無いビルドで `use_gpu()` を呼んでも throw せず CPU 経路に
 フォールバックするので、プログラムは可搬なままです。選択が結果を
-左右する場合は `gpu_available()` を確認してください。小さいテンソルは
-カーネル起動コストに負けるのが普通で、それが `use_auto` をデフォルトに
-している理由です。格納はどのデバイスでも F32 のまま（上の dtype 制約
-参照）。
+左右する場合は `gpu_available()` を確認してください。格納はどのデバイス
+でも F32 のまま（上の dtype 制約参照）。
+
+Metal はビルド時に何も要りません。CUDA は `nvcc` が見つかったときに
+組み込まれます（`CULEBRA_TENSOR_CUDA=AUTO` がデフォルト。`ON` は `nvcc`
+が無ければ configure エラー、`OFF` はバックエンドを外す）。CUDA ドライバ
+自体は実行時にロードされるので、CUDA を有効にしたバイナリは GPU の無い
+マシンでもそのまま動き、`gpu_available()` が `false` を返すだけです。
 
 ---
 

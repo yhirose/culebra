@@ -392,4 +392,34 @@ let ag_zg = ag_z.grad().to_array()
 assert_eq(to_float(ag_zg[0][0]), 1.0)
 assert_eq(to_float(ag_zg[1][1]), 1.0)
 
+# --- device selection ---
+#
+# Runs the same asserts on whichever device the build has: use_gpu() falls
+# back to the CPU path when no backend is compiled in or no device is
+# reachable, so this doubles as the fallback contract. Every value below is
+# exact in f32, so the result does not depend on a backend's accumulation
+# order — GPU and CPU must agree bit for bit.
+assert_eq(type_of(Tensor.gpu_available()), "Bool")
+
+let dev_a = Tensor.from([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).reshape([2, 3])
+let dev_b = Tensor.from([0.5, -1.0, 2.0, 1.5, -0.5, 0.25]).reshape([3, 2])
+
+Tensor.use_gpu()
+let dev_m = dev_a.dot(dev_b)
+Tensor.eval(dev_m)
+assert_eq(to_string(dev_m.to_array()), "[[3.0, 2.75], [9.0, 5.0]]")
+let dev_r = (dev_a * 2.0 + 1.0).relu().sum(1)
+Tensor.eval(dev_r)
+assert_eq(to_string(dev_r.to_array()), "[15.0, 33.0]")
+
+Tensor.use_auto()
+let dev_m2 = dev_a.dot(dev_b)
+Tensor.eval(dev_m2)
+assert_eq(to_string(dev_m2.to_array()), "[[3.0, 2.75], [9.0, 5.0]]")
+
+Tensor.use_cpu()
+let dev_m3 = dev_a.dot(dev_b)
+Tensor.eval(dev_m3)
+assert_eq(to_string(dev_m3.to_array()), "[[3.0, 2.75], [9.0, 5.0]]")
+
 inspect("test_tensor: OK")
