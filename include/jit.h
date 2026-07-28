@@ -5537,7 +5537,7 @@ struct JIT {
     if (nil_coalesce && av.lvalcnt != 1) {
       // Position backfilled by compile()'s wrapper (the ASSIGNMENT node).
       throw culebra::CulebraError("SyntaxError",
-          "`??=` is only supported on a simple variable target.");
+          R"(`??=` is only supported on a simple variable target.)");
     }
     auto compile_rhs = [&]() {
       auto v = compile(*av.rhs).consume();

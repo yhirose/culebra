@@ -711,7 +711,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       if (av.compound && (av.is_let || av.is_mut)) {
         syntax("compound assignment cannot declare a new variable.");
       } else if (av.compound && av.op_base == "??" && av.lvalcnt != 1) {
-        syntax("`??=` is only supported on a simple variable target.");
+        syntax(R"(`??=` is only supported on a simple variable target.)");
       } else if (av.lvalcnt == 1 &&
                  !culebra::is_assignable_name(*node.nodes[av.lvaloff])) {
         // Same test as the interp's check_assignable_name. A lone
