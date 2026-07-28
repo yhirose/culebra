@@ -56,7 +56,7 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println` を
 14. [`Regex`](#14-regex) — 線形時間・grapheme 単位の正規表現
 15. [`Http`](#15-http) — 同期 HTTP/HTTPS クライアント（get/post/put/delete/head/request）
 16. [`Encoding`](#16-encoding) — スキーム別のテキストコーデック（`Encoding.html`、`Encoding.base64`、`Encoding.hex`、`Encoding.url`）
-17. [`Compress`](#17-compress) — データ・ファイルの gzip 圧縮/展開
+17. [`Compress`](#17-compress) — データ・ファイルの gzip / deflate 圧縮/展開
 18. [`Hash`](#18-hash) — SHA-256/SHA-1/SHA-512/MD5 ダイジェストと HMAC（hex 出力）
 19. [`CSV`](#19-csv) — RFC 4180 流の CSV を parse / stringify
 20. [`Env`](#20-env) — dotenv 形式の `.env` を parse / load
@@ -96,6 +96,7 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println` を
 | HTML エンティティの escape / unescape | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
 | base64 / hex / url のエンコード・デコード | [§16 Encoding](#16-encoding) — `Encoding.base64.encode(s)` |
 | データ・ファイルの gzip / gunzip | [§17 Compress](#17-compress) — `Compress.gzip(s)` / `Compress.gunzip(z)` |
+| gzip の封筒なしで圧縮 | [§17 Compress](#17-compress) — `Compress.deflate(s, level: 9)`（展開は `Compress.gunzip`） |
 | ハッシュ / チェックサム / HMAC | [§18 Hash](#18-hash) — `Hash.sha256(s)` / `Hash.hmac_sha256(key, s)` |
 | CSV のパース / 生成 | [§19 CSV](#19-csv) — `CSV.parse(text)` / `CSV.stringify(rows)` |
 | TOML のパース / 生成 | [§24 TOML](#24-toml) — `TOML.parse(text)` / `TOML.stringify(obj)` |
@@ -3338,16 +3339,18 @@ inspect(Encoding.url.encode("café"))    # => 'caf%C3%A9'
 
 ## 17. `Compress`
 
-zlib を用いた gzip 圧縮・展開。どちらの関数もバイナリセーフ（埋め込み NUL も
-往復で保持）で、標準の `gzip` ツールと相互運用できます。
+zlib を用いた gzip / deflate 圧縮・展開。どの関数もバイナリセーフ（埋め込み
+NUL も往復で保持）です。
 
 | 関数 | 結果 |
 | --- | --- |
-| `Compress.gzip(data: String) -> String` | gzip 圧縮したバイト列（RFC 1952 ラッパー） |
+| `Compress.gzip(data: String) -> String` | gzip 圧縮したバイト列（RFC 1952 ラッパー）。標準の `gzip` ツールと相互運用可 |
 | `Compress.gunzip(data: String) -> String` | 展開したバイト列。不正な入力は `ValueError` |
+| `Compress.deflate(data: String, level: Long = -1) -> String` | zlib 圧縮したバイト列（RFC 1950 ラッパー）— `gzip` から gzip 固有のヘッダを除いたもの |
 
-`gunzip` はヘッダを自動判別するので、gzip と zlib（`deflate`）の両方を展開します。
-切り詰められた入力や gzip でない入力は `ValueError`。
+`gunzip` はヘッダを自動判別するので、`gzip` と `deflate` の出力をどちらも同じ
+1 つの関数で展開します — 別に `inflate` はありません。切り詰められた入力や
+認識できない入力は `ValueError`。
 
 ```culebra
 let original = "the quick brown fox the quick brown fox the quick brown fox the quick brown fox"
@@ -3361,6 +3364,30 @@ inspect(Compress.gunzip(z) == original)      # => true
 # .gz ファイルを読み書き
 let text = Compress.gunzip(FS.read("logs.gz"))
 FS.write("out.gz", Compress.gzip(text))
+```
+
+`deflate` が `gzip` と違うのはラッパーだけです — ファイル名/mtime ヘッダも
+CRC-32 トレーラも無く、2 byte のヘッダと Adler-32 チェックサムだけ。これは
+PNG の `IDAT` チャンクが持つ形式そのもので、gzip の封筒が何の得にもならない
+場面（メモリ上の blob、別のコンテナに埋め込む値）で選ぶとよい小さい方です。
+
+```culebra
+let text = "the quick brown fox the quick brown fox the quick brown fox"
+let z2 = Compress.deflate(text)              # gzip ではなく zlib ラッパー
+inspect(Compress.gunzip(z2) == text)         # 同じデコーダ
+# => true
+inspect(z2.size() < Compress.gzip(text).size())   # gzip ヘッダが無い分
+# => true
+```
+
+`level` は zlib 自身の規約に従います: `-1`（既定）は zlib 内蔵のトレードオフ、
+`0` は無圧縮で格納、`9` は最も時間をかけて最小の出力にします。`-1..9` の範囲
+外の値はその呼び出しで `ValueError`。
+
+```culebra
+let text = "the quick brown fox the quick brown fox the quick brown fox"
+inspect(Compress.deflate(text, level: 9).size() <=
+        Compress.deflate(text, level: 0).size())   # => true
 ```
 
 HTTP レスポンスは `Http` クライアントが透過的に展開します（`Accept-Encoding` を

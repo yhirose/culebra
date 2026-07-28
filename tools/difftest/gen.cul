@@ -1530,6 +1530,24 @@ for al in ['0', '1', '64', '128', '191', '254', '255', '256', '-1', '1.5', '"x"'
   case("cvalpha|" + al, '_Canvas.init(2, 1); _Canvas.clear(_CA+9); _Canvas.blit_scaled(' + cvsprite + ', 0, 0, 2, 1, 0, 0, 2, 1, 0, ' + al + '); to_string(_Canvas.get_pixel(0, 0)) + "," + to_string(_Canvas.get_pixel(1, 0))')
 }
 
+# Compress.deflate: an optional trailing param (level) with a default, decoded
+# by the existing Compress.gunzip (no separate inflate). Every call shape
+# (direct, keyword, as-value, HOF) is generated because this is exactly the
+# combination that once diverged — a namespace method whose adapter reads a
+# second positional needs registering with the JIT's kwarg-slab dispatch, or
+# every non-single-arg call form throws an ArityError while interp accepts it.
+let deflate_data = '"the quick brown fox the quick brown fox"'
+for lv in ['-1', '0', '1', '9', '99', '"x"'] {
+  case("cfdeflvl|" + lv, 'let z = Compress.deflate(' + deflate_data + ', ' + lv + '); Compress.gunzip(z) == ' + deflate_data)
+  case("cfdeflvlkw|" + lv, 'let z = Compress.deflate(' + deflate_data + ', level: ' + lv + '); Compress.gunzip(z) == ' + deflate_data)
+}
+case("cfdefdefault", 'Compress.gunzip(Compress.deflate(' + deflate_data + ')) == ' + deflate_data)
+case("cfdefvalue", 'let f = Compress.deflate; Compress.gunzip(f(' + deflate_data + ', 9)) == ' + deflate_data)
+case("cfdefbare", 'let c = Compress; Compress.gunzip(c.deflate(' + deflate_data + ', 9)) == ' + deflate_data)
+case("cfdefhof", '[' + deflate_data + '].map(|d| Compress.gunzip(Compress.deflate(d, 9)) == d)')
+case("cfdefbaddata", 'Compress.deflate(5, 9)')
+case("cfdeftoomany", 'Compress.deflate(' + deflate_data + ', 1, 2)')
+
 # --- Dimension: iterator protocol contract --------------------------------
 # `iter` / `has_next` / `next` must each hold a 0-arg Function, and opening an
 # iterator validates the pair before anything drives it. Both seams used to

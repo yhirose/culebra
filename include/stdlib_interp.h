@@ -6136,6 +6136,32 @@ inline Value make_compress_namespace() {
                           },
                           "String"sv)),
       false);
+  // deflate(data, level=-1): the raw choke behind gzip, minus the gzip
+  // wrapper — the zlib (RFC 1950) format Compress.gunzip already auto-detects
+  // and decodes, so there is no separate `inflate` to add. `level` follows
+  // zlib's own convention (-1 = default, 0 = none, 9 = best); an out-of-range
+  // value fails at deflateInit2 and surfaces as the same ValueError shape.
+  ns.initialize(
+      "deflate",
+      Value(FunctionValue(
+          {{"data", false, "String"sv},
+           {"level", false, "Long"sv, nullptr,
+            std::make_shared<Value>(Value(static_cast<long>(-1)))}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            auto level = env->get("level").to_long();
+            auto r = culebra::compress::deflate_zlib(
+                env->get("data").to_string_view(),
+                static_cast<int>(level));
+            if (!r.error.empty()) {
+              throw CulebraError("ValueError", "Compress.deflate: " + r.error,
+                                 line, col);
+            }
+            return Value(std::move(r.data));
+          },
+          "String"sv)),
+      false);
   return Value(std::move(ns));
 }
 

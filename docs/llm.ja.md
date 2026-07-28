@@ -503,7 +503,7 @@ inspect([1, 2].size())                          # => 2
 
 **Encoding** — Encoding.html; Encoding.html.escape(s) -> String; Encoding.html.unescape(s) -> String; Encoding.base64; Encoding.base64.encode(s) -> String; Encoding.base64.decode(s) -> String; Encoding.hex; Encoding.hex.encode(s) -> String; Encoding.hex.decode(s) -> String; Encoding.url; Encoding.url.encode(s) -> String; Encoding.url.decode(s) -> String
 
-**Compress** — Compress.gzip(data: String) -> String; Compress.gunzip(data: String) -> String
+**Compress** — Compress.gzip(data: String) -> String; Compress.gunzip(data: String) -> String; Compress.deflate(data: String, level: Long = -1) -> String
 
 **Hash** — Hash.sha256(data: String) -> String; Hash.sha1(data: String) -> String; Hash.sha512(data: String) -> String; Hash.md5(data: String) -> String; Hash.hmac_sha256(key: String, data: String) -> String; Hash.hmac_sha1(key: String, data: String) -> String; Hash.hmac_sha512(key: String, data: String) -> String
 

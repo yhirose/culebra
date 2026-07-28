@@ -43,4 +43,34 @@ let parts = ["one", "two", "three"]
 let zs = parts.map(Compress.gzip)
 assert_eq(zs.map(Compress.gunzip), parts)
 
+// --- deflate: the choke behind gzip, minus the gzip wrapper. gunzip already
+// auto-detects and decodes it (RFC 1950), so there is no separate `inflate`.
+assert_eq(Compress.gunzip(Compress.deflate(s)), s)
+assert_eq(Compress.gunzip(Compress.deflate("")), "")
+assert_eq(Compress.gunzip(Compress.deflate(b)), b)
+assert_true(Compress.deflate(s).size() < s.size())
+
+// level: -1 (default) behaves like some valid level; 0 (store) is never
+// smaller than 9 (best) for compressible input; both decode to the original.
+assert_eq(Compress.gunzip(Compress.deflate(s, 0)), s)
+assert_eq(Compress.gunzip(Compress.deflate(s, 9)), s)
+assert_true(Compress.deflate(s, 0).size() >= Compress.deflate(s, 9).size())
+// Positional and keyword agree byte for byte (same call, same level).
+assert_eq(Compress.deflate(s, 6), Compress.deflate(s, level: 6))
+
+// An out-of-range level fails the same way a malformed gunzip input does:
+// ValueError, not a silent fallback to the default.
+assert_throws("ValueError", fn () { Compress.deflate(s, 99) })
+let de = try { Compress.deflate(s, 99); nil } catch e { e }
+assert_eq(de.message, "Compress.deflate: deflate init failed")
+
+// --- errors: argument types, matching gzip/gunzip's declared-param shape ---
+assert_throws("TypeError", fn () { Compress.deflate(42) })
+assert_throws("TypeError", fn () { Compress.deflate(s, "x") })
+
+// --- first-class value + HOF, same conformance as gzip/gunzip above ---
+let d = Compress.deflate
+assert_eq(Compress.gunzip(d(s)), s)
+assert_eq(parts.map(|p| Compress.gunzip(Compress.deflate(p, 9))), parts)
+
 inspect("compress tests passed")

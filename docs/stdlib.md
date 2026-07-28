@@ -59,7 +59,7 @@ Conventions used below:
 14. [`Regex`](#14-regex) — linear-time, grapheme-aware regular expressions
 15. [`Http`](#15-http) — synchronous HTTP/HTTPS client (get/post/put/delete/head/request)
 16. [`Encoding`](#16-encoding) — text codecs by scheme (`Encoding.html`, `Encoding.base64`, `Encoding.hex`, `Encoding.url`)
-17. [`Compress`](#17-compress) — gzip (de)compression for data and files
+17. [`Compress`](#17-compress) — gzip / deflate (de)compression for data and files
 18. [`Hash`](#18-hash) — SHA-256/SHA-1/SHA-512/MD5 digests and HMAC (hex output)
 19. [`CSV`](#19-csv) — parse / stringify RFC 4180-ish comma-separated values
 20. [`Env`](#20-env) — parse / load dotenv-style `.env` files
@@ -99,6 +99,7 @@ Conventions used below:
 | Escape / unescape HTML entities | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
 | Encode / decode base64, hex, url | [§16 Encoding](#16-encoding) — `Encoding.base64.encode(s)` |
 | gzip / gunzip data or files | [§17 Compress](#17-compress) — `Compress.gzip(s)` / `Compress.gunzip(z)` |
+| Compress without the gzip envelope | [§17 Compress](#17-compress) — `Compress.deflate(s, level: 9)` (decode with `Compress.gunzip`) |
 | Hash / checksum / HMAC | [§18 Hash](#18-hash) — `Hash.sha256(s)` / `Hash.hmac_sha256(key, s)` |
 | Parse / write CSV | [§19 CSV](#19-csv) — `CSV.parse(text)` / `CSV.stringify(rows)` |
 | Parse / write TOML | [§24 TOML](#24-toml) — `TOML.parse(text)` / `TOML.stringify(obj)` |
@@ -3446,16 +3447,18 @@ inspect(Encoding.url.encode("café"))    # => 'caf%C3%A9'
 
 ## 17. `Compress`
 
-gzip (de)compression, backed by zlib. Both functions are binary-safe (embedded
-NUL bytes survive a round trip) and interoperate with the standard `gzip` tool.
+gzip / deflate (de)compression, backed by zlib. Every function is binary-safe
+(embedded NUL bytes survive a round trip).
 
 | Function | Result |
 | --- | --- |
-| `Compress.gzip(data: String) -> String` | gzip-compressed bytes (RFC 1952 wrapper) |
+| `Compress.gzip(data: String) -> String` | gzip-compressed bytes (RFC 1952 wrapper); interoperates with the standard `gzip` tool |
 | `Compress.gunzip(data: String) -> String` | the decompressed bytes; raises `ValueError` on malformed input |
+| `Compress.deflate(data: String, level: Long = -1) -> String` | zlib-compressed bytes (RFC 1950 wrapper) — `gzip` minus its gzip-specific header |
 
-`gunzip` auto-detects the header, so it decompresses both gzip and zlib
-(`deflate`) streams. A truncated or non-gzip input raises `ValueError`.
+`gunzip` auto-detects the header, so it decompresses both `gzip` and
+`deflate` output with the one function — there is no separate `inflate`.
+A truncated or unrecognized input raises `ValueError`.
 
 ```culebra
 let original = "the quick brown fox the quick brown fox the quick brown fox the quick brown fox"
@@ -3469,6 +3472,31 @@ inspect(Compress.gunzip(z) == original)      # => true
 # Read a .gz file and write one back
 let text = Compress.gunzip(FS.read("logs.gz"))
 FS.write("out.gz", Compress.gzip(text))
+```
+
+`deflate` differs from `gzip` only in the wrapper: no filename/mtime header,
+no CRC-32 trailer, just a 2-byte header and an Adler-32 checksum — the format
+a PNG's `IDAT` chunk holds, and the smaller choice when the gzip envelope adds
+nothing (an in-memory blob, a value embedded in another container).
+
+```culebra
+let text = "the quick brown fox the quick brown fox the quick brown fox"
+let z2 = Compress.deflate(text)          # zlib wrapper, not gzip's
+inspect(Compress.gunzip(z2) == text)     # the same decoder handles both
+# => true
+inspect(z2.size() < Compress.gzip(text).size())   # no gzip header to pay for
+# => true
+```
+
+`level` follows zlib's own convention: `-1` (the default) picks zlib's
+built-in tradeoff, `0` stores the input with no compression, and `9` spends
+the most time for the smallest output. A value outside `-1..9` raises
+`ValueError` at the same call.
+
+```culebra
+let text = "the quick brown fox the quick brown fox the quick brown fox"
+inspect(Compress.deflate(text, level: 9).size() <=
+        Compress.deflate(text, level: 0).size())   # => true
 ```
 
 HTTP responses are decompressed transparently by the `Http` client (it sends

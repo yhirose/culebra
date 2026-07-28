@@ -5680,6 +5680,21 @@ inline JitValue _ns_compress_gunzip(JitValue* a, int64_t) {
   }
   return _ns_adapt::v_string(_culebra_heap_str(r.data));
 }
+// deflate(data, level=-1): level is optional, matching FS.remove's
+// recursive=false shape — the kwarg resolver fills a[1] from either a
+// positional or a `level:` call before this adapter ever runs, so `n > 1`
+// alone distinguishes "omitted" from "given" and the type/arity checks it
+// implies are already done at the canonical NsParamMeta layer.
+inline JitValue _ns_compress_deflate(JitValue* a, int64_t n) {
+  int64_t level = n > 1 ? _ns_adapt::take_long(a[1]) : -1;
+  auto r = culebra::compress::deflate_zlib(_ns_adapt::require_sv(a[0], "data"),
+                                           static_cast<int>(level));
+  if (!r.error.empty()) {
+    throw culebra::CulebraError("ValueError", "Compress.deflate: " + r.error,
+                                0, 0);
+  }
+  return _ns_adapt::v_string(_culebra_heap_str(r.data));
+}
 
 // Hash.{sha256,sha1,sha512,md5} + Hash.hmac_*: self-hosted digests via hash.h,
 // returning the lowercase hex digest. require_sv keeps the input binary-safe
@@ -6428,6 +6443,7 @@ inline bool _ns_method_uses_kwarg_slab(const NsMethod* m) {
   if (ns == "CSV")      return nm == "parse" || nm == "stringify";
   if (ns == "TOML")     return nm == "stringify";  // sort_keys default
   if (ns == "Env")      return nm == "load";  // path/override defaults
+  if (ns == "Compress") return nm == "deflate";  // level default
   if (ns.empty())       return nm == "range" || nm == "iota";  // bare globals
   return false;
 }
@@ -6631,6 +6647,7 @@ inline const NsMethod kNsMethods[] = {
 
   {"Compress", "gzip",     1, &_ns_compress_gzip,   nullptr, "String", "data"},
   {"Compress", "gunzip",   1, &_ns_compress_gunzip, nullptr, "String", "data"},
+  {"Compress", "deflate",  1, &_ns_compress_deflate, nullptr, "String", "data"},
 
   {"Hash", "sha256",      1, &_ns_hash_sha256, nullptr, "String", "data"},
   {"Hash", "sha1",        1, &_ns_hash_sha1,   nullptr, "String", "data"},
