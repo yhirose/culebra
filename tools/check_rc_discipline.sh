@@ -64,7 +64,14 @@ count_bare() { # file
 # mid-merge throw — the throw-edge releaser the callee-consumes
 # contract requires (a leak FIX inside the owning RAII class, not new debt;
 # JitUnwindRelease is fixed-arity and cannot hold a variable slab).
-ratchet "bare RC calls (stdlib_jit.h)" "$(count_bare include/stdlib_jit.h)" 98
+# 98 -> 100 (2026-07-28, reviewed): same function, one more throw edge. A
+# keyword-supplied value's target param isn't known until the name lookup
+# in _jit_ns_kwarg_resolve_core, so it skips the compile-time per-argument
+# type check the positional path gets — this added that check (a symmetry
+# FIX: Compress.deflate(s, level: "x") raised on interp but not JIT/AOT
+# before it). The two releases are the same already-filled-slab +
+# remaining-merged-kwargs cleanup the sibling throw edges in this loop use.
+ratchet "bare RC calls (stdlib_jit.h)" "$(count_bare include/stdlib_jit.h)" 100
 ratchet "bare RC calls (sendable_jit.h)" "$(count_bare include/sendable_jit.h)" 17
 
 # Codegen-side hand-placed throw guards: the automatic unwind-temp window
@@ -119,6 +126,6 @@ ratchet "typed consume assignments (jit.h)" "$tassign" 0
 if (( fail )); then exit 1; fi
 echo "rc-discipline OK (release=$rel/49 retain=$ret/29 borrow=$brw/4" \
      "tail-self=$tail_self/0" \
-     "stdlib=$(count_bare include/stdlib_jit.h)/98" \
+     "stdlib=$(count_bare include/stdlib_jit.h)/100" \
      "sendable=$(count_bare include/sendable_jit.h)/17 throwguard=$tg/21" \
      "unchecked=$cu/14 vphi=$vphi/0 typed-consume=$tassign/0 rawcompile=$rawc/0)"

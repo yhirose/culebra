@@ -7064,6 +7064,22 @@ inline bool _jit_ns_kwarg_resolve_core(
       slab[i] = it->second;
       filled[i] = true;
       merged.erase(it);
+      // A keyword-supplied value's target slot isn't known until this
+      // name lookup, so it never went through the compile-time
+      // per-argument-position check the positional path gets (see
+      // compile_ns_method_kwargs) — this is its only type check. Position
+      // is the call site, matching the interp binder's kwarg diagnostic.
+      if (!pm->params[i].type.empty() &&
+          !_culebra_value_matches_type(slab[i].tag, slab[i].data,
+                                       pm->params[i].type)) {
+        for (int k = 0; k <= i; k++)
+          if (filled[k]) _culebra_value_release_impl(slab[k].tag, slab[k].data);
+        for (auto& [_, v] : merged)
+          _culebra_value_release_impl(v.tag, v.data);
+        throw culebra::CulebraError("TypeError", std::format(
+            "type error: parameter '{}' expects {}", pm->params[i].name,
+            pm->params[i].type), line, col);
+      }
     } else if (pm->params[i].has_default) {
       slab[i] = _jit_default_from_value(*pm->params[i].canon_default);
       filled[i] = true;
