@@ -76,6 +76,14 @@ struct BindVal {
 // the wrap.h foreign table and File's fd table). Tables are thread_local: a
 // Database/Statement handle is __nonsendable__ (never crosses an isolate, i.e.
 // never crosses a thread), so per-thread tables are correct and lock-free.
+//
+// The tables belong to the implementation, so the weak-stub branch leaves them
+// out: it never interns a handle. Carrying them there would put the same
+// `inline thread_local` in both the core archive and the force-loaded feature
+// archive, and mingw's ld rejects the duplicate `.text$__tls_init` COMDAT
+// instead of folding it (`multiple definition of 'TLS init function for …'`).
+
+#if !defined(CULEBRA_RT_SQLITE_WEAK)
 
 namespace detail {
 inline thread_local std::vector<sqlite3*> g_dbs;
@@ -112,6 +120,8 @@ inline sqlite3_stmt* stmt_get(int64_t id) {
   return g_stmts[id];
 }
 }  // namespace detail
+
+#endif  // !CULEBRA_RT_SQLITE_WEAK
 
 // ---- Library info ----------------------------------------------------------
 
