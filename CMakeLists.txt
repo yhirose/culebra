@@ -753,6 +753,19 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
       "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_webview${CMAKE_STATIC_LIBRARY_SUFFIX}")
     list(APPEND _rt_embed_deps culebra_rt_webview)
   endif()
+  # Every feature archive is force-loaded next to the core archive, so the two
+  # must not both define the same dynamically-initialized thread_local: mingw's
+  # ld rejects the duplicate TLS init and the Windows AOT link fails. This flips
+  # the CULEBRA_RT_CORE_OWNED declarations (rt_shared_tls.h) to `extern` here,
+  # leaving the core archive the single owner. Ratchet:
+  # tools/check_rt_archive_tls.sh, run by the `all` test gate.
+  foreach(_rt_feature culebra_rt_tensor culebra_rt_http culebra_rt_compress
+                      culebra_rt_sqlite culebra_rt_scene culebra_rt_canvas
+                      culebra_rt_webview culebra_rt_wrap)
+    if(TARGET ${_rt_feature})
+      target_compile_definitions(${_rt_feature} PRIVATE CULEBRA_RT_FEATURE_BUILD=1)
+    endif()
+  endforeach()
   cpp_embedlib_add(culebra_rt_assets
     FILES ${_rt_embed_files}
     BASE_DIR "${CMAKE_CURRENT_BINARY_DIR}"

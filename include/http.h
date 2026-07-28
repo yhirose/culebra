@@ -31,6 +31,7 @@
 #include <utility>
 #include <vector>
 
+#include <rt_shared_tls.h>  // CULEBRA_RT_CORE_OWNED (one owner per thread_local)
 #include <shared.h>  // throw_if_interrupted / culebra_g_sigint (Ctrl+C wiring)
 #include <vfs.h>     // Dir / DiskDir / EmbeddedDir / serve_static (static assets)
 
@@ -245,17 +246,21 @@ inline std::string encode_query(const HeaderList& pairs) {
 #define CULEBRA_RT_HTTP_LINKAGE inline
 #endif
 
+// Everything from here to the end of the client half is implementation: the
+// handle table, the httplib-touching helpers and the HttpClient definition.
+// The WEAK core archive's stubs never intern a handle, and a `thread_local`
+// carried by both it and the force-loaded feature archive breaks the Windows
+// AOT link (see rt_shared_tls.h), so none of it is compiled there.
+#if !defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+
 // A persistent client holding one reused keep-alive connection plus a base URL
-// and default headers (the Http.client handle's native backing). Opaque outside
-// the gated real path below — the WEAK core archive never sees httplib::Client.
+// and default headers (the Http.client handle's native backing).
 struct HttpClient;
 
 // id → HttpClient* registry. Scripts hold a small integer id, never a raw
 // pointer (matching the SQLite handle model — an invalid/forged id resolves to
 // nullptr and fails safely instead of dereferencing arbitrary memory).
 // thread_local because a client is non-sendable (one connection, one thread).
-// Stores opaque pointers only, so it pulls in no httplib/TLS symbol and stays
-// ungated; only open/close/request (which touch httplib) are gated.
 inline thread_local std::vector<HttpClient*> g_http_clients;
 inline thread_local std::vector<int64_t> g_http_client_free;
 inline int64_t _http_client_register(HttpClient* c) {
@@ -279,11 +284,6 @@ inline void _http_client_unregister(int64_t id) {
     g_http_client_free.push_back(id);
   }
 }
-
-// The httplib-touching helpers and HttpClient definition live behind the gate
-// (referenced only by the real, non-stub function bodies), so the WEAK core
-// archive pulls in no TLS/zlib symbol.
-#if !defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
 
 // Merge `over` onto `base` with per-key (case-insensitive) override: a header
 // present in both takes `over`'s value; others are appended. Used to layer a
@@ -681,6 +681,9 @@ using WsHandler =
 // id → HttpServer* registry, same opaque-pointer model as the client: scripts
 // hold a small integer id, a forged/closed id resolves to nullptr and fails
 // safely. thread_local because a server (v0) runs on the thread that created it.
+// Gated with the bodies that intern a server, so the core archive does not also
+// define the table (see rt_shared_tls.h).
+#if !defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
 struct HttpServer;
 inline thread_local std::vector<HttpServer*> g_http_servers;
 inline thread_local std::vector<int64_t> g_http_server_free;
@@ -705,6 +708,7 @@ inline void _http_server_unregister(int64_t id) {
     g_http_server_free.push_back(id);
   }
 }
+#endif  // !CULEBRA_RT_HTTP_REQUEST_WEAK
 
 // ---- Chunked response streaming (SSE / chunked) --------------------------
 //
@@ -758,7 +762,7 @@ struct IdRegistry {
   }
 };
 
-inline thread_local IdRegistry<httplib::DataSink> g_http_sinks;
+CULEBRA_RT_CORE_OWNED thread_local IdRegistry<httplib::DataSink> g_http_sinks;
 
 // Write a chunk through sink `id`. Returns false if the id is stale/invalid (an
 // escaped sink) or the client has gone away — so the handler can stop early.

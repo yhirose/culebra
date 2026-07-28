@@ -3,6 +3,7 @@
 #include <effects_transform.h>
 #include <module_loader.h>
 #include <packable.h>
+#include <rt_shared_tls.h>
 
 // Shared.new view readers (concurrency C4) — defined in sharedval.h,
 // which every TU includes later via isolate.h; declared here so the
@@ -564,7 +565,7 @@ inline InterpGC& interp_gc() { return InterpGC::instance(); }
 
 // Cycle detection during str() / out() to avoid infinite recursion on
 // cyclic objects. RAII guard: inserts on construction, erases on destruction.
-inline thread_local std::unordered_set<const void*> _str_visiting;
+CULEBRA_RT_CORE_OWNED thread_local std::unordered_set<const void*> _str_visiting;
 
 struct StrGuard {
   const void* key;
@@ -1744,8 +1745,8 @@ enum : uint8_t {
   kFlowContinue = 3,
 };
 
-inline thread_local uint8_t _flow_type = kFlowNormal;
-inline thread_local Value _flow_value;  // only meaningful for kFlowReturn
+inline thread_local uint8_t _flow_type = kFlowNormal;  // constant-init: no owner needed
+CULEBRA_RT_CORE_OWNED thread_local Value _flow_value;  // only meaningful for kFlowReturn
 
 inline bool flow_pending() { return _flow_type != kFlowNormal; }
 inline bool flow_is_break() { return _flow_type == kFlowBreak; }
