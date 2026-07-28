@@ -6924,6 +6924,40 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return eval(**it, env);
   }
 
+  // How one loop-body iteration ended. A `return`, a user `throw` or an
+  // interrupt unwinds past here instead of being reported.
+  enum class LoopStep { Next, Break };
+
+  // Run one loop-body iteration. This is the single place that pairs a body
+  // scope with its `run_deferred`, so a body `defer` fires on every exit path
+  // — normal, break, continue and unwind — by construction rather than by each
+  // loop remembering to repeat the four handlers. `prologue` runs inside the
+  // guarded region (for-in checks interrupts there so a signal still disposes
+  // its iterator); `on_unwind` is the loop's own teardown on the throw path.
+  template <typename Prologue, typename OnUnwind>
+  LoopStep run_loop_body(const peg::Ast& body,
+                         const std::shared_ptr<Environment>& scopeEnv,
+                         Prologue&& prologue, OnUnwind&& on_unwind) {
+    try {
+      prologue();
+      if (debugger_ && is_collapsed_single_statement(body))
+        statement_boundary(body, scopeEnv);  // breakpoint on a 1-stmt body
+      eval(body, scopeEnv);
+      run_deferred(scopeEnv);
+      return LoopStep::Next;
+    } catch (const BreakSignal&) {
+      run_deferred(scopeEnv);
+      return LoopStep::Break;
+    } catch (const ContinueSignal&) {
+      run_deferred(scopeEnv);
+      return LoopStep::Next;
+    } catch (...) {
+      run_deferred(scopeEnv);
+      on_unwind();
+      throw;
+    }
+  }
+
   Value eval_while(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     auto wv = culebra::view_while(ast);
     // The optional init clause (`while mut i = 0; i < n { … }`) binds its
@@ -6949,21 +6983,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       // iterations (so a bare immutable `x = …` re-declares each pass rather
       // than re-assigning), and a body `defer` fires on every iteration.
       auto scopeEnv = make_scope(loopEnv);
-      try {
-        if (debugger_ && is_collapsed_single_statement(*wv.body))
-          statement_boundary(*wv.body, scopeEnv);  // breakpoint on 1 stmt
-        eval(*wv.body, scopeEnv);
-        run_deferred(scopeEnv);
-      } catch (const BreakSignal&) {
-        run_deferred(scopeEnv);
+      if (run_loop_body(*wv.body, scopeEnv, [] {}, [] {}) == LoopStep::Break) {
         completed = false;
         break;
-      } catch (const ContinueSignal&) {
-        run_deferred(scopeEnv);
-        // fall through to next iteration
-      } catch (...) {
-        run_deferred(scopeEnv);
-        throw;
       }
     }
     // A `nobreak { … }` runs only on normal completion (condition false), not
@@ -7030,25 +7052,14 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           throw_destructure_mismatch_at(static_cast<long>(var.line),
                                         static_cast<long>(var.column));
         }
-        try {
-          check_interrupt();  // inside the try so an interrupt still disposes
-          if (debugger_ && is_collapsed_single_statement(body))
-            statement_boundary(body, scopeEnv);  // breakpoint on a 1-stmt body
-          eval(body, scopeEnv);
-          run_deferred(scopeEnv);
-        } catch (const BreakSignal&) {
-          run_deferred(scopeEnv);
+        // The interrupt check is the prologue so a signal still disposes.
+        if (run_loop_body(body, scopeEnv, [this] { check_interrupt(); },
+                          dispose_quietly) == LoopStep::Break) {
           completed = false;
           dispose();
           break;
-        } catch (const ContinueSignal&) {
-          run_deferred(scopeEnv);
-          // fall through (loop continues; dispose only at final exit)
-        } catch (...) {
-          run_deferred(scopeEnv);
-          dispose_quietly();
-          throw;
         }
+        // continue falls through (loop continues; dispose only at final exit)
       }
       return completed;
     };

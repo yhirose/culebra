@@ -1,0 +1,117 @@
+// Pins the control-flow boundary semantics that the Completion-record
+// migration must preserve. `return` is a STATEMENT in the grammar, but every
+// block-bearing expression (if / match) can host one, so flow can become
+// pending in the middle of evaluating any subexpression. Each case below is a
+// distinct syntactic slot where that happens.
+//
+// Dual-backend: interp raises these as C++ exceptions today, the JIT compiles
+// them to IR branches. Both must agree here before and after the migration.
+
+# --- `return` originating inside each expression slot ---
+
+fn in_binop(c) {
+  y = 5 + if c { return 1 } else { 2 }
+  y
+}
+assert_eq(in_binop(true), 1)
+assert_eq(in_binop(false), 7)
+
+fn in_call_arg(c) {
+  y = Math.max(0, if c { return 1 } else { 2 })
+  y
+}
+assert_eq(in_call_arg(true), 1)
+assert_eq(in_call_arg(false), 2)
+
+fn in_array(c) {
+  a = [9, if c { return 1 } else { 2 }]
+  a[1]
+}
+assert_eq(in_array(true), 1)
+assert_eq(in_array(false), 2)
+
+fn in_object(c) {
+  o = { k: if c { return 1 } else { 2 } }
+  o.k
+}
+assert_eq(in_object(true), 1)
+assert_eq(in_object(false), 2)
+
+fn in_index(c) {
+  a = [10, 20, 30]
+  a[if c { return 1 } else { 2 }]
+}
+assert_eq(in_index(true), 1)
+assert_eq(in_index(false), 30)
+
+fn in_match_subject(c) {
+  match if c { return 1 } else { 2 } {
+    2 => 22,
+    _ => 99
+  }
+}
+assert_eq(in_match_subject(true), 1)
+assert_eq(in_match_subject(false), 22)
+
+# --- `return` inside a defer body is absorbed by the defer, not the function ---
+# The function's own value stands; the defer's `return` does not override it.
+
+fn defer_with_return() {
+  defer { return 9 }
+  1
+}
+assert_eq(defer_with_return(), 1)
+
+# --- a defer body may throw ---
+
+fn defer_throws() {
+  defer { throw 'from defer' }
+  1
+}
+let d1 = try { defer_throws() } catch e { e }
+assert_eq(d1, 'from defer')
+
+# --- a defer that throws while the scope is already unwinding replaces the
+# in-flight exception (this is why defer cannot be a C++ destructor) ---
+
+fn defer_throws_during_unwind() {
+  defer { throw 'from defer' }
+  throw 'from body'
+}
+let d2 = try { defer_throws_during_unwind() } catch e { e }
+assert_eq(d2, 'from defer')
+
+# --- defer still fires on an early return ---
+
+fn defer_on_early_return() {
+  mut log = []
+  fn inner() {
+    defer { log.push('deferred') }
+    return 'returned'
+  }
+  r = inner()
+  "{r}/{log.size()}"
+}
+assert_eq(defer_on_early_return(), 'returned/1')
+
+# --- break / continue crossing a body scope that has a defer ---
+
+fn break_with_defer() {
+  mut log = []
+  for i in 0..3 {
+    defer { log.push(i) }
+    if i == 1 { break }
+  }
+  log
+}
+assert_eq(break_with_defer(), [0, 1])
+
+fn continue_with_defer() {
+  mut log = []
+  for i in 0..3 {
+    defer { log.push(i) }
+    if i == 1 { continue }
+  }
+  log
+}
+assert_eq(continue_with_defer(), [0, 1, 2])
