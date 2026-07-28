@@ -15,6 +15,7 @@
 #include "mi_smoke.cc"
 #include "mt_smoke.cc"
 #include "signal_smoke.cc"
+#include "tensor_device_smoke.cc"
 #include "utf8_invalid_smoke.cc"
 
 #include <cstdio>
@@ -26,10 +27,15 @@ int main(int argc, char** argv) {
     if (std::strcmp(argv[1], "mi") == 0) return mi_smoke_ns::run();
     if (std::strcmp(argv[1], "mt") == 0) return mt_smoke_ns::run();
     if (std::strcmp(argv[1], "signal") == 0) return signal_smoke_ns::run();
+    if (std::strcmp(argv[1], "tensor_device") == 0)
+      return tensor_device_smoke_ns::run(false);
+    if (std::strcmp(argv[1], "tensor_device_pin") == 0)
+      return tensor_device_smoke_ns::run(true);
     if (std::strcmp(argv[1], "utf8_invalid") == 0)
       return utf8_invalid_smoke_ns::run();
   }
   std::fprintf(stderr,
-               "usage: smoke_suite <define|mi|mt|signal|utf8_invalid>\n");
+               "usage: smoke_suite <define|mi|mt|signal|tensor_device|"
+               "tensor_device_pin|utf8_invalid>\n");
   return 2;
 }

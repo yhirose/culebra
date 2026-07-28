@@ -1444,18 +1444,19 @@ Tensor で意味づけしておらず、`@` は出力形状が変わるため in
 
 | 関数 | 効果 |
 | --- | --- |
-| `Tensor.use_cpu() -> Nil` | すべての演算を CPU で評価（デフォルト） |
+| `Tensor.use_cpu() -> Nil` | すべての演算を CPU で評価 |
 | `Tensor.use_gpu() -> Nil` | GPU バックエンドで評価 |
-| `Tensor.use_auto() -> Nil` | 演算ごとに問題サイズで選択 |
+| `Tensor.use_auto() -> Nil` | 演算ごとに問題サイズで選択（デフォルト） |
 | `Tensor.gpu_available() -> Bool` | GPU バックエンドがビルドに含まれ到達可能か |
 
 ```culebra
 inspect(type_of(Tensor.gpu_available()))    # => 'Bool'
 ```
 
-評価は CPU から始まり、GPU に載せるには `use_gpu()` か `use_auto()` を
-明示的に呼びます。小さいテンソルはカーネル起動コストに負けるので、
-サイズが混在するプログラムでは `use_auto` を選んでください。
+`use_auto` がデフォルトなのは、小さいテンソルがカーネル起動コストに
+負けるからです。小さい演算は CPU に留め、移送コストに見合う大きさの
+演算だけを GPU に送ります。`use_cpu()` / `use_gpu()` を呼べば — 最初の
+テンソルを作る前でも — 以降の演算はそのデバイスに固定されます。
 
 GPU が無いビルドで `use_gpu()` を呼んでも throw せず CPU 経路に
 フォールバックするので、プログラムは可搬なままです。選択が結果を

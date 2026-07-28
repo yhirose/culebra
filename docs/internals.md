@@ -650,6 +650,13 @@ Linux / Windows). AOT builds pick up the matching runtime archive;
 the per-binary gating goes through the `TL_RUNTIME_HOOKS` opt-in so a
 tensor-free program links neither the GPU frameworks nor the kernels.
 
+The device default is culebra's, not the engine's: `tl` starts on the
+CPU, and `tensor_rt_bootstrap` switches to `auto` when the first tensor
+is created. Doing it there rather than at load keeps a tensor-free
+binary untouched, and a `tensor_device_chosen` flag — set by the three
+`use_*()` entries — stops that bootstrap from overwriting a device the
+program picked before its first tensor.
+
 CUDA is the one backend with a build-time step: `nvcc` compiles
 `kernels/tensorlib_cuda.cu` to PTX, which `bin2c` turns into the byte
 array `cuda.h` embeds. Nothing links against CUDA — the driver is

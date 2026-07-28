@@ -1130,6 +1130,13 @@ endif()
 foreach(smoke mt mi define signal utf8_invalid)
   add_test(NAME ${smoke}_smoke COMMAND smoke_suite ${smoke})
 endforeach()
+if(CULEBRA_ENABLE_TENSOR)
+  # Two entries, not one: the device default installs from a function-local
+  # static, so each ordering needs its own process.
+  foreach(smoke tensor_device tensor_device_pin)
+    add_test(NAME ${smoke}_smoke COMMAND smoke_suite ${smoke})
+  endforeach()
+endif()
 
 # Headless DAP adapter test — drives `culebra dap` over a pipe with a scripted
 # debug session. Standalone (no culebra linkage); spawns the binary at runtime.

@@ -639,6 +639,13 @@ CUDA) です。AOT ビルドは対応するランタイムアーカイブを拾�
 単位のゲーティングは `TL_RUNTIME_HOOKS` の opt-in を通るので、Tensor を
 使わないプログラムは GPU フレームワークもカーネルもリンクしません。
 
+デバイスの既定はエンジン側ではなく culebra 側のものです。`tl` は CPU で
+始まり、最初のテンソル生成時に `tensor_rt_bootstrap` が `auto` へ切り替え
+ます。load 時でなくそこで行うことで Tensor を使わないバイナリは無変更の
+まま済み、3 つの `use_*()` が立てる `tensor_device_chosen` フラグが、
+最初のテンソルより前にプログラムが選んだデバイスを bootstrap が上書き
+しないようにしています。
+
 ビルド時の手順を持つのは CUDA だけです。`nvcc` が
 `kernels/tensorlib_cuda.cu` を PTX にコンパイルし、`bin2c` がそれを
 `cuda.h` の埋め込むバイト配列に変換します。CUDA 自体はリンクしません —

@@ -1481,19 +1481,20 @@ switchable at runtime:
 
 | Function | Effect |
 | --- | --- |
-| `Tensor.use_cpu() -> Nil` | evaluate every op on the CPU (the default) |
+| `Tensor.use_cpu() -> Nil` | evaluate every op on the CPU |
 | `Tensor.use_gpu() -> Nil` | evaluate on the GPU backend |
-| `Tensor.use_auto() -> Nil` | choose per op by problem size |
+| `Tensor.use_auto() -> Nil` | choose per op by problem size (the default) |
 | `Tensor.gpu_available() -> Bool` | whether a GPU backend is compiled in and reachable |
 
 ```culebra
 inspect(type_of(Tensor.gpu_available()))    # => 'Bool'
 ```
 
-Evaluation starts on the CPU; reaching the GPU is an explicit
-`use_gpu()` or `use_auto()`. Small tensors lose to kernel-launch
-overhead, so `use_auto` is the one to prefer when a program mixes
-sizes.
+`use_auto` is the default because small tensors lose to kernel-launch
+overhead: it keeps those on the CPU and sends only the ops big enough
+to pay for the trip. Calling `use_cpu()` / `use_gpu()` anywhere —
+including before the first tensor exists — pins every later op to that
+device instead.
 
 `use_gpu()` on a build with no reachable GPU falls back to the CPU
 path rather than throwing, so a program stays portable; check

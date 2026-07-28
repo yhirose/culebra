@@ -159,9 +159,17 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_rt_bootstrap();
 // plain inline. gpu_available() reaches tl::gpu_available() ->
 // metal::available(), which references the Metal device; it is choked like
 // the eval entry so a no-tensor binary (weak stub -> false) links no Metal.
-inline void tensor_use_cpu() { tl::use_cpu(); }
-inline void tensor_use_gpu() { tl::use_gpu(); }
-inline void tensor_use_auto() { tl::use_auto(); }
+//
+// `tl` defaults to cpu, the conservative default for a library that must not
+// reach for a GPU behind its caller's back. Culebra's documented default is
+// auto (docs/stdlib.md §8), applied in tensor_rt_bootstrap rather than at load
+// time so a tensor-free binary still pulls in nothing. This flag is what keeps
+// the two compatible: a use_*() before the first tensor has to survive that
+// bootstrap instead of being overwritten by it.
+inline bool tensor_device_chosen = false;
+inline void tensor_use_cpu() { tensor_device_chosen = true; tl::use_cpu(); }
+inline void tensor_use_gpu() { tensor_device_chosen = true; tl::use_gpu(); }
+inline void tensor_use_auto() { tensor_device_chosen = true; tl::use_auto(); }
 CULEBRA_RT_TENSOR_EVAL_LINKAGE bool tensor_gpu_available();
 
 // Tensor — an Op-tagged autograd tape node whose value is a tl::array
@@ -1026,6 +1034,7 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_rt_bootstrap() {
 #else
   static const bool installed = [] {
     tl::install_runtime_hooks();
+    if (!tensor_device_chosen) tl::use_auto();
     return true;
   }();
   (void)installed;
