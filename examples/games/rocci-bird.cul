@@ -51,9 +51,9 @@ let PLANT_TYPES = 30
 
 # --- tones (exact WASM-4 parameters) ---------------------------------------
 # tone(freq, sustain, vol, wave, end_freq, attack, decay, release, peak, duty)
-let flap_tone = fn () { Canvas.tone(700, 0, 10, Canvas.PULSE, 870, 10, 5, 3, 20, Canvas.DUTY_QUARTER) }
-let point_tone = fn () { Canvas.tone(995, 0, 25, Canvas.PULSE2, 1000, 0, 10, 10, 75, Canvas.DUTY_HALF) }
-let death_tone = fn () { Canvas.tone(170, 20, 100, Canvas.NOISE, 40, 0, 40, 0, 0, Canvas.DUTY_HALF) }
+let flap_tone = || Canvas.tone(700, 0, 10, Canvas.PULSE, 870, 10, 5, 3, 20, Canvas.DUTY_QUARTER)
+let point_tone = || Canvas.tone(995, 0, 25, Canvas.PULSE2, 1000, 0, 10, 10, 75, Canvas.DUTY_HALF)
+let death_tone = || Canvas.tone(170, 20, 100, Canvas.NOISE, 40, 0, 40, 0, 0, Canvas.DUTY_HALF)
 
 # --- animation -------------------------------------------------------------
 # cells is a list of [frames, src_x]; every frame is `sw`x16 on `sheet`.
@@ -85,16 +85,16 @@ class Anim {
   draw(x, y) { self.sheet.draw_sub(x, y, self.cells[self.index][1], 0, self.sw, 16) }
 }
 
-let idle_anim = fn (fc) { Anim.new(rocci_sheet, 16, [[17, 0], [6, 16], [17, 32]], fc, 0, AnimState.Loop) }
-let flap_anim = fn (fc) { Anim.new(rocci_sheet, 16, [[6, 16], [12, 32], [1, 0]], fc, 2, AnimState.Completed) }
-let fall_anim = fn (fc) { Anim.new(rocci_sheet, 16, [[10, 48], [10, 64]], fc, 0, AnimState.Loop) }
-let hiscore_anim = fn (fc) { Anim.new(hiscore_sheet, 32, [[5, 0], [5, 32], [5, 64], [5, 96]], fc, 0, AnimState.Loop) }
+let idle_anim = |fc| Anim.new(rocci_sheet, 16, [[17, 0], [6, 16], [17, 32]], fc, 0, AnimState.Loop)
+let flap_anim = |fc| Anim.new(rocci_sheet, 16, [[6, 16], [12, 32], [1, 0]], fc, 2, AnimState.Completed)
+let fall_anim = |fc| Anim.new(rocci_sheet, 16, [[10, 48], [10, 64]], fc, 0, AnimState.Loop)
+let hiscore_anim = |fc| Anim.new(hiscore_sheet, 32, [[5, 0], [5, 32], [5, 64], [5, 96]], fc, 0, AnimState.Loop)
 
 # --- collision (pixel readback at the original's sample points) ------------
 # A point counts as a hit when the framebuffer there is not the background
 # colour C1. This must run after the world is drawn but before the player.
 let BASE_POINTS = [[11, 2], [13, 3], [3, 5], [11, 6], [9, 8], [5, 9], [7, 10], [5, 12]]
-let hit_at = fn (px, py) { Canvas.get_pixel(px, py) != C1 }
+let hit_at = |px, py| Canvas.get_pixel(px, py) != C1
 
 let collided = fn (player_y, anim_index) {
   if player_y < -1 { return hit_at(PLAYER_X + 13, 0) }
@@ -111,6 +111,7 @@ let collided = fn (player_y, anim_index) {
 }
 
 # --- drawing helpers -------------------------------------------------------
+let shift_left = |p| { ...p, x: p.x - 1 }
 let draw_ground = fn (x) {
   ground_sprite.draw(x, GROUND_Y)
   ground_sprite.draw(x + W, GROUND_Y)
@@ -164,7 +165,7 @@ class App {
   }
 
   starting_plants() {
-    iota(15).map(fn (i) { { x: i * 12, type: Random.int(0, PLANT_TYPES) } })
+    iota(15).map(|i| { x: i * 12, type: Random.int(0, PLANT_TYPES) })
   }
 
   enter_title() {
@@ -270,7 +271,7 @@ class App {
       self.pipes.push({ x: W, gap_start: Random.int(0, 16) * 5 + 10 })
       self.last_pipe = self.fc
     }
-    let moved_pipes = self.pipes.map(fn (p) { { ...p, x: p.x - 1 } })
+    let moved_pipes = self.pipes.map(shift_left)
     let gained = moved_pipes.filter(|p| p.x == PLAYER_X - 2).size()
     self.pipes = moved_pipes.filter(|p| p.x >= -20)
 
@@ -279,7 +280,7 @@ class App {
       self.plants.push({ x: W, type: Random.int(0, PLANT_TYPES) })
       self.last_plant = self.fc
     }
-    self.plants = self.plants.map(fn (p) { { ...p, x: p.x - 1 } }).filter(|p| p.x >= -12)
+    self.plants = self.plants.map(shift_left).filter(|p| p.x >= -12)
 
     self.player_y += self.player_vel
     self.score = Math.min(self.score + gained, 255)
@@ -326,4 +327,4 @@ class App {
 }
 
 let app = App.new()
-Canvas.run(W, H, fn () { app.tick() })
+Canvas.run(W, H, app.tick)
