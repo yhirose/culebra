@@ -1,7 +1,8 @@
 # retro-run assets
 
-Generated, not drawn by hand — run `python3 ../tools/gen_assets.py` to rebuild
-them. The generator only needs the Python standard library.
+Generated, not drawn by hand — run `culebra ../tools/gen_assets.cul` to rebuild
+them (`--jit` halves the ~20s). The generator needs nothing but culebra itself:
+`Canvas.Sprite` bakes the palette and `to_png` writes the files.
 
 These are **placeholders**. Upstream javascript-racer's `sprites.png` is lifted
 from OutRun and its music may not be redistributed, so nothing from it is
@@ -32,10 +33,11 @@ as the sizes below stay exactly as they are.
 
 **Free — redraw at will:** every colour and every shape inside those boxes.
 
-The generator enforces the fixed parts rather than trusting them: it draws the
-backgrounds once into a buffer of palette *keys* and bakes that same buffer four
-times, so a scene-specific shape is not expressible; it asserts each layer wraps;
-and it asserts the four baked images share one alpha mask.
+The generator enforces the fixed parts rather than trusting them. It draws the
+backgrounds once into a buffer of palette *keys*, then hands that one buffer to
+`Canvas.Sprite` four times with four palettes — so a scene-specific shape is not
+expressible, and the four images cannot disagree about geometry or about which
+pixels are transparent. It also checks that each layer wraps.
 
 `../tools/check_assets.cul` re-checks the shipped files from the outside — it
 loads them with `Canvas.Sprite.from_png` and verifies every rectangle is where
@@ -46,7 +48,7 @@ backgrounds still share one mask.
 
 Warm pastel, plum-ish ink instead of black, dithering instead of intermediate
 tones. The base values, the saturation boost and the light/dark narrowing all
-live at the top of `gen_assets.py`, which is the single source for both the art
+live at the top of `gen_assets.cul`, which is the single source for both the art
 and `retro-run.cul`'s road colours.
 
 `sprites.png` is baked once with the **day** palette and is not recoloured per

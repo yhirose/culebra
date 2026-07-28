@@ -1,0 +1,42 @@
+# Generate outline templates a designer can draw pixel art into.
+#
+# Draws a 1px black rectangle around every sprite / background-layer atlas
+# rectangle, on an otherwise transparent canvas the same size as the real
+# sheet. atlas.cul is the single source of truth for those rectangles; this
+# script only borders them, never redraws them.
+#
+# Run:  culebra examples/games/retro-run/tools/gen_templates.cul [outdir]
+#       (default outdir is ../assets)
+
+import atlas from './atlas.cul'
+
+let BLACK = Canvas.rgba(0, 0, 0)
+
+# Border each rect on a transparent sheet. Drawing straight into a Canvas
+# sprite means no pixel buffer to assemble by hand: `rect(fill: false)` is
+# already the one-pixel outline, and `blank(w, h)` starts fully transparent.
+fn outline_sheet(w, h, rects) {
+  let sheet = Canvas.Sprite.blank(w, h)
+  Canvas.draw_to(sheet, fn () {
+    for name, r in rects {
+      let [x, y, rw, rh] = r
+      Canvas.rect(x, y, rw, rh, BLACK, false)
+    }
+  })
+  sheet
+}
+
+let outdir = Sys.argv.size() > 0
+  ? Sys.argv[0]
+  : FS.join(FS.dirname(FS.dirname(Sys.script)), "assets")
+FS.mkdir(outdir)
+
+for (file, w, h, rects) in [
+  ("sprites-template.png", atlas.SPRITE_W, atlas.SPRITE_H, atlas.SPRITES),
+  ("background-template.png", atlas.BG_W, atlas.BG_H, atlas.BACKGROUND)
+] {
+  let path = FS.join(outdir, file)
+  let png = outline_sheet(w, h, rects).to_png()
+  FS.write(path, png)
+  println("{file:<28} {png.size():>8} bytes")
+}

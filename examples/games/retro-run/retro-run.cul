@@ -194,9 +194,9 @@ let backgrounds = fn () {
 # --- colours ---------------------------------------------------------------
 # One palette per scene, in the order SCENES lists them, as flat r,g,b triples:
 # grass dark, grass light, road dark, road light, rumble dark, rumble light,
-# fog, sky. These are the values gen_assets.py bakes the matching background
-# with, so the road meets the horizon in the colour the picture ends in
-# (`python3 tools/gen_assets.py --colours` reprints them).
+# fog, sky. These are the values tools/gen_assets.cul bakes the matching
+# background with, so the road meets the horizon in the colour the picture
+# ends in.
 let SCENE_COLORS = [
   # asayake
   [182, 159, 4, 198, 174, 31, 190, 140, 108, 203, 158, 126,
