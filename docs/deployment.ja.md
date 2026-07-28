@@ -56,8 +56,8 @@ culebra build path/to/program.cul -o ./program
 各機能軸は独立に force-load される（仕組みは
 [§4](#4-共有-runtime-archive-レイアウト) 参照）ので、`Tensor` も
 `Http` も使わないプログラムは base のみを link する。OpenSSL を
-落とすだけで約 4 MB 効く（非 Http バイナリ ~5 MB に対し Http 版は
-~9.5 MB、OpenSSL は静的リンクのため）。
+落とすだけで約 4.5 MB 効く（非 Http バイナリ ~6.2 MB に対し Http 版は
+~10.8 MB、OpenSSL は静的リンクのため）。
 
 `otool -L`（macOS）や `ldd`（Linux）で確認できます:
 
@@ -86,8 +86,8 @@ $ otool -L /tmp/microgpt_tensor
 ローカルシンボル（`GCC_except_table*`、テンプレートや文字列の
 実体化など）が数千個含まれる。リンクは既定でこれらを破棄し
 （`-Wl,-x` — ld64・GNU ld・lld のいずれも解釈する）、ローダが必要
-とするグローバル／動的シンボルは保持したままバイナリを約 30% 縮める
-（例: Term/IO プログラムが ~7.6 MB → ~5.3 MB）。デバッグ用に残したい
+とするグローバル／動的シンボルは保持したままバイナリを約 33% 縮める
+（例: Term/IO プログラムが ~9.8 MB → ~6.5 MB）。デバッグ用に残したい
 場合は `--keep-symbols` を渡す。
 
 ### クロスコンパイル

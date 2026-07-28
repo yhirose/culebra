@@ -439,7 +439,7 @@ for the final link.
 ### Tree-shaking
 
 The module graph and the AST together give the set of reachable
-top-level names. Runtime helpers (~200) are partitioned by feature
+top-level names. Runtime helpers (~450) are partitioned by feature
 group; only the groups that are statically referenced from the user
 program are linked. A "hello world" using `inspect` pulls in IO plus the
 Long printer, and nothing else.
@@ -826,8 +826,9 @@ self-contained binaries.
   per-feature archive (Ch.5) into the driver.
 
 Feature options gate both the namespace and its archive:
-`CULEBRA_ENABLE_JIT` (LLVM linkage — off gives a ~1 MB driver with no
-LLVM dependency), `CULEBRA_ENABLE_HTTP`, `CULEBRA_ENABLE_SQLITE`,
+`CULEBRA_ENABLE_JIT` (LLVM linkage — off gives a ~15 MB driver with no
+LLVM dependency, against ~100 MB with it), `CULEBRA_ENABLE_HTTP`,
+`CULEBRA_ENABLE_SQLITE`,
 `CULEBRA_ENABLE_WEBVIEW` (on by default; self-disables on Linux
 without the GTK4 / WebKitGTK dev packages),
 `CULEBRA_ENABLE_CANVAS_WINDOW` (on by default where a window works —

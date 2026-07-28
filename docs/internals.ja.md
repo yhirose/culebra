@@ -429,7 +429,7 @@ Array、Func、Set、Tensor、Cell、String) を `shared_ptr` ではなく、手
 ### tree-shaking
 
 モジュールグラフと AST が合わさって、到達可能なトップレベル名の集合を
-与えます。ランタイムヘルパ (~200 個) は機能グループごとに分割され、
+与えます。ランタイムヘルパ (~450 個) は機能グループごとに分割され、
 ユーザープログラムから静的に参照されるグループのみがリンクされます。
 `inspect` を使う "hello world" は IO と Long プリンタを引き込み、それ以外
 は何も引き込みません。
@@ -808,8 +808,9 @@ vendored なソースからのビルドなので、`culebra build` は自己完�
   供。
 
 機能オプションは namespace とそのアーカイブの両方をゲートします:
-`CULEBRA_ENABLE_JIT` (LLVM リンケージ。off ならドライバは ~1 MB で
-LLVM 依存なし)、`CULEBRA_ENABLE_HTTP`、`CULEBRA_ENABLE_SQLITE`、
+`CULEBRA_ENABLE_JIT` (LLVM リンケージ。off ならドライバは ~15 MB で
+LLVM 依存なし。on なら ~100 MB)、`CULEBRA_ENABLE_HTTP`、
+`CULEBRA_ENABLE_SQLITE`、
 `CULEBRA_ENABLE_WEBVIEW` (既定 ON。GTK4 / WebKitGTK の dev パッケージ
 が無い Linux では自動的に無効化)、`CULEBRA_ENABLE_CANVAS_WINDOW` (ウィ
 ンドウが動くプラットフォーム — 現状は macOS — では既定 ON。環境変数

@@ -51,8 +51,8 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
 
 - **2 バックエンド、1 AST。** ツリーウォーキング型インタプリタと
   LLVM ORC JIT が同じ AST を共有。 インタプリタは LLVM 非依存
-  (~1 MB バイナリ、埋め込み向き)、JIT は `-O2` で同じプログラムを
-  実行。 両方を維持 — どちらも捨てません。
+  (ドライバ ~15 MB。 LLVM を含めると ~100 MB)、JIT は `-O2` で同じ
+  プログラムを実行。 両方を維持 — どちらも捨てません。
 - **日常的に使う 8 つの型。** `Nil` / `Bool` / `Long` / `Float` /
   `String` / `Array` / `Object` / `Function`、加えて用途特化の 4 つ
   (`StringView` / `Tuple` / `Set` / `Tensor`)。 クラス・モジュール・
@@ -89,7 +89,7 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
 
 ```bash
 just build              # JIT 付き
-just build-no-jit       # インタプリタのみ、~1 MB
+just build-no-jit       # インタプリタのみ、~15 MB
 just dev                # LTO 無し -O1 の高速ビルド → build-dev/ (内側ループ用)
 just test-dev           # build-dev/ で interp==JIT を素早く確認 (各編集ごと)
 just test               # 全 backend + embed スモークテスト (並列; JOBS=1 で逐次化)
@@ -1555,7 +1555,7 @@ tensor エンジンが必要とする Accelerate / Metal フレームワーク�
 
 ```bash
 ./build/culebra build my-program.cul -o ./out
-./out                                     # standalone、~350 KB on macOS
+./out                                     # standalone、~6 MB on macOS
 otool -L ./out                            # Accelerate も Metal も LLVM も無し
 ```
 
@@ -1576,8 +1576,9 @@ otool -L ./out                            # Accelerate も Metal も LLVM も無
 
 `inspect` だけ使う "hello world" は tensor も HTTP ランタイムも要らない。
 エントリファイルから call graph を辿ることで、参照されていないラン
-タイムヘルパ (~200 個) を落とせる。 `Tensor` 参照が無ければ tensor 抜きの
-archive に差し替わるので、数 MB が数百 KB になる。
+タイムヘルパ (~450 個) を落とせる。 `Tensor` 参照が無ければ tensor 抜きの
+archive に差し替わるので、全 feature archive を抱えると ~12.5 MB のところ
+~6 MB に収まる。
 
 ## 17. 埋め込み概観
 

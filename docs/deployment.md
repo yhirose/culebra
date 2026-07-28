@@ -56,8 +56,9 @@ The default invocation targets the host platform.
 
 Each feature axis force-loads independently (mechanism: [§4](#4-shared-runtime-archive-layout)),
 so a program using neither `Tensor` nor `Http` links only the base
-archive. Dropping OpenSSL alone is worth ~4 MB (a non-Http binary is
-~5 MB vs ~9.5 MB for an Http one, since OpenSSL is statically linked).
+archive. Dropping OpenSSL alone is worth ~4.5 MB (a non-Http binary is
+~6.2 MB vs ~10.8 MB for an Http one, since OpenSSL is statically
+linked).
 
 Verify with `otool -L` (macOS) / `ldd` (Linux):
 
@@ -85,7 +86,7 @@ The embedded runtime archive carries thousands of local symbols
 (`GCC_except_table*`, template and string instantiations) useless in a
 distributed executable. The link discards them by default (`-Wl,-x` —
 understood by ld64, GNU ld and lld alike), shrinking the binary by
-~30% (e.g. a Term/IO program drops from ~7.6 MB to ~5.3 MB) while
+~33% (e.g. a Term/IO program drops from ~9.8 MB to ~6.5 MB) while
 keeping the global/dynamic symbols the loader needs. Pass
 `--keep-symbols` to retain them for debugging.
 

@@ -21,8 +21,8 @@ Highlights
 ### Small, fast, runs anywhere
 
 - **CLI script.** Cold start in tens of milliseconds.
-- **Standalone binary.** A few MB on macOS arm64 (vs tens of MB for
-  comparable tools), no runtime dependencies.
+- **Standalone binary.** ~6 MB on macOS arm64 for a script that stays
+  off Http and Tensor, no runtime dependencies.
 - **Embedded library.** Embeds the interpreter into a C++ host, no
   LLVM dependency.
 - **Cross-platform.** macOS / Linux / Windows; cross-compile to any
@@ -30,11 +30,12 @@ Highlights
 
 ### Friendly to agent loops
 
-Fast cold start, single-file programs, and implicit imports add up
-to a runtime that doesn't punish an agent for invoking it every turn.
+Fast cold start, single-file programs, and a stdlib that is already in
+scope add up to a runtime that doesn't punish an agent for invoking it
+every turn.
 
-- **Implicit imports.** No `import` lines for an agent (or human) to
-  forget or misspell.
+- **No import lines for the stdlib.** `JSON`, `Http`, `FS`, `Tensor`
+  and the rest are bound before the program runs.
 - **One file, one program.** Run it without a project layout.
 - **Ship the result.** `culebra build` turns the script the agent just
   wrote into a binary it can hand back to the user.
@@ -55,12 +56,16 @@ compression ship too, same policy.
 
 ### Built-in Tensor
 
-`Tensor` is a language primitive, not a library. Arithmetic and `@`
-are operators; matmul routes through Accelerate / OpenBLAS.
+`Tensor` is a language primitive, not a library. Arithmetic is
+operators over a lazy graph that `Tensor.eval` materializes; matmul is
+`.dot()`. Ops run on the CPU (AVX2 / NEON kernels, Accelerate on
+macOS) or the GPU (Metal on macOS, CUDA where `nvcc` built it in),
+picked per op by size unless a `Tensor.use_*()` call pins one.
 
 ```culebra
-x = tensor([[1.0, 2.0], [3.0, 4.0]])
-y = x @ x.transpose()                # BLAS-routed
+x = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
+y = x.dot(x.transpose())
+Tensor.eval(y)                       # [[5.0, 11.0], [11.0, 25.0]]
 ```
 
 Language features
@@ -70,7 +75,7 @@ Language features
   patterns, with optional `if` guards.
 - **String interpolation.** `"head={head}, rest={tail.size()}"`.
 - **Gradual typing.** Annotations runtime-checked at boundaries;
-  Union / Optional / Tuple / Trait / Generic land pre-1.0.
+  Union, Optional, Tuple, Trait and Generic all check today.
 - **UFCS.** Free functions callable as methods (`x.f(y)` ≡ `f(x, y)`).
 - **Multiple dispatch.** Free functions dispatch on argument types
   across interp / JIT / AOT.
@@ -93,8 +98,8 @@ Standalone binaries
 
 `culebra build` compiles a `.cul` source ahead-of-time into a
 self-contained executable. No LLVM at runtime; tree-shaking drops
-the ~200 runtime helpers a program doesn't reference. Tensor-free
-programs also drop the Accelerate / BLAS framework dependency.
+the ~450 runtime helpers a program doesn't reference. Tensor-free
+programs also drop the Accelerate / Metal framework dependency.
 
 ```bash
 culebra build path/to/script.cul -o ./out
@@ -142,8 +147,8 @@ The rationale lives in [`docs/internals.md`](docs/internals.md).
   at services up to a few-thousand-connection ceiling — the shape
   SQLite, Redis, and most line-of-business backends already use.
 - **Gradual typing without a compile step.** Annotations are
-  runtime-checked at boundaries; startup stays instant. Union /
-  Optional / Tuple / Trait / Generic are decided and pre-1.0 required.
+  runtime-checked at boundaries; startup stays instant. Union,
+  Optional, Tuple, Trait and Generic annotations are all in.
 - **Immutable by default, no declaration keyword.** A bare `x = 1`
   creates an *immutable* binding — reassigning it is an error. Use `mut`
   for a variable you intend to change (`mut x = 1; x = 2`), so `mut`
@@ -152,8 +157,11 @@ The rationale lives in [`docs/internals.md`](docs/internals.md).
   and mutation is visible where it happens.
 - **UFCS, not pipeline.** `x.f(...)` doubles as the resolution path
   for free functions over user types.
-- **Implicit imports.** No explicit `import` statement — the resolver
-  walks unresolved identifiers across sibling files.
+- **The stdlib needs no import.** Namespaces are bound before the
+  program runs, so a one-file script has no import block. Splitting
+  across files uses top-level `import` / `export`, which keeps the
+  dependency graph known at parse time — what AOT bundling and
+  tree-shaking need.
 - **Batteries included.** Everyday scripting needs ship in the binary,
   not as third-party packages.
 - **Pre-1.0.** No version tags, CHANGELOG, or package registry yet —
