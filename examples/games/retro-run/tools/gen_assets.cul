@@ -98,60 +98,28 @@ let SCENES = [("asayake", ASAYAKE), ("hiru", HIRU), ("yuugure", YUUGURE),
               ("twilight", TWILIGHT)]
 
 # --- colour space ------------------------------------------------------------
-# HSV both ways, on 0..1 channels. The saturation boost and the pair narrowing
-# below both work in HSV, which is the whole reason the palette reads as one
-# set of colours rather than nineteen unrelated ones.
-fn rgb_to_hsv(r, g, b) {
-  let hi = Math.max(r, g, b)
-  let lo = Math.min(r, g, b)
-  if lo == hi { return (0.0, 0.0, hi) }
-  let span = hi - lo
-  let rc = (hi - r) / span
-  let gc = (hi - g) / span
-  let bc = (hi - b) / span
-  let h6 = if r == hi { bc - gc } else if g == hi { 2.0 + rc - bc } else { 4.0 + gc - rc }
-  # Wrap into [0, 1). `%` truncates, so a negative h6 needs the floored form.
-  let h = h6 / 6.0
-  (h - Math.floor(h).to_float(), span / hi, hi)
-}
-
-fn hsv_to_rgb(h, s, v) {
-  if s == 0.0 { return (v, v, v) }
-  let i = (h * 6.0).to_long() % 6
-  let f = h * 6.0 - (h * 6.0).to_long().to_float()
-  let p = v * (1.0 - s)
-  let q = v * (1.0 - s * f)
-  let t = v * (1.0 - s * (1.0 - f))
-  match i {
-    0 => (v, t, p),
-    1 => (q, v, p),
-    2 => (p, v, t),
-    3 => (p, q, v),
-    4 => (t, p, v),
-    _ => (v, p, q)
-  }
-}
-
+# The saturation boost and the pair narrowing below both work in HSV (via
+# Canvas.rgb_to_hsv / hsv_to_rgb), which is the whole reason the palette reads
+# as one set of colours rather than nineteen unrelated ones.
 fn boost(c, k) {
-  let (h, s, v) = rgb_to_hsv(c[0] / 255.0, c[1] / 255.0, c[2] / 255.0)
-  let (r, g, b) = hsv_to_rgb(h, Math.min(1.0, s * (1 + k) + 0.02), v)
-  [r * 255, g * 255, b * 255]
+  let (h, s, v) = Canvas.rgb_to_hsv(c[0], c[1], c[2])
+  let (r, g, b) = Canvas.hsv_to_rgb(h, Math.min(1.0, s * (1 + k) + 0.02), v)
+  [r, g, b]
 }
 
 fn narrow_toward(light_c, dark_c, amount) {
-  let (lh, ls, lv) = rgb_to_hsv(light_c[0] / 255.0, light_c[1] / 255.0, light_c[2] / 255.0)
-  let (_, ds, dv) = rgb_to_hsv(dark_c[0] / 255.0, dark_c[1] / 255.0, dark_c[2] / 255.0)
-  let (r, g, b) = hsv_to_rgb(lh, Math.min(1.0, ls + (ds - ls) * amount),
-                             lv + (dv - lv) * amount * 0.6)
-  [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)]
+  let (lh, ls, lv) = Canvas.rgb_to_hsv(light_c[0], light_c[1], light_c[2])
+  let (_, ds, dv) = Canvas.rgb_to_hsv(dark_c[0], dark_c[1], dark_c[2])
+  let (r, g, b) = Canvas.hsv_to_rgb(lh, Math.min(1.0, ls + (ds - ls) * amount),
+                                    lv + (dv - lv) * amount * 0.6)
+  [r, g, b]
 }
 
 # Base colours -> the final RGB the art is baked with.
 fn palette_for(scene) {
   mut pal = {...COMMON, ...scene}
   for n, c in pal {
-    let v = NO_BOOST.contains(n) ? c : boost(c, SAT_K)
-    pal[n] = v.map(|x| Math.round(x))
+    pal[n] = NO_BOOST.contains(n) ? c : boost(c, SAT_K)
   }
   for (dark, light) in PAIRS {
     if pal.has(dark) && pal.has(light) {

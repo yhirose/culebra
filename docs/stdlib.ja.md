@@ -3894,6 +3894,28 @@ macOS、`Scene` と同じ vendored 静的 raylib + SDL3）では**実際のデ�
 値をそのまま格納し `get_pixel` と対になる（透過を書き込むのはこの 2 つの
 役目）。
 
+`Canvas.rgb_to_hsv(r, g, b) -> Tuple` と `Canvas.hsv_to_rgb(h, s, v) -> Tuple`
+は 2 つの色モデルを変換する — RGB 側は `rgba` と同じ 0–255 チャンネル、HSV
+側は 色相/彩度/明度 それぞれ `0.0..1.0`。パレットを**派生させる**場面は
+HSV の出番で、彩度を上げる・明暗ペアを近づける・色相をずらす、といった操作
+はどれも HSV では 1 行の式になるが、RGB にはそれに相当する単純な式がない。
+`Canvas.hsv(h, s, v, a = 255) -> Long` は結果をそのまま詰める — `rgba` と
+対になる形。
+
+```culebra
+inspect(Canvas.rgb_to_hsv(255, 0, 0))     # => (0.0, 1.0, 1.0)
+inspect(Canvas.hsv_to_rgb(0.0, 1.0, 1.0)) # => (255, 0, 0)
+inspect(Canvas.hsv(0.0, 1.0, 1.0) == Canvas.rgba(255, 0, 0))  # => true
+
+# 基本色を HSV で 40% 彩度アップしてから詰める
+let (h, s, v) = Canvas.rgb_to_hsv(180, 140, 200)
+inspect(Canvas.hsv(h, Math.min(1.0, s * 1.4), v))  # => 4291327148
+```
+
+2 つは 0–255 のグリッド上で厳密に往復する — `hsv_to_rgb` は各チャンネルを
+丸めるので、`rgb_to_hsv` の結果をそのまま `hsv_to_rgb` に戻すとどの入力
+でも元の `r, g, b` に一致する。見た目が近いだけの近似ではない。
+
 ### 描画
 
 | 関数 | 効果 |

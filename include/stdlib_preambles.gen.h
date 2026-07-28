@@ -324,6 +324,57 @@ let _canvas_module = fn () {
   # is the colour every Canvas call takes.
   let rgba = fn (r, g, b, a = 255) { r + g * 256 + b * 65536 + a * 16777216 }
 
+  # RGB (each channel 0..255) to HSV (each of h, s, v in 0.0..1.0) — the usual
+  # transform for deriving a palette from a few base colours: boost saturation,
+  # narrow a light/dark pair toward each other, shift hue. Channel-scale (not
+  # 0..1) input so it composes directly with rgba's own r/g/b arguments.
+  let rgb_to_hsv = fn (r, g, b) {
+    # Normalize to 0..1 before any ratio, matching the textbook (and every
+    # other colorsys-style) computation order: a ratio computed on the raw
+    # 0..255 values and one computed on 0..1 values are mathematically the
+    # same, but not bit-for-bit — the /255 shouldn't be deferred, or a hue
+    # that lands exactly on a sector boundary can round to the wrong side.
+    let rf = r / 255.0
+    let gf = g / 255.0
+    let bf = b / 255.0
+    let hi = Math.max(rf, gf, bf)
+    let lo = Math.min(rf, gf, bf)
+    if lo == hi { return (0.0, 0.0, hi) }
+    let span = hi - lo
+    let rc = (hi - rf) / span
+    let gc = (hi - gf) / span
+    let bc = (hi - bf) / span
+    let h6 = if rf == hi { bc - gc } else if gf == hi { 2.0 + rc - bc } else { 4.0 + gc - rc }
+    let h = h6 / 6.0
+    (h - Math.floor(h), span / hi, hi)
+  }
+
+  # The inverse: HSV (each 0.0..1.0) to RGB (each channel rounded to 0..255).
+  let hsv_to_rgb = fn (h, s, v) {
+    if s == 0.0 { let g = Math.round(v * 255); return (g, g, g) }
+    let sector = (h * 6.0).to_long() % 6
+    let f = h * 6.0 - (h * 6.0).to_long().to_float()
+    let p = v * (1.0 - s)
+    let q = v * (1.0 - s * f)
+    let t = v * (1.0 - s * (1.0 - f))
+    let (r, g, b) = match sector {
+      0 => (v, t, p),
+      1 => (q, v, p),
+      2 => (p, v, t),
+      3 => (p, q, v),
+      4 => (t, p, v),
+      _ => (v, p, q)
+    }
+    (Math.round(r * 255), Math.round(g * 255), Math.round(b * 255))
+  }
+
+  # hsv is to hsv_to_rgb + rgba what rgba is to its own three channels: the
+  # one-call way to get a packed colour when hue is what you have.
+  let hsv = fn (h, s, v, a = 255) {
+    let (r, g, b) = hsv_to_rgb(h, s, v)
+    rgba(r, g, b, a)
+  }
+
   # The mirror bits, shared by both blit paths.
   let _flip_bits = fn (flip_x, flip_y) {
     (if flip_x { 1 } else { 0 }) + (if flip_y { 2 } else { 0 })
@@ -591,6 +642,9 @@ let _canvas_module = fn () {
 
   {
     rgba: rgba,
+    rgb_to_hsv: rgb_to_hsv,
+    hsv_to_rgb: hsv_to_rgb,
+    hsv: hsv,
     # Allocate (or resize) the framebuffer. `run` does this for you; call it
     # directly when you drive the frame loop yourself.
     init: fn (w, h) { _Canvas.init(w, h) },

@@ -9,6 +9,38 @@ let BLUE = Canvas.rgba(0, 0, 255, 255)
 assert_eq(RED, 255 + 255 * 16777216)          // r=255, a=255
 assert_eq(Canvas.rgba(0, 0, 0, 0), 0)
 
+// --- rgb_to_hsv / hsv_to_rgb / hsv ------------------------------------------
+// Primaries, and the grayscale axis (s == 0, h is irrelevant but 0 by
+// convention).
+assert_eq(Canvas.rgb_to_hsv(255, 0, 0), (0.0, 1.0, 1.0))
+assert_eq(Canvas.rgb_to_hsv(0, 255, 0), (1.0 / 3.0, 1.0, 1.0))
+assert_eq(Canvas.rgb_to_hsv(0, 0, 255), (2.0 / 3.0, 1.0, 1.0))
+assert_eq(Canvas.rgb_to_hsv(0, 0, 0), (0.0, 0.0, 0.0))
+assert_eq(Canvas.rgb_to_hsv(255, 255, 255), (0.0, 0.0, 1.0))
+assert_eq(Canvas.rgb_to_hsv(128, 128, 128), (0.0, 0.0, 128 / 255.0))
+
+assert_eq(Canvas.hsv_to_rgb(0.0, 1.0, 1.0), (255, 0, 0))
+assert_eq(Canvas.hsv_to_rgb(1.0 / 3.0, 1.0, 1.0), (0, 255, 0))
+assert_eq(Canvas.hsv_to_rgb(2.0 / 3.0, 1.0, 1.0), (0, 0, 255))
+assert_eq(Canvas.hsv_to_rgb(0.0, 0.0, 1.0), (255, 255, 255))
+assert_eq(Canvas.hsv_to_rgb(0.5, 0.0, 0.4), (102, 102, 102))   // s=0: h ignored
+
+// Round trip is exact on the 0..255 grid (every channel a multiple of 17, so
+// the sweep covers 0 and 255 without floating-point drift at the edges).
+for r in 0..256 by 17 {
+  for g in 0..256 by 17 {
+    for b in 0..256 by 17 {
+      let (h, s, v) = Canvas.rgb_to_hsv(r, g, b)
+      assert_eq(Canvas.hsv_to_rgb(h, s, v), (r, g, b))
+    }
+  }
+}
+
+// hsv() is to hsv_to_rgb what rgba() is to its own channels — a packed
+// colour, byte-identical to rgba() from the equivalent RGB.
+assert_eq(Canvas.hsv(0.0, 1.0, 1.0), RED)
+assert_eq(Canvas.hsv(1.0 / 3.0, 1.0, 1.0, 128), Canvas.rgba(0, 255, 0, 128))
+
 // Canvas.run initialises the framebuffer; a one-shot tick lets us draw and
 // inspect. frames=1 + tick returning false keeps it to a single pass.
 Canvas.run(8, 8, fn () {

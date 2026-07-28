@@ -4025,6 +4025,29 @@ are `clear`, which replaces every pixel with the given value (a frame reset,
 not a wash), and `set_pixel`, which stores the value raw so it pairs with
 `get_pixel` (writing transparency is what those two are for).
 
+`Canvas.rgb_to_hsv(r, g, b) -> Tuple` and `Canvas.hsv_to_rgb(h, s, v) -> Tuple`
+convert between the two colour models — the RGB side in the same 0–255
+channels as `rgba`, the HSV side each of hue/saturation/value in `0.0..1.0`.
+HSV is where a palette gets *derived*: boosting saturation, narrowing a
+light/dark pair toward each other, or shifting hue are all one-line
+expressions in HSV that have no simple RGB equivalent. `Canvas.hsv(h, s, v, a
+= 255) -> Long` packs the result directly, mirroring `rgba`.
+
+```culebra
+inspect(Canvas.rgb_to_hsv(255, 0, 0))     # => (0.0, 1.0, 1.0)
+inspect(Canvas.hsv_to_rgb(0.0, 1.0, 1.0)) # => (255, 0, 0)
+inspect(Canvas.hsv(0.0, 1.0, 1.0) == Canvas.rgba(255, 0, 0))  # => true
+
+# saturate a base colour by 40%, in HSV, then pack it
+let (h, s, v) = Canvas.rgb_to_hsv(180, 140, 200)
+inspect(Canvas.hsv(h, Math.min(1.0, s * 1.4), v))  # => 4291327148
+```
+
+The pair round-trips exactly on the 0–255 grid — `hsv_to_rgb` rounds each
+channel, so feeding `rgb_to_hsv`'s result straight back into `hsv_to_rgb`
+reproduces the original `r, g, b` for every input, not just a
+visually-close approximation.
+
 ### Drawing
 
 | Function | Effect |
