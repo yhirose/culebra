@@ -54,7 +54,20 @@ if [[ -n "$UNMAPPED" ]]; then
   exit 1
 fi
 
-# 4. Emit the AUTO-KEYWORDS block in the order categories appear in the map.
+# 4. Warn about categories with no `hi def link` in culebra.vim. The generated
+#    block only defines the syntax groups; the links are hand-written, and an
+#    unlinked group renders uncoloured.
+UNLINKED=$(awk -F: '/^cul/{print $1}' "$MAP" | sort -u | while IFS= read -r cat; do
+  grep -qE "^hi def link[[:space:]]+$cat[[:space:]]" "$VIM" || echo "$cat"
+done)
+if [[ -n "$UNLINKED" ]]; then
+  echo "ERROR: categories without a \`hi def link\` in $VIM:" >&2
+  echo "$UNLINKED" | sed 's/^/  /' >&2
+  echo "  (add a \`hi def link <category> <HighlightGroup>\` line to $VIM)" >&2
+  exit 1
+fi
+
+# 5. Emit the AUTO-KEYWORDS block in the order categories appear in the map.
 awk -F: '/^cul/{
   cat = $1
   rest = $2
@@ -62,7 +75,7 @@ awk -F: '/^cul/{
   printf "syn keyword %-14s %s\n", cat, rest
 }' "$MAP" > "$TMP_VIM_BLOCK"
 
-# 5. Splice the new block into culebra.vim between BEGIN/END markers.
+# 6. Splice the new block into culebra.vim between BEGIN/END markers.
 awk -v block_file="$TMP_VIM_BLOCK" '
   /^" === BEGIN AUTO-KEYWORDS/ {
     print
@@ -79,7 +92,7 @@ awk -v block_file="$TMP_VIM_BLOCK" '
   !in_block { print }
 ' "$VIM" > "$TMP_VIM"
 
-# 6. Emit the VSCode TextMate keyword rules — one per category, mapping the
+# 7. Emit the VSCode TextMate keyword rules — one per category, mapping the
 #    culebra.vim category to a TextMate scope. Each line carries a trailing comma;
 #    the never-matching `\b\B` end marker that follows is the array's last
 #    element, so the JSON stays valid.
@@ -109,7 +122,7 @@ while IFS= read -r line; do
     "$pipe" "$(tm_scope "$cat")" >> "$TMP_TM_BLOCK"
 done < "$MAP"
 
-# 7. Splice the block into the tmLanguage between the `\b\B` marker rules.
+# 8. Splice the block into the tmLanguage between the `\b\B` marker rules.
 awk -v block_file="$TMP_TM_BLOCK" '
   /auto-keywords-begin/ {
     print
@@ -126,7 +139,7 @@ awk -v block_file="$TMP_TM_BLOCK" '
   !in_block { print }
 ' "$TM" > "$TMP_TM"
 
-# 8. Emit the CodeMirror (playground) KEYWORDS/CONSTANTS sets — culBoolean and
+# 9. Emit the CodeMirror (playground) KEYWORDS/CONSTANTS sets — culBoolean and
 #    culConstant fold into CONSTANTS (mirroring the tmLanguage's separate
 #    constant.language.* scopes vs its keyword.* scopes); every other category
 #    folds into KEYWORDS. Only runs where playground/culebra-lang.js exists

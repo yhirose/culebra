@@ -83,6 +83,7 @@ hi def link culClass         Structure
 hi def link culConditional   Conditional
 hi def link culRepeat        Repeat
 hi def link culStatement     Statement
+hi def link culEffect        Keyword
 hi def link culInclude       Include
 hi def link culDebugger      Debug
 hi def link culBoolean       Boolean
