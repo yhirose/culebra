@@ -8924,8 +8924,8 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
       return jit.own(make_bool(emit_call(module_->getFunction(rt::term_resized), {})));
     if (method == "width" && a.size() == 1) {
       auto str = jit.compile(*a[0]);
-      emit_type_check(str.borrow(), "String", "parameter 's'", a[0].get());
-      auto p = builder_.CreateIntToPtr(extract_data(str.borrow()), ptrTy);
+      auto p = jit.coerce_strlike_cstr(str.borrow(), "term.width", false, "s",
+                                       a[0].get());
       auto w = emit_call(module_->getFunction(rt::term_width), {p});
       str.drop();
       return jit.own(make_long(w));

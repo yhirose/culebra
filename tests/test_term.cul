@@ -204,6 +204,11 @@ assert_eq(Term.width("e\u{0301}"), 1) // e + combining acute = 1
 assert_eq(Term.width("👨‍👩‍👧"), 2)      // family (ZWJ) = one cluster
 assert_eq(Term.width("🇯🇵"), 2)        // flag (regional indicators)
 
+// StringLike: accepts StringView directly (e.g. from .slice() / .graphemes()),
+// no .to_string() needed
+assert_eq(Term.width("a中b".slice(1, 4)), 2)          // '中' as a StringView
+assert_eq(Term.width("café".graphemes().collect()[3]), 1) // 'é' grapheme as a StringView
+
 // --- Term.style: SGR parameter string for a cell (downsampled to level) ---
 Term.set_level(3)
 assert_eq(Term.style(), "")                            // no attrs/colour

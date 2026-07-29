@@ -1722,12 +1722,12 @@ inline Value make_term_primitives_namespace() {
           "Long"sv)),
       false);
 
-  // _Term.width(s: String) -> Long (display columns; wide/emoji = 2)
+  // _Term.width(s: StringLike) -> Long (display columns; wide/emoji = 2)
   ns.initialize("width",
-      Value(FunctionValue({{"s", false, "String"sv}},
+      Value(FunctionValue({{"s", false, "StringLike"sv}},
           [](std::shared_ptr<Environment> env) {
-            return Value(static_cast<long>(
-                _term_detail::width(env->get("s").to_string())));
+            return Value(static_cast<long>(_term_detail::width(
+                std::string(env->get("s").to_string_view()))));
           },
           "Long"sv)),
       false);
