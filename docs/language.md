@@ -1603,6 +1603,7 @@ Built-in methods:
 | Method        | Description                                        |
 |---------------|----------------------------------------------------|
 | `size()`      | Element count (`Long`)                             |
+| `empty()`     | `Bool` — is `size()` zero?                         |
 | `contains(x)` | `Bool` — is `x` an element?                        |
 | `to_array()`  | Fresh `Array` with the same elements               |
 | `iter()`      | Iterator yielding elements in index order          |
@@ -1687,6 +1688,7 @@ Built-in methods:
 | Method         | Description                                        |
 |----------------|----------------------------------------------------|
 | `size()`       | Element count (`Long`)                             |
+| `empty()`      | `Bool` — is `size()` zero?                         |
 | `contains(x)`  | `Bool` — is `x` a member?                          |
 | `union(b)`     | New `Set` of all elements from this and `b`        |
 | `intersect(b)` | New `Set` of elements present in both              |
@@ -3678,6 +3680,7 @@ receiver is never mutated.
 | Signature                                       | Description                          |
 |-------------------------------------------------|--------------------------------------|
 | `s.size() -> Long`                              | Byte length.                         |
+| `s.empty() -> Bool`                              | Whether `size() == 0`.               |
 | `s.upper() -> String`                           | ASCII uppercase.                     |
 | `s.lower() -> String`                           | ASCII lowercase.                     |
 | `s.capitalize() -> String`                      | First ASCII letter uppercase, the rest lowercase. ASCII-only like `upper`/`lower`, so a leading non-ASCII scalar passes through. |
@@ -3803,6 +3806,7 @@ inspect(seen)   # => [1, 2]
 | Signature                                   | Description                           |
 |---------------------------------------------|---------------------------------------|
 | `a.size() -> Long`                          | Number of elements.                   |
+| `a.empty() -> Bool`                          | Whether `size() == 0`.                |
 | `a.push(x: Any) -> Nil` *(mutating)*        | Append `x` to the end.                |
 | `a.pop() -> Any` *(mutating)*               | Remove and return the last element. `nil` if empty. |
 | `a.slice(start: Long, end: Long) -> Array`  | Shallow subarray `[start, end)`. Same clamping as `String.slice`. |
@@ -3894,6 +3898,7 @@ wrong-typed element raises a `TypeError`:
 | Signature                        | Description                                |
 |----------------------------------|--------------------------------------------|
 | `o.size() -> Long`               | Number of own properties.                  |
+| `o.empty() -> Bool`               | Whether `size() == 0`.                     |
 | `o.keys() -> Array`              | `Array` of keys in insertion order (matches display order — §8). |
 | `o.values() -> Iterator`        | Lazy iterator of values in insertion order — the value-only view of `o.iter()` (which yields `(key, value)` pairs). Chains / `collect`s like any iterator. |
 | `o.has(key: String) -> Bool`     | Whether `o` has an own property named `key`. Ignores built-in method names. |

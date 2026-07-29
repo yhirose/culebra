@@ -3945,6 +3945,13 @@ inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
          }
          return Value(n);
        }))},
+      {"empty"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         const auto& obj = callEnv->get("self").to_object();
+         bool empty = obj.properties->empty() &&
+                      (!obj.non_string_props || obj.non_string_props->empty());
+         return Value(empty);
+       }))},
       {"keys"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          const auto& obj = callEnv->get("self").to_object();
@@ -4647,6 +4654,11 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                                        long n = val.to_array().values->size();
                                        return Value(n);
                                      }))},
+      {"empty"sv, Value(FunctionValue({},
+                                      [](std::shared_ptr<Environment> callEnv) {
+                                        const auto& val = callEnv->get("self");
+                                        return Value(val.to_array().values->empty());
+                                      }))},
       {"push"sv, Value(FunctionValue{{{"arg", false}},
                                      [](std::shared_ptr<Environment> callEnv) {
                                        const auto& val = callEnv->get("self");
@@ -5371,6 +5383,10 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
          return Value(static_cast<long>(
              callEnv->get("self").to_string_view().size()));
        }))},
+      {"empty"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         return Value(callEnv->get("self").to_string_view().empty());
+       }))},
       // `.view()` → StringView sharing the receiver's bytes.
       {"view"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
@@ -5700,6 +5716,11 @@ inline std::unordered_map<std::string_view, Value>& set_builtins() {
          const auto& self = callEnv->get("self").get<SetValue>();
          return Value(static_cast<long>(self.members->size()));
        }))},
+      {"empty"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         const auto& self = callEnv->get("self").get<SetValue>();
+         return Value(self.members->empty());
+       }))},
       {"contains"sv,
        Value(FunctionValue(
            {{"x", false}},
@@ -5844,6 +5865,11 @@ inline std::unordered_map<std::string_view, Value>& tuple_builtins() {
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          const auto& self = callEnv->get("self").get<TupleValue>();
          return Value(static_cast<long>(self.elements->size()));
+       }))},
+      {"empty"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         const auto& self = callEnv->get("self").get<TupleValue>();
+         return Value(self.elements->empty());
        }))},
       {"contains"sv,
        Value(FunctionValue(

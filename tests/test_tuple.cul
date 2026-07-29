@@ -43,6 +43,8 @@ assert_eq(n1, n2)
 
 // --- Methods (a-1) ---
 assert_eq(t.size(), 3)
+assert_true(!t.empty())
+assert_true(!(1,).empty())
 assert_true(t.contains(20))
 let nope = t.contains(99)
 assert_eq(nope, false)

@@ -28,6 +28,8 @@ let p = {1, 2, 3}
 let q = {3, 4, 5}
 
 assert_eq(p.size(), 3)
+assert_true(!p.empty())
+assert_true([].to_set().empty())
 assert_true(p.contains(2))
 let has_99 = p.contains(99)
 assert_eq(has_99, false)

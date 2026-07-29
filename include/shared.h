@@ -48,8 +48,9 @@ namespace culebra {
 // known_builtin_methods() (which delegates here so the list never drifts).
 inline const std::unordered_set<std::string_view>& builtin_method_names() {
   static const std::unordered_set<std::string_view> kNames = {
-      "size",       "push",        "pop",        "reverse",    "slice",
-      "join",       "index_of",    "contains",   "upper",      "lower",
+      "size",       "empty",       "push",       "pop",        "reverse",
+      "slice",      "join",        "index_of",   "contains",   "upper",
+      "lower",
       "trim",       "tr",          "trim_start", "trim_end",   "split",
       "repeat",     "capitalize",  "lines",
       "starts_with","ends_with",   "keys",       "values",     "has",
@@ -89,7 +90,8 @@ inline bool is_builtin_method_name(std::string_view name) {
 // `IO.push()` / `FS.split()` raise on both backends.
 inline bool is_object_builtin_method_name(std::string_view name) {
   static const std::unordered_set<std::string_view> kNames = {
-      "size", "keys", "has", "get", "get_or_put", "remove", "values", "iter"};
+      "size",  "empty", "keys",       "has",    "get", "get_or_put",
+      "remove", "values", "iter"};
   return kNames.count(name) > 0;
 }
 

@@ -15625,6 +15625,77 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     return own(make_long(phi));
   }
 
+  // .empty() — works on Array, Object, String, StringView, Set
+  if (method == "empty" && argsAst.nodes.size() == 0) {
+    auto arrBB = llvm::BasicBlock::Create(ctx_, "empty.arr", fn);
+    auto objBB = llvm::BasicBlock::Create(ctx_, "empty.obj", fn);
+    auto strBB = llvm::BasicBlock::Create(ctx_, "empty.str", fn);
+    auto svBB  = llvm::BasicBlock::Create(ctx_, "empty.sv", fn);
+    auto setBB = llvm::BasicBlock::Create(ctx_, "empty.set", fn);
+    auto errBB = llvm::BasicBlock::Create(ctx_, "empty.err", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "empty.merge", fn);
+
+    auto sw = builder_.CreateSwitch(tag, errBB, 6);
+    sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
+    sw->addCase(builder_.getInt8(TAG_TUPLE), arrBB);
+    sw->addCase(builder_.getInt8(TAG_OBJECT), objBB);
+    sw->addCase(builder_.getInt8(TAG_STRING), strBB);
+    sw->addCase(builder_.getInt8(TAG_STRINGVIEW), svBB);
+    sw->addCase(builder_.getInt8(TAG_SET), setBB);
+
+    builder_.SetInsertPoint(arrBB);
+    auto arrPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto arrSize = emit_call(
+        module_->getFunction(rt::array_size), {arrPtr}, "asz");
+    auto arrSizeBB = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(objBB);
+    auto objPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto objSize = emit_call(
+        module_->getFunction(rt::object_size), {objPtr}, "osz");
+    auto objSizeBB = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(strBB);
+    auto strPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto strSize = emit_call(
+        module_->getFunction(rt::str_size), {strPtr}, "ssz");
+    auto strSizeBB = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    // JitStringView { ptr, len } — load len at offset 8.
+    builder_.SetInsertPoint(svBB);
+    auto svPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto svLenPtr = builder_.CreateConstInBoundsGEP1_64(
+        builder_.getInt8Ty(), svPtr, 8);
+    auto svSize = builder_.CreateLoad(builder_.getInt64Ty(), svLenPtr, "svsz");
+    auto svSizeBB = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(setBB);
+    auto setPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto setSize = emit_call(
+        module_->getOrInsertFunction(rt::set_size,
+                                     builder_.getInt64Ty(), ptrTy),
+        {setPtr}, "ssz2");
+    auto setSizeBB = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(errBB);
+    emit_receiver_resolution_error(tag, "empty");
+
+    builder_.SetInsertPoint(mergeBB);
+    auto phi = builder_.CreatePHI(builder_.getInt64Ty(), 5, "sz");
+    phi->addIncoming(arrSize, arrSizeBB);
+    phi->addIncoming(objSize, objSizeBB);
+    phi->addIncoming(strSize, strSizeBB);
+    phi->addIncoming(svSize, svSizeBB);
+    phi->addIncoming(setSize, setSizeBB);
+    auto isEmpty = builder_.CreateICmpEQ(phi, builder_.getInt64(0), "isempty");
+    return own(make_bool(isEmpty));
+  }
+
   // --- Set methods ---
   // union/intersect/diff/sym_diff: both operands Set, returns Set.
   if ((method == "union" || method == "intersect" ||
