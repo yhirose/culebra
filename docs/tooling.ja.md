@@ -450,7 +450,11 @@ VSCode は `.cul` のハイライトと `culebra` デバッグタイプ登録の
 ### Vim (vimspector)
 
 拡張は不要 — [vimspector](https://github.com/puremourning/vimspector) を導入し、
-プロジェクトルートに `.vimspector.json`（vimspector はプロジェクト単位）:
+プロジェクトルートに `.vimspector.json` を置きます（vimspector はプロジェクト
+単位の設定なので、culebra 側からは配布できません）。Vim のシンタックスファイルを
+インストール済み（`misc/vim/install.sh`）なら、プロジェクトルートで `.cul` ファイルを
+開いて `:CulebraVimspectorInit` を実行すれば生成されます — 既存の
+`.vimspector.json` は上書きしません。手動で作る場合は次の内容を書きます:
 
 ```json
 {

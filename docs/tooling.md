@@ -479,9 +479,12 @@ under `misc/vscode/` with an installer.
 
 ### Vim (vimspector)
 
-No extension needed — install [vimspector](https://github.com/puremourning/vimspector)
-and add `.vimspector.json` to the project root (vimspector configs are
-per-project):
+No extension needed — install [vimspector](https://github.com/puremourning/vimspector),
+then add `.vimspector.json` to the project root (vimspector configs are
+per-project, so this isn't something `culebra` can ship for you). With the
+Vim syntax files installed (`misc/vim/install.sh`), open any `.cul` file in
+the project root and run `:CulebraVimspectorInit` to write it — it won't
+overwrite an existing `.vimspector.json`. Or create it by hand:
 
 ```json
 {

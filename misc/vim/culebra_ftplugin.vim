@@ -46,6 +46,37 @@ endfunction
 " :CulebraFmt — reformat the whole buffer.
 command! -buffer CulebraFmt call <SID>CulebraFormat()
 
+" :CulebraVimspectorInit — scaffold .vimspector.json in the cwd (vimspector
+" configs are per-project and not something `culebra` itself can ship, since
+" it lives outside any one project). Matches the "Debug file" config from
+" docs/tooling.md verbatim; keep the two in sync if either changes.
+function! s:CulebraVimspectorInit() abort
+  let l:path = getcwd() . '/.vimspector.json'
+  if filereadable(l:path)
+    echohl WarningMsg
+    echomsg 'CulebraVimspectorInit: ' . l:path . ' already exists — leaving it as is.'
+    echohl None
+    return
+  endif
+  call writefile([
+        \ '{',
+        \ '  "configurations": {',
+        \ '    "Debug file": {',
+        \ '      "adapter": { "command": ["culebra", "dap"] },',
+        \ '      "configuration": {',
+        \ '        "request": "launch",',
+        \ '        "program": "${file}",',
+        \ '        "stopOnEntry": false',
+        \ '      }',
+        \ '    }',
+        \ '  }',
+        \ '}',
+        \], l:path)
+  echomsg 'CulebraVimspectorInit: wrote ' . l:path
+endfunction
+
+command! -buffer CulebraVimspectorInit call <SID>CulebraVimspectorInit()
+
 " Format on save: `let g:culebra_fmt_autosave = 1` in your vimrc to enable
 " (off by default, mirroring g:go_fmt_autosave / g:rustfmt_autosave).
 if get(g:, 'culebra_fmt_autosave', 0)
