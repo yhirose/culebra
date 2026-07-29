@@ -33,7 +33,8 @@ function! s:CulebraFormat() abort
     call remove(l:lines, -1)        " drop the element after the final newline
   endif
   if l:lines ==# getline(1, '$')
-    return                          " already formatted — no edit, no undo entry
+    " Already formatted — no edit, no undo entry.
+    return
   endif
   call setline(1, l:lines)
   if line('$') > len(l:lines)
