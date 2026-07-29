@@ -29,7 +29,7 @@ codegen, AOT tree-shaking) see [`internals.md`](internals.md).
     * [Sets](#sets)
 11. [Functions and closures](#11-functions-and-closures)
     * [Generators (`yield`)](#generators-yield)
-12. [Control flow (`if`, `while`, `for`)](#12-control-flow)
+12. [Control flow (`if`, `cond`, `while`, `for`)](#12-control-flow)
 13. [Pattern matching (`match`)](#13-pattern-matching)
 14. [Optional type annotations](#14-optional-type-annotations)
     * [Sum types (`enum`)](#sum-types-enum)
@@ -235,10 +235,8 @@ Most constructs are expressions that yield a value:
 
 * `if { a } else { b }` yields the taken branch's value.
 * `match x { ... }` yields the matching arm's body value (or `nil`).
-* `cond { test => a, _ => b }` — the subjectless multi-way conditional:
-  yields the body of the first truthy `test` (`_` is the
-  always-match default), or `nil` if none match. Use it instead of a
-  `match true { _ if … }` guard chain when there is nothing to match on.
+* `cond { test => a, _ => b }` yields the body of the first truthy
+  `test`, or `nil` if none match (see [`cond`](#cond)).
 * `while` always yields `nil`.
 * A block `{ ... }` in statement position is a `LEXICAL_SCOPE` and
   yields `nil`; in expression position `{` starts an `OBJECT` literal.
@@ -2092,6 +2090,39 @@ if mut d = compute(n); d > threshold {
 Each binding must be a declaration (`let` / `mut`); a bare `if x = 0;
 …` is a `SyntaxError`. Multiple bindings use `,`
 (`if mut a = f(), mut b = g(); …`).
+
+### `cond`
+
+    cond { test => body, ..., _ => default }
+
+The subjectless multi-way conditional (Elixir's `cond`, Kotlin's
+argless `when`): arms are tried top to bottom, and the value of the
+first arm whose `test` is truthy becomes the value of the whole
+expression. `_` is the always-match wildcard, conventionally last —
+arms after a matched `_` never run. If no arm matches, the value is
+`nil` (like an unmatched `match`).
+
+```culebra
+fn grade(n) {
+  cond {
+    n >= 90 => 'A',
+    n >= 80 => 'B',
+    _       => 'C'
+  }
+}
+inspect(grade(85))   # => 'B'
+```
+
+A `test` follows the same truthiness rule as `if` (`Bool` or `Long`,
+zero falsy), and may be any expression — calls, `&&`/`||`,
+comparisons. An arm body follows the same
+[expression-or-block](#arm-bodies) rule as `match` arms: a bare
+expression, or a brace block that yields its last statement's value
+and forms its own scope.
+
+Use `cond` in place of a `match true { _ if … => ... }` guard chain
+when there is nothing to match on — it reads as a priority-ordered
+list of conditions rather than a match against a dummy subject.
 
 ### `while`
 

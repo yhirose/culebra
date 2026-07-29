@@ -12,6 +12,21 @@ for n in [-2, 0, 5] {
   println("classify({n}) = {classify(n)}")
 }
 
+# `cond`: a subjectless multi-way conditional — the first truthy `test`
+# wins, `_` is the always-match default
+fn grade(n) {
+  cond {
+    n >= 90 => "A",
+    n >= 80 => "B",
+    n >= 70 => "C",
+    _       => "F"
+  }
+}
+
+for n in [95, 82, 40] {
+  println("grade({n}) = {grade(n)}")
+}
+
 # `while` with an init clause: the counter is scoped to the loop
 while mut i = 0; i < 3 {
   println("while i = {i}")
