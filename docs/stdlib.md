@@ -3721,6 +3721,27 @@ let st = Term.style(fg: (255, 128, 0), bold: true)   # for a Screen cell
 | `Term.width(s) -> Long` | display width in columns (wide / emoji = 2, combining = 0) |
 | `Term.flush()` | flush buffered output |
 
+### Piped input
+
+`Term.attach_tty() -> Bool` reattaches stdin to the controlling terminal,
+replacing whatever stdin currently is (a pipe, a redirected file). Raw mode
+and key reads (`Term.app`, `Term.poll`, `Term.read_key`) only work off a real
+tty, so a script fed content on stdin (`some-command | script.cul`) can drain
+that pipe first, then call `Term.attach_tty()` to switch to interactive key
+input — the same pattern `less` uses. Returns `false` (stdin is left
+untouched) when there is no controlling terminal at all, e.g. running fully
+detached or under CI.
+
+```culebra
+# doctest: skip
+let content = IO.stdin().read()   # drain the pipe first
+if !Term.attach_tty() {
+  println(content)                # no terminal to be interactive on
+  Sys.exit(0)
+}
+Term.app(fn (screen) { ... })
+```
+
 ### Input events
 
 Input is a single event model: `Term.poll(timeout)` — also reachable as

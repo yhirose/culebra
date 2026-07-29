@@ -1751,6 +1751,16 @@ inline Value make_term_primitives_namespace() {
           "String"sv)),
       false);
 
+  // _Term.attach_tty() -> Bool (reattach stdin to the controlling terminal;
+  // false if none exists)
+  ns.initialize("attach_tty",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            return Value(_term_detail::attach_tty());
+          },
+          "Bool"sv)),
+      false);
+
   return Value(std::move(ns));
 }
 

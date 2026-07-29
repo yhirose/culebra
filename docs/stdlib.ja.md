@@ -3599,6 +3599,26 @@ let st = Term.style(fg: (255, 128, 0), bold: true)   # Screen セル用
 | `Term.width(s) -> Long` | 表示幅（全角 / 絵文字 = 2、結合 = 0） |
 | `Term.flush()` | バッファ済み出力をフラッシュ |
 
+### パイプ入力
+
+`Term.attach_tty() -> Bool` は stdin を制御端末へ再接続する（現在の stdin が
+パイプでもリダイレクトされたファイルでも上書きする）。raw mode とキー読み取り
+（`Term.app`・`Term.poll`・`Term.read_key`）は本物の tty でしか機能しないため、
+stdin に内容を流し込まれたスクリプト（`some-command | script.cul`）は先に
+そのパイプを読み切ってから `Term.attach_tty()` を呼んで対話的なキー入力へ
+切り替えられる —— `less` と同じパターン。制御端末が一切無い場合（完全に
+非対話・CI 下など）は `false` を返し、stdin はそのまま変更されない。
+
+```culebra
+# doctest: skip
+let content = IO.stdin().read()   # 先にパイプを読み切る
+if !Term.attach_tty() {
+  println(content)                # 対話できる端末が無い
+  Sys.exit(0)
+}
+Term.app(fn (screen) { ... })
+```
+
 ### 入力イベント
 
 入力は単一のイベントモデル: `Term.poll(timeout)` —— `Term.app` の

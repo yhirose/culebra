@@ -18,6 +18,7 @@
 #if defined(__EMSCRIPTEN__)
 #include <emscripten.h>
 #elif !defined(_WIN32)
+#include <fcntl.h>
 #include <poll.h>
 #include <sys/ioctl.h>
 #include <termios.h>
@@ -47,6 +48,10 @@ namespace _term_detail {
 
 inline void raw_on() {}
 inline void raw_off() {}
+
+// No process-level stdin to reattach in the browser; the frontend terminal
+// is already the only input source.
+inline bool attach_tty() { return false; }
 
 // self.__termCols/__termRows are set once by worker.js before a run starts
 // (from the terminal emulator's current size); self.__termResized is set by
@@ -205,6 +210,20 @@ inline std::string read_key(double timeout_secs) {
   return out;
 }
 
+// Reattach stdin to the controlling terminal, replacing fd 0 in place so
+// `raw_on`/`read_key` (which always read STDIN_FILENO) pick it up with no
+// change of their own. Lets a script drain piped input on stdin first, then
+// switch to interactive key reads — the same /dev/tty reopen `less` uses.
+// False (no controlling terminal — e.g. fully detached, no /dev/tty at all)
+// leaves stdin untouched.
+inline bool attach_tty() {
+  int fd = ::open("/dev/tty", O_RDWR);
+  if (fd < 0) return false;
+  bool ok = ::dup2(fd, STDIN_FILENO) >= 0;
+  ::close(fd);
+  return ok;
+}
+
 #else  // _WIN32
 
 // Windows Console API port of the POSIX termios/poll primitives. The console's
@@ -316,6 +335,20 @@ inline std::string read_key(double timeout_secs) {
   for (DWORD i = 0; i < n; i++)
     if (buf[i] != '\0') out.push_back(buf[i]);
   return out;
+}
+
+// Reattach stdin to the console, the Windows analogue of /dev/tty: `CONIN$`
+// is a reserved device name that opens the console regardless of any
+// redirection applied to the process's stdin. SetStdHandle (not freopen —
+// raw_on/read_key above read the Win32 handle via GetStdHandle, not the CRT
+// stdin FILE*) is what those functions will see on their next call. False
+// leaves the existing handle untouched.
+inline bool attach_tty() {
+  HANDLE h = CreateFileW(L"CONIN$", GENERIC_READ | GENERIC_WRITE,
+                          FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                          OPEN_EXISTING, 0, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return false;
+  return SetStdHandle(STD_INPUT_HANDLE, h) != 0;
 }
 
 #endif  // _WIN32

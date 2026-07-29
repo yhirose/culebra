@@ -678,6 +678,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_term_read_key(
     double timeout) {
   return _culebra_heap_str(culebra::_term_detail::read_key(timeout));
 }
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_term_attach_tty() {
+  return culebra::_term_detail::attach_tty();
+}
 
 // --- _Canvas primitives ---
 // Immediate-mode 2D framebuffer thin wrappers (logic in canvas.h, shared with
@@ -7869,6 +7872,7 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::term_color_level, i64);
   jit.module_->getOrInsertFunction(rt::term_read_key, ptrTy,
                                    jit.builder_.getDoubleTy());
+  jit.module_->getOrInsertFunction(rt::term_attach_tty, jit.builder_.getInt1Ty());
   // _Canvas (immediate-mode 2D framebuffer primitives).
   auto vt = jit.builder_.getVoidTy();
   jit.module_->getOrInsertFunction(rt::canvas_coord, i64,
@@ -8936,6 +8940,8 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
       t.drop();
       return jit.own(make_string(s));
     }
+    if (method == "attach_tty" && a.empty())
+      return jit.own(make_bool(emit_call(module_->getFunction(rt::term_attach_tty), {})));
   }
 
   if (ns == "_Canvas") {

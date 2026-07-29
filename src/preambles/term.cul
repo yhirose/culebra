@@ -292,6 +292,7 @@ let _term_module = fn () {
     mouse_off: fn () { "\x1b[?1002l\x1b[?1006l" },
     width: fn (s) { _Term.width(s) },
     resized: fn () { _Term.resized() },
+    attach_tty: fn () { _Term.attach_tty() },
     poll: fn (timeout) { _poll(timeout) },
     app: fn (body, mouse = false) {
       _Term.raw_on()

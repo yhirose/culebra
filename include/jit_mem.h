@@ -726,6 +726,7 @@ inline constexpr auto term_resized         = "culebra_runtime_term_resized";
 inline constexpr auto term_width           = "culebra_runtime_term_width";
 inline constexpr auto term_color_level     = "culebra_runtime_term_color_level";
 inline constexpr auto term_read_key        = "culebra_runtime_term_read_key";
+inline constexpr auto term_attach_tty      = "culebra_runtime_term_attach_tty";
 inline constexpr auto canvas_coord         = "culebra_runtime_canvas_coord";
 inline constexpr auto canvas_init          = "culebra_runtime_canvas_init";
 inline constexpr auto canvas_clear         = "culebra_runtime_canvas_clear";
