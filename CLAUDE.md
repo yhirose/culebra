@@ -20,6 +20,10 @@ culebra は個人の趣味プロジェクト（未公開のプログラミング
 5. マージ = **rebase → 再テスト → ff-only**。textual に無衝突でも意味的に正しいとは限らないので rebase 後は必ず再テストする。ただし**再テストは既定で `just test-dev`（~80s）**であって全ゲートではない（下の「どこまで回すか」）。master は他セッションで頻繁に動くので、rebase のたびに全ゲートを回すとマシンが占有され全員が止まる
 6. 完了後 `git worktree remove --force` + `git branch -d`
 
+**Step 5-6 は `/ff-merge` skill で自動化されている**（`disable-model-invocation` なのでユーザーが明示的に呼ぶ）。内部で `just land`（`misc/land.sh`）が rebase → `just test-dev` → ff-only merge を machine-wide ロック下で1プロセス実行し、着地レース（他セッションが先に master を進めた場合）は自動リトライする。全て commit 済みならこれを使う。上記 5-6 は手動でやる場合の内訳。
+
+**Claude Code の sandbox について**: `git worktree add`／`submodule update`／`just dev`／`just test-dev` は `.claude/settings.local.json` の `sandbox.filesystem.allowWrite`（ccache tmp dir 追加済み）と `sandbox.network.allowLocalBinding` で sandbox 有効のまま通る。**`git worktree remove` だけは例外** — `.git/worktrees/` 配下の削除は sandbox 下で常に拒否される（`.git` メタデータ削除への意図的な保護とみられる）ので、この一手だけ `dangerouslyDisableSandbox` が要る。
+
 複数セッションが同じ repo で並行作業しうる。作業開始時は `git log --oneline master` と `git worktree list` を確認し、`git status` に自分が作っていない未コミット変更がある場合はそれを触らずユーザーに確認する。
 
 ## ビルド
