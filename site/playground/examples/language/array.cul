@@ -1,0 +1,27 @@
+mut a = [3, 1, 4, 1, 5]
+a.push(9)
+
+println("pushed   = {a}")
+println("popped   = {a.pop()}, remains {a}")
+
+println("map      = {[1, 2, 3].map(|x| x * x)}")
+println("filter   = {[1, 2, 3, 4].filter(|x| x % 2 == 0)}")
+println("reduce   = {[1, 2, 3, 4].reduce(0, |acc, x| acc + x)}")
+println("find     = {[3, 1, 4, 1, 5].find(|x| x > 3)}")
+
+let (evens, odds) = [1, 2, 3, 4, 5, 6].partition(|x| x % 2 == 0)
+
+println("evens    = {evens}, odds = {odds}")
+
+let words = ["fig", "date", "kiwi", "banana"]
+
+println("by_len   = {words.group_by(|w| w.size())}")
+
+mut names = ["fig", "date", "kiwi", "banana"]
+names.sort_by(|w| w.size())
+
+println("sorted   = {names}")
+
+let prices = [("apple", 100), ("banana", 80)].to_object()
+
+println("to_object = {prices}")

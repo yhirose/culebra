@@ -1,16 +1,27 @@
 fn countdown(start) {
-  for i in start..=1 by -1 { yield i }
+  for i in start..=1 by -1 {
+    yield i
+  }
 }
-for v in countdown(3) { println("{v}...") }
+for v in countdown(3) {
+  println("{v}...")
+}
 
 fn chunk(arr, n) {
   mut buf = []
   for v in arr {
     buf.push(v)
-    if buf.size() >= n { yield buf; buf = [] }
+    if buf.size() >= n {
+      yield buf
+      buf = []
+    }
   }
-  if buf.size() > 0 { yield buf }
+  if buf.size() > 0 {
+    yield buf
+  }
 }
+
 println("chunks   = {chunk([1, 2, 3, 4, 5], 2).collect()}")
+
 # the same grouping is a built-in iterator method
 println("built-in = {[1, 2, 3, 4, 5].iter().chunks(2).collect()}")

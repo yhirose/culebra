@@ -3,18 +3,24 @@
     {
       "name": "Basics",
       "examples": [
-        { "title": "Hello", "path": "examples/greeting.cul" },
-        { "title": "Functions & closures", "path": "examples/closures.cul" },
-        { "title": "Classes & operators", "path": "examples/classes.cul" },
-        { "title": "Generators", "path": "examples/generators.cul" },
-        { "title": "Error handling", "path": "examples/error_handling.cul" }
+        { "title": "Hello", "path": "examples/language/greeting.cul" },
+        { "title": "Functions & closures", "path": "examples/language/closures.cul" },
+        { "title": "Classes & operators", "path": "examples/language/classes.cul" },
+        { "title": "Control flow", "path": "examples/language/flow.cul" },
+        { "title": "Pattern matching", "path": "examples/language/match.cul" },
+        { "title": "Generators", "path": "examples/language/generators.cul" },
+        { "title": "Iterators", "path": "examples/language/iterator.cul" },
+        { "title": "Strings", "path": "examples/language/string.cul" },
+        { "title": "Arrays", "path": "examples/language/array.cul" },
+        { "title": "Algebraic effects", "path": "examples/language/effects.cul" },
+        { "title": "Error handling", "path": "examples/language/error_handling.cul" }
       ]
     },
     {
       "name": "Tensor",
       "examples": [
-        { "title": "Tensors", "path": "examples/tensors.cul" },
-        { "title": "Tensors on the GPU", "path": "examples/tensors_gpu.cul" }
+        { "title": "Tensors", "path": "examples/tensor/tensors.cul" },
+        { "title": "Tensors on the GPU", "path": "examples/tensor/tensors_gpu.cul" }
       ]
     },
     {

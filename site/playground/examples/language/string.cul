@@ -1,0 +1,27 @@
+let s = "  Hello, World!  "
+println("trim     = '{s.trim()}'")
+println("lower    = '{s.trim().lower()}'")
+println("upper    = '{s.trim().upper()}'")
+
+println("split    = {'a,b,c'.split(',')}")
+println("contains = {s.contains('World')}")
+println("replace  = {'a-b-c'.replace('-', '_')}")
+println("slice    = '{'hello'.slice(1, 4)}'")
+
+# 'café' is 4 characters but 5 bytes ('é' takes 2 UTF-8 bytes)
+let word = 'café'
+println("bytes       = {word.size()}")
+println("code_points = {word.code_points().count()}")
+println("graphemes   = {word.graphemes().count()}")
+
+# an emoji ZWJ sequence: several scalars, one user-perceived character
+let family = '👨‍👩‍👧'
+println("family scalars   = {family.code_points().count()}")
+println("family graphemes = {family.graphemes().count()}")
+
+# code_points opts into numeric work without per-scalar String allocation
+let vowels = 'Hello World'
+  .code_points()
+  .filter(|cp| cp == 97 || cp == 101 || cp == 105 || cp == 111 || cp == 117)
+  .count()
+println("vowels   = {vowels}")

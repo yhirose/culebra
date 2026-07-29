@@ -1,0 +1,43 @@
+effect fn ask(prompt)
+
+fn greet() {
+  let name = perform ask("your name")
+  "hi {name}"
+}
+
+# the handler decides what `ask` means — greet() never knows
+let scripted = handle { greet() } with ask(prompt, resume) { resume("ana") }
+
+# declining to resume drops the rest of the performing computation
+let aborted = handle { greet() } with ask(prompt, resume) { "<no answer>" }
+
+println("scripted = {scripted}")
+println("aborted  = {aborted}")
+
+effect fn get()
+effect fn put(v)
+
+# state threaded by the handler, not by the code that uses it
+mut cell = 0
+let total = handle {
+  let a = perform get()
+  perform put(a + 5)
+  perform get()
+} with get(k) { k(cell) }
+  with put(v, k) { cell = v; k(nil) }
+  with return(v) { "final={v}" }
+
+println("state    = {total}")
+
+effect fn choose(a, b)
+
+# resume twice: both branches run and both results come back
+let all = handle {
+  let x = perform choose(1, 2)
+  let y = perform choose(10, 20)
+  x + y
+} with choose(a, b, k) {
+  [k(a), k(b)]
+}
+
+println("choices  = {all}")

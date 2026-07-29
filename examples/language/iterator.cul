@@ -1,0 +1,47 @@
+let evens_doubled = (1..=10)
+  .iter()
+  .filter(|x| x % 2 == 0)
+  .map(|x| x * 10)
+  .collect()
+
+println("evens*10 = {evens_doubled}")
+
+# lazy chains short-circuit: only enough of the range is pulled to find 4 hits
+let first_four = range(1000000).filter(|x| x % 7 == 0).take(4).collect()
+
+println("first_four multiples of 7 = {first_four}")
+
+fn countdown(start) {
+  mut i = start
+  {iter: fn () {
+      self
+    }, has_next: fn () {
+      i > 0
+    }, next: fn () {
+      let v = i
+      i = i - 1
+      v
+    }}
+}
+
+println("countdown = {countdown(3).collect()}")
+
+# a generator is an Iterable too, so it chains like any other iterator
+fn nums() {
+  yield 1
+  yield 2
+  yield 3
+  yield 4
+}
+
+println("gen chain = {nums().filter(|x| x % 2 == 0).map(|x| x * x).collect()}")
+
+let words = ["fig", "date", "kiwi", "plum", "pear"]
+
+println("windows  = {words.iter().windows(2).collect()}")
+println("chunks   = {words.iter().chunks(2).collect()}")
+println("zipped   = {words.iter().enumerate().collect()}")
+
+let by_len = words.iter().group_by(|w| w.size())
+
+println("by_len   = {by_len}")

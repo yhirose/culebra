@@ -1,0 +1,49 @@
+fn describe(x) {
+  match x {
+    0 => "zero",
+    n if n < 0 => "negative",
+    n if n % 2 == 0 => "even {n}",
+    n => "odd {n}",
+  }
+}
+
+for v in [0, -3, 4, 7] {
+  println("describe({v}) = {describe(v)}")
+}
+
+fn head_tail(arr) {
+  match arr {
+    [] => "empty",
+    [x] => "one: {x}",
+    [x, ...rest] => "head {x}, rest {rest}",
+  }
+}
+
+println("head_tail([])        = {head_tail([])}")
+println("head_tail([1, 2, 3])  = {head_tail([1, 2, 3])}")
+
+fn greet(user) {
+  match user {
+    {name, role: "admin"} => "welcome back, {name} (admin)",
+    {name} => "hi, {name}",
+    _ => "who?",
+  }
+}
+
+println(greet({name: "ana", role: "admin"}))
+println(greet({name: "bo"}))
+
+enum Shape {
+  Circle(Float),
+  Rect(Float, Float),
+}
+
+fn area(s) {
+  match s {
+    Circle(r) => Math.pi * r * r,
+    Rect(w, h) => w * h,
+  }
+}
+
+println("area(circle) = {area(Shape.Circle(2.0))}")
+println("area(rect)   = {area(Shape.Rect(3.0, 4.0))}")

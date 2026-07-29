@@ -1,5 +1,7 @@
 fn risky(n) {
-  if n < 0 { throw {kind: "RangeError", message: "n must be >= 0, got {n}"} }
+  if n < 0 {
+    throw {kind: "RangeError", message: "n must be >= 0, got {n}"}
+  }
   n * 2
 }
 
