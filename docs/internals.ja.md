@@ -815,9 +815,9 @@ vendored なソースからのビルドなので、`culebra build` は自己完�
 LLVM 依存なし。on なら ~100 MB)、`CULEBRA_ENABLE_HTTP`、
 `CULEBRA_ENABLE_SQLITE`、
 `CULEBRA_ENABLE_WEBVIEW` (既定 ON。GTK4 / WebKitGTK の dev パッケージ
-が無い Linux では自動的に無効化)、`CULEBRA_ENABLE_CANVAS_WINDOW` (ウィ
-ンドウが動くプラットフォーム — macOS と、SDL3 のビルド依存が入っている
-Linux。Webview と同じように probe する — では既定 ON。環境変数
+が無い Linux では自動的に無効化)、`CULEBRA_ENABLE_CANVAS_WINDOW` (macOS
+と Windows、および SDL3 のビルド依存が入っている Linux（Webview と同じ
+ように probe する）では既定 ON。環境変数
 `CULEBRA_CANVAS_WINDOW_DEFAULT=OFF` はジョブ内の全 configure でこの既定
 を反転させる。CI はこれで opt-out している)、そして窓ありの opt-in
 `CULEBRA_ENABLE_SCENE`。

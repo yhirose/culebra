@@ -826,6 +826,26 @@ jobs:
         run: cmake --build build-win-aot --target culebra -j
       - name: Report ccache stats
         run: ccache -s || true
+      # The window backend adds Win32 libraries to the link, and a download
+      # still has to run on a plain Windows box. Same allowlist as the
+      # `windows` job and release.yml's Windows build — identical on purpose,
+      # so an import the window backend newly pulls in fails here, in a CI run,
+      # rather than during a release. The window entries (imm32 setupapi
+      # dinput8 cfgmgr32 hid avrt) all ship with Windows.
+      - name: Verify standalone binary (only system DLLs)
+        run: |
+          echo "Imported DLLs:"
+          imports=$(objdump -p build-win-aot/culebra.exe \
+            | grep -i 'DLL Name' | sed -E 's/.*DLL Name:\s*//' | tr 'A-Z' 'a-z' | sort -u)
+          echo "$imports"
+          allow='^(kernel32|kernelbase|msvcrt|ntdll|user32|advapi32|ws2_32|shell32|ole32|oleaut32|bcrypt|crypt32|secur32|iphlpapi|dbghelp|version|winmm|gdi32|imm32|setupapi|dinput8|cfgmgr32|hid|avrt)\.dll$'
+          bad=$(echo "$imports" | grep -viE "$allow" || true)
+          if [ -n "$bad" ]; then
+            echo "ERROR: binary imports non-system DLL(s) — not standalone:" >&2
+            echo "$bad" >&2
+            exit 1
+          fi
+          echo "OK: only system DLLs imported — runs on a plain Windows box"
       # Trivial AOT (no exceptions): exercises COFF object emit + the Windows
       # link driver (g++/quoting/-static). Verbose so the link command shows.
       - name: Smoke — trivial AOT (no EH)

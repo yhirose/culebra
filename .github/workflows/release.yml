@@ -28,14 +28,16 @@ permissions:
 env:
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
   # Note there is deliberately no CULEBRA_CANVAS_WINDOW_DEFAULT here, unlike
-  # ci.yml which pins it OFF everywhere. Each platform gets CMake's own default,
-  # which is ON for macOS and Linux — so those downloads open a real window for a
-  # Canvas game, matching what a local `just build` produces on either. The
-  # Linux job therefore has to install SDL3's build dependencies (it does, in
-  # its toolchain step); without them SDL3's configure fails and takes the whole
-  # build with it. Windows stays off: its raylib + SDL3 path has never been
-  # built anywhere, and shipping it unproven would advertise window support that
-  # may not open a window. Enable it once a job proves that link.
+  # ci.yml which pins it OFF for the jobs that do not want it. Each platform
+  # gets CMake's own default, which is ON everywhere now — so every download
+  # opens a real window for a Canvas game, matching what a local `just build`
+  # produces. The Linux job therefore has to install SDL3's build dependencies
+  # (it does, in its toolchain step); without them SDL3's configure fails and
+  # takes the whole build with it. Windows needs no such packages, and its link
+  # is proved by ci.yml's windows-aot-build.
+  # Each job verifies the option survived into its CMakeCache: SDL drops a
+  # missing backend quietly rather than failing, so a build that lost the
+  # window backend would otherwise ship claiming window support it lacks.
 
 jobs:
   # Make sure a release object exists before the build jobs try to upload into
@@ -228,7 +230,9 @@ jobs:
   windows-x64:
     needs: prepare
     runs-on: windows-latest
-    timeout-minutes: 60
+    # The LTO link alone runs ~40 min here; the vendored SDL3 + raylib build
+    # adds a few more on a cold deps cache.
+    timeout-minutes: 75
     defaults:
       run:
         shell: msys2 {0}
@@ -262,14 +266,26 @@ jobs:
           restore-keys: |
             release-windows-ccache-
             windows-aot-ccache-
+      # SDL3 + raylib, on the same key ci.yml's windows-aot-build publishes
+      # under — a warm cache skips their ~4 min ExternalProject build.
+      - name: Restore SDL3 + raylib deps cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.deps
+          key: windows-deps-${{ hashFiles('.gitmodules') }}-${{ hashFiles('vendor/SDL/CMakeLists.txt', 'vendor/raylib/CMakeLists.txt') }}
+          restore-keys: |
+            windows-deps-
       # The feature set of ci.yml's windows-aot-build (the widest Windows
       # configuration that CI proves), with LTO turned back on for release.
       # HTTP stays off: it wants a static OpenSSL, which no CI job has linked
       # under mingw. Webview cannot build here at all — CMake has no Windows
-      # backend for it and switches it off itself.
+      # backend for it and switches it off itself. The Canvas window is on (its
+      # own default, spelled out because everything else here is) so a
+      # downloaded culebra.exe opens a window for a Canvas game.
       - name: Configure
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
+          CULEBRA_DEPS_CACHE: ${{ github.workspace }}/.deps
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -281,6 +297,7 @@ jobs:
             -DCULEBRA_ENABLE_JIT=ON \
             -DCULEBRA_ENABLE_HTTP=OFF \
             -DCULEBRA_ENABLE_WEBVIEW=OFF \
+            -DCULEBRA_ENABLE_CANVAS_WINDOW=ON \
             -DCULEBRA_DEV_NO_RT=OFF \
             -DCULEBRA_LTO=ON
       # Only `culebra` (+ its embedded runtime archives): the default `all`
@@ -290,17 +307,30 @@ jobs:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: cmake --build build --target culebra -j
       - run: ccache -s || true
+      # Same check as the macOS and Linux jobs, for the same reason: an
+      # inherited CULEBRA_CANVAS_WINDOW_DEFAULT or a deps-cache miss drops the
+      # window backend without failing the build.
+      - name: Verify the Canvas window backend is in this build
+        run: |
+          if ! grep -qx 'CULEBRA_ENABLE_CANVAS_WINDOW:BOOL=ON' build/CMakeCache.txt; then
+            echo "ERROR: built without the Canvas desktop window" >&2
+            grep -i canvas build/CMakeCache.txt >&2 || true
+            exit 1
+          fi
+          echo "OK: Canvas games open a real window"
       # The whole point of -static here: a downloaded .exe must not need a DLL
-      # the user does not have. Same allowlist as ci.yml's `windows` job — an
-      # allowlist, not a mingw-runtime blocklist, so an unexpected import (a
-      # static lib that quietly resolved to its DLL) fails too.
+      # the user does not have. Same allowlist as ci.yml's `windows` and
+      # windows-aot-build jobs — an allowlist, not a mingw-runtime blocklist,
+      # so an unexpected import (a static lib that quietly resolved to its DLL)
+      # fails too. The window backend's own imports are in it; they all ship
+      # with Windows, so the binary still starts on a machine with no display.
       - name: Verify standalone binary (only system DLLs)
         run: |
           echo "Imported DLLs:"
           imports=$(objdump -p build/culebra.exe \
             | grep -i 'DLL Name' | sed -E 's/.*DLL Name:\s*//' | tr 'A-Z' 'a-z' | sort -u)
           echo "$imports"
-          allow='^(kernel32|kernelbase|msvcrt|ntdll|user32|advapi32|ws2_32|shell32|ole32|oleaut32|bcrypt|crypt32|secur32|iphlpapi|dbghelp|version|winmm|gdi32)\.dll$'
+          allow='^(kernel32|kernelbase|msvcrt|ntdll|user32|advapi32|ws2_32|shell32|ole32|oleaut32|bcrypt|crypt32|secur32|iphlpapi|dbghelp|version|winmm|gdi32|imm32|setupapi|dinput8|cfgmgr32|hid|avrt)\.dll$'
           bad=$(echo "$imports" | grep -viE "$allow" || true)
           if [ -n "$bad" ]; then
             echo "ERROR: binary imports non-system DLL(s) — not standalone:" >&2

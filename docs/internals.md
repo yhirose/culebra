@@ -835,9 +835,9 @@ LLVM dependency, against ~100 MB with it), `CULEBRA_ENABLE_HTTP`,
 `CULEBRA_ENABLE_SQLITE`,
 `CULEBRA_ENABLE_WEBVIEW` (on by default; self-disables on Linux
 without the GTK4 / WebKitGTK dev packages),
-`CULEBRA_ENABLE_CANVAS_WINDOW` (on by default where a window works —
-macOS, and Linux when SDL3's build dependencies are installed, which it
-probes for the way Webview does; the environment variable
+`CULEBRA_ENABLE_CANVAS_WINDOW` (on by default on macOS and Windows, and
+on Linux when SDL3's build dependencies are installed, which it probes
+for the way Webview does; the environment variable
 `CULEBRA_CANVAS_WINDOW_DEFAULT=OFF` flips that default for every
 configure in a job, which is how CI opts out), and the windowed opt-in
 `CULEBRA_ENABLE_SCENE`.
