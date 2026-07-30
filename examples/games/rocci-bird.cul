@@ -229,16 +229,20 @@ class App {
 
   idle_shift() {
     let a = self.rocci
-    if a.index == 2 { 0 }
-    else if a.index == 1 && self.fc - a.last_updated > 3 { 0 }
-    else { 1 }
+    cond {
+      a.index == 2                                 => 0,
+      a.index == 1 && self.fc - a.last_updated > 3 => 0,
+      _                                            => 1,
+    }
   }
 
   flap_allowed() {
     let a = self.rocci
-    if a.index == 2 { true }
-    else if a.index == 1 { self.fc - a.last_updated > 6 }
-    else { false }
+    cond {
+      a.index == 2 => true,
+      a.index == 1 => self.fc - a.last_updated > 6,
+      _            => false,
+    }
   }
 
   tick_title() {

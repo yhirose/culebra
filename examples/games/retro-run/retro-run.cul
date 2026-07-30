@@ -235,7 +235,7 @@ let MARK_FINISH = 2
 let CHECKER_COLS = 8              # squares across the road on a finish segment
 
 # --- Util (common.js) ------------------------------------------------------
-let limit = fn (v, lo, hi) { if v < lo { lo } else if v > hi { hi } else { v } }
+let limit = fn (v, lo, hi) { cond { v < lo => lo, v > hi => hi, _ => v } }
 let ease_in = fn (a, b, percent) { a + (b - a) * percent * percent }
 let ease_in_out = fn (a, b, percent) { a + (b - a) * ((-Math.cos(percent * Math.pi) / 2.0) + 0.5) }
 let percent_remaining = fn (n, total) { (n % total) / total }
@@ -270,7 +270,7 @@ class Segment {
     self.p2_sx = 0.0; self.p2_sy = 0.0; self.p2_sw = 0.0; self.p2_scale = 0.0
     self.clip = 0.0
     self.vis = false            # projected this frame (i.e. in front of us)
-    self.kind = if (index / RUMBLE_LENGTH) % 2 == 0 { KIND_LIGHT } else { KIND_DARK }
+    self.kind = (index / RUMBLE_LENGTH) % 2 == 0 ? KIND_LIGHT : KIND_DARK
     self.mark = MARK_NONE
     self.sprites = []
     self.cars = []
@@ -306,7 +306,7 @@ mut cars = []
 mut track_length = 0.0
 
 let last_y = fn () {
-  if segments.empty() { 0.0 } else { segments[segments.size() - 1].p2_wy }
+  segments.empty() ? 0.0 : segments[segments.size() - 1].p2_wy
 }
 
 let add_segment = fn (curve, y) {
@@ -409,13 +409,13 @@ let reset_props = fn () {
   }
 
   for n in 200..segments.size() by 3 {
-    let side = if Random.int(0, 2) == 0 { 1.0 } else { -1.0 }
+    let side = Random.int(0, 2) == 0 ? 1.0 : -1.0
     add_prop(n, PLANTS[Random.int(0, PLANTS.size())],
              side * (2.0 + Random.uniform(0.0, 5.0)))
   }
 
   for n in 1000..segments.size() - 50 by 100 {
-    let side = if Random.int(0, 2) == 0 { 1.0 } else { -1.0 }
+    let side = Random.int(0, 2) == 0 ? 1.0 : -1.0
     add_prop(n + Random.int(0, 51), BILLBOARDS[Random.int(0, BILLBOARDS.size())], -side)
     for _ in 0..20 {
       add_prop(n + Random.int(0, 51), PLANTS[Random.int(0, PLANTS.size())],
@@ -427,10 +427,10 @@ let reset_props = fn () {
 let reset_cars = fn () {
   cars = []
   for _ in 0..TOTAL_CARS {
-    let side = if Random.int(0, 2) == 0 { -0.8 } else { 0.8 }
+    let side = Random.int(0, 2) == 0 ? -0.8 : 0.8
     let art = CARS[Random.int(0, CARS.size())]
     # The semi is slower, so it needs a narrower spread to stay behind traffic.
-    let spread = if art == SEMI { 4.0 } else { 2.0 }
+    let spread = art == SEMI ? 4.0 : 2.0
     let seg = Random.int(0, segments.size())
     let car = Car.new(art, Random.uniform(0.0, 1.0) * side, seg, 0.0,
                       MAX_SPEED / 4.0 + Random.uniform(0.0, MAX_SPEED / spread))
@@ -563,8 +563,6 @@ let tick_bgm = fn () {
 
 # --- update ----------------------------------------------------------------
 # How far a car steers this frame to get around whatever is in front of it.
-# Written without an early exit: `return` is a C++ stack unwind in the
-# interpreter, and the window test alone would take one per car per frame.
 let steer_car = fn (car, car_index, player_index, n, player_half) {
   let ahead = (car_index - player_index + n) % n
   mut result = 0.0
@@ -572,9 +570,7 @@ let steer_car = fn (car, car_index, player_index, n, player_half) {
     let car_w = car.w
     let offset = car.offset
     let car_speed = car.speed
-    mut done = false
-    mut i = 1
-    while !done && i < LOOKAHEAD {
+    for i in 1..LOOKAHEAD {
       mut si = car_index + i
       if si >= n { si -= n }
       let segment = segments[si]
@@ -583,39 +579,35 @@ let steer_car = fn (car, car_index, player_index, n, player_half) {
         let lim = player_half + car_w * 0.6
         let d = player_x - offset
         if d >= -lim && d <= lim {
-          let dir = if player_x > 0.5 { -1.0 }
-                    else if player_x < -0.5 { 1.0 }
-                    else if offset > player_x { 1.0 } else { -1.0 }
+          let dir = cond {
+            player_x > 0.5    => -1.0,
+            player_x < -0.5   => 1.0,
+            offset > player_x => 1.0,
+            _                 => -1.0,
+          }
           # The closer the car and the bigger the speed gap, the harder it pulls.
           result = dir * (1.0 / i) * (car_speed - speed) / MAX_SPEED
-          done = true
+          break
         }
       }
 
-      if !done {
-        let list = segment.cars
-        let m = list.size()
-        mut j = 0
-        while !done && j < m {
-          let other = list[j]
-          if car_speed > other.speed {
-            let lim = (car_w + other.w) * 0.6
-            let d = offset - other.offset
-            if d >= -lim && d <= lim {
-              let dir = if other.offset > 0.5 { -1.0 }
-                        else if other.offset < -0.5 { 1.0 }
-                        else if offset > other.offset { 1.0 } else { -1.0 }
-              result = dir * (1.0 / i) * (car_speed - other.speed) / MAX_SPEED
-              done = true
-            }
-          }
-          j += 1
+      let other = segment.cars.find(fn (o) {
+        let reach = (car_w + o.w) * 0.6
+        let gap = offset - o.offset
+        car_speed > o.speed && gap >= -reach && gap <= reach
+      })
+      if other != nil {
+        let dir = cond {
+          other.offset > 0.5    => -1.0,
+          other.offset < -0.5   => 1.0,
+          offset > other.offset => 1.0,
+          _                     => -1.0,
         }
+        result = dir * (1.0 / i) * (car_speed - other.speed) / MAX_SPEED
+        break
       }
-      i += 1
-    }
-    # Nothing ahead, but somehow off the road: steer back on.
-    if !done {
+    } nobreak {
+      # Nothing ahead, but somehow off the road: steer back on.
       if offset < -0.9 { result = 0.1 } else if offset > 0.9 { result = -0.1 }
     }
   }
@@ -675,35 +667,25 @@ let update = fn (dt) {
   if player_x < -1.0 || player_x > 1.0 {
     if speed > OFF_ROAD_LIMIT { speed += OFF_ROAD_DECEL * dt }
 
-    let props = player_segment.sprites
-    mut i = 0
-    mut hit = false
-    while !hit && i < props.size() {
-      let prop = props[i]
+    for prop in player_segment.sprites {
       let pw = prop.art.sw
       # A prop is anchored at its inner edge, so its centre is half a width out.
-      let side = if prop.offset > 0.0 { 1.0 } else { -1.0 }
+      let side = prop.offset > 0.0 ? 1.0 : -1.0
       if overlap(player_x, PLAYER_W, prop.offset + pw / 2.0 * side, pw, 1.0) {
         speed = MAX_SPEED / 5.0
         # Stop in front of it, at the near edge of its segment.
         position = increase(player_segment.p1_wz, -PLAYER_Z, track_length)
-        hit = true
+        break
       }
-      i += 1
     }
   }
 
-  let here = player_segment.cars
-  mut i = 0
-  mut hit = false
-  while !hit && i < here.size() {
-    let car = here[i]
+  for car in player_segment.cars {
     if speed > car.speed && overlap(player_x, PLAYER_W, car.offset, car.w, 0.8) {
       speed = car.speed * (car.speed / speed)
       position = increase(car.z, -PLAYER_Z, track_length)
-      hit = true
+      break
     }
-    i += 1
   }
 
   player_x = limit(player_x, -3.0, 3.0)
@@ -834,7 +816,7 @@ let draw_road = fn (base_index, base_percent, player_y) {
     let segment = segments[si]
     let looped = si < base_index
     segment.clip = edge
-    let camera_z = if looped { cz_looped } else { cz_here }
+    let camera_z = looped ? cz_looped : cz_here
 
     # Cull before dividing: with the camera exactly on a segment boundary the
     # depth is zero, where JS yields Infinity and culebra raises.
@@ -986,14 +968,12 @@ let draw_art = fn (art, scale, dest_x, dest_y, offset_x, clip) {
 
 let draw_player = fn (speed_percent, dest_y, steer, updown) {
   let bounce = 1.5 * Random.uniform(0.0, 1.0) * speed_percent * RESOLUTION *
-               (if Random.int(0, 2) == 0 { -1.0 } else { 1.0 })
-  let art = if steer < 0.0 {
-      if updown > 0.0 { PLAYER_UPHILL_LEFT } else { PLAYER_LEFT }
-    } else if steer > 0.0 {
-      if updown > 0.0 { PLAYER_UPHILL_RIGHT } else { PLAYER_RIGHT }
-    } else {
-      if updown > 0.0 { PLAYER_UPHILL_STRAIGHT } else { PLAYER_STRAIGHT }
-    }
+               (Random.int(0, 2) == 0 ? -1.0 : 1.0)
+  let art = cond {
+    steer < 0.0 => updown > 0.0 ? PLAYER_UPHILL_LEFT : PLAYER_LEFT,
+    steer > 0.0 => updown > 0.0 ? PLAYER_UPHILL_RIGHT : PLAYER_RIGHT,
+    _           => updown > 0.0 ? PLAYER_UPHILL_STRAIGHT : PLAYER_STRAIGHT,
+  }
   # No hill clips the player's own car; the framebuffer edge is the only limit.
   draw_art(art, CAMERA_DEPTH / PLAYER_Z, W2, dest_y + bounce, -0.5, NO_CLIP)
 }
@@ -1075,7 +1055,7 @@ let render = fn () {
       # anchored by its right edge and the one on the right by its left.
       for prop in segment.sprites {
         draw_art(prop.art, s1s, s1x + s1s * prop.offset * SW_K, s1y,
-                 if prop.offset < 0.0 { -1.0 } else { 0.0 }, clip)
+                 prop.offset < 0.0 ? -1.0 : 0.0, clip)
       }
     }
 
@@ -1084,7 +1064,7 @@ let render = fn () {
       # it, so the car's own projection is the constant H — v4 interpolates its
       # camera-space height to arrive at the same number.
       draw_player(speed / MAX_SPEED, H * 1.0,
-                  if key_left { -1.0 } else if key_right { 1.0 } else { 0.0 },
+                  cond { key_left => -1.0, key_right => 1.0, _ => 0.0 },
                   player_segment.p2_wy - player_segment.p1_wy)
     }
     mi -= 1
