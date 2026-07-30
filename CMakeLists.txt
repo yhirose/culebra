@@ -496,7 +496,19 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
   # appends on usage. Built once here — Scene and Canvas share it, so they can't
   # drift apart — then assigned to the two per-feature vars (kept separate
   # because they ride different usage axes: uses_scene vs uses_canvas).
-  set(_raylib_aot_link "'${_raylib_a}' '${_sdl_a}'")
+  #
+  # `culebra build` splices this verbatim into a std::system() command, so the
+  # paths carry the quoting that platform's shell wants — the same split
+  # src/main.cc's shq() makes: /bin/sh takes single quotes, while mingw's
+  # system() goes through cmd.exe, where a single quote is a literal character
+  # and a double quote is the quoting form. The Windows quotes are escaped
+  # because this string ends up inside a C string literal (CULEBRA_*_LINK).
+  if(WIN32)
+    set(_shq "\\\"")
+  else()
+    set(_shq "'")
+  endif()
+  set(_raylib_aot_link "${_shq}${_raylib_a}${_shq} ${_shq}${_sdl_a}${_shq}")
   if(APPLE)
     foreach(_fw IN LISTS _scene_frameworks)
       string(APPEND _raylib_aot_link " -framework ${_fw}")
