@@ -27,11 +27,14 @@ permissions:
 
 env:
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
-  # Ship one build shape per platform. The vendored raylib + SDL3 statics behind
-  # Scene / the Canvas desktop window are excluded: no CI job has ever built
-  # them (every job pins this OFF), and a release is the wrong place to debut an
-  # unexercised toolchain path. Canvas itself still works headless.
-  CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
+  # Note there is deliberately no CULEBRA_CANVAS_WINDOW_DEFAULT here, unlike
+  # ci.yml which pins it OFF everywhere. Each platform gets CMake's own default,
+  # which is ON only on macOS — so the macOS download opens a real window for a
+  # Canvas game, matching what a local `just build` produces, while Linux and
+  # Windows stay off. Their raylib + SDL3 path has never been built anywhere,
+  # and SDL disables a missing video backend silently rather than failing the
+  # build, so turning it on blind would ship a binary that claims window
+  # support and cannot open one. Enable them once a CI job proves the link.
 
 jobs:
   # Make sure a release object exists before the build jobs try to upload into
@@ -89,9 +92,23 @@ jobs:
             release-macos-ccache-
             ${{ runner.os }}-ccache-
       # `just build` is the -O3 + LTO configuration, unlike the no-LTO gate
-      # build: a downloaded binary should be the fast one.
+      # build: a downloaded binary should be the fast one. It also builds the
+      # vendored raylib + SDL3 statics here, which is why this job takes a few
+      # minutes longer than ci.yml's.
       - run: just build
       - run: ccache -s || true
+      # The window backend is the thing a downloaded macOS build would most
+      # easily lose: an inherited CULEBRA_CANVAS_WINDOW_DEFAULT, or a deps-cache
+      # miss, turns it off without failing the build. CMake never rewrites this
+      # cache entry after the option(), so it is the honest answer.
+      - name: Verify the Canvas window backend is in this build
+        run: |
+          if ! grep -qx 'CULEBRA_ENABLE_CANVAS_WINDOW:BOOL=ON' build/CMakeCache.txt; then
+            echo "ERROR: built without the Canvas desktop window" >&2
+            grep -i canvas build/CMakeCache.txt >&2 || true
+            exit 1
+          fi
+          echo "OK: Canvas games open a real window"
       - name: Package and upload
         env:
           GH_TOKEN: ${{ github.token }}
