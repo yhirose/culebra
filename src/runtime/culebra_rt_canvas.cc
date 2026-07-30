@@ -39,6 +39,7 @@ int g_tex_w = 0;
 int g_tex_h = 0;
 int g_scale = 1;
 bool g_window_ready = false;
+bool g_window_failed = false;  // creation tried and failed; don't try again
 
 // Integer upscale so the small framebuffer fills a comfortable window while
 // pixels stay crisp (nearest-neighbour), matching the Playground's
@@ -101,25 +102,14 @@ bool forced_headless() {
   return h;
 }
 
-// Hand the window and the audio device back at process exit, so the run
-// terminates cleanly rather than leaving the OS to reclaim them. Defined with
-// the audio state it also tears down, at the end of the audio section; declared
-// here because ensure_window() arms it.
-//
-// Arming it at window/device creation rather than making it a file-scope object
-// with a destructor is the whole point. A static object registers its
-// destructor with __cxa_atexit when it is CONSTRUCTED — before main for a
-// file-scope one — and exit runs those registrations in reverse, so a
-// file-scope closer runs last: after the GL and audio drivers dlopen'd along
-// the way have already run their own teardown. Calling into Mesa at that point
-// segfaults (the first Canvas window on Linux did exactly this). Registering
-// once the resource exists puts our teardown inside their lifetime instead.
+// Registers the exit teardown; defined with the audio state it tears down, at
+// the end of the audio section.
 void arm_exit_teardown();
 
 // (Re)create the window + texture to match the current framebuffer size. Called
 // on first use and again if the framebuffer is re-init()'d at a new size.
 void ensure_window() {
-  if (forced_headless()) return;
+  if (forced_headless() || g_window_failed) return;
   // The window mirrors the FRAMEBUFFER — width()/height() report the current
   // draw target, which inside Canvas.draw_to is an offscreen sprite.
   int w = _fb_w();
@@ -133,8 +123,14 @@ void ensure_window() {
     InitWindow(w * g_scale, h * g_scale, "culebra Canvas");
     // No display (headless server / CI / SSH): raylib fails to open a window
     // and IsWindowReady() stays false. Degrade to the headless backend rather
-    // than driving GL on a dead context — present/input become no-ops.
-    if (!IsWindowReady()) return;
+    // than driving GL on a dead context — present/input become no-ops. Latched,
+    // because every present and every input poll comes back through here: a
+    // retry per call would re-run SDL's whole video-driver probe, and print
+    // raylib's two failure lines, thousands of times over a 600-frame run.
+    if (!IsWindowReady()) {
+      g_window_failed = true;
+      return;
+    }
     stop_text_input();
     SetTargetFPS(60);  // pin the game clock to 60 fps like the browser loop
     g_window_ready = true;
@@ -151,7 +147,6 @@ void ensure_window() {
   g_tex_w = w;
   g_tex_h = h;
 }
-
 
 // One held-key -> Canvas button bit (bits match src/preambles/canvas.cul and
 // the Playground's KEY_BITS: LEFT=1, RIGHT=2, UP=4, DOWN=8, A=16, B=32).
@@ -445,10 +440,10 @@ struct SoundRegistry {
 };
 SoundRegistry g_sounds;
 
-// The teardown arm_exit_teardown() registers, in the order raylib wants it:
-// every sound and the music stream go back before the device they were decoded
-// for, and the device before the window. Idempotent — each step clears the flag
-// that guards it, so the statics above find nothing left to do when their own
+// Hand the window and the audio device back at process exit, in the order
+// raylib wants: every sound and the music stream go back before the device they
+// were decoded for, and the device before the window. Each step clears what
+// guards it, so the owning statics above find nothing left to do when their own
 // destructors run afterwards.
 void exit_teardown() {
   g_sounds.unload_all();
@@ -465,9 +460,16 @@ void exit_teardown() {
   }
 }
 
+// Armed once the window or the audio device exists, rather than run from a
+// file-scope object's destructor. A static object registers its destructor with
+// __cxa_atexit when it is CONSTRUCTED — before main for a file-scope one — and
+// exit runs those registrations in reverse, so a file-scope closer runs last:
+// after the GL and audio drivers dlopen'd along the way have torn themselves
+// down. Calling into Mesa there segfaults, which is what every Canvas program on
+// Linux did on the way out. Registering once the resource exists nests our
+// teardown inside the lifetime of the libraries it calls into.
 void arm_exit_teardown() {
-  static const bool armed = [] { return std::atexit(exit_teardown) == 0; }();
-  (void)armed;
+  [[maybe_unused]] static const int armed = std::atexit(exit_teardown);
 }
 
 // Refill the stream's buffers — called from present(), the one place every

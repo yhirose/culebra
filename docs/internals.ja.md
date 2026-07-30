@@ -232,8 +232,11 @@ JIT は AST を関数粒度で LLVM IR へ lower し (スクリプトのトッ�
 ### ランタイムシンボル解決
 
 ランタイムヘルパ (`culebra_runtime_*`) はリンク時に可視です。macOS で
-は既定で可視ですが、ELF/Linux では `-rdynamic` (CMake の
-`ENABLE_EXPORTS` プロパティ) が必要です。
+は既定で可視です。ELF/Linux では `-rdynamic` ではなく culebra 自身の
+C リンケージ名のホワイトリスト (`cmake/exported_symbols.txt`) を公開し
+ます。全部を公開すると静的リンクした LLVM も公開され、後からプロセスに
+読み込まれるライブラリ — Mesa の DRI ドライバは自前の LLVM をリンクして
+いる — がビルド時のものではなくこちらに束縛されてしまうためです。
 
 ### インラインキャッシュ
 
@@ -813,7 +816,8 @@ LLVM 依存なし。on なら ~100 MB)、`CULEBRA_ENABLE_HTTP`、
 `CULEBRA_ENABLE_SQLITE`、
 `CULEBRA_ENABLE_WEBVIEW` (既定 ON。GTK4 / WebKitGTK の dev パッケージ
 が無い Linux では自動的に無効化)、`CULEBRA_ENABLE_CANVAS_WINDOW` (ウィ
-ンドウが動くプラットフォーム — 現状は macOS — では既定 ON。環境変数
+ンドウが動くプラットフォーム — macOS と、SDL3 のビルド依存が入っている
+Linux。Webview と同じように probe する — では既定 ON。環境変数
 `CULEBRA_CANVAS_WINDOW_DEFAULT=OFF` はジョブ内の全 configure でこの既定
 を反転させる。CI はこれで opt-out している)、そして窓ありの opt-in
 `CULEBRA_ENABLE_SCENE`。

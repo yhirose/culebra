@@ -624,13 +624,9 @@ let _canvas_module = fn () {
   # suspends to the browser's animation frame in the interactive build, so the
   # loop yields cooperatively. Closing the native window (`_Canvas.closing()`,
   # always false on the browser/headless backends) also stops it. Otherwise the
-  # loop stops after `frames`, so a run nobody can end can't spin forever. That
-  # needs both halves: frames must actually reach a display (`_Canvas.windowed()`
-  # — false on a build without the window backend, under CULEBRA_CANVAS_HEADLESS,
-  # and when no display let the window open), and the run must be interactive at
-  # all (false for a piped native run and the non-JSPI wasm build). A headless
-  # run on a tty satisfies the second and not the first: it shows nothing, takes
-  # no input, and has no close box, so it is capped like any other demo run.
+  # loop stops after `frames`, so a run nobody can end can't spin forever —
+  # which takes both halves below: a headless run on a tty is interactive and
+  # still has nothing to show and no close box.
   let run = fn (w, h, tick, frames = 600) {
     _Canvas.init(w, h)
     let interactive = IO.stdin_is_terminal() && _Canvas.windowed()

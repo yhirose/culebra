@@ -205,13 +205,14 @@ jobs:
       # mean this download needs a display just to print its --version.
       - name: Verify no desktop runtime crept into the link
         run: |
+          deps=$(ldd build/culebra)
           echo "Shared library dependencies:"
-          ldd build/culebra
-          if ldd build/culebra | grep -iE 'gtk|webkit|libsoup|javascriptcore'; then
+          echo "$deps"
+          if echo "$deps" | grep -iE 'gtk|webkit|libsoup|javascriptcore'; then
             echo "ERROR: the binary needs a desktop WebKit stack to start" >&2
             exit 1
           fi
-          if ldd build/culebra | grep -iE 'libX11|libGL|libEGL|libwayland|libSDL|libasound|libpulse'; then
+          if echo "$deps" | grep -iE 'libX11|libGL|libEGL|libwayland|libSDL|libasound|libpulse'; then
             echo "ERROR: the binary needs a display/audio stack to start" >&2
             exit 1
           fi

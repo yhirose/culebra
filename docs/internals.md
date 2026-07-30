@@ -238,8 +238,12 @@ allocator, BLAS) are exposed to JIT'd code via ORC's
 ### Runtime symbol resolution
 
 Runtime helpers (`culebra_runtime_*`) are visible at link time. On
-macOS they are visible by default; on ELF/Linux they require
-`-rdynamic` (CMake's `ENABLE_EXPORTS` property).
+macOS they are visible by default. On ELF/Linux the link publishes a
+whitelist of culebra's own C-linkage names
+(`cmake/exported_symbols.txt`) rather than `-rdynamic`: exporting
+everything would also export the statically linked LLVM, which a
+library the process loads later — Mesa's DRI drivers link their own
+LLVM — would then bind to instead of the one it was built against.
 
 ### Inline cache
 
@@ -832,9 +836,11 @@ LLVM dependency, against ~100 MB with it), `CULEBRA_ENABLE_HTTP`,
 `CULEBRA_ENABLE_WEBVIEW` (on by default; self-disables on Linux
 without the GTK4 / WebKitGTK dev packages),
 `CULEBRA_ENABLE_CANVAS_WINDOW` (on by default where a window works —
-macOS today; the environment variable `CULEBRA_CANVAS_WINDOW_DEFAULT=OFF`
-flips that default for every configure in a job, which is how CI opts
-out), and the windowed opt-in `CULEBRA_ENABLE_SCENE`.
+macOS, and Linux when SDL3's build dependencies are installed, which it
+probes for the way Webview does; the environment variable
+`CULEBRA_CANVAS_WINDOW_DEFAULT=OFF` flips that default for every
+configure in a job, which is how CI opts out), and the windowed opt-in
+`CULEBRA_ENABLE_SCENE`.
 
 Both windowed namespaces link the same vendored SDL3 + raylib statics.
 Those depend only on their own sources and the target platform — never
