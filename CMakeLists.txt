@@ -527,9 +527,12 @@ if(CULEBRA_ENABLE_JIT)
   # ORC JIT looks up culebra_runtime_* symbols in the host process at
   # codegen time. On macOS those symbols are visible by default; on
   # ELF/Linux they are stripped from the dynamic symbol table unless
-  # we link with -rdynamic. ENABLE_EXPORTS adds the right flag per
-  # platform (no-op on macOS).
-  set_target_properties(culebra PROPERTIES ENABLE_EXPORTS ON)
+  # the link says otherwise. ENABLE_EXPORTS (-rdynamic) is the portable
+  # way to say it, but it exports *everything* linked in, which on ELF is
+  # actively harmful — see the --dynamic-list branch below.
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set_target_properties(culebra PROPERTIES ENABLE_EXPORTS ON)
+  endif()
   # ENABLE_EXPORTS is a no-op for a MinGW .exe, so GetProcAddress over this
   # image (how ORC's process-symbol resolver works on Windows) finds nothing.
   # --export-all-symbols is the Windows analog of -rdynamic, but exporting
@@ -542,6 +545,22 @@ if(CULEBRA_ENABLE_JIT)
   if(WIN32)
     target_link_options(culebra PRIVATE
       -Wl,--export-all-symbols -Wl,--exclude-libs,ALL)
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # ELF has the same problem for a sharper reason than a table limit. A
+    # symbol in the executable's dynamic table takes precedence over the same
+    # name in every shared object, including ones the OS dlopens into us later.
+    # -rdynamic published all ~67k symbols the link pulled in, LLVM's among
+    # them, and Mesa's DRI drivers link their own LLVM (Gallium): loading one
+    # bound its 81 LLVM imports to culebra's LLVM 22 instead of the libLLVM it
+    # was built against, so the first GL context a Canvas window created
+    # segfaulted inside Mesa. OpenSSL, zlib and cpp-peglib are the same hazard
+    # waiting for a library that happens to want those names.
+    # So publish a whitelist instead: the culebra_runtime_* helpers ORC has to
+    # resolve, and nothing else (see cmake/exported_symbols.txt). Not on macOS,
+    # where two-level namespaces already stop a dylib from binding to the
+    # executable by accident.
+    target_link_options(culebra PRIVATE
+      "-Wl,--dynamic-list=${CMAKE_CURRENT_SOURCE_DIR}/cmake/exported_symbols.txt")
   endif()
 
   # `culebra wrap` rebuilds this tree with CULEBRA_WRAP_SOURCES; the
