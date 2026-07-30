@@ -1,7 +1,7 @@
 Culebra Programming Language
 ============================
 
-> **Status:** under active development, not yet released — APIs and syntax may change.
+> **Status:** pre-1.0 and under active development — APIs and syntax may change.
 
 A scripting language small enough to embed, fast enough for Tensor,
 simple enough for agents.
@@ -14,6 +14,30 @@ culebra script.cul                        # run as a script (interpreter)
 culebra --jit script.cul                  # JIT-compiled
 culebra build script.cul -o app && ./app  # ship as a standalone binary
 ```
+
+Download
+--------
+
+These always point at the newest release. Each archive holds the binary
+and the license; `culebra --version` reports which release it is.
+
+| Platform | Download |
+|---|---|
+| macOS (Apple Silicon) | [culebra-macos-arm64.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64.tar.gz) |
+| Linux (x86-64) | [culebra-linux-x64.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-linux-x64.tar.gz) |
+| Windows (x86-64) | [culebra-windows-x64.zip](https://github.com/yhirose/culebra/releases/latest/download/culebra-windows-x64.zip) |
+
+Extracting from the command line also avoids the quarantine flag macOS
+puts on anything unpacked through Finder — the binaries are unsigned:
+
+```bash
+curl -fsSL https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64.tar.gz | tar xz
+sudo mv culebra-*/culebra /usr/local/bin/
+culebra --version
+```
+
+Checksums and every release's notes are on the
+[releases page](https://github.com/yhirose/culebra/releases).
 
 Highlights
 ----------
@@ -163,8 +187,8 @@ The rationale lives in [`docs/internals.md`](docs/internals.md).
   tree-shaking need.
 - **Batteries included.** Everyday scripting needs ship in the binary,
   not as third-party packages.
-- **Pre-1.0.** No version tags, CHANGELOG, or package registry yet —
-  surface still moves.
+- **Pre-1.0.** Releases follow semver's 0.x reading: a minor bump may
+  break things. No package registry yet — download a binary or build it.
 
 Performance
 -----------

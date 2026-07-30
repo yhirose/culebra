@@ -15,6 +15,12 @@
 # Windows gets .zip (what Explorer opens without a detour), everything else
 # .tar.gz. Both hold a single top-level directory so extracting never scatters
 # files into the user's cwd.
+#
+# The archive filename carries no version, which is what lets README link to
+#   .../releases/latest/download/culebra-<os>-<arch>.tar.gz
+# and have it keep working across releases. The directory inside does carry it,
+# so an extracted copy still says which release it came from — and the binary
+# itself answers definitively with `culebra --version`.
 set -euo pipefail
 
 if [ $# -ne 4 ]; then
@@ -37,21 +43,22 @@ if [ "$want" != "$got" ]; then
   exit 1
 fi
 
-name="culebra-$tag-$os-$arch"
+dir="culebra-$tag-$os-$arch"   # inside the archive: says which release
+stem="culebra-$os-$arch"       # the archive itself: stable across releases
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT  # the staged copy is ~100 MB; don't leak it locally
-staging="$tmp/$name"
+staging="$tmp/$dir"
 mkdir -p "$staging"
 cp "$binary" "$staging/"
 cp LICENSE "$staging/"
 
 out=$PWD
 if [ "$os" = windows ]; then
-  archive="$name.zip"
-  (cd "$tmp" && zip -qr "$out/$archive" "$name")
+  archive="$stem.zip"
+  (cd "$tmp" && zip -qr "$out/$archive" "$dir")
 else
-  archive="$name.tar.gz"
-  tar -czf "$archive" -C "$tmp" "$name"
+  archive="$stem.tar.gz"
+  tar -czf "$archive" -C "$tmp" "$dir"
 fi
 
 # Relative name in, relative name out, so the digest line names just the
