@@ -899,3 +899,24 @@ site-build:
 [doc("Build the playground, then serve site/ locally")]
 site-serve port="8000": site-build
     python3 -m http.server {{port}} -d site
+
+# The committed page under site/ is what GitHub Pages serves, and build.sh
+# stamps its version from include/culebra.h. Regenerating it needs emsdk, so a
+# version bump can land with the served page still naming the old version and
+# nothing else would notice — the wasm is unaffected, so no build breaks. This
+# compares the two directly and needs no toolchain (CI gate).
+[group("site")]
+[doc("Verify site/playground/index.html names the current version")]
+check-site-version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    want=$(sed -n 's/^#define CULEBRA_VERSION "\([^"]*\)"/\1/p' include/culebra.h)
+    [ -n "$want" ] || { echo "no CULEBRA_VERSION in include/culebra.h" >&2; exit 1; }
+    got=$(sed -n 's|.*<title>culebra Playground v\([^<]*\)</title>.*|\1|p' \
+          site/playground/index.html)
+    if [ "$want" != "$got" ]; then
+        echo "site/playground/index.html says v${got:-<none>}, but include/culebra.h says v$want" >&2
+        echo "run \`just site-build\` and commit site/playground/index.html" >&2
+        exit 1
+    fi
+    echo "site version OK (v$want)"
