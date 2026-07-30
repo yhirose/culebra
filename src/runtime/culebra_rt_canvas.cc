@@ -101,6 +101,21 @@ bool forced_headless() {
   return h;
 }
 
+// Hand the window and the audio device back at process exit, so the run
+// terminates cleanly rather than leaving the OS to reclaim them. Defined with
+// the audio state it also tears down, at the end of the audio section; declared
+// here because ensure_window() arms it.
+//
+// Arming it at window/device creation rather than making it a file-scope object
+// with a destructor is the whole point. A static object registers its
+// destructor with __cxa_atexit when it is CONSTRUCTED — before main for a
+// file-scope one — and exit runs those registrations in reverse, so a
+// file-scope closer runs last: after the GL and audio drivers dlopen'd along
+// the way have already run their own teardown. Calling into Mesa at that point
+// segfaults (the first Canvas window on Linux did exactly this). Registering
+// once the resource exists puts our teardown inside their lifetime instead.
+void arm_exit_teardown();
+
 // (Re)create the window + texture to match the current framebuffer size. Called
 // on first use and again if the framebuffer is re-init()'d at a new size.
 void ensure_window() {
@@ -123,6 +138,7 @@ void ensure_window() {
     stop_text_input();
     SetTargetFPS(60);  // pin the game clock to 60 fps like the browser loop
     g_window_ready = true;
+    arm_exit_teardown();
   } else {
     UnloadTexture(g_tex);
     SetWindowSize(w * g_scale, h * g_scale);
@@ -136,17 +152,6 @@ void ensure_window() {
   g_tex_h = h;
 }
 
-// Close the window at process exit so the run terminates cleanly rather than
-// leaving the OS to reclaim it.
-struct WindowCloser {
-  ~WindowCloser() {
-    if (g_window_ready && IsWindowReady()) {
-      UnloadTexture(g_tex);
-      CloseWindow();
-    }
-  }
-};
-WindowCloser g_closer;
 
 // One held-key -> Canvas button bit (bits match src/preambles/canvas.cul and
 // the Playground's KEY_BITS: LEFT=1, RIGHT=2, UP=4, DOWN=8, A=16, B=32).
@@ -395,17 +400,8 @@ void ensure_audio() {
   SetAudioStreamCallback(g_stream, audio_callback);
   PlayAudioStream(g_stream);
   g_audio_ready = true;
+  arm_exit_teardown();
 }
-
-struct AudioCloser {
-  ~AudioCloser() {
-    if (g_audio_ready) {
-      UnloadAudioStream(g_stream);
-      CloseAudioDevice();
-    }
-  }
-};
-AudioCloser g_audio_closer;
 
 // --- music: one streamed-file slot ------------------------------------------
 //
@@ -433,21 +429,46 @@ struct MusicSlot {
   }
   ~MusicSlot() { unload(); }
 };
-// Defined after g_audio_closer on purpose: statics destroy in reverse order,
-// so the slot's UnloadMusicStream runs before CloseAudioDevice.
 MusicSlot g_music;
 
 // Loaded sound effects, keyed by the canvas.h-allocated handle. One live
 // instance per handle (raylib PlaySound restarts the sound), matching the
-// browser side. Also after g_audio_closer, so the sounds unload before
-// CloseAudioDevice.
+// browser side.
 struct SoundRegistry {
   std::unordered_map<int64_t, Sound> sounds;
-  ~SoundRegistry() {
+
+  void unload_all() {
     for (auto& [id, s] : sounds) UnloadSound(s);
+    sounds.clear();
   }
+  ~SoundRegistry() { unload_all(); }
 };
 SoundRegistry g_sounds;
+
+// The teardown arm_exit_teardown() registers, in the order raylib wants it:
+// every sound and the music stream go back before the device they were decoded
+// for, and the device before the window. Idempotent — each step clears the flag
+// that guards it, so the statics above find nothing left to do when their own
+// destructors run afterwards.
+void exit_teardown() {
+  g_sounds.unload_all();
+  g_music.unload();
+  if (g_audio_ready) {
+    UnloadAudioStream(g_stream);
+    CloseAudioDevice();
+    g_audio_ready = false;
+  }
+  if (g_window_ready && IsWindowReady()) {
+    UnloadTexture(g_tex);
+    CloseWindow();
+    g_window_ready = false;
+  }
+}
+
+void arm_exit_teardown() {
+  static const bool armed = [] { return std::atexit(exit_teardown) == 0; }();
+  (void)armed;
+}
 
 // Refill the stream's buffers — called from present(), the one place every
 // frame loop passes through, so no pump API needs exposing.
