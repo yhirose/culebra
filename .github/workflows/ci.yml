@@ -420,6 +420,11 @@ jobs:
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-zlib
 
+      # The Canvas desktop window defaults ON for Windows; windows-aot-build is
+      # where it is proved (it is the only Windows job that also links AOT
+      # binaries, which is the other half of that backend). Off here so this
+      # job stays a fast portability check rather than paying for the vendored
+      # SDL3 + raylib build.
       - name: Configure (interpreter only, static, Phase 1 feature set)
         run: |
           cmake -S . -B build-win -G Ninja \
@@ -430,6 +435,7 @@ jobs:
             -DCULEBRA_ENABLE_JIT=OFF \
             -DCULEBRA_ENABLE_HTTP=OFF \
             -DCULEBRA_ENABLE_WEBVIEW=OFF \
+            -DCULEBRA_ENABLE_CANVAS_WINDOW=OFF \
             -DCULEBRA_DEV_NO_RT=ON \
             -DCULEBRA_LTO=OFF
 
@@ -611,6 +617,8 @@ jobs:
           restore-keys: |
             windows-jit-ccache-
 
+      # Canvas window off here for the same reason as the `windows` job above:
+      # windows-aot-build is the one that proves that backend.
       - name: Configure (JIT ON, mingw LLVM, static, no AOT runtime)
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -625,6 +633,7 @@ jobs:
             -DCULEBRA_ENABLE_JIT=ON \
             -DCULEBRA_ENABLE_HTTP=OFF \
             -DCULEBRA_ENABLE_WEBVIEW=OFF \
+            -DCULEBRA_ENABLE_CANVAS_WINDOW=OFF \
             -DCULEBRA_DEV_NO_RT=ON \
             -DCULEBRA_LTO=OFF
 
@@ -738,9 +747,15 @@ jobs:
   # driver's Windows path (g++ driver, double-quote quoting, -static, no
   # -no-pie). The EH smoke is the payoff: AOT's static .o unwind tables are
   # in-image, so a throw should unwind (unlike in-process JIT — see that job).
+  # Also the job that proves the Canvas desktop window on Windows: it is the
+  # only Windows configuration that both links the driver against the vendored
+  # SDL3 + raylib statics and then links AOT binaries against the same pair
+  # through CULEBRA_CANVAS_LINK. A runner has no display, so what is provable
+  # here is the link and the headless-identical behaviour, not that a window
+  # actually appears — the same limit the macOS and Linux jobs have.
   windows-aot-build:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     defaults:
       run:
         shell: msys2 {0}
@@ -771,9 +786,23 @@ jobs:
           key: windows-aot-ccache-${{ github.sha }}
           restore-keys: |
             windows-aot-ccache-
-      - name: Configure (JIT ON, runtime archives embedded, static)
+      # SDL3 + raylib are built by ExternalProject, which ccache does not cover
+      # end to end (the install/publish steps are not compiles). They depend
+      # only on their submodule revisions, so cache the published tree on that
+      # key and a warm run skips the ~4 min build entirely. Pointing
+      # CULEBRA_DEPS_CACHE at the workspace also keeps it off $HOME, which under
+      # MSYS2 is an msys path the native toolchain reads as C:\home\...
+      - name: Restore SDL3 + raylib deps cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.deps
+          key: windows-deps-${{ hashFiles('.gitmodules') }}-${{ hashFiles('vendor/SDL/CMakeLists.txt', 'vendor/raylib/CMakeLists.txt') }}
+          restore-keys: |
+            windows-deps-
+      - name: Configure (JIT ON, runtime archives embedded, static, Canvas window)
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
+          CULEBRA_DEPS_CACHE: ${{ github.workspace }}/.deps
         run: |
           cmake -S . -B build-win-aot -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -785,6 +814,7 @@ jobs:
             -DCULEBRA_ENABLE_JIT=ON \
             -DCULEBRA_ENABLE_HTTP=OFF \
             -DCULEBRA_ENABLE_WEBVIEW=OFF \
+            -DCULEBRA_ENABLE_CANVAS_WINDOW=ON \
             -DCULEBRA_DEV_NO_RT=OFF \
             -DCULEBRA_LTO=OFF
       - name: Build (culebra driver + runtime archives)
@@ -836,6 +866,68 @@ jobs:
             echo "AOT_SPACED_CACHE_BUILD_FAIL rc=$?"
             exit 1
           fi
+      # The Canvas desktop window: this configuration links the driver against
+      # the vendored SDL3 + raylib statics, so the same program has to behave
+      # identically across interp, JIT and AOT — and the AOT link is the one
+      # that goes through CULEBRA_CANVAS_LINK (the statics + the Win32 library
+      # list). Forced headless, which is what every windowed build does on a
+      # machine with no display, so the assertions are the framebuffer ones.
+      - name: Smoke — Canvas window build (interp / JIT / AOT)
+        env:
+          CULEBRA_CANVAS_HEADLESS: "1"
+          CULEBRA_VERBOSE: "1"
+        run: |
+          cat > canvas.cul <<'EOF'
+          fn rgba(r, g, b, a) { r + g * 256 + b * 65536 + a * 16777216 }
+          let RED = rgba(255, 0, 0, 255)
+          let BLUE = rgba(0, 0, 255, 255)
+          _Canvas.init(4, 4)
+          _Canvas.clear(RED)
+          _Canvas.rect(1, 1, 2, 2, BLUE, 1)
+          assert_eq(_Canvas.get_pixel(0, 0), RED)
+          assert_eq(_Canvas.get_pixel(2, 2), BLUE)
+          # The window-backed entry points a headless build only stubs. Under
+          # CULEBRA_CANVAS_HEADLESS they no-op, so they assert as headless does.
+          _Canvas.present()
+          assert_eq(_Canvas.windowed(), false)
+          print("canvas ok")
+          EOF
+          fail=0
+          for mode in "" "--jit"; do
+            echo "=== culebra $mode canvas.cul ==="
+            out=$(timeout 60 ./build-win-aot/culebra.exe $mode canvas.cul 2>&1); rc=$?
+            echo "out=[$out] rc=$rc"
+            [ "$out" = "canvas ok" ] || { echo "CANVAS_${mode:---interp}_FAIL"; fail=1; }
+          done
+          echo "=== culebra build canvas.cul ==="
+          if ./build-win-aot/culebra.exe build canvas.cul -o canvas.exe; then
+            out=$(timeout 60 ./canvas.exe 2>&1); rc=$?
+            echo "out=[$out] rc=$rc"
+            [ "$out" = "canvas ok" ] && echo "CANVAS_AOT_PASS" \
+              || { echo "CANVAS_AOT_RUN_FAIL"; fail=1; }
+          else
+            echo "CANVAS_AOT_BUILD_FAIL rc=$?"
+            fail=1
+          fi
+          exit $fail
+      # What the step above deliberately does not exercise: window creation
+      # itself. A runner has no interactive desktop, so either outcome is
+      # acceptable — SDL opens one, or it fails and the backend falls back to
+      # behaving headless. What is NOT acceptable is hanging or crashing, which
+      # is what this bounds. (`windowed()` is the call that creates the window.)
+      - name: Smoke — Canvas window creation does not hang or crash
+        run: |
+          printf '_Canvas.init(8, 8)\nprint(_Canvas.windowed())\n' > win.cul
+          out=$(timeout 60 ./build-win-aot/culebra.exe win.cul 2>&1); rc=$?
+          echo "out=[$out] rc=$rc"
+          if [ $rc -ne 0 ]; then
+            echo "ERROR: window probe exited $rc (124 = hung)" >&2
+            exit 1
+          fi
+          case "$out" in
+            *true|*false) echo "OK: window probe returned cleanly" ;;
+            *) echo "ERROR: unexpected output" >&2; exit 1 ;;
+          esac
       # AOT regression smoke: string concat + caught-value integrity (16-byte
       # runtime helpers, sret ABI), classes, getters and callable class objects.
       # set +e so every case still runs and gets listed, but any failure is

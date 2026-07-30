@@ -385,13 +385,13 @@ endfunction()
 option(CULEBRA_ENABLE_SCENE "Enable builtin Scene namespace (raylib + SDL)" OFF)
 # The native Canvas desktop window (2D framebuffer) rides on the same vendored
 # raylib + SDL3 statics as the 3D Scene namespace. ON wherever a window is known
-# to work — macOS and Linux; Windows keeps the toolchain work Scene needs — so a
-# plain `just build` runs a Canvas game in a window with no knob to remember. It
-# costs nothing at runtime: the framebuffer core is identical and
-# CULEBRA_CANVAS_HEADLESS turns the window off per run, no rebuild. Nor does it
-# cost anything to a displayless machine: SDL3 dlopens X11/GL/audio on first use,
-# so a window build adds no DT_NEEDED entry and still starts on a headless
-# server — unlike the Webview namespace, which is why that one stays off here.
+# to work — macOS, Linux and Windows — so a plain `just build` runs a Canvas
+# game in a window with no knob to remember. It costs nothing at runtime: the
+# framebuffer core is identical and CULEBRA_CANVAS_HEADLESS turns the window off
+# per run, no rebuild. Nor does it cost anything to a displayless machine: SDL3
+# dlopens X11/GL/audio (opengl32.dll on Windows) on first use, so a window build
+# adds no load-time dependency on them and still starts on a headless server —
+# unlike the Webview namespace, which is why that one stays off here.
 # A build that wants raylib gone entirely passes
 # -DCULEBRA_ENABLE_CANVAS_WINDOW=OFF; CULEBRA_CANVAS_WINDOW_DEFAULT in the
 # environment flips the default for every configure in a job, which is how CI
@@ -406,8 +406,13 @@ option(CULEBRA_ENABLE_SCENE "Enable builtin Scene namespace (raylib + SDL)" OFF)
 # are missing. This is a check that the documented set was installed, not a
 # replication of SDL3's own probing — -DCULEBRA_ENABLE_CANVAS_WINDOW=ON still
 # forces the issue.
+#
+# Windows needs no such check: SDL3's Win32 backends build against the headers
+# the mingw-w64 toolchain already ships, so there is no dev-package set to be
+# missing, and the libraries it wants at link time (below) are part of every
+# Windows install.
 set(_canvas_window_default OFF)
-if(APPLE)
+if(APPLE OR WIN32)
   set(_canvas_window_default ON)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set(_canvas_window_default ON)
@@ -491,6 +496,16 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
       Carbon Metal QuartzCore)
     # SDL3 links these weakly so binaries still load on older macOS.
     set(_scene_weak_frameworks CoreHaptics UniformTypeIdentifiers)
+  elseif(WIN32)
+    # What the frameworks above are on macOS. Mirrors the Win32 list SDL3's own
+    # build records (vendor/SDL/CMakeLists.txt, "Libraries for Win32 native and
+    # MinGW"), plus dinput8 from its joystick block — mingw-w64 ships dinput.h,
+    # so that backend compiles in. No opengl32: with PLATFORM=SDL raylib reaches
+    # GL through SDL_GL_GetProcAddress, and SDL loads opengl32.dll at runtime,
+    # so nothing here imports it at link time.
+    set(_scene_system_libs
+      kernel32 user32 gdi32 winmm imm32 ole32 oleaut32 version uuid advapi32
+      setupapi shell32 dinput8)
   endif()
   # The AOT link fragment (raylib + SDL3 statics + frameworks) `culebra build`
   # appends on usage. Built once here — Scene and Canvas share it, so they can't
@@ -515,6 +530,10 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
     endforeach()
     foreach(_fw IN LISTS _scene_weak_frameworks)
       string(APPEND _raylib_aot_link " -weak_framework ${_fw}")
+    endforeach()
+  elseif(WIN32)
+    foreach(_lib IN LISTS _scene_system_libs)
+      string(APPEND _raylib_aot_link " -l${_lib}")
     endforeach()
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # What the frameworks above are on macOS: the system libraries a static
@@ -1092,6 +1111,12 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
   # a cache entry only ever appears complete: a concurrent cold build elsewhere
   # sees either nothing yet or a finished tree, never a half-written archive.
   set(_deps_stage "${CMAKE_CURRENT_BINARY_DIR}/deps_stage")
+  # Both are C projects, and a sub-build picks its own compiler from the
+  # environment unless told. Pass this build's down so the statics are made by
+  # the toolchain that will link them — on MSYS2 the parent is configured with
+  # an explicit mingw gcc, and letting the sub-build search PATH on its own is
+  # how a static archive ends up built by a different one.
+  set(_deps_toolchain -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER})
   if(NOT EXISTS "${_sdl_a}")
     ExternalProject_Add(sdl_ext
       SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/SDL"
@@ -1101,6 +1126,7 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
         -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF
         -DSDL_INSTALL_CPACK=OFF
         -DCMAKE_BUILD_TYPE=Release
+        ${_deps_toolchain}
         -DCMAKE_INSTALL_PREFIX=${_deps_stage}/sdl
         -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
         -DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
@@ -1130,6 +1156,7 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
         # SDL's headers against another's static archive fails at the final link.
         -DSDL3_DIR=${_sdl_install}/lib/cmake/SDL3
         -DCMAKE_PREFIX_PATH=${_sdl_install}
+        ${_deps_toolchain}
         -DCMAKE_INSTALL_PREFIX=${_deps_stage}/raylib
         -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
         -DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
@@ -1160,6 +1187,8 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
     foreach(_fw IN LISTS _scene_weak_frameworks)
       target_link_libraries(culebra "-weak_framework ${_fw}")
     endforeach()
+  elseif(WIN32)
+    target_link_libraries(culebra ${_scene_system_libs})  # same single source
   endif()
   # Per-namespace bindings compiled into the driver.
   if(CULEBRA_ENABLE_SCENE)
