@@ -14,12 +14,12 @@ Desktop.run({
   title: "culebra desktop",
   size: [720, 560],
   assets: Embed.dir("dist"),
-  routes: fn(srv) {
-    srv.get("/api/hello", fn(req) {
+  routes: fn (srv) {
+    srv.get("/api/hello", fn (req) {
       { content_type: "application/json",
         body: JSON.stringify({ message: "Hello from culebra's local server 🛸" }) }
     })
-    srv.post("/api/echo", fn(req) {
+    srv.post("/api/echo", fn (req) {
       let input = JSON.parse(req.body)
       { content_type: "application/json",
         body: JSON.stringify({ reply: "You said: " + input["text"] }) }

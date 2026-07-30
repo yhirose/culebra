@@ -188,7 +188,7 @@ fn draw_score_box(s, scores, highlight, footer) {
   let lines = scores.empty()
     ? ["no scores yet"]
     : scores.enumerate()
-            .map(fn ((i, e)) { "{i + 1}. {e.score}   {e.date} {e.time}" })
+            .map(|(i, e)| "{i + 1}. {e.score}   {e.date} {e.time}")
             .collect()
   # index_of answers -1 for a nil highlight and for the empty board alike.
   draw_box(s, 40, "BEST 5", lines, scores.index_of(highlight), footer)
