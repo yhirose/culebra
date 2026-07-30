@@ -468,9 +468,14 @@ void exit_teardown() {
 // down. Calling into Mesa there segfaults, which is what every Canvas program on
 // Linux did on the way out. Registering once the resource exists nests our
 // teardown inside the lifetime of the libraries it calls into.
-void arm_exit_teardown() {
-  [[maybe_unused]] static const int armed = std::atexit(exit_teardown);
-}
+//
+// Re-registered per resource rather than latched to the first one: only a
+// registration made after a driver was dlopen'd runs before that driver tears
+// itself down. A tone() on the first frame brings audio up before the window,
+// which latched the registration ahead of Mesa and put CloseWindow() back after
+// Mesa was gone. exit_teardown clears what guards each step, so the second run
+// finds nothing to do and the duplicate registration costs only its slot.
+void arm_exit_teardown() { std::atexit(exit_teardown); }
 
 // Refill the stream's buffers — called from present(), the one place every
 // frame loop passes through, so no pump API needs exposing.
