@@ -2169,27 +2169,45 @@ inline long _owned_scope_binding_refs(const Environment& env,
 // ref (its map is a no-op-deleter alias), so it emits nothing: counting it
 // would over-subtract and free a live node (GAP2 §4b). Tensor is a leaf (its
 // buffer is opaque bytes — no container edge).
-template <class Emit>  // Emit(GcKind kind, void* primary)
+// `use_count` and the sidecars ride along because the scope-exit collector
+// discovers nodes lazily from Values (only its candidates have entries to read
+// them back from) and must expand each new node with gc_for_each_child; collect
+// ignores them (it already holds the locked shared_ptrs).
+template <class Emit>  // Emit(GcKind kind, void* primary, long use_count,
+                       //      void* side1, void* side2)
 inline void gc_for_each_container_backing(const Value& v, Emit&& emit) {
+  // Pointer and use_count always come from the same shared_ptr.
+  auto emit_backing = [&](GcKind kind, const auto& sp, void* side1,
+                          void* side2) {
+    emit(kind, sp.get(), sp.use_count(), side1, side2);
+  };
+  // Map node: side1 = non_string_props, side2 = key_order (ObjectValue base,
+  // so Array reuses it).
+  auto emit_prop_map = [&](const ObjectValue& o) {
+    emit_backing(GcKind::Map, o.properties, o.non_string_props.get(),
+                 o.key_order.get());
+  };
   switch (v.type) {
     case Value::Object: {
       const auto& o = v.get<ObjectValue>();
-      if (!o.is_synthetic) emit(GcKind::Map, o.properties.get());
+      if (!o.is_synthetic) emit_prop_map(o);
       break;
     }
     case Value::Array: {
       // Two nodes: the element vector and the ObjectValue-base prop map.
       const auto& a = v.get<ArrayValue>();
-      emit(GcKind::Vec, a.values.get());
-      emit(GcKind::Map, a.properties.get());
+      emit_backing(GcKind::Vec, a.values, nullptr, nullptr);
+      emit_prop_map(a);
       break;
     }
     case Value::Tuple:
-      emit(GcKind::Vec, v.get<TupleValue>().elements.get());
+      emit_backing(GcKind::Vec, v.get<TupleValue>().elements, nullptr, nullptr);
       break;
-    case Value::Set:
-      emit(GcKind::Set, v.get<SetValue>().members.get());
+    case Value::Set: {
+      const auto& s = v.get<SetValue>();
+      emit_backing(GcKind::Set, s.members, s.index.get(), nullptr);
       break;
+    }
     default:
       break;  // Function / primitive / Tensor — caller's responsibility
   }
@@ -2364,73 +2382,26 @@ inline void _owned_resolve_ambiguous(
     nodes[to].explained++;
     if (from != npos) nodes[from].out.push_back(to);
   };
-  auto walk_object_contents = [&](size_t id, const ObjectValue& obj,
-                                  auto&& walk_value) -> void {
-    for (const auto& [_, sym] : *obj.properties)
-      walk_value(sym.val, id, walk_value);
-    if (obj.non_string_props) {
-      for (const auto& [k, sym] : *obj.non_string_props) {
-        walk_value(k, id, walk_value);
-        walk_value(sym.val, id, walk_value);
-      }
-    }
-    if (obj.key_order) {
-      for (const auto& k : *obj.key_order) walk_value(k, id, walk_value);
-    }
-  };
   auto walk_value = [&](const Value& v, size_t from, auto&& self) -> void {
+    // Container backings and their children — single-sourced with
+    // InterpGC::collect (GAP2); this collector supplies the node bookkeeping.
+    const bool binding_root = (from == npos || nodes[from].is_env);
+    gc_for_each_container_backing(
+        v, [&](GcKind kind, void* primary, long uc, void* side1, void* side2) {
+          bool fresh;
+          size_t id = add_node(primary, uc, fresh);
+          // Held by a binding: the exiting scope's (from == npos) or a
+          // discovered env's dictionary. Object only — an Array's prop map
+          // goes with the array's own container cascade, not a slot release
+          // (see the verdict split below).
+          if (binding_root && v.type == Value::Object)
+            binding_held.insert(primary);
+          edge(from, id);
+          if (fresh)
+            gc_for_each_child(kind, primary, side1, side2,
+                              [&](const Value& cv) { self(cv, id, self); });
+        });
     switch (v.type) {
-      case Value::Object: {
-        const auto& obj = v.to_object();
-        bool fresh;
-        size_t id = add_node(obj.properties.get(),
-                             obj.properties.use_count(), fresh);
-        // Held by a binding: the exiting scope's (from == npos) or a
-        // discovered env's dictionary.
-        if (from == npos || nodes[from].is_env)
-          binding_held.insert(obj.properties.get());
-        edge(from, id);
-        if (fresh) walk_object_contents(id, obj, self);
-        break;
-      }
-      case Value::Array: {
-        // An Array Value occurrence keeps two containers alive: the
-        // element vector and the (ObjectValue base) prop map. Model both
-        // as nodes so either being pinned propagates correctly.
-        const auto& arr = v.to_array();
-        bool fresh;
-        size_t vid =
-            add_node(arr.values.get(), arr.values.use_count(), fresh);
-        edge(from, vid);
-        if (fresh) {
-          for (const auto& e : *arr.values) self(e, vid, self);
-        }
-        size_t pid = add_node(arr.properties.get(),
-                              arr.properties.use_count(), fresh);
-        edge(from, pid);
-        if (fresh) walk_object_contents(pid, arr, self);
-        break;
-      }
-      case Value::Tuple: {
-        const auto& els = v.get<TupleValue>().elements;
-        bool fresh;
-        size_t id = add_node(els.get(), els.use_count(), fresh);
-        edge(from, id);
-        if (fresh) {
-          for (const auto& e : *els) self(e, id, self);
-        }
-        break;
-      }
-      case Value::Set: {
-        const auto& mem = v.get<SetValue>().members;
-        bool fresh;
-        size_t id = add_node(mem.get(), mem.use_count(), fresh);
-        edge(from, id);
-        if (fresh) {
-          for (const auto& e : *mem) self(e, id, self);
-        }
-        break;
-      }
       case Value::Function: {
         // Mirror InterpGC::collect's edge model. Every Value copy of a
         // FunctionValue holds its own def_env ref (multiplicity 2 when
@@ -2534,7 +2505,7 @@ inline void _owned_resolve_ambiguous(
         break;
       }
       default:
-        break;  // primitives / Tensor (conservatively opaque)
+        break;  // containers handled above; primitives / Tensor opaque
     }
   };
 
@@ -2549,12 +2520,11 @@ inline void _owned_resolve_ambiguous(
     cand_ids[i] = id;
     nodes[id].explained++;  // our lock
     if (fresh) {
-      ObjectValue view{ObjectValue::Synthetic{}};
-      view.properties = std::shared_ptr<OrderedSymbolMap>(
-          p.sp.get(), [](OrderedSymbolMap*) {});
-      view.non_string_props = p.entry.non_string_props.lock();
-      view.key_order = p.entry.key_order.lock();
-      walk_object_contents(id, view, walk_value);
+      auto non_string_props = p.entry.non_string_props.lock();
+      auto key_order = p.entry.key_order.lock();
+      gc_for_each_child(
+          GcKind::Map, p.sp.get(), non_string_props.get(), key_order.get(),
+          [&](const Value& cv) { walk_value(cv, id, walk_value); });
     }
   }
 
@@ -11841,8 +11811,8 @@ inline void InterpGC::collect(Environment* current) {
     auto emit_value_edges = [&](const Value& val, auto&& self) -> void {
       // Container backings (Object/Array/Tuple/Set; synthetic views and Tensor
       // emit nothing) — single-sourced with _owned_resolve_ambiguous.
-      gc_for_each_container_backing(val,
-                                    [&](GcKind, void* p) { emit(p, 1L); });
+      gc_for_each_container_backing(
+          val, [&](GcKind, void* p, long, void*, void*) { emit(p, 1L); });
       if (val.type == Value::Function) {
         auto& fv = val.template get<FunctionValue>();
         if (fv.def_env) emit(fv.def_env.get(), fv.def_env_multiplicity());
