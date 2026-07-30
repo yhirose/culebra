@@ -19,8 +19,8 @@
 #include <emscripten.h>
 #elif !defined(_WIN32)
 #include <fcntl.h>
-#include <poll.h>
 #include <sys/ioctl.h>
+#include <sys/select.h>
 #include <termios.h>
 #include <unistd.h>
 #endif
@@ -192,15 +192,26 @@ inline int rows() {
 // or non-tty stdin. NUL bytes are dropped so the result survives the
 // NUL-terminated `const char*` boundary the JIT path returns through; no
 // arrow/function key contains a NUL.
+//
+// Uses select(), not poll(): on macOS, poll() on the tty fd that
+// attach_tty() just dup2'd into place (a pty slave reattached as the
+// controlling terminal after piped stdin) spuriously reports POLLNVAL
+// instead of POLLIN, so a real keypress is silently missed forever. select()
+// on the identical fd reports it readable correctly. Confirmed with a
+// minimal reproduction outside culebra entirely (plain attach_tty() +
+// raw_on() + a bare poll()/select() call), so this is a Darwin poll()
+// quirk with reattached tty fds, not a culebra-side ordering bug.
 inline std::string read_key(double timeout_secs) {
   if (!isatty(STDIN_FILENO)) return "";
-  struct pollfd pfd;
-  pfd.fd = STDIN_FILENO;
-  pfd.events = POLLIN;
-  pfd.revents = 0;
-  int ms = timeout_secs <= 0 ? 0 : static_cast<int>(timeout_secs * 1000.0);
-  int r = poll(&pfd, 1, ms);
-  if (r <= 0 || !(pfd.revents & POLLIN)) return "";
+  fd_set rfds;
+  FD_ZERO(&rfds);
+  FD_SET(STDIN_FILENO, &rfds);
+  double secs = timeout_secs <= 0 ? 0.0 : timeout_secs;
+  struct timeval tv;
+  tv.tv_sec = static_cast<time_t>(secs);
+  tv.tv_usec = static_cast<suseconds_t>((secs - tv.tv_sec) * 1e6);
+  int r = select(STDIN_FILENO + 1, &rfds, nullptr, nullptr, &tv);
+  if (r <= 0 || !FD_ISSET(STDIN_FILENO, &rfds)) return "";
   char buf[32];
   ssize_t n = ::read(STDIN_FILENO, buf, sizeof(buf));
   if (n <= 0) return "";
