@@ -57,7 +57,7 @@ puts('hi')
 x = 1                # 新規不変束縛、または外側を再代入
 let y = 2            # 不変; 外側のシャドウは不可
 mut z = 3            # 可変
-z = z + 1
+z = 4                # bare 再代入
 z += 1               # -= *= /= %= **= @= も同様
 inspect(z)           # => 5
 ```
@@ -65,7 +65,7 @@ inspect(z)           # => 5
 引数も不変です。代入するとローカルコピーではなくエラーになります:
 
 ```culebra
-bump = fn (n) { n = n + 1; n }
+bump = fn (n) { n += 1; n }
 inspect(try { bump(1) } catch e { e.kind })   # => 'ImmutableError'
 ```
 
@@ -140,7 +140,7 @@ for v in [1, 3, 5] {
   inspect('all odd')             # => 'all odd'
 }
 
-while mut i = 0; i < 3 { i = i + 1 }
+while mut i = 0; i < 3 { i += 1 }
 if let m = 6; m > 5 { inspect('big') }        # => 'big'
 ```
 
@@ -222,7 +222,7 @@ body に `yield` を含む `fn` はジェネレータになり、呼ぶとイテ
 ```culebra
 fn countdown(start) {
   mut i = start
-  while i > 0 { yield i; i = i - 1 }
+  while i > 0 { yield i; i -= 1 }
 }
 inspect(countdown(3).collect())                 # => [3, 2, 1]
 ```
@@ -308,7 +308,7 @@ inspect('after')
 class Car {
   wheels = 4                     # デフォルト付きの宣言フィールド
   new(mpr)  { self.miles = 0; self.mpr = mpr }
-  run(n)    { self.miles = self.miles + self.mpr * n }
+  run(n)    { self.miles += self.mpr * n }
   get far() { self.miles > 10 }  # 計算プロパティ、括弧なしで呼ぶ
   static unit() { Car(1) }
 }

@@ -57,7 +57,7 @@ introduces a binding, or reassigns the nearest enclosing one.
 x = 1                # immutable binding, or reassign an outer one
 let y = 2            # immutable; must not shadow an outer binding
 mut z = 3            # mutable
-z = z + 1
+z = 4                # bare reassignment
 z += 1               # also -= *= /= %= **= @=
 inspect(z)           # => 5
 ```
@@ -66,7 +66,7 @@ Parameters are immutable too — assigning to one is an error, not a
 local copy:
 
 ```culebra
-bump = fn (n) { n = n + 1; n }
+bump = fn (n) { n += 1; n }
 inspect(try { bump(1) } catch e { e.kind })   # => 'ImmutableError'
 ```
 
@@ -143,7 +143,7 @@ for v in [1, 3, 5] {
   inspect('all odd')             # => 'all odd'
 }
 
-while mut i = 0; i < 3 { i = i + 1 }
+while mut i = 0; i < 3 { i += 1 }
 if let m = 6; m > 5 { inspect('big') }        # => 'big'
 ```
 
@@ -225,7 +225,7 @@ an iterator.
 ```culebra
 fn countdown(start) {
   mut i = start
-  while i > 0 { yield i; i = i - 1 }
+  while i > 0 { yield i; i -= 1 }
 }
 inspect(countdown(3).collect())                 # => [3, 2, 1]
 ```
@@ -311,7 +311,7 @@ shorthand for `.new`.
 class Car {
   wheels = 4                     # declared field with a default
   new(mpr)  { self.miles = 0; self.mpr = mpr }
-  run(n)    { self.miles = self.miles + self.mpr * n }
+  run(n)    { self.miles += self.mpr * n }
   get far() { self.miles > 10 }  # computed property, no parentheses
   static unit() { Car(1) }
 }

@@ -44,14 +44,14 @@ let args = fn () {
         Sys.exit(2)
       }
       if a == "--assets" { dir = Sys.argv[i + 1] } else { cars = to_long(Sys.argv[i + 1]) }
-      i = i + 2
+      i += 2
     } else if a.starts_with("-") {
       println("retro-run: unknown option {a}")
       println("usage: retro-run.cul [--assets <dir>] [--cars <n>] [draw-distance]")
       Sys.exit(2)
     } else {
       distance = to_long(a)
-      i = i + 1
+      i += 1
     }
   }
   { dir: dir, distance: distance, cars: cars }
@@ -243,8 +243,8 @@ let exponential_fog = fn (distance, density) { 1.0 / Math.exp(distance * distanc
 
 let increase = fn (start, increment, max) {
   mut result = start + increment
-  while result >= max { result = result - max }
-  while result < 0 { result = result + max }
+  while result >= max { result -= max }
+  while result < 0 { result += max }
   result
 }
 
@@ -306,7 +306,7 @@ mut cars = []
 mut track_length = 0.0
 
 let last_y = fn () {
-  if segments.size() == 0 { 0.0 } else { segments[segments.size() - 1].p2_wy }
+  if segments.empty() { 0.0 } else { segments[segments.size() - 1].p2_wy }
 }
 
 let add_segment = fn (curve, y) {
@@ -399,7 +399,7 @@ let reset_props = fn () {
   while n < 200 {
     add_prop(n, PALM_TREE, 0.5 + Random.uniform(0.0, 0.5))
     add_prop(n, PALM_TREE, 1.0 + Random.uniform(0.0, 2.0))
-    n = n + 4 + n / 100
+    n += 4 + n / 100
   }
 
   for n in 250..1000 by 5 {
@@ -576,7 +576,7 @@ let steer_car = fn (car, car_index, player_index, n, player_half) {
     mut i = 1
     while !done && i < LOOKAHEAD {
       mut si = car_index + i
-      if si >= n { si = si - n }
+      if si >= n { si -= n }
       let segment = segments[si]
 
       if si == player_index && car_speed > speed {
@@ -609,10 +609,10 @@ let steer_car = fn (car, car_index, player_index, n, player_half) {
               done = true
             }
           }
-          j = j + 1
+          j += 1
         }
       }
-      i = i + 1
+      i += 1
     }
     # Nothing ahead, but somehow off the road: steer back on.
     if !done {
@@ -638,10 +638,10 @@ let update_cars = fn (dt, player_index) {
   let player_half = PLAYER_W * 0.6
   for car in cars {
     let old_index = car.seg
-    car.offset = car.offset + steer_car(car, old_index, player_index, n, player_half)
+    car.offset += steer_car(car, old_index, player_index, n, player_half)
     mut zin = car.zin + dt * car.speed
     if zin >= seg_len {
-      zin = zin - seg_len
+      zin -= seg_len
       mut ni = old_index + 1
       if ni >= n { ni = 0 }
       car.seg = ni
@@ -664,16 +664,16 @@ let update = fn (dt) {
 
   position = increase(position, dt * speed, track_length)
 
-  if key_left { player_x = player_x - dx }
-  else if key_right { player_x = player_x + dx }
-  player_x = player_x - (dx * speed_percent * player_segment.curve * CENTRIFUGAL)
+  if key_left { player_x -= dx }
+  else if key_right { player_x += dx }
+  player_x -= (dx * speed_percent * player_segment.curve * CENTRIFUGAL)
 
-  if key_faster { speed = speed + ACCEL * dt }
-  else if key_slower { speed = speed + BREAKING * dt }
-  else { speed = speed + DECEL * dt }
+  if key_faster { speed += ACCEL * dt }
+  else if key_slower { speed += BREAKING * dt }
+  else { speed += DECEL * dt }
 
   if player_x < -1.0 || player_x > 1.0 {
-    if speed > OFF_ROAD_LIMIT { speed = speed + OFF_ROAD_DECEL * dt }
+    if speed > OFF_ROAD_LIMIT { speed += OFF_ROAD_DECEL * dt }
 
     let props = player_segment.sprites
     mut i = 0
@@ -689,7 +689,7 @@ let update = fn (dt) {
         position = increase(player_segment.p1_wz, -PLAYER_Z, track_length)
         hit = true
       }
-      i = i + 1
+      i += 1
     }
   }
 
@@ -703,7 +703,7 @@ let update = fn (dt) {
       position = increase(car.z, -PLAYER_Z, track_length)
       hit = true
     }
-    i = i + 1
+    i += 1
   }
 
   player_x = limit(player_x, -3.0, 3.0)
@@ -722,7 +722,7 @@ let update = fn (dt) {
       current_lap_time = 0.0
       if last_lap_time < fast_lap_time { fast_lap_time = last_lap_time }
     } else {
-      current_lap_time = current_lap_time + dt
+      current_lap_time += dt
     }
   }
 
@@ -860,9 +860,9 @@ let draw_road = fn (base_index, base_percent, player_y) {
       visible = sy2 < sy1 && sy2 < edge
     }
 
-    x = x + dx
-    dx = dx + segment.curve
-    si = si + 1
+    x += dx
+    dx += segment.curve
+    si += 1
     if si >= n_segments { si = 0 }
 
     if visible {
@@ -896,8 +896,8 @@ let draw_road = fn (base_index, base_percent, player_y) {
       mut w1 = segment.p1_sw
       if edge == H && sy1 > edge {
         let t = (edge - sy1) / (sy2 - sy1)
-        x1 = x1 + (x2 - x1) * t
-        w1 = w1 + (w2 - w1) * t
+        x1 += (x2 - x1) * t
+        w1 += (w2 - w1) * t
       }
       let r1 = w1 / 6.0
       let r2 = w2 / 6.0
@@ -921,8 +921,8 @@ let draw_road = fn (base_index, base_percent, player_y) {
         for _ in 1..LANES {
           _Canvas.polygon([lx1 - l1, edge, lx1 + l1, edge, lx2 + l2, top,
                            lx2 - l2, top], c_lane, 1)
-          lx1 = lx1 + lw1
-          lx2 = lx2 + lw2
+          lx1 += lw1
+          lx2 += lw2
         }
       }
       # Road markings go on last, over the tarmac and the lane dashes both,
@@ -1054,7 +1054,7 @@ let render = fn () {
 
   # Back to front over the same window, so nearer sprites overlap farther ones.
   mut mi = base_index + DRAW_DISTANCE - 1
-  while mi >= n_segments { mi = mi - n_segments }
+  while mi >= n_segments { mi -= n_segments }
   for _ in 1..DRAW_DISTANCE {
     let segment = segments[mi]
     if segment.vis {
@@ -1087,7 +1087,7 @@ let render = fn () {
                   if key_left { -1.0 } else if key_right { 1.0 } else { 0.0 },
                   player_segment.p2_wy - player_segment.p1_wy)
     }
-    mi = mi - 1
+    mi -= 1
     if mi < 0 { mi = n_segments - 1 }
   }
 
@@ -1117,9 +1117,9 @@ let frame = fn () {
   key_faster = (held & Canvas.UP) != 0
   key_slower = (held & Canvas.DOWN) != 0
 
-  gdt = gdt + dt
+  gdt += dt
   while gdt > STEP {
-    gdt = gdt - STEP
+    gdt -= STEP
     update(STEP)
   }
   render()

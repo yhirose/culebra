@@ -18,7 +18,7 @@ effect fn choose(options)   # pick one option; the handler decides how many
 effect fn reject()          # this branch is a dead end
 effect fn visit()           # one placement considered (for instrumentation)
 
-let N = Sys.argv.size() > 0 ? to_long(Sys.argv[0]) : 6
+let N = !Sys.argv.empty() ? to_long(Sys.argv[0]) : 6
 
 # `cols[r]` is the column of the queen on row r; a partial solution is a
 # prefix. A new queen at column `c` on row `cols.size()` is safe if it shares
@@ -75,7 +75,7 @@ let all = handle {
 }
 
 println("{N} queens: {all.size()} solutions, {nodes_all} placements considered\n")
-if all.size() > 0 { println(board_of(all[0]) + "\n") }
+if !all.empty() { println(board_of(all[0]) + "\n") }
 
 # --- handler B: same search, stop at the first solution ------------------
 # Only the `choose` clause changes — it stops resuming once a branch has
@@ -88,7 +88,7 @@ let one = handle {
     mut hit = []
     for o in options {
       for s in resume(o) { hit.push(s) }
-      if hit.size() > 0 { break }
+      if !hit.empty() { break }
     }
     hit
   } with reject(resume) {
@@ -99,7 +99,7 @@ let one = handle {
   resume(nil)
 }
 
-let answer = one.size() > 0 ? one[0].to_string() : "none"
+let answer = !one.empty() ? one[0].to_string() : "none"
 println("first solution only: {answer}, {nodes_one} placements considered")
 if nodes_one < nodes_all {
   println("(same search, {nodes_all - nodes_one} fewer placements — the handler pruned it)")

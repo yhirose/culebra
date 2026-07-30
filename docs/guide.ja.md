@@ -154,7 +154,7 @@ inspect(type_of(fn () { 1 }))    # => 'Function'
 x = 10              # bare: 新規不変束縛、または外側を再代入
 let y = 20          # let: 新規不変束縛 (外側のシャドウは不可)
 mut z = 30          # mut: 新規可変束縛
-z = z + 1           # mut は再代入可能
+z = 31              # mut は再代入可能
 z += 1              # 複合 (`-= *= /= %= **= @=` も同様)
 inspect(z)             # => 32
 ```
@@ -180,7 +180,7 @@ make = fn () {
   mut n = 0
   fn () {
     # let n = 1   # エラー: 捕捉された `n` をシャドウしてしまう
-    n = n + 1     # bare 代入で捕捉 `n` を更新 — OK
+    n += 1        # bare 代入で捕捉 `n` を更新 — OK
     n
   }
 }
@@ -207,7 +207,7 @@ size = match x {                 # match も式 (Ch.6)
 inspect(size)                    # => 'small'
 
 mut i = 0
-while i < 3 { inspect(i); i = i + 1 }
+while i < 3 { inspect(i); i += 1 }
 # => |
 # 0
 # 1
@@ -273,7 +273,7 @@ for n in [1, 3, 5] {
 漏れません:
 
 ```culebra
-while mut i = 0; i < 3 { i = i + 1 }
+while mut i = 0; i < 3 { i += 1 }
 if let n = 6; n > 5 { inspect('大きい') }     # => '大きい'
 ```
 
@@ -326,7 +326,7 @@ inspect(fib(10))                 # => 55
 ```culebra
 make_counter = fn () {
   mut n = 0
-  fn () { n = n + 1; n }   # bare `n = ...` で捕捉 `n` を更新
+  fn () { n += 1; n }      # bare 代入で捕捉 `n` を更新
 }
 c = make_counter()
 inspect(c())                     # => 1
@@ -362,7 +362,7 @@ inspect(greet('carol', **opts))               # => 'yo, carol'
 ```culebra
 sum_all = fn (first, *rest) {
   mut t = first
-  for v in rest { t = t + v }
+  for v in rest { t += v }
   t
 }
 inspect(sum_all(1, 2, 3, 4))                  # => 10
@@ -539,7 +539,7 @@ countdown = fn (start) {
   {
     iter:     fn () { self },
     has_next: fn () { i > 0 },
-    next:     fn () { v = i; i = i - 1; v }
+    next:     fn () { v = i; i -= 1; v }
   }
 }
 
@@ -560,7 +560,7 @@ for v in countdown(3) { inspect(v) }
 ```culebra
 fn countdown(start) {
   mut i = start
-  while i > 0 { yield i; i = i - 1 }
+  while i > 0 { yield i; i -= 1 }
 }
 for v in countdown(3) { inspect(v) }
 # => |
@@ -574,7 +574,7 @@ fn chunk(arr, n) {
     buf.push(v)
     if buf.size() >= n { yield buf; buf = [] }
   }
-  if buf.size() > 0 { yield buf }
+  if !buf.empty() { yield buf }
 }
 inspect(chunk([1, 2, 3, 4, 5], 2).collect())    # => [[1, 2], [3, 4], [5]]
 ```
@@ -898,7 +898,7 @@ inspect(out)   # => 'final=42'
 ```culebra
 class Car {
   new(mpr)  { self.miles = 0; self.mpr = mpr }
-  run(n)    { self.miles = self.miles + self.mpr * n }
+  run(n)    { self.miles += self.mpr * n }
   total()   { "走行距離: {self.miles} miles" }
 }
 
@@ -947,7 +947,7 @@ Car2 = {
   new: fn (mpr) {
     mut miles = 0
     {
-      run:   fn (n) { miles = miles + mpr * n },
+      run:   fn (n) { miles += mpr * n },
       total: fn () { "走行距離: {miles} miles" }
     }
   }

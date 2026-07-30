@@ -16,7 +16,7 @@ fn chunk(arr, n) {
       buf = []
     }
   }
-  if buf.size() > 0 {
+  if !buf.empty() {
     yield buf
   }
 }

@@ -647,7 +647,7 @@ Only `Bool`, `Long`, and `Float` are convertible to bool:
   `type error`.
 
 (This is intentionally strict. Wrap with an explicit check such as
-`s != nil` or `arr.size() > 0` if needed.)
+`s != nil` or `!arr.empty()` if needed.)
 
 ### Unary
 
@@ -1988,7 +1988,7 @@ drives `for`-in, the lazy combinator set (§18.5), and any other
 consumer of the protocol. Suspension makes unbounded sources practical:
 
 ```culebra
-fn nat() { mut i = 0; while true { yield i; i = i + 1 } }
+fn nat() { mut i = 0; while true { yield i; i += 1 } }
 inspect(nat().map(|x| x * x).take(5).collect())   # => [0, 1, 4, 9, 16]
 ```
 
@@ -4202,7 +4202,7 @@ countdown = fn (start) {
     has_next: fn () { i > 0 },
     next:     fn () {
       v = i
-      i = i - 1
+      i -= 1
       v
     }
   }

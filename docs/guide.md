@@ -162,7 +162,7 @@ Four more show up once you reach for them: `StringView` (Ch.4.4),
 x = 10              # bare: new immutable binding, or reassign outer
 let y = 20          # let: new immutable binding (must not shadow outer)
 mut z = 30          # mut: new mutable binding
-z = z + 1           # mut allows reassignment
+z = 31              # mut allows reassignment
 z += 1              # compound (`-= *= /= %= **= @=` work the same way)
 inspect(z)             # => 32
 ```
@@ -190,7 +190,7 @@ make = fn () {
   mut n = 0
   fn () {
     # let n = 1   # error: would shadow captured `n`
-    n = n + 1     # bare reassignment of the captured `n` — OK
+    n += 1        # bare reassignment of the captured `n` — OK
     n
   }
 }
@@ -217,7 +217,7 @@ size = match x {                 # match is an expression too (Ch.6)
 inspect(size)                    # => 'small'
 
 mut i = 0
-while i < 3 { inspect(i); i = i + 1 }
+while i < 3 { inspect(i); i += 1 }
 # => |
 # 0
 # 1
@@ -283,7 +283,7 @@ scoped to the construct, separated by `;` — so a loop variable doesn't
 leak into the surrounding scope:
 
 ```culebra
-while mut i = 0; i < 3 { i = i + 1 }
+while mut i = 0; i < 3 { i += 1 }
 if let n = 6; n > 5 { inspect('big') }     # => 'big'
 ```
 
@@ -338,7 +338,7 @@ captured binding writable.
 ```culebra
 make_counter = fn () {
   mut n = 0
-  fn () { n = n + 1; n }   # bare `n = ...` reassigns the captured `n`
+  fn () { n += 1; n }      # a bare assignment reassigns the captured `n`
 }
 c = make_counter()
 inspect(c())                     # => 1
@@ -374,7 +374,7 @@ extra positional arguments into an Array:
 ```culebra
 sum_all = fn (first, *rest) {
   mut t = first
-  for v in rest { t = t + v }
+  for v in rest { t += v }
   t
 }
 inspect(sum_all(1, 2, 3, 4))                  # => 10
@@ -553,7 +553,7 @@ countdown = fn (start) {
   {
     iter:     fn () { self },
     has_next: fn () { i > 0 },
-    next:     fn () { v = i; i = i - 1; v }
+    next:     fn () { v = i; i -= 1; v }
   }
 }
 
@@ -574,7 +574,7 @@ from` delegates to another iterable.
 ```culebra
 fn countdown(start) {
   mut i = start
-  while i > 0 { yield i; i = i - 1 }
+  while i > 0 { yield i; i -= 1 }
 }
 for v in countdown(3) { inspect(v) }
 # => |
@@ -588,7 +588,7 @@ fn chunk(arr, n) {
     buf.push(v)
     if buf.size() >= n { yield buf; buf = [] }
   }
-  if buf.size() > 0 { yield buf }
+  if !buf.empty() { yield buf }
 }
 inspect(chunk([1, 2, 3, 4, 5], 2).collect())    # => [[1, 2], [3, 4], [5]]
 ```
@@ -915,7 +915,7 @@ Part II — Tools for abstraction
 ```culebra
 class Car {
   new(mpr)  { self.miles = 0; self.mpr = mpr }
-  run(n)    { self.miles = self.miles + self.mpr * n }
+  run(n)    { self.miles += self.mpr * n }
   total()   { "total: {self.miles} miles" }
 }
 
@@ -965,7 +965,7 @@ Car2 = {
   new: fn (mpr) {
     mut miles = 0
     {
-      run:   fn (n) { miles = miles + mpr * n },
+      run:   fn (n) { miles += mpr * n },
       total: fn () { "total: {miles} miles" }
     }
   }

@@ -1120,7 +1120,7 @@ if error_occurred { Sys.exit(1) }
 ### `Sys.env(name: String) -> String`
 
 Return the value of the environment variable `name`, or `''` (empty
-string) if it is not set. Use `.size() > 0` to distinguish an unset
+string) if it is not set. Use `!v.empty()` to distinguish an unset
 variable from one set to the empty string.
 
 ```culebra
@@ -1315,10 +1315,10 @@ unbounded.
 
 ```culebra
 # doctest: skip
-W2 = W2 - d2.dot(a1.transpose()) * lr
-b2 = b2 - d2.sum(1).reshape([N_OUT, 1]) * lr
-W1 = W1 - d1.dot(xb.transpose()) * lr
-b1 = b1 - d1.sum(1).reshape([N_HID, 1]) * lr
+W2 -= d2.dot(a1.transpose()) * lr
+b2 -= d2.sum(1).reshape([N_OUT, 1]) * lr
+W1 -= d1.dot(xb.transpose()) * lr
+b1 -= d1.sum(1).reshape([N_HID, 1]) * lr
 Tensor.eval(W1, b1, W2, b2)              # evaluate all four in one pass
 ```
 
@@ -2025,7 +2025,7 @@ let parts = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
 mut handles = []
 for p in parts { handles.push(Isolate.spawn(|| p.reduce(0, |a, b| a + b))) }
 mut total = 0
-for h in handles { total = total + h.join() }
+for h in handles { total += h.join() }
 total                          # => 45
 ```
 
@@ -2987,7 +2987,7 @@ the sink). `into:` accepts:
 Http.get("https://example.com/big.tar.gz", into: "big.tar.gz")   # → file
 
 mut bytes = 0
-Http.get("https://example.com/big.csv", into: fn (chunk) { bytes = bytes + chunk.size() })
+Http.get("https://example.com/big.csv", into: fn (chunk) { bytes += chunk.size() })
 
 # any method, e.g. a POST whose response streams back:
 Http.post("https://example.com/query", body: q, into: fn (chunk) { handle(chunk) })
@@ -3003,7 +3003,7 @@ returns the next chunk `String`, or `nil` to end the stream:
 let f = File.open("big.bin")
 Http.post(url, body: fn () {
   let chunk = f.read(65536)
-  chunk.size() > 0 ? chunk : nil          # nil signals end-of-stream
+  !chunk.empty() ? chunk : nil            # nil signals end-of-stream
 }, content_type: "application/octet-stream")
 ```
 
@@ -3044,7 +3044,7 @@ Http.post(url, files: { clip: { path: "/movies/big.mp4", content_type: "video/mp
 mut row = 0
 Http.post(url, files: {
   export: { filename: "rows.csv", content_type: "text/csv", stream: fn () {
-    row = row + 1
+    row += 1
     row <= 1000 ? "{row},{compute(row)}\n" : nil
   } },
 })
@@ -4553,7 +4553,7 @@ let box = view.add_box(2.0, 2.0, 2.0).material(gold)
 
 mut a = 0.0
 while !view.closing() {
-  a = a + view.dt()
+  a += view.dt()
   box.yaw(a)
   view.camera(4.0, 3.0, 5.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 55.0)
   view.render_3d()

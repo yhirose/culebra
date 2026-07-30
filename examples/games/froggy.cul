@@ -17,7 +17,7 @@ let ROWS = 16
 let COLS = 16
 
 # Optional tick budget so the demo terminates under a smoke test.
-let MAX_TICKS = Sys.argv.size() > 0 ? to_long(Sys.argv[0]) : -1
+let MAX_TICKS = !Sys.argv.empty() ? to_long(Sys.argv[0]) : -1
 # When stdin is not a tty there is nobody to press keys: auto-start and let
 # the world animate on its own until the tick budget runs out.
 let INTERACTIVE = IO.stdin_is_terminal()

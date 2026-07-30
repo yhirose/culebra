@@ -225,7 +225,7 @@ class Cells {
         let v = self.get(x, y)
         v != 0 && v != ink
       })
-      if col.size() == 0 { continue }
+      if col.empty() { continue }
       let start = (col.min() + (col.max() - col.min()) * (1 - frac)).to_long()
       for y in col {
         if y >= start && (x + y) % 2 == 0 { self.set(x, y, key_dark) }
@@ -672,7 +672,7 @@ for i in 1..10 { DRAW["BILLBOARD{i:02}"] = |c, w, h| draw_billboard(c, w, h, 40 
 fn build_sprites() {
   mut img = KeyImage(atlas.SPRITE_W, atlas.SPRITE_H)
   let missing = atlas.SPRITES.keys().filter(|n| !DRAW.has(n))
-  if missing.size() > 0 {
+  if !missing.empty() {
     throw {kind: "ValueError", message: "no draw routine for {missing.sorted()}"}
   }
   for name, r in atlas.SPRITES {
@@ -688,7 +688,7 @@ fn build_sprites() {
 }
 
 # --- main --------------------------------------------------------------------
-let outdir = Sys.argv.size() > 0
+let outdir = !Sys.argv.empty()
   ? Sys.argv[0]
   : FS.join(FS.dirname(FS.dirname(Sys.script)), "assets")
 FS.mkdir(outdir)

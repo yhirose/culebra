@@ -608,7 +608,7 @@ Culebra はシャドウを 3 つの軸で独立に扱います:
 * `Nil`, `String`, `Array`, `Object`, `Function`: **変換不可** — 真偽値
   文脈（例: `if s { ... }`）に渡すと `type error`。
 
-（これは意図的に厳格です。必要なら `s != nil` や `arr.size() > 0` と
+（これは意図的に厳格です。必要なら `s != nil` や `!arr.empty()` と
 明示的に書いてください。）
 
 ### 単項
@@ -1886,7 +1886,7 @@ inspect(walk({value: 1, kids: [{value: 2, kids: [leaf]}]}).collect())   # => [1,
 使えます。中断できることで、終わりのないソースも実用的になります:
 
 ```culebra
-fn nat() { mut i = 0; while true { yield i; i = i + 1 } }
+fn nat() { mut i = 0; while true { yield i; i += 1 } }
 inspect(nat().map(|x| x * x).take(5).collect())   # => [0, 1, 4, 9, 16]
 ```
 
@@ -3996,7 +3996,7 @@ countdown = fn (start) {
     has_next: fn () { i > 0 },
     next:     fn () {
       v = i
-      i = i - 1
+      i -= 1
       v
     }
   }

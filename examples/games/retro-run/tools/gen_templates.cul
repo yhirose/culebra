@@ -26,7 +26,7 @@ fn outline_sheet(w, h, rects) {
   sheet
 }
 
-let outdir = Sys.argv.size() > 0
+let outdir = !Sys.argv.empty()
   ? Sys.argv[0]
   : FS.join(FS.dirname(FS.dirname(Sys.script)), "assets")
 FS.mkdir(outdir)

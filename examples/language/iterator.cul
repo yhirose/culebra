@@ -19,7 +19,7 @@ fn countdown(start) {
       i > 0
     }, next: fn () {
       let v = i
-      i = i - 1
+      i -= 1
       v
     }}
 }

@@ -13,7 +13,7 @@ let SZ = W * H
 
 # Optional frame count (so the example terminates under a smoke test);
 # absent => spin forever.
-let max_frames = Sys.argv.size() > 0 ? to_long(Sys.argv[0]) : -1
+let max_frames = !Sys.argv.empty() ? to_long(Sys.argv[0]) : -1
 
 mut a = 0.0   # rotation about one axis
 mut b = 0.0   # rotation about the other

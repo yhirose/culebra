@@ -15,7 +15,7 @@ COLS = 14
 NCOLORS = 5
 COLORS = [0, 196, 46, 39, 226, 201]   # 256-colour per tile value 1..5
 
-MAX_MOVES = Sys.argv.size() > 0 ? to_long(Sys.argv[0]) : -1
+MAX_MOVES = !Sys.argv.empty() ? to_long(Sys.argv[0]) : -1
 # Optional second arg seeds the board for a reproducible demo (and lets the
 # interp / JIT / AOT backends be diffed byte-for-byte); -1 = seed from the clock.
 SEED = Sys.argv.size() > 1 ? to_long(Sys.argv[1]) : -1
@@ -37,7 +37,7 @@ fn group_at(b, r, c) {
   mut out = []
   mut seen = [].to_set()          # (row, col) tuples — Sets take any hashable
   mut stack = [(r, c)]
-  while stack.size() > 0 {
+  while !stack.empty() {
     let (pr, pc) = stack.pop()
     let inside = pr >= 0 && pr < ROWS && pc >= 0 && pc < COLS
     # `add` reports whether the cell was new, so the visited test and the mark
@@ -185,7 +185,7 @@ fn draw_box(s, w, title, lines, pick, footer) {
 }
 
 fn draw_score_box(s, scores, highlight, footer) {
-  let lines = scores.size() == 0
+  let lines = scores.empty()
     ? ["no scores yet"]
     : scores.enumerate()
             .map(fn ((i, e)) { "{i + 1}. {e.score}   {e.date} {e.time}" })
@@ -265,7 +265,7 @@ Term.app(fn (s) {
       let left = count_tiles(board)
       if left == 0 { score += 1000; msg = "CLEARED!  bonus +1000" }
       else { msg = "no moves — game over ({left} left)" }
-      msg = msg + "  —  q: quit, other key: new game"
+      msg += "  —  q: quit, other key: new game"
       draw(s, board, cur_r, cur_c, score, msg)
       if !INTERACTIVE { return }
       let (best, entry) = record_score(score)

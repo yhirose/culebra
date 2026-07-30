@@ -26,7 +26,7 @@ let GREEN = ESC + "[32m"
 let RED = ESC + "[31m"
 
 let openrouter_key = Sys.env('OPENROUTER_API_KEY')
-let use_openrouter = openrouter_key.size() > 0
+let use_openrouter = !openrouter_key.empty()
 let api_url = if use_openrouter {
   'https://openrouter.ai/api/v1/messages'
 } else {
@@ -34,7 +34,7 @@ let api_url = if use_openrouter {
 }
 let env_model = Sys.env('MODEL')
 let default_model = if use_openrouter { 'anthropic/claude-opus-5' } else { 'claude-opus-5' }
-let model = if env_model.size() > 0 { env_model } else { default_model }
+let model = if !env_model.empty() { env_model } else { default_model }
 
 # --- small helpers -------------------------------------------------------
 
@@ -84,7 +84,7 @@ let tool_glob = fn (args) {
   let pattern = FS.join(base, args.pat)
   let files = FS.glob(pattern)
   let sorted = files.sorted_by(|f| if FS.is_file(f) { FS.stat(f).mtime } else { 0 }, reverse: true)
-  if sorted.size() == 0 { 'none' } else { sorted.join("\n") }
+  if sorted.empty() { 'none' } else { sorted.join("\n") }
 }
 
 let tool_grep = fn (args) {
@@ -104,20 +104,20 @@ let tool_grep = fn (args) {
     } catch _ { }
   }
   # The walk returns at 50, so whatever is left here is already under the cap.
-  if hits.size() == 0 { 'none' } else { hits.join("\n") }
+  if hits.empty() { 'none' } else { hits.join("\n") }
 }
 
 let tool_bash = fn (args) {
   let r = Proc.run(['sh', '-c', args.cmd], timeout: 30000)
   let combined = (r.stdout + r.stderr).trim_end("\n")
-  if combined.size() > 0 {
+  if !combined.empty() {
     for line in combined.split("\n") {
       IO.println("  {DIM}\u{2502} {line}{RESET}")
     }
   }
   if r.timed_out { return combined + "\n(timed out after 30s)" }
   let out = combined.trim()
-  if out.size() == 0 { '(empty)' } else { out }
+  if out.empty() { '(empty)' } else { out }
 }
 
 # --- tool registry + schema ------------------------------------------------
@@ -235,7 +235,7 @@ let main = fn () {
       IO.print("{BOLD}{BLUE}\u{276f}{RESET} ")
       let user_input = IO.input().trim()
       IO.println(separator())
-      if user_input.size() == 0 {
+      if user_input.empty() {
         if !IO.stdin_is_terminal() { break }
         continue
       }
@@ -285,7 +285,7 @@ let main = fn () {
 
         messages.push({role: 'assistant', content: content_blocks})
 
-        if tool_results.size() == 0 { break }
+        if tool_results.empty() { break }
         messages.push({role: 'user', content: tool_results})
       }
 
