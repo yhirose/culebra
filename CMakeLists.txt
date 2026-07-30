@@ -347,16 +347,24 @@ endfunction()
 option(CULEBRA_ENABLE_SCENE "Enable builtin Scene namespace (raylib + SDL)" OFF)
 # The native Canvas desktop window (2D framebuffer) rides on the same vendored
 # raylib + SDL3 statics as the 3D Scene namespace. ON wherever a window is known
-# to work — macOS today; Linux and Windows keep the toolchain work Scene needs —
-# so a plain `just build` runs a Canvas game in a window with no knob to
-# remember. It costs nothing at runtime: the framebuffer core is identical and
-# CULEBRA_CANVAS_HEADLESS turns the window off per run, no rebuild. A build that
-# wants raylib gone entirely (a lean container, a displayless server) passes
+# to work — macOS and Linux; Windows keeps the toolchain work Scene needs — so a
+# plain `just build` runs a Canvas game in a window with no knob to remember. It
+# costs nothing at runtime: the framebuffer core is identical and
+# CULEBRA_CANVAS_HEADLESS turns the window off per run, no rebuild. Nor does it
+# cost anything to a displayless machine: SDL3 dlopens X11/GL/audio on first use,
+# so a window build adds no DT_NEEDED entry and still starts on a headless
+# server — unlike the Webview namespace, which is why that one stays off here.
+# A build that wants raylib gone entirely passes
 # -DCULEBRA_ENABLE_CANVAS_WINDOW=OFF; CULEBRA_CANVAS_WINDOW_DEFAULT in the
 # environment flips the default for every configure in a job, which is how CI
 # skips the vendored SDL3 + raylib build it has no display for.
+#
+# Linux needs SDL3's documented build dependencies present (see
+# vendor/SDL/docs/README-linux.md): its configure fails outright, rather than
+# quietly dropping a backend, when the X11 or audio headers it probes are
+# missing. Any Linux job that does not install them must pin the env var OFF.
 set(_canvas_window_default OFF)
-if(APPLE)
+if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set(_canvas_window_default ON)
 endif()
 if(DEFINED ENV{CULEBRA_CANVAS_WINDOW_DEFAULT})

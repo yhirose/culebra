@@ -4050,9 +4050,15 @@ frame, `present` it, poll input, repeat. Colours are packed RGBA `Long`s and
 the buffer can be any size (a WASM-4-style 160×160 is typical). In the WASM
 Playground a Canvas program runs in the **Canvas tab** — frames are shown on a
 `<canvas>`, keyboard/pointer feed the input, and `tone` plays through WebAudio.
-Natively a build **opens a real desktop window** wherever one is known to work
-(macOS today; vendored static raylib + SDL3, the same backend the `Scene`
-namespace links): each `present` uploads the frame, upscales it with
+Natively a build **opens a real desktop window** wherever one is known to work —
+macOS and Linux today, using vendored static raylib + SDL3, the same backend the
+`Scene` namespace links. Building it on Linux needs SDL3's documented build
+dependencies present (`vendor/SDL/docs/README-linux.md`); SDL3's configure fails
+outright when the X11 or audio headers it probes for are missing, so a machine
+without them should configure with `-DCULEBRA_ENABLE_CANVAS_WINDOW=OFF`. The
+resulting binary still runs anywhere: SDL3 dlopens X11/GL/audio on first use, so
+a window build adds no shared-library dependency and starts fine on a headless
+server. Each `present` uploads the frame, upscales it with
 nearest-neighbour to a comfortable window size, and blocks to vsync at 60 fps;
 the keyboard and mouse feed `Canvas.buttons`/`Canvas.mouse`, and closing the
 window (or Esc) ends the `run` loop. Everywhere else — and in any run with

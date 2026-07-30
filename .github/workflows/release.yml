@@ -29,12 +29,13 @@ env:
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
   # Note there is deliberately no CULEBRA_CANVAS_WINDOW_DEFAULT here, unlike
   # ci.yml which pins it OFF everywhere. Each platform gets CMake's own default,
-  # which is ON only on macOS — so the macOS download opens a real window for a
-  # Canvas game, matching what a local `just build` produces, while Linux and
-  # Windows stay off. Their raylib + SDL3 path has never been built anywhere,
-  # and SDL disables a missing video backend silently rather than failing the
-  # build, so turning it on blind would ship a binary that claims window
-  # support and cannot open one. Enable them once a CI job proves the link.
+  # which is ON for macOS and Linux — so those downloads open a real window for a
+  # Canvas game, matching what a local `just build` produces on either. The
+  # Linux job therefore has to install SDL3's build dependencies (it does, in
+  # its toolchain step); without them SDL3's configure fails and takes the whole
+  # build with it. Windows stays off: its raylib + SDL3 path has never been
+  # built anywhere, and shipping it unproven would advertise window support that
+  # may not open a window. Enable it once a job proves that link.
 
 jobs:
   # Make sure a release object exists before the build jobs try to upload into
@@ -149,6 +150,20 @@ jobs:
           sudo apt-get install -y \
             ccache cmake g++-14 libblas-dev mold wget \
             lsb-release software-properties-common gnupg
+          # SDL3's Linux build dependencies, so the Canvas desktop window is in
+          # this download the way it is in a local `just build`. These are
+          # build-time only: SDL3 dlopens X11/GL/audio on first use, so the
+          # binary gains no DT_NEEDED entry and still runs on a headless server.
+          # SDL3's configure hard-errors on a missing one rather than dropping
+          # the backend, so this list tracks vendor/SDL/docs/README-linux.md.
+          sudo apt-get install -y \
+            libasound2-dev libpulse-dev libaudio-dev libfribidi-dev \
+            libjack-dev libsndio-dev libx11-dev libxext-dev libxrandr-dev \
+            libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev \
+            libxkbcommon-dev libdrm-dev libgbm-dev libgl1-mesa-dev \
+            libgles2-mesa-dev libegl1-mesa-dev libdbus-1-dev libibus-1.0-dev \
+            libudev-dev libthai-dev libusb-1.0-0-dev libpipewire-0.3-dev \
+            libwayland-dev libdecor-0-dev liburing-dev
           curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
             | sudo bash -s -- --to /usr/local/bin
           wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
@@ -170,16 +185,34 @@ jobs:
             ${{ runner.os }}-ccache-
       - run: just build -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
       - run: ccache -s || true
+      # Same check as the macOS job, for the same reason: an inherited
+      # CULEBRA_CANVAS_WINDOW_DEFAULT or a deps-cache miss drops the window
+      # backend without failing the build.
+      - name: Verify the Canvas window backend is in this build
+        run: |
+          if ! grep -qx 'CULEBRA_ENABLE_CANVAS_WINDOW:BOOL=ON' build/CMakeCache.txt; then
+            echo "ERROR: built without the Canvas desktop window" >&2
+            grep -i canvas build/CMakeCache.txt >&2 || true
+            exit 1
+          fi
+          echo "OK: Canvas games open a real window"
       # Guard the specific regression the toolchain step above avoids: if a
       # desktop dev package ever reaches this runner, CMake silently links
       # Webview and the binary stops starting on headless machines. Naming the
       # offending stack keeps this from failing on unrelated legitimate deps.
+      # X11/GL/SDL belong on the same list now that the window backend is on:
+      # SDL3 is meant to dlopen them, and a DT_NEEDED entry on any of them would
+      # mean this download needs a display just to print its --version.
       - name: Verify no desktop runtime crept into the link
         run: |
           echo "Shared library dependencies:"
           ldd build/culebra
           if ldd build/culebra | grep -iE 'gtk|webkit|libsoup|javascriptcore'; then
             echo "ERROR: the binary needs a desktop WebKit stack to start" >&2
+            exit 1
+          fi
+          if ldd build/culebra | grep -iE 'libX11|libGL|libEGL|libwayland|libSDL|libasound|libpulse'; then
+            echo "ERROR: the binary needs a display/audio stack to start" >&2
             exit 1
           fi
           echo "OK: no desktop runtime dependency"

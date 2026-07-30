@@ -3918,9 +3918,15 @@ Database / Statement ハンドルは生成したスレッド（isolate）に紐�
 色は packed RGBA `Long`、バッファは任意サイズ（WASM-4 流の 160×160 が典型）。
 WASM Playground では Canvas プログラムは **Canvas タブ**で動く — フレームは
 `<canvas>` に表示され、キーボード / ポインタが入力になり、`tone` は WebAudio で
-鳴る。ネイティブでは、ウィンドウが動くと分かっているプラットフォーム（現状は
-macOS、`Scene` と同じ vendored 静的 raylib + SDL3）では**実際のデスクトップ
-ウィンドウを開く**: 各 `present` はフレームをアップロードし、最近傍で見やすい
+鳴る。ネイティブでは、ウィンドウが動くと分かっているプラットフォーム — 現状
+macOS と Linux、`Scene` と同じ vendored 静的 raylib + SDL3 — で**実際のデスク
+トップウィンドウを開く**。Linux でのビルドには SDL3 が挙げるビルド依存
+（`vendor/SDL/docs/README-linux.md`）が必要で、探索する X11 / 音声のヘッダが
+無いと SDL3 の configure が失敗するので、入っていないマシンでは
+`-DCULEBRA_ENABLE_CANVAS_WINDOW=OFF` で configure する。できたバイナリはどこでも
+動く: SDL3 は X11/GL/音声を初回使用時に dlopen するので、ウィンドウビルドでも
+共有ライブラリ依存は増えず、ディスプレイの無いサーバでも問題なく起動する。
+各 `present` はフレームをアップロードし、最近傍で見やすい
 サイズに整数倍拡大し、60fps で vsync までブロックする。キーボードとマウスが
 `Canvas.buttons` / `Canvas.mouse` になり、ウィンドウを閉じる（または Esc）と `run`
 ループが終わる。それ以外のプラットフォーム、および `CULEBRA_CANVAS_HEADLESS` が
