@@ -49,7 +49,7 @@ namespace culebra::fmt {
 struct Doc;
 using DocP = std::shared_ptr<Doc>;
 
-enum class DocKind { Text, Line, SoftLine, HardLine, Group, Indent, Concat };
+enum class DocKind { Text, Line, SoftLine, HardLine, Group, Indent, Concat, IfBreak };
 
 struct Doc {
   DocKind kind;
@@ -61,6 +61,14 @@ struct Doc {
 inline DocP doc_text(std::string s) {
   auto d = std::make_shared<Doc>();
   d->kind = DocKind::Text;
+  d->text = std::move(s);
+  return d;
+}
+// Emitted only when the enclosing group breaks — a trailing comma that appears
+// exactly when the list is laid out one element per line.
+inline DocP doc_if_break(std::string s) {
+  auto d = std::make_shared<Doc>();
+  d->kind = DocKind::IfBreak;
   d->text = std::move(s);
   return d;
 }
@@ -85,6 +93,16 @@ inline DocP doc_indent(int n, DocP x) {
   d->indent = n;
   d->children = {std::move(x)};
   return d;
+}
+
+// A Group may only wrap docs that can lay out flat, so anything holding a
+// HardLine has to stay ungrouped (the invariant the layout relies on).
+inline bool doc_has_hardline(const DocP& d) {
+  if (!d) return false;
+  if (d->kind == DocKind::HardLine) return true;
+  for (const auto& c : d->children)
+    if (doc_has_hardline(c)) return true;
+  return false;
 }
 
 struct LayoutCmd {
@@ -115,6 +133,9 @@ inline bool doc_fits(int remaining, std::vector<LayoutCmd> stack) {
       case DocKind::Line:
         if (c.flat) remaining -= 1; else return true;
         break;
+      case DocKind::IfBreak:
+        if (!c.flat) remaining -= static_cast<int>(c.doc->text.size());
+        break;
       case DocKind::SoftLine:
         if (!c.flat) return true;
         break;
@@ -128,13 +149,26 @@ inline bool doc_fits(int remaining, std::vector<LayoutCmd> stack) {
 inline std::string doc_render(const DocP& root, int width) {
   std::string out;
   int col = 0;
+  // Indentation is owed, not written: a line that never receives text stays
+  // empty instead of collecting trailing spaces.
+  int pending_indent = -1;
+  auto put = [&](std::string_view s) {
+    if (s.empty()) return;
+    if (pending_indent >= 0) { out.append(pending_indent, ' '); pending_indent = -1; }
+    out += s;
+  };
+  auto newline = [&](int indent) {
+    out += '\n';
+    pending_indent = indent;
+    col = indent;
+  };
   std::vector<LayoutCmd> stack = {{0, /*flat=*/false, root.get()}};
   while (!stack.empty()) {
     LayoutCmd c = stack.back();
     stack.pop_back();
     switch (c.doc->kind) {
       case DocKind::Text:
-        out += c.doc->text;
+        put(c.doc->text);
         col += static_cast<int>(c.doc->text.size());
         break;
       case DocKind::Concat:
@@ -152,16 +186,17 @@ inline std::string doc_render(const DocP& root, int width) {
         break;
       }
       case DocKind::Line:
-        if (c.flat) { out += ' '; col += 1; }
-        else { out += '\n'; out.append(c.indent, ' '); col = c.indent; }
+        if (c.flat) { put(" "); col += 1; }
+        else { newline(c.indent); }
+        break;
+      case DocKind::IfBreak:
+        if (!c.flat) { put(c.doc->text); col += static_cast<int>(c.doc->text.size()); }
         break;
       case DocKind::SoftLine:
-        if (!c.flat) { out += '\n'; out.append(c.indent, ' '); col = c.indent; }
+        if (!c.flat) { newline(c.indent); }
         break;
       case DocKind::HardLine:
-        out += '\n';
-        out.append(c.indent, ' ');
-        col = c.indent;
+        newline(c.indent);
         break;
     }
   }
@@ -699,7 +734,8 @@ class Printer {
   // brace interior is located by scanning from `after_pos` (at or before `{`).
   template <typename Render>
   DocP print_braced(const std::vector<const peg::Ast*>& items, size_t after_pos,
-                    const std::string& sep, bool empty_ok, Render render) {
+                    const std::string& sep, bool empty_ok, Render render,
+                    bool allow_inline = true) {
     BlockSpan span = block_interior(after_pos);
     size_t lo = span.found ? span.lo : (items.empty() ? after_pos : items.front()->position);
     size_t hi = span.found ? span.hi : (items.empty() ? after_pos : node_end(*items.back()));
@@ -717,6 +753,22 @@ class Printer {
       return doc_concat({doc_text("{"), doc_indent(kIndent, doc_concat(std::move(inner))),
                          doc_hardline(), doc_text("}")});
     }
+    // A lone statement with no comments in the braces may stay on one line when
+    // it fits — `if !ok { return }` is how culebra is written, in the docs and
+    // throughout the examples. Member lists (sep == ",") always lay out multi-line.
+    if (allow_inline && items.size() == 1 && sep.empty()) {
+      bool has_comment = false;
+      for (const auto& c : comments_)
+        if (c.start >= lo && c.start < hi) { has_comment = true; break; }
+      DocP only = has_comment ? nullptr : render(0);
+      if (only && !doc_has_hardline(only))
+        return doc_group(doc_concat({
+            doc_text("{"),
+            doc_indent(kIndent, doc_concat({doc_line(), std::move(only)})),
+            doc_line(),
+            doc_text("}"),
+        }));
+    }
     return doc_concat({
         doc_text("{"),
         doc_indent(kIndent, doc_concat({doc_hardline(),
@@ -728,10 +780,11 @@ class Printer {
 
   // A brace block of statements: `body` is the block's statement node(s),
   // `after_pos` at or before its `{`.
-  DocP print_block(const peg::Ast& body, size_t after_pos, bool empty_ok) {
+  DocP print_block(const peg::Ast& body, size_t after_pos, bool empty_ok,
+                   bool allow_inline = true) {
     auto stmts = stmt_children(body);
     return print_braced(stmts, after_pos, "", empty_ok,
-                        [&](size_t k) { return print(*stmts[k]); });
+                        [&](size_t k) { return print(*stmts[k]); }, allow_inline);
   }
 
   // A bare `{ ... }` statement block. The optimizer keeps LEXICAL_SCOPE as a
@@ -748,7 +801,9 @@ class Printer {
     // from it would locate the wrong brace and mis-attribute interior comments.
     // The lone child's span is folded to start exactly at this scope's own `{`.
     const peg::Ast& body = *node.nodes[0];
-    return print_block(body, body.position, /*empty_ok=*/true);
+    // Never inline: a bare block exists to mark a scope, and collapsing it to
+    // `{ let a = i }` inside another block's braces reads as a typo.
+    return print_block(body, body.position, /*empty_ok=*/true, /*allow_inline=*/false);
   }
 
   // Print `node` as an operand of a binary/unary context, parenthesizing when
@@ -850,6 +905,11 @@ class Printer {
   DocP print_delimited(const std::string& open, std::vector<DocP> items,
                        const std::string& close) {
     if (items.empty()) return doc_text(open + close);
+    // Breaking after the delimiter never helps a lone element: an atom is just
+    // as wide on its own line, and a nested list breaks inside itself. Keep it
+    // against the bracket (prettier's "hug") so `f({...})` reads as one call.
+    if (items.size() == 1)
+      return doc_concat({doc_text(open), std::move(items[0]), doc_text(close)});
     std::vector<DocP> inner;
     inner.push_back(doc_softline());
     for (size_t i = 0; i < items.size(); i++) {
@@ -859,6 +919,9 @@ class Printer {
         inner.push_back(doc_line());
       }
     }
+    // Once broken, the list gets the trailing comma the language allows for
+    // exactly this reason: reordering or appending touches one line, not two.
+    inner.push_back(doc_if_break(","));
     return doc_group(doc_concat({
         doc_text(open),
         doc_indent(kIndent, doc_concat(std::move(inner))),
