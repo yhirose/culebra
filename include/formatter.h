@@ -897,7 +897,16 @@ class Printer {
     DocP cond = print_operand(*node.nodes[0], prec("CONDITIONAL"), /*assoc_safe=*/true);
     DocP then = print(*node.nodes[1]);
     DocP els = print_operand(*node.nodes[2], prec("CONDITIONAL"), /*assoc_safe=*/true);
-    return doc_concat({cond, doc_text(" ? "), then, doc_text(" : "), els});
+    // Wrap like a binary chain when it overflows: `?` and `:` lead the
+    // continuation lines, which parses because both are infix rungs that admit
+    // a newline before them (unlike `+`, where breaking early ends the term).
+    return doc_group(doc_concat({
+        cond,
+        doc_indent(kIndent, doc_concat({
+            doc_line(), doc_text("? "), std::move(then),
+            doc_line(), doc_text(": "), std::move(els),
+        })),
+    }));
   }
 
   // A comma-separated, group-wrappable list: `( a, b, c )` style. `open`/`close`
@@ -1582,6 +1591,63 @@ struct FormatResult {
   std::string message;  // diagnostic for ParseError / Refused
 };
 
+// Line up the trailing comments of adjacent lines. A run of `code  # note`
+// lines is written as a column by hand — giving each one its own width turns a
+// table back into ragged text. Only runs at the same indentation are joined, so
+// a comment inside a block never drags one outside it. Two spaces is the
+// minimum gap, which is what a single such line already gets.
+inline std::string align_trailing_comments(const std::string& src) {
+  std::vector<size_t> line_start{0};
+  for (size_t i = 0; i < src.size(); i++)
+    if (src[i] == '\n') line_start.push_back(i + 1);
+  const size_t n = line_start.size();
+
+  std::vector<size_t> comment_at(n, std::string::npos);
+  for (const auto& c : scan_comments(src)) {
+    if (c.own_line || c.block) continue;
+    size_t li = static_cast<size_t>(
+        std::upper_bound(line_start.begin(), line_start.end(), c.start) -
+        line_start.begin()) - 1;
+    comment_at[li] = c.start;
+  }
+
+  auto line_end = [&](size_t li) { return li + 1 < n ? line_start[li + 1] : src.size(); };
+  auto indent_of = [&](size_t li) {
+    size_t p = line_start[li];
+    while (p < src.size() && (src[p] == ' ' || src[p] == '\t')) p++;
+    return p - line_start[li];
+  };
+  auto code_width = [&](size_t li) {
+    size_t e = comment_at[li];
+    while (e > line_start[li] && (src[e - 1] == ' ' || src[e - 1] == '\t')) e--;
+    return e - line_start[li];
+  };
+
+  std::string out;
+  out.reserve(src.size() + src.size() / 16);
+  for (size_t i = 0; i < n;) {
+    if (comment_at[i] == std::string::npos) {
+      out.append(src, line_start[i], line_end(i) - line_start[i]);
+      i++;
+      continue;
+    }
+    size_t j = i, width = 0;
+    const size_t indent = indent_of(i);
+    while (j < n && comment_at[j] != std::string::npos && indent_of(j) == indent) {
+      width = std::max(width, code_width(j));
+      j++;
+    }
+    for (size_t k = i; k < j; k++) {
+      size_t w = code_width(k);
+      out.append(src, line_start[k], w);
+      out.append(width - w + 2, ' ');
+      out.append(src, comment_at[k], line_end(k) - comment_at[k]);
+    }
+    i = j;
+  }
+  return out;
+}
+
 // Multiset of comment texts (sorted), so two sources can be compared for
 // comment preservation regardless of where the comments moved.
 inline std::vector<std::string> comment_multiset(std::string_view s) {
@@ -1605,6 +1671,7 @@ inline FormatResult format_source(const std::string& path, std::string_view src,
   Printer printer(src);
   std::string out = doc_render(printer.print_program(*ast), width);
   if (out.empty() || out.back() != '\n') out += '\n';
+  out = align_trailing_comments(out);
 
   // Safety net 1: re-parse and require structural AST equality, so a printer
   // bug can never silently change program meaning.
