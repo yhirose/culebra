@@ -2687,7 +2687,8 @@ catastrophic backtracking が原理的に起きないため backreference はあ
 | `Regex.find_all(pat, s)` | `[Match]` |
 | `Regex.test(pat, s)` | `Bool` |
 | `Regex.split(pat, s)` | `[String]` |
-| `Regex.replace_all(pat, s, repl)` | `String` — テンプレート または `fn (Match) -> String` の repl |
+| `Regex.replace_all(pat, s, repl)` | `String` — テンプレート または `fn (Match) -> String` の repl、全マッチ置換 |
+| `Regex.replace_first(pat, s, repl)` | `String` — repl は同じ、最左マッチのみ置換 |
 
 ```culebra
 inspect(Regex.find('(\d+)', "ab12")[1])            # => '12'
@@ -2707,7 +2708,8 @@ inspect(Regex.find('x', "y")?.value ?? "none")     # => 'none'
 | `re.find_all_index(s)` | `[Int]` — flat なバイト span `[s0, e0, s1, e1, …]`（位置のみ・確保は配列1個） |
 | `re.count(s)` | `Int` — 非重複マッチ数（オブジェクト確保なし） |
 | `re.find_iter(s)` | `Iterator<Match>` — 遅延。途中終了可（`.take(n)`） |
-| `re.replace_all(s, repl)` | `String` — `repl` はテンプレート（`$1` / `$<name>` / `$$`）**または** `fn (Match) -> String` |
+| `re.replace_all(s, repl)` | `String` — `repl` はテンプレート（`$1` / `$<name>` / `$$`）**または** `fn (Match) -> String`、全マッチ置換 |
+| `re.replace_first(s, repl)` | `String` — `repl` の文法は同じ、最左マッチのみ置換。マッチなしなら `s` をそのまま返す |
 | `re.split(s)` | `[String]` — マッチで `s` を分割 |
 
 **bulk API の選び方。** `find_all` はマッチごとに完全な `Match`
@@ -2758,11 +2760,14 @@ inspect(m.groups[1].value)       # => '2026'
 inspect(m.named["year"].value)   # => '2026'
 ```
 
-置換と分割 — 置換文字列は `$n` テンプレートか、`Match` を受け取る関数です:
+置換と分割 — 置換文字列は `$n` テンプレートか、`Match` を受け取る関数です。
+`replace_all` は全マッチを置換し、`replace_first` は最左マッチだけを置換して
+残りはそのまま残します（マッチが無ければ `s` をそのまま返す no-op）:
 
 ```culebra
 let d = Regex.compile('\d+')
 inspect(d.replace_all("a1 b22 c333", "#"))                        # => 'a# b# c#'
+inspect(d.replace_first("a1 b22 c333", "#"))                      # => 'a# b22 c333'
 inspect(Regex.compile('(\w+)@(\w+)').replace_all("x@y", '$2.$1')) # => 'y.x'
 inspect(d.replace_all("a1 b22", fn (m) { "<{m.value}>" }))        # => 'a<1> b<22>'
 inspect(Regex.compile('\s+').split("the quick  brown"))           # => ['the', 'quick', 'brown']

@@ -6926,6 +6926,27 @@ inline Value make_regex_primitives_namespace() {
                     "String"sv)),
                 false);
 
+  // replace_first(pattern, s, repl) -> String: like replace_all but only the
+  // leftmost match. Same $-template grammar (regexlib::replace_first).
+  ns.initialize("replace_first",
+                Value(FunctionValue(
+                    {{"pattern", false, "StringLike"sv},
+                     {"s", false, "StringLike"sv},
+                     {"repl", false, "StringLike"sv}},
+                    [](std::shared_ptr<Environment> env) -> Value {
+                      auto re = regex_from_env(env);
+                      std::string s{env->get("s").to_string()};
+                      std::string repl{env->get("repl").to_string()};
+                      try {
+                        return Value(re->replace_first(s, repl));
+                      } catch (const reg::RegexError& e) {
+                        regex_rethrow(e, env);
+                        return Value();
+                      }
+                    },
+                    "String"sv)),
+                false);
+
   // split: slice the subject between successive matches (find_all + substr).
   ns.initialize("split",
                 Value(FunctionValue(

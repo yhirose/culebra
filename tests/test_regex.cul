@@ -55,6 +55,13 @@ assert_eq(Regex.compile('\d+').replace_all("a1 b22 c333", "#"), "a# b# c#")
 assert_eq(Regex.compile('(\w+)@(\w+)').replace_all("x@y", '$2.$1'), "y.x")
 assert_eq(Regex.compile('(?<g>\d+)').replace_all("a12b", '[$<g>]'), "a[12]b")
 
+// --- replace_first: leftmost match only, same $-grammar, same repl types ---
+assert_eq(Regex.compile('\d+').replace_first("a1 b22 c333", "#"), "a# b22 c333")
+assert_eq(Regex.compile('(\w+)@(\w+)').replace_first("x@y z@w", '$2.$1'), "y.x z@w")
+assert_eq(Regex.replace_first('\d+', "a1 b22 c333", "#"), "a# b22 c333")
+assert_eq(Regex.compile('\d+').replace_first("a1 b22", fn (m) { "<{m.value}>" }), "a<1> b22")
+assert_eq(Regex.compile('\d+').replace_first("no digits", "#"), "no digits") // no match -> unchanged
+
 // --- split ---
 let parts = Regex.compile('\s+').split("the quick  brown   fox")
 assert_eq(parts.size(), 4)

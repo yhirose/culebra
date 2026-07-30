@@ -2776,7 +2776,8 @@ caches by pattern so the one-shot forms pay no recompile. Put flags inline
 | `Regex.find_all(pat, s)` | `[Match]` |
 | `Regex.test(pat, s)` | `Bool` |
 | `Regex.split(pat, s)` | `[String]` |
-| `Regex.replace_all(pat, s, repl)` | `String` — template or `fn (Match) -> String` repl |
+| `Regex.replace_all(pat, s, repl)` | `String` — template or `fn (Match) -> String` repl, every match |
+| `Regex.replace_first(pat, s, repl)` | `String` — same `repl`, only the leftmost match |
 
 ```culebra
 inspect(Regex.find('(\d+)', "ab12")[1])            # => '12'
@@ -2796,7 +2797,8 @@ inspect(Regex.find('x', "y")?.value ?? "none")     # => 'none'
 | `re.find_all_index(s)` | `[Int]` — flat byte spans `[s0, e0, s1, e1, …]` (positions only, one allocation total) |
 | `re.count(s)` | `Int` — number of non-overlapping matches (no objects allocated) |
 | `re.find_iter(s)` | `Iterator<Match>` — lazy; supports early exit (`.take(n)`) |
-| `re.replace_all(s, repl)` | `String` — `repl` is a template (`$1` / `$<name>` / `$$`) **or** a `fn (Match) -> String` |
+| `re.replace_all(s, repl)` | `String` — `repl` is a template (`$1` / `$<name>` / `$$`) **or** a `fn (Match) -> String`, every match |
+| `re.replace_first(s, repl)` | `String` — same `repl` grammar, only the leftmost match; unchanged if there is no match |
 | `re.split(s)` | `[String]` — split `s` on matches |
 
 **Choosing a bulk API.** `find_all` builds a full `Match` object (text, spans,
@@ -2849,11 +2851,14 @@ inspect(m.named["year"].value)   # => '2026'
 ```
 
 Replacing and splitting — a replacement is either a `$n` template or a
-function of the `Match`:
+function of the `Match`. `replace_all` replaces every match; `replace_first`
+replaces only the leftmost one and leaves the rest of the string untouched
+(a no-op — returns `s` unchanged — if there is no match):
 
 ```culebra
 let d = Regex.compile('\d+')
 inspect(d.replace_all("a1 b22 c333", "#"))                        # => 'a# b# c#'
+inspect(d.replace_first("a1 b22 c333", "#"))                      # => 'a# b22 c333'
 inspect(Regex.compile('(\w+)@(\w+)').replace_all("x@y", '$2.$1')) # => 'y.x'
 inspect(d.replace_all("a1 b22", fn (m) { "<{m.value}>" }))        # => 'a<1> b<22>'
 inspect(Regex.compile('\s+').split("the quick  brown"))           # => ['the', 'quick', 'brown']

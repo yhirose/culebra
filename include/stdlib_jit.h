@@ -6258,6 +6258,14 @@ inline JitValue _ns_regex_replace_all(JitValue* a, int64_t) {
                                     _ns_adapt::require_sv(a[2], "repl", "StringLike"));
   return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(out))};
 }
+// replace_first(pattern, s, repl) -> String: like replace_all but only the
+// leftmost match. Same $-template grammar (regexlib::replace_first).
+inline JitValue _ns_regex_replace_first(JitValue* a, int64_t) {
+  auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
+  std::string out = re->replace_first(_ns_adapt::require_sv(a[1], "s", "StringLike"),
+                                      _ns_adapt::require_sv(a[2], "repl", "StringLike"));
+  return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(out))};
+}
 // find_from(pattern, s, pos) -> { m: Match|nil, next: Int }. See the interp
 // twin in stdlib_interp.h: one stateless find_at scan step (absolute offsets,
 // engine-owned empty-match resume rule, anchors see the full subject).
@@ -6595,6 +6603,7 @@ inline const NsMethod kNsMethods[] = {
   {"_Regex", "find_all_index",2, &_ns_regex_find_all_index},
   {"_Regex", "count",       2, &_ns_regex_count},
   {"_Regex", "replace_all", 3, &_ns_regex_replace_all},
+  {"_Regex", "replace_first",3, &_ns_regex_replace_first},
   {"_Regex", "split",       2, &_ns_regex_split},
 
   {"Net",    "connect", 2, &_ns_net_connect},
