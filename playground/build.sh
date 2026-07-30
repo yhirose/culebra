@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Build the culebra playground (interp-only, WebAssembly) into site/playground/.
-# The wasm artifacts are committed so GitHub Pages ("deploy from branch") serves
-# them directly. Run from the repo root (via `just site-build`). Only a changed
-# input triggers a recompile, so editing the frontend and re-running
-# `just site-serve` costs a copy rather than two interpreter builds.
+# The wasm artifacts are committed, and .github/workflows/pages.yml uploads
+# site/ as-is — no runner has emsdk, so this never runs in CI. Invoke it via
+# `just site-build`. Only a changed input triggers a recompile, so re-running
+# it after editing only the frontend costs a copy rather than two interpreter
+# builds.
 #
 # Two builds, and worker.js picks one at load time:
 #
@@ -49,7 +50,10 @@ if command -v ccache >/dev/null; then
 fi
 
 OUT="site/playground"
-mkdir -p "$OUT"
+# Dep files and stamps are local bookkeeping, not published output — keeping
+# them out of $OUT means Pages serves only what a visitor needs.
+CACHE="build-playground"
+mkdir -p "$OUT" "$CACHE"
 
 COMMON=(
   -std=c++23 -O2 -fwasm-exceptions
@@ -88,7 +92,8 @@ fingerprint() {  # $1 = dep file, $2 = output .js, $3… = the emcc command line
 
 compile() {  # $1 = label, $2 = output .js, $3… = flags on top of COMMON
   local label=$1 out=$2; shift 2
-  local dep="${out%.js}.d" stamp="${out%.js}.stamp" want
+  local base; base="$CACHE/$(basename "${out%.js}")"
+  local dep="$base.d" stamp="$base.stamp" want
   local cmd=("${COMMON[@]}" "$@" playground/wasm_main.cc -o "$out")
   # A vanished input makes fingerprint fail, which reads as "rebuild".
   if [ -s "$dep" ] && [ -f "$stamp" ] && [ -f "${out%.js}.wasm" ] &&

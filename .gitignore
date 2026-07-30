@@ -77,9 +77,8 @@ docs/_history.md
 docs/_history.ja.md
 docs/_internal/*
 
-# Playground incremental-build bookkeeping (the wasm beside it is committed)
-site/playground/*.d
-site/playground/*.stamp
+# Playground incremental-build bookkeeping (the wasm it guards is committed)
+build-playground/
 
 # Python bytecode from the asset generator
 __pycache__/

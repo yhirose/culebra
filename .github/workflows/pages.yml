@@ -1,0 +1,53 @@
+name: Pages
+
+# Publish site/ to GitHub Pages. Deploying from an artifact rather than from a
+# branch is what lets the site live in site/ at all: a branch source can only
+# be / or /docs, and it runs the tree through Jekyll first — which would put
+# every reference doc under docs/ on the public web and make the deploy depend
+# on Liquid not choking on a `{{` in a fenced code block. Here the tarball is
+# served verbatim, so site/ is the whole published surface and docs/ is not
+# part of it.
+#
+# One-time setup: Settings -> Pages -> Source = "GitHub Actions". Without that
+# the deploy step fails; nothing in this file can flip it.
+#
+# The wasm is committed (no runner has emsdk — see playground/build.sh), so
+# this only ever uploads what is already in the tree; `just site-build` stays
+# a local step.
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+# One deploy at a time, and never cancel one in flight — a half-applied deploy
+# is what leaves the live site inconsistent. A newer run just waits its turn.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write  # OIDC token deploy-pages exchanges for the upload
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      # No submodules: site/ is prebuilt output plus static assets.
+      - uses: actions/checkout@v5
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

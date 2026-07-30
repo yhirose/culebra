@@ -887,9 +887,9 @@ vendor-update *extra:
     ./tools/vendor_update.sh {{extra}}
 
 # Build the browser playground (interp-only wasm via emscripten) into
-# site/playground/. Artifacts are committed — GitHub Pages serves site/
-# straight from the branch. Needs emsdk (default ~/Projects/emsdk, override
-# with EMSDK_DIR).
+# site/playground/. Artifacts are committed — .github/workflows/pages.yml
+# uploads site/ to Pages as-is, so this is the only place they are produced.
+# Needs emsdk (default ~/Projects/emsdk, override with EMSDK_DIR).
 [group("site")]
 [doc("Build the browser playground (wasm) into site/playground/")]
 site-build:
