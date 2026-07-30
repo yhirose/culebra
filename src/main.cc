@@ -1831,10 +1831,11 @@ int main(int argc, const char** argv) {
     // Name the backends the build actually has: a no-JIT build cannot run
     // --jit or `culebra build`, so a bug report needs to say which binary.
 #ifdef CULEBRA_JIT_ENABLED
-    std::println(cout, "culebra {} (interp+jit)", CULEBRA_VERSION);
+    constexpr auto backends = "interp+jit";
 #else
-    std::println(cout, "culebra {} (interp)", CULEBRA_VERSION);
+    constexpr auto backends = "interp";
 #endif
+    std::println(cout, "culebra {} ({})", CULEBRA_VERSION, backends);
     return 0;
   }
 

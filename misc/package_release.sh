@@ -38,7 +38,9 @@ if [ "$want" != "$got" ]; then
 fi
 
 name="culebra-$tag-$os-$arch"
-staging="$(mktemp -d)/$name"
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT  # the staged copy is ~100 MB; don't leak it locally
+staging="$tmp/$name"
 mkdir -p "$staging"
 cp "$binary" "$staging/"
 cp LICENSE "$staging/"
@@ -46,10 +48,10 @@ cp LICENSE "$staging/"
 out=$PWD
 if [ "$os" = windows ]; then
   archive="$name.zip"
-  (cd "$(dirname "$staging")" && zip -qr "$out/$archive" "$name")
+  (cd "$tmp" && zip -qr "$out/$archive" "$name")
 else
   archive="$name.tar.gz"
-  tar -czf "$archive" -C "$(dirname "$staging")" "$name"
+  tar -czf "$archive" -C "$tmp" "$name"
 fi
 
 # Relative name in, relative name out, so the digest line names just the

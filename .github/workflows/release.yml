@@ -42,11 +42,17 @@ jobs:
     steps:
       # No checkout: this job only talks to the releases API, so `gh` is pointed
       # at the repo by GH_REPO rather than by a git remote.
-      - name: Ensure a release exists for $TAG
+      - name: Ensure a release exists for ${{ env.TAG }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          # `gh release create` would happily invent the tag at the default
+          # branch, so a mistyped workflow_dispatch input must not reach it.
+          gh api "repos/$GH_REPO/git/ref/tags/$TAG" >/dev/null || {
+            echo "no such tag: $TAG" >&2
+            exit 1
+          }
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "release $TAG already exists — leaving its notes alone"
           else
@@ -54,7 +60,7 @@ jobs:
               --notes "Assets are building. Release notes follow."
           fi
 
-  macos:
+  macos-arm64:
     needs: prepare
     runs-on: macos-latest
     timeout-minutes: 60
@@ -74,7 +80,14 @@ jobs:
         with:
           path: ${{ github.workspace }}/.ccache
           key: release-macos-ccache-${{ github.sha }}
-          restore-keys: release-macos-ccache-
+          # Fall back to the cache ci.yml keeps warm on master. A tag ref can
+          # read the default branch's caches but not another tag's, so without
+          # this second key every release would be a cold build — the release-*
+          # entries this run writes are unreadable from the next tag. Same
+          # `just build` flags and same env here, so most objects hit.
+          restore-keys: |
+            release-macos-ccache-
+            ${{ runner.os }}-ccache-
       # `just build` is the -O3 + LTO configuration, unlike the no-LTO gate
       # build: a downloaded binary should be the fast one.
       - run: just build
@@ -82,6 +95,7 @@ jobs:
       - name: Package and upload
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         # Assign first, upload second: a failing package step then aborts here
         # with its own message, instead of `gh` complaining about no files.
         run: |
@@ -101,17 +115,23 @@ jobs:
         with:
           submodules: recursive
       # Mirrors ci.yml's Ubuntu setup — gcc-14 for C++23 <print>, LLVM 22 for
-      # the JIT's APIs, mold for the LLVM-heavy static link, `just` from its
-      # own installer (apt's predates [group(...)]) — plus the WebView
-      # development packages, which ci.yml omits: CI does not care whether the
-      # Webview namespace is present, a release binary does.
+      # the JIT's APIs, mold for the LLVM-heavy static link, `just` from its own
+      # installer (apt's predates [group(...)]).
+      #
+      # Deliberately NOT installing gtk4 + webkitgtk-6.0: with them present
+      # CMake links the Webview namespace, and vendored webview.h calls gtk_*
+      # and webkit_* directly, so the driver picks up DT_NEEDED entries on
+      # libgtk-4.so.1 and libwebkitgtk-6.0.so.4. That binary then fails to even
+      # start anywhere those runtimes are absent — a headless server, a
+      # container, any pre-24.04 Ubuntu. Webview is a desktop feature; making
+      # every download depend on a desktop WebKit stack is the wrong trade. A
+      # separate desktop-flavored asset can carry it later.
       - name: Install toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             ccache cmake g++-14 libblas-dev mold wget \
-            lsb-release software-properties-common gnupg \
-            libgtk-4-dev libwebkitgtk-6.0-dev zip
+            lsb-release software-properties-common gnupg
           curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
             | sudo bash -s -- --to /usr/local/bin
           wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
@@ -128,30 +148,33 @@ jobs:
         with:
           path: ${{ github.workspace }}/.ccache
           key: release-linux-ccache-${{ github.sha }}
-          restore-keys: release-linux-ccache-
+          restore-keys: |
+            release-linux-ccache-
+            ${{ runner.os }}-ccache-
       - run: just build -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
       - run: ccache -s || true
-      # CMake turns Webview off with only a STATUS message when pkg-config
-      # cannot see gtk4 / webkitgtk-6.0, and `just build` discards the configure
-      # log — a renamed apt package would otherwise ship a binary quietly
-      # missing the namespace. Ask the binary instead: `Webview` is registered
-      # only under CULEBRA_ENABLE_WEBVIEW, so a NameError is the exact signal.
-      - name: Verify Webview made it into the build
+      # Guard the specific regression the toolchain step above avoids: if a
+      # desktop dev package ever reaches this runner, CMake silently links
+      # Webview and the binary stops starting on headless machines. Naming the
+      # offending stack keeps this from failing on unrelated legitimate deps.
+      - name: Verify no desktop runtime crept into the link
         run: |
-          printf 'println(Webview.Window != nil)\n' > webview_check.cul
-          ./build/culebra webview_check.cul || {
-            echo "Webview is missing — check the gtk4 / webkitgtk-6.0 dev packages" >&2
+          echo "Shared library dependencies:"
+          ldd build/culebra
+          if ldd build/culebra | grep -iE 'gtk|webkit|libsoup|javascriptcore'; then
+            echo "ERROR: the binary needs a desktop WebKit stack to start" >&2
             exit 1
-          }
-          rm -f webview_check.cul
+          fi
+          echo "OK: no desktop runtime dependency"
       - name: Package and upload
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           assets=$(misc/package_release.sh ./build/culebra "$TAG" linux x64)
           gh release upload "$TAG" --clobber $assets
 
-  windows:
+  windows-x64:
     needs: prepare
     runs-on: windows-latest
     timeout-minutes: 60
@@ -182,7 +205,12 @@ jobs:
         with:
           path: ${{ github.workspace }}/.ccache
           key: release-windows-ccache-${{ github.sha }}
-          restore-keys: release-windows-ccache-
+          # windows-aot-ccache-* is the closest warm cache: same configure line
+          # apart from LTO, which only changes the `culebra` target's own two
+          # TUs — the runtime archives that dominate the build still hit.
+          restore-keys: |
+            release-windows-ccache-
+            windows-aot-ccache-
       # The feature set of ci.yml's windows-aot-build (the widest Windows
       # configuration that CI proves), with LTO turned back on for release.
       # HTTP stays off: it wants a static OpenSSL, which no CI job has linked
@@ -211,19 +239,34 @@ jobs:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: cmake --build build --target culebra -j
       - run: ccache -s || true
-      # The whole point of -static here: a downloaded .exe must not need a
-      # mingw runtime DLL the user does not have.
-      - name: Verify the binary needs only system DLLs
+      # The whole point of -static here: a downloaded .exe must not need a DLL
+      # the user does not have. Same allowlist as ci.yml's `windows` job — an
+      # allowlist, not a mingw-runtime blocklist, so an unexpected import (a
+      # static lib that quietly resolved to its DLL) fails too.
+      - name: Verify standalone binary (only system DLLs)
         run: |
-          objdump -p build/culebra.exe | grep -i 'DLL Name' | sort -u
-          if objdump -p build/culebra.exe | grep -i 'DLL Name' |
-             grep -iqE 'libgcc|libstdc\+\+|libwinpthread|msys-'; then
-            echo "binary depends on a mingw runtime DLL — static link broke" >&2
+          echo "Imported DLLs:"
+          imports=$(objdump -p build/culebra.exe \
+            | grep -i 'DLL Name' | sed -E 's/.*DLL Name:\s*//' | tr 'A-Z' 'a-z' | sort -u)
+          echo "$imports"
+          allow='^(kernel32|kernelbase|msvcrt|ntdll|user32|advapi32|ws2_32|shell32|ole32|oleaut32|bcrypt|crypt32|secur32|iphlpapi|dbghelp|version|winmm|gdi32)\.dll$'
+          bad=$(echo "$imports" | grep -viE "$allow" || true)
+          if [ -n "$bad" ]; then
+            echo "ERROR: binary imports non-system DLL(s) — not standalone:" >&2
+            echo "$bad" >&2
             exit 1
           fi
+          echo "OK: only system DLLs imported — runs on a plain Windows box"
       - name: Package and upload
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          # setup-msys2 defaults to path-type `minimal`, whose PATH holds only
+          # the MSYS2 trees plus System32 — the runner's gh.exe lives outside
+          # both, so `gh` would be not-found here, at the end of a ~40 min
+          # build. `inherit` puts the Windows PATH back. GH_REPO matters for the
+          # same reason: MSYS2 has no git for gh to read the remote from.
+          MSYS2_PATH_TYPE: inherit
         run: |
           assets=$(misc/package_release.sh ./build/culebra.exe "$TAG" windows x64)
           gh release upload "$TAG" --clobber $assets
@@ -232,7 +275,7 @@ jobs:
   # per-asset digests back off the release rather than passing artifacts around,
   # which also proves each upload actually landed.
   finalize:
-    needs: [macos, linux-x64, windows]
+    needs: [macos-arm64, linux-x64, windows-x64]
     runs-on: ubuntu-latest
     steps:
       - name: Aggregate SHA256SUMS
