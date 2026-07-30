@@ -1,0 +1,257 @@
+name: Release
+
+# Pushing a `v*` tag builds the downloadable binaries and attaches them to the
+# release for that tag. The release notes are NOT written here — `/release`
+# (.claude/commands/release.md) authors them and flips the release out of draft
+# once this workflow is green. This workflow only ever adds assets, so the two
+# can run in either order.
+on:
+  push:
+    tags: ['v*']
+  # Re-run the asset build for an existing tag without re-tagging (a runner
+  # flake, a fixed workflow bug). Uploads are --clobber, so this is idempotent.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build assets for (e.g. v0.1.0)'
+        required: true
+
+# One asset build per tag: a re-dispatch while a run is still going would have
+# both racing to upload the same filenames.
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write  # gh release create / upload
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  # Ship one build shape per platform. The vendored raylib + SDL3 statics behind
+  # Scene / the Canvas desktop window are excluded: no CI job has ever built
+  # them (every job pins this OFF), and a release is the wrong place to debut an
+  # unexercised toolchain path. Canvas itself still works headless.
+  CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
+
+jobs:
+  # Make sure a release object exists before the build jobs try to upload into
+  # it. Idempotent on purpose: `/release` may have created the draft already,
+  # and a workflow_dispatch re-run finds a published release.
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      # No checkout: this job only talks to the releases API, so `gh` is pointed
+      # at the repo by GH_REPO rather than by a git remote.
+      - name: Ensure a release exists for $TAG
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists — leaving its notes alone"
+          else
+            gh release create "$TAG" --draft --title "$TAG" \
+              --notes "Assets are building. Release notes follow."
+          fi
+
+  macos:
+    needs: prepare
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      # The 7 GB runner swaps compiling >2 LLVM-header-heavy TUs (~3 GB each).
+      CULEBRA_BUILD_JOBS: "2"
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - run: brew install llvm just ccache
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: release-macos-ccache-${{ github.sha }}
+          restore-keys: release-macos-ccache-
+      # `just build` is the -O3 + LTO configuration, unlike the no-LTO gate
+      # build: a downloaded binary should be the fast one.
+      - run: just build
+      - run: ccache -s || true
+      - name: Package and upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Assign first, upload second: a failing package step then aborts here
+        # with its own message, instead of `gh` complaining about no files.
+        run: |
+          assets=$(misc/package_release.sh ./build/culebra "$TAG" macos arm64)
+          gh release upload "$TAG" --clobber $assets
+
+  linux-x64:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      # Mirrors ci.yml's Ubuntu setup — gcc-14 for C++23 <print>, LLVM 22 for
+      # the JIT's APIs, mold for the LLVM-heavy static link, `just` from its
+      # own installer (apt's predates [group(...)]) — plus the WebView
+      # development packages, which ci.yml omits: CI does not care whether the
+      # Webview namespace is present, a release binary does.
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ccache cmake g++-14 libblas-dev mold wget \
+            lsb-release software-properties-common gnupg \
+            libgtk-4-dev libwebkitgtk-6.0-dev zip
+          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
+            | sudo bash -s -- --to /usr/local/bin
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 22
+          sudo apt-get install -y llvm-22-dev
+          {
+            echo "CC=gcc-14"
+            echo "CXX=g++-14"
+            echo "CMAKE_PREFIX_PATH=/usr/lib/llvm-22"
+          } >> "$GITHUB_ENV"
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: release-linux-ccache-${{ github.sha }}
+          restore-keys: release-linux-ccache-
+      - run: just build -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
+      - run: ccache -s || true
+      # CMake turns Webview off with only a STATUS message when pkg-config
+      # cannot see gtk4 / webkitgtk-6.0, and `just build` discards the configure
+      # log — a renamed apt package would otherwise ship a binary quietly
+      # missing the namespace. Ask the binary instead: `Webview` is registered
+      # only under CULEBRA_ENABLE_WEBVIEW, so a NameError is the exact signal.
+      - name: Verify Webview made it into the build
+        run: |
+          printf 'println(Webview.Window != nil)\n' > webview_check.cul
+          ./build/culebra webview_check.cul || {
+            echo "Webview is missing — check the gtk4 / webkitgtk-6.0 dev packages" >&2
+            exit 1
+          }
+          rm -f webview_check.cul
+      - name: Package and upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          assets=$(misc/package_release.sh ./build/culebra "$TAG" linux x64)
+          gh release upload "$TAG" --clobber $assets
+
+  windows:
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      # mingw-w64, not MSVC: the Value type is used through std::vector<Value>
+      # while incomplete, which libstdc++ accepts and the MSVC STL rejects
+      # (see ci.yml's windows jobs).
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-llvm
+            mingw-w64-x86_64-ccache
+            zip
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: release-windows-ccache-${{ github.sha }}
+          restore-keys: release-windows-ccache-
+      # The feature set of ci.yml's windows-aot-build (the widest Windows
+      # configuration that CI proves), with LTO turned back on for release.
+      # HTTP stays off: it wants a static OpenSSL, which no CI job has linked
+      # under mingw. Webview cannot build here at all — CMake has no Windows
+      # backend for it and switches it off itself.
+      - name: Configure
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++ \
+            -DCMAKE_C_COMPILER=gcc \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
+            -DCULEBRA_ENABLE_JIT=ON \
+            -DCULEBRA_ENABLE_HTTP=OFF \
+            -DCULEBRA_ENABLE_WEBVIEW=OFF \
+            -DCULEBRA_DEV_NO_RT=OFF \
+            -DCULEBRA_LTO=ON
+      # Only `culebra` (+ its embedded runtime archives): the default `all`
+      # pulls in POSIX-only test targets.
+      - name: Build
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: cmake --build build --target culebra -j
+      - run: ccache -s || true
+      # The whole point of -static here: a downloaded .exe must not need a
+      # mingw runtime DLL the user does not have.
+      - name: Verify the binary needs only system DLLs
+        run: |
+          objdump -p build/culebra.exe | grep -i 'DLL Name' | sort -u
+          if objdump -p build/culebra.exe | grep -i 'DLL Name' |
+             grep -iqE 'libgcc|libstdc\+\+|libwinpthread|msys-'; then
+            echo "binary depends on a mingw runtime DLL — static link broke" >&2
+            exit 1
+          fi
+      - name: Package and upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          assets=$(misc/package_release.sh ./build/culebra.exe "$TAG" windows x64)
+          gh release upload "$TAG" --clobber $assets
+
+  # One file the user can `sha256sum -c` against every asset at once. Reads the
+  # per-asset digests back off the release rather than passing artifacts around,
+  # which also proves each upload actually landed.
+  finalize:
+    needs: [macos, linux-x64, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Aggregate SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release download "$TAG" --pattern '*.sha256' --dir sums
+          cat sums/*.sha256 | sort -k2 > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$TAG" SHA256SUMS --clobber
+      # Publishing stays with `/release`, which owns the notes: assets being
+      # ready is not the same as the release being ready to announce.
+      - name: Remind that the release is still a draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true ]; then
+            echo "Assets are complete. \`/release\` publishes $TAG once the notes are in." \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -117,6 +117,14 @@ cp playground/index.html playground/app.js playground/worker.js \
    playground/editor.js playground/culebra-lang.js playground/styles.css \
    playground/examples.json "$OUT/"
 
+# Stamp the version into the copy, reading the one place that defines it. The
+# source index.html keeps the placeholder — it is never served directly, only
+# this copy is. Not `sed -i`: its in-place syntax differs between BSD and GNU.
+version="$(sed -n 's/^#define CULEBRA_VERSION "\([^"]*\)"/\1/p' include/culebra.h)"
+[ -n "$version" ] || { echo "error: no CULEBRA_VERSION in include/culebra.h" >&2; exit 1; }
+sed "s/{{CULEBRA_VERSION}}/v$version/g" "$OUT/index.html" >"$OUT/index.html.tmp"
+mv "$OUT/index.html.tmp" "$OUT/index.html"
+
 # examples.json's "path" and "assets" fields double as both the source location
 # (relative to the repo root) and the fetch path the browser uses (relative to
 # $OUT) — mirror everything they name under $OUT so both readings hold. The

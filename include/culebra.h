@@ -1,5 +1,10 @@
 #pragma once
 
+// Single source of truth for the version. `culebra --version` prints it, and
+// playground/build.sh greps this line to stamp the Playground title, so keep
+// the `#define CULEBRA_VERSION "X.Y.Z"` form on one line.
+#define CULEBRA_VERSION "0.1.0"
+
 #include "interpreter.h"
 #include "debugger.h"
 #include "module_loader.h"

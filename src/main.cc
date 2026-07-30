@@ -152,6 +152,7 @@ struct Options {
   bool shell = false;
   bool debug = false;
   bool help = false;
+  bool version = false;
 #ifdef CULEBRA_JIT_ENABLED
   bool jit = false;
   // Unoptimized IR pipeline + unoptimized backend: collapses JIT warmup
@@ -474,6 +475,7 @@ void print_usage(ostream& os) {
         "  --                 Stop parsing options; the next argument is the\n"
         "                     script even if it begins with '-'\n"
         "  -h, --help         Show this help and exit\n"
+        "  --version          Show the version and exit\n"
         "\n"
         "Commands:\n"
 #ifdef CULEBRA_JIT_ENABLED
@@ -1196,6 +1198,7 @@ Options parse_command_line(int argc, const char** argv) {
     if (!no_flags) {
       if (arg == "--") { no_flags = true; continue; }
       if (arg == "-h" || arg == "--help") { options.help = true; continue; }
+      if (arg == "--version") { options.version = true; continue; }
       if (arg == "--shell") { options.shell = true; continue; }
       if (arg == "--ast") { options.print_ast = true; continue; }
       if (arg == "--debug") { options.debug = true; continue; }
@@ -1822,6 +1825,16 @@ int main(int argc, const char** argv) {
   }
   if (options.help) {
     print_usage(cout);
+    return 0;
+  }
+  if (options.version) {
+    // Name the backends the build actually has: a no-JIT build cannot run
+    // --jit or `culebra build`, so a bug report needs to say which binary.
+#ifdef CULEBRA_JIT_ENABLED
+    std::println(cout, "culebra {} (interp+jit)", CULEBRA_VERSION);
+#else
+    std::println(cout, "culebra {} (interp)", CULEBRA_VERSION);
+#endif
     return 0;
   }
 

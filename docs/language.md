@@ -4806,6 +4806,7 @@ as the script even if it begins with a dash.
 | `--emit-llvm`  | With `--jit`, print the generated IR and exit.            |
 | `-O0`..`-O3`   | With `--jit`, select the LLVM optimization level. Default `-O2`. |
 | `-h`, `--help` | Print the option / command summary and exit.              |
+| `--version`    | Print the version and available backends, then exit.      |
 
 ### Subcommands
 
