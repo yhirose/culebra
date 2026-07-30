@@ -237,7 +237,6 @@ jobs:
             -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
             -DCULEBRA_ENABLE_JIT=OFF \
             -DCULEBRA_ENABLE_HTTP=OFF \
-            -DCULEBRA_ENABLE_GRAPHICS=OFF \
             -DCULEBRA_ENABLE_WEBVIEW=OFF \
             -DCULEBRA_DEV_NO_RT=ON \
             -DCULEBRA_LTO=OFF
@@ -433,7 +432,6 @@ jobs:
             -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
             -DCULEBRA_ENABLE_JIT=ON \
             -DCULEBRA_ENABLE_HTTP=OFF \
-            -DCULEBRA_ENABLE_GRAPHICS=OFF \
             -DCULEBRA_ENABLE_WEBVIEW=OFF \
             -DCULEBRA_DEV_NO_RT=ON \
             -DCULEBRA_LTO=OFF
@@ -594,7 +592,6 @@ jobs:
             -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
             -DCULEBRA_ENABLE_JIT=ON \
             -DCULEBRA_ENABLE_HTTP=OFF \
-            -DCULEBRA_ENABLE_GRAPHICS=OFF \
             -DCULEBRA_ENABLE_WEBVIEW=OFF \
             -DCULEBRA_DEV_NO_RT=OFF \
             -DCULEBRA_LTO=OFF
@@ -750,7 +747,6 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCULEBRA_ENABLE_JIT=ON \
             -DCULEBRA_ENABLE_HTTP=OFF \
-            -DCULEBRA_ENABLE_GRAPHICS=OFF \
             -DCULEBRA_ENABLE_WEBVIEW=OFF \
             -DCULEBRA_DEV_NO_RT=ON \
             -DCULEBRA_LTO=OFF \
