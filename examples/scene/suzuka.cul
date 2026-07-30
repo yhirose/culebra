@@ -79,8 +79,7 @@ fn add_ribbon(view, pts, oa, ob, yf, vscale, mat, closed) {
   let n = pts.size()
   let r = view.add_mesh()
   r.material(mat)
-  for i in 0..n {
-    let [px, pz] = pts[i]
+  for i, [px, pz] in pts.enumerate() {
     let (nx, nz, _) = frame_at(pts, i)
     let y = yf(i)
     let v = to_float(i) / vscale
@@ -502,7 +501,7 @@ let MM_cz = (track_z.min() + track_z.max()) / 2.0
 let MM_scale = 190.0 / Math.max(track_x.max() - track_x.min(),
                                 track_z.max() - track_z.min())
 
-let MM = range(0, n, step: 6)
+let MM = range(n, step: 6)
   .map(|mi| ((cl[mi][0] - MM_cx) * MM_scale, (cl[mi][1] - MM_cz) * MM_scale))
   .collect()
 

@@ -25,12 +25,7 @@ let N = !Sys.argv.empty() ? to_long(Sys.argv[0]) : 6
 # no column and no diagonal with any queen already placed.
 fn is_safe(cols, c) {
   let row = cols.size()
-  for r in 0..row {
-    let cc = cols[r]
-    if cc == c { return false }
-    if (row - r) == Math.abs(c - cc) { return false }
-  }
-  true
+  !cols.enumerate().any(|(r, cc)| cc == c || (row - r) == Math.abs(c - cc))
 }
 
 # The whole search. It is written as if `choose` returned a single column and
@@ -48,7 +43,7 @@ effect fn search(cols) {
 }
 
 fn board_of(cols) {
-  cols.map(|c| iota(N).map(|i| i == c ? "Q" : ".").join("")).join("\n")
+  cols.map(|c| range(N).map(|i| i == c ? "Q" : ".").join("")).join("\n")
 }
 
 # --- handler A: enumerate every solution --------------------------------
@@ -85,12 +80,7 @@ let one = handle {
   handle {
     [search([])]
   } with choose(options, resume) {
-    mut hit = []
-    for o in options {
-      for s in resume(o) { hit.push(s) }
-      if !hit.empty() { break }
-    }
-    hit
+    options.iter().map(|o| resume(o)).find(|r| !r.empty()) ?? []
   } with reject(resume) {
     []
   }

@@ -61,7 +61,7 @@ fn remove_cells(b, cells) {
 # the gap they leave lands on top.
 fn gravity(b) {
   for c in 0..COLS {
-    let col = iota(ROWS).map(|r| b[r][c]).filter(|v| v != 0)
+    let col = range(ROWS).map(|r| b[r][c]).filter(|v| v != 0).collect()
     let gap = ROWS - col.size()
     for r in 0..ROWS { b[r][c] = r < gap ? 0 : col[r - gap] }
   }

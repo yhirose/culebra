@@ -98,16 +98,13 @@ let hit_at = |px, py| Canvas.get_pixel(px, py) != C1
 
 let collided = fn (player_y, anim_index) {
   if player_y < -1 { return hit_at(PLAYER_X + 13, 0) }
-  for [dx, dy] in BASE_POINTS {
-    if hit_at(PLAYER_X + dx, player_y + dy) { return true }
+  # The wing sweeps through a different cell on each frame of the flap.
+  let wing = cond {
+    anim_index == 2 => [[2, 1], [7, 1]],
+    anim_index == 1 => [[2, 2]],
+    _               => [],
   }
-  if anim_index == 2 {
-    if hit_at(PLAYER_X + 2, player_y + 1) { return true }
-    if hit_at(PLAYER_X + 7, player_y + 1) { return true }
-  } else if anim_index == 1 {
-    if hit_at(PLAYER_X + 2, player_y + 2) { return true }
-  }
-  false
+  [...BASE_POINTS, ...wing].any(|[dx, dy]| hit_at(PLAYER_X + dx, player_y + dy))
 }
 
 # --- drawing helpers -------------------------------------------------------

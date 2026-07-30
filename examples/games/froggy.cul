@@ -230,13 +230,12 @@ fn draw_game_over(s, score, time, frog, fruit, dessert) {
   let off = offsets(s)
   draw_status(s, off, score, time)
   draw_food_count(s, off, fruit, dessert)
-  if !frog.alive() {
-    output(s, off, 6, COLS / 2 - 3, "GAME OVER 😱")
-  } else if time > 0 {
-    output(s, off, 6, COLS / 2 - 5, "🎉 Congratulations 🎊")
-  } else {
-    output(s, off, 6, COLS / 2 - 2, "TIME UP ⏱")
+  let (col, text) = cond {
+    !frog.alive() => (COLS / 2 - 3, "GAME OVER 😱"),
+    time > 0      => (COLS / 2 - 5, "🎉 Congratulations 🎊"),
+    _             => (COLS / 2 - 2, "TIME UP ⏱"),
   }
+  output(s, off, 6, col, text)
   output(s, off, 10, COLS / 2 - 3, "Hit Space")
   s.flush()
 }

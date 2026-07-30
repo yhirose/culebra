@@ -27,19 +27,17 @@ let RED = ESC + "[31m"
 
 let openrouter_key = Sys.env('OPENROUTER_API_KEY')
 let use_openrouter = !openrouter_key.empty()
-let api_url = if use_openrouter {
-  'https://openrouter.ai/api/v1/messages'
-} else {
-  'https://api.anthropic.com/v1/messages'
-}
+let api_url = use_openrouter
+  ? 'https://openrouter.ai/api/v1/messages'
+  : 'https://api.anthropic.com/v1/messages'
+let default_model = use_openrouter ? 'anthropic/claude-opus-5' : 'claude-opus-5'
 let env_model = Sys.env('MODEL')
-let default_model = if use_openrouter { 'anthropic/claude-opus-5' } else { 'claude-opus-5' }
-let model = if !env_model.empty() { env_model } else { default_model }
+let model = env_model.empty() ? default_model : env_model
 
 # --- small helpers -------------------------------------------------------
 
 let separator = fn () {
-  let cols = if IO.stdout_is_terminal() { Term.size()[0] } else { 80 }
+  let cols = IO.stdout_is_terminal() ? Term.size()[0] : 80
   DIM + "\u{2500}".repeat(Math.min(cols, 80)) + RESET
 }
 
@@ -83,8 +81,8 @@ let tool_glob = fn (args) {
   let base = args.path ?? '.'
   let pattern = FS.join(base, args.pat)
   let files = FS.glob(pattern)
-  let sorted = files.sorted_by(|f| if FS.is_file(f) { FS.stat(f).mtime } else { 0 }, reverse: true)
-  if sorted.empty() { 'none' } else { sorted.join("\n") }
+  let sorted = files.sorted_by(|f| FS.is_file(f) ? FS.stat(f).mtime : 0, reverse: true)
+  sorted.empty() ? 'none' : sorted.join("\n")
 }
 
 let tool_grep = fn (args) {
@@ -104,7 +102,7 @@ let tool_grep = fn (args) {
     } catch _ { }
   }
   # The walk returns at 50, so whatever is left here is already under the cap.
-  if hits.empty() { 'none' } else { hits.join("\n") }
+  hits.empty() ? 'none' : hits.join("\n")
 }
 
 let tool_bash = fn (args) {
@@ -117,7 +115,7 @@ let tool_bash = fn (args) {
   }
   if r.timed_out { return combined + "\n(timed out after 30s)" }
   let out = combined.trim()
-  if out.empty() { '(empty)' } else { out }
+  out.empty() ? '(empty)' : out
 }
 
 # --- tool registry + schema ------------------------------------------------
@@ -161,8 +159,7 @@ let TOOL_LIST = [
   },
 ]
 
-mut TOOLS = {}
-for t in TOOL_LIST { TOOLS[t.name] = t }
+let TOOLS = TOOL_LIST.map(|t| (t.name, t)).to_object()
 
 let run_tool = fn (name, args) {
   let tool = TOOLS[name]
@@ -177,11 +174,10 @@ let run_tool = fn (name, args) {
 # Built once — TOOL_LIST is static, so every call_api turn reuses this.
 # A trailing '?' in the param spec marks it optional; everything else is required.
 let TOOL_SCHEMA = TOOL_LIST.map(fn (t) {
-  mut properties = {}
-  for name, spec in t.params {
+  let properties = t.params.iter().map(fn ((name, spec)) {
     let base = spec.trim_end('?')
-    properties[name] = {type: base == 'number' ? 'integer' : base}
-  }
+    (name, {type: base == 'number' ? 'integer' : base})
+  }).to_object()
   let required = t.params.keys().filter(|k| !t.params[k].ends_with('?'))
 
   {
@@ -195,11 +191,9 @@ let TOOL_SCHEMA = TOOL_LIST.map(fn (t) {
 
 let HEADERS = {
   "anthropic-version": '2023-06-01',
-  ...(if use_openrouter {
-    {"Authorization": 'Bearer ' + openrouter_key}
-  } else {
-    {"x-api-key": Sys.env('ANTHROPIC_API_KEY')}
-  }),
+  ...(use_openrouter
+      ? {"Authorization": 'Bearer ' + openrouter_key}
+      : {"x-api-key": Sys.env('ANTHROPIC_API_KEY')}),
 }
 
 # Thinking is on by default on this model and `max_tokens` caps thinking plus
@@ -224,7 +218,7 @@ let call_api = fn (messages, system_prompt) {
 # --- REPL --------------------------------------------------------------
 
 let main = fn () {
-  let provider = if use_openrouter { 'OpenRouter' } else { 'Anthropic' }
+  let provider = use_openrouter ? 'OpenRouter' : 'Anthropic'
   IO.println("{BOLD}nanocode{RESET} | {DIM}{model} ({provider}) | {Sys.getcwd()}{RESET}\n")
   mut messages = []
   let system_prompt = "Concise coding assistant. cwd: {Sys.getcwd()}"
