@@ -549,6 +549,14 @@ bool closing() {
   return WindowShouldClose();
 }
 
+// True when frames actually reach a display. False under CULEBRA_CANVAS_HEADLESS
+// and when window creation failed (no display), where this build behaves exactly
+// like the headless one: nothing shown, no input, no close box.
+bool windowed() {
+  ensure_window();
+  return g_window_ready;
+}
+
 // Frames (at ~60fps) to samples (at kSampleRate), matching the browser's own
 // `frames / 60` -> seconds conversion (playground/app.js's F()).
 int64_t frames_to_samples(int64_t frames) {

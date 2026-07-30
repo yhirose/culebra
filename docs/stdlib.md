@@ -4379,9 +4379,13 @@ formats always work.
 `tick()` once per frame, presenting after each. `tick` returns `false` to stop
 (e.g. the player quit). In the interactive Playground build `present()` waits
 for the browser's next animation frame, so the loop paces itself and yields
-cooperatively; when input isn't interactive (a non-JSPI browser, or a piped /
-headless native run) it also stops after `frames`, so an automated run can't
-spin forever.
+cooperatively. Otherwise the loop stops after `frames`, so a run nobody can end
+can't spin forever. Staying unbounded takes both halves: the frames must reach a
+display (not a build without the window backend, not `CULEBRA_CANVAS_HEADLESS`,
+not a machine with no display) *and* the run must be interactive (not a piped
+native run, not a non-JSPI browser). A headless run from a terminal meets only
+the second — it shows nothing, takes no input and has no close box — so it is
+capped like any other automated run.
 
 ```culebra
 # doctest: skip
