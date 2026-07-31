@@ -1,0 +1,14 @@
+# A dependency module that leans on lazy stdlib namespaces the entry
+# module never names — both at module top level (evaluated before the
+# entry module runs) and inside exported functions. Regression cover for
+# the JIT/AOT preamble splice: it must (a) collect tokens from imported
+# modules, not just the entry, and (b) register lazy-ns builders before
+# any dependency's top level executes.
+
+let t0 = Time.monotonic()
+let re = Regex.compile("a+b")
+
+let elapsed_nonneg = fn () { Time.monotonic() >= t0 }
+let matches = fn (s) { re.test(s) }
+
+export {elapsed_nonneg, matches}

@@ -1,0 +1,13 @@
+# Conformance: §23 (Modules) x lazy stdlib namespaces.
+#
+# The entry module deliberately never names the lazy namespaces the
+# dependency uses; only the import below pulls them in. Under the JIT/AOT
+# splice this used to raise NameError (the token scan only looked at the
+# entry module, and builder registration ran after dependency top level).
+# Both backends must agree.
+
+import dep from './test_import_helpers/lazy_ns_dep.cul'
+
+assert_true(dep.elapsed_nonneg())
+assert_true(dep.matches("aab"))
+assert_false(dep.matches("cc"))

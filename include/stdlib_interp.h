@@ -7393,7 +7393,17 @@ inline void collect_ast_tokens(const peg::Ast& ast,
   for (const auto& n : ast.nodes) collect_ast_tokens(*n, out);
 }
 
-inline std::string stdlib_preamble_for(
+// The two halves of the JIT/AOT stdlib preamble. `lazy` holds the
+// `_lazy_ns_register("Ns", fn(){...})` statements — pure runtime side
+// effects with no scope bindings, so they can run in their own module
+// ahead of every dependency. `plain` holds real top-level bindings (the
+// matcher family, `replace`) that must live in the entry module's scope.
+struct StdlibPreamble {
+  std::string lazy;
+  std::string plain;
+};
+
+inline StdlibPreamble stdlib_preamble_for(
     const std::unordered_set<std::string_view>& names) {
   auto has = [&](std::string_view m) { return names.contains(m); };
   // Each module is pulled in when the program names it. Matching the parsed
@@ -7409,44 +7419,44 @@ inline std::string stdlib_preamble_for(
   // The five namespace modules (Time/Term/Args/Regex/Log) are wrapped as lazy
   // builder registrations (see _wrap_lazy_ns_module); the matcher family and
   // `replace` (a bare fn, not a namespace) stay plain spliced bindings.
-  std::string preamble;
+  StdlibPreamble preamble;
   if (has("Time"))
-    preamble.append(_wrap_lazy_ns_module(TIME_MODULE_SOURCE, "Time",
-                                         "_time_module"));
+    preamble.lazy.append(_wrap_lazy_ns_module(TIME_MODULE_SOURCE, "Time",
+                                              "_time_module"));
   if (has("Term"))
-    preamble.append(_wrap_lazy_ns_module(TERM_MODULE_SOURCE, "Term",
-                                         "_term_module"));
+    preamble.lazy.append(_wrap_lazy_ns_module(TERM_MODULE_SOURCE, "Term",
+                                              "_term_module"));
   if (has("Canvas"))
-    preamble.append(_wrap_lazy_ns_module(CANVAS_MODULE_SOURCE, "Canvas",
-                                         "_canvas_module"));
+    preamble.lazy.append(_wrap_lazy_ns_module(CANVAS_MODULE_SOURCE, "Canvas",
+                                              "_canvas_module"));
   if (has("Args"))
-    preamble.append(_wrap_lazy_ns_module(ARGS_MODULE_SOURCE, "Args",
-                                         "_args_module"));
+    preamble.lazy.append(_wrap_lazy_ns_module(ARGS_MODULE_SOURCE, "Args",
+                                              "_args_module"));
   if (std::any_of(names.begin(), names.end(), [](std::string_view n) {
         return n.starts_with("assert_");
       }))
-    preamble.append(MATCHERS_MODULE_SOURCE);
+    preamble.plain.append(MATCHERS_MODULE_SOURCE);
   if (has("Regex"))
-    preamble.append(_wrap_lazy_ns_module(REGEX_MODULE_SOURCE, "Regex",
-                                         "_regex_module"));
-  if (has("replace")) preamble.append(STRING_REPLACE_MODULE_SOURCE);
+    preamble.lazy.append(_wrap_lazy_ns_module(REGEX_MODULE_SOURCE, "Regex",
+                                              "_regex_module"));
+  if (has("replace")) preamble.plain.append(STRING_REPLACE_MODULE_SOURCE);
   if (has("Log"))
-    preamble.append(_wrap_lazy_ns_module(LOG_MODULE_SOURCE, "Log",
-                                         "_log_module"));
+    preamble.lazy.append(_wrap_lazy_ns_module(LOG_MODULE_SOURCE, "Log",
+                                              "_log_module"));
   if (has("Path"))
-    preamble.append(_wrap_lazy_ns_module(PATH_MODULE_SOURCE, "Path",
-                                         "_path_module"));
+    preamble.lazy.append(_wrap_lazy_ns_module(PATH_MODULE_SOURCE, "Path",
+                                              "_path_module"));
   // Algebraic-effects runtime. The transform has already lowered every effect
   // construct into `__Eff.*` calls by the time we see the AST, so that one
   // token is the exact marker (see effects_transform.h).
   if (has("__Eff"))
-    preamble.append(_wrap_lazy_ns_module(EFFECTS_MODULE_SOURCE, "__Eff",
-                                         "_eff_module"));
+    preamble.lazy.append(_wrap_lazy_ns_module(EFFECTS_MODULE_SOURCE, "__Eff",
+                                              "_eff_module"));
 #ifdef CULEBRA_ENABLE_WEBVIEW
   // `Desktop.run` facade — only when the Webview namespace it drives is built in.
   if (has("Desktop"))
-    preamble.append(_wrap_lazy_ns_module(DESKTOP_MODULE_SOURCE, "Desktop",
-                                         "_desktop_module"));
+    preamble.lazy.append(_wrap_lazy_ns_module(DESKTOP_MODULE_SOURCE, "Desktop",
+                                              "_desktop_module"));
 #endif
   return preamble;
 }
@@ -7476,14 +7486,38 @@ inline std::vector<std::shared_ptr<peg::Ast>> collect_top_level_statements(
 // root: user nodes keep the exact line/column they were parsed with.
 inline void splice_stdlib_preamble(std::vector<LoadedModule>& modules) {
   if (modules.empty()) return;
+  // Scan every module, not just the entry: an imported module's `Canvas`
+  // (or `Time`, ...) must pull that namespace's preamble in too, even when
+  // the entry module never names it.
   std::unordered_set<std::string_view> names;
-  if (modules.back().ast) collect_ast_tokens(*modules.back().ast, names);
-  std::string preamble = stdlib_preamble_for(names);
-  if (preamble.empty()) return;
+  for (const auto& m : modules) {
+    if (m.ast) collect_ast_tokens(*m.ast, names);
+  }
+  StdlibPreamble preamble = stdlib_preamble_for(names);
+
+  // Lazy-ns builder registrations are pure side effects with no scope
+  // bindings, so they run as their own module *ahead of every dependency* —
+  // a dependency's top-level `Canvas.rgba(...)` must find the builder
+  // already registered. Splicing them into the entry module (which the
+  // loader schedules last) would run them too late for that.
+  if (!preamble.lazy.empty()) {
+    auto lazy_buf = std::make_shared<std::string>(std::move(preamble.lazy));
+    std::vector<std::string> msgs;
+    auto lazy_ast = parse_with_transforms("<stdlib>", lazy_buf->data(),
+                                          lazy_buf->size(), msgs);
+    if (lazy_ast) {
+      LoadedModule pre;
+      pre.abs_path = "<stdlib>";
+      pre.source = std::move(lazy_buf);
+      pre.ast = std::move(lazy_ast);
+      modules.insert(modules.begin(), std::move(pre));
+    }
+  }
+  if (preamble.plain.empty()) return;
 
   // Retain the preamble bytes for the module's lifetime — the spliced
   // AST's tokens are string_views into this buffer.
-  auto pre_buf = std::make_shared<std::string>(std::move(preamble));
+  auto pre_buf = std::make_shared<std::string>(std::move(preamble.plain));
   std::vector<std::string> msgs;
   auto pre_ast = parse_with_transforms("<stdlib>", pre_buf->data(),
                                        pre_buf->size(), msgs);
