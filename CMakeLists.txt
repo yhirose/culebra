@@ -1270,6 +1270,18 @@ if(CULEBRA_ENABLE_WEBVIEW)
   target_link_libraries(culebra ${_webview_libs})
 endif()
 
+# Each runtime binding above is a second TU in the driver that includes the
+# interpreter/JIT headers, so it would define the CULEBRA_RT_CORE_OWNED
+# thread_locals a second time next to main.cc. ELF and Mach-O fold the
+# duplicate TLS init symbols; PE/COFF has no weak external and mingw's ld
+# fails the link. Give the driver the same ownership split the archives have —
+# main.cc defines, the bindings borrow (see rt_shared_tls.h).
+set_source_files_properties(
+  ./src/runtime/culebra_rt_webview.cc
+  ./src/runtime/culebra_rt_scene.cc
+  ./src/runtime/culebra_rt_canvas.cc
+  PROPERTIES COMPILE_DEFINITIONS CULEBRA_RT_FEATURE_BUILD=1)
+
 # Embedding smoke tests. mt_smoke exercises thread_local isolation
 # (parser, GC, exception state); mi_smoke exercises RuntimeScope and
 # per-Runtime hooks. Build them alongside `culebra` so they stay in
