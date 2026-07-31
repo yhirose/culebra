@@ -29,10 +29,23 @@ shutdown order), read the facade itself: `src/preambles/desktop.cul`.
 
 ## Build
 
-`Webview` is ON by default in the culebra build (macOS links `-framework
-WebKit`; on Linux it auto-disables unless the `gtk4` + `webkitgtk-6.0` dev
-packages are present — `sudo apt install libgtk-4-dev libwebkitgtk-6.0-dev`
-on Debian/Ubuntu). Opt out with `-DCULEBRA_ENABLE_WEBVIEW=OFF`.
+`Webview` is ON by default in the culebra build. Each platform needs its own
+engine's headers, and CMake switches the namespace off when they are missing
+rather than failing the build:
+
+| Platform | Engine | What the build needs |
+|---|---|---|
+| macOS | WKWebView | nothing — links `-framework WebKit` |
+| Linux | WebKitGTK | `gtk4` + `webkitgtk-6.0` dev packages (`sudo apt install libgtk-4-dev libwebkitgtk-6.0-dev`) |
+| Windows | WebView2 | `WebView2.h` (`pacman -S mingw-w64-x86_64-webview2-loader` under MSYS2) |
+
+Opt out with `-DCULEBRA_ENABLE_WEBVIEW=OFF`.
+
+Windows needs no import library and no DLL shipped alongside: the vendored
+header carries a builtin loader that locates the Edge WebView2 runtime itself
+at run time (it uses `WebView2Loader.dll` when present, but does not require
+it). So a Windows build's only new imports are system DLLs, and the released
+`.exe` carries Webview — unlike the Linux asset (below).
 
 The released Linux binary is built with Webview OFF on purpose: linking
 WebKitGTK puts `libgtk-4.so.1` and `libwebkitgtk-6.0.so.4` in the driver's

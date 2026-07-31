@@ -4721,11 +4721,10 @@ A desktop GUI written in web tech: a local HTTP server supplies the UI, a
 **native WebView** window displays it, and the whole thing ships as one
 binary. `Webview` wraps the OS's own engine (WKWebView on macOS, WebKitGTK
 on Linux, WebView2 on Windows) — no bundled browser. Both namespaces are
-in the default build (`-DCULEBRA_ENABLE_WEBVIEW=OFF` opts out; on Linux
-they self-disable when the GTK4 / WebKitGTK dev packages —
-`libgtk-4-dev` + `libwebkitgtk-6.0-dev` on Debian/Ubuntu — are absent), and
-`culebra build` links the WebView frameworks only for programs that
-actually reference them.
+in the default build (`-DCULEBRA_ENABLE_WEBVIEW=OFF` opts out; they
+self-disable when the engine's headers are absent — the GTK4 / WebKitGTK dev
+packages on Linux, `WebView2.h` on Windows), and `culebra build` links the
+WebView frameworks only for programs that actually reference them.
 
 ### `Desktop.run(config: Object) -> Nil`
 
