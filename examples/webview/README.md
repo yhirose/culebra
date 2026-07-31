@@ -21,7 +21,6 @@ The binding lives in `src/runtime/culebra_rt_webview.cc` + `vendor/webview/`.
 |---|---|
 | `desktop_app.cul` | The recommended shape: `Desktop.run` + `Embed.dir` — a complete desktop app |
 | `hello.cul` | Minimal raw `Webview.Window`: one window with inline HTML, no server |
-| `smoke.cul` | Non-blocking binding check (ctor → setters → drop); safe for CI/headless |
 | `dist/` | The frontend as real files (`index.html`, `style.css`, `app.js`) |
 
 To see the plumbing `Desktop.run` hides (server, window, loopback URL, quit,
@@ -58,8 +57,10 @@ source with the dev packages installed to get it.
 culebra examples/webview/desktop_app.cul          # the full app (interpreter)
 culebra --jit examples/webview/desktop_app.cul    # same, JIT
 culebra examples/webview/hello.cul                # minimal window
-culebra examples/webview/smoke.cul                # no window, just the binding
 ```
+
+To check that a build has Webview at all, without a window to look at, run
+`tests/gui/webview_probe.cul` — the same probe CI uses.
 
 ## The app in one call
 
@@ -180,7 +181,7 @@ Creating a window and destroying it with nothing in between —
 `webview_create` immediately followed by `webview_destroy`, no HTML and no
 navigation — segfaults inside GTK. It reproduces against upstream webview on
 its own, with no culebra in the process, so it is the vendored header's bug,
-not the binding's. Every real path (and `smoke.cul`) sets content first.
+not the binding's. Every real path sets content first.
 
 ## Not here yet
 
