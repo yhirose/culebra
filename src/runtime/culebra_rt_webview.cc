@@ -77,17 +77,29 @@ class Window {
     g_active_window.store(nullptr);
     g_quit_pending.store(false);
   }
-  void terminate() { webview_terminate(w_); }
+  void terminate() { terminate_on_loop_thread(w_); }
 
   // Terminate whichever window is currently in run() — callable from any
   // thread (e.g. an HTTP handler). If none is running yet, the quit is held
   // for the next run() instead of being dropped.
   static void quit() {
     g_quit_pending.store(true);
-    if (auto* w = g_active_window.load()) webview_terminate(w);
+    if (auto* w = g_active_window.load()) terminate_on_loop_thread(w);
   }
 
  private:
+  // webview_terminate is not thread-safe on every backend: the Win32 one calls
+  // PostQuitMessage, which posts WM_QUIT to the *calling* thread's queue, so a
+  // quit from an HTTP worker never reaches the main thread's GetMessage and
+  // run() parks forever. webview_dispatch is the thread-safe primitive on all
+  // three backends (PostMessage to the message window / g_idle_add /
+  // dispatch_async), so hop onto the loop thread and terminate from there —
+  // which is what the GTK backend's own terminate already does internally.
+  static void terminate_on_loop_thread(webview_t w) {
+    webview_dispatch(
+        w, [](webview_t self, void*) { webview_terminate(self); }, nullptr);
+  }
+
   webview_t w_;
 };
 
