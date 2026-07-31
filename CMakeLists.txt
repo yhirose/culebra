@@ -323,8 +323,8 @@ libs (auto-detected when the static libs are missing)" OFF)
   # imported target's import library at it. Windows-only: elsewhere a shared
   # zstd is a normal system library.
   if(WIN32 AND TARGET zstd::libzstd_shared)
-    find_library(CULEBRA_ZSTD_STATIC NAMES libzstd.a zstd_static zstd)
-    if(CULEBRA_ZSTD_STATIC MATCHES "\\.a$")
+    find_library(CULEBRA_ZSTD_STATIC NAMES libzstd.a zstd_static)
+    if(CULEBRA_ZSTD_STATIC MATCHES "libzstd\\.a$|zstd_static")
       message(STATUS "zstd: linking ${CULEBRA_ZSTD_STATIC} statically (LLVM dep)")
       set_target_properties(zstd::libzstd_shared PROPERTIES
         IMPORTED_IMPLIB "${CULEBRA_ZSTD_STATIC}"

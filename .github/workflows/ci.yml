@@ -811,6 +811,18 @@ jobs:
             -DCULEBRA_ENABLE_CANVAS_WINDOW=ON \
             -DCULEBRA_DEV_NO_RT=OFF \
             -DCULEBRA_LTO=OFF
+      # Diagnostic: how zstd reaches the link. mingw's LLVM wants it, and an
+      # import library named by absolute path in an exported interface defeats
+      # both -static and a remap of the zstd:: target. Informative on purpose —
+      # the standalone check at the end of this job is what enforces the answer.
+      - name: How does zstd reach the link
+        run: |
+          echo "--- zstd references in the generated build ---"
+          grep -o '[^ ]*zstd[^ ]*' build-win-aot/build.ninja | sort -u || true
+          echo "--- zstd in LLVM's exported interfaces ---"
+          grep -rl 'zstd' "$(llvm-config --cmakedir)" 2>/dev/null | head -5 || true
+          grep -rho '[^ ";]*zstd[^ ";]*' "$(llvm-config --cmakedir)" 2>/dev/null \
+            | sort -u | head -20 || true
       - name: Build (culebra driver + runtime archives)
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -820,10 +832,6 @@ jobs:
         run: cmake --build build-win-aot --target culebra -j
       - name: Report ccache stats
         run: ccache -s || true
-      # The window backend adds Win32 libraries to the link, so an import it
-      # newly pulls in fails here, in a CI run, rather than during a release.
-      - name: Verify standalone binary (only system DLLs)
-        run: misc/verify_standalone_exe.sh build-win-aot/culebra.exe
       # Trivial AOT (no exceptions): exercises COFF object emit + the Windows
       # link driver (g++/quoting/-static). Verbose so the link command shows.
       - name: Smoke — trivial AOT (no EH)
@@ -961,6 +969,11 @@ jobs:
             fail=1
           fi
           exit $fail
+      # Last, so a link-level complaint doesn't hide the functional results
+      # above. The window backend adds Win32 libraries to the link, so an
+      # import it newly pulls in fails here, in a CI run, not during a release.
+      - name: Verify standalone binary (only system DLLs)
+        run: misc/verify_standalone_exe.sh build-win-aot/culebra.exe
 
   # Regression for issue #13: Arch's `llvm` package ships only the combined
   # libLLVM.so (no per-component .a archives), which the plain
