@@ -1,0 +1,32 @@
+# Webview event-loop probe for CI. Not under tests/*.cul on purpose: the gate
+# sweeps that glob, and this opens a real window.
+#
+# Prints one marker per phase and lets any failure propagate — the caller
+# classifies the outcome, because a machine with no display is a legitimate
+# result here and a hang or a crash is not.
+
+# A quit that lands before run() must not be dropped: Desktop.run answers HTTP
+# while the window is still being built, so a route can quit first.
+let early = Webview.Window.new()
+early.set_title("ci probe (pending quit)")
+early.set_size(320, 240)
+early.set_html("<h1>pending</h1>")
+Webview.Window.quit()
+early.run()
+early.drop()
+println("WEBVIEW_PROBE_PENDING_QUIT_OK")
+
+# The normal shape: park in the event loop, quit from another thread, come back
+# and tear down. This is what Desktop.run does.
+let w = Webview.Window.new()
+w.set_title("ci probe (run + quit)")
+w.set_size(320, 240)
+w.set_html("<h1>run</h1>")
+let h = Isolate.spawn(fn () {
+  Time.sleep(2.0)
+  Webview.Window.quit()
+})
+w.run()
+h.join()
+w.drop()
+println("WEBVIEW_PROBE_OK")
