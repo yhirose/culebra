@@ -219,12 +219,27 @@ and `x = c ? a : b` is `x = (c ? a : b)`.
 3. `==`, `!=`, `<`, `<=`, `>`, `>=`
 4. Binary `+`, `-`
 5. Binary `*`, `/`, `%`, `@` (matmul)
-6. Unary `+`, `-`, `!` (right-associative)
-7. `**` (right-associative). Binds tighter than unary minus —
-   `-2**2 == -4` — but the RHS of `**` itself accepts a unary
-   prefix, so `2 ** -1 == 0.5` and `2 ** -3 ** 2 == 0.00195…` both
-   parse.
+6. Unary `+`, `-`, `!`, `~` (right-associative)
+7. `**` (right-associative). Binds tighter than a unary prefix —
+   `-2**2 == -4` — but the RHS of `**` itself accepts one, so
+   `2 ** -1 == 0.5` and `2 ** -3 ** 2 == 0.00195…` both parse.
 8. Call / index / dot (`x(...)`, `x[i]`, `x.k`) — left-associative
+
+A unary prefix binds tighter than `*`, so `-a * b` is `(-a) * b`. For
+numbers the two readings agree, but a type defining `__neg__` and
+`__mul__` sees which one runs first:
+
+```culebra
+class N {
+  new(v)     { self.v = v }
+  __neg__()  { println('neg'); N(-self.v) }
+  __mul__(o) { println('mul'); N(self.v * o.v) }
+}
+_ = -N(2) * N(3)
+# => |
+# neg
+# mul
+```
 
 `=` is right-associative but appears only in `ASSIGNMENT`, not as a
 general expression operator.

@@ -886,9 +886,16 @@ class Printer {
   DocP print_unary(const peg::Ast& node) {
     // [OPERATOR_token, operand]
     std::string op = std::string(node.nodes[0]->token);
-    // Operand needs parens if it binds looser than unary (prec < 14), so a
-    // nested unary or any binary is wrapped: `-(a + b)`, `-(-x)`.
-    DocP operand = print_operand(*node.nodes[1], /*parent_prec=*/14, /*assoc_safe=*/true);
+    // The operand needs parens only when it binds looser than unary itself, so
+    // `-(a + b)` keeps them while `-a * b` and `-a ** b` — which bind tighter —
+    // do not gain any. A stacked unary is the exception: `--x` and `!!x` lex as
+    // one token each, so `-(-x)` has to stay parenthesized to round-trip.
+    const peg::Ast& inner = *node.nodes[1];
+    const bool stacked = inner.name.rfind("UNARY_", 0) == 0;
+    DocP operand = stacked
+                       ? doc_concat({doc_text("("), print(inner), doc_text(")")})
+                       : print_operand(inner, /*parent_prec=*/prec(node.name),
+                                       /*assoc_safe=*/true);
     return doc_concat({doc_text(op), operand});
   }
 

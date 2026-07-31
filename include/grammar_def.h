@@ -191,15 +191,19 @@ const auto grammar_ = R"(
   # `let v = X` followed by a line starting with `-y` is two statements.
   # Continuation across newlines requires the operator at line end
   # (or wrapping in parentheses).
-  ADDITIVE                 <-  UNARY_PLUS (_h_ ADDITIVE_OPERATOR _ UNARY_PLUS)*
-  UNARY_PLUS               <-  UNARY_PLUS_OPERATOR? UNARY_MINUS
-  UNARY_MINUS              <-  UNARY_MINUS_OPERATOR? UNARY_NOT
-  UNARY_NOT                <-  UNARY_NOT_OPERATOR? UNARY_BNOT
-  UNARY_BNOT               <-  UNARY_BNOT_OPERATOR? MULTIPLICATIVE
+  ADDITIVE                 <-  MULTIPLICATIVE (_h_ ADDITIVE_OPERATOR _ MULTIPLICATIVE)*
   # `_h_` (no newline) before the operator matches ADDITIVE's rule
   # so `}\n@deco fn ...` is two statements (decorator on a fresh fn),
   # not a matmul continuation of the preceding expression.
-  MULTIPLICATIVE           <-  POWER (_h_ MULTIPLICATIVE_OPERATOR _ POWER)*
+  # A unary prefix binds tighter than `*` — `-a * b` is `(-a) * b`, as in C,
+  # Python, Ruby and JavaScript — so the unary rungs sit below this one.
+  MULTIPLICATIVE           <-  UNARY_PLUS (_h_ MULTIPLICATIVE_OPERATOR _ UNARY_PLUS)*
+  UNARY_PLUS               <-  UNARY_PLUS_OPERATOR? UNARY_MINUS
+  UNARY_MINUS              <-  UNARY_MINUS_OPERATOR? UNARY_NOT
+  UNARY_NOT                <-  UNARY_NOT_OPERATOR? UNARY_BNOT
+  # `**` still binds tighter than a unary prefix, so `-2 ** 2 == -4` the way
+  # Python and Ruby have it.
+  UNARY_BNOT               <-  UNARY_BNOT_OPERATOR? POWER
   # '**' RHS recurses through UNARY_PLUS so `2 ** -1` and `2 ** 3 ** 4`
   # both parse as in Python (unary prefix allowed, right-associative).
   POWER                    <-  CALL (_ POWER_OPERATOR _ UNARY_PLUS)?
