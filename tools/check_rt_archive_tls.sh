@@ -92,3 +92,40 @@ fi
 
 echo "rt-archive-tls OK ($checked feature archives," \
      "$(printf '%s\n' "$core_defs" | grep -c . || true) core-owned thread_locals)"
+
+# The same invariant one level down: the driver is several TUs in one PE image,
+# so two of them defining the same thread_local is the identical link error --
+# and until now nothing checked it. main.cc is the owner; every other TU must
+# borrow (see CMakeLists' set_source_files_properties) or, better, not reach
+# the headers at all. Objects, not archives, so this runs off `build-dev` too:
+# seconds here instead of a Windows CI round trip.
+driver_dir="$BUILD_DIR/CMakeFiles/culebra.dir"
+owner="$driver_dir/src/main.cc.o"
+if [[ -f "$owner" ]]; then
+  owner_defs=$(tls_defs "$owner")
+  objs=0
+  while IFS= read -r obj; do
+    [[ "$obj" == "$owner" ]] && continue
+    objs=$((objs + 1))
+    shared=$(comm -12 <(printf '%s\n' "$owner_defs") <(tls_defs "$obj"))
+    [[ -n "$shared" ]] || continue
+    fail=1
+    echo "rt-driver-tls FAIL: ${obj#$driver_dir/} re-defines thread_local state" \
+         "main.cc already defines:" >&2
+    printf '%s\n' "$shared" | demangle | sed 's/^/  /' >&2
+  done < <(find "$driver_dir" -name '*.o' -o -name '*.obj' | sort)
+  if (( fail )); then
+    cat >&2 <<'EOF'
+  mingw's ld fails the driver link with "multiple definition of `TLS init
+  function for ...'"; ELF and Mach-O fold it, so only Windows CI would notice.
+  Keep the TU off the interpreter/JIT headers if it can be -- reaching
+  culebra.h costs ~70 s of compile for them anyway. If it genuinely needs
+  them, CULEBRA_RT_FEATURE_BUILD covers only the CULEBRA_RT_CORE_OWNED
+  variables (rt_shared_tls.h); the net/http/sqlite registries are plain
+  `inline thread_local` and no build flag will move them.
+EOF
+    exit 1
+  fi
+  echo "rt-driver-tls OK ($objs driver TUs borrow main.cc's" \
+       "$(printf '%s\n' "$owner_defs" | grep -c . || true) thread_locals)"
+fi

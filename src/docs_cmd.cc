@@ -4,12 +4,15 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <format>
+#include <memory>
 #include <print>
 #include <string>
 #include <string_view>
 #include <vector>
 
-#include "culebra.h"
 #include "docs_embedded.h"
 #include "term.h"
 
@@ -275,9 +278,8 @@ const Topic* find_topic(std::string_view name, bool ja) {
   return nullptr;
 }
 
-void print_list(bool ja) {
-  std::println("Reference docs embedded in this binary (culebra {}).",
-               CULEBRA_VERSION);
+void print_list(bool ja, const char* version) {
+  std::println("Reference docs embedded in this binary (culebra {}).", version);
   std::println("");
   for (size_t i = 0; i < kTopicCount; i++) {
     const Topic& t = kTopics[i];
@@ -416,7 +418,7 @@ int print_at(const Topic& t, long line) {
 
 }  // namespace
 
-int run_docs(int argc, const char** argv) {
+int run_docs(int argc, const char** argv, const char* version) {
   std::string_view topic_name, pattern;
   bool ja = false, full = false, list = false;
   long at = 0;
@@ -465,7 +467,7 @@ int run_docs(int argc, const char** argv) {
     if (!topic) {
       std::println(stderr, "culebra docs: no topic named '{}'", topic_name);
       std::println(stderr, "");
-      print_list(ja);
+      print_list(ja, version);
       return 2;
     }
   }
@@ -482,7 +484,7 @@ int run_docs(int argc, const char** argv) {
     std::fwrite(topic->text, 1, std::strlen(topic->text), stdout);
     return 0;
   }
-  print_list(ja);
+  print_list(ja, version);
   return 0;
 }
 

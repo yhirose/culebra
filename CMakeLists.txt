@@ -1281,12 +1281,15 @@ if(CULEBRA_ENABLE_WEBVIEW)
   target_link_libraries(culebra ${_webview_libs})
 endif()
 
-# Each runtime binding above is a second TU in the driver that includes the
-# interpreter/JIT headers, so it would define the CULEBRA_RT_CORE_OWNED
-# thread_locals a second time next to main.cc. ELF and Mach-O fold the
-# duplicate TLS init symbols; PE/COFF has no weak external and mingw's ld
-# fails the link. Give the driver the same ownership split the archives have —
-# main.cc defines, the bindings borrow (see rt_shared_tls.h).
+# main.cc owns the CULEBRA_RT_CORE_OWNED thread_locals; a second driver TU
+# defining them too is a link error on PE/COFF, which has no weak external
+# (ELF and Mach-O fold the duplicate TLS init symbols, so only Windows sees
+# it). These three reach them through wrap.h and borrow instead.
+#
+# The flag is not a general licence to include the world: it moves only the
+# CULEBRA_RT_CORE_OWNED variables, and a TU that reaches culebra.h picks up ~18
+# more from the net/http/sqlite registries that no flag can move. Such a TU has
+# to stop reaching those headers. check_rt_archive_tls.sh enforces both halves.
 set_source_files_properties(
   ./src/runtime/culebra_rt_webview.cc
   ./src/runtime/culebra_rt_scene.cc

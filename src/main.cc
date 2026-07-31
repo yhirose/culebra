@@ -1814,7 +1814,7 @@ int main(int argc, const char** argv) {
     return run_fmt(argc, argv);
   }
   if (argc >= 2 && string(argv[1]) == "docs") {
-    return culebra::run_docs(argc, argv);
+    return culebra::run_docs(argc, argv, CULEBRA_VERSION);
   }
   if (argc >= 2 && string(argv[1]) == "dap") {
     // Debug Adapter Protocol server over stdio (interp-backed). The program to
