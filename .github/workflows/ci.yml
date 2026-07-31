@@ -763,6 +763,10 @@ jobs:
       - uses: actions/checkout@v5
         with:
           submodules: recursive
+      # git is in this list because setup-msys2's PATH holds only the MSYS2
+      # trees plus System32, and the runner's own git is in neither: the SDL3 +
+      # raylib deps cache is keyed on the submodule revisions, so without a git
+      # to read them the key is empty and every run rebuilds both from scratch.
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
@@ -775,6 +779,7 @@ jobs:
             mingw-w64-x86_64-llvm
             mingw-w64-x86_64-ccache
             mingw-w64-x86_64-gdb
+            git
       - name: Toolchain versions
         run: |
           g++ --version | head -1

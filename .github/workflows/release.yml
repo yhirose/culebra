@@ -242,7 +242,9 @@ jobs:
           submodules: recursive
       # mingw-w64, not MSVC: the Value type is used through std::vector<Value>
       # while incomplete, which libstdc++ accepts and the MSVC STL rejects
-      # (see ci.yml's windows jobs).
+      # (see ci.yml's windows jobs). git is in the list because the SDL3 +
+      # raylib deps cache is keyed on the submodule revisions and setup-msys2's
+      # PATH has no git to read them with.
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
@@ -255,6 +257,7 @@ jobs:
             mingw-w64-x86_64-llvm
             mingw-w64-x86_64-ccache
             zip
+            git
       - name: Restore ccache
         uses: actions/cache@v4
         with:
