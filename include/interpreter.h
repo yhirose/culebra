@@ -917,15 +917,15 @@ struct StringViewPayload {
 // ends to [0, len] and force an empty window when start > end. Returns a
 // half-open [start, end). Shared by interp + JIT slicing so the two
 // backends stay symmetric.
-inline std::pair<size_t, size_t> _slice_bounds(long lo, long hi,
+inline std::pair<size_t, size_t> _slice_bounds(int64_t lo, int64_t hi,
                                                bool inclusive, size_t len) {
-  long n = static_cast<long>(len);
+  int64_t n = static_cast<int64_t>(len);
   if (lo < 0) lo += n;
   if (hi < 0) hi += n;
   // `..=` includes the end. Skip the increment at LONG_MAX so a huge
   // endpoint (`xs[0..=<LONG_MAX>]`) doesn't signed-overflow; it clamps to
   // `n` below either way, so the result is unchanged for every other input.
-  if (inclusive && hi != std::numeric_limits<long>::max()) hi += 1;
+  if (inclusive && hi != std::numeric_limits<int64_t>::max()) hi += 1;
   if (lo < 0) lo = 0;
   if (lo > n) lo = n;
   if (hi < 0) hi = 0;
@@ -963,7 +963,12 @@ struct Value {
   }
 
   explicit Value(bool b) : type(Bool), v(b) {}
-  explicit Value(long l) : type(Long), v(l) {}
+  // int64_t, not long: `long` is 32-bit on Windows (LLP64), which made the
+  // language's Long 32-bit there while the JIT's stayed 64-bit — the same
+  // program returning different numbers depending on the backend. The payload
+  // is what fixes the width, and std::any matches types exactly, so every
+  // producer and consumer below has to say int64_t too.
+  explicit Value(int64_t l) : type(Long), v(l) {}
   explicit Value(double d) : type(Float), v(d) {}
   explicit Value(std::string&& s) : type(String), v(std::move(s)) {}
   // StringView: borrowed bytes view with shared-ownership lifetime.
@@ -1025,7 +1030,7 @@ struct Value {
   double to_double_coerce() const {
     switch (type) {
       case Long:
-        return static_cast<double>(get<long>());
+        return static_cast<double>(get<int64_t>());
       case Float:
         return get<double>();
       default:
@@ -1033,13 +1038,21 @@ struct Value {
     }
   }
 
+  // std::any matches types, not widths: `long` is a distinct type from
+  // int64_t on Windows AND macOS, so asking for it throws at runtime instead
+  // of failing to build. Say so at compile time, except on the platforms where
+  // the two really are one type.
   template <typename T>
   T& get() {
+    static_assert(!std::is_same_v<T, long> || std::is_same_v<long, int64_t>,
+                  "a Long payload is int64_t — ask for int64_t, not long");
     return std::any_cast<T&>(v);
   }
 
   template <typename T>
   const T& get() const {
+    static_assert(!std::is_same_v<T, long> || std::is_same_v<long, int64_t>,
+                  "a Long payload is int64_t — ask for int64_t, not long");
     return std::any_cast<const T&>(v);
   }
 
@@ -1048,7 +1061,7 @@ struct Value {
       case Bool:
         return get<bool>();
       case Long:
-        return get<long>() != 0;
+        return get<int64_t>() != 0;
       case Float: {
         // Python semantics: 0.0 (and -0.0) are false, every other finite
         // value is true, NaN is true (matches Python's `bool(float('nan'))`).
@@ -1060,11 +1073,11 @@ struct Value {
     }
   }
 
-  long to_long() const {
+  int64_t to_long() const {
     switch (type) {
       // case Bool: return get<bool>();
       case Long:
-        return get<long>();
+        return get<int64_t>();
       default:
         _throw_type_error("Long");
     }
@@ -1281,7 +1294,7 @@ struct Value {
       case Bool:
         return get<bool>() == rhs.get<bool>();
       case Long:
-        return get<long>() == rhs.get<long>();
+        return get<int64_t>() == rhs.get<int64_t>();
       case Float:
         return get<double>() == rhs.get<double>();
       case String:
@@ -1343,7 +1356,7 @@ struct Value {
       case Bool:
         return cmp(double(get<bool>()), double(rhs.get<bool>()));
       case Long:
-        return cmp(double(get<long>()), double(rhs.get<long>()));
+        return cmp(double(get<int64_t>()), double(rhs.get<int64_t>()));
       case Float:
         return cmp(get<double>(), rhs.get<double>());
       case String: {
@@ -1399,16 +1412,9 @@ struct ValueHash {
   size_t operator()(const Value& v) const {
     switch (v.type) {
       case Value::Nil:    return 0;
-      case Value::Bool:   return std::hash<long>{}(v.get<bool>() ? 1 : 0);
-      case Value::Long:   return std::hash<long>{}(v.get<long>());
-      case Value::Float: {
-        double d = v.get<double>();
-        long as_long = static_cast<long>(d);
-        if (std::isfinite(d) && static_cast<double>(as_long) == d) {
-          return std::hash<long>{}(as_long);
-        }
-        return std::hash<double>{}(d);
-      }
+      case Value::Bool:   return culebra::hash_long(v.get<bool>() ? 1 : 0);
+      case Value::Long:   return culebra::hash_long(v.get<int64_t>());
+      case Value::Float:  return culebra::hash_double(v.get<double>());
       case Value::String:
         return std::hash<std::string_view>{}(
             std::string_view(v.get<std::string>()));
@@ -1432,7 +1438,7 @@ struct ValueHash {
           if (r.type != Value::Long) {
             throw CulebraError("TypeError", "hash() must return Long");
           }
-          return std::hash<long>{}(r.get<long>());
+          return culebra::hash_long(r.get<int64_t>());
         }
         throw CulebraError("TypeError",
             "unhashable type: 'Object' (no hash() method)");
@@ -1463,7 +1469,7 @@ struct ValueEq {
     switch (a.type) {
       case Value::Nil:   return true;
       case Value::Bool:  return a.get<bool>() == b.get<bool>();
-      case Value::Long:  return a.get<long>() == b.get<long>();
+      case Value::Long:  return a.get<int64_t>() == b.get<int64_t>();
       case Value::Float: return a.get<double>() == b.get<double>();
       case Value::Tuple: {
         const auto& ea = *a.get<TupleValue>().elements;
@@ -1927,11 +1933,11 @@ inline const std::shared_ptr<Value>& kw_default_true() {
   return v;
 }
 inline const std::shared_ptr<Value>& kw_default_zero() {
-  static const auto v = std::make_shared<Value>(Value((long)0));
+  static const auto v = std::make_shared<Value>(Value((int64_t)0));
   return v;
 }
 inline const std::shared_ptr<Value>& kw_default_one() {
-  static const auto v = std::make_shared<Value>(Value((long)1));
+  static const auto v = std::make_shared<Value>(Value((int64_t)1));
   return v;
 }
 inline const std::shared_ptr<Value>& kw_default_nil() {
@@ -2141,7 +2147,7 @@ struct DapFrameGuard {
 // conservatively (survive; the closure's death releases them, the GC
 // backstop covers closure-held cycles). This also matches §8: a
 // closure capture IS an escape.
-inline long _owned_scope_binding_refs(const Environment& env,
+inline int64_t _owned_scope_binding_refs(const Environment& env,
                                       const OrderedSymbolMap* m) {
   long n = 0;
   for (const auto& [_, sym] : env.dictionary) {
@@ -2870,7 +2876,7 @@ inline void ObjectValue::assign(const Value& key, const Value& val) {
 // Build the structured-error Object surfaced to user `catch` blocks.
 // Keys are string literals — safe for the string_view-keyed map.
 inline Value make_error_object(std::string_view kind, std::string_view message,
-                               long line, long col) {
+                               int64_t line, int64_t col) {
   ObjectValue obj;
   obj.initialize("kind", Value(std::string(kind)), false);
   obj.initialize("message", Value(std::string(message)), false);
@@ -3159,7 +3165,8 @@ inline std::string Value::str_object() const {
   return s;
 }
 
-inline std::pair<long, long> normalize_slice(long start, long end, long size) {
+inline std::pair<int64_t, int64_t> normalize_slice(int64_t start, int64_t end,
+                                                  int64_t size) {
   if (start < 0) start += size;
   if (end < 0) end += size;
   if (start < 0) start = 0;
@@ -3286,8 +3293,9 @@ inline Value _make_iterator(AdvanceFn&& advance,
 // passable value; an absent endpoint (open-ended range) is stored as Nil.
 // `step` defaults to 1 and is never Nil — slicing ignores it (bounds only);
 // for-in builds a bounded, step-aware iterator (see _get_iterator).
-inline Value _make_range(std::optional<long> start, std::optional<long> end,
-                         bool inclusive, long step = 1) {
+inline Value _make_range(std::optional<int64_t> start,
+                         std::optional<int64_t> end, bool inclusive,
+                         int64_t step = 1) {
   ObjectValue r;
   r.initialize("class", Value(std::string("Range")), false);
   r.initialize("start", start ? Value(*start) : Value(), false);
@@ -3311,7 +3319,7 @@ inline Value _iter_over_vector(std::shared_ptr<std::vector<Value>> vec) {
 }
 
 // `(index, value)` tuple yielded by enumerate (on arrays and iterators).
-inline Value _index_value_pair(long index, Value v) {
+inline Value _index_value_pair(int64_t index, Value v) {
   std::vector<Value> pair;
   pair.reserve(2);
   pair.push_back(Value(index));
@@ -3329,12 +3337,12 @@ inline Value _index_value_pair(long index, Value v) {
 // Fold into a sum (`mul` false) or product. Stays a Long while every element
 // is a Long and promotes at the first Float, so `[1, 2].sum()` is 3, not 3.0.
 inline Value _numeric_fold(const std::vector<Value>& vs, bool mul) {
-  long acc_i = mul ? 1 : 0;
+  int64_t acc_i = mul ? 1 : 0;
   double acc_d = 0;
   bool is_float = false;
   for (const auto& v : vs) {
     if (v.type == Value::Long && !is_float) {
-      if (mul) acc_i *= v.get<long>(); else acc_i += v.get<long>();
+      if (mul) acc_i *= v.get<int64_t>(); else acc_i += v.get<int64_t>();
       continue;
     }
     double x = v.to_double_coerce();
@@ -3451,8 +3459,8 @@ inline std::shared_ptr<Environment> _make_method_call_env(
   auto env = std::make_shared<Environment>();
   env->is_function_frame = true;
   env->initialize("self", self_val, false);
-  env->initialize("__LINE__", Value((long)line), false);
-  env->initialize("__COLUMN__", Value((long)column), false);
+  env->initialize("__LINE__", Value((int64_t)line), false);
+  env->initialize("__COLUMN__", Value((int64_t)column), false);
   return env;
 }
 
@@ -3510,7 +3518,7 @@ inline bool _ordering_less(const Value& a, const Value& b) {
       // to the primitive compare, mirroring compare_values' try_cmp and the
       // JIT's _special_cmp (so a contract-breaking cmp errors identically).
       auto r = _invoke_binary_method(a, "cmp", b);
-      if (r.type == Value::Long) return r.template get<long>() < 0;
+      if (r.type == Value::Long) return r.template get<int64_t>() < 0;
     }
   }
   return a < b;
@@ -3591,7 +3599,7 @@ inline void inject_derived_methods(
                   self_v, [&](std::string_view, const Value& av) {
                     h = h * 31 + ValueHash{}(av);
                   });
-              return Value(static_cast<long>(h));
+              return Value(static_cast<int64_t>(h));
             });
         break;
       case 2:  // Show -> to_s()
@@ -3616,9 +3624,9 @@ inline void inject_derived_methods(
             [](const std::shared_ptr<Environment>& env) -> Value {
               const auto& self_v = env->get("self");
               const auto& other = env->get("other");
-              if (other.type != Value::Object) return Value(0L);
+              if (other.type != Value::Object) return Value(int64_t{0});
               const auto& ob = other.to_object();
-              long result = 0;
+              int64_t result = 0;
               bool done = false;
               _for_each_derived_field(
                   self_v, [&](std::string_view name, const Value& av) {
@@ -3735,12 +3743,12 @@ inline std::optional<Value> _iter_next_value(const Value& upstream) {
 
 // Streaming twins of the two helpers above, for the Iterator terminals.
 inline Value _iter_numeric_fold(Value upstream, bool mul) {
-  long acc_i = mul ? 1 : 0;
+  int64_t acc_i = mul ? 1 : 0;
   double acc_d = 0;
   bool is_float = false;
   while (auto v = _iter_next_value(upstream)) {
     if (v->type == Value::Long && !is_float) {
-      if (mul) acc_i *= v->get<long>(); else acc_i += v->get<long>();
+      if (mul) acc_i *= v->get<int64_t>(); else acc_i += v->get<int64_t>();
       continue;
     }
     double x = v->to_double_coerce();
@@ -3790,8 +3798,8 @@ inline Value _invoke_callback(const Value& fn_val) {
   env->is_function_frame = true;
   env->initialize("fn", fn_val, false);
   bind_callback_params(*env, fn, {});
-  env->initialize("__LINE__", Value(0L), false);
-  env->initialize("__COLUMN__", Value(0L), false);
+  env->initialize("__LINE__", Value(int64_t{0}), false);
+  env->initialize("__COLUMN__", Value(int64_t{0}), false);
   return deliver_call(fn.eval(env));
 }
 
@@ -3801,8 +3809,8 @@ inline Value _invoke_callback(const Value& fn_val, const Value& a) {
   env->is_function_frame = true;
   env->initialize("fn", fn_val, false);
   bind_callback_params(*env, fn, {a});
-  env->initialize("__LINE__", Value(0L), false);
-  env->initialize("__COLUMN__", Value(0L), false);
+  env->initialize("__LINE__", Value(int64_t{0}), false);
+  env->initialize("__COLUMN__", Value(int64_t{0}), false);
   return deliver_call(fn.eval(env));
 }
 
@@ -3813,8 +3821,8 @@ inline Value _invoke_callback(const Value& fn_val, const Value& a,
   env->is_function_frame = true;
   env->initialize("fn", fn_val, false);
   bind_callback_params(*env, fn, {a, b});
-  env->initialize("__LINE__", Value(0L), false);
-  env->initialize("__COLUMN__", Value(0L), false);
+  env->initialize("__LINE__", Value(int64_t{0}), false);
+  env->initialize("__COLUMN__", Value(int64_t{0}), false);
   return deliver_call(fn.eval(env));
 }
 
@@ -3823,16 +3831,16 @@ inline Value _invoke_callback(const Value& fn_val, const Value& a,
 // so the for-in fast path and the generic iterator below cannot drift
 // apart on which values a range yields.
 struct RangeBounds {
-  long cur;
-  long end_exclusive;
-  long step;
+  int64_t cur;
+  int64_t end_exclusive;
+  int64_t step;
 
   bool done() const {
     return step > 0 ? cur >= end_exclusive : cur <= end_exclusive;
   }
   // Surrender the current value and advance. Only valid when !done().
-  long take() {
-    long v = cur;
+  int64_t take() {
+    int64_t v = cur;
     cur += step;
     return v;
   }
@@ -3851,13 +3859,13 @@ inline RangeBounds range_bounds(const ObjectValue& obj, size_t line,
         static_cast<long>(line), static_cast<long>(col));
   }
   const auto& step_v = obj.get("step");
-  long step = step_v.type == Value::Nil ? 1 : step_v.to_long();
+  int64_t step = step_v.type == Value::Nil ? 1 : step_v.to_long();
   if (step == 0) {
     throw CulebraError("ValueError", "range() step must not be zero",
         static_cast<long>(line), static_cast<long>(col));
   }
   bool inclusive = obj.get("inclusive").to_bool();
-  long end = e.to_long() + (inclusive ? (step > 0 ? 1 : -1) : 0);
+  int64_t end = e.to_long() + (inclusive ? (step > 0 ? 1 : -1) : 0);
   return RangeBounds{s.to_long(), end, step};
 }
 
@@ -3909,9 +3917,9 @@ inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
       {"size"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          const auto& obj = callEnv->get("self").to_object();
-         long n = static_cast<long>(obj.properties->size());
+         int64_t n = static_cast<int64_t>(obj.properties->size());
          if (obj.non_string_props) {
-           n += static_cast<long>(obj.non_string_props->size());
+           n += static_cast<int64_t>(obj.non_string_props->size());
          }
          return Value(n);
        }))},
@@ -4395,8 +4403,8 @@ inline Value invoke_unary_callback(std::shared_ptr<Environment> callEnv,
   // A function frame doesn't inherit the caller's __LINE__/__COLUMN__, so a
   // builtin callback that reads them (`to_long`/`to_float`) would NameError
   // when handed to a HOF (`map(to_float)`). Seed 0 like _invoke_callback.
-  inner->initialize("__LINE__", Value(0L), false);
-  inner->initialize("__COLUMN__", Value(0L), false);
+  inner->initialize("__LINE__", Value(int64_t{0}), false);
+  inner->initialize("__COLUMN__", Value(int64_t{0}), false);
   return deliver_call(f.eval(inner));
 }
 
@@ -4452,8 +4460,8 @@ inline Value call(const std::shared_ptr<Environment>& env, std::string_view name
     extras.values->push_back(std::move(args[i]));
   }
   bind_overflow_args(params, *callEnv, Value(std::move(extras)));
-  callEnv->initialize("__LINE__", Value(0L), false);
-  callEnv->initialize("__COLUMN__", Value(0L), false);
+  callEnv->initialize("__LINE__", Value(int64_t{0}), false);
+  callEnv->initialize("__COLUMN__", Value(int64_t{0}), false);
 
   return deliver_call(f.eval(callEnv));
 }
@@ -4498,7 +4506,12 @@ struct fn_traits<std::function<R(Args...)>> {
 template <class T> struct ValueAs;
 
 template <> struct ValueAs<long> {
-  static long convert(const Value& v) { return v.to_long(); }
+  static long convert(const Value& v) { return static_cast<long>(v.to_long()); }
+};
+// Distinct from `long` wherever the two differ (Windows, and `long long` even
+// on LP64), so a binding that spells the width it means still resolves.
+template <> struct ValueAs<long long> {
+  static long long convert(const Value& v) { return v.to_long(); }
 };
 template <> struct ValueAs<int> {
   static int convert(const Value& v) { return static_cast<int>(v.to_long()); }
@@ -4533,8 +4546,9 @@ template <> struct ValueAs<const Value&> {
 };
 
 // C++ → Value. `cpp_to_value(void)` is handled at the call site.
-inline Value cpp_to_value(long v)        { return Value(v); }
-inline Value cpp_to_value(int v)         { return Value(static_cast<long>(v)); }
+inline Value cpp_to_value(long v)        { return Value(static_cast<int64_t>(v)); }
+inline Value cpp_to_value(long long v)   { return Value(static_cast<int64_t>(v)); }
+inline Value cpp_to_value(int v)         { return Value(static_cast<int64_t>(v)); }
 inline Value cpp_to_value(double v)      { return Value(v); }
 inline Value cpp_to_value(float v)       { return Value(static_cast<double>(v)); }
 inline Value cpp_to_value(bool v)        { return Value(v); }
@@ -4621,7 +4635,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
       {"size"sv, Value(FunctionValue({},
                                      [](std::shared_ptr<Environment> callEnv) {
                                        const auto& val = callEnv->get("self");
-                                       long n = val.to_array().values->size();
+                                       int64_t n = val.to_array().values->size();
                                        return Value(n);
                                      }))},
       {"empty"sv, Value(FunctionValue({},
@@ -4682,9 +4696,9 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                              const auto& vs = *val.to_array().values;
                              for (size_t i = 0; i < vs.size(); i++) {
                                if (vs[i] == needle)
-                                 return Value(static_cast<long>(i));
+                                 return Value(static_cast<int64_t>(i));
                              }
-                             return Value(static_cast<long>(-1));
+                             return Value(static_cast<int64_t>(-1));
                            }))},
       {"contains"sv,
        Value(FunctionValue({{"v", false}},
@@ -4782,8 +4796,8 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                bind_callback_params(*inner, f, {acc, v});
                // See invoke_unary_callback: a builtin reducer reading
                // __LINE__/__COLUMN__ would NameError without these.
-               inner->initialize("__LINE__", Value(0L), false);
-               inner->initialize("__COLUMN__", Value(0L), false);
+               inner->initialize("__LINE__", Value(int64_t{0}), false);
+               inner->initialize("__COLUMN__", Value(int64_t{0}), false);
                acc = deliver_call(f.eval(inner));
                return true;
              });
@@ -5080,7 +5094,7 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                          ArrayValue out;
                          out.values->reserve(impl.shape.dims.size());
                          for (auto d : impl.shape.dims) {
-                           out.values->push_back(Value(static_cast<long>(d)));
+                           out.values->push_back(Value(static_cast<int64_t>(d)));
                          }
                          return Value(std::move(out));
                        },
@@ -5350,7 +5364,7 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
   static std::unordered_map<std::string_view, Value> props_ = {
       {"size"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         return Value(static_cast<long>(
+         return Value(static_cast<int64_t>(
              callEnv->get("self").to_string_view().size()));
        }))},
       {"empty"sv,
@@ -5513,7 +5527,7 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
       {"count"sv,
        Value(FunctionValue({{"sub", false, "StringLike"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-                             return Value(static_cast<long>(culebra::str_count(
+                             return Value(static_cast<int64_t>(culebra::str_count(
                                  callEnv->get("self").to_string_view(),
                                  callEnv->get("sub").to_string_view())));
                            }))},
@@ -5579,7 +5593,7 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
                if (*offset >= base.size()) return _iter_step_done();
                char32_t cp;
                _decode_one_utf8(base, *offset, cp);
-               return _iter_step_value(Value(static_cast<long>(cp)));
+               return _iter_step_value(Value(static_cast<int64_t>(cp)));
              });
        }))},
       // Lazy walk yielding the receiver's raw UTF-8 bytes as Long (0–255),
@@ -5595,7 +5609,7 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
                if (*offset >= base.size()) return _iter_step_done();
                auto b = static_cast<unsigned char>(base[*offset]);
                (*offset)++;
-               return _iter_step_value(Value(static_cast<long>(b)));
+               return _iter_step_value(Value(static_cast<int64_t>(b)));
              });
        }))},
       // Lazy walk yielding Extended Grapheme Cluster boundaries (UAX
@@ -5684,7 +5698,7 @@ inline std::unordered_map<std::string_view, Value>& set_builtins() {
       {"size"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          const auto& self = callEnv->get("self").get<SetValue>();
-         return Value(static_cast<long>(self.members->size()));
+         return Value(static_cast<int64_t>(self.members->size()));
        }))},
       {"empty"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
@@ -5834,7 +5848,7 @@ inline std::unordered_map<std::string_view, Value>& tuple_builtins() {
       {"size"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          const auto& self = callEnv->get("self").get<TupleValue>();
-         return Value(static_cast<long>(self.elements->size()));
+         return Value(static_cast<int64_t>(self.elements->size()));
        }))},
       {"empty"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
@@ -6366,7 +6380,7 @@ inline std::unordered_map<std::string_view, IterBuiltin>& iterator_builtins() {
          auto upstream = callEnv->get("self");
          auto p = Value(as_callback(callEnv->get("p")));
          check_callback_arity(p.to_function(), 1, "position");
-         long i = 0;
+         int64_t i = 0;
          while (auto v = _iter_next_value(upstream)) {
            if (_invoke_callback(p, *v).to_bool()) return Value(i);
            i++;
@@ -6451,7 +6465,7 @@ inline std::unordered_map<std::string_view, IterBuiltin>& iterator_builtins() {
       {"count"sv,
        {Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
-         long n = 0;
+         int64_t n = 0;
          while (_iter_next_value(upstream)) n++;
          return Value(n);
        })), Terminal}},
@@ -6529,7 +6543,7 @@ inline std::unordered_map<std::string_view, IterBuiltin>& iterator_builtins() {
 // Shared arg parser for the integer range/iota factories. 1 arg → end
 // (start defaults to 0), 2+ args → (start, end). Missing args leave the
 // pair at (0, 0), which yields an empty range/iota.
-inline std::pair<long, long> _parse_range_args(
+inline std::pair<int64_t, int64_t> _parse_range_args(
     std::shared_ptr<Environment> callEnv, const char* name) {
   const auto& extras = *callEnv->get("__ARGS__").to_array().values;
   // range/iota take 1 (end) or 2 (start, end) positional arguments — too
@@ -6568,7 +6582,7 @@ inline void setup_core_globals(Environment& env) {
             auto [start, end] = _parse_range_args(callEnv, "iota");
             ArrayValue out;
             if (end > start) out.values->reserve(end - start);
-            for (long i = start; i < end; i++) {
+            for (int64_t i = start; i < end; i++) {
               out.values->push_back(Value(i));
             }
             return Value(std::move(out));
@@ -6597,7 +6611,7 @@ inline void setup_core_globals(Environment& env) {
               throw CulebraError("ValueError",
                   "range() step must not be zero", line, col);
             }
-            auto current = std::make_shared<long>(start);
+            auto current = std::make_shared<int64_t>(start);
             return _make_iterator(
                 [current, end, step](std::shared_ptr<Environment>) {
                   bool done = step > 0 ? *current >= end : *current <= end;
@@ -7289,7 +7303,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                val.get<bool>() == (pattern.token == "true");
       case "NUMBER"_:
         return val.type == Value::Long &&
-               val.get<long>() == parse_integer_literal(pattern.token);
+               val.get<int64_t>() == parse_integer_literal(pattern.token);
       case "FLOAT"_:
         return val.type == Value::Float &&
                val.get<double>() == pattern.token_to_number<double>();
@@ -8073,7 +8087,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       case culebra::ZeroKind::Float: return Value(0.0);
       case culebra::ZeroKind::Bool: return Value(false);
       case culebra::ZeroKind::String: return Value(std::string());
-      case culebra::ZeroKind::Long: return Value(static_cast<long>(0));
+      case culebra::ZeroKind::Long: return Value(static_cast<int64_t>(0));
       case culebra::ZeroKind::Nil: return Value();
     }
     return Value();
@@ -8139,23 +8153,23 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     }
     if (f.type == "Int8") {
       int8_t v; std::memcpy(&v, p, 1);
-      return Value(static_cast<long>(v));
+      return Value(static_cast<int64_t>(v));
     }
     if (f.type == "Int16") {
       int16_t v; std::memcpy(&v, p, 2);
-      return Value(static_cast<long>(v));
+      return Value(static_cast<int64_t>(v));
     }
     if (f.type == "Int32") {
       int32_t v; std::memcpy(&v, p, 4);
-      return Value(static_cast<long>(v));
+      return Value(static_cast<int64_t>(v));
     }
     if (f.type == "Int64" || f.type == "Long") {
       int64_t v; std::memcpy(&v, p, 8);
-      return Value(static_cast<long>(v));
+      return Value(static_cast<int64_t>(v));
     }
     if (f.type == "Byte") {
       uint8_t v; std::memcpy(&v, p, 1);
-      return Value(static_cast<long>(v));
+      return Value(static_cast<int64_t>(v));
     }
     if (f.type == "Bool") {
       uint8_t v; std::memcpy(&v, p, 1);
@@ -8303,10 +8317,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // (zero copy, shared across isolates with the buffer). -------------------
   struct FaView {
     std::shared_ptr<culebra::SharedBufferCore> core;
-    long off;      // absolute byte offset of the field (the i32 len lives here)
-    long cap;      // capacity N
-    long dataoff;  // byte offset of T[0] within the field (after len)
-    long esize;    // sizeof(T)
+    int64_t off;      // absolute byte offset of the field (the i32 len is here)
+    int64_t cap;      // capacity N
+    int64_t dataoff;  // byte offset of T[0] within the field (after len)
+    int64_t esize;    // sizeof(T)
     std::string etype;
   };
   static FaView fa_resolve(const Value& view) {
@@ -8317,10 +8331,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
             o.get("__fa_dataoff__").to_long(), o.get("__fa_esize__").to_long(),
             o.get("__fa_etype__").get<std::string>()};
   }
-  static long fa_len(const FaView& v) {
+  static int64_t fa_len(const FaView& v) {
     int32_t n; std::memcpy(&n, v.core->data + v.off, 4); return n;
   }
-  static void fa_set_len(const FaView& v, long n) {
+  static void fa_set_len(const FaView& v, int64_t n) {
     int32_t x = static_cast<int32_t>(n);
     std::memcpy(v.core->data + v.off, &x, 4);
   }
@@ -8350,15 +8364,15 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     if (i < 0 || i >= n) throw CulebraError("IndexError", "index out of range");
     packable_write_field(fa_elem_ptr(v, i), fa_elem_field(v), val);
   }
-  static Value make_fixed_array_view(long id, long abs_off,
+  static Value make_fixed_array_view(int64_t id, int64_t abs_off,
                                      const culebra::PackableField& f) {
     using namespace std::literals;
     ObjectValue h;
     h.initialize("__fa_id__", Value(id), false);
     h.initialize("__fa_off__", Value(abs_off), false);
-    h.initialize("__fa_cap__", Value(static_cast<long>(f.capacity)), false);
-    h.initialize("__fa_dataoff__", Value(static_cast<long>(f.data_offset)), false);
-    h.initialize("__fa_esize__", Value(static_cast<long>(f.elem_size)), false);
+    h.initialize("__fa_cap__", Value(static_cast<int64_t>(f.capacity)), false);
+    h.initialize("__fa_dataoff__", Value(static_cast<int64_t>(f.data_offset)), false);
+    h.initialize("__fa_esize__", Value(static_cast<int64_t>(f.elem_size)), false);
     h.initialize("__fa_etype__", Value(std::string(f.elem_type)), false);
     h.initialize("size", Value(FunctionValue({},
         [](std::shared_ptr<Environment> e) {
@@ -8411,7 +8425,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // shared byte-level `culebra::fixed_probe`, so interp and JIT agree. -----
   struct FsView {
     std::shared_ptr<culebra::SharedBufferCore> core;
-    long off, cap, dataoff, esize;
+    int64_t off, cap, dataoff, esize;
     std::string etype;
   };
   static FsView fs_resolve(const Value& view) {
@@ -8422,7 +8436,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
             o.get("__fs_dataoff__").to_long(), o.get("__fs_esize__").to_long(),
             o.get("__fs_etype__").get<std::string>()};
   }
-  static long fs_count(const FsView& v) {
+  static int64_t fs_count(const FsView& v) {
     int32_t n; std::memcpy(&n, v.core->data + v.off, 4); return n;
   }
   static void fs_set_count(const FsView& v, long n) {
@@ -8441,15 +8455,15 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     packable_write_field(buf.data(), fs_elem_field(v), val);
     return buf;
   }
-  static Value make_fixed_set_view(long id, long abs_off,
+  static Value make_fixed_set_view(int64_t id, int64_t abs_off,
                                    const culebra::PackableField& f) {
     using namespace std::literals;
     ObjectValue h;
     h.initialize("__fs_id__", Value(id), false);
     h.initialize("__fs_off__", Value(abs_off), false);
-    h.initialize("__fs_cap__", Value(static_cast<long>(f.capacity)), false);
-    h.initialize("__fs_dataoff__", Value(static_cast<long>(f.data_offset)), false);
-    h.initialize("__fs_esize__", Value(static_cast<long>(f.elem_size)), false);
+    h.initialize("__fs_cap__", Value(static_cast<int64_t>(f.capacity)), false);
+    h.initialize("__fs_dataoff__", Value(static_cast<int64_t>(f.data_offset)), false);
+    h.initialize("__fs_esize__", Value(static_cast<int64_t>(f.elem_size)), false);
     h.initialize("__fs_etype__", Value(std::string(f.elem_type)), false);
     h.initialize("size", Value(FunctionValue({},
         [](std::shared_ptr<Environment> e) {
@@ -8463,7 +8477,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         [](std::shared_ptr<Environment> e) {
           auto v = fs_resolve(e->get("self"));
           auto key = fs_encode(v, e->get("v"));
-          long slot = culebra::fixed_probe(fs_states(v), fs_vals(v), v.cap,
+          int64_t slot = culebra::fixed_probe(fs_states(v), fs_vals(v), v.cap,
                                            v.esize, v.esize, key.data(), nullptr);
           return Value(slot >= 0);
         }, "Bool"sv)), false);
@@ -8471,8 +8485,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         [](std::shared_ptr<Environment> e) -> Value {
           auto v = fs_resolve(e->get("self"));
           auto key = fs_encode(v, e->get("v"));
-          long insert = -1;
-          long slot = culebra::fixed_probe(fs_states(v), fs_vals(v), v.cap,
+          int64_t insert = -1;
+          int64_t slot = culebra::fixed_probe(fs_states(v), fs_vals(v), v.cap,
                                            v.esize, v.esize, key.data(), &insert);
           if (slot >= 0) return Value();  // already present
           if (insert < 0)
@@ -8487,7 +8501,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         [](std::shared_ptr<Environment> e) {
           auto v = fs_resolve(e->get("self"));
           auto key = fs_encode(v, e->get("v"));
-          long slot = culebra::fixed_probe(fs_states(v), fs_vals(v), v.cap,
+          int64_t slot = culebra::fixed_probe(fs_states(v), fs_vals(v), v.cap,
                                            v.esize, v.esize, key.data(), nullptr);
           if (slot < 0) return Value(false);
           fs_states(v)[slot] = culebra::kFixedTomb;
@@ -8519,7 +8533,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // / size / capacity / for-in (yields (k, v) tuples). ---------------------
   struct FmView {
     std::shared_ptr<culebra::SharedBufferCore> core;
-    long off, cap, koff, voff, ksize, vsize;
+    int64_t off, cap, koff, voff, ksize, vsize;
     std::string ktype, vtype;
   };
   static FmView fm_resolve(const Value& view) {
@@ -8532,7 +8546,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
             o.get("__fm_ktype__").get<std::string>(),
             o.get("__fm_vtype__").get<std::string>()};
   }
-  static long fm_count(const FmView& v) {
+  static int64_t fm_count(const FmView& v) {
     int32_t n; std::memcpy(&n, v.core->data + v.off, 4); return n;
   }
   static void fm_set_count(const FmView& v, long n) {
@@ -8551,17 +8565,17 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     packable_write_field(buf.data(), fm_field(t), val);
     return buf;
   }
-  static Value make_fixed_map_view(long id, long abs_off,
+  static Value make_fixed_map_view(int64_t id, int64_t abs_off,
                                    const culebra::PackableField& f) {
     using namespace std::literals;
     ObjectValue h;
     h.initialize("__fm_id__", Value(id), false);
     h.initialize("__fm_off__", Value(abs_off), false);
-    h.initialize("__fm_cap__", Value(static_cast<long>(f.capacity)), false);
-    h.initialize("__fm_koff__", Value(static_cast<long>(f.data_offset)), false);
-    h.initialize("__fm_voff__", Value(static_cast<long>(f.val_offset)), false);
-    h.initialize("__fm_ksize__", Value(static_cast<long>(f.elem_size)), false);
-    h.initialize("__fm_vsize__", Value(static_cast<long>(f.val_size)), false);
+    h.initialize("__fm_cap__", Value(static_cast<int64_t>(f.capacity)), false);
+    h.initialize("__fm_koff__", Value(static_cast<int64_t>(f.data_offset)), false);
+    h.initialize("__fm_voff__", Value(static_cast<int64_t>(f.val_offset)), false);
+    h.initialize("__fm_ksize__", Value(static_cast<int64_t>(f.elem_size)), false);
+    h.initialize("__fm_vsize__", Value(static_cast<int64_t>(f.val_size)), false);
     h.initialize("__fm_ktype__", Value(std::string(f.elem_type)), false);
     h.initialize("__fm_vtype__", Value(std::string(f.val_type)), false);
     h.initialize("size", Value(FunctionValue({},
@@ -8576,7 +8590,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         [](std::shared_ptr<Environment> e) {
           auto v = fm_resolve(e->get("self"));
           auto key = fm_enc(v.ktype, v.ksize, e->get("k"));
-          long slot = culebra::fixed_probe(fm_states(v), fm_keys(v), v.cap,
+          int64_t slot = culebra::fixed_probe(fm_states(v), fm_keys(v), v.cap,
                                            v.ksize, v.ksize, key.data(), nullptr);
           return Value(slot >= 0);
         }, "Bool"sv)), false);
@@ -8584,7 +8598,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         [](std::shared_ptr<Environment> e) -> Value {
           auto v = fm_resolve(e->get("self"));
           auto key = fm_enc(v.ktype, v.ksize, e->get("k"));
-          long slot = culebra::fixed_probe(fm_states(v), fm_keys(v), v.cap,
+          int64_t slot = culebra::fixed_probe(fm_states(v), fm_keys(v), v.cap,
                                            v.ksize, v.ksize, key.data(), nullptr);
           if (slot < 0) return Value();  // absent -> nil
           return packable_read_field(fm_vals(v) + slot * v.vsize,
@@ -8594,8 +8608,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         [](std::shared_ptr<Environment> e) -> Value {
           auto v = fm_resolve(e->get("self"));
           auto key = fm_enc(v.ktype, v.ksize, e->get("k"));
-          long insert = -1;
-          long slot = culebra::fixed_probe(fm_states(v), fm_keys(v), v.cap,
+          int64_t insert = -1;
+          int64_t slot = culebra::fixed_probe(fm_states(v), fm_keys(v), v.cap,
                                            v.ksize, v.ksize, key.data(), &insert);
           if (slot < 0) {
             if (insert < 0)
@@ -8614,7 +8628,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         [](std::shared_ptr<Environment> e) {
           auto v = fm_resolve(e->get("self"));
           auto key = fm_enc(v.ktype, v.ksize, e->get("k"));
-          long slot = culebra::fixed_probe(fm_states(v), fm_keys(v), v.cap,
+          int64_t slot = culebra::fixed_probe(fm_states(v), fm_keys(v), v.cap,
                                            v.ksize, v.ksize, key.data(), nullptr);
           if (slot < 0) return Value(false);
           fm_states(v)[slot] = culebra::kFixedTomb;
@@ -8691,7 +8705,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         return *l;
     return core.layout;
   }
-  static Value make_nested_view(long id, long off, const std::string& cls) {
+  static Value make_nested_view(int64_t id, int64_t off, const std::string& cls) {
     ObjectValue h;
     h.initialize("__packedview_id__", Value(id), false);
     h.initialize("__packedview_byteoff__", Value(off), false);
@@ -8714,8 +8728,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           "@packable {} has no field `{}`", packed_view_class(view, *core),
           name));
     }
-    long id = view.to_object().get("__packedview_id__").to_long();
-    long abs_off = off + static_cast<long>(f->offset);
+    int64_t id = view.to_object().get("__packedview_id__").to_long();
+    int64_t abs_off = off + static_cast<int64_t>(f->offset);
     if (f->is_fixed_array) return make_fixed_array_view(id, abs_off, *f);
     if (f->is_fixed_set) return make_fixed_set_view(id, abs_off, *f);
     if (f->is_fixed_map) return make_fixed_map_view(id, abs_off, *f);
@@ -9594,8 +9608,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     }
     bind_overflow_args(params, *callEnv, Value(std::move(extras)));
 
-    callEnv->initialize("__LINE__", Value((long)call_line), false);
-    callEnv->initialize("__COLUMN__", Value((long)call_column), false);
+    callEnv->initialize("__LINE__", Value((int64_t)call_line), false);
+    callEnv->initialize("__COLUMN__", Value((int64_t)call_column), false);
 
     Value result = deliver_call(f.eval(callEnv));
     check_type(result, f.return_type, "return value", call_line, call_column);
@@ -9721,7 +9735,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     if (key.type == Value::Long) {
       const auto& groups = *m.get("groups").to_array().values;
       long n = static_cast<long>(groups.size());
-      long i = key.to_long();
+      int64_t i = key.to_long();
       if (i < 0) i += n;
       if (i < 0 || i >= n) return Value();
       return group_value(groups[i]);
@@ -9755,11 +9769,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     if (val.type == Value::Object &&
         val.to_object().has("__sharedbuffer_id__")) {
       const auto& buf = val.to_object();
-      long id = buf.get("__sharedbuffer_id__").to_long();
+      int64_t id = buf.get("__sharedbuffer_id__").to_long();
       auto core = culebra::lookup_shared_buffer(id);
       if (!core) throw CulebraError("ValueError", "SharedBuffer has been dropped");
-      long n = static_cast<long>(core->count);
-      long idx = key.to_long();
+      int64_t n = static_cast<int64_t>(core->count);
+      int64_t idx = key.to_long();
       if (idx < 0) idx += n;
       if (idx < 0 || idx >= n) {
         throw CulebraError("IndexError", "index out of range");
@@ -9825,9 +9839,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     const auto& ev = robj.get("end");
     bool open_end = ev.type == Value::Nil;
     bool inclusive = !open_end && robj.get("inclusive").to_bool();
-    long lo = sv.type == Value::Nil ? 0 : sv.to_long();
+    int64_t lo = sv.type == Value::Nil ? 0 : sv.to_long();
     auto bounds = [&](size_t len) {
-      long hi = open_end ? static_cast<long>(len) : ev.to_long();
+      int64_t hi = open_end ? static_cast<int64_t>(len) : ev.to_long();
       return _slice_bounds(lo, hi, inclusive, len);
     };
     if (val.is_stringlike()) {
@@ -10422,9 +10436,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // Comparable-trait fallback: when no `__lt__`/`__le__` dunder, derive
     // ordering from a user/derived `cmp(other)` (the canonical Comparable
     // method; the trait-default lt/le/gt/ge are not stored on instances).
-    auto try_cmp = [&]() -> std::optional<long> {
+    auto try_cmp = [&]() -> std::optional<int64_t> {
       if (auto r = try_special_binop(lhs, rhs, "cmp", env)) {
-        if (r->type == Value::Long) return r->template get<long>();
+        if (r->type == Value::Long) return r->template get<int64_t>();
       }
       return std::nullopt;
     };
@@ -10475,7 +10489,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     if (v.type == Value::Float) return Value(-v.get<double>());
     if (v.type != Value::Long)
       culebra::throw_type_mismatch("Long or Float", v.type_name());
-    return Value(v.get<long>() * -1);
+    return Value(v.get<int64_t>() * -1);
   }
 
   Value eval_unary_not(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
@@ -10492,25 +10506,25 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       throw CulebraError("TypeError", std::format(
           "type error: '~' requires Long, got {}", v.type_name()));
     }
-    return Value(~v.get<long>());
+    return Value(~v.get<int64_t>());
   }
 
   // Bitwise / shift chains (`^`, `&`, `<<`, `>>`). Left-associative over
   // [operand, OP, operand, ...]; operands must be Long. The operator is
   // read from the captured OP token (handles the 2-char `<<` / `>>`).
   Value eval_bitwise(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
-    auto require_long = [&](const Value& v) -> long {
+    auto require_long = [&](const Value& v) -> int64_t {
       if (v.type != Value::Long) {
         throw CulebraError("TypeError", std::format(
             "type error: bitwise operator requires Long, got {}",
             v.type_name()));
       }
-      return v.get<long>();
+      return v.get<int64_t>();
     };
-    long acc = require_long(eval(*ast.nodes[0], env));
+    int64_t acc = require_long(eval(*ast.nodes[0], env));
     for (size_t i = 1; i < ast.nodes.size(); i += 2) {
       auto op = ast.nodes[i]->token;
-      long rhs = require_long(eval(*ast.nodes[i + 1], env));
+      int64_t rhs = require_long(eval(*ast.nodes[i + 1], env));
       if (op == "|") acc |= rhs;
       else if (op == "^") acc ^= rhs;
       else if (op == "&") acc &= rhs;
@@ -10560,7 +10574,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     bool has_step = n > 0 && ast.nodes[n - 1]->tag == "BY_STEP"_;
     size_t end_limit = has_step ? n - 1 : n;
     bool has_end = op_idx + 1 < end_limit;
-    std::optional<long> start, end;
+    std::optional<int64_t> start, end;
     Value bound;
     if (has_start) {
       if (!eval_operand(*ast.nodes[0], env, bound)) return Value();
@@ -10570,7 +10584,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       if (!eval_operand(*ast.nodes[op_idx + 1], env, bound)) return Value();
       end = bound.to_long();
     }
-    long step = 1;
+    int64_t step = 1;
     if (has_step) {
       if (!eval_operand(*ast.nodes[n - 1]->nodes[0], env, bound)) return Value();
       step = bound.to_long();
@@ -10736,7 +10750,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     }
     // Integer fast path: both Long.
     if (lhs.type == Value::Long && rhs.type == Value::Long) {
-      return arith_op(lhs.get<long>(), rhs.get<long>(), ope);
+      return arith_op(lhs.get<int64_t>(), rhs.get<int64_t>(), ope);
     }
     // Mixed or both-Float path: promote to double.
     return arith_op(lhs.to_double_coerce(), rhs.to_double_coerce(), ope);
@@ -10786,8 +10800,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       throw_arith_type_error("**", base.type_name(), exp.type_name());
     }
     if (base.type == Value::Long && exp.type == Value::Long) {
-      auto a = base.get<long>();
-      auto b = exp.get<long>();
+      auto a = base.get<int64_t>();
+      auto b = exp.get<int64_t>();
       if (b >= 0) return Value(ipow_nonneg(a, b));
       // Negative integer exponent: promote to float so `2 ** -1 == 0.5`.
       if (a == 0) throw CulebraError("ZeroDivisionError", "divide by 0 error");
@@ -11068,7 +11082,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         if (is_fixed_array_view(lval)) {
           Value iv;
           if (!eval_operand(postfix, env, iv)) return Value();
-          long i = iv.to_long();
+          int64_t i = iv.to_long();
           if (compound) {
             Value cur = fa_get(lval, i);
             Value nv = apply_compound_op(cur, rval, base_op, env);
@@ -11341,13 +11355,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     if (spec.empty()) return str_display_with_special(v);
     if (v.type == Value::Long) {
       if (format_spec_wants_float(spec))
-        return format_value_double(static_cast<double>(v.get<long>()), spec,
+        return format_value_double(static_cast<double>(v.get<int64_t>()), spec,
                                    line, col);
-      return format_value_long(v.get<long>(), spec, line, col);
+      return format_value_long(v.get<int64_t>(), spec, line, col);
     }
     if (v.type == Value::Float) {
       if (format_spec_wants_int(spec))
-        return format_value_long(static_cast<long>(v.get<double>()), spec,
+        return format_value_long(static_cast<int64_t>(v.get<double>()), spec,
                                  line, col);
       return format_value_double(v.get<double>(), spec, line, col);
     }

@@ -138,7 +138,12 @@ and the parser's diagnostic, formatted by the CLI driver in a
 
 `Value` is a `Type` tag (the twelve names `type_of` can return) plus a
 `std::any` payload. `Nil` / `Bool` / `Long` / `Float` sit in the
-payload directly; `String` holds a `std::string` by value; the
+payload directly — a `Long` as `int64_t` exactly, never `long`, which
+is 32-bit on Windows and would make the same program answer differently
+there than under the JIT; `std::any` matches types rather than widths,
+so producers and consumers have to spell `int64_t` too (`Value::get`
+static_asserts against `long` where the two differ).
+`String` holds a `std::string` by value; the
 container types hold a struct whose *interior* is a `shared_ptr`
 (`ArrayValue::values` is a `shared_ptr<vector<Value>>`, an object's
 property map likewise), which is what gives them reference semantics

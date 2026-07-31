@@ -172,7 +172,7 @@ struct HttpRequest {
 
 struct HttpResult {
   bool ok = false;        // transport succeeded and a response was received.
-  long status = 0;        // HTTP status code (0 when ok is false).
+  int64_t status = 0;     // HTTP status code (0 when ok is false).
   std::string reason;     // status reason phrase ("OK", "Not Found", …).
   std::string body;       // response body (raw bytes).
   HeaderList headers;     // response headers (insertion order from server).

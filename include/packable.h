@@ -466,28 +466,28 @@ enum : uint8_t { kFixedEmpty = 0, kFixedFull = 1, kFixedTomb = 2 };
 // existing equal key, or -1 if absent; `*out_insert` receives the first
 // reusable slot (empty or tombstone) for an insert, or -1 if the table is
 // full. Shared by interp and JIT so probing/equality stay identical.
-inline long fixed_probe(const uint8_t* states, const uint8_t* keys, size_t cap,
+inline int64_t fixed_probe(const uint8_t* states, const uint8_t* keys, size_t cap,
                         size_t key_size, size_t stride, const uint8_t* key,
-                        long* out_insert) {
+                        int64_t* out_insert) {
   if (out_insert) *out_insert = -1;
   if (cap == 0) return -1;
   uint64_t h = fixed_hash_bytes(key, key_size);
-  long insert = -1;
+  int64_t insert = -1;
   for (size_t probe = 0; probe < cap; probe++) {
     size_t i = (h + probe) % cap;
     uint8_t st = states[i];
     if (st == kFixedEmpty) {
-      if (insert < 0) insert = static_cast<long>(i);
+      if (insert < 0) insert = static_cast<int64_t>(i);
       if (out_insert) *out_insert = insert;
       return -1;  // an empty slot terminates the probe chain
     }
     if (st == kFixedTomb) {
-      if (insert < 0) insert = static_cast<long>(i);
+      if (insert < 0) insert = static_cast<int64_t>(i);
       continue;
     }
     if (std::memcmp(keys + i * stride, key, key_size) == 0) {
-      if (out_insert) *out_insert = static_cast<long>(i);
-      return static_cast<long>(i);
+      if (out_insert) *out_insert = static_cast<int64_t>(i);
+      return static_cast<int64_t>(i);
     }
   }
   if (out_insert) *out_insert = insert;

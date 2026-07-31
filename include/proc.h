@@ -58,7 +58,7 @@ extern char** environ;
 namespace culebra::proc {
 
 struct ProcResult {
-  long code = 0;        // WEXITSTATUS on normal exit; -1 when killed by signal.
+  int64_t code = 0;     // WEXITSTATUS on normal exit; -1 when killed by signal.
   std::string out;      // full stdout (raw bytes).
   std::string err;      // full stderr (raw bytes).
   bool ok = false;      // exited normally with code 0 (no signal).
@@ -137,7 +137,7 @@ inline void set_nonblocking(int fd) {
 }
 
 // Monotonic milliseconds, for per-child timeout deadlines.
-inline long now_ms() {
+inline int64_t now_ms() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
              std::chrono::steady_clock::now().time_since_epoch())
       .count();
@@ -470,8 +470,8 @@ inline bool poll_step(std::vector<Child>& running, char* buf, size_t buflen,
 // SIGKILL after a grace period. Marks timed_out. Returns the earliest absolute
 // wake time across pending deadlines (-1 if none) so the caller can size its
 // next poll() wait.
-inline long enforce_deadlines(std::vector<Child>& running, long now) {
-  long next = -1;
+inline int64_t enforce_deadlines(std::vector<Child>& running, int64_t now) {
+  int64_t next = -1;
   auto consider = [&](long when) {
     if (when > 0 && (next < 0 || when < next)) next = when;
   };
@@ -498,8 +498,8 @@ inline long enforce_deadlines(std::vector<Child>& running, long now) {
 // -1 if no child has a pending deadline. Wraps the run_command/run_all loops'
 // shared now -> enforce -> clamp step.
 inline int deadline_poll_timeout(std::vector<Child>& running) {
-  long now = now_ms();
-  long next = enforce_deadlines(running, now);
+  int64_t now = now_ms();
+  int64_t next = enforce_deadlines(running, now);
   return (next < 0) ? -1 : static_cast<int>(next > now ? next - now : 0);
 }
 
@@ -632,7 +632,7 @@ inline std::vector<RunOutcome> run_all(
   std::vector<long> attempts_left(n, retries);  // remaining retries per command
   std::vector<size_t> retry_queue;              // indices awaiting a re-run
   size_t next = 0, finished = 0;
-  long failed_index = -1;
+  int64_t failed_index = -1;
   auto is_failure = [](const RunOutcome& oc) {
     return !oc.spawned || !oc.result.ok;
   };
@@ -649,7 +649,7 @@ inline std::vector<RunOutcome> run_all(
     }
     ++finished;
     if (fail_fast && failed && failed_index < 0)
-      failed_index = static_cast<long>(idx);
+      failed_index = static_cast<int64_t>(idx);
   };
   auto launch = [&](size_t i) {
     const std::string* sp =
@@ -1135,7 +1135,7 @@ inline std::vector<RunOutcome> run_all(
   std::vector<long> attempts_left(n, retries);
   std::vector<size_t> retry_queue;
   size_t next = 0, finished = 0;
-  long failed_index = -1;
+  int64_t failed_index = -1;
   auto is_failure = [](const RunOutcome& oc) { return !oc.spawned || !oc.result.ok; };
   auto handle_outcome = [&](size_t idx, RunOutcome&& oc) {
     bool failed = is_failure(oc);
@@ -1249,7 +1249,7 @@ inline std::pair<size_t, RunOutcome> run_race(
 
 struct SpawnResult {
   bool spawned = false;
-  long pid = -1;
+  int64_t pid = -1;
   int out_fd = -1, err_fd = -1;
   int err_no = 0;            // errno when !spawned.
   std::string err_what;     // failing step when !spawned.
@@ -1304,7 +1304,7 @@ inline SpawnResult spawn_detached(
   return sr;
 }
 
-inline void kill_pid(long pid, int sig) {
+inline void kill_pid(int64_t pid, int sig) {
   if (pid > 0) kill(static_cast<pid_t>(pid), sig);
 }
 

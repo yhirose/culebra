@@ -1,0 +1,74 @@
+// Long is 64-bit on every platform, and every backend agrees on that.
+//
+// It was not: `Value` carried the payload as C++ `long`, which is 32 bits on
+// Windows (LLP64) while the JIT's stayed 64 — so the same program returned
+// different numbers depending on the backend, and literals past 2^31 were
+// rejected outright by the JIT and AOT. Nothing here needs a window, a clock
+// or a file; it is pure arithmetic, so it runs identically on all three
+// backends and pins the width down where the type system cannot.
+
+// --- literals past the 32-bit line, in every base the grammar takes ---
+let big = 3000000000                       // > 2^31 - 1
+assert_eq(big, 3000000000)
+assert_eq(0x7FFFFFFFFFFFFFFF, 9223372036854775807)   // Long's maximum
+assert_eq(-9223372036854775807, 0 - 9223372036854775807)
+assert_eq(0x100000000, 4294967296)         // 2^32 exactly
+assert_eq(0o40000000000, 4294967296)
+assert_eq(0b100000000000000000000000000000000, 4294967296)
+
+// --- arithmetic stays 64-bit ---
+assert_eq(big + 1, 3000000001)
+assert_eq(big * 2, 6000000000)
+assert_eq(big - 6000000000, -3000000000)
+assert_eq(6000000000 / 2, 3000000000)
+assert_eq(2 ** 40, 1099511627776)          // ipow, not the float path
+assert_eq(big % 1000000007, 999999986)
+assert_eq(-3000000001 % 3000000000, -1)   // `%` truncates, as in C
+assert_eq(2305843009213693951 + 1, 2305843009213693952)
+
+// A product that overflows 32 bits but not 64: the classic silent truncation.
+assert_eq(65536 * 65536, 4294967296)
+assert_eq(2147483647 + 1, 2147483648)      // one past INT32_MAX
+
+// --- bit operations, where a 32-bit accumulator truncates both operands ---
+assert_eq(1 << 40, 1099511627776)
+assert_eq((1 << 40) >> 8, 4294967296)
+assert_eq(0x100000000 | 1, 4294967297)
+assert_eq(0xFFFFFFFF & 0x100000000, 0)
+assert_eq(4294967296 ^ 1, 4294967297)
+assert_eq(~0, -1)
+
+// --- comparisons and equality across the line ---
+assert_eq(big > 2147483647, true)
+assert_eq(-3000000000 < -2147483648, true)
+assert_eq(4294967296 == 4294967296, true)
+assert_eq(4294967296 == 0, false)          // truncation would make these equal
+
+// --- round trips through text ---
+assert_eq(big.to_string(), "3000000000")
+assert_eq("3000000000".to_long(), 3000000000)
+assert_eq("-9223372036854775807".to_long(), -9223372036854775807)
+assert_eq(9223372036854775807.to_string(), "9223372036854775807")
+assert_eq("{big:d}", "3000000000")   // the format path, not to_string
+assert_eq("{big:x}", "b2d05e00")
+
+// --- values used as keys / members, where hashing truncates silently ---
+let s = {4294967296, 0}
+assert_eq(s.size(), 2)                      // a 32-bit hash would collide
+assert_eq(s.contains(4294967296), true)
+let m = {"4294967296": "hi"}
+assert_eq(m["4294967296"], "hi")
+
+// --- ranges carry 64-bit bounds ---
+let xs = []
+for i in 2999999998..3000000001 { xs.push(i) }
+assert_eq(xs, [2999999998, 2999999999, 3000000000])
+let tail = []
+for i in 4294967294..4294967297 { tail.push(i) }
+assert_eq(tail, [4294967294, 4294967295, 4294967296])
+
+// --- Float <-> Long conversions past 2^31 ---
+assert_eq(3000000000.0.to_long(), 3000000000)
+assert_eq(big.to_float(), 3000000000.0)
+
+print("long width ok")

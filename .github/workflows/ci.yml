@@ -898,18 +898,24 @@ jobs:
             echo "AOT_SPACED_CACHE_BUILD_FAIL rc=$?"
             exit 1
           fi
+      # Long is 64-bit here too. This is the platform where it was not — `long`
+      # is 32 bits under LLP64, and the interpreter carried the payload in one —
+      # so the shared test runs on the one runner that can tell, across all
+      # three backends, which is where the widths used to disagree.
+      - name: Test — Long is 64-bit (interp / JIT / AOT)
+        run: |
+          misc/run_all_backends.sh ./build-win-aot/culebra.exe \
+            tests/test_long_width.cul "long width ok" LONG
       # What the window backend adds, through all three backends: a window build
       # forced headless must behave exactly like a headless one, and the AOT
       # link is the only place CULEBRA_CANVAS_LINK (the statics + the Win32
       # library list) is exercised.
       #
       # Deliberately not tests/test_canvas.cul, which is where this belongs and
-      # where it runs on macOS and Linux. That file is the first Canvas program
-      # ever run on Windows, and it fails there for two reasons that have
-      # nothing to do with windowing: integer literals above 2^31 are rejected
-      # (shared.h parses them with strtol, and long is 32-bit on Windows), and a
-      # glyph test reads negative pixel values. Point this at the shared test
-      # once those are fixed.
+      # where it runs on macOS and Linux. That file was the first Canvas program
+      # ever run on Windows and it still fails there, now for one reason left
+      # over from that first run: a glyph test reads negative pixel values.
+      # Point this at the shared test once that is fixed.
       - name: Smoke — Canvas window build (interp / JIT / AOT)
         env:
           CULEBRA_CANVAS_HEADLESS: "1"
@@ -930,27 +936,8 @@ jobs:
           assert_eq(_Canvas.windowed(), false)
           print("canvas ok")
           EOF
-          # This shell runs with -e, so a failing command substitution would end
-          # the step before the output it captured could be printed.
-          set +e
-          fail=0
-          for mode in "" "--jit"; do
-            echo "=== culebra $mode canvas.cul ==="
-            out=$(timeout 60 ./build-win-aot/culebra.exe $mode canvas.cul 2>&1); rc=$?
-            echo "out=[$out] rc=$rc"
-            [ "$out" = "canvas ok" ] || { echo "CANVAS_${mode:---interp}_FAIL"; fail=1; }
-          done
-          echo "=== culebra build canvas.cul ==="
-          if ./build-win-aot/culebra.exe build canvas.cul -o canvas.exe; then
-            out=$(timeout 60 ./canvas.exe 2>&1); rc=$?
-            echo "out=[$out] rc=$rc"
-            [ "$out" = "canvas ok" ] && echo "CANVAS_AOT_PASS" \
-              || { echo "CANVAS_AOT_RUN_FAIL"; fail=1; }
-          else
-            echo "CANVAS_AOT_BUILD_FAIL rc=$?"
-            fail=1
-          fi
-          exit $fail
+          misc/run_all_backends.sh ./build-win-aot/culebra.exe \
+            canvas.cul "canvas ok" CANVAS
       # Window creation itself, which the forced-headless step above skips. A
       # runner has no desktop, so either outcome is fine — SDL opens a window,
       # or it fails and the backend behaves headless. Hanging or crashing is

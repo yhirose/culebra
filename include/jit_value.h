@@ -606,16 +606,12 @@ struct JitValueHash {
   size_t operator()(const JitValue& v) const {
     switch (v.tag) {
       case TAG_NIL:  return 0;
-      case TAG_BOOL: return std::hash<long>{}(v.data != 0 ? 1 : 0);
-      case TAG_LONG: return std::hash<long>{}(v.data);
+      case TAG_BOOL: return culebra::hash_long(v.data != 0 ? 1 : 0);
+      case TAG_LONG: return culebra::hash_long(v.data);
       case TAG_FLOAT: {
         double d;
         std::memcpy(&d, &v.data, sizeof d);
-        long as_long = static_cast<long>(d);
-        if (std::isfinite(d) && static_cast<double>(as_long) == d) {
-          return std::hash<long>{}(as_long);
-        }
-        return std::hash<double>{}(d);
+        return culebra::hash_double(d);
       }
       case TAG_STRING:
       case TAG_STRINGVIEW:

@@ -231,21 +231,21 @@ inline int poll_one(socket_t fd, bool want_write, int timeout_ms) {
 #endif
 }
 
-inline long now_ms() {
+inline int64_t now_ms() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
              std::chrono::steady_clock::now().time_since_epoch())
       .count();
 }
 
 // Absolute deadline for a timeout in ms; <= 0 means wait forever.
-inline long deadline_from(long timeout_ms) {
+inline int64_t deadline_from(int64_t timeout_ms) {
   return timeout_ms > 0 ? now_ms() + timeout_ms : -1;
 }
 
 // Block until `fd` is ready (or the deadline passes), yielding to a pending
 // Ctrl+C / isolate cancel every kInterruptPollMs. `deadline` is an absolute
 // now_ms() value; negative waits forever.
-inline IoStatus wait_ready(socket_t fd, bool want_write, long deadline,
+inline IoStatus wait_ready(socket_t fd, bool want_write, int64_t deadline,
                            std::string* err) {
   for (;;) {
     throw_if_interrupted();  // cooperative Interrupted, before another sleep
@@ -374,7 +374,7 @@ inline void compact(Sock& s) {
 // bytes were appended.
 inline IoStatus fill(Sock& s, std::string* err) {
   if (s.eof) return IoStatus::Eof;
-  long deadline = deadline_from(s.timeout_ms);
+  int64_t deadline = deadline_from(s.timeout_ms);
   char tmp[kReadChunk];
   for (;;) {
     IoStatus st = wait_ready(s.fd, false, deadline, err);
@@ -426,7 +426,7 @@ inline bool is_open(int64_t id) { return detail::find(id) != nullptr; }
 
 // Set the per-handle blocking timeout in ms; 0 waits forever. Applies to
 // connect-time (passed separately), read/write, accept and recv_from.
-inline bool set_timeout(int64_t id, long ms, std::string* err) {
+inline bool set_timeout(int64_t id, int64_t ms, std::string* err) {
   detail::Sock* s = detail::find(id);
   if (!s) {
     if (err) *err = "operation on a closed socket";
@@ -436,7 +436,7 @@ inline bool set_timeout(int64_t id, long ms, std::string* err) {
   return true;
 }
 
-inline long get_timeout(int64_t id) {
+inline int64_t get_timeout(int64_t id) {
   detail::Sock* s = detail::find(id);
   return s ? s->timeout_ms : 0;
 }
@@ -649,7 +649,7 @@ inline int64_t listen(const std::string& host, int port, int backlog,
 inline IoStatus accept(int64_t lid, int64_t* out_id, std::string* err) {
   detail::Sock* l = detail::get(lid, Kind::Listener, err);
   if (!l) return IoStatus::Error;
-  long deadline = detail::deadline_from(l->timeout_ms);
+  int64_t deadline = detail::deadline_from(l->timeout_ms);
   for (;;) {
     IoStatus st = detail::wait_ready(l->fd, false, deadline, err);
     if (st != IoStatus::Ok) return st;
@@ -768,7 +768,7 @@ inline IoStatus write_all(int64_t id, const char* data, size_t n,
                           std::string* err) {
   detail::Sock* s = detail::get(id, Kind::Tcp, err);
   if (!s) return IoStatus::Error;
-  long deadline = detail::deadline_from(s->timeout_ms);
+  int64_t deadline = detail::deadline_from(s->timeout_ms);
   size_t sent = 0;
   while (sent < n) {
     IoStatus st = detail::wait_ready(s->fd, /*want_write=*/true, deadline, err);
@@ -1016,7 +1016,7 @@ inline bool udp_send_to(int64_t id, const char* data, size_t n,
     if (err) *err = detail::gai_message(rc);
     return false;
   }
-  long deadline = detail::deadline_from(s->timeout_ms);
+  int64_t deadline = detail::deadline_from(s->timeout_ms);
   for (;;) {
 #if defined(_WIN32)
     int w = ::sendto(s->fd, data, static_cast<int>(n), detail::kSendFlags,
@@ -1048,7 +1048,7 @@ inline IoStatus udp_recv_from(int64_t id, size_t max, std::string& out,
   port = 0;
   detail::Sock* s = detail::get(id, Kind::Udp, err);
   if (!s) return IoStatus::Error;
-  long deadline = detail::deadline_from(s->timeout_ms);
+  int64_t deadline = detail::deadline_from(s->timeout_ms);
   std::string buf(max, '\0');
   for (;;) {
     IoStatus st = detail::wait_ready(s->fd, false, deadline, err);

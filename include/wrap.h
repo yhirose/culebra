@@ -106,8 +106,8 @@ inline int64_t handle_gen(const ObjectValue& h) {
 // script-writable slot.
 template <class T>
 inline T* handle_self(const std::shared_ptr<Environment>& env) {
-  long line = env->get("__LINE__").to_long();
-  long col = env->get("__COLUMN__").to_long();
+  int64_t line = env->get("__LINE__").to_long();
+  int64_t col = env->get("__COLUMN__").to_long();
   const auto& h = env->get("self").to_object();
   if (h.has("_bid")) {
     int64_t bid = h.get("_bid").to_long();
@@ -126,10 +126,10 @@ template <class T>
 Value make_foreign_handle(int64_t id) {
   ObjectValue h;
   h.initialize("__foreign__", Value(std::string(class_info<T>::name)), false);
-  h.initialize("_id", Value(static_cast<long>(id)), false);
+  h.initialize("_id", Value(static_cast<int64_t>(id)), false);
   // Type-erased closed+gen read for the borrow validation chain.
   h.initialize("_state_fn",
-               Value(static_cast<long>(foreign::state_fn_id<T>())), false);
+               Value(static_cast<int64_t>(foreign::state_fn_id<T>())), false);
   // A foreign instance lives in a process-local table — not Sendable.
   h.initialize("__nonsendable__", Value(true), false);
   for (const auto& [name, proto] : class_info<T>::methods) {
@@ -176,7 +176,7 @@ inline Value make_borrow_handle(T2* p, const Value& parent, int64_t pgen) {
   ObjectValue h;
   h.initialize("__foreign__", Value(std::string(class_info<T2>::name)),
                false);
-  h.initialize("_bid", Value(static_cast<long>(bid)), false);
+  h.initialize("_bid", Value(static_cast<int64_t>(bid)), false);
   h.initialize("__parent__", parent, false);
   h.initialize("__nonsendable__", Value(true), false);
   for (const auto& [name, proto] : class_info<T2>::methods) {

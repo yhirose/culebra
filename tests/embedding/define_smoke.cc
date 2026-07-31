@@ -55,7 +55,7 @@ int run() {
 
   // (1) Call from C++ via culebra::call
   ok &= check(culebra::call(env, "host_add",
-                            {culebra::Value(3L), culebra::Value(4L)})
+                            {culebra::Value(int64_t{3}), culebra::Value(int64_t{4})})
                   .to_long() == 7,
               "host_add via call");
 

@@ -47,14 +47,14 @@ namespace culebra {
 // POSIX ::read/::write live in <io.h> under an underscore; the fd values (0/1)
 // are the same CRT descriptors.
 namespace _dap_io {
-inline long read_fd(int fd, char* buf, size_t n) {
+inline int64_t read_fd(int fd, char* buf, size_t n) {
 #if defined(_WIN32)
   return _read(fd, buf, static_cast<unsigned>(n));
 #else
   return ::read(fd, buf, n);
 #endif
 }
-inline long write_fd(int fd, const char* buf, size_t n) {
+inline int64_t write_fd(int fd, const char* buf, size_t n) {
 #if defined(_WIN32)
   return _write(fd, buf, static_cast<unsigned>(n));
 #else
@@ -91,7 +91,7 @@ class DapServer {
   // ---- value builders (DAP JSON is built as culebra Values, serialized by
   // the interpreter's json_stringify) -------------------------------------
   static Value S(std::string s) { return Value(std::move(s)); }
-  static Value L(long n) { return Value(n); }
+  static Value L(int64_t n) { return Value(n); }
   static Value Bv(bool b) { return Value(b); }
   struct Obj {
     ObjectValue o;
@@ -146,7 +146,7 @@ class DapServer {
     std::lock_guard<std::mutex> lk(write_mu_);
     long off = 0, total = static_cast<long>(frame.size());
     while (off < total) {
-      long n = _dap_io::write_fd(out_, frame.data() + off, total - off);
+      int64_t n = _dap_io::write_fd(out_, frame.data() + off, total - off);
       if (n <= 0) break;
       off += n;
     }
@@ -217,7 +217,7 @@ class DapServer {
     } else if (cmd == "scopes") {
       // variablesReference == the frame id, so `variables` reads the locals of
       // whichever frame the client selected in the call stack.
-      long frame_id = frame_id_arg(at(req, "arguments"));
+      int64_t frame_id = frame_id_arg(at(req, "arguments"));
       respond(req, Obj()
                        .set("scopes",
                             arr({Obj()
@@ -227,7 +227,7 @@ class DapServer {
                                      .v()}))
                        .v());
     } else if (cmd == "variables") {
-      long var_ref = frame_id_arg(at(req, "arguments"), "variablesReference");
+      int64_t var_ref = frame_id_arg(at(req, "arguments"), "variablesReference");
       respond(req, Obj().set("variables", collect_variables(var_ref)).v());
     } else if (cmd == "evaluate") {
       do_evaluate(req);
@@ -287,7 +287,7 @@ class DapServer {
     const Value& bpArr = at(a, "breakpoints");
     if (bpArr.type == Value::Array) {
       for (const auto& bp : *bpArr.to_array().values) {
-        long line = at(bp, "line").type == Value::Long ? at(bp, "line").to_long()
+        int64_t line = at(bp, "line").type == Value::Long ? at(bp, "line").to_long()
                                                        : 0;
         std::string cond = at(bp, "condition").type == Value::String
                                ? std::string(at(bp, "condition").to_string())
@@ -440,7 +440,7 @@ class DapServer {
   // Variables in scope at a given frame. `var_ref` is the DAP
   // variablesReference, which we set equal to the 1-based frame id (see
   // `scopes`), so a client inspecting a selected frame gets that frame's locals.
-  Value collect_variables(long var_ref) {
+  Value collect_variables(int64_t var_ref) {
     std::lock_guard<std::mutex> lk(mu_);
     Environment* env = nullptr;
     const peg::Ast* ast = nullptr;
@@ -509,9 +509,9 @@ class DapServer {
   // A frame id arg (`frameId`, or `variablesReference` which we set equal to the
   // frame id) clamped to a 1-based frame index; 0 / absent / negative means the
   // top frame.
-  static long frame_id_arg(const Value& a, const char* key = "frameId") {
+  static int64_t frame_id_arg(const Value& a, const char* key = "frameId") {
     const Value& f = at(a, key);
-    long id = f.type == Value::Long ? f.to_long() : 0;
+    int64_t id = f.type == Value::Long ? f.to_long() : 0;
     return id >= 1 ? id : 1;
   }
 

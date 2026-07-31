@@ -80,7 +80,7 @@ inline Value make_math_namespace() {
                           [](std::shared_ptr<Environment> env) {
                             const auto& x = env->get("x");
                             if (x.type == Value::Long) {
-                              auto v = x.get<long>();
+                              auto v = x.get<int64_t>();
                               return Value(v < 0 ? -v : v);
                             }
                             if (x.type == Value::Float) {
@@ -95,8 +95,8 @@ inline Value make_math_namespace() {
   // Returns Long if every arg was Long, else Float. Requires ≥2 args.
   auto numeric_reduce = [](std::shared_ptr<Environment> env,
                            auto better) {
-    long line = env->get("__LINE__").to_long();
-    long col = env->get("__COLUMN__").to_long();
+    int64_t line = env->get("__LINE__").to_long();
+    int64_t col = env->get("__COLUMN__").to_long();
     if (!env->has("__ARGS__")) throw_type_error_at(line, col);
     const auto& extras = *env->get("__ARGS__").to_array().values;
     if (extras.empty()) throw_type_error_at(line, col);
@@ -113,9 +113,9 @@ inline Value make_math_namespace() {
       }
       return Value(acc);
     }
-    long acc = extras[0].get<long>();
+    int64_t acc = extras[0].get<int64_t>();
     for (size_t i = 1; i < extras.size(); i++) {
-      long x = extras[i].get<long>();
+      int64_t x = extras[i].get<int64_t>();
       if (better(static_cast<double>(x), static_cast<double>(acc))) acc = x;
     }
     return Value(acc);
@@ -163,7 +163,7 @@ inline Value make_math_namespace() {
       Value(FunctionValue({{"x", false, "Long"sv}},
                           [](std::shared_ptr<Environment> env) {
                             auto x = env->get("x").to_long();
-                            return Value(x > 0 ? 1L : (x < 0 ? -1L : 0L));
+                            return Value(int64_t{x > 0 ? 1 : (x < 0 ? -1 : 0)});
                           },
                           "Long"sv)),
       false);
@@ -226,7 +226,7 @@ inline Value make_math_namespace() {
             auto col = env->get("__COLUMN__").to_long();
             throw_type_error_at(line, col);
           }
-          return Value(static_cast<long>(fn(v.get<double>())));
+          return Value(static_cast<int64_t>(fn(v.get<double>())));
         },
         "Long"sv));
   };
@@ -545,7 +545,7 @@ inline std::vector<std::string> _fs_glob(std::string_view pattern) {
 
 // Last-write time of `p` as seconds since the Unix epoch, or 0 on error.
 // Shared interp/JIT (file_time_type -> system_clock conversion for FS.stat).
-inline long _fs_mtime_secs(const std::filesystem::path& p) {
+inline int64_t _fs_mtime_secs(const std::filesystem::path& p) {
   std::error_code ec;
   auto ftime = std::filesystem::last_write_time(p, ec);
   if (ec) return 0;
@@ -574,7 +574,7 @@ inline long _fs_mtime_secs(const std::filesystem::path& p) {
 
 // Read st_uid / st_gid of `p` (following symlinks, like the other stat fields).
 // Returns false if the path can't be stat'd.
-inline bool _fs_owner(const std::filesystem::path& p, long& uid, long& gid) {
+inline bool _fs_owner(const std::filesystem::path& p, int64_t& uid, int64_t& gid) {
   struct ::stat st;
   if (::stat(p.c_str(), &st) != 0) return false;
   uid = static_cast<long>(st.st_uid);
@@ -583,7 +583,7 @@ inline bool _fs_owner(const std::filesystem::path& p, long& uid, long& gid) {
 }
 
 // Resolve a user name to a uid (thread-safe getpwnam_r), or -1 if unknown.
-inline long _fs_uid_from_name(const std::string& name) {
+inline int64_t _fs_uid_from_name(const std::string& name) {
   struct ::passwd pw;
   struct ::passwd* result = nullptr;
   std::vector<char> buf(1024);
@@ -595,7 +595,7 @@ inline long _fs_uid_from_name(const std::string& name) {
 }
 
 // Resolve a group name to a gid (thread-safe getgrnam_r), or -1 if unknown.
-inline long _fs_gid_from_name(const std::string& name) {
+inline int64_t _fs_gid_from_name(const std::string& name) {
   struct ::group gr;
   struct ::group* result = nullptr;
   std::vector<char> buf(1024);
@@ -607,7 +607,7 @@ inline long _fs_gid_from_name(const std::string& name) {
 }
 
 // POSIX chown with uid/gid == -1 meaning "leave unchanged". Throws IOError.
-inline void _fs_do_chown(const std::filesystem::path& p, long uid, long gid,
+inline void _fs_do_chown(const std::filesystem::path& p, int64_t uid, int64_t gid,
                          long line, long col) {
   if (::chown(p.c_str(), static_cast<uid_t>(uid),
               static_cast<gid_t>(gid)) != 0) {
@@ -619,11 +619,11 @@ inline void _fs_do_chown(const std::filesystem::path& p, long uid, long gid,
 #else  // _WIN32 — POSIX numeric uid/gid ownership has no Windows equivalent.
        // FS.stat omits the owner fields (no uid/gid) and FS.chown raises.
 
-inline bool _fs_owner(const std::filesystem::path&, long&, long&) {
+inline bool _fs_owner(const std::filesystem::path&, int64_t&, int64_t&) {
   return false;  // no POSIX owner ids on Windows → stat omits uid/gid
 }
-inline long _fs_uid_from_name(const std::string&) { return -1; }
-inline long _fs_gid_from_name(const std::string&) { return -1; }
+inline int64_t _fs_uid_from_name(const std::string&) { return -1; }
+inline int64_t _fs_gid_from_name(const std::string&) { return -1; }
 inline void _fs_do_chown(const std::filesystem::path&, long, long, long line,
                          long col) {
   throw CulebraError("RuntimeError",
@@ -650,8 +650,8 @@ inline Value make_fs_namespace() {
       "join",
       Value(FunctionValue({FunctionValue::Parameter::make_args_rest("args")},
                           [throw_io](std::shared_ptr<Environment> env) {
-        long line = env->get("__LINE__").to_long();
-        long col = env->get("__COLUMN__").to_long();
+        int64_t line = env->get("__LINE__").to_long();
+        int64_t col = env->get("__COLUMN__").to_long();
         if (!env->has("__ARGS__")) return Value(std::string(""));
         const auto& args = *env->get("__ARGS__").to_array().values;
         std::filesystem::path out;
@@ -699,8 +699,8 @@ inline Value make_fs_namespace() {
       "read",
       Value(FunctionValue({{"path", false, "String|Path"sv}},
                           [throw_io](std::shared_ptr<Environment> env) {
-                            long line = env->get("__LINE__").to_long();
-                            long col = env->get("__COLUMN__").to_long();
+                            int64_t line = env->get("__LINE__").to_long();
+                            int64_t col = env->get("__COLUMN__").to_long();
                             const auto& p = _fspath(env->get("path"));
                             std::ifstream ifs(p, std::ios::binary);
                             if (!ifs) {
@@ -721,8 +721,8 @@ inline Value make_fs_namespace() {
       Value(FunctionValue(
           {{"path", false, "String|Path"sv}, {"content", false, "String"sv}},
           [throw_io](std::shared_ptr<Environment> env) {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             const auto& p = _fspath(env->get("path"));
             const auto& c = env->get("content").to_string();
             std::ofstream ofs(p, std::ios::binary);
@@ -739,13 +739,13 @@ inline Value make_fs_namespace() {
       Value(FunctionValue(
           {{"path", false, "String|Path"sv}},
           [throw_io](std::shared_ptr<Environment> env) {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             const auto& p = _fspath(env->get("path"));
             std::error_code ec;
             auto sz = std::filesystem::file_size(p, ec);
             if (ec) throw_io(std::format("FS.size('{}')", p), line, col, ec);
-            return Value(static_cast<long>(sz));
+            return Value(static_cast<int64_t>(sz));
           },
           "Long"sv)),
       false);
@@ -755,8 +755,8 @@ inline Value make_fs_namespace() {
       Value(FunctionValue(
           {{"path", false, "String|Path"sv}},
           [throw_io](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             const auto& p = _fspath(env->get("path"));
             std::error_code ec;
             auto it = std::filesystem::directory_iterator(p, ec);
@@ -775,8 +775,8 @@ inline Value make_fs_namespace() {
       Value(FunctionValue(
           {{"path", false, "String|Path"sv}},
           [throw_io](std::shared_ptr<Environment> env) {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             const auto& p = _fspath(env->get("path"));
             std::error_code ec;
             std::filesystem::create_directories(p, ec);
@@ -791,8 +791,8 @@ inline Value make_fs_namespace() {
           {{"path", false, "String|Path"sv},
            {"recursive", false, ""sv, nullptr, kw_default_false()}},
           [throw_io](std::shared_ptr<Environment> env) {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             const auto& p = _fspath(env->get("path"));
             bool recursive = env->get("recursive").to_bool();
             std::error_code ec;
@@ -817,8 +817,8 @@ inline Value make_fs_namespace() {
       Value(FunctionValue(
           {{"path", false, "String|Path"sv}},
           [throw_io](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             const auto& p = _fspath(env->get("path"));
             std::error_code ec;
             auto st = std::filesystem::symlink_status(p, ec);
@@ -834,9 +834,9 @@ inline Value make_fs_namespace() {
               sz = std::filesystem::file_size(p, ec);
               if (ec) sz = 0;
             }
-            long mtime = _fs_mtime_secs(p);
+            int64_t mtime = _fs_mtime_secs(p);
             ObjectValue obj;
-            obj.initialize("size", Value(static_cast<long>(sz)), false);
+            obj.initialize("size", Value(static_cast<int64_t>(sz)), false);
             obj.initialize("is_dir",
                            Value(std::filesystem::is_directory(fst)), false);
             obj.initialize("is_file",
@@ -846,10 +846,10 @@ inline Value make_fs_namespace() {
             obj.initialize("mtime", Value(mtime), false);
             obj.initialize(
                 "mode",
-                Value(static_cast<long>(fst.permissions() &
+                Value(static_cast<int64_t>(fst.permissions() &
                                         std::filesystem::perms::mask)),
                 false);
-            long uid = -1, gid = -1;
+            int64_t uid = -1, gid = -1;
             _fs_owner(p, uid, gid);
             obj.initialize("uid", Value(uid), false);
             obj.initialize("gid", Value(gid), false);
@@ -866,10 +866,10 @@ inline Value make_fs_namespace() {
       Value(FunctionValue(
           {{"path", false, "String|Path"sv}, {"mode", false, "Long"sv}},
           [throw_io](std::shared_ptr<Environment> env) {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             const auto& p = _fspath(env->get("path"));
-            long mode = env->get("mode").to_long();
+            int64_t mode = env->get("mode").to_long();
             std::error_code ec;
             std::filesystem::permissions(
                 std::filesystem::path(p),
@@ -892,13 +892,13 @@ inline Value make_fs_namespace() {
            {"owner", false, ""sv, nullptr, kw_default_nil()},
            {"group", false, ""sv, nullptr, kw_default_nil()}},
           [](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             const auto& p = _fspath(env->get("path"));
             auto resolve = [&](const Value& v, const char* param,
                                bool is_user) -> long {
               if (v.type == Value::Nil) return -1;
-              if (v.type == Value::Long) return v.get<long>();
+              if (v.type == Value::Long) return v.get<int64_t>();
               if (v.is_stringlike()) {  // String or StringView (e.g. a slice)
                 const auto name = v.to_string();
                 long id = is_user ? _fs_uid_from_name(name)
@@ -932,8 +932,8 @@ inline Value make_fs_namespace() {
       Value(FunctionValue(
           {{"src", false, "String|Path"sv}, {"dst", false, "String|Path"sv}},
           [throw_io](std::shared_ptr<Environment> env) {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             const auto& s = _fspath(env->get("src"));
             const auto& d = _fspath(env->get("dst"));
             std::error_code ec;
@@ -951,8 +951,8 @@ inline Value make_fs_namespace() {
           {{"src", false, "String|Path"sv}, {"dst", false, "String|Path"sv},
            {"recursive", false, ""sv, nullptr, kw_default_false()}},
           [throw_io](std::shared_ptr<Environment> env) {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             const auto& s = _fspath(env->get("src"));
             const auto& d = _fspath(env->get("dst"));
             bool recursive = env->get("recursive").to_bool();
@@ -983,8 +983,8 @@ inline Value make_fs_namespace() {
       Value(FunctionValue(
           {{"path", false, "String|Path"sv}},
           [throw_io](std::shared_ptr<Environment> env) {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             const auto& p = _fspath(env->get("path"));
             std::error_code ec;
             auto out = std::filesystem::absolute(p, ec);
@@ -998,8 +998,8 @@ inline Value make_fs_namespace() {
       Value(FunctionValue(
           {{"path", false, "String|Path"sv}},
           [throw_io](std::shared_ptr<Environment> env) {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             const auto& p = _fspath(env->get("path"));
             std::error_code ec;
             auto out = std::filesystem::weakly_canonical(p, ec);
@@ -1022,8 +1022,8 @@ inline Value make_fs_namespace() {
       Value(FunctionValue(
           {{"target", false, "String|Path"sv}, {"link", false, "String|Path"sv}},
           [throw_io](std::shared_ptr<Environment> env) {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             const auto& t = _fspath(env->get("target"));
             const auto& l = _fspath(env->get("link"));
             std::error_code ec;
@@ -1038,8 +1038,8 @@ inline Value make_fs_namespace() {
       Value(FunctionValue(
           {{"path", false, "String|Path"sv}},
           [throw_io](std::shared_ptr<Environment> env) {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             const auto& p = _fspath(env->get("path"));
             std::error_code ec;
             auto out = std::filesystem::read_symlink(p, ec);
@@ -1056,8 +1056,8 @@ inline Value make_fs_namespace() {
       Value(FunctionValue(
           {{"path", false, "String|Path"sv}},
           [throw_io](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             const auto& p = _fspath(env->get("path"));
             std::error_code ec;
             std::filesystem::recursive_directory_iterator it(p, ec);
@@ -1201,9 +1201,9 @@ inline void _file_seek(int64_t id, long off, std::string_view whence,
   if (s.readable) s.fs.seekg(off, dir); else s.fs.seekp(off, dir);
 }
 
-inline long _file_tell(int64_t id, long line, long col) {
+inline int64_t _file_tell(int64_t id, long line, long col) {
   auto& s = _file_get(id, "tell", line, col);
-  return static_cast<long>(s.readable ? s.fs.tellg() : s.fs.tellp());
+  return static_cast<int64_t>(s.readable ? s.fs.tellg() : s.fs.tellp());
 }
 
 // Read one line (newline stripped, handles \n / \r\n / \r). Returns false
@@ -1261,7 +1261,7 @@ inline int days_in_month(int year, int month) {
   throw CulebraError("ValueError", msg, line, col);
 }
 
-inline long iso_weekday(const std::tm& tm) {
+inline int64_t iso_weekday(const std::tm& tm) {
   // tm_wday is 0=Sun..6=Sat; ISO 8601 uses 0=Mon..6=Sun.
   return (tm.tm_wday + 6) % 7;
 }
@@ -1438,7 +1438,7 @@ inline Value make_time_primitives_namespace() {
             using clock = std::chrono::system_clock;
             auto d = clock::now().time_since_epoch();
             auto ns_count = std::chrono::duration_cast<std::chrono::nanoseconds>(d).count();
-            return Value(static_cast<long>(ns_count));
+            return Value(static_cast<int64_t>(ns_count));
           },
           "Long"sv)),
       false);
@@ -1472,13 +1472,13 @@ inline Value make_time_primitives_namespace() {
       Value(FunctionValue({{"s", false, "String"sv}},
           [](std::shared_ptr<Environment> env) {
             const auto& s = env->get("s").to_string();
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             auto r = _time_detail::parse_iso_nanos(s);
             if (!r) _time_detail::throw_value(
                 std::format("_Time.from_iso_nanos: invalid ISO 8601 '{}'", s),
                 line, col);
-            return Value(static_cast<long>(*r));
+            return Value(static_cast<int64_t>(*r));
           },
           "Long"sv)),
       false);
@@ -1490,8 +1490,8 @@ inline Value make_time_primitives_namespace() {
           [](std::shared_ptr<Environment> env) {
             const auto& s = env->get("s").to_string();
             const auto& fmt = env->get("fmt").to_string();
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             std::tm tm{};
             if (!os_strptime(s.c_str(), fmt.c_str(), &tm)) {
               _time_detail::throw_value(
@@ -1500,7 +1500,7 @@ inline Value make_time_primitives_namespace() {
             }
             tm.tm_isdst = -1;
             auto t = std::mktime(&tm);
-            return Value(static_cast<long>(_time_detail::combine_nanos(t, 0)));
+            return Value(static_cast<int64_t>(_time_detail::combine_nanos(t, 0)));
           },
           "Long"sv)),
       false);
@@ -1542,15 +1542,15 @@ inline Value make_time_primitives_namespace() {
             auto tm = _time_detail::to_tm_nanos(nanos, utc);
             auto sub = _time_detail::split_nanos(nanos).second;
             ObjectValue p;
-            p.initialize("year",      Value(static_cast<long>(tm.tm_year + 1900)), false);
-            p.initialize("month",     Value(static_cast<long>(tm.tm_mon + 1)),     false);
-            p.initialize("day",       Value(static_cast<long>(tm.tm_mday)),        false);
-            p.initialize("hour",      Value(static_cast<long>(tm.tm_hour)),        false);
-            p.initialize("minute",    Value(static_cast<long>(tm.tm_min)),         false);
-            p.initialize("second",    Value(static_cast<long>(tm.tm_sec)),         false);
-            p.initialize("nanosecond",Value(static_cast<long>(sub)),               false);
+            p.initialize("year",      Value(static_cast<int64_t>(tm.tm_year + 1900)), false);
+            p.initialize("month",     Value(static_cast<int64_t>(tm.tm_mon + 1)),     false);
+            p.initialize("day",       Value(static_cast<int64_t>(tm.tm_mday)),        false);
+            p.initialize("hour",      Value(static_cast<int64_t>(tm.tm_hour)),        false);
+            p.initialize("minute",    Value(static_cast<int64_t>(tm.tm_min)),         false);
+            p.initialize("second",    Value(static_cast<int64_t>(tm.tm_sec)),         false);
+            p.initialize("nanosecond",Value(static_cast<int64_t>(sub)),               false);
             p.initialize("weekday",   Value(_time_detail::iso_weekday(tm)),        false);
-            p.initialize("dayofyear", Value(static_cast<long>(tm.tm_yday + 1)),    false);
+            p.initialize("dayofyear", Value(static_cast<int64_t>(tm.tm_yday + 1)),    false);
             return Value(std::move(p));
           },
           "Object"sv)),
@@ -1575,7 +1575,7 @@ inline Value make_time_primitives_namespace() {
             tm.tm_min  = static_cast<int>(get("minute", 0));
             tm.tm_sec  = static_cast<int>(get("second", 0));
             auto sub_ns = get("nanosecond", 0);
-            return Value(static_cast<long>(_time_detail::from_tm_nanos(tm, sub_ns, utc)));
+            return Value(static_cast<int64_t>(_time_detail::from_tm_nanos(tm, sub_ns, utc)));
           },
           "Long"sv)),
       false);
@@ -1608,8 +1608,8 @@ inline Value make_time_primitives_namespace() {
             auto utc = env->get("utc").to_bool();
             auto tm = _time_detail::to_tm_nanos(nanos, utc);
             auto sub = _time_detail::split_nanos(nanos).second;
-            long years_add  = env->get("years").to_long();
-            long months_add = env->get("months").to_long();
+            int64_t years_add  = env->get("years").to_long();
+            int64_t months_add = env->get("months").to_long();
             if (years_add || months_add) {
               int target_year = tm.tm_year + 1900 + static_cast<int>(years_add);
               int target_month_total = tm.tm_mon + static_cast<int>(months_add);
@@ -1626,7 +1626,7 @@ inline Value make_time_primitives_namespace() {
             tm.tm_hour += static_cast<int>(env->get("hours").to_long());
             tm.tm_min  += static_cast<int>(env->get("minutes").to_long());
             tm.tm_sec  += static_cast<int>(env->get("seconds").to_long());
-            return Value(static_cast<long>(_time_detail::from_tm_nanos(tm, sub, utc)));
+            return Value(static_cast<int64_t>(_time_detail::from_tm_nanos(tm, sub, utc)));
           },
           "Long"sv)),
       false);
@@ -1641,8 +1641,8 @@ inline Value make_time_primitives_namespace() {
             auto nanos = env->get("nanos").to_long();
             const auto& unit = env->get("unit").to_string();
             auto utc = env->get("utc").to_bool();
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             auto tm = _time_detail::to_tm_nanos(nanos, utc);
             if (unit == "year")        { tm.tm_mon = 0; tm.tm_mday = 1; tm.tm_hour = 0; tm.tm_min = 0; tm.tm_sec = 0; }
             else if (unit == "month")  { tm.tm_mday = 1; tm.tm_hour = 0; tm.tm_min = 0; tm.tm_sec = 0; }
@@ -1655,7 +1655,7 @@ inline Value make_time_primitives_namespace() {
                               "(year/month/day/hour/minute)", unit),
                   line, col);
             }
-            return Value(static_cast<long>(_time_detail::from_tm_nanos(tm, 0, utc)));
+            return Value(static_cast<int64_t>(_time_detail::from_tm_nanos(tm, 0, utc)));
           },
           "Long"sv)),
       false);
@@ -1676,14 +1676,14 @@ inline Value make_term_primitives_namespace() {
   ns.initialize("cols",
       Value(FunctionValue({},
           [](std::shared_ptr<Environment>) {
-            return Value(static_cast<long>(_term_detail::cols()));
+            return Value(static_cast<int64_t>(_term_detail::cols()));
           },
           "Long"sv)),
       false);
   ns.initialize("rows",
       Value(FunctionValue({},
           [](std::shared_ptr<Environment>) {
-            return Value(static_cast<long>(_term_detail::rows()));
+            return Value(static_cast<int64_t>(_term_detail::rows()));
           },
           "Long"sv)),
       false);
@@ -1717,7 +1717,7 @@ inline Value make_term_primitives_namespace() {
   ns.initialize("color_level",
       Value(FunctionValue({},
           [](std::shared_ptr<Environment>) {
-            return Value(static_cast<long>(_term_detail::color_level()));
+            return Value(static_cast<int64_t>(_term_detail::color_level()));
           },
           "Long"sv)),
       false);
@@ -1726,7 +1726,7 @@ inline Value make_term_primitives_namespace() {
   ns.initialize("width",
       Value(FunctionValue({{"s", false, "StringLike"sv}},
           [](std::shared_ptr<Environment> env) {
-            return Value(static_cast<long>(_term_detail::width(
+            return Value(static_cast<int64_t>(_term_detail::width(
                 std::string(env->get("s").to_string_view()))));
           },
           "Long"sv)),
@@ -1838,7 +1838,7 @@ inline Value make_canvas_primitives_namespace() {
       Value(FunctionValue({{"x", false, "Long|Float"sv},
                            {"y", false, "Long|Float"sv}},
           [](std::shared_ptr<Environment> env) {
-            return Value(static_cast<long>(_canvas_detail::get_pixel(
+            return Value(static_cast<int64_t>(_canvas_detail::get_pixel(
                 canvas_coord_arg(env, "x"), canvas_coord_arg(env, "y"))));
           },
           "Long"sv)),
@@ -1926,8 +1926,8 @@ inline Value make_canvas_primitives_namespace() {
                            {"rgba", false, "Long"sv},
                            {"fill", false, "Long"sv}},
           [](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             const auto& arr = *env->get("points").to_array().values;
             std::vector<int64_t> pts;
             pts.reserve(arr.size());
@@ -1957,7 +1957,7 @@ inline Value make_canvas_primitives_namespace() {
       Value(FunctionValue({{"rows", false, "Array"sv}},
           [](std::shared_ptr<Environment> env) {
             auto rows = canvas_int_array_arg<uint8_t>(env, "rows");
-            return Value(static_cast<long>(_canvas_detail::font_load(
+            return Value(static_cast<int64_t>(_canvas_detail::font_load(
                 rows.data(), static_cast<int64_t>(rows.size()))));
           },
           "Long"sv)),
@@ -1989,7 +1989,7 @@ inline Value make_canvas_primitives_namespace() {
                            {"h", false, "Long"sv}},
           [](std::shared_ptr<Environment> env) {
             auto px = canvas_int_array_arg<uint32_t>(env, "pixels");
-            return Value(static_cast<long>(_canvas_detail::sprite_load(
+            return Value(static_cast<int64_t>(_canvas_detail::sprite_load(
                 px.data(), static_cast<int64_t>(px.size()),
                 env->get("w").to_long(), env->get("h").to_long())));
           },
@@ -2001,13 +2001,13 @@ inline Value make_canvas_primitives_namespace() {
   ns.initialize("sprite_from_png",
       Value(FunctionValue({{"data", false, "String"sv}},
           [](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             auto d = culebra::image::decode_png(
                 env->get("data").to_string_view());
             if (!d.error.empty())
               throw CulebraError("ValueError", d.error, line, col);
-            return Value(static_cast<long>(_canvas_detail::sprite_adopt(
+            return Value(static_cast<int64_t>(_canvas_detail::sprite_adopt(
                 std::move(d.px), d.w, d.h)));
           },
           "Long"sv)),
@@ -2019,8 +2019,8 @@ inline Value make_canvas_primitives_namespace() {
   ns.initialize("sprite_to_png",
       Value(FunctionValue({{"id", false, "Long"sv}},
           [](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             auto t = _canvas_detail::readback_target(env->get("id").to_long());
             if (t.px == nullptr)
               throw CulebraError("ValueError", "not a live sprite handle",
@@ -2039,7 +2039,7 @@ inline Value make_canvas_primitives_namespace() {
   ns.initialize("sprite_width",
       Value(FunctionValue({{"id", false, "Long"sv}},
           [](std::shared_ptr<Environment> env) {
-            return Value(static_cast<long>(
+            return Value(static_cast<int64_t>(
                 _canvas_detail::sprite_width(env->get("id").to_long())));
           },
           "Long"sv)),
@@ -2047,7 +2047,7 @@ inline Value make_canvas_primitives_namespace() {
   ns.initialize("sprite_height",
       Value(FunctionValue({{"id", false, "Long"sv}},
           [](std::shared_ptr<Environment> env) {
-            return Value(static_cast<long>(
+            return Value(static_cast<int64_t>(
                 _canvas_detail::sprite_height(env->get("id").to_long())));
           },
           "Long"sv)),
@@ -2059,7 +2059,7 @@ inline Value make_canvas_primitives_namespace() {
       Value(FunctionValue({{"w", false, "Long"sv}, {"h", false, "Long"sv},
                            {"rgba", false, "Long"sv}},
           [](std::shared_ptr<Environment> env) {
-            return Value(static_cast<long>(_canvas_detail::sprite_blank(
+            return Value(static_cast<int64_t>(_canvas_detail::sprite_blank(
                 env->get("w").to_long(), env->get("h").to_long(),
                 static_cast<uint32_t>(env->get("rgba").to_long()))));
           },
@@ -2090,7 +2090,7 @@ inline Value make_canvas_primitives_namespace() {
               throw CulebraError("ValueError", "not a live sprite handle",
                                  env->get("__LINE__").to_long(),
                                  env->get("__COLUMN__").to_long());
-            return Value(static_cast<long>(prev));
+            return Value(static_cast<int64_t>(prev));
           },
           "Long"sv)),
       false);
@@ -2162,7 +2162,7 @@ inline Value make_canvas_primitives_namespace() {
   ns.initialize("buttons",
       Value(FunctionValue({},
           [](std::shared_ptr<Environment>) {
-            return Value(static_cast<long>(_canvas_detail::buttons()));
+            return Value(static_cast<int64_t>(_canvas_detail::buttons()));
           },
           "Long"sv)),
       false);
@@ -2171,21 +2171,21 @@ inline Value make_canvas_primitives_namespace() {
   ns.initialize("mouse_x",
       Value(FunctionValue({},
           [](std::shared_ptr<Environment>) {
-            return Value(static_cast<long>(_canvas_detail::mouse_x()));
+            return Value(static_cast<int64_t>(_canvas_detail::mouse_x()));
           },
           "Long"sv)),
       false);
   ns.initialize("mouse_y",
       Value(FunctionValue({},
           [](std::shared_ptr<Environment>) {
-            return Value(static_cast<long>(_canvas_detail::mouse_y()));
+            return Value(static_cast<int64_t>(_canvas_detail::mouse_y()));
           },
           "Long"sv)),
       false);
   ns.initialize("mouse_buttons",
       Value(FunctionValue({},
           [](std::shared_ptr<Environment>) {
-            return Value(static_cast<long>(_canvas_detail::mouse_buttons()));
+            return Value(static_cast<int64_t>(_canvas_detail::mouse_buttons()));
           },
           "Long"sv)),
       false);
@@ -2284,8 +2284,8 @@ inline Value make_canvas_primitives_namespace() {
                            {"loop", false, "Long"sv}, {"vol", false, "Long"sv},
                            {"start", false, "Long|Float"sv}},
           [](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             auto sv = env->get("data").to_string_view();
             auto p = reinterpret_cast<const uint8_t*>(sv.data());
             const char* fmt = _canvas_detail::music_format(p, sv.size());
@@ -2370,7 +2370,7 @@ inline Value make_canvas_primitives_namespace() {
             int64_t id = _canvas_detail::sound_alloc_id();
             _canvas_detail::sound_load(id, p, static_cast<int64_t>(sv.size()),
                                        fmt);
-            return Value(static_cast<long>(id));
+            return Value(static_cast<int64_t>(id));
           },
           "Long"sv)),
       false);
@@ -2413,14 +2413,14 @@ inline Value make_canvas_primitives_namespace() {
   ns.initialize("width",
       Value(FunctionValue({},
           [](std::shared_ptr<Environment>) {
-            return Value(static_cast<long>(_canvas_detail::width()));
+            return Value(static_cast<int64_t>(_canvas_detail::width()));
           },
           "Long"sv)),
       false);
   ns.initialize("height",
       Value(FunctionValue({},
           [](std::shared_ptr<Environment>) {
-            return Value(static_cast<long>(_canvas_detail::height()));
+            return Value(static_cast<int64_t>(_canvas_detail::height()));
           },
           "Long"sv)),
       false);
@@ -2465,7 +2465,7 @@ inline Value make_random_namespace() {
               auto col = env->get("__COLUMN__").to_long();
               throw_type_error_at(line, col);
             }
-            std::uniform_int_distribution<long> d(lo, hi - 1);
+            std::uniform_int_distribution<int64_t> d(lo, hi - 1);
             return Value(d(random_engine()));
           },
           "Long"sv)),
@@ -2836,8 +2836,8 @@ inline Value make_sys_namespace() {
       "getcwd",
       Value(FunctionValue({},
                           [](std::shared_ptr<Environment> env) {
-                            long line = env->get("__LINE__").to_long();
-                            long col = env->get("__COLUMN__").to_long();
+                            int64_t line = env->get("__LINE__").to_long();
+                            int64_t col = env->get("__COLUMN__").to_long();
                             std::error_code ec;
                             auto p = std::filesystem::current_path(ec);
                             if (ec) _io_throw("Sys.getcwd", line, col, ec);
@@ -2852,8 +2852,8 @@ inline Value make_sys_namespace() {
       "chdir",
       Value(FunctionValue({{"path", false, "String"sv}},
                           [](std::shared_ptr<Environment> env) {
-                            long line = env->get("__LINE__").to_long();
-                            long col = env->get("__COLUMN__").to_long();
+                            int64_t line = env->get("__LINE__").to_long();
+                            int64_t col = env->get("__COLUMN__").to_long();
                             const auto& p = env->get("path").to_string();
                             std::error_code ec;
                             std::filesystem::current_path(
@@ -2873,8 +2873,8 @@ inline Value make_sys_namespace() {
       Value(FunctionValue(
           {{"name", false, "String"sv}, {"value", false, "String"sv}},
           [](std::shared_ptr<Environment> env) {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             const auto& name = env->get("name").to_string();
             const auto& value = env->get("value").to_string();
             if (os_setenv(name.c_str(), value.c_str(), 1) != 0) {
@@ -2919,8 +2919,8 @@ inline Value make_gc_namespace() {
                           [](std::shared_ptr<Environment>) {
                             auto& gc = interp_gc();
                             gc.collect();  // report reachable, not cycle residue
-                            long live = static_cast<long>(gc.live_objects);
-                            long bytes = static_cast<long>(gc.live_bytes);
+                            int64_t live = static_cast<int64_t>(gc.live_objects);
+                            int64_t bytes = static_cast<int64_t>(gc.live_bytes);
                             ObjectValue stat;
                             stat.initialize("live_objects", Value(live), false);
                             // Symmetry with the JIT: refcounted-only live count.
@@ -2940,7 +2940,7 @@ inline Value make_gc_namespace() {
 // Built by make_shared_buffer_handle in isolate.h (next to the channel
 // endpoint + Sendable hooks, where sendable.h is available). Forward-declared
 // here so SharedBuffer.new can hand back a proper handle.
-inline Value make_shared_buffer_handle(long id, long count);
+inline Value make_shared_buffer_handle(int64_t id, int64_t count);
 
 // `SharedBuffer.new(count, Cls)` allocates a flat, zero-initialized byte
 // store holding `count` records laid out per the @packable class `Cls`,
@@ -2960,7 +2960,7 @@ inline Value make_shared_buffer_namespace() {
                 env->has("__LINE__") ? env->get("__LINE__").to_long() : 0;
             long col =
                 env->has("__COLUMN__") ? env->get("__COLUMN__").to_long() : 0;
-            long count = env->get("count").to_long();
+            int64_t count = env->get("count").to_long();
             const Value& tv = env->get("type");
             if (count < 0) {
               throw culebra::CulebraError(
@@ -3006,7 +3006,7 @@ inline Value make_shared_buffer_namespace() {
                   col);
             }
             std::string path(pathv.to_string_view());
-            long count = env->get("count").to_long();
+            int64_t count = env->get("count").to_long();
             const Value& tv = env->get("type");
             if (count < 0) {
               throw culebra::CulebraError(
@@ -3045,7 +3045,7 @@ inline Value make_shared_buffer_namespace() {
                 env->has("__LINE__") ? env->get("__LINE__").to_long() : 0;
             long col =
                 env->has("__COLUMN__") ? env->get("__COLUMN__").to_long() : 0;
-            long count = env->get("count").to_long();
+            int64_t count = env->get("count").to_long();
             const Value& tv = env->get("type");
             if (count < 0) {
               throw culebra::CulebraError(
@@ -3113,7 +3113,7 @@ inline Value make_shared_buffer_namespace() {
                 *layout, cls, namev.to_string_view());
             auto core = culebra::lookup_shared_buffer(id);
             return make_shared_buffer_handle(
-                id, core ? static_cast<long>(core->count) : 0);
+                id, core ? static_cast<int64_t>(core->count) : 0);
           },
           "Object"sv)),
       false);
@@ -3140,7 +3140,7 @@ inline Value proc_outcome_to_value(culebra::proc::RunOutcome&& oc) {
     obj.initialize("error", Value(), false);
     obj.initialize("timed_out", Value(r.timed_out), false);
   } else {
-    obj.initialize("code", Value(static_cast<long>(-1)), false);
+    obj.initialize("code", Value(static_cast<int64_t>(-1)), false);
     obj.initialize("stdout", Value(std::string("")), false);
     obj.initialize("stderr", Value(std::string("")), false);
     obj.initialize("ok", Value(false), false);
@@ -3227,7 +3227,7 @@ inline void proc_parse_share(
           std::format("{}: share `{}` must be a SharedBuffer", ctx, k),
           line, col);
     }
-    long id = sym.val.to_object().get("__sharedbuffer_id__").to_long();
+    int64_t id = sym.val.to_object().get("__sharedbuffer_id__").to_long();
     auto [fd, env_val] = culebra::prepare_share_buffer(id, k);
     env_out.emplace_back(culebra::share_env_key(k), std::move(env_val));
     fds_out.push_back(fd);
@@ -3305,7 +3305,7 @@ inline void _proc_handle_set(const Value& this_v, std::string_view key,
 inline Value make_file_handle(int64_t id) {
   using namespace std::literals;
   ObjectValue h;
-  h.initialize("_id", Value(static_cast<long>(id)), false);
+  h.initialize("_id", Value(static_cast<int64_t>(id)), false);
   // A native handle (the fd lives in a process-local table) is not Sendable —
   // reject it at the serialize boundary the same way the JIT handle does.
   h.initialize("__nonsendable__", Value(true), false);
@@ -3405,7 +3405,7 @@ inline Value make_file_handle(int64_t id) {
                           [hid, loc](std::shared_ptr<Environment> env) {
         long line, col; loc(env, line, col);
         int64_t id = hid(env);
-        long n = env->get("n").to_long();
+        int64_t n = env->get("n").to_long();
         Value self = env->get("self");
         Value iter = _make_iterator(
             [self, id, n, line, col](std::shared_ptr<Environment>) -> std::optional<Value> {
@@ -3449,8 +3449,8 @@ inline Value make_file_namespace() {
            {"mode", false, ""sv, nullptr,
             std::make_shared<Value>(std::string("r"))}},
           [](std::shared_ptr<Environment> env) {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             int64_t id = _file_open(_fspath(env->get("path")),
                                     env->get("mode").to_string(), line, col);
             return make_file_handle(id);
@@ -3468,8 +3468,8 @@ inline Value make_file_namespace() {
             std::make_shared<Value>(std::string("r"))},
            {"fn", false, "Function"sv}},
           [](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             int64_t id = _file_open(_fspath(env->get("path")),
                                     env->get("mode").to_string(), line, col);
             Value handle = make_file_handle(id);
@@ -3555,7 +3555,7 @@ inline Value _sqlite_cell_to_value(const culebra::sqlite::Cell& c) {
   using CT = culebra::sqlite::ColType;
   switch (c.type) {
     case CT::Integer:
-      return Value(static_cast<long>(c.i));
+      return Value(static_cast<int64_t>(c.i));
     case CT::Float:
       return Value(c.d);
     case CT::Text:
@@ -3655,7 +3655,7 @@ inline Value _sqlite_execute(int64_t db_id, const std::string& sql,
     throw;
   }
   culebra::sqlite::finalize(st);
-  return Value(static_cast<long>(culebra::sqlite::changes(db_id)));
+  return Value(static_cast<int64_t>(culebra::sqlite::changes(db_id)));
 }
 
 // query(db, sql, params) -> [Object]. Prepares a transient statement.
@@ -3682,7 +3682,7 @@ inline Value _sqlite_query(int64_t db_id, const std::string& sql,
 inline Value make_sqlite_stmt_handle(int64_t stmt_id, const Value& db_handle) {
   using namespace std::literals;
   ObjectValue h;
-  h.initialize("_id", Value(static_cast<long>(stmt_id)), false);
+  h.initialize("_id", Value(static_cast<int64_t>(stmt_id)), false);
   h.initialize("__nonsendable__", Value(true), false);
   // Keep the owning Database alive while this Statement exists.
   h.initialize("__parent__", db_handle, false);
@@ -3711,7 +3711,7 @@ inline Value make_sqlite_stmt_handle(int64_t stmt_id, const Value& db_handle) {
             culebra::sqlite::reset(st);
             _sqlite_bind_params(st, env->get("params"), line, col);
             _sqlite_drain(st, line, col);
-            return Value(static_cast<long>(culebra::sqlite::changes(dbid(env))));
+            return Value(static_cast<int64_t>(culebra::sqlite::changes(dbid(env))));
           },
           "Long"sv)),
       false);
@@ -3757,7 +3757,7 @@ inline Value make_sqlite_stmt_handle(int64_t stmt_id, const Value& db_handle) {
 inline Value make_sqlite_db_handle(int64_t db_id) {
   using namespace std::literals;
   ObjectValue h;
-  h.initialize("_id", Value(static_cast<long>(db_id)), false);
+  h.initialize("_id", Value(static_cast<int64_t>(db_id)), false);
   h.initialize("__nonsendable__", Value(true), false);
 
   auto did = [](const std::shared_ptr<Environment>& env) -> int64_t {
@@ -3866,8 +3866,8 @@ inline Value make_sqlite_namespace() {
       Value(FunctionValue(
           {{"path", false, "String"sv}},
           [](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             std::string err;
             int64_t id =
                 culebra::sqlite::open_db(env->get("path").to_string(), &err);
@@ -3912,14 +3912,14 @@ inline void _net_check(culebra::net::IoStatus st, const char* ctx,
 inline Value _net_addr_object(const std::string& host, int port) {
   ObjectValue o;
   o.initialize("host", Value(std::string(host)), false);
-  o.initialize("port", Value(static_cast<long>(port)), false);
+  o.initialize("port", Value(static_cast<int64_t>(port)), false);
   return Value(std::move(o));
 }
 
 // The `_id` + set_timeout/is_open/close/drop set every Net handle shares.
 inline void _net_add_common(ObjectValue& h, int64_t id) {
   using namespace std::literals;
-  h.initialize("_id", Value(static_cast<long>(id)), false);
+  h.initialize("_id", Value(static_cast<int64_t>(id)), false);
   // A native handle (the fd lives in a thread-local table) is not Sendable —
   // reject it at the serialize boundary the same way the JIT handle does.
   h.initialize("__nonsendable__", Value(true), false);
@@ -3933,8 +3933,8 @@ inline void _net_add_common(ObjectValue& h, int64_t id) {
       "set_timeout",
       Value(FunctionValue({{"ms", false, "Long"sv}},
                           [hid](std::shared_ptr<Environment> env) {
-                            long line = env->get("__LINE__").to_long();
-                            long col = env->get("__COLUMN__").to_long();
+                            int64_t line = env->get("__LINE__").to_long();
+                            int64_t col = env->get("__COLUMN__").to_long();
                             std::string err;
                             if (!culebra::net::set_timeout(
                                     hid(env), env->get("ms").to_long(), &err))
@@ -3999,7 +3999,7 @@ inline Value make_net_socket_handle(int64_t id) {
             if (n.type == Value::Nil) {
               st = culebra::net::read_all(hid(env), out, &err);
             } else {
-              long want = n.to_long();
+              int64_t want = n.to_long();
               st = culebra::net::read(hid(env),
                                       static_cast<size_t>(want < 0 ? 0 : want),
                                       out, &err);
@@ -4034,7 +4034,7 @@ inline Value make_net_socket_handle(int64_t id) {
           {{"n", false, "Long"sv}},
           [hid, loc](std::shared_ptr<Environment> env) -> Value {
             long line, col; loc(env, line, col);
-            long want = env->get("n").to_long();
+            int64_t want = env->get("n").to_long();
             if (want < 0) want = 0;
             std::string out, err;
             auto st = culebra::net::read_exact(
@@ -4169,7 +4169,7 @@ inline Value make_net_listener_handle(int64_t id, const std::string& host,
   ObjectValue h;
   _net_add_common(h, id);
   h.initialize("host", Value(std::string(host)), false);
-  h.initialize("port", Value(static_cast<long>(port)), false);
+  h.initialize("port", Value(static_cast<int64_t>(port)), false);
 
   auto hid = [](const std::shared_ptr<Environment>& env) -> int64_t {
     return env->get("self").to_object().get("_id").to_long();
@@ -4203,7 +4203,7 @@ inline Value make_net_listener_handle(int64_t id, const std::string& host,
       Value(FunctionValue(
           {{"handler", false, "Function"sv},
            {"workers", false, "Long"sv, nullptr,
-            std::make_shared<Value>(Value(static_cast<long>(0)))}},
+            std::make_shared<Value>(Value(static_cast<int64_t>(0)))}},
           [hid, loc](std::shared_ptr<Environment> env) -> Value {
             long line, col; loc(env, line, col);
             return _net_serve_impl(hid(env), env->get("handler"),
@@ -4244,7 +4244,7 @@ inline Value make_net_udp_handle(int64_t id, const std::string& host, int port) 
   ObjectValue h;
   _net_add_common(h, id);
   h.initialize("host", Value(std::string(host)), false);
-  h.initialize("port", Value(static_cast<long>(port)), false);
+  h.initialize("port", Value(static_cast<int64_t>(port)), false);
 
   auto hid = [](const std::shared_ptr<Environment>& env) -> int64_t {
     return env->get("self").to_object().get("_id").to_long();
@@ -4279,10 +4279,10 @@ inline Value make_net_udp_handle(int64_t id, const std::string& host, int port) 
       "recv_from",
       Value(FunctionValue(
           {{"max", false, "Long"sv, nullptr,
-            std::make_shared<Value>(Value(static_cast<long>(65536)))}},
+            std::make_shared<Value>(Value(static_cast<int64_t>(65536)))}},
           [hid, loc](std::shared_ptr<Environment> env) -> Value {
             long line, col; loc(env, line, col);
-            long max = env->get("max").to_long();
+            int64_t max = env->get("max").to_long();
             if (max < 0) max = 0;
             std::string data, host, err;
             int port = 0;
@@ -4292,7 +4292,7 @@ inline Value make_net_udp_handle(int64_t id, const std::string& host, int port) 
             ObjectValue o;
             o.initialize("data", Value(std::move(data)), false);
             o.initialize("host", Value(std::move(host)), false);
-            o.initialize("port", Value(static_cast<long>(port)), false);
+            o.initialize("port", Value(static_cast<int64_t>(port)), false);
             return Value(std::move(o));
           },
           "Object"sv)),
@@ -4332,7 +4332,7 @@ inline Value make_net_namespace() {
   ObjectValue ns;
   auto timeout_param = FunctionValue::Parameter{
       "timeout", false, "Long"sv, nullptr,
-      std::make_shared<Value>(Value(static_cast<long>(0)))};
+      std::make_shared<Value>(Value(static_cast<int64_t>(0)))};
 
   // connect(host, port, timeout=0) -> Socket. `timeout` (ms, 0 = none) bounds
   // the connect and becomes the socket's read/write timeout.
@@ -4342,8 +4342,8 @@ inline Value make_net_namespace() {
           {{"host", false, "String"sv}, {"port", false, "Long"sv},
            timeout_param},
           [](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             std::string err;
             int64_t id = culebra::net::connect(
                 env->get("host").to_string(),
@@ -4364,10 +4364,10 @@ inline Value make_net_namespace() {
            {"host", false, "String"sv, nullptr,
             std::make_shared<Value>(std::string("0.0.0.0"))},
            {"backlog", false, "Long"sv, nullptr,
-            std::make_shared<Value>(Value(static_cast<long>(0)))}},
+            std::make_shared<Value>(Value(static_cast<int64_t>(0)))}},
           [](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             std::string err;
             int64_t id = culebra::net::listen(
                 env->get("host").to_string(),
@@ -4387,12 +4387,12 @@ inline Value make_net_namespace() {
       "udp",
       Value(FunctionValue(
           {{"port", false, "Long"sv, nullptr,
-            std::make_shared<Value>(Value(static_cast<long>(0)))},
+            std::make_shared<Value>(Value(static_cast<int64_t>(0)))},
            {"host", false, "String"sv, nullptr,
             std::make_shared<Value>(std::string("0.0.0.0"))}},
           [](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             std::string err;
             int64_t id = culebra::net::udp_open(
                 env->get("host").to_string(),
@@ -4412,8 +4412,8 @@ inline Value make_net_namespace() {
       Value(FunctionValue(
           {{"host", false, "String"sv}},
           [](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             std::vector<std::string> addrs;
             std::string err;
             if (!culebra::net::resolve(env->get("host").to_string(), addrs,
@@ -4433,12 +4433,12 @@ inline Value make_net_namespace() {
 // plus `wait`/`poll`/`kill`/`drop` methods. The result is cached on first
 // wait/poll so the methods are idempotent; `drop` (called on GC) best-effort
 // reaps a child that was never waited on.
-inline Value make_proc_handle(long pid, int out_fd, int err_fd) {
+inline Value make_proc_handle(int64_t pid, int out_fd, int err_fd) {
   using namespace std::literals;
   ObjectValue h;
   h.initialize("_pid", Value(pid), true);
-  h.initialize("_out", Value(static_cast<long>(out_fd)), true);
-  h.initialize("_err", Value(static_cast<long>(err_fd)), true);
+  h.initialize("_out", Value(static_cast<int64_t>(out_fd)), true);
+  h.initialize("_err", Value(static_cast<int64_t>(err_fd)), true);
   h.initialize("_done", Value(false), true);
   h.initialize("_result", Value(), true);
   // A native handle (pid + pipe fds are process-local) is not Sendable — reject
@@ -4479,7 +4479,7 @@ inline Value make_proc_handle(long pid, int out_fd, int err_fd) {
       }, ""sv)), false);  // returns Object (exited) or nil (still running)
 
   static const auto kill_sig_default =
-      std::make_shared<Value>(Value(static_cast<long>(15)));
+      std::make_shared<Value>(Value(static_cast<int64_t>(15)));
   h.initialize("kill",
       Value(FunctionValue({{"sig", false, "Long"sv, nullptr, kill_sig_default}},
           [](std::shared_ptr<Environment> env) -> Value {
@@ -4499,7 +4499,7 @@ inline Value make_proc_handle(long pid, int out_fd, int err_fd) {
         if (o.get("_done").to_bool()) return Value();
         int out_fd = static_cast<int>(o.get("_out").to_long());
         int err_fd = static_cast<int>(o.get("_err").to_long());
-        long pid = o.get("_pid").to_long();
+        int64_t pid = o.get("_pid").to_long();
         culebra::proc::kill_pid(pid, SIGKILL);
         culebra::proc::wait_handle(pid, out_fd, err_fd);  // drains + reaps
         _proc_handle_set(self, "_done", Value(true));
@@ -4622,7 +4622,7 @@ inline void http_fill_common(const std::shared_ptr<Environment>& env,
   // positionally-absent slot). A present non-nil still goes through the strict
   // to_long()/to_bool() coercion.
   const auto& tv = env->get("timeout");
-  long timeout = tv.type == Value::Nil ? 0 : tv.to_long();
+  int64_t timeout = tv.type == Value::Nil ? 0 : tv.to_long();
   req.timeout_sec = timeout > 0 ? timeout : 0;
   const auto& fv = env->get("follow_redirects");
   req.follow_redirects = fv.type == Value::Nil ? true : fv.to_bool();
@@ -4914,7 +4914,7 @@ inline Value make_http_client_handle(int64_t id) {
   static const auto text_plain_default =
       std::make_shared<Value>(Value(std::string("text/plain")));
   ObjectValue h;
-  h.initialize("_id", Value(static_cast<long>(id)), false);
+  h.initialize("_id", Value(static_cast<int64_t>(id)), false);
   h.initialize("__nonsendable__", Value(true), false);
 
   auto path_param = FunctionValue::Parameter{"path", false, "String"sv};
@@ -4944,8 +4944,8 @@ inline Value make_http_client_handle(int64_t id) {
     return Value(FunctionValue(
         {path_param, headers_param, params_param, into_param},
         [method, ctx, cid](std::shared_ptr<Environment> env) -> Value {
-          long line = env->get("__LINE__").to_long();
-          long col = env->get("__COLUMN__").to_long();
+          int64_t line = env->get("__LINE__").to_long();
+          int64_t col = env->get("__COLUMN__").to_long();
           culebra::http::HttpRequest req;
           req.method = method;
           req.url = env->get("path").to_string();
@@ -4967,8 +4967,8 @@ inline Value make_http_client_handle(int64_t id) {
         {path_param, body_param, ct_param, headers_param, params_param,
          into_param, json_param, form_param, files_param},
         [method, ctx, cid](std::shared_ptr<Environment> env) -> Value {
-          long line = env->get("__LINE__").to_long();
-          long col = env->get("__COLUMN__").to_long();
+          int64_t line = env->get("__LINE__").to_long();
+          int64_t col = env->get("__COLUMN__").to_long();
           culebra::http::HttpRequest req;
           req.method = method;
           req.url = env->get("path").to_string();
@@ -4994,8 +4994,8 @@ inline Value make_http_client_handle(int64_t id) {
            headers_param, params_param, into_param, json_param, form_param,
            files_param},
           [cid](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             culebra::http::HttpRequest req;
             req.method = env->get("method").to_string();
             req.url = env->get("path").to_string();
@@ -5065,7 +5065,7 @@ inline Value http_request_to_object(const httplib::Request& q) {
 // reject a present, non-nil field of the wrong type with a TypeError.
 inline std::string http_apply_response_meta(const ObjectValue& obj,
                                             httplib::Response& res) {
-  long status = 200;
+  int64_t status = 200;
   if (obj.has_own("status") && obj.get("status").type != Value::Nil) {
     status = obj.get("status").to_long();
   }
@@ -5122,7 +5122,7 @@ inline void http_apply_response(const Value& ret, httplib::Response& res) {
 inline Value make_http_sink_handle(int64_t sink_id) {
   using namespace std::literals;
   ObjectValue h;
-  h.initialize("_sink", Value(static_cast<long>(sink_id)), false);
+  h.initialize("_sink", Value(static_cast<int64_t>(sink_id)), false);
   h.initialize("__nonsendable__", Value(true), false);
   h.initialize(
       "write",
@@ -5184,7 +5184,7 @@ inline bool http_try_stream_response(const Value& ret, httplib::Response& res,
 inline Value make_http_ws_handle(int64_t ws_id, bool is_client) {
   using namespace std::literals;
   ObjectValue h;
-  h.initialize("_ws", Value(static_cast<long>(ws_id)), false);
+  h.initialize("_ws", Value(static_cast<int64_t>(ws_id)), false);
   h.initialize("__nonsendable__", Value(true), false);
   auto wid = [](const std::shared_ptr<Environment>& env) -> int64_t {
     return env->get("self").to_object().get("_ws").to_long();
@@ -5278,9 +5278,9 @@ inline Value make_http_server_handle(int64_t id) {
   static const auto host_default =
       std::make_shared<Value>(Value(std::string("0.0.0.0")));
   static const auto workers_default =
-      std::make_shared<Value>(Value(static_cast<long>(0)));  // 0 = CPU-scaled
+      std::make_shared<Value>(Value(static_cast<int64_t>(0)));  // 0 = CPU-scaled
   ObjectValue h;
-  h.initialize("_id", Value(static_cast<long>(id)), false);
+  h.initialize("_id", Value(static_cast<int64_t>(id)), false);
   h.initialize("__nonsendable__", Value(true), false);
 
   auto sid = [](const std::shared_ptr<Environment>& env) -> int64_t {
@@ -5320,8 +5320,8 @@ inline Value make_http_server_handle(int64_t id) {
       Value(FunctionValue(
           {{"mount", false, "String"sv}, {"dir", false, ""sv}},
           [sid](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             std::string err;
             std::string mount = std::string(env->get("mount").to_string_view());
             const Value& d = env->get("dir");
@@ -5360,14 +5360,14 @@ inline Value make_http_server_handle(int64_t id) {
   // background thread (stop with stop()). Shared body for both methods.
   auto do_listen = [sid](bool async) {
     return [sid, async](std::shared_ptr<Environment> env) -> Value {
-      long line = env->get("__LINE__").to_long();
-      long col = env->get("__COLUMN__").to_long();
+      int64_t line = env->get("__LINE__").to_long();
+      int64_t col = env->get("__COLUMN__").to_long();
       int port = static_cast<int>(env->get("port").to_long());
       const auto& hv = env->get("host");
       std::string host = hv.type == Value::Nil ? std::string("0.0.0.0")
                                                : std::string(hv.to_string_view());
       const auto& wv = env->get("workers");
-      long workers = wv.type == Value::Nil ? 0 : wv.to_long();  // 0 = CPU-scaled
+      int64_t workers = wv.type == Value::Nil ? 0 : wv.to_long();  // 0 = CPU-scaled
       return _http_server_do_listen(sid(env), host, port, workers, async,
                                     line, col);
     };
@@ -5485,8 +5485,8 @@ inline Value make_http_namespace() {
         {url_param, headers_param, timeout_param, follow_param, into_param,
          params_param},
         [method, ctx](std::shared_ptr<Environment> env) -> Value {
-          long line = env->get("__LINE__").to_long();
-          long col = env->get("__COLUMN__").to_long();
+          int64_t line = env->get("__LINE__").to_long();
+          int64_t col = env->get("__COLUMN__").to_long();
           culebra::http::HttpRequest req;
           req.method = method;
           req.url = env->get("url").to_string();
@@ -5508,8 +5508,8 @@ inline Value make_http_namespace() {
          follow_param, into_param, params_param, json_param, form_param,
          files_param},
         [method, ctx](std::shared_ptr<Environment> env) -> Value {
-          long line = env->get("__LINE__").to_long();
-          long col = env->get("__COLUMN__").to_long();
+          int64_t line = env->get("__LINE__").to_long();
+          int64_t col = env->get("__COLUMN__").to_long();
           culebra::http::HttpRequest req;
           req.method = method;
           req.url = env->get("url").to_string();
@@ -5537,8 +5537,8 @@ inline Value make_http_namespace() {
            headers_param, timeout_param, follow_param, into_param,
            params_param, json_param, form_param, files_param},
           [](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             culebra::http::HttpRequest req;
             req.method = env->get("method").to_string();
             req.url = env->get("url").to_string();
@@ -5567,8 +5567,8 @@ inline Value make_http_namespace() {
            FunctionValue::Parameter{"on_event", false, "Function"sv},
            headers_param, timeout_param, follow_param},
           [](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             culebra::http::HttpRequest req;
             req.method = "GET";
             req.url = env->get("url").to_string();
@@ -5576,7 +5576,7 @@ inline Value make_http_namespace() {
             req.headers =
                 http_parse_headers(env->get("headers"), "Http.sse", line, col);
             const auto& tv = env->get("timeout");
-            long timeout = tv.type == Value::Nil ? 0 : tv.to_long();
+            int64_t timeout = tv.type == Value::Nil ? 0 : tv.to_long();
             req.timeout_sec = timeout > 0 ? timeout : 0;
             const auto& fv = env->get("follow_redirects");
             req.follow_redirects = fv.type == Value::Nil ? true : fv.to_bool();
@@ -5627,12 +5627,12 @@ inline Value make_http_namespace() {
           {{"base_url", false, "String"sv}, headers_param, timeout_param,
            follow_param},
           [](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             auto headers =
                 http_parse_headers(env->get("headers"), "Http.client", line, col);
             const auto& tv = env->get("timeout");
-            long timeout = tv.type == Value::Nil ? 0 : tv.to_long();
+            int64_t timeout = tv.type == Value::Nil ? 0 : tv.to_long();
             const auto& fv = env->get("follow_redirects");
             bool follow = fv.type == Value::Nil ? true : fv.to_bool();
             std::string err;
@@ -5705,12 +5705,12 @@ inline Value make_proc_namespace() {
               {"share", false, ""sv, nullptr, kw_default_nil()},
           },
           [](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
 
             auto la = proc_parse_launch(env, "Proc.run", line, col);
             bool check = env->get("check").to_bool();
-            long timeout = env->get("timeout").to_long();
+            int64_t timeout = env->get("timeout").to_long();
             if (timeout < 0) timeout = 0;
 
             auto oc = culebra::proc::run_command(la.argv, la.cwd_ptr(),
@@ -5751,16 +5751,16 @@ inline Value make_proc_namespace() {
               {"share", false, ""sv, nullptr, kw_default_nil()},
           },
           [](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             auto commands = proc_parse_command_list(
                 *env->get("commands").to_array().values, "Proc.all", line, col);
-            long lim = env->get("limit").to_long();
+            int64_t lim = env->get("limit").to_long();
             if (lim < 0) lim = 0;
-            long timeout = env->get("timeout").to_long();
+            int64_t timeout = env->get("timeout").to_long();
             if (timeout < 0) timeout = 0;
             bool fail_fast = env->get("fail_fast").to_bool();
-            long retries = env->get("retries").to_long();
+            int64_t retries = env->get("retries").to_long();
             if (retries < 0) retries = 0;
             std::vector<std::pair<std::string, std::string>> share_env;
             std::vector<int> share_fds;
@@ -5799,8 +5799,8 @@ inline Value make_proc_namespace() {
               {"share", false, ""sv, nullptr, kw_default_nil()},
           },
           [](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             auto commands = proc_parse_command_list(
                 *env->get("commands").to_array().values, "Proc.race", line,
                 col);
@@ -5836,8 +5836,8 @@ inline Value make_proc_namespace() {
               {"share", false, ""sv, nullptr, kw_default_nil()},
           },
           [](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             auto la = proc_parse_launch(env, "Proc.spawn", line, col);
             auto sr = culebra::proc::spawn_detached(la.argv, la.cwd_ptr(),
                                                     la.env_ptr(), la.stdin_data,
@@ -5874,7 +5874,7 @@ struct _JsonValueBuilder {
   using Array = ArrayValue;
   static Value make_null() { return Value(); }
   static Value boolean(bool b) { return Value(b); }
-  static Value integer(int64_t n) { return Value(static_cast<long>(n)); }
+  static Value integer(int64_t n) { return Value(static_cast<int64_t>(n)); }
   static Value real(double d) { return Value(d); }
   static Value string(std::string&& s) { return Value(std::move(s)); }
   static Object object_new() { return ObjectValue(); }
@@ -5913,7 +5913,7 @@ struct _JsonValueReader {
     }
   }
   static bool as_bool(const Value& v) { return v.get<bool>(); }
-  static int64_t as_long(const Value& v) { return v.get<long>(); }
+  static int64_t as_long(const Value& v) { return v.get<int64_t>(); }
   static double as_double(const Value& v) { return v.get<double>(); }
   static std::string_view as_string(const Value& v) {
     return v.get<std::string>();
@@ -5986,7 +5986,7 @@ inline Value make_json_namespace() {
             // indent/sort_keys/lines carry type annotations, so the typed-param
             // binder already rejected non-Long / non-Bool with the shared
             // `parameter '<name>' expects <Type>` message (matching the JIT).
-            int indent = static_cast<int>(env->get("indent").get<long>());
+            int indent = static_cast<int>(env->get("indent").get<int64_t>());
             bool sort_keys = env->get("sort_keys").to_bool();
             bool lines = env->get("lines").to_bool();
             if (lines) {
@@ -6053,8 +6053,8 @@ inline Value regex_group_value(const reg::Match& c, size_t offset = 0) {
   if (!c.matched()) return Value();
   ObjectValue g;
   g.initialize("value", Value(std::string(c.str())), false);
-  g.initialize("start", Value(static_cast<long>(c.begin() + offset)), false);
-  g.initialize("end", Value(static_cast<long>(c.end() + offset)), false);
+  g.initialize("start", Value(static_cast<int64_t>(c.begin() + offset)), false);
+  g.initialize("end", Value(static_cast<int64_t>(c.end() + offset)), false);
   return Value(std::move(g));
 }
 
@@ -6073,8 +6073,8 @@ inline Value regex_match_value(const MatchT& m,
   ObjectValue mo;
   mo.is_match = true;
   mo.initialize("value", Value(std::string(m.str())), false);
-  mo.initialize("start", Value(static_cast<long>(m.begin() + offset)), false);
-  mo.initialize("end", Value(static_cast<long>(m.end() + offset)), false);
+  mo.initialize("start", Value(static_cast<int64_t>(m.begin() + offset)), false);
+  mo.initialize("end", Value(static_cast<int64_t>(m.end() + offset)), false);
   ArrayValue groups;  // groups[0] is the whole match, then capture groups 1..n
   for (size_t i = 0; i <= m.group_count(); i++)
     groups.values->push_back(regex_group_value(m.group(i), offset));
@@ -6137,8 +6137,8 @@ inline Value make_compress_namespace() {
       "gzip",
       Value(FunctionValue({{"data", false, "String"sv}},
                           [](std::shared_ptr<Environment> env) -> Value {
-                            long line = env->get("__LINE__").to_long();
-                            long col = env->get("__COLUMN__").to_long();
+                            int64_t line = env->get("__LINE__").to_long();
+                            int64_t col = env->get("__COLUMN__").to_long();
                             auto r = culebra::compress::gzip(
                                 env->get("data").to_string_view());
                             if (!r.error.empty()) {
@@ -6154,8 +6154,8 @@ inline Value make_compress_namespace() {
       "gunzip",
       Value(FunctionValue({{"data", false, "String"sv}},
                           [](std::shared_ptr<Environment> env) -> Value {
-                            long line = env->get("__LINE__").to_long();
-                            long col = env->get("__COLUMN__").to_long();
+                            int64_t line = env->get("__LINE__").to_long();
+                            int64_t col = env->get("__COLUMN__").to_long();
                             auto r = culebra::compress::gunzip(
                                 env->get("data").to_string_view());
                             if (!r.error.empty()) {
@@ -6177,10 +6177,10 @@ inline Value make_compress_namespace() {
       Value(FunctionValue(
           {{"data", false, "String"sv},
            {"level", false, "Long"sv, nullptr,
-            std::make_shared<Value>(Value(static_cast<long>(-1)))}},
+            std::make_shared<Value>(Value(static_cast<int64_t>(-1)))}},
           [](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             auto level = env->get("level").to_long();
             auto r = culebra::compress::deflate_zlib(
                 env->get("data").to_string_view(),
@@ -6212,7 +6212,7 @@ inline Value make_string_namespace() {
       Value(FunctionValue(
           {{"cp", false, "Long"sv}},
           [](std::shared_ptr<Environment> callEnv) {
-            return Value(string_from_code_point(callEnv->get("cp").get<long>()));
+            return Value(string_from_code_point(callEnv->get("cp").get<int64_t>()));
           },
           "String"sv)),
       false);
@@ -6232,7 +6232,7 @@ inline Value make_string_namespace() {
             out.reserve(arr.size());
             for (const auto& v : arr) {
               if (v.type != Value::Long) throw_type_error_at(line, col);
-              append_checked_byte(out, v.get<long>());
+              append_checked_byte(out, v.get<int64_t>());
             }
             return Value(std::move(out));
           },
@@ -6254,7 +6254,7 @@ inline Value make_string_namespace() {
             out.reserve(arr.size());
             for (const auto& v : arr) {
               if (v.type != Value::Long) throw_type_error_at(line, col);
-              append_checked_code_point(out, v.get<long>());
+              append_checked_code_point(out, v.get<int64_t>());
             }
             return Value(std::move(out));
           },
@@ -6300,7 +6300,7 @@ inline Value csv_coerced_to_value(const culebra::csv::CoercedCell& cc) {
   using CT = culebra::csv::ColType;
   switch (cc.kind) {
     case CT::String: return Value(std::string(cc.str_val));
-    case CT::Long:   return Value(static_cast<long>(cc.long_val));
+    case CT::Long:   return Value(static_cast<int64_t>(cc.long_val));
     case CT::Float:  return Value(cc.float_val);
     case CT::Bool:   return Value(cc.bool_val);
   }
@@ -6394,8 +6394,8 @@ inline Value make_csv_namespace() {
                             kw_default_false()},
                            {"types", false, ""sv, nullptr, kw_default_nil()}},
                           [](std::shared_ptr<Environment> env) -> Value {
-                            long line = env->get("__LINE__").to_long();
-                            long col = env->get("__COLUMN__").to_long();
+                            int64_t line = env->get("__LINE__").to_long();
+                            int64_t col = env->get("__COLUMN__").to_long();
                             auto rows = culebra::csv::parse(
                                 env->get("text").to_string_view(),
                                 csv_delim_char(env->get("delimiter")));
@@ -6412,8 +6412,8 @@ inline Value make_csv_namespace() {
                            {"delimiter", false, "String"sv, nullptr,
                             kw_default_comma()}},
                           [](std::shared_ptr<Environment> env) -> Value {
-                            long line = env->get("__LINE__").to_long();
-                            long col = env->get("__COLUMN__").to_long();
+                            int64_t line = env->get("__LINE__").to_long();
+                            int64_t col = env->get("__COLUMN__").to_long();
                             const auto& rows = env->get("rows").to_array();
                             std::vector<std::vector<std::string>> grid;
                             for (const auto& rv : *rows.values) {
@@ -6439,7 +6439,7 @@ inline Value toml_node_to_value(const culebra::toml::Node& n) {
   using K = culebra::toml::Kind;
   switch (n.kind) {
     case K::String: return Value(std::string(n.s));
-    case K::Int:    return Value(static_cast<long>(n.i));
+    case K::Int:    return Value(static_cast<int64_t>(n.i));
     case K::Float:  return Value(n.f);
     case K::Bool:   return Value(n.b);
     case K::Array: {
@@ -6467,7 +6467,7 @@ inline culebra::toml::Node value_to_toml_node(const Value& v, long line,
   using N = culebra::toml::Node;
   switch (v.type) {
     case Value::Bool:   return N::boolean(v.get<bool>());
-    case Value::Long:   return N::integer(v.get<long>());
+    case Value::Long:   return N::integer(v.get<int64_t>());
     case Value::Float:  return N::floating(v.get<double>());
     case Value::String: return N::string(v.get<std::string>());
     case Value::Array:
@@ -6528,8 +6528,8 @@ inline Value make_toml_namespace() {
                            {"sort_keys", false, "Bool"sv, nullptr,
                             kw_default_false()}},
                           [](std::shared_ptr<Environment> env) -> Value {
-                            long line = env->get("__LINE__").to_long();
-                            long col = env->get("__COLUMN__").to_long();
+                            int64_t line = env->get("__LINE__").to_long();
+                            int64_t col = env->get("__COLUMN__").to_long();
                             bool sort_keys = env->get("sort_keys").to_bool();
                             auto root = value_to_toml_node(env->get("v"), line,
                                                            col);
@@ -6580,8 +6580,8 @@ inline Value make_env_namespace() {
           {{"path", false, "String"sv, nullptr, kw_default_dotenv()},
            {"override", false, "Bool"sv, nullptr, kw_default_false()}},
           [](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
             const auto& path = env->get("path").to_string();
             bool overwrite = env->get("override").to_bool();
             std::ifstream ifs(path, std::ios::binary);
@@ -6683,8 +6683,8 @@ inline Value make_encoding_namespace() {
       "decode",
       Value(FunctionValue({{"s", false, "String"sv}},
                           [](std::shared_ptr<Environment> env) -> Value {
-                            long line = env->get("__LINE__").to_long();
-                            long col = env->get("__COLUMN__").to_long();
+                            int64_t line = env->get("__LINE__").to_long();
+                            int64_t col = env->get("__COLUMN__").to_long();
                             auto r = culebra::base64_decode(
                                 env->get("s").to_string_view());
                             if (!r) {
@@ -6713,8 +6713,8 @@ inline Value make_encoding_namespace() {
       "decode",
       Value(FunctionValue({{"s", false, "String"sv}},
                           [](std::shared_ptr<Environment> env) -> Value {
-                            long line = env->get("__LINE__").to_long();
-                            long col = env->get("__COLUMN__").to_long();
+                            int64_t line = env->get("__LINE__").to_long();
+                            int64_t col = env->get("__COLUMN__").to_long();
                             auto r = culebra::hex_decode(
                                 env->get("s").to_string_view());
                             if (!r) {
@@ -6828,7 +6828,7 @@ inline Value make_regex_primitives_namespace() {
           [](std::shared_ptr<Environment> env) -> Value {
             auto re = regex_from_env(env);
             std::string s{env->get("s").to_string()};
-            long pos = env->get("pos").to_long();
+            int64_t pos = env->get("pos").to_long();
             ObjectValue out;
             try {
               auto r = re->find_at(s, pos < 0 ? s.size() + 1
@@ -6838,7 +6838,7 @@ inline Value make_regex_primitives_namespace() {
                                  ? regex_match_value(r.m, re->named_groups())
                                  : Value(),
                              false);
-              out.initialize("nxt", Value(static_cast<long>(r.next_pos)),
+              out.initialize("nxt", Value(static_cast<int64_t>(r.next_pos)),
                              false);
               return Value(std::move(out));
             } catch (const reg::RegexError& e) {
@@ -6900,9 +6900,9 @@ inline Value make_regex_primitives_namespace() {
                       try {
                         for (auto m : re->find_all(s)) {
                           av.values->push_back(
-                              Value(static_cast<long>(m.begin())));
+                              Value(static_cast<int64_t>(m.begin())));
                           av.values->push_back(
-                              Value(static_cast<long>(m.end())));
+                              Value(static_cast<int64_t>(m.end())));
                         }
                       } catch (const reg::RegexError& e) {
                         regex_rethrow(e, env);
@@ -6919,7 +6919,7 @@ inline Value make_regex_primitives_namespace() {
                       auto re = regex_from_env(env);
                       std::string s{env->get("s").to_string()};
                       try {
-                        return Value(static_cast<long>(re->find_all(s).size()));
+                        return Value(static_cast<int64_t>(re->find_all(s).size()));
                       } catch (const reg::RegexError& e) {
                         regex_rethrow(e, env);
                         return Value();
@@ -7025,7 +7025,7 @@ inline void setup_built_in_functions(Environment& env) {
                             if (v.type == Value::Long) return v;
                             if (v.type == Value::Float) {
                               // Truncate toward zero (matches Python's int()).
-                              return Value(static_cast<long>(v.get<double>()));
+                              return Value(static_cast<int64_t>(v.get<double>()));
                             }
                             if (v.type != Value::String &&
                                 v.type != Value::StringView)
@@ -7045,7 +7045,7 @@ inline void setup_built_in_functions(Environment& env) {
                             auto col = env->get("__COLUMN__").to_long();
                             if (v.type == Value::Float) return v;
                             if (v.type == Value::Long) {
-                              return Value(static_cast<double>(v.get<long>()));
+                              return Value(static_cast<double>(v.get<int64_t>()));
                             }
                             if (v.type != Value::String &&
                                 v.type != Value::StringView)
@@ -7087,7 +7087,7 @@ inline void setup_built_in_functions(Environment& env) {
                     }
                     return r;
                   }
-                  return Value(static_cast<long>(ValueHash{}(v)));
+                  return Value(static_cast<int64_t>(ValueHash{}(v)));
                 },
                 "Long"sv)),
       false);

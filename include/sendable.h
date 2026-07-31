@@ -44,7 +44,7 @@ struct SendNode {
   K kind = K::Nil;
 
   bool b = false;  // Bool; also Channel role (false = tx, true = rx)
-  long i = 0;      // Long; also Channel id (into the process-wide registry)
+  int64_t i = 0;   // Long; also Channel id (into the process-wide registry)
   double d = 0.0;
   std::string s;   // Str
 

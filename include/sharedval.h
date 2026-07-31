@@ -170,7 +170,7 @@ inline long freeze_shared_val(SendNode&& root) {
 // eval_property / eval_array_reference (declared there, defined below).
 // ---------------------------------------------------------------------------
 
-inline Value make_shared_val_view(long id, long node_idx);
+inline Value make_shared_val_view(int64_t id, int64_t node_idx);
 
 struct ResolvedNode {
   std::shared_ptr<SharedValCore> core;
@@ -184,13 +184,13 @@ inline ResolvedNode _shared_val_node_of(const Value& view) {
   if (o.has("_dropped") && o.get("_dropped").to_bool()) {
     throw CulebraError("ClosedError", "Shared value has been dropped");
   }
-  long id = o.get("__sharedval_id__").to_long();
+  int64_t id = o.get("__sharedval_id__").to_long();
   auto core = lookup_shared_val(id);
   if (!core) {
     throw CulebraError("ClosedError", "Shared value has been dropped");
   }
-  long node = o.get("__sharedval_node__").to_long();
-  if (node < 0 || node >= static_cast<long>(core->nodes.size())) {
+  int64_t node = o.get("__sharedval_node__").to_long();
+  if (node < 0 || node >= static_cast<int64_t>(core->nodes.size())) {
     throw CulebraError("ValueError", "corrupt Shared view");
   }
   // Resolve the node pointer BEFORE moving `core` — aggregate init runs
@@ -203,7 +203,7 @@ inline ResolvedNode _shared_val_node_of(const Value& view) {
 // One node, one Value: a leaf materializes into the local heap (strings
 // copy — a StringView into the tree would need owner-lifetime rules; a
 // later optimization), a container mints a sub-view (+1 on the registry).
-inline Value _shared_val_read(long id, const SharedValCore& core,
+inline Value _shared_val_read(int64_t id, const SharedValCore& core,
                               const SendNode& n) {
   switch (n.kind) {
     case SendNode::K::Nil:   return Value();
@@ -217,7 +217,7 @@ inline Value _shared_val_read(long id, const SharedValCore& core,
     case SendNode::K::Tuple: {
       shared_val_bump(id);
       return make_shared_val_view(id,
-                                  static_cast<long>(core.ids.at(&n)));
+                                  static_cast<int64_t>(core.ids.at(&n)));
     }
     default:
       throw CulebraError("ValueError", "corrupt Shared view");
@@ -336,8 +336,8 @@ inline Value shared_val_get_index(const Value& view, const Value& key) {
     }
     case SendNode::K::Array:
     case SendNode::K::Tuple: {
-      long len = static_cast<long>(n->elems.size());
-      long idx = key.to_long();
+      int64_t len = static_cast<int64_t>(n->elems.size());
+      int64_t idx = key.to_long();
       if (idx < 0) idx += len;
       if (idx < 0 || idx >= len) {
         throw CulebraError("IndexError", "index out of range");
@@ -383,7 +383,7 @@ inline Value shared_val_make_iter(const Value& view) {
   return Value(std::move(it));
 }
 
-inline Value make_shared_val_view(long id, long node_idx) {
+inline Value make_shared_val_view(int64_t id, int64_t node_idx) {
   using namespace std::literals;
   ObjectValue h;
   h.initialize("__sharedval_id__", Value(id), false);
@@ -395,9 +395,9 @@ inline Value make_shared_val_view(long id, long node_idx) {
   h.initialize("size",
       Value(FunctionValue({}, [self_node](std::shared_ptr<Environment> env) {
         auto [core, n, id, idx] = self_node(env);
-        long s = n->kind == SendNode::K::Object
-                     ? static_cast<long>(n->entries.size())
-                     : static_cast<long>(n->elems.size());
+        int64_t s = n->kind == SendNode::K::Object
+                     ? static_cast<int64_t>(n->entries.size())
+                     : static_cast<int64_t>(n->elems.size());
         return Value(s);
       }, "Long"sv)), false);
   h.initialize("has",
@@ -465,8 +465,8 @@ inline Value make_shared_namespace() {
       Value(FunctionValue({{"value", false, ""sv}},
           [](std::shared_ptr<Environment> env) -> Value {
         auto v = env->get("value");
-        long line = env->get("__LINE__").to_long();
-        long col = env->get("__COLUMN__").to_long();
+        int64_t line = env->get("__LINE__").to_long();
+        int64_t col = env->get("__COLUMN__").to_long();
         sendable::SendNode root;
         try {
           // Freeze mode: extract hooks skip the in-flight bump (a freeze
@@ -503,7 +503,7 @@ inline const bool _sharedval_hooks_installed = [] {
     if (o.get("_dropped").to_bool()) {
       throw CulebraError("ClosedError", "Shared value has been dropped");
     }
-    long id = o.get("__sharedval_id__").to_long();
+    int64_t id = o.get("__sharedval_id__").to_long();
     if (!sendable::sharedval_freezing()) shared_val_bump(id);
     return {id, o.get("__sharedval_node__").to_long()};
   };

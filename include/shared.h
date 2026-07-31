@@ -839,8 +839,8 @@ inline std::string url_decode(std::string_view in) {
 
 // Integer power by squaring. `exp` must be non-negative; result wraps
 // on overflow (matches the rest of Long arithmetic — no bignum).
-inline long ipow_nonneg(long base, long exp) {
-  long r = 1;
+inline int64_t ipow_nonneg(int64_t base, int64_t exp) {
+  int64_t r = 1;
   while (exp > 0) {
     if (exp & 1) r *= base;
     exp >>= 1;
@@ -849,13 +849,26 @@ inline long ipow_nonneg(long base, long exp) {
   return r;
 }
 
+// The numeric hash rule both backends use: a Float holding an integral value
+// hashes as that Long, so 2 and 2.0 land in the same bucket. Single-sourced
+// here so ValueHash and JitValueHash cannot drift — including on the width,
+// which is int64_t because that is what a culebra Long is.
+inline size_t hash_long(int64_t v) { return std::hash<int64_t>{}(v); }
+inline size_t hash_double(double d) {
+  int64_t as_long = static_cast<int64_t>(d);
+  if (std::isfinite(d) && static_cast<double>(as_long) == d) {
+    return hash_long(as_long);
+  }
+  return std::hash<double>{}(d);
+}
+
 // Floored remainder — the one `%` does not give, since `%` truncates.
 // The result carries the sign of `n`, so a positive `n` lands it in
 // `[0, n)`: the wrap a circular index wants. `n == 0` is the caller's
 // to reject. Single source for interp and JIT.
-inline long floored_mod(long x, long n) {
-  if (n == -1) return 0;  // LONG_MIN % -1 overflows; the answer is 0 anyway
-  long r = x % n;
+inline int64_t floored_mod(int64_t x, int64_t n) {
+  if (n == -1) return 0;  // INT64_MIN % -1 overflows; the answer is 0 anyway
+  int64_t r = x % n;
   return (r != 0 && (r < 0) != (n < 0)) ? r + n : r;
 }
 
@@ -1458,13 +1471,13 @@ inline std::string canonicalize_type_annotation(std::string_view name) {
 
 // Parse a full string as a base-10 signed long; whitespace-trim allowed,
 // any other trailing content or invalid form throws `type error at L:C`.
-inline long parse_long_strict(std::string_view s, long line, long col) {
+inline int64_t parse_long_strict(std::string_view s, long line, long col) {
   auto t = trim_ascii(s);
   if (t.empty()) throw_type_error_at(line, col);
   try {
     size_t used = 0;
     std::string owned(t);
-    long v = std::stol(owned, &used, 10);
+    int64_t v = std::stoll(owned, &used, 10);
     if (used != owned.size()) throw std::invalid_argument("");
     return v;
   } catch (const std::runtime_error&) {
@@ -1481,7 +1494,7 @@ inline long parse_long_strict(std::string_view s, long line, long col) {
 // per prefix, so this is a clean base dispatch with no validation churn.
 // Shared by interp (eval_number) and JIT (compile NUMBER) so the two
 // backends decode literals identically.
-inline long parse_integer_literal(std::string_view tok) {
+inline int64_t parse_integer_literal(std::string_view tok) {
   std::string owned(tok);
   int base = 10;
   size_t off = 0;
@@ -1491,12 +1504,14 @@ inline long parse_integer_literal(std::string_view tok) {
     else if (p == 'o' || p == 'O') { base = 8; off = 2; }
     else if (p == 'b' || p == 'B') { base = 2; off = 2; }
   }
-  // strtol over the body after any prefix; the grammar restricted the
+  // strtoll over the body after any prefix; the grammar restricted the
   // digits, so no partial-parse guard is needed. errno is checked so an
   // out-of-range literal throws instead of silently clamping to
-  // LONG_MAX/MIN (matches parse_long_strict's strict overflow handling).
+  // INT64_MAX/MIN (matches parse_long_strict's strict overflow handling).
+  // strtoll, not strtol: `long` is 32-bit on Windows, where it rejected every
+  // literal above 2^31 that the JIT and AOT accepted.
   errno = 0;
-  long v = std::strtol(owned.c_str() + off, nullptr, base);
+  int64_t v = std::strtoll(owned.c_str() + off, nullptr, base);
   if (errno == ERANGE) {
     throw CulebraError("ValueError",
                        std::format("integer literal out of range: {}", tok));
@@ -1545,8 +1560,8 @@ inline std::string format_value_as(T& v, std::string_view type_name,
         col);
   }
 }
-inline std::string format_value_long(long v, std::string_view spec, long line,
-                                     long col) {
+inline std::string format_value_long(int64_t v, std::string_view spec,
+                                     long line, long col) {
   return format_value_as(v, "Long", spec, line, col);
 }
 inline std::string format_value_double(double v, std::string_view spec,

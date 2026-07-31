@@ -137,7 +137,12 @@ AST ノードは cpp-peglib 自身が生成する `shared_ptr<peg::Ast>` です�
 
 `Value` は `Type` タグ (`type_of` が返しうる 12 個の名前) と
 `std::any` のペイロードです。`Nil` / `Bool` / `Long` / `Float` は
-ペイロードに直接入り、`String` は `std::string` を値で持ちます。
+ペイロードに直接入ります。`Long` は必ず `int64_t` で、`long` は使いま
+せん — Windows では 32bit になり、同じプログラムが JIT と違う答えを返
+してしまいます。`std::any` は幅でなく型で一致するので、値を作る側も読
+む側も `int64_t` と書く必要があります (`Value::get` は両者が異なる環境
+で `long` を static_assert で弾きます)。
+`String` は `std::string` を値で持ちます。
 コンテナ型は**内部**が `shared_ptr` の struct を持ち
 (`ArrayValue::values` は `shared_ptr<vector<Value>>`、Object のプロパ
 ティマップも同様)、これが `Value` 自体を copyable に保ったまま参照

@@ -488,7 +488,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_fs_stat(
   int64_t mode = static_cast<int64_t>(
       fst.permissions() & std::filesystem::perms::mask);
   culebra_runtime_object_set(o, "mode", false, TAG_LONG, mode, line, col);
-  long uid = -1, gid = -1;
+  int64_t uid = -1, gid = -1;
   culebra::_fs_owner(path ? path : "", uid, gid);
   culebra_runtime_object_set(o, "uid", false, TAG_LONG, uid, line, col);
   culebra_runtime_object_set(o, "gid", false, TAG_LONG, gid, line, col);
@@ -2395,7 +2395,7 @@ CULEBRA_RT_INLINE void _jit_file_seek(JitValue* __ret, JitClosure*, int8_t self_
     _jit_file_missing_arg(self, "offset");
   if (args[0].tag != TAG_LONG)
     _jit_file_param_type_error(self, "offset", "Long", 0);
-  long off = args[0].data;
+  int64_t off = args[0].data;
   // `whence` is untyped with default "set" — a non-String is the interp's
   // to_string() body error.
   std::string_view whence = "set";
@@ -4030,7 +4030,7 @@ inline JitValue _ns_fs_chmod(JitValue* a, int64_t) {
 // any other type is a TypeError, an unknown name an IOError — wording matches
 // the interp resolver. Positions are 0/0 (the trampoline backfills the call
 // site).
-inline long _fs_chown_id(JitValue v, const char* param, bool is_user) {
+inline int64_t _fs_chown_id(JitValue v, const char* param, bool is_user) {
   if (v.tag == TAG_NIL) return -1;
   if (v.tag == TAG_LONG) return v.data;
   if (v.tag == TAG_STRING || v.tag == TAG_STRINGVIEW) {
@@ -4055,8 +4055,8 @@ inline long _fs_chown_id(JitValue v, const char* param, bool is_user) {
 }
 // chown(path, owner=nil, group=nil): slab full-arity via NsParamMeta.
 inline JitValue _ns_fs_chown(JitValue* a, int64_t n) {
-  long uid = _fs_chown_id(n > 1 ? a[1] : JitValue{TAG_NIL, 0}, "owner", true);
-  long gid = _fs_chown_id(n > 2 ? a[2] : JitValue{TAG_NIL, 0}, "group", false);
+  int64_t uid = _fs_chown_id(n > 1 ? a[1] : JitValue{TAG_NIL, 0}, "owner", true);
+  int64_t gid = _fs_chown_id(n > 2 ? a[2] : JitValue{TAG_NIL, 0}, "group", false);
   culebra::_fs_do_chown(_ns_adapt::take_path(a[0]), uid, gid, 0, 0);
   return _ns_adapt::v_nil();
 }
@@ -4681,7 +4681,7 @@ inline JitValue _ns_http_client(JitValue* a, int64_t n) {
   if (to.tag != TAG_LONG && to.tag != TAG_NIL) {
     culebra::throw_type_mismatch("Long", _culebra_tag_name(to.tag), 0, 0);
   }
-  long timeout = (to.tag == TAG_LONG && to.data > 0) ? to.data : 0;
+  int64_t timeout = (to.tag == TAG_LONG && to.data > 0) ? to.data : 0;
   JitValue fr = _proc_adapt::at(a, n, 3);
   bool follow;
   if (fr.tag == TAG_NIL) {
@@ -5398,7 +5398,7 @@ inline JitValue _ns_sharedbuffer_new(JitValue* a, int64_t n) {
     // `type error: expected Long, got <T>` (position backfilled by dispatch).
     culebra::throw_type_mismatch("Long", _culebra_tag_name(a[0].tag), 0, 0);
   }
-  long count = a[0].data;
+  int64_t count = a[0].data;
   if (count < 0) {
     throw culebra::CulebraError("ValueError",
         "SharedBuffer.new: count must be >= 0");
@@ -5440,7 +5440,7 @@ inline JitValue _ns_sharedbuffer_file(JitValue* a, int64_t n) {
   if (a[1].tag != TAG_LONG) {
     culebra::throw_type_mismatch("Long", _culebra_tag_name(a[1].tag), 0, 0);
   }
-  long count = a[1].data;
+  int64_t count = a[1].data;
   if (count < 0) {
     throw culebra::CulebraError("ValueError",
         "SharedBuffer.file: count must be >= 0");
@@ -5477,7 +5477,7 @@ inline JitValue _ns_sharedbuffer_shared(JitValue* a, int64_t n) {
   if (a[0].tag != TAG_LONG) {
     culebra::throw_type_mismatch("Long", _culebra_tag_name(a[0].tag), 0, 0);
   }
-  long count = a[0].data;
+  int64_t count = a[0].data;
   if (count < 0) {
     throw culebra::CulebraError("ValueError",
         "SharedBuffer.shared: count must be >= 0");
@@ -5537,7 +5537,7 @@ inline JitValue _ns_sharedbuffer_receive(JitValue* a, int64_t n) {
                                                        std::string(cname), name);
   auto core = culebra::lookup_shared_buffer(id);
   return _jit_make_shared_buffer_handle(
-      id, core ? static_cast<long>(core->count) : 0);
+      id, core ? static_cast<int64_t>(core->count) : 0);
 }
 
 // Parallel.{map,each,map_settled,race}(items, fn, limit = 0). `limit` arrives in
@@ -5551,7 +5551,7 @@ inline JitValue _ns_parallel_dispatch(JitValue* a, int64_t n,
         std::format("Parallel.{}: expected (items, fn)",
                     culebra::parallel_mode_name(mode)));
   }
-  long limit = (n >= 3 && a[2].tag == TAG_LONG) ? a[2].data : 0;
+  int64_t limit = (n >= 3 && a[2].tag == TAG_LONG) ? a[2].data : 0;
   JitValue on_progress = (n >= 4) ? a[3] : JitValue{TAG_NIL, 0};
   return jit_parallel_run(a[0], a[1], limit, mode, 0, 0, on_progress);
 }
@@ -6273,7 +6273,7 @@ inline JitValue _ns_regex_replace_first(JitValue* a, int64_t) {
 inline JitValue _ns_regex_find_from(JitValue* a, int64_t) {
   auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
   std::string s(_ns_adapt::require_sv(a[1], "s", "StringLike"));
-  long pos = static_cast<long>(a[2].data);
+  int64_t pos = a[2].data;
   auto* out = culebra_runtime_object_new();
   auto r = re->find_at(s, pos < 0 ? s.size() + 1 : static_cast<size_t>(pos));
   if (r.m.matched()) {
@@ -6381,7 +6381,7 @@ inline JitValue _jit_default_from_value(const culebra::Value& v) {
   switch (v.type) {
     case culebra::Value::Nil:    return {TAG_NIL, 0};
     case culebra::Value::Bool:   return {TAG_BOOL, v.get<bool>() ? 1 : 0};
-    case culebra::Value::Long:   return {TAG_LONG, v.get<long>()};
+    case culebra::Value::Long:   return {TAG_LONG, v.get<int64_t>()};
     case culebra::Value::Float:  return jit_float(v.get<double>());
     case culebra::Value::String:
       return {TAG_STRING,
