@@ -36,7 +36,11 @@ fn add(a, b) {
   return a + b
 }
 
-if x > 0 { inspect("hi") } else { inspect("lo") }
+if x > 0 {
+  inspect("hi")
+} else {
+  inspect("lo")
+}
 EOF
 "$CULEBRA" fmt "$TMP/in.cul" > "$TMP/got.cul" 2>"$TMP/err"
 if ! diff -u "$TMP/want.cul" "$TMP/got.cul" > "$TMP/diff" 2>&1; then

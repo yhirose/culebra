@@ -56,12 +56,22 @@ struct Doc {
   std::string text;            // Text
   std::vector<DocP> children;  // Concat, Group (size 1), Indent (size 1)
   int indent = 0;              // Indent
+  bool weightless = false;     // Text that the fit check ignores
 };
 
 inline DocP doc_text(std::string s) {
   auto d = std::make_shared<Doc>();
   d->kind = DocKind::Text;
   d->text = std::move(s);
+  return d;
+}
+
+// Text that occupies no width as far as layout is concerned. A trailing
+// comment sits past the end of the code, so letting it count would break the
+// code around it to make room for prose that follows either way.
+inline DocP doc_weightless_text(std::string s) {
+  auto d = doc_text(std::move(s));
+  d->weightless = true;
   return d;
 }
 // Emitted only when the enclosing group breaks — a trailing comma that appears
@@ -95,6 +105,21 @@ inline DocP doc_indent(int n, DocP x) {
   return d;
 }
 
+// Force a doc to its flat form. A head with no brackets of its own — the
+// condition of an `if` / `while`, the subject of a `match` — has nothing to
+// break *inside*, so a break lands between two operands (`if v ==` / `0 {`) and
+// reads as a mistake. Width pressure from the rest of the line must not reach
+// it.
+inline DocP doc_flatten(const DocP& d) {
+  if (!d) return d;
+  if (d->kind == DocKind::Line) return doc_text(" ");
+  if (d->kind == DocKind::SoftLine || d->kind == DocKind::IfBreak) return doc_text("");
+  if (d->children.empty()) return d;
+  auto c = std::make_shared<Doc>(*d);
+  for (auto& ch : c->children) ch = doc_flatten(ch);
+  return c;
+}
+
 // A Group may only wrap docs that can lay out flat, so anything holding a
 // HardLine has to stay ungrouped (the invariant the layout relies on).
 inline bool doc_has_hardline(const DocP& d) {
@@ -118,7 +143,7 @@ inline bool doc_fits(int remaining, std::vector<LayoutCmd> stack) {
     stack.pop_back();
     switch (c.doc->kind) {
       case DocKind::Text:
-        remaining -= static_cast<int>(c.doc->text.size());
+        if (!c.doc->weightless) remaining -= static_cast<int>(c.doc->text.size());
         break;
       case DocKind::Concat:
         for (auto it = c.doc->children.rbegin(); it != c.doc->children.rend(); ++it)
@@ -703,9 +728,14 @@ class Printer {
       if (!c.own_line) {
         int pk = prev_item_index(c.start);
         if (pk >= 0) {
+          // Weightless: the comment follows the code either way, so counting it
+          // would only break the code in front of it to make room.
+          DocP gap = doc_weightless_text("  ");
+          DocP text = doc_weightless_text(
+              std::string(src_.substr(c.start, c.end - c.start)));
           trailing[pk] = trailing[pk]
-              ? doc_concat({trailing[pk], doc_text("  "), comment_doc(c)})
-              : doc_concat({doc_text("  "), comment_doc(c)});
+              ? doc_concat({trailing[pk], std::move(gap), std::move(text)})
+              : doc_concat({std::move(gap), std::move(text)});
           continue;
         }
       }
@@ -780,9 +810,22 @@ class Printer {
 
   // A brace block of statements: `body` is the block's statement node(s),
   // `after_pos` at or before its `{`.
+  // A construct that carries braces of its own. One of these as a block's only
+  // statement keeps the block multi-line: `for … { for … { … } }` fits, but it
+  // hides the nesting the indentation was showing.
+  static bool carries_a_block(const peg::Ast& n) {
+    const std::string& s = n.name;
+    return s == "IF" || s == "WHILE" || s == "FOR" || s == "MATCH" ||
+           s == "COND" || s == "TRY" || s == "DEFER" || s == "HANDLE" ||
+           s == "LEXICAL_SCOPE" || s == "CLASS_DECL" || s == "TRAIT_DECL" ||
+           s == "ENUM_DECL";
+  }
+
   DocP print_block(const peg::Ast& body, size_t after_pos, bool empty_ok,
                    bool allow_inline = true) {
     auto stmts = stmt_children(body);
+    if (allow_inline && stmts.size() == 1 && carries_a_block(*stmts[0]))
+      allow_inline = false;
     return print_braced(stmts, after_pos, "", empty_ok,
                         [&](size_t k) { return print(*stmts[k]); }, allow_inline);
   }
@@ -1333,22 +1376,27 @@ class Printer {
       }
       parts.push_back(doc_text("; "));
     }
-    parts.push_back(print(*nodes[off]));
+    // Only a lone `if` may keep its body inline. Once there is an `else`, the
+    // arms have to agree: each block decides its own layout, so a long `else if`
+    // would otherwise leave `if c {` broken across lines next to a one-line
+    // `else { … }`.
+    const bool lone = nodes.size() - off == 2;
+    parts.push_back(doc_flatten(print(*nodes[off])));
     parts.push_back(doc_text(" "));
-    parts.push_back(print_block(*nodes[off + 1], node_end(*nodes[off]), false));
+    parts.push_back(print_block(*nodes[off + 1], node_end(*nodes[off]), false, lone));
     size_t cursor = block_interior(node_end(*nodes[off])).after;
     size_t i = off + 2, n = nodes.size();
     while (n - i >= 2) {
       parts.push_back(doc_text(" else if "));
-      parts.push_back(print(*nodes[i]));
+      parts.push_back(doc_flatten(print(*nodes[i])));
       parts.push_back(doc_text(" "));
-      parts.push_back(print_block(*nodes[i + 1], node_end(*nodes[i]), false));
+      parts.push_back(print_block(*nodes[i + 1], node_end(*nodes[i]), false, /*allow_inline=*/false));
       cursor = block_interior(node_end(*nodes[i])).after;
       i += 2;
     }
     if (i < n) {
       parts.push_back(doc_text(" else "));
-      parts.push_back(print_block(*nodes[i], cursor, false));
+      parts.push_back(print_block(*nodes[i], cursor, false, /*allow_inline=*/false));
     }
     return doc_concat(std::move(parts));
   }
@@ -1366,7 +1414,7 @@ class Printer {
     // clause renders as `binding, binding; ` before the condition
     // (`while mut i = 0; i < n {…}`); a nobreak clause renders after the body.
     auto wv = culebra::view_while(node);
-    DocP head = print(*wv.cond);
+    DocP head = doc_flatten(print(*wv.cond));
     if (wv.init) {
       std::vector<DocP> parts;
       for (size_t i = 0; i < wv.init->nodes.size(); i++) {
@@ -1449,7 +1497,7 @@ class Printer {
       }
       head.push_back(doc_text("; "));
     }
-    head.push_back(print(*mv.subject));
+    head.push_back(doc_flatten(print(*mv.subject)));
     head.push_back(doc_text(" "));
     head.push_back(print_braced(items, node_end(*mv.subject), ",",
                                 /*empty_ok=*/true, render));
