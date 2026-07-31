@@ -1134,6 +1134,7 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
       BUILD_BYPRODUCTS "${_sdl_a}")
     ExternalProject_Add_Step(sdl_ext publish
       COMMAND ${CMAKE_COMMAND} -DSTAGE=${_deps_stage}/sdl -DDEST=${_sdl_install}
+              -DPROBE=${_sdl_a}
               -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/publish_dep.cmake"
       COMMENT "Publishing SDL3 to ${_sdl_install}"
       DEPENDEES install)
@@ -1164,6 +1165,7 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
       BUILD_BYPRODUCTS "${_raylib_a}")
     ExternalProject_Add_Step(raylib_ext publish
       COMMAND ${CMAKE_COMMAND} -DSTAGE=${_deps_stage}/raylib -DDEST=${_raylib_install}
+              -DPROBE=${_raylib_a}
               -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/publish_dep.cmake"
       COMMENT "Publishing raylib to ${_raylib_install}"
       DEPENDEES install)
