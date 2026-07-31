@@ -22,6 +22,7 @@
 #include <deque>
 #include <mutex>
 #include <numbers>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 
@@ -43,6 +44,7 @@ int g_tex_h = 0;
 int g_scale = 1;
 bool g_window_ready = false;
 bool g_window_failed = false;  // creation tried and failed; don't try again
+std::string g_title = "culebra Canvas";  // applied when the window opens
 
 // Integer upscale so the small framebuffer fills a comfortable window while
 // pixels stay crisp (nearest-neighbour), matching the Playground's
@@ -165,7 +167,7 @@ void ensure_window() {
       g_window_failed = true;
       return;
     }
-    InitWindow(w * g_scale, h * g_scale, "culebra Canvas");
+    InitWindow(w * g_scale, h * g_scale, g_title.c_str());
     // No display (headless server / CI / SSH): raylib fails to open a window
     // and IsWindowReady() stays false. Degrade to the headless backend rather
     // than driving GL on a dead context — present/input become no-ops. Latched,
@@ -628,6 +630,14 @@ bool closing() {
 bool windowed() {
   ensure_window();
   return g_window_ready;
+}
+
+// Deliberately does not ensure_window(): naming a window must not open one.
+// Before there is one the name is only remembered; ensure_window() applies it.
+void set_title(const char* title) {
+  if (g_title == title) return;  // a per-frame rename that isn't one
+  g_title = title;
+  if (g_window_ready) SetWindowTitle(g_title.c_str());
 }
 
 // Frames (at ~60fps) to samples (at kSampleRate), matching the browser's own

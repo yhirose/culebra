@@ -471,6 +471,7 @@ assert_eq(_Canvas.mouse_buttons(), 0)
 // channel, duty) — 10 Longs; headless is a no-op but the arity/types must match.
 _Canvas.tone(700, 870, 10, 5, 0, 3, 10, 20, 0, 1)
 _Canvas.present()
+_Canvas.title("some window")
 // False in a headless build, and in a window build too: every `just` recipe
 // exports CULEBRA_CANVAS_HEADLESS, which is what makes the two identical.
 assert_eq(_Canvas.windowed(), false)

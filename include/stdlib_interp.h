@@ -2242,6 +2242,16 @@ inline Value make_canvas_primitives_namespace() {
           "Bool"sv)),
       false);
 
+  // _Canvas.title(name) — name the window. No-op where there is none.
+  ns.initialize("title",
+      Value(FunctionValue({{"name", false, "String"sv}},
+          [](std::shared_ptr<Environment> env) {
+            _canvas_detail::set_title(
+                std::string(env->get("name").to_string_view()).c_str());
+            return Value();
+          })),
+      false);
+
   // _Canvas.tone(freq, dur, vol, wave) -> Nil (no-op headless)
   ns.initialize("tone",
       Value(FunctionValue({{"start_freq", false, "Long"sv},

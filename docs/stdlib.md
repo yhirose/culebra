@@ -4165,6 +4165,19 @@ rasterizes back to exactly the rectangle. The interpolation is integer
 throughout, so every backend produces the identical shape, and coordinates
 saturate into a ±2³⁰ guard band so no input can overflow it.
 
+### The window
+
+A window exists only in a desktop build that opened one — headless builds and
+the browser have none, and the entry points below are no-ops there. `Canvas`
+is a framebuffer first; this is the one part of it the OS owns.
+
+| Function | Effect |
+| --- | --- |
+| `Canvas.title(name)` | name the window; call it before the loop starts |
+
+The browser is a deliberate no-op rather than a missing feature: the tab's
+title belongs to the page hosting the canvas, not to the program drawing on it.
+
 ### Sprites
 
 `Canvas.Sprite.new(pixels, w, h, palette = nil)` uploads a sprite once and

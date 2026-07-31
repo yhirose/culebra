@@ -1126,4 +1126,5 @@ let frame = fn () {
   true
 }
 
+Canvas.title("Retro Run")
 Canvas.run(W, H, frame, 100000)

@@ -907,6 +907,9 @@ inline std::string char_pop() {
 inline bool closing() { return false; }
 // The browser canvas always shows the frames it is handed.
 inline bool windowed() { return true; }
+// Deliberate: the tab's title belongs to the page hosting the canvas, not to
+// the program drawing on it.
+inline void set_title(const char*) {}
 inline void tone(int64_t start_freq, int64_t end_freq, int64_t attack,
                  int64_t decay, int64_t sustain, int64_t release, int64_t vol,
                  int64_t peak, int64_t channel, int64_t duty) {
@@ -968,6 +971,7 @@ __attribute__((weak)) std::string key_pop() { return ""; }
 __attribute__((weak)) std::string char_pop() { return ""; }
 __attribute__((weak)) bool closing() { return false; }
 __attribute__((weak)) bool windowed() { return false; }
+__attribute__((weak)) void set_title(const char*) {}
 __attribute__((weak)) void tone(int64_t, int64_t, int64_t, int64_t, int64_t,
                                 int64_t, int64_t, int64_t, int64_t, int64_t) {}
 __attribute__((weak)) void music_play(const uint8_t*, int64_t, const char*,
@@ -1000,6 +1004,7 @@ std::string key_pop();
 std::string char_pop();
 bool closing();
 bool windowed();
+void set_title(const char* title);
 void tone(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,
           int64_t, int64_t, int64_t);
 void music_play(const uint8_t* data, int64_t len, const char* fmt,
@@ -1030,6 +1035,7 @@ inline std::string key_pop() { return ""; }
 inline std::string char_pop() { return ""; }
 inline bool closing() { return false; }
 inline bool windowed() { return false; }  // no window to show frames in
+inline void set_title(const char*) {}  // ...and none to title
 inline void tone(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,
                  int64_t, int64_t, int64_t) {}
 inline void music_play(const uint8_t*, int64_t, const char*, int64_t, int64_t,

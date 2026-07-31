@@ -755,6 +755,7 @@ inline constexpr auto canvas_mouse_x       = "culebra_runtime_canvas_mouse_x";
 inline constexpr auto canvas_mouse_y       = "culebra_runtime_canvas_mouse_y";
 inline constexpr auto canvas_mouse_buttons = "culebra_runtime_canvas_mouse_buttons";
 inline constexpr auto canvas_key           = "culebra_runtime_canvas_key";
+inline constexpr auto canvas_title         = "culebra_runtime_canvas_title";
 inline constexpr auto canvas_key_pop       = "culebra_runtime_canvas_key_pop";
 inline constexpr auto canvas_char_pop      = "culebra_runtime_canvas_char_pop";
 inline constexpr auto canvas_closing       = "culebra_runtime_canvas_closing";

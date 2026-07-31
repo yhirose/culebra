@@ -339,6 +339,11 @@ assert_eq(Canvas.key_queue(), [])
 assert_eq(Canvas.typed(), "")
 assert_throws("TypeError", fn() { Canvas.key(42) })
 
+// Naming the window is a no-op headless, but the String contract is checked
+// the same on both backends.
+Canvas.title("Space Invaders")
+assert_throws("TypeError", fn() { Canvas.title(42) })
+
 // Button/wave constants are distinct bits/codes.
 assert_eq(Canvas.LEFT + Canvas.RIGHT + Canvas.UP + Canvas.DOWN, 15)
 assert_eq(Canvas.NOISE, 3)

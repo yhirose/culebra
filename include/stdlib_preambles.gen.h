@@ -650,6 +650,10 @@ let _canvas_module = fn () {
     # Allocate (or resize) the framebuffer. `run` does this for you; call it
     # directly when you drive the frame loop yourself.
     init: fn (w, h) { _Canvas.init(w, h) },
+    # --- window ---
+    # Name it. Call before the loop starts; a later call renames a window
+    # already up. No-op where there is no window (headless, browser).
+    title: fn (name) { _Canvas.title(name) },
     clear: fn (color) { _Canvas.clear(color) },
     set_pixel: fn (x, y, color) { _Canvas.set_pixel(x, y, color) },
     get_pixel: fn (x, y) { _Canvas.get_pixel(x, y) },

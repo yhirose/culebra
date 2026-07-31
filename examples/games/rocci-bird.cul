@@ -452,4 +452,5 @@ class App {
 }
 
 let app = App.new()
+Canvas.title("Rocci Bird")
 Canvas.run(W, H, app.tick)
