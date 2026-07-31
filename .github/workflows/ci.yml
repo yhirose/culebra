@@ -770,6 +770,8 @@ jobs:
             mingw-w64-ucrt-x86_64-llvm
             mingw-w64-ucrt-x86_64-ccache
             mingw-w64-ucrt-x86_64-gdb
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-webview2-loader
             git
       - name: Toolchain versions
         run: |
@@ -795,6 +797,8 @@ jobs:
         with:
           path: ${{ github.workspace }}/.deps
           key: ${{ steps.deps.outputs.key }}
+      # The widest Windows configuration, and the only job that builds Http
+      # (static OpenSSL) and Webview (WebView2) on Windows.
       - name: Configure (JIT ON, runtime archives embedded, static, Canvas window)
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -808,8 +812,8 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
             -DCULEBRA_ENABLE_JIT=ON \
-            -DCULEBRA_ENABLE_HTTP=OFF \
-            -DCULEBRA_ENABLE_WEBVIEW=OFF \
+            -DCULEBRA_ENABLE_HTTP=ON \
+            -DCULEBRA_ENABLE_WEBVIEW=ON \
             -DCULEBRA_ENABLE_CANVAS_WINDOW=ON \
             -DCULEBRA_DEV_NO_RT=OFF \
             -DCULEBRA_LTO=OFF
@@ -822,6 +826,24 @@ jobs:
         run: cmake --build build-win-aot --target culebra -j
       - name: Report ccache stats
         run: ccache -s || true
+      # Same allowlist as the `windows` job, but that one builds with Http and
+      # Webview off, so this is where OpenSSL's and WebView2's imports are
+      # actually seen. Without it the widened import set is first checked by the
+      # release job, at the end of a ~40 min LTO build on a tag.
+      - name: Verify standalone binary (only system DLLs)
+        run: |
+          echo "Imported DLLs:"
+          imports=$(objdump -p build-win-aot/culebra.exe \
+            | grep -i 'DLL Name' | sed -E 's/.*DLL Name:\s*//' | tr 'A-Z' 'a-z' | sort -u)
+          echo "$imports"
+          allow='^(kernel32|kernelbase|msvcrt|ucrtbase|api-ms-win-crt-[a-z0-9-]+|ntdll|user32|advapi32|ws2_32|shell32|shlwapi|ole32|oleaut32|bcrypt|crypt32|secur32|iphlpapi|dbghelp|version|winmm|gdi32)\.dll$'
+          bad=$(echo "$imports" | grep -viE "$allow" || true)
+          if [ -n "$bad" ]; then
+            echo "ERROR: binary imports non-system DLL(s) — not standalone:"
+            echo "$bad"
+            exit 1
+          fi
+          echo "OK: only system DLLs imported — runs on a plain Windows box"
       # Trivial AOT (no exceptions): exercises COFF object emit + the Windows
       # link driver (g++/quoting/-static). Verbose so the link command shows.
       - name: Smoke — trivial AOT (no EH)
@@ -937,6 +959,27 @@ jobs:
             *true|*false) echo "OK: window probe returned cleanly" ;;
             *) echo "ERROR: unexpected output" >&2; exit 1 ;;
           esac
+      # Webview self-disables in CMake when WebView2.h is missing, and the
+      # reference below is never executed, so only the archive's existence
+      # proves the binding compiled. Naming both namespaces then proves the AOT
+      # scan force-loads it and that CULEBRA_WEBVIEW_LINK / CULEBRA_SSL_LINK
+      # resolve at link time.
+      - name: Smoke — AOT with Webview + Http linked
+        env:
+          CULEBRA_VERBOSE: "1"
+        run: |
+          test -f build-win-aot/libculebra_rt_webview.a \
+            || { echo "WEBVIEW_SILENTLY_DISABLED (WebView2.h not found?)"; exit 1; }
+          printf 'let srv = Http.server()\nif false { let w = Webview.Window.new(); w.run() }\nprint("webview+http ok")\n' > wv.cul
+          if ./build-win-aot/culebra.exe build wv.cul -o wv.exe; then
+            out=$(./wv.exe 2>&1); rc=$?
+            echo "out=[$out] rc=$rc"
+            [ "$out" = "webview+http ok" ] && echo "AOT_WEBVIEW_HTTP_PASS" \
+              || { echo "AOT_WEBVIEW_HTTP_RUN_FAIL"; exit 1; }
+          else
+            echo "AOT_WEBVIEW_HTTP_BUILD_FAIL rc=$?"
+            exit 1
+          fi
       # AOT regression smoke: string concat + caught-value integrity (16-byte
       # runtime helpers, sret ABI), classes, getters and callable class objects.
       # set +e so every case still runs and gets listed, but any failure is
