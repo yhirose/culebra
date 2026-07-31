@@ -1471,6 +1471,14 @@ add_test(NAME args_cli_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/args_cli_test.sh
                  $<TARGET_FILE:culebra>)
 
+# That arguments reach the program at all, and reach an isolate with it. The
+# .cul sweeps run every file with none, so an empty Sys.argv is all they can
+# see. The AOT half needs the runtime archive, so justfile's AOT lane runs the
+# same script again with --aot.
+add_test(NAME sys_argv_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/sys_argv_test.sh
+                 $<TARGET_FILE:culebra>)
+
 # How the driver takes its input (a piped script, a directory), what --ast does
 # instead of running, and that a rewrite it can't write says so rather than
 # reporting success. All process-level, so no .cul sweep reaches it.

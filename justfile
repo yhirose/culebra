@@ -483,6 +483,9 @@ _run-tests BACKEND:
             echo "test aot FAIL" >&2
             exit 1
         fi
+        # The sweep above runs every binary with no arguments, so this is the
+        # one place an AOT build is asked what it does with some.
+        {{nice_cmd}} bash tests/sys_argv_test.sh "$BIN" --aot || exit 1
         echo "test aot OK: AOT binaries match --jit"
     }
 
