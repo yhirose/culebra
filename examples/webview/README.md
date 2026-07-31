@@ -31,8 +31,13 @@ shutdown order), read the facade itself: `src/preambles/desktop.cul`.
 
 `Webview` is ON by default in the culebra build (macOS links `-framework
 WebKit`; on Linux it auto-disables unless the `gtk4` + `webkitgtk-6.0` dev
-packages are present — untested yet). Opt out with
-`-DCULEBRA_ENABLE_WEBVIEW=OFF`.
+packages are present — `sudo apt install libgtk-4-dev libwebkitgtk-6.0-dev`
+on Debian/Ubuntu). Opt out with `-DCULEBRA_ENABLE_WEBVIEW=OFF`.
+
+The released Linux binary is built with Webview OFF on purpose: linking
+WebKitGTK puts `libgtk-4.so.1` and `libwebkitgtk-6.0.so.4` in the driver's
+`DT_NEEDED`, and it would then fail to start on any headless box. Build from
+source with the dev packages installed to get it.
 
 ## Run
 
@@ -155,6 +160,14 @@ LLVM 22): `user_script` holds a `std::unique_ptr<impl>` to an incomplete
 type and the new standard library eagerly instantiates the deleter in a
 throwing constructor. master fixed it. The header carries its source
 commit at the top; regenerate with webview's `scripts/amalgamate/amalgamate.py`.
+
+## Known upstream wart (GTK4)
+
+Creating a window and destroying it with nothing in between —
+`webview_create` immediately followed by `webview_destroy`, no HTML and no
+navigation — segfaults inside GTK. It reproduces against upstream webview on
+its own, with no culebra in the process, so it is the vendored header's bug,
+not the binding's. Every real path (and `smoke.cul`) sets content first.
 
 ## Not here yet
 

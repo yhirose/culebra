@@ -4570,8 +4570,9 @@ Web 技術で書くデスクトップ GUI: ローカル HTTP サーバが UI を
 なります。`Webview` は OS 自身のエンジン（macOS は WKWebView、Linux は
 WebKitGTK、Windows は WebView2）をラップするので、ブラウザは同梱しません。
 どちらの名前空間もデフォルトビルドに含まれます（`-DCULEBRA_ENABLE_WEBVIEW=OFF`
-で無効化。Linux では GTK4 / WebKitGTK の dev パッケージが無ければ自動で
-無効化）。`culebra build` は実際に参照しているプログラムに対してのみ
+で無効化。Linux では GTK4 / WebKitGTK の dev パッケージ — Debian/Ubuntu なら
+`libgtk-4-dev` + `libwebkitgtk-6.0-dev` — が無ければ自動で無効化）。
+`culebra build` は実際に参照しているプログラムに対してのみ
 WebView フレームワークをリンクします。
 
 ### `Desktop.run(config: Object) -> Nil`
