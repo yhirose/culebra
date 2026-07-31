@@ -4926,6 +4926,8 @@ smoke を 1 度に回します。AOT 差分のみなら `just test aot`。下表
 | `tests/test_defer.cul` | §15 (`defer`、scope-guard パターン) |
 | `tests/test_forward_ref.cul` | §6 (スコープ)、§11 (closure)、§20 |
 | `tests/test_iter.cul` | §12 (`for ... in`)、§18 (iterator protocol、String メソッド)、§19 (`range`、`iota`) |
+| `tests/test_iter_combinators.cul` | §18 (lazy combinator 群、無限ソースの laziness) |
+| `tests/test_iter_terminal.cul` | §18 (terminal iterator メソッド、§18.5 protocol contract) |
 | `tests/test_kwargs.cul` | §11 (キーワード引数、`**` splat)、§20 (kwargs in 多重 dispatch)、§7 (mixed call の評価順) |
 | `tests/test_match_class.cul` | §13 (型パターン) |
 | `tests/test_multidispatch.cul` | §20 |

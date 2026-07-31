@@ -1,0 +1,255 @@
+# Conformance: §17 (iterator protocol), §18. See docs/language.md §25.
+#
+# Terminal Iterator methods, edge cases, and the iterator protocol
+# contract (language.md §18.5). Split from test_iter.cul: one flat
+# script compiles as a single JIT function, whose optimization cost
+# grows superlinearly with size.
+#
+# Run with:  ./build/culebra tests/test_iter_terminal.cul
+#            ./build/culebra --jit tests/test_iter_terminal.cul
+
+# --- Phase 3: terminal Iterator methods ---
+
+# for_each
+mut acc = 0
+[1, 2, 3].iter().for_each(fn (x) { acc = acc + x })
+assert_eq(acc, 6)
+
+# reduce
+s = range(1, 6).reduce(0, fn (a, x) { a + x })
+assert_eq(s, 15)
+
+s2 = [].iter().reduce(42, fn (a, x) { a + x })
+assert_eq(s2, 42)   # empty → init
+
+# find
+f = range(100).find(fn (x) { x > 10 && x % 3 == 0 })
+assert_eq(f, 12)
+
+f2 = [1, 2, 3].iter().find(fn (x) { x > 99 })
+assert_eq(f2, nil)
+
+# any / all
+assert_eq([1, 2, 3].iter().any(fn (x) { x > 2 }), true)
+assert_eq([1, 2, 3].iter().any(fn (x) { x > 99 }), false)
+assert_eq([1, 2, 3].iter().all(fn (x) { x > 0 }), true)
+assert_eq([1, 2, 3].iter().all(fn (x) { x > 1 }), false)
+assert_eq([].iter().all(fn (x) { x > 0 }), true)   # vacuous truth
+
+# count
+assert_eq(range(100).filter(fn (x) { x % 7 == 0 }).count(), 15)
+assert_eq([].iter().count(), 0)
+
+# sum / product — identity on empty (0 / 1), same shape as math folds
+assert_eq(range(1, 11).sum(), 55)
+assert_eq([].iter().sum(), 0)
+assert_eq(range(1, 6).product(), 120)
+assert_eq([].iter().product(), 1)
+assert_eq(range(100).filter(fn (x) { x % 3 == 0 }).sum(), 1683)
+
+# min / max — empty input throws (tested via type_of check on a helper
+# that would only produce a value on success)
+assert_eq([5, 2, 8, 1, 9, 3].iter().min(), 1)
+assert_eq([5, 2, 8, 1, 9, 3].iter().max(), 9)
+assert_eq(range(-5, 5).min(), -5)
+assert_eq(range(-5, 5).max(), 4)
+
+# Chain of chains: lazy + terminal
+head = range(1000000)
+  .filter(fn (x) { x % 2 == 0 })
+  .map(fn (x) { x * x })
+  .take(4)
+  .collect()
+assert_eq(head.size(), 4)
+assert_true(head[0] == 0 && head[1] == 4 && head[2] == 16 && head[3] == 36)
+
+# Eager Array methods still win when the receiver is an Array
+# (not an iterator). Array.map returns Array, not Iterator.
+m = [1, 2, 3].map(fn (x) { x + 1 })
+assert_eq(type_of(m), 'Array')
+assert_true(m[0] == 2 && m[2] == 4)
+
+# --- Edge cases --------------------------------------------------------
+
+# collect() on a user-defined iterator that yields zero values
+empty_iter = fn () {
+  { iter: fn () { self }, has_next: fn () { false }, next: fn () { nil } }
+}
+assert_eq(empty_iter().collect().size(), 0)
+assert_eq(empty_iter().count(), 0)
+assert_eq(empty_iter().map(fn (x) { x }).collect().size(), 0)
+
+# chain with mismatched / empty sides
+c1 = [1, 2].iter().chain([]).collect()
+assert_true(c1.size() == 2 && c1[0] == 1 && c1[1] == 2)
+c2 = [].iter().chain([3, 4]).collect()
+assert_true(c2.size() == 2 && c2[0] == 3 && c2[1] == 4)
+c3 = [].iter().chain([]).collect()
+assert_eq(c3.size(), 0)
+
+# zip with mismatched / empty sides — result length is min(len(a), len(b))
+z1 = [1, 2, 3].iter().zip([]).collect()
+assert_eq(z1.size(), 0)
+z2 = [].iter().zip([1, 2, 3]).collect()
+assert_eq(z2.size(), 0)
+
+# zip against a lazy iter: the longer side must not be consumed past
+# the shorter side's length.
+mut visited = 0
+counted = range(1000000).map(fn (x) { visited = visited + 1; x })
+z3 = [10, 20, 30].iter().zip(counted).collect()
+assert_eq(z3.size(), 3)
+# map pulls one element per zip step on the short side; the long side
+# should have been touched exactly 3 times.
+assert_eq(visited, 3)
+
+# take_while stays stopped after the first rejection — a subsequent
+# element that matches the predicate must NOT be emitted.
+tw = [1, 2, 3, 0, 4, 5].iter().take_while(fn (x) { x > 0 }).collect()
+assert_eq(tw.size(), 3)
+assert_true(tw[0] == 1 && tw[1] == 2 && tw[2] == 3)
+
+# enumerate on empty
+assert_eq([].iter().enumerate().collect().size(), 0)
+
+# flat_map with empty outer
+assert_eq([].iter().flat_map(fn (x) { [x] }).collect().size(), 0)
+
+# flat_map where some inner iterables are empty
+fm = [[], [1], [], [2, 3], []].iter()
+  .flat_map(fn (xs) { xs })
+  .collect()
+assert_eq(fm.size(), 3)
+assert_true(fm[0] == 1 && fm[1] == 2 && fm[2] == 3)
+
+# flat_map with range callbacks (non-Array iterable)
+fm2 = [1, 2, 3].iter()
+  .flat_map(fn (n) { range(n) })
+  .collect()
+assert_eq(fm2.size(), 6)
+# range(1) + range(2) + range(3) = [0] + [0,1] + [0,1,2]
+assert_true(fm2[0] == 0 && fm2[1] == 0 && fm2[2] == 1
+    && fm2[3] == 0 && fm2[4] == 1 && fm2[5] == 2)
+
+# Manually driving a user-defined iterator: has_next() drops to false
+# after the single value is consumed; calling next() past the end is
+# undefined (user-defined behavior) so we only assert the protocol.
+drained = fn () {
+  mut emitted = false
+  {
+    iter: fn () { self },
+    has_next: fn () { !emitted },
+    next: fn () { emitted = true; 7 }
+  }
+}
+it = drained()
+assert_eq(it.has_next(), true)
+assert_eq(it.next(), 7)
+assert_eq(it.has_next(), false)
+
+# Nested for-in: outer binding must remain accessible after the inner
+# loop ends. This also pins down that for-in binding scope stays within
+# its own loop body and does not leak into enclosing scopes.
+outer_seen = []
+inner_seen = []
+for x in [1, 2] {
+  outer_seen.push(x)
+  for y in [10, 20] { inner_seen.push(y) }
+  outer_seen.push(x)   # `x` still bound here, inner loop did not rebind it
+}
+assert_eq(outer_seen.size(), 4)
+assert_true(outer_seen[0] == 1 && outer_seen[1] == 1
+    && outer_seen[2] == 2 && outer_seen[3] == 2)
+assert_eq(inner_seen.size(), 4)
+assert_true(inner_seen[0] == 10 && inner_seen[1] == 20
+    && inner_seen[2] == 10 && inner_seen[3] == 20)
+
+# --- User iterators compose with the lazy combinator chain ---
+# A user `iter()` returning a `{has_next, next}` object gains the same lazy
+# methods as a built-in iterator (map/filter/take/.../collect), driven via
+# its has_next()/next().
+class Countdown {
+  new(n) { self.n = n }
+  iter() {
+    let mut i = self.n
+    { has_next: fn() { i > 0 }, next: fn() { i = i - 1; i + 1 } }
+  }
+}
+assert_eq(Countdown.new(5).iter().filter(|x| x % 2 == 0).collect(), [4, 2])
+assert_eq(Countdown.new(5).iter().map(|x| x * 10).collect(), [50, 40, 30, 20, 10])
+assert_eq(Countdown.new(5).iter().take(2).collect(), [5, 4])
+assert_eq(Countdown.new(4).iter().map(|x| x + 1).filter(|x| x > 2).collect(), [5, 4, 3])
+
+# Generators expose the same chain.
+fn nums() { yield 1; yield 2; yield 3; yield 4 }
+assert_eq(nums().filter(|x| x % 2 == 0).collect(), [2, 4])
+assert_eq(nums().map(|x| x * 10).take(2).collect(), [10, 20])
+
+# Lazy short-circuit must cross the user-iterator boundary: take(2) over an
+# infinite source drives the user next() only twice (it must not exhaust it).
+mut calls = 0
+class Naturals {
+  new() {}
+  iter() {
+    { has_next: fn() { true }, next: fn() { calls = calls + 1; calls } }
+  }
+}
+assert_eq(Naturals.new().iter().map(|x| x * 2).take(2).collect(), [2, 4])
+assert_true(calls <= 3)
+
+# A terminal iterator method (collect/count/sum) reached by name on a
+# non-iterator — e.g. a builtin namespace as `GC.collect()` — must raise a
+# clean TypeError, not crash (regression: it segfaulted the JIT when it
+# drove a null has_next/next closure).
+mut threw = false
+try { GC.collect() } catch e { threw = true }
+assert_true(threw)
+
+# --- Iterator protocol contract (language.md §18.5) ---
+# `iter` / `has_next` / `next` are well-known properties: binding one to
+# anything but a 0-arg Function is rejected where it is bound. That is what
+# keeps every protocol call site safe — a `has_next` holding a Long used to
+# be cast to a closure and called (JIT/AOT segfault), and a 1-arg `has_next`
+# was invoked with nothing bound, which looped forever on the interpreter.
+assert_throws("DropContractError", fn () { let o = { has_next: 1 }; o })
+assert_throws("DropContractError", fn () { let o = { has_next: fn (a) { a } }; o })
+assert_throws("DropContractError", fn () { let o = { next: 1 }; o })
+assert_throws("DropContractError", fn () { let o = { iter: 1 }; o })
+# Only the protocol names are reserved; a lookalike field is still data.
+assert_eq({ has_next_at: 1 }.has_next_at, 1)
+
+# Opening an iterator validates the protocol, so every backend reports the
+# same error: `iter()` must return an Object carrying the pair.
+mut perr = nil
+try {
+  let bad = { iter: fn () { 42 } }
+  for x in bad { }
+} catch e { perr = e }
+assert_eq(perr.kind, "TypeError")
+assert_eq(perr.message, "type error: iter() did not return an Object")
+
+perr = nil
+try {
+  let bad = { iter: fn () { let it = { a: 1 }; it } }
+  for x in bad { }
+} catch e { perr = e }
+assert_eq(perr.kind, "TypeError")
+assert_eq(perr.message, "type error: iterator missing has_next()/next()")
+
+# The same error surfaces from a lazy chain — at the terminal that drives it,
+# since building the chain pulls nothing.
+perr = nil
+let half = { next: fn () { 1 }, iter: fn () { self } }
+let half_chain = half.map(|x| x)
+try { half_chain.take(2).collect() } catch e { perr = e }
+assert_eq(perr.kind, "TypeError")
+assert_eq(perr.message, "type error: iterator missing has_next()/next()")
+
+# Terminal join on a lazy iterator — no intermediate .collect() needed.
+# Mirrors Array.join (str_display of each element, joined by sep).
+assert_eq(nums().map(|x| x * 10).join(","), "10,20,30,40")
+assert_eq(nums().filter(|x| x % 2 == 0).join("-"), "2-4")
+assert_eq(range(0, 0).map(|x| x).join(","), "")          # empty iterator
+assert_eq(range(1, 4).join(""), "123")                   # range is lazy
+# Array.join still works (eager receiver, same dispatch site)
+assert_eq([1, 2, 3].map(|x| x + 1).join(" "), "2 3 4")

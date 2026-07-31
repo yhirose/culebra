@@ -5186,6 +5186,8 @@ touch multiple sections, marked "(broad)".
 | `tests/test_defer.cul` | §15 (`defer`, scope-guard pattern) |
 | `tests/test_forward_ref.cul` | §6 (scope), §11 (closures), §20 |
 | `tests/test_iter.cul` | §12 (`for ... in`), §18 (iterator protocol, String methods), §19 (`range`, `iota`) |
+| `tests/test_iter_combinators.cul` | §18 (lazy combinator families, unbounded-source laziness) |
+| `tests/test_iter_terminal.cul` | §18 (terminal iterator methods, §18.5 protocol contract) |
 | `tests/test_kwargs.cul` | §11 (keyword arguments, `**` splat), §20 (kwargs in multimethods), §7 (evaluation order for mixed calls) |
 | `tests/test_match_class.cul` | §13 (type patterns) |
 | `tests/test_multidispatch.cul` | §20 |

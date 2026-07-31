@@ -369,10 +369,12 @@ _run-tests BACKEND:
     # The second group throws through deep preamble call chains — the shape
     # that hid a backend miscompile from this gate until 2026-07 precisely
     # because the list above never exercised it.
-    # One job per (file, backend) pair, heaviest file first: test_effects costs
-    # ~17 s of the phase's ~30 s of work, so keeping its two backend runs in one
-    # job would leave every other lane idle waiting for it.
-    codegen_files="tests/test_effects.cul \
+    # One job per (file, backend) pair, heaviest files first: the effects
+    # trio dominates the phase, so keeping a heavy file's two backend runs
+    # in one job would leave every other lane idle waiting for it.
+    codegen_files="tests/test_effects_resume.cul \
+        tests/test_effects_defer.cul \
+        tests/test_effects.cul \
         tests/test_dynamic_perform.cul \
         tests/test_transform_error_lines.cul \
         tests/test_forin_codegen.cul \

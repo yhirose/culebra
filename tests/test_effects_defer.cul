@@ -1,0 +1,554 @@
+// Conformance: algebraic effects × `defer`. Split from test_effects.cul:
+// every `handle` / `effect fn` body synthesizes a computation class, and
+// this file alone lowers to hundreds of functions — keeping it separate
+// bounds per-file JIT compile time and lets the suite run it in parallel.
+//
+// Run with:  ./build/culebra tests/test_effects_defer.cul
+//            ./build/culebra --jit tests/test_effects_defer.cul
+
+// --- top-level `defer` in an effect / handle body ---
+// A `defer` at the body's statement level registers into the computation's
+// defer list (rewritten to `self.`) and runs, LIFO, when the body completes or
+// throws — not when the `_step` invocation returns at a suspension. Block-scope
+// semantics (a defer nested in if / while / for) and a `perform` inside a defer
+// are rejected symmetrically.
+
+// a defer registered before a suspension still runs at body completion, not
+// early at the perform (the bug this fixes)
+effect fn de_ask()
+mut de_log = []
+effect fn de_before() {
+  defer { de_log.push("defer") }
+  let x = perform de_ask()
+  de_log.push("end")
+  x
+}
+let de_r = handle { de_before() } with de_ask(resume) { resume(1) }
+assert_eq(de_log, ["end", "defer"])
+assert_eq(de_r, 1)
+
+// LIFO across a suspension: the later-registered defer runs first
+mut de_log2 = []
+effect fn de_lifo() {
+  defer { de_log2.push("d1") }
+  let x = perform de_ask()
+  defer { de_log2.push("d2") }
+  de_log2.push("end")
+  x
+}
+handle { de_lifo() } with de_ask(resume) { resume(1) }
+assert_eq(de_log2, ["end", "d2", "d1"])
+
+// a defer fires while a throw unwinds out of the body, before the catcher
+mut de_log3 = []
+effect fn de_throw() {
+  defer { de_log3.push("defer") }
+  let x = perform de_ask()
+  de_log3.push("before-throw")
+  throw "boom"
+}
+let de_r3 = try {
+  handle { de_throw() } with de_ask(resume) { resume(1) }
+} catch e { de_log3.push("catch"); e }
+assert_eq(de_log3, ["before-throw", "defer", "catch"])
+assert_eq(de_r3, "boom")
+
+// a throw from a *called* fn (not a statement-level throw) still runs the defer
+mut de_log4 = []
+fn de_boom() { throw "x" }
+effect fn de_callthrow() {
+  defer { de_log4.push("defer") }
+  let v = perform de_ask()
+  de_boom()
+  v
+}
+let de_r4 = try {
+  handle { de_callthrow() } with de_ask(resume) { resume(1) }
+} catch e { "caught:" + e }
+assert_eq(de_log4, ["defer"])
+assert_eq(de_r4, "caught:x")
+
+// multi-shot resume: each fork completes the body, so the defer fires per fork
+mut de_log5 = []
+effect fn de_ch(a, b)
+effect fn de_multi() {
+  defer { de_log5.push("d") }
+  let x = perform de_ch(1, 2)
+  x * 10
+}
+let de_r5 = handle { de_multi() } with de_ch(a, b, resume) { [resume(a), resume(b)] }
+assert_eq(de_r5, [10, 20])
+assert_eq(de_log5, ["d", "d"])
+
+// a defer directly in a handle body (lexical) runs at the body's end
+mut de_log6 = []
+let de_r6 = handle {
+  defer { de_log6.push("defer") }
+  let x = perform de_ask()
+  de_log6.push("end")
+  x + 1
+} with de_ask(resume) { resume(4) }
+assert_eq(de_log6, ["end", "defer"])
+assert_eq(de_r6, 5)
+
+// an abort (a handler that never resumes) abandons the body; the driver runs
+// the reached defers of the discarded computation. A defer AFTER the aborting
+// perform was never reached, so it does not run.
+mut de_log7 = []
+effect fn de_fail()
+effect fn de_abort() {
+  defer { de_log7.push("reached") }
+  perform de_fail()
+  defer { de_log7.push("unreached") }
+  99
+}
+let de_r7 = handle { de_abort() } with de_fail(resume) { "aborted" }
+assert_eq(de_r7, "aborted")
+assert_eq(de_log7, ["reached"])
+
+// abort through a delegate chain: each abandoned frame's defer runs, deepest
+// (innermost) first
+mut de_log8 = []
+effect fn de_inner() {
+  defer { de_log8.push("inner") }
+  perform de_fail()
+  0
+}
+effect fn de_outer() {
+  defer { de_log8.push("outer") }
+  de_inner()
+  0
+}
+let de_r8 = handle { de_outer() } with de_fail(resume) { "ab" }
+assert_eq(de_r8, "ab")
+assert_eq(de_log8, ["inner", "outer"])
+
+// an escaping continuation (a full-control handler that saves `resume` and
+// invokes it after the handle returns) must NOT finalize early: the body's
+// defers run when the resumed fork completes, not when the handle returns
+mut de_log9 = []
+mut de_saved = nil
+effect fn de_esc() {
+  defer { de_log9.push("pre") }
+  let x = perform de_fail()
+  de_log9.push("resumed")
+  defer { de_log9.push("post") }
+  x + 100
+}
+let de_r9 = handle { de_esc() } with de_fail(resume) { de_saved = resume; "paused" }
+de_log9.push("handle:" + de_r9)
+let de_r9b = de_saved(42)
+assert_eq(de_log9, ["handle:paused", "resumed", "post", "pre"])
+assert_eq(de_r9b, 142)
+
+// a defer also runs when an abort *signal* (not a driven abort clause) unwinds
+// through a driver. An effect fn bare-called from ordinary code is driven by
+// _run_comp; a `perform` handled by an abort clause aborts natively through it,
+// abandoning the frame — whose defer must still run.
+mut de_log10 = []
+effect fn de_sig_op()
+effect fn de_sig_f() {
+  defer { de_log10.push("f-defer") }
+  perform de_sig_op()
+  0
+}
+fn de_sig_plain() { de_sig_f() }   // bare call → _run_comp
+let de_r10 = handle { de_sig_plain() } with de_sig_op(resume) { "aborted" }
+assert_eq(de_r10, "aborted")
+assert_eq(de_log10, ["f-defer"])
+
+// an abort signal that crosses an inner handle (targeting an outer one) unwinds
+// through the inner _drive: the inner handle body's defer runs before the signal
+// keeps unwinding to the outer handle
+mut de_log11 = []
+effect fn de_outer_op()
+effect fn de_inner_op()
+fn de_cross_plain() { perform de_outer_op() }
+let de_r11 = handle {
+  handle {
+    defer { de_log11.push("inner-defer") }
+    de_cross_plain()
+    0
+  } with de_inner_op(resume) { "never" }
+} with de_outer_op(resume) { "outer" }
+assert_eq(de_r11, "outer")
+assert_eq(de_log11, ["inner-defer"])
+
+// a regular `throw` (not an abort signal) unwinding through a delegate chain
+// abandons every ancestor frame on the way out, not just the one that threw:
+// `_step` finalizes the throwing frame itself, the driver finalizes the rest.
+mut de_log12 = []
+effect fn de_thrower() {
+  defer { de_log12.push("inner") }
+  throw { kind: "E", message: "boom" }
+}
+effect fn de_delegator() {
+  defer { de_log12.push("outer") }
+  de_thrower()
+  0
+}
+let de_r12 = try { handle { de_delegator() } with dummy(r) { 0 } } catch e { "caught:" + e.message }
+assert_eq(de_r12, "caught:boom")
+assert_eq(de_log12, ["inner", "outer"])
+
+// soundness: a full-control handler that stores `resume` and then throws (for
+// an unrelated reason) must not finalize the stored continuation early — it
+// stays viable to resume later, and its defer fires once, on that resume
+mut de_log13 = []
+mut de_saved13 = nil
+effect fn de_esc2() {
+  defer { de_log13.push("body-defer") }
+  perform de_fail() + 1
+}
+let de_out13 = try {
+  handle { de_esc2() } with de_fail(resume) { de_saved13 = resume; throw { kind: "E", message: "h" } }
+} catch e { "caught:" + e.message }
+assert_eq(de_out13, "caught:h")
+assert_eq(de_log13, [])
+assert_eq(de_saved13(41), 42)
+assert_eq(de_log13, ["body-defer"])
+
+// a tail clause that throws BEFORE its trailing resume can never have saved
+// the continuation, so the suspended body is abandoned for good: its defer
+// runs as the throw unwinds — under driven dispatch...
+mut de_log14 = []
+effect fn de_t14()
+effect fn de_body14() {
+  defer { de_log14.push("body-defer") }
+  perform de_t14()
+  0
+}
+let de_r14 = try {
+  handle { de_body14() } with de_t14(resume) {
+    de_log14.push("clause")
+    throw { kind: "E", message: "t-threw" }
+    resume(1)   // dead — its presence is what classifies the clause "t"
+  }
+} catch e { "caught:" + e.message }
+assert_eq(de_r14, "caught:t-threw")
+assert_eq(de_log14, ["clause", "body-defer"])
+
+// ...and under direct dispatch (the effect fn bare-called from a plain fn)
+mut de_log15 = []
+effect fn de_body15() {
+  defer { de_log15.push("body-defer") }
+  perform de_t14()
+  0
+}
+fn de_plain15() { de_body15() }
+let de_r15 = try {
+  handle { de_plain15() } with de_t14(resume) {
+    de_log15.push("clause")
+    throw { kind: "E", message: "t-threw2" }
+    resume(1)   // dead — its presence is what classifies the clause "t"
+  }
+} catch e { "caught:" + e.message }
+assert_eq(de_r15, "caught:t-threw2")
+assert_eq(de_log15, ["clause", "body-defer"])
+
+// an abort clause (never mentions resume) that throws instead of returning
+// likewise abandons the body: its defer runs
+mut de_log16 = []
+effect fn de_body16() {
+  defer { de_log16.push("body-defer") }
+  perform de_t14()
+  0
+}
+let de_r16 = try {
+  handle { de_body16() } with de_t14(resume) { throw { kind: "E", message: "a-threw" } }
+} catch e { "caught:" + e.message }
+assert_eq(de_r16, "caught:a-threw")
+assert_eq(de_log16, ["body-defer"])
+
+// a no-handler EffectError from a driven perform abandons the frames the same
+// way a clause throw does: the body's defer runs as the error unwinds
+mut de_log17 = []
+effect fn de_unhandled17()
+effect fn de_body17() {
+  defer { de_log17.push("body-defer") }
+  perform de_unhandled17()
+  0
+}
+let de_r17 = try {
+  handle { de_body17() } with de_t14(resume) { resume(1) }
+} catch e { "caught:" + e.kind }
+assert_eq(de_r17, "caught:EffectError")
+assert_eq(de_log17, ["body-defer"])
+
+// tail clauses under driven dispatch run without capturing a continuation:
+// a long chain of tail performs must not overflow the native stack (the
+// driver used to nest one recursive frame per resume — ~3000 was the ceiling).
+// 10000 is comfortably past that ceiling; going higher only buys interp time
+// (each perform runs the CPS driver, ~166 us under interp).
+effect fn tp_tick()
+effect fn tp_chain(n) {
+  mut total = 0
+  mut i = 0
+  while i < n {
+    total = total + perform tp_tick()
+    i = i + 1
+  }
+  total
+}
+assert_eq(handle { tp_chain(10000) } with tp_tick(resume) { resume(1) }, 10000)
+
+// a defer in a tail clause fires when the clause returns — BEFORE the
+// continuation proceeds — identically under direct dispatch (plain-fn
+// perform) and driven dispatch (effect-fn body perform)
+mut tp_log1 = []
+effect fn tp_op1()
+fn tp_plain() {
+  let v = perform tp_op1()
+  tp_log1.push("after")
+  v
+}
+handle { tp_plain() } with tp_op1(resume) {
+  defer { tp_log1.push("clause-defer") }
+  resume(1)
+}
+assert_eq(tp_log1, ["clause-defer", "after"])
+
+mut tp_log2 = []
+effect fn tp_op2()
+effect fn tp_driven() {
+  let v = perform tp_op2()
+  tp_log2.push("after")
+  v
+}
+handle { tp_driven() } with tp_op2(resume) {
+  defer { tp_log2.push("clause-defer") }
+  resume(1)
+}
+assert_eq(tp_log2, ["clause-defer", "after"])
+
+// the driven tail path still applies the return clause to the final value
+let tp_r = handle { tp_chain(3) } with tp_tick(resume) { resume(10) }
+  with return(v) { v * 2 }
+assert_eq(tp_r, 60)
+
+// A-normalization reaches inside a control-flow body (uniform with top level)
+effect fn cf_qty()
+effect fn cf_accumulate(n) {
+  mut total = 0
+  mut i = 0
+  while i < n {
+    total = total + perform cf_qty() * 2
+    i = i + 1
+  }
+  total
+}
+assert_eq(handle { cf_accumulate(3) } with cf_qty(resume) { resume(5) }, 30)
+
+// nested control flow: for inside if
+effect fn cf_gen()
+effect fn cf_nested(flag) {
+  if flag {
+    mut s = 0
+    for x in [1, 2, 3] {
+      s = s + perform cf_gen() + x
+    }
+    s
+  } else {
+    0
+  }
+}
+assert_eq(handle { cf_nested(true) } with cf_gen(resume) { resume(10) }, 36)
+assert_eq(handle { cf_nested(false) } with cf_gen(resume) { resume(10) }, 0)
+
+// a non-suspending loop in tail position runs verbatim; the loop's value is nil
+effect fn cf_side()
+mut cf_log = []
+effect fn cf_trailing_loop() {
+  let r = perform cf_side()
+  for x in [1, 2] { cf_log.push(x + r) }
+}
+assert_eq(handle { cf_trailing_loop() } with cf_side(resume) { resume(10) }, nil)
+assert_eq(cf_log, [11, 12])
+
+// a non-suspending if in tail position still yields its branch value
+effect fn cf_pick()
+effect fn cf_tail_if() {
+  let r = perform cf_pick()
+  if r > 0 { "pos" } else { "neg" }
+}
+assert_eq(handle { cf_tail_if() } with cf_pick(resume) { resume(5) }, "pos")
+assert_eq(handle { cf_tail_if() } with cf_pick(resume) { resume(-5) }, "neg")
+
+// return of an expression-nested perform, from an if nested in a while
+effect fn cf_seek()
+effect fn cf_ret_in_loop(n) {
+  mut i = 0
+  while i < n {
+    if i == 2 { return perform cf_seek() * 10 }
+    i = i + 1
+  }
+  -1
+}
+assert_eq(handle { cf_ret_in_loop(5) } with cf_seek(resume) { resume(3) }, 30)
+
+// nested while, perform in the inner loop
+effect fn cf_unit()
+effect fn cf_grid(n, m) {
+  mut sum = 0
+  mut i = 0
+  while i < n {
+    mut j = 0
+    while j < m {
+      sum = sum + perform cf_unit()
+      j = j + 1
+    }
+    i = i + 1
+  }
+  sum
+}
+assert_eq(handle { cf_grid(2, 3) } with cf_unit(resume) { resume(1) }, 6)
+
+// A-normalization inside an if-branch inside a while
+effect fn cf_val()
+effect fn cf_branch_anf(n) {
+  mut total = 0
+  mut i = 0
+  while i < n {
+    if i % 2 == 0 { total = total + perform cf_val() + i }
+    i = i + 1
+  }
+  total
+}
+assert_eq(handle { cf_branch_anf(4) } with cf_val(resume) { resume(5) }, 12)
+
+// === nested handles =====================================================
+// A `handle` may nest inside another (the per-class resume parameter is unique,
+// so an inner computation no longer shadows an enclosing one). `perform`
+// resolves up the dynamically-scoped handler stack, so an inner body can
+// delegate an effect to an outer handler.
+
+// inner handled locally; a separate outer effect delegates up the stack
+effect fn nh_inner()
+effect fn nh_outer()
+let nh1 = handle {
+  let a = handle { perform nh_inner() } with nh_inner(resume) { resume(5) }
+  let b = perform nh_outer()
+  a + b
+} with nh_outer(resume) { resume(10) }
+assert_eq(nh1, 15)
+
+// multi-effect: an inner body performs two ops; one handled here, one delegated
+effect fn nh_a()
+effect fn nh_b()
+let nh2 = handle {
+  handle {
+    let x = perform nh_a()
+    let y = perform nh_b()
+    x + y
+  } with nh_a(resume) { resume(1) }
+} with nh_b(resume) { resume(2) }
+assert_eq(nh2, 3)
+
+// === multiple handler clauses ===========================================
+// One `handle` may carry several `with` clauses (one per effect operation);
+// an operation resolves up the dynamically-scoped frame stack. An optional
+// `with return(v) { … }` clause maps the normal-completion value.
+
+// state effect: get + put threaded through a cell by two clauses
+effect fn mc_get()
+effect fn mc_put(v)
+effect fn mc_counter() {
+  let a = perform mc_get()
+  perform mc_put(a + 1)
+  let b = perform mc_get()
+  b
+}
+mut mc_cell = 10
+let mc_r = handle {
+  mc_counter()
+} with mc_get(resume) {
+  resume(mc_cell)
+} with mc_put(v, resume) {
+  mc_cell = v
+  resume(nil)
+}
+assert_eq(mc_r, 11)
+assert_eq(mc_cell, 11)
+
+// three clauses + control-flow body
+effect fn mc_ask(i)
+effect fn mc_log(m)
+effect fn mc_done()
+effect fn mc_session(n) {
+  mut total = 0
+  mut i = 0
+  while i < n {
+    let x = perform mc_ask(i)
+    perform mc_log(x)
+    total = total + x
+    i = i + 1
+  }
+  perform mc_done()
+  total
+}
+mut mc_logs = []
+let mc_s = handle {
+  mc_session(3)
+} with mc_ask(i, resume) {
+  resume(i * 10)
+} with mc_log(m, resume) {
+  mc_logs.push(m)
+  resume(nil)
+} with mc_done(resume) {
+  resume(nil)
+}
+assert_eq(mc_s, 30)
+assert_eq(mc_logs, [0, 10, 20])
+
+// a duplicate clause for one effect is rejected (parse-time, symmetric)
+// (see the reject corpus; not asserted here since it aborts the module)
+
+// return clause maps the normal-completion value
+effect fn rc_ask()
+let rc_r = handle {
+  let x = perform rc_ask()
+  x
+} with rc_ask(resume) {
+  resume(5)
+} with return(v) {
+  v + 100
+}
+assert_eq(rc_r, 105)
+
+// return clause is NOT applied when a handler aborts (never resumes)
+effect fn rc_fail()
+let rc_a = handle {
+  perform rc_fail()
+  99
+} with rc_fail(resume) {
+  -1
+} with return(v) {
+  v + 100
+}
+assert_eq(rc_a, -1)
+
+// return clause + multiple clauses + control flow: wrap the result
+effect fn rc_q(i)
+effect fn rc_note(m)
+mut rc_notes = []
+let rc_s = handle {
+  mut total = 0
+  mut i = 0
+  while i < 3 {
+    let x = perform rc_q(i)
+    perform rc_note(x)
+    total = total + x
+    i = i + 1
+  }
+  total
+} with rc_q(i, resume) {
+  resume(i + 1)
+} with rc_note(m, resume) {
+  rc_notes.push(m)
+  resume(nil)
+} with return(v) {
+  { sum: v, count: rc_notes.size() }
+}
+assert_eq(rc_s.sum, 6)
+assert_eq(rc_s.count, 3)
+assert_eq(rc_notes, [1, 2, 3])
