@@ -220,33 +220,34 @@ jobs:
           submodules: recursive
       # mingw-w64, not MSVC: the Value type is used through std::vector<Value>
       # while incomplete, which libstdc++ accepts and the MSVC STL rejects
-      # (see ci.yml's windows jobs). git is in the list because the SDL3 +
-      # raylib deps cache is keyed on the submodule revisions and setup-msys2's
-      # PATH has no git to read them with.
+      # (see ci.yml's windows jobs). UCRT64 rather than MINGW64 — same gcc and
+      # libstdc++, but the modern C runtime; see ci.yml's `windows` job. git is
+      # in the list because the SDL3 + raylib deps cache is keyed on the
+      # submodule revisions and setup-msys2's PATH has no git to read them with.
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: true
           install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-ninja
-            mingw-w64-x86_64-zlib
-            mingw-w64-x86_64-llvm
-            mingw-w64-x86_64-ccache
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-llvm
+            mingw-w64-ucrt-x86_64-ccache
             zip
             git
       - name: Restore ccache
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.ccache
-          key: release-windows-ccache-${{ github.sha }}
-          # windows-aot-ccache-* is the closest warm cache: same configure line
+          key: release-windows-ucrt-ccache-${{ github.sha }}
+          # windows-aot-ucrt-ccache-* is the closest warm cache: same configure line
           # apart from LTO, which only changes the `culebra` target's own two
           # TUs — the runtime archives that dominate the build still hit.
           restore-keys: |
-            release-windows-ccache-
-            windows-aot-ccache-
+            release-windows-ucrt-ccache-
+            windows-aot-ucrt-ccache-
       # SDL3 + raylib, on the same key ci.yml's windows-aot-build publishes
       # under — a warm cache skips their ~4 min ExternalProject build.
       - name: Resolve deps cache key

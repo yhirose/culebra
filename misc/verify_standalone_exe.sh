@@ -20,9 +20,12 @@ exe=${1:?usage: verify_standalone_exe.sh <exe>}
 # longer Win32 list than it ends up importing). Both ship with Windows, so a
 # window build still starts on a machine with no display. Anything SDL starts
 # referencing later should land here deliberately, not be pre-approved.
-allow='^(kernel32|kernelbase|msvcrt|ntdll|user32|advapi32|ws2_32|shell32|ole32'
-allow="$allow"'|oleaut32|bcrypt|crypt32|secur32|iphlpapi|dbghelp|version|winmm'
-allow="$allow"'|gdi32|imm32|setupapi)\.dll$'
+# ucrtbase and the api-ms-win-crt-* apisets are the UCRT64 toolchain's C
+# runtime, where MINGW64 imported msvcrt; shlwapi comes with Webview.
+allow='^(kernel32|kernelbase|msvcrt|ucrtbase|api-ms-win-crt-[a-z0-9-]+|ntdll'
+allow="$allow"'|user32|advapi32|ws2_32|shell32|shlwapi|ole32|oleaut32|bcrypt'
+allow="$allow"'|crypt32|secur32|iphlpapi|dbghelp|version|winmm|gdi32|imm32'
+allow="$allow"'|setupapi)\.dll$'
 
 echo "Imported DLLs:"
 imports=$(objdump -p "$exe" \

@@ -415,15 +415,23 @@ jobs:
       # no changes. The binary is linked fully static (-static: libstdc++ /
       # libgcc / libwinpthread), so it runs on a plain Windows box with no mingw
       # runtime DLLs — verified below.
+      #
+      # UCRT64, not MINGW64: same gcc and libstdc++, but ucrtbase.dll instead of
+      # the frozen msvcrt.dll that predates C99 (its printf has no %lld and
+      # writes 3-digit exponents; it has no UTF-8 locale). UCRT ships with
+      # Windows 10, which is already this build's floor (_WIN32_WINNT=0x0A00).
+      # MSYS2 also treats UCRT64 as the default environment now, and packages
+      # increasingly land there only — mingw-w64-x86_64-webview2-loader does not
+      # exist, its ucrt counterpart does.
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: true
           install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-ninja
-            mingw-w64-x86_64-zlib
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-zlib
 
       - name: Configure (interpreter only, static, Phase 1 feature set)
         run: |
@@ -579,16 +587,16 @@ jobs:
 
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: true
           install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-ninja
-            mingw-w64-x86_64-zlib
-            mingw-w64-x86_64-llvm
-            mingw-w64-x86_64-ccache
-            mingw-w64-x86_64-gdb
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-llvm
+            mingw-w64-ucrt-x86_64-ccache
+            mingw-w64-ucrt-x86_64-gdb
 
       - name: Toolchain versions
         run: |
@@ -599,9 +607,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.ccache
-          key: windows-jit-ccache-${{ github.sha }}
+          key: windows-jit-ucrt-ccache-${{ github.sha }}
           restore-keys: |
-            windows-jit-ccache-
+            windows-jit-ucrt-ccache-
 
       - name: Configure (JIT ON, mingw LLVM, static, no AOT runtime)
         env:
@@ -752,16 +760,16 @@ jobs:
       # to read them the key is empty and every run rebuilds both from scratch.
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: true
           install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-ninja
-            mingw-w64-x86_64-zlib
-            mingw-w64-x86_64-llvm
-            mingw-w64-x86_64-ccache
-            mingw-w64-x86_64-gdb
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-llvm
+            mingw-w64-ucrt-x86_64-ccache
+            mingw-w64-ucrt-x86_64-gdb
             git
       - name: Toolchain versions
         run: |
@@ -771,9 +779,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.ccache
-          key: windows-aot-ccache-${{ github.sha }}
+          key: windows-aot-ucrt-ccache-${{ github.sha }}
           restore-keys: |
-            windows-aot-ccache-
+            windows-aot-ucrt-ccache-
       # ccache does not cover the ExternalProject build of SDL3 + raylib end to
       # end (its install and publish steps are not compiles), so cache the
       # published tree. No restore-keys: a partial hit is a tree CMake ignores.
