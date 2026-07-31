@@ -481,6 +481,62 @@ return a }'
 expect_lint_clean "return in if branch" 'fn f(x) { if x { return 1 }
 2 }'
 
+# --- idioms: forms that run and say the same thing the long way ------------
+# `x = x <op> y` -> `x <op>= y`
+expect_lint_warns "self add"  'mut i = 0
+i = i + 1
+inspect(i)'                                       "can be 'i += …'"
+expect_lint_warns "self sub"  'mut i = 9
+i = i - 1
+inspect(i)'                                       "can be 'i -= …'"
+expect_lint_warns "self mul"  'mut i = 2
+i = i * 3
+inspect(i)'                                       "can be 'i *= …'"
+# Sound-negatives. A longer chain is NOT the compound form: `i = i - a + b`
+# means `(i - a) + b`, while `i -= a + b` would subtract the sum.
+expect_lint_clean "chain is not compound" 'mut i = 9
+let a = 1
+let b = 2
+i = i - a + b
+inspect(i)'
+expect_lint_clean "already compound"  'mut i = 0
+i += 1
+inspect(i)'
+expect_lint_clean "different name"    'mut i = 0
+let j = 5
+i = j + 1
+inspect(i)'
+expect_lint_clean "self on the right" 'mut i = 0
+i = 1 + i
+inspect(i)'
+
+# `.size()` against 0 -> `.empty()`
+expect_lint_warns "size eq zero"  'let xs = [1]
+inspect(xs.size() == 0)'                          "use .empty()"
+expect_lint_warns "size gt zero"  'let xs = [1]
+inspect(xs.size() > 0)'                           "use !….empty()"
+expect_lint_warns "size ne zero"  'let xs = [1]
+inspect(xs.size() != 0)'                          "use !….empty()"
+expect_lint_warns "zero eq size"  'let xs = [1]
+inspect(0 == xs.size())'                          "use .empty()"
+# Sound-negatives: another bound, a comparison the rewrite would not preserve,
+# and a same-named method that takes an argument.
+expect_lint_clean "size eq one"   'let xs = [1]
+inspect(xs.size() == 1)'
+expect_lint_clean "size ge zero"  'let xs = [1]
+inspect(xs.size() >= 0)'
+expect_lint_clean "count eq zero" 'let s = "ab"
+inspect(s.count("a") == 0)'
+
+# `range(0, n)` -> `range(n)`
+expect_lint_warns "range zero start" 'inspect(range(0, 5).collect())' \
+                                                  "range(0, n) is range(n)"
+expect_lint_warns "range zero step"  'inspect(range(0, 9, step: 3).collect())' \
+                                                  "range(0, n) is range(n)"
+# Sound-negatives: a start that is not 0, and the single-argument form.
+expect_lint_clean "range one start"  'inspect(range(1, 5).collect())'
+expect_lint_clean "range single arg" 'inspect(range(5).collect())'
+
 # Errors propagate through the same CLI with exit 2:
 expect_lint_error "undefined var"      'fn f() { nope }'
 expect_lint_error "break outside loop" 'fn f() { break }'
@@ -500,9 +556,9 @@ inspect(handle { perform choose(1, 2) } with choose(a, b, resume) { [resume(a), 
 expect_lint_clean "effects return clause" 'effect fn get()
 mut cell = 0
 inspect(handle { perform get() } with get(resume) { resume(cell) } with return(v) { v + 1 })'
-expect_lint_clean "generator yield" 'fn counter(n) { mut i = 0; while i < n { yield i; i = i + 1 } }
+expect_lint_clean "generator yield" 'fn counter(n) { mut i = 0; while i < n { yield i; i += 1 } }
 mut t = 0
-for v in counter(3) { t = t + v }
+for v in counter(3) { t += v }
 inspect(t)'
 # Advisory warnings run over the source as written, so bindings the lowering
 # synthesizes are never reported: an abort clause deliberately never reads its

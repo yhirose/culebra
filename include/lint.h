@@ -1852,6 +1852,113 @@ inline void analyze_module(const peg::Ast& ast,
 
 }  // namespace unreachable
 
+// Idiom warnings: forms that run, mean exactly what the shorter spelling
+// means, and have no reading under which leaving them is right. That last
+// clause is the admission test — the same zero-false-positive bar the
+// unused-parameter check failed above.
+//
+// Deliberately absent: an `if`/`else` a ternary *could* express (two long arms
+// read better as a block) and a manual index `enumerate()` *could* replace (the
+// index may be wanted for something else, or the walk may run backwards). Both
+// are real advice and both have exceptions, so they belong in the prose
+// (`docs/llm.md` §3) rather than in a check that gates CI.
+namespace idiom {
+
+inline bool is_name(const peg::Ast& n, std::string_view name) {
+  return n.name == "IDENTIFIER" && n.token == name;
+}
+
+// `x = x + 1` says `x += 1` the long way. Only a lone binary operand matches:
+// `x = x - a + b` is *not* `x -= a + b`, and rather than re-derive precedence
+// here the check simply declines to look at longer chains.
+inline void check_self_assign(const peg::Ast& n, std::vector<Diagnostic>& diags) {
+  if (n.name != "ASSIGNMENT") return;
+  auto av = culebra::view_assignment(n);
+  if (av.compound || av.lvalcnt != 1 || !av.type_annotation.empty()) return;
+  const peg::Ast& target = *n.nodes[av.lvaloff];
+  if (target.name != "IDENTIFIER") return;
+  const peg::Ast& rhs = *av.rhs;
+  if (rhs.name != "ADDITIVE" && rhs.name != "MULTIPLICATIVE") return;
+  if (rhs.nodes.size() != 3) return;  // exactly `lhs op rhs`
+  if (!is_name(*rhs.nodes[0], target.token)) return;
+  std::string_view op = rhs.nodes[1]->token;
+  diags.push_back(Diagnostic{
+      "RedundantSelfAssign",
+      std::format("'{0} = {0} {1} …' can be '{0} {1}= …'", target.token, op),
+      static_cast<long>(n.line), static_cast<long>(n.column), Severity::Warning});
+}
+
+// A no-argument `.size()` at the end of a call chain.
+inline bool is_size_call(const peg::Ast& n) {
+  if (n.name != "CALL" || n.nodes.size() < 3) return false;
+  const peg::Ast& dot = *n.nodes[n.nodes.size() - 2];
+  const peg::Ast& args = *n.nodes[n.nodes.size() - 1];
+  return dot.original_name == "DOT" && dot.token == "size" &&
+         args.name == "ARG_LIST" && args.nodes.empty();
+}
+
+inline bool is_zero(const peg::Ast& n) {
+  return n.name == "NUMBER" && n.token == "0";
+}
+
+// `xs.size() == 0` / `> 0` / `!= 0` — `empty()` answers the same question, and
+// says which question it is.
+inline void check_size_zero(const peg::Ast& n, std::vector<Diagnostic>& diags) {
+  if (n.name != "CONDITION" || n.nodes.size() != 3) return;
+  std::string_view op = n.nodes[1]->token;
+  const peg::Ast& lhs = *n.nodes[0];
+  const peg::Ast& rhs = *n.nodes[2];
+  const bool size_left = is_size_call(lhs) && is_zero(rhs);
+  const bool size_right = is_size_call(rhs) && is_zero(lhs);
+  if (!size_left && !size_right) return;
+  // `< 0` is never true and `>= 0` always is; those are a different bug, and
+  // the rewrite suggested here would not be equivalent to either.
+  const bool eq = op == "==";
+  const bool ne = op == "!=";
+  const bool gt = size_left ? op == ">" : op == "<";
+  if (!eq && !ne && !gt) return;
+  diags.push_back(Diagnostic{
+      "SizeZeroComparison",
+      eq ? "comparing .size() to 0 — use .empty()"
+         : "comparing .size() to 0 — use !….empty()",
+      static_cast<long>(n.line), static_cast<long>(n.column), Severity::Warning});
+}
+
+// `range(0, n)` is the range `range(n)` already describes.
+inline void check_range_zero(const peg::Ast& n, std::vector<Diagnostic>& diags) {
+  if (n.name != "CALL" || n.nodes.size() < 2) return;
+  if (!is_name(*n.nodes[0], "range")) return;
+  const peg::Ast& args = *n.nodes[1];
+  if (args.name != "ARG_LIST" || args.nodes.size() < 2) return;
+  if (!is_zero(*args.nodes[0])) return;
+  diags.push_back(Diagnostic{
+      "RangeZeroStart", "range(0, n) is range(n)",
+      static_cast<long>(n.line), static_cast<long>(n.column), Severity::Warning});
+}
+
+// A fourth check — a callback written `fn (x) { expr }` that a lambda would
+// say more briefly — was written and withdrawn. Over tests/ it fired 154
+// times, and the ones worth acting on (`.filter(fn (x) { x > 1 })`) could not
+// be told from the ones that were not: a body that is a single expression but
+// spans several lines reads worse as `|x| …`, a zero-parameter callback would
+// have to open with `||` (the logical-or token), and `fn () { throw … }` is a
+// statement the optimizer merely collapses to look like an expression. Each
+// exclusion is a judgement, which is the signature of a check that cannot meet
+// the bar. The advice keeps its place in `docs/llm.md` §3 instead.
+
+inline void analyze_walk(const peg::Ast& node, std::vector<Diagnostic>& diags) {
+  check_self_assign(node, diags);
+  check_size_zero(node, diags);
+  check_range_zero(node, diags);
+  for (const auto& c : node.nodes) analyze_walk(*c, diags);
+}
+
+inline void analyze_module(const peg::Ast& ast, std::vector<Diagnostic>& diags) {
+  analyze_walk(ast, diags);
+}
+
+}  // namespace idiom
+
 // Which source lines an autofix may delete outright. `culebra lint --fix`
 // removes an unused `import` by dropping its line, so the line has to belong
 // to that import alone: the grammar lets `;` join statements, and a dead
@@ -1972,6 +2079,7 @@ inline std::vector<Diagnostic> collect_module(const peg::Ast& lowered,
   _detail::unused::analyze_module(authored, diags);
   _detail::toplevel::analyze_module(authored, diags);
   _detail::unreachable::analyze_module(authored, diags);
+  _detail::idiom::analyze_module(authored, diags);
   std::sort(diags.begin(), diags.end(), [](const Diagnostic& a,
                                            const Diagnostic& b) {
     return a.line != b.line ? a.line < b.line : a.col < b.col;
