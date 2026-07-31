@@ -548,6 +548,13 @@ if(CULEBRA_ENABLE_WEBVIEW)
       pkg_check_modules(WEBKITGTK gtk4 webkitgtk-6.0)
     endif()
     if(WEBKITGTK_FOUND)
+      # webkitgtk's pkg-config Libs carries -Wl,--export-dynamic (inherited from
+      # gmodule-2.0, which wants it so a loaded GModule can bind back to the
+      # executable). Linking it would undo culebra_export_jit_symbols()'s
+      # whitelist and republish all ~68k symbols — LLVM's among them — which is
+      # exactly what segfaults the Mesa/Gallium LLVM that WebKitGTK dlopens.
+      # culebra loads no GModule, so drop it.
+      list(REMOVE_ITEM WEBKITGTK_LDFLAGS "-Wl,--export-dynamic")
       string(REPLACE ";" " " _webview_link "${WEBKITGTK_LDFLAGS}")
       string(APPEND _webview_link " -ldl")
     else()
