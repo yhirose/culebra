@@ -725,7 +725,7 @@ class Heap {
     // multiplier is tunable via CULEBRA_GC_MULT for the frequency/memory study.
     static const size_t mult = []() -> size_t {
       if (const char* m = std::getenv("CULEBRA_GC_MULT")) {
-        long v = std::atol(m);
+        int64_t v = std::atol(m);
         if (v > 0) return static_cast<size_t>(v);
       }
       return 16;

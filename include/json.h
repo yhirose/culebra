@@ -67,8 +67,8 @@ struct Parser {
 
   const char* p;
   const char* end;
-  long line = 1;
-  long col = 1;
+  int64_t line = 1;
+  int64_t col = 1;
   // 'auto' (default): integer-shaped → Long, otherwise Float.
   // 'float'         : every number → Float.
   std::string_view number_mode = "auto";

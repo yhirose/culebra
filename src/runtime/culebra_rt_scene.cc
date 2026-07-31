@@ -27,13 +27,13 @@
 
 namespace gfx {
 
-static Color col(long r, long g, long b, long a = 255) {
+static Color col(int64_t r, int64_t g, int64_t b, int64_t a = 255) {
   return Color{(unsigned char)r, (unsigned char)g, (unsigned char)b,
                (unsigned char)a};
 }
 
 // 0-255 RGB to a normalized linear-ish Vector3, scaled by `k` (light intensity).
-static Vector3 rgb01(long r, long g, long b, double k = 1.0) {
+static Vector3 rgb01(int64_t r, int64_t g, int64_t b, double k = 1.0) {
   return Vector3{(float)(r / 255.0 * k), (float)(g / 255.0 * k), (float)(b / 255.0 * k)};
 }
 
@@ -272,7 +272,7 @@ struct TexEntry { Texture2D tex; RenderTexture2D rt{}; bool is_rt = false; };
 // accidentally passing a texture id to node.material() (or vice versa) lands
 // out of range and degrades to "untextured" instead of silently picking the
 // wrong material/texture.
-static constexpr long TEX_BASE = 1000000;
+static constexpr int64_t TEX_BASE = 1000000;
 
 // Shadow map = a normal colour render target (RGBA8 colour + depth buffer).
 // The depth pass writes packed depth into the colour texture, which we then
@@ -308,7 +308,7 @@ class Node {
   double ax = 0, ay = 1, az = 0, ang = 0;   // axis-angle spin (radians)
   double scx = 1, scy = 1, scz = 1;
   Color color = WHITE;
-  long mat_id = -1;        // index into the View's material registry (-1 = inline color)
+  int64_t mat_id = -1;        // index into the View's material registry (-1 = inline color)
   bool visible = true;
   std::string name;
   std::vector<std::shared_ptr<Node>> children;
@@ -339,8 +339,8 @@ class Node {
   Node& spin(double x, double y, double z, double a) { ax = x; ay = y; az = z; ang = a; local_dirty_ = true; return *this; }
   Node& scale(double s) { scx = scy = scz = s; local_dirty_ = true; return *this; }
   Node& scale3(double x, double y, double z) { scx = x; scy = y; scz = z; local_dirty_ = true; return *this; }
-  Node& tint(long r, long g, long b) { color = col(r, g, b); return *this; }
-  Node& material(long id) { mat_id = id; return *this; }
+  Node& tint(int64_t r, int64_t g, int64_t b) { color = col(r, g, b); return *this; }
+  Node& material(int64_t id) { mat_id = id; return *this; }
   Node& set_name(std::string n) { name = std::move(n); return *this; }
   Node& hide() { visible = false; return *this; }
   Node& show() { visible = true; return *this; }
@@ -356,7 +356,7 @@ class Node {
     mt.push_back((float)u); mt.push_back((float)v);
     return *this;
   }
-  Node& tri(long a, long b, long c) {
+  Node& tri(int64_t a, int64_t b, int64_t c) {
     mi.push_back(a); mi.push_back(b); mi.push_back(c);
     return *this;
   }
@@ -371,8 +371,8 @@ class Node {
     // Every index must name a vertex that was pushed. That subsumes the 16-bit
     // range check (the cap above bounds the count), so the narrowing cast below
     // is the only place a value can reach the GPU and it is provably in range.
-    long verts = (long)(mv.size() / 3);
-    for (long i : mi) {
+    int64_t verts = (long)(mv.size() / 3);
+    for (int64_t i : mi) {
       if (i < 0 || i >= verts) {
         TraceLog(LOG_ERROR,
                  "Scene: triangle index %ld names no vertex (%ld pushed) — "
@@ -501,7 +501,7 @@ class Node {
 
 class View {
  public:
-  View(long w, long h, std::string title) {
+  View(int64_t w, int64_t h, std::string title) {
     // Quiet raylib's INFO/WARNING chatter (verbose GL/asset logs, and the
     // per-call gamepad-vibration "not available" warning on backends without
     // haptics). Keep errors only.
@@ -585,22 +585,22 @@ class View {
     MemFree(depth_mat_.maps);
   }
 
-  void target_fps(long fps) { SetTargetFPS((int)fps); }
+  void target_fps(int64_t fps) { SetTargetFPS((int)fps); }
   bool closing() const { return WindowShouldClose(); }
   double dt() const { return GetFrameTime(); }
   double width() const { return GetScreenWidth(); }
   double height() const { return GetScreenHeight(); }
-  bool held(long key) const { return IsKeyDown((int)key); }
-  bool pressed(long key) const { return IsKeyPressed((int)key); }
+  bool held(int64_t key) const { return IsKeyDown((int)key); }
+  bool pressed(int64_t key) const { return IsKeyPressed((int)key); }
   // Gamepad 0 (Xbox / DualSense, mapped by SDL_GameControllerDB).
   bool pad_available() const { return IsGamepadAvailable(0); }
-  double pad_axis(long axis) const { return (double)GetGamepadAxisMovement(0, (int)axis); }
-  bool pad_button(long b) const { return IsGamepadButtonDown(0, (int)b); }
-  bool pad_pressed(long b) const { return IsGamepadButtonPressed(0, (int)b); }
+  double pad_axis(int64_t axis) const { return (double)GetGamepadAxisMovement(0, (int)axis); }
+  bool pad_button(int64_t b) const { return IsGamepadButtonDown(0, (int)b); }
+  bool pad_pressed(int64_t b) const { return IsGamepadButtonPressed(0, (int)b); }
   std::string pad_name() const { const char* n = GetGamepadName(0); return n ? n : ""; }
   // Load SDL_GameControllerDB mapping lines for pads the bundled DB lacks
   // (newer controllers). Returns 1 on success.
-  long gamepad_mappings(std::string db) { return SetGamepadMappings(db.c_str()); }
+  int64_t gamepad_mappings(std::string db) { return SetGamepadMappings(db.c_str()); }
   // Rumble both motors at [0..1] for `sec` seconds. Works where the platform's
   // gamepad backend drives haptics (Windows/Linux XInput, Sony pads on macOS).
   // NOTE: Xbox controllers on macOS cannot rumble — no macOS API (SDL or Apple's
@@ -608,16 +608,16 @@ class View {
   void rumble(double left, double right, double sec) {
     SetGamepadVibration(0, (float)left, (float)right, (float)sec);
   }
-  void background(long r, long g, long b) { bg_ = col(r, g, b); }
+  void background(int64_t r, int64_t g, int64_t b) { bg_ = col(r, g, b); }
   // Vertical sky gradient (top -> horizon), drawn behind the 3D scene.
-  void sky(long tr, long tg, long tb, long br, long bg, long bb) {
+  void sky(int64_t tr, int64_t tg, int64_t tb, int64_t br, int64_t bg, int64_t bb) {
     sky_top_ = col(tr, tg, tb);
     sky_bot_ = col(br, bg, bb);
     has_sky_ = true;
     set_sky_uniform();
   }
   // Distance fog: surfaces fade to (r,g,b) between `start` and `end` metres.
-  void fog(double start, double end, long r, long g, long b) {
+  void fog(double start, double end, int64_t r, int64_t g, int64_t b) {
     fogcol_ = rgb01(r, g, b);
     fogstart_ = (float)start;
     fogend_ = (float)end;
@@ -626,13 +626,13 @@ class View {
   void screenshot(std::string path) { TakeScreenshot(path.c_str()); }
 
   // lighting
-  void sun(double dx, double dy, double dz, double intensity, long r, long g, long b) {
+  void sun(double dx, double dy, double dz, double intensity, int64_t r, int64_t g, int64_t b) {
     Vector3 d = Vector3Normalize(Vector3{(float)dx, (float)dy, (float)dz});
     dir_ = d;
     lcol_ = rgb01(r, g, b, intensity);
     set_sun_uniform();
   }
-  void ambient(double intensity, long r, long g, long b) {
+  void ambient(double intensity, int64_t r, int64_t g, int64_t b) {
     amb_ = rgb01(r, g, b, intensity);
     set_sun_uniform();
   }
@@ -641,22 +641,22 @@ class View {
   // The four script-facing entries differ only in which of tex / metallic /
   // roughness they expose; MatDesc's defaults cover the rest (matte dielectric,
   // untextured).
-  long material(long r, long g, long b) { return add_material({col(r, g, b), -1}); }
-  long material_tex(long tex, long r, long g, long b) {
+  int64_t material(int64_t r, int64_t g, int64_t b) { return add_material({col(r, g, b), -1}); }
+  int64_t material_tex(int64_t tex, int64_t r, int64_t g, int64_t b) {
     return add_material({col(r, g, b), tex_index(tex)});
   }
   // PBR variants: metallic 0..1, roughness 0..1 (glossy paint, matte rubber, metal).
-  long material_pbr(long r, long g, long b, double metallic, double roughness) {
+  int64_t material_pbr(int64_t r, int64_t g, int64_t b, double metallic, double roughness) {
     return add_material({col(r, g, b), -1, (float)metallic, (float)roughness});
   }
-  long material_tex_pbr(long tex, long r, long g, long b, double metallic, double roughness) {
+  int64_t material_tex_pbr(int64_t tex, int64_t r, int64_t g, int64_t b, double metallic, double roughness) {
     return add_material(
         {col(r, g, b), tex_index(tex), (float)metallic, (float)roughness});
   }
   // Upload a CPU image as a mipmapped, repeat-wrapped texture; register + return
   // its id. Mipmaps + trilinear keep tiled high-frequency textures (e.g. the
   // checker) from crawling/shimmering when minified under motion. Consumes `im`.
-  long register_texture(Image im) {
+  int64_t register_texture(Image im) {
     Texture2D t = LoadTextureFromImage(im);
     GenTextureMipmaps(&t);
     SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR);
@@ -666,15 +666,15 @@ class View {
     return (long)texs_.size() - 1 + TEX_BASE;
   }
   // a checkerboard texture (px square, `checks` cells per side)
-  long checker(long px, long checks, long r1, long g1, long b1, long r2, long g2, long b2) {
-    long n = checks > 0 ? checks : 1;          // guard: avoid div-by-zero / 0-size cells
+  int64_t checker(int64_t px, int64_t checks, int64_t r1, int64_t g1, int64_t b1, int64_t r2, int64_t g2, int64_t b2) {
+    int64_t n = checks > 0 ? checks : 1;          // guard: avoid div-by-zero / 0-size cells
     int cell = (int)(px / n);
     if (cell < 1) cell = 1;
     return register_texture(GenImageChecked((int)px, (int)px, cell, cell,
                                             col(r1, g1, b1), col(r2, g2, b2)));
   }
   // a flat colour with white-noise grain mixed in (asphalt / grass grain)
-  long grain(long px, long r, long g, long b, long amt) {
+  int64_t grain(int64_t px, int64_t r, int64_t g, int64_t b, int64_t amt) {
     Image im = GenImageColor((int)px, (int)px, col(r, g, b));
     Image noise = GenImageWhiteNoise((int)px, (int)px, 0.5f);
     ImageColorTint(&noise, col(amt, amt, amt));
@@ -688,7 +688,7 @@ class View {
   // rect/circle/line calls draw INTO it; canvas_end() finalises it. This is the
   // "generate a texture procedurally" path (liveries, signage) — like SceneKit
   // drawing textures with Core Graphics.
-  long canvas(long w, long h) {
+  int64_t canvas(int64_t w, int64_t h) {
     RenderTexture2D rt = LoadRenderTexture((int)w, (int)h);
     SetTextureFilter(rt.texture, TEXTURE_FILTER_BILINEAR);
     SetTextureWrap(rt.texture, TEXTURE_WRAP_REPEAT);
@@ -807,29 +807,29 @@ class View {
   // Alpha for subsequent 2D draws (0..255). The RGBA contract: 2D colours take
   // r,g,b and this shared alpha, so HUD fades / translucent panels are possible
   // without a 4-arg variant of every draw call. Reset to 255 when done.
-  void alpha(long a) { alpha_ = (a < 0 ? 0 : (a > 255 ? 255 : a)); }
+  void alpha(int64_t a) { alpha_ = (a < 0 ? 0 : (a > 255 ? 255 : a)); }
 
-  void text(std::string s, double x, double y, long size, long r, long g, long b) {
+  void text(std::string s, double x, double y, int64_t size, int64_t r, int64_t g, int64_t b) {
     DrawText(s.c_str(), (int)x, (int)y, (int)size, col(r, g, b, alpha_));
   }
-  void rect(double x, double y, double w, double h, long r, long g, long b) {
+  void rect(double x, double y, double w, double h, int64_t r, int64_t g, int64_t b) {
     DrawRectangle((int)x, (int)y, (int)w, (int)h, col(r, g, b, alpha_));
   }
-  void circle(double x, double y, double radius, long r, long g, long b) {
+  void circle(double x, double y, double radius, int64_t r, int64_t g, int64_t b) {
     DrawCircle((int)x, (int)y, (float)radius, col(r, g, b, alpha_));
   }
-  void line(double x0, double y0, double x1, double y1, double thick, long r, long g, long b) {
+  void line(double x0, double y0, double x1, double y1, double thick, int64_t r, int64_t g, int64_t b) {
     DrawLineEx(Vector2{(float)x0, (float)y0}, Vector2{(float)x1, (float)y1}, (float)thick, col(r, g, b, alpha_));
   }
 
  private:
   std::shared_ptr<Node> push(std::shared_ptr<Node> n) { roots_.push_back(n); return n; }
-  long add_material(MatDesc m) {
+  int64_t add_material(MatDesc m) {
     mats_.push_back(m);
     return (long)mats_.size() - 1;   // the id IS the index into mats_
   }
   // Texture ids are offset by TEX_BASE (see there); undo it to index texs_.
-  static int tex_index(long tex) { return (int)(tex - TEX_BASE); }
+  static int tex_index(int64_t tex) { return (int)(tex - TEX_BASE); }
   // Bind one pass's invariants. `m` is the pass's material (lit or depth).
   RenderCtx pass_ctx(Material& m, bool lit) {
     return RenderCtx{m, cube_, sphere_, cyl_, plane_,
@@ -856,7 +856,7 @@ class View {
   Color bg_ = SKYBLUE;
   Color sky_top_{}, sky_bot_{};
   bool has_sky_ = false;
-  long alpha_ = 255;        // shared alpha for 2D draws
+  int64_t alpha_ = 255;        // shared alpha for 2D draws
   std::vector<std::shared_ptr<Node>> roots_;
   std::vector<MatDesc> mats_;
   std::vector<TexEntry> texs_;
@@ -896,7 +896,7 @@ class SoundFx {
   Sound snd_{};
 };
 
-// A streamed audio track for long / looping audio — engine note, ambience, BGM.
+// A streamed audio track for int64_t / looping audio — engine note, ambience, BGM.
 // Needs update() called each frame to keep the stream fed. Pitch drives the
 // engine RPM effect; looping by default.
 class MusicTrack {

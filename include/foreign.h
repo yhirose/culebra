@@ -127,8 +127,8 @@ inline ForeignTable<T>& table() {
 // Method-entry guard: the live instance, or the safety error. The
 // wording is shared by both backends so messages stay symmetric.
 template <class T>
-inline T* get_or_throw(int64_t id, std::string_view type_name, long line,
-                       long col) {
+inline T* get_or_throw(int64_t id, std::string_view type_name, int64_t line,
+                       int64_t col) {
   T* p = table<T>().get(id);
   if (!p) {
     throw CulebraError(
@@ -173,7 +173,7 @@ inline int64_t owner_gen_via(int64_t state_id, int64_t owner_id) {
 // "parent dropped" and "parent mutated since the borrow" land here, on
 // both backends, byte-identically.
 [[noreturn]] inline void throw_borrow_invalid(std::string_view type_name,
-                                              long line, long col) {
+                                              int64_t line, int64_t col) {
   throw CulebraError(
       "ClosedError",
       std::string(type_name) +

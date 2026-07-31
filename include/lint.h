@@ -28,8 +28,8 @@ enum class Severity { Error, Warning };
 struct Diagnostic {
   std::string kind;       // CulebraError-compatible (e.g. "ImmutableError")
   std::string message;
-  long line = 0;
-  long col = 0;
+  int64_t line = 0;
+  int64_t col = 0;
   Severity severity = Severity::Error;
 };
 
@@ -1524,8 +1524,8 @@ using NameSet = std::set<std::string, std::less<>>;
 
 struct Decl {
   std::string name;
-  long line;
-  long col;
+  int64_t line;
+  int64_t col;
 };
 
 // A leading underscore marks a binding as intentionally unused (the sink `_`
@@ -1759,8 +1759,8 @@ using unused::ignored_unused;
 
 struct Cand {
   std::string name;
-  long line;
-  long col;
+  int64_t line;
+  int64_t col;
   bool is_import;
 };
 
@@ -1971,7 +1971,7 @@ struct LineUse {
   bool spills = false;  // an import here whose tokens run onto other lines
 };
 
-inline void note_spill(const peg::Ast& n, long start, bool& spills) {
+inline void note_spill(const peg::Ast& n, int64_t start, bool& spills) {
   if (n.nodes.empty()) {
     if (static_cast<long>(n.line) != start) spills = true;
     return;

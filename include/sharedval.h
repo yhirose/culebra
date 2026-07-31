@@ -49,7 +49,7 @@ struct SharedValCore {
       obj_index;
   // Live handle count (every handle and sub-view holds one). Guarded by
   // shared_val_mutex() on the cold bump/drop paths.
-  long refcount = 0;
+  int64_t refcount = 0;
 };
 
 inline std::mutex& shared_val_mutex() {
@@ -73,7 +73,7 @@ inline std::atomic<long>& shared_val_next_id() {
 // a dropped tree alive — the referent expires when the last live view
 // drops. The map grows by distinct-id (not read count); a stale hit
 // erases its own entry, so the cache tracks the thread's live id set.
-inline std::shared_ptr<SharedValCore> lookup_shared_val(long id) {
+inline std::shared_ptr<SharedValCore> lookup_shared_val(int64_t id) {
   static thread_local std::unordered_map<long, std::weak_ptr<SharedValCore>>
       cache;
   if (auto it = cache.find(id); it != cache.end()) {
@@ -86,12 +86,12 @@ inline std::shared_ptr<SharedValCore> lookup_shared_val(long id) {
   cache[id] = it->second;
   return it->second;
 }
-inline void shared_val_bump(long id) {
+inline void shared_val_bump(int64_t id) {
   std::lock_guard<std::mutex> lock(shared_val_mutex());
   auto it = shared_val_registry().find(id);
   if (it != shared_val_registry().end()) it->second->refcount++;
 }
-inline void shared_val_drop(long id) {
+inline void shared_val_drop(int64_t id) {
   // Erase under the lock, release the shared_ptr outside it (a concurrent
   // lookup may hold a copy) — mirrors shared_buffer_drop.
   std::shared_ptr<SharedValCore> doomed;
@@ -152,12 +152,12 @@ inline const char* _shared_val_reject_reason(const SendNode& n) {
 
 // Freeze a serialized tree into the registry. Returns the new id; the
 // creator's handle owns the initial refcount.
-inline long freeze_shared_val(SendNode&& root) {
+inline int64_t freeze_shared_val(SendNode&& root) {
   auto core = std::make_shared<SharedValCore>();
   core->root = std::move(root);
   _shared_val_index(*core, core->root);
   core->refcount = 1;
-  long id = shared_val_next_id()++;
+  int64_t id = shared_val_next_id()++;
   std::lock_guard<std::mutex> lock(shared_val_mutex());
   shared_val_registry().emplace(id, std::move(core));
   return id;
@@ -175,7 +175,7 @@ inline Value make_shared_val_view(int64_t id, int64_t node_idx);
 struct ResolvedNode {
   std::shared_ptr<SharedValCore> core;
   const SendNode* node;
-  long id;
+  int64_t id;
   size_t idx;  // node table index (== obj_index key for an Object node)
 };
 
@@ -485,7 +485,7 @@ inline Value make_shared_namespace() {
           throw CulebraError("SendError",
                              std::format("Shared.new: {}", why), line, col);
         }
-        long id = freeze_shared_val(std::move(root));
+        int64_t id = freeze_shared_val(std::move(root));
         return make_shared_val_view(id, 0);
       }, ""sv)), false);
   return Value(std::move(ns));

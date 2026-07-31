@@ -542,7 +542,7 @@ inline void _jit_isolate_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int
 
 // _jit_native_method (captureless native method closure) now lives in jit.h.
 
-inline JitValue _jit_build_isolate_handle(long id) {
+inline JitValue _jit_build_isolate_handle(int64_t id) {
   auto* h = culebra_runtime_object_new();
   h->set_or_append("_core_id", JitValue{TAG_LONG, id}, true);
   h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
@@ -590,7 +590,7 @@ inline JitValue culebra_jit_isolate_spawn(int8_t fn_tag, int64_t fn_data,
   }
 
   auto core = std::make_shared<IsolateCore>();
-  long id = jit_isolate_next_id().fetch_add(1, std::memory_order_relaxed);
+  int64_t id = jit_isolate_next_id().fetch_add(1, std::memory_order_relaxed);
   {
     std::lock_guard<std::mutex> lk(jit_isolate_reg_mutex());
     jit_isolate_reg()[id] = core;
@@ -643,7 +643,7 @@ inline void _jit_chan_send(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
   // method's operands on unwind, so the guards must (else self + arg strand).
   JitMethodSelf _s{self};
   JitMethodArgs _a{n, args};
-  long id = _jit_self_long(self, "__channel_id__");
+  int64_t id = _jit_self_long(self, "__channel_id__");
   if (n >= 1) {
     JitSerCtx sc;
     channel_send_node(id, jit_serialize(args[0], sc));  // Sendable check here
@@ -656,7 +656,7 @@ inline void _jit_chan_recv(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
   // Callee-consumes on any exit: chan_pop_blocking raises Interrupted on a
   // cancelled isolate, which a tail release would strand `self` on.
   JitMethodSelf _s{self};
-  long id = _jit_self_long(self, "__channel_id__");
+  int64_t id = _jit_self_long(self, "__channel_id__");
   auto node = chan_pop_blocking(id);
   JitValue ret{TAG_NIL, 0};
   if (node) {
@@ -691,7 +691,7 @@ inline void _jit_chan_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
 inline void _jit_chan_clone(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
-  long id = _jit_self_long(self, "__channel_id__");
+  int64_t id = _jit_self_long(self, "__channel_id__");
   int role = static_cast<int>(_jit_self_long(self, "__channel_role__"));
   chan_bump(id, role, +1);
   { *__ret = _jit_make_channel_endpoint(id, role); return; }
@@ -710,7 +710,7 @@ inline void _jit_chan_iter_has_next(JitValue* __ret, JitClosure*, int8_t self_ta
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};  // consumed on any exit (blocking pull can raise)
   auto* it = reinterpret_cast<JitObject*>(self.data);
-  long st = _jit_self_long(self, "_st");
+  int64_t st = _jit_self_long(self, "_st");
   JitValue ret;
   if (st == 1) {
     ret = {TAG_BOOL, 1};
@@ -748,7 +748,7 @@ inline void _jit_chan_iter_next(JitValue* __ret, JitClosure*, int8_t self_tag, i
 inline void _jit_chan_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
-  long id = _jit_self_long(self, "__channel_id__");
+  int64_t id = _jit_self_long(self, "__channel_id__");
   auto* it = culebra_runtime_object_new();
   it->set_or_append("_cid", JitValue{TAG_LONG, id}, true);
   it->set_or_append("_st", JitValue{TAG_LONG, 0}, true);
@@ -844,7 +844,7 @@ inline void _jit_shared_buffer_with_lock(JitValue* __ret, JitClosure*, int8_t se
 struct JitResolvedNode {
   std::shared_ptr<culebra::SharedValCore> core;
   const sendable::SendNode* node;
-  long id;
+  int64_t id;
   size_t idx;  // node table index (== obj_index key for an Object node)
 };
 
@@ -921,7 +921,7 @@ inline JitValue _jit_shared_val_read(int64_t id,
 // view drops), not eager reclaim of a transiently-unreferenced sub-view — the
 // necessary cost of honoring the +0-borrowed return contract. Retention is
 // bounded by the frozen tree's own container-node count per live view.
-inline JitValue _jit_shared_val_child(JitObject* view, long id,
+inline JitValue _jit_shared_val_child(JitObject* view, int64_t id,
                                       const culebra::SharedValCore& core,
                                       const sendable::SendNode& child) {
   using K = sendable::SendNode::K;
@@ -1025,7 +1025,7 @@ CULEBRA_RT_INLINE JitValue _jit_shared_val_index(JitObject* view,
         // "expected Long, got <T>".
         culebra_runtime_type_error_typed(line, col, "Long", key_tag);
       }
-      long idx = key_data;
+      int64_t idx = key_data;
       if (idx < 0) idx += len;
       if (idx < 0 || idx >= len) {
         throw culebra::CulebraError("IndexError", "index out of range",
@@ -1157,9 +1157,9 @@ inline void _jit_sv_iter_has_next(JitValue* __ret, JitClosure*, int8_t self_tag,
       reinterpret_cast<JitObject*>(self.data));
   (void)nidx;
   using K = sendable::SendNode::K;
-  long total = n->kind == K::Object ? static_cast<long>(n->entries.size())
+  int64_t total = n->kind == K::Object ? static_cast<long>(n->entries.size())
                                     : static_cast<long>(n->elems.size());
-  long idx = _jit_self_long(self, "_idx");
+  int64_t idx = _jit_self_long(self, "_idx");
   { *__ret = {TAG_BOOL, idx < total ? 1 : 0}; return; }
 }
 
@@ -1171,9 +1171,9 @@ inline void _jit_sv_iter_next(JitValue* __ret, JitClosure*, int8_t self_tag, int
   auto [core, n, id, nidx] = _jit_shared_val_node_of(it);
   (void)nidx;
   using K = sendable::SendNode::K;
-  long total = n->kind == K::Object ? static_cast<long>(n->entries.size())
+  int64_t total = n->kind == K::Object ? static_cast<long>(n->entries.size())
                                     : static_cast<long>(n->elems.size());
-  long idx = _jit_self_long(self, "_idx");
+  int64_t idx = _jit_self_long(self, "_idx");
   if (idx >= total) { *__ret = {TAG_NIL, 0}; return; }
   it->set_or_append("_idx", JitValue{TAG_LONG, idx + 1}, true);
   if (n->kind == K::Object) {
@@ -1357,7 +1357,7 @@ inline void _jit_merged_iter_has_next(JitValue* __ret, JitClosure*, int8_t self_
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};  // consumed on any exit (blocking select can raise)
   auto* it = reinterpret_cast<JitObject*>(self.data);
-  long st = _jit_self_long(self, "_st");
+  int64_t st = _jit_self_long(self, "_st");
   JitValue ret;
   if (st == 1) {
     ret = {TAG_BOOL, 1};
@@ -1398,7 +1398,7 @@ inline void _jit_merged_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int6
   meth("next", _jit_chan_iter_next);          // reuse: hands over _lv
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
-inline JitValue _jit_make_merged_rx_endpoint(long mid) {
+inline JitValue _jit_make_merged_rx_endpoint(int64_t mid) {
   auto* h = culebra_runtime_object_new();
   h->set_or_append("__merged_rx__", JitValue{TAG_BOOL, 1}, false);
   h->set_or_append("__merged_id__", JitValue{TAG_LONG, mid}, false);
@@ -1638,7 +1638,7 @@ inline void jit_parallel_progress_coordinator(
   }
 }
 
-inline JitValue jit_parallel_run(JitValue items_v, JitValue fn_v, long limit,
+inline JitValue jit_parallel_run(JitValue items_v, JitValue fn_v, int64_t limit,
                                  culebra::PMode mode, int64_t line, int64_t col,
                                  JitValue on_progress = JitValue{TAG_NIL, 0}) {
   const char* who = culebra::parallel_mode_name(mode);
@@ -1749,7 +1749,7 @@ inline JitValue culebra_jit_channel_new(int64_t n, JitValue* args,
         "Channel.new: capacity must be >= 0", line, col);
   }
   auto core = std::make_shared<ChannelCore>(static_cast<size_t>(cap));
-  long id = channel_next_id().fetch_add(1, std::memory_order_relaxed);
+  int64_t id = channel_next_id().fetch_add(1, std::memory_order_relaxed);
   {
     std::lock_guard<std::mutex> lk(channel_registry_mutex());
     channel_registry()[id] = core;

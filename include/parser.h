@@ -978,7 +978,8 @@ inline ArityBounds builtin_arity_bounds(const std::vector<P>& params) {
 // Requiring `expected == cb_max` means every regular param is positionally
 // filled, so no default ever needs evaluating and both backends behave
 // identically (matching the JIT's historical exact-arity callback rule).
-inline bool callback_arity_accepts(long cb_min, long cb_max, long expected) {
+inline bool callback_arity_accepts(int64_t cb_min, int64_t cb_max,
+                                   int64_t expected) {
   return cb_max < 0 ? expected >= cb_min : expected == cb_max;
 }
 

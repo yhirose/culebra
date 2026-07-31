@@ -560,7 +560,7 @@ inline int64_t _fs_mtime_secs(const std::filesystem::path& p) {
 // Raise an IOError as `<what>: <ec.message()>.` (or just `<what>` when no
 // error_code). The interp twin of the JIT's `_fs_throw_io` — shared by the FS
 // and Sys namespaces so a failed syscall reports identically on both backends.
-[[noreturn]] inline void _io_throw(const std::string& what, long line, long col,
+[[noreturn]] inline void _io_throw(const std::string& what, int64_t line, int64_t col,
                                    const std::error_code& ec = {}) {
   auto msg = ec ? std::format("{}: {}.", what, ec.message())
                 : std::string(what);
@@ -608,7 +608,7 @@ inline int64_t _fs_gid_from_name(const std::string& name) {
 
 // POSIX chown with uid/gid == -1 meaning "leave unchanged". Throws IOError.
 inline void _fs_do_chown(const std::filesystem::path& p, int64_t uid, int64_t gid,
-                         long line, long col) {
+                         int64_t line, int64_t col) {
   if (::chown(p.c_str(), static_cast<uid_t>(uid),
               static_cast<gid_t>(gid)) != 0) {
     _io_throw(std::format("FS.chown('{}')", p.string()), line, col,
@@ -624,8 +624,9 @@ inline bool _fs_owner(const std::filesystem::path&, int64_t&, int64_t&) {
 }
 inline int64_t _fs_uid_from_name(const std::string&) { return -1; }
 inline int64_t _fs_gid_from_name(const std::string&) { return -1; }
-inline void _fs_do_chown(const std::filesystem::path&, long, long, long line,
-                         long col) {
+inline void _fs_do_chown(const std::filesystem::path&, int64_t, int64_t,
+                         int64_t line,
+                         int64_t col) {
   throw CulebraError("RuntimeError",
                      "FS.chown is not supported on Windows (no POSIX uid/gid "
                      "ownership model)",
@@ -638,7 +639,7 @@ inline Value make_fs_namespace() {
   using namespace std::literals;
   ObjectValue ns;
 
-  auto throw_io = [](const std::string& what, long line, long col,
+  auto throw_io = [](const std::string& what, int64_t line, int64_t col,
                      const std::error_code& ec = {}) {
     _io_throw(what, line, col, ec);
   };
@@ -896,12 +897,12 @@ inline Value make_fs_namespace() {
             int64_t col = env->get("__COLUMN__").to_long();
             const auto& p = _fspath(env->get("path"));
             auto resolve = [&](const Value& v, const char* param,
-                               bool is_user) -> long {
+                               bool is_user) -> int64_t {
               if (v.type == Value::Nil) return -1;
               if (v.type == Value::Long) return v.get<int64_t>();
               if (v.is_stringlike()) {  // String or StringView (e.g. a slice)
                 const auto name = v.to_string();
-                long id = is_user ? _fs_uid_from_name(name)
+                int64_t id = is_user ? _fs_uid_from_name(name)
                                   : _fs_gid_from_name(name);
                 if (id < 0) {
                   throw CulebraError(
@@ -919,8 +920,8 @@ inline Value make_fs_namespace() {
                               param),
                   line, col);
             };
-            long uid = resolve(env->get("owner"), "owner", true);
-            long gid = resolve(env->get("group"), "group", false);
+            int64_t uid = resolve(env->get("owner"), "owner", true);
+            int64_t gid = resolve(env->get("group"), "group", false);
             _fs_do_chown(std::filesystem::path(p), uid, gid, line, col);
             return Value();
           })),
@@ -1116,15 +1117,15 @@ inline _FileTable& _file_table() {
   return runtime_substate<_FileTable>(kSlotFileTable);
 }
 
-[[noreturn]] inline void _file_throw(const std::string& what, long line,
-                                     long col, std::string_view kind = "IOError") {
+[[noreturn]] inline void _file_throw(const std::string& what, int64_t line,
+                                     int64_t col, std::string_view kind = "IOError") {
   throw CulebraError(std::string(kind), what, line, col);
 }
 
 // Open `path` in `mode` (r/w/a). Returns a fresh handle id. ValueError on
 // bad mode, IOError if the stream can't be opened.
 inline int64_t _file_open(const std::string& path, const std::string& mode,
-                          long line, long col) {
+                          int64_t line, int64_t col) {
   std::ios::openmode flags = std::ios::binary;
   bool readable = false, writable = false;
   if (mode == "r")      { flags |= std::ios::in;  readable = true; }
@@ -1149,7 +1150,7 @@ inline int64_t _file_open(const std::string& path, const std::string& mode,
 }
 
 // Look up a live stream; IOError if the id was closed.
-inline _FileStream& _file_get(int64_t id, const char* op, long line, long col) {
+inline _FileStream& _file_get(int64_t id, const char* op, int64_t line, int64_t col) {
   auto& tbl = _file_table();
   auto it = tbl.entries.find(id);
   if (it == tbl.entries.end()) {
@@ -1158,7 +1159,7 @@ inline _FileStream& _file_get(int64_t id, const char* op, long line, long col) {
   return it->second;
 }
 
-inline std::string _file_read_all(int64_t id, long line, long col) {
+inline std::string _file_read_all(int64_t id, int64_t line, int64_t col) {
   auto& s = _file_get(id, "read", line, col);
   if (!s.readable) _file_throw("File.read: file not opened for reading", line, col);
   std::string out((std::istreambuf_iterator<char>(s.fs)),
@@ -1166,7 +1167,7 @@ inline std::string _file_read_all(int64_t id, long line, long col) {
   return out;
 }
 
-inline std::string _file_read_n(int64_t id, long n, long line, long col) {
+inline std::string _file_read_n(int64_t id, int64_t n, int64_t line, int64_t col) {
   auto& s = _file_get(id, "read", line, col);
   if (!s.readable) _file_throw("File.read: file not opened for reading", line, col);
   if (n < 0) n = 0;
@@ -1176,19 +1177,19 @@ inline std::string _file_read_n(int64_t id, long n, long line, long col) {
   return buf;
 }
 
-inline void _file_write(int64_t id, std::string_view data, long line, long col) {
+inline void _file_write(int64_t id, std::string_view data, int64_t line, int64_t col) {
   auto& s = _file_get(id, "write", line, col);
   if (!s.writable) _file_throw("File.write: file not opened for writing", line, col);
   s.fs.write(data.data(), static_cast<std::streamsize>(data.size()));
   if (s.fs.bad()) _file_throw("File.write: write failed", line, col);
 }
 
-inline void _file_flush(int64_t id, long line, long col) {
+inline void _file_flush(int64_t id, int64_t line, int64_t col) {
   _file_get(id, "flush", line, col).fs.flush();
 }
 
-inline void _file_seek(int64_t id, long off, std::string_view whence,
-                       long line, long col) {
+inline void _file_seek(int64_t id, int64_t off, std::string_view whence,
+                       int64_t line, int64_t col) {
   auto& s = _file_get(id, "seek", line, col);
   std::ios::seekdir dir;
   if (whence == "set")      dir = std::ios::beg;
@@ -1201,14 +1202,14 @@ inline void _file_seek(int64_t id, long off, std::string_view whence,
   if (s.readable) s.fs.seekg(off, dir); else s.fs.seekp(off, dir);
 }
 
-inline int64_t _file_tell(int64_t id, long line, long col) {
+inline int64_t _file_tell(int64_t id, int64_t line, int64_t col) {
   auto& s = _file_get(id, "tell", line, col);
   return static_cast<int64_t>(s.readable ? s.fs.tellg() : s.fs.tellp());
 }
 
 // Read one line (newline stripped, handles \n / \r\n / \r). Returns false
 // at end of stream.
-inline bool _file_getline(int64_t id, std::string& out, long line, long col) {
+inline bool _file_getline(int64_t id, std::string& out, int64_t line, int64_t col) {
   auto& s = _file_get(id, "lines", line, col);
   out.clear();
   int ch;
@@ -1257,7 +1258,7 @@ inline int days_in_month(int year, int month) {
   return days[month - 1];
 }
 
-[[noreturn]] inline void throw_value(const std::string& msg, long line, long col) {
+[[noreturn]] inline void throw_value(const std::string& msg, int64_t line, int64_t col) {
   throw CulebraError("ValueError", msg, line, col);
 }
 
@@ -1391,7 +1392,7 @@ inline std::string format_iso_nanos(int64_t nanos, bool utc) {
   if (!utc) {
     auto offset = os_gmtoff(tm, t);
     int sign = offset < 0 ? -1 : 1;
-    long abs_off = std::abs(static_cast<long>(offset));
+    int64_t abs_off = std::abs(static_cast<long>(offset));
     tz_str = std::format("{}{:02d}:{:02d}",
                          sign < 0 ? '-' : '+',
                          static_cast<int>(abs_off / 3600),
@@ -1563,7 +1564,7 @@ inline Value make_time_primitives_namespace() {
           [](std::shared_ptr<Environment> env) {
             const auto& obj = env->get("p").to_object();
             auto utc = env->get("utc").to_bool();
-            auto get = [&](const char* k, long fallback) -> long {
+            auto get = [&](const char* k, int64_t fallback) -> int64_t {
               if (obj.has(k)) return obj.get(k).to_long();
               return fallback;
             };
@@ -2956,9 +2957,9 @@ inline Value make_shared_buffer_namespace() {
       Value(FunctionValue(
           {{"count", false, ""sv}, {"type", false, ""sv}},
           [](std::shared_ptr<Environment> env) -> Value {
-            long line =
+            int64_t line =
                 env->has("__LINE__") ? env->get("__LINE__").to_long() : 0;
-            long col =
+            int64_t col =
                 env->has("__COLUMN__") ? env->get("__COLUMN__").to_long() : 0;
             int64_t count = env->get("count").to_long();
             const Value& tv = env->get("type");
@@ -2982,7 +2983,7 @@ inline Value make_shared_buffer_namespace() {
                               cls),
                   line, col);
             }
-            long id = culebra::make_shared_buffer(
+            int64_t id = culebra::make_shared_buffer(
                 *layout, cls, static_cast<size_t>(count));
             return make_shared_buffer_handle(id, count);
           },
@@ -2995,9 +2996,9 @@ inline Value make_shared_buffer_namespace() {
       Value(FunctionValue(
           {{"path", false, ""sv}, {"count", false, ""sv}, {"type", false, ""sv}},
           [](std::shared_ptr<Environment> env) -> Value {
-            long line =
+            int64_t line =
                 env->has("__LINE__") ? env->get("__LINE__").to_long() : 0;
-            long col =
+            int64_t col =
                 env->has("__COLUMN__") ? env->get("__COLUMN__").to_long() : 0;
             const Value& pathv = env->get("path");
             if (!pathv.is_stringlike()) {
@@ -3027,7 +3028,7 @@ inline Value make_shared_buffer_namespace() {
                               cls),
                   line, col);
             }
-            long id = culebra::make_shared_buffer_file(
+            int64_t id = culebra::make_shared_buffer_file(
                 *layout, cls, static_cast<size_t>(count), path);
             return make_shared_buffer_handle(id, count);
           },
@@ -3041,9 +3042,9 @@ inline Value make_shared_buffer_namespace() {
       Value(FunctionValue(
           {{"count", false, ""sv}, {"type", false, ""sv}},
           [](std::shared_ptr<Environment> env) -> Value {
-            long line =
+            int64_t line =
                 env->has("__LINE__") ? env->get("__LINE__").to_long() : 0;
-            long col =
+            int64_t col =
                 env->has("__COLUMN__") ? env->get("__COLUMN__").to_long() : 0;
             int64_t count = env->get("count").to_long();
             const Value& tv = env->get("type");
@@ -3068,7 +3069,7 @@ inline Value make_shared_buffer_namespace() {
                               cls),
                   line, col);
             }
-            long id = culebra::make_shared_buffer_shared(
+            int64_t id = culebra::make_shared_buffer_shared(
                 *layout, cls, static_cast<size_t>(count));
             return make_shared_buffer_handle(id, count);
           },
@@ -3082,9 +3083,9 @@ inline Value make_shared_buffer_namespace() {
       Value(FunctionValue(
           {{"name", false, ""sv}, {"type", false, ""sv}},
           [](std::shared_ptr<Environment> env) -> Value {
-            long line =
+            int64_t line =
                 env->has("__LINE__") ? env->get("__LINE__").to_long() : 0;
-            long col =
+            int64_t col =
                 env->has("__COLUMN__") ? env->get("__COLUMN__").to_long() : 0;
             const Value& namev = env->get("name");
             if (!namev.is_stringlike()) {
@@ -3109,7 +3110,7 @@ inline Value make_shared_buffer_namespace() {
                               cls),
                   line, col);
             }
-            long id = culebra::make_shared_buffer_from_share_env(
+            int64_t id = culebra::make_shared_buffer_from_share_env(
                 *layout, cls, namev.to_string_view());
             auto core = culebra::lookup_shared_buffer(id);
             return make_shared_buffer_handle(
@@ -3157,7 +3158,7 @@ inline Value proc_outcome_to_value(culebra::proc::RunOutcome&& oc) {
 // Validate and convert an Array of command Arrays into argv vectors. Used by
 // Proc.all / Proc.race. Each element must be a non-empty Array<String>.
 inline std::vector<std::vector<std::string>> proc_parse_command_list(
-    const std::vector<Value>& outer, const char* ctx, long line, long col) {
+    const std::vector<Value>& outer, const char* ctx, int64_t line, int64_t col) {
   std::vector<std::vector<std::string>> commands;
   commands.reserve(outer.size());
   for (const auto& cv : outer) {
@@ -3211,7 +3212,7 @@ struct ProcLaunchArgs {
 // Shared by Proc.run/spawn (via proc_parse_launch) and Proc.all/race. A nil
 // share is a no-op; only `SharedBuffer.shared(...)` buffers may cross.
 inline void proc_parse_share(
-    const Value& share_v, std::string_view ctx, long line, long col,
+    const Value& share_v, std::string_view ctx, int64_t line, int64_t col,
     std::vector<std::pair<std::string, std::string>>& env_out,
     std::vector<int>& fds_out) {
   if (share_v.type == Value::Nil) return;
@@ -3237,8 +3238,8 @@ inline void proc_parse_share(
 // Validate and collect the cmd (non-empty Array<String>), cwd (nil/String),
 // env (nil/Object of String) and stdin (String) kwargs. `ctx` tags errors.
 inline ProcLaunchArgs proc_parse_launch(
-    const std::shared_ptr<Environment>& env, const char* ctx, long line,
-    long col) {
+    const std::shared_ptr<Environment>& env, const char* ctx, int64_t line,
+    int64_t col) {
   ProcLaunchArgs la;
   const auto& arr = *env->get("cmd").to_array().values;
   if (arr.empty()) {
@@ -3313,7 +3314,8 @@ inline Value make_file_handle(int64_t id) {
   auto hid = [](const std::shared_ptr<Environment>& env) -> int64_t {
     return env->get("self").to_object().get("_id").to_long();
   };
-  auto loc = [](const std::shared_ptr<Environment>& env, long& line, long& col) {
+  auto loc = [](const std::shared_ptr<Environment>& env, int64_t& line,
+                int64_t& col) {
     line = env->get("__LINE__").to_long();
     col = env->get("__COLUMN__").to_long();
   };
@@ -3323,7 +3325,7 @@ inline Value make_file_handle(int64_t id) {
       "read",
       Value(FunctionValue({{"n", false, ""sv, nullptr, kw_default_nil()}},
                           [hid, loc](std::shared_ptr<Environment> env) {
-                            long line, col; loc(env, line, col);
+                            int64_t line, col; loc(env, line, col);
                             const auto& n = env->get("n");
                             if (n.type == Value::Nil) {
                               return Value(_file_read_all(hid(env), line, col));
@@ -3338,7 +3340,7 @@ inline Value make_file_handle(int64_t id) {
       "write",
       Value(FunctionValue({{"data", false, "String"sv}},
                           [hid, loc](std::shared_ptr<Environment> env) {
-                            long line, col; loc(env, line, col);
+                            int64_t line, col; loc(env, line, col);
                             _file_write(hid(env), env->get("data").to_string(),
                                         line, col);
                             return Value();
@@ -3348,7 +3350,7 @@ inline Value make_file_handle(int64_t id) {
   h.initialize(
       "flush",
       Value(FunctionValue({}, [hid, loc](std::shared_ptr<Environment> env) {
-        long line, col; loc(env, line, col);
+        int64_t line, col; loc(env, line, col);
         _file_flush(hid(env), line, col);
         return Value();
       })),
@@ -3361,7 +3363,7 @@ inline Value make_file_handle(int64_t id) {
            {"whence", false, ""sv, nullptr,
             std::make_shared<Value>(std::string("set"))}},
           [hid, loc](std::shared_ptr<Environment> env) {
-            long line, col; loc(env, line, col);
+            int64_t line, col; loc(env, line, col);
             _file_seek(hid(env), env->get("offset").to_long(),
                        env->get("whence").to_string(), line, col);
             return Value();
@@ -3371,7 +3373,7 @@ inline Value make_file_handle(int64_t id) {
   h.initialize(
       "tell",
       Value(FunctionValue({}, [hid, loc](std::shared_ptr<Environment> env) {
-        long line, col; loc(env, line, col);
+        int64_t line, col; loc(env, line, col);
         return Value(_file_tell(hid(env), line, col));
       }, "Long"sv)),
       false);
@@ -3381,7 +3383,7 @@ inline Value make_file_handle(int64_t id) {
   h.initialize(
       "lines",
       Value(FunctionValue({}, [hid, loc](std::shared_ptr<Environment> env) {
-        long line, col; loc(env, line, col);
+        int64_t line, col; loc(env, line, col);
         int64_t id = hid(env);
         // Capture the handle Value so the iterator keeps it alive — without
         // this the anonymous `File.open(p).lines()` handle would be GC'd
@@ -3403,7 +3405,7 @@ inline Value make_file_handle(int64_t id) {
       "chunks",
       Value(FunctionValue({{"n", false, "Long"sv}},
                           [hid, loc](std::shared_ptr<Environment> env) {
-        long line, col; loc(env, line, col);
+        int64_t line, col; loc(env, line, col);
         int64_t id = hid(env);
         int64_t n = env->get("n").to_long();
         Value self = env->get("self");
@@ -3509,15 +3511,15 @@ inline Value make_file_namespace() {
 // and close deterministically on scope exit via the `drop` backstop.
 // ===========================================================================
 
-[[noreturn]] inline void _sqlite_throw(const std::string& msg, long line,
-                                       long col) {
+[[noreturn]] inline void _sqlite_throw(const std::string& msg, int64_t line,
+                                       int64_t col) {
   throw CulebraError("SQLiteError", std::format("SQLite: {}", msg), line, col);
 }
 
 // culebra value -> neutral BindVal. Long/Bool -> Integer, Float -> Float,
 // String -> Text, nil -> Null; anything else is a TypeError.
-inline culebra::sqlite::BindVal _sqlite_to_bind(const Value& v, long line,
-                                                long col) {
+inline culebra::sqlite::BindVal _sqlite_to_bind(const Value& v, int64_t line,
+                                                int64_t col) {
   using CT = culebra::sqlite::ColType;
   culebra::sqlite::BindVal b;
   switch (v.type) {
@@ -3569,8 +3571,8 @@ inline Value _sqlite_cell_to_value(const culebra::sqlite::Cell& c) {
 
 // Bind `params` onto a prepared statement: an Array binds positionally (1-based
 // `?`), an Object binds by name (`:key`/`@key`/`$key`), nil binds nothing.
-inline void _sqlite_bind_params(int64_t stmt_id, const Value& params, long line,
-                                long col) {
+inline void _sqlite_bind_params(int64_t stmt_id, const Value& params, int64_t line,
+                                int64_t col) {
   std::string err;
   if (params.type == Value::Nil) return;
   if (params.type == Value::Array) {
@@ -3612,7 +3614,7 @@ inline void _sqlite_bind_params(int64_t stmt_id, const Value& params, long line,
 
 // Drives a prepared statement to completion, collecting each row as an Object
 // keyed by column name. Throws SQLiteError on a step failure.
-inline Value _sqlite_collect_rows(int64_t stmt_id, long line, long col) {
+inline Value _sqlite_collect_rows(int64_t stmt_id, int64_t line, int64_t col) {
   ArrayValue rows;
   int ncol = culebra::sqlite::column_count(stmt_id);
   std::vector<std::string> names(ncol);
@@ -3632,7 +3634,7 @@ inline Value _sqlite_collect_rows(int64_t stmt_id, long line, long col) {
 }
 
 // Drains a prepared statement, ignoring any rows (for execute()).
-inline void _sqlite_drain(int64_t stmt_id, long line, long col) {
+inline void _sqlite_drain(int64_t stmt_id, int64_t line, int64_t col) {
   std::string err;
   for (;;) {
     int rc = culebra::sqlite::step(stmt_id, &err);
@@ -3643,7 +3645,7 @@ inline void _sqlite_drain(int64_t stmt_id, long line, long col) {
 
 // execute(db, sql, params) -> rows affected. Prepares a transient statement.
 inline Value _sqlite_execute(int64_t db_id, const std::string& sql,
-                             const Value& params, long line, long col) {
+                             const Value& params, int64_t line, int64_t col) {
   std::string err;
   int64_t st = culebra::sqlite::prepare(db_id, sql, &err);
   if (st < 0) _sqlite_throw(err, line, col);
@@ -3660,7 +3662,7 @@ inline Value _sqlite_execute(int64_t db_id, const std::string& sql,
 
 // query(db, sql, params) -> [Object]. Prepares a transient statement.
 inline Value _sqlite_query(int64_t db_id, const std::string& sql,
-                           const Value& params, long line, long col) {
+                           const Value& params, int64_t line, int64_t col) {
   std::string err;
   int64_t st = culebra::sqlite::prepare(db_id, sql, &err);
   if (st < 0) _sqlite_throw(err, line, col);
@@ -3693,7 +3695,8 @@ inline Value make_sqlite_stmt_handle(int64_t stmt_id, const Value& db_handle) {
   auto dbid = [](const std::shared_ptr<Environment>& env) -> int64_t {
     return env->get("self").to_object().get("__parent__").to_object().get("_id").to_long();
   };
-  auto loc = [](const std::shared_ptr<Environment>& env, long& line, long& col) {
+  auto loc = [](const std::shared_ptr<Environment>& env, int64_t& line,
+                int64_t& col) {
     line = env->get("__LINE__").to_long();
     col = env->get("__COLUMN__").to_long();
   };
@@ -3706,7 +3709,7 @@ inline Value make_sqlite_stmt_handle(int64_t stmt_id, const Value& db_handle) {
       Value(FunctionValue(
           {params_param},
           [sid, dbid, loc](std::shared_ptr<Environment> env) -> Value {
-            long line, col; loc(env, line, col);
+            int64_t line, col; loc(env, line, col);
             int64_t st = sid(env);
             culebra::sqlite::reset(st);
             _sqlite_bind_params(st, env->get("params"), line, col);
@@ -3722,7 +3725,7 @@ inline Value make_sqlite_stmt_handle(int64_t stmt_id, const Value& db_handle) {
       Value(FunctionValue(
           {params_param},
           [sid, loc](std::shared_ptr<Environment> env) -> Value {
-            long line, col; loc(env, line, col);
+            int64_t line, col; loc(env, line, col);
             int64_t st = sid(env);
             culebra::sqlite::reset(st);
             _sqlite_bind_params(st, env->get("params"), line, col);
@@ -3763,7 +3766,8 @@ inline Value make_sqlite_db_handle(int64_t db_id) {
   auto did = [](const std::shared_ptr<Environment>& env) -> int64_t {
     return env->get("self").to_object().get("_id").to_long();
   };
-  auto loc = [](const std::shared_ptr<Environment>& env, long& line, long& col) {
+  auto loc = [](const std::shared_ptr<Environment>& env, int64_t& line,
+                int64_t& col) {
     line = env->get("__LINE__").to_long();
     col = env->get("__COLUMN__").to_long();
   };
@@ -3777,7 +3781,7 @@ inline Value make_sqlite_db_handle(int64_t db_id) {
       Value(FunctionValue(
           {sql_param, params_param},
           [did, loc](std::shared_ptr<Environment> env) -> Value {
-            long line, col; loc(env, line, col);
+            int64_t line, col; loc(env, line, col);
             return _sqlite_execute(did(env), env->get("sql").to_string(),
                                    env->get("params"), line, col);
           },
@@ -3790,7 +3794,7 @@ inline Value make_sqlite_db_handle(int64_t db_id) {
       Value(FunctionValue(
           {sql_param, params_param},
           [did, loc](std::shared_ptr<Environment> env) -> Value {
-            long line, col; loc(env, line, col);
+            int64_t line, col; loc(env, line, col);
             return _sqlite_query(did(env), env->get("sql").to_string(),
                                  env->get("params"), line, col);
           },
@@ -3803,7 +3807,7 @@ inline Value make_sqlite_db_handle(int64_t db_id) {
       Value(FunctionValue(
           {sql_param},
           [did, loc](std::shared_ptr<Environment> env) -> Value {
-            long line, col; loc(env, line, col);
+            int64_t line, col; loc(env, line, col);
             std::string err;
             int64_t st =
                 culebra::sqlite::prepare(did(env), env->get("sql").to_string(), &err);
@@ -3820,7 +3824,7 @@ inline Value make_sqlite_db_handle(int64_t db_id) {
       Value(FunctionValue(
           {{"fn", false, "Function"sv}},
           [did, loc](std::shared_ptr<Environment> env) -> Value {
-            long line, col; loc(env, line, col);
+            int64_t line, col; loc(env, line, col);
             int64_t db = did(env);
             Value fn = env->get("fn");
             _sqlite_execute(db, "BEGIN", Value(), line, col);
@@ -3895,14 +3899,14 @@ inline Value make_sqlite_namespace() {
 // the core, so these adapters only translate values and errors.
 
 [[noreturn]] inline void _net_throw(const char* ctx, const std::string& msg,
-                                    long line, long col) {
+                                    int64_t line, int64_t col) {
   throw CulebraError("NetError", std::format("{}: {}", ctx, msg), line, col);
 }
 
 // Map a failed IoStatus to NetError. Eof is never an error here — each reader
 // gives it its own meaning ("" / nil / a short-read error).
 inline void _net_check(culebra::net::IoStatus st, const char* ctx,
-                       const std::string& err, long line, long col) {
+                       const std::string& err, int64_t line, int64_t col) {
   if (st == culebra::net::IoStatus::Timeout ||
       st == culebra::net::IoStatus::Error) {
     _net_throw(ctx, culebra::net::status_message(st, err), line, col);
@@ -3980,7 +3984,8 @@ inline Value make_net_socket_handle(int64_t id) {
   auto hid = [](const std::shared_ptr<Environment>& env) -> int64_t {
     return env->get("self").to_object().get("_id").to_long();
   };
-  auto loc = [](const std::shared_ptr<Environment>& env, long& line, long& col) {
+  auto loc = [](const std::shared_ptr<Environment>& env, int64_t& line,
+                int64_t& col) {
     line = env->get("__LINE__").to_long();
     col = env->get("__COLUMN__").to_long();
   };
@@ -3992,7 +3997,7 @@ inline Value make_net_socket_handle(int64_t id) {
       Value(FunctionValue(
           {{"n", false, ""sv, nullptr, kw_default_nil()}},
           [hid, loc](std::shared_ptr<Environment> env) -> Value {
-            long line, col; loc(env, line, col);
+            int64_t line, col; loc(env, line, col);
             const auto& n = env->get("n");
             std::string out, err;
             culebra::net::IoStatus st;
@@ -4016,7 +4021,7 @@ inline Value make_net_socket_handle(int64_t id) {
       Value(FunctionValue(
           {},
           [hid, loc](std::shared_ptr<Environment> env) -> Value {
-            long line, col; loc(env, line, col);
+            int64_t line, col; loc(env, line, col);
             std::string out, err;
             auto st = culebra::net::read_line(hid(env), out, &err);
             if (st == culebra::net::IoStatus::Eof) return Value();
@@ -4033,7 +4038,7 @@ inline Value make_net_socket_handle(int64_t id) {
       Value(FunctionValue(
           {{"n", false, "Long"sv}},
           [hid, loc](std::shared_ptr<Environment> env) -> Value {
-            long line, col; loc(env, line, col);
+            int64_t line, col; loc(env, line, col);
             int64_t want = env->get("n").to_long();
             if (want < 0) want = 0;
             std::string out, err;
@@ -4058,7 +4063,7 @@ inline Value make_net_socket_handle(int64_t id) {
       Value(FunctionValue(
           {},
           [hid, loc](std::shared_ptr<Environment> env) {
-            long line, col; loc(env, line, col);
+            int64_t line, col; loc(env, line, col);
             int64_t id = hid(env);
             // Capture the handle so the iterator keeps it alive — otherwise an
             // anonymous `Net.connect(...).lines()` would be GC'd (drop → close)
@@ -4083,7 +4088,7 @@ inline Value make_net_socket_handle(int64_t id) {
       Value(FunctionValue(
           {{"data", false, "String"sv}},
           [hid, loc](std::shared_ptr<Environment> env) {
-            long line, col; loc(env, line, col);
+            int64_t line, col; loc(env, line, col);
             const std::string& data = env->get("data").to_string();
             std::string err;
             auto st = culebra::net::write_all(hid(env), data.data(),
@@ -4098,7 +4103,7 @@ inline Value make_net_socket_handle(int64_t id) {
   h.initialize(
       "shutdown_write",
       Value(FunctionValue({}, [hid, loc](std::shared_ptr<Environment> env) {
-        long line, col; loc(env, line, col);
+        int64_t line, col; loc(env, line, col);
         std::string err;
         if (!culebra::net::shutdown_write(hid(env), &err))
           _net_throw("Net.shutdown_write", err, line, col);
@@ -4112,7 +4117,7 @@ inline Value make_net_socket_handle(int64_t id) {
           {{"on", false, "Bool"sv, nullptr,
             std::make_shared<Value>(Value(true))}},
           [hid, loc](std::shared_ptr<Environment> env) {
-            long line, col; loc(env, line, col);
+            int64_t line, col; loc(env, line, col);
             std::string err;
             if (!culebra::net::set_nodelay(hid(env), env->get("on").to_bool(),
                                            &err))
@@ -4126,7 +4131,7 @@ inline Value make_net_socket_handle(int64_t id) {
       Value(FunctionValue(
           {},
           [hid, loc](std::shared_ptr<Environment> env) -> Value {
-            long line, col; loc(env, line, col);
+            int64_t line, col; loc(env, line, col);
             std::string host, err;
             int port = 0;
             if (!culebra::net::local_addr(hid(env), host, port, &err))
@@ -4141,7 +4146,7 @@ inline Value make_net_socket_handle(int64_t id) {
       Value(FunctionValue(
           {},
           [hid, loc](std::shared_ptr<Environment> env) -> Value {
-            long line, col; loc(env, line, col);
+            int64_t line, col; loc(env, line, col);
             std::string host, err;
             int port = 0;
             if (!culebra::net::peer_addr(hid(env), host, port, &err))
@@ -4157,8 +4162,8 @@ inline Value make_net_socket_handle(int64_t id) {
 // Defined after isolate.h is included (it needs sendable::serialize, since the
 // handler runs on a worker pool); forward-declared here so the listener handle
 // method can call it. Serves until interrupted; throws on a Sendable error.
-inline Value _net_serve_impl(int64_t id, const Value& handler, long workers,
-                             long line, long col);
+inline Value _net_serve_impl(int64_t id, const Value& handler, int64_t workers,
+                             int64_t line, int64_t col);
 
 // Build a Listener handle: `port`/`host` of the bound address (so a port-0 bind
 // can report the ephemeral port it got) plus accept, and `iter` so
@@ -4174,7 +4179,8 @@ inline Value make_net_listener_handle(int64_t id, const std::string& host,
   auto hid = [](const std::shared_ptr<Environment>& env) -> int64_t {
     return env->get("self").to_object().get("_id").to_long();
   };
-  auto loc = [](const std::shared_ptr<Environment>& env, long& line, long& col) {
+  auto loc = [](const std::shared_ptr<Environment>& env, int64_t& line,
+                int64_t& col) {
     line = env->get("__LINE__").to_long();
     col = env->get("__COLUMN__").to_long();
   };
@@ -4184,7 +4190,7 @@ inline Value make_net_listener_handle(int64_t id, const std::string& host,
       Value(FunctionValue(
           {},
           [hid, loc](std::shared_ptr<Environment> env) -> Value {
-            long line, col; loc(env, line, col);
+            int64_t line, col; loc(env, line, col);
             int64_t cid = -1;
             std::string err;
             auto st = culebra::net::accept(hid(env), &cid, &err);
@@ -4205,7 +4211,7 @@ inline Value make_net_listener_handle(int64_t id, const std::string& host,
            {"workers", false, "Long"sv, nullptr,
             std::make_shared<Value>(Value(static_cast<int64_t>(0)))}},
           [hid, loc](std::shared_ptr<Environment> env) -> Value {
-            long line, col; loc(env, line, col);
+            int64_t line, col; loc(env, line, col);
             return _net_serve_impl(hid(env), env->get("handler"),
                                    env->get("workers").to_long(), line, col);
           })),
@@ -4219,7 +4225,7 @@ inline Value make_net_listener_handle(int64_t id, const std::string& host,
       Value(FunctionValue(
           {},
           [hid, loc](std::shared_ptr<Environment> env) {
-            long line, col; loc(env, line, col);
+            int64_t line, col; loc(env, line, col);
             int64_t id = hid(env);
             Value self = env->get("self");
             return _make_iterator(
@@ -4249,7 +4255,8 @@ inline Value make_net_udp_handle(int64_t id, const std::string& host, int port) 
   auto hid = [](const std::shared_ptr<Environment>& env) -> int64_t {
     return env->get("self").to_object().get("_id").to_long();
   };
-  auto loc = [](const std::shared_ptr<Environment>& env, long& line, long& col) {
+  auto loc = [](const std::shared_ptr<Environment>& env, int64_t& line,
+                int64_t& col) {
     line = env->get("__LINE__").to_long();
     col = env->get("__COLUMN__").to_long();
   };
@@ -4261,7 +4268,7 @@ inline Value make_net_udp_handle(int64_t id, const std::string& host, int port) 
            {"host", false, "String"sv},
            {"port", false, "Long"sv}},
           [hid, loc](std::shared_ptr<Environment> env) {
-            long line, col; loc(env, line, col);
+            int64_t line, col; loc(env, line, col);
             const std::string& data = env->get("data").to_string();
             std::string err;
             if (!culebra::net::udp_send_to(
@@ -4281,7 +4288,7 @@ inline Value make_net_udp_handle(int64_t id, const std::string& host, int port) 
           {{"max", false, "Long"sv, nullptr,
             std::make_shared<Value>(Value(static_cast<int64_t>(65536)))}},
           [hid, loc](std::shared_ptr<Environment> env) -> Value {
-            long line, col; loc(env, line, col);
+            int64_t line, col; loc(env, line, col);
             int64_t max = env->get("max").to_long();
             if (max < 0) max = 0;
             std::string data, host, err;
@@ -4304,7 +4311,7 @@ inline Value make_net_udp_handle(int64_t id, const std::string& host, int port) 
           {{"on", false, "Bool"sv, nullptr,
             std::make_shared<Value>(Value(true))}},
           [hid, loc](std::shared_ptr<Environment> env) {
-            long line, col; loc(env, line, col);
+            int64_t line, col; loc(env, line, col);
             std::string err;
             if (!culebra::net::set_broadcast(hid(env), env->get("on").to_bool(),
                                              &err))
@@ -4319,7 +4326,7 @@ inline Value make_net_udp_handle(int64_t id, const std::string& host, int port) 
 // Read back the address a fresh listener / UDP socket actually bound, so the
 // handle can report the ephemeral port chosen for a port-0 bind.
 inline void _net_bound_addr(int64_t id, const char* ctx, std::string& host,
-                            int& port, long line, long col) {
+                            int& port, int64_t line, int64_t col) {
   std::string err;
   if (!culebra::net::local_addr(id, host, port, &err)) {
     culebra::net::close_handle(id);
@@ -4521,8 +4528,8 @@ inline Value json_parse(std::string_view s, std::string_view number_mode = "auto
 // Convert the optional `headers` kwarg (nil or an Object of String values)
 // into the header list the http core wants. `ctx` tags type errors.
 inline culebra::http::HeaderList http_parse_headers(const Value& hv,
-                                                    const char* ctx, long line,
-                                                    long col) {
+                                                    const char* ctx, int64_t line,
+                                                    int64_t col) {
   culebra::http::HeaderList headers;
   if (hv.type == Value::Nil) return headers;
   if (hv.type != Value::Object) {
@@ -4543,8 +4550,8 @@ inline culebra::http::HeaderList http_parse_headers(const Value& hv,
 // Convert the optional `params` kwarg (nil or an Object of String values) into
 // query name/value pairs (percent-encoded by the http core). `ctx` tags errors.
 inline culebra::http::HeaderList http_parse_params(const Value& pv,
-                                                   const char* ctx, long line,
-                                                   long col) {
+                                                   const char* ctx, int64_t line,
+                                                   int64_t col) {
   culebra::http::HeaderList params;
   if (pv.type == Value::Nil) return params;
   if (pv.type != Value::Object) {
@@ -4565,8 +4572,8 @@ inline culebra::http::HeaderList http_parse_params(const Value& pv,
 // Convert the `form` kwarg (an Object of String values) into name/value pairs
 // for an application/x-www-form-urlencoded body. `ctx` tags errors.
 inline culebra::http::HeaderList http_parse_form(const Value& fv,
-                                                 const char* ctx, long line,
-                                                 long col) {
+                                                 const char* ctx, int64_t line,
+                                                 int64_t col) {
   culebra::http::HeaderList form;
   if (fv.type != Value::Object) {
     throw CulebraError("TypeError",
@@ -4614,7 +4621,7 @@ inline Value http_result_to_value(culebra::http::HttpResult&& r) {
 // set by the individual builders.
 inline void http_fill_common(const std::shared_ptr<Environment>& env,
                              culebra::http::HttpRequest& req, const char* ctx,
-                             long line, long col) {
+                             int64_t line, int64_t col) {
   req.headers = http_parse_headers(env->get("headers"), ctx, line, col);
   req.params = http_parse_params(env->get("params"), ctx, line, col);
   // nil means "unset" → use the default (matching every other optional kwarg
@@ -4643,7 +4650,7 @@ struct HttpIntoState {
 inline void http_setup_into(const Value& into,
                             const std::shared_ptr<Environment>& env,
                             culebra::http::HttpRequest& req, HttpIntoState& st,
-                            const char* ctx, long line, long col) {
+                            const char* ctx, int64_t line, int64_t col) {
   if (into.type == Value::Nil) return;
   if (into.type == Value::String || into.type == Value::StringView) {
     std::string path(into.to_string_view());
@@ -4685,7 +4692,7 @@ inline void http_setup_into(const Value& into,
 // return the response Object ({status, ok, body, headers}; body empty when
 // streamed via `into`).
 inline Value http_run_into(culebra::http::HttpRequest& req, HttpIntoState& st,
-                           const char* ctx, long line, long col) {
+                           const char* ctx, int64_t line, int64_t col) {
   auto r = culebra::http::http_request(req);
   if (st.eptr) std::rethrow_exception(st.eptr);
   if (!r.ok) {
@@ -4698,8 +4705,8 @@ inline Value http_run_into(culebra::http::HttpRequest& req, HttpIntoState& st,
 // As http_run_into, but against a persistent Http.client (id) — reuses its
 // connection and layers its default headers under the request's.
 inline Value http_run_client_into(int64_t id, culebra::http::HttpRequest& req,
-                                  HttpIntoState& st, const char* ctx, long line,
-                                  long col) {
+                                  HttpIntoState& st, const char* ctx, int64_t line,
+                                  int64_t col) {
   auto r = culebra::http::http_client_request(id, req);
   if (st.eptr) std::rethrow_exception(st.eptr);
   if (!r.ok) {
@@ -4721,8 +4728,8 @@ inline Value http_run_client_into(int64_t id, culebra::http::HttpRequest& req,
 inline void http_setup_multipart(const Value& filesv,
                                   const std::shared_ptr<Environment>& env,
                                   culebra::http::HttpRequest& req,
-                                  HttpIntoState& st, const char* ctx, long line,
-                                  long col) {
+                                  HttpIntoState& st, const char* ctx, int64_t line,
+                                  int64_t col) {
   if (filesv.type != Value::Object) {
     throw CulebraError("TypeError",
         std::format("{}: files must be an Object", ctx), line, col);
@@ -4838,7 +4845,7 @@ inline void http_setup_body(const Value& bodyv, const Value& jsonv,
                             const Value& ct,
                             const std::shared_ptr<Environment>& env,
                             culebra::http::HttpRequest& req, HttpIntoState& st,
-                            const char* ctx, long line, long col) {
+                            const char* ctx, int64_t line, int64_t col) {
   bool has_json = jsonv.type != Value::Nil;
   bool has_form = formv.type != Value::Nil;
   bool has_files = filesv.type != Value::Nil;
@@ -5264,8 +5271,8 @@ inline thread_local std::unordered_map<int64_t, std::vector<InterpRouteRecord>>
 // handle method can call it. Binds and serves; returns nil, or throws on a bind
 // / Sendable error.
 inline Value _http_server_do_listen(int64_t id, const std::string& host,
-                                    int port, long workers, bool async,
-                                    long line, long col);
+                                    int port, int64_t workers, bool async,
+                                    int64_t line, int64_t col);
 
 // The Http.server handle: record routes (get/post/…) and serve files (static),
 // then listen() to register the routes and block accepting connections. Handlers
@@ -6102,7 +6109,7 @@ inline void regex_rethrow(const reg::RegexError& e,
 // cache gives reuse without a handle. Flags are written inline ((?i)/(?m)/(?s))
 // in the pattern, so the cache key is just the pattern.
 inline std::shared_ptr<reg::Regex> regex_compile_cached(
-    const std::string& pattern, long line, long col) {
+    const std::string& pattern, int64_t line, int64_t col) {
   static thread_local std::unordered_map<std::string,
                                           std::shared_ptr<reg::Regex>>
       cache;
@@ -6314,8 +6321,8 @@ inline Value csv_coerced_to_value(const culebra::csv::CoercedCell& cc) {
 // column name. Shared shape with the JIT adapter (csv.h single-sources the
 // header/types validation and coercion).
 inline Value csv_rows_to_value(std::vector<std::vector<std::string>>&& rows,
-                               bool header, const Value& typesv, long line,
-                               long col) {
+                               bool header, const Value& typesv, int64_t line,
+                               int64_t col) {
   namespace ccsv = culebra::csv;
   bool has_types = typesv.type != Value::Nil;
   if (has_types && !header) {
@@ -6462,8 +6469,8 @@ inline Value toml_node_to_value(const culebra::toml::Node& n) {
 // Convert a culebra Value into a neutral toml::Node for serialization. Objects
 // become tables (non-String keys rejected, mirroring JSON), Array/Tuple/Set
 // become arrays, scalars map across; everything else is a TypeError.
-inline culebra::toml::Node value_to_toml_node(const Value& v, long line,
-                                              long col) {
+inline culebra::toml::Node value_to_toml_node(const Value& v, int64_t line,
+                                              int64_t col) {
   using N = culebra::toml::Node;
   switch (v.type) {
     case Value::Bool:   return N::boolean(v.get<bool>());
@@ -7614,8 +7621,8 @@ inline thread_local std::shared_ptr<Interpreter> g_net_w_interp;
 inline thread_local std::shared_ptr<Environment> g_net_w_base;
 inline thread_local Value g_net_w_handler;
 
-inline Value _net_serve_impl(int64_t id, const Value& handler, long workers,
-                             long line, long col) {
+inline Value _net_serve_impl(int64_t id, const Value& handler, int64_t workers,
+                             int64_t line, int64_t col) {
   // Serialize once here, so a non-Sendable handler is an error at serve() —
   // not a surprise on the first connection. Each worker rebuilds it on its own
   // heap in setup().
@@ -7661,8 +7668,8 @@ inline thread_local std::shared_ptr<Environment> g_srv_w_base;
 inline thread_local std::vector<Value> g_srv_w_handlers;
 
 inline Value _http_server_do_listen(
-    int64_t id, const std::string& host, int port, long workers, bool async,
-    long line, long col) {
+    int64_t id, const std::string& host, int port, int64_t workers, bool async,
+    int64_t line, int64_t col) {
   // Move the records out of the thread_local map and drop the entry now: the
   // RouteHandlers below capture their own handler copies (workers<=1) or the
   // serialized SendNodes (workers>1), so the records are only needed during

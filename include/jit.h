@@ -6663,7 +6663,7 @@ struct JIT {
 
   // If `ast` is a compile-time numeric literal (possibly wrapped in a
   // single unary minus), extract its value. Returns nullopt otherwise.
-  struct NumLit { bool is_float; double d; long l; };
+  struct NumLit { bool is_float; double d; int64_t l; };
   std::optional<NumLit> try_numeric_literal(const peg::Ast& ast) {
     using namespace peg::udl;
     if (ast.original_tag == "UNARY_MINUS"_ && ast.nodes.size() == 2) {
@@ -12406,7 +12406,7 @@ struct JIT {
                                 const peg::Ast& argsAst,
                                 llvm::Value* receiver) {
     using namespace peg::udl;
-    long argc = static_cast<long>(argsAst.nodes.size());
+    int64_t argc = static_cast<long>(argsAst.nodes.size());
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
     auto tag = extract_tag(receiver);
@@ -12464,7 +12464,7 @@ struct JIT {
       // Kwarg-capable: replicate interp's bind order (too-many positional →
       // per-param missing / positional+keyword conflict → leftover unknown
       // keyword). Args are static here, so the whole check is compile-time.
-      long n_pos = 0;
+      int64_t n_pos = 0;
       std::vector<std::string_view> kw_names;
       bool has_splat = false, has_rest = false;
       for (const auto& n : argsAst.nodes) {
@@ -13296,7 +13296,7 @@ struct JIT {
     {
       auto cap = culebra::first_kw_only_index(params);
       long cap_long = cap ? static_cast<long>(*cap) : -1;
-      long n_pos = static_cast<long>(positional.size());
+      int64_t n_pos = static_cast<long>(positional.size());
       // Match throw_if_too_many_positionals' compile-time predicate
       // (cap < 0 = no cap; cap == 0 = leading kw-only, zero positionals
       // allowed) but route through emit_throw_error so the runtime throw
@@ -15304,7 +15304,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     // iterator codegen running on a String. Kwarg-capable spellings keep
     // their runtime binding (bounds alone don't decide them).
     std::vector<int8_t> valueTags;
-    long argc = static_cast<long>(argsAst.nodes.size());
+    int64_t argc = static_cast<long>(argsAst.nodes.size());
     for (auto& [t, tbl] : builtin_value_tables()) {
       auto it = tbl->find(method);
       if (it == tbl->end()) continue;

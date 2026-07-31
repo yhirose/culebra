@@ -2495,7 +2495,7 @@ inline bool _culebra_callback_arity_ok(JitClosure* cls, size_t expected) {
   // e.g. `map(JSON.stringify)` (1 required + 3 optional) is rejected like the
   // interp's gate.
   if (_jit_ns_callback_arity_hook) {
-    long cb_min, cb_max;
+    int64_t cb_min, cb_max;
     if (_jit_ns_callback_arity_hook(cls, &cb_min, &cb_max)) {
       return culebra::callback_arity_accepts(cb_min, cb_max,
                                              static_cast<long>(expected));

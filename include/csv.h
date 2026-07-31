@@ -55,7 +55,7 @@ inline const char* col_type_name(ColType t) {
 // coercion logic keeps interp/JIT/AOT byte-identical).
 struct CoercedCell {
   ColType kind = ColType::String;
-  long long_val = 0;
+  int64_t long_val = 0;
   double float_val = 0;
   bool bool_val = false;
   std::string_view str_val;  // for String: points into the source cell.
@@ -73,7 +73,7 @@ inline bool coerce_cell(std::string_view cell, ColType type, CoercedCell& out) {
     case ColType::Long: {
       const char* b = cell.data();
       const char* e = b + cell.size();
-      long v = 0;
+      int64_t v = 0;
       auto r = std::from_chars(b, e, v);
       if (r.ec != std::errc() || r.ptr != e) return false;  // junk/overflow/empty
       out.long_val = v;

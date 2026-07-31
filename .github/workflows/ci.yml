@@ -590,6 +590,60 @@ jobs:
   # path that needed a Win64-specific fix (16-byte-return sret ABI, the
   # ___chkstk_ms stack-probe symbol, class methods/getters/callable objects).
   # DEV_NO_RT=ON isolates the in-process JIT (no AOT runtime archives). The
+  # The width gate. culebra's Long is int64_t; C++ `long` is 32-bit under LLP64
+  # and, on macOS, a distinct 64-bit type. Linux — where everyone develops — is
+  # the one platform that cannot see either, because there `long` IS int64_t, so
+  # a language value left in a `long` compiles clean locally and silently
+  # truncates on a download. This job is the compiler saying so, without paying
+  # for a build: -fsyntax-only over the two TUs that pull in every header, with
+  # -Wconversion narrowed to the one diagnostic that means "64-bit value into a
+  # 32-bit type". tools/check_long_width.sh is the local half of the same guard.
+  windows-long-width:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-llvm
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-webview2-loader
+            mingw-w64-ucrt-x86_64-python
+            make
+      # Configure only — no build. compile_commands.json then carries the exact
+      # flags each TU needs, so this check cannot drift from the real build the
+      # way a hand-maintained -I list would.
+      - name: Configure (no build)
+        env:
+          CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
+        run: |
+          # MSYS Makefiles, not Ninja: Ninja routes long compile lines through
+          # response files that exist only once a build runs, so a configure-only
+          # compile_commands.json points at .rsp files that are not there.
+          cmake -S . -B build-width -G "MSYS Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++ \
+            -DCMAKE_C_COMPILER=gcc \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCULEBRA_ENABLE_JIT=ON \
+            -DCULEBRA_ENABLE_HTTP=ON \
+            -DCULEBRA_ENABLE_WEBVIEW=ON \
+            -DCULEBRA_DEV_NO_RT=OFF \
+            -DCULEBRA_LTO=OFF
+      - name: Syntax-check for 64-bit values landing in 32-bit types
+        run: misc/check_llp64_width.sh build-width
+
   # smokes are informative (echo PASS/FAIL, never fail the job): everything
   # except in-process exceptions works on Win64 — JIT'd exception unwind needs
   # near-image memory placement for the .xdata RVA and is deferred (see the EH

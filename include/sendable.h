@@ -331,7 +331,7 @@ struct FreezeGuard {
 // receiver rebuilds it); `rebuild` materializes a fresh endpoint over the same
 // id (no extra bump — extract already accounted for it).
 struct ChannelRef {
-  long id = 0;
+  int64_t id = 0;
   int role = 0;
 };
 inline std::function<ChannelRef(const Value&)>& channel_extract_hook() {
@@ -349,12 +349,12 @@ inline std::function<Value(const ChannelRef&)>& channel_rebuild_hook() {
 // protection so a temporary buffer can't be reclaimed before the child rebuilds
 // it); `rebuild` materializes a fresh handle over the same id (bumping its own
 // ref, released by that handle's drop). Same shape as the channel hooks.
-inline std::function<long(const Value&)>& sharedbuffer_extract_hook() {
-  static std::function<long(const Value&)> f;
+inline std::function<int64_t(const Value&)>& sharedbuffer_extract_hook() {
+  static std::function<int64_t(const Value&)> f;
   return f;
 }
-inline std::function<Value(long)>& sharedbuffer_rebuild_hook() {
-  static std::function<Value(long)> f;
+inline std::function<Value(int64_t)>& sharedbuffer_rebuild_hook() {
+  static std::function<Value(int64_t)> f;
   return f;
 }
 
@@ -362,8 +362,8 @@ inline std::function<Value(long)>& sharedbuffer_rebuild_hook() {
 // tree crosses by registry id + node index (a sub-view is just a deeper
 // node). Same extract-bumps / rebuild-transfers contract as above.
 struct SharedValRef {
-  long id = 0;
-  long node = 0;
+  int64_t id = 0;
+  int64_t node = 0;
 };
 inline std::function<SharedValRef(const Value&)>& sharedval_extract_hook() {
   static std::function<SharedValRef(const Value&)> f;

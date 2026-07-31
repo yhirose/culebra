@@ -163,7 +163,7 @@ struct HttpRequest {
                                    // body_source is set.
   std::string content_type;        // applied iff body/body_source set and no
                                    // explicit Content-Type header.
-  long timeout_sec = 0;            // per-phase timeout; 0 => library default.
+  int64_t timeout_sec = 0;            // per-phase timeout; 0 => library default.
   bool follow_redirects = true;    // 3xx Location chasing.
   BodySink body_sink = nullptr;    // set → stream the response body (no buffer).
   BodySource body_source = nullptr;// set → stream the request body (chunked).
@@ -504,7 +504,7 @@ struct HttpClient {
   std::string base_path;        // leading path prefix ("" or "/v1"), no trailing
                                 // slash; the origin lives in `cli`.
   HeaderList default_headers;   // layered under each request's headers.
-  long timeout_sec = 0;         // carried so an absolute-URL one-off can reuse it.
+  int64_t timeout_sec = 0;         // carried so an absolute-URL one-off can reuse it.
   bool follow_redirects = true;
   std::mutex m;                 // one connection → serialize requests.
   explicit HttpClient(const std::string& origin) : cli(origin) {}
@@ -561,7 +561,7 @@ CULEBRA_RT_HTTP_LINKAGE HttpResult http_request(const HttpRequest& req) {
 // or -1 (with `err` set) on a bad base_url. Caller closes it (http_client_close).
 CULEBRA_RT_HTTP_LINKAGE int64_t http_client_open(const std::string& base_url,
                                                  HeaderList default_headers,
-                                                 long timeout_sec,
+                                                 int64_t timeout_sec,
                                                  bool follow_redirects,
                                                  std::string& err) {
 #if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)

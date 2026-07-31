@@ -116,7 +116,7 @@ class DapServer {
   // ---- transport --------------------------------------------------------
   bool fill() {
     char buf[4096];
-    long n = _dap_io::read_fd(in_, buf, sizeof(buf));
+    int64_t n = _dap_io::read_fd(in_, buf, sizeof(buf));
     if (n <= 0) return false;
     inbuf_.append(buf, static_cast<size_t>(n));
     return true;
@@ -144,7 +144,7 @@ class DapServer {
     std::string frame =
         "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
     std::lock_guard<std::mutex> lk(write_mu_);
-    long off = 0, total = static_cast<long>(frame.size());
+    int64_t off = 0, total = static_cast<long>(frame.size());
     while (off < total) {
       int64_t n = _dap_io::write_fd(out_, frame.data() + off, total - off);
       if (n <= 0) break;
@@ -312,7 +312,7 @@ class DapServer {
   // enclosing function bounds the in-scope identifiers.
   struct UiFrame {
     std::string name;
-    long line;
+    int64_t line;
     std::string path;
     Environment* env;
     const peg::Ast* ast;
@@ -341,7 +341,7 @@ class DapServer {
     // internal delegation's function frame into the real call it implements.
     struct UF {
       std::string name;
-      long line;
+      int64_t line;
       std::string path;
       const peg::Ast* call_ast;
       Environment* exec;    // the function frame actually executing
@@ -356,12 +356,12 @@ class DapServer {
         ufs.back().exec = e.callee_env;  // dispatcher -> picked overload
       }
     }
-    long m = static_cast<long>(ufs.size());
+    int64_t m = static_cast<int64_t>(ufs.size());
     // Top: the current execution point in the innermost function.
     out.push_back({m ? ufs[m - 1].name : std::string("main"), cur_line_,
                    cur_path_, cur_env_, cur_ast_});
     // Each lower frame executes at the call site of the frame just above it.
-    for (long i = m - 1; i >= 1; i--) {
+    for (int64_t i = m - 1; i >= 1; i--) {
       out.push_back({ufs[i - 1].name, ufs[i].line,
                      ufs[i].path.empty() ? cur_path_ : ufs[i].path,
                      ufs[i - 1].exec, ufs[i].call_ast});
@@ -375,7 +375,7 @@ class DapServer {
   }
 
   // Resolve a 1-based DAP frame id to its env + scope AST (under mu_).
-  bool frame_target_locked(long frame_id, Environment*& env,
+  bool frame_target_locked(int64_t frame_id, Environment*& env,
                            const peg::Ast*& ast) {
     auto frames = build_frames_locked();
     if (frame_id < 1 || static_cast<size_t>(frame_id) > frames.size())
@@ -389,7 +389,7 @@ class DapServer {
     std::lock_guard<std::mutex> lk(mu_);
     auto frames = build_frames_locked();
     std::vector<Value> out;
-    long id = 1;
+    int64_t id = 1;
     for (auto& fr : frames) {
       std::string base = fr.path;
       auto slash = base.find_last_of('/');
@@ -405,7 +405,7 @@ class DapServer {
                                            .v())
                         .v());
     }
-    long total = static_cast<long>(out.size());
+    int64_t total = static_cast<long>(out.size());
     respond(req, Obj()
                      .set("stackFrames", arr(std::move(out)))
                      .set("totalFrames", L(total))
@@ -494,7 +494,7 @@ class DapServer {
 
   // The env of the requested frame (default: top), as a shared_ptr safe to use
   // after releasing mu_. The debuggee thread is parked, so this read is safe.
-  std::shared_ptr<Environment> resolve_frame(long frame_id, std::string& err) {
+  std::shared_ptr<Environment> resolve_frame(int64_t frame_id, std::string& err) {
     std::lock_guard<std::mutex> lk(mu_);
     if (!paused_) { err = "not paused"; return nullptr; }
     Environment* env = nullptr;
@@ -545,7 +545,7 @@ class DapServer {
                               : "";
     // variablesReference is the frame id (see `scopes`), so a set targets the
     // variable in the selected frame's scope, not always the top frame.
-    long frame_id = frame_id_arg(a, "variablesReference");
+    int64_t frame_id = frame_id_arg(a, "variablesReference");
     std::string err;
     auto frame = resolve_frame(frame_id, err);
     Value v;
@@ -671,7 +671,7 @@ class DapServer {
 
   // Per-statement hook (runs on the debuggee thread).
   void on_statement(const peg::Ast& ast, Environment& env, bool force) {
-    long line = static_cast<long>(ast.line);
+    int64_t line = static_cast<long>(ast.line);
     const std::string& path = ast.path;
     // The lazy stdlib preamble (Time/Args/Log/...) evaluates as statements with
     // a synthetic `<builtin>` path. Never stop there — the debugger only stops
@@ -847,7 +847,7 @@ class DapServer {
   const peg::Ast* cur_ast_ = nullptr;
   Environment* cur_env_ = nullptr;
   std::string cur_path_;
-  long cur_line_ = 0;
+  int64_t cur_line_ = 0;
   bool entered_ = false;
 
   // path -> (line -> condition). An empty condition means an unconditional

@@ -664,6 +664,9 @@ _run-tests BACKEND:
     # hand-placed retain/release forms, so migration debt can only shrink and
     # a new bare RC op fails the gate.
     run_rc_discipline() { bash tools/check_rc_discipline.sh; }
+    # Long-width ratchet: a language value that passes through a C++ `long`
+    # is 32-bit on Windows, and Linux cannot see it (there long IS int64_t).
+    run_long_width() { bash tools/check_long_width.sh; }
     run_flow_discipline() { bash tools/check_flow_discipline.sh; }
 
     # Dispatch-tag symmetry gate: the AST tag sets handled by the interp
@@ -699,6 +702,7 @@ _run-tests BACKEND:
       # Linux CI and in local dev.
       all)
         phase "rc-discipline (bare retain/release ratchet)"; run_rc_discipline
+        phase "long width (language values are int64_t, not long)"; run_long_width
         phase "flow-discipline (return-completion ratchet)"; run_flow_discipline
         phase "dispatch symmetry (eval_X vs compile_X tag sets)"; run_dispatch_symmetry
         phase "iter wiring (JitIterDrive + upstream forwarding ratchet)"; run_iter_wiring
@@ -727,6 +731,7 @@ _run-tests BACKEND:
       # check after a single edit; `all` is the pre-commit gate.
       fast)
         phase "rc-discipline (bare retain/release ratchet)"; run_rc_discipline
+        phase "long width (language values are int64_t, not long)"; run_long_width
         phase "flow-discipline (return-completion ratchet)"; run_flow_discipline
         phase "dispatch symmetry (eval_X vs compile_X tag sets)"; run_dispatch_symmetry
         phase "iter wiring (JitIterDrive + upstream forwarding ratchet)"; run_iter_wiring

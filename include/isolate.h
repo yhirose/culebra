@@ -299,7 +299,7 @@ inline std::unordered_map<long, MergeEntry>& merge_registry() {
   static std::unordered_map<long, MergeEntry> r;
   return r;
 }
-inline long chan_merge_register(
+inline int64_t chan_merge_register(
     std::vector<int64_t> ids,
     std::vector<std::shared_ptr<IsolateCore>> producers = {}) {
   int64_t id = channel_next_id().fetch_add(1, std::memory_order_relaxed);
@@ -311,7 +311,7 @@ inline void chan_drop(int64_t id, int role);  // fwd
 // Drop a merged endpoint: release the rx clone fan_in took on each source, and
 // erase the entry (releasing any producer cores — their threads are finished
 // once every source has closed, so destruction joins them). Idempotent.
-inline void chan_merge_drop(long mid) {
+inline void chan_merge_drop(int64_t mid) {
   MergeEntry e;
   {
     std::lock_guard<std::mutex> lk(merge_registry_mutex());
@@ -330,14 +330,14 @@ inline void chan_merge_drop(long mid) {
 // Both backends join through this; each then re-raises in its own throw form
 // (interp throws a Value, the JIT a CulebraException) so the surfaced error is
 // symmetric — see _jit_merged_join.
-inline std::vector<std::shared_ptr<IsolateCore>> chan_merge_producers(long mid) {
+inline std::vector<std::shared_ptr<IsolateCore>> chan_merge_producers(int64_t mid) {
   std::lock_guard<std::mutex> lk(merge_registry_mutex());
   auto it = merge_registry().find(mid);
   if (it == merge_registry().end()) return {};
   return it->second.producers;
 }
 
-inline void chan_merge_join(long mid) {
+inline void chan_merge_join(int64_t mid) {
   std::vector<std::shared_ptr<IsolateCore>> producers = chan_merge_producers(mid);
   std::optional<culebra::CulebraError> first_err;
   std::optional<Value> first_thrown;
@@ -357,7 +357,7 @@ inline void chan_merge_join(long mid) {
 inline Value make_channel_endpoint(int64_t id, int role);  // fwd (clone recurses)
 
 // Adjust an endpoint's active count (+1 on clone / in-flight send, -1 on drop).
-inline void chan_bump(long id, int role, int delta) {
+inline void chan_bump(int64_t id, int role, int delta) {
   auto core = chan_lookup(id);
   if (!core) return;
   std::lock_guard<std::mutex> lk(core->m);
@@ -446,7 +446,7 @@ inline void chan_drop(int64_t id, int role) {
 // Used by Signal.notify delivery, which (like Go's signal relay) must never
 // block — a full buffer means the program hasn't drained, so the extra signal
 // is dropped rather than wedging the delivery thread.
-inline bool channel_try_send_node(long id, sendable::SendNode node) {
+inline bool channel_try_send_node(int64_t id, sendable::SendNode node) {
   auto core = chan_lookup(id);
   if (!core) return false;
   std::lock_guard<std::mutex> lk(core->m);
@@ -484,7 +484,7 @@ inline void _signal_delivery_loop() {
         std::lock_guard<std::mutex> lk(signal_registry_mutex());
         ids = signal_channel_ids();
       }
-      for (long id : ids) {
+      for (int64_t id : ids) {
         sendable::SendNode n;
         n.kind = sendable::SendNode::K::Str;
         n.s = "SIGINT";
@@ -500,7 +500,7 @@ inline void _ensure_signal_delivery_thread() {
   std::call_once(once, [] { std::thread(_signal_delivery_loop).detach(); });
 }
 
-inline void signal_notify_register(long id) {
+inline void signal_notify_register(int64_t id) {
   chan_bump(id, /*role=*/0, +1);  // retain a runtime sender → channel stays open
   {
     std::lock_guard<std::mutex> lk(signal_registry_mutex());
@@ -524,7 +524,7 @@ inline void signal_notify_reset() {
 // Backend-neutral enqueue: the caller has already serialized the value (interp
 // or JIT) into a neutral node. Blocks while the buffer is full; interrupt- and
 // close-aware.
-inline void channel_send_node(long id, sendable::SendNode node) {
+inline void channel_send_node(int64_t id, sendable::SendNode node) {
   auto core = chan_lookup(id);
   if (!core) throw culebra::CulebraError("ChannelError", "send on a closed channel");
   std::unique_lock<std::mutex> lk(core->m);
@@ -551,14 +551,14 @@ inline void channel_send_node(long id, sendable::SendNode node) {
   }
 }
 
-inline void channel_send(long id, const Value& v) {
+inline void channel_send(int64_t id, const Value& v) {
   sendable::SerCtx sc;
   channel_send_node(id, sendable::serialize(v, sc));  // Sendable check here
 }
 
 // Block until a value is available or the channel is closed+drained. Returns
 // the dequeued (neutral) node, or nullopt when closed and empty.
-inline std::optional<sendable::SendNode> chan_pop_blocking(long id) {
+inline std::optional<sendable::SendNode> chan_pop_blocking(int64_t id) {
   auto core = chan_lookup(id);
   if (!core) return std::nullopt;
   std::unique_lock<std::mutex> lk(core->m);
@@ -585,7 +585,7 @@ inline Value chan_take(const sendable::SendNode& node) {
 
 // Block for one value. Returns nil when the channel is closed and drained
 // (for a clean end-of-stream, prefer `for x in rx`, which ends instead).
-inline Value channel_recv(long id) {
+inline Value channel_recv(int64_t id) {
   auto node = chan_pop_blocking(id);
   return node ? chan_take(*node) : Value();
 }
@@ -603,7 +603,7 @@ inline bool _isolate_finished(IsolateCore& c);  // fwd (defined after IsolateCor
 // (for the fan_in(items, fn) form) has finished — the latter covers a producer
 // that threw, since the JIT doesn't auto-drop a thrown closure's `tx` param the
 // way the interp GC does, so the channel might not have closed itself.
-inline std::optional<sendable::SendNode> chan_select_recv(long mid) {
+inline std::optional<sendable::SendNode> chan_select_recv(int64_t mid) {
   std::vector<int64_t> ids;
   std::vector<std::shared_ptr<IsolateCore>> producers;
   {
@@ -664,7 +664,7 @@ inline std::optional<sendable::SendNode> chan_select_recv(long mid) {
   }
 }
 
-inline Value channel_iter(long id) {
+inline Value channel_iter(int64_t id) {
   return _make_iterator(
       [id](std::shared_ptr<Environment>) -> std::optional<Value> {
         auto node = chan_pop_blocking(id);
@@ -689,7 +689,7 @@ inline bool _handle_drop_consumed(const Value& self) {
   return false;
 }
 
-inline Value _chan_drop_once(const Value& self, long id, int role) {
+inline Value _chan_drop_once(const Value& self, int64_t id, int role) {
   if (!_handle_drop_consumed(self)) chan_drop(id, role);
   return Value();
 }
@@ -769,7 +769,7 @@ inline Value make_merged_rx_endpoint(int64_t mid) {
 }
 
 // --- SharedBuffer handle lifecycle (mirrors the channel endpoint) ---------
-inline Value _shared_buffer_drop_once(const Value& self, long id) {
+inline Value _shared_buffer_drop_once(const Value& self, int64_t id) {
   if (!_handle_drop_consumed(self)) culebra::shared_buffer_drop(id);
   return Value();
 }
@@ -822,13 +822,13 @@ inline Value make_shared_buffer_handle(int64_t id, int64_t count) {
 
 // Register the SharedBuffer Sendable hooks (handles ship by id) once at load.
 inline bool _install_shared_buffer_hooks() {
-  sendable::sharedbuffer_extract_hook() = [](const Value& v) -> long {
+  sendable::sharedbuffer_extract_hook() = [](const Value& v) -> int64_t {
     int64_t id = v.to_object().get("__sharedbuffer_id__").to_long();
     if (!sendable::sharedval_freezing())
       culebra::shared_buffer_bump(id, +1);  // in-flight ref (skip during freeze)
     return id;
   };
-  sendable::sharedbuffer_rebuild_hook() = [](long id) -> Value {
+  sendable::sharedbuffer_rebuild_hook() = [](int64_t id) -> Value {
     culebra::shared_buffer_bump(id, +1);  // the rebuilt handle's own ref
     auto core = culebra::lookup_shared_buffer(id);
     return make_shared_buffer_handle(
@@ -1219,8 +1219,8 @@ inline void parallel_progress_coordinator(
   }
 }
 
-inline Value parallel_run(const Value& items_v, const Value& fn_v, long limit,
-                          PMode mode, long line, long col,
+inline Value parallel_run(const Value& items_v, const Value& fn_v, int64_t limit,
+                          PMode mode, int64_t line, int64_t col,
                           const Value& on_progress = Value(),
                           std::shared_ptr<Environment> parent_env = nullptr) {
   const char* who = parallel_mode_name(mode);
@@ -1421,7 +1421,7 @@ inline Value make_isolate_namespace() {
           [](std::shared_ptr<Environment> env) -> Value {
             const Value& fnv = env->get("fn");
             int64_t line = env->has("__LINE__") ? env->get("__LINE__").to_long() : 0;
-            long col =
+            int64_t col =
                 env->has("__COLUMN__") ? env->get("__COLUMN__").to_long() : 0;
             if (fnv.type != Value::Function) {
               throw culebra::CulebraError(

@@ -247,7 +247,7 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
   constexpr std::string_view kBytes = "Bytes<";
   if (t.starts_with(kBytes) && t.ends_with(">")) {
     auto nstr = _packable_trim(t.substr(kBytes.size(), t.size() - kBytes.size() - 1));
-    long n = 0;
+    int64_t n = 0;
     auto [ptr, ec] =
         std::from_chars(nstr.data(), nstr.data() + nstr.size(), n);
     if (ec != std::errc() || ptr != nstr.data() + nstr.size() || n <= 0)
@@ -266,7 +266,7 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
   constexpr std::string_view kFS = "FixedString<";
   if (t.starts_with(kFS) && t.ends_with(">")) {
     auto nstr = _packable_trim(t.substr(kFS.size(), t.size() - kFS.size() - 1));
-    long n = 0;
+    int64_t n = 0;
     auto [ptr, ec] =
         std::from_chars(nstr.data(), nstr.data() + nstr.size(), n);
     if (ec != std::errc() || ptr != nstr.data() + nstr.size() || n <= 0)
@@ -291,7 +291,7 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
     auto nstr = _packable_trim(inner.substr(comma + 1));
     auto ei = packable_type_info(elem);
     if (ei.size == 0) return {};
-    long n = 0;
+    int64_t n = 0;
     auto [ptr, ec] = std::from_chars(nstr.data(), nstr.data() + nstr.size(), n);
     if (ec != std::errc() || ptr != nstr.data() + nstr.size() || n <= 0)
       return {};
@@ -319,7 +319,7 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
     auto ki = packable_type_info(kt);
     auto vi = packable_type_info(vt);
     if (ki.size == 0 || vi.size == 0) return {};
-    long n = 0;
+    int64_t n = 0;
     auto [ptr, ec] = std::from_chars(nstr.data(), nstr.data() + nstr.size(), n);
     if (ec != std::errc() || ptr != nstr.data() + nstr.size() || n <= 0)
       return {};
@@ -346,7 +346,7 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
     auto nstr = _packable_trim(inner.substr(comma + 1));
     auto ei = packable_type_info(elem);
     if (ei.size == 0) return {};  // element must be a fixed scalar
-    long n = 0;
+    int64_t n = 0;
     auto [ptr, ec] =
         std::from_chars(nstr.data(), nstr.data() + nstr.size(), n);
     if (ec != std::errc() || ptr != nstr.data() + nstr.size() || n <= 0)
@@ -658,7 +658,7 @@ struct SharedBufferCore {
   // bytes — is reclaimed when the last handle drops. Crossing an isolate
   // boundary bumps it (the child gets its own handle); a transient in-flight
   // bump covers the serialize→rebuild gap. Mirrors ChannelCore.tx_count.
-  long refcount = 0;
+  int64_t refcount = 0;
 
   SharedBufferCore() = default;
   SharedBufferCore(const SharedBufferCore&) = delete;  // only held by shared_ptr
@@ -702,7 +702,7 @@ inline void shared_lock_init(SharedBufferCore& core) {
 // only a racing file reopener actually waits.
 inline void shared_lock_wait_ready(SharedBufferCore& core) {
   std::atomic_ref<uint32_t> ready(shared_lock_header(core)->ready);
-  for (long i = 0; ready.load(std::memory_order_acquire) != 1; ++i) {
+  for (int64_t i = 0; ready.load(std::memory_order_acquire) != 1; ++i) {
     if (i > kInitSpinLimit) {
       throw CulebraError("IOError",
           "SharedBuffer: timed out waiting for the lock to initialize");
@@ -758,13 +758,13 @@ inline std::atomic<long>& shared_buffer_next_id() {
   static std::atomic<long> id{1};
   return id;
 }
-inline long register_shared_buffer(std::shared_ptr<SharedBufferCore> core) {
-  long id = shared_buffer_next_id().fetch_add(1, std::memory_order_relaxed);
+inline int64_t register_shared_buffer(std::shared_ptr<SharedBufferCore> core) {
+  int64_t id = shared_buffer_next_id().fetch_add(1, std::memory_order_relaxed);
   std::lock_guard<std::mutex> lk(shared_buffer_mutex());
   shared_buffer_registry()[id] = std::move(core);
   return id;
 }
-inline std::shared_ptr<SharedBufferCore> lookup_shared_buffer(long id) {
+inline std::shared_ptr<SharedBufferCore> lookup_shared_buffer(int64_t id) {
   std::lock_guard<std::mutex> lk(shared_buffer_mutex());
   auto it = shared_buffer_registry().find(id);
   return it == shared_buffer_registry().end() ? nullptr : it->second;
@@ -774,7 +774,7 @@ inline std::shared_ptr<SharedBufferCore> lookup_shared_buffer(long id) {
 // `layout`, register it (refcount 1 for the handle the caller builds), and
 // return its id. Pure metadata + raw bytes (no Value / JitValue), so interp
 // and JIT share this construction.
-inline long make_shared_buffer(const PackableLayout& layout,
+inline int64_t make_shared_buffer(const PackableLayout& layout,
                                std::string class_name, size_t count) {
   auto core = std::make_shared<SharedBufferCore>();
   core->byte_size = layout.stride * count;
@@ -805,7 +805,7 @@ inline std::string share_env_key(std::string_view name) {
 // user deletes it like any file. The process that wins an exclusive create
 // initializes the lock; everyone else waits for it. Throws IOError on an OS
 // failure.
-inline long make_shared_buffer_file(const PackableLayout& layout,
+inline int64_t make_shared_buffer_file(const PackableLayout& layout,
                                     std::string class_name, size_t count,
                                     const std::string& path) {
   size_t bytes = kLockHeader + layout.stride * count;
@@ -828,7 +828,7 @@ inline long make_shared_buffer_file(const PackableLayout& layout,
     }
   } else {
     // The creator may still be sizing the file; wait until it's big enough.
-    for (long i = 0;; ++i) {
+    for (int64_t i = 0;; ++i) {
       struct stat st;
       if (::fstat(fd, &st) == 0 && static_cast<size_t>(st.st_size) >= bytes)
         break;
@@ -902,7 +902,7 @@ inline int make_anon_shm_fd(size_t bytes) {
 // make_shared_buffer_receive (owns the fd it inherited). The caller initializes
 // or waits on the lock; the core closes the fd + munmaps in its destructor
 // either way. Throws IOError on a map failure.
-inline long _adopt_shared_fd(const PackableLayout& layout,
+inline int64_t _adopt_shared_fd(const PackableLayout& layout,
                              std::string class_name, size_t count, int fd,
                              size_t bytes) {
   void* p = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
@@ -928,11 +928,11 @@ inline long _adopt_shared_fd(const PackableLayout& layout,
 // fd lives in the core and ships to the child by number. The parent is the
 // creator, so it initializes the lock before any child can fork. Throws
 // IOError on an OS failure.
-inline long make_shared_buffer_shared(const PackableLayout& layout,
+inline int64_t make_shared_buffer_shared(const PackableLayout& layout,
                                       std::string class_name, size_t count) {
   size_t bytes = kLockHeader + layout.stride * count;
   int fd = make_anon_shm_fd(bytes);
-  long id = _adopt_shared_fd(layout, std::move(class_name), count, fd, bytes);
+  int64_t id = _adopt_shared_fd(layout, std::move(class_name), count, fd, bytes);
   shared_lock_init(*lookup_shared_buffer(id));
   return id;
 }
@@ -941,10 +941,10 @@ inline long make_shared_buffer_shared(const PackableLayout& layout,
 // byte size are the parent's (passed through the environment); this only maps
 // the bytes and waits for the parent-initialized lock. Throws IOError on a map
 // failure.
-inline long make_shared_buffer_receive(const PackableLayout& layout,
+inline int64_t make_shared_buffer_receive(const PackableLayout& layout,
                                        std::string class_name, size_t count,
                                        int fd) {
-  long id = _adopt_shared_fd(layout, std::move(class_name), count, fd,
+  int64_t id = _adopt_shared_fd(layout, std::move(class_name), count, fd,
                              kLockHeader + layout.stride * count);
   shared_lock_wait_ready(*lookup_shared_buffer(id));
   return id;
@@ -965,7 +965,7 @@ inline std::string share_env_value(int fd, size_t bytes, size_t stride,
 // isolate-local, and a file buffer is shared by re-opening its path. The fd
 // isn't touched here (CLOEXEC is cleared in the child, for that child only).
 // Throws ValueError on a dropped or wrong-storage buffer.
-inline std::pair<int, std::string> prepare_share_buffer(long id,
+inline std::pair<int, std::string> prepare_share_buffer(int64_t id,
                                                         std::string_view name) {
   auto core = lookup_shared_buffer(id);
   if (!core) {
@@ -990,7 +990,7 @@ inline std::pair<int, std::string> prepare_share_buffer(long id,
 // record stride against this process's @packable layout (a cheap drift guard),
 // then mmap the inherited fd. `count` is the parent's — the child never states
 // it. Throws ValueError if the name isn't present or the layouts disagree.
-inline long make_shared_buffer_from_share_env(const PackableLayout& layout,
+inline int64_t make_shared_buffer_from_share_env(const PackableLayout& layout,
                                               std::string class_name,
                                               std::string_view name) {
   std::string key = share_env_key(name);
@@ -1042,7 +1042,7 @@ inline unsigned _win_shm_seq() {
 // `data` past the lock header, and adopts the handles. On a null mutex or map
 // failure it closes the handles and throws IOError. Shared by the File / Shared
 // / receive constructors so they agree on the offset math and handle ownership.
-inline long _win_adopt_mapping(const PackableLayout& layout,
+inline int64_t _win_adopt_mapping(const PackableLayout& layout,
                                std::string class_name, size_t count,
                                size_t bytes, HANDLE hMap, HANDLE hFile,
                                HANDLE hMutex,
@@ -1096,7 +1096,7 @@ inline std::pair<DWORD, DWORD> _win_size_hilo(size_t bytes) {
 // index), not its path spelling, so processes opening the file under different
 // paths still share one mutex — the robustness the POSIX in-region mutex gave
 // for free. Throws IOError on an OS failure.
-inline long make_shared_buffer_file(const PackableLayout& layout,
+inline int64_t make_shared_buffer_file(const PackableLayout& layout,
                                     std::string class_name, size_t count,
                                     const std::string& path) {
   size_t bytes = kLockHeader + layout.stride * count;
@@ -1143,7 +1143,7 @@ inline long make_shared_buffer_file(const PackableLayout& layout,
 // region shared with child processes by name (Proc `share:`). The mapping and
 // its with_lock mutex get per-process-unique names; the child opens them by
 // name (no HANDLE inheritance). Throws IOError on an OS failure.
-inline long make_shared_buffer_shared(const PackableLayout& layout,
+inline int64_t make_shared_buffer_shared(const PackableLayout& layout,
                                       std::string class_name, size_t count) {
   size_t bytes = kLockHeader + layout.stride * count;
   unsigned seq = _win_shm_seq();
@@ -1170,7 +1170,7 @@ inline long make_shared_buffer_shared(const PackableLayout& layout,
 // object names contain backslashes). The fd slot is unused on Windows (the
 // child opens by name, not by an inherited handle), so it returns -1. Throws
 // ValueError on a dropped or wrong-storage buffer.
-inline std::pair<int, std::string> prepare_share_buffer(long id,
+inline std::pair<int, std::string> prepare_share_buffer(int64_t id,
                                                         std::string_view name) {
   auto core = lookup_shared_buffer(id);
   if (!core) {
@@ -1198,7 +1198,7 @@ inline std::pair<int, std::string> prepare_share_buffer(long id,
 // open the named mapping + mutex and map the region. `count` is the parent's.
 // Throws ValueError if the name isn't present or the layouts disagree, IOError
 // if the named objects can't be opened.
-inline long make_shared_buffer_from_share_env(const PackableLayout& layout,
+inline int64_t make_shared_buffer_from_share_env(const PackableLayout& layout,
                                               std::string class_name,
                                               std::string_view name) {
   std::string key = share_env_key(name);
@@ -1263,7 +1263,7 @@ inline long make_shared_buffer_from_share_env(const PackableLayout& layout,
 
 // Flush a file-backed buffer's dirty pages to disk. No-op for Heap and Shared
 // (RAM-backed): only a File buffer has anything to sync.
-inline void shared_buffer_flush(long id) {
+inline void shared_buffer_flush(int64_t id) {
   auto core = lookup_shared_buffer(id);
   if (core && core->storage != SharedBufferCore::Storage::Heap &&
       core->map_base && core->byte_size) {
@@ -1281,7 +1281,7 @@ inline void shared_buffer_flush(long id) {
 
 // Adjust a buffer's live-handle count (+1 on cross-isolate transfer / rebuild,
 // in-flight protection during serialization).
-inline void shared_buffer_bump(long id, long delta) {
+inline void shared_buffer_bump(int64_t id, int64_t delta) {
   std::lock_guard<std::mutex> lk(shared_buffer_mutex());
   auto it = shared_buffer_registry().find(id);
   if (it != shared_buffer_registry().end()) it->second->refcount += delta;
@@ -1290,7 +1290,7 @@ inline void shared_buffer_bump(long id, long delta) {
 // Drop one handle; reclaim the core (freeing its bytes) when the count hits 0.
 // The shared_ptr is released outside the registry lock so a concurrent
 // lookup that still holds a copy stays valid.
-inline void shared_buffer_drop(long id) {
+inline void shared_buffer_drop(int64_t id) {
   std::shared_ptr<SharedBufferCore> dead;
   {
     std::lock_guard<std::mutex> lk(shared_buffer_mutex());

@@ -493,7 +493,7 @@ struct InterpGC {
   // DAP server collapses such synthetic frames into the user-visible call.
   struct DapFrame {
     std::string name;          // callee's declared name ("<anonymous>" if none)
-    long line;                 // call-site line (in the caller)
+    int64_t line;                 // call-site line (in the caller)
     std::string path;          // call-site source path (empty = use cur path)
     const peg::Ast* call_ast;  // call expression node (null = internal call)
     Environment* caller_env;   // scope that made the call
@@ -504,7 +504,7 @@ struct InterpGC {
     dap_tracking_ = on;
     dap_frames_.clear();
   }
-  void dap_push_frame(std::string name, long line, std::string path,
+  void dap_push_frame(std::string name, int64_t line, std::string path,
                       const peg::Ast* call_ast, Environment* caller_env) {
     dap_frames_.push_back({std::move(name), line, std::move(path), call_ast,
                            caller_env, nullptr});
@@ -673,7 +673,7 @@ struct FunctionValue {
   // Exact gc_refs multiplicity of this fn's `def_env` edge: 2 when `eval`
   // also captures it (two shared_ptr refs), else 1. Single source for the
   // cycle collector — under-count leaks, over-count is a use-after-free.
-  long def_env_multiplicity() const { return eval_captures_def_env ? 2L : 1L; }
+  int64_t def_env_multiplicity() const { return eval_captures_def_env ? 2 : 1; }
   // Declared name for introspection (`fn.name`). Empty for anonymous
   // expressions (lambdas, `fn (x) { ... }`). Set by the caller after
   // construction so stdlib FunctionValues stay one-liners. Owned
@@ -707,7 +707,7 @@ struct FunctionValue {
   // is defined later — so eval_multifn_decl bakes this predicate, closing
   // over the shared (live) method table so later overloads are reflected.
   // Empty for non-dispatchers.
-  std::function<bool(long expected)> multimethod_accepts_arity;
+  std::function<bool(int64_t expected)> multimethod_accepts_arity;
   // Cycle-collector hook: enumerates each overload body's captured def_env
   // with the body's own multiplicity (2 when the body's `eval` also captures
   // it). A nested `fn name` closes over its activation env, but the body
@@ -715,7 +715,7 @@ struct FunctionValue {
   // reach that edge by walking values — without it the dispatcher↔env cycle
   // leaks (a fresh body + captured locals per call). Baked in
   // eval_multifn_decl where MultiMethod is visible; empty for non-dispatchers.
-  std::function<void(const std::function<void(Environment*, long)>&)>
+  std::function<void(const std::function<void(Environment*, int64_t)>&)>
       multimethod_for_each_body_env;
   // Cycle-collector hook: a closure can capture Values the value-walk can't
   // otherwise reach. A class constructor's instance methods live inside
@@ -2149,7 +2149,7 @@ struct DapFrameGuard {
 // closure capture IS an escape.
 inline int64_t _owned_scope_binding_refs(const Environment& env,
                                       const OrderedSymbolMap* m) {
-  long n = 0;
+  int64_t n = 0;
   for (const auto& [_, sym] : env.dictionary) {
     if (sym.val.type == Value::Object &&
         sym.val.to_object().properties.get() == m) {
@@ -2179,7 +2179,7 @@ inline int64_t _owned_scope_binding_refs(const Environment& env,
 // discovers nodes lazily from Values (only its candidates have entries to read
 // them back from) and must expand each new node with gc_for_each_child; collect
 // ignores them (it already holds the locked shared_ptrs).
-template <class Emit>  // Emit(GcKind kind, void* primary, long use_count,
+template <class Emit>  // Emit(GcKind kind, void* primary, int64_t use_count,
                        //      void* side1, void* side2)
 inline void gc_for_each_container_backing(const Value& v, Emit&& emit) {
   // Pointer and use_count always come from the same shared_ptr.
@@ -2333,8 +2333,8 @@ inline void _owned_resolve_ambiguous(
     const std::unordered_set<const void*>* garbage,
     std::vector<char>& drop_it) {
   struct Node {
-    long use_count = 0;
-    long explained = 0;          // subgraph edges + bindings + our locks
+    int64_t use_count = 0;
+    int64_t explained = 0;       // subgraph edges + bindings + our locks
     bool force_pin = false;      // self-captured env (see above)
     bool force_explained = false;  // proven-garbage env: never pins
     bool is_env = false;         // Environment node (see cycle split below)
@@ -2367,7 +2367,7 @@ inline void _owned_resolve_ambiguous(
 
   // Discover-or-find a node for a shared container. `inserted` tells the
   // caller it must expand the container's children exactly once.
-  auto add_node = [&](const void* p, long use_count, bool& inserted) {
+  auto add_node = [&](const void* p, int64_t use_count, bool& inserted) {
     auto [it, fresh] = index.try_emplace(p, nodes.size());
     inserted = fresh;
     if (fresh) {
@@ -2393,7 +2393,7 @@ inline void _owned_resolve_ambiguous(
     // InterpGC::collect (GAP2); this collector supplies the node bookkeeping.
     const bool binding_root = (from == npos || nodes[from].is_env);
     gc_for_each_container_backing(
-        v, [&](GcKind kind, void* primary, long uc, void* side1, void* side2) {
+        v, [&](GcKind kind, void* primary, int64_t uc, void* side1, void* side2) {
           bool fresh;
           size_t id = add_node(primary, uc, fresh);
           // Held by a binding: the exiting scope's (from == npos) or a
@@ -2416,7 +2416,7 @@ inline void _owned_resolve_ambiguous(
         // once per table, but out-edges on every occurrence (a missed
         // out-edge could under-pin; a missed explained ref only pins).
         const auto& fv = v.template get<FunctionValue>();
-        auto env_edge = [&](const std::shared_ptr<Environment>& e, long mult,
+        auto env_edge = [&](const std::shared_ptr<Environment>& e, int64_t mult,
                             auto&& wv) -> void {
           if (!e) return;
           bool fresh;
@@ -2471,10 +2471,10 @@ inline void _owned_resolve_ambiguous(
         if (fv.multimethod_table) {
           bool table_fresh = mm_seen.insert(fv.multimethod_table.get()).second;
           if (fv.multimethod_for_each_body_env) {
-            fv.multimethod_for_each_body_env([&](Environment* e, long mult) {
+            fv.multimethod_for_each_body_env([&](Environment* e, int64_t mult) {
               if (!e) return;
               // weak_from_this: read the owner count without a +1.
-              long uc = static_cast<long>(e->weak_from_this().use_count());
+              int64_t uc = static_cast<long>(e->weak_from_this().use_count());
               bool fresh;
               size_t id = add_node(e, uc, fresh);
               nodes[id].is_env = true;
@@ -2678,7 +2678,7 @@ inline void _owned_process_scope_exit(
     // plus our lock — unreachable once the scope is gone, and firing in
     // the desc-id release group matches the JIT's reverse-declaration
     // slot release. No traversal.
-    long scope_refs =
+    int64_t scope_refs =
         credit_bindings ? _owned_scope_binding_refs(*env, pending[i].sp.get())
                         : 0;
     if (pending[i].sp.use_count() == scope_refs + 1) {
@@ -3715,7 +3715,7 @@ inline const Value* _iter_protocol_member(const Value& iter_val,
 // it. The for-in head calls this with the iterable expression's position;
 // the JIT's culebra_runtime_iter_protocol_open is the twin, so a broken
 // iterator reports the same error on every backend.
-inline void _check_iter_protocol(const Value& iter_val, long line, long col) {
+inline void _check_iter_protocol(const Value& iter_val, int64_t line, int64_t col) {
   if (iter_val.type != Value::Object) throw_iter_not_object(line, col);
   if (!_iter_protocol_member(iter_val, "has_next") ||
       !_iter_protocol_member(iter_val, "next")) {
@@ -4201,7 +4201,7 @@ inline void bind_callback_params(Environment& frame, const FunctionValue& f,
 // empty receiver still errors symmetrically. Position is left unset for the
 // eval wrapper to backfill from the call site, matching the JIT's call-site
 // line/col.
-inline void check_callback_arity(const FunctionValue& f, long expected,
+inline void check_callback_arity(const FunctionValue& f, int64_t expected,
                                  std::string_view method) {
   // A multimethod dispatcher accepts the callback if ANY overload can be
   // invoked with `expected` positional args; the per-element call then
@@ -4216,7 +4216,7 @@ inline void check_callback_arity(const FunctionValue& f, long expected,
     return;
   }
   auto b = builtin_arity_bounds(*f.params);
-  long cb_max = b.variadic ? -1 : b.max;
+  int64_t cb_max = b.variadic ? -1 : b.max;
   if (!callback_arity_accepts(b.min, cb_max, expected)) {
     throw CulebraError("TypeError",
         std::format("type error: {} expects a {}-parameter function",
@@ -4562,6 +4562,7 @@ inline Value cpp_to_value(Value v)       { return v; }
 // then means "no annotation" (any).
 template <class T> constexpr std::string_view type_annotation_for() { return {}; }
 template <> constexpr std::string_view type_annotation_for<long>()              { return "Long"; }
+template <> constexpr std::string_view type_annotation_for<long long>()         { return "Long"; }
 template <> constexpr std::string_view type_annotation_for<int>()               { return "Long"; }
 template <> constexpr std::string_view type_annotation_for<double>()            { return "Float"; }
 template <> constexpr std::string_view type_annotation_for<float>()             { return "Float"; }
@@ -4670,7 +4671,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                                            static_cast<long>(vs.size()));
              ArrayValue out;
              out.values->reserve(e - s);
-             for (long i = s; i < e; i++) out.values->push_back(vs[i]);
+             for (int64_t i = s; i < e; i++) out.values->push_back(vs[i]);
              return Value(std::move(out));
            }))},
       {"join"sv,
@@ -4723,7 +4724,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
       {"enumerate"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          auto vec = callEnv->get("self").to_array().values;
-         auto index = std::make_shared<long>(0);
+         auto index = std::make_shared<int64_t>(0);
          return _make_iterator([vec, index](std::shared_ptr<Environment>) {
            if (static_cast<size_t>(*index) >= vec->size()) {
              return _iter_step_done();
@@ -5946,7 +5947,7 @@ inline std::unordered_map<std::string_view, IterBuiltin>& iterator_builtins() {
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
          auto limit = callEnv->get("n").to_long();
-         auto count = std::make_shared<long>(0);
+         auto count = std::make_shared<int64_t>(0);
          return _make_iterator(
              [upstream, limit, count](std::shared_ptr<Environment>) {
                if (*count >= limit) return _iter_step_done();
@@ -5967,7 +5968,7 @@ inline std::unordered_map<std::string_view, IterBuiltin>& iterator_builtins() {
              [upstream, limit, skipped](std::shared_ptr<Environment>) {
                if (!*skipped) {
                  *skipped = true;
-                 for (long i = 0; i < limit; i++) {
+                 for (int64_t i = 0; i < limit; i++) {
                    if (!_iter_next_value(upstream)) return _iter_step_done();
                  }
                }
@@ -6114,7 +6115,7 @@ inline std::unordered_map<std::string_view, IterBuiltin>& iterator_builtins() {
          return _make_iterator(
              [upstream, step, started](std::shared_ptr<Environment>) {
                if (*started) {
-                 for (long i = 1; i < step; i++) {
+                 for (int64_t i = 1; i < step; i++) {
                    if (!_iter_next_value(upstream)) return _iter_step_done();
                  }
                }
@@ -6180,7 +6181,7 @@ inline std::unordered_map<std::string_view, IterBuiltin>& iterator_builtins() {
          return _make_iterator(
              [upstream, size](std::shared_ptr<Environment>) {
                ArrayValue chunk;
-               for (long i = 0; i < size; i++) {
+               for (int64_t i = 0; i < size; i++) {
                  auto v = _iter_next_value(upstream);
                  if (!v) break;
                  chunk.values->push_back(std::move(*v));
@@ -6294,7 +6295,7 @@ inline std::unordered_map<std::string_view, IterBuiltin>& iterator_builtins() {
       {"enumerate"sv,
        {Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("self");
-         auto index = std::make_shared<long>(0);
+         auto index = std::make_shared<int64_t>(0);
          return _make_iterator(
              [upstream, index](std::shared_ptr<Environment>) {
                auto v = _iter_next_value(upstream);
@@ -6430,7 +6431,7 @@ inline std::unordered_map<std::string_view, IterBuiltin>& iterator_builtins() {
                               callEnv->get("__LINE__").to_long(),
                               callEnv->get("__COLUMN__").to_long());
          }
-         for (long i = 0; i < n; i++) {
+         for (int64_t i = 0; i < n; i++) {
            if (!_iter_next_value(upstream)) return Value();
          }
          auto v = _iter_next_value(upstream);
@@ -7929,7 +7930,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // Expose each overload body's def_env edge to the cycle collector
     // (see FunctionValue::multimethod_for_each_body_env).
     fv.multimethod_for_each_body_env =
-        [methods](const std::function<void(Environment*, long)>& emit) {
+        [methods](const std::function<void(Environment*, int64_t)>& emit) {
           for (auto& m : *methods) {
             if (m.body.type != Value::Function) continue;
             auto& bfv = m.body.get<FunctionValue>();
@@ -7950,9 +7951,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // args. Closes over the shared `methods` table so overloads appended after
     // this decl are reflected without rebuilding the predicate.
     fv.multimethod_accepts_arity =
-        [methods](long expected) {
+        [methods](int64_t expected) {
           for (const auto& m : *methods) {
-            long cb_max = m.variadic ? -1 : static_cast<long>(m.param_types.size());
+            int64_t cb_max = m.variadic ? -1 : static_cast<long>(m.param_types.size());
             if (callback_arity_accepts(static_cast<long>(m.min_params), cb_max,
                                        expected))
               return true;
@@ -8344,22 +8345,22 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     f.offset = 0;
     return f;
   }
-  static uint8_t* fa_elem_ptr(const FaView& v, long i) {
+  static uint8_t* fa_elem_ptr(const FaView& v, int64_t i) {
     return v.core->data + v.off + v.dataoff + i * v.esize;
   }
   static bool is_fixed_array_view(const Value& v) {
     return v.type == Value::Object && v.to_object().has("__fa_id__");
   }
-  static Value fa_get(const Value& view, long i) {
+  static Value fa_get(const Value& view, int64_t i) {
     auto v = fa_resolve(view);
-    long n = fa_len(v);
+    int64_t n = fa_len(v);
     if (i < 0) i += n;
     if (i < 0 || i >= n) throw CulebraError("IndexError", "index out of range");
     return packable_read_field(fa_elem_ptr(v, i), fa_elem_field(v));
   }
-  static void fa_set(const Value& view, long i, const Value& val) {
+  static void fa_set(const Value& view, int64_t i, const Value& val) {
     auto v = fa_resolve(view);
-    long n = fa_len(v);
+    int64_t n = fa_len(v);
     if (i < 0) i += n;
     if (i < 0 || i >= n) throw CulebraError("IndexError", "index out of range");
     packable_write_field(fa_elem_ptr(v, i), fa_elem_field(v), val);
@@ -8385,7 +8386,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     h.initialize("push", Value(FunctionValue({{"v", false, ""sv}},
         [](std::shared_ptr<Environment> e) -> Value {
           auto v = fa_resolve(e->get("self"));
-          long n = fa_len(v);
+          int64_t n = fa_len(v);
           if (n >= v.cap)
             throw CulebraError("IndexError",
                 std::format("FixedArray is full (capacity {})", v.cap));
@@ -8405,7 +8406,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     h.initialize("iter", Value(FunctionValue({},
         [](std::shared_ptr<Environment> e) {
           Value self = e->get("self");
-          auto idx = std::make_shared<long>(0);
+          auto idx = std::make_shared<int64_t>(0);
           return _make_iterator(
               [self, idx](std::shared_ptr<Environment>) -> std::optional<Value> {
                 auto v = fa_resolve(self);
@@ -8439,7 +8440,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   static int64_t fs_count(const FsView& v) {
     int32_t n; std::memcpy(&n, v.core->data + v.off, 4); return n;
   }
-  static void fs_set_count(const FsView& v, long n) {
+  static void fs_set_count(const FsView& v, int64_t n) {
     int32_t x = static_cast<int32_t>(n);
     std::memcpy(v.core->data + v.off, &x, 4);
   }
@@ -8511,12 +8512,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     h.initialize("iter", Value(FunctionValue({},
         [](std::shared_ptr<Environment> e) {
           Value self = e->get("self");
-          auto idx = std::make_shared<long>(0);
+          auto idx = std::make_shared<int64_t>(0);
           return _make_iterator(
               [self, idx](std::shared_ptr<Environment>) -> std::optional<Value> {
                 auto v = fs_resolve(self);
                 while (*idx < v.cap) {
-                  long i = (*idx)++;
+                  int64_t i = (*idx)++;
                   if (fs_states(v)[i] == culebra::kFixedFull)
                     return _iter_step_value(
                         packable_read_field(fs_vals(v) + i * v.esize,
@@ -8549,7 +8550,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   static int64_t fm_count(const FmView& v) {
     int32_t n; std::memcpy(&n, v.core->data + v.off, 4); return n;
   }
-  static void fm_set_count(const FmView& v, long n) {
+  static void fm_set_count(const FmView& v, int64_t n) {
     int32_t x = static_cast<int32_t>(n);
     std::memcpy(v.core->data + v.off, &x, 4);
   }
@@ -8559,7 +8560,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   static culebra::PackableField fm_field(const std::string& t) {
     culebra::PackableField f; f.type = t; f.offset = 0; return f;
   }
-  static std::vector<uint8_t> fm_enc(const std::string& t, long sz,
+  static std::vector<uint8_t> fm_enc(const std::string& t, int64_t sz,
                                      const Value& val) {
     std::vector<uint8_t> buf(sz, 0);
     packable_write_field(buf.data(), fm_field(t), val);
@@ -8639,7 +8640,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         [](std::shared_ptr<Environment> e) {
           auto v = fm_resolve(e->get("self"));
           ArrayValue arr;
-          for (long i = 0; i < v.cap; i++)
+          for (int64_t i = 0; i < v.cap; i++)
             if (fm_states(v)[i] == culebra::kFixedFull)
               arr.values->push_back(packable_read_field(
                   fm_keys(v) + i * v.ksize, fm_field(v.ktype)));
@@ -8648,12 +8649,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     h.initialize("iter", Value(FunctionValue({},
         [](std::shared_ptr<Environment> e) {
           Value self = e->get("self");
-          auto idx = std::make_shared<long>(0);
+          auto idx = std::make_shared<int64_t>(0);
           return _make_iterator(
               [self, idx](std::shared_ptr<Environment>) -> std::optional<Value> {
                 auto v = fm_resolve(self);
                 while (*idx < v.cap) {
-                  long i = (*idx)++;
+                  int64_t i = (*idx)++;
                   if (fm_states(v)[i] == culebra::kFixedFull) {
                     Value k = packable_read_field(fm_keys(v) + i * v.ksize,
                                                   fm_field(v.ktype));
@@ -9475,7 +9476,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                            static_cast<long>(call_column));
       }
       if (!b.variadic) {
-        long got = static_cast<long>(args.positional.size());
+        int64_t got = static_cast<long>(args.positional.size());
         if (got < b.min || got > b.max) {
           // Too few → report the required count (b.min); too many → the cap
           // (b.max). Reporting b.max for too-few was misleading for methods
@@ -9671,7 +9672,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         // reach here, so the node count is the positional count.
         if (fn.builtin_arity_checked) {
           auto b = builtin_arity_bounds(*fn.params);
-          long argc = static_cast<long>(ast.nodes.size());
+          int64_t argc = static_cast<long>(ast.nodes.size());
           if (argc < b.min || (!b.variadic && argc > b.max)) {
             throw CulebraError("ArityError",
                 builtin_arity_error_message(fn.name, b.min, b.max, argc),
@@ -9734,7 +9735,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     };
     if (key.type == Value::Long) {
       const auto& groups = *m.get("groups").to_array().values;
-      long n = static_cast<long>(groups.size());
+      int64_t n = static_cast<long>(groups.size());
       int64_t i = key.to_long();
       if (i < 0) i += n;
       if (i < 0 || i >= n) return Value();
@@ -10163,8 +10164,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       // position matches the JIT — whose runtime property read carries the
       // enclosing expression's position, not the member token's. Falls back to
       // the member (DOT) position when the receiver node isn't threaded in.
-      long line = recv && recv->line ? static_cast<long>(recv->line) : ast.line;
-      long col =
+      int64_t line = recv && recv->line ? static_cast<long>(recv->line) : ast.line;
+      int64_t col =
           recv && recv->column ? static_cast<long>(recv->column) : ast.column;
       throw CulebraError(
           "AttributeError",
@@ -11278,8 +11279,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // Append an iterable's elements to `out` for `[...x]` array spread.
   // MVP sources: Array / Tuple / Set (the common ones); other values
   // raise a TypeError.
-  void spread_into_array(const Value& v, ArrayValue& out, long line,
-                         long col) {
+  void spread_into_array(const Value& v, ArrayValue& out, int64_t line,
+                         int64_t col) {
     if (v.type == Value::Array) {
       for (auto& e : *v.to_array().values) out.values->push_back(e);
     } else if (v.type == Value::Tuple) {
@@ -11351,7 +11352,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // the spec's type char (`.2f` formats a Long as Float, `x` an int in
   // hex); everything else formats its display string (width / align).
   std::string apply_format_spec(const Value& v, std::string_view spec,
-                                long line, long col) {
+                                int64_t line, int64_t col) {
     if (spec.empty()) return str_display_with_special(v);
     if (v.type == Value::Long) {
       if (format_spec_wants_float(spec))
@@ -11782,7 +11783,7 @@ inline void InterpGC::collect(Environment* current) {
   // lookup. A node is registered exactly once (§3b track-once); assert it in
   // debug builds — a duplicate would double-subtract and free a live node.
   struct Node {
-    long refs;
+    int64_t refs;
     GcKind kind;
     void* side1;
     void* side2;
@@ -11826,7 +11827,7 @@ inline void InterpGC::collect(Environment* current) {
       // Container backings (Object/Array/Tuple/Set; synthetic views and Tensor
       // emit nothing) — single-sourced with _owned_resolve_ambiguous.
       gc_for_each_container_backing(
-          val, [&](GcKind, void* p, long, void*, void*) { emit(p, 1L); });
+          val, [&](GcKind, void* p, long, void*, void*) { emit(p, int64_t{1}); });
       if (val.type == Value::Function) {
         auto& fv = val.template get<FunctionValue>();
         if (fv.def_env) emit(fv.def_env.get(), fv.def_env_multiplicity());
@@ -11834,7 +11835,7 @@ inline void InterpGC::collect(Environment* current) {
             (!mm_dedup || mm_dedup->insert(fv.multimethod_table.get()).second)) {
           if (fv.multimethod_for_each_body_env)
             fv.multimethod_for_each_body_env(
-                [&emit](Environment* e, long mult) { emit(e, mult); });
+                [&emit](Environment* e, int64_t mult) { emit(e, mult); });
           if (fv.introspection_target && fv.introspection_target->def_env)
             emit(fv.introspection_target->def_env.get(),
                  fv.introspection_target->def_env_multiplicity());
@@ -11855,7 +11856,7 @@ inline void InterpGC::collect(Environment* current) {
       auto* e = static_cast<Environment*>(ptr);
       for (auto& [k, sym] : e->dictionary)
         emit_value_edges(sym.val, emit_value_edges);
-      if (e->outer) emit(e->outer.get(), 1L);
+      if (e->outer) emit(e->outer.get(), int64_t{1});
     } else {
       gc_for_each_child(kind, ptr, side1, side2, [&](const Value& cv) {
         emit_value_edges(cv, emit_value_edges);
@@ -11869,7 +11870,7 @@ inline void InterpGC::collect(Environment* current) {
   mm_dedup = &mm_seen;
   cap_dedup = &cap_seen;
   for (auto& l : live) {
-    walk_node(l.ptr, l.kind, l.side1, l.side2, [&](void* p, long mult) {
+    walk_node(l.ptr, l.kind, l.side1, l.side2, [&](void* p, int64_t mult) {
       auto it = gc_refs.find(p);
       if (it != gc_refs.end()) it->second.refs -= mult;
     });
@@ -11886,7 +11887,7 @@ inline void InterpGC::collect(Environment* current) {
       q.push(ptr);
     }
   }
-  auto mark = [&](void* c, long) {
+  auto mark = [&](void* c, int64_t) {
     if (reachable.insert(c).second && gc_refs.contains(c)) q.push(c);
   };
 

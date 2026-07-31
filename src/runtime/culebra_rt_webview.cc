@@ -61,7 +61,7 @@ class Window {
   void set_title(const std::string& title) {
     webview_set_title(w_, title.c_str());
   }
-  void set_size(long width, long height) {
+  void set_size(int64_t width, int64_t height) {
     webview_set_size(w_, static_cast<int>(width), static_cast<int>(height),
                      WEBVIEW_HINT_NONE);
   }

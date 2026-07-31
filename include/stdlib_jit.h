@@ -2275,14 +2275,14 @@ CULEBRA_RT_INLINE void _jit_handle_drop(JitValue* __ret, JitClosure*, int8_t sel
   if (_jit_handle_done(h)) { *__ret = {TAG_NIL, 0}; return; }
   int out_fd = static_cast<int>(_jit_handle_long(h, "_out"));
   int err_fd = static_cast<int>(_jit_handle_long(h, "_err"));
-  long pid = _jit_handle_long(h, "_pid");
+  int64_t pid = _jit_handle_long(h, "_pid");
   culebra::proc::kill_pid(pid, SIGKILL);
   culebra::proc::wait_handle(pid, out_fd, err_fd);
   h->set_or_append("_done", JitValue{TAG_BOOL, 1}, true);
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
-CULEBRA_RT_INLINE JitValue _culebra_proc_build_handle(long pid, int out_fd,
+CULEBRA_RT_INLINE JitValue _culebra_proc_build_handle(int64_t pid, int out_fd,
                                                       int err_fd) {
   auto* h = culebra_runtime_object_new();
   h->set_or_append("_pid", JitValue{TAG_LONG, pid}, true);
@@ -2411,7 +2411,7 @@ CULEBRA_RT_INLINE void _jit_file_seek(JitValue* __ret, JitClosure*, int8_t self_
 CULEBRA_RT_INLINE void _jit_file_tell(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                           int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  long pos = culebra::_file_tell(
+  int64_t pos = culebra::_file_tell(
       _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id"), 0, 0);
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_LONG, pos}; return; }
@@ -3551,7 +3551,7 @@ struct JitExtension {
   // placeholder value (unreachable: emit_throw_error is noreturn).
   static llvm::Value* emit_malformed_arg_throw(
       JIT& jit, const peg::Ast& argsAst, size_t eval_count, const char* kind,
-      const std::string& msg, long line, long col);
+      const std::string& msg, int64_t line, int64_t col);
 
   static llvm::Value* emit_output_call(JIT& jit, const char* rt_name,
                                          const peg::Ast& argsAst);
@@ -4035,7 +4035,7 @@ inline int64_t _fs_chown_id(JitValue v, const char* param, bool is_user) {
   if (v.tag == TAG_LONG) return v.data;
   if (v.tag == TAG_STRING || v.tag == TAG_STRINGVIEW) {
     std::string name(_culebra_str_view(v.tag, v.data));
-    long id = is_user ? culebra::_fs_uid_from_name(name)
+    int64_t id = is_user ? culebra::_fs_uid_from_name(name)
                       : culebra::_fs_gid_from_name(name);
     if (id < 0) {
       culebra::throw_runtime_error_at(
@@ -4751,7 +4751,7 @@ inline JitObject* _jit_http_request_to_object(const httplib::Request& q) {
 // value (interp reads these via to_long / to_string_view, same rejection).
 inline std::string _jit_http_apply_response_meta(JitObject* o,
                                                  httplib::Response& res) {
-  long status = 200;
+  int64_t status = 200;
   size_t si = o->find_slot("status");
   if (si != static_cast<size_t>(-1) && o->slots[si].value.tag != TAG_NIL) {
     JitValue v = o->slots[si].value;
@@ -5113,7 +5113,7 @@ CULEBRA_RT_INLINE void _jit_http_server_static(JitValue* __ret, JitClosure*, int
 // (serialized once here, rebuilt per worker — so they must be Sendable); the
 // accept loop never runs a handler. `async` selects background vs blocking serve.
 inline JitValue _jit_http_server_do_listen(int64_t id, std::string host,
-                                           int port, long workers, bool async) {
+                                           int port, int64_t workers, bool async) {
   auto& recs = g_jit_srv_routes[id];
   std::string err;
   {
@@ -5220,7 +5220,7 @@ inline JitValue _jit_http_server_listen_impl(JitValue self, int64_t n,
   std::string host = "0.0.0.0";
   if (_jit_file_arg_present(n, args, 1) && args[1].tag != TAG_NIL)
     host = std::string(_culebra_str_view(args[1].tag, args[1].data));
-  long workers = 0;  // 0 = CPU-scaled pool (default_http_workers)
+  int64_t workers = 0;  // 0 = CPU-scaled pool (default_http_workers)
   if (_jit_file_arg_present(n, args, 2) && args[2].tag != TAG_NIL) {
     if (args[2].tag != TAG_LONG)
       culebra::throw_type_mismatch("Long", _culebra_tag_name(args[2].tag), 0,
@@ -5384,7 +5384,7 @@ inline JitValue _ns_shared_new(JitValue* a, int64_t n) {
     throw culebra::CulebraError("SendError",
         std::format("Shared.new: {}", why));
   }
-  long id = culebra::freeze_shared_val(std::move(root));
+  int64_t id = culebra::freeze_shared_val(std::move(root));
   return _jit_make_shared_val_view(id, 0);
 }
 
@@ -5420,7 +5420,7 @@ inline JitValue _ns_sharedbuffer_new(JitValue* a, int64_t n) {
     throw culebra::CulebraError("TypeError",
         std::format("SharedBuffer.new: no @packable layout for `{}`", cname));
   }
-  long id = culebra::make_shared_buffer(*layout, std::string(cname),
+  int64_t id = culebra::make_shared_buffer(*layout, std::string(cname),
                                         static_cast<size_t>(count));
   return _jit_make_shared_buffer_handle(id, count);
 }
@@ -5462,7 +5462,7 @@ inline JitValue _ns_sharedbuffer_file(JitValue* a, int64_t n) {
     throw culebra::CulebraError("TypeError",
         std::format("SharedBuffer.file: no @packable layout for `{}`", cname));
   }
-  long id = culebra::make_shared_buffer_file(*layout, std::string(cname),
+  int64_t id = culebra::make_shared_buffer_file(*layout, std::string(cname),
                                              static_cast<size_t>(count), path);
   return _jit_make_shared_buffer_handle(id, count);
 }
@@ -5499,7 +5499,7 @@ inline JitValue _ns_sharedbuffer_shared(JitValue* a, int64_t n) {
     throw culebra::CulebraError("TypeError",
         std::format("SharedBuffer.shared: no @packable layout for `{}`", cname));
   }
-  long id = culebra::make_shared_buffer_shared(*layout, std::string(cname),
+  int64_t id = culebra::make_shared_buffer_shared(*layout, std::string(cname),
                                                static_cast<size_t>(count));
   return _jit_make_shared_buffer_handle(id, count);
 }
@@ -5533,7 +5533,7 @@ inline JitValue _ns_sharedbuffer_receive(JitValue* a, int64_t n) {
     throw culebra::CulebraError("TypeError",
         std::format("SharedBuffer.receive: no @packable layout for `{}`", cname));
   }
-  long id = culebra::make_shared_buffer_from_share_env(*layout,
+  int64_t id = culebra::make_shared_buffer_from_share_env(*layout,
                                                        std::string(cname), name);
   auto core = culebra::lookup_shared_buffer(id);
   return _jit_make_shared_buffer_handle(
@@ -7168,7 +7168,8 @@ inline bool _jit_ns_kwarg_resolve(
 // (cb_min, cb_max) from the SAME canonical params interp's check_callback_arity
 // reads (builtin_arity_bounds over _canon_params), so both backends gate an
 // ns-method callback identically. Returns false for non-ns closures.
-inline bool _jit_ns_callback_arity(JitClosure* cls, long* cb_min, long* cb_max) {
+inline bool _jit_ns_callback_arity(JitClosure* cls, int64_t* cb_min,
+                                   int64_t* cb_max) {
   if (cls->fn_ptr != reinterpret_cast<void*>(_jit_ns_method_trampoline)) {
     return false;
   }
@@ -8300,7 +8301,7 @@ struct ScannedArgs {
   std::vector<const peg::Ast*> splats;
   const char* err_kind = nullptr;  // "TypeError" | "SyntaxError" | nullptr
   std::string err_msg;
-  long err_line = 0, err_col = 0;
+  int64_t err_line = 0, err_col = 0;
   size_t err_eval_count = 0;
 };
 
@@ -9451,7 +9452,7 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
 
 inline llvm::Value* JitExtension::emit_malformed_arg_throw(
     JIT& jit, const peg::Ast& argsAst, size_t eval_count, const char* kind,
-    const std::string& msg, long line, long col) {
+    const std::string& msg, int64_t line, int64_t col) {
   CULEBRA_JIT_EXT_BODY_ALIASES(jit);
   using namespace peg::udl;
   for (size_t i = 0; i < eval_count && i < argsAst.nodes.size(); i++) {
@@ -9866,7 +9867,7 @@ inline JIT::Owned JitExtension::compile_ufcs_builtin(
     // 1 (receiver only) or 2 (receiver + start/end). More is an
     // ArityError, matching interp + the bare-call path.
     if (!bail) {
-      long total = 1 + static_cast<long>(positional.size());
+      int64_t total = 1 + static_cast<long>(positional.size());
       if (total > 2) {
         jit.emit_value_release(receiver);  // see the unknown-kwarg arm
         jit.emit_throw_error("ArityError",

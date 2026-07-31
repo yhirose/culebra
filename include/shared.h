@@ -136,8 +136,8 @@ struct sv_equal {
 // the portable path for Windows SEH funclet EH. Declared here so the ctor below
 // can call it; a no-op for anything that ignores the carrier (the interpreter).
 inline void culebra_note_pending_error(const std::string& kind,
-                                       const std::string& msg, long line,
-                                       long col);
+                                       const std::string& msg, int64_t line,
+                                       int64_t col);
 
 // Both backends throw this; try/catch machinery translates it into a
 // culebra Object with `kind`/`message`/`line`/`col` fields. Inherits
@@ -146,10 +146,10 @@ inline void culebra_note_pending_error(const std::string& kind,
 class CulebraError : public std::runtime_error {
  public:
   std::string kind;
-  long line = 0;
-  long col = 0;
+  int64_t line = 0;   // int64_t: positions round-trip through Value Longs
+  int64_t col = 0;
 
-  CulebraError(std::string k, std::string msg, long l = 0, long c = 0)
+  CulebraError(std::string k, std::string msg, int64_t l = 0, int64_t c = 0)
       : std::runtime_error(std::move(msg)),
         kind(std::move(k)),
         line(l),
@@ -240,7 +240,7 @@ inline std::string current_executable_path() {
 
 // "takes N positional argument(s) but M given" — a call overflowed the
 // positional cap of a kw-only section.
-inline std::string too_many_positionals_message(long cap, long got) {
+inline std::string too_many_positionals_message(int64_t cap, int64_t got) {
   return std::format("takes {} positional argument{} but {} given", cap,
                      cap == 1 ? "" : "s", got);
 }
@@ -290,8 +290,8 @@ inline std::string type_mismatch_message(std::string_view expected,
 // positionals are accepted and any positional overflows. Shared by
 // interp's bind_call_args, the JIT static kwargs resolver, and the JIT
 // dynamic-callee runtime guard — all three throw the same shape.
-inline void throw_if_too_many_positionals(long cap, long n_pos,
-                                           long line, long col) {
+inline void throw_if_too_many_positionals(int64_t cap, int64_t n_pos,
+                                           int64_t line, int64_t col) {
   if (cap < 0 || n_pos <= cap) return;
   throw CulebraError("TypeError", too_many_positionals_message(cap, n_pos),
                      line, col);
@@ -304,7 +304,7 @@ inline void throw_if_too_many_positionals(long cap, long n_pos,
 // count drives nothing; `min`/`max` drive the singular/plural of the
 // expected noun (no period — the printer appends ` at L:C.`).
 inline std::string builtin_arity_error_message(std::string_view method,
-                                               long min, long max, long got) {
+                                               long min, long max, int64_t got) {
   if (min == max) {
     return std::format("'{}' takes {} argument{} but {} given", method, min,
                        min == 1 ? "" : "s", got);
@@ -320,7 +320,7 @@ inline std::string builtin_arity_error_message(std::string_view method,
 // nameless message lets both backends render byte-identical text for
 // `Math.abs(1, 2)` and `let f = Math.abs; f(1, 2)` alike. Distinct from
 // builtin_arity_error_message, which names value-type *methods*.
-inline std::string ns_fn_arity_error_message(long expected, long got) {
+inline std::string ns_fn_arity_error_message(int64_t expected, int64_t got) {
   return std::format("expected {} positional argument{}, got {}", expected,
                      expected == 1 ? "" : "s", got);
 }
@@ -721,7 +721,7 @@ inline std::string url_decode(std::string_view in) {
 // Location lives in the CulebraError's line/col fields; the top-level
 // printer (src/main.cc) appends ` at L:C.` once, so messages must not
 // embed it themselves (else it prints twice).
-[[noreturn]] inline void throw_type_error_at(long line, long col) {
+[[noreturn]] inline void throw_type_error_at(int64_t line, int64_t col) {
   throw CulebraError("TypeError", "type error", line, col);
 }
 
@@ -729,7 +729,7 @@ inline std::string url_decode(std::string_view in) {
 // `compile_destructure_assign` so both backends report the same
 // structured error (`ValueError` + descriptive message + location)
 // when an Object / Array / Tuple pattern fails to match its rval.
-[[noreturn]] inline void throw_destructure_mismatch_at(long line, long col) {
+[[noreturn]] inline void throw_destructure_mismatch_at(int64_t line, int64_t col) {
   throw CulebraError("ValueError",
                      "destructure pattern did not match value", line, col);
 }
@@ -739,7 +739,7 @@ inline std::string url_decode(std::string_view in) {
 // JIT read the missing slot as nil and then threw TypeError on
 // `nil + rhs`. This helper unifies the kind + message + location.
 [[noreturn]] inline void throw_compound_missing_property_at(
-    long line, long col) {
+    int64_t line, int64_t col) {
   throw CulebraError("AttributeError",
                      "compound assignment on missing property.",
                      line, col);
@@ -749,7 +749,7 @@ inline std::string url_decode(std::string_view in) {
 // mut via the `Symbol`'s `mut` flag; the JIT carries `mut` on
 // `VarSlot` and routes here when a write hits a non-mut slot.
 [[noreturn]] inline void throw_immutable_assign_at(
-    const std::string& name, long line, long col) {
+    const std::string& name, int64_t line, int64_t col) {
   throw CulebraError("ImmutableError",
                      std::format("cannot reassign '{}' (declared without 'mut')",
                                  name),
@@ -774,7 +774,7 @@ inline std::string url_decode(std::string_view in) {
 // JIT raised at IR-emit time (uncatchable). This helper unifies them
 // to runtime throws.
 [[noreturn]] inline void throw_unknown_kwarg_at(
-    const std::string& name, long line, long col) {
+    const std::string& name, int64_t line, int64_t col) {
   throw CulebraError("TypeError", unknown_kwarg_message(name), line, col);
 }
 
@@ -782,7 +782,7 @@ inline std::string url_decode(std::string_view in) {
 // kwarg, no default). Same backend-asymmetry rationale as the unknown-
 // kwarg helper above.
 [[noreturn]] inline void throw_missing_required_arg_at(
-    const std::string& name, long line, long col) {
+    const std::string& name, int64_t line, int64_t col) {
   throw CulebraError("ArityError", missing_required_arg_message(name),
                      line, col);
 }
@@ -793,7 +793,7 @@ inline std::string url_decode(std::string_view in) {
 // to keep `try { ... } catch e { e.kind }` semantics symmetric.
 [[noreturn]] inline void throw_runtime_error_at(
     const std::string& kind, const std::string& msg,
-    long line, long col) {
+    int64_t line, int64_t col) {
   throw CulebraError(kind, msg, line, col);
 }
 
@@ -804,7 +804,7 @@ inline std::string url_decode(std::string_view in) {
 [[noreturn]] inline void throw_arith_type_error(std::string_view op,
                                                 std::string_view lhs,
                                                 std::string_view rhs,
-                                                long line = 0, long col = 0) {
+                                                int64_t line = 0, int64_t col = 0) {
   throw CulebraError("TypeError",
                      "type error: cannot apply '" + std::string(op) +
                          "' to " + std::string(lhs) + " and " +
@@ -817,8 +817,8 @@ inline std::string url_decode(std::string_view in) {
 // backends single-source from here.
 [[noreturn]] inline void throw_compare_type_error(std::string_view lhs,
                                                   std::string_view rhs,
-                                                  long line = 0,
-                                                  long col = 0) {
+                                                  int64_t line = 0,
+                                                  int64_t col = 0) {
   throw CulebraError("TypeError",
                      "type error: cannot compare " + std::string(lhs) +
                          " and " + std::string(rhs),
@@ -830,7 +830,7 @@ inline std::string url_decode(std::string_view in) {
 // guard shared between backends.
 [[noreturn]] inline void throw_type_mismatch(std::string_view expected,
                                              std::string_view got,
-                                             long line = 0, long col = 0) {
+                                             int64_t line = 0, int64_t col = 0) {
   throw CulebraError("TypeError",
                      "type error: expected " + std::string(expected) +
                          ", got " + std::string(got),
@@ -998,8 +998,8 @@ inline std::string str_tr(std::string_view s, std::string_view from,
 // String; a negative `n` is a ValueError rather than a silent empty, and an
 // oversized result is caught before the allocation is attempted. Shared by
 // the interp String method and the JIT runtime so both agree.
-inline std::string str_repeat(std::string_view s, int64_t n, long line = 0,
-                              long col = 0) {
+inline std::string str_repeat(std::string_view s, int64_t n, int64_t line = 0,
+                              int64_t col = 0) {
   if (n < 0) {
     throw CulebraError("ValueError", "repeat() n must not be negative", line,
                        col);
@@ -1471,7 +1471,8 @@ inline std::string canonicalize_type_annotation(std::string_view name) {
 
 // Parse a full string as a base-10 signed long; whitespace-trim allowed,
 // any other trailing content or invalid form throws `type error at L:C`.
-inline int64_t parse_long_strict(std::string_view s, long line, long col) {
+inline int64_t parse_long_strict(std::string_view s, int64_t line,
+                                 int64_t col) {
   auto t = trim_ascii(s);
   if (t.empty()) throw_type_error_at(line, col);
   try {
@@ -1548,7 +1549,8 @@ inline bool format_spec_wants_int(std::string_view spec) {
 // ValueError tagged with the value's culebra type name.
 template <typename T>
 inline std::string format_value_as(T& v, std::string_view type_name,
-                                   std::string_view spec, long line, long col) {
+                                   std::string_view spec, int64_t line,
+                                   int64_t col) {
   std::string fmt = "{:";
   fmt += spec;
   fmt += "}";
@@ -1561,20 +1563,21 @@ inline std::string format_value_as(T& v, std::string_view type_name,
   }
 }
 inline std::string format_value_long(int64_t v, std::string_view spec,
-                                     long line, long col) {
+                                     int64_t line, int64_t col) {
   return format_value_as(v, "Long", spec, line, col);
 }
 inline std::string format_value_double(double v, std::string_view spec,
-                                       long line, long col) {
+                                       int64_t line, int64_t col) {
   return format_value_as(v, "Float", spec, line, col);
 }
 inline std::string format_value_string(std::string v, std::string_view spec,
-                                       long line, long col) {
+                                       int64_t line, int64_t col) {
   return format_value_as(v, "String", spec, line, col);
 }
 
 // Parse a full string as a double; same trim / full-consumption rules.
-inline double parse_double_strict(std::string_view s, long line, long col) {
+inline double parse_double_strict(std::string_view s, int64_t line,
+                                  int64_t col) {
   auto t = trim_ascii(s);
   if (t.empty()) throw_type_error_at(line, col);
   try {
@@ -1754,8 +1757,8 @@ inline Runtime& current_runtime() {
 // thread-local when none is installed), so this is safe from any context — parse,
 // interpret, or JIT.
 inline void culebra_note_pending_error(const std::string& kind,
-                                       const std::string& msg, long line,
-                                       long col) {
+                                       const std::string& msg, int64_t line,
+                                       int64_t col) {
   auto& rt = current_runtime();
   rt.pending_kind = kind;
   rt.pending_msg = msg;
@@ -2120,13 +2123,13 @@ inline ZeroKind zero_kind_for_type(std::string_view type) {
 // the point a lazy chain first drives its upstream. Single-sourced here so
 // interp and JIT/AOT report the identical kind and wording; each backend
 // supplies the position (0/0 leaves it to the positionless-error backfill).
-[[noreturn]] inline void throw_iter_not_object(long line = 0, long col = 0) {
+[[noreturn]] inline void throw_iter_not_object(int64_t line = 0, int64_t col = 0) {
   throw CulebraError("TypeError",
                      "type error: iter() did not return an Object", line, col);
 }
 
-[[noreturn]] inline void throw_iter_missing_protocol(long line = 0,
-                                                     long col = 0) {
+[[noreturn]] inline void throw_iter_missing_protocol(int64_t line = 0,
+                                                     int64_t col = 0) {
   throw CulebraError("TypeError",
                      "type error: iterator missing has_next()/next()", line,
                      col);

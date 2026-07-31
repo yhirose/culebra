@@ -543,7 +543,7 @@ inline bool (*_jit_ns_kwarg_hook)(
 // params the interp's check_callback_arity reads, and returns true; it
 // returns false for non-ns closures so the regular path runs.
 inline bool (*_jit_ns_callback_arity_hook)(
-    JitClosure* cls, long* cb_min, long* cb_max) = nullptr;
+    JitClosure* cls, int64_t* cb_min, int64_t* cb_max) = nullptr;
 
 // Enforce kw-only at runtime for dynamic-callee positional calls.
 // `let g = f; g(1, 2)` where f is kw-only would otherwise fill the

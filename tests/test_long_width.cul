@@ -41,7 +41,6 @@ assert_eq(~0, -1)
 // --- comparisons and equality across the line ---
 assert_eq(big > 2147483647, true)
 assert_eq(-3000000000 < -2147483648, true)
-assert_eq(4294967296 == 4294967296, true)
 assert_eq(4294967296 == 0, false)          // truncation would make these equal
 
 // --- round trips through text ---

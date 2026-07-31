@@ -97,7 +97,7 @@ inline constexpr socket_t kInvalidSocket = -1;
 
 // Blocking waits wake at least this often to honor a pending Ctrl+C / isolate
 // cancel even when the socket never becomes ready (matches proc.h).
-inline constexpr long kInterruptPollMs = 100;
+inline constexpr int64_t kInterruptPollMs = 100;
 
 // One recv() worth of bytes appended to a socket's read buffer.
 inline constexpr size_t kReadChunk = 64 * 1024;
@@ -249,9 +249,9 @@ inline IoStatus wait_ready(socket_t fd, bool want_write, int64_t deadline,
                            std::string* err) {
   for (;;) {
     throw_if_interrupted();  // cooperative Interrupted, before another sleep
-    long slice = kInterruptPollMs;
+    int64_t slice = kInterruptPollMs;
     if (deadline >= 0) {
-      long left = deadline - now_ms();
+      int64_t left = deadline - now_ms();
       if (left <= 0) return IoStatus::Timeout;
       if (left < slice) slice = left;
     }
@@ -318,7 +318,7 @@ inline bool addr_to_host_port(const sockaddr* sa, socklen_t len,
 struct Sock {
   Kind kind = Kind::Tcp;
   socket_t fd = kInvalidSocket;
-  long timeout_ms = 0;   // 0 = wait forever (still interruptible)
+  int64_t timeout_ms = 0;  // 0 = wait forever (still interruptible)
   std::string rbuf;      // bytes read from the wire, not yet handed to script
   size_t rpos = 0;       // consumed prefix of rbuf
   bool eof = false;      // peer closed its write end and rbuf is drained
@@ -538,7 +538,8 @@ inline bool resolve(const std::string& host, std::vector<std::string>& out,
 // Connect to host:port, trying each resolved address in turn. `timeout_ms`
 // bounds each attempt (0 = wait forever) and becomes the handle's I/O timeout.
 // Returns a Tcp handle id, or -1 with *err set.
-inline int64_t connect(const std::string& host, int port, long timeout_ms,
+inline int64_t connect(const std::string& host, int port,
+                       int64_t timeout_ms,
                        std::string* err) {
   if (detail::unavailable(err)) return -1;
   detail::platform_init();
@@ -838,7 +839,7 @@ inline size_t default_serve_workers() {
 class ServePool {
  public:
   ServePool(size_t n, const ServeHooks& hooks, std::atomic<bool>* interrupt_flag,
-            long conn_timeout_ms)
+            int64_t conn_timeout_ms)
       : hooks_(hooks),
         interrupt_flag_(interrupt_flag),
         conn_timeout_ms_(conn_timeout_ms),
@@ -913,7 +914,7 @@ class ServePool {
 
   ServeHooks hooks_;
   std::atomic<bool>* interrupt_flag_;
-  long conn_timeout_ms_;
+  int64_t conn_timeout_ms_;
   size_t cap_;
   std::vector<std::thread> threads_;
   std::deque<socket_t> jobs_;
@@ -933,7 +934,7 @@ inline bool serve(int64_t lid, int n_workers, const ServeHooks& hooks,
   detail::Sock* l = detail::get(lid, Kind::Listener, err);
   if (!l) return false;
   socket_t lfd = l->fd;
-  long conn_timeout = l->timeout_ms;
+  int64_t conn_timeout = l->timeout_ms;
   size_t nw = n_workers >= 1 ? static_cast<size_t>(n_workers)
                              : default_serve_workers();
   ServePool pool(nw, hooks, culebra::current_runtime().interrupt_flag,

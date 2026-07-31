@@ -374,7 +374,7 @@ inline bool jit_arg_matches(const JitValue& v) {
 template <class A>
 inline std::decay_t<A> jit_arg_get(const JitValue& v) {
   using D = std::decay_t<A>;
-  if constexpr (std::is_same_v<D, long> || std::is_same_v<D, int>) {
+  if constexpr (std::is_integral_v<D> && !std::is_same_v<D, bool>) {
     return static_cast<D>(v.data);
   } else if constexpr (std::is_same_v<D, double> || std::is_same_v<D, float>) {
     double d;
@@ -467,7 +467,7 @@ inline JitValue jit_lower_return(R r) {
     using U = typename D::element_type;
     auto id = foreign::table<U>().adopt_shared(std::move(r));
     return jit_make_handle<U>(id);
-  } else if constexpr (std::is_same_v<D, long> || std::is_same_v<D, int>) {
+  } else if constexpr (std::is_integral_v<D> && !std::is_same_v<D, bool>) {
     return {TAG_LONG, static_cast<int64_t>(r)};
   } else if constexpr (std::is_same_v<D, double> || std::is_same_v<D, float>) {
     double d = static_cast<double>(r);

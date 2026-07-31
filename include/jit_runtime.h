@@ -2730,7 +2730,7 @@ inline JitValue _jit_packed_view_get(JitObject* view, const char* key,
   if (!core)
     throw culebra::CulebraError("ValueError",
         "packed view references a freed SharedBuffer", line, col);
-  long off = _jit_packed_view_off(view, *core);
+  int64_t off = _jit_packed_view_off(view, *core);
   const auto& layout = _jit_packed_view_layout(view, *core);
   const auto* f = layout.find(key);
   if (!f) {
@@ -2760,7 +2760,7 @@ inline void _jit_packed_view_set(JitObject* view, const char* key, int8_t tag,
     throw culebra::CulebraError("ValueError",
         "packed view references a freed SharedBuffer", line, col);
   }
-  long off = _jit_packed_view_off(view, *core);
+  int64_t off = _jit_packed_view_off(view, *core);
   const auto& layout = _jit_packed_view_layout(view, *core);
   const auto* f = layout.find(key);
   if (!f) {
@@ -2786,7 +2786,7 @@ inline void _jit_packed_view_set(JitObject* view, const char* key, int8_t tag,
     bool ok = src && src->is_packed_view;
     std::string src_cls;
     std::shared_ptr<culebra::SharedBufferCore> src_core;
-    long src_off = 0;
+    int64_t src_off = 0;
     if (ok) {
       int64_t sid = src->slots[src->find_slot("__packedview_id__")].value.data;
       src_core = culebra::lookup_shared_buffer(sid);

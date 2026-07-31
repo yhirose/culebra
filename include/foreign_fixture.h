@@ -20,12 +20,12 @@ namespace culebra::foreign_fixture {
 
 class Counter {
  public:
-  explicit Counter(long start) : value_(start) { ++live_; }
+  explicit Counter(int64_t start) : value_(start) { ++live_; }
   Counter(const Counter& o) : value_(o.value_) { ++live_; }
   ~Counter() { --live_; }
 
-  long value() const { return value_; }
-  void add(long n) { value_ += n; }
+  int64_t value() const { return value_; }
+  void add(int64_t n) { value_ += n; }
   std::string label() const { return "Counter(" + std::to_string(value_) + ")"; }
 
   // The three return-ownership shapes.
@@ -38,12 +38,12 @@ class Counter {
     return shared_self_;
   }
 
-  static long live() { return live_; }
+  static int64_t live() { return live_; }
 
  private:
-  long value_;
+  int64_t value_;
   std::shared_ptr<Counter> shared_self_;
-  static inline thread_local long live_ = 0;
+  static inline thread_local int64_t live_ = 0;
 };
 
 // Phase 5 fixture: a class whose methods BORROW — `inner()`
@@ -54,12 +54,12 @@ class Counter {
 // non-const but declared preserves_borrows at the binding.
 class Box {
  public:
-  explicit Box(long start) : inner_(start) {}
+  explicit Box(int64_t start) : inner_(start) {}
 
   Counter& inner() { return inner_; }
   const Counter& read_inner() const { return inner_; }
-  long peek() const { return inner_.value(); }
-  void reset(long v) { inner_ = Counter(v); }
+  int64_t peek() const { return inner_.value(); }
+  void reset(int64_t v) { inner_ = Counter(v); }
   void touch() {}  // non-const, but harmless — preserves_borrows
 
  private:

@@ -66,8 +66,8 @@ struct Node {
 
 struct ParseError {
   std::string message;
-  long line;
-  long col;
+  int64_t line;
+  int64_t col;
 };
 
 // --- parser ---------------------------------------------------------------

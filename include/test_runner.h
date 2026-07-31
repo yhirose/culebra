@@ -60,7 +60,7 @@ class StdoutCapture {
 // Convert a runtime error line (1-based) to a user-file line, returning
 // 0 for unknown locations. Preamble offset removed in Phase 2, when the
 // interp test path stopped prepending stdlib source.
-inline int to_user_line(long raw) {
+inline int to_user_line(int64_t raw) {
   return raw > 0 ? static_cast<int>(raw) : 0;
 }
 
@@ -382,11 +382,11 @@ inline TestRunSummary run_tests(
   auto emit_file_error = [&](const std::string& path_str,
                               const std::string& kind,
                               const std::string& message,
-                              long raw_line = 0, long col = 0) {
+                              int64_t raw_line = 0, int64_t col = 0) {
     // raw_line is in entry-buffer coordinates (preamble-included).
     // Reduce to user-file coordinates so the JSON line value points
     // into the actual file the user wrote.
-    long line = to_user_line(raw_line);
+    int64_t line = to_user_line(raw_line);
     if (reporter == Reporter::Json) {
       std::cout << R"({"event":"file_error","source":)"
                 << json_escape(path_str)
@@ -518,7 +518,7 @@ inline TestRunSummary run_tests(
     // captured into the same `stdout` field.
     bool failed = false;
     std::string err_kind, err_what;
-    long err_line = 0, err_col = 0;
+    int64_t err_line = 0, err_col = 0;
     try {
       // Inner scope so the per-test fixture_cache destructs before
       // we take() captured stdout — class `drop()` then writes into

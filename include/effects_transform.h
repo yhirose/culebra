@@ -102,7 +102,7 @@ struct EffSuspension {
   std::string args_array;  // Perform: `[a, b, …]` source (rewritten)
   std::string call_src;    // Delegate: the effect-fn call source (rewritten)
   std::string prov;        // ` #@culebra:N` marker for the emitted line ("" = none)
-  long line = 0;           // Perform: original source line (for EffectError)
+  int64_t line = 0;           // Perform: original source line (for EffectError)
 };
 
 // Classification of a leaf body statement: a statement-level suspension
@@ -157,7 +157,7 @@ class EffectsLowerer {
       // constructs nested in the argument expressions.
       std::string op = std::string(ast->nodes[0]->token);
       std::string args = perform_args_array(*ast->nodes[1], {});
-      long line = err_line(*ast);
+      int64_t line = err_line(*ast);
       auto synth = std::make_shared<std::string>(std::format(
           "fn __eff_perform_wrapper__() {{\n"
           "  __Eff.perform_direct(\"{}\", {}, {})\n"
@@ -178,8 +178,8 @@ class EffectsLowerer {
   mutable LineMarkers markers_;
 
   // Error-position line: provenance when known, else the raw (fragment) line.
-  long err_line(const peg::Ast& n) const {
-    long p = markers_.orig_line(n);
+  int64_t err_line(const peg::Ast& n) const {
+    int64_t p = markers_.orig_line(n);
     return p ? p : static_cast<long>(n.line);
   }
   std::string mk(const peg::Ast& n) const { return markers_.mk(n); }
@@ -1480,7 +1480,7 @@ class EffectsLowerer {
     auto inner_sv = strip_block_braces(slice(body_node));
     std::string inner(inner_sv);
     if (src_is_original_) {
-      long first = line_of_offset({src_, src_len_},
+      int64_t first = line_of_offset({src_, src_len_},
                                   static_cast<size_t>(inner_sv.data() - src_));
       inner = annotate_line_markers(inner, first);
       inner += '\n';  // a trailing marker comment needs a newline to parse
@@ -1819,7 +1819,7 @@ class EffectsLowerer {
   // synthesized source is registered for lifetime via the generator
   // transform's source store.
   std::shared_ptr<peg::Ast> reparse_decl(std::shared_ptr<std::string> synth,
-                                         long fallback_line) {
+                                         int64_t fallback_line) {
     auto label = next_fragment_label("eff");
     auto fn = parse_wrapper_fn(synth, label.c_str());
     if (!fn) {
@@ -1842,7 +1842,7 @@ class EffectsLowerer {
   // effect constructs. Both backends evaluate a nested STATEMENTS node in the
   // enclosing scope, so the spliced decls bind exactly where the original did.
   std::shared_ptr<peg::Ast> reparse_stmts(std::shared_ptr<std::string> synth,
-                                          long fallback_line) {
+                                          int64_t fallback_line) {
     auto label = next_fragment_label("eff");
     auto fn = parse_wrapper_fn(synth, label.c_str());
     if (!fn) {
@@ -1861,7 +1861,7 @@ class EffectsLowerer {
   // expression node in its body (to splice in place of a HANDLE), recursively
   // lowering nested effect constructs.
   std::shared_ptr<peg::Ast> reparse_expr(std::shared_ptr<std::string> synth,
-                                         long fallback_line) {
+                                         int64_t fallback_line) {
     using namespace peg::udl;
     auto body = reparse_stmts(synth, fallback_line);
     return (body->tag == "STATEMENTS"_ && !body->nodes.empty())

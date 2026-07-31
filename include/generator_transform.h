@@ -367,13 +367,13 @@ inline constexpr std::string_view kLineMarker = "#@culebra:";
 
 // The ` #@culebra:N` suffix for a line whose original line is `n` — the one
 // writer of the format `line_has_marker` / `marker_line_map` read back.
-inline std::string line_marker(long n) {
+inline std::string line_marker(int64_t n) {
   return std::format(" {}{}", kLineMarker, n);
 }
 
 // 1-based line number of byte offset `pos` in `s`.
-inline long line_of_offset(std::string_view s, size_t pos) {
-  long line = 1;
+inline int64_t line_of_offset(std::string_view s, size_t pos) {
+  int64_t line = 1;
   for (size_t i = 0; i < pos && i < s.size(); i++) {
     if (s[i] == '\n') line++;
   }
@@ -465,7 +465,7 @@ inline bool text_has_line_marker(std::string_view text) {
 // re-sliced from an annotated fragment never reaches here, but a user comment
 // could imitate one) keep the existing value.
 inline std::string annotate_line_markers(std::string_view text,
-                                         long first_line) {
+                                         int64_t first_line) {
   auto safe = safe_line_ends(text);
   std::string out;
   size_t start = 0, idx = 0;
@@ -488,16 +488,16 @@ inline std::string annotate_line_markers(std::string_view text,
 
 // Read the markers back: for each 1-based line of `text`, its original line,
 // or 0 when the line carries none (synthesized machinery).
-inline std::vector<long> marker_line_map(std::string_view text) {
+inline std::vector<int64_t> marker_line_map(std::string_view text) {
   auto safe = safe_line_ends(text);
-  std::vector<long> map;
+  std::vector<int64_t> map;
   map.push_back(0);  // index 0 unused
   size_t start = 0, idx = 0;
   while (start <= text.size()) {
     size_t nl = text.find('\n', start);
     size_t end = (nl == std::string_view::npos) ? text.size() : nl;
     std::string_view line = text.substr(start, end - start);
-    long v = 0;
+    int64_t v = 0;
     if ((idx + 1) < safe.size() && safe[idx + 1] && line_has_marker(line)) {
       size_t d = line.size();
       while (d > 0 && std::isdigit(static_cast<unsigned char>(line[d - 1]))) d--;
@@ -519,7 +519,7 @@ inline std::vector<long> marker_line_map(std::string_view text) {
 
 // Original line for a node parsed from marker-annotated text: the marker on
 // its line, else its own line (identity for the original, unannotated file).
-inline long marker_orig_line(std::string_view text, size_t line) {
+inline int64_t marker_orig_line(std::string_view text, size_t line) {
   auto map = marker_line_map(text);
   return (line < map.size() && map[line]) ? map[line]
                                           : static_cast<long>(line);
@@ -531,14 +531,14 @@ inline long marker_orig_line(std::string_view text, size_t line) {
 struct LineMarkers {
   std::string_view src;
   bool src_is_original = false;
-  std::vector<long> cache;
+  std::vector<int64_t> cache;
   bool built = false;
-  long orig_line(const peg::Ast& n) {
+  int64_t orig_line(const peg::Ast& n) {
     if (!built) {
       cache = marker_line_map(src);
       built = true;
     }
-    long m = (n.line < cache.size()) ? cache[n.line] : 0;
+    int64_t m = (n.line < cache.size()) ? cache[n.line] : 0;
     if (m) return m;
     return src_is_original ? static_cast<long>(n.line) : 0;
   }
@@ -546,7 +546,7 @@ struct LineMarkers {
   // single-line statement's trailing marker sits outside its node span, so a
   // plain slice loses it).
   std::string mk(const peg::Ast& n) {
-    long p = orig_line(n);
+    int64_t p = orig_line(n);
     return p ? line_marker(p) : "";
   }
 };
@@ -558,10 +558,10 @@ struct LineMarkers {
 // peg::Ast's line is const, so nodes are recreated via the two-step ctor pair
 // (full ctor sets name; the copy ctor restores original_name / original_tag).
 inline std::shared_ptr<peg::Ast> reposition_ast(
-    const std::shared_ptr<peg::Ast>& n, const std::vector<long>& map,
-    long fallback, const std::string& label) {
+    const std::shared_ptr<peg::Ast>& n, const std::vector<int64_t>& map,
+    int64_t fallback, const std::string& label) {
   if (n->path != label) return n;
-  long line = (n->line < map.size() && map[n->line])
+  int64_t line = (n->line < map.size() && map[n->line])
                   ? map[n->line]
                   : fallback;
   std::shared_ptr<peg::Ast> out;
@@ -738,7 +738,7 @@ inline std::optional<std::string> rewrite_yielding_fors_to_while(
     // The three synthesized lines carry the `for`'s provenance marker so an
     // error in the loop machinery (e.g. `.iter()` on a non-iterable) reports
     // the for-in's original line.
-    long orig = (f->line < marker_map.size() && marker_map[f->line])
+    int64_t orig = (f->line < marker_map.size() && marker_map[f->line])
                     ? marker_map[f->line]
                     : static_cast<long>(f->line);
     std::string body_text(blk_inner);
@@ -1130,7 +1130,7 @@ struct CpsBuilder {
 inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
     std::shared_ptr<peg::Ast> ast, const char* src, size_t src_len,
     const peg::Ast& name_ast, const peg::Ast& params_ast,
-    long decl_fallback) {
+    int64_t decl_fallback) {
   using namespace peg::udl;
 
   auto gen_name = std::format("_Gen_{}_{}_{}",
@@ -1327,12 +1327,12 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
   // A body sliced out of an already-annotated fragment (a generator fn nested
   // in an effect body) keeps its markers as-is: re-annotating would stamp
   // fragment-relative numbers onto the marker-less machinery lines.
-  long decl_fallback = static_cast<long>(ast->nodes[i]->line);
+  int64_t decl_fallback = static_cast<int64_t>(ast->nodes[i]->line);
   {
     auto inner = strip_block_braces(
         ast_source_slice(*ast->nodes.back(), src, src_len));
     if (!text_has_line_marker(inner)) {
-      long first = line_of_offset({src, src_len},
+      int64_t first = line_of_offset({src, src_len},
                                   static_cast<size_t>(inner.data() - src));
       auto params_sv = ast_source_slice(*ast->nodes[i + 1], src, src_len);
       auto annotated = std::make_shared<std::string>(std::format(

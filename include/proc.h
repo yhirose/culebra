@@ -540,7 +540,7 @@ inline void kill_and_reap(std::vector<Child>& cs) {
 // Default concurrency = online CPU count, capped so limit*3 fds stay well
 // under the typical RLIMIT_NOFILE (256 on macOS).
 inline size_t default_limit() {
-  long n = sysconf(_SC_NPROCESSORS_ONLN);
+  int64_t n = sysconf(_SC_NPROCESSORS_ONLN);
   size_t cpu = (n > 0) ? static_cast<size_t>(n) : 4;
   return cpu < 64 ? cpu : 64;
 }
@@ -572,7 +572,7 @@ inline RunOutcome run_command(
     const std::string* cwd,
     const std::vector<std::pair<std::string, std::string>>* env_overrides,
     const std::string& stdin_data,
-    long timeout_ms = 0,
+    int64_t timeout_ms = 0,
     const std::vector<int>* inherit_fds = nullptr) {
   _detail::SigpipeGuard guard;
   const std::string* sp = stdin_data.empty() ? nullptr : &stdin_data;
@@ -613,10 +613,10 @@ inline std::vector<RunOutcome> run_all(
     const std::string* cwd = nullptr,
     const std::vector<std::pair<std::string, std::string>>* env = nullptr,
     const std::vector<std::string>* stdins = nullptr,
-    long timeout_ms = 0,
+    int64_t timeout_ms = 0,
     bool fail_fast = false,
     size_t* out_failed = nullptr,
-    long retries = 0,
+    int64_t retries = 0,
     const std::vector<int>* inherit_fds = nullptr) {
   size_t n = commands.size();
   std::vector<RunOutcome> results(n);
@@ -1093,7 +1093,7 @@ struct ScopeKiller {
 inline RunOutcome run_command(
     const std::vector<std::string>& argv, const std::string* cwd,
     const std::vector<std::pair<std::string, std::string>>* env_overrides,
-    const std::string& stdin_data, long timeout_ms = 0,
+    const std::string& stdin_data, int64_t timeout_ms = 0,
     const std::vector<int>* = nullptr) {
   const std::string* sp = stdin_data.empty() ? nullptr : &stdin_data;
   _detail::WinChild c = _detail::spawn_child(argv, cwd, env_overrides, sp, 0);
@@ -1119,8 +1119,8 @@ inline std::vector<RunOutcome> run_all(
     const std::vector<std::vector<std::string>>& commands, size_t limit = 0,
     const std::string* cwd = nullptr,
     const std::vector<std::pair<std::string, std::string>>* env = nullptr,
-    const std::vector<std::string>* stdins = nullptr, long timeout_ms = 0,
-    bool fail_fast = false, size_t* out_failed = nullptr, long retries = 0,
+    const std::vector<std::string>* stdins = nullptr, int64_t timeout_ms = 0,
+    bool fail_fast = false, size_t* out_failed = nullptr, int64_t retries = 0,
     const std::vector<int>* = nullptr) {
   size_t n = commands.size();
   std::vector<RunOutcome> results(n);
@@ -1310,7 +1310,7 @@ inline void kill_pid(int64_t pid, int sig) {
 
 // Non-blocking: returns true and fills `status` if the child has exited (and
 // reaps it); false if it is still running.
-inline bool try_reap(long pid, int& status) {
+inline bool try_reap(int64_t pid, int& status) {
   pid_t r;
   do {
     r = waitpid(static_cast<pid_t>(pid), &status, WNOHANG);
@@ -1319,7 +1319,7 @@ inline bool try_reap(long pid, int& status) {
 }
 
 // Adopts pid + out/err fds into a Child to reuse the drain+reap machinery.
-inline _detail::Child _adopt(long pid, int& out_fd, int& err_fd) {
+inline _detail::Child _adopt(int64_t pid, int& out_fd, int& err_fd) {
   _detail::Child c;
   c.pid = static_cast<pid_t>(pid);
   c.out_fd = out_fd;
@@ -1332,7 +1332,7 @@ inline _detail::Child _adopt(long pid, int& out_fd, int& err_fd) {
 
 // Blocking: drains out/err to EOF and waitpid()s -> full ProcResult. Consumes
 // the fds (sets them to -1).
-inline ProcResult wait_handle(long pid, int& out_fd, int& err_fd) {
+inline ProcResult wait_handle(int64_t pid, int& out_fd, int& err_fd) {
   std::vector<_detail::Child> running;
   running.push_back(_adopt(pid, out_fd, err_fd));
   char buf[65536];
@@ -1371,8 +1371,8 @@ inline std::map<long, WinLive>& live_registry() {
   static std::map<long, WinLive> m;
   return m;
 }
-inline long& live_next_id() {
-  static long id = 1;
+inline int64_t& live_next_id() {
+  static int64_t id = 1;
   return id;
 }
 // Serialises the id counter + map structure across parallel isolates (two
@@ -1401,7 +1401,7 @@ inline SpawnResult spawn_detached(
   SpawnResult sr;
   _detail::SpawnHandles h = _detail::spawn_process(argv, cwd, env_overrides);
   if (!h.ok) { sr.err_no = h.err_no; sr.err_what = h.err_what; return sr; }
-  long id;
+  int64_t id;
   _detail::WinLive* lv;
   {
     std::lock_guard<std::mutex> g(_detail::live_mutex());
@@ -1420,7 +1420,7 @@ inline SpawnResult spawn_detached(
   return sr;
 }
 
-inline void kill_pid(long id, int /*sig*/) {
+inline void kill_pid(int64_t id, int /*sig*/) {
   std::lock_guard<std::mutex> g(_detail::live_mutex());
   auto& reg = _detail::live_registry();
   auto it = reg.find(id);
@@ -1430,7 +1430,7 @@ inline void kill_pid(long id, int /*sig*/) {
 
 // Non-blocking: true (and fills `status` with the exit code) once the child has
 // exited; false while it runs. Leaves the entry in place — drain_reaped drops it.
-inline bool try_reap(long id, int& status) {
+inline bool try_reap(int64_t id, int& status) {
   std::lock_guard<std::mutex> g(_detail::live_mutex());
   auto& reg = _detail::live_registry();
   auto it = reg.find(id);
@@ -1445,7 +1445,7 @@ inline bool try_reap(long id, int& status) {
 // Blocking: wait for exit, drain out/err to EOF, decode, and drop the entry.
 // `id` arrives as pid. The lock is dropped across the INFINITE wait so other
 // handle ops make progress; the map node stays valid (single-owner id).
-inline ProcResult wait_handle(long id, int&, int&) {
+inline ProcResult wait_handle(int64_t id, int&, int&) {
   ProcResult r;
   _detail::WinLive* lv = nullptr;
   {
