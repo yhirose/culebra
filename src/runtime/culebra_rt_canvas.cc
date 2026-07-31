@@ -39,6 +39,7 @@ int g_tex_w = 0;
 int g_tex_h = 0;
 int g_scale = 1;
 bool g_window_ready = false;
+bool g_window_failed = false;  // creation tried and failed; don't try again
 
 // Integer upscale so the small framebuffer fills a comfortable window while
 // pixels stay crisp (nearest-neighbour), matching the Playground's
@@ -101,10 +102,14 @@ bool forced_headless() {
   return h;
 }
 
+// Registers the exit teardown; defined with the audio state it tears down, at
+// the end of the audio section.
+void arm_exit_teardown();
+
 // (Re)create the window + texture to match the current framebuffer size. Called
 // on first use and again if the framebuffer is re-init()'d at a new size.
 void ensure_window() {
-  if (forced_headless()) return;
+  if (forced_headless() || g_window_failed) return;
   // The window mirrors the FRAMEBUFFER — width()/height() report the current
   // draw target, which inside Canvas.draw_to is an offscreen sprite.
   int w = _fb_w();
@@ -118,11 +123,18 @@ void ensure_window() {
     InitWindow(w * g_scale, h * g_scale, "culebra Canvas");
     // No display (headless server / CI / SSH): raylib fails to open a window
     // and IsWindowReady() stays false. Degrade to the headless backend rather
-    // than driving GL on a dead context — present/input become no-ops.
-    if (!IsWindowReady()) return;
+    // than driving GL on a dead context — present/input become no-ops. Latched,
+    // because every present and every input poll comes back through here: a
+    // retry per call would re-run SDL's whole video-driver probe, and print
+    // raylib's two failure lines, thousands of times over a 600-frame run.
+    if (!IsWindowReady()) {
+      g_window_failed = true;
+      return;
+    }
     stop_text_input();
     SetTargetFPS(60);  // pin the game clock to 60 fps like the browser loop
     g_window_ready = true;
+    arm_exit_teardown();
   } else {
     UnloadTexture(g_tex);
     SetWindowSize(w * g_scale, h * g_scale);
@@ -135,18 +147,6 @@ void ensure_window() {
   g_tex_w = w;
   g_tex_h = h;
 }
-
-// Close the window at process exit so the run terminates cleanly rather than
-// leaving the OS to reclaim it.
-struct WindowCloser {
-  ~WindowCloser() {
-    if (g_window_ready && IsWindowReady()) {
-      UnloadTexture(g_tex);
-      CloseWindow();
-    }
-  }
-};
-WindowCloser g_closer;
 
 // One held-key -> Canvas button bit (bits match src/preambles/canvas.cul and
 // the Playground's KEY_BITS: LEFT=1, RIGHT=2, UP=4, DOWN=8, A=16, B=32).
@@ -395,17 +395,8 @@ void ensure_audio() {
   SetAudioStreamCallback(g_stream, audio_callback);
   PlayAudioStream(g_stream);
   g_audio_ready = true;
+  arm_exit_teardown();
 }
-
-struct AudioCloser {
-  ~AudioCloser() {
-    if (g_audio_ready) {
-      UnloadAudioStream(g_stream);
-      CloseAudioDevice();
-    }
-  }
-};
-AudioCloser g_audio_closer;
 
 // --- music: one streamed-file slot ------------------------------------------
 //
@@ -433,21 +424,58 @@ struct MusicSlot {
   }
   ~MusicSlot() { unload(); }
 };
-// Defined after g_audio_closer on purpose: statics destroy in reverse order,
-// so the slot's UnloadMusicStream runs before CloseAudioDevice.
 MusicSlot g_music;
 
 // Loaded sound effects, keyed by the canvas.h-allocated handle. One live
 // instance per handle (raylib PlaySound restarts the sound), matching the
-// browser side. Also after g_audio_closer, so the sounds unload before
-// CloseAudioDevice.
+// browser side.
 struct SoundRegistry {
   std::unordered_map<int64_t, Sound> sounds;
-  ~SoundRegistry() {
+
+  void unload_all() {
     for (auto& [id, s] : sounds) UnloadSound(s);
+    sounds.clear();
   }
+  ~SoundRegistry() { unload_all(); }
 };
 SoundRegistry g_sounds;
+
+// Hand the window and the audio device back at process exit, in the order
+// raylib wants: every sound and the music stream go back before the device they
+// were decoded for, and the device before the window. Each step clears what
+// guards it, so the owning statics above find nothing left to do when their own
+// destructors run afterwards.
+void exit_teardown() {
+  g_sounds.unload_all();
+  g_music.unload();
+  if (g_audio_ready) {
+    UnloadAudioStream(g_stream);
+    CloseAudioDevice();
+    g_audio_ready = false;
+  }
+  if (g_window_ready && IsWindowReady()) {
+    UnloadTexture(g_tex);
+    CloseWindow();
+    g_window_ready = false;
+  }
+}
+
+// Armed once the window or the audio device exists, rather than run from a
+// file-scope object's destructor. A static object registers its destructor with
+// __cxa_atexit when it is CONSTRUCTED — before main for a file-scope one — and
+// exit runs those registrations in reverse, so a file-scope closer runs last:
+// after the GL and audio drivers dlopen'd along the way have torn themselves
+// down. Calling into Mesa there segfaults, which is what every Canvas program on
+// Linux did on the way out. Registering once the resource exists nests our
+// teardown inside the lifetime of the libraries it calls into.
+//
+// Re-registered per resource rather than latched to the first one: only a
+// registration made after a driver was dlopen'd runs before that driver tears
+// itself down. A tone() on the first frame brings audio up before the window,
+// which latched the registration ahead of Mesa and put CloseWindow() back after
+// Mesa was gone. exit_teardown clears what guards each step, so the second run
+// finds nothing to do and the duplicate registration costs only its slot.
+void arm_exit_teardown() { std::atexit(exit_teardown); }
 
 // Refill the stream's buffers — called from present(), the one place every
 // frame loop passes through, so no pump API needs exposing.
@@ -547,6 +575,14 @@ bool closing() {
   ensure_window();
   if (!g_window_ready) return false;
   return WindowShouldClose();
+}
+
+// True when frames actually reach a display. False under CULEBRA_CANVAS_HEADLESS
+// and when window creation failed (no display), where this build behaves exactly
+// like the headless one: nothing shown, no input, no close box.
+bool windowed() {
+  ensure_window();
+  return g_window_ready;
 }
 
 // Frames (at ~60fps) to samples (at kSampleRate), matching the browser's own

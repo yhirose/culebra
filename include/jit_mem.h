@@ -758,6 +758,7 @@ inline constexpr auto canvas_key           = "culebra_runtime_canvas_key";
 inline constexpr auto canvas_key_pop       = "culebra_runtime_canvas_key_pop";
 inline constexpr auto canvas_char_pop      = "culebra_runtime_canvas_char_pop";
 inline constexpr auto canvas_closing       = "culebra_runtime_canvas_closing";
+inline constexpr auto canvas_windowed      = "culebra_runtime_canvas_windowed";
 inline constexpr auto canvas_tone          = "culebra_runtime_canvas_tone";
 inline constexpr auto canvas_music_play    = "culebra_runtime_canvas_music_play";
 inline constexpr auto canvas_music_stop    = "culebra_runtime_canvas_music_stop";

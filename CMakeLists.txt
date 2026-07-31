@@ -336,6 +336,44 @@ function(_culebra_dep_rev out dir)
   set(${out} "${rev}" PARENT_SCOPE)
 endfunction()
 
+# Publish, in `tgt`'s dynamic symbol table, the names ORC JIT resolves out of the
+# host process at codegen time. Every executable that hosts the in-process JIT
+# needs this and needs it the same way, so both call here rather than each
+# reaching for a platform flag.
+#
+# macOS: visible by default, ENABLE_EXPORTS is the portable way to say so.
+#
+# Windows: ENABLE_EXPORTS is a no-op for a MinGW .exe, so GetProcAddress over
+# this image (how ORC's process-symbol resolver works there) finds nothing.
+# --export-all-symbols is the analog of -rdynamic, but exporting *everything*
+# overflows the 65535-entry PE export table once LLVM's ~80k static symbols are
+# counted ("export ordinal too large"). --exclude-libs ALL keeps static-lib
+# symbols (LLVM, libstdc++, libgcc) out, leaving just culebra's own runtime
+# symbols — comfortably under the limit. The few EH entry points that live in
+# the excluded static libs are supplied to the JIT separately as absolute
+# symbols (JIT::define_windows_eh_symbols).
+#
+# ELF: -rdynamic would work and is actively harmful. A symbol in the
+# executable's dynamic table takes precedence over the same name in every shared
+# object, including ones the OS dlopens into us later, and -rdynamic published
+# all ~67k symbols the link pulled in — LLVM's among them. Mesa's DRI drivers
+# link their own LLVM (Gallium), so loading one bound its 81 LLVM imports to
+# culebra's LLVM 22 instead of the libLLVM it was built against and the first GL
+# context a Canvas window created segfaulted inside Mesa. OpenSSL, zlib and
+# cpp-peglib are the same hazard waiting for a library that wants those names.
+# Publish a whitelist instead — see cmake/exported_symbols.txt.
+function(culebra_export_jit_symbols tgt)
+  if(WIN32)
+    target_link_options(${tgt} PRIVATE
+      -Wl,--export-all-symbols -Wl,--exclude-libs,ALL)
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(${tgt} PRIVATE
+      "-Wl,--dynamic-list=${CMAKE_CURRENT_SOURCE_DIR}/cmake/exported_symbols.txt")
+  else()
+    set_target_properties(${tgt} PROPERTIES ENABLE_EXPORTS ON)
+  endif()
+endfunction()
+
 # --- Builtin Scene namespace (raylib + SDL): config ---------------------
 # A 3D namespace nothing else needs, so OFF by default (normal builds + CI stay
 # lean). Computed before the runtime/embed block so the feature archive + the
@@ -347,17 +385,44 @@ endfunction()
 option(CULEBRA_ENABLE_SCENE "Enable builtin Scene namespace (raylib + SDL)" OFF)
 # The native Canvas desktop window (2D framebuffer) rides on the same vendored
 # raylib + SDL3 statics as the 3D Scene namespace. ON wherever a window is known
-# to work — macOS today; Linux and Windows keep the toolchain work Scene needs —
-# so a plain `just build` runs a Canvas game in a window with no knob to
-# remember. It costs nothing at runtime: the framebuffer core is identical and
-# CULEBRA_CANVAS_HEADLESS turns the window off per run, no rebuild. A build that
-# wants raylib gone entirely (a lean container, a displayless server) passes
+# to work — macOS and Linux; Windows keeps the toolchain work Scene needs — so a
+# plain `just build` runs a Canvas game in a window with no knob to remember. It
+# costs nothing at runtime: the framebuffer core is identical and
+# CULEBRA_CANVAS_HEADLESS turns the window off per run, no rebuild. Nor does it
+# cost anything to a displayless machine: SDL3 dlopens X11/GL/audio on first use,
+# so a window build adds no DT_NEEDED entry and still starts on a headless
+# server — unlike the Webview namespace, which is why that one stays off here.
+# A build that wants raylib gone entirely passes
 # -DCULEBRA_ENABLE_CANVAS_WINDOW=OFF; CULEBRA_CANVAS_WINDOW_DEFAULT in the
 # environment flips the default for every configure in a job, which is how CI
 # skips the vendored SDL3 + raylib build it has no display for.
+#
+# On Linux that default is conditional on the toolchain, the way Webview's is
+# below: SDL3's configure fails the whole build when a header it probes for is
+# absent, rather than dropping that backend the way it drops a missing runtime
+# library, so defaulting ON unconditionally would break `just build` on any
+# machine without SDL3's dev packages. Smoke-test a few of the ones it hard-errors
+# on (vendor/SDL/docs/README-linux.md lists the full set) and stay off when they
+# are missing. This is a check that the documented set was installed, not a
+# replication of SDL3's own probing — -DCULEBRA_ENABLE_CANVAS_WINDOW=ON still
+# forces the issue.
 set(_canvas_window_default OFF)
 if(APPLE)
   set(_canvas_window_default ON)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(_canvas_window_default ON)
+  foreach(_hdr X11/Xlib.h X11/extensions/scrnsaver.h X11/extensions/XTest.h
+               xkbcommon/xkbcommon.h alsa/asoundlib.h)
+    unset(_canvas_hdr CACHE)
+    find_path(_canvas_hdr NAMES ${_hdr})
+    if(NOT _canvas_hdr)
+      message(STATUS "Canvas window: off (SDL3 build dependency missing: ${_hdr}"
+                     " — see vendor/SDL/docs/README-linux.md)")
+      set(_canvas_window_default OFF)
+      break()
+    endif()
+  endforeach()
+  unset(_canvas_hdr CACHE)
 endif()
 if(DEFINED ENV{CULEBRA_CANVAS_WINDOW_DEFAULT})
   set(_canvas_window_default "$ENV{CULEBRA_CANVAS_WINDOW_DEFAULT}")
@@ -439,6 +504,15 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
     foreach(_fw IN LISTS _scene_weak_frameworks)
       string(APPEND _raylib_aot_link " -weak_framework ${_fw}")
     endforeach()
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # What the frameworks above are on macOS: the system libraries a static
+    # SDL3 records in its sdl3.pc but a static archive cannot carry itself. The
+    # driver's own link of these statics takes them from Threads::Threads +
+    # CMAKE_DL_LIBS further below; the AOT fragment has to spell them, or the
+    # two link paths this block exists to single-source drift. Omitting them
+    # only linked at all because glibc >= 2.34 folded libpthread and libdl into
+    # libc — an older target, or a cross-compile, fails on dlopen/pthread_*.
+    string(APPEND _raylib_aot_link " -lpthread -ldl -lm")
   endif()
 endif()
 
@@ -524,25 +598,7 @@ endif()
 
 if(CULEBRA_ENABLE_JIT)
   target_link_libraries(culebra ${llvm_libs})
-  # ORC JIT looks up culebra_runtime_* symbols in the host process at
-  # codegen time. On macOS those symbols are visible by default; on
-  # ELF/Linux they are stripped from the dynamic symbol table unless
-  # we link with -rdynamic. ENABLE_EXPORTS adds the right flag per
-  # platform (no-op on macOS).
-  set_target_properties(culebra PROPERTIES ENABLE_EXPORTS ON)
-  # ENABLE_EXPORTS is a no-op for a MinGW .exe, so GetProcAddress over this
-  # image (how ORC's process-symbol resolver works on Windows) finds nothing.
-  # --export-all-symbols is the Windows analog of -rdynamic, but exporting
-  # *everything* overflows the 65535-entry PE export table once LLVM's ~80k
-  # static symbols are counted ("export ordinal too large"). --exclude-libs ALL
-  # keeps static-lib symbols (LLVM, libstdc++, libgcc) out of the table, leaving
-  # just culebra's own runtime symbols exported — comfortably under the limit.
-  # The few EH entry points that live in the excluded static libs are supplied
-  # to the JIT separately as absolute symbols (JIT::define_windows_eh_symbols).
-  if(WIN32)
-    target_link_options(culebra PRIVATE
-      -Wl,--export-all-symbols -Wl,--exclude-libs,ALL)
-  endif()
+  culebra_export_jit_symbols(culebra)
 
   # `culebra wrap` rebuilds this tree with CULEBRA_WRAP_SOURCES; the
   # baked source path is the default when CULEBRA_HOME is unset. Scoped to
@@ -1123,9 +1179,10 @@ if(_tensor_cuda)
 endif()
 if(CULEBRA_ENABLE_JIT)
   target_link_libraries(smoke_suite ${llvm_libs})
-  # The in-process JIT (mt/mi/signal) resolves the `used`-pinned runtime
-  # helpers from the host binary via ORC — keep them exported.
-  set_target_properties(smoke_suite PROPERTIES ENABLE_EXPORTS ON)
+  # The in-process JIT (mt/mi/signal) resolves the `used`-pinned runtime helpers
+  # from the host binary via ORC — same contract as the driver, same mechanism,
+  # so the smokes exercise the export path the driver actually ships with.
+  culebra_export_jit_symbols(smoke_suite)
 endif()
 if(CULEBRA_ENABLE_HTTP)
   target_link_libraries(smoke_suite ${_ssl_libs})

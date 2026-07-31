@@ -623,12 +623,13 @@ let _canvas_module = fn () {
   # each. `tick()` returns false to stop (e.g. the player quit). present()
   # suspends to the browser's animation frame in the interactive build, so the
   # loop yields cooperatively. Closing the native window (`_Canvas.closing()`,
-  # always false on the browser/headless backends) also stops it. When input
-  # isn't interactive (the non-JSPI wasm build, or a piped/headless native run)
-  # it also stops after `frames`, so a CI/auto-demo run can't spin forever.
+  # always false on the browser/headless backends) also stops it. Otherwise the
+  # loop stops after `frames`, so a run nobody can end can't spin forever —
+  # which takes both halves below: a headless run on a tty is interactive and
+  # still has nothing to show and no close box.
   let run = fn (w, h, tick, frames = 600) {
     _Canvas.init(w, h)
-    let interactive = IO.stdin_is_terminal()
+    let interactive = IO.stdin_is_terminal() && _Canvas.windowed()
     mut i = 0
     mut running = true
     while running {

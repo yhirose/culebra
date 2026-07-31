@@ -896,6 +896,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_canvas_char_pop() 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_canvas_closing() {
   return culebra::_canvas_detail::closing();
 }
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_canvas_windowed() {
+  return culebra::_canvas_detail::windowed();
+}
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_tone(
     int64_t start_freq, int64_t end_freq, int64_t attack, int64_t decay,
     int64_t sustain, int64_t release, int64_t vol, int64_t peak,
@@ -7928,6 +7931,8 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::canvas_key_pop, ptrTy);
   jit.module_->getOrInsertFunction(rt::canvas_char_pop, ptrTy);
   jit.module_->getOrInsertFunction(rt::canvas_closing, jit.builder_.getInt1Ty());
+  jit.module_->getOrInsertFunction(rt::canvas_windowed,
+                                   jit.builder_.getInt1Ty());
   jit.module_->getOrInsertFunction(rt::canvas_tone, vt, i64, i64, i64, i64, i64,
                                    i64, i64, i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_music_play, vt,
@@ -9172,6 +9177,9 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
     if (method == "closing" && a.empty())
       return jit.own(make_bool(
           emit_call(module_->getFunction(rt::canvas_closing), {})));
+    if (method == "windowed" && a.empty())
+      return jit.own(make_bool(
+          emit_call(module_->getFunction(rt::canvas_windowed), {})));
     if (method == "tone")
       if (auto v = args({{"start_freq"}, {"end_freq"}, {"attack"}, {"decay"},
                          {"sustain"}, {"release"}, {"vol"}, {"peak"},

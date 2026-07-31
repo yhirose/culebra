@@ -68,8 +68,10 @@ jobs:
       CULEBRA_TEST_SKIP_HEAVY: ${{ matrix.skip_heavy }}
       # `just test` runs the wrap lane only when this is non-empty.
       CULEBRA_TEST_WRAP: ${{ matrix.test_wrap }}
-      # macOS defaults the Canvas desktop window ON; a runner has no display and
-      # building the vendored SDL3 + raylib statics would add ~4 min per job.
+      # macOS and Linux default the Canvas desktop window ON; a runner has no
+      # display, building the vendored SDL3 + raylib statics would add ~4 min
+      # per job, and the Linux runners do not install SDL3's build dependencies
+      # (whose absence fails its configure outright).
       # Job-wide env, not a -D on the build step, so every cmake configure
       # agrees — including the gate build `just test` runs.
       CULEBRA_CANVAS_WINDOW_DEFAULT: OFF

@@ -2232,6 +2232,16 @@ inline Value make_canvas_primitives_namespace() {
           "Bool"sv)),
       false);
 
+  // _Canvas.windowed() -> Bool (frames are reaching a display: true on the
+  // browser, true for a window build that opened one, false headless)
+  ns.initialize("windowed",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            return Value(_canvas_detail::windowed());
+          },
+          "Bool"sv)),
+      false);
+
   // _Canvas.tone(freq, dur, vol, wave) -> Nil (no-op headless)
   ns.initialize("tone",
       Value(FunctionValue({{"start_freq", false, "Long"sv},

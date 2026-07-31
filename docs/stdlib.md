@@ -4050,9 +4050,15 @@ frame, `present` it, poll input, repeat. Colours are packed RGBA `Long`s and
 the buffer can be any size (a WASM-4-style 160×160 is typical). In the WASM
 Playground a Canvas program runs in the **Canvas tab** — frames are shown on a
 `<canvas>`, keyboard/pointer feed the input, and `tone` plays through WebAudio.
-Natively a build **opens a real desktop window** wherever one is known to work
-(macOS today; vendored static raylib + SDL3, the same backend the `Scene`
-namespace links): each `present` uploads the frame, upscales it with
+Natively a build **opens a real desktop window** wherever one is known to work —
+macOS and Linux today, using vendored static raylib + SDL3, the same backend the
+`Scene` namespace links. Building it on Linux needs SDL3's documented build
+dependencies present (`vendor/SDL/docs/README-linux.md`); SDL3's configure fails
+outright when the X11 or audio headers it probes for are missing, so a machine
+without them should configure with `-DCULEBRA_ENABLE_CANVAS_WINDOW=OFF`. The
+resulting binary still runs anywhere: SDL3 dlopens X11/GL/audio on first use, so
+a window build adds no shared-library dependency and starts fine on a headless
+server. Each `present` uploads the frame, upscales it with
 nearest-neighbour to a comfortable window size, and blocks to vsync at 60 fps;
 the keyboard and mouse feed `Canvas.buttons`/`Canvas.mouse`, and closing the
 window (or Esc) ends the `run` loop. Everywhere else — and in any run with
@@ -4379,9 +4385,13 @@ formats always work.
 `tick()` once per frame, presenting after each. `tick` returns `false` to stop
 (e.g. the player quit). In the interactive Playground build `present()` waits
 for the browser's next animation frame, so the loop paces itself and yields
-cooperatively; when input isn't interactive (a non-JSPI browser, or a piped /
-headless native run) it also stops after `frames`, so an automated run can't
-spin forever.
+cooperatively. Otherwise the loop stops after `frames`, so a run nobody can end
+can't spin forever. Staying unbounded takes both halves: the frames must reach a
+display (not a build without the window backend, not `CULEBRA_CANVAS_HEADLESS`,
+not a machine with no display) *and* the run must be interactive (not a piped
+native run, not a non-JSPI browser). A headless run from a terminal meets only
+the second — it shows nothing, takes no input and has no close box — so it is
+capped like any other automated run.
 
 ```culebra
 # doctest: skip

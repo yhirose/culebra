@@ -1,0 +1,15 @@
+# The symbols culebra publishes in the executable's ELF dynamic symbol table.
+#
+# ORC JIT resolves what it emits references to through
+# DynamicLibrarySearchGenerator, which is dlsym over the process, so every name
+# it can ask for has to be visible here. Those names are exactly culebra's
+# C-linkage ones: the `culebra_runtime_*` helpers (jit_mem.h's rt:: family) and
+# the `culebra_g_wake` interrupt flag (jit.h's getOrInsertGlobal). The C++ EH
+# entry points JIT'd landingpads reference (__cxa_throw, __gxx_personality_v0)
+# come from libstdc++.so and are found there, not in this table.
+#
+# Why a whitelist rather than -rdynamic: see culebra_export_jit_symbols() in
+# CMakeLists.txt.
+{
+  culebra_*;
+};
