@@ -10,10 +10,7 @@ fn classify(n) {
 
 for n in [-2, 0, 5] { println("classify({n}) = {classify(n)}") }
 
-for i, (
-  fname,
-  lname,
-) in [["John", "Smith"], ["Hello", "World"]].enumerate() {
+for i, (fname, lname) in [["John", "Smith"], ["Hello", "World"]].enumerate() {
   println("{i}: fname={fname}, lname={lname}")
 }
 

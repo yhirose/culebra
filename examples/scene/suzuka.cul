@@ -419,16 +419,8 @@ class CameraRig {
 
 # Index of the centerline point nearest to (x,z).
 fn nearest_idx(cl, x, z) {
-  mut bi = 0
-  mut bd = 1000000000.0
-  for i, [px, pz] in cl.enumerate() {
-    let d = (px - x) * (px - x) + (pz - z) * (pz - z)
-    if d < bd {
-      bd = d
-      bi = i
-    }
-  }
-  bi
+  let dist2 = fn ((i, [px, pz])) { (px - x) * (px - x) + (pz - z) * (pz - z) }
+  cl.enumerate().min_by(dist2)[0]
 }
 
 # Nearest centerline index searched only within `win` of `around` (wrapping).
@@ -437,18 +429,11 @@ fn nearest_idx(cl, x, z) {
 # bridge vs the road under it) instead of snapping to the wrong elevation.
 fn nearest_idx_near(cl, x, z, around, win) {
   let n = cl.size()
-  mut bi = around
-  mut bd = 1000000000.0
-  for d in 0..2 * win + 1 {
-    let i = (around - win + d + n) % n
+  let dist2 = fn (i) {
     let [px, pz] = cl[i]
-    let dd = (px - x) * (px - x) + (pz - z) * (pz - z)
-    if dd < bd {
-      bd = dd
-      bi = i
-    }
+    (px - x) * (px - x) + (pz - z) * (pz - z)
   }
-  bi
+  range(2 * win + 1).map(|d| (around - win + d + n) % n).min_by(dist2)
 }
 
 # True when the car (at nearest centerline index `bi`) has drifted onto/over the
@@ -586,13 +571,7 @@ fn current_corner(corners, s) {
 fn draw_minimap(view, mm, car_x, car_z) {
   let ox = view.width() - 130.0
   let oy = 130.0
-  for (
-    ax,
-    az,
-  ), (
-    bx,
-    bz,
-  ) in mm.iter().windows(2) {
+  for (ax, az), (bx, bz) in mm.iter().windows(2) {
     view.line(ox + ax, oy + az, ox + bx, oy + bz, 2.0, 235, 235, 240)
   }
   view.circle(

@@ -267,16 +267,13 @@ let limit = fn (v, lo, hi) {
   }
 }
 let ease_in = fn (a, b, percent) { a + (b - a) * percent * percent }
-let ease_in_out = fn (
-  a,
-  b,
-  percent,
-) { a + (b - a) * (-Math.cos(percent * Math.pi) / 2.0 + 0.5) }
+let ease_in_out = fn (a, b, percent) {
+  a + (b - a) * (-Math.cos(percent * Math.pi) / 2.0 + 0.5)
+}
 let percent_remaining = fn (n, total) { (n % total) / total }
-let exponential_fog = fn (
-  distance,
-  density,
-) { 1.0 / Math.exp(distance * distance * density) }
+let exponential_fog = fn (distance, density) {
+  1.0 / Math.exp(distance * distance * density)
+}
 
 let increase = fn (start, increment, max) {
   mut result = start + increment
@@ -352,10 +349,9 @@ let last_y = fn () {
   segments.empty() ? 0.0 : segments[segments.size() - 1].p2_wy
 }
 
-let add_segment = fn (
-  curve,
-  y,
-) { segments.push(Segment.new(segments.size(), last_y(), y, curve)) }
+let add_segment = fn (curve, y) {
+  segments.push(Segment.new(segments.size(), last_y(), y, curve))
+}
 
 let add_road = fn (enter, hold, leave, curve, y) {
   let start_y = last_y()
@@ -389,11 +385,9 @@ let C_MEDIUM = 4.0
 
 let add_straight = fn (num) { add_road(num, num, num, 0.0, 0.0) }
 let add_hill = fn (num, height) { add_road(num, num, num, 0.0, height) }
-let add_curve = fn (
-  num,
-  curve,
-  height,
-) { add_road(num, num, num, curve, height) }
+let add_curve = fn (num, curve, height) {
+  add_road(num, num, num, curve, height)
+}
 
 let add_low_rolling_hills = fn (num, height) {
   add_road(num, num, num, 0.0, height / 2.0)
@@ -431,11 +425,9 @@ let find_segment = fn (z) {
   segments[Math.floor(z / SEGMENT_LENGTH) % segments.size()]
 }
 
-let add_prop = fn (
-  n,
-  art,
-  offset,
-) { segments[n].sprites.push(Prop.new(art, offset)) }
+let add_prop = fn (n, art, offset) {
+  segments[n].sprites.push(Prop.new(art, offset))
+}
 
 let reset_props = fn () {
   add_prop(20, BILLBOARD07, -1.0)

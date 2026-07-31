@@ -219,10 +219,7 @@ class Cells {
     self.k = iota(w * h).map(|_| 0)
   }
 
-  get(
-    x,
-    y,
-  ) {
+  get(x, y) {
     x >= 0 && x < self.w && y >= 0 && y < self.h ? self.k[y * self.w + x] : 0
   }
 
@@ -467,10 +464,9 @@ fn draw_trees(c) {
 # is a seam. Allow a little change — real detail differs column to column —
 # but not more than two neighbouring interior columns do.
 fn check_wraps(name, cells) {
-  let diff = fn (
-    a,
-    b,
-  ) { iota(cells.h).filter(|y| cells.get(a, y) != cells.get(b, y)).size() }
+  let diff = fn (a, b) {
+    iota(cells.h).filter(|y| cells.get(a, y) != cells.get(b, y)).size()
+  }
   let seam = diff(LW - 1, 0)
   let interior = iota(1, LW - 2).map(|x| diff(x, x + 1)).max()
   if seam > interior {
@@ -505,10 +501,9 @@ fn build_background() {
 # Pixels per drawn cell — the coarse grid the whole sheet shares. Sprites
 # already at pixel-art size (the cars) draw one cell per pixel; the large
 # scenery is drawn coarse so it reads at the same chunkiness.
-fn cell_scale(
-  w,
-  h,
-) { Math.max(w, h) <= 130 ? 1 : Math.max(2, Math.round(Math.max(w, h) / 60.0)) }
+fn cell_scale(w, h) {
+  Math.max(w, h) <= 130 ? 1 : Math.max(2, Math.round(Math.max(w, h) / 60.0))
+}
 
 # Rear three-quarter view — what the player sees of traffic ahead. `kind` picks
 # the silhouette family; the parts are the same everywhere.
@@ -879,10 +874,7 @@ fn draw_column(c, w, h, seed) {
     "SHADOW",
     "PLATE",
   )
-  for (
-    y,
-    ww,
-  ) in [(0.04, 0.66), (0.86, 0.72)] {
+  for (y, ww) in [(0.04, 0.66), (0.86, 0.72)] {
     c.rect(
       (w * (1 - ww) / 2).to_long(),
       (h * y).to_long(),

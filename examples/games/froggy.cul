@@ -204,12 +204,7 @@ fn draw_status(s, off, score, time) {
   output(s, off, 1, 1, "SCORE: {score}")
   output(s, off, 1, COLS - 5, "TIME: {time}")
 }
-fn draw_food_count(
-  s,
-  off,
-  fruit,
-  dessert,
-) {
+fn draw_food_count(s, off, fruit, dessert) {
   output(
     s,
     off,

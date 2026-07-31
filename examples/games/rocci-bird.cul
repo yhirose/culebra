@@ -22,11 +22,9 @@ let GROUND_PAL = [C1, C2, C3, C4]     # set_draw_colors: C1, C2, C3, C4
 # --- 2BPP sprite decoding --------------------------------------------------
 # WASM-4 2BPP: a continuous bitstream, MSB first, 4 pixels per byte, each pixel
 # a palette index 0..3. All our sheet widths are byte-aligned per row.
-let decode2bpp = fn (
-  bytes,
-  w,
-  h,
-) { iota(w * h).map(|n| bytes[n / 4] >> 6 - 2 * (n % 4) & 3) }
+let decode2bpp = fn (bytes, w, h) {
+  iota(w * h).map(|n| bytes[n / 4] >> 6 - 2 * (n % 4) & 3)
+}
 
 let load_sprite = fn (hex, w, h, pal) {
   let bytes = Encoding.hex.decode(hex).bytes().collect()
@@ -157,10 +155,9 @@ class Anim {
       },
     }
   }
-  draw(
-    x,
-    y,
-  ) { self.sheet.draw_sub(x, y, self.cells[self.index][1], 0, self.sw, 16) }
+  draw(x, y) {
+    self.sheet.draw_sub(x, y, self.cells[self.index][1], 0, self.sw, 16)
+  }
 }
 
 let idle_anim = |fc| Anim.new(
@@ -229,10 +226,9 @@ let draw_ground = fn (x) {
   ground_sprite.draw(x + W, GROUND_Y)
 }
 let draw_plants = fn (plants) {
-  for {
-    x,
-    type,
-  } in plants { plant_sheet.draw_sub(x, PLANT_Y, type * 12, 0, 12, 12) }
+  for {x, type} in plants {
+    plant_sheet.draw_sub(x, PLANT_Y, type * 12, 0, 12, 12)
+  }
 }
 let draw_pipes = fn (pipes) {
   for {x, gap_start} in pipes {
