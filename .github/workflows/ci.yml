@@ -774,20 +774,14 @@ jobs:
           key: windows-aot-ccache-${{ github.sha }}
           restore-keys: |
             windows-aot-ccache-
-      # SDL3 + raylib are built by ExternalProject, which ccache does not cover
-      # end to end (the install/publish steps are not compiles). Cache the
-      # published tree instead, on the same two submodule revisions CMake keys
-      # its own deps dir on — anything coarser (a .gitmodules hash, say) would
-      # hit exactly on a vendor bump, restore a tree CMake then ignores, and
-      # skip the save, so every later run rebuilds. No restore-keys for the
-      # same reason: a partial hit is a tree nothing will read.
+      # ccache does not cover the ExternalProject build of SDL3 + raylib end to
+      # end (its install and publish steps are not compiles), so cache the
+      # published tree. No restore-keys: a partial hit is a tree CMake ignores.
       - name: Resolve deps cache key
         id: deps
-        run: |
-          echo "key=windows-deps-$(git -C vendor/SDL rev-parse --short=12 HEAD)-$(git -C vendor/raylib rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
-      # Pointing CULEBRA_DEPS_CACHE at the workspace also keeps the tree off
-      # $HOME, which under MSYS2 is an msys path the native toolchain reads as
-      # C:\home\...
+        run: echo "key=$(misc/deps_cache_key.sh windows-deps)" >> "$GITHUB_OUTPUT"
+      # CULEBRA_DEPS_CACHE also keeps the tree off $HOME, which under MSYS2 is
+      # an msys path the native toolchain reads as C:\home\...
       - name: Restore SDL3 + raylib deps cache
         uses: actions/cache@v4
         with:
@@ -811,18 +805,6 @@ jobs:
             -DCULEBRA_ENABLE_CANVAS_WINDOW=ON \
             -DCULEBRA_DEV_NO_RT=OFF \
             -DCULEBRA_LTO=OFF
-      # Diagnostic: how zstd reaches the link. mingw's LLVM wants it, and an
-      # import library named by absolute path in an exported interface defeats
-      # both -static and a remap of the zstd:: target. Informative on purpose —
-      # the standalone check at the end of this job is what enforces the answer.
-      - name: How does zstd reach the link
-        run: |
-          echo "--- zstd references in the generated build ---"
-          grep -o '[^ ]*zstd[^ ]*' build-win-aot/build.ninja | sort -u || true
-          echo "--- zstd in LLVM's exported interfaces ---"
-          grep -rl 'zstd' "$(llvm-config --cmakedir)" 2>/dev/null | head -5 || true
-          grep -rho '[^ ";]*zstd[^ ";]*' "$(llvm-config --cmakedir)" 2>/dev/null \
-            | sort -u | head -20 || true
       - name: Build (culebra driver + runtime archives)
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -881,22 +863,19 @@ jobs:
           CULEBRA_CANVAS_HEADLESS: "1"
           CULEBRA_VERBOSE: "1"
         run: |
-          # set +e: this shell runs with -e, so a failing command substitution
-          # would end the step before the output it captured could be printed.
+          # This shell runs with -e, so a failing command substitution would end
+          # the step before the output it captured could be printed.
           set +e
-          # A hang here should fail the step, not sit until the job timeout —
-          # but not at the cost of the step dying if this MSYS2 has no timeout.
-          bounded() { if command -v timeout >/dev/null 2>&1; then timeout 60 "$@"; else "$@"; fi; }
           fail=0
           for mode in "" "--jit"; do
             echo "=== culebra $mode tests/test_canvas.cul ==="
-            out=$(bounded ./build-win-aot/culebra.exe $mode tests/test_canvas.cul 2>&1); rc=$?
+            out=$(timeout 60 ./build-win-aot/culebra.exe $mode tests/test_canvas.cul 2>&1); rc=$?
             echo "out=[$out] rc=$rc"
             [ "$out" = "canvas ok" ] || { echo "CANVAS_${mode:---interp}_FAIL"; fail=1; }
           done
           echo "=== culebra build tests/test_canvas.cul ==="
           if ./build-win-aot/culebra.exe build tests/test_canvas.cul -o canvas.exe; then
-            out=$(bounded ./canvas.exe 2>&1); rc=$?
+            out=$(timeout 60 ./canvas.exe 2>&1); rc=$?
             echo "out=[$out] rc=$rc"
             [ "$out" = "canvas ok" ] && echo "CANVAS_AOT_PASS" \
               || { echo "CANVAS_AOT_RUN_FAIL"; fail=1; }
@@ -912,9 +891,8 @@ jobs:
       - name: Smoke — Canvas window creation does not hang or crash
         run: |
           set +e  # as above: keep the captured output printable
-          bounded() { if command -v timeout >/dev/null 2>&1; then timeout 60 "$@"; else "$@"; fi; }
           printf '_Canvas.init(8, 8)\nprint(_Canvas.windowed())\n' > win.cul
-          out=$(bounded ./build-win-aot/culebra.exe win.cul 2>&1); rc=$?
+          out=$(timeout 60 ./build-win-aot/culebra.exe win.cul 2>&1); rc=$?
           echo "out=[$out] rc=$rc"
           if [ $rc -ne 0 ]; then
             echo "ERROR: window probe exited $rc (124 = hung)" >&2

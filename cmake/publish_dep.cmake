@@ -7,13 +7,10 @@
 # build elsewhere either doesn't see it yet (and builds its own copy) or sees a
 # finished tree — never a half-written archive.
 #
-# PROBE is the artifact whose presence means "a complete tree is already here"
-# — the static library the consumer links. The test cannot be the directory:
-# Ninja creates the directories of a rule's declared byproducts before running
-# it, so DEST already exists, empty, the first time this step runs under that
-# generator. Testing the directory therefore made a cold Ninja build publish
-# nothing at all and leave an empty shell behind, which the dependent build
-# then failed to find its dependency in.
+# PROBE — the static library the consumer links — is what says "a complete tree
+# is already here". Not the directory: Ninja creates the directories of a
+# rule's declared byproducts before running it, so DEST exists, empty, on a
+# cold build under that generator.
 
 if(NOT STAGE OR NOT DEST OR NOT PROBE)
   message(FATAL_ERROR "publish_dep: STAGE, DEST and PROBE are required")

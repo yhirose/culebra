@@ -324,24 +324,19 @@ libs (auto-detected when the static libs are missing)" OFF)
   # zstd is a normal system library.
   if(WIN32 AND TARGET zstd::libzstd_shared)
     find_library(CULEBRA_ZSTD_STATIC NAMES libzstd.a zstd_static)
-    if(CULEBRA_ZSTD_STATIC MATCHES "libzstd\\.a$|zstd_static")
-      # Every location property, including the per-configuration ones zstd's
-      # config package sets: a plain IMPORTED_IMPLIB is ignored whenever an
-      # IMPORTED_IMPLIB_<CONFIG> exists, which is how the first attempt at
-      # this still linked the DLL's import library.
-      set(_zstd_props IMPORTED_IMPLIB IMPORTED_LOCATION)
+    if(CULEBRA_ZSTD_STATIC)
+      # Per-configuration properties too: a plain IMPORTED_IMPLIB is ignored
+      # whenever an IMPORTED_IMPLIB_<CONFIG> exists, and zstd's config package
+      # sets those.
+      set(_zstd_props IMPORTED_IMPLIB "${CULEBRA_ZSTD_STATIC}"
+                      IMPORTED_LOCATION "${CULEBRA_ZSTD_STATIC}")
       get_target_property(_zstd_cfgs zstd::libzstd_shared IMPORTED_CONFIGURATIONS)
-      if(_zstd_cfgs)
-        foreach(_c IN LISTS _zstd_cfgs)
-          list(APPEND _zstd_props IMPORTED_IMPLIB_${_c} IMPORTED_LOCATION_${_c})
-        endforeach()
-      endif()
-      foreach(_p IN LISTS _zstd_props)
-        set_target_properties(zstd::libzstd_shared PROPERTIES
-          ${_p} "${CULEBRA_ZSTD_STATIC}")
+      foreach(_c IN LISTS _zstd_cfgs)
+        list(APPEND _zstd_props IMPORTED_IMPLIB_${_c} "${CULEBRA_ZSTD_STATIC}"
+                                IMPORTED_LOCATION_${_c} "${CULEBRA_ZSTD_STATIC}")
       endforeach()
-      message(STATUS "zstd: linking ${CULEBRA_ZSTD_STATIC} statically (LLVM dep,"
-                     " configs: ${_zstd_cfgs})")
+      set_target_properties(zstd::libzstd_shared PROPERTIES ${_zstd_props})
+      message(STATUS "zstd: linking ${CULEBRA_ZSTD_STATIC} statically (LLVM dep)")
     endif()
   endif()
 
@@ -1134,11 +1129,8 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
   # a cache entry only ever appears complete: a concurrent cold build elsewhere
   # sees either nothing yet or a finished tree, never a half-written archive.
   set(_deps_stage "${CMAKE_CURRENT_BINARY_DIR}/deps_stage")
-  # Both are C projects, and a sub-build picks its own compiler from the
-  # environment unless told. Pass this build's down so the statics are made by
-  # the toolchain that will link them — on MSYS2 the parent is configured with
-  # an explicit mingw gcc, and letting the sub-build search PATH on its own is
-  # how a static archive ends up built by a different one.
+  # A sub-build picks its own compiler off PATH unless told; pass this build's
+  # down so the statics are made by the toolchain that will link them.
   set(_deps_toolchain -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER})
   if(NOT EXISTS "${_sdl_a}")
     ExternalProject_Add(sdl_ext

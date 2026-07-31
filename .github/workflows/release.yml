@@ -97,18 +97,8 @@ jobs:
       # minutes longer than ci.yml's.
       - run: just build
       - run: ccache -s || true
-      # The window backend is the thing a downloaded macOS build would most
-      # easily lose: an inherited CULEBRA_CANVAS_WINDOW_DEFAULT, or a deps-cache
-      # miss, turns it off without failing the build. CMake never rewrites this
-      # cache entry after the option(), so it is the honest answer.
       - name: Verify the Canvas window backend is in this build
-        run: |
-          if ! grep -qx 'CULEBRA_ENABLE_CANVAS_WINDOW:BOOL=ON' build/CMakeCache.txt; then
-            echo "ERROR: built without the Canvas desktop window" >&2
-            grep -i canvas build/CMakeCache.txt >&2 || true
-            exit 1
-          fi
-          echo "OK: Canvas games open a real window"
+        run: misc/verify_canvas_window.sh build
       - name: Package and upload
         env:
           GH_TOKEN: ${{ github.token }}
@@ -184,17 +174,8 @@ jobs:
             ${{ runner.os }}-ccache-
       - run: just build -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
       - run: ccache -s || true
-      # Same check as the macOS job, for the same reason: an inherited
-      # CULEBRA_CANVAS_WINDOW_DEFAULT or a deps-cache miss drops the window
-      # backend without failing the build.
       - name: Verify the Canvas window backend is in this build
-        run: |
-          if ! grep -qx 'CULEBRA_ENABLE_CANVAS_WINDOW:BOOL=ON' build/CMakeCache.txt; then
-            echo "ERROR: built without the Canvas desktop window" >&2
-            grep -i canvas build/CMakeCache.txt >&2 || true
-            exit 1
-          fi
-          echo "OK: Canvas games open a real window"
+        run: misc/verify_canvas_window.sh build
       # Guard the specific regression the toolchain step above avoids: if a
       # desktop dev package ever reaches this runner, CMake silently links
       # Webview and the binary stops starting on headless machines. Naming the
@@ -270,8 +251,7 @@ jobs:
       # under — a warm cache skips their ~4 min ExternalProject build.
       - name: Resolve deps cache key
         id: deps
-        run: |
-          echo "key=windows-deps-$(git -C vendor/SDL rev-parse --short=12 HEAD)-$(git -C vendor/raylib rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+        run: echo "key=$(misc/deps_cache_key.sh windows-deps)" >> "$GITHUB_OUTPUT"
       - name: Restore SDL3 + raylib deps cache
         uses: actions/cache@v4
         with:
@@ -301,6 +281,11 @@ jobs:
             -DCULEBRA_ENABLE_WEBVIEW=OFF \
             -DCULEBRA_DEV_NO_RT=OFF \
             -DCULEBRA_LTO=ON
+      # Before the build, not after: unlike the macOS and Linux jobs (whose
+      # `just build` is one step) this one can catch a lost window backend
+      # without first paying the ~40 min LTO link.
+      - name: Verify the Canvas window backend is in this build
+        run: misc/verify_canvas_window.sh build
       # Only `culebra` (+ its embedded runtime archives): the default `all`
       # pulls in POSIX-only test targets.
       - name: Build
@@ -308,17 +293,6 @@ jobs:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: cmake --build build --target culebra -j
       - run: ccache -s || true
-      # Same check as the macOS and Linux jobs, for the same reason: an
-      # inherited CULEBRA_CANVAS_WINDOW_DEFAULT or a deps-cache miss drops the
-      # window backend without failing the build.
-      - name: Verify the Canvas window backend is in this build
-        run: |
-          if ! grep -qx 'CULEBRA_ENABLE_CANVAS_WINDOW:BOOL=ON' build/CMakeCache.txt; then
-            echo "ERROR: built without the Canvas desktop window" >&2
-            grep -i canvas build/CMakeCache.txt >&2 || true
-            exit 1
-          fi
-          echo "OK: Canvas games open a real window"
       # The whole point of -static here: a downloaded .exe must not need a DLL
       # the user does not have. Same script — and so the same allowlist — as
       # ci.yml's two Windows link checks, so this gate cannot end up weaker.
