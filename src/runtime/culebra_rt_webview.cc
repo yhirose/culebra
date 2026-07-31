@@ -31,6 +31,12 @@ namespace culebra_webview {
 // the HTTP-bridge way to quit from a UI button/menu.
 inline std::atomic<webview_t> g_active_window{nullptr};
 
+// A quit() that lands while no window is in run() yet. Desktop.run binds the
+// server before it builds the window, so the app answers `/__quit` during a
+// window where g_active_window is still null — without this the request would
+// return 200 and the window would then open and never close.
+inline std::atomic<bool> g_quit_pending{false};
+
 // A thin owning facade over webview's opaque C handle: clean,
 // void-returning methods over simple types that wrap.h's `method<&T::m>`
 // DSL can bind directly. (The C++ `webview::webview` class returns a
@@ -61,17 +67,23 @@ class Window {
 
   // Runs the native event loop; blocks until terminate() (safe to call
   // from another thread per the webview C API contract). Marks this window as
-  // the active one for the duration so `quit()` can find it.
+  // the active one for the duration so `quit()` can find it. A quit() that
+  // already arrived skips the loop rather than entering one nothing will leave:
+  // the two seq_cst store/load pairs here and in quit() cross, so exactly one
+  // side sees the other and the quit is never dropped.
   void run() {
     g_active_window.store(w_);
-    webview_run(w_);
+    if (!g_quit_pending.exchange(false)) webview_run(w_);
     g_active_window.store(nullptr);
+    g_quit_pending.store(false);
   }
   void terminate() { webview_terminate(w_); }
 
   // Terminate whichever window is currently in run() — callable from any
-  // thread (e.g. an HTTP handler). No-op if no window is running.
+  // thread (e.g. an HTTP handler). If none is running yet, the quit is held
+  // for the next run() instead of being dropped.
   static void quit() {
+    g_quit_pending.store(true);
     if (auto* w = g_active_window.load()) webview_terminate(w);
   }
 
