@@ -188,6 +188,12 @@ if(CULEBRA_ENABLE_HTTP)
     list(APPEND _ssl_libs ${CMAKE_DL_LIBS})
     find_package(Threads REQUIRED)
     list(APPEND _ssl_libs Threads::Threads)
+  elseif(WIN32)
+    # Static OpenSSL takes its entropy and its trust store from the OS:
+    # BCryptGenRandom (bcrypt), the system root store (crypt32), and sockets
+    # (ws2_32). MSVC picks these up from OpenSSL's own #pragma comment(lib);
+    # mingw has to be told.
+    list(APPEND _ssl_libs crypt32 bcrypt ws2_32)
   endif()
 
   # AOT link string: resolve the OpenSSL static archives to absolute paths so
@@ -198,6 +204,8 @@ if(CULEBRA_ENABLE_HTTP)
     set(_ssl_link "${_ssl_link} -framework CoreFoundation -framework Security")
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(_ssl_link "${_ssl_link} -ldl -lpthread")
+  elseif(WIN32)
+    set(_ssl_link "${_ssl_link} -lcrypt32 -lbcrypt -lws2_32")
   endif()
 endif()
 
