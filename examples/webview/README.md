@@ -59,8 +59,9 @@ culebra --jit examples/webview/desktop_app.cul    # same, JIT
 culebra examples/webview/hello.cul                # minimal window
 ```
 
-To check that a build has Webview at all, without a window to look at, run
-`tests/gui/webview_probe.cul` — the same probe CI uses.
+`just smoke-webview` drives the event loop on both backends — the same probe
+CI runs. It opens a window; `tests/gui/webview_pending_quit.cul` is the one
+that checks the binding without ever showing one.
 
 ## The app in one call
 
@@ -88,10 +89,10 @@ fetch("/__quit", { method: "POST" })   // the "Quit" button in dist/index.html
 ```
 
 The quit route calls **`Webview.Window.quit()`** — a static that terminates the
-running window. It's safe to call from the server's worker thread (`webview`'s
-terminate is thread-safe) and never touches the non-sendable window handle, so
-the UI can close the app without a native JS↔culebra bridge. `Desktop.quit()`
-exposes the same for a custom handler.
+running window. It is safe to call from the server's worker thread (the
+binding hops onto the loop thread — see the wart below) and never touches the
+non-sendable window handle, so the UI can close the app without a native
+JS↔culebra bridge. `Desktop.quit()` exposes the same for a custom handler.
 
 ## Single binary + a real dev loop
 
@@ -155,7 +156,7 @@ w.set_title("Hello")
 w.set_size(640, 480)
 w.set_html("<h1>It works</h1>")    # or: w.navigate("https://…" / "data:…" / "file://…")
 w.run()                            # blocks the GUI thread until terminate()
-w.terminate()                      # safe from another thread
+w.terminate()                      # from the thread that called run()
 
 Webview.Window.quit()              # static: terminate the window currently in
                                    # run(), callable from any thread (e.g. an
@@ -175,7 +176,21 @@ type and the new standard library eagerly instantiates the deleter in a
 throwing constructor. master fixed it. The header carries its source
 commit at the top; regenerate with webview's `scripts/amalgamate/amalgamate.py`.
 
-## Known upstream wart (GTK4)
+## Known upstream warts
+
+**`webview_terminate` is not thread-safe, despite saying it is.** Its doc
+comment reads "safe to call from another background thread"; only the GTK
+backend honours that. Win32 calls `PostQuitMessage`, which posts WM_QUIT to the
+*calling* thread, so a quit from an HTTP worker never reaches the loop and the
+app hangs. Cocoa calls `NSApplication_stop`, which AppKit allows on the main
+thread only. The binding works around it by going through `webview_dispatch`
+(genuinely thread-safe on all three) — see `terminate_on_loop_thread` in
+`src/runtime/culebra_rt_webview.cc`. **Re-check this when regenerating the
+header**: the workaround is downstream, so an upstream fix will not remove it
+and a change to `dispatch` semantics would break it silently. `just
+smoke-webview` is what catches that.
+
+**GTK4 crashes on a create/destroy pair with no content.**
 
 Creating a window and destroying it with nothing in between —
 `webview_create` immediately followed by `webview_destroy`, no HTML and no

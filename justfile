@@ -842,6 +842,14 @@ smoke-microgpt: build fetch-names
     ./build/culebra --jit benchmarks/microgpt/microgpt.cul 5 0 > /dev/null
     @echo "smoke-microgpt OK: 5 steps completed on both backends"
 
+# Opens a real window, so it is out of `just test` (and out of tests/*.cul,
+# which that sweeps) — but the window backend is the one thing CI cannot fully
+# answer, so it needs a command to run by hand. Same script the CI jobs call.
+[doc("Drive the Webview event loop on both backends (opens a window)")]
+[group("test")]
+smoke-webview: build
+    misc/probe_webview_window.sh ./build/culebra
+
 # Download Karpathy's names dataset for benchmarks/microgpt.
 [group("bench")]
 fetch-names:

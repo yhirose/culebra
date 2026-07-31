@@ -25,10 +25,10 @@
 namespace culebra_webview {
 
 // The window currently parked in run() (one per desktop app). Set on run()
-// entry, cleared on return. webview_terminate is thread-safe, so a request
-// handler on the server's worker thread can close the app via the static
-// `Webview.Window.quit()` without holding the (non-sendable) window handle —
-// the HTTP-bridge way to quit from a UI button/menu.
+// entry, cleared on return. It is what lets a request handler on the server's
+// worker thread close the app via the static `Webview.Window.quit()` without
+// holding the (non-sendable) window handle — the HTTP-bridge way to quit from
+// a UI button/menu. See terminate_on_loop_thread for how that crosses threads.
 inline std::atomic<webview_t> g_active_window{nullptr};
 
 // A quit() that lands while no window is in run() yet. Desktop.run binds the
@@ -65,8 +65,7 @@ class Window {
   }
   void navigate(const std::string& url) { webview_navigate(w_, url.c_str()); }
 
-  // Runs the native event loop; blocks until terminate() (safe to call
-  // from another thread per the webview C API contract). Marks this window as
+  // Runs the native event loop; blocks until terminate(). Marks this window as
   // the active one for the duration so `quit()` can find it. A quit() that
   // already arrived skips the loop rather than entering one nothing will leave:
   // the two seq_cst store/load pairs here and in quit() cross, so exactly one
@@ -88,13 +87,14 @@ class Window {
   }
 
  private:
-  // webview_terminate is not thread-safe on every backend: the Win32 one calls
-  // PostQuitMessage, which posts WM_QUIT to the *calling* thread's queue, so a
-  // quit from an HTTP worker never reaches the main thread's GetMessage and
-  // run() parks forever. webview_dispatch is the thread-safe primitive on all
-  // three backends (PostMessage to the message window / g_idle_add /
-  // dispatch_async), so hop onto the loop thread and terminate from there —
-  // which is what the GTK backend's own terminate already does internally.
+  // webview_terminate documents itself as safe from any thread, and is not:
+  // Win32 calls PostQuitMessage, which by definition posts WM_QUIT to the
+  // *calling* thread, so a quit from an HTTP worker never reaches the loop and
+  // run() parks forever; Cocoa calls NSApplication_stop, which AppKit allows
+  // only on the main thread. GTK is the one backend that honours the contract,
+  // and it does so by routing through its own dispatch. So do that here, for
+  // all three: webview_dispatch is genuinely thread-safe everywhere
+  // (PostMessage to the message window / g_idle_add / dispatch_async).
   static void terminate_on_loop_thread(webview_t w) {
     webview_dispatch(
         w, [](webview_t self, void*) { webview_terminate(self); }, nullptr);

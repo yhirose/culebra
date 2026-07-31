@@ -171,24 +171,27 @@ jobs:
       # driven, not platform-specific, and the slow macOS runner needn't pay
       # for a second from-scratch compile (the JIT define flips every ccache
       # key, so this shares nothing with the build above).
-      - name: Build (interpreter only, no JIT)
-        if: matrix.os == 'ubuntu-latest'
-        run: just build-no-jit
-
-      - name: Report ccache stats
-        run: ccache -s
-
-      # A binary to try on a real desktop, which no CI job can stand in for:
-      # a runner proves a window does not hang or crash, never that anyone can
-      # see it. Uploaded straight after the build so a failure further down
-      # still leaves something to debug with. One day of retention — this is a
-      # scratch download, not a release artifact.
+      # A binary to try on a real desktop, which no CI job can stand in for: a
+      # runner proves a window does not hang or crash, never that anyone can
+      # see it. Before the no-JIT build, so that failing still leaves this
+      # behind. Note both of these carry Canvas headless (the job pins
+      # CULEBRA_CANVAS_WINDOW_DEFAULT off) and the Ubuntu one has no Webview
+      # either (no gtk4/webkitgtk here) — the Windows artifact is the only one
+      # with a window backend in it.
       - name: Upload the binary for manual testing
         uses: actions/upload-artifact@v4
         with:
           name: culebra-${{ matrix.os }}
           path: build/culebra
           retention-days: 1
+          compression-level: 1  # ~5x faster than the default, 12% larger
+
+      - name: Build (interpreter only, no JIT)
+        if: matrix.os == 'ubuntu-latest'
+        run: just build-no-jit
+
+      - name: Report ccache stats
+        run: ccache -s
 
       - name: Test (interp/JIT diff + embedding smoke + AOT + culebra-test self)
         # Reuse the LTO build/ from the Build step rather than letting `just
@@ -212,39 +215,12 @@ jobs:
       - name: Smoke test microgpt (5 steps, both backends)
         run: just smoke-microgpt
 
-      # The one layer nothing else covers: a Webview build that links and then
-      # dies the moment it opens a window. Both bugs this caught by hand on
-      # Linux (an LLVM symbol clash that segfaulted inside Mesa, and a quit()
-      # arriving before run() being dropped) were invisible to every other gate.
-      #
       # macOS builds Webview by default and needs no packages, so this costs
-      # only the run. Ubuntu self-disables it for want of gtk4/webkitgtk, and
+      # only the run. Ubuntu self-disables it for want of gtk4/webkitgtk, where
       # `Webview` is then an undefined name — skip rather than pretend.
-      #
-      # A runner with no display is a legitimate outcome; hanging or crashing
-      # is not. AOT is left out: the Windows job already links a Webview
-      # program, and this is about the event loop, not the link.
       - name: Smoke — Webview window + event loop (interp / JIT)
         if: matrix.os == 'macos-latest'
-        run: |
-          set +e  # keep the captured output printable on failure
-          fail=0
-          for probe in webview_probe webview_pending_quit; do
-           for mode in "" "--jit"; do
-            echo "=== culebra $mode $probe.cul ==="
-            out=$(gtimeout 60 ./build/culebra $mode tests/gui/$probe.cul 2>&1)
-            rc=$?
-            echo "out=[$out] rc=$rc"
-            case "$rc:$out" in
-              0:*WEBVIEW_PROBE_OK*|0:*WEBVIEW_PROBE_PENDING_QUIT_OK*)
-                echo "OK: window, event loop and quit behaved" ;;
-              *"failed to create window"*) echo "OK: no window server here — clean failure" ;;
-              124:*) echo "ERROR: probe hung" >&2; fail=1 ;;
-              *) echo "ERROR: probe failed (rc=$rc)" >&2; fail=1 ;;
-            esac
-           done
-          done
-          exit $fail
+        run: misc/probe_webview_window.sh ./build/culebra
 
   # The Canvas desktop window backend is the one part of the tree no other job
   # builds: the matrix above pins CULEBRA_CANVAS_WINDOW_DEFAULT=OFF on both
@@ -872,15 +848,16 @@ jobs:
         run: cmake --build build-win-aot --target culebra -j
       - name: Report ccache stats
         run: ccache -s || true
-      # The widest Windows build there is — Canvas window, Webview and Http all
-      # on — so this is the one to try on a real desktop. See the matching step
-      # in the `test` job for why CI cannot answer that question itself.
+      # The widest build there is — Canvas window, Webview and Http all on — so
+      # this is the one to try on a real desktop, and the only artifact with a
+      # window backend in it.
       - name: Upload the binary for manual testing
         uses: actions/upload-artifact@v4
         with:
           name: culebra-windows-x64
           path: build-win-aot/culebra.exe
           retention-days: 1
+          compression-level: 1
       # Trivial AOT (no exceptions): exercises COFF object emit + the Windows
       # link driver (g++/quoting/-static). Verbose so the link command shows.
       - name: Smoke — trivial AOT (no EH)
@@ -1017,31 +994,9 @@ jobs:
             echo "AOT_WEBVIEW_HTTP_BUILD_FAIL rc=$?"
             exit 1
           fi
-      # The step above proves the link; this one proves the window. Same probe
-      # the macOS job runs — a WebView2 that opens and then dies in the event
-      # loop, or a quit() that never lands, would pass everything else here.
-      # No WebView2 runtime on the runner is a legitimate outcome; a hang or a
-      # crash is not.
+      # The step above proves the link; this one proves the window.
       - name: Smoke — Webview window + event loop (interp / JIT)
-        run: |
-          set +e  # keep the captured output printable on failure
-          fail=0
-          for probe in webview_probe webview_pending_quit; do
-           for mode in "" "--jit"; do
-            echo "=== culebra $mode $probe.cul ==="
-            out=$(timeout 60 ./build-win-aot/culebra.exe $mode tests/gui/$probe.cul 2>&1)
-            rc=$?
-            echo "out=[$out] rc=$rc"
-            case "$rc:$out" in
-              0:*WEBVIEW_PROBE_OK*|0:*WEBVIEW_PROBE_PENDING_QUIT_OK*)
-                echo "OK: window, event loop and quit behaved" ;;
-              *"failed to create window"*) echo "OK: no WebView2 runtime here — clean failure" ;;
-              124:*) echo "ERROR: probe hung" >&2; fail=1 ;;
-              *) echo "ERROR: probe failed (rc=$rc)" >&2; fail=1 ;;
-            esac
-           done
-          done
-          exit $fail
+        run: misc/probe_webview_window.sh ./build-win-aot/culebra.exe
       # AOT regression smoke: string concat + caught-value integrity (16-byte
       # runtime helpers, sret ABI), classes, getters and callable class objects.
       # set +e so every case still runs and gets listed, but any failure is
