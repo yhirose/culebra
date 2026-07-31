@@ -178,6 +178,18 @@ jobs:
       - name: Report ccache stats
         run: ccache -s
 
+      # A binary to try on a real desktop, which no CI job can stand in for:
+      # a runner proves a window does not hang or crash, never that anyone can
+      # see it. Uploaded straight after the build so a failure further down
+      # still leaves something to debug with. One day of retention — this is a
+      # scratch download, not a release artifact.
+      - name: Upload the binary for manual testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: culebra-${{ matrix.os }}
+          path: build/culebra
+          retention-days: 1
+
       - name: Test (interp/JIT diff + embedding smoke + AOT + culebra-test self)
         # Reuse the LTO build/ from the Build step rather than letting `just
         # test` spin up a second no-LTO build-gate/. CI already pays for the
@@ -860,6 +872,15 @@ jobs:
         run: cmake --build build-win-aot --target culebra -j
       - name: Report ccache stats
         run: ccache -s || true
+      # The widest Windows build there is — Canvas window, Webview and Http all
+      # on — so this is the one to try on a real desktop. See the matching step
+      # in the `test` job for why CI cannot answer that question itself.
+      - name: Upload the binary for manual testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: culebra-windows-x64
+          path: build-win-aot/culebra.exe
+          retention-days: 1
       # Trivial AOT (no exceptions): exercises COFF object emit + the Windows
       # link driver (g++/quoting/-static). Verbose so the link command shows.
       - name: Smoke — trivial AOT (no EH)
