@@ -1145,6 +1145,13 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
     if(TARGET sdl_ext)
       set(_raylib_dep DEPENDS sdl_ext)
     endif()
+    # rcore.c's Windows branch calls isalpha() without including <ctype.h>, and
+    # raylib builds itself with -Werror=implicit-function-declaration. Supply
+    # the declaration rather than switching that diagnostic off.
+    set(_raylib_c_flags "")
+    if(WIN32)
+      set(_raylib_c_flags "-DCMAKE_C_FLAGS=-include ctype.h")
+    endif()
     ExternalProject_Add(raylib_ext
       SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/raylib"
       PREFIX "${CMAKE_CURRENT_BINARY_DIR}/raylib_ext_build"
@@ -1158,6 +1165,7 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
         -DSDL3_DIR=${_sdl_install}/lib/cmake/SDL3
         -DCMAKE_PREFIX_PATH=${_sdl_install}
         ${_deps_toolchain}
+        ${_raylib_c_flags}
         -DCMAKE_INSTALL_PREFIX=${_deps_stage}/raylib
         -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
         -DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
