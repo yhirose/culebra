@@ -33,8 +33,9 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE int culebra_aot_bootstrap(
     }
   }
 
-  // UTF-8 console output + cooperative Ctrl+C, same as the CLI: an AOT binary
-  // is the CLI's peer, so it does the same process-wide setup `main` does.
+  // UTF-8 console output and cooperative Ctrl+C, same as the CLI: the program's
+  // loop safepoints and (if it runs the interpreter) statement poll observe the
+  // flag.
   culebra::install_console_utf8();
   culebra::install_sigint_handler();
 

@@ -1841,26 +1841,23 @@ inline void install_sigint_handler() {
   std::signal(SIGINT, _culebra_sigint_handler);
 }
 
-// A Windows console decodes what a program writes with its output code page,
-// which on a localized install is a legacy DBCS one (932 on ja-JP), not UTF-8 —
-// so every non-ASCII byte culebra writes is mojibake there. The Term renderer
-// breaks worse than the text alone: an orphaned DBCS lead byte swallows the
-// following byte, and when that byte is the ESC of the next `\x1b[y;xH` the
-// whole frame's cursor addressing prints as literal text. Setting both code
-// pages to UTF-8 is what makes Windows output match POSIX byte-for-byte (the
-// input one covers the non-ASCII keys read_key returns). Restored at exit —
-// a console left on 65001 changes behaviour for whatever runs in it next.
-// No-op off a console (redirected output) and on every other platform.
+// A Windows console decodes output with its code page — on a localized install
+// a legacy DBCS one (932 on ja-JP), which turns non-ASCII bytes into mojibake
+// and lets an orphaned lead byte eat the ESC of a following `\x1b[y;xH`. The
+// input CP follows so read_key returns non-ASCII keys as UTF-8 too. Restored at
+// exit: a console left on 65001 changes behaviour for what runs in it next.
 // CLI-only, like install_sigint_handler: embedders own their console.
 inline void install_console_utf8() {
 #if defined(_WIN32)
-  static bool installed = false;
-  if (installed) return;
-  static UINT saved_out = GetConsoleOutputCP();
-  static UINT saved_in = GetConsoleCP();
-  if (!SetConsoleOutputCP(CP_UTF8)) return;  // no console attached
+  static UINT saved_out, saved_in;  // static: the atexit lambda cannot capture
+  UINT out = GetConsoleOutputCP();
+  if (out == 0) return;  // no console attached (redirected output)
+  UINT in = GetConsoleCP();
+  if (out == CP_UTF8 && in == CP_UTF8) return;  // already UTF-8, nothing to undo
+  if (!SetConsoleOutputCP(CP_UTF8)) return;
   SetConsoleCP(CP_UTF8);
-  installed = true;
+  saved_out = out;
+  saved_in = in;
   std::atexit([] {
     SetConsoleOutputCP(saved_out);
     SetConsoleCP(saved_in);
