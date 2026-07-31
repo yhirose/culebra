@@ -1,0 +1,16 @@
+# Companion to webview_probe.cul, in its own process: a quit() that lands
+# before run() must not be dropped. Desktop.run binds the HTTP server before it
+# builds the window, so a route can quit during that window of time — and the
+# window would then open with nothing left able to close it.
+#
+# Same rules as its companion: not under tests/*.cul, failures propagate, no
+# display is a legitimate outcome and a hang is not.
+
+let w = Webview.Window.new()
+w.set_title("ci probe (pending quit)")
+w.set_size(320, 240)
+w.set_html("<h1>pending</h1>")
+Webview.Window.quit()
+w.run()
+w.drop()
+println("WEBVIEW_PROBE_PENDING_QUIT_OK")

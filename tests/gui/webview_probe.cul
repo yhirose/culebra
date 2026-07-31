@@ -1,23 +1,14 @@
-# Webview event-loop probe for CI. Not under tests/*.cul on purpose: the gate
-# sweeps that glob, and this opens a real window.
+# Webview event-loop probe for CI: park in the event loop, quit from another
+# thread, come back and tear down. This is the shape Desktop.run depends on.
 #
-# Prints one marker per phase and lets any failure propagate — the caller
-# classifies the outcome, because a machine with no display is a legitimate
-# result here and a hang or a crash is not.
+# Not under tests/*.cul on purpose — the gate sweeps that glob and this opens a
+# real window. One window per process, like Desktop.run: multiple windows in
+# one process is not a supported shape (see examples/webview/README.md), so the
+# pending-quit case lives in its own file rather than a second phase here.
+#
+# Failures propagate; the caller classifies. A machine with no display is a
+# legitimate outcome, a hang or a crash is not.
 
-# A quit that lands before run() must not be dropped: Desktop.run answers HTTP
-# while the window is still being built, so a route can quit first.
-let early = Webview.Window.new()
-early.set_title("ci probe (pending quit)")
-early.set_size(320, 240)
-early.set_html("<h1>pending</h1>")
-Webview.Window.quit()
-early.run()
-early.drop()
-println("WEBVIEW_PROBE_PENDING_QUIT_OK")
-
-# The normal shape: park in the event loop, quit from another thread, come back
-# and tear down. This is what Desktop.run does.
 let w = Webview.Window.new()
 w.set_title("ci probe (run + quit)")
 w.set_size(320, 240)

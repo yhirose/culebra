@@ -217,17 +217,20 @@ jobs:
         run: |
           set +e  # keep the captured output printable on failure
           fail=0
-          for mode in "" "--jit"; do
-            echo "=== culebra $mode webview_probe.cul ==="
-            out=$(gtimeout 60 ./build/culebra $mode tests/gui/webview_probe.cul 2>&1)
+          for probe in webview_probe webview_pending_quit; do
+           for mode in "" "--jit"; do
+            echo "=== culebra $mode $probe.cul ==="
+            out=$(gtimeout 60 ./build/culebra $mode tests/gui/$probe.cul 2>&1)
             rc=$?
             echo "out=[$out] rc=$rc"
             case "$rc:$out" in
-              0:*WEBVIEW_PROBE_OK*) echo "OK: window, event loop and cross-thread quit" ;;
+              0:*WEBVIEW_PROBE_OK*|0:*WEBVIEW_PROBE_PENDING_QUIT_OK*)
+                echo "OK: window, event loop and quit behaved" ;;
               *"failed to create window"*) echo "OK: no window server here — clean failure" ;;
               124:*) echo "ERROR: probe hung" >&2; fail=1 ;;
               *) echo "ERROR: probe failed (rc=$rc)" >&2; fail=1 ;;
             esac
+           done
           done
           exit $fail
 
@@ -1002,17 +1005,20 @@ jobs:
         run: |
           set +e  # keep the captured output printable on failure
           fail=0
-          for mode in "" "--jit"; do
-            echo "=== culebra $mode webview_probe.cul ==="
-            out=$(timeout 60 ./build-win-aot/culebra.exe $mode tests/gui/webview_probe.cul 2>&1)
+          for probe in webview_probe webview_pending_quit; do
+           for mode in "" "--jit"; do
+            echo "=== culebra $mode $probe.cul ==="
+            out=$(timeout 60 ./build-win-aot/culebra.exe $mode tests/gui/$probe.cul 2>&1)
             rc=$?
             echo "out=[$out] rc=$rc"
             case "$rc:$out" in
-              0:*WEBVIEW_PROBE_OK*) echo "OK: window, event loop and cross-thread quit" ;;
+              0:*WEBVIEW_PROBE_OK*|0:*WEBVIEW_PROBE_PENDING_QUIT_OK*)
+                echo "OK: window, event loop and quit behaved" ;;
               *"failed to create window"*) echo "OK: no WebView2 runtime here — clean failure" ;;
               124:*) echo "ERROR: probe hung" >&2; fail=1 ;;
               *) echo "ERROR: probe failed (rc=$rc)" >&2; fail=1 ;;
             esac
+           done
           done
           exit $fail
       # AOT regression smoke: string concat + caught-value integrity (16-byte
