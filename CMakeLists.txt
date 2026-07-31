@@ -708,6 +708,12 @@ set(CULEBRA_WRAP_LINK "" CACHE STRING
   "Extra link flags for the wrapped libraries (e.g. -lmylib)")
 if(CULEBRA_WRAP_SOURCES)
   target_sources(culebra PRIVATE ${CULEBRA_WRAP_SOURCES})
+  # wrap.h reaches interpreter.h and jit.h, so these TUs would define five of
+  # main.cc's thread_locals a second time in the same image — the link error
+  # PE has and ELF does not. The archive copy of the same sources gets this
+  # from the feature loop below; the driver copy needs saying (rt_shared_tls.h).
+  set_source_files_properties(${CULEBRA_WRAP_SOURCES} PROPERTIES
+    COMPILE_DEFINITIONS CULEBRA_RT_FEATURE_BUILD=1)
   if(CULEBRA_WRAP_LINK)
     separate_arguments(_wrap_link_args NATIVE_COMMAND "${CULEBRA_WRAP_LINK}")
     target_link_options(culebra PRIVATE ${_wrap_link_args})
