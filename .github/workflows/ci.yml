@@ -918,7 +918,11 @@ jobs:
           out=$(timeout 60 ./build-win-aot/culebra.exe win.cul 2>&1); rc=$?
           echo "out=[$out] rc=$rc"
           if [ $rc -ne 0 ]; then
-            echo "ERROR: window probe exited $rc (124 = hung)" >&2
+            echo "ERROR: window probe exited $rc (124 = hung, 139 = crashed)" >&2
+            # Where it died, so a crash here is actionable from the log alone
+            # rather than costing a round trip to find out.
+            gdb -batch -ex run -ex bt --args ./build-win-aot/culebra.exe win.cul \
+              2>&1 | tail -30
             exit 1
           fi
           case "$out" in

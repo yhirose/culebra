@@ -15,7 +15,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdarg>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <deque>
 #include <mutex>
@@ -106,6 +108,21 @@ bool forced_headless() {
 // the end of the audio section.
 void arm_exit_teardown();
 
+// raylib reports a graphics device it could not create with LOG_FATAL, and its
+// default log handler exits the process — so on exactly the machines the
+// headless fallback below exists for, the run died instead of degrading. A
+// trace-log callback is raylib's own way out: TraceLog hands the message over
+// and returns, which lets InitPlatform's `return -1` reach InitWindow, which
+// reports the failure through IsWindowReady() like any other.
+void trace_log(int level, const char* text, va_list args) {
+  if (level < LOG_WARNING) return;  // raylib's INFO chatter stays quiet
+  std::fprintf(stderr, "%s: ", level >= LOG_FATAL     ? "FATAL"
+                               : level >= LOG_ERROR   ? "ERROR"
+                                                      : "WARNING");
+  std::vfprintf(stderr, text, args);
+  std::fputc('\n', stderr);
+}
+
 // (Re)create the window + texture to match the current framebuffer size. Called
 // on first use and again if the framebuffer is re-init()'d at a new size.
 void ensure_window() {
@@ -120,6 +137,7 @@ void ensure_window() {
   g_scale = pick_scale(w, h);
   if (!g_window_ready) {
     SetTraceLogLevel(LOG_WARNING);  // quiet raylib's INFO chatter
+    SetTraceLogCallback(trace_log);  // and keep a fatal one from exiting
     InitWindow(w * g_scale, h * g_scale, "culebra Canvas");
     // No display (headless server / CI / SSH): raylib fails to open a window
     // and IsWindowReady() stays false. Degrade to the headless backend rather
