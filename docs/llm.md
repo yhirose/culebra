@@ -161,7 +161,14 @@ inspect(square(7))               # => 49
 
 fib = fn (x) { if x < 2 { x } else { fn(x - 2) + fn(x - 1) } }
 inspect(fib(10))                 # => 55
+
+inspect([1, 2, 3].map(|x| x * 2))                 # => [2, 4, 6]
+inspect([[1, 2]].map(fn ((a, b)) { a + b }))      # => [3]
 ```
+
+Name a function with `fn`; pass a callback as `|x|`. A lambda body is a
+single expression, so switch to `fn (x) { ... }` when the callback needs
+statements — that is the only reason to write `fn` inline.
 
 A block evaluates to its last expression, so `return` is rarely
 needed. `*` makes the rest keyword-only, `**rest` collects unknown
@@ -199,6 +206,19 @@ inspect('café'.graphemes().collect().size())    # => 4
 inspect('café'.slice(0, 1))                     # => 'c'
 inspect('hello world'.split(' '))               # => ['hello', 'world']
 inspect(['a', 'b'].join('-'))                   # => 'a-b'
+```
+
+`"""` is a block string: it interpolates like `"..."`, strips the
+indentation of its closing delimiter, and drops the newline before it.
+The closing `"""` must be on its own line. Use it for anything
+multi-line rather than concatenating `\n`.
+
+```culebra
+sql = """
+    SELECT *
+    FROM t
+    """
+inspect(sql.lines())             # => ['SELECT *', 'FROM t']
 ```
 
 ### 2.6 Iterators
@@ -456,6 +476,31 @@ inspect(type_of('a,b'.split(',')[0]))          # => 'StringView'
 inspect([1, 2].length)                          # => nil
 inspect([1, 2].size())                          # => 2
 ```
+
+### Idioms
+
+The rows above fail loudly. These ones run — they are just not how the
+language is written, and nothing will tell you so. Prefer the right
+column.
+
+| Works, but | Write |
+|---|---|
+| `if c { a } else { b }` as a value | `c ? a : b` |
+| `if` / `else if` chain yielding a value | `match` (on a subject) or `cond` |
+| `i = i + 1` | `i += 1` |
+| `x.size() == 0` / `> 0` | `x.empty()` / `!x.empty()` |
+| `mut i = 0` alongside a loop, `i += 1` | `for i, v in xs.enumerate()` |
+| `mut out = []` + `for` + `out.push(f(x))` | `xs.map(f)` — same for `filter` |
+| `mut t = {}` + `for` + `t[k] = v` | `xs.map(\|x\| (k(x), v(x))).to_object()` |
+| `mut found = false` + `while !found` | `for x in xs { … break }`, or `xs.find(p)` |
+| `"a\n" + "b\n"` | a `"""` block |
+| `.map(fn (x) { expr })` | `.map(\|x\| expr)` |
+| `range(0, n)` | `range(n)` |
+| `for i in 0..xs.size() { xs[i] … }` | `for x in xs` |
+
+`cond` is a `match` with no subject, so a chain of unrelated tests is
+`cond { a > 1 => …, b < 2 => …, _ => … }`. A loop that must report
+whether it finished takes a `nobreak` block instead of a flag.
 
 ## 4. Signature index
 

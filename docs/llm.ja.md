@@ -158,7 +158,14 @@ inspect(square(7))               # => 49
 
 fib = fn (x) { if x < 2 { x } else { fn(x - 2) + fn(x - 1) } }
 inspect(fib(10))                 # => 55
+
+inspect([1, 2, 3].map(|x| x * 2))                 # => [2, 4, 6]
+inspect([[1, 2]].map(fn ((a, b)) { a + b }))      # => [3]
 ```
+
+関数に名前を付けるときは `fn`、その場で渡す callback は `|x|`。lambda の
+body は単一式なので、callback に文が要るときだけ `fn (x) { ... }` に切り替える
+— インラインで `fn` を書く理由はそれだけ。
 
 ブロックは最後の式に評価されるので `return` はほとんど不要です。`*`
 以降はキーワード専用、`**rest` は未知のキーワードを、`*rest` は余った
@@ -196,6 +203,18 @@ inspect('café'.graphemes().collect().size())    # => 4
 inspect('café'.slice(0, 1))                     # => 'c'
 inspect('hello world'.split(' '))               # => ['hello', 'world']
 inspect(['a', 'b'].join('-'))                   # => 'a-b'
+```
+
+`"""` はブロック文字列。`"..."` と同じく補間し、閉じ区切りのインデントを
+取り除き、その直前の改行も落とす。閉じ `"""` は独立した行に置く。複数行の
+文字列は `\n` を連結せずこれを使う。
+
+```culebra
+sql = """
+    SELECT *
+    FROM t
+    """
+inspect(sql.lines())             # => ['SELECT *', 'FROM t']
 ```
 
 ### 2.6 イテレータ
@@ -449,6 +468,30 @@ inspect(type_of('a,b'.split(',')[0]))          # => 'StringView'
 inspect([1, 2].length)                          # => nil
 inspect([1, 2].size())                          # => 2
 ```
+
+### 慣用形
+
+上の表はエラーになるもの。ここに挙げるのは**動く**が、この言語の書き方では
+ないもので、何も警告してくれない。右の列で書く。
+
+| 動くが | こう書く |
+|---|---|
+| 値としての `if c { a } else { b }` | `c ? a : b` |
+| 値を返す `if` / `else if` の連鎖 | `match`（主語あり）または `cond` |
+| `i = i + 1` | `i += 1` |
+| `x.size() == 0` / `> 0` | `x.empty()` / `!x.empty()` |
+| ループの外に `mut i = 0` を置いて `i += 1` | `for i, v in xs.enumerate()` |
+| `mut out = []` + `for` + `out.push(f(x))` | `xs.map(f)`（`filter` も同様） |
+| `mut t = {}` + `for` + `t[k] = v` | `xs.map(\|x\| (k(x), v(x))).to_object()` |
+| `mut found = false` + `while !found` | `for x in xs { … break }` か `xs.find(p)` |
+| `"a\n" + "b\n"` | `"""` ブロック |
+| `.map(fn (x) { expr })` | `.map(\|x\| expr)` |
+| `range(0, n)` | `range(n)` |
+| `for i in 0..xs.size() { xs[i] … }` | `for x in xs` |
+
+`cond` は主語のない `match` なので、互いに無関係な条件の連鎖は
+`cond { a > 1 => …, b < 2 => …, _ => … }` になる。完走したかどうかを
+知りたいループはフラグでなく `nobreak` ブロックを使う。
 
 ## 4. シグネチャ索引
 
