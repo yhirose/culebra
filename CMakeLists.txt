@@ -588,16 +588,19 @@ endif()
 # is a single vendored header (vendor/webview/webview.h) plus the OS's native
 # WebView framework, so it adds ~300 KB to the driver and nothing to non-Webview
 # AOT binaries (usage-gated force-load, mirroring the Scene axis). On
-# platforms where the toolkit headers are missing (Linux without gtk4 +
-# webkitgtk-6.0, untested Windows) it auto-disables — the binding TU wouldn't
-# compile there.
+# platforms where the engine's headers are missing (Linux without gtk4 +
+# webkitgtk-6.0, Windows without WebView2.h) it auto-disables — the binding TU
+# wouldn't compile there.
 option(CULEBRA_ENABLE_WEBVIEW "Enable builtin Webview namespace (native WebView)" ON)
 set(_webview_link "")
 if(CULEBRA_ENABLE_WEBVIEW)
-  # AOT link fragment (CULEBRA_WEBVIEW_LINK): the OS WebView framework(s).
-  # `culebra build` appends it only when the program uses Webview. Single-sourced
-  # with the driver's in-process link (further below) so they can't drift.
+  # Resolve the platform's engine once into three siblings the later blocks
+  # consume unconditionally, the way Http does with _ssl_libs/_ssl_link:
+  # _webview_includes (header dirs), _webview_libs (driver + archive link) and
+  # _webview_link (the CULEBRA_WEBVIEW_LINK string `culebra build` appends only
+  # when the program uses Webview). One platform chain, not one per consumer.
   if(APPLE)
+    set(_webview_libs "-framework WebKit" ${CMAKE_DL_LIBS})
     set(_webview_link "-framework WebKit -ldl")
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(PkgConfig)
@@ -612,12 +615,34 @@ if(CULEBRA_ENABLE_WEBVIEW)
       # exactly what segfaults the Mesa/Gallium LLVM that WebKitGTK dlopens.
       # culebra loads no GModule, so drop it.
       list(REMOVE_ITEM WEBKITGTK_LDFLAGS "-Wl,--export-dynamic")
+      set(_webview_includes ${WEBKITGTK_INCLUDE_DIRS})
+      set(_webview_libs ${WEBKITGTK_LDFLAGS} ${CMAKE_DL_LIBS})
       string(REPLACE ";" " " _webview_link "${WEBKITGTK_LDFLAGS}")
       string(APPEND _webview_link " -ldl")
     else()
       message(STATUS "Webview: disabled (gtk4 + webkitgtk-6.0 not found via pkg-config)")
       set(CULEBRA_ENABLE_WEBVIEW OFF)
     endif()
+  elseif(WIN32)
+    # Only the SDK header is needed at build time — webview.h's builtin loader
+    # finds the Edge WebView2 runtime through the registry, so there is no
+    # import library and WebView2Loader.dll is optional. MSYS2 ships the header
+    # as mingw-w64-<env>-webview2-loader. The libs are the ones webview.h asks
+    # MSVC for via #pragma comment(lib). Unset around find_path like the Canvas
+    # probe: a cached hit is never re-validated, so an uninstalled SDK would
+    # keep configuring and then fail the compile.
+    unset(_webview2_hdr CACHE)
+    find_path(_webview2_hdr NAMES WebView2.h)
+    if(_webview2_hdr)
+      set(_webview_includes ${_webview2_hdr})
+      set(_webview_libs ole32 shell32 shlwapi user32 version advapi32)
+      list(TRANSFORM _webview_libs PREPEND "-l" OUTPUT_VARIABLE _webview_lflags)
+      list(JOIN _webview_lflags " " _webview_link)
+    else()
+      message(STATUS "Webview: disabled (WebView2.h not found — install webview2-loader)")
+      set(CULEBRA_ENABLE_WEBVIEW OFF)
+    endif()
+    unset(_webview2_hdr CACHE)
   else()
     message(STATUS "Webview: disabled (unsupported platform for the native WebView backend)")
     set(CULEBRA_ENABLE_WEBVIEW OFF)
@@ -880,15 +905,13 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   # Webview feature archive: same usage-gating as Scene (force-loaded into an
   # AOT binary only when the AST scan reports Webview use; the OS WebView
   # framework comes from CULEBRA_WEBVIEW_LINK). The vendored single header is
-  # all macOS needs (it drives the ObjC runtime directly), but the GTK backend
-  # includes gtk/gtk.h, so Linux needs the same include dirs the driver gets.
+  # all macOS needs (it drives the ObjC runtime directly); GTK and WebView2 add
+  # their own headers, which _webview_includes carries (empty on macOS).
   if(CULEBRA_ENABLE_WEBVIEW)
     add_library(culebra_rt_webview STATIC ./src/runtime/culebra_rt_webview.cc)
     target_compile_features(culebra_rt_webview PRIVATE cxx_std_23)
-    target_include_directories(culebra_rt_webview PRIVATE ./vendor/webview)
-    if(WEBKITGTK_FOUND)
-      target_include_directories(culebra_rt_webview PRIVATE ${WEBKITGTK_INCLUDE_DIRS})
-    endif()
+    target_include_directories(culebra_rt_webview PRIVATE ./vendor/webview
+                                                          ${_webview_includes})
     target_compile_definitions(culebra_rt_webview PRIVATE CULEBRA_ENABLE_WEBVIEW=1)
     target_compile_options(culebra_rt_webview PRIVATE -ffunction-sections -fdata-sections)
     list(APPEND _rt_embed_files
@@ -1078,8 +1101,8 @@ endif()
 # Windows (mingw-w64 for Phase 1): link winpthread for std::thread (the posix
 # thread model libstdc++ uses) and Winsock for cpp-httplib. http.h is always
 # compiled into the driver, so ws2_32 is linked unconditionally; harmless when
-# the Http namespace is disabled. (TLS via OpenSSL is a separate opt-in — see the
-# CULEBRA_ENABLE_HTTP block; Phase 1 Windows builds run without it.)
+# the Http namespace is disabled. (TLS via OpenSSL is a separate opt-in — see
+# the CULEBRA_ENABLE_HTTP block, which the CI and release Windows builds set.)
 if(WIN32)
   find_package(Threads REQUIRED)
   target_link_libraries(culebra Threads::Threads ws2_32)
@@ -1242,16 +1265,9 @@ endif()
 # (it drives the ObjC runtime via objc_msgSend on macOS, so no .mm needed).
 if(CULEBRA_ENABLE_WEBVIEW)
   target_sources(culebra PRIVATE ./src/runtime/culebra_rt_webview.cc)
-  target_include_directories(culebra PRIVATE ./vendor/webview)
+  target_include_directories(culebra PRIVATE ./vendor/webview ${_webview_includes})
   target_compile_definitions(culebra PRIVATE CULEBRA_ENABLE_WEBVIEW=1)
-  if(APPLE)
-    target_link_libraries(culebra "-framework WebKit" ${CMAKE_DL_LIBS})
-  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    if(WEBKITGTK_FOUND)
-      target_include_directories(culebra PRIVATE ${WEBKITGTK_INCLUDE_DIRS})
-      target_link_libraries(culebra ${WEBKITGTK_LDFLAGS} ${CMAKE_DL_LIBS})
-    endif()
-  endif()
+  target_link_libraries(culebra ${_webview_libs})
 endif()
 
 # Embedding smoke tests. mt_smoke exercises thread_local isolation
