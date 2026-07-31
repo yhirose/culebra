@@ -555,12 +555,12 @@ mut fast_lap_time = 180.0  # v4's starting target, session-lived
 # --- BGM ---------------------------------------------------------------
 # A music.ogg / music.mp3 next to the art (upstream's own soundtrack, say)
 # loops under the run instead of the chiptune; the generated assets ship no
-# music, so the riff below is the default. Either way the level sits at v4's
-# own quiet `music.volume = 0.05` (= vol 25 on Canvas's 0..100 scale).
+# music, so the riff below is the default. It sits under the engine and the
+# chiptune's own level, loud enough to carry on laptop speakers.
 let MUSIC_FILE = ["music.ogg", "music.mp3"]
   .map(|n| ART_DIR + "/" + n)
   .find(|p| FS.exists(p))
-if MUSIC_FILE != nil { Canvas.music(FS.read(MUSIC_FILE), vol: 25) }
+if MUSIC_FILE != nil { Canvas.music(FS.read(MUSIC_FILE), vol: 60) }
 
 # The chiptune fallback — a bossa-flavored run, not a transcription of any
 # particular tune: a brisk ii-V-I-ish turnaround (F△7-Dm7-Gm7-C7, one bar

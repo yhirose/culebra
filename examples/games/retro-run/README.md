@@ -65,9 +65,9 @@ picture behind them stays put.
 
 A `music.ogg` or `music.mp3` in the directory (looked for in that order) loops
 under the run via `Canvas.music`, replacing the built-in chiptune riff —
-upstream's own soundtrack, if you have it. Either way the volume sits at v4's
-quiet `music.volume = 0.05` level. The generated set ships no music, so the
-chiptune is the default.
+upstream's own soundtrack, if you have it. It plays at `vol: 60`, under the
+engine but clearly audible; edit the `Canvas.music` call to taste. The
+generated set ships no music, so the chiptune is the default.
 
 ## Performance
 

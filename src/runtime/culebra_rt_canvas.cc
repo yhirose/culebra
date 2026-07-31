@@ -324,9 +324,13 @@ AudioStream g_stream;
 bool g_audio_ready = false;
 bool g_audio_failed = false;  // latch: don't retry InitAudioDevice every call
 
-// vol/peak arrive as 0..100; keep the mix well under clipping when several
-// channels stack, matching the browser's "keep it gentle" 0.2 headroom.
-double gain_of(int64_t v) { return std::clamp(v, int64_t{0}, int64_t{100}) / 100.0 * 0.2; }
+// vol/peak arrive as 0..100. File-backed audio (music, Sound) is already
+// mixed, so 100 is the file's own level.
+double gain_of(int64_t v) { return std::clamp(v, int64_t{0}, int64_t{100}) / 100.0; }
+
+// A synthesized waveform is raw and up to four channels stack, so tone keeps a
+// headroom the file paths don't need — the browser's "keep it gentle" 0.2.
+double tone_gain_of(int64_t v) { return gain_of(v) * 0.2; }
 
 // The ADSR envelope's gain at `elapsed` samples into a note of the given
 // phase lengths (all in samples). Attack ramps 0->peak, decay ramps
@@ -664,8 +668,8 @@ void tone(int64_t start_freq, int64_t end_freq, int64_t attack, int64_t decay,
   n.release = frames_to_samples(release);
   n.total = n.attack + n.decay + n.sustain + n.release;
   if (n.total <= 0) n.total = 1;  // guarantee an audible blip, like the browser
-  n.vol = gain_of(vol);
-  n.peak = gain_of(peak);
+  n.vol = tone_gain_of(vol);
+  n.peak = tone_gain_of(peak);
   static constexpr double kDutyCycles[4] = {0.125, 0.25, 0.5, 0.75};
   n.duty = kDutyCycles[std::clamp<int64_t>(duty, 0, 3)];
   n.elapsed = 0;

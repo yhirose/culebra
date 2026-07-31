@@ -4335,7 +4335,10 @@ volume from 0 up to `peak`, down to the sustain `vol` (0–100), and back to 0.
 `wave` selects the channel — `Canvas.PULSE` / `PULSE2` (with a `duty` cycle:
 `Canvas.DUTY_EIGHTH` / `DUTY_QUARTER` / `DUTY_HALF` / `DUTY_THREE_QUARTER`),
 `Canvas.TRIANGLE`, `Canvas.NOISE`, or the culebra extension `Canvas.SAWTOOTH`.
-Each channel is monophonic (a new note cuts the previous one).
+Each channel is monophonic (a new note cuts the previous one). A synthesized
+waveform is raw and four channels can sound at once, so `tone` mixes its
+0–100 well under full scale — file-backed audio (`Sound`, `music`) is already
+mixed and plays at the file's own level for `vol = 100`.
 
 In the browser, `tone` plays through WebAudio (an oscillator per channel, a
 `PeriodicWave` for the pulse duty cycle, a filtered noise buffer). Natively it
@@ -4375,8 +4378,8 @@ audio device) everything no-ops with `playing()` false, exactly like
 Vorbis file from its bytes (a `String`, e.g. from `FS.read` — the same
 bytes-in convention as `Sprite.from_png`). There is **one slot**, in the
 manner of pygame's `mixer.music`: playing a new file replaces the old one, and
-no handle reaches the script. `vol` is 0–100 on the same scale as `tone`;
-`start` is seconds into the file. Bytes that are neither MP3 nor Ogg raise
+no handle reaches the script. `vol` is 0–100, `100` being the file's own
+level; `start` is seconds into the file. Bytes that are neither MP3 nor Ogg raise
 `ValueError: not a valid MP3 or Ogg audio stream` on every backend; a stream
 that passes that check but fails to decode stays silent.
 

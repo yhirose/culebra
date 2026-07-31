@@ -469,6 +469,10 @@ function whiteNoise() {
   return buf;
 }
 
+// vol/peak arrive as 0..100. File-backed audio (music, Sound) is already
+// mixed, so 100 is the file's own level; tone scales this down (below).
+const fileG = (v) => Math.max(0, Math.min(1, v / 100));
+
 function playTone(m) {
   try {
     if (!ensureAudio()) return;
@@ -480,7 +484,7 @@ function playTone(m) {
     if (total <= 0) total = 1 / 60;  // guarantee an audible blip
     const startF = Math.max(1, m.startFreq);
     const endF = Math.max(1, m.endFreq);
-    const G = (v) => Math.max(0, Math.min(1, v / 100)) * 0.2;  // keep it gentle
+    const G = (v) => fileG(v) * 0.2;  // raw waveforms stack: keep it gentle
     const peakG = G(m.peak), susG = G(m.vol);
     const channel = m.channel | 0;
 
@@ -540,11 +544,9 @@ function playTone(m) {
 let musicBuffer = null;   // decoded audio, while a file is loaded
 let musicVoice = null;    // { src, gain, startedAt } while audible
 let musicLoop = true;
-let musicGain = 0.2;
+let musicGain = 1;
 let musicPausedAt = null; // seconds into the buffer, while paused
 let musicSeq = 0;         // play generation: a stale decode must not resurrect
-
-const musicG = (v) => Math.max(0, Math.min(1, v / 100)) * 0.2; // tone's scale
 
 function musicNotify(playing, loaded) {
   if (worker) worker.postMessage({ type: "musicState", playing, loaded });
@@ -600,7 +602,7 @@ function handleMusic(m) {
       case "play": {
         resetMusic();
         musicLoop = !!m.loop;
-        musicGain = musicG(m.vol);
+        musicGain = fileG(m.vol);
         if (!ensureAudio()) { musicNotify(false, false); return; }
         // If the context is still suspended (no gesture yet) the voice is
         // created anyway: currentTime is frozen, so playback simply begins
@@ -630,7 +632,7 @@ function handleMusic(m) {
         }
         break;
       case "volume":
-        musicGain = musicG(m.vol);
+        musicGain = fileG(m.vol);
         if (musicVoice) musicVoice.gain.gain.value = musicGain;
         break;
       case "seek": {
@@ -684,7 +686,7 @@ function handleSound(m) {
         const src = audioCtx.createBufferSource();
         src.buffer = buf;
         const gain = audioCtx.createGain();
-        gain.gain.value = musicG(m.vol);   // the same 0..100 scale as tone
+        gain.gain.value = fileG(m.vol);    // 0..100, the sample's own level
         src.connect(gain).connect(audioCtx.destination);
         const v = { src };
         src.onended = () => {

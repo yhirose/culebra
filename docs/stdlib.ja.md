@@ -4192,7 +4192,10 @@ decay = 0, release = 0, peak = nil, duty = 2)` は WASM-4 流の小さな APU �
 `wave` はチャンネルを選ぶ — `Canvas.PULSE` / `PULSE2`（`duty` サイクル付き:
 `Canvas.DUTY_EIGHTH` / `DUTY_QUARTER` / `DUTY_HALF` / `DUTY_THREE_QUARTER`）、
 `Canvas.TRIANGLE`、`Canvas.NOISE`、または culebra 拡張の `Canvas.SAWTOOTH`。各
-チャンネルはモノフォニック（新しい音が前の音を止める）。
+チャンネルはモノフォニック（新しい音が前の音を止める）。合成波形は生で、4
+チャンネルが同時に鳴りうるので、`tone` は 0–100 をフルスケールよりかなり低く
+ミックスする — ファイル音源（`Sound`・`music`）はすでにミックス済みなので
+`vol = 100` はファイル自身のレベルで鳴る。
 
 ブラウザでは `tone` は WebAudio で鳴る（チャンネルごとのオシレータ、pulse の duty
 サイクル用 `PeriodicWave`、フィルタ済みノイズバッファ）。ネイティブでは raylib の
@@ -4230,7 +4233,7 @@ Ogg Vorbis、`Sprite.from_png` と同じバイト列渡しの流儀 — から�
 ファイルをそのバイト列（`String`、例えば `FS.read` の結果 — `Sprite.from_png` と
 同じバイト列渡しの流儀）から再生する。スロットは pygame の `mixer.music` と同じく
 **1 つだけ**: 新しいファイルを再生すると前のものは置き換わり、ハンドルは
-スクリプトに渡らない。`vol` は `tone` と同じ 0–100 スケール、`start` は
+スクリプトに渡らない。`vol` は 0–100 で `100` がファイル自身のレベル、`start` は
 ファイル内の秒位置。MP3 でも Ogg でもないバイト列はどの backend でも
 `ValueError: not a valid MP3 or Ogg audio stream` を投げ、この検査を通ったのに
 デコードに失敗したストリームは無音のままになる。
