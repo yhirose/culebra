@@ -325,10 +325,23 @@ libs (auto-detected when the static libs are missing)" OFF)
   if(WIN32 AND TARGET zstd::libzstd_shared)
     find_library(CULEBRA_ZSTD_STATIC NAMES libzstd.a zstd_static)
     if(CULEBRA_ZSTD_STATIC MATCHES "libzstd\\.a$|zstd_static")
-      message(STATUS "zstd: linking ${CULEBRA_ZSTD_STATIC} statically (LLVM dep)")
-      set_target_properties(zstd::libzstd_shared PROPERTIES
-        IMPORTED_IMPLIB "${CULEBRA_ZSTD_STATIC}"
-        IMPORTED_LOCATION "${CULEBRA_ZSTD_STATIC}")
+      # Every location property, including the per-configuration ones zstd's
+      # config package sets: a plain IMPORTED_IMPLIB is ignored whenever an
+      # IMPORTED_IMPLIB_<CONFIG> exists, which is how the first attempt at
+      # this still linked the DLL's import library.
+      set(_zstd_props IMPORTED_IMPLIB IMPORTED_LOCATION)
+      get_target_property(_zstd_cfgs zstd::libzstd_shared IMPORTED_CONFIGURATIONS)
+      if(_zstd_cfgs)
+        foreach(_c IN LISTS _zstd_cfgs)
+          list(APPEND _zstd_props IMPORTED_IMPLIB_${_c} IMPORTED_LOCATION_${_c})
+        endforeach()
+      endif()
+      foreach(_p IN LISTS _zstd_props)
+        set_target_properties(zstd::libzstd_shared PROPERTIES
+          ${_p} "${CULEBRA_ZSTD_STATIC}")
+      endforeach()
+      message(STATUS "zstd: linking ${CULEBRA_ZSTD_STATIC} statically (LLVM dep,"
+                     " configs: ${_zstd_cfgs})")
     endif()
   endif()
 

@@ -881,16 +881,22 @@ jobs:
           CULEBRA_CANVAS_HEADLESS: "1"
           CULEBRA_VERBOSE: "1"
         run: |
+          # set +e: this shell runs with -e, so a failing command substitution
+          # would end the step before the output it captured could be printed.
+          set +e
+          # A hang here should fail the step, not sit until the job timeout —
+          # but not at the cost of the step dying if this MSYS2 has no timeout.
+          bounded() { if command -v timeout >/dev/null 2>&1; then timeout 60 "$@"; else "$@"; fi; }
           fail=0
           for mode in "" "--jit"; do
             echo "=== culebra $mode tests/test_canvas.cul ==="
-            out=$(timeout 60 ./build-win-aot/culebra.exe $mode tests/test_canvas.cul 2>&1); rc=$?
+            out=$(bounded ./build-win-aot/culebra.exe $mode tests/test_canvas.cul 2>&1); rc=$?
             echo "out=[$out] rc=$rc"
             [ "$out" = "canvas ok" ] || { echo "CANVAS_${mode:---interp}_FAIL"; fail=1; }
           done
           echo "=== culebra build tests/test_canvas.cul ==="
           if ./build-win-aot/culebra.exe build tests/test_canvas.cul -o canvas.exe; then
-            out=$(timeout 60 ./canvas.exe 2>&1); rc=$?
+            out=$(bounded ./canvas.exe 2>&1); rc=$?
             echo "out=[$out] rc=$rc"
             [ "$out" = "canvas ok" ] && echo "CANVAS_AOT_PASS" \
               || { echo "CANVAS_AOT_RUN_FAIL"; fail=1; }
@@ -905,8 +911,10 @@ jobs:
       # not. (`windowed()` is the call that creates the window.)
       - name: Smoke — Canvas window creation does not hang or crash
         run: |
+          set +e  # as above: keep the captured output printable
+          bounded() { if command -v timeout >/dev/null 2>&1; then timeout 60 "$@"; else "$@"; fi; }
           printf '_Canvas.init(8, 8)\nprint(_Canvas.windowed())\n' > win.cul
-          out=$(timeout 60 ./build-win-aot/culebra.exe win.cul 2>&1); rc=$?
+          out=$(bounded ./build-win-aot/culebra.exe win.cul 2>&1); rc=$?
           echo "out=[$out] rc=$rc"
           if [ $rc -ne 0 ]; then
             echo "ERROR: window probe exited $rc (124 = hung)" >&2
