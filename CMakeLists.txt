@@ -407,10 +407,8 @@ option(CULEBRA_ENABLE_SCENE "Enable builtin Scene namespace (raylib + SDL)" OFF)
 # replication of SDL3's own probing — -DCULEBRA_ENABLE_CANVAS_WINDOW=ON still
 # forces the issue.
 #
-# Windows needs no such check: SDL3's Win32 backends build against the headers
-# the mingw-w64 toolchain already ships, so there is no dev-package set to be
-# missing, and the libraries it wants at link time (below) are part of every
-# Windows install.
+# Windows needs no such check: mingw-w64 already ships the headers SDL3's Win32
+# backends want, and the libraries below are part of every Windows install.
 set(_canvas_window_default OFF)
 if(APPLE OR WIN32)
   set(_canvas_window_default ON)
@@ -511,13 +509,10 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
   # appends on usage. Built once here — Scene and Canvas share it, so they can't
   # drift apart — then assigned to the two per-feature vars (kept separate
   # because they ride different usage axes: uses_scene vs uses_canvas).
-  #
-  # `culebra build` splices this verbatim into a std::system() command, so the
-  # paths carry the quoting that platform's shell wants — the same split
-  # src/main.cc's shq() makes: /bin/sh takes single quotes, while mingw's
-  # system() goes through cmd.exe, where a single quote is a literal character
-  # and a double quote is the quoting form. The Windows quotes are escaped
-  # because this string ends up inside a C string literal (CULEBRA_*_LINK).
+  # The paths carry the quoting that platform's shell wants, since `culebra
+  # build` splices this straight into a std::system() command — the same split
+  # src/main.cc's shq() makes. Escaped on Windows: this lands inside a C string
+  # literal, and a bare double quote would end it.
   if(WIN32)
     set(_shq "\\\"")
   else()

@@ -395,6 +395,11 @@ jobs:
   windows:
     runs-on: windows-latest
     timeout-minutes: 25  # a runtime hang (e.g. a Proc deadlock) fails fast here
+    env:
+      # windows-aot-build is the job that proves the Canvas window backend; off
+      # here (and job-wide, so any configure agrees) keeps this a fast
+      # portability check instead of paying for the vendored SDL3 + raylib.
+      CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
     defaults:
       run:
         shell: msys2 {0}
@@ -420,11 +425,6 @@ jobs:
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-zlib
 
-      # The Canvas desktop window defaults ON for Windows; windows-aot-build is
-      # where it is proved (it is the only Windows job that also links AOT
-      # binaries, which is the other half of that backend). Off here so this
-      # job stays a fast portability check rather than paying for the vendored
-      # SDL3 + raylib build.
       - name: Configure (interpreter only, static, Phase 1 feature set)
         run: |
           cmake -S . -B build-win -G Ninja \
@@ -435,7 +435,6 @@ jobs:
             -DCULEBRA_ENABLE_JIT=OFF \
             -DCULEBRA_ENABLE_HTTP=OFF \
             -DCULEBRA_ENABLE_WEBVIEW=OFF \
-            -DCULEBRA_ENABLE_CANVAS_WINDOW=OFF \
             -DCULEBRA_DEV_NO_RT=ON \
             -DCULEBRA_LTO=OFF
 
@@ -444,25 +443,10 @@ jobs:
       - name: Build (culebra driver)
         run: cmake --build build-win --target culebra -j -- -k 0
 
-      # Prove the "runs on a plain Windows box" claim: the .exe may import ONLY
-      # DLLs that ship with every Windows install. Anything else (mingw runtime
-      # libstdc++-6 / libgcc_s / libwinpthread, or a bundled zlib1.dll) would
-      # make it fail to start on a clean machine. Whitelist the system DLLs and
-      # fail on any other import.
+      # Prove the "runs on a plain Windows box" claim. The allowlist lives in
+      # the script, shared with windows-aot-build and the release build.
       - name: Verify standalone binary (only system DLLs)
-        run: |
-          echo "Imported DLLs:"
-          imports=$(objdump -p build-win/culebra.exe \
-            | grep -i 'DLL Name' | sed -E 's/.*DLL Name:\s*//' | tr 'A-Z' 'a-z' | sort -u)
-          echo "$imports"
-          allow='^(kernel32|kernelbase|msvcrt|ntdll|user32|advapi32|ws2_32|shell32|ole32|oleaut32|bcrypt|crypt32|secur32|iphlpapi|dbghelp|version|winmm|gdi32)\.dll$'
-          bad=$(echo "$imports" | grep -viE "$allow" || true)
-          if [ -n "$bad" ]; then
-            echo "ERROR: binary imports non-system DLL(s) — not standalone:"
-            echo "$bad"
-            exit 1
-          fi
-          echo "OK: only system DLLs imported — runs on a plain Windows box"
+        run: misc/verify_standalone_exe.sh build-win/culebra.exe
 
       - name: Smoke test (interp runs a script + core stdlib)
         run: |
@@ -583,6 +567,8 @@ jobs:
   windows-jit-build:
     runs-on: windows-latest
     timeout-minutes: 45
+    env:
+      CULEBRA_CANVAS_WINDOW_DEFAULT: OFF  # proved in windows-aot-build
     defaults:
       run:
         shell: msys2 {0}
@@ -617,8 +603,6 @@ jobs:
           restore-keys: |
             windows-jit-ccache-
 
-      # Canvas window off here for the same reason as the `windows` job above:
-      # windows-aot-build is the one that proves that backend.
       - name: Configure (JIT ON, mingw LLVM, static, no AOT runtime)
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -633,7 +617,6 @@ jobs:
             -DCULEBRA_ENABLE_JIT=ON \
             -DCULEBRA_ENABLE_HTTP=OFF \
             -DCULEBRA_ENABLE_WEBVIEW=OFF \
-            -DCULEBRA_ENABLE_CANVAS_WINDOW=OFF \
             -DCULEBRA_DEV_NO_RT=ON \
             -DCULEBRA_LTO=OFF
 
@@ -792,18 +775,24 @@ jobs:
           restore-keys: |
             windows-aot-ccache-
       # SDL3 + raylib are built by ExternalProject, which ccache does not cover
-      # end to end (the install/publish steps are not compiles). They depend
-      # only on their submodule revisions, so cache the published tree on that
-      # key and a warm run skips the ~4 min build entirely. Pointing
-      # CULEBRA_DEPS_CACHE at the workspace also keeps it off $HOME, which under
-      # MSYS2 is an msys path the native toolchain reads as C:\home\...
+      # end to end (the install/publish steps are not compiles). Cache the
+      # published tree instead, on the same two submodule revisions CMake keys
+      # its own deps dir on — anything coarser (a .gitmodules hash, say) would
+      # hit exactly on a vendor bump, restore a tree CMake then ignores, and
+      # skip the save, so every later run rebuilds. No restore-keys for the
+      # same reason: a partial hit is a tree nothing will read.
+      - name: Resolve deps cache key
+        id: deps
+        run: |
+          echo "key=windows-deps-$(git -C vendor/SDL rev-parse --short=12 HEAD)-$(git -C vendor/raylib rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+      # Pointing CULEBRA_DEPS_CACHE at the workspace also keeps the tree off
+      # $HOME, which under MSYS2 is an msys path the native toolchain reads as
+      # C:\home\...
       - name: Restore SDL3 + raylib deps cache
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.deps
-          key: windows-deps-${{ hashFiles('.gitmodules') }}-${{ hashFiles('vendor/SDL/CMakeLists.txt', 'vendor/raylib/CMakeLists.txt') }}
-          restore-keys: |
-            windows-deps-
+          key: ${{ steps.deps.outputs.key }}
       - name: Configure (JIT ON, runtime archives embedded, static, Canvas window)
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -831,26 +820,10 @@ jobs:
         run: cmake --build build-win-aot --target culebra -j
       - name: Report ccache stats
         run: ccache -s || true
-      # The window backend adds Win32 libraries to the link, and a download
-      # still has to run on a plain Windows box. Same allowlist as the
-      # `windows` job and release.yml's Windows build — identical on purpose,
-      # so an import the window backend newly pulls in fails here, in a CI run,
-      # rather than during a release. The window entries (imm32 setupapi
-      # dinput8 cfgmgr32 hid avrt) all ship with Windows.
+      # The window backend adds Win32 libraries to the link, so an import it
+      # newly pulls in fails here, in a CI run, rather than during a release.
       - name: Verify standalone binary (only system DLLs)
-        run: |
-          echo "Imported DLLs:"
-          imports=$(objdump -p build-win-aot/culebra.exe \
-            | grep -i 'DLL Name' | sed -E 's/.*DLL Name:\s*//' | tr 'A-Z' 'a-z' | sort -u)
-          echo "$imports"
-          allow='^(kernel32|kernelbase|msvcrt|ntdll|user32|advapi32|ws2_32|shell32|ole32|oleaut32|bcrypt|crypt32|secur32|iphlpapi|dbghelp|version|winmm|gdi32|imm32|setupapi|dinput8|cfgmgr32|hid|avrt)\.dll$'
-          bad=$(echo "$imports" | grep -viE "$allow" || true)
-          if [ -n "$bad" ]; then
-            echo "ERROR: binary imports non-system DLL(s) — not standalone:" >&2
-            echo "$bad" >&2
-            exit 1
-          fi
-          echo "OK: only system DLLs imported — runs on a plain Windows box"
+        run: misc/verify_standalone_exe.sh build-win-aot/culebra.exe
       # Trivial AOT (no exceptions): exercises COFF object emit + the Windows
       # link driver (g++/quoting/-static). Verbose so the link command shows.
       - name: Smoke — trivial AOT (no EH)
@@ -891,41 +864,24 @@ jobs:
             echo "AOT_SPACED_CACHE_BUILD_FAIL rc=$?"
             exit 1
           fi
-      # The Canvas desktop window: this configuration links the driver against
-      # the vendored SDL3 + raylib statics, so the same program has to behave
-      # identically across interp, JIT and AOT — and the AOT link is the one
-      # that goes through CULEBRA_CANVAS_LINK (the statics + the Win32 library
-      # list). Forced headless, which is what every windowed build does on a
-      # machine with no display, so the assertions are the framebuffer ones.
+      # The repo's own Canvas test, through all three backends: a window build
+      # forced headless must behave exactly like a headless one, and the AOT
+      # link is the only place CULEBRA_CANVAS_LINK (the statics + the Win32
+      # library list) is exercised.
       - name: Smoke — Canvas window build (interp / JIT / AOT)
         env:
           CULEBRA_CANVAS_HEADLESS: "1"
           CULEBRA_VERBOSE: "1"
         run: |
-          cat > canvas.cul <<'EOF'
-          fn rgba(r, g, b, a) { r + g * 256 + b * 65536 + a * 16777216 }
-          let RED = rgba(255, 0, 0, 255)
-          let BLUE = rgba(0, 0, 255, 255)
-          _Canvas.init(4, 4)
-          _Canvas.clear(RED)
-          _Canvas.rect(1, 1, 2, 2, BLUE, 1)
-          assert_eq(_Canvas.get_pixel(0, 0), RED)
-          assert_eq(_Canvas.get_pixel(2, 2), BLUE)
-          # The window-backed entry points a headless build only stubs. Under
-          # CULEBRA_CANVAS_HEADLESS they no-op, so they assert as headless does.
-          _Canvas.present()
-          assert_eq(_Canvas.windowed(), false)
-          print("canvas ok")
-          EOF
           fail=0
           for mode in "" "--jit"; do
-            echo "=== culebra $mode canvas.cul ==="
-            out=$(timeout 60 ./build-win-aot/culebra.exe $mode canvas.cul 2>&1); rc=$?
+            echo "=== culebra $mode tests/test_canvas.cul ==="
+            out=$(timeout 60 ./build-win-aot/culebra.exe $mode tests/test_canvas.cul 2>&1); rc=$?
             echo "out=[$out] rc=$rc"
             [ "$out" = "canvas ok" ] || { echo "CANVAS_${mode:---interp}_FAIL"; fail=1; }
           done
-          echo "=== culebra build canvas.cul ==="
-          if ./build-win-aot/culebra.exe build canvas.cul -o canvas.exe; then
+          echo "=== culebra build tests/test_canvas.cul ==="
+          if ./build-win-aot/culebra.exe build tests/test_canvas.cul -o canvas.exe; then
             out=$(timeout 60 ./canvas.exe 2>&1); rc=$?
             echo "out=[$out] rc=$rc"
             [ "$out" = "canvas ok" ] && echo "CANVAS_AOT_PASS" \
@@ -935,11 +891,10 @@ jobs:
             fail=1
           fi
           exit $fail
-      # What the step above deliberately does not exercise: window creation
-      # itself. A runner has no interactive desktop, so either outcome is
-      # acceptable — SDL opens one, or it fails and the backend falls back to
-      # behaving headless. What is NOT acceptable is hanging or crashing, which
-      # is what this bounds. (`windowed()` is the call that creates the window.)
+      # Window creation itself, which the forced-headless step above skips. A
+      # runner has no desktop, so either outcome is fine — SDL opens a window,
+      # or it fails and the backend behaves headless. Hanging or crashing is
+      # not. (`windowed()` is the call that creates the window.)
       - name: Smoke — Canvas window creation does not hang or crash
         run: |
           printf '_Canvas.init(8, 8)\nprint(_Canvas.windowed())\n' > win.cul

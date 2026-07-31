@@ -35,9 +35,6 @@ env:
   # (it does, in its toolchain step); without them SDL3's configure fails and
   # takes the whole build with it. Windows needs no such packages, and its link
   # is proved by ci.yml's windows-aot-build.
-  # Each job verifies the option survived into its CMakeCache: SDL drops a
-  # missing backend quietly rather than failing, so a build that lost the
-  # window backend would otherwise ship claiming window support it lacks.
 
 jobs:
   # Make sure a release object exists before the build jobs try to upload into
@@ -271,20 +268,22 @@ jobs:
             windows-aot-ccache-
       # SDL3 + raylib, on the same key ci.yml's windows-aot-build publishes
       # under — a warm cache skips their ~4 min ExternalProject build.
+      - name: Resolve deps cache key
+        id: deps
+        run: |
+          echo "key=windows-deps-$(git -C vendor/SDL rev-parse --short=12 HEAD)-$(git -C vendor/raylib rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
       - name: Restore SDL3 + raylib deps cache
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.deps
-          key: windows-deps-${{ hashFiles('.gitmodules') }}-${{ hashFiles('vendor/SDL/CMakeLists.txt', 'vendor/raylib/CMakeLists.txt') }}
-          restore-keys: |
-            windows-deps-
+          key: ${{ steps.deps.outputs.key }}
       # The feature set of ci.yml's windows-aot-build (the widest Windows
       # configuration that CI proves), with LTO turned back on for release.
       # HTTP stays off: it wants a static OpenSSL, which no CI job has linked
       # under mingw. Webview cannot build here at all — CMake has no Windows
-      # backend for it and switches it off itself. The Canvas window is on (its
-      # own default, spelled out because everything else here is) so a
-      # downloaded culebra.exe opens a window for a Canvas game.
+      # backend for it and switches it off itself. The Canvas window is the one
+      # option left to CMake's default (ON), like the macOS and Linux jobs —
+      # spelling it out here would make the verification below unfalsifiable.
       - name: Configure
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -300,7 +299,6 @@ jobs:
             -DCULEBRA_ENABLE_JIT=ON \
             -DCULEBRA_ENABLE_HTTP=OFF \
             -DCULEBRA_ENABLE_WEBVIEW=OFF \
-            -DCULEBRA_ENABLE_CANVAS_WINDOW=ON \
             -DCULEBRA_DEV_NO_RT=OFF \
             -DCULEBRA_LTO=ON
       # Only `culebra` (+ its embedded runtime archives): the default `all`
@@ -322,25 +320,10 @@ jobs:
           fi
           echo "OK: Canvas games open a real window"
       # The whole point of -static here: a downloaded .exe must not need a DLL
-      # the user does not have. Same allowlist as ci.yml's `windows` and
-      # windows-aot-build jobs — an allowlist, not a mingw-runtime blocklist,
-      # so an unexpected import (a static lib that quietly resolved to its DLL)
-      # fails too. The window backend's own imports are in it; they all ship
-      # with Windows, so the binary still starts on a machine with no display.
+      # the user does not have. Same script — and so the same allowlist — as
+      # ci.yml's two Windows link checks, so this gate cannot end up weaker.
       - name: Verify standalone binary (only system DLLs)
-        run: |
-          echo "Imported DLLs:"
-          imports=$(objdump -p build/culebra.exe \
-            | grep -i 'DLL Name' | sed -E 's/.*DLL Name:\s*//' | tr 'A-Z' 'a-z' | sort -u)
-          echo "$imports"
-          allow='^(kernel32|kernelbase|msvcrt|ntdll|user32|advapi32|ws2_32|shell32|ole32|oleaut32|bcrypt|crypt32|secur32|iphlpapi|dbghelp|version|winmm|gdi32|imm32|setupapi|dinput8|cfgmgr32|hid|avrt)\.dll$'
-          bad=$(echo "$imports" | grep -viE "$allow" || true)
-          if [ -n "$bad" ]; then
-            echo "ERROR: binary imports non-system DLL(s) — not standalone:" >&2
-            echo "$bad" >&2
-            exit 1
-          fi
-          echo "OK: only system DLLs imported — runs on a plain Windows box"
+        run: misc/verify_standalone_exe.sh build/culebra.exe
       - name: Package and upload
         env:
           GH_TOKEN: ${{ github.token }}
