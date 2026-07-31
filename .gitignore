@@ -56,9 +56,10 @@ webview-app
 
 # Claude Code: ignore local artifacts (permission allowlist,
 # scheduled-tasks lock, plan dir, etc.) but track team-shared
-# settings (plansDirectory, etc.).
+# settings (plansDirectory, etc.) and skills.
 .claude/*
 !.claude/settings.json
+!.claude/skills/
 
 # Local scratch probes (kept out of git)
 tmp/
