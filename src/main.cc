@@ -1796,6 +1796,10 @@ int main(int argc, const char** argv) {
   startup_profile::start();
   startup_profile::mark("main entered");
 
+  // Before anything can print: on Windows the console decodes output with a
+  // legacy code page unless told otherwise, which mangles every non-ASCII byte.
+  culebra::install_console_utf8();
+
   // Make the builtin-name set visible to the load-stage undefined-variable
   // lint before any subcommand loads a module (run / build / test all load
   // through the shared module loader, so installing here covers every path).

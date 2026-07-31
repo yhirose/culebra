@@ -1841,6 +1841,33 @@ inline void install_sigint_handler() {
   std::signal(SIGINT, _culebra_sigint_handler);
 }
 
+// A Windows console decodes what a program writes with its output code page,
+// which on a localized install is a legacy DBCS one (932 on ja-JP), not UTF-8 —
+// so every non-ASCII byte culebra writes is mojibake there. The Term renderer
+// breaks worse than the text alone: an orphaned DBCS lead byte swallows the
+// following byte, and when that byte is the ESC of the next `\x1b[y;xH` the
+// whole frame's cursor addressing prints as literal text. Setting both code
+// pages to UTF-8 is what makes Windows output match POSIX byte-for-byte (the
+// input one covers the non-ASCII keys read_key returns). Restored at exit —
+// a console left on 65001 changes behaviour for whatever runs in it next.
+// No-op off a console (redirected output) and on every other platform.
+// CLI-only, like install_sigint_handler: embedders own their console.
+inline void install_console_utf8() {
+#if defined(_WIN32)
+  static bool installed = false;
+  if (installed) return;
+  static UINT saved_out = GetConsoleOutputCP();
+  static UINT saved_in = GetConsoleCP();
+  if (!SetConsoleOutputCP(CP_UTF8)) return;  // no console attached
+  SetConsoleCP(CP_UTF8);
+  installed = true;
+  std::atexit([] {
+    SetConsoleOutputCP(saved_out);
+    SetConsoleCP(saved_in);
+  });
+#endif
+}
+
 // Throw the cooperative Interrupted if an interrupt is pending — for blocking
 // syscalls that poll between waits (interruptible stdin below). Checks the
 // process SIGINT flag directly (like the JIT safepoint), so it works regardless
