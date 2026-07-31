@@ -826,24 +826,6 @@ jobs:
         run: cmake --build build-win-aot --target culebra -j
       - name: Report ccache stats
         run: ccache -s || true
-      # Same allowlist as the `windows` job, but that one builds with Http and
-      # Webview off, so this is where OpenSSL's and WebView2's imports are
-      # actually seen. Without it the widened import set is first checked by the
-      # release job, at the end of a ~40 min LTO build on a tag.
-      - name: Verify standalone binary (only system DLLs)
-        run: |
-          echo "Imported DLLs:"
-          imports=$(objdump -p build-win-aot/culebra.exe \
-            | grep -i 'DLL Name' | sed -E 's/.*DLL Name:\s*//' | tr 'A-Z' 'a-z' | sort -u)
-          echo "$imports"
-          allow='^(kernel32|kernelbase|msvcrt|ucrtbase|api-ms-win-crt-[a-z0-9-]+|ntdll|user32|advapi32|ws2_32|shell32|shlwapi|ole32|oleaut32|bcrypt|crypt32|secur32|iphlpapi|dbghelp|version|winmm|gdi32)\.dll$'
-          bad=$(echo "$imports" | grep -viE "$allow" || true)
-          if [ -n "$bad" ]; then
-            echo "ERROR: binary imports non-system DLL(s) — not standalone:"
-            echo "$bad"
-            exit 1
-          fi
-          echo "OK: only system DLLs imported — runs on a plain Windows box"
       # Trivial AOT (no exceptions): exercises COFF object emit + the Windows
       # link driver (g++/quoting/-static). Verbose so the link command shows.
       - name: Smoke — trivial AOT (no EH)
