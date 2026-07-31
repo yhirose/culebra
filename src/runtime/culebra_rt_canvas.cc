@@ -26,6 +26,7 @@
 #include <unordered_map>
 
 #include "raylib.h"
+#include <SDL3/SDL_init.h>
 #include <SDL3/SDL_keyboard.h>
 #include <SDL3/SDL_video.h>
 
@@ -123,6 +124,28 @@ void trace_log(int level, const char* text, va_list args) {
   std::fputc('\n', stderr);
 }
 
+// A machine can have a video driver and still not have the GL raylib needs: a
+// Windows session with only the generic Microsoft renderer hands out an OpenGL
+// 1.1 context, where the shader entry points rlglInit calls are null — and it
+// calls them, so the process dies inside raylib with nothing we can check
+// afterwards (a CI runner did exactly this: rlLoadShader -> 0x0). raylib does
+// the window and the GL context in one call, so the only place to ask is
+// before it: take a hidden context of our own, see whether the entry point
+// rlglInit will reach for is there, and hand it back.
+bool gl_usable() {
+  if (!SDL_Init(SDL_INIT_VIDEO)) return false;
+  SDL_Window* w = SDL_CreateWindow("culebra Canvas probe", 1, 1,
+                                   SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN);
+  if (w == nullptr) return false;
+  bool ok = false;
+  if (SDL_GLContext ctx = SDL_GL_CreateContext(w)) {
+    ok = SDL_GL_GetProcAddress("glCreateShader") != nullptr;
+    SDL_GL_DestroyContext(ctx);
+  }
+  SDL_DestroyWindow(w);
+  return ok;
+}
+
 // (Re)create the window + texture to match the current framebuffer size. Called
 // on first use and again if the framebuffer is re-init()'d at a new size.
 void ensure_window() {
@@ -138,6 +161,10 @@ void ensure_window() {
   if (!g_window_ready) {
     SetTraceLogLevel(LOG_WARNING);  // quiet raylib's INFO chatter
     SetTraceLogCallback(trace_log);  // and keep a fatal one from exiting
+    if (!gl_usable()) {
+      g_window_failed = true;
+      return;
+    }
     InitWindow(w * g_scale, h * g_scale, "culebra Canvas");
     // No display (headless server / CI / SSH): raylib fails to open a window
     // and IsWindowReady() stays false. Degrade to the headless backend rather
