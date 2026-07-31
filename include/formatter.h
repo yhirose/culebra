@@ -919,6 +919,24 @@ class Printer {
     // against the bracket (prettier's "hug") so `f({...})` reads as one call.
     if (items.size() == 1)
       return doc_concat({doc_text(open), std::move(items[0]), doc_text(close)});
+    // Last-argument hugging: when the final element already brings its own line
+    // breaks — a function body, a nested block — the list is multi-line no
+    // matter what, so splitting it only buys a level of indentation. Keep the
+    // callback attached, the way `srv.get("/path", fn (req) { ... })` is written.
+    if (doc_has_hardline(items.back())) {
+      bool rest_flat = true;
+      for (size_t i = 0; i + 1 < items.size(); i++)
+        if (doc_has_hardline(items[i])) { rest_flat = false; break; }
+      if (rest_flat) {
+        std::vector<DocP> hug{doc_text(open)};
+        for (size_t i = 0; i < items.size(); i++) {
+          if (i) hug.push_back(doc_text(", "));
+          hug.push_back(std::move(items[i]));
+        }
+        hug.push_back(doc_text(close));
+        return doc_concat(std::move(hug));
+      }
+    }
     std::vector<DocP> inner;
     inner.push_back(doc_softline());
     for (size_t i = 0; i < items.size(); i++) {
@@ -1116,9 +1134,24 @@ class Printer {
   // A destructuring pattern: containers (`(...)` / `[...]` / `{...}`) get
   // normalized comma spacing; leaf patterns (identifier, `_`, `name: Type`,
   // `Ctor(a)`, literals, `a | b` alternation) are sliced verbatim.
+  // A multi-target `for` binds bare: `for k, v in obj`, which is how the docs
+  // and the examples write it. Only FOR_BINDING qualifies — `for (a, b) in
+  // pairs` is a *tuple pattern* destructuring each element, a different
+  // construct, and dropping its parentheses would change what the loop means.
+  DocP print_for_binding(const peg::Ast& b) {
+    if (b.name != "FOR_BINDING") return print_pattern(b);
+    std::vector<DocP> parts;
+    for (size_t i = 0; i < b.nodes.size(); i++) {
+      if (i) parts.push_back(doc_text(", "));
+      parts.push_back(print_pattern(*b.nodes[i]));
+    }
+    return doc_concat(std::move(parts));
+  }
+
   DocP print_pattern(const peg::Ast& n) {
     // FOR_BINDING (multi-target `for k, v in …`) shares the tuple pattern's
-    // shape; render it parenthesized like a tuple (matching `for (k, v)`).
+    // shape; parenthesize it here — print_for_binding strips them back off for
+    // the one context that writes them bare.
     if (n.name == "TUPLE_PATTERN" || n.name == "FOR_BINDING") {
       std::vector<DocP> items;
       for (auto& c : n.nodes) items.push_back(print_pattern(*c));
@@ -1346,7 +1379,7 @@ class Printer {
     // [binding, iter, BLOCK, (NOBREAK_CLAUSE)?]. The binding is a single var or
     // a pattern; a nobreak clause renders after the body.
     auto fv = culebra::view_for(node);
-    return doc_concat({doc_text("for "), print_pattern(*fv.binding),
+    return doc_concat({doc_text("for "), print_for_binding(*fv.binding),
                        doc_text(" in "), print(*fv.iter), doc_text(" "),
                        print_block(*fv.body, node_end(*fv.iter), false),
                        print_nobreak(fv.nobreak, *fv.body)});
