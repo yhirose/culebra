@@ -32,6 +32,7 @@ culebra build prog.cul -o prog   # AOT, self-contained binary
 culebra test                     # run every test_*.cul below the cwd
 culebra fmt -i .                 # format in place (no style options)
 culebra lint .                   # static checks; exit 1 warn, 2 error
+culebra docs -g 'Math.wrap'      # look a signature up in the reference
 ```
 
 Source files use the `.cul` extension. There is no project file, no
@@ -45,6 +46,16 @@ library guess fails immediately rather than halfway through:
 # !! undefined variable 'puts'
 puts('hi')
 ```
+
+That check covers names, not members: `Math.abss(1)` and `xs.len()`
+survive `lint` and fail when the line runs, and a missing property is
+`nil` rather than an error. So run what you write — a program that has
+only been linted has not been checked.
+
+The whole reference set is inside the binary, always matching the build
+being run. `culebra docs -g <pattern>` prints the sections that match
+and exits 1 when none do, which settles whether an API exists without
+reading the output. Patterns are identifiers or phrases, not questions.
 
 ## 2. Syntax
 

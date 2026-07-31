@@ -2,8 +2,8 @@
 
 The `culebra` binary is the whole toolchain: the same executable that
 runs a program also carries the test runner, the linter, the formatter,
-and the debug adapter. This document is the reference for those four
-development subcommands.
+the debug adapter, and the reference documentation itself. This document
+is the reference for those five development subcommands.
 
 | Subcommand | What it does | Reference |
 |---|---|---|
@@ -11,6 +11,7 @@ development subcommands.
 | `culebra lint [paths...]` | report static problems without running the program | [§2](#2-linting-culebra-lint) |
 | `culebra fmt [paths...]` | reformat source to the canonical style | [§3](#3-formatting-culebra-fmt) |
 | `culebra dap` | speak the Debug Adapter Protocol over stdio | [§4](#4-debugging-culebra-dap) |
+| `culebra docs [topic]` | read and search the embedded reference docs | [§5](#5-reading-the-docs-culebra-docs) |
 | `culebra build <in.cul> -o <out>` | compile ahead-of-time into a standalone executable | [`deployment.md` §1](deployment.md#1-standalone-binary-build-culebra-build) |
 | `culebra wrap` | build an extended binary exposing your own C++ classes | [`deployment.md` §3](deployment.md#3-wrapping-c-libraries-culebra-wrap) |
 
@@ -33,6 +34,7 @@ Contents
    * [VSCode](#vscode)
    * [Vim (vimspector)](#vim-vimspector)
    * [Zed](#zed)
+5. [Reading the docs (`culebra docs`)](#5-reading-the-docs-culebra-docs)
 
 ---
 
@@ -565,3 +567,64 @@ Then open a `.cul` file (it highlights), set a breakpoint, and run
 > the dev extension fails to build or the adapter doesn't launch, check
 > the Zed version against the `zed_extension_api` version in
 > `misc/zed/Cargo.toml`.
+
+---
+
+## 5. Reading the docs (`culebra docs`)
+
+Every document in this reference set is compiled into the binary, so
+`culebra docs` answers from the same build that runs the code — there is
+no checked-out tree to fall behind it and no network to reach. The
+release archive carries no `docs/` directory precisely because it does
+not need one.
+
+```
+culebra docs                     # list the topics, with a size estimate
+culebra docs stdlib              # print one topic
+culebra docs -g 'Math.wrap'      # print the sections that match
+culebra docs stdlib -g 'wrap'    # search one topic
+culebra docs --ja ...            # the Japanese edition
+```
+
+Exit status is the grep convention: `0` printed something, `1` nothing
+matched, `2` bad usage. That makes an existence check a one-liner, with
+no output to read:
+
+```
+culebra docs -g '<name>' >/dev/null || echo "no such API"
+```
+
+(A literal name in that position would be searching for itself — this page
+is part of the corpus.)
+
+### Searching
+
+`-g` takes a regular expression, matched case-insensitively unless the
+pattern contains a capital. A pattern that does not compile — usually a
+signature fragment like `get_or_put(` — is searched for literally
+instead of rejected, with a note on stderr.
+
+The unit of output is a section: a heading and the text under it. Hits
+are ordered by where the match landed, because a heading match in
+`stdlib.md` is nearly always a signature, and that is what the reader
+was after:
+
+1. the heading, 2. a code block, 3. body text.
+
+Past eight matching sections the output degrades to an index of
+headings, so a broad pattern costs a screen rather than the whole
+reference. The strongest few heading matches still print in full.
+`--full` overrides this, and `--at <line>` prints one section
+uncapped — the line number comes from the locator above each hit.
+
+Sections stay small by construction (21 lines at the median), so a hit
+is normally shown whole; anything past 60 lines is truncated with a
+pointer to `--at`.
+
+### Which topic to read
+
+`culebra docs llm` is the condensed pack: the syntax, the habits from
+other languages that do not carry over, and every standard-library
+signature, in a file that fits in a prompt. It is the one to read
+before writing culebra rather than to search. The rest of the set is
+larger than a prompt window, which is what `-g` is for.

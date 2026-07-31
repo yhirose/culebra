@@ -32,6 +32,7 @@ culebra build prog.cul -o prog   # AOT、自己完結バイナリ
 culebra test                     # cwd 以下の test_*.cul を全実行
 culebra fmt -i .                 # その場で整形 (スタイル指定は無し)
 culebra lint .                   # 静的検査; 警告 1 / エラー 2 で exit
+culebra docs -g 'Math.wrap'      # リファレンスから署名を引く
 ```
 
 ソースファイルの拡張子は `.cul`。プロジェクトファイルもマニフェストも
@@ -45,6 +46,16 @@ culebra lint .                   # 静的検査; 警告 1 / エラー 2 で exit
 # !! undefined variable 'puts'
 puts('hi')
 ```
+
+弾かれるのは名前であってメンバではありません。`Math.abss(1)` や
+`xs.len()` は `lint` を素通りし、その行が実行されて初めて落ちます。
+存在しないプロパティはエラーでなく `nil` です。書いたら実行すること
+— lint を通しただけのプログラムは検査されていません。
+
+リファレンス一式はバイナリの中にあり、実行中のビルドと常に一致します。
+`culebra docs -g <パターン>` は一致したセクションを表示し、無ければ
+exit 1 になるので、出力を読まずに API の実在を判定できます。パターン
+は識別子か語句であって、質問文ではありません。
 
 ## 2. 構文
 

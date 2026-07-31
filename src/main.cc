@@ -1,5 +1,6 @@
 #include <culebra.h>
 #include <dap.h>
+#include <docs_cmd.h>
 #include <doctest_runner.h>
 #include <formatter.h>
 #include <source_dir.h>
@@ -491,6 +492,9 @@ void print_usage(ostream& os) {
         "                            (-i in-place, -l list, --check; `culebra fmt --help`)\n"
         "  dap                       Speak the Debug Adapter Protocol over\n"
         "                            stdin/stdout (your editor launches this)\n"
+        "  docs [topic]              Read the reference docs carried in this\n"
+        "                            binary (-g searches them; `culebra docs`\n"
+        "                            lists the topics)\n"
 #ifdef CULEBRA_JIT_ENABLED
         "  wrap <decl.cpp> ...       Build an extended culebra binary exposing\n"
         "                            your C++ classes (`culebra wrap --help`)\n"
@@ -1792,6 +1796,9 @@ int main(int argc, const char** argv) {
   }
   if (argc >= 2 && string(argv[1]) == "fmt") {
     return run_fmt(argc, argv);
+  }
+  if (argc >= 2 && string(argv[1]) == "docs") {
+    return culebra::run_docs(argc, argv);
   }
   if (argc >= 2 && string(argv[1]) == "dap") {
     // Debug Adapter Protocol server over stdio (interp-backed). The program to

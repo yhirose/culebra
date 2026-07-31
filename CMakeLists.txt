@@ -563,7 +563,25 @@ if(CULEBRA_ENABLE_WEBVIEW)
   message(STATUS "Webview: enabled (native WebView, vendored webview.h)")
 endif()
 
-add_executable(culebra ./src/main.cc ./src/source_dir.cc)
+# The reference docs travel inside the binary so `culebra docs` answers from
+# the same build the user is running — a URL or a checked-out tree can drift
+# from it, and the release archive carries no docs/ directory at all. Generated
+# at build time rather than committed: docs change every cycle, and a committed
+# 1.3 MB blob would land in every diff and need a staleness gate of its own.
+set(_docs_gen "${CMAKE_CURRENT_BINARY_DIR}/gen/docs_embedded.cc")
+file(GLOB _docs_sources "${CMAKE_CURRENT_SOURCE_DIR}/docs/*.md")
+add_custom_command(
+  OUTPUT ${_docs_gen}
+  COMMAND ${CMAKE_COMMAND}
+          -DDOCS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/docs
+          -DOUT=${_docs_gen}
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_docs.cmake
+  DEPENDS ${_docs_sources} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_docs.cmake
+  COMMENT "Embedding docs/*.md"
+  VERBATIM)
+
+add_executable(culebra ./src/main.cc ./src/source_dir.cc ./src/docs_cmd.cc
+                       ${_docs_gen})
 if(_culebra_enable_lto)
   set_target_properties(culebra PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
@@ -1269,6 +1287,13 @@ endforeach()
 # `culebra` binary, which all backends share via the ModuleLoader.
 add_test(NAME lint_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/lint_test.sh
+                 $<TARGET_FILE:culebra>)
+
+# Embedded reference docs (src/docs_cmd.cc): the exit-code contract callers
+# script against, and the guard that keeps a broad pattern from dumping the
+# whole reference set.
+add_test(NAME docs_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/docs_test.sh
                  $<TARGET_FILE:culebra>)
 
 # Source formatter (include/formatter.h): golden-fixture output, the comment

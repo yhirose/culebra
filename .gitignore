@@ -75,7 +75,6 @@ scratchpad/
 # Ignore internal development history
 docs/_history.md
 docs/_history.ja.md
-docs/_internal/*
 
 # Playground incremental-build bookkeeping (the wasm it guards is committed)
 build-playground/
