@@ -638,6 +638,17 @@ if(CULEBRA_ENABLE_WEBVIEW)
       set(_webview_libs ole32 shell32 shlwapi user32 version advapi32)
       list(TRANSFORM _webview_libs PREPEND "-l" OUTPUT_VARIABLE _webview_lflags)
       list(JOIN _webview_lflags " " _webview_link)
+      # The binding reaches wrap.h, so its TU carries `inline` copies of all
+      # ~300 culebra_runtime_* helpers the core archive defines outright. ELF
+      # and Mach-O fold the weak duplicates when the AOT link force-loads this
+      # archive; PE has no weak external and ld calls it a multiple definition.
+      # The two copies are the same header's, so taking the first is what the
+      # other platforms already do. Scoped to this axis's fragment, not the
+      # whole link, so an AOT binary that does not use Webview keeps strict
+      # duplicate detection. (Scene has the same shape and would need the same
+      # once it builds here.) The real fix is for wrap.h to stop dragging the
+      # runtime into a binding TU.
+      string(APPEND _webview_link " -Wl,--allow-multiple-definition")
     else()
       message(STATUS "Webview: disabled (WebView2.h not found — install webview2-loader)")
       set(CULEBRA_ENABLE_WEBVIEW OFF)
