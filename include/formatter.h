@@ -1435,7 +1435,7 @@ class Printer {
     // a pattern; a nobreak clause renders after the body.
     auto fv = culebra::view_for(node);
     return doc_concat({doc_text("for "), print_for_binding(*fv.binding),
-                       doc_text(" in "), print(*fv.iter), doc_text(" "),
+                       doc_text(" in "), doc_flatten(print(*fv.iter)), doc_text(" "),
                        print_block(*fv.body, node_end(*fv.iter), false),
                        print_nobreak(fv.nobreak, *fv.body)});
   }
