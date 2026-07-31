@@ -419,7 +419,7 @@ class CameraRig {
 
 # Index of the centerline point nearest to (x,z).
 fn nearest_idx(cl, x, z) {
-  let dist2 = fn ((i, [px, pz])) { (px - x) * (px - x) + (pz - z) * (pz - z) }
+  let dist2 = fn ((_, [px, pz])) { (px - x) * (px - x) + (pz - z) * (pz - z) }
   cl.enumerate().min_by(dist2)[0]
 }
 

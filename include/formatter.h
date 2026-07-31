@@ -143,9 +143,8 @@ inline bool doc_has_hardline(const DocP& d) {
 }
 
 // Width of a doc laid out flat, or -1 if it cannot lay out flat at all (it
-// holds a HardLine). Used to settle a layout *before* handing it to the
-// renderer: an unresolved group makes the fit check look past it, and whatever
-// shares the line in front then breaks to make room it cannot use.
+// holds a HardLine). An Isolate settles on this rather than on a fit scan, so
+// that it costs the line what it actually takes.
 inline int doc_flat_width(const DocP& d) {
   if (!d) return 0;
   switch (d->kind) {
@@ -172,13 +171,7 @@ struct LayoutCmd {
   Doc* doc;
 };
 
-// `inside_isolate` distinguishes the two questions an Isolate answers. Asked
-// from outside — "does this parameter list fit?" — it reports yes and stops,
-// because the body beyond it settles on its own. Asked while laying the
-// Isolate itself out, it has to measure like any other group, nested ones
-// included, or a body would call itself flat and then break inside.
-inline bool doc_fits(int remaining, std::vector<LayoutCmd> stack,
-                     bool inside_isolate = false) {
+inline bool doc_fits(int remaining, std::vector<LayoutCmd> stack) {
   while (remaining >= 0) {
     if (stack.empty()) return true;
     LayoutCmd c = stack.back();
@@ -194,10 +187,14 @@ inline bool doc_fits(int remaining, std::vector<LayoutCmd> stack,
       case DocKind::Group:
         stack.push_back({c.indent, /*flat=*/true, c.doc->children[0].get()});
         break;
-      case DocKind::Isolate:
-        if (!inside_isolate) return true;  // settles on its own; not ours
-        stack.push_back({c.indent, /*flat=*/true, c.doc->children[0].get()});
+      case DocKind::Isolate: {
+        // Costs its flat width if it can take it, and otherwise ends the line —
+        // at which point what follows is on another line and not ours to weigh.
+        int w = doc_flat_width(c.doc->children[0]);
+        if (w < 0 || w > remaining) return true;
+        remaining -= w;
         break;
+      }
       case DocKind::Indent:
         stack.push_back({c.indent + c.doc->indent, c.flat, c.doc->children[0].get()});
         break;
@@ -257,9 +254,8 @@ inline std::string doc_render(const DocP& root, int width) {
         break;
       }
       case DocKind::Isolate: {
-        std::vector<LayoutCmd> test;  // nothing after it: measured alone
-        test.push_back({c.indent, /*flat=*/true, c.doc->children[0].get()});
-        bool flat = doc_fits(width - col, std::move(test), /*inside_isolate=*/true);
+        int w = doc_flat_width(c.doc->children[0]);  // measured alone
+        bool flat = w >= 0 && w <= width - col;
         stack.push_back({c.indent, flat, c.doc->children[0].get()});
         break;
       }
@@ -839,11 +835,8 @@ class Printer {
     // A lone statement with no comments in the braces may stay on one line —
     // `if !ok { return }` is how culebra is written, in the docs and throughout
     // the examples. Member lists (sep == ",") always lay out multi-line.
-    //
-    // An Isolate rather than a Group: the body is the last thing on its line,
-    // so it settles against the width it is handed and never pushes on what
-    // came before. As a Group it made a parameter list in front of a long body
-    // break one name per line, buying room the body could not use.
+    // An Isolate rather than a Group, so a long body cannot make the head in
+    // front of it break to buy room the body will not use.
     if (allow_inline && items.size() == 1 && sep.empty()) {
       bool has_comment = false;
       for (const auto& c : comments_)
