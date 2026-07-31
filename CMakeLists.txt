@@ -822,12 +822,16 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   endif()
   # Webview feature archive: same usage-gating as Scene (force-loaded into an
   # AOT binary only when the AST scan reports Webview use; the OS WebView
-  # framework comes from CULEBRA_WEBVIEW_LINK). Compiling needs only the vendored
-  # single header.
+  # framework comes from CULEBRA_WEBVIEW_LINK). The vendored single header is
+  # all macOS needs (it drives the ObjC runtime directly), but the GTK backend
+  # includes gtk/gtk.h, so Linux needs the same include dirs the driver gets.
   if(CULEBRA_ENABLE_WEBVIEW)
     add_library(culebra_rt_webview STATIC ./src/runtime/culebra_rt_webview.cc)
     target_compile_features(culebra_rt_webview PRIVATE cxx_std_23)
     target_include_directories(culebra_rt_webview PRIVATE ./vendor/webview)
+    if(WEBKITGTK_FOUND)
+      target_include_directories(culebra_rt_webview PRIVATE ${WEBKITGTK_INCLUDE_DIRS})
+    endif()
     target_compile_definitions(culebra_rt_webview PRIVATE CULEBRA_ENABLE_WEBVIEW=1)
     target_compile_options(culebra_rt_webview PRIVATE -ffunction-sections -fdata-sections)
     list(APPEND _rt_embed_files
