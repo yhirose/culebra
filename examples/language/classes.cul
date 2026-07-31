@@ -4,21 +4,13 @@ class Vec2 {
     self.y = y
   }
 
-  __add__(o) {
-    Vec2.new(self.x + o.x, self.y + o.y)
-  }
+  __add__(o) { Vec2.new(self.x + o.x, self.y + o.y) }
 
-  __mul__(k) {
-    Vec2.new(self.x * k, self.y * k)
-  }
+  __mul__(k) { Vec2.new(self.x * k, self.y * k) }
 
-  __str__() {
-    "({self.x}, {self.y})"
-  }  # how the value prints
+  __str__() { "({self.x}, {self.y})" }  # how the value prints
 
-  get len() {
-    Math.sqrt(to_float(self.x * self.x + self.y * self.y))
-  }
+  get len() { Math.sqrt(to_float(self.x * self.x + self.y * self.y)) }
 }
 
 let a = Vec2.new(1, 2)

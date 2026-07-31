@@ -14,9 +14,9 @@
 #                                                     Warmup dominates at this size,
 #                                                     so it is slower than the interp.)
 
-effect fn choose(options)   # pick one option; the handler decides how many
-effect fn reject()          # this branch is a dead end
-effect fn visit()           # one placement considered (for instrumentation)
+effect fn choose(options)  # pick one option; the handler decides how many
+effect fn reject()         # this branch is a dead end
+effect fn visit()          # one placement considered (for instrumentation)
 
 let N = !Sys.argv.empty() ? to_long(Sys.argv[0]) : 6
 
@@ -25,7 +25,7 @@ let N = !Sys.argv.empty() ? to_long(Sys.argv[0]) : 6
 # no column and no diagonal with any queen already placed.
 fn is_safe(cols, c) {
   let row = cols.size()
-  !cols.enumerate().any(|(r, cc)| cc == c || (row - r) == Math.abs(c - cc))
+  !cols.enumerate().any(|(r, cc)| cc == c || row - r == Math.abs(c - cc))
 }
 
 # The whole search. It is written as if `choose` returned a single column and
@@ -66,7 +66,7 @@ let all = handle {
   }
 } with visit(resume) {
   nodes_all += 1
-  resume(nil)   # tail-resumptive: no continuation captured, just a callback
+  resume(nil)  # tail-resumptive: no continuation captured, just a callback
 }
 
 println("{N} queens: {all.size()} solutions, {nodes_all} placements considered\n")

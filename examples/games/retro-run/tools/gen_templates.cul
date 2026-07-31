@@ -31,10 +31,12 @@ let outdir = !Sys.argv.empty()
   : FS.join(FS.dirname(FS.dirname(Sys.script)), "assets")
 FS.mkdir(outdir)
 
-for (file, w, h, rects) in [
-  ("sprites-template.png", atlas.SPRITE_W, atlas.SPRITE_H, atlas.SPRITES),
-  ("background-template.png", atlas.BG_W, atlas.BG_H, atlas.BACKGROUND)
-] {
+for (
+  file,
+  w,
+  h,
+  rects,
+) in [("sprites-template.png", atlas.SPRITE_W, atlas.SPRITE_H, atlas.SPRITES), ("background-template.png", atlas.BG_W, atlas.BG_H, atlas.BACKGROUND)] {
   let path = FS.join(outdir, file)
   let png = outline_sheet(w, h, rects).to_png()
   FS.write(path, png)

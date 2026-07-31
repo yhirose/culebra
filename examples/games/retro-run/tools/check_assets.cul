@@ -42,13 +42,13 @@ let SPRITES = {
   PLAYER_UPHILL_RIGHT: [1385, 1018, 80, 45],
   PLAYER_LEFT: [995, 480, 80, 41],
   PLAYER_STRAIGHT: [1085, 480, 80, 41],
-  PLAYER_RIGHT: [995, 531, 80, 41]
+  PLAYER_RIGHT: [995, 531, 80, 41],
 }
 
 let BACKGROUND = {
   HILLS: [5, 5, 1280, 480],
   SKY: [5, 495, 1280, 480],
-  TREES: [5, 985, 1280, 480]
+  TREES: [5, 985, 1280, 480],
 }
 
 let SCENES = ["asayake", "hiru", "yuugure", "twilight"]
@@ -87,7 +87,7 @@ fn opaque_in(sprite, r) {
 let sheet = Canvas.Sprite.from_png(FS.read(dir + "/sprites.png"))
 check(
   sheet.width() == 1492 && sheet.height() == 1487,
-  "sprites.png is {sheet.width()}x{sheet.height()}, want 1492x1487"
+  "sprites.png is {sheet.width()}x{sheet.height()}, want 1492x1487",
 )
 
 for name, r in SPRITES {
@@ -106,7 +106,7 @@ let masks = SCENES.map(fn (scene) {
   let bg = Canvas.Sprite.from_png(FS.read(dir + "/background_{scene}.png"))
   check(
     bg.width() == 1290 && bg.height() == 1470,
-    "background_{scene} is {bg.width()}x{bg.height()}, want 1290x1470"
+    "background_{scene} is {bg.width()}x{bg.height()}, want 1290x1470",
   )
   for layer, r in BACKGROUND {
     check(opaque_in(bg, r) > 0, "background_{scene} layer {layer} is empty")
@@ -127,13 +127,13 @@ let masks = SCENES.map(fn (scene) {
 for i in 1..masks.size() {
   check(
     masks[i] == masks[0],
-    "background scene {i} has a different opaque mask than {SCENES[0]}"
+    "background scene {i} has a different opaque mask than {SCENES[0]}",
   )
 }
 
 if failures == 0 {
   println("assets ok: {SPRITES.size()} sprites at the common.js rectangles, " +
-          "{SCENES.size()} backgrounds sharing one geometry")
+    "{SCENES.size()} backgrounds sharing one geometry")
 } else {
   println("{failures} check(s) failed")
 }

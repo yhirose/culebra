@@ -15,8 +15,8 @@ let SZ = W * H
 # absent => spin forever.
 let max_frames = !Sys.argv.empty() ? to_long(Sys.argv[0]) : -1
 
-mut a = 0.0   # rotation about one axis
-mut b = 0.0   # rotation about the other
+mut a = 0.0  # rotation about one axis
+mut b = 0.0  # rotation about the other
 
 # A Screen diffs frames so only the cells that change are redrawn.
 let s = Term.Screen.new()
@@ -36,7 +36,7 @@ while mut frame_no = 0; max_frames < 0 || frame_no < max_frames {
       let f = Math.sin(j)
       let g = Math.cos(a)
       let h = d + 2.0
-      let inv = 1.0 / (c * h * e + f * g + 5.0)   # one-over-z
+      let inv = 1.0 / (c * h * e + f * g + 5.0)  # one-over-z
       let l = Math.cos(i)
       let m = Math.cos(b)
       let n = Math.sin(b)
@@ -44,7 +44,8 @@ while mut frame_no = 0; max_frames < 0 || frame_no < max_frames {
       let x = to_long(40.0 + 30.0 * inv * (l * h * m - t * n))
       let y = to_long(12.0 + 15.0 * inv * (l * h * n + t * m))
       let o = x + W * y
-      let lum = to_long(8.0 * ((f * e - c * d * g) * m - c * d * e - f * g - l * d * n))
+      let lum = to_long(8.0 *
+        ((f * e - c * d * g) * m - c * d * e - f * g - l * d * n))
       if y > 0 && y < H && x > 0 && x < W && inv > depth[o] {
         depth[o] = inv
         let ci = Math.max(lum, 0)
@@ -55,7 +56,7 @@ while mut frame_no = 0; max_frames < 0 || frame_no < max_frames {
     j += 0.07
   }
 
-  s.flush()                 # redraws only the cells that changed
+  s.flush()  # redraws only the cells that changed
   Time.sleep(0.03)
   a += 0.07
   b += 0.03

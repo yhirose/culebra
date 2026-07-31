@@ -81,7 +81,10 @@ let tool_glob = fn (args) {
   let base = args.path ?? '.'
   let pattern = FS.join(base, args.pat)
   let files = FS.glob(pattern)
-  let sorted = files.sorted_by(|f| FS.is_file(f) ? FS.stat(f).mtime : 0, reverse: true)
+  let sorted = files.sorted_by(
+    |f| FS.is_file(f) ? FS.stat(f).mtime : 0,
+    reverse: true,
+  )
   sorted.empty() ? 'none' : sorted.join("\n")
 }
 
@@ -99,7 +102,8 @@ let tool_grep = fn (args) {
           if hits.size() >= 50 { return hits.join("\n") }
         }
       }
-    } catch _ { }
+    } catch _ {
+}
   }
   # The walk returns at 50, so whatever is left here is already under the cap.
   hits.empty() ? 'none' : hits.join("\n")
@@ -164,20 +168,16 @@ let TOOLS = TOOL_LIST.map(|t| (t.name, t)).to_object()
 let run_tool = fn (name, args) {
   let tool = TOOLS[name]
   if tool == nil { return "error: unknown tool {name}" }
-  try {
-    tool.run(args)
-  } catch e {
-    "error: {e}"
-  }
+  try { tool.run(args) } catch e { "error: {e}" }
 }
 
 # Built once — TOOL_LIST is static, so every call_api turn reuses this.
 # A trailing '?' in the param spec marks it optional; everything else is required.
 let TOOL_SCHEMA = TOOL_LIST.map(fn (t) {
   let properties = t.params.iter().map(fn ((name, spec)) {
-    let base = spec.trim_end('?')
-    (name, {type: base == 'number' ? 'integer' : base})
-  }).to_object()
+      let base = spec.trim_end('?')
+      (name, {type: base == 'number' ? 'integer' : base})
+    }).to_object()
   let required = t.params.keys().filter(|k| !t.params[k].ends_with('?'))
 
   {
@@ -191,9 +191,9 @@ let TOOL_SCHEMA = TOOL_LIST.map(fn (t) {
 
 let HEADERS = {
   "anthropic-version": '2023-06-01',
-  ...(use_openrouter
-      ? {"Authorization": 'Bearer ' + openrouter_key}
-      : {"x-api-key": Sys.env('ANTHROPIC_API_KEY')}),
+  ...use_openrouter
+    ? {"Authorization": 'Bearer ' + openrouter_key}
+    : {"x-api-key": Sys.env('ANTHROPIC_API_KEY')},
 }
 
 # Thinking is on by default on this model and `max_tokens` caps thinking plus
@@ -210,7 +210,11 @@ let call_api = fn (messages, system_prompt) {
   }
   let r = Http.post(api_url, json: body, headers: HEADERS, timeout: 120)
   if !r.ok {
-    throw {kind: 'LLMApiError', message: "API error {r.status}: {r.body}", status: r.status}
+    throw {
+      kind: 'LLMApiError',
+      message: "API error {r.status}: {r.body}",
+      status: r.status,
+    }
   }
   r.json()
 }
@@ -267,13 +271,17 @@ let main = fn () {
             let lines = result.split("\n")
             let head = lines[0].slice(0, 60)
             let preview = cond {
-              lines.size() > 1     => "{head} ... +{lines.size() - 1} lines",
+              lines.size() > 1 => "{head} ... +{lines.size() - 1} lines",
               lines[0].size() > 60 => "{head}...",
-              _                    => head.to_string(),
+              _ => head.to_string(),
             }
             IO.println("  {DIM}\u{23bf}  {preview}{RESET}")
 
-            tool_results.push({type: 'tool_result', tool_use_id: block.id, content: result})
+            tool_results.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: result,
+            })
           }
         }
 

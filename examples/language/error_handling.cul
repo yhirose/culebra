@@ -1,13 +1,9 @@
 fn risky(n) {
-  if n < 0 {
-    throw {kind: "RangeError", message: "n must be >= 0, got {n}"}
-  }
+  if n < 0 { throw {kind: "RangeError", message: "n must be >= 0, got {n}"} }
   n * 2
 }
 
 try {
   println("risky(21) = {risky(21)}")
   risky(-1)
-} catch e {
-  println("caught {e.kind}: {e.message}")
-}
+} catch e { println("caught {e.kind}: {e.message}") }

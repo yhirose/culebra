@@ -38,7 +38,7 @@ fn fade(t) { t * t * t * (t * (t * 6.0 - 15.0) + 10.0) }
 fn lerp(a, b, t) { a + t * (b - a) }
 fn grad(h, x) { h % 2 == 0 ? x : -x }
 fn pnoise1(perm, x) {
-  let fl = to_float(to_long(x))          # floor (x is always >= 0 here)
+  let fl = to_float(to_long(x))  # floor (x is always >= 0 here)
   let xi = to_long(x) % 256
   let xf = x - fl
   let u = fade(xf)
@@ -49,7 +49,9 @@ fn pnoise1(perm, x) {
 let PERM = build_perm(to_long(Time.now().unix()) % 2000000000)
 fn noise_pos(base, a) {
   let x = to_long((pnoise1(PERM, base * a) + 1.0) / 2.0 * to_float(ROWS))
-  let y = to_long((pnoise1(PERM, (base + 10000.0) * a) + 1.0) / 2.0 * to_float(COLS))
+  let y = to_long((pnoise1(PERM, (base + 10000.0) * a) + 1.0) /
+    2.0 *
+    to_float(COLS))
   (Math.clamp(x, 0, ROWS - 1), Math.clamp(y, 0, COLS - 1))
 }
 
@@ -59,9 +61,7 @@ fn settle(start, speed, margin) {
   mut base = start
   mut (x, y) = noise_pos(base, speed)
   mut tries = 0
-  while ((Math.abs(to_float(x) - to_float(ROWS) / 2.0) < margin
-       || Math.abs(to_float(y) - to_float(COLS) / 2.0) < margin)
-      && tries < 300) {
+  while (Math.abs(to_float(x) - to_float(ROWS) / 2.0) < margin || Math.abs(to_float(y) - to_float(COLS) / 2.0) < margin) && tries < 300 {
     base += 1.0
     (x, y) = noise_pos(base, speed)
     tries += 1
@@ -107,7 +107,7 @@ class Frog {
       "right" | "l" => (1, 0),
       "up"    | "k" => (0, -1),
       "down"  | "j" => (0, 1),
-      _             => (0, 0),
+      _ => (0, 0),
     }
     self.move(dx, dy)
   }
@@ -119,7 +119,9 @@ class Frog {
       self.energy = -1
     }
   }
-  eaten() { if self.energy == -1 { self.energy = 50 } }
+  eaten() {
+    if self.energy == -1 { self.energy = 50 }
+  }
   alive() { self.energy != 0 }
 }
 
@@ -132,7 +134,11 @@ class Food {
     self.score = score
     # `self` is immutable inside a constructor, so settle away from the board
     # centre first and assign each field once.
-    let (base, x, y) = settle(to_float(to_long(Time.now().unix()) % 1000 * 10000), speed, 4.0)
+    let (
+      base,
+      x,
+      y,
+    ) = settle(to_float(to_long(Time.now().unix()) % 1000 * 10000), speed, 4.0)
     self.base = base
     self.x = x
     self.y = y
@@ -158,7 +164,11 @@ class Enemy {
   new(emoji, speed) {
     self.emoji = emoji
     self.speed = speed
-    let (base, x, y) = settle(to_float(to_long(Time.now().unix()) % 1000), speed, 6.0)
+    let (
+      base,
+      x,
+      y,
+    ) = settle(to_float(to_long(Time.now().unix()) % 1000), speed, 6.0)
     self.base = base
     self.x = x
     self.y = y
@@ -194,8 +204,19 @@ fn draw_status(s, off, score, time) {
   output(s, off, 1, 1, "SCORE: {score}")
   output(s, off, 1, COLS - 5, "TIME: {time}")
 }
-fn draw_food_count(s, off, fruit, dessert) {
-  output(s, off, ROWS - 1, COLS - 5, "FOOD: {fruit.remaining() + dessert.remaining()}")
+fn draw_food_count(
+  s,
+  off,
+  fruit,
+  dessert,
+) {
+  output(
+    s,
+    off,
+    ROWS - 1,
+    COLS - 5,
+    "FOOD: {fruit.remaining() + dessert.remaining()}",
+  )
 }
 
 fn draw_screen(s, frog, fruit, dessert, eagle, snake, score, time) {
@@ -232,8 +253,8 @@ fn draw_game_over(s, score, time, frog, fruit, dessert) {
   draw_food_count(s, off, fruit, dessert)
   let (col, text) = cond {
     !frog.alive() => (COLS / 2 - 3, "GAME OVER 😱"),
-    time > 0      => (COLS / 2 - 5, "🎉 Congratulations 🎊"),
-    _             => (COLS / 2 - 2, "TIME UP ⏱"),
+    time > 0 => (COLS / 2 - 5, "🎉 Congratulations 🎊"),
+    _ => (COLS / 2 - 2, "TIME UP ⏱"),
   }
   output(s, off, 6, col, text)
   output(s, off, 10, COLS / 2 - 3, "Hit Space")
@@ -259,17 +280,30 @@ fn run(s) {
   mut score = 0
   mut tic = 0
   let frog = Frog.new()
-  let fruit = Food.new("🍓🍌🍎🍑🍇🍉🍐🍊🍋🍒🍍🥝🍏🍅🥑🥕🥔🍆🍠🌽".graphemes().collect(), 0.01, 1)
-  let dessert = Food.new("🍦🍩🍧🧁🍨🍪🍫🍰🍮🍭🍿🥛🍷🍶🍹🍼🍵".graphemes().collect(), 0.02, 2)
+  let fruit = Food.new(
+    "🍓🍌🍎🍑🍇🍉🍐🍊🍋🍒🍍🥝🍏🍅🥑🥕🥔🍆🍠🌽"
+      .graphemes()
+      .collect(),
+    0.01,
+    1,
+  )
+  let dessert = Food.new(
+    "🍦🍩🍧🧁🍨🍪🍫🍰🍮🍭🍿🥛🍷🍶🍹🍼🍵"
+      .graphemes()
+      .collect(),
+    0.02,
+    2,
+  )
   let eagle = Enemy.new("🦅", 0.03)
   let snake = Enemy.new("🐍", 0.02)
 
-  while (time > 0 && frog.alive()
-      && (fruit.remaining() > 0 || dessert.remaining() > 0)
-      && (MAX_TICKS < 0 || tic < MAX_TICKS)) {
+  while time > 0 && frog.alive() && (fruit.remaining() > 0 || dessert.remaining() > 0) && (MAX_TICKS < 0 || tic < MAX_TICKS) {
     let ev = s.poll(0.1)
     let key = ev?.kind == "key" ? ev.key : ""
-    if key == "q" { time = 0; break }
+    if key == "q" {
+      time = 0
+      break
+    }
     frog.move_by_key(key)
     fruit.move(s)
     dessert.move(s)
@@ -288,4 +322,7 @@ fn run(s) {
   wait_key(s, [" ", "q"]) != "q"
 }
 
-Term.app(fn (s) { while run(s) {} })
+Term.app(fn (s) {
+  while run(s) {
+}
+})
