@@ -49,7 +49,7 @@ namespace culebra::fmt {
 struct Doc;
 using DocP = std::shared_ptr<Doc>;
 
-enum class DocKind { Text, Line, SoftLine, HardLine, Group, Indent, Concat, IfBreak };
+enum class DocKind { Text, Line, SoftLine, HardLine, Group, Isolate, Indent, Concat, IfBreak };
 
 struct Doc {
   DocKind kind;
@@ -97,6 +97,18 @@ inline DocP doc_group(DocP x) {
   d->children = {std::move(x)};
   return d;
 }
+// A group measured on its own. An ordinary Group asks "does this, and
+// everything after it on the line, still fit?", which is right for a list that
+// shares the line with what follows. It is wrong for a brace body: the body is
+// the last thing on its line, and letting it push on what precedes it makes a
+// parameter list break to buy room the body cannot use. An Isolate is laid out
+// against the remaining width alone, and never constrains what came before.
+inline DocP doc_isolate(DocP x) {
+  auto d = std::make_shared<Doc>();
+  d->kind = DocKind::Isolate;
+  d->children = {std::move(x)};
+  return d;
+}
 inline DocP doc_indent(int n, DocP x) {
   auto d = std::make_shared<Doc>();
   d->kind = DocKind::Indent;
@@ -130,13 +142,43 @@ inline bool doc_has_hardline(const DocP& d) {
   return false;
 }
 
+// Width of a doc laid out flat, or -1 if it cannot lay out flat at all (it
+// holds a HardLine). Used to settle a layout *before* handing it to the
+// renderer: an unresolved group makes the fit check look past it, and whatever
+// shares the line in front then breaks to make room it cannot use.
+inline int doc_flat_width(const DocP& d) {
+  if (!d) return 0;
+  switch (d->kind) {
+    case DocKind::Text:
+      return d->weightless ? 0 : static_cast<int>(d->text.size());
+    case DocKind::Line: return 1;
+    case DocKind::SoftLine:
+    case DocKind::IfBreak: return 0;
+    case DocKind::HardLine: return -1;
+    default: break;
+  }
+  int sum = 0;
+  for (const auto& c : d->children) {
+    int w = doc_flat_width(c);
+    if (w < 0) return -1;
+    sum += w;
+  }
+  return sum;
+}
+
 struct LayoutCmd {
   int indent;
   bool flat;
   Doc* doc;
 };
 
-inline bool doc_fits(int remaining, std::vector<LayoutCmd> stack) {
+// `inside_isolate` distinguishes the two questions an Isolate answers. Asked
+// from outside — "does this parameter list fit?" — it reports yes and stops,
+// because the body beyond it settles on its own. Asked while laying the
+// Isolate itself out, it has to measure like any other group, nested ones
+// included, or a body would call itself flat and then break inside.
+inline bool doc_fits(int remaining, std::vector<LayoutCmd> stack,
+                     bool inside_isolate = false) {
   while (remaining >= 0) {
     if (stack.empty()) return true;
     LayoutCmd c = stack.back();
@@ -150,6 +192,10 @@ inline bool doc_fits(int remaining, std::vector<LayoutCmd> stack) {
           stack.push_back({c.indent, c.flat, it->get()});
         break;
       case DocKind::Group:
+        stack.push_back({c.indent, /*flat=*/true, c.doc->children[0].get()});
+        break;
+      case DocKind::Isolate:
+        if (!inside_isolate) return true;  // settles on its own; not ours
         stack.push_back({c.indent, /*flat=*/true, c.doc->children[0].get()});
         break;
       case DocKind::Indent:
@@ -207,6 +253,13 @@ inline std::string doc_render(const DocP& root, int width) {
         std::vector<LayoutCmd> test = stack;
         test.push_back({c.indent, /*flat=*/true, c.doc->children[0].get()});
         bool flat = doc_fits(width - col, std::move(test));
+        stack.push_back({c.indent, flat, c.doc->children[0].get()});
+        break;
+      }
+      case DocKind::Isolate: {
+        std::vector<LayoutCmd> test;  // nothing after it: measured alone
+        test.push_back({c.indent, /*flat=*/true, c.doc->children[0].get()});
+        bool flat = doc_fits(width - col, std::move(test), /*inside_isolate=*/true);
         stack.push_back({c.indent, flat, c.doc->children[0].get()});
         break;
       }
@@ -783,16 +836,21 @@ class Printer {
       return doc_concat({doc_text("{"), doc_indent(kIndent, doc_concat(std::move(inner))),
                          doc_hardline(), doc_text("}")});
     }
-    // A lone statement with no comments in the braces may stay on one line when
-    // it fits — `if !ok { return }` is how culebra is written, in the docs and
-    // throughout the examples. Member lists (sep == ",") always lay out multi-line.
+    // A lone statement with no comments in the braces may stay on one line —
+    // `if !ok { return }` is how culebra is written, in the docs and throughout
+    // the examples. Member lists (sep == ",") always lay out multi-line.
+    //
+    // An Isolate rather than a Group: the body is the last thing on its line,
+    // so it settles against the width it is handed and never pushes on what
+    // came before. As a Group it made a parameter list in front of a long body
+    // break one name per line, buying room the body could not use.
     if (allow_inline && items.size() == 1 && sep.empty()) {
       bool has_comment = false;
       for (const auto& c : comments_)
         if (c.start >= lo && c.start < hi) { has_comment = true; break; }
       DocP only = has_comment ? nullptr : render(0);
       if (only && !doc_has_hardline(only))
-        return doc_group(doc_concat({
+        return doc_isolate(doc_concat({
             doc_text("{"),
             doc_indent(kIndent, doc_concat({doc_line(), std::move(only)})),
             doc_line(),
