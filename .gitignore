@@ -85,3 +85,6 @@ __pycache__/
 
 # Upstream art dropped in locally to play with — not redistributable
 examples/games/retro-run/assets-*/
+
+# `culebra build`ing the example in place, as its README shows
+examples/games/retro-run/retro-run

@@ -184,8 +184,9 @@ let BG_TREES = Art.new(5, 985, 1280, 480)
 # --- assets ----------------------------------------------------------------
 # `--assets <dir>` points at art held elsewhere — upstream's own, say; without
 # it the generated stand-ins in assets/ are used. `Sys.script` reads the same in
-# the Playground as it does natively, so there is no branch on the backend here.
-let HOME = FS.dirname(Sys.script)
+# the Playground as it does natively; an AOT binary carries no `.cul`, so there
+# it is nil and the art is looked for next to the executable instead.
+let HOME = FS.dirname(Sys.script ?? Sys.executable)
 let ART_DIR = args.dir ?? HOME + "/assets"
 let SCENES = ["asayake", "hiru", "yuugure", "twilight"]
 let SCENE_COUNT = SCENES.size()

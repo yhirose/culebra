@@ -32,6 +32,19 @@ culebra --jit examples/games/retro-run/retro-run.cul 150
 culebra --jit examples/games/retro-run/retro-run.cul --assets ~/art/racer 150
 ```
 
+`culebra build` produces a standalone binary. It compiles rather than runs, so
+the arguments above go to the binary, not to the build:
+
+```sh
+cd examples/games/retro-run
+culebra build retro-run.cul -o retro-run
+./retro-run --assets assets-racer
+```
+
+The binary has no `.cul` to sit beside, so without `--assets` it reads the art
+from an `assets/` directory next to the executable — which is where building
+in place puts it.
+
 ## Assets
 
 `assets/` holds generated placeholder art — see `assets/README.md` for what's
