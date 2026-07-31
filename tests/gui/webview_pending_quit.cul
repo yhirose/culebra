@@ -7,9 +7,13 @@
 # display is a legitimate outcome and a hang is not.
 
 let w = Webview.Window.new()
-# Content, but no title or size: run() never enters the loop here, so nothing
-# would show them. set_html is still load-bearing — a bare create/destroy pair
-# hits the GTK4 crash in examples/webview/README.md.
+# All three setters are load-bearing, however pointless they look on a window
+# that never enters the loop. Measured: dropping the title and size segfaults
+# under GTK on 3 runs in 5 — near enough the bare create/destroy crash in
+# examples/webview/README.md that they are evidently what realises the window
+# enough to survive teardown. Do not "simplify" them away.
+w.set_title("ci probe (pending quit)")
+w.set_size(320, 240)
 w.set_html("<h1>pending</h1>")
 Webview.Window.quit()
 w.run()

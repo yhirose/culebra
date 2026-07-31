@@ -4638,6 +4638,7 @@ Desktop.run({
 | `w.run()` | ネイティブイベントループを実行（終了までブロック） |
 | `w.terminate()` | このウィンドウの `run()` を終了 |
 | `Webview.Window.quit()` | いま `run()` 中のウィンドウを終了 — 別スレッド（例: HTTP ハンドラ）から呼べる |
+| `Webview.Window.is_running()` | ウィンドウがイベントループを回している間 `true`。`quit()` の前提ではない（早く届いた quit は保持される）が、別スレッドがループの起動を待てる |
 
 ```culebra
 # doctest: skip

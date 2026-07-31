@@ -4787,6 +4787,7 @@ remote URL).
 | `w.run()` | run the native event loop; blocks until terminated |
 | `w.terminate()` | end this window's `run()` |
 | `Webview.Window.quit()` | terminate whichever window is currently in `run()` — callable from another thread, e.g. an HTTP handler |
+| `Webview.Window.is_running()` | `true` while a window is pumping its event loop. Not needed before `quit()` — a quit that arrives earlier is held — but lets another thread wait for the loop to be up |
 
 ```culebra
 # doctest: skip

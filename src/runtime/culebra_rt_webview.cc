@@ -37,6 +37,11 @@ inline std::atomic<webview_t> g_active_window{nullptr};
 // return 200 and the window would then open and never close.
 inline std::atomic<bool> g_quit_pending{false};
 
+// Set from inside the loop (see run()), cleared when it returns. Distinct from
+// g_active_window, which is set just *before* run() and so cannot answer
+// whether the loop is actually pumping.
+inline std::atomic<bool> g_loop_running{false};
+
 // A thin owning facade over webview's opaque C handle: clean,
 // void-returning methods over simple types that wrap.h's `method<&T::m>`
 // DSL can bind directly. (The C++ `webview::webview` class returns a
@@ -72,7 +77,16 @@ class Window {
   // side sees the other and the quit is never dropped.
   void run() {
     g_active_window.store(w_);
-    if (!g_quit_pending.exchange(false)) webview_run(w_);
+    if (!g_quit_pending.exchange(false)) {
+      // Dispatched before the loop starts, so it runs on the first pump —
+      // which is the earliest moment `is_running()` may answer true. Queued
+      // only on the path that actually pumps: a callback posted to a loop that
+      // never runs would never be freed either.
+      webview_dispatch(
+          w_, [](webview_t, void*) { g_loop_running.store(true); }, nullptr);
+      webview_run(w_);
+      g_loop_running.store(false);
+    }
     g_active_window.store(nullptr);
     g_quit_pending.store(false);
   }
@@ -85,6 +99,12 @@ class Window {
     g_quit_pending.store(true);
     if (auto* w = g_active_window.load()) terminate_on_loop_thread(w);
   }
+
+  // True while a window is pumping its event loop. `quit()` works before that
+  // too (it is held), so this is not a precondition for quitting — it is for
+  // code that needs to know the loop is up, such as a test that means to
+  // exercise the cross-thread terminate rather than the held-quit path.
+  static bool is_running() { return g_loop_running.load(); }
 
  private:
   // webview_terminate documents itself as safe from any thread, and is not:
@@ -117,7 +137,8 @@ const bool registered = [] {
       .method<&culebra_webview::Window::navigate>("navigate", {"url"})
       .method<&culebra_webview::Window::run>("run")
       .method<&culebra_webview::Window::terminate>("terminate")
-      .static_method<&culebra_webview::Window::quit>("quit");
+      .static_method<&culebra_webview::Window::quit>("quit")
+      .static_method<&culebra_webview::Window::is_running>("is_running");
   return true;
 }();
 

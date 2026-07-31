@@ -14,7 +14,12 @@ w.set_title("ci probe (run + quit)")
 w.set_size(320, 240)
 w.set_html("<h1>run</h1>")
 let h = Isolate.spawn(fn () {
-  Time.sleep(2.0)
+  # Wait for the loop rather than guessing at how long it takes to come up: a
+  # quit that lands first is *held* and run() then skips the loop entirely, so
+  # a fixed sleep that a slow machine outran would quietly test the held-quit
+  # path instead of the cross-thread terminate this probe exists for — and
+  # still print the OK marker. The caller's timeout bounds this.
+  while !Webview.Window.is_running() { Time.sleep(0.05) }
   Webview.Window.quit()
 })
 w.run()
