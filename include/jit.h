@@ -8,6 +8,7 @@
 #include <module_loader.h>
 #include <packable.h>
 #include <parser.h>
+#include <rt_shared_tls.h>  // CULEBRA_RT_CORE_OWNED (one owner per thread_local)
 #include <runtime/rt_macros.h>
 #include <shared.h>
 #include <tensor.h>

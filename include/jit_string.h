@@ -9,8 +9,10 @@
 // fragments rely on jit.h's #include block and are included by jit.h in a
 // fixed sequence (see jit.h); they are not standalone headers.
 
-// Cycle detection during string conversion.
-inline thread_local std::unordered_set<const void*> _jit_str_visiting;
+// Cycle detection during string conversion. Core-owned: a feature archive that
+// pulls in the JIT headers (Webview via wrap.h) must borrow, not redefine.
+CULEBRA_RT_CORE_OWNED thread_local std::unordered_set<const void*>
+    _jit_str_visiting;
 
 // RAII: inserts on construction, erases on destruction. `already` is true if
 // the pointer was present (i.e., we're inside a cycle).

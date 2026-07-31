@@ -678,7 +678,8 @@ struct _PendingSnapshot {
   std::string kind, msg;
   int64_t line, col;
 };
-inline thread_local std::vector<_PendingSnapshot> _pending_save_stack;
+CULEBRA_RT_CORE_OWNED thread_local std::vector<_PendingSnapshot>
+    _pending_save_stack;
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_save_thrown(
     int8_t* out_flag, int8_t* out_tag, int64_t* out_data) {
@@ -2274,7 +2275,7 @@ struct CulebraEffAbort {
 // live while the next is pushed. Pushed in eff_abort, popped in eff_catch_abort
 // — the single consumer that stops an abort (cleanup/user-catch landingpads
 // only rethrow it, never consume) — so the two stay 1:1.
-inline thread_local std::vector<JitValue> _eff_abort_inflight;
+CULEBRA_RT_CORE_OWNED thread_local std::vector<JitValue> _eff_abort_inflight;
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_eff_abort(int8_t tag,
                                                                  int64_t data) {
