@@ -16,12 +16,13 @@ set -eu
 
 exe=${1:?usage: verify_standalone_exe.sh <exe>}
 
-# The window backend's entries (imm32 setupapi dinput8 cfgmgr32 hid avrt) are
-# here too: SDL3 links them, and they ship with Windows, so a Canvas build
-# still starts on a machine with no display.
+# imm32 and setupapi are the two the Canvas window backend adds (SDL3 links a
+# longer Win32 list than it ends up importing). Both ship with Windows, so a
+# window build still starts on a machine with no display. Anything SDL starts
+# referencing later should land here deliberately, not be pre-approved.
 allow='^(kernel32|kernelbase|msvcrt|ntdll|user32|advapi32|ws2_32|shell32|ole32'
 allow="$allow"'|oleaut32|bcrypt|crypt32|secur32|iphlpapi|dbghelp|version|winmm'
-allow="$allow"'|gdi32|imm32|setupapi|dinput8|cfgmgr32|hid|avrt)\.dll$'
+allow="$allow"'|gdi32|imm32|setupapi)\.dll$'
 
 echo "Imported DLLs:"
 imports=$(objdump -p "$exe" \

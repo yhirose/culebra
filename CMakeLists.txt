@@ -317,6 +317,21 @@ libs (auto-detected when the static libs are missing)" OFF)
     set(llvm_libs LLVM)
   endif()
 
+  # LLVMSupport's exported interface names zstd::libzstd_shared, so even a
+  # -static link imports libzstd.dll — which a downloaded .exe won't find on a
+  # plain Windows box. The same package ships the static archive; point the
+  # imported target's import library at it. Windows-only: elsewhere a shared
+  # zstd is a normal system library.
+  if(WIN32 AND TARGET zstd::libzstd_shared)
+    find_library(CULEBRA_ZSTD_STATIC NAMES libzstd.a zstd_static zstd)
+    if(CULEBRA_ZSTD_STATIC MATCHES "\\.a$")
+      message(STATUS "zstd: linking ${CULEBRA_ZSTD_STATIC} statically (LLVM dep)")
+      set_target_properties(zstd::libzstd_shared PROPERTIES
+        IMPORTED_IMPLIB "${CULEBRA_ZSTD_STATIC}"
+        IMPORTED_LOCATION "${CULEBRA_ZSTD_STATIC}")
+    endif()
+  endif()
+
   add_compile_definitions(CULEBRA_JIT_ENABLED)
 endif()
 
