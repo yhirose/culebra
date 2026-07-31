@@ -1107,6 +1107,11 @@ A standalone `--` is an optional escape hatch: it stops flag parsing,
 so the next argument becomes the script even if it begins with a dash
 (e.g. `culebra -- -weird.cul`). It is otherwise unnecessary.
 
+A binary built by `culebra build` reports the arguments it was run
+with, the same way and with the same skip of the program name. The
+value is process-wide, so an [isolate](#12-isolate) or an HTTP handler
+running on a worker thread reads the same array as the main thread.
+
 ### `Sys.exit(code: Long) -> Nil`
 
 Terminate the process immediately with the given exit code. Does

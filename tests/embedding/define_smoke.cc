@@ -33,7 +33,7 @@ bool check(bool cond, const char* what) {
 }  // namespace
 
 int run() {
-  auto env = culebra::environment({});
+  auto env = culebra::environment();
   bool ok = true;
 
   // long, long -> long

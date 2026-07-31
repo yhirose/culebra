@@ -1290,7 +1290,6 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
 
 #ifdef CULEBRA_JIT_ENABLED
   if (options.jit) {
-    culebra::_culebra_sys_argv_holder() = options.script_argv;
     culebra::JIT::run_modules(modules, options.emit_llvm, options.debug,
                                options.opt_level, options.jit_faststart);
     return true;
@@ -1403,7 +1402,7 @@ int run_test(int argc, const char** argv) {
       return 1;
     }
     auto make_env = [] {
-      auto e = culebra::environment({});
+      auto e = culebra::environment();
       install_cli_aliases(*e);
       culebra::install_doctest_exit_guard(*e);
       return e;
@@ -1411,7 +1410,7 @@ int run_test(int argc, const char** argv) {
     summary = culebra::run_doctests(
         files, filter, make_env, reporter, bail_after, list_only);
   } else {
-    auto env = culebra::environment({});
+    auto env = culebra::environment();
     install_cli_aliases(*env);
     culebra::install_test_ambient(*env);
 
@@ -1900,8 +1899,13 @@ int main(int argc, const char** argv) {
     }
   }
 
+  // `Sys.argv` — the arguments after the script path. Set here, beside the
+  // script path, because both backends and every thread read it from the same
+  // process-wide holder (the AOT bootstrap fills it in the same way).
+  culebra::sys_argv() = options.script_argv;
+
   try {
-    auto env = culebra::environment(options.script_argv);
+    auto env = culebra::environment();
     startup_profile::mark("environment() (interp stdlib registered)");
     install_cli_aliases(*env);
     startup_profile::mark("install_cli_aliases");

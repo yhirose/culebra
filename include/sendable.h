@@ -83,7 +83,7 @@ struct SendNode {
 // ---------------------------------------------------------------------------
 // Builtin / stdlib name set. Captured free variables that resolve to one of
 // these are NOT shipped — the receiver builds its own stdlib via
-// environment({}), so `print` / `Math` / `Isolate` etc. resolve locally. Only
+// environment(), so `print` / `Math` / `Isolate` etc. resolve locally. Only
 // USER bindings (e.g. a top-level `fn fib`) are transferred. Computed once.
 // ---------------------------------------------------------------------------
 // The base environment an isolate runs in: the standard stdlib plus the
@@ -92,7 +92,7 @@ struct SendNode {
 // aren't shipped). builtin_names() is derived from this same env, keeping
 // the "skip" set and the child's environment exactly in sync.
 inline std::shared_ptr<Environment> isolate_base_env() {
-  auto env = culebra::environment({});
+  auto env = culebra::environment();
   if (env->has("IO")) {
     const auto& io = env->get("IO").to_object();
     env->initialize("inspect", io.get("inspect"), false);

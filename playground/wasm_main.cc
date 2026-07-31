@@ -115,7 +115,8 @@ EMSCRIPTEN_KEEPALIVE int run_culebra(const char* src_c, const char* path_c,
       for (auto& m : msgs) std::cerr << m << "\n";
       rc = 1;
     } else {
-      auto env = culebra::environment(argv);
+      culebra::sys_argv() = argv;
+      auto env = culebra::environment();
       culebra::install_cli_aliases(*env);
       culebra::Value val;
       culebra::Debugger dbg;

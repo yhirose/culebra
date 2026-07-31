@@ -143,7 +143,7 @@ via a minimal environment API:
 #include <stdlib_interp.h>
 
 int main() {
-  auto env = culebra::environment({});  // stdlib bound
+  auto env = culebra::environment();  // stdlib bound
 
   std::vector<std::string> msgs;
   auto ast = culebra::parse("<inline>", "1 + 2", 5, msgs);

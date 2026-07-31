@@ -105,7 +105,7 @@ int run() {
   // --- 3. interpreter: a running program throws Interrupted, flag consumed.
   {
     auto ast = parse_or_die(kLoop);
-    auto env = culebra::environment({});
+    auto env = culebra::environment();
     auto interp = std::make_shared<culebra::Interpreter>();
     interp->interrupt_flag_ = &culebra::culebra_g_sigint;
     culebra::request_interrupt();

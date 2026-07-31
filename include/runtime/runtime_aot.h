@@ -24,7 +24,7 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE int culebra_aot_bootstrap(
   // Skip argv[0] (program name) so `Sys.argv` matches the
   // `culebra --jit script.cul -- a b c` convention where the holder
   // is populated with only the user-supplied args.
-  auto& argv_holder = culebra::current_runtime().sys_argv;
+  auto& argv_holder = culebra::sys_argv();
   argv_holder.clear();
   if (argc > 1) {
     argv_holder.reserve(static_cast<size_t>(argc - 1));

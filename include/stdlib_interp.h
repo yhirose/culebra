@@ -12,7 +12,7 @@
 //
 // Independent header. Include from main.cc (or any embedder) after
 // interpreter.h to wire stdlib into a fresh Environment via
-// `culebra::environment(argv)` or `culebra::setup_built_in_functions(env)`.
+// `culebra::environment()` or `culebra::setup_built_in_functions(env)`.
 
 #include <compress.h>
 #include <image.h>
@@ -2784,11 +2784,12 @@ inline Value make_tensor_namespace() {
   return Value(std::move(ns));
 }
 
-inline Value make_sys_namespace(const std::vector<std::string>& argv) {
+inline Value make_sys_namespace() {
   using namespace std::literals;
   ObjectValue ns;
 
   ArrayValue arr;
+  const auto& argv = culebra::sys_argv();
   arr.values->reserve(argv.size());
   for (const auto& s : argv) {
     arr.values->push_back(Value(std::string(s)));
@@ -7011,8 +7012,7 @@ struct InterpEffAbort {
   Value val;
 };
 
-inline void setup_built_in_functions(
-    Environment& env, const std::vector<std::string>& argv = {}) {
+inline void setup_built_in_functions(Environment& env) {
   using namespace std::literals;
 
   env.initialize(
@@ -7216,7 +7216,7 @@ inline void setup_built_in_functions(
   ns_init("_Term", make_term_primitives_namespace());
   ns_init("_Canvas", make_canvas_primitives_namespace());
   ns_init("Random", make_random_namespace());
-  ns_init("Sys", make_sys_namespace(argv));
+  ns_init("Sys", make_sys_namespace());
   ns_init("GC", make_gc_namespace());
   ns_init("Tensor", make_tensor_namespace());
   ns_init("JSON", make_json_namespace());
@@ -7550,11 +7550,15 @@ inline void mark_strict_arity_builtins(Environment& env) {
   for (auto& [name, sym] : env.dictionary) _mark_strict_arity(sym.val);
 }
 
-inline std::shared_ptr<Environment> environment(
-    const std::vector<std::string>& argv = {}) {
+// The program's arguments are not a parameter here: `Sys.argv` reads the
+// process-wide `culebra::sys_argv()`, which the entry point fills in once
+// (main.cc, the AOT bootstrap, or an embedder). This factory is also called
+// lazily on worker threads — for the JIT's canonical env, for every isolate —
+// where an argv parameter could only be a wrong answer.
+inline std::shared_ptr<Environment> environment() {
   auto env = std::make_shared<Environment>();
   setup_core_globals(*env);
-  setup_built_in_functions(*env, argv);
+  setup_built_in_functions(*env);
   mark_strict_arity_builtins(*env);
   register_stdlib_lazy_modules(*env);
   return env;

@@ -1655,7 +1655,6 @@ static_assert(kSlotJitSlab < kSlotJitGc &&
 
 struct Runtime {
   std::mt19937_64 random_engine{std::random_device{}()};
-  std::vector<std::string> sys_argv;
 
   // JIT exception carriers. Set by `culebra_runtime_throw`, read by
   // the try/catch landing pad. See jit.h for the protocol.
@@ -1711,6 +1710,16 @@ struct Runtime {
   Runtime(const Runtime&) = delete;
   Runtime& operator=(const Runtime&) = delete;
 };
+
+// The arguments the program was started with, as `Sys.argv` reports them.
+// Process-wide rather than a Runtime member: argv is fixed at startup and is
+// the same fact on every thread, so an isolate or a server worker — each of
+// which builds its own Runtime — sees what the main thread saw. Filled in once
+// by the entry point: main.cc, the AOT bootstrap, or an embedding host.
+inline std::vector<std::string>& sys_argv() {
+  static std::vector<std::string> v;
+  return v;
+}
 
 inline thread_local Runtime* _culebra_current_runtime = nullptr;
 

@@ -49,7 +49,7 @@ int run() {
   // Initialize each Runtime independently.
   {
     culebra::RuntimeScope scope(rt_a);
-    env_a = culebra::environment({});
+    env_a = culebra::environment();
     culebra::Value v;
     std::vector<std::string> msgs;
     culebra::interpret(parse_or_die(kScriptInit), env_a, v, msgs,
@@ -57,7 +57,7 @@ int run() {
   }
   {
     culebra::RuntimeScope scope(rt_b);
-    env_b = culebra::environment({});
+    env_b = culebra::environment();
     culebra::Value v;
     std::vector<std::string> msgs;
     culebra::interpret(parse_or_die(kScriptInit), env_b, v, msgs,

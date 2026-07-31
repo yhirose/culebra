@@ -65,7 +65,7 @@ void run_interp(int tid) {
       ++failures;
       continue;
     }
-    auto env = culebra::environment({});
+    auto env = culebra::environment();
     culebra::Value val;
     if (!culebra::interpret(ast, env, val, msgs, culebra::Debugger())) {
       std::cerr << "interp tid=" << tid << " rep=" << rep << " threw:";

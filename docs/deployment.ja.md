@@ -155,7 +155,7 @@ LLVM をリンクすれば、C++ からインタプリタや JIT を駆動でき
 #include <stdlib_interp.h>
 
 int main() {
-  auto env = culebra::environment({});  // stdlib をバインド
+  auto env = culebra::environment();  // stdlib をバインド
 
   std::vector<std::string> msgs;
   auto ast = culebra::parse("<inline>", "1 + 2", 5, msgs);
@@ -170,6 +170,14 @@ JIT を使う場合は `<stdlib_jit.h>` を追加し、起動時に
 `culebra::install_jit_stdlib()` を 1 回呼んで、`interpret` の代わりに
 `culebra::JIT::run(ast)` を呼びます。
 
+スクリプトが `Sys.argv` として見る値は `environment()` の引数ではなく
+プロセス全体のホルダです（`environment()` は worker スレッド上でも
+遅延構築されるため）。起動時に 1 回入れてください:
+
+```cpp
+culebra::sys_argv() = {"--verbose", "input.txt"};
+```
+
 ### スレッディング
 
 ランタイムは **Runtime ごと**に単一スレッドで動きます。複数の
@@ -178,7 +186,7 @@ JIT を使う場合は `<stdlib_jit.h>` を追加し、起動時に
 
 ```cpp
 std::thread([&]{
-  auto env = culebra::environment({});
+  auto env = culebra::environment();
   // ... メインスレッドとは独立 ...
 }).detach();
 ```

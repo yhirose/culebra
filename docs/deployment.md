@@ -155,7 +155,7 @@ JIT, and you can drive the interpreter or JIT from C++.
 #include <stdlib_interp.h>
 
 int main() {
-  auto env = culebra::environment({});  // stdlib bound
+  auto env = culebra::environment();  // stdlib bound
 
   std::vector<std::string> msgs;
   auto ast = culebra::parse("<inline>", "1 + 2", 5, msgs);
@@ -170,6 +170,14 @@ For the JIT, add `<stdlib_jit.h>`, call `culebra::install_jit_stdlib()`
 once at startup, and use `culebra::JIT::run(ast)` instead of
 `interpret`.
 
+What the script sees as `Sys.argv` is a process-wide holder rather
+than an argument to `environment()`, which is also built lazily on
+worker threads. Fill it once at startup:
+
+```cpp
+culebra::sys_argv() = {"--verbose", "input.txt"};
+```
+
 ### Threading
 
 The runtime is single-threaded *per Runtime*. To use Culebra from
@@ -177,7 +185,7 @@ multiple host threads, give each thread its own work:
 
 ```cpp
 std::thread([&]{
-  auto env = culebra::environment({});
+  auto env = culebra::environment();
   // ... independent of the main thread ...
 }).detach();
 ```

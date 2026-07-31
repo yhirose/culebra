@@ -44,13 +44,6 @@
 #include <system_error>
 #include <unistd.h>  // isatty (IO.*_is_terminal)
 
-namespace culebra {
-// main.cc (or any embedder) populates this before calling JIT::run.
-inline std::vector<std::string>& _culebra_sys_argv_holder() {
-  return current_runtime().sys_argv;
-}
-}  // namespace culebra
-
 using culebra::parse_double_strict;
 using culebra::parse_long_strict;
 using culebra::throw_type_error_at;
@@ -1150,7 +1143,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_sys_set_env(
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_sys_argv() {
-  auto& argv = culebra::_culebra_sys_argv_holder();
+  auto& argv = culebra::sys_argv();
   auto* r = culebra_runtime_array_new();
   for (const auto& s : argv) {
     auto* str = _culebra_heap_str(s);
