@@ -55,10 +55,16 @@ difftest・AOT・leak 系・wrap はそこで必ず走る。ローカルで全�
 | docs | `just doctest` |
 | push 後 | **CI の両 OS を確認**（toolchain 差異はここでしか出ない） |
 
-**CI の穴（ローカルでしか塞げない 2 点）**:
-- CI は全ジョブで `CULEBRA_CANVAS_WINDOW_DEFAULT=OFF`。**raylib window backend を一度もビルドしていない**
+**CI の穴（ローカルでしか塞げない点）**:
 - macOS CI は `CULEBRA_TEST_SKIP_HEAVY=1`。**macOS の AOT と difftest は走らない**（Ubuntu で代替。ただし
   「macOS だけで壊れる AOT リンク」は CI では出ない — 実例あり）
+- Canvas window backend の **macOS 側**。`linux-canvas-window` ジョブ（下記）が Linux は見るが、
+  raylib の macOS パスをビルド・実行するのはローカルだけ
+
+`test` マトリクスは今も全ジョブ `CULEBRA_CANVAS_WINDOW_DEFAULT=OFF` だが、**`linux-canvas-window`
+ジョブが Linux で window ON をビルドする**（SDL3 の build deps を入れて CMake 既定に任せる）。
+window ON ビルドでの headless 動作・AOT の `culebra_rt_canvas` force-load・Xvfb 下の実窓生成まで見る。
+`release.yml` も window ON だが `v*` tag でしか走らない（tag はまだ 0 件）。
 
 ### 並走時のマシン占有
 
