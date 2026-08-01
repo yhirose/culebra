@@ -1010,6 +1010,14 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   add_executable(compress_asset ./tools/compress_asset.cc)
   target_compile_features(compress_asset PRIVATE cxx_std_23)
   target_link_libraries(compress_asset ZLIB::ZLIB)
+  # Uses std::println, so it needs the same libstdc++exp the driver links for
+  # __open_terminal / __write_to_terminal (see the culebra target's WIN32
+  # block). GCC 14/15 objects happened to link without it; GCC 16's emit the
+  # references outright — which CI's mingw lane only showed once its ccache
+  # stopped serving objects compiled by the older compiler.
+  if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_link_libraries(compress_asset stdc++exp)
+  endif()
   set(_rt_packed_dir "${CMAKE_CURRENT_BINARY_DIR}/rt-packed")
   file(MAKE_DIRECTORY "${_rt_packed_dir}")
   set(_rt_embed_packed "")
