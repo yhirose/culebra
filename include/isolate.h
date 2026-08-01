@@ -198,7 +198,7 @@ inline Value _isolate_deser_parent(const sendable::SendNode& n) {
 
 // Whether the isolate has finished (normally or by throwing). Read under the
 // core lock; used by the fan_in merge to treat a finished producer's drained
-// channel as done even if its `tx` wasn't dropped (a JIT throw path).
+// channel as done even if its `tx` wasn't dropped.
 inline bool _isolate_finished(IsolateCore& core) {
   std::lock_guard<std::mutex> lk(core.m);
   return core.finished;
@@ -600,9 +600,9 @@ inline bool _isolate_finished(IsolateCore& c);  // fwd (defined after IsolateCor
 // `merge` is just a loop over this).
 //
 // A source is "done" when it is empty and either closed OR its producer isolate
-// (for the fan_in(items, fn) form) has finished — the latter covers a producer
-// that threw, since the JIT doesn't auto-drop a thrown closure's `tx` param the
-// way the interp GC does, so the channel might not have closed itself.
+// (for the fan_in(items, fn) form) has finished — the latter is the safety net
+// for a producer that ends while something still holds a `tx` for its channel,
+// so the channel never closed itself.
 inline std::optional<sendable::SendNode> chan_select_recv(int64_t mid) {
   std::vector<int64_t> ids;
   std::vector<std::shared_ptr<IsolateCore>> producers;

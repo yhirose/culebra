@@ -1,0 +1,58 @@
+# An isolate whose body throws must still drop what its closure held, so a
+# captured (or argument-passed) `tx` closes the channel instead of stranding
+# the receiver. The child rebuilds the closure on its own heap; releasing it
+# only on the normal return left the endpoint alive after a throw, and the
+# parent's `recv()` then blocked forever. Both backends, since the JIT child
+# entry owns that reference explicitly where interp drops it in heap teardown.
+
+# --- captured tx, body throws ---
+let (tx, rx) = Channel.new(1)
+let iso = Isolate.spawn(fn() {
+  tx.send("before")
+  throw { kind: "Boom", message: "captured" }
+})
+tx.drop()
+assert_eq(rx.recv(), "before")
+assert_eq(rx.recv(), nil)          # closed: the child dropped its tx on the throw
+let e = try { iso.join(); nil } catch e { e }
+assert_eq(e.kind, "Boom")
+
+# --- tx passed as an argument into a function that throws ---
+fn boom(t) { throw { kind: "Boom2", message: "arg" } }
+let (tx2, rx2) = Channel.new(1)
+let iso2 = Isolate.spawn(fn() { boom(tx2) })
+tx2.drop()
+assert_eq(rx2.recv(), nil)
+let e2 = try { iso2.join(); nil } catch e { e }
+assert_eq(e2.kind, "Boom2")
+
+# --- for-in over the receiver ends rather than hanging ---
+let (tx3, rx3) = Channel.new(2)
+let iso3 = Isolate.spawn(fn() {
+  tx3.send(1)
+  tx3.send(2)
+  throw { kind: "Boom3", message: "mid-stream" }
+})
+tx3.drop()
+mut got = []
+for v in rx3 { got.push(v) }
+assert_eq(got, [1, 2])
+let e3 = try { iso3.join(); nil } catch e { e }
+assert_eq(e3.kind, "Boom3")
+
+# --- Parallel worker: a throwing fn must not strand its captured tx either ---
+let (tx4, rx4) = Channel.new(4)
+let err = try {
+  Parallel.map([1, 2, 3], fn(i) {
+    tx4.send(i)
+    throw { kind: "Boom4", message: "worker" }
+  })
+  nil
+} catch e { e }
+tx4.drop()
+assert_eq(err.kind, "ParallelError")   # the element throw is wrapped by Parallel
+mut n = 0
+for v in rx4 { n = n + 1 }   # ends: the workers dropped tx4 despite throwing
+assert_ge(n, 1)              # the rest are cancelled once the first item throws
+
+println("throw-closes-channel ok")

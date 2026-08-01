@@ -407,33 +407,45 @@ inline void run_isolate_child_jit(std::shared_ptr<IsolateCore> core,
   rt.interrupt_flag = &core->interrupt;
   try {
     JitDeCtx dc;
-    JitValue fn = jit_deserialize(sclosure, dc);  // rebuild closure on child heap
-    auto* cls = reinterpret_cast<JitClosure*>(fn.data);
-    std::vector<JitValue> args;
-    args.reserve(sargs.size());
-    for (const auto& sa : sargs) args.push_back(jit_deserialize(sa, dc));
+    // The rebuilt closure is the child heap's only ref to whatever crossed the
+    // boundary, so its captures drop when it does (the interp path drops them
+    // via heap teardown). Held in JitOwnedVal because that has to happen on the
+    // unwind path too: a body that throws past here with a captured `tx` would
+    // otherwise leave the channel open forever and hang every receiver.
+    JitOwnedVal fn(jit_deserialize(sclosure, dc));
+    auto* cls = reinterpret_cast<JitClosure*>(fn.borrow().data);
+    std::vector<JitOwnedVal> owned_args;
+    owned_args.reserve(sargs.size());
+    for (const auto& sa : sargs)
+      owned_args.emplace_back(jit_deserialize(sa, dc));
     // Rebuilt endpoints hold their own refs now; drop the in-flight ones.
     release_inflight_channels(sclosure);
     for (const auto& sa : sargs) release_inflight_channels(sa);
-    JitValue r;
-    if (args.empty()) r = _culebra_invoke0(cls);
-    else if (args.size() == 1) r = _culebra_invoke1(cls, args[0]);
-    else if (args.size() == 2) r = _culebra_invoke2(cls, args[0], args[1]);
-    else r = _jit_invoke(cls, {TAG_NO_SELF, 0},
-                         static_cast<int64_t>(args.size()), args.data());
+    // Each arm consumes exactly what it passes: the invoke takes the args over,
+    // and the callee frame releases the params on both its exit paths. Only the
+    // variadic form needs them flattened into a buffer.
+    JitValue raw;
+    if (owned_args.empty()) raw = _culebra_invoke0(cls);
+    else if (owned_args.size() == 1)
+      raw = _culebra_invoke1(cls, owned_args[0].consume());
+    else if (owned_args.size() == 2)
+      raw = _culebra_invoke2(cls, owned_args[0].consume(),
+                             owned_args[1].consume());
+    else {
+      std::vector<JitValue> args;
+      args.reserve(owned_args.size());
+      for (auto& a : owned_args) args.push_back(a.consume());
+      raw = _jit_invoke(cls, {TAG_NO_SELF, 0},
+                        static_cast<int64_t>(args.size()), args.data());
+    }
+    JitOwnedVal r(raw);
     JitSerCtx sc;
-    sendable::SendNode out = jit_serialize(r, sc);
+    sendable::SendNode out = jit_serialize(r.borrow(), sc);
     {
       std::lock_guard<std::mutex> lk(core->m);
       core->result = std::move(out);
       core->finished = true;
     }
-    culebra_runtime_value_release(r.tag, r.data);
-    // Release the closure so its captures drop on the child thread (the interp
-    // path drops them via heap teardown). Without this a captured channel
-    // endpoint never drops, so a producer that relies on auto-close — rather
-    // than an explicit tx.drop() — leaves the channel open and receivers hang.
-    culebra_runtime_value_release(fn.tag, fn.data);
   } catch (culebra::CulebraError& e) {
     std::lock_guard<std::mutex> lk(core->m);
     core->error = e;
@@ -1525,20 +1537,21 @@ inline JitValue _jit_settled_result(bool ok, JitValue value, const char* err) {
 }
 
 // JIT counterparts of parallel_record_success / _element_error (the interp ones
-// build Value; these build JitValue). `r` is owned and released here.
-inline void jit_parallel_record_success(ParallelState& st, size_t i, JitValue r) {
+// build Value; these build JitValue). The result is owned and released here.
+inline void jit_parallel_record_success(ParallelState& st, size_t i,
+                                        JitValue raw) {
+  JitOwnedVal r(raw);  // released on every path, a throwing serialize included
   switch (st.mode) {
     case culebra::PMode::Map: {
       JitSerCtx sc;
-      st.results[i] = jit_serialize(r, sc);
+      st.results[i] = jit_serialize(r.borrow(), sc);
       break;
     }
     case culebra::PMode::MapSettled: {
-      JitValue o = _jit_settled_result(true, r, nullptr);  // owns r
+      JitOwnedVal o(_jit_settled_result(true, r.consume(), nullptr));  // owns r
       JitSerCtx sc;
-      st.results[i] = jit_serialize(o, sc);
-      culebra_runtime_value_release(o.tag, o.data);  // frees o and r
-      return;
+      st.results[i] = jit_serialize(o.borrow(), sc);
+      break;
     }
     case culebra::PMode::Each:
       break;
@@ -1546,12 +1559,11 @@ inline void jit_parallel_record_success(ParallelState& st, size_t i, JitValue r)
       if (!st.race_won.exchange(true)) {
         std::lock_guard<std::mutex> lk(st.err_m);
         JitSerCtx sc;
-        st.race_result = jit_serialize(r, sc);
+        st.race_result = jit_serialize(r.borrow(), sc);
         st.interrupt.store(true, std::memory_order_relaxed);
       }
       break;
   }
-  culebra_runtime_value_release(r.tag, r.data);
 }
 
 inline void jit_parallel_record_element_error(ParallelState& st, size_t i,
@@ -1580,15 +1592,17 @@ inline void jit_parallel_worker(std::shared_ptr<ParallelState> st) {
   rt.interrupt_flag = &st->interrupt;
   try {
     JitDeCtx dc;
-    JitValue fn = jit_deserialize(st->fn, dc);
-    auto* cls = reinterpret_cast<JitClosure*>(fn.data);
+    // Owned for the same reason as the isolate child's closure: the captures
+    // (a `tx` above all) must drop on every exit path, throw included.
+    JitOwnedVal fn(jit_deserialize(st->fn, dc));
+    auto* cls = reinterpret_cast<JitClosure*>(fn.borrow().data);
     while (!st->interrupt.load(std::memory_order_relaxed)) {
       size_t i = st->next.fetch_add(1, std::memory_order_relaxed);
       if (i >= st->items.size()) break;
       try {
         JitDeCtx idc;
-        JitValue item = jit_deserialize(st->items[i], idc);
-        JitValue r = _culebra_invoke1(cls, item);
+        JitOwnedVal item(jit_deserialize(st->items[i], idc));
+        JitValue r = _culebra_invoke1(cls, item.consume());  // invoke consumes
         jit_parallel_record_success(*st, i, r);
       } catch (culebra::CulebraError& e) {
         jit_parallel_record_element_error(*st, i, e);
@@ -1598,12 +1612,6 @@ inline void jit_parallel_worker(std::shared_ptr<ParallelState> st) {
       }
       st->done.fetch_add(1, std::memory_order_relaxed);  // for on_progress
     }
-    // Release the closure so its captures drop on this worker thread (the interp
-    // worker drops them via heap teardown). Without this a captured channel
-    // endpoint never drops, so an `fn` that relies on auto-close — rather than an
-    // explicit tx.drop() — leaves the channel open and a downstream receiver
-    // hangs. Same fix as run_isolate_child_jit.
-    culebra_runtime_value_release(fn.tag, fn.data);
   } catch (culebra::CulebraError& e) {
     parallel_record_error(*st, 0, e);
   } catch (std::exception& e) {
