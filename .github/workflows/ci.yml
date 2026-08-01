@@ -510,6 +510,37 @@ jobs:
       - name: AOT link + run (Webview force-load axis)
         run: misc/probe_webview_aot_link.sh ./build/culebra
 
+      # Ubuntu 24.04's AppArmor lets an unconfined binary *create* an
+      # unprivileged user namespace but denies capability use inside it. That is
+      # the worst of the three possible worlds for WebKit: its bwrap sandbox
+      # starts (creation succeeded — so WebKit's own "no user namespaces, run
+      # unsandboxed" detection never fires), then cannot finish bootstrapping
+      # the web process (`bwrap: loopback: Failed RTM_NEWADDR: Operation not
+      # permitted`), and the parent aborts in a g_error. Measured here on the
+      # first run of this job: exit 133, with the sysctl reading 1.
+      #
+      # The fix is the one Ubuntu itself ships for Chrome, Discord and every
+      # other third-party userns consumer, and the one that resolved the same
+      # crash for WebKit apps (Launchpad #2060810): an AppArmor profile naming
+      # the binary and granting `userns`. bwrap inherits it across exec, the
+      # restriction stays live for everything else on the runner, and — unlike
+      # the sysctl, or WebKit's do-not-sandbox env switch — the probe below
+      # still exercises the sandbox a desktop user's app would actually run in.
+      # A culebra app shipped to 24.04+ wants the same profile; the profile
+      # here doubles as the tested copy of the README's deployment note.
+      - name: Let the sandbox use its user namespaces (AppArmor profile)
+        run: |
+          sudo tee /etc/apparmor.d/culebra-ci >/dev/null <<EOF
+          abi <abi/4.0>,
+          include <tunables/global>
+
+          profile culebra-ci $PWD/build/culebra flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/culebra-ci
+          echo "OK: profile loaded for $PWD/build/culebra"
+
       # What no other job on any OS reaches: a real window, the event loop, a
       # quit from another thread, and a quit that lands before the loop starts —
       # on both backends, against Xvfb.
