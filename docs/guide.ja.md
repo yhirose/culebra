@@ -1,15 +1,15 @@
-Culebra ガイド
+Culebraガイド
 ================
 
-小さな動的型付けスクリプト言語。 束縛は既定で不変、ブロックは値に
-評価され、パターンマッチが言語の中核にあります。 ツリー
-ウォーキング型インタプリタと LLVM ORC JIT の 2 バックエンドが 1 つの
-AST を共有します。 このガイドは "hello" から C++ ホストへの埋め込み
-までを案内します。 厳密な文法は [`language.ja.md`](language.ja.md)、
-API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳細は
+小さな動的型付けスクリプト言語。束縛は既定で不変、ブロックは値に
+評価され、パターンマッチが言語の中核にあります。ツリー
+ウォーキング型インタプリタとLLVM ORC JITの2バックエンドが1つの
+ASTを共有します。このガイドは "hello" からC++ ホストへの埋め込み
+までを案内します。厳密な文法は [`language.ja.md`](language.ja.md)、
+APIリファレンスは [`stdlib.ja.md`](stdlib.ja.md)、実装の内部詳細は
 [`internals.ja.md`](internals.ja.md) を参照してください。
 
-> **doctest 規約。** 本ガイドの各 ` ```culebra ` ブロックは実行可能
+> **doctest規約。** 本ガイドの各` ```culebra ` ブロックは実行可能
 > な例です。 行末の `# => <value>` は標準出力の期待値、`# !! <pattern>`
 > は `throw` の期待値。 ブロック先頭の `# doctest: skip` は説明用
 > （複数ファイル・ネットワークアクセス・`culebra test` ランナーが
@@ -88,15 +88,15 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
 インタプリタ (LLVM 20+ があれば JIT も) をビルド:
 
 ```bash
-just build              # JIT 付き
+just build              # JIT付き
 just build-no-jit       # インタプリタのみ、~23 MB
-just dev                # LTO 無し -O1 の高速ビルド → build-dev/ (内側ループ用)
-just test-dev           # build-dev/ で interp==JIT を素早く確認 (各編集ごと)
-just test               # 全 backend + embed スモークテスト (並列; JOBS=1 で逐次化)
-just test wrap          # `culebra wrap` の端から端まで (`just test` には含まれない)
-just test-assert        # 同じスイープを NDEBUG なしでビルドし assert を実行させる
-just install            # Release バイナリを /usr/local/bin へ (`just install ~/.local` でユーザー install)
-./build/culebra --shell # REPL (--jit で JIT REPL)
+just dev                # LTO無し -O1の高速ビルド → build-dev/ (内側ループ用)
+just test-dev           # build-dev/ でinterp==JITを素早く確認 (各編集ごと)
+just test               # 全backend + embedスモークテスト (並列; JOBS=1で逐次化)
+just test wrap          # `culebra wrap`の端から端まで (`just test`には含まれない)
+just test-assert        # 同じスイープをNDEBUGなしでビルドしassertを実行させる
+just install            # Releaseバイナリを /usr/local/binへ (`just install ~/.local`でユーザーinstall)
+./build/culebra --shell # REPL (--jitでJIT REPL)
 ```
 
 Culebra ソースの拡張子は `.cul`。 `culebra` バイナリで実行:
@@ -155,8 +155,8 @@ inspect(type_of(fn () { 1 }))    # => 'Function'
 x = 10              # bare: 新規不変束縛、または外側を再代入
 let y = 20          # let: 新規不変束縛 (外側のシャドウは不可)
 mut z = 30          # mut: 新規可変束縛
-z = 31              # mut は再代入可能
-z += 1              # 複合 (`-= *= /= %= **= @=` も同様)
+z = 31              # mutは再代入可能
+z += 1              # 複合 (`-= *= /= %= **= @=`も同様)
 inspect(z)             # => 32
 ```
 
@@ -180,8 +180,8 @@ bare 代入は外側スコープへ向かって検索し、最も近い同名束
 make = fn () {
   mut n = 0
   fn () {
-    # let n = 1   # エラー: 捕捉された `n` をシャドウしてしまう
-    n += 1        # bare 代入で捕捉 `n` を更新 — OK
+    # let n = 1   # エラー: 捕捉された`n`をシャドウしてしまう
+    n += 1        # bare代入で捕捉`n`を更新 — OK
     n
   }
 }
@@ -200,7 +200,7 @@ x = 7
 sign = if x > 0 { 1 } else if x < 0 { -1 } else { 0 }
 inspect(sign)                    # => 1
 
-size = match x {                 # match も式 (Ch.6)
+size = match x {                 # matchも式 (Ch.6)
   0           => 'zero',
   n if n < 10 => 'small',
   _           => 'large'
@@ -233,7 +233,7 @@ for n in 0..10 by 3 { inspect(n) }   # ステップ付きレンジ
 # 6
 # 9
 
-for k, v in {a: 1, b: 2} { inspect("{k}={v}") }   # Object は key, value を返す
+for k, v in {a: 1, b: 2} { inspect("{k}={v}") }   # Objectはkey, valueを返す
 # => |
 # 'a=1'
 # 'b=2'
@@ -245,7 +245,7 @@ for k, v in {a: 1, b: 2} { inspect("{k}={v}") }   # Object は key, value を返
 ```culebra
 for n in 0..10 {
   if n % 2 == 1 { continue }      # 奇数は飛ばす
-  if n > 4 { break }              # 4 を超えたら止める
+  if n > 4 { break }              # 4を超えたら止める
   inspect(n)
 }
 # => |
@@ -327,7 +327,7 @@ inspect(fib(10))                 # => 55
 ```culebra
 make_counter = fn () {
   mut n = 0
-  fn () { n += 1; n }      # bare 代入で捕捉 `n` を更新
+  fn () { n += 1; n }      # bare代入で捕捉`n`を更新
 }
 c = make_counter()
 inspect(c())                     # => 1
@@ -1225,7 +1225,7 @@ inspect(add_typed.return_type)               # => 'Long'
 # lib.cul
 let greet = fn (name) { "hello, {name}" }
 let PI    = 3.14159
-let helper = fn () { 'internal' }   # export しない
+let helper = fn () { 'internal' }   # exportしない
 
 export { greet, PI }
 ```
@@ -1237,7 +1237,7 @@ import lib from './lib.cul'
 
 inspect(lib.greet('world'))      # => 'hello, world'
 inspect(lib.PI)                  # => 3.14159
-inspect(lib.helper)              # => nil — export Object に載っていない
+inspect(lib.helper)              # => nil — export Objectに載っていない
 ```
 
 パスはシングルクォートのリテラルで、import する側のファイルの
@@ -1508,21 +1508,21 @@ culebra test --filter "Array/push"  # 名前で絞って実行
 関数がフィクスチャになります。クラスインスタンスを返すフィクスチャは
 テスト終了時に `drop` が呼ばれます (Ch.7.4)。同じランナーはこのガイドの
 例も実行します — `culebra test --doc docs` — 本書のすべての
-` ```culebra ` ブロックが期待出力を持っているのはそのためです。
+` ```culebra `ブロックが期待出力を持っているのはそのためです。
 
 ### 15.2 lint とフォーマット
 
-`culebra lint` は、プログラムを実行せずに静的解析で分かることを報告します。
+`culebra lint`は、プログラムを実行せずに静的解析で分かることを報告します。
 実行すればどのみち中断されるエラーに加えて、助言的な警告（未使用の変数・
-import、到達不能コード）も出します。終了コードは clean が 0、警告のみが 1、
-エラーが 2 なので CI のゲートに使えます。
+import、到達不能コード）も出します。終了コードはcleanが0、警告のみが1、
+エラーが2なのでCIのゲートに使えます。
 
 ```bash
 culebra lint .          # カレントディレクトリ配下の .cul を再帰的に
 culebra lint --fix .    # 加えて未使用 import 行を削除する
 ```
 
-`culebra fmt` は設定不要のフォーマッタです（スタイルフラグはありません）。
+`culebra fmt`は設定不要のフォーマッタです（スタイルフラグはありません）。
 パース → 再出力 → **再パースして比較**してから書き出すので、意味を変えたり
 コメントを落としたりするフォーマットは適用せず拒否します。
 
@@ -1531,27 +1531,27 @@ culebra fmt -i .        # プロジェクトをその場で整形
 culebra fmt --check .   # 未整形があれば exit 1（CI ゲート）
 ```
 
-エディタは stdin 形式 (`culebra fmt -`) でフォーマッタを呼びます。同梱の
-VSCode・Zed・Vim 統合はすでにこれに繋いであります。
+エディタはstdin形式 (`culebra fmt -`) でフォーマッタを呼びます。同梱の
+VSCode・Zed・Vim統合はすでにこれに繋いであります。
 
 ### 15.3 デバッグ
 
-`culebra dap` は Debug Adapter Protocol を stdio で話します。ブレークポイント、
-ステップ実行、コールスタック、ウォッチ式、実行中の `mut` 変数の書き換えが、
-DAP に対応した任意のエディタで動きます。アダプタを起動するのはエディタ側で、
-手で走らせることはまずありません。デバッグはインタプリタで動くので `--jit`
+`culebra dap`はDebug Adapter Protocolをstdioで話します。ブレークポイント、
+ステップ実行、コールスタック、ウォッチ式、実行中の`mut`変数の書き換えが、
+DAPに対応した任意のエディタで動きます。アダプタを起動するのはエディタ側で、
+手で走らせることはまずありません。デバッグはインタプリタで動くので`--jit`
 は付けないでください。
 
-ソース中に裸の `debugger` 文を置けば、設定なしでもその場所で必ず停止します。
+ソース中に裸の`debugger`文を置けば、設定なしでもその場所で必ず停止します。
 エディタ別のセットアップ（VSCode・Vim・Zed）は
 [`tooling.ja.md` §4](tooling.ja.md#4-デバッグ-culebra-dap) にあります。
 
 ## 16. AOT バイナリビルド
 
-`culebra build` は `.cul` ソースを ahead-of-time で自己完結バイナ
-リにコンパイルする。 ランタイムに LLVM 不要。 tree-shaking で使われ
-ないランタイムヘルパを落とす。 Tensor を使わないプログラムでは
-tensor エンジンが必要とする Accelerate / Metal フレームワーク依存も
+`culebra build`は`.cul`ソースをahead-of-timeで自己完結バイナ
+リにコンパイルする。ランタイムにLLVM不要。tree-shakingで使われ
+ないランタイムヘルパを落とす。Tensorを使わないプログラムでは
+tensorエンジンが必要とするAccelerate / Metalフレームワーク依存も
 外せる。
 
 ```bash
@@ -1570,20 +1570,20 @@ otool -L ./out                            # Accelerate も Metal も LLVM も無
   -o ./out-linux
 ```
 
-ランタイムアーカイブのビルド、sysroot の用意、クロスコンパイル全
+ランタイムアーカイブのビルド、sysrootの用意、クロスコンパイル全
 ワークフローの詳細は [`deployment.ja.md`](deployment.ja.md)。
 
 ### Why tree-shaking が効くか
 
-`inspect` だけ使う "hello world" は tensor も HTTP ランタイムも要らない。
-エントリファイルから call graph を辿ることで、参照されていないラン
-タイムヘルパ (~450 個) を落とせる。 `Tensor` 参照が無ければ tensor 抜きの
-archive に差し替わるので、全 feature archive を抱えると ~12.5 MB のところ
-~6 MB に収まる。
+`inspect`だけ使う "hello world" はtensorもHTTPランタイムも要らない。
+エントリファイルからcall graphを辿ることで、参照されていないラン
+タイムヘルパ (~450個) を落とせる。`Tensor`参照が無ければtensor抜きの
+archiveに差し替わるので、全feature archiveを抱えると ~12.5 MBのところ
+~6 MBに収まる。
 
 ## 17. 埋め込み概観
 
-Culebra は header-friendly な C++23 ライブラリ。 最小埋め込み例:
+Culebraはheader-friendlyなC++23ライブラリ。最小埋め込み例:
 
 ```cpp
 #include <culebra.h>
@@ -1598,11 +1598,11 @@ int main() {
 }
 ```
 
-環境構築は埋め込み側。 `IO` は提供されるが、CLI 専用 alias の
-`inspect` / `print` はホスト側で用意する設計。 エラーは
-`culebra::Error` 例外として throw され、元の値と行/列情報を持つ。
+環境構築は埋め込み側。`IO`は提供されるが、CLI専用aliasの
+`inspect` / `print`はホスト側で用意する設計。エラーは
+`culebra::Error`例外としてthrowされ、元の値と行/列情報を持つ。
 
-環境カスタマイズ、値変換、JIT ホスト、AOT-archive 埋め込み経路
+環境カスタマイズ、値変換、JITホスト、AOT-archive埋め込み経路
 (`libculebra_rt.a`) の詳細は [`deployment.ja.md`](deployment.ja.md)。
 
 ---
@@ -1611,8 +1611,8 @@ int main() {
 --------
 
 - 厳密な文法と評価規則: [`language.ja.md`](language.ja.md)
-- API リファレンス: [`stdlib.ja.md`](stdlib.ja.md)
+- APIリファレンス: [`stdlib.ja.md`](stdlib.ja.md)
 - 実装の内部詳細: [`internals.ja.md`](internals.ja.md)
 - バイナリビルド・埋め込み・ラッピング: [`deployment.ja.md`](deployment.ja.md)
 - 大きめの実例: [`benchmarks/microgpt/`](../benchmarks/microgpt/)
-- インタラクティブな REPL: `./build/culebra --shell`
+- インタラクティブなREPL: `./build/culebra --shell`

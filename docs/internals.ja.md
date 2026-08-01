@@ -1,4 +1,4 @@
-Culebra 内部構造
+Culebra内部構造
 ================
 
 本ドキュメントは、ユーザー向けガイドに対する開発者向けの姉妹編で
@@ -34,7 +34,7 @@ Culebra 内部構造
 
 ## 1. アーキテクチャ概観
 
-1 つの AST、3 つの実行経路。同じパーサがすべてに供給します。
+1つのAST、3つの実行経路。同じパーサがすべてに供給します。
 
 ```
        .cul source
@@ -50,683 +50,683 @@ Interpreter  JIT (LLVM ORC)      AOT codegen
 
 このレイアウトの理由:
 
-- **AST の共有**により、バックエンド間で意味論が同一に保たれます。
-  新しい言語機能はまず AST + インタプリタに実装され、その後 JIT と
-  AOT 経路が追随します。
-- **bytecode 層は無し。** インタプリタは AST ノードを直接ウォークし、
-  JIT は AST を LLVM IR へ lower します。bytecode の中間層は、この規
+- **ASTの共有**により、バックエンド間で意味論が同一に保たれます。
+  新しい言語機能はまずAST + インタプリタに実装され、その後JITと
+  AOT経路が追随します。
+- **bytecode層は無し。** インタプリタはASTノードを直接ウォークし、
+  JITはASTをLLVM IRへlowerします。bytecodeの中間層は、この規
   模では計測可能な利点なしに複雑さを増すため不採用です。
-- **ドライババイナリ `culebra`** が CLI です。フラグ (`--jit`、
-  `build`、既定のインタプリタ) に応じて 3 経路のいずれも実行できま
+- **ドライババイナリ`culebra`** がCLIです。フラグ (`--jit`、
+  `build`、既定のインタプリタ) に応じて3経路のいずれも実行できま
   す。
 
 ヘッダのルート:
 
-- `include/grammar_def.h` — PEG 文法。単一の真実源。
-- `include/parser.h` — cpp-peglib のパーサと、全 backend がノードを読
-  むための AST アクセサ (`view_for`、`view_match`、`view_method` 等)。
-  `ast.h` は無く、
-  AST は `peg::Ast` そのもの。
+- `include/grammar_def.h` — PEG文法。単一の真実源。
+- `include/parser.h` — cpp-peglibのパーサと、全backendがノードを読
+  むためのASTアクセサ (`view_for`、`view_match`、`view_method`等)。
+  `ast.h`は無く、
+  ASTは`peg::Ast`そのもの。
 - `include/interpreter.h` — ツリーウォーキング型インタプリタ。
-- `include/jit.h` — ORC JIT **および** AOT のオブジェクト出力
-  (`CULEBRA_ENABLE_JIT` のときのみコンパイル)。lowering を共有している
-  ので 2 経路がドリフトしない。
-- `include/jit_*.h` — 関心事で分割した JIT: `jit_value` (タグ付け)、
+- `include/jit.h` — ORC JIT **および** AOTのオブジェクト出力
+  (`CULEBRA_ENABLE_JIT`のときのみコンパイル)。loweringを共有している
+  ので2経路がドリフトしない。
+- `include/jit_*.h` — 関心事で分割したJIT: `jit_value` (タグ付け)、
   `jit_mem` / `jit_slab` / `jit_gc` / `jit_owned` (メモリ)、
   `jit_string`、`jit_iter`、`jit_dispatch`、`jit_runtime` (生成コード
   から呼べるヘルパ)。
 - `include/stdlib_interp.h` / `include/stdlib_jit.h` — 標準ライブラリ
-  の 2 つの半分。後述の drift チェックで対称性を保つ。
-- `include/runtime/` — AOT 側のランタイム入口 (`runtime_aot.h`、
+  の2つの半分。後述のdriftチェックで対称性を保つ。
+- `include/runtime/` — AOT側のランタイム入口 (`runtime_aot.h`、
   `aot_scan.h`、`rt_macros.h`)。
 
-メモリ管理 (参照カウント、tracing バックストップ、JIT の構造的リーク
-自由の規律) は横断的な関心事であり、Ch.13〜15 でまとめて扱います。
+メモリ管理 (参照カウント、tracingバックストップ、JITの構造的リーク
+自由の規律) は横断的な関心事であり、Ch.13〜15でまとめて扱います。
 
 ## 2. パーサ (cpp-peglib)
 
-文法は `include/grammar_def.h` に単一の PEG 仕様として置かれ、
-`peg::parser` に供給されます。cpp-peglib が提供するもの:
+文法は`include/grammar_def.h`に単一のPEG仕様として置かれ、
+`peg::parser`に供給されます。cpp-peglibが提供するもの:
 
-- PEG の意味論 (greedy、左再帰は禁止ルール)。
-- パーサ自身が構築する汎用 AST (`peg::Ast`) — プロダクションごとに
+- PEGの意味論 (greedy、左再帰は禁止ルール)。
+- パーサ自身が構築する汎用AST (`peg::Ast`) — プロダクションごとに
   C++ のノードクラスを用意する必要がない。
-- ソース位置がすべての AST ノードに自動的に伝播される。
+- ソース位置がすべてのASTノードに自動的に伝播される。
 
 ### grammar blob
 
-文法テキストのメタパースには ~10 ms かかり、そのままだと毎回の
-プロセス起動で払うことになります。`tools/gen_grammar_blob.cc` が
-コンパイル済み文法を `include/grammar_blob.h` にシリアライズし
-(`just gen-blob`)、`parser.h` はそちらをロードします。ガードは文法
-ソースのハッシュ `grammar_blob_key()`: 文法を編集して再生成し忘れた
-場合や cpp-peglib の bump でレイアウトが変わった場合はキーが一致せず、
-`load_grammar()` にフォールバックします。どちらの経路でも AST と
-packrat は同じように有効化されます。
+文法テキストのメタパースには ~10 msかかり、そのままだと毎回の
+プロセス起動で払うことになります。`tools/gen_grammar_blob.cc`が
+コンパイル済み文法を`include/grammar_blob.h`にシリアライズし
+(`just gen-blob`)、`parser.h`はそちらをロードします。ガードは文法
+ソースのハッシュ`grammar_blob_key()`: 文法を編集して再生成し忘れた
+場合やcpp-peglibのbumpでレイアウトが変わった場合はキーが一致せず、
+`load_grammar()`にフォールバックします。どちらの経路でもASTと
+packratは同じように有効化されます。
 
-cpp-peglib を選んだ理由 (手書きの再帰下降との比較):
+cpp-peglibを選んだ理由 (手書きの再帰下降との比較):
 
-- 文法が 1 ファイルにまとまり、`language.ja.md` の隣で仕様として読め
+- 文法が1ファイルにまとまり、`language.ja.md`の隣で仕様として読め
   る。
-- semantic action が構文に近い位置に留まり、lexer/parser の二分法に何
+- semantic actionが構文に近い位置に留まり、lexer/parserの二分法に何
   も漏れ出さない。
 - 性能はボトルネックになっていない — パース時間はパーサではなくイン
-  タプリタ/JIT のコンパイルが支配的。
+  タプリタ/JITのコンパイルが支配的。
 
-AST ノードは cpp-peglib 自身が生成する `shared_ptr<peg::Ast>` です。
+ASTノードはcpp-peglib自身が生成する`shared_ptr<peg::Ast>`です。
 識別子解決はパース後のパスへ遅延され、パーサは文脈自由でいられます。
 
-文法に触る前に知っておくべき帰結が 2 つあります:
+文法に触る前に知っておくべき帰結が2つあります:
 
-- **トークンのテキストはソースバッファへの `string_view`。** AST を
+- **トークンのテキストはソースバッファへの`string_view`。** ASTを
   持つ側がソース文字列を一緒に生かし続ける必要があります。
-  `LoadedModule` が `source` (と、splice した preamble のための
-  `aux_sources`) を AST の隣に保持しているのはこのためです。
-- **全 backend は `ast.nodes[i]` の添字ではなく `parser.h` の `view_*`
-  アクセサ経由でノードを読むこと。** cpp-peglib の `AstOptimizer` は
+  `LoadedModule`が`source` (と、spliceしたpreambleのための
+  `aux_sources`) をASTの隣に保持しているのはこのためです。
+- **全backendは`ast.nodes[i]`の添字ではなく`parser.h`の`view_*`
+  アクセサ経由でノードを読むこと。** cpp-peglibの`AstOptimizer`は
   単一子ノードを畳むので、プロダクションに省略可能要素が増えると生の
-  添字がずれます — 「文法を変えたのに walker を 1 つ更新し忘れた」系
+  添字がずれます — 「文法を変えたのにwalkerを1つ更新し忘れた」系
   バグの常習犯です。
 
-パース失敗はファイル・行・列とパーサの診断を持つ `SyntaxError` として
-表面化し、CLI ドライバが `clang` 風の固定幅スタイルで整形します。
+パース失敗はファイル・行・列とパーサの診断を持つ`SyntaxError`として
+表面化し、CLIドライバが`clang`風の固定幅スタイルで整形します。
 
 ## 3. インタプリタ
 
 ### Value レイアウト
 
-`Value` は `Type` タグ (`type_of` が返しうる 12 個の名前) と
-`std::any` のペイロードです。`Nil` / `Bool` / `Long` / `Float` は
-ペイロードに直接入ります。`Long` は必ず `int64_t` で、`long` は使いま
-せん — Windows では 32bit になり、同じプログラムが JIT と違う答えを返
-してしまいます。`std::any` は幅でなく型で一致するので、値を作る側も読
-む側も `int64_t` と書く必要があります (`Value::get` は両者が異なる環境
-で `long` を static_assert で弾きます)。
-`String` は `std::string` を値で持ちます。
-コンテナ型は**内部**が `shared_ptr` の struct を持ち
-(`ArrayValue::values` は `shared_ptr<vector<Value>>`、Object のプロパ
-ティマップも同様)、これが `Value` 自体を copyable に保ったまま参照
+`Value`は`Type`タグ (`type_of`が返しうる12個の名前) と
+`std::any`のペイロードです。`Nil` / `Bool` / `Long` / `Float`は
+ペイロードに直接入ります。`Long`は必ず`int64_t`で、`long`は使いま
+せん — Windowsでは32bitになり、同じプログラムがJITと違う答えを返
+してしまいます。`std::any`は幅でなく型で一致するので、値を作る側も読
+む側も`int64_t`と書く必要があります (`Value::get`は両者が異なる環境
+で`long`をstatic_assertで弾きます)。
+`String`は`std::string`を値で持ちます。
+コンテナ型は**内部**が`shared_ptr`のstructを持ち
+(`ArrayValue::values`は`shared_ptr<vector<Value>>`、Objectのプロパ
+ティマップも同様)、これが`Value`自体をcopyableに保ったまま参照
 セマンティクスを与えています。
 
-`Value` の move コンストラクタは `std::any` を必ず `std::move` する
-必要があります — コピーする「move」は、引数バインド・return・swap の
-たびに boxing されたペイロードを deep copy します (move が多いループで
-実測 ~13%)。コピーする move は最適化不足ではなく**欠陥**です。
+`Value`のmoveコンストラクタは`std::any`を必ず`std::move`する
+必要があります — コピーする「move」は、引数バインド・return・swapの
+たびにboxingされたペイロードをdeep copyします (moveが多いループで
+実測 ~13%)。コピーするmoveは最適化不足ではなく**欠陥**です。
 
-参照カウントは `shared_ptr` の既定に従います — 自動かつ厳密なので、
-このバックエンドではリークと二重解放は構造的に起こり得ません。RC だ
+参照カウントは`shared_ptr`の既定に従います — 自動かつ厳密なので、
+このバックエンドではリークと二重解放は構造的に起こり得ません。RCだ
 けでは回収できないサイクルは、精密なサイクルコレクタ (`InterpGC`) が
-回収します。RC/GC/drop の完全なモデル (JIT と共有) は Ch.13 を、
-`InterpGC` が C++ スタックをスキャンせずにルートを見つける方法は
-Ch.13 の「ルーティング」節を参照してください。
+回収します。RC/GC/dropの完全なモデル (JITと共有) はCh.13を、
+`InterpGC`がC++ スタックをスキャンせずにルートを見つける方法は
+Ch.13の「ルーティング」節を参照してください。
 
 ### スコープ
 
-`Environment` は連結されたフレームです。各フレームは文字列 → Value の
+`Environment`は連結されたフレームです。各フレームは文字列 → Valueの
 マップと、外側フレームへの親ポインタを保持します。クロージャキャプチ
 ャは「フレームを閉じ込める」方式で、クロージャは
-`shared_ptr<Environment>` を保持し、外側の関数がリターンした後もフレ
+`shared_ptr<Environment>`を保持し、外側の関数がリターンした後もフレ
 ームを生存させ続けます。
 
 ### shared_from_this の寿命管理
 
-`Interpreter` は、呼び出し元より長く生存する必要がある 4 つの長寿命ラ
+`Interpreter`は、呼び出し元より長く生存する必要がある4つの長寿命ラ
 ムダ (ランタイム値にインストールされるコールバック) を所有します。こ
-れらのラムダは `[self = shared_from_this(), ...]` をキャプチャするた
-め、escape したコールバックが 1 つでも生存する限りインタプリタオブジ
+れらのラムダは`[self = shared_from_this(), ...]`をキャプチャするた
+め、escapeしたコールバックが1つでも生存する限りインタプリタオブジ
 ェクト自身が生存し続けます。このコードベースで新規のランタイムコール
 バックラムダは、必ず同じパターンに従わなければなりません。
 
 ### 制御フローとエラー
 
-インタプリタはこの 2 つを意図的に分離しており、機構も異なります。
+インタプリタはこの2つを意図的に分離しており、機構も異なります。
 
-**`return` / `break` / `continue` は thread-local スロットで完了しま
-す** — ECMAScript の completion record を、すべての `eval()` シグネチャ
-に引き回す代わりに、CPython が pending 例外を保持するのと同じ形で持ち
-ます。`eval()` は入口でスロットを見て即座に制御を返すので、値を素通し
-するだけの約 100 箇所の呼び出しサイトは伝播コードを持ちません。関数呼
-び出し境界が `return` を消費し (`deliver_call`)、最も近い囲みループが
-`break` / `continue` を消費します (`run_loop_body`)。
+**`return` / `break` / `continue`はthread-localスロットで完了しま
+す** — ECMAScriptのcompletion recordを、すべての`eval()`シグネチャ
+に引き回す代わりに、CPythonがpending例外を保持するのと同じ形で持ち
+ます。`eval()`は入口でスロットを見て即座に制御を返すので、値を素通し
+するだけの約100箇所の呼び出しサイトは伝播コードを持ちません。関数呼
+び出し境界が`return`を消費し (`deliver_call`)、最も近い囲みループが
+`break` / `continue`を消費します (`run_loop_body`)。
 
-途中のサイトがしてはいけないのは、完了が pending の状態で `eval()` の
-結果を*変換*することです。`to_bool` / `to_long` / `to_string` は入口
-ガードが返す nil に対して `TypeError` を投げるため、それらのサイトは
-`eval_operand` を経由して pending を呼び出し元に報告します。この規則は
-`tools/check_flow_discipline.sh` が ratchet します。
+途中のサイトがしてはいけないのは、完了がpendingの状態で`eval()`の
+結果を*変換*することです。`to_bool` / `to_long` / `to_string`は入口
+ガードが返すnilに対して`TypeError`を投げるため、それらのサイトは
+`eval_operand`を経由してpendingを呼び出し元に報告します。この規則は
+`tools/check_flow_discipline.sh`がratchetします。
 
-**ユーザの `throw` は C++ 例外のままです。** 頻度が低く unwind コスト
-が問題にならないうえ、throw する `defer` は実行中の例外を置き換えられ
-る必要があり、これは戻り値プロトコルでは表現できません。`return` が
-unwind しなくなったため、`run_deferred` はスコープの defer 実行中だけ
-pending の完了を退避します (`FlowPark`)。そうしないと入口ガードがすべ
-ての defer 本体を no-op にしてしまいます。
+**ユーザの`throw`はC++ 例外のままです。** 頻度が低くunwindコスト
+が問題にならないうえ、throwする`defer`は実行中の例外を置き換えられ
+る必要があり、これは戻り値プロトコルでは表現できません。`return`が
+unwindしなくなったため、`run_deferred`はスコープのdefer実行中だけ
+pendingの完了を退避します (`FlowPark`)。そうしないと入口ガードがすべ
+てのdefer本体をno-opにしてしまいます。
 
-この分離により、制御フローは通常の文と同じコストになり、`throw` は
-unwind の意味論をそのまま保ちます。
+この分離により、制御フローは通常の文と同じコストになり、`throw`は
+unwindの意味論をそのまま保ちます。
 
 ### エラー伝播
 
-2 種類の throw を 2 つの C++ 例外型が運びます:
+2種類のthrowを2つのC++ 例外型が運びます:
 
-- **ユーザの `throw expr`** は `Value` そのものを投げます
-  (`eval_throw` は文字どおり `throw eval(...)`)。どんな culebra 値も
+- **ユーザの`throw expr`** は`Value`そのものを投げます
+  (`eval_throw`は文字どおり`throw eval(...)`)。どんなculebra値も
   そのまま投げて受け取れます。
-- **ランタイムエラー**は `culebra::CulebraError` (`kind` / `line` /
-  `col` を持つ `std::runtime_error` の派生) を投げます。コンストラクタ
-  **とコピー/ムーブコンストラクタ**が thread-local の pending スロット
-  にエラーを publish するので、JIT の catch pad は飛行中の例外を再検査
-  せずに Object を作れます。isolate が保存済みエラーをコピーで再送出
-  する経路があるため、コピーコンストラクタは defaulted にできません。
+- **ランタイムエラー**は`culebra::CulebraError` (`kind` / `line` /
+  `col`を持つ`std::runtime_error`の派生) を投げます。コンストラクタ
+  **とコピー/ムーブコンストラクタ**がthread-localのpendingスロット
+  にエラーをpublishするので、JITのcatch padは飛行中の例外を再検査
+  せずにObjectを作れます。isolateが保存済みエラーをコピーで再送出
+  する経路があるため、コピーコンストラクタはdefaultedにできません。
 
-`catch` はどちらも言語仕様どおりの `{kind, message, line, col}` Object
-に変換します。defer は `Environment` (`env->deferred`) に積まれ、
-`run_deferred` があらゆる離脱経路で LIFO に実行します。defer 自身が
-throw した場合はそれが伝播し、そのスコープの残りの defer は破棄されます
-(Go ではなく Swift のルール)。スコープ終端の drop 解決は同じ関数の末尾に
-乗っているので、defer は常にスコープの資源解放より先に走ります。
+`catch`はどちらも言語仕様どおりの`{kind, message, line, col}` Object
+に変換します。deferは`Environment` (`env->deferred`) に積まれ、
+`run_deferred`があらゆる離脱経路でLIFOに実行します。defer自身が
+throwした場合はそれが伝播し、そのスコープの残りのdeferは破棄されます
+(GoではなくSwiftのルール)。スコープ終端のdrop解決は同じ関数の末尾に
+乗っているので、deferは常にスコープの資源解放より先に走ります。
 
 ## 4. JIT (LLVM ORC)
 
-JIT は AST を関数粒度で LLVM IR へ lower し (スクリプトのトップレベル
-はモジュール全体を lower)、そのモジュールを ORC v2 に渡して `-O2` コン
+JITはASTを関数粒度でLLVM IRへlowerし (スクリプトのトップレベル
+はモジュール全体をlower)、そのモジュールをORC v2に渡して`-O2`コン
 パイルさせます。ホストプロセス内のシンボル (ランタイムヘルパ、アロケ
-ータ、BLAS) は、ORC の `DefinitionGenerator` 機構を介して JIT 済みコー
+ータ、BLAS) は、ORCの`DefinitionGenerator`機構を介してJIT済みコー
 ドに公開されます。
 
 ### ランタイムシンボル解決
 
-ランタイムヘルパ (`culebra_runtime_*`) はリンク時に可視です。macOS で
-は既定で可視です。ELF/Linux では `-rdynamic` ではなく culebra 自身の
-C リンケージ名のホワイトリスト (`cmake/exported_symbols.txt`) を公開し
-ます。全部を公開すると静的リンクした LLVM も公開され、後からプロセスに
-読み込まれるライブラリ — Mesa の DRI ドライバは自前の LLVM をリンクして
+ランタイムヘルパ (`culebra_runtime_*`) はリンク時に可視です。macOSで
+は既定で可視です。ELF/Linuxでは`-rdynamic`ではなくculebra自身の
+Cリンケージ名のホワイトリスト (`cmake/exported_symbols.txt`) を公開し
+ます。全部を公開すると静的リンクしたLLVMも公開され、後からプロセスに
+読み込まれるライブラリ — MesaのDRIドライバは自前のLLVMをリンクして
 いる — がビルド時のものではなくこちらに束縛されてしまうためです。
 
 ### インラインキャッシュ
 
-プロパティアクセスは V8 / SpiderMonkey 流の**モノモーフィック**な
-インラインキャッシュを使います。呼び出し箇所ごとに `{Shape*,
-slot_offset}` を持つ専用の IC グローバルがあり (`JitPropIC`。書き込み
-側は `JitPropSetIC` で、プロパティの可変性もキャッシュします)、fast
-path はランタイム呼び出しを一切出しません — `obj->shape` をロードして
-キャッシュ済みの `Shape*` と比較し、ヒットならスロットベクタへ直接
-インデックスします。ミス時は `culebra_runtime_object_get_ic` を呼んで
-本来のルックアップを行い、IC を詰め直します。
+プロパティアクセスはV8 / SpiderMonkey流の**モノモーフィック**な
+インラインキャッシュを使います。呼び出し箇所ごとに`{Shape*,
+slot_offset}`を持つ専用のICグローバルがあり (`JitPropIC`。書き込み
+側は`JitPropSetIC`で、プロパティの可変性もキャッシュします)、fast
+pathはランタイム呼び出しを一切出しません — `obj->shape`をロードして
+キャッシュ済みの`Shape*`と比較し、ヒットならスロットベクタへ直接
+インデックスします。ミス時は`culebra_runtime_object_get_ic`を呼んで
+本来のルックアップを行い、ICを詰め直します。
 
-Shape はプロセス全体で intern されている (`ShapeRegistry`) ので比較は
-ポインタ等価で済み、同じ作り方をした object は 1 つの shape を共有します。
+Shapeはプロセス全体でinternされている (`ShapeRegistry`) ので比較は
+ポインタ等価で済み、同じ作り方をしたobjectは1つのshapeを共有します。
 
 ### namespace ディスパッチテーブル
 
-`include/stdlib_jit.h` は `kNsMethods` を公開します。これは
-`(namespace, method)` から JIT 呼び出し可能なランタイム関数ポインタへ
-のテーブルです。裸の namespace メソッド (`Math.abs`、`IO.inspect`) は
-codegen 時にここで引かれ、汎用ルックアップのオーバーヘッドを回避しま
-す。新しい stdlib メソッドを追加するには、ここに 1 行と対応するインタ
-プリタ実装が必要です。`add-stdlib-namespace` skill を参照。
+`include/stdlib_jit.h`は`kNsMethods`を公開します。これは
+`(namespace, method)`からJIT呼び出し可能なランタイム関数ポインタへ
+のテーブルです。裸のnamespaceメソッド (`Math.abs`、`IO.inspect`) は
+codegen時にここで引かれ、汎用ルックアップのオーバーヘッドを回避しま
+す。新しいstdlibメソッドを追加するには、ここに1行と対応するインタ
+プリタ実装が必要です。`add-stdlib-namespace` skillを参照。
 
-起動時の debug 専用ドリフトチェックが、`kNsMethods` の全メソッドがイ
-ンタプリタテーブルに存在することを検証し、2 つのバックエンドがサイレ
+起動時のdebug専用ドリフトチェックが、`kNsMethods`の全メソッドがイ
+ンタプリタテーブルに存在することを検証し、2つのバックエンドがサイレ
 ントに乖離するのを防ぎます。
 
 ### `self` の束縛
 
-`self` の 2 段階解決（レシーバ優先・字句フォールバック —
-language.md §メソッドと UFCS）は、インタプリタでは自然に成立します:
-レシーバ呼出は callEnv に `self` を束縛し、素の呼出は何も束縛せず、
-def_env チェーンが外側メソッドの束縛を供給します。JIT はこれを構造
-的に再現します。全フレームは `self` を 2 つのスカラ ABI 引数として
-受け取り、本体（またはネストしたクロージャ）が `self` を読むフレーム
+`self`の2段階解決（レシーバ優先・字句フォールバック —
+language.md §メソッドとUFCS）は、インタプリタでは自然に成立します:
+レシーバ呼出はcallEnvに`self`を束縛し、素の呼出は何も束縛せず、
+def_envチェーンが外側メソッドの束縛を供給します。JITはこれを構造
+的に再現します。全フレームは`self`を2つのスカラABI引数として
+受け取り、本体（またはネストしたクロージャ）が`self`を読むフレーム
 はそれを自由変数として列挙するので、クロージャは外側フレームの
-self セルを通常の変数と同じ機構で capture します。prologue はこれを
-マージします: 到着したレシーバが NO_SELF センチネルなら captured
+selfセルを通常の変数と同じ機構でcaptureします。prologueはこれを
+マージします: 到着したレシーバがNO_SELFセンチネルならcaptured
 セルの値が代わりに入ります（`culebra_runtime_self_merge`）。メソッド
-と trait メソッドのフレームはこの一切をスキップします — それらを
-呼び得る全経路がレシーバを渡すため、解析がフォールバック capture を
-strip し、prologue は引数を直接束縛します（ホットパス無変化）。読み
-取りは引き続きセンチネルを guard し、それが「レシーバも外側 self も
-ない」を interp と同じ読み取り箇所の NameError に変えます。
+とtraitメソッドのフレームはこの一切をスキップします — それらを
+呼び得る全経路がレシーバを渡すため、解析がフォールバックcaptureを
+stripし、prologueは引数を直接束縛します（ホットパス無変化）。読み
+取りは引き続きセンチネルをguardし、それが「レシーバも外側selfも
+ない」をinterpと同じ読み取り箇所のNameErrorに変えます。
 
 関数値プロパティの値読み（`let m = o.f`）は恒久束縛です:
-`culebra_runtime_bind_method_value` は Object レシーバ上の TAG_FUNC
-view を own slot・proto メソッド・static・ctor の別なく
-`[receiver, method]` thunk（interp の `_wrap_method_with_this` の
-双子）で包みます。thunk は後続の呼出が渡すレシーバを無視して
-（release して）自分の束縛を使うため、束縛メソッドの付け替えでは
-再束縛されません。introspection 系の消費者（callback arity 検査）は
-逆に thunk を unwrap して下のメソッドを判定します — 共有 thunk の
-fn_ptr は自前の param metadata を持たないためです。再帰ハンドル
-`fn` も同じモデルです: 直接の `fn(...)` 呼出はフレームのマージ済み
-self を渡し直し、値読みはフレームごとに一度だけ束縛ラッパを実体化
-します（`culebra_runtime_fn_handle`、owned slot にキャッシュ）。
-これにより interp の「wrapper が fn」と同じく、escape した `fn` も
+`culebra_runtime_bind_method_value`はObjectレシーバ上のTAG_FUNC
+viewをown slot・protoメソッド・static・ctorの別なく
+`[receiver, method]` thunk（interpの`_wrap_method_with_this`の
+双子）で包みます。thunkは後続の呼出が渡すレシーバを無視して
+（releaseして）自分の束縛を使うため、束縛メソッドの付け替えでは
+再束縛されません。introspection系の消費者（callback arity検査）は
+逆にthunkをunwrapして下のメソッドを判定します — 共有thunkの
+fn_ptrは自前のparam metadataを持たないためです。再帰ハンドル
+`fn`も同じモデルです: 直接の`fn(...)`呼出はフレームのマージ済み
+selfを渡し直し、値読みはフレームごとに一度だけ束縛ラッパを実体化
+します（`culebra_runtime_fn_handle`、owned slotにキャッシュ）。
+これによりinterpの「wrapperがfn」と同じく、escapeした`fn`も
 レシーバを保持します。
 
 ### HOF fusion
 
-`range(n).filter(p).map(f).take(k).collect()` は fusable なチェーンと
-して認識され、`p` と `f` を inline した単一のカウンタループへ lower さ
-れます。パターンはパーサ実行後の AST shape 上でマッチされ、JIT はその
-後 IR でタイトなループを emit します。インタプリタは fusion しませ
-ん。そのイテレータチェーン実装も lazy ですが、ステージごとに小さな
-ラッパを確保します。body に `return` / `defer` を含む callback は
-inline されず（本物の callee frame が必要なため）、runtime helper
+`range(n).filter(p).map(f).take(k).collect()`はfusableなチェーンと
+して認識され、`p`と`f`をinlineした単一のカウンタループへlowerさ
+れます。パターンはパーサ実行後のAST shape上でマッチされ、JITはその
+後IRでタイトなループをemitします。インタプリタはfusionしませ
+ん。そのイテレータチェーン実装もlazyですが、ステージごとに小さな
+ラッパを確保します。bodyに`return` / `defer`を含むcallbackは
+inlineされず（本物のcallee frameが必要なため）、runtime helper
 経路を通ります。
 
 ### iterator 専用メソッドの descriptor table
 
-eager な Array 側の腕を持たない lazy combinator / terminal（`take`、
-`scan`、`chunks`、`first`、`zip` など）は 1 つの descriptor table
-（jit.h の `kIterMethods`）から emit されます。1 行が runtime シンボル、
-receiver ゲート、引数の形、シンボルが呼び出し位置を取るか、結果の
-ラップを指定します。オペレータの追加は「表 1 行 + runtime fn +
-interp ラムダ」で、runtime 側の上流転送は従来どおり
-`tools/check_iter_wiring.sh` がゲートします。receiver ディスパッチが
+eagerなArray側の腕を持たないlazy combinator / terminal（`take`、
+`scan`、`chunks`、`first`、`zip`など）は1つのdescriptor table
+（jit.hの`kIterMethods`）からemitされます。1行がruntimeシンボル、
+receiverゲート、引数の形、シンボルが呼び出し位置を取るか、結果の
+ラップを指定します。オペレータの追加は「表1行 + runtime fn +
+interpラムダ」で、runtime側の上流転送は従来どおり
+`tools/check_iter_wiring.sh`がゲートします。receiverディスパッチが
 特殊なもの（`iter`、`enumerate`、文字列ソース系）は手書きのままです。
 
 ### eager/lazy 両対応メソッドの descriptor table
 
-Array と iterator プロトコル Object の両方を receiver に取るメソッドは
-2 つ目の表（`kDualMethods`）から emit されます。2 つの腕は receiver
-オペランド・runtime シンボル・結果のラップ方だけが違うので、1 行は
-シンボルと結果種別を腕ごとに持ちます（`flat_map` は eager 側が Array・
-lazy 側が新しい iterator、`find` は両腕とも out-param 経由）。行は
-inline fusion の emitter も腕ごとに指定できます。callback が literal
-lambda のときに使われ、`map` / `filter` は Array 側だけ fusion し
-（lazy 側は factory に本物の closure を渡す必要がある）、`for_each` と
-`reduce` は両腕とも fusion します（`reduce` の emitter は seed も
-受け取ります）。残りの行の軸は `join`（型検査付き引数のポインタを両腕で
-borrow し、シンボルは呼び出し位置を取らない）と `sum` / `max`
-（`tensor_op` が TAG_TENSOR を第 3 の receiver 腕として共有の軸なし
-reduction に振り分ける。`product` / `min` は 2-way のまま）を
+ArrayとiteratorプロトコルObjectの両方をreceiverに取るメソッドは
+2つ目の表（`kDualMethods`）からemitされます。2つの腕はreceiver
+オペランド・runtimeシンボル・結果のラップ方だけが違うので、1行は
+シンボルと結果種別を腕ごとに持ちます（`flat_map`はeager側がArray・
+lazy側が新しいiterator、`find`は両腕ともout-param経由）。行は
+inline fusionのemitterも腕ごとに指定できます。callbackがliteral
+lambdaのときに使われ、`map` / `filter`はArray側だけfusionし
+（lazy側はfactoryに本物のclosureを渡す必要がある）、`for_each`と
+`reduce`は両腕ともfusionします（`reduce`のemitterはseedも
+受け取ります）。残りの行の軸は`join`（型検査付き引数のポインタを両腕で
+borrowし、シンボルは呼び出し位置を取らない）と`sum` / `max`
+（`tensor_op`がTAG_TENSORを第3のreceiver腕として共有の軸なし
+reductionに振り分ける。`product` / `min`は2-wayのまま）を
 カバーします。
 
 ### for-in カーソル
 
-`for x in xs` は Array、Tuple、Set、Object のキー、Range、`iter` プロパ
-ティを持つ任意のオブジェクト、String の7面を扱う必要があり、進め方は3種
-類あります — 添字による配列走査、UTF-8 スカラ走査、`has_next`/`next` の
+`for x in xs`はArray、Tuple、Set、Objectのキー、Range、`iter`プロパ
+ティを持つ任意のオブジェクト、Stringの7面を扱う必要があり、進め方は3種
+類あります — 添字による配列走査、UTF-8スカラ走査、`has_next`/`next`の
 イテレータプロトコルです。これらは1つのカーソルを共有します。ループ先頭
-のタグディスパッチはカーソルを *open* するだけ (kind と、その kind が必
-要とする状態を記録) で、単一のループヘッドが kind で switch して対応する
-advance を選び、どの advance も要素を1つの body へ渡します。出口も共有で
-す。イテレータの dispose はカーソルのイテレータスロットでガードされ、
-array/string カーソルはそこを nil のままにします。
+のタグディスパッチはカーソルを *open* するだけ (kindと、そのkindが必
+要とする状態を記録) で、単一のループヘッドがkindでswitchして対応する
+advanceを選び、どのadvanceも要素を1つのbodyへ渡します。出口も共有で
+す。イテレータのdisposeはカーソルのイテレータスロットでガードされ、
+array/stringカーソルはそこをnilのままにします。
 
-throw しうる2つの側 — advance ブロックと body — を1つの cleanup pad が
-まとめて覆い、再送出の前にイテレータを dispose します。この覆う範囲が
-§18.5 の「ループを抜けるあらゆる例外で dispose」を、`next()` / `has_next()`
-の throw、ループ safepoint での interrupt、中断中に throw したジェネレータ
-本体 (登録済み defer はこの dispose 経由でしか走らない) について成立させ
-ます。インタプリタの `eval_for` が producer 呼び出しと safepoint を try で
+throwしうる2つの側 — advanceブロックとbody — を1つのcleanup padが
+まとめて覆い、再送出の前にイテレータをdisposeします。この覆う範囲が
+§18.5の「ループを抜けるあらゆる例外でdispose」を、`next()` / `has_next()`
+のthrow、ループsafepointでのinterrupt、中断中にthrowしたジェネレータ
+本体 (登録済みdeferはこのdispose経由でしか走らない) について成立させ
+ます。インタプリタの`eval_for`がproducer呼び出しとsafepointをtryで
 包むのも同じ理由です。
 
-ループが所有する3つの値 — iterable、プロトコルの導出元、`iter()` が返し
+ループが所有する3つの値 — iterable、プロトコルの導出元、`iter()`が返し
 たイテレータ — はいずれも文自身のスコープのスロットです。この順で宣言さ
-れるので、LIFO の解体はイテレータを導出元より先に落とします。これが出口
-を一様にします。drain・`break`・早期 `return`・あらゆる throw (drain 途中
-の `next()` / `has_next()` からの throw を含む) で、通常のスコープ機構が
-3つとも release するため、カーソル自身の cleanup は `dispose()` の呼び出
-しだけに縮みます。以前のイテレータはカーソルの素の alloca で、どの
-cleanup pad からも見えず、producer が throw するとループ1回につきイテレー
-タが1個 strand していました (Ch.15 §15.5 の不変条件 3。スロット化がこれ
-を回復します)。インライン `reduce` ループのアキュムレータも同じ扱いです。
-seed はプロトコル open の前から最初の反復が body スコープへ引き渡すまで
-生きているので、construction cleanup に登録し、open・`has_next()`・件数式
-のいずれかが throw したときに release されるようにしています。
+れるので、LIFOの解体はイテレータを導出元より先に落とします。これが出口
+を一様にします。drain・`break`・早期`return`・あらゆるthrow (drain途中
+の`next()` / `has_next()`からのthrowを含む) で、通常のスコープ機構が
+3つともreleaseするため、カーソル自身のcleanupは`dispose()`の呼び出
+しだけに縮みます。以前のイテレータはカーソルの素のallocaで、どの
+cleanup padからも見えず、producerがthrowするとループ1回につきイテレー
+タが1個strandしていました (Ch.15 §15.5の不変条件3。スロット化がこれ
+を回復します)。インライン`reduce`ループのアキュムレータも同じ扱いです。
+seedはプロトコルopenの前から最初の反復がbodyスコープへ引き渡すまで
+生きているので、construction cleanupに登録し、open・`has_next()`・件数式
+のいずれかがthrowしたときにreleaseされるようにしています。
 
-body を1回だけ emit することがネストを現実的にします。容器の各アームに
-body を inline すると1段ごとに6倍され、3重ネストでは最内 body が 216 回
-emit されていました。IR は1段あたり約 6.4 倍に増え、4重ネストの4行プログ
-ラムが 100 万行の IR を生みました。
+bodyを1回だけemitすることがネストを現実的にします。容器の各アームに
+bodyをinlineすると1段ごとに6倍され、3重ネストでは最内bodyが216回
+emitされていました。IRは1段あたり約6.4倍に増え、4重ネストの4行プログ
+ラムが100万行のIRを生みました。
 
-`for v in a..b`（`by <step>` の有無を問わず）はこの経路を通らず、直接の
-Long カウンタで回ります。Range オブジェクトもヒープイテレータも、ステップ
-ごとの `{done,value}` オブジェクトもありません。両 backend がこれを行いま
-すが、判断の根拠が異なります — JIT はコンパイル時に range *リテラル* を融
-合し、インタプリタは渡された range *値* を融合します。したがって変数経由で
-ループに届いた range は、一方の backend では融合され他方では generic 経路
-を通ります。これが安全なのは、カウンタループが range 意味論の第二実装では
-ないからです。境界・step の符号・inclusive 端の補正・2つのエラー (unbounded
-range、step ゼロ) は generic な range イテレータと同じデコーダから来ており、
-ループ body・スコープ・defer・break の処理は generic 経路と共有していて複製
-していません。インタプリタ側の利得はループの*入口*にあります。generic カー
-ソルを開くと Range オブジェクトとイテレータオブジェクトで約 3µs かかり、外
+`for v in a..b`（`by <step>`の有無を問わず）はこの経路を通らず、直接の
+Longカウンタで回ります。Rangeオブジェクトもヒープイテレータも、ステップ
+ごとの`{done,value}`オブジェクトもありません。両backendがこれを行いま
+すが、判断の根拠が異なります — JITはコンパイル時にrange *リテラル* を融
+合し、インタプリタは渡されたrange *値* を融合します。したがって変数経由で
+ループに届いたrangeは、一方のbackendでは融合され他方ではgeneric経路
+を通ります。これが安全なのは、カウンタループがrange意味論の第二実装では
+ないからです。境界・stepの符号・inclusive端の補正・2つのエラー (unbounded
+range、stepゼロ) はgenericなrangeイテレータと同じデコーダから来ており、
+ループbody・スコープ・defer・breakの処理はgeneric経路と共有していて複製
+していません。インタプリタ側の利得はループの*入口*にあります。genericカー
+ソルを開くとRangeオブジェクトとイテレータオブジェクトで約3µsかかり、外
 側の反復ごとに入り直す内側ループでは中身の処理より高くついていました。
 
 ### stdlib preamble の splice
 
-いくつかの stdlib モジュール (`Time`、`Term`、`Args`、`Regex`、`Log`、
-`Path`、`Canvas`、matcher ファミリ、`__Eff`) は C++ でなく culebra で書
-かれており、3 backend が1つの実装を共有します。インタプリタはこれらを環
-境ごとに遅延束縛しますが、JIT/AOT 経路はプログラムが使うものをエントリモ
-ジュールの AST へ、ユーザ文の前の statement として splice します。ソース
-テキストへの連結ではなく splice なのは、ユーザノードがパース時の行・列を
+いくつかのstdlibモジュール (`Time`、`Term`、`Args`、`Regex`、`Log`、
+`Path`、`Canvas`、matcherファミリ、`__Eff`) はC++ でなくculebraで書
+かれており、3 backendが1つの実装を共有します。インタプリタはこれらを環
+境ごとに遅延束縛しますが、JIT/AOT経路はプログラムが使うものをエントリモ
+ジュールのASTへ、ユーザ文の前のstatementとしてspliceします。ソース
+テキストへの連結ではなくspliceなのは、ユーザノードがパース時の行・列を
 保ち、エラー位置がインタプリタと一致するようにするためです。
 
-どのモジュールを splice するかはエントリモジュールのパース済みトークン集
+どのモジュールをspliceするかはエントリモジュールのパース済みトークン集
 合から決まるため、名前は厳密一致です。コメント中や、より長い識別子の一部
-としてのモジュール名では引き込まれません。1モジュールあたり JIT コンパイ
+としてのモジュール名では引き込まれません。1モジュールあたりJITコンパイ
 ル時間で約1秒かかるので、この違いは机上の話ではありません。
 
 モジュールが返すのはただのオブジェクトリテラルなので、それ自体は名前空間
-マーカーを持ちません。各 backend がモジュールを構築する箇所でマーカーを立
-てます — インタプリタは `Environment::resolve_from_lazy`、JIT/AOT は
-`_jit_namespace_get_or_build` (子 isolate も同じ関数で再構築します)。両者
-とも `lazy_namespace_static_name` (shared.h) を参照するので経路がドリフト
-することはなく、このマーカーによって未定義メンバーの読み取りは C++ 製名前
-空間と同じ `AttributeError` になります。`Path` が意図的にこのリストに無い
-のは、そのモジュールが返すのがクラスであり、クラスのプロパティ miss は
-`nil` を返すためです。
+マーカーを持ちません。各backendがモジュールを構築する箇所でマーカーを立
+てます — インタプリタは`Environment::resolve_from_lazy`、JIT/AOTは
+`_jit_namespace_get_or_build` (子isolateも同じ関数で再構築します)。両者
+とも`lazy_namespace_static_name` (shared.h) を参照するので経路がドリフト
+することはなく、このマーカーによって未定義メンバーの読み取りはC++ 製名前
+空間と同じ`AttributeError`になります。`Path`が意図的にこのリストに無い
+のは、そのモジュールが返すのがクラスであり、クラスのプロパティmissは
+`nil`を返すためです。
 
-インタプリタと異なり、JIT が生成するコードは heap 値 (Object、
-Array、Func、Set、Tensor、Cell、String) を `shared_ptr` ではなく、手書
-きで emit した retain/release IR を通じて管理します。その規律 — 所有
-権をどう追跡するか、tracing バックストップが RC の回収できないものを
+インタプリタと異なり、JITが生成するコードはheap値 (Object、
+Array、Func、Set、Tensor、Cell、String) を`shared_ptr`ではなく、手書
+きでemitしたretain/release IRを通じて管理します。その規律 — 所有
+権をどう追跡するか、tracingバックストップがRCの回収できないものを
 どう回収するか、リーク/二重解放を場当たり的な修正ではなく構造的に不
-可能化した方法 — が Ch.13〜15 の主題です。
+可能化した方法 — がCh.13〜15の主題です。
 
 ## 5. AOT codegen
 
-`culebra build foo.cul -o foo` は、モジュールグラフ (Ch.10) をウォー
-クし、到達可能な各トップレベルを LLVM IR へ lower し、non-PIC な `.o`
-を emit し、そのオブジェクトとランタイムアーカイブを最終リンクのため
-にシステム C++ コンパイラへ渡します。
+`culebra build foo.cul -o foo`は、モジュールグラフ (Ch.10) をウォー
+クし、到達可能な各トップレベルをLLVM IRへlowerし、non-PICな`.o`
+をemitし、そのオブジェクトとランタイムアーカイブを最終リンクのため
+にシステムC++ コンパイラへ渡します。
 
 ### tree-shaking
 
-モジュールグラフと AST が合わさって、到達可能なトップレベル名の集合を
-与えます。ランタイムヘルパ (~450 個) は機能グループごとに分割され、
+モジュールグラフとASTが合わさって、到達可能なトップレベル名の集合を
+与えます。ランタイムヘルパ (~450個) は機能グループごとに分割され、
 ユーザープログラムから静的に参照されるグループのみがリンクされます。
-`inspect` を使う "hello world" は IO と Long プリンタを引き込み、それ以外
+`inspect`を使う "hello world" はIOとLongプリンタを引き込み、それ以外
 は何も引き込みません。
 
 ### ランタイムアーカイブ (base + 機能別)
 
-- `libculebra_rt.a` — base ランタイム。機能の choke はすべて
-  **weak-symbol stub** なので、ここから呼べるコードは tensor カーネル、
-  OpenSSL、zlib、SQLite、ウィンドウ/GPU フレームワークのいずれにも
-  到達しません。ただし*参照*が無いわけではありません: httplib の TLS と
-  gzip のコードは choke が生きているかに関わらずこのアーカイブに入るので、
-  `--gc-sections` / `-dead_strip` が必ず捨てるセクションに OpenSSL と zlib
+- `libculebra_rt.a` — baseランタイム。機能のchokeはすべて
+  **weak-symbol stub** なので、ここから呼べるコードはtensorカーネル、
+  OpenSSL、zlib、SQLite、ウィンドウ/GPUフレームワークのいずれにも
+  到達しません。ただし*参照*が無いわけではありません: httplibのTLSと
+  gzipのコードはchokeが生きているかに関わらずこのアーカイブに入るので、
+  `--gc-sections` / `-dead_strip`が必ず捨てるセクションにOpenSSLとzlib
   の未解決シンボルが残ります。セクションを回収する前にシンボルを解決する
-  リンカはそれを報告してしまうので、Windows と Linux の Webview 軸は
-  呼びもしない OpenSSL/zlib をバイナリにリンクします。
-- 機能ごとに 1 アーカイブ。それぞれが weak stub を上書きする strong
-  choke を持ちます:
+  リンカはそれを報告してしまうので、WindowsとLinuxのWebview軸は
+  呼びもしないOpenSSL/zlibをバイナリにリンクします。
+- 機能ごとに1アーカイブ。それぞれがweak stubを上書きするstrong
+  chokeを持ちます:
 
-  | アーカイブ | ゲートする namespace | 引き込むもの |
+  | アーカイブ | ゲートするnamespace | 引き込むもの |
   |---|---|---|
-  | `libculebra_rt_tensor.a` | `Tensor` | cpp-tensorlib。macOS では Accelerate + Metal |
-  | `libculebra_rt_http.a` | `Http` | cpp-httplib + 静的 OpenSSL |
+  | `libculebra_rt_tensor.a` | `Tensor` | cpp-tensorlib。macOSではAccelerate + Metal |
+  | `libculebra_rt_http.a` | `Http` | cpp-httplib + 静的OpenSSL |
   | `libculebra_rt_compress.a` | `Compress` | zlib |
-  | `libculebra_rt_sqlite.a` | `SQLite` | vendored な SQLite amalgamation |
+  | `libculebra_rt_sqlite.a` | `SQLite` | vendoredなSQLite amalgamation |
   | `libculebra_rt_canvas.a` | `Canvas` (窓ありビルド) | raylib + SDL3 |
   | `libculebra_rt_scene.a` | `Scene` | raylib + SDL3 |
-  | `libculebra_rt_webview.a` | `Webview` / `Desktop` | OS の WebView フレームワーク |
-  | `libculebra_rt_wrap.a` | ラップした C++ クラス | ラップ先ライブラリの依存 |
+  | `libculebra_rt_webview.a` | `Webview` / `Desktop` | OSのWebViewフレームワーク |
+  | `libculebra_rt_wrap.a` | ラップしたC++ クラス | ラップ先ライブラリの依存 |
 
-`culebra build` は常に base をリンクし、AST がその namespace を参照した
-ときのみ機能アーカイブを **force-load** します — strong choke が weak
-stub を上書きします。したがって未使用の機能は、そのアーカイブも外部
-ライブラリもリンクしません。これは 2^N のマトリクスではなく N+1 の
+`culebra build`は常にbaseをリンクし、ASTがそのnamespaceを参照した
+ときのみ機能アーカイブを **force-load** します — strong chokeがweak
+stubを上書きします。したがって未使用の機能は、そのアーカイブも外部
+ライブラリもリンクしません。これは2^NのマトリクスではなくN+1の
 アーカイブです。
 
-このゲート契約は**外から**壊れやすい: vendored ライブラリが自前の
+このゲート契約は**外から**壊れやすい: vendoredライブラリが自前の
 ランタイムフックを経由せずデバイスアロケータを無条件に呼ぶと、その参照が
-全バイナリにコンパイルされ、`Tensor` に一切触れないプログラムがリンク
-できなくなります。submodule を bump したら毎回 AOT 込みのフルゲートを
-回すこと — diff が小さくても契約は壊れえます。
+全バイナリにコンパイルされ、`Tensor`に一切触れないプログラムがリンク
+できなくなります。submoduleをbumpしたら毎回AOT込みのフルゲートを
+回すこと — diffが小さくても契約は壊れえます。
 
 ### Linux -no-pie
 
-LLVM の `TargetMachine` は non-PIC な `.o` を emit します。Ubuntu の
-`gcc` は既定で PIE リンクを行い、"failed to set dynamic section
-sizes" で失敗します。ドライバは Linux でリンカに `-no-pie` を渡してこ
+LLVMの`TargetMachine`はnon-PICな`.o`をemitします。Ubuntuの
+`gcc`は既定でPIEリンクを行い、"failed to set dynamic section
+sizes" で失敗します。ドライバはLinuxでリンカに`-no-pie`を渡してこ
 れを解消します。
 
 ### クロスコンパイル
 
-`--target=<triple>` + ユーザー提供の `--sysroot=` と `--rt-lib=`。
-LLVM の `AllTargets*` コンポーネントがホストの `culebra` ドライバにリ
-ンクされているため、任意の LLVM サポート triple 向けに emit できま
+`--target=<triple>` + ユーザー提供の`--sysroot=`と`--rt-lib=`。
+LLVMの`AllTargets*`コンポーネントがホストの`culebra`ドライバにリ
+ンクされているため、任意のLLVMサポートtriple向けにemitできま
 す。ランタイムアーカイブ自体はターゲット向けにビルドされている必要が
-あります — バンドルされた sysroot はまだありません。
+あります — バンドルされたsysrootはまだありません。
 
 ## 6. 文字列 / Unicode
 
 ### 現状
 
-文字列は内部的には `std::string` (UTF-8) です。バイトインデックスは
-`std::string::operator[]`、スカラー反復は cpp-unicodelib の `utf8`
-namespace を使ってコードポイントを 1 つずつウォークします。
+文字列は内部的には`std::string` (UTF-8) です。バイトインデックスは
+`std::string::operator[]`、スカラー反復はcpp-unicodelibの`utf8`
+namespaceを使ってコードポイントを1つずつウォークします。
 
-`split`、`replace`、`trim` などのメソッドは既定でバイトレベルで動作し
-ます。`size()` はバイト数を返します。スカラー数を数える `length()` は
+`split`、`replace`、`trim`などのメソッドは既定でバイトレベルで動作し
+ます。`size()`はバイト数を返します。スカラー数を数える`length()`は
 **存在しません** — スカラーや書記素クラスタの数え上げはイテレータ
 (`code_points()` / `graphemes()`) を通すので、O(n) のコストが呼び出し側
-で見えます。ユーザ向けの説明は `guide.ja.md` §4.2 です。
+で見えます。ユーザ向けの説明は`guide.ja.md` §4.2です。
 
 ### JIT/AOT 表現: インライン長さヘッダ
 
-インタプリタの `std::string` は自身の長さを保持するため、埋め込まれた
-NUL は普通のバイトです。JIT/AOT バックエンドはそれに一致させなければ
-なりませんが、`JitValue` は 1 つの `{tag, i64}` スロットです — 長さは
-値に載せられないため、heap/`.rodata` オブジェクトに存在します。
-`TAG_STRING` の payload は、長さ前置バッファのバイト列を指します:
+インタプリタの`std::string`は自身の長さを保持するため、埋め込まれた
+NULは普通のバイトです。JIT/AOTバックエンドはそれに一致させなければ
+なりませんが、`JitValue`は1つの`{tag, i64}`スロットです — 長さは
+値に載せられないため、heap/`.rodata`オブジェクトに存在します。
+`TAG_STRING`のpayloadは、長さ前置バッファのバイト列を指します:
 
 ```
 [ uint64_t len ][ bytes... ][ '\0' ]
                  ^ TAG_STRING data points here; len at data[-8].
 ```
 
-これは BSTR / Zig の sentinel-slice / CPython の形です。長さが正典であ
-り O(1) で読める (`_str_len`) ため、埋め込み NUL は普通のバイトです。
-末尾の NUL は保持され、NUL を持たない文字列でもそのまま C API (パス、
-`%s`) に渡せます。`{ptr, len}` ディスクリプタは不採用でした — hot
-path に間接参照を追加し、借用名に対して surface ごとの確保が発生し、
-`TAG_STRINGVIEW` のレイアウトと衝突するためです。
+これはBSTR / Zigのsentinel-slice / CPythonの形です。長さが正典であ
+りO(1) で読める (`_str_len`) ため、埋め込みNULは普通のバイトです。
+末尾のNULは保持され、NULを持たない文字列でもそのままC API (パス、
+`%s`) に渡せます。`{ptr, len}`ディスクリプタは不採用でした — hot
+pathに間接参照を追加し、借用名に対してsurfaceごとの確保が発生し、
+`TAG_STRINGVIEW`のレイアウトと衝突するためです。
 
-不変条件: すべての `TAG_STRING` はヘッダ付きです。生産者は
-`_culebra_heap_str` (ランタイム) と `emit_str_literal` (`.rodata` の
-`ConstantStruct`) のみです。リテラル文字列と heap 文字列は 1 つのレイ
-アウトを共有するため、読み手は起源で分岐しません。String 値として現れ
-る借用 shape 名 (object キー、`class` / variant / enum 名) は
-`_intern_str` を通してヘッダを得ます。`_str_len` の debug `assert`
-が、`TAG_STRING` に誤タグ付けされたヘッダなしポインタを捕捉します。
+不変条件: すべての`TAG_STRING`はヘッダ付きです。生産者は
+`_culebra_heap_str` (ランタイム) と`emit_str_literal` (`.rodata`の
+`ConstantStruct`) のみです。リテラル文字列とheap文字列は1つのレイ
+アウトを共有するため、読み手は起源で分岐しません。String値として現れ
+る借用shape名 (objectキー、`class` / variant / enum名) は
+`_intern_str`を通してヘッダを得ます。`_str_len`のdebug `assert`
+が、`TAG_STRING`に誤タグ付けされたヘッダなしポインタを捕捉します。
 
-`String`/`StringView` は参照カウントを持ちません — RC の
-release-to-zero ではなく、tracing バックストップのみが回収します
-(Ch.13〜14 で理由と仕組みを扱います。Ch.13 の「traced-only」の注記を参
+`String`/`StringView`は参照カウントを持ちません — RCの
+release-to-zeroではなく、tracingバックストップのみが回収します
+(Ch.13〜14で理由と仕組みを扱います。Ch.13の「traced-only」の注記を参
 照)。
 
 ### StringView、StringLike、lazy graphemes
 
-3 つとも実装済みです。
+3つとも実装済みです。
 
 **`StringView`** は他の文字列のバイトに対する借用で、同じバイト/スカラー
-API と独自の `type_of` 名を持ちます。パラメータ専用ではなく**第一級の値**
-です — Object や Array に格納でき、返り値にでき、slice 元の束縛より長生き
-できます。バッキングを生かし続ける方法は backend ごとに違いますが、
-どちらも view が dangle しない形です:
+APIと独自の`type_of`名を持ちます。パラメータ専用ではなく**第一級の値**
+です — ObjectやArrayに格納でき、返り値にでき、slice元の束縛より長生き
+できます。バッキングを生かし続ける方法はbackendごとに違いますが、
+どちらもviewがdangleしない形です:
 
-- **interp** — `Value::StringView` が `StringViewPayload
-  { shared_ptr<const std::string> source; string_view sv; }` を持ちます。
-  `shared_ptr` が所有権のエッジで、複数の view が 1 つの source を共有します。
-- **JIT/AOT** — `TAG_STRINGVIEW` はヒープ上の `JitStringView
-  { const char* ptr; uint64_t len; const char* owner_base; }` (24 バイト。
-  codegen が長さを offset 8 で読むので `ptr`@0 / `len`@8 は固定) を指します。
-  `owner_base` はバッキング String の登録済み GC base ポインタで、バイト列が
-  GC 管理外 (リテラルの `.rodata`、intern 済みの名前) のときは `nullptr` です。
-  文字列は traced-only なので、sweep 中にバッキングを root するのはこの
+- **interp** — `Value::StringView`が`StringViewPayload
+  { shared_ptr<const std::string> source; string_view sv; }`を持ちます。
+  `shared_ptr`が所有権のエッジで、複数のviewが1つのsourceを共有します。
+- **JIT/AOT** — `TAG_STRINGVIEW`はヒープ上の`JitStringView
+  { const char* ptr; uint64_t len; const char* owner_base; }` (24バイト。
+  codegenが長さをoffset 8で読むので`ptr`@0 / `len`@8は固定) を指します。
+  `owner_base`はバッキングStringの登録済みGC baseポインタで、バイト列が
+  GC管理外 (リテラルの`.rodata`、intern済みの名前) のときは`nullptr`です。
+  文字列はtraced-onlyなので、sweep中にバッキングをrootするのはこの
   エッジです (`_jit_gc_enumerate_children`)。
 
-生成元は `slice` / `split` / `split_iter` / `view` / `iter` / `graphemes` で、
+生成元は`slice` / `split` / `split_iter` / `view` / `iter` / `graphemes`で、
 大きな文字列を反復してもステップごとのコピーが発生しないのはこのためです。
 
-**`StringLike`** は型ではなく注釈タグです。`x: StringLike` は `String` と
-`StringView` の両方を受けます (`Value::is_stringlike`)。多重ディスパッチの
+**`StringLike`** は型ではなく注釈タグです。`x: StringLike`は`String`と
+`StringView`の両方を受けます (`Value::is_stringlike`)。多重ディスパッチの
 特異度は注釈でスコアリングするので、「文字列のどちらの形でも」を表す
 ディスパッチタグとしても機能します。
 
-**`graphemes()`** は cpp-unicodelib の grapheme break テーブルを使った、
-拡張書記素クラスタ (UAX #29) の lazy イテレータです。1 クラスタ分の
-`StringView` を yield するので、クラスタ単位の走査もステップごとの
+**`graphemes()`** はcpp-unicodelibのgrapheme breakテーブルを使った、
+拡張書記素クラスタ (UAX #29) のlazyイテレータです。1クラスタ分の
+`StringView`をyieldするので、クラスタ単位の走査もステップごとの
 アロケーションなしで回ります。
 
-残るコスト: `StringView` に対する `contains` / `starts_with` / `ends_with`
-は呼び出しごとに NUL 終端の一時コピーを materialize します。他の String と
-同じく tracing backstop が回収するのでリークではありませんが、多数の view を
-ホットループで回す場合は先に `.to_string()` で 1 度だけ実体化してください。
+残るコスト: `StringView`に対する`contains` / `starts_with` / `ends_with`
+は呼び出しごとにNUL終端の一時コピーをmaterializeします。他のStringと
+同じくtracing backstopが回収するのでリークではありませんが、多数のviewを
+ホットループで回す場合は先に`.to_string()`で1度だけ実体化してください。
 
 ## 7. Regex
 
 ### ライブラリ選択
 
-エンジンは `vendor/cpp-regexlib` — culebra のために書き、その後
-単一ヘッダの独立ライブラリとして切り出したものです。RE2 は検討の上
-見送りました: 1 つの
-stdlib namespace のために重い vendor 依存になり、書記素クラスタ
+エンジンは`vendor/cpp-regexlib` — culebraのために書き、その後
+単一ヘッダの独立ライブラリとして切り出したものです。RE2は検討の上
+見送りました: 1つの
+stdlib namespaceのために重いvendor依存になり、書記素クラスタ
 マッチングを後付けするのは自前エンジンを書くより多くのコードになる
 ためです。
 
 ### エンジンモデル
 
-- **構造的に線形時間。** マッチングは leftmost-first (Perl の
-  alternation / quantifier 優先度) で、lazy DFA が走り、意味論の
-  フォールバックとして Thompson-NFA の Pike VM が走ります。どちらも
-  backtrack しないので catastrophic backtracking は起こりえません —
-  backreference が非対応なのも同じ設計判断の帰結です。
-- **マッチ単位はコードポイントではなく拡張書記素クラスタ**: `.` は
-  ユーザーが 1 文字と感じる単位を消費するので、絵文字の ZWJ 列に対する
-  `.` はクラスタ全体にマッチします。オフセットは元の UTF-8 subject への
+- **構造的に線形時間。** マッチングはleftmost-first (Perlの
+  alternation / quantifier優先度) で、lazy DFAが走り、意味論の
+  フォールバックとしてThompson-NFAのPike VMが走ります。どちらも
+  backtrackしないのでcatastrophic backtrackingは起こりえません —
+  backreferenceが非対応なのも同じ設計判断の帰結です。
+- **マッチ単位はコードポイントではなく拡張書記素クラスタ**: `.`は
+  ユーザーが1文字と感じる単位を消費するので、絵文字のZWJ列に対する
+  `.`はクラスタ全体にマッチします。オフセットは元のUTF-8 subjectへの
   バイトオフセットで、常にクラスタ境界に落ちます。コードポイント単位も
   選択できます。
-- Unicode テーブルはヘッダに生成済みなので、エンジンは何もリンクしません。
+- Unicodeテーブルはヘッダに生成済みなので、エンジンは何もリンクしません。
 
 ### surface area
 
-`Regex.compile(pattern, flags?)` が Regex オブジェクトを返し、
-`re.test/match/find/find_all/split/replace_all` がそのメソッドです。
-`Regex.escape` はリテラルをクォートします。`re"..."` リテラルは、flags を
-インライングループとしてパターンに畳み込んだ `compile` の糖衣です。
+`Regex.compile(pattern, flags?)`がRegexオブジェクトを返し、
+`re.test/match/find/find_all/split/replace_all`がそのメソッドです。
+`Regex.escape`はリテラルをクォートします。`re"..."`リテラルは、flagsを
+インライングループとしてパターンに畳み込んだ`compile`の糖衣です。
 
-Match はただのデータ Object — `{value, start, end, groups, named}` で、
-オフセットはバイト、名前付きキャプチャは `named` の下です。この形は
-`stdlib_interp.h` で組み立てられ JIT がミラーするので、どの backend でも
+MatchはただのデータObject — `{value, start, end, groups, named}`で、
+オフセットはバイト、名前付きキャプチャは`named`の下です。この形は
+`stdlib_interp.h`で組み立てられJITがミラーするので、どのbackendでも
 同じように読めます。
 
 ## 8. Tensor
 
 ### TensorImpl
 
-`Tensor` は `shared_ptr<TensorImpl>` — Op でタグ付けされた autograd
-テープのノードで、その値は `tl::array` (vendored な `cpp-tensorlib` の
+`Tensor`は`shared_ptr<TensorImpl>` — Opでタグ付けされたautograd
+テープのノードで、その値は`tl::array` (vendoredな`cpp-tensorlib`の
 配列ハンドル) です:
 
 - `op: Op` + `inputs: vector<shared_ptr<TensorImpl>>` — テープの辺
-- `shape: TensorShape`、`dtype: Dtype` (F32 のみ)
+- `shape: TensorShape`、`dtype: Dtype` (F32のみ)
 - `value: tl::array` — 構築のされ方に応じて、遅延グラフノード /
-  zero-copy ビュー / materialize 済みバッファのいずれか
+  zero-copyビュー / materialize済みバッファのいずれか
 - `grad`、`requires_grad`、`is_view`
 
-循環は構造上できません: `inputs` は入力方向にしか向かわず、`grad` は
-常に入力を持たない materialize 済みの `Const` なので、テープは RC だけ
+循環は構造上できません: `inputs`は入力方向にしか向かわず、`grad`は
+常に入力を持たないmaterialize済みの`Const`なので、テープはRCだけ
 で回収されます。
 
-ビュー (transpose、reshape、slice) は `is_view` を立てて base バッファ
-を共有するので zero-copy のままです。ビュー越しの in-place 書き込みは
-base を壊すため、`tensor_inplace_binop` が拒否します。
+ビュー (transpose、reshape、slice) は`is_view`を立ててbaseバッファ
+を共有するのでzero-copyのままです。ビュー越しのin-place書き込みは
+baseを壊すため、`tensor_inplace_binop`が拒否します。
 
 ### カーネルのルーティング
 
-culebra 側が autograd (VJP) 規則・`TensorNoGradGuard`・言語バインディング・
-broadcast 規則を持ち、`cpp-tensorlib` 側が遅延グラフ・peephole fusion・
-`eval` (トポロジカル)・デバイスバックエンド・buffer pool を持ちます。
-評価はすべて `tensor_eval_node` の choke point を通るので、バインディング
+culebra側がautograd (VJP) 規則・`TensorNoGradGuard`・言語バインディング・
+broadcast規則を持ち、`cpp-tensorlib`側が遅延グラフ・peephole fusion・
+`eval` (トポロジカル)・デバイスバックエンド・buffer poolを持ちます。
+評価はすべて`tensor_eval_node`のchoke pointを通るので、バインディング
 層に触れずにエンジンを差し替えられました。
 
-デバイスバックエンドは CPU (AVX2 / NEON カーネル。macOS では BLAS 形状の
-カーネルを Accelerate が担当) と GPU (macOS は Metal、Linux / Windows は
-CUDA) です。AOT ビルドは対応するランタイムアーカイブを拾います。バイナリ
-単位のゲーティングは `TL_RUNTIME_HOOKS` の opt-in を通るので、Tensor を
-使わないプログラムは GPU フレームワークもカーネルもリンクしません。
+デバイスバックエンドはCPU (AVX2 / NEONカーネル。macOSではBLAS形状の
+カーネルをAccelerateが担当) とGPU (macOSはMetal、Linux / Windowsは
+CUDA) です。AOTビルドは対応するランタイムアーカイブを拾います。バイナリ
+単位のゲーティングは`TL_RUNTIME_HOOKS`のopt-inを通るので、Tensorを
+使わないプログラムはGPUフレームワークもカーネルもリンクしません。
 
-デバイスの既定はエンジン側ではなく culebra 側のものです。`tl` は CPU で
-始まり、最初のテンソル生成時に `tensor_rt_bootstrap` が `auto` へ切り替え
-ます。load 時でなくそこで行うことで Tensor を使わないバイナリは無変更の
-まま済み、3 つの `use_*()` が立てる `tensor_device_chosen` フラグが、
-最初のテンソルより前にプログラムが選んだデバイスを bootstrap が上書き
+デバイスの既定はエンジン側ではなくculebra側のものです。`tl`はCPUで
+始まり、最初のテンソル生成時に`tensor_rt_bootstrap`が`auto`へ切り替え
+ます。load時でなくそこで行うことでTensorを使わないバイナリは無変更の
+まま済み、3つの`use_*()`が立てる`tensor_device_chosen`フラグが、
+最初のテンソルより前にプログラムが選んだデバイスをbootstrapが上書き
 しないようにしています。
 
-ビルド時の手順を持つのは CUDA だけです。`nvcc` が
-`kernels/tensorlib_cuda.cu` を PTX にコンパイルし、`bin2c` がそれを
-`cuda.h` の埋め込むバイト配列に変換します。CUDA 自体はリンクしません —
-ドライバは `dlopen`（Windows は `LoadLibrary` で `nvcuda.dll`）でロード
-され、PTX はそのドライバが JIT するので、リンク依存は `libdl` だけです。
-`CULEBRA_TENSOR_CUDA` が `AUTO` 既定なのはこのためで、ビルドには `nvcc`
-が要る一方、出来たバイナリは GPU もドライバも無い環境でそのまま動きます。
+ビルド時の手順を持つのはCUDAだけです。`nvcc`が
+`kernels/tensorlib_cuda.cu`をPTXにコンパイルし、`bin2c`がそれを
+`cuda.h`の埋め込むバイト配列に変換します。CUDA自体はリンクしません —
+ドライバは`dlopen`（Windowsは`LoadLibrary`で`nvcuda.dll`）でロード
+され、PTXはそのドライバがJITするので、リンク依存は`libdl`だけです。
+`CULEBRA_TENSOR_CUDA`が`AUTO`既定なのはこのためで、ビルドには`nvcc`
+が要る一方、出来たバイナリはGPUもドライバも無い環境でそのまま動きます。
 
-このスイッチはドライバと `culebra_rt_tensor` に必ず揃えて適用し、core
-archive には付けません。前者 2 つは tensorlib のバックエンド本体を実体化
-するので、揃っていないと interp/JIT と AOT で別デバイスに解決されます。
-core archive の weak choke (`tensor_eval_node`・`tensor_gpu_available`) は
-`tl` を odr-use しないので、Tensor を触らないバイナリからバックエンドも
-埋め込み PTX も外れたままになります。
+このスイッチはドライバと`culebra_rt_tensor`に必ず揃えて適用し、core
+archiveには付けません。前者2つはtensorlibのバックエンド本体を実体化
+するので、揃っていないとinterp/JITとAOTで別デバイスに解決されます。
+core archiveのweak choke (`tensor_eval_node`・`tensor_gpu_available`) は
+`tl`をodr-useしないので、Tensorを触らないバイナリからバックエンドも
+埋め込みPTXも外れたままになります。
 
 ### Broadcast
 
-標準的な NumPy スタイルの broadcasting: shape は右揃えされ、欠けた次元
-は size-1、size-1 次元は伸張します。broadcast 軸で stride をゼロに調整
-し、汎用の n 次元ループで反復することで実装します。
+標準的なNumPyスタイルのbroadcasting: shapeは右揃えされ、欠けた次元
+はsize-1、size-1次元は伸張します。broadcast軸でstrideをゼロに調整
+し、汎用のn次元ループで反復することで実装します。
 
 ### lazy shape (計画中のチューニング)
 
-reduction (軸に対する `sum`、`mean`) は、reshape-then-reduce が要求さ
-れると現状では中間バッファを materialize します。これらを fusion する
-lazy な shape-graph パスは、Tensor の定常状態チューニングの候補です。
+reduction (軸に対する`sum`、`mean`) は、reshape-then-reduceが要求さ
+れると現状では中間バッファをmaterializeします。これらをfusionする
+lazyなshape-graphパスは、Tensorの定常状態チューニングの候補です。
 
 ### dtype
 
-F32 のみ。F64 は削除されました (2026-07): Metal には存在せず、コンシュ
-ーマ向け NVIDIA GPU では 1/32〜1/64 の速度で走るため、CPU 専用 dtype
-になってしまうからです。`Dtype` enum は、将来の BF16 ストレージ型のた
-めの seam として残ります。スカラーの入口/出口点 (`.item()`、
-`.sum()`、`.to_array()`) は `Float` を surface します。
+F32のみ。F64は削除されました (2026-07): Metalには存在せず、コンシュ
+ーマ向けNVIDIA GPUでは1/32〜1/64の速度で走るため、CPU専用dtype
+になってしまうからです。`Dtype` enumは、将来のBF16ストレージ型のた
+めのseamとして残ります。スカラーの入口/出口点 (`.item()`、
+`.sum()`、`.to_array()`) は`Float`をsurfaceします。
 
 ### GPU
 
-GPU 専用の型はありません。同じ `Tensor` がどちらのデバイスでも動きます —
-バッファを所有しどのデバイス上にあるかを知っているのが culebra ではなく
-`tl::array` だからです。`Matrix` / `GTensor` として別プリミティブに分ける
-案は `TNode` が生の `shared_ptr<float[]>` を持っていた頃の計画で、
-`cpp-tensorlib` の採用でその理由が消えました。
+GPU専用の型はありません。同じ`Tensor`がどちらのデバイスでも動きます —
+バッファを所有しどのデバイス上にあるかを知っているのがculebraではなく
+`tl::array`だからです。`Matrix` / `GTensor`として別プリミティブに分ける
+案は`TNode`が生の`shared_ptr<float[]>`を持っていた頃の計画で、
+`cpp-tensorlib`の採用でその理由が消えました。
 
 選択はプロセスグローバルで実行時に切り替えられます — `Tensor.use_cpu()` /
-`use_gpu()` / `use_auto()`、および backend がビルドに含まれ到達可能かを返す
-`Tensor.gpu_available()`。デフォルトの `use_auto` は演算ごとに問題サイズで
+`use_gpu()` / `use_auto()`、およびbackendがビルドに含まれ到達可能かを返す
+`Tensor.gpu_available()`。デフォルトの`use_auto`は演算ごとに問題サイズで
 選びます (小さいテンソルはカーネル起動コストに負けるため)。
 
 ## 9. HTTP
 
 ### ライブラリ選択
 
-cpp-httplib (vendored) は、ブロッキングの HTTP/1.1、SSE、WebSocket を 1
-つのヘッダで提供します。TLS は静的リンクの OpenSSL (macOS は Homebrew の
-`openssl@3`、Linux はディストリの dev パッケージ) で、`CULEBRA_ENABLE_HTTP`
-オプションの背後にあります。async/await は採用*しません* — 並行はスレッド
+cpp-httplib (vendored) は、ブロッキングのHTTP/1.1、SSE、WebSocketを1
+つのヘッダで提供します。TLSは静的リンクのOpenSSL (macOSはHomebrewの
+`openssl@3`、Linuxはディストリのdevパッケージ) で、`CULEBRA_ENABLE_HTTP`
+オプションの背後にあります。async/awaitは採用*しません* — 並行はスレッド
 経由です。
 
 ### なぜ async/await でなくブロッキング + スレッドなのか
 
-- インタプリタ型の動的言語をまたぐ async/await は、我々が狙う規模で
+- インタプリタ型の動的言語をまたぐasync/awaitは、我々が狙う規模で
   は、わずかな利得のために大きな意味論的追加 (colored functions、
-  executor モデル) になる。
-- cpp-httplib は async を強制せずに必要なもの (SSE、WS) をすべてカバー
+  executorモデル) になる。
+- cpp-httplibはasyncを強制せずに必要なもの (SSE、WS) をすべてカバー
   する。
-- 数千同時接続というスケール上限は、Culebra が位置づけられているワー
-  クロード (CLI ツール、小規模サーバー、ホスト埋め込み) には十分。
+- 数千同時接続というスケール上限は、Culebraが位置づけられているワー
+  クロード (CLIツール、小規模サーバー、ホスト埋め込み) には十分。
 
 ### surface area
 
@@ -737,49 +737,49 @@ Http.server()                                     # -> srv.get/post/... + listen
 Http.sse(...) / Http.ws(...)                      # ストリーミングクライアント
 ```
 
-`Http.server()` はルーティング付きのサーバーオブジェクトを返します。
-`listen` はブロックし、`listen_async` はワーカープール上で走らせます
-(`Desktop` facade は async 側を使います)。どちらの側もブロッキング +
-スレッドで、async にはなりません。
+`Http.server()`はルーティング付きのサーバーオブジェクトを返します。
+`listen`はブロックし、`listen_async`はワーカープール上で走らせます
+(`Desktop` facadeはasync側を使います)。どちらの側もブロッキング +
+スレッドで、asyncにはなりません。
 
 ## 10. モジュールシステム
 
 ### ローダ
 
-`ModuleLoader` (`include/module_loader.h`) は interp / JIT / AOT が
-共有します。したがって 3 者は同じ評価順・同じキャッシュ・同じ I/O /
+`ModuleLoader` (`include/module_loader.h`) はinterp / JIT / AOTが
+共有します。したがって3者は同じ評価順・同じキャッシュ・同じI/O /
 パース / サイクルエラーを観測します。ローダ自身は何も評価せず、パース
-済みモジュールを返して各 backend に歩かせます。
+済みモジュールを返して各backendに歩かせます。
 
-`load_recursive` は `import` 文をたどる深さ優先探索です:
+`load_recursive`は`import`文をたどる深さ優先探索です:
 
 1. パスを正準化する (`resolve_module_path`。全コンポーネントがこのキー
-   で一致しないと register と lookup がすれ違う)。
+   で一致しないとregisterとlookupがすれ違う)。
 2. そのパスが進行中スタックにあればサイクルエラー、既にロード済みなら
    キャッシュ済みインデックスを返す。
-3. ソースを**ヒープ確保した** `shared_ptr<string>` に読み込む。囲む
-   `LoadedModule` が move されても `data()` が生き残る必要があるため —
-   AST のトークンはそのバイト列への `string_view` です。
-4. パース → `validate_module` → そのファイルの import を抽出し、自分を
+3. ソースを**ヒープ確保した** `shared_ptr<string>`に読み込む。囲む
+   `LoadedModule`がmoveされても`data()`が生き残る必要があるため —
+   ASTのトークンはそのバイト列への`string_view`です。
+4. パース → `validate_module` → そのファイルのimportを抽出し、自分を
    記録する**前に**各依存へ再帰する。こうすると依存が低いインデックス
    に並び、結果のベクタがトポロジカルソート済みになります。
 
-探索後、全ロード済みモジュールに `lint::check_module` を走らせます。
-健全な静的診断はどの backend が評価するより前にプログラムを中断する —
-これが診断を backend 非依存にしています。
+探索後、全ロード済みモジュールに`lint::check_module`を走らせます。
+健全な静的診断はどのbackendが評価するより前にプログラムを中断する —
+これが診断をbackend非依存にしています。
 
 ### サイクル検出
 
-進行中の `stack_` がそのままサイクル検出器です。まだスタック上にある
-パスに再入すると、サイクルを明示した `ImportError` を投げます。SCC の
-専用パスはありません — import グラフの DFS なら無償で得られます。共有の
-第 3 のファイルを介してリファクタしてください。
+進行中の`stack_`がそのままサイクル検出器です。まだスタック上にある
+パスに再入すると、サイクルを明示した`ImportError`を投げます。SCCの
+専用パスはありません — importグラフのDFSなら無償で得られます。共有の
+第3のファイルを介してリファクタしてください。
 
 ### モジュールのスコープ
 
-各依存は自分のスコープで評価され、トップレベル束縛は `export` が集めた
-名前を除いて非公開のままです。集められた名前は 1 つの immutable な
-export Object になり、import 側が選んだ名前に束縛されます。エントリ
+各依存は自分のスコープで評価され、トップレベル束縛は`export`が集めた
+名前を除いて非公開のままです。集められた名前は1つのimmutableな
+export Objectになり、import側が選んだ名前に束縛されます。エントリ
 モジュールは最後に評価され、呼び出し側のスコープを共有するので、その
 トップレベルは起動した側から見え続けます。
 
@@ -787,8 +787,8 @@ export Object になり、import 側が選んだ名前に束縛されます。�
 
 未解決識別子からグラフを導出する方式は試して取り下げました。明示的な
 文は、読者にとってもツールにとっても、そのファイルの依存を知るために
-見る場所が 1 箇所で済みます。`culebra lint` の未使用 import 警告 (と
-安全な `--fix`) が曖昧さなく出せるのも、AOT のバンドラと tree-shaker が
+見る場所が1箇所で済みます。`culebra lint`の未使用import警告 (と
+安全な`--fix`) が曖昧さなく出せるのも、AOTのバンドラとtree-shakerが
 推論ではなくパース時に確定したグラフで動けるのも同じ理由です。
 
 ## 11. ビルドと vendor
@@ -797,95 +797,95 @@ export Object になり、import 側が選んだ名前に束縛されます。�
 
 | ライブラリ | 目的 | リンケージ |
 |---|---|---|
-| `cpp-peglib` | PEG パーサ (Ch.2) | header-only |
-| `cpp-linenoise` | REPL 行エディタ | header-only |
-| `cpp-unicodelib` | Unicode テーブル (scalar、grapheme、case) | header-only |
+| `cpp-peglib` | PEGパーサ (Ch.2) | header-only |
+| `cpp-linenoise` | REPL行エディタ | header-only |
+| `cpp-unicodelib` | Unicodeテーブル (scalar、grapheme、case) | header-only |
 | `cpp-embedlib` | 静的アーカイブをドライババイナリに焼き込む (`cpp_embedlib_add()`) | header-only |
-| `cpp-regexlib` | Regex エンジン (Ch.7) | header-only |
-| `cpp-httplib` | HTTP スタック (Ch.9) | header-only (+ TLS 用の静的 OpenSSL) |
-| `cpp-tensorlib` | Tensor エンジンとデバイスバックエンド (Ch.8) | header-only |
-| `raylib` + `SDL` | `Canvas` と `Scene` のウィンドウ / 入力バックエンド | ソースからビルドする静的アーカイブ (下記のキャッシュ付き) |
-| `webview` | `Webview` / `Desktop` のネイティブ WebView ウィンドウ | header-only (+ OS の WebView フレームワーク) |
-| `sqlite` | `SQLite` namespace 用の SQLite amalgamation | in-tree でコンパイル |
+| `cpp-regexlib` | Regexエンジン (Ch.7) | header-only |
+| `cpp-httplib` | HTTPスタック (Ch.9) | header-only (+ TLS用の静的OpenSSL) |
+| `cpp-tensorlib` | Tensorエンジンとデバイスバックエンド (Ch.8) | header-only |
+| `raylib` + `SDL` | `Canvas`と`Scene`のウィンドウ / 入力バックエンド | ソースからビルドする静的アーカイブ (下記のキャッシュ付き) |
+| `webview` | `Webview` / `Desktop`のネイティブWebViewウィンドウ | header-only (+ OSのWebViewフレームワーク) |
+| `sqlite` | `SQLite` namespace用のSQLite amalgamation | in-treeでコンパイル |
 
-OpenSSL と OS 提供のフレームワークを除き、すべての依存は header-only か
-vendored なソースからのビルドなので、`culebra build` は自己完結型の
+OpenSSLとOS提供のフレームワークを除き、すべての依存はheader-onlyか
+vendoredなソースからのビルドなので、`culebra build`は自己完結型の
 バイナリを生成します。
 
 ### CMake 構造
 
-- `CMakeLists.txt` (トップレベル) — `culebra` ドライバ、任意の LLVM リ
-  ンケージ、base + 機能別のランタイムアーカイブ、embed テストを定義。
+- `CMakeLists.txt` (トップレベル) — `culebra`ドライバ、任意のLLVMリ
+  ンケージ、base + 機能別のランタイムアーカイブ、embedテストを定義。
 - `vendor/cpp-embedlib/cmake/cpp-embedlib.cmake` — `libculebra_rt.a`
   とその機能別アーカイブ (`libculebra_rt_tensor.a`、`_http`、
-  `_compress`) をドライバに焼き込むための `cpp_embedlib_add()` を提
+  `_compress`) をドライバに焼き込むための`cpp_embedlib_add()`を提
   供。
-- `tools/compress_asset.cc` — 埋め込み前に各アーカイブを deflate 圧縮
-  （ドライバ内で 33.8 MB のところ 6.9 MB）。圧縮するのはアーカイブだけ
-  です: 埋め込みバイトの約 95% を占め、かつ展開は `culebra build` 時に
-  fingerprint あたり 1 回で起動パスから外れているため。grammar blob・
-  stdlib preamble・埋め込み docs は通常実行で読むので、同じ取引は
-  約 1 MB と引き換えに起動レイテンシを払うことになります。
+- `tools/compress_asset.cc` — 埋め込み前に各アーカイブをdeflate圧縮
+  （ドライバ内で33.8 MBのところ6.9 MB）。圧縮するのはアーカイブだけ
+  です: 埋め込みバイトの約95% を占め、かつ展開は`culebra build`時に
+  fingerprintあたり1回で起動パスから外れているため。grammar blob・
+  stdlib preamble・埋め込みdocsは通常実行で読むので、同じ取引は
+  約1 MBと引き換えに起動レイテンシを払うことになります。
 
-機能オプションは namespace とそのアーカイブの両方をゲートします:
-`CULEBRA_ENABLE_JIT` (LLVM リンケージ。off ならドライバは ~23 MB で
-LLVM 依存なし。on なら ~82 MB)、`CULEBRA_ENABLE_HTTP`、
+機能オプションはnamespaceとそのアーカイブの両方をゲートします:
+`CULEBRA_ENABLE_JIT` (LLVMリンケージ。offならドライバは ~23 MBで
+LLVM依存なし。onなら ~82 MB)、`CULEBRA_ENABLE_HTTP`、
 `CULEBRA_ENABLE_SQLITE`、
-`CULEBRA_ENABLE_WEBVIEW` (既定 ON。GTK4 / WebKitGTK の dev パッケージ
-が無い Linux では自動的に無効化。要るのはヘッダだけで、エンジン自体は
-ウィンドウ生成時に `dlopen` する)、`CULEBRA_ENABLE_CANVAS_WINDOW` (macOS
-と Windows、および SDL3 のビルド依存が入っている Linux（Webview と同じ
-ように probe する）では既定 ON。環境変数
-`CULEBRA_CANVAS_WINDOW_DEFAULT=OFF` はジョブ内の全 configure でこの既定
-を反転させる。CI はこれで opt-out している)、そして窓ありの opt-in
+`CULEBRA_ENABLE_WEBVIEW` (既定ON。GTK4 / WebKitGTKのdevパッケージ
+が無いLinuxでは自動的に無効化。要るのはヘッダだけで、エンジン自体は
+ウィンドウ生成時に`dlopen`する)、`CULEBRA_ENABLE_CANVAS_WINDOW` (macOS
+とWindows、およびSDL3のビルド依存が入っているLinux（Webviewと同じ
+ようにprobeする）では既定ON。環境変数
+`CULEBRA_CANVAS_WINDOW_DEFAULT=OFF`はジョブ内の全configureでこの既定
+を反転させる。CIはこれでopt-outしている)、そして窓ありのopt-in
 `CULEBRA_ENABLE_SCENE`。
 
-窓ありの 2 つの namespace は同じ vendored SDL3 + raylib の静的ライブラリ
+窓ありの2つのnamespaceは同じvendored SDL3 + raylibの静的ライブラリ
 をリンクします。これらは自分自身のソースとターゲットプラットフォームに
-のみ依存し、culebra 側の build type / LTO / JIT 設定には依存しないので、
-`~/.cache/culebra/deps/<platform>-sdl<rev>-raylib<rev>/` に一度だけイン
-ストールされます (root は `CULEBRA_DEPS_CACHE` で変更可能)。同じキーに
-解決される build dir や worktree はすべて再ビルドせずにリンクし、
-submodule を bump すれば新しいキーの下に入るので stale な成果物を拾うこ
-とはありません。cold ビルドは staging dir にインストールし、
-`cmake/publish_dep.cmake` がそれを rename して置くので、キャッシュエン
-トリは原子的に出現し、別 worktree の並行 cold ビルドが書きかけのアーカ
+のみ依存し、culebra側のbuild type / LTO / JIT設定には依存しないので、
+`~/.cache/culebra/deps/<platform>-sdl<rev>-raylib<rev>/`に一度だけイン
+ストールされます (rootは`CULEBRA_DEPS_CACHE`で変更可能)。同じキーに
+解決されるbuild dirやworktreeはすべて再ビルドせずにリンクし、
+submoduleをbumpすれば新しいキーの下に入るのでstaleな成果物を拾うこ
+とはありません。coldビルドはstaging dirにインストールし、
+`cmake/publish_dep.cmake`がそれをrenameして置くので、キャッシュエン
+トリは原子的に出現し、別worktreeの並行coldビルドが書きかけのアーカ
 イブを読むことはありません。
 
 ### 依存ポリシー
 
-- パッケージ管理される依存よりも header-only の vendor ライブラリを優
-  先する。リポジトリは、C++23 コンパイラ (と JIT 用に任意で LLVM) 以外
-  のシステムパッケージなしで clone-and-build できるべき。HTTP 機能の
-  OpenSSL だけが唯一の例外。
-- `vendor/` は commit ごとに pin された git submodule。clone 直後は
-  `git submodule update --init --recursive` を先に走らせないとビルド
-  できない。(`sqlite` と `webview` は単一ファイルなので submodule では
+- パッケージ管理される依存よりもheader-onlyのvendorライブラリを優
+  先する。リポジトリは、C++23コンパイラ (とJIT用に任意でLLVM) 以外
+  のシステムパッケージなしでclone-and-buildできるべき。HTTP機能の
+  OpenSSLだけが唯一の例外。
+- `vendor/`はcommitごとにpinされたgit submodule。clone直後は
+  `git submodule update --init --recursive`を先に走らせないとビルド
+  できない。(`sqlite`と`webview`は単一ファイルなのでsubmoduleでは
   なくコミット済みソース。)
-- 新しい vendor ライブラリの追加には、この章に Why エントリが必要。
+- 新しいvendorライブラリの追加には、この章にWhyエントリが必要。
 
 ## 12. テストランナー
 
 `culebra test [paths...]` (`include/test_runner.h`) は、ディレクトリ
-引数を `test_*.cul` で走査し、ファイル引数はそのまま採用します。実行中
-だけ `test` / `@test` / `@parametrize` を ambient global として登録
-します — matcher 一族は言語レベルの global なので注入は不要です。
-フラグは `--filter` (名前の部分一致)、`--bail [n]`、`--list`、
+引数を`test_*.cul`で走査し、ファイル引数はそのまま採用します。実行中
+だけ`test` / `@test` / `@parametrize`をambient globalとして登録
+します — matcher一族は言語レベルのglobalなので注入は不要です。
+フラグは`--filter` (名前の部分一致)、`--bail [n]`、`--list`、
 `--reporter json`。
 
-レポータは 2 つ (`Reporter::Default` / `Reporter::Json`)。JSON 側は
-NDJSON — 1 イベント 1 オブジェクト — を吐き、テスト自身の stdout は
+レポータは2つ (`Reporter::Default` / `Reporter::Json`)。JSON側は
+NDJSON — 1イベント1オブジェクト — を吐き、テスト自身のstdoutは
 ストリームに混ぜずイベントの中に取り込みます。これが出力を機械可読に
 しています。
 
-**fixture は名前による依存性注入です。** テストの位置パラメータは
-周囲の環境に対して解決されるので、スコープ内の任意の `fn` が decorator
-なしで fixture になります。解決はテストごとにメモ化され (直接参照と
+**fixtureは名前による依存性注入です。** テストの位置パラメータは
+周囲の環境に対して解決されるので、スコープ内の任意の`fn`がdecorator
+なしでfixtureになります。解決はテストごとにメモ化され (直接参照と
 推移参照が同じインスタンスを共有し、テストをまたぐと作り直し)、fixture
-の循環は連鎖を添えた `CycleError` で検出されます。
+の循環は連鎖を添えた`CycleError`で検出されます。
 
-doctest ランナー (`include/doctest_runner.h`) がもう半分です。markdown
-から ` ```culebra ` の fenced ブロックを走査し、ブロック先頭の
+doctestランナー (`include/doctest_runner.h`) がもう半分です。markdown
+から` ```culebra ` の fenced ブロックを走査し、ブロック先頭の
 `# doctest:` ディレクティブを読み、`# =>` / `# => |` マーカー (throw 期待は
 `# !!`) から期待 stdout を組み立てます。
 現在解釈されるのは `skip` のみで、`compile-only` と backend フィルタは
@@ -1519,92 +1519,92 @@ computation オブジェクトとドライバは return-tag プロトコルを�
 各 `_step(rv)` は、何が起きたかをドライバへ伝えるタグを返します。
 
 ```
-0 = DONE      self._eff_val に computation の結果が入る
-1 = SUSPEND   self._eff_op / self._eff_args が perform を表す
-2 = DELEGATE  self._eff_delegate が driving 対象のサブ computation
+0 = DONE      self._eff_valにcomputationの結果が入る
+1 = SUSPEND   self._eff_op / self._eff_argsがperformを表す
+2 = DELEGATE  self._eff_delegateがdriving対象のサブcomputation
 ```
 
-2 つの構文は変換時に — 対称的に、どのバックエンドも誤コンパイルしない
-よう — 拒否されます: 制御フローの条件や iterable の中の `perform`、およ
-び外側の束縛をキャプチャする入れ子の `handle` です。
+2つの構文は変換時に — 対称的に、どのバックエンドも誤コンパイルしない
+よう — 拒否されます: 制御フローの条件やiterableの中の`perform`、およ
+び外側の束縛をキャプチャする入れ子の`handle`です。
 
-この機能は完全に source-to-source なので、そのコストはバックエンドの複
+この機能は完全にsource-to-sourceなので、そのコストはバックエンドの複
 雑さではなく、パーサが噛み砕く生成ソース量として現れます。
-`CULEBRA_TRANSFORM_STATS=1` は各変換が emit する culebra ソース量を報告
-します (`=2` は lowering 後のソースそのものを出力します)。
+`CULEBRA_TRANSFORM_STATS=1`は各変換がemitするculebraソース量を報告
+します (`=2`はlowering後のソースそのものを出力します)。
 
 ## 17. Net: 生ソケット
 
 ### ロジックの置き場所
 
-`include/net.h` は `http.h` / `sqlite.h` / `proc.h` と同じ形の値中立
-コアです。`Value` / `JitValue` / GC 型に依存しないので、
-`stdlib_interp.h` と `stdlib_jit.h` が互いを引き込まずに include でき
-ます。バックエンド側は値のマーシャリングと `IoStatus` の解釈だけを行い
+`include/net.h`は`http.h` / `sqlite.h` / `proc.h`と同じ形の値中立
+コアです。`Value` / `JitValue` / GC型に依存しないので、
+`stdlib_interp.h`と`stdlib_jit.h`が互いを引き込まずにincludeでき
+ます。バックエンド側は値のマーシャリングと`IoStatus`の解釈だけを行い
 ます。
 
 フレーミング (`read` / `read_line` / `read_exact` / `read_all`) は、
-2 つのアダプタではなくコア側にソケット単位の読み取りバッファとともに
+2つのアダプタではなくコア側にソケット単位の読み取りバッファとともに
 置いています。これが「両方を注意深く書いたからバックエンドが一致する」
-と「実装が 1 つしかないから一致する」の違いです。重複するのはエラーの
-*文言* だけ (呼び出し地点ごとの `ctx` 文字列) で、そこは
-`tests/test_net.cul` のスイープが固定します。
+と「実装が1つしかないから一致する」の違いです。重複するのはエラーの
+*文言* だけ (呼び出し地点ごとの`ctx`文字列) で、そこは
+`tests/test_net.cul`のスイープが固定します。
 
 ### ブロッキング、ノンブロッキング、Ctrl+C
 
 ソケットは内部的にノンブロッキングで、すべての操作が「`wait_ready()`
-してからリトライ」です。理由は 2 つ:
+してからリトライ」です。理由は2つ:
 
-- poll/select の ready 通知はあくまで助言的 — その裏でブロッキング
-  `recv()` を呼ぶとタイムアウトを超えて止まりうる。
-- `wait_ready()` は 100 ms 刻みでポーリングして `throw_if_interrupted()`
-  を呼ぶので、ブロック中の `accept` / `read` が interp・JIT・AOT のいず
-  れでも協調的 `Interrupted` を送出する。JIT には文と文の間のセーフ
+- poll/selectのready通知はあくまで助言的 — その裏でブロッキング
+  `recv()`を呼ぶとタイムアウトを超えて止まりうる。
+- `wait_ready()`は100 ms刻みでポーリングして`throw_if_interrupted()`
+  を呼ぶので、ブロック中の`accept` / `read`がinterp・JIT・AOTのいず
+  れでも協調的`Interrupted`を送出する。JITには文と文の間のセーフ
   ポイントがないため、呼び出し後のチェックでは対称にならない
-  (`proc.h` と同じ理屈)。
+  (`proc.h`と同じ理屈)。
 
 ### ハンドルテーブル
 
-スクリプト側のハンドルは生 fd ではなく thread-local テーブルへの
-`int64` インデックスです。偽造・失効したインデックスは境界チェックで
-穏当なエラーになり、決して参照解決されません (`sqlite.h` や File と同
-じ姿勢)。thread-local で正しいのは、ソケットハンドルが
-`__nonsendable__` だからです — アイソレートを越えない、つまりスレッド
-を越えません。生 fd は intern されるまで `FdGuard` が所有するので、
-`wait_ready()` から送出される `Interrupted` を含め、どのエラー経路でも
+スクリプト側のハンドルは生fdではなくthread-localテーブルへの
+`int64`インデックスです。偽造・失効したインデックスは境界チェックで
+穏当なエラーになり、決して参照解決されません (`sqlite.h`やFileと同
+じ姿勢)。thread-localで正しいのは、ソケットハンドルが
+`__nonsendable__`だからです — アイソレートを越えない、つまりスレッド
+を越えません。生fdはinternされるまで`FdGuard`が所有するので、
+`wait_ready()`から送出される`Interrupted`を含め、どのエラー経路でも
 リークしません。
 
 ### 並行 serve: 越えるのは fd で、ハンドルではない
 
-`listener.serve(handler, workers:)` は呼び出しスレッドで accept し、
-ハンドラをプールで実行します。各ワーカーが自分の culebra ランタイムを
-持つ — httplib を除いた `Http.server` と同じモデルです。要点は、ソケット
-ハンドルが `__nonsendable__` で thread-local テーブルに住むため、ワーカー
-に *渡せない* ことです。境界を越えるのは accept した生の **fd** で、
-ワーカーはそれを自分のテーブルに intern してハンドルを作ります。不変条件
+`listener.serve(handler, workers:)`は呼び出しスレッドでacceptし、
+ハンドラをプールで実行します。各ワーカーが自分のculebraランタイムを
+持つ — httplibを除いた`Http.server`と同じモデルです。要点は、ソケット
+ハンドルが`__nonsendable__`でthread-localテーブルに住むため、ワーカー
+に *渡せない* ことです。境界を越えるのはacceptした生の **fd** で、
+ワーカーはそれを自分のテーブルにinternしてハンドルを作ります。不変条件
 は例外扱いにするのではなく、保たれたままです。
 
-ハンドラは `serve` の時点で 1 度だけシリアライズされ (だから非 Sendable
+ハンドラは`serve`の時点で1度だけシリアライズされ (だから非Sendable
 なハンドラは最初の接続時ではなくその場で失敗します)、ワーカーごとに再構築
-されます。Http サーバのルートハンドラとまったく同じです。
+されます。Httpサーバのルートハンドラとまったく同じです。
 
-バックプレッシャーはキューが担います。ジョブキューが満杯の間 `submit` が
-ブロックするので、速い accept ループがワーカーを際限なく追い越すことは
-ありません (実際のバッファはカーネルの listen backlog です)。抜けるとき —
-Ctrl+C は `Interrupted` の送出として抜けます — プールのデストラクタが、
-まだ始まっていない接続を破棄し、実行中のものを join します。
+バックプレッシャーはキューが担います。ジョブキューが満杯の間`submit`が
+ブロックするので、速いacceptループがワーカーを際限なく追い越すことは
+ありません (実際のバッファはカーネルのlisten backlogです)。抜けるとき —
+Ctrl+Cは`Interrupted`の送出として抜けます — プールのデストラクタが、
+まだ始まっていない接続を破棄し、実行中のものをjoinします。
 
 ### AOT の usage-gating 軸を増やさない
 
-Tensor / Http / Compress / SQLite と違い、`Net` は外部ライブラリを一切
-引き込みません (素の BSD ソケット、Windows では `ws2_32` のみ)。weak
-スタブにするものも force-load するものもないので、base ランタイム
-アーカイブに同居し、`aot_scan.h` に `aot_uses_net` は増えません。
+Tensor / Http / Compress / SQLiteと違い、`Net`は外部ライブラリを一切
+引き込みません (素のBSDソケット、Windowsでは`ws2_32`のみ)。weak
+スタブにするものもforce-loadするものもないので、baseランタイム
+アーカイブに同居し、`aot_scan.h`に`aot_uses_net`は増えません。
 
 ### プラットフォーム上の注意
 
-Windows では `WSAPoll()` ではなく `select()` で待ちます (`WSAPoll` は
-ノンブロッキング connect の失敗を報告しないため)。SIGPIPE はソケット
+Windowsでは`WSAPoll()`ではなく`select()`で待ちます (`WSAPoll`は
+ノンブロッキングconnectの失敗を報告しないため)。SIGPIPEはソケット
 単位 (`SO_NOSIGPIPE`) か送信単位 (`MSG_NOSIGNAL`) で抑止します。
 Emscripten (Playground) ビルドに生ソケットはないので、エミュレートされた
 呼び出しで中途半端に動くのではなく、全エントリポイントが最初にその旨を

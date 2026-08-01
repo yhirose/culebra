@@ -1,22 +1,22 @@
 # Culebra ツール
 
-`culebra` バイナリはツールチェーンそのものです。プログラムを実行する同じ
+`culebra`バイナリはツールチェーンそのものです。プログラムを実行する同じ
 実行ファイルが、テストランナー・リンタ・フォーマッタ・デバッグアダプタ、
-そしてリファレンス文書そのものも兼ねています。この文書はその 5 つの
+そしてリファレンス文書そのものも兼ねています。この文書はその5つの
 開発用サブコマンドのリファレンスです。
 
 | サブコマンド | 役割 | 参照 |
 |---|---|---|
-| `culebra test [paths...]` | テストと doctest を実行する | [§1](#1-テスト-culebra-test) |
+| `culebra test [paths...]` | テストとdoctestを実行する | [§1](#1-テスト-culebra-test) |
 | `culebra lint [paths...]` | 実行せずに静的な問題を報告する | [§2](#2-lint-culebra-lint) |
 | `culebra fmt [paths...]` | ソースを正準スタイルに整形する | [§3](#3-フォーマット-culebra-fmt) |
-| `culebra dap` | Debug Adapter Protocol を stdio で話す | [§4](#4-デバッグ-culebra-dap) |
+| `culebra dap` | Debug Adapter Protocolをstdioで話す | [§4](#4-デバッグ-culebra-dap) |
 | `culebra docs [topic]` | 埋め込まれたリファレンスを読む・検索する | [§5](#5-ドキュメントを読む-culebra-docs) |
-| `culebra build <in.cul> -o <out>` | AOT コンパイルして単体実行ファイルを作る | [`deployment.ja.md` §1](deployment.ja.md#1-standalone-バイナリビルドculebra-build) |
-| `culebra wrap` | 自前の C++ クラスを組み込んだ拡張バイナリを作る | [`deployment.ja.md` §3](deployment.ja.md#3-c-ライブラリのラッピングculebra-wrap) |
+| `culebra build <in.cul> -o <out>` | AOTコンパイルして単体実行ファイルを作る | [`deployment.ja.md` §1](deployment.ja.md#1-standalone-バイナリビルドculebra-build) |
+| `culebra wrap` | 自前のC++ クラスを組み込んだ拡張バイナリを作る | [`deployment.ja.md` §3](deployment.ja.md#3-c-ライブラリのラッピングculebra-wrap) |
 
-素の `culebra [flags] script.cul` 形式 — `--jit`・`-O0`..`-O3`・`--ast`・
-`--shell` など — は
+素の`culebra [flags] script.cul`形式 — `--jit`・`-O0`..`-O3`・`--ast`・
+`--shell`など — は
 [言語仕様 §22](language.ja.md#22-コマンドラインインタフェース) が規定します。
 同じツール群の読み物としての導入は
 [`guide.ja.md` §15](guide.ja.md#15-ツール-test-lint-fmt-デバッグ) にあります。
@@ -40,15 +40,15 @@
 
 ## 1. テスト (`culebra test`)
 
-`culebra test [paths...]` はテストファイルを探索して実行します。`test()`・
+`culebra test [paths...]`はテストファイルを探索して実行します。`test()`・
 `@test`・`@parametrize`・マッチャ群・依存注入によるフィクスチャがすべて
 使えます。
 
 ### テストの書き方
 
-書き方は 3 通りあります。呼び出し形式と `@test` デコレータは等価なので、
-呼び出し側が読みやすい方を選んでください。`@parametrize` はケースごとに
-1 つのテストを登録します。
+書き方は3通りあります。呼び出し形式と`@test`デコレータは等価なので、
+呼び出し側が読みやすい方を選んでください。`@parametrize`はケースごとに
+1つのテストを登録します。
 
 ```culebra
 # doctest: skip
@@ -74,11 +74,11 @@ fn adds_correctly(a, b, want) {
 }
 ```
 
-**`describe` のネストはありません。** ファイルパス（`tests/strings/`）と
-テスト名中の `/`（`"Array/push: appends element"`）でグループ化します。
+**`describe`のネストはありません。** ファイルパス（`tests/strings/`）と
+テスト名中の`/`（`"Array/push: appends element"`）でグループ化します。
 
-**フィクスチャは DI で。** テストの位置引数は周囲の環境から名前で解決され
-ます。env にある任意の関数がフィクスチャになれ、デコレータは不要です。
+**フィクスチャはDIで。** テストの位置引数は周囲の環境から名前で解決され
+ます。envにある任意の関数がフィクスチャになれ、デコレータは不要です。
 フィクスチャ自身がフィクスチャを取ることもできます。
 
 ```culebra
@@ -92,10 +92,10 @@ fn user_has_name(user) {
 }
 ```
 
-1 つのテストの中では各フィクスチャは**一度だけ**評価され、直接・推移的な
+1つのテストの中では各フィクスチャは**一度だけ**評価され、直接・推移的な
 複数の言及が同じインスタンスを共有します。テストをまたぐと新しく作られます。
 
-**後始末はクラスの `drop` で。** 後始末が要るリソースは `drop` メソッドを
+**後始末はクラスの`drop`で。** 後始末が要るリソースは`drop`メソッドを
 持つクラスに包みます（[`language.ja.md` §17](language.ja.md#17-メモリモデル)）。
 テスト終了時にフィクスチャキャッシュが解放されると、ランタイムの参照カウント
 による確定処理が走ります。
@@ -118,16 +118,16 @@ fn user_count(db) {
 }
 ```
 
-フィクスチャ本体に書いた `defer` はフィクスチャ関数が return した時点
-（テスト実行より前）で発火してしまうので、後始末にはクラスの `drop` が
+フィクスチャ本体に書いた`defer`はフィクスチャ関数がreturnした時点
+（テスト実行より前）で発火してしまうので、後始末にはクラスの`drop`が
 適切です。ファイルをまたいで共有する長命な状態（一度だけ読み込むモデル等）は
 モジュールのトップレベルに置きます。モジュールシステムが束縛をキャッシュする
 ためです。
 
-**マッチャ。** 表明にはマッチャ群を使います。`assert` キーワードや組み込みは
-ありません。マッチャは **3 バックエンド共通のグローバル**（`inspect` や
-`Math` と同じく全環境に束縛される）なので、`culebra script.cul`・
-`culebra --jit script.cul`・`culebra build`・`culebra test` のいずれでも
+**マッチャ。** 表明にはマッチャ群を使います。`assert`キーワードや組み込みは
+ありません。マッチャは **3バックエンド共通のグローバル**（`inspect`や
+`Math`と同じく全環境に束縛される）なので、`culebra script.cul`・
+`culebra --jit script.cul`・`culebra build`・`culebra test`のいずれでも
 同じように動きます:
 
 ```culebra
@@ -137,21 +137,21 @@ assert_throws("TypeError", fn() { let _ = 1 + 'b' })
 assert_close(0.1 + 0.2, 0.3, 1e-9)      # |a - b| <= tol
 ```
 
-マッチャの全一覧（`assert_true`/`false`/`ne`/`lt`/`le`/`gt`/`ge` と
-`__eq__`/`__lt__` のディスパッチ規則）は
+マッチャの全一覧（`assert_true`/`false`/`ne`/`lt`/`le`/`gt`/`ge`と
+`__eq__`/`__lt__`のディスパッチ規則）は
 [`stdlib.ja.md` §13](stdlib.ja.md#13-matchers)。
 
-**本番の不変条件。** テストスイート外の `if (!cond) throw {...}` 検査は
-`if`/`throw` を直接書きます（Go 流。
+**本番の不変条件。** テストスイート外の`if (!cond) throw {...}`検査は
+`if`/`throw`を直接書きます（Go流。
 [`language.ja.md` §15](language.ja.md#15-エラー処理) 参照）。本番ビルドで
-無効化する `assert` キーワードのようなものはありません。
+無効化する`assert`キーワードのようなものはありません。
 
 ### 実行
 
-このサブコマンド経由で起動すると、`test` / `@test` / `@parametrize` が常時
-使えるマッチャ群と並んで**環境に備わったグローバル**になります（import 不要）。
-これは `inspect` / `print` がスクリプト実行モードでは備わっている一方
-`culebra::environment()` には無いのと同じ考え方です。
+このサブコマンド経由で起動すると、`test` / `@test` / `@parametrize`が常時
+使えるマッチャ群と並んで**環境に備わったグローバル**になります（import不要）。
+これは`inspect` / `print`がスクリプト実行モードでは備わっている一方
+`culebra::environment()`には無いのと同じ考え方です。
 
 ```sh
 culebra test                       # カレントディレクトリから探索して実行
@@ -165,11 +165,11 @@ culebra test --doc docs            # markdown 中の doctest を実行
 ```
 
 探索規則: ファイルを指すパスはそのまま対象になり、ディレクトリを指すパスは
-`test_*.cul` にマッチするファイルを再帰的に探します。終了コードは全て通れば
-`0`、1 つでも失敗すれば `1` です。
+`test_*.cul`にマッチするファイルを再帰的に探します。終了コードは全て通れば
+`0`、1つでも失敗すれば`1`です。
 
-**レポータ。** 既定は人間向けです。`--reporter json` は 1 行 1 JSON
-オブジェクト（NDJSON）を出力します。エージェントループや CI に向きます:
+**レポータ。** 既定は人間向けです。`--reporter json`は1行1 JSON
+オブジェクト（NDJSON）を出力します。エージェントループやCIに向きます:
 
 ```
 {"event":"test_pass","name":"adds_correctly","source":"tests/test_math.cul","stdout":""}
@@ -178,13 +178,13 @@ culebra test --doc docs            # markdown 中の doctest を実行
 {"event":"run_end","passed":42,"failed":1,"errored_files":0,"bailed":false}
 ```
 
-テスト内のユーザ `inspect(...)` は NDJSON ストリームに混ざらず、イベントの
-`stdout` フィールドに取り込まれます。失敗イベントには失敗行を `>` で示した
-`snippet` が付きます。
+テスト内のユーザ`inspect(...)`はNDJSONストリームに混ざらず、イベントの
+`stdout`フィールドに取り込まれます。失敗イベントには失敗行を`>`で示した
+`snippet`が付きます。
 
 ### doctest
 
-`culebra test --doc <path>` は `<path>` 配下の markdown からすべての
+`culebra test --doc <path>`は`<path>`配下のmarkdownからすべての
 ` ```culebra ` ブロックを取り出し、新しいインタプリタで実行して、下記の
 マーカーと出力を突き合わせます。`guide.ja.md`・`language.ja.md`・
 `stdlib.ja.md` の全ブロックがこの規約に従っています:
@@ -227,8 +227,8 @@ culebra lint app.cul
 # app.cul:12:7: warning: unused variable 'tmp'
 # app.cul:20:3: error: undefined variable 'reuslt'
 
-culebra lint .          # カレントディレクトリ配下の .cul を再帰的に
-                        # (`culebra fmt -i .` と同じ)
+culebra lint .          # カレントディレクトリ配下の .culを再帰的に
+                        # (`culebra fmt -i .`と同じ)
 ```
 
 `.cul` を 1 つも含まないパスは clean ではなく exit 2 になります。ディレクトリ
@@ -297,8 +297,8 @@ culebra lint --fix joined.cul
 ```bash
 culebra fmt app.cul          # 整形結果を標準出力へ
 culebra fmt -i app.cul       # ファイルをその場で書き換え
-culebra fmt -i .             # カレントディレクトリ配下の .cul を全て整形
-culebra fmt --check app.cul  # 未整形なら exit 1（CI ゲート）
+culebra fmt -i .             # カレントディレクトリ配下の .culを全て整形
+culebra fmt --check app.cul  # 未整形ならexit 1（CIゲート）
 culebra fmt -l src/*.cul     # 変更されるファイルを列挙
 cat app.cul | culebra fmt -  # stdin -> stdout（エディタの保存時整形）
 ```
@@ -363,7 +363,7 @@ Culebra は [Debug Adapter Protocol](https://microsoft.github.io/debug-adapter-p
 ステップ実行・変数の確認をビジュアルに行えます。1 つのアダプタで全エディタに対応します。
 
 ```
-culebra dap        # stdin/stdout で DAP を話す
+culebra dap        # stdin/stdoutでDAPを話す
 ```
 
 手で実行することは稀で、通常はエディタが起動します（下記のエディタ別セットアップ参照）。
@@ -542,9 +542,9 @@ misc/zed/install.sh
 
 ```
 culebra docs                     # トピック一覧（サイズの目安つき）
-culebra docs stdlib              # 1 トピックを表示
+culebra docs stdlib              # 1トピックを表示
 culebra docs -g 'Math.wrap'      # 一致したセクションを表示
-culebra docs stdlib -g 'wrap'    # 1 トピックだけ検索
+culebra docs stdlib -g 'wrap'    # 1トピックだけ検索
 culebra docs --ja ...            # 日本語版
 ```
 
@@ -553,7 +553,7 @@ culebra docs --ja ...            # 日本語版
 書けます:
 
 ```
-culebra docs -g '<名前>' >/dev/null || echo "そんな API は無い"
+culebra docs -g '<名前>' >/dev/null || echo "そんなAPIは無い"
 ```
 
 （ここに実際の名前を書くと、それ自身を検索することになります。この
@@ -599,7 +599,7 @@ culebra docs agent >> .github/copilot-instructions.md  # GitHub Copilot
 culebra docs agent >> AGENTS.md                        # Codex, Cursor
 ```
 
-追記先の一覧は stdout ではなく stderr に出るので、リダイレクトには
-markdown だけが入ります。`agent` も `llm` も横断検索には参加しません
-（どちらも他のトピックを凝縮したもので、同じ API が二重に出ます）。
+追記先の一覧はstdoutではなくstderrに出るので、リダイレクトには
+markdownだけが入ります。`agent`も`llm`も横断検索には参加しません
+（どちらも他のトピックを凝縮したもので、同じAPIが二重に出ます）。
 名前を指定すれば検索できます: `culebra docs agent -g …`。

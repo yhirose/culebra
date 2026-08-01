@@ -1,14 +1,14 @@
-Culebra コンテキストパック
+Culebraコンテキストパック
 ==========================
 
-正しい Culebra を書くために必要なものを 1 ファイルにまとめたもの:
+正しいCulebraを書くために必要なものを1ファイルにまとめたもの:
 構文、他言語から**持ち込むと外れる**習慣、そして標準ライブラリの全
 シグネチャ。凝縮元のリファレンス
 ([`guide.ja.md`](guide.ja.md)、[`language.ja.md`](language.ja.md)、
-[`stdlib.ja.md`](stdlib.ja.md)) は合計 15 万トークン規模で、これは
+[`stdlib.ja.md`](stdlib.ja.md)) は合計15万トークン規模で、これは
 そのうちプロンプトに載る部分です。
 
-以下の ` ```culebra ` ブロックはすべて `culebra test --doc docs` が
+以下の` ```culebra ` ブロックはすべて `culebra test --doc docs` が
 実行するので、実装から乖離することはありません。行末の
 `# => <値>` は検証済みの stdout、`# !! <パターン>` は検証済みの throw
 です。§4 は `just gen-llm-context` がリファレンスから生成します —
@@ -29,9 +29,9 @@ Culebra コンテキストパック
 culebra prog.cul                 # ツリーウォーク型インタプリタ
 culebra --jit prog.cul           # LLVM ORC JIT — 出力は同一
 culebra build prog.cul -o prog   # AOT、自己完結バイナリ
-culebra test                     # cwd 以下の test_*.cul を全実行
+culebra test                     # cwd以下のtest_*.culを全実行
 culebra fmt -i .                 # その場で整形 (スタイル指定は無し)
-culebra lint .                   # 静的検査; 警告 1 / エラー 2 で exit
+culebra lint .                   # 静的検査; 警告1 / エラー2でexit
 culebra docs -g 'Math.wrap'      # リファレンスから署名を引く
 ```
 
@@ -68,7 +68,7 @@ exit 1 になるので、出力を読まずに API の実在を判定できま�
 x = 1                # 新規不変束縛、または外側を再代入
 let y = 2            # 不変; 外側のシャドウは不可
 mut z = 3            # 可変
-z = 4                # bare 再代入
+z = 4                # bare再代入
 z += 1               # -= *= /= %= **= @= も同様
 inspect(z)           # => 5
 ```
@@ -118,7 +118,7 @@ label = match n {
 }
 inspect(label)                   # => 'small'
 
-grade = cond {                   # 主語のない match
+grade = cond {                   # 主語のないmatch
   n >= 90 => 'A',
   n >= 5  => 'B',
   _       => 'C'
@@ -128,7 +128,7 @@ inspect(n > 5 ? 'big' : 'small') # => 'big'
 ```
 
 ```culebra
-for i in 0..3 { inspect(i) }     # 半開; 0..=2 は閉区間; `by k` で刻む
+for i in 0..3 { inspect(i) }     # 半開; 0..=2は閉区間; `by k`で刻む
 # => |
 # 0
 # 1
@@ -164,7 +164,7 @@ inspect(add(2, 3))               # => 5
 typed = fn (a: Long, b: Long) -> Long { a + b }
 inspect(typed(2, 3))             # => 5
 
-square = |x| x * x               # lambda の body は単一式のみ
+square = |x| x * x               # lambdaのbodyは単一式のみ
 inspect(square(7))               # => 49
 
 fib = fn (x) { if x < 2 { x } else { fn(x - 2) + fn(x - 1) } }
@@ -643,5 +643,5 @@ fn adds_each(a, b, want) { assert_eq(a + b, want) }
 
 - 理由付きのチュートリアル: [`guide.ja.md`](guide.ja.md)
 - 形式文法と評価規則: [`language.ja.md`](language.ja.md)
-- 散文付きの完全な API リファレンス: [`stdlib.ja.md`](stdlib.ja.md)
+- 散文付きの完全なAPIリファレンス: [`stdlib.ja.md`](stdlib.ja.md)
 - バイナリビルドと埋め込み: [`deployment.ja.md`](deployment.ja.md)
