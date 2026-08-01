@@ -52,6 +52,7 @@ difftest・AOT・leak 系・wrap はそこで必ず走る。ローカルで全�
 | rebase 後の再検証（textual 無衝突） | `just test-dev` |
 | 通常のコード変更 | `just test-dev` |
 | **Canvas/Scene の window backend、AOT gating、runtime archive** | **`just test`**（+ CMakeLists/wrap なら `just test wrap`） |
+| **`Runtime` の teardown、GC heap、slab allocator** | **`just test-assert`** — 全レーンが `Release`（`-DNDEBUG`）で木の assert は 1 度も走らない。これだけが `NDEBUG` なしでビルドして同じスイープを回す |
 | docs | `just doctest` |
 | push 後 | **CI の両 OS を確認**（toolchain 差異はここでしか出ない） |
 
@@ -65,6 +66,10 @@ difftest・AOT・leak 系・wrap はそこで必ず走る。ローカルで全�
 ジョブが Linux で window ON をビルドする**（SDL3 の build deps を入れて CMake 既定に任せる）。
 window ON ビルドでの headless 動作・AOT の `culebra_rt_canvas` force-load・Xvfb 下の実窓生成まで見る。
 `release.yml` も window ON だが `v*` tag でしか走らない（tag はまだ 0 件）。
+
+**`linux-assert` ジョブ**が Ubuntu で `just test-assert` を回す（`NDEBUG` なしビルド + 同じスイープ）。
+assert が本当に compile-in されたかを binary 内の assert 文字列 grep で検証してから走るので、
+`NDEBUG` が戻っても緑にならない。
 
 ### 並走時のマシン占有
 

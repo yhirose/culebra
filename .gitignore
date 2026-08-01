@@ -41,6 +41,7 @@ build/
 build-dev/
 build-gate/
 build-asan/
+build-assert/
 build-no-jit/
 build-gfx/
 raylib_ext_build/

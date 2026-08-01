@@ -55,6 +55,7 @@ Testing
 ```bash
 just test               # commit gate: interp vs JIT vs AOT + embedding smoke
 just test wrap          # `culebra wrap` end-to-end (not in the gate; see below)
+just test-assert        # the same sweep with asserts live (not in the gate)
 just doctest            # run the `# =>` doctests in docs and tests/doctest
 just difftest           # differential interp-vs-JIT corpus (tools/difftest)
 just perf               # microbench regression check (tests/perf/*.cul)
@@ -68,6 +69,13 @@ into its own cache dir, which roughly doubles the gate's wall time to guard a
 path only a `culebra wrap`, `CMakeLists.txt`, or AOT-runtime change can break.
 Run `just test wrap` when you touch one of those; CI runs it on every Ubuntu
 build (`CULEBRA_TEST_WRAP=1`).
+
+Every lane above is `CMAKE_BUILD_TYPE=Release`, so `NDEBUG` compiles the tree's
+asserts away — and they check internal invariants no test can observe from
+script level, like a cross-Runtime slab free. `just test-assert` runs the same
+sweep against a build without it (into `build-assert/`); CI runs it on Ubuntu
+(`linux-assert`). Reach for it when touching `Runtime` teardown, the GC heap,
+or the slab allocator.
 
 Grammar
 -------

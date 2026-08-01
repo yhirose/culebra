@@ -107,6 +107,19 @@ build-no-jit:
     cd build-no-jit && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=OFF .. > /dev/null
     cd build-no-jit && {{nice_cmd}} make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8) culebra
 
+# Same Release + JIT shape as `just dev`, minus -DNDEBUG, so the tree's asserts
+# actually execute. Every other lane is Release, so without this one NO build
+# ever runs an assert — jit_slab.h's cross-allocator free guard sat dead while
+# exactly that corruption shipped. -O1 keeps rebuilds in inner-loop range; its
+# own build-assert/ dir keeps the NDEBUG flag flip out of the other lanes'
+# ccache keys, which also means this lane is always ccache-cold on first use —
+# hence the CULEBRA_BUILD_JOBS cap, since it doesn't take the machine lock.
+[group("build")]
+build-assert *extra:
+    mkdir -p build-assert
+    cd build-assert && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF -DCULEBRA_DEV_NO_RT=ON -DCMAKE_CXX_FLAGS_RELEASE="-O1" {{extra}} .. > /dev/null
+    cd build-assert && {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)} culebra
+
 # Install the Release binary (`just build`) into PREFIX/bin, with sudo only when
 # that directory isn't already writable. PREFIX defaults to /usr/local: on macOS
 # /usr/bin is read-only even for root (SIP), so a system-wide install goes here.
@@ -169,7 +182,7 @@ asan:
 # Clean build directories + local editor/cache scratch (all regenerable)
 [group("build")]
 clean:
-    rm -rf build build-dev build-gate build-asan build-no-jit
+    rm -rf build build-dev build-gate build-asan build-assert build-no-jit
     rm -rf .cache-ccache .zed .vscode .vimspector.json misc/*/.zed
 
 # Regenerate misc/culebra.peg + the Vim/VSCode AUTO-KEYWORDS from include/parser.h
@@ -215,6 +228,13 @@ test BACKEND='all': build-gate
 [group("test")]
 test-dev BACKEND='fast': dev
     @BIN=./build-dev/culebra CULEBRA_TEST_SKIP_HEAVY=1 just _run-tests {{BACKEND}}
+
+# The same sweep as test-dev against the assert-enabled binary (`just
+# build-assert`). Not part of `just test`; Ubuntu CI runs it as linux-assert.
+[doc("Tests vs an assert-enabled build (no NDEBUG). BACKEND=fast|interp|jit|isolate (default: fast).")]
+[group("test")]
+test-assert BACKEND='fast': build-assert
+    @BIN=./build-assert/culebra CULEBRA_TEST_SKIP_HEAVY=1 just _run-tests {{BACKEND}}
 
 # Land BRANCH onto local master: rebase, rebuild + test-dev, then fast-forward
 # merge (misc/land.sh), retrying the rebase if master moves again before the

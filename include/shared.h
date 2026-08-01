@@ -1639,7 +1639,10 @@ enum RuntimeSlot : size_t {
   kSlotFileTable,
   // Per-scope owned-resource stacks for deterministic drop (one per
   // backend; see interpreter.h / jit.h "owned stack"). Entries are
-  // non-owning, so destruction order relative to the GC slots is moot.
+  // non-owning, so destruction order relative to the GC slots is moot —
+  // but ~InterpGC's collect resolves this slot after it was nulled, so
+  // every Runtime that ran interp code revives it empty. ~Runtime's sweep
+  // is what keeps that revival from leaking.
   kSlotInterpOwnedStack,
   kSlotJitOwnedStack,
   // Foreign-instance tables (wrapped C++ objects, see foreign.h): one
@@ -1670,6 +1673,24 @@ static_assert(kSlotJitSlab < kSlotJitGc &&
                   kSlotJitSlab < kSlotTestRegistry,
               "kSlotJitSlab must outlive the GC heap and all struct-holding "
               "table substates during reverse-order Runtime teardown");
+
+struct Runtime;
+
+// The active Runtime on this thread, or none (see current_runtime()).
+inline thread_local Runtime* _culebra_current_runtime = nullptr;
+
+// RAII to switch the active Runtime for the current thread. Above Runtime
+// rather than beside current_runtime() because ~Runtime uses it on itself; a
+// Runtime* and a Runtime& are all it needs, so the forward declaration does.
+struct RuntimeScope {
+  Runtime* prev_;
+  explicit RuntimeScope(Runtime& rt) : prev_(_culebra_current_runtime) {
+    _culebra_current_runtime = &rt;
+  }
+  ~RuntimeScope() { _culebra_current_runtime = prev_; }
+  RuntimeScope(const RuntimeScope&) = delete;
+  RuntimeScope& operator=(const RuntimeScope&) = delete;
+};
 
 struct Runtime {
   std::mt19937_64 random_engine{std::random_device{}()};
@@ -1718,12 +1739,24 @@ struct Runtime {
     // first, leaving those later releases to call into a destroyed heap. Null
     // each slot after deleting so any release that still resolves a substate
     // mid-teardown lazily revives an empty one instead of touching freed memory.
-    for (size_t i = substate.size(); i-- > 0;) {
-      if (substate[i] && substate_deleter[i]) {
-        substate_deleter[i](substate[i]);
-        substate[i] = nullptr;
+    //
+    // Install ourselves as current first: the worker's own RuntimeScope is
+    // already gone by now, so a release here would otherwise free into a
+    // *different* Runtime's slab. Repeat until a pass frees nothing — a slot
+    // revived below the cursor leaks (the interp owned stack revives that way,
+    // from ~InterpGC's collect).
+    RuntimeScope self(*this);
+    bool destroyed;
+    do {
+      destroyed = false;
+      for (size_t i = substate.size(); i-- > 0;) {
+        if (substate[i] && substate_deleter[i]) {
+          substate_deleter[i](substate[i]);
+          substate[i] = nullptr;
+          destroyed = true;
+        }
       }
-    }
+    } while (destroyed);
   }
   Runtime(const Runtime&) = delete;
   Runtime& operator=(const Runtime&) = delete;
@@ -1738,8 +1771,6 @@ inline std::vector<std::string>& sys_argv() {
   static std::vector<std::string> v;
   return v;
 }
-
-inline thread_local Runtime* _culebra_current_runtime = nullptr;
 
 inline Runtime& default_runtime() {
   static thread_local Runtime rt;
@@ -2043,17 +2074,6 @@ inline std::mutex& stdio_mutex() {
   static std::mutex m;
   return m;
 }
-
-// RAII to switch the active Runtime for the current thread.
-struct RuntimeScope {
-  Runtime* prev_;
-  explicit RuntimeScope(Runtime& rt) : prev_(_culebra_current_runtime) {
-    _culebra_current_runtime = &rt;
-  }
-  ~RuntimeScope() { _culebra_current_runtime = prev_; }
-  RuntimeScope(const RuntimeScope&) = delete;
-  RuntimeScope& operator=(const RuntimeScope&) = delete;
-};
 
 // Lazy-init a default-constructible T into a Runtime slot.
 template <class T>

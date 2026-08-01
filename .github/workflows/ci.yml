@@ -407,6 +407,80 @@ jobs:
           fi
           echo "OK: no display runtime dependency"
 
+  # The only lane that runs with asserts live. Every other job — and every local
+  # `just` build — is CMAKE_BUILD_TYPE=Release, i.e. -DNDEBUG, so the tree's
+  # asserts never execute: jit_slab.h's cross-allocator-free guard sat dead
+  # while exactly that corruption shipped and surfaced as an intermittent
+  # SIGABRT in the isolate lane. Ubuntu only — these asserts check
+  # backend-neutral invariants (Runtime teardown, the GC heap, the slab), so a
+  # second OS would buy runner time and no coverage.
+  linux-assert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ccache cmake g++-14 libblas-dev mold wget \
+            lsb-release software-properties-common gnupg
+          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
+            | sudo bash -s -- --to /usr/local/bin
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 22
+          sudo apt-get install -y llvm-22-dev
+          {
+            echo "CC=gcc-14"
+            echo "CXX=g++-14"
+            echo "CMAKE_PREFIX_PATH=/usr/lib/llvm-22"
+          } >> "$GITHUB_ENV"
+
+      # No cross-job fallback key: this lane shares no compile command with any
+      # other, so a restore from theirs would hit ~0% and merge back as bloat.
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: linux-assert-ccache-${{ github.sha }}
+          restore-keys: |
+            linux-assert-ccache-
+
+      - name: Build (asserts enabled)
+        run: just build-assert -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
+
+      # Without this the job goes green while proving nothing: NDEBUG creeping
+      # back into the Release flags would silently compile every assert away and
+      # the sweep below would still pass. The message text is only in the binary
+      # when the assert survived preprocessing.
+      - name: Verify the asserts are actually in this build
+        run: |
+          if ! grep -qa 'slab free of a pointer this allocator never handed out' \
+              build-assert/culebra; then
+            echo "::error::built with NDEBUG — every assert compiled away, so this job proves nothing." >&2
+            grep -i 'CMAKE_CXX_FLAGS_RELEASE' build-assert/CMakeCache.txt >&2 || true
+            exit 1
+          fi
+          echo "OK: asserts compiled in"
+
+      # Reuse the binary from the Build step — plain `just test-assert` would
+      # re-run its build-assert prerequisite, reconfiguring without the mold
+      # flag above.
+      - name: Tests (asserts enabled)
+        run: BIN=./build-assert/culebra CULEBRA_TEST_SKIP_HEAVY=1 just _run-tests fast
+
+      - name: Report ccache stats
+        run: ccache -s || true
+
   # Windows port — interpreter-only driver (no JIT/AOT) with the OS-heavy
   # optional features off, proving the core language + stdlib + SQLite compile
   # and run on Windows. Phase 1 landed the core; Phase 2 added Proc (subprocess)
