@@ -103,7 +103,9 @@ check-blob: _gen-blob-tool
 [group("build")]
 build-no-jit:
     mkdir -p build-no-jit
-    cd build-no-jit && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=OFF .. > /dev/null
+    # LTO off: this lane proves the interp-only build compiles and links, and
+    # a whole-driver relink proves nothing more than the link it already does.
+    cd build-no-jit && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=OFF -DCULEBRA_LTO=OFF .. > /dev/null
     cd build-no-jit && {{nice_cmd}} make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8) culebra
 
 # Same Release + JIT shape as `just dev`, minus -DNDEBUG, so the tree's asserts
