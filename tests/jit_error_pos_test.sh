@@ -203,5 +203,10 @@ for x in 0..5 by s { }'
 check_same "for range nested"         'fn f() { for x in 0..5 by 2.5 { } }
 f()'
 
+# The `.iter()` method on a range routes through the same runtime builder;
+# the JIT used to hand it position 0:0, printing a location-less ValueError.
+check_same "range iter zero step"     'for i in (0..5 by 0).iter() { }'
+check_same "range iter unbounded"     'let x = (0..).iter()'
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

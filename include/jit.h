@@ -16730,8 +16730,9 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     // A range value's `.iter()` yields its start..end sequence — split it out
     // before the generic Object path (which would walk the Range object's
     // key/value pairs). Mirrors interp's object-builtin `iter` and the for-in
-    // objectBB. Unbounded ranges throw at 0:0 here to stay symmetric with
-    // interp's `.iter()` method (the for-in path keeps its own position).
+    // objectBB. The zero-step / unbounded errors report at the current
+    // position — the interp stamps the deepest eval's location onto the
+    // line-0 throw, which resolves to the same call node.
     auto objRangeBB = llvm::BasicBlock::Create(ctx_, "iter.obj.range", fn);
     auto objPlainBB = llvm::BasicBlock::Create(ctx_, "iter.obj.plain", fn);
     builder_.CreateCondBr(emit_is_range(receiver), objRangeBB, objPlainBB);
@@ -16742,7 +16743,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
                                      builder_.getInt64Ty(),
                                      builder_.getInt64Ty(),
                                      builder_.getInt64Ty()),
-        {d, builder_.getInt64(0), builder_.getInt64(0)});
+        {d, current_line_val(), current_column_val()});
     iterMerge.add_incoming(make_object(rangeIt));
     builder_.CreateBr(mergeBB);
 
