@@ -1,0 +1,40 @@
+// Iterating a Set walks a snapshot of its members taken when the iterator
+// is created: mutations made by the loop body change the set but not the
+// walk. (The interp used to share the live member vector — an add grew the
+// iteration and a remove shifted the indices and skipped an element — while
+// the JIT snapshotted, so the two backends disagreed.)
+
+// Adding during for-in: the walk sees only the original members.
+mut s = [1, 2].to_set()
+mut seen = []
+for x in s {
+  seen.push(x)
+  s.add(x + 10)
+}
+assert_eq(seen, [1, 2])
+assert_eq(s.size(), 4)
+assert_eq(s.contains(11), true)
+assert_eq(s.contains(12), true)
+
+// Removing during for-in: every original member is still visited.
+mut t = [1, 2, 3].to_set()
+mut seen2 = []
+for x in t {
+  seen2.push(x)
+  t.remove(1)
+}
+assert_eq(seen2, [1, 2, 3])
+assert_eq(t.size(), 2)
+
+// The explicit .iter() takes its snapshot at the call, not per step.
+mut u = [1, 2].to_set()
+let it = u.iter()
+u.add(3)
+assert_eq(it.collect(), [1, 2])
+
+// A snapshot per loop entry: a second loop sees the mutated set.
+mut v = [1].to_set()
+for x in v { v.add(2) }
+mut seen3 = []
+for x in v { seen3.push(x) }
+assert_eq(seen3, [1, 2])

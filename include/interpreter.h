@@ -3330,6 +3330,15 @@ inline Value _iter_over_range(RangeBounds bounds) {
   });
 }
 
+// Iterating a Set walks a snapshot of its members: the walk must not see
+// mutations made by the loop body (the JIT's set_to_array does the same,
+// and sharing the live vector also skipped elements when a remove shifted
+// the indices).
+inline Value _iter_over_set(const Value& set) {
+  return _iter_over_vector(
+      std::make_shared<std::vector<Value>>(*set.get<SetValue>().members));
+}
+
 // `(index, value)` tuple yielded by enumerate (on arrays and iterators).
 inline Value _index_value_pair(int64_t index, Value v) {
   std::vector<Value> pair;
@@ -3882,7 +3891,7 @@ inline Value _get_iterator(const Value& iterable, size_t line, size_t col) {
   } else if (iterable.type == Value::Tuple) {
     return _iter_over_vector(iterable.get<TupleValue>().elements);
   } else if (iterable.type == Value::Set) {
-    return _iter_over_vector(iterable.get<SetValue>().members);
+    return _iter_over_set(iterable);
   }
   if (iter_fn.type != Value::Function) {
     // Match the JIT's for-in check: list the allowed iterable types and
@@ -5820,8 +5829,7 @@ inline std::unordered_map<std::string_view, Value>& set_builtins() {
            "Array"sv))},
       {"iter"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         return _iter_over_vector(
-             callEnv->get("self").get<SetValue>().members);
+         return _iter_over_set(callEnv->get("self"));
        }))},
   };
   return props_;

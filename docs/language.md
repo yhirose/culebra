@@ -2240,6 +2240,12 @@ The iterator protocol (see §18.5) requires the target to be either an
 already playing the iterator role with `has_next` / `next` methods.
 Passing any other type raises `type error`.
 
+Iterating a `Set` walks a snapshot of the members taken when the iterator
+is created: mutations made by the loop body change the set but not the
+walk. An `Object` snapshots only its keys — removed keys are skipped and
+values are read live (see §18.5). An `Array` is read live, one index per
+step.
+
 `for` is a statement; its value is `nil`. Shadow rules apply to
 `var`: if it would shadow a closure-captured name from an enclosing
 function, the script is rejected (see §6).
