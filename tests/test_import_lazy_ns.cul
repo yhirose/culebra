@@ -1,13 +1,23 @@
-# Conformance: §23 (Modules) x lazy stdlib namespaces.
+# Conformance: §23 (Modules) x the stdlib preamble.
 #
-# The entry module deliberately never names the lazy namespaces the
-# dependency uses; only the import below pulls them in. Under the JIT/AOT
-# splice this used to raise NameError (the token scan only looked at the
-# entry module, and builder registration ran after dependency top level).
-# Both backends must agree.
+# The entry module deliberately never names what the dependencies use; only
+# the imports below pull them in. Under the JIT/AOT splice this used to raise
+# NameError — for the lazy namespaces the token scan only looked at the entry
+# module and builder registration ran after dependency top level, and for the
+# plain bindings (the matcher family, `replace`) the copy went to the entry
+# module alone, which a dependency's own scope cannot see. Both backends must
+# agree.
 
 import dep from './test_import_helpers/lazy_ns_dep.cul'
+import plain from './test_import_helpers/plain_preamble_dep.cul'
+import own from './test_import_helpers/own_replace_dep.cul'
 
 assert_true(dep.elapsed_nonneg())
 assert_true(dep.matches("aab"))
 assert_false(dep.matches("cc"))
+
+assert_eq(plain.checked(), "checked")
+assert_eq(plain.rewritten("aaa"), "bbb")
+
+# A module's own binding wins over the spliced stdlib one.
+assert_eq(own.apply("x"), "own:x")

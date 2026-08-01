@@ -1,0 +1,16 @@
+# A dependency that leans on the stdlib's *plain* bindings (the matcher
+# family and `replace`) which the entry module never names. Unlike the lazy
+# namespaces these are ordinary top-level `let`s, so the JIT/AOT splice has
+# to put a copy in every module that names one — a dependency compiles in
+# its own scope and cannot see the entry's.
+
+let checked = fn () {
+  assert_true(1 == 1)
+  assert_false(1 == 2)
+  assert_eq(2 + 2, 4)
+  "checked"
+}
+
+let rewritten = fn (s) { replace(s, "a", "b") }
+
+export {checked, rewritten}

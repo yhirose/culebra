@@ -7395,9 +7395,17 @@ inline void collect_ast_tokens(const peg::Ast& ast,
 
 // The two halves of the JIT/AOT stdlib preamble. `lazy` holds the
 // `_lazy_ns_register("Ns", fn(){...})` statements — pure runtime side
-// effects with no scope bindings, so they can run in their own module
+// effects with no scope bindings, so they run once in their own module
 // ahead of every dependency. `plain` holds real top-level bindings (the
-// matcher family, `replace`) that must live in the entry module's scope.
+// matcher family, `replace`) that must live in the scope of each module
+// that names them (module scopes are isolated, so there is nowhere else
+// to put them — see splice_stdlib_preamble).
+//
+// Precondition on anything added to `plain`: it must be stateless. Each
+// module that names a binding gets its own copy, so a binding that carried
+// state (a counter, a cache) would observably differ from the interpreter's
+// single global one. Stateful additions belong in `lazy`, where the builder
+// registry hands every module the same per-Runtime instance.
 struct StdlibPreamble {
   std::string lazy;
   std::string plain;
@@ -7473,17 +7481,47 @@ inline std::vector<std::shared_ptr<peg::Ast>> collect_top_level_statements(
   return {ast};
 }
 
-// JIT/AOT only: graft the stdlib preamble into the entry module's tree.
+// Path stamped on the synthesized preamble module and on preamble ASTs, so
+// they are distinguishable from user modules (and from each other's rescan).
+inline constexpr const char* kStdlibPreamblePath = "<stdlib>";
+
+// Splice `src`'s top-level statements ahead of `m`'s own. The naive approach
+// (concatenate the preamble onto the source text) shifts every user line down
+// by the preamble's height, desyncing JIT/AOT error locations and in-language
+// `e.line` from the interpreter, which never prepends. Parsing the preamble on
+// its own instead keeps every user node at the exact line/column it was parsed
+// with.
+inline void splice_plain_preamble(LoadedModule& m, std::string src) {
+  if (src.empty()) return;
+  // Retain the preamble bytes for the module's lifetime — the spliced AST's
+  // tokens are string_views into this buffer.
+  auto pre_buf = std::make_shared<std::string>(std::move(src));
+  std::vector<std::string> msgs;
+  auto pre_ast = parse_with_transforms(kStdlibPreamblePath, pre_buf->data(),
+                                       pre_buf->size(), msgs);
+  if (!pre_ast) return;  // stdlib is trusted; a parse failure is a build bug
+
+  std::vector<std::shared_ptr<peg::Ast>> stmts =
+      collect_top_level_statements(pre_ast);
+  for (auto& s : collect_top_level_statements(m.ast)) {
+    stmts.push_back(std::move(s));
+  }
+
+  const char* path = m.ast ? m.ast->path.c_str() : "";
+  auto merged = std::make_shared<peg::Ast>(path, size_t{1}, size_t{1},
+                                           "STATEMENTS", stmts);
+  for (auto& child : merged->nodes) child->parent = merged;
+
+  m.ast = std::move(merged);
+  m.aux_sources.push_back(std::move(pre_buf));
+}
+
+// JIT/AOT only: graft the stdlib preamble into the module trees.
 //
-// The preamble defines helpers (assert_*, Time, …) that user code calls,
-// and those bindings must live in the entry module's top-level scope —
-// dependency modules compile in isolated scopes, so the preamble can't be
-// a separate module. The naive approach (concatenate the preamble onto
-// the source text) shifts every user line down by the preamble's height,
-// desyncing JIT/AOT error locations and in-language `e.line` from the
-// interpreter, which never prepends. Instead we parse the preamble on its
-// own and splice its statements ahead of the user's in a fresh STATEMENTS
-// root: user nodes keep the exact line/column they were parsed with.
+// The preamble defines helpers (assert_*, Time, …) that user code calls. The
+// interpreter binds them in the global environment every module can see; the
+// JIT has no such cross-module user scope, so each half gets there its own
+// way — see the two blocks below.
 inline void splice_stdlib_preamble(std::vector<LoadedModule>& modules) {
   if (modules.empty()) return;
   // Scan every module, not just the entry: an imported module's `Canvas`
@@ -7503,41 +7541,28 @@ inline void splice_stdlib_preamble(std::vector<LoadedModule>& modules) {
   if (!preamble.lazy.empty()) {
     auto lazy_buf = std::make_shared<std::string>(std::move(preamble.lazy));
     std::vector<std::string> msgs;
-    auto lazy_ast = parse_with_transforms("<stdlib>", lazy_buf->data(),
+    auto lazy_ast = parse_with_transforms(kStdlibPreamblePath,
+                                          lazy_buf->data(),
                                           lazy_buf->size(), msgs);
     if (lazy_ast) {
       LoadedModule pre;
-      pre.abs_path = "<stdlib>";
+      pre.abs_path = kStdlibPreamblePath;
       pre.source = std::move(lazy_buf);
       pre.ast = std::move(lazy_ast);
       modules.insert(modules.begin(), std::move(pre));
     }
   }
-  if (preamble.plain.empty()) return;
-
-  // Retain the preamble bytes for the module's lifetime — the spliced
-  // AST's tokens are string_views into this buffer.
-  auto pre_buf = std::make_shared<std::string>(std::move(preamble.plain));
-  std::vector<std::string> msgs;
-  auto pre_ast = parse_with_transforms("<stdlib>", pre_buf->data(),
-                                       pre_buf->size(), msgs);
-  if (!pre_ast) return;  // stdlib is trusted; a parse failure is a build bug
-
-  // Entry module is last (the loader emits dependencies before it).
-  LoadedModule& entry = modules.back();
-  std::vector<std::shared_ptr<peg::Ast>> stmts =
-      collect_top_level_statements(pre_ast);
-  for (auto& s : collect_top_level_statements(entry.ast)) {
-    stmts.push_back(std::move(s));
+  // Plain bindings are per module, selected from that module's own tokens:
+  // they are ordinary top-level `let`s, and a dependency compiles in its own
+  // isolated scope, so the entry's copy is invisible to it. The interpreter
+  // reaches the same place from the other side — register_stdlib_lazy_modules
+  // binds them in the global env every module can see.
+  for (auto& m : modules) {
+    if (!m.ast || m.abs_path == kStdlibPreamblePath) continue;
+    std::unordered_set<std::string_view> own;
+    collect_ast_tokens(*m.ast, own);
+    splice_plain_preamble(m, stdlib_preamble_for(own).plain);
   }
-
-  const char* path = entry.ast ? entry.ast->path.c_str() : "";
-  auto merged = std::make_shared<peg::Ast>(path, size_t{1}, size_t{1},
-                                           "STATEMENTS", stmts);
-  for (auto& child : merged->nodes) child->parent = merged;
-
-  entry.ast = std::move(merged);
-  entry.aux_sources.push_back(std::move(pre_buf));
 }
 
 // Register stdlib modules that should not be parsed/evaluated up front.
