@@ -3079,7 +3079,7 @@ srv.listen(8080)                 # ブロックする。Ctrl+C で停止
 | `static(mount, dir)` | URL プレフィックス `mount` で静的ファイルを配信。`dir` は String パス（ディスク上のディレクトリをライブ配信）または `Embed.dir(...)` 記述子（AOT ではバイナリに焼き込み — [Embed](#embed) 参照） |
 | `sink.write(chunk)` | （`stream:` クロージャ内）1 チャンクを送出。クライアント切断時は `false` を返す |
 | `listen(port, host="0.0.0.0", workers=0)` | バインドして中断まで配信（呼び出しスレッドをブロック）。ハンドラは accept ループでなく worker プールで動くので、遅いハンドラが新規接続の受付を止めない — ハンドラは **Sendable** 必須。`workers=0`（既定）は CPU 連動のプールサイズ、正の数で固定 |
-| `listen_async(port, host="0.0.0.0", workers=0)` | 同上を背後プールで行い即 return。停止は `stop()` |
+| `listen_async(port, host="0.0.0.0", workers=0)` | 同上を背後プールで行い即 return。停止は `stop()`。戻り値は実際に bind したポート — `port` に `0` を渡すと OS が空きポートを選び、戻り値で受け取れる |
 | `stop()` | 背後（`listen_async`）サーバを停止しスレッドを join（別スレッドからも呼べる） |
 | `close()` | 配信を停止しサーバを解放（スコープを抜けたサーバは GC も閉じる） |
 
@@ -4627,7 +4627,7 @@ WebView フレームワークをリンクします。
 | `size` | ウィンドウ既定値 | `[width, height]`（ピクセル） |
 | `assets` | — | `/` に配信する静的ルート。通常は `Embed.dir('dist')` — dev ではディスクから読み、`culebra build` ではバイナリに焼き込まれる |
 | `routes` | — | `fn (srv) { ... }`。アプリ自身のルートを `Http` サーバ（§15）に登録する |
-| `port` | `8731` | サーバが bind する loopback ポート |
+| `port` | `8731`、だめなら OS 任せ | サーバが bind する loopback ポート。未指定: まず `8731` を試し、使用中なら（別の culebra デスクトップアプリなど）OS が選ぶ空きポートに切り替える — ポートが変わるとページの origin、つまり `localStorage` も変わる点に注意。明示指定: そのポートに bind するか失敗する |
 | `workers` | `4` | サーバのワーカースレッド数 |
 
 `POST /__quit` ルートが自動登録されるので、ページ側からアプリを閉じられます

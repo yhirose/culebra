@@ -5395,8 +5395,9 @@ inline Value make_http_server_handle(int64_t id) {
                false);
   // listen_async(port, host="0.0.0.0", workers=0) — returns immediately, serves
   // on a background pool; handlers must be Sendable (they run off this thread).
+  // Returns the port actually bound (the OS's pick when port is 0).
   h.initialize("listen_async",
-               Value(FunctionValue(listen_params, do_listen(true), "Nil"sv)),
+               Value(FunctionValue(listen_params, do_listen(true), "Long"sv)),
                false);
   // stop() — stop a background (listen_async) server and join its thread.
   h.initialize(
@@ -7774,6 +7775,12 @@ inline Value _http_server_do_listen(
     if (!ok)
       throw CulebraError("HttpError", std::format("server.listen: {}", err),
                          line, col);
+    // listen_async returns the port actually bound — the OS's pick when the
+    // requested port was 0. Blocking listen only returns once the server has
+    // stopped, so a port is of no use there; keep it nil.
+    if (async)
+      return Value(static_cast<int64_t>(
+          culebra::http::http_server_bound_port(id)));
     return Value();
   }
 }

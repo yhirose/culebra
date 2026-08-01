@@ -5206,6 +5206,11 @@ inline JitValue _jit_http_server_do_listen(int64_t id, std::string host,
     if (!ok)
       throw culebra::CulebraError("HttpError",
                                   std::format("server.listen: {}", err), 0, 0);
+    // listen_async returns the port actually bound — the OS's pick when the
+    // requested port was 0. Blocking listen only returns once the server has
+    // stopped, so a port is of no use there; keep it nil.
+    if (async)
+      return {TAG_LONG, culebra::http::http_server_bound_port(id)};
     return {TAG_NIL, 0};
   }
 }

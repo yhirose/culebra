@@ -271,3 +271,30 @@ mut abinderr = "none"
 try { abind.listen_async(18922, "192.0.2.1") } catch e { abinderr = e.kind }
 inspect("async bind fail -> " + abinderr)
 abind.close()
+
+# --- exclusive bind: a port with a live listener must refuse a second server
+# loudly. (cpp-httplib's default socket options set SO_REUSEPORT, under which a
+# second bind silently succeeds and the two processes shadow/split requests —
+# culebra overrides them with exclusive ones.)
+XPORT = 18930
+XBASE = "http://127.0.0.1:" + XPORT.to_string()
+xsrv = Http.server()
+xsrv.get("/", fn(req) { "holder" })
+xsrv.listen_async(XPORT, workers: 1)
+xsrv2 = Http.server()
+xsrv2.get("/", fn(req) { "intruder" })
+mut xerr = "none"
+try { xsrv2.listen_async(XPORT, workers: 1) } catch e { xerr = e.kind }
+inspect("exclusive bind -> " + xerr)
+inspect("holder still serves -> " + Http.get(XBASE).body)
+xsrv2.close()
+xsrv.stop()
+
+# --- port 0: the OS picks a free port, listen_async returns it. (Don't print
+# the port itself — it differs per run, and interp/jit outputs are diffed.)
+zsrv = Http.server()
+zsrv.get("/", fn(req) { "zeroed" })
+zport = zsrv.listen_async(0, workers: 1)
+inspect("port 0 assigns -> " + (zport > 0 && zport <= 65535).to_string())
+inspect("port 0 serves -> " + Http.get("http://127.0.0.1:" + zport.to_string() + "/").body)
+zsrv.stop()

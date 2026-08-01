@@ -3177,7 +3177,7 @@ srv.listen(8080)                 # blocks; Ctrl+C to stop
 | `static(mount, dir)` | serve static files at the URL prefix `mount`; `dir` is a String path (a live on-disk directory) or an `Embed.dir(...)` descriptor (baked into the binary under AOT — see [Embed](#embed)) |
 | `sink.write(chunk)` | (inside a `stream:` closure) push one chunk; returns `false` if the client has disconnected |
 | `listen(port, host="0.0.0.0", workers=0)` | bind and serve until interrupted (blocks the calling thread). Handlers run on a worker pool, never on the accept loop, so a slow handler can't block accepting new connections — and handlers must be **Sendable**. `workers=0` (default) picks a CPU-scaled pool size; pass a positive count to fix it |
-| `listen_async(port, host="0.0.0.0", workers=0)` | same, but serve on a background pool and return immediately; stop with `stop()` |
+| `listen_async(port, host="0.0.0.0", workers=0)` | same, but serve on a background pool and return immediately; stop with `stop()`. Returns the port actually bound — pass `port` `0` to let the OS pick a free one and read it from the return value |
 | `stop()` | stop a background (`listen_async`) server and join its thread (can be called from another thread) |
 | `close()` | stop serving and release the server (the GC also closes one that goes out of scope) |
 
@@ -4775,7 +4775,7 @@ the window closes, then stop the server.
 | `size` | window default | `[width, height]` in pixels |
 | `assets` | — | static root served at `/` — typically `Embed.dir('dist')`, which reads from disk in dev and is baked into the binary under `culebra build` |
 | `routes` | — | `fn (srv) { ... }` to register the app's own routes on the `Http` server (§15) |
-| `port` | `8731` | loopback port the server binds |
+| `port` | `8731`, then OS-assigned | loopback port the server binds. Unset: try `8731`; if it's taken (say, another culebra desktop app), fall back to an OS-assigned free port — note the page's origin, and so its `localStorage`, changes with the port. Set explicitly: bind exactly that port or fail |
 | `workers` | `4` | server worker threads |
 
 A `POST /__quit` route is registered for you, so the page can close the

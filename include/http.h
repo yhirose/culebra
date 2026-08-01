@@ -808,6 +808,22 @@ struct StaticMount {
   std::unique_ptr<culebra::Dir> dir;
 };
 
+// Exclusive listen-socket options, replacing cpp-httplib's default. The default
+// sets SO_REUSEPORT (Unix), which lets a second server bind a port with a live
+// listener — the processes then silently shadow (macOS/BSD: first binder takes
+// every connection) or split (Linux: kernel load-balances) each other's
+// requests instead of the second bind failing. SO_REUSEADDR alone keeps
+// restart-after-TIME_WAIT working but makes a live double-bind fail loudly.
+// On Windows SO_REUSEADDR is the *hijack-enabling* option (different semantics
+// than Unix); SO_EXCLUSIVEADDRUSE is the server-side equivalent of exclusivity.
+inline void _http_exclusive_socket_options(socket_t sock) {
+#ifdef _WIN32
+  httplib::set_socket_opt(sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, 1);
+#else
+  httplib::set_socket_opt(sock, SOL_SOCKET, SO_REUSEADDR, 1);
+#endif
+}
+
 struct HttpServer {
   httplib::Server svr;
   // For listen_async: the background thread running the accept loop. Empty for
@@ -817,11 +833,32 @@ struct HttpServer {
   // cannot be started again (httplib::Server is not designed to restart after
   // stop). Set on a successful start; a fresh start is rejected, not hung.
   bool started = false;
+  // The port actually bound by a successful listen — differs from the requested
+  // port when that was 0 (OS-assigned). 0 until bound.
+  int bound_port = 0;
   // Static asset mounts (srv.static with Embed.dir), served by a pre_routing
   // handler installed on first use.
   std::vector<StaticMount> static_mounts;
   bool static_handler_installed = false;
+
+  HttpServer() { svr.set_socket_options(_http_exclusive_socket_options); }
 };
+
+// Bind `s` to host:port; port 0 asks the OS for a free port. Records the port
+// actually bound in s->bound_port. On failure httplib decommissions the
+// underlying Server (it can never bind again, any port) — retrying takes a
+// fresh Http.server(); returns false with `err` set.
+inline bool _http_server_bind(HttpServer* s, const std::string& host, int port,
+                              std::string& err) {
+  int bound = port == 0 ? s->svr.bind_to_any_port(host)
+                        : (s->svr.bind_to_port(host, port) ? port : -1);
+  if (bound < 0) {
+    err = "Http: failed to bind " + host + ":" + std::to_string(port);
+    return false;
+  }
+  s->bound_port = bound;
+  return true;
+}
 
 // Default worker-pool size when the script doesn't pass `workers:`. Scaled with
 // the machine but bounded: at least 4 (a browser opens several connections in
@@ -1102,12 +1139,9 @@ CULEBRA_RT_HTTP_LINKAGE bool http_server_listen(
   // Poll on_idle ~10x/s so a pending Ctrl+C stops the accept loop promptly even
   // when no connection arrives (idle_interval turns accept into a timed select).
   s->svr.set_idle_interval(0, 100 * 1000);
-  // Bind first (so a bind failure leaves the handle reusable, like async), then
-  // mark single-use and run the blocking accept loop on this thread.
-  if (!s->svr.bind_to_port(host, port)) {
-    err = "Http: failed to bind " + host + ":" + std::to_string(port);
-    return false;
-  }
+  // Bind first, then mark single-use and run the blocking accept loop on this
+  // thread. (A failed bind decommissions the server — see _http_server_bind.)
+  if (!_http_server_bind(s, host, port, err)) return false;
   s->started = true;
   bool ok = s->svr.listen_after_bind();
   throw_if_interrupted();  // pending Ctrl+C / cancel → cooperative Interrupted
@@ -1157,13 +1191,24 @@ CULEBRA_RT_HTTP_LINKAGE bool http_server_listen_async(
     return new CulebraWorkerPool(nw, svr, isolate_flag, hooks);
   };
   s->svr.set_idle_interval(0, 100 * 1000);
-  if (!s->svr.bind_to_port(host, port)) {
-    err = "Http: failed to bind " + host + ":" + std::to_string(port);
-    return false;  // bind failed before serving — handle stays reusable
-  }
+  // (A failed bind decommissions the server — see _http_server_bind.)
+  if (!_http_server_bind(s, host, port, err)) return false;
   s->started = true;
   s->accept_thread = std::thread([svr = &s->svr] { svr->listen_after_bind(); });
   return true;
+#endif
+}
+
+// The port actually bound by the last successful listen on this server — what
+// the OS picked when the requested port was 0. 0 for a closed or never-bound
+// server.
+CULEBRA_RT_HTTP_LINKAGE int http_server_bound_port(int64_t id) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)id;
+  return 0;
+#else
+  HttpServer* s = _http_server_get(id);
+  return s ? s->bound_port : 0;
 #endif
 }
 
