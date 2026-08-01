@@ -44,7 +44,7 @@ build *extra:
     # LLVM-header-heavy TU peaks at ~3 GB, so too many at once swap.
     cd build && {{lock_cmd}} {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}
 
-# Fast dev build: LTO off (saves ~15-25 s link) and -O1, still Release + JIT,
+# Fast dev build: LTO off and -O1, still Release + JIT,
 # uses a separate `build-dev/` so it doesn't fight `just build`'s cache.
 # CULEBRA_DEV_NO_RT skips the four AOT runtime archives (each a full
 # culebra_rt.cc recompile), so a header touch rebuilds one TU instead of
@@ -61,13 +61,12 @@ dev *extra:
 
 # Gate build for `just test`: Release + JIT like `just build`, but LTO OFF.
 # LTO is a pure link-time optimization — every test phase's output is identical
-# with or without it — so the gate skips it to drop the ThinLTO relink (>120 s
-# on a driver-touching change) off the pre-commit critical path. Unlike `just
-# dev` this keeps the AOT runtime archives (no DEV_NO_RT) and builds the whole
-# tree (the embedding-test executables included), so the AOT and ctest phases
-# still run. Its own build-gate/ dir keeps a warm no-LTO ccache separate from
-# `build/`'s LTO cache — the LTO define flips every ccache key. `just build`
-# stays LTO for release / the CI ThinLTO-link check.
+# with or without it — so the gate skips it and keeps its own ccache: the LTO
+# define flips every key, so build-gate/ holds the warm no-LTO half `just build`
+# would otherwise keep evicting. Unlike `just dev` it keeps the AOT runtime
+# archives (no DEV_NO_RT) and builds the whole tree (the embedding-test
+# executables included), so the AOT and ctest phases still run. `just build`
+# stays LTO for release / the CI LTO-link check.
 [group("build")]
 build-gate *extra:
     mkdir -p build-gate

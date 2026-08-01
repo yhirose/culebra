@@ -27,10 +27,10 @@ if(CCACHE_PROGRAM)
   message(STATUS "ccache: ${CCACHE_PROGRAM}")
 endif()
 
-# ThinLTO trims ~15 MB off the Release `culebra` driver and gives the
-# JIT runtime a permanent +6.7% (cross-TU inlining of codegen). Cost
-# is ~25 s extra link time per build. Disable with `-DCULEBRA_LTO=OFF`
-# for fast local iterations.
+# LTO gives the JIT runtime a permanent +6.7% (cross-TU inlining of codegen);
+# what it saves on size is a rounding error beside the dead-strip. It costs a
+# relink of the whole driver — disable with `-DCULEBRA_LTO=OFF` for fast local
+# iterations.
 #
 # IMPORTANT: applied only to the `culebra` executable target, not to
 # `culebra_rt` / the feature objects. Those archives ship LTO
@@ -38,7 +38,7 @@ endif()
 # the user's compiler may be a different toolchain/version (GCC 13 vs
 # 14, Clang vs GCC) and chokes on cross-version LTO bitcode. Object
 # code only for archives keeps `culebra build` portable.
-option(CULEBRA_LTO "Enable ThinLTO for the culebra driver (Release)" ON)
+option(CULEBRA_LTO "Enable LTO for the culebra driver (Release)" ON)
 # Inner-loop dev switch: skip building+embedding the four AOT runtime
 # archives. Each archive is a full recompile of culebra_rt.cc (which
 # pulls in the interpreter + JIT headers), so embedding all four turns a
@@ -699,6 +699,15 @@ add_executable(culebra ./src/main.cc ./src/source_dir.cc ./src/docs_cmd.cc
                        ${_docs_gen})
 if(_culebra_enable_lto)
   set_target_properties(culebra PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
+  # Before 3.24, CMake hands GCC a bare `-flto`, which runs all 128 LTRANS jobs
+  # on one core: 103 s of link against 16 s parallel, for byte-identical output
+  # (it schedules the partitions, it does not change them) at an unchanged peak
+  # RSS. CMake does this itself from 3.24 (MR !7400), so this block goes when the
+  # floor at the top of the file reaches it; `auto` is GCC's spelling, and
+  # clang's ThinLTO already threads its link.
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_VERSION VERSION_LESS 3.24)
+    target_link_options(culebra PRIVATE -flto=auto)
+  endif()
 endif()
 
 # Shed what a shipped driver never uses. Both halves are what the AOT link has

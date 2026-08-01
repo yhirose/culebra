@@ -196,7 +196,7 @@ jobs:
       - name: Test (interp/JIT diff + embedding smoke + AOT + culebra-test self)
         # Reuse the LTO build/ from the Build step rather than letting `just
         # test` spin up a second no-LTO build-gate/. CI already pays for the
-        # ThinLTO link in the Build step above, so run the full gate against it
+        # LTO link in the Build step above, so run the full gate against it
         # — this also keeps the gate exercising the LTO binary on both OSes.
         # (Local dev gets the fast no-LTO gate via plain `just test`.)
         run: BIN=./build/culebra just _run-tests all
@@ -332,8 +332,8 @@ jobs:
       # Full `just build`, not the DEV_NO_RT inner-loop build: the window knob
       # also splits culebra_rt's Canvas ops into weak headless stubs and adds
       # the culebra_rt_canvas archive, and DEV_NO_RT skips every AOT archive.
-      # LTO off — this job is proving compiles and links, and the ThinLTO link
-      # is several minutes that the matrix above already pays on this OS.
+      # LTO off — this job proves compiles and links; the matrix above already
+      # pays for the LTO link on this OS.
       - name: Build (window backend ON)
         run: just build -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold -DCULEBRA_LTO=OFF
 
