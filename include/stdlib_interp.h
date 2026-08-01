@@ -2150,9 +2150,8 @@ inline Value make_canvas_primitives_namespace() {
       false);
 
   // _Canvas.present() -> Nil (show the frame; suspends to the next animation
-  // frame in the JSPI browser build, no-op in a declared-headless run). The
-  // one call that reports a window the run asked for but could not open —
-  // headless is declared (CULEBRA_CANVAS_HEADLESS=1), never inferred.
+  // frame in the JSPI browser build, no-op in a declared-headless run; raises
+  // when the run asked for a window that could not open).
   ns.initialize("present",
       Value(FunctionValue({},
           [](std::shared_ptr<Environment> env) -> Value {

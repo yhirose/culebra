@@ -44,10 +44,8 @@ int g_tex_h = 0;
 int g_scale = 1;
 bool g_window_ready = false;
 bool g_window_failed = false;  // creation tried and failed; don't try again
-// Why it failed, for the error present() raises. Headless is a mode the user
-// declares (a headless build, CULEBRA_CANVAS_HEADLESS=1, the Playground) —
-// a window build that was ASKED for a window and cannot open one must say so,
-// not quietly act like a declared-headless run.
+// Why the window could not open — the message present() raises. Headless is
+// declared (CULEBRA_CANVAS_HEADLESS=1), never inferred from a failed window.
 std::string g_window_error;
 std::string g_title = "culebra Canvas";  // applied when the window opens
 
@@ -171,8 +169,7 @@ void ensure_window() {
     // Both failure arms latch (every present and every input poll comes back
     // through here — a retry per call would re-run SDL's whole video-driver
     // probe thousands of times over a 600-frame run) and record the message
-    // for the error present() raises. Not a silent fallback: headless is a
-    // mode the user declares, and this run declared a window.
+    // present() raises.
     if (!gl_usable()) {
       g_window_failed = true;
       g_window_error =

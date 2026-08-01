@@ -252,29 +252,35 @@ constexpr std::string_view return_annotation() {
   }
 }
 
-// Fill omitted parameter names with `_arg<i>` and pin the storage —
-// FunctionValue::Parameter holds string_views into it.
-// A wrapped body's own C++ exception (a ctor refusing construction, a method
-// reporting failure), surfaced as a culebra RuntimeError the script can catch.
-// Both backends' entry points route their body call through here — without it
-// the interp's eval boundary bakes the position into the MESSAGE (its legacy
-// path for unconverted throws) while the JIT lets the exception escape the
-// process, so the two disagree on message, catchability and position at once.
-// Position stays 0:0: the interp eval boundary stamps the call node into the
-// fields, and the JIT boundaries backfill from the published op position —
-// the same convention as every positionless lib helper. CulebraError passes
-// through untouched (argument conversion and handle validation own theirs).
-template <class F>
-auto surface_native_error(F&& f) -> decltype(f()) {
+// Surface a wrapped body's own C++ exception (a ctor refusing construction, a
+// method reporting failure) as a RuntimeError the script can catch — without
+// this the interp bakes the position into the message while the JIT lets the
+// exception escape the process. Position stays 0:0, backfilled at each
+// backend's boundary like every positionless lib helper; CulebraError passes
+// through untouched. The conversion is outlined and non-templated on purpose:
+// with the handlers inside the template, GCC outlined the whole wrapper at
+// every instantiation (~93 KB of duplicated catch code per archive) and the
+// wrapped body stopped inlining.
+[[noreturn]] inline void rethrow_as_culebra() {
   try {
-    return f();
+    throw;
   } catch (const culebra::CulebraError&) {
     throw;
   } catch (const std::exception& e) {
     throw culebra::CulebraError("RuntimeError", e.what(), 0, 0);
   }
 }
+template <class F>
+auto surface_native_error(F&& f) -> decltype(f()) {
+  try {
+    return f();
+  } catch (...) {
+    rethrow_as_culebra();
+  }
+}
 
+// Fill omitted parameter names with `_arg<i>` and pin the storage —
+// FunctionValue::Parameter holds string_views into it.
 inline std::shared_ptr<std::vector<std::string>> pin_param_names(
     std::vector<std::string> names, size_t arity) {
   names.resize(arity);
@@ -677,11 +683,8 @@ void jit_method_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t sel
       return jit_lower_return<R>(std::forward<decltype(r)>(r));
     }
   };
-  {
-    *__ret = surface_native_error(
-        [&] { return invoke(std::index_sequence_for<Args...>{}); });
-    return;
-  }
+  *__ret = surface_native_error(
+      [&] { return invoke(std::index_sequence_for<Args...>{}); });
 }
 
 // A borrowed-return method thunk: the parent's generation is
@@ -703,11 +706,8 @@ void jit_borrowed_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t s
     auto& r = (obj->*Mf)(jit_arg_get<Args>(args[I])...);
     return jit_make_borrow_handle<T2>(const_cast<T2*>(&r), self, pgen);
   };
-  {
-    *__ret = surface_native_error(
-        [&] { return invoke(std::index_sequence_for<Args...>{}); });
-    return;
-  }
+  *__ret = surface_native_error(
+      [&] { return invoke(std::index_sequence_for<Args...>{}); });
 }
 
 // ns adapters: reached through the kNsMethods trampoline, which has

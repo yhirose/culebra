@@ -68,9 +68,15 @@ static void ensure_audio() {
 // failure into an error the script can see. Printing without exiting lets
 // InitPlatform's failure reach InitWindow, which reports it through
 // IsWindowReady() like any other (same shape as the Canvas backend's handler).
+// Body identical to the Canvas backend's: raylib holds ONE process-global
+// callback slot, so whichever TU installs last serves both — the bodies must
+// agree, with verbosity left to each TU's SetTraceLogLevel (raylib applies it
+// before the callback).
 static void trace_log(int level, const char* text, va_list args) {
-  if (level < LOG_ERROR) return;  // keep the ctor's errors-only policy
-  std::fprintf(stderr, "%s: ", level >= LOG_FATAL ? "FATAL" : "ERROR");
+  if (level < LOG_WARNING) return;
+  std::fprintf(stderr, "%s: ", level >= LOG_FATAL     ? "FATAL"
+                               : level >= LOG_ERROR   ? "ERROR"
+                                                      : "WARNING");
   std::vfprintf(stderr, text, args);
   std::fputc('\n', stderr);
 }
@@ -417,18 +423,13 @@ class Node {
         return *this;
       }
     }
-    // Upload out of the node's own buffers, and hand raylib only what it needs
-    // to keep: the vertex arrays are read once by UploadMesh and freed with
-    // this call frame (the swaps below). Indices are the exception — DrawMesh
-    // reads that pointer as the flag for "draw indexed", so this one array
-    // must outlive the upload, and it is raylib's to free. What is left in the
-    // Mesh is then the GL ids plus two plain-heap allocations, which is what
-    // lets a node outlive its window without leaking (see unload_mesh).
-    // LoadModelFromMesh is skipped for the same reason: render() draws the
-    // Mesh, and a Model would add three more allocations to keep alive.
-    // (This leans on the GL33 backend, where DrawMesh draws from the VBOs; the
-    // GL 1.1 path reads mesh.vertices per frame — moot while the lit shader
-    // is #version 330, but a vendor bump changing that would land here.)
+    // Upload straight from the node's own vectors; UploadMesh reads them once
+    // and they are freed below. Indices are the exception — DrawMesh reads
+    // that pointer as its draw-indexed flag, so that one array stays raylib's.
+    // The Mesh then keeps GL ids plus two plain-heap arrays, so a node can
+    // outlive its window (see unload_mesh). No Model: render() draws the Mesh.
+    // (GL33-only: the GL 1.1 draw path reads mesh.vertices per frame — moot
+    // while the lit shader is #version 330.)
     ::Mesh m{};
     m.vertexCount = (int)(mv.size() / 3);
     m.triangleCount = (int)(mi.size() / 3);
@@ -629,7 +630,7 @@ class View {
   }
   ~View() {
     if (IsWindowReady()) {
-      if (canvas_open_) EndTextureMode();   // no frame to finish, just unbind
+      if (canvas_index_ >= 0) EndTextureMode();  // no frame to finish, just unbind
       roots_.clear();                       // drop scene → ~Node unloads each mesh (window still up)
       UnloadRenderTexture(shadowmap0_);
       UnloadRenderTexture(shadowmap1_);
@@ -736,12 +737,7 @@ class View {
   // its id. Mipmaps + trilinear keep tiled high-frequency textures (e.g. the
   // checker) from crawling/shimmering when minified under motion. Consumes `im`.
   int64_t register_texture(Image im) {
-    Texture2D t = LoadTextureFromImage(im);
-    GenTextureMipmaps(&t);
-    SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR);
-    SetTextureWrap(t, TEXTURE_WRAP_REPEAT);
-    UnloadImage(im);
-    texs_.push_back({t});
+    texs_.push_back({upload(std::move(im), true)});
     return (long)texs_.size() - 1 + TEX_BASE;
   }
   // a checkerboard texture (px square, `checks` cells per side)
@@ -768,43 +764,35 @@ class View {
   // "generate a texture procedurally" path (liveries, signage) — like SceneKit
   // drawing textures with Core Graphics.
   int64_t canvas(int64_t w, int64_t h) {
-    if (canvas_open_) {
+    if (canvas_index_ >= 0) {
       TraceLog(LOG_ERROR,
                "Scene: canvas() while a canvas is still open — end that one "
                "first. Ignored.");
-      return -1;   // outside the texture id range: draws untextured (TEX_BASE)
+      return -1;   // below the texture id range: draws untextured (see TEX_BASE)
     }
     RenderTexture2D rt = LoadRenderTexture((int)w, (int)h);
     SetTextureFilter(rt.texture, TEXTURE_FILTER_BILINEAR);
     SetTextureWrap(rt.texture, TEXTURE_WRAP_REPEAT);
     texs_.push_back({rt.texture, rt, true});
-    canvas_open_ = true;
     canvas_index_ = (int)texs_.size() - 1;
     BeginTextureMode(rt);
     ClearBackground(WHITE);
     return (long)texs_.size() - 1 + TEX_BASE;
   }
   void canvas_end() {
-    if (!canvas_open_) {
+    if (canvas_index_ < 0) {
       TraceLog(LOG_ERROR, "Scene: canvas_end() with no canvas open. Ignored.");
       return;
     }
     EndTextureMode();
-    canvas_open_ = false;
-    // A render target is stored bottom-up. The present path compensates with a
-    // negative source height, but a material samples the texture as it is and
-    // the drawing would land upside down on the mesh. Bake the flip in once,
-    // here, so a canvas texture is an ordinary texture from this point on —
-    // which is also what frees the render target early.
+    // A render target is stored bottom-up; the present path flips it, but a
+    // material samples it as-is. Bake the flip into a plain texture here —
+    // which also frees the render target (and its depth buffer) early.
     TexEntry& e = texs_[canvas_index_];
     Image im = LoadImageFromTexture(e.rt.texture);
     ImageFlipVertical(&im);
     UnloadRenderTexture(e.rt);
-    Texture2D t = LoadTextureFromImage(im);
-    UnloadImage(im);
-    SetTextureFilter(t, TEXTURE_FILTER_BILINEAR);
-    SetTextureWrap(t, TEXTURE_WRAP_REPEAT);
-    e = TexEntry{t};
+    e = TexEntry{upload(std::move(im), false)};
     canvas_index_ = -1;
   }
 
@@ -918,7 +906,7 @@ class View {
   // Alpha for subsequent 2D draws (0..255). The RGBA contract: 2D colours take
   // r,g,b and this shared alpha, so HUD fades / translucent panels are possible
   // without a 4-arg variant of every draw call. Reset to 255 when done.
-  void alpha(int64_t a) { alpha_ = (a < 0 ? 0 : (a > 255 ? 255 : a)); }
+  void alpha(int64_t a) { alpha_ = chan(a); }
 
   void text(std::string s, double x, double y, int64_t size, int64_t r, int64_t g, int64_t b) {
     DrawText(s.c_str(), (int)x, (int)y, (int)size, col(r, g, b, alpha_));
@@ -938,7 +926,7 @@ class View {
   // into the canvas instead of the screen, with nothing said about it. Finish
   // the canvas — it is the frame the caller is asking for that must proceed.
   void close_stray_canvas(const char* opener) {
-    if (!canvas_open_) return;
+    if (canvas_index_ < 0) return;
     TraceLog(LOG_ERROR,
              "Scene: %s() with a canvas still open — ending the canvas first. "
              "Call canvas_end() when the texture is drawn.", opener);
@@ -951,6 +939,17 @@ class View {
   }
   // Texture ids are offset by TEX_BASE (see there); undo it to index texs_.
   static int tex_index(int64_t tex) { return (int)(tex - TEX_BASE); }
+  // GPU-upload an Image as a repeat-wrapped texture, consuming it. Mipmapped
+  // trilinear for tiled materials; plain bilinear for baked canvas drawings.
+  static Texture2D upload(Image im, bool mipmaps) {
+    Texture2D t = LoadTextureFromImage(im);
+    if (mipmaps) GenTextureMipmaps(&t);
+    SetTextureFilter(t, mipmaps ? TEXTURE_FILTER_TRILINEAR
+                                : TEXTURE_FILTER_BILINEAR);
+    SetTextureWrap(t, TEXTURE_WRAP_REPEAT);
+    UnloadImage(im);
+    return t;
+  }
   // Bind one pass's invariants. `m` is the pass's material (lit or depth).
   RenderCtx pass_ctx(Material& m, bool lit) {
     return RenderCtx{m, cube_, sphere_, cyl_, plane_,
@@ -981,8 +980,7 @@ class View {
   std::vector<std::shared_ptr<Node>> roots_;
   std::vector<MatDesc> mats_;
   std::vector<TexEntry> texs_;
-  bool canvas_open_ = false;   // a canvas() whose canvas_end() has not run yet
-  int canvas_index_ = -1;      // its texs_ slot, so canvas_end() can bake it
+  int canvas_index_ = -1;  // texs_ slot of the open canvas; -1 when none
   Texture2D white_{};
   Shader lit_{}, depth_{}, post_{};
   Material mat_{}, depth_mat_{};
