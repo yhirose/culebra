@@ -30,6 +30,17 @@ assert_eq(2305843009213693951 + 1, 2305843009213693952)
 assert_eq(65536 * 65536, 4294967296)
 assert_eq(2147483647 + 1, 2147483648)      // one past INT32_MAX
 
+// The 2^31..2^32 band, where a 32-bit payload does not truncate but SIGN-
+// EXTENDS, and truncating division then carries the sign into the answer. A
+// packed RGBA with alpha 255 lives here, which is how the Canvas test used to
+// fail on Windows: 0xFF00000A read back as -16777206, so `% 256` gave -246 and
+// `/ 10` gave -24 where the test wanted 1.
+let packed = 10 + 255 * 16777216           // 0xFF00000A = 4278190090
+assert_eq(packed, 4278190090)
+assert_eq(packed % 256, 10)                // sign extension makes this -246
+assert_eq(packed % 256 / 10, 1)            // ...and this -24
+assert_eq(packed / 16777216, 255)          // the alpha channel back out
+
 // --- bit operations, where a 32-bit accumulator truncates both operands ---
 assert_eq(1 << 40, 1099511627776)
 assert_eq((1 << 40) >> 8, 4294967296)

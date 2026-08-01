@@ -1223,17 +1223,13 @@ jobs:
           misc/run_all_backends.sh ./build-win-aot/culebra.exe \
             tests/test_long_width.cul "long width ok" LONG
       # What the window backend adds, through all three backends: a window build
-      # forced headless must behave exactly like a headless one, and the AOT
-      # link is the only place CULEBRA_CANVAS_LINK (the statics + the Win32
-      # library list) is exercised.
+      # forced headless must behave exactly like a headless one. It names
+      # `_Canvas`, which the AOT scan does not match against the `Canvas` axis,
+      # so this does NOT force-load the canvas archive — the Linux job's
+      # canvas_aot.cul is what covers that, and CULEBRA_CANVAS_LINK with it.
       #
-      # The shared test, the same one macOS and Linux run. It was held out while
-      # Windows had its own copy: as the first Canvas program ever run here it
-      # failed for two reasons, and both were the 32-bit `long` the interpreter
-      # carried a Long in under LLP64 — literals past 2^31 rejected outright,
-      # and a packed RGBA read back through get_pixel arriving sign-extended
-      # (`[0, -24, -23, -21, -20]` where the ramp wanted `[0, 1, 2, 4, 5]`, the
-      # arithmetic of a value that no longer fit). 0e4e102 fixed the width.
+      # Windows ran an inline copy of this until Long became 64-bit; the shared
+      # test failed on nothing but that width.
       - name: Smoke — Canvas window build (interp / JIT / AOT)
         env:
           CULEBRA_CANVAS_HEADLESS: "1"
