@@ -216,6 +216,14 @@ o.a ??= 9'
 expect_param_reject "keyword LHS (if)"         "left-hand side is invalid variable name" 'if = 1'
 expect_param_reject "keyword LHS (true)"       "left-hand side is invalid variable name" 'true = 1'
 expect_param_reject "keyword LHS (match)"      "left-hand side is invalid variable name" 'match = 1'
+# Declaration introducers are reserved too: the PEG backtracks them to
+# IDENTIFIER, so only this check keeps `class`/`import` from naming a variable.
+expect_param_reject "keyword LHS (class)"      "left-hand side is invalid variable name" 'let class = 1'
+expect_param_reject "keyword LHS (trait)"      "left-hand side is invalid variable name" 'let trait = 1'
+expect_param_reject "keyword LHS (enum)"       "left-hand side is invalid variable name" 'let enum = 1'
+expect_param_reject "keyword LHS (import)"     "left-hand side is invalid variable name" 'let import = 1'
+expect_param_reject "keyword LHS (export)"     "left-hand side is invalid variable name" 'let export = 1'
+expect_param_reject "keyword LHS (yield)"      "left-hand side is invalid variable name" 'let yield = 1'
 # A lone non-identifier target used to be declared as a nameless slot, so the
 # statement silently did nothing.
 expect_param_reject "literal LHS"              "left-hand side is invalid variable name" '1 = 2'

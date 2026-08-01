@@ -791,13 +791,18 @@ inline DerivedMethod derive_method_for(std::string_view trait) {
 // Reserved words that may not name a variable. Single source for the
 // assignment LHS check, shared by the interpreter and the static lint pass
 // (an assignment target that is a keyword is a SyntaxError on every backend).
+// The declaration introducers are here too: the PEG would happily backtrack to
+// IDENTIFIER for them, but a variable named `class` or `import` reads as the
+// construct. The rest of the grammar's keywords stay contextual (see the
+// Keywords section of docs/language.md).
 inline bool is_keyword(std::string_view ident) {
   using namespace std::literals;
   static const std::set<std::string_view> keywords = {
-      "nil"sv,    "true"sv,  "false"sv,    "mut"sv,   "debugger"sv,
-      "return"sv, "while"sv, "for"sv,      "in"sv,    "if"sv,
-      "else"sv,   "fn"sv,    "match"sv,    "throw"sv, "try"sv,
-      "catch"sv,  "break"sv, "continue"sv, "defer"sv};
+      "nil"sv,    "true"sv,   "false"sv,    "mut"sv,    "debugger"sv,
+      "return"sv, "while"sv,  "for"sv,      "in"sv,     "if"sv,
+      "else"sv,   "fn"sv,     "match"sv,    "throw"sv,  "try"sv,
+      "catch"sv,  "break"sv,  "continue"sv, "defer"sv,  "class"sv,
+      "trait"sv,  "enum"sv,   "import"sv,   "export"sv, "yield"sv};
   return keywords.contains(ident);
 }
 

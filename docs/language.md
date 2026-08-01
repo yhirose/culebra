@@ -95,20 +95,33 @@ Identifiers are case-sensitive.
 
 ### Keywords
 
-Reserved words that cannot be used as identifiers in declarations:
+Reserved words that cannot name a variable:
 
     nil  true  false  mut  debugger  return  while  for  in  if  else
-    fn  match  cond  break  continue  nobreak  throw  try  catch
-    defer  yield  class  trait  enum  import  export  from
-    effect  perform  handle  with
+    fn  match  break  continue  throw  try  catch  defer
+    class  trait  enum  import  export  yield
+
+Assigning to one is a `SyntaxError` (`let class = 1`). The reservation
+covers the assignment target only: a parameter, a `for` variable, an
+object key, and a property name are all positions where no keyword can
+start, so they accept any of these words.
+
+The grammar's remaining keywords are *contextual* — each is recognized
+only where its own construct can begin, and is an ordinary identifier
+everywhere else:
+
+    cond  nobreak  from  with  effect  perform  handle  static  get  by
+
+`static` and `get` are markers inside a class body and `by` is
+contextual inside a range literal (`0..10 by 2`). The other seven
+introduce constructs with a distinctive shape — `cond {` … `}` needs at
+least one `test => body` arm, `nobreak` follows a loop body, `from`
+follows an `import` — so `let with = 1` and `if handle { … }` both name
+a variable. Type annotation names (`Nil`, `Bool`, `Long`, `Float`,
+`String`, `Array`, `Object`, `Function`, `Any`) are not reserved
+either; they are contextual and only recognized after `:` or `->`.
 
 The parser also recognizes `let` as an optional prefix in assignments.
-`static` and `get` are contextual markers inside a class body, and
-`by` is contextual inside a range literal (`0..10 by 2`); none of the
-three is reserved elsewhere. Type annotation names (`Nil`, `Bool`,
-`Long`, `Float`, `String`, `Array`, `Object`, `Function`, `Any`) are
-*not* reserved either; they are contextual and only recognized after
-`:` or `->`.
 
 ### Literals
 

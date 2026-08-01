@@ -92,19 +92,31 @@ Culebra は小さな動的型付けスクリプト言語です。設計上の優
 
 ### キーワード
 
-識別子として使えない予約語:
+変数名にできない予約語:
 
     nil  true  false  mut  debugger  return  while  for  in  if  else
-    fn  match  cond  break  continue  nobreak  throw  try  catch
-    defer  yield  class  trait  enum  import  export  from
-    effect  perform  handle  with
+    fn  match  break  continue  throw  try  catch  defer
+    class  trait  enum  import  export  yield
+
+これらへの代入は `SyntaxError` です（`let class = 1`）。予約が効くのは
+代入ターゲットの位置だけで、パラメータ名・`for` 変数・オブジェクトのキー・
+プロパティ名はキーワードが始まりえない位置なので、これらの語も受け付けます。
+
+残りのキーワードは**文脈依存**で、それぞれの構文が始まりうる位置でのみ
+キーワードとして認識され、それ以外では普通の識別子です:
+
+    cond  nobreak  from  with  effect  perform  handle  static  get  by
+
+`static` と `get` は class 本体内の、`by` は range リテラル内
+（`0..10 by 2`）のマーカーです。残る 7 語はそれぞれ固有の形を持つ構文を
+導きます — `cond {` … `}` は `test => body` のアームが最低 1 つ必要、
+`nobreak` はループ本体の後、`from` は `import` の後 — なので
+`let with = 1` も `if handle { … }` も変数を指します。型注釈の型名
+（`Nil`, `Bool`, `Long`, `Float`, `String`, `Array`, `Object`, `Function`,
+`Any`）も予約語ではなく、`:` や `->` の後に現れる場合のみ文脈的に
+認識されます。
 
 パーサは代入における `let` もオプショナルな接頭辞として認識します。
-`static` と `get` は class 本体内の、`by` は range リテラル内
-（`0..10 by 2`）の文脈依存マーカーで、いずれもそれ以外の場所では
-予約語ではありません。型注釈の型名（`Nil`, `Bool`, `Long`, `Float`,
-`String`, `Array`, `Object`, `Function`, `Any`）も予約語ではなく、`:` や `->` の後に
-現れる場合のみ文脈的に認識されます。
 
 ### リテラル
 
