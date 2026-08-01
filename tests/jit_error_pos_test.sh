@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
-# Regression test for compile-time error position symmetry between the
-# interp and the JIT (include/jit.h compile() wrapper). The interp stamps
-# the deepest eval()'s AST location onto any CulebraError thrown with
-# line==0; the JIT's compile() wrapper mirrors this for compile-time
-# throws, so a compile_* site that omits ast.line/column still yields the
-# same `... at L:C.` as the interp. This guards against the recurring
-# "JIT forgot the position" divergence. Usage: <path-to-culebra>
+# Regression test for error position symmetry between the interp and the
+# JIT — mostly compile-time throws, plus runtime checks the JIT emits from
+# compile-time position state (e.g. the for-in counted-range fast path).
+# The interp stamps the deepest eval()'s AST location onto any CulebraError
+# thrown with line==0; the JIT's compile() wrapper mirrors this for
+# compile-time throws, so a compile_* site that omits ast.line/column still
+# yields the same `... at L:C.` as the interp. This guards against the
+# recurring "JIT forgot the position" divergence. Usage: <path-to-culebra>
 set -u
 CULEBRA="${1:?usage: jit_error_pos_test.sh <culebra-binary>}"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 fail=0
 
-# Each case is a program that fails at compile time. The interp and the
-# JIT must print byte-identical diagnostics (kind + message + position).
+# Each case must print byte-identical diagnostics (kind + message +
+# position) on both backends.
 check_same() {
   local name="$1" prog="$2"
   printf '%s\n' "$prog" > "$TMP/t.cul"
@@ -188,6 +189,19 @@ check_same "wk contract ctor slot"     'class P { new() { self.drop = 42 } }
 P.new()'
 check_same "wk contract trait default" 'trait P { tag() -> Long
   next(x) { x } }'
+
+# for-in's counted-range fast path type-checks the endpoints and step inline
+# (value_to_long) instead of building a Range object. These are runtime
+# errors; the JIT used to report them at the `for` keyword because compile()'s
+# PosGuard had already restored the position, while the interp (and the JIT's
+# own expression-context compile_range) report at the range expression.
+check_same "for range float step"     'for x in 0..5 by 2.5 { }'
+check_same "for range float lo"       'for x in 0.0..5 { }'
+check_same "for range float hi"       'for x in 0..5.0 { }'
+check_same "for range var float step" 'let s = 2.5
+for x in 0..5 by s { }'
+check_same "for range nested"         'fn f() { for x in 0..5 by 2.5 { } }
+f()'
 
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

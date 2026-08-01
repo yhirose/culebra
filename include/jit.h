@@ -8173,6 +8173,12 @@ struct JIT {
     if (id.tag == "IDENTIFIER"_ && iter_expr.tag == "RANGE"_) {
       auto lay = decode_range_layout(iter_expr);
       if (lay.start && lay.end) {
+        // Attribute endpoint/step type errors to the range expression (like
+        // interp's eval of iter_expr), not the `for` keyword — each operand's
+        // compile() saves and restores around this stamp, so it is what
+        // every value_to_long below reports.
+        if (iter_expr.line) current_line_ = iter_expr.line;
+        if (iter_expr.column) current_column_ = iter_expr.column;
         auto startV = value_to_long(compile(*lay.start).consume());
         auto endV = value_to_long(compile(*lay.end).consume());
         llvm::Value* stepV =
