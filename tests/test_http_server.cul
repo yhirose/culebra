@@ -48,19 +48,28 @@ iso = Isolate.spawn(fn() {
   srv.listen(PORT)
 })
 
-# Retry until the server thread has bound the port.
-fn wait_get(p) {
+# Wait for a spawned server to answer. Sleeping is what makes this a wait: a
+# refused loopback connect returns in microseconds, so a bare attempt count
+# spends its whole budget in about a millisecond. Two seconds is plenty for an
+# isolate to start; past that the port is not late but taken — these are fixed
+# ports and `just test-dev` holds no machine lock, so a concurrent gate elsewhere
+# binds them first and no amount of waiting helps. Hence the throw, which also
+# keeps a lost race from reaching the caller as a type error on nil.
+# `_Time`, not `Time`: naming the facade pulls Duration/Instant into the JIT
+# lane for 0.4 s, and the primitive is all of what we need.
+fn connect_when_up(url, dial) {
   mut a = 0
-  while a < 200 {
-    mut r = nil
-    try { r = Http.get(BASE + p) } catch e { r = nil }
+  while a < 100 {
+    let r = try { dial(url) } catch _ { nil }
     if r != nil { return r }
+    _Time.sleep(0.02)
     a = a + 1
   }
-  return nil
+  throw { kind: "AssertionError",
+          message: "no server on " + url + " after 2s (port already taken?)" }
 }
 
-r = wait_get("/")
+r = connect_when_up(BASE + "/", Http.get)
 inspect("GET / -> " + r.status.to_string() + " | " + r.body)
 
 r2 = Http.get(BASE + "/users/42")
@@ -121,17 +130,7 @@ iso2 = Isolate.spawn(fn() {
   })
   srv.listen(PORT2, workers: 4)
 })
-fn wait2(p) {
-  mut a = 0
-  while a < 200 {
-    mut r = nil
-    try { r = Http.get(BASE2 + p) } catch e { r = nil }
-    if r != nil { return r }
-    a = a + 1
-  }
-  return nil
-}
-wait2("/sq/0")
+connect_when_up(BASE2 + "/sq/0", Http.get)
 squares = Parallel.map([1, 2, 3, 4, 5, 6, 7, 8], fn(i) {
   Http.get(BASE2 + "/sq/" + i.to_string()).body
 })
@@ -186,18 +185,7 @@ wiso = Isolate.spawn(fn() {
   srv.listen(WPORT, workers: 2)
 })
 
-fn ws_connect(p) {
-  mut a = 0
-  while a < 200 {
-    mut c = nil
-    try { c = Http.ws(WBASE + p) } catch e { c = nil }
-    if c != nil { return c }
-    a = a + 1
-  }
-  return nil
-}
-
-we = ws_connect("/echo")
+we = connect_when_up(WBASE + "/echo", Http.ws)
 we.send("one")
 inspect("ws echo -> " + we.receive())
 we.send("two")
@@ -244,17 +232,7 @@ asrv.get("/", fn(req) { "async-hi" })
 asrv.get("/sq/:n", fn(req) { let n = to_long(req.params["n"]); (n * n).to_string() })
 asrv.listen_async(APORT, workers: 2)      # returns immediately
 
-fn await_get(p) {
-  mut a = 0
-  while a < 200 {
-    mut r = nil
-    try { r = Http.get(ABASE + p) } catch e { r = nil }
-    if r != nil { return r }
-    a = a + 1
-  }
-  return nil
-}
-ar = await_get("/")
+ar = connect_when_up(ABASE + "/", Http.get)
 inspect("listen_async GET / -> " + ar.status.to_string() + " | " + ar.body)
 inspect("listen_async route -> " + Http.get(ABASE + "/sq/9").body)
 # A server is single-use: starting it again (even on a free port) is a catchable
@@ -272,7 +250,7 @@ inspect("relisten after stop -> " + reerr2)
 asrv2 = Http.server()
 asrv2.get("/", fn(req) { "rebound" })
 asrv2.listen_async(APORT)
-inspect("rebind -> " + await_get("/").body)
+inspect("rebind -> " + connect_when_up(ABASE + "/", Http.get).body)
 asrv2.stop()
 
 # A non-Sendable handler is rejected at listen_async (it runs off this thread).

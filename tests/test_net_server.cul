@@ -23,10 +23,15 @@ iso = Isolate.spawn(fn() {
   }, workers: 4)
 })
 
-// The isolate may not have bound the port yet — retry until it answers.
+// The isolate may not have bound the port yet — retry until it answers. The
+// sleep is what makes this a wait: a refused loopback connect returns in
+// microseconds, so a bare attempt count spends its budget in about a
+// millisecond. Past two seconds the fixed port is taken rather than late, so
+// throw — a nil here would surface as a type error wherever the caller used it.
+// `_Time`, not `Time`: the facade would pull Duration/Instant into the JIT lane.
 fn ask(msg) {
   mut attempt = 0
-  while attempt < 400 {
+  while attempt < 100 {
     mut reply = nil
     try {
       let c = Net.connect(HOST, PORT, timeout: 2000)
@@ -38,9 +43,12 @@ fn ask(msg) {
       reply = nil
     }
     if reply != nil { return reply }
+    _Time.sleep(0.02)
     attempt = attempt + 1
   }
-  return nil
+  throw { kind: "AssertionError",
+          message: "no server on " + HOST + ":" + PORT.to_string() +
+                   " after 2s (port already taken?)" }
 }
 
 // --- the pool serves connection after connection ---
