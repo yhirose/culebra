@@ -4309,7 +4309,8 @@ Playground でも動かない。
 ### View とフレームループ
 
 `Scene.View.new(w, h, title)` はウィンドウを開く。位置とサイズは `Float`
-（ワールド単位）、色は `0–255` の 3 または 4 チャンネル整数。1 フレームは、
+（ワールド単位）、色は `0–255` の 3 または 4 チャンネル整数で、範囲外の
+チャンネルは端に丸められる。1 フレームは、
 2D オーバーレイ付きの 3D パス（`render_3d()` → オーバーレイ描画 → `present()`）
 か、純 2D（`begin2d()` → 描画 → `present()`）のいずれか。
 
@@ -4333,7 +4334,7 @@ Playground でも動かない。
 
 | メソッド | 効果 |
 | --- | --- |
-| `view.add_box(w, h, d)` / `add_sphere(r)` / `add_cylinder(r, h)` / `add_plane(w, d)` | プリミティブノードを追加 |
+| `view.add_box(w, h, d)` / `add_sphere(r)` / `add_cylinder(r, h)` / `add_plane(w, d)` | プリミティブノードを追加（`node` からも同じ形状を子として追加できる） |
 | `view.add_mesh()` / `node.add_mesh()` | 空のカスタムメッシュを追加（下記） |
 | `node.move(x, y, z)` | 位置を設定 |
 | `node.yaw(a)` / `pitch(a)` / `roll(a)` | 1 軸まわりの回転（ラジアン） |
@@ -4364,6 +4365,9 @@ ny, nz)`（または `vertex_uv(…, u, v)`）が頂点、`m.tri(a, b, c)` が�
 `view.grain(px, r, g, b, amt) -> tex` はノイズ、`view.canvas(w, h) -> tex` は
 2D 呼び出し（`rect` / `text` …）で塗る render-to-texture を開き、
 `view.canvas_end()` で閉じる — デモがリバリーや看板を描くのに使っている方法。
+canvas は同時に 1 枚だけ: 閉じる前の 2 枚目の `canvas()` は拒否され、開いたまま
+フレームを開くと先に閉じられる。テクスチャは UV の向きに関わらずメッシュ上で
+正しい向きになる。
 
 ライティングは view 上で設定する:
 
@@ -4371,7 +4375,7 @@ ny, nz)`（または `vertex_uv(…, u, v)`）が頂点、`m.tri(a, b, c)` が�
 | --- | --- |
 | `view.background(r, g, b)` | クリア色 |
 | `view.sky(tr,tg,tb, br,bg,bb)` | 天頂 → 地平のグラデーション（反射環境も兼ねる） |
-| `view.sun(dx,dy,dz, intensity, r,g,b)` | 指向性ライト（2 カスケード影） |
+| `view.sun(dx,dy,dz, intensity, r,g,b)` | 指向性ライト（2 カスケード影）。`(0, 0, 0)` は方向を指さないので拒否される |
 | `view.ambient(intensity, r, g, b)` | フィルライト |
 | `view.fog(start, end, r, g, b)` | 距離フォグ |
 | `view.screenshot(path)` | 現フレームを PNG に保存 |

@@ -4457,7 +4457,8 @@ nor in the Playground.
 ### The view and the frame loop
 
 `Scene.View.new(w, h, title)` opens a window. Positions and sizes are `Float`
-world units; colours are three or four `0–255` integer channels. A frame is
+world units; colours are three or four `0–255` integer channels, and a channel
+outside that range clamps to it. A frame is
 either a 3D pass with a 2D overlay (`render_3d()` → overlay draws → `present()`)
 or pure 2D (`begin2d()` → draws → `present()`).
 
@@ -4481,7 +4482,7 @@ persistent geometry once and move it each frame.
 
 | Method | Effect |
 | --- | --- |
-| `view.add_box(w, h, d)` / `add_sphere(r)` / `add_cylinder(r, h)` / `add_plane(w, d)` | add a primitive node |
+| `view.add_box(w, h, d)` / `add_sphere(r)` / `add_cylinder(r, h)` / `add_plane(w, d)` | add a primitive node (a `node` adds the same shapes as a child) |
 | `view.add_mesh()` / `node.add_mesh()` | add an empty custom mesh (below) |
 | `node.move(x, y, z)` | set position |
 | `node.yaw(a)` / `pitch(a)` / `roll(a)` | rotate about one axis (radians) |
@@ -4512,7 +4513,10 @@ Textures are generated in-process (there is no image-file loader):
 `view.checker(px, checks, r1,g1,b1, r2,g2,b2) -> tex` makes a checkerboard,
 `view.grain(px, r, g, b, amt) -> tex` a noise texture, and `view.canvas(w, h) ->
 tex` opens a render-to-texture you paint with the 2D calls (`rect`/`text`/…) and
-close with `view.canvas_end()` — how the demo draws liveries and signage.
+close with `view.canvas_end()` — how the demo draws liveries and signage. One
+canvas is open at a time: a second `canvas()` before the close is refused, and a
+frame opened with one still open ends it first. The texture is upright on the
+mesh whichever way its UVs run.
 
 Lighting is set on the view:
 
@@ -4520,7 +4524,7 @@ Lighting is set on the view:
 | --- | --- |
 | `view.background(r, g, b)` | clear colour |
 | `view.sky(tr,tg,tb, br,bg,bb)` | zenith → horizon gradient (also the reflected environment) |
-| `view.sun(dx,dy,dz, intensity, r,g,b)` | directional light (two-cascade shadows) |
+| `view.sun(dx,dy,dz, intensity, r,g,b)` | directional light (two-cascade shadows); `(0, 0, 0)` names no direction and is refused |
 | `view.ambient(intensity, r, g, b)` | fill light |
 | `view.fog(start, end, r, g, b)` | distance fog |
 | `view.screenshot(path)` | save the current frame to a PNG |

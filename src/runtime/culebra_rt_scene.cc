@@ -27,14 +27,22 @@
 
 namespace gfx {
 
+// A channel saturates at the ends of its range. The cast alone would wrap —
+// 256 to black, -1 to full — turning an off-by-one brightness tweak into the
+// opposite colour.
+static unsigned char chan(int64_t v) {
+  return (unsigned char)(v < 0 ? 0 : v > 255 ? 255 : v);
+}
+
 static Color col(int64_t r, int64_t g, int64_t b, int64_t a = 255) {
-  return Color{(unsigned char)r, (unsigned char)g, (unsigned char)b,
-               (unsigned char)a};
+  return Color{chan(r), chan(g), chan(b), chan(a)};
 }
 
 // 0-255 RGB to a normalized linear-ish Vector3, scaled by `k` (light intensity).
+// `k` is deliberately not clamped: intensity above 1 is a brighter light.
 static Vector3 rgb01(int64_t r, int64_t g, int64_t b, double k = 1.0) {
-  return Vector3{(float)(r / 255.0 * k), (float)(g / 255.0 * k), (float)(b / 255.0 * k)};
+  return Vector3{(float)(chan(r) / 255.0 * k), (float)(chan(g) / 255.0 * k),
+                 (float)(chan(b) / 255.0 * k)};
 }
 
 // Bring the audio device up on first use (a View, Sound or Music) so scripts
@@ -319,7 +327,7 @@ class Node {
   std::vector<float> mt;   // texcoords uv
   std::vector<long> mi;    // indices (range-checked at build())
   bool mesh_built = false;
-  ::Model mesh_model{};
+  ::Mesh mesh_{};   // GL ids + indices — see build(); the vertex data is ours
 
   // local-transform cache: recomputed only when a setter dirties it, so a
   // static subtree's matrix is built once, not 3x/frame across the passes.
@@ -327,8 +335,13 @@ class Node {
   mutable bool local_dirty_ = true;
 
   ~Node() {
-    if (mesh_built && IsWindowReady()) UnloadModel(mesh_model);
+    if (mesh_built) unload_mesh();
   }
+  // The node owns GL ids and a raylib-side index array (see build()); a copy
+  // would free them twice. Everything holds nodes by shared_ptr.
+  Node() = default;
+  Node(const Node&) = delete;
+  Node& operator=(const Node&) = delete;
 
   // fluent setters (transform setters dirty the cached local matrix)
   Node& move(double x, double y, double z) { px = x; py = y; pz = z; local_dirty_ = true; return *this; }
@@ -380,24 +393,32 @@ class Node {
         return *this;
       }
     }
+    // Upload out of the node's own buffers, and hand raylib only what it needs
+    // to keep: the vertex arrays are read once by UploadMesh and freed with
+    // this call frame (the swaps below). Indices are the exception — DrawMesh
+    // reads that pointer as the flag for "draw indexed", so this one array
+    // must outlive the upload, and it is raylib's to free. What is left in the
+    // Mesh is then the GL ids plus two plain-heap allocations, which is what
+    // lets a node outlive its window without leaking (see unload_mesh).
+    // LoadModelFromMesh is skipped for the same reason: render() draws the
+    // Mesh, and a Model would add three more allocations to keep alive.
+    // (This leans on the GL33 backend, where DrawMesh draws from the VBOs; the
+    // GL 1.1 path reads mesh.vertices per frame — moot while the lit shader
+    // is #version 330, but a vendor bump changing that would land here.)
     ::Mesh m{};
     m.vertexCount = (int)(mv.size() / 3);
     m.triangleCount = (int)(mi.size() / 3);
-    m.vertices = (float*)MemAlloc((unsigned)(mv.size() * sizeof(float)));
-    for (size_t i = 0; i < mv.size(); i++) m.vertices[i] = mv[i];
-    if (!mn.empty()) {
-      m.normals = (float*)MemAlloc((unsigned)(mn.size() * sizeof(float)));
-      for (size_t i = 0; i < mn.size(); i++) m.normals[i] = mn[i];
-    }
-    if (!mt.empty()) {
-      m.texcoords = (float*)MemAlloc((unsigned)(mt.size() * sizeof(float)));
-      for (size_t i = 0; i < mt.size(); i++) m.texcoords[i] = mt[i];
-    }
+    m.vertices = mv.data();
+    if (!mn.empty()) m.normals = mn.data();
+    if (!mt.empty()) m.texcoords = mt.data();
     m.indices = (unsigned short*)MemAlloc((unsigned)(mi.size() * sizeof(unsigned short)));
     for (size_t i = 0; i < mi.size(); i++) m.indices[i] = (unsigned short)mi[i];
     UploadMesh(&m, false);
-    if (mesh_built) UnloadModel(mesh_model);   // rebuilt: drop the older upload
-    mesh_model = LoadModelFromMesh(m);
+    m.vertices = nullptr;
+    m.normals = nullptr;
+    m.texcoords = nullptr;
+    if (mesh_built) unload_mesh();   // rebuilt: drop the older upload
+    mesh_ = m;
     mesh_built = true;
     // the data now lives in the GPU mesh; release the CPU-side build buffers
     std::vector<float>().swap(mv);
@@ -426,6 +447,7 @@ class Node {
   std::shared_ptr<Node> add_box(double w, double h, double d) { return push(make_box(w, h, d)); }
   std::shared_ptr<Node> add_sphere(double r) { return push(make_sphere(r)); }
   std::shared_ptr<Node> add_cylinder(double r, double h) { return push(make_cylinder(r, h)); }
+  std::shared_ptr<Node> add_plane(double w, double d) { return push(make_plane(w, d)); }
   std::shared_ptr<Node> add_mesh() { auto n = std::make_shared<Node>(); n->shape = Shape::Mesh; return push(n); }
 
   double x() const { return px; }
@@ -488,7 +510,7 @@ class Node {
       case Shape::Cylinder: DrawMesh(ctx.cyl, ctx.mat, draw); break;
       case Shape::Plane: DrawMesh(ctx.plane, ctx.mat, draw); break;
       case Shape::Mesh:
-        if (mesh_built) DrawMesh(mesh_model.meshes[0], ctx.mat, world);
+        if (mesh_built) DrawMesh(mesh_, ctx.mat, world);
         break;
       case Shape::Group: break;
     }
@@ -497,6 +519,21 @@ class Node {
 
  private:
   std::shared_ptr<Node> push(std::shared_ptr<Node> n) { children.push_back(n); return n; }
+
+  // Only the GL ids need the window. The vboId and index arrays are plain heap
+  // and are reclaimed either way — the same split ~View makes for a material's
+  // maps. The vertex data was never raylib's (build() uploads from this node's
+  // own vectors), so a node outliving its View leaks nothing.
+  void unload_mesh() {
+    if (IsWindowReady()) {
+      UnloadMesh(mesh_);
+    } else {
+      MemFree(mesh_.vboId);
+      MemFree(mesh_.indices);
+    }
+    mesh_ = ::Mesh{};
+    mesh_built = false;
+  }
 };
 
 class View {
@@ -560,6 +597,7 @@ class View {
   }
   ~View() {
     if (IsWindowReady()) {
+      if (canvas_open_) EndTextureMode();   // no frame to finish, just unbind
       roots_.clear();                       // drop scene → ~Node unloads each mesh (window still up)
       UnloadRenderTexture(shadowmap0_);
       UnloadRenderTexture(shadowmap1_);
@@ -628,6 +666,15 @@ class View {
   // lighting
   void sun(double dx, double dy, double dz, double intensity, int64_t r, int64_t g, int64_t b) {
     Vector3 d = Vector3Normalize(Vector3{(float)dx, (float)dy, (float)dz});
+    // Vector3Normalize leaves a zero vector alone, but the shader normalizes
+    // it again and 0/0 unlights the whole scene. Refuse the call rather than
+    // hand the GPU a NaN.
+    if (d.x == 0 && d.y == 0 && d.z == 0) {
+      TraceLog(LOG_ERROR,
+               "Scene: sun() needs a direction to shine from; (0, 0, 0) names "
+               "none — sun unchanged.");
+      return;
+    }
     dir_ = d;
     lcol_ = rgb01(r, g, b, intensity);
     set_sun_uniform();
@@ -689,15 +736,45 @@ class View {
   // "generate a texture procedurally" path (liveries, signage) — like SceneKit
   // drawing textures with Core Graphics.
   int64_t canvas(int64_t w, int64_t h) {
+    if (canvas_open_) {
+      TraceLog(LOG_ERROR,
+               "Scene: canvas() while a canvas is still open — end that one "
+               "first. Ignored.");
+      return -1;   // outside the texture id range: draws untextured (TEX_BASE)
+    }
     RenderTexture2D rt = LoadRenderTexture((int)w, (int)h);
     SetTextureFilter(rt.texture, TEXTURE_FILTER_BILINEAR);
     SetTextureWrap(rt.texture, TEXTURE_WRAP_REPEAT);
     texs_.push_back({rt.texture, rt, true});
+    canvas_open_ = true;
+    canvas_index_ = (int)texs_.size() - 1;
     BeginTextureMode(rt);
     ClearBackground(WHITE);
     return (long)texs_.size() - 1 + TEX_BASE;
   }
-  void canvas_end() { EndTextureMode(); }
+  void canvas_end() {
+    if (!canvas_open_) {
+      TraceLog(LOG_ERROR, "Scene: canvas_end() with no canvas open. Ignored.");
+      return;
+    }
+    EndTextureMode();
+    canvas_open_ = false;
+    // A render target is stored bottom-up. The present path compensates with a
+    // negative source height, but a material samples the texture as it is and
+    // the drawing would land upside down on the mesh. Bake the flip in once,
+    // here, so a canvas texture is an ordinary texture from this point on —
+    // which is also what frees the render target early.
+    TexEntry& e = texs_[canvas_index_];
+    Image im = LoadImageFromTexture(e.rt.texture);
+    ImageFlipVertical(&im);
+    UnloadRenderTexture(e.rt);
+    Texture2D t = LoadTextureFromImage(im);
+    UnloadImage(im);
+    SetTextureFilter(t, TEXTURE_FILTER_BILINEAR);
+    SetTextureWrap(t, TEXTURE_WRAP_REPEAT);
+    e = TexEntry{t};
+    canvas_index_ = -1;
+  }
 
   std::shared_ptr<Node> add_node() { return push(std::make_shared<Node>()); }
   std::shared_ptr<Node> add_box(double w, double h, double d) { return push(Node::make_box(w, h, d)); }
@@ -741,6 +818,7 @@ class View {
   }
 
   void render_3d() {
+    close_stray_canvas("render_3d");
     Matrix id = MatrixIdentity();
     Vector3 focus = cam_.target;
 
@@ -799,6 +877,7 @@ class View {
   // Open a frame for 2D-only screens (menus / pause), with no 3D or shadow
   // passes — pair with present(). (render_3d() opens the frame for 3D scenes.)
   void begin2d() {
+    close_stray_canvas("begin2d");
     BeginDrawing();
     ClearBackground(bg_);
   }
@@ -823,6 +902,16 @@ class View {
   }
 
  private:
+  // A canvas left open would nest render targets: the frame would be drawn
+  // into the canvas instead of the screen, with nothing said about it. Finish
+  // the canvas — it is the frame the caller is asking for that must proceed.
+  void close_stray_canvas(const char* opener) {
+    if (!canvas_open_) return;
+    TraceLog(LOG_ERROR,
+             "Scene: %s() with a canvas still open — ending the canvas first. "
+             "Call canvas_end() when the texture is drawn.", opener);
+    canvas_end();
+  }
   std::shared_ptr<Node> push(std::shared_ptr<Node> n) { roots_.push_back(n); return n; }
   int64_t add_material(MatDesc m) {
     mats_.push_back(m);
@@ -860,6 +949,8 @@ class View {
   std::vector<std::shared_ptr<Node>> roots_;
   std::vector<MatDesc> mats_;
   std::vector<TexEntry> texs_;
+  bool canvas_open_ = false;   // a canvas() whose canvas_end() has not run yet
+  int canvas_index_ = -1;      // its texs_ slot, so canvas_end() can bake it
   Texture2D white_{};
   Shader lit_{}, depth_{}, post_{};
   Material mat_{}, depth_mat_{};
@@ -947,6 +1038,7 @@ const bool registered = [] {
       .method<&gfx::Node::add_box>("add_box", {"w", "h", "d"})
       .method<&gfx::Node::add_sphere>("add_sphere", {"r"})
       .method<&gfx::Node::add_cylinder>("add_cylinder", {"r", "h"})
+      .method<&gfx::Node::add_plane>("add_plane", {"w", "d"})
       .method<&gfx::Node::add_mesh>("add_mesh")
       .method<&gfx::Node::x>("x")
       .method<&gfx::Node::y>("y")
