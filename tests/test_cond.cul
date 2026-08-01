@@ -38,3 +38,14 @@ assert_eq(cond { 5 => "t", _ => "f" }, "t")
 assert_eq("s={cond { y > 0 => 1, _ => 0 }}", "s=1")
 z = cond { y > 10 => "a", _ => "b" }
 assert_eq(z, "b")
+
+// `cond` is not reserved: an arm is required, so `if cond {}` with an empty
+// block still reads `cond` as an identifier instead of an arm-less `cond {}`.
+cond = false
+if cond { }
+mut taken = "none"
+if cond { taken = "then" } else { taken = "else" }
+assert_eq(taken, "else")
+mut hits = 0
+while cond { hits = hits + 1 }
+assert_eq(hits, 0)

@@ -292,7 +292,9 @@ const auto grammar_ = R"(
   # `cond { test => expr, ..., _ => default }`. The first arm whose test is
   # truthy yields its body; `_` (WILDCARD) is the always-match default. No
   # subject, so the grammar never collides with `match EXPRESSION { … }`.
-  COND                     <-  cond _ '{' _ (COND_ARM (_ ',' _ COND_ARM)* _ ','?)? _ '}'
+  # At least one arm is required: an empty `cond {}` would only ever yield nil,
+  # and allowing it would swallow `if cond {}` when `cond` is an identifier.
+  COND                     <-  cond _ '{' _ COND_ARM (_ ',' _ COND_ARM)* _ ','? _ '}'
   COND_ARM                 <-  (WILDCARD / EXPRESSION) _ '=>' _ (EXPRESSION / BLOCK)
 
   PATTERN                  <-  PRIMARY_PATTERN (_ '|' _ PRIMARY_PATTERN)*
