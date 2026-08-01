@@ -53,7 +53,7 @@ Read this once; the rest of the guide assumes these choices.
 
 - **Two backends, one AST.** A tree-walking interpreter and an LLVM
   ORC JIT share the same AST. The interpreter has no LLVM dependency
-  (a ~23 MB driver against ~109 MB once LLVM is linked in); the JIT
+  (a ~23 MB driver against ~82 MB once LLVM is linked in); the JIT
   runs the same program at `-O2`. Both are maintained — neither is
   going away.
 - **Eight everyday types.** `Nil`, `Bool`, `Long`, `Float`, `String`,

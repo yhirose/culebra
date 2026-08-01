@@ -839,10 +839,17 @@ self-contained binaries.
 - `vendor/cpp-embedlib/cmake/cpp-embedlib.cmake` — provides
   `cpp_embedlib_add()` used to bake `libculebra_rt.a` and every
   per-feature archive (Ch.5) into the driver.
+- `tools/compress_asset.cc` — deflates each archive before it is
+  embedded (33.8 MB of driver against 6.9 MB). Only the archives are
+  compressed: they are ~95% of the embedded bytes, and they inflate
+  once per fingerprint on `culebra build`, off the startup path. The
+  grammar blob, the stdlib preambles and the embedded docs are read on
+  ordinary runs, where the same trade would buy ~1 MB for startup
+  latency.
 
 Feature options gate both the namespace and its archive:
 `CULEBRA_ENABLE_JIT` (LLVM linkage — off gives a ~23 MB driver with no
-LLVM dependency, against ~109 MB with it), `CULEBRA_ENABLE_HTTP`,
+LLVM dependency, against ~82 MB with it), `CULEBRA_ENABLE_HTTP`,
 `CULEBRA_ENABLE_SQLITE`,
 `CULEBRA_ENABLE_WEBVIEW` (on by default; self-disables on Linux
 without the GTK4 / WebKitGTK dev packages — headers only, since the

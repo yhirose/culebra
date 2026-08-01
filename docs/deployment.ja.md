@@ -604,8 +604,9 @@ OpenSSL / zlib）を付けます。強い choke が base の弱スタブを上�
 これらのアーカイブは cpp-embedlib によって **`culebra` ドライバに
 直接埋め込まれています** — ドライバは単体で完結する 1 バイナリで、
 サイドカーの `.a` ファイルを別途インストールする必要はありません。
-`culebra build` の初回呼び出し時に必要なアーカイブを
-`$HOME/.cache/culebra/<fingerprint>/lib*.a` に展開し、2 回目以降は
+deflate 圧縮して格納しており、ドライバ内で 33.8 MB のところ 6.9 MB
+です。`culebra build` の初回呼び出し時に必要なアーカイブを
+`$HOME/.cache/culebra/<fingerprint>/lib*.a` へ展開し、2 回目以降は
 キャッシュを再利用します。fingerprint は埋め込みアーカイブのコンテ
 ンツハッシュなので、`culebra` を再ビルドすると自動的に旧版のキャッ
 シュと分離されます。

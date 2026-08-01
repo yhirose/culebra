@@ -820,10 +820,16 @@ vendored なソースからのビルドなので、`culebra build` は自己完�
   とその機能別アーカイブ (`libculebra_rt_tensor.a`、`_http`、
   `_compress`) をドライバに焼き込むための `cpp_embedlib_add()` を提
   供。
+- `tools/compress_asset.cc` — 埋め込み前に各アーカイブを deflate 圧縮
+  （ドライバ内で 33.8 MB のところ 6.9 MB）。圧縮するのはアーカイブだけ
+  です: 埋め込みバイトの約 95% を占め、かつ展開は `culebra build` 時に
+  fingerprint あたり 1 回で起動パスから外れているため。grammar blob・
+  stdlib preamble・埋め込み docs は通常実行で読むので、同じ取引は
+  約 1 MB と引き換えに起動レイテンシを払うことになります。
 
 機能オプションは namespace とそのアーカイブの両方をゲートします:
 `CULEBRA_ENABLE_JIT` (LLVM リンケージ。off ならドライバは ~23 MB で
-LLVM 依存なし。on なら ~109 MB)、`CULEBRA_ENABLE_HTTP`、
+LLVM 依存なし。on なら ~82 MB)、`CULEBRA_ENABLE_HTTP`、
 `CULEBRA_ENABLE_SQLITE`、
 `CULEBRA_ENABLE_WEBVIEW` (既定 ON。GTK4 / WebKitGTK の dev パッケージ
 が無い Linux では自動的に無効化。要るのはヘッダだけで、エンジン自体は

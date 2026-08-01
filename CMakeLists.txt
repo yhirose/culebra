@@ -1001,14 +1001,38 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
       target_compile_definitions(${_rt_feature} PRIVATE CULEBRA_RT_FEATURE_BUILD=1)
     endif()
   endforeach()
+  # Embed the archives deflated: 33.8 -> 6.9 MB of .rodata, a quarter of the
+  # driver, for one inflate per archive on the first `culebra build` of a given
+  # fingerprint (materialize_archive caches the expanded .a). The compressed
+  # copies live in their own directory under the archives' own names, so the
+  # embedded entry is still "libculebra_rt.a" and the driver needs no filename
+  # convention to agree with; the real archives stay put for --rt-lib.
+  add_executable(compress_asset ./tools/compress_asset.cc)
+  target_compile_features(compress_asset PRIVATE cxx_std_23)
+  target_link_libraries(compress_asset ZLIB::ZLIB)
+  set(_rt_packed_dir "${CMAKE_CURRENT_BINARY_DIR}/rt-packed")
+  file(MAKE_DIRECTORY "${_rt_packed_dir}")
+  set(_rt_embed_packed "")
+  foreach(_rt_a _rt_dep IN ZIP_LISTS _rt_embed_files _rt_embed_deps)
+    cmake_path(GET _rt_a FILENAME _rt_a_name)
+    add_custom_command(
+      OUTPUT "${_rt_packed_dir}/${_rt_a_name}"
+      COMMAND compress_asset "${_rt_a}" "${_rt_packed_dir}/${_rt_a_name}"
+      DEPENDS "${_rt_a}" ${_rt_dep} compress_asset
+      COMMENT "Compressing ${_rt_a_name}"
+      VERBATIM)
+    list(APPEND _rt_embed_packed "${_rt_packed_dir}/${_rt_a_name}")
+  endforeach()
+  add_custom_target(culebra_rt_packed DEPENDS ${_rt_embed_packed})
+
   cpp_embedlib_add(culebra_rt_assets
-    FILES ${_rt_embed_files}
-    BASE_DIR "${CMAKE_CURRENT_BINARY_DIR}"
+    FILES ${_rt_embed_packed}
+    BASE_DIR "${_rt_packed_dir}"
     NAMESPACE CulebraRT)
   # cpp-embedlib's per-file DEPENDS is a file-level dependency. Force
-  # the asset library to wait for the real archive targets too, so the
-  # .a files actually exist when the embed step runs.
-  add_dependencies(culebra_rt_assets ${_rt_embed_deps})
+  # the asset library to wait for the compress step (and through it the real
+  # archive targets), so the packed files exist when the embed step runs.
+  add_dependencies(culebra_rt_assets culebra_rt_packed)
   target_link_libraries(culebra culebra_rt_assets)
   endif()
 endif()

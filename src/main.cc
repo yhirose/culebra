@@ -1,3 +1,5 @@
+#include <compress.h>  // gunzip() — the embedded runtime archives are stored
+                       // compressed (transitive too, but this file names it)
 #include <culebra.h>
 #include <dap.h>
 #include <docs_cmd.h>
@@ -298,14 +300,21 @@ static std::filesystem::path materialize_archive(
   auto cache = dir / name;
   if (std::filesystem::exists(cache)) return cache;
 
+  // The entries are embedded compressed (see CMakeLists).
   auto it = CulebraRT::FS.find(name);
   if (it == CulebraRT::FS.end()) {
     err = std::format("embedded runtime archive '{}' not found", name);
     return {};
   }
-  auto data = (*it).bytes();
-  if (!data) {
+  auto packed = (*it).text();
+  if (!packed) {
     err = std::format("embedded runtime archive '{}' has no data", name);
+    return {};
+  }
+  auto archive = culebra::compress::gunzip(*packed);
+  if (!archive.error.empty()) {
+    err = std::format("embedded runtime archive '{}' is corrupt: {}", name,
+                      archive.error);
     return {};
   }
 
@@ -331,8 +340,8 @@ static std::filesystem::path materialize_archive(
       err = std::format("can't write '{}'", tmp.string());
       return {};
     }
-    out.write(reinterpret_cast<const char*>(data->data()),
-              static_cast<std::streamsize>(data->size()));
+    out.write(archive.data.data(),
+              static_cast<std::streamsize>(archive.data.size()));
     if (!out) {
       err = std::format("write failed for '{}'", tmp.string());
       return {};

@@ -609,8 +609,9 @@ these features links none of them.
 
 These archives are **embedded directly into the `culebra` driver**
 via cpp-embedlib — the driver is a single self-contained binary, no
-sibling `.a` files need to be installed. On first invocation of
-`culebra build`, the required archives are materialized to
+sibling `.a` files need to be installed. They are stored deflated,
+which is 33.8 MB of the driver against 6.9 MB. On first invocation of
+`culebra build`, the required archives are inflated to
 `$HOME/.cache/culebra/<fingerprint>/lib*.a`; subsequent invocations
 reuse the cache. The fingerprint is a content-hash of the embedded
 archives, so a freshly-built `culebra` automatically isolates its cache

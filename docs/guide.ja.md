@@ -51,7 +51,7 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
 
 - **2 バックエンド、1 AST。** ツリーウォーキング型インタプリタと
   LLVM ORC JIT が同じ AST を共有。 インタプリタは LLVM 非依存
-  (ドライバ ~23 MB。 LLVM を含めると ~109 MB)、JIT は `-O2` で同じ
+  (ドライバ ~23 MB。 LLVM を含めると ~82 MB)、JIT は `-O2` で同じ
   プログラムを実行。 両方を維持 — どちらも捨てません。
 - **日常的に使う 8 つの型。** `Nil` / `Bool` / `Long` / `Float` /
   `String` / `Array` / `Object` / `Function`、加えて用途特化の 4 つ
