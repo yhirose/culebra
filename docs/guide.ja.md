@@ -6,8 +6,7 @@ Culebraガイド
 ウォーキング型インタプリタとLLVM ORC JITの2バックエンドが1つの
 ASTを共有します。このガイドは "hello" からC++ ホストへの埋め込み
 までを案内します。厳密な文法は [`language.ja.md`](language.ja.md)、
-APIリファレンスは [`stdlib.ja.md`](stdlib.ja.md)、実装の内部詳細は
-[`internals.ja.md`](internals.ja.md) を参照してください。
+APIリファレンスは [`stdlib.ja.md`](stdlib.ja.md) を参照してください。
 
 > **doctest規約。** 本ガイドの各` ```culebra ` ブロックは実行可能
 > な例です。 行末の `# => <value>` は標準出力の期待値、`# !! <pattern>`
@@ -445,7 +444,6 @@ inspect('café'.graphemes().collect().size())        # => 4
 ```
 
 `StringView`/grapheme の完全な API は [language.ja.md §18.1](language.ja.md)。
-設計議論は [`internals.ja.md` §6](internals.ja.md) 参照。
 
 ### なぜバイトインデックスなのか
 
@@ -1264,8 +1262,6 @@ inspect(lib.helper)              # => nil — export Objectに載っていない
 lint` の未使用 import 警告 (と `--fix`、Ch.15) が曖昧さなく出せるのも、
 AOT ビルドが推測なしにバンドルできるのも同じ理由。
 
-ローダ設計と循環検出アルゴリズムの詳細は [`internals.ja.md` §10](internals.ja.md)。
-
 ---
 
 第 III 部 — 型とライブラリ
@@ -1468,9 +1464,8 @@ inspect(c.to_array())            # => [[7.0, 10.0], [15.0, 22.0]]
 `Tensor.use_gpu()` / `use_cpu()` / `use_auto()` がバックエンドをプロセス
 全体で切り替え、既定の `use_auto` は問題サイズごとに選びます (小さい
 テンソルはカーネル起動のオーバーヘッドに負けるため)。形状・リダクション・
-autograd・デバイスの詳細は [`stdlib.ja.md` §8](stdlib.ja.md#8-tensor)、
-dtype・アロケータ・遅延形状の理由は
-[`internals.ja.md` §8](internals.ja.md) にあります。
+autograd・デバイスの詳細は [`stdlib.ja.md` §8](stdlib.ja.md#8-tensor)
+にあります。
 
 ## 15. ツール (`test`, `lint`, `fmt`, デバッグ)
 
@@ -1612,7 +1607,6 @@ int main() {
 
 - 厳密な文法と評価規則: [`language.ja.md`](language.ja.md)
 - APIリファレンス: [`stdlib.ja.md`](stdlib.ja.md)
-- 実装の内部詳細: [`internals.ja.md`](internals.ja.md)
 - バイナリビルド・埋め込み・ラッピング: [`deployment.ja.md`](deployment.ja.md)
 - 大きめの実例: [`benchmarks/microgpt/`](../benchmarks/microgpt/)
 - インタラクティブなREPL: `./build/culebra --shell`

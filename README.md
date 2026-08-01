@@ -160,8 +160,6 @@ for the JIT path, threading, and host-function registration.
 Design choices
 --------------
 
-The rationale lives in [`docs/internals.md`](docs/internals.md).
-
 - **Two backends, one AST.** Interpreter and JIT both maintained;
   no plan to consolidate.
 - **Predictable threaded concurrency.** No `async`/`await`. Stack
@@ -220,8 +218,6 @@ Documentation
   C++ libraries (`culebra build` / `culebra wrap`):
   [`docs/deployment.md`](docs/deployment.md)
   / [日本語](docs/deployment.ja.md)
-* Implementation internals: [`docs/internals.md`](docs/internals.md)
-  / [日本語](docs/internals.ja.md)
 * Context pack — the syntax, the carried-over mistakes and every stdlib
   signature condensed into one file to paste into an LLM prompt:
   [`docs/llm.md`](docs/llm.md)

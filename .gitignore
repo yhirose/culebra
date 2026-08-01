@@ -78,6 +78,11 @@ scratchpad/
 docs/_history.md
 docs/_history.ja.md
 
+# Private, unpolished dev notes on implementation internals — not guaranteed
+# in sync with the code, not embedded, not part of the public doc set.
+docs/_internals.md
+docs/_internals.ja.md
+
 # Playground incremental-build bookkeeping (the wasm it guards is committed)
 build-playground/
 

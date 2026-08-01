@@ -15142,7 +15142,7 @@ inline llvm::Value* JIT::emit_inlined_iter_reduce(
 // and break message symmetry.
 inline llvm::Value* JIT::emit_builtin_long_arg(const peg::Ast& argAst) {
   // `v` stays Owned across the check, so the automatic unwind-temp window
-  // (internals.md, JIT ownership) releases it if the check throws.
+  // (JIT ownership discipline) releases it if the check throws.
   auto v = compile(argAst);
   emit_type_check(v.borrow(), "Long", "parameter 'n'", &argAst);
   return value_to_long(v.consume());

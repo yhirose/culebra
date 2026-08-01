@@ -6,8 +6,7 @@
 インタープリタを正としJITがそれを追うものとします。
 
 実例つき入門は [`guide.ja.md`](guide.ja.md)、標準ライブラリの
-APIリファレンスは [`stdlib.ja.md`](stdlib.ja.md)、実装の内部詳細
-(パーサ、JIT codegen、AOT tree-shaking) は [`internals.ja.md`](internals.ja.md)
+APIリファレンスは [`stdlib.ja.md`](stdlib.ja.md)
 を参照してください。
 
 ## 目次

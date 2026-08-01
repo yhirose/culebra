@@ -51,7 +51,7 @@ check_exit "ja topic"       0 --ja tooling
 # Every topic is present in both editions: a missing half would mean the
 # bilingual pair broke, and gen_docs.cmake refuses to build in that case —
 # this catches a topic silently dropped from its table instead.
-for t in llm agent guide language stdlib tooling deployment internals; do
+for t in llm agent guide language stdlib tooling deployment; do
   check_exit "topic $t"    0 "$t" --at 1
   check_exit "topic $t ja" 0 --ja "$t" --at 1
 done

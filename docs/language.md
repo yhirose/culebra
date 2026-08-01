@@ -8,8 +8,7 @@ tracks its behavior.
 
 For an introductory tour with runnable examples, see
 [`guide.md`](guide.md). For API reference of the standard library see
-[`stdlib.md`](stdlib.md). For implementation internals (parser, JIT
-codegen, AOT tree-shaking) see [`internals.md`](internals.md).
+[`stdlib.md`](stdlib.md).
 
 ## Table of contents
 

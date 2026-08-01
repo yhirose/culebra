@@ -1,7 +1,7 @@
 // Conformance: stdlib namespace methods accept kwargs / defaults on all
 // three backends (interp, JIT, AOT). Mechanism: stdlib methods carrying
 // NsParamMeta route kwargs through the same resolver as user fns. See
-// docs/internals.md and tests/test_kwargs.cul (user-fn kwargs).
+// tests/test_kwargs.cul (user-fn kwargs).
 //
 // Proc is the exercised namespace here (its methods have kwargs/defaults
 // on master). Commands use `echo`, which exists on every CI host.

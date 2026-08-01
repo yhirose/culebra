@@ -6,8 +6,9 @@
 # gate to every docs edit. Written in CMake rather than sh because the Windows
 # build (mingw) has no shell dependency to lean on.
 #
-# The file list is explicit, never a glob: docs/_history.* is gitignored local
-# notes, and a glob would embed whatever private file happens to sit there.
+# The file list is explicit, never a glob: docs/_history.* and docs/_internals.*
+# are gitignored local notes, and a glob would embed whatever private file
+# happens to sit there.
 #
 # Usage: cmake -DDOCS_DIR=<dir> -DOUT=<file> -P gen_docs.cmake
 
@@ -21,7 +22,6 @@ set(TOPICS
   "stdlib|Every namespace and its signatures|全 namespace とその署名"
   "tooling|test, lint, fmt and the debug adapter|test・lint・fmt とデバッグアダプタ"
   "deployment|Embedding, AOT builds, release archives|埋め込み・AOT ビルド・リリース書庫"
-  "internals|Implementation: parser, interpreter, JIT, GC|実装：パーサ・インタプリタ・JIT・GC"
 )
 
 set(BODY "")

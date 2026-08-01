@@ -7,9 +7,7 @@ Everything described here is available without any `import`
 statement.
 
 For an introductory tour and usage idioms see
-[`guide.md` §14](guide.md#14-standard-library). For library
-implementation details and rationale see
-[`internals.md`](internals.md).
+[`guide.md` §14](guide.md#14-standard-library).
 
 Language-level built-ins — `to_long`, `to_float`, `to_string`,
 `type_of`, `range`, `iota` — are specified in

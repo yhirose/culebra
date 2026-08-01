@@ -5,9 +5,8 @@
 （`Math`, `IO`, `Sys`, `FS`, `Time`, `Args`, `Random`, `String`）
 を対象とします。ここに記載のものは`import`文なしで利用できます。
 
-実例つきの導入とイディオムは [`guide.ja.md` §14](guide.ja.md#14-標準ライブラリ)、
-ライブラリの実装詳細と設計理由は [`internals.ja.md`](internals.ja.md) を
-参照してください。
+実例つきの導入とイディオムは [`guide.ja.md` §14](guide.ja.md#14-標準ライブラリ)
+を参照してください。
 
 言語レベルの組み込み関数（`to_long`, `to_float`, `to_string`,
 `type_of`, `range`, `iota`）は [言語仕様 §19](language.ja.md)

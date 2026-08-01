@@ -1,7 +1,7 @@
 // Deflate a file for embedding: `compress_asset <in> <out>`.
 //
-// A build step rather than `gzip -9`, because the dependency policy
-// (docs/internals.md) is a C++23 compiler and nothing else, and because
+// A build step rather than `gzip -9`, because the dependency policy is a
+// C++23 compiler and nothing else, and because
 // writing the output where we ask lets the embedded entry keep the archive's
 // own name — the driver's inflate (materialize_archive, src/main.cc) then
 // needs no filename convention to agree with. zlib is already required.

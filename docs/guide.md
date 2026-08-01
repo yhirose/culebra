@@ -6,8 +6,7 @@ default, blocks that evaluate to a value, and pattern matching in the
 core. Two backends share one AST — a tree-walking interpreter and an
 LLVM ORC JIT. This guide walks you from "hello" to embedding Culebra
 in a C++ host. For the formal grammar see [`language.md`](language.md);
-for the API reference see [`stdlib.md`](stdlib.md); for implementation
-internals see [`internals.md`](internals.md).
+for the API reference see [`stdlib.md`](stdlib.md).
 
 > **Doctest convention.** Every ` ```culebra ` block in this guide is
 > a runnable example. Lines ending in `# => <value>` show expected
@@ -457,8 +456,7 @@ inspect('a👨‍👩‍👧b'.graphemes().collect().size())    # => 3
 inspect('café'.graphemes().collect().size())        # => 4
 ```
 
-Full `StringView`/grapheme API: [language.md §18.1](language.md). Design
-discussion: [`internals.md` §6](internals.md).
+Full `StringView`/grapheme API: [language.md §18.1](language.md).
 
 ### Why byte indexing?
 
@@ -1287,9 +1285,6 @@ lint` an unambiguous unused-import warning (and a `--fix` for it,
 Ch.15), and gives the AOT build a graph it can bundle without
 guessing.
 
-See [`internals.md` §10](internals.md) for the loader design and
-cycle-detection algorithm.
-
 ---
 
 Part III — Types and libraries
@@ -1495,8 +1490,7 @@ The same type runs on the GPU — there is no separate GPU type.
 process-wide, and `use_auto` (the default) picks per operation by
 problem size, since small tensors lose to kernel-launch overhead.
 Shapes, reductions, autograd and device details:
-[`stdlib.md` §8](stdlib.md#8-tensor). The dtype, allocator and
-lazy-shape rationale is in [`internals.md` §8](internals.md).
+[`stdlib.md` §8](stdlib.md#8-tensor).
 
 ## 15. Tooling (`test`, `lint`, `fmt`, debug)
 
@@ -1642,7 +1636,6 @@ Where to go next
 
 - Formal grammar and evaluation rules: [`language.md`](language.md)
 - API reference: [`stdlib.md`](stdlib.md)
-- Implementation internals: [`internals.md`](internals.md)
 - Binary builds, embedding, and wrapping: [`deployment.md`](deployment.md)
 - Larger worked example: [`benchmarks/microgpt/`](../benchmarks/microgpt/)
 - Interactive REPL: `./build/culebra --shell`
