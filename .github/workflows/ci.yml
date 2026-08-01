@@ -1227,33 +1227,20 @@ jobs:
       # link is the only place CULEBRA_CANVAS_LINK (the statics + the Win32
       # library list) is exercised.
       #
-      # Deliberately not tests/test_canvas.cul, which is where this belongs and
-      # where it runs on macOS and Linux. That file was the first Canvas program
-      # ever run on Windows and it still fails there, now for one reason left
-      # over from that first run: a glyph test reads negative pixel values.
-      # Point this at the shared test once that is fixed.
+      # The shared test, the same one macOS and Linux run. It was held out while
+      # Windows had its own copy: as the first Canvas program ever run here it
+      # failed for two reasons, and both were the 32-bit `long` the interpreter
+      # carried a Long in under LLP64 — literals past 2^31 rejected outright,
+      # and a packed RGBA read back through get_pixel arriving sign-extended
+      # (`[0, -24, -23, -21, -20]` where the ramp wanted `[0, 1, 2, 4, 5]`, the
+      # arithmetic of a value that no longer fit). 0e4e102 fixed the width.
       - name: Smoke — Canvas window build (interp / JIT / AOT)
         env:
           CULEBRA_CANVAS_HEADLESS: "1"
           CULEBRA_VERBOSE: "1"
         run: |
-          cat > canvas.cul <<'EOF'
-          fn rgba(r, g, b, a) { r + g * 256 + b * 65536 + a * 16777216 }
-          let RED = rgba(255, 0, 0, 255)
-          let BLUE = rgba(0, 0, 255, 255)
-          _Canvas.init(4, 4)
-          _Canvas.clear(RED)
-          _Canvas.rect(1, 1, 2, 2, BLUE, 1)
-          assert_eq(_Canvas.get_pixel(0, 0), RED)
-          assert_eq(_Canvas.get_pixel(2, 2), BLUE)
-          # The window-backed entry points. Forced headless they no-op, so a
-          # window build has to answer exactly as a headless one does.
-          _Canvas.present()
-          assert_eq(_Canvas.windowed(), false)
-          print("canvas ok")
-          EOF
           misc/run_all_backends.sh ./build-win-aot/culebra.exe \
-            canvas.cul "canvas ok" CANVAS
+            tests/test_canvas.cul "canvas ok" CANVAS
       # Window creation itself, which the forced-headless step above skips. A
       # runner has no desktop, so either outcome is fine — SDL opens a window,
       # or it fails and the backend behaves headless. Hanging or crashing is
