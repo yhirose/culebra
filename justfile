@@ -141,7 +141,9 @@ install PREFIX='/usr/local': build
     sudo=""
     [[ -w "$probe" ]] || sudo=sudo
     $sudo mkdir -p "$dest"
-    $sudo install -m 755 build/culebra "$dest/culebra"
+    # -s: the same ~9 MB of global symbols the release archive drops
+    # (misc/package_release.sh), for the same reason.
+    $sudo install -m 755 -s build/culebra "$dest/culebra"
     echo "installed -> $dest/culebra"
     case ":${PATH}:" in *":$dest:"*) ;;
       *) echo "note: $dest is not on your PATH" >&2 ;;

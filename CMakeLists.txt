@@ -57,6 +57,14 @@ if(CULEBRA_DEV_O1)
   string(REGEX REPLACE "-O[0-9gsz]+" "-O1"
          CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
 endif()
+# `just asan` is the one entry point that sanitizes, and it passes the flags
+# through CMAKE_CXX_FLAGS. Decided once here because the driver's link options
+# key off it in two places.
+if(CMAKE_CXX_FLAGS MATCHES "sanitize")
+  set(_culebra_sanitized TRUE)
+else()
+  set(_culebra_sanitized FALSE)
+endif()
 include(CheckIPOSupported)
 check_ipo_supported(RESULT _ipo_supported OUTPUT _ipo_err)
 if(CULEBRA_LTO AND _ipo_supported AND CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -693,13 +701,31 @@ if(_culebra_enable_lto)
   set_target_properties(culebra PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
 
-# Discard local symbols (the same -Wl,-x the AOT link has used since f90a3cc):
-# __LINKEDIT 16.8 -> 4.6 MB, binary 112.7 -> 101.0 MB on macOS arm64. The ORC
-# JIT resolves its culebra_runtime_* helpers as *global* symbols, so those
-# survive. Sanitizer builds keep the locals for readable stack traces; Windows
-# is excluded because its PE export table is tuned separately below.
-if(NOT WIN32 AND NOT CMAKE_CXX_FLAGS MATCHES "sanitize")
-  target_link_options(culebra PRIVATE -Wl,-x)
+# Shed what a shipped driver never uses. Both halves are what the AOT link has
+# always done to its outputs (src/main.cc: strip_syms, dead_strip); the driver
+# was the one binary still keeping it all. Sanitizer builds opt out of both —
+# the locals and the unreached code are what make their reports readable.
+if(NOT _culebra_sanitized)
+  # Local symbols: __LINKEDIT 16.8 -> 4.6 MB, binary 112.7 -> 101.0 MB on macOS
+  # arm64 (-Wl,-x since f90a3cc). Not on Windows, whose PE export table is
+  # tuned separately below.
+  if(NOT WIN32)
+    target_link_options(culebra PRIVATE -Wl,-x)
+  endif()
+  # Then the code nothing reaches: 121.3 -> 108.5 MB on Linux x86-64. Under LTO
+  # that is the linker's doing alone, over inputs already split by whoever built
+  # them — the LLVM statics orcjit and the native target barely call, and the
+  # sqlite object above. GCC drops -ffunction-sections at compile in an LTO
+  # build (nothing but bitcode to place); it earns its keep in the LTO=OFF
+  # configs, where it is worth 13.7 MB for ~6% larger objects. The JIT's helpers
+  # stay alive as GC roots via the export lists below — which is also why the
+  # whole thing is inert on Windows, whose list is --export-all-symbols.
+  target_compile_options(culebra PRIVATE -ffunction-sections -fdata-sections)
+  if(APPLE)
+    target_link_options(culebra PRIVATE -Wl,-dead_strip)
+  else()
+    target_link_options(culebra PRIVATE -Wl,--gc-sections)
+  endif()
 endif()
 
 # Out-of-tree binding declarations (`culebra wrap` drives these): each
@@ -1338,8 +1364,10 @@ endif()
 if(CULEBRA_ENABLE_JIT)
   target_link_libraries(smoke_suite ${llvm_libs})
   # The in-process JIT (mt/mi/signal) resolves the `used`-pinned runtime helpers
-  # from the host binary via ORC — same contract as the driver, same mechanism,
-  # so the smokes exercise the export path the driver actually ships with.
+  # from the host binary via ORC — same export contract as the driver, same
+  # mechanism. Not the same link: the driver is dead-stripped above and this
+  # test binary is not, so the smokes prove the export path, not the driver's
+  # exact link.
   culebra_export_jit_symbols(smoke_suite)
 endif()
 if(CULEBRA_ENABLE_HTTP)

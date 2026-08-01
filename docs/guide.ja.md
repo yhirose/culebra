@@ -51,7 +51,7 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
 
 - **2 バックエンド、1 AST。** ツリーウォーキング型インタプリタと
   LLVM ORC JIT が同じ AST を共有。 インタプリタは LLVM 非依存
-  (ドライバ ~15 MB。 LLVM を含めると ~100 MB)、JIT は `-O2` で同じ
+  (ドライバ ~23 MB。 LLVM を含めると ~109 MB)、JIT は `-O2` で同じ
   プログラムを実行。 両方を維持 — どちらも捨てません。
 - **日常的に使う 8 つの型。** `Nil` / `Bool` / `Long` / `Float` /
   `String` / `Array` / `Object` / `Function`、加えて用途特化の 4 つ
@@ -89,7 +89,7 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
 
 ```bash
 just build              # JIT 付き
-just build-no-jit       # インタプリタのみ、~15 MB
+just build-no-jit       # インタプリタのみ、~23 MB
 just dev                # LTO 無し -O1 の高速ビルド → build-dev/ (内側ループ用)
 just test-dev           # build-dev/ で interp==JIT を素早く確認 (各編集ごと)
 just test               # 全 backend + embed スモークテスト (並列; JOBS=1 で逐次化)

@@ -841,8 +841,8 @@ self-contained binaries.
   per-feature archive (Ch.5) into the driver.
 
 Feature options gate both the namespace and its archive:
-`CULEBRA_ENABLE_JIT` (LLVM linkage — off gives a ~15 MB driver with no
-LLVM dependency, against ~100 MB with it), `CULEBRA_ENABLE_HTTP`,
+`CULEBRA_ENABLE_JIT` (LLVM linkage — off gives a ~23 MB driver with no
+LLVM dependency, against ~109 MB with it), `CULEBRA_ENABLE_HTTP`,
 `CULEBRA_ENABLE_SQLITE`,
 `CULEBRA_ENABLE_WEBVIEW` (on by default; self-disables on Linux
 without the GTK4 / WebKitGTK dev packages),

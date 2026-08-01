@@ -822,8 +822,8 @@ vendored なソースからのビルドなので、`culebra build` は自己完�
   供。
 
 機能オプションは namespace とそのアーカイブの両方をゲートします:
-`CULEBRA_ENABLE_JIT` (LLVM リンケージ。off ならドライバは ~15 MB で
-LLVM 依存なし。on なら ~100 MB)、`CULEBRA_ENABLE_HTTP`、
+`CULEBRA_ENABLE_JIT` (LLVM リンケージ。off ならドライバは ~23 MB で
+LLVM 依存なし。on なら ~109 MB)、`CULEBRA_ENABLE_HTTP`、
 `CULEBRA_ENABLE_SQLITE`、
 `CULEBRA_ENABLE_WEBVIEW` (既定 ON。GTK4 / WebKitGTK の dev パッケージ
 が無い Linux では自動的に無効化)、`CULEBRA_ENABLE_CANVAS_WINDOW` (macOS

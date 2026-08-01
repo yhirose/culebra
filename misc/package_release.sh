@@ -32,25 +32,50 @@ binary=$1 tag=$2 os=$3 arch=$4
 
 [ -x "$binary" ] || { echo "package_release: not executable: $binary" >&2; exit 1; }
 
+dir="culebra-$tag-$os-$arch"   # inside the archive: says which release
+stem="culebra-$os-$arch"       # the archive itself: stable across releases
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT  # the staged copy is ~100 MB; don't leak it locally
+staging="$tmp/$dir"
+staged="$staging/$(basename "$binary")"
+mkdir -p "$staging"
+cp "$binary" "$staged"
+cp LICENSE "$staging/"
+
+# Strip the staged copy, not the build tree's, which the gate and local
+# debugging still want: -Wl,-x dropped the locals at link, and the global
+# .symtab left over is ~9 MB no downloader can use (it also takes 2.5 MB off
+# the tarball). Everything below then checks the staged copy, since these are
+# no longer the bytes CI tested.
+if command -v strip >/dev/null; then
+  strip "$staged"
+fi
+
 # The binary self-reports the version it was compiled with (include/culebra.h);
 # the tag is what the release claims. A mismatch means the version bump missed
 # the header, which would otherwise ship silently — fail here instead.
 want=${tag#v}
-got=$("$binary" --version | awk '{print $2}')
+got=$("$staged" --version | awk '{print $2}')
 if [ "$want" != "$got" ]; then
   echo "package_release: tag says $want but the binary reports $got" >&2
   echo "  (did the release commit update CULEBRA_VERSION in include/culebra.h?)" >&2
   exit 1
 fi
 
-dir="culebra-$tag-$os-$arch"   # inside the archive: says which release
-stem="culebra-$os-$arch"       # the archive itself: stable across releases
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT  # the staged copy is ~100 MB; don't leak it locally
-staging="$tmp/$dir"
-mkdir -p "$staging"
-cp "$binary" "$staging/"
-cp LICENSE "$staging/"
+# Both backends: the interpreter needs no symbols, but the JIT resolves its
+# helpers by name, so a strip that reached too far shows up here. Each run is
+# ~10 ms. `|| said=` keeps a crash reportable — under `set -e` a failing
+# substitution would otherwise end the script before the message.
+printf 'print(6 * 7)\n' >"$tmp/smoke.cul"
+for lane in interp jit; do
+  [ "$lane" = jit ] && flag=--jit || flag=
+  said=$("$staged" $flag "$tmp/smoke.cul") || said="exited $?"
+  if [ "$said" != "42" ]; then
+    echo "package_release: the stripped binary failed the $lane smoke" >&2
+    echo "  (expected 42, got '$said')" >&2
+    exit 1
+  fi
+done
 
 out=$PWD
 if [ "$os" = windows ]; then

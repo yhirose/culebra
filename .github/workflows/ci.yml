@@ -222,6 +222,19 @@ jobs:
         if: matrix.os == 'macos-latest'
         run: misc/probe_webview_window.sh ./build/culebra
 
+      # The driver is dead-stripped (CMakeLists, -Wl,-dead_strip) and the AOT
+      # link is where ld64 has the most to get wrong about it: materialize the
+      # embedded archives, -force_load the axes, resolve the runtime helpers.
+      # This job sets CULEBRA_TEST_SKIP_HEAVY=1, so nothing else here builds an
+      # AOT binary, and Ubuntu's dead-strip is a different linker's. One link,
+      # not the per-test AOT sweep SKIP_HEAVY exists to avoid.
+      - name: Smoke — AOT survives the driver's dead-strip (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          printf 'print(6 * 7)\n' > aot_smoke.cul
+          ./build/culebra build aot_smoke.cul -o aot_smoke
+          test "$(./aot_smoke)" = 42
+
   # The Canvas desktop window backend is the one part of the tree no other job
   # builds: the matrix above pins CULEBRA_CANVAS_WINDOW_DEFAULT=OFF on both
   # OSes, and release.yml (which does leave CMake's ON default alone) only runs

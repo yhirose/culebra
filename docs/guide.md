@@ -53,7 +53,7 @@ Read this once; the rest of the guide assumes these choices.
 
 - **Two backends, one AST.** A tree-walking interpreter and an LLVM
   ORC JIT share the same AST. The interpreter has no LLVM dependency
-  (a ~15 MB driver against ~100 MB once LLVM is linked in); the JIT
+  (a ~23 MB driver against ~109 MB once LLVM is linked in); the JIT
   runs the same program at `-O2`. Both are maintained — neither is
   going away.
 - **Eight everyday types.** `Nil`, `Bool`, `Long`, `Float`, `String`,
@@ -94,7 +94,7 @@ Build the interpreter (and JIT, if LLVM 20+ is installed):
 
 ```bash
 just build              # with JIT
-just build-no-jit       # interpreter only, ~15 MB
+just build-no-jit       # interpreter only, ~23 MB
 just dev                # fast no-LTO -O1 build into build-dev/ (inner loop)
 just test-dev           # quick interp==JIT check vs build-dev/ (after each edit)
 just test               # all backends + embed smoke (parallel; JOBS=1 to serialize)
