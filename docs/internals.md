@@ -456,8 +456,16 @@ Long printer, and nothing else.
 ### Runtime archives (base + per-feature)
 
 - `libculebra_rt.a` — base runtime. Every feature choke in it is a
-  **weak-symbol stub**, so on its own it references no tensor kernels,
-  OpenSSL, zlib, SQLite, or window/GPU frameworks.
+  **weak-symbol stub**, so nothing it can call reaches tensor kernels,
+  OpenSSL, zlib, SQLite, or window/GPU frameworks. It is not free of
+  *references* to them: httplib's TLS and gzip code compiles into the
+  archive whether or not the choke is live, leaving undefined OpenSSL
+  and zlib symbols in sections that `--gc-sections` / `-dead_strip`
+  always discard. A linker that resolves symbols before it collects
+  sections reports them anyway — that is why Windows links OpenSSL and
+  zlib into every AOT binary, and why the Webview axis names zlib on
+  Linux (webkitgtk brings libz into the link as an indirect DSO, and ld
+  refuses to resolve against one).
 - One archive per feature, each holding the strong choke that
   overrides the weak stub:
 

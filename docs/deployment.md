@@ -593,7 +593,7 @@ emits it as a base archive plus one small archive per heavy feature
 
 | Archive | Contents |
 |---|---|
-| `libculebra_rt.a` | base — everything, but with **weak stubs** for the tensor / http / compress chokes (so it references no BLAS, OpenSSL, or zlib) |
+| `libculebra_rt.a` | base — everything, but with **weak stubs** for the tensor / http / compress chokes (so nothing it can call reaches BLAS, OpenSSL, or zlib) |
 | `libculebra_rt_tensor.a` | strong tensor choke (pulls BLAS / Accelerate) |
 | `libculebra_rt_http.a` | strong http choke (pulls OpenSSL + zlib) |
 | `libculebra_rt_compress.a` | strong compress choke (pulls zlib) |

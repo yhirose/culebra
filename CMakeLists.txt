@@ -619,6 +619,18 @@ if(CULEBRA_ENABLE_WEBVIEW)
       set(_webview_libs ${WEBKITGTK_LDFLAGS} ${CMAKE_DL_LIBS})
       string(REPLACE ";" " " _webview_link "${WEBKITGTK_LDFLAGS}")
       string(APPEND _webview_link " -ldl")
+      # zlib, which nothing on this axis calls. The core archive carries dead
+      # references to it (httplib's gzip paths; --gc-sections discards every one
+      # of those sections here) and ld resolves symbols before it garbage-
+      # collects, so a dead reference is diagnosed the moment libz becomes
+      # reachable — as `undefined reference ... DSO missing from command line`.
+      # libz is a NEEDED of libwebkitgtk, and an indirectly-loaded DSO is not
+      # allowed to resolve anything, so naming it here is what clears it. Only
+      # this axis pulls a DSO that carries libz (Scene/Canvas link raylib and
+      # SDL statically), which is why only this one needs it. Same class of
+      # problem as the Windows link naming zlib for every AOT binary; --as-needed
+      # then drops it from the output, so the cost is nothing.
+      string(APPEND _webview_link " ${_zlib_link}")
     else()
       message(STATUS "Webview: disabled (gtk4 + webkitgtk-6.0 not found via pkg-config)")
       set(CULEBRA_ENABLE_WEBVIEW OFF)

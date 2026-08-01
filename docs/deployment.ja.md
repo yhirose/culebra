@@ -588,7 +588,7 @@ CMake は `-DCULEBRA_ENABLE_JIT=ON` で、base archive ＋ 重い機能ごとに
 
 | Archive | 内容 |
 |---|---|
-| `libculebra_rt.a` | base — 全部入りだが tensor / http / compress の choke は**弱シンボルのスタブ**（BLAS・OpenSSL・zlib を一切参照しない） |
+| `libculebra_rt.a` | base — 全部入りだが tensor / http / compress の choke は**弱シンボルのスタブ**（ここから呼べるコードは BLAS・OpenSSL・zlib に到達しない） |
 | `libculebra_rt_tensor.a` | 強い tensor choke（BLAS / Accelerate を引く） |
 | `libculebra_rt_http.a` | 強い http choke（OpenSSL + zlib を引く） |
 | `libculebra_rt_compress.a` | 強い compress choke（zlib を引く） |

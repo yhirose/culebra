@@ -445,8 +445,16 @@ Array、Func、Set、Tensor、Cell、String) を `shared_ptr` ではなく、手
 ### ランタイムアーカイブ (base + 機能別)
 
 - `libculebra_rt.a` — base ランタイム。機能の choke はすべて
-  **weak-symbol stub** なので、単体では tensor カーネル、OpenSSL、
-  zlib、SQLite、ウィンドウ/GPU フレームワークのいずれも参照しません。
+  **weak-symbol stub** なので、ここから呼べるコードは tensor カーネル、
+  OpenSSL、zlib、SQLite、ウィンドウ/GPU フレームワークのいずれにも
+  到達しません。ただし*参照*が無いわけではありません: httplib の TLS と
+  gzip のコードは choke が生きているかに関わらずこのアーカイブに入るので、
+  `--gc-sections` / `-dead_strip` が必ず捨てるセクションに OpenSSL と zlib
+  の未解決シンボルが残ります。セクションを回収する前にシンボルを解決する
+  リンカはそれを報告してしまう — Windows が全 AOT バイナリに OpenSSL と
+  zlib をリンクするのも、Linux で Webview 軸が zlib を名指しするのも
+  これが理由です（webkitgtk が libz を間接 DSO として持ち込み、ld は
+  間接 DSO での解決を拒否する）。
 - 機能ごとに 1 アーカイブ。それぞれが weak stub を上書きする strong
   choke を持ちます:
 
