@@ -4068,14 +4068,18 @@ build adds no load-time library dependency and starts fine on a headless
 server. Each `present` uploads the frame, upscales it with
 nearest-neighbour to a comfortable window size, and blocks to vsync at 60 fps;
 the keyboard and mouse feed `Canvas.buttons`/`Canvas.mouse`, and closing the
-window (or Esc) ends the `run` loop. Everywhere else — and in any run with
+window (or Esc) ends the `run` loop. **Headless is declared, never inferred**:
+in a build without the window backend — or in any run with
 `CULEBRA_CANVAS_HEADLESS` set to anything but `0`/`off` — the backend is
 **headless**: the pixel and sprite ops run identically (so behaviour is the same
 across interpreter / JIT / AOT and testable via `Canvas.get_pixel`), but nothing
 is displayed, input reads as "no button", and `tone` is silent. That variable is
 how a displayless server — or the test suite, since every `just` recipe exports
 it — runs a window-capable binary; `-DCULEBRA_ENABLE_CANVAS_WINDOW=OFF` goes
-further and leaves raylib out of the build entirely. Outside headless, native
+further and leaves raylib out of the build entirely. A window build that
+declared neither and cannot open a window (no display, no usable GL) raises a
+`RuntimeError` at the first `present` naming the variable, rather than
+guessing that a silent headless run is what was wanted. Outside headless, native
 `tone` plays through a small software APU mixed on raylib's audio thread (see
 Audio below), lazily opening the audio device on first use.
 
@@ -4456,7 +4460,10 @@ nor in the Playground.
 
 ### The view and the frame loop
 
-`Scene.View.new(w, h, title)` opens a window. Positions and sizes are `Float`
+`Scene.View.new(w, h, title)` opens a window, and raises a `RuntimeError` when
+it cannot (no usable display/GL) — unlike `Canvas` there is no headless mode to
+fall back to, because everything a `View` does needs the GPU. Positions and
+sizes are `Float`
 world units; colours are three or four `0–255` integer channels, and a channel
 outside that range clamps to it. A frame is
 either a 3D pass with a 2D overlay (`render_3d()` → overlay draws → `present()`)

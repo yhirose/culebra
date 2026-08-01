@@ -17,7 +17,10 @@
 
 #include <wrap.h>
 
+#include <cstdarg>
+#include <cstdio>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -46,9 +49,30 @@ static Vector3 rgb01(int64_t r, int64_t g, int64_t b, double k = 1.0) {
 }
 
 // Bring the audio device up on first use (a View, Sound or Music) so scripts
-// don't have to manage it. Idempotent.
+// don't have to manage it. Idempotent; a failure is latched so a device-less
+// machine doesn't re-probe (and re-log) on every Sound/Music construction.
 static void ensure_audio() {
-  if (!IsAudioDeviceReady()) InitAudioDevice();
+  static bool failed = false;
+  if (failed || IsAudioDeviceReady()) return;
+  InitAudioDevice();
+  if (!IsAudioDeviceReady()) {
+    failed = true;
+    // Sound is decorative, so no error — but say it once, past the ctor's
+    // LOG_ERROR filter (a latched silence reads as "my sounds are broken").
+    std::fprintf(stderr, "Scene: no audio device -- sound stays off\n");
+  }
+}
+
+// raylib reports a graphics device it could not create with LOG_FATAL, and its
+// default log handler exits the process — the View ctor never gets to turn the
+// failure into an error the script can see. Printing without exiting lets
+// InitPlatform's failure reach InitWindow, which reports it through
+// IsWindowReady() like any other (same shape as the Canvas backend's handler).
+static void trace_log(int level, const char* text, va_list args) {
+  if (level < LOG_ERROR) return;  // keep the ctor's errors-only policy
+  std::fprintf(stderr, "%s: ", level >= LOG_FATAL ? "FATAL" : "ERROR");
+  std::vfprintf(stderr, text, args);
+  std::fputc('\n', stderr);
 }
 
 // Minimal lit shader: one directional sun + flat ambient, Lambert diffuse.
@@ -543,7 +567,15 @@ class View {
     // per-call gamepad-vibration "not available" warning on backends without
     // haptics). Keep errors only.
     SetTraceLogLevel(LOG_ERROR);
+    SetTraceLogCallback(trace_log);  // keep a FATAL from exiting (see there)
     InitWindow((int)w, (int)h, title.c_str());
+    // No window, no Scene: unlike Canvas (whose meaning lives in the CPU
+    // framebuffer and which has a declared headless mode), every observable
+    // thing a View does needs the GPU. wrap maps this to a RuntimeError the
+    // script can catch — the Webview ctor's shape.
+    if (!IsWindowReady())
+      throw std::runtime_error(
+          "Scene: cannot open a window (no usable display/GL)");
     ensure_audio();
     cam_.up = Vector3{0, 1, 0};
     cam_.fovy = 55;

@@ -44,6 +44,11 @@ int g_tex_h = 0;
 int g_scale = 1;
 bool g_window_ready = false;
 bool g_window_failed = false;  // creation tried and failed; don't try again
+// Why it failed, for the error present() raises. Headless is a mode the user
+// declares (a headless build, CULEBRA_CANVAS_HEADLESS=1, the Playground) —
+// a window build that was ASKED for a window and cannot open one must say so,
+// not quietly act like a declared-headless run.
+std::string g_window_error;
 std::string g_title = "culebra Canvas";  // applied when the window opens
 
 // Integer upscale so the small framebuffer fills a comfortable window while
@@ -163,19 +168,26 @@ void ensure_window() {
   if (!g_window_ready) {
     SetTraceLogLevel(LOG_WARNING);  // quiet raylib's INFO chatter
     SetTraceLogCallback(trace_log);  // and keep a fatal one from exiting
+    // Both failure arms latch (every present and every input poll comes back
+    // through here — a retry per call would re-run SDL's whole video-driver
+    // probe thousands of times over a 600-frame run) and record the message
+    // for the error present() raises. Not a silent fallback: headless is a
+    // mode the user declares, and this run declared a window.
     if (!gl_usable()) {
       g_window_failed = true;
+      g_window_error =
+          "cannot open a Canvas window: no usable OpenGL; set "
+          "CULEBRA_CANVAS_HEADLESS=1 to run without one";
       return;
     }
     InitWindow(w * g_scale, h * g_scale, g_title.c_str());
-    // No display (headless server / CI / SSH): raylib fails to open a window
-    // and IsWindowReady() stays false. Degrade to the headless backend rather
-    // than driving GL on a dead context — present/input become no-ops. Latched,
-    // because every present and every input poll comes back through here: a
-    // retry per call would re-run SDL's whole video-driver probe, and print
-    // raylib's two failure lines, thousands of times over a 600-frame run.
+    // No display (headless server / SSH): raylib fails to open a window and
+    // IsWindowReady() stays false.
     if (!IsWindowReady()) {
       g_window_failed = true;
+      g_window_error =
+          "cannot open a Canvas window: no display; set "
+          "CULEBRA_CANVAS_HEADLESS=1 to run without one";
       return;
     }
     stop_text_input();
@@ -439,7 +451,10 @@ void ensure_audio() {
   SetTraceLogLevel(LOG_WARNING);  // audio may come up before any window does
   InitAudioDevice();
   if (!IsAudioDeviceReady()) {
-    g_audio_failed = true;  // no device (headless server/CI): stay silent
+    g_audio_failed = true;  // no device (headless server/CI)
+    // Sound is decorative, so no error — but say it once. A silent latch
+    // reads as "my tone() calls are broken" on a machine without a device.
+    TraceLog(LOG_WARNING, "Canvas: no audio device -- sound stays off");
     return;
   }
   g_stream = LoadAudioStream(kSampleRate, 32, 1);  // 32-bit float, mono
@@ -634,6 +649,10 @@ bool closing() {
 bool windowed() {
   ensure_window();
   return g_window_ready;
+}
+
+const char* window_error() {
+  return g_window_error.empty() ? nullptr : g_window_error.c_str();
 }
 
 // Deliberately does not ensure_window(): naming a window must not open one.

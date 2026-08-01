@@ -254,6 +254,27 @@ constexpr std::string_view return_annotation() {
 
 // Fill omitted parameter names with `_arg<i>` and pin the storage —
 // FunctionValue::Parameter holds string_views into it.
+// A wrapped body's own C++ exception (a ctor refusing construction, a method
+// reporting failure), surfaced as a culebra RuntimeError the script can catch.
+// Both backends' entry points route their body call through here — without it
+// the interp's eval boundary bakes the position into the MESSAGE (its legacy
+// path for unconverted throws) while the JIT lets the exception escape the
+// process, so the two disagree on message, catchability and position at once.
+// Position stays 0:0: the interp eval boundary stamps the call node into the
+// fields, and the JIT boundaries backfill from the published op position —
+// the same convention as every positionless lib helper. CulebraError passes
+// through untouched (argument conversion and handle validation own theirs).
+template <class F>
+auto surface_native_error(F&& f) -> decltype(f()) {
+  try {
+    return f();
+  } catch (const culebra::CulebraError&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw culebra::CulebraError("RuntimeError", e.what(), 0, 0);
+  }
+}
+
 inline std::shared_ptr<std::vector<std::string>> pin_param_names(
     std::vector<std::string> names, size_t arity) {
   names.resize(arity);
@@ -297,7 +318,8 @@ inline Value make_method_proto(Mf mf, std::vector<std::string> names,
             env->get(std::string_view((*storage)[I])))...));
       }
     };
-    return invoke(std::index_sequence_for<Args...>{});
+    return surface_native_error(
+        [&] { return invoke(std::index_sequence_for<Args...>{}); });
   };
   return Value(FunctionValue(typed_params<Args...>(*storage),
                              std::move(eval), return_annotation<R>()));
@@ -320,7 +342,8 @@ inline Value make_borrowed_proto(Mf mf, std::vector<std::string> names) {
           env->get(std::string_view((*storage)[I])))...);
       return make_borrow_handle<T2>(const_cast<T2*>(&r), parent, pgen);
     };
-    return invoke(std::index_sequence_for<Args...>{});
+    return surface_native_error(
+        [&] { return invoke(std::index_sequence_for<Args...>{}); });
   };
   return Value(FunctionValue(typed_params<Args...>(*storage),
                              std::move(eval), "Object"));
@@ -341,7 +364,8 @@ inline Value make_static_proto(Fn fn, std::vector<std::string> names) {
             env->get(std::string_view((*storage)[I])))...));
       }
     };
-    return invoke(std::index_sequence_for<Args...>{});
+    return surface_native_error(
+        [&] { return invoke(std::index_sequence_for<Args...>{}); });
   };
   return Value(FunctionValue(typed_params<Args...>(*storage),
                              std::move(eval), return_annotation<R>()));
@@ -653,7 +677,11 @@ void jit_method_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t sel
       return jit_lower_return<R>(std::forward<decltype(r)>(r));
     }
   };
-  { *__ret = invoke(std::index_sequence_for<Args...>{}); return; }
+  {
+    *__ret = surface_native_error(
+        [&] { return invoke(std::index_sequence_for<Args...>{}); });
+    return;
+  }
 }
 
 // A borrowed-return method thunk: the parent's generation is
@@ -675,7 +703,11 @@ void jit_borrowed_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t s
     auto& r = (obj->*Mf)(jit_arg_get<Args>(args[I])...);
     return jit_make_borrow_handle<T2>(const_cast<T2*>(&r), self, pgen);
   };
-  { *__ret = invoke(std::index_sequence_for<Args...>{}); return; }
+  {
+    *__ret = surface_native_error(
+        [&] { return invoke(std::index_sequence_for<Args...>{}); });
+    return;
+  }
 }
 
 // ns adapters: reached through the kNsMethods trampoline, which has
@@ -688,7 +720,8 @@ JitValue jit_ctor_adapter(JitValue* a, int64_t) {
     return foreign::table<T>().adopt(
         std::make_unique<T>(jit_arg_get<Args>(a[I])...));
   };
-  return jit_make_handle<T>(invoke(std::index_sequence_for<Args...>{}));
+  return jit_make_handle<T>(surface_native_error(
+      [&] { return invoke(std::index_sequence_for<Args...>{}); }));
 }
 
 template <auto Fn, class R, class... Args>
@@ -701,7 +734,8 @@ JitValue jit_static_adapter(JitValue* a, int64_t) {
       return jit_lower_return<R>(Fn(jit_arg_get<Args>(a[I])...));
     }
   };
-  return invoke(std::index_sequence_for<Args...>{});
+  return surface_native_error(
+      [&] { return invoke(std::index_sequence_for<Args...>{}); });
 }
 
 #endif  // CULEBRA_JIT_ENABLED

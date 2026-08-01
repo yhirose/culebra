@@ -907,6 +907,8 @@ inline std::string char_pop() {
 inline bool closing() { return false; }
 // The browser canvas always shows the frames it is handed.
 inline bool windowed() { return true; }
+// The page hosting the canvas IS the display; there is no window to fail.
+inline const char* window_error() { return nullptr; }
 // Deliberate: the tab's title belongs to the page hosting the canvas, not to
 // the program drawing on it.
 inline void set_title(const char*) {}
@@ -971,6 +973,7 @@ __attribute__((weak)) std::string key_pop() { return ""; }
 __attribute__((weak)) std::string char_pop() { return ""; }
 __attribute__((weak)) bool closing() { return false; }
 __attribute__((weak)) bool windowed() { return false; }
+__attribute__((weak)) const char* window_error() { return nullptr; }
 __attribute__((weak)) void set_title(const char*) {}
 __attribute__((weak)) void tone(int64_t, int64_t, int64_t, int64_t, int64_t,
                                 int64_t, int64_t, int64_t, int64_t, int64_t) {}
@@ -1004,6 +1007,10 @@ std::string key_pop();
 std::string char_pop();
 bool closing();
 bool windowed();
+// Non-null after the window could not be opened with no headless mode
+// declared; the message for the error present() raises. Null while the window
+// is up, before anything asked for one, and in every declared-headless mode.
+const char* window_error();
 void set_title(const char* title);
 void tone(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,
           int64_t, int64_t, int64_t);
@@ -1035,6 +1042,7 @@ inline std::string key_pop() { return ""; }
 inline std::string char_pop() { return ""; }
 inline bool closing() { return false; }
 inline bool windowed() { return false; }  // no window to show frames in
+inline const char* window_error() { return nullptr; }  // ...by declaration
 inline void set_title(const char*) {}  // ...and none to title
 inline void tone(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,
                  int64_t, int64_t, int64_t) {}

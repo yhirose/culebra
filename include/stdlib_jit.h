@@ -859,8 +859,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_blit_scaled(
                                            flags, alpha),
       line, col);
 }
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_present() {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_present(
+    int64_t line, int64_t col) {
   culebra::_canvas_detail::present();
+  if (const char* e = culebra::_canvas_detail::window_error())
+    throw culebra::CulebraError("RuntimeError", e, line, col);
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_buttons() {
   return culebra::_canvas_detail::buttons();
@@ -7920,7 +7923,7 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::canvas_blit_scaled, vt, i64, i64, i64,
                                    i64, i64, i64, i64, i64, i64, i64, i64, i64,
                                    i64);
-  jit.module_->getOrInsertFunction(rt::canvas_present, vt);
+  jit.module_->getOrInsertFunction(rt::canvas_present, vt, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_buttons, i64);
   jit.module_->getOrInsertFunction(rt::canvas_mouse_x, i64);
   jit.module_->getOrInsertFunction(rt::canvas_mouse_y, i64);
@@ -9147,7 +9150,7 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
         return call_void(rt::canvas_blit_scaled, *v);
       }
     if (method == "present" && a.empty())
-      return call_void(rt::canvas_present, {});
+      return call_void(rt::canvas_present, {line, col});
     if (method == "buttons" && a.empty())
       return jit.own(make_long(
           emit_call(module_->getFunction(rt::canvas_buttons), {})));
