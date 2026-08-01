@@ -40,16 +40,29 @@ rather than failing the build:
 
 Opt out with `-DCULEBRA_ENABLE_WEBVIEW=OFF`.
 
-Windows needs no import library and no DLL shipped alongside: the vendored
-header carries a builtin loader that locates the Edge WebView2 runtime itself
-at run time (it uses `WebView2Loader.dll` when present, but does not require
-it). So a Windows build's only new imports are system DLLs, and the released
-`.exe` carries Webview — unlike the Linux asset (below).
+The dev packages are a **build-time** requirement on every platform, not a
+run-time one: the binary they produce finds its engine itself.
 
-The released Linux binary is built with Webview OFF on purpose: linking
-WebKitGTK puts `libgtk-4.so.1` and `libwebkitgtk-6.0.so.4` in the driver's
-`DT_NEEDED`, and it would then fail to start on any headless box. Build from
-source with the dev packages installed to get it.
+- **Windows** — the vendored header carries a builtin loader that locates the
+  Edge WebView2 runtime through the registry at run time (it uses
+  `WebView2Loader.dll` when present, but does not require it), so there is no
+  import library and no DLL to ship alongside.
+- **Linux** — `src/runtime/webview_gtk_dynload.cc` defines every GTK/WebKit
+  symbol the binding reaches and `dlopen`s the engine when a window is created.
+  Linking it instead would put `libgtk-4.so.1` and `libwebkitgtk-6.0.so.4` in
+  `DT_NEEDED`, and the binary would then fail to *start* — not just fail to open
+  a window — on a headless server, in a container, or on a desktop that never
+  installed webkitgtk-6.0. `culebra --version` should not need a WebKit stack.
+- **macOS** — nothing to arrange: WebKit.framework is part of the OS.
+
+So a machine with no engine gets the same failure everywhere, at the same
+point: `Webview.Window.new()` raises `webview: failed to create window`. A
+program that never opens a window is unaffected on all three.
+
+`tools/check_webview_dynload.sh` (in the `just test` gate) holds the Linux end
+of that: neither the driver nor a `culebra build` output may carry the engine in
+`DT_NEEDED`, and neither may export the forwarders — exported, they would
+interpose on GTK's and WebKit's own internal calls once dlopen loads them.
 
 ## Run
 

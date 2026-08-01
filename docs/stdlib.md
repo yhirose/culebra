@@ -4758,6 +4758,12 @@ self-disable when the engine's headers are absent — the GTK4 / WebKitGTK dev
 packages on Linux, `WebView2.h` on Windows), and `culebra build` links the
 WebView frameworks only for programs that actually reference them.
 
+Those headers are a build-time requirement only. The binary loads its engine
+when a window is created — through the vendored header's own loader on Windows,
+through `dlopen` on Linux — so it starts on a machine that has none, and a
+program that never opens a window runs there unaffected. Asking for a window
+without an engine raises `webview: failed to create window`.
+
 ### `Desktop.run(config: Object) -> Nil`
 
 The one-call facade: start the server, open the window on it, block until

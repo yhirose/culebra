@@ -601,12 +601,15 @@ endif()
 # wouldn't compile there.
 option(CULEBRA_ENABLE_WEBVIEW "Enable builtin Webview namespace (native WebView)" ON)
 set(_webview_link "")
+set(_webview_sources ./src/runtime/culebra_rt_webview.cc)
 if(CULEBRA_ENABLE_WEBVIEW)
-  # Resolve the platform's engine once into three siblings the later blocks
+  # Resolve the platform's engine once into four siblings the later blocks
   # consume unconditionally, the way Http does with _ssl_libs/_ssl_link:
-  # _webview_includes (header dirs), _webview_libs (driver + archive link) and
+  # _webview_includes (header dirs), _webview_libs (driver + archive link),
   # _webview_link (the CULEBRA_WEBVIEW_LINK string `culebra build` appends only
-  # when the program uses Webview). One platform chain, not one per consumer.
+  # when the program uses Webview) and _webview_sources (the binding TU, plus
+  # whatever else a platform needs to reach its engine). One platform chain, not
+  # one per consumer.
   if(APPLE)
     set(_webview_libs "-framework WebKit" ${CMAKE_DL_LIBS})
     set(_webview_link "-framework WebKit -ldl")
@@ -616,24 +619,32 @@ if(CULEBRA_ENABLE_WEBVIEW)
       pkg_check_modules(WEBKITGTK gtk4 webkitgtk-6.0)
     endif()
     if(WEBKITGTK_FOUND)
-      # webkitgtk's pkg-config Libs carries -Wl,--export-dynamic (inherited from
-      # gmodule-2.0, which wants it so a loaded GModule can bind back to the
-      # executable). Linking it would undo culebra_export_jit_symbols()'s
-      # whitelist and republish all ~68k symbols — LLVM's among them — which is
-      # exactly what segfaults the Mesa/Gallium LLVM that WebKitGTK dlopens.
-      # culebra loads no GModule, so drop it.
-      list(REMOVE_ITEM WEBKITGTK_LDFLAGS "-Wl,--export-dynamic")
+      # Headers, and deliberately nothing else: the engine is dlopen'd when a
+      # window is created (src/runtime/webview_gtk_dynload.cc, which defines
+      # every GTK/WebKit symbol the binding reaches). Linking gtk4/webkitgtk is
+      # what put libgtk-4.so.1 and libwebkitgtk-6.0.so.4 in DT_NEEDED and stopped
+      # the binary from starting where a desktop stack is absent — the reason
+      # the released Linux asset used to be built with Webview off. So the
+      # pkg-config Libs go unused here; only its include dirs are.
+      #
+      # Two link-line workarounds went with them: the -Wl,--export-dynamic that
+      # webkitgtk inherits from gmodule (it would have republished all ~68k
+      # symbols past culebra_export_jit_symbols()'s whitelist, LLVM's among
+      # them, which is what segfaults the Mesa/Gallium LLVM WebKitGTK dlopens),
+      # and the -lz that answered ld diagnosing the core archive's dead gzip
+      # references once libz became reachable as an indirect DSO of libwebkitgtk.
+      # Neither DSO reaches the link now, so neither workaround has anything to
+      # act on. misc/probe_webview_aot_link.sh is what proves the second.
       set(_webview_includes ${WEBKITGTK_INCLUDE_DIRS})
-      set(_webview_libs ${WEBKITGTK_LDFLAGS} ${CMAKE_DL_LIBS})
-      string(REPLACE ";" " " _webview_link "${WEBKITGTK_LDFLAGS}")
-      string(APPEND _webview_link " -ldl")
-      # Nothing on this axis calls zlib, but the core archive's dead gzip
-      # references (httplib's, in sections --gc-sections discards) are still
-      # diagnosed once libz is reachable — and it is, as a NEEDED of
-      # libwebkitgtk, which ld will not resolve against as an indirect DSO.
-      # Only this axis pulls such a DSO in; webkitgtk already loads libz, so
-      # the tag this leaves on the output costs a soname lookup.
-      string(APPEND _webview_link " ${_zlib_link}")
+      set(_webview_libs ${CMAKE_DL_LIBS})
+      set(_webview_link "-ldl")
+      list(APPEND _webview_sources ./src/runtime/webview_gtk_dynload.cc)
+      # Keeps the forwarders out of the executable's dynamic symbol table, where
+      # they would interpose on GTK's and WebKit's own internal calls. It covers
+      # the GTK/GLib half; WEBKIT_API pins the rest to default visibility and the
+      # --dynamic-list whitelist is what holds those. See the TU's header.
+      set_source_files_properties(./src/runtime/webview_gtk_dynload.cc
+                                  PROPERTIES COMPILE_OPTIONS -fvisibility=hidden)
     else()
       message(STATUS "Webview: disabled (gtk4 + webkitgtk-6.0 not found via pkg-config)")
       set(CULEBRA_ENABLE_WEBVIEW OFF)
@@ -967,7 +978,7 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   # all macOS needs (it drives the ObjC runtime directly); GTK and WebView2 add
   # their own headers, which _webview_includes carries (empty on macOS).
   if(CULEBRA_ENABLE_WEBVIEW)
-    add_library(culebra_rt_webview STATIC ./src/runtime/culebra_rt_webview.cc)
+    add_library(culebra_rt_webview STATIC ${_webview_sources})
     target_compile_features(culebra_rt_webview PRIVATE cxx_std_23)
     target_include_directories(culebra_rt_webview PRIVATE ./vendor/webview
                                                           ${_webview_includes})
@@ -1323,7 +1334,7 @@ endif()
 # CULEBRA_WEBVIEW_LINK (gated on usage). The header stays plain-C++ compilable
 # (it drives the ObjC runtime via objc_msgSend on macOS, so no .mm needed).
 if(CULEBRA_ENABLE_WEBVIEW)
-  target_sources(culebra PRIVATE ./src/runtime/culebra_rt_webview.cc)
+  target_sources(culebra PRIVATE ${_webview_sources})
   target_include_directories(culebra PRIVATE ./vendor/webview ${_webview_includes})
   target_compile_definitions(culebra PRIVATE CULEBRA_ENABLE_WEBVIEW=1)
   target_link_libraries(culebra ${_webview_libs})

@@ -845,7 +845,8 @@ Feature options gate both the namespace and its archive:
 LLVM dependency, against ~109 MB with it), `CULEBRA_ENABLE_HTTP`,
 `CULEBRA_ENABLE_SQLITE`,
 `CULEBRA_ENABLE_WEBVIEW` (on by default; self-disables on Linux
-without the GTK4 / WebKitGTK dev packages),
+without the GTK4 / WebKitGTK dev packages — headers only, since the
+engine itself is `dlopen`'d when a window is created),
 `CULEBRA_ENABLE_CANVAS_WINDOW` (on by default on macOS and Windows, and
 on Linux when SDL3's build dependencies are installed, which it probes
 for the way Webview does; the environment variable

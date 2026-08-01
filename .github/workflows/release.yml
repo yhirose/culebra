@@ -125,20 +125,22 @@ jobs:
       # the JIT's APIs, mold for the LLVM-heavy static link, `just` from its own
       # installer (apt's predates [group(...)]).
       #
-      # Deliberately NOT installing gtk4 + webkitgtk-6.0: with them present
-      # CMake links the Webview namespace, and vendored webview.h calls gtk_*
-      # and webkit_* directly, so the driver picks up DT_NEEDED entries on
-      # libgtk-4.so.1 and libwebkitgtk-6.0.so.4. That binary then fails to even
-      # start anywhere those runtimes are absent — a headless server, a
-      # container, any pre-24.04 Ubuntu. Webview is a desktop feature; making
-      # every download depend on a desktop WebKit stack is the wrong trade. A
-      # separate desktop-flavored asset can carry it later.
+      # gtk4 + webkitgtk-6.0 are installed here for their headers alone: the
+      # binding defines every GTK/WebKit symbol it reaches and dlopens the
+      # engine when a window is created (src/runtime/webview_gtk_dynload.cc), so
+      # this download carries Webview and still starts where no desktop stack
+      # exists — a headless server, a container, a desktop that never installed
+      # webkitgtk-6.0. It used to be built with Webview off for exactly the
+      # opposite reason: linking them put libgtk-4.so.1 and libwebkitgtk-6.0.so.4
+      # in DT_NEEDED and the binary would not start at all. The ldd check below
+      # is what keeps that from coming back.
       - name: Install toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             ccache cmake g++-14 libblas-dev mold wget \
-            lsb-release software-properties-common gnupg
+            lsb-release software-properties-common gnupg \
+            libgtk-4-dev libwebkitgtk-6.0-dev
           # SDL3's Linux build dependencies, so the Canvas desktop window is in
           # this download the way it is in a local `just build`. These are
           # build-time only: SDL3 dlopens X11/GL/audio on first use, so the
@@ -176,13 +178,15 @@ jobs:
       - run: ccache -s || true
       - name: Verify the Canvas window backend is in this build
         run: misc/verify_canvas_window.sh build
-      # Guard the specific regression the toolchain step above avoids: if a
-      # desktop dev package ever reaches this runner, CMake silently links
-      # Webview and the binary stops starting on headless machines. Naming the
-      # offending stack keeps this from failing on unrelated legitimate deps.
-      # X11/GL/SDL belong on the same list now that the window backend is on:
-      # SDL3 is meant to dlopen them, and a DT_NEEDED entry on any of them would
-      # mean this download needs a display just to print its --version.
+      # The asset's load-time contract, checked on the artifact itself: nothing
+      # a desktop provides may appear in DT_NEEDED, or this download needs a
+      # display just to print its --version. Both windowed stacks are meant to
+      # arrive through dlopen — SDL3 does it for X11/GL/audio, and Webview for
+      # GTK/WebKit — so an entry here means one of them was linked instead, and
+      # the binary stops starting on every headless machine. Naming the two
+      # stacks keeps this from failing on unrelated legitimate deps.
+      # tools/check_webview_dynload.sh makes the same check in the test gate,
+      # for both the driver and a `culebra build` output.
       - name: Verify no desktop runtime crept into the link
         run: |
           deps=$(ldd build/culebra)
@@ -262,11 +266,11 @@ jobs:
           key: ${{ steps.deps.outputs.key }}
       # The feature set of ci.yml's windows-aot-build (the widest Windows
       # configuration that CI proves), with LTO turned back on for release.
-      # Http and Webview are on here, unlike the Linux asset: WebView2 costs
-      # this binary nothing a plain Windows box lacks. The engine is the Edge
-      # runtime, found at run time, so the only new imports are system DLLs
-      # (ole32, shlwapi, version). Linux cannot do the same because linking
-      # WebKitGTK puts libgtk/libwebkitgtk in DT_NEEDED. Note the standalone
+      # Http and Webview are on here. WebView2 costs this binary nothing a plain
+      # Windows box lacks: the engine is the Edge runtime, found at run time, so
+      # the only new imports are system DLLs (ole32, shlwapi, version). The
+      # Linux asset now reaches the same place by dlopening GTK/WebKit rather
+      # than linking them (webview_gtk_dynload.cc). Note the standalone
       # check below scans the import table, which the engine is deliberately
       # outside of — it proves no stray DLL, not that WebView2 is reachable.
       # The Canvas window is left to CMake's default (ON), like the macOS and

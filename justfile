@@ -714,6 +714,14 @@ _run-tests BACKEND:
         bash tools/check_rt_archive_tls.sh "$(dirname "$BIN")"
     }
 
+    # Webview dynamic-load gate (Linux): the engine is dlopen'd at window
+    # creation, so neither the driver nor an AOT binary may carry it in
+    # DT_NEEDED or export the forwarders (tools/check_webview_dynload.sh).
+    # Reads the linked output and links an AOT binary, so gate-only too.
+    run_webview_dynload() {
+        bash tools/check_webview_dynload.sh "$(dirname "$BIN")"
+    }
+
     # Announce each phase with the running elapsed time, so a slow/stalled CI
     # run shows where it is (otherwise the silent phases — difftest, the
     # interp/jit sweep — emit nothing until they finish).
@@ -732,6 +740,7 @@ _run-tests BACKEND:
         phase "dispatch symmetry (eval_X vs compile_X tag sets)"; run_dispatch_symmetry
         phase "iter wiring (JitIterDrive + upstream forwarding ratchet)"; run_iter_wiring
         phase "rt-archive TLS ownership (core vs force-loaded features)"; run_rt_archive_tls
+        phase "webview dynload (engine stays behind dlopen)"; run_webview_dynload
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
         phase "codegen backends (-O0, fast vs interp)"; run_codegen_backends
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "difftest (5114 generated cases)"; run_difftest; }

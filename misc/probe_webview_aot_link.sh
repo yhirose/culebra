@@ -3,11 +3,15 @@
 #
 # Usage: misc/probe_webview_aot_link.sh <culebra binary> [work dir]
 #
-# Webview is the one axis whose link pulls a DSO carrying libz, which is what
-# makes ld diagnose the core archive's dead zlib references (see CMakeLists
-# _webview_link). No tests/*.cul can host it: a driver built without the axis
-# has no `Webview` name to scan for, and this is the sibling of
-# probe_webview_window.sh — that one proves the window, this one the link.
+# No tests/*.cul can host this: a driver built without the axis has no `Webview`
+# name to scan for. It is the sibling of probe_webview_window.sh — that one
+# proves the window, this one the link.
+#
+# The Linux link is also the one that used to need -lz. Webview was the only
+# axis pulling in a DSO that carried libz (libwebkitgtk), and its presence is
+# what made ld diagnose the core archive's dead zlib references; the engine now
+# arrives through dlopen instead, so no such DSO reaches the line and the
+# workaround is gone. This probe is what says that is still true.
 #
 # The name only has to be scanned, so no window is ever created. The link line
 # is checked as well as the exit status: a driver that stopped force-loading

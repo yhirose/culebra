@@ -4610,6 +4610,12 @@ WebKitGTK の dev パッケージ、Windows なら `WebView2.h`）。
 `culebra build` は実際に参照しているプログラムに対してのみ
 WebView フレームワークをリンクします。
 
+これらのヘッダが要るのはビルド時だけです。バイナリはウィンドウ生成時に
+エンジンをロードします（Windows は vendored ヘッダ自身のローダー、Linux は
+`dlopen`）。したがってエンジンの無い機械でも起動し、ウィンドウを開かない
+プログラムはそこで問題なく動きます。エンジンが無いままウィンドウを要求すると
+`webview: failed to create window` になります。
+
 ### `Desktop.run(config: Object) -> Nil`
 
 1 呼び出しの facade: サーバを起動し、その上にウィンドウを開き、ウィンドウが
