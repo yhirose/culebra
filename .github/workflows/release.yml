@@ -178,29 +178,35 @@ jobs:
       - run: ccache -s || true
       - name: Verify the Canvas window backend is in this build
         run: misc/verify_canvas_window.sh build
+      # A download that ships Webview must actually have it, for the same reason
+      # the Canvas window is checked above: a missing dev package turns the axis
+      # off and the build succeeds anyway.
+      - name: Verify the Webview axis is in this build
+        run: misc/verify_webview_axis.sh build
+
       # The asset's load-time contract, checked on the artifact itself: nothing
       # a desktop provides may appear in DT_NEEDED, or this download needs a
       # display just to print its --version. Both windowed stacks are meant to
       # arrive through dlopen — SDL3 does it for X11/GL/audio, and Webview for
-      # GTK/WebKit — so an entry here means one of them was linked instead, and
-      # the binary stops starting on every headless machine. Naming the two
-      # stacks keeps this from failing on unrelated legitimate deps.
-      # tools/check_webview_dynload.sh makes the same check in the test gate,
-      # for both the driver and a `culebra build` output.
+      # GTK/WebKit.
+      #
+      # The engine half is the test gate's own ratchet, run here against the
+      # artifact: one definition of "the engine stays behind dlopen", covering
+      # the dynamic symbol table and a `culebra build` output as well as this
+      # binary's DT_NEEDED. The display half has no such script — SDL3's stack
+      # is named here, where naming it keeps the check from firing on unrelated
+      # legitimate deps.
       - name: Verify no desktop runtime crept into the link
         run: |
+          tools/check_webview_dynload.sh build
           deps=$(ldd build/culebra)
           echo "Shared library dependencies:"
           echo "$deps"
-          if echo "$deps" | grep -iE 'gtk|webkit|libsoup|javascriptcore'; then
-            echo "ERROR: the binary needs a desktop WebKit stack to start" >&2
-            exit 1
-          fi
           if echo "$deps" | grep -iE 'libX11|libGL|libEGL|libwayland|libSDL|libasound|libpulse'; then
             echo "ERROR: the binary needs a display/audio stack to start" >&2
             exit 1
           fi
-          echo "OK: no desktop runtime dependency"
+          echo "OK: no display runtime dependency"
       - name: Package and upload
         env:
           GH_TOKEN: ${{ github.token }}

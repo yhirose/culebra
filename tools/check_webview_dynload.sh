@@ -38,11 +38,12 @@ if [[ ! -f "$BUILD_DIR/libculebra_rt_webview.a" ]]; then
   exit 0
 fi
 
-# The engine's four sonames. libsoup and libjavascriptcore are WebKit's own
-# dependencies rather than anything culebra names, which is the point: linking
-# webkitgtk drags them in too, and any one of them in DT_NEEDED is a binary
-# that will not start without the stack.
-engine='libgtk-4|libwebkitgtk|libjavascriptcoregtk|libsoup'
+# The engine's stack, by substring rather than by exact soname: culebra names
+# only gtk4 and webkitgtk-6.0, but linking those drags libsoup and
+# libjavascriptcore in too, and a GTK3-era build would carry different sonames
+# for the same mistake. Any of them in DT_NEEDED is a binary that will not start
+# without a desktop. Nothing culebra legitimately links matches these.
+engine='gtk|webkit|javascriptcore|libsoup'
 # The forwarders, by prefix. gdk_/jsc_ are in the set too (gdk_x11_display_get_type
 # from a cast macro, jsc_value_to_string from the message bridge).
 forwarders=' (gtk_|gdk_|webkit_|jsc_|g_[a-z])'

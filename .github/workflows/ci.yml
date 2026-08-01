@@ -482,18 +482,10 @@ jobs:
       - name: Report ccache stats
         run: ccache -s || true
 
-      # CMakeCache cannot answer this: CULEBRA_ENABLE_WEBVIEW stays ON in the
-      # cache while the feature block turns it off in a plain variable. The
-      # archive beside the driver is the proof. Without it every step below
-      # still passes, against a build with no Webview in it at all.
+      # Without this every step below still passes, against a build with no
+      # Webview in it at all — this job would prove nothing and say so in green.
       - name: Verify the Webview axis is actually in this build
-        run: |
-          if [ ! -f build/libculebra_rt_webview.a ]; then
-            echo "::error::built without Webview — gtk4/webkitgtk-6.0 headers missing. This job then proves nothing." >&2
-            grep -i webview build/CMakeCache.txt >&2 || true
-            exit 1
-          fi
-          echo "OK: Webview axis built"
+        run: misc/verify_webview_axis.sh build
 
       # The load-time contract, for the driver and for a `culebra build` output:
       # no engine in DT_NEEDED, no forwarder in .dynsym. This is the property
