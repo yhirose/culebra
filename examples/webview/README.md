@@ -64,15 +64,32 @@ of that: neither the driver nor a `culebra build` output may carry the engine in
 `DT_NEEDED`, and neither may export the forwarders — exported, they would
 interpose on GTK's and WebKit's own internal calls once dlopen loads them.
 
-### Ubuntu 24.04+ and AppArmor
+### The sandbox on Ubuntu-family systems (AppArmor)
 
-Ubuntu 24.04 restricts unprivileged user namespaces: an unconfined binary may
-*create* one but cannot use capabilities inside it. WebKit's sandbox (bwrap)
-then starts and fails halfway — the window crashes with
-`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` followed by a
-`failed to receive credentials` abort. Ubuntu's own resolution for third-party
-apps (Chrome, Discord, and the WebKit apps that hit this first) is a per-binary
-AppArmor profile granting `userns`, which bwrap inherits across exec:
+One distro family needs a note; none of it is culebra-specific, and none of it
+is baked into the binary. On Debian, Raspberry Pi OS, Fedora, Arch — any Linux
+that does not carry Ubuntu's AppArmor patches — unprivileged user namespaces
+are simply available, WebKit's sandbox works, and there is nothing to set up.
+
+Ubuntu 23.10+ restricts them: an unconfined binary may *create* one but cannot
+use capabilities inside it. WebKit's sandbox (bwrap) then starts and fails
+halfway — the window crashes with `bwrap: loopback: Failed RTM_NEWADDR:
+Operation not permitted` followed by a `failed to receive credentials` abort.
+Every WebKitGTK embedder hits this identically (Tauri apps run the same engine),
+as do Chromium and Electron; it is a property of the OS policy, not of the app.
+
+An up-to-date Ubuntu already resolves it for itself: since 24.04.2 the
+apparmor/bubblewrap packages ship a `bwrap-userns-restrict` profile, and
+desktops with it run WebKitGTK apps out of the box. What still lacks the
+profile is the stripped image — a CI runner, a container, an unupdated 24.04.
+There, either restore Ubuntu's own profile:
+
+```sh
+sudo apt install --reinstall bubblewrap apparmor
+```
+
+or grant the namespace to the one binary, the same 3-line shape Ubuntu ships
+for Chrome and Discord:
 
 ```sh
 sudo tee /etc/apparmor.d/my-app <<EOF
@@ -86,10 +103,9 @@ EOF
 sudo apparmor_parser -r /etc/apparmor.d/my-app
 ```
 
-Ship one with any culebra-built desktop app you distribute to 24.04+ users.
-CI's `linux-webview` job runs its window probes under exactly this profile.
-(Servers, containers, and programs that never open a window are unaffected —
-the restriction only bites when the sandbox actually launches.)
+CI's `linux-webview` job runs its window probes under the per-binary form.
+(Servers, containers, and programs that never open a window are unaffected
+either way — the restriction only bites when the sandbox actually launches.)
 
 ## Run
 

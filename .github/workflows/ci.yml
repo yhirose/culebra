@@ -526,8 +526,10 @@ jobs:
       # restriction stays live for everything else on the runner, and — unlike
       # the sysctl, or WebKit's do-not-sandbox env switch — the probe below
       # still exercises the sandbox a desktop user's app would actually run in.
-      # A culebra app shipped to 24.04+ wants the same profile; the profile
-      # here doubles as the tested copy of the README's deployment note.
+      # Ubuntu-only, like the quirk itself: no other distro restricts these
+      # namespaces, and an up-to-date Ubuntu (24.04.2+) ships a bwrap profile
+      # that makes even this step unnecessary — this runner image is the
+      # stripped case that lacks it. The README documents both.
       - name: Let the sandbox use its user namespaces (AppArmor profile)
         run: |
           sudo tee /etc/apparmor.d/culebra-ci >/dev/null <<EOF
