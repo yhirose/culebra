@@ -1086,7 +1086,8 @@ property.
 `keys()`, `size()`, `to_string()`, `for k, v in obj`, spread (`{...obj}`)
 and `JSON.stringify` all enumerate the same set: the object's own
 entries, in insertion order. For a class-sugar instance that is the
-`class:` tag plus the fields the constructor and methods set. Methods are
+`class:` tag, then the declared fields in declaration order, then the
+ones the constructor and methods set with `self.x = y`. Methods are
 not own entries — they live on one per-class method table every instance
 delegates to (see §25) — so they never appear:
 

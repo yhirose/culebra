@@ -442,22 +442,27 @@ inline SendNode serialize(const Value& v, SerCtx& ctx) {
       n.kind = SendNode::K::Object;
       size_t nprops = obj.properties->size() +
                       (obj.non_string_props ? obj.non_string_props->size() : 0);
+      auto ship_string_entries = [&ctx](SendNode& into,
+                                        const OrderedSymbolMap& src) {
+        into.entries.reserve(into.entries.size() + src.size());
+        into.entry_mut.reserve(into.entry_mut.size() + src.size());
+        for (const auto& [k, sym] : src) {
+          SendNode key;
+          key.kind = SendNode::K::Str;
+          key.s = std::string(k);
+          into.entries.emplace_back(std::move(key), serialize(sym.val, ctx));
+          into.entry_mut.push_back(sym.mut);
+        }
+      };
       n.entries.reserve(nprops);
       n.entry_mut.reserve(nprops);
-      for (const auto& [k, sym] : *obj.properties) {
-        SendNode key;
-        key.kind = SendNode::K::Str;
-        key.s = std::string(k);
-        n.entries.emplace_back(std::move(key), serialize(sym.val, ctx));
-        n.entry_mut.push_back(sym.mut);
-      }
+      ship_string_entries(n, *obj.properties);
       // Class instance: ship the class meta (the shared method table) as
-      // elems[0] so a method call works on the other side. Many instances
-      // share one meta, so it is memoized (same id space as closures; the
-      // pointers never collide) and a repeat ships as a backref. Placed
-      // between the String and non-String entries, exactly where the JIT
-      // puts it (sendable_jit.h) — the two backends must produce identical
-      // SendNode shapes.
+      // elems[0] so a method call works on the other side, exactly as the
+      // JIT does (sendable_jit.h) — the two backends must produce identical
+      // SendNode shapes. Many instances share one meta, so it is memoized
+      // (same id space as closures; the pointers never collide) and a repeat
+      // ships as a backref.
       if (const auto& proto = obj.properties->proto) {
         // Carry this instance's own owned-stack registration rather than
         // re-deriving it from the meta on the other side: a nested instance
@@ -465,28 +470,17 @@ inline SendNode serialize(const Value& v, SerCtx& ctx) {
         // before the entries land), so probing the meta there would depend
         // on the class's member declaration order.
         n.b = obj.properties->owned_registered;
-        if (auto it = ctx.proto_ids.find(proto.get());
-            it != ctx.proto_ids.end()) {
-          SendNode ref;
-          ref.kind = SendNode::K::Object;
-          ref.is_backref = true;
-          ref.ref_id = it->second;
-          n.elems.push_back(std::move(ref));
+        SendNode meta;
+        meta.kind = SendNode::K::Object;
+        auto [it, fresh] = ctx.proto_ids.try_emplace(proto.get(), ctx.next_id);
+        meta.ref_id = it->second;
+        if (fresh) {
+          ctx.next_id++;
+          ship_string_entries(meta, *proto);
         } else {
-          int proto_ref = ctx.next_id++;
-          ctx.proto_ids.emplace(proto.get(), proto_ref);
-          SendNode meta;
-          meta.kind = SendNode::K::Object;
-          for (const auto& [k, sym] : *proto) {
-            SendNode key;
-            key.kind = SendNode::K::Str;
-            key.s = std::string(k);
-            meta.entries.emplace_back(std::move(key), serialize(sym.val, ctx));
-            meta.entry_mut.push_back(sym.mut);
-          }
-          meta.ref_id = proto_ref;
-          n.elems.push_back(std::move(meta));
+          meta.is_backref = true;
         }
+        n.elems.push_back(std::move(meta));
       }
       if (obj.non_string_props) {
         for (const auto& [k, sym] : *obj.non_string_props) {

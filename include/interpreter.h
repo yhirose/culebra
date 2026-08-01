@@ -797,8 +797,18 @@ struct ObjectValue {
   bool has_own(std::string_view name) const;
   // Own entry, else the shared class meta (`properties->proto`). Builtins are
   // NOT consulted — this is the "what the object itself carries" lookup that
-  // method dispatch wants. Mirrors the JIT's find_prop (jit_runtime.h).
+  // method dispatch wants. Twin of the JIT's `_find_property`.
   const Symbol* find_prop(std::string_view name) const;
+  // The instance's `__call__`, or null — the callable-class gate, shared by
+  // the two type_matches branches and as_callback.
+  const Value* call_operator() const;
+  // find_prop for a Value key, with the same String/StringView normalization
+  // the other Value-key overloads use. Backs the `has` builtin; the data
+  // accessors (`get`, subscripts) deliberately stay own-entry-only.
+  bool has_prop(const Value& key) const;
+  // The builtins()-table half of a property read, so a caller that already
+  // ran find_prop can finish the lookup without repeating it.
+  const Value* find_builtin(std::string_view name) const;
   const Value& get(std::string_view name) const;
   // `get` without the throw on a miss: one lookup, nullptr when absent
   // (own properties then the builtin table, exactly like `get`). Lets a
@@ -1596,15 +1606,12 @@ struct OrderedSymbolMap {
   // `drop` got bound). Dedupes re-registration on repeated writes.
   bool owned_registered = false;
   // Class instances only: the per-class meta map holding the shared method
-  // table. Property lookup falls through to it after this map's own entries
-  // (one level — proto chains aren't supported), so an instance's own
-  // entries carry ONLY `class` plus its data fields and every enumeration
-  // face (keys/size/str/for-in/spread/JSON) sees just those. The JIT's
-  // JitObject::proto is the same model; keeping them identical is what
-  // makes the two backends enumerate alike. Lives on the map (the shared
-  // object identity, like `dropped`) rather than on ObjectValue, so a Value
-  // copy costs no extra refcount and a raw-map holder — _call_drop_if_present,
-  // the owned stack — can still reach the methods.
+  // table, twin of the JIT's JitObject::proto. Own entries then proto, one
+  // level — so an instance's own entries are just `class` plus its fields
+  // and every enumeration face sees only those. Lives on the map (the shared
+  // object identity, like `dropped`) rather than on ObjectValue: a Value copy
+  // pays no extra refcount, and a raw-map holder — _call_drop_if_present, the
+  // owned stack — can still reach the methods.
   std::shared_ptr<OrderedSymbolMap> proto;
 
   bool contains(std::string_view k) const { return index_.contains(k); }
@@ -1704,6 +1711,17 @@ struct OrderedSymbolMap {
   auto cbegin() const { return entries_.cbegin(); }
   auto cend()   const { return entries_.cend(); }
 
+  // Own entry, else the class meta (`proto`). Builtins are not consulted;
+  // see ObjectValue::has/get for the lookups that fall through to them.
+  // Declared after find()/end() so their return types are deduced.
+  const Symbol* find_prop(std::string_view k) const {
+    if (auto it = find(k); it != end()) return &it->second;
+    if (proto) {
+      if (auto it = proto->find(k); it != proto->end()) return &it->second;
+    }
+    return nullptr;
+  }
+
  private:
   std::vector<Entry> entries_;
   std::unordered_map<std::string, size_t, sv_hash, sv_equal> index_;
@@ -1711,11 +1729,10 @@ struct OrderedSymbolMap {
 };
 
 // Structural object equality: same key set (String + non-String) with
-// equal values, order-independent (like Python dict). Class-sugar
-// instances compare their `class` tag and method values too — methods
-// share a params shared_ptr across instances, so same-class instances
-// match when their data fields do. Defined here so OrderedSymbolMap is
-// complete.
+// equal values, order-independent (like Python dict). For a class-sugar
+// instance that means its `class` tag and data fields — methods live on
+// the shared meta, outside the compared entries, matching the JIT.
+// Defined here so OrderedSymbolMap is complete.
 inline bool _object_eq(const Value& a, const Value& b) {
   const auto& oa = a.to_object();
   const auto& ob = b.to_object();
@@ -2236,6 +2253,19 @@ inline void gc_for_each_container_backing(const Value& v, Emit&& emit) {
   }
 }
 
+// The one node→node edge no Value walk can see: a class instance's map holds
+// one ref on its class meta (OrderedSymbolMap::proto), multiplicity 1 per map
+// node. Kept beside the container enumeration so a third walk can't miss it
+// the way the Set `index` edge once was. The meta carries no non-String keys
+// and no key_order entry reaching a tracked node, so expanding it with null
+// sidecars is exact.
+inline const std::shared_ptr<OrderedSymbolMap>& gc_node_proto(GcKind kind,
+                                                              void* primary) {
+  static const std::shared_ptr<OrderedSymbolMap> none;
+  if (kind != GcKind::Map) return none;
+  return static_cast<OrderedSymbolMap*>(primary)->proto;
+}
+
 // Invoke f(childValue) for every Value a Vec/Set/Map node holds — the outgoing
 // edges to subtract/mark. `side1`/`side2` are the node's held-together sidecars
 // (§3a); a null sidecar (a synthetic view, or an absent map) is skipped.
@@ -2405,12 +2435,11 @@ inline void _owned_resolve_ambiguous(
     nodes[to].explained++;
     if (from != npos) nodes[from].out.push_back(to);
   };
-  // A class instance's map holds one ref on its class meta (see
-  // OrderedSymbolMap::proto) — a map→map edge no Value walk can see, and the
-  // edge a drop-having class's finalizer hangs off. The meta's own sidecars
-  // are always empty, so expanding it with null sidecars is exact.
-  auto link_proto = [&](size_t from_id, const OrderedSymbolMap* m, auto&& wv) {
-    const auto& proto = m->proto;
+  // Discover the class-meta edge (gc_node_proto) and expand the meta's
+  // methods, which is where a drop-having class's finalizer hangs.
+  auto link_proto = [&](size_t from_id, GcKind kind, void* primary,
+                        auto&& wv) {
+    const auto& proto = gc_node_proto(kind, primary);
     if (!proto) return;
     bool fresh;
     size_t pid = add_node(proto.get(), proto.use_count(), fresh);
@@ -2435,9 +2464,7 @@ inline void _owned_resolve_ambiguous(
             binding_held.insert(primary);
           edge(from, id);
           if (fresh) {
-            if (kind == GcKind::Map)
-              link_proto(id, static_cast<const OrderedSymbolMap*>(primary),
-                         self);
+            link_proto(id, kind, primary, self);
             gc_for_each_child(kind, primary, side1, side2,
                               [&](const Value& cv) { self(cv, id, self); });
           }
@@ -2563,7 +2590,7 @@ inline void _owned_resolve_ambiguous(
     if (fresh) {
       auto non_string_props = p.entry.non_string_props.lock();
       auto key_order = p.entry.key_order.lock();
-      link_proto(id, p.sp.get(), walk_value);
+      link_proto(id, GcKind::Map, p.sp.get(), walk_value);
       gc_for_each_child(
           GcKind::Map, p.sp.get(), non_string_props.get(), key_order.get(),
           [&](const Value& cv) { walk_value(cv, id, walk_value); });
@@ -2790,18 +2817,16 @@ typedef std::function<void(const peg::Ast& ast, Environment& env,
     Debugger;
 
 inline const Symbol* ObjectValue::find_prop(std::string_view name) const {
-  if (auto it = properties->find(name); it != properties->end()) {
-    return &it->second;
-  }
-  if (const auto& proto = properties->proto) {
-    if (auto it = proto->find(name); it != proto->end()) return &it->second;
-  }
-  return nullptr;
+  return properties->find_prop(name);
 }
 
 inline bool ObjectValue::has(std::string_view name) const {
-  if (find_prop(name)) return true;
-  return const_cast<ObjectValue*>(this)->builtins().contains(name);
+  return get_ptr(name) != nullptr;
+}
+
+inline const Value* ObjectValue::call_operator() const {
+  const auto* sym = find_prop("__call__");
+  return sym && sym->val.type == Value::Function ? &sym->val : nullptr;
 }
 
 inline bool ObjectValue::has_own(std::string_view name) const {
@@ -2813,11 +2838,15 @@ inline const Value& ObjectValue::get(std::string_view name) const {
   return const_cast<ObjectValue*>(this)->builtins().at(name);
 }
 
-inline const Value* ObjectValue::get_ptr(std::string_view name) const {
-  if (const auto* sym = find_prop(name)) return &sym->val;
+inline const Value* ObjectValue::find_builtin(std::string_view name) const {
   const auto& props = const_cast<ObjectValue*>(this)->builtins();
   auto it = props.find(name);
   return it == props.end() ? nullptr : &it->second;
+}
+
+inline const Value* ObjectValue::get_ptr(std::string_view name) const {
+  if (const auto* sym = find_prop(name)) return &sym->val;
+  return find_builtin(name);
 }
 
 // Validate the well-known-property contract (see shared.h)
@@ -2870,6 +2899,13 @@ inline bool ObjectValue::has(const Value& key) const {
   }
   if (non_string_props->empty()) return false;  // fast miss
   return non_string_props->contains(key);
+}
+
+inline bool ObjectValue::has_prop(const Value& key) const {
+  if (key.type == Value::String || key.type == Value::StringView) {
+    return find_prop(key.to_string_view()) != nullptr;
+  }
+  return has(key);
 }
 
 inline const Value& ObjectValue::get(const Value& key) const {
@@ -2931,9 +2967,13 @@ inline Value make_error_object(std::string_view kind, std::string_view message,
 // `val` is.
 inline std::optional<std::string_view> class_tag(const Value& val) {
   if (val.type != Value::Object) return std::nullopt;
-  const auto& obj = val.to_object();
-  if (!obj.has("class")) return std::nullopt;
-  const auto& cn = obj.get("class");
+  // Own slot only, in one probe: `class` is always written to the instance
+  // itself (build_instance / the enum builders), never inherited from the
+  // class meta, and there is no `class` builtin to fall through to.
+  const auto& props = *val.to_object().properties;
+  auto it = props.find("class");
+  if (it == props.end()) return std::nullopt;
+  const auto& cn = it->second.val;
   if (cn.type != Value::String) return std::nullopt;
   return std::string_view(cn.template get<std::string>());
 }
@@ -2966,10 +3006,7 @@ inline bool type_matches(const Value& val, std::string_view name) {
   if (is_fn_type(name)) {
     if (val.type == Value::Function) return true;
     if (val.type == Value::Object) {
-      if (class_tag(val)) {
-        const auto* sym = val.to_object().find_prop("__call__");
-        if (sym && sym->val.type == Value::Function) return true;
-      }
+      if (class_tag(val) && val.to_object().call_operator()) return true;
     }
     return false;
   }
@@ -3030,9 +3067,8 @@ inline bool type_matches(const Value& val, std::string_view name) {
       // Limited to an own/proto `__call__` (a `__call__` inherited only
       // as a trait default isn't reachable from this free function);
       // direct `obj(x)` calls still dispatch trait-default `__call__`.
-      if (name == "Function" && tag) {
-        const auto* sym = val.to_object().find_prop("__call__");
-        if (sym && sym->val.type == Value::Function) return true;
+      if (name == "Function" && tag && val.to_object().call_operator()) {
+        return true;
       }
       // Enum variant: an instance tagged with `__enum` also matches the
       // parent enum name (so `r: Result` accepts any `Result.*` variant).
@@ -3984,22 +4020,14 @@ inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
          }
          return Value(std::move(arr));
        }))},
-      // A String key resolves like a property read minus the builtin table
-      // (own entry, then the class meta), which is what the JIT's
-      // object_has_value walks: `p.has("m")` sees a class method while
-      // `p.has("size")` stays false. The data accessors below (`get`,
-      // subscripts) stay own-only in both backends.
+      // has_prop, not has: a String key resolves like a property read minus
+      // the builtin table, which is what the JIT's object_has_value walks —
+      // `p.has("m")` sees a class method, `p.has("size")` stays false.
       {"has"sv, Value(FunctionValue({{"key", false}},
                                     [](std::shared_ptr<Environment> callEnv) {
                                       const auto& obj = callEnv->get("self").to_object();
                                       const auto& key = callEnv->get("key");
-                                      if (key.type == Value::String ||
-                                          key.type == Value::StringView) {
-                                        return Value(obj.find_prop(
-                                                         key.to_string_view()) !=
-                                                     nullptr);
-                                      }
-                                      return Value(obj.has(key));
+                                      return Value(obj.has_prop(key));
                                     }))},
       // get(key, fallback): read-only. Return the value for `key`, or
       // `fallback` if absent. Never mutates the dict. `fallback` is an
@@ -4279,9 +4307,8 @@ inline void check_callback_arity(const FunctionValue& f, int64_t expected,
 // to to_function(), which raises the standard "expected Function" error.
 inline FunctionValue as_callback(const Value& cb) {
   if (cb.type == Value::Object && class_tag(cb)) {
-    const auto* sym = cb.to_object().find_prop("__call__");
-    if (sym && sym->val.type == Value::Function) {
-      const auto& pf = sym->val.get<FunctionValue>();
+    if (const Value* call = cb.to_object().call_operator()) {
+      const auto& pf = call->get<FunctionValue>();
       FunctionValue bound(*pf.params, [pf, cb](std::shared_ptr<Environment> ce) {
         ce->initialize("self", cb, false);
         return pf.eval(ce);
@@ -8958,10 +8985,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // the constructor call env — so `new` parameters are not visible (Kotlin's
   // model: property initializers see `self` but not secondary-ctor params).
   // Sets overwrite an existing own property (a method called from an earlier
-  // initializer may have created it) — mirrors the JIT's object_set.
+  // initializer may have created it) — mirrors the JIT's object_set, which
+  // `initialize` matches while also keeping key_order complete (a raw
+  // `insert_or_assign` here dropped declared fields out of keys()/for-in).
   void init_instance_fields(
       const std::vector<ClassMembers::FieldDecl>& fields,
-      const std::shared_ptr<Environment>& def_env, const Value& inst) {
+      const std::shared_ptr<Environment>& def_env, Value& inst) {
     if (fields.empty()) return;
     auto fieldEnv = std::make_shared<Environment>(def_env);
     fieldEnv->append_outer(def_env);
@@ -8969,8 +8998,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     for (const auto& f : fields) {
       Value v =
           f.init ? eval(*f.init, fieldEnv) : zero_value_for_type(f.type);
-      inst.to_object().properties->insert_or_assign(f.name,
-                                                    Symbol{std::move(v), true});
+      inst.to_object().initialize(f.name, v, true);
     }
   }
 
@@ -9044,16 +9072,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         method_template.begin(), method_template.end(),
         [](const auto& m) { return m.first == "drop"; });
 
-    // The per-class meta: one Object carrying the method table that every
-    // instance of this class reaches through `properties->proto`. Held in a
-    // shared Value so build_instance and the cycle-collector hook
-    // (for_each_captured_value, below) reference the SAME copy — the meta's
-    // map is a tracked GC node, and a second copy would hold a map ref the
-    // hook doesn't emit, spuriously rooting the class↔def_env cycle (the
-    // `_wrap_method_with_this` pattern, one layer out). Its own sidecars stay
-    // empty (string-keyed emplace only), which is what lets an instance emit
-    // the proto edge with null sidecars.
-    // Field initializers are ASTs (no Values, nothing for the collector).
+    // The per-class meta: one Object holding the method table every instance
+    // reaches through `properties->proto`. Held in a shared Value so
+    // build_instance and the collector hook (for_each_captured_value, below)
+    // reference the SAME copy — a second copy would hold a map ref the hook
+    // doesn't emit, spuriously rooting the class↔def_env cycle (the
+    // `_wrap_method_with_this` pattern, one layer out).
     ObjectValue meta_obj;
     for (auto& [name, val] : method_template) {
       meta_obj.properties->emplace(name, Symbol{std::move(val), false});
@@ -9199,14 +9223,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       constructor = build_multifn_dispatcher("new", methods);
     }
 
-    // Both constructors hide the class meta inside `build_instance`.
-    // Emit it for the cycle collector so it can subtract the ref the capture
-    // holds on the meta's map — otherwise a class declared inside a function
-    // leaks its call env + class value on every invocation (the meta's node
-    // stays externally referenced, and its methods keep the def_env alive).
-    // The methods themselves need no enumeration here: the meta's map is a
-    // tracked node, so the normal node walk subtracts their def_env edges.
-    // (Field initializers are ASTs, not Values — nothing to enumerate.)
+    // Both constructors hide the class meta inside `build_instance`. Emit it
+    // so the collector subtracts the ref that capture holds on the meta's
+    // map — otherwise a class declared inside a function leaks its call env +
+    // class value on every invocation. The methods need no enumeration: the
+    // meta's map is a tracked node, so the node walk reaches their def_envs.
     constructor.get<FunctionValue>().for_each_captured_value =
         [meta](const std::function<void(const Value&)>& emit) { emit(*meta); };
     // Dedup key so an aliased constructor's hidden edges are counted once.
@@ -10177,8 +10198,15 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     }
 
     const auto& obj = val.to_object();
-    if (obj.has(name)) {
-      const auto& prop = obj.get(name);
+    // One resolution for both questions the branch asks: what the value is,
+    // and where it came from. User Function properties (own slots, class
+    // methods reached through the class meta, namespace methods like
+    // Proc.run) accept kwargs and stay first-class; only builtins()-table
+    // methods — `[1,2].map` — are rejected as bare values.
+    const Symbol* carried = obj.find_prop(name);
+    if (const Value* found = carried ? &carried->val
+                                     : obj.find_builtin(name)) {
+      const Value& prop = *found;
       if (prop.type == Value::Function) {
         // A getter read as a value (`obj.name`, no call parens) auto-invokes
         // 0-arg with `self`=receiver. When called as `obj.name()` (as_value
@@ -10187,13 +10215,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         if (as_value && prop.get<FunctionValue>().is_getter) {
           return _invoke_method_no_args(val, name);
         }
-        // User Function properties (own slots, class methods reached through
-        // the class meta, namespace methods like Proc.run) accept kwargs and
-        // stay first-class; only builtins()-table methods (found by neither —
-        // `[1,2].map`) are rejected as bare values.
-        bool from_builtins = obj.find_prop(name) == nullptr;
-        if (from_builtins) reject_if_bare(name);
-        return _wrap_method_with_this(prop, val, from_builtins, name);
+        if (!carried) reject_if_bare(name);
+        return _wrap_method_with_this(prop, val, !carried, name);
       }
       return prop;
     }
@@ -11235,18 +11258,18 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         auto& obj = lval.to_object();
         auto name = postfix.token;
         if (compound) {
-          if (!obj.find_prop(name)) {
-            // Shared helper so the JIT path (see jit.h
-            // `compile_assignment` DOT-compound branch) raises
-            // the same AttributeError with location attached.
-            // find_prop (not has) so a builtin-named miss still errors
-            // rather than compounding against a builtin method value —
-            // the exact predicate the JIT pre-check uses (object_has).
+          // find_prop (not has) so a builtin-named miss still errors rather
+          // than compounding against a builtin method value — the exact
+          // predicate the JIT pre-check uses (object_has). The shared helper
+          // keeps the AttributeError identical to the JIT's (see jit.h
+          // `compile_assignment`, DOT-compound branch).
+          const Symbol* sym = obj.find_prop(name);
+          if (!sym) {
             throw_compound_missing_property_at(
                 static_cast<long>(postfix.line),
                 static_cast<long>(postfix.column));
           }
-          auto cur = obj.get(name);
+          auto cur = sym->val;  // copied: the op below can re-enter user code
           if (try_tensor_inplace(cur, base_op, rval)) {
             return cur;
           }
@@ -11907,12 +11930,8 @@ inline void InterpGC::collect(Environment* current) {
         emit_value_edges(sym.val, emit_value_edges);
       if (e->outer) emit(e->outer.get(), int64_t{1});
     } else {
-      // A class instance's map holds one ref on its class meta (see
-      // OrderedSymbolMap::proto) — a map→map edge no Value walk can see.
-      if (kind == GcKind::Map) {
-        if (auto* p = static_cast<OrderedSymbolMap*>(ptr)->proto.get())
-          emit(p, int64_t{1});
-      }
+      if (const auto& proto = gc_node_proto(kind, ptr))
+        emit(proto.get(), int64_t{1});
       gc_for_each_child(kind, ptr, side1, side2, [&](const Value& cv) {
         emit_value_edges(cv, emit_value_edges);
       });
@@ -12060,15 +12079,9 @@ inline void _call_drop_if_present(OrderedSymbolMap* m) {
   if (!m) return;
   if (m->dropped) return;  // already ran (explicit or backstop) — at most once
   if (_drop_suppressed()) return;  // cycle member — no finalizer (see decl)
-  // Own entry, else the class meta: a class's `drop` lives on the shared
-  // method table, and the owned stack holds only this map.
-  const Symbol* sym = nullptr;
-  if (auto it = m->find("drop"); it != m->end()) {
-    sym = &it->second;
-  } else if (m->proto) {
-    if (auto pit = m->proto->find("drop"); pit != m->proto->end())
-      sym = &pit->second;
-  }
+  // A class's `drop` lives on the shared method table, and the owned stack
+  // holds only this map — hence find_prop on the map, not on ObjectValue.
+  const Symbol* sym = m->find_prop("drop");
   if (!sym || sym->val.type != Value::Function) return;
 
   const auto& fn = sym->val.template get<FunctionValue>();
