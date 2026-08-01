@@ -418,7 +418,12 @@ _run-tests BACKEND:
         done | xargs -P "$JOBS" -I '{}' bash -c '
             f=${1%% *}; flags=${1#* }; d="$2"
             name=$(basename "$f" .cul).${flags// /}
-            ref=$(cul "$f" 2>/dev/null) || {
+            # Both sides capture stderr. Comparing a stderr-inclusive run
+            # against a stderr-free one makes anything the wrapper writes there
+            # (nice reporting it cannot setpriority, say) read as a codegen
+            # mismatch on every file; and stderr is half of what interp/JIT
+            # symmetry is about, so it belongs in the comparison anyway.
+            ref=$(cul "$f" 2>&1) || {
                 echo "interp failed: $f" > "$d/$name.err"; touch "$d/$name.fail"; exit 0
             }
             got=$(cul $flags "$f" 2>&1) || {
