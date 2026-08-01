@@ -27,12 +27,14 @@
 #include "parser.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <charconv>
 #include <format>
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <regex>
 #include <set>
@@ -46,8 +48,21 @@ namespace culebra {
 // `string_view`s into the parsed source, so anything the transform
 // re-parses needs process-lifetime backing — the same fix the lazy-module
 // path uses.
-inline std::vector<std::shared_ptr<std::string>>&
-generator_transform_sources() {
+//
+// Process-global, and written from several threads at once: every isolate
+// resolves the lazy stdlib modules on its own thread and those modules contain
+// generators, so N children can be inside the transform together. (It cannot
+// be thread_local either — the builtin-traits preamble is parsed once and its
+// AST is shared by every thread, so the buffers it views must outlive the
+// thread that made them.) Hence the lock, and hence accessors that do the work
+// rather than hand out a reference a caller could touch unlocked: two
+// unsynchronised push_backs reallocating at once free the same buffer twice.
+// Never held across `parse`, which re-enters here for nested lowering.
+inline std::mutex& fragment_ledger_mutex() {
+  static std::mutex m;
+  return m;
+}
+inline std::vector<std::shared_ptr<std::string>>& _fragment_sources() {
   static std::vector<std::shared_ptr<std::string>> sources;
   return sources;
 }
@@ -594,8 +609,11 @@ inline std::shared_ptr<peg::Ast> reposition_ast(
 // Unique per-fragment parse label, so `reposition_ast` can tell this
 // fragment's nodes from subtrees spliced in by nested lowering.
 inline std::string next_fragment_label(const char* stem) {
-  static int counter = 0;
-  return std::format("<{}#{}>", stem, counter++);
+  // Atomic: concurrent isolates lower generators at the same time, and two
+  // fragments sharing a label would resolve to each other's buffer.
+  static std::atomic<int> counter{0};
+  return std::format("<{}#{}>", stem,
+                     counter.fetch_add(1, std::memory_order_relaxed));
 }
 
 inline std::string rewrite_locals_to_self(std::string_view src,
@@ -773,7 +791,7 @@ inline std::optional<std::string> rewrite_yielding_fors_to_while(
 // Re-parse a `fn __gen_wrapper__(...) { ... }` source fragment and return
 // its MULTIFN_DECL node, after registering the source for lifetime. peg::Ast
 // holds string_views into the source, so the synthesized buffer must stay
-// alive until the AST is discarded — generator_transform_sources() owns it.
+// alive until the AST is discarded — the fragment ledger owns it.
 // Parse a synthesized buffer after registering it for process lifetime (the
 // resulting AST's string_views point into it). The single place that pairs the
 // lifetime store with `parse` — used by both the generator wrapper parse and
@@ -785,17 +803,36 @@ inline std::optional<std::string> rewrite_yielding_fors_to_while(
 // effects pass reaching a construct inside a generator-lowered body.
 // Non-unique labels (internal re-parses that never splice nodes into the
 // final AST) may overwrite each other; only `next_fragment_label` labels
-// are ever looked up.
+// are ever looked up. Guarded by fragment_ledger_mutex(), like the vector.
 inline std::map<std::string, std::shared_ptr<std::string>, std::less<>>&
-fragment_source_registry() {
+_fragment_registry() {
   static std::map<std::string, std::shared_ptr<std::string>, std::less<>> reg;
   return reg;
 }
 
+// The buffer a spliced-in subtree was parsed from, or null. A copy of the
+// shared_ptr, so the caller reads the buffer without holding the lock.
+inline std::shared_ptr<std::string> fragment_source_for(
+    std::string_view label) {
+  std::lock_guard<std::mutex> lk(fragment_ledger_mutex());
+  auto& reg = _fragment_registry();
+  auto it = reg.find(label);
+  return it == reg.end() ? nullptr : it->second;
+}
+
+// Every synthesized fragment so far (CULEBRA_TRANSFORM_STATS reporting).
+inline std::vector<std::shared_ptr<std::string>> fragment_sources_snapshot() {
+  std::lock_guard<std::mutex> lk(fragment_ledger_mutex());
+  return _fragment_sources();
+}
+
 inline std::shared_ptr<peg::Ast> parse_registered_source(
     const char* label, std::shared_ptr<std::string> synthesized) {
-  generator_transform_sources().push_back(synthesized);
-  fragment_source_registry()[label] = synthesized;
+  {
+    std::lock_guard<std::mutex> lk(fragment_ledger_mutex());
+    _fragment_sources().push_back(synthesized);
+    _fragment_registry()[label] = synthesized;
+  }
   std::vector<std::string> msgs;
   return parse(label, synthesized->data(), synthesized->size(), msgs);
 }

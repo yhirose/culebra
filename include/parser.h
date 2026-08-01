@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <mutex>
 #include <format>
 #include <optional>
 #include <print>
@@ -882,8 +883,12 @@ inline bool is_pattern_param(const peg::Ast& node) {
 // the arg to `__destructure_N`, then the body unpacks it).
 inline std::string_view destructure_param_name(size_t i) {
   // deque keeps element addresses stable as it grows, so the returned
-  // string_view stays valid; grow on demand rather than capping.
+  // string_view stays valid after the lock is dropped; grow on demand rather
+  // than capping. Locked because isolates parse on their own threads at the
+  // same time, and two unsynchronised grows corrupt the deque.
+  static std::mutex m;
   static std::deque<std::string> names;
+  std::lock_guard<std::mutex> lk(m);
   while (names.size() <= i)
     names.push_back("__destructure_" + std::to_string(names.size()));
   return names[i];

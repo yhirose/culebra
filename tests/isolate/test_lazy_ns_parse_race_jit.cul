@@ -1,0 +1,53 @@
+# Conformance: several isolates may lower generators at the same time.
+#
+# The generator transform parks its synthesized source fragments in a
+# process-global ledger (peg::Ast holds string_views into them, and the
+# builtin-traits AST is shared by every thread, so the buffers cannot be
+# thread_local). Every child resolves the lazy stdlib modules on its own
+# thread, and Time/Regex both contain generators — so N children push into
+# that ledger at once. Unsynchronised, two reallocating push_backs free the
+# same buffer twice; observed as `double free or corruption`, `free(): invalid
+# pointer`, `corrupted double-linked list` and plain SIGSEGV, at a few percent
+# per run under load.
+#
+# This maximises the overlap the CI runners hit by accident: one Parallel.map
+# wide enough to start many children together, each touching generator-bearing
+# modules and declaring a generator of its own, so they lower on their own
+# schedule rather than in lockstep behind a single lazy resolve.
+
+let inputs = range(24).collect()
+
+# Each round spawns a fresh set of children, and every child resolves the
+# modules again on its own thread — so rounds multiply the chance of catching a
+# regression instead of repeating one draw.
+for _round in 0..4 {
+  let outs = Parallel.map(inputs, fn (i) {
+    # Each of these is a lazy module whose source contains a generator, so the
+    # child's first reference to it runs the whole transform on this thread and
+    # appends to the ledger. Several per child widens the window: the body's own
+    # generators would not help, since the parent already lowered those once.
+    # Canvas is deliberately NOT among these: resolving it from several
+    # isolates at once still corrupts the heap after this fix, a second and
+    # so-far-unexplained race that would make this test flaky for the wrong
+    # reason. See the memory note; this file is about the fragment ledger.
+    let a = Regex.find_all("x+", "xx ax xxx").size()        # 3
+    let p = Path.new("x/y").name().size()                   # 1
+    let w = Term.width("ab")                                # 2
+    let b = to_long(Time.seconds(i % 3).seconds())          # 0, 1 or 2
+    a + b + p + w - 3
+  })
+  assert_eq(outs.size(), 24)
+  assert_eq(outs.sum(), inputs.map(fn (i) { 3 + i % 3 }).sum())
+}
+
+# The same race reached the other way: sequential spawns that each resolve a
+# module the parent never touched, so the child does the lowering.
+for _ in 0..4 {
+  let t = Isolate.spawn(fn () {
+    fn one() { yield Regex.find_all("a", "aaa").size() }
+    one().next() + to_long(Time.seconds(1).seconds())
+  })
+  assert_eq(t.join(), 4)
+}
+
+inspect("lazy-ns parse race OK")

@@ -138,9 +138,8 @@ class EffectsLowerer {
     // in by the mainline generator pass) indexes that fragment's buffer, not
     // ours — hand the walk to a lowerer over the right slice base.
     if (!path_.empty() && ast->path != path_) {
-      auto& reg = fragment_source_registry();
-      if (auto it = reg.find(ast->path); it != reg.end()) {
-        EffectsLowerer sub(it->second->data(), it->second->size(), effect_fns_,
+      if (auto src = fragment_source_for(ast->path)) {
+        EffectsLowerer sub(src->data(), src->size(), effect_fns_,
                            /*src_is_original=*/false, ast->path);
         return sub.transform(ast);
       }
@@ -1895,18 +1894,18 @@ inline std::shared_ptr<peg::Ast> parse_with_transforms(
   // effects passes synthesized for this module — the input to every backend's
   // compile, so it bounds what any codegen-side change can save.
   if (std::getenv("CULEBRA_TRANSFORM_STATS")) {
+    auto sources = fragment_sources_snapshot();
     size_t bytes = 0, lines = 0;
-    for (auto& s : generator_transform_sources()) {
+    for (auto& s : sources) {
       bytes += s->size();
       lines += static_cast<size_t>(std::count(s->begin(), s->end(), '\n'));
     }
     std::fprintf(stderr,
                  "[transform-stats] %s: source %zu bytes -> synthesized %zu "
                  "fragments, %zu bytes, %zu lines\n",
-                 path.c_str(), len, generator_transform_sources().size(),
-                 bytes, lines);
+                 path.c_str(), len, sources.size(), bytes, lines);
     if (std::string_view(std::getenv("CULEBRA_TRANSFORM_STATS")) == "2") {
-      for (auto& s : generator_transform_sources())
+      for (auto& s : sources)
         std::fprintf(stderr, "----8<---- fragment\n%s\n", s->c_str());
     }
   }
