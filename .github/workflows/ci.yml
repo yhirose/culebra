@@ -476,6 +476,7 @@ jobs:
       # feature archive, which DEV_NO_RT skips. LTO off — this job proves links
       # and behaviour, and the matrix already pays a ThinLTO link on this OS.
       - name: Build (Webview ON)
+        id: build
         run: just build -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold -DCULEBRA_LTO=OFF
 
       - name: Report ccache stats
@@ -501,6 +502,14 @@ jobs:
       - name: Webview dynload ratchet
         run: tools/check_webview_dynload.sh build
 
+      # The AOT axis: naming Webview has to force-load libculebra_rt_webview.a,
+      # which is also where the dlopen table lives. The driver links that TU
+      # directly, so a broken force-load shows up only here. Before the window
+      # step because it needs no display: a runner whose Xvfb or WebKit sandbox
+      # misbehaves should still report on everything that does not depend on one.
+      - name: AOT link + run (Webview force-load axis)
+        run: misc/probe_webview_aot_link.sh ./build/culebra
+
       # What no other job on any OS reaches: a real window, the event loop, a
       # quit from another thread, and a quit that lands before the loop starts —
       # on both backends, against Xvfb.
@@ -511,27 +520,37 @@ jobs:
       # that outcome as well as for the exit status.
       - name: Window + event loop (Xvfb, interp / JIT)
         run: |
-          out=$(xvfb-run -a misc/probe_webview_window.sh ./build/culebra 2>&1)
+          # `|| rc=$?` rather than a bare assignment: the step runs under
+          # `bash -e`, where a failing command substitution ends the step at the
+          # assignment and takes the probe's output — the only thing worth
+          # having when this fails — with it.
+          rc=0
+          out=$(xvfb-run -a misc/probe_webview_window.sh ./build/culebra 2>&1) || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then
+            echo "--- environment, for a failure that is the runner's and not the probe's ---"
+            echo "bwrap: $(command -v bwrap || echo absent)"
+            echo "apparmor_restrict_unprivileged_userns: $(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo n/a)"
+            echo "webkit processes: $(ls /usr/libexec/webkitgtk-6.0 /usr/lib/x86_64-linux-gnu/webkitgtk-6.0 2>/dev/null | tr '\n' ' ')"
+            echo "::error::the window probe failed (exit $rc)" >&2
+            exit "$rc"
+          fi
           if echo "$out" | grep -q 'no window engine here'; then
             echo "::error::no display under Xvfb — the probe passed without opening a window" >&2
             exit 1
           fi
           echo "OK: real windows, on both backends"
 
-      # The AOT axis: naming Webview has to force-load libculebra_rt_webview.a,
-      # which is also where the dlopen table lives. The driver links that TU
-      # directly, so a broken force-load shows up only here.
-      - name: AOT link + run (Webview force-load axis)
-        run: misc/probe_webview_aot_link.sh ./build/culebra
-
       # The point of the whole design, and the one thing that cannot be checked
       # on a machine that has the engine: with the runtime libraries gone, the
       # binary still starts and still runs a program that opens no window, and
       # asking for one fails the way it does on macOS and Windows. Last, and
       # destructive to this runner's WebKit install by design — nothing after it
-      # could trust the engine to be there.
+      # could trust the engine to be there. Runs even when a step above failed
+      # (it needs only a driver), so one run reports on the whole job rather
+      # than stopping at the first display-dependent thing that went wrong.
       - name: Start with no engine present
+        if: always() && steps.build.outcome == 'success'
         run: |
           sudo mv /usr/lib/x86_64-linux-gnu/libwebkitgtk-6.0.so.4 /tmp/wk.hidden
           sudo mv /usr/lib/x86_64-linux-gnu/libgtk-4.so.1 /tmp/gtk.hidden
