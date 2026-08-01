@@ -4823,6 +4823,14 @@ w.set_html('<h1>hi from culebra</h1>')
 w.run()
 ```
 
+**When the window becomes visible.** On macOS the window stays transparent
+until the page puts its first frame on screen, so an app opens on its own
+content instead of flashing an empty white rectangle first. A page that never
+reports a frame — JavaScript turned off, a navigation that never completes —
+gets the window shown anyway after 1.5 s, blank rather than invisible. Windows
+and Linux show the window as soon as `set_size` runs, so the empty frame is
+still briefly visible there.
+
 ---
 
 ## 30. Design notes

@@ -17,12 +17,74 @@
 #include <wrap.h>
 
 #include <atomic>
+#include <memory>
 #include <stdexcept>
 #include <string>
 
 #include "webview.h"
 
+#if defined(__APPLE__)
+#include <dispatch/dispatch.h>
+#include <objc/objc-runtime.h>
+#endif
+
 namespace culebra_webview {
+
+// --- Concealing the window until it has something to show --------------------
+//
+// webview puts the window on screen from inside webview_create — empty, opaque
+// and white — while the page only paints a few hundred ms later, so every app
+// opens with a white flash (measured on macOS: the pre-paint window is a solid
+// 255/255/255 rectangle for its whole duration).
+//
+// Taking the window off screen to hide it does not work: WebKit stops
+// servicing requestAnimationFrame for a window that isn't on screen, so the
+// "it painted" signal we wait for never arrives (measured: nothing within 3 s
+// of an orderOut:). A fully transparent window keeps rendering while staying
+// invisible, so alpha is the concealment, and the page tells us when to lift
+// it.
+#if defined(__APPLE__)
+inline constexpr bool kConcealSupported = true;
+inline void set_window_alpha(void* nswindow, double alpha) {
+  if (!nswindow) return;
+  reinterpret_cast<void (*)(id, SEL, double)>(objc_msgSend)(
+      static_cast<id>(nswindow), sel_registerName("setAlphaValue:"), alpha);
+}
+#else
+// Windows and Linux keep the old behaviour. The concealment proven above has
+// no verified counterpart there — hiding a Win32/GTK window pauses
+// requestAnimationFrame the same way orderOut: does, and the layered-window
+// alpha that would dodge that is a known WebView2 compositing hazard — and
+// neither can be checked from a macOS machine. Wrong here is an app that never
+// becomes visible, so this stays off until someone can measure it.
+inline constexpr bool kConcealSupported = false;
+inline void set_window_alpha(void*, double) {}
+#endif
+
+// Shared by the two reveal paths — the page's first-paint signal and the
+// deadline below — either of which may win. Everything that touches it runs on
+// the loop (main) thread: WebKit delivers the page's message there, the GCD
+// deadline fires on the main queue, and the culebra script that owns the
+// Window runs there too. So plain fields suffice.
+struct RevealGate {
+  webview_t w{};
+  void* window{};
+  bool done = false;
+
+  // Idempotent: the page re-arms its signal on every navigation, and the
+  // deadline fires regardless of whether the signal already won.
+  void reveal() {
+    if (done) return;
+    done = true;
+    set_window_alpha(window, 1.0);
+  }
+};
+
+// How long to wait for a page that never reports a first frame (JavaScript
+// off, a navigation that never completes) before showing the window anyway.
+// An app that stays invisible is a worse failure than a flash, and the signal
+// lands ~200 ms in when it works at all, so this is pure headroom.
+inline constexpr int64_t kRevealDeadlineMs = 1500;
 
 // The window currently parked in run() (one per desktop app). Set on run()
 // entry, cleared on return. It is what lets a request handler on the server's
@@ -51,6 +113,7 @@ class Window {
  public:
   Window() : w_(webview_create(0, nullptr)) {
     if (!w_) throw std::runtime_error("webview: failed to create window");
+    if (kConcealSupported) conceal_until_first_paint();
   }
   ~Window() {
     if (w_) webview_destroy(w_);
@@ -120,7 +183,51 @@ class Window {
         w, [](webview_t self, void*) { webview_terminate(self); }, nullptr);
   }
 
+  // Make the window transparent now and arrange for it to be revealed once the
+  // page has a frame on screen — see the concealment note at the top.
+  void conceal_until_first_paint() {
+    gate_ = std::make_shared<RevealGate>();
+    gate_->w = w_;
+    gate_->window =
+        webview_get_native_handle(w_, WEBVIEW_NATIVE_HANDLE_KIND_UI_WINDOW);
+    set_window_alpha(gate_->window, 0.0);
+
+    // DOMContentLoaded says the document exists; two animation frames later
+    // WebKit has actually composited one. The script runs per document, so a
+    // navigation re-arms it and the first page to paint wins. The raw context
+    // is safe: the callback only runs while the webview exists, on this same
+    // thread, and gate_ outlives w_.
+    webview_bind(
+        w_, "__culebra_first_paint__",
+        [](const char* id, const char*, void* ctx) {
+          auto* gate = static_cast<RevealGate*>(ctx);
+          gate->reveal();
+          webview_return(gate->w, id, 0, "null");
+        },
+        gate_.get());
+    webview_init(w_,
+                 "window.addEventListener('DOMContentLoaded', () => {"
+                 "  requestAnimationFrame(() => requestAnimationFrame(() => {"
+                 "    window.__culebra_first_paint__();"
+                 "  }));"
+                 "});");
+
+    // The backstop for a page that never reports a frame. Weak: a deadline
+    // that outlives the window does nothing.
+#if defined(__APPLE__)
+    dispatch_after_f(
+        dispatch_time(DISPATCH_TIME_NOW, kRevealDeadlineMs * NSEC_PER_MSEC),
+        dispatch_get_main_queue(), new std::weak_ptr<RevealGate>(gate_),
+        [](void* ctx) {
+          std::unique_ptr<std::weak_ptr<RevealGate>> held{
+              static_cast<std::weak_ptr<RevealGate>*>(ctx)};
+          if (auto gate = held->lock()) gate->reveal();
+        });
+#endif
+  }
+
   webview_t w_;
+  std::shared_ptr<RevealGate> gate_;
 };
 
 }  // namespace culebra_webview
