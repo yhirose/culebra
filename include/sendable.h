@@ -297,6 +297,7 @@ inline const Symbol* find_symbol(const Environment* e, std::string_view name) {
 // ---------------------------------------------------------------------------
 struct SerCtx {
   std::map<std::pair<const void*, const void*>, int> closure_ids;
+  std::map<const void*, int> proto_ids;  // class meta map -> ref id
   int next_id = 0;
   std::set<const void*> visiting;  // backing-store ptrs on the current path
 };
@@ -450,6 +451,43 @@ inline SendNode serialize(const Value& v, SerCtx& ctx) {
         n.entries.emplace_back(std::move(key), serialize(sym.val, ctx));
         n.entry_mut.push_back(sym.mut);
       }
+      // Class instance: ship the class meta (the shared method table) as
+      // elems[0] so a method call works on the other side. Many instances
+      // share one meta, so it is memoized (same id space as closures; the
+      // pointers never collide) and a repeat ships as a backref. Placed
+      // between the String and non-String entries, exactly where the JIT
+      // puts it (sendable_jit.h) — the two backends must produce identical
+      // SendNode shapes.
+      if (const auto& proto = obj.properties->proto) {
+        // Carry this instance's own owned-stack registration rather than
+        // re-deriving it from the meta on the other side: a nested instance
+        // can relink while its meta is still mid-fill (the memo registers
+        // before the entries land), so probing the meta there would depend
+        // on the class's member declaration order.
+        n.b = obj.properties->owned_registered;
+        if (auto it = ctx.proto_ids.find(proto.get());
+            it != ctx.proto_ids.end()) {
+          SendNode ref;
+          ref.kind = SendNode::K::Object;
+          ref.is_backref = true;
+          ref.ref_id = it->second;
+          n.elems.push_back(std::move(ref));
+        } else {
+          int proto_ref = ctx.next_id++;
+          ctx.proto_ids.emplace(proto.get(), proto_ref);
+          SendNode meta;
+          meta.kind = SendNode::K::Object;
+          for (const auto& [k, sym] : *proto) {
+            SendNode key;
+            key.kind = SendNode::K::Str;
+            key.s = std::string(k);
+            meta.entries.emplace_back(std::move(key), serialize(sym.val, ctx));
+            meta.entry_mut.push_back(sym.mut);
+          }
+          meta.ref_id = proto_ref;
+          n.elems.push_back(std::move(meta));
+        }
+      }
       if (obj.non_string_props) {
         for (const auto& [k, sym] : *obj.non_string_props) {
           n.entries.emplace_back(serialize(k, ctx), serialize(sym.val, ctx));
@@ -536,6 +574,9 @@ inline SendNode serialize(const Value& v, SerCtx& ctx) {
 // ---------------------------------------------------------------------------
 struct DeCtx {
   std::map<int, Value> closures;
+  // Rebuilt class metas by ref id. Holds the meta Value (not just its map)
+  // so the table keeps it alive for the whole message.
+  std::map<int, Value> protos;
 };
 
 inline Value deserialize(const SendNode& n, Interpreter& interp,
@@ -587,7 +628,14 @@ inline Value deserialize(const SendNode& n, Interpreter& interp,
       return Value(TupleValue(std::move(els)));
     }
     case K::Object: {
+      // A backref to a class meta already rebuilt in this message.
+      if (n.is_backref) return ctx.protos.at(n.ref_id);
       ObjectValue obj;
+      // A shared class meta registers BEFORE its entries are filled so a
+      // backref inside its own subtree (a method capturing another instance
+      // of the same class) resolves — mirrors the closure memo. The copy
+      // shares `obj`'s maps, so the entries below land in it.
+      if (n.ref_id >= 0) ctx.protos.emplace(n.ref_id, Value(ObjectValue(obj)));
       for (size_t k = 0; k < n.entries.size(); k++) {
         const SendNode& key = n.entries[k].first;
         Value val = deserialize(n.entries[k].second, interp, base, ctx);
@@ -597,6 +645,14 @@ inline Value deserialize(const SendNode& n, Interpreter& interp,
         } else {
           obj.initialize(deserialize(key, interp, base, ctx), val, mut);
         }
+      }
+      // Class instance: relink the meta (elems[0]), mirroring build_instance.
+      // `n.b` carries the sender instance's owned-stack registration — don't
+      // probe the meta here, it may still be mid-fill for a nested instance.
+      if (!n.elems.empty()) {
+        Value proto = deserialize(n.elems[0], interp, base, ctx);
+        obj.properties->proto = proto.get<ObjectValue>().properties;
+        if (n.b) _owned_register(obj);
       }
       return Value(std::move(obj));
     }

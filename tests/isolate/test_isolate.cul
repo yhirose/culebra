@@ -154,4 +154,34 @@ assert_eq(adder(5), 105)
 let hinspect = Isolate.spawn(fn () { inspect("[isolate] hello"); 7 })
 assert_eq(hinspect.join(), 7)
 
+# --- class instances cross the boundary with their methods: those live on
+#     the shared class meta, so the meta ships once per message and repeat
+#     instances of the same class arrive as backrefs ---
+class Point {
+  new(x, y) { self.x = x; self.y = y }
+  norm() { self.x * self.x + self.y * self.y }
+}
+let hmany = Isolate.spawn(fn (ps) { ps.map(|p| p.norm()) },
+                          [Point(1, 2), Point(3, 4), Point(5, 6)])
+assert_eq(hmany.join(), [5, 25, 61])
+
+# nested instance (a field holding another instance) keeps both metas
+class Box {
+  new(p) { self.p = p }
+  inner() { self.p.norm() }
+}
+let hbox = Isolate.spawn(fn (b) { [b.inner(), b.keys(), b.p.keys()] },
+                         Box(Point(3, 4)))
+assert_eq(hbox.join(), [25, ['class', 'p'], ['class', 'x', 'y']])
+
+# an instance built inside the isolate is rebuilt callable on the parent
+let hmade = Isolate.spawn(fn () {
+  class Made { new() { self.v = 7 }  twice() { self.v * 2 } }
+  Made()
+})
+let made = hmade.join()
+assert_eq(made.twice(), 14)
+assert_eq(made.keys(), ['class', 'v'])
+assert_eq(made.to_string(), 'Made {mut v: 7}')
+
 inspect("test_isolate: all assertions passed")

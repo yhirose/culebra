@@ -1081,6 +1081,33 @@ mut y: 4}`. Plain objects that happen to carry a `class:` key get the
 same treatment; a non-String `class` field is displayed as a regular
 property.
 
+### Enumeration
+
+`keys()`, `size()`, `to_string()`, `for k, v in obj`, spread (`{...obj}`)
+and `JSON.stringify` all enumerate the same set: the object's own
+entries, in insertion order. For a class-sugar instance that is the
+`class:` tag plus the fields the constructor and methods set. Methods are
+not own entries — they live on one per-class method table every instance
+delegates to (see §25) — so they never appear:
+
+    class P { new() { self.a = 1 }  m() { 2 } }
+    let p = P()
+    p.keys()                  # ['class', 'a']
+    p.size()                  # 2
+    p.to_string()             # 'P {mut a: 1}'  (class hoisted to the prefix)
+    JSON.stringify(p)         # '{"class":"P","a":1}'
+    {...p}.keys()             # ['class', 'a'] — a plain Object, no methods
+
+`has(key)` is the exception: it answers the *lookup* question, so it also
+sees class methods — but not dict builtins:
+
+    p.has('m')                # true  — a class method
+    p.has('size')             # false — a dict builtin, not an entry
+
+The data accessors stay own-entry-only: `p.get('m', fallback)` returns
+the fallback and `p['m']` raises `KeyError`. Assigning to a method name
+(`p.m = 1`) creates an own field that shadows the method.
+
 ### Access and mutation
 
     obj.key              # read, returns nil if absent
@@ -1264,14 +1291,17 @@ Semantics:
 
 * The decl binds `Car` to an `Object` with a single `new` property.
 * `Car.new(...)` returns a fresh `Object` carrying `class: 'Car'` plus
-  every non-`new` method as a property. `self` is bound to that object
-  for the duration of the constructor body.
+  the fields the constructor sets. `self` is bound to that object for the
+  duration of the constructor body. Methods are not copied onto the
+  instance: every non-`new` method lives on a single per-class method
+  table each instance delegates to, so `c.run` resolves through it while
+  `c.keys()` reports only `class` and the fields (see *Enumeration*).
 * Fields created via `self.x = y` inside constructors and methods are
   **mutable by default** (unlike bare `o.x = y`, which creates an
   immutable property). This matches the idiom of classes whose methods
   routinely mutate instance state.
 * The `new` method is optional; without it the class accepts no
-  arguments and returns an instance with only methods and `class:`.
+  arguments and returns an instance carrying only `class:`.
 * `self` is immutable inside the constructor body. Attempting
   `self = newObj` raises `ImmutableError`. The constructor always
   returns the originally allocated
@@ -3966,7 +3996,7 @@ wrong-typed element raises a `TypeError`:
 | `o.empty() -> Bool`               | Whether `size() == 0`.                     |
 | `o.keys() -> Array`              | `Array` of keys in insertion order (matches display order — §8). |
 | `o.values() -> Iterator`        | Lazy iterator of values in insertion order — the value-only view of `o.iter()` (which yields `(key, value)` pairs). Chains / `collect`s like any iterator. |
-| `o.has(key: String) -> Bool`     | Whether `o` has an own property named `key`. Ignores built-in method names. |
+| `o.has(key: String) -> Bool`     | Whether `o` has an own property named `key`, or (for a class instance) a method of that name. Ignores built-in method names. |
 | `o.get(key, fallback) -> value`  | The value for `key`, or `fallback` if absent. Read-only — never inserts. |
 | `o.get_or_put(key, init) -> value` *(mutating)* | The value for `key`; on a miss, store `init` and return it (sharing storage, so `o.get_or_put(k, [] ).push(x)` grows the stored array). When `init` is a function it is called lazily — only a miss pays for it: `o.get_or_put(k, || [])`. |
 | `o.remove(key: String) -> Nil` *(mutating)* | Delete the property named `key` if present. |

@@ -7147,6 +7147,9 @@ inline void setup_built_in_functions(Environment& env) {
             for (const auto& [k, sym] : *src.properties) {
               copy.initialize(k, sym.val, sym.mut);
             }
+            // Share the class meta, like the JIT clone (`o->proto =
+            // src->proto`): the copy stays an instance of the same class.
+            copy.properties->proto = src.properties->proto;
             return Value(std::move(copy));
           },
           "Object"sv)),
