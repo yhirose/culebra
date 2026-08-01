@@ -51,7 +51,7 @@ check_exit "ja topic"       0 --ja tooling
 # Every topic is present in both editions: a missing half would mean the
 # bilingual pair broke, and gen_docs.cmake refuses to build in that case —
 # this catches a topic silently dropped from its table instead.
-for t in llm guide language stdlib tooling deployment internals; do
+for t in llm agent guide language stdlib tooling deployment internals; do
   check_exit "topic $t"    0 "$t" --at 1
   check_exit "topic $t ja" 0 --ja "$t" --at 1
 done
@@ -78,6 +78,15 @@ check_contains "broad pattern degrades" 'headings only' -g 'the'
 # corpus-wide search must not report every API twice — but naming it works.
 check_absent   "llm excluded by default" 'llm.md:' -g 'Math.wrap'
 check_contains "llm searchable on request" 'llm.md:' llm -g 'Math.wrap'
+check_absent   "agent excluded by default" 'agent.md:' -g 'Math.wrap'
+check_contains "agent searchable on request" 'agent.md:' agent -g 'Math.wrap'
+
+# `culebra docs agent` is meant to be redirected into an instructions file, so
+# the note about which file that is has to stay out of the redirect.
+check_contains "agent names its destinations" 'CLAUDE.md' agent
+if "$CULEBRA" docs agent 2>/dev/null | grep -q 'CLAUDE.md'; then
+  echo "FAIL agent hint: destinations leaked into stdout"; fail=1
+fi
 
 if [[ $fail == 0 ]]; then echo "docs_test OK"; fi
 exit $fail

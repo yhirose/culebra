@@ -588,3 +588,18 @@ culebra docs -g '<名前>' >/dev/null || echo "そんな API は無い"
 標準ライブラリの全署名が、プロンプトに収まる 1 ファイルに入っています。
 これは検索するものではなく、culebra を書く前に読むものです。残りは
 プロンプト窓より大きく、そのために `-g` があります。
+
+`culebra docs agent` はさらに短く、プログラムの外に出ていくことを
+前提にした唯一のトピックです。コーディングエージェントが既に読んで
+いるファイルに追記する規則で、署名を推測せずここで引くようにさせます。
+
+```
+culebra docs agent >> CLAUDE.md                        # Claude Code
+culebra docs agent >> .github/copilot-instructions.md  # GitHub Copilot
+culebra docs agent >> AGENTS.md                        # Codex, Cursor
+```
+
+追記先の一覧は stdout ではなく stderr に出るので、リダイレクトには
+markdown だけが入ります。`agent` も `llm` も横断検索には参加しません
+（どちらも他のトピックを凝縮したもので、同じ API が二重に出ます）。
+名前を指定すれば検索できます: `culebra docs agent -g …`。

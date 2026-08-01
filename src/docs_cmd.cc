@@ -301,6 +301,24 @@ void print_list(bool ja, const char* version) {
   std::println(
       "fits in a prompt, and it lists the habits from other languages that do");
   std::println("not carry over.");
+  std::println("");
+  std::println(
+      "Setting up a coding agent? `culebra docs agent >> CLAUDE.md` gives it"
+      " the");
+  std::println("same starting point, in the file it already reads.");
+}
+
+// agent.md is the one topic written to leave this program and land in someone
+// else's file. Where to put it belongs with it, but not in the paste, so the
+// destinations go to stderr.
+void print_agent_hint() {
+  std::println(stderr, "");
+  std::println(stderr, "Append the above to the file your agent reads:");
+  std::println(stderr, "  CLAUDE.md                        (Claude Code)");
+  std::println(stderr, "  .github/copilot-instructions.md  (GitHub Copilot)");
+  std::println(stderr,
+               "  AGENTS.md                        (Codex, Cursor, Copilot"
+               " coding agent)");
 }
 
 void print_usage() {
@@ -344,9 +362,14 @@ int search(std::string_view pattern, const Topic* only, bool ja, bool full) {
     if (std::string_view(t.lang) != (ja ? "ja" : "en")) continue;
     if (only && &t != only) continue;
     // llm.md's signature index is generated *from* stdlib.md and language.md,
-    // so a corpus-wide search would report every API twice. Searching it on
-    // purpose still works: `culebra docs llm -g …`.
-    if (!only && std::string_view(t.name) == "llm") continue;
+    // so a corpus-wide search would report every API twice. agent.md condenses
+    // the same ground again, down to placeholders like `<name>` that would
+    // match a search for themselves. Naming either still works:
+    // `culebra docs llm -g …`.
+    if (!only && (std::string_view(t.name) == "llm" ||
+                  std::string_view(t.name) == "agent")) {
+      continue;
+    }
     docs.push_back(build_doc(t));
   }
 
@@ -482,6 +505,7 @@ int run_docs(int argc, const char** argv, const char* version) {
   if (!pattern.empty()) return search(pattern, topic, ja, full);
   if (topic && !list) {
     std::fwrite(topic->text, 1, std::strlen(topic->text), stdout);
+    if (std::string_view(topic->name) == "agent") print_agent_hint();
     return 0;
   }
   print_list(ja, version);

@@ -628,3 +628,18 @@ other languages that do not carry over, and every standard-library
 signature, in a file that fits in a prompt. It is the one to read
 before writing culebra rather than to search. The rest of the set is
 larger than a prompt window, which is what `-g` is for.
+
+`culebra docs agent` is shorter still, and the only topic written to
+leave the program: rules to append to whatever file a coding agent
+already reads, so it looks signatures up here instead of guessing them.
+
+```
+culebra docs agent >> CLAUDE.md                        # Claude Code
+culebra docs agent >> .github/copilot-instructions.md  # GitHub Copilot
+culebra docs agent >> AGENTS.md                        # Codex, Cursor
+```
+
+The destinations are listed on stderr, not stdout, so a redirect gets
+the markdown alone. Neither `agent` nor `llm` takes part in a
+corpus-wide search — both condense the other topics, and would report
+the same API twice — but naming one searches it: `culebra docs agent -g …`.

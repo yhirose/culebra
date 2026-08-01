@@ -226,6 +226,11 @@ Documentation
   signature condensed into one file to paste into an LLM prompt:
   [`docs/llm.md`](docs/llm.md)
   / [日本語](docs/llm.ja.md)
+* Agent rules — the same starting point in the form a coding agent
+  reads, to append to `CLAUDE.md`, `.github/copilot-instructions.md` or
+  `AGENTS.md` (`culebra docs agent`):
+  [`docs/agent.md`](docs/agent.md)
+  / [日本語](docs/agent.ja.md)
 
 Building from source and running the tests: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
