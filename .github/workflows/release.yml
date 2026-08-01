@@ -121,51 +121,20 @@ jobs:
       - uses: actions/checkout@v5
         with:
           submodules: recursive
-      # Mirrors ci.yml's Ubuntu setup — gcc-14 for C++23 <print>, LLVM 22 for
-      # the JIT's APIs, mold for the LLVM-heavy static link, `just` from its own
-      # installer (apt's predates [group(...)]).
-      #
-      # gtk4 + webkitgtk-6.0 are installed here for their headers alone: the
-      # binding defines every GTK/WebKit symbol it reaches and dlopens the
-      # engine when a window is created (src/runtime/webview_gtk_dynload.cc), so
-      # this download carries Webview and still starts where no desktop stack
-      # exists — a headless server, a container, a desktop that never installed
-      # webkitgtk-6.0. It used to be built with Webview off for exactly the
-      # opposite reason: linking them put libgtk-4.so.1 and libwebkitgtk-6.0.so.4
-      # in DT_NEEDED and the binary would not start at all. The ldd check below
-      # is what keeps that from coming back.
+      # The same toolchain every Linux CI job builds with, plus both windowed
+      # axes: this download is the one build that must carry everything a
+      # contributor's local `just build` does. Neither axis costs the binary a
+      # load-time dependency — SDL3 dlopens X11/GL/audio, and the Webview
+      # binding dlopens gtk4/webkitgtk — which is what lets this asset ship them
+      # and still start on a headless server. It used to be built with Webview
+      # off for the opposite reason: linking the engine put libgtk-4.so.1 and
+      # libwebkitgtk-6.0.so.4 in DT_NEEDED and the binary would not start at
+      # all. The checks below are what keep that from coming back.
       - name: Install toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            ccache cmake g++-14 libblas-dev mold wget \
-            lsb-release software-properties-common gnupg \
-            libgtk-4-dev libwebkitgtk-6.0-dev
-          # SDL3's Linux build dependencies, so the Canvas desktop window is in
-          # this download the way it is in a local `just build`. These are
-          # build-time only: SDL3 dlopens X11/GL/audio on first use, so the
-          # binary gains no DT_NEEDED entry and still runs on a headless server.
-          # SDL3's configure hard-errors on a missing one rather than dropping
-          # the backend, so this list tracks vendor/SDL/docs/README-linux.md.
-          sudo apt-get install -y \
-            libasound2-dev libpulse-dev libaudio-dev libfribidi-dev \
-            libjack-dev libsndio-dev libx11-dev libxext-dev libxrandr-dev \
-            libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev \
-            libxkbcommon-dev libdrm-dev libgbm-dev libgl1-mesa-dev \
-            libgles2-mesa-dev libegl1-mesa-dev libdbus-1-dev libibus-1.0-dev \
-            libudev-dev libthai-dev libusb-1.0-0-dev libpipewire-0.3-dev \
-            libwayland-dev libdecor-0-dev liburing-dev
-          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
-            | sudo bash -s -- --to /usr/local/bin
-          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
-          chmod +x /tmp/llvm.sh
-          sudo /tmp/llvm.sh 22
-          sudo apt-get install -y llvm-22-dev
-          {
-            echo "CC=gcc-14"
-            echo "CXX=g++-14"
-            echo "CMAKE_PREFIX_PATH=/usr/lib/llvm-22"
-          } >> "$GITHUB_ENV"
+        uses: ./.github/actions/setup-linux-toolchain
+        with:
+          sdl3-deps: 'true'
+          webview-deps: 'true'
       - name: Restore ccache
         uses: actions/cache@v4
         with:

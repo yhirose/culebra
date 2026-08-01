@@ -90,37 +90,13 @@ jobs:
         with:
           submodules: recursive
 
+      # No windowed dependencies: this matrix pins the Canvas window off, and
+      # without gtk4/webkitgtk the Webview namespace self-disables — which is
+      # also the coverage this lane provides, that the tree still builds and
+      # passes with both windowed axes absent.
       - name: Install dependencies (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            ccache \
-            cmake \
-            g++-14 \
-            libblas-dev \
-            mold \
-            wget \
-            lsb-release \
-            software-properties-common \
-            gnupg
-          # Ubuntu 24.04's apt-shipped `just` predates the [group(...)]
-          # attribute (just 1.27.0+). Install from the official script.
-          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
-            | sudo bash -s -- --to /usr/local/bin
-          # Ubuntu 24.04's default llvm-dev (17/18) is too old — culebra's
-          # JIT uses LLVM 20+ APIs. Pull LLVM 22 from apt.llvm.org to
-          # match the local dev environment (README references LLVM 22).
-          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
-          chmod +x /tmp/llvm.sh
-          sudo /tmp/llvm.sh 22
-          sudo apt-get install -y llvm-22-dev
-          # Ubuntu 24.04 ships gcc-13 by default, which lacks C++23 <print>.
-          {
-            echo "CC=gcc-14"
-            echo "CXX=g++-14"
-            echo "CMAKE_PREFIX_PATH=/usr/lib/llvm-22"
-          } >> "$GITHUB_ENV"
+        uses: ./.github/actions/setup-linux-toolchain
 
       - name: Install dependencies (macOS)
         if: matrix.os == 'macos-latest'
@@ -267,38 +243,13 @@ jobs:
         with:
           submodules: recursive
 
+      # xvfb is for the window smoke below; the SDL3 deps are what leave the
+      # Canvas window at CMake's Linux default, which is this job's subject.
       - name: Install toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            ccache cmake g++-14 libblas-dev mold wget \
-            lsb-release software-properties-common gnupg
-          # SDL3's Linux build dependencies. Its configure hard-errors on a
-          # missing one rather than dropping that backend, so CMakeLists.txt
-          # keeps the window off unless they are present — meaning without this
-          # list the job would silently build the very thing it exists to test
-          # out of the build. Tracks vendor/SDL/docs/README-linux.md, same list
-          # as release.yml's Linux job. xvfb is for the window smoke below.
-          sudo apt-get install -y \
-            libasound2-dev libpulse-dev libaudio-dev libfribidi-dev \
-            libjack-dev libsndio-dev libx11-dev libxext-dev libxrandr-dev \
-            libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev \
-            libxkbcommon-dev libdrm-dev libgbm-dev libgl1-mesa-dev \
-            libgles2-mesa-dev libegl1-mesa-dev libdbus-1-dev libibus-1.0-dev \
-            libudev-dev libthai-dev libusb-1.0-0-dev libpipewire-0.3-dev \
-            libwayland-dev libdecor-0-dev liburing-dev \
-            xvfb
-          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
-            | sudo bash -s -- --to /usr/local/bin
-          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
-          chmod +x /tmp/llvm.sh
-          sudo /tmp/llvm.sh 22
-          sudo apt-get install -y llvm-22-dev
-          {
-            echo "CC=gcc-14"
-            echo "CXX=g++-14"
-            echo "CMAKE_PREFIX_PATH=/usr/lib/llvm-22"
-          } >> "$GITHUB_ENV"
+        uses: ./.github/actions/setup-linux-toolchain
+        with:
+          sdl3-deps: 'true'
+          extra-packages: xvfb
 
       # The SDL3 + raylib statics are ~4 min of build that depends only on the
       # two submodule revisions, which is exactly what CMakeLists.txt keys its
@@ -439,29 +390,14 @@ jobs:
         with:
           submodules: recursive
 
+      # xvfb is for the window smoke below. No SDL3 build deps on purpose:
+      # without them the Canvas window self-disables, and this job builds only
+      # what it is about.
       - name: Install toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            ccache cmake g++-14 libblas-dev mold wget \
-            lsb-release software-properties-common gnupg
-          # The engine's headers — the build needs them, the binary does not
-          # (src/runtime/webview_gtk_dynload.cc dlopens the runtime libraries,
-          # which arrive as these packages' dependencies). xvfb is for the
-          # window smoke. No SDL3 build deps on purpose: without them the Canvas
-          # window self-disables, and this job builds only what it is about.
-          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev xvfb
-          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
-            | sudo bash -s -- --to /usr/local/bin
-          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
-          chmod +x /tmp/llvm.sh
-          sudo /tmp/llvm.sh 22
-          sudo apt-get install -y llvm-22-dev
-          {
-            echo "CC=gcc-14"
-            echo "CXX=g++-14"
-            echo "CMAKE_PREFIX_PATH=/usr/lib/llvm-22"
-          } >> "$GITHUB_ENV"
+        uses: ./.github/actions/setup-linux-toolchain
+        with:
+          webview-deps: 'true'
+          extra-packages: xvfb
 
       - name: Restore ccache
         uses: actions/cache@v4
@@ -610,22 +546,7 @@ jobs:
           submodules: recursive
 
       - name: Install toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            ccache cmake g++-14 libblas-dev mold wget \
-            lsb-release software-properties-common gnupg
-          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
-            | sudo bash -s -- --to /usr/local/bin
-          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
-          chmod +x /tmp/llvm.sh
-          sudo /tmp/llvm.sh 22
-          sudo apt-get install -y llvm-22-dev
-          {
-            echo "CC=gcc-14"
-            echo "CXX=g++-14"
-            echo "CMAKE_PREFIX_PATH=/usr/lib/llvm-22"
-          } >> "$GITHUB_ENV"
+        uses: ./.github/actions/setup-linux-toolchain
 
       # No cross-job fallback key: this lane shares no compile command with any
       # other, so a restore from theirs would hit ~0% and merge back as bloat.
