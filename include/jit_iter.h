@@ -2,6 +2,8 @@
 
 #ifdef CULEBRA_JIT_ENABLED
 
+#include <range_bounds.h>
+
 // Iterator protocol runtime: terminal / lazy / string iterators and
 // higher-order array helpers.
 //
@@ -1389,14 +1391,14 @@ culebra_runtime_strlike_to_cstr(int8_t tag, int64_t data);
 // iterator Object Value. Returns a fresh +1 (caller owns the result).
 // Throws `type error at line:col.` on non-iterable input.
 // Forward decl: a range value iterates via the same fast iterator as
-// math_range, which is defined further down.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_math_range(
-    int64_t start, int64_t end, int64_t step, int64_t line, int64_t col);
+// _range_iter_new, which is defined further down next to its fast fn.
+inline JitObject* _range_iter_new(int64_t start, int64_t end, int64_t step,
+                                  bool inclusive, int64_t line, int64_t col);
 
 // Build a bounded iterator over a range value `data`. An open start or end
 // has no defined iteration bound, so an unbounded range is not iterable.
 // `step` defaults to 1 when absent (older/manually-built range objects);
-// culebra_runtime_math_range validates step != 0.
+// _range_iter_new validates step != 0.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_range_iter(
     int64_t data, int64_t line, int64_t col) {
   auto* o = reinterpret_cast<JitObject*>(data);
@@ -1410,8 +1412,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_range_iter(
   auto stv = _jit_slot_or_nil(o, "step");
   int64_t step = stv.tag == TAG_NIL ? 1 : stv.data;
   bool inclusive = iv.tag == TAG_BOOL && iv.data != 0;
-  int64_t end = ev.data + (inclusive ? (step > 0 ? 1 : -1) : 0);
-  return culebra_runtime_math_range(sv.data, end, step, line, col);
+  return _range_iter_new(sv.data, ev.data, step, inclusive, line, col);
 }
 
 inline JitValue _iter_coerce_iterable(int8_t t, int64_t d, int64_t line,
@@ -2383,23 +2384,28 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_chunk_by(
        _iter_pos_cell(line, col)}, /*n_upstreams=*/1);
 }
 
+// Captures: {current, end, step, inclusive, exhausted} — the fields of
+// RangeBounds (range_bounds.h), which owns the sequence semantics shared
+// with the interpreter and mirrored by the counted-range loop the JIT
+// emits (compile_for_counted_range).
 inline void _math_range_fast_fn(JitClosure* cls, JitValue, bool* done,
                                 int8_t* out_tag, int64_t* out_data) {
   auto* current_cell = cls->captures[0];
-  auto* end_cell = cls->captures[1];
-  auto* step_cell = cls->captures[2];
-  int64_t current = current_cell->value.data;
-  int64_t end = end_cell->value.data;
-  int64_t step = step_cell->value.data;
-  bool finished = step > 0 ? current >= end : current <= end;
-  if (finished) {
+  auto* exhausted_cell = cls->captures[4];
+  culebra::RangeBounds b{current_cell->value.data,
+                         cls->captures[1]->value.data,
+                         cls->captures[2]->value.data,
+                         cls->captures[3]->value.data != 0,
+                         exhausted_cell->value.data != 0};
+  if (b.done()) {
     *done = true;
     return;
   }
   *done = false;
   *out_tag = TAG_LONG;
-  *out_data = current;
-  current_cell->value.data = current + step;
+  *out_data = b.take();
+  current_cell->value.data = b.cur;
+  if (b.exhausted) exhausted_cell->value.data = 1;
 }
 
 // Entry point called from for-in codegen (`rt::iter_advance`): returns
@@ -2425,14 +2431,24 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_range_step_check(
   }
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_math_range(
-    int64_t start, int64_t end, int64_t step, int64_t line, int64_t col) {
+// Shared builder behind Math.range (exclusive by definition) and the
+// `a..b` / `a..=b` iterator (culebra_runtime_range_iter, which passes the
+// range's own inclusive flag).
+inline JitObject* _range_iter_new(int64_t start, int64_t end, int64_t step,
+                                  bool inclusive, int64_t line, int64_t col) {
   culebra_runtime_range_step_check(step, line, col);
   auto* current_cell = culebra_runtime_cell_new(TAG_LONG, start);
   auto* end_cell = culebra_runtime_cell_new(TAG_LONG, end);
   auto* step_cell = culebra_runtime_cell_new(TAG_LONG, step);
+  auto* incl_cell = culebra_runtime_cell_new(TAG_BOOL, inclusive ? 1 : 0);
+  auto* exhausted_cell = culebra_runtime_cell_new(TAG_BOOL, 0);
   return _iter_wrap_fast<&_math_range_fast_fn>(
-      {current_cell, end_cell, step_cell});
+      {current_cell, end_cell, step_cell, incl_cell, exhausted_cell});
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_math_range(
+    int64_t start, int64_t end, int64_t step, int64_t line, int64_t col) {
+  return _range_iter_new(start, end, step, /*inclusive=*/false, line, col);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_iota(int64_t start,

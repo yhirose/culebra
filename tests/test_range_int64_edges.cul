@@ -1,0 +1,71 @@
+// Range iteration at the int64 boundary. The sequence semantics live in
+// RangeBounds (include/range_bounds.h), shared by the interp, the JIT's
+// iterator runtime and the JIT's counted-range fast path — these cases pin
+// the boundary behaviour on every path: the inclusive endpoint is compared
+// directly (no `end + 1` normalization, which used to overflow into an
+// empty sequence) and the advance is overflow-checked (a step past the
+// boundary used to wrap back into the range and loop forever).
+
+let MAX = 9223372036854775807
+let MIN = -9223372036854775807 - 1
+
+// Inclusive up to MAX: two values, then stop (fast path).
+mut inclusive_max = []
+for x in MAX - 1..=MAX { inclusive_max.push(x) }
+assert_eq(inclusive_max, [MAX - 1, MAX])
+
+// Same range through the generic iterator path (variable, .iter(), collect).
+let r = MAX - 1..=MAX
+mut via_var = []
+for x in r { via_var.push(x) }
+assert_eq(via_var, [MAX - 1, MAX])
+assert_eq((MAX - 1..=MAX).iter().collect(), [MAX - 1, MAX])
+
+// Stepped inclusive landing exactly on MAX.
+mut stepped_onto_max = []
+for x in MAX - 2..=MAX by 2 { stepped_onto_max.push(x) }
+assert_eq(stepped_onto_max, [MAX - 2, MAX])
+
+// Descending inclusive down to MIN.
+mut descending_to_min = []
+for x in MIN + 2..=MIN by -1 { descending_to_min.push(x) }
+assert_eq(descending_to_min, [MIN + 2, MIN + 1, MIN])
+
+// A step that overshoots the boundary ends the sequence — one value, not a
+// wrap back into range.
+mut overshoot = []
+for x in MAX - 1..MAX by 3 { overshoot.push(x) }
+assert_eq(overshoot, [MAX - 1])
+let r2 = MAX - 1..MAX by 3
+mut overshoot_via_var = []
+for x in r2 { overshoot_via_var.push(x) }
+assert_eq(overshoot_via_var, [MAX - 1])
+
+// The `range()` builtin walks the same bounds (its end is always exclusive).
+mut builtin_overshoot = []
+for x in range(MAX - 1, MAX, step: 3) { builtin_overshoot.push(x) }
+assert_eq(builtin_overshoot, [MAX - 1])
+assert_eq(range(MIN, MIN + 2).collect(), [MIN, MIN + 1])
+
+// Exclusive end at MAX: the boundary value itself is not yielded.
+mut exclusive_max = []
+for x in MAX - 1..MAX { exclusive_max.push(x) }
+assert_eq(exclusive_max, [MAX - 1])
+
+// A MIN step: descending it yields the start once, ascending it is empty.
+mut min_step_down = []
+for x in 1..0 by MIN { min_step_down.push(x) }
+assert_eq(min_step_down, [1])
+mut min_step_up = []
+for x in 0..1 by MIN { min_step_up.push(x) }
+assert_eq(min_step_up, [])
+
+// Ordinary ranges are untouched by the boundary handling.
+mut ascending = []
+for x in -3..7 by 2 { ascending.push(x) }
+assert_eq(ascending, [-3, -1, 1, 3, 5])
+mut descending = []
+for x in 10..=0 by -3 { descending.push(x) }
+assert_eq(descending, [10, 7, 4, 1])
+assert_eq((0..=0).iter().collect(), [0])
+assert_eq((3..0).iter().collect(), [])

@@ -15,6 +15,7 @@ Value shared_val_get_index(const Value& view, const Value& key);
 Value shared_val_make_iter(const Value& view);
 }  // namespace culebra
 #include <parser.h>
+#include <range_bounds.h>
 #include <shared.h>
 #include <tensor.h>
 #include <unicodelib.h>
@@ -3318,6 +3319,17 @@ inline Value _iter_over_vector(std::shared_ptr<std::vector<Value>> vec) {
   });
 }
 
+// Build an iterator over a bounded integer range. RangeBounds owns the
+// stepping rules (range_bounds.h), so `a..b`, the `range()` builtin and
+// the JIT's _math_range_fast_fn cannot drift apart at the int64 boundary.
+inline Value _iter_over_range(RangeBounds bounds) {
+  auto state = std::make_shared<RangeBounds>(bounds);
+  return _make_iterator([state](std::shared_ptr<Environment>) {
+    if (state->done()) return _iter_step_done();
+    return _iter_step_value(Value(state->take()));
+  });
+}
+
 // `(index, value)` tuple yielded by enumerate (on arrays and iterators).
 inline Value _index_value_pair(int64_t index, Value v) {
   std::vector<Value> pair;
@@ -3826,30 +3838,11 @@ inline Value _invoke_callback(const Value& fn_val, const Value& a,
   return deliver_call(fn.eval(env));
 }
 
-// The counted sequence a bounded range iterates: `cur` walks by `step`
-// until it passes `end_exclusive`. Sole owner of the bounds/step rules,
-// so the for-in fast path and the generic iterator below cannot drift
-// apart on which values a range yields.
-struct RangeBounds {
-  int64_t cur;
-  int64_t end_exclusive;
-  int64_t step;
-
-  bool done() const {
-    return step > 0 ? cur >= end_exclusive : cur <= end_exclusive;
-  }
-  // Surrender the current value and advance. Only valid when !done().
-  int64_t take() {
-    int64_t v = cur;
-    cur += step;
-    return v;
-  }
-};
-
-// Decode a Range value into its iteration bounds. An open start or end
-// has no defined bound, so an unbounded range is not iterable; a zero
-// step never terminates. Both raise here — before the first iteration —
-// at the iterable's source position.
+// Decode a Range value into its iteration bounds (RangeBounds, the shared
+// sequence semantics — see range_bounds.h). An open start or end has no
+// defined bound, so an unbounded range is not iterable; a zero step never
+// terminates. Both raise here — before the first iteration — at the
+// iterable's source position.
 inline RangeBounds range_bounds(const ObjectValue& obj, size_t line,
                                 size_t col) {
   const auto& s = obj.get("start");
@@ -3864,9 +3857,8 @@ inline RangeBounds range_bounds(const ObjectValue& obj, size_t line,
     throw CulebraError("ValueError", "range() step must not be zero",
         static_cast<long>(line), static_cast<long>(col));
   }
-  bool inclusive = obj.get("inclusive").to_bool();
-  int64_t end = e.to_long() + (inclusive ? (step > 0 ? 1 : -1) : 0);
-  return RangeBounds{s.to_long(), end, step};
+  return RangeBounds{s.to_long(), e.to_long(), step,
+                     obj.get("inclusive").to_bool()};
 }
 
 // Resolve the `iter` method on an iterable value (Object/Array/String)
@@ -3875,12 +3867,7 @@ inline RangeBounds range_bounds(const ObjectValue& obj, size_t line,
 inline Value _get_iterator(const Value& iterable, size_t line, size_t col) {
   Value iter_fn;
   if (auto ct = class_tag(iterable); ct && *ct == "Range") {
-    auto state =
-        std::make_shared<RangeBounds>(range_bounds(iterable.to_object(), line, col));
-    return _make_iterator([state](std::shared_ptr<Environment>) {
-      if (state->done()) return _iter_step_done();
-      return _iter_step_value(Value(state->take()));
-    });
+    return _iter_over_range(range_bounds(iterable.to_object(), line, col));
   }
   if (iterable.type == Value::String ||
       iterable.type == Value::StringView) {
@@ -6612,15 +6599,7 @@ inline void setup_core_globals(Environment& env) {
               throw CulebraError("ValueError",
                   "range() step must not be zero", line, col);
             }
-            auto current = std::make_shared<int64_t>(start);
-            return _make_iterator(
-                [current, end, step](std::shared_ptr<Environment>) {
-                  bool done = step > 0 ? *current >= end : *current <= end;
-                  if (done) return _iter_step_done();
-                  auto v = Value(*current);
-                  *current += step;
-                  return _iter_step_value(std::move(v));
-                });
+            return _iter_over_range({start, end, step, /*inclusive=*/false});
           })),
       false);
 }

@@ -8553,24 +8553,19 @@ struct JIT {
     }
   }
 
-  // Direct Long counter loop for `for v in start..end` (see compile_for's
-  // fast path). `startV`/`endV` are i64 values dominating this point;
-  // `inclusive` picks `<=` over `<` (testing the bound directly rather than
-  // bumping it, so `..=` to INT64_MAX can't overflow). Allocates nothing on
-  // the heap — the sole alloca is the loop counter. Yields math_range's
-  // `[start, end)` / `[start, end]` sequence, identical to range_iter.
   // A literal step needs no runtime zero check — the constant is the proof.
   static bool is_nonzero_constant(llvm::Value* v) {
     auto* c = llvm::dyn_cast<llvm::ConstantInt>(v);
     return c && !c->isZero();
   }
 
-  // `stepV` null is the plain (step 1) form and compares against the raw
-  // end. A stepped range instead normalizes to an exclusive end and picks
-  // the comparison by the step's sign, the same arithmetic `range_bounds`
-  // does in the interpreter — both loop-invariant, so they are emitted in
-  // the preheader and the whole thing folds to a constant stride whenever
-  // the step is a literal.
+  // Direct Long counter loop for `for v in start..end` (see compile_for's
+  // fast path). `startV`/`endV` are i64 values dominating this point;
+  // `stepV` null is the plain step-1 form. RangeBounds' done()/take()
+  // (range_bounds.h) spelled as IR — the incBB exit paths are what keep the
+  // int64 boundary identical to range_iter and the interp. Allocates nothing
+  // on the heap; the sole alloca is the loop counter, and the sign select
+  // folds away whenever the step is a literal.
   void compile_for_counted_range(llvm::Value* startV, llvm::Value* endV,
                                  bool inclusive, llvm::Value* stepV,
                                  const peg::Ast& var, const peg::Ast& body,
@@ -8588,12 +8583,6 @@ struct JIT {
     if (stepV) {
       stepPos = builder_.CreateICmpSGT(stepV, builder_.getInt64(0),
                                        "for.r.step.pos");
-      if (inclusive) {
-        endV = builder_.CreateAdd(
-            endV, builder_.CreateSelect(stepPos, builder_.getInt64(1),
-                                        builder_.getInt64(-1)),
-            "for.r.end.excl");
-      }
     }
 
     auto condBB = llvm::BasicBlock::Create(ctx_, "for.r.cond", fn);
@@ -8606,8 +8595,11 @@ struct JIT {
     auto idx = builder_.CreateLoad(i64Ty, idxAlloca, "for.r.i");
     llvm::Value* cond;
     if (stepV) {
-      cond = builder_.CreateSelect(stepPos, builder_.CreateICmpSLT(idx, endV),
-                                   builder_.CreateICmpSGT(idx, endV));
+      auto up = inclusive ? builder_.CreateICmpSLE(idx, endV)
+                          : builder_.CreateICmpSLT(idx, endV);
+      auto down = inclusive ? builder_.CreateICmpSGE(idx, endV)
+                            : builder_.CreateICmpSGT(idx, endV);
+      cond = builder_.CreateSelect(stepPos, up, down);
     } else {
       cond = inclusive ? builder_.CreateICmpSLE(idx, endV)
                        : builder_.CreateICmpSLT(idx, endV);
@@ -8621,10 +8613,30 @@ struct JIT {
         body, incBB, for_break_target(endBB, brokeFlag, "for.r"));
 
     builder_.SetInsertPoint(incBB);
-    auto next = builder_.CreateAdd(builder_.CreateLoad(i64Ty, idxAlloca),
-                                  stepV ? stepV : builder_.getInt64(1));
-    builder_.CreateStore(next, idxAlloca);
-    builder_.CreateBr(condBB);
+    auto idxv = builder_.CreateLoad(i64Ty, idxAlloca, "for.r.i2");
+    if (stepV) {
+      auto sadd = llvm::Intrinsic::getOrInsertDeclaration(
+          module_, llvm::Intrinsic::sadd_with_overflow, {i64Ty});
+      auto res = builder_.CreateCall(sadd, {idxv, stepV}, "for.r.next");
+      builder_.CreateStore(builder_.CreateExtractValue(res, 0), idxAlloca);
+      builder_.CreateCondBr(builder_.CreateExtractValue(res, 1, "for.r.ovf"),
+                            endBB, condBB);
+    } else if (inclusive) {
+      // The last value is already yielded when idx == end; exit before the
+      // increment so `..=INT64_MAX` never computes MAX + 1.
+      auto stepBB = llvm::BasicBlock::Create(ctx_, "for.r.step", fn);
+      builder_.CreateCondBr(builder_.CreateICmpEQ(idxv, endV, "for.r.last"),
+                            endBB, stepBB);
+      builder_.SetInsertPoint(stepBB);
+      builder_.CreateStore(builder_.CreateAdd(idxv, builder_.getInt64(1)),
+                           idxAlloca);
+      builder_.CreateBr(condBB);
+    } else {
+      // idx < end ≤ INT64_MAX, so idx + 1 cannot overflow.
+      builder_.CreateStore(builder_.CreateAdd(idxv, builder_.getInt64(1)),
+                           idxAlloca);
+      builder_.CreateBr(condBB);
+    }
   }
 
   // Cursor kinds the unified for-in head switches on (see compile_for).
