@@ -462,10 +462,8 @@ Long printer, and nothing else.
   archive whether or not the choke is live, leaving undefined OpenSSL
   and zlib symbols in sections that `--gc-sections` / `-dead_strip`
   always discard. A linker that resolves symbols before it collects
-  sections reports them anyway — that is why Windows links OpenSSL and
-  zlib into every AOT binary, and why the Webview axis names zlib on
-  Linux (webkitgtk brings libz into the link as an indirect DSO, and ld
-  refuses to resolve against one).
+  sections reports them anyway, which is why Windows and the Linux
+  Webview axis link OpenSSL/zlib into binaries that never call them.
 - One archive per feature, each holding the strong choke that
   overrides the weak stub:
 

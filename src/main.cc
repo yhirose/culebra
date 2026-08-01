@@ -971,7 +971,9 @@ int run_build(const BuildOptions& opts) {
   }
   // The wrap archive holds static registrars nothing references by name, so it
   // needs the same force-load for the binding to register at all; its flags are
-  // whatever `culebra wrap --link` baked in.
+  // whatever `culebra wrap --link` baked in. A wrapped library whose shared
+  // objects need libz has to name -lz among them, for the reason the Webview
+  // axis does (CMakeLists, _webview_link).
   if (host_build && uses_wrap)
     feature_objs.push_back(force_load_feature("libculebra_rt_wrap.a", true));
   if (uses_wrap) feature_links.push_back(CULEBRA_WRAP_LINK_FLAGS);

@@ -451,24 +451,10 @@ _run-tests BACKEND:
             [[ -d "$keep" ]] && continue
             echo "test aot FAIL: cache prune deleted $keep" >&2; exit 1
         done
-        # The Webview axis is the one AOT link whose libraries drag in a DSO
-        # that carries libz, which is what makes ld diagnose the core archive's
-        # dead zlib references (see CMakeLists _webview_link). No tests/*.cul
-        # can cover it: naming Webview is enough to force-load the archive, but
-        # a driver built without the axis has no such name. Build and run — the
-        # window is never created, so this is a link check that costs a print.
-        if [[ -f "$(dirname "$BIN")/libculebra_rt_webview.a" ]]; then
-            printf 'if false { let w = Webview.Window.new(); w.run() }\nprint("webview link ok")\n' \
-                > "$out_dir/webview_link.cul"
-            if ! cul build "$out_dir/webview_link.cul" -o "$out_dir/webview_link" \
-                    > "$d/webview_link.err" 2>&1; then
-                echo "test aot FAIL: Webview AOT link" >&2
-                cat "$d/webview_link.err" >&2; exit 1
-            fi
-            if [[ "$("$out_dir/webview_link")" != "webview link ok" ]]; then
-                echo "test aot FAIL: Webview AOT binary did not run" >&2; exit 1
-            fi
-        fi
+        # The one axis whose link no tests/*.cul can reach (it skips itself on a
+        # driver built without Webview, which is what the sweep below cannot do).
+        {{nice_cmd}} bash misc/probe_webview_aot_link.sh "$BIN" "$out_dir/webview" \
+            || exit 1
         printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
             f="$1"; d="$2"; out_dir="$3"; jit_out="$4"
             name=$(basename "$f" .cul)
