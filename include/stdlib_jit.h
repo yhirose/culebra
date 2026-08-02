@@ -4538,14 +4538,16 @@ inline JitValue _jit_http_client_bodyless(JitValue self, int64_t n,
   auto at = [&](size_t i) {
     return _jit_file_arg_present(n, args, i) ? args[i] : JitValue{TAG_NIL, 0};
   };
-  culebra::http::HttpRequest req;
-  req.method = method;
-  req.url = std::string(_culebra_str_view(args[0].tag, args[0].data));
-  _jit_http_client_strobj(at(1), req.headers, ctx, "headers", "header");
-  _jit_http_client_strobj(at(2), req.params, ctx, "params", "param");
-  JitHttpInto st;
-  _http_setup_into(at(3), req, st, ctx);
-  return _http_run_client_into(id, req, st, ctx);
+  return _jit_at_pos(_jit_call_site_line, _jit_call_site_col, [&] {
+    culebra::http::HttpRequest req;
+    req.method = method;
+    req.url = std::string(_culebra_str_view(args[0].tag, args[0].data));
+    _jit_http_client_strobj(at(1), req.headers, ctx, "headers", "header");
+    _jit_http_client_strobj(at(2), req.params, ctx, "params", "param");
+    JitHttpInto st;
+    _http_setup_into(at(3), req, st, ctx);
+    return _http_run_client_into(id, req, st, ctx);
+  });
 }
 
 inline JitValue _jit_http_client_withbody(JitValue self, int64_t n,
@@ -4561,15 +4563,17 @@ inline JitValue _jit_http_client_withbody(JitValue self, int64_t n,
   auto at = [&](size_t i) {
     return _jit_file_arg_present(n, args, i) ? args[i] : JitValue{TAG_NIL, 0};
   };
-  culebra::http::HttpRequest req;
-  req.method = method;
-  req.url = std::string(_culebra_str_view(args[0].tag, args[0].data));
-  _jit_http_client_strobj(at(3), req.headers, ctx, "headers", "header");
-  _jit_http_client_strobj(at(4), req.params, ctx, "params", "param");
-  JitHttpInto st;
-  _http_setup_body(at(1), at(6), at(7), at(8), at(2), req, st, ctx);
-  _http_setup_into(at(5), req, st, ctx);
-  return _http_run_client_into(id, req, st, ctx);
+  return _jit_at_pos(_jit_call_site_line, _jit_call_site_col, [&] {
+    culebra::http::HttpRequest req;
+    req.method = method;
+    req.url = std::string(_culebra_str_view(args[0].tag, args[0].data));
+    _jit_http_client_strobj(at(3), req.headers, ctx, "headers", "header");
+    _jit_http_client_strobj(at(4), req.params, ctx, "params", "param");
+    JitHttpInto st;
+    _http_setup_body(at(1), at(6), at(7), at(8), at(2), req, st, ctx);
+    _http_setup_into(at(5), req, st, ctx);
+    return _http_run_client_into(id, req, st, ctx);
+  });
 }
 
 CULEBRA_RT_INLINE void _jit_http_client_get(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
@@ -4612,17 +4616,20 @@ CULEBRA_RT_INLINE void _jit_http_client_request(JitValue* __ret, JitClosure*, in
   auto at = [&](size_t i) {
     return _jit_file_arg_present(n, args, i) ? args[i] : JitValue{TAG_NIL, 0};
   };
-  culebra::http::HttpRequest req;
-  req.method = std::string(_culebra_str_view(args[0].tag, args[0].data));
-  req.url = std::string(_culebra_str_view(args[1].tag, args[1].data));
-  _jit_http_client_strobj(at(4), req.headers, "client.request", "headers",
-                          "header");
-  _jit_http_client_strobj(at(5), req.params, "client.request", "params",
-                          "param");
-  JitHttpInto st;
-  _http_setup_body(at(2), at(7), at(8), at(9), at(3), req, st, "client.request");
-  _http_setup_into(at(6), req, st, "client.request");
-  { *__ret = _http_run_client_into(id, req, st, "client.request"); return; }
+  *__ret = _jit_at_pos(_jit_call_site_line, _jit_call_site_col, [&] {
+    culebra::http::HttpRequest req;
+    req.method = std::string(_culebra_str_view(args[0].tag, args[0].data));
+    req.url = std::string(_culebra_str_view(args[1].tag, args[1].data));
+    _jit_http_client_strobj(at(4), req.headers, "client.request", "headers",
+                            "header");
+    _jit_http_client_strobj(at(5), req.params, "client.request", "params",
+                            "param");
+    JitHttpInto st;
+    _http_setup_body(at(2), at(7), at(8), at(9), at(3), req, st,
+                     "client.request");
+    _http_setup_into(at(6), req, st, "client.request");
+    return _http_run_client_into(id, req, st, "client.request");
+  });
 }
 CULEBRA_RT_INLINE void _jit_http_client_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                   int64_t, JitValue*) {
@@ -5070,48 +5077,49 @@ CULEBRA_RT_INLINE void _jit_http_server_ws(JitValue* __ret, JitClosure*, int8_t 
 CULEBRA_RT_INLINE void _jit_http_server_static(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                    int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
-  int64_t id =
-      _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
+  int64_t id = _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
   if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "mount");
   if (args[0].tag != TAG_STRING)
     _jit_file_param_type_error(self, "mount", "String", 0);
   if (!_jit_file_arg_present(n, args, 1)) _jit_file_missing_arg(self, "dir");
   _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
-  std::string mount(_culebra_str_view(args[0].tag, args[0].data));
-  std::string err;
-  // dir is either a String path (live disk via mount point) or an
-  // `Embed.dir(...)` descriptor object {__embed_dir__, name} (baked under AOT,
-  // live disk otherwise). Mirrors the interp overload.
-  // Mirror the interp message exactly (interp/JIT symmetry): a wrong type or a
-  // forged Object that isn't a real Embed.dir descriptor both land here.
-  auto bad_dir = [] {
-    throw culebra::CulebraError(
-        "TypeError",
-        "server.static: dir must be a String path or Embed.dir(...)", 0, 0);
-  };
-  if (args[1].tag == TAG_OBJECT) {
-    auto* o = reinterpret_cast<JitObject*>(args[1].data);
-    // A real Embed.dir descriptor has both __embed_dir__ and name; a forged
-    // lookalike missing either is rejected like any non-String (no OOB read).
-    size_t ni = o->find_slot("name");
-    if (o->find_slot("__embed_dir__") == static_cast<size_t>(-1) ||
-        ni == static_cast<size_t>(-1))
+  *__ret = _jit_at_pos(_jit_call_site_line, _jit_call_site_col, [&] {
+    std::string mount(_culebra_str_view(args[0].tag, args[0].data));
+    std::string err;
+    // dir is either a String path (live disk via mount point) or an
+    // `Embed.dir(...)` descriptor object {__embed_dir__, name} (baked under
+    // AOT, live disk otherwise). Mirrors the interp overload.
+    // Mirror the interp message exactly (interp/JIT symmetry): a wrong type or
+    // a forged Object that isn't a real Embed.dir descriptor both land here.
+    auto bad_dir = [] {
+      throw culebra::CulebraError(
+          "TypeError",
+          "server.static: dir must be a String path or Embed.dir(...)", 0, 0);
+    };
+    if (args[1].tag == TAG_OBJECT) {
+      auto* o = reinterpret_cast<JitObject*>(args[1].data);
+      // A real Embed.dir descriptor has both __embed_dir__ and name; a forged
+      // lookalike missing either is rejected like any non-String (no OOB read).
+      size_t ni = o->find_slot("name");
+      if (o->find_slot("__embed_dir__") == static_cast<size_t>(-1) ||
+          ni == static_cast<size_t>(-1))
+        bad_dir();
+      JitValue nv = o->slots[ni].value;
+      culebra::http::http_server_serve_embed(
+          id, mount, std::string(_culebra_str_view(nv.tag, nv.data)), err);
+    } else if (args[1].tag == TAG_STRING) {
+      culebra::http::http_server_static(
+          id, mount, std::string(_culebra_str_view(args[1].tag, args[1].data)),
+          err);
+    } else {
       bad_dir();
-    JitValue nv = o->slots[ni].value;
-    culebra::http::http_server_serve_embed(
-        id, mount, std::string(_culebra_str_view(nv.tag, nv.data)), err);
-  } else if (args[1].tag == TAG_STRING) {
-    culebra::http::http_server_static(
-        id, mount, std::string(_culebra_str_view(args[1].tag, args[1].data)),
-        err);
-  } else {
-    bad_dir();
-  }
-  if (!err.empty())
-    throw culebra::CulebraError("HttpError",
-                                std::format("server.static: {}", err), 0, 0);
-  culebra_runtime_value_retain(self.tag, self.data);  // chainable return (+1)
-  { *__ret = self; return; }
+    }
+    if (!err.empty())
+      throw culebra::CulebraError("HttpError",
+                                  std::format("server.static: {}", err), 0, 0);
+    culebra_runtime_value_retain(self.tag, self.data);  // chainable return (+1)
+    return self;
+  });
 }
 
 // Register the recorded routes and serve. Handlers always run on a worker pool
@@ -5257,9 +5265,11 @@ CULEBRA_RT_INLINE void _jit_http_server_bind(JitValue* __ret, JitClosure*, int8_
   JitValue self{self_tag, self_data};
   if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "port");
   _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
-  int64_t bound = _jit_http_server_bind_args(_jit_http_server_id(self), n, args,
-                                             "server.bind");
-  { *__ret = {TAG_LONG, bound}; return; }
+  *__ret = _jit_at_pos(_jit_call_site_line, _jit_call_site_col, [&] {
+    return JitValue{TAG_LONG,
+                    _jit_http_server_bind_args(_jit_http_server_id(self), n,
+                                               args, "server.bind")};
+  });
 }
 
 // Shared body for serve (async=false, blocks) and serve_async (returns).
@@ -5267,10 +5277,11 @@ inline JitValue _jit_http_server_serve_impl(JitValue self, int64_t n,
                                             JitValue* args, bool async) {
   int64_t id = _jit_http_server_id(self);
   _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
-  return _jit_http_server_do_serve(id, _jit_http_server_workers_arg(n, args, 0),
-                                   async,
-                                   async ? "server.serve_async"
-                                         : "server.serve");
+  return _jit_at_pos(_jit_call_site_line, _jit_call_site_col, [&] {
+    return _jit_http_server_do_serve(
+        id, _jit_http_server_workers_arg(n, args, 0), async,
+        async ? "server.serve_async" : "server.serve");
+  });
 }
 CULEBRA_RT_INLINE void _jit_http_server_serve(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                   int64_t n, JitValue* args) {
@@ -5291,11 +5302,13 @@ inline JitValue _jit_http_server_listen_impl(JitValue self, int64_t n,
   int64_t id = _jit_http_server_id(self);
   if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "port");
   _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
-  const char* ctx = async ? "server.listen_async" : "server.listen";
-  int64_t bound = _jit_http_server_bind_args(id, n, args, ctx);
-  int64_t workers = _jit_http_server_workers_arg(n, args, 2);
-  JitValue r = _jit_http_server_do_serve(id, workers, async, ctx);
-  return async ? JitValue{TAG_LONG, bound} : r;
+  return _jit_at_pos(_jit_call_site_line, _jit_call_site_col, [&] {
+    const char* ctx = async ? "server.listen_async" : "server.listen";
+    int64_t bound = _jit_http_server_bind_args(id, n, args, ctx);
+    int64_t workers = _jit_http_server_workers_arg(n, args, 2);
+    JitValue r = _jit_http_server_do_serve(id, workers, async, ctx);
+    return async ? JitValue{TAG_LONG, bound} : r;
+  });
 }
 CULEBRA_RT_INLINE void _jit_http_server_listen(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                    int64_t n, JitValue* args) {
@@ -6950,8 +6963,7 @@ inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
       throw;
     }
   } catch (culebra::CulebraError& e) {
-    if (e.line == 0) { e.line = line; e.col = col; }
-    culebra::culebra_note_pending_error(e);
+    _jit_backfill_error_pos(e, line, col);
     throw;
   }
 }
@@ -7117,13 +7129,8 @@ inline bool _jit_ns_kwarg_resolve_core(
   if (pm->args_rest_idx >= 0) {
     auto slab = _jit_ns_build_args_rest_slab(pm, n_pos, positional, merged,
                                              line, col);
-    try {
-      *out = _jit_ns_dispatch_owned_slab(m, slab);
-    } catch (culebra::CulebraError& e) {
-      if (e.line == 0) { e.line = line; e.col = col; }
-      culebra::culebra_note_pending_error(e);
-      throw;
-    }
+    *out = _jit_at_pos(line, col,
+                       [&] { return _jit_ns_dispatch_owned_slab(m, slab); });
     return true;
   }
 

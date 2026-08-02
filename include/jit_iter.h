@@ -2188,9 +2188,8 @@ inline void _iter_distinct_fast_fn(JitClosure* cls, JitValue, bool* done,
     }
     JitValue v = {tag, data};
     JitOwnedVal vg(v);
-    bool fresh = _culebra_hash_at(line, col, [&] {
-      return !seen->index->contains(v);
-    });
+    bool fresh =
+        _jit_at_pos(line, col, [&] { return !seen->index->contains(v); });
     if (!fresh) continue;  // vg releases the duplicate
     culebra_runtime_value_retain(v.tag, v.data);  // one for the set
     {
@@ -2199,7 +2198,7 @@ inline void _iter_distinct_fast_fn(JitClosure* cls, JitValue, bool* done,
       // The throw-edge releaser is what the contract requires there;
       // without it `[[1]].iter().distinct()` stranded one +1 per element.
       JitUnwindRelease set_ref({v});
-      _culebra_hash_at(line, col, [&] {
+      _jit_at_pos(line, col, [&] {
         culebra_runtime_set_add(seen, v.tag, v.data);
         return 0;
       });
@@ -3424,12 +3423,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove_any(
     // No non-string keys stored yet, but the interpreter's sidecar still
     // hashes the key on every remove — an unhashable key (Function, Array,
     // ...) must raise here too rather than silently no-op.
-    _culebra_hash_at(line, col, [&] { return JitValueHash{}(key); });
+    _jit_at_pos(line, col, [&] { return JitValueHash{}(key); });
     _culebra_value_release_impl(tag, data);
     return;
   }
-  auto it = _culebra_hash_at(
-      line, col, [&] { return obj->non_string_props->find(key); });
+  auto it =
+      _jit_at_pos(line, col, [&] { return obj->non_string_props->find(key); });
   if (it == obj->non_string_props->end()) {
     _culebra_value_release_impl(tag, data);
     return;
@@ -3482,7 +3481,7 @@ inline JitSet* _collect_set_jit(Each each, int64_t line, int64_t col) {
   JitOwnedVal out_guard(JitValue{TAG_SET, reinterpret_cast<int64_t>(out)});
   each([&](JitValue v) {
     JitOwnedVal vg(v);
-    _culebra_hash_at(line, col, [&] {
+    _jit_at_pos(line, col, [&] {
       culebra_runtime_set_add(out, v.tag, v.data);
       return 0;
     });
@@ -3511,7 +3510,7 @@ inline JitObject* _collect_to_object_jit(Each each, int64_t line, int64_t col) {
     }
     auto k = pair->items[0];
     auto val = pair->items[1];
-    _culebra_hash_at(line, col, [&] { return JitValueHash{}(k); });
+    _jit_at_pos(line, col, [&] { return JitValueHash{}(k); });
     // set_any consumes one ref of each half; the tuple still holds its own.
     culebra_runtime_value_retain(k.tag, k.data);
     culebra_runtime_value_retain(val.tag, val.data);
@@ -3539,7 +3538,7 @@ inline JitObject* _collect_group_by_jit(Each each, int8_t ft, int64_t fd,
     JitOwnedVal kg(k);
     auto* fresh = culebra_runtime_array_new();
     JitOwnedVal fg(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(fresh)});
-    _culebra_hash_at(line, col, [&] { return JitValueHash{}(k); });
+    _jit_at_pos(line, col, [&] { return JitValueHash{}(k); });
     kg.consume();
     fg.consume();
     // get_or_put consumes the key and the fresh bucket, and hands back the

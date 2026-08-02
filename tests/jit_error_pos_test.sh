@@ -208,5 +208,31 @@ f()'
 check_same "range iter zero step"     'for i in (0..5 by 0).iter() { }'
 check_same "range iter unbounded"     'let x = (0..).iter()'
 
+# A native handle method is entered with no line/col (the thunk ABI carries
+# none), so its entry point backfills the published call site — one case per
+# wrapped entry point. Every case fails offline (refused / unbound / bad path).
+# Skipped when the binary was built without Http.
+printf 'Http\n' > "$TMP/probe.cul"
+if "$CULEBRA" "$TMP/probe.cul" >/dev/null 2>&1; then
+  check_same "client transport"      'let c = Http.client("http://127.0.0.1:1")
+c.get("/")'
+  # `into` is checked by a helper shared with the Http.* adapters, which throw
+  # positionless on purpose — only the entry-point backfill positions this one.
+  check_same "client into type"      'let c = Http.client("http://127.0.0.1:1")
+c.get("/", into: 5)'
+  check_same "client with body"      'let c = Http.client("http://127.0.0.1:1")
+c.post("/", "x")'
+  check_same "client request"        'let c = Http.client("http://127.0.0.1:1")
+c.request("GET", "/")'
+  check_same "server serve unbound"  'let s = Http.server()
+s.serve()'
+  check_same "server bind refused"   'let s = Http.server()
+s.bind(-1)'
+  check_same "server listen refused" 'let s = Http.server()
+s.listen(-1)'
+  check_same "server static bad dir" 'let s = Http.server()
+s.static("/x", "/no/such/dir/here")'
+fi
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

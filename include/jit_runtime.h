@@ -198,26 +198,30 @@ inline bool _culebra_value_ord(int8_t t1, int64_t d1, int8_t t2, int64_t d2,
   }
 }
 
-// The Set/Object hash containers raise a positionless "unhashable type"
-// CulebraError from deep inside JitValueHash. The interpreter backfills the
-// call-site location at its eval boundary; the JIT has no such boundary for
-// these direct runtime calls, so this wrapper stamps (line, col) onto any
-// positionless error a hashing operation raises — keeping both backends'
-// error locations symmetric. (Templates need C++ linkage, so it sits outside
-// the extern "C" block below.)
+// Stamp a position onto a still-positionless error, as Interpreter::eval does;
+// an Interrupted has no position on either backend. Re-notes the pending
+// carrier, which is what a catch pad reads for the error Object's line/col.
+// (_jit_backfill_op_pos below is the same rule against the published op
+// position, minus the re-note — its consumers are the exception boundaries.)
+inline void _jit_backfill_error_pos(culebra::CulebraError& e, int64_t line,
+                                    int64_t col) {
+  if (e.line != 0 || e.col != 0 || e.kind == "Interrupted") return;
+  e.line = line;
+  e.col = col;
+  culebra::culebra_note_pending_error(e);
+}
+
+// Run `op` and give whatever positionless error it raises the position (line,
+// col). The interpreter backfills at its eval boundary; compiled code has no
+// such boundary, so a call class whose helpers throw with no location (hashing,
+// a native handle method) wraps itself here instead. (Templates need C++
+// linkage, so this sits outside the extern "C" block below.)
 template <class F>
-inline auto _culebra_hash_at(int64_t line, int64_t col, F&& op)
-    -> decltype(op()) {
+inline auto _jit_at_pos(int64_t line, int64_t col, F&& op) -> decltype(op()) {
   try {
     return op();
   } catch (culebra::CulebraError& e) {
-    if (e.line == 0) {
-      e.line = line;
-      e.col = col;
-    }
-    // Keep the pending carrier (read by the JIT catch pad) in sync with the
-    // position just stamped onto the in-flight exception.
-    culebra::culebra_note_pending_error(e);
+    _jit_backfill_error_pos(e, line, col);
     throw;
   }
 }
@@ -423,19 +427,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_hash_any(
   // Primitives go through the same hash that JitObject's AnyKeyMap uses;
   // unhashable inputs (Array / Set / Function / Tensor) throw there — but
   // positionless, since the container use has no call site. Backfill the
-  // call-site line/col (same pattern as the interp eval / JIT compile
-  // wrappers) so `hash([1,2])` and `[1,2].hash()` carry a position like
-  // the interp.
-  try {
+  // call-site line/col so `hash([1,2])` and `[1,2].hash()` carry a position
+  // like the interp.
+  return _jit_at_pos(line, col, [&] {
     return static_cast<int64_t>(JitValueHash{}(JitValue{type, data}));
-  } catch (culebra::CulebraError& e) {
-    if (e.line == 0 && e.col == 0) {
-      e.line = static_cast<int>(line);
-      e.col = static_cast<int>(col);
-    }
-    culebra::culebra_note_pending_error(e);
-    throw;
-  }
+  });
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_concat(
@@ -1617,7 +1613,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_add(JitSet* set,
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_set_contains(
     JitSet* set, int8_t tag, int64_t data, int64_t line, int64_t col) {
-  return _culebra_hash_at(line, col, [&] {
+  return _jit_at_pos(line, col, [&] {
     return set->index && set->index->contains(JitValue{tag, data});
   });
 }
@@ -1696,8 +1692,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_superset(JitSet* a,
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_add_method(
     JitSet* set, int8_t tag, int64_t data, int64_t line, int64_t col) {
   JitValue v{tag, data};
-  bool inserted = _culebra_hash_at(
-      line, col, [&] { return set->index->insert(v).second; });
+  bool inserted =
+      _jit_at_pos(line, col, [&] { return set->index->insert(v).second; });
   if (!inserted) {
     _culebra_value_release_impl(tag, data);
     return 0;
@@ -1710,7 +1706,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_add_method(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_remove(
     JitSet* set, int8_t tag, int64_t data, int64_t line, int64_t col) {
   JitValue key{tag, data};
-  if (!_culebra_hash_at(line, col, [&] { return set->index->erase(key); }))
+  if (!_jit_at_pos(line, col, [&] { return set->index->erase(key); }))
     return 0;
   // Find and erase from the members vector (O(n) — same as the interp's
   // OrderedSymbolMap erase pattern).
