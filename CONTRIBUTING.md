@@ -19,7 +19,7 @@ just clean              # remove build/, build-dev/, build-asan/
 `just build` produces `./build/culebra`:
 
 ```bash
-./build/culebra --shell                   # REPL  (--jit for JIT REPL)
+./build/culebra --shell                   # REPL  (always the interpreter)
 ./build/culebra        path/to/script.cul # interpreter
 ./build/culebra --jit  path/to/script.cul # JIT
 ./build/culebra build  path/to/script.cul -o ./out   # AOT standalone binary

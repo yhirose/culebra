@@ -3289,7 +3289,7 @@ AOT builds (unless noted).
 | `ChannelError` | `tx.send` on a channel whose receivers/senders have all gone (closed). | yes |
 | `ParallelError` | A `Parallel.map` / `Parallel.each` element threw; carries the failing element's index and cause (fail-fast). | yes |
 | `DropContractError` | `drop` / `iter` / `has_next` / `next` property bound to a non-Function or non-zero-arity function. | yes |
-| `RuntimeError` | Fallback when interp catches an unconverted `std::runtime_error` from a not-yet-migrated throw site; JIT REPL `repl_set` outside a session. `e.line == 0` and `e.col == 0` are possible in this case only. | yes |
+| `RuntimeError` | Fallback when interp catches an unconverted `std::runtime_error` from a not-yet-migrated throw site. `e.line == 0` and `e.col == 0` are possible in this case only. | yes |
 
 Uncaught errors print as `Kind: message` and exit with non-zero
 status. User-thrown values via `throw expr` print as `uncaught: {value}`.
@@ -5252,17 +5252,12 @@ embedding Culebra should be aware:
   a conservative stack-scanning mark-sweep. Both reclaim every cycle
   shape — including one routed purely through `Object` property maps —
   so this is an implementation difference, not a behavioral one.
-* **REPL persistence storage.** The interpreter persists session
-  globals in the top-level `Environment` scope. The JIT uses a
-  thread-local `JitReplGlobals` dict accessed via
-  `culebra_runtime_repl_{get,set}`. User code observes the same
-  binding behavior across statements.
 * **Thread safety.** Most runtime state — the interpreter and JIT
-  garbage collectors, the defer stack, REPL globals, the interrupt
-  flag — lives in a `thread_local` `Runtime`, so concurrent isolates
-  on separate threads do not share it. The two process-global intern
-  tables, the `ShapeRegistry` and the trait registry, are
-  mutex-guarded. Execution within a single `Runtime` is
+  garbage collectors, the defer stack, the interrupt flag — lives in
+  a `thread_local` `Runtime`, so concurrent isolates on separate
+  threads do not share it. The two process-global intern tables, the
+  `ShapeRegistry` and the trait registry, are mutex-guarded.
+  Execution within a single `Runtime` is
   single-threaded: an embedder that drives one `Runtime` from
   multiple threads must serialize the calls itself.
 

@@ -136,7 +136,7 @@ echo "inspect('hello, culebra!')" > hello.cul
 culebra hello.cul                    # インタプリタ
 culebra --jit hello.cul              # JIT (出力は同じ)
 culebra --jit-faststart hello.cul    # JIT・起動が速い
-culebra --shell                      # REPL (--jitでJIT REPL)
+culebra --shell                      # REPL (常にインタプリタ)
 culebra --help                       # 全オプション・コマンド一覧
 ```
 

@@ -3107,7 +3107,7 @@ shutdownパターン）は、`Signal.notify`でチャネルを登録します（
 | `ChannelError` | 全endpointが消えた（closed）channelへの`tx.send` | はい |
 | `ParallelError` | `Parallel.map` / `Parallel.each`の要素が例外を投げた。失敗要素のindexと原因を保持（fail-fast） | はい |
 | `DropContractError` | `drop` / `iter` / `has_next` / `next`プロパティが非Functionまたは非0引数Function | はい |
-| `RuntimeError` | 未変換throw siteから伝播した`std::runtime_error`をインタプリタが拾うフォールバック；JIT REPLのsession外`repl_set`。この場合のみ`e.line == 0` / `e.col == 0`がありうる | はい |
+| `RuntimeError` | 未変換throw siteから伝播した`std::runtime_error`をインタプリタが拾うフォールバック。この場合のみ`e.line == 0` / `e.col == 0`がありうる | はい |
 
 未catchのエラーは`Kind: message`形式で表示し非ゼロ終了します。
 ユーザが`throw expr`で投げた値は`uncaught: {value}`で表示されます。
@@ -4993,13 +4993,9 @@ export）は同じファイル内のインライン`try { ... } catch { ... }`�
   mark-sweepを行う。両者ともあらゆる循環形状を回収する（`Object`の
   プロパティマップだけを経由する循環を含む）ので、これは実装差であり
   振る舞いの差ではありません。
-* **REPLの永続化ストレージ.** インタプリタはsession globalsを
-  トップレベル`Environment`スコープに保持。JITはthread_local
-  `JitReplGlobals`辞書を経由（`culebra_runtime_repl_{get,set}`）。
-  ユーザコードから観測される束縛挙動はstatement間で同一。
 * **スレッド安全性.** ほとんどのランタイム状態（インタプリタ/JITの
-  GC、defer stack、REPL globals、interrupt flag）は`thread_local`な
-  `Runtime`に置かれ、別スレッドで動く並行isolate間で共有されません。
+  GC、defer stack、interrupt flag）は`thread_local`な`Runtime`に
+  置かれ、別スレッドで動く並行isolate間で共有されません。
   プロセス共有の2つのinternテーブル（`ShapeRegistry`とtrait
   registry）はmutexでガードされています。単一`Runtime`内の実行は
   シングルスレッドなので、1つの`Runtime`を複数スレッドから駆動する

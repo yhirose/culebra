@@ -143,7 +143,7 @@ echo "inspect('hello, culebra!')" > hello.cul
 culebra hello.cul                    # interpreter
 culebra --jit hello.cul              # JIT (same output)
 culebra --jit-faststart hello.cul    # JIT, fast startup
-culebra --shell                      # REPL (add --jit for the JIT REPL)
+culebra --shell                      # REPL (always the interpreter)
 culebra --help                       # all options and commands
 ```
 

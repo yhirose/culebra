@@ -314,11 +314,8 @@ run_jit_group() {
   check_http  "jit http"  -- "$CULEBRA" --jit "$TMP/http.cul"
   check_proc  "jit proc"  -- "$CULEBRA" --jit "$TMP/proc.cul"
   check_signotify "jit signotify" -- "$CULEBRA" --jit "$TMP/signotify.cul"
-  # The JIT REPL is pre-existingly non-functional (it aborts/hangs at startup
-  # compiling its stdlib preamble), so its interrupt can't be exercised end-to-end
-  # here. The wiring is identical to the JIT script-mode loop cases above (same
-  # install_sigint_handler + global-flag safepoint), which DO run. See the Task.
-  echo "skip [jit repl] (JIT REPL pre-existingly broken at startup)"
+  # No JIT REPL case: `--jit --shell` prints a note and runs the interpreter
+  # REPL, so the interp group's `check_repl` above already covers it.
   exit $fail
 }
 

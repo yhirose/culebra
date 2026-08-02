@@ -204,8 +204,7 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast) {
       // retention, every REPL-defined function dangles its parameter
       // names + body tokens as soon as the next input drops the
       // previous line. Bounded by session length (one entry per
-      // accepted input). The JIT path is unaffected — JIT REPL
-      // copies the names it cares about into LLVM module globals.
+      // accepted input).
       retained_sources_.push_back(full_line);
       const auto& src = retained_sources_.back();
       auto ast = parse_with_transforms("(repl)", src.data(), src.size(), msgs);
