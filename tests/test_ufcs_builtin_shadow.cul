@@ -1,0 +1,58 @@
+# Conformance: §10 (methods, UFCS) — resolution order with builtin-named
+# user functions in scope. An existing method/builtin ALWAYS beats UFCS
+# (Option 1); UFCS fires only when the receiver resolves nothing.
+#
+# Phase 1 scope (receiver_has_property parity): receivers whose builtin
+# must keep winning even when a same-named free function is in scope.
+# The "UFCS fires on a non-resolving receiver" direction lands with the
+# JIT dispatch phases and is asserted in later additions to this file.
+#
+# Run: ./build/culebra tests/test_ufcs_builtin_shadow.cul
+#      ./build/culebra --jit tests/test_ufcs_builtin_shadow.cul
+
+# --- Tensor: builtin methods win over same-named globals ---
+
+fn sum(o) { "ufcs sum" }
+fn shape(o) { "ufcs shape" }
+fn to_array(o) { "ufcs to_array" }
+
+let t = Tensor.zeros([2, 3])
+assert_eq(t.sum(), 0.0)
+assert_eq(t.shape(), [2, 3])
+assert_eq(t.to_array(), [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+
+# --- Iterator-shaped receiver: lazy method set wins over globals ---
+
+fn map(o, f) { "ufcs map" }
+fn collect(o) { "ufcs collect" }
+fn take(o, n) { "ufcs take" }
+
+assert_eq([1, 2, 3].iter().map(fn (x) { x * 2 }).collect(), [2, 4, 6])
+assert_eq([1, 2, 3].iter().take(2).collect(), [1, 2])
+
+# A user iterator object (duck-typed next/has_next) also resolves the
+# lazy set ahead of the globals.
+fn counter(limit) {
+  mut i = 0
+  {
+    has_next: fn () { i < limit },
+    next: fn () {
+      i = i + 1
+      i
+    },
+  }
+}
+assert_eq(counter(3).map(fn (x) { x * 10 }).collect(), [10, 20, 30])
+
+# --- Controls: eager builtins keep winning (pre-existing behavior) ---
+
+fn size(o) { "ufcs size" }
+assert_eq([1, 2].size(), 2)
+assert_eq("ab".size(), 2)
+assert_eq({a: 1}.size(), 1)
+
+# UFCS still fires for a receiver that resolves nothing (non-builtin name).
+fn tripled(x) { x * 3 }
+assert_eq((7).tripled(), 21)
+
+inspect("test_ufcs_builtin_shadow: ok")

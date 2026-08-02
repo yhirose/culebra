@@ -788,6 +788,12 @@ struct ObjectValue {
   explicit ObjectValue(Synthetic) : is_synthetic(true) {}
 
   bool has(std::string_view name) const;
+  // Iterator-shaped (docs §18.5): exposes `next` plus `has_next` or `iter`.
+  // Single source for eval_property's duck-typed fallback and
+  // receiver_has_property's UFCS gate — the two must never drift.
+  bool is_iterator_shaped() const {
+    return has("next") && (has("has_next") || has("iter"));
+  }
   // Own-field existence, excluding builtin methods. `has()` returns true
   // for builtin method names (`size`/`keys`/...) even when the instance
   // carries no such field, which is what property *reads* want (the
@@ -10387,7 +10393,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // which drives the receiver via has_next()/next(). This is what lets a
     // user `iter()` result (`{has_next, next}`) chain combinators, not just
     // built-in iterators. Eager Array methods take priority above.
-    if (obj.has("next") && (obj.has("has_next") || obj.has("iter"))) {
+    if (obj.is_iterator_shaped()) {
       const auto& methods = iterator_builtins();
       auto it = methods.find(name);
       if (it != methods.end()) {
@@ -10420,8 +10426,16 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     if (val.type == Value::Function) {
       return name == "name" || name == "params" || name == "return_type";
     }
-    if (val.type == Value::Object || val.type == Value::Array) {
-      if (val.to_object().has(name)) return true;
+    if (val.type == Value::Object || val.type == Value::Array ||
+        val.type == Value::Tensor) {
+      const auto& obj = val.to_object();
+      if (obj.has(name)) return true;
+      // Iterator-shaped receivers resolve the lazy method set via
+      // eval_property's duck-typed fallback; those names must block UFCS
+      // like any other builtin.
+      if (obj.is_iterator_shaped() && iterator_builtins().count(name) > 0) {
+        return true;
+      }
       // Synthesized `parameters()` is available on every class instance
       // (see eval_property).
       if (name == "parameters" && class_tag(val)) return true;
