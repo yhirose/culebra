@@ -34,6 +34,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <deque>
+#include <mutex>
 #include <string>
 #include <vector>
 #if defined(__EMSCRIPTEN__)
@@ -419,13 +421,42 @@ inline void ellipse(int64_t cx, int64_t cy, int64_t rx, int64_t ry,
 // Registered 8x8 bitmap fonts: a flat table of 8 row-bytes per glyph, MSB the
 // leftmost pixel. Handles index the registry, so a font crosses the FFI
 // boundary once at module load instead of per character drawn.
-inline std::vector<std::vector<uint8_t>>& _fonts() {
-  static std::vector<std::vector<uint8_t>> f;
+//
+// Unlike the rest of this file, the registry is reached off the drawing
+// thread: the Canvas preamble uploads its font at module top level, so every
+// isolate that resolves `Canvas` — even one that only calls `Canvas.rgba` —
+// registers on its own thread. Hence the lock, and hence a deque: entries keep
+// their address across appends, so `glyph` can read a font's bytes without
+// holding the lock for the length of a draw.
+inline std::mutex& _fonts_mutex() {
+  static std::mutex m;
+  return m;
+}
+inline std::deque<std::vector<uint8_t>>& _fonts() {
+  static std::deque<std::vector<uint8_t>> f;
   return f;
+}
+
+// The bytes handle `id` names, or nullptr for a handle that names no font.
+// Entries are never mutated after registration, so the pointer stays good
+// after the lock drops.
+inline const std::vector<uint8_t>* font_of(int64_t id) {
+  std::lock_guard<std::mutex> lk(_fonts_mutex());
+  if (id < 0 || static_cast<size_t>(id) >= _fonts().size()) return nullptr;
+  return &_fonts()[static_cast<size_t>(id)];
 }
 
 inline int64_t font_load(const uint8_t* rows, int64_t n) {
   if (n < 0) n = 0;
+  std::lock_guard<std::mutex> lk(_fonts_mutex());
+  // Registration is by content: with no way to unregister a font, handing back
+  // the existing handle for identical bytes is indistinguishable from a fresh
+  // one, and it keeps N isolates each uploading the preamble font from growing
+  // the table without bound.
+  for (size_t i = 0; i < _fonts().size(); i++) {
+    if (std::equal(_fonts()[i].begin(), _fonts()[i].end(), rows, rows + n))
+      return static_cast<int64_t>(i);
+  }
   _fonts().emplace_back(rows, rows + n);
   return static_cast<int64_t>(_fonts().size() - 1);
 }
@@ -438,8 +469,9 @@ inline int64_t font_load(const uint8_t* rows, int64_t n) {
 inline void glyph(int64_t id, int64_t index, int x, int y, uint32_t rgba,
                   int64_t scale) {
   if (scale <= 0) return;
-  if (id < 0 || static_cast<size_t>(id) >= _fonts().size()) return;
-  const std::vector<uint8_t>& f = _fonts()[id];
+  const std::vector<uint8_t>* fp = font_of(id);
+  if (fp == nullptr) return;
+  const std::vector<uint8_t>& f = *fp;
   // Bound the index against the glyph COUNT, never against `index * 8`: that
   // product wraps for a large index, which would let the check pass and read
   // off the front of the table.

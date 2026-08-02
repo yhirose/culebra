@@ -26,14 +26,15 @@ for _round in 0..4 {
     # child's first reference to it runs the whole transform on this thread and
     # appends to the ledger. Several per child widens the window: the body's own
     # generators would not help, since the parent already lowered those once.
-    # Canvas is deliberately NOT among these: resolving it from several
-    # isolates at once still corrupts the heap after this fix, a second and
-    # so-far-unexplained race that would make this test flaky for the wrong
-    # reason. See the memory note; this file is about the fragment ledger.
+    # Canvas covers the second thing a resolve can race on: its module body
+    # uploads the bitmap font at top level, so N children reach the native font
+    # registry at once — the only preamble that calls into a native registry
+    # just by being resolved.
     let a = Regex.find_all("x+", "xx ax xxx").size()        # 3
     let p = Path.new("x/y").name().size()                   # 1
     let w = Term.width("ab")                                # 2
     let b = to_long(Time.seconds(i % 3).seconds())          # 0, 1 or 2
+    assert_eq(Canvas.rgba(0, 0, 0, 0), 0)
     a + b + p + w - 3
   })
   assert_eq(outs.size(), 24)
