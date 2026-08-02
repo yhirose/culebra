@@ -90,6 +90,18 @@ for entry in "${outdated[@]}"; do
   git -C "$path" checkout --quiet "$latest"
 done
 
+# The grammar blob is keyed to the cpp-peglib version as well as the grammar
+# text, so a bump here silently invalidates it — and the diff of a vendor bump
+# never mentions grammar_blob.h, which is what makes it easy to miss. Running
+# the generator unconditionally is idempotent: an unaffected bump rewrites the
+# same bytes and leaves the working tree clean.
+echo
+echo "regenerating include/grammar_blob.h (keyed to the cpp-peglib version)"
+just gen-blob
+
 echo
 echo "done. Review each submodule's log, rebuild (\`just dev\`), run \`just test-dev\`,"
 echo "then commit each bump separately (\`Bump <name>: ...\`, see git log for style)."
+if ! git diff --quiet -- include/grammar_blob.h; then
+  echo "NOTE: grammar_blob.h changed — commit it with the cpp-peglib bump, not on its own."
+fi
