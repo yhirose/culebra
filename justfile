@@ -73,12 +73,23 @@ build-gate *extra:
     cd build-gate && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF {{extra}} .. > /dev/null
     cd build-gate && {{lock_cmd}} {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}
 
+# Compile and link as two steps: ccache passes a combined compile+link command
+# straight through (`Result: called_for_link`), so the cache only engages when
+# `-c` is its own invocation. With it, a warm rebuild of this tool is ~0.2 s
+# instead of ~7 s — and ccache keys on the preprocessed source, so an edit to
+# grammar_def.h or a peglib bump (both reached through #include) still rebuilds.
+# That dependency tracking is the point: a mtime rule over the .cc alone would
+# reuse a stale tool exactly when the grammar changed, and bless a stale blob.
 [private]
 _gen-blob-tool:
+    #!/usr/bin/env bash
+    set -euo pipefail
     mkdir -p build-dev
-    {{ if path_exists("/opt/homebrew/opt/llvm/bin/clang++") == "true" { "/opt/homebrew/opt/llvm/bin/clang++" } else { env_var_or_default("CXX", "c++") } }} \
-        -std=c++23 -O2 -I include -I vendor/cpp-peglib \
-        tools/gen_grammar_blob.cc -o build-dev/gen_grammar_blob
+    cxx="{{ if path_exists("/opt/homebrew/opt/llvm/bin/clang++") == "true" { "/opt/homebrew/opt/llvm/bin/clang++" } else { env_var_or_default("CXX", "c++") } }}"
+    ccache=$(command -v ccache || true)
+    $ccache "$cxx" -std=c++23 -O2 -I include -I vendor/cpp-peglib \
+        -c tools/gen_grammar_blob.cc -o build-dev/gen_grammar_blob.o
+    "$cxx" build-dev/gen_grammar_blob.o -o build-dev/gen_grammar_blob
 
 # Regenerate include/grammar_blob.h — the serialized grammar that lets
 # get_parser() skip peglib's ~10 ms meta-parse on startup. Run after editing the
