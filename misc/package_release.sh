@@ -88,11 +88,28 @@ fi
 
 # Relative name in, relative name out, so the digest line names just the
 # archive — `sha256sum -c` then works from wherever the user downloaded it.
+#
+# Write the line rather than take the tool's: coreutils under MSYS2 reads in
+# binary mode and marks it ` *name`, while macOS shasum writes `  name`, so
+# SHA256SUMS came out of v0.1.0 with the Windows row spelled differently from
+# the other two. Only the digest is taken from the tool, so the bytes hashed
+# are still whatever it reads natively — passing --text to even out the marker
+# would instead change the read mode, and on a platform where that means CRLF
+# translation it would hash something other than the archive.
 if command -v sha256sum >/dev/null; then
-  sha256sum "$archive" >"$archive.sha256"
+  sum() { sha256sum "$@"; }
 else
-  shasum -a 256 "$archive" >"$archive.sha256"
+  sum() { shasum -a 256 "$@"; }
 fi
+printf '%s  %s\n' "$(sum "$archive" | cut -d' ' -f1)" "$archive" >"$archive.sha256"
+
+# Prove the line we just wrote verifies here, on the platform that produced it.
+# The check is the point: it is what says the one spelling is readable
+# everywhere, instead of leaving it to be discovered by whoever downloads.
+sum -c "$archive.sha256" >/dev/null || {
+  echo "package_release: the .sha256 we wrote does not verify" >&2
+  exit 1
+}
 
 echo "$archive"
 echo "$archive.sha256"
