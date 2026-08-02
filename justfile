@@ -749,11 +749,12 @@ _run-tests BACKEND:
     # upstream(s) to the wrapper factory (tools/check_iter_wiring.sh).
     run_iter_wiring() { bash tools/check_iter_wiring.sh; }
 
-    # Runtime-archive TLS ownership: a dynamically-initialized namespace-scope
-    # thread_local must be defined by the core archive or by a force-loaded
-    # feature archive, never both — mingw's ld rejects the duplicate TLS init
-    # and the Windows AOT link fails (tools/check_rt_archive_tls.sh). Needs the
-    # built archives, so this is a gate-only phase (`test-dev` has none).
+    # Runtime-archive ownership: a dynamically-initialized namespace-scope
+    # thread_local — and any symbol the core archive defines strongly — must
+    # come from one archive, never both. mingw's ld rejects the duplicate and
+    # the Windows AOT link fails, while ELF and Mach-O fold it silently
+    # (tools/check_rt_archive_tls.sh). Needs the built archives, so this is a
+    # gate-only phase (`test-dev` has none).
     run_rt_archive_tls() {
         bash tools/check_rt_archive_tls.sh "$(dirname "$BIN")"
     }

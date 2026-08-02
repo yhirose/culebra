@@ -663,14 +663,9 @@ if(CULEBRA_ENABLE_WEBVIEW)
       set(_webview_libs ole32 shell32 shlwapi user32 version advapi32)
       list(TRANSFORM _webview_libs PREPEND "-l" OUTPUT_VARIABLE _webview_lflags)
       list(JOIN _webview_lflags " " _webview_link)
-      # No --allow-multiple-definition here. The binding reaches wrap.h, which
-      # used to make its TU emit its own copy of every culebra_runtime_* helper
-      # the core archive already defines outright — 348 of them, which PE's ld
-      # calls a multiple definition because it has no weak external to fold
-      # them with. A feature archive links against the core archive's copies
-      # now (rt_macros.h), so the duplicates are gone rather than waved
-      # through, and Scene gets the same treatment for free when it builds
-      # here.
+      # No --allow-multiple-definition here: duplicate runtime helpers are kept
+      # out at the source (rt_macros.h) and checked by
+      # tools/check_rt_archive_tls.sh, not waved through at link time.
     else()
       message(STATUS "Webview: disabled (WebView2.h not found — install webview2-loader)")
       set(CULEBRA_ENABLE_WEBVIEW OFF)
@@ -985,11 +980,12 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     list(APPEND _rt_embed_deps culebra_rt_webview)
   endif()
   # Every feature archive is force-loaded next to the core archive, so the two
-  # must not both define the same dynamically-initialized thread_local: mingw's
-  # ld rejects the duplicate TLS init and the Windows AOT link fails. This flips
-  # the CULEBRA_RT_CORE_OWNED declarations (rt_shared_tls.h) to `extern` here,
-  # leaving the core archive the single owner. Ratchet:
-  # tools/check_rt_archive_tls.sh, run by the `all` test gate.
+  # must not both define the same symbol: mingw's ld rejects the duplicate and
+  # the Windows AOT link fails. The flag says "this TU borrows from the core"
+  # and has two halves — it flips the CULEBRA_RT_CORE_OWNED declarations
+  # (rt_shared_tls.h) to `extern`, and stops the runtime helpers being
+  # force-emitted (rt_macros.h) — leaving the core archive the single owner of
+  # both. Ratchet: tools/check_rt_archive_tls.sh, run by the `all` test gate.
   foreach(_rt_feature culebra_rt_tensor culebra_rt_http culebra_rt_compress
                       culebra_rt_sqlite culebra_rt_scene culebra_rt_canvas
                       culebra_rt_webview culebra_rt_wrap)
@@ -1370,10 +1366,12 @@ endif()
 # (ELF and Mach-O fold the duplicate TLS init symbols, so only Windows sees
 # it). These three reach them through wrap.h and borrow instead.
 #
-# The flag is not a general licence to include the world: it moves only the
-# CULEBRA_RT_CORE_OWNED variables, and a TU that reaches culebra.h picks up ~18
-# more from the net/http/sqlite registries that no flag can move. Such a TU has
-# to stop reaching those headers. check_rt_archive_tls.sh enforces both halves.
+# The flag is not a general licence to include the world: it moves the
+# CULEBRA_RT_CORE_OWNED variables and the runtime helpers' force-emission
+# (rt_macros.h), and nothing else — a TU that reaches culebra.h picks up ~18
+# more thread_locals from the net/http/sqlite registries that no flag can move.
+# Such a TU has to stop reaching those headers. check_rt_archive_tls.sh
+# enforces all of it.
 set_source_files_properties(
   ./src/runtime/culebra_rt_webview.cc
   ./src/runtime/culebra_rt_scene.cc

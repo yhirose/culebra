@@ -16,14 +16,18 @@
 // binaries — `cc -Wl,-dead_strip` can now drop runtime helpers a
 // program never references.
 
-// Feature-archive path: a binding TU that reaches wrap.h (Webview, Scene) gets
-// the same runtime headers, and `used` made it emit its own copy of every
-// helper — 348 of them in the Webview archive, next to the core archive that
-// already defines all of them. It resolves them from there at link time
-// instead, so the attribute comes off here and the compiler emits only what it
-// cannot inline away. ELF and Mach-O were folding the duplicates; PE has no
-// weak external and ld calls each one a multiple definition, which the Webview
-// link fragment used to wave through with --allow-multiple-definition.
+// Borrowing path: a TU that links beside the core archive rather than being it
+// — every feature archive, and the driver's own copies of those sources (see
+// CULEBRA_RT_FEATURE_BUILD in CMakeLists, and rt_shared_tls.h for the same
+// flag's other half). Reaching wrap.h pulled these headers in, and `used` then
+// forced out a copy of every helper next to the core archive's real ones: 348
+// in the Webview archive. Dropping the attribute leaves ordinary `inline`, so
+// nothing is emitted for a use the compiler inlines — which today is all of
+// them. That is an optimizer-dependent outcome, not a contract: at -O0 four
+// copies come back, and each one is a multiple definition to PE's ld, which
+// has no weak external to fold it with (ELF and Mach-O fold silently, so only
+// Windows would report it). tools/check_rt_archive_tls.sh checks the result
+// instead of trusting it.
 
 #ifdef CULEBRA_RT_DEFINE_RUNTIME
 #define CULEBRA_RT_KEEP

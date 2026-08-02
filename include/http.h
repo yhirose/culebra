@@ -233,11 +233,21 @@ inline std::string encode_query(const HeaderList& pairs) {
 // inside the bodies below. Their linkage is partitioned across the AOT runtime
 // archives exactly like tensor_eval_node:
 //   - core archive   (CULEBRA_RT_HTTP_REQUEST_WEAK):   weak stubs, never
-//     touch httplib::Client, so the archive references no ssl/zlib symbol
-//     (merely including httplib.h pulls none — verified).
+//     touch httplib::Client, so no CALL of ours reaches ssl/zlib.
 //   - http archive   (CULEBRA_RT_HTTP_REQUEST_STRONG): strong real bodies,
 //     force-loaded only when the program uses Http (overrides the stubs).
 //   - header-only / in-process JIT (neither): the normal inline bodies.
+//
+// The stub archive still carries ~32 undefined OpenSSL references anyway:
+// including httplib.h emits SSLClient / SSLServer / SSLSocketStream vtables and
+// the digest-auth hashes whatever we do, and stdlib_interp.h's Http bindings —
+// compiled here — name httplib::Request / Response, so the include cannot be
+// gated out. ELF and Mach-O dead-strip them; PE's ld reports them before
+// --gc-sections runs, which is why Windows links OpenSSL into every AOT binary
+// (src/main.cc, win_static). Closing that means moving the binding surface into
+// the Http archive, not compiling this one without TLS: the two configurations
+// disagree about httplib's inline bodies and the linker folds them across the
+// archives, which segfaults the first Http program built that way (measured).
 #if defined(CULEBRA_RT_HTTP_REQUEST_STRONG)
 #define CULEBRA_RT_HTTP_LINKAGE
 #elif defined(CULEBRA_RT_HTTP_REQUEST_WEAK)

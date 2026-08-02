@@ -60,6 +60,31 @@ tls_defs() {
   fi
 }
 
+# Every symbol an archive DEFINES, and the subset it defines STRONGLY. A
+# feature archive overriding one of the core's weak stubs is the force-load
+# design itself (Http, Canvas, Tensor), so only the core's strong definitions
+# are off limits to it.
+all_defs() {
+  local ar="$1"
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    nm -m "$ar" 2>/dev/null | { grep -v ' undefined' || true; } \
+      | awk '{print $NF}' | sed 's/^_//' | sort -u
+  else
+    nm --defined-only "$ar" 2>/dev/null | awk '{print $NF}' | sort -u
+  fi
+}
+strong_defs() {
+  local ar="$1"
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    nm -m "$ar" 2>/dev/null | { grep -v ' undefined' || true; } \
+      | { grep -v 'weak external' || true; } \
+      | awk '{print $NF}' | sed 's/^_//' | sort -u
+  else
+    nm --defined-only "$ar" 2>/dev/null \
+      | awk '$2 ~ /^[TDBR]$/ {print $NF}' | sort -u
+  fi
+}
+
 demangle() {
   if command -v c++filt >/dev/null 2>&1; then c++filt; else cat; fi
 }
@@ -93,6 +118,40 @@ fi
 echo "rt-archive-tls OK ($checked feature archives," \
      "$(printf '%s\n' "$core_defs" | grep -c . || true) core-owned thread_locals)"
 
+# Same hazard, different symbol class: the runtime helpers. They are header-only
+# and normally carry __attribute__((used)) so the in-process JIT can find them,
+# which made a feature TU that reaches wrap.h emit its own copy of all ~350 next
+# to the core archive's real ones. CULEBRA_RT_FEATURE_BUILD drops the attribute
+# (rt_macros.h), and then nothing is emitted BECAUSE every remaining use inlines
+# — an optimizer-dependent property, not a contract: at -O0 four copies come
+# back. So check the result rather than trusting it. Weak-vs-strong is silently
+# folded by ELF and Mach-O, so without this the first report is a mingw link
+# 45 minutes away.
+core_strong=$(strong_defs "$core")
+dup_fail=0
+for ar in "$BUILD_DIR"/libculebra_rt_*.a; do
+  [[ -f "$ar" ]] || continue
+  shared=$(comm -12 <(printf '%s\n' "$core_strong") <(all_defs "$ar"))
+  [[ -n "$shared" ]] || continue
+  dup_fail=1
+  echo "rt-archive-dup FAIL: $(basename "$ar") re-defines symbols the core" \
+       "archive defines strongly:" >&2
+  printf '%s\n' "$shared" | demangle | sed 's/^/  /' | head -20 >&2
+done
+if (( dup_fail )); then
+  cat >&2 <<'EOF'
+  PE has no weak external, so mingw's ld calls each of these a multiple
+  definition and the Windows AOT link fails. A feature TU must not define what
+  the core archive already defines strongly: check that its build carries
+  CULEBRA_RT_FEATURE_BUILD (CMakeLists' feature loop), and that whatever call
+  survived inlining is small enough to inline or belongs behind the core
+  archive's own entry points.
+EOF
+  exit 1
+fi
+echo "rt-archive-dup OK (no feature archive re-defines the core's" \
+     "$(printf '%s\n' "$core_strong" | grep -c . || true) strong symbols)"
+
 # The same invariant one level down: the driver is several TUs in one PE image,
 # so two of them defining the same thread_local is the identical link error --
 # and until now nothing checked it. main.cc is the owner; every other TU must
@@ -120,9 +179,10 @@ if [[ -f "$owner" ]]; then
   function for ...'"; ELF and Mach-O fold it, so only Windows CI would notice.
   Keep the TU off the interpreter/JIT headers if it can be -- reaching
   culebra.h costs ~70 s of compile for them anyway. If it genuinely needs
-  them, CULEBRA_RT_FEATURE_BUILD covers only the CULEBRA_RT_CORE_OWNED
-  variables (rt_shared_tls.h); the net/http/sqlite registries are plain
-  `inline thread_local` and no build flag will move them.
+  them, CULEBRA_RT_FEATURE_BUILD covers the CULEBRA_RT_CORE_OWNED variables
+  (rt_shared_tls.h) and the runtime helpers (rt_macros.h), and nothing else:
+  the net/http/sqlite registries are plain `inline thread_local` and no build
+  flag will move them.
 EOF
     exit 1
   fi
