@@ -240,7 +240,14 @@ jobs:
           path: ${{ github.workspace }}/.deps
           key: ${{ steps.deps.outputs.key }}
       # The feature set of ci.yml's windows-aot-build (the widest Windows
-      # configuration that CI proves), with LTO turned back on for release.
+      # configuration that CI proves), LTO included — off, the way every
+      # Windows job in ci.yml has it. UCRT64's gcc 16 cannot LTO-link against
+      # its own prebuilt libstdc++.a: the COMDAT type-info sections in
+      # future.o / system_error.o / ios_errcat.o come out a different size than
+      # the LTO objects', and ld refuses ("duplicate section ... has different
+      # size"). check_ipo_supported does not see it — it only asks whether the
+      # compiler accepts the flag. v0.1.0's first release build turned LTO on
+      # here, unlike CI, and failed at the final link. macOS and Linux keep it.
       # Http and Webview are on here. WebView2 costs this binary nothing a plain
       # Windows box lacks: the engine is the Edge runtime, found at run time, so
       # the only new imports are system DLLs (ole32, shlwapi, version). The
@@ -267,7 +274,7 @@ jobs:
             -DCULEBRA_ENABLE_HTTP=ON \
             -DCULEBRA_ENABLE_WEBVIEW=ON \
             -DCULEBRA_DEV_NO_RT=OFF \
-            -DCULEBRA_LTO=ON
+            -DCULEBRA_LTO=OFF
       # Before the build, not after: unlike the macOS and Linux jobs (whose
       # `just build` is one step) this one can catch a lost window backend
       # without first paying the ~40 min LTO link.
