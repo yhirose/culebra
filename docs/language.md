@@ -1800,8 +1800,12 @@ and Arrays (§9). A `Set` has no `+` — `to_array()` first, or `union`.
     fn (name, greeting = 'hello') { "{greeting}, {name}" }
 
 Functions are first-class values and the only way to define a reusable
-piece of code. There is no `fn name(...)` declaration syntax; use
-`name = fn (...) { ... }`.
+piece of code. Bind a literal like any other value
+(`name = fn (...) { ... }`), or use the declaration form
+`fn name(...) { ... }`. Only the declaration form can be a
+[generator](#generators-yield) or take part in [multimethod
+dispatch](#20-multimethods), and only it gives `fn.name` a source-level
+name.
 
 ### Lambda sugar `|x| ...`
 
