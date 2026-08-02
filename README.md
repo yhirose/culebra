@@ -71,11 +71,41 @@ for the common case.
 
 ### Batteries included, in one binary
 
-File I/O, CLI argument parsing, structured data (JSON — with optional
-JSONC comments and trailing commas — CSV, TOML), time, math, and
-randomness ship in the single binary — no package manager, no lockfile.
-Text processing (regex), an HTTP client, and hashing / encoding /
-compression ship too, same policy.
+The whole standard library is bound before the program runs — no
+package manager, no lockfile:
+
+- **Data.** JSON (with optional JSONC comments and trailing commas),
+  CSV, TOML, `.env`, UUID, and SQLite — the amalgamation is compiled
+  in, so there is no system library to install.
+- **Text.** Grapheme-aware regex, encodings (base64 / hex / url / HTML
+  entities), SHA / MD5 digests and HMAC, gzip / deflate.
+- **System.** Paths and whole-file I/O, streaming file handles,
+  subprocesses, time, math, randomness, CLI argument parsing, and
+  leveled structured logging.
+- **Network.** An HTTP/HTTPS client and server (routes, static files,
+  Server-Sent Events, WebSocket), plus raw TCP / UDP sockets and name
+  resolution underneath.
+- **Concurrency.** Isolates, channels, `Parallel`, shared buffers, and
+  Ctrl+C delivered as a channel message.
+
+### Terminals, windows, and games
+
+The same binary that runs a script also draws:
+
+- **`Term`.** Colour, cursor control, the alternate screen, and
+  key/mouse input for TUIs, downsampled to whatever the terminal
+  supports (and silent under `NO_COLOR`).
+- **`Canvas`.** An immediate-mode 2D framebuffer — draw, `present`,
+  poll input, repeat — with sprites, text, and tone/music. It opens a
+  real window on macOS, Linux and Windows; a run that declares itself
+  headless does the same pixel work and displays nothing, which is how
+  the tests and a displayless server run it.
+- **`Desktop` / `Webview`.** A desktop GUI in web tech: a local HTTP
+  server supplies the UI, the OS's own WebView engine displays it, and
+  the whole thing ships as one binary.
+- **`Scene`.** A retained-mode 3D renderer for procedural geometry with
+  physically based lighting. Opt-in (`-DCULEBRA_ENABLE_SCENE=ON`) and
+  macOS-only today.
 
 ### Built-in Tensor
 
@@ -96,7 +126,13 @@ Language features
 
 - **Pattern matching.** Literals, type guards, destructuring, and rest
   patterns, with optional `if` guards.
-- **String interpolation.** `"head={head}, rest={tail.size()}"`.
+- **Sum types.** `enum Shape { Circle(Float), Rect(Float, Float) }`,
+  generic where you need it, matched by variant or by enum.
+- **Tuples and sets.** `(3, 4)` is immutable and hashable; `{1, 2, 3}`
+  is an insertion-ordered set of unique values.
+- **String interpolation.** `"head={head}, rest={tail.size()}"`, with
+  format specs, triple-quoted blocks that dedent, and `re"…"` regex
+  literals.
 - **Gradual typing.** Annotations runtime-checked at boundaries;
   Union, Optional, Tuple, Trait and Generic all check today.
 - **UFCS.** Free functions callable as methods (`x.f(y)` ≡ `f(x, y)`).
@@ -106,22 +142,48 @@ Language features
   with default methods.
 - **Closures and `class` form.** Both supported, same encapsulation
   semantics.
+- **Generators.** A `fn` whose body contains `yield` returns an
+  Iterator; `yield from` delegates to any iterable.
 - **Algebraic effects.** `effect fn` / `perform` / `handle … with`, with
   multi-shot `resume` — one mechanism covering generators, exceptions,
   dependency injection, and backtracking search.
+- **Decorators.** `@expr` before a `fn` or `class` wraps the declared
+  value before it is bound.
 - **Doctests in comments.** `1 + 1  # => 2` is an executable
   assertion under `culebra test`.
 - **Structural assert diagnostics.** `assert_eq` prints a diff.
 - **Defer / RAII.** Scope-bound cleanup.
-- **Threaded concurrency.** No `async`/`await`; blocking I/O on
-  shared-nothing threads.
+- **Threaded concurrency.** No `async`/`await`. `Isolate.spawn` runs a
+  closure on its own thread with its own heap, values cross by copy,
+  and `Channel` carries them — so two isolates cannot race on one
+  object. `SharedBuffer` (fixed-layout, zero-copy) and `Shared`
+  (immutable, by reference) opt out of the copy where it matters.
+
+The toolchain is the same binary
+--------------------------------
+
+There is nothing else to install: the executable that runs a program
+also carries the test runner, the linter, the formatter, the debug
+adapter, and the reference documentation.
+
+| Command | What it does |
+|---|---|
+| `culebra test [paths...]` | run tests and the doctests written in comments |
+| `culebra lint [paths...]` | report static problems without running the program |
+| `culebra fmt [paths...]` | reformat source to the canonical style |
+| `culebra dap` | speak the Debug Adapter Protocol over stdio (VSCode / Vim / Zed) |
+| `culebra docs [topic]` | read and search the embedded reference docs |
+| `culebra build <in.cul> -o <out>` | compile ahead-of-time into a standalone executable |
+| `culebra wrap` | build an extended binary exposing your own C++ classes |
+
+Details are in [`docs/tooling.md`](docs/tooling.md).
 
 Standalone binaries
 -------------------
 
 `culebra build` compiles a `.cul` source ahead-of-time into a
 self-contained executable. No LLVM at runtime; tree-shaking drops
-the ~450 runtime helpers a program doesn't reference. Tensor-free
+the ~500 runtime helpers a program doesn't reference. Tensor-free
 programs also drop the Accelerate / Metal framework dependency.
 
 ```bash
@@ -166,7 +228,9 @@ Design choices
   traces stay readable, the debugger sees every frame, and library
   authors don't write a colored version of every function. Targeted
   at services up to a few-thousand-connection ceiling — the shape
-  SQLite, Redis, and most line-of-business backends already use.
+  SQLite, Redis, and most line-of-business backends already use. The
+  reasoning is written out in
+  [`docs/essays/concurrency.md`](docs/essays/concurrency.md).
 - **Gradual typing without a compile step.** Annotations are
   runtime-checked at boundaries; startup stays instant. Union,
   Optional, Tuple, Trait and Generic annotations are all in.
@@ -210,8 +274,8 @@ Documentation
   / [日本語](docs/language.ja.md)
 * Standard library reference: [`docs/stdlib.md`](docs/stdlib.md)
   / [日本語](docs/stdlib.ja.md)
-* Tooling — the test runner, linter, formatter and debug adapter
-  (`culebra test` / `lint` / `fmt` / `dap`):
+* Tooling — the test runner, linter, formatter, debug adapter and
+  embedded docs (`culebra test` / `lint` / `fmt` / `dap` / `docs`):
   [`docs/tooling.md`](docs/tooling.md)
   / [日本語](docs/tooling.ja.md)
 * Deployment — standalone binary build, embedding from C++, wrapping
@@ -227,6 +291,9 @@ Documentation
   `AGENTS.md` (`culebra docs agent`):
   [`docs/agent.md`](docs/agent.md)
   / [日本語](docs/agent.ja.md)
+* Essays — how a design decision was reached, at the length the
+  specification has no room for:
+  [`docs/essays/`](docs/essays/)
 
 Building from source and running the tests: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
