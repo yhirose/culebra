@@ -4553,7 +4553,8 @@ A custom mesh is built from vertices and triangles, then finalised:
 `m.vertex(x, y, z, nx, ny, nz)` (or `vertex_uv(…, u, v)`) adds a vertex,
 `m.tri(a, b, c)` a triangle by vertex index, and `m.build()` uploads it. (raylib
 uses a 16-bit index buffer, so a mesh caps at 65535 vertices; `build()` rejects
-more.)
+more.) An uploaded mesh belongs to the view that uploaded it: a node kept past
+`view.drop()` stays usable as a transform, but draws nothing in a later view.
 
 ### Materials, lighting, textures
 

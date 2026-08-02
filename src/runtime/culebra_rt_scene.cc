@@ -316,6 +316,18 @@ static RenderTexture2D LoadShadowmap(int w, int h) {
 
 enum class Shape { Group, Box, Sphere, Cylinder, Plane, Mesh };
 
+// GL names belong to the context that made them, and a View owns its context:
+// closing one and opening the next starts the numbering over, so a mesh built
+// under the old View holds ids that now name nothing — or name one of the new
+// View's meshes. Nodes outlive their View (the script may hold one), so every
+// View bumps this and a mesh records the value it was uploaded under.
+// IsWindowReady() alone can't tell the two apart: it is true again as soon as
+// the next View opens.
+static uint64_t& gl_epoch() {
+  static uint64_t epoch = 0;
+  return epoch;
+}
+
 // Everything Node::render needs from the View that doesn't vary within a pass:
 // the shared material, the cached primitive meshes, the material / texture
 // registries and the lit shader's per-node PBR uniform locations. `lit` is the
@@ -356,6 +368,7 @@ class Node {
   std::vector<long> mi;    // indices (range-checked at build())
   bool mesh_built = false;
   ::Mesh mesh_{};   // GL ids + indices — see build(); the vertex data is ours
+  uint64_t mesh_epoch_ = 0;   // the GL context mesh_ was uploaded under
 
   // local-transform cache: recomputed only when a setter dirties it, so a
   // static subtree's matrix is built once, not 3x/frame across the passes.
@@ -442,6 +455,7 @@ class Node {
     m.texcoords = nullptr;
     if (mesh_built) unload_mesh();   // rebuilt: drop the older upload
     mesh_ = m;
+    mesh_epoch_ = gl_epoch();
     mesh_built = true;
     // the data now lives in the GPU mesh; release the CPU-side build buffers
     std::vector<float>().swap(mv);
@@ -533,7 +547,7 @@ class Node {
       case Shape::Cylinder: DrawMesh(ctx.cyl, ctx.mat, draw); break;
       case Shape::Plane: DrawMesh(ctx.plane, ctx.mat, draw); break;
       case Shape::Mesh:
-        if (mesh_built) DrawMesh(mesh_, ctx.mat, world);
+        if (mesh_live()) DrawMesh(mesh_, ctx.mat, world);
         break;
       case Shape::Group: break;
     }
@@ -543,12 +557,20 @@ class Node {
  private:
   std::shared_ptr<Node> push(std::shared_ptr<Node> n) { children.push_back(n); return n; }
 
-  // Only the GL ids need the window. The vboId and index arrays are plain heap
-  // and are reclaimed either way — the same split ~View makes for a material's
-  // maps. The vertex data was never raylib's (build() uploads from this node's
-  // own vectors), so a node outliving its View leaks nothing.
+  // Has this mesh's GL side survived? It dies with the View that uploaded it
+  // (see gl_epoch), and drawing with ids the current context reused would draw
+  // some other node's geometry. A stale mesh draws nothing, like one whose
+  // build() was refused.
+  bool mesh_live() const { return mesh_built && mesh_epoch_ == gl_epoch(); }
+
+  // Only the GL ids need the window — and only the context that made them, or
+  // the delete lands on whatever the new one has since given those ids to. The
+  // vboId and index arrays are plain heap and are reclaimed either way — the
+  // same split ~View makes for a material's maps. The vertex data was never
+  // raylib's (build() uploads from this node's own vectors), so a node
+  // outliving its View leaks nothing.
   void unload_mesh() {
-    if (IsWindowReady()) {
+    if (mesh_live() && IsWindowReady()) {
       UnloadMesh(mesh_);
     } else {
       MemFree(mesh_.vboId);
@@ -575,6 +597,7 @@ class View {
     if (!IsWindowReady())
       throw std::runtime_error(
           "Scene: cannot open a window (no usable display/GL)");
+    ++gl_epoch();   // a fresh context: nothing an earlier View uploaded survives
     ensure_audio();
     cam_.up = Vector3{0, 1, 0};
     cam_.fovy = 55;
