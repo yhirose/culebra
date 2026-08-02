@@ -220,7 +220,10 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast) {
 
         Value val;
         if (interpret(ast, env, val, msgs)) {
-          cout << val << endl;
+          // A nil result isn't echoed: `println(...)`, a `fn` declaration and
+          // an `if` without else all evaluate to nil, so echoing would double
+          // every line of output (matches the python REPL convention).
+          if (val.type != Value::Nil) cout << val << endl;
           add_history(full_line);
           continue;
         }

@@ -4954,21 +4954,17 @@ packaging ones in [`deployment.md`](deployment.md).
 | `wrap` | Build an extended `culebra` binary that exposes your own C++ classes as builtins. | [`deployment.md` §3](deployment.md#3-wrapping-c-libraries-culebra-wrap) |
 
 
-If no script is provided, the REPL is launched automatically. Both
-the interpreter REPL and the JIT REPL preserve session state across
-inputs — `let`, `mut`, and `fn` declarations from one input are
-visible to subsequent inputs, including from inside nested closures.
-The JIT REPL keeps a single `LLJIT` instance alive for the session
-and adds each input as a new module; top-level bindings are stored
-in a per-session dictionary that runtime helpers read through a
-thread-local pointer, so closures defined at the prompt can resolve
-top-level names at call time.
+If no script is provided, the REPL is launched automatically. It
+always runs on the interpreter — a prompt line is never a hot loop,
+so `--jit` applies to scripts only and passing it here just prints a
+note. Session state is preserved across inputs: `let`, `mut`, and
+`fn` declarations from one input are visible to subsequent inputs,
+including from inside nested closures.
 
-Free-variable references inside REPL-defined closures pay one hash
-lookup per access (the closure body emits a `repl_get` call instead
-of capturing a cell). Bodies declared inside a function literal —
-not at the prompt — keep the normal capture machinery and are
-unaffected.
+Each accepted input's result is echoed, except when it is `nil` —
+`println(...)`, a `fn` declaration and an `if` without an else branch
+all evaluate to nil, and echoing it would double every line of output.
+Output written by the program itself (`println`, `print`) is unaffected.
 
 The REPL persists input history across sessions. The path is
 `$CULEBRA_HISTFILE` if set, otherwise `$XDG_STATE_HOME/culebra/history`

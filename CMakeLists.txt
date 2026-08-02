@@ -1561,3 +1561,10 @@ add_test(NAME sys_argv_test
 add_test(NAME cli_input_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_input_test.sh
                  $<TARGET_FILE:culebra>)
+
+# What the REPL echoes (nil results are not), that a declaration's state
+# survives to the next input, and that an error doesn't end the session.
+# Reaching any of it needs a process with a piped stdin.
+add_test(NAME repl_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/repl_test.sh
+                 $<TARGET_FILE:culebra>)
