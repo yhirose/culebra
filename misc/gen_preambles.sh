@@ -20,13 +20,28 @@ gen() {
   done
 }
 if [ "${1:-}" = "--check" ]; then
-  if gen | diff -u "$OUT" - >/dev/null 2>&1; then
+  # Compare two real files rather than piping the generated text in as `-`:
+  # BSD diff spools a stdin operand through the per-user darwin temp dir, which
+  # a sandboxed run cannot write. That failure used to be swallowed by the
+  # `2>&1` and reported as "out of sync", which sends you to regenerate a header
+  # that was already correct. Keep the three outcomes apart: same, different,
+  # and could-not-compare.
+  tmp=$(mktemp "${TMPDIR:-/tmp}/gen_preambles.XXXXXX")
+  tmpdiff=$(mktemp "${TMPDIR:-/tmp}/gen_preambles.XXXXXX")
+  trap 'rm -f "$tmp" "$tmpdiff"' EXIT
+  gen > "$tmp"
+  diff -u "$OUT" "$tmp" > "$tmpdiff" 2>&1 && status=0 || status=$?
+  if [ "$status" -eq 0 ]; then
     echo "stdlib_preambles.gen.h in sync"
-  else
+  elif [ "$status" -eq 1 ]; then
     echo "ERROR: stdlib_preambles.gen.h is out of sync with src/preambles/*.cul." >&2
     echo "Run \`just gen-preambles\`." >&2
-    gen | diff -u "$OUT" - >&2 || true
+    cat "$tmpdiff" >&2
     exit 1
+  else
+    echo "ERROR: could not compare $OUT (diff exited $status):" >&2
+    cat "$tmpdiff" >&2
+    exit "$status"
   fi
 else
   gen > "$OUT"
