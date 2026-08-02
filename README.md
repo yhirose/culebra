@@ -5,10 +5,20 @@ Culebra Programming Language
 
 > **Status:** pre-1.0 and under active development — APIs and syntax may change.
 
-*This page in [日本語](README.ja.md).*
-
 A scripting language small enough to embed, fast enough for Tensor,
 simple enough for agents.
+
+```culebra
+let people = [
+  { name: 'Taro', age: 30 },
+  { name: 'John', age: 45 },
+  { name: 'Ada',  age: 36 },
+]
+
+for p in people.sorted_by(|p| p.age) {
+  println("{p.name} is {p.age} years old")
+}
+```
 
 Run it as a script, JIT it for speed, or ship it as a standalone
 binary — from one file, with no compile step:

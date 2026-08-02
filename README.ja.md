@@ -5,10 +5,20 @@ Culebraプログラミング言語
 
 > **ステータス:** 1.0前・活発に開発中 — APIと構文は変わることがあります。
 
-*このページの[English](README.md)版。*
-
 埋め込めるだけ小さく、Tensorを回せるだけ速く、エージェントが扱えるだけ
 単純なスクリプト言語です。
+
+```culebra
+let people = [
+  { name: 'Taro', age: 30 },
+  { name: 'John', age: 45 },
+  { name: 'Ada',  age: 36 },
+]
+
+for p in people.sorted_by(|p| p.age) {
+  println("{p.name} is {p.age} years old")
+}
+```
 
 スクリプトとして実行する、JITで速くする、単体バイナリとして配る —
 どれも1ファイルから、コンパイル手順なしで行えます:
