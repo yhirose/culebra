@@ -1,16 +1,20 @@
 // Playground worker: owns the WASM instance so the page never blocks.
 // Stop = the main thread terminates this worker and spawns a fresh one.
 //
-// Two builds ship (see build.sh): culebra-full adds JSPI, needed for both
-// the WebGPU Tensor backend and the TUI tab's Term.read_key. It loads only
-// where a WebGPU device can actually be acquired — tensorlib's WebGPU init
-// crashes at module startup with no device handed in (a known gap, not
-// handled gracefully yet), so a browser with JSPI but no usable WebGPU
-// device falls back to the basic build and loses TUI too. That coupling is
-// a narrow edge case (WebGPU disabled/unavailable on an otherwise-current
-// browser), not the common one — pick by capability, never by browser
-// version (Chrome 137 shipping JSPI is exactly what broke version-sniffing
-// detectors elsewhere).
+// Two builds ship (see build.sh): culebra-full adds JSPI, which is what makes
+// the TUI tab's Term.read_key and Canvas.present able to wait — without it a
+// TUI script sees no keys and a Canvas game never yields to the worker's
+// message queue, so neither takes input. JSPI alone decides the build.
+//
+// The WebGPU device is a separate axis. It used to gate the build too, which
+// cost every JSPI browser that could not produce a device (Firefox on Linux,
+// hardware acceleration off, a VM) the interactive TUI and Canvas as well as
+// the GPU — a much larger loss than the one being avoided. tensorlib reports
+// gpu_available() false when no device is handed in and routes every op to
+// the CPU, so the full build is safe without one.
+//
+// Pick by capability, never by browser version (Chrome 137 shipping JSPI is
+// exactly what broke version-sniffing detectors elsewhere).
 const hasJSPI = typeof WebAssembly.Suspending === "function";
 
 // The device is acquired here, in JS, and handed to wasm fully formed, which
@@ -28,14 +32,19 @@ async function acquireDevice() {
   }
 }
 
-const device = await acquireDevice();
-const useFullBuild = device !== null;
+// Not awaited yet: the device no longer picks the build, so its two round
+// trips have nothing the import is waiting on and can run alongside it.
+const devicePromise = acquireDevice();
+const useFullBuild = hasJSPI;
 
 const { default: createCulebra } = await import(
   useFullBuild ? "./culebra-full.js" : "./culebra-basic.js"
 );
+// Only set the key when there is a device: emdawnwebgpu hands whatever it
+// finds under it to importJsDevice, which has no null check.
+const device = await devicePromise;
 const mod = await createCulebra(
-  useFullBuild ? { preinitializedWebGPUDevice: device } : {}
+  device ? { preinitializedWebGPUDevice: device } : {}
 );
 
 // --- TUI key/mouse input --------------------------------------------------
@@ -117,7 +126,13 @@ self.__canvasMouseButtons = 0;
 self.__musicLoaded = false;
 self.__musicPlaying = false;
 
-postMessage({ type: "ready", backend: useFullBuild ? "full" : "basic" });
+// Two independent facts now, so the page reports them separately: `backend`
+// is whether waits work (TUI keys, Canvas frames), `gpu` is where Tensor runs.
+postMessage({
+  type: "ready",
+  backend: useFullBuild ? "full" : "basic",
+  gpu: device !== null,
+});
 
 // Output streams live: wasm_main.cc's StreamingBuf posts "output" messages
 // directly (via EM_ASM's plain `postMessage`, i.e. this same worker's global

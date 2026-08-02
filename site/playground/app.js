@@ -234,12 +234,16 @@ function spawnWorker() {
       // the program runs, so send it as soon as the module is up.
       worker.postMessage({ type: "termSize", cols: TERM_COLS, rows: TERM_ROWS });
       runBtn.disabled = false;
-      // full = JSPI available: Tensor can reach WebGPU, and Term.read_key
-      // can wait for a real keypress so a TUI script is actually playable.
-      backendEl.textContent = msg.backend === "full" ? "Tensor: GPU" : "Tensor: CPU";
-      backendEl.title = msg.backend === "full"
-        ? "WebGPU + interactive TUI available — auto mode runs large tensor ops on the GPU"
-        : "Basic build (this browser lacks JSPI/WebGPU) — a TUI script runs non-interactively";
+      // Where Tensor runs and whether a TUI/Canvas script can take input are
+      // separate capabilities (worker.js) — the badge names the first, the
+      // tooltip names whichever one is degraded.
+      backendEl.textContent = msg.gpu ? "Tensor: GPU" : "Tensor: CPU";
+      backendEl.title =
+        msg.backend !== "full"
+          ? "This browser lacks JSPI — a TUI or Canvas script runs, but takes no input"
+          : msg.gpu
+            ? "Auto mode runs large tensor ops on the GPU"
+            : "No WebGPU device here, so every tensor op runs on the CPU";
       if (!running) setStatus("ready");
       maybeAutorun();
       return;
