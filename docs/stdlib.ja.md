@@ -3077,8 +3077,11 @@ srv.listen(8080)                 # ブロックする。Ctrl+C で停止
 | `get/post/put/delete/patch/options(pattern, handler)` | そのメソッドとルート`pattern`に`handler`（`fn(req)->response`）を登録。サーバを返す（チェーン可） |
 | `static(mount, dir)` | URLプレフィックス`mount`で静的ファイルを配信。`dir`はStringパス（ディスク上のディレクトリをライブ配信）または`Embed.dir(...)`記述子（AOTではバイナリに焼き込み — [Embed](#embed) 参照） |
 | `sink.write(chunk)` | （`stream:`クロージャ内）1チャンクを送出。クライアント切断時は`false`を返す |
-| `listen(port, host="0.0.0.0", workers=0)` | バインドして中断まで配信（呼び出しスレッドをブロック）。ハンドラはacceptループでなくworkerプールで動くので、遅いハンドラが新規接続の受付を止めない — ハンドラは **Sendable** 必須。`workers=0`（既定）はCPU連動のプールサイズ、正の数で固定 |
-| `listen_async(port, host="0.0.0.0", workers=0)` | 同上を背後プールで行い即return。停止は`stop()`。戻り値は実際にbindしたポート — `port`に`0`を渡すとOSが空きポートを選び、戻り値で受け取れる |
+| `bind(port, host="0.0.0.0") -> Long` | listenソケットを開き、実際に取れたポートを返す。`port=0`はOS任せのephemeral port。1回だけ、かつ配信開始後は不可 |
+| `serve(workers=0)` | バインド済みソケットでacceptループを回す（中断まで呼び出しスレッドをブロック）。ハンドラはacceptループでなくworkerプールで動くので、遅いハンドラが新規接続の受付を止めない — ハンドラは **Sendable** 必須。`workers=0`（既定）はCPU連動のプールサイズ、正の数で固定 |
+| `serve_async(workers=0)` | 同上を背後プールで行い即return。停止は`stop()` |
+| `listen(port, host="0.0.0.0", workers=0)` | `bind` + `serve`を1回で。停止するまで返らない |
+| `listen_async(port, host="0.0.0.0", workers=0) -> Long` | `bind` + `serve_async`。バインドしたポートを返す |
 | `stop()` | 背後（`listen_async`）サーバを停止しスレッドをjoin（別スレッドからも呼べる） |
 | `close()` | 配信を停止しサーバを解放（スコープを抜けたサーバはGCも閉じる） |
 
@@ -3204,6 +3207,49 @@ let srv_iso = Isolate.spawn(fn() {
 # … メインスレッドから Http.get("http://127.0.0.1:8080/health") …
 srv_iso.drop()                   # サーバに停止を通知して join
 ```
+
+**起動完了とポート番号を知る — `bind` + `serve`。** ブロッキング`listen`は返らない
+ので何も報告できません。「ソケットが開いた」ことも、`port 0`のときにOSが選んだ番号
+も伝えられません。2つに分けると、その両方が判明している地点が生まれます。**`bind`
+が返ること自体が起動完了の合図**です — ソケットはバックログ付きで開いているので、
+その後に張られた接続は`serve`がacceptを始める前でもカーネルが受けています。
+
+```culebra
+# doctest: skip
+let (tx, rx) = Channel.new(1)
+let srv_iso = Isolate.spawn(fn() {
+  let srv = Http.server()
+  srv.get("/health", fn(req) { "ok" })
+  tx.send(srv.bind(0))           # 0 = 空いているポート。番号を外へ
+  tx.drop()
+  srv.serve()                    # ここでブロック
+})
+tx.drop()                        # 親自身の sender コピー
+let base = "http://127.0.0.1:" + rx.recv().to_string()
+inspect(Http.get(base + "/health").body)     # => 'ok'
+srv_iso.drop()
+```
+
+ここにチャネル固有の話は何もありません。ポートはただの`Long`なので、ログに出すのも
+`Shared`に置くのもファイルに書くのも自由です。**ハンドラが自分のアドレスを知るには
+この値を捕捉するのが唯一の手段**でもあります — サーバハンドルは非Sendableなので
+`srv`を読むハンドラは弾かれますが、`Long`はそのままコピーされます。
+
+```culebra
+# doctest: skip
+let srv = Http.server()
+let port = srv.bind(0)
+Log.info("http server listening", { port: port })
+srv.get("/whoami", fn(req) { "http://127.0.0.1:" + port.to_string() })
+srv.serve(workers: 4)
+```
+
+呼び出しスレッド上なら`listen_async`だけで足ります（バインドしたポートを返すので）。
+分割が要るのは呼び出しがブロックする場面だけです。ルート登録は`bind`の前後どちらでも
+構いません（必要なのは`serve`の時点）。未バインドでの`serve`、2度目の`bind`、
+`bind`後の`listen`はいずれも捕捉可能な`HttpError`で、記録済みのルートは
+そのまま残るのでやり直せます。bindに失敗したハンドルも未バインドのまま残るので、
+別のポートを試せます。
 
 ### `Http.ws(url) -> Object`
 

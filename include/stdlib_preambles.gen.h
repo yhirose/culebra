@@ -736,19 +736,12 @@ inline constexpr const char* DESKTOP_MODULE_SOURCE = R"=culpre=(let _desktop_mod
   # A Tauri-shaped desktop facade: local HTTP server + native WebView + assets,
   # in one call.
   let run = fn(config) {
-    # A server whose bind failed can never bind again (its socket is
-    # decommissioned), so the port fallback below rebuilds from scratch
-    # instead of retrying the same handle.
-    let build = fn() {
-      let s = Http.server()
-      if config.has("assets") { s.static("/", config["assets"]) }
-      if config.has("routes") { config["routes"](s) }
-      s.post("/__quit", fn(req) { Webview.Window.quit(); "" })
-      s
-    }
     let workers = config.get("workers", 4)
 
-    let mut srv = build()
+    let srv = Http.server()
+    if config.has("assets") { srv.static("/", config["assets"]) }
+    if config.has("routes") { config["routes"](srv) }
+    srv.post("/__quit", fn(req) { Webview.Window.quit(); "" })
     # The server outlives every early exit from here on — a throw out of the
     # WebView would otherwise leave its workers holding the port for the rest
     # of the process.
@@ -761,9 +754,9 @@ inline constexpr const char* DESKTOP_MODULE_SOURCE = R"=culpre=(let _desktop_mod
         srv.listen_async(8731, workers: workers)
       } catch _ {
         # Default port taken (most likely another culebra desktop app): retry
-        # once on an OS-assigned free port. A non-bind startup error reproduces
-        # identically on the retry and propagates from there.
-        srv = build()
+        # once on an OS-assigned free port — a failed bind leaves the handle
+        # unbound and its routes recorded, so the same server serves the retry.
+        # A non-bind startup error reproduces identically here and propagates.
         srv.listen_async(0, workers: workers)
       }
     }

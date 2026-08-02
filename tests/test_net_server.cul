@@ -4,16 +4,21 @@
 // over loopback; dropping the isolate sets its interrupt flag, which the accept
 // loop polls and stops on. Same shape as tests/test_http_server.cul.
 //
-// A fixed port is used because the isolate can't hand its ephemeral port back
-// to the main thread here; the sequential-API test (test_net.cul) covers port 0.
+// The port is 0 (OS-chosen) and the isolate hands it back over a channel:
+// Net.listen() has already bound and set the backlog when it returns, so a
+// connection sent after rx.recv() is queued by the kernel even before serve()
+// starts accepting. That is both the bind-completion signal and the reason no
+// fixed port is needed — a concurrent gate on this machine cannot take it.
 // Output is identical across interp/JIT — no address, port or timing is
 // printed.
 
-PORT = 18811
 HOST = "127.0.0.1"
 
+let (tx, rx) = Channel.new(1)
 iso = Isolate.spawn(fn() {
-  let l = Net.listen(PORT, host: HOST)
+  let l = Net.listen(0, host: HOST)
+  tx.send(l.port)
+  tx.drop()
   // Each connection: read one line, echo it back uppercased. "boom" raises, to
   // prove one failing handler doesn't take the server (or its worker) down.
   l.serve(fn(conn) {
@@ -22,33 +27,19 @@ iso = Isolate.spawn(fn() {
     if line != nil { conn.write(line.upper() + "\n") }
   }, workers: 4)
 })
+tx.drop()                            // the parent's own sender copy
+PORT = rx.recv()
+if PORT == nil {
+  throw { kind: "AssertionError", message: "listener never bound" }
+}
 
-// The isolate may not have bound the port yet — retry until it answers. The
-// sleep is what makes this a wait: a refused loopback connect returns in
-// microseconds, so a bare attempt count spends its budget in about a
-// millisecond. Past two seconds the fixed port is taken rather than late, so
-// throw — a nil here would surface as a type error wherever the caller used it.
-// `_Time`, not `Time`: the facade would pull Duration/Instant into the JIT lane.
 fn ask(msg) {
-  mut attempt = 0
-  while attempt < 100 {
-    mut reply = nil
-    try {
-      let c = Net.connect(HOST, PORT, timeout: 2000)
-      c.set_timeout(2000)
-      c.write(msg + "\n")
-      reply = c.read_line()
-      c.close()
-    } catch e {
-      reply = nil
-    }
-    if reply != nil { return reply }
-    _Time.sleep(0.02)
-    attempt = attempt + 1
-  }
-  throw { kind: "AssertionError",
-          message: "no server on " + HOST + ":" + PORT.to_string() +
-                   " after 2s (port already taken?)" }
+  let c = Net.connect(HOST, PORT, timeout: 2000)
+  c.set_timeout(2000)
+  c.write(msg + "\n")
+  let reply = c.read_line()
+  c.close()
+  return reply
 }
 
 // --- the pool serves connection after connection ---

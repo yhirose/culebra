@@ -3174,8 +3174,11 @@ srv.listen(8080)                 # blocks; Ctrl+C to stop
 | `get/post/put/delete/patch/options(pattern, handler)` | register `handler` (a `fn(req)->response`) for that method and route `pattern`; returns the server (so calls chain) |
 | `static(mount, dir)` | serve static files at the URL prefix `mount`; `dir` is a String path (a live on-disk directory) or an `Embed.dir(...)` descriptor (baked into the binary under AOT — see [Embed](#embed)) |
 | `sink.write(chunk)` | (inside a `stream:` closure) push one chunk; returns `false` if the client has disconnected |
-| `listen(port, host="0.0.0.0", workers=0)` | bind and serve until interrupted (blocks the calling thread). Handlers run on a worker pool, never on the accept loop, so a slow handler can't block accepting new connections — and handlers must be **Sendable**. `workers=0` (default) picks a CPU-scaled pool size; pass a positive count to fix it |
-| `listen_async(port, host="0.0.0.0", workers=0)` | same, but serve on a background pool and return immediately; stop with `stop()`. Returns the port actually bound — pass `port` `0` to let the OS pick a free one and read it from the return value |
+| `bind(port, host="0.0.0.0") -> Long` | open the listening socket and return the port it got; `port=0` asks the OS for an ephemeral one. Once only, and not after the server has served |
+| `serve(workers=0)` | run the accept loop on a bound socket until interrupted (blocks the calling thread). Handlers run on a worker pool, never on the accept loop, so a slow handler can't block accepting new connections — and handlers must be **Sendable**. `workers=0` (default) picks a CPU-scaled pool size; pass a positive count to fix it |
+| `serve_async(workers=0)` | same, but serve on a background pool and return immediately; stop with `stop()` |
+| `listen(port, host="0.0.0.0", workers=0)` | `bind` + `serve` in one call. Returns only once stopped |
+| `listen_async(port, host="0.0.0.0", workers=0) -> Long` | `bind` + `serve_async`; returns the bound port |
 | `stop()` | stop a background (`listen_async`) server and join its thread (can be called from another thread) |
 | `close()` | stop serving and release the server (the GC also closes one that goes out of scope) |
 
@@ -3308,6 +3311,51 @@ let srv_iso = Isolate.spawn(fn() {
 # … use Http.get("http://127.0.0.1:8080/health") from the main thread …
 srv_iso.drop()                   # signals the server to stop, then joins
 ```
+
+**Knowing when it is up, and on which port — `bind` + `serve`.** A blocking
+`listen` never returns, so it can report nothing: neither "the socket is open"
+nor, for a `port 0` bind, which port the OS chose. Splitting the two gives a
+point between them where both are known. `bind` returning **is** the readiness
+signal — the socket is open with a backlog, so a connection made after it is
+queued by the kernel even before `serve` starts accepting.
+
+```culebra
+# doctest: skip
+let (tx, rx) = Channel.new(1)
+let srv_iso = Isolate.spawn(fn() {
+  let srv = Http.server()
+  srv.get("/health", fn(req) { "ok" })
+  tx.send(srv.bind(0))           # 0 = any free port; hand the number out
+  tx.drop()
+  srv.serve()                    # blocks here
+})
+tx.drop()                        # the parent's own sender copy
+let base = "http://127.0.0.1:" + rx.recv().to_string()
+inspect(Http.get(base + "/health").body)     # => 'ok'
+srv_iso.drop()
+```
+
+Nothing about that is channel-specific — the port is a plain `Long`, so log it,
+put it in a `Shared`, or write it to a file. It is also what a handler must
+capture to know its own address: the server handle is **non-Sendable**, so a
+handler that reads `srv` is rejected, while a captured `Long` copies fine.
+
+```culebra
+# doctest: skip
+let srv = Http.server()
+let port = srv.bind(0)
+Log.info("http server listening", { port: port })
+srv.get("/whoami", fn(req) { "http://127.0.0.1:" + port.to_string() })
+srv.serve(workers: 4)
+```
+
+On the calling thread `listen_async` is enough on its own — it returns the bound
+port, so the split is only needed where the call blocks. Routes may be registered
+either side of `bind`; only `serve` needs them in place. A `serve` on an unbound
+handle, a second `bind`, and a `listen` after `bind` are each a catchable
+`HttpError`, and leave the recorded routes intact for a later attempt. A bind
+that fails leaves the handle unbound rather than spent, so another port can be
+tried.
 
 ### `Http.ws(url) -> Object`
 

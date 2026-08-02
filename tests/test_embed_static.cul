@@ -4,13 +4,13 @@
 # identical across interp/JIT (no random / timing values printed). The server is
 # started with listen_async (serves on a background thread); stop() halts it.
 
-PORT = 18877
-BASE = "http://127.0.0.1:" + PORT.to_string()
-
 srv = Http.server()
 srv.static("/", Embed.dir("embed_assets"))
 srv.get("/api/ok", fn(req) { { content_type: "application/json", body: '{"ok":true}' } })
-srv.listen_async(PORT)   # returns immediately (bind is synchronous)
+# Port 0: the OS picks a free one (so a concurrent gate cannot take it) and
+# listen_async hands the number back.
+PORT = srv.listen_async(0)
+BASE = "http://127.0.0.1:" + PORT.to_string()
 
 # index.html at the mount root, with inferred content type
 r = Http.get(BASE + "/")

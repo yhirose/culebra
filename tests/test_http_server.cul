@@ -1,13 +1,28 @@
-# Http.server — v0 single-threaded HTTP server. The server blocks in listen(),
+# Http.server — v0 single-threaded HTTP server. The server blocks in serve(),
 # so it runs in an Isolate (its own thread + runtime) while the main thread
 # drives requests through the existing Http client over loopback. Dropping the
 # isolate handle sets its interrupt flag, which the server's accept loop polls
 # and stops on — giving a clean, deterministic shutdown. Output is identical
 # across interp/JIT (no random or timing-dependent values are printed).
+#
+# Every server here binds port 0 and reports the port the OS gave it. bind()
+# returning is both the port and the readiness signal: the socket is open with a
+# backlog, so a connection sent after it is queued even before serve() accepts.
+# That removes both hazards of a fixed port — another gate on this machine
+# cannot take it, and nothing has to guess when the bind finished.
 
-PORT = 18799
-BASE = "http://127.0.0.1:" + PORT.to_string()
+# The bound port, or a named failure. recv() yields nil when the channel closed
+# without a port, i.e. the isolate died before binding; without this the caller
+# would meet it as a type error on nil several lines later.
+fn bound_port(rx) {
+  let p = rx.recv()
+  if p == nil {
+    throw { kind: "AssertionError", message: "server never bound" }
+  }
+  return p
+}
 
+let (tx, rx) = Channel.new(1)
 iso = Isolate.spawn(fn() {
   let srv = Http.server()
   srv.get("/", fn(req) { "Hello, world!" })
@@ -45,31 +60,14 @@ iso = Isolate.spawn(fn() {
     { body: "x", stream: fn(sink) { sink.write("y") } }
   })
   srv.get("/stream_bad", fn(req) { { stream: 42 } })
-  srv.listen(PORT)
+  tx.send(srv.bind(0))               # bind first, hand the port to the parent
+  tx.drop()
+  srv.serve()
 })
+tx.drop()                            # the parent's copy; the isolate holds one
+BASE = "http://127.0.0.1:" + bound_port(rx).to_string()
 
-# Wait for a spawned server to answer. Sleeping is what makes this a wait: a
-# refused loopback connect returns in microseconds, so a bare attempt count
-# spends its whole budget in about a millisecond. Two seconds is plenty for an
-# isolate to start; past that the port is not late but taken — these are fixed
-# ports and `just test-dev` holds no machine lock, so a concurrent gate elsewhere
-# binds them first and no amount of waiting helps. Hence the throw, which also
-# keeps a lost race from reaching the caller as a type error on nil.
-# `_Time`, not `Time`: naming the facade pulls Duration/Instant into the JIT
-# lane for 0.4 s, and the primitive is all of what we need.
-fn connect_when_up(url, dial) {
-  mut a = 0
-  while a < 100 {
-    let r = try { dial(url) } catch _ { nil }
-    if r != nil { return r }
-    _Time.sleep(0.02)
-    a = a + 1
-  }
-  throw { kind: "AssertionError",
-          message: "no server on " + url + " after 2s (port already taken?)" }
-}
-
-r = connect_when_up(BASE + "/", Http.get)
+r = Http.get(BASE + "/")
 inspect("GET / -> " + r.status.to_string() + " | " + r.body)
 
 r2 = Http.get(BASE + "/users/42")
@@ -120,17 +118,19 @@ inspect("server stopped")
 # runtime with the handlers rebuilt onto it (so they must be Sendable), giving
 # true parallel request handling. Parallel.map preserves input order, so the
 # output is deterministic across backends.
-PORT2 = 18856
-BASE2 = "http://127.0.0.1:" + PORT2.to_string()
+let (tx2, rx2) = Channel.new(1)
 iso2 = Isolate.spawn(fn() {
   let srv = Http.server()
   srv.get("/sq/:n", fn(req) {
     let n = to_long(req.params["n"])
     (n * n).to_string()
   })
-  srv.listen(PORT2, workers: 4)
+  tx2.send(srv.bind(0))
+  tx2.drop()
+  srv.serve(workers: 4)
 })
-connect_when_up(BASE2 + "/sq/0", Http.get)
+tx2.drop()
+BASE2 = "http://127.0.0.1:" + bound_port(rx2).to_string()
 squares = Parallel.map([1, 2, 3, 4, 5, 6, 7, 8], fn(i) {
   Http.get(BASE2 + "/sq/" + i.to_string()).body
 })
@@ -138,16 +138,21 @@ inspect("concurrent squares: " + squares.to_string())
 iso2.drop()
 inspect("pool stopped")
 
-# --- A non-Sendable handler is rejected at listen(workers>1) with SendError,
-# before binding — surfaced identically across backends.
+# --- A non-Sendable handler is rejected with SendError when serving starts (the
+# check is at serve, so listen() has bound by then) — identical across backends.
 bad = Http.server()
 mut hits = 0
 bad.get("/", fn(req) { hits = hits + 1; "x" })
 try {
-  bad.listen(18857, workers: 2)
+  bad.listen(0, workers: 2)
 } catch e {
   inspect("non-sendable handler -> " + e.kind)
 }
+# The routes survive the rejection, so the retry reaches the same verdict rather
+# than quietly serving an empty server.
+mut bad2 = "none"
+try { bad.serve_async(workers: 2) } catch e { bad2 = e.kind }
+inspect("non-sendable retry -> " + bad2)
 bad.close()
 
 # Port-free checks: handle methods chain (return the handle), and close is
@@ -164,8 +169,7 @@ inspect("double close ok")
 # client connects with Http.ws and the same handle shape drives both. A separate
 # route pushes messages then returns, which the client drains with for-in. Under
 # a worker pool so each connection occupies its own worker.
-WPORT = 18902
-WBASE = "ws://127.0.0.1:" + WPORT.to_string()
+let (wtx, wrx) = Channel.new(1)
 wiso = Isolate.spawn(fn() {
   let srv = Http.server()
   srv.ws("/echo", fn(req, ws) {
@@ -182,10 +186,14 @@ wiso = Isolate.spawn(fn() {
     mut i = 0
     while i < 3 { ws.send("p" + i.to_string()); i = i + 1 }
   })
-  srv.listen(WPORT, workers: 2)
+  wtx.send(srv.bind(0))
+  wtx.drop()
+  srv.serve(workers: 2)
 })
+wtx.drop()
+WBASE = "ws://127.0.0.1:" + bound_port(wrx).to_string()
 
-we = connect_when_up(WBASE + "/echo", Http.ws)
+we = Http.ws(WBASE + "/echo")
 we.send("one")
 inspect("ws echo -> " + we.receive())
 we.send("two")
@@ -224,33 +232,33 @@ inspect("ws stopped")
 # --- listen_async + stop: a background server with no isolate wrapper. The
 # server serves on its own thread while the main thread drives requests, then
 # stop() halts it cross-thread and joins. listen_async always runs handlers on a
-# worker pool (off this thread), so they must be Sendable.
-APORT = 18920
-ABASE = "http://127.0.0.1:" + APORT.to_string()
+# worker pool (off this thread), so they must be Sendable. It returns the bound
+# port, so bind/serve is only needed where the call blocks.
 asrv = Http.server()
 asrv.get("/", fn(req) { "async-hi" })
 asrv.get("/sq/:n", fn(req) { let n = to_long(req.params["n"]); (n * n).to_string() })
-asrv.listen_async(APORT, workers: 2)      # returns immediately
+APORT = asrv.listen_async(0, workers: 2)   # returns the port immediately
+ABASE = "http://127.0.0.1:" + APORT.to_string()
 
-ar = connect_when_up(ABASE + "/", Http.get)
+ar = Http.get(ABASE + "/")
 inspect("listen_async GET / -> " + ar.status.to_string() + " | " + ar.body)
 inspect("listen_async route -> " + Http.get(ABASE + "/sq/9").body)
 # A server is single-use: starting it again (even on a free port) is a catchable
 # error, not a crash/hang — serve again with a fresh Http.server().
 mut reerr = "none"
-try { asrv.listen_async(18923) } catch e { reerr = e.kind }
+try { asrv.listen_async(0) } catch e { reerr = e.kind }
 inspect("listen_async twice -> " + reerr)
 asrv.stop()                                # cross-thread stop + join
 inspect("async stopped")
 mut reerr2 = "none"
-try { asrv.listen_async(18924) } catch e { reerr2 = e.kind }
+try { asrv.listen_async(0) } catch e { reerr2 = e.kind }
 inspect("relisten after stop -> " + reerr2)
 
-# After stop the port is free: a fresh server binds and serves it.
+# After stop the port is free: a fresh server binds that same port and serves it.
 asrv2 = Http.server()
 asrv2.get("/", fn(req) { "rebound" })
 asrv2.listen_async(APORT)
-inspect("rebind -> " + connect_when_up(ABASE + "/", Http.get).body)
+inspect("rebind -> " + Http.get(ABASE + "/").body)
 asrv2.stop()
 
 # A non-Sendable handler is rejected at listen_async (it runs off this thread).
@@ -258,7 +266,7 @@ abad = Http.server()
 mut acount = 0
 abad.get("/", fn(req) { acount = acount + 1; "x" })
 try {
-  abad.listen_async(18921)
+  abad.listen_async(0)
 } catch e {
   inspect("async non-sendable -> " + e.kind)
 }
@@ -268,19 +276,19 @@ abad.close()
 abind = Http.server()
 abind.get("/", fn(req) { "x" })
 mut abinderr = "none"
-try { abind.listen_async(18922, "192.0.2.1") } catch e { abinderr = e.kind }
+try { abind.listen_async(0, "192.0.2.1") } catch e { abinderr = e.kind }
 inspect("async bind fail -> " + abinderr)
 abind.close()
 
 # --- exclusive bind: a port with a live listener must refuse a second server
 # loudly. (cpp-httplib's default socket options set SO_REUSEPORT, under which a
 # second bind silently succeeds and the two processes shadow/split requests —
-# culebra overrides them with exclusive ones.)
-XPORT = 18930
-XBASE = "http://127.0.0.1:" + XPORT.to_string()
+# culebra overrides them with exclusive ones.) The holder takes an OS-assigned
+# port; the intruder asks for exactly that one.
 xsrv = Http.server()
 xsrv.get("/", fn(req) { "holder" })
-xsrv.listen_async(XPORT, workers: 1)
+XPORT = xsrv.listen_async(0, workers: 1)
+XBASE = "http://127.0.0.1:" + XPORT.to_string()
 xsrv2 = Http.server()
 xsrv2.get("/", fn(req) { "intruder" })
 mut xerr = "none"
@@ -298,3 +306,54 @@ zport = zsrv.listen_async(0, workers: 1)
 inspect("port 0 assigns -> " + (zport > 0 && zport <= 65535).to_string())
 inspect("port 0 serves -> " + Http.get("http://127.0.0.1:" + zport.to_string() + "/").body)
 zsrv.stop()
+
+# --- bind / serve as separate steps. serve() needs a bound socket, bind() is
+# once-only, and listen() includes a bind — each mis-sequencing is a catchable
+# HttpError naming what is wrong, not a crash or a hang.
+ssrv = Http.server()
+ssrv.get("/", fn(req) { "split" })
+mut unbound = "none"
+try { ssrv.serve_async() } catch e { unbound = e.message }
+inspect("serve before bind -> " + unbound)
+
+# A rejected serve leaves the recorded routes alone — the same handle can serve
+# them afterwards (below). Both backends must agree on that, so a failed attempt
+# neither consumes the records nor half-installs their trampolines.
+SPORT = ssrv.bind(0)
+mut rebound = "none"
+try { ssrv.bind(0) } catch e { rebound = e.message }
+inspect("bind twice -> " + rebound)
+mut relisten = "none"
+try { ssrv.listen_async(0) } catch e { relisten = e.message }
+inspect("listen after bind -> " + relisten)
+
+# Routes registered after bind still take effect — bind only opens the socket.
+ssrv.get("/late", fn(req) { "registered after bind" })
+ssrv.serve_async(workers: 2)
+SBASE = "http://127.0.0.1:" + SPORT.to_string()
+inspect("split serve -> " + Http.get(SBASE + "/").body)
+inspect("route after bind -> " + Http.get(SBASE + "/late").body)
+ssrv.stop()
+
+# A failed bind leaves the handle usable, so "try the next port" works. (cpp-httplib
+# decommissions the server on a failed bind and then refuses every later one, so
+# this only holds because http_server_bind clears that.)
+fsrv = Http.server()
+fsrv.get("/", fn(req) { "recovered" })
+mut firstbind = "none"
+try { fsrv.bind(0, "192.0.2.1") } catch e { firstbind = e.kind }
+FPORT = fsrv.bind(0)
+fsrv.serve_async(workers: 2)
+inspect("bind after failed bind -> " + firstbind + " | " +
+     Http.get("http://127.0.0.1:" + FPORT.to_string() + "/").body)
+fsrv.stop()
+
+# A missing or wrong-typed port is rejected the same way on bind and listen
+# (these unwind through the handle-method path, so they also pin its refcounting).
+fn error_kind(f) { return try { f(); "none" } catch e { e.kind } }
+esrv = Http.server()
+inspect("bind-missing -> " + error_kind(fn() { esrv.bind() }))
+inspect("bind-type -> " + error_kind(fn() { esrv.bind("80") }))
+inspect("listen-missing -> " + error_kind(fn() { esrv.listen() }))
+inspect("workers-type -> " + error_kind(fn() { esrv.serve_async(workers: "4") }))
+esrv.close()

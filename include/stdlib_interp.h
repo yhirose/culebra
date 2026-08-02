@@ -5272,25 +5272,44 @@ inline thread_local std::unordered_map<int64_t, std::vector<InterpRouteRecord>>
     g_srv_routes;
 
 // Defined after isolate.h is included (it needs sendable::serialize, since
-// handlers always run on a worker pool); forward-declared here so the listen
-// handle method can call it. Binds and serves; returns nil, or throws on a bind
-// / Sendable error.
-inline Value _http_server_do_listen(int64_t id, const std::string& host,
-                                    int port, int64_t workers, bool async,
-                                    int64_t line, int64_t col);
+// handlers always run on a worker pool); forward-declared here so the serve
+// handle methods can call it. Registers the routes and serves; returns nil, or
+// throws on a Sendable / serve error. `ctx` names the method the user called
+// ("server.serve" / "server.listen") so the error says where it came from.
+inline Value _http_server_do_serve(int64_t id, int64_t workers, bool async,
+                                   const char* ctx, int64_t line, int64_t col);
+
+// `nil` means "unset" for the optional listen/serve params, as elsewhere in the
+// Http module — the declared defaults cover an omitted argument, these cover an
+// explicit nil.
+inline std::string _http_server_host_arg(const Value& v) {
+  return v.type == Value::Nil ? std::string("0.0.0.0")
+                              : std::string(v.to_string_view());
+}
+inline int64_t _http_server_workers_arg(const Value& v) {
+  return v.type == Value::Nil ? 0 : v.to_long();  // 0 = CPU-scaled
+}
+inline int64_t _http_server_bind_or_throw(int64_t id, const std::string& host,
+                                          int port, const char* ctx,
+                                          int64_t line, int64_t col) {
+  std::string err;
+  int bound = culebra::http::http_server_bind(id, host, port, err);
+  if (bound < 0)
+    throw CulebraError("HttpError", std::format("{}: {}", ctx, err), line, col);
+  return bound;
+}
 
 // The Http.server handle: record routes (get/post/…) and serve files (static),
-// then listen() to register the routes and block accepting connections. Handlers
-// always run on a worker pool (each worker thread gets its own runtime with the
-// handlers rebuilt onto it), so they must be Sendable; the accept loop never
-// runs a handler. `workers` defaults to 0 = a CPU-scaled pool size (see
-// default_http_workers); pass a positive count to fix it. See _http_server_do_listen.
+// then bind() to open the socket and serve() to accept on it — or listen(),
+// which does both. Handlers always run on a worker pool (each worker thread gets
+// its own runtime with the handlers rebuilt onto it), so they must be Sendable;
+// the accept loop never runs a handler. `workers` defaults to 0 = a CPU-scaled
+// pool size (see default_http_workers); pass a positive count to fix it.
 inline Value make_http_server_handle(int64_t id) {
   using namespace std::literals;
   static const auto host_default =
       std::make_shared<Value>(Value(std::string("0.0.0.0")));
-  static const auto workers_default =
-      std::make_shared<Value>(Value(static_cast<int64_t>(0)));  // 0 = CPU-scaled
+  const auto& workers_default = kw_default_zero();  // 0 = CPU-scaled
   ObjectValue h;
   h.initialize("_id", Value(static_cast<int64_t>(id)), false);
   h.initialize("__nonsendable__", Value(true), false);
@@ -5367,21 +5386,59 @@ inline Value make_http_server_handle(int64_t id) {
           "Object"sv)),
       false);
 
-  // listen(port, host, workers) — register routes, bind, and serve. `async`
-  // false blocks until Ctrl+C; true returns immediately and serves on a
-  // background thread (stop with stop()). Shared body for both methods.
+  // bind(port, host="0.0.0.0") — open the listening socket and return the port
+  // it got (port 0 = an OS-chosen one). Routes may be registered either side of
+  // it; only serve() needs them in place.
+  h.initialize(
+      "bind",
+      Value(FunctionValue(
+          {{"port", false, ""sv}, {"host", false, ""sv, nullptr, host_default}},
+          [sid](std::shared_ptr<Environment> env) -> Value {
+            return Value(_http_server_bind_or_throw(
+                sid(env), _http_server_host_arg(env->get("host")),
+                static_cast<int>(env->get("port").to_long()), "server.bind",
+                env->get("__LINE__").to_long(),
+                env->get("__COLUMN__").to_long()));
+          },
+          "Long"sv)),
+      false);
+
+  // serve(workers=0) / serve_async(workers=0) — register the routes and run the
+  // accept loop on a bound socket. `async` false blocks until Ctrl+C; true
+  // returns immediately and serves on a background thread (stop with stop()).
+  std::vector<FunctionValue::Parameter> serve_params = {
+      {"workers", false, ""sv, nullptr, workers_default}};
+  auto do_serve = [sid](bool async) {
+    return [sid, async](std::shared_ptr<Environment> env) -> Value {
+      return _http_server_do_serve(
+          sid(env), _http_server_workers_arg(env->get("workers")), async,
+          async ? "server.serve_async" : "server.serve",
+          env->get("__LINE__").to_long(), env->get("__COLUMN__").to_long());
+    };
+  };
+  h.initialize("serve",
+               Value(FunctionValue(serve_params, do_serve(false), "Nil"sv)),
+               false);
+  h.initialize("serve_async",
+               Value(FunctionValue(serve_params, do_serve(true), "Nil"sv)),
+               false);
+
+  // listen(port, host, workers) — bind + serve in one call. The blocking form
+  // returns nil (it only returns once stopped); the async form returns the bound
+  // port, which is the only way to learn it when port 0 was asked for.
   auto do_listen = [sid](bool async) {
     return [sid, async](std::shared_ptr<Environment> env) -> Value {
       int64_t line = env->get("__LINE__").to_long();
       int64_t col = env->get("__COLUMN__").to_long();
-      int port = static_cast<int>(env->get("port").to_long());
-      const auto& hv = env->get("host");
-      std::string host = hv.type == Value::Nil ? std::string("0.0.0.0")
-                                               : std::string(hv.to_string_view());
-      const auto& wv = env->get("workers");
-      int64_t workers = wv.type == Value::Nil ? 0 : wv.to_long();  // 0 = CPU-scaled
-      return _http_server_do_listen(sid(env), host, port, workers, async,
-                                    line, col);
+      const char* ctx = async ? "server.listen_async" : "server.listen";
+      int64_t self_id = sid(env);
+      int64_t bound = _http_server_bind_or_throw(
+          self_id, _http_server_host_arg(env->get("host")),
+          static_cast<int>(env->get("port").to_long()), ctx, line, col);
+      Value r = _http_server_do_serve(
+          self_id, _http_server_workers_arg(env->get("workers")), async, ctx,
+          line, col);
+      return async ? Value(bound) : r;
     };
   };
   std::vector<FunctionValue::Parameter> listen_params = {
@@ -5393,9 +5450,8 @@ inline Value make_http_server_handle(int64_t id) {
   h.initialize("listen", Value(FunctionValue(listen_params, do_listen(false),
                                              "Nil"sv)),
                false);
-  // listen_async(port, host="0.0.0.0", workers=0) — returns immediately, serves
-  // on a background pool; handlers must be Sendable (they run off this thread).
-  // Returns the port actually bound (the OS's pick when port is 0).
+  // listen_async(port, host="0.0.0.0", workers=0) -> Long — returns the bound
+  // port at once; handlers must be Sendable (they run off this thread).
   h.initialize("listen_async",
                Value(FunctionValue(listen_params, do_listen(true), "Long"sv)),
                false);
@@ -7665,39 +7721,41 @@ inline thread_local std::shared_ptr<Interpreter> g_srv_w_interp;
 inline thread_local std::shared_ptr<Environment> g_srv_w_base;
 inline thread_local std::vector<Value> g_srv_w_handlers;
 
-inline Value _http_server_do_listen(
-    int64_t id, const std::string& host, int port, int64_t workers, bool async,
-    int64_t line, int64_t col) {
-  // Move the records out of the thread_local map and drop the entry now: the
-  // RouteHandlers below capture their own handler copies (workers<=1) or the
-  // serialized SendNodes (workers>1), so the records are only needed during
-  // registration. Leaving Values in a thread_local map past this point risks a
-  // double-free — the map's destructor runs at thread exit, AFTER the GC heap
-  // has already torn down (and freed those Values).
-  std::vector<InterpRouteRecord> recs = std::move(g_srv_routes[id]);
-  g_srv_routes.erase(id);
+inline Value _http_server_do_serve(int64_t id, int64_t workers, bool async,
+                                   const char* ctx, int64_t line, int64_t col) {
   std::string err;
+  // Reject an unservable handle before touching the records, so a rejected
+  // serve() leaves the routes registrable by a later one.
+  if (!culebra::http::http_server_serve_ready(id, err))
+    throw CulebraError("HttpError", std::format("{}: {}", ctx, err), line, col);
   // Handlers always run on a worker pool (off the accept loop) and so must be
-  // Sendable: serialize each once here (the Sendable check happens at listen),
-  // and each worker thread rebuilds them onto its own heap. `async` only selects
-  // blocking vs background serving below — not the handler model.
+  // Sendable: serialize each once here (that is the Sendable check), and each
+  // worker thread rebuilds them onto its own heap. `async` only selects blocking
+  // vs background serving below — not the handler model. Read the records in
+  // place: a SendError must leave them recorded, as the JIT side does.
   {
-    // Serialize each handler once (the Sendable check happens here, at listen);
-    // the worker threads each rebuild them onto their own heap.
+    auto& recorded = g_srv_routes[id];
     auto snodes = std::make_shared<std::vector<sendable::SendNode>>();
-    for (const auto& rec : recs) {
+    for (const auto& rec : recorded) {
       try {
         sendable::SerCtx sc;
         snodes->push_back(sendable::serialize(rec.handler, sc));
       } catch (CulebraError& e) {
         throw CulebraError(
             "SendError",
-            std::format(
-                "server.listen: handler for {} {} is not Sendable: {}",
-                rec.method, rec.pattern, e.what()),
+            std::format("{}: handler for {} {} is not Sendable: {}", ctx,
+                        rec.method, rec.pattern, e.what()),
             line, col);
       }
     }
+    // Past the Sendable check, move the records out of the thread_local map and
+    // drop the entry: the RouteHandlers below capture the serialized
+    // SendNodes, so the records are only needed during registration. Leaving
+    // Values in a thread_local map past this point risks a double-free — the
+    // map's destructor runs at thread exit, AFTER the GC heap has already torn
+    // down (and freed those Values).
+    std::vector<InterpRouteRecord> recs = std::move(recorded);
+    g_srv_routes.erase(id);
     // One trampoline per route; each reads the calling worker thread's table.
     for (size_t i = 0; i < recs.size(); i++) {
       size_t ri = i;
@@ -7739,8 +7797,8 @@ inline Value _http_server_do_listen(
                                          std::move(rh), rerr);
       }
       if (!rerr.empty())
-        throw CulebraError("HttpError", std::format("server.listen: {}", rerr),
-                           line, col);
+        throw CulebraError("HttpError", std::format("{}: {}", ctx, rerr), line,
+                           col);
     }
     auto setup = [snodes]() {
       g_srv_w_interp = std::make_shared<Interpreter>();
@@ -7758,21 +7816,13 @@ inline Value _http_server_do_listen(
       g_srv_w_base.reset();
       g_srv_w_interp.reset();
     };
-    bool ok = async ? culebra::http::http_server_listen_async(
-                          id, host, port, static_cast<int>(workers), setup,
-                          teardown, err)
-                    : culebra::http::http_server_listen(
-                          id, host, port, static_cast<int>(workers), setup,
-                          teardown, err);
+    bool ok = async ? culebra::http::http_server_serve_async(
+                          id, static_cast<int>(workers), setup, teardown, err)
+                    : culebra::http::http_server_serve(
+                          id, static_cast<int>(workers), setup, teardown, err);
     if (!ok)
-      throw CulebraError("HttpError", std::format("server.listen: {}", err),
-                         line, col);
-    // listen_async returns the port actually bound — the OS's pick when the
-    // requested port was 0. Blocking listen only returns once the server has
-    // stopped, so a port is of no use there; keep it nil.
-    if (async)
-      return Value(static_cast<int64_t>(
-          culebra::http::http_server_bound_port(id)));
+      throw CulebraError("HttpError", std::format("{}: {}", ctx, err), line,
+                         col);
     return Value();
   }
 }

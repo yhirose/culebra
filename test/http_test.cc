@@ -508,6 +508,33 @@ int main() {
     culebra::http::g_http_sinks.invalidate(id2);
   }
 
+  // A handle that bound and never served still owns its listening socket, and
+  // close must release it. cpp-httplib gated Server::stop()'s socket teardown on
+  // is_running_, so this leaked one fd (and held the port) per bind — reachable
+  // only since bind became a call of its own. Linux-only: it needs /proc to
+  // count descriptors, and the fix is platform-independent.
+#ifdef __linux__
+  {
+    auto open_fds = [] {
+      size_t n = 0;
+      for (const auto& e :
+           std::filesystem::directory_iterator("/proc/self/fd")) {
+        (void)e;
+        n++;
+      }
+      return n;
+    };
+    size_t before = open_fds();
+    for (int i = 0; i < 20; i++) {
+      int64_t id = culebra::http::http_server_open();
+      std::string err;
+      CHECK(culebra::http::http_server_bind(id, "127.0.0.1", 0, err) > 0);
+      culebra::http::http_server_close(id);
+    }
+    CHECK(open_fds() == before);
+  }
+#endif
+
   std::printf("\nhttp: %d passed, %d failed\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

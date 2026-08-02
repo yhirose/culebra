@@ -5117,10 +5117,15 @@ CULEBRA_RT_INLINE void _jit_http_server_static(JitValue* __ret, JitClosure*, int
 // Register the recorded routes and serve. Handlers always run on a worker pool
 // (serialized once here, rebuilt per worker — so they must be Sendable); the
 // accept loop never runs a handler. `async` selects background vs blocking serve.
-inline JitValue _jit_http_server_do_listen(int64_t id, std::string host,
-                                           int port, int64_t workers, bool async) {
-  auto& recs = g_jit_srv_routes[id];
+inline JitValue _jit_http_server_do_serve(int64_t id, int64_t workers,
+                                          bool async, const char* ctx) {
   std::string err;
+  // Reject an unservable handle before installing any route trampoline, so a
+  // rejected serve() leaves the handle exactly as it was.
+  if (!culebra::http::http_server_serve_ready(id, err))
+    throw culebra::CulebraError("HttpError", std::format("{}: {}", ctx, err), 0,
+                                0);
+  auto& recs = g_jit_srv_routes[id];
   {
     auto snodes = std::make_shared<std::vector<sendable::SendNode>>();
     for (const auto& rec : recs) {
@@ -5130,9 +5135,8 @@ inline JitValue _jit_http_server_do_listen(int64_t id, std::string host,
       } catch (culebra::CulebraError& e) {
         throw culebra::CulebraError(
             "SendError",
-            std::format(
-                "server.listen: handler for {} {} is not Sendable: {}",
-                rec.method, rec.pattern, e.what()),
+            std::format("{}: handler for {} {} is not Sendable: {}", ctx,
+                        rec.method, rec.pattern, e.what()),
             0, 0);
       }
     }
@@ -5186,8 +5190,7 @@ inline JitValue _jit_http_server_do_listen(int64_t id, std::string host,
       }
       if (!rerr.empty())
         throw culebra::CulebraError("HttpError",
-                                    std::format("server.listen: {}", rerr), 0,
-                                    0);
+                                    std::format("{}: {}", ctx, rerr), 0, 0);
     }
     auto setup = [snodes]() {
       g_jit_srv_w_handlers.clear();
@@ -5205,45 +5208,94 @@ inline JitValue _jit_http_server_do_listen(int64_t id, std::string host,
         culebra_runtime_value_release(h.tag, h.data);
       g_jit_srv_w_handlers.clear();
     };
-    bool ok = async ? culebra::http::http_server_listen_async(
-                          id, host, port, static_cast<int>(workers), setup,
-                          teardown, err)
-                    : culebra::http::http_server_listen(
-                          id, host, port, static_cast<int>(workers), setup,
-                          teardown, err);
+    bool ok = async ? culebra::http::http_server_serve_async(
+                          id, static_cast<int>(workers), setup, teardown, err)
+                    : culebra::http::http_server_serve(
+                          id, static_cast<int>(workers), setup, teardown, err);
     if (!ok)
-      throw culebra::CulebraError("HttpError",
-                                  std::format("server.listen: {}", err), 0, 0);
-    // listen_async returns the port actually bound — the OS's pick when the
-    // requested port was 0. Blocking listen only returns once the server has
-    // stopped, so a port is of no use there; keep it nil.
-    if (async)
-      return {TAG_LONG, culebra::http::http_server_bound_port(id)};
+      throw culebra::CulebraError("HttpError", std::format("{}: {}", ctx, err),
+                                  0, 0);
     return {TAG_NIL, 0};
   }
 }
 
-// Shared body for listen (async=false, blocks) and listen_async (returns).
-inline JitValue _jit_http_server_listen_impl(JitValue self, int64_t n,
-                                             JitValue* args, bool async) {
-  int64_t id =
-      _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "port");
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+CULEBRA_RT_INLINE int64_t _jit_http_server_id(JitValue self) {
+  return _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
+}
+
+// args[0] = port, args[1] = host. Shared by bind and listen. The caller has
+// already checked that port is present (that check must run before the self
+// guard exists — _jit_file_missing_arg releases self itself).
+inline int64_t _jit_http_server_bind_args(int64_t id, int64_t n, JitValue* args,
+                                          const char* ctx) {
   if (args[0].tag != TAG_LONG)
     culebra::throw_type_mismatch("Long", _culebra_tag_name(args[0].tag), 0, 0);
-  int port = static_cast<int>(args[0].data);
   std::string host = "0.0.0.0";
   if (_jit_file_arg_present(n, args, 1) && args[1].tag != TAG_NIL)
     host = std::string(_culebra_str_view(args[1].tag, args[1].data));
-  int64_t workers = 0;  // 0 = CPU-scaled pool (default_http_workers)
-  if (_jit_file_arg_present(n, args, 2) && args[2].tag != TAG_NIL) {
-    if (args[2].tag != TAG_LONG)
-      culebra::throw_type_mismatch("Long", _culebra_tag_name(args[2].tag), 0,
-                                   0);
-    workers = args[2].data;
-  }
-  return _jit_http_server_do_listen(id, host, port, workers, async);
+  std::string err;
+  int bound = culebra::http::http_server_bind(
+      id, host, static_cast<int>(args[0].data), err);
+  if (bound < 0)
+    throw culebra::CulebraError("HttpError", std::format("{}: {}", ctx, err), 0,
+                                0);
+  return bound;
+}
+
+// `workers` at args[idx]; absent / nil = 0 = the CPU-scaled pool.
+inline int64_t _jit_http_server_workers_arg(int64_t n, JitValue* args,
+                                            int64_t idx) {
+  if (!_jit_file_arg_present(n, args, idx) || args[idx].tag == TAG_NIL) return 0;
+  if (args[idx].tag != TAG_LONG)
+    culebra::throw_type_mismatch("Long", _culebra_tag_name(args[idx].tag), 0,
+                                 0);
+  return args[idx].data;
+}
+
+CULEBRA_RT_INLINE void _jit_http_server_bind(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                                 int64_t n, JitValue* args) {
+  JitValue self{self_tag, self_data};
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "port");
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  int64_t bound = _jit_http_server_bind_args(_jit_http_server_id(self), n, args,
+                                             "server.bind");
+  { *__ret = {TAG_LONG, bound}; return; }
+}
+
+// Shared body for serve (async=false, blocks) and serve_async (returns).
+inline JitValue _jit_http_server_serve_impl(JitValue self, int64_t n,
+                                            JitValue* args, bool async) {
+  int64_t id = _jit_http_server_id(self);
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  return _jit_http_server_do_serve(id, _jit_http_server_workers_arg(n, args, 0),
+                                   async,
+                                   async ? "server.serve_async"
+                                         : "server.serve");
+}
+CULEBRA_RT_INLINE void _jit_http_server_serve(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                                  int64_t n, JitValue* args) {
+  JitValue self{self_tag, self_data};
+  { *__ret = _jit_http_server_serve_impl(self, n, args, /*async=*/false); return; }
+}
+CULEBRA_RT_INLINE void _jit_http_server_serve_async(JitValue* __ret, JitClosure*,
+                                                        int8_t self_tag, int64_t self_data,
+                                                        int64_t n, JitValue* args) {
+  JitValue self{self_tag, self_data};
+  { *__ret = _jit_http_server_serve_impl(self, n, args, /*async=*/true); return; }
+}
+
+// listen = bind + serve. Blocking returns nil (it only returns once stopped);
+// async returns the bound port — the only way to learn a port-0 one.
+inline JitValue _jit_http_server_listen_impl(JitValue self, int64_t n,
+                                             JitValue* args, bool async) {
+  int64_t id = _jit_http_server_id(self);
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "port");
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  const char* ctx = async ? "server.listen_async" : "server.listen";
+  int64_t bound = _jit_http_server_bind_args(id, n, args, ctx);
+  int64_t workers = _jit_http_server_workers_arg(n, args, 2);
+  JitValue r = _jit_http_server_do_serve(id, workers, async, ctx);
+  return async ? JitValue{TAG_LONG, bound} : r;
 }
 CULEBRA_RT_INLINE void _jit_http_server_listen(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                    int64_t n, JitValue* args) {
@@ -5302,6 +5354,10 @@ CULEBRA_RT_INLINE JitValue _culebra_http_build_server_handle(int64_t id) {
       _jit_make_handle_meta({"pattern", "handler"}, {false, false});
   static const JitParamMeta* static_meta =
       _jit_make_handle_meta({"mount", "dir"}, {false, false});
+  static const JitParamMeta* bind_meta =
+      _jit_make_handle_meta({"port", "host"}, {false, true});
+  static const JitParamMeta* serve_meta =
+      _jit_make_handle_meta({"workers"}, {true});
   static const JitParamMeta* listen_meta =
       _jit_make_handle_meta({"port", "host", "workers"}, {false, true, true});
   _jit_handle_bind_method(h, "get", _jit_http_server_get, 2, route_meta);
@@ -5313,6 +5369,10 @@ CULEBRA_RT_INLINE JitValue _culebra_http_build_server_handle(int64_t id) {
                           route_meta);
   _jit_handle_bind_method(h, "ws", _jit_http_server_ws, 2, route_meta);
   _jit_handle_bind_method(h, "static", _jit_http_server_static, 2, static_meta);
+  _jit_handle_bind_method(h, "bind", _jit_http_server_bind, 1, bind_meta);
+  _jit_handle_bind_method(h, "serve", _jit_http_server_serve, 0, serve_meta);
+  _jit_handle_bind_method(h, "serve_async", _jit_http_server_serve_async, 0,
+                          serve_meta);
   _jit_handle_bind_method(h, "listen", _jit_http_server_listen, 1, listen_meta);
   _jit_handle_bind_method(h, "listen_async", _jit_http_server_listen_async, 1,
                           listen_meta);
