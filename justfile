@@ -238,9 +238,16 @@ test BACKEND='all': build-gate
 # Runs only the phases that don't need LTO/AOT/embed exes: the interp==JIT
 # symmetry sweep + culebra-test self + isolate (BACKEND=fast, the default).
 # Run this after each edit; `just test` is the heavier pre-commit gate.
+#
+# The four generated-artifact checks run first, and cost ~1.5 s together. They
+# used to live only in CI, which put them past the point of landing: `just land`
+# rebases, runs this recipe, and fast-forwards master, so a stale generated file
+# reached master and CI reported it afterwards (a cpp-peglib bump did exactly
+# that to grammar_blob.h). Ordering them ahead of `dev` also means the ~1.5 s
+# answer arrives before the rebuild, not after it.
 [doc("Fast inner-loop tests vs build-dev/ (no LTO). BACKEND=fast|interp|jit|isolate (default: fast).")]
 [group("test")]
-test-dev BACKEND='fast': dev
+test-dev BACKEND='fast': check-grammar-sync check-preambles check-blob check-site-version dev
     @BIN=./build-dev/culebra CULEBRA_TEST_SKIP_HEAVY=1 just _run-tests {{BACKEND}}
 
 # The same sweep as test-dev against the assert-enabled binary (`just
