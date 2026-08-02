@@ -34,8 +34,8 @@ for _round in 0..4 {
     let p = Path.new("x/y").name().size()                   # 1
     let w = Term.width("ab")                                # 2
     let b = to_long(Time.seconds(i % 3).seconds())          # 0, 1 or 2
-    assert_eq(Canvas.rgba(0, 0, 0, 0), 0)
-    a + b + p + w - 3
+    let c = Canvas.rgba(0, 0, 0, 0)                         # 0
+    a + b + c + p + w - 3
   })
   assert_eq(outs.size(), 24)
   assert_eq(outs.sum(), inputs.map(fn (i) { 3 + i % 3 }).sum())

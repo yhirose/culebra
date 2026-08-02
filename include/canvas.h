@@ -62,6 +62,11 @@ struct Sprite {
   std::vector<uint32_t> px;
 };
 
+// This state is process-global and unsynchronized: drawing is a single-thread
+// activity. What makes that hold is that no preamble reaches a *mutating*
+// native at module top level — a top-level call runs once per isolate, on that
+// isolate's own thread. The font registry below is the one exception (the
+// Canvas preamble uploads its font as it resolves), so it carries a lock.
 inline int& _fb_w() { static int w = 0; return w; }
 inline int& _fb_h() { static int h = 0; return h; }
 inline std::vector<uint32_t>& _fb() { static std::vector<uint32_t> b; return b; }
@@ -420,45 +425,41 @@ inline void ellipse(int64_t cx, int64_t cy, int64_t rx, int64_t ry,
 
 // Registered 8x8 bitmap fonts: a flat table of 8 row-bytes per glyph, MSB the
 // leftmost pixel. Handles index the registry, so a font crosses the FFI
-// boundary once at module load instead of per character drawn.
-//
-// Unlike the rest of this file, the registry is reached off the drawing
-// thread: the Canvas preamble uploads its font at module top level, so every
-// isolate that resolves `Canvas` — even one that only calls `Canvas.rgba` —
-// registers on its own thread. Hence the lock, and hence a deque: entries keep
-// their address across appends, so `glyph` can read a font's bytes without
-// holding the lock for the length of a draw.
-inline std::mutex& _fonts_mutex() {
-  static std::mutex m;
-  return m;
-}
-inline std::deque<std::vector<uint8_t>>& _fonts() {
-  static std::deque<std::vector<uint8_t>> f;
-  return f;
+// boundary once at module load instead of per character drawn. Registered off
+// the drawing thread (see the note above `_fb_w`), so the table is bundled
+// with the lock that guards it — and it is a deque, whose entries keep their
+// address, so `glyph` can read a font's bytes with the lock released.
+struct FontTable {
+  std::mutex m;
+  std::deque<std::vector<uint8_t>> v;
+};
+inline FontTable& _fonts() {
+  static FontTable t;
+  return t;
 }
 
 // The bytes handle `id` names, or nullptr for a handle that names no font.
-// Entries are never mutated after registration, so the pointer stays good
-// after the lock drops.
+// Entries are never mutated after registration, so the pointer outlives the
+// lock.
 inline const std::vector<uint8_t>* font_of(int64_t id) {
-  std::lock_guard<std::mutex> lk(_fonts_mutex());
-  if (id < 0 || static_cast<size_t>(id) >= _fonts().size()) return nullptr;
-  return &_fonts()[static_cast<size_t>(id)];
+  FontTable& t = _fonts();
+  std::lock_guard<std::mutex> lk(t.m);
+  if (id < 0 || static_cast<size_t>(id) >= t.v.size()) return nullptr;
+  return &t.v[static_cast<size_t>(id)];
 }
 
 inline int64_t font_load(const uint8_t* rows, int64_t n) {
   if (n < 0) n = 0;
-  std::lock_guard<std::mutex> lk(_fonts_mutex());
-  // Registration is by content: with no way to unregister a font, handing back
-  // the existing handle for identical bytes is indistinguishable from a fresh
-  // one, and it keeps N isolates each uploading the preamble font from growing
-  // the table without bound.
-  for (size_t i = 0; i < _fonts().size(); i++) {
-    if (std::equal(_fonts()[i].begin(), _fonts()[i].end(), rows, rows + n))
+  FontTable& t = _fonts();
+  std::lock_guard<std::mutex> lk(t.m);
+  // Identical bytes reuse the handle: fonts never unregister, so repeated
+  // isolate spawns would otherwise grow the table forever.
+  for (size_t i = 0; i < t.v.size(); i++) {
+    if (std::equal(t.v[i].begin(), t.v[i].end(), rows, rows + n))
       return static_cast<int64_t>(i);
   }
-  _fonts().emplace_back(rows, rows + n);
-  return static_cast<int64_t>(_fonts().size() - 1);
+  t.v.emplace_back(rows, rows + n);
+  return static_cast<int64_t>(t.v.size() - 1);
 }
 
 // Draw glyph `index` of font `id` at (x, y), clipped, each font pixel as a
