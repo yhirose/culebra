@@ -55,7 +55,7 @@ Conventions used below:
 12. [`Isolate`](#12-isolate) — run a closure on another thread (own heap), copy values across the boundary; `Channel`, `Parallel`, `Signal` (route Ctrl+C to a channel), `SharedBuffer` (zero-copy shared fixed-layout data), and `Shared` (immutable values shared by reference) live here too
 13. [Matchers](#13-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` family
 14. [`Regex`](#14-regex) — linear-time, grapheme-aware regular expressions
-15. [`Http`](#15-http) — synchronous HTTP/HTTPS client (get/post/put/delete/head/request)
+15. [`Http`](#15-http) — synchronous HTTP/HTTPS client (get/post/put/delete/head/request), server (routes, static files, WebSocket), and Server-Sent Events
 16. [`Encoding`](#16-encoding) — text codecs by scheme (`Encoding.html`, `Encoding.base64`, `Encoding.hex`, `Encoding.url`)
 17. [`Compress`](#17-compress) — gzip / deflate (de)compression for data and files
 18. [`Hash`](#18-hash) — SHA-256/SHA-1/SHA-512/MD5 digests and HMAC (hex output)
@@ -93,6 +93,7 @@ Conventions used below:
 | Process info | `Sys.argv`, `Sys.exit`, `Sys.env`, `Sys.set_env`, `Sys.getcwd`, `Sys.chdir`, `Sys.executable`, `Sys.script` |
 | Run an external command | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
 | Call an HTTP/HTTPS API | [§15 Http](#15-http) — `Http.get("https://api.example/x")` |
+| Serve HTTP — routes, static files, WebSocket | [§15 `Http.server()`](#httpserver---object) — `Http.server().get("/", h).listen(8080)` |
 | Speak a raw TCP / UDP protocol, resolve a hostname | [§28 Net](#28-net) — `Net.connect(host, port)` / `Net.listen(port)` / `Net.udp()` / `Net.resolve(host)` |
 | Escape / unescape HTML entities | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
 | Encode / decode base64, hex, url | [§16 Encoding](#16-encoding) — `Encoding.base64.encode(s)` |
@@ -2889,7 +2890,9 @@ model and resource limits are documented in the vendored engine,
 
 Synchronous HTTP/HTTPS client (engine: vendored `cpp-httplib` + OpenSSL,
 statically linked). Each call **blocks** until the response arrives — there is
-no async/await. TLS is automatic for `https://` URLs; the system trust store is
+no async/await. The same namespace also serves: `Http.server()` below carries
+routes, static files, and WebSocket, and `Http.sse` / `Http.ws` speak the two
+streaming protocols as a client. TLS is automatic for `https://` URLs; the system trust store is
 used to verify server certificates (macOS keychain / the platform CA bundle on
 Linux). `gzip` / `deflate` responses are decompressed transparently — `body`
 is always the decoded content.

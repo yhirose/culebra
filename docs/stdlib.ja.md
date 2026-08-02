@@ -53,7 +53,7 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println`を
 12. [`Isolate`](#12-isolate) — クロージャを別スレッド（独立ヒープ）で実行、値は境界でコピー。`Channel` / `Parallel` / `Signal`（Ctrl+Cをチャネルへ振り向け）/ `SharedBuffer`（zero-copy共有する固定レイアウトデータ）/ `Shared`（参照共有するimmutable値）も同節
 13. [Matchers](#13-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close`一族
 14. [`Regex`](#14-regex) — 線形時間・grapheme単位の正規表現
-15. [`Http`](#15-http) — 同期HTTP/HTTPSクライアント（get/post/put/delete/head/request）
+15. [`Http`](#15-http) — 同期HTTP/HTTPSクライアント（get/post/put/delete/head/request）、サーバー（ルーティング・静的ファイル・WebSocket）、Server-Sent Events
 16. [`Encoding`](#16-encoding) — スキーム別のテキストコーデック（`Encoding.html`、`Encoding.base64`、`Encoding.hex`、`Encoding.url`）
 17. [`Compress`](#17-compress) — データ・ファイルのgzip / deflate圧縮/展開
 18. [`Hash`](#18-hash) — SHA-256/SHA-1/SHA-512/MD5ダイジェストとHMAC（hex出力）
@@ -91,6 +91,7 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println`を
 | プロセス情報 | `Sys.argv`、`Sys.exit`、`Sys.env`、`Sys.set_env`、`Sys.getcwd`、`Sys.chdir`、`Sys.executable`、`Sys.script` |
 | 外部コマンド実行 | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
 | HTTP/HTTPS APIを呼ぶ | [§15 Http](#15-http) — `Http.get("https://api.example/x")` |
+| HTTPを提供する（ルーティング・静的ファイル・WebSocket） | [§15 `Http.server()`](#httpserver---object) — `Http.server().get("/", h).listen(8080)` |
 | 生のTCP / UDPを話す、ホスト名を解決する | [§28 Net](#28-net) — `Net.connect(host, port)` / `Net.listen(port)` / `Net.udp()` / `Net.resolve(host)` |
 | HTMLエンティティのescape / unescape | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
 | base64 / hex / urlのエンコード・デコード | [§16 Encoding](#16-encoding) — `Encoding.base64.encode(s)` |
@@ -2799,7 +2800,10 @@ inspect(Regex.escape("a.b(c)"))                          # => 'a\.b\(c\)'
 
 同期HTTP/HTTPSクライアント（エンジン: vendorの`cpp-httplib` + OpenSSLを
 静的リンク）。各呼び出しはレスポンスが返るまで **blocking** で、async/awaitは
-ありません。`https://` URLではTLSが自動で有効になり、サーバ証明書の検証には
+ありません。この名前空間は提供側も兼ねていて、後述の`Http.server()`が
+ルーティング・静的ファイル・WebSocketを担い、`Http.sse` / `Http.ws`が
+クライアントとして2つのストリーミングプロトコルを話します。
+`https://` URLではTLSが自動で有効になり、サーバ証明書の検証には
 システムの信頼ストア（macOSはkeychain、LinuxはプラットフォームのCAバンドル）
 を使います。`gzip` / `deflate`のレスポンスは透過的に展開され、`body`は常に
 デコード済みの内容です。
