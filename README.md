@@ -1,6 +1,8 @@
 Culebra Programming Language
 ============================
 
+[![CI](https://github.com/yhirose/culebra/actions/workflows/ci.yml/badge.svg)](https://github.com/yhirose/culebra/actions/workflows/ci.yml)
+
 > **Status:** pre-1.0 and under active development — APIs and syntax may change.
 
 *This page in [日本語](README.ja.md).*

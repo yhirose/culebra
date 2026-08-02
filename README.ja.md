@@ -1,6 +1,8 @@
 Culebraプログラミング言語
 =========================
 
+[![CI](https://github.com/yhirose/culebra/actions/workflows/ci.yml/badge.svg)](https://github.com/yhirose/culebra/actions/workflows/ci.yml)
+
 > **ステータス:** 1.0前・活発に開発中 — APIと構文は変わることがあります。
 
 *このページの[English](README.md)版。*
