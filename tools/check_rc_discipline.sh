@@ -71,7 +71,10 @@ count_bare() { # file
 # FIX: Compress.deflate(s, level: "x") raised on interp but not JIT/AOT
 # before it). The two releases are the same already-filled-slab +
 # remaining-merged-kwargs cleanup the sibling throw edges in this loop use.
-ratchet "bare RC calls (stdlib_jit.h)" "$(count_bare include/stdlib_jit.h)" 100
+# 100 -> 98 (2026-08-01): the Http route/ws handlers and the sqlite
+# transaction body hold their invoke result in JitOwnedVal, so the tail
+# releases a throwing response-apply / COMMIT used to skip are gone.
+ratchet "bare RC calls (stdlib_jit.h)" "$(count_bare include/stdlib_jit.h)" 98
 # 17 -> 12 (2026-08-01): the isolate/parallel child entries hold the rebuilt
 # closure, its args and the call result in JitOwnedVal, so their tail releases
 # are gone — and with them the hang a throwing child caused by never dropping a
@@ -130,6 +133,6 @@ ratchet "typed consume assignments (jit.h)" "$tassign" 0
 if (( fail )); then exit 1; fi
 echo "rc-discipline OK (release=$rel/49 retain=$ret/29 borrow=$brw/4" \
      "tail-self=$tail_self/0" \
-     "stdlib=$(count_bare include/stdlib_jit.h)/100" \
+     "stdlib=$(count_bare include/stdlib_jit.h)/98" \
      "sendable=$(count_bare include/sendable_jit.h)/12 throwguard=$tg/21" \
      "unchecked=$cu/14 vphi=$vphi/0 typed-consume=$tassign/0 rawcompile=$rawc/0)"

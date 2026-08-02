@@ -2913,10 +2913,12 @@ CULEBRA_RT_INLINE void _jit_sqlite_db_transaction(JitValue* __ret, JitClosure*, 
   _jit_sqlite_execute(db, "BEGIN", JitValue{TAG_NIL, 0}, _jit_call_site_line,
                       _jit_call_site_col);
   try {
-    JitValue result = _culebra_invoke0(fn);
+    // Owned across the COMMIT, which throws on a busy db or a deferred
+    // constraint — the rollback arm below rethrows and would drop the +1.
+    JitOwnedVal result(_culebra_invoke0(fn));
     _jit_sqlite_execute(db, "COMMIT", JitValue{TAG_NIL, 0}, _jit_call_site_line,
                         _jit_call_site_col);
-    { *__ret = result; return; }
+    { *__ret = result.consume(); return; }
   } catch (...) {
     _jit_sqlite_execute(db, "ROLLBACK", JitValue{TAG_NIL, 0},
                         _jit_call_site_line, _jit_call_site_col);
@@ -5142,15 +5144,18 @@ inline JitValue _jit_http_server_do_listen(int64_t id, std::string host,
             [ri](const httplib::Request& q, httplib::ws::WebSocket& ws) {
               int64_t wsid = culebra::http::ws_register_server(&ws);
               try {
-                JitValue req{TAG_OBJECT, reinterpret_cast<int64_t>(
-                                             _jit_http_request_to_object(q))};
-                JitValue wsh{TAG_OBJECT,
-                             reinterpret_cast<int64_t>(
-                                 _jit_make_http_ws_handle(wsid, false))};
+                JitOwnedVal req(JitValue{
+                    TAG_OBJECT,
+                    reinterpret_cast<int64_t>(_jit_http_request_to_object(q))});
+                JitOwnedVal wsh(JitValue{
+                    TAG_OBJECT, reinterpret_cast<int64_t>(
+                                    _jit_make_http_ws_handle(wsid, false))});
                 auto* cb = reinterpret_cast<JitClosure*>(
                     g_jit_srv_w_handlers[ri].data);
-                JitValue r = _culebra_invoke2(cb, req, wsh);  // consumes both +1
-                _culebra_value_release_impl(r.tag, r.data);
+                // The invoke consumes both +1s; owning them until then covers
+                // a throw while the second one is still being built.
+                JitOwnedVal r(_culebra_invoke2(cb, req.consume(),
+                                               wsh.consume()));
               } catch (...) {
               }
               culebra::http::ws_unregister(wsid);
@@ -5164,10 +5169,13 @@ inline JitValue _jit_http_server_do_listen(int64_t id, std::string host,
                                              _jit_http_request_to_object(q))};
                 auto* cb = reinterpret_cast<JitClosure*>(
                     g_jit_srv_w_handlers[ri].data);
-                JitValue ret = _culebra_invoke1(cb, req);
-                if (!_jit_http_try_stream_response(ret, res))
-                  _jit_http_apply_response(ret, res);
-                _culebra_value_release_impl(ret.tag, ret.data);
+                // Owned: applying the response raises a TypeError on a
+                // malformed one (bad `status`, `stream` plus `body`, …), and
+                // the catch below turns that into a 500 — a tail release would
+                // never run, stranding the handler's result and its captures.
+                JitOwnedVal ret(_culebra_invoke1(cb, req));
+                if (!_jit_http_try_stream_response(ret.borrow(), res))
+                  _jit_http_apply_response(ret.borrow(), res);
               } catch (const std::exception& e) {
                 res.status = 500;
                 res.set_content(e.what(), "text/plain");
