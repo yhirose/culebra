@@ -55,4 +55,31 @@ assert_eq({a: 1}.size(), 1)
 fn tripled(x) { x * 3 }
 assert_eq((7).tripled(), 21)
 
+# --- Non-Function bindings never take the UFCS path ---
+# interp gates on the binding's type (eval_call); the JIT runtime-checks the
+# loaded value. Both fall through to normal dispatch and its usual errors.
+
+let shadow = 5
+assert_throws('TypeError', fn () { (3).shadow() })        # scalar member error
+assert_throws('TypeError', fn () { ({a: 1}).shadow() })   # expected Function, got Nil
+assert_throws('TypeError', fn () { (3).shadow(k: 1) })    # kwargs shape, same gate
+
+# --- Function receivers own the three introspection names ---
+# `g.params()` reads the introspection view (never callable) on both
+# backends; a same-named free function must not hijack it. Non-Function
+# receivers resolve nothing, so UFCS still fires for them.
+
+fn probe() { 1 }
+fn params(o) { "ufcs params" }
+assert_throws('TypeError', fn () { probe.params() })
+assert_eq((5).params(), "ufcs params")
+
+# An Object receiver carrying its own `params` reaches the same property arm.
+# (The +1-owned introspection view it reads is released by the arm itself;
+# the RC-leak net for that lives in the difftest leak corpus, which runs with
+# the conservative backstop off.)
+let holder = {params: fn () { [1, 2, 3] }}
+assert_eq(holder.params(), [1, 2, 3])
+assert_eq(holder.params(), [1, 2, 3])
+
 inspect("test_ufcs_builtin_shadow: ok")

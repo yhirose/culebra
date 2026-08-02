@@ -11337,8 +11337,7 @@ struct JIT {
   llvm::Value* emit_property_value_read(llvm::Value* receiver,
                                         llvm::Value* view,
                                         const std::string& name) {
-    bool intro =
-        (name == "name" || name == "params" || name == "return_type");
+    bool intro = fn_introspection_name(name);
     auto i8Ty = builder_.getInt8Ty();
     auto i64Ty = builder_.getInt64Ty();
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
@@ -11547,6 +11546,14 @@ struct JIT {
     return own(end_safe_nav(sn, callee.consume()));
   }
 
+  // The three function-introspection properties (`g.name` / `g.params` /
+  // `g.return_type`) — the only names a Function receiver owns
+  // (interp's receiver_has_property Function arm). Their property reads
+  // return a +1-owned view (emit_property_get's fn_mode retains).
+  static bool fn_introspection_name(std::string_view name) {
+    return name == "name" || name == "params" || name == "return_type";
+  }
+
   // Get a property from an object (TAG_OBJECT required).
   //
   // Inlines a V8/SpiderMonkey-style monomorphic inline cache: each call
@@ -11578,8 +11585,7 @@ struct JIT {
     // function value follow a separate runtime path. Object IC stays
     // intact for receivers tagged TAG_OBJECT (a user-defined property
     // named `name` still resolves through the IC).
-    bool fn_mode =
-        name == "name" || name == "params" || name == "return_type";
+    bool fn_mode = fn_introspection_name(name);
     llvm::BasicBlock* finalMergeBB = nullptr;
     std::optional<OwnedPhi> finalMerge;
     if (fn_mode) {
@@ -12216,8 +12222,7 @@ struct JIT {
     // callee, so for those names that extra +1 would strand (e.g.
     // `obj.name()` on a class method named `name`); drop it after the call.
     auto methodVal = emit_property_get(receiver.borrow(), method);
-    bool owned_method_view = (method == "name" || method == "params" ||
-                              method == "return_type");
+    bool owned_method_view = fn_introspection_name(method);
     // A method miss lowers to `call nil`, whose error path must release the
     // consumed receiver + args (nothing else does on this site's throw edge) —
     // opt into that cleanup. A real method call proceeds normally (its callee
@@ -12820,6 +12825,17 @@ struct JIT {
                                           builder_.getInt8(TAG_OBJECT));
       auto checkBB =
           llvm::BasicBlock::Create(ctx_, "ufcs.kw.check", fn);
+      // Function receivers own the three introspection names
+      // (receiver_has_property), so they take the property arm — a
+      // same-named free function never hijacks `g.params()`.
+      if (fn_introspection_name(method)) {
+        auto isFnRecv = builder_.CreateICmpEQ(
+            rtag, builder_.getInt8(TAG_FUNC), "ufcs.kw.fn.recv");
+        auto notFnRecvBB =
+            llvm::BasicBlock::Create(ctx_, "ufcs.kw.not_fn", fn);
+        builder_.CreateCondBr(isFnRecv, methodHasBB, notFnRecvBB);
+        builder_.SetInsertPoint(notFnRecvBB);
+      }
       builder_.CreateCondBr(isObj, checkBB, ufcsHasBB);
 
       builder_.SetInsertPoint(checkBB);
@@ -12844,12 +12860,39 @@ struct JIT {
       OwnedPhi kwMerge(this, "ufcs.kw.res");
       builder_.SetInsertPoint(methodHasBB);
       auto methodVal = emit_property_get(receiver, method);
-      kwMerge.add_incoming(compile_function_call_runtime_kwargs(
-          argsAst, methodVal, receiver));
+      // fn_mode hands back a +1-OWNED view (not the usual borrowed slot
+      // value) and the call only borrows its callee. Hold it across the call
+      // so the unwind-temp window releases it when the call raises on a
+      // non-callable view, and drop it on the normal path.
+      Owned kwIntroView;
+      if (fn_introspection_name(method)) kwIntroView = own(methodVal);
+      auto kwMethodRes =
+          compile_function_call_runtime_kwargs(argsAst, methodVal, receiver);
+      kwIntroView.drop();
+      kwMerge.add_incoming(std::move(kwMethodRes));
       builder_.CreateBr(mergeBB);
 
       builder_.SetInsertPoint(ufcsHasBB);
       auto freeFn = load_free_fn();
+      // Same Function-binding gate as the positional UFCS arm below.
+      auto kwIsFn = builder_.CreateICmpEQ(
+          extract_tag(freeFn), builder_.getInt8(TAG_FUNC), "ufcs.kw.is.fn");
+      auto kwCallBB = llvm::BasicBlock::Create(ctx_, "ufcs.kw.call", fn);
+      auto kwMissBB = llvm::BasicBlock::Create(ctx_, "ufcs.kw.miss", fn);
+      builder_.CreateCondBr(kwIsFn, kwCallBB, kwMissBB);
+
+      builder_.SetInsertPoint(kwMissBB);
+      // The non-Function binding is not a callee — drop the load's +1. The
+      // property read raises the scalar member error itself and owns the
+      // receiver on that direct-error edge (own_receiver).
+      own(freeFn).drop();
+      auto kwMissProp =
+          emit_property_get(receiver, method, /*own_receiver=*/true);
+      kwMerge.add_incoming(compile_function_call_runtime_kwargs(
+          argsAst, kwMissProp, receiver));
+      builder_.CreateBr(mergeBB);
+
+      builder_.SetInsertPoint(kwCallBB);
       // This branch owns the callee load's +1, released on the normal path
       // below. A typed-param / binding throw from the call would strand it
       // (`"x".f(m: 1)` where `f`'s first param is Long) — guard the callee
@@ -12887,7 +12930,16 @@ struct JIT {
     auto ufcsBB = llvm::BasicBlock::Create(ctx_, "ufcs.free", fn);
     auto mergeBB = llvm::BasicBlock::Create(ctx_, "ufcs.merge", fn);
 
-    // Non-Object receivers have no user properties, so UFCS always wins.
+    // Non-Object receivers have no user properties, so UFCS always wins —
+    // except a Function receiver on the three introspection names, which it
+    // owns (receiver_has_property), so those take the property arm.
+    if (fn_introspection_name(method)) {
+      auto isFnRecv = builder_.CreateICmpEQ(
+          tag, builder_.getInt8(TAG_FUNC), "ufcs.fn.recv");
+      auto notFnRecvBB = llvm::BasicBlock::Create(ctx_, "ufcs.not_fn", fn);
+      builder_.CreateCondBr(isFnRecv, methodBB, notFnRecvBB);
+      builder_.SetInsertPoint(notFnRecvBB);
+    }
     builder_.CreateCondBr(isObj, checkBB, ufcsBB);
 
     builder_.SetInsertPoint(checkBB);
@@ -12899,12 +12951,65 @@ struct JIT {
     builder_.SetInsertPoint(methodBB);
     auto methodVal = emit_property_get(receiver, method);
     OwnedPhi ufcsMerge(this, "ufcs.res");
-    ufcsMerge.add_incoming(
-        compile_function_call_raw(methodVal, receiver, userArgs, argAsts));
+    // A non-Function property (`{f: 5}.f()`, an introspection view) lowers
+    // to a non-function call; nothing else releases the consumed receiver +
+    // args on that raise, so opt into both (fires only on that arm — a real
+    // method's callee frame cleans its own self/params).
+    // fn_mode hands back a +1-OWNED view (not the usual borrowed slot value)
+    // and the call only borrows its callee. Hold it across the call so the
+    // unwind-temp window releases it when the call raises on a non-callable
+    // view (`g.params()`), and drop it on the normal path.
+    Owned introView;
+    if (fn_introspection_name(method)) introView = own(methodVal);
+    auto methodRes = compile_function_call_raw(
+        methodVal, receiver, userArgs,
+        /*check_kw_only=*/false, /*allow_call_overload=*/true, argAsts,
+        /*own_self_on_error=*/true, /*own_args_on_error=*/true);
+    introView.drop();
+    ufcsMerge.add_incoming(std::move(methodRes));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(ufcsBB);
     auto freeFn = load_free_fn();
+    // interp takes UFCS only when the binding is a Function (eval_call's
+    // fn_val.type gate); anything else falls through to normal dispatch —
+    // the property read + call below, whose nil/scalar errors match the
+    // no-candidate path.
+    auto isFn = builder_.CreateICmpEQ(
+        extract_tag(freeFn), builder_.getInt8(TAG_FUNC), "ufcs.is.fn");
+    auto callBB = llvm::BasicBlock::Create(ctx_, "ufcs.call", fn);
+    auto missBB = llvm::BasicBlock::Create(ctx_, "ufcs.miss", fn);
+    builder_.CreateCondBr(isFn, callBB, missBB);
+
+    builder_.SetInsertPoint(missBB);
+    // The non-Function binding is not a callee — drop the load's +1.
+    own(freeFn).drop();
+    llvm::Value* missProp;
+    {
+      // Re-own the compiled args across the may-throw property read so the
+      // unwind-temp window releases them on that edge; the receiver rides
+      // the helper's own_receiver contract. Each +1 is handed back to the
+      // call below (same block).
+      std::vector<Owned> argWindow;
+      argWindow.reserve(userArgs.size());
+      for (auto* a : userArgs) argWindow.push_back(own(a));
+      missProp = emit_property_get(receiver, method, /*own_receiver=*/true);
+      for (auto& h : argWindow) h.consume();
+    }
+    // Same shape as compile_method_call's no-candidate tail: a method miss
+    // lowers to `call nil`, whose error path releases the consumed receiver
+    // + args. The three function-introspection names return a +1-owned
+    // view — drop it after the call (see that tail).
+    bool ownedMissView = fn_introspection_name(method);
+    auto missRes = compile_function_call_raw(
+        missProp, receiver, userArgs,
+        /*check_kw_only=*/false, /*allow_call_overload=*/true, argAsts,
+        /*own_self_on_error=*/true, /*own_args_on_error=*/true);
+    if (ownedMissView) own(missProp).drop();
+    ufcsMerge.add_incoming(std::move(missRes));
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(callBB);
     std::vector<llvm::Value*> ufcsArgs;
     ufcsArgs.reserve(userArgs.size() + 1);
     ufcsArgs.push_back(receiver);
