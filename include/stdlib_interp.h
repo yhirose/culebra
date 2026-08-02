@@ -2832,15 +2832,20 @@ inline Value make_sys_namespace() {
                           })),
       false);
 
+  // `fallback` is returned unchanged (any type) when the variable is unset, so
+  // `Sys.env('X', nil)` tells "unset" apart from "set to the empty string" —
+  // the default of "" keeps the one-argument form returning a String.
   ns.initialize(
       "env",
-      Value(FunctionValue({{"name", false, "String"sv}},
-                          [](std::shared_ptr<Environment> env) {
-                            const auto& name = env->get("name").to_string();
-                            const char* v = std::getenv(name.c_str());
-                            return Value(std::string(v ? v : ""));
-                          },
-                          "String"sv)),
+      Value(FunctionValue(
+          {{"name", false, "String"sv},
+           {"fallback", false, ""sv, nullptr, kw_default_empty_str()}},
+          [](std::shared_ptr<Environment> env) {
+            const auto& name = env->get("name").to_string();
+            const char* v = std::getenv(name.c_str());
+            if (v) return Value(std::string(v));
+            return env->get("fallback");
+          })),
       false);
 
   // Current working directory. IOError on failure (e.g. the cwd was

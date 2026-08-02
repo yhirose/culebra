@@ -81,6 +81,15 @@ ratchet "bare RC calls (stdlib_jit.h)" "$(count_bare include/stdlib_jit.h)" 98
 # captured channel endpoint.
 ratchet "bare RC calls (sendable_jit.h)" "$(count_bare include/sendable_jit.h)" 12
 
+# Runtime-side borrow -> +1 seam (JitOwnedVal::from_borrowed). Its retain lives
+# inside the ownership layer, so it is invisible to count_bare above — the same
+# blind spot emit_borrow_to_owned has on the codegen side. Count the call sites
+# on their own ceiling so the seam cannot become a quiet way to add hand-placed
+# retains. Current population: 1 (Sys.env returning its borrowed `fallback`).
+rbrw=$(grep -E "JitOwnedVal::from_borrowed\(" include/*.h \
+       | grep -vcE "^[^:]*:[[:space:]]*//" || true)
+ratchet "runtime borrow->owned seam sites" "$rbrw" 1
+
 # Codegen-side hand-placed throw guards: the automatic unwind-temp window
 # is the default cleaner for a codegen-owned +1, so the hand-placed
 # ThrowGuard population should only shrink as sites migrate onto it.
@@ -132,7 +141,7 @@ ratchet "typed consume assignments (jit.h)" "$tassign" 0
 
 if (( fail )); then exit 1; fi
 echo "rc-discipline OK (release=$rel/49 retain=$ret/29 borrow=$brw/4" \
-     "tail-self=$tail_self/0" \
+     "rt-borrow=$rbrw/1 tail-self=$tail_self/0" \
      "stdlib=$(count_bare include/stdlib_jit.h)/98" \
      "sendable=$(count_bare include/sendable_jit.h)/12 throwguard=$tg/21" \
      "unchecked=$cu/14 vphi=$vphi/0 typed-consume=$tassign/0 rawcompile=$rawc/0)"

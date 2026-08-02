@@ -4162,8 +4162,14 @@ inline JitValue _ns_sys_exit(JitValue* a, int64_t) {
   culebra_runtime_sys_exit(_ns_adapt::take_long(a[0]));
   return _ns_adapt::v_nil();
 }
-inline JitValue _ns_sys_env(JitValue* a, int64_t) {
-  return _ns_adapt::v_string(culebra_runtime_sys_env(_ns_adapt::take_str(a[0])));
+// Kwarg slab: a[0]=name, a[1]=fallback ("" default). getenv is consulted
+// directly rather than through culebra_runtime_sys_env because that one folds
+// "unset" into "", which is exactly the distinction `fallback` restores.
+inline JitValue _ns_sys_env(JitValue* a, int64_t n) {
+  const char* v = std::getenv(_ns_adapt::take_str(a[0]));
+  if (v) return _ns_adapt::v_string(_culebra_heap_str(std::string(v)));
+  if (n > 1) return JitOwnedVal::from_borrowed(a[1]).consume();
+  return _ns_adapt::v_string(_culebra_heap_str(std::string()));
 }
 inline JitValue _ns_sys_time(JitValue*, int64_t) {
   return _ns_adapt::v_float(culebra_runtime_sys_time());
@@ -6566,6 +6572,7 @@ inline bool _ns_method_uses_kwarg_slab(const NsMethod* m) {
   if (ns == "CSV")      return nm == "parse" || nm == "stringify";
   if (ns == "TOML")     return nm == "stringify";  // sort_keys default
   if (ns == "Env")      return nm == "load";  // path/override defaults
+  if (ns == "Sys")      return nm == "env";  // fallback default
   if (ns == "Compress") return nm == "deflate";  // level default
   if (ns.empty())       return nm == "range" || nm == "iota";  // bare globals
   return false;
@@ -8507,7 +8514,7 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
     // hook resolves kwargs/defaults for methods carrying NsParamMeta and
     // raises a clean error for those that don't — matching the interp.
     static const std::set<std::string_view> kwarg_aware_ns = {"JSON", "Proc",
-                                                              "Http"};
+                                                              "Http", "Sys"};
     if (!kwarg_aware_ns.contains(ns)) {
       return {};
     }
@@ -8571,6 +8578,21 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
     if (const NsMethod* m = _lookup_ns_method("Http", method)) {
       return compile_ns_method_kwargs(jit, m, argsAst, callAst);
     }
+  }
+
+  // Sys.env(name[, fallback]) is the only Sys method with a kwarg-slab
+  // (NsParamMeta): its positional `name` needs a type check at its own
+  // source position when called with `fallback:`, matching interp — the
+  // generic runtime kwarg resolver (_jit_ns_kwarg_resolve_core) only knows
+  // the call site, not each argument's position, so it can't do that. Other
+  // Sys methods (exit/getcwd/...) have no kwarg-slab and fall through to the
+  // runtime path unchanged.
+  if (ns == "Sys") {
+    if (const NsMethod* m = _lookup_ns_method("Sys", method);
+        m && _ns_method_uses_kwarg_slab(m)) {
+      return compile_ns_method_kwargs(jit, m, argsAst, callAst);
+    }
+    return {};
   }
 
   // Proc.run / Proc.all route their (positional + kwargs) ARG_LIST through one

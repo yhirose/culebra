@@ -25,10 +25,8 @@ let api_url = use_openrouter
   ? 'https://openrouter.ai/api/v1/messages'
   : 'https://api.anthropic.com/v1/messages'
 
-let env_model = Sys.env('MODEL')
-let model = env_model.empty()
-  ? use_openrouter ? 'openai/gpt-oss-20b:free' : 'claude-opus-5'
-  : env_model
+let default_model = use_openrouter ? 'openai/gpt-oss-20b:free' : 'claude-opus-5'
+let model = Sys.env('MODEL', default_model)
 
 # --- small helpers -------------------------------------------------------
 

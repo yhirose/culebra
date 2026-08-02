@@ -1121,16 +1121,23 @@ not return; pending `defer` statements are *not* run.
 if error_occurred { Sys.exit(1) }
 ```
 
-### `Sys.env(name: String) -> String`
+### `Sys.env(name: String, fallback = '') -> Any`
 
-Return the value of the environment variable `name`, or `''` (empty
-string) if it is not set. Use `!v.empty()` to distinguish an unset
-variable from one set to the empty string.
+Return the value of the environment variable `name`. If it is not set,
+return `fallback` unchanged — the default of `''` keeps the one-argument
+form returning a `String`.
+
+`fallback` is returned as-is whatever its type, so passing `nil` is what
+separates an unset variable from one set to the empty string: the
+one-argument form folds both to `''`.
 
 ```culebra
 # doctest: skip
-inspect(Sys.env('HOME'))          # '/Users/alice'
-inspect(Sys.env('NOT_A_VAR'))     # ''
+inspect(Sys.env('HOME'))                # '/Users/alice'
+inspect(Sys.env('NOT_A_VAR'))           # ''
+inspect(Sys.env('PORT', '8080'))        # '8080' while PORT is unset
+inspect(Sys.env('NOT_A_VAR', nil))      # nil — unset
+inspect(Sys.env('SET_BUT_EMPTY', nil))  # '' — set, and empty
 ```
 
 ### `Sys.set_env(name: String, value: String) -> Nil`

@@ -1096,15 +1096,22 @@ inspect(Sys.argv)        # ['hello', 'world']
 if error_occurred { Sys.exit(1) }
 ```
 
-### `Sys.env(name: String) -> String`
+### `Sys.env(name: String, fallback = '') -> Any`
 
-環境変数`name`の値を返します。未設定の場合は`''`（空文字列）。
-未設定と空文字列設定を区別したい場合は`!v.empty()`を使用。
+環境変数`name`の値を返します。未設定の場合は`fallback`をそのまま返します。
+既定値が`''`なので、1引数形式は従来どおり`String`を返します。
+
+`fallback`は型を問わずそのまま返るため、`nil`を渡すことで「未設定」と
+「空文字列が設定されている」を区別できます。1引数形式はどちらも`''`に
+なります。
 
 ```culebra
 # doctest: skip
-inspect(Sys.env('HOME'))          # '/Users/alice'
-inspect(Sys.env('NOT_A_VAR'))     # ''
+inspect(Sys.env('HOME'))                # '/Users/alice'
+inspect(Sys.env('NOT_A_VAR'))           # ''
+inspect(Sys.env('PORT', '8080'))        # '8080'（PORT未設定時）
+inspect(Sys.env('NOT_A_VAR', nil))      # nil — 未設定
+inspect(Sys.env('SET_BUT_EMPTY', nil))  # '' — 設定済みで空文字列
 ```
 
 ### `Sys.set_env(name: String, value: String) -> Nil`

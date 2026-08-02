@@ -2579,6 +2579,14 @@ struct JitOwnedVal {
   JitValue borrow() const { return v; }            // read without consuming
   JitValue consume() { owned = false; return v; }  // hand the +1 onward
   ~JitOwnedVal() { if (owned) _culebra_value_release_impl(v.tag, v.data); }
+
+  // Borrow -> +1, the runtime-helper twin of codegen's emit_borrow_to_owned. A
+  // native adapter only borrows its arguments (the dispatcher releases them
+  // on return), so one handed back as the *result* needs its own reference.
+  static JitOwnedVal from_borrowed(JitValue val) {
+    culebra_runtime_value_retain(val.tag, val.data);
+    return JitOwnedVal(val);
+  }
 };
 
 // Encode a primitive JitValue into field `f`'s raw bytes. Numeric coercion

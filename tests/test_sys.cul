@@ -19,6 +19,34 @@ assert_eq(Sys.env("CULEBRA_SYS_TEST_VAR"), "hello")
 Sys.set_env("CULEBRA_SYS_TEST_VAR", "world")
 assert_eq(Sys.env("CULEBRA_SYS_TEST_VAR"), "world")
 
+// --- env fallback ---
+// A set variable ignores the fallback; an unset one returns it verbatim,
+// whatever its type.
+assert_eq(Sys.env("CULEBRA_SYS_TEST_VAR", "fb"), "world")
+assert_eq(Sys.env("CULEBRA_SYS_TEST_UNSET", "fb"), "fb")
+assert_eq(Sys.env("CULEBRA_SYS_TEST_UNSET", 8080), 8080)
+assert_eq(Sys.env("CULEBRA_SYS_TEST_UNSET", nil), nil)
+assert_eq(Sys.env("CULEBRA_SYS_TEST_UNSET", [1, 2]), [1, 2])
+assert_eq(Sys.env("CULEBRA_SYS_TEST_UNSET", fallback: "kw"), "kw")
+
+// That is what tells "unset" apart from "set to the empty string" — the
+// one-argument form folds both to "".
+Sys.set_env("CULEBRA_SYS_TEST_EMPTY", "")
+assert_eq(Sys.env("CULEBRA_SYS_TEST_EMPTY", nil), "")
+assert_eq(Sys.env("CULEBRA_SYS_TEST_EMPTY"), Sys.env("CULEBRA_SYS_TEST_UNSET"))
+
+// Arity and the declared type of `name` hold on both the direct and the
+// as-value call paths — including a positional `name` alongside `fallback:`,
+// where the JIT has a dedicated compile path (see compile_ns_call's "Sys"
+// case) precisely so this stays type-checked like every other positional.
+assert_throws("ArityError", || Sys.env())
+assert_throws("ArityError", || Sys.env("A", "b", "c"))
+assert_throws("TypeError", || Sys.env(42))
+assert_throws("TypeError", || Sys.env(42, fallback: "fb"))
+let env_fn = Sys.env
+assert_eq(env_fn("CULEBRA_SYS_TEST_UNSET", "via-value"), "via-value")
+assert_throws("TypeError", || env_fn(42))
+
 // --- getcwd / chdir ---
 // getcwd returns a non-empty absolute path.
 let orig = Sys.getcwd()
