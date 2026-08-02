@@ -3609,6 +3609,64 @@ inline Value _invoke_binary_method(const Value& receiver,
   // last expression — catch it like _invoke_method_no_args.
   return deliver_call(fn.eval(env));
 }
+// Comparison-class id for ordering_unobservable: two values sharing one never
+// throw when compared and never reach user code. Long and Float share an id
+// because ord_compare coerces the mixed pair to double, exactly as it already
+// does for Long vs Long; String and StringView get separate ids because that
+// cross-flavor pair is a type error. Bool and Nil would qualify too, but an
+// array of them is not worth sorting, so they take the general path.
+inline int _orderable_kind(const Value& v) {
+  switch (v.type) {
+    case Value::Long:
+    case Value::Float: return 1;
+    case Value::String: return 2;
+    case Value::StringView: return 3;
+    default: return 0;
+  }
+}
+
+// Shared body of sort_by / sorted_by: evaluate `make_key` once per element, in
+// index order, and return the (key, index) pairs in sorted order. Uniformity
+// is tracked as the keys are built, so the common case costs no extra scan.
+// Uniform primitive keys leave the comparison order unobservable (see
+// ordering_unobservable), and the pairs are sorted directly — contiguous, no
+// indirection per comparison. Otherwise the order IS observable and both
+// backends must agree on it, so indices are sorted against the keys. The JIT's
+// _keyed_sort (jit_iter.h) implements the same rule over its own value type.
+template <class MakeKey, class Less>
+inline std::vector<std::pair<Value, size_t>> _keyed_sort(size_t n,
+                                                         MakeKey make_key,
+                                                         Less less) {
+  std::vector<std::pair<Value, size_t>> keyed;
+  keyed.reserve(n);
+  bool uniform = true;
+  int kind0 = 0;
+  for (size_t i = 0; i < n; i++) {
+    keyed.emplace_back(make_key(i), i);
+    if (uniform) {
+      int kd = _orderable_kind(keyed.back().first);
+      if (i == 0) kind0 = kd;
+      uniform = kd != 0 && kd == kind0;
+    }
+  }
+  if (uniform) {
+    std::stable_sort(
+        keyed.begin(), keyed.end(),
+        [&](const auto& a, const auto& b) { return less(a.first, b.first); });
+    return keyed;
+  }
+  // keyed[i] is still element i's key while the indices are being sorted;
+  // reorder the pairs afterwards so callers read `.second` the same way on
+  // either path.
+  auto perm = stable_sort_permutation(n, [&](size_t a, size_t b) {
+    return less(keyed[a].first, keyed[b].first);
+  });
+  std::vector<std::pair<Value, size_t>> ordered;
+  ordered.reserve(n);
+  for (auto i : perm) ordered.push_back(std::move(keyed[i]));
+  return ordered;
+}
+
 inline bool _ordering_less(const Value& a, const Value& b) {
   if (a.type == Value::Object) {
     const auto& oa = a.to_object();
@@ -3622,6 +3680,24 @@ inline bool _ordering_less(const Value& a, const Value& b) {
     }
   }
   return a < b;
+}
+
+// Shared body of sort / sorted: one place decides whether this array's
+// comparison order is observable (see ordering_unobservable).
+inline void _natural_sort(std::vector<Value>& vs, bool reverse) {
+  auto less = [&](const Value& a, const Value& b) {
+    return reverse ? _ordering_less(b, a) : _ordering_less(a, b);
+  };
+  if (ordering_unobservable(vs.begin(), vs.end(), _orderable_kind)) {
+    std::stable_sort(vs.begin(), vs.end(), less);
+    return;
+  }
+  auto perm = stable_sort_permutation(
+      vs.size(), [&](size_t a, size_t b) { return less(vs[a], vs[b]); });
+  std::vector<Value> sorted;
+  sorted.reserve(vs.size());
+  for (auto i : perm) sorted.push_back(std::move(vs[i]));
+  vs = std::move(sorted);
 }
 
 // --- @derive support --------------------------------------------------
@@ -5038,21 +5114,20 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                              check_callback_arity(f, 1, "sort_by");
                              bool reverse = callEnv->get("reverse").to_bool();
                              auto& vs = *arr.values;
-                             std::vector<std::pair<Value, size_t>> keyed;
-                             keyed.reserve(vs.size());
-                             for (size_t i = 0; i < vs.size(); i++) {
-                               keyed.emplace_back(
-                                   invoke_unary_callback(callEnv, f, vs[i]), i);
-                             }
-                             std::stable_sort(
-                                 keyed.begin(), keyed.end(),
-                                 [reverse](const auto& a, const auto& b) {
-                                   return reverse ? (b.first < a.first)
-                                                  : (a.first < b.first);
+                             auto keyed = _keyed_sort(
+                                 vs.size(),
+                                 [&](size_t i) {
+                                   return invoke_unary_callback(callEnv, f,
+                                                                vs[i]);
+                                 },
+                                 [&](const Value& a, const Value& b) {
+                                   return reverse ? (b < a) : (a < b);
                                  });
                              std::vector<Value> sorted;
                              sorted.reserve(vs.size());
-                             for (auto& [k, i] : keyed) sorted.push_back(vs[i]);
+                             for (auto& [k, i] : keyed) {
+                               sorted.push_back(std::move(vs[i]));
+                             }
                              vs = std::move(sorted);
                              return Value();
                            }))},
@@ -5068,17 +5143,14 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                              check_callback_arity(f, 1, "sorted_by");
                              bool reverse = callEnv->get("reverse").to_bool();
                              auto& vs = *arr.values;
-                             std::vector<std::pair<Value, size_t>> keyed;
-                             keyed.reserve(vs.size());
-                             for (size_t i = 0; i < vs.size(); i++) {
-                               keyed.emplace_back(
-                                   invoke_unary_callback(callEnv, f, vs[i]), i);
-                             }
-                             std::stable_sort(
-                                 keyed.begin(), keyed.end(),
-                                 [reverse](const auto& a, const auto& b) {
-                                   return reverse ? (b.first < a.first)
-                                                  : (a.first < b.first);
+                             auto keyed = _keyed_sort(
+                                 vs.size(),
+                                 [&](size_t i) {
+                                   return invoke_unary_callback(callEnv, f,
+                                                                vs[i]);
+                                 },
+                                 [&](const Value& a, const Value& b) {
+                                   return reverse ? (b < a) : (a < b);
                                  });
                              ArrayValue out;
                              out.values->reserve(vs.size());
@@ -5094,14 +5166,9 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
        Value(FunctionValue({{"reverse", false, "Bool"sv, nullptr,
                              kw_default_false(), true}},
                            [](std::shared_ptr<Environment> callEnv) {
-                             auto& vs = *callEnv->get("self").to_array().values;
-                             bool reverse = callEnv->get("reverse").to_bool();
-                             std::stable_sort(
-                                 vs.begin(), vs.end(),
-                                 [reverse](const Value& a, const Value& b) {
-                                   return reverse ? _ordering_less(b, a)
-                                                  : _ordering_less(a, b);
-                                 });
+                             _natural_sort(
+                                 *callEnv->get("self").to_array().values,
+                                 callEnv->get("reverse").to_bool());
                              return Value();
                            }))},
       // Non-mutating twin of `sort`: returns a new sorted Array so it chains.
@@ -5111,15 +5178,10 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                            [](std::shared_ptr<Environment> callEnv) {
                              const auto& vs =
                                  *callEnv->get("self").to_array().values;
-                             bool reverse = callEnv->get("reverse").to_bool();
                              ArrayValue out;
                              out.values->assign(vs.begin(), vs.end());
-                             std::stable_sort(
-                                 out.values->begin(), out.values->end(),
-                                 [reverse](const Value& a, const Value& b) {
-                                   return reverse ? _ordering_less(b, a)
-                                                  : _ordering_less(a, b);
-                                 });
+                             _natural_sort(*out.values,
+                                           callEnv->get("reverse").to_bool());
                              return Value(std::move(out));
                            }))},
       // Iterator protocol: yield elements in index order.

@@ -234,5 +234,26 @@ s.listen(-1)'
 s.static("/x", "/no/such/dir/here")'
 fi
 
+# A UFCS call reports at its ARGUMENTS node, as the interp always has. The JIT
+# was using the chain root its enclosing walk installed, which names the
+# receiver instead — on the positional branch and on the kwargs one.
+check_same "ufcs dispatch no args"    'fn g(a, b) { a }
+let x = 1
+x.g()'
+check_same "ufcs dispatch extra args" 'fn g(a, b) { a }
+let x = 1
+x.g(1, 2)'
+check_same "ufcs dispatch typed"      'fn g(a: String) { a }
+let x = 1
+x.g()'
+# The kwargs UFCS branch reports through a different call than the positional
+# one, and was still naming the receiver after the latter was fixed.
+check_same "ufcs kwarg bad type"      'fn g(a, k: Long = 1) { a }
+let x = 1
+x.g(k: "bad")'
+check_same "ufcs kwarg unknown"       'fn g(a, k: Long = 1) { a }
+let x = 1
+x.g(zz: 1)'
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

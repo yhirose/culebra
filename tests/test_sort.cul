@@ -44,6 +44,62 @@ assert_eq([Rank.new(2), Rank.new(1)].sorted().map(fn (r) { r.n }), [1, 2])
 let e = try { [1, "a"].sorted(); nil } catch e { e.kind }
 assert_eq(e, "TypeError")
 
+// --- the comparator sees the same pairs in the same order on every backend.
+// Sorting goes through an index permutation so std::stable_sort picks one
+// algorithm for both, rather than one per element type: a user `cmp`'s side
+// effects, and which operand a type error names first, no longer depend on
+// the backend. ---
+let seen = []
+class Probe {
+  new(v) { self.v = v }
+  cmp(o) { seen.push(self.v.to_string() + ":" + o.v.to_string()); self.v - o.v }
+}
+[Probe.new(1), Probe.new(2), Probe.new(3)].sorted()
+assert_eq(seen, ["2:1", "3:2"])
+
+let e3 = try { [1, [2], 3].sorted(); nil } catch e { e.message }
+assert_eq(e3, "type error: cannot compare Array and Long")
+
+// A throwing comparison leaves the receiver as it was — the elements are never
+// moved while comparisons run.
+let untouched = [5, 3, "a", 1, 7]
+try { untouched.sort() } catch e { nil }
+assert_eq(untouched, [5, 3, "a", 1, 7])
+
+// Keyed sorts report the same operand first, and are equally non-destructive.
+let e4 = try { [1, "a", 2].sorted_by(fn (x) { x }); nil } catch e { e.message }
+assert_eq(e4, "type error: cannot compare String and Long")
+let ks = [3, "a", 1]
+let e5 = try { ks.sort_by(fn (x) { x }, reverse: true); nil } catch e { e.message }
+assert_eq(e5, "type error: cannot compare Long and String")
+assert_eq(ks, [3, "a", 1])
+
+// Long and Float are one comparison class — mixing them never throws, so these
+// sort by value rather than falling out by type.
+assert_eq([3, 1.5, 2, 1, 2.0].sorted(), [1, 1.5, 2, 2.0, 3])
+assert_eq([3, 1.5, 2, 1, 2.0].sorted(reverse: true), [3, 2, 2.0, 1.5, 1])
+assert_eq([3, 1.5, 2].sorted_by(fn (x) { x }), [1.5, 2, 3])
+
+// Shuffled runs of user objects go through that same path; exercise multi-
+// element cycles at several sizes, both directions, mutating and not.
+mut seed = 987654321
+fn nextval() {
+  seed = (seed * 1103515245 + 12345) % 2147483648
+  return seed % 1000
+}
+for n in [1, 2, 3, 5, 17, 64, 200] {
+  let raw = []
+  for i in 0..n { raw.push(nextval()) }
+  let objs = raw.map(fn (v) { Money.new(v) })
+  assert_eq(objs.sorted().map(fn (m) { m.c }), raw.sorted())
+  assert_eq(objs.sorted(reverse: true).map(fn (m) { m.c }),
+            raw.sorted(reverse: true))
+  assert_eq(objs.map(fn (m) { m.c }), raw)   // non-mutating form leaves it be
+  let mutable = raw.map(fn (v) { Money.new(v) })
+  mutable.sort()
+  assert_eq(mutable.map(fn (m) { m.c }), raw.sorted())
+}
+
 // --- extra positional arg is rejected (0 positional params) ---
 let e2 = try { [1, 2].sorted(1); nil } catch e { e.kind }
 assert_eq(e2, "TypeError")

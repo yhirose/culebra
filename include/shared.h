@@ -1,7 +1,9 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <numeric>
 #include <csignal>
 #include <cctype>
 #include <mutex>
@@ -859,6 +861,41 @@ inline std::string url_decode(std::string_view in) {
                      "type error: cannot compare " + std::string(lhs) +
                          " and " + std::string(rhs),
                      line, col);
+}
+
+// A sort's comparison sequence is unobservable when every element belongs to
+// the same comparison class: `<` then neither throws nor enters user code, so
+// which pairs get compared — and in what order — cannot be seen from the
+// language. Sorts take the in-place std::stable_sort fast path in that case.
+// Anything else (user objects with cmp/__lt__, or mixed types whose `<`
+// throws) must go through stable_sort_permutation below. `kind(x)` returns a
+// nonzero id per comparison class and 0 for everything else.
+template <class It, class Kind>
+inline bool ordering_unobservable(It first, It last, Kind kind) {
+  if (first == last) return true;
+  auto k0 = kind(*first);
+  if (k0 == 0) return false;
+  for (auto it = std::next(first); it != last; ++it) {
+    if (kind(*it) != k0) return false;
+  }
+  return true;
+}
+
+// Stable sort expressed as a permutation of indices, for the observable case.
+// std::stable_sort chooses insertion-sort or merge by
+// `is_trivially_copy_assignable<T>`, so sorting elements directly ran
+// different algorithms for the interpreter's Value and the JIT's JitValue:
+// a user `cmp`'s side-effect order and the operand order of an
+// incomparable-element TypeError then diverged between backends. Sorting
+// indices makes the sorted type the same on both sides. It also keeps the
+// elements untouched while comparisons run, so a throwing comparison leaves
+// the array exactly as it was rather than strewn with moved-from slots.
+template <class Less>
+inline std::vector<size_t> stable_sort_permutation(size_t n, Less less) {
+  std::vector<size_t> perm(n);
+  std::iota(perm.begin(), perm.end(), size_t{0});
+  std::stable_sort(perm.begin(), perm.end(), less);
+  return perm;
 }
 
 // Canonical "expected X, got Y" type error. Used for unary negation

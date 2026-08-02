@@ -2745,6 +2745,78 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_flat_map(
   return out;
 }
 
+// Comparison-class id for ordering_unobservable — mirrors the interpreter's
+// _orderable_kind: Long and Float share one (the mixed pair coerces to
+// double), String and StringView do not (that pair is a type error).
+inline int _orderable_kind(const JitValue& v) {
+  switch (v.tag) {
+    case TAG_LONG:
+    case TAG_FLOAT: return 1;
+    case TAG_STRING: return 2;
+    case TAG_STRINGVIEW: return 3;
+    default: return 0;
+  }
+}
+
+// Reorder an array's slots into `perm` order. Each element's ref moves with
+// its slot, so no retain/release is involved. sort_by inlines this same gather
+// against its (key, index) pairs — it already has the indices and building a
+// separate perm vector for them measurably costs more than the duplication.
+inline void _apply_sort_permutation(JitArray* arr,
+                                    const std::vector<size_t>& perm) {
+  std::vector<JitValue> sorted(arr->size);
+  for (size_t i = 0; i < arr->size; i++) sorted[i] = arr->items[perm[i]];
+  std::copy(sorted.begin(), sorted.end(), arr->items);
+}
+
+// Shared body of sort_by / sorted_by: evaluate the key function once per
+// element and return the (key, index) pairs in sorted order. Mirrors the
+// interpreter's _keyed_sort — see shared.h for why the uniform-key case may
+// sort the pairs directly while anything else must order indices instead.
+inline std::vector<std::pair<JitOwnedVal, size_t>> _keyed_sort(
+    JitArray* arr, JitHofCallback& fn, bool reverse, int64_t line,
+    int64_t col) {
+  std::vector<std::pair<JitOwnedVal, size_t>> keyed;
+  keyed.reserve(arr->size);
+  bool uniform = true;
+  int kind0 = 0;
+  for (size_t i = 0; i < arr->size; i++) {
+    auto e = arr->items[i];
+    culebra_runtime_value_retain(e.tag, e.data);
+    keyed.emplace_back(JitOwnedVal(_culebra_invoke1_at(fn, e, line, col)), i);
+    if (uniform) {
+      int kd = _orderable_kind(keyed.back().first.borrow());
+      if (i == 0) kind0 = kd;
+      uniform = kd != 0 && kd == kind0;
+    }
+  }
+  if (uniform) {
+    std::stable_sort(keyed.begin(), keyed.end(),
+                     [reverse, line, col](const auto& a, const auto& b) {
+                       const auto& x = reverse ? b : a;
+                       const auto& y = reverse ? a : b;
+                       auto xk = x.first.borrow(), yk = y.first.borrow();
+                       return _culebra_value_ord(
+                           xk.tag, xk.data, yk.tag, yk.data,
+                           [](double p, double q) { return p < q; },
+                           line, col);
+                     });
+    return keyed;
+  }
+  auto perm = culebra::stable_sort_permutation(
+      arr->size, [&](size_t a, size_t b) {
+        auto xk = keyed[reverse ? b : a].first.borrow();
+        auto yk = keyed[reverse ? a : b].first.borrow();
+        return _culebra_value_ord(xk.tag, xk.data, yk.tag, yk.data,
+                                  [](double p, double q) { return p < q; },
+                                  line, col);
+      });
+  std::vector<std::pair<JitOwnedVal, size_t>> ordered;
+  ordered.reserve(arr->size);
+  for (auto i : perm) ordered.push_back(std::move(keyed[i]));
+  return ordered;
+}
+
 // sort_by: evaluates the key function on each element once, stable-sorts
 // in place by those keys. Mutates. Keys are released on every exit path
 // (including during a throw from the key comparison).
@@ -2754,28 +2826,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_sort_by(
   JitHofCallback fn(fn_tag, fn_data, 1,"sort_by", "f", line, col);
   // Each computed key is held owned, so every exit path — normal, a throw
   // from the key callback, or from the key comparison — releases it.
-  std::vector<std::pair<JitOwnedVal, size_t>> keyed;
-  keyed.reserve(arr->size);
-  for (size_t i = 0; i < arr->size; i++) {
-    auto e = arr->items[i];
-    culebra_runtime_value_retain(e.tag, e.data);
-    keyed.emplace_back(JitOwnedVal(_culebra_invoke1_at(fn, e, line, col)), i);
-  }
-  std::stable_sort(keyed.begin(), keyed.end(),
-                   [reverse, line, col](const auto& a, const auto& b) {
-                     const auto& x = reverse ? b : a;
-                     const auto& y = reverse ? a : b;
-                     auto xk = x.first.borrow(), yk = y.first.borrow();
-                     return _culebra_value_ord(
-                         xk.tag, xk.data, yk.tag, yk.data,
-                         [](double p, double q) { return p < q; },
-                         line, col);
-                   });
+  auto keyed = _keyed_sort(arr, fn, reverse, line, col);
   std::vector<JitValue> sorted(arr->size);
-  for (size_t i = 0; i < keyed.size(); i++) {
-    sorted[i] = arr->items[keyed[i].second];
-  }
-  for (size_t i = 0; i < arr->size; i++) arr->items[i] = sorted[i];
+  for (size_t i = 0; i < arr->size; i++) sorted[i] = arr->items[keyed[i].second];
+  std::copy(sorted.begin(), sorted.end(), arr->items);
 }
 
 // Non-mutating sort_by: returns a fresh array with the elements in sorted
@@ -2787,22 +2841,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_sorted_by(
   JitHofCallback fn(fn_tag, fn_data, 1, "sorted_by", "f", line, col);
   // Owned keys release on every exit path (normal, callback throw, or a throw
   // from the key comparison).
-  std::vector<std::pair<JitOwnedVal, size_t>> keyed;
-  keyed.reserve(arr->size);
-  for (size_t i = 0; i < arr->size; i++) {
-    auto e = arr->items[i];
-    culebra_runtime_value_retain(e.tag, e.data);
-    keyed.emplace_back(JitOwnedVal(_culebra_invoke1_at(fn, e, line, col)), i);
-  }
-  std::stable_sort(keyed.begin(), keyed.end(),
-                   [reverse, line, col](const auto& a, const auto& b) {
-                     const auto& x = reverse ? b : a;
-                     const auto& y = reverse ? a : b;
-                     auto xk = x.first.borrow(), yk = y.first.borrow();
-                     return _culebra_value_ord(
-                         xk.tag, xk.data, yk.tag, yk.data,
-                         [](double p, double q) { return p < q; }, line, col);
-                   });
+  auto keyed = _keyed_sort(arr, fn, reverse, line, col);
   auto* out = culebra_runtime_array_new();
   for (auto& [k, idx] : keyed) {
     auto e = arr->items[idx];
@@ -2820,13 +2859,25 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_sorted_by(
 // which is correct for codegen operand temps but would corrupt `arr` here.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_sort(
     JitArray* arr, bool reverse, int64_t line, int64_t col) {
-  std::stable_sort(arr->items, arr->items + arr->size,
-                   [reverse, line, col](const JitValue& a, const JitValue& b) {
-                     const auto& x = reverse ? b : a;
-                     const auto& y = reverse ? a : b;
-                     return _value_less_borrow(x.tag, x.data, y.tag,
-                                               y.data, line, col);
-                   });
+  if (culebra::ordering_unobservable(arr->items, arr->items + arr->size,
+                                     _orderable_kind)) {
+    std::stable_sort(arr->items, arr->items + arr->size,
+                     [reverse, line, col](const JitValue& a,
+                                          const JitValue& b) {
+                       const auto& x = reverse ? b : a;
+                       const auto& y = reverse ? a : b;
+                       return _value_less_borrow(x.tag, x.data, y.tag, y.data,
+                                                 line, col);
+                     });
+    return;
+  }
+  auto perm = culebra::stable_sort_permutation(
+      arr->size, [&](size_t a, size_t b) {
+        const auto& x = arr->items[reverse ? b : a];
+        const auto& y = arr->items[reverse ? a : b];
+        return _value_less_borrow(x.tag, x.data, y.tag, y.data, line, col);
+      });
+  _apply_sort_permutation(arr, perm);
 }
 
 // Non-mutating twin of `sort`: returns a fresh array (owning its own refs to

@@ -1981,6 +1981,33 @@ struct JIT {
     CallRootSaver& operator=(const CallRootSaver&) = delete;
   };
 
+  // Report everything the enclosed emissions raise at `ast`, restoring both
+  // positions on exit. A UFCS call has no CALL node naming its callee, so the
+  // chain root the enclosing walk installed still points at the receiver;
+  // without this the same call reports its dispatch failure at the receiver
+  // and its argument errors at the argument list. interp reports both at the
+  // ARGUMENTS node, so that is what gets pinned here.
+  struct CallSiteAt {
+    JIT& j;
+    size_t line, column, root_line, root_col;
+    CallSiteAt(JIT& jit, const peg::Ast& ast)
+        : j(jit), line(jit.current_line_), column(jit.current_column_),
+          root_line(jit.call_root_line_), root_col(jit.call_root_col_) {
+      if (ast.line) j.current_line_ = ast.line;
+      if (ast.column) j.current_column_ = ast.column;
+      j.call_root_line_ = ast.line;
+      j.call_root_col_ = ast.column;
+    }
+    ~CallSiteAt() {
+      j.current_line_ = line;
+      j.current_column_ = column;
+      j.call_root_line_ = root_line;
+      j.call_root_col_ = root_col;
+    }
+    CallSiteAt(const CallSiteAt&) = delete;
+    CallSiteAt& operator=(const CallSiteAt&) = delete;
+  };
+
   // Debug mode flag
   bool debug_enabled_ = false;
 
@@ -12813,6 +12840,8 @@ struct JIT {
       // this/params, so it does not double-free the callee's own cleanup.
       Owned ufcsRes;
       {
+        // Same call-position pinning as the positional UFCS branch below.
+        CallSiteAt at(*this, argsAst);
         ThrowGuard callee_guard(this, {freeFn});
         ufcsRes = compile_function_call_runtime_kwargs(
             argsAst, freeFn, /*selfVal=*/nullptr, {receiver}, dot_ast);
@@ -12877,6 +12906,7 @@ struct JIT {
     // cleans on throw), so it does not double-free the callee's own cleanup.
     Owned ufcsRes;
     {
+      CallSiteAt at(*this, argsAst);
       ThrowGuard callee_guard(this, {freeFn});
       ufcsRes =
           compile_function_call_raw(freeFn, nullptr, ufcsArgs, ufcsArgAsts);
