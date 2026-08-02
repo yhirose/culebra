@@ -241,6 +241,22 @@ assert_eq(FS.size(png_path), png_sprite.to_png().size())
 assert_eq(Canvas.Sprite.from_png(FS.read(png_path)).width(), 2)
 FS.remove(png_path)
 
+// One canvas, one isolate: this one claimed it above, so a second is refused
+// rather than raced (see own_canvas in canvas.h).
+Canvas.init(4, 4)
+Canvas.clear(RED)
+let busy = try { Isolate.spawn(fn () { Canvas.init(2, 2) }).join(); nil } catch e { e }
+assert_eq("{busy.kind}: {busy.message}",
+          'RuntimeError: another isolate is already drawing to the canvas')
+assert_eq(Isolate.spawn(fn () {
+  Canvas.clear(GREEN)                         // clipped away: a 0x0 target
+  Canvas.get_pixel(0, 0)
+}).join(), 0)
+assert_eq(Isolate.spawn(fn () {
+  Canvas.Sprite.new([GREEN], 1, 1).width()    // 0: no handle was registered
+}).join(), 0)
+assert_eq(Canvas.get_pixel(0, 0), RED)        // this isolate's canvas is intact
+
 // Canvas.init sizes the framebuffer without going through run — for a program
 // that drives its own frame loop.
 Canvas.init(5, 3)

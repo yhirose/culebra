@@ -686,9 +686,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_coord(
     double d) {
   return culebra::_canvas_detail::coord(d);
 }
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_init(int64_t w,
-                                                                   int64_t h) {
-  culebra::_canvas_detail::init(static_cast<int>(w), static_cast<int>(h));
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_init(
+    int64_t w, int64_t h, int64_t line, int64_t col) {
+  if (!culebra::_canvas_detail::init(static_cast<int>(w), static_cast<int>(h)))
+    throw culebra::CulebraError("RuntimeError",
+                                culebra::_canvas_detail::kBusyError, line, col);
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_clear(
     int64_t rgba) {
@@ -798,9 +800,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char*
 culebra_runtime_canvas_sprite_to_png(
     int64_t id, int64_t line, int64_t col) {
   auto t = culebra::_canvas_detail::readback_target(id);
-  if (t.px == nullptr)
-    throw culebra::CulebraError("ValueError", "not a live sprite handle", line,
-                                col);
+  if (t.px == nullptr) {
+    auto r = culebra::_canvas_detail::refusal();
+    throw culebra::CulebraError(r.kind, r.message, line, col);
+  }
   auto e = culebra::image::encode_png(t.px, t.w, t.h);
   if (!e.error.empty())
     throw culebra::CulebraError("ValueError", e.error, line, col);
@@ -821,9 +824,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_sprite_free(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_target(
     int64_t id, int64_t line, int64_t col) {
   int64_t prev = culebra::_canvas_detail::target(id);
-  if (prev < 0)
-    throw culebra::CulebraError("ValueError", "not a live sprite handle", line,
-                                col);
+  if (prev < 0) {
+    auto r = culebra::_canvas_detail::refusal();
+    throw culebra::CulebraError(r.kind, r.message, line, col);
+  }
   return prev;
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_sprite_width(
@@ -8028,7 +8032,7 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   auto vt = jit.builder_.getVoidTy();
   jit.module_->getOrInsertFunction(rt::canvas_coord, i64,
                                    jit.builder_.getDoubleTy());
-  jit.module_->getOrInsertFunction(rt::canvas_init, vt, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_init, vt, i64, i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_clear, vt, i64);
   jit.module_->getOrInsertFunction(rt::canvas_set_pixel, vt, i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_get_pixel, i64, i64, i64);
@@ -9160,7 +9164,11 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
       return jit.own(make_nil());
     };
     if (method == "init")
-      if (auto v = args({{"w"}, {"h"}})) return call_void(rt::canvas_init, *v);
+      if (auto v = args({{"w"}, {"h"}})) {
+        v->push_back(line);
+        v->push_back(col);
+        return call_void(rt::canvas_init, *v);
+      }
     if (method == "clear")
       if (auto v = args({{"rgba"}})) return call_void(rt::canvas_clear, *v);
     if (method == "set_pixel")

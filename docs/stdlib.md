@@ -4186,6 +4186,13 @@ visually-close approximation.
 | `Canvas.to_png() -> String` | the current draw target's pixels as PNG bytes |
 | `Canvas.present()` | show the frame (see the loop below) |
 
+The framebuffer and the sprite registry belong to one isolate — the first one
+to touch them, by drawing or by reading (`width`, `get_pixel`). A second
+isolate is refused rather than raced: it finds an empty canvas (no pixels, no
+sprite handles), and the calls that can report say why — `init` and
+`draw_to`/`to_png` raise `RuntimeError`. A worker can own the canvas, as long
+as no other isolate has touched it.
+
 Every shape takes `fill: false` to draw its one-pixel outline instead of the
 filled interior: for `rect` that is the outermost ring of the same fill, for
 `circle` / `ellipse` the connected edge, and for `triangle` / `polygon` the

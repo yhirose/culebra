@@ -4053,6 +4053,13 @@ inspect(Canvas.hsv(h, Math.min(1.0, s * 1.4), v))  # => 4291327148
 | `Canvas.to_png() -> String` | 現在の描画先のピクセルをPNGバイト列で返す |
 | `Canvas.present()` | フレームを提示（下記ループ参照） |
 
+フレームバッファとスプライトレジストリは1つのisolateのもので、最初に触れた
+isolate（描画でも`width`/`get_pixel`のような読み取りでも）が持ち主になる。
+2つ目のisolateは競合させる代わりに拒否され、空のキャンバス（ピクセルも
+スプライトハンドルも無い）を見る。報告できる呼び出しは理由を返す — `init`と
+`draw_to`/`to_png`は`RuntimeError`。他のisolateが一度も触れていなければ、
+持ち主がworkerでも構わない。
+
 すべての図形は`fill: false`で塗りの代わりに1ピクセル幅の輪郭を描く:
 `rect`は同じ塗りの最外周リング、`circle` / `ellipse`はつながった縁、
 `triangle` / `polygon`は`line`で描いた辺の閉じた連鎖（半開区間の塗りと

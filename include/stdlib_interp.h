@@ -1801,12 +1801,16 @@ inline Value make_canvas_primitives_namespace() {
   using namespace std::literals;
   ObjectValue ns;
 
-  // _Canvas.init(w, h) -> Nil (allocate/reset the framebuffer)
+  // _Canvas.init(w, h) -> Nil (allocate/reset the framebuffer). Raises when
+  // another isolate owns the canvas — the one drawing call that says so.
   ns.initialize("init",
       Value(FunctionValue({{"w", false, "Long"sv}, {"h", false, "Long"sv}},
           [](std::shared_ptr<Environment> env) {
-            _canvas_detail::init(env->get("w").to_long(),
-                                 env->get("h").to_long());
+            if (!_canvas_detail::init(env->get("w").to_long(),
+                                      env->get("h").to_long()))
+              throw CulebraError("RuntimeError", _canvas_detail::kBusyError,
+                                 env->get("__LINE__").to_long(),
+                                 env->get("__COLUMN__").to_long());
             return Value();
           })),
       false);
@@ -2023,9 +2027,10 @@ inline Value make_canvas_primitives_namespace() {
             int64_t line = env->get("__LINE__").to_long();
             int64_t col = env->get("__COLUMN__").to_long();
             auto t = _canvas_detail::readback_target(env->get("id").to_long());
-            if (t.px == nullptr)
-              throw CulebraError("ValueError", "not a live sprite handle",
-                                 line, col);
+            if (t.px == nullptr) {
+              auto r = _canvas_detail::refusal();
+              throw CulebraError(r.kind, r.message, line, col);
+            }
             auto e = culebra::image::encode_png(t.px, t.w, t.h);
             if (!e.error.empty())
               throw CulebraError("ValueError", e.error, line, col);
@@ -2087,10 +2092,12 @@ inline Value make_canvas_primitives_namespace() {
       Value(FunctionValue({{"id", false, "Long"sv}},
           [](std::shared_ptr<Environment> env) -> Value {
             int64_t prev = _canvas_detail::target(env->get("id").to_long());
-            if (prev < 0)
-              throw CulebraError("ValueError", "not a live sprite handle",
+            if (prev < 0) {
+              auto r = _canvas_detail::refusal();
+              throw CulebraError(r.kind, r.message,
                                  env->get("__LINE__").to_long(),
                                  env->get("__COLUMN__").to_long());
+            }
             return Value(static_cast<int64_t>(prev));
           },
           "Long"sv)),

@@ -31,6 +31,7 @@
 // framebuffer header still pulls in no raylib either way.
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -63,10 +64,35 @@ struct Sprite {
 };
 
 // This state is process-global and unsynchronized: drawing is a single-thread
-// activity. What makes that hold is that no preamble reaches a *mutating*
-// native at module top level — a top-level call runs once per isolate, on that
-// isolate's own thread. The font registry below is the one exception (the
-// Canvas preamble uploads its font as it resolves), so it carries a lock.
+// activity. The two vectors below reallocate, so a SECOND isolate drawing
+// would free the buffer the first is drawing through — an init() or a sprite
+// registration against a live blit. One isolate owns the state instead: the
+// first thread to reach a seam that claims it (init, resolve_target,
+// sprite_of, sprite_adopt, target — `git grep own_canvas`). Every other thread
+// finds an empty canvas, so its draws clip themselves away; the seams that can
+// report say why (see refusal()), which is how a drawing isolate hears about
+// it at its first call rather than through a window that stays blank.
+//
+// Deliberately outside the claim: font_load, which every isolate reaches as it
+// resolves the Canvas module (that is why the font registry carries a lock
+// instead), and the window backend's read of _fb(), which belongs to whichever
+// thread drives the window.
+inline constexpr auto kBusyError =
+    "another isolate is already drawing to the canvas";
+inline bool own_canvas() {
+  static std::atomic<bool> claimed{false};
+  thread_local int mine = 0;   // 0 = never asked, 1 = owner, 2 = not
+  if (mine == 0) {
+    // Both answers are final — the claim is never released — so a plain
+    // thread_local caches it, which an atomic load could not: the seams that
+    // ask twice per call (resolve_target, blit, glyph) then check once.
+    bool unclaimed = false;
+    mine = claimed.compare_exchange_strong(unclaimed, true,
+                                           std::memory_order_relaxed) ? 1 : 2;
+  }
+  return mine == 1;
+}
+
 inline int& _fb_w() { static int w = 0; return w; }
 inline int& _fb_h() { static int h = 0; return h; }
 inline std::vector<uint32_t>& _fb() { static std::vector<uint32_t> b; return b; }
@@ -85,6 +111,7 @@ inline int64_t sprite_handle(size_t index, uint32_t gen) {
 // generation, never valid). The pointer is only good until the registry next
 // mutates — resolve per call, never cache.
 inline Sprite* sprite_of(int64_t id) {
+  if (!own_canvas()) return nullptr;
   int64_t index = (id & 0xffffffff) - 1;
   if (index < 0 || static_cast<size_t>(index) >= _sprites().size())
     return nullptr;
@@ -98,12 +125,15 @@ inline Sprite* sprite_of(int64_t id) {
 // level before the loop first calls init(), so clearing here would invalidate
 // their handles. It is process-lifetime state, reclaimed at process exit (or,
 // in the Playground, when Stop respawns the worker).
-inline void init(int w, int h) {
+// False when another isolate owns the canvas (the caller raises kBusyError).
+inline bool init(int w, int h) {
+  if (!own_canvas()) return false;
   if (w < 0) w = 0;
   if (h < 0) h = 0;
   _fb_w() = w;
   _fb_h() = h;
   _fb().assign(static_cast<size_t>(w) * static_cast<size_t>(h), 0u);
+  return true;
 }
 
 // Declared ahead: width/height report the CURRENT draw target (the
@@ -149,6 +179,7 @@ struct Target {
 };
 inline int64_t& _target_id() { static int64_t id = 0; return id; }
 inline Target resolve_target() {
+  if (!own_canvas()) return {nullptr, 0, 0};
   if (_target_id() != 0) {
     // Freeing the current target is refused at the seam, so this resolves as
     // long as the id is set.
@@ -164,7 +195,7 @@ inline int height() { return resolve_target().h; }
 // The pixels an id names for readback (PNG encoding): 0 follows the CURRENT
 // draw target, the way width/height/get_pixel do, so `Canvas.to_png()` inside
 // `draw_to` encodes the sprite being drawn into; any other id is that sprite.
-// `px` is null for a stale handle — the caller raises.
+// `px` is null for a stale handle — the caller raises with refusal().
 inline Target readback_target(int64_t id) {
   if (id == 0) return resolve_target();
   if (Sprite* s = sprite_of(id)) return {s->px.data(), s->w, s->h};
@@ -172,13 +203,26 @@ inline Target readback_target(int64_t id) {
 }
 
 // Switch the draw target: 0 for the framebuffer, a sprite handle for its
-// pixels. Returns the previous target id, or -1 when `id` names no live
-// sprite (the caller raises; the target is left unchanged).
+// pixels. Returns the previous target id, or -1 when `id` names no live sprite
+// (the caller raises with refusal(); the target is left unchanged). A
+// non-owner is refused before the store: `id` 0 resolves no sprite, so nothing
+// else here would stop it from redirecting the owner's drawing.
 inline int64_t target(int64_t id) {
+  if (!own_canvas()) return -1;
   if (id != 0 && sprite_of(id) == nullptr) return -1;
   int64_t prev = _target_id();
   _target_id() = id;
   return prev;
+}
+
+// Why a seam that resolves a handle refused. A non-owner is not holding a
+// stale handle — it has no handles at all — and hearing about sprite lifetimes
+// is the least useful thing it could be told.
+struct Refusal { const char* kind; const char* message; };
+inline constexpr auto kStaleSpriteError = "not a live sprite handle";
+inline Refusal refusal() {
+  return own_canvas() ? Refusal{"ValueError", kStaleSpriteError}
+                      : Refusal{"RuntimeError", kBusyError};
 }
 
 // Composite `src` over `dst` at `alpha`/255 — straight-alpha source-over,
@@ -497,6 +541,7 @@ inline void glyph(int64_t id, int64_t index, int x, int y, uint32_t rgba,
 // already bumped), so the registry doesn't grow monotonically under
 // create-per-frame use.
 inline int64_t sprite_adopt(std::vector<uint32_t>&& px, int w, int h) {
+  if (!own_canvas()) return 0;
   Sprite s;
   s.w = w < 0 ? 0 : w;
   s.h = h < 0 ? 0 : h;
