@@ -11,7 +11,10 @@
       display: flex; align-items: center; justify-content: space-between;
       max-width: 960px; margin: 0 auto; padding: 1.1rem 1.4rem;
     }
-    .nav .brand { display: flex; align-items: baseline; gap: 0.5rem; }
+    /* Centered, not baseline: the wordmark is an inline-flex whose first item
+       is the SVG, so its baseline sits at the mark's bottom edge rather than
+       at the "culebra" text baseline, which drops the version below the word. */
+    .nav .brand { display: flex; align-items: center; gap: 0.5rem; }
     /* Hand-written, unlike the Playground's, which build.sh stamps — the
        landing page has no build step. `just check-site-version` compares both
        against include/culebra.h so neither can be left behind by a bump. */
