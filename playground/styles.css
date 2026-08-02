@@ -128,4 +128,19 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   .pg-main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
   .pg-editor { border-right: 0; border-bottom: 1px solid var(--border); }
   .pg-header .sub { display: none; }
+  /* An embed is narrow by nature, so this is its normal layout rather than a
+     phone case: give the source the larger share, since the snippet a host
+     page sends is the thing being shown and the output is a few lines. */
+  .embed .pg-main { grid-template-rows: 1.35fr 1fr; }
 }
+
+/* --- embed mode (?embed=1) --------------------------------------------- */
+/* A page hosting the Playground in an iframe brings its own branding and
+   supplies the source through ?code=, so the standalone header, the example
+   picker and the argument box have nothing to do here. Run/Stop, the status
+   and the panes stay: they are the part that is being embedded. */
+.embed .pg-header,
+.embed #examples,
+.embed #args,
+.embed .backend { display: none; }
+.embed .pg-toolbar { padding: 0.45rem 0.8rem; }

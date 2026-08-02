@@ -220,6 +220,7 @@ function spawnWorker() {
         ? "WebGPU + interactive TUI available — auto mode runs large tensor ops on the GPU"
         : "Basic build (this browser lacks JSPI/WebGPU) — a TUI script runs non-interactively";
       if (!running) setStatus("ready");
+      maybeAutorun();
       return;
     }
     if (msg.type === "output") {
@@ -800,9 +801,45 @@ gameCanvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
 // --- boot -----------------------------------------------------------------
 
+// `?code=` seeds the editor with base64url-encoded source, so a page that
+// already shows a snippet can hand it over instead of keeping a second copy
+// that drifts. `?run=1` starts it once the worker is up — an embed's visitor
+// pressed Run on the hosting page and should not have to press it again.
+const params = new URLSearchParams(location.search);
+const seeded = decodeSource(params.get("code"));
+let pendingAutorun = params.get("run") === "1";
+let seedApplied = false;
+
+function decodeSource(param) {
+  if (!param) return null;
+  try {
+    const b64 = param.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+    // atob gives one char per byte; the source is UTF-8, so decode it as such.
+    const bytes = Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  } catch (err) {
+    console.error("ignoring unreadable ?code=", err);
+    return null;
+  }
+}
+
+// Both halves race: the catalog is fetched while the worker compiles. Run when
+// whichever finishes last lands — `runBtn.disabled` is the worker's own ready
+// signal, so no second flag tracks it.
+function maybeAutorun() {
+  if (!pendingAutorun || !seedApplied || runBtn.disabled) return;
+  pendingAutorun = false;
+  run();
+}
+
 loadExampleCatalog()
-  .then(() => loadExample("Hello"))
-  .then((src) => editor.setValue(src))
+  .then(() => (seeded === null ? loadExample("Hello") : seeded))
+  .then((src) => {
+    editor.setValue(src);
+    seedApplied = true;
+    maybeAutorun();
+  })
   .catch((err) => console.error("failed to load example catalog", err));
 setStatus("loading…");
 spawnWorker();

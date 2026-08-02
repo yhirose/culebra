@@ -28,10 +28,28 @@
     .fact h3 { margin: 0 0 0.35rem; font-size: 0.95rem; color: var(--brand-strong); }
     .fact p { margin: 0; font-size: 0.92rem; color: var(--muted); }
 
+    .sample-wrap {
+      border: 1px solid var(--border); border-radius: var(--radius);
+      overflow: hidden; margin: 2.2rem 0; background: var(--code-bg);
+    }
+    .sample-bar {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 0.8rem; padding: 0.5rem 0.7rem 0.5rem 1.1rem;
+      background: var(--surface-2); border-bottom: 1px solid var(--border);
+    }
+    .sample-bar .name { color: var(--muted); font-size: 0.82rem; font-family: var(--font-mono); }
+    .sample-bar .btn { padding: 0.25rem 0.8rem; font-size: 0.85rem; }
     pre.sample {
-      background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius);
+      background: var(--code-bg); border: 0; border-radius: 0;
       padding: 1.1rem 1.3rem; overflow-x: auto; font-size: 0.9rem; line-height: 1.6;
-      margin: 2.2rem 0;
+      margin: 0;
+    }
+    /* Tall enough for the editor and the output pane to both be legible; the
+       Playground stacks them below 720px, which is why the cap grows with the
+       viewport rather than staying at one pixel height. */
+    .sample-frame {
+      display: block; width: 100%; border: 0;
+      height: clamp(340px, 52vh, 460px); background: var(--code-bg);
     }
     .k { color: var(--brand-strong); font-weight: 600; }
     .s { color: var(--accent); }
@@ -74,12 +92,21 @@
       </div>
     </section>
 
-    <pre class="sample"><span class="c"># runs in your browser on the Playground — interpreter compiled to WebAssembly</span>
-<span class="k">fn</span> fib(n) { <span class="k">if</span> n &lt; 2 { n } <span class="k">else</span> { fib(n-1) + fib(n-2) } }
+    <div class="sample-wrap" id="sample-wrap">
+      <div class="sample-bar">
+        <span class="name">example.cul</span>
+        <button id="run-sample" class="btn btn-primary" type="button">▶ Run in your browser</button>
+      </div>
+      <pre class="sample" id="sample"><span class="k">let</span> people = [
+  { name: <span class="s">'Kate'</span>, age: <span class="s">30</span> },
+  { name: <span class="s">'John'</span>, age: <span class="s">45</span> },
+  { name: <span class="s">'Ada'</span>,  age: <span class="s">36</span> },
+]
 
-<span class="k">let</span> xs = [<span class="s">1</span>, <span class="s">2</span>, <span class="s">3</span>, <span class="s">4</span>, <span class="s">5</span>]
-println(<span class="s">"squares: "</span> + xs.map(|x| x * x).to_string())
-println(<span class="s">"fib(20): "</span> + fib(<span class="s">20</span>).to_string())</pre>
+<span class="k">for</span> p <span class="k">in</span> people.sorted_by(|p| p.age) {
+  println(<span class="s">"{p.name} is {p.age} years old"</span>)
+}</pre>
+    </div>
 
     <section class="facts">
       <div class="fact">
@@ -109,6 +136,36 @@ println(<span class="s">"fib(20): "</span> + fib(<span class="s">20</span>).to_s
       var t = localStorage.getItem("culebra-theme");
       if (t) document.documentElement.setAttribute("data-theme", t);
     } catch (e) {}
+
+    // Run swaps the listing for the Playground in an iframe. Loading it on
+    // demand is the point: the wasm interpreter is ~1.2 MB compressed, which
+    // nobody should pay for just to read the page. The <pre> above is the one
+    // copy of the snippet — its text is handed over through ?code=, so the
+    // sample that runs cannot drift from the sample that is shown.
+    document.getElementById("run-sample").addEventListener("click", function () {
+      var src = document.getElementById("sample").textContent;
+      var bytes = new TextEncoder().encode(src);
+      var bin = "";
+      for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      var code = btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+      var frame = document.createElement("iframe");
+      frame.className = "sample-frame";
+      frame.title = "culebra Playground";
+      frame.src = "./playground/?embed=1&run=1&code=" + code;
+
+      var wrap = document.getElementById("sample-wrap");
+      wrap.replaceChild(frame, document.getElementById("sample"));
+
+      // The button has done its job; from here the way on is the full editor,
+      // carrying the same source so nothing typed in the frame is needed.
+      var btn = document.getElementById("run-sample");
+      var link = document.createElement("a");
+      link.className = "btn";
+      link.href = "./playground/?code=" + code;
+      link.textContent = "Open in the Playground ↗";
+      btn.replaceWith(link);
+    });
   </script>
 </body>
 </html>

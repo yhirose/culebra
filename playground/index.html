@@ -8,6 +8,13 @@
   <link rel="stylesheet" href="../assets/brand.css">
   <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="https://esm.sh/@xterm/xterm@5.5.0/css/xterm.css">
+  <script>
+    // ?embed=1 drops the chrome a hosting page already provides. Marked on the
+    // root element from <head>, before the body is parsed, so an embed never
+    // paints the standalone header and then takes it away.
+    if (new URLSearchParams(location.search).get("embed") === "1")
+      document.documentElement.classList.add("embed");
+  </script>
 </head>
 <body>
   <header class="pg-header">
