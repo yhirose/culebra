@@ -663,9 +663,17 @@ if(CULEBRA_ENABLE_WEBVIEW)
       set(_webview_libs ole32 shell32 shlwapi user32 version advapi32)
       list(TRANSFORM _webview_libs PREPEND "-l" OUTPUT_VARIABLE _webview_lflags)
       list(JOIN _webview_lflags " " _webview_link)
-      # No --allow-multiple-definition here: duplicate runtime helpers are kept
-      # out at the source (rt_macros.h) and checked by
-      # tools/check_rt_archive_tls.sh, not waved through at link time.
+      # The binding reaches wrap.h, so its TU can emit a runtime helper the core
+      # archive also defines, and PE has no weak external to fold the two with.
+      # CULEBRA_RT_FEATURE_BUILD (rt_macros.h) stops the wholesale emission but
+      # not the last un-inlined one — that is the compiler's business, and
+      # mingw's GCC 16 keeps `_jit_handle_bind_method` where GCC 14 does not.
+      # It takes the first definition and drops the diagnostic; COMDAT folding
+      # is what handles the ordinary inline bodies. Scoped to this axis, so a
+      # link that does not use Webview keeps strict duplicate detection, and
+      # tools/check_rt_archive_tls.sh fails if the count grows past a leftover
+      # or two.
+      string(APPEND _webview_link " -Wl,--allow-multiple-definition")
     else()
       message(STATUS "Webview: disabled (WebView2.h not found — install webview2-loader)")
       set(CULEBRA_ENABLE_WEBVIEW OFF)

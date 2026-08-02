@@ -64,25 +64,18 @@ tls_defs() {
 # feature archive overriding one of the core's weak stubs is the force-load
 # design itself (Http, Canvas, Tensor), so only the core's strong definitions
 # are off limits to it.
+#
+# Read on ELF only. `nm`'s one-letter class answers weak-or-not outright, while
+# Mach-O spells it several ways (`weak external`, `weak private external`, ...)
+# and a filter that misses one reports every inline C++ body in the tree — this
+# check did exactly that on the macOS lane. The hazard being proxied belongs to
+# PE, so one platform that answers unambiguously is enough.
 all_defs() {
-  local ar="$1"
-  if [[ "$(uname -s)" == "Darwin" ]]; then
-    nm -m "$ar" 2>/dev/null | { grep -v ' undefined' || true; } \
-      | awk '{print $NF}' | sed 's/^_//' | sort -u
-  else
-    nm --defined-only "$ar" 2>/dev/null | awk '{print $NF}' | sort -u
-  fi
+  nm --defined-only "$1" 2>/dev/null | awk '{print $NF}' | sort -u
 }
 strong_defs() {
-  local ar="$1"
-  if [[ "$(uname -s)" == "Darwin" ]]; then
-    nm -m "$ar" 2>/dev/null | { grep -v ' undefined' || true; } \
-      | { grep -v 'weak external' || true; } \
-      | awk '{print $NF}' | sed 's/^_//' | sort -u
-  else
-    nm --defined-only "$ar" 2>/dev/null \
-      | awk '$2 ~ /^[TDBR]$/ {print $NF}' | sort -u
-  fi
+  nm --defined-only "$1" 2>/dev/null \
+    | awk '$2 ~ /^[TDBR]$/ {print $NF}' | sort -u
 }
 
 demangle() {
@@ -118,39 +111,66 @@ fi
 echo "rt-archive-tls OK ($checked feature archives," \
      "$(printf '%s\n' "$core_defs" | grep -c . || true) core-owned thread_locals)"
 
-# Same hazard, different symbol class: the runtime helpers. They are header-only
-# and normally carry __attribute__((used)) so the in-process JIT can find them,
-# which made a feature TU that reaches wrap.h emit its own copy of all ~350 next
-# to the core archive's real ones. CULEBRA_RT_FEATURE_BUILD drops the attribute
-# (rt_macros.h), and then nothing is emitted BECAUSE every remaining use inlines
-# — an optimizer-dependent property, not a contract: at -O0 four copies come
-# back. So check the result rather than trusting it. Weak-vs-strong is silently
-# folded by ELF and Mach-O, so without this the first report is a mingw link
-# 45 minutes away.
-core_strong=$(strong_defs "$core")
-dup_fail=0
-for ar in "$BUILD_DIR"/libculebra_rt_*.a; do
-  [[ -f "$ar" ]] || continue
-  shared=$(comm -12 <(printf '%s\n' "$core_strong") <(all_defs "$ar"))
-  [[ -n "$shared" ]] || continue
-  dup_fail=1
-  echo "rt-archive-dup FAIL: $(basename "$ar") re-defines symbols the core" \
-       "archive defines strongly:" >&2
-  printf '%s\n' "$shared" | demangle | sed 's/^/  /' | head -20 >&2
-done
-if (( dup_fail )); then
-  cat >&2 <<'EOF'
+# Same hazard, one symbol class over: the runtime helpers. The core archive
+# defines all of them outright, and a feature TU that reaches wrap.h emits its
+# own copy of any the compiler declines to inline (rt_macros.h explains what
+# stops the rest). Webview's link fragment takes the first definition and drops
+# the diagnostic, so a leftover there is survivable; nothing absorbs anyone
+# else's. The bound is what separates "a call stopped inlining" from "the
+# force-emit attribute came back" — and the archives that would show the latter
+# are exactly the ones that reach wrap.h, so no other check catches it.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  echo "rt-archive-dup SKIP (symbol classes are read on ELF -- see strong_defs)"
+else
+  # The waiver is only as true as the flag, and it is Webview's fragment that
+  # must carry it -- not some other axis. This script is where a fragment that
+  # lost the flag goes unnoticed otherwise (it did, once: the flag was deleted
+  # and only the comment came back).
+  waved=""
+  if grep -q -- '_webview_link.*--allow-multiple-definition' CMakeLists.txt; then
+    waved="libculebra_rt_webview.a"
+  fi
+  waved_max=8   # a leftover or two; 348 was the archive before the attribute came off
+  core_strong=$(strong_defs "$core")
+  dup_fail=0
+  for ar in "$BUILD_DIR"/libculebra_rt_*.a; do
+    [[ -f "$ar" ]] || continue
+    shared=$(comm -12 <(printf '%s\n' "$core_strong") <(all_defs "$ar"))
+    [[ -n "$shared" ]] || continue
+    n=$(printf '%s\n' "$shared" | grep -c .)
+    if [[ -n "$waved" && "$ar" == */"$waved" ]] && (( n <= waved_max )); then
+      echo "rt-archive-dup OK: $(basename "$ar") leaves $n un-inlined" \
+           "helper(s) for its fragment's --allow-multiple-definition"
+      continue
+    fi
+    dup_fail=1
+    echo "rt-archive-dup FAIL: $(basename "$ar") re-defines $n symbol(s) the" \
+         "core archive defines strongly:" >&2
+    printf '%s\n' "$shared" | demangle | sed 's/^/  /' | head -20 >&2
+  done
+  if (( dup_fail )); then
+    cat >&2 <<'EOF'
   PE has no weak external, so mingw's ld calls each of these a multiple
   definition and the Windows AOT link fails. A feature TU must not define what
-  the core archive already defines strongly: check that its build carries
-  CULEBRA_RT_FEATURE_BUILD (CMakeLists' feature loop), and that whatever call
-  survived inlining is small enough to inline or belongs behind the core
-  archive's own entry points.
+  the core archive defines strongly: check that its build carries
+  CULEBRA_RT_FEATURE_BUILD (CMakeLists' feature loop). Many of them mean the
+  __attribute__((used)) came back (rt_macros.h); one or two mean a call stopped
+  inlining, which only an axis whose link fragment carries
+  --allow-multiple-definition can absorb.
+
+  If this names libculebra_rt_scene.a, it is not your change: Scene reaches
+  wrap.h the same way and leaves three, and its fragment is raylib's, shared
+  with Canvas, so it has no flag to absorb them. Scene has never linked on
+  Windows for this reason; the gate builds it OFF.
+
+  (An axis you just switched OFF still has its archive in the build dir --
+  delete that .a and re-run.)
 EOF
-  exit 1
+    exit 1
+  fi
+  echo "rt-archive-dup OK (no unabsorbed duplicate of the core's" \
+       "$(printf '%s\n' "$core_strong" | grep -c . || true) strong symbols)"
 fi
-echo "rt-archive-dup OK (no feature archive re-defines the core's" \
-     "$(printf '%s\n' "$core_strong" | grep -c . || true) strong symbols)"
 
 # The same invariant one level down: the driver is several TUs in one PE image,
 # so two of them defining the same thread_local is the identical link error --
