@@ -2642,8 +2642,7 @@ struct JIT {
   // reused across calls — windows never overlap at runtime, a frame executes
   // one call at a time), and unwind_covered_ the values currently excluded
   // from windows because a callee-cleans contract names another
-  // unwind-edge releaser (a ThrowGuard pad, a callee-cleans helper, an
-  // invoker guard) — spilling
+  // unwind-edge releaser (a ThrowGuard pad, a callee-cleans helper) — spilling
   // those too would double-free, the ASan-confirmed overlap trap.
   std::vector<Owned*> live_owned_;
   std::vector<llvm::Value*> unwind_temp_slots_;
@@ -2666,10 +2665,9 @@ struct JIT {
   }
 
   // Scoped callee-cleans declaration: while alive, the calls emitted have a
-  // callee/invoker-side cleaner for `vals` on the unwind edge (an operator
-  // helper's direct-error release, an invoke_method* guard over user
-  // dispatch, a pending-guard window), so the automatic unwind-temp window
-  // skips them — each edge keeps exactly one releaser.
+  // callee-side cleaner for `vals` on the unwind edge (an operator helper's
+  // body-wide release, a pending-guard window), so the automatic unwind-temp
+  // window skips them — each edge keeps exactly one releaser.
   struct UnwindCovered {
     JIT* jit_;
     std::vector<llvm::Value*> vals_;
@@ -5318,9 +5316,14 @@ struct JIT {
   llvm::Value* emit_interp_fragment(const peg::Ast& node) {
     using namespace peg::udl;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    // Both display helpers BORROW the value (their C++ callers — print, Path
+    // join, the formatter — all hand borrowed values), and the string they
+    // return is heap-allocated on its own. So the handle keeps the `+1`: it
+    // releases after the piece is built and stays in the unwind-temp window,
+    // which is what covers a throwing user `__str__`.
     if (node.tag == "INTERP_EXPR"_ && node.nodes.size() > 1) {
       // `{expr:spec}` — children [EXPRESSION, FORMAT_SPEC].
-      auto val = compile(*node.nodes[0]).consume();
+      auto val = compile(*node.nodes[0]);
       auto specPtr = get_or_create_global_str(
           std::string(node.nodes[1]->token), ".fmtspec");
       return emit_call(
@@ -5329,19 +5332,19 @@ struct JIT {
                                        builder_.getInt64Ty(), ptrTy,
                                        builder_.getInt64Ty(),
                                        builder_.getInt64Ty()),
-          {extract_tag(val), extract_data(val), specPtr,
+          {extract_tag(val.borrow()), extract_data(val.borrow()), specPtr,
            builder_.getInt64(node.line), builder_.getInt64(node.column)},
           "fmt");
     }
     // Bare `{expr}` — INTERP_EXPR with just [EXPRESSION], or (defensive) a
     // bare expr node.
     auto exprNode = (node.tag == "INTERP_EXPR"_) ? node.nodes[0].get() : &node;
-    auto val = compile(*exprNode).consume();
+    auto val = compile(*exprNode);
     return emit_call(
         module_->getOrInsertFunction(rt::value_to_display, ptrTy,
                                      builder_.getInt8Ty(),
                                      builder_.getInt64Ty()),
-        {extract_tag(val), extract_data(val)}, "disp");
+        {extract_tag(val.borrow()), extract_data(val.borrow())}, "disp");
   }
 
   Owned compile_interpolated_string(const peg::Ast& ast) {
@@ -6295,9 +6298,8 @@ struct JIT {
                                    LongPath long_path,
                                    FloatPath float_path) {
     // Callee-cleans: on the helper's unwind edge the operands already have
-    // exactly one releaser — the arith helper itself on a direct type
-    // error, the callee
-    // frame + invoker guard on a user `__op__` dispatch — so the unwind-temp
+    // exactly one releaser — the arith helper's body-wide guard, covering a
+    // direct type error and a user `__op__` dispatch alike — so the unwind-temp
     // window must not spill them (the ASan-confirmed overlap trap).
     UnwindCovered cover(this, {lhs, rhs});
     auto fn = builder_.GetInsertBlock()->getParent();
@@ -6346,15 +6348,10 @@ struct JIT {
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(numBB);
-    // Slow path: the runtime helper borrows both operands and can throw. The
-    // operands are NOT guarded on the unwind edge here — a *user*-operator
-    // dispatch (`v + 2` invoking `__add__`) already releases them via the
-    // callee frame's throw cleanup + JitUnwindRelease, so a codegen-side guard
-    // would triple-free (ASan-confirmed). A *builtin*-operator TypeError
-    // (`1 + "a"`) does strand the operand, but closing that needs the operator
-    // helpers to release on their direct-throw path (uniform callee-cleans),
-    // not a codegen guard that can't tell the two dispatch paths apart. That
-    // operator throw-path is deferred.
+    // Slow path: callee-cleans. The runtime helper guards its whole body, so
+    // it releases the operand temps on every throw — a user `__add__` body's
+    // and a builtin TypeError's (`1 + "a"`) alike. Exclude them from the
+    // unwind-temp window so the two cleaners do not double-free.
     merge.add_incoming(emit_value_call(
         module_->getOrInsertFunction(rt_name, valueType_,
                                      builder_.getInt8Ty(),
@@ -6492,8 +6489,8 @@ struct JIT {
       // because it has no built-in numeric meaning (dispatch only via
       // `__matmul__`). Emit directly, then skip the dispatch below.
       if (ope == '@') {
-        // Callee-cleans: num_matmul releases both operands on its direct
-        // type error, user `__matmul__` via the invoker guard.
+        // Callee-cleans: num_matmul releases both operands on every throw —
+        // its direct type error and a user `__matmul__` alike.
         UnwindCovered cover(this, {acc.borrow(), rhs.borrow()});
         auto ptrTy = llvm::PointerType::get(ctx_, 0);
         (void)ptrTy;
@@ -6573,9 +6570,9 @@ struct JIT {
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(slowBB);
-    // Callee-cleans: num_neg releases the operand on its direct type
-    // error, a user `__neg__` dispatch via the callee frame + invoker guard —
-    // exclude it from the unwind-temp window (see emit_binop_dispatch).
+    // Callee-cleans: num_neg releases the operand on every throw — its direct
+    // type error and a user `__neg__` alike — so exclude it from the
+    // unwind-temp window (see emit_binop_dispatch).
     UnwindCovered cover(this, {val.borrow()});
     merge.add_incoming(emit_value_call(
         module_->getOrInsertFunction(rt::num_neg, valueType_,
@@ -6744,8 +6741,8 @@ struct JIT {
     }
 
     Owned exp = compile(*ast.nodes[2]);
-    // Callee-cleans: num_pow releases both operands on its direct type
-    // error (via _arith_guard_numeric), user `__pow__` via the invoker guard.
+    // Callee-cleans: num_pow releases both operands on every throw — the
+    // `__pow__` dispatch's and _arith_guard_numeric's alike.
     UnwindCovered cover(this, {base.borrow(), exp.borrow()});
     auto result = emit_value_call(
         module_->getOrInsertFunction(rt::num_pow, valueType_,
@@ -6769,11 +6766,10 @@ struct JIT {
   // `(a < b) && (b < c)` with each middle operand evaluated once.
   llvm::Value* emit_comparison_i1(llvm::Value* lhs, llvm::Value* rhs,
                                      const std::string& ope_str) {
-    // Callee-cleans: every throw edge of the eq/ordering helpers already
-    // has exactly one releaser for the operands (the helper on a direct
-    // type error /
-    // non-Bool coercion, the callee frame + invoker guard on a user
-    // `__eq__`/`__lt__` dispatch) — exclude them from the unwind-temp window.
+    // Callee-cleans: every throw edge of the eq/ordering helpers already has
+    // exactly one releaser for the operands (the helper's body-wide guard:
+    // direct type error, non-Bool coercion, and a user `__eq__`/`__lt__`
+    // dispatch alike) — exclude them from the unwind-temp window.
     UnwindCovered cover(this, {lhs, rhs});
     auto ltag = extract_tag(lhs);
     auto ldata = extract_data(lhs);
@@ -6807,10 +6803,9 @@ struct JIT {
       // a positionless error; publish the operator position so the exception
       // boundary backfills it (the ordering ops carry line/col explicitly).
       emit_set_op_pos();
-      // Not guarded on the unwind edge: a user `__eq__` dispatch already
-      // releases the operands via the callee frame + JitUnwindRelease, so a
-      // codegen guard here would double-free (ASan-confirmed). See the
-      // operator throw-path note in emit_binop_dispatch.
+      // Not guarded on the unwind edge: culebra_runtime_value_equal releases
+      // the operand temps on every throw of its own. See the callee-cleans
+      // note in emit_binop_dispatch.
       auto slowEq = emit_call(
           module_->getOrInsertFunction(rt::value_equal,
                                        builder_.getInt1Ty(),
@@ -6874,8 +6869,8 @@ struct JIT {
     else throw std::runtime_error("invalid comparison operator");
 
     // Not guarded on the unwind edge (same reason as the eq slow path and
-    // emit_binop_dispatch): a user `__lt__` dispatch releases the operands via
-    // the callee frame + JitUnwindRelease, so a codegen guard would double-free.
+    // emit_binop_dispatch): the ordering entry releases the operand temps on
+    // every throw of its own.
     auto slowResult = emit_call(
         module_->getOrInsertFunction(ord_rt,
                                      builder_.getInt1Ty(),
@@ -6954,10 +6949,10 @@ struct JIT {
     VarSlot prevSlot = operand_slot(prev);
     for (size_t i = 1; i + 1 < ast.nodes.size(); i += 2) {
       auto rhs = compile(*ast.nodes[i + 1]).consume_unchecked();
-      // The comparison owns its two operands' throw edges (a direct type
-      // error releases them in the helper; a user __lt__/__eq__ throw
-      // releases the owner +1 via the invoker guard + callee frame — the
-      // same contract the 2-operand branch relies on). Blank prev's slot for
+      // The comparison owns its two operands' throw edges (the helper's
+      // body-wide guard releases them on a direct type error and on a user
+      // __lt__/__eq__ throw alike — the same contract the 2-operand branch
+      // relies on). Blank prev's slot for
       // exactly that call so the region pad doesn't double-release it; rhs
       // is not slotted yet for the same reason. Each operand thus has one
       // releaser per edge: the helper on its own throw, the region on every
@@ -11334,10 +11329,6 @@ struct JIT {
   llvm::Value* emit_property_value_read(llvm::Value* receiver,
                                         llvm::Value* view,
                                         const std::string& name) {
-    // Invoker-cleans: a getter body's throw is cleaned by the invoke
-    // helper's unwind guard, which releases the owner-side receiver +1 —
-    // exclude it from the unwind-temp window.
-    UnwindCovered cover(this, {receiver});
     bool intro =
         (name == "name" || name == "params" || name == "return_type");
     auto i8Ty = builder_.getInt8Ty();

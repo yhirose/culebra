@@ -860,6 +860,8 @@ inline bool _jit_try_object_setindex(JitObject* obj, int8_t key_tag,
   auto* cls = _lookup_special(TAG_OBJECT, reinterpret_cast<int64_t>(obj),
                               "__setindex__");
   if (!cls) return false;
+  // Borrows the key and value: the caller consumes them on the normal path and
+  // guards them over this call for the throw path.
   auto r = _culebra_invoke_method2(
       cls, {TAG_OBJECT, reinterpret_cast<int64_t>(obj)}, {key_tag, key_data},
       {val_tag, val_data});
@@ -924,15 +926,24 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
     // non-refcounted, so only the consumed value is released here).
     if (obj->proto &&
         obj->find_slot(reinterpret_cast<const char*>(key_data)) ==
-            static_cast<size_t>(-1) &&
-        _jit_try_object_setindex(obj, key_tag, key_data, val_tag, val_data)) {
-      _culebra_value_release_impl(val_tag, val_data);
-      return;
+            static_cast<size_t>(-1)) {
+      // A user `__setindex__` body's throw unwinds past the release below, so
+      // guard the value's +1 across the dispatch.
+      JitUnwindRelease g{JitValue{val_tag, val_data}};
+      if (_jit_try_object_setindex(obj, key_tag, key_data, val_tag, val_data)) {
+        _culebra_value_release_impl(val_tag, val_data);
+        return;
+      }
     }
     culebra_runtime_object_set(obj, reinterpret_cast<const char*>(key_data),
                                mut, val_tag, val_data, line, col, is_init);
     return;
   }
+  // Everything below consumes the key and value this helper was handed, and
+  // both a user `hash()` (the sidecar probes below hash the key) and a user
+  // `__setindex__` can throw in the middle — one guard releases them on every
+  // such edge. The paths that hand the refs on return immediately.
+  JitUnwindRelease g{JitValue{key_tag, key_data}, JitValue{val_tag, val_data}};
   // A class instance may route a not-yet-stored key to __setindex__ before
   // the sidecar is activated (key + value are consumed by this helper's
   // contract). A plain dict skips this probe entirely.
@@ -973,12 +984,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
   // Object-literal construction (`is_init`) overwrites a duplicate key
   // last-wins like the interp's `initialize`; only a post-construction
   // `o[k] = v` (is_init=false) honors the slot's immutable flag.
-  if (!is_init && !it->second.mut) {
-    _culebra_value_release_impl(val_tag, val_data);
-    _culebra_value_release_impl(key_tag, key_data);
+  if (!is_init && !it->second.mut)
     throw culebra::CulebraError("ImmutableError",
                                 "immutable entry on non-String key", line, col);
-  }
   _culebra_value_release_impl(it->second.value.tag, it->second.value.data);
   it->second.value.tag = val_tag;
   it->second.value.data = val_data;
@@ -1050,77 +1058,72 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
     bool own_receiver) {
   std::string _kbuf;
   _jit_normalize_str_key(key_tag, key_data, _kbuf);
-  // When the codegen index path (`obj[k]`) owns the receiver +1, a *direct*
-  // lookup failure (KeyError / bad-key TypeError / OOB) must release it — the
-  // caller only releases on the normal path and there is no landing pad on the
-  // unwind edge. A user `__index__` dispatch is exempt: its throw is cleaned
-  // by the callee frame + the invoker's unwind guard, so the guards below are
-  // scoped to the dispatch-free regions only. The C++/compound-assign callers
-  // borrow the receiver and pass false; a TAG_STRING key is a borrowed cstring
-  // (never released). Nil guard entries no-op.
+  // When the codegen index path (`obj[k]`) owns the receiver +1, a lookup that
+  // throws must release it — the caller only releases on the normal path and
+  // there is no landing pad on the unwind edge. One guard covers every throw
+  // here: the direct failures (bad-key TypeError, OOB IndexError, the
+  // shared-val reader's errors, KeyError) and a user `__index__` body's alike,
+  // since the dispatch only borrows what it is handed. The C++/compound-assign
+  // callers borrow the receiver and pass false; a TAG_STRING key is a borrowed
+  // cstring (never released). Nil guard entries no-op.
   const JitValue recv_guard = own_receiver
       ? JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(obj)}
       : JitValue{TAG_NIL, 0};
   const JitValue key_guard = key_tag != TAG_STRING
       ? JitValue{key_tag, key_data}
       : JitValue{TAG_NIL, 0};
-  // FixedArray view / SharedBuffer / Shared.new view / Regex match: no user
-  // dispatch can run in these arms, so one unwind guard covers every direct
-  // throw (bad-key TypeError, OOB IndexError, the shared-val reader's errors).
-  {
-    JitUnwindRelease g{key_guard, recv_guard};
-    // `arr[i]` on a FixedArray view: read element i from the inline bytes.
-    if (obj->is_fixed_array_view) {
-      int64_t i = (key_tag == TAG_LONG) ? key_data
-             : (key_tag == TAG_FLOAT)
-                 ? static_cast<int64_t>(_culebra_float_to_double(key_data))
-                 : throw culebra::CulebraError("TypeError",
-                       "type error: expected Long or Float", line, col);
-      JitValue r = _jit_fa_get(obj, i, line, col);
-      *out_tag = r.tag;
-      *out_data = r.data;
-      return;
-    }
-    // `buf[i]` on a SharedBuffer: hand back a packed view over element `i`
-    // (the index coerces Long/Float like the interp's `key.to_long()`).
-    if (_jit_is_shared_buffer(obj)) {
-      int64_t idx = (key_tag == TAG_LONG)    ? key_data
-               : (key_tag == TAG_FLOAT)   ? static_cast<int64_t>(_culebra_float_to_double(key_data))
+  JitUnwindRelease g{key_guard, recv_guard};
+  // `arr[i]` on a FixedArray view: read element i from the inline bytes.
+  if (obj->is_fixed_array_view) {
+    int64_t i = (key_tag == TAG_LONG) ? key_data
+           : (key_tag == TAG_FLOAT)
+               ? static_cast<int64_t>(_culebra_float_to_double(key_data))
                : throw culebra::CulebraError("TypeError",
                      "type error: expected Long or Float", line, col);
-      auto* view = _jit_shared_buffer_index(obj, idx, line, col);
-      *out_tag = TAG_OBJECT;
-      *out_data = reinterpret_cast<int64_t>(view);
-      return;
-    }
-    // Shared.new view: `view[key]` reads the frozen tree (Object key
-    // lookup / Array-Tuple positional). Consumes a refcounted key per
-    // this helper's contract; the result is +1.
-    if (_jit_is_shared_val(obj)) {
-      JitValue r = culebra::_jit_shared_val_index(obj, key_tag, key_data,
-                                                  line, col);
-      if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
-      // _jit_shared_val_child hands back a container sub-view BORROWED (+0; the
-      // parent view's memo owns the +1) or a fresh primitive leaf. Retain so
-      // this helper is uniformly +1-owned like every other branch — index
-      // callers release the receiver without a promotion retain, and a borrowed
-      // sub-view would otherwise be freed by that release while the parent
-      // still points at it (a use-after-free the memo's next reader would hit).
-      culebra_runtime_value_retain(r.tag, r.data);
-      *out_tag = r.tag;
-      *out_data = r.data;
-      return;
-    }
-    // `m[i]` / `m["name"]` on a Regex match: index its capture groups (Long ->
-    // positional, String/StringView -> named). A miss is nil. Record fields
-    // (`m.value`, spans) stay on dot access.
-    if (obj->is_match) {
-      JitValue r = _jit_match_index(obj, key_tag, key_data);
-      *out_tag = r.tag;
-      *out_data = r.data;
-      if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
-      return;
-    }
+    JitValue r = _jit_fa_get(obj, i, line, col);
+    *out_tag = r.tag;
+    *out_data = r.data;
+    return;
+  }
+  // `buf[i]` on a SharedBuffer: hand back a packed view over element `i`
+  // (the index coerces Long/Float like the interp's `key.to_long()`).
+  if (_jit_is_shared_buffer(obj)) {
+    int64_t idx = (key_tag == TAG_LONG)    ? key_data
+             : (key_tag == TAG_FLOAT)   ? static_cast<int64_t>(_culebra_float_to_double(key_data))
+             : throw culebra::CulebraError("TypeError",
+                   "type error: expected Long or Float", line, col);
+    auto* view = _jit_shared_buffer_index(obj, idx, line, col);
+    *out_tag = TAG_OBJECT;
+    *out_data = reinterpret_cast<int64_t>(view);
+    return;
+  }
+  // Shared.new view: `view[key]` reads the frozen tree (Object key
+  // lookup / Array-Tuple positional). Consumes a refcounted key per
+  // this helper's contract; the result is +1.
+  if (_jit_is_shared_val(obj)) {
+    JitValue r = culebra::_jit_shared_val_index(obj, key_tag, key_data,
+                                                line, col);
+    if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
+    // _jit_shared_val_child hands back a container sub-view BORROWED (+0; the
+    // parent view's memo owns the +1) or a fresh primitive leaf. Retain so
+    // this helper is uniformly +1-owned like every other branch — index
+    // callers release the receiver without a promotion retain, and a borrowed
+    // sub-view would otherwise be freed by that release while the parent
+    // still points at it (a use-after-free the memo's next reader would hit).
+    culebra_runtime_value_retain(r.tag, r.data);
+    *out_tag = r.tag;
+    *out_data = r.data;
+    return;
+  }
+  // `m[i]` / `m["name"]` on a Regex match: index its capture groups (Long ->
+  // positional, String/StringView -> named). A miss is nil. Record fields
+  // (`m.value`, spans) stay on dot access.
+  if (obj->is_match) {
+    JitValue r = _jit_match_index(obj, key_tag, key_data);
+    *out_tag = r.tag;
+    *out_data = r.data;
+    if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
+    return;
   }
   // Slot hit: String keys are unified with shape access (see object_set_any);
   // other keys live in the non-String sidecar.
@@ -1142,14 +1145,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
       return;
     }
   }
-  // Miss → user `__index__` overload (a dispatch window: its throw is cleaned
-  // by the callee frame, not by us).
+  // Miss → user `__index__` overload.
   if (_jit_try_object_index(obj, key_tag, key_data, out_tag, out_data)) {
     if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
     return;
   }
-  // Direct KeyError — sole releaser of the owned receiver + refcounted key.
-  JitUnwindRelease g{key_guard, recv_guard};
   throw culebra::CulebraError("KeyError", "key not present", line, col);
 }
 
@@ -1387,8 +1387,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
 // handle) strands that +1 when this cold path throws — a dropped Shared view's
 // ClosedError, a closed namespace's AttributeError, a corrupt-view ValueError,
 // or the scalar TypeError. All of those are DIRECT errors (no user dispatch:
-// a getter is invoked later in emit_property_value_read, whose JitUnwindRelease
-// already balances the receiver), so this helper is the sole releaser on the
+// a getter is invoked later in emit_property_value_read, where the receiver
+// rides the unwind-temp window), so this helper is the sole releaser on the
 // unwind edge. Callers that merely borrow the receiver (compound-assign
 // intermediates, the iterator protocol) pass false. The fast inline path never
 // reaches here, so the gate costs the cold path one i1 arg and no IR at the

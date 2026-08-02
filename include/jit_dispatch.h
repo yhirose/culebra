@@ -300,58 +300,56 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_derived_cmp(
 }
 
 // JitFn-ABI thunks installed as `fn_ptr` on each derived-method closure.
-// The ABI is callee-consumes: the invoker (_culebra_invoke_method*, or a direct
-// call site) hands `self` and each arg at +1, and the callee releases them on a
-// NORMAL return; on a C++ throw the *caller* cleans up its operands (a codegen
-// call site via its cleanup pad, _culebra_invoke_method* via its JitUnwindRelease
-// guard). So these native thunks release self + args on the normal path only —
-// releasing on throw too would double-release once the invoker unwinds. Without
-// even the normal-path release, every derived `==`/`!=`/`cmp`/`hash`/`show`
-// leaks its operand(s) (the dispatch retains them and nobody gives them back).
-inline void _jit_derived_thunk_consume(JitValue self, int64_t n,
-                                       JitValue* args) {
-  culebra_runtime_value_release(self.tag, self.data);
-  for (int64_t i = 0; i < n; i++)
-    culebra_runtime_value_release(args[i].tag, args[i].data);
-}
+// The ABI is callee-consumes on EVERY exit: the invoker (_culebra_invoke_method*,
+// or a codegen call site) hands `self` and each arg at +1 and never gives them
+// back, exactly as a compiled frame's slots release on a normal return and
+// through its cleanup pad on a throw. So these hold theirs in the same
+// JitMethodSelf / JitMethodArgs pair every other native endpoint uses — a
+// nested user `eq`/`cmp` throwing out of a derived body would strand them
+// otherwise, and without the release at all every derived
+// `==`/`!=`/`cmp`/`hash`/`show` leaks its operand(s).
 inline void _jit_derived_eq_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                                        JitValue* args) {
   JitValue self{self_tag, self_data};
+  JitMethodArgs _a{n, args};
+  JitMethodSelf _s{self};
   JitValue r{TAG_BOOL, 0};
   if (self.tag == TAG_OBJECT && n >= 1)
     r = culebra_runtime_derived_eq(reinterpret_cast<JitObject*>(self.data),
                                    args[0]);
-  _jit_derived_thunk_consume(self, n, args);
   { *__ret = r; return; }
 }
 inline void _jit_derived_hash_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                                          JitValue* args) {
   JitValue self{self_tag, self_data};
+  JitMethodArgs _a{n, args};
+  JitMethodSelf _s{self};
   JitValue r{TAG_LONG, 0};
   if (self.tag == TAG_OBJECT)
     r = {TAG_LONG, culebra_runtime_derived_hash(
                        reinterpret_cast<JitObject*>(self.data))};
-  _jit_derived_thunk_consume(self, n, args);
   { *__ret = r; return; }
 }
 inline void _jit_derived_show_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                                          JitValue* args) {
   JitValue self{self_tag, self_data};
+  JitMethodArgs _a{n, args};
+  JitMethodSelf _s{self};
   const char* s = (self.tag == TAG_OBJECT)
                       ? culebra_runtime_derived_show(
                             reinterpret_cast<JitObject*>(self.data))
                       : _culebra_heap_str("");
-  _jit_derived_thunk_consume(self, n, args);
   { *__ret = {TAG_STRING, reinterpret_cast<int64_t>(s)}; return; }
 }
 inline void _jit_derived_cmp_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                                         JitValue* args) {
   JitValue self{self_tag, self_data};
+  JitMethodArgs _a{n, args};
+  JitMethodSelf _s{self};
   JitValue r{TAG_LONG, 0};
   if (self.tag == TAG_OBJECT && n >= 1)
     r = {TAG_LONG, culebra_runtime_derived_cmp(
                        reinterpret_cast<JitObject*>(self.data), args[0])};
-  _jit_derived_thunk_consume(self, n, args);
   { *__ret = r; return; }
 }
 
@@ -1480,9 +1478,9 @@ inline JitClosure* _jit_unwrap_bound_method(JitClosure* cls) {
 // in every case (retaining the view, or the receiver+method into the wrapper's
 // cells); the caller releases the receiver separately.
 // Invoke a getter body 0-arg with `self`=receiver, returning its +1-owned
-// result. The callee frame takes ownership of `self` on entry (retained inside
-// _culebra_invoke_method0, released on a throw via its JitUnwindRelease). Shared
-// by the bare-read and introspection-name paths.
+// result. The receiver is only borrowed (_culebra_invoke_method0 mints the
+// callee's own +1), so a throwing getter leaves the caller's ref intact.
+// Shared by the bare-read and introspection-name paths.
 CULEBRA_RT_INLINE JitValue _jit_invoke_getter(JitClosure* method,
                                               int8_t recv_tag,
                                               int64_t recv_data) {

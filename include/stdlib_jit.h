@@ -10087,13 +10087,19 @@ inline JIT::Owned JitExtension::compile_ufcs_builtin(
   }
 
   if (argsAst.nodes.size() != 0) return {};
+  // compile_call consumed the receiver's `+1` out of its handle before calling
+  // the hook, so nothing spills it when one of these helpers throws out of a
+  // user `__str__`/`hash` body. Re-own it here: a live handle is what puts it
+  // in the automatic unwind-temp window. On decline the raw `+1` goes back to
+  // compile_call, which re-owns it.
+  auto recv = jit.own(receiver);
   if (method == "inspect" || method == "print" || method == "println") {
     auto rt_name = method == "inspect" ? rt::inspect
                   : method == "println" ? rt::println
                                          : rt::print;
     emit_call(module_->getFunction(rt_name),
-                        {extract_tag(receiver), extract_data(receiver)});
-    emit_value_release(receiver);
+                        {extract_tag(recv.borrow()), extract_data(recv.borrow())});
+    recv.drop();
     return jit.own(make_nil());
   }
   // to_long/to_float attribute a bad-conversion error to the call's argument
@@ -10109,8 +10115,9 @@ inline JIT::Owned JitExtension::compile_ufcs_builtin(
     // String-only `rt::to_long` here used to wrongly reject it.
     auto r = jit.emit_value_call(
         module_->getFunction(rt::to_long_any),
-        {extract_tag(receiver), extract_data(receiver), argLine, argCol});
-    emit_value_release(receiver);
+        {extract_tag(recv.borrow()), extract_data(recv.borrow()), argLine,
+         argCol});
+    recv.drop();
     return jit.own(r);
   }
   if (method == "to_float") {
@@ -10118,30 +10125,32 @@ inline JIT::Owned JitExtension::compile_ufcs_builtin(
     // `to_float(x)`. Returns a full Value (the runtime picks the tag).
     auto r = jit.emit_value_call(
         module_->getFunction(rt::to_float_any),
-        {extract_tag(receiver), extract_data(receiver), argLine, argCol});
-    emit_value_release(receiver);
+        {extract_tag(recv.borrow()), extract_data(recv.borrow()), argLine,
+         argCol});
+    recv.drop();
     return jit.own(r);
   }
   if (method == "to_string") {
     auto s = emit_call(
         module_->getFunction(rt::value_to_display),
-        {extract_tag(receiver), extract_data(receiver)});
-    emit_value_release(receiver);
+        {extract_tag(recv.borrow()), extract_data(recv.borrow())});
+    recv.drop();
     return jit.own(make_string(s));
   }
   if (method == "type_of") {
     auto s = emit_call(module_->getFunction(rt::type_of),
-                                 {extract_tag(receiver)});
-    emit_value_release(receiver);
+                                 {extract_tag(recv.borrow())});
+    recv.drop();
     return jit.own(make_string(s));
   }
   if (method == "hash") {
     auto h = emit_call(
         module_->getFunction(rt::hash_any),
-        {extract_tag(receiver), extract_data(receiver), line, col});
-    emit_value_release(receiver);
+        {extract_tag(recv.borrow()), extract_data(recv.borrow()), line, col});
+    recv.drop();
     return jit.own(make_long(h));
   }
+  recv.consume_unchecked();  // declined: compile_call re-owns the raw +1
   return {};
 }
 

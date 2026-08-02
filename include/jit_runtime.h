@@ -37,9 +37,8 @@ inline double _culebra_coerce_num(int8_t tag, int64_t data) {
 // is non-numeric, after special-method dispatch has already declined.
 // Single source for every arithmetic helper's type error, with location.
 // Borrow-contract: never touches the operands' refs — each caller arms a
-// `JitUnwindRelease` over its direct-error section (after user dispatch has
-// declined), which is the sole releaser of the codegen-owned operand temps
-// on this throw (callee-cleans-on-direct-throw).
+// `JitUnwindRelease` over its whole body, which is the sole releaser of the
+// codegen-owned operand temps on this throw (callee-cleans-on-throw).
 inline void _arith_guard_numeric(const char* op, int8_t lt, int8_t rt,
                                  int64_t line, int64_t col) {
   bool ln = (lt == TAG_LONG || lt == TAG_FLOAT);
@@ -1009,11 +1008,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_div_zero(int64_t line,
 
 // Releases its values IFF the enclosing scope exits via C++ exception unwind
 // (std::uncaught_exceptions grew since construction) — the single RAII form of
-// the callee-cleans-on-direct-throw convention.
-// Arm it only over a region whose throws are all DIRECT errors: after user
-// dispatch has declined or returned (a user-dispatch throw is cleaned by the
-// callee frame + the invoker's own guard, so releasing here too would
-// double-free). A value that needs no cleanup on some path is passed as nil
+// the callee-cleans-on-throw convention.
+// Arm it over the helper's whole body, user dispatch included: the invoke
+// helpers only borrow what they are handed (they mint the callee's own +1), so
+// a dispatch throw strands the caller's temps exactly like a direct error does
+// and this guard is the one releaser for both. A value that needs no cleanup
+// on some path is passed as nil
 // (releasing nil is a no-op), which models conditional-ownership gates like
 // `own_receiver`. Values release in list order.
 struct JitUnwindRelease {
@@ -1033,28 +1033,27 @@ struct JitUnwindRelease {
   }
 };
 
-// Invoke a method closure with an explicit `self`. Retains both the
-// receiver and the argument so the callee can consume them per the
-// JIT's closure ABI. Returns the +1 result.
-// Callee-consumes ABI: these helpers hand `self` and each arg to the method at
-// +1, and the callee releases them on a NORMAL return. On a C++ throw from the
-// callee (a user `eq`/`hash`/`__lt__`/… body, possibly recursing into nested
-// fields) the callee does NOT release them — the caller cleans up its operands,
-// exactly as a codegen call site releases them through its cleanup pad. These
-// C++ invokers have no cleanup pad, so the unwind guard is their equivalent:
-// it releases the retained operands iff the call unwinds.
+// Invoke a method closure with an explicit `self`. Returns the +1 result.
+//
+// The values passed in are BORROWED: each helper mints the +1 the
+// callee-consumes ABI requires, and the callee consumes it on EVERY exit — a
+// compiled frame releases its slots on a normal return and through its
+// fn-level cleanup pad on a throw, and native endpoints hold theirs in RAII
+// (see _jit_bound_method_thunk). So these helpers are refcount-neutral on both
+// paths, and a caller may hand them elements it only borrows (an array's slots
+// during a sort, a dict's stored keys during a lookup) without the user body's
+// throw corrupting the owner's refcounts. A caller holding a `+1` temp of its
+// own releases that temp itself on the unwind edge.
 inline JitValue _culebra_invoke_method1(JitClosure* cls, JitValue self,
                                         JitValue arg) {
   culebra_runtime_value_retain(self.tag, self.data);
   culebra_runtime_value_retain(arg.tag, arg.data);
-  JitUnwindRelease g{self, arg};
   JitValue args[1] = {arg};
   return _jit_invoke(cls, self, 1, args);
 }
 
 inline JitValue _culebra_invoke_method0(JitClosure* cls, JitValue self) {
   culebra_runtime_value_retain(self.tag, self.data);
-  JitUnwindRelease g{self};
   return _jit_invoke(cls, self, 0, nullptr);
 }
 
@@ -1063,7 +1062,6 @@ inline JitValue _culebra_invoke_method2(JitClosure* cls, JitValue self,
   culebra_runtime_value_retain(self.tag, self.data);
   culebra_runtime_value_retain(a1.tag, a1.data);
   culebra_runtime_value_retain(a2.tag, a2.data);
-  JitUnwindRelease g{self, a1, a2};
   JitValue args[2] = {a1, a2};
   return _jit_invoke(cls, self, 2, args);
 }
@@ -1087,32 +1085,20 @@ inline std::optional<int64_t> _jit_object_user_hash(JitObject* obj) {
 
 // Resolve user-defined `eq(other)` on a pair of Objects (Eq structural
 // conformance). Both sides must expose `eq`; otherwise nullopt so the
-// caller keeps reference equality.
-// Invoke the Eq-trait `eq(other)` and return its raw +1 result, WITHOUT
-// coercing to Bool. Split from the coercing wrapper so the public `==` entry
-// can run the coercion under its own operand-release guard: a user-dispatch
-// throw (inside the invoke here) is cleaned by the callee frame + JitUnwindRelease,
-// whereas a non-Bool RETURN throws only in the later coercion — two paths the
-// caller must treat differently.
-inline std::optional<JitValue> _jit_object_user_eq_raw(JitObject* a,
-                                                       JitObject* b) {
+// caller keeps reference equality. The return is coerced via `to_bool`
+// semantics (Bool/Long/Float), matching the interpreter's `_invoke_user_eq`
+// so a non-Bool `eq` agrees across backends (and, like interp, throws on a
+// non-coercible return).
+inline std::optional<bool> _jit_object_user_eq(JitObject* a, JitObject* b) {
   auto* ea = _find_property(a, "eq");
   auto* eb = _find_property(b, "eq");
   if (!ea || !eb || ea->value.tag != TAG_FUNC || eb->value.tag != TAG_FUNC) {
     return std::nullopt;
   }
   auto* cls = reinterpret_cast<JitClosure*>(ea->value.data);
-  return _culebra_invoke_method1(
+  return _extract_bool_and_release(_culebra_invoke_method1(
       cls, {TAG_OBJECT, reinterpret_cast<int64_t>(a)},
-      {TAG_OBJECT, reinterpret_cast<int64_t>(b)});
-}
-
-inline std::optional<bool> _jit_object_user_eq(JitObject* a, JitObject* b) {
-  // Coerce the return via `to_bool` semantics (Bool/Long/Float), matching
-  // the interpreter's `_invoke_user_eq` so a non-Bool `eq` agrees across
-  // backends (and, like interp, throws on a non-coercible return).
-  if (auto r = _jit_object_user_eq_raw(a, b)) return _extract_bool_and_release(*r);
-  return std::nullopt;
+      {TAG_OBJECT, reinterpret_cast<int64_t>(b)}));
 }
 
 // Look up a Function-typed property on a JitObject by name.
@@ -1205,11 +1191,11 @@ inline std::optional<JitValue> _try_tensor_binop(
   CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_##name(     \
       int8_t lt, int64_t ld, int8_t rt, int64_t rd,                     \
       int64_t line, int64_t col) {                                      \
+    JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};             \
     if (auto r = _try_tensor_binop(lt, ld, rt, rd, op_id)) return *r;   \
     if (auto r = _dispatch_arith_special(lt, ld, rt, rd, method,        \
                                          reflect))                      \
       return *r;                                                        \
-    JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};             \
     _arith_guard_numeric(opstr, lt, rt, line, col);                     \
     auto a = _culebra_coerce_num(lt, ld);                               \
     auto b = _culebra_coerce_num(rt, rd);                               \
@@ -1226,12 +1212,12 @@ CUL_NUM_BINOP(mul, "*", "__mul__", a * b, true,  static_cast<int>(culebra::Op::M
 // `"{x}"` for those.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_add(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
+  JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};
   if (auto r = _try_tensor_binop(lt, ld, rt, rd,
                                   static_cast<int>(culebra::Op::Add)))
     return *r;
   if (auto r = _dispatch_arith_special(lt, ld, rt, rd, "__add__", true))
     return *r;
-  JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};
   bool ls = (lt == TAG_STRING || lt == TAG_STRINGVIEW);
   bool rs = (rt == TAG_STRING || rt == TAG_STRINGVIEW);
   if (ls && rs) {
@@ -1248,12 +1234,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_add(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_div(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
+  JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};
   if (auto r = _try_tensor_binop(lt, ld, rt, rd,
                                   static_cast<int>(culebra::Op::Div)))
     return *r;
   if (auto r = _dispatch_arith_special(lt, ld, rt, rd, "__div__", false))
     return *r;
-  JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};
   _arith_guard_numeric("/", lt, rt, line, col);
   auto a = _culebra_coerce_num(lt, ld);
   auto b = _culebra_coerce_num(rt, rd);
@@ -1263,9 +1249,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_div(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_mod(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
+  JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};
   if (auto r = _dispatch_arith_special(lt, ld, rt, rd, "__mod__", false))
     return *r;
-  JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};
   _arith_guard_numeric("%", lt, rt, line, col);
   auto a = _culebra_coerce_num(lt, ld);
   auto b = _culebra_coerce_num(rt, rd);
@@ -1277,10 +1263,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_mod(
 // `__matmul__`. Non-commutative, so no reflection.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_matmul(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
-  if (auto r = _try_special_binop(lt, ld, rt, rd, "__matmul__")) return *r;
-  // Direct type error (no user `__matmul__` matched) — the guard releases the
-  // owned operand temps on the raise, matching the other arithmetic entries.
   JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};
+  if (auto r = _try_special_binop(lt, ld, rt, rd, "__matmul__")) return *r;
   culebra::throw_arith_type_error("@", _culebra_tag_name(lt),
                                   _culebra_tag_name(rt), line, col);
 }
@@ -1310,28 +1294,22 @@ inline bool _extract_bool_and_release(JitValue v) {
 // operator so the JIT can look them up by name.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_equal(
     int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
-  // Bool-coerce a user `__eq__`/`eq` return. A non-Bool RETURN throws here,
-  // AFTER the dispatch returned normally (the invoker's unwind guard is out of
-  // scope), so the `==` codegen's operands are still owned by us and would
-  // strand — the guard releases them (callee-cleans-on-direct-type-error, C①).
-  // A user-dispatch THROW is the other path: it unwinds inside the invoke
-  // below, where the callee frame + the invoker's unwind guard release the
-  // operands, and never reaches this coercion — so this never double-frees
-  // (ASan-confirmed: `eq` throw = clean).
-  auto coerce = [&](JitValue r) -> bool {
-    JitUnwindRelease g{JitValue{t1, d1}, JitValue{t2, d2}};
-    return _extract_bool_and_release(r);
-  };
+  // One guard over the whole body: the `==` codegen hands `+1` operand temps
+  // and strands them on the unwind edge, and every throw from here — a user
+  // `__eq__`/`eq` body, or the Bool coercion of a bad return — must release
+  // them (callee-cleans-on-throw, C①). The dispatch itself only borrows them.
+  JitUnwindRelease g{JitValue{t1, d1}, JitValue{t2, d2}};
   // `==` is commutative, so try either side's `__eq__`.
-  if (auto r = _try_special_binop(t1, d1, t2, d2, "__eq__")) return coerce(*r);
-  if (auto r = _try_special_binop(t2, d2, t1, d1, "__eq__")) return coerce(*r);
+  if (auto r = _try_special_binop(t1, d1, t2, d2, "__eq__"))
+    return _extract_bool_and_release(*r);
+  if (auto r = _try_special_binop(t2, d2, t1, d1, "__eq__"))
+    return _extract_bool_and_release(*r);
   // Eq-trait fallback: route through a user/derived `eq(other)` so the
-  // operator agrees with key equality (JitValueEq dispatches `eq` too). Invoke
-  // raw and coerce under the same guard so a non-Bool return releases operands.
+  // operator agrees with key equality (JitValueEq dispatches `eq` too).
   if (t1 == TAG_OBJECT && t2 == TAG_OBJECT) {
-    if (auto r = _jit_object_user_eq_raw(reinterpret_cast<JitObject*>(d1),
-                                         reinterpret_cast<JitObject*>(d2)))
-      return coerce(*r);
+    if (auto e = _jit_object_user_eq(reinterpret_cast<JitObject*>(d1),
+                                     reinterpret_cast<JitObject*>(d2)))
+      return *e;
   }
   return _culebra_value_equal(t1, d1, t2, d2);
 }
@@ -1354,10 +1332,24 @@ inline std::optional<bool> _special_le(int8_t t1, int64_t d1,
                                       int8_t t2, int64_t d2) {
   if (auto r = _try_special_binop(t1, d1, t2, d2, "__le__"))
     return _extract_bool_and_release(*r);
+  // Both dunders run before either return is coerced (interp's le_as_bool does
+  // the same, so the side-effect order matches). That leaves one `+1` result
+  // in flight across the next step, and only _extract_bool_and_release
+  // consumes one — so each waiting result gets a guard until its own coercion
+  // takes it over. A dunder returning a non-Bool heap value strands it
+  // otherwise.
   auto lt = _try_special_binop(t1, d1, t2, d2, "__lt__");
-  auto eq = _try_special_binop(t1, d1, t2, d2, "__eq__");
+  std::optional<JitValue> eq;
+  {
+    JitUnwindRelease g{lt ? *lt : JitValue{TAG_NIL, 0}};
+    eq = _try_special_binop(t1, d1, t2, d2, "__eq__");
+  }
   if (!lt && !eq) return std::nullopt;
-  bool l = lt && _extract_bool_and_release(*lt);
+  bool l;
+  {
+    JitUnwindRelease g{eq ? *eq : JitValue{TAG_NIL, 0}};
+    l = lt && _extract_bool_and_release(*lt);
+  }
   bool e = eq && _extract_bool_and_release(*eq);
   return l || e;
 }
@@ -1372,13 +1364,10 @@ inline std::optional<bool> _special_le(int8_t t1, int64_t d1,
 //     its refcounts.
 //
 //   culebra_runtime_value_<name>  — public operator entry, callee-cleans-on-
-//     throw. The `fast_path` user dispatch runs first and OUTSIDE the operand-
-//     release guard: a user `__lt__`/`cmp` throw is already cleaned by the
-//     invoker's unwind guard, so releasing the operands there would double-free
-//     (ASan-confirmed). Only the trailing numeric/String ordering raises the
-//     direct type error, and its `+1`-owned operand temps strand on the unwind
-//     edge (the codegen `Owned` handles fire only on the normal path), so the
-//     entry's guard releases them there — matching _arith_guard_numeric.
+//     throw. Its `+1`-owned operand temps strand on the unwind edge (the
+//     codegen `Owned` handles fire only on the normal path), so one guard over
+//     the whole body releases them on every throw — the user dispatch's and the
+//     direct type error's alike, matching _arith_guard_numeric.
 #define CUL_DEF_ORD_OP(name, cmp_op, fast_path)                         \
   inline bool _value_##name##_borrow(                                   \
       int8_t t1, int64_t d1, int8_t t2, int64_t d2,                     \
@@ -1391,8 +1380,8 @@ inline std::optional<bool> _special_le(int8_t t1, int64_t d1,
   CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_##name(       \
       int8_t t1, int64_t d1, int8_t t2, int64_t d2,                     \
       int64_t line, int64_t col) {                                      \
-    fast_path                                                           \
     JitUnwindRelease g{JitValue{t1, d1}, JitValue{t2, d2}};             \
+    fast_path                                                           \
     return _culebra_value_ord(t1, d1, t2, d2,                           \
                               [](double a, double b) { return a cmp_op b; }, \
                               line, col);                               \
@@ -1466,8 +1455,8 @@ CUL_NUM_INPLACE(div, Op::Div)
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_pow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
-  if (auto r = _try_special_binop(lt, ld, rt, rd, "__pow__")) return *r;
   JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};
+  if (auto r = _try_special_binop(lt, ld, rt, rd, "__pow__")) return *r;
   if (lt == TAG_LONG && rt == TAG_LONG) {
     int64_t a = ld, e = rd;
     if (e >= 0) return {TAG_LONG, culebra::ipow_nonneg(a, e)};
@@ -1489,15 +1478,13 @@ CUL_NUM_INPLACE(pow, Op::Pow)
 // raises type error. Called only from the unary-minus slow path.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_neg(
     int8_t t, int64_t d, int64_t line, int64_t col) {
+  JitUnwindRelease g{JitValue{t, d}};
   if (auto r = _try_special_unary(t, d, "__neg__")) return *r;
   if (t == TAG_LONG) return {TAG_LONG, -d};
   if (t == TAG_FLOAT) {
     auto v = _culebra_float_to_double(d);
     return {TAG_FLOAT, _culebra_double_to_bits(-v)};
   }
-  // Direct type error (no user `__neg__` matched) — the guard releases the
-  // owned operand temp on the raise, matching the other arithmetic entries.
-  JitUnwindRelease g{JitValue{t, d}};
   culebra::throw_type_mismatch("Long or Float", _culebra_tag_name(t),
                                line, col);
 }

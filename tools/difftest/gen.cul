@@ -1899,6 +1899,51 @@ for c in selflex {
   case("selflex|" + c, c)
 }
 
+# --- Dimension: user dispatch throws over a borrowed operand ---------------
+# A `cmp`/`__lt__`/`eq`/`__index__`/`__setindex__`/getter body reached from a
+# container's own internals gets the element BORROWED — the array/dict/Set
+# still owns it. A dispatch that consumed a ref on its throw path freed those
+# elements out from under the container, so the JIT crashed where the interp
+# read the collection back intact. Each case throws mid-operation and then
+# *uses* the container, which is where the divergence surfaces; a stranded +1
+# shows up in the leak-abort audit as well.
+let borrowthrow = [
+  # keyless sort/sorted: the comparator borrows two array slots
+  'class Bs { new(v){ self.v = v } cmp(o){ if self.v == 9 { 1 / 0 }; self.v - o.v } }; let xs = [3, 9, 1].map(fn (v) { Bs.new(v) }); try { xs.sort() } catch e { nil }; xs.map(fn (b) { b.v })',
+  'class Bt { new(v){ self.v = v } cmp(o){ if self.v == 9 { 1 / 0 }; self.v - o.v } }; let xs = [3, 9, 1].map(fn (v) { Bt.new(v) }); try { xs.sorted() } catch e { nil }; xs.map(fn (b) { b.v })',
+  'class Bu { new(v){ self.v = v } __lt__(o){ if self.v == 9 { [1][9] }; self.v < o.v } }; let xs = [3, 9, 1].map(fn (v) { Bu.new(v) }); try { xs.sort() } catch e { nil }; xs.map(fn (b) { b.v })',
+  # `reverse:` flips which side is the receiver — throw on either operand so
+  # the borrow window is reached from that direction too
+  'class Bv { new(v){ self.v = v } cmp(o){ if self.v == 9 || o.v == 9 { 1 / 0 }; self.v - o.v } }; let xs = [3, 9, 1].map(fn (v) { Bv.new(v) }); let e = try { xs.sort(reverse: true); nil } catch e { e.kind }; [e, xs.map(fn (b) { b.v })]',
+  # sort_by compares extracted keys, so the throw comes from the key callback
+  'class Bw { new(v){ self.v = v } }; let xs = [3, 9, 1].map(fn (v) { Bw.new(v) }); try { xs.sort_by(fn (b) { b.v == 9 ? 1 / 0 : b.v }) } catch e { nil }; xs.map(fn (b) { b.v })',
+  # dict / Set lookup: the stored key is borrowed while `eq`/`hash` runs
+  'class Bk { new(v){ self.v = v } hash(){ 1 } eq(o){ if self.v == 9 { 1 / 0 }; self.v == o.v } }; let s = [Bk.new(9)].to_set(); try { s.contains(Bk.new(1)) } catch e { nil }; s.iter().map(fn (k) { k.v }).collect()',
+  'class Bm { new(v){ self.v = v } hash(){ 1 } eq(o){ if self.v == 9 { 1 / 0 }; self.v == o.v } }; mut d = {}; d[Bm.new(9)] = 1; try { d[Bm.new(1)] } catch e { nil }; d.keys().map(fn (k) { k.v })',
+  # the `==` operator hands +1 temps instead — the other half of the contract
+  'class Be { new(v){ self.v = v } __eq__(o){ 1 / 0 } }; let a = Be.new(1); let b = Be.new(2); let e = try { a == b; nil } catch e { e.kind }; [e, a.v + b.v]',
+  'class Bl { new(v){ self.v = v } cmp(o){ 1 / 0 } }; let a = Bl.new(1); let b = Bl.new(2); let e = try { a < b; nil } catch e { e.kind }; [e, a.v + b.v]',
+  # subscript / property overloads reached through a live receiver
+  'class Bi { new(v){ self.v = v } __index__(k){ 1 / 0 } }; let o = Bi.new(5); let e = try { o[[1]]; nil } catch e { e.kind }; [e, o.v]',
+  'class Bx { new(v){ mut self.v = v } __setindex__(k, x){ 1 / 0 } }; mut o = Bx.new(5); let e = try { o[[1]] = [2]; nil } catch e { e.kind }; [e, o.v]',
+  'class By { new(v){ mut self.v = v } __setindex__(k, x){ 1 / 0 } }; mut o = By.new(5); let e = try { o["zz"] = [2]; nil } catch e { e.kind }; [e, o.v]',
+  'class Bg { new(v){ self.v = v } get boom(){ 1 / 0 } }; let o = Bg.new(5); let e = try { o.boom; nil } catch e { e.kind }; [e, o.v]',
+  # UFCS builtin forms: the receiver +1 rides the call into a user body
+  'class Bq { new(v){ self.v = v } __str__(){ 1 / 0 } }; let o = Bq.new(1); let e = try { o.to_string(); nil } catch e { e.kind }; [e, o.v]',
+  'class Br { new(v){ self.v = v } __str__(){ 1 / 0 } }; let o = Br.new(1); let e = try { o.println(); nil } catch e { e.kind }; [e, o.v]',
+  'class Bh { new(v){ self.v = v } hash(){ 1 / 0 } }; let o = Bh.new(1); let e = try { o.hash(); nil } catch e { e.kind }; [e, o.v]',
+  # a stored key is hashed on the way in, so a throwing hash() unwinds mid-write
+  'class Bn { new(v){ self.v = v } hash(){ 1 / 0 } eq(o){ self.v == o.v } }; mut d = {}; let e = try { d[Bn.new(1)] = [5]; nil } catch e { e.kind }; [e, d.size()]',
+  # a throwing __str__ over an element the array still owns
+  'class Bp { new(v){ self.v = v } __str__(){ 1 / 0 } }; let xs = [Bp.new(1)]; let e = try { "{xs[0]}"; nil } catch e { e.kind }; [e, xs[0].v]',
+  # builtin (non-dispatch) compare error on the same sorts: array untouched
+  'let xs = [3, "a", 1]; let e = try { xs.sort(); nil } catch e { e.kind }; [e, xs]',
+  'let xs = [3, "a", 1]; let e = try { xs.sorted(); nil } catch e { e.kind }; [e, xs]',
+]
+for c in borrowthrow {
+  case("borrowthrow|" + c, c)
+}
+
 # --- Dimension: well-known property contract (drop/iter/has_next/next) ----
 # Bind-time enforcement must hold on every write surface (literal prop,
 # dynamic/literal subscript, native builder, class decl) with the interp's

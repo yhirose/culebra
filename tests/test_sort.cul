@@ -100,6 +100,32 @@ for n in [1, 2, 3, 5, 17, 64, 200] {
   assert_eq(mutable.map(fn (m) { m.c }), raw.sorted())
 }
 
+// --- a user cmp / __lt__ that throws leaves the array whole -----------------
+// The comparator borrows the array's slots (the array owns them), so the
+// throw must not consume a ref: reading the elements back afterwards is the
+// check that nothing was freed underneath.
+class Boom { new(v) { self.v = v } cmp(o) { if self.v == 9 { throw {kind: "E", message: "boom"} }; return self.v - o.v } }
+let bs = [3, 9, 1].map(fn (v) { Boom.new(v) })
+let eb = try { bs.sort(); nil } catch e { e.kind }
+assert_eq(eb, "E")
+assert_eq(bs.map(fn (b) { b.v }), [3, 9, 1])   // untouched, nothing freed
+let eb2 = try { bs.sorted(); nil } catch e { e.kind }
+assert_eq(eb2, "E")
+assert_eq(bs.map(fn (b) { b.v }), [3, 9, 1])
+// `reverse:` swaps which side is the receiver, so throw on either operand to
+// reach the same borrow window from the flipped direction.
+class Boom2 { new(v) { self.v = v } cmp(o) { if self.v == 9 || o.v == 9 { throw {kind: "E", message: "boom"} }; return self.v - o.v } }
+let rs = [3, 9, 1].map(fn (v) { Boom2.new(v) })
+let eb3 = try { rs.sort(reverse: true); nil } catch e { e.kind }
+assert_eq(eb3, "E")
+assert_eq(rs.map(fn (b) { b.v }), [3, 9, 1])
+
+class Blt { new(v) { self.v = v } __lt__(o) { if self.v == 9 { throw {kind: "E", message: "boom"} }; return self.v < o.v } }
+let ls = [3, 9, 1].map(fn (v) { Blt.new(v) })
+let el = try { ls.sort(); nil } catch e { e.kind }
+assert_eq(el, "E")
+assert_eq(ls.map(fn (b) { b.v }), [3, 9, 1])
+
 // --- extra positional arg is rejected (0 positional params) ---
 let e2 = try { [1, 2].sorted(1); nil } catch e { e.kind }
 assert_eq(e2, "TypeError")

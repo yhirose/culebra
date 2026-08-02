@@ -253,10 +253,18 @@ unwind（最後のものはリージョンごとのcleanup landing padを経由�
 | 契約 | unwind経路での解放者 | 用途 |
 |---|---|---|
 | Caller-cleans | 呼び出し箇所のリージョンごとのcleanup pad。リージョンがthrowできなければ除去される | builtinメソッドのreceiver/引数、呼び出しのcallee式、代入先、UFCSのcallee |
-| Callee-cleans-on-direct-throw | helper自身の中のガード。ユーザーレベルdispatchが除外された後にのみarmされる | 演算子の実装、receiver所有下でのindex/property取得、関数でないエラー経路 |
+| Callee-cleans-on-throw | helper本体全体を覆うガード。ユーザーdispatchの窓からのthrowも直接エラーのthrowも等しく呼び出し側のtempを解放する | 演算子の実装、receiver所有下でのindex/property取得、関数でないエラー経路 |
 | Callee-consumes-on-every-exit | helperの入口で宣言されるowned引数ハンドル。正常な戻りとunwindの両方で解放 | ネイティブメソッドのentry point、高階関数のaccumulatorとcallback |
-| Invoker-cleans | 呼び出し側が呼び出し前にretainし、callee自身のフレームが正常戻りで解放し、呼び出し側のガードはcalleeがthrowした場合のみ解放 | ユーザー定義dispatchが走るあらゆる窓 — 演算子オーバーロード、`eq`/`hash`/`cmp`、`__index__`、プロパティgetter |
+| Borrow-neutral invoke | 呼び出し側はcalleeが消費する分の参照だけを発行し、他には一切触れない。本体が正常に戻ってもthrowしても参照カウント中立 | ユーザー定義dispatchが走るあらゆる窓 — 演算子オーバーロード、`eq`/`hash`/`cmp`、`__index__`、プロパティgetter |
 | Transfer | 入ってきた参照をそのまま結果として返す、またはcapture cell/スロットへ直接渡す | iterator-self系メソッド、遅延combinatorのcapture cell |
+
+最後の2行は同じ規則を両側から見たもので、この分割には意味がある:
+dispatchの窓には**コンテナが所有している**値が渡されることが多い —
+comparatorが走っている間の配列のスロット、lookup中の辞書の格納済み
+キー — この場合、掃除すべき呼び出し側のtempはそもそも存在しない。
+unwind経路で解放するinvokerは所有者の足下でその要素を解放してしま
+うので、掃除は`+1`を発行した側の責務であって、共有のdispatch helper
+の責務ではない。
 
 **裸の参照はそれが生成されたブロックに閉じ込められる。** 最後に残っ
 たescape hatchは、参照がハンドルを離れる瞬間だった: ハンドルから値

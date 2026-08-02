@@ -265,10 +265,18 @@ by construction:
 | Contract | Who releases on the unwind path | Used for |
 |---|---|---|
 | Caller-cleans | A per-region cleanup pad at the call site, eliminated when the region cannot throw | Builtin-method receivers and arguments, a call's callee expression, an assignment's target, the UFCS callee |
-| Callee-cleans-on-direct-throw | A guard inside the helper itself, armed only once user-level dispatch has been ruled out | Operator implementations, index/property access under receiver ownership, the not-a-function error path |
+| Callee-cleans-on-throw | A guard covering the helper's whole body, so every throw releases the caller's temps — the user-dispatch window's and the direct error's alike | Operator implementations, index/property access under receiver ownership, the not-a-function error path |
 | Callee-consumes-on-every-exit | An owned-argument handle declared at the helper's entry, releasing on both normal return and unwind | Native method entry points, higher-order-function accumulators and callbacks |
-| Invoker-cleans | The invoker retains before the call; the callee's own frame releases on normal return; the invoker's guard releases only if the callee throws | Every window where user-defined dispatch runs — operator overloads, `eq`/`hash`/`cmp`, `__index__`, property getters |
+| Borrow-neutral invoke | The invoker mints the reference the callee consumes and touches nothing else, so the call is refcount-neutral whether the body returns or throws | Every window where user-defined dispatch runs — operator overloads, `eq`/`hash`/`cmp`, `__index__`, property getters |
 | Transfer | The incoming reference is returned as-is, or handed directly into a capture cell or slot | Iterator-self methods, a lazily-built combinator's capture cell |
+
+The last two rows are one rule seen from both sides, and the split
+matters: a dispatch window is often handed a value the *container*
+owns — an array's slots while its comparator runs, a dictionary's
+stored key during a lookup — where there is no caller temp to clean at
+all. An invoker that released on the unwind path would free those
+elements out from under their owner, so cleanup belongs to whoever
+minted the `+1`, never to the shared dispatch helper.
 
 **A bare reference is confined to the block where it was produced.**
 The last remaining escape hatch was the moment a reference left its

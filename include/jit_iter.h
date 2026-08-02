@@ -1968,8 +1968,8 @@ culebra_runtime_object_iter_dispatch(JitObject* obj) {
   if (entry && entry->value.tag == TAG_FUNC) {
     auto* cls = reinterpret_cast<JitClosure*>(entry->value.data);
     auto self = JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
-    // _culebra_invoke_method0 retains `self`, and frees it on a throw from the
-    // user iter() body via its JitUnwindRelease (callee-consumes on normal return).
+    // `self` is borrowed: _culebra_invoke_method0 mints the callee's own +1, so
+    // a throw from the user iter() body leaves this object's refcount alone.
     auto r = _culebra_invoke_method0(cls, self);
     // The user iter() returns an Object (+1) — caller takes that retain.
     return reinterpret_cast<JitObject*>(r.data);
