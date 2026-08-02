@@ -297,11 +297,6 @@ void main() {
 // roughness 0..1). Defaults are a matte dielectric.
 struct MatDesc { Color color; int tex = -1; float metallic = 0.0f; float roughness = 0.85f; };
 
-// Lit-shader uniform locations for the per-node PBR params (set once at View
-// construction; one window/shader per process for these examples).
-static int g_loc_metallic = 0;
-static int g_loc_rough = 0;
-
 // A registry texture: either a plain Texture2D (checker/grain) or a render
 // target the script drew into (canvas) — tracked so it's freed the right way.
 struct TexEntry { Texture2D tex; RenderTexture2D rt{}; bool is_rt = false; };
@@ -322,9 +317,10 @@ static RenderTexture2D LoadShadowmap(int w, int h) {
 enum class Shape { Group, Box, Sphere, Cylinder, Plane, Mesh };
 
 // Everything Node::render needs from the View that doesn't vary within a pass:
-// the shared material, the cached primitive meshes and the material / texture
-// registries. `lit` is the one per-pass bit — the depth pass's shader reads only
-// vertex positions, so resolving a node's colour/texture there is wasted work.
+// the shared material, the cached primitive meshes, the material / texture
+// registries and the lit shader's per-node PBR uniform locations. `lit` is the
+// one per-pass bit — the depth pass's shader reads only vertex positions, so
+// resolving a node's colour/texture there is wasted work.
 struct RenderCtx {
   Material& mat;
   const Mesh& cube;
@@ -334,6 +330,8 @@ struct RenderCtx {
   const std::vector<MatDesc>& mats;
   const std::vector<TexEntry>& texs;
   Texture2D white;
+  int loc_metallic;
+  int loc_rough;
   bool lit;
 };
 
@@ -526,8 +524,8 @@ class Node {
       }
       ctx.mat.maps[MATERIAL_MAP_DIFFUSE].color = c;
       ctx.mat.maps[MATERIAL_MAP_DIFFUSE].texture = tex;
-      SetShaderValue(ctx.mat.shader, g_loc_metallic, &metallic, SHADER_UNIFORM_FLOAT);
-      SetShaderValue(ctx.mat.shader, g_loc_rough, &roughness, SHADER_UNIFORM_FLOAT);
+      SetShaderValue(ctx.mat.shader, ctx.loc_metallic, &metallic, SHADER_UNIFORM_FLOAT);
+      SetShaderValue(ctx.mat.shader, ctx.loc_rough, &roughness, SHADER_UNIFORM_FLOAT);
     }
     switch (shape) {
       case Shape::Box: DrawMesh(ctx.cube, ctx.mat, draw); break;
@@ -591,8 +589,8 @@ class View {
     loc_fogcol_ = GetShaderLocation(lit_, "fogColor");
     loc_fogstart_ = GetShaderLocation(lit_, "fogStart");
     loc_fogend_ = GetShaderLocation(lit_, "fogEnd");
-    g_loc_metallic = GetShaderLocation(lit_, "metallic");
-    g_loc_rough = GetShaderLocation(lit_, "roughness");
+    loc_metallic_ = GetShaderLocation(lit_, "metallic");
+    loc_rough_ = GetShaderLocation(lit_, "roughness");
     loc_skytop_ = GetShaderLocation(lit_, "skyTop");
     loc_skybot_ = GetShaderLocation(lit_, "skyBot");
     sky_top_ = Color{135, 165, 205, 255};   // default reflected sky until sky() is called
@@ -952,8 +950,10 @@ class View {
   }
   // Bind one pass's invariants. `m` is the pass's material (lit or depth).
   RenderCtx pass_ctx(Material& m, bool lit) {
-    return RenderCtx{m, cube_, sphere_, cyl_, plane_,
-                     mats_, texs_, white_, lit};
+    return RenderCtx{.mat = m, .cube = cube_, .sphere = sphere_, .cyl = cyl_,
+                     .plane = plane_, .mats = mats_, .texs = texs_,
+                     .white = white_, .loc_metallic = loc_metallic_,
+                     .loc_rough = loc_rough_, .lit = lit};
   }
   void set_sun_uniform() {
     SetShaderValue(lit_, loc_dir_, &dir_, SHADER_UNIFORM_VEC3);
@@ -993,6 +993,7 @@ class View {
   int loc_lvp0_ = 0, loc_lvp1_ = 0;
   int loc_viewpos_ = 0, loc_fogcol_ = 0, loc_fogstart_ = 0, loc_fogend_ = 0;
   int loc_skytop_ = 0, loc_skybot_ = 0;
+  int loc_metallic_ = 0, loc_rough_ = 0;
   Vector3 dir_ = Vector3{0.5f, -1.0f, -0.6f};
   Vector3 lcol_ = Vector3{1.0f, 0.98f, 0.94f};
   Vector3 amb_ = Vector3{0.35f, 0.38f, 0.42f};
