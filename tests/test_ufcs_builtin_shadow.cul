@@ -154,4 +154,54 @@ assert_eq(IO.keys().contains("println"), true)
 # split: interp takes UFCS, the JIT raises AttributeError. Closing namespaces
 # on both backends is a separate step.)
 
+# --- `add` / `remove`: the mutating fast path takes the same gate ---
+# These two have their own tag dispatch (Set mutate / dict key removal), which
+# used to raise on every other receiver instead of yielding to a free function.
+
+fn add(o, v) { "ufcs add:" + type_of(o) }
+fn remove(o, v) { "ufcs remove:" + type_of(o) }
+
+assert_eq((5).add(1), "ufcs add:Long")
+assert_eq("ab".add(1), "ufcs add:String")
+assert_eq((1, 2).add(1), "ufcs add:Tuple")
+assert_eq([1, 2].add(1), "ufcs add:Array")     # Array mutates via `push`
+assert_eq(({a: 1}).add(1), "ufcs add:Object")  # not a dict builtin
+assert_eq((5).remove(1), "ufcs remove:Long")
+assert_eq([1, 2].remove(9), "ufcs remove:Array")
+
+# The receivers that DO resolve them keep their builtin.
+mut set = {1, 2}
+assert_eq(set.add(3), true)
+assert_eq(set.contains(3), true)
+assert_eq(set.remove(3), true)
+assert_eq(set.contains(3), false)
+mut dict = {a: 1, b: 2}
+dict.remove("a")
+assert_eq(dict, {b: 2})
+
+# An own method wins over both, and a real Set still rejects keywords.
+class Acc {
+  new() { self.n = 0 }
+  add(v) { self.n = self.n + v; self.n }
+}
+assert_eq(Acc().add(5), 5)
+assert_eq(({add: fn (v) { "own add" }}).add(7), "own add")
+assert_eq(try { {1, 2}.add(x: 1) } catch e { e.kind }, 'TypeError')
+# ...while a non-resolving receiver binds the keyword through the free function.
+assert_eq((5).add(v: 1), "ufcs add:Long")
+
+# The argument expression is compiled inside the arm that runs, so it is
+# evaluated exactly once no matter which arm that is.
+mut adds = 0
+fn tick() {
+  adds = adds + 1
+  adds
+}
+assert_eq((5).add(tick()), "ufcs add:Long")
+assert_eq(adds, 1)
+mut sink = {8, 9}
+sink.add(tick())
+assert_eq(adds, 2)
+assert_eq(sink.size(), 3)
+
 inspect("test_ufcs_builtin_shadow: ok")

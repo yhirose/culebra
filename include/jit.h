@@ -12123,14 +12123,16 @@ struct JIT {
     }
     // Set's mutating `.add(x)` / `.remove(x)` can shadow user-defined
     // Object methods of the same name (e.g. `Calculator.add(1)`). Emit
-    // a runtime tag dispatch here so both worlds coexist: Set receiver
-    // → set_add_method / set_remove; Object receiver → user property.
+    // a runtime dispatch here so all three worlds coexist: Set receiver
+    // → set_add_method / set_remove; Object receiver → user property;
+    // a receiver that resolves neither → a free function of that name.
     // Positional-only: a kwargs call was already routed above.
     if ((method == "add" || method == "remove") &&
         argsAst.nodes.size() == 1 && !has_kwargs) {
-      // Never declines: every receiver tag lands in one of its arms
-      // (Set / Object / error), so the +1 transfers unconditionally.
-      return compile_set_mutate_dispatch(method, argsAst, receiver.consume());
+      // Never declines: every receiver lands in one of its arms
+      // (Set / Object / UFCS / error), so the +1 transfers unconditionally.
+      return compile_set_mutate_dispatch(method, argsAst, receiver.consume(),
+                                         dot_ast);
     }
     // A user class may define a method whose name collides with a builtin
     // (`find`, `split`, `map`, …). The interpreter gives the user's own method
@@ -12284,7 +12286,43 @@ struct JIT {
     return merge.finish(mergeBB);
   }
 
-  // `.add(x)` / `.remove(x)`: runtime tag dispatch.
+  // `.add(x)` / `.remove(x)`: the UFCS gate, then the tag dispatch below.
+  // A receiver that doesn't resolve the name — `(5).add(1)`, `[1,2].remove(9)`,
+  // a plain dict's `.add` — is a UFCS candidate on the interp
+  // (receiver_has_property is false there), so give it the same arm. The
+  // branch has to come before the
+  // argument is compiled: the UFCS arm compiles its own from argsAst, and a
+  // shared eager compile would strand that `+1` on the arm that doesn't run.
+  Owned compile_set_mutate_dispatch(const std::string& method,
+                                    const peg::Ast& argsAst,
+                                    llvm::Value* receiver,
+                                    const peg::Ast* dot_ast) {
+    auto load_free_fn = ufcs_free_fn_loader(method);
+    if (!load_free_fn)
+      return compile_set_mutate_arms(method, argsAst, receiver);
+
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto resolves = emit_receiver_has_property(method, receiver);
+    auto hitBB = llvm::BasicBlock::Create(ctx_, "ma.resolved", fn);
+    auto missBB = llvm::BasicBlock::Create(ctx_, "ma.unresolved", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "ma.ufcs.merge", fn);
+    builder_.CreateCondBr(resolves, hitBB, missBB);
+
+    OwnedPhi merge(this, "ma.ufcs.res");
+    builder_.SetInsertPoint(missBB);
+    merge.add_incoming(compile_ufcs_or_miss(method, load_free_fn, argsAst,
+                                            receiver, dot_ast));
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(hitBB);
+    merge.add_incoming(compile_set_mutate_arms(method, argsAst, receiver));
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(mergeBB);
+    return merge.finish(mergeBB);
+  }
+
+  // The tag dispatch itself.
   //   - TAG_SET    → set_add_method / set_remove (returns Bool)
   //   - TAG_OBJECT → for `remove`, the built-in object_remove_any
   //                  (returns Nil); for `add`, a user-defined property
@@ -12292,15 +12330,20 @@ struct JIT {
   //   - other      → type error
   // The argument is compiled once before the branch so side effects
   // don't duplicate.
-  Owned compile_set_mutate_dispatch(const std::string& method,
-                                           const peg::Ast& argsAst,
-                                           llvm::Value* receiver) {
+  Owned compile_set_mutate_arms(const std::string& method,
+                                       const peg::Ast& argsAst,
+                                       llvm::Value* receiver) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
+    // The argument expression can throw (`s.add(f())`), and the arms that
+    // release the receiver all sit past that edge — hold its +1 as Owned so
+    // the unwind-temp window covers it while the argument compiles.
+    Owned recvHold = own(receiver);
     // Raw handoff into the mutually-exclusive dispatch arms below:
     // every arm releases or hands off the +1 on its runtime path (see the
     // errBB note), so the block-pin check does not apply.
     auto arg = compile(*argsAst.nodes[0]).consume_unchecked();
+    recvHold.consume();  // handed to the arms below
 
     auto tag = extract_tag(receiver);
     auto setBB = llvm::BasicBlock::Create(ctx_, "ma.set", fn);
@@ -12326,7 +12369,7 @@ struct JIT {
     // SSA, not either value), so each frees exactly once across the three paths.
     emit_value_release(arg);
     emit_value_release(receiver);
-    emit_receiver_resolution_error(tag, "remove");
+    emit_receiver_resolution_error(tag, method);
 
     // Set: mutating runtime helper.
     builder_.SetInsertPoint(setBB);
@@ -13105,7 +13148,13 @@ struct JIT {
     }
 
     std::vector<const peg::Ast*> argAsts;
+    // The argument expressions can throw (`x.f(g())`), and every arm that
+    // releases the receiver sits past that edge — hold its +1 as Owned so the
+    // unwind-temp window covers it while they compile. (The kwargs path above
+    // needs no counterpart: its callee owns the receiver from entry.)
+    Owned recvHold = own(receiver);
     auto ownedArgs = compile_positional_args(argsAst, argAsts);
+    recvHold.consume();  // handed to the arms below
     // The method / UFCS branches below are mutually exclusive at runtime;
     // both reference the same raws, so this single consume still hands each
     // +1 to exactly one runtime consumer.
