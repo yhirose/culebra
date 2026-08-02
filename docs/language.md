@@ -2109,6 +2109,13 @@ for v in two() { inspect(v); break }
   a property name, object key, or kwarg label spelled `self` is not a
   reference. To reach an enclosing receiver, capture it first:
   `let me = self` outside the generator, then use `me` inside.
+* A body local keeps plain-variable semantics even though the lowering
+  stores it on the state object: a local holding a function is a value,
+  not a method of that object, so `f == f` stays true and passing it on
+  leaves the receiver to whatever call follows (`holder.f = f`, then
+  `holder.f()` sees `holder`). The generator's own protocol methods are
+  not locals and bind as usual (§10). An `effect fn` body and a `handle`
+  body lower the same way and follow the same rule (§16).
 * A generator body cannot `perform` a bare effect operation or declare
   an `effect fn`; a self-contained `handle { ... }` expression inside
   the body does work (§16).

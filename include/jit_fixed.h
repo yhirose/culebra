@@ -1550,10 +1550,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has_value(
 // retaining, and the meta's own destructor releases them. (A stray retain
 // here left the caller's original +1 unreleased — a class declared inside a
 // function leaked one closure per method on every call.)
+// `lowered_state` flags a class a lowering synthesized (generator / effects
+// state machine), so a value read of one of its instances' own slots stays
+// unbound — see culebra_runtime_bind_method_value and the interp setting
+// OrderedSymbolMap::lowered_state on the same object.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_build_class_meta(
     const char* const* method_names, const JitValue* method_vals,
-    int64_t n_methods) {
+    int64_t n_methods, int64_t lowered_state) {
   auto* meta = culebra_runtime_object_new();
+  meta->is_lowered_state = lowered_state != 0;
   int64_t i = 0;
   try {
     for (; i < n_methods; i++) {

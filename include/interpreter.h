@@ -1605,6 +1605,10 @@ struct OrderedSymbolMap {
   // Set once this map has been pushed onto the owned stack (the moment
   // `drop` got bound). Dedupes re-registration on repeated writes.
   bool owned_registered = false;
+  // Set on a CLASS META (never an instance) whose class a lowering
+  // synthesized — see culebra::is_lowered_state_class. Declared among the
+  // other bools so it lands in their padding rather than opening a hole.
+  bool lowered_state = false;
   // Class instances only: the per-class meta map holding the shared method
   // table, twin of the JIT's JitObject::proto. Own entries then proto, one
   // level — so an instance's own entries are just `class` plus its fields
@@ -9082,6 +9086,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     for (auto& [name, val] : method_template) {
       meta_obj.properties->emplace(name, Symbol{std::move(val), false});
     }
+    // One test per declaration; every instance reads the answer off the meta
+    // (the JIT passes the same bit to build_class_meta).
+    meta_obj.properties->lowered_state =
+        culebra::is_lowered_state_class(class_name, ast.path);
     auto meta = std::make_shared<Value>(Value(std::move(meta_obj)));
     auto shared_fields =
         std::make_shared<std::vector<ClassMembers::FieldDecl>>(
@@ -10214,6 +10222,15 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         // invokes it — same result, so both spellings work.
         if (as_value && prop.get<FunctionValue>().is_getter) {
           return _invoke_method_no_args(val, name);
+        }
+        // A promoted body local is storage, not a method — hand the raw
+        // function back unbound (culebra::is_lowered_state_class). Own slots
+        // only: the state class's own methods live on the proto and bind as
+        // usual. Cheap terms first — `has_own` is a second map probe, and
+        // only a state instance ever needs it.
+        if (as_value && obj.properties->proto &&
+            obj.properties->proto->lowered_state && obj.has_own(name)) {
+          return prop;
         }
         if (!carried) reject_if_bare(name);
         return _wrap_method_with_this(prop, val, !carried, name);

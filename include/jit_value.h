@@ -272,6 +272,11 @@ struct JitObject {
   // reuse its padding (JitObject stays <= 128 bytes); set via the
   // culebra_runtime_mark_class helper, never GEP'd by codegen.
   bool is_class = false;
+  // Set on a CLASS META (never an instance) whose class a lowering
+  // synthesized — see culebra::is_lowered_state_class. An instance reaches it
+  // through `proto`, which is how bind_method_value knows its own slots are
+  // compiler storage. Passed to build_class_meta, never GEP'd by codegen.
+  bool is_lowered_state = false;
   const char* ns_name = nullptr;
 
   // --- Shape-based property access helpers ---

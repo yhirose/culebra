@@ -1170,7 +1170,10 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
     int64_t decl_fallback) {
   using namespace peg::udl;
 
-  auto gen_name = std::format("_Gen_{}_{}_{}",
+  // Prefix from the shared constant: both backends recognize the state class
+  // by it (culebra::is_lowered_state_class).
+  auto gen_name = std::format("{}{}_{}_{}",
+                              culebra::kGeneratorStateClassPrefix,
                               std::string(name_ast.token),
                               name_ast.line, name_ast.column);
 

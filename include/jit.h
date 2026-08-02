@@ -9758,9 +9758,12 @@ struct JIT {
       emit_set_op_pos();
       metaPtr = emit_call(
           module_->getOrInsertFunction(rt::build_class_meta, ptrTy, ptrTy,
-                                       ptrTy, builder_.getInt64Ty()),
+                                       ptrTy, builder_.getInt64Ty(),
+                                       builder_.getInt64Ty()),
           {nameArrayPtr, methodSlab,
-           builder_.getInt64(static_cast<int64_t>(n_methods))},
+           builder_.getInt64(static_cast<int64_t>(n_methods)),
+           builder_.getInt64(
+               culebra::is_lowered_state_class(class_name, ast.path))},
           "class.meta");
     }
     Owned metaVal = own(make_object(metaPtr));

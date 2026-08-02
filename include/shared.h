@@ -2150,6 +2150,38 @@ inline bool is_well_known_prop(std::string_view name) {
          name == "next";
 }
 
+// Two lowerings rewrite a body into a synthesized class and promote every
+// body local to a field on the instance — the generator CPS transform
+// (generator_transform.h) and the effects transform (effects_transform.h),
+// which shares its collect_local_names / rewrite_locals_to_self /
+// emit_ctor_param_and_local_inits helpers. These are the class names they
+// emit.
+//
+// Such an instance's own slots are compiler storage, not user object slots,
+// so a value read of one must NOT bind `self` the way `o.f` does. Binding
+// would leave a promoted local holding a function permanently bound to the
+// state object: `f == f` false, and a later `holder.f()` unable to take its
+// own receiver. The class's own methods live on the proto, are not own slots,
+// and keep binding normally. Both backends test this once per class
+// declaration and flag the class meta.
+inline constexpr std::string_view kGeneratorStateClassPrefix = "_Gen_";
+inline constexpr std::string_view kEffectComputationClassPrefix = "_EffComp_";
+inline constexpr std::string_view kEffectBodyClassPrefix = "_EffBody_";
+
+// `parse_path` is the AST node's parse label. A lowering re-parses its
+// synthesized source under a `<stem#N>` label (next_fragment_label), which no
+// user file path can be, so requiring it keeps a user class that happens to
+// be spelled `_Gen_x` on ordinary binding semantics.
+inline bool is_lowered_state_class(std::string_view class_name,
+                                   std::string_view parse_path) {
+  if (!parse_path.starts_with('<') ||
+      parse_path.find('#') == std::string_view::npos)
+    return false;
+  return class_name.starts_with(kGeneratorStateClassPrefix) ||
+         class_name.starts_with(kEffectComputationClassPrefix) ||
+         class_name.starts_with(kEffectBodyClassPrefix);
+}
+
 // The zero value a typed instance field (`x: T` with no initializer) takes
 // at construction. Single source for the interp's zero_value_for_type and
 // the JIT's emit_zero_value so a declared type maps to the same default on

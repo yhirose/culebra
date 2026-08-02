@@ -1510,9 +1510,18 @@ CULEBRA_RT_INLINE JitValue _jit_make_bound_method(int8_t recv_tag,
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_bind_method_value(
     int8_t recv_tag, int64_t recv_data, int8_t view_tag, int64_t view_data,
-    const char* /*key*/) {
+    const char* key) {
   if (view_tag == TAG_FUNC && recv_tag == TAG_OBJECT) {
     auto* method = reinterpret_cast<JitClosure*>(view_data);
+    // A promoted body local is storage, not a method — hand the raw function
+    // back unbound (culebra::is_lowered_state_class). Own slots only: the
+    // state class's own methods live on the proto and bind as usual. Twin of
+    // the interp's eval_property branch.
+    auto* recv = reinterpret_cast<JitObject*>(recv_data);
+    if (recv->proto && recv->proto->is_lowered_state && recv->has_own(key)) {
+      culebra_runtime_value_retain(view_tag, view_data);
+      return {view_tag, view_data};
+    }
     // A getter read as a value auto-invokes 0-arg with `self`=receiver
     // (interp's eval_property getter branch). Reached only on the bare-read
     // path; `obj.name()` compiles as a method call and never lands here, so

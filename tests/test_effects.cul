@@ -305,3 +305,36 @@ fn th_gen() {
         catch e { "g:" + e }
 }
 assert_eq(th_gen().collect(), ["g:boom"])
+
+// --- promoted body locals stay values, not methods -------------------------
+// The effects lowering shares generator_transform's locals-to-`self` machinery
+// (collect_local_names / rewrite_locals_to_self / emit_ctor_param_and_local_
+// inits), so a local promoted onto an _EffComp_ / _EffBody_ state object must
+// read back unbound — same contract tests/test_generator_self.cul pins for
+// _Gen_. Both backends agreed while this was broken, so difftest cannot see
+// it; these need value asserts.
+fn pl_mk_plain() { return fn () { 1 } }
+fn pl_mk_self() { return fn () { self } }
+effect fn pl_ask()
+
+// _EffComp_: an effectful fn's body
+effect fn pl_comp() {
+  let f = pl_mk_plain()
+  let s = pl_mk_self()
+  let holder = { tag: "holder" }
+  holder.s = s
+  perform pl_ask()
+  [f == f, holder.s().tag]
+}
+assert_eq(handle { pl_comp() } with pl_ask(resume) { resume(nil) },
+          [true, "holder"])
+
+// _EffBody_: the handle body itself
+assert_eq(handle {
+  let f = pl_mk_plain()
+  let s = pl_mk_self()
+  let holder = { tag: "holder" }
+  holder.s = s
+  perform pl_ask()
+  [f == f, holder.s().tag]
+} with pl_ask(resume) { resume(nil) }, [true, "holder"])

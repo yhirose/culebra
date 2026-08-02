@@ -1617,8 +1617,11 @@ class EffectsLowerer {
     const auto& params_ast = *ast->nodes[1];
     const auto& body = *ast->nodes.back();
     auto param_names = collect_positional_param_names(params_ast);
-    auto class_name = std::format("_EffComp_{}_{}_{}", name, ast->line,
-                                  ast->column);
+    // Prefix from the shared constant: both backends recognize the state
+    // class by it (culebra::is_lowered_state_class).
+    auto class_name = std::format("{}{}_{}_{}",
+                                  culebra::kEffectComputationClassPrefix, name,
+                                  ast->line, ast->column);
     auto rv_name = std::format("_rv_{}_{}", ast->line, ast->column);
     std::string cls =
         build_computation_class(class_name, body, param_names, rv_name);
@@ -1702,7 +1705,8 @@ class EffectsLowerer {
     bool captures = captures_outer(*ast);
     auto self_name = std::format("_eff_self_{}_{}", ast->line, ast->column);
 
-    auto class_name = std::format("_EffBody_{}_{}", ast->line, ast->column);
+    auto class_name = std::format("{}{}_{}", culebra::kEffectBodyClassPrefix,
+                                  ast->line, ast->column);
     auto rv_name = std::format("_rv_{}_{}", ast->line, ast->column);
     std::vector<std::string_view> body_params;
     if (captures) body_params.push_back("_eff_outer");
