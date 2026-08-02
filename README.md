@@ -5,8 +5,13 @@ Culebra Programming Language
 
 > **Status:** pre-1.0 and under active development — APIs and syntax may change.
 
-A scripting language small enough to embed, fast enough for Tensor,
-simple enough for agents.
+A dynamically-typed cross-platform scripting language with three
+backends: an interpreter, an LLVM JIT, and an ahead-of-time build that
+emits a standalone binary. Write scripts, CLI tools, machine learning,
+desktop apps, and games.
+
+The stdlib, test runner, linter, formatter, debugger and docs are all
+in that one executable. Nothing else to install!
 
 ```culebra
 let people = [
@@ -20,8 +25,8 @@ for p in people.sorted_by(|p| p.age) {
 }
 ```
 
-Run it as a script, JIT it for speed, or ship it as a standalone
-binary — from one file, with no compile step:
+All three run that same source file, with no project layout and no
+compile step:
 
 ```bash
 culebra script.cul                        # run as a script (interpreter)
@@ -176,9 +181,7 @@ Language features
 The toolchain is the same binary
 --------------------------------
 
-There is nothing else to install: the executable that runs a program
-also carries the test runner, the linter, the formatter, the debug
-adapter, and the reference documentation.
+Every subcommand below is part of the executable that runs a program.
 
 | Command | What it does |
 |---|---|
