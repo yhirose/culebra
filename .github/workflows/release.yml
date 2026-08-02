@@ -45,6 +45,13 @@ jobs:
     steps:
       # No checkout: this job only talks to the releases API, so `gh` is pointed
       # at the repo by GH_REPO rather than by a git remote.
+      #
+      # This step is the ONLY thing that creates the release. `gh release
+      # create` is not conditional, so a second creator racing this one is not
+      # prevented by the view-first guard below — cutting v0.1.0, /release
+      # created its draft in the same second as this job and the tag ended up
+      # with two, one of which lost its tag_name when the other was deleted.
+      # /release now waits for this workflow and only ever edits.
       - name: Ensure a release exists for ${{ env.TAG }}
         env:
           GH_TOKEN: ${{ github.token }}
