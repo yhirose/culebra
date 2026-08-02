@@ -94,19 +94,23 @@ inline bool fn_body_has_yield(const peg::Ast& node) {
   return find_yield_in_fn_body(node) != nullptr;
 }
 
-// First bare `self` reference in a generator's immediate fn body. The body
-// is lowered into methods of the synthesized state class, so `self` there
-// could only ever name the internal state object — never the enclosing
-// receiver the user means. Stops at fn boundaries (a nested fn value's
-// `self` follows its own call shape, e.g. an object-literal method) and at
-// class/trait decls (their methods bind a real receiver). Skips
-// non-reference identifiers: property names (`x.self`), object keys, and
-// kwarg labels.
+// First bare `self` reference in a lowered fn body — a generator's or an
+// effect fn's (reject_self_in_lowered_body below states the rule for both).
+// The body becomes methods of a synthesized state class, so `self` there
+// could only ever name that internal object, never the enclosing receiver the
+// user means. Nested functions are searched too: a closure defined in the body
+// would read the state object through the body method's own `self`.
+//
+// Two things stop the walk. A function WRITTEN as an object-literal property
+// (`yield {m: fn () { self.x }}`) takes its `self` from whatever object it is
+// called on, never from the lowering — ordinary code, so it stays legal. A
+// class/trait declaration in a lowered body is refused a few checks later as
+// unsupported control flow; stopping here just picks that accurate error over
+// a misleading one about `self`. Non-reference identifiers are skipped too:
+// property names (`x.self`), object keys, and kwarg labels.
 inline const peg::Ast* find_self_ref_in_fn_body(const peg::Ast& node) {
   using namespace peg::udl;
-  if (is_fn_boundary(node.tag) || node.tag == "CLASS_DECL"_ ||
-      node.tag == "TRAIT_DECL"_)
-    return nullptr;
+  if (node.tag == "CLASS_DECL"_ || node.tag == "TRAIT_DECL"_) return nullptr;
   if (node.tag == "IDENTIFIER"_ && node.original_tag != "DOT"_ &&
       node.token == "self")
     return &node;
@@ -120,9 +124,25 @@ inline const peg::Ast* find_self_ref_in_fn_body(const peg::Ast& node) {
           node.nodes.size() >= 3) ||
          (node.tag == "KWARG"_ && i == 0)))
       continue;
+    if (node.tag == "OBJECT_PROPERTY"_ && is_fn_boundary(c.tag)) continue;
     if (auto* s = find_self_ref_in_fn_body(c)) return s;
   }
   return nullptr;
+}
+
+// The refusal both lowerings share. `what` names the body in the message; the
+// rest of the sentence — and so the workaround a user is told — is one string,
+// because the two bodies obey one rule for one reason.
+inline void reject_self_in_lowered_body(const peg::Ast& body,
+                                        std::string_view what) {
+  if (auto* s = find_self_ref_in_fn_body(body)) {
+    throw CulebraError(
+        "SyntaxError",
+        std::format("self is not available inside {} — bind it outside first "
+                    "(let me = self) and use that variable, or pass it as a "
+                    "parameter.", what),
+        static_cast<long>(s->line), static_cast<long>(s->column));
+  }
 }
 
 // Collect every DEFER node in a fn body in source order, stopping at
@@ -634,6 +654,11 @@ inline std::string rewrite_locals_to_self(std::string_view src,
   // ahead of the inserted `self.`. `..` is listed before the single-char class
   // so a range bound is matched as an operand rather than a member access on
   // its second dot.
+  // A promoted local stays a plain variable: reading one hands back the value
+  // and CALLING one passes no receiver, even though both are spelled
+  // `self.<name>` after this. Neither is decided here — both backends check
+  // the slot's owner (culebra::is_lowered_state_class), which is the only
+  // place that sees every spelling a call can take.
   std::vector<std::regex> pats;
   pats.reserve(sorted.size());
   for (const auto& name : sorted) {
@@ -1351,14 +1376,8 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
   // can mean — a generator is a named fn, so no receiver survives the
   // lowering. Reject it uniformly (like the rules above); the enclosing
   // value is one binding away.
-  if (auto* s = find_self_ref_in_fn_body(*ast->nodes.back())) {
-    throw CulebraError(
-        "SyntaxError",
-        "self is not available inside a generator body (a function that "
-        "uses yield) — bind it outside first (let me = self) and use that "
-        "variable, or pass it as a parameter.",
-        static_cast<long>(s->line), static_cast<long>(s->column));
-  }
+  reject_self_in_lowered_body(*ast->nodes.back(),
+                              "a generator body (a function that uses yield)");
 
   // Annotate every body line with a `#@culebra:<original-line>` provenance marker
   // before any rewriting stage. Markers are comments, so each later stage

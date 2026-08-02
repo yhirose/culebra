@@ -2,8 +2,9 @@
 // the synthesized class's methods, so a bare `self` there could only name
 // the internal state object — it is rejected at parse time (see
 // jit_error_pos_test.sh for the rejection side). This file pins what stays
-// LEGAL: non-reference spellings of `self`, nested fn values (whose `self`
-// follows their own call shape), and the sanctioned capture idiom.
+// LEGAL: non-reference spellings of `self`, a fn written as an object
+// property (whose `self` is the receiver it is called on), and the sanctioned
+// capture idiom.
 
 // A property named `self` is a label, not a reference.
 fn g_key() {
@@ -41,6 +42,36 @@ assert_eq(Holder.new().run()[0], "held")
 fn g_str() { yield "self service" }
 assert_eq(g_str().collect()[0], "self service")
 
+fn mk_plain() { return fn () { 1 } }
+fn mk_self() { return fn () { self } }
+
+// A function from OUTSIDE, called bare in the body, is called the way a bare
+// call is called anywhere: with no receiver. The lowering promotes the local
+// onto the state object, so the call used to arrive as a method and hand the
+// state object over as `self` — the last way a body's `self` escaped after
+// the parse-time rule above.
+fn g_bare() {
+  let f = mk_self()
+  yield try { f(); "no error" } catch e { e.kind }
+}
+fn plain_bare() {
+  let f = mk_self()
+  return try { f(); "no error" } catch e { e.kind }
+}
+assert_eq(g_bare().collect()[0], "NameError")
+assert_eq(g_bare().collect()[0], plain_bare())   // same as outside a generator
+
+// ...and an ordinary local call is untouched by that rewrite, including one
+// spelled inside an interpolation.
+fn g_local_calls() {
+  let add = fn (a, b) { a + b }
+  let mk = fn () { [1, 2] }
+  yield add(2, 3)
+  yield mk().size()
+  yield "one and one is {add(1, 1)}"
+}
+assert_eq(g_local_calls().collect(), [5, 2, "one and one is 2"])
+
 // --- Promoted locals are storage, not methods -----------------------------
 // The lowering moves every body local onto the state object. Reading one back
 // must hand out the value itself: binding it would make the state object a
@@ -48,8 +79,6 @@ assert_eq(g_str().collect()[0], "self service")
 // agreed with each other even while this was broken, so difftest cannot see
 // it — these need value asserts.
 
-fn mk_plain() { return fn () { 1 } }
-fn mk_self() { return fn () { self } }
 
 // (1) Identity. A bound wrapper is minted per read, so `f == f` went false.
 fn g_identity() {

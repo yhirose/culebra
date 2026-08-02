@@ -338,3 +338,37 @@ assert_eq(handle {
   perform pl_ask()
   [f == f, holder.s().tag]
 } with pl_ask(resume) { resume(nil) }, [true, "holder"])
+
+// --- `self` and the two lowered bodies --------------------------------------
+// An effect fn is a named declaration that cannot be a class member, so its
+// lowering leaves no receiver and `self` in its body is refused at parse time
+// (jit_error_pos_test.sh). A handle body is the other case: it is spliced
+// where it was written, so the enclosing method's receiver survives and
+// reading `self` there is ordinary code.
+effect fn sf_ask()
+class SelfHolder {
+  new(v) { self.v = v }
+  run() { return handle { self.v + perform sf_ask() } with sf_ask(resume) { resume(10) } }
+  runNested() {
+    return handle { (fn () { self.v })() + perform sf_ask() }
+           with sf_ask(resume) { resume(100) }
+  }
+}
+assert_eq(SelfHolder.new(1).run(), 11)
+assert_eq(SelfHolder.new(2).runNested(), 102)
+
+// A function from outside, called bare in either body, is called with no
+// receiver — the same rewrite the generator lowering shares.
+effect fn sf_comp() {
+  let f = pl_mk_self()
+  let r = try { f(); "no error" } catch e { e.kind }
+  perform sf_ask()
+  r
+}
+assert_eq(handle { sf_comp() } with sf_ask(resume) { resume(nil) }, "NameError")
+assert_eq(handle {
+  let f = pl_mk_self()
+  let r = try { f(); "no error" } catch e { e.kind }
+  perform sf_ask()
+  r
+} with sf_ask(resume) { resume(nil) }, "NameError")

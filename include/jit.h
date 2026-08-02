@@ -11356,6 +11356,22 @@ struct JIT {
         intro ? "getter.or.value" : "bind.method");
   }
 
+  // The receiver a user method call hands over, filtered through
+  // culebra_runtime_call_receiver: a promoted body local named by an own slot
+  // of a lowering's state object is storage, so calling it must pass no
+  // receiver. Consumes the +1 and returns whatever the call should carry.
+  llvm::Value* emit_call_receiver(llvm::Value* receiver,
+                                  const std::string& name) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    return emit_value_call(
+        module_->getOrInsertFunction(rt::call_receiver, valueType_,
+                                     builder_.getInt8Ty(),
+                                     builder_.getInt64Ty(), ptrTy),
+        {extract_tag(receiver), extract_data(receiver),
+         get_or_create_global_str(name, ".callrecv.key")},
+        "call.receiver");
+  }
+
   Owned compile_call(const peg::Ast& ast) {
     using namespace peg::udl;
     auto calleeNode = ast.nodes[0];
@@ -12207,7 +12223,9 @@ struct JIT {
     // opt into that cleanup. A real method call proceeds normally (its callee
     // frame cleans `self`/args), so the flag only fires on the not-a-function
     // arm and never double-frees.
-    auto callRes = compile_function_call(argsAst, methodVal, receiver.consume(),
+    auto callRes = compile_function_call(argsAst, methodVal,
+                                         emit_call_receiver(receiver.consume(),
+                                                            method),
                                          /*own_self_on_error=*/true,
                                          /*own_args_on_error=*/true);
     if (owned_method_view) emit_value_release(methodVal);

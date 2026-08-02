@@ -10322,10 +10322,15 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         // A promoted body local is storage, not a method — hand the raw
         // function back unbound (culebra::is_lowered_state_class). Own slots
         // only: the state class's own methods live on the proto and bind as
-        // usual. Cheap terms first — `has_own` is a second map probe, and
-        // only a state instance ever needs it.
-        if (as_value && obj.properties->proto &&
-            obj.properties->proto->lowered_state && obj.has_own(name)) {
+        // usual. Reading it and CALLING it both land here (`as_value` false is
+        // the call), and both must skip the bind: `f()` in a lowered body is a
+        // bare call, which the lowering only spells as `self.f()` because it
+        // moved the local onto the state object. The JIT's twin is
+        // bind_method_value for the read and call_receiver for the call.
+        // Cheap terms first — `has_own` is a second map probe, and only a
+        // state instance ever needs it.
+        if (obj.properties->proto && obj.properties->proto->lowered_state &&
+            obj.has_own(name)) {
           return prop;
         }
         if (!carried) reject_if_bare(name);

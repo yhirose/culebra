@@ -1506,6 +1506,25 @@ CULEBRA_RT_INLINE JitValue _jit_make_bound_method(int8_t recv_tag,
   return {TAG_FUNC, reinterpret_cast<int64_t>(bound)};
 }
 
+// The receiver a method call hands over — or none, when the callee is a
+// promoted body local. A lowering's state object carries its body's locals as
+// own slots, so `f()` in that body arrives here as `self.f()`; it is a bare
+// call and must not acquire a receiver on the way in, exactly as the value
+// read of the same slot does not acquire one (bind_method_value). Consumes the
+// +1 the call site was going to pass on. Twin of the interp's eval_property
+// branch, which reaches both spellings through one condition.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_receiver(
+    int8_t recv_tag, int64_t recv_data, const char* key) {
+  if (recv_tag == TAG_OBJECT) {
+    auto* recv = reinterpret_cast<JitObject*>(recv_data);
+    if (recv->proto && recv->proto->is_lowered_state && recv->has_own(key)) {
+      _culebra_value_release_impl(recv_tag, recv_data);
+      return {TAG_NO_SELF, 0};
+    }
+  }
+  return {recv_tag, recv_data};
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_bind_method_value(
     int8_t recv_tag, int64_t recv_data, int8_t view_tag, int64_t view_data,
     const char* key) {

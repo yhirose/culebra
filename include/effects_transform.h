@@ -1616,6 +1616,16 @@ class EffectsLowerer {
 
     const auto& params_ast = *ast->nodes[1];
     const auto& body = *ast->nodes.back();
+
+    // Same rule as a generator body, for the same reason: an effect fn is a
+    // named declaration (it cannot be a class member), so no receiver survives
+    // the lowering and `self` could only name the computation object. A handle
+    // body is deliberately NOT covered — spliced where it was written, it keeps
+    // an enclosing method's receiver, and `handle { self.v + perform … }`
+    // inside a method is ordinary code. (A handle written INSIDE an effect fn
+    // body IS covered, by this walk: no receiver survives there either.)
+    reject_self_in_lowered_body(body, "an effect fn body");
+
     auto param_names = collect_positional_param_names(params_ast);
     // Prefix from the shared constant: both backends recognize the state
     // class by it (culebra::is_lowered_state_class).

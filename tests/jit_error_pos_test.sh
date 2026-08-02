@@ -72,10 +72,10 @@ o.g()'
 check_same "yield in fn expr"     'let g = fn () { yield 9 }
 g()'
 
-# `self` in a generator's immediate body used to silently resolve to the
-# synthesized state object (never the enclosing receiver). Now a shared
-# parse-time SyntaxError pointing at the self token. Nested fn values and
-# labels (keys, kwargs, `x.self`) stay legal — see test_generator_self.cul.
+# `self` in a generator's body used to silently resolve to the synthesized
+# state object (never the enclosing receiver). Now a shared parse-time
+# SyntaxError pointing at the self token. Labels (keys, kwargs, `x.self`) stay
+# legal — see test_generator_self.cul.
 check_same "self in generator"        'fn g() { yield self }
 g()'
 check_same "self.prop in generator"   'fn g() { yield self.name }
@@ -86,6 +86,20 @@ g()'
 check_same "let self in generator"    'fn g() { let self = 1
 yield self }
 g()'
+# The rule reaches nested functions: a closure defined in the body reads the
+# state object through the body method's own `self`, so it is refused where it
+# is written. A function that is an object property is exempt — there `self` is
+# the dynamic receiver (test_generator_self.cul asserts that side).
+check_same "self in nested fn"        'fn g() { yield (fn () { self })() }
+g()'
+# An effect fn body is the same shape — a named declaration whose lowering
+# leaves no receiver — and refuses identically. A handle body is NOT: there the
+# enclosing method's receiver survives (test_effects.cul asserts it).
+check_same "self in effect fn"        'effect fn ask()
+effect fn e() { let s = self
+let x = perform ask()
+s }
+handle { e() } with ask(resume) { resume(1) }'
 
 # UFCS calls to the unary global builtins (to_string/hash/type_of/to_long/
 # to_float). The JIT used to fall through to a property-get TypeError on a

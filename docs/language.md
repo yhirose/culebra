@@ -2109,8 +2109,8 @@ for v in two() { inspect(v); break }
 
   The check runs over what the transform pass leaves behind, so every
   backend rejects the same programs at the same position.
-* `self` may not be referenced in a generator's immediate body. The
-  body is lowered into methods of a synthesized state class, so a bare
+* `self` may not be referenced in a generator's body. The body is
+  lowered into methods of a synthesized state class, so a bare
   `self` there could only name that internal object — never a receiver
   (a generator is a named fn and cannot be a method). The parser
   rejects it:
@@ -2119,18 +2119,27 @@ for v in two() { inspect(v); break }
       function that uses yield) — bind it outside first (let me = self)
       and use that variable, or pass it as a parameter.
 
-  Only the immediate body is restricted. A nested `fn` / lambda value
-  keeps its normal `self` contract (bound by how it is called, §10), and
-  a property name, object key, or kwarg label spelled `self` is not a
-  reference. To reach an enclosing receiver, capture it first:
-  `let me = self` outside the generator, then use `me` inside.
+  The rule reaches a `fn` / lambda **defined** in the body, which would
+  otherwise read that state object through the enclosing method's
+  `self`. One shape is exempt: a function that is an object property
+  (`yield {m: fn () { self.x }}`), whose `self` is the dynamic receiver
+  of the object it is called on (§10), never the state object. A
+  property name, object key, or kwarg label spelled `self` is not a
+  reference either. To reach an enclosing receiver, capture it first:
+  `let me = self` outside the generator, then use `me` inside. An
+  `effect fn` body is the same shape and refuses the same way; a
+  `handle` body is not — it is spliced where it was written, so an
+  enclosing method's `self` is still that method's receiver (§16).
 * A body local keeps plain-variable semantics even though the lowering
   stores it on the state object: a local holding a function is a value,
-  not a method of that object, so `f == f` stays true and passing it on
-  leaves the receiver to whatever call follows (`holder.f = f`, then
-  `holder.f()` sees `holder`). The generator's own protocol methods are
-  not locals and bind as usual (§10). An `effect fn` body and a `handle`
-  body lower the same way and follow the same rule (§16).
+  not a method of that object, so `f == f` stays true, calling it (`f()`)
+  passes no receiver exactly as it would outside a generator, and passing
+  it on leaves the receiver to whatever call follows (`holder.f = f`,
+  then `holder.f()` sees `holder`). The generator's own protocol methods
+  are not locals and bind as usual (§10). An `effect fn` body and a
+  `handle` body promote their locals the same way, so this rule holds
+  there too (§16) — it is only the `self` rule above that treats the two
+  differently.
 * A generator body cannot `perform` a bare effect operation or declare
   an `effect fn`; a self-contained `handle { ... }` expression inside
   the body does work (§16).
@@ -3373,6 +3382,14 @@ function** (with a body):
 
 An operation declaration only names the operation and its parameters; invoking
 it directly is an error — it must be reached through `perform`.
+
+An effectful function's body is lowered into a synthesized computation class,
+the same shape a generator body takes, so `self` may not be referenced there
+(`self is not available inside an effect fn body`) — pass what you mean as a
+parameter, or bind it outside as `let me = self`. A `handle { ... }` body is
+not restricted: it stays where it was written, so inside a method `self` is
+still that method's receiver. Both promote their locals onto the synthesized
+object, where a local holding a function stays a plain variable (§11).
 
 ### Performing an operation
 
