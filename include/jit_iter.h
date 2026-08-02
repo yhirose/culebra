@@ -3304,6 +3304,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_is_shared_val(
   return reinterpret_cast<JitObject*>(data)->is_shared_val ? 1 : 0;
 }
 
+// True if a TAG_OBJECT receiver is a builtin stdlib namespace (IO, Sys, ...).
+// A namespace answers every member itself — an unknown one is an AttributeError
+// (culebra_runtime_prop_get), never a UFCS candidate — so the builtin-receiver
+// test claims all of them.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_is_namespace(
+    int64_t data) {
+  return reinterpret_cast<JitObject*>(data)->is_namespace ? 1 : 0;
+}
+
 // A Shared.new view exposes only its own reader methods. A dict builtin
 // (`get`/`remove`/`get_or_put`) compiled against the view must behave
 // like the interp: the name reads from the frozen tree (functions can't

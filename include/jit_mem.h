@@ -804,6 +804,7 @@ inline constexpr auto object_values       = "culebra_runtime_object_values";
 inline constexpr auto object_new          = "culebra_runtime_object_new";
 inline constexpr auto object_remove       = "culebra_runtime_object_remove";
 inline constexpr auto is_shared_val       = "culebra_runtime_is_shared_val";
+inline constexpr auto is_namespace        = "culebra_runtime_is_namespace";
 inline constexpr auto object_remove_any   = "culebra_runtime_object_remove_any";
 inline constexpr auto build_class_instance
     = "culebra_runtime_build_class_instance";

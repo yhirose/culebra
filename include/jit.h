@@ -4525,6 +4525,8 @@ struct JIT {
                                  builder_.getVoidTy(), ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::is_shared_val, builder_.getInt8Ty(),
                                  builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::is_namespace, builder_.getInt8Ty(),
+                                 builder_.getInt64Ty());
     // Higher-order array helpers (§17.2): (arr, fn_tag, fn_data, line, col).
     module_->getOrInsertFunction(rt::array_map, ptrTy, ptrTy,
                                  builder_.getInt8Ty(), builder_.getInt64Ty(),
@@ -12117,7 +12119,7 @@ struct JIT {
     if (has_kwargs && (known_builtin_methods().contains(method) ||
                        method == "add")) {
       return compile_user_method_over_builtin(method, argsAst,
-                                              receiver.consume());
+                                              receiver.consume(), dot_ast);
     }
     // Set's mutating `.add(x)` / `.remove(x)` can shadow user-defined
     // Object methods of the same name (e.g. `Calculator.add(1)`). Emit
@@ -12139,7 +12141,7 @@ struct JIT {
     // fallback, and the Set add/remove dispatch above.)
     if (known_builtin_methods().contains(method)) {
       return compile_user_method_over_builtin(method, argsAst,
-                                              receiver.consume());
+                                              receiver.consume(), dot_ast);
     }
     // Uniform receiver-ownership convention for builtin methods: a builtin
     // treats the receiver as BORROWED — read-only/mutating methods never
@@ -12162,28 +12164,13 @@ struct JIT {
       return builtinR;
     }
 
-    // UFCS fallback: if `method` is not a known builtin and resolves as
-    // a free function in scope, `x.method(args)` becomes `method(x,
-    // args)` — but only when the receiver has no user property by that
-    // name. Existing methods always win (interpreter parity: Option 1
-    // from the UFCS design discussion).
-    bool is_builtin = known_builtin_methods().contains(method);
-    const VarSlot* freeFnSlot = is_builtin ? nullptr : lookup_var(method);
-    if (freeFnSlot) {
-      return compile_method_or_ufcs(
-          method, [&] { return load_slot(*freeFnSlot, method); }, argsAst,
-          receiver.consume(), dot_ast);
-    }
-
-    // `s.replace(pat, repl)` — a bare stdlib function global written in
-    // culebra. It lives in no scope (the runtime resolver owns it), but UFCS
-    // over it must still yield to a receiver property of the same name, so it
-    // takes the same two-arm path a scope slot does. The interp gets here by
-    // finding the name in its global env.
-    if (!culebra::lazy_fn_group_of(method).empty()) {
-      return compile_method_or_ufcs(
-          method, [&] { return emit_builtin_var_get(method); }, argsAst,
-          receiver.consume(), dot_ast);
+    // UFCS fallback: if `method` resolves as a free function in scope,
+    // `x.method(args)` becomes `method(x, args)` — but only when the receiver
+    // has no user property by that name. Existing methods always win
+    // (interpreter parity: Option 1 from the UFCS design discussion).
+    if (auto load_free_fn = ufcs_free_fn_loader(method)) {
+      return compile_method_or_ufcs(method, load_free_fn, argsAst,
+                                    receiver.consume(), dot_ast);
     }
 
     // UFCS into an extension builtin: `x.inspect()` → `inspect(x)` and so on
@@ -12456,6 +12443,16 @@ struct JIT {
     return tables;
   }
 
+  // The dict table — the builtins any Object receiver resolves
+  // (keys/has/size/...). Same throwaway-instance reasoning as above.
+  static const BuiltinTable* dict_builtin_table() {
+    static const BuiltinTable* table = [] {
+      ObjectValue o;
+      return &o.builtins();
+    }();
+    return table;
+  }
+
   // Whether some builtin value-type method named `method` declares a
   // keyword-only / defaulted / **rest parameter — i.e. it can take keyword
   // args (e.g. `sort_by(f, reverse: true)`). Consulted by the builtin
@@ -12513,7 +12510,6 @@ struct JIT {
       builder_.CreateBr(okBB);  // unreachable (throw is noreturn) but valid
       builder_.SetInsertPoint(okBB);
     };
-    using Table = std::unordered_map<std::string_view, Value>;
     // The error `method` would raise on this arg shape when it resolves in
     // `tbl`, or nullopt if the call is valid / the method is absent. A pure
     // positional builtin uses the count-based ArityError; a kwarg-capable one
@@ -12594,10 +12590,6 @@ struct JIT {
     };
 
     auto& valueTables = builtin_value_tables();
-    static const Table* dictTable = [] {
-      ObjectValue o;
-      return &o.builtins();
-    }();
 
     for (auto& [t, tbl] : valueTables) {
       if (auto e = error_for(*tbl)) {
@@ -12613,7 +12605,7 @@ struct JIT {
     // dict builtin so `has("iter")` is always true — the effective test
     // is just "has an own/proto `next`", which is what we probe here.
     auto isObj = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT));
-    if (auto e = error_for(*dictTable)) {
+    if (auto e = error_for(*dict_builtin_table())) {
       throw_if(isObj, *e);
     } else if (auto e = error_for(iterator_builtins())) {
       auto shapeBB = llvm::BasicBlock::Create(ctx_, "arity.itshape", fn);
@@ -12630,6 +12622,81 @@ struct JIT {
       builder_.CreateBr(okBB);  // unreachable (throw is noreturn) but valid
       builder_.SetInsertPoint(okBB);
     }
+  }
+
+  // Whether the receiver resolves `method` on its own — the runtime twin of
+  // interp's `receiver_has_property`, the predicate that decides between a
+  // real method call and the UFCS fallback. True for a builtin-table method of
+  // the receiver's type, for an own/proto property of an Object receiver, and
+  // for every member name on a closed namespace; false leaves the name free
+  // for a same-named free function. Table membership is a static fact of the
+  // build (the same-version lock-step the arity check's baked bounds assume) —
+  // only the receiver's tag/shape is tested at runtime. Mirrors eval_property's
+  // order: value tables by tag, dict builtins on any Object, iterator builtins
+  // on an iterator-shaped one. receiver_has_property's trait-default branch has
+  // no counterpart here because it can't be reached: a trait default IS a
+  // Function, so the property arm above this test already claimed it.
+  llvm::Value* emit_receiver_has_property(const std::string& method,
+                                          llvm::Value* receiver) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto tag = extract_tag(receiver);
+    auto tag_is = [&](int8_t t) {
+      return builder_.CreateICmpEQ(tag, builder_.getInt8(t));
+    };
+    // Start empty rather than at `false`: IRBuilder only constant-folds an
+    // `or` when BOTH operands are constants, so seeding it would leave an
+    // `or i1 false, %x` at every site.
+    llvm::Value* hit = nullptr;
+    auto add_hit = [&](llvm::Value* v) {
+      hit = hit ? builder_.CreateOr(hit, v, "rhp.resolves") : v;
+    };
+
+    for (auto& [t, tbl] : builtin_value_tables())
+      if (tbl->count(method)) add_hit(tag_is(t));
+    // A Function receiver owns the three introspection names.
+    if (fn_introspection_name(method)) add_hit(tag_is(TAG_FUNC));
+
+    // A dict builtin resolves on any Object, so the tag test IS the answer —
+    // no pointer probe, no block split.
+    if (dict_builtin_table()->count(method)) {
+      add_hit(tag_is(TAG_OBJECT));
+      return hit;
+    }
+    bool iter_hit = iterator_builtins().count(method) > 0;
+
+    // Own/proto membership needs the pointer, so probe it in its own block.
+    auto objBB = llvm::BasicBlock::Create(ctx_, "rhp.obj", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "rhp.merge", fn);
+    auto entryBB = builder_.GetInsertBlock();
+    builder_.CreateCondBr(tag_is(TAG_OBJECT), objBB, mergeBB);
+
+    builder_.SetInsertPoint(objBB);
+    auto data = extract_data(receiver);
+    llvm::Value* objHit = builder_.CreateICmpNE(
+        emit_call(module_->getFunction(rt::is_namespace), {data}, "rhp.is.ns"),
+        builder_.getInt8(0));
+    auto objPtr = builder_.CreateIntToPtr(data, ptrTy);
+    // An own/proto property wins over UFCS even when it isn't a Function
+    // (interp's `obj.has()`): `{map: 5}.map(f)` must raise "expected Function,
+    // got Long", not call a free `map`.
+    objHit = builder_.CreateOr(
+        objHit,
+        emit_object_has(objPtr, get_or_create_global_str(method, ".rhp.key")));
+    if (iter_hit)
+      objHit = builder_.CreateOr(
+          objHit,
+          emit_object_has(objPtr,
+                          get_or_create_global_str("next", ".rhp.next")));
+    auto objEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(mergeBB);
+    auto objPhi = builder_.CreatePHI(builder_.getInt1Ty(), 2, "rhp.obj.hit");
+    objPhi->addIncoming(builder_.getFalse(), entryBB);
+    objPhi->addIncoming(objHit, objEnd);
+    add_hit(objPhi);
+    return hit;
   }
 
   // Emit the "this builtin method didn't resolve on this receiver" path,
@@ -12678,6 +12745,101 @@ struct JIT {
                                  /*own_args_on_error=*/true);
   }
 
+  // The compile-time UFCS candidate for `method`: a loader emitting a `+1` of
+  // the free function of that name, or an empty function when none is visible.
+  // A scope slot first, then `s.replace(pat, repl)` — a bare stdlib global
+  // written in culebra, which lives in no scope (the runtime resolver owns it)
+  // but must still yield to a receiver property of the same name, so it takes
+  // the same two-arm path a scope slot does. The interp gets there by finding
+  // the name in its global env. The third rung compile_method_call tries
+  // (`compile_ufcs_builtin`) is deliberately absent: that hook compiles a whole
+  // call rather than loading a callee, and its names (`inspect`, `to_long`,
+  // `range`, …) reach that tail only after this loader has already declined.
+  std::function<llvm::Value*()> ufcs_free_fn_loader(const std::string& method) {
+    if (const VarSlot* slot = lookup_var(method))
+      return [this, slot, method] { return load_slot(*slot, method); };
+    if (!culebra::lazy_fn_group_of(method).empty())
+      return [this, method] { return emit_builtin_var_get(method); };
+    return {};
+  }
+
+  // The argument vectors of a UFCS call: the receiver rides as positional[0],
+  // and its report position is the DOT node (interp's eval_ufcs_call passes
+  // dot_line/col for positional_locs[0]).
+  static std::pair<std::vector<llvm::Value*>, std::vector<const peg::Ast*>>
+  ufcs_call_args(llvm::Value* receiver, const peg::Ast* dot_ast,
+                 llvm::ArrayRef<llvm::Value*> args,
+                 llvm::ArrayRef<const peg::Ast*> argAsts) {
+    std::vector<llvm::Value*> vals{receiver};
+    vals.insert(vals.end(), args.begin(), args.end());
+    std::vector<const peg::Ast*> asts{dot_ast};
+    asts.insert(asts.end(), argAsts.begin(), argAsts.end());
+    return {std::move(vals), std::move(asts)};
+  }
+
+  // The receiver-test miss arm: UFCS into the free function `method` when the
+  // binding really is a Function (interp takes UFCS only then), otherwise the
+  // ordinary unresolved-method error — the same shape compile_method_or_ufcs
+  // gives a non-builtin name. Args are compiled inside whichever arm runs (the
+  // caller's builtin arm compiles its own from the same argsAst), so an
+  // argument expression that throws can't strand the receiver. The receiver
+  // arrives owned (+1) and every arm consumes it.
+  Owned compile_ufcs_or_miss(const std::string& method,
+                             const std::function<llvm::Value*()>& load_free_fn,
+                             const peg::Ast& argsAst, llvm::Value* receiver,
+                             const peg::Ast* dot_ast) {
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto freeFn = load_free_fn();
+    auto isFn = builder_.CreateICmpEQ(extract_tag(freeFn),
+                                      builder_.getInt8(TAG_FUNC), "ufcsm.is.fn");
+    auto callBB = llvm::BasicBlock::Create(ctx_, "ufcsm.call", fn);
+    auto missBB = llvm::BasicBlock::Create(ctx_, "ufcsm.miss", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "ufcsm.merge", fn);
+    builder_.CreateCondBr(isFn, callBB, missBB);
+
+    OwnedPhi merge(this, "ufcsm.res");
+
+    builder_.SetInsertPoint(missBB);
+    own(freeFn).drop();  // a non-Function binding is not a callee
+    merge.add_incoming(emit_unresolved_builtin_method(
+        method, argsAst, receiver, /*guard_arity_receiver=*/true));
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(callBB);
+    // The callee load's +1 is dropped on the normal path below; holding it as
+    // Owned keeps it visible to the unwind-temp window, so a typed-param or
+    // binding throw inside the call releases it instead of stranding it. It is
+    // a distinct SSA from the callee frame's this/params, so this never
+    // collides with the callee's own cleanup.
+    Owned freeHold = own(freeFn);
+    Owned res;
+    if (!arg_list_is_positional_only(argsAst)) {
+      // call_with_kwargs owns the receiver on every exit (see
+      // compile_method_or_ufcs's kwarg UFCS arm).
+      CallSiteAt at(*this, argsAst);
+      res = compile_function_call_runtime_kwargs(argsAst, freeFn,
+                                                 /*selfVal=*/nullptr,
+                                                 {receiver}, dot_ast);
+    } else {
+      std::vector<const peg::Ast*> argAsts;
+      // The receiver rides as positional[0]; hold it as Owned so the
+      // unwind-temp window covers it while the argument expressions compile.
+      Owned recvHold = own(receiver);
+      auto ownedArgs = compile_positional_args(argsAst, argAsts);
+      recvHold.consume();  // handed to the raw call below
+      auto [ufcsArgs, ufcsArgAsts] = ufcs_call_args(
+          receiver, dot_ast, consume_all(std::move(ownedArgs)), argAsts);
+      CallSiteAt at(*this, argsAst);
+      res = compile_function_call_raw(freeFn, nullptr, ufcsArgs, ufcsArgAsts);
+    }
+    freeHold.drop();  // borrowed-callee dispatch
+    merge.add_incoming(std::move(res));
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(mergeBB);
+    return merge.finish(mergeBB);
+  }
+
   // Builtin-named method on a user class: give the class's own method priority
   // over the builtin (interpreter parity). Runtime branch — Object whose class
   // (proto-aware) defines `method` → call it; otherwise the builtin. Args are
@@ -12687,7 +12849,8 @@ struct JIT {
   // releases it).
   Owned compile_user_method_over_builtin(const std::string& method,
                                                 const peg::Ast& argsAst,
-                                                llvm::Value* receiver) {
+                                                llvm::Value* receiver,
+                                                const peg::Ast* dot_ast) {
     auto fn = builder_.GetInsertBlock()->getParent();
     auto tag = extract_tag(receiver);
     auto isObj =
@@ -12735,9 +12898,32 @@ struct JIT {
     builder_.CreateBr(mergeBB);
 
     // builtinBB: the receiver is a real builtin value (or an Object lacking
-    // the method). A kwargs call here targets a true builtin, which never
-    // accepts keywords — raise the same TypeError the interp does.
+    // the method).
     builder_.SetInsertPoint(builtinBB);
+    // …but a builtin-NAMED method is only a builtin on a receiver that
+    // actually resolves it: `(5).map(f)` with a free `map` in scope is UFCS on
+    // the interp (receiver_has_property is false, so its DOT arm takes the free
+    // function), and the JIT had no such arm for any of the builtin names.
+    // Only emit the runtime test when a candidate is visible at compile time —
+    // without one the miss arm would just re-emit the builtin path's own
+    // fallback, so every ordinary `arr.push(x)` site stays as it was.
+    if (auto load_free_fn = ufcs_free_fn_loader(method)) {
+      auto resolves = emit_receiver_has_property(method, receiver);
+      auto hitBB = llvm::BasicBlock::Create(ctx_, "umb.resolved", fn);
+      auto missBB = llvm::BasicBlock::Create(ctx_, "umb.unresolved", fn);
+      builder_.CreateCondBr(resolves, hitBB, missBB);
+
+      builder_.SetInsertPoint(missBB);
+      umbMerge.add_incoming(compile_ufcs_or_miss(method, load_free_fn, argsAst,
+                                                 receiver, dot_ast));
+      builder_.CreateBr(mergeBB);
+
+      builder_.SetInsertPoint(hitBB);
+    }
+    // A kwargs call on a receiver that DOES resolve the name targets a true
+    // builtin, which never accepts keywords — raise the same TypeError the
+    // interp does. (A receiver that doesn't took the UFCS arm above, where the
+    // free function binds its keywords normally.)
     Owned builtinRes;
     if (!arg_list_is_positional_only(argsAst) &&
         !builtin_method_is_kwarg_capable(method)) {
@@ -12859,7 +13045,14 @@ struct JIT {
       // coverage of the same value.
       OwnedPhi kwMerge(this, "ufcs.kw.res");
       builder_.SetInsertPoint(methodHasBB);
-      auto methodVal = emit_property_get(receiver, method);
+      // Also the landing block for a non-Function free binding (kwMissBB
+      // below): both read the property and call it, so sharing the block emits
+      // this ARG_LIST once instead of twice. own_receiver covers that edge —
+      // the read raises the scalar member error there and is the only releaser
+      // of the receiver on it; on the has-property edge it cannot raise, so
+      // the flag is inert.
+      auto methodVal = emit_property_get(receiver, method,
+                                         /*own_receiver=*/true);
       // fn_mode hands back a +1-OWNED view (not the usual borrowed slot
       // value) and the call only borrows its callee. Hold it across the call
       // so the unwind-temp window releases it when the call raises on a
@@ -12882,15 +13075,11 @@ struct JIT {
       builder_.CreateCondBr(kwIsFn, kwCallBB, kwMissBB);
 
       builder_.SetInsertPoint(kwMissBB);
-      // The non-Function binding is not a callee — drop the load's +1. The
-      // property read raises the scalar member error itself and owns the
-      // receiver on that direct-error edge (own_receiver).
+      // The non-Function binding is not a callee — drop the load's +1 and
+      // rejoin the property arm, whose read + call is exactly what this edge
+      // needs (and whose ARG_LIST is then emitted once for both).
       own(freeFn).drop();
-      auto kwMissProp =
-          emit_property_get(receiver, method, /*own_receiver=*/true);
-      kwMerge.add_incoming(compile_function_call_runtime_kwargs(
-          argsAst, kwMissProp, receiver));
-      builder_.CreateBr(mergeBB);
+      builder_.CreateBr(methodHasBB);
 
       builder_.SetInsertPoint(kwCallBB);
       // This branch owns the callee load's +1, released on the normal path
@@ -13010,16 +13199,8 @@ struct JIT {
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(callBB);
-    std::vector<llvm::Value*> ufcsArgs;
-    ufcsArgs.reserve(userArgs.size() + 1);
-    ufcsArgs.push_back(receiver);
-    for (auto* a : userArgs) ufcsArgs.push_back(a);
-    // The receiver is positional[0]; its report position is the DOT node
-    // (interp's eval_ufcs_call passes dot_line/col for positional_locs[0]).
-    std::vector<const peg::Ast*> ufcsArgAsts;
-    ufcsArgAsts.reserve(argAsts.size() + 1);
-    ufcsArgAsts.push_back(dot_ast);
-    for (auto* a : argAsts) ufcsArgAsts.push_back(a);
+    auto [ufcsArgs, ufcsArgAsts] =
+        ufcs_call_args(receiver, dot_ast, userArgs, argAsts);
     // This branch owns the slot load's +1, released on the normal path below.
     // A positional typed-param binding throw (`"x".f(1)` where `f`'s first
     // param is Long) would strand it — guard the borrowed callee value on the

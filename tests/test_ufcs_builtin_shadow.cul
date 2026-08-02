@@ -2,10 +2,9 @@
 # user functions in scope. An existing method/builtin ALWAYS beats UFCS
 # (Option 1); UFCS fires only when the receiver resolves nothing.
 #
-# Phase 1 scope (receiver_has_property parity): receivers whose builtin
-# must keep winning even when a same-named free function is in scope.
-# The "UFCS fires on a non-resolving receiver" direction lands with the
-# JIT dispatch phases and is asserted in later additions to this file.
+# Both directions of receiver_has_property parity: receivers whose builtin
+# must keep winning even when a same-named free function is in scope, and
+# receivers that resolve nothing, where the free function takes over.
 #
 # Run: ./build/culebra tests/test_ufcs_builtin_shadow.cul
 #      ./build/culebra --jit tests/test_ufcs_builtin_shadow.cul
@@ -81,5 +80,78 @@ assert_eq((5).params(), "ufcs params")
 let holder = {params: fn () { [1, 2, 3] }}
 assert_eq(holder.params(), [1, 2, 3])
 assert_eq(holder.params(), [1, 2, 3])
+
+# --- Phase 3: a builtin NAME on a receiver that doesn't resolve it ---
+# The receiver test decides per receiver, so the same name is a builtin on
+# one value and a UFCS candidate on the next.
+
+fn push(o, v) { "ufcs push:" + type_of(o) }
+
+assert_eq((5).push(1), "ufcs push:Long")
+assert_eq((1.5).push(1), "ufcs push:Float")
+assert_eq(true.push(1), "ufcs push:Bool")
+assert_eq(nil.push(1), "ufcs push:Nil")
+assert_eq("ab".push(1), "ufcs push:String")      # String has no push
+assert_eq((1, 2).push(1), "ufcs push:Tuple")     # Tuple is immutable
+assert_eq({a: 1}.push(1), "ufcs push:Object")    # not a dict builtin
+assert_eq(probe.push(1), "ufcs push:Function")
+
+mut arr = [1, 2]
+arr.push(3)                                       # Array resolves it: builtin
+assert_eq(arr, [1, 2, 3])
+assert_eq({1, 2}.push(3), "ufcs push:Set")        # Set mutates via `add`
+assert_eq({1, 2}.size(), 2)
+
+# A class instance resolves dict builtins but not Array/String ones.
+class Box {
+  new(v) { self.v = v }
+}
+assert_eq(Box(1).push(9), "ufcs push:Object")
+assert_eq(type_of(Box(1).size()), "Long")         # dict `size`, not "ufcs size"
+
+# NOTE: these use a top-level `try` rather than assert_throws — the JIT
+# resolves a UFCS candidate from the enclosing compile scope, and a lambda
+# body is its own scope. Nested-fn visibility lands with the free-variable
+# phase; until then an assert_throws callback would exercise the old path.
+
+# An own property beats UFCS even when it isn't callable — the receiver
+# "has" the name, so interp never reaches its UFCS arm.
+assert_eq(try { ({push: 5}).push(1) } catch e { e.kind }, 'TypeError')
+
+# A class method of the same name still wins over both.
+class Stack {
+  new() { self.items = [] }
+  push(v) { "method push" }
+}
+assert_eq(Stack().push(1), "method push")
+
+# kwargs reach the free function on a non-resolving receiver, while a real
+# builtin receiver keeps rejecting keywords.
+fn insert(o, at = 0) { "ufcs insert:" + to_string(at) }
+assert_eq((5).insert(at: 3), "ufcs insert:3")
+assert_eq(try { [1, 2].insert(at: 3) } catch e { e.kind }, 'TypeError')
+
+# The receiver is positional[0], so a typed first param rejects it exactly
+# as a direct `windows("ab", 2)` would.
+fn windows(o: Long, n) { o + n }
+assert_eq((5).windows(2), 7)
+assert_eq(try { "ab".windows(2) } catch e { e.kind }, 'DispatchError')
+
+# Arguments are compiled inside the arm that runs — a throwing argument
+# expression must not double-evaluate the receiver or strand it.
+mut calls = 0
+fn bump() {
+  calls = calls + 1
+  calls
+}
+assert_eq((5).push(bump()), "ufcs push:Long")
+assert_eq(calls, 1)
+
+# A namespace keeps answering its own members: the receiver test claims every
+# name on one, so the builtin-named arm is unchanged by the UFCS fallback.
+assert_eq(IO.keys().contains("println"), true)
+# (`IO.push(1)` — an unknown member with a free `push` in scope — is still
+# split: interp takes UFCS, the JIT raises AttributeError. Closing namespaces
+# on both backends is a separate step.)
 
 inspect("test_ufcs_builtin_shadow: ok")
