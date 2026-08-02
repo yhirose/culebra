@@ -28,6 +28,25 @@ const TERM_ROWS = 24;
 const term = new Terminal({ cols: TERM_COLS, rows: TERM_ROWS, cursorBlink: true });
 term.open($("tui"));
 
+// 80 columns at the default font is wider than a phone, and the grid cannot
+// reflow — a Term.app draws to fixed coordinates — so the part that does give
+// is the type size. Shrinking it keeps the whole board on screen, which for a
+// TUI game matters more than the glyphs staying large. Font metrics are linear
+// in the size, so the measured width scales straight into the size to ask for.
+const TERM_FONT_MAX = 15;   // xterm's default, and the desktop size
+const TERM_FONT_MIN = 6;
+function fitTerm() {
+  const pane = $("tui");
+  const screen = term.element?.querySelector(".xterm-screen");
+  const room = pane.clientWidth - 2 * parseFloat(getComputedStyle(pane).paddingLeft);
+  if (!screen || room <= 0 || !screen.offsetWidth) return;
+  const size = term.options.fontSize * (room / screen.offsetWidth);
+  const want = Math.max(TERM_FONT_MIN, Math.min(TERM_FONT_MAX, Math.floor(size)));
+  if (want !== term.options.fontSize) term.options.fontSize = want;
+}
+fitTerm();
+addEventListener("resize", fitTerm);
+
 // --- Canvas pane -----------------------------------------------------------
 //
 // A Canvas program (canvas.h / src/preambles/canvas.cul) posts RGBA frames the
@@ -57,7 +76,9 @@ function switchTab(name) {
   // Clear empties the Output pane and nothing else, so it rides the tab strip
   // and leaves with the pane it belongs to.
   clearBtn.hidden = name !== "output";
-  if (name === "tui") term.focus();
+  // A hidden pane has no width to measure against, so the terminal is sized
+  // the moment it becomes visible rather than only on load and on resize.
+  if (name === "tui") { fitTerm(); term.focus(); }
   if (name === "canvas") canvasPane.focus();
 }
 tabButtons.output.addEventListener("click", () => switchTab("output"));

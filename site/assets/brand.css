@@ -61,6 +61,9 @@ body {
   font-family: var(--font-ui);
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
+  /* Off, or WebKit inflates text on rotation to landscape and the two pages
+     disagree with the sizes their media queries were written against. */
+  -webkit-text-size-adjust: 100%;
 }
 
 a { color: var(--brand-strong); text-decoration: none; }

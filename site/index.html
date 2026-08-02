@@ -8,8 +8,12 @@
   <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg">
   <link rel="stylesheet" href="./assets/brand.css">
   <style>
+    /* Wraps because it cannot shrink: below ~400px the wordmark and the three
+       links together are wider than the viewport, and without a wrap they
+       push past the padding and give the whole page a horizontal scroll. */
     .nav {
       display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 0.4rem 1rem;
       max-width: 960px; margin: 0 auto; padding: 1.1rem 1.4rem;
     }
     /* Centered, not baseline: the wordmark is an inline-flex whose first item
@@ -20,7 +24,7 @@
        landing page has no build step. `just check-site-version` compares both
        against include/culebra.h so neither can be left behind by a bump. */
     .nav .ver { color: var(--muted); font-size: 0.9rem; font-weight: 500; }
-    .nav-links { display: flex; gap: 1.3rem; align-items: center; }
+    .nav-links { display: flex; flex-wrap: wrap; gap: 0.4rem 1.3rem; align-items: center; }
     .nav-links a { color: var(--muted); font-weight: 500; }
     .nav-links a:hover { color: var(--text); text-decoration: none; }
 
@@ -66,6 +70,25 @@
 
     footer { border-top: 1px solid var(--border); color: var(--muted); font-size: 0.85rem; }
     .foot-inner { max-width: 760px; margin: 0 auto; padding: 1.6rem 1.4rem; }
+
+    @media (max-width: 560px) {
+      .nav { padding: 0.9rem 1.1rem; }
+      main { padding: 2.4rem 1.1rem 3.5rem; }
+      .hero .tag { font-size: 1.05rem; }
+      /* Full-width and stacked: two half-width buttons side by side leave the
+         labels wrapping inside them at this width. */
+      .cta .btn { flex: 1 1 100%; }
+      .facts { margin: 2rem 0; }
+      /* Sized so the sample's widest line lands inside the block instead of
+         under a scrollbar: it is 42 columns, and a phone has no width to spare
+         for a horizontal scroll the reader has to discover. */
+      pre.sample { padding: 0.9rem 1rem; font-size: min(0.8rem, 2.85vw); }
+      .sample-bar { padding-left: 0.9rem; }
+      /* Taller than on a desktop, not shorter: below 720px the Playground
+         stacks the editor over the output, so the frame has two panes to fit
+         in its height instead of two columns to fit in its width. */
+      .sample-frame { height: min(72vh, 520px); }
+    }
   </style>
 </head>
 <body>

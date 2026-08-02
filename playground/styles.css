@@ -2,6 +2,10 @@
    (../assets/brand.css); this file owns only structure. */
 
 html, body { height: 100%; }
+/* Mobile browsers grow and shrink the visible area as their chrome collapses.
+   `100%` resolves against the tall end of that range, which leaves the bottom
+   pane cut off below the address bar until the user scrolls; `dvh` tracks it. */
+@supports (height: 100dvh) { html, body { height: 100dvh; } }
 body { display: flex; flex-direction: column; overflow: hidden; }
 
 /* --- header ------------------------------------------------------------ */
@@ -127,7 +131,32 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 @media (max-width: 720px) {
   .pg-main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
   .pg-editor { border-right: 0; border-bottom: 1px solid var(--border); }
+  .pg-header { padding: 0.6rem 0.9rem; }
   .pg-header .sub { display: none; }
+
+  /* The toolbar wraps to three rows on a phone — controls, arguments, status —
+     and takes a quarter of the screen with it. Ordering the argument box last
+     folds the status back onto the control row, so it costs two rows and
+     nothing is hidden. The backend badge does go: it reports which wasm build
+     loaded, which is diagnostic rather than something to act on. */
+  .pg-toolbar { padding: 0.45rem 0.7rem; gap: 0.4rem; }
+  .pg-toolbar .backend, .pg-toolbar .spacer { display: none; }
+  .pg-toolbar #args { order: 1; flex: 1 1 100%; min-width: 0; }
+  /* The picker sizes itself to its longest example title, which alone is wider
+     than half a phone. Letting it flex instead makes it take what the row has
+     left, which is also what the spacer was there to do. */
+  .pg-toolbar select { flex: 1 1 6rem; min-width: 0; }
+
+  /* 16px is the threshold below which iOS Safari zooms the page in on focus,
+     leaving the layout scrolled sideways with no way back but a pinch. It
+     applies to the editor too: CodeMirror's surface is contenteditable. The
+     taller controls are the same trade — nearer a thumb-sized tap target. */
+  .pg-toolbar select, .pg-toolbar .btn, .pg-toolbar #args { height: 2.4rem; }
+  .pg-toolbar select, .pg-toolbar #args { font-size: 16px; }
+  .pg-main .pg-editor .cm-editor { font-size: 16px; }
+  .pg-tab { padding: 0.5rem 1rem; }
+  .pg-tab-action { padding: 0.35rem 0.8rem; }
+
   /* An embed is narrow by nature, so this is its normal layout rather than a
      phone case: give the source the larger share, since the snippet a host
      page sends is the thing being shown and the output is a few lines. */
