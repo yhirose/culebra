@@ -1,16 +1,12 @@
-fn fib(n) {
-  n < 2 ? n : fib(n - 1) + fib(n - 2)
-}
+fn fib(n) { n < 2 ? n : fib(n - 1) + fib(n - 2) }
 
 println("fib(20) = {fib(20)}")
-
 
 let xs = [1, 2, 3, 4, 5]
 let squares = xs.map(|x| x * x)
 
 println("squares      = {squares}")
 println("sum          = {squares.reduce(0, |a, b| a + b)}")
-
 
 fn make_counter() {
   mut n = 0

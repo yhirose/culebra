@@ -13,9 +13,9 @@
 ROWS = 9
 COLS = 14
 NCOLORS = 5
-COLORS = [0, 196, 46, 39, 226, 201]   # 256-colour per tile value 1..5
+COLORS = [0, 196, 46, 39, 226, 201]  # 256-colour per tile value 1..5
 
-MAX_MOVES = Sys.argv.size() > 0 ? to_long(Sys.argv[0]) : -1
+MAX_MOVES = !Sys.argv.empty() ? to_long(Sys.argv[0]) : -1
 # Optional second arg seeds the board for a reproducible demo (and lets the
 # interp / JIT / AOT backends be diffed byte-for-byte); -1 = seed from the clock.
 SEED = Sys.argv.size() > 1 ? to_long(Sys.argv[1]) : -1
@@ -26,7 +26,7 @@ SCORE_FILE = SCORE_DIR + "/score.json"
 
 fn new_board() {
   Random.seed(SEED >= 0 ? SEED : to_long(Time.now().unix()))
-  iota(ROWS).map(|_| iota(COLS).map(|_| Random.int(1, NCOLORS + 1)))   # 1..NCOLORS
+  iota(ROWS).map(|_| iota(COLS).map(|_| Random.int(1, NCOLORS + 1)))  # 1..NCOLORS
 }
 
 # All cells orthogonally connected to (r,c) sharing its colour.
@@ -35,9 +35,9 @@ fn group_at(b, r, c) {
   if color == 0 { return [] }
 
   mut out = []
-  mut seen = [].to_set()          # (row, col) tuples — Sets take any hashable
+  mut seen = [].to_set()  # (row, col) tuples — Sets take any hashable
   mut stack = [(r, c)]
-  while stack.size() > 0 {
+  while !stack.empty() {
     let (pr, pc) = stack.pop()
     let inside = pr >= 0 && pr < ROWS && pc >= 0 && pc < COLS
     # `add` reports whether the cell was new, so the visited test and the mark
@@ -61,7 +61,7 @@ fn remove_cells(b, cells) {
 # the gap they leave lands on top.
 fn gravity(b) {
   for c in 0..COLS {
-    let col = iota(ROWS).map(|r| b[r][c]).filter(|v| v != 0)
+    let col = range(ROWS).map(|r| b[r][c]).filter(|v| v != 0).collect()
     let gap = ROWS - col.size()
     for r in 0..ROWS { b[r][c] = r < gap ? 0 : col[r - gap] }
   }
@@ -121,9 +121,13 @@ fn draw(s, b, cur_r, cur_c, score, msg) {
       let py = oy + r
       let cur = INTERACTIVE && r == cur_r && c == cur_c
       let tile = cur ? "()" : "  "
-      if v == 0 { s.put(px, py, tile) }
-      else if cur { s.put(px, py, tile, Term.style(fg: 15, bg: COLORS[v])) }
-      else { s.put(px, py, tile, Term.style(bg: COLORS[v])) }
+      if v == 0 {
+        s.put(px, py, tile)
+      } else if cur {
+        s.put(px, py, tile, Term.style(fg: 15, bg: COLORS[v]))
+      } else {
+        s.put(px, py, tile, Term.style(bg: COLORS[v]))
+      }
     }
   }
   s.flush()
@@ -142,7 +146,9 @@ fn save_scores(scores) {
 # Merges `entry` into `scores`, keeps the top 5 by score, and reports
 # whether `entry` made the cut.
 fn rank_into(scores, entry) {
-  let list = [...scores, entry].sorted_by(|x| x.score, reverse: true).slice(0, 5)
+  let list = [...scores, entry]
+    .sorted_by(|x| x.score, reverse: true)
+    .slice(0, 5)
   (list, list.index_of(entry) >= 0)
 }
 
@@ -151,7 +157,11 @@ fn rank_into(scores, entry) {
 fn record_score(score) {
   let scores = load_scores()
   let now = Time.now()
-  let entry = {score: score, date: now.format("%Y-%m-%d"), time: now.format("%H:%M:%S")}
+  let entry = {
+    score: score,
+    date: now.format("%Y-%m-%d"),
+    time: now.format("%H:%M:%S"),
+  }
   let (list, made_top5) = rank_into(scores, entry)
   if made_top5 { save_scores(list) }
   (list, made_top5 ? entry : nil)
@@ -185,11 +195,12 @@ fn draw_box(s, w, title, lines, pick, footer) {
 }
 
 fn draw_score_box(s, scores, highlight, footer) {
-  let lines = scores.size() == 0
+  let lines = scores.empty()
     ? ["no scores yet"]
-    : scores.enumerate()
-            .map(fn ((i, e)) { "{i + 1}. {e.score}   {e.date} {e.time}" })
-            .collect()
+    : scores
+      .enumerate()
+      .map(|(i, e)| "{i + 1}. {e.score}   {e.date} {e.time}")
+      .collect()
   # index_of answers -1 for a nil highlight and for the empty board alike.
   draw_box(s, 40, "BEST 5", lines, scores.index_of(highlight), footer)
 }
@@ -201,21 +212,33 @@ fn show_scores(s, board, cur_r, cur_c, score, msg) {
   let entry = {score: score, date: "(current)", time: ""}
   let (list, made_top5) = rank_into(scores, entry)
   draw(s, board, cur_r, cur_c, score, msg)
-  draw_score_box(s, made_top5 ? list : scores, made_top5 ? entry : nil, "press any key")
+  draw_score_box(
+    s,
+    made_top5 ? list : scores,
+    made_top5 ? entry : nil,
+    "press any key",
+  )
   wait_any_key(s)
 }
 
 fn draw_help_box(s) {
-  draw_box(s, 44, "HELP", [
-    "Click 2+ same-colored tiles to clear them.",
-    "",
-    "arrows    move cursor",
-    "space     clear group",
-    "n         new game",
-    "s         best scores",
-    "h         this help",
-    "q         quit",
-  ], -1, "press any key")
+  draw_box(
+    s,
+    44,
+    "HELP",
+    [
+      "Click 2+ same-colored tiles to clear them.",
+      "",
+      "arrows    move cursor",
+      "space     clear group",
+      "n         new game",
+      "s         best scores",
+      "h         this help",
+      "q         quit",
+    ],
+    -1,
+    "press any key",
+  )
 }
 
 # Shows the help overlay. Blocks until any key is pressed.
@@ -242,84 +265,94 @@ fn try_remove(b, r, c) {
 }
 
 Term.app(fn (s) {
-  mut board = new_board()
-  mut score = 0
-  mut cur_r = 0
-  mut cur_c = 0
-  mut moves = 0
-  mut msg = ""
+    mut board = new_board()
+    mut score = 0
+    mut cur_r = 0
+    mut cur_c = 0
+    mut moves = 0
+    mut msg = ""
 
-  fn new_round() {
-    board = new_board()
-    score = 0
-    cur_r = 0
-    cur_c = 0
-    moves = 0
-    msg = ""
-  }
+    fn new_round() {
+      board = new_board()
+      score = 0
+      cur_r = 0
+      cur_c = 0
+      moves = 0
+      msg = ""
+    }
 
-  draw(s, board, cur_r, cur_c, score, msg)
+    draw(s, board, cur_r, cur_c, score, msg)
 
-  while true {
-    if !has_moves(board) {
-      let left = count_tiles(board)
-      if left == 0 { score += 1000; msg = "CLEARED!  bonus +1000" }
-      else { msg = "no moves — game over ({left} left)" }
-      msg = msg + "  —  q: quit, other key: new game"
-      draw(s, board, cur_r, cur_c, score, msg)
-      if !INTERACTIVE { return }
-      let (best, entry) = record_score(score)
-      if entry != nil {
-        draw_score_box(s, best, entry, "q: quit   other key: new game")
+    while true {
+      if !has_moves(board) {
+        let left = count_tiles(board)
+        if left == 0 {
+          score += 1000
+          msg = "CLEARED!  bonus +1000"
+        } else {
+          msg = "no moves — game over ({left} left)"
+        }
+        msg += "  —  q: quit, other key: new game"
+        draw(s, board, cur_r, cur_c, score, msg)
+        if !INTERACTIVE { return }
+        let (best, entry) = record_score(score)
+        if entry != nil {
+          draw_score_box(s, best, entry, "q: quit   other key: new game")
+          if wait_any_key(s) == "q" { return }
+          new_round()
+          draw(s, board, cur_r, cur_c, score, msg)
+          continue
+        }
         if wait_any_key(s) == "q" { return }
         new_round()
         draw(s, board, cur_r, cur_c, score, msg)
-        continue
       }
-      if wait_any_key(s) == "q" { return }
-      new_round()
-      draw(s, board, cur_r, cur_c, score, msg)
-    }
-    if MAX_MOVES >= 0 && moves >= MAX_MOVES { return }
+      if MAX_MOVES >= 0 && moves >= MAX_MOVES { return }
 
-    mut sr = -1
-    mut sc = -1
-    if INTERACTIVE {
-      let ev = s.poll(0.1)
-      if ev != nil {
-        if ev.kind == "key" {
-          if ev.key == "q" { return }
-          match ev.key {
-            "n" => { new_round() },
-            "s" => { show_scores(s, board, cur_r, cur_c, score, msg) },
-            "h" => { show_help(s, board, cur_r, cur_c, score, msg) },
-            "left"  => { cur_c = Math.clamp(cur_c - 1, 0, COLS - 1) },
-            "right" => { cur_c = Math.clamp(cur_c + 1, 0, COLS - 1) },
-            "up"    => { cur_r = Math.clamp(cur_r - 1, 0, ROWS - 1) },
-            "down"  => { cur_r = Math.clamp(cur_r + 1, 0, ROWS - 1) },
-            " " | "enter" => { sr = cur_r; sc = cur_c },
+      mut sr = -1
+      mut sc = -1
+      if INTERACTIVE {
+        let ev = s.poll(0.1)
+        if ev != nil {
+          if ev.kind == "key" {
+            if ev.key == "q" { return }
+            match ev.key {
+              "n" => { new_round() },
+              "s" => { show_scores(s, board, cur_r, cur_c, score, msg) },
+              "h" => { show_help(s, board, cur_r, cur_c, score, msg) },
+              "left" => { cur_c = Math.clamp(cur_c - 1, 0, COLS - 1) },
+              "right" => { cur_c = Math.clamp(cur_c + 1, 0, COLS - 1) },
+              "up" => { cur_r = Math.clamp(cur_r - 1, 0, ROWS - 1) },
+              "down" => { cur_r = Math.clamp(cur_r + 1, 0, ROWS - 1) },
+              " " | "enter" => {
+                sr = cur_r
+                sc = cur_c
+              },
+            }
+            draw(s, board, cur_r, cur_c, score, msg)
+          } else if ev.kind == "mouse" && ev.event == "press" && ev.button == "left" {
+            let (ox, oy) = offsets(s)
+            let gc = (ev.x - ox) / 2
+            let gr = ev.y - oy
+            if gr >= 0 && gr < ROWS && gc >= 0 && gc < COLS {
+              sr = gr
+              sc = gc
+            }
           }
+        }
+      } else {
+        (sr, sc) = find_move(board)
+        Time.sleep(0.04)
+      }
+
+      if sr >= 0 {
+        let n = try_remove(board, sr, sc)
+        if n >= 2 {
+          score += (n - 2) * (n - 2)
+          moves += 1
+          msg = "cleared {n}"
           draw(s, board, cur_r, cur_c, score, msg)
-        } else if ev.kind == "mouse" && ev.event == "press" && ev.button == "left" {
-          let (ox, oy) = offsets(s)
-          let gc = (ev.x - ox) / 2
-          let gr = ev.y - oy
-          if gr >= 0 && gr < ROWS && gc >= 0 && gc < COLS { sr = gr; sc = gc }
         }
       }
-    } else {
-      (sr, sc) = find_move(board)
-      Time.sleep(0.04)
     }
-
-    if sr >= 0 {
-      let n = try_remove(board, sr, sc)
-      if n >= 2 {
-        score += (n - 2) * (n - 2)
-        moves += 1
-        msg = "cleared {n}"
-        draw(s, board, cur_r, cur_c, score, msg)
-      }
-    }
-  }
-}, mouse: INTERACTIVE)   # enable mouse reporting (interactive only) so clicks reach s.poll()
+  }, mouse: INTERACTIVE)  # enable mouse reporting (interactive only) so clicks reach s.poll()

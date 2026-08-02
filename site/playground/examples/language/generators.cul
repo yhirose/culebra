@@ -1,11 +1,7 @@
 fn countdown(start) {
-  for i in start..=1 by -1 {
-    yield i
-  }
+  for i in start..=1 by -1 { yield i }
 }
-for v in countdown(3) {
-  println("{v}...")
-}
+for v in countdown(3) { println("{v}...") }
 
 fn chunk(arr, n) {
   mut buf = []
@@ -16,9 +12,7 @@ fn chunk(arr, n) {
       buf = []
     }
   }
-  if buf.size() > 0 {
-    yield buf
-  }
+  if !buf.empty() { yield buf }
 }
 
 println("chunks   = {chunk([1, 2, 3, 4, 5], 2).collect()}")

@@ -43,30 +43,34 @@ let args = fn () {
         println("retro-run: {a} needs a value")
         Sys.exit(2)
       }
-      if a == "--assets" { dir = Sys.argv[i + 1] } else { cars = to_long(Sys.argv[i + 1]) }
-      i = i + 2
+      if a == "--assets" {
+        dir = Sys.argv[i + 1]
+      } else {
+        cars = to_long(Sys.argv[i + 1])
+      }
+      i += 2
     } else if a.starts_with("-") {
       println("retro-run: unknown option {a}")
       println("usage: retro-run.cul [--assets <dir>] [--cars <n>] [draw-distance]")
       Sys.exit(2)
     } else {
       distance = to_long(a)
-      i = i + 1
+      i += 1
     }
   }
-  { dir: dir, distance: distance, cars: cars }
+  {dir: dir, distance: distance, cars: cars}
 }()
 let DRAW_DISTANCE = args.distance
 let LANES = 3
 let SEGMENT_LENGTH = 200
-let RUMBLE_LENGTH = 3             # segments per light/dark stripe
-let ROAD_WIDTH = 2000             # half-width, so the road spans -RW..+RW
+let RUMBLE_LENGTH = 3  # segments per light/dark stripe
+let ROAD_WIDTH = 2000  # half-width, so the road spans -RW..+RW
 let CAMERA_HEIGHT = 1000
-let FIELD_OF_VIEW = 100           # degrees
+let FIELD_OF_VIEW = 100  # degrees
 let FOG_DENSITY = 5
 let CENTRIFUGAL = 0.3
 let TOTAL_CARS = args.cars
-let LOOKAHEAD = 20                # segments an AI car looks ahead to steer
+let LOOKAHEAD = 20  # segments an AI car looks ahead to steer
 # The original skips the AI for a car more than drawDistance segments *ahead*,
 # a signed test that leaves every car behind the player scanning: update then
 # climbs from 13 to 50 ms over one lap and resets. Both ends of a circular
@@ -78,32 +82,32 @@ let TREE_SPEED = 0.003
 
 let CAMERA_DEPTH = 1.0 / Math.tan((FIELD_OF_VIEW / 2.0) * Math.pi / 180.0)
 let PLAYER_Z = CAMERA_HEIGHT * CAMERA_DEPTH
-let MAX_SPEED = SEGMENT_LENGTH / STEP     # one segment per frame, at most
+let MAX_SPEED = SEGMENT_LENGTH / STEP  # one segment per frame, at most
 let ACCEL = MAX_SPEED / 5.0
 let BREAKING = -MAX_SPEED
 let DECEL = -MAX_SPEED / 5.0
 let OFF_ROAD_DECEL = -MAX_SPEED / 2.0
 let OFF_ROAD_LIMIT = MAX_SPEED / 4.0
-let RESOLUTION = H / 480.0                # v4's resolution-independence factor
+let RESOLUTION = H / 480.0  # v4's resolution-independence factor
 
 let W2 = W / 2.0
 let H2 = H / 2.0
 let NO_CLIP = 1e9
-let SW_K = ROAD_WIDTH * W2                # projected road half-width per unit scale
+let SW_K = ROAD_WIDTH * W2  # projected road half-width per unit scale
 
 # --- sprite atlas ----------------------------------------------------------
 # Rectangles are verbatim from the upstream common.js: SPRITES.w is what
 # collision measures and what sets the world scale, so they are a contract with
 # the art, not a property of it (assets/README.md).
-let SPRITE_SCALE = 0.3 / 80.0             # 0.3 / PLAYER_STRAIGHT.w
+let SPRITE_SCALE = 0.3 / 80.0  # 0.3 / PLAYER_STRAIGHT.w
 
 class Art {
-  new (x, y, w, h) {
+  new(x, y, w, h) {
     self.x = x
     self.y = y
     self.w = w
     self.h = h
-    self.sw = w * SPRITE_SCALE            # world width, pre-scaled
+    self.sw = w * SPRITE_SCALE  # world width, pre-scaled
     self.sh = h * SPRITE_SCALE
   }
 }
@@ -143,11 +147,31 @@ let PLAYER_LEFT = Art.new(995, 480, 80, 41)
 let PLAYER_STRAIGHT = Art.new(1085, 480, 80, 41)
 let PLAYER_RIGHT = Art.new(995, 531, 80, 41)
 
-let BILLBOARDS = [BILLBOARD01, BILLBOARD02, BILLBOARD03, BILLBOARD04,
-                  BILLBOARD05, BILLBOARD06, BILLBOARD07, BILLBOARD08,
-                  BILLBOARD09]
-let PLANTS = [TREE1, TREE2, DEAD_TREE1, DEAD_TREE2, PALM_TREE, BUSH1, BUSH2,
-              CACTUS, STUMP, BOULDER1, BOULDER2, BOULDER3]
+let BILLBOARDS = [
+  BILLBOARD01,
+  BILLBOARD02,
+  BILLBOARD03,
+  BILLBOARD04,
+  BILLBOARD05,
+  BILLBOARD06,
+  BILLBOARD07,
+  BILLBOARD08,
+  BILLBOARD09,
+]
+let PLANTS = [
+  TREE1,
+  TREE2,
+  DEAD_TREE1,
+  DEAD_TREE2,
+  PALM_TREE,
+  BUSH1,
+  BUSH2,
+  CACTUS,
+  STUMP,
+  BOULDER1,
+  BOULDER2,
+  BOULDER3,
+]
 let CARS = [CAR01, CAR02, CAR03, CAR04, SEMI, TRUCK]
 
 let PLAYER_W = PLAYER_STRAIGHT.sw
@@ -160,8 +184,9 @@ let BG_TREES = Art.new(5, 985, 1280, 480)
 # --- assets ----------------------------------------------------------------
 # `--assets <dir>` points at art held elsewhere — upstream's own, say; without
 # it the generated stand-ins in assets/ are used. `Sys.script` reads the same in
-# the Playground as it does natively, so there is no branch on the backend here.
-let HOME = FS.dirname(Sys.script)
+# the Playground as it does natively; an AOT binary carries no `.cul`, so there
+# it is nil and the art is looked for next to the executable instead.
+let HOME = FS.dirname(Sys.script ?? Sys.executable)
 let ART_DIR = args.dir ?? HOME + "/assets"
 let SCENES = ["asayake", "hiru", "yuugure", "twilight"]
 let SCENE_COUNT = SCENES.size()
@@ -232,19 +257,29 @@ let KIND_LIGHT = 1
 let MARK_NONE = 0
 let MARK_START = 1
 let MARK_FINISH = 2
-let CHECKER_COLS = 8              # squares across the road on a finish segment
+let CHECKER_COLS = 8  # squares across the road on a finish segment
 
 # --- Util (common.js) ------------------------------------------------------
-let limit = fn (v, lo, hi) { if v < lo { lo } else if v > hi { hi } else { v } }
+let limit = fn (v, lo, hi) {
+  cond {
+    v < lo => lo,
+    v > hi => hi,
+    _ => v,
+  }
+}
 let ease_in = fn (a, b, percent) { a + (b - a) * percent * percent }
-let ease_in_out = fn (a, b, percent) { a + (b - a) * ((-Math.cos(percent * Math.pi) / 2.0) + 0.5) }
+let ease_in_out = fn (a, b, percent) {
+  a + (b - a) * (-Math.cos(percent * Math.pi) / 2.0 + 0.5)
+}
 let percent_remaining = fn (n, total) { (n % total) / total }
-let exponential_fog = fn (distance, density) { 1.0 / Math.exp(distance * distance * density) }
+let exponential_fog = fn (distance, density) {
+  1.0 / Math.exp(distance * distance * density)
+}
 
 let increase = fn (start, increment, max) {
   mut result = start + increment
-  while result >= max { result = result - max }
-  while result < 0 { result = result + max }
+  while result >= max { result -= max }
+  while result < 0 { result += max }
   result
 }
 
@@ -252,25 +287,31 @@ let increase = fn (start, increment, max) {
 # against a car, 1.2 for the AI steering around one.
 let overlap = fn (x1, w1, x2, w2, percent) {
   let half = percent / 2.0
-  !((x1 + w1 * half < x2 - w2 * half) || (x1 - w1 * half > x2 + w2 * half))
+  !(x1 + w1 * half < x2 - w2 * half || x1 - w1 * half > x2 + w2 * half)
 }
 
 # --- world -----------------------------------------------------------------
 # p1/p2 are flat fields rather than nested objects: the projection loop writes
 # ten of them per segment per frame.
 class Segment {
-  new (index, y1, y2, curve) {
+  new(index, y1, y2, curve) {
     self.index = index
     self.p1_wy = y1
     self.p1_wz = index * SEGMENT_LENGTH * 1.0
     self.p2_wy = y2
     self.p2_wz = (index + 1) * SEGMENT_LENGTH * 1.0
     self.curve = curve
-    self.p1_sx = 0.0; self.p1_sy = 0.0; self.p1_sw = 0.0; self.p1_scale = 0.0
-    self.p2_sx = 0.0; self.p2_sy = 0.0; self.p2_sw = 0.0; self.p2_scale = 0.0
+    self.p1_sx = 0.0
+    self.p1_sy = 0.0
+    self.p1_sw = 0.0
+    self.p1_scale = 0.0
+    self.p2_sx = 0.0
+    self.p2_sy = 0.0
+    self.p2_sw = 0.0
+    self.p2_scale = 0.0
     self.clip = 0.0
-    self.vis = false            # projected this frame (i.e. in front of us)
-    self.kind = if (index / RUMBLE_LENGTH) % 2 == 0 { KIND_LIGHT } else { KIND_DARK }
+    self.vis = false  # projected this frame (i.e. in front of us)
+    self.kind = (index / RUMBLE_LENGTH) % 2 == 0 ? KIND_LIGHT : KIND_DARK
     self.mark = MARK_NONE
     self.sprites = []
     self.cars = []
@@ -278,7 +319,7 @@ class Segment {
 }
 
 class Prop {
-  new (art, offset) {
+  new(art, offset) {
     self.art = art
     self.offset = offset
   }
@@ -289,14 +330,14 @@ class Prop {
 # add and a carry, and the two find_segment calls the original does per car per
 # frame disappear.
 class Car {
-  new (art, offset, seg, zin, speed) {
+  new(art, offset, seg, zin, speed) {
     self.art = art
     self.offset = offset
     self.seg = seg
     self.zin = zin
     self.speed = speed
     self.percent = 0.0
-    self.w = art.sw           # the AI compares widths every lookahead step
+    self.w = art.sw  # the AI compares widths every lookahead step
     self.z = seg * SEGMENT_LENGTH * 1.0 + zin
   }
 }
@@ -306,7 +347,7 @@ mut cars = []
 mut track_length = 0.0
 
 let last_y = fn () {
-  if segments.size() == 0 { 0.0 } else { segments[segments.size() - 1].p2_wy }
+  segments.empty() ? 0.0 : segments[segments.size() - 1].p2_wy
 }
 
 let add_segment = fn (curve, y) {
@@ -318,15 +359,19 @@ let add_road = fn (enter, hold, leave, curve, y) {
   let end_y = start_y + y * SEGMENT_LENGTH * 1.0
   let total = (enter + hold + leave) * 1.0
   for n in 0..enter {
-    add_segment(ease_in(0.0, curve, n / (enter * 1.0)),
-                ease_in_out(start_y, end_y, n / total))
+    add_segment(
+      ease_in(0.0, curve, n / (enter * 1.0)),
+      ease_in_out(start_y, end_y, n / total),
+    )
   }
   for n in 0..hold {
     add_segment(curve, ease_in_out(start_y, end_y, (enter + n) / total))
   }
   for n in 0..leave {
-    add_segment(ease_in_out(curve, 0.0, n / (leave * 1.0)),
-                ease_in_out(start_y, end_y, (enter + hold + n) / total))
+    add_segment(
+      ease_in_out(curve, 0.0, n / (leave * 1.0)),
+      ease_in_out(start_y, end_y, (enter + hold + n) / total),
+    )
   }
 }
 
@@ -341,7 +386,9 @@ let C_MEDIUM = 4.0
 
 let add_straight = fn (num) { add_road(num, num, num, 0.0, 0.0) }
 let add_hill = fn (num, height) { add_road(num, num, num, 0.0, height) }
-let add_curve = fn (num, curve, height) { add_road(num, num, num, curve, height) }
+let add_curve = fn (num, curve, height) {
+  add_road(num, num, num, curve, height)
+}
 
 let add_low_rolling_hills = fn (num, height) {
   add_road(num, num, num, 0.0, height / 2.0)
@@ -375,9 +422,13 @@ let add_downhill_to_end = fn (num) {
   add_road(num, num, num, -C_EASY, -last_y() / SEGMENT_LENGTH)
 }
 
-let find_segment = fn (z) { segments[Math.floor(z / SEGMENT_LENGTH) % segments.size()] }
+let find_segment = fn (z) {
+  segments[Math.floor(z / SEGMENT_LENGTH) % segments.size()]
+}
 
-let add_prop = fn (n, art, offset) { segments[n].sprites.push(Prop.new(art, offset)) }
+let add_prop = fn (n, art, offset) {
+  segments[n].sprites.push(Prop.new(art, offset))
+}
 
 let reset_props = fn () {
   add_prop(20, BILLBOARD07, -1.0)
@@ -399,7 +450,7 @@ let reset_props = fn () {
   while n < 200 {
     add_prop(n, PALM_TREE, 0.5 + Random.uniform(0.0, 0.5))
     add_prop(n, PALM_TREE, 1.0 + Random.uniform(0.0, 2.0))
-    n = n + 4 + n / 100
+    n += 4 + n / 100
   }
 
   for n in 250..1000 by 5 {
@@ -409,17 +460,27 @@ let reset_props = fn () {
   }
 
   for n in 200..segments.size() by 3 {
-    let side = if Random.int(0, 2) == 0 { 1.0 } else { -1.0 }
-    add_prop(n, PLANTS[Random.int(0, PLANTS.size())],
-             side * (2.0 + Random.uniform(0.0, 5.0)))
+    let side = Random.int(0, 2) == 0 ? 1.0 : -1.0
+    add_prop(
+      n,
+      PLANTS[Random.int(0, PLANTS.size())],
+      side * (2.0 + Random.uniform(0.0, 5.0)),
+    )
   }
 
   for n in 1000..segments.size() - 50 by 100 {
-    let side = if Random.int(0, 2) == 0 { 1.0 } else { -1.0 }
-    add_prop(n + Random.int(0, 51), BILLBOARDS[Random.int(0, BILLBOARDS.size())], -side)
+    let side = Random.int(0, 2) == 0 ? 1.0 : -1.0
+    add_prop(
+      n + Random.int(0, 51),
+      BILLBOARDS[Random.int(0, BILLBOARDS.size())],
+      -side,
+    )
     for _ in 0..20 {
-      add_prop(n + Random.int(0, 51), PLANTS[Random.int(0, PLANTS.size())],
-               side * (1.5 + Random.uniform(0.0, 1.0)))
+      add_prop(
+        n + Random.int(0, 51),
+        PLANTS[Random.int(0, PLANTS.size())],
+        side * (1.5 + Random.uniform(0.0, 1.0)),
+      )
     }
   }
 }
@@ -427,13 +488,18 @@ let reset_props = fn () {
 let reset_cars = fn () {
   cars = []
   for _ in 0..TOTAL_CARS {
-    let side = if Random.int(0, 2) == 0 { -0.8 } else { 0.8 }
+    let side = Random.int(0, 2) == 0 ? -0.8 : 0.8
     let art = CARS[Random.int(0, CARS.size())]
     # The semi is slower, so it needs a narrower spread to stay behind traffic.
-    let spread = if art == SEMI { 4.0 } else { 2.0 }
+    let spread = art == SEMI ? 4.0 : 2.0
     let seg = Random.int(0, segments.size())
-    let car = Car.new(art, Random.uniform(0.0, 1.0) * side, seg, 0.0,
-                      MAX_SPEED / 4.0 + Random.uniform(0.0, MAX_SPEED / spread))
+    let car = Car.new(
+      art,
+      Random.uniform(0.0, 1.0) * side,
+      seg,
+      0.0,
+      MAX_SPEED / 4.0 + Random.uniform(0.0, MAX_SPEED / spread),
+    )
     segments[seg].cars.push(car)
     cars.push(car)
   }
@@ -484,16 +550,17 @@ mut key_faster = false
 mut key_slower = false
 mut current_lap_time = 0.0
 mut last_lap_time = 0.0
-mut fast_lap_time = 180.0             # v4's starting target, session-lived
+mut fast_lap_time = 180.0  # v4's starting target, session-lived
 
 # --- BGM ---------------------------------------------------------------
 # A music.ogg / music.mp3 next to the art (upstream's own soundtrack, say)
 # loops under the run instead of the chiptune; the generated assets ship no
-# music, so the riff below is the default. Either way the level sits at v4's
-# own quiet `music.volume = 0.05` (= vol 25 on Canvas's 0..100 scale).
-let MUSIC_FILE = ["music.ogg", "music.mp3"].map(|n| ART_DIR + "/" + n)
-                                           .find(|p| FS.exists(p))
-if MUSIC_FILE != nil { Canvas.music(FS.read(MUSIC_FILE), vol: 25) }
+# music, so the riff below is the default. It sits under the engine and the
+# chiptune's own level, loud enough to carry on laptop speakers.
+let MUSIC_FILE = ["music.ogg", "music.mp3"]
+  .map(|n| ART_DIR + "/" + n)
+  .find(|p| FS.exists(p))
+if MUSIC_FILE != nil { Canvas.music(FS.read(MUSIC_FILE), vol: 60) }
 
 # The chiptune fallback — a bossa-flavored run, not a transcription of any
 # particular tune: a brisk ii-V-I-ish turnaround (F△7-Dm7-Gm7-C7, one bar
@@ -503,10 +570,10 @@ if MUSIC_FILE != nil { Canvas.music(FS.read(MUSIC_FILE), vol: 25) }
 # fire-and-forget (the APU keeps playing the note on its own), so the
 # sequencer is just "is it this note's turn yet"; a `0` in a note table is a
 # rest, not a pitch, and is skipped rather than triggered.
-let LEAD_STEP = 7            # frames per sixteenth-note step (~129 bpm)
-let BASS_STEP = LEAD_STEP * 2    # eighth notes
-let PAD_STEP = LEAD_STEP * 4     # quarter notes
-let BGM_LOOP = LEAD_STEP * 64    # 4 bars of 16 sixteenths
+let LEAD_STEP = 7              # frames per sixteenth-note step (~129 bpm)
+let BASS_STEP = LEAD_STEP * 2  # eighth notes
+let PAD_STEP = LEAD_STEP * 4   # quarter notes
+let BGM_LOOP = LEAD_STEP * 64  # 4 bars of 16 sixteenths
 # A phrase per chord built from its 3rd/5th/6th/7th rather than a plain
 # arpeggio, sequenced down a step bar to bar and dipping to a lower register
 # for the Gm7 bar before C7's dominant run resolves it back down to F.
@@ -523,10 +590,10 @@ let LEAD_NOTES = [
 # anticipating beat 3 (the classic bossa push), the 5th sustained through
 # beat 3, then the 7th as a pickup into the next bar's root.
 let BASS_NOTES = [
-  175, 0, 0, 220, 262, 0, 0, 330,     # F△7: F root, A, C 5th, E 7th pickup
-  147, 0, 0, 175, 220, 0, 0, 262,     # Dm7: D root, F, A 5th, C 7th pickup
-  196, 0, 0, 233, 294, 0, 0, 349,     # Gm7: G root, Bb, D 5th, F 7th pickup
-  131, 0, 0, 165, 196, 0, 0, 233]     # C7: C root, E, G 5th, Bb pickup (b7 into F)
+  175, 0, 0, 220, 262, 0, 0, 330,  # F△7: F root, A, C 5th, E 7th pickup
+  147, 0, 0, 175, 220, 0, 0, 262,  # Dm7: D root, F, A 5th, C 7th pickup
+  196, 0, 0, 233, 294, 0, 0, 349,  # Gm7: G root, Bb, D 5th, F 7th pickup
+  131, 0, 0, 165, 196, 0, 0, 233]  # C7: C root, E, G 5th, Bb pickup (b7 into F)
 # An airy chime on beats 1 and 3 only — the 5th then the 6th/7th colour tone
 # of each chord — for the lounge-jazz shimmer a plain lead/bass duo lacks.
 let PAD_NOTES = [523, 0, 659, 0, 440, 0, 523, 0, 466, 0, 587, 0, 392, 0, 466, 0]
@@ -536,15 +603,31 @@ let tick_bgm = fn () {
   if bgm_frame % LEAD_STEP == 0 {
     let note = LEAD_NOTES[(bgm_frame / LEAD_STEP) % LEAD_NOTES.size()]
     if note != 0 {
-      Canvas.tone(note, LEAD_STEP - 2, vol: 16, wave: Canvas.PULSE,
-                  attack: 1, decay: 1, release: 3, duty: Canvas.DUTY_QUARTER)
+      Canvas.tone(
+        note,
+        LEAD_STEP - 2,
+        vol: 16,
+        wave: Canvas.PULSE,
+        attack: 1,
+        decay: 1,
+        release: 3,
+        duty: Canvas.DUTY_QUARTER,
+      )
     }
   }
   if bgm_frame % BASS_STEP == 0 {
     let note = BASS_NOTES[(bgm_frame / BASS_STEP) % BASS_NOTES.size()]
     if note != 0 {
-      Canvas.tone(note, BASS_STEP - 4, vol: 22, wave: Canvas.PULSE2,
-                  attack: 1, decay: 2, release: 5, duty: Canvas.DUTY_HALF)
+      Canvas.tone(
+        note,
+        BASS_STEP - 4,
+        vol: 22,
+        wave: Canvas.PULSE2,
+        attack: 1,
+        decay: 2,
+        release: 5,
+        duty: Canvas.DUTY_HALF,
+      )
     }
   } else if bgm_frame % BASS_STEP == LEAD_STEP {
     # A soft shaker tick on the offbeat eighth, for a bit of groove under the
@@ -554,8 +637,15 @@ let tick_bgm = fn () {
   if bgm_frame % PAD_STEP == 0 {
     let note = PAD_NOTES[(bgm_frame / PAD_STEP) % PAD_NOTES.size()]
     if note != 0 {
-      Canvas.tone(note, PAD_STEP - 6, vol: 9, wave: Canvas.TRIANGLE,
-                  attack: 3, decay: 6, release: 12)
+      Canvas.tone(
+        note,
+        PAD_STEP - 6,
+        vol: 9,
+        wave: Canvas.TRIANGLE,
+        attack: 3,
+        decay: 6,
+        release: 12,
+      )
     }
   }
   bgm_frame = (bgm_frame + 1) % BGM_LOOP
@@ -563,8 +653,6 @@ let tick_bgm = fn () {
 
 # --- update ----------------------------------------------------------------
 # How far a car steers this frame to get around whatever is in front of it.
-# Written without an early exit: `return` is a C++ stack unwind in the
-# interpreter, and the window test alone would take one per car per frame.
 let steer_car = fn (car, car_index, player_index, n, player_half) {
   let ahead = (car_index - player_index + n) % n
   mut result = 0.0
@@ -572,51 +660,49 @@ let steer_car = fn (car, car_index, player_index, n, player_half) {
     let car_w = car.w
     let offset = car.offset
     let car_speed = car.speed
-    mut done = false
-    mut i = 1
-    while !done && i < LOOKAHEAD {
+    for i in 1..LOOKAHEAD {
       mut si = car_index + i
-      if si >= n { si = si - n }
+      if si >= n { si -= n }
       let segment = segments[si]
 
       if si == player_index && car_speed > speed {
         let lim = player_half + car_w * 0.6
         let d = player_x - offset
         if d >= -lim && d <= lim {
-          let dir = if player_x > 0.5 { -1.0 }
-                    else if player_x < -0.5 { 1.0 }
-                    else if offset > player_x { 1.0 } else { -1.0 }
+          let dir = cond {
+            player_x > 0.5 => -1.0,
+            player_x < -0.5 => 1.0,
+            offset > player_x => 1.0,
+            _ => -1.0,
+          }
           # The closer the car and the bigger the speed gap, the harder it pulls.
           result = dir * (1.0 / i) * (car_speed - speed) / MAX_SPEED
-          done = true
+          break
         }
       }
 
-      if !done {
-        let list = segment.cars
-        let m = list.size()
-        mut j = 0
-        while !done && j < m {
-          let other = list[j]
-          if car_speed > other.speed {
-            let lim = (car_w + other.w) * 0.6
-            let d = offset - other.offset
-            if d >= -lim && d <= lim {
-              let dir = if other.offset > 0.5 { -1.0 }
-                        else if other.offset < -0.5 { 1.0 }
-                        else if offset > other.offset { 1.0 } else { -1.0 }
-              result = dir * (1.0 / i) * (car_speed - other.speed) / MAX_SPEED
-              done = true
-            }
-          }
-          j = j + 1
+      let other = segment.cars.find(fn (o) {
+        let reach = (car_w + o.w) * 0.6
+        let gap = offset - o.offset
+        car_speed > o.speed && gap >= -reach && gap <= reach
+      })
+      if other != nil {
+        let dir = cond {
+          other.offset > 0.5 => -1.0,
+          other.offset < -0.5 => 1.0,
+          offset > other.offset => 1.0,
+          _ => -1.0,
         }
+        result = dir * (1.0 / i) * (car_speed - other.speed) / MAX_SPEED
+        break
       }
-      i = i + 1
-    }
-    # Nothing ahead, but somehow off the road: steer back on.
-    if !done {
-      if offset < -0.9 { result = 0.1 } else if offset > 0.9 { result = -0.1 }
+    } nobreak {
+      # Nothing ahead, but somehow off the road: steer back on.
+      if offset < -0.9 {
+        result = 0.1
+      } else if offset > 0.9 {
+        result = -0.1
+      }
     }
   }
   result
@@ -638,10 +724,10 @@ let update_cars = fn (dt, player_index) {
   let player_half = PLAYER_W * 0.6
   for car in cars {
     let old_index = car.seg
-    car.offset = car.offset + steer_car(car, old_index, player_index, n, player_half)
+    car.offset += steer_car(car, old_index, player_index, n, player_half)
     mut zin = car.zin + dt * car.speed
     if zin >= seg_len {
-      zin = zin - seg_len
+      zin -= seg_len
       mut ni = old_index + 1
       if ni >= n { ni = 0 }
       car.seg = ni
@@ -657,59 +743,58 @@ let update_cars = fn (dt, player_index) {
 let update = fn (dt) {
   let player_segment = find_segment(position + PLAYER_Z)
   let speed_percent = speed / MAX_SPEED
-  let dx = dt * 2.0 * speed_percent     # left to right in one second, flat out
+  let dx = dt * 2.0 * speed_percent  # left to right in one second, flat out
   let start_position = position
 
   update_cars(dt, player_segment.index)
 
   position = increase(position, dt * speed, track_length)
 
-  if key_left { player_x = player_x - dx }
-  else if key_right { player_x = player_x + dx }
-  player_x = player_x - (dx * speed_percent * player_segment.curve * CENTRIFUGAL)
+  if key_left {
+    player_x -= dx
+  } else if key_right {
+    player_x += dx
+  }
+  player_x -= dx * speed_percent * player_segment.curve * CENTRIFUGAL
 
-  if key_faster { speed = speed + ACCEL * dt }
-  else if key_slower { speed = speed + BREAKING * dt }
-  else { speed = speed + DECEL * dt }
+  if key_faster {
+    speed += ACCEL * dt
+  } else if key_slower {
+    speed += BREAKING * dt
+  } else {
+    speed += DECEL * dt
+  }
 
   if player_x < -1.0 || player_x > 1.0 {
-    if speed > OFF_ROAD_LIMIT { speed = speed + OFF_ROAD_DECEL * dt }
+    if speed > OFF_ROAD_LIMIT { speed += OFF_ROAD_DECEL * dt }
 
-    let props = player_segment.sprites
-    mut i = 0
-    mut hit = false
-    while !hit && i < props.size() {
-      let prop = props[i]
+    for prop in player_segment.sprites {
       let pw = prop.art.sw
       # A prop is anchored at its inner edge, so its centre is half a width out.
-      let side = if prop.offset > 0.0 { 1.0 } else { -1.0 }
+      let side = prop.offset > 0.0 ? 1.0 : -1.0
       if overlap(player_x, PLAYER_W, prop.offset + pw / 2.0 * side, pw, 1.0) {
         speed = MAX_SPEED / 5.0
         # Stop in front of it, at the near edge of its segment.
         position = increase(player_segment.p1_wz, -PLAYER_Z, track_length)
-        hit = true
+        break
       }
-      i = i + 1
     }
   }
 
-  let here = player_segment.cars
-  mut i = 0
-  mut hit = false
-  while !hit && i < here.size() {
-    let car = here[i]
+  for car in player_segment.cars {
     if speed > car.speed && overlap(player_x, PLAYER_W, car.offset, car.w, 0.8) {
       speed = car.speed * (car.speed / speed)
       position = increase(car.z, -PLAYER_Z, track_length)
-      hit = true
+      break
     }
-    i = i + 1
   }
 
   player_x = limit(player_x, -3.0, 3.0)
   speed = limit(speed, 0.0, MAX_SPEED)
 
-  let scroll = player_segment.curve * (position - start_position) / SEGMENT_LENGTH
+  let scroll = player_segment.curve *
+    (position - start_position) /
+    SEGMENT_LENGTH
   sky_offset = increase(sky_offset, SKY_SPEED * scroll, 1.0)
   hill_offset = increase(hill_offset, HILL_SPEED * scroll, 1.0)
   tree_offset = increase(tree_offset, TREE_SPEED * scroll, 1.0)
@@ -722,7 +807,7 @@ let update = fn (dt) {
       current_lap_time = 0.0
       if last_lap_time < fast_lap_time { fast_lap_time = last_lap_time }
     } else {
-      current_lap_time = current_lap_time + dt
+      current_lap_time += dt
     }
   }
 
@@ -732,14 +817,17 @@ let update = fn (dt) {
 # --- render ----------------------------------------------------------------
 # The fog factor only depends on how far down the draw window a segment is, so
 # it is tabulated once, as 0..256 for the integer colour lerp.
-let fog_i = iota(DRAW_DISTANCE).map(|n|
-  Math.round(exponential_fog(n / (DRAW_DISTANCE * 1.0), FOG_DENSITY) * 256.0))
+let fog_i = iota(DRAW_DISTANCE).map(|n| Math.round(exponential_fog(
+  n / (DRAW_DISTANCE * 1.0),
+  FOG_DENSITY,
+) *
+  256.0))
 
 # Per-frame road colours: the current scene lerped toward the next one, then
 # each segment lerped toward the fog colour. Both are integer arithmetic —
 # floats would need a Math.round per channel to reach the Long the primitive
 # takes, and that is 3 us a call.
-mut pal = [[], []]              # by segment kind: grass, rumble, road, lane
+mut pal = [[], []]  # by segment kind: grass, rumble, road, lane
 # Road marking colours for this frame: light r,g,b then dark r,g,b. White and
 # black would be the obvious choice and they punch a hole in a pastel scene,
 # so the pair is built out of the palette instead — the light half is mostly
@@ -759,12 +847,42 @@ let build_palette = fn (scene, blend) {
   let f = blend
   let g = 256 - blend
   let c = fn (i) { (a[i] * g + b[i] * f) / 256 }
-  pal[KIND_DARK] = [c(0), c(1), c(2), c(12), c(13), c(14), c(6), c(7), c(8),
-                    LANE_R, LANE_G, LANE_B]
-  pal[KIND_LIGHT] = [c(3), c(4), c(5), c(15), c(16), c(17), c(9), c(10), c(11),
-                     LANE_R, LANE_G, LANE_B]
-  mark_rgb = [(LANE_R * 4 + c(9)) / 5, (LANE_G * 4 + c(10)) / 5,
-              (LANE_B * 4 + c(11)) / 5, c(6) / 2, c(7) / 2, c(8) / 2]
+  pal[KIND_DARK] = [
+    c(0),
+    c(1),
+    c(2),
+    c(12),
+    c(13),
+    c(14),
+    c(6),
+    c(7),
+    c(8),
+    LANE_R,
+    LANE_G,
+    LANE_B,
+  ]
+  pal[KIND_LIGHT] = [
+    c(3),
+    c(4),
+    c(5),
+    c(15),
+    c(16),
+    c(17),
+    c(9),
+    c(10),
+    c(11),
+    LANE_R,
+    LANE_G,
+    LANE_B,
+  ]
+  mark_rgb = [
+    (LANE_R * 4 + c(9)) / 5,
+    (LANE_G * 4 + c(10)) / 5,
+    (LANE_B * 4 + c(11)) / 5,
+    c(6) / 2,
+    c(7) / 2,
+    c(8) / 2,
+  ]
   fog_r = c(18)
   fog_g = c(19)
   fog_b = c(20)
@@ -781,11 +899,33 @@ let draw_layer = fn (id, layer, rotation, offset, alpha) {
   let source_x = layer.x + Math.floor(layer.w * rotation)
   let source_w = Math.min(image_w, layer.x + layer.w - source_x)
   let dest_w = Math.floor(W * (source_w * 1.0 / image_w))
-  _Canvas.blit_scaled(id, 0, offset, dest_w, H,
-                      source_x, layer.y, source_w, layer.h, 0, alpha)
+  _Canvas.blit_scaled(
+    id,
+    0,
+    offset,
+    dest_w,
+    H,
+    source_x,
+    layer.y,
+    source_w,
+    layer.h,
+    0,
+    alpha,
+  )
   if source_w < image_w {
-    _Canvas.blit_scaled(id, dest_w, offset, W - dest_w, H,
-                        layer.x, layer.y, image_w - source_w, layer.h, 0, alpha)
+    _Canvas.blit_scaled(
+      id,
+      dest_w,
+      offset,
+      W - dest_w,
+      H,
+      layer.x,
+      layer.y,
+      image_w - source_w,
+      layer.h,
+      0,
+      alpha,
+    )
   }
   # Climbing slides the layer down and uncovers a strip above it. Fill it by
   # stretching the layer's own top row, so any art matches itself — the
@@ -793,19 +933,53 @@ let draw_layer = fn (id, layer, rotation, offset, alpha) {
   # art (--assets) showed it as a solid wrong-coloured band. A transparent
   # top row (hills, trees) draws nothing, so only the sky actually pays.
   if offset >= 1.0 {
-    _Canvas.blit_scaled(id, 0, 0, dest_w, offset,
-                        source_x, layer.y, source_w, 1, 0, alpha)
+    _Canvas.blit_scaled(
+      id,
+      0,
+      0,
+      dest_w,
+      offset,
+      source_x,
+      layer.y,
+      source_w,
+      1,
+      0,
+      alpha,
+    )
     if source_w < image_w {
-      _Canvas.blit_scaled(id, dest_w, 0, W - dest_w, offset,
-                          layer.x, layer.y, image_w - source_w, 1, 0, alpha)
+      _Canvas.blit_scaled(
+        id,
+        dest_w,
+        0,
+        W - dest_w,
+        offset,
+        layer.x,
+        layer.y,
+        image_w - source_w,
+        1,
+        0,
+        alpha,
+      )
     }
   }
 }
 
 let draw_background = fn (id, player_y, alpha) {
   draw_layer(id, BG_SKY, sky_offset, RESOLUTION * SKY_SPEED * player_y, alpha)
-  draw_layer(id, BG_HILLS, hill_offset, RESOLUTION * HILL_SPEED * player_y, alpha)
-  draw_layer(id, BG_TREES, tree_offset, RESOLUTION * TREE_SPEED * player_y, alpha)
+  draw_layer(
+    id,
+    BG_HILLS,
+    hill_offset,
+    RESOLUTION * HILL_SPEED * player_y,
+    alpha,
+  )
+  draw_layer(
+    id,
+    BG_TREES,
+    tree_offset,
+    RESOLUTION * TREE_SPEED * player_y,
+    alpha,
+  )
 }
 
 # v4 draws a translucent fog rectangle over each band; lerping the four colours
@@ -834,7 +1008,7 @@ let draw_road = fn (base_index, base_percent, player_y) {
     let segment = segments[si]
     let looped = si < base_index
     segment.clip = edge
-    let camera_z = if looped { cz_looped } else { cz_here }
+    let camera_z = looped ? cz_looped : cz_here
 
     # Cull before dividing: with the camera exactly on a segment boundary the
     # depth is zero, where JS yields Infinity and culebra raises.
@@ -860,9 +1034,9 @@ let draw_road = fn (base_index, base_percent, player_y) {
       visible = sy2 < sy1 && sy2 < edge
     }
 
-    x = x + dx
-    dx = dx + segment.curve
-    si = si + 1
+    x += dx
+    dx += segment.curve
+    si += 1
     if si >= n_segments { si = 0 }
 
     if visible {
@@ -870,14 +1044,17 @@ let draw_road = fn (base_index, base_percent, player_y) {
       let f = fog_i[n]
       let g = 256 - f
       let c_grass = (p[0] * f + fog_r * g) / 256 +
-                    ((p[1] * f + fog_g * g) / 256) * 256 +
-                    ((p[2] * f + fog_b * g) / 256) * 65536 + OPAQUE
+        ((p[1] * f + fog_g * g) / 256) * 256 +
+        ((p[2] * f + fog_b * g) / 256) * 65536 +
+        OPAQUE
       let c_rumble = (p[3] * f + fog_r * g) / 256 +
-                     ((p[4] * f + fog_g * g) / 256) * 256 +
-                     ((p[5] * f + fog_b * g) / 256) * 65536 + OPAQUE
+        ((p[4] * f + fog_g * g) / 256) * 256 +
+        ((p[5] * f + fog_b * g) / 256) * 65536 +
+        OPAQUE
       let c_road = (p[6] * f + fog_r * g) / 256 +
-                   ((p[7] * f + fog_g * g) / 256) * 256 +
-                   ((p[8] * f + fog_b * g) / 256) * 65536 + OPAQUE
+        ((p[7] * f + fog_g * g) / 256) * 256 +
+        ((p[8] * f + fog_b * g) / 256) * 65536 +
+        OPAQUE
 
       # The band runs from `top` (this segment's far edge, snapped up to a row)
       # down to `edge`, the first row nothing has painted yet.
@@ -896,33 +1073,46 @@ let draw_road = fn (base_index, base_percent, player_y) {
       mut w1 = segment.p1_sw
       if edge == H && sy1 > edge {
         let t = (edge - sy1) / (sy2 - sy1)
-        x1 = x1 + (x2 - x1) * t
-        w1 = w1 + (w2 - w1) * t
+        x1 += (x2 - x1) * t
+        w1 += (w2 - w1) * t
       }
       let r1 = w1 / 6.0
       let r2 = w2 / 6.0
       _Canvas.rect(0, top, W, edge - top, c_grass, 1)
-      _Canvas.polygon([x1 - w1 - r1, edge, x1 - w1, edge, x2 - w2, top,
-                       x2 - w2 - r2, top], c_rumble, 1)
-      _Canvas.polygon([x1 + w1 + r1, edge, x1 + w1, edge, x2 + w2, top,
-                       x2 + w2 + r2, top], c_rumble, 1)
-      _Canvas.polygon([x1 - w1, edge, x1 + w1, edge, x2 + w2, top, x2 - w2, top],
-                      c_road, 1)
+      _Canvas.polygon(
+        [x1 - w1 - r1, edge, x1 - w1, edge, x2 - w2, top, x2 - w2 - r2, top],
+        c_rumble,
+        1,
+      )
+      _Canvas.polygon(
+        [x1 + w1 + r1, edge, x1 + w1, edge, x2 + w2, top, x2 + w2 + r2, top],
+        c_rumble,
+        1,
+      )
+      _Canvas.polygon(
+        [x1 - w1, edge, x1 + w1, edge, x2 + w2, top, x2 - w2, top],
+        c_road,
+        1,
+      )
       if segment.kind == KIND_LIGHT {
         let c_lane = (p[9] * f + fog_r * g) / 256 +
-                     ((p[10] * f + fog_g * g) / 256) * 256 +
-                     ((p[11] * f + fog_b * g) / 256) * 65536 + OPAQUE
+          ((p[10] * f + fog_g * g) / 256) * 256 +
+          ((p[11] * f + fog_b * g) / 256) * 65536 +
+          OPAQUE
         let lw1 = w1 * 2.0 / LANES
         let lw2 = w2 * 2.0 / LANES
-        let l1 = w1 / 64.0        # half a lane marker, which is w/max(32, 8*lanes)
+        let l1 = w1 / 64.0  # half a lane marker, which is w/max(32, 8*lanes)
         let l2 = w2 / 64.0
         mut lx1 = x1 - w1 + lw1
         mut lx2 = x2 - w2 + lw2
         for _ in 1..LANES {
-          _Canvas.polygon([lx1 - l1, edge, lx1 + l1, edge, lx2 + l2, top,
-                           lx2 - l2, top], c_lane, 1)
-          lx1 = lx1 + lw1
-          lx2 = lx2 + lw2
+          _Canvas.polygon(
+            [lx1 - l1, edge, lx1 + l1, edge, lx2 + l2, top, lx2 - l2, top],
+            c_lane,
+            1,
+          )
+          lx1 += lw1
+          lx2 += lw2
         }
       }
       # Road markings go on last, over the tarmac and the lane dashes both,
@@ -934,17 +1124,25 @@ let draw_road = fn (base_index, base_percent, player_y) {
       # check.
       if segment.mark != MARK_NONE {
         let c_light = (mark_rgb[0] * f + fog_r * g) / 256 +
-                      ((mark_rgb[1] * f + fog_g * g) / 256) * 256 +
-                      ((mark_rgb[2] * f + fog_b * g) / 256) * 65536 + OPAQUE
+          ((mark_rgb[1] * f + fog_g * g) / 256) * 256 +
+          ((mark_rgb[2] * f + fog_b * g) / 256) * 65536 +
+          OPAQUE
         if segment.mark == MARK_START {
-          _Canvas.polygon([x1 - w1, edge, x1 + w1, edge, x2 + w2, top,
-                           x2 - w2, top], c_light, 1)
+          _Canvas.polygon(
+            [x1 - w1, edge, x1 + w1, edge, x2 + w2, top, x2 - w2, top],
+            c_light,
+            1,
+          )
         } else {
           let c_dark = (mark_rgb[3] * f + fog_r * g) / 256 +
-                       ((mark_rgb[4] * f + fog_g * g) / 256) * 256 +
-                       ((mark_rgb[5] * f + fog_b * g) / 256) * 65536 + OPAQUE
-          _Canvas.polygon([x1 - w1, edge, x1 + w1, edge, x2 + w2, top,
-                           x2 - w2, top], c_dark, 1)
+            ((mark_rgb[4] * f + fog_g * g) / 256) * 256 +
+            ((mark_rgb[5] * f + fog_b * g) / 256) * 65536 +
+            OPAQUE
+          _Canvas.polygon(
+            [x1 - w1, edge, x1 + w1, edge, x2 + w2, top, x2 - w2, top],
+            c_dark,
+            1,
+          )
           let cw1 = w1 * 2.0 / CHECKER_COLS
           let cw2 = w2 * 2.0 / CHECKER_COLS
           let bx1 = x1 - w1
@@ -952,8 +1150,11 @@ let draw_road = fn (base_index, base_percent, player_y) {
           for i in segment.index % 2..CHECKER_COLS by 2 {
             let a1 = bx1 + cw1 * i
             let a2 = bx2 + cw2 * i
-            _Canvas.polygon([a1, edge, a1 + cw1, edge, a2 + cw2, top, a2, top],
-                            c_light, 1)
+            _Canvas.polygon(
+              [a1, edge, a1 + cw1, edge, a2 + cw2, top, a2, top],
+              c_light,
+              1,
+            )
           }
         }
       }
@@ -975,25 +1176,48 @@ let draw_art = fn (art, scale, dest_x, dest_y, offset_x, clip) {
     let over = dy + dh - clip
     if over > 0.0 {
       let keep = 1.0 - over / dh
-      _Canvas.blit_scaled(SHEET, dx, dy, dw, dh - over,
-                          art.x, art.y, art.w, art.h * keep, 0, 255)
+      _Canvas.blit_scaled(
+        SHEET,
+        dx,
+        dy,
+        dw,
+        dh - over,
+        art.x,
+        art.y,
+        art.w,
+        art.h * keep,
+        0,
+        255,
+      )
     } else {
-      _Canvas.blit_scaled(SHEET, dx, dy, dw, dh, art.x, art.y, art.w, art.h,
-                          0, 255)
+      _Canvas.blit_scaled(
+        SHEET,
+        dx,
+        dy,
+        dw,
+        dh,
+        art.x,
+        art.y,
+        art.w,
+        art.h,
+        0,
+        255,
+      )
     }
   }
 }
 
 let draw_player = fn (speed_percent, dest_y, steer, updown) {
-  let bounce = 1.5 * Random.uniform(0.0, 1.0) * speed_percent * RESOLUTION *
-               (if Random.int(0, 2) == 0 { -1.0 } else { 1.0 })
-  let art = if steer < 0.0 {
-      if updown > 0.0 { PLAYER_UPHILL_LEFT } else { PLAYER_LEFT }
-    } else if steer > 0.0 {
-      if updown > 0.0 { PLAYER_UPHILL_RIGHT } else { PLAYER_RIGHT }
-    } else {
-      if updown > 0.0 { PLAYER_UPHILL_STRAIGHT } else { PLAYER_STRAIGHT }
-    }
+  let bounce = 1.5 *
+    Random.uniform(0.0, 1.0) *
+    speed_percent *
+    RESOLUTION *
+    (Random.int(0, 2) == 0 ? -1.0 : 1.0)
+  let art = cond {
+    steer < 0.0 => updown > 0.0 ? PLAYER_UPHILL_LEFT : PLAYER_LEFT,
+    steer > 0.0 => updown > 0.0 ? PLAYER_UPHILL_RIGHT : PLAYER_RIGHT,
+    _ => updown > 0.0 ? PLAYER_UPHILL_STRAIGHT : PLAYER_STRAIGHT,
+  }
   # No hill clips the player's own car; the framebuffer edge is the only limit.
   draw_art(art, CAMERA_DEPTH / PLAYER_Z, W2, dest_y + bounce, -0.5, NO_CLIP)
 }
@@ -1026,9 +1250,12 @@ let render = fn () {
   let base_percent = percent_remaining(position, SEGMENT_LENGTH * 1.0)
   let player_segment = find_segment(position + PLAYER_Z)
   let player_index = player_segment.index
-  let player_percent = percent_remaining(position + PLAYER_Z, SEGMENT_LENGTH * 1.0)
+  let player_percent = percent_remaining(
+    position + PLAYER_Z,
+    SEGMENT_LENGTH * 1.0,
+  )
   let player_y = player_segment.p1_wy +
-                 (player_segment.p2_wy - player_segment.p1_wy) * player_percent
+    (player_segment.p2_wy - player_segment.p1_wy) * player_percent
 
   # The day cycle runs on distance, not on the clock, so it reads the same
   # however fast the car is driven. Each scene owns an equal stretch of the
@@ -1038,23 +1265,26 @@ let render = fn () {
   let scene = to_long(cycle)
   let local = cycle - scene
   let blend = if local < SCENE_HOLD {
-      0
-    } else {
-      Math.round((local - SCENE_HOLD) / (1.0 - SCENE_HOLD) * 256.0)
-    }
+    0
+  } else {
+    Math.round((local - SCENE_HOLD) / (1.0 - SCENE_HOLD) * 256.0)
+  }
   build_palette(scene, blend)
 
   _Canvas.clear(sky_color)
   draw_background(backgrounds[scene], player_y, 255)
   if blend > 0 {
-    draw_background(backgrounds[(scene + 1) % SCENE_COUNT], player_y,
-                    blend * 255 / 256)
+    draw_background(
+      backgrounds[(scene + 1) % SCENE_COUNT],
+      player_y,
+      blend * 255 / 256,
+    )
   }
   draw_road(base_index, base_percent, player_y)
 
   # Back to front over the same window, so nearer sprites overlap farther ones.
   mut mi = base_index + DRAW_DISTANCE - 1
-  while mi >= n_segments { mi = mi - n_segments }
+  while mi >= n_segments { mi -= n_segments }
   for _ in 1..DRAW_DISTANCE {
     let segment = segments[mi]
     if segment.vis {
@@ -1066,16 +1296,27 @@ let render = fn () {
       for car in segment.cars {
         let pc = car.percent
         let scale = s1s + (segment.p2_scale - s1s) * pc
-        draw_art(car.art, scale,
-                 s1x + (segment.p2_sx - s1x) * pc + scale * car.offset * SW_K,
-                 s1y + (segment.p2_sy - s1y) * pc, -0.5, clip)
+        draw_art(
+          car.art,
+          scale,
+          s1x + (segment.p2_sx - s1x) * pc + scale * car.offset * SW_K,
+          s1y + (segment.p2_sy - s1y) * pc,
+          -0.5,
+          clip,
+        )
       }
 
       # A prop hangs off the near edge of the road, so the one on the left is
       # anchored by its right edge and the one on the right by its left.
       for prop in segment.sprites {
-        draw_art(prop.art, s1s, s1x + s1s * prop.offset * SW_K, s1y,
-                 if prop.offset < 0.0 { -1.0 } else { 0.0 }, clip)
+        draw_art(
+          prop.art,
+          s1s,
+          s1x + s1s * prop.offset * SW_K,
+          s1y,
+          prop.offset < 0.0 ? -1.0 : 0.0,
+          clip,
+        )
       }
     }
 
@@ -1083,11 +1324,13 @@ let render = fn () {
       # The camera sits exactly CAMERA_HEIGHT above the car and PLAYER_Z behind
       # it, so the car's own projection is the constant H — v4 interpolates its
       # camera-space height to arrive at the same number.
-      draw_player(speed / MAX_SPEED, H * 1.0,
-                  if key_left { -1.0 } else if key_right { 1.0 } else { 0.0 },
-                  player_segment.p2_wy - player_segment.p1_wy)
+      draw_player(speed / MAX_SPEED, H * 1.0, cond {
+          key_left => -1.0,
+          key_right => 1.0,
+          _ => 0.0,
+        }, player_segment.p2_wy - player_segment.p1_wy)
     }
-    mi = mi - 1
+    mi -= 1
     if mi < 0 { mi = n_segments - 1 }
   }
 
@@ -1112,14 +1355,14 @@ let frame = fn () {
   last = now
 
   let held = _Canvas.buttons()
-  key_left = (held & Canvas.LEFT) != 0
-  key_right = (held & Canvas.RIGHT) != 0
-  key_faster = (held & Canvas.UP) != 0
-  key_slower = (held & Canvas.DOWN) != 0
+  key_left = held & Canvas.LEFT != 0
+  key_right = held & Canvas.RIGHT != 0
+  key_faster = held & Canvas.UP != 0
+  key_slower = held & Canvas.DOWN != 0
 
-  gdt = gdt + dt
+  gdt += dt
   while gdt > STEP {
-    gdt = gdt - STEP
+    gdt -= STEP
     update(STEP)
   }
   render()
