@@ -16,87 +16,76 @@
 
 # --- setup -------------------------------------------------------------
 
-let ESC = "\x1b"
-let RESET = ESC + "[0m"
-let BOLD = ESC + "[1m"
-let DIM = ESC + "[2m"
-let BLUE = ESC + "[34m"
-let CYAN = ESC + "[36m"
-let GREEN = ESC + "[32m"
-let RED = ESC + "[31m"
-
 let openrouter_key = Sys.env('OPENROUTER_API_KEY')
 let use_openrouter = !openrouter_key.empty()
+
+# OpenRouter speaks the Anthropic Messages API here, tool calls included, even
+# for non-Anthropic models — so one response shape covers both providers.
 let api_url = use_openrouter
   ? 'https://openrouter.ai/api/v1/messages'
   : 'https://api.anthropic.com/v1/messages'
-let default_model = use_openrouter ? 'anthropic/claude-opus-5' : 'claude-opus-5'
+
 let env_model = Sys.env('MODEL')
-let model = env_model.empty() ? default_model : env_model
+let model = env_model.empty()
+  ? use_openrouter ? 'openai/gpt-oss-20b:free' : 'claude-opus-5'
+  : env_model
 
 # --- small helpers -------------------------------------------------------
 
-let separator = fn () {
-  let cols = IO.stdout_is_terminal() ? Term.size()[0] : 80
-  DIM + "\u{2500}".repeat(Math.min(cols, 80)) + RESET
-}
+# Term.* is tty-aware: off a terminal the styles are no-ops and `cols()` is 80,
+# so nothing here needs an `IO.stdout_is_terminal()` branch.
+fn separator() { Term.dim("\u{2500}".repeat(Math.min(Term.cols(), 80))) }
 
-let render_markdown = fn (text) {
-  text.replace(re'\*\*(.+?)\*\*', BOLD + '$1' + RESET)
-}
+fn render_markdown(text) { text.replace(re'\*\*(.+?)\*\*', Term.bold('$1')) }
 
 # --- tool implementations -------------------------------------------------
 
-let tool_read = fn (args) {
+fn tool_read(args) {
   let lines = FS.read(args.path).lines()
   let offset = args.offset ?? 0
   let limit = args.limit ?? lines.size()
-  let selected = lines.slice(offset, offset + limit)
-  selected.enumerate().map(|(i, line)| "{offset + i + 1:4}| {line}").join("\n")
+  lines
+    .slice(offset, offset + limit)
+    .enumerate()
+    .map(|(i, line)| "{offset + i + 1:4}| {line}")
+    .join("\n")
 }
 
-let tool_write = fn (args) {
+fn tool_write(args) {
   FS.write(args.path, args.content)
   'ok'
 }
 
-let tool_edit = fn (args) {
+fn tool_edit(args) {
   let text = FS.read(args.path)
-  let old = args.old
-  let new = args.new
+  let count = text.count(args.old)
+  if count == 0 { return 'error: old_string not found' }
+
   let all = args.all ?? false
-  if !text.contains(old) { return 'error: old_string not found' }
-  let parts = text.split(old)
-  let count = parts.size() - 1
   if !all && count > 1 {
     return "error: old_string appears {count} times, must be unique (use all=true)"
   }
-  # count is 1 here whenever !all, so join-with-new already replaces just that
-  # one occurrence — no separate first-vs-all branch needed.
-  FS.write(args.path, parts.join(new))
+
+  # count is 1 here whenever !all, so replacing every occurrence still touches
+  # just that one — no separate first-vs-all branch needed.
+  FS.write(args.path, text.replace(args.old, args.new))
   'ok'
 }
 
-let tool_glob = fn (args) {
-  let base = args.path ?? '.'
-  let pattern = FS.join(base, args.pat)
-  let files = FS.glob(pattern)
-  let sorted = files.sorted_by(
-    |f| FS.is_file(f) ? FS.stat(f).mtime : 0,
-    reverse: true,
-  )
+fn tool_glob(args) {
+  let sorted = FS
+    .glob(FS.join(args.path ?? '.', args.pat))
+    .sorted_by(|f| FS.is_file(f) ? FS.stat(f).mtime : 0, reverse: true)
   sorted.empty() ? 'none' : sorted.join("\n")
 }
 
-let tool_grep = fn (args) {
+fn tool_grep(args) {
   let re = Regex.compile(args.pat)
-  let base = args.path ?? '.'
   mut hits = []
-  for p in FS.walk(base) {
+  for p in FS.walk(args.path ?? '.') {
     if !FS.is_file(p) { continue }
     try {
-      let text = FS.read(p)
-      for i, line in text.split("\n").enumerate() {
+      for i, line in FS.read(p).lines().enumerate() {
         if re.test(line) {
           hits.push("{p}:{i + 1}:{line}")
           if hits.size() >= 50 { return hits.join("\n") }
@@ -105,19 +94,26 @@ let tool_grep = fn (args) {
     } catch _ {
 }
   }
+
   # The walk returns at 50, so whatever is left here is already under the cap.
   hits.empty() ? 'none' : hits.join("\n")
 }
 
-let tool_bash = fn (args) {
+fn tool_bash(args) {
   let r = Proc.run(['sh', '-c', args.cmd], timeout: 30000)
+
   let combined = (r.stdout + r.stderr).trim_end("\n")
   if !combined.empty() {
-    for line in combined.split("\n") {
-      IO.println("  {DIM}\u{2502} {line}{RESET}")
-    }
+    for line in combined.lines() { println(Term.dim("  \u{2502} {line}")) }
   }
-  if r.timed_out { return combined + "\n(timed out after 30s)" }
+
+  # Lead with the timeout note: the caller previews only the first line.
+  if r.timed_out {
+    return combined.empty()
+      ? '(timed out after 30s)'
+      : "(timed out after 30s)\n" + combined
+  }
+
   let out = combined.trim()
   out.empty() ? '(empty)' : out
 }
@@ -128,7 +124,7 @@ let TOOL_LIST = [
   {
     name: 'read',
     description: 'Read file with line numbers (file path, not directory)',
-    params: {path: 'string', offset: 'number?', limit: 'number?'},
+    params: {path: 'string', offset: 'integer?', limit: 'integer?'},
     run: tool_read,
   },
   {
@@ -165,26 +161,26 @@ let TOOL_LIST = [
 
 let TOOLS = TOOL_LIST.map(|t| (t.name, t)).to_object()
 
-let run_tool = fn (name, args) {
-  let tool = TOOLS[name]
+fn run_tool(name, args) {
+  let tool = TOOLS.get(name, nil)
   if tool == nil { return "error: unknown tool {name}" }
   try { tool.run(args) } catch e { "error: {e}" }
 }
 
-# Built once — TOOL_LIST is static, so every call_api turn reuses this.
-# A trailing '?' in the param spec marks it optional; everything else is required.
-let TOOL_SCHEMA = TOOL_LIST.map(fn (t) {
-  let properties = t.params.iter().map(fn ((name, spec)) {
-      let base = spec.trim_end('?')
-      (name, {type: base == 'number' ? 'integer' : base})
-    }).to_object()
-  let required = t.params.keys().filter(|k| !t.params[k].ends_with('?'))
+fn param_types(params) {
+  params.iter().map(|(k, v)| (k, {type: v.trim_end('?')})).to_object()
+}
 
-  {
-    name: t.name,
-    description: t.description,
-    input_schema: {type: 'object', properties: properties, required: required},
-  }
+# Built once — TOOL_LIST is static, so every call_api turn reuses this. Param
+# specs are JSON Schema type names; a trailing '?' marks one optional.
+let TOOL_SCHEMA = TOOL_LIST.map(|t| {
+  name: t.name,
+  description: t.description,
+  input_schema: {
+    type: 'object',
+    properties: param_types(t.params),
+    required: t.params.keys().filter(|k| !t.params[k].ends_with('?')),
+  },
 })
 
 # --- API call --------------------------------------------------------------
@@ -200,14 +196,15 @@ let HEADERS = {
 # reply together, so the budget needs headroom a reply-only one would not.
 let MAX_TOKENS = 16000
 
-let call_api = fn (messages, system_prompt) {
+fn call_api(messages, system_prompt) {
   let body = {
-    model: model,
+    model,
     max_tokens: MAX_TOKENS,
     system: system_prompt,
-    messages: messages,
+    messages,
     tools: TOOL_SCHEMA,
   }
+
   let r = Http.post(api_url, json: body, headers: HEADERS, timeout: 120)
   if !r.ok {
     throw {
@@ -221,61 +218,66 @@ let call_api = fn (messages, system_prompt) {
 
 # --- REPL --------------------------------------------------------------
 
-let main = fn () {
+fn main() {
   let provider = use_openrouter ? 'OpenRouter' : 'Anthropic'
-  IO.println("{BOLD}nanocode{RESET} | {DIM}{model} ({provider}) | {Sys.getcwd()}{RESET}\n")
+  let banner = Term.dim("{model} ({provider}) | {Sys.getcwd()}")
+  println("{Term.bold('nanocode')} | {banner}\n")
+
   mut messages = []
   let system_prompt = "Concise coding assistant. cwd: {Sys.getcwd()}"
 
   while true {
     try {
-      IO.println(separator())
-      IO.print("{BOLD}{BLUE}\u{276f}{RESET} ")
-      let user_input = IO.input().trim()
-      IO.println(separator())
-      if user_input.empty() {
-        if !IO.stdin_is_terminal() { break }
-        continue
-      }
-      if user_input == '/q' || user_input == 'exit' { break }
-      if user_input == '/c' {
-        messages = []
-        IO.println("{GREEN}\u{23fa} Cleared conversation{RESET}")
-        continue
-      }
+      println(separator())
+      print("{Term.bold(Term.blue("\u{276f}"))} ")
 
-      messages.push({role: 'user', content: user_input})
+      let user_input = IO.input().trim()
+      println(separator())
+
+      match user_input {
+        '' => {
+          if !IO.stdin_is_terminal() { break }
+          continue
+        },
+        '/q' | 'exit' => { break; },  # `;` forces a block, not a Set literal
+        '/c' => {
+          messages = []
+          println(Term.green("\u{23fa} Cleared conversation"))
+          continue
+        },
+        _ => messages.push({role: 'user', content: user_input}),
+      }
 
       while true {
         let response = call_api(messages, system_prompt)
+
         # A safety classifier can decline the request: HTTP 200, no content.
         # Say so rather than looping back with an empty turn.
         if response.stop_reason == 'refusal' {
-          IO.println("{RED}\u{23fa} Declined ({response.stop_details?.category ?? 'no category'}){RESET}")
+          println(Term.red("\u{23fa} Declined ({response.stop_details?.category ?? 'no category'})"))
           break
         }
+
         let content_blocks = response.content ?? []
         mut tool_results = []
 
         for block in content_blocks {
           if block.type == 'text' {
-            IO.println("\n{CYAN}\u{23fa}{RESET} {render_markdown(block.text)}")
-          }
-          if block.type == 'tool_use' {
-            let tool_name = block.name
-            let tool_args = block.input
-            let arg_preview = "{tool_args.values().first() ?? ''}".slice(0, 50)
-            IO.println("\n{GREEN}\u{23fa} {tool_name.capitalize()}{RESET}({DIM}{arg_preview}{RESET})")
+            println("\n{Term.cyan("\u{23fa}")} {render_markdown(block.text)}")
+          } else if block.type == 'tool_use' {
+            let first_arg = "{block.input.values().first() ?? ''}"
+            let label = Term.green("\u{23fa} {block.name.capitalize()}")
+            println("\n{label}({Term.dim(first_arg.slice(0, 50))})")
 
-            let result = run_tool(tool_name, tool_args)
+            let result = run_tool(block.name, block.input)
             let lines = result.split("\n")
             let head = lines[0].slice(0, 60)
             let preview = cond {
               lines.size() > 1 => "{head} ... +{lines.size() - 1} lines",
               lines[0].size() > 60 => "{head}...",
-              _ => head.to_string(),
+              _ => head,
             }
-            IO.println("  {DIM}\u{23bf}  {preview}{RESET}")
+            println(Term.dim("  \u{23bf}  {preview}"))
 
             tool_results.push({
               type: 'tool_result',
@@ -291,10 +293,10 @@ let main = fn () {
         messages.push({role: 'user', content: tool_results})
       }
 
-      IO.println('')
+      println('')
     } catch e {
       if e.kind == 'Interrupted' { break }
-      IO.println("{RED}\u{23fa} Error: {e}{RESET}")
+      println(Term.red("\u{23fa} Error: {e}"))
     }
   }
 }
