@@ -3585,8 +3585,9 @@ JIT internal `Cell`s and `Closure`s) are reference-counted.
 
 Pure reference counting cannot reclaim cycles (`a.c = a`). Both
 backends register every refcounted heap object with an auxiliary
-cycle collector that runs a mark-and-sweep periodically (every 10,000
-new allocations) and at program exit.
+cycle collector that runs a mark-and-sweep periodically (an adaptive
+threshold — see §25 for the exact schedule, which differs between
+backends) and at program exit.
 
 * Subject to collection: `Array`, `Object`, `Tuple`, `Set`, and the
   environments captured by closures (plus `Closure` / `Cell` in the
@@ -3642,6 +3643,13 @@ single parent's properties is **not specified** (currently follows
 **Exceptions**: an exception thrown from `drop` is logged to stderr
 and swallowed so that the rest of the cleanup cascade proceeds.
 
+**Reentrant drop bodies**: a `drop` body may mutate the object's own
+fields, including releasing a reference that is itself part of a
+cycle with the object being dropped (`self.other = nil`). This is
+safe — it cannot cause `drop` to fire a second time or corrupt the
+cascade; `drop` runs exactly once no matter what its own body
+releases.
+
 **Cycles**: a reference cycle does not block `drop`. A cycle whose
 members are owned by a scope — created under it and unreachable from
 outside when it exits — is dropped **at that scope's exit**, newest
@@ -3684,6 +3692,15 @@ run, on every backend. When cleanup must happen at a known point,
 break the cycle manually before the last reference is released (e.g.
 `a.other = nil`), use an explicit `.drop()`, or `defer` (§15) at the
 scope that owns the resource.
+
+**Very large cycles**: the scope-exit cascade above has a size limit
+tuned to keep ordinary programs synchronous; a scope that drops an
+unusually large number of cycle-bearing objects at once (thousands,
+not the handful in typical code) may not resolve all of them at that
+scope's exit — the excess defers to the GC backstop instead, with the
+same unspecified-order, PEP-442-style finalization described above.
+Nothing is lost, only delayed; ordinary programs never approach this
+size.
 
 **Binding-scope caveat**: `drop` fires reliably when the object is
 held in a **block-scoped** binding whose `drop` function was produced
