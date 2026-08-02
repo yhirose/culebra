@@ -1,12 +1,12 @@
 The Culebra Guide
 =================
 
-A small, dynamically-typed scripting language: immutable bindings by
-default, blocks that evaluate to a value, and pattern matching in the
-core. Two backends share one AST — a tree-walking interpreter and an
-LLVM ORC JIT. This guide walks you from "hello" to embedding Culebra
-in a C++ host. For the formal grammar see [`language.md`](language.md);
-for the API reference see [`stdlib.md`](stdlib.md).
+A dynamically-typed scripting language: immutable bindings by default,
+blocks that evaluate to a value, and pattern matching in the core. Two
+backends share one AST — a tree-walking interpreter and an LLVM ORC
+JIT. This guide walks you from "hello" to embedding Culebra in a C++
+host. For the formal grammar see [`language.md`](language.md); for the
+API reference see [`stdlib.md`](stdlib.md).
 
 > **Doctest convention.** Every ` ```culebra ` block in this guide is
 > a runnable example. Lines ending in `# => <value>` show expected

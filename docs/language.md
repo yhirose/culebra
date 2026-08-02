@@ -50,12 +50,11 @@ For an introductory tour with runnable examples, see
 
 ## 1. Overview and philosophy
 
-Culebra is a small, dynamically-typed scripting language. Its
-priorities are:
+Culebra is a dynamically-typed scripting language. Its priorities
+are:
 
-* **Small surface area.** A few orthogonal features: first-class
-  functions, closures, arrays, objects, pattern matching, optional
-  type annotations.
+* **Orthogonal features.** New capability arrives as a feature that
+  composes with the rest, not as a special case in the grammar.
 * **Two backends, one AST.** A tree-walking interpreter and an LLVM
   ORC JIT share the same parser and AST, so features must be
   implementable in both.
