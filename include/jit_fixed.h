@@ -180,9 +180,9 @@ CULEBRA_RT_INLINE JitClosure* _jit_make_handle_method(
 // positionless error escaping it prints without a location where the interp
 // stamps the call AST. The entry point owns the backfill: wrap the body in
 // `_jit_at_pos(_jit_call_site_line, _jit_call_site_col, ...)` (see the Http
-// handles). Not done here for all of them: a `drop` runs from the drop
-// protocol at scope exit, where the published call site belongs to some
-// unrelated earlier call.
+// handles, and surface_native_error_at_call_site for every wrapped C++ class).
+// Not done here for all of them: a `drop` runs from the drop protocol at scope
+// exit, where the published call site belongs to some unrelated earlier call.
 CULEBRA_RT_INLINE void _jit_handle_bind_method(
     JitObject* h, const char* name,
     void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*), size_t ar,

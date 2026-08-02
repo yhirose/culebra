@@ -531,6 +531,12 @@ deterministic drop (cycles included), an idempotent explicit `drop()`,
 and `ClosedError` on use-after-drop. `ext-culebra build script.cul`
 produces standalone AOT binaries that carry the binding.
 
+A wrapped C++ body that throws — ctor, method or static — does not escape
+the process: a `std::exception` surfaces as a catchable `RuntimeError`
+carrying its `what()`, reported at the call like any other error, and a
+`culebra::CulebraError` the body throws passes through with its own kind
+and message.
+
 The binding and the wrapped library (`--link`) are pulled into an AOT
 binary only when the script names a wrapped namespace — a program built by
 `ext-culebra` that uses none of the wrapped classes links none of the

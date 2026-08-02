@@ -658,6 +658,29 @@ inline void jit_check_args(JitValue self, int64_t n, JitValue* args) {
   }
 }
 
+// The thunk twin of surface_native_error: the same conversion, plus the
+// call-site position the thunk ABI has no room for. The ns adapters below keep
+// the plain form — their trampoline backfills from a line/col it was handed,
+// which a stamp here (from whatever call published last) would beat to it.
+// Outlined and non-templated for the reason its twin is, and so the hot path
+// doesn't read the call-site thread-locals it only needs when throwing.
+[[noreturn]] inline void rethrow_as_culebra_at_call_site() {
+  try {
+    rethrow_as_culebra();
+  } catch (culebra::CulebraError& e) {
+    _jit_backfill_error_pos(e, _jit_call_site_line, _jit_call_site_col);
+    throw;
+  }
+}
+template <class F>
+auto surface_native_error_at_call_site(F&& f) -> decltype(f()) {
+  try {
+    return f();
+  } catch (...) {
+    rethrow_as_culebra_at_call_site();
+  }
+}
+
 // One handle method thunk per (T, member fn). Self arrives +1, released on
 // every exit by the guard below — an early release on a temp receiver would
 // fire its drop and erase the table entry under our feet, so the guard runs at
@@ -683,7 +706,7 @@ void jit_method_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t sel
       return jit_lower_return<R>(std::forward<decltype(r)>(r));
     }
   };
-  *__ret = surface_native_error(
+  *__ret = surface_native_error_at_call_site(
       [&] { return invoke(std::index_sequence_for<Args...>{}); });
 }
 
@@ -706,7 +729,7 @@ void jit_borrowed_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t s
     auto& r = (obj->*Mf)(jit_arg_get<Args>(args[I])...);
     return jit_make_borrow_handle<T2>(const_cast<T2*>(&r), self, pgen);
   };
-  *__ret = surface_native_error(
+  *__ret = surface_native_error_at_call_site(
       [&] { return invoke(std::index_sequence_for<Args...>{}); });
 }
 

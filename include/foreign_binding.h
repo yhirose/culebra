@@ -18,6 +18,7 @@ inline const bool _foreign_counter_wrapped = [] {
       .ctor<long>({"start"})
       .method<&Counter::value>("value")
       .method<&Counter::add>("add", {"n"})
+      .method<&Counter::divide>("divide", {"n"})
       .method<&Counter::label>("label")
       .method<&Counter::clone>("clone")
       .method<&Counter::fork>("fork")
@@ -38,7 +39,8 @@ inline const bool _foreign_box_wrapped = [] {
       .method<&Box::reset>("reset", {"v"})
       .method<&Box::touch>("touch", {}, wrap_policy::preserves_borrows)
       .borrowed_method<&Box::inner>("inner")
-      .borrowed_method<&Box::read_inner>("read_inner");
+      .borrowed_method<&Box::read_inner>("read_inner")
+      .borrowed_method<&Box::slot>("slot", {"i"});
   return true;
 }();
 

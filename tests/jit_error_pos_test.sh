@@ -255,5 +255,13 @@ check_same "ufcs kwarg unknown"       'fn g(a, k: Long = 1) { a }
 let x = 1
 x.g(zz: 1)'
 
+# A wrapped C++ class (wrap.h) reaches its methods through that same ABI, so
+# the exception its body raises — a RuntimeError with no location — is
+# positioned by the thunk. One case per thunk shape.
+check_same "wrap method body"      'let c = __Foreign.Counter.new(10)
+c.divide(0)'
+check_same "wrap borrowed body"    'let b = __Foreign.Box.new(5)
+b.slot(1)'
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

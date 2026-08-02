@@ -529,6 +529,11 @@ scope終端の確定drop（循環込み）、冪等な明示`drop()`、use-after
 `ClosedError`。`ext-culebra build script.cul`のAOTバイナリにも
 バインディングが載ります。
 
+ラップしたC++ボディ（ctor・メソッド・staticのいずれも）が例外を投げても
+プロセスの外には出ません。`std::exception`は`what()`を持つcatch可能な
+`RuntimeError`になり、位置は他のエラーと同じく呼び出し箇所です。ボディが
+`culebra::CulebraError`を投げた場合はkindとメッセージがそのまま通ります。
+
 バインディングとラップ対象ライブラリ（`--link`）がAOTバイナリに載るのは、
 スクリプトがラップ名前空間を参照したときだけです。`ext-culebra`でビルドしても
 ラップクラスを一切使わないプログラムは、ラップ対象ライブラリを一切リンクせず、

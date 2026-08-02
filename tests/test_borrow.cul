@@ -97,6 +97,18 @@ fn closed_msg(thunk) {
   assert_eq(c2.value(), 15)            # sibling still valid (parent gen untouched)
 }
 
+# --- A borrowed-return body that throws reports at the call. -----------------
+# Same rule as an owning method: the C++ exception becomes a RuntimeError
+# positioned where the call is, on every backend.
+{
+  let b = __Foreign.Box.new(8)
+  assert_eq(b.slot(0).value(), 8)      # the borrow, when the body returns
+  let err = try { b.slot(1); nil } catch e { e }
+  assert_eq("{err.kind}: {err.message}", 'RuntimeError: no such slot')
+  assert_true(err.line > 0)
+  assert_eq(err.col, 19)               # the receiver, not 0
+}
+
 # --- A borrow is not Sendable (it carries a borrow id). ----------------------
 {
   let b = __Foreign.Box.new(1)

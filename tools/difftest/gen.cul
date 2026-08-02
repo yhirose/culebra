@@ -774,8 +774,9 @@ for s in svs {
 
 # --- Dimension 25: Foreign binding (__Foreign.Counter PoC) ----------------
 # The hand-bound C++ class: construction, thunk dispatch, the three
-# return-ownership shapes, ClosedError after drop, marshalling errors —
-# message and position must match across backends (the ownership-shape check).
+# return-ownership shapes, ClosedError after drop, marshalling errors, a
+# throwing C++ body — message and position must match across backends (the
+# ownership-shape check).
 let fns = [
   '{ let c = __Foreign.Counter.new(5); c.add(2); c.value() }',
   '{ let c = __Foreign.Counter.new(5); c.label() }',
@@ -786,6 +787,7 @@ let fns = [
   '{ let c = __Foreign.Counter.new(7); c.drop(); c.value() }',
   '{ let c = __Foreign.Counter.new(7); c.drop(); c.drop(); __Foreign.Counter.live() }',
   '{ let c = __Foreign.Counter.new(0); c.add("x") }',
+  '{ let c = __Foreign.Counter.new(6); c.divide(0) }',
   '{ let c = __Foreign.Counter.new(0); c.drop(); c.add("x") }',
   '{ let c = __Foreign.Counter.new(0); let g = c.add; g("x") }',
   '{ let c = __Foreign.Counter.new(0); c.add() }',
@@ -905,7 +907,8 @@ for p in pps {
 # `Box.inner()` returns a borrowing handle: parent closed/generation
 # checks on every access (ClosedError, byte-identical), reads/writes
 # through to the parent, escape keeps the parent alive, non-const bumps
-# stale outstanding borrows, preserves_borrows doesn't.
+# stale outstanding borrows, preserves_borrows doesn't, a throwing body
+# reports at the call.
 let brs = [
   '{ let b = __Foreign.Box.new(5); b.inner().value() }',
   '{ let b = __Foreign.Box.new(5); let c = b.inner(); c.add(3); (c.value(), b.peek()) }',
@@ -918,6 +921,7 @@ let brs = [
   '{ let b = __Foreign.Box.new(10); let c1 = b.inner(); let c2 = b.inner(); c1.add(5); c2.value() }',
   '{ let b = __Foreign.Box.new(1); let c = b.inner(); c.drop(); c.value() }',
   '{ let b = __Foreign.Box.new(1); let c = b.inner(); c.add("x") }',
+  '{ let b = __Foreign.Box.new(8); b.slot(2) }',
   'mut c = nil; { let b = __Foreign.Box.new(2); c = b.inner() }; c.value()',
   '{ let b = __Foreign.Box.new(8); let c = b.inner(); c.label() }',
   '{ let b = __Foreign.Box.new(8); b.inner().clone().value() }',
