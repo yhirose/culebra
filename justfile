@@ -492,6 +492,30 @@ _run-tests BACKEND:
             [[ -d "$keep" ]] && continue
             echo "test aot FAIL: cache prune deleted $keep" >&2; exit 1
         done
+        # A build leaves nothing in the temp dir: neither the scratch object nor
+        # (with Embed.dir) the generated asset TU and its object, which used to
+        # accumulate one pair per invocation. A failed link is the same
+        # contract — that path used to keep the object too. A private TMPDIR
+        # makes anything left over visible.
+        local sdir="$out_dir/scratch"
+        mkdir -p "$sdir/tmp"
+        if ! ( export TMPDIR="$sdir/tmp"
+               cul build tests/test_embed_static.cul -o "$sdir/embed" ) \
+                > "$d/scratch.err" 2>&1; then
+            echo "test aot FAIL: build with a private TMPDIR" >&2
+            cat "$d/scratch.err" >&2; exit 1
+        fi
+        left=$(ls -A "$sdir/tmp")
+        [[ -z "$left" ]] || {
+            echo "test aot FAIL: build left scratch in TMPDIR: $left" >&2; exit 1; }
+        printf 'IO.inspect(1)\n' > "$sdir/p.cul"
+        if ( export TMPDIR="$sdir/tmp"
+             cul build "$sdir/p.cul" -o "$sdir/no/such/dir/p" ) > /dev/null 2>&1; then
+            echo "test aot FAIL: build into a missing directory succeeded" >&2; exit 1
+        fi
+        left=$(ls -A "$sdir/tmp")
+        [[ -z "$left" ]] || {
+            echo "test aot FAIL: failed build left scratch in TMPDIR: $left" >&2; exit 1; }
         # The one axis whose link no tests/*.cul can reach (it skips itself on a
         # driver built without Webview, which is what the sweep below cannot do).
         {{nice_cmd}} bash misc/probe_webview_aot_link.sh "$BIN" "$out_dir/webview" \

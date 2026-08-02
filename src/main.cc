@@ -287,6 +287,29 @@ static void prune_stale_cache_dirs(const std::filesystem::path& current) {
   }
 }
 
+// Scratch files a build writes next to its output: removed when the scope that
+// registered them ends, so the early returns (a failed asset compile, a failed
+// link) leave no more behind than the happy path does. Removing a path that was
+// never written, or that a rename already claimed, is a no-op. `keep`
+// (CULEBRA_VERBOSE) leaves them for inspection — the verbose log prints each
+// one, and reading the generated asset source is the point of the flag.
+class ScratchFiles {
+ public:
+  explicit ScratchFiles(bool keep = false) : keep_(keep) {}
+  ScratchFiles(const ScratchFiles&) = delete;
+  ScratchFiles& operator=(const ScratchFiles&) = delete;
+  ~ScratchFiles() {
+    if (keep_) return;
+    std::error_code ec;
+    for (const auto& p : paths_) std::filesystem::remove(p, ec);
+  }
+  void add(std::string path) { paths_.push_back(std::move(path)); }
+
+ private:
+  std::vector<std::string> paths_;
+  bool keep_;
+};
+
 // Materialize one embedded runtime archive (by file name) to the on-disk
 // cache and return its path. The linker needs a real file, so the driver
 // writes the archive once per (culebra binary × machine) and reuses it on
@@ -334,6 +357,8 @@ static std::filesystem::path materialize_archive(
   // either no file (and writes its own) or the complete archive.
   auto tmp = cache;
   tmp += std::format(".tmp.{}", ::getpid());
+  ScratchFiles scratch;
+  scratch.add(tmp.string());
   {
     std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
     if (!out) {
@@ -351,7 +376,6 @@ static std::filesystem::path materialize_archive(
   if (ec) {
     // Lost a race (another process renamed first) or cross-device link —
     // if the destination is now a complete archive, use it; else report.
-    std::filesystem::remove(tmp);
     if (!std::filesystem::exists(cache)) {
       err = std::format("can't finalize '{}': {}", cache.string(),
                         ec.message());
@@ -720,6 +744,8 @@ int run_build(const BuildOptions& opts) {
 
   bool verbose = std::getenv("CULEBRA_VERBOSE") != nullptr;
   if (verbose) std::println(stderr, "culebra build: object -> {}", obj);
+  ScratchFiles scratch(verbose);
+  scratch.add(obj);
 
   bool cross = !opts.target.empty();
   if (cross && opts.target == llvm::sys::getDefaultTargetTriple()) {
@@ -880,6 +906,8 @@ int run_build(const BuildOptions& opts) {
       auto aobj = (tmpdir / std::format("{}.assets.{}.o", stem,
                                         static_cast<unsigned>(::getpid())))
                       .string();
+      scratch.add(acpp);
+      scratch.add(aobj);
       { std::ofstream(acpp) << src; }
       auto ccmd = std::format("c++ -std=c++23 -O2 -I {}/include -c {} -o {}",
                               shq(src_dir), shq(acpp), shq(aobj));
@@ -1063,7 +1091,6 @@ int run_build(const BuildOptions& opts) {
     return 1;
   }
 
-  if (!verbose) std::filesystem::remove(obj);
   return 0;
 }
 
