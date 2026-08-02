@@ -11,6 +11,11 @@
       display: flex; align-items: center; justify-content: space-between;
       max-width: 960px; margin: 0 auto; padding: 1.1rem 1.4rem;
     }
+    .nav .brand { display: flex; align-items: baseline; gap: 0.5rem; }
+    /* Hand-written, unlike the Playground's, which build.sh stamps — the
+       landing page has no build step. `just check-site-version` compares both
+       against include/culebra.h so neither can be left behind by a bump. */
+    .nav .ver { color: var(--muted); font-size: 0.9rem; font-weight: 500; }
     .nav-links { display: flex; gap: 1.3rem; align-items: center; }
     .nav-links a { color: var(--muted); font-weight: 500; }
     .nav-links a:hover { color: var(--text); text-decoration: none; }
@@ -61,20 +66,23 @@
 </head>
 <body>
   <nav class="nav">
-    <a class="wordmark" href="./" aria-label="culebra home">
-      <svg class="mark" width="26" height="26" viewBox="0 0 26 26" fill="none" aria-hidden="true">
-        <path d="M13 15C13 12 13.5 9 14 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
-        <path d="M14 6C15 2 18 1 19 3" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
-        <path d="M14 6C16.2 5.4 18.5 6 19 8.8" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
-        <path d="M14 6C13 2 10 1 9 3" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
-        <path d="M14 6C11.8 5.4 9.5 6 9 8.8" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
-        <path d="M2 15.5c1.5-2 3.5-2 5 0s3.5 2 5 0 3.5-2 5 0 3.5 2 5 0"
-              stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
-        <path d="M2 20c1.5-2 3.5-2 5 0s3.5 2 5 0 3.5-2 5 0 3.5 2 5 0"
-              stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none" opacity="0.5"/>
-      </svg>
-      culebra
-    </a>
+    <div class="brand">
+      <a class="wordmark" href="./" aria-label="culebra home">
+        <svg class="mark" width="26" height="26" viewBox="0 0 26 26" fill="none" aria-hidden="true">
+          <path d="M13 15C13 12 13.5 9 14 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <path d="M14 6C15 2 18 1 19 3" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <path d="M14 6C16.2 5.4 18.5 6 19 8.8" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <path d="M14 6C13 2 10 1 9 3" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <path d="M14 6C11.8 5.4 9.5 6 9 8.8" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <path d="M2 15.5c1.5-2 3.5-2 5 0s3.5 2 5 0 3.5-2 5 0 3.5 2 5 0"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <path d="M2 20c1.5-2 3.5-2 5 0s3.5 2 5 0 3.5-2 5 0 3.5 2 5 0"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none" opacity="0.5"/>
+        </svg>
+        culebra
+      </a>
+      <span class="ver">v0.1.0</span>
+    </div>
     <div class="nav-links">
       <a href="./playground/">Playground</a>
       <a href="https://github.com/yhirose/culebra/tree/master/docs">Docs</a>

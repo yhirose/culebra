@@ -959,23 +959,32 @@ site-build:
 site-serve port="8000": site-build
     python3 -m http.server {{port}} -d site
 
-# The committed page under site/ is what GitHub Pages serves, and build.sh
-# stamps its version from include/culebra.h. Regenerating it needs emsdk, so a
-# version bump can land with the served page still naming the old version and
-# nothing else would notice — the wasm is unaffected, so no build breaks. This
-# compares the two directly and needs no toolchain (CI gate).
+# The committed pages under site/ are what GitHub Pages serves, and both name
+# the version: the Playground's is stamped by build.sh from include/culebra.h,
+# the landing page's is hand-written (it has no build step). Either way a bump
+# can land with a served page still naming the old version and nothing else
+# would notice — the wasm is unaffected, so no build breaks. This compares them
+# directly and needs no toolchain (CI gate).
 [group("site")]
-[doc("Verify site/playground/index.html names the current version")]
+[doc("Verify the served pages name the current version")]
 check-site-version:
     #!/usr/bin/env bash
     set -euo pipefail
     want=$(sed -n 's/^#define CULEBRA_VERSION "\([^"]*\)"/\1/p' include/culebra.h)
     [ -n "$want" ] || { echo "no CULEBRA_VERSION in include/culebra.h" >&2; exit 1; }
-    got=$(sed -n 's|.*<title>culebra Playground v\([^<]*\)</title>.*|\1|p' \
-          site/playground/index.html)
-    if [ "$want" != "$got" ]; then
-        echo "site/playground/index.html says v${got:-<none>}, but include/culebra.h says v$want" >&2
-        echo "run \`just site-build\` and commit site/playground/index.html" >&2
-        exit 1
-    fi
+    fail=0
+    check() {  # $1 = file, $2 = sed script yielding its version, $3 = how to fix
+        local got; got=$(sed -n "$2" "$1")
+        [ "$want" = "$got" ] && return
+        echo "$1 says v${got:-<none>}, but include/culebra.h says v$want" >&2
+        echo "  $3" >&2
+        fail=1
+    }
+    check site/playground/index.html \
+          's|.*<title>culebra Playground v\([^<]*\)</title>.*|\1|p' \
+          'run `just site-build` and commit site/playground/index.html'
+    check site/index.html \
+          's|.*<span class="ver">v\([^<]*\)</span>.*|\1|p' \
+          'edit the <span class="ver"> in site/index.html'
+    [ "$fail" = 0 ] || exit 1
     echo "site version OK (v$want)"
