@@ -90,18 +90,18 @@ for entry in "${outdated[@]}"; do
   git -C "$path" checkout --quiet "$latest"
 done
 
-# The grammar blob is keyed to the cpp-peglib version as well as the grammar
-# text, so a bump here silently invalidates it — and the diff of a vendor bump
-# never mentions grammar_blob.h, which is what makes it easy to miss. Running
-# the generator unconditionally is idempotent: an unaffected bump rewrites the
-# same bytes and leaves the working tree clean.
+# The blob is keyed to the cpp-peglib version, and a vendor bump's diff never
+# mentions grammar_blob.h. Regenerating unconditionally is idempotent. Never
+# fatal: the checkouts above are already applied, and a peglib bump that breaks
+# the generator's own compile is exactly when the closing advice is needed.
+blob_before=$(git hash-object include/grammar_blob.h)
 echo
 echo "regenerating include/grammar_blob.h (keyed to the cpp-peglib version)"
-just gen-blob
+just gen-blob || echo "WARNING: gen-blob failed — run it before committing" >&2
 
 echo
 echo "done. Review each submodule's log, rebuild (\`just dev\`), run \`just test-dev\`,"
 echo "then commit each bump separately (\`Bump <name>: ...\`, see git log for style)."
-if ! git diff --quiet -- include/grammar_blob.h; then
-  echo "NOTE: grammar_blob.h changed — commit it with the cpp-peglib bump, not on its own."
+if [[ "$(git hash-object include/grammar_blob.h)" != "$blob_before" ]]; then
+  echo "NOTE: grammar_blob.h changed — commit it with the bump that invalidated it."
 fi

@@ -22,22 +22,20 @@ TM=misc/vscode/syntaxes/culebra.tmLanguage.json
 CMLANG=playground/culebra-lang.js
 MAP=misc/keyword-map.txt
 
-# Always name the directory: macOS's mktemp ignores TMPDIR for a bare call and
-# uses the per-user darwin temp dir, which a sandboxed run cannot write, so the
-# script died before doing any work. With an explicit template it lands wherever
-# TMPDIR points, which sandboxes do allow.
-tmpfile() { mktemp "${TMPDIR:-/tmp}/sync_grammar.XXXXXX"; }
+# Name the directory explicitly: macOS mktemp ignores TMPDIR for a bare call and
+# uses the darwin per-user temp dir, which a sandboxed run cannot write.
+TMPD=$(mktemp -d "${TMPDIR:-/tmp}/sync_grammar.XXXXXX")
+trap 'rm -rf "$TMPD"' EXIT
 
-TMP_PEG=$(tmpfile)
-TMP_KW=$(tmpfile)
-TMP_MAP_KW=$(tmpfile)
-TMP_VIM_BLOCK=$(tmpfile)
-TMP_VIM=$(tmpfile)
-TMP_TM_BLOCK=$(tmpfile)
-TMP_TM=$(tmpfile)
-TMP_CMLANG_BLOCK=$(tmpfile)
-TMP_CMLANG=$(tmpfile)
-trap 'rm -f "$TMP_PEG" "$TMP_KW" "$TMP_MAP_KW" "$TMP_VIM_BLOCK" "$TMP_VIM" "$TMP_TM_BLOCK" "$TMP_TM" "$TMP_CMLANG_BLOCK" "$TMP_CMLANG"' EXIT
+TMP_PEG=$TMPD/peg
+TMP_KW=$TMPD/kw
+TMP_MAP_KW=$TMPD/map_kw
+TMP_VIM_BLOCK=$TMPD/vim_block
+TMP_VIM=$TMPD/vim
+TMP_TM_BLOCK=$TMPD/tm_block
+TMP_TM=$TMPD/tm
+TMP_CMLANG_BLOCK=$TMPD/cmlang_block
+TMP_CMLANG=$TMPD/cmlang
 
 # 1. Extract the embedded grammar block.
 awk '/^const auto grammar_ = R"\(/{flag=1; next} /^\)";/{flag=0; exit} flag{print}' "$PARSER" > "$TMP_PEG"
@@ -151,8 +149,8 @@ awk -v block_file="$TMP_TM_BLOCK" '
 #    folds into KEYWORDS. Only runs where playground/culebra-lang.js exists
 #    (it ships on the wasm-playground branch, not yet on master).
 if [[ -f "$CMLANG" ]]; then
-  KW_LINES=$(tmpfile)
-  CONST_WORDS=$(tmpfile)
+  KW_LINES=$TMPD/kw_lines
+  CONST_WORDS=$TMPD/const_words
   : > "$KW_LINES"
   : > "$CONST_WORDS"
   while IFS= read -r line; do

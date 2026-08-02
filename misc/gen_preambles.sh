@@ -20,27 +20,23 @@ gen() {
   done
 }
 if [ "${1:-}" = "--check" ]; then
-  # Compare two real files rather than piping the generated text in as `-`:
-  # BSD diff spools a stdin operand through the per-user darwin temp dir, which
-  # a sandboxed run cannot write. That failure used to be swallowed by the
-  # `2>&1` and reported as "out of sync", which sends you to regenerate a header
-  # that was already correct. Keep the three outcomes apart: same, different,
-  # and could-not-compare.
+  # Compare two real files: BSD diff spools a `-` operand through the darwin
+  # temp dir, which a sandboxed run cannot write — and that failure looked
+  # identical to "out of sync". Keep could-not-compare as its own outcome.
   tmp=$(mktemp "${TMPDIR:-/tmp}/gen_preambles.XXXXXX")
-  tmpdiff=$(mktemp "${TMPDIR:-/tmp}/gen_preambles.XXXXXX")
-  trap 'rm -f "$tmp" "$tmpdiff"' EXIT
+  trap 'rm -f "$tmp"' EXIT
   gen > "$tmp"
-  diff -u "$OUT" "$tmp" > "$tmpdiff" 2>&1 && status=0 || status=$?
+  report=$(diff -u "$OUT" "$tmp" 2>&1) && status=0 || status=$?
   if [ "$status" -eq 0 ]; then
     echo "stdlib_preambles.gen.h in sync"
   elif [ "$status" -eq 1 ]; then
     echo "ERROR: stdlib_preambles.gen.h is out of sync with src/preambles/*.cul." >&2
     echo "Run \`just gen-preambles\`." >&2
-    cat "$tmpdiff" >&2
+    printf '%s\n' "$report" >&2
     exit 1
   else
     echo "ERROR: could not compare $OUT (diff exited $status):" >&2
-    cat "$tmpdiff" >&2
+    printf '%s\n' "$report" >&2
     exit "$status"
   fi
 else

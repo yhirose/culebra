@@ -16,6 +16,9 @@ nice_cmd := "nice -n " + env_var_or_default("CULEBRA_NICE", "10")
 # CULEBRA_GATE_LOCK=0 opts out (see misc/one_at_a_time.sh).
 lock_cmd := justfile_directory() / "misc/one_at_a_time.sh"
 
+# Compiler for the one tool built outside CMake (tools/gen_grammar_blob.cc).
+blob_cxx := if path_exists("/opt/homebrew/opt/llvm/bin/clang++") == "true" { "/opt/homebrew/opt/llvm/bin/clang++" } else { env_var_or_default("CXX", "c++") }
+
 # Share ccache entries between worktrees of the same commit: every -I CMake
 # generates is an absolute path into this checkout, so without a base_dir each
 # new worktree pays a full cold build. Only sound while no cacheable TU bakes in
@@ -73,23 +76,14 @@ build-gate *extra:
     cd build-gate && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF {{extra}} .. > /dev/null
     cd build-gate && {{lock_cmd}} {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}
 
-# Compile and link as two steps: ccache passes a combined compile+link command
-# straight through (`Result: called_for_link`), so the cache only engages when
-# `-c` is its own invocation. With it, a warm rebuild of this tool is ~0.2 s
-# instead of ~7 s — and ccache keys on the preprocessed source, so an edit to
-# grammar_def.h or a peglib bump (both reached through #include) still rebuilds.
-# That dependency tracking is the point: a mtime rule over the .cc alone would
-# reuse a stale tool exactly when the grammar changed, and bless a stale blob.
+# Compile and link separately: ccache passes a combined compile+link command
+# through uncached (`called_for_link`). Keying on the preprocessed source also
+# rebuilds on a grammar_def.h edit or a peglib bump, which a mtime rule wouldn't.
 [private]
 _gen-blob-tool:
-    #!/usr/bin/env bash
-    set -euo pipefail
     mkdir -p build-dev
-    cxx="{{ if path_exists("/opt/homebrew/opt/llvm/bin/clang++") == "true" { "/opt/homebrew/opt/llvm/bin/clang++" } else { env_var_or_default("CXX", "c++") } }}"
-    ccache=$(command -v ccache || true)
-    $ccache "$cxx" -std=c++23 -O2 -I include -I vendor/cpp-peglib \
-        -c tools/gen_grammar_blob.cc -o build-dev/gen_grammar_blob.o
-    "$cxx" build-dev/gen_grammar_blob.o -o build-dev/gen_grammar_blob
+    ccache=$(command -v ccache || true); $ccache "{{blob_cxx}}" -std=c++23 -O2 -I include -I vendor/cpp-peglib -c tools/gen_grammar_blob.cc -o build-dev/gen_grammar_blob.o
+    "{{blob_cxx}}" build-dev/gen_grammar_blob.o -o build-dev/gen_grammar_blob
 
 # Regenerate include/grammar_blob.h — the serialized grammar that lets
 # get_parser() skip peglib's ~10 ms meta-parse on startup. Run after editing the
@@ -105,6 +99,11 @@ gen-blob: _gen-blob-tool
 [group("build")]
 check-blob: _gen-blob-tool
     ./build-dev/gen_grammar_blob --check include/grammar_blob.h
+
+# Every committed file a generator produces, checked against its source. Needs
+# no build, and costs ~0.7 s — cheap enough to gate both test recipes.
+[private]
+check-generated: check-grammar-sync check-preambles check-blob check-site-version
 
 # Build without JIT (interpreter only, no LLVM). Builds just the `culebra`
 # driver — the only TU with CULEBRA_JIT_ENABLED #ifdef gating, so this is the
@@ -231,23 +230,19 @@ check-preambles:
 # The single-backend modes are for focused debugging.
 [doc("Full gate (no-LTO gate build). BACKEND=all|fast|interp|jit|aot|embed|isolate|wrap (default: all). JOBS=N controls parallelism (default: CPU cores). CULEBRA_TEST_SKIP_HEAVY=1 skips difftest + gc-stress + AOT (set on the slow macOS CI runner); CULEBRA_TEST_WRAP=1 adds the wrap lane (set on Ubuntu CI).")]
 [group("test")]
-test BACKEND='all': build-gate
+test BACKEND='all': check-generated build-gate
     @BIN=./build-gate/culebra {{lock_cmd}} just _run-tests {{BACKEND}}
 
 # Fast inner-loop tests against the no-LTO build-dev/ binary (`just dev`).
 # Runs only the phases that don't need LTO/AOT/embed exes: the interp==JIT
 # symmetry sweep + culebra-test self + isolate (BACKEND=fast, the default).
 # Run this after each edit; `just test` is the heavier pre-commit gate.
-#
-# The four generated-artifact checks run first, and cost ~1.5 s together. They
-# used to live only in CI, which put them past the point of landing: `just land`
-# rebases, runs this recipe, and fast-forwards master, so a stale generated file
-# reached master and CI reported it afterwards (a cpp-peglib bump did exactly
-# that to grammar_blob.h). Ordering them ahead of `dev` also means the ~1.5 s
-# answer arrives before the rebuild, not after it.
+# check-generated runs ahead of the build: `just land` runs this recipe as its
+# only gate before fast-forwarding master, so a stale generated file would
+# otherwise reach master with only CI left to notice.
 [doc("Fast inner-loop tests vs build-dev/ (no LTO). BACKEND=fast|interp|jit|isolate (default: fast).")]
 [group("test")]
-test-dev BACKEND='fast': check-grammar-sync check-preambles check-blob check-site-version dev
+test-dev BACKEND='fast': check-generated dev
     @BIN=./build-dev/culebra CULEBRA_TEST_SKIP_HEAVY=1 just _run-tests {{BACKEND}}
 
 # The same sweep as test-dev against the assert-enabled binary (`just
