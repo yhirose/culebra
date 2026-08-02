@@ -985,6 +985,27 @@ check-site-version:
           'run `just site-build` and commit site/playground/index.html'
     check site/index.html \
           's|.*<span class="ver">v\([^<]*\)</span>.*|\1|p' \
-          'edit the <span class="ver"> in site/index.html'
+          'run `just sync-site-version`'
     [ "$fail" = 0 ] || exit 1
     echo "site version OK (v$want)"
+
+# check-site-version's twin, for the page it can only complain about: the
+# Playground's version arrives with `just site-build`, but the landing page has
+# no build step, so without this a bump means hand-editing a string the gate
+# then catches after the fact. Needs no toolchain either, so a release can run
+# it anywhere.
+[group("site")]
+[doc("Rewrite the version site/index.html names from include/culebra.h")]
+sync-site-version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    want=$(sed -n 's/^#define CULEBRA_VERSION "\([^"]*\)"/\1/p' include/culebra.h)
+    [ -n "$want" ] || { echo "no CULEBRA_VERSION in include/culebra.h" >&2; exit 1; }
+    # Not `sed -i`: its in-place syntax differs between BSD and GNU, the same
+    # reason playground/build.sh stamps through a temporary file.
+    sed 's|<span class="ver">v[^<]*</span>|<span class="ver">v'"$want"'</span>|' \
+        site/index.html >site/index.html.tmp
+    mv site/index.html.tmp site/index.html
+    grep -q "<span class=\"ver\">v$want</span>" site/index.html ||
+      { echo "site/index.html has no <span class=\"ver\"> to stamp" >&2; exit 1; }
+    echo "site/index.html names v$want"
