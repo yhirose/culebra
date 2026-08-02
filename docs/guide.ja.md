@@ -23,7 +23,7 @@ APIリファレンスは [`stdlib.ja.md`](stdlib.ja.md) を参照してくださ
 ----
 
 - **第 I 部 — 言語コア**
-  1. [Hello & セットアップ](#1-hello--セットアップ)
+  1. [導入](#1-導入)
   2. [値・束縛・制御フロー](#2-値束縛制御フロー)
   3. [関数とクロージャ](#3-関数とクロージャ)
   4. [文字列](#4-文字列)
@@ -82,9 +82,35 @@ APIリファレンスは [`stdlib.ja.md`](stdlib.ja.md) を参照してくださ
 第 I 部 — 言語コア
 ==================
 
-## 1. Hello & セットアップ
+## 1. 導入
 
-インタプリタ (LLVM 20+ があれば JIT も) をビルド:
+### 1.1 リリースバイナリのインストール
+
+以下のリンクは常に最新リリースを指す。アーカイブの中身は実行ファイル1本と
+ライセンスだけで、インストーラも追加で置くものもない。
+
+| プラットフォーム | ダウンロード |
+|---|---|
+| macOS (Apple Silicon) | [culebra-macos-arm64.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64.tar.gz) |
+| Linux (x86-64) | [culebra-linux-x64.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-linux-x64.tar.gz) |
+| Windows (x86-64) | [culebra-windows-x64.zip](https://github.com/yhirose/culebra/releases/latest/download/culebra-windows-x64.zip) |
+
+コマンドラインで展開すると、macOSがFinder経由の展開物に付ける隔離フラグも
+避けられる (バイナリは未署名):
+
+```bash
+curl -fsSL https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64.tar.gz | tar xz
+sudo mv culebra-*/culebra /usr/local/bin/
+culebra --version
+```
+
+チェックサムと各リリースのノートは
+[releasesページ](https://github.com/yhirose/culebra/releases)にある。
+
+### 1.2 ソースからビルド
+
+masterを追う場合とCulebra自体を開発する場合にだけ必要。`just build`は
+インタプリタを、LLVM 20+があればJITも生成する:
 
 ```bash
 just build              # JIT付き
@@ -95,17 +121,23 @@ just test               # 全backend + embedスモークテスト (並列; JOBS=
 just test wrap          # `culebra wrap`の端から端まで (`just test`には含まれない)
 just test-assert        # 同じスイープをNDEBUGなしでビルドしassertを実行させる
 just install            # Releaseバイナリを /usr/local/binへ (`just install ~/.local`でユーザーinstall)
-./build/culebra --shell # REPL (--jitでJIT REPL)
 ```
 
-Culebra ソースの拡張子は `.cul`。 `culebra` バイナリで実行:
+`just install`を実行するまでバイナリは`./build/culebra` (または
+`./build-dev/culebra`)にあるので、以降のコマンドは`culebra`ではなく
+そのパスで呼ぶ。
+
+### 1.3 Hello, Culebra
+
+Culebraソースの拡張子は`.cul`。`culebra`バイナリで実行:
 
 ```bash
 echo "inspect('hello, culebra!')" > hello.cul
-./build/culebra hello.cul            # インタプリタ
-./build/culebra --jit hello.cul      # JIT (出力は同じ)
-./build/culebra --jit-faststart hello.cul # JIT・起動が速い
-./build/culebra --help                    # 全オプション・コマンド一覧
+culebra hello.cul                    # インタプリタ
+culebra --jit hello.cul              # JIT (出力は同じ)
+culebra --jit-faststart hello.cul    # JIT・起動が速い
+culebra --shell                      # REPL (--jitでJIT REPL)
+culebra --help                       # 全オプション・コマンド一覧
 ```
 
 3 バックエンドとも観測可能な出力は同一 (interp↔JIT の差分コーパス全件で

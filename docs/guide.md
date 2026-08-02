@@ -25,7 +25,7 @@ Contents
 --------
 
 - **Part I — The Language Core**
-  1. [Hello & setup](#1-hello--setup)
+  1. [Get started](#1-get-started)
   2. [Values, bindings, and control flow](#2-values-bindings-and-control-flow)
   3. [Functions and closures](#3-functions-and-closures)
   4. [Strings](#4-strings)
@@ -87,9 +87,36 @@ Read this once; the rest of the guide assumes these choices.
 Part I — The Language Core
 ==========================
 
-## 1. Hello & setup
+## 1. Get started
 
-Build the interpreter (and JIT, if LLVM 20+ is installed):
+### 1.1 Install a release binary
+
+Each download below always points at the newest release. The archive
+holds a single executable and the license — there is no installer and
+nothing else to put on the machine.
+
+| Platform | Download |
+|---|---|
+| macOS (Apple Silicon) | [culebra-macos-arm64.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64.tar.gz) |
+| Linux (x86-64) | [culebra-linux-x64.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-linux-x64.tar.gz) |
+| Windows (x86-64) | [culebra-windows-x64.zip](https://github.com/yhirose/culebra/releases/latest/download/culebra-windows-x64.zip) |
+
+Unpacking from the command line also avoids the quarantine flag macOS
+puts on anything extracted through Finder — the binaries are unsigned:
+
+```bash
+curl -fsSL https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64.tar.gz | tar xz
+sudo mv culebra-*/culebra /usr/local/bin/
+culebra --version
+```
+
+Checksums and every release's notes are on the
+[releases page](https://github.com/yhirose/culebra/releases).
+
+### 1.2 Build from source
+
+Needed only to track master or to work on Culebra itself. `just build`
+produces the interpreter, and the JIT too if LLVM 20+ is installed:
 
 ```bash
 just build              # with JIT
@@ -100,18 +127,24 @@ just test               # all backends + embed smoke (parallel; JOBS=1 to serial
 just test wrap          # `culebra wrap` end-to-end (not part of `just test`)
 just test-assert        # same sweep, built without NDEBUG so asserts run
 just install            # copy the Release binary to /usr/local/bin (`just install ~/.local` for a user install)
-./build/culebra --shell # REPL (add --jit for the JIT REPL)
 ```
+
+Until `just install` runs, the binary stays at `./build/culebra` (or
+`./build-dev/culebra`); the commands below then need that path instead
+of a bare `culebra`.
+
+### 1.3 Hello, Culebra
 
 A Culebra source file uses the `.cul` extension. Run it with the
 `culebra` binary:
 
 ```bash
 echo "inspect('hello, culebra!')" > hello.cul
-./build/culebra hello.cul            # interpreter
-./build/culebra --jit hello.cul      # JIT (same output)
-./build/culebra --jit-faststart hello.cul # JIT, fast startup
-./build/culebra --help                    # all options and commands
+culebra hello.cul                    # interpreter
+culebra --jit hello.cul              # JIT (same output)
+culebra --jit-faststart hello.cul    # JIT, fast startup
+culebra --shell                      # REPL (add --jit for the JIT REPL)
+culebra --help                       # all options and commands
 ```
 
 All three backends produce identical observable output (the whole
