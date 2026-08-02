@@ -54,8 +54,13 @@ class Probe {
   new(v) { self.v = v }
   cmp(o) { seen.push(self.v.to_string() + ":" + o.v.to_string()); self.v - o.v }
 }
+// How many pairs std::stable_sort asks about, and in which order, is the
+// standard library's business (libstdc++ compares 1 against 2 twice here;
+// libc++ sorts a 3-element range differently). Printing the sequence rather
+// than pinning it asserts the part that is ours: the harness diffs this line
+// across backends, so interp, JIT and AOT must produce the same one.
 [Probe.new(1), Probe.new(2), Probe.new(3)].sorted()
-assert_eq(seen, ["2:1", "3:2"])
+inspect(seen)
 
 let e3 = try { [1, [2], 3].sorted(); nil } catch e { e.message }
 assert_eq(e3, "type error: cannot compare Array and Long")
