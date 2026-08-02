@@ -1,6 +1,6 @@
 # CLAUDE.md — culebra
 
-culebra は個人の趣味プロジェクト（未公開のプログラミング言語処理系。interp + JIT + AOT の3 backend）。
+culebra は個人の趣味プロジェクト（プログラミング言語処理系。interp + JIT + AOT の3 backend）。**repo は公開済み**（`github.com/yhirose/culebra`）で、**2026-08-02 に `v0.1.0` をリリース**した — 3 OS のバイナリを GitHub Release で配布し、docs サイトと WASM Playground を GitHub Pages で公開している。
 
 ## 言語・コミュニケーション
 
@@ -39,7 +39,7 @@ culebra は個人の趣味プロジェクト（未公開のプログラミング
 ## テスト（速い順に段階的に）
 
 1. 単発確認: `./build-dev/culebra <file>.cul`（+ `--jit`）
-2. 両 backend 対称確認: **`just test-dev`**（~80s、no-LTO）— 通常はここまで
+2. 両 backend 対称確認: **`just test-dev`**（~80s、no-LTO）— 通常はここまで。生成物ゲート `check-generated`（grammar sync / preamble / blob / site version）を前段で回すので、生成物のずれは着地前にここで落ちる
 3. フルゲート **`just test`**（実測 450〜880s、うち 95% は difftest + leak 系 + AOT）
 4. **docs を触ったら必ず `just doctest`**（`just test` には含まれない別ステップ）
 
@@ -67,7 +67,7 @@ difftest・AOT・leak 系・wrap はそこで必ず走る。ローカルで全�
 `test` マトリクスは今も全ジョブ `CULEBRA_CANVAS_WINDOW_DEFAULT=OFF` だが、**`linux-canvas-window`
 ジョブが Linux で window ON をビルドする**（SDL3 の build deps を入れて CMake 既定に任せる）。
 window ON ビルドでの headless 動作・AOT の `culebra_rt_canvas` force-load・Xvfb 下の実窓生成まで見る。
-`release.yml` も window ON だが `v*` tag でしか走らない（tag はまだ 0 件）。
+`release.yml` も window ON だが `v*` tag でしか走らない（初回の `v0.1.0` で実走済み）。
 
 **`linux-assert` ジョブ**が Ubuntu で `just test-assert` を回す（`NDEBUG` なしビルド + 同じスイープ）。
 assert が本当に compile-in されたかを binary 内の assert 文字列 grep で検証してから走るので、
@@ -89,7 +89,9 @@ assert が本当に compile-in されたかを binary 内の assert 文字列 gr
 ## PR・リリース
 
 - PR は **user から明示的に頼まれない限り作成しない**。commit・local master へのマージまでは依頼通り進めてよい。
-- culebra は公開前。version tag・CHANGELOG・GitHub Release 等のリリース系成果物は提案しない（docs 更新は release cadence と独立に進めて OK）。
+- **リリースは `/release` skill を user が明示的に実行したときだけ。** tag を push して GitHub Release を公開する不可逆な操作なので、自発的に開始しないし提案もしない（docs 更新は release cadence と独立に進めて OK）。CHANGELOG は持たず、リリースノートは `/release` が都度書く。
+- **版数の単一源は `include/culebra.h` の `CULEBRA_VERSION`。** site 側の表記とのずれは `just check-site-version` が検出する（`check-generated` 経由で `just test-dev` が回すので、ずれたままでは着地できない）。landing page は `just sync-site-version`、Playground は `just site-build` で追従させる。
+- repo は公開済みなので、README・docs・site・commit メッセージ・issue/PR は**そのまま公開コンテンツ**として扱う（言語は上記のとおり英語）。
 
 ## コードスタイル
 
