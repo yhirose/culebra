@@ -1,6 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0.5 0.25 23 23">
   <!-- The nav wordmark's palm and waves. Standalone, so `currentColor` binds
-       to the root `color` here instead of the page's. -->
+       to the root `color` here instead of the page's. The viewBox is cropped
+       to the ink: the nav's 26x26 leaves more room below the waves than above
+       the fronds, which reads as top-aligned in a browser tab. -->
   <style>
     :root { color: #1590c4; }
     @media (prefers-color-scheme: dark) { :root { color: #45b8ee; } }
