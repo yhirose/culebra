@@ -5415,33 +5415,35 @@ struct JIT {
     // Object. `IO.method(...)` still goes through the fast compile_global
     // path; only this slow path runs when the namespace is used as a
     // value.
-    if (is_builtin_var(name)) {
-      auto ptrTy = llvm::PointerType::get(ctx_, 0);
-      auto fn = builder_.GetInsertBlock()->getParent();
-      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
-                               fn->getEntryBlock().begin());
-      auto tagSlot = entryB.CreateAlloca(builder_.getInt8Ty(),
-                                          nullptr, "ns.tag");
-      auto dataSlot = entryB.CreateAlloca(builder_.getInt64Ty(),
-                                           nullptr, "ns.data");
-      auto namePtr = get_or_create_global_str(name, ".ns.name");
-      emit_call(
-          module_->getOrInsertFunction(rt::namespace_get,
-                                       builder_.getVoidTy(),
-                                       ptrTy, ptrTy, ptrTy),
-          {namePtr, tagSlot, dataSlot});
-      auto tag = builder_.CreateLoad(builder_.getInt8Ty(), tagSlot,
-                                      "ns.tag.v");
-      auto data = builder_.CreateLoad(builder_.getInt64Ty(), dataSlot,
-                                       "ns.data.v");
-      return own(make_value(tag, data));
-    }
+    if (is_builtin_var(name)) return own(emit_builtin_var_get(name));
     // Match interp's eval-time NameError so `try { undefined } catch e
     // { ... }` works under --jit too.
     emit_throw_error("NameError",
         std::format("undefined variable '{}'", name),
         ast.line, ast.column);
     return own(make_nil());
+  }
+
+  // Materialize a builtin global (`IO`, `Time`, `inspect`, `assert_eq`) as a
+  // value: one +1 reference to whatever the runtime resolver hands back for
+  // that name on this Runtime. Callers own the result.
+  llvm::Value* emit_builtin_var_get(const std::string& name) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto fn = builder_.GetInsertBlock()->getParent();
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                             fn->getEntryBlock().begin());
+    auto tagSlot = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "ns.tag");
+    auto dataSlot =
+        entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "ns.data");
+    auto namePtr = get_or_create_global_str(name, ".ns.name");
+    emit_call(module_->getOrInsertFunction(rt::namespace_get,
+                                           builder_.getVoidTy(), ptrTy, ptrTy,
+                                           ptrTy),
+              {namePtr, tagSlot, dataSlot});
+    auto tag = builder_.CreateLoad(builder_.getInt8Ty(), tagSlot, "ns.tag.v");
+    auto data =
+        builder_.CreateLoad(builder_.getInt64Ty(), dataSlot, "ns.data.v");
+    return make_value(tag, data);
   }
 
   // Create an alloca + cell for a new captured variable.
@@ -12117,8 +12119,20 @@ struct JIT {
     bool is_builtin = known_builtin_methods().contains(method);
     const VarSlot* freeFnSlot = is_builtin ? nullptr : lookup_var(method);
     if (freeFnSlot) {
-      return compile_method_or_ufcs(method, *freeFnSlot, argsAst,
-                                    receiver.consume(), dot_ast);
+      return compile_method_or_ufcs(
+          method, [&] { return load_slot(*freeFnSlot, method); }, argsAst,
+          receiver.consume(), dot_ast);
+    }
+
+    // `s.replace(pat, repl)` — a bare stdlib function global written in
+    // culebra. It lives in no scope (the runtime resolver owns it), but UFCS
+    // over it must still yield to a receiver property of the same name, so it
+    // takes the same two-arm path a scope slot does. The interp gets here by
+    // finding the name in its global env.
+    if (!culebra::lazy_fn_group_of(method).empty()) {
+      return compile_method_or_ufcs(
+          method, [&] { return emit_builtin_var_get(method); }, argsAst,
+          receiver.consume(), dot_ast);
     }
 
     // UFCS into an extension builtin: `x.inspect()` → `inspect(x)` and so on
@@ -12728,11 +12742,15 @@ struct JIT {
   }
 
   // Emit the runtime dispatch between a user method (receiver owns a
-  // property `method`) and UFCS (call the free variable `method` with
+  // property `method`) and UFCS (call the free function `method` with
   // `receiver` as the first argument). Args are compiled once up front
-  // so side-effects don't duplicate across branches.
+  // so side-effects don't duplicate across branches. `load_free_fn` emits
+  // the load of that free function into the UFCS branch and yields a +1 this
+  // function releases — a scope slot for a user binding, or the builtin
+  // resolver for a stdlib global like `replace`.
   Owned compile_method_or_ufcs(const std::string& method,
-                                      const VarSlot& freeFnSlot,
+                                      const std::function<llvm::Value*()>&
+                                          load_free_fn,
                                       const peg::Ast& argsAst,
                                       llvm::Value* receiver,
                                       const peg::Ast* dot_ast = nullptr) {
@@ -12784,8 +12802,8 @@ struct JIT {
       builder_.CreateBr(mergeBB);
 
       builder_.SetInsertPoint(ufcsHasBB);
-      auto freeFn = load_slot(freeFnSlot, method);
-      // This branch owns the slot load's +1, released on the normal path
+      auto freeFn = load_free_fn();
+      // This branch owns the callee load's +1, released on the normal path
       // below. A typed-param / binding throw from the call would strand it
       // (`"x".f(m: 1)` where `f`'s first param is Long) — guard the callee
       // value on the unwind edge. It is a distinct SSA from the callee frame's
@@ -12837,7 +12855,7 @@ struct JIT {
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(ufcsBB);
-    auto freeFn = load_slot(freeFnSlot, method);
+    auto freeFn = load_free_fn();
     std::vector<llvm::Value*> ufcsArgs;
     ufcsArgs.reserve(userArgs.size() + 1);
     ufcsArgs.push_back(receiver);

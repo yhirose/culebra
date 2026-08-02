@@ -14,6 +14,7 @@
 #include <random>
 #include <optional>
 #include <shared_mutex>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -109,6 +110,41 @@ inline const char* lazy_namespace_static_name(std::string_view name) {
   for (const char* n : kNames)
     if (name == n) return n;
   return nullptr;
+}
+
+// The culebra-source stdlib modules that bind bare *functions* instead of a
+// namespace object: the matcher family (matchers.cul) and `replace`
+// (string_replace.cul). Both backends must hand out one instance of each per
+// Runtime, so a function reached from two modules compares equal on either.
+// The interp binds a group's names once in the global environment
+// (initialize_lazy_group); the JIT/AOT wrap the same source in a builder that
+// returns `{name: name, ...}`, register it under the group name, and resolve
+// every bare reference to the member the group built (_jit_lazy_fn_closure).
+// The group name is internal — user code never writes it, so it is not a
+// builtin global on either side.
+struct LazyFnGroup {
+  std::string_view name;
+  std::span<const std::string_view> members;
+};
+
+inline std::span<const LazyFnGroup> lazy_fn_groups() {
+  static constexpr std::string_view kMatchers[] = {
+      "assert_true", "assert_false", "assert_eq",     "assert_ne",
+      "assert_lt",   "assert_le",    "assert_gt",     "assert_ge",
+      "assert_throws", "assert_close"};
+  static constexpr std::string_view kReplace[] = {"replace"};
+  static constexpr LazyFnGroup kGroups[] = {{"__Matchers", kMatchers},
+                                            {"__Replace", kReplace}};
+  return kGroups;
+}
+
+// The group `name` belongs to, or empty when it is not a bare stdlib function.
+inline std::string_view lazy_fn_group_of(std::string_view name) {
+  for (const auto& g : lazy_fn_groups()) {
+    for (auto m : g.members)
+      if (m == name) return g.name;
+  }
+  return {};
 }
 
 // Transparent hash/eq for std::string-keyed unordered_map that allows

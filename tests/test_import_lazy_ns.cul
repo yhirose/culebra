@@ -2,22 +2,32 @@
 #
 # The entry module deliberately never names what the dependencies use; only
 # the imports below pull them in. Under the JIT/AOT splice this used to raise
-# NameError — for the lazy namespaces the token scan only looked at the entry
-# module and builder registration ran after dependency top level, and for the
-# plain bindings (the matcher family, `replace`) the copy went to the entry
-# module alone, which a dependency's own scope cannot see. Both backends must
-# agree.
+# NameError — the token scan looked at the entry module alone, and builder
+# registration ran after dependency top level. Both backends must agree.
 
 import dep from './test_import_helpers/lazy_ns_dep.cul'
-import plain from './test_import_helpers/plain_preamble_dep.cul'
+import bare from './test_import_helpers/bare_fn_dep.cul'
 import own from './test_import_helpers/own_replace_dep.cul'
 
 assert_true(dep.elapsed_nonneg())
 assert_true(dep.matches("aab"))
 assert_false(dep.matches("cc"))
 
-assert_eq(plain.checked(), "checked")
-assert_eq(plain.rewritten("aaa"), "bbb")
+assert_eq(bare.checked(), "checked")
+assert_eq(bare.rewritten("aaa"), "bbb")
 
-# A module's own binding wins over the spliced stdlib one.
+# A module's own binding wins over the stdlib one of the same name.
 assert_eq(own.apply("x"), "own:x")
+
+# One instance per program, not per module: a stdlib function a dependency
+# reads is the same value the entry module reads. This is what a per-module
+# copy of the definitions cannot give — it hands each module its own closure,
+# so these compared false under the JIT while the interp said true.
+let mine = assert_eq
+assert_true(bare.held_matcher() == mine)
+assert_true(bare.held_matcher() == assert_eq)
+assert_true(bare.held_replace() == replace)
+assert_true(bare.held_matcher() == bare.held_matcher())
+
+# The lazy namespaces reach the same place, and always have.
+assert_true(dep.time_ns() == Time)

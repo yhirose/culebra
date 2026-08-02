@@ -27,4 +27,14 @@ assert_eq(
   "a, b  1".replace(",", "、").replace(re'\s+', " ").replace(re'\d', "N"),
   "a、 b N")
 
+# A receiver's own `replace` wins over the stdlib free function, exactly as it
+# does for a user-defined one: UFCS is the fallback, never the override.
+let obj = {tag: "own", replace: fn (pat, repl) { "{self.tag}:{pat}->{repl}" }}
+assert_eq(obj.replace("a", "b"), "own:a->b")
+
+# The free function is one value, wherever it is read from.
+let held = replace
+assert_true(held == replace)
+assert_eq(held("aa", "a", "b"), "bb")
+
 IO.inspect("test_string_replace OK")

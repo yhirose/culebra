@@ -1,0 +1,20 @@
+# A dependency that leans on the stdlib's bare function globals (the matcher
+# family and `replace`) which the entry module never names. They live in no
+# module's scope: the interp binds them once in the global environment, the
+# JIT/AOT resolve each reference through the group module's registered
+# builder — either way one function per program, which `held_*` below lets
+# the entry module compare against its own reference.
+
+let checked = fn () {
+  assert_true(1 == 1)
+  assert_false(1 == 2)
+  assert_eq(2 + 2, 4)
+  "checked"
+}
+
+let rewritten = fn (s) { replace(s, "a", "b") }
+
+let held_matcher = fn () { assert_eq }
+let held_replace = fn () { replace }
+
+export {checked, rewritten, held_matcher, held_replace}

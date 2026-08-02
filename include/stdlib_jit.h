@@ -615,8 +615,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_fs_glob(
 // Calendar logic is shared with the interpreter via `culebra::_time_detail`
 // (see stdlib_interp.h). The user-facing `Time` module (Instant /
 // Duration classes) is built from culebra source (`TIME_MODULE_SOURCE`
-// in stdlib_interp.h) — interp registers it lazily, JIT/AOT splice it
-// selectively into the entry module via `splice_stdlib_preamble`.
+// in stdlib_interp.h) — interp registers it lazily, JIT/AOT register its
+// builder ahead of every module via `splice_stdlib_preamble`.
 // Timestamps are
 // i64 nanos since Unix epoch; `monotonic` / `sleep` stay Float
 // (measurement, precision-insensitive).
@@ -7282,6 +7282,11 @@ struct _JitNamespaceTable {
   // lifetime/teardown order as `entries` — both hold heap values that must
   // be released before the GC heap substate (a lower slot) is destroyed.
   std::unordered_map<std::string, JitClosure*> builtin_fns;
+  // Memo for the bare function globals written in culebra (the matcher
+  // family, `replace`). Each is a member slot of its group Object in
+  // `entries`, which holds the reference and is pinned for the Runtime's
+  // lifetime — so this map borrows and needs no teardown of its own.
+  std::unordered_map<std::string, JitClosure*> lazy_fns;
   ~_JitNamespaceTable() {
     for (auto& [_, obj] : entries) {
       _culebra_value_release_impl(TAG_OBJECT,
@@ -7416,9 +7421,9 @@ inline const NsParamMeta* _ns_type_meta(const NsMethod* m) {
 // for a bare builtin function name, or null if `name` is not one. Mirrors
 // `_jit_namespace_get_or_build`'s caching/pinning so the value can be passed
 // around like any user closure without the GC reclaiming it between uses.
-inline JitClosure* _jit_builtin_fn_closure(const std::string& name) {
-  auto& cache = culebra::runtime_substate<_JitNamespaceTable>(
-                    culebra::kSlotJitNamespaceTable).builtin_fns;
+inline JitClosure* _jit_builtin_fn_closure(_JitNamespaceTable& t,
+                                           const std::string& name) {
+  auto& cache = t.builtin_fns;
   auto it = cache.find(name);
   if (it != cache.end()) return it->second;
   for (const auto& m : kBuiltinFns) {
@@ -7536,6 +7541,34 @@ inline JitObject* _jit_namespace_get_or_build(const std::string& name) {
   return obj;
 }
 
+// Resolve a bare stdlib function global (matcher family, `replace`) to the one
+// closure its group module built on this Runtime, or null if `name` is not
+// one. The group Object is built + pinned by _jit_namespace_get_or_build, so
+// reading the member out of its slot — rather than through property access,
+// which hands back a fresh bound view each time — gives every module the same
+// function value. That is the JIT's counterpart to the interp's single global
+// binding, and what makes `assert_eq` captured in one module compare equal to
+// `assert_eq` read in another. The result is borrowed: the group Object owns
+// it and outlives every caller (see _JitNamespaceTable::lazy_fns).
+inline JitClosure* _jit_lazy_fn_closure(_JitNamespaceTable& t,
+                                        const std::string& name) {
+  // Memo first: a name outside every group is never in it, so the group scan
+  // only runs before the first resolve of a name that is.
+  auto it = t.lazy_fns.find(name);
+  if (it != t.lazy_fns.end()) return it->second;
+  auto group = culebra::lazy_fn_group_of(name);
+  if (group.empty()) return nullptr;
+  auto* obj = _jit_namespace_get_or_build(std::string(group));
+  if (!obj) return nullptr;
+  auto slot = obj->find_slot(name);
+  if (slot == static_cast<size_t>(-1)) return nullptr;
+  auto member = obj->slots[slot].value;
+  if (member.tag != TAG_FUNC) return nullptr;
+  auto* cls = reinterpret_cast<JitClosure*>(member.data);
+  t.lazy_fns.emplace(name, cls);
+  return cls;
+}
+
 #ifndef NDEBUG
 // One-shot namespace-coverage check: if interp's setup_built_in_functions binds
 // a namespace this dispatcher doesn't know about, abort with a clear message at
@@ -7575,9 +7608,15 @@ culebra_runtime_namespace_get(const char* name,
                                int8_t* out_tag, int64_t* out_data) {
   _check_ns_drift_once();
   std::string nm(name ? name : "");
-  // Bare builtin function used as a value (`let f = inspect`, `map(type_of)`).
-  // Checked before the namespace lookup since these names are not namespaces.
-  if (auto* cls = _jit_builtin_fn_closure(nm)) {
+  // Bare builtin function used as a value (`let f = inspect`, `map(type_of)`,
+  // `assert_eq`). Checked before the namespace lookup since these names are
+  // not namespaces; the culebra-source ones (matcher family, `replace`)
+  // resolve the same way, through their group module.
+  auto& table = culebra::runtime_substate<_JitNamespaceTable>(
+      culebra::kSlotJitNamespaceTable);
+  JitClosure* cls = _jit_builtin_fn_closure(table, nm);
+  if (!cls) cls = _jit_lazy_fn_closure(table, nm);
+  if (cls) {
     culebra_runtime_value_retain(TAG_FUNC, reinterpret_cast<int64_t>(cls));
     *out_tag = TAG_FUNC;
     *out_data = reinterpret_cast<int64_t>(cls);
@@ -9813,6 +9852,8 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       // interp's builtin_names skip. See _jit_namespace_get_or_build.
       "Time",    "Args",      "Regex",     "Term",      "Log",      "Path",
       "Canvas",  "__Eff",
+      // The bare function globals from those same source modules (assert_*,
+      // `replace`) are listed by lazy_fn_group_of below, not here.
 #if defined(CULEBRA_HTTP_ENABLED)
       "Http",
 #endif
@@ -9821,6 +9862,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
 #endif
   };
   if (names.contains(name)) return true;
+  if (!culebra::lazy_fn_group_of(name).empty()) return true;
   // wrap.h-declared namespaces (e.g. __Foreign) — registry-driven.
   for (const auto& m : _wrapped_ns_methods()) {
     if (name == m.ns) return true;

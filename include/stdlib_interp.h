@@ -7262,11 +7262,9 @@ inline void setup_built_in_functions(Environment& env) {
 }
 
 // Embedded culebra source for stdlib modules that are easier to express
-// in culebra than in C++. Both Time and Args are registered lazily by
-// `environment()`. The JIT path
-// still pre-concats them via `STDLIB_PREAMBLE_SOURCE` until it adopts
-// the env's lazy bindings. Each module is single-line so user-code
-// error positions are only off-by-one.
+// in culebra than in C++. `environment()` registers each of them lazily;
+// the JIT/AOT path registers a builder for it instead (see
+// splice_stdlib_preamble).
 //
 // `Time` — Instant / Duration classes wrapping `_Time` primitives.
 // Operator overloads (`__add__` / `__sub__` / `__mul__` / `__div__`
@@ -7327,29 +7325,8 @@ inline void setup_built_in_functions(Environment& env) {
 // fields; `Log.with(fields)` returns a child logger that binds those fields
 // into every record (request-scoped context). Format ($LOG_FORMAT or
 // set_format, default "text", or "json" for JSON Lines); the text level is
-// colored when stderr is a tty. Single-line so JIT/AOT preamble prepending
-// shifts user-code error lines by only one, matching the other modules.
+// colored when stderr is a tty.
 
-// Transitional concatenation used by the JIT path until it adopts the
-// env's lazy bindings (Phase 3). The
-// interp path is already preamble-free.
-inline const char* _stdlib_preamble_concat() {
-  static const std::string s =
-      std::string(TIME_MODULE_SOURCE) + ARGS_MODULE_SOURCE +
-      MATCHERS_MODULE_SOURCE + REGEX_MODULE_SOURCE +
-      STRING_REPLACE_MODULE_SOURCE;
-  return s.c_str();
-}
-inline const char* STDLIB_PREAMBLE_SOURCE = _stdlib_preamble_concat();
-
-// Build the selective stdlib preamble for a script: only the modules the
-// source appears to reference (substring match). The JIT/AOT backends
-// need these helpers inlined into the entry module because they don't
-// honour the env's lazy bindings (Phase 3); the interpreter binds them
-// lazily and
-// never calls this. A substring hit is a safe over-approximation: false
-// positives (e.g. `let myTime = 1`) just include an unneeded module; only
-// true negatives skip a module, preserving correctness.
 // JIT/AOT only: rewrite a lazy source module so the entry module registers a
 // captureless builder thunk instead of materializing a top-level slot.
 //
@@ -7381,6 +7358,68 @@ inline std::string _wrap_lazy_ns_module(std::string_view src, const char* pub,
   return "_lazy_ns_register(\"" + std::string(pub) + "\", fn(){ " + s + " });";
 }
 
+// The culebra-source stdlib modules whose public binding is a namespace
+// object: public name, source, and the builder its last statement calls.
+// One list for both backends — the interp's lazy bindings and the JIT/AOT
+// builder registrations read it — so a module added to one cannot go missing
+// from the other.
+struct LazyNsModule {
+  const char* name;
+  const char* source;
+  const char* builder;
+};
+
+inline std::span<const LazyNsModule> lazy_ns_modules() {
+  static constexpr LazyNsModule kModules[] = {
+      {"Time", TIME_MODULE_SOURCE, "_time_module"},
+      {"Term", TERM_MODULE_SOURCE, "_term_module"},
+      {"Canvas", CANVAS_MODULE_SOURCE, "_canvas_module"},
+      {"Args", ARGS_MODULE_SOURCE, "_args_module"},
+      {"Regex", REGEX_MODULE_SOURCE, "_regex_module"},
+      {"Log", LOG_MODULE_SOURCE, "_log_module"},
+      {"Path", PATH_MODULE_SOURCE, "_path_module"},
+      // Algebraic-effects runtime. The transform has already lowered every
+      // effect construct into `__Eff.*` calls by the time we see the AST, so
+      // that one token is the exact marker (see effects_transform.h).
+      {"__Eff", EFFECTS_MODULE_SOURCE, "_eff_module"},
+#ifdef CULEBRA_ENABLE_WEBVIEW
+      // `Desktop.run` facade — only when the Webview namespace it drives is
+      // built in.
+      {"Desktop", DESKTOP_MODULE_SOURCE, "_desktop_module"},
+#endif
+  };
+  return kModules;
+}
+
+// The source backing a bare-function group (see LazyFnGroup in shared.h).
+inline std::string_view lazy_fn_group_source(std::string_view group) {
+  if (group == "__Matchers") return MATCHERS_MODULE_SOURCE;
+  if (group == "__Replace") return STRING_REPLACE_MODULE_SOURCE;
+  return {};
+}
+
+// JIT/AOT only: give a bare-function module the same lazy builder a namespace
+// module gets, by appending an Object literal that exposes its functions as
+// members. A bare `assert_eq` then resolves to that Object's member — one
+// closure per Runtime, reached identically from every module — where the
+// interp resolves the same source's `let` into the one global environment.
+inline std::string _wrap_lazy_fn_group(const LazyFnGroup& g) {
+  // Trimmed because the members literal is appended as a further statement:
+  // the `;` separator must not land after the source's trailing newline.
+  auto src = trim_ascii(lazy_fn_group_source(g.name));
+  // A group declared in shared.h with no source here would register a builder
+  // that binds nothing, and every one of its names would raise NameError under
+  // the JIT while the interp resolved them fine.
+  assert(!src.empty() && "bare-function group has no source module");
+  std::string members;
+  for (auto m : g.members) {
+    if (!members.empty()) members += ", ";
+    members += std::string(m) + ": " + std::string(m);
+  }
+  return "_lazy_ns_register(\"" + std::string(g.name) + "\", fn(){ " +
+         std::string(src) + "; {" + members + "} });";
+}
+
 // Every token the parsed program carries. Comments and whitespace are gone
 // by this point, and a token is a whole lexeme — which is what makes the
 // module selection below name-exact instead of substring-based.
@@ -7393,25 +7432,14 @@ inline void collect_ast_tokens(const peg::Ast& ast,
   for (const auto& n : ast.nodes) collect_ast_tokens(*n, out);
 }
 
-// The two halves of the JIT/AOT stdlib preamble. `lazy` holds the
-// `_lazy_ns_register("Ns", fn(){...})` statements — pure runtime side
-// effects with no scope bindings, so they run once in their own module
-// ahead of every dependency. `plain` holds real top-level bindings (the
-// matcher family, `replace`) that must live in the scope of each module
-// that names them (module scopes are isolated, so there is nowhere else
-// to put them — see splice_stdlib_preamble).
-//
-// Precondition on anything added to `plain`: it must be stateless. Each
-// module that names a binding gets its own copy, so a binding that carried
-// state (a counter, a cache) would observably differ from the interpreter's
-// single global one. Stateful additions belong in `lazy`, where the builder
-// registry hands every module the same per-Runtime instance.
-struct StdlibPreamble {
-  std::string lazy;
-  std::string plain;
-};
-
-inline StdlibPreamble stdlib_preamble_for(
+// The JIT/AOT stdlib preamble: `_lazy_ns_register("Ns", fn(){...})`
+// statements, one per stdlib module the program names. They are pure runtime
+// side effects with no scope bindings, so they run once in their own module
+// ahead of every other one, and every reference — in any module, from any
+// closure — resolves through the builder registry to a single instance per
+// Runtime. That is what makes the JIT match the interp, which binds each
+// stdlib module once in the global environment every module can see.
+inline std::string stdlib_preamble_for(
     const std::unordered_set<std::string_view>& names) {
   auto has = [&](std::string_view m) { return names.contains(m); };
   // Each module is pulled in when the program names it. Matching the parsed
@@ -7419,109 +7447,38 @@ inline StdlibPreamble stdlib_preamble_for(
   // longer identifier that merely contains the name — from inlining a whole
   // module: "Terminal" in a comment used to pull in Term, and `side_effect`
   // the effects runtime, each about a second of JIT compile for nothing.
-  // `assert_` still pulls the whole matcher family by prefix (no other stdlib
-  // symbol starts with it). A `re'...'` / `re"..."` / `` re`...` `` regex
-  // literal desugars to `Regex.compile(...)` in the parser, so it shows up as
-  // a plain `Regex` token here and needs no extra marker.
-  //
-  // The five namespace modules (Time/Term/Args/Regex/Log) are wrapped as lazy
-  // builder registrations (see _wrap_lazy_ns_module); the matcher family and
-  // `replace` (a bare fn, not a namespace) stay plain spliced bindings.
-  StdlibPreamble preamble;
-  if (has("Time"))
-    preamble.lazy.append(_wrap_lazy_ns_module(TIME_MODULE_SOURCE, "Time",
-                                              "_time_module"));
-  if (has("Term"))
-    preamble.lazy.append(_wrap_lazy_ns_module(TERM_MODULE_SOURCE, "Term",
-                                              "_term_module"));
-  if (has("Canvas"))
-    preamble.lazy.append(_wrap_lazy_ns_module(CANVAS_MODULE_SOURCE, "Canvas",
-                                              "_canvas_module"));
-  if (has("Args"))
-    preamble.lazy.append(_wrap_lazy_ns_module(ARGS_MODULE_SOURCE, "Args",
-                                              "_args_module"));
-  if (std::any_of(names.begin(), names.end(), [](std::string_view n) {
-        return n.starts_with("assert_");
-      }))
-    preamble.plain.append(MATCHERS_MODULE_SOURCE);
-  if (has("Regex"))
-    preamble.lazy.append(_wrap_lazy_ns_module(REGEX_MODULE_SOURCE, "Regex",
-                                              "_regex_module"));
-  if (has("replace")) preamble.plain.append(STRING_REPLACE_MODULE_SOURCE);
-  if (has("Log"))
-    preamble.lazy.append(_wrap_lazy_ns_module(LOG_MODULE_SOURCE, "Log",
-                                              "_log_module"));
-  if (has("Path"))
-    preamble.lazy.append(_wrap_lazy_ns_module(PATH_MODULE_SOURCE, "Path",
-                                              "_path_module"));
-  // Algebraic-effects runtime. The transform has already lowered every effect
-  // construct into `__Eff.*` calls by the time we see the AST, so that one
-  // token is the exact marker (see effects_transform.h).
-  if (has("__Eff"))
-    preamble.lazy.append(_wrap_lazy_ns_module(EFFECTS_MODULE_SOURCE, "__Eff",
-                                              "_eff_module"));
-#ifdef CULEBRA_ENABLE_WEBVIEW
-  // `Desktop.run` facade — only when the Webview namespace it drives is built in.
-  if (has("Desktop"))
-    preamble.lazy.append(_wrap_lazy_ns_module(DESKTOP_MODULE_SOURCE, "Desktop",
-                                              "_desktop_module"));
-#endif
+  // A `re'...'` / `re"..."` / `` re`...` `` regex literal desugars to
+  // `Regex.compile(...)` in the parser, so it shows up as a plain `Regex`
+  // token here and needs no extra marker.
+  std::string preamble;
+  for (const auto& m : lazy_ns_modules()) {
+    if (has(m.name))
+      preamble.append(_wrap_lazy_ns_module(m.source, m.name, m.builder));
+  }
+  // Bare-function modules: naming any one member pulls in its whole group,
+  // since they share a source (one `assert_*` brings the family, as on the
+  // interp side, where initialize_lazy_group binds all ten at once).
+  for (const auto& g : lazy_fn_groups()) {
+    if (std::any_of(g.members.begin(), g.members.end(), has))
+      preamble.append(_wrap_lazy_fn_group(g));
+  }
   return preamble;
 }
 
-// Collect the top-level statements from a parsed program AST. After the
-// AstOptimizer runs, a multi-statement program's root carries the
-// STATEMENTS tag (its children are the statements), while a single-
-// statement program collapses so that the root *is* that lone statement.
-inline std::vector<std::shared_ptr<peg::Ast>> collect_top_level_statements(
-    const std::shared_ptr<peg::Ast>& ast) {
-  using namespace peg::udl;
-  if (!ast) return {};
-  if (ast->tag == "STATEMENTS"_) return ast->nodes;
-  return {ast};
-}
-
-// Path stamped on the synthesized preamble module and on preamble ASTs, so
-// they are distinguishable from user modules (and from each other's rescan).
+// Path stamped on the synthesized preamble module, so it is distinguishable
+// from user modules.
 inline constexpr const char* kStdlibPreamblePath = "<stdlib>";
 
-// Splice `src`'s top-level statements ahead of `m`'s own. The naive approach
-// (concatenate the preamble onto the source text) shifts every user line down
-// by the preamble's height, desyncing JIT/AOT error locations and in-language
-// `e.line` from the interpreter, which never prepends. Parsing the preamble on
-// its own instead keeps every user node at the exact line/column it was parsed
-// with.
-inline void splice_plain_preamble(LoadedModule& m, std::string src) {
-  if (src.empty()) return;
-  // Retain the preamble bytes for the module's lifetime — the spliced AST's
-  // tokens are string_views into this buffer.
-  auto pre_buf = std::make_shared<std::string>(std::move(src));
-  std::vector<std::string> msgs;
-  auto pre_ast = parse_with_transforms(kStdlibPreamblePath, pre_buf->data(),
-                                       pre_buf->size(), msgs);
-  if (!pre_ast) return;  // stdlib is trusted; a parse failure is a build bug
-
-  std::vector<std::shared_ptr<peg::Ast>> stmts =
-      collect_top_level_statements(pre_ast);
-  for (auto& s : collect_top_level_statements(m.ast)) {
-    stmts.push_back(std::move(s));
-  }
-
-  const char* path = m.ast ? m.ast->path.c_str() : "";
-  auto merged = std::make_shared<peg::Ast>(path, size_t{1}, size_t{1},
-                                           "STATEMENTS", stmts);
-  for (auto& child : merged->nodes) child->parent = merged;
-
-  m.ast = std::move(merged);
-  m.aux_sources.push_back(std::move(pre_buf));
-}
-
-// JIT/AOT only: graft the stdlib preamble into the module trees.
+// JIT/AOT only: prepend the synthesized `<stdlib>` preamble module.
 //
-// The preamble defines helpers (assert_*, Time, …) that user code calls. The
-// interpreter binds them in the global environment every module can see; the
-// JIT has no such cross-module user scope, so each half gets there its own
-// way — see the two blocks below.
+// The preamble registers the builders behind the helpers user code calls
+// (assert_*, Time, …). The registrations are pure side effects with no scope
+// bindings, so they run as their own module *ahead of every dependency* — a
+// dependency's top-level `Canvas.rgba(...)` must find the builder already
+// registered, and appending them to the entry module (which the loader
+// schedules last) would run them too late for that. Every reference then
+// resolves through the registry, so no module needs a copy of its own — the
+// same reach the interpreter gets from its global environment.
 inline void splice_stdlib_preamble(std::vector<LoadedModule>& modules) {
   if (modules.empty()) return;
   // Scan every module, not just the entry: an imported module's `Canvas`
@@ -7531,64 +7488,37 @@ inline void splice_stdlib_preamble(std::vector<LoadedModule>& modules) {
   for (const auto& m : modules) {
     if (m.ast) collect_ast_tokens(*m.ast, names);
   }
-  StdlibPreamble preamble = stdlib_preamble_for(names);
+  std::string preamble = stdlib_preamble_for(names);
+  if (preamble.empty()) return;
 
-  // Lazy-ns builder registrations are pure side effects with no scope
-  // bindings, so they run as their own module *ahead of every dependency* —
-  // a dependency's top-level `Canvas.rgba(...)` must find the builder
-  // already registered. Splicing them into the entry module (which the
-  // loader schedules last) would run them too late for that.
-  if (!preamble.lazy.empty()) {
-    auto lazy_buf = std::make_shared<std::string>(std::move(preamble.lazy));
-    std::vector<std::string> msgs;
-    auto lazy_ast = parse_with_transforms(kStdlibPreamblePath,
-                                          lazy_buf->data(),
-                                          lazy_buf->size(), msgs);
-    if (lazy_ast) {
-      LoadedModule pre;
-      pre.abs_path = kStdlibPreamblePath;
-      pre.source = std::move(lazy_buf);
-      pre.ast = std::move(lazy_ast);
-      modules.insert(modules.begin(), std::move(pre));
-    }
-  }
-  // Plain bindings are per module, selected from that module's own tokens:
-  // they are ordinary top-level `let`s, and a dependency compiles in its own
-  // isolated scope, so the entry's copy is invisible to it. The interpreter
-  // reaches the same place from the other side — register_stdlib_lazy_modules
-  // binds them in the global env every module can see.
-  for (auto& m : modules) {
-    if (!m.ast || m.abs_path == kStdlibPreamblePath) continue;
-    std::unordered_set<std::string_view> own;
-    collect_ast_tokens(*m.ast, own);
-    splice_plain_preamble(m, stdlib_preamble_for(own).plain);
-  }
+  auto buf = std::make_shared<std::string>(std::move(preamble));
+  std::vector<std::string> msgs;
+  auto ast = parse_with_transforms(kStdlibPreamblePath, buf->data(),
+                                   buf->size(), msgs);
+  if (!ast) return;  // stdlib is trusted; a parse failure is a build bug
+  LoadedModule pre;
+  pre.abs_path = kStdlibPreamblePath;
+  pre.source = std::move(buf);
+  pre.ast = std::move(ast);
+  modules.insert(modules.begin(), std::move(pre));
 }
 
 // Register stdlib modules that should not be parsed/evaluated up front.
 // Each module is bound lazily so scripts that never touch it pay zero
 // cost.
 inline void register_stdlib_lazy_modules(Environment& env) {
-  env.initialize_lazy("Time", TIME_MODULE_SOURCE);
-  env.initialize_lazy("Term", TERM_MODULE_SOURCE);
-  env.initialize_lazy("Canvas", CANVAS_MODULE_SOURCE);
-  env.initialize_lazy("Args", ARGS_MODULE_SOURCE);
-  env.initialize_lazy("Regex", REGEX_MODULE_SOURCE);
-  env.initialize_lazy("replace", STRING_REPLACE_MODULE_SOURCE);
-  env.initialize_lazy("Log", LOG_MODULE_SOURCE);
-  env.initialize_lazy("Path", PATH_MODULE_SOURCE);
-  env.initialize_lazy("__Eff", EFFECTS_MODULE_SOURCE);
-#ifdef CULEBRA_ENABLE_WEBVIEW
-  env.initialize_lazy("Desktop", DESKTOP_MODULE_SOURCE);
-#endif
-  // Matcher family — 10 symbols share one source via initialize_lazy_group.
-  // First `get` of any matcher parses + evals the source once; the others
-  // are picked up by the non-Nil guard in resolve_from_lazy.
-  env.initialize_lazy_group(
-      {"assert_true", "assert_false", "assert_eq", "assert_ne",
-       "assert_lt", "assert_le", "assert_gt", "assert_ge",
-       "assert_throws", "assert_close"},
-      MATCHERS_MODULE_SOURCE);
+  for (const auto& m : lazy_ns_modules()) env.initialize_lazy(m.name, m.source);
+  // Bare-function modules (the 10 matchers, `replace`): every name in a group
+  // shares one source via initialize_lazy_group. First `get` of any member
+  // parses + evals the source once, binding the whole group in this env; the
+  // others are picked up by the non-Nil guard in resolve_from_lazy. One
+  // binding per env is what makes `assert_eq` read from two modules the same
+  // function — the JIT reaches the same place through its builder registry
+  // (see _wrap_lazy_fn_group).
+  for (const auto& g : lazy_fn_groups()) {
+    env.initialize_lazy_group({g.members.begin(), g.members.end()},
+                              std::string(lazy_fn_group_source(g.name)));
+  }
 }
 
 // Flag the root stdlib functions (namespace methods like `Math.abs` + bare

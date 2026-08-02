@@ -5,7 +5,7 @@
 #include <filesystem>
 #include <linenoise.hpp>
 #include "interpreter.h"
-#include "stdlib_interp.h"  // STDLIB_PREAMBLE_SOURCE
+#include "stdlib_interp.h"  // culebra::environment()
 
 #ifdef CULEBRA_JIT_ENABLED
 #include "jit.h"
