@@ -68,6 +68,11 @@ jobs:
       CULEBRA_TEST_SKIP_HEAVY: ${{ matrix.skip_heavy }}
       # `just test` runs the wrap lane only when this is non-empty.
       CULEBRA_TEST_WRAP: ${{ matrix.test_wrap }}
+      # Tied to the same matrix field as CULEBRA_TEST_WRAP: wherever the wrap
+      # lane runs, LTO the rebuild the same as the Build step below (which
+      # LTOs by default — matrix.linker_flag carries no -DCULEBRA_LTO=OFF) so
+      # wrap's ccache entries land in that step's namespace. See wrap_test.sh.
+      CULEBRA_WRAP_LTO: ${{ matrix.test_wrap }}
       # macOS and Linux default the Canvas desktop window ON; a runner has no
       # display, building the vendored SDL3 + raylib statics would add ~4 min
       # per job, and the Linux runners do not install SDL3's build dependencies
@@ -766,65 +771,19 @@ jobs:
   # under the mingw LLVM toolchain and runs a regression smoke over every codegen
   # path that needed a Win64-specific fix (16-byte-return sret ABI, the
   # ___chkstk_ms stack-probe symbol, class methods/getters/callable objects).
-  # DEV_NO_RT=ON isolates the in-process JIT (no AOT runtime archives). The
-  # The width gate. culebra's Long is int64_t; C++ `long` is 32-bit under LLP64
-  # and, on macOS, a distinct 64-bit type. Linux — where everyone develops — is
-  # the one platform that cannot see either, because there `long` IS int64_t, so
-  # a language value left in a `long` compiles clean locally and silently
-  # truncates on a download. This job is the compiler saying so, without paying
-  # for a build: -fsyntax-only over the two TUs that pull in every header, with
-  # -Wconversion narrowed to the one diagnostic that means "64-bit value into a
-  # 32-bit type". tools/check_long_width.sh is the local half of the same guard.
-  windows-long-width:
-    runs-on: windows-latest
-    timeout-minutes: 25
-    defaults:
-      run:
-        shell: msys2 {0}
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          submodules: recursive
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          update: true
-          install: >-
-            mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-zlib
-            mingw-w64-ucrt-x86_64-llvm
-            mingw-w64-ucrt-x86_64-openssl
-            mingw-w64-ucrt-x86_64-webview2-loader
-            mingw-w64-ucrt-x86_64-python
-            make
-      # Configure only — no build. compile_commands.json then carries the exact
-      # flags each TU needs, so this check cannot drift from the real build the
-      # way a hand-maintained -I list would.
-      - name: Configure (no build)
-        env:
-          CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
-        run: |
-          # MSYS Makefiles, not Ninja: Ninja routes long compile lines through
-          # response files that exist only once a build runs, so a configure-only
-          # compile_commands.json points at .rsp files that are not there.
-          cmake -S . -B build-width -G "MSYS Makefiles" \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_COMPILER=g++ \
-            -DCMAKE_C_COMPILER=gcc \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-            -DCULEBRA_ENABLE_JIT=ON \
-            -DCULEBRA_ENABLE_HTTP=ON \
-            -DCULEBRA_ENABLE_WEBVIEW=ON \
-            -DCULEBRA_DEV_NO_RT=OFF \
-            -DCULEBRA_LTO=OFF
-      - name: Syntax-check for 64-bit values landing in 32-bit types
-        run: misc/check_llp64_width.sh build-width
-
-  # smokes are informative (echo PASS/FAIL, never fail the job): everything
-  # except in-process exceptions works on Win64 — JIT'd exception unwind needs
-  # near-image memory placement for the .xdata RVA and is deferred (see the EH
-  # smoke). AOT exceptions already work (windows-aot-build).
+  # DEV_NO_RT=ON isolates the in-process JIT (no AOT runtime archives).
+  #
+  # Also carries the width gate (a separate configure further down, sharing
+  # this job's msys2 setup rather than paying for its own runner + toolchain
+  # install). culebra's Long is int64_t; C++ `long` is 32-bit under LLP64 and,
+  # on macOS, a distinct 64-bit type. Linux — where everyone develops — is the
+  # one platform that cannot see either, because there `long` IS int64_t, so a
+  # language value left in a `long` compiles clean locally and silently
+  # truncates on a download. That gate is the compiler saying so, without
+  # paying for a build: -fsyntax-only over the two TUs that pull in every
+  # header, with -Wconversion narrowed to the one diagnostic that means
+  # "64-bit value into a 32-bit type". tools/check_long_width.sh is the local
+  # half of the same guard.
   windows-jit-build:
     runs-on: windows-latest
     timeout-minutes: 45
@@ -838,6 +797,10 @@ jobs:
         with:
           submodules: recursive
 
+      # Union of this job's own packages and the width gate's (openssl,
+      # webview2-loader, python, make) — one setup-msys2 install pays for
+      # both configures below instead of two runners each installing most of
+      # the same toolchain.
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -850,6 +813,10 @@ jobs:
             mingw-w64-ucrt-x86_64-llvm
             mingw-w64-ucrt-x86_64-ccache
             mingw-w64-ucrt-x86_64-gdb
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-webview2-loader
+            mingw-w64-ucrt-x86_64-python
+            make
 
       - name: Toolchain versions
         run: |
@@ -984,6 +951,29 @@ jobs:
           echo "=== culebra --jit jit_eh.cul ==="
           timeout 60 ./build-win-jit/culebra.exe --jit jit_eh.cul \
             && echo "JIT_EH_PASS" || echo "JIT_EH_FAIL rc=$?"
+
+      # The width gate (see the job comment above): its own configure, in the
+      # same runner, so it shares the msys2 toolchain install above instead of
+      # paying for a second Windows VM.
+      - name: Configure width gate (no build)
+        env:
+          CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
+        run: |
+          # MSYS Makefiles, not Ninja: Ninja routes long compile lines through
+          # response files that exist only once a build runs, so a configure-only
+          # compile_commands.json points at .rsp files that are not there.
+          cmake -S . -B build-width -G "MSYS Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++ \
+            -DCMAKE_C_COMPILER=gcc \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCULEBRA_ENABLE_JIT=ON \
+            -DCULEBRA_ENABLE_HTTP=ON \
+            -DCULEBRA_ENABLE_WEBVIEW=ON \
+            -DCULEBRA_DEV_NO_RT=OFF \
+            -DCULEBRA_LTO=OFF
+      - name: Syntax-check for 64-bit values landing in 32-bit types
+        run: misc/check_llp64_width.sh build-width
 
   # Windows AOT (`culebra build`): stand up native single-.exe generation on
   # Win64. Unlike the JIT job this builds WITH the runtime archives embedded
