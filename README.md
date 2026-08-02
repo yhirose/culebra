@@ -3,6 +3,8 @@ Culebra Programming Language
 
 > **Status:** pre-1.0 and under active development — APIs and syntax may change.
 
+*This page in [日本語](README.ja.md).*
+
 A scripting language small enough to embed, fast enough for Tensor,
 simple enough for agents.
 
