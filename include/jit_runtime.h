@@ -1205,11 +1205,15 @@ CUL_NUM_BINOP(sub, "-", "__sub__", a - b, false, static_cast<int>(culebra::Op::S
 CUL_NUM_BINOP(mul, "*", "__mul__", a * b, true,  static_cast<int>(culebra::Op::Mul))
 #undef CUL_NUM_BINOP
 
-// `+` is the only arithmetic op that also concatenates strings, so it gets a
+// Forward decl — body is further down with the other Array runtime entries.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_concat(
+    JitArray* a, JitArray* b);
+
+// `+` is the only arithmetic op that also concatenates, so it gets a
 // hand-written body instead of CUL_NUM_BINOP. String / StringView operands on
-// both sides yield a new owned String; mixed types (e.g. String + Long) fall
-// through to _culebra_coerce_num, which throws TypeError — use interpolation
-// `"{x}"` for those.
+// both sides yield a new owned String, two Arrays a new Array; mixed types
+// (e.g. String + Long) fall through to _culebra_coerce_num, which throws
+// TypeError — use interpolation `"{x}"` for those.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_add(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
   JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};
@@ -1225,6 +1229,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_add(
             reinterpret_cast<int64_t>(culebra_runtime_str_concat(
                 culebra_runtime_strlike_to_cstr(lt, ld),
                 culebra_runtime_strlike_to_cstr(rt, rd)))};
+  }
+  if (lt == TAG_ARRAY && rt == TAG_ARRAY) {
+    return {TAG_ARRAY,
+            reinterpret_cast<int64_t>(culebra_runtime_array_concat(
+                reinterpret_cast<JitArray*>(ld),
+                reinterpret_cast<JitArray*>(rd)))};
   }
   _arith_guard_numeric("+", lt, rt, line, col);
   auto a = _culebra_coerce_num(lt, ld);
@@ -1830,6 +1840,48 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_slice(
     culebra_runtime_array_push(r, e.tag, e.data);
   }
   return r;
+}
+
+// `a + b`: a fresh +1 Array holding another reference to every element of
+// both sides. Shallow, like slice — the operands stay untouched (the IR's
+// Owned handles release them).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_concat(
+    JitArray* a, JitArray* b) {
+  auto* r = culebra_runtime_array_new_reserved(
+      static_cast<int64_t>(a->size + b->size));
+  for (auto* src : {a, b}) {
+    for (size_t i = 0; i < src->size; i++) {
+      auto& e = src->items[i];
+      culebra_runtime_value_retain(e.tag, e.data);
+      culebra_runtime_array_push(r, e.tag, e.data);
+    }
+  }
+  return r;
+}
+
+// `a.insert(i, x)` — the array absorbs the +1 on `x`, so an out-of-range `i`
+// must release it (the guard) rather than strand it.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_insert(
+    JitArray* arr, int64_t idx, int8_t tag, int64_t data, int64_t line,
+    int64_t col) {
+  JitUnwindRelease g{JitValue{tag, data}};
+  size_t at = culebra::resolve_position_index(idx, arr->size,
+                                              /*allow_end=*/true, line, col);
+  culebra_runtime_array_push(arr, tag, data);  // grow, then shift into place
+  for (size_t i = arr->size - 1; i > at; i--) arr->items[i] = arr->items[i - 1];
+  arr->items[at] = JitValue{tag, data};
+}
+
+// `a.remove_at(i)` — the removed element's +1 moves to the caller, like pop.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_remove_at(
+    JitArray* arr, int64_t idx, int8_t* out_tag, int64_t* out_data,
+    int64_t line, int64_t col) {
+  size_t at = culebra::resolve_position_index(idx, arr->size,
+                                              /*allow_end=*/false, line, col);
+  *out_tag = arr->items[at].tag;
+  *out_data = arr->items[at].data;
+  for (size_t i = at + 1; i < arr->size; i++) arr->items[i - 1] = arr->items[i];
+  arr->size--;
 }
 
 // Slice `tag:data` by the range value `range_data` (a `{class:"Range",

@@ -4512,6 +4512,14 @@ struct JIT {
                                  builder_.getInt8Ty(), builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::array_reverse,
                                  builder_.getVoidTy(), ptrTy);
+    module_->getOrInsertFunction(rt::array_insert, builder_.getVoidTy(), ptrTy,
+                                 builder_.getInt64Ty(), builder_.getInt8Ty(),
+                                 builder_.getInt64Ty(), builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::array_remove_at, builder_.getVoidTy(),
+                                 ptrTy, builder_.getInt64Ty(), ptrTy, ptrTy,
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::object_keys, ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::object_remove,
                                  builder_.getVoidTy(), ptrTy, ptrTy);
@@ -15817,6 +15825,60 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     emit_call(module_->getFunction(rt::array_push),
                         {arrPtr, extract_tag(val), extract_data(val)});
     return own(make_nil());
+  }
+
+  // `extend` is the method form of `[...a, ...b]`, so it reuses the spread
+  // runtime. The declared `Array` parameter is checked first, which also keeps
+  // the Tuple/Set arms of that helper out of reach here.
+  if (method == "extend" && argsAst.nodes.size() == 1) {
+    auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "ext");
+    Owned other = compile(*argsAst.nodes[0]);
+    emit_type_check(other.borrow(), "Array", "parameter 'other'",
+                    argsAst.nodes[0].get());
+    emit_call(module_->getOrInsertFunction(
+                  rt::array_extend, builder_.getVoidTy(),
+                  llvm::PointerType::get(ctx_, 0), builder_.getInt8Ty(),
+                  builder_.getInt64Ty(), builder_.getInt64Ty(),
+                  builder_.getInt64Ty()),
+              {arrPtr, extract_tag(other.borrow()),
+               extract_data(other.borrow()), current_line_val(),
+               current_column_val()});
+    return own(make_nil());
+  }
+
+  // `insert` absorbs the +1 on the value (like push); `remove_at` hands the
+  // removed element's +1 back (like pop). Both resolve the index in the
+  // runtime, so a bad one raises there with the interp's IndexError.
+  if (method == "insert" && argsAst.nodes.size() == 2) {
+    auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "ins");
+    Owned idxO = compile(*argsAst.nodes[0]);
+    Owned valO = compile(*argsAst.nodes[1]);
+    emit_type_check(idxO.borrow(), "Long", "parameter 'i'",
+                    argsAst.nodes[0].get());
+    auto idx = extract_data(idxO.consume());
+    auto val = valO.consume();
+    emit_call(module_->getFunction(rt::array_insert),
+              {arrPtr, idx, extract_tag(val), extract_data(val),
+               current_line_val(), current_column_val()});
+    return own(make_nil());
+  }
+
+  if (method == "remove_at" && argsAst.nodes.size() == 1) {
+    auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "rmat");
+    Owned idxO = compile(*argsAst.nodes[0]);
+    emit_type_check(idxO.borrow(), "Long", "parameter 'i'",
+                    argsAst.nodes[0].get());
+    auto idx = extract_data(idxO.consume());
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    auto outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "rmat.tag");
+    auto outData =
+        entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "rmat.data");
+    emit_call(module_->getFunction(rt::array_remove_at),
+              {arrPtr, idx, outTag, outData, current_line_val(),
+               current_column_val()});
+    auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
+    auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
+    return own(make_value(tagLoaded, dataLoaded));
   }
 
   if (method == "pop" && argsAst.nodes.size() == 0) {

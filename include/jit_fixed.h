@@ -798,7 +798,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_extend(
     JitArray* arr, int8_t tag, int64_t data, int64_t line, int64_t col) {
   if (tag == TAG_ARRAY || tag == TAG_TUPLE) {
     auto* src = reinterpret_cast<JitArray*>(data);
-    for (size_t i = 0; i < src->size; i++) {
+    // Size read once: `a.extend(a)` (the method form) aliases arr and src, so
+    // re-reading it would grow forever. `items` is re-read per step because
+    // push may have reallocated it.
+    size_t n = src->size;
+    for (size_t i = 0; i < n; i++) {
       culebra_runtime_value_retain(src->items[i].tag, src->items[i].data);
       culebra_runtime_array_push(arr, src->items[i].tag, src->items[i].data);
     }

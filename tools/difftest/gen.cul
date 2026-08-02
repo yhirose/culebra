@@ -44,7 +44,8 @@ for u in ['-', '!'] {
 # Methods spanning Array/String/Object/Set/Tuple/iterator builtins. Applying
 # every method to every receiver with every arg shape mostly errors; the point
 # is that the error (kind/message/position) must match across backends.
-let methods = ['size', 'empty', 'push', 'pop', 'slice', 'map', 'filter', 'reduce',
+let methods = ['size', 'empty', 'push', 'pop', 'extend', 'insert', 'remove_at',
+               'slice', 'map', 'filter', 'reduce',
                'find', 'any', 'all', 'for_each', 'flat_map', 'sort_by',
                'sort', 'sorted', 'sum',
                'product', 'min', 'max', 'min_by', 'max_by', 'to_set',
@@ -110,6 +111,25 @@ for recv in recvs {
     case("slice|" + recv + "|" + s, "(" + recv + ")[" + s + "]")
   }
 }
+
+# `insert` / `remove_at` take the same positions a subscript does, so they get
+# the same index sweep: the in-range, end-slot, negative and out-of-range arms
+# must agree with each other and across backends. The receiver is rebuilt per
+# case because both mutate.
+for i in [...indices, '3', '-3', '-4'] {
+  case('insert|' + i, '{ mut a = [1, 2, 3]; a.insert(' + i + ', 9); a }')
+  case('removeat|' + i,
+       '{ mut a = [1, 2, 3]; let r = a.remove_at(' + i + '); (r, a) }')
+}
+for src in ['[4, 5]', '[]', '(4, 5)', '{4, 5}', '"ab"', '4', 'nil'] {
+  case('extend|' + src, '{ mut a = [1, 2]; a.extend(' + src + '); a }')
+  case('concat|' + src, '[1, 2] + ' + src)
+}
+case("insert-empty", '{ mut a = []; a.insert(0, 1); a }')
+case("removeat-empty", '{ mut a = []; a.remove_at(0) }')
+case("extend-self", '{ mut a = [1, 2]; a.extend(a); a }')
+case("concat-self", '{ let a = [1, 2]; a + a }')
+case("concat-shared", '{ let a = [{v: 1}]; let c = a + []; (a[0].v, c[0].v) }')
 
 # --- Dimension 5: value display (inspect / to_string) ----------------------
 # The display path differs from to_string for some tags (e.g. a Function

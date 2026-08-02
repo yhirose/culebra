@@ -458,7 +458,6 @@ produces something else, in Culebra.
 | `x \|> f()` | UFCS: `x.f()`. There is no pipeline operator |
 | `{3}` as a one-element Set | `SyntaxError`. One element is `{3,}`; `{}` is the empty Object |
 | `a \| b`, `a & b` on sets | methods: `a.union(b)`, `a.intersect(b)`, `a.diff(b)` |
-| `[1, 2] + [3]` | `TypeError`. Use `[1, 2].iter().chain([3]).collect()` |
 | `{a: 1} + {b: 2}` | `TypeError`. There is no Object merge operator |
 | `s[0]` on a String | `TypeError`. Use `s.slice(0, 1)`, which takes byte offsets |
 | `-7 % 3 == 2` (Python) | `-1` — the sign follows the dividend, as in C |
@@ -467,6 +466,7 @@ produces something else, in Culebra.
 | `0 == false` | `false` — there is no cross-type coercion |
 | `.length` / `.count` | `.size()`. A missing property is `nil`, so `.length` reads as `nil` instead of raising |
 | `.append(x)` | `.push(x)` |
+| `del a[i]` / `a.splice(i, 1)` | `a.remove_at(i)`, which returns the removed element |
 | `obj['missing']` | `KeyError`. `obj.missing` is `nil`; `obj.get('missing', dflt)` takes a fallback |
 | `'ab' * 3` | `TypeError`. There is no string repetition operator |
 | assigning to a parameter | parameters are immutable — `ImmutableError` |
@@ -524,7 +524,7 @@ entry with no receiver at all (`contains(x)` under **Set methods**,
 
 **String methods** — s.size() -> Long; s.empty() -> Bool; s.upper() -> String; s.lower() -> String; s.capitalize() -> String; s.repeat(n: Long) -> String; s.trim() -> String; s.trim_start(chars: StringLike = "") -> String; s.trim_end(chars: StringLike = "") -> String; s.tr(from: StringLike, to: StringLike) -> String; s.split(sep: StringLike) -> Array<StringView>; s.split_iter(sep: StringLike) -> Iterator<StringView>; s.lines() -> Array<StringView>; s.replace(pat: String | Regex, repl: String | Function) -> String; s.contains(sub: StringLike) -> Bool; s.count(sub: StringLike) -> Long; s.starts_with(prefix: StringLike) -> Bool; s.ends_with(suffix: StringLike) -> Bool; s.slice(start: Long, end: Long) -> StringView; s.view() -> StringView; s.to_string() -> String; s.iter() -> Iterator<StringView>; s.code_points() -> Iterator<Long>; s.graphemes() -> Iterator<StringView>; s.bytes() -> Iterator<Long>; String.from_code_point(cp: Long) -> String; String.from_code_points(cps: Array) -> String; String.from_bytes(bytes: Array) -> String
 
-**Array methods** — a.size() -> Long; a.empty() -> Bool; a.push(x: Any) -> Nil (mutating); a.pop() -> Any (mutating); a.slice(start: Long, end: Long) -> Array; a.join(sep: String) -> String; a.contains(v: Any) -> Bool; a.index_of(v: Any) -> Long; a.reverse() -> Nil (mutating); a.map(f: Function) -> Array; a.filter(f: Function) -> Array; a.for_each(f: Function) -> Nil; a.reduce(init: Any, f: Function) -> Any; a.find(f: Function) -> Any; a.any(f: Function) -> Bool; a.all(f: Function) -> Bool; a.flat_map(f: Function) -> Array; a.sum() -> Long | Float; a.product() -> Long | Float; a.min() -> Any; a.max() -> Any; a.min_by(f: Function) -> Any; a.max_by(f: Function) -> Any; a.to_set() -> Set; a.to_object() -> Object; a.group_by(f: Function) -> Object; a.partition(p: Function) -> Tuple; a.sort(reverse: Bool = false) -> Nil (mutating); a.sorted(reverse: Bool = false) -> Array; a.sort_by(key: Function, reverse: Bool = false) -> Nil (mutating); a.sorted_by(key: Function, reverse: Bool = false) -> Array
+**Array methods** — a.size() -> Long; a.empty() -> Bool; a.push(x: Any) -> Nil (mutating); a.pop() -> Any (mutating); a.extend(other: Array) -> Nil (mutating); a.insert(i: Long, x: Any) -> Nil (mutating); a.remove_at(i: Long) -> Any (mutating); a.slice(start: Long, end: Long) -> Array; a.join(sep: String) -> String; a.contains(v: Any) -> Bool; a.index_of(v: Any) -> Long; a.reverse() -> Nil (mutating); a.map(f: Function) -> Array; a.filter(f: Function) -> Array; a.for_each(f: Function) -> Nil; a.reduce(init: Any, f: Function) -> Any; a.find(f: Function) -> Any; a.any(f: Function) -> Bool; a.all(f: Function) -> Bool; a.flat_map(f: Function) -> Array; a.sum() -> Long | Float; a.product() -> Long | Float; a.min() -> Any; a.max() -> Any; a.min_by(f: Function) -> Any; a.max_by(f: Function) -> Any; a.to_set() -> Set; a.to_object() -> Object; a.group_by(f: Function) -> Object; a.partition(p: Function) -> Tuple; a.sort(reverse: Bool = false) -> Nil (mutating); a.sorted(reverse: Bool = false) -> Array; a.sort_by(key: Function, reverse: Bool = false) -> Nil (mutating); a.sorted_by(key: Function, reverse: Bool = false) -> Array
 
 **Object methods** — o.size() -> Long; o.empty() -> Bool; o.keys() -> Array; o.values() -> Iterator; o.has(key: String) -> Bool; o.get(key, fallback) -> value; o.get_or_put(key, init) -> value (mutating); o.remove(key: String) -> Nil (mutating)
 

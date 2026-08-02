@@ -158,7 +158,7 @@ and a one-element set respectively.
 ### Operators and punctuation
 
     ==  !=  <=  <  >=  >        # comparison
-    +  -  *  /  %  **           # arithmetic (`**` exponentiation); `+` also concatenates strings
+    +  -  *  /  %  **           # arithmetic (`**` exponentiation); `+` also concatenates strings and Arrays
     @                           # matmul (user-defined via `__matmul__`)
     |  &  ^  <<  >>  ~          # bitwise or / and / xor / shifts / complement (Long only)
     !                           # logical not
@@ -942,6 +942,8 @@ an owned `String`. Concatenating a string with a non-string (`'n: ' + 1`)
 is a `TypeError` — use interpolation (`"n: {1}"`) or `to_string` to mix
 types.
 
+Arrays concatenate the same way (§9); no other type does.
+
 ---
 
 ## 9. Arrays
@@ -967,6 +969,19 @@ elements into the literal:
 
 Spread sources are `Array`, `Tuple`, and `Set` (a non-iterable raises
 `TypeError`).
+
+**Concatenation.** `+` joins two Arrays into a new one, the same way it
+joins two Strings (§8). Spread is the more general form — it takes
+`Tuple` / `Set` sources and can splice into the middle of a literal —
+while `+` reads better for the plain two-Array case and chains:
+
+    a + b                    # new Array; a and b unchanged
+    a += b                   # rebinds a to the concatenation
+    [...a, ...b]             # same result as a + b
+
+The copy is shallow: elements are shared with the operands, as with
+`slice`. To append in place instead of building a new Array, use
+`a.extend(b)` (§18.2).
 
 ### Access and mutation
 
@@ -1769,7 +1784,8 @@ the `|` close delimiter of lambda parameters made the operator
 ambiguous to a stateless PEG parser, so all four operations route
 through methods for consistency. Operators otherwise stay reserved for
 math types (Long, Float, Tensor, user numeric classes via `__add__`
-etc.); the one exception is `+`, which also concatenates strings (§8).
+etc.); the one exception is `+`, which also concatenates strings (§8)
+and Arrays (§9). A `Set` has no `+` — `to_array()` first, or `union`.
 
 ---
 
@@ -3904,8 +3920,9 @@ direct String scalars, prefer `for c in s { ... }` (native loop).
 ### 18.2 Array methods
 
 Methods marked **mutating** modify the receiver in place and return
-`nil` (except `pop`, which returns the removed element); others
-return a new `Array` and leave the receiver unchanged.
+`nil` (except `pop` and `remove_at`, which return the removed
+element); others return a new `Array` and leave the receiver
+unchanged.
 
 A callback that mutates the receiver is allowed, and the walk follows
 the live array: the size is re-read before every step, so the walk ends
@@ -3927,6 +3944,9 @@ inspect(seen)   # => [1, 2]
 | `a.empty() -> Bool`                          | Whether `size() == 0`.                |
 | `a.push(x: Any) -> Nil` *(mutating)*        | Append `x` to the end.                |
 | `a.pop() -> Any` *(mutating)*               | Remove and return the last element. `nil` if empty. |
+| `a.extend(other: Array) -> Nil` *(mutating)* | Append every element of `other`. `a.extend(a)` appends the elements `a` had on entry. For `Tuple` / `Set` sources use spread (§9). |
+| `a.insert(i: Long, x: Any) -> Nil` *(mutating)* | Insert `x` at position `i`, shifting the rest right. Negative `i` counts from the end, like `a[i]`; `i == a.size()` is the append slot. Out of range raises `IndexError`. |
+| `a.remove_at(i: Long) -> Any` *(mutating)*  | Remove the element at `i` and return it, shifting the rest left. Negative `i` counts from the end. Unlike `insert`, `i == a.size()` is out of range — raises `IndexError`, as does any `i` on an empty array. |
 | `a.slice(start: Long, end: Long) -> Array`  | Shallow subarray `[start, end)`. Same clamping as `String.slice`. |
 | `a.join(sep: String) -> String`             | Concatenate elements via `to_string` (strings unquoted), separated by `sep`. |
 | `a.contains(v: Any) -> Bool`                | Whether `v == elem` for some element (reference types: identity; value types: contents). |
@@ -3959,6 +3979,12 @@ inspect(seen)   # => [1, 2]
 mut a = [1, 2, 3]
 a.push(4)
 inspect(a.pop())                      # => 4
+a.extend([9, 8])
+inspect(a)                            # => [1, 2, 3, 9, 8]
+a.insert(0, 0)
+inspect(a)                            # => [0, 1, 2, 3, 9, 8]
+inspect(a.remove_at(-1))              # => 8
+inspect([1, 2] + [3])                 # => [1, 2, 3]
 inspect([10, 20, 30, 40].slice(1, 3)) # => [20, 30]
 inspect(['a', 'b', 'c'].join('-'))    # => 'a-b-c'
 inspect([1, 2, 3].contains(2))        # => true

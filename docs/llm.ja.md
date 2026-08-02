@@ -450,7 +450,6 @@ inspect(show('hi'))              # => 'hi'
 | `x \|> f()` | UFCS の `x.f()`。パイプライン演算子は無い |
 | 1 要素の Set として `{3}` | `SyntaxError`。1 要素は `{3,}`、`{}` は空 Object |
 | 集合の `a \| b` / `a & b` | メソッド: `a.union(b)` / `a.intersect(b)` / `a.diff(b)` |
-| `[1, 2] + [3]` | `TypeError`。`[1, 2].iter().chain([3]).collect()` を使う |
 | `{a: 1} + {b: 2}` | `TypeError`。Object のマージ演算子は無い |
 | String への `s[0]` | `TypeError`。バイトオフセットを取る `s.slice(0, 1)` を使う |
 | `-7 % 3 == 2` (Python) | `-1` — 符号は被除数に従う (C 流) |
@@ -459,6 +458,7 @@ inspect(show('hi'))              # => 'hi'
 | `0 == false` | `false` — 型をまたぐ暗黙変換は無い |
 | `.length` / `.count` | `.size()`。存在しないプロパティは `nil` なので `.length` は raise せず `nil` になる |
 | `.append(x)` | `.push(x)` |
+| `del a[i]` / `a.splice(i, 1)` | `a.remove_at(i)`。取り除いた要素を返す |
 | `obj['missing']` | `KeyError`。`obj.missing` は `nil`、`obj.get('missing', dflt)` は fallback を取る |
 | `'ab' * 3` | `TypeError`。文字列の繰り返し演算子は無い |
 | 引数への代入 | 引数は不変 — `ImmutableError` |
@@ -515,7 +515,7 @@ inspect([1, 2].size())                          # => 2
 
 **文字列メソッド** — s.size() -> Long; s.empty() -> Bool; s.upper() -> String; s.lower() -> String; s.capitalize() -> String; s.repeat(n: Long) -> String; s.trim() -> String; s.trim_start(chars: StringLike = "") -> String; s.trim_end(chars: StringLike = "") -> String; s.tr(from: StringLike, to: StringLike) -> String; s.split(sep: StringLike) -> Array<StringView>; s.split_iter(sep: StringLike) -> Iterator<StringView>; s.lines() -> Array<StringView>; s.replace(pat: String | Regex, repl: String | Function) -> String; s.contains(sub: StringLike) -> Bool; s.count(sub: StringLike) -> Long; s.starts_with(prefix: StringLike) -> Bool; s.ends_with(suffix: StringLike) -> Bool; s.slice(start: Long, end: Long) -> StringView; s.view() -> StringView; s.to_string() -> String; s.iter() -> Iterator<StringView>; s.code_points() -> Iterator<Long>; s.graphemes() -> Iterator<StringView>; s.bytes() -> Iterator<Long>; String.from_code_point(cp: Long) -> String; String.from_code_points(cps: Array) -> String; String.from_bytes(bytes: Array) -> String
 
-**配列メソッド** — a.size() -> Long; a.empty() -> Bool; a.push(x: Any) -> Nil (破壊的); a.pop() -> Any (破壊的); a.slice(start: Long, end: Long) -> Array; a.join(sep: String) -> String; a.contains(v: Any) -> Bool; a.index_of(v: Any) -> Long; a.reverse() -> Nil (破壊的); a.map(f: Function) -> Array; a.filter(f: Function) -> Array; a.for_each(f: Function) -> Nil; a.reduce(init: Any, f: Function) -> Any; a.find(f: Function) -> Any; a.any(f: Function) -> Bool; a.all(f: Function) -> Bool; a.flat_map(f: Function) -> Array; a.sum() -> Long | Float; a.product() -> Long | Float; a.min() -> Any; a.max() -> Any; a.min_by(f: Function) -> Any; a.max_by(f: Function) -> Any; a.to_set() -> Set; a.to_object() -> Object; a.group_by(f: Function) -> Object; a.partition(p: Function) -> Tuple; a.sort(reverse: Bool = false) -> Nil (破壊的); a.sorted(reverse: Bool = false) -> Array; a.sort_by(key: Function, reverse: Bool = false) -> Nil (破壊的); a.sorted_by(key: Function, reverse: Bool = false) -> Array
+**配列メソッド** — a.size() -> Long; a.empty() -> Bool; a.push(x: Any) -> Nil (破壊的); a.pop() -> Any (破壊的); a.extend(other: Array) -> Nil (破壊的); a.insert(i: Long, x: Any) -> Nil (破壊的); a.remove_at(i: Long) -> Any (破壊的); a.slice(start: Long, end: Long) -> Array; a.join(sep: String) -> String; a.contains(v: Any) -> Bool; a.index_of(v: Any) -> Long; a.reverse() -> Nil (破壊的); a.map(f: Function) -> Array; a.filter(f: Function) -> Array; a.for_each(f: Function) -> Nil; a.reduce(init: Any, f: Function) -> Any; a.find(f: Function) -> Any; a.any(f: Function) -> Bool; a.all(f: Function) -> Bool; a.flat_map(f: Function) -> Array; a.sum() -> Long | Float; a.product() -> Long | Float; a.min() -> Any; a.max() -> Any; a.min_by(f: Function) -> Any; a.max_by(f: Function) -> Any; a.to_set() -> Set; a.to_object() -> Object; a.group_by(f: Function) -> Object; a.partition(p: Function) -> Tuple; a.sort(reverse: Bool = false) -> Nil (破壊的); a.sorted(reverse: Bool = false) -> Array; a.sort_by(key: Function, reverse: Bool = false) -> Nil (破壊的); a.sorted_by(key: Function, reverse: Bool = false) -> Array
 
 **オブジェクトメソッド** — o.size() -> Long; o.empty() -> Bool; o.keys() -> Array; o.values() -> Iterator; o.has(key: String) -> Bool; o.get(key, fallback) -> value; o.get_or_put(key, init) -> value (破壊的); o.remove(key: String) -> Nil (破壊的)
 

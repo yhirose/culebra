@@ -4812,6 +4812,40 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
          vs.pop_back();
          return last;
        }))},
+      // Append every element of `other`. Reserving first keeps the read
+      // valid when the receiver is also the argument (`a.extend(a)`).
+      {"extend"sv,
+       Value(FunctionValue({{"other", false, "Array"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+                             auto& vs = *callEnv->get("self").to_array().values;
+                             const auto& other =
+                                 *callEnv->get("other").to_array().values;
+                             size_t n = other.size();
+                             vs.reserve(vs.size() + n);
+                             for (size_t i = 0; i < n; i++) vs.push_back(other[i]);
+                             return Value();
+                           }))},
+      {"insert"sv,
+       Value(FunctionValue({{"i", false, "Long"sv}, {"x", false}},
+                           [](std::shared_ptr<Environment> callEnv) {
+                             auto& vs = *callEnv->get("self").to_array().values;
+                             auto i = resolve_position_index(
+                                 callEnv->get("i").to_long(), vs.size(),
+                                 /*allow_end=*/true);
+                             vs.insert(vs.begin() + i, callEnv->get("x"));
+                             return Value();
+                           }))},
+      {"remove_at"sv,
+       Value(FunctionValue({{"i", false, "Long"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+                             auto& vs = *callEnv->get("self").to_array().values;
+                             auto i = resolve_position_index(
+                                 callEnv->get("i").to_long(), vs.size(),
+                                 /*allow_end=*/false);
+                             auto removed = vs[i];
+                             vs.erase(vs.begin() + i);
+                             return removed;
+                           }))},
       {"slice"sv,
        Value(FunctionValue(
            {{"start", false, "Long"sv}, {"end", false, "Long"sv}},
@@ -10885,6 +10919,17 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       std::string out;
       out.reserve(a.size() + b.size());
       out.append(a).append(b);
+      return Value(std::move(out));
+    }
+    // Array concatenation: the same `+`-also-concatenates exception the
+    // String case above gets. Shallow, like `slice` — elements are shared.
+    if (ope == '+' && lhs.type == Value::Array && rhs.type == Value::Array) {
+      const auto& a = *lhs.to_array().values;
+      const auto& b = *rhs.to_array().values;
+      ArrayValue out;
+      out.values->reserve(a.size() + b.size());
+      out.values->insert(out.values->end(), a.begin(), a.end());
+      out.values->insert(out.values->end(), b.begin(), b.end());
       return Value(std::move(out));
     }
     // `@` has no numeric meaning, so skip the numeric path entirely;

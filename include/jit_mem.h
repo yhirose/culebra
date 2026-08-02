@@ -508,6 +508,8 @@ namespace rt {
 inline constexpr auto array_all           = "culebra_runtime_array_all";
 inline constexpr auto array_any           = "culebra_runtime_array_any";
 inline constexpr auto array_contains      = "culebra_runtime_array_contains";
+inline constexpr auto array_insert        = "culebra_runtime_array_insert";
+inline constexpr auto array_remove_at     = "culebra_runtime_array_remove_at";
 inline constexpr auto array_min_by        = "culebra_runtime_array_min_by";
 inline constexpr auto array_max_by        = "culebra_runtime_array_max_by";
 inline constexpr auto array_to_set        = "culebra_runtime_array_to_set";

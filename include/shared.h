@@ -52,6 +52,7 @@ namespace culebra {
 inline const std::unordered_set<std::string_view>& builtin_method_names() {
   static const std::unordered_set<std::string_view> kNames = {
       "size",       "empty",       "push",       "pop",        "reverse",
+      "extend",     "insert",      "remove_at",
       "slice",      "join",        "index_of",   "contains",   "upper",
       "lower",
       "trim",       "tr",          "trim_start", "trim_end",   "split",
@@ -861,6 +862,20 @@ inline std::string url_decode(std::string_view in) {
                      "type error: cannot compare " + std::string(lhs) +
                          " and " + std::string(rhs),
                      line, col);
+}
+
+// Resolve the position argument of Array `insert` / `remove_at`: negative
+// counts from the end, like `a[i]`. `allow_end` admits `size` itself — the
+// append slot `insert` accepts and `remove_at` (which must address a live
+// element) does not. Single source so both backends raise the same
+// IndexError as a subscript.
+inline size_t resolve_position_index(int64_t i, size_t size, bool allow_end,
+                                     int64_t line = 0, int64_t col = 0) {
+  auto n = static_cast<int64_t>(size);
+  if (i < 0) i += n;
+  if (i < 0 || i > n || (i == n && !allow_end))
+    throw CulebraError("IndexError", "index out of range", line, col);
+  return static_cast<size_t>(i);
 }
 
 // A sort's comparison sequence is unobservable when every element belongs to
