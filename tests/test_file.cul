@@ -137,6 +137,21 @@ let e_closed = try {
 } catch e { e.kind }
 assert_eq(e_closed, "IOError")
 
+// A handle method's error is positioned at the call, like every other error.
+let ph = File.open(p, "r")
+ph.close()
+let e_pos = try { ph.read(); nil } catch e { e }
+assert_true(e_pos.line > 0 && e_pos.col > 0)
+
+// A lines() step reports where the ITERATOR was built, not at the loop that
+// pulls it — the position travels with the iterator.
+let lh = File.open(p, "r")
+let lit = lh.lines()
+lh.close()
+let e_lines = try { for l in lit { l }; nil } catch e { e }
+assert_eq(e_lines.kind, "IOError")
+assert_true(e_lines.line > 0 && e_lines.col > 0)
+
 // --- multibyte round-trip (String is a Go-style byte string) ---
 // Multibyte UTF-8 must survive write→read unchanged, and size() counts
 // bytes (3 per CJK char here), not characters. (A lone NUL / invalid

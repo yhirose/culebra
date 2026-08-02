@@ -2361,8 +2361,11 @@ CULEBRA_RT_INLINE void _jit_file_read(JitValue* __ret, JitClosure*, int8_t self_
                      args[0].tag != TAG_NIL;
   if (has_n && args[0].tag != TAG_LONG)
     _jit_file_body_type_error(self, "Long", args[0].tag);
-  std::string out = has_n ? culebra::_file_read_n(id, args[0].data, 0, 0)
-                          : culebra::_file_read_all(id, 0, 0);
+  std::string out = has_n ? culebra::_file_read_n(id, args[0].data,
+                                                  _jit_call_site_line,
+                                                  _jit_call_site_col)
+                          : culebra::_file_read_all(id, _jit_call_site_line,
+                                                    _jit_call_site_col);
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(out))}; return; }
 }
@@ -2377,7 +2380,7 @@ CULEBRA_RT_INLINE void _jit_file_write(JitValue* __ret, JitClosure*, int8_t self
   if (args[0].tag != TAG_STRING)
     _jit_file_param_type_error(self, "data", "String", 0);
   auto sv = _culebra_str_view(args[0].tag, args[0].data);
-  culebra::_file_write(id, sv, 0, 0);
+  culebra::_file_write(id, sv, _jit_call_site_line, _jit_call_site_col);
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
@@ -2385,7 +2388,8 @@ CULEBRA_RT_INLINE void _jit_file_flush(JitValue* __ret, JitClosure*, int8_t self
                                            int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   culebra::_file_flush(_jit_handle_long(reinterpret_cast<JitObject*>(self.data),
-                                        "_id"), 0, 0);
+                                        "_id"),
+                       _jit_call_site_line, _jit_call_site_col);
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
@@ -2407,7 +2411,8 @@ CULEBRA_RT_INLINE void _jit_file_seek(JitValue* __ret, JitClosure*, int8_t self_
       _jit_file_body_type_error(self, "String", args[1].tag);
     whence = _culebra_str_view(args[1].tag, args[1].data);
   }
-  culebra::_file_seek(id, off, whence, 0, 0);
+  culebra::_file_seek(id, off, whence, _jit_call_site_line,
+                      _jit_call_site_col);
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
@@ -2415,7 +2420,8 @@ CULEBRA_RT_INLINE void _jit_file_tell(JitValue* __ret, JitClosure*, int8_t self_
                                           int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   int64_t pos = culebra::_file_tell(
-      _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id"), 0, 0);
+      _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id"),
+      _jit_call_site_line, _jit_call_site_col);
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_LONG, pos}; return; }
 }
@@ -2436,14 +2442,20 @@ CULEBRA_RT_INLINE void _jit_file_drop(JitValue* __ret, JitClosure*, int8_t self_
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
-// lines()/chunks() iterator FastFns. captures: [handle_cell, id_cell]
-// (+ n_cell for chunks). handle_cell keeps the File handle alive so an
-// anonymous `File.open(p).lines()` isn't GC'd before the loop runs.
+// lines()/chunks() iterator FastFns. captures: [handle_cell, id_cell,
+// (n_cell,) line_cell, col_cell]. handle_cell keeps the File handle alive so
+// an anonymous `File.open(p).lines()` isn't GC'd before the loop runs; the
+// position is the one captured when the iterator was built, which is where the
+// interp's closure reports a step's error too — not the loop that pulls it.
 inline void _file_lines_fast_fn(JitClosure* cls, JitValue, bool* done,
                                 int8_t* out_tag, int64_t* out_data) {
   int64_t id = cls->captures[1]->value.data;
   std::string out;
-  if (!culebra::_file_getline(id, out, 0, 0)) { *done = true; return; }
+  if (!culebra::_file_getline(id, out, cls->captures[2]->value.data,
+                              cls->captures[3]->value.data)) {
+    *done = true;
+    return;
+  }
   *done = false;
   *out_tag = TAG_STRING;
   *out_data = reinterpret_cast<int64_t>(_culebra_heap_str(out));
@@ -2452,7 +2464,8 @@ inline void _file_chunks_fast_fn(JitClosure* cls, JitValue, bool* done,
                                  int8_t* out_tag, int64_t* out_data) {
   int64_t id = cls->captures[1]->value.data;
   int64_t n = cls->captures[2]->value.data;
-  std::string chunk = culebra::_file_read_n(id, n, 0, 0);
+  std::string chunk = culebra::_file_read_n(id, n, cls->captures[3]->value.data,
+                                            cls->captures[4]->value.data);
   if (chunk.empty()) { *done = true; return; }
   *done = false;
   *out_tag = TAG_STRING;
@@ -2480,12 +2493,17 @@ inline JitObject* _file_iter_build(JitValue self, bool chunks, int64_t n) {
   culebra_runtime_value_retain(self.tag, self.data);  // iter keeps handle alive
   auto* handle_cell = culebra_runtime_cell_new(self.tag, self.data);
   auto* id_cell = culebra_runtime_cell_new(TAG_LONG, id);
+  // This call's site, not the pulling loop's: each step reports here.
+  auto* line_cell = culebra_runtime_cell_new(TAG_LONG, _jit_call_site_line);
+  auto* col_cell = culebra_runtime_cell_new(TAG_LONG, _jit_call_site_col);
   JitObject* it;
   if (chunks) {
     auto* n_cell = culebra_runtime_cell_new(TAG_LONG, n);
-    it = _iter_wrap_fast<&_file_chunks_fast_fn>({handle_cell, id_cell, n_cell});
+    it = _iter_wrap_fast<&_file_chunks_fast_fn>(
+        {handle_cell, id_cell, n_cell, line_cell, col_cell});
   } else {
-    it = _iter_wrap_fast<&_file_lines_fast_fn>({handle_cell, id_cell});
+    it = _iter_wrap_fast<&_file_lines_fast_fn>(
+        {handle_cell, id_cell, line_cell, col_cell});
   }
   _jit_register_native_fn(
       reinterpret_cast<const void*>(&_file_iter_dispose_fn));

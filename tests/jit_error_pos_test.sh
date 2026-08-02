@@ -263,5 +263,33 @@ c.divide(0)'
 check_same "wrap borrowed body"    'let b = __Foreign.Box.new(5)
 b.slot(1)'
 
+# A File handle method is entered through a thunk ABI with no line/col, so it
+# hands the published call site to the same helper the interp calls with its
+# own — one case per method that can fail. lines()/chunks() report where the
+# ITERATOR was built (the position the interp's closure captured), not at the
+# loop pulling it, so those two cases put the two on different lines.
+printf 'a\nb\n' > "$TMP/in.txt"
+check_same "file read closed"   "let f = File.open('$TMP/in.txt')
+f.close()
+f.read()"
+check_same "file write rdonly"  "let f = File.open('$TMP/in.txt')
+f.write('x')"
+check_same "file flush closed"  "let f = File.open('$TMP/in.txt')
+f.close()
+f.flush()"
+check_same "file seek whence"   "let f = File.open('$TMP/in.txt')
+f.seek(0, 'bogus')"
+check_same "file tell closed"   "let f = File.open('$TMP/in.txt')
+f.close()
+f.tell()"
+check_same "file lines closed"  "let f = File.open('$TMP/in.txt')
+let it = f.lines()
+f.close()
+for l in it { l }"
+check_same "file chunks closed" "let f = File.open('$TMP/in.txt')
+let it = f.chunks(2)
+f.close()
+for c in it { c }"
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1
