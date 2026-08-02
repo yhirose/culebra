@@ -74,8 +74,9 @@ APIリファレンスは [`stdlib.ja.md`](stdlib.ja.md) を参照してくださ
   (Regex/Http/Hash/Encoding/Compress/JSON/CSV/TOML/SQLite/UUID/
   Log/Term/Canvas) はどちらも出荷済み。 Tier 2/3 (Crypto、Sockets)
   は需要次第 — Ch.14 参照。
-- **1.0 前。** ソース・API は変わる可能性。 リリース機構 (バージョン
-  タグ、CHANGELOG、Homebrew formula 等) は 1.0 後。
+- **1.0前。** ソース・APIは変わる可能性。tag付きリリースには3プラット
+  フォームのビルド済みバイナリが付く (§1.1)。CHANGELOGとHomebrew
+  formulaは無く、各リリースのノートが記録。
 
 ---
 

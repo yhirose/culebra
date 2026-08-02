@@ -78,9 +78,10 @@ Read this once; the rest of the guide assumes these choices.
   Random/String/Time/Args) and Tier 1 (Regex/Http/Hash/Encoding/
   Compress/JSON/CSV/TOML/SQLite/UUID/Log/Term/Canvas) both ship
   today; Tier 2/3 (Crypto, Sockets) follows demand — see Ch.14.
-- **Pre-1.0.** Source and APIs may change. There is no release
-  machinery (no version tags, no CHANGELOG, no Homebrew formula) yet
-  — that comes after 1.0.
+- **Pre-1.0.** Source and APIs may change. Tagged releases carry
+  prebuilt binaries for the three platforms (§1.1); there is no
+  CHANGELOG and no Homebrew formula — each release's notes on GitHub
+  are the record.
 
 ---
 
