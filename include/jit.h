@@ -13097,9 +13097,9 @@ struct JIT {
     // non-Function — `{size: 5}.size()` is "expected Function, got Long", not
     // the dict builtin. A trait default has no slot to find, so the Function
     // test stays alongside: the property read resolves it and it takes the
-    // user arm like any other method. Names the object lacks (a Shared.new
-    // view's frozen-tree keys included) drop to the builtin arm, whose own
-    // receiver gates route them back to the same property read.
+    // user arm like any other method. Names the object lacks drop to the
+    // builtin arm, whose own receiver gates route them back to the same
+    // property read.
     builder_.SetInsertPoint(checkBB);
     auto methodVal = emit_property_get(receiver, method);  // borrowed; nil if absent
     auto isFunc = builder_.CreateICmpEQ(extract_tag(methodVal),
@@ -13109,6 +13109,18 @@ struct JIT {
                                 llvm::PointerType::get(ctx_, 0)),
         get_or_create_global_str(method, ".umb.key"), "umb.has");
     auto toUser = builder_.CreateOr(isFunc, hasOwn, "umb.to.user");
+    // …except that a Shared.new view has no dict builtins: interp's
+    // eval_property hands every name the handle doesn't carry to the frozen
+    // tree, so `view.get(k)` is "expected Function, got Nil" and not the dict
+    // builtin's ArityError. Only the dict table can reach an Object receiver,
+    // so the extra test is a compile-time fact away for every other name.
+    if (dict_builtin_table()->count(method)) {
+      auto isView = builder_.CreateICmpNE(
+          emit_call(module_->getFunction(rt::is_shared_val),
+                    {extract_data(receiver)}, "umb.is.view"),
+          builder_.getInt8(0));
+      toUser = builder_.CreateOr(toUser, isView, "umb.to.user.view");
+    }
     builder_.CreateCondBr(toUser, userBB, builtinBB);
 
     // userBB: the user-defined function shadows the builtin. Use the same

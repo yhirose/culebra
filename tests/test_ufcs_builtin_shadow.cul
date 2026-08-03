@@ -507,6 +507,14 @@ assert_throws('TypeError', fn () {
   view.upper()
 })
 
+# A view has no dict builtins of its own: a name its handle doesn't carry
+# reads the frozen tree (nil) and raises on the call, which is what
+# eval_property does — not the dict builtin's ArityError.
+assert_throws('TypeError', fn () { view.get("a") })
+assert_throws('TypeError', fn () { view.get_or_put("z", 9) })
+assert_throws('TypeError', fn () { view.remove("a") })
+assert_throws('TypeError', fn () { view.empty() })
+
 # --- Phase 7 (J): `drop`'s at-most-once guard sits below UFCS ---
 
 # A free `drop` claims every receiver that carries no `drop` of its own, just
