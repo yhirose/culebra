@@ -469,9 +469,10 @@ fn ns_through_binding() {
 assert_throws('AttributeError', ns_through_binding)
 
 # A namespace member called at the wrong arity is that member's ArityError,
-# not the same-named global taking over.
+# not the same-named global taking over. `arg` defaults to '', so only an
+# arity above the cap (not zero args) is wrong here.
 assert_throws('ArityError', fn () {
-  IO.println()
+  IO.println(1, 2)
 })
 
 # Plain dicts keep UFCS, and an own property still beats an extension global.

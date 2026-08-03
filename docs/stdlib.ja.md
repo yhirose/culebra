@@ -326,15 +326,17 @@ IO.print('world!')
 IO.println('')      # → Hello, world!
 ```
 
-### `IO.println(x: Any) -> Nil`
+### `IO.println(x: Any = '') -> Nil`
 
 `x`を改行付きで標準出力に書き出します。書式は`to_string`と同じで、
 文字列は**引用符なし**で出力されます — `inspect`の生表示版であり、
-`print`の改行付き版です。
+`print`の改行付き版です。`x`は`''`がデフォルトなので、`println()`単体は
+空行だけを出力します。
 
 ```culebra
 IO.println('hi')       # → hi
 IO.println(42)         # → 42
+IO.println()           # → (空行)
 ```
 
 ### `IO.input() -> String`

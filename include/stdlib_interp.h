@@ -342,7 +342,8 @@ inline Value make_io_namespace() {
                 false);
 
   ns.initialize("println",
-                Value(FunctionValue({{"arg", true}},
+                Value(FunctionValue({{"arg", true, ""sv, nullptr,
+                                      kw_default_empty_str()}},
                                     [](std::shared_ptr<Environment> env) {
                                       auto s = str_display_with_special(
                                           env->get("arg"));

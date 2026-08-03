@@ -10,6 +10,13 @@ IO.eprint("eprint → stderr (raw)\n")
 IO.eprintln("eprintln → stderr (raw + newline)")
 IO.println("println → stdout (raw + newline)")
 
+// `arg` defaults to '' — a bare println() writes just a blank line, matching
+// println('') on both backends (direct call, IO.println, and as a value).
+println()
+IO.println()
+let bare_println = println
+bare_println()
+
 // Exercise IO.stdin().read() only when stdin is a pipe/file (never an
 // interactive terminal, which would block waiting for EOF). Returns a String.
 if IO.stdin_is_terminal() {

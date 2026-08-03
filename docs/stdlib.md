@@ -335,15 +335,17 @@ IO.print('world!')
 IO.println('')      # → Hello, world!
 ```
 
-### `IO.println(x: Any) -> Nil`
+### `IO.println(x: Any = '') -> Nil`
 
 Print `x` followed by a newline to standard output, using `to_string`
 formatting (strings are **unquoted**) — the raw-display twin of
-`inspect`, and the newline-appending twin of `print`.
+`inspect`, and the newline-appending twin of `print`. `x` defaults to
+`''`, so a bare `println()` just writes a blank line.
 
 ```culebra
 IO.println('hi')       # → hi
 IO.println(42)         # → 42
+IO.println()           # → (blank line)
 ```
 
 ### `IO.input() -> String`

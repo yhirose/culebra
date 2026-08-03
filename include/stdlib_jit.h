@@ -3753,8 +3753,12 @@ inline JitValue _ns_io_print(JitValue* a, int64_t) {
   culebra_runtime_print(a[0].tag, a[0].data);
   return _ns_adapt::v_nil();
 }
-inline JitValue _ns_io_println(JitValue* a, int64_t) {
-  culebra_runtime_println(a[0].tag, a[0].data);
+// `arg` defaults to "" (Python-style bare `println()` prints a blank line) —
+// mirrors the interp's kw_default_empty_str() default on the same param.
+inline JitValue _ns_io_println(JitValue* a, int64_t n) {
+  JitValue arg = n > 0 ? a[0]
+                       : _ns_adapt::v_string(_culebra_heap_str(std::string()));
+  culebra_runtime_println(arg.tag, arg.data);
   return _ns_adapt::v_nil();
 }
 inline JitValue _ns_io_input(JitValue*, int64_t) {
@@ -6530,7 +6534,20 @@ _canon_params(const NsMethod* m) {
   const culebra::Value* fnv = nullptr;
   if (m->ns == nullptr || m->ns[0] == '\0') {
     auto it = env.dictionary.find(std::string(m->name));
-    if (it != env.dictionary.end()) fnv = &it->second.val;
+    if (it != env.dictionary.end()) {
+      fnv = &it->second.val;
+    } else {
+      // `inspect`/`print`/`println` are CLI aliases of IO members
+      // (install_cli_aliases), not entries of the canonical dictionary
+      // itself — fall back to the IO namespace so their canonical params
+      // (defaults included) still resolve for the bare-global form.
+      auto io_it = env.dictionary.find("IO");
+      if (io_it != env.dictionary.end() &&
+          io_it->second.val.type == culebra::Value::Object) {
+        const auto& io_obj = io_it->second.val.to_object();
+        if (io_obj.has(m->name)) fnv = &io_obj.get(m->name);
+      }
+    }
   } else {
     auto it = env.dictionary.find(std::string(m->ns));
     if (it == env.dictionary.end() ||
@@ -6576,7 +6593,9 @@ inline bool _ns_method_uses_kwarg_slab(const NsMethod* m) {
   if (ns == "Env")      return nm == "load";  // path/override defaults
   if (ns == "Sys")      return nm == "env";  // fallback default
   if (ns == "Compress") return nm == "deflate";  // level default
-  if (ns.empty())       return nm == "range" || nm == "iota";  // bare globals
+  if (ns == "IO")       return nm == "println";  // arg defaults to ""
+  if (ns.empty())       return nm == "range" || nm == "iota" ||
+                               nm == "println";  // bare globals
   return false;
 }
 
@@ -8358,7 +8377,7 @@ inline JIT::Owned JitExtension::compile_global(JIT& jit,
     return jit.own(emit_output_call(jit, rt::inspect, argsAst));
   if (name == "print" && argsAst.nodes.size() == 1)
     return jit.own(emit_output_call(jit, rt::print, argsAst));
-  if (name == "println" && argsAst.nodes.size() == 1)
+  if (name == "println" && argsAst.nodes.size() <= 1)
     return jit.own(emit_output_call(jit, rt::println, argsAst));
 
   if (name == "to_long" && argsAst.nodes.size() == 1) {
@@ -8895,7 +8914,7 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
       return jit.own(emit_output_call(rt::inspect, argsAst));
     if (method == "print" && argsAst.nodes.size() == 1)
       return jit.own(emit_output_call(rt::print, argsAst));
-    if (method == "println" && argsAst.nodes.size() == 1)
+    if (method == "println" && argsAst.nodes.size() <= 1)
       return jit.own(emit_output_call(rt::println, argsAst));
     if (method == "input" && argsAst.nodes.size() == 0) {
       auto s = emit_call(module_->getFunction(rt::input), {});
@@ -9985,7 +10004,11 @@ inline JIT::Owned JitExtension::compile_ns_prop(JIT& jit,
 inline llvm::Value* JitExtension::emit_output_call(JIT& jit,
                                                      const char* rt_name,
                                                      const peg::Ast& argsAst) {
-  auto arg = jit.compile(*argsAst.nodes[0]);
+  // Only `println` reaches here with an empty arg list (bare `println()` —
+  // defaults to "", matching the interp's kw_default_empty_str() default).
+  auto arg = argsAst.nodes.empty()
+                 ? jit.own(jit.make_string(jit.emit_str_literal("")))
+                 : jit.compile(*argsAst.nodes[0]);
   jit.emit_call(jit.module_->getFunction(rt_name),
                       {jit.extract_tag(arg.borrow()),
                        jit.extract_data(arg.borrow())});
