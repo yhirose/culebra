@@ -13605,18 +13605,39 @@ struct JIT {
     // is cleared on the self-recursive __call__ invocation below so the
     // reconstruction emits only once (no compile-time recursion).
     builder_.SetInsertPoint(errorBB);
+    // `callee` is often BORROWED out of `selfVal`'s own slots (`{m:
+    // Adder.new(1)}.m(41)` reads `callee` off `selfVal`'s `m` slot), so pin
+    // it with our own +1 before releasing `selfVal` below — otherwise the
+    // release can free the object the `class_call_method`/`class_new_method`
+    // probes below still need to dereference. None of the three sub-arms
+    // (not-a-function, `__call__` overload, ctor dispatch) consumes the
+    // ORIGINAL `selfVal` either, so release it here once, covering all
+    // three uniformly instead of only the not-a-function tail (where it used
+    // to sit, stranding it whenever the overload/ctor arm was taken — the
+    // receiver leak `{m: Adder.new(1)}.m(41)` hit). Each arm below drops the
+    // `callee` pin exactly once in turn (transferred into `self` on the
+    // overload arm, an explicit release on the ctor/not-a-function arms).
+    // Most callers pass a nil/borrowed `selfVal` and opt into neither this
+    // nor the args release below; `selfVal` may be null (releasing nil is a
+    // no-op). Gated on `allow_call_overload` (a C++-time constant, not a
+    // runtime branch): the overload/ctor probes this pin protects only exist
+    // on that arm, and the self-recursive `__call__` invocation below always
+    // passes a confirmed-Function callee, so its own errorBB is dead code —
+    // no sense emitting an unreachable pin/unpin pair into it.
+    if (allow_call_overload) emit_value_retain(callee);
+    if (own_self_on_error && selfVal) emit_value_release(selfVal);
     auto emit_not_function = [&] {
       // The callee is not callable (a method miss lowers to `call nil` —
-      // `[1,2,3].first()`). No callee frame will run, so the +1s the caller
-      // handed this call have no consumer and strand on the raise. The receiver
-      // (`selfVal`) and args are gated separately by the caller: the method-call
-      // fallthrough consumes both and nothing else releases them, so it opts into
-      // both; the unresolved-builtin path (`{a:1}.map(f)`) already releases the
-      // receiver on this edge via its own machinery but strands the callback arg,
-      // so it opts into args-only — releasing its receiver too would double-free.
-      // Most callers pass a nil/borrowed `selfVal` and opt into neither. `selfVal`
-      // may be null (releasing nil is a no-op).
-      if (own_self_on_error && selfVal) emit_value_release(selfVal);
+      // `[1,2,3].first()`). No callee frame will run, so the args the caller
+      // handed this call have no consumer and strand on the raise (`selfVal`
+      // is already handled above). Args are gated separately by the caller:
+      // the method-call fallthrough consumes them and nothing else releases
+      // them, so it opts in; the unresolved-builtin path (`{a:1}.map(f)`)
+      // already releases its receiver on this edge via its own machinery but
+      // strands the callback arg, so it opts in too. Most callers pass no
+      // args needing this or opt out.
+      if (allow_call_overload)
+        emit_value_release(callee);  // drop the pin taken at errorBB entry
       if (own_args_on_error)
         for (auto* a : userArgs) emit_value_release(a);
       emit_type_error_typed("Function", tag);
@@ -13639,10 +13660,10 @@ struct JIT {
       builder_.CreateCondBr(isCallFn, overloadBB, tryCtorBB);
 
       builder_.SetInsertPoint(overloadBB);
-      // `callee` becomes `self`; retain so the recursive frame consumes
-      // its own +1 (the original ref stays borrowed, the convention the
-      // normal path shares — see the leak note in the kwargs path).
-      emit_value_retain(callee);
+      // `callee` becomes `self`: the pin taken at errorBB entry above IS
+      // that +1 (the recursive frame consumes it, the convention the normal
+      // path shares — see the leak note in the kwargs path); no second
+      // retain needed.
       // Late-merge arm raw: the value lives only on this arm's
       // runtime path and is re-owned when the builder revisits the arm to
       // declare it into call.phi below — holding it in an Owned across the
@@ -13673,6 +13694,9 @@ struct JIT {
       emit_not_function();
 
       builder_.SetInsertPoint(ctorBB);
+      // The constructor takes no receiver, so the pin taken at errorBB entry
+      // has no further use on this arm — drop it.
+      emit_value_release(callee);
       // Late-merge arm raw — same contract as overloadResult above.
       ctorResult = compile_function_call_raw(
           newMethod, /*selfVal=*/nullptr, userArgs,

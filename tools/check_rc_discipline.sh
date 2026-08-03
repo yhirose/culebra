@@ -30,7 +30,13 @@ ret=$(grep "emit_value_retain(" include/jit.h \
 # 51 -> 49 (2026-07-25): the for-in protocol iterator moved onto a scope slot,
 # so emit_iter_dispose no longer hand-places the alloca's release (nor the
 # local unwind pad that mirrored it) — scope teardown owns both now.
-ratchet "bare emit_value_release sites (jit.h)" "$rel" 49
+# 49 -> 51 (2026-08-03, reviewed): compile_function_call_raw's errorBB pins
+# `callee` (often BORROWED out of `selfVal`'s own slots) before releasing
+# `selfVal`, fixing a use-after-free on the `__call__`/ctor overload probes.
+# The pin is dropped once per leaf arm; the ctor and not-a-function arms
+# need a new bare release each (the overload arm folds it into the existing
+# recursive-call handoff instead).
+ratchet "bare emit_value_release sites (jit.h)" "$rel" 51
 # 29 includes the ctor-overload shared-meta multi-capture retain in
 # compile_class_decl: one class meta fans out into N `new` overload closures,
 # each capture needing its own +1 (a genuine fan-out, not a throw-safety
@@ -144,7 +150,7 @@ tassign=$(grep -cE '(llvm::Value|auto) ?\* ?[A-Za-z_]+ ?= ?[^;]*\.consume\(\);' 
 ratchet "typed consume assignments (jit.h)" "$tassign" 0
 
 if (( fail )); then exit 1; fi
-echo "rc-discipline OK (release=$rel/49 retain=$ret/29 borrow=$brw/5" \
+echo "rc-discipline OK (release=$rel/51 retain=$ret/29 borrow=$brw/5" \
      "rt-borrow=$rbrw/1 tail-self=$tail_self/0" \
      "stdlib=$(count_bare include/stdlib_jit.h)/98" \
      "sendable=$(count_bare include/sendable_jit.h)/12 throwguard=$tg/21" \
