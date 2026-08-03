@@ -171,6 +171,12 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast) {
     bool continuing = !accum.empty();
     auto prompt = continuing ? "...> " : "cul> ";
     bool eof_signal = false;
+    // `print(...)` (unlike `println`/`inspect`) writes no trailing
+    // newline, so it can sit unflushed in cout's buffer until some
+    // later `std::endl` call flushes it — visibly delaying it past
+    // the next prompt. Flush here so anything buffered lands before
+    // the prompt that follows it.
+    cout.flush();
     auto line = linenoise::Readline(prompt, eof_signal);
 
     // Exit on Ctrl-D / EOF (linenoise sets `eof_signal` in raw mode)
