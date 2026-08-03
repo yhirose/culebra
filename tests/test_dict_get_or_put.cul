@@ -42,3 +42,18 @@ assert_eq(e.has("he"), true)
 assert_eq(e.get("he", 0), 1)
 e.remove("hello"[0..2])  // remove via a StringView key
 assert_eq(e.has("he"), false)
+
+// `init` is invoked as a zero-argument thunk, so a callee that requires an
+// argument is an ArityError — not a frame with an unbound name in it.
+assert_throws("ArityError", || {a: 1}.get_or_put("z", |k| k))
+assert_throws("ArityError", || {a: 1}.get_or_put("z", |a, b| a))
+assert_throws("ArityError", || {a: 1}.get_or_put("z", fn (*, k) { k }))
+// ...but a thunk whose parameters all have somewhere to come from runs.
+assert_eq({a: 1}.get_or_put("z", fn (q = 5) { q }), 5)
+assert_eq({a: 1}.get_or_put("y", fn (*rest) { rest.size() }), 0)
+
+// A key and a value that never reach the slot (the thunk raised, or the key
+// is unhashable) must not strand — the RC-leak net for these lives in the
+// difftest leak corpus; these pin the observable behaviour.
+assert_throws("TypeError", || {a: 1}.get_or_put([1, 2], || [3, 4]))
+assert_eq({a: 1}.get_or_put((1, "k"), || "made"), "made")

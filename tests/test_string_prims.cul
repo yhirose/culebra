@@ -33,6 +33,9 @@ assert_eq("café".truncate(100), "café")
 assert_eq("hello world".slice(0, 11).truncate(8), "hello...")
 assert_throws("ValueError", || "x".truncate(-1))
 assert_throws("ValueError", || "hello".truncate(1))  // max < default ellipsis size
+// A built-in has no `__ARGS__` to absorb a surplus positional, so its
+// declared parameters are the cap even though `ellipsis` is optional.
+assert_throws("TypeError", || "hello".truncate(5, "~", 9))
 
 // --- capitalize -----------------------------------------------------
 assert_eq("read".capitalize(), "Read")

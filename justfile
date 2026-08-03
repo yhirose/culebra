@@ -100,10 +100,16 @@ gen-blob: _gen-blob-tool
 check-blob: _gen-blob-tool
     ./build-dev/gen_grammar_blob --check include/grammar_blob.h
 
+# Every built-in method name reaches the differential corpus (tools/difftest).
+[group("build")]
+[doc("Verify the difftest corpus applies every built-in method name")]
+check-difftest-coverage:
+    tools/check_difftest_coverage.sh
+
 # Every committed file a generator produces, checked against its source. Needs
 # no build, and costs ~0.7 s — cheap enough to gate both test recipes.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage
 
 # Build without JIT (interpreter only, no LLVM). Builds just the `culebra`
 # driver — the only TU with CULEBRA_JIT_ENABLED #ifdef gating, so this is the

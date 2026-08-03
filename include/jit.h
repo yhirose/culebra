@@ -12570,9 +12570,16 @@ struct JIT {
     Owned objRes;
     if (method == "add") {
       auto methodVal = emit_property_get(receiver, method);
+      // A dict with no `add` of its own reads nil and the call raises
+      // "expected Function, got Nil" — nothing else releases the consumed
+      // receiver + arg on that edge, so opt into the cleanup. A real `add`
+      // method is a Function whose callee frame cleans its own self/params,
+      // so the flags only fire on the not-a-function arm.
       objRes = compile_function_call_raw(
-          methodVal, receiver, {arg},
-          llvm::ArrayRef<const peg::Ast*>{argsAst.nodes[0].get()});
+          methodVal, receiver, {arg}, /*check_kw_only=*/false,
+          /*allow_call_overload=*/true,
+          llvm::ArrayRef<const peg::Ast*>{argsAst.nodes[0].get()},
+          /*own_self_on_error=*/true, /*own_args_on_error=*/true);
     } else {
       auto methodVal = emit_property_get(receiver, "remove");  // borrowed
       auto isFunc = builder_.CreateICmpEQ(extract_tag(methodVal),
@@ -16992,6 +16999,10 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
         module_->getFunction(rt::str_split), {strPtr, sepPtr});
     sep.drop();
     auto iter = emit_call(module_->getFunction(rt::array_iter), {arr});
+    // array_iter takes its own +1 on the Array, so str_split's fresh one dies
+    // here and the snapshot lives exactly as long as the iterator (the same
+    // hand-off the Set branch of `.iter()` makes with set_to_array).
+    own(make_array(arr)).drop();
     return own(make_object(iter));
   }
 

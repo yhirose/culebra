@@ -23,4 +23,28 @@ assert_eq("ab".trim_end("z"), "ab")
 // multibyte trim char
 assert_eq("　全角　".trim_start("　").trim_end("　"), "全角")
 
+// The optional char set does not make the method variadic: a surplus
+// positional is an error, not a silently dropped argument.
+assert_throws("TypeError", || "ab".trim_start("z", 9))
+assert_throws("TypeError", || "ab".trim_end("z", 9))
+
+// The cap is a built-in-table rule. A trait default, a `__call__` and an
+// operator special are wrapped the same way internally, but their surplus
+// positionals still flow into `__ARGS__` as any user function's do.
+trait Greet {
+  name() -> String
+  hello(sep) -> String { "hi" + sep + self.name() + to_string(__ARGS__.size()) }
+}
+class Bob {
+  new() { self.x = 1 }
+  name() { "bob" }
+}
+assert_eq(Bob.new().hello("-", 9, 10), "hi-bob2")
+
+class Adder {
+  new(n) { self.n = n }
+  __call__(x) { self.n + x + __ARGS__.size() }
+}
+assert_eq(Adder.new(1)(2, 3, 4), 5)
+
 IO.inspect("test_string_trim_dir OK")

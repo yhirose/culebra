@@ -44,20 +44,31 @@ for u in ['-', '!'] {
 # Methods spanning Array/String/Object/Set/Tuple/iterator builtins. Applying
 # every method to every receiver with every arg shape mostly errors; the point
 # is that the error (kind/message/position) must match across backends.
-let methods = ['size', 'empty', 'presence', 'push', 'pop', 'extend', 'insert',
-               'remove_at', 'truncate',
-               'slice', 'map', 'filter', 'reduce',
-               'find', 'any', 'all', 'for_each', 'flat_map', 'sort_by',
-               'sort', 'sorted', 'sum',
-               'product', 'min', 'max', 'min_by', 'max_by', 'to_set',
-               'group_by', 'partition', 'join',
-               'contains', 'index_of',
-               'reverse', 'keys', 'values', 'has', 'remove', 'upper', 'lower',
-               'trim', 'split', 'code_points', 'iter', 'take', 'skip',
-               'take_while', 'skip_while', 'chunks', 'windows', 'collect',
-               'count', 'first', 'last', 'nth', 'position', 'flatten',
-               'scan', 'distinct', 'tap', 'step_by', 'chunk_by',
-               'enumerate', 'union', 'to_array', 'view']
+# EVERY name in shared.h's builtin_method_names() belongs here — a method the
+# corpus never applies is a method whose error shapes nobody compares
+# (`trim_start` sat outside this list for two months with a live asymmetry).
+# tools/check_difftest_coverage.sh fails the build when the two drift apart.
+let methods = ['add', 'all', 'any', 'argmax', 'backward', 'bytes',
+               'capitalize', 'chain', 'chunk_by', 'chunks', 'clone',
+               'code_points', 'collect', 'contains', 'count', 'detach',
+               'diff', 'distinct', 'dot', 'empty', 'ends_with',
+               'enumerate', 'extend', 'filter', 'find', 'first',
+               'flat_map', 'flatten', 'for_each', 'get', 'get_or_put',
+               'grad', 'graphemes', 'group_by', 'has', 'index_of',
+               'insert', 'intersect', 'item', 'iter', 'join', 'keys',
+               'last', 'linear_sigmoid', 'lines', 'log', 'lower', 'map',
+               'max', 'max_by', 'mean', 'min', 'min_by', 'nth',
+               'partition', 'pop', 'position', 'pow', 'presence',
+               'product', 'push', 'reduce', 'relu', 'remove', 'remove_at',
+               'repeat', 'requires_grad', 'reshape', 'reverse', 'scan',
+               'shape', 'sigmoid', 'size', 'skip', 'skip_while', 'slice',
+               'softmax', 'sort', 'sort_by', 'sorted', 'sorted_by',
+               'split', 'split_iter', 'starts_with', 'step_by', 'subset',
+               'sum', 'superset', 'sym_diff', 'take', 'take_while', 'tap',
+               'to_array', 'to_object', 'to_set', 'to_string', 'tr',
+               'transpose', 'trim', 'trim_end', 'trim_start', 'truncate',
+               'union', 'upper', 'values', 'view', 'windows', 'zero_grad',
+               'zip']
 let argshapes = ['', '0', '"x"', '1, 2', '0, 1, 2', '|x| x', '|x| x > 0',
                  '0, |a, b| a + b', 'fn (a, b) { a }', '[1]']
 for recv in recvs {

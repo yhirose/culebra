@@ -3976,6 +3976,20 @@ inline void bind_callback_params(Environment& frame, const FunctionValue& f,
 // (check_callback_arity); the binder handles *args / defaults uniformly.
 inline Value _invoke_callback(const Value& fn_val) {
   const auto& fn = fn_val.to_function();
+  // The zero-argument form is a thunk call, not a per-element callback: no
+  // HOF entry pre-validated the arity, so an unfilled required parameter has
+  // to raise here (`d.get_or_put(k, |a| a)`) rather than leave a hole in the
+  // frame that the body only trips over if it reads the name. The JIT runs
+  // these thunks through its ordinary call path and says exactly this.
+  // A kw-only parameter counts too: nothing supplies keywords here either.
+  if (!fn.multimethod_accepts_arity) {
+    for (const auto& p : *fn.params) {
+      if (p.kwargs_rest || p.args_rest) continue;
+      if (p.default_expr == nullptr && p.default_value == nullptr) {
+        throw CulebraError("ArityError", missing_required_arg_message(p.name));
+      }
+    }
+  }
   auto env = std::make_shared<Environment>();
   env->is_function_frame = true;
   env->initialize("fn", fn_val, false);
@@ -9759,9 +9773,23 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // kw-only slot when too many positionals were given. A `*args`
     // catch-all removes the cap entirely — overflow flows into it.
     auto cap = first_kw_only_index(params);
+    long pos_cap =
+        (cap && !has_args_rest(params)) ? static_cast<long>(*cap) : -1;
+    // A built-in-table method has no `__ARGS__` for the overflow to flow
+    // into, so its declared regular parameters ARE the cap even without a `*`
+    // separator — the reason `'ab'.trim_start('x', 9)` is an error and not a
+    // silently dropped argument. `builtin_arity_checked`, not
+    // `is_builtin_method`: the latter is also set on the trait-default /
+    // `__call__` / operator-special wrappers, whose surplus positionals go to
+    // `__ARGS__` on both backends. And only a method declaring at least one
+    // regular positional says anything about a cap — a zero-declared-param
+    // native reads `__ARGS__`.
+    if (pos_cap < 0 && f.builtin_arity_checked) {
+      auto b = builtin_arity_bounds(params);
+      if (!b.variadic && b.max > 0) pos_cap = b.max;
+    }
     throw_if_too_many_positionals(
-        (cap && !has_args_rest(params)) ? static_cast<long>(*cap) : -1,
-        static_cast<long>(args.positional.size()),
+        pos_cap, static_cast<long>(args.positional.size()),
         static_cast<long>(call_line), static_cast<long>(call_column));
 
     auto callEnv = std::make_shared<Environment>(env);

@@ -3454,23 +3454,37 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_or_put(
     _culebra_value_release_impl(kt, kd);           // release key; no-op for String/Long
     return stored;
   }
-  // Miss: evaluate init lazily when it is a function (zero-arg thunk).
+  // Miss: the key's `+1` is owned by the slot store at the bottom (a String
+  // key is not refcounted — see object_set_any), and the init thunk between
+  // here and there can raise. Hold it so a Tuple key can't strand.
+  JitOwnedVal key_guard(kt == TAG_STRING ? JitValue{TAG_NIL, 0}
+                                         : JitValue{kt, kd});
+  // Evaluate init lazily when it is a function (zero-arg thunk).
   JitValue v;
   if (it_tag == TAG_FUNC) {
+    // The thunk can raise — a callee with a required parameter
+    // (`d.get_or_put(k, |a| a)`), or a throwing body — and a tail release
+    // would sit past that edge. RAII so the closure dies exactly once either
+    // way.
+    JitOwnedVal init_guard(JitValue{it_tag, it_data});
     v = culebra_runtime_call_with_kwargs(
         reinterpret_cast<JitClosure*>(it_data), int8_t{TAG_NIL}, int64_t{0}, 0,
         nullptr, 0, nullptr, nullptr, 0, nullptr, line, col);
-    _culebra_value_release_impl(it_tag, it_data);  // release the closure
   } else {
     v = JitValue{it_tag, it_data};  // use as-is (already +1)
   }
   // Two refs: one consumed by the slot store, one returned to the caller.
   // Immutable slot, matching a normal dict entry (`d[k] = v`); the value can
   // still be mutated in place (e.g. `.push`).
+  // The store owns both the key and the slot's ref on every exit, including
+  // its own throw (`d.get_or_put([1, 2], …)` is an unhashable key), so hand
+  // those over and keep only the caller's ref under RAII.
+  JitOwnedVal ret_guard(v);
   culebra_runtime_value_retain(v.tag, v.data);
+  key_guard.consume();
   culebra_runtime_object_set_any(obj, kt, kd, /*mut*/ false, v.tag, v.data,
                                  line, col, /*is_init*/ false);
-  return v;
+  return ret_guard.consume();
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove_any(
