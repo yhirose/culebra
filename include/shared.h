@@ -423,9 +423,9 @@ inline std::string json_escape(std::string_view s) {
 }
 
 // Whether `cp` is a Unicode scalar value: <= U+10FFFF and not a surrogate
-// (U+D800-U+DFFF). Same boundary the `\u{...}` string-literal escape enforces
-// (parser.h::decode_unicode_escape) — `String.from_code_point` reuses it so
-// both ways of turning a number into a codepoint agree on what's valid.
+// (U+D800-U+DFFF). Same boundary the `\u`/`\U` string-literal escapes enforce
+// (parser.h::decode_unicode_escape_u/_U) — `String.from_code_point` reuses it
+// so both ways of turning a number into a codepoint agree on what's valid.
 inline bool is_unicode_scalar_value(int64_t cp) {
   return cp >= 0 && cp <= 0x10FFFF && !(cp >= 0xD800 && cp <= 0xDFFF);
 }
@@ -452,8 +452,8 @@ inline void append_utf8(std::string& out, uint32_t cp) {
   }
 }
 
-// `String.from_code_point(cp)` — the runtime counterpart of the `\u{...}`
-// literal escape, single-sourced here for interp + JIT. Raises ValueError
+// `String.from_code_point(cp)` — the runtime counterpart of the `\u`/`\U`
+// literal escapes, single-sourced here for interp + JIT. Raises ValueError
 // (not SyntaxError — this is a runtime call, not a parse error) on the same
 // boundary the escape rejects at parse time.
 inline std::string string_from_code_point(int64_t cp) {

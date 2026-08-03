@@ -94,47 +94,57 @@ inline size_t decode_hex_byte(std::string_view raw, size_t i, std::string& out) 
   return i + 3;
 }
 
-// `\u{H..H}` — 1–6 hex digits in braces → a Unicode scalar value, UTF-8
-// encoded. Rejects > U+10FFFF and surrogates (U+D800–U+DFFF). `i` points
-// at the backslash; returns the index of the closing brace.
-inline size_t decode_unicode_escape(std::string_view raw, size_t i,
-                                     std::string& out) {
-  if (i + 2 >= raw.size() || raw[i + 2] != '{') {
-    throw CulebraError("SyntaxError",
-        "invalid \\u escape: expected \\u{H..H} with braces.");
+// Parses exactly `width` hex digits starting at raw[start]. `escape_name` is
+// the introducer (e.g. "\\u") used in error messages.
+inline uint32_t parse_fixed_hex(std::string_view raw, size_t start, int width,
+                                 std::string_view escape_name) {
+  if (start + width > raw.size()) {
+    throw CulebraError("SyntaxError", std::format(
+        "invalid {} escape: expected {} hex digits.", escape_name, width));
   }
-  size_t j = i + 3;
   uint32_t cp = 0;
-  int digits = 0;
-  while (j < raw.size() && raw[j] != '}') {
-    int v = _hex_val(raw[j]);
+  for (int k = 0; k < width; k++) {
+    int v = _hex_val(raw[start + k]);
     if (v < 0) {
-      throw CulebraError("SyntaxError",
-          "invalid \\u{...} escape: non-hex digit.");
+      throw CulebraError("SyntaxError", std::format(
+          "invalid {} escape: expected {} hex digits.", escape_name, width));
     }
     cp = cp * 16 + static_cast<uint32_t>(v);
-    digits++;
-    if (digits > 6) {
-      throw CulebraError("SyntaxError",
-          "invalid \\u{...} escape: more than 6 hex digits.");
-    }
-    j++;
   }
-  if (j >= raw.size() || digits == 0) {
-    throw CulebraError("SyntaxError",
-        "invalid \\u{...} escape: empty or unterminated.");
-  }
-  if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+  return cp;
+}
+
+// `\uXXXX` — exactly 4 hex digits → a BMP Unicode scalar value, UTF-8
+// encoded. Rejects surrogates (U+D800–U+DFFF). `i` points at the backslash;
+// returns the index of the last consumed hex digit.
+inline size_t decode_unicode_escape_u(std::string_view raw, size_t i,
+                                       std::string& out) {
+  uint32_t cp = parse_fixed_hex(raw, i + 2, 4, "\\u");
+  if (cp >= 0xD800 && cp <= 0xDFFF) {
     throw CulebraError("SyntaxError", std::format(
-        "invalid \\u{{...}} escape: U+{:X} is not a Unicode scalar value.",
-        cp));
+        "invalid \\u escape: U+{:04X} is not a Unicode scalar value "
+        "(surrogate).", cp));
   }
   _append_utf8(out, cp);
-  return j;  // points at '}'
+  return i + 5;
+}
+
+// `\UXXXXXXXX` — exactly 8 hex digits → a Unicode scalar value, UTF-8
+// encoded. Rejects > U+10FFFF and surrogates. `i` points at the backslash;
+// returns the index of the last consumed hex digit.
+inline size_t decode_unicode_escape_U(std::string_view raw, size_t i,
+                                       std::string& out) {
+  uint32_t cp = parse_fixed_hex(raw, i + 2, 8, "\\U");
+  if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+    throw CulebraError("SyntaxError", std::format(
+        "invalid \\U escape: U+{:X} is not a Unicode scalar value.", cp));
+  }
+  _append_utf8(out, cp);
+  return i + 9;
 }
 
 // Decode escape sequences in an INTERPOLATED_CONTENT token. Recognized:
-//   \n \r \t \\ \" \{ \xHH \u{H..H}
+//   \n \r \t \\ \" \{ \xHH \uXXXX \UXXXXXXXX
 // Unknown '\X' is preserved literally as backslash + char (Python's
 // permissive default — keeps the string round-trippable rather than
 // silently dropping the escape introducer).
@@ -158,7 +168,8 @@ inline std::string decode_interpolated_content(std::string_view raw) {
         case '"':  out += '"';  i++; continue;
         case '{':  out += '{';  i++; continue;
         case 'x':  i = decode_hex_byte(raw, i, out); continue;
-        case 'u':  i = decode_unicode_escape(raw, i, out); continue;
+        case 'u':  i = decode_unicode_escape_u(raw, i, out); continue;
+        case 'U':  i = decode_unicode_escape_U(raw, i, out); continue;
         default:
           out += '\\';
           out += n;

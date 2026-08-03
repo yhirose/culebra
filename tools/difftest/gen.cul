@@ -434,7 +434,7 @@ for n in nums {
 
 # --- Dimension 13: string formatting / escapes ----------------------------
 let strs = ['let _x = 3.14159; "v={_x:.2f}"', 'let _n = 42; "n={_n:05}"',
-            'let _n = 255; "h={_n:x}"', '"a\tb\nc".size()', '"caf\u{e9}".size()',
+            'let _n = 255; "h={_n:x}"', '"a\tb\nc".size()', '"caf\u00e9".size()',
             '"a\x41b".size()', '"hello".slice(1, 3)', '"hello"[1..3]',
             'let _s = "x"; "interp={_s}{_s}"']
 for s in strs {
@@ -661,8 +661,8 @@ let strits = [
   '"café".iter().collect()',
   '"café".graphemes().collect()',
   '"café".code_points().collect()',
-  '"e\u{301}".graphemes().collect()',
-  '"e\u{301}".iter().collect()',
+  '"e\u0301".graphemes().collect()',
+  '"e\u0301".iter().collect()',
   '"a\xffb".iter().collect()',
   'mut t = ""; for c in "x" { t = type_of(c) }; t',
   'type_of("a".iter().collect()[0])',

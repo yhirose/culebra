@@ -6323,7 +6323,7 @@ inline Value make_compress_namespace() {
 // `.bytes()`: a single Unicode scalar value in, a one-character String out.
 // Raises ValueError (via string_from_code_point in shared.h) for values
 // above U+10FFFF or in the surrogate range, the same boundary the
-// `\u{...}` literal escape enforces at parse time.
+// `\u`/`\U` literal escapes enforce at parse time.
 inline Value make_string_namespace() {
   using namespace std::literals;
   ObjectValue ns;

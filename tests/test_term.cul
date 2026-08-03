@@ -198,7 +198,7 @@ assert_eq(Term.width("あ"), 2)        // hiragana (wide)
 assert_eq(Term.width("中文"), 4)       // CJK (2 + 2)
 assert_eq(Term.width("🐸"), 2)        // emoji (wide)
 assert_eq(Term.width("a🐸b"), 4)      // 1 + 2 + 1
-assert_eq(Term.width("e\u{0301}"), 1) // e + combining acute = 1
+assert_eq(Term.width("e\u0301"), 1) // e + combining acute = 1
 // measured per extended grapheme cluster: a ZWJ sequence / flag / keycap is
 // one 2-cell group, not the sum of its scalars
 assert_eq(Term.width("👨‍👩‍👧"), 2)      // family (ZWJ) = one cluster

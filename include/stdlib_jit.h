@@ -6120,7 +6120,7 @@ inline JitValue _ns_env_load(JitValue* a, int64_t n) {
 
 // String.from_code_point(cp): shared with interp via string_from_code_point
 // (shared.h) — raises ValueError for values above U+10FFFF or in the
-// surrogate range, same boundary the `\u{...}` literal escape enforces.
+// surrogate range, same boundary the `\u`/`\U` literal escapes enforce.
 inline JitValue _ns_string_from_code_point(JitValue* a, int64_t) {
   return _ns_adapt::v_string(
       _culebra_heap_str(culebra::string_from_code_point(_ns_adapt::take_long(a[0]))));

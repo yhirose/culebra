@@ -147,10 +147,12 @@ The parser also recognizes `let` as an optional prefix in assignments.
   Recognized escape sequences: `\n` `\r` `\t` `\\` `\"` `\{` (use `\{`
   to embed a literal `{` without starting an interpolation; raw `}` is
   fine since it's only special as the interpolation terminator),
-  `\xHH` (exactly two hex digits → one raw byte, `0x00`–`0xFF`), and
-  `\u{H..H}` (1–6 hex digits → a Unicode scalar value, UTF-8 encoded;
-  rejects values above `U+10FFFF` and the surrogate range). An unknown
-  `\X` is preserved as the two literal characters `\` and `X`.
+  `\xHH` (exactly two hex digits → one raw byte, `0x00`–`0xFF`), `\uXXXX`
+  (exactly four hex digits → a BMP Unicode scalar value, UTF-8 encoded),
+  and `\UXXXXXXXX` (exactly eight hex digits → a Unicode scalar value,
+  UTF-8 encoded; the only form that reaches beyond the BMP). Both reject
+  values above `U+10FFFF` and the surrogate range. An unknown `\X` is
+  preserved as the two literal characters `\` and `X`.
 * Boolean: `true`, `false`.
 * Nil: `nil`.
 
@@ -874,24 +876,26 @@ and concatenated with the surrounding text.
 
 Escape sequences (in plain-text segments only):
 
-| escape     | byte / codepoint                                 |
-| ---------- | ------------------------------------------------ |
-| `\n`       | newline (0x0A)                                   |
-| `\r`       | carriage return                                  |
-| `\t`       | tab                                              |
-| `\\`       | backslash                                        |
-| `\"`       | double quote                                     |
-| `\{`       | literal `{` (does not start an interpolation)    |
-| `\xHH`     | one raw byte from two hex digits (`0x00`–`0xFF`) |
-| `\u{H..H}` | a Unicode scalar value (1–6 hex digits), UTF-8 encoded |
+| escape       | byte / codepoint                                                 |
+| ------------ | ----------------------------------------------------------------- |
+| `\n`         | newline (0x0A)                                                     |
+| `\r`         | carriage return                                                    |
+| `\t`         | tab                                                                |
+| `\\`         | backslash                                                          |
+| `\"`         | double quote                                                       |
+| `\{`         | literal `{` (does not start an interpolation)                      |
+| `\xHH`       | one raw byte from two hex digits (`0x00`–`0xFF`)                   |
+| `\uXXXX`     | a BMP Unicode scalar value (exactly 4 hex digits), UTF-8 encoded   |
+| `\UXXXXXXXX` | a Unicode scalar value (exactly 8 hex digits), UTF-8 encoded       |
 
 `\xHH` writes a raw byte — it can produce bytes that aren't valid UTF-8
-(e.g. `"\xff"`), since a `String` is a byte string. `\u{...}` writes a
-codepoint: it rejects values above `U+10FFFF` and the surrogate range
-`U+D800`–`U+DFFF` (not Unicode scalar values). A `}` does not need
+(e.g. `"\xff"`), since a `String` is a byte string. `\uXXXX` / `\UXXXXXXXX`
+write a codepoint: both reject values above `U+10FFFF` and the surrogate
+range `U+D800`–`U+DFFF` (not Unicode scalar values); only `\U` reaches
+beyond the BMP. A `}` does not need
 escaping outside of an interpolation. An unknown `\X` is preserved
 unchanged as two characters (`\` and `X`). An embedded NUL (`\x00` /
-`\u{0}`) is an ordinary byte: `size()` counts it and every String
+`\u0000`) is an ordinary byte: `size()` counts it and every String
 operation preserves it — a `String` never terminates at a NUL.
 
 ### Format specs
@@ -3957,7 +3961,7 @@ receiver is never mutated.
 | `s.code_points() -> Iterator<Long>`             | Lazy walk yielding **Unicode scalar values** as `Long` (`U+0000`–`U+10FFFF`). For numeric / range / classification work where the per-scalar allocation of `iter` is wasteful. Invalid bytes yield as `0`–`255`. |
 | `s.graphemes() -> Iterator<StringView>`         | Lazy walk yielding **Extended Grapheme Clusters** (UAX #29) — one user-perceived character per step (e.g. an emoji ZWJ sequence is a single element). |
 | `s.bytes() -> Iterator<Long>`                   | Lazy walk yielding the receiver's **raw UTF-8 bytes** as `Long` (`0`–`255`), one byte per step — no decoding, unlike `code_points`. For when the encoding itself is wanted (hashing, tokenizer vocabularies, wire formats). |
-| `String.from_code_point(cp: Long) -> String`    | The inverse of `code_points()`: one Unicode scalar value in, a one-character `String` out. Raises `ValueError` for `cp` above `U+10FFFF` or in the surrogate range `U+D800`–`U+DFFF` — the same boundary the `\u{...}` literal escape (§4.1) rejects at parse time. |
+| `String.from_code_point(cp: Long) -> String`    | The inverse of `code_points()`: one Unicode scalar value in, a one-character `String` out. Raises `ValueError` for `cp` above `U+10FFFF` or in the surrogate range `U+D800`–`U+DFFF` — the same boundary the `\u`/`\U` literal escapes (§4.1) reject at parse time. |
 | `String.from_code_points(cps: Array) -> String` | The plural inverse of `code_points()`: an `Array` of Unicode scalar values in, a `String` out. Each element passes through the same gate as `from_code_point`, so `String.from_code_points([cp]) == String.from_code_point(cp)`; a non-`Long` element is a `TypeError`, an out-of-range one a `ValueError`. |
 | `String.from_bytes(bytes: Array) -> String`     | The inverse of `bytes()`: an `Array` of raw byte values (`0`–`255`) in, a `String` out. **No UTF-8 validation**, and no error on malformed input: culebra `String`s tolerate invalid UTF-8 (same as `iter()`), so `String.from_bytes(s.bytes().collect()) == s` holds for every `String`, including ones with invalid sequences. A non-`Long` element is a `TypeError`, an out-of-range one (outside `0`–`255`) a `ValueError`. |
 

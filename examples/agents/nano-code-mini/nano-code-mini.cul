@@ -32,7 +32,7 @@ let model = Sys.env('MODEL', default_model)
 
 # Term.* is tty-aware: off a terminal the styles are no-ops and `cols()` is 80,
 # so nothing here needs an `IO.stdout_is_terminal()` branch.
-fn separator() { Term.dim("\u{2500}".repeat(Math.min(Term.cols(), 80))) }
+fn separator() { Term.dim("\u2500".repeat(Math.min(Term.cols(), 80))) }
 
 fn render_markdown(text) { text.replace(re'\*\*(.+?)\*\*', Term.bold('$1')) }
 
@@ -102,7 +102,7 @@ fn tool_bash(args) {
 
   let combined = (r.stdout + r.stderr).trim_end("\n")
   if !combined.empty() {
-    for line in combined.lines() { println(Term.dim("  \u{2502} {line}")) }
+    for line in combined.lines() { println(Term.dim("  \u2502 {line}")) }
   }
 
   # Lead with the timeout note: the caller previews only the first line.
@@ -226,7 +226,7 @@ fn main() {
   while true {
     try {
       println(separator())
-      print("{Term.bold(Term.blue("\u{276f}"))} ")
+      print("{Term.bold(Term.blue("\u276f"))} ")
 
       let user_input = IO.input().trim()
       println(separator())
@@ -239,7 +239,7 @@ fn main() {
         '/q' | 'exit' => break,
         '/c' => {
           messages = []
-          println(Term.green("\u{23fa} Cleared conversation"))
+          println(Term.green("\u23fa Cleared conversation"))
           continue
         },
         _ => messages.push({role: 'user', content: user_input}),
@@ -251,7 +251,7 @@ fn main() {
         # A safety classifier can decline the request: HTTP 200, no content.
         # Say so rather than looping back with an empty turn.
         if response.stop_reason == 'refusal' {
-          println(Term.red("\u{23fa} Declined ({response.stop_details?.category ?? 'no category'})"))
+          println(Term.red("\u23fa Declined ({response.stop_details?.category ?? 'no category'})"))
           break
         }
 
@@ -260,10 +260,10 @@ fn main() {
 
         for block in content_blocks {
           if block.type == 'text' {
-            println("\n{Term.cyan("\u{23fa}")} {render_markdown(block.text)}")
+            println("\n{Term.cyan("\u23fa")} {render_markdown(block.text)}")
           } else if block.type == 'tool_use' {
             let first_arg = "{block.input.values().first() ?? ''}"
-            let label = Term.green("\u{23fa} {block.name.capitalize()}")
+            let label = Term.green("\u23fa {block.name.capitalize()}")
             println("\n{label}({Term.dim(first_arg.slice(0, 50))})")
 
             let result = run_tool(block.name, block.input)
@@ -273,7 +273,7 @@ fn main() {
             let preview = lines.size() > 1
               ? "{lines[0].slice(0, 60)} ... +{lines.size() - 1} lines"
               : lines[0].truncate(60)
-            println(Term.dim("  \u{23bf}  {preview}"))
+            println(Term.dim("  \u23bf  {preview}"))
 
             tool_results.push({
               type: 'tool_result',
@@ -292,7 +292,7 @@ fn main() {
       println('')
     } catch e {
       if e.kind == 'Interrupted' { break }
-      println(Term.red("\u{23fa} Error: {e}"))
+      println(Term.red("\u23fa Error: {e}"))
     }
   }
 }

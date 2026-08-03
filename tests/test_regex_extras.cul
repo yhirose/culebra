@@ -54,8 +54,8 @@ assert_eq(gs[1].value, "x")
 let anchored = Regex.compile('^x*').find_iter("xxyx").collect()
 assert_eq(anchored.size(), 1)
 assert_eq(anchored[0].value, "xx")
-// empty matches advance one grapheme (e\u{301} = 3-byte cluster), never mid-cluster
-let ee = Regex.compile('a*').find_iter("e\u{301}b").collect()
+// empty matches advance one grapheme (e\u0301 = 3-byte cluster), never mid-cluster
+let ee = Regex.compile('a*').find_iter("e\u0301b").collect()
 assert_eq(ee.map(fn (m) { m.start }), [0, 3, 4])
 // ...and never land between CR and LF (fused cluster)
 let crlf = Regex.compile('q*').find_iter("a\r\nb").collect()

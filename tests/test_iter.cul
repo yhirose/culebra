@@ -119,7 +119,7 @@ assert_eq('hello'.bytes().count(), 5)
 # ASCII: bytes() and code_points() agree
 assert_eq('hello'.bytes().collect(), 'hello'.code_points().collect())
 
-# --- String.from_code_point(cp) — inverse of code_points()/\u{...} ---
+# --- String.from_code_point(cp) — inverse of code_points()/\u and \U ---
 assert_eq(String.from_code_point(97), 'a')
 assert_eq(String.from_code_point(233), 'é')
 # Round-trips through code_points()

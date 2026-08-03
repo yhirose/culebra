@@ -450,13 +450,14 @@
   FORMAT_SPEC              <-  < (![}] .)* >
   # Inside interpolated strings, '\X' is one logical character: the parser
   # keeps both bytes in the captured token and the runtime decoder turns
-  # recognized escapes (\n \r \t \\ \" \{) into their byte values. This
-  # also lets '\"' and '\{' appear inside the content without prematurely
-  # closing the string or starting an interpolation.
-  # `\u{...}` is matched as one unit *before* the bare-`{` interpolation
-  # rule so its brace isn't read as an INTERP_EXPR opener. The decoder
-  # validates the hex/range; the grammar just delimits the token.
-  INTERPOLATED_CONTENT     <-  ('\\u{' [0-9a-fA-F]* '}' / '\\' . / !["{\\] .)+
+  # recognized escapes (\n \r \t \\ \" \{ \xHH \uXXXX \UXXXXXXXX) into their
+  # byte values. This also lets '\"' and '\{' appear inside the content
+  # without prematurely closing the string or starting an interpolation.
+  # Neither `\u`/`\U` nor `\x` carries braces, so they need no special
+  # grammar case — the generic '\\' . alternative consumes the introducer
+  # and the fixed hex digits fall through as ordinary content chars. The
+  # decoder validates digit count/range; the grammar just delimits the token.
+  INTERPOLATED_CONTENT     <-  ('\\' . / !["{\\] .)+
 
   # Triple-quoted `"""..."""`: multi-line, interpolated like `"..."` but
   # single/double quotes need no escaping (only `"""` closes). Ideal for
@@ -467,7 +468,7 @@
   # leading/trailing newline and dedents by the closing delimiter's indent —
   # see normalize_triple_pieces (shared by interp + JIT, so it can't diverge).
   TRIPLE_STRING            <-  '"""' (INTERP_EXPR / TRIPLE_CONTENT)* '"""'
-  TRIPLE_CONTENT           <-  ('\\u{' [0-9a-fA-F]* '}' / '\\' . / !('"""' / '{' / '\\') .)+
+  TRIPLE_CONTENT           <-  ('\\' . / !('"""' / '{' / '\\') .)+
 
   # Regex literal: `re'...'` / `re"..."` / `` re`...` ``. The body is RAW — no
   # escape decoding — regardless of which quote delimits it, so regex

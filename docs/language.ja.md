@@ -832,15 +832,17 @@ dedentはリテラル構築時に1回だけ解決されます（JITは純リテ�
 | `\\`       | バックスラッシュ                              |
 | `\"`       | ダブルクォート                                |
 | `\{`       | 素の`{`（補間を起動しない）                   |
-| `\xHH`     | 16進2桁の生バイト1つ（`0x00`–`0xFF`）          |
-| `\u{H..H}` | Unicodeスカラー値（16進1–6桁）、UTF-8エンコード |
+| `\xHH`       | 16進2桁の生バイト1つ（`0x00`–`0xFF`）                    |
+| `\uXXXX`     | BMPのUnicodeスカラー値（16進ちょうど4桁）、UTF-8エンコード |
+| `\UXXXXXXXX` | Unicodeスカラー値（16進ちょうど8桁）、UTF-8エンコード      |
 
 `\xHH`は生バイトを書きます — `String`はbyte stringなので、不正な
-UTF-8になるバイト（例`"\xff"`）も生成できます。`\u{...}`はコード
-ポイントを書き、`U+10FFFF`超とサロゲート範囲`U+D800`–`U+DFFF`
-（Unicodeスカラー値でない）を拒否します。`}`は補間終端としてのみ
+UTF-8になるバイト（例`"\xff"`）も生成できます。`\uXXXX`/`\UXXXXXXXX`は
+コードポイントを書き、どちらも`U+10FFFF`超とサロゲート範囲`U+D800`–`U+DFFF`
+（Unicodeスカラー値でない）を拒否します。BMPを超える範囲を書けるのは
+`\U`のみです。`}`は補間終端としてのみ
 特別なのでエスケープ不要。未知の`\X`は2文字（`\`と`X`）として
-そのまま残ります。埋め込みNUL（`\x00` / `\u{0}`）は普通のバイトで、
+そのまま残ります。埋め込みNUL（`\x00` / `\u0000`）は普通のバイトで、
 `size()`が数え、すべてのString操作が保持します — `String`はNULで
 終端しません。
 
@@ -3750,7 +3752,7 @@ matcher一族`assert_true` / `assert_eq`等）は
 | `s.code_points() -> Iterator<Long>`             | **Unicodeスカラー値**を`Long`（`U+0000`–`U+10FFFF`）としてyieldする遅延イテレータ。`iter`の毎反復アロケが無駄になる数値・範囲・分類処理向け。不正バイトは生バイト値（0–255） |
 | `s.graphemes() -> Iterator<StringView>`         | **Extended Grapheme Cluster**（UAX #29）を1つずつyield。1ステップが1ユーザー知覚文字（絵文字ZWJシーケンス等は1要素にまとまる） |
 | `s.bytes() -> Iterator<Long>`                   | レシーバの**生UTF-8バイト**を`Long`（`0`–`255`）として1バイトずつyield — `code_points`と違いデコードしない。エンコーディングそのものが欲しい場面向け（ハッシュ計算、tokenizerの語彙、ワイヤーフォーマット等） |
-| `String.from_code_point(cp: Long) -> String`    | `code_points()`の逆演算: Unicodeスカラー値1つを受け取り1文字の`String`を返す。`cp`が`U+10FFFF`超過またはサロゲート範囲`U+D800`–`U+DFFF`の場合`ValueError`（`\u{...}`リテラルエスケープ §4.1がパース時に拒否するのと同じ境界） |
+| `String.from_code_point(cp: Long) -> String`    | `code_points()`の逆演算: Unicodeスカラー値1つを受け取り1文字の`String`を返す。`cp`が`U+10FFFF`超過またはサロゲート範囲`U+D800`–`U+DFFF`の場合`ValueError`（`\u`/`\U`リテラルエスケープ §4.1がパース時に拒否するのと同じ境界） |
 | `String.from_code_points(cps: Array) -> String` | `code_points()`の複数形の逆演算: Unicodeスカラー値の`Array`を受け取り`String`を返す。各要素は`from_code_point`と同じゲートを通るので`String.from_code_points([cp]) == String.from_code_point(cp)`。要素が`Long`でなければ`TypeError`、範囲外なら`ValueError` |
 | `String.from_bytes(bytes: Array) -> String`     | `bytes()`の逆演算: 生バイト値（`0`–`255`）の`Array`を受け取り`String`を返す。**UTF-8の検証は行わず**、不正入力でも例外を投げない: culebraの`String`は不正なUTF-8を許容する（`iter()`と同様）ため、不正なバイト列を含むあらゆる`String`について`String.from_bytes(s.bytes().collect()) == s`が成立する。要素が`Long`でなければ`TypeError`、範囲外（`0`–`255`の外）なら`ValueError` |
 
