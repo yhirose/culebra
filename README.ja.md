@@ -58,6 +58,12 @@ culebra --version
 チェックサムと各リリースのノートは
 [リリースページ](https://github.com/yhirose/culebra/releases)にあります。
 
+プロジェクトディレクトリで`culebra init`を実行すると、この機械にある
+VSCode・Vim・Neovimのうち見つかったものにシンタックスハイライトと
+デバッグアダプタを導入し、`AGENTS.md`（既に`CLAUDE.md`か
+`.github/copilot-instructions.md`があればそちら）にコーディングエージェント
+向けの指示を追加します。何度でも再実行して構いません。
+
 主な特長
 --------
 
