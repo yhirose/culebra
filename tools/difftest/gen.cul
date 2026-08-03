@@ -19,10 +19,13 @@ fn emit(line) { out.push(line) }
 # come from single-quote raw strings; the label/body are plain concatenation.
 fn case(label, body) { emit("_p('" + label + "', fn () " + '{ ' + body + ' }' + ")") }
 
-# Receiver expressions spanning every value type. Parenthesized so a scalar
-# receiver (`(1).size()`) and a method/index chain both parse.
+# Receiver expressions spanning every Value::Type variant (interpreter.h's
+# `enum Type`) except Tensor and StringView, which get their own dedicated
+# sweeps (Dimension 15, Dimension 19/24) because neither is reachable through
+# a plain literal. Parenthesized so a scalar receiver (`(1).size()`) and a
+# method/index chain both parse.
 let recvs = ['1', '1.5', 'true', 'nil', '"abc"', '[1, 2, 3]', '{a: 1, b: 2}',
-             '(1, 2, 3)', '{1, 2, 3}']
+             '(1, 2, 3)', '{1, 2, 3}', 'fn (x) { x }']
 
 # --- Dimension 1: operators x operand-type pairs --------------------------
 let operands = ['1', '2', '1.5', '"a"', '"b"', 'true', 'nil', '[1, 2]', '{a: 1}', '(1, 2)']
@@ -103,11 +106,14 @@ for v in vals {
 # (the JIT decides via culebra_runtime_bare_builtin_reject — pin the two
 # backends together across every receiver shape). `zzz` is the non-builtin
 # control: a plain nil miss everywhere.
+# `bare_names` reuses Dimension 2's `methods` (every name in
+# builtin_method_names(), coverage-gated) rather than its own hand-picked
+# subset — a name added there is swept here for free, closing the same kind
+# of gap `trim_start` fell into (tools/check_difftest_coverage.sh).
 let bare_recvs = ['1', '"abc"', '[1, 2]', '{a: 1}', '(1, 2)', '{1, 2}', '0..3',
                   '[1, 2].iter()',
                   '{has_next: fn () { false }, next: fn () { nil }}']
-let bare_names = ['map', 'size', 'join', 'collect', 'upper', 'union',
-                  'presence', 'truncate', 'zzz']
+let bare_names = [...methods, 'zzz']
 for r in bare_recvs {
   for n in bare_names {
     case("bareread|" + r + "|" + n, "(" + r + ")." + n)
