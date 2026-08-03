@@ -109,14 +109,9 @@ class Box {
 assert_eq(Box(1).push(9), "ufcs push:Object")
 assert_eq(type_of(Box(1).size()), "Long")         # dict `size`, not "ufcs size"
 
-# NOTE: these use a top-level `try` rather than assert_throws — the JIT
-# resolves a UFCS candidate from the enclosing compile scope, and a lambda
-# body is its own scope. Nested-fn visibility lands with the free-variable
-# phase; until then an assert_throws callback would exercise the old path.
-
 # An own property beats UFCS even when it isn't callable — the receiver
 # "has" the name, so interp never reaches its UFCS arm.
-assert_eq(try { ({push: 5}).push(1) } catch e { e.kind }, 'TypeError')
+assert_throws('TypeError', fn () { ({push: 5}).push(1) })
 
 # A class method of the same name still wins over both.
 class Stack {
@@ -129,13 +124,13 @@ assert_eq(Stack().push(1), "method push")
 # builtin receiver keeps rejecting keywords.
 fn insert(o, at = 0) { "ufcs insert:" + to_string(at) }
 assert_eq((5).insert(at: 3), "ufcs insert:3")
-assert_eq(try { [1, 2].insert(at: 3) } catch e { e.kind }, 'TypeError')
+assert_throws('TypeError', fn () { [1, 2].insert(at: 3) })
 
 # The receiver is positional[0], so a typed first param rejects it exactly
 # as a direct `windows("ab", 2)` would.
 fn windows(o: Long, n) { o + n }
 assert_eq((5).windows(2), 7)
-assert_eq(try { "ab".windows(2) } catch e { e.kind }, 'DispatchError')
+assert_throws('DispatchError', fn () { "ab".windows(2) })
 
 # Arguments are compiled inside the arm that runs — a throwing argument
 # expression must not double-evaluate the receiver or strand it.
@@ -186,7 +181,7 @@ class Acc {
 }
 assert_eq(Acc().add(5), 5)
 assert_eq(({add: fn (v) { "own add" }}).add(7), "own add")
-assert_eq(try { {1, 2}.add(x: 1) } catch e { e.kind }, 'TypeError')
+assert_throws('TypeError', fn () { {1, 2}.add(x: 1) })
 # ...while a non-resolving receiver binds the keyword through the free function.
 assert_eq((5).add(v: 1), "ufcs add:Long")
 
@@ -203,5 +198,58 @@ mut sink = {8, 9}
 sink.add(tick())
 assert_eq(adds, 2)
 assert_eq(sink.size(), 3)
+
+# --- Phase 5: a nested function sees the same candidates its caller does ---
+# The JIT reaches a UFCS candidate through the closure's captures, so a
+# builtin-named method inside a nested fn must capture the name like any
+# other read. Every case below is a candidate the enclosing scope binds.
+
+fn nested_global(x, y) { x.remove(y) }
+assert_eq(nested_global(5, 1), "ufcs remove:Long")
+
+fn nested_outer_local() {
+  let remove = fn (o, v) { "local remove" }
+  fn inner(x, y) { x.remove(y) }
+  inner(5, 1)
+}
+assert_eq(nested_outer_local(), "local remove")
+
+# …and the builtin still wins inside the nested fn on a receiver that has it.
+fn nested_builtin_wins() {
+  let size = fn (o) { "local size" }
+  fn inner(a) { a.size() }
+  inner([1, 2, 3])
+}
+assert_eq(nested_builtin_wins(), 3)
+
+# A closure named after a builtin method it calls on its own argument: the
+# capture must resolve to the enclosing binding, not to the closure's cell
+# before it exists.
+let map = fn (a) { a.map(fn (x) { x + 1 }) }
+assert_eq(map([1, 2]), [2, 3])
+
+# A candidate declared AFTER the closure that mentions it (implicit binding,
+# so the forward-ref cell is pre-allocated for a bare assignment too).
+let late = fn (x) { x.contains(9) }
+contains = fn (o, v) { "late contains:" + to_string(v) }
+assert_eq(late(5), "late contains:9")
+assert_eq(late([9, 8, 7]), true)   # Array resolves `contains`: builtin
+
+# A candidate name bound in a block that has already closed is out of reach:
+# the receiver answers on its own. (The enclosing locals set is flat per
+# function, so the name still reaches the capture list — it just binds nil.)
+for r in [1, 2] { let sorted = r }
+fn out_of_reach(a) { a.sorted() }
+assert_eq(out_of_reach([2, 1]), [1, 2])
+assert_throws('TypeError', fn () { out_of_reach(5) })
+
+# The genuine binding still wins when the same name is BOTH called as a
+# method and read as a variable, in either order.
+fn both_uses() {
+  let step_by = fn (o, n) { "local step_by" }
+  fn inner(a) { [a.step_by(2), type_of(step_by)] }
+  inner(5)
+}
+assert_eq(both_uses(), ["local step_by", "Function"])
 
 inspect("test_ufcs_builtin_shadow: ok")

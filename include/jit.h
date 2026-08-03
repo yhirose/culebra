@@ -136,6 +136,13 @@ struct JIT {
     // by the inner function's free-var binding so ImmutableError fires on
     // writes to captured non-mut bindings.
     std::vector<bool> free_var_mut;
+    // Free vars noted only as UFCS method-name candidates, never read as a
+    // variable. The enclosing locals set is flat per function, so a name
+    // declared in a block that has already closed still lands here — for a
+    // real read that's a compile error, but a candidate that isn't in reach
+    // just means the receiver's builtin answers, so emit_closure_build binds
+    // it to nil instead.
+    std::set<std::string> optional_free_vars;
     std::set<std::string> captured_locals;  // my locals captured by nested
     // EH/defer emission flags (populated by scan_eh_defer):
     bool has_eh = false;        // contains TRY or any scope with defers
@@ -3700,10 +3707,13 @@ struct JIT {
   // namespace resolution at its use site (compile_identifier → namespace_get).
   // lookup_var resolves captures/slots before builtins, so capture and
   // resolution stay consistent.
+  //
+  // `optional` marks a UFCS method-name candidate (see optional_free_vars); a
+  // genuine read of the same name clears the mark whichever order they appear.
   void note_free_var(const std::string& name,
                      const std::set<std::string>& my_locals,
                      std::vector<const std::set<std::string>*>& outer,
-                     FuncInfo& info) {
+                     FuncInfo& info, bool optional = false) {
     if (my_locals.contains(name)) return;
     // `self` is always capturable: every frame defines a self slot (the
     // receiver, or the lexical fallback), so the outer-scope scan below
@@ -3724,7 +3734,9 @@ struct JIT {
         if (std::find(info.free_vars.begin(), info.free_vars.end(), name) ==
             info.free_vars.end()) {
           info.free_vars.push_back(name);
+          if (optional) info.optional_free_vars.insert(name);
         }
+        if (!optional) info.optional_free_vars.erase(name);
         return;
       }
     }
@@ -3786,6 +3798,14 @@ struct JIT {
           if (std::find(info.free_vars.begin(), info.free_vars.end(), fv) ==
               info.free_vars.end()) {
             info.free_vars.push_back(fv);
+            // A candidate stays optional as it travels outward: no frame on
+            // the way holds a binding for it either.
+            if (nested_info.optional_free_vars.contains(fv)) {
+              info.optional_free_vars.insert(fv);
+            }
+          }
+          if (!nested_info.optional_free_vars.contains(fv)) {
+            info.optional_free_vars.erase(fv);
           }
         }
       }
@@ -3933,8 +3953,11 @@ struct JIT {
     // outer-scope variable, it must be captured so the nested-fn UFCS
     // lookup (lookup_var at the call site) can find it — otherwise
     // `(5).dbl()` inside a closure would miss the captured `dbl` that
-    // `dbl(5)` resolves fine. Bare property access (DOT without a
-    // following ARGUMENTS) never uses UFCS, so it's left alone.
+    // `dbl(5)` resolves fine. Builtin method names count too: whether
+    // `remove` is the builtin or a UFCS candidate is a property of the
+    // receiver, decided at runtime, so the name has to be in reach either
+    // way. Bare property access (DOT without a following ARGUMENTS) never
+    // uses UFCS, so it's left alone.
     if (node.tag == "CALL"_) {
       // Scope barrier for a lazy-ns builder. The stdlib splices
       // `_lazy_ns_register("Ns", fn(){...})` at entry-module top level; the
@@ -3976,13 +3999,8 @@ struct JIT {
               std::none_of(outer.begin(), outer.end(), [&](auto* s) {
                 return s->contains(recv_name);
               });
-          // A builtin method name (size/map/...) is shadowed by the
-          // builtin on any receiver that has it, so UFCS never fires for
-          // it — don't capture (capturing a same-named outer fn the
-          // builtin wins over is both useless and breaks closure setup).
-          // Only genuine non-builtin method names are UFCS candidates.
-          if (!ns_receiver && !known_builtin_methods().contains(mname)) {
-            note_free_var(mname, my_locals, outer, info);
+          if (!ns_receiver) {
+            note_free_var(mname, my_locals, outer, info, /*optional=*/true);
           }
           continue;  // skip the DOT recursion (it would early-return)
         }
@@ -11206,6 +11224,22 @@ struct JIT {
                                            builder_.getInt8Ty(),
                                            builder_.getInt64Ty()),
               {extract_tag(noSelf), extract_data(noSelf)}, "self.nocell");
+          auto dstSlot = builder_.CreateInBoundsGEP(
+              ptrTy, capturesArr, {builder_.getInt64(i)});
+          builder_.CreateStore(cellPtr, dstSlot);
+          continue;
+        }
+        if (!slot && info.optional_free_vars.contains(fv)) {
+          // A UFCS candidate that isn't in reach here: bind nil so the call
+          // site's Function gate declines and the receiver's own builtin (or
+          // its method-miss error) answers, exactly as the interp does with
+          // the name unbound. cell_new returns +1 = the closure's ref.
+          auto nilv = make_nil();
+          auto cellPtr = emit_call(
+              module_->getOrInsertFunction(rt::cell_new, ptrTy,
+                                           builder_.getInt8Ty(),
+                                           builder_.getInt64Ty()),
+              {extract_tag(nilv), extract_data(nilv)}, "ufcs.nocell");
           auto dstSlot = builder_.CreateInBoundsGEP(
               ptrTy, capturesArr, {builder_.getInt64(i)});
           builder_.CreateStore(cellPtr, dstSlot);
