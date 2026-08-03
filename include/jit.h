@@ -121,6 +121,11 @@ struct JIT {
     // still-null cell as "declaration never ran" (NameError, interp
     // parity), and writers/captures materialize it first.
     bool lazy = false;
+    // True while a forward-ref pre-allocated cell is still waiting for an
+    // implicit declaration (`x = ...` with no `let`/`mut`). That statement
+    // is the binding's declaration, so it must not be mut-checked against
+    // this placeholder — the flag clears when it lands.
+    bool awaits_implicit_decl = false;
   };
 
   // Analysis result for a function (including top-level __culebra_main).
@@ -2278,9 +2283,13 @@ struct JIT {
     auto& slots = scopes_.empty()
                       ? scopes_.emplace_back().slots
                       : scopes_.back().slots;
-    auto pre = [&](std::string_view name_sv, bool is_mut) {
+    auto pre = [&](std::string_view name_sv, bool is_mut, bool implicit) {
       std::string name(name_sv);
       if (!captured.contains(name)) return;
+      // `x = ...` declares only when nothing named `x` is in scope; when a
+      // binding already exists the statement reassigns it, so pre-allocating
+      // here would shadow it (an `if` branch shares the enclosing scope).
+      if (implicit && lookup_var(name)) return;
       if (auto it = slots.find(name); it != slots.end()) {
         // Already pre-allocated (e.g. by a sibling if-branch sharing
         // this scope): re-emit the materialization guard here so
@@ -2301,10 +2310,11 @@ struct JIT {
                          cellSlotAlloca);
       VarSlot slot{VarSlot::Cell, cellSlotAlloca, /*owned=*/true, is_mut};
       slot.lazy = true;
+      slot.awaits_implicit_decl = implicit;
       emit_lazy_cell_materialize(slot);
       define_var(name, slot);
     };
-    struct DeclInfo { std::string_view name; bool is_mut; };
+    struct DeclInfo { std::string_view name; bool is_mut; bool implicit; };
     auto extract_decl = [](const peg::Ast& node) -> DeclInfo {
       if (node.tag == "MULTIFN_DECL"_ || node.tag == "CLASS_DECL"_ ||
           node.tag == "ENUM_DECL"_) {
@@ -2317,36 +2327,26 @@ struct JIT {
         while (i < node.nodes.size() &&
                node.nodes[i]->tag == "DECORATOR"_) i++;
         return {culebra::parse_generic_head(node.nodes[i]->token).outer,
-                false};
+                false, false};
       }
-      if (node.tag == "ASSIGNMENT"_ && node.nodes.size() >= 2 &&
-          (node.nodes[0]->token == "let" ||
-           node.nodes[1]->token == "mut")) {  // `mut x = ...` declares too
-        // ASSIGNMENT [LET, MUTABLE, lval-chain..., ASSIGN_OP, EXPRESSION].
-        // Only single-name lvalues (lvalcnt == 1) get a name here.
-        auto total = static_cast<int>(node.nodes.size());
-        auto lvalcnt = total - 4;
-        // The slot before ASSIGN_OP may carry a TYPE_ANNOTATION; subtract it.
-        if (lvalcnt >= 1 && node.nodes[total - 3]->tag == "TYPE_ANNOTATION"_) {
-          lvalcnt--;
-        }
-        if (lvalcnt == 1) {
-          const auto& lval = *node.nodes[2];
-          if (lval.tag == "IDENTIFIER"_) {
-            // The MUTABLE child carries "mut" (or empty); read it so
-            // forward-ref pre-allocation matches the user's intent
-            // even when the `let mut x` line is compiled after a
-            // closure that captures x.
-            bool is_mut = node.nodes[1]->token == "mut";
-            return {lval.token, is_mut};
-          }
-        }
+      if (node.tag == "ASSIGNMENT"_) {
+        auto av = culebra::view_assignment(node);
+        // `x += 1` needs the binding to exist already, so it never declares.
+        const auto* lval =
+            av.compound ? nullptr : culebra::assign_name_target(node, av);
+        if (!lval) return {};
+        // `let x` / `mut x` declare outright; a bare `x = ...` declares only
+        // on first occurrence, which `pre` re-checks against the scope chain.
+        // The MUTABLE child carries "mut" (or empty); read it so forward-ref
+        // pre-allocation matches the user's intent even when the `let mut x`
+        // line is compiled after a closure that captures x.
+        return {lval->token, av.is_mut, /*implicit=*/!(av.is_let || av.is_mut)};
       }
       return {};
     };
     auto handle = [&](const peg::Ast& node) {
       auto d = extract_decl(node);
-      if (!d.name.empty()) pre(d.name, d.is_mut);
+      if (!d.name.empty()) pre(d.name, d.is_mut, d.implicit);
     };
     if (statements_ast.tag == "STATEMENTS"_ ||
         statements_ast.tag == "LEXICAL_SCOPE"_) {
@@ -3571,9 +3571,8 @@ struct JIT {
 
     if (node.tag == "ASSIGNMENT"_) {
       auto av = culebra::view_assignment(node);
-      if (av.lvalcnt == 1 && !av.compound) {
-        auto ident_node = node.nodes[av.lvaloff];
-        if (ident_node->tag == "IDENTIFIER"_) {
+      if (!av.compound) {
+        if (const auto* ident_node = culebra::assign_name_target(node, av)) {
           auto name = std::string(ident_node->token);
           bool is_declare = av.is_let || av.is_mut;
 
@@ -3958,11 +3957,6 @@ struct JIT {
                          i + 1 < node.nodes.size() &&
                          node.nodes[i + 1]->original_tag == "ARGUMENTS"_;
         if (is_method) {
-          // A builtin method name (size/map/...) is shadowed by the
-          // builtin on any receiver that has it, so UFCS never fires for
-          // it — don't capture (capturing a same-named outer fn the
-          // builtin wins over is both useless and breaks closure setup).
-          // Only genuine non-builtin method names are UFCS candidates.
           auto mname = std::string(child.token);
           // A call whose receiver is a builtin namespace identifier
           // (`Http.server()`, `Time.sleep()`) is member dispatch, never
@@ -3982,6 +3976,11 @@ struct JIT {
               std::none_of(outer.begin(), outer.end(), [&](auto* s) {
                 return s->contains(recv_name);
               });
+          // A builtin method name (size/map/...) is shadowed by the
+          // builtin on any receiver that has it, so UFCS never fires for
+          // it — don't capture (capturing a same-named outer fn the
+          // builtin wins over is both useless and breaks closure setup).
+          // Only genuine non-builtin method names are UFCS candidates.
           if (!ns_receiver && !known_builtin_methods().contains(mname)) {
             note_free_var(mname, my_locals, outer, info);
           }
@@ -5718,19 +5717,22 @@ struct JIT {
     // interp's `declare = let || mut` rule. Implicit `x = ...`
     // first-occurrence is also a declaration.
     bool declare = let || mut;
-    bool declared_new =
+    bool declares =
         emit_assign_name(name, rval, declare, mut, ast.line, ast.column);
     emit_value_retain(rval);
-    if (declared_new) {
-      // Record direct `let f = fn (...) {...}` bindings so a later
-      // `f(x, y: 2)` can resolve kwargs against the FUNCTION AST at
-      // compile time. The RHS lives at ast.nodes.back(); its `tag`
-      // (post-optimizer) is "FUNCTION" for a function literal.
-      using namespace peg::udl;
-      const auto& rhs = *ast.nodes.back();
-      if (rhs.tag == "FUNCTION"_ && !scopes_.empty()) {
-        scopes_.back().fn_asts[name] = &rhs;
-      }
+    // Record direct `let f = fn (...) {...}` bindings so a later
+    // `f(x, y: 2)` can resolve kwargs against the FUNCTION AST at
+    // compile time. The RHS lives at ast.nodes.back(); its `tag`
+    // (post-optimizer) is "FUNCTION" for a function literal.
+    using namespace peg::udl;
+    const auto& rhs = *ast.nodes.back();
+    if (declares && rhs.tag == "FUNCTION"_ && !scopes_.empty()) {
+      scopes_.back().fn_asts[name] = &rhs;
+    } else {
+      // Any other write means the name no longer denotes the recorded AST —
+      // drop it so kwargs fall back to runtime resolution (`mut f = fn (a)
+      // {…}` then `f = fn (b) {…}` must bind `b`, not raise against `a`).
+      forget_fn_ast(name);
     }
     return own(rval);
   }
@@ -5739,9 +5741,10 @@ struct JIT {
   // `declare` binds in the current scope, otherwise an existing slot anywhere
   // in the chain is reassigned (mut-checked) and an unseen name is declared.
   // Consumes rval's +1 into the slot; the caller mints its own result ref if it
-  // needs one. Returns true when a new local was declared rather than an
-  // existing slot reused — only compile_assign_var cares, to record a
-  // `let f = fn …` binding. Mirrors interp's assign_name.
+  // needs one. Returns true when this statement is the binding's declaration
+  // (including into a forward-ref pre-allocated slot) rather than a
+  // reassignment — only compile_assign_var cares, to record a `let f = fn …`
+  // binding. Mirrors interp's assign_name.
   bool emit_assign_name(const std::string& name, llvm::Value* rval,
                         bool declare, bool mut, size_t line, size_t column) {
     // Check the innermost scope first: reusing the slot avoids alloca
@@ -5750,7 +5753,9 @@ struct JIT {
       auto& slots = scopes_.back().slots;
       auto it = slots.find(name);
       if (it != slots.end()) {
-        if (declare) {
+        bool declares = declare || it->second.awaits_implicit_decl;
+        it->second.awaits_implicit_decl = false;
+        if (declares) {
           // Forward-ref pre-allocation or loop re-entry: this is the
           // first / re-running binding. Honor the user-declared mut
           // flag from the source.
@@ -5760,7 +5765,7 @@ struct JIT {
           if (!it->second.mut) emit_immutable_assign_throw(name, line, column);
         }
         store_slot(it->second, rval);
-        return false;
+        return declares;
       }
     }
 
@@ -13572,6 +13577,14 @@ struct JIT {
       if (found != it->fn_asts.end()) return found->second;
     }
     return nullptr;
+  }
+
+  // Drop the binding lookup_fn_ast would find for `name` — the same
+  // inner-to-outer walk, since a reassignment writes whichever scope holds it.
+  void forget_fn_ast(const std::string& name) {
+    for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
+      if (it->fn_asts.erase(name)) return;
+    }
   }
 
   // Compile-time resolution of kwargs/splats for a directly-named user

@@ -336,6 +336,19 @@ inline AssignmentView view_assignment(const peg::Ast& a) {
   };
 }
 
+// The single plain-name target of `x = v` / `let x = v` / `mut x = v` (and
+// their compound forms), or nullptr when the assignment writes a complex
+// lvalue (`o.a = v`, `a[i] = v`). Callers that must exclude compound
+// assignment check `av.compound` themselves — a read analysis wants the name
+// for `x += 1`, the passes that pick out declarations don't.
+inline const peg::Ast* assign_name_target(const peg::Ast& a,
+                                          const AssignmentView& av) {
+  using namespace peg::udl;
+  if (av.lvalcnt != 1) return nullptr;
+  const auto& t = *a.nodes[av.lvaloff];
+  return (t.tag == "IDENTIFIER"_ && t.is_token) ? &t : nullptr;
+}
+
 // View of a PLACE_ASSIGN AST node — see grammar:
 //   PLACE_ASSIGN <- '(' PLACE (',' PLACE)+ ','? ')' '=' EXPRESSION
 // Children are the targets followed by the RHS, so the target count is one

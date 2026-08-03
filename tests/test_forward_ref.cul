@@ -45,3 +45,32 @@ let chain_b = fn() { chain_c() + 1 }
 let chain_c = fn() { 40 }
 
 assert_eq(chain_a(), 42)
+
+# --- (6) Forward ref to an implicit binding (`g = …`, no `let`) ---
+# First assignment declares, so the pre-allocated cell must accept it as the
+# declaration — not mut-check it as a reassignment.
+calls_g = fn() { g() + 1 }
+
+g = fn() { 41 }
+
+assert_eq(calls_g(), 42)
+assert_throws('ImmutableError', fn () { g = 1 })
+
+# …and `mut` keeps its reassignability through the same cell.
+reads_h = fn() { h }
+
+mut h = 1
+h = 2
+
+assert_eq(reads_h(), 2)
+
+# --- (7) Reassignment drops the recorded FUNCTION AST ---
+# kwargs resolve against the binding's current value, not the literal the
+# name was first declared with.
+reads_k = fn() { k }
+
+mut k = fn(a = 0) { "a" + to_string(a) }
+k = fn(b = 0) { "b" + to_string(b) }
+
+assert_eq(k(b: 1), "b1")
+assert_eq(reads_k()(b: 2), "b2")
