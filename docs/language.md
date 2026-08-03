@@ -1227,6 +1227,9 @@ to keep the data in the sidecar instead.
 
 A method call `receiver.name(args)` resolves in this order:
 
+0. If `receiver` is a built-in namespace (`IO`, `Math`, …), only its own
+   members resolve — see [Namespaces are closed](#namespaces-are-closed)
+   below. UFCS is off for such a receiver.
 1. If `receiver` exposes a property or built-in method named `name`,
    invoke it. For `Object` / `Array`, user-defined properties win
    over built-ins; built-ins fill in otherwise. String methods are
@@ -1262,6 +1265,25 @@ bare property access (`x.name` without `()`) never uses UFCS. A UFCS
 invocation does **not** bind `self` to the receiver — the call is
 semantically a free-function call with the receiver in the first
 positional slot.
+
+#### Namespaces are closed
+
+A built-in namespace exposes a fixed member set, so an unknown member is
+a typo or a removed API rather than an extension point. Reading one
+raises `AttributeError: namespace 'IO' has no member 'zzz'`, and UFCS
+does not step in — a free function named `zzz` cannot fill the gap:
+
+```culebra
+# doctest: skip
+zzz = fn (ns, v) { v }
+IO.zzz(9)                        # AttributeError, not zzz(IO, 9)
+Math.to_string()                 # AttributeError, not to_string(Math)
+```
+
+The dict built-ins are the exception: `IO.keys()`, `Sys.has('script')`
+and the rest of the `Object` table still answer, because a namespace is
+an `Object`. Plain objects are unaffected — `{a: 1}.zzz(9)` is UFCS as
+usual.
 
 A bare read of a **built-in** method (`let m = [1, 2].map`, no parens)
 is not a first-class value — it raises `TypeError: built-in method

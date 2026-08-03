@@ -1155,6 +1155,10 @@ shapeが単調増加します。そのようなワークロードでは非String
 
 メソッド呼出`receiver.name(args)`は次の順序で解決します:
 
+0. `receiver`が組み込みnamespace (`IO`・`Math`等) の場合、解決
+   されるのはそのメンバーだけです。後述の
+   [namespaceは閉じている](#namespaceは閉じている)を参照。この
+   レシーバではUFCSは働きません。
 1. `receiver`が`name`という名前のプロパティ / 組み込みメソッドを
    持てばそれを呼ぶ。`Object` / `Array`ではユーザ定義プロパティが
    組み込みを上書きできる。`String`は専用のメソッドテーブルのみ。
@@ -1188,6 +1192,26 @@ UFCSは **DOTの直後に引数リストがある場合のみ**適用されま�
 プロパティ参照（`x.name`だけ）ではUFCSは起動しません。UFCS呼出
 はレシーバを`self`に**バインドしません** — 意味的には自由関数
 呼出で、レシーバは単に第一引数の位置にあります。
+
+#### namespaceは閉じている
+
+組み込みnamespaceのメンバー集合は固定なので、知らないメンバーは
+拡張点ではなくtypoか廃止されたAPIです。参照すると
+`AttributeError: namespace 'IO' has no member 'zzz'`になり、UFCS
+が代わりに立つこともありません —— 同名の自由関数`zzz`では埋まり
+ません:
+
+```culebra
+# doctest: skip
+zzz = fn (ns, v) { v }
+IO.zzz(9)                        # AttributeError。zzz(IO, 9) ではない
+Math.to_string()                 # AttributeError。to_string(Math) ではない
+```
+
+例外はdictの組み込みで、namespaceも`Object`である以上
+`IO.keys()`・`Sys.has('script')`など`Object`テーブルの分は今も
+答えます。素のobjectは影響を受けません —— `{a: 1}.zzz(9)`は従来
+どおりUFCSです。
 
 **組み込み**メソッドの裸読み（括弧なしの`let m = [1, 2].map`）は
 第一級値になりません — `TypeError: built-in method 'map' cannot be
