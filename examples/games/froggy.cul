@@ -361,5 +361,5 @@ fn run(s) {
 
 Term.app(fn (s) {
   while run(s) {
-}
+  }
 })

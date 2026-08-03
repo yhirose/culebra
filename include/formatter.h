@@ -773,7 +773,10 @@ class Printer {
       std::vector<DocP> dangling;
       for (const auto& c : comments_)
         if (c.start >= lo && c.start < hi) dangling.push_back(comment_doc(c));
-      if (dangling.empty()) return empty_ok ? doc_text("{}") : doc_text("{\n}");
+      if (dangling.empty()) {
+        return empty_ok ? doc_text("{}")
+                        : doc_concat({doc_text("{"), doc_hardline(), doc_text("}")});
+      }
       std::vector<DocP> inner = {doc_hardline()};
       for (size_t k = 0; k < dangling.size(); k++) {
         if (k) inner.push_back(doc_hardline());

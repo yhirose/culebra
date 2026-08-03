@@ -209,7 +209,7 @@ fn iter_h(thrower) {
 }
 try {
   for v in iter_h('next') {
-}
+  }
 } catch e {
   log_h = "{log_h}c:{e};"
 }
@@ -217,7 +217,7 @@ assert_eq(log_h, 'disposed;c:nx;')
 log_h = ''
 try {
   for v in iter_h('has_next') {
-}
+  }
 } catch e {
   log_h = "{log_h}c:{e};"
 }
@@ -236,7 +236,7 @@ let iter_i = {iter: fn () {
 mut log_i = ''
 try {
   for v in iter_i {
-}
+  }
 } catch e {
   log_i = "{log_i}{e};"
 }
@@ -264,7 +264,7 @@ fn iter_j(tag, bad) {
 try {
   for a in iter_j('out', false) {
     for b in iter_j('in', true) {
-}
+    }
   }
 } catch e {
 }
@@ -330,7 +330,7 @@ fn gen_bad(tag) {
 }
 try {
   for v in gen_bad('prod').map(|x| x) {
-}
+  }
 } catch e {
 }
 assert_eq(log_k, 'prod;')

@@ -321,7 +321,7 @@ try {
     42
   }}
   for x in bad {
-}
+  }
 } catch e {
   perr = e
 }
@@ -335,7 +335,7 @@ try {
     it
   }}
   for x in bad {
-}
+  }
 } catch e {
   perr = e
 }
