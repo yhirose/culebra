@@ -39,9 +39,13 @@ ratchet "bare emit_value_retain sites (jit.h)" "$ret" 29
 # The borrow -> +1 seam funnels its retain through one call, so its call sites
 # are invisible to the grep above. Count them here on their own ceiling —
 # otherwise the seam becomes a way to add hand-placed retains unnoticed.
+# 4 -> 5 (2026-08-03, reviewed): `.presence()` hands the receiver itself back
+# out as the method's result on the non-empty arm (Array/Object/String/Set,
+# same identity Ruby's `Object#presence` returns) — a genuine new borrow ->
+# owned crossing through the seam, not a bare retain bypassing it.
 brw=$(grep "emit_borrow_to_owned(" include/jit.h \
       | grep -v "llvm::Value\* emit_borrow_to_owned" | grep -vc "^[[:space:]]*//")
-ratchet "borrow->owned conversions (jit.h)" "$brw" 4
+ratchet "borrow->owned conversions (jit.h)" "$brw" 5
 
 # Native-method endpoints consume self via RAII (JitMethodSelf at entry), not
 # a tail release a throw would skip. sendable_jit.h is fully converted; keep
@@ -140,7 +144,7 @@ tassign=$(grep -cE '(llvm::Value|auto) ?\* ?[A-Za-z_]+ ?= ?[^;]*\.consume\(\);' 
 ratchet "typed consume assignments (jit.h)" "$tassign" 0
 
 if (( fail )); then exit 1; fi
-echo "rc-discipline OK (release=$rel/49 retain=$ret/29 borrow=$brw/4" \
+echo "rc-discipline OK (release=$rel/49 retain=$ret/29 borrow=$brw/5" \
      "rt-borrow=$rbrw/1 tail-self=$tail_self/0" \
      "stdlib=$(count_bare include/stdlib_jit.h)/98" \
      "sendable=$(count_bare include/sendable_jit.h)/12 throwguard=$tg/21" \

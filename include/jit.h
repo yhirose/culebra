@@ -1558,7 +1558,8 @@ struct JIT {
     bool line_col;  // append the ho_line/ho_col call-position arguments
     Res res;
   };
-  llvm::Value* emit_builtin_long_arg(const peg::Ast& argAst);
+  llvm::Value* emit_builtin_long_arg(const peg::Ast& argAst,
+                                     const char* param_name = "n");
   Owned try_compile_iter_table_method(const std::string& method,
                                       const peg::Ast& argsAst,
                                       llvm::Value* receiver,
@@ -4492,6 +4493,9 @@ struct JIT {
     module_->getOrInsertFunction(rt::str_repeat, ptrTy, ptrTy,
                                  builder_.getInt64Ty(), builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::str_truncate, ptrTy, ptrTy,
+                                 builder_.getInt64Ty(), ptrTy,
+                                 builder_.getInt64Ty(), builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::str_lines, ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::str_count, builder_.getInt64Ty(), ptrTy,
                                  ptrTy);
@@ -15673,11 +15677,13 @@ inline llvm::Value* JIT::emit_inlined_iter_reduce(
 // through its binder ("parameter 'n' expects Long"), so check before
 // converting — a bare value_to_long would report "expected Long, got String"
 // and break message symmetry.
-inline llvm::Value* JIT::emit_builtin_long_arg(const peg::Ast& argAst) {
+inline llvm::Value* JIT::emit_builtin_long_arg(const peg::Ast& argAst,
+                                               const char* param_name) {
   // `v` stays Owned across the check, so the automatic unwind-temp window
   // (JIT ownership discipline) releases it if the check throws.
   auto v = compile(argAst);
-  emit_type_check(v.borrow(), "Long", "parameter 'n'", &argAst);
+  emit_type_check(v.borrow(), "Long", std::string("parameter '") + param_name + "'",
+                  &argAst);
   return value_to_long(v.consume());
 }
 
@@ -16248,6 +16254,98 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     return own(make_bool(isEmpty));
   }
 
+  // .presence() — same size probe as .empty(), merging into the receiver
+  // itself (retained: a second owner is now handing it out) when non-empty,
+  // or nil when it is. Works on Array, Object, String, StringView, Set.
+  if (method == "presence" && argsAst.nodes.size() == 0) {
+    auto arrBB = llvm::BasicBlock::Create(ctx_, "pres.arr", fn);
+    auto objBB = llvm::BasicBlock::Create(ctx_, "pres.obj", fn);
+    auto strBB = llvm::BasicBlock::Create(ctx_, "pres.str", fn);
+    auto svBB  = llvm::BasicBlock::Create(ctx_, "pres.sv", fn);
+    auto setBB = llvm::BasicBlock::Create(ctx_, "pres.set", fn);
+    auto errBB = llvm::BasicBlock::Create(ctx_, "pres.err", fn);
+    auto sizeBB = llvm::BasicBlock::Create(ctx_, "pres.size", fn);
+    auto emptyBB = llvm::BasicBlock::Create(ctx_, "pres.empty", fn);
+    auto presentBB = llvm::BasicBlock::Create(ctx_, "pres.present", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "pres.merge", fn);
+
+    auto sw = builder_.CreateSwitch(tag, errBB, 6);
+    sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
+    sw->addCase(builder_.getInt8(TAG_TUPLE), arrBB);
+    sw->addCase(builder_.getInt8(TAG_OBJECT), objBB);
+    sw->addCase(builder_.getInt8(TAG_STRING), strBB);
+    sw->addCase(builder_.getInt8(TAG_STRINGVIEW), svBB);
+    sw->addCase(builder_.getInt8(TAG_SET), setBB);
+
+    builder_.SetInsertPoint(arrBB);
+    auto arrPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto arrSize = emit_call(
+        module_->getFunction(rt::array_size), {arrPtr}, "asz3");
+    auto arrSizeBB = builder_.GetInsertBlock();
+    builder_.CreateBr(sizeBB);
+
+    builder_.SetInsertPoint(objBB);
+    auto objPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto objSize = emit_call(
+        module_->getFunction(rt::object_size), {objPtr}, "osz3");
+    auto objSizeBB = builder_.GetInsertBlock();
+    builder_.CreateBr(sizeBB);
+
+    builder_.SetInsertPoint(strBB);
+    auto strPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto strSize = emit_call(
+        module_->getFunction(rt::str_size), {strPtr}, "ssz3");
+    auto strSizeBB = builder_.GetInsertBlock();
+    builder_.CreateBr(sizeBB);
+
+    builder_.SetInsertPoint(svBB);
+    auto svPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto svLenPtr = builder_.CreateConstInBoundsGEP1_64(
+        builder_.getInt8Ty(), svPtr, 8);
+    auto svSize = builder_.CreateLoad(builder_.getInt64Ty(), svLenPtr, "svsz3");
+    auto svSizeBB = builder_.GetInsertBlock();
+    builder_.CreateBr(sizeBB);
+
+    builder_.SetInsertPoint(setBB);
+    auto setPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto setSize = emit_call(
+        module_->getOrInsertFunction(rt::set_size,
+                                     builder_.getInt64Ty(), ptrTy),
+        {setPtr}, "ssz4");
+    auto setSizeBB = builder_.GetInsertBlock();
+    builder_.CreateBr(sizeBB);
+
+    builder_.SetInsertPoint(errBB);
+    emit_receiver_resolution_error(tag, "presence");
+
+    builder_.SetInsertPoint(sizeBB);
+    auto phi = builder_.CreatePHI(builder_.getInt64Ty(), 5, "sz3");
+    phi->addIncoming(arrSize, arrSizeBB);
+    phi->addIncoming(objSize, objSizeBB);
+    phi->addIncoming(strSize, strSizeBB);
+    phi->addIncoming(svSize, svSizeBB);
+    phi->addIncoming(setSize, setSizeBB);
+    auto isEmpty = builder_.CreateICmpEQ(phi, builder_.getInt64(0), "isempty3");
+    builder_.CreateCondBr(isEmpty, emptyBB, presentBB);
+
+    OwnedPhi merge(this, "presence.r");
+
+    builder_.SetInsertPoint(emptyBB);
+    merge.add_incoming(make_nil());
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(presentBB);
+    // Rebuild {tag, data} fresh here (rather than reusing `receiver`, born
+    // long before this arm) so the retained value is visibly produced in
+    // this block — the OwnedPhi raw-incoming check requires that.
+    merge.add_incoming(
+        emit_borrow_to_owned(make_value(tag, extract_data(receiver))));
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(mergeBB);
+    return merge.finish(mergeBB);
+  }
+
   // --- Set methods ---
   // union/intersect/diff/sym_diff: both operands Set, returns Set.
   if ((method == "union" || method == "intersect" ||
@@ -16687,6 +16785,29 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     auto s = emit_call(
         module_->getFunction(rt::str_repeat),
         {strPtr, n, current_line_val(), current_column_val()});
+    return own(make_string(s));
+  }
+
+  // `ellipsis` is optional — pass "..." (the default) when omitted, same
+  // shape as trim_start/trim_end's optional `chars`.
+  if (method == "truncate" && argsAst.nodes.size() >= 1 &&
+      argsAst.nodes.size() <= 2) {
+    auto strPtr = coerce_strlike_cstr(receiver, "trunc", true);
+    auto max = emit_builtin_long_arg(*argsAst.nodes[0], "max");
+    Owned ellipsis;
+    llvm::Value* ellipsisPtr;
+    if (argsAst.nodes.size() < 2) {
+      ellipsisPtr = emit_str_literal("...");
+    } else {
+      ellipsis = compile(*argsAst.nodes[1]);
+      ellipsisPtr = coerce_strlike_cstr(ellipsis.borrow(), "trunc.ellipsis",
+                                        false, "ellipsis",
+                                        argsAst.nodes[1].get());
+    }
+    auto s = emit_call(
+        module_->getFunction(rt::str_truncate),
+        {strPtr, max, ellipsisPtr, current_line_val(), current_column_val()});
+    ellipsis.drop();  // no-op when empty; releases the compiled arg otherwise
     return own(make_string(s));
   }
 

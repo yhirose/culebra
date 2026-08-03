@@ -1709,6 +1709,7 @@ Built-in methods:
 |---------------|----------------------------------------------------|
 | `size()`      | Element count (`Long`)                             |
 | `empty()`     | `Bool` — is `size()` zero?                         |
+| `presence()`  | The tuple unchanged if non-empty, else `nil`       |
 | `contains(x)` | `Bool` — is `x` an element?                        |
 | `to_array()`  | Fresh `Array` with the same elements               |
 | `iter()`      | Iterator yielding elements in index order          |
@@ -1794,6 +1795,7 @@ Built-in methods:
 |----------------|----------------------------------------------------|
 | `size()`       | Element count (`Long`)                             |
 | `empty()`      | `Bool` — is `size()` zero?                         |
+| `presence()`   | The set unchanged if non-empty, else `nil`         |
 | `contains(x)`  | `Bool` — is `x` a member?                          |
 | `union(b)`     | New `Set` of all elements from this and `b`        |
 | `intersect(b)` | New `Set` of elements present in both              |
@@ -3930,10 +3932,12 @@ receiver is never mutated.
 |-------------------------------------------------|--------------------------------------|
 | `s.size() -> Long`                              | Byte length.                         |
 | `s.empty() -> Bool`                              | Whether `size() == 0`.               |
+| `s.presence() -> String \| StringView \| Nil`   | `s` unchanged if non-empty, else `nil` — pairs with `??`/`?.` for "use it if there's anything there" (`x.presence() ?? default`). |
 | `s.upper() -> String`                           | ASCII uppercase.                     |
 | `s.lower() -> String`                           | ASCII lowercase.                     |
 | `s.capitalize() -> String`                      | First ASCII letter uppercase, the rest lowercase. ASCII-only like `upper`/`lower`, so a leading non-ASCII scalar passes through. |
 | `s.repeat(n: Long) -> String`                   | `n` copies concatenated. `n == 0` → `""`; a negative `n` is a `ValueError`, as is a result too large to allocate. |
+| `s.truncate(max: Long, ellipsis: StringLike = "...") -> String` | `s` unchanged if it already fits in `max` bytes; otherwise cut so the result (content + `ellipsis`) is exactly `max` bytes. Byte-based like `slice`, so a multi-byte scalar can split at the cut point. `max < 0`, or too small to fit `ellipsis`, is a `ValueError`. |
 | `s.trim() -> String`                            | Remove leading/trailing whitespace (` `, `\t`, `\n`, `\r`). |
 | `s.trim_start(chars: StringLike = "") -> String` | Trim from the start. No arg → whitespace; `chars` → leading scalars in that set (no ranges). |
 | `s.trim_end(chars: StringLike = "") -> String`  | Trim from the end. e.g. `s.trim_end("\n")`. |
@@ -4002,6 +4006,8 @@ inspect('  hi  '.trim())             # => 'hi'
 inspect('a,b,c'.split(','))          # => ['a', 'b', 'c']
 inspect('hello'.slice(1, 4))         # => 'ell'
 inspect('hello'.slice(-3, -1))       # => 'll'
+inspect('hello world'.truncate(8))   # => 'hello...'
+inspect(''.presence() ?? 'default')  # => 'default'
 
 # Three views of the same string: bytes, scalars, clusters
 inspect('café'.size())                # => 5
@@ -4057,6 +4063,7 @@ inspect(seen)   # => [1, 2]
 |---------------------------------------------|---------------------------------------|
 | `a.size() -> Long`                          | Number of elements.                   |
 | `a.empty() -> Bool`                          | Whether `size() == 0`.                |
+| `a.presence() -> Array \| Nil`               | `a` unchanged (same Array, not a copy) if non-empty, else `nil` — pairs with `??`/`?.` for "use it if there's anything there" (`xs.presence()?.join(",") ?? default`). |
 | `a.push(x: Any) -> Nil` *(mutating)*        | Append `x` to the end.                |
 | `a.pop() -> Any` *(mutating)*               | Remove and return the last element. `nil` if empty. |
 | `a.extend(other: Array) -> Nil` *(mutating)* | Append every element of `other`. `a.extend(a)` appends the elements `a` had on entry. For `Tuple` / `Set` sources use spread (§9). |
@@ -4104,6 +4111,7 @@ inspect([10, 20, 30, 40].slice(1, 3)) # => [20, 30]
 inspect(['a', 'b', 'c'].join('-'))    # => 'a-b-c'
 inspect([1, 2, 3].contains(2))        # => true
 inspect([10, 20, 30].index_of(99))    # => -1
+inspect([].presence() ?? 'default')   # => 'default'
 
 inspect([1, 2, 3].map(fn (x) { x * x }))           # => [1, 4, 9]
 inspect([1, 2, 3, 4].filter(fn (x) { x % 2 == 0 })) # => [2, 4]
@@ -4158,6 +4166,7 @@ wrong-typed element raises a `TypeError`:
 |----------------------------------|--------------------------------------------|
 | `o.size() -> Long`               | Number of own properties.                  |
 | `o.empty() -> Bool`               | Whether `size() == 0`.                     |
+| `o.presence() -> Object \| Nil`  | `o` unchanged (same Object, not a copy) if non-empty, else `nil` — pairs with `??`/`?.` for "use it if there's anything there". |
 | `o.keys() -> Array`              | `Array` of keys in insertion order (matches display order — §8). |
 | `o.values() -> Iterator`        | Lazy iterator of values in insertion order — the value-only view of `o.iter()` (which yields `(key, value)` pairs). Chains / `collect`s like any iterator. |
 | `o.has(key: String) -> Bool`     | Whether `o` has an own property named `key`, or (for a class instance) a method of that name. Ignores built-in method names. |

@@ -74,7 +74,7 @@ fn tool_glob(args) {
   let sorted = FS
     .glob(FS.join(args.path ?? '.', args.pat))
     .sorted_by(|f| FS.is_file(f) ? FS.stat(f).mtime : 0, reverse: true)
-  sorted.empty() ? 'none' : sorted.join("\n")
+  sorted.presence()?.join("\n") ?? 'none'
 }
 
 fn tool_grep(args) {
@@ -94,7 +94,7 @@ fn tool_grep(args) {
   }
 
   # The walk returns at 50, so whatever is left here is already under the cap.
-  hits.empty() ? 'none' : hits.join("\n")
+  hits.presence()?.join("\n") ?? 'none'
 }
 
 fn tool_bash(args) {
@@ -112,8 +112,7 @@ fn tool_bash(args) {
       : "(timed out after 30s)\n" + combined
   }
 
-  let out = combined.trim()
-  out.empty() ? '(empty)' : out
+  combined.trim().presence() ?? '(empty)'
 }
 
 # --- tool registry + schema ------------------------------------------------
@@ -237,7 +236,7 @@ fn main() {
           if !IO.stdin_is_terminal() { break }
           continue
         },
-        '/q' | 'exit' => { break; },  # `;` forces a block, not a Set literal
+        '/q' | 'exit' => break,
         '/c' => {
           messages = []
           println(Term.green("\u{23fa} Cleared conversation"))
@@ -269,12 +268,11 @@ fn main() {
 
             let result = run_tool(block.name, block.input)
             let lines = result.split("\n")
-            let head = lines[0].slice(0, 60)
-            let preview = cond {
-              lines.size() > 1 => "{head} ... +{lines.size() - 1} lines",
-              lines[0].size() > 60 => "{head}...",
-              _ => head,
-            }
+            # "+N lines" already signals more text, so multi-line skips
+            # truncate's own ellipsis; single-line adds it when it cuts.
+            let preview = lines.size() > 1
+              ? "{lines[0].slice(0, 60)} ... +{lines.size() - 1} lines"
+              : lines[0].truncate(60)
             println(Term.dim("  \u{23bf}  {preview}"))
 
             tool_results.push({

@@ -44,7 +44,8 @@ for u in ['-', '!'] {
 # Methods spanning Array/String/Object/Set/Tuple/iterator builtins. Applying
 # every method to every receiver with every arg shape mostly errors; the point
 # is that the error (kind/message/position) must match across backends.
-let methods = ['size', 'empty', 'push', 'pop', 'extend', 'insert', 'remove_at',
+let methods = ['size', 'empty', 'presence', 'push', 'pop', 'extend', 'insert',
+               'remove_at', 'truncate',
                'slice', 'map', 'filter', 'reduce',
                'find', 'any', 'all', 'for_each', 'flat_map', 'sort_by',
                'sort', 'sorted', 'sum',
@@ -94,7 +95,8 @@ for v in vals {
 let bare_recvs = ['1', '"abc"', '[1, 2]', '{a: 1}', '(1, 2)', '{1, 2}', '0..3',
                   '[1, 2].iter()',
                   '{has_next: fn () { false }, next: fn () { nil }}']
-let bare_names = ['map', 'size', 'join', 'collect', 'upper', 'union', 'zzz']
+let bare_names = ['map', 'size', 'join', 'collect', 'upper', 'union',
+                  'presence', 'truncate', 'zzz']
 for r in bare_recvs {
   for n in bare_names {
     case("bareread|" + r + "|" + n, "(" + r + ")." + n)

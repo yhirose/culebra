@@ -1,4 +1,4 @@
-// String primitives: repeat / capitalize / lines / count.
+// String primitives: repeat / truncate / capitalize / lines / count.
 
 // --- repeat ---------------------------------------------------------
 assert_eq("-".repeat(3), "---")
@@ -14,6 +14,25 @@ assert_throws("ValueError", || "x".repeat(-1))
 assert_throws("ValueError", || "abcd".repeat(3000000000000000000))
 // a StringView receiver repeats its own bytes, not the source's
 assert_eq("abcd".slice(1, 3).repeat(2), "bcbc")
+
+// --- truncate -------------------------------------------------------
+// fits within max -> unchanged
+assert_eq("hello".truncate(10), "hello")
+assert_eq("hello".truncate(5), "hello")
+// cuts so content + ellipsis is exactly max bytes
+assert_eq("hello world".truncate(8), "hello...")
+assert_eq("hello world".truncate(8).size(), 8)
+// custom ellipsis
+assert_eq("hello world".truncate(8, "~"), "hello w~")
+// max exactly the ellipsis length -> all content, no room to spare
+assert_eq("hello world".truncate(0, ""), "")
+assert_eq("hello world".truncate(3, "..."), "...")
+// non-ASCII passthrough when it already fits
+assert_eq("café".truncate(100), "café")
+// a StringView receiver
+assert_eq("hello world".slice(0, 11).truncate(8), "hello...")
+assert_throws("ValueError", || "x".truncate(-1))
+assert_throws("ValueError", || "hello".truncate(1))  // max < default ellipsis size
 
 // --- capitalize -----------------------------------------------------
 assert_eq("read".capitalize(), "Read")

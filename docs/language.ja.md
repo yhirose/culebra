@@ -1624,6 +1624,7 @@ classインスタンスはleaf扱いで、ウォーカーはそこで停止し�
 |-------------|---------------------------------------------------|
 | `size()`    | 要素数 (`Long`)                                    |
 | `empty()`   | `Bool` — `size()`が0か                          |
+| `presence()`| 非空ならタプルをそのまま、空なら`nil`                |
 | `contains(x)`| `Bool` — `x`が要素に含まれているか                 |
 | `to_array()`| 同じ要素を持つ新しい`Array`                        |
 | `iter()`    | 要素を添字順に返すイテレータ                          |
@@ -1705,6 +1706,7 @@ RHSは1度だけ評価され、`Array`または`Tuple`で、対象と同数の�
 |--------------|----------------------------------------------------|
 | `size()`     | 要素数 (`Long`)                                     |
 | `empty()`    | `Bool` — `size()`が0か                           |
+| `presence()` | 非空ならセットをそのまま、空なら`nil`                 |
 | `contains(x)`| `Bool` — `x`が含まれているか                         |
 | `union(b)`   | このセットと`b`の合併を新しい`Set`で返す           |
 | `intersect(b)`| 両方に含まれる要素を新しい`Set`で返す               |
@@ -3723,10 +3725,12 @@ matcher一族`assert_true` / `assert_eq`等）は
 |-------------------------------------------------|--------------------------------------|
 | `s.size() -> Long`                              | バイト長                              |
 | `s.empty() -> Bool`                              | `size() == 0`か                     |
+| `s.presence() -> String \| StringView \| Nil`   | 非空なら`s`をそのまま、空なら`nil` — `??`/`?.`と組み合わせて「あれば使う」慣用句に（`x.presence() ?? default`） |
 | `s.upper() -> String`                           | ASCIIの大文字化                      |
 | `s.lower() -> String`                           | ASCIIの小文字化                      |
 | `s.capitalize() -> String`                      | 先頭のASCII文字を大文字に、残りを小文字に。`upper`/`lower`と同じくASCIIのみなので、先頭が非ASCII scalarならそのまま |
 | `s.repeat(n: Long) -> String`                   | `n`個連結。`n == 0`は`""`、負の`n`は`ValueError`。確保できない大きさの結果も`ValueError` |
+| `s.truncate(max: Long, ellipsis: StringLike = "...") -> String` | `s`が`max`バイト以内ならそのまま。超えるなら結果（本文+`ellipsis`）がちょうど`max`バイトになるよう切る。`slice`と同じくバイト単位なので、切断点でマルチバイトscalarが分断されうる。`max < 0`、または`ellipsis`が収まらない小ささは`ValueError` |
 | `s.trim() -> String`                            | 前後の空白（` `, `\t`, `\n`, `\r`）を除去 |
 | `s.trim_start(chars: StringLike = "") -> String` | 先頭側を除去。引数なし → 空白、`chars` → その集合の先頭scalar（範囲非対応） |
 | `s.trim_end(chars: StringLike = "") -> String`  | 末尾側を除去。例`s.trim_end("\n")` |
@@ -3795,6 +3799,8 @@ inspect('  hi  '.trim())             # => 'hi'
 inspect('a,b,c'.split(','))          # => ['a', 'b', 'c']
 inspect('hello'.slice(1, 4))         # => 'ell'
 inspect('hello'.slice(-3, -1))       # => 'll'
+inspect('hello world'.truncate(8))   # => 'hello...'
+inspect(''.presence() ?? 'default')  # => 'default'
 
 # 同じ文字列の3つのビュー
 inspect('café'.size())                # => 5
@@ -3849,6 +3855,7 @@ inspect(seen)   # => [1, 2]
 |---------------------------------------------|--------------------------------------|
 | `a.size() -> Long`                          | 要素数                                |
 | `a.empty() -> Bool`                          | `size() == 0`か                     |
+| `a.presence() -> Array \| Nil`               | 非空なら`a`をそのまま（コピーでなく同じArray）、空なら`nil` — `??`/`?.`と組み合わせて「あれば使う」慣用句に（`xs.presence()?.join(",") ?? default`） |
 | `a.push(x: Any) -> Nil` *(破壊的)*          | 末尾に追加                            |
 | `a.pop() -> Any` *(破壊的)*                 | 末尾を取り除いて返す。空なら`nil`     |
 | `a.extend(other: Array) -> Nil` *(破壊的)*  | `other`の全要素を末尾に追加。`a.extend(a)`は呼び出し時点の`a`の要素を追加する。`Tuple` / `Set`を対象にしたい場合はスプレッド（§9）を使う |
@@ -3896,6 +3903,7 @@ inspect([10, 20, 30, 40].slice(1, 3)) # => [20, 30]
 inspect(['a', 'b', 'c'].join('-'))    # => 'a-b-c'
 inspect([1, 2, 3].contains(2))        # => true
 inspect([10, 20, 30].index_of(99))    # => -1
+inspect([].presence() ?? 'default')   # => 'default'
 
 inspect([1, 2, 3].map(fn (x) { x * x }))           # => [1, 4, 9]
 inspect([1, 2, 3, 4].filter(fn (x) { x % 2 == 0 })) # => [2, 4]
@@ -3948,6 +3956,7 @@ inspect([1, 2, 3].reduce(0, fn (a, *xs) { a + xs.size() }))  # => 3
 |----------------------------------|--------------------------------------------|
 | `o.size() -> Long`               | 自身のプロパティ数                          |
 | `o.empty() -> Bool`               | `size() == 0`か                          |
+| `o.presence() -> Object \| Nil`  | 非空なら`o`をそのまま（コピーでなく同じObject）、空なら`nil` — `??`/`?.`と組み合わせて「あれば使う」慣用句に |
 | `o.keys() -> Array`              | キーの配列を挿入順で返す（表示順と同じ — §8） |
 | `o.values() -> Iterator`        | 値を挿入順で返す遅延イテレータ。`o.iter()`（`(key, value)`ペアをyield）の値だけのビュー。他のイテレータ同様に連鎖／`collect`できる |
 | `o.has(key: String) -> Bool`     | `key`を自身のプロパティ、または（クラスインスタンスなら）その名のメソッドとして持つか。ビルトインメソッド名は含まない |

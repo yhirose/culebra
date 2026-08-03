@@ -909,6 +909,7 @@ inline constexpr auto str_trim_end        = "culebra_runtime_str_trim_end";
 inline constexpr auto str_upper           = "culebra_runtime_str_upper";
 inline constexpr auto str_capitalize      = "culebra_runtime_str_capitalize";
 inline constexpr auto str_repeat          = "culebra_runtime_str_repeat";
+inline constexpr auto str_truncate        = "culebra_runtime_str_truncate";
 inline constexpr auto str_lines           = "culebra_runtime_str_lines";
 inline constexpr auto str_count           = "culebra_runtime_str_count";
 inline constexpr auto safepoint           = "culebra_runtime_safepoint";

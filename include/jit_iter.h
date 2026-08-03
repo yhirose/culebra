@@ -3074,6 +3074,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_repeat(
       _str_sv(s), n, static_cast<long>(line), static_cast<long>(col)));
 }
 
+// `s.truncate(max, ellipsis)` — shares culebra::str_truncate with the
+// interp, including its negative-max / ellipsis-too-long ValueErrors
+// (positioned at the call site).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_truncate(
+    const char* s, int64_t max, const char* ellipsis, int64_t line,
+    int64_t col) {
+  return _culebra_heap_str(culebra::str_truncate(
+      _str_sv(s), max, _str_sv(ellipsis), static_cast<long>(line),
+      static_cast<long>(col)));
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_str_count(
     const char* s, const char* sub) {
   return culebra::str_count(_str_sv(s), _str_sv(sub));

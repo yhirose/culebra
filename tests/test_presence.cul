@@ -1,0 +1,37 @@
+// `.presence()` — self if non-empty, else `nil`. One shape shared by
+// String, Array, Object, Set and Tuple, wherever `.empty()` already exists.
+
+// --- String -----------------------------------------------------------
+assert_eq("".presence(), nil)
+assert_eq("hi".presence(), "hi")
+assert_eq("hi".slice(0, 1).presence(), "h")  // StringView receiver
+
+// --- Array --------------------------------------------------------------
+assert_eq([].presence(), nil)
+assert_eq([1, 2].presence(), [1, 2])
+
+// --- Object -------------------------------------------------------------
+assert_eq({}.presence(), nil)
+assert_eq({a: 1}.presence(), {a: 1})
+
+// --- Set ------------------------------------------------------------------
+assert_true({1, 2}.presence() != nil)
+assert_eq({1, 2}.presence(), {1, 2})
+
+// --- Tuple ----------------------------------------------------------------
+// a Tuple is never empty (no zero-arity literal), so presence is always self
+assert_eq((1, 2).presence(), (1, 2))
+
+// --- identity: presence returns the SAME object, not a copy --------------
+mut a = [1, 2]
+let p = a.presence()
+p.push(3)
+assert_eq(a, [1, 2, 3])
+
+// --- the "use it if there's anything there" idiom this exists for -------
+assert_eq([].presence() ?? "default", "default")
+assert_eq([1, 2].presence() ?? "default", [1, 2])
+assert_eq(["x", "y"].presence()?.join(","), "x,y")
+assert_eq([].presence()?.join(",") ?? "none", "none")
+
+IO.inspect("test_presence OK")

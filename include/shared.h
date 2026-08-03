@@ -51,12 +51,13 @@ namespace culebra {
 // known_builtin_methods() (which delegates here so the list never drifts).
 inline const std::unordered_set<std::string_view>& builtin_method_names() {
   static const std::unordered_set<std::string_view> kNames = {
-      "size",       "empty",       "push",       "pop",        "reverse",
+      "size",       "empty",       "presence",   "push",       "pop",
+      "reverse",
       "extend",     "insert",      "remove_at",
       "slice",      "join",        "index_of",   "contains",   "upper",
       "lower",
       "trim",       "tr",          "trim_start", "trim_end",   "split",
-      "repeat",     "capitalize",  "lines",      "to_string",
+      "repeat",     "truncate",    "capitalize", "lines",      "to_string",
       "starts_with","ends_with",   "keys",       "values",     "has",
       "remove",     "get",         "get_or_put", "map",        "filter",
       "reduce",     "for_each",    "find",
@@ -95,7 +96,7 @@ inline bool is_builtin_method_name(std::string_view name) {
 // `IO.push()` / `FS.split()` raise on both backends.
 inline bool is_object_builtin_method_name(std::string_view name) {
   static const std::unordered_set<std::string_view> kNames = {
-      "size",  "empty", "keys",       "has",    "get", "get_or_put",
+      "size",  "empty", "presence",   "keys",   "has", "get", "get_or_put",
       "remove", "values", "iter"};
   return kNames.count(name) > 0;
 }
@@ -1111,6 +1112,31 @@ inline std::string str_repeat(std::string_view s, int64_t n, int64_t line = 0,
   std::string out;
   out.reserve(s.size() * static_cast<size_t>(n));
   for (int64_t i = 0; i < n; i++) out += s;
+  return out;
+}
+
+// `s.truncate(max, ellipsis)` — `s` unchanged if it already fits in `max`
+// bytes; otherwise cut so the result (content + ellipsis) is exactly `max`
+// bytes. Byte-based like `slice()`, so a multi-byte scalar can split at the
+// cut point same as slice's existing behavior. A negative `max`, or one too
+// small to fit `ellipsis`, is a ValueError rather than a silently wrong cut.
+inline std::string str_truncate(std::string_view s, int64_t max,
+                                std::string_view ellipsis, int64_t line = 0,
+                                int64_t col = 0) {
+  if (max < 0) {
+    throw CulebraError("ValueError", "truncate() max must not be negative",
+                       line, col);
+  }
+  auto umax = static_cast<uint64_t>(max);
+  if (s.size() <= umax) return std::string(s);
+  if (umax < ellipsis.size()) {
+    throw CulebraError("ValueError",
+                       std::format("truncate() max must be at least {}",
+                                   ellipsis.size()),
+                       line, col);
+  }
+  std::string out(s.substr(0, umax - ellipsis.size()));
+  out += ellipsis;
   return out;
 }
 

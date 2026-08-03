@@ -4087,6 +4087,16 @@ inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
                       (!obj.non_string_props || obj.non_string_props->empty());
          return Value(empty);
        }))},
+      // `self` unchanged if non-empty, else `nil` — pairs with `??`/`?.` for
+      // the common "use it if there's anything there" idiom.
+      {"presence"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto self = callEnv->get("self");
+         const auto& obj = self.to_object();
+         bool empty = obj.properties->empty() &&
+                      (!obj.non_string_props || obj.non_string_props->empty());
+         return empty ? Value() : self;
+       }))},
       {"keys"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          const auto& obj = callEnv->get("self").to_object();
@@ -4802,6 +4812,15 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                                         const auto& val = callEnv->get("self");
                                         return Value(val.to_array().values->empty());
                                       }))},
+      // `self` unchanged if non-empty, else `nil` — pairs with `??`/`?.` for
+      // the common "use it if there's anything there" idiom.
+      {"presence"sv, Value(FunctionValue({},
+                                         [](std::shared_ptr<Environment> callEnv) {
+                                           auto val = callEnv->get("self");
+                                           return val.to_array().values->empty()
+                                                      ? Value()
+                                                      : val;
+                                         }))},
       {"push"sv, Value(FunctionValue{{{"arg", false}},
                                      [](std::shared_ptr<Environment> callEnv) {
                                        const auto& val = callEnv->get("self");
@@ -5550,6 +5569,13 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          return Value(callEnv->get("self").to_string_view().empty());
        }))},
+      // `self` unchanged if non-empty, else `nil` — pairs with `??`/`?.` for
+      // the common "use it if there's anything there" idiom.
+      {"presence"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto self = callEnv->get("self");
+         return self.to_string_view().empty() ? Value() : self;
+       }))},
       // `.view()` → StringView sharing the receiver's bytes.
       {"view"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
@@ -5589,6 +5615,20 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
              return Value(culebra::str_repeat(
                  callEnv->get("self").to_string_view(),
                  callEnv->get("n").to_long()));
+           }))},
+      // Cut to `max` bytes, appending `ellipsis` when it does — the receiver
+      // unchanged if it already fits. `max < 0` or too small to fit
+      // `ellipsis` is a ValueError.
+      {"truncate"sv,
+       Value(FunctionValue(
+           {{"max", false, "Long"sv},
+            {"ellipsis", false, "StringLike"sv, nullptr,
+             std::make_shared<Value>(Value(std::string("...")))}},
+           [](std::shared_ptr<Environment> callEnv) {
+             return Value(culebra::str_truncate(
+                 callEnv->get("self").to_string_view(),
+                 callEnv->get("max").to_long(),
+                 callEnv->get("ellipsis").to_string_view()));
            }))},
       {"trim"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
@@ -5884,6 +5924,13 @@ inline std::unordered_map<std::string_view, Value>& set_builtins() {
          const auto& self = callEnv->get("self").get<SetValue>();
          return Value(self.members->empty());
        }))},
+      // `self` unchanged if non-empty, else `nil` — pairs with `??`/`?.` for
+      // the common "use it if there's anything there" idiom.
+      {"presence"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto self = callEnv->get("self");
+         return self.get<SetValue>().members->empty() ? Value() : self;
+       }))},
       {"contains"sv,
        Value(FunctionValue(
            {{"x", false}},
@@ -6032,6 +6079,13 @@ inline std::unordered_map<std::string_view, Value>& tuple_builtins() {
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          const auto& self = callEnv->get("self").get<TupleValue>();
          return Value(self.elements->empty());
+       }))},
+      // `self` unchanged if non-empty, else `nil` — pairs with `??`/`?.` for
+      // the common "use it if there's anything there" idiom.
+      {"presence"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto self = callEnv->get("self");
+         return self.get<TupleValue>().elements->empty() ? Value() : self;
        }))},
       {"contains"sv,
        Value(FunctionValue(
