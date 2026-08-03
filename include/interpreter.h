@@ -10143,7 +10143,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // quietly so the in-flight error survives — the exact lines eval_for's
   // dispose_iter / dispose_quietly draw.
   static Value _wrap_method_with_this(const Value& prop, const Value& val,
-                                      bool is_builtin = true,
+                                      bool is_builtin,
                                       std::string_view method_name = {},
                                       bool dispose_receiver = false) {
     const auto& pf = prop.to_function();
@@ -10456,7 +10456,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         auto it = default_methods.find(std::string(name));
         if (it == default_methods.end()) continue;
         if (type_matches(val, trait_name)) {
-          return _wrap_method_with_this(it->second, val);
+          return _wrap_method_with_this(it->second, val, /*is_builtin=*/false);
         }
       }
     }
@@ -10897,13 +10897,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     const auto& obj = val.to_object();
     if (const auto* sym = obj.find_prop(name);
         sym && sym->val.type == Value::Function) {
-      return _wrap_method_with_this(sym->val, val);
+      return _wrap_method_with_this(sym->val, val, /*is_builtin=*/false);
     }
     for (const auto& [trait_name, default_methods] : trait_default_impls_) {
       auto dit = default_methods.find(std::string(name));
       if (dit == default_methods.end()) continue;
       if (type_matches(val, trait_name)) {
-        return _wrap_method_with_this(dit->second, val);
+        return _wrap_method_with_this(dit->second, val, /*is_builtin=*/false);
       }
     }
     return std::nullopt;
@@ -10921,7 +10921,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     if (!sym) return std::nullopt;
     const auto& m = sym->val;
     if (m.type != Value::Function) return std::nullopt;
-    auto bound = _wrap_method_with_this(m, receiver);
+    auto bound = _wrap_method_with_this(m, receiver, /*is_builtin=*/false);
     size_t arity = rhs ? 1 : 0;
     return invoke_user_function(
         bound, env, arity,
@@ -10953,7 +10953,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     if (!sym) return std::nullopt;
     const auto& m = sym->val;
     if (m.type != Value::Function) return std::nullopt;
-    auto bound = _wrap_method_with_this(m, receiver);
+    auto bound = _wrap_method_with_this(m, receiver, /*is_builtin=*/false);
     const Value* args[2] = {&a1, &a2};
     return invoke_user_function(
         bound, env, 2, [&](size_t i) { return *args[i]; },
