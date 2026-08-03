@@ -10580,8 +10580,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           // call from a bare reference; special properties (SharedBuffer .size,
           // function introspection) are handled before those sites and are
           // unaffected.
+          // The postfix chain itself, not its head child: a parenthesized
+          // receiver collapses to the inner expression, whose column is one
+          // past the `(` the JIT's property read reports (and that every other
+          // property error on this chain reports).
           val = eval_property(postfix, env, val, /*as_value=*/!next_is_args,
-                              /*recv=*/ast.nodes[0].get());
+                              /*recv=*/&ast);
           break;
         }
         case "SAFE_INDEX"_:
@@ -11331,10 +11335,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           lval = eval_array_reference(postfix, env, lval);
           break;
         case "DOT"_:
-          // Attribute a namespace AttributeError to the chain head (matching
-          // the rvalue path and the JIT), not the member token.
+          // The assignment node itself, not the lvalue's base: a `mut` prefix
+          // or a parenthesized base sits ahead of that child, and the JIT's
+          // property read reports the statement's own position.
           lval = eval_property(postfix, env, lval, /*as_value=*/false,
-                               /*recv=*/ast.nodes[lvaloff].get());
+                               /*recv=*/&ast);
           break;
         default:
           throw std::logic_error("invalid internal condition.");

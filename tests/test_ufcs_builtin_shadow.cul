@@ -515,6 +515,18 @@ assert_throws('TypeError', fn () { view.get_or_put("z", 9) })
 assert_throws('TypeError', fn () { view.remove("a") })
 assert_throws('TypeError', fn () { view.empty() })
 
+# The member miss reports the position of the whole postfix chain, so
+# parenthesizing the receiver doesn't move it.
+fn ns_miss_col(f) {
+  try { f(); nil } catch e { return e.col }
+}
+assert_eq(ns_miss_col(fn () { Math.zzz(9) }), 31)
+assert_eq(ns_miss_col(fn () { (Math).zzz(9) }), 31)
+# …and an assignment target reports the statement, not the base expression.
+assert_eq(ns_miss_col(fn () { Math.zzz.a = 1 }), 31)
+assert_eq(ns_miss_col(fn () { (Math).zzz.a = 1 }), 31)
+assert_eq(ns_miss_col(fn () { mut Math.zzz.a = 1 }), 31)
+
 # --- Phase 7 (J): `drop`'s at-most-once guard sits below UFCS ---
 
 # A free `drop` claims every receiver that carries no `drop` of its own, just
