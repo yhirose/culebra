@@ -647,7 +647,7 @@ _run-tests BACKEND:
       ${TIMEOUT_BIN:+$TIMEOUT_BIN 1800} tests/wrap_test.sh "$BIN" || exit 1
     }
     run_difftest() {
-        # A batch of 5114 generated cases, not a single invocation, so it gets
+        # A whole generated batch, not a single invocation, so it gets
         # its own generous wall-clock bound (well above the honest runtime) —
         # only a genuine hang trips it.
         ${TIMEOUT_BIN:+$TIMEOUT_BIN 1800} tools/difftest/run.sh "$BIN"
@@ -783,7 +783,7 @@ _run-tests BACKEND:
       # Order: cheap tests first, then AOT (slowest + most env-sensitive,
       # so a failure there shouldn't mask matcher regressions).
       # CULEBRA_TEST_SKIP_HEAVY skips the platform-independent heavy phases
-      # (the 5114-case generated difftest, the JIT gc-stress sweep, and the
+      # (the generated difftest, the JIT gc-stress sweep, and the
       # per-test AOT links). CI sets it on the slow macOS runner — those run on
       # Linux CI and in local dev.
       all)
@@ -797,7 +797,7 @@ _run-tests BACKEND:
         phase "webview dynload (engine stays behind dlopen)"; run_webview_dynload
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
         phase "codegen backends (-O0, fast vs interp)"; run_codegen_backends
-        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "difftest (5114 generated cases)"; run_difftest; }
+        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "difftest (generated corpus)"; run_difftest; }
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "leak-fuzz (corpus RC-leak regression)"; run_leak_fuzz; }
         phase "leak-abort (GAP5 loud detector smoke)"; run_leak_abort
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "leak-abort-suite (corpus inflated-RC, throw-paths)"; run_leak_abort_suite; }
