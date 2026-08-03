@@ -319,12 +319,20 @@ bool setup_vscode() {
   }
   if (cli.empty()) return true;  // no VSCode-family editor found — not an error
 
-  std::string package_json = find_asset("vscode", "package.json")->text;
-  std::string ext_js = find_asset("vscode", "extension.js")->text;
-  std::string lang_conf =
-      find_asset("vscode", "language-configuration.json")->text;
-  std::string tm_grammar =
-      find_asset("vscode", "syntaxes/culebra.tmLanguage.json")->text;
+  const editor_assets::Asset* package_asset = find_asset("vscode", "package.json");
+  const editor_assets::Asset* ext_asset = find_asset("vscode", "extension.js");
+  const editor_assets::Asset* lang_asset =
+      find_asset("vscode", "language-configuration.json");
+  const editor_assets::Asset* grammar_asset =
+      find_asset("vscode", "syntaxes/culebra.tmLanguage.json");
+  if (!package_asset || !ext_asset || !lang_asset || !grammar_asset) {
+    std::println(stderr, "culebra init: VSCode assets missing from this binary");
+    return false;
+  }
+  std::string package_json = package_asset->text;
+  std::string ext_js = ext_asset->text;
+  std::string lang_conf = lang_asset->text;
+  std::string tm_grammar = grammar_asset->text;
 
   // The debug adapter (`program`) and the formatter (extension.js) default to
   // plain "culebra" resolved on PATH. Bake in this process's own absolute
@@ -395,9 +403,13 @@ bool write_file(const fs::path& path, std::string_view text) {
 bool install_vim_into(const fs::path& root, std::string_view name) {
   const editor_assets::Asset* syn = find_asset("vim", "culebra.vim");
   const editor_assets::Asset* ftp = find_asset("vim", "culebra_ftplugin.vim");
+  if (!syn || !ftp) {
+    std::println(stderr, "culebra init: Vim assets missing from this binary");
+    return false;
+  }
   bool ok = true;
-  ok &= write_file(root / "syntax" / "culebra.vim", syn ? syn->text : "");
-  ok &= write_file(root / "ftplugin" / "culebra.vim", ftp ? ftp->text : "");
+  ok &= write_file(root / "syntax" / "culebra.vim", syn->text);
+  ok &= write_file(root / "ftplugin" / "culebra.vim", ftp->text);
   ok &= write_file(root / "ftdetect" / "culebra.vim",
                    "autocmd BufRead,BufNewFile *.cul set filetype=culebra\n");
   if (ok) {
