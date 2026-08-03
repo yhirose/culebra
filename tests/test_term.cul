@@ -5,7 +5,7 @@
 // --- escape builders (pure strings) ---
 assert_eq(Term.clear(), "\x1b[2J\x1b[H")
 assert_eq(Term.move(0, 0), "\x1b[1;1H")
-assert_eq(Term.move(4, 2), "\x1b[3;5H")     // row = y+1, col = x+1
+assert_eq(Term.move(4, 2), "\x1b[3;5H")  // row = y+1, col = x+1
 assert_eq(Term.hide(), "\x1b[?25l")
 assert_eq(Term.show(), "\x1b[?25h")
 
@@ -31,7 +31,7 @@ assert_eq(Term.rgb("x", 255, 128, 0), "\x1b[38;5;208mx\x1b[39m")
 // level 1: everything collapses to the 16-colour palette
 Term.set_level(1)
 assert_eq(Term.red("x"), "\x1b[31mx\x1b[39m")
-assert_eq(Term.fg("x", 196), "\x1b[91mx\x1b[39m")     // 256 #196 -> bright red
+assert_eq(Term.fg("x", 196), "\x1b[91mx\x1b[39m")  // 256 #196 -> bright red
 assert_eq(Term.bold("x"), "\x1b[1mx\x1b[22m")
 // level 0 (NO_COLOR / non-tty): all styling stripped
 Term.set_level(0)
@@ -39,17 +39,19 @@ assert_eq(Term.fg("x", 196), "x")
 assert_eq(Term.rgb("x", 255, 128, 0), "x")
 assert_eq(Term.bold("x"), "x")
 assert_eq(Term.red("x"), "x")
-Term.set_level(3)   // restore for any later use
+Term.set_level(3)  // restore for any later use
 
 // --- key parsing: raw bytes -> key event Object (or nil) ---
 assert_eq(Term.parse(""), nil)
-fn kev(raw) { Term.parse(raw) }
+fn kev(raw) {
+  Term.parse(raw)
+}
 assert_eq(kev("\x1b[A").kind, "key")
 assert_eq(kev("\x1b[A").key, "up")
 assert_eq(kev("\x1b[B").key, "down")
 assert_eq(kev("\x1b[C").key, "right")
 assert_eq(kev("\x1b[D").key, "left")
-assert_eq(kev("\x1bOA").key, "up")          // SS3 variant
+assert_eq(kev("\x1bOA").key, "up")  // SS3 variant
 assert_eq(kev("\x1b").key, "escape")
 assert_eq(kev("\r").key, "enter")
 assert_eq(kev("\n").key, "enter")
@@ -68,15 +70,15 @@ assert_eq(kev("\x1bOP").key, "f1")
 assert_eq(kev("\x1b[15~").key, "f5")
 assert_eq(kev("\x1b[24~").key, "f12")
 // modifiers: ctrl / shift / alt
-let ce = kev("\x1b[1;5C")                   // Ctrl+Right
+let ce = kev("\x1b[1;5C")  // Ctrl+Right
 assert_eq(ce.key, "right")
 assert_eq(ce.ctrl, true)
 assert_eq(ce.shift, false)
-assert_eq(kev("\x1b[1;2A").shift, true)     // Shift+Up
-assert_eq(kev("\x1b[3;5~").ctrl, true)      // Ctrl+Delete
-assert_eq(kev("\x03").key, "c")             // Ctrl+C control byte
+assert_eq(kev("\x1b[1;2A").shift, true)  // Shift+Up
+assert_eq(kev("\x1b[3;5~").ctrl, true)   // Ctrl+Delete
+assert_eq(kev("\x03").key, "c")          // Ctrl+C control byte
 assert_eq(kev("\x03").ctrl, true)
-assert_eq(kev("\x1bx").key, "x")            // Alt+x (ESC prefix)
+assert_eq(kev("\x1bx").key, "x")  // Alt+x (ESC prefix)
 assert_eq(kev("\x1bx").alt, true)
 
 // --- size fallback (no tty under the test runner) ---
@@ -90,7 +92,7 @@ assert_eq(sz[1], 24)
 let s = Term.Screen.new()
 s.clear()
 s.put(2, 1, "X")
-s.render()                          // first render = full repaint (discard)
+s.render()  // first render = full repaint (discard)
 // changing one cell emits only that cell's move + glyph
 s.put(2, 1, "Y")
 assert_eq(s.render(), "\x1b[2;3HY")  // row 2, col 3
@@ -114,18 +116,18 @@ assert_eq(s.render(), "\x1b[4;6H  ")
 // cell without a cursor move, stranding it one column to the right.
 let w = Term.Screen.new()
 w.clear()
-w.render()                          // full repaint of blanks (discard)
+w.render()  // full repaint of blanks (discard)
 w.clear()
-w.set(0, 0, "🐸")                   // wide glyph (blanks col 1)
-w.set(1, 0, "z")                    // refill the continuation cell
-w.set(3, 0, "Q")                    // later cell that reveals cursor drift
+w.set(0, 0, "🐸")  // wide glyph (blanks col 1)
+w.set(1, 0, "z")     // refill the continuation cell
+w.set(3, 0, "Q")     // later cell that reveals cursor drift
 assert_eq(w.render(), "\x1b[1;1H🐸\x1b[1;2Hz\x1b[1;4HQ")
 
 // put() advances by each glyph's own width on every row: two wide glyphs land
 // on columns 1-2 and 3-4, so the second needs no cursor move.
 let p = Term.Screen.new()
 p.clear()
-p.render()                          // full repaint of blanks (discard)
+p.render()  // full repaint of blanks (discard)
 p.clear()
 p.put(0, 2, "🐸🐸")
 assert_eq(p.render(), "\x1b[3;1H🐸🐸")
@@ -134,9 +136,9 @@ assert_eq(p.render(), "\x1b[3;1H🐸🐸")
 // cell; a narrow put() on another row must still advance one column.
 let q = Term.Screen.new()
 q.clear()
-q.render()                          // full repaint of blanks (discard)
+q.render()  // full repaint of blanks (discard)
 q.clear()
-q.set(1, 0, "🐸")                   // blanks (2, 0)
+q.set(1, 0, "🐸")  // blanks (2, 0)
 q.put(1, 4, "ab")
 assert_eq(q.render(), "\x1b[1;2H🐸\x1b[5;2Hab")
 
@@ -145,13 +147,13 @@ assert_eq(q.render(), "\x1b[1;2H🐸\x1b[5;2Hab")
 // half it owns, and the diff would otherwise leave the stale cell on screen.
 let c = Term.Screen.new()
 c.clear()
-c.render()                          // full repaint of blanks (discard)
+c.render()  // full repaint of blanks (discard)
 c.clear()
 c.set(0, 0, "🐸")
-c.set(1, 0, "z")                    // covers the frog's right half
+c.set(1, 0, "z")  // covers the frog's right half
 assert_eq(c.render(), "\x1b[1;1H🐸\x1b[1;2Hz")
 c.clear()
-c.set(0, 0, "🐸")                   // same glyph, but the "z" is still displayed
+c.set(0, 0, "🐸")  // same glyph, but the "z" is still displayed
 assert_eq(c.render(), "\x1b[1;1H🐸")
 
 // "" marks the right half of a wide glyph, so a narrow glyph replacing that
@@ -159,13 +161,13 @@ assert_eq(c.render(), "\x1b[1;1H🐸")
 // emit a stray blank there.
 let d = Term.Screen.new()
 d.clear()
-d.render()                          // full repaint of blanks (discard)
+d.render()  // full repaint of blanks (discard)
 d.clear()
 d.set(0, 0, "🐸")
-d.set(0, 0, "a")                    // narrow glyph takes the wide one's place
+d.set(0, 0, "a")  // narrow glyph takes the wide one's place
 assert_eq(d.render(), "\x1b[1;1Ha")
 d.clear()
-d.set(0, 0, "a")                    // identical frame: nothing left to emit
+d.set(0, 0, "a")  // identical frame: nothing left to emit
 assert_eq(d.render(), "")
 
 // A resize that keeps the cell count still moves every cell to a new column,
@@ -174,10 +176,10 @@ assert_eq(d.render(), "")
 // resize one.)
 let z = Term.Screen.new()
 z.clear()
-z.render()                          // full repaint at 80x24 (discard)
+z.render()  // full repaint at 80x24 (discard)
 z.clear()
-assert_eq(z.render(), "")           // steady state
-z._w = 48                           // 48x40 == 1920 cells == 80x24
+assert_eq(z.render(), "")  // steady state
+z._w = 48                  // 48x40 == 1920 cells == 80x24
 z._h = 40
 z.set(0, 0, "X")
 assert_eq(z.render().starts_with("\x1b[2J"), true)
@@ -188,45 +190,45 @@ assert_eq(s.rows(), 24)
 
 // No resize pending under the test runner (SIGWINCH never fired).
 assert_eq(Term.resized(), false)
-assert_eq(s.poll(0.0), nil)       // no input, no resize -> nil
+assert_eq(s.poll(0.0), nil)  // no input, no resize -> nil
 
 // --- display width (wcwidth): ASCII = 1, CJK / emoji = 2, combining = 0 ---
 assert_eq(Term.width("a"), 1)
 assert_eq(Term.width("abc"), 3)
 assert_eq(Term.width(""), 0)
-assert_eq(Term.width("あ"), 2)        // hiragana (wide)
-assert_eq(Term.width("中文"), 4)       // CJK (2 + 2)
-assert_eq(Term.width("🐸"), 2)        // emoji (wide)
-assert_eq(Term.width("a🐸b"), 4)      // 1 + 2 + 1
-assert_eq(Term.width("e\u0301"), 1) // e + combining acute = 1
+assert_eq(Term.width("あ"), 2)      // hiragana (wide)
+assert_eq(Term.width("中文"), 4)   // CJK (2 + 2)
+assert_eq(Term.width("🐸"), 2)     // emoji (wide)
+assert_eq(Term.width("a🐸b"), 4)   // 1 + 2 + 1
+assert_eq(Term.width("e\u0301"), 1)  // e + combining acute = 1
 // measured per extended grapheme cluster: a ZWJ sequence / flag / keycap is
 // one 2-cell group, not the sum of its scalars
-assert_eq(Term.width("👨‍👩‍👧"), 2)      // family (ZWJ) = one cluster
-assert_eq(Term.width("🇯🇵"), 2)        // flag (regional indicators)
+assert_eq(Term.width("👨‍👩‍👧"), 2)  // family (ZWJ) = one cluster
+assert_eq(Term.width("🇯🇵"), 2)            // flag (regional indicators)
 
 // StringLike: accepts StringView directly (e.g. from .slice() / .graphemes()),
 // no .to_string() needed
-assert_eq(Term.width("a中b".slice(1, 4)), 2)          // '中' as a StringView
-assert_eq(Term.width("café".graphemes().collect()[3]), 1) // 'é' grapheme as a StringView
+assert_eq(Term.width("a中b".slice(1, 4)), 2)               // '中' as a StringView
+assert_eq(Term.width("café".graphemes().collect()[3]), 1)  // 'é' grapheme as a StringView
 
 // --- Term.style: SGR parameter string for a cell (downsampled to level) ---
 Term.set_level(3)
-assert_eq(Term.style(), "")                            // no attrs/colour
-assert_eq(Term.style(fg: 196), "38;5;196")             // 256 fg
-assert_eq(Term.style(bg: 0), "48;5;0")                 // 256 bg
+assert_eq(Term.style(), "")                 // no attrs/colour
+assert_eq(Term.style(fg: 196), "38;5;196")  // 256 fg
+assert_eq(Term.style(bg: 0), "48;5;0")      // 256 bg
 assert_eq(Term.style(fg: 196, bold: true), "1;38;5;196")
 assert_eq(Term.style(fg: 2, bg: 4), "38;5;2;48;5;4")
-assert_eq(Term.style(fg: (255, 128, 0)), "38;2;255;128;0")   // truecolour fg
+assert_eq(Term.style(fg: (255, 128, 0)), "38;2;255;128;0")  // truecolour fg
 assert_eq(Term.style(bold: true, underline: true), "1;4")
 Term.set_level(0)
-assert_eq(Term.style(fg: 196, bold: true), "")         // stripped at level 0
+assert_eq(Term.style(fg: 196, bold: true), "")  // stripped at level 0
 Term.set_level(3)
 
 // --- per-cell colour: render emits minimal SGR transitions, ends at default ---
 let cc = Term.Screen.new()
 cc.clear()
 cc.put(2, 1, "A", Term.style(fg: 2))
-cc.render()                          // first render = full repaint (discard)
+cc.render()  // first render = full repaint (discard)
 // change the glyph, same style: move + reset + style + glyph + trailing reset
 cc.put(2, 1, "B", Term.style(fg: 2))
 assert_eq(cc.render(), "\x1b[2;3H\x1b[0m\x1b[38;5;2mB\x1b[0m")
@@ -239,25 +241,25 @@ cc.put(2, 1, "B")
 assert_eq(cc.render(), "\x1b[2;3HB")
 
 // --- mouse: SGR report -> mouse event Object (0-based coordinates) ---
-let m1 = Term.parse("\x1b[<0;15;8M")     // left press at col 15, row 8 (1-based)
+let m1 = Term.parse("\x1b[<0;15;8M")  // left press at col 15, row 8 (1-based)
 assert_eq(m1.kind, "mouse")
 assert_eq(m1.event, "press")
 assert_eq(m1.button, "left")
-assert_eq(m1.x, 14)                      // 0-based
+assert_eq(m1.x, 14)  // 0-based
 assert_eq(m1.y, 7)
 assert_eq(m1.shift, false)
-let m2 = Term.parse("\x1b[<2;3;4m")      // right release ('m')
+let m2 = Term.parse("\x1b[<2;3;4m")  // right release ('m')
 assert_eq(m2.button, "right")
 assert_eq(m2.event, "release")
-let m3 = Term.parse("\x1b[<64;1;1M")     // wheel up
+let m3 = Term.parse("\x1b[<64;1;1M")  // wheel up
 assert_eq(m3.button, "wheel_up")
 assert_eq(m3.event, "scroll")
 assert_eq(Term.parse("\x1b[<65;1;1M").button, "wheel_down")
-let m5 = Term.parse("\x1b[<32;5;6M")     // motion bit set -> drag
+let m5 = Term.parse("\x1b[<32;5;6M")  // motion bit set -> drag
 assert_eq(m5.event, "drag")
 assert_eq(m5.button, "left")
-assert_eq(Term.parse("\x1b[<4;1;1M").shift, true)    // shift modifier (bit 2)
-assert_eq(Term.parse("\x1b[<16;1;1M").ctrl, true)    // ctrl modifier (bit 4)
+assert_eq(Term.parse("\x1b[<4;1;1M").shift, true)  // shift modifier (bit 2)
+assert_eq(Term.parse("\x1b[<16;1;1M").ctrl, true)  // ctrl modifier (bit 4)
 // mouse-enable / disable escapes
 assert_eq(Term.mouse_on(), "\x1b[?1002h\x1b[?1006h")
 assert_eq(Term.mouse_off(), "\x1b[?1002l\x1b[?1006l")
@@ -268,7 +270,9 @@ assert_eq(type_of(Term.parse("q")), "Object")
 // Closed like the C++ namespaces: an unknown member raises instead of reading
 // as nil. Lives here rather than in test_namespace_attr.cul, which would have
 // to splice this whole module into the JIT entry module to say it.
-assert_throws("AttributeError", fn() { Term.typo })
+assert_throws("AttributeError", fn () {
+  Term.typo
+})
 assert_true(Term.has("Screen"))
 
 inspect("test_term ok")

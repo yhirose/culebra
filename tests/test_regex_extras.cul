@@ -3,7 +3,7 @@
 
 // --- Regex.escape: quote metacharacters so a string matches literally ---
 assert_eq(Regex.escape("a.b(c)"), `a\.b\(c\)`)
-assert_eq(Regex.escape("1+1=2"), `1\+1=2`)        // '=' is not a metachar
+assert_eq(Regex.escape("1+1=2"), `1\+1=2`)  // '=' is not a metachar
 // escaped string matches the literal text, not as a regex
 assert_true(Regex.compile(Regex.escape("a.b")).test("a.b"))
 assert_false(Regex.compile(Regex.escape("a.b")).test("axb"))
@@ -13,19 +13,22 @@ assert_true(Regex.compile(`\b` + Regex.escape(word)).test("use C++ here"))
 
 // --- replace_all with a function argument ---
 let d = Regex.compile('\d+')
-assert_eq(d.replace_all("a1 b22 c333", fn (m) { "<{m.value}>" }),
-          "a<1> b<22> c<333>")
+assert_eq(d.replace_all("a1 b22 c333", fn (m) {
+    "<{m.value}>"
+  }), "a<1> b<22> c<333>")
 // the callback sees the whole Match (groups, offsets)
 assert_eq(Regex.compile('(\w)(\w)').replace_all("ab cd", fn (m) {
-            m.groups[2].value + m.groups[1].value
-          }), "ba dc")
+      m.groups[2].value + m.groups[1].value
+    }), "ba dc")
 // String repl still uses the $-template fast path
 assert_eq(d.replace_all("x9y", "#"), "x#y")
 
 // --- find_iter: lazy iterator over matches ---
 let s = "a1 b22 c333"
 let mut vals = []
-for m in d.find_iter(s) { vals.push(m.value) }
+for m in d.find_iter(s) {
+  vals.push(m.value)
+}
 assert_eq(vals.size(), 3)
 assert_eq(vals[0], "1")
 assert_eq(vals[2], "333")
@@ -56,15 +59,19 @@ assert_eq(anchored.size(), 1)
 assert_eq(anchored[0].value, "xx")
 // empty matches advance one grapheme (e\u0301 = 3-byte cluster), never mid-cluster
 let ee = Regex.compile('a*').find_iter("e\u0301b").collect()
-assert_eq(ee.map(fn (m) { m.start }), [0, 3, 4])
+assert_eq(ee.map(fn (m) {
+    m.start
+  }), [0, 3, 4])
 // ...and never land between CR and LF (fused cluster)
 let crlf = Regex.compile('q*').find_iter("a\r\nb").collect()
-assert_eq(crlf.map(fn (m) { m.start }), [0, 1, 3, 4])
+assert_eq(crlf.map(fn (m) {
+    m.start
+  }), [0, 1, 3, 4])
 
 // --- find_all_str / count: lean bulk APIs (no Match objects) ---
 let w = Regex.compile('\w+')
 assert_eq(w.find_all_str("a1 b22 c333"), ["a1", "b22", "c333"])
-assert_eq(w.find_all_str("nope-here").size(), 2)   // "nope", "here"
+assert_eq(w.find_all_str("nope-here").size(), 2)  // "nope", "here"
 assert_eq(w.count("a1 b22 c333"), 3)
 assert_eq(Regex.compile('\d+').count("a1 b22 c333"), 3)
 assert_eq(Regex.compile('x').count("yyy"), 0)
@@ -74,7 +81,7 @@ assert_eq(Regex.compile('\d+').find_all_str(s2), ["7", "99"])
 
 // --- find_all_index: flat byte spans [s0, e0, s1, e1, ...] ---
 let dd = Regex.compile('\d+')
-assert_eq(dd.find_all_index("a1 b22"), [1, 2, 4, 6])   // "1"@[1,2), "22"@[4,6)
+assert_eq(dd.find_all_index("a1 b22"), [1, 2, 4, 6])  // "1"@[1,2), "22"@[4,6)
 assert_eq(dd.find_all_index("none"), [])
 // spans agree with the Match start/end from find_all
 let ix = dd.find_all_index(s2)
@@ -86,7 +93,7 @@ assert_eq(ix.size(), ms.size() * 2)
 // --- StringLike subject: methods accept a StringView (e.g. from String.split
 // / .slice), not just an owning String. Previously the native primitive
 // rejected a view (interp) or silently read it as empty (JIT). ---
-let view = "a1 b22 c333".slice(0, 6)        // "a1 b22" as a StringView
+let view = "a1 b22 c333".slice(0, 6)  // "a1 b22" as a StringView
 assert_eq(type_of(view), "StringView")
 let dv = Regex.compile('\d+')
 assert_eq(dv.test(view), true)

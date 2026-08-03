@@ -17,15 +17,15 @@ assert_eq("\x4a", "\x4A")
 assert_eq("\x00".size(), 1)
 assert_eq("a\x00b".size(), 3)
 assert_eq("\u0000".size(), 1)
-assert_eq("a\x00b", "a" + "\x00" + "b")   // round-trips through concat
+assert_eq("a\x00b", "a" + "\x00" + "b")  // round-trips through concat
 
 // --- \uXXXX: exactly 4 hex digits, BMP scalar value, UTF-8 encoded ---
-assert_eq("\u0041", "A")               // BMP ASCII
-assert_eq("\u03B1", "α")              // Greek alpha, U+03B1 (2 bytes UTF-8)
-assert_eq("\u03b1".size(), 2)         // lowercase hex, 2 UTF-8 bytes
+assert_eq("\u0041", "A")       // BMP ASCII
+assert_eq("\u03B1", "α")      // Greek alpha, U+03B1 (2 bytes UTF-8)
+assert_eq("\u03b1".size(), 2)  // lowercase hex, 2 UTF-8 bytes
 
 // --- \UXXXXXXXX: exactly 8 hex digits, full scalar range ---
-assert_eq("\U0001F600", "😀")          // astral plane (emoji, U+1F600, 4 bytes)
+assert_eq("\U0001F600", "😀")  // astral plane (emoji, U+1F600, 4 bytes)
 assert_eq("\U0001F600".size(), 4)
 
 // --- mixed with interpolation and other escapes ---
@@ -37,8 +37,8 @@ assert_eq("""x\u0041y""", "xAy")
 assert_eq("""b\xffe""".size(), 3)
 
 // --- raw strings do NOT interpret escapes ---
-assert_eq('\x41'.size(), 4)            // backslash, x, 4, 1 — verbatim
-assert_eq('\u0041'.size(), 6)          // backslash, u, 0, 0, 4, 1 — verbatim
+assert_eq('\x41'.size(), 4)    // backslash, x, 4, 1 — verbatim
+assert_eq('\u0041'.size(), 6)  // backslash, u, 0, 0, 4, 1 — verbatim
 
 // Error paths (codepoint > U+10FFFF, surrogate range, malformed \x / \u / \U)
 // are rejected at parse time, so they can't be caught with try/catch in

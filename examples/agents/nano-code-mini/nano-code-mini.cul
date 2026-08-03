@@ -32,9 +32,13 @@ let model = Sys.env('MODEL', default_model)
 
 # Term.* is tty-aware: off a terminal the styles are no-ops and `cols()` is 80,
 # so nothing here needs an `IO.stdout_is_terminal()` branch.
-fn separator() { Term.dim("\u2500".repeat(Math.min(Term.cols(), 80))) }
+fn separator() {
+  Term.dim("\u2500".repeat(Math.min(Term.cols(), 80)))
+}
 
-fn render_markdown(text) { text.replace(re'\*\*(.+?)\*\*', Term.bold('$1')) }
+fn render_markdown(text) {
+  text.replace(re'\*\*(.+?)\*\*', Term.bold('$1'))
+}
 
 # --- tool implementations -------------------------------------------------
 
@@ -57,7 +61,9 @@ fn tool_write(args) {
 fn tool_edit(args) {
   let text = FS.read(args.path)
   let count = text.count(args.old)
-  if count == 0 { return 'error: old_string not found' }
+  if count == 0 {
+    return 'error: old_string not found'
+  }
 
   let all = args.all ?? false
   if !all && count > 1 {
@@ -81,12 +87,16 @@ fn tool_grep(args) {
   let re = Regex.compile(args.pat)
   mut hits = []
   for p in FS.walk(args.path ?? '.') {
-    if !FS.is_file(p) { continue }
+    if !FS.is_file(p) {
+      continue
+    }
     try {
       for i, line in FS.read(p).lines().enumerate() {
         if re.test(line) {
           hits.push("{p}:{i + 1}:{line}")
-          if hits.size() >= 50 { return hits.join("\n") }
+          if hits.size() >= 50 {
+            return hits.join("\n")
+          }
         }
       }
     } catch _ {
@@ -102,7 +112,9 @@ fn tool_bash(args) {
 
   let combined = (r.stdout + r.stderr).trim_end("\n")
   if !combined.empty() {
-    for line in combined.lines() { println(Term.dim("  \u2502 {line}")) }
+    for line in combined.lines() {
+      println(Term.dim("  \u2502 {line}"))
+    }
   }
 
   # Lead with the timeout note: the caller previews only the first line.
@@ -160,8 +172,14 @@ let TOOLS = TOOL_LIST.map(|t| (t.name, t)).to_object()
 
 fn run_tool(name, args) {
   let tool = TOOLS.get(name, nil)
-  if tool == nil { return "error: unknown tool {name}" }
-  try { tool.run(args) } catch e { "error: {e}" }
+  if tool == nil {
+    return "error: unknown tool {name}"
+  }
+  try {
+    tool.run(args)
+  } catch e {
+    "error: {e}"
+  }
 }
 
 fn param_types(params) {
@@ -233,7 +251,9 @@ fn main() {
 
       match user_input {
         '' => {
-          if !IO.stdin_is_terminal() { break }
+          if !IO.stdin_is_terminal() {
+            break
+          }
           continue
         },
         '/q' | 'exit' => break,
@@ -285,13 +305,17 @@ fn main() {
 
         messages.push({role: 'assistant', content: content_blocks})
 
-        if tool_results.empty() { break }
+        if tool_results.empty() {
+          break
+        }
         messages.push({role: 'user', content: tool_results})
       }
 
       println('')
     } catch e {
-      if e.kind == 'Interrupted' { break }
+      if e.kind == 'Interrupted' {
+        break
+      }
       println(Term.red("\u23fa Error: {e}"))
     }
   }
