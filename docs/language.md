@@ -257,9 +257,17 @@ numbers the two readings agree, but a type defining `__neg__` and
 
 ```culebra
 class N {
-  new(v)     { self.v = v }
-  __neg__()  { println('neg'); N(-self.v) }
-  __mul__(o) { println('mul'); N(self.v * o.v) }
+  new(v) {
+    self.v = v
+  }
+  __neg__() {
+    println('neg')
+    N(-self.v)
+  }
+  __mul__(o) {
+    println('mul')
+    N(self.v * o.v)
+  }
 }
 _ = -N(2) * N(3)
 # => |
@@ -1248,20 +1256,28 @@ A method call `receiver.name(args)` resolves in this order:
    fails with a type error.
 
 ```culebra
-o = { n: 10, add: fn (x) { x + self.n } }
+o = {n: 10, add: fn (x) {
+  x + self.n
+}}
 # A receiver call binds self, so `add` reads o.n:
-inspect(o.add(5))                   # => 15
+inspect(o.add(5))  # => 15
 
-double = fn (x) { x * 2 }
-42.double()                      # UFCS → double(42) → 84
+double = fn (x) {
+  x * 2
+}
+42.double()  # UFCS → double(42) → 84
 
-word_count = fn (s) { s.split(' ').size() }
-'hello world'.word_count()       # UFCS → 2
+word_count = fn (s) {
+  s.split(' ').size()
+}
+'hello world'.word_count()  # UFCS → 2
 
 # Existing methods always win — a user-defined `size` is shadowed by
 # the Array/Object/String built-in `size`.
-size = fn (x) { 99 }
-[1, 2, 3].size()                 # 3 (builtin), not 99
+size = fn (x) {
+  99
+}
+[1, 2, 3].size()  # 3 (builtin), not 99
 ```
 
 UFCS only fires when DOT is immediately followed by an argument list;
@@ -1279,9 +1295,11 @@ does not step in — a free function named `zzz` cannot fill the gap:
 
 ```culebra
 # doctest: skip
-zzz = fn (ns, v) { v }
-IO.zzz(9)                        # AttributeError, not zzz(IO, 9)
-Math.to_string()                 # AttributeError, not to_string(Math)
+zzz = fn (ns, v) {
+  v
+}
+IO.zzz(9)         # AttributeError, not zzz(IO, 9)
+Math.to_string()  # AttributeError, not to_string(Math)
 ```
 
 The dict built-ins are the exception: `IO.keys()`, `Sys.has('script')`
@@ -1541,13 +1559,19 @@ identically.
 
 ```culebra
 class Grid {
-  new()          { self.d = [10, 20, 30] }
-  __index__(i)   { self.d[i] }
-  __setindex__(i, v) { self.d[i] = v }
+  new() {
+    self.d = [10, 20, 30]
+  }
+  __index__(i) {
+    self.d[i]
+  }
+  __setindex__(i, v) {
+    self.d[i] = v
+  }
 }
 let g = Grid.new()
 g[1] = 99
-inspect(g[1])                  # => 99
+inspect(g[1])  # => 99
 ```
 
 **Calling (`__call__`).** A class instance can define `__call__(*args)`
@@ -1560,12 +1584,16 @@ ordinary value. Both backends dispatch identically.
 
 ```culebra
 class Adder {
-  new(b)       { self.b = b }
-  __call__(x)  { self.b + x }
+  new(b) {
+    self.b = b
+  }
+  __call__(x) {
+    self.b + x
+  }
 }
 let add3 = Adder.new(3)
-inspect(add3(10))              # => 13
-inspect(add3.__call__(10))     # => 13
+inspect(add3(10))           # => 13
+inspect(add3.__call__(10))  # => 13
 ```
 
 A class with `__call__` structurally satisfies the `Function` type, so a
@@ -1575,11 +1603,20 @@ to any `Function`-annotated parameter, and it is invoked through its
 `__call__`.
 
 ```culebra
-class Scale { new(k) { self.k = k } __call__(x) { x * self.k } }
-inspect([1, 2, 3].map(Scale.new(10)))   # => [10, 20, 30]
+class Scale {
+  new(k) {
+    self.k = k
+  }
+  __call__(x) {
+    x * self.k
+  }
+}
+inspect([1, 2, 3].map(Scale.new(10)))  # => [10, 20, 30]
 
-fn apply_twice(f: Function, x) { f(f(x)) }
-inspect(apply_twice(Scale.new(2), 5))   # => 20
+fn apply_twice(f: Function, x) {
+  f(f(x))
+}
+inspect(apply_twice(Scale.new(2), 5))  # => 20
 ```
 
 `__call__` accepts the full call form — positional, `*args`, and keyword
@@ -2079,13 +2116,15 @@ a lazy chain, or another generator — yielding each of its elements
 before the delegating body resumes:
 
 ```culebra
-fn inner() { yield 'x' }
+fn inner() {
+  yield 'x'
+}
 fn mixed() {
   yield from [1, 2]
   yield from inner()
   yield 'done'
 }
-inspect(mixed().collect())   # => [1, 2, 'x', 'done']
+inspect(mixed().collect())  # => [1, 2, 'x', 'done']
 ```
 
 Recursive traversals compose from it, which is the usual reason to
@@ -2094,10 +2133,12 @@ reach for delegation:
 ```culebra
 fn walk(node) {
   yield node.value
-  for kid in node.kids { yield from walk(kid) }
+  for kid in node.kids {
+    yield from walk(kid)
+  }
 }
 let leaf = {value: 3, kids: []}
-inspect(walk({value: 1, kids: [{value: 2, kids: [leaf]}]}).collect())   # => [1, 2, 3]
+inspect(walk({value: 1, kids: [{value: 2, kids: [leaf]}]}).collect())  # => [1, 2, 3]
 ```
 
 **The generator object.** What the call returns is an ordinary
@@ -2106,8 +2147,14 @@ drives `for`-in, the lazy combinator set (§18.5), and any other
 consumer of the protocol. Suspension makes unbounded sources practical:
 
 ```culebra
-fn nat() { mut i = 0; while true { yield i; i += 1 } }
-inspect(nat().map(|x| x * x).take(5).collect())   # => [0, 1, 4, 9, 16]
+fn nat() {
+  mut i = 0
+  while true {
+    yield i
+    i += 1
+  }
+}
+inspect(nat().map(|x| x * x).take(5).collect())  # => [0, 1, 4, 9, 16]
 ```
 
 The body starts on the first `has_next()`, not at the call. A generator
@@ -2124,11 +2171,16 @@ to the consumer's exit path, not to the body reaching its end.
 
 ```culebra
 fn two() {
-  defer { inspect('closed') }
+  defer {
+    inspect('closed')
+  }
   yield 1
   yield 2
 }
-for v in two() { inspect(v); break }
+for v in two() {
+  inspect(v)
+  break
+}
 # => |
 # 1
 # 'closed'
@@ -2298,12 +2350,20 @@ iterator with `has_next()` / `next()`: while `has_next()` is `true`,
 iteration (see §18.5).
 
 ```culebra
-for x in [1, 2, 3] { inspect(x) }
+for x in [1, 2, 3] {
+  inspect(x)
+}
 
-for k in {b: 2, a: 1} { inspect(k) }   # keys, ascending
+for k in {b: 2, a: 1} {
+  inspect(k)
+}  # keys, ascending
 
-for i in 0..10 { inspect(i) }          # exclusive (0..9)
-for i in 0..=10 { inspect(i) }         # inclusive (0..10)
+for i in 0..10 {
+  inspect(i)
+}  # exclusive (0..9)
+for i in 0..=10 {
+  inspect(i)
+}  # inclusive (0..10)
 ```
 
 Range values `a..b` (exclusive) and `a..=b` (inclusive) iterate the
@@ -2315,8 +2375,12 @@ A range takes an optional `by <step>` clause to iterate by something
 other than 1, including descending (`step` negative):
 
 ```culebra
-for i in 0..10 by 2 { inspect(i) }      # 0, 2, 4, 6, 8
-for i in 10..0 by -2 { inspect(i) }     # 10, 8, 6, 4, 2
+for i in 0..10 by 2 {
+  inspect(i)
+}  # 0, 2, 4, 6, 8
+for i in 10..0 by -2 {
+  inspect(i)
+}  # 10, 8, 6, 4, 2
 ```
 
 `step` must not be `0` (raises `ValueError` when the range is
@@ -2400,9 +2464,11 @@ no flag variable:
 # doctest: skip
 fn find(xs, target) {
   for x in xs {
-    if x == target { return "found" }
+    if x == target {
+      return "found"
+    }
   } nobreak {
-    return "not found"     # only reached if the loop never broke
+    return "not found"  # only reached if the loop never broke
   }
 }
 ```
@@ -2436,10 +2502,11 @@ be ill-typed:
 
 ```culebra
 # doctest: skip
-let width = "v" + match n {      # the `+` never completes when n is 4
-  4 => break,
-  _ => "x",
-}
+let width = "v" + match n {
+    # the `+` never completes when n is 4
+    4 => break,
+    _ => "x",
+  }
 ```
 
 Consequences worth knowing:
@@ -3602,11 +3669,12 @@ an effect fn (and vice versa) — including through first-class uses like
 
 ```culebra
 effect fn ask()
-fn greet() {                     # a plain fn performing an effect
+fn greet() {
+  # a plain fn performing an effect
   let name = perform ask()
   "hi " + name
 }
-inspect(handle { greet() } with ask(k) { k("ana") })   # => 'hi ana'
+inspect(handle { greet() } with ask(k) { k("ana") })  # => 'hi ana'
 ```
 
 What makes this work is a classification of each handler clause at parse
@@ -3801,15 +3869,17 @@ member first, on both backends:
 ```culebra
 let log = []
 make_thing = fn (id) {
-  { id: id, drop: fn () { log.push(id) } }
+  {id: id, drop: fn () {
+    log.push(id)
+  }}
 }
 {
   let a = make_thing('a')
   let b = make_thing('b')
   a.other = b
   b.other = a
-}                # both drop at the block's exit, despite the cycle
-inspect(log)        # => ['b', 'a']
+}             # both drop at the block's exit, despite the cycle
+inspect(log)  # => ['b', 'a']
 ```
 
 The owning scope is wherever the cycle last escaped to: a cycle that
@@ -3853,11 +3923,13 @@ closures-as-objects and works out of the box:
 
 ```culebra
 make_thing = fn () {
-  { drop: fn () { inspect('cleaned') } }   # captures make_thing's env
+  {drop: fn () {
+    inspect('cleaned')
+  }}  # captures make_thing's env
 }
 {
-  let t = make_thing()                  # block-scoped binding
-}                                        # drop fires here
+  let t = make_thing()  # block-scoped binding
+}  # drop fires here
 ```
 
 Binding a `drop`-bearing object at the **top level** leaves it alive
@@ -4059,8 +4131,11 @@ follows (§12), and it covers `map`, `filter`, `for_each`, `reduce`,
 ```culebra
 mut a = [1, 2, 3, 4]
 mut seen = []
-a.for_each(fn (x) { seen.push(x); a.pop() })
-inspect(seen)   # => [1, 2]
+a.for_each(fn (x) {
+  seen.push(x)
+  a.pop()
+})
+inspect(seen)  # => [1, 2]
 ```
 
 | Signature                                   | Description                           |
@@ -4104,31 +4179,47 @@ inspect(seen)   # => [1, 2]
 ```culebra
 mut a = [1, 2, 3]
 a.push(4)
-inspect(a.pop())                      # => 4
+inspect(a.pop())  # => 4
 a.extend([9, 8])
-inspect(a)                            # => [1, 2, 3, 9, 8]
+inspect(a)  # => [1, 2, 3, 9, 8]
 a.insert(0, 0)
-inspect(a)                            # => [0, 1, 2, 3, 9, 8]
-inspect(a.remove_at(-1))              # => 8
-inspect([1, 2] + [3])                 # => [1, 2, 3]
-inspect([10, 20, 30, 40].slice(1, 3)) # => [20, 30]
-inspect(['a', 'b', 'c'].join('-'))    # => 'a-b-c'
-inspect([1, 2, 3].contains(2))        # => true
-inspect([10, 20, 30].index_of(99))    # => -1
-inspect([].presence() ?? 'default')   # => 'default'
+inspect(a)                             # => [0, 1, 2, 3, 9, 8]
+inspect(a.remove_at(-1))               # => 8
+inspect([1, 2] + [3])                  # => [1, 2, 3]
+inspect([10, 20, 30, 40].slice(1, 3))  # => [20, 30]
+inspect(['a', 'b', 'c'].join('-'))     # => 'a-b-c'
+inspect([1, 2, 3].contains(2))         # => true
+inspect([10, 20, 30].index_of(99))     # => -1
+inspect([].presence() ?? 'default')    # => 'default'
 
-inspect([1, 2, 3].map(fn (x) { x * x }))           # => [1, 4, 9]
-inspect([1, 2, 3, 4].filter(fn (x) { x % 2 == 0 })) # => [2, 4]
-inspect([1, 2, 3, 4].reduce(0, fn (acc, x) { acc + x })) # => 10
+inspect([1, 2, 3].map(fn (x) {
+  x * x
+}))  # => [1, 4, 9]
+inspect([1, 2, 3, 4].filter(fn (x) {
+  x % 2 == 0
+}))  # => [2, 4]
+inspect([1, 2, 3, 4].reduce(0, fn (acc, x) {
+  acc + x
+}))  # => 10
 
-inspect([3, 1, 4, 1, 5].find(fn (x) { x > 3 }))    # => 4
-inspect([1, 2, 3].any(fn (x) { x > 2 }))           # => true
-inspect([1, 2, 3].all(fn (x) { x > 0 }))           # => true
-inspect([1, 2, 3].flat_map(fn (x) { [x, x * 10] })) # => [1, 10, 2, 20, 3, 30]
+inspect([3, 1, 4, 1, 5].find(fn (x) {
+  x > 3
+}))  # => 4
+inspect([1, 2, 3].any(fn (x) {
+  x > 2
+}))  # => true
+inspect([1, 2, 3].all(fn (x) {
+  x > 0
+}))  # => true
+inspect([1, 2, 3].flat_map(fn (x) {
+  [x, x * 10]
+}))  # => [1, 10, 2, 20, 3, 30]
 
 mut words = ['banana', 'fig', 'apple']
-words.sort_by(fn (s) { s.size() })
-inspect(words)                                      # => ['fig', 'apple', 'banana']
+words.sort_by(fn (s) {
+  s.size()
+})
+inspect(words)  # => ['fig', 'apple', 'banana']
 ```
 
 **Callback arity.** A higher-order method calls its callback with a fixed
@@ -4142,15 +4233,21 @@ fails even on an empty receiver:
 ```
 
 ```culebra
-[1, 2, 3].map(fn (a, b) { a })    # !! map expects a 1-parameter function
+[1, 2, 3].map(fn (a, b) {
+  a
+})  # !! map expects a 1-parameter function
 ```
 
 A `*args` callback absorbs whatever it is given, so it works at any arity —
 the per-call arguments arrive as the rest Array:
 
 ```culebra
-inspect([10, 20].map(fn (*xs) { xs.size() }))                # => [1, 1]
-inspect([1, 2, 3].reduce(0, fn (a, *xs) { a + xs.size() }))  # => 3
+inspect([10, 20].map(fn (*xs) {
+  xs.size()
+}))  # => [1, 1]
+inspect([1, 2, 3].reduce(0, fn (a, *xs) {
+  a + xs.size()
+}))  # => 3
 ```
 
 This is why `range` / `iota` (variadic builtins) can be passed directly as
@@ -4161,7 +4258,9 @@ enforced on every invocation, exactly like a direct call — the first
 wrong-typed element raises a `TypeError`:
 
 ```culebra
-[1, 'x'].map(fn (v: Long) { v * 2 })   # !! parameter 'v' expects Long
+[1, 'x'].map(fn (v: Long) {
+  v * 2
+})  # !! parameter 'v' expects Long
 ```
 
 ### 18.3 Object methods
@@ -4310,9 +4409,15 @@ natural loop is `for k, v in obj` and `obj.iter()` is the entries view
 `obj.keys()` (an `Array`) and `obj.values()` (a lazy iterator):
 
 ```culebra
-for k, v in {a: 1, b: 2} { inspect("{k}={v}") }   # 'a=1' then 'b=2'
-for k in {a: 1, b: 2}.keys() { inspect(k) }       # 'a' then 'b'
-for v in {a: 1, b: 2}.values() { inspect(v) }     # 1 then 2
+for k, v in {a: 1, b: 2} {
+  inspect("{k}={v}")
+}  # 'a=1' then 'b=2'
+for k in {a: 1, b: 2}.keys() {
+  inspect(k)
+}  # 'a' then 'b'
+for v in {a: 1, b: 2}.values() {
+  inspect(v)
+}  # 1 then 2
 ```
 
 **Object iter and mutation**: iteration is over a snapshot of the keys
@@ -4325,16 +4430,21 @@ the same protocol.
 
 ```culebra
 mut o = {mut x: 1, mut y: 2}
-for k, v in o.iter() { o[k] = 99 }   # update existing values
-inspect(o.x)            # => 99
+for k, v in o.iter() {
+  o[k] = 99
+}             # update existing values
+inspect(o.x)  # => 99
 ```
 
 ```culebra
 mut books = {a: ('alpha', 1)}
-for reading, n in books.values() {   # add aliases while iterating
-  if !books.has(reading) { books[reading] = (reading, n) }
+for reading, n in books.values() {
+  # add aliases while iterating
+  if !books.has(reading) {
+    books[reading] = (reading, n)
+  }
 }
-inspect(books.has('alpha'))   # => true
+inspect(books.has('alpha'))  # => true
 ```
 
 **Iterator methods**: any Object exposing the iterator interface —
@@ -4347,8 +4457,13 @@ a new Iterator; terminal methods consume the iterator and return a
 concrete value.
 
 ```culebra
-fn nums() { yield 1; yield 2; yield 3; yield 4 }
-inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
+fn nums() {
+  yield 1
+  yield 2
+  yield 3
+  yield 4
+}
+inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())  # => [20, 40]
 ```
 
 | Non-terminal | Result | Notes |
@@ -4404,10 +4519,14 @@ Every terminal disposes the iterator it drove (see **Optional
 `it` yields nothing (`[]` from `collect`), exactly as after a `break`:
 
 ```culebra
-fn g() { yield 1; yield 2; yield 3 }
+fn g() {
+  yield 1
+  yield 2
+  yield 3
+}
 let it = g()
-inspect(it.find(|x| x == 2))    # => 2
-inspect(it.collect())           # => []
+inspect(it.find(|x| x == 2))  # => 2
+inspect(it.collect())         # => []
 ```
 
 The `find` also ran `g()`'s defers; the empty second answer is the
@@ -4439,7 +4558,7 @@ range(1000000).filter(f).map(g).take(4).collect()
 countdown = fn (start) {
   mut i = start
   {
-    iter:     fn () { self },                 # Iterator is its own Iterable
+    iter:     fn () { self },  # Iterator is its own Iterable
     has_next: fn () { i > 0 },
     next:     fn () {
       v = i
@@ -4449,7 +4568,9 @@ countdown = fn (start) {
   }
 }
 
-for x in countdown(3) { inspect(x) }              # 3, 2, 1
+for x in countdown(3) {
+  inspect(x)
+}  # 3, 2, 1
 ```
 
 **JIT**: everything in this section — for-in driving the protocol,
@@ -4583,14 +4704,24 @@ the range size.
   `ValueError`.
 
 ```culebra
-for i in range(5)              { inspect(i) }   # 0, 1, 2, 3, 4
-for i in range(2, 6)           { inspect(i) }   # 2, 3, 4, 5
-for i in range(0, 10, step: 2) { inspect(i) }   # 0, 2, 4, 6, 8
-for i in range(5, 0, step: -1) { inspect(i) }   # 5, 4, 3, 2, 1
+for i in range(5) {
+  inspect(i)
+}  # 0, 1, 2, 3, 4
+for i in range(2, 6) {
+  inspect(i)
+}  # 2, 3, 4, 5
+for i in range(0, 10, step: 2) {
+  inspect(i)
+}  # 0, 2, 4, 6, 8
+for i in range(5, 0, step: -1) {
+  inspect(i)
+}  # 5, 4, 3, 2, 1
 
 # Constant memory even for huge bounds
 for i in range(1000000000) {
-  if i > 3 { break }
+  if i > 3 {
+    break
+  }
   inspect(i)
 }
 ```
@@ -4656,16 +4787,18 @@ introspection:
 | `fn.params`     | `Array<Object>`| Per-parameter metadata; each entry has `name / mut / type / has_default / kw_only / kwargs_rest` |
 
 ```culebra
-fn greet(name: String, *, prefix = "hi") { "{prefix}, {name}" }
+fn greet(name: String, *, prefix = "hi") {
+  "{prefix}, {name}"
+}
 
-inspect(greet.name)                  # => 'greet'
-inspect(greet.return_type)           # => ''
+inspect(greet.name)         # => 'greet'
+inspect(greet.return_type)  # => ''
 let ps = greet.params
-inspect(ps.size())                   # => 2
-inspect(ps[0].name)                  # => 'name'
-inspect(ps[0].type)                  # => 'String'
-inspect(ps[1].kw_only)               # => true
-inspect(ps[1].has_default)           # => true
+inspect(ps.size())          # => 2
+inspect(ps[0].name)         # => 'name'
+inspect(ps[0].type)         # => 'String'
+inspect(ps[1].kw_only)      # => true
+inspect(ps[1].has_default)  # => true
 ```
 
 `fn.params` returns a fresh `Array` each access; mutating it has no
@@ -4843,14 +4976,20 @@ picked overload:
 ```culebra
 class Calc {
   new() {}
-  go(x: Long)          { "long: {x}" }
-  go(x: String)        { "string: {x}" }
-  go(x: Long, y: Long) { "sum: {x + y}" }
+  go(x: Long) {
+    "long: {x}"
+  }
+  go(x: String) {
+    "string: {x}"
+  }
+  go(x: Long, y: Long) {
+    "sum: {x + y}"
+  }
 }
 let c = Calc.new()
-c.go(1)      # → "long: 1"
-c.go("a")    # → "string: a"
-c.go(2, 3)   # → "sum: 5"
+c.go(1)     # → "long: 1"
+c.go("a")   # → "string: a"
+c.go(2, 3)  # → "sum: 5"
 ```
 
 The same scoring, default-param, `*args`, kwarg, and `**rest` rules as
@@ -4873,9 +5012,15 @@ the class object; `Cls.method(args)` picks on the argument types. No
 
 ```culebra
 class Vec {
-  static make(x: Long)         { "long: {x}" }
-  static make(x: String)       { "str: {x}" }
-  static make(x: Long, y: Long) { "pair: {x}, {y}" }
+  static make(x: Long) {
+    "long: {x}"
+  }
+  static make(x: String) {
+    "str: {x}"
+  }
+  static make(x: Long, y: Long) {
+    "pair: {x}, {y}"
+  }
 }
 Vec.make(5)     # → "long: 5"
 Vec.make("hi")  # → "str: hi"
@@ -4895,13 +5040,25 @@ on the runtime types of the arguments, exactly like method overloads:
 
 ```culebra
 class Point {
-  new(x: Long, y: Long) { self.tag = "xy";  self.x = x; self.y = y }
-  new(s: String)        { self.tag = "str"; self.x = s.size(); self.y = 0 }
-  new()                 { self.tag = "empty"; self.x = -1; self.y = -1 }
+  new(x: Long, y: Long) {
+    self.tag = "xy"
+    self.x = x
+    self.y = y
+  }
+  new(s: String) {
+    self.tag = "str"
+    self.x = s.size()
+    self.y = 0
+  }
+  new() {
+    self.tag = "empty"
+    self.x = -1
+    self.y = -1
+  }
 }
-Point(3, 4).tag    # → "xy"
-Point("hi").tag    # → "str"
-Point().tag        # → "empty"
+Point(3, 4).tag  # → "xy"
+Point("hi").tag  # → "str"
+Point().tag      # → "empty"
 ```
 
 The overload is picked **before any instance is allocated**, so a call
@@ -4926,13 +5083,20 @@ type:
 
 ```culebra
 class Vec {
-  new(x: Long, y: Long) { self.x = x; self.y = y }
-  __add__(o: Vec) { Vec(self.x + o.x, self.y + o.y) }   # elementwise
-  __add__(n: Long) { Vec(self.x + n, self.y + n) }       # scalar
+  new(x: Long, y: Long) {
+    self.x = x
+    self.y = y
+  }
+  __add__(o: Vec) {
+    Vec(self.x + o.x, self.y + o.y)
+  }  # elementwise
+  __add__(n: Long) {
+    Vec(self.x + n, self.y + n)
+  }  # scalar
 }
 let v = Vec(1, 2)
-(v + Vec(10, 20))   # → Vec(11, 22)   (Vec overload)
-(v + 5)             # → Vec(6, 7)     (Long overload)
+v + Vec(10, 20)  # → Vec(11, 22)   (Vec overload)
+v + 5            # → Vec(6, 7)     (Long overload)
 ```
 
 Commutative auto-reflection is unaffected: `5 + v` still reflects to
@@ -4976,10 +5140,16 @@ The decorator receives the **unbound** declared value and returns
 the value that ends up in the variable:
 
 ```culebra
-let tag = fn(f) { fn() { "[{f()}]" } }
+let tag = fn (f) {
+  fn () {
+    "[{f()}]"
+  }
+}
 
 @tag
-fn greet() { "hello" }
+fn greet() {
+  "hello"
+}
 
 greet()  # "[hello]"
 ```
@@ -4988,10 +5158,18 @@ For a class, the decorator gets the class object and returns the
 object the variable will hold:
 
 ```culebra
-let mark = fn(cls) { cls.marked = true; cls }
+let mark = fn (cls) {
+  cls.marked = true
+  cls
+}
 
 @mark
-class Point { new(x, y) { self.x = x; self.y = y } }
+class Point {
+  new(x, y) {
+    self.x = x
+    self.y = y
+  }
+}
 
 Point.marked  # true
 ```

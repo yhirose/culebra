@@ -286,8 +286,10 @@ inspect(Math.wrap(320, 320))   # => 0
 
 ```culebra
 let frames = ['a', 'b', 'c']
-let prev = fn (i) { frames[Math.wrap(i - 1, frames.size())] }
-inspect(prev(0))               # => 'c'
+let prev = fn (i) {
+  frames[Math.wrap(i - 1, frames.size())]
+}
+inspect(prev(0))  # => 'c'
 ```
 
 `n`が負なら全体が反転し、結果は`(n, 0]`に入ります。`n`が`0`の
@@ -367,10 +369,16 @@ Unixフィルタのイディオム。読み取りはブロッキングかつ割�
 # doctest: skip
 # フィルタ: "error" を含む行を大文字化
 for line in IO.stdin().lines() {
-    if line.contains("error") { IO.println(line.upper()) }
+  if line.contains("error") {
+    IO.println(line.upper())
+  }
 }
 
-let src = if IO.stdin_is_terminal() { read_clipboard() } else { IO.stdin().read() }
+let src = if IO.stdin_is_terminal() {
+  read_clipboard()
+} else {
+  IO.stdin().read()
+}
 ```
 
 ### `IO.einspect(x: Any) -> Nil` / `IO.eprint(x: Any) -> Nil` / `IO.eprintln(x: Any) -> Nil`
@@ -383,8 +391,10 @@ let src = if IO.stdin_is_terminal() { read_clipboard() } else { IO.stdin().read(
 
 ```culebra
 # doctest: skip
-IO.einspect("warning: retrying")     # → stderr
-if !ok { IO.eprint("error: {msg}\n") }
+IO.einspect("warning: retrying")  # → stderr
+if !ok {
+  IO.eprint("error: {msg}\n")
+}
 IO.eprintln("done")
 ```
 
@@ -398,8 +408,16 @@ IO.eprintln("done")
 
 ```culebra
 # doctest: skip
-let src = if IO.stdin_is_terminal() { read_clipboard() } else { FS.read("/dev/stdin") }
-if IO.stdout_is_terminal() { println(colorize(msg)) } else { println(msg) }
+let src = if IO.stdin_is_terminal() {
+  read_clipboard()
+} else {
+  FS.read("/dev/stdin")
+}
+if IO.stdout_is_terminal() {
+  println(colorize(msg))
+} else {
+  println(msg)
+}
 ```
 
 `IO`は標準ストリームとコンソールの名前空間です。ファイルの読み書きは
@@ -707,8 +725,9 @@ for src in root.glob("*/content.src.js") {
 ```culebra
 # doctest: skip
 let cfg = Path.new("/etc") / "app.conf"
-let text = FS.read(cfg)                 # FS.read(String | Path)
-for line in File.open(cfg).lines() { }  # File.open(String | Path)
+let text = FS.read(cfg)  # FS.read(String | Path)
+for line in File.open(cfg).lines() {
+}  # File.open(String | Path)
 ```
 
 こうしてopt-inするのは*パスを取る*標準ライブラリ関数だけです。それ
@@ -747,7 +766,9 @@ for line in File.open(cfg).lines() { }  # File.open(String | Path)
 
 ```culebra
 # doctest: skip
-let head = File.with('big.log', 'r', fn (f) { f.read(256) })
+let head = File.with('big.log', 'r', fn (f) {
+  f.read(256)
+})
 ```
 
 ### 資源安全 — 閉じる3つの方法
@@ -777,7 +798,9 @@ iteratorがハンドルを所有し、ループ終了・breakで閉じます。
 ```culebra
 # doctest: skip
 for line in File.open('access.log').lines() {
-  if line.contains('ERROR') { inspect(line) }
+  if line.contains('ERROR') {
+    inspect(line)
+  }
 }
 ```
 
@@ -915,7 +938,9 @@ dayofyear}`に分解。`weekday`はISO 8601起点（`0=Mon`、`6=Sun`）、
 
 ```culebra
 let p = Time.now().parts()
-if p.hour >= 9 && p.hour < 17 { inspect("business hours") }
+if p.hour >= 9 && p.hour < 17 {
+  inspect("business hours")
+}
 ```
 
 #### `t.weekday(utc: false) -> Long`
@@ -1093,7 +1118,9 @@ inspect(Sys.argv)        # ['hello', 'world']
 
 ```culebra
 # doctest: skip
-if error_occurred { Sys.exit(1) }
+if error_occurred {
+  Sys.exit(1)
+}
 ```
 
 ### `Sys.env(name: String, fallback = '') -> Any`
@@ -1393,7 +1420,9 @@ forwardに使います。
 
 ```culebra
 # doctest: skip
-let logits = Tensor.no_grad(fn () { model_forward(x) })
+let logits = Tensor.no_grad(fn () {
+  model_forward(x)
+})
 ```
 
 ### 演算子オーバーロード
@@ -1549,7 +1578,12 @@ JSON文字列をCulebraの値に変換します。
 位置が乗ります:
 
 ```culebra
-let r = try { JSON.parse('{"a": ,}'); nil } catch e { e }
+let r = try {
+  JSON.parse('{"a": ,}')
+  nil
+} catch e {
+  e
+}
 inspect(r.message)           # => 'JSON.parse: expected value'
 inspect("{r.line}:{r.col}")  # => '1:7'
 ```
@@ -1559,17 +1593,20 @@ inspect("{r.line}:{r.col}")  # => '1:7'
 ```culebra
 let v = {name: 'alice', age: 30, tags: ['admin', 'staff']}
 # 既定はコンパクト。`sort_keys` はキーを辞書順に並べる。
-inspect(JSON.stringify(v))                  # => '{"name":"alice","age":30,"tags":["admin","staff"]}'
-inspect(JSON.stringify(v, sort_keys: true)) # => '{"age":30,"name":"alice","tags":["admin","staff"]}'
+inspect(JSON.stringify(v))                   # => '{"name":"alice","age":30,"tags":["admin","staff"]}'
+inspect(JSON.stringify(v, sort_keys: true))  # => '{"age":30,"name":"alice","tags":["admin","staff"]}'
 let back = JSON.parse(JSON.stringify(v))
-inspect(back.name)                          # => 'alice'
+inspect(back.name)  # => 'alice'
 let arr = JSON.parse("1\n2\n3\n", lines: true)
-inspect(arr)                                # => [1, 2, 3]
-let cfg = JSON.parse('{
+inspect(arr)  # => [1, 2, 3]
+let cfg = JSON.parse(
+  '{
   // コメントと末尾カンマを許容
   "port": 8080,
-}', jsonc: true)
-inspect(cfg.port)                           # => 8080
+}',
+  jsonc: true,
+)
+inspect(cfg.port)  # => 8080
 ```
 
 `indent`は整形出力、`lines`はJSON Linesを出します。どちらも複数行に
@@ -1655,19 +1692,35 @@ positionalは全て必須。`default`を付けた引数はpositionalではなく
 # doctest: skip
 let spec = {
   name: "wc-lite",
-  doc:  "count lines and words",
+  doc: "count lines and words",
   args: [
-    {name: "input",   type: "String", doc: "input file"},
-    {name: "lines",   short: "l", type: "Bool", default: false, doc: "count lines"},
-    {name: "words",   short: "w", type: "Bool", default: false, doc: "count words"},
-    {name: "encoding",            type: "String", default: "utf-8"}
-  ]
+    {name: "input", type: "String", doc: "input file"},
+    {
+      name: "lines",
+      short: "l",
+      type: "Bool",
+      default: false,
+      doc: "count lines",
+    },
+    {
+      name: "words",
+      short: "w",
+      type: "Bool",
+      default: false,
+      doc: "count words",
+    },
+    {name: "encoding", type: "String", default: "utf-8"},
+  ],
 }
 
 let args = Args.parse(Sys.argv, spec)
 inspect(args.input)
-if args.lines { inspect("lines: ...") }
-if args.words { inspect("words: ...") }
+if args.lines {
+  inspect("lines: ...")
+}
+if args.words {
+  inspect("words: ...")
+}
 inspect("encoding: {args.encoding}")
 ```
 
@@ -1719,7 +1772,11 @@ match Args.parse(Sys.argv, spec).subcommand {
 `Args.parse`はエラー時にexitする。`Args.try_parse`はthrow:
 
 ```culebra
-let r = try { Args.try_parse(["--bogus"], spec) } catch e { e }
+let r = try {
+  Args.try_parse(["--bogus"], spec)
+} catch e {
+  e
+}
 # r == {kind: "ArgParseError", message: "unknown option '--bogus'"}
 ```
 
@@ -1787,7 +1844,12 @@ let up = Proc.run(["tr", "a-z", "A-Z"], stdin: "hello\n")
 assert_eq(up.stdout, "HELLO\n")
 
 # ディレクトリと環境変数を指定し、失敗時に throw。
-Proc.run(["make", "install"], cwd: "/src/app", env: {PREFIX: "/usr/local"}, check: true)
+Proc.run(
+  ["make", "install"],
+  cwd: "/src/app",
+  env: {PREFIX: "/usr/local"},
+  check: true,
+)
 ```
 
 出力は全量バッファされるため、巨大な出力はそのぶんメモリを使います。stdoutと
@@ -1826,13 +1888,14 @@ throwしません。空リストは`[]`を返します。
 
 ```culebra
 # doctest: skip
-let results = Proc.all([
-  ["git", "fetch", "origin"],
-  ["npm", "test"],
-  ["cargo", "build"],
-], limit: 2)
+let results = Proc.all(
+  [["git", "fetch", "origin"], ["npm", "test"], ["cargo", "build"]],
+  limit: 2,
+)
 for r in results {
-  if !r.ok { IO.print(r.error ?? r.stderr) }
+  if !r.ok {
+    IO.print(r.error ?? r.stderr)
+  }
 }
 ```
 
@@ -1945,9 +2008,12 @@ GCがjoinするため、スレッドが取り残されることはありませ�
 ```culebra
 # doctest: skip
 let xs = [1, 2, 3]
-let h = Isolate.spawn(fn () { xs.push(99); xs.size() })
-h.join()                       # => 4   (isolate 側のコピー)
-xs                             # => [1, 2, 3]   (親は不変)
+let h = Isolate.spawn(fn () {
+  xs.push(99)
+  xs.size()
+})
+h.join()  # => 4   (isolate 側のコピー)
+xs        # => [1, 2, 3]   (親は不変)
 ```
 
 `mut`の捕獲は黙ってスナップショットを取らず拒否します — 値は引数として
@@ -1972,10 +2038,14 @@ Isolate.spawn(|t| t, total)    # ok — 値渡し
 # 並列 map: 仕事を isolate に分配して集約。
 let parts = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
 mut handles = []
-for p in parts { handles.push(Isolate.spawn(|| p.reduce(0, |a, b| a + b))) }
+for p in parts {
+  handles.push(Isolate.spawn(|| p.reduce(0, |a, b| a + b)))
+}
 mut total = 0
-for h in handles { total += h.join() }
-total                          # => 45
+for h in handles {
+  total += h.join()
+}
+total  # => 45
 ```
 
 ### キャンセル
@@ -1995,13 +2065,17 @@ endpointはSendable規則の唯一の例外で、（参照で）共有されま�
 
 ```culebra
 # doctest: skip
-let (tx, rx) = Channel.new(10)        # 有界・容量 10
+let (tx, rx) = Channel.new(10)  # 有界・容量 10
 let prod = Isolate.spawn(fn () {
-  for line in source() { tx.send(parse(line)) }
-  tx.drop()                            # この送信端を解放
+  for line in source() {
+    tx.send(parse(line))
+  }
+  tx.drop()  # この送信端を解放
 })
-tx.drop()                              # 親側の送信端も解放
-for record in rx { process(record) }   # 全 tx が drop されると終了
+tx.drop()  # 親側の送信端も解放
+for record in rx {
+  process(record)
+}  # 全 tx が drop されると終了
 prod.join()
 ```
 
@@ -2040,12 +2114,18 @@ mut handles = []
 mut sources = []
 for w in workers {
   let (tx, rx) = Channel.new()
-  handles.push(Isolate.spawn(fn () { produce(w, tx) }))  # producer の tx は終了時 auto-drop
-  tx.drop()                                               # 親自身の tx（1:1、自明）
+  handles.push(Isolate.spawn(fn () {
+    produce(w, tx)
+  }))        # producer の tx は終了時 auto-drop
+  tx.drop()  # 親自身の tx（1:1、自明）
   sources.push(rx)
 }
-for v in Channel.fan_in(sources) { consume(v) }           # 1 本のストリーム、全 producer
-for h in handles { h.join() }                             # handle を保持・エラー回収
+for v in Channel.fan_in(sources) {
+  consume(v)
+}  # 1 本のストリーム、全 producer
+for h in handles {
+  h.join()
+}  # handle を保持・エラー回収
 ```
 
 mergeは渡したreceiverを**引き取り**ます — 元のrxを直接読まず、束ねた`rx`
@@ -2062,10 +2142,14 @@ dropもhandleも一切書きません**。`fn`と各itemはSendable必須。
 ```culebra
 # doctest: skip
 let merged = Channel.fan_in(workers, fn (w, tx) {
-  for x in produce(w) { tx.send(x) }
+  for x in produce(w) {
+    tx.send(x)
+  }
 })
-for v in merged { consume(v) }
-merged.join()        # producer を join、最初のエラーを再送出
+for v in merged {
+  consume(v)
+}
+merged.join()  # producer を join、最初のエラーを再送出
 ```
 
 `merged.join()`（stream終了後）はproducerをjoinし最初のエラーを再送出。
@@ -2115,8 +2199,11 @@ callbackを受け取れます。`fn`と違い **Sendableではありません** 
 
 ```culebra
 # doctest: skip
-Parallel.map(urls, |u| fetch(u),
-             on_progress: |done, total| IO.print("\r" + done.to_string() + "/" + total.to_string()))
+Parallel.map(
+  urls,
+  |u| fetch(u),
+  on_progress: |done, total| IO.print("\r" + done.to_string() + "/" + total.to_string()),
+)
 ```
 
 (`map_reduce`は予定。)
@@ -2164,7 +2251,8 @@ drain_and_close()
 
 ```culebra
 # doctest: skip
-@packable class Vec2 {
+@packable
+class Vec2 {
   x: Float32 = 0.0
   y: Float32 = 0.0
 }
@@ -2195,10 +2283,13 @@ drain_and_close()
 
 ```culebra
 # doctest: skip
-@packable class Cell { v: Int64 = 0 }
+@packable
+class Cell {
+  v: Int64 = 0
+}
 let buf = SharedBuffer.file("/tmp/grid.bin", 100, Cell)
 buf[0].v = 42
-buf.flush()                   # ディスクへ永続化
+buf.flush()  # ディスクへ永続化
 ```
 
 #### `SharedBuffer.shared(count, Class) -> buffer`
@@ -2217,16 +2308,17 @@ buf.flush()                   # ディスクへ永続化
 ジェクトは生成されない:
 
 ```culebra
-@packable class Vec2 {
+@packable
+class Vec2 {
   x: Float32 = 0.0
   y: Float32 = 0.0
 }
 let buf = SharedBuffer.new(3, Vec2)
-inspect(buf.size)                # => 3
-buf[0].x = 1.5                # その場でバイトを書く
-let v = buf[0]                # 保持した view は同じ要素を指す
+inspect(buf.size)  # => 3
+buf[0].x = 1.5     # その場でバイトを書く
+let v = buf[0]     # 保持した view は同じ要素を指す
 v.y = 2.5
-inspect([buf[0].x, buf[0].y])    # => [1.5, 2.5]
+inspect([buf[0].x, buf[0].y])  # => [1.5, 2.5]
 ```
 
 要素まるごとの代入（`buf[i] = ...`）は`TypeError` — レコードは単独の値
@@ -2242,10 +2334,15 @@ bufferはisolate境界を **参照で**越える — 子は同じバイトを読
 
 ```culebra
 # doctest: skip
-@packable class Cell { v: Int64 = 0 }
+@packable
+class Cell {
+  v: Int64 = 0
+}
 let cells = SharedBuffer.new(8, Cell)
 
-Parallel.each([0, 1, 2, 3, 4, 5, 6, 7], fn (i) { cells[i].v = i * i })
+Parallel.each([0, 1, 2, 3, 4, 5, 6, 7], fn (i) {
+  cells[i].v = i * i
+})
 
 # cells は 0, 1, 4, 9, 16, 25, 36, 49 を保持
 ```
@@ -2266,20 +2363,28 @@ buffer`のObject）で渡し、子はその名前で`SharedBuffer.receive(name, 
 ```culebra
 # doctest: skip
 # --- parent.cul ---
-@packable class Cell { v: Int64 = 0 }
+@packable
+class Cell {
+  v: Int64 = 0
+}
 let grid = SharedBuffer.shared(4, Cell)
 grid[0].v = 100
 Proc.run([Sys.executable, "worker.cul"], share: {grid: grid})
-inspect(grid[0].v)               # 子の書き込みをここで読み戻す
+inspect(grid[0].v)  # 子の書き込みをここで読み戻す
 grid.drop()
 ```
 
 ```culebra
 # doctest: skip
 # --- worker.cul ---
-@packable class Cell { v: Int64 = 0 }
+@packable
+class Cell {
+  v: Int64 = 0
+}
 let grid = SharedBuffer.receive("grid", Cell)
-for i in 0..grid.count { grid[i].v = grid[i].v + (i + 1) * 10 }
+for i in 0..grid.count {
+  grid[i].v = grid[i].v + (i + 1) * 10
+}
 grid.drop()
 ```
 
@@ -2305,15 +2410,20 @@ disjointな書き込みは同期不要。2つの書き手が本当に**同じ**�
 
 ```culebra
 # doctest: skip
-@packable class Counter { n: Int64 = 0 }
+@packable
+class Counter {
+  n: Int64 = 0
+}
 let tally = SharedBuffer.new(1, Counter)
 
 Parallel.each(iota(0, 8), fn (w) {
   for _ in 0..1000 {
-    tally.with_lock(fn () { tally[0].n = tally[0].n + 1 })
+    tally.with_lock(fn () {
+      tally[0].n = tally[0].n + 1
+    })
   }
 })
-inspect(tally[0].n)              # ちょうど 8000 — lost update なし
+inspect(tally[0].n)  # ちょうど 8000 — lost update なし
 ```
 
 同じ呼び出しが**プロセス間**でも効く。`.shared` / `.file`のbufferは
@@ -2366,16 +2476,17 @@ UTF-8文字列を保持する固定容量インライン文字列（`[len][byte 
 
 ```culebra
 # doctest: skip
-@packable class Row {
+@packable
+class Row {
   id: Int32
   name: FixedString<16>
 }
 
 let rows = SharedBuffer.new(100, Row)
-rows[0].name = "alice"     # まるごと書き込み（≤ 16 バイト）
-rows[0].name               # => "alice"   （本物の String）
-rows[0].name.upper()       # => "ALICE"   （String の全メソッドが効く）
-rows[1].name               # => ""        （ゼロ値は空文字列）
+rows[0].name = "alice"  # まるごと書き込み（≤ 16 バイト）
+rows[0].name            # => "alice"   （本物の String）
+rows[0].name.upper()    # => "ALICE"   （String の全メソッドが効く）
+rows[1].name            # => ""        （ゼロ値は空文字列）
 ```
 
 `N`は**バイト**容量。`N`バイトを超える文字列は`CapacityError`、String以外
@@ -2428,17 +2539,18 @@ for k, v in m { ... }          # (key, value) タプルを yield
 
 ```culebra
 # doctest: skip
-@packable class Node {
-  id:     Int32
-  parent: Int32?      # 疎な「親なし」スロット
+@packable
+class Node {
+  id: Int32
+  parent: Int32?  # 疎な「親なし」スロット
 }
 
 let n = SharedBuffer.new(100, Node)
-n[0].parent            # => nil   （ゼロ値）
+n[0].parent  # => nil   （ゼロ値）
 n[0].parent = 5
-n[0].parent            # => 5
-n[0].parent = nil      # クリア
-n[0].parent ?? -1      # => -1
+n[0].parent        # => 5
+n[0].parent = nil  # クリア
+n[0].parent ?? -1  # => -1
 ```
 
 `0`は実値で`nil`とは別。packableなのはスカラoptionalのみ（`T`は固定スカラ）。
@@ -2454,23 +2566,26 @@ payloadが最大variantに合わせた1領域を共有し、tagがどのvariant�
 
 ```culebra
 # doctest: skip
-@packable enum Shape {
+@packable
+enum Shape {
   Circle(Float32),
   Rect(Float32, Float32),
-  Point
+  Point,
 }
 
-@packable class Obj {
-  id:    Int32
+@packable
+class Obj {
+  id: Int32
   shape: Shape
 }
 
 let objs = SharedBuffer.new(100, Obj)
-objs[0].shape = Shape.Rect(2.0, 3.0)   # variant 値を書く
-match objs[0].shape {                  # 読み戻して match
+objs[0].shape = Shape.Rect(2.0, 3.0)  # variant 値を書く
+match objs[0].shape {
+  # 読み戻して match
   Rect(w, h) => w * h,
-  Circle(r)  => 3.14 * r * r,
-  Point      => 0.0
+  Circle(r) => 3.14 * r * r,
+  Point => 0.0,
 }
 ```
 
@@ -2487,14 +2602,15 @@ variant payloadは全て固定スカラに限る（非スカラpayloadはvariant
 
 ```culebra
 # doctest: skip
-@packable class Entry {
-  id:     Int32
-  digest: Bytes<32>      # 例: SHA-256
+@packable
+class Entry {
+  id: Int32
+  digest: Bytes<32>  # 例: SHA-256
 }
 
 let e = SharedBuffer.new(100, Entry)
 e[0].digest = some_32_byte_string
-e[0].digest                       # => 32 バイト（バイナリ安全）
+e[0].digest  # => 32 バイト（バイナリ安全）
 ```
 
 書き込む`String`は**ちょうど** `N`バイトでなければならない（違えば`ValueError`）。
@@ -2509,14 +2625,23 @@ String以外は`TypeError`。バイトはバイナリ安全（埋め込みNULも
 
 ```culebra
 # doctest: skip
-@packable class Point { x: Float32  y: Float32 }
-@packable class Line  { id: Int32   start: Point  end: Point }
+@packable
+class Point {
+  x: Float32
+  y: Float32
+}
+@packable
+class Line {
+  id: Int32
+  start: Point
+  end: Point
+}
 
 let lines = SharedBuffer.new(100, Line)
-lines[0].start.x = 1.0        # インライン Point のバイトに書く
+lines[0].start.x = 1.0  # インライン Point のバイトに書く
 lines[0].start.y = 2.0
-lines[0].start.x             # => 1.0
-lines[0].end = lines[0].start # サブレコードまるごとコピー（memcpy）
+lines[0].start.x               # => 1.0
+lines[0].end = lines[0].start  # サブレコードまるごとコピー（memcpy）
 ```
 
 ネストするクラスは、それを含むクラスより前に（`@packable`で）宣言する必要がある。
@@ -2604,10 +2729,15 @@ if (!cond) {
 * **`assert_ge(a, b) -> Nil`** — `a >= b`。
 
 ```culebra
-assert_eq(1 + 1, 2)                                # 成功時は無音
+assert_eq(1 + 1, 2)  # 成功時は無音
 
-let r = try { assert_eq("foo", "bar"); nil } catch e { e }
-inspect(r.kind)         # => 'AssertionError'
+let r = try {
+  assert_eq("foo", "bar")
+  nil
+} catch e {
+  e
+}
+inspect(r.kind)  # => 'AssertionError'
 inspect(r.message)
 # => |
 # 'assert_eq failed:
@@ -2623,8 +2753,10 @@ inspect(r.message)
 照合。`f`の引数数が0以外なら`ArityError`。
 
 ```culebra
-assert_throws("ZeroDivisionError", fn() { let _ = 1 / 0 })
-assert_throws("MyError", fn() {
+assert_throws("ZeroDivisionError", fn () {
+  let _ = 1 / 0
+})
+assert_throws("MyError", fn () {
   throw {kind: "MyError", message: "boom"}
 })
 ```
@@ -2778,12 +2910,14 @@ inspect(m.named["year"].value)   # => '2026'
 
 ```culebra
 let d = Regex.compile('\d+')
-inspect(d.replace_all("a1 b22 c333", "#"))                        # => 'a# b# c#'
-inspect(d.replace_first("a1 b22 c333", "#"))                      # => 'a# b22 c333'
-inspect(Regex.compile('(\w+)@(\w+)').replace_all("x@y", '$2.$1')) # => 'y.x'
-inspect(d.replace_all("a1 b22", fn (m) { "<{m.value}>" }))        # => 'a<1> b<22>'
-inspect(Regex.compile('\s+').split("the quick  brown"))           # => ['the', 'quick', 'brown']
-inspect(Regex.compile('hello', "i").test("HELLO world"))          # => true
+inspect(d.replace_all("a1 b22 c333", "#"))                         # => 'a# b# c#'
+inspect(d.replace_first("a1 b22 c333", "#"))                       # => 'a# b22 c333'
+inspect(Regex.compile('(\w+)@(\w+)').replace_all("x@y", '$2.$1'))  # => 'y.x'
+inspect(d.replace_all("a1 b22", fn (m) {
+  "<{m.value}>"
+}))                                                       # => 'a<1> b<22>'
+inspect(Regex.compile('\s+').split("the quick  brown"))   # => ['the', 'quick', 'brown']
+inspect(Regex.compile('hello', "i").test("HELLO world"))  # => true
 ```
 
 `find_iter`は遅延なので走査を途中で止められます。
@@ -2873,22 +3007,24 @@ inspect(Regex.escape("a.b(c)"))                          # => 'a\.b\(c\)'
 # doctest: skip
 let r = Http.get("https://api.example.com/users", params: {page: "2"})
 if r.ok {
-  let users = r.json()                 # レスポンスボディを JSON としてパース
+  let users = r.json()  # レスポンスボディを JSON としてパース
   IO.inspect(users.size().to_string())
 } else {
   IO.inspect("request failed: {r.status}")
 }
 
 # ヘッダとタイムアウトを指定して JSON を POST（`json:` が serialize + Content-Type 設定）。
-let resp = Http.post("https://api.example.com/users",
-                     json: {name: "alice"},
-                     headers: {Authorization: "Bearer " + token},
-                     timeout: 30)
+let resp = Http.post(
+  "https://api.example.com/users",
+  json: {name: "alice"},
+  headers: {Authorization: "Bearer " + token},
+  timeout: 30,
+)
 assert_true(resp.ok)
 
 # トランスポート失敗は throw するが、404 は throw しない。
 let missing = Http.get("https://api.example.com/nope")
-assert_eq(missing.ok, false)        # 404 は通常の結果
+assert_eq(missing.ok, false)  # 404 は通常の結果
 assert_eq(missing.status, 404)
 ```
 
@@ -2906,13 +3042,20 @@ JSON APIでは [`JSON.parse`](#9-json) と組み合わせます。
 
 ```culebra
 # doctest: skip
-Http.get("https://example.com/big.tar.gz", into: "big.tar.gz")   # → ファイル
+Http.get("https://example.com/big.tar.gz", into: "big.tar.gz")  # → ファイル
 
 mut bytes = 0
-Http.get("https://example.com/big.csv", into: fn (chunk) { bytes += chunk.size() })
+Http.get(
+  "https://example.com/big.csv",
+  into: fn (chunk) { bytes += chunk.size() },
+)
 
 # 任意のメソッド。例: レスポンスがストリームで返る POST:
-Http.post("https://example.com/query", body: q, into: fn (chunk) { handle(chunk) })
+Http.post(
+  "https://example.com/query",
+  body: q,
+  into: fn (chunk) { handle(chunk) },
+)
 ```
 
 **ストリーミング（アップロード）。** 対称に、`body:`（`post` / `put` /
@@ -2923,10 +3066,14 @@ chunk `String`を返し、`nil`でストリーム終端を示します:
 ```culebra
 # doctest: skip
 let f = File.open("big.bin")
-Http.post(url, body: fn () {
+Http.post(
+  url,
+  body: fn () {
   let chunk = f.read(65536)
-  !chunk.empty() ? chunk : nil            # nil で終端
-}, content_type: "application/octet-stream")
+  !chunk.empty() ? chunk : nil  # nil で終端
+},
+  content_type: "application/octet-stream",
+)
 ```
 
 producerは呼び出しスレッド上で実行され（捕捉状態をmutableに扱える）、throwすれば
@@ -2952,28 +3099,40 @@ producerは呼び出しスレッド上で実行され（捕捉状態をmutable�
 ```culebra
 # doctest: skip
 # テキストフィールド + メモリ上のファイル part
-Http.post(url, files: {
+Http.post(
+  url,
+  files: {
   title: "My report",
   doc:   { content: "a,b,c\n1,2,3\n", filename: "data.csv", content_type: "text/csv" },
-})
+},
+)
 
 # 大きなファイルをディスクから直接ストリーム（全体をバッファしない）
-Http.post(url, files: { clip: { path: "/movies/big.mp4", content_type: "video/mp4" } })
+Http.post(
+  url,
+  files: { clip: { path: "/movies/big.mp4", content_type: "video/mp4" } },
+)
 
 # 生成に時間がかかる part を producer からストリーム
 mut row = 0
-Http.post(url, files: {
+Http.post(
+  url,
+  files: {
   export: { filename: "rows.csv", content_type: "text/csv", stream: fn () {
     row += 1
     row <= 1000 ? "{row},{compute(row)}\n" : nil
   } },
-})
+},
+)
 
 # Array で同一フィールド名に複数 part
-Http.post(url, files: {
+Http.post(
+  url,
+  files: {
   caption: "trip",
   photos:  [ { path: "./1.jpg" }, { path: "./2.jpg" } ],
-})
+},
+)
 ```
 
 partの値が`String` / `Object` / `Array`以外、`Object`が`content` / `path` /
@@ -2999,7 +3158,9 @@ partの値が`String` / `Object` / `Array`以外、`Object`が`content` / `path`
 ```culebra
 # doctest: skip
 Http.sse("https://api.example/v1/stream", fn (e) {
-  if e.data == "[DONE]" { return }
+  if e.data == "[DONE]" {
+    return
+  }
   let delta = JSON.parse(e.data)
   IO.print(delta.choices[0].delta.content)
 })
@@ -3027,16 +3188,18 @@ TLSハンドシェイクを避けられます。返り値は`get` / `post` / `pu
 
 ```culebra
 # doctest: skip
-let api = Http.client("https://api.example.com/v1",
-                      headers: {Authorization: "Bearer " + token},
-                      timeout: 30)
+let api = Http.client(
+  "https://api.example.com/v1",
+  headers: {Authorization: "Bearer " + token},
+  timeout: 30,
+)
 
-let me   = api.get("/me").json()              # → GET https://api.example.com/v1/me
-let user = api.get("/users/42").json()        # 同じ接続を再利用
-api.post("/users", json: {name: "alice"})     # Authorization ヘッダが付く
+let me = api.get("/me").json()             # → GET https://api.example.com/v1/me
+let user = api.get("/users/42").json()     # 同じ接続を再利用
+api.post("/users", json: {name: "alice"})  # Authorization ヘッダが付く
 
-api.get("/items", headers: {"Idempotency-Key": k})   # 既定の上にマージ
-api.close()                                    # 接続を解放
+api.get("/items", headers: {"Idempotency-Key": k})  # 既定の上にマージ
+api.close()                                         # 接続を解放
 ```
 
 リクエストメソッドの第1引数はパスです。先頭スラッシュor素の相対パスは`base_url`に
@@ -3072,15 +3235,25 @@ HTTPサーバです。`get`/`post`/`put`/`delete`/`patch`/`options`でルート�
 ```culebra
 # doctest: skip
 let srv = Http.server()
-srv.get("/", fn(req) { "Hello, world!" })
-srv.get("/users/:id", fn(req) { "user " + req.params["id"] })
-srv.post("/echo", fn(req) { req.body })
-srv.get("/json", fn(req) {
-  { status: 201, body: '{"ok":true}', content_type: "application/json",
-    headers: {"X-Trace": req.headers["X-Request-Id"]} }
+srv.get("/", fn (req) {
+  "Hello, world!"
+})
+srv.get("/users/:id", fn (req) {
+  "user " + req.params["id"]
+})
+srv.post("/echo", fn (req) {
+  req.body
+})
+srv.get("/json", fn (req) {
+  {
+    status: 201,
+    body: '{"ok":true}',
+    content_type: "application/json",
+    headers: {"X-Trace": req.headers["X-Request-Id"]},
+  }
 })
 srv.static("/assets", "./public")
-srv.listen(8080)                 # ブロックする。Ctrl+C で停止
+srv.listen(8080)  # ブロックする。Ctrl+C で停止
 ```
 
 | メソッド | 効果 |
@@ -3149,11 +3322,17 @@ streamクロージャはworkerスレッド上で実行されるため、`workers
 
 ```culebra
 # doctest: skip
-srv.ws("/echo", fn(req, ws) { for msg in ws { ws.send(msg) } })
-srv.ws("/chat", fn(req, ws) {
+srv.ws("/echo", fn (req, ws) {
+  for msg in ws {
+    ws.send(msg)
+  }
+})
+srv.ws("/chat", fn (req, ws) {
   while true {
     let m = ws.receive()
-    if m == nil { break }              # peer が close
+    if m == nil {
+      break
+    }  # peer が close
     ws.send(req.path + ": " + m)
   }
 })
@@ -3182,10 +3361,12 @@ hubに寄せる（`Isolate`と同じ規則）。
 
 ```culebra
 # doctest: skip
-let model = Shared.new(load_weights())          # read-only 1 コピーを全 worker で共有
+let model = Shared.new(load_weights())  # read-only 1 コピーを全 worker で共有
 let srv = Http.server()
-srv.post("/predict", fn(req) { infer(model, req.body) })
-srv.listen(8080, workers: 8)                     # 8 ハンドラが並列実行
+srv.post("/predict", fn (req) {
+  infer(model, req.body)
+})
+srv.listen(8080, workers: 8)  # 8 ハンドラが並列実行
 ```
 
 **バックグラウンドサーバ — `listen_async` + `stop`。** メインスレッドが別作業を
@@ -3199,10 +3380,12 @@ srv.listen(8080, workers: 8)                     # 8 ハンドラが並列実行
 ```culebra
 # doctest: skip
 let srv = Http.server()
-srv.get("/health", fn(req) { "ok" })
-srv.listen_async(8080, workers: 4)   # 即 return
+srv.get("/health", fn (req) {
+  "ok"
+})
+srv.listen_async(8080, workers: 4)  # 即 return
 # … 別作業をしつつ Http.get("http://127.0.0.1:8080/health") …
-srv.stop()                           # 停止して背後スレッドを join
+srv.stop()  # 停止して背後スレッドを join
 ```
 
 あるいは、ブロッキング`listen`をisolate内で動かし、そのisolateをdrop
@@ -3210,13 +3393,15 @@ srv.stop()                           # 停止して背後スレッドを join
 
 ```culebra
 # doctest: skip
-let srv_iso = Isolate.spawn(fn() {
+let srv_iso = Isolate.spawn(fn () {
   let srv = Http.server()
-  srv.get("/health", fn(req) { "ok" })
+  srv.get("/health", fn (req) {
+    "ok"
+  })
   srv.listen(8080, workers: 4)
 })
 # … メインスレッドから Http.get("http://127.0.0.1:8080/health") …
-srv_iso.drop()                   # サーバに停止を通知して join
+srv_iso.drop()  # サーバに停止を通知して join
 ```
 
 **起動完了とポート番号を知る — `bind` + `serve`。** ブロッキング`listen`は返らない
@@ -3228,16 +3413,18 @@ srv_iso.drop()                   # サーバに停止を通知して join
 ```culebra
 # doctest: skip
 let (tx, rx) = Channel.new(1)
-let srv_iso = Isolate.spawn(fn() {
+let srv_iso = Isolate.spawn(fn () {
   let srv = Http.server()
-  srv.get("/health", fn(req) { "ok" })
-  tx.send(srv.bind(0))           # 0 = 空いているポート。番号を外へ
+  srv.get("/health", fn (req) {
+    "ok"
+  })
+  tx.send(srv.bind(0))  # 0 = 空いているポート。番号を外へ
   tx.drop()
-  srv.serve()                    # ここでブロック
+  srv.serve()  # ここでブロック
 })
-tx.drop()                        # 親自身の sender コピー
+tx.drop()  # 親自身の sender コピー
 let base = "http://127.0.0.1:" + rx.recv().to_string()
-inspect(Http.get(base + "/health").body)     # => 'ok'
+inspect(Http.get(base + "/health").body)  # => 'ok'
 srv_iso.drop()
 ```
 
@@ -3250,8 +3437,10 @@ srv_iso.drop()
 # doctest: skip
 let srv = Http.server()
 let port = srv.bind(0)
-Log.info("http server listening", { port: port })
-srv.get("/whoami", fn(req) { "http://127.0.0.1:" + port.to_string() })
+Log.info("http server listening", {port: port})
+srv.get("/whoami", fn (req) {
+  "http://127.0.0.1:" + port.to_string()
+})
 srv.serve(workers: 4)
 ```
 
@@ -3273,8 +3462,10 @@ WebSocketクライアントを`url`（`ws://host:port/path`）に接続し、サ
 # doctest: skip
 let ws = Http.ws("ws://127.0.0.1:8080/echo")
 ws.send("hello")
-inspect(ws.receive())               # => エコーされたメッセージ
-for msg in ws { handle(msg) }    # サーバが close するまでメッセージを drain
+inspect(ws.receive())  # => エコーされたメッセージ
+for msg in ws {
+  handle(msg)
+}  # サーバが close するまでメッセージを drain
 ws.close()
 ```
 
@@ -3302,7 +3493,9 @@ ws.close()
 # doctest: skip
 let art = Embed.dir("assets")
 let sheet = Canvas.Sprite.from_png(art.read("sprites.png"))
-if art.exists("music.ogg") { Canvas.music(art.read("music.ogg")) }
+if art.exists("music.ogg") {
+  Canvas.music(art.read("music.ogg"))
+}
 ```
 
 同じハンドルでディレクトリ全体をHTTP配信できる:
@@ -3310,8 +3503,10 @@ if art.exists("music.ogg") { Canvas.music(art.read("music.ogg")) }
 ```culebra
 # doctest: skip
 let srv = Http.server()
-srv.static("/", Embed.dir("dist"))     # フロントエンド全体を1行で
-srv.get("/api/ping", fn(req) { '{"ok":true}' })
+srv.static("/", Embed.dir("dist"))  # フロントエンド全体を1行で
+srv.get("/api/ping", fn (req) {
+  '{"ok":true}'
+})
 srv.listen(8080)
 ```
 
@@ -3556,13 +3751,16 @@ inspect(rows[0]["name"])                                 # => 'alice'
 （先頭ゼロや精度の喪失なし）。`types:`は`header: true`を要する。
 
 ```culebra
-let rows = CSV.parse("name,age,active\nalice,30,true", header: true,
-                     types: {age: "Long", active: "Bool"})
+let rows = CSV.parse(
+  "name,age,active\nalice,30,true",
+  header: true,
+  types: {age: "Long", active: "Bool"},
+)
 # age はもう本物の Long（String でない）ので算術が効く:
-inspect(rows[0]["age"] + 1)                              # => 31
+inspect(rows[0]["age"] + 1)  # => 31
 # 郵便番号は元テキストのまま — 数値推論なし:
 let z = CSV.parse("zip\n01234", header: true, types: {zip: "String"})
-inspect(z[0]["zip"])                                     # => '01234'
+inspect(z[0]["zip"])  # => '01234'
 ```
 
 未知の型名・どの列も指さない`types`キー・変換不能なセル（`Long`への`"hello"`、
@@ -3863,9 +4061,14 @@ log.error("upstream failed", {status: 502})
 （いずれも1始まり）が問題の文字を指す:
 
 ```culebra
-let r = try { TOML.parse("x = "); nil } catch e { e }
-inspect(r.message)            # => 'TOML.parse: expected value'
-inspect("{r.line}:{r.col}")   # => '1:5'
+let r = try {
+  TOML.parse("x = ")
+  nil
+} catch e {
+  e
+}
+inspect(r.message)           # => 'TOML.parse: expected value'
+inspect("{r.line}:{r.col}")  # => '1:5'
 ```
 
 `stringify`は`Object`（TOML文書は常にテーブル）を取り、まずスカラ / 配列 /
@@ -3967,11 +4170,13 @@ db.execute("CREATE TABLE users (id INTEGER, name TEXT)")
 db.execute("INSERT INTO users VALUES (?, ?)", [1, "Alice"])
 
 let rows = db.query("SELECT * FROM users")
-inspect(rows[0]["name"])      # => 'Alice'
+inspect(rows[0]["name"])  # => 'Alice'
 
 # 再利用可能なプリペアド文
 let ins = db.prepare("INSERT INTO users VALUES (?, ?)")
-for u in [[2, "Bob"], [3, "Carol"]] { ins.run(u) }
+for u in [[2, "Bob"], [3, "Carol"]] {
+  ins.run(u)
+}
 ins.finalize()
 
 # all-or-nothing
@@ -3979,8 +4184,13 @@ db.transaction(fn () {
   db.execute("UPDATE users SET name = 'Bob!' WHERE id = 2")
 })
 
-let r = try { db.query("SELECT * FROM missing"); nil } catch e { e }
-inspect(r.kind)               # => 'SQLiteError'
+let r = try {
+  db.query("SELECT * FROM missing")
+  nil
+} catch e {
+  e
+}
+inspect(r.kind)  # => 'SQLiteError'
 
 db.close()
 ```
@@ -4177,12 +4387,15 @@ packed RGBA `Long`、または`palette`を与えたときはそのパレット�
 ```culebra
 # doctest: skip
 let bgd = Canvas.Sprite.blank(320, 240)
-Canvas.draw_to(bgd, fn () {          # 背景は一度だけ描く…
+Canvas.draw_to(bgd, fn () {
+  # 背景は一度だけ描く…
   Canvas.clear(sky)
-  for i in 0..50 { Canvas.circle(Random.below(320), Random.below(240), 2, star) }
+  for i in 0..50 {
+    Canvas.circle(Random.below(320), Random.below(240), 2, star)
+  }
 })
 Canvas.run(320, 240, fn () {
-  bgd.draw(0, 0)                     # …毎フレームは blit 1 回
+  bgd.draw(0, 0)  # …毎フレームは blit 1 回
   true
 })
 ```
@@ -4203,10 +4416,12 @@ Canvas.run(320, 240, fn () {
 Canvas.init(320, 240)
 Canvas.clear(Canvas.rgba(24, 24, 32))
 Canvas.circle(160, 120, 40, Canvas.rgba(240, 180, 90))
-FS.write("shot.png", Canvas.to_png())          # スクリーンショット
+FS.write("shot.png", Canvas.to_png())  # スクリーンショット
 
-let tile = Canvas.Sprite.blank(16, 16)         # オフスクリーンで描いてもよい
-Canvas.draw_to(tile, fn () { Canvas.clear(Canvas.rgba(80, 200, 120)) })
+let tile = Canvas.Sprite.blank(16, 16)  # オフスクリーンで描いてもよい
+Canvas.draw_to(tile, fn () {
+  Canvas.clear(Canvas.rgba(80, 200, 120))
+})
 FS.write("tile.png", tile.to_png())
 ```
 
@@ -4592,7 +4807,8 @@ bindしてlistenする。`port: 0`はOSに空きポートを選ばせ、`listene
 # doctest: skip
 let server = Net.listen(7000)
 println("listening on " + server.port.to_string())
-for conn in server {                    # ループで accept
+for conn in server {
+  # ループで accept
   conn.write("hello " + conn.peer_addr().host + "\n")
   conn.close()
 }
@@ -4618,9 +4834,11 @@ for conn in server {                    # ループで accept
 ```culebra
 # doctest: skip
 let server = Net.listen(7000)
-server.serve(fn(conn) {
-  for line in conn.lines() { conn.write(line.upper() + "\n") }
-}, workers: 8)                      # Ctrl+C までブロック
+server.serve(fn (conn) {
+    for line in conn.lines() {
+      conn.write(line.upper() + "\n")
+    }
+  }, workers: 8)  # Ctrl+C までブロック
 ```
 
 - `workers: 0`（既定）はCPU数に応じたプール（最小4、最大8）。正の数を渡せば
@@ -4719,17 +4937,14 @@ WebViewフレームワークをリンクします。
 
 ```culebra
 # doctest: skip
-Desktop.run({
-  title: 'culebra desktop',
-  size: [720, 560],
-  assets: Embed.dir('dist'),
-  routes: fn (srv) {
-    srv.get('/api/hello', fn (req) {
-      { content_type: 'application/json',
-        body: JSON.stringify({ message: 'hello' }) }
-    })
-  }
-})
+Desktop.run({title: 'culebra desktop', size: [
+  720,
+  560,
+], assets: Embed.dir('dist'), routes: fn (srv) {
+  srv.get('/api/hello', fn (req) {
+    {content_type: 'application/json', body: JSON.stringify({message: 'hello'})}
+  })
+}})
 ```
 
 ### `Webview.Window` — 生のバインディング
@@ -4793,9 +5008,11 @@ w.run()
 
 ```culebra
 let io = IO
-io.inspect("hello")              # IO.inspect("hello") と同じ
+io.inspect("hello")  # IO.inspect("hello") と同じ
 
-fn run_with(ns, x) { ns.inspect(x) }
+fn run_with(ns, x) {
+  ns.inspect(x)
+}
 run_with(IO, "via parameter")
 ```
 

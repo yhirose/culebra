@@ -77,8 +77,15 @@ Parameters are immutable too — assigning to one is an error, not a
 local copy:
 
 ```culebra
-bump = fn (n) { n += 1; n }
-inspect(try { bump(1) } catch e { e.kind })   # => 'ImmutableError'
+bump = fn (n) {
+  n += 1
+  n
+}
+inspect(try {
+  bump(1)
+} catch e {
+  e.kind
+})  # => 'ImmutableError'
 ```
 
 Introducing a binding that would shadow a *captured outer* variable is
@@ -88,17 +95,19 @@ fine.
 ### 2.2 Types
 
 ```culebra
-inspect(type_of(nil))            # => 'Nil'
-inspect(type_of(true))           # => 'Bool'
-inspect(type_of(42))             # => 'Long'
-inspect(type_of(3.14))           # => 'Float'
-inspect(type_of('hi'))           # => 'String'
-inspect(type_of([1, 2]))         # => 'Array'
-inspect(type_of({a: 1}))         # => 'Object'
-inspect(type_of(fn () { 1 }))    # => 'Function'
-inspect(type_of((1, 'a')))       # => 'Tuple'
-inspect(type_of({1, 2}))         # => 'Set'
-inspect(type_of('hello'.slice(1, 3)))   # => 'StringView'
+inspect(type_of(nil))     # => 'Nil'
+inspect(type_of(true))    # => 'Bool'
+inspect(type_of(42))      # => 'Long'
+inspect(type_of(3.14))    # => 'Float'
+inspect(type_of('hi'))    # => 'String'
+inspect(type_of([1, 2]))  # => 'Array'
+inspect(type_of({a: 1}))  # => 'Object'
+inspect(type_of(fn () {
+  1
+}))                                    # => 'Function'
+inspect(type_of((1, 'a')))             # => 'Tuple'
+inspect(type_of({1, 2}))               # => 'Set'
+inspect(type_of('hello'.slice(1, 3)))  # => 'StringView'
 ```
 
 `Tensor` is the twelfth (section 4). `Object` is the substrate for
@@ -111,33 +120,44 @@ statements.
 
 ```culebra
 n = 7
-sign = if n > 0 { 1 } else if n < 0 { -1 } else { 0 }
-inspect(sign)                    # => 1
+sign = if n > 0 {
+  1
+} else if n < 0 {
+  -1
+} else {
+  0
+}
+inspect(sign)  # => 1
 
 label = match n {
-  0           => 'zero',
+  0 => 'zero',
   k if k < 10 => 'small',
-  _           => 'large'
+  _ => 'large',
 }
-inspect(label)                   # => 'small'
+inspect(label)  # => 'small'
 
-grade = cond {                   # a subjectless match
+grade = cond {
+  # a subjectless match
   n >= 90 => 'A',
-  n >= 5  => 'B',
-  _       => 'C'
+  n >= 5 => 'B',
+  _ => 'C',
 }
-inspect(grade)                   # => 'B'
-inspect(n > 5 ? 'big' : 'small') # => 'big'
+inspect(grade)                    # => 'B'
+inspect(n > 5 ? 'big' : 'small')  # => 'big'
 ```
 
 ```culebra
-for i in 0..3 { inspect(i) }     # exclusive; 0..=2 inclusive; `by k` steps
+for i in 0..3 {
+  inspect(i)
+}  # exclusive; 0..=2 inclusive; `by k` steps
 # => |
 # 0
 # 1
 # 2
 
-for k, v in {a: 1, b: 2} { inspect("{k}={v}") }
+for k, v in {a: 1, b: 2} {
+  inspect("{k}={v}")
+}
 # => |
 # 'a=1'
 # 'b=2'
@@ -149,32 +169,50 @@ init clause scoped to the construct:
 
 ```culebra
 for v in [1, 3, 5] {
-  if v % 2 == 0 { break }
+  if v % 2 == 0 {
+    break
+  }
 } nobreak {
-  inspect('all odd')             # => 'all odd'
+  inspect('all odd')  # => 'all odd'
 }
 
-while mut i = 0; i < 3 { i += 1 }
-if let m = 6; m > 5 { inspect('big') }        # => 'big'
+while mut i = 0; i < 3 {
+  i += 1
+}
+if let m = 6; m > 5 {
+  inspect('big')
+}  # => 'big'
 ```
 
 ### 2.4 Functions
 
 ```culebra
-add = fn (a, b) { a + b }
-inspect(add(2, 3))               # => 5
+add = fn (a, b) {
+  a + b
+}
+inspect(add(2, 3))  # => 5
 
-typed = fn (a: Long, b: Long) -> Long { a + b }
-inspect(typed(2, 3))             # => 5
+typed = fn (a: Long, b: Long) -> Long {
+  a + b
+}
+inspect(typed(2, 3))  # => 5
 
-square = |x| x * x               # a lambda body is a single expression
-inspect(square(7))               # => 49
+square = |x| x * x  # a lambda body is a single expression
+inspect(square(7))  # => 49
 
-fib = fn (x) { if x < 2 { x } else { fn(x - 2) + fn(x - 1) } }
-inspect(fib(10))                 # => 55
+fib = fn (x) {
+  if x < 2 {
+    x
+  } else {
+    fn(x - 2) + fn(x - 1)
+  }
+}
+inspect(fib(10))  # => 55
 
-inspect([1, 2, 3].map(|x| x * 2))                 # => [2, 4, 6]
-inspect([[1, 2]].map(fn ((a, b)) { a + b }))      # => [3]
+inspect([1, 2, 3].map(|x| x * 2))  # => [2, 4, 6]
+inspect([[1, 2]].map(fn ((a, b)) {
+  a + b
+}))  # => [3]
 ```
 
 Name a function with `fn`; pass a callback as `|x|`. A lambda body is a
@@ -229,7 +267,8 @@ sql = """
     SELECT *
     FROM t
     """
-inspect(sql.lines())             # => ['SELECT *', 'FROM t']
+
+inspect(sql.lines())  # => ['SELECT *', 'FROM t']
 ```
 
 ### 2.6 Iterators
@@ -238,13 +277,15 @@ inspect(sql.lines())             # => ['SELECT *', 'FROM t']
 chains stop at the first consumer and build no intermediates.
 
 ```culebra
-inspect(iota(3))                                # => [0, 1, 2]
+inspect(iota(3))  # => [0, 1, 2]
 inspect(range(1000).filter(|x| x % 2 == 0).map(|x| x * 3).take(4).collect())
 # => [0, 6, 12, 18]
-inspect(range(1, 11).reduce(0, |a, x| a + x))   # => 55
-inspect([1, 2, 3, 4].iter().zip(['a', 'b']).collect().size())   # => 2
+inspect(range(1, 11).reduce(0, |a, x| a + x))                  # => 55
+inspect([1, 2, 3, 4].iter().zip(['a', 'b']).collect().size())  # => 2
 
-for i, v in ['x', 'y'].enumerate() { inspect("{i}:{v}") }
+for i, v in ['x', 'y'].enumerate() {
+  inspect("{i}:{v}")
+}
 # => |
 # '0:x'
 # '1:y'
@@ -256,9 +297,12 @@ an iterator.
 ```culebra
 fn countdown(start) {
   mut i = start
-  while i > 0 { yield i; i -= 1 }
+  while i > 0 {
+    yield i
+    i -= 1
+  }
 }
-inspect(countdown(3).collect())                 # => [3, 2, 1]
+inspect(countdown(3).collect())  # => [3, 2, 1]
 ```
 
 Any object with `iter()`, `has_next()` and `next()` works with `for`
@@ -294,15 +338,32 @@ There is no exhaustiveness check; supply a `_` arm.
 Any value can be thrown, and `try` is an expression.
 
 ```culebra
-check = fn (x) { if x < 0 { throw "negative: {x}" }; x }
-inspect(try { check(-1) } catch e { e })        # => 'negative: -1'
-inspect(try { check(7) } catch _ { 0 })         # => 7
+check = fn (x) {
+  if x < 0 {
+    throw "negative: {x}"
+  }
+  x
+}
+inspect(try {
+  check(-1)
+} catch e {
+  e
+})  # => 'negative: -1'
+inspect(try {
+  check(7)
+} catch _ {
+  0
+})  # => 7
 ```
 
 Built-in errors are Objects carrying a `kind`:
 
 ```culebra
-inspect(try { 1 / 0 } catch e { e.kind })       # => 'ZeroDivisionError'
+inspect(try {
+  1 / 0
+} catch e {
+  e.kind
+})  # => 'ZeroDivisionError'
 ```
 
 `defer` runs on every exit path from the enclosing block, in LIFO
@@ -311,8 +372,12 @@ last reference goes away.
 
 ```culebra
 {
-  defer { inspect('second') }
-  defer { inspect('first') }
+  defer {
+    inspect('second')
+  }
+  defer {
+    inspect('first')
+  }
   inspect('body')
 }
 # => |
@@ -323,7 +388,9 @@ last reference goes away.
 
 ```culebra
 {
-  r = { drop: fn () { inspect('released') } }
+  r = {drop: fn () {
+    inspect('released')
+  }}
   inspect('in scope')
 }
 inspect('after')
@@ -340,19 +407,28 @@ shorthand for `.new`.
 
 ```culebra
 class Car {
-  wheels = 4                     # declared field with a default
-  new(mpr)  { self.miles = 0; self.mpr = mpr }
-  run(n)    { self.miles += self.mpr * n }
-  get far() { self.miles > 10 }  # computed property, no parentheses
-  static unit() { Car(1) }
+  wheels = 4  # declared field with a default
+  new(mpr) {
+    self.miles = 0
+    self.mpr = mpr
+  }
+  run(n) {
+    self.miles += self.mpr * n
+  }
+  get far() {
+    self.miles > 10
+  }  # computed property, no parentheses
+  static unit() {
+    Car(1)
+  }
 }
 
 c = Car(5)
 c.run(3)
-inspect(c.miles)                 # => 15
-inspect(c.far)                   # => true
-inspect(c.wheels)                # => 4
-inspect(c.class)                 # => 'Car'
+inspect(c.miles)   # => 15
+inspect(c.far)     # => true
+inspect(c.wheels)  # => 4
+inspect(c.class)   # => 'Car'
 ```
 
 Operators map to dunder methods (`__add__`, `__eq__`, `__lt__`,
@@ -364,19 +440,29 @@ Any free function `f(x, ...)` can be called as `x.f(...)`, but an
 existing property or method always wins:
 
 ```culebra
-double = fn (x) { x * 2 }
-inspect(42.double())             # => 84
+double = fn (x) {
+  x * 2
+}
+inspect(42.double())  # => 84
 ```
 
 Several free functions may share a name and dispatch on their declared
 parameter types:
 
 ```culebra
-class Circle { new(r) { self.r = r } }
-fn area(c: Circle) { 3 * c.r * c.r }
-fn area(n: Long)   { n }
-inspect(area(Circle(2)))         # => 12
-inspect(area(10))                # => 10
+class Circle {
+  new(r) {
+    self.r = r
+  }
+}
+fn area(c: Circle) {
+  3 * c.r * c.r
+}
+fn area(n: Long) {
+  n
+}
+inspect(area(Circle(2)))  # => 12
+inspect(area(10))         # => 10
 ```
 
 A `trait` is structural: any class with matching method names and
@@ -385,10 +471,21 @@ a default body, and `@derive(Eq, Hash, Show, Comparable)` generates
 the usual conformance methods.
 
 ```culebra
-trait Greeter { hello() -> String }
-class Bob { new(n) { self.n = n }  hello() { "hi, {self.n}" } }
-greet = fn (g: Greeter) -> String { g.hello() }
-inspect(greet(Bob('Ann')))       # => 'hi, Ann'
+trait Greeter {
+  hello() -> String
+}
+class Bob {
+  new(n) {
+    self.n = n
+  }
+  hello() {
+    "hi, {self.n}"
+  }
+}
+greet = fn (g: Greeter) -> String {
+  g.hello()
+}
+inspect(greet(Bob('Ann')))  # => 'hi, Ann'
 ```
 
 ### 2.10 Effects
@@ -418,8 +515,10 @@ known at parse time.
 ```culebra
 # doctest: skip
 # lib.cul
-let greet = fn (n) { "hello, {n}" }
-export { greet }
+let greet = fn (n) {
+  "hello, {n}"
+}
+export {greet}
 ```
 
 ```culebra
@@ -440,9 +539,11 @@ passing, and return — and nowhere else. `Long | String` is a union,
 without checking it elementwise.
 
 ```culebra
-show = fn (x: Long | String) -> String { to_string(x) }
-inspect(show(1))                 # => '1'
-inspect(show('hi'))              # => 'hi'
+show = fn (x: Long | String) -> String {
+  to_string(x)
+}
+inspect(show(1))     # => '1'
+inspect(show('hi'))  # => 'hi'
 ```
 
 ## 3. What does not carry over
@@ -606,7 +707,9 @@ spec = {
   positionals: [{name: 'who', help: 'who to greet'}],
 }
 args = Args.parse(Sys.argv, spec)
-for _ in range(args.times) { println("hello, {args.who}") }
+for _ in range(args.times) {
+  println("hello, {args.who}")
+}
 ```
 
 ### HTTP request
@@ -614,7 +717,9 @@ for _ in range(args.times) { println("hello, {args.who}") }
 ```culebra
 # doctest: skip
 r = Http.get('https://example.com/api', headers: {Accept: 'application/json'})
-if !r.ok { throw "HTTP {r.status}: {r.reason}" }
+if !r.ok {
+  throw "HTTP {r.status}: {r.reason}"
+}
 println(r.json().title)
 ```
 
@@ -632,7 +737,9 @@ counts = File.with('input.txt', 'r', fn (f) {
   }
   n
 })
-for k in counts.keys().sorted() { println("{k}\t{counts[k]}") }
+for k in counts.keys().sorted() {
+  println("{k}\t{counts[k]}")
+}
 ```
 
 ### Test file
@@ -641,10 +748,14 @@ for k in counts.keys().sorted() { println("{k}\t{counts[k]}") }
 # doctest: skip
 # test_math.cul
 @test
-fn adds() { assert_eq(1 + 2, 3) }
+fn adds() {
+  assert_eq(1 + 2, 3)
+}
 
 @parametrize([(1, 2, 3), (10, 20, 30)])
-fn adds_each(a, b, want) { assert_eq(a + b, want) }
+fn adds_each(a, b, want) {
+  assert_eq(a + b, want)
+}
 ```
 
 Where to go next

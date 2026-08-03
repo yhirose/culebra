@@ -237,9 +237,17 @@ Culebraは動的型付けスクリプト言語です。設計上の優先事項:
 
 ```culebra
 class N {
-  new(v)     { self.v = v }
-  __neg__()  { println('neg'); N(-self.v) }
-  __mul__(o) { println('mul'); N(self.v * o.v) }
+  new(v) {
+    self.v = v
+  }
+  __neg__() {
+    println('neg')
+    N(-self.v)
+  }
+  __mul__(o) {
+    println('mul')
+    N(self.v * o.v)
+  }
 }
 _ = -N(2) * N(3)
 # => |
@@ -1174,20 +1182,28 @@ shapeが単調増加します。そのようなワークロードでは非String
    型エラーで失敗します。
 
 ```culebra
-o = { n: 10, add: fn (x) { x + self.n } }
+o = {n: 10, add: fn (x) {
+  x + self.n
+}}
 # レシーバ呼び出しは self を束縛するので `add` は o.n を読む:
-inspect(o.add(5))                   # => 15
+inspect(o.add(5))  # => 15
 
-double = fn (x) { x * 2 }
-42.double()                      # UFCS → double(42) → 84
+double = fn (x) {
+  x * 2
+}
+42.double()  # UFCS → double(42) → 84
 
-word_count = fn (s) { s.split(' ').size() }
-'hello world'.word_count()       # UFCS → 2
+word_count = fn (s) {
+  s.split(' ').size()
+}
+'hello world'.word_count()  # UFCS → 2
 
 # 既存メソッドが常に優先 — ユーザ定義の `size` は Array / Object /
 # String の組み込み `size` によって隠される。
-size = fn (x) { 99 }
-[1, 2, 3].size()                 # 3 (builtin)、99 ではない
+size = fn (x) {
+  99
+}
+[1, 2, 3].size()  # 3 (builtin)、99 ではない
 ```
 
 UFCSは **DOTの直後に引数リストがある場合のみ**適用されます。裸の
@@ -1205,9 +1221,11 @@ UFCSは **DOTの直後に引数リストがある場合のみ**適用されま�
 
 ```culebra
 # doctest: skip
-zzz = fn (ns, v) { v }
-IO.zzz(9)                        # AttributeError。zzz(IO, 9) ではない
-Math.to_string()                 # AttributeError。to_string(Math) ではない
+zzz = fn (ns, v) {
+  v
+}
+IO.zzz(9)         # AttributeError。zzz(IO, 9) ではない
+Math.to_string()  # AttributeError。to_string(Math) ではない
 ```
 
 例外はdictの組み込みで、namespaceも`Object`である以上
@@ -1458,13 +1476,19 @@ traitのメソッドにフォールバックします。`==` / `!=`は`eq(other)
 
 ```culebra
 class Grid {
-  new()          { self.d = [10, 20, 30] }
-  __index__(i)   { self.d[i] }
-  __setindex__(i, v) { self.d[i] = v }
+  new() {
+    self.d = [10, 20, 30]
+  }
+  __index__(i) {
+    self.d[i]
+  }
+  __setindex__(i, v) {
+    self.d[i] = v
+  }
 }
 let g = Grid.new()
 g[1] = 99
-inspect(g[1])                  # => 99
+inspect(g[1])  # => 99
 ```
 
 **呼び出し (`__call__`)。** クラスインスタンスに`__call__(*args)`を
@@ -1478,12 +1502,16 @@ inspect(g[1])                  # => 99
 
 ```culebra
 class Adder {
-  new(b)       { self.b = b }
-  __call__(x)  { self.b + x }
+  new(b) {
+    self.b = b
+  }
+  __call__(x) {
+    self.b + x
+  }
 }
 let add3 = Adder.new(3)
-inspect(add3(10))              # => 13
-inspect(add3.__call__(10))     # => 13
+inspect(add3(10))           # => 13
+inspect(add3.__call__(10))  # => 13
 ```
 
 `__call__`を持つクラスは`Function`型を構造的に満たすので、callable
@@ -1492,11 +1520,20 @@ inspect(add3.__call__(10))     # => 13
 束縛しても、その`__call__`経由で呼ばれます:
 
 ```culebra
-class Scale { new(k) { self.k = k } __call__(x) { x * self.k } }
-inspect([1, 2, 3].map(Scale.new(10)))   # => [10, 20, 30]
+class Scale {
+  new(k) {
+    self.k = k
+  }
+  __call__(x) {
+    x * self.k
+  }
+}
+inspect([1, 2, 3].map(Scale.new(10)))  # => [10, 20, 30]
 
-fn apply_twice(f: Function, x) { f(f(x)) }
-inspect(apply_twice(Scale.new(2), 5))   # => 20
+fn apply_twice(f: Function, x) {
+  f(f(x))
+}
+inspect(apply_twice(Scale.new(2), 5))  # => 20
 ```
 
 `__call__`は呼び出しの全形式（位置引数・`*args`・キーワード引数）を
@@ -1976,13 +2013,15 @@ inspect(counter().collect())   # => [1, 2, 3]
 委譲元の本体を再開します:
 
 ```culebra
-fn inner() { yield 'x' }
+fn inner() {
+  yield 'x'
+}
 fn mixed() {
   yield from [1, 2]
   yield from inner()
   yield 'done'
 }
-inspect(mixed().collect())   # => [1, 2, 'x', 'done']
+inspect(mixed().collect())  # => [1, 2, 'x', 'done']
 ```
 
 委譲を使う主な理由である再帰的な走査もこれで組み立てられます:
@@ -1990,10 +2029,12 @@ inspect(mixed().collect())   # => [1, 2, 'x', 'done']
 ```culebra
 fn walk(node) {
   yield node.value
-  for kid in node.kids { yield from walk(kid) }
+  for kid in node.kids {
+    yield from walk(kid)
+  }
 }
 let leaf = {value: 3, kids: []}
-inspect(walk({value: 1, kids: [{value: 2, kids: [leaf]}]}).collect())   # => [1, 2, 3]
+inspect(walk({value: 1, kids: [{value: 2, kids: [leaf]}]}).collect())  # => [1, 2, 3]
 ```
 
 **ジェネレータオブジェクト。** 呼び出しが返すのは通常のイテレータです。
@@ -2002,8 +2043,14 @@ inspect(walk({value: 1, kids: [{value: 2, kids: [leaf]}]}).collect())   # => [1,
 使えます。中断できることで、終わりのないソースも実用的になります:
 
 ```culebra
-fn nat() { mut i = 0; while true { yield i; i += 1 } }
-inspect(nat().map(|x| x * x).take(5).collect())   # => [0, 1, 4, 9, 16]
+fn nat() {
+  mut i = 0
+  while true {
+    yield i
+    i += 1
+  }
+}
+inspect(nat().map(|x| x * x).take(5).collect())  # => [0, 1, 4, 9, 16]
 ```
 
 本体が動き出すのは呼び出し時ではなく最初の`has_next()`です。ジェネレータ
@@ -2020,11 +2067,16 @@ inspect(nat().map(|x| x * x).take(5).collect())   # => [0, 1, 4, 9, 16]
 
 ```culebra
 fn two() {
-  defer { inspect('closed') }
+  defer {
+    inspect('closed')
+  }
   yield 1
   yield 2
 }
-for v in two() { inspect(v); break }
+for v in two() {
+  inspect(v)
+  break
+}
 # => |
 # 1
 # 'closed'
@@ -2193,20 +2245,32 @@ init変数は反復をまたいで生存し（本体の`i = i + 2`は再代入�
 返す要素を`var`として反復ごとに新しいスコープに束縛します（§18.5）。
 
 ```culebra
-for x in [1, 2, 3] { inspect(x) }
+for x in [1, 2, 3] {
+  inspect(x)
+}
 
-for k, v in {b: 2, a: 1} { inspect("{k}={v}") }   # (key, value) ペアを挿入順
+for k, v in {b: 2, a: 1} {
+  inspect("{k}={v}")
+}  # (key, value) ペアを挿入順
 
-for i in 0..10 { inspect(i) }          # 排他範囲（0..9）
-for i in 0..=10 { inspect(i) }         # 包含範囲（0..10）
+for i in 0..10 {
+  inspect(i)
+}  # 排他範囲（0..9）
+for i in 0..=10 {
+  inspect(i)
+}  # 包含範囲（0..10）
 ```
 
 rangeは`by <step>`節で1以外の刻み幅を指定できます（`step`を負に
 すれば降順も可）:
 
 ```culebra
-for i in 0..10 by 2 { inspect(i) }      # 0, 2, 4, 6, 8
-for i in 10..0 by -2 { inspect(i) }     # 10, 8, 6, 4, 2
+for i in 0..10 by 2 {
+  inspect(i)
+}  # 0, 2, 4, 6, 8
+for i in 10..0 by -2 {
+  inspect(i)
+}  # 10, 8, 6, 4, 2
 ```
 
 `step`は`0`にできません（rangeを反復した時点で`ValueError`）。
@@ -2281,9 +2345,11 @@ liveに読まれます（§18.5参照）。`Array`は1ステップごとにlive�
 # doctest: skip
 fn find(xs, target) {
   for x in xs {
-    if x == target { return "found" }
+    if x == target {
+      return "found"
+    }
   } nobreak {
-    return "not found"     # ループが一度も break しなかったときだけ到達
+    return "not found"  # ループが一度も break しなかったときだけ到達
   }
 }
 ```
@@ -2314,10 +2380,11 @@ fn find(xs, target) {
 
 ```culebra
 # doctest: skip
-let width = "v" + match n {      # nが4のとき`+`は完了しない
-  4 => break,
-  _ => "x",
-}
+let width = "v" + match n {
+    # nが4のとき`+`は完了しない
+    4 => break,
+    _ => "x",
+  }
 ```
 
 知っておくべき帰結:
@@ -3408,11 +3475,12 @@ effect fnを（逆方向も）呼べます — `.map(f)`のようなfirst-class�
 
 ```culebra
 effect fn ask()
-fn greet() {                     # plain 関数がエフェクトを perform する
+fn greet() {
+  # plain 関数がエフェクトを perform する
   let name = perform ask()
   "hi " + name
 }
-inspect(handle { greet() } with ask(k) { k("ana") })   # => 'hi ana'
+inspect(handle { greet() } with ask(k) { k("ana") })  # => 'hi ana'
 ```
 
 これを支えるのは、各ハンドラ節のparse時分類です:
@@ -3598,15 +3666,17 @@ File.open = fn (path) {
 ```culebra
 let log = []
 make_thing = fn (id) {
-  { id: id, drop: fn () { log.push(id) } }
+  {id: id, drop: fn () {
+    log.push(id)
+  }}
 }
 {
   let a = make_thing('a')
   let b = make_thing('b')
   a.other = b
   b.other = a
-}                # 循環していても、ブロック離脱でここで両方 drop
-inspect(log)        # => ['b', 'a']
+}             # 循環していても、ブロック離脱でここで両方 drop
+inspect(log)  # => ['b', 'a']
 ```
 
 所有スコープは「循環が最後にescapeした先」です: 関数の戻り値として
@@ -3647,11 +3717,13 @@ resourceからの逆参照が無いclosure専用循環がそのresourceを片持
 
 ```culebra
 make_thing = fn () {
-  { drop: fn () { inspect('cleaned') } }   # make_thing の env を捕捉
+  {drop: fn () {
+    inspect('cleaned')
+  }}  # make_thing の env を捕捉
 }
 {
-  let t = make_thing()                  # ブロックスコープ束縛
-}                                        # ここで drop が走る
+  let t = make_thing()  # ブロックスコープ束縛
+}  # ここで drop が走る
 ```
 
 `drop`を持つオブジェクトを**トップレベル**で束縛すると、どの
@@ -3849,8 +3921,11 @@ ArrayやStringスカラーを回す場合は`for c in s { ... }`
 ```culebra
 mut a = [1, 2, 3, 4]
 mut seen = []
-a.for_each(fn (x) { seen.push(x); a.pop() })
-inspect(seen)   # => [1, 2]
+a.for_each(fn (x) {
+  seen.push(x)
+  a.pop()
+})
+inspect(seen)  # => [1, 2]
 ```
 
 | シグネチャ                                   | 説明                                  |
@@ -3894,31 +3969,47 @@ inspect(seen)   # => [1, 2]
 ```culebra
 mut a = [1, 2, 3]
 a.push(4)
-inspect(a.pop())                      # => 4
+inspect(a.pop())  # => 4
 a.extend([9, 8])
-inspect(a)                            # => [1, 2, 3, 9, 8]
+inspect(a)  # => [1, 2, 3, 9, 8]
 a.insert(0, 0)
-inspect(a)                            # => [0, 1, 2, 3, 9, 8]
-inspect(a.remove_at(-1))              # => 8
-inspect([1, 2] + [3])                 # => [1, 2, 3]
-inspect([10, 20, 30, 40].slice(1, 3)) # => [20, 30]
-inspect(['a', 'b', 'c'].join('-'))    # => 'a-b-c'
-inspect([1, 2, 3].contains(2))        # => true
-inspect([10, 20, 30].index_of(99))    # => -1
-inspect([].presence() ?? 'default')   # => 'default'
+inspect(a)                             # => [0, 1, 2, 3, 9, 8]
+inspect(a.remove_at(-1))               # => 8
+inspect([1, 2] + [3])                  # => [1, 2, 3]
+inspect([10, 20, 30, 40].slice(1, 3))  # => [20, 30]
+inspect(['a', 'b', 'c'].join('-'))     # => 'a-b-c'
+inspect([1, 2, 3].contains(2))         # => true
+inspect([10, 20, 30].index_of(99))     # => -1
+inspect([].presence() ?? 'default')    # => 'default'
 
-inspect([1, 2, 3].map(fn (x) { x * x }))           # => [1, 4, 9]
-inspect([1, 2, 3, 4].filter(fn (x) { x % 2 == 0 })) # => [2, 4]
-inspect([1, 2, 3, 4].reduce(0, fn (acc, x) { acc + x })) # => 10
+inspect([1, 2, 3].map(fn (x) {
+  x * x
+}))  # => [1, 4, 9]
+inspect([1, 2, 3, 4].filter(fn (x) {
+  x % 2 == 0
+}))  # => [2, 4]
+inspect([1, 2, 3, 4].reduce(0, fn (acc, x) {
+  acc + x
+}))  # => 10
 
-inspect([3, 1, 4, 1, 5].find(fn (x) { x > 3 }))    # => 4
-inspect([1, 2, 3].any(fn (x) { x > 2 }))           # => true
-inspect([1, 2, 3].all(fn (x) { x > 0 }))           # => true
-inspect([1, 2, 3].flat_map(fn (x) { [x, x * 10] })) # => [1, 10, 2, 20, 3, 30]
+inspect([3, 1, 4, 1, 5].find(fn (x) {
+  x > 3
+}))  # => 4
+inspect([1, 2, 3].any(fn (x) {
+  x > 2
+}))  # => true
+inspect([1, 2, 3].all(fn (x) {
+  x > 0
+}))  # => true
+inspect([1, 2, 3].flat_map(fn (x) {
+  [x, x * 10]
+}))  # => [1, 10, 2, 20, 3, 30]
 
 mut words = ['banana', 'fig', 'apple']
-words.sort_by(fn (s) { s.size() })
-inspect(words)                                      # => ['fig', 'apple', 'banana']
+words.sort_by(fn (s) {
+  s.size()
+})
+inspect(words)  # => ['fig', 'apple', 'banana']
 ```
 
 **コールバックの引数個数。** 高階メソッドはコールバックを固定個数の引数で呼ぶ
@@ -3931,15 +4022,21 @@ inspect(words)                                      # => ['fig', 'apple', 'banan
 ```
 
 ```culebra
-[1, 2, 3].map(fn (a, b) { a })    # !! map expects a 1-parameter function
+[1, 2, 3].map(fn (a, b) {
+  a
+})  # !! map expects a 1-parameter function
 ```
 
 `*args`コールバックは渡された分をすべて吸収するので任意の個数で使える。各呼び出しの
 引数はrest配列として届く:
 
 ```culebra
-inspect([10, 20].map(fn (*xs) { xs.size() }))                # => [1, 1]
-inspect([1, 2, 3].reduce(0, fn (a, *xs) { a + xs.size() }))  # => 3
+inspect([10, 20].map(fn (*xs) {
+  xs.size()
+}))  # => [1, 1]
+inspect([1, 2, 3].reduce(0, fn (a, *xs) {
+  a + xs.size()
+}))  # => 3
 ```
 
 `range` / `iota`（可変長ビルトイン）をそのままコールバックとして渡せるのはこのため。
@@ -3949,7 +4046,9 @@ inspect([1, 2, 3].reduce(0, fn (a, *xs) { a + xs.size() }))  # => 3
 毎回の呼び出しで検査される。型の合わない要素に達した時点で`TypeError`:
 
 ```culebra
-[1, 'x'].map(fn (v: Long) { v * 2 })   # !! parameter 'v' expects Long
+[1, 'x'].map(fn (v: Long) {
+  v * 2
+})  # !! parameter 'v' expects Long
 ```
 
 ### 18.3 オブジェクトメソッド
@@ -4096,9 +4195,15 @@ Iterableラッパなしで動作します。
 `obj.keys()`（`Array`）と`obj.values()`（遅延イテレータ）:
 
 ```culebra
-for k, v in {a: 1, b: 2} { inspect("{k}={v}") }   # 'a=1' then 'b=2'
-for k in {a: 1, b: 2}.keys() { inspect(k) }       # 'a' then 'b'
-for v in {a: 1, b: 2}.values() { inspect(v) }     # 1 then 2
+for k, v in {a: 1, b: 2} {
+  inspect("{k}={v}")
+}  # 'a=1' then 'b=2'
+for k in {a: 1, b: 2}.keys() {
+  inspect(k)
+}  # 'a' then 'b'
+for v in {a: 1, b: 2}.values() {
+  inspect(v)
+}  # 1 then 2
 ```
 
 **Object iterと変更**: 反復はループ開始時に取ったキーのスナップショット
@@ -4110,16 +4215,21 @@ fail-fastガードは無い）。反復中に**追加**したキーは対象に�
 
 ```culebra
 mut o = {mut x: 1, mut y: 2}
-for k, v in o.iter() { o[k] = 99 }   # 既存の値を更新
-inspect(o.x)            # => 99
+for k, v in o.iter() {
+  o[k] = 99
+}             # 既存の値を更新
+inspect(o.x)  # => 99
 ```
 
 ```culebra
 mut books = {a: ('alpha', 1)}
-for reading, n in books.values() {   # 反復しながら別名を追加
-  if !books.has(reading) { books[reading] = (reading, n) }
+for reading, n in books.values() {
+  # 反復しながら別名を追加
+  if !books.has(reading) {
+    books[reading] = (reading, n)
+  }
 }
-inspect(books.has('alpha'))   # => true
+inspect(books.has('alpha'))  # => true
 ```
 
 **イテレータメソッド**: イテレータ・インターフェイスを満たすObject
@@ -4132,8 +4242,13 @@ inspect(books.has('alpha'))   # => true
 返します。
 
 ```culebra
-fn nums() { yield 1; yield 2; yield 3; yield 4 }
-inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
+fn nums() {
+  yield 1
+  yield 2
+  yield 3
+  yield 4
+}
+inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())  # => [20, 40]
 ```
 
 | 非終端 | 戻り値 | 説明 |
@@ -4189,10 +4304,14 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 返しません（`collect`は`[]`）— `break`の後とまったく同じです:
 
 ```culebra
-fn g() { yield 1; yield 2; yield 3 }
+fn g() {
+  yield 1
+  yield 2
+  yield 3
+}
 let it = g()
-inspect(it.find(|x| x == 2))    # => 2
-inspect(it.collect())           # => []
+inspect(it.find(|x| x == 2))  # => 2
+inspect(it.collect())         # => []
 ```
 
 この`find`の時点で`g()`のdeferが走っています。2つ目が空なのは、
@@ -4224,7 +4343,7 @@ range(1000000).filter(f).map(g).take(4).collect()
 countdown = fn (start) {
   mut i = start
   {
-    iter:     fn () { self },                 # Iterator は自身が Iterable
+    iter:     fn () { self },  # Iterator は自身が Iterable
     has_next: fn () { i > 0 },
     next:     fn () {
       v = i
@@ -4234,7 +4353,9 @@ countdown = fn (start) {
   }
 }
 
-for x in countdown(3) { inspect(x) }              # 3, 2, 1
+for x in countdown(3) {
+  inspect(x)
+}  # 3, 2, 1
 ```
 
 **JIT**: 本節のすべて — for-inによるプロトコル駆動、ユーザー定義
@@ -4361,14 +4482,24 @@ yieldします。`for`-inやイテレータメソッドチェーンと組み合�
   降順 (exclusive end)。`step: 0`は`ValueError`。
 
 ```culebra
-for i in range(5)              { inspect(i) }   # 0, 1, 2, 3, 4
-for i in range(2, 6)           { inspect(i) }   # 2, 3, 4, 5
-for i in range(0, 10, step: 2) { inspect(i) }   # 0, 2, 4, 6, 8
-for i in range(5, 0, step: -1) { inspect(i) }   # 5, 4, 3, 2, 1
+for i in range(5) {
+  inspect(i)
+}  # 0, 1, 2, 3, 4
+for i in range(2, 6) {
+  inspect(i)
+}  # 2, 3, 4, 5
+for i in range(0, 10, step: 2) {
+  inspect(i)
+}  # 0, 2, 4, 6, 8
+for i in range(5, 0, step: -1) {
+  inspect(i)
+}  # 5, 4, 3, 2, 1
 
 # 巨大な上限でも定数メモリで動く
 for i in range(1000000000) {
-  if i > 3 { break }
+  if i > 3 {
+    break
+  }
   inspect(i)
 }
 ```
@@ -4430,16 +4561,18 @@ fnが引数付きで呼ばれた場合、全ての引数が`__ARGS__`に入り�
 | `fn.params`     | `Array<Object>`| 各パラメータのmetadata。`name / mut / type / has_default / kw_only / kwargs_rest` |
 
 ```culebra
-fn greet(name: String, *, prefix = "hi") { "{prefix}, {name}" }
+fn greet(name: String, *, prefix = "hi") {
+  "{prefix}, {name}"
+}
 
-inspect(greet.name)                  # => 'greet'
-inspect(greet.return_type)           # => ''
+inspect(greet.name)         # => 'greet'
+inspect(greet.return_type)  # => ''
 let ps = greet.params
-inspect(ps.size())                   # => 2
-inspect(ps[0].name)                  # => 'name'
-inspect(ps[0].type)                  # => 'String'
-inspect(ps[1].kw_only)               # => true
-inspect(ps[1].has_default)           # => true
+inspect(ps.size())          # => 2
+inspect(ps[0].name)         # => 'name'
+inspect(ps[0].type)         # => 'String'
+inspect(ps[1].kw_only)      # => true
+inspect(ps[1].has_default)  # => true
 ```
 
 `fn.params`はアクセス毎に新規`Array`を返します。これを書き換えても
@@ -4613,14 +4746,20 @@ paint(7, **{color: "gold"})  # → "gold 7"
 ```culebra
 class Calc {
   new() {}
-  go(x: Long)          { "long: {x}" }
-  go(x: String)        { "string: {x}" }
-  go(x: Long, y: Long) { "sum: {x + y}" }
+  go(x: Long) {
+    "long: {x}"
+  }
+  go(x: String) {
+    "string: {x}"
+  }
+  go(x: Long, y: Long) {
+    "sum: {x + y}"
+  }
 }
 let c = Calc.new()
-c.go(1)      # → "long: 1"
-c.go("a")    # → "string: a"
-c.go(2, 3)   # → "sum: 5"
+c.go(1)     # → "long: 1"
+c.go("a")   # → "string: a"
+c.go(2, 3)  # → "sum: 5"
 ```
 
 スコアリング・デフォルト引数・`*args`・kwarg・`**rest`のルールは
@@ -4643,9 +4782,15 @@ staticメソッドも同様にoverloadできます。位置パラメータ型シ
 
 ```culebra
 class Vec {
-  static make(x: Long)         { "long: {x}" }
-  static make(x: String)       { "str: {x}" }
-  static make(x: Long, y: Long) { "pair: {x}, {y}" }
+  static make(x: Long) {
+    "long: {x}"
+  }
+  static make(x: String) {
+    "str: {x}"
+  }
+  static make(x: Long, y: Long) {
+    "pair: {x}, {y}"
+  }
 }
 Vec.make(5)     # → "long: 5"
 Vec.make("hi")  # → "str: hi"
@@ -4665,13 +4810,25 @@ staticとinstanceのoverloadセットは独立です: staticとinstanceの
 
 ```culebra
 class Point {
-  new(x: Long, y: Long) { self.tag = "xy";  self.x = x; self.y = y }
-  new(s: String)        { self.tag = "str"; self.x = s.size(); self.y = 0 }
-  new()                 { self.tag = "empty"; self.x = -1; self.y = -1 }
+  new(x: Long, y: Long) {
+    self.tag = "xy"
+    self.x = x
+    self.y = y
+  }
+  new(s: String) {
+    self.tag = "str"
+    self.x = s.size()
+    self.y = 0
+  }
+  new() {
+    self.tag = "empty"
+    self.x = -1
+    self.y = -1
+  }
 }
-Point(3, 4).tag    # → "xy"
-Point("hi").tag    # → "str"
-Point().tag        # → "empty"
+Point(3, 4).tag  # → "xy"
+Point("hi").tag  # → "str"
+Point().tag      # → "empty"
 ```
 
 overloadは**インスタンスを確保する前**に選ばれるため、どのoverloadにも
@@ -4695,13 +4852,20 @@ overloadは**インスタンスを確保する前**に選ばれるため、ど�
 
 ```culebra
 class Vec {
-  new(x: Long, y: Long) { self.x = x; self.y = y }
-  __add__(o: Vec) { Vec(self.x + o.x, self.y + o.y) }   # 要素ごと
-  __add__(n: Long) { Vec(self.x + n, self.y + n) }       # スカラ
+  new(x: Long, y: Long) {
+    self.x = x
+    self.y = y
+  }
+  __add__(o: Vec) {
+    Vec(self.x + o.x, self.y + o.y)
+  }  # 要素ごと
+  __add__(n: Long) {
+    Vec(self.x + n, self.y + n)
+  }  # スカラ
 }
 let v = Vec(1, 2)
-(v + Vec(10, 20))   # → Vec(11, 22)   (Vec overload)
-(v + 5)             # → Vec(6, 7)     (Long overload)
+v + Vec(10, 20)  # → Vec(11, 22)   (Vec overload)
+v + 5            # → Vec(6, 7)     (Long overload)
 ```
 
 可換演算のauto-reflectionは不変: `5 + v`は`v.__add__(5)`に反射し`Long`
@@ -4743,10 +4907,16 @@ fn foo() { ... }
 デコレータは**bind前の宣言値**を受け取り、変数に入る値を返す:
 
 ```culebra
-let tag = fn(f) { fn() { "[{f()}]" } }
+let tag = fn (f) {
+  fn () {
+    "[{f()}]"
+  }
+}
 
 @tag
-fn greet() { "hello" }
+fn greet() {
+  "hello"
+}
 
 greet()  # "[hello]"
 ```
@@ -4754,10 +4924,18 @@ greet()  # "[hello]"
 クラスの場合はclass objectを受け取って返す:
 
 ```culebra
-let mark = fn(cls) { cls.marked = true; cls }
+let mark = fn (cls) {
+  cls.marked = true
+  cls
+}
 
 @mark
-class Point { new(x, y) { self.x = x; self.y = y } }
+class Point {
+  new(x, y) {
+    self.x = x
+    self.y = y
+  }
+}
 
 Point.marked  # true
 ```

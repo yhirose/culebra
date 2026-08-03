@@ -294,8 +294,10 @@ tile coordinate, an angle stepped backwards:
 
 ```culebra
 let frames = ['a', 'b', 'c']
-let prev = fn (i) { frames[Math.wrap(i - 1, frames.size())] }
-inspect(prev(0))               # => 'c'
+let prev = fn (i) {
+  frames[Math.wrap(i - 1, frames.size())]
+}
+inspect(prev(0))  # => 'c'
 ```
 
 A negative `n` mirrors the whole thing — the result lands in `(n, 0]` —
@@ -377,10 +379,16 @@ where the byte read left off.
 # doctest: skip
 # Filter: uppercase lines containing "error".
 for line in IO.stdin().lines() {
-    if line.contains("error") { IO.println(line.upper()) }
+  if line.contains("error") {
+    IO.println(line.upper())
+  }
 }
 
-let src = if IO.stdin_is_terminal() { read_clipboard() } else { IO.stdin().read() }
+let src = if IO.stdin_is_terminal() {
+  read_clipboard()
+} else {
+  IO.stdin().read()
+}
 ```
 
 ### `IO.einspect(x: Any) -> Nil` / `IO.eprint(x: Any) -> Nil` / `IO.eprintln(x: Any) -> Nil`
@@ -393,8 +401,10 @@ writes the raw display form with no trailing newline (like `print`);
 
 ```culebra
 # doctest: skip
-IO.einspect("warning: retrying")     # → stderr
-if !ok { IO.eprint("error: {msg}\n") }
+IO.einspect("warning: retrying")  # → stderr
+if !ok {
+  IO.eprint("error: {msg}\n")
+}
 IO.eprintln("done")
 ```
 
@@ -408,8 +418,16 @@ redirected to a file or pipe.
 
 ```culebra
 # doctest: skip
-let src = if IO.stdin_is_terminal() { read_clipboard() } else { FS.read("/dev/stdin") }
-if IO.stdout_is_terminal() { println(colorize(msg)) } else { println(msg) }
+let src = if IO.stdin_is_terminal() {
+  read_clipboard()
+} else {
+  FS.read("/dev/stdin")
+}
+if IO.stdout_is_terminal() {
+  println(colorize(msg))
+} else {
+  println(msg)
+}
 ```
 
 `IO` is the standard-stream and console namespace. File reading and
@@ -721,8 +739,9 @@ flows straight through without `.str()`:
 ```culebra
 # doctest: skip
 let cfg = Path.new("/etc") / "app.conf"
-let text = FS.read(cfg)                 # FS.read(String | Path)
-for line in File.open(cfg).lines() { }  # File.open(String | Path)
+let text = FS.read(cfg)  # FS.read(String | Path)
+for line in File.open(cfg).lines() {
+}  # File.open(String | Path)
 ```
 
 Only the *path-taking* stdlib functions opt in this way. `Path` and
@@ -762,7 +781,9 @@ choice when the handle's lifetime fits one block.
 
 ```culebra
 # doctest: skip
-let head = File.with('big.log', 'r', fn (f) { f.read(256) })
+let head = File.with('big.log', 'r', fn (f) {
+  f.read(256)
+})
 ```
 
 ### Resource safety — three ways to close
@@ -793,7 +814,9 @@ it when the loop ends or breaks.
 ```culebra
 # doctest: skip
 for line in File.open('access.log').lines() {
-  if line.contains('ERROR') { inspect(line) }
+  if line.contains('ERROR') {
+    inspect(line)
+  }
 }
 ```
 
@@ -934,7 +957,9 @@ nanosecond, weekday, dayofyear}`. `weekday` follows ISO 8601
 
 ```culebra
 let p = Time.now().parts()
-if p.hour >= 9 && p.hour < 17 { inspect("business hours") }
+if p.hour >= 9 && p.hour < 17 {
+  inspect("business hours")
+}
 ```
 
 #### `t.weekday(utc: false) -> Long`
@@ -1118,7 +1143,9 @@ not return; pending `defer` statements are *not* run.
 
 ```culebra
 # doctest: skip
-if error_occurred { Sys.exit(1) }
+if error_occurred {
+  Sys.exit(1)
+}
 ```
 
 ### `Sys.env(name: String, fallback = '') -> Any`
@@ -1426,7 +1453,9 @@ or any forward you will not backprop through.
 
 ```culebra
 # doctest: skip
-let logits = Tensor.no_grad(fn () { model_forward(x) })
+let logits = Tensor.no_grad(fn () {
+  model_forward(x)
+})
 ```
 
 ### Operator overloading
@@ -1589,7 +1618,12 @@ exposes the JSON-internal position via `e.line` / `e.col` (both
 1-based, pointing at the offending character):
 
 ```culebra
-let r = try { JSON.parse('{"a": ,}'); nil } catch e { e }
+let r = try {
+  JSON.parse('{"a": ,}')
+  nil
+} catch e {
+  e
+}
 inspect(r.message)           # => 'JSON.parse: expected value'
 inspect("{r.line}:{r.col}")  # => '1:7'
 ```
@@ -1599,17 +1633,20 @@ Examples:
 ```culebra
 let v = {name: 'alice', age: 30, tags: ['admin', 'staff']}
 # The default is compact; `sort_keys` orders the keys alphabetically.
-inspect(JSON.stringify(v))                  # => '{"name":"alice","age":30,"tags":["admin","staff"]}'
-inspect(JSON.stringify(v, sort_keys: true)) # => '{"age":30,"name":"alice","tags":["admin","staff"]}'
+inspect(JSON.stringify(v))                   # => '{"name":"alice","age":30,"tags":["admin","staff"]}'
+inspect(JSON.stringify(v, sort_keys: true))  # => '{"age":30,"name":"alice","tags":["admin","staff"]}'
 let back = JSON.parse(JSON.stringify(v))
-inspect(back.name)                          # => 'alice'
+inspect(back.name)  # => 'alice'
 let arr = JSON.parse("1\n2\n3\n", lines: true)
-inspect(arr)                                # => [1, 2, 3]
-let cfg = JSON.parse('{
+inspect(arr)  # => [1, 2, 3]
+let cfg = JSON.parse(
+  '{
   // comments and trailing commas are allowed
   "port": 8080,
-}', jsonc: true)
-inspect(cfg.port)                           # => 8080
+}',
+  jsonc: true,
+)
+inspect(cfg.port)  # => 8080
 ```
 
 `indent` pretty-prints and `lines` emits JSON Lines; both produce
@@ -1700,19 +1737,35 @@ argument that may be omitted carries a `default` and is spelled
 # doctest: skip
 let spec = {
   name: "wc-lite",
-  doc:  "count lines and words",
+  doc: "count lines and words",
   args: [
-    {name: "input",   type: "String", doc: "input file"},
-    {name: "lines",   short: "l", type: "Bool", default: false, doc: "count lines"},
-    {name: "words",   short: "w", type: "Bool", default: false, doc: "count words"},
-    {name: "encoding",            type: "String", default: "utf-8"}
-  ]
+    {name: "input", type: "String", doc: "input file"},
+    {
+      name: "lines",
+      short: "l",
+      type: "Bool",
+      default: false,
+      doc: "count lines",
+    },
+    {
+      name: "words",
+      short: "w",
+      type: "Bool",
+      default: false,
+      doc: "count words",
+    },
+    {name: "encoding", type: "String", default: "utf-8"},
+  ],
 }
 
 let args = Args.parse(Sys.argv, spec)
-inspect(args.input)            # String
-if args.lines { inspect("lines: ...") }
-if args.words { inspect("words: ...") }
+inspect(args.input)  # String
+if args.lines {
+  inspect("lines: ...")
+}
+if args.words {
+  inspect("words: ...")
+}
 inspect("encoding: {args.encoding}")
 ```
 
@@ -1766,7 +1819,11 @@ match Args.parse(Sys.argv, spec).subcommand {
 `Args.parse` exits on any error. `Args.try_parse` instead throws:
 
 ```culebra
-let r = try { Args.try_parse(["--bogus"], spec) } catch e { e }
+let r = try {
+  Args.try_parse(["--bogus"], spec)
+} catch e {
+  e
+}
 # r == {kind: "ArgParseError", message: "unknown option '--bogus'"}
 ```
 
@@ -1838,7 +1895,12 @@ let up = Proc.run(["tr", "a-z", "A-Z"], stdin: "hello\n")
 assert_eq(up.stdout, "HELLO\n")
 
 # Run in a directory with an extra env var; throw on failure.
-Proc.run(["make", "install"], cwd: "/src/app", env: {PREFIX: "/usr/local"}, check: true)
+Proc.run(
+  ["make", "install"],
+  cwd: "/src/app",
+  env: {PREFIX: "/usr/local"},
+  check: true,
+)
 ```
 
 Output is buffered in full, so a command that emits gigabytes will use
@@ -1883,13 +1945,14 @@ buffer (use `buf.with_lock` for contended cells).
 
 ```culebra
 # doctest: skip
-let results = Proc.all([
-  ["git", "fetch", "origin"],
-  ["npm", "test"],
-  ["cargo", "build"],
-], limit: 2)
+let results = Proc.all(
+  [["git", "fetch", "origin"], ["npm", "test"], ["cargo", "build"]],
+  limit: 2,
+)
 for r in results {
-  if !r.ok { IO.print(r.error ?? r.stderr) }
+  if !r.ok {
+    IO.print(r.error ?? r.stderr)
+  }
 }
 ```
 
@@ -2006,9 +2069,12 @@ mutates **its own copy** — the parent's value is untouched:
 ```culebra
 # doctest: skip
 let xs = [1, 2, 3]
-let h = Isolate.spawn(fn () { xs.push(99); xs.size() })
-h.join()                       # => 4   (the isolate's copy)
-xs                             # => [1, 2, 3]   (parent unchanged)
+let h = Isolate.spawn(fn () {
+  xs.push(99)
+  xs.size()
+})
+h.join()  # => 4   (the isolate's copy)
+xs        # => [1, 2, 3]   (parent unchanged)
 ```
 
 A `mut` capture is rejected rather than silently snapshotted — pass the value
@@ -2034,10 +2100,14 @@ returns the same result; only the timing differs.
 # Parallel map: split work across isolates, then collect.
 let parts = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
 mut handles = []
-for p in parts { handles.push(Isolate.spawn(|| p.reduce(0, |a, b| a + b))) }
+for p in parts {
+  handles.push(Isolate.spawn(|| p.reduce(0, |a, b| a + b)))
+}
 mut total = 0
-for h in handles { total += h.join() }
-total                          # => 45
+for h in handles {
+  total += h.join()
+}
+total  # => 45
 ```
 
 ### Cancellation
@@ -2058,13 +2128,17 @@ shared.
 
 ```culebra
 # doctest: skip
-let (tx, rx) = Channel.new(10)        # bounded; capacity 10
+let (tx, rx) = Channel.new(10)  # bounded; capacity 10
 let prod = Isolate.spawn(fn () {
-  for line in source() { tx.send(parse(line)) }
-  tx.drop()                            # release this sender
+  for line in source() {
+    tx.send(parse(line))
+  }
+  tx.drop()  # release this sender
 })
-tx.drop()                              # release the parent's sender too
-for record in rx { process(record) }   # ends when every tx is dropped
+tx.drop()  # release the parent's sender too
+for record in rx {
+  process(record)
+}  # ends when every tx is dropped
 prod.join()
 ```
 
@@ -2105,12 +2179,18 @@ mut handles = []
 mut sources = []
 for w in workers {
   let (tx, rx) = Channel.new()
-  handles.push(Isolate.spawn(fn () { produce(w, tx) }))  # producer's tx auto-drops on exit
-  tx.drop()                                               # the parent's own tx (1:1, obvious)
+  handles.push(Isolate.spawn(fn () {
+    produce(w, tx)
+  }))        # producer's tx auto-drops on exit
+  tx.drop()  # the parent's own tx (1:1, obvious)
   sources.push(rx)
 }
-for v in Channel.fan_in(sources) { consume(v) }           # one stream, all producers
-for h in handles { h.join() }                             # keep handles alive; collect errors
+for v in Channel.fan_in(sources) {
+  consume(v)
+}  # one stream, all producers
+for h in handles {
+  h.join()
+}  # keep handles alive; collect errors
 ```
 
 The merge **takes over** the given receivers — read them only through the merged
@@ -2129,10 +2209,14 @@ Sendable.
 ```culebra
 # doctest: skip
 let merged = Channel.fan_in(workers, fn (w, tx) {
-  for x in produce(w) { tx.send(x) }
+  for x in produce(w) {
+    tx.send(x)
+  }
 })
-for v in merged { consume(v) }
-merged.join()        # join the producers; re-raises the first one that errored
+for v in merged {
+  consume(v)
+}
+merged.join()  # join the producers; re-raises the first one that errored
 ```
 
 `merged.join()` (after the stream ends) joins the spawned producers and re-raises
@@ -2185,8 +2269,11 @@ running completion count and the total; a throwing callback cancels the run.
 
 ```culebra
 # doctest: skip
-Parallel.map(urls, |u| fetch(u),
-             on_progress: |done, total| IO.print("\r" + done.to_string() + "/" + total.to_string()))
+Parallel.map(
+  urls,
+  |u| fetch(u),
+  on_progress: |done, total| IO.print("\r" + done.to_string() + "/" + total.to_string()),
+)
 ```
 
 (`map_reduce` is planned.)
@@ -2234,7 +2321,8 @@ type annotation and an optional default:
 
 ```culebra
 # doctest: skip
-@packable class Vec2 {
+@packable
+class Vec2 {
   x: Float32 = 0.0
   y: Float32 = 0.0
 }
@@ -2264,10 +2352,13 @@ disk durability.
 
 ```culebra
 # doctest: skip
-@packable class Cell { v: Int64 = 0 }
+@packable
+class Cell {
+  v: Int64 = 0
+}
 let buf = SharedBuffer.file("/tmp/grid.bin", 100, Cell)
 buf[0].v = 42
-buf.flush()                   # durable on disk
+buf.flush()  # durable on disk
 ```
 
 #### `SharedBuffer.shared(count, Class) -> buffer`
@@ -2286,16 +2377,17 @@ end). Reading or writing `view.field` goes straight to the backing bytes — no
 per-record object is materialized:
 
 ```culebra
-@packable class Vec2 {
+@packable
+class Vec2 {
   x: Float32 = 0.0
   y: Float32 = 0.0
 }
 let buf = SharedBuffer.new(3, Vec2)
-inspect(buf.size)                # => 3
-buf[0].x = 1.5                # writes the bytes in place
-let v = buf[0]                # a stored view aliases the same element
+inspect(buf.size)  # => 3
+buf[0].x = 1.5     # writes the bytes in place
+let v = buf[0]     # a stored view aliases the same element
 v.y = 2.5
-inspect([buf[0].x, buf[0].y])    # => [1.5, 2.5]
+inspect([buf[0].x, buf[0].y])  # => [1.5, 2.5]
 ```
 
 Whole-element assignment (`buf[i] = ...`) is a `TypeError` — a record has no
@@ -2312,10 +2404,15 @@ allocation-free:
 
 ```culebra
 # doctest: skip
-@packable class Cell { v: Int64 = 0 }
+@packable
+class Cell {
+  v: Int64 = 0
+}
 let cells = SharedBuffer.new(8, Cell)
 
-Parallel.each([0, 1, 2, 3, 4, 5, 6, 7], fn (i) { cells[i].v = i * i })
+Parallel.each([0, 1, 2, 3, 4, 5, 6, 7], fn (i) {
+  cells[i].v = i * i
+})
 
 # cells now holds 0, 1, 4, 9, 16, 25, 36, 49
 ```
@@ -2336,20 +2433,28 @@ same physical pages: writes are visible without copying or serializing.
 ```culebra
 # doctest: skip
 # --- parent.cul ---
-@packable class Cell { v: Int64 = 0 }
+@packable
+class Cell {
+  v: Int64 = 0
+}
 let grid = SharedBuffer.shared(4, Cell)
 grid[0].v = 100
 Proc.run([Sys.executable, "worker.cul"], share: {grid: grid})
-inspect(grid[0].v)               # the child's write, read back here
+inspect(grid[0].v)  # the child's write, read back here
 grid.drop()
 ```
 
 ```culebra
 # doctest: skip
 # --- worker.cul ---
-@packable class Cell { v: Int64 = 0 }
+@packable
+class Cell {
+  v: Int64 = 0
+}
 let grid = SharedBuffer.receive("grid", Cell)
-for i in 0..grid.count { grid[i].v = grid[i].v + (i + 1) * 10 }
+for i in 0..grid.count {
+  grid[i].v = grid[i].v + (i + 1) * 10
+}
 grid.drop()
 ```
 
@@ -2375,15 +2480,20 @@ exit, including a thrown exception.
 
 ```culebra
 # doctest: skip
-@packable class Counter { n: Int64 = 0 }
+@packable
+class Counter {
+  n: Int64 = 0
+}
 let tally = SharedBuffer.new(1, Counter)
 
 Parallel.each(iota(0, 8), fn (w) {
   for _ in 0..1000 {
-    tally.with_lock(fn () { tally[0].n = tally[0].n + 1 })
+    tally.with_lock(fn () {
+      tally[0].n = tally[0].n + 1
+    })
   }
 })
-inspect(tally[0].n)              # 8000 exactly — no lost updates
+inspect(tally[0].n)  # 8000 exactly — no lost updates
 ```
 
 The same call works across **processes**: a `.shared` or `.file` buffer carries
@@ -2438,16 +2548,17 @@ pattern:
 
 ```culebra
 # doctest: skip
-@packable class Row {
+@packable
+class Row {
   id: Int32
   name: FixedString<16>
 }
 
 let rows = SharedBuffer.new(100, Row)
-rows[0].name = "alice"     # whole-value write (≤ 16 bytes)
-rows[0].name               # => "alice"   (a real String)
-rows[0].name.upper()       # => "ALICE"   (all String methods apply)
-rows[1].name               # => ""        (zero value is empty)
+rows[0].name = "alice"  # whole-value write (≤ 16 bytes)
+rows[0].name            # => "alice"   (a real String)
+rows[0].name.upper()    # => "ALICE"   (all String methods apply)
+rows[1].name            # => ""        (zero value is empty)
 ```
 
 `N` is a **byte** capacity. A string of more than `N` bytes raises
@@ -2501,17 +2612,18 @@ the present byte is clear, otherwise the scalar.
 
 ```culebra
 # doctest: skip
-@packable class Node {
-  id:     Int32
-  parent: Int32?      # a sparse "no parent" slot
+@packable
+class Node {
+  id: Int32
+  parent: Int32?  # a sparse "no parent" slot
 }
 
 let n = SharedBuffer.new(100, Node)
-n[0].parent            # => nil   (zero value)
+n[0].parent  # => nil   (zero value)
 n[0].parent = 5
-n[0].parent            # => 5
-n[0].parent = nil      # clear it
-n[0].parent ?? -1      # => -1
+n[0].parent        # => 5
+n[0].parent = nil  # clear it
+n[0].parent ?? -1  # => -1
 ```
 
 `0` is a real value, distinct from `nil`. Only scalar optionals are packable
@@ -2528,23 +2640,26 @@ discriminated payloads in a shared record.
 
 ```culebra
 # doctest: skip
-@packable enum Shape {
+@packable
+enum Shape {
   Circle(Float32),
   Rect(Float32, Float32),
-  Point
+  Point,
 }
 
-@packable class Obj {
-  id:    Int32
+@packable
+class Obj {
+  id: Int32
   shape: Shape
 }
 
 let objs = SharedBuffer.new(100, Obj)
-objs[0].shape = Shape.Rect(2.0, 3.0)   # write a variant value
-match objs[0].shape {                  # read it back and match
+objs[0].shape = Shape.Rect(2.0, 3.0)  # write a variant value
+match objs[0].shape {
+  # read it back and match
   Rect(w, h) => w * h,
-  Circle(r)  => 3.14 * r * r,
-  Point      => 0.0
+  Circle(r) => 3.14 * r * r,
+  Point => 0.0,
 }
 ```
 
@@ -2562,14 +2677,15 @@ UUIDs, and other fixed binary blobs.
 
 ```culebra
 # doctest: skip
-@packable class Entry {
-  id:     Int32
-  digest: Bytes<32>      # e.g. a SHA-256
+@packable
+class Entry {
+  id: Int32
+  digest: Bytes<32>  # e.g. a SHA-256
 }
 
 let e = SharedBuffer.new(100, Entry)
 e[0].digest = some_32_byte_string
-e[0].digest                       # => the 32 bytes (binary-safe)
+e[0].digest  # => the 32 bytes (binary-safe)
 ```
 
 The written `String` must be **exactly** `N` bytes (a `ValueError` otherwise);
@@ -2585,14 +2701,23 @@ field assignment writes through in place:
 
 ```culebra
 # doctest: skip
-@packable class Point { x: Float32  y: Float32 }
-@packable class Line  { id: Int32   start: Point  end: Point }
+@packable
+class Point {
+  x: Float32
+  y: Float32
+}
+@packable
+class Line {
+  id: Int32
+  start: Point
+  end: Point
+}
 
 let lines = SharedBuffer.new(100, Line)
-lines[0].start.x = 1.0        # writes into the inline Point's bytes
+lines[0].start.x = 1.0  # writes into the inline Point's bytes
 lines[0].start.y = 2.0
-lines[0].start.x             # => 1.0
-lines[0].end = lines[0].start # copy a whole sub-record (memcpy)
+lines[0].start.x               # => 1.0
+lines[0].end = lines[0].start  # copy a whole sub-record (memcpy)
 ```
 
 The nested class must be declared (and `@packable`) before the class that
@@ -2688,10 +2813,15 @@ user `__str__`).
 * **`assert_ge(a, b) -> Nil`** — `a >= b`.
 
 ```culebra
-assert_eq(1 + 1, 2)                                # passes silently
+assert_eq(1 + 1, 2)  # passes silently
 
-let r = try { assert_eq("foo", "bar"); nil } catch e { e }
-inspect(r.kind)         # => 'AssertionError'
+let r = try {
+  assert_eq("foo", "bar")
+  nil
+} catch e {
+  e
+}
+inspect(r.kind)  # => 'AssertionError'
 inspect(r.message)
 # => |
 # 'assert_eq failed:
@@ -2707,8 +2837,10 @@ expose `e.kind` directly; user `throw {kind: "X", ...}` matches the
 same way. `f` must take 0 parameters — otherwise `ArityError`.
 
 ```culebra
-assert_throws("ZeroDivisionError", fn() { let _ = 1 / 0 })
-assert_throws("MyError", fn() {
+assert_throws("ZeroDivisionError", fn () {
+  let _ = 1 / 0
+})
+assert_throws("MyError", fn () {
   throw {kind: "MyError", message: "boom"}
 })
 ```
@@ -2868,12 +3000,14 @@ replaces only the leftmost one and leaves the rest of the string untouched
 
 ```culebra
 let d = Regex.compile('\d+')
-inspect(d.replace_all("a1 b22 c333", "#"))                        # => 'a# b# c#'
-inspect(d.replace_first("a1 b22 c333", "#"))                      # => 'a# b22 c333'
-inspect(Regex.compile('(\w+)@(\w+)').replace_all("x@y", '$2.$1')) # => 'y.x'
-inspect(d.replace_all("a1 b22", fn (m) { "<{m.value}>" }))        # => 'a<1> b<22>'
-inspect(Regex.compile('\s+').split("the quick  brown"))           # => ['the', 'quick', 'brown']
-inspect(Regex.compile('hello', "i").test("HELLO world"))          # => true
+inspect(d.replace_all("a1 b22 c333", "#"))                         # => 'a# b# c#'
+inspect(d.replace_first("a1 b22 c333", "#"))                       # => 'a# b22 c333'
+inspect(Regex.compile('(\w+)@(\w+)').replace_all("x@y", '$2.$1'))  # => 'y.x'
+inspect(d.replace_all("a1 b22", fn (m) {
+  "<{m.value}>"
+}))                                                       # => 'a<1> b<22>'
+inspect(Regex.compile('\s+').split("the quick  brown"))   # => ['the', 'quick', 'brown']
+inspect(Regex.compile('hello', "i").test("HELLO world"))  # => true
 ```
 
 `find_iter` is lazy, so a scan can stop early — `for m in d.find_iter(s) { break }`
@@ -2963,22 +3097,24 @@ Keyword arguments (shared by every method):
 # doctest: skip
 let r = Http.get("https://api.example.com/users", params: {page: "2"})
 if r.ok {
-  let users = r.json()                 # parse the response body as JSON
+  let users = r.json()  # parse the response body as JSON
   IO.inspect(users.size().to_string())
 } else {
   IO.inspect("request failed: {r.status}")
 }
 
 # POST JSON with a header and a timeout (`json:` serializes + sets Content-Type).
-let resp = Http.post("https://api.example.com/users",
-                     json: {name: "alice"},
-                     headers: {Authorization: "Bearer " + token},
-                     timeout: 30)
+let resp = Http.post(
+  "https://api.example.com/users",
+  json: {name: "alice"},
+  headers: {Authorization: "Bearer " + token},
+  timeout: 30,
+)
 assert_true(resp.ok)
 
 # A transport failure throws; a 404 does not.
 let missing = Http.get("https://api.example.com/nope")
-assert_eq(missing.ok, false)        # 404 is a normal result
+assert_eq(missing.ok, false)  # 404 is a normal result
 assert_eq(missing.status, 404)
 ```
 
@@ -2997,13 +3133,20 @@ the sink). `into:` accepts:
 
 ```culebra
 # doctest: skip
-Http.get("https://example.com/big.tar.gz", into: "big.tar.gz")   # → file
+Http.get("https://example.com/big.tar.gz", into: "big.tar.gz")  # → file
 
 mut bytes = 0
-Http.get("https://example.com/big.csv", into: fn (chunk) { bytes += chunk.size() })
+Http.get(
+  "https://example.com/big.csv",
+  into: fn (chunk) { bytes += chunk.size() },
+)
 
 # any method, e.g. a POST whose response streams back:
-Http.post("https://example.com/query", body: q, into: fn (chunk) { handle(chunk) })
+Http.post(
+  "https://example.com/query",
+  body: q,
+  into: fn (chunk) { handle(chunk) },
+)
 ```
 
 **Streaming (upload).** Symmetrically, pass a `Function` as `body:` (on
@@ -3014,10 +3157,14 @@ returns the next chunk `String`, or `nil` to end the stream:
 ```culebra
 # doctest: skip
 let f = File.open("big.bin")
-Http.post(url, body: fn () {
+Http.post(
+  url,
+  body: fn () {
   let chunk = f.read(65536)
-  !chunk.empty() ? chunk : nil            # nil signals end-of-stream
-}, content_type: "application/octet-stream")
+  !chunk.empty() ? chunk : nil  # nil signals end-of-stream
+},
+  content_type: "application/octet-stream",
+)
 ```
 
 The producer runs on the calling thread (it may mutate captured state); if it
@@ -3045,28 +3192,40 @@ chunk `String`, or `nil` to end the part.
 ```culebra
 # doctest: skip
 # text field + an in-memory file part
-Http.post(url, files: {
+Http.post(
+  url,
+  files: {
   title: "My report",
   doc:   { content: "a,b,c\n1,2,3\n", filename: "data.csv", content_type: "text/csv" },
-})
+},
+)
 
 # a large file streamed straight from disk (never buffered whole)
-Http.post(url, files: { clip: { path: "/movies/big.mp4", content_type: "video/mp4" } })
+Http.post(
+  url,
+  files: { clip: { path: "/movies/big.mp4", content_type: "video/mp4" } },
+)
 
 # a slow-to-produce part streamed from a producer
 mut row = 0
-Http.post(url, files: {
+Http.post(
+  url,
+  files: {
   export: { filename: "rows.csv", content_type: "text/csv", stream: fn () {
     row += 1
     row <= 1000 ? "{row},{compute(row)}\n" : nil
   } },
-})
+},
+)
 
 # repeated parts under one field name via an Array
-Http.post(url, files: {
+Http.post(
+  url,
+  files: {
   caption: "trip",
   photos:  [ { path: "./1.jpg" }, { path: "./2.jpg" } ],
-})
+},
+)
 ```
 
 A part value that isn't a `String` / `Object` / `Array`, an `Object` without
@@ -3093,7 +3252,9 @@ Each event is an Object with three String fields:
 ```culebra
 # doctest: skip
 Http.sse("https://api.example/v1/stream", fn (e) {
-  if e.data == "[DONE]" { return }
+  if e.data == "[DONE]" {
+    return
+  }
   let delta = JSON.parse(e.data)
   IO.print(delta.choices[0].delta.content)
 })
@@ -3122,16 +3283,18 @@ argument is a path joined onto `base_url`) plus `close`.
 
 ```culebra
 # doctest: skip
-let api = Http.client("https://api.example.com/v1",
-                      headers: {Authorization: "Bearer " + token},
-                      timeout: 30)
+let api = Http.client(
+  "https://api.example.com/v1",
+  headers: {Authorization: "Bearer " + token},
+  timeout: 30,
+)
 
-let me   = api.get("/me").json()              # → GET https://api.example.com/v1/me
-let user = api.get("/users/42").json()        # reuses the same connection
-api.post("/users", json: {name: "alice"})     # Authorization header rides along
+let me = api.get("/me").json()             # → GET https://api.example.com/v1/me
+let user = api.get("/users/42").json()     # reuses the same connection
+api.post("/users", json: {name: "alice"})  # Authorization header rides along
 
-api.get("/items", headers: {"Idempotency-Key": k})   # merged over the defaults
-api.close()                                    # release the connection
+api.get("/items", headers: {"Idempotency-Key": k})  # merged over the defaults
+api.close()                                         # release the connection
 ```
 
 A request method's first argument is a path: a leading-slash or bare relative
@@ -3168,15 +3331,25 @@ serve files with `static`, then `listen` to accept connections. Each handler is 
 ```culebra
 # doctest: skip
 let srv = Http.server()
-srv.get("/", fn(req) { "Hello, world!" })
-srv.get("/users/:id", fn(req) { "user " + req.params["id"] })
-srv.post("/echo", fn(req) { req.body })
-srv.get("/json", fn(req) {
-  { status: 201, body: '{"ok":true}', content_type: "application/json",
-    headers: {"X-Trace": req.headers["X-Request-Id"]} }
+srv.get("/", fn (req) {
+  "Hello, world!"
+})
+srv.get("/users/:id", fn (req) {
+  "user " + req.params["id"]
+})
+srv.post("/echo", fn (req) {
+  req.body
+})
+srv.get("/json", fn (req) {
+  {
+    status: 201,
+    body: '{"ok":true}',
+    content_type: "application/json",
+    headers: {"X-Trace": req.headers["X-Request-Id"]},
+  }
 })
 srv.static("/assets", "./public")
-srv.listen(8080)                 # blocks; Ctrl+C to stop
+srv.listen(8080)  # blocks; Ctrl+C to stop
 ```
 
 | Method | Effect |
@@ -3246,11 +3419,17 @@ returns. The `ws` handle reads and writes messages:
 
 ```culebra
 # doctest: skip
-srv.ws("/echo", fn(req, ws) { for msg in ws { ws.send(msg) } })
-srv.ws("/chat", fn(req, ws) {
+srv.ws("/echo", fn (req, ws) {
+  for msg in ws {
+    ws.send(msg)
+  }
+})
+srv.ws("/chat", fn (req, ws) {
   while true {
     let m = ws.receive()
-    if m == nil { break }              # peer closed
+    if m == nil {
+      break
+    }  # peer closed
     ws.send(req.path + ": " + m)
   }
 })
@@ -3283,10 +3462,12 @@ it through `Shared` / a channel / a hub — the same rules as `Isolate`.)
 
 ```culebra
 # doctest: skip
-let model = Shared.new(load_weights())          # one read-only copy, shared by all workers
+let model = Shared.new(load_weights())  # one read-only copy, shared by all workers
 let srv = Http.server()
-srv.post("/predict", fn(req) { infer(model, req.body) })
-srv.listen(8080, workers: 8)                     # 8 handlers run in parallel
+srv.post("/predict", fn (req) {
+  infer(model, req.body)
+})
+srv.listen(8080, workers: 8)  # 8 handlers run in parallel
 ```
 
 **Background servers — `listen_async` + `stop`.** To serve while the main thread
@@ -3302,10 +3483,12 @@ once it has served, starting it again is an `HttpError` — create a new
 ```culebra
 # doctest: skip
 let srv = Http.server()
-srv.get("/health", fn(req) { "ok" })
-srv.listen_async(8080, workers: 4)   # returns immediately
+srv.get("/health", fn (req) {
+  "ok"
+})
+srv.listen_async(8080, workers: 4)  # returns immediately
 # … do other work; call Http.get("http://127.0.0.1:8080/health") …
-srv.stop()                           # stop and join the background thread
+srv.stop()  # stop and join the background thread
 ```
 
 Alternatively, a blocking `listen` inside an isolate also works — dropping the
@@ -3313,13 +3496,15 @@ isolate (or `Ctrl+C`) stops the accept loop:
 
 ```culebra
 # doctest: skip
-let srv_iso = Isolate.spawn(fn() {
+let srv_iso = Isolate.spawn(fn () {
   let srv = Http.server()
-  srv.get("/health", fn(req) { "ok" })
+  srv.get("/health", fn (req) {
+    "ok"
+  })
   srv.listen(8080, workers: 4)
 })
 # … use Http.get("http://127.0.0.1:8080/health") from the main thread …
-srv_iso.drop()                   # signals the server to stop, then joins
+srv_iso.drop()  # signals the server to stop, then joins
 ```
 
 **Knowing when it is up, and on which port — `bind` + `serve`.** A blocking
@@ -3332,16 +3517,18 @@ queued by the kernel even before `serve` starts accepting.
 ```culebra
 # doctest: skip
 let (tx, rx) = Channel.new(1)
-let srv_iso = Isolate.spawn(fn() {
+let srv_iso = Isolate.spawn(fn () {
   let srv = Http.server()
-  srv.get("/health", fn(req) { "ok" })
-  tx.send(srv.bind(0))           # 0 = any free port; hand the number out
+  srv.get("/health", fn (req) {
+    "ok"
+  })
+  tx.send(srv.bind(0))  # 0 = any free port; hand the number out
   tx.drop()
-  srv.serve()                    # blocks here
+  srv.serve()  # blocks here
 })
-tx.drop()                        # the parent's own sender copy
+tx.drop()  # the parent's own sender copy
 let base = "http://127.0.0.1:" + rx.recv().to_string()
-inspect(Http.get(base + "/health").body)     # => 'ok'
+inspect(Http.get(base + "/health").body)  # => 'ok'
 srv_iso.drop()
 ```
 
@@ -3354,8 +3541,10 @@ handler that reads `srv` is rejected, while a captured `Long` copies fine.
 # doctest: skip
 let srv = Http.server()
 let port = srv.bind(0)
-Log.info("http server listening", { port: port })
-srv.get("/whoami", fn(req) { "http://127.0.0.1:" + port.to_string() })
+Log.info("http server listening", {port: port})
+srv.get("/whoami", fn (req) {
+  "http://127.0.0.1:" + port.to_string()
+})
 srv.serve(workers: 4)
 ```
 
@@ -3378,8 +3567,10 @@ URL or a failed connect is an `HttpError`.
 # doctest: skip
 let ws = Http.ws("ws://127.0.0.1:8080/echo")
 ws.send("hello")
-inspect(ws.receive())               # => the echoed message
-for msg in ws { handle(msg) }    # drains messages until the server closes
+inspect(ws.receive())  # => the echoed message
+for msg in ws {
+  handle(msg)
+}  # drains messages until the server closes
 ws.close()
 ```
 
@@ -3407,7 +3598,9 @@ absolute path or one containing `..` is not found rather than escaping.
 # doctest: skip
 let art = Embed.dir("assets")
 let sheet = Canvas.Sprite.from_png(art.read("sprites.png"))
-if art.exists("music.ogg") { Canvas.music(art.read("music.ogg")) }
+if art.exists("music.ogg") {
+  Canvas.music(art.read("music.ogg"))
+}
 ```
 
 The same handle serves a whole directory over HTTP:
@@ -3415,8 +3608,10 @@ The same handle serves a whole directory over HTTP:
 ```culebra
 # doctest: skip
 let srv = Http.server()
-srv.static("/", Embed.dir("dist"))     # whole frontend, one line
-srv.get("/api/ping", fn(req) { '{"ok":true}' })
+srv.static("/", Embed.dir("dist"))  # whole frontend, one line
+srv.get("/api/ping", fn (req) {
+  '{"ok":true}'
+})
 srv.listen(8080)
 ```
 
@@ -3669,13 +3864,16 @@ like a ZIP code or ID declared `String` keeps its exact text (no leading-zero or
 precision loss). `types:` requires `header: true`.
 
 ```culebra
-let rows = CSV.parse("name,age,active\nalice,30,true", header: true,
-                     types: {age: "Long", active: "Bool"})
+let rows = CSV.parse(
+  "name,age,active\nalice,30,true",
+  header: true,
+  types: {age: "Long", active: "Bool"},
+)
 # age is a real Long now (not a String), so arithmetic works:
-inspect(rows[0]["age"] + 1)                              # => 31
+inspect(rows[0]["age"] + 1)  # => 31
 # a ZIP code stays exact text — no number inference:
 let z = CSV.parse("zip\n01234", header: true, types: {zip: "String"})
-inspect(z[0]["zip"])                                     # => '01234'
+inspect(z[0]["zip"])  # => '01234'
 ```
 
 An unknown type name, a `types` key that names no column, or a cell that can't be
@@ -3993,9 +4191,14 @@ round trip re-quotes them as ordinary strings. Malformed input raises a
 character:
 
 ```culebra
-let r = try { TOML.parse("x = "); nil } catch e { e }
-inspect(r.message)            # => 'TOML.parse: expected value'
-inspect("{r.line}:{r.col}")   # => '1:5'
+let r = try {
+  TOML.parse("x = ")
+  nil
+} catch e {
+  e
+}
+inspect(r.message)           # => 'TOML.parse: expected value'
+inspect("{r.line}:{r.col}")  # => '1:5'
 ```
 
 `stringify` takes an `Object` (a TOML document is always a table) and renders
@@ -4099,11 +4302,13 @@ db.execute("CREATE TABLE users (id INTEGER, name TEXT)")
 db.execute("INSERT INTO users VALUES (?, ?)", [1, "Alice"])
 
 let rows = db.query("SELECT * FROM users")
-inspect(rows[0]["name"])      # => 'Alice'
+inspect(rows[0]["name"])  # => 'Alice'
 
 # a reusable prepared statement
 let ins = db.prepare("INSERT INTO users VALUES (?, ?)")
-for u in [[2, "Bob"], [3, "Carol"]] { ins.run(u) }
+for u in [[2, "Bob"], [3, "Carol"]] {
+  ins.run(u)
+}
 ins.finalize()
 
 # all-or-nothing
@@ -4111,8 +4316,13 @@ db.transaction(fn () {
   db.execute("UPDATE users SET name = 'Bob!' WHERE id = 2")
 })
 
-let r = try { db.query("SELECT * FROM missing"); nil } catch e { e }
-inspect(r.kind)               # => 'SQLiteError'
+let r = try {
+  db.query("SELECT * FROM missing")
+  nil
+} catch e {
+  e
+}
+inspect(r.kind)  # => 'SQLiteError'
 
 db.close()
 ```
@@ -4319,12 +4529,15 @@ path (including a throw), and `draw_to` nests like the call stack it is.
 ```culebra
 # doctest: skip
 let bgd = Canvas.Sprite.blank(320, 240)
-Canvas.draw_to(bgd, fn () {          # render the backdrop once…
+Canvas.draw_to(bgd, fn () {
+  # render the backdrop once…
   Canvas.clear(sky)
-  for i in 0..50 { Canvas.circle(Random.below(320), Random.below(240), 2, star) }
+  for i in 0..50 {
+    Canvas.circle(Random.below(320), Random.below(240), 2, star)
+  }
 })
 Canvas.run(320, 240, fn () {
-  bgd.draw(0, 0)                     # …then each frame is one blit
+  bgd.draw(0, 0)  # …then each frame is one blit
   true
 })
 ```
@@ -4346,10 +4559,12 @@ being drawn into, outside it encodes the framebuffer.
 Canvas.init(320, 240)
 Canvas.clear(Canvas.rgba(24, 24, 32))
 Canvas.circle(160, 120, 40, Canvas.rgba(240, 180, 90))
-FS.write("shot.png", Canvas.to_png())          # a screenshot
+FS.write("shot.png", Canvas.to_png())  # a screenshot
 
-let tile = Canvas.Sprite.blank(16, 16)         # or render one offscreen
-Canvas.draw_to(tile, fn () { Canvas.clear(Canvas.rgba(80, 200, 120)) })
+let tile = Canvas.Sprite.blank(16, 16)  # or render one offscreen
+Canvas.draw_to(tile, fn () {
+  Canvas.clear(Canvas.rgba(80, 200, 120))
+})
 FS.write("tile.png", tile.to_png())
 ```
 
@@ -4741,7 +4956,8 @@ Bind and listen. `port: 0` asks the OS for a free port, readable back as
 # doctest: skip
 let server = Net.listen(7000)
 println("listening on " + server.port.to_string())
-for conn in server {                    # accept in a loop
+for conn in server {
+  # accept in a loop
   conn.write("hello " + conn.peer_addr().host + "\n")
   conn.close()
 }
@@ -4767,9 +4983,11 @@ slow connection can't stall the accept loop:
 ```culebra
 # doctest: skip
 let server = Net.listen(7000)
-server.serve(fn(conn) {
-  for line in conn.lines() { conn.write(line.upper() + "\n") }
-}, workers: 8)                      # blocks until Ctrl+C
+server.serve(fn (conn) {
+    for line in conn.lines() {
+      conn.write(line.upper() + "\n")
+    }
+  }, workers: 8)  # blocks until Ctrl+C
 ```
 
 - `workers: 0` (the default) picks a CPU-scaled pool (at least 4, at most 8);
@@ -4867,17 +5085,14 @@ from culebra code.
 
 ```culebra
 # doctest: skip
-Desktop.run({
-  title: 'culebra desktop',
-  size: [720, 560],
-  assets: Embed.dir('dist'),
-  routes: fn (srv) {
-    srv.get('/api/hello', fn (req) {
-      { content_type: 'application/json',
-        body: JSON.stringify({ message: 'hello' }) }
-    })
-  }
-})
+Desktop.run({title: 'culebra desktop', size: [
+  720,
+  560,
+], assets: Embed.dir('dist'), routes: fn (srv) {
+  srv.get('/api/hello', fn (req) {
+    {content_type: 'application/json', body: JSON.stringify({message: 'hello'})}
+  })
+}})
 ```
 
 ### `Webview.Window` — the raw binding
@@ -4942,9 +5157,11 @@ on that binding observe the same semantics as direct calls:
 
 ```culebra
 let io = IO
-io.inspect("hello")              # same as IO.inspect("hello")
+io.inspect("hello")  # same as IO.inspect("hello")
 
-fn run_with(ns, x) { ns.inspect(x) }
+fn run_with(ns, x) {
+  ns.inspect(x)
+}
 run_with(IO, "via parameter")
 ```
 
