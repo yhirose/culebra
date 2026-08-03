@@ -40,7 +40,7 @@ namespace culebra::sendable {
 // ---------------------------------------------------------------------------
 struct SendNode {
   enum class K { Nil, Bool, Long, Float, Str, Array, Object, Set, Tuple,
-                 Closure, Channel, SharedBuffer, SharedVal };
+                 Closure, Channel, SharedBuffer, SharedVal, EmbedDir };
   K kind = K::Nil;
 
   bool b = false;  // Bool; also Channel role (false = tx, true = rx)
@@ -375,6 +375,15 @@ inline std::function<Value(const SharedValRef&)>& sharedval_rebuild_hook() {
   return f;
 }
 
+// An Embed.dir handle carries no shared state — only the directory name — so
+// there is nothing to extract and only a rebuild hook (the handle's native
+// methods can't cross, but a fresh handle over the same name behaves the same
+// on either side, baked table or live disk).
+inline std::function<Value(const std::string&)>& embed_dir_rebuild_hook() {
+  static std::function<Value(const std::string&)> f;
+  return f;
+}
+
 inline SendNode serialize(const Value& v, SerCtx& ctx) {
   SendNode n;
   // Array / Set / Tuple share the same shape: cycle-guard the backing store,
@@ -432,6 +441,18 @@ inline SendNode serialize(const Value& v, SerCtx& ctx) {
         n.kind = SendNode::K::SharedVal;
         n.i = ref.id;
         n.ref_id = static_cast<int>(ref.node);
+        return n;
+      }
+      // Embed.dir handle: nothing to share — ship the directory name and let
+      // the other side rebuild the handle over it (checked before the native
+      // methods it carries would be refused below).
+      // A String `name` is what makes it a real handle; a lookalike carrying
+      // something else there is an ordinary object and ships as one (the JIT
+      // reads the same slot the same way).
+      if (obj.has("__embed_dir__") && obj.has("name") &&
+          obj.get("name").type == Value::String) {
+        n.kind = SendNode::K::EmbedDir;
+        n.s = std::string(obj.get("name").to_string_view());
         return n;
       }
       if (obj.has("__nonsendable__"))
@@ -602,6 +623,8 @@ inline Value deserialize(const SendNode& n, Interpreter& interp,
       return sharedbuffer_rebuild_hook()(n.i);
     case K::SharedVal:
       return sharedval_rebuild_hook()(SharedValRef{n.i, n.ref_id});
+    case K::EmbedDir:
+      return embed_dir_rebuild_hook()(n.s);
     case K::Array: {
       ArrayValue av;
       av.values->reserve(n.elems.size());

@@ -183,36 +183,39 @@ let BG_TREES = Art.new(5, 985, 1280, 480)
 
 # --- assets ----------------------------------------------------------------
 # `--assets <dir>` points at art held elsewhere — upstream's own, say; without
-# it the generated stand-ins in assets/ are used. `Sys.script` reads the same in
-# the Playground as it does natively; an AOT binary carries no `.cul`, so there
-# it is nil and the art is looked for next to the executable instead.
-let HOME = FS.dirname(Sys.script ?? Sys.executable)
-let ART_DIR = args.dir ?? HOME + "/assets"
+# it the generated stand-ins in assets/ are used, through a handle that reads
+# them wherever this is running: the directory next to the source natively and
+# in the Playground, and the copy `culebra build` bakes into the binary — which
+# is why the executable needs no files beside it.
+let ART_DIR = args.dir
+let ART = ART_DIR != nil
+  ? { exists: |n| FS.exists(ART_DIR + "/" + n),
+      read: |n| FS.read(ART_DIR + "/" + n) }
+  : Embed.dir("assets")
 let SCENES = ["asayake", "hiru", "yuugure", "twilight"]
 let SCENE_COUNT = SCENES.size()
 
 # A missing file is what a mistyped `--assets` looks like, so say which one.
 let art = fn (name) {
-  let path = ART_DIR + "/" + name
-  if !FS.exists(path) {
-    println("retro-run: {ART_DIR} has no {name}")
+  if !ART.exists(name) {
+    println("retro-run: {ART_DIR ?? "the built-in art"} has no {name}")
     Sys.exit(2)
   }
-  path
+  ART.read(name)
 }
 
-let sheet = Canvas.Sprite.from_png(FS.read(art("sprites.png")))
+let sheet = Canvas.Sprite.from_png(art("sprites.png"))
 let SHEET = sheet._id
 
 # Upstream ships one background; the generated set has one per scene. Loading
 # the same file four times would cost 7.5 MB apiece, so a repeat is aliased —
-# get_or_put only calls the loader on a path it has not seen.
+# get_or_put only calls the loader on a name it has not seen.
 let backgrounds = fn () {
   mut loaded = {}
   SCENES.map(fn (scene) {
-    let scened = ART_DIR + "/background_" + scene + ".png"
-    let path = FS.exists(scened) ? scened : art("background.png")
-    loaded.get_or_put(path, || Canvas.Sprite.from_png(FS.read(path)))._id
+    let scened = "background_" + scene + ".png"
+    let name = ART.exists(scened) ? scened : "background.png"
+    loaded.get_or_put(name, || Canvas.Sprite.from_png(art(name)))._id
   })
 }()
 
@@ -557,10 +560,8 @@ mut fast_lap_time = 180.0  # v4's starting target, session-lived
 # loops under the run instead of the chiptune; the generated assets ship no
 # music, so the riff below is the default. It sits under the engine and the
 # chiptune's own level, loud enough to carry on laptop speakers.
-let MUSIC_FILE = ["music.ogg", "music.mp3"]
-  .map(|n| ART_DIR + "/" + n)
-  .find(|p| FS.exists(p))
-if MUSIC_FILE != nil { Canvas.music(FS.read(MUSIC_FILE), vol: 60) }
+let MUSIC_FILE = ["music.ogg", "music.mp3"].find(|n| ART.exists(n))
+if MUSIC_FILE != nil { Canvas.music(art(MUSIC_FILE), vol: 60) }
 
 # The chiptune fallback — a bossa-flavored run, not a transcription of any
 # particular tune: a brisk ii-V-I-ish turnaround (F△7-Dm7-Gm7-C7, one bar

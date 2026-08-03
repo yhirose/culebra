@@ -5115,10 +5115,10 @@ CULEBRA_RT_INLINE void _jit_http_server_static(JitValue* __ret, JitClosure*, int
     std::string mount(_culebra_str_view(args[0].tag, args[0].data));
     std::string err;
     // dir is either a String path (live disk via mount point) or an
-    // `Embed.dir(...)` descriptor object {__embed_dir__, name} (baked under
+    // `Embed.dir(...)` handle object {__embed_dir__, name} (baked under
     // AOT, live disk otherwise). Mirrors the interp overload.
     // Mirror the interp message exactly (interp/JIT symmetry): a wrong type or
-    // a forged Object that isn't a real Embed.dir descriptor both land here.
+    // a forged Object that isn't a real Embed.dir handle both land here.
     auto bad_dir = [] {
       throw culebra::CulebraError(
           "TypeError",
@@ -5126,7 +5126,7 @@ CULEBRA_RT_INLINE void _jit_http_server_static(JitValue* __ret, JitClosure*, int
     };
     if (args[1].tag == TAG_OBJECT) {
       auto* o = reinterpret_cast<JitObject*>(args[1].data);
-      // A real Embed.dir descriptor has both __embed_dir__ and name; a forged
+      // A real Embed.dir handle has both __embed_dir__ and name; a forged
       // lookalike missing either is rejected like any non-String (no OOB read).
       size_t ni = o->find_slot("name");
       if (o->find_slot("__embed_dir__") == static_cast<size_t>(-1) ||
@@ -6612,20 +6612,64 @@ inline const std::vector<NsMethod>& _wrapped_ns_methods() {
   return rows;
 }
 
-// `Embed.dir(name)` — opaque descriptor {__embed_dir__: true, name} consumed by
-// `srv.static`. Mirrors interp make_embed_namespace; the bake-vs-disk decision
-// happens later in http_server_serve_embed (table present → embedded, else live
-// disk), so this just packages the name.
-inline JitValue _ns_embed_dir(JitValue* args, int64_t n) {
-  (void)n;
+// `Embed.dir(name)` — handle {__embed_dir__: true, name} + read/exists, also
+// consumed by `srv.static`. Mirrors interp make_embed_dir_handle; the
+// bake-vs-disk decision happens in vfs.h's open_embed_dir (table present →
+// embedded, else live disk), so the handle just carries the name.
+CULEBRA_RT_INLINE std::string _jit_embed_dir_name(JitObject* h) {
+  size_t i = h->find_slot("name");
+  if (i == static_cast<size_t>(-1)) return {};
+  JitValue v = h->slots[i].value;
+  return std::string(_culebra_str_view(v.tag, v.data));
+}
+
+CULEBRA_RT_INLINE void _jit_embed_dir_read(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                               int64_t n, JitValue* args) {
+  JitValue self{self_tag, self_data};
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "path");
+  if (args[0].tag != TAG_STRING)
+    _jit_file_param_type_error(self, "path", "String", 0);
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  std::string name = _jit_embed_dir_name(reinterpret_cast<JitObject*>(self.data));
+  std::string path(_culebra_str_view(args[0].tag, args[0].data));
+  std::string bytes;
+  if (!culebra::embed_dir_read(name, path, bytes))
+    throw culebra::CulebraError(
+        "IOError", std::format("Embed.dir.read: '{}' has no '{}'", name, path),
+        _jit_call_site_line, _jit_call_site_col);
+  { *__ret = {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(bytes))}; return; }
+}
+
+CULEBRA_RT_INLINE void _jit_embed_dir_exists(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                                 int64_t n, JitValue* args) {
+  JitValue self{self_tag, self_data};
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "path");
+  if (args[0].tag != TAG_STRING)
+    _jit_file_param_type_error(self, "path", "String", 0);
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  bool ok = culebra::embed_dir_exists(
+      _jit_embed_dir_name(reinterpret_cast<JitObject*>(self.data)),
+      _culebra_str_view(args[0].tag, args[0].data));
+  { *__ret = {TAG_BOOL, ok ? 1 : 0}; return; }
+}
+
+inline JitValue _jit_make_embed_dir_handle(const std::string& name) {
   auto* o = culebra_runtime_object_new();
   culebra_runtime_object_set(o, "__embed_dir__", false, TAG_BOOL, 1, 0, 0);
   culebra_runtime_object_set(
       o, "name", false, TAG_STRING,
-      reinterpret_cast<int64_t>(_culebra_heap_str(
-          std::string(_culebra_str_view(args[0].tag, args[0].data)))),
-      0, 0);
+      reinterpret_cast<int64_t>(_culebra_heap_str(name)), 0, 0);
+  static const JitParamMeta* path_meta =
+      _jit_make_handle_meta({"path"}, {false});
+  _jit_handle_bind_method(o, "read", _jit_embed_dir_read, 1, path_meta);
+  _jit_handle_bind_method(o, "exists", _jit_embed_dir_exists, 1, path_meta);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(o)};
+}
+
+inline JitValue _ns_embed_dir(JitValue* args, int64_t n) {
+  (void)n;
+  return _jit_make_embed_dir_handle(
+      std::string(_culebra_str_view(args[0].tag, args[0].data)));
 }
 
 inline const NsMethod kNsMethods[] = {

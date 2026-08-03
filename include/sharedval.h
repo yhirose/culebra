@@ -136,6 +136,7 @@ inline const char* _shared_val_reject_reason(const SendNode& n) {
     case SendNode::K::Channel:
     case SendNode::K::SharedBuffer:
     case SendNode::K::SharedVal:
+    case SendNode::K::EmbedDir:
       return "handles cannot be nested in a Shared value";
     default:
       break;

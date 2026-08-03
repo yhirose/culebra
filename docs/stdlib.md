@@ -3182,7 +3182,7 @@ srv.listen(8080)                 # blocks; Ctrl+C to stop
 | Method | Effect |
 | --- | --- |
 | `get/post/put/delete/patch/options(pattern, handler)` | register `handler` (a `fn(req)->response`) for that method and route `pattern`; returns the server (so calls chain) |
-| `static(mount, dir)` | serve static files at the URL prefix `mount`; `dir` is a String path (a live on-disk directory) or an `Embed.dir(...)` descriptor (baked into the binary under AOT — see [Embed](#embed)) |
+| `static(mount, dir)` | serve static files at the URL prefix `mount`; `dir` is a String path (a live on-disk directory) or an `Embed.dir(...)` handle (baked into the binary under AOT — see [Embed](#embed)) |
 | `sink.write(chunk)` | (inside a `stream:` closure) push one chunk; returns `false` if the client has disconnected |
 | `bind(port, host="0.0.0.0") -> Long` | open the listening socket and return the port it got; `port=0` asks the OS for an ephemeral one. Once only, and not after the server has served |
 | `serve(workers=0)` | run the accept loop on a bound socket until interrupted (blocks the calling thread). Handlers run on a worker pool, never on the accept loop, so a slow handler can't block accepting new connections — and handlers must be **Sendable**. `workers=0` (default) picks a CPU-scaled pool size; pass a positive count to fix it |
@@ -3385,15 +3385,32 @@ ws.close()
 
 ### Embed
 
-`Embed.dir(name)` returns a directory descriptor for `srv.static(mount, ...)`
-that resolves *per backend*, with no code change:
+`Embed.dir(name)` returns a handle over a directory of assets that resolves
+*per backend*, with no code change:
 
-- **Run from source** (interpreter / JIT): it serves the live on-disk directory
-  `name`, resolved relative to the entry script — so editing a file and
-  reloading shows the change immediately (a real dev loop).
+- **Run from source** (interpreter / JIT): it reads the live on-disk directory
+  `name`, resolved relative to the entry script — so editing a file and running
+  again shows the change immediately (a real dev loop).
 - **`culebra build`** (AOT): the directory is walked at build time and its bytes
-  are baked into the executable; the binary serves them with no external files.
+  are baked into the executable; the binary reads them with no external files.
   The build prints what it embedded (`embedded N file(s) (… bytes) from '…'`).
+
+| Method | Returns | Notes |
+|---|---|---|
+| `dir.read(path)` | `String` | the file's bytes (binary-safe); `IOError` when it isn't there |
+| `dir.exists(path)` | `Bool` | whether `path` is a file in the directory |
+
+`path` is relative to the directory and forward-slashed (`"sub/logo.png"`); an
+absolute path or one containing `..` is not found rather than escaping.
+
+```culebra
+# doctest: skip
+let art = Embed.dir("assets")
+let sheet = Canvas.Sprite.from_png(art.read("sprites.png"))
+if art.exists("music.ogg") { Canvas.music(art.read("music.ogg")) }
+```
+
+The same handle serves a whole directory over HTTP:
 
 ```culebra
 # doctest: skip
@@ -3404,11 +3421,13 @@ srv.listen(8080)
 ```
 
 `name` must be a string literal so the AOT build can find and bake it; a
-computed path still works from source but isn't embedded. The Content-Type is
-inferred from each file's extension, a request for a directory (or `/`) serves
-its `index.html`, and a path not in the directory falls through to the
-registered routes (so an API route always wins). `Embed.dir` is independent of
-`Http` — it produces a plain descriptor any consumer could serve.
+computed path still works from source but isn't embedded. Under `srv.static`
+the Content-Type is inferred from each file's extension, a request for a
+directory (or `/`) serves its `index.html`, and a path not in the directory
+falls through to the registered routes (so an API route always wins).
+`Embed.dir` is independent of `Http` — a program that only reads assets needs
+no server. A handle is Sendable: sending one to another isolate rebuilds it
+there over the same directory.
 
 `culebra build` compiles the baked assets against the culebra headers, so it
 needs a source checkout: the one the binary was built from by default, or

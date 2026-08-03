@@ -838,6 +838,17 @@ inline bool _install_shared_buffer_hooks() {
 }
 inline const bool _shared_buffer_hooks_installed = _install_shared_buffer_hooks();
 
+// Register the Embed.dir Sendable hook once at load. The handle shares no
+// state, so only the rebuild side exists: the receiving isolate builds a fresh
+// handle over the same directory name (baked table or live disk, same choice).
+inline bool _install_embed_dir_hook() {
+  sendable::embed_dir_rebuild_hook() = [](const std::string& name) -> Value {
+    return make_embed_dir_handle(name);
+  };
+  return true;
+}
+inline const bool _embed_dir_hook_installed = _install_embed_dir_hook();
+
 // Register the Sendable hooks (endpoints ship by id + role) once at load.
 inline bool _install_channel_hooks() {
   sendable::channel_extract_hook() =

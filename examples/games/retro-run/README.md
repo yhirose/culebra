@@ -41,9 +41,9 @@ culebra build retro-run.cul -o retro-run
 ./retro-run --assets assets-racer
 ```
 
-The binary has no `.cul` to sit beside, so without `--assets` it reads the art
-from an `assets/` directory next to the executable — which is where building
-in place puts it.
+The art comes in with it: the game reads `assets/` through `Embed.dir`, which
+the build walks and bakes into the executable, so the binary runs anywhere on
+its own. `--assets` still reads a directory instead.
 
 ## Assets
 

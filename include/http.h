@@ -1053,20 +1053,7 @@ CULEBRA_RT_HTTP_LINKAGE void http_server_serve_embed(int64_t id,
     err = "Http: server is closed";
     return;
   }
-  std::unique_ptr<culebra::Dir> d;
-  auto& tables = culebra::_asset_tables();
-  if (auto it = tables.find(name); it != tables.end()) {
-    d = std::make_unique<culebra::EmbeddedDir>(it->second.first,
-                                               it->second.second);
-  } else {
-    // Dev: resolve the directory relative to the entry script (set at startup),
-    // so it works regardless of the cwd — the same base the AOT build walks.
-    std::string base = culebra::main_script_dir();
-    if (!base.empty() && base.back() != '/') base += '/';
-    base += name;
-    d = std::make_unique<culebra::DiskDir>(base);
-  }
-  s->static_mounts.push_back({mount, std::move(d)});
+  s->static_mounts.push_back({mount, culebra::open_embed_dir(name)});
   if (!s->static_handler_installed) {
     s->static_handler_installed = true;
     HttpServer* sp = s;  // outlives the handler (it lives on sp->svr)

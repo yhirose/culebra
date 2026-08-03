@@ -5355,7 +5355,7 @@ inline Value make_http_server_handle(int64_t id) {
 
   // static(mount, dir) — serve static files at the URL prefix `mount`. `dir` is
   // either a String path (a live on-disk directory, via httplib's mount point)
-  // or an `Embed.dir(...)` descriptor (baked into the binary under AOT, live
+  // or an `Embed.dir(...)` handle (baked into the binary under AOT, live
   // disk otherwise). Static files are tried before routes and only when present,
   // so API routes still win. Chainable.
   h.initialize(
@@ -5368,7 +5368,7 @@ inline Value make_http_server_handle(int64_t id) {
             std::string err;
             std::string mount = std::string(env->get("mount").to_string_view());
             const Value& d = env->get("dir");
-            // A real Embed.dir descriptor has both __embed_dir__ and name; a
+            // A real Embed.dir handle has both __embed_dir__ and name; a
             // forged lookalike missing either falls through to the TypeError
             // below (not an uncaught out_of_range from get("name")).
             if (d.type == Value::Object &&
@@ -5488,32 +5488,6 @@ inline Value make_http_server_handle(int64_t id) {
   h.initialize("drop", Value(FunctionValue({}, shutdown)), false);
 
   return Value(std::move(h));
-}
-
-// `Embed` — bake a directory of assets into the program. `Embed.dir(name)`
-// returns an opaque descriptor for `srv.static(mount, ...)`: under an AOT build
-// the named directory is walked at build time and its bytes are linked into the
-// binary; running from source it reads the live on-disk directory (relative to
-// the entry script) so UI edits show up on the next request. The descriptor is
-// plain data (Sendable): {name} — `srv.static` prefers the baked table keyed by
-// `name` when present, else reads the live directory (base computed there).
-inline Value make_embed_namespace() {
-  using namespace std::literals;
-  ObjectValue ns;
-  ns.initialize(
-      "dir",
-      Value(FunctionValue(
-          {{"name", false, "String"sv}},
-          [](std::shared_ptr<Environment> env) -> Value {
-            std::string name = std::string(env->get("name").to_string_view());
-            ObjectValue h;
-            h.initialize("__embed_dir__", Value(true), false);
-            h.initialize("name", Value(std::move(name)), false);
-            return Value(std::move(h));
-          },
-          "Object"sv)),
-      false);
-  return Value(std::move(ns));
 }
 
 // `Http` — synchronous HTTP/HTTPS client (cpp-httplib + OpenSSL). Each call
@@ -5763,6 +5737,71 @@ inline Value make_http_namespace() {
   return Value(std::move(ns));
 }
 #endif  // CULEBRA_HTTP_ENABLED
+
+// `Embed` — bake a directory of assets into the program. `Embed.dir(name)`
+// returns a handle over that directory: under an AOT build the named directory
+// is walked at build time and its bytes are linked into the binary; running
+// from source it reads the live on-disk directory (relative to the entry
+// script) so an edit shows up on the next read. `read`/`exists` take a file out
+// of it directly; `srv.static(mount, ...)` serves the whole thing. The handle
+// carries its `name` as data and stays Sendable (sendable.h rebuilds it from
+// that name, as it does for the other native handles it ships by reference).
+inline Value make_embed_dir_handle(std::string name) {
+  using namespace std::literals;
+  ObjectValue h;
+  h.initialize("__embed_dir__", Value(true), false);
+  h.initialize("name", Value(std::move(name)), false);
+
+  // The directory this handle names, for an error message.
+  auto dir_name = [](std::shared_ptr<Environment>& env) {
+    return std::string(env->get("self").to_object().get("name").to_string_view());
+  };
+  h.initialize(
+      "read",
+      Value(FunctionValue(
+          {{"path", false, "String"sv}},
+          [dir_name](std::shared_ptr<Environment> env) -> Value {
+            std::string name = dir_name(env);
+            auto path = env->get("path").to_string_view();
+            std::string bytes;
+            if (!culebra::embed_dir_read(name, path, bytes)) {
+              _io_throw(std::format("Embed.dir.read: '{}' has no '{}'", name,
+                                    path),
+                        env->get("__LINE__").to_long(),
+                        env->get("__COLUMN__").to_long());
+            }
+            return Value(std::move(bytes));
+          },
+          "String"sv)),
+      false);
+  h.initialize(
+      "exists",
+      Value(FunctionValue(
+          {{"path", false, "String"sv}},
+          [dir_name](std::shared_ptr<Environment> env) -> Value {
+            return Value(culebra::embed_dir_exists(
+                dir_name(env), env->get("path").to_string_view()));
+          },
+          "Bool"sv)),
+      false);
+  return Value(std::move(h));
+}
+
+inline Value make_embed_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+  ns.initialize(
+      "dir",
+      Value(FunctionValue(
+          {{"name", false, "String"sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            return make_embed_dir_handle(
+                std::string(env->get("name").to_string_view()));
+          },
+          "Object"sv)),
+      false);
+  return Value(std::move(ns));
+}
 
 // `Proc.run(cmd, cwd=nil, env=nil, stdin="", check=false)` — run an external
 // command synchronously. `cmd` is a non-empty Array<String> (no shell). A
@@ -7272,11 +7311,7 @@ inline void setup_built_in_functions(Environment& env) {
   ns_init("IO", make_io_namespace());
   ns_init("FS", make_fs_namespace());
   ns_init("File", make_file_namespace());
-#if defined(CULEBRA_HTTP_ENABLED)
-  // make_embed_namespace lives in the HTTP block (Embed pairs with
-  // srv.static); register it only when that block is compiled.
   ns_init("Embed", make_embed_namespace());
-#endif
   // Wrapped C++ classes (wrap.h declarations, e.g. foreign_binding.h's
   // `__Foreign.Counter`): one namespace object per declared ns, holding
   // one class object (ctor + statics) per class. Registered at

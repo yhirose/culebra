@@ -3086,7 +3086,7 @@ srv.listen(8080)                 # ブロックする。Ctrl+C で停止
 | メソッド | 効果 |
 | --- | --- |
 | `get/post/put/delete/patch/options(pattern, handler)` | そのメソッドとルート`pattern`に`handler`（`fn(req)->response`）を登録。サーバを返す（チェーン可） |
-| `static(mount, dir)` | URLプレフィックス`mount`で静的ファイルを配信。`dir`はStringパス（ディスク上のディレクトリをライブ配信）または`Embed.dir(...)`記述子（AOTではバイナリに焼き込み — [Embed](#embed) 参照） |
+| `static(mount, dir)` | URLプレフィックス`mount`で静的ファイルを配信。`dir`はStringパス（ディスク上のディレクトリをライブ配信）または`Embed.dir(...)`ハンドル（AOTではバイナリに焼き込み — [Embed](#embed) 参照） |
 | `sink.write(chunk)` | （`stream:`クロージャ内）1チャンクを送出。クライアント切断時は`false`を返す |
 | `bind(port, host="0.0.0.0") -> Long` | listenソケットを開き、実際に取れたポートを返す。`port=0`はOS任せのephemeral port。1回だけ、かつ配信開始後は不可 |
 | `serve(workers=0)` | バインド済みソケットでacceptループを回す（中断まで呼び出しスレッドをブロック）。ハンドラはacceptループでなくworkerプールで動くので、遅いハンドラが新規接続の受付を止めない — ハンドラは **Sendable** 必須。`workers=0`（既定）はCPU連動のプールサイズ、正の数で固定 |
@@ -3280,15 +3280,32 @@ ws.close()
 
 ### Embed
 
-`Embed.dir(name)`は`srv.static(mount, ...)`用のディレクトリ記述子を返し、
-**バックエンドごとに**（コード変更なしで）解決されます:
+`Embed.dir(name)`はアセットディレクトリのハンドルを返し、**バックエンドごとに**
+（コード変更なしで）解決されます:
 
-- **ソース実行**（インタプリタ / JIT）: `name`のディスク上ディレクトリをライブ
-  配信（エントリスクリプト相対で解決）。ファイルを編集してリロードすれば即反映
+- **ソース実行**（インタプリタ / JIT）: `name`のディスク上ディレクトリをライブに
+  読む（エントリスクリプト相対で解決）。ファイルを編集して実行し直せば即反映
   ＝開発ループ。
 - **`culebra build`**（AOT）: ビルド時にディレクトリを走査してバイト列をバイナリ
-  に焼き込み、外部ファイル無しで配信。焼き込んだ内容はビルドが表示する
+  に焼き込み、外部ファイル無しで読む。焼き込んだ内容はビルドが表示する
   （`embedded N file(s) (… bytes) from '…'`）。
+
+| メソッド | 返り値 | 備考 |
+|---|---|---|
+| `dir.read(path)` | `String` | ファイルのバイト列（バイナリセーフ）。無ければ`IOError` |
+| `dir.exists(path)` | `Bool` | `path`がそのディレクトリのファイルか |
+
+`path`はディレクトリ相対でスラッシュ区切り（`"sub/logo.png"`）。絶対パスや`..`を
+含むパスは外に出るのではなく「見つからない」として扱われる。
+
+```culebra
+# doctest: skip
+let art = Embed.dir("assets")
+let sheet = Canvas.Sprite.from_png(art.read("sprites.png"))
+if art.exists("music.ogg") { Canvas.music(art.read("music.ogg")) }
+```
+
+同じハンドルでディレクトリ全体をHTTP配信できる:
 
 ```culebra
 # doctest: skip
@@ -3299,10 +3316,12 @@ srv.listen(8080)
 ```
 
 `name`はAOTビルドが探して焼き込めるよう**文字列リテラル**であること（計算した
-パスはソース実行では動くが焼き込まれない）。Content-Typeは拡張子から推論、
-ディレクトリ（や`/`）へのリクエストはその`index.html`、ディレクトリに無いパスは
-登録ルートにフォールスルー（APIルートが常に優先）。`Embed.dir`は`Http`非依存
-＝任意の利用側が配信できるプレーンな記述子を返す。
+パスはソース実行では動くが焼き込まれない）。`srv.static`経由ではContent-Typeは
+拡張子から推論、ディレクトリ（や`/`）へのリクエストはその`index.html`、
+ディレクトリに無いパスは登録ルートにフォールスルー（APIルートが常に優先）。
+`Embed.dir`は`Http`非依存＝アセットを読むだけのプログラムにサーバは要らない。
+ハンドルはSendableで、別のisolateに送ると同じディレクトリのハンドルとして
+向こう側で再構築される。
 
 `culebra build`は焼き込むアセットをculebraのヘッダに対してコンパイルするため、
 ソースチェックアウトが必要。既定はそのバイナリをビルドしたときのパスで、

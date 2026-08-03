@@ -114,6 +114,17 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
             o->slots[o->find_slot("__sharedval_node__")].value.data);
         return n;
       }
+      // Embed.dir handle: nothing to share — ship the directory name and let
+      // the other side rebuild the handle over it (checked before the native
+      // methods it carries would be refused below). Mirrors the interp.
+      if (size_t ei = o->find_slot("__embed_dir__"), ni = o->find_slot("name");
+          ei != static_cast<size_t>(-1) && ni != static_cast<size_t>(-1) &&
+          o->slots[ni].value.tag == TAG_STRING) {
+        JitValue nv = o->slots[ni].value;
+        n.kind = K::EmbedDir;
+        n.s = std::string(_culebra_str_view(nv.tag, nv.data));
+        return n;
+      }
       if (o->find_slot("__nonsendable__") != static_cast<size_t>(-1))
         sendable::send_error("a native handle is not Sendable");
       if (!ctx.visiting.insert(o).second)
@@ -236,6 +247,7 @@ inline JitValue jit_float(double d) {
 inline JitValue _jit_make_channel_endpoint(int64_t id, int role);  // fwd
 inline JitValue _jit_make_shared_buffer_handle(int64_t id, int64_t count);  // fwd
 inline JitValue _jit_make_shared_val_view(int64_t id, int64_t node);       // fwd
+inline JitValue _jit_make_embed_dir_handle(const std::string& name);      // fwd
 
 inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
   using K = sendable::SendNode::K;
@@ -371,6 +383,8 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
       culebra::shared_val_bump(n.i);
       return _jit_make_shared_val_view(n.i, n.ref_id);
     }
+    case K::EmbedDir:
+      return _jit_make_embed_dir_handle(n.s);
   }
   return {TAG_NIL, 0};
 }

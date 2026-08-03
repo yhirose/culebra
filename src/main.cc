@@ -1926,15 +1926,11 @@ int main(int argc, const char** argv) {
   // so embedded-asset paths resolve the way the AOT build walks them —
   // relative to the source — whatever the cwd is. Both are left empty (→ nil)
   // for the REPL and stdin.
-  culebra::main_script_path().clear();
-  culebra::main_script_dir().clear();
+  culebra::set_main_script("");
   if (options.script_path) {
     std::error_code ec;
     auto abs = std::filesystem::absolute(*options.script_path, ec);
-    if (!ec) {
-      culebra::main_script_path() = abs.string();
-      culebra::main_script_dir() = abs.parent_path().string();
-    }
+    if (!ec) culebra::set_main_script(abs.string());
   }
 
   // `Sys.argv` — the arguments after the script path. Set here, beside the

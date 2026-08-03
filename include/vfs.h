@@ -15,10 +15,13 @@
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <unordered_map>
 #include <utility>
 
@@ -31,21 +34,39 @@ struct Dir {
   // Fill `out` with the bytes of `path` and return true; return false when
   // there is no such file.
   virtual bool read(std::string_view path, std::string& out) const = 0;
+  // Whether `path` is a file here. Separate from read() so an existence test
+  // costs no bytes.
+  virtual bool exists(std::string_view path) const = 0;
 };
 
 // Dev: read from a base directory on disk at request time, so edits are live.
 struct DiskDir : Dir {
   std::string base;
   explicit DiskDir(std::string b) : base(std::move(b)) {}
-  bool read(std::string_view path, std::string& out) const override {
+  std::string full_path(std::string_view path) const {
     std::string full = base;
     if (!full.empty() && full.back() != '/') full += '/';
     full.append(path);
+    return full;
+  }
+  // Only a regular file counts. Opening a directory succeeds on some platforms
+  // and reads back as an empty file, where the baked table — which holds no
+  // directories — reports not-found; the two have to answer alike.
+  static bool is_file(const std::string& p) {
+    std::error_code ec;
+    return std::filesystem::is_regular_file(p, ec);
+  }
+  bool read(std::string_view path, std::string& out) const override {
+    std::string full = full_path(path);
+    if (!is_file(full)) return false;
     std::ifstream f(full, std::ios::binary);
     if (!f) return false;
     out.assign(std::istreambuf_iterator<char>(f),
                std::istreambuf_iterator<char>());
     return true;
+  }
+  bool exists(std::string_view path) const override {
+    return is_file(full_path(path));
   }
 };
 
@@ -62,15 +83,19 @@ struct EmbeddedDir : Dir {
   const AssetEntry* entries;
   std::size_t count;
   EmbeddedDir(const AssetEntry* e, std::size_t n) : entries(e), count(n) {}
+  const AssetEntry* find(std::string_view path) const {
+    for (std::size_t i = 0; i < count; i++)
+      if (path == entries[i].path) return &entries[i];
+    return nullptr;
+  }
   bool read(std::string_view path, std::string& out) const override {
-    for (std::size_t i = 0; i < count; i++) {
-      if (path == entries[i].path) {
-        out.assign(reinterpret_cast<const char*>(entries[i].data),
-                   entries[i].len);
-        return true;
-      }
-    }
-    return false;
+    const AssetEntry* e = find(path);
+    if (!e) return false;
+    out.assign(reinterpret_cast<const char*>(e->data), e->len);
+    return true;
+  }
+  bool exists(std::string_view path) const override {
+    return find(path) != nullptr;
   }
 };
 
@@ -98,6 +123,38 @@ inline std::string& main_script_dir() {
   return s;
 }
 
+// The `Dir` behind `Embed.dir(name)`: the baked asset table when this binary
+// was built with that directory embedded, else the live on-disk directory —
+// the choice that makes `Embed.dir` resolve per backend with no code change.
+inline std::unique_ptr<Dir> open_embed_dir(const std::string& name) {
+  auto& tables = _asset_tables();
+  if (auto it = tables.find(name); it != tables.end())
+    return std::make_unique<EmbeddedDir>(it->second.first, it->second.second);
+  std::string base = main_script_dir();
+  if (!base.empty() && base.back() != '/') base += '/';
+  base += name;
+  return std::make_unique<DiskDir>(std::move(base));
+}
+
+// A direct read's path is already the lookup key (no mount to strip), so it
+// only has to stay inside the directory: no absolute path and no "..", the
+// traversal rule `static_key` applies.
+inline bool embed_path_ok(std::string_view path) {
+  return !path.empty() && path.front() != '/' &&
+         path.find("..") == std::string_view::npos;
+}
+
+// The reads behind `Embed.dir(name).read(path)` / `.exists(path)`. Shared by
+// the three backends, so a lookup answers identically wherever it runs.
+inline bool embed_dir_read(const std::string& name, std::string_view path,
+                           std::string& out) {
+  return embed_path_ok(path) && open_embed_dir(name)->read(path, out);
+}
+
+inline bool embed_dir_exists(const std::string& name, std::string_view path) {
+  return embed_path_ok(path) && open_embed_dir(name)->exists(path);
+}
+
 // Absolute path of the entry script, set at startup before the environment is
 // built (so `Sys.script` can be baked into the Sys namespace on both backends).
 // Empty when there is no source file at runtime — the REPL, `stdin`, or an AOT
@@ -105,6 +162,16 @@ inline std::string& main_script_dir() {
 inline std::string& main_script_path() {
   static std::string s;
   return s;
+}
+
+// Set both at once — the directory is the path's parent by definition, and a
+// caller that derives it separately is how the two come to disagree. An empty
+// path clears both (no source file: the REPL, stdin, an AOT binary).
+inline void set_main_script(const std::string& path) {
+  main_script_path() = path;
+  main_script_dir() =
+      path.empty() ? std::string()
+                   : std::filesystem::path(path).parent_path().string();
 }
 
 // Content-Type from a file extension — the common web set; anything unknown is

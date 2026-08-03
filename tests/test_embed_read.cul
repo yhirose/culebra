@@ -1,0 +1,32 @@
+# Reading assets straight out of an `Embed.dir(...)` handle — the same handle
+# `srv.static` takes, without a server. Run from source (this suite) it reads
+# the live on-disk directory relative to the entry script; under an AOT build
+# the same calls read a baked-in table, and the output has to match either way.
+
+d = Embed.dir("embed_assets")
+inspect(d.exists("app.js"))
+inspect(d.exists("nope.css"))
+inspect(d.read("app.js").trim())
+inspect(d.read("index.html").contains("<h1>It works</h1>"))
+
+# Binary-safe: the bytes come back whole, baked or on disk.
+inspect(d.read("index.html").size())
+
+# A path out of the directory is not found rather than escaping it.
+inspect(d.exists("../test_embed_read.cul"))
+inspect(d.exists("/etc/hosts"))
+inspect(d.exists(""))
+
+# A missing file names both the directory and the file.
+try { d.read("nope.css") } catch e { inspect(e.kind + ": " + e.message) }
+try { d.read("../test_embed_read.cul") } catch e { inspect(e.kind) }
+
+# Wrong / missing argument, at the same position on every backend.
+try { d.read(42) } catch e { inspect(e.kind + ": " + e.message) }
+try { d.exists() } catch e { inspect(e.kind + ": " + e.message) }
+
+# The handle is Sendable: an isolate rebuilds it over the same directory.
+(tx, rx) = Channel.new()
+h = Isolate.spawn(fn (tx, art) { tx.send(art.read("app.js").trim()) }, tx, d)
+inspect("from isolate: " + rx.recv())
+h.join()
