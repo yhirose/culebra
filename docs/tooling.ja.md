@@ -2,11 +2,12 @@
 
 `culebra`バイナリはツールチェーンそのものです。プログラムを実行する同じ
 実行ファイルが、テストランナー・リンタ・フォーマッタ・デバッグアダプタ、
-そしてリファレンス文書そのものも兼ねています。この文書はその5つの
+そしてリファレンス文書そのものも兼ねています。この文書はそれらの
 開発用サブコマンドのリファレンスです。
 
 | サブコマンド | 役割 | 参照 |
 |---|---|---|
+| `culebra init` | このディレクトリとエディタをセットアップする | [§4](#手早いセットアップ-culebra-init) |
 | `culebra test [paths...]` | テストとdoctestを実行する | [§1](#1-テスト-culebra-test) |
 | `culebra lint [paths...]` | 実行せずに静的な問題を報告する | [§2](#2-lint-culebra-lint) |
 | `culebra fmt [paths...]` | ソースを正準スタイルに整形する | [§3](#3-フォーマット-culebra-fmt) |
@@ -31,6 +32,7 @@
 2. [Lint (`culebra lint`)](#2-lint-culebra-lint)
 3. [フォーマット (`culebra fmt`)](#3-フォーマット-culebra-fmt)
 4. [デバッグ (`culebra dap`)](#4-デバッグ-culebra-dap)
+   * [手早いセットアップ: `culebra init`](#手早いセットアップ-culebra-init)
    * [VSCode](#vscode)
    * [Vim (vimspector)](#vim-vimspector)
    * [Zed](#zed)

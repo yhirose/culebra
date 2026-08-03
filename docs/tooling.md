@@ -3,10 +3,11 @@
 The `culebra` binary is the whole toolchain: the same executable that
 runs a program also carries the test runner, the linter, the formatter,
 the debug adapter, and the reference documentation itself. This document
-is the reference for those five development subcommands.
+is the reference for those development subcommands.
 
 | Subcommand | What it does | Reference |
 |---|---|---|
+| `culebra init` | set up this directory and machine's editors | [§4](#quick-setup-culebra-init) |
 | `culebra test [paths...]` | run tests and doctests | [§1](#1-testing-culebra-test) |
 | `culebra lint [paths...]` | report static problems without running the program | [§2](#2-linting-culebra-lint) |
 | `culebra fmt [paths...]` | reformat source to the canonical style | [§3](#3-formatting-culebra-fmt) |
@@ -31,6 +32,7 @@ Contents
 2. [Linting (`culebra lint`)](#2-linting-culebra-lint)
 3. [Formatting (`culebra fmt`)](#3-formatting-culebra-fmt)
 4. [Debugging (`culebra dap`)](#4-debugging-culebra-dap)
+   * [Quick setup: `culebra init`](#quick-setup-culebra-init)
    * [VSCode](#vscode)
    * [Vim (vimspector)](#vim-vimspector)
    * [Zed](#zed)
