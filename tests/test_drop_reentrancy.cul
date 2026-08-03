@@ -37,27 +37,47 @@ fn gc_settle(arr, want) {
 # the re-entrant collect must defer, not corrupt the in-flight dead set.
 let ev1 = []
 make_lam = fn () {
-  let res = { id: 'lam', drop: fn () { GC.stat(); ev1.push('lam') } }
-  let g = fn () { res.id }
+  let res = {id: 'lam', drop: fn () {
+    GC.stat()
+    ev1.push('lam')
+  }}
+  let g = fn () {
+    res.id
+  }
   g()
 }
-fn run_lam() { { let _l = make_lam() }; nil }
+fn run_lam() {
+  {
+    let _l = make_lam()
+  }
+  nil
+}
 run_lam()
 gc_settle(ev1, 1)
-assert_true(ev1.size() <= 1)      # conservative retention tolerance; the
-                                  # crash-freedom of the re-entrant collect
-                                  # is the point
+assert_true(ev1.size() <= 1)  # conservative retention tolerance; the
+# crash-freedom of the re-entrant collect
+# is the point
 
 # --- 2) A drop body breaking its OWN cycle edge releases through itself:
 # the in-drop pin must absorb any number of self-releases.
 let ev2 = []
 make_self = fn () {
-  let cyc = { id: 'c', mut me: nil, drop: fn () { self.me = nil; ev2.push('d') } }
+  let cyc = {id: 'c', mut me: nil, drop: fn () {
+    self.me = nil
+    ev2.push('d')
+  }}
   cyc.me = cyc
-  let g = fn () { cyc.id }
+  let g = fn () {
+    cyc.id
+  }
   g()
 }
-fn run_self() { { let _x = make_self() }; nil }
+fn run_self() {
+  {
+    let _x = make_self()
+  }
+  nil
+}
 run_self()
 gc_settle(ev2, 1)
 assert_true(ev2.size() <= 1)
@@ -70,8 +90,12 @@ assert_true(ev2.size() <= 1)
 let ev3 = []
 fn make_replace(tag) {
   mut use_res = nil
-  let res = { id: tag, drop: fn () { ev3.push(use_res()) } }
-  fn helper() { res.id }
+  let res = {id: tag, drop: fn () {
+    ev3.push(use_res())
+  }}
+  fn helper() {
+    res.id
+  }
   use_res = helper
   nil
 }
@@ -96,11 +120,16 @@ mut depth = 0
 fn make_forget() {
   mut h = nil
   {
-    let res = { id: 'r', drop: fn () {
+    let res = {id: 'r', drop: fn () {
       ev4.push('drop')
-      if depth < 1 { depth = depth + 1; make_forget() }
-    } }
-    fn helper() { res.id }
+      if depth < 1 {
+        depth = depth + 1
+        make_forget()
+      }
+    }}
+    fn helper() {
+      res.id
+    }
     h = helper
   }
   h = nil
@@ -108,5 +137,5 @@ fn make_forget() {
 }
 make_forget()
 gc_settle(ev4, 2)
-assert_eq(ev4.size(), 2)   # outer drop + one recursive make's drop
-                           # (both refcount-driven: deterministic)
+assert_eq(ev4.size(), 2)  # outer drop + one recursive make's drop
+# (both refcount-driven: deterministic)

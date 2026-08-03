@@ -16,14 +16,26 @@ fn measure(work) {
   work()
   let base = GC.stat().live_objects
   mut i = 0
-  while i < 30 { work(); i = i + 1 }
+  while i < 30 {
+    work()
+    i = i + 1
+  }
   GC.stat().live_objects - base
 }
-class Box { new(d) { self.data = d } }
+class Box {
+  new(d) {
+    self.data = d
+  }
+}
 assert_lt(measure(fn () {
-  mut topo = []
-  build = |n| if n > 0 { topo.push(Box.new(n)); fn(n - 1) } else { 0 }
-  build(200)
-  topo.size()
-}), 1000)
+    mut topo = []
+    build = |n| if n > 0 {
+      topo.push(Box.new(n))
+      fn(n - 1)
+    } else {
+      0
+    }
+    build(200)
+    topo.size()
+  }), 1000)
 inspect("gc leak [self-closure]: no leak")

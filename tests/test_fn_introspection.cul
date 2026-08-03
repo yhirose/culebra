@@ -3,11 +3,15 @@
 // Both backends + AOT must agree.
 
 // --- fn.name on declared function ---
-fn add(a, b) { a + b }
+fn add(a, b) {
+  a + b
+}
 assert_eq(add.name, "add")
 
 // Anonymous functions: name is ""
-let inc = fn (x) { x + 1 }
+let inc = fn (x) {
+  x + 1
+}
 assert_eq(inc.name, "")
 
 // Lambda: also anonymous
@@ -26,7 +30,9 @@ assert_eq(ps[0].kwargs_rest, false)
 assert_eq(ps[1].name, "b")
 
 // --- type annotation ---
-fn typed(x: Long, y: String) -> Long { x }
+fn typed(x: Long, y: String) -> Long {
+  x
+}
 assert_eq(typed.name, "typed")
 assert_eq(typed.return_type, "Long")
 let tps = typed.params
@@ -37,18 +43,24 @@ assert_eq(tps[1].type, "String")
 assert_eq(add.return_type, "")
 
 // --- mut param ---
-fn modify(mut x) { x }
+fn modify(mut x) {
+  x
+}
 let mps = modify.params
 assert_eq(mps[0].mut, true)
 
 // --- default value ---
-fn with_default(x, y = 10) { x + y }
+fn with_default(x, y = 10) {
+  x + y
+}
 let dps = with_default.params
 assert_eq(dps[0].has_default, false)
 assert_eq(dps[1].has_default, true)
 
 // --- kw-only (* separator) ---
-fn kw_fn(x, *, kw_a, kw_b = 5) { x }
+fn kw_fn(x, *, kw_a, kw_b = 5) {
+  x
+}
 let kps = kw_fn.params
 assert_eq(kps[0].name, "x")
 assert_eq(kps[0].kw_only, false)
@@ -59,7 +71,9 @@ assert_eq(kps[2].kw_only, true)
 assert_eq(kps[2].has_default, true)
 
 // --- **rest ---
-fn rest_fn(x, **rest) { x }
+fn rest_fn(x, **rest) {
+  x
+}
 let rps = rest_fn.params
 assert_eq(rps[0].kwargs_rest, false)
 assert_eq(rps[1].name, "rest")
@@ -70,16 +84,20 @@ assert_eq(rps[1].kwargs_rest, true)
 // checked by mutation, not by reference inequality) ---
 let p1 = add.params
 let p2 = add.params
-assert_eq(p1, p2)                  // same content (value-equal)
+assert_eq(p1, p2)  // same content (value-equal)
 mut pmut = add.params
 let n0 = pmut.size()
 pmut.push(nil)
-assert_eq(add.params.size(), n0)   // a fresh fetch is unaffected
+assert_eq(add.params.size(), n0)  // a fresh fetch is unaffected
 
 // --- class method also has name ---
 class Box {
-  new (v) { self.v = v }
-  get () { self.v }
+  new(v) {
+    self.v = v
+  }
+  get() {
+    self.v
+  }
 }
 let bx = Box.new(7)
 // `get` was wrapped with `self` bound for method call; the bound

@@ -6,19 +6,29 @@
 
 test_class_basic = fn () {
   class Car {
-    new(mpr) { self.miles = 0; self.mpr = mpr }
-    run(n)   { self.miles = self.miles + self.mpr * n }
-    total()  { self.miles }
+    new(mpr) {
+      self.miles = 0
+      self.mpr = mpr
+    }
+    run(n) {
+      self.miles = self.miles + self.mpr * n
+    }
+    total() {
+      self.miles
+    }
   }
   c = Car.new(5)
-  c.run(1); c.run(2)
+  c.run(1)
+  c.run(2)
   assert_eq(c.total(), 15)
   assert_eq(c.class, 'Car')
 }
 
 test_class_default_ctor = fn () {
   class Empty {
-    greet() { 'hi' }
+    greet() {
+      'hi'
+    }
   }
   e = Empty.new()
   assert_eq(e.greet(), 'hi')
@@ -27,20 +37,36 @@ test_class_default_ctor = fn () {
 
 test_class_independent_instances = fn () {
   class Car {
-    new(mpr) { self.miles = 0; self.mpr = mpr }
-    run(n)   { self.miles = self.miles + self.mpr * n }
-    total()  { self.miles }
+    new(mpr) {
+      self.miles = 0
+      self.mpr = mpr
+    }
+    run(n) {
+      self.miles = self.miles + self.mpr * n
+    }
+    total() {
+      self.miles
+    }
   }
-  a = Car.new(10); b = Car.new(20)
-  a.run(1); b.run(1)
+  a = Car.new(10)
+  b = Car.new(20)
+  a.run(1)
+  b.run(1)
   assert_true(a.total() == 10 && b.total() == 20)
 }
 
 test_class_chain = fn () {
   class Counter {
-    new()  { self.n = 0 }
-    bump() { self.n = self.n + 1; self }
-    value(){ self.n }
+    new() {
+      self.n = 0
+    }
+    bump() {
+      self.n = self.n + 1
+      self
+    }
+    value() {
+      self.n
+    }
   }
   k = Counter.new()
   k.bump().bump().bump()
@@ -48,11 +74,16 @@ test_class_chain = fn () {
 }
 
 test_class_match_tag = fn () {
-  class Point { new(x, y) { self.x = x; self.y = y } }
+  class Point {
+    new(x, y) {
+      self.x = x
+      self.y = y
+    }
+  }
   describe = fn (o) {
     match o {
       {class} if class == 'Point' => 'point',
-      _ => 'other'
+      _ => 'other',
     }
   }
   assert_eq(describe(Point.new(0, 0)), 'point')
@@ -61,19 +92,30 @@ test_class_match_tag = fn () {
 
 test_op_overload = fn () {
   class Vec {
-    new(x, y) { self.x = x; self.y = y }
-    __add__(r) { Vec.new(self.x + r.x, self.y + r.y) }
-    __sub__(r) { Vec.new(self.x - r.x, self.y - r.y) }
+    new(x, y) {
+      self.x = x
+      self.y = y
+    }
+    __add__(r) {
+      Vec.new(self.x + r.x, self.y + r.y)
+    }
+    __sub__(r) {
+      Vec.new(self.x - r.x, self.y - r.y)
+    }
     __mul__(r) {
       match r {
         n: Long => Vec.new(self.x * n, self.y * n),
-        _       => Vec.new(self.x * r.x, self.y * r.y)
+        _ => Vec.new(self.x * r.x, self.y * r.y),
       }
     }
-    __neg__()  { Vec.new(-self.x, -self.y) }
-    __eq__(r)  { self.x == r.x && self.y == r.y }
-    __lt__(r)  {
-      (self.x * self.x + self.y * self.y) < (r.x * r.x + r.y * r.y)
+    __neg__() {
+      Vec.new(-self.x, -self.y)
+    }
+    __eq__(r) {
+      self.x == r.x && self.y == r.y
+    }
+    __lt__(r) {
+      self.x * self.x + self.y * self.y < r.x * r.x + r.y * r.y
     }
   }
   a = Vec.new(1, 2)
@@ -82,22 +124,26 @@ test_op_overload = fn () {
   s = a + b
   assert_true(s.x == 4 && s.y == 6)
   assert_eq((b - a).x, 2)
-  assert_eq((a * 3).x, 3)                 # scalar scale
-  assert_eq((a * b).y, 8)                 # element-wise
+  assert_eq((a * 3).x, 3)  # scalar scale
+  assert_eq((a * b).y, 8)  # element-wise
   assert_eq((-a).x, -1)
 
   assert_eq(a, Vec.new(1, 2))
   assert_ne(a, b)
   assert_lt(a, b)
-  assert_le(a, Vec.new(1, 2))             # derives from __lt__ + __eq__
+  assert_le(a, Vec.new(1, 2))  # derives from __lt__ + __eq__
   assert_gt(b, a)
   assert_ge(b, Vec.new(3, 4))
 }
 
 test_pow_overload = fn () {
   class Wrapped {
-    new(n) { self.n = n }
-    __pow__(e) { Wrapped.new(self.n * e.n) }   # silly demo semantics
+    new(n) {
+      self.n = n
+    }
+    __pow__(e) {
+      Wrapped.new(self.n * e.n)
+    }  # silly demo semantics
   }
   r = Wrapped.new(3) ** Wrapped.new(4)
   assert_eq(r.n, 12)
@@ -107,24 +153,36 @@ test_pow_overload = fn () {
 # instance, so a user collection wrapper subscripts like a built-in.
 test_subscript_overload = fn () {
   class Grid {
-    new() { self.d = [10, 20, 30] }
-    __index__(i)    { self.d[i] }
-    __setindex__(i, v) { self.d[i] = v }     # exercises self.d[i] = v lvalue
+    new() {
+      self.d = [10, 20, 30]
+    }
+    __index__(i) {
+      self.d[i]
+    }
+    __setindex__(i, v) {
+      self.d[i] = v
+    }  # exercises self.d[i] = v lvalue
   }
   g = Grid.new()
   assert_eq(g[0], 10)
   assert_eq(g[2], 30)
   g[1] = 99
   assert_eq(g[1], 99)
-  assert_eq(g.d[1], 99)                       # the setter mutated the field
-  g[2] += 5                                   # compound: read __index__, write __setindex__
+  assert_eq(g.d[1], 99)  # the setter mutated the field
+  g[2] += 5              # compound: read __index__, write __setindex__
   assert_eq(g[2], 35)
 
   # Non-integer keys route through the same hooks.
   class Bag {
-    new() { self.m = {} }
-    __index__(k)    { self.m[k] }
-    __setindex__(k, v) { self.m[k] = v }
+    new() {
+      self.m = {}
+    }
+    __index__(k) {
+      self.m[k]
+    }
+    __setindex__(k, v) {
+      self.m[k] = v
+    }
   }
   b = Bag.new()
   b["x"] = 1
@@ -136,36 +194,49 @@ test_subscript_overload = fn () {
   # merely holds an `__index__` / `__setindex__` value treats them as
   # ordinary data, not hooks. `d[k]` misses -> KeyError; `d[k] = v` stores
   # a normal entry.
-  let plain = { __index__: fn(i) { 999 } }
+  let plain = {__index__: fn (i) {
+    999
+  }}
   mut threw = false
-  try { let _ = plain[5] } catch e { threw = true }
+  try {
+    let _ = plain[5]
+  } catch e {
+    threw = true
+  }
   assert_true(threw)
-  mut store = { __setindex__: fn(k, v) { 0 } }
+  mut store = {__setindex__: fn (k, v) {
+    0
+  }}
   store["z"] = 42
   assert_eq(store["z"], 42)
 }
 
 test_auto_reflect = fn () {
   class Vec {
-    new(x, y) { self.x = x; self.y = y }
+    new(x, y) {
+      self.x = x
+      self.y = y
+    }
     __add__(r) {
       match r {
         n: Long => Vec.new(self.x + n, self.y + n),
-        _       => Vec.new(self.x + r.x, self.y + r.y)
+        _ => Vec.new(self.x + r.x, self.y + r.y),
       }
     }
     __mul__(r) {
       match r {
         n: Long => Vec.new(self.x * n, self.y * n),
-        _       => Vec.new(self.x * r.x, self.y * r.y)
+        _ => Vec.new(self.x * r.x, self.y * r.y),
       }
     }
-    __eq__(r) { self.x == r.x && self.y == r.y }
+    __eq__(r) {
+      self.x == r.x && self.y == r.y
+    }
   }
   v = Vec.new(3, 4)
-  a = 2 * v                          # Long * Vec reflects to v.__mul__(2)
+  a = 2 * v  # Long * Vec reflects to v.__mul__(2)
   assert_true(a.x == 6 && a.y == 8)
-  b = 10 + v                         # Long + Vec reflects to v.__add__(10)
+  b = 10 + v  # Long + Vec reflects to v.__add__(10)
   assert_true(b.x == 13 && b.y == 14)
   # Equality reflection (Object RHS)
   assert_eq(v, Vec.new(3, 4))
@@ -174,7 +245,9 @@ test_auto_reflect = fn () {
 
 test_matmul_overload = fn () {
   class Mat {
-    new(data) { self.data = data }
+    new(data) {
+      self.data = data
+    }
     __matmul__(r) {
       mut out = []
       for i in 0..self.data.size() {
@@ -203,8 +276,13 @@ test_matmul_overload = fn () {
 
 test_str_special = fn () {
   class Matrix {
-    new(r, c) { self.rows = r; self.cols = c }
-    __str__()  { "Matrix {self.rows}x{self.cols}" }
+    new(r, c) {
+      self.rows = r
+      self.cols = c
+    }
+    __str__() {
+      "Matrix {self.rows}x{self.cols}"
+    }
   }
   m = Matrix.new(2, 3)
 
@@ -222,7 +300,12 @@ test_str_special = fn () {
 test_default_display = fn () {
   # Class-sugar instance: `class:` tag is hoisted to a prefix, and
   # omitted from the property list to avoid repetition.
-  class Point { new(x, y) { self.x = x; self.y = y } }
+  class Point {
+    new(x, y) {
+      self.x = x
+      self.y = y
+    }
+  }
   p = Point.new(3, 4)
   assert_eq(to_string(p), 'Point {mut x: 3, mut y: 4}')
 
@@ -245,9 +328,13 @@ test_default_display = fn () {
 # top-level functions instead (see samples/drop.cul guideline).
 test_self_immutable_in_ctor = fn () {
   class C {
-    new () {
-      let r = try { self = {hijacked: true}; "no error" }
-                catch e { "kind={e.kind}" }
+    new() {
+      let r = try {
+        self = {hijacked: true}
+        "no error"
+      } catch e {
+        "kind={e.kind}"
+      }
       self.result = r
     }
   }
@@ -261,7 +348,7 @@ test_self_immutable_in_ctor = fn () {
 # of an explicit `return` inside the body.
 test_ctor_return_ignored = fn () {
   class C {
-    new () {
+    new() {
       self.tag = 'allocated'
       return {tag: 'returned'}
     }
@@ -275,34 +362,51 @@ test_ctor_return_ignored = fn () {
 # (Shape.create(...)) on both backends.
 test_static_methods = fn () {
   class Shape {
-    new () {}
-    static make_circle (r) {
+    new() {}
+    static make_circle(r) {
       let s = Shape.new()
       s.kind = 'circle'
       s.radius = r
       s
     }
-    area () {
-      if self.kind == 'circle' { 3 * self.radius * self.radius } else { 0 }
+    area() {
+      if self.kind == 'circle' {
+        3 * self.radius * self.radius
+      } else {
+        0
+      }
     }
   }
   let circle = Shape.make_circle(4)
   assert_eq(circle.kind, 'circle')
   assert_eq(circle.area(), 48)
   # Static methods are *not* on the instance.
-  let inst_call_kind = try { circle.make_circle(1); 'no error' }
-                       catch e { "kind={e.kind}" }
+  let inst_call_kind = try {
+    circle.make_circle(1)
+    'no error'
+  } catch e {
+    "kind={e.kind}"
+  }
   assert_true(inst_call_kind == 'kind=AttributeError' ||
-         inst_call_kind == 'kind=TypeError')
+    inst_call_kind == 'kind=TypeError')
 }
 
 # Multiple statics + interop with the regular constructor.
 test_static_multiple = fn () {
   class Counter {
-    new (start) { self.n = start }
-    bump () { self.n = self.n + 1; self }
-    static zero () { Counter.new(0) }
-    static from_array (arr) { Counter.new(arr.size()) }
+    new(start) {
+      self.n = start
+    }
+    bump() {
+      self.n = self.n + 1
+      self
+    }
+    static zero() {
+      Counter.new(0)
+    }
+    static from_array(arr) {
+      Counter.new(arr.size())
+    }
   }
   let a = Counter.zero()
   let b = Counter.from_array([1, 2, 3])
@@ -342,10 +446,14 @@ fn test_class_decl_throw_catchable() {
   let r = try {
     class ThrowingInit {
       static v = to_long('x')
-      m() { 1 }
+      m() {
+        1
+      }
     }
     'no error'
-  } catch e { e.kind }
+  } catch e {
+    e.kind
+  }
   assert_eq(r, 'TypeError')
 }
 test_class_decl_throw_catchable()
@@ -411,7 +519,9 @@ fn test_field_this_and_order() {
     a: Long = base + 1
     b: Long = self.a * 2
     c: Long = self.calc()
-    calc() { self.a + self.b }
+    calc() {
+      self.a + self.b
+    }
   }
   let k = K.new()
   assert_eq(k.a, 101)
@@ -423,7 +533,9 @@ test_field_this_and_order()
 fn test_field_before_new_body() {
   class N {
     x: Long = 5
-    new(m) { self.y = self.x * m }
+    new(m) {
+      self.y = self.x * m
+    }
   }
   assert_eq(N.new(10).y, 50)
 }
@@ -432,10 +544,13 @@ test_field_before_new_body()
 fn test_field_mutable_in_methods() {
   class C {
     n: Long = 0
-    bump() { self.n = self.n + 1 }
+    bump() {
+      self.n = self.n + 1
+    }
   }
   let c = C.new()
-  c.bump(); c.bump()
+  c.bump()
+  c.bump()
   assert_eq(c.n, 2)
 }
 test_field_mutable_in_methods()
@@ -460,7 +575,12 @@ fn test_field_init_throw_at_construction() {
   class Boom {
     x: Long = to_long('nope')
   }
-  let r = try { Boom.new(); 'no error' } catch e { e.kind }
+  let r = try {
+    Boom.new()
+    'no error'
+  } catch e {
+    e.kind
+  }
   assert_eq(r, 'TypeError')
 }
 test_field_init_throw_at_construction()
@@ -476,7 +596,9 @@ fn test_untyped_fields() {
     items = []
     best = self.score + base
     static MAX = 99
-    bump() { self.score = self.score + 1 }
+    bump() {
+      self.score = self.score + 1
+    }
   }
   let a = P.new()
   let b = P.new()
@@ -498,8 +620,12 @@ fn test_member_default_sees_defining_scope() {
   # NameError instead of running — while the JIT ran the default fine.
   let bonus = 7
   class M {
-    new(a = bonus + 1) { self.a = a }
-    m(b = bonus * 2) { b }
+    new(a = bonus + 1) {
+      self.a = a
+    }
+    m(b = bonus * 2) {
+      b
+    }
   }
   assert_eq(M.new().a, 8)
   assert_eq(M.new(1).m(), 14)
@@ -507,11 +633,23 @@ fn test_member_default_sees_defining_scope() {
   # backends — and the ctor also resolves defaults as a HOF callback
   # (map passes one arg; the second param's default must evaluate).
   class T {
-    new(x = 1, a = to_long('zzz')) { self.a = a }
+    new(x = 1, a = to_long('zzz')) {
+      self.a = a
+    }
   }
-  let r = try { T.new(); 'built' } catch e { e.kind }
+  let r = try {
+    T.new()
+    'built'
+  } catch e {
+    e.kind
+  }
   assert_eq(r, 'TypeError')
-  let r2 = try { [9].map(T.new); 'built' } catch e { e.kind }
+  let r2 = try {
+    [9].map(T.new)
+    'built'
+  } catch e {
+    e.kind
+  }
   assert_eq(r2, 'TypeError')
 }
 test_member_default_sees_defining_scope()
@@ -520,12 +658,22 @@ fn test_field_init_after_arg_binding() {
   # Initializers run only once the ctor args bound successfully: an arity
   # error fires first, with no field side effects (interp/JIT symmetric).
   mut ran = 0
-  fn noisy() { ran = ran + 1; 1 }
+  fn noisy() {
+    ran = ran + 1
+    1
+  }
   class A {
     x: Long = noisy()
-    new(a, b) { self.s = a + b }
+    new(a, b) {
+      self.s = a + b
+    }
   }
-  let r = try { A.new(1); 'built' } catch e { e.kind }
+  let r = try {
+    A.new(1)
+    'built'
+  } catch e {
+    e.kind
+  }
   assert_eq(r, 'ArityError')
   assert_eq(ran, 0)
   A.new(1, 2)

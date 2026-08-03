@@ -6,7 +6,9 @@
 
 // A packed RGBA colour: r | g<<8 | b<<16 | a<<24 — the byte order putImageData
 // consumes. Built with arithmetic so the test needs nothing from the preamble.
-fn rgba(r, g, b, a) { r + g * 256 + b * 65536 + a * 16777216 }
+fn rgba(r, g, b, a) {
+  r + g * 256 + b * 65536 + a * 16777216
+}
 let RED = rgba(255, 0, 0, 255)
 let GREEN = rgba(0, 255, 0, 255)
 let BLUE = rgba(0, 0, 255, 255)
@@ -24,7 +26,7 @@ assert_eq(_Canvas.get_pixel(3, 3), RED)
 
 _Canvas.set_pixel(1, 1, GREEN)
 assert_eq(_Canvas.get_pixel(1, 1), GREEN)
-assert_eq(_Canvas.get_pixel(0, 0), RED)      // neighbours untouched
+assert_eq(_Canvas.get_pixel(0, 0), RED)  // neighbours untouched
 
 // Off-buffer writes are dropped and reads return 0 (transparent).
 _Canvas.set_pixel(-1, 0, GREEN)
@@ -37,20 +39,20 @@ _Canvas.clear(RED)
 _Canvas.rect(1, 1, 2, 2, BLUE, 1)
 assert_eq(_Canvas.get_pixel(1, 1), BLUE)
 assert_eq(_Canvas.get_pixel(2, 2), BLUE)
-assert_eq(_Canvas.get_pixel(0, 0), RED)      // outside the rect
+assert_eq(_Canvas.get_pixel(0, 0), RED)  // outside the rect
 assert_eq(_Canvas.get_pixel(3, 3), RED)
-_Canvas.rect(3, 3, 5, 5, GREEN, 1)              // spills past the edge, clipped
+_Canvas.rect(3, 3, 5, 5, GREEN, 1)  // spills past the edge, clipped
 assert_eq(_Canvas.get_pixel(3, 3), GREEN)
 
 let CLEAR = rgba(0, 0, 0, 0)
 
 // --- Float geometry: rounds toward -inf, one rule for all three backends ---
 _Canvas.clear(RED)
-_Canvas.rect(1.7, 1.2, 2.9, 2.9, BLUE, 1)       // -> rect(1, 1, 2, 2)
+_Canvas.rect(1.7, 1.2, 2.9, 2.9, BLUE, 1)  // -> rect(1, 1, 2, 2)
 assert_eq(_Canvas.get_pixel(1, 1), BLUE)
 assert_eq(_Canvas.get_pixel(2, 2), BLUE)
 assert_eq(_Canvas.get_pixel(3, 3), RED)
-assert_eq(_Canvas.get_pixel(1.9, 1.9), BLUE) // readback rounds the same way
+assert_eq(_Canvas.get_pixel(1.9, 1.9), BLUE)  // readback rounds the same way
 // A negative float floors off-buffer instead of snapping onto column 0.
 _Canvas.clear(RED)
 _Canvas.set_pixel(-0.5, 0.0, BLUE)
@@ -59,13 +61,19 @@ assert_eq(_Canvas.get_pixel(0, 0), RED)
 _Canvas.set_pixel(1e30, 0, BLUE)
 _Canvas.set_pixel(-Math.inf, 0, BLUE)
 assert_eq(_Canvas.get_pixel(0, 0), RED)
-_Canvas.set_pixel(Math.nan, 0, BLUE)         // NaN -> 0
+_Canvas.set_pixel(Math.nan, 0, BLUE)  // NaN -> 0
 assert_eq(_Canvas.get_pixel(0, 0), BLUE)
 // Colours, flags and handles are still Long-only.
-assert_eq(try { _Canvas.rect(0, 0, 1, 1, 1.5, 1) } catch e { e.message },
-          "type error: parameter 'rgba' expects Long")
-assert_eq(try { _Canvas.rect("x", 0, 1, 1, 1, 1) } catch e { e.message },
-          "type error: parameter 'x' expects Long|Float")
+assert_eq(try {
+    _Canvas.rect(0, 0, 1, 1, 1.5, 1)
+  } catch e {
+    e.message
+  }, "type error: parameter 'rgba' expects Long")
+assert_eq(try {
+    _Canvas.rect("x", 0, 1, 1, 1, 1)
+  } catch e {
+    e.message
+  }, "type error: parameter 'x' expects Long|Float")
 
 // --- triangle / polygon: even-odd scanline fill ---
 // Renders the framebuffer as one string per row so a whole shape asserts at once.
@@ -77,9 +85,17 @@ fn dump() {
     mut x = 0
     while x < _Canvas.width() {
       let p = _Canvas.get_pixel(x, y)
-      s = s + (if p == RED { "." } else if p == BLUE { "#" }
-               else if p == GREEN { "o" } else if p == WHITE { "w" }
-               else { " " })
+      s = s + if p == RED {
+          "."
+        } else if p == BLUE {
+          "#"
+        } else if p == GREEN {
+          "o"
+        } else if p == WHITE {
+          "w"
+        } else {
+          " "
+        }
       x = x + 1
     }
     rows.push(s)
@@ -98,8 +114,8 @@ _Canvas.triangle(0.5, 0.9, 8.2, 0.4, 0.7, 6.8, BLUE, 1)
 assert_eq(dump(), "########/######  /#####   /####    /##      /#       ")
 // Zero-area input draws nothing.
 _Canvas.clear(RED)
-_Canvas.triangle(0, 0, 4, 0, 8, 0, BLUE, 1)     // collinear
-_Canvas.triangle(2, 2, 2, 2, 2, 2, BLUE, 1)     // a point
+_Canvas.triangle(0, 0, 4, 0, 8, 0, BLUE, 1)  // collinear
+_Canvas.triangle(2, 2, 2, 2, 2, 2, BLUE, 1)  // a point
 assert_eq(dump(), "......../......../......../......../......../........")
 // The seam property, stated as an identity: a rectangle cut along its diagonal
 // into two triangles must rasterize back to exactly the rectangle — no gap
@@ -138,17 +154,29 @@ _Canvas.clear(RED)
 _Canvas.polygon([], BLUE, 1)
 _Canvas.polygon([1, 1], BLUE, 1)
 _Canvas.polygon([1, 1, 5, 5], BLUE, 1)
-_Canvas.polygon([1, 1, 5, 1, 5], BLUE, 1)       // 2 vertices + a stray x
+_Canvas.polygon([1, 1, 5, 1, 5], BLUE, 1)  // 2 vertices + a stray x
 assert_eq(dump(), "......../......../......../......../......../........")
 // Vertices carry the same Long|Float contract the scalar arguments do.
-assert_eq(try { _Canvas.polygon([1, 1, "x", 1, 5, 5], BLUE, 1) } catch e { e.message },
-          "type error: parameter 'points' expects an Array of Long|Float")
-assert_eq(try { _Canvas.polygon(5, BLUE, 1) } catch e { e.message },
-          "type error: parameter 'points' expects Array")
-assert_eq(try { _Canvas.polygon([1, 1, 5, 1, 5, 5], 1.5, 1) } catch e { e.message },
-          "type error: parameter 'rgba' expects Long")
-assert_eq(try { _Canvas.triangle(0, 0, 1, 1, 2, 2, 1.5, 1) } catch e { e.message },
-          "type error: parameter 'rgba' expects Long")
+assert_eq(try {
+    _Canvas.polygon([1, 1, "x", 1, 5, 5], BLUE, 1)
+  } catch e {
+    e.message
+  }, "type error: parameter 'points' expects an Array of Long|Float")
+assert_eq(try {
+    _Canvas.polygon(5, BLUE, 1)
+  } catch e {
+    e.message
+  }, "type error: parameter 'points' expects Array")
+assert_eq(try {
+    _Canvas.polygon([1, 1, 5, 1, 5, 5], 1.5, 1)
+  } catch e {
+    e.message
+  }, "type error: parameter 'rgba' expects Long")
+assert_eq(try {
+    _Canvas.triangle(0, 0, 1, 1, 2, 2, 1.5, 1)
+  } catch e {
+    e.message
+  }, "type error: parameter 'rgba' expects Long")
 
 // --- line / ellipse primitives ---
 // line carries the same Long|Float coordinate contract; both endpoints are
@@ -159,37 +187,53 @@ _Canvas.line(0, 0, 5, 5, BLUE)
 assert_eq(_Canvas.get_pixel(0, 0), BLUE)
 assert_eq(_Canvas.get_pixel(5, 5), BLUE)
 _Canvas.line(5, 5, 0, 0, RED)
-assert_eq(_Canvas.get_pixel(2, 2), RED)      // reverse overdrew every pixel
+assert_eq(_Canvas.get_pixel(2, 2), RED)  // reverse overdrew every pixel
 mut leftover = 0
-for y in 0..6 { for x in 0..6 {
-  if _Canvas.get_pixel(x, y) == BLUE { leftover = leftover + 1 }
-} }
+for y in 0..6 {
+  for x in 0..6 {
+    if _Canvas.get_pixel(x, y) == BLUE {
+      leftover = leftover + 1
+    }
+  }
+}
 assert_eq(leftover, 0)
 _Canvas.clear(0)
-_Canvas.line(0.9, 2.1, 4.2, 2.8, BLUE)       // Floats floor like other coords
+_Canvas.line(0.9, 2.1, 4.2, 2.8, BLUE)  // Floats floor like other coords
 assert_eq(_Canvas.get_pixel(0, 2), BLUE)
-assert_eq(try { _Canvas.line(0, 0, "x", 1, 1) } catch e { e.message },
-          "type error: parameter 'x2' expects Long|Float")
-assert_eq(try { _Canvas.line(0, 0, 1, 1, 1.5) } catch e { e.message },
-          "type error: parameter 'rgba' expects Long")
+assert_eq(try {
+    _Canvas.line(0, 0, "x", 1, 1)
+  } catch e {
+    e.message
+  }, "type error: parameter 'x2' expects Long|Float")
+assert_eq(try {
+    _Canvas.line(0, 0, 1, 1, 1.5)
+  } catch e {
+    e.message
+  }, "type error: parameter 'rgba' expects Long")
 
 // ellipse: centre-and-radii, fill and outline; negative radius draws nothing.
 _Canvas.init(7, 7)
 _Canvas.clear(0)
 _Canvas.ellipse(3, 3, 3, 3, BLUE, 1)
-assert_eq(_Canvas.get_pixel(0, 3), BLUE)     // (cx - r, cy)
-assert_eq(_Canvas.get_pixel(3, 0), BLUE)     // (cx, cy - r)
-assert_eq(_Canvas.get_pixel(0, 0), 0)        // the corner stays outside
+assert_eq(_Canvas.get_pixel(0, 3), BLUE)  // (cx - r, cy)
+assert_eq(_Canvas.get_pixel(3, 0), BLUE)  // (cx, cy - r)
+assert_eq(_Canvas.get_pixel(0, 0), 0)     // the corner stays outside
 _Canvas.clear(0)
 _Canvas.ellipse(3, 3, 3, 3, BLUE, 0)
 assert_eq(_Canvas.get_pixel(0, 3), BLUE)
-assert_eq(_Canvas.get_pixel(3, 3), 0)        // interior untouched
+assert_eq(_Canvas.get_pixel(3, 3), 0)  // interior untouched
 _Canvas.ellipse(3, 3, -1, 2, RED, 1)
-assert_eq(_Canvas.get_pixel(3, 3), 0)        // negative radius: nothing
-assert_eq(try { _Canvas.ellipse(0, 0, "r", 1, 1, 1) } catch e { e.message },
-          "type error: parameter 'rx' expects Long|Float")
-assert_eq(try { _Canvas.ellipse(0, 0, 1, 1, 1.5, 1) } catch e { e.message },
-          "type error: parameter 'rgba' expects Long")
+assert_eq(_Canvas.get_pixel(3, 3), 0)  // negative radius: nothing
+assert_eq(try {
+    _Canvas.ellipse(0, 0, "r", 1, 1, 1)
+  } catch e {
+    e.message
+  }, "type error: parameter 'rx' expects Long|Float")
+assert_eq(try {
+    _Canvas.ellipse(0, 0, 1, 1, 1.5, 1)
+  } catch e {
+    e.message
+  }, "type error: parameter 'rgba' expects Long")
 
 _Canvas.init(4, 4)
 
@@ -199,17 +243,17 @@ let spr = _Canvas.sprite_load([RED, RED, BLUE, CLEAR], 2, 2)
 
 _Canvas.init(4, 4)
 _Canvas.clear(GREEN)
-_Canvas.blit(spr, 0, 0, 0, 0, 2, 2, 0)       // no flags
+_Canvas.blit(spr, 0, 0, 0, 0, 2, 2, 0)  // no flags
 assert_eq(_Canvas.get_pixel(0, 0), RED)
 assert_eq(_Canvas.get_pixel(1, 0), RED)
 assert_eq(_Canvas.get_pixel(0, 1), BLUE)
-assert_eq(_Canvas.get_pixel(1, 1), GREEN)    // transparent pixel showed through
+assert_eq(_Canvas.get_pixel(1, 1), GREEN)  // transparent pixel showed through
 
 // flip Y: bottom row of the sprite lands on the top row of the destination.
 _Canvas.clear(GREEN)
-_Canvas.blit(spr, 0, 0, 0, 0, 2, 2, 2)       // flag 2 = flip Y
+_Canvas.blit(spr, 0, 0, 0, 0, 2, 2, 2)  // flag 2 = flip Y
 assert_eq(_Canvas.get_pixel(0, 0), BLUE)
-assert_eq(_Canvas.get_pixel(1, 0), GREEN)    // transparent, moved to top-right
+assert_eq(_Canvas.get_pixel(1, 0), GREEN)  // transparent, moved to top-right
 assert_eq(_Canvas.get_pixel(0, 1), RED)
 
 // An out-of-range handle blits nothing (no crash).
@@ -222,13 +266,13 @@ assert_eq(_Canvas.get_pixel(0, 0), GREEN)
 let chk = _Canvas.sprite_load([BLUE, GREEN, GREEN, BLUE], 2, 2)
 _Canvas.init(4, 4)
 _Canvas.clear(CLEAR)
-_Canvas.blit_scaled(chk, 0, 0, 4, 4, 0, 0, 2, 2, 0, 255)     // 2x, nearest
+_Canvas.blit_scaled(chk, 0, 0, 4, 4, 0, 0, 2, 2, 0, 255)  // 2x, nearest
 assert_eq(dump(), "##oo/##oo/oo##/oo##")
 _Canvas.clear(CLEAR)
-_Canvas.blit_scaled(chk, 0, 0, 4, 4, 0, 0, 2, 2, 1, 255)     // flip X
+_Canvas.blit_scaled(chk, 0, 0, 4, 4, 0, 0, 2, 2, 1, 255)  // flip X
 assert_eq(dump(), "oo##/oo##/##oo/##oo")
 _Canvas.clear(CLEAR)
-_Canvas.blit_scaled(chk, 0, 0, 4, 4, 0, 0, 2, 2, 2, 255)     // flip Y
+_Canvas.blit_scaled(chk, 0, 0, 4, 4, 0, 0, 2, 2, 2, 255)  // flip Y
 assert_eq(dump(), "oo##/oo##/##oo/##oo")
 // Clipped on all four sides.
 _Canvas.clear(CLEAR)
@@ -245,13 +289,24 @@ assert_eq(dump(), "..../..../..../....")
 // A ratio that doesn't divide. Destination column u samples source column
 // floor(u * sw / dw), which the blit carries forward incrementally instead of
 // dividing per pixel, so a 7 -> 5 shrink pins that it floors the same way.
-let ramp = _Canvas.sprite_load([rgba(0, 0, 0, 255), rgba(10, 0, 0, 255),
-                                rgba(20, 0, 0, 255), rgba(30, 0, 0, 255),
-                                rgba(40, 0, 0, 255), rgba(50, 0, 0, 255),
-                                rgba(60, 0, 0, 255)], 7, 1)
+let ramp = _Canvas.sprite_load(
+  [
+    rgba(0, 0, 0, 255),
+    rgba(10, 0, 0, 255),
+    rgba(20, 0, 0, 255),
+    rgba(30, 0, 0, 255),
+    rgba(40, 0, 0, 255),
+    rgba(50, 0, 0, 255),
+    rgba(60, 0, 0, 255),
+  ],
+  7,
+  1,
+)
 let ramp_row = fn (w) {
   mut out = []
-  for x in 0..w { out.push(_Canvas.get_pixel(x, 0) % 256 / 10) }
+  for x in 0..w {
+    out.push(_Canvas.get_pixel(x, 0) % 256 / 10)
+  }
   out
 }
 _Canvas.init(5, 1)
@@ -259,7 +314,7 @@ _Canvas.clear(CLEAR)
 _Canvas.blit_scaled(ramp, 0, 0, 5, 1, 0, 0, 7, 1, 0, 255)
 assert_eq(ramp_row(5), [0, 1, 2, 4, 5])
 _Canvas.clear(CLEAR)
-_Canvas.blit_scaled(ramp, 0, 0, 5, 1, 0, 0, 7, 1, 1, 255)     // flip X
+_Canvas.blit_scaled(ramp, 0, 0, 5, 1, 0, 0, 7, 1, 1, 255)  // flip X
 assert_eq(ramp_row(5), [5, 4, 2, 1, 0])
 // Clipped on the left, so the walk starts part way along the destination.
 _Canvas.init(3, 1)
@@ -267,7 +322,7 @@ _Canvas.clear(CLEAR)
 _Canvas.blit_scaled(ramp, -2, 0, 5, 1, 0, 0, 7, 1, 0, 255)
 assert_eq(ramp_row(3), [2, 4, 5])
 _Canvas.clear(CLEAR)
-_Canvas.blit_scaled(ramp, -2, 0, 5, 1, 0, 0, 7, 1, 1, 255)    // flip X, clipped
+_Canvas.blit_scaled(ramp, -2, 0, 5, 1, 0, 0, 7, 1, 1, 255)  // flip X, clipped
 assert_eq(ramp_row(3), [2, 1, 0])
 // A source rectangle reaching past the sprite draws only the rows that exist.
 let two_rows = _Canvas.sprite_load([BLUE, BLUE, GREEN, GREEN], 2, 2)
@@ -276,7 +331,7 @@ _Canvas.clear(RED)
 _Canvas.blit_scaled(two_rows, 0, 0, 2, 4, 0, 0, 2, 4, 0, 255)
 assert_eq(_Canvas.get_pixel(0, 0), BLUE)
 assert_eq(_Canvas.get_pixel(0, 1), GREEN)
-assert_eq(_Canvas.get_pixel(0, 2), RED)      // source row 2 is off the sprite
+assert_eq(_Canvas.get_pixel(0, 2), RED)  // source row 2 is off the sprite
 assert_eq(_Canvas.get_pixel(0, 3), RED)
 
 // alpha: 0 draws nothing, 255 is the plain blit, and in between each channel
@@ -296,14 +351,14 @@ let strip = _Canvas.sprite_load([BLUE, BLUE, GREEN, GREEN], 4, 1)
 _Canvas.init(2, 1)
 _Canvas.clear(CLEAR)
 _Canvas.blit_scaled(strip, 0, 0, 2, 1, 0, 0, 4, 1, 8, 255)
-assert_eq(_Canvas.get_pixel(0, 0), BLUE)     // each box is one pure colour
+assert_eq(_Canvas.get_pixel(0, 0), BLUE)  // each box is one pure colour
 assert_eq(_Canvas.get_pixel(1, 0), GREEN)
 _Canvas.init(1, 1)
 _Canvas.clear(CLEAR)
 _Canvas.blit_scaled(strip, 0, 0, 1, 1, 0, 0, 4, 1, 8, 255)
-assert_eq(_Canvas.get_pixel(0, 0), rgba(0, 127, 127, 255))   // whole strip averaged
+assert_eq(_Canvas.get_pixel(0, 0), rgba(0, 127, 127, 255))  // whole strip averaged
 _Canvas.clear(CLEAR)
-_Canvas.blit_scaled(strip, 0, 0, 1, 1, 0, 0, 4, 1, 0, 255)   // nearest instead
+_Canvas.blit_scaled(strip, 0, 0, 1, 1, 0, 0, 4, 1, 0, 255)  // nearest instead
 assert_eq(_Canvas.get_pixel(0, 0), BLUE)
 // Shrinking in both axes at once: a 5x5 down to 2x2 splits the source into
 // boxes of columns 0..1 / 2..4 and rows 0..1 / 2..4, so a source laid out in
@@ -311,15 +366,26 @@ assert_eq(_Canvas.get_pixel(0, 0), BLUE)
 mut blocks = []
 for y in 0..5 {
   for x in 0..5 {
-    blocks.push(if y < 2 { if x < 2 { RED } else { GREEN } }
-                else { if x < 2 { BLUE } else { WHITE } })
+    blocks.push(if y < 2 {
+      if x < 2 {
+        RED
+      } else {
+        GREEN
+      }
+    } else {
+      if x < 2 {
+        BLUE
+      } else {
+        WHITE
+      }
+    })
   }
 }
 let quad = _Canvas.sprite_load(blocks, 5, 5)
 _Canvas.init(2, 2)
 _Canvas.clear(CLEAR)
 _Canvas.blit_scaled(quad, 0, 0, 2, 2, 0, 0, 5, 5, 8, 255)
-assert_eq(dump(), ".o/#w")                   // RED GREEN / BLUE WHITE
+assert_eq(dump(), ".o/#w")  // RED GREEN / BLUE WHITE
 // Averaging a 2-D box that isn't uniform, and the same box composited at
 // alpha=128 over red — sampling then blending, each integer-only.
 _Canvas.init(1, 1)
@@ -341,27 +407,51 @@ _Canvas.clear(RED)
 _Canvas.blit_scaled(hole, 0, 0, 1, 1, 0, 0, 4, 1, 8, 255)
 assert_eq(_Canvas.get_pixel(0, 0), RED)
 
-assert_eq(try { _Canvas.blit_scaled(chk, 0, 0, 1, 1, 0, 0, 1, 1, 0, "x") }
-          catch e { e.message },
-          "type error: parameter 'alpha' expects Long")
+assert_eq(try {
+    _Canvas.blit_scaled(chk, 0, 0, 1, 1, 0, 0, 1, 1, 0, "x")
+  } catch e {
+    e.message
+  }, "type error: parameter 'alpha' expects Long")
 
 // --- font_load / glyph: an 8x8 bitmap cell, one call per character ---
 // Two glyphs: index 0 is a solid block, index 1 a single top-left pixel.
 // A ZERO bit is lit, so 0x00 is solid and 0x7f lights only the leftmost pixel.
-let font = _Canvas.font_load([0, 0, 0, 0, 0, 0, 0, 0,
-                              127, 255, 255, 255, 255, 255, 255, 255])
+let font = _Canvas.font_load([
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  127,
+  255,
+  255,
+  255,
+  255,
+  255,
+  255,
+  255,
+])
 _Canvas.init(10, 8)
 _Canvas.clear(CLEAR)
 _Canvas.glyph(font, 0, 0, 0, BLUE, 1)
 _Canvas.glyph(font, 1, 8, 0, GREEN, 1)
-assert_eq(dump(), "########o /########  /########  /########  /" +
-                  "########  /########  /########  /########  ")
+assert_eq(
+  dump(),
+  "########o /########  /########  /########  /" +
+    "########  /########  /########  /########  ",
+)
 // Clipped at every edge, and the coordinates take Floats like the rest.
 _Canvas.clear(CLEAR)
 _Canvas.glyph(font, 0, -6, -6, BLUE, 1)
 _Canvas.glyph(font, 0, 8.9, 6.9, BLUE, 1)
-assert_eq(dump(), "##        /##        /          /          /" +
-                  "          /          /        ##/        ##")
+assert_eq(
+  dump(),
+  "##        /##        /          /          /" +
+    "          /          /        ##/        ##",
+)
 // An unknown handle, a negative index and an index past the table all draw
 // nothing rather than reading out of bounds.
 _Canvas.clear(RED)
@@ -398,27 +488,39 @@ fn png_pixels(hex) {
   _Canvas.clear(0)
   _Canvas.blit(id, 0, 0, 0, 0, w, h, 0)
   mut px = []
-  for y in 0..h { for x in 0..w { px.push(_Canvas.get_pixel(x, y)) } }
+  for y in 0..h {
+    for x in 0..w {
+      px.push(_Canvas.get_pixel(x, y))
+    }
+  }
   px
 }
 
 // Every colour type lands on the same packed-RGBA layout the framebuffer uses.
 assert_eq(png_pixels(PNG_RGBA), [RED, GREEN, BLUE, CLEAR])
-assert_eq(png_pixels(PNG_RGB), [RED, GREEN, BLUE, WHITE])   // no alpha = opaque
+assert_eq(png_pixels(PNG_RGB), [RED, GREEN, BLUE, WHITE])  // no alpha = opaque
 assert_eq(png_pixels(PNG_GREY), [BLACK, WHITE])
 assert_eq(png_pixels(PNG_GREYA), [WHITE, CLEAR])
-assert_eq(png_pixels(PNG_PAL), [RED, GREEN, BLUE, CLEAR])   // palette + tRNS
-assert_eq(png_pixels(PNG_I16), [RED, GREEN])                // 16 bpc, narrowed
+assert_eq(png_pixels(PNG_PAL), [RED, GREEN, BLUE, CLEAR])  // palette + tRNS
+assert_eq(png_pixels(PNG_I16), [RED, GREEN])               // 16 bpc, narrowed
 
 // Anything that isn't a decodable PNG raises the one shared ValueError.
 let truncated = "89504e470d0a1a0a0000000d4948445200000002"
-assert_eq(try { _Canvas.sprite_from_png(Encoding.hex.decode(truncated)) }
-          catch e { e.kind + "|" + e.message },
-          "ValueError|not a valid PNG image")
-assert_eq(try { _Canvas.sprite_from_png("") } catch e { e.message },
-          "not a valid PNG image")
-assert_eq(try { _Canvas.sprite_from_png(5) } catch e { e.message },
-          "type error: parameter 'data' expects String")
+assert_eq(try {
+    _Canvas.sprite_from_png(Encoding.hex.decode(truncated))
+  } catch e {
+    e.kind + "|" + e.message
+  }, "ValueError|not a valid PNG image")
+assert_eq(try {
+    _Canvas.sprite_from_png("")
+  } catch e {
+    e.message
+  }, "not a valid PNG image")
+assert_eq(try {
+    _Canvas.sprite_from_png(5)
+  } catch e {
+    e.message
+  }, "type error: parameter 'data' expects String")
 // An unknown handle has no dimensions (rather than reading out of bounds).
 assert_eq(_Canvas.sprite_width(-1), 0)
 assert_eq(_Canvas.sprite_height(9999), 0)
@@ -438,26 +540,36 @@ assert_eq(reencoded_pixels(PNG_PAL), [RED, GREEN, BLUE, CLEAR])
 
 // The output is a real PNG: signature, then IHDR's big-endian w/h. A String is
 // a byte string, so the embedded NULs are bytes like any other.
-let encoded = _Canvas.sprite_to_png(_Canvas.sprite_from_png(
-    Encoding.hex.decode(PNG_RGBA)))
-assert_eq(encoded.bytes().collect().slice(0, 8), [137, 80, 78, 71, 13, 10, 26, 10])
-assert_eq(encoded.bytes().collect().slice(12, 16), [73, 72, 68, 82])   // "IHDR"
+let encoded = _Canvas.sprite_to_png(_Canvas.sprite_from_png(Encoding.hex.decode(PNG_RGBA)))
+assert_eq(
+  encoded.bytes().collect().slice(0, 8),
+  [137, 80, 78, 71, 13, 10, 26, 10],
+)
+assert_eq(encoded.bytes().collect().slice(12, 16), [73, 72, 68, 82])  // "IHDR"
 assert_eq(encoded.bytes().collect().slice(16, 24), [0, 0, 0, 2, 0, 0, 0, 2])
 assert_true(encoded.size() > 24)
 
 // id 0 encodes the CURRENT draw target, which is what Canvas.to_png() passes.
 _Canvas.init(3, 2)
 _Canvas.clear(RED)
-assert_eq(png_pixels(Encoding.hex.encode(_Canvas.sprite_to_png(0))),
-          [RED, RED, RED, RED, RED, RED])
+assert_eq(
+  png_pixels(Encoding.hex.encode(_Canvas.sprite_to_png(0))),
+  [RED, RED, RED, RED, RED, RED],
+)
 
 // A stale handle raises rather than reading freed pixels; an empty target has
 // nothing to encode.
-assert_eq(try { _Canvas.sprite_to_png(9999) } catch e { e.kind + "|" + e.message },
-          "ValueError|not a live sprite handle")
+assert_eq(try {
+    _Canvas.sprite_to_png(9999)
+  } catch e {
+    e.kind + "|" + e.message
+  }, "ValueError|not a live sprite handle")
 _Canvas.init(0, 0)
-assert_eq(try { _Canvas.sprite_to_png(0) } catch e { e.message },
-          "image has no pixels")
+assert_eq(try {
+    _Canvas.sprite_to_png(0)
+  } catch e {
+    e.message
+  }, "image has no pixels")
 _Canvas.init(4, 4)
 
 _Canvas.init(4, 4)

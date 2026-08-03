@@ -8,13 +8,13 @@ let o = {"User-Agent": "Mozilla", 'x': 1, `b-c`: 2, a: 3}
 assert_eq(o["User-Agent"], "Mozilla")
 assert_eq(o["x"], 1)
 assert_eq(o["b-c"], 2)
-assert_eq(o.a, 3)                       // identifier key still dot-accessible
+assert_eq(o.a, 3)  // identifier key still dot-accessible
 assert_eq(o["a"], 3)
 
 // double-quote key decodes escapes (interpolated lane), single-quote is raw
 let e = {"a\tb": 9, 'c\td': 8}
-assert_eq(e["a\tb"], 9)                 // "\t" → real tab on both sides
-assert_eq(e['c\td'], 8)                 // raw backslash-t on both sides
+assert_eq(e["a\tb"], 9)  // "\t" → real tab on both sides
+assert_eq(e['c\td'], 8)  // raw backslash-t on both sides
 
 // non-string literal keys still work (unchanged by this feature)
 let n = {1: "one", 2: "two"}
@@ -25,12 +25,12 @@ assert_eq({true: "yes"}[true], "yes")
 // --- match patterns ---
 fn classify(s) {
   match s {
-    "north" | "south" => "vertical",     // OR of "..." patterns
+    "north" | "south" => "vertical",  // OR of "..." patterns
     "east" => "horizontal",
-    'raw-lane' => "raw",                  // single-quote pattern
-    "" => "empty",                        // empty constant
-    "tab\tsep" => "escaped",              // escape-decoded constant
-    _ => "other"
+    'raw-lane' => "raw",      // single-quote pattern
+    "" => "empty",            // empty constant
+    "tab\tsep" => "escaped",  // escape-decoded constant
+    _ => "other",
   }
 }
 assert_eq(classify("north"), "vertical")

@@ -28,7 +28,9 @@ test_map_mut_local_captured = fn () {
 # The closure may be bound before it is handed over, and the callee may be a
 # user-defined higher-order function rather than a builtin.
 test_map_capture_via_let_and_user_hof = fn () {
-  let apply = fn (f) { f() }
+  let apply = fn (f) {
+    f()
+  }
   let via_let = ['a'].map(fn (n) {
     let path = '/' + n
     let f = || path.upper()
@@ -63,14 +65,23 @@ test_reduce_local_captured_by_nested_closure = fn () {
 }
 
 test_filter_find_for_each_capture = fn () {
-  let kept = ['a', 'bb'].filter(fn (s) { let n = s.size(); [1].any(|_| n > 1) })
+  let kept = ['a', 'bb'].filter(fn (s) {
+    let n = s.size()
+    [1].any(|_| n > 1)
+  })
   assert_eq(kept, ['bb'])
 
-  let found = ['a', 'bb'].find(fn (s) { let n = s.size(); [1].any(|_| n > 1) })
+  let found = ['a', 'bb'].find(fn (s) {
+    let n = s.size()
+    [1].any(|_| n > 1)
+  })
   assert_eq(found, 'bb')
 
   mut seen = []
-  ['a', 'bb'].for_each(fn (s) { let n = s.size(); seen.push([1].map(|_| n)[0]) })
+  ['a', 'bb'].for_each(fn (s) {
+    let n = s.size()
+    seen.push([1].map(|_| n)[0])
+  })
   assert_eq(seen, [1, 2])
 }
 
@@ -89,7 +100,10 @@ test_nested_inlined_callbacks = fn () {
 
 # The lazy-iterator side fuses through the same emitters.
 test_iterator_chain_capture = fn () {
-  let r = range(3).map(fn (i) { let k = i * 2; [1].map(|_| k)[0] }).collect()
+  let r = range(3).map(fn (i) {
+      let k = i * 2
+      [1].map(|_| k)[0]
+    }).collect()
   assert_eq(r, [0, 2, 4])
 }
 

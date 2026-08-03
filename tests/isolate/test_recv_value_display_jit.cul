@@ -17,8 +17,8 @@ fn roundtrip(v) {
 }
 
 let s = roundtrip("hello")
-assert_eq(type_of(s), "String")   # was "Unknown" in the JIT
-assert_eq(s, "hello")             # was eq-no in the JIT
+assert_eq(type_of(s), "String")  # was "Unknown" in the JIT
+assert_eq(s, "hello")            # was eq-no in the JIT
 assert_eq(s.size(), 5)
 
 assert_eq(type_of(roundtrip(42)), "Long")
@@ -34,7 +34,9 @@ assert_eq(type_of(roundtrip({"k": 1})), "Object")
 assert_eq("got {roundtrip("x")}", "got x")
 
 # --- an isolate join result (also deserialized) keeps its tag ---
-let h = Isolate.spawn(fn () { "from-isolate" })
+let h = Isolate.spawn(fn () {
+  "from-isolate"
+})
 let r = h.join()
 assert_eq(type_of(r), "String")
 assert_eq(r, "from-isolate")

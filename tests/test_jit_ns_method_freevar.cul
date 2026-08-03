@@ -9,7 +9,7 @@
 # referenced, never made to listen / sleep).
 
 # `server` is the assignment target and also the member in `Http.server()`.
-server = fn() {
+server = fn () {
   let s = Http.server()
   return "server-ok"
 }
@@ -18,7 +18,7 @@ inspect(server())
 # Same shape via Time.monotonic — the member `monotonic` would collide too
 # if a like-named var existed; here `mono` exercises the namespace receiver
 # skip on a different namespace.
-mono = fn() {
+mono = fn () {
   let t = Time.monotonic()
   return "mono-ok"
 }
@@ -34,6 +34,10 @@ if true {
 
 # Genuine UFCS on a non-namespace receiver must still capture the method:
 # `dbl` is a top-level free function reached via `(n).dbl()` inside a closure.
-fn dbl(n) { return n * 2 }
-let ufcs = fn() { return (21).dbl() }
+fn dbl(n) {
+  return n * 2
+}
+let ufcs = fn () {
+  return 21.dbl()
+}
 inspect(ufcs().to_string())

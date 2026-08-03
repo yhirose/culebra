@@ -5,7 +5,9 @@
 test_typed_let_captured_by_closure = fn () {
   let outer = fn () {
     let x: Long = 5
-    let g = fn () { x }
+    let g = fn () {
+      x
+    }
     g()
   }
   assert_eq(outer(), 5)

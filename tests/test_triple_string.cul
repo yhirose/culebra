@@ -14,6 +14,7 @@ assert_eq(q, "She said \"hi\" and 'bye'.")
 // Multi-line.
 let prompt = """line one
 line two"""
+
 assert_eq(prompt, "line one\nline two")
 
 // Escapes decode; `\{` is a literal open brace (`}` needs no escape).
@@ -36,6 +37,7 @@ let html = """
     <html>
     </html>
     """
+
 assert_eq(html, "<html>\n</html>")
 
 // Interpolation inside a block; relative indentation is preserved.
@@ -43,6 +45,7 @@ let block = """
     Hello {name}
       indented more
     """
+
 assert_eq(block, "Hello Alice\n  indented more")
 
 // Blank lines are normalized to empty (their whitespace is not significant).
@@ -51,6 +54,7 @@ let para = """
 
     c
     """
+
 assert_eq(para, "a\n\nc")
 
 // A block with only the delimiter lines is the empty string.

@@ -45,7 +45,7 @@ handle { ms_log() } with ms_choose(a, b, r) {
   ms_seen.push(r(a))
   ms_seen.push(r(b))
 }
-assert_eq(ms_seen[0], [1, 2])   // both forks appended into the same array
+assert_eq(ms_seen[0], [1, 2])  // both forks appended into the same array
 
 // the return clause maps each fork's completion, not the aggregate
 effect fn ms_id() { perform ms_choose(1, 2) }
@@ -140,23 +140,25 @@ assert_eq(cap_h, 3 + 16)
 // NOT be rewritten there; only interpolation `{expr}` and code are rewritten.
 effect fn sc_ask()
 effect fn sc_body() {
-  let base = perform sc_ask()      # comment mentioning base stays literal
-  let lit = "the base rate"        # literal 'base' — untouched
-  let raw = 'base'                 # single-quote raw — untouched
-  let interp = "v={base} lit=base" # {base} rewritten, literal 'base' untouched
+  let base = perform sc_ask()       # comment mentioning base stays literal
+  let lit = "the base rate"         # literal 'base' — untouched
+  let raw = 'base'                  # single-quote raw — untouched
+  let interp = "v={base} lit=base"  # {base} rewritten, literal 'base' untouched
   "{base}|{lit}|{raw}|{interp}"
 }
-assert_eq(handle { sc_body() } with sc_ask(k) { k(5) },
-          "5|the base rate|base|v=5 lit=base")
+assert_eq(
+  handle { sc_body() } with sc_ask(k) { k(5) },
+  "5|the base rate|base|v=5 lit=base",
+)
 
 // all three comment forms (# / // / block) are skipped even when they contain a
 // local name or an unbalanced quote (which would otherwise open a phantom
 // string). The block comment is mid-expression (its only valid position).
 effect fn cm_ask()
 effect fn cm_body() {
-  let base = perform cm_ask()   // don't rewrite base in this line comment
+  let base = perform cm_ask()  // don't rewrite base in this line comment
   let y = /* it's base */ base + 1
-  y                             # base again, still literal
+  y  # base again, still literal
 }
 assert_eq(handle { cm_body() } with cm_ask(k) { k(10) }, 11)
 
@@ -165,7 +167,12 @@ assert_eq(handle { cm_body() } with cm_ask(k) { k(10) }, 11)
 // handler clause (neither is a `_step`, so `__Eff.stepping()` is false there).
 effect fn cl_g()
 effect fn cl_f() { let v = perform cl_g(); v * 2 }
-let cl_bare = try { cl_f(); "no-error" } catch e { e.kind }
+let cl_bare = try {
+  cl_f()
+  "no-error"
+} catch e {
+  e.kind
+}
 assert_eq(cl_bare, "EffectError")
 
 effect fn cl_x()
@@ -244,7 +251,10 @@ let yg_clause = handle { perform nf_ask() } with nf_ask(k) {
 assert_eq(yg_clause, [1, 2])
 
 // for-in and yield-from inside the nested generator
-fn yg_base() { yield 100; yield 200 }
+fn yg_base() {
+  yield 100
+  yield 200
+}
 effect fn yg_mix() {
   let x = perform nf_ask()
   fn g4() {
@@ -262,8 +272,10 @@ effect fn yg_ms() {
   fn g5(n) { yield n; yield n + 1 }
   g5(b).collect()
 }
-assert_eq(handle { yg_ms() } with yg_choose(k) { [k(10), k(20)] },
-          [[10, 11], [20, 21]])
+assert_eq(
+  handle { yg_ms() } with yg_choose(k) { [k(10), k(20)] },
+  [[10, 11], [20, 21]],
+)
 
 // a named fn in a CPS-visited tail `if` arm works too
 effect fn yg_tail() {

@@ -6,7 +6,9 @@
 
 srv = Http.server()
 srv.static("/", Embed.dir("embed_assets"))
-srv.get("/api/ok", fn(req) { { content_type: "application/json", body: '{"ok":true}' } })
+srv.get("/api/ok", fn (req) {
+  {content_type: "application/json", body: '{"ok":true}'}
+})
 # Port 0: the OS picks a free one (so a concurrent gate cannot take it) and
 # listen_async hands the number back.
 PORT = srv.listen_async(0)
@@ -14,11 +16,18 @@ BASE = "http://127.0.0.1:" + PORT.to_string()
 
 # index.html at the mount root, with inferred content type
 r = Http.get(BASE + "/")
-inspect("GET / -> " + r.status.to_string() + " | ct=" + r.headers["Content-Type"] +
-     " | h1=" + r.body.contains("<h1>It works</h1>").to_string())
+inspect("GET / -> " +
+  r.status.to_string() +
+  " | ct=" +
+  r.headers["Content-Type"] +
+  " | h1=" +
+  r.body.contains("<h1>It works</h1>").to_string())
 # a named asset
 js = Http.get(BASE + "/app.js")
-inspect("GET /app.js -> " + js.status.to_string() + " | ct=" + js.headers["Content-Type"])
+inspect("GET /app.js -> " +
+  js.status.to_string() +
+  " | ct=" +
+  js.headers["Content-Type"])
 # a registered route still wins over a missing static file (static tried first, misses)
 api = Http.get(BASE + "/api/ok")
 inspect("GET /api/ok -> " + api.status.to_string() + " | " + api.body)

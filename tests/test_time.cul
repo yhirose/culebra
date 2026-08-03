@@ -5,7 +5,7 @@
 
 # --- now / monotonic / sleep ---
 let now = Time.now()
-assert_gt(now.unix(), 1700000000.0)               # post-2023
+assert_gt(now.unix(), 1700000000.0)  # post-2023
 assert_gt(now.unix_nanos(), 1700000000000000000)
 
 let m1 = Time.monotonic()
@@ -39,7 +39,8 @@ assert_eq(t_unix.iso(), "2026-05-21T15:30:45Z")
 # from_parts (kwarg: utc)
 let t_parts = Time.from_parts(
   {year: 2026, month: 5, day: 21, hour: 15, minute: 30, second: 45},
-  utc: true)
+  utc: true,
+)
 assert_eq(t_parts, t0)
 
 # parse (strftime)
@@ -53,7 +54,7 @@ let p = t.parts(utc: true)
 assert_true(p.year == 2026 && p.month == 5 && p.day == 21)
 assert_true(p.hour == 15 && p.minute == 30 && p.second == 45)
 assert_eq(p.nanosecond, 123456789)
-assert_eq(p.weekday, 3)                          # Thursday — ISO 0=Mon..6=Sun
+assert_eq(p.weekday, 3)  # Thursday — ISO 0=Mon..6=Sun
 assert_eq(p.dayofyear, 141)
 
 assert_eq(t.weekday(utc: true), 3)
@@ -86,7 +87,10 @@ assert_true(pp.year == 2026 && pp.month == 2 && pp.day == 15)
 # start_of
 let sod = t.start_of("day", utc: true)
 let sd = sod.parts(utc: true)
-assert_true(sd.hour == 0 && sd.minute == 0 && sd.second == 0 && sd.nanosecond == 0)
+assert_true(sd.hour == 0 &&
+  sd.minute == 0 &&
+  sd.second == 0 &&
+  sd.nanosecond == 0)
 
 let soy = t.start_of("year", utc: true)
 let sy = soy.parts(utc: true)
@@ -151,13 +155,13 @@ assert_eq(t1, t1)
 # Instant and Duration are both nanosecond wrappers, so an unguarded operator
 # happily mixes them. Arithmetic and ordering across the two have no meaning:
 # they raise, naming both sides.
-assert_throws("TypeError", || t1 + t2)                  // Instant + Instant
-assert_throws("TypeError", || Time.seconds(1) + t1)     // Duration + Instant
-assert_throws("TypeError", || t1 - 42)                  // used to yield nil
+assert_throws("TypeError", || t1 + t2)               // Instant + Instant
+assert_throws("TypeError", || Time.seconds(1) + t1)  // Duration + Instant
+assert_throws("TypeError", || t1 - 42)               // used to yield nil
 assert_throws("TypeError", || Time.seconds(1) - t1)
-assert_throws("TypeError", || t1 < Time.seconds(1))     // ordering across types
+assert_throws("TypeError", || t1 < Time.seconds(1))  // ordering across types
 assert_throws("TypeError", || Time.seconds(1) < t1)
-assert_throws("TypeError", || Time.seconds(1) + 1)      // a bare number is not a Duration
+assert_throws("TypeError", || Time.seconds(1) + 1)  // a bare number is not a Duration
 
 # Equality is the exception: comparing against another type is simply false,
 # never a TypeError (the convention Path follows too).

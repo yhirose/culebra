@@ -36,7 +36,7 @@ assert_eq(buf[0].id, 1)
 // Records and sub-records are independent.
 buf[1].start.x = 9.0
 assert_eq(buf[0].start.x, 1.0)
-assert_eq(buf[0].end.x, 3.0)         // a sibling sub-record is untouched
+assert_eq(buf[0].end.x, 3.0)  // a sibling sub-record is untouched
 
 // Whole sub-record copy (memcpy of the inner bytes).
 buf[2].start = buf[0].start
@@ -48,16 +48,20 @@ assert_eq(buf[2].start.x, 1.0)
 
 // Copying from a wrong-class record is a TypeError.
 @packable
-class Other { a: Int32 }
+class Other {
+  a: Int32
+}
 ob = SharedBuffer.new(1, Other)
 try {
   buf[0].start = ob[0]
   assert_eq("no throw", "should throw")
-} catch e { assert_eq(e.kind, "TypeError") }
+} catch e {
+  assert_eq(e.kind, "TypeError")
+}
 
 // Cross-isolate share: a child writes the nested sub-record's fields.
 shared = SharedBuffer.new(1, Line)
-w = Isolate.spawn(fn() {
+w = Isolate.spawn(fn () {
   shared[0].start.x = 7.0
   shared[0].end.y = 8.0
 })

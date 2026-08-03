@@ -6,7 +6,10 @@
 
 @derive(Eq, Hash, Show, Comparable)
 class Point {
-  new(x, y) { self.x = x; self.y = y }
+  new(x, y) {
+    self.x = x
+    self.y = y
+  }
 }
 
 let a = Point.new(1, 2)
@@ -45,33 +48,46 @@ mut bag[Point.new(1, 2)] = "a"
 assert_eq(bag[Point.new(1, 2)], "a")
 
 mut s = {Point.new(1, 1), Point.new(2, 2)}
-s.add(Point.new(1, 1))   // duplicate -> no growth
+s.add(Point.new(1, 1))  // duplicate -> no growth
 assert_eq(s.size(), 2)
 
 // --- String fields are quoted in to_s (value repr) ---
 @derive(Show)
 class Named {
-  new(n) { self.n = n }
+  new(n) {
+    self.n = n
+  }
 }
 assert_eq(Named.new("bob").to_s(), "Named('bob')")
 
 // --- User definitions win over derived ones ---
 @derive(Show)
 class Custom {
-  new(v) { self.v = v }
-  to_s() { "custom!" }
+  new(v) {
+    self.v = v
+  }
+  to_s() {
+    "custom!"
+  }
 }
 assert_eq(Custom.new(1).to_s(), "custom!")
 
 // --- Partial derive: only requested traits get methods ---
 @derive(Eq)
 class OnlyEq {
-  new(v) { self.v = v }
+  new(v) {
+    self.v = v
+  }
 }
 let oe = OnlyEq.new(5)
 assert_eq(oe.eq(OnlyEq.new(5)), true)
 // hash() was NOT derived -> absent.
-let probe = try { oe.hash(); "present" } catch e { "absent" }
+let probe = try {
+  oe.hash()
+  "present"
+} catch e {
+  "absent"
+}
 assert_eq(probe, "absent")
 
 IO.inspect("test_derive OK")

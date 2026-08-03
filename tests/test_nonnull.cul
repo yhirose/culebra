@@ -13,17 +13,31 @@ assert_eq(arr!![0], 1)
 
 // nil raises NilError.
 let n = nil
-let e = try { n!!; "no" } catch er { er.kind }
+let e = try {
+  n!!
+  "no"
+} catch er {
+  er.kind
+}
 assert_eq(e, "NilError")
 
 // Applies to an expression result.
-fn maybe(v) { v }
+fn maybe(v) {
+  v
+}
 assert_eq(maybe(7)!!, 7)
-let e2 = try { maybe(nil)!!; "no" } catch er { er.kind }
+let e2 = try {
+  maybe(nil)!!
+  "no"
+} catch er {
+  er.kind
+}
 assert_eq(e2, "NilError")
 
 // Combines with `??`: assert the coalesced result is non-nil.
-fn pick(v) -> Long { (v ?? 0)!! }
+fn pick(v) -> Long {
+  (v ?? 0)!!
+}
 assert_eq(pick(nil), 0)
 assert_eq(pick(9), 9)
 

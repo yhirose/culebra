@@ -3,23 +3,41 @@
 // non-nil values. Runtime check only (culebra's type checks are runtime).
 
 // --- Param + return annotations ---
-fn id(x: Long?) -> Long? { x }
+fn id(x: Long?) -> Long? {
+  x
+}
 assert_eq(id(5), 5)
 assert_eq(id(nil), nil)
 
 // Non-nil value of the wrong type is still rejected (param check runs
 // through dispatch, so a mismatch is a DispatchError).
-let e = try { id("s"); nil } catch er { er }
+let e = try {
+  id("s")
+  nil
+} catch er {
+  er
+}
 assert_eq(e.kind, "DispatchError")
 
 // --- Plain `Long` (no `?`) still rejects nil ---
-fn strict(x: Long) -> Long { x }
-let e2 = try { strict(nil); nil } catch er { er }
+fn strict(x: Long) -> Long {
+  x
+}
+let e2 = try {
+  strict(nil)
+  nil
+} catch er {
+  er
+}
 assert_eq(e2.kind, "DispatchError")
 
 // --- `?` on a Generic outer type ---
 fn first(xs: Array<Long>?) -> Long? {
-  if xs == nil { nil } else { xs[0] }
+  if xs == nil {
+    nil
+  } else {
+    xs[0]
+  }
 }
 assert_eq(first([10, 20]), 10)
 assert_eq(first(nil), nil)
@@ -29,15 +47,24 @@ let a: String? = nil
 assert_eq(a, nil)
 let b: String? = "hi"
 assert_eq(b, "hi")
-let e3 = try { let c: String? = 42; nil } catch er { er }
+let e3 = try {
+  let c: String? = 42
+  nil
+} catch er {
+  er
+}
 assert_eq(e3.kind, "TypeError")
 
 // --- Introspection: `T?` canonicalizes to `T | Nil` ---
-fn annotated(x: Long?) { x }
+fn annotated(x: Long?) {
+  x
+}
 assert_eq(annotated.params[0].type, "Long | Nil")
 
 // --- `?.` interplay sanity: `??` still works alongside `T?` ---
-fn opt(x: Long?) -> Long { x ?? 0 }
+fn opt(x: Long?) -> Long {
+  x ?? 0
+}
 assert_eq(opt(nil), 0)
 assert_eq(opt(7), 7)
 

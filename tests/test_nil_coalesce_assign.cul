@@ -5,22 +5,25 @@
 mut a = nil
 a ??= 5
 assert_eq(a, 5)
-a ??= 9            // a is non-nil -> unchanged
+a ??= 9  // a is non-nil -> unchanged
 assert_eq(a, 5)
 
 // Short-circuit: the RHS is not evaluated when the target is non-nil.
 mut calls = 0
-fn bump() { calls = calls + 1; 99 }
+fn bump() {
+  calls = calls + 1
+  99
+}
 
 mut b = 7
 b ??= bump()
 assert_eq(b, 7)
-assert_eq(calls, 0)   // bump() was not called
+assert_eq(calls, 0)  // bump() was not called
 
 mut c = nil
 c ??= bump()
 assert_eq(c, 99)
-assert_eq(calls, 1)   // bump() called exactly once
+assert_eq(calls, 1)  // bump() called exactly once
 
 // Works with any value type.
 mut s = nil

@@ -25,13 +25,24 @@ assert_eq(Compress.gunzip(Compress.gzip(u)), u)
 // (covered transitively: gzip uses the gzip wrapper, decoded by the same call)
 
 // --- errors: malformed input raises ValueError ---
-assert_throws("ValueError", fn () { Compress.gunzip("not gzip data at all") })
-let e = try { Compress.gunzip("not gzip data at all"); nil } catch e { e }
+assert_throws("ValueError", fn () {
+  Compress.gunzip("not gzip data at all")
+})
+let e = try {
+  Compress.gunzip("not gzip data at all")
+  nil
+} catch e {
+  e
+}
 assert_eq(e.message, "Compress.gunzip: invalid gzip data")
 
 // --- errors: a non-String argument raises TypeError (declared param type) ---
-assert_throws("TypeError", fn () { Compress.gzip(42) })
-assert_throws("TypeError", fn () { Compress.gunzip([1, 2, 3]) })
+assert_throws("TypeError", fn () {
+  Compress.gzip(42)
+})
+assert_throws("TypeError", fn () {
+  Compress.gunzip([1, 2, 3])
+})
 
 // --- first-class value: bound namespace method (slow-path conformance) ---
 let f = Compress.gzip
@@ -60,13 +71,24 @@ assert_eq(Compress.deflate(s, 6), Compress.deflate(s, level: 6))
 
 // An out-of-range level fails the same way a malformed gunzip input does:
 // ValueError, not a silent fallback to the default.
-assert_throws("ValueError", fn () { Compress.deflate(s, 99) })
-let de = try { Compress.deflate(s, 99); nil } catch e { e }
+assert_throws("ValueError", fn () {
+  Compress.deflate(s, 99)
+})
+let de = try {
+  Compress.deflate(s, 99)
+  nil
+} catch e {
+  e
+}
 assert_eq(de.message, "Compress.deflate: deflate init failed")
 
 // --- errors: argument types, matching gzip/gunzip's declared-param shape ---
-assert_throws("TypeError", fn () { Compress.deflate(42) })
-assert_throws("TypeError", fn () { Compress.deflate(s, "x") })
+assert_throws("TypeError", fn () {
+  Compress.deflate(42)
+})
+assert_throws("TypeError", fn () {
+  Compress.deflate(s, "x")
+})
 
 // --- first-class value + HOF, same conformance as gzip/gunzip above ---
 let d = Compress.deflate

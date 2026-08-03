@@ -7,9 +7,15 @@
 # --- type dispatch on an instance method ---
 class Calc {
   new() {}
-  go(x: Long)   { "long" }
-  go(x: String) { "string" }
-  go(x: Long, y: Long) { "two" }
+  go(x: Long) {
+    "long"
+  }
+  go(x: String) {
+    "string"
+  }
+  go(x: Long, y: Long) {
+    "two"
+  }
 }
 let c = Calc.new()
 assert_eq(c.go(1), "long")
@@ -18,9 +24,15 @@ assert_eq(c.go(2, 3), "two")
 
 # --- `self` is bound inside each overload body ---
 class Box {
-  new(n) { self.n = n }
-  add(x: Long)   { self.n + x }
-  add(x: String) { x.size() + self.n }
+  new(n) {
+    self.n = n
+  }
+  add(x: Long) {
+    self.n + x
+  }
+  add(x: String) {
+    x.size() + self.n
+  }
 }
 let b = Box.new(10)
 assert_eq(b.add(5), 15)
@@ -29,8 +41,12 @@ assert_eq(b.add("abc"), 13)
 # --- default param on one overload ---
 class D {
   new() {}
-  f(x: Long, y: Long = 100) { x + y }
-  f(x: String) { x.size() }
+  f(x: Long, y: Long = 100) {
+    x + y
+  }
+  f(x: String) {
+    x.size()
+  }
 }
 let d = D.new()
 assert_eq(d.f(1), 101)
@@ -39,9 +55,15 @@ assert_eq(d.f("qq"), 2)
 
 # --- keyword argument flows to the picked overload ---
 class Srv {
-  new() { self.base = 1000 }
-  handle(x: Long, scale: Long = 2) { self.base + x * scale }
-  handle(x: String) { x.size() }
+  new() {
+    self.base = 1000
+  }
+  handle(x: Long, scale: Long = 2) {
+    self.base + x * scale
+  }
+  handle(x: String) {
+    x.size()
+  }
 }
 let s = Srv.new()
 assert_eq(s.handle(5), 1010)
@@ -49,11 +71,19 @@ assert_eq(s.handle(5, scale: 10), 1050)
 assert_eq(s.handle("hey"), 3)
 
 # --- dispatch on a class-instance-typed param ---
-class Animal { new(n) { self.n = n } }
+class Animal {
+  new(n) {
+    self.n = n
+  }
+}
 class Zoo {
   new() {}
-  feed(a: Animal) { "animal" }
-  feed(x: Long)   { "count" }
+  feed(a: Animal) {
+    "animal"
+  }
+  feed(x: Long) {
+    "count"
+  }
 }
 let z = Zoo.new()
 assert_eq(z.feed(Animal.new("cat")), "animal")
@@ -61,47 +91,101 @@ assert_eq(z.feed(7), "count")
 
 # --- no matching overload raises a catchable DispatchError ---
 mut err = nil
-try { z.feed(1.5) } catch e { err = e.kind }
+try {
+  z.feed(1.5)
+} catch e {
+  err = e.kind
+}
 assert_eq(err, "DispatchError")
 
 # --- a single-method class is unaffected (bare method, no dispatcher) ---
-class S { new() {} only(x) { x * 2 } }
+class S {
+  new() {}
+  only(x) {
+    x * 2
+  }
+}
 assert_eq(S.new().only(21), 42)
 
 # --- callable instance overload still satisfies `Function` HOF use ---
-class Twice { new() {} __call__(n) { n * 2 } }
+class Twice {
+  new() {}
+  __call__(n) {
+    n * 2
+  }
+}
 class Apply {
   new() {}
-  run(f: Function, x: Long) { f(x) }
-  run(x: Long) { x }
+  run(f: Function, x: Long) {
+    f(x)
+  }
+  run(x: Long) {
+    x
+  }
 }
 let ap = Apply.new()
 assert_eq(ap.run(Twice.new(), 21), 42)
 assert_eq(ap.run(9), 9)
 
 # --- two same-named classes in different scopes stay isolated ---
-fn make_a() { class K { new(){} g(x: Long){"A"} g(x: String){"a"} }; K.new() }
-fn make_b() { class K { new(){} g(x: Long){"B"} g(x: String){"b"} }; K.new() }
+fn make_a() {
+  class K {
+    new() {}
+    g(x: Long) {
+      "A"
+    }
+    g(x: String) {
+      "a"
+    }
+  }
+  K.new()
+}
+fn make_b() {
+  class K {
+    new() {}
+    g(x: Long) {
+      "B"
+    }
+    g(x: String) {
+      "b"
+    }
+  }
+  K.new()
+}
 let ka = make_a()
 let kb = make_b()
 assert_eq(ka.g(1) + ka.g("x") + kb.g(1) + kb.g("x"), "AaBb")
 
 # --- an overloaded method still satisfies a trait (conformance arity) ---
-trait Shower { show(x) }
+trait Shower {
+  show(x)
+}
 class Shown {
   new() {}
-  show(x: Long)   { "n" }
-  show(x: String) { "s" }
+  show(x: Long) {
+    "n"
+  }
+  show(x: String) {
+    "s"
+  }
 }
-fn use_shower(s: Shower, v) { s.show(v) }
+fn use_shower(s: Shower, v) {
+  s.show(v)
+}
 assert_eq(use_shower(Shown.new(), 5), "n")
 assert_eq(use_shower(Shown.new(), "q"), "s")
 
 # --- an overloaded-method instance keeps `self` across an isolate ---
 class Counter {
-  new(n) { self.n = n }
-  bump(x: Long)   { self.n + x }
-  bump(x: String) { self.n }
+  new(n) {
+    self.n = n
+  }
+  bump(x: Long) {
+    self.n + x
+  }
+  bump(x: String) {
+    self.n
+  }
 }
 let bumped = Parallel.map([Counter.new(100), Counter.new(200)], |c| c.bump(5))
 assert_eq(bumped[0], 105)

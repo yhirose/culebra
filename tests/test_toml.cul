@@ -75,15 +75,23 @@ assert_eq(cm.y, 2)
 
 // --- stringify: scalars + section expansion ---
 assert_eq(TOML.stringify({a: 1, b: "x"}), "a = 1\nb = \"x\"\n")
-assert_eq(TOML.stringify({s: {host: "h", port: 80}}),
-          "\n[s]\nhost = \"h\"\nport = 80\n")
+assert_eq(
+  TOML.stringify({s: {host: "h", port: 80}}),
+  "\n[s]\nhost = \"h\"\nport = 80\n",
+)
 // floats always carry a decimal point so they round-trip as floats
 assert_eq(TOML.stringify({r: 2.0}), "r = 2.0\n")
 // arrays render inline; bools / strings as TOML literals
-assert_eq(TOML.stringify({xs: [1, 2, 3], ok: true}), "xs = [1, 2, 3]\nok = true\n")
+assert_eq(
+  TOML.stringify({xs: [1, 2, 3], ok: true}),
+  "xs = [1, 2, 3]\nok = true\n",
+)
 
 // --- sort_keys gives deterministic output ---
-assert_eq(TOML.stringify({b: 2, a: 1, c: 3}, sort_keys: true), "a = 1\nb = 2\nc = 3\n")
+assert_eq(
+  TOML.stringify({b: 2, a: 1, c: 3}, sort_keys: true),
+  "a = 1\nb = 2\nc = 3\n",
+)
 // positional form works too
 assert_eq(TOML.stringify({b: 2, a: 1}, true), "a = 1\nb = 2\n")
 
@@ -99,24 +107,47 @@ assert_eq(rt.server.port, 8080)
 assert_eq(TOML.stringify({"a b": 1}), "\"a b\" = 1\n")
 
 // --- errors: ValueError with line / col on malformed input ---
-let e1 = try { TOML.parse("x = "); nil } catch e { e }
+let e1 = try {
+  TOML.parse("x = ")
+  nil
+} catch e {
+  e
+}
 assert_eq(e1.kind, "ValueError")
 assert_true(e1.message.contains("TOML.parse"))
 assert_eq(e1.line, 1)
 assert_eq(e1.col, 5)
 
-let e2 = try { TOML.parse("ok = 1\nbad = \"unterminated"); nil } catch e { e }
+let e2 = try {
+  TOML.parse("ok = 1\nbad = \"unterminated")
+  nil
+} catch e {
+  e
+}
 assert_eq(e2.kind, "ValueError")
 assert_eq(e2.line, 2)
 
-let e3 = try { TOML.parse("[t]\nx 1"); nil } catch e { e }
+let e3 = try {
+  TOML.parse("[t]\nx 1")
+  nil
+} catch e {
+  e
+}
 assert_eq(e3.kind, "ValueError")
 assert_true(e3.message.contains("expected '='"))
 
 // --- type errors: parse wants a String, stringify wants a serializable Object ---
-assert_throws("TypeError", fn () { TOML.parse(42) })
-assert_throws("TypeError", fn () { TOML.stringify("nope") })
-assert_throws("TypeError", fn () { TOML.stringify({f: fn () { 1 }}) })
+assert_throws("TypeError", fn () {
+  TOML.parse(42)
+})
+assert_throws("TypeError", fn () {
+  TOML.stringify("nope")
+})
+assert_throws("TypeError", fn () {
+  TOML.stringify({f: fn () {
+    1
+  }})
+})
 
 // --- first-class value (slow-path conformance) ---
 let p = TOML.parse

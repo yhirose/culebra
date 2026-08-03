@@ -29,10 +29,10 @@ assert_eq(buf[2].name.upper(), "CAROL")
 assert_eq(buf[2].name[0..1], "C")
 
 // Capacity is bytes; exactly N fits, N+1 raises CapacityError.
-buf[0].name = "0123456789abcdef"          // 16 bytes, fits
+buf[0].name = "0123456789abcdef"  // 16 bytes, fits
 assert_eq(buf[0].name, "0123456789abcdef")
 try {
-  buf[0].name = "0123456789abcdefg"       // 17 bytes
+  buf[0].name = "0123456789abcdefg"  // 17 bytes
   assert_eq("no throw", "should have thrown")
 } catch e {
   assert_eq(e.kind, "CapacityError")
@@ -57,7 +57,7 @@ assert_eq(buf[2].name, "z")
 // Cross-isolate share: a child isolate writes FixedString fields into the
 // shared backing bytes (zero copy), the parent reads them back.
 shared = SharedBuffer.new(2, Row)
-worker = Isolate.spawn(fn() {
+worker = Isolate.spawn(fn () {
   shared[0].name = "from_child"
   shared[1].name = "second"
 })

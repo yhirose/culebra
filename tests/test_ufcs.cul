@@ -10,48 +10,67 @@
 #      ./build/culebra --jit tests/test_ufcs.cul
 
 # Free function as method on primitive
-double = fn (x) { x * 2 }
+double = fn (x) {
+  x * 2
+}
 assert_eq(42.double(), 84)
 assert_eq((-3).double(), -6)
 
 # UFCS on String
-word_count = fn (s) { s.split(' ').size() }
+word_count = fn (s) {
+  s.split(' ').size()
+}
 assert_eq('a b c'.word_count(), 3)
-assert_eq(''.word_count(), 1)   # empty string split on space yields [""]
+assert_eq(''.word_count(), 1)  # empty string split on space yields [""]
 
 # UFCS on Array
-sum = fn (xs) { xs.reduce(0, fn (a, x) { a + x }) }
+sum = fn (xs) {
+  xs.reduce(0, fn (a, x) {
+    a + x
+  })
+}
 assert_eq([1, 2, 3, 4].sum(), 10)
 assert_eq([].sum(), 0)
 
 # UFCS with multiple args: first is receiver, rest map normally
-scale = fn (x, factor) { x * factor }
+scale = fn (x, factor) {
+  x * factor
+}
 assert_eq(7.scale(3), 21)
 assert_eq(10.scale(-2), -20)
 
 # Existing method takes priority over same-named free function
-size = fn (x) { inspect('user size NOT called'); 99 }
-assert_eq([1, 2, 3].size(), 3)          # Array builtin wins
-assert_eq('hello'.size(), 5)             # String builtin wins
-assert_eq({a: 1, b: 2}.size(), 2)        # Object builtin wins
+size = fn (x) {
+  inspect('user size NOT called')
+  99
+}
+assert_eq([1, 2, 3].size(), 3)     # Array builtin wins
+assert_eq('hello'.size(), 5)       # String builtin wins
+assert_eq({a: 1, b: 2}.size(), 2)  # Object builtin wins
 
 # Object HOF via UFCS
 map_keys_to = fn (o, f) {
   mut r = []
-  for k in o.keys() { r.push(f(k)) }
+  for k in o.keys() {
+    r.push(f(k))
+  }
   r
 }
 o = {b: 2, a: 1}
-ks = o.map_keys_to(fn (k) { k })
+ks = o.map_keys_to(fn (k) {
+  k
+})
 assert_eq(ks.size(), 2)
 assert_true(ks[0] == 'b' && ks[1] == 'a')
 
 # Chains mixing builtins and UFCS
-incr = fn (x) { x + 1 }
+incr = fn (x) {
+  x + 1
+}
 result = [1, 2, 3]
-  .map(fn (x) { x * 10 })          # builtin → [10, 20, 30]
-  .sum()                            # UFCS → 60
-  .incr()                           # UFCS → 61
+  .map(fn (x) { x * 10 })  # builtin → [10, 20, 30]
+  .sum()                   # UFCS → 60
+  .incr()                  # UFCS → 61
 assert_eq(result, 61)
 
 # UFCS with 0-param function — receiver goes to __ARGS__
@@ -75,25 +94,37 @@ assert_eq('world'.greet(), 'hello world')
 # this previously failed — the UFCS method name was skipped by the
 # free-variable walk, so `(5).incr()` inside a closure couldn't find the
 # captured `incr` that `incr(5)` resolves fine.
-bump = fn (x) { x + 1 }
-in_fn = fn () { (5).bump() }
+bump = fn (x) {
+  x + 1
+}
+in_fn = fn () {
+  5.bump()
+}
 assert_eq(in_fn(), 6)
-in_lambda = || (5).bump()
+in_lambda = || 5.bump()
 assert_eq(in_lambda(), 6)
 # UFCS on an Array receiver inside a closure, too.
-listlen = fn (xs) { xs.reduce(0, fn (a, _x) { a + 1 }) }
-in_fn2 = fn () { [10, 20, 30].listlen() }
+listlen = fn (xs) {
+  xs.reduce(0, fn (a, _x) {
+    a + 1
+  })
+}
+in_fn2 = fn () {
+  [10, 20, 30].listlen()
+}
 assert_eq(in_fn2(), 3)
 # A builtin method name still wins over the same-named outer `size` fn
 # (defined above) even inside a closure — UFCS must not capture/shadow it
 # (capturing the outer `size` here used to crash closure setup).
-in_fn3 = fn () { [1, 2, 3, 4].size() }
+in_fn3 = fn () {
+  [1, 2, 3, 4].size()
+}
 assert_eq(in_fn3(), 4)
 
 # UFCS of the sequence-factory globals `range` / `iota`: the receiver is
 # their first positional arg, so `(n).range()` is `range(n)`.
-assert_eq((3).range().collect(), [0, 1, 2])
-assert_eq((1).range(4).collect(), [1, 2, 3])
-assert_eq((3).iota(), [0, 1, 2])
+assert_eq(3.range().collect(), [0, 1, 2])
+assert_eq(1.range(4).collect(), [1, 2, 3])
+assert_eq(3.iota(), [0, 1, 2])
 # `range`'s `step:` kwarg threads through UFCS too.
-assert_eq((0).range(10, step: 2).collect(), [0, 2, 4, 6, 8])
+assert_eq(0.range(10, step: 2).collect(), [0, 2, 4, 6, 8])

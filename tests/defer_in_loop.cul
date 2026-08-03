@@ -5,31 +5,45 @@
 
 # Basic per-iteration firing.
 for i in [1, 2] {
-  defer { inspect("c") }
+  defer {
+    inspect("c")
+  }
   inspect(i)
 }
 inspect("---")
 
 # continue runs the current iteration's defers before the next iteration.
 for i in [1, 2, 3] {
-  defer { inspect("cont:" + i.to_string()) }
-  if i == 2 { continue }
+  defer {
+    inspect("cont:" + i.to_string())
+  }
+  if i == 2 {
+    continue
+  }
   inspect(i)
 }
 inspect("---")
 
 # break runs the current iteration's defers before leaving the loop.
 for i in [1, 2, 3] {
-  defer { inspect("brk:" + i.to_string()) }
-  if i == 2 { break }
+  defer {
+    inspect("brk:" + i.to_string())
+  }
+  if i == 2 {
+    break
+  }
   inspect(i)
 }
 inspect("---")
 
 # Multiple defers fire LIFO within an iteration.
 for i in [1, 2] {
-  defer { inspect("a") }
-  defer { inspect("b") }
+  defer {
+    inspect("a")
+  }
+  defer {
+    inspect("b")
+  }
   inspect(i)
 }
 inspect("---")
@@ -37,16 +51,37 @@ inspect("---")
 # A nested block's defer fires at the block exit; the loop body's defer at
 # the iteration exit.
 for i in [1, 2] {
-  { defer { inspect("inner") } }
-  defer { inspect("outer") }
+  {
+    defer {
+      inspect("inner")
+    }
+  }
+  defer {
+    inspect("outer")
+  }
   inspect(i)
 }
 inspect("---")
 
 # Each for-loop kind (array / range / string / object-keys) routes through
 # the same per-iteration defer path.
-for i in 0..2 { defer { inspect("r") }; inspect(i) }
+for i in 0..2 {
+  defer {
+    inspect("r")
+  }
+  inspect(i)
+}
 inspect("---")
-for ch in "ab" { defer { inspect("s") }; inspect(ch) }
+for ch in "ab" {
+  defer {
+    inspect("s")
+  }
+  inspect(ch)
+}
 inspect("---")
-for k in {x: 1, y: 2} { defer { inspect("o") }; inspect(k) }
+for k in {x: 1, y: 2} {
+  defer {
+    inspect("o")
+  }
+  inspect(k)
+}

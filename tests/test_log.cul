@@ -24,9 +24,19 @@ Log.set_level("info")
 
 // Invalid level / format raise (a thrown String, catchable). Identical on
 // every backend.
-let e1 = try { Log.set_level("bogus"); "no-error" } catch e { e }
+let e1 = try {
+  Log.set_level("bogus")
+  "no-error"
+} catch e {
+  e
+}
 assert_true(e1.contains("unknown level 'bogus'"))
-let e2 = try { Log.set_format("xml"); "no-error" } catch e { e }
+let e2 = try {
+  Log.set_format("xml")
+  "no-error"
+} catch e {
+  e
+}
 assert_true(e2.contains("unknown format 'xml'"))
 
 IO.inspect("test_log OK")

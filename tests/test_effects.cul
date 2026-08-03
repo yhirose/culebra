@@ -37,7 +37,7 @@ assert_eq(a, 11)
 effect fn fail()
 effect fn risky() {
   perform fail()
-  99            // unreachable when the handler doesn't resume
+  99  // unreachable when the handler doesn't resume
 }
 let b = handle {
   risky()
@@ -72,7 +72,7 @@ effect fn doubler() {
 let d = handle {
   doubler()
 } with twice(n, resume) {
-  resume(n * 2)   // n=5 -> resume 10 -> y=10 -> 110
+  resume(n * 2)  // n=5 -> resume 10 -> y=10 -> 110
 }
 assert_eq(d, 110)
 
@@ -83,7 +83,9 @@ assert_eq(e1, 2)
 assert_eq(e2, 14)
 
 // --- effect-free code is completely unaffected ---
-fn plain(n) { n * n }
+fn plain(n) {
+  n * n
+}
 assert_eq(plain(6), 36)
 
 // === A-normalization: expression-nested perform ==========================
@@ -102,7 +104,9 @@ effect fn anf_binary() {
 assert_eq(handle { anf_binary() } with anf_get(resume) { resume(41) }, 42)
 
 // perform as a positional call argument
-fn add2(a, b) { a + b }
+fn add2(a, b) {
+  a + b
+}
 effect fn anf_arg() {
   let y = add2(perform anf_get(), 2)
   y
@@ -130,8 +134,10 @@ effect fn anf_nested() {
   w
 }
 // inner wrap(1) -> 101; outer wrap(101) -> 201
-assert_eq(handle { anf_nested() } with anf_wrap(v, resume) { resume(v + 100) },
-          201)
+assert_eq(
+  handle { anf_nested() } with anf_wrap(v, resume) { resume(v + 100) },
+  201,
+)
 
 // perform in a return expression
 effect fn anf_ret() {
@@ -149,7 +155,10 @@ assert_eq(handle { anf_index() } with anf_get(resume) { resume(1) }, 20)
 
 // a left operand's side effect runs before the suspension it precedes
 mut anf_trace = []
-fn anf_se(tag, val) { anf_trace.push(tag); val }
+fn anf_se(tag, val) {
+  anf_trace.push(tag)
+  val
+}
 effect fn anf_order_fn() {
   let q = anf_se("left", 100) + perform anf_get()
   q
@@ -196,12 +205,18 @@ effect fn cf_branch(f) {
   else if f == 1 { let b = perform cf_choose(1); b * 2 }
   else { let c = perform cf_choose(2); c + 100 }
 }
-assert_eq(handle { cf_branch(0) } with cf_choose(x, resume) { resume(x + 10) },
-          10)
-assert_eq(handle { cf_branch(1) } with cf_choose(x, resume) { resume(x + 10) },
-          22)
-assert_eq(handle { cf_branch(2) } with cf_choose(x, resume) { resume(x + 10) },
-          112)
+assert_eq(
+  handle { cf_branch(0) } with cf_choose(x, resume) { resume(x + 10) },
+  10,
+)
+assert_eq(
+  handle { cf_branch(1) } with cf_choose(x, resume) { resume(x + 10) },
+  22,
+)
+assert_eq(
+  handle { cf_branch(2) } with cf_choose(x, resume) { resume(x + 10) },
+  112,
+)
 
 // for-in body performs (desugared to while + iterator)
 effect fn cf_each()
@@ -213,8 +228,10 @@ effect fn cf_iterate(xs) {
   }
   acc
 }
-assert_eq(handle { cf_iterate([10, 20, 30]) } with cf_each(resume) { resume(1) },
-          [11, 21, 31])
+assert_eq(
+  handle { cf_iterate([10, 20, 30]) } with cf_each(resume) { resume(1) },
+  [11, 21, 31],
+)
 
 // break / continue inside a while carrying a perform
 effect fn cf_tick()
@@ -232,9 +249,12 @@ effect fn cf_counted(n) {
 }
 mut cf_ticks = [1, 0, 2, 3]
 mut cf_ti = 0
-assert_eq(handle { cf_counted(4) } with cf_tick(resume) {
+assert_eq(
+  handle { cf_counted(4) } with cf_tick(resume) {
   let v = cf_ticks[cf_ti]; cf_ti = cf_ti + 1; resume(v)
-}, 6)
+},
+  6,
+)
 
 // return early out of a loop
 effect fn cf_probe()
@@ -249,9 +269,12 @@ effect fn cf_finder(n) {
 }
 mut cf_hits = [false, false, true, false]
 mut cf_pi = 0
-assert_eq(handle { cf_finder(4) } with cf_probe(resume) {
+assert_eq(
+  handle { cf_finder(4) } with cf_probe(resume) {
   let h = cf_hits[cf_pi]; cf_pi = cf_pi + 1; resume(h)
-}, 2)
+},
+  2,
+)
 
 // --- throw as a terminal statement in an effect / handle body ---
 // `throw` never yields a value and never falls through, so it lowers to a
@@ -265,17 +288,18 @@ effect fn th_body() {
   let x = perform th_ask()
   throw "boom"
 }
-assert_eq(
-  try { handle { th_body() } with th_ask(resume) { resume(1) } }
-  catch e { "caught:" + e },
-  "caught:boom")
+assert_eq(try {
+    handle { th_body() } with th_ask(resume) { resume(1) }
+  } catch e {
+    "caught:" + e
+  }, "caught:boom")
 
 // throw directly in a handle body (lexical position)
-assert_eq(
-  try {
+assert_eq(try {
     handle { let x = perform th_ask(); throw "hb" } with th_ask(resume) { resume(7) }
-  } catch e { "caught:" + e },
-  "caught:hb")
+  } catch e {
+    "caught:" + e
+  }, "caught:hb")
 
 // interior throw skips the (unreachable) tail expression
 effect fn th_interior() {
@@ -283,10 +307,11 @@ effect fn th_interior() {
   throw "mid"
   x + 1
 }
-assert_eq(
-  try { handle { th_interior() } with th_ask(resume) { resume(1) } }
-  catch e { e },
-  "mid")
+assert_eq(try {
+    handle { th_interior() } with th_ask(resume) { resume(1) }
+  } catch e {
+    e
+  }, "mid")
 
 // throw guarded by an if arm; the other arm returns normally
 effect fn th_guard(flag) {
@@ -294,15 +319,19 @@ effect fn th_guard(flag) {
   if flag { throw "hit" } else { x }
 }
 assert_eq(handle { th_guard(false) } with th_ask(resume) { resume(9) }, 9)
-assert_eq(
-  try { handle { th_guard(true) } with th_ask(resume) { resume(9) } }
-  catch e { e },
-  "hit")
+assert_eq(try {
+    handle { th_guard(true) } with th_ask(resume) { resume(9) }
+  } catch e {
+    e
+  }, "hit")
 
 // a thrown effect body escapes an enclosing generator's iteration too
 fn th_gen() {
-  yield try { handle { th_body() } with th_ask(resume) { resume(0) } }
-        catch e { "g:" + e }
+  yield try {
+    handle { th_body() } with th_ask(resume) { resume(0) }
+  } catch e {
+    "g:" + e
+  }
 }
 assert_eq(th_gen().collect(), ["g:boom"])
 
@@ -313,8 +342,16 @@ assert_eq(th_gen().collect(), ["g:boom"])
 // read back unbound — same contract tests/test_generator_self.cul pins for
 // _Gen_. Both backends agreed while this was broken, so difftest cannot see
 // it; these need value asserts.
-fn pl_mk_plain() { return fn () { 1 } }
-fn pl_mk_self() { return fn () { self } }
+fn pl_mk_plain() {
+  return fn () {
+    1
+  }
+}
+fn pl_mk_self() {
+  return fn () {
+    self
+  }
+}
 effect fn pl_ask()
 
 // _EffComp_: an effectful fn's body
@@ -326,18 +363,23 @@ effect fn pl_comp() {
   perform pl_ask()
   [f == f, holder.s().tag]
 }
-assert_eq(handle { pl_comp() } with pl_ask(resume) { resume(nil) },
-          [true, "holder"])
+assert_eq(
+  handle { pl_comp() } with pl_ask(resume) { resume(nil) },
+  [true, "holder"],
+)
 
 // _EffBody_: the handle body itself
-assert_eq(handle {
+assert_eq(
+  handle {
   let f = pl_mk_plain()
   let s = pl_mk_self()
   let holder = { tag: "holder" }
   holder.s = s
   perform pl_ask()
   [f == f, holder.s().tag]
-} with pl_ask(resume) { resume(nil) }, [true, "holder"])
+} with pl_ask(resume) { resume(nil) },
+  [true, "holder"],
+)
 
 // --- `self` and the two lowered bodies --------------------------------------
 // An effect fn is a named declaration that cannot be a class member, so its
@@ -347,8 +389,12 @@ assert_eq(handle {
 // reading `self` there is ordinary code.
 effect fn sf_ask()
 class SelfHolder {
-  new(v) { self.v = v }
-  run() { return handle { self.v + perform sf_ask() } with sf_ask(resume) { resume(10) } }
+  new(v) {
+    self.v = v
+  }
+  run() {
+    return handle { self.v + perform sf_ask() } with sf_ask(resume) { resume(10) }
+  }
   runNested() {
     return handle { (fn () { self.v })() + perform sf_ask() }
            with sf_ask(resume) { resume(100) }
@@ -366,9 +412,12 @@ effect fn sf_comp() {
   r
 }
 assert_eq(handle { sf_comp() } with sf_ask(resume) { resume(nil) }, "NameError")
-assert_eq(handle {
+assert_eq(
+  handle {
   let f = pl_mk_self()
   let r = try { f(); "no error" } catch e { e.kind }
   perform sf_ask()
   r
-} with sf_ask(resume) { resume(nil) }, "NameError")
+} with sf_ask(resume) { resume(nil) },
+  "NameError",
+)

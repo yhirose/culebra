@@ -11,9 +11,15 @@
 
 # --- Tensor: builtin methods win over same-named globals ---
 
-fn sum(o) { "ufcs sum" }
-fn shape(o) { "ufcs shape" }
-fn to_array(o) { "ufcs to_array" }
+fn sum(o) {
+  "ufcs sum"
+}
+fn shape(o) {
+  "ufcs shape"
+}
+fn to_array(o) {
+  "ufcs to_array"
+}
 
 let t = Tensor.zeros([2, 3])
 assert_eq(t.sum(), 0.0)
@@ -22,62 +28,89 @@ assert_eq(t.to_array(), [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
 
 # --- Iterator-shaped receiver: lazy method set wins over globals ---
 
-fn map(o, f) { "ufcs map" }
-fn collect(o) { "ufcs collect" }
-fn take(o, n) { "ufcs take" }
+fn map(o, f) {
+  "ufcs map"
+}
+fn collect(o) {
+  "ufcs collect"
+}
+fn take(o, n) {
+  "ufcs take"
+}
 
-assert_eq([1, 2, 3].iter().map(fn (x) { x * 2 }).collect(), [2, 4, 6])
+assert_eq([1, 2, 3].iter().map(fn (x) {
+      x * 2
+    }).collect(), [2, 4, 6])
 assert_eq([1, 2, 3].iter().take(2).collect(), [1, 2])
 
 # A user iterator object (duck-typed next/has_next) also resolves the
 # lazy set ahead of the globals.
 fn counter(limit) {
   mut i = 0
-  {
-    has_next: fn () { i < limit },
-    next: fn () {
+  {has_next: fn () {
+      i < limit
+    }, next: fn () {
       i = i + 1
       i
-    },
-  }
+    }}
 }
-assert_eq(counter(3).map(fn (x) { x * 10 }).collect(), [10, 20, 30])
+assert_eq(counter(3).map(fn (x) {
+      x * 10
+    }).collect(), [10, 20, 30])
 
 # --- Controls: eager builtins keep winning (pre-existing behavior) ---
 
-fn size(o) { "ufcs size" }
+fn size(o) {
+  "ufcs size"
+}
 assert_eq([1, 2].size(), 2)
 assert_eq("ab".size(), 2)
 assert_eq({a: 1}.size(), 1)
 
 # UFCS still fires for a receiver that resolves nothing (non-builtin name).
-fn tripled(x) { x * 3 }
-assert_eq((7).tripled(), 21)
+fn tripled(x) {
+  x * 3
+}
+assert_eq(7.tripled(), 21)
 
 # --- Non-Function bindings never take the UFCS path ---
 # interp gates on the binding's type (eval_call); the JIT runtime-checks the
 # loaded value. Both fall through to normal dispatch and its usual errors.
 
 let shadow = 5
-assert_throws('TypeError', fn () { (3).shadow() })        # scalar member error
-assert_throws('TypeError', fn () { ({a: 1}).shadow() })   # expected Function, got Nil
-assert_throws('TypeError', fn () { (3).shadow(k: 1) })    # kwargs shape, same gate
+assert_throws('TypeError', fn () {
+  3.shadow()
+})  # scalar member error
+assert_throws('TypeError', fn () {
+  {a: 1}.shadow()
+})  # expected Function, got Nil
+assert_throws('TypeError', fn () {
+  3.shadow(k: 1)
+})  # kwargs shape, same gate
 
 # --- Function receivers own the three introspection names ---
 # `g.params()` reads the introspection view (never callable) on both
 # backends; a same-named free function must not hijack it. Non-Function
 # receivers resolve nothing, so UFCS still fires for them.
 
-fn probe() { 1 }
-fn params(o) { "ufcs params" }
-assert_throws('TypeError', fn () { probe.params() })
-assert_eq((5).params(), "ufcs params")
+fn probe() {
+  1
+}
+fn params(o) {
+  "ufcs params"
+}
+assert_throws('TypeError', fn () {
+  probe.params()
+})
+assert_eq(5.params(), "ufcs params")
 
 # An Object receiver carrying its own `params` reaches the same property arm.
 # (The +1-owned introspection view it reads is released by the arm itself;
 # the RC-leak net for that lives in the difftest leak corpus, which runs with
 # the conservative backstop off.)
-let holder = {params: fn () { [1, 2, 3] }}
+let holder = {params: fn () {
+  [1, 2, 3]
+}}
 assert_eq(holder.params(), [1, 2, 3])
 assert_eq(holder.params(), [1, 2, 3])
 
@@ -85,52 +118,70 @@ assert_eq(holder.params(), [1, 2, 3])
 # The receiver test decides per receiver, so the same name is a builtin on
 # one value and a UFCS candidate on the next.
 
-fn push(o, v) { "ufcs push:" + type_of(o) }
+fn push(o, v) {
+  "ufcs push:" + type_of(o)
+}
 
-assert_eq((5).push(1), "ufcs push:Long")
-assert_eq((1.5).push(1), "ufcs push:Float")
+assert_eq(5.push(1), "ufcs push:Long")
+assert_eq(1.5.push(1), "ufcs push:Float")
 assert_eq(true.push(1), "ufcs push:Bool")
 assert_eq(nil.push(1), "ufcs push:Nil")
-assert_eq("ab".push(1), "ufcs push:String")      # String has no push
-assert_eq((1, 2).push(1), "ufcs push:Tuple")     # Tuple is immutable
-assert_eq({a: 1}.push(1), "ufcs push:Object")    # not a dict builtin
+assert_eq("ab".push(1), "ufcs push:String")    # String has no push
+assert_eq((1, 2).push(1), "ufcs push:Tuple")   # Tuple is immutable
+assert_eq({a: 1}.push(1), "ufcs push:Object")  # not a dict builtin
 assert_eq(probe.push(1), "ufcs push:Function")
 
 mut arr = [1, 2]
-arr.push(3)                                       # Array resolves it: builtin
+arr.push(3)  # Array resolves it: builtin
 assert_eq(arr, [1, 2, 3])
-assert_eq({1, 2}.push(3), "ufcs push:Set")        # Set mutates via `add`
+assert_eq({1, 2}.push(3), "ufcs push:Set")  # Set mutates via `add`
 assert_eq({1, 2}.size(), 2)
 
 # A class instance resolves dict builtins but not Array/String ones.
 class Box {
-  new(v) { self.v = v }
+  new(v) {
+    self.v = v
+  }
 }
 assert_eq(Box(1).push(9), "ufcs push:Object")
-assert_eq(type_of(Box(1).size()), "Long")         # dict `size`, not "ufcs size"
+assert_eq(type_of(Box(1).size()), "Long")  # dict `size`, not "ufcs size"
 
 # An own property beats UFCS even when it isn't callable — the receiver
 # "has" the name, so interp never reaches its UFCS arm.
-assert_throws('TypeError', fn () { ({push: 5}).push(1) })
+assert_throws('TypeError', fn () {
+  {push: 5}.push(1)
+})
 
 # A class method of the same name still wins over both.
 class Stack {
-  new() { self.items = [] }
-  push(v) { "method push" }
+  new() {
+    self.items = []
+  }
+  push(v) {
+    "method push"
+  }
 }
 assert_eq(Stack().push(1), "method push")
 
 # kwargs reach the free function on a non-resolving receiver, while a real
 # builtin receiver keeps rejecting keywords.
-fn insert(o, at = 0) { "ufcs insert:" + to_string(at) }
-assert_eq((5).insert(at: 3), "ufcs insert:3")
-assert_throws('TypeError', fn () { [1, 2].insert(at: 3) })
+fn insert(o, at = 0) {
+  "ufcs insert:" + to_string(at)
+}
+assert_eq(5.insert(at: 3), "ufcs insert:3")
+assert_throws('TypeError', fn () {
+  [1, 2].insert(at: 3)
+})
 
 # The receiver is positional[0], so a typed first param rejects it exactly
 # as a direct `windows("ab", 2)` would.
-fn windows(o: Long, n) { o + n }
-assert_eq((5).windows(2), 7)
-assert_throws('DispatchError', fn () { "ab".windows(2) })
+fn windows(o: Long, n) {
+  o + n
+}
+assert_eq(5.windows(2), 7)
+assert_throws('DispatchError', fn () {
+  "ab".windows(2)
+})
 
 # Arguments are compiled inside the arm that runs — a throwing argument
 # expression must not double-evaluate the receiver or strand it.
@@ -139,7 +190,7 @@ fn bump() {
   calls = calls + 1
   calls
 }
-assert_eq((5).push(bump()), "ufcs push:Long")
+assert_eq(5.push(bump()), "ufcs push:Long")
 assert_eq(calls, 1)
 
 # A namespace keeps answering its own members: the receiver test claims every
@@ -153,15 +204,19 @@ assert_eq(IO.keys().contains("println"), true)
 # These two have their own tag dispatch (Set mutate / dict key removal), which
 # used to raise on every other receiver instead of yielding to a free function.
 
-fn add(o, v) { "ufcs add:" + type_of(o) }
-fn remove(o, v) { "ufcs remove:" + type_of(o) }
+fn add(o, v) {
+  "ufcs add:" + type_of(o)
+}
+fn remove(o, v) {
+  "ufcs remove:" + type_of(o)
+}
 
-assert_eq((5).add(1), "ufcs add:Long")
+assert_eq(5.add(1), "ufcs add:Long")
 assert_eq("ab".add(1), "ufcs add:String")
 assert_eq((1, 2).add(1), "ufcs add:Tuple")
-assert_eq([1, 2].add(1), "ufcs add:Array")     # Array mutates via `push`
-assert_eq(({a: 1}).add(1), "ufcs add:Object")  # not a dict builtin
-assert_eq((5).remove(1), "ufcs remove:Long")
+assert_eq([1, 2].add(1), "ufcs add:Array")   # Array mutates via `push`
+assert_eq({a: 1}.add(1), "ufcs add:Object")  # not a dict builtin
+assert_eq(5.remove(1), "ufcs remove:Long")
 assert_eq([1, 2].remove(9), "ufcs remove:Array")
 
 # The receivers that DO resolve them keep their builtin.
@@ -176,14 +231,23 @@ assert_eq(dict, {b: 2})
 
 # An own method wins over both, and a real Set still rejects keywords.
 class Acc {
-  new() { self.n = 0 }
-  add(v) { self.n = self.n + v; self.n }
+  new() {
+    self.n = 0
+  }
+  add(v) {
+    self.n = self.n + v
+    self.n
+  }
 }
 assert_eq(Acc().add(5), 5)
-assert_eq(({add: fn (v) { "own add" }}).add(7), "own add")
-assert_throws('TypeError', fn () { {1, 2}.add(x: 1) })
+assert_eq({add: fn (v) {
+    "own add"
+  }}.add(7), "own add")
+assert_throws('TypeError', fn () {
+  {1, 2}.add(x: 1)
+})
 # ...while a non-resolving receiver binds the keyword through the free function.
-assert_eq((5).add(v: 1), "ufcs add:Long")
+assert_eq(5.add(v: 1), "ufcs add:Long")
 
 # The argument expression is compiled inside the arm that runs, so it is
 # evaluated exactly once no matter which arm that is.
@@ -192,7 +256,7 @@ fn tick() {
   adds = adds + 1
   adds
 }
-assert_eq((5).add(tick()), "ufcs add:Long")
+assert_eq(5.add(tick()), "ufcs add:Long")
 assert_eq(adds, 1)
 mut sink = {8, 9}
 sink.add(tick())
@@ -204,20 +268,30 @@ assert_eq(sink.size(), 3)
 # builtin-named method inside a nested fn must capture the name like any
 # other read. Every case below is a candidate the enclosing scope binds.
 
-fn nested_global(x, y) { x.remove(y) }
+fn nested_global(x, y) {
+  x.remove(y)
+}
 assert_eq(nested_global(5, 1), "ufcs remove:Long")
 
 fn nested_outer_local() {
-  let remove = fn (o, v) { "local remove" }
-  fn inner(x, y) { x.remove(y) }
+  let remove = fn (o, v) {
+    "local remove"
+  }
+  fn inner(x, y) {
+    x.remove(y)
+  }
   inner(5, 1)
 }
 assert_eq(nested_outer_local(), "local remove")
 
 # …and the builtin still wins inside the nested fn on a receiver that has it.
 fn nested_builtin_wins() {
-  let size = fn (o) { "local size" }
-  fn inner(a) { a.size() }
+  let size = fn (o) {
+    "local size"
+  }
+  fn inner(a) {
+    a.size()
+  }
   inner([1, 2, 3])
 }
 assert_eq(nested_builtin_wins(), 3)
@@ -225,29 +299,47 @@ assert_eq(nested_builtin_wins(), 3)
 # A closure named after a builtin method it calls on its own argument: the
 # capture must resolve to the enclosing binding, not to the closure's cell
 # before it exists.
-let map = fn (a) { a.map(fn (x) { x + 1 }) }
+let map = fn (a) {
+  a.map(fn (x) {
+    x + 1
+  })
+}
 assert_eq(map([1, 2]), [2, 3])
 
 # A candidate declared AFTER the closure that mentions it (implicit binding,
 # so the forward-ref cell is pre-allocated for a bare assignment too).
-let late = fn (x) { x.contains(9) }
-contains = fn (o, v) { "late contains:" + to_string(v) }
+let late = fn (x) {
+  x.contains(9)
+}
+contains = fn (o, v) {
+  "late contains:" + to_string(v)
+}
 assert_eq(late(5), "late contains:9")
-assert_eq(late([9, 8, 7]), true)   # Array resolves `contains`: builtin
+assert_eq(late([9, 8, 7]), true)  # Array resolves `contains`: builtin
 
 # A candidate name bound in a block that has already closed is out of reach:
 # the receiver answers on its own. (The enclosing locals set is flat per
 # function, so the name still reaches the capture list — it just binds nil.)
-for r in [1, 2] { let sorted = r }
-fn out_of_reach(a) { a.sorted() }
+for r in [1, 2] {
+  let sorted = r
+}
+fn out_of_reach(a) {
+  a.sorted()
+}
 assert_eq(out_of_reach([2, 1]), [1, 2])
-assert_throws('TypeError', fn () { out_of_reach(5) })
+assert_throws('TypeError', fn () {
+  out_of_reach(5)
+})
 
 # The genuine binding still wins when the same name is BOTH called as a
 # method and read as a variable, in either order.
 fn both_uses() {
-  let step_by = fn (o, n) { "local step_by" }
-  fn inner(a) { [a.step_by(2), type_of(step_by)] }
+  let step_by = fn (o, n) {
+    "local step_by"
+  }
+  fn inner(a) {
+    [a.step_by(2), type_of(step_by)]
+  }
   inner(5)
 }
 assert_eq(both_uses(), ["local step_by", "Function"])
@@ -260,54 +352,87 @@ assert_eq(both_uses(), ["local step_by", "Function"])
 # `to_string` on a String-like is the value method, even with a same-named
 # global in scope; every other receiver still reaches that global.
 fn to_string_shadowed() {
-  let to_string = fn (x) { "shadow" }
-  [("ab").to_string(), ("ab").view().to_string(), (5).to_string(),
-   [1, 2].to_string()]
+  let to_string = fn (x) {
+    "shadow"
+  }
+  ["ab".to_string(), "ab".view().to_string(), 5.to_string(), [1, 2].to_string()]
 }
 assert_eq(to_string_shadowed(), ["ab", "ab", "shadow", "shadow"])
-assert_eq((5).to_string(), "5")
+assert_eq(5.to_string(), "5")
 assert_eq({a: 1}.to_string(), to_string({a: 1}))
 
 # `add` resolves on a Set at its one declared arity; any other arity is the
 # interp's ArityError, and a non-Set receiver is free for UFCS.
 fn add_shadowed() {
-  let add = fn (a, b) { "shadow" }
-  [(5).add(1), [1].add(1, 2)]
+  let add = fn (a, b) {
+    "shadow"
+  }
+  [5.add(1), [1].add(1, 2)]
 }
 assert_eq(add_shadowed(), ["shadow", "shadow"])
-assert_throws('ArityError', fn () { {1, 2}.add() })
-assert_throws('ArityError', fn () { {1, 2}.add(1, 2) })
-assert_throws('TypeError', fn () { {1, 2}.add(x: 1) })
+assert_throws('ArityError', fn () {
+  {1, 2}.add()
+})
+assert_throws('ArityError', fn () {
+  {1, 2}.add(1, 2)
+})
+assert_throws('TypeError', fn () {
+  {1, 2}.add(x: 1)
+})
 
 # Wrong arity picks its message by receiver: the String value method for a
 # String-like, the arity-1 global for everything else.
-assert_throws('ArityError', fn () { ("ab").to_string(9) })
-assert_throws('ArityError', fn () { (5).to_string(9) })
-assert_throws('TypeError', fn () { ("ab").to_string(x: 1) })
-assert_throws('TypeError', fn () { (5).to_string(x: 1) })
+assert_throws('ArityError', fn () {
+  "ab".to_string(9)
+})
+assert_throws('ArityError', fn () {
+  5.to_string(9)
+})
+assert_throws('TypeError', fn () {
+  "ab".to_string(x: 1)
+})
+assert_throws('TypeError', fn () {
+  5.to_string(x: 1)
+})
 
 # A bare reference to either is not a first-class value on a receiver that
 # resolves it — and stays an ordinary miss on one that doesn't.
-assert_throws('TypeError', fn () { ("ab").to_string })
-assert_throws('TypeError', fn () { {1, 2}.add })
+assert_throws('TypeError', fn () {
+  "ab".to_string
+})
+assert_throws('TypeError', fn () {
+  {1, 2}.add
+})
 assert_eq({a: 1}.add, nil)
 
 # A user-defined method of the same name still wins.
 class Adder {
-  init() { self.n = 0 }
-  add(a, b) { a + b }
-  to_string() { "Adder" }
+  init() {
+    self.n = 0
+  }
+  add(a, b) {
+    a + b
+  }
+  to_string() {
+    "Adder"
+  }
 }
 assert_eq(Adder().add(2, 3), 5)
 assert_eq(Adder().to_string(), "Adder")
-assert_eq({add: fn (v) { "own add:" + to_string(v) }}.add(7), "own add:7")
+assert_eq({add: fn (v) {
+    "own add:" + to_string(v)
+  }}.add(7), "own add:7")
 
 # --- Phase 7 (I): a closed namespace is never a UFCS receiver ---
 # A builtin namespace resolves every name itself — as a member, or as the
 # member-miss AttributeError. A same-named global must not stand in for it.
 
-fn zzz(o, v) { "ufcs zzz" }
-fn push(o, v) { "ufcs push" }
+fn zzz(o, v) {
+  "ufcs zzz"
+}
+fn push(o, v) {
+  "ufcs push"
+}
 
 # Its own members and the dict builtins still answer.
 assert_eq(Math.abs(-3), 3)
@@ -316,12 +441,24 @@ assert_eq(IO.keys().contains("println"), true)
 
 # …but nothing else does, whether the name is known to the builtin tables,
 # an extension global, or arbitrary.
-assert_throws('AttributeError', fn () { IO.zzz(9) })
-assert_throws('AttributeError', fn () { IO.push(9) })
-assert_throws('AttributeError', fn () { IO.to_string() })
-assert_throws('AttributeError', fn () { IO.type_of() })
-assert_throws('AttributeError', fn () { Math.inspect() })
-assert_throws('AttributeError', fn () { JSON.zzz(9) })
+assert_throws('AttributeError', fn () {
+  IO.zzz(9)
+})
+assert_throws('AttributeError', fn () {
+  IO.push(9)
+})
+assert_throws('AttributeError', fn () {
+  IO.to_string()
+})
+assert_throws('AttributeError', fn () {
+  IO.type_of()
+})
+assert_throws('AttributeError', fn () {
+  Math.inspect()
+})
+assert_throws('AttributeError', fn () {
+  JSON.zzz(9)
+})
 
 # The receiver's namespace-ness is a runtime fact, so a bound one behaves the
 # same as the bare name.
@@ -333,27 +470,41 @@ assert_throws('AttributeError', ns_through_binding)
 
 # A namespace member called at the wrong arity is that member's ArityError,
 # not the same-named global taking over.
-assert_throws('ArityError', fn () { IO.println() })
+assert_throws('ArityError', fn () {
+  IO.println()
+})
 
 # Plain dicts keep UFCS, and an own property still beats an extension global.
 assert_eq({a: 1}.zzz(9), "ufcs zzz")
 assert_eq({a: 1}.push(9), "ufcs push")
-assert_eq({inspect: fn () { "own inspect" }}.inspect(), "own inspect")
-assert_eq((5).type_of(), "Long")
-assert_eq((1).range(4).collect(), [1, 2, 3])
-assert_throws('ArityError', fn () { (5).inspect(1, 2) })
-assert_throws('TypeError', fn () { (5).inspect(k: 1) })
+assert_eq({inspect: fn () {
+    "own inspect"
+  }}.inspect(), "own inspect")
+assert_eq(5.type_of(), "Long")
+assert_eq(1.range(4).collect(), [1, 2, 3])
+assert_throws('ArityError', fn () {
+  5.inspect(1, 2)
+})
+assert_throws('TypeError', fn () {
+  5.inspect(k: 1)
+})
 
 # An own slot wins even when it holds a non-Function, so the builtin of that
 # name never answers for it.
-assert_throws('TypeError', fn () { {size: 5}.size() })
-assert_throws('TypeError', fn () { {to_string: 5}.to_string() })
+assert_throws('TypeError', fn () {
+  {size: 5}.size()
+})
+assert_throws('TypeError', fn () {
+  {to_string: 5}.to_string()
+})
 
 # A Shared.new view carries only its reader methods; every other name is left
 # to the receiver-type resolution, exactly as on the interpreter.
 let view = Shared.new({a: 1})
 assert_eq(view.size(), 1)
 assert_eq(view.to_string(), to_string(view))
-assert_throws('TypeError', fn () { view.upper() })
+assert_throws('TypeError', fn () {
+  view.upper()
+})
 
 inspect("test_ufcs_builtin_shadow: ok")

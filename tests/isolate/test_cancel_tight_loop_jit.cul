@@ -7,8 +7,10 @@
 # regression into a fast failure instead of a hang).
 let h = Isolate.spawn(fn () {
   mut i = 0
-  while true { i = i + 1 }
+  while true {
+    i = i + 1
+  }
 })
 Time.sleep(0.05)
-h.drop()                 # cancel the still-spinning isolate; must return, not hang
+h.drop()  # cancel the still-spinning isolate; must return, not hang
 inspect("test_cancel_tight_loop: passed")

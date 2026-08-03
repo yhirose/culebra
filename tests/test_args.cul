@@ -7,10 +7,10 @@
 let spec = {
   name: "demo",
   args: [
-    {name: "input",   type: "String"},
+    {name: "input", type: "String"},
     {name: "verbose", short: "v", type: "Bool", default: false},
-    {name: "count",   short: "n", type: "Long", default: 1}
-  ]
+    {name: "count", short: "n", type: "Long", default: 1},
+  ],
 }
 
 # Required positional only
@@ -49,7 +49,7 @@ assert_eq(rf.x, 3.14)
 # --- Repeated positional ---
 let spec_rep = {
   name: "concat",
-  args: [{name: "files", type: "String", repeated: true}]
+  args: [{name: "files", type: "String", repeated: true}],
 }
 let r_rep = Args.try_parse(["a.txt", "b.txt", "c.txt"], spec_rep)
 assert_eq(r_rep.files.size(), 3)
@@ -59,9 +59,12 @@ assert_eq(r_rep.files[2], "c.txt")
 # --- Repeated option ---
 let spec_tag = {
   name: "tagged",
-  args: [{name: "tag", short: "t", type: "String", repeated: true}]
+  args: [{name: "tag", short: "t", type: "String", repeated: true}],
 }
-let r_tag = Args.try_parse(["-t", "alpha", "--tag", "beta", "-t=gamma"], spec_tag)
+let r_tag = Args.try_parse(
+  ["-t", "alpha", "--tag", "beta", "-t=gamma"],
+  spec_tag,
+)
 assert_eq(r_tag.tag.size(), 3)
 assert_eq(r_tag.tag[0], "alpha")
 assert_eq(r_tag.tag[1], "beta")
@@ -80,40 +83,57 @@ assert_eq(r_sep.verbose, false)
 # --- Bool without default → false ---
 let spec_bare = {
   name: "bare",
-  args: [
-    {name: "x", type: "String"},
-    {name: "v", short: "v", type: "Bool"}
-  ]
+  args: [{name: "x", type: "String"}, {name: "v", short: "v", type: "Bool"}],
 }
 let r_bare = Args.try_parse(["hello"], spec_bare)
 assert_eq(r_bare.v, false)
 
 # --- Error cases ---
-let e_missing = try { Args.try_parse([], spec) } catch e { e }
+let e_missing = try {
+  Args.try_parse([], spec)
+} catch e {
+  e
+}
 assert_eq(e_missing.kind, "ArgParseError")
 assert_eq(e_missing.message, "missing required argument 'input'")
 
-let e_unknown = try { Args.try_parse(["foo", "--bogus"], spec) } catch e { e }
+let e_unknown = try {
+  Args.try_parse(["foo", "--bogus"], spec)
+} catch e {
+  e
+}
 assert_eq(e_unknown.kind, "ArgParseError")
 assert_eq(e_unknown.message, "unknown option '--bogus'")
 
-let e_extra = try { Args.try_parse(["foo", "bar"], spec) } catch e { e }
+let e_extra = try {
+  Args.try_parse(["foo", "bar"], spec)
+} catch e {
+  e
+}
 assert_eq(e_extra.kind, "ArgParseError")
 assert_eq(e_extra.message, "unexpected positional argument 'bar'")
 
-let e_novalue = try { Args.try_parse(["foo", "--count"], spec) } catch e { e }
+let e_novalue = try {
+  Args.try_parse(["foo", "--count"], spec)
+} catch e {
+  e
+}
 assert_eq(e_novalue.kind, "ArgParseError")
 
-let e_badbool = try { Args.try_parse(["foo", "--verbose=notabool"], spec) } catch e { e }
+let e_badbool = try {
+  Args.try_parse(["foo", "--verbose=notabool"], spec)
+} catch e {
+  e
+}
 assert_eq(e_badbool.kind, "ArgParseError")
 
 # --- Subcommands ---
 let git = {
   name: "git-lite",
   subcommands: [
-    {name: "add",    args: [{name: "files", type: "String", repeated: true}]},
-    {name: "commit", args: [{name: "message", short: "m", type: "String"}]}
-  ]
+    {name: "add", args: [{name: "files", type: "String", repeated: true}]},
+    {name: "commit", args: [{name: "message", short: "m", type: "String"}]},
+  ],
 }
 
 let g1 = Args.try_parse(["add", "a.txt", "b.txt"], git)
@@ -124,7 +144,11 @@ let g2 = Args.try_parse(["commit", "-m", "wip"], git)
 assert_eq(g2.subcommand, "commit")
 assert_eq(g2.message, "wip")
 
-let g3 = try { Args.try_parse(["push"], git) } catch e { e }
+let g3 = try {
+  Args.try_parse(["push"], git)
+} catch e {
+  e
+}
 assert_eq(g3.kind, "ArgParseError")
 assert_eq(g3.message, "unknown subcommand 'push'")
 
@@ -135,11 +159,17 @@ assert_true(help.contains("--verbose"))
 assert_true(help.contains("--help"))
 
 # --- Help raised by try_parse on --help ---
-let h = try { Args.try_parse(["--help"], spec) } catch e { e }
+let h = try {
+  Args.try_parse(["--help"], spec)
+} catch e {
+  e
+}
 assert_eq(h.kind, "ArgParseHelp")
 assert_true(h.help.contains("Usage: demo"))
 
 # --- Closed namespace: an unknown member raises instead of reading as nil.
 # Lives here rather than in test_namespace_attr.cul, which would have to splice
 # this whole module into the JIT entry module to say it.
-assert_throws("AttributeError", fn() { Args.typo })
+assert_throws("AttributeError", fn () {
+  Args.typo
+})

@@ -9,25 +9,37 @@ assert_eq(show(1), "1")
 assert_eq(show(2.5), "2.5")
 
 // --- Whitespace tolerance: no space, one space, multi-space ---
-fn shape_a(x: Long|Float) -> Long { 1 }
-fn shape_b(x: Long  |  Float) -> Long { 2 }
+fn shape_a(x: Long|Float) -> Long {
+  1
+}
+fn shape_b(x: Long  |  Float) -> Long {
+  2
+}
 assert_eq(shape_a(1), 1)
 assert_eq(shape_a(1.5), 1)
 assert_eq(shape_b(2), 2)
 
 // --- Return-type Union (just a permissive annotation, no narrowing) ---
 fn lookup(k: String) -> Long | Nil {
-  if k == "answer" { 42 } else { nil }
+  if k == "answer" {
+    42
+  } else {
+    nil
+  }
 }
 assert_eq(lookup("answer"), 42)
 assert_eq(lookup("missing"), nil)
 
 // --- Class instances in Union ---
 class Square {
-  new (s) { self.side = s }
+  new(s) {
+    self.side = s
+  }
 }
 class Circle {
-  new (r) { self.r = r }
+  new(r) {
+    self.r = r
+  }
 }
 fn area(shape: Square | Circle) -> Float {
   match shape {
@@ -50,7 +62,9 @@ try {
 assert_eq(caught, "DispatchError")
 
 // --- Single-alternative still works (regression check) ---
-fn single(x: Long) { x }
+fn single(x: Long) {
+  x
+}
 assert_eq(single(7), 7)
 
 // --- Union in `match` arm (`n: Long | Float => ...`) ---
@@ -88,45 +102,74 @@ let ps = show.params
 assert_eq(ps[0].type, "Long | Float")
 
 // Whitespace variants in source still canonicalize to the same form.
-fn no_space(x: Long|Float) { x }
-fn many_space(x: Long  |   Float) { x }
+fn no_space(x: Long|Float) {
+  x
+}
+fn many_space(x: Long  |   Float) {
+  x
+}
 assert_eq(no_space.params[0].type, "Long | Float")
 assert_eq(many_space.params[0].type, "Long | Float")
 
 // Duplicate alternatives collapse (first-occurrence order kept).
-fn dup_alt(x: Long | Long) { x }
-fn dup_alt2(x: Float | Long | Float) { x }
+fn dup_alt(x: Long | Long) {
+  x
+}
+fn dup_alt2(x: Float | Long | Float) {
+  x
+}
 assert_eq(dup_alt.params[0].type, "Long")
 assert_eq(dup_alt2.params[0].type, "Float | Long")
 
 // Concrete type outranks a Union that includes it.
-fn pick(x: Long) -> String { "concrete" }
-fn pick(x: Long | Float) -> String { "union" }
+fn pick(x: Long) -> String {
+  "concrete"
+}
+fn pick(x: Long | Float) -> String {
+  "union"
+}
 assert_eq(pick(1), "concrete")
 assert_eq(pick(1.5), "union")
 
 // Union outranks bare `Object` when arg is in the Union (Object is
 // class-instance catch-all only; primitives go through the Union).
 class Holder {
-  new (v) { self.value = v }
+  new(v) {
+    self.value = v
+  }
 }
-fn rank(x: Object) -> String { "object" }
-fn rank(x: Long | Float) -> String { "union" }
+fn rank(x: Object) -> String {
+  "object"
+}
+fn rank(x: Long | Float) -> String {
+  "union"
+}
 assert_eq(rank(1), "union")
 assert_eq(rank(Holder.new(0)), "object")
 
 // Object as sole option: primitives do NOT slip through Object catch
 // (multifn pick agrees with check_type → DispatchError on no match,
 // not a spurious TypeError after a false-positive pick).
-fn only_object(x: Object) -> String { "object" }
-let e = try { only_object("hi"); nil } catch e { e }
+fn only_object(x: Object) -> String {
+  "object"
+}
+let e = try {
+  only_object("hi")
+  nil
+} catch e {
+  e
+}
 assert_eq(e.kind, "DispatchError")
 assert_eq(only_object(Holder.new(0)), "object")
 assert_eq(only_object({a: 1}), "object")
 
 // Whitespace-variant redecl overwrites instead of growing the table.
-fn dedup(x: Long|Float) -> String { "first" }
-fn dedup(x: Long | Float) -> String { "second" }
+fn dedup(x: Long|Float) -> String {
+  "first"
+}
+fn dedup(x: Long | Float) -> String {
+  "second"
+}
 assert_eq(dedup(1), "second")
 assert_eq(dedup(1.5), "second")
 

@@ -5,8 +5,18 @@
 # interp also rejected the terminal iterator ops). The interp-vs-JIT diff in
 # `just test` guards the symmetry.
 
-class Dbl { new() {} __call__(x) { x * 2 } }
-class Pos { new() {} __call__(x) { x > 0 } }
+class Dbl {
+  new() {}
+  __call__(x) {
+    x * 2
+  }
+}
+class Pos {
+  new() {}
+  __call__(x) {
+    x > 0
+  }
+}
 
 # Lazy combinators
 inspect([1, 2, 3].iter().map(Dbl.new()).collect())
@@ -20,7 +30,7 @@ inspect([1, -2, 3].iter().any(Pos.new()))
 inspect([1, -2, 3].iter().all(Pos.new()))
 inspect([1, -2, 3].iter().find(Pos.new()))
 mut total = 0
-[1, 2, 3].iter().for_each(Dbl.new())   # side-effect-free here, just must not error
+[1, 2, 3].iter().for_each(Dbl.new())  # side-effect-free here, just must not error
 inspect("for_each ok")
 
 # Eager Array HOFs still accept it (regression guard)

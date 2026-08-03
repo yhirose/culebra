@@ -34,9 +34,15 @@ fn build_perm(seed) {
   p
 }
 
-fn fade(t) { t * t * t * (t * (t * 6.0 - 15.0) + 10.0) }
-fn lerp(a, b, t) { a + t * (b - a) }
-fn grad(h, x) { h % 2 == 0 ? x : -x }
+fn fade(t) {
+  t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+}
+fn lerp(a, b, t) {
+  a + t * (b - a)
+}
+fn grad(h, x) {
+  h % 2 == 0 ? x : -x
+}
 fn pnoise1(perm, x) {
   let fl = to_float(to_long(x))  # floor (x is always >= 0 here)
   let xi = to_long(x) % 256
@@ -77,7 +83,9 @@ fn offsets(s) {
   ((cols - COLS) / 2, (s.rows() - ROWS) / 2)
 }
 
-fn output(s, (offx, offy), y, x, str) { s.put((x + offx) * 2, y + offy, str) }
+fn output(s, (offx, offy), y, x, str) {
+  s.put((x + offx) * 2, y + offy, str)
+}
 
 # --- entities --------------------------------------------------------------
 class Frog {
@@ -113,16 +121,22 @@ class Frog {
   }
   eat() {
     if self.energy == -1 {
-      if self.bonus == 0 { self.bonus = 50 }
+      if self.bonus == 0 {
+        self.bonus = 50
+      }
     } else {
       self.bonus = 0
       self.energy = -1
     }
   }
   eaten() {
-    if self.energy == -1 { self.energy = 50 }
+    if self.energy == -1 {
+      self.energy = 50
+    }
   }
-  alive() { self.energy != 0 }
+  alive() {
+    self.energy != 0
+  }
 }
 
 class Food {
@@ -143,7 +157,9 @@ class Food {
     self.x = x
     self.y = y
   }
-  draw(s, off) { output(s, off, self.y, self.x, self.foods[self.food_index]) }
+  draw(s, off) {
+    output(s, off, self.y, self.x, self.foods[self.food_index])
+  }
   move(s) {
     let (x, y) = self.next_pos()
     self.x = x
@@ -156,8 +172,12 @@ class Food {
       self.base += 100000.0
     }
   }
-  remaining() { self.foods.size() - self.food_index }
-  next_pos() { noise_pos(self.base, self.speed) }
+  remaining() {
+    self.foods.size() - self.food_index
+  }
+  next_pos() {
+    noise_pos(self.base, self.speed)
+  }
 }
 
 class Enemy {
@@ -173,14 +193,18 @@ class Enemy {
     self.x = x
     self.y = y
   }
-  draw(s, off) { output(s, off, self.y, self.x, self.emoji) }
+  draw(s, off) {
+    output(s, off, self.y, self.x, self.emoji)
+  }
   move(s) {
     let (x, y) = self.next_pos()
     self.x = x
     self.y = y
     self.base += 1.0
   }
-  next_pos() { noise_pos(self.base, self.speed) }
+  next_pos() {
+    noise_pos(self.base, self.speed)
+  }
 }
 
 # --- collisions / scoring --------------------------------------------------
@@ -194,7 +218,9 @@ fn check(frog, foods, enemies, score) {
     }
   }
   for enemy in enemies {
-    if frog.x == enemy.x && frog.y == enemy.y { frog.eaten() }
+    if frog.x == enemy.x && frog.y == enemy.y {
+      frog.eaten()
+    }
   }
   s
 }
@@ -226,9 +252,13 @@ fn draw_screen(s, frog, fruit, dessert, eagle, snake, score, time) {
   }
   frog.draw(s, off)
   for food in [fruit, dessert] {
-    if food.remaining() > 0 { food.draw(s, off) }
+    if food.remaining() > 0 {
+      food.draw(s, off)
+    }
   }
-  for enemy in [eagle, snake] { enemy.draw(s, off) }
+  for enemy in [eagle, snake] {
+    enemy.draw(s, off)
+  }
   s.flush()
 }
 
@@ -259,10 +289,14 @@ fn draw_game_over(s, score, time, frog, fruit, dessert) {
 # Block until one of `chars` is pressed; auto-return the first when there is
 # no tty (demo mode).
 fn wait_key(s, chars) {
-  if !INTERACTIVE { return chars[0] }
+  if !INTERACTIVE {
+    return chars[0]
+  }
   while true {
     let ev = s.poll(0.1)
-    if ev?.kind == "key" && chars.contains(ev.key) { return ev.key }
+    if ev?.kind == "key" && chars.contains(ev.key) {
+      return ev.key
+    }
   }
 }
 
@@ -270,7 +304,9 @@ fn wait_key(s, chars) {
 fn run(s) {
   mut time = 99
   draw_opening(s, time)
-  if wait_key(s, [" ", "q"]) == "q" { return false }
+  if wait_key(s, [" ", "q"]) == "q" {
+    return false
+  }
 
   mut score = 0
   mut tic = 0
@@ -306,12 +342,18 @@ fn run(s) {
     snake.move(s)
     score = check(frog, [fruit, dessert], [eagle, snake], score)
     draw_screen(s, frog, fruit, dessert, eagle, snake, score, time)
-    if tic % 10 == 0 { time -= 1 }
+    if tic % 10 == 0 {
+      time -= 1
+    }
     tic += 1
   }
 
-  if frog.alive() { score += time }
-  if !INTERACTIVE { return false }
+  if frog.alive() {
+    score += time
+  }
+  if !INTERACTIVE {
+    return false
+  }
   Time.sleep(1.2)
   draw_game_over(s, score, time, frog, fruit, dessert)
   wait_key(s, [" ", "q"]) != "q"

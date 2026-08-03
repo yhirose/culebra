@@ -66,11 +66,11 @@ let m3 = {a: 1, 2: "two", b: 3, 4: "four"}
 assert_eq(to_string(m2), to_string(m3))
 // Distinct insertion orders render differently.
 let m4 = {2: "two", a: 1, 4: "four", b: 3}
-let diff = (to_string(m2) == to_string(m4))
+let diff = to_string(m2) == to_string(m4)
 assert_eq(diff, false)
 
 // And the same insertion order yields the same render.
-let n  = {10: "x", 5: "y", 1: "z"}
+let n = {10: "x", 5: "y", 1: "z"}
 let n2 = {10: "x", 5: "y", 1: "z"}
 assert_eq(to_string(n), to_string(n2))
 
@@ -109,8 +109,8 @@ assert_eq(split["y"], 7)
 // (subscript or dot, either flow into the same shape slot) succeeds.
 mut split2 = {}
 mut split2["x"] = 1
-split2["x"] = 2     // update via subscript
-split2.x = 3        // update via dot — same slot
+split2["x"] = 2  // update via subscript
+split2.x = 3     // update via dot — same slot
 assert_eq(split2.x, 3)
 assert_eq(split2["x"], 3)
 
@@ -135,7 +135,9 @@ assert_eq(ks[3], (1, 2))
 // (Regression: interp's for-in used to walk only the String shape,
 // dropping non-String keys, so it diverged from both keys() and size().)
 mut iter_keys = []
-for k, v in bag2 { iter_keys.push(k) }
+for k, v in bag2 {
+  iter_keys.push(k)
+}
 assert_eq(iter_keys, ks)
 
 bag2.remove(10)
@@ -150,9 +152,9 @@ assert_eq(bag2.size(), 1)
 // String keys and honor the slot's `mut` flag; non-String keys live in
 // the sidecar but compound updates work there too.
 mut counts = {mut a: 10, mut b: 20}
-counts['a'] += 5            // shape slot via subscript
+counts['a'] += 5  // shape slot via subscript
 assert_eq(counts.a, 15)
-counts.b -= 3               // dot reaches the same slot
+counts.b -= 3  // dot reaches the same slot
 assert_eq(counts['b'], 17)
 counts['a'] *= 2
 assert_eq(counts.a, 30)
@@ -178,8 +180,8 @@ mut bag3 = {}
 mut i = 0
 while i < 20 {
   let k = (i, i + 1)
-  mut bag3[k] = i             // insert
-  bag3[k] = i * 2             // update
+  mut bag3[k] = i  // insert
+  bag3[k] = i * 2  // update
   assert_true(bag3.has((i, i + 1)))
   assert_eq(bag3[(i, i + 1)], i * 2)
   bag3[k] += 1

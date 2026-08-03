@@ -27,15 +27,21 @@ let BRIDGE_HALF = 70.0  # ramp half-length, meters
 
 fn shortest_angle(a) {
   mut x = a
-  while x > Math.pi { x -= 2.0 * Math.pi }
-  while x < -Math.pi { x += 2.0 * Math.pi }
+  while x > Math.pi {
+    x -= 2.0 * Math.pi
+  }
+  while x < -Math.pi {
+    x += 2.0 * Math.pi
+  }
   x
 }
 
 # Node yaw that points the car's nose (local -Z) along a movement heading h
 # (measured as atan2(dz, dx)). RotateY turns the model the opposite sense to the
 # movement angle and is offset 90deg, so map through atan2(-cos, -sin).
-fn face_yaw(h) { Math.atan2(-Math.cos(h), -Math.sin(h)) }
+fn face_yaw(h) {
+  Math.atan2(-Math.cos(h), -Math.sin(h))
+}
 
 # Left normal (nx, nz) and tangent heading (ang) at centerline index i.
 fn frame_at(pts, i) {
@@ -66,7 +72,9 @@ fn road_h(s) {
 mut WA = []
 fn half_width(s) {
   mut i = 0
-  while i < WA.size() - 1 && WA[i + 1][0] < s { i += 1 }
+  while i < WA.size() - 1 && WA[i + 1][0] < s {
+    i += 1
+  }
   let [s0, hw0] = WA[i]
   let [s1, hw1] = WA[Math.min(i + 1, WA.size() - 1)]
   let span = s1 - s0
@@ -381,9 +389,13 @@ class Car {
       .pitch(Math.atan(slope))
   }
 
-  height() { self.y }
+  height() {
+    self.y
+  }
 
-  kmh() { to_long(self.speed * 3.6) }
+  kmh() {
+    to_long(self.speed * 3.6)
+  }
 }
 
 class CameraRig {
@@ -419,7 +431,9 @@ class CameraRig {
 
 # Index of the centerline point nearest to (x,z).
 fn nearest_idx(cl, x, z) {
-  let dist2 = fn ((_, [px, pz])) { (px - x) * (px - x) + (pz - z) * (pz - z) }
+  let dist2 = fn ((_, [px, pz])) {
+    (px - x) * (px - x) + (pz - z) * (pz - z)
+  }
   cl.enumerate().min_by(dist2)[0]
 }
 
@@ -455,17 +469,31 @@ fn read_controls(view) {
   mut steer = 0.0
   if view.pad_available() {
     let lx = view.pad_axis(0)  # left stick X
-    if Math.abs(lx) > 0.18 { steer = lx }
+    if Math.abs(lx) > 0.18 {
+      steer = lx
+    }
     # raylib normalizes triggers to 0..1 (rest 0, full 1; -1 until first touched)
     throttle = Math.max(view.pad_axis(5), 0.0)  # right trigger
     brake = Math.max(view.pad_axis(4), 0.0)     # left trigger
-    if view.pad_button(7) { throttle = 1.0 }    # A
-    if view.pad_button(6) { brake = 1.0 }       # B
+    if view.pad_button(7) {
+      throttle = 1.0
+    }  # A
+    if view.pad_button(6) {
+      brake = 1.0
+    }  # B
   }
-  if view.held(265) { throttle = 1.0 }  # UP
-  if view.held(264) { brake = 1.0 }     # DOWN
-  if view.held(263) { steer = -1.0 }    # LEFT
-  if view.held(262) { steer = 1.0 }     # RIGHT
+  if view.held(265) {
+    throttle = 1.0
+  }  # UP
+  if view.held(264) {
+    brake = 1.0
+  }  # DOWN
+  if view.held(263) {
+    steer = -1.0
+  }  # LEFT
+  if view.held(262) {
+    steer = 1.0
+  }  # RIGHT
   (throttle, brake, steer)
 }
 
@@ -563,7 +591,9 @@ let MM = range(n, step: 6)
 fn current_corner(corners, s) {
   mut name = corners[0][0]
   for [corner_name, corner_s] in corners {
-    if to_float(corner_s) <= s { name = corner_name }
+    if to_float(corner_s) <= s {
+      name = corner_name
+    }
   }
   name
 }
@@ -630,8 +660,12 @@ while !view.closing() {
 
   # Force feedback: a sharp "gatsun" when a wheel rides up onto the kerb.
   # (SPACE also fires a test jolt.)
-  if view.pressed(32) { view.rumble(1.0, 1.0, 0.2) }
-  if kerb_contact(cl, bi, car.x, car.z) { view.rumble(0.85, 0.85, 0.08) }
+  if view.pressed(32) {
+    view.rumble(1.0, 1.0, 0.2)
+  }
+  if kerb_contact(cl, bi, car.x, car.z) {
+    view.rumble(0.85, 0.85, 0.08)
+  }
 
   view.render_3d()
   view.text("SUZUKA 1987", 24.0, 18.0, 32, 245, 245, 245)
@@ -658,8 +692,12 @@ while !view.closing() {
   view.present()
 
   frame += 1
-  if DEMO && frame == FRAMES * 3 / 4 { view.screenshot("suzuka_shot.png") }
-  if DEMO && frame >= FRAMES { break }
+  if DEMO && frame == FRAMES * 3 / 4 {
+    view.screenshot("suzuka_shot.png")
+  }
+  if DEMO && frame >= FRAMES {
+    break
+  }
 }
 view.drop()
 println("suzuka: clean exit after {frame} frames")

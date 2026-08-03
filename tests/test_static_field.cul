@@ -5,7 +5,7 @@
 
 test_static_field_basic = fn () {
   class Shape {
-    new () {}
+    new() {}
     static PI = 3.14
     static MAX_SIDES = 100
   }
@@ -16,10 +16,16 @@ test_static_field_basic = fn () {
 # Static fields and static methods coexist on the same class namespace.
 test_static_field_with_method = fn () {
   class Circle {
-    new (r) { self.radius = r }
+    new(r) {
+      self.radius = r
+    }
     static PI = 3.14
-    static unit () { Circle.new(1) }
-    area () { self.radius * self.radius * Circle.PI }
+    static unit() {
+      Circle.new(1)
+    }
+    area() {
+      self.radius * self.radius * Circle.PI
+    }
   }
   let c = Circle.unit()
   assert_eq(c.area(), 3.14)
@@ -29,7 +35,7 @@ test_static_field_with_method = fn () {
 # Value expressions can be arbitrary expressions; eagerly evaluated.
 test_static_field_expression = fn () {
   class Config {
-    new () {}
+    new() {}
     static BASE = 10
     static DOUBLE = 10 * 2
     static GREETING = "hello world"
@@ -45,7 +51,7 @@ test_static_field_expression = fn () {
 # Missing instance properties resolve to nil (culebra's general semantics).
 test_static_field_not_on_instance = fn () {
   class K {
-    new () {}
+    new() {}
     static FOO = 42
   }
   let k = K.new()
@@ -56,11 +62,15 @@ test_static_field_not_on_instance = fn () {
 # Static fields are immutable from the outside.
 test_static_field_immutable = fn () {
   class Const {
-    new () {}
+    new() {}
     static VAL = 1
   }
-  let kind = try { Const.VAL = 2; 'no error' }
-             catch e { "kind={e.kind}" }
+  let kind = try {
+    Const.VAL = 2
+    'no error'
+  } catch e {
+    "kind={e.kind}"
+  }
   assert_true(kind == 'kind=ImmutableError' || kind == 'kind=TypeError')
 }
 

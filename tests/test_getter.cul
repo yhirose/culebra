@@ -4,10 +4,18 @@
 // `just test` — identical stdout (asserts are silent on success).
 
 class Circle {
-  new(r) { self.r = r }
-  get area() { 3 * self.r * self.r }   // pure, no parens at the call site
-  get r2() { self.r * self.r }
-  scale(k) { Circle.new(self.r * k) }  // a plain method still needs parens
+  new(r) {
+    self.r = r
+  }
+  get area() {
+    3 * self.r * self.r
+  }  // pure, no parens at the call site
+  get r2() {
+    self.r * self.r
+  }
+  scale(k) {
+    Circle.new(self.r * k)
+  }  // a plain method still needs parens
 }
 
 let c = Circle.new(2)
@@ -25,13 +33,20 @@ assert_eq(c.scale(3).area, c.scale(3).area())
 
 // --- a getter reads `self` fields like any method ---
 class Point {
-  new(x, y) { self.x = x; self.y = y }
-  get sum() { self.x + self.y }
-  get name() { "pt" }                  // a getter named `name` fires, not fn intro
+  new(x, y) {
+    self.x = x
+    self.y = y
+  }
+  get sum() {
+    self.x + self.y
+  }
+  get name() {
+    "pt"
+  }  // a getter named `name` fires, not fn intro
 }
 let pt = Point.new(3, 4)
 assert_eq(pt.sum, 7)
-assert_eq(pt.name, "pt")               // introspection-name path also fires getters
+assert_eq(pt.name, "pt")  // introspection-name path also fires getters
 assert_eq(pt.name, pt.name())
 
 // --- getters read inside a HOF lambda ---
@@ -40,18 +55,26 @@ assert_eq(pts, [2, 4])
 
 // --- a plain 0-arg method is NOT auto-invoked by a bare read ---
 class Box {
-  new(v) { self.v = v }
-  peek() { self.v }                    // ordinary method — bare read yields it
+  new(v) {
+    self.v = v
+  }
+  peek() {
+    self.v
+  }  // ordinary method — bare read yields it
 }
 let b = Box.new(9)
-assert_eq(type_of(b.peek), "Function") // not called
-assert_eq(b.peek(), 9)                 // called
+assert_eq(type_of(b.peek), "Function")  // not called
+assert_eq(b.peek(), 9)                  // called
 
 // --- a member literally named `get` is not the `get` modifier ---
 // (the contextual keyword only fires when an identifier follows)
 class Getter {
-  new(v) { self.v = v }
-  get() { self.v }                     // method named "get"
+  new(v) {
+    self.v = v
+  }
+  get() {
+    self.v
+  }  // method named "get"
 }
 assert_eq(Getter.new(5).get(), 5)
 // A getter declared with parameters is a SyntaxError — asserted out-of-band in

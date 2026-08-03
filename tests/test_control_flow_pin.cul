@@ -10,28 +10,44 @@
 # --- `return` originating inside each expression slot ---
 
 fn in_binop(c) {
-  y = 5 + if c { return 1 } else { 2 }
+  y = 5 + if c {
+      return 1
+    } else {
+      2
+    }
   y
 }
 assert_eq(in_binop(true), 1)
 assert_eq(in_binop(false), 7)
 
 fn in_call_arg(c) {
-  y = Math.max(0, if c { return 1 } else { 2 })
+  y = Math.max(0, if c {
+    return 1
+  } else {
+    2
+  })
   y
 }
 assert_eq(in_call_arg(true), 1)
 assert_eq(in_call_arg(false), 2)
 
 fn in_array(c) {
-  a = [9, if c { return 1 } else { 2 }]
+  a = [9, if c {
+    return 1
+  } else {
+    2
+  }]
   a[1]
 }
 assert_eq(in_array(true), 1)
 assert_eq(in_array(false), 2)
 
 fn in_object(c) {
-  o = { k: if c { return 1 } else { 2 } }
+  o = {k: if c {
+    return 1
+  } else {
+    2
+  }}
   o.k
 }
 assert_eq(in_object(true), 1)
@@ -39,15 +55,23 @@ assert_eq(in_object(false), 2)
 
 fn in_index(c) {
   a = [10, 20, 30]
-  a[if c { return 1 } else { 2 }]
+  a[if c {
+    return 1
+  } else {
+    2
+  }]
 }
 assert_eq(in_index(true), 1)
 assert_eq(in_index(false), 30)
 
 fn in_match_subject(c) {
-  match if c { return 1 } else { 2 } {
+  match if c {
+    return 1
+  } else {
+    2
+  } {
     2 => 22,
-    _ => 99
+    _ => 99,
   }
 }
 assert_eq(in_match_subject(true), 1)
@@ -57,7 +81,9 @@ assert_eq(in_match_subject(false), 22)
 # The function's own value stands; the defer's `return` does not override it.
 
 fn defer_with_return() {
-  defer { return 9 }
+  defer {
+    return 9
+  }
   1
 }
 assert_eq(defer_with_return(), 1)
@@ -65,20 +91,32 @@ assert_eq(defer_with_return(), 1)
 # --- a defer body may throw ---
 
 fn defer_throws() {
-  defer { throw 'from defer' }
+  defer {
+    throw 'from defer'
+  }
   1
 }
-let d1 = try { defer_throws() } catch e { e }
+let d1 = try {
+  defer_throws()
+} catch e {
+  e
+}
 assert_eq(d1, 'from defer')
 
 # --- a defer that throws while the scope is already unwinding replaces the
 # in-flight exception (this is why defer cannot be a C++ destructor) ---
 
 fn defer_throws_during_unwind() {
-  defer { throw 'from defer' }
+  defer {
+    throw 'from defer'
+  }
   throw 'from body'
 }
-let d2 = try { defer_throws_during_unwind() } catch e { e }
+let d2 = try {
+  defer_throws_during_unwind()
+} catch e {
+  e
+}
 assert_eq(d2, 'from defer')
 
 # --- defer still fires on an early return ---
@@ -86,7 +124,9 @@ assert_eq(d2, 'from defer')
 fn defer_on_early_return() {
   mut log = []
   fn inner() {
-    defer { log.push('deferred') }
+    defer {
+      log.push('deferred')
+    }
     return 'returned'
   }
   r = inner()
@@ -99,8 +139,12 @@ assert_eq(defer_on_early_return(), 'returned/1')
 fn break_with_defer() {
   mut log = []
   for i in 0..3 {
-    defer { log.push(i) }
-    if i == 1 { break }
+    defer {
+      log.push(i)
+    }
+    if i == 1 {
+      break
+    }
   }
   log
 }
@@ -109,8 +153,12 @@ assert_eq(break_with_defer(), [0, 1])
 fn continue_with_defer() {
   mut log = []
   for i in 0..3 {
-    defer { log.push(i) }
-    if i == 1 { continue }
+    defer {
+      log.push(i)
+    }
+    if i == 1 {
+      continue
+    }
   }
   log
 }
@@ -123,7 +171,9 @@ assert_eq(continue_with_defer(), [0, 1, 2])
 
 fn return_from_loop(n) {
   for x in [1, 2, 3] {
-    if x == n { return "hit {x}" }
+    if x == n {
+      return "hit {x}"
+    }
   }
   'none'
 }
@@ -133,7 +183,9 @@ assert_eq(return_from_loop(9), 'none')
 
 fn return_from_destructuring_loop(n) {
   for [a, b] in [[1, 2], [3, 4]] {
-    if a == n { return a + b }
+    if a == n {
+      return a + b
+    }
   }
   0
 }
@@ -143,7 +195,9 @@ fn return_skips_nobreak() {
   mut log = []
   fn inner() {
     for x in [1, 2] {
-      if x == 1 { return 'returned' }
+      if x == 1 {
+        return 'returned'
+      }
     } nobreak {
       log.push('nobreak')
     }
@@ -158,12 +212,16 @@ assert_eq(return_skips_nobreak(), 'returned/0')
 fn return_disposes_generator() {
   mut log = []
   fn g() {
-    defer { log.push('disposed') }
+    defer {
+      log.push('disposed')
+    }
     yield 1
     yield 2
   }
   fn first() {
-    for x in g() { return x }
+    for x in g() {
+      return x
+    }
     0
   }
   v = first()

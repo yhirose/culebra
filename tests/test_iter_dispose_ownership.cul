@@ -8,25 +8,28 @@
 # Distinct iterator: the iterator's drop fires at loop exit (after dispose),
 # the iterable's drop at its scope exit.
 fn mk_distinct() {
-  {
-    v: 1,
-    iter: fn () {
-      {
-        mut i: 0,
-        has_next: fn () { self.i < 3 },
-        next: fn () { self.i = self.i + 1; self.i },
-        dispose: fn () { inspect("distinct: disposed") },
-        drop: fn () { inspect("distinct: iter dropped") },
-      }
-    },
-    drop: fn () { inspect("distinct: iterable dropped") },
-  }
+  {v: 1, iter: fn () {
+      {mut i: 0, has_next: fn () {
+          self.i < 3
+        }, next: fn () {
+          self.i = self.i + 1
+          self.i
+        }, dispose: fn () {
+          inspect("distinct: disposed")
+        }, drop: fn () {
+          inspect("distinct: iter dropped")
+        }}
+    }, drop: fn () {
+      inspect("distinct: iterable dropped")
+    }}
 }
 
 fn run_distinct() {
   let g = mk_distinct()
   for x in g {
-    if x > 1 { break }
+    if x > 1 {
+      break
+    }
   }
   inspect("distinct: after loop")
 }
@@ -36,7 +39,9 @@ inspect("distinct: after run")
 # Fresh iterable (no binding): its drop fires at the loop's own scope exit.
 fn run_fresh() {
   for x in mk_distinct() {
-    if x > 1 { break }
+    if x > 1 {
+      break
+    }
   }
   inspect("fresh: after loop")
 }
@@ -45,20 +50,26 @@ inspect("fresh: after run")
 
 # Self-returning iterator: still usable after the loop, drop at scope exit.
 fn mk_self() {
-  {
-    mut i: 0,
-    iter: fn () { self },
-    has_next: fn () { self.i < 3 },
-    next: fn () { self.i = self.i + 1; self.i },
-    dispose: fn () { inspect("self: disposed") },
-    drop: fn () { inspect("self: dropped") },
-  }
+  {mut i: 0, iter: fn () {
+      self
+    }, has_next: fn () {
+      self.i < 3
+    }, next: fn () {
+      self.i = self.i + 1
+      self.i
+    }, dispose: fn () {
+      inspect("self: disposed")
+    }, drop: fn () {
+      inspect("self: dropped")
+    }}
 }
 
 fn run_self() {
   let g = mk_self()
   for x in g {
-    if x > 1 { break }
+    if x > 1 {
+      break
+    }
   }
   inspect("self: after loop")
   inspect("self: usable " + g.has_next().to_string())
@@ -68,7 +79,9 @@ inspect("self: after run")
 
 # Generator with a body defer standing in for dispose observability.
 fn gen() {
-  defer { inspect("gen: disposed") }
+  defer {
+    inspect("gen: disposed")
+  }
   yield 1
   yield 2
   yield 3
@@ -76,7 +89,9 @@ fn gen() {
 
 fn run_gen() {
   for x in gen() {
-    if x > 1 { break }
+    if x > 1 {
+      break
+    }
   }
   inspect("gen: after loop")
 }

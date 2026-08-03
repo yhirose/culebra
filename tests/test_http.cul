@@ -9,94 +9,188 @@
 // error-object construction identically across all three backends.
 
 // --- URL validation: a missing scheme is an HttpError, not a crash ---
-let no_scheme = try { Http.get("example.com"); nil } catch e { e }
+let no_scheme = try {
+  Http.get("example.com")
+  nil
+} catch e {
+  e
+}
 assert_eq(no_scheme.kind, "HttpError")
-assert_eq(no_scheme.message,
-    "Http.get: Http: URL must include a scheme (http:// or https://): example.com")
+assert_eq(
+  no_scheme.message,
+  "Http.get: Http: URL must include a scheme (http:// or https://): example.com",
+)
 
 // Http.request shares the same validation, tagged with its own context.
-let req_no_scheme = try { Http.request("PATCH", "example.com"); nil } catch e { e }
+let req_no_scheme = try {
+  Http.request("PATCH", "example.com")
+  nil
+} catch e {
+  e
+}
 assert_eq(req_no_scheme.kind, "HttpError")
-assert_eq(req_no_scheme.message,
-    "Http.request: Http: URL must include a scheme (http:// or https://): example.com")
+assert_eq(
+  req_no_scheme.message,
+  "Http.request: Http: URL must include a scheme (http:// or https://): example.com",
+)
 
 // --- headers kwarg: must be an Object of String (checked before any I/O) ---
-let bad_headers = try { Http.get("http://127.0.0.1:1", headers: "nope"); nil } catch e { e }
+let bad_headers = try {
+  Http.get("http://127.0.0.1:1", headers: "nope")
+  nil
+} catch e {
+  e
+}
 assert_eq(bad_headers.kind, "TypeError")
 assert_eq(bad_headers.message, "Http.get: headers must be an Object of String")
 
-let bad_header_val = try { Http.get("http://127.0.0.1:1", headers: {X: 1}); nil } catch e { e }
+let bad_header_val = try {
+  Http.get("http://127.0.0.1:1", headers: {X: 1})
+  nil
+} catch e {
+  e
+}
 assert_eq(bad_header_val.kind, "TypeError")
 assert_eq(bad_header_val.message, "Http.get: header values must be String")
 
 // --- transport failure: connection refused surfaces as HttpError ---
 // Port 1 is never listening, so connect() fails immediately and offline.
-let refused = try { Http.get("http://127.0.0.1:1/x"); nil } catch e { e }
+let refused = try {
+  Http.get("http://127.0.0.1:1/x")
+  nil
+} catch e {
+  e
+}
 assert_eq(refused.kind, "HttpError")
 
 // POST shares the failure model.
-let refused_post = try { Http.post("http://127.0.0.1:1/x", body: "data"); nil } catch e { e }
+let refused_post = try {
+  Http.post("http://127.0.0.1:1/x", body: "data")
+  nil
+} catch e {
+  e
+}
 assert_eq(refused_post.kind, "HttpError")
 
 // --- `into:` streaming sink: offline-deterministic error paths (happy paths
 //     need a server, covered by the in-process loopback test http_test.cc) ---
 
 // into: a String path that can't be opened is an IOError (before any I/O).
-let into_badpath = try { Http.get("http://127.0.0.1:1/x", into: "tmp/_no_such_dir_/f"); nil } catch e { e }
+let into_badpath = try {
+  Http.get("http://127.0.0.1:1/x", into: "tmp/_no_such_dir_/f")
+  nil
+} catch e {
+  e
+}
 assert_eq(into_badpath.kind, "IOError")
 
 // into: anything but nil / String / Function is a TypeError (before any I/O).
-let into_badtype = try { Http.get("http://127.0.0.1:1/x", into: 123); nil } catch e { e }
+let into_badtype = try {
+  Http.get("http://127.0.0.1:1/x", into: 123)
+  nil
+} catch e {
+  e
+}
 assert_eq(into_badtype.kind, "TypeError")
 
 // into: a callback still surfaces a transport failure as HttpError.
-let into_refused = try { Http.get("http://127.0.0.1:1/x", into: fn (c) { nil }); nil } catch e { e }
+let into_refused = try {
+  Http.get("http://127.0.0.1:1/x", into: fn (c) { nil })
+  nil
+} catch e {
+  e
+}
 assert_eq(into_refused.kind, "HttpError")
 
 // --- `body:` streaming source (upload): offline-deterministic error paths.
 //     Happy path (chunked upload echoed back) is in http_test.cc. ---
 
 // body: must be a String or a producer Function (checked before any I/O).
-let body_badtype = try { Http.post("http://127.0.0.1:1/x", body: 123); nil } catch e { e }
+let body_badtype = try {
+  Http.post("http://127.0.0.1:1/x", body: 123)
+  nil
+} catch e {
+  e
+}
 assert_eq(body_badtype.kind, "TypeError")
 
 // body: a producer Function + transport failure still surfaces as HttpError.
-let body_refused = try { Http.post("http://127.0.0.1:1/x", body: fn () { nil }); nil } catch e { e }
+let body_refused = try {
+  Http.post("http://127.0.0.1:1/x", body: fn () { nil })
+  nil
+} catch e {
+  e
+}
 assert_eq(body_refused.kind, "HttpError")
 
 // --- `params:` query string: offline-deterministic error paths (the encoding
 //     round-trip is in http_test.cc). ---
 
 // params: must be an Object (of String values).
-let params_badtype = try { Http.get("http://127.0.0.1:1/x", params: 123); nil } catch e { e }
+let params_badtype = try {
+  Http.get("http://127.0.0.1:1/x", params: 123)
+  nil
+} catch e {
+  e
+}
 assert_eq(params_badtype.kind, "TypeError")
 
 // params: a non-String value is a TypeError.
-let params_badval = try { Http.get("http://127.0.0.1:1/x", params: {n: 5}); nil } catch e { e }
+let params_badval = try {
+  Http.get("http://127.0.0.1:1/x", params: {n: 5})
+  nil
+} catch e {
+  e
+}
 assert_eq(params_badval.kind, "TypeError")
 
 // --- `json:` send / `r.json()`: the round-trip is verified e2e against a local
 //     echo server; here, the offline-deterministic checks. ---
 
 // json: and body: together is a TypeError (checked before any I/O).
-let json_and_body = try { Http.post("http://127.0.0.1:1/x", body: "x", json: {a: 1}); nil } catch e { e }
+let json_and_body = try {
+  Http.post("http://127.0.0.1:1/x", body: "x", json: {a: 1})
+  nil
+} catch e {
+  e
+}
 assert_eq(json_and_body.kind, "TypeError")
 
 // json: alone serializes (then a transport failure surfaces as HttpError).
-let json_refused = try { Http.post("http://127.0.0.1:1/x", json: {a: 1}); nil } catch e { e }
+let json_refused = try {
+  Http.post("http://127.0.0.1:1/x", json: {a: 1})
+  nil
+} catch e {
+  e
+}
 assert_eq(json_refused.kind, "HttpError")
 
 // --- `form:` (application/x-www-form-urlencoded): offline error paths. The
 //     encoding round-trip is verified e2e. ---
 
 // form: must be an Object of String values.
-let form_badtype = try { Http.post("http://127.0.0.1:1/x", form: "nope"); nil } catch e { e }
+let form_badtype = try {
+  Http.post("http://127.0.0.1:1/x", form: "nope")
+  nil
+} catch e {
+  e
+}
 assert_eq(form_badtype.kind, "TypeError")
-let form_badval = try { Http.post("http://127.0.0.1:1/x", form: {n: 5}); nil } catch e { e }
+let form_badval = try {
+  Http.post("http://127.0.0.1:1/x", form: {n: 5})
+  nil
+} catch e {
+  e
+}
 assert_eq(form_badval.kind, "TypeError")
 
 // at most one of body / json / form.
-let form_and_body = try { Http.post("http://127.0.0.1:1/x", body: "x", form: {a: "1"}); nil } catch e { e }
+let form_and_body = try {
+  Http.post("http://127.0.0.1:1/x", body: "x", form: {a: "1"})
+  nil
+} catch e {
+  e
+}
 assert_eq(form_and_body.kind, "TypeError")
 
 // --- `files:` (multipart/form-data): offline-deterministic error paths. The
@@ -104,54 +198,118 @@ assert_eq(form_and_body.kind, "TypeError")
 //     server; here, the kwarg type/shape errors and the failure model. ---
 
 // files: must be an Object of parts.
-let files_badtype = try { Http.post("http://127.0.0.1:1/x", files: "nope"); nil } catch e { e }
+let files_badtype = try {
+  Http.post("http://127.0.0.1:1/x", files: "nope")
+  nil
+} catch e {
+  e
+}
 assert_eq(files_badtype.kind, "TypeError")
 assert_eq(files_badtype.message, "Http.post: files must be an Object")
 
 // a part value must be a String, Object, or Array.
-let files_badpart = try { Http.post("http://127.0.0.1:1/x", files: {a: 1}); nil } catch e { e }
+let files_badpart = try {
+  Http.post("http://127.0.0.1:1/x", files: {a: 1})
+  nil
+} catch e {
+  e
+}
 assert_eq(files_badpart.kind, "TypeError")
-assert_eq(files_badpart.message,
-    "Http.post: files['a'] must be a String, Object, or Array")
+assert_eq(
+  files_badpart.message,
+  "Http.post: files['a'] must be a String, Object, or Array",
+)
 
 // a part Object needs exactly one of content / path / stream. The count check
 // runs before any field type-check (so a wrong-typed second source still
 // reports "needs exactly one", not a per-field error) — verified symmetric.
-let files_nosource = try { Http.post("http://127.0.0.1:1/x", files: {a: {filename: "x"}}); nil } catch e { e }
+let files_nosource = try {
+  Http.post("http://127.0.0.1:1/x", files: {a: {filename: "x"}})
+  nil
+} catch e {
+  e
+}
 assert_eq(files_nosource.kind, "TypeError")
-assert_eq(files_nosource.message,
-    "Http.post: files['a'] needs exactly one of content, path, stream")
-let files_twosource = try { Http.post("http://127.0.0.1:1/x", files: {a: {content: 1, path: "y"}}); nil } catch e { e }
+assert_eq(
+  files_nosource.message,
+  "Http.post: files['a'] needs exactly one of content, path, stream",
+)
+let files_twosource = try {
+  Http.post("http://127.0.0.1:1/x", files: {a: {content: 1, path: "y"}})
+  nil
+} catch e {
+  e
+}
 assert_eq(files_twosource.kind, "TypeError")
-assert_eq(files_twosource.message,
-    "Http.post: files['a'] needs exactly one of content, path, stream")
+assert_eq(
+  files_twosource.message,
+  "Http.post: files['a'] needs exactly one of content, path, stream",
+)
 
 // content / path must be a String — the message names the part and the field
 // (interp/JIT must agree exactly, so assert the full text, not just the kind).
-let files_badcontent = try { Http.post("http://127.0.0.1:1/x", files: {a: {content: 1}}); nil } catch e { e }
+let files_badcontent = try {
+  Http.post("http://127.0.0.1:1/x", files: {a: {content: 1}})
+  nil
+} catch e {
+  e
+}
 assert_eq(files_badcontent.kind, "TypeError")
-assert_eq(files_badcontent.message, "Http.post: files['a'].content must be a String")
+assert_eq(
+  files_badcontent.message,
+  "Http.post: files['a'].content must be a String",
+)
 
-let files_badpathtype = try { Http.post("http://127.0.0.1:1/x", files: {a: {path: 9}}); nil } catch e { e }
+let files_badpathtype = try {
+  Http.post("http://127.0.0.1:1/x", files: {a: {path: 9}})
+  nil
+} catch e {
+  e
+}
 assert_eq(files_badpathtype.kind, "TypeError")
-assert_eq(files_badpathtype.message, "Http.post: files['a'].path must be a String")
+assert_eq(
+  files_badpathtype.message,
+  "Http.post: files['a'].path must be a String",
+)
 
 // stream must be a Function (producer).
-let files_badstream = try { Http.post("http://127.0.0.1:1/x", files: {a: {stream: 1}}); nil } catch e { e }
+let files_badstream = try {
+  Http.post("http://127.0.0.1:1/x", files: {a: {stream: 1}})
+  nil
+} catch e {
+  e
+}
 assert_eq(files_badstream.kind, "TypeError")
-assert_eq(files_badstream.message,
-    "Http.post: files['a'].stream must be a Function (producer)")
+assert_eq(
+  files_badstream.message,
+  "Http.post: files['a'].stream must be a Function (producer)",
+)
 
 // path that can't be opened is an IOError (before any I/O).
-let files_badpath = try { Http.post("http://127.0.0.1:1/x", files: {a: {path: "_no_such_dir_/f"}}); nil } catch e { e }
+let files_badpath = try {
+  Http.post("http://127.0.0.1:1/x", files: {a: {path: "_no_such_dir_/f"}})
+  nil
+} catch e {
+  e
+}
 assert_eq(files_badpath.kind, "IOError")
 
 // files: and body: together is a TypeError (at most one of body/json/form/files).
-let files_and_body = try { Http.post("http://127.0.0.1:1/x", body: "x", files: {a: "b"}); nil } catch e { e }
+let files_and_body = try {
+  Http.post("http://127.0.0.1:1/x", body: "x", files: {a: "b"})
+  nil
+} catch e {
+  e
+}
 assert_eq(files_and_body.kind, "TypeError")
 
 // a valid in-memory part + transport failure still surfaces as HttpError.
-let files_refused = try { Http.post("http://127.0.0.1:1/x", files: {a: "b"}); nil } catch e { e }
+let files_refused = try {
+  Http.post("http://127.0.0.1:1/x", files: {a: "b"})
+  nil
+} catch e {
+  e
+}
 assert_eq(files_refused.kind, "HttpError")
 
 // --- `Http.sse` (Server-Sent Events): offline-deterministic paths. The event
@@ -159,11 +317,23 @@ assert_eq(files_refused.kind, "HttpError")
 //     here, the error model. ---
 
 // on_event is required: calling without it is an ArityError before any I/O.
-let sse_noarg = try { Http.sse("http://127.0.0.1:1/x"); nil } catch e { e }
+let sse_noarg = try {
+  Http.sse("http://127.0.0.1:1/x")
+  nil
+} catch e {
+  e
+}
 assert_eq(sse_noarg.kind, "ArityError")
 
 // a transport failure surfaces as HttpError (same as the other verbs).
-let sse_refused = try { Http.sse("http://127.0.0.1:1/x", fn (e) { nil }); nil } catch e { e }
+let sse_refused = try {
+  Http.sse("http://127.0.0.1:1/x", fn (e) {
+    nil
+  })
+  nil
+} catch e {
+  e
+}
 assert_eq(sse_refused.kind, "HttpError")
 
 // --- `Http.client` (persistent connection-reusing client): offline error
@@ -172,44 +342,95 @@ assert_eq(sse_refused.kind, "HttpError")
 //     model and the per-method kwarg type errors (tagged with a client.* ctx). ---
 
 // a bad base_url (no scheme) fails to open with an HttpError.
-let cl_badbase = try { Http.client("example.com"); nil } catch e { e }
+let cl_badbase = try {
+  Http.client("example.com")
+  nil
+} catch e {
+  e
+}
 assert_eq(cl_badbase.kind, "HttpError")
-assert_eq(cl_badbase.message,
-    "Http.client: Http: URL must include a scheme (http:// or https://): example.com")
+assert_eq(
+  cl_badbase.message,
+  "Http.client: Http: URL must include a scheme (http:// or https://): example.com",
+)
 
 // a transport failure on a client request surfaces as HttpError (dead port).
 let cl = Http.client("http://127.0.0.1:1")
-let cl_refused = try { cl.get("/x"); nil } catch e { e }
+let cl_refused = try {
+  cl.get("/x")
+  nil
+} catch e {
+  e
+}
 assert_eq(cl_refused.kind, "HttpError")
 
 // a client method's headers kwarg must be an Object of String (client.* ctx).
-let cl_badheaders = try { cl.get("/x", headers: "nope"); nil } catch e { e }
+let cl_badheaders = try {
+  cl.get("/x", headers: "nope")
+  nil
+} catch e {
+  e
+}
 assert_eq(cl_badheaders.kind, "TypeError")
-assert_eq(cl_badheaders.message, "client.get: headers must be an Object of String")
-let cl_badheaderval = try { cl.get("/x", headers: {X: 1}); nil } catch e { e }
+assert_eq(
+  cl_badheaders.message,
+  "client.get: headers must be an Object of String",
+)
+let cl_badheaderval = try {
+  cl.get("/x", headers: {X: 1})
+  nil
+} catch e {
+  e
+}
 assert_eq(cl_badheaderval.kind, "TypeError")
 assert_eq(cl_badheaderval.message, "client.get: header values must be String")
 
 // params likewise.
-let cl_badparams = try { cl.get("/x", params: 1); nil } catch e { e }
+let cl_badparams = try {
+  cl.get("/x", params: 1)
+  nil
+} catch e {
+  e
+}
 assert_eq(cl_badparams.kind, "TypeError")
-assert_eq(cl_badparams.message, "client.get: params must be an Object of String")
+assert_eq(
+  cl_badparams.message,
+  "client.get: params must be an Object of String",
+)
 
 // at most one of body / json / form / files on a client post (client.post ctx).
-let cl_excl = try { cl.post("/x", body: "y", json: {a: 1}); nil } catch e { e }
+let cl_excl = try {
+  cl.post("/x", body: "y", json: {a: 1})
+  nil
+} catch e {
+  e
+}
 assert_eq(cl_excl.kind, "TypeError")
-assert_eq(cl_excl.message, "client.post: pass at most one of body, json, form, files")
+assert_eq(
+  cl_excl.message,
+  "client.post: pass at most one of body, json, form, files",
+)
 
 // `path` is a typed String param: a StringView (e.g. a slice) is rejected, the
 // same as the free Http.* functions' typed url (interp/JIT must agree).
 let cl_pathstr = "/abc"
-let cl_svpath = try { cl.get(cl_pathstr[0..2]); nil } catch e { e }
+let cl_svpath = try {
+  cl.get(cl_pathstr[0..2])
+  nil
+} catch e {
+  e
+}
 assert_eq(cl_svpath.kind, "TypeError")
 assert_eq(cl_svpath.message, "type error: parameter 'path' expects String")
 
 // a closed client errors cleanly (no crash) on further use.
 cl.close()
-let cl_closed = try { cl.get("/x"); nil } catch e { e }
+let cl_closed = try {
+  cl.get("/x")
+  nil
+} catch e {
+  e
+}
 assert_eq(cl_closed.kind, "HttpError")
 assert_eq(cl_closed.message, "client.get: Http: client is closed")
 

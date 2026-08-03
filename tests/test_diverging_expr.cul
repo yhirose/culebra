@@ -26,36 +26,72 @@ fn classify(n) {
     2 => throw "two",
     _ => "other",
   }
-  "fell:{v}"                 # only reached when the arm did not diverge
+  "fell:{v}"  # only reached when the arm did not diverge
 }
 assert_eq(classify(1), "one")
 assert_eq(classify(3), "fell:other")
 mut caught = ""
-try { classify(2) } catch e { caught = e }
+try {
+  classify(2)
+} catch e {
+  caught = e
+}
 assert_eq(caught, "two")
 
 # --- as a direct operand, with no block or arm to sit in ---
 # Each of these leaves the enclosing expression half-built. The JIT must
 # park its builder on a dead block after the terminator, or the operand
 # compilers keep emitting into an already-terminated one.
-fn d_let()    { let y = return "a"; y }
-fn d_binop()  { let y = "x" + return "b"; y }
-fn d_paren()  { let y = (return "c"); y }
-fn d_bare()   { let y = return; y }
-fn d_or(n)    { (n < 3) || return "d"; "no" }
-fn d_and(n)   { (n < 3) && return "e"; "no" }
-fn d_coalesce() { nil ?? return "f" }
-fn d_interp() { "<{return "g"}>" }
-fn d_call()   { Math.max(0, return "h") }
-fn d_index(a) { a[return "i"] }
-fn d_cmp(n)   { n == return "j" }
-fn d_subject() { match return "k" { _ => "unreached" } }
+fn d_let() {
+  let y = return "a"
+  y
+}
+fn d_binop() {
+  let y = "x" + return "b"
+  y
+}
+fn d_paren() {
+  let y = return "c"
+  y
+}
+fn d_bare() {
+  let y = return
+  y
+}
+fn d_or(n) {
+  n < 3 || return "d"
+  "no"
+}
+fn d_and(n) {
+  n < 3 && return "e"
+  "no"
+}
+fn d_coalesce() {
+  nil ?? return "f"
+}
+fn d_interp() {
+  "<{return "g"}>"
+}
+fn d_call() {
+  Math.max(0, return "h")
+}
+fn d_index(a) {
+  a[return "i"]
+}
+fn d_cmp(n) {
+  n == return "j"
+}
+fn d_subject() {
+  match return "k" {
+    _ => "unreached",
+  }
+}
 
 assert_eq(d_let(), "a")
 assert_eq(d_binop(), "b")
 assert_eq(d_paren(), "c")
 assert_eq(d_bare(), nil)
-assert_eq(d_or(1), "no")       # `1 < 3` is truthy, so `||` short-circuits
+assert_eq(d_or(1), "no")  # `1 < 3` is truthy, so `||` short-circuits
 assert_eq(d_and(1), "e")
 assert_eq(d_coalesce(), "f")
 assert_eq(d_interp(), "g")
@@ -65,9 +101,16 @@ assert_eq(d_cmp(1), "j")
 assert_eq(d_subject(), "k")
 
 # `throw` / `break` / `continue` in the same direct-operand slot
-fn t_binop() { let y = "x" + throw "boom"; y }
+fn t_binop() {
+  let y = "x" + throw "boom"
+  y
+}
 mut tcaught = ""
-try { t_binop() } catch e { tcaught = e }
+try {
+  t_binop()
+} catch e {
+  tcaught = e
+}
 assert_eq(tcaught, "boom")
 
 mut b_out = []
@@ -82,7 +125,10 @@ assert_eq(b_out, ["n1", "n2"])
 mut j = 0
 while true {
   j = j + 1
-  cond { j > 2 => break, _ => nil }
+  cond {
+    j > 2 => break,
+    _ => nil,
+  }
 }
 assert_eq(j, 3)
 
@@ -96,7 +142,7 @@ assert_eq(k, 5)
 mut m = 0
 while true {
   m = m + 1
-  m < 3 ? nil : break      # else-branch position (CONDITIONAL, not EXPRESSION)
+  m < 3 ? nil : break  # else-branch position (CONDITIONAL, not EXPRESSION)
 }
 assert_eq(m, 3)
 
@@ -105,7 +151,10 @@ mut n = 0
 mut widths = []
 while true {
   n = n + 1
-  let s = "v" + match n { 4 => break, _ => "x" }
+  let s = "v" + match n {
+      4 => break,
+      _ => "x",
+    }
   widths.push(s.size())
 }
 assert_eq(widths, [2, 2, 2])
@@ -117,7 +166,10 @@ mut p = 0
 mut sums = []
 while true {
   p = p + 1
-  sums.push(Math.max(0, match p { 3 => break, _ => p }))
+  sums.push(Math.max(0, match p {
+    3 => break,
+    _ => p,
+  }))
 }
 assert_eq(sums, [1, 2])
 
@@ -125,8 +177,13 @@ assert_eq(sums, [1, 2])
 mut log = []
 fn defer_break() {
   for x in [1, 2, 3] {
-    defer { log.push("d{x}") }
-    match x { 2 => break, _ => log.push("b{x}") }
+    defer {
+      log.push("d{x}")
+    }
+    match x {
+      2 => break,
+      _ => log.push("b{x}"),
+    }
   }
   "done"
 }
@@ -136,8 +193,13 @@ assert_eq(log, ["b1", "d1", "d2"])
 # `return` out of an expression runs the enclosing block's defers
 mut log2 = []
 fn defer_return(x) {
-  defer { log2.push("fn-d") }
-  let s = "r" + match x { 7 => return "early", _ => "late" }
+  defer {
+    log2.push("fn-d")
+  }
+  let s = "r" + match x {
+      7 => return "early",
+      _ => "late",
+    }
   s
 }
 assert_eq(defer_return(7), "early")
@@ -148,21 +210,28 @@ assert_eq(log2, ["fn-d", "fn-d"])
 mut outer = []
 for a in [1, 2, 3] {
   for b in [10, 20, 30] {
-    match b { 20 => break, _ => outer.push(a * 100 + b) }
+    match b {
+      20 => break,
+      _ => outer.push(a * 100 + b),
+    }
   }
 }
-assert_eq(outer, [110, 210, 310])   # not [110, 310, 210, 610, ...]
+assert_eq(outer, [110, 210, 310])  # not [110, 310, 210, 610, ...]
 
 # --- statement position is unchanged (STATEMENT still matches first) ---
 mut q = 0
 while true {
   q = q + 1
-  if q > 2 { break }
+  if q > 2 {
+    break
+  }
 }
 assert_eq(q, 3)
 
 fn plain_return(c) {
-  if c { return 1 + 2 }    # RETURN's operand is still the whole expression
+  if c {
+    return 1 + 2
+  }  # RETURN's operand is still the whole expression
   0
 }
 assert_eq(plain_return(true), 3)

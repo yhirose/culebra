@@ -57,9 +57,15 @@ assert_true(FS.is_abs(orig))
 // current_path resolves symlinks (e.g. macOS /tmp -> /private/tmp), so
 // compare against FS.realpath of the same dir.
 let tmpdir_env = Sys.env("TMPDIR")
-let tmp_root = if tmpdir_env != "" { tmpdir_env } else { "/tmp" }
+let tmp_root = if tmpdir_env != "" {
+  tmpdir_env
+} else {
+  "/tmp"
+}
 let dir = FS.join(tmp_root, "culebra_sys_test")
-if FS.exists(dir) { FS.remove(dir, recursive: true) }
+if FS.exists(dir) {
+  FS.remove(dir, recursive: true)
+}
 FS.mkdir(dir)
 
 Sys.chdir(dir)
@@ -71,7 +77,12 @@ assert_eq(Sys.getcwd(), orig)
 FS.remove(dir, recursive: true)
 
 // --- Error path: chdir to a non-existent dir throws IOError ---
-let err = try { Sys.chdir("/definitely/not/a/real/path/xyzzy"); "no-error" } catch e { e.kind }
+let err = try {
+  Sys.chdir("/definitely/not/a/real/path/xyzzy")
+  "no-error"
+} catch e {
+  e.kind
+}
 assert_eq(err, "IOError")
 
 // --- Bare-resolve (slow path): namespace as a first-class value ---

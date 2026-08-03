@@ -6,7 +6,7 @@ let m = Regex.find('(\d+)-(\d+)', "ab 12-34 cd")
 assert_eq(m[1], "12")
 assert_eq(m[2], "34")
 assert_eq(Regex.find('\d+', "no digits"), nil)
-assert_eq(Regex.match('\d+', "12ab").value, "12")   // anchored at start
+assert_eq(Regex.match('\d+', "12ab").value, "12")  // anchored at start
 assert_eq(Regex.match('\d+', "ab12"), nil)
 
 // test (Bool)
@@ -22,7 +22,9 @@ assert_eq(Regex.split('\s+', "the quick  brown"), ["the", "quick", "brown"])
 // replace_all — String template repl and Function repl
 assert_eq(Regex.replace_all('[;；]', "a;b；c", "、"), "a、b、c")
 assert_eq(Regex.replace_all('(\w+)@(\w+)', "x@y", '$2.$1'), "y.x")
-assert_eq(Regex.replace_all('\d+', "a1 b22", fn (m) { "<{m.value}>" }), "a<1> b<22>")
+assert_eq(Regex.replace_all('\d+', "a1 b22", fn (m) {
+    "<{m.value}>"
+  }), "a<1> b<22>")
 
 // inline flags work (no flags arg on the one-shot forms)
 assert_eq(Regex.test('(?i)hello', "HELLO world"), true)

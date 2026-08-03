@@ -13,13 +13,20 @@ assert_eq("{with}", "w")
 // A construct keyword followed by `{` must not swallow the block of an
 // enclosing `if` / `while`, including when that block is empty.
 let handle = false
-if handle { }
+if handle {
+}
 mut taken = "none"
-if handle { taken = "then" } else { taken = "else" }
+if handle {
+  taken = "then"
+} else {
+  taken = "else"
+}
 assert_eq(taken, "else")
 
 mut hits = 0
-while handle { hits = hits + 1 }
+while handle {
+  hits = hits + 1
+}
 assert_eq(hits, 0)
 
 // Method calls and interpolation on such a name.
@@ -28,7 +35,9 @@ assert_eq(effect.size(), 3)
 assert_eq("n={effect.size()}", "n=3")
 
 // Parameter, argument, and return positions.
-fn twice(perform) { perform * 2 }
+fn twice(perform) {
+  perform * 2
+}
 assert_eq(twice(21), 42)
 
 fn pick() {
@@ -39,13 +48,22 @@ assert_eq(pick(), "v")
 
 // `for` variable and object key.
 mut total = 0
-for cond in [1, 2, 3] { total = total + cond }
+for cond in [1, 2, 3] {
+  total = total + cond
+}
 assert_eq(total, 6)
 
-let o = { with: 1, from: 2 }
+let o = {with: 1, from: 2}
 assert_eq(o.with + o.from, 3)
 
 // The keyword meanings are unaffected by any of the above.
-assert_eq(cond { total > 5 => "big", _ => "small" }, "big")
-for i in [1, 2] { total = total + i } nobreak { total = total + 100 }
+assert_eq(cond {
+    total > 5 => "big",
+    _ => "small",
+  }, "big")
+for i in [1, 2] {
+  total = total + i
+} nobreak {
+  total = total + 100
+}
 assert_eq(total, 109)

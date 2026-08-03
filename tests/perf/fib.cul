@@ -1,6 +1,10 @@
 # Recursive Fibonacci (compute-bound, function calls)
 # perf: min_speedup 8.0
 fib = fn (x) {
-  if x < 2 { x } else { fn(x - 2) + fn(x - 1) }
+  if x < 2 {
+    x
+  } else {
+    fn(x - 2) + fn(x - 1)
+  }
 }
 inspect(fib(33))

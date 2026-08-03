@@ -6,16 +6,20 @@
 let hex = "0123456789abcdef"
 
 // Canonical shape: 36 chars, hyphens at 8-13-18-23, lowercase hex elsewhere.
-let at = fn (s, i) { s[i..i + 1] }      // single char (strings index by slice)
+let at = fn (s, i) {
+  s[i..i + 1]
+}  // single char (strings index by slice)
 let check_shape = fn (u, version_char) {
   assert_eq(u.size(), 36)
-  for i in [8, 13, 18, 23] { assert_eq(at(u, i), "-") }   // hyphen positions
-  assert_eq(at(u, 14), version_char)    // version nibble
-  let var = at(u, 19)                   // variant: 8/9/a/b
+  for i in [8, 13, 18, 23] {
+    assert_eq(at(u, i), "-")
+  }                                   // hyphen positions
+  assert_eq(at(u, 14), version_char)  // version nibble
+  let var = at(u, 19)                 // variant: 8/9/a/b
   assert_true(var == "8" || var == "9" || var == "a" || var == "b")
   for i in 0..36 {
     if i != 8 && i != 13 && i != 18 && i != 23 {
-      assert_true(hex.contains(at(u, i)))   // lowercase hex digit
+      assert_true(hex.contains(at(u, i)))  // lowercase hex digit
     }
   }
 }
@@ -38,7 +42,9 @@ assert_true(a[0..8] <= b[0..8])
 // --- first-class value + higher-order (slow-path conformance) ---
 let gen = UUID.v4
 assert_eq(gen().size(), 36)
-let batch = [1, 2, 3].map(fn (_) { UUID.v4() })
+let batch = [1, 2, 3].map(fn (_) {
+  UUID.v4()
+})
 assert_eq(batch.size(), 3)
 assert_true(batch[0] != batch[1])
 

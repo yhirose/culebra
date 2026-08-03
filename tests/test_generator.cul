@@ -4,7 +4,9 @@
 // factory wrapping). State machine + multi-yield arrive in Stage 1+.
 
 // --- minimal: 1 yield ---
-fn one() { yield 42 }
+fn one() {
+  yield 42
+}
 
 let g = one()
 assert_eq(g.has_next(), true)
@@ -13,29 +15,37 @@ assert_eq(g.has_next(), false)
 
 // --- works as an Iterable (Phase 2 protocol auto-conforms) ---
 mut collected = []
-for x in one() { collected.push(x) }
+for x in one() {
+  collected.push(x)
+}
 assert_eq(collected.size(), 1)
 assert_eq(collected[0], 42)
 
 // --- yield expression (non-literal value) ---
-fn computed() { yield 7 * 6 }
+fn computed() {
+  yield 7 * 6
+}
 assert_eq(computed().next(), 42)
 
 // --- params flow through to the yielded value ---
-fn echo(v) { yield v }
+fn echo(v) {
+  yield v
+}
 assert_eq(echo("hi").next(), "hi")
-assert_eq(echo(nil).next(), nil)   // nil yield works (key advantage)
+assert_eq(echo(nil).next(), nil)  // nil yield works (key advantage)
 
 // --- each call returns a fresh generator instance ---
 let g1 = one()
 let g2 = one()
-g1.next()                              // drain g1
+g1.next()  // drain g1
 assert_eq(g1.has_next(), false)
-assert_eq(g2.has_next(), true)         // g2 unaffected
+assert_eq(g2.has_next(), true)  // g2 unaffected
 assert_eq(g2.next(), 42)
 
 // --- pipeline composition (Phase 2 Iterator methods) ---
-let mapped = echo(10).map(fn (x) { x * 3 }).collect()
+let mapped = echo(10).map(fn (x) {
+    x * 3
+  }).collect()
 assert_eq(mapped.size(), 1)
 assert_eq(mapped[0], 30)
 
@@ -118,7 +128,9 @@ assert_eq(head[6], 8)
 mut sum = 0
 for x in counter(0, 1000) {
   sum = sum + x
-  if x >= 4 { break }
+  if x >= 4 {
+    break
+  }
 }
 assert_eq(sum, 0 + 1 + 2 + 3 + 4)
 
@@ -220,7 +232,9 @@ assert_eq(se[3], 4)
 mut sum_s5 = 0
 for x in outer_times10(100) {
   sum_s5 = sum_s5 + x
-  if x >= 30 { break }
+  if x >= 30 {
+    break
+  }
 }
 assert_eq(sum_s5, 0 + 10 + 20 + 30)
 

@@ -12,10 +12,12 @@
 mut a = {mut x: 1, mut y: 2}
 mut a_vals = []
 for k, v in a.iter() {
-  if k == "x" { a["y"] = 99 }   # change y's value while visiting x
+  if k == "x" {
+    a["y"] = 99
+  }  # change y's value while visiting x
   a_vals.push(v)
 }
-assert_eq(a_vals, [1, 99])      # x = 1 (own value), then y read live = 99
+assert_eq(a_vals, [1, 99])  # x = 1 (own value), then y read live = 99
 
 # 2. Adding a key mid-iter does not raise; the new key is not visited.
 mut b = {x: 1}
@@ -24,17 +26,19 @@ for k, v in b.iter() {
   b["new_key"] = 2
   b_seen.push(k)
 }
-assert_eq(b_seen, ["x"])          # only the snapshot key
-assert_true(b.has("new_key"))     # but the add did take effect
+assert_eq(b_seen, ["x"])       # only the snapshot key
+assert_true(b.has("new_key"))  # but the add did take effect
 
 # 3. Removing a not-yet-visited key mid-iter skips it (no raise).
 mut c = {x: 1, y: 2, z: 3}
 mut c_seen = []
 for k, v in c.iter() {
-  if k == "x" { c.remove("z") }
+  if k == "x" {
+    c.remove("z")
+  }
   c_seen.push(k)
 }
-assert_eq(c_seen, ["x", "y"])     # z removed before its turn → skipped
+assert_eq(c_seen, ["x", "y"])  # z removed before its turn → skipped
 
 # 4. The `for k, v in obj` sugar has the same tolerance (a fresh key per
 #    step so each add creates a new slot).
@@ -44,12 +48,14 @@ for k, v in d {
   d[k + "2"] = v
   d_seen.push(k)
 }
-assert_eq(d_seen, ["a", "b"])     # a2 / b2 added but not visited
+assert_eq(d_seen, ["a", "b"])  # a2 / b2 added but not visited
 
 # 5. The setdefault-style pattern: add derived entries while iterating.
 mut books = {"創": ("創世記", "章"), "詩": ("詩編", "編")}
 for reading, unit in books.values() {
-  if !books.has(reading) { books[reading] = (reading, unit) }
+  if !books.has(reading) {
+    books[reading] = (reading, unit)
+  }
 }
 assert_eq(books.size(), 4)
 assert_true(books.has("創世記") && books.has("詩編"))

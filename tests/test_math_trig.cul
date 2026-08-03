@@ -34,9 +34,15 @@ assert_close(Math.asin(Math.sin(0.5)), 0.5, tol)
 assert_close(Math.atan(Math.tan(0.3)), 0.3, tol)
 
 // --- type error on non-numeric argument (both backends) ---
-assert_throws("TypeError", fn () { Math.sin("x") })
-assert_throws("TypeError", fn () { Math.atan2(1.0, "x") })
-assert_throws("TypeError", fn () { Math.atan2("y", 1.0) })
+assert_throws("TypeError", fn () {
+  Math.sin("x")
+})
+assert_throws("TypeError", fn () {
+  Math.atan2(1.0, "x")
+})
+assert_throws("TypeError", fn () {
+  Math.atan2("y", 1.0)
+})
 
 // --- first-class value + higher-order (slow-path conformance) ---
 let f = Math.cos

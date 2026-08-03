@@ -6,14 +6,17 @@
 mut last_done = 0
 mut total_seen = 0
 mut calls = 0
-let rs = Parallel.map([1, 2, 3, 4, 5, 6, 7, 8], |x| x * x,
-                      on_progress: fn (done, total) {
+let rs = Parallel.map(
+  [1, 2, 3, 4, 5, 6, 7, 8],
+  |x| x * x,
+  on_progress: fn (done, total) {
   last_done = done
   total_seen = total
   calls = calls + 1
-})
+},
+)
 assert_eq(rs, [1, 4, 9, 16, 25, 36, 49, 64])
-assert_eq(last_done, 8)            # progress reaches every element
+assert_eq(last_done, 8)  # progress reaches every element
 assert_eq(total_seen, 8)
 assert_true(calls >= 1)
 
@@ -28,7 +31,11 @@ assert_eq(Parallel.map([1, 2, 3], |x| x + 1), [2, 3, 4])
 # a throwing on_progress callback propagates out of the Parallel call (the throw
 # is re-raised faithfully once the workers are joined)
 let caught = try {
-  Parallel.map([1, 2, 3, 4, 5, 6], |x| x, on_progress: fn (d, t) { throw 'boom' })
+  Parallel.map(
+    [1, 2, 3, 4, 5, 6],
+    |x| x,
+    on_progress: fn (d, t) { throw 'boom' },
+  )
   "no error"
 } catch e {
   e

@@ -8,41 +8,93 @@
 # and defer ordering.
 
 # --- value = last statement ---
-assert_eq(match 1 { 1 => { let x = 10; x + 5 }, _ => 0 }, 15)
-assert_eq(match 2 { 2 => { let a = 1; let b = 2; a + b }, _ => 0 }, 3)
+assert_eq(match 1 {
+    1 => {
+      let x = 10
+      x + 5
+    },
+    _ => 0,
+  }, 15)
+assert_eq(match 2 {
+    2 => {
+      let a = 1
+      let b = 2
+      a + b
+    },
+    _ => 0,
+  }, 3)
 
 # single-expression brace is a block yielding the value
-assert_eq(match 3 { 3 => { 7 * 6 }, _ => 0 }, 42)
+assert_eq(match 3 {
+    3 => {
+      7 * 6
+    },
+    _ => 0,
+  }, 42)
 
 # culebra `let` is an expression returning the bound value, so a block
 # ending in `let` yields that value (not nil)
-assert_eq(match 4 { 4 => { let z = 99 }, _ => 0 }, 99)
+assert_eq(match 4 {
+    4 => {
+      let z = 99
+    },
+    _ => 0,
+  }, 99)
 
 # --- guard + block ---
-assert_eq(match 7 { n if n > 5 => { let d = n * 2; d - 1 }, _ => 0 }, 13)
-assert_eq(match 3 { n if n > 5 => { 1 }, _ => { 2 } }, 2)
+assert_eq(match 7 {
+    n if n > 5 => {
+      let d = n * 2
+      d - 1
+    },
+    _ => 0,
+  }, 13)
+assert_eq(match 3 {
+    n if n > 5 => {
+      1
+    },
+    _ => {
+      2
+    },
+  }, 2)
 
 # --- object / set literal arms keep their meaning (not blocks) ---
-assert_eq((match 5 { 5 => {k: 42}, _ => {k: 0} })["k"], 42)
-assert_eq((match 6 { 6 => {1, 2, 3}, _ => {0, 9} }).size(), 3)
+assert_eq(match 5 {
+    5 => {k: 42},
+    _ => {k: 0},
+  }["k"], 42)
+assert_eq(match 6 {
+    6 => {1, 2, 3},
+    _ => {0, 9},
+  }.size(), 3)
 
 # bare-identifier brace stays object shorthand (documented quirk):
 # `{ v }` is `{v: v}`, not a block yielding v.
 let v = 8
-assert_eq((match 0 { _ => { v } })["v"], 8)
+assert_eq(match 0 {
+    _ => {v},
+  }["v"], 8)
 
 # --- nested match in a block arm ---
-assert_eq(
-  match 0 {
-    0 => { let inner = match 1 { 1 => 100, _ => 0 }; inner + 1 },
-    _ => -1
+assert_eq(match 0 {
+    0 => {
+      let inner = match 1 {
+        1 => 100,
+        _ => 0,
+      }
+      inner + 1
+    },
+    _ => -1,
   }, 101)
 
 # --- control flow inside a block arm ---
 fn early(x) {
   match x {
-    0 => { let r = "z"; return r },
-    _ => { }
+    0 => {
+      let r = "z"
+      return r
+    },
+    _ => {},
   }
   "fell-through"
 }
@@ -52,8 +104,12 @@ assert_eq(early(9), "fell-through")
 mut acc = 0
 for i in [0, 1, 2, 3] {
   match i {
-    1 => { continue; },
-    _ => { acc = acc + i }
+    1 => {
+      continue;
+    },
+    _ => {
+      acc = acc + i
+    },
   }
 }
 assert_eq(acc, 5)
@@ -61,8 +117,13 @@ assert_eq(acc, 5)
 mut hit = []
 for i in [0, 1, 2] {
   match i {
-    1 => { hit.push("break"); break },
-    _ => { hit.push(i) }
+    1 => {
+      hit.push("break")
+      break
+    },
+    _ => {
+      hit.push(i)
+    },
   }
 }
 assert_eq(hit, [0, "break"])
@@ -70,8 +131,14 @@ assert_eq(hit, [0, "break"])
 # --- defer in a block arm runs at arm exit (LIFO), value survives ---
 mut log = []
 let val = match 1 {
-  1 => { defer { log.push("d") }; log.push("body"); 42 },
-  _ => 0
+  1 => {
+    defer {
+      log.push("d")
+    }
+    log.push("body")
+    42
+  },
+  _ => 0,
 }
 assert_eq(val, 42)
 assert_eq(log, ["body", "d"])
@@ -80,8 +147,13 @@ assert_eq(log, ["body", "d"])
 mut log2 = []
 fn ret_defer() {
   match 1 {
-    1 => { defer { log2.push("ret-d") }; return "R" },
-    _ => "n"
+    1 => {
+      defer {
+        log2.push("ret-d")
+      }
+      return "R"
+    },
+    _ => "n",
   }
 }
 assert_eq(ret_defer(), "R")
@@ -92,8 +164,14 @@ mut log3 = []
 fn throw_defer() {
   try {
     match 1 {
-      1 => { defer { log3.push("throw-d") }; throw "boom"; 0 },
-      _ => 0
+      1 => {
+        defer {
+          log3.push("throw-d")
+        }
+        throw "boom"
+        0
+      },
+      _ => 0,
     }
   } catch e {
     log3.push("caught:" + e)
@@ -107,14 +185,21 @@ mut log4 = []
 fn nested_defer() {
   match 1 {
     1 => {
-      defer { log4.push("outer") }
+      defer {
+        log4.push("outer")
+      }
       let r = match 2 {
-        2 => { defer { log4.push("inner") }; 5 },
-        _ => 0
+        2 => {
+          defer {
+            log4.push("inner")
+          }
+          5
+        },
+        _ => 0,
       }
       r
     },
-    _ => 0
+    _ => 0,
   }
 }
 assert_eq(nested_defer(), 5)

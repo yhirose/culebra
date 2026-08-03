@@ -14,7 +14,7 @@
 # again, so a later element that matches is still emitted).
 assert_eq([1, 2, 3, 8, 2, 1].iter().skip_while(|x| x < 5).collect(), [8, 2, 1])
 assert_eq(range(10).skip_while(|x| x < 7).collect(), [7, 8, 9])
-assert_eq([1, 2, 3].iter().skip_while(|x| x < 99).collect(), [])   # all skipped
+assert_eq([1, 2, 3].iter().skip_while(|x| x < 99).collect(), [])        # all skipped
 assert_eq([9, 1, 2].iter().skip_while(|x| x < 5).collect(), [9, 1, 2])  # none
 assert_eq([].iter().skip_while(|x| true).collect(), [])
 # take_while / skip_while split the same stream in two
@@ -28,7 +28,7 @@ assert_true([1, 2, 3].iter().contains(2))
 assert_true(![1, 2, 3].iter().contains(9))
 assert_true([1, 2, 3].iter().map(|x| x * 2).contains(6))
 assert_true(![].iter().contains(1))
-assert_true([[1, 2], [3]].iter().contains([1, 2]))    # structural equality
+assert_true([[1, 2], [3]].iter().contains([1, 2]))  # structural equality
 assert_true(['a', 'b'].iter().contains('b'))
 # the eager receivers still route to their own arms
 assert_true([1, 2, 3].contains(2))
@@ -59,7 +59,12 @@ assert_eq([].iter().position(|v| true), nil)
 # --- laziness: none of these may drain an unbounded source -----------------
 fn naturals() {
   mut n = 0
-  { has_next: fn () { true }, next: fn () { n = n + 1; n - 1 } }
+  {has_next: fn () {
+      true
+    }, next: fn () {
+      n = n + 1
+      n - 1
+    }}
 }
 assert_eq(naturals().skip_while(|x| x < 3).first(), 3)
 assert_eq(naturals().position(|x| x == 4), 4)
@@ -67,7 +72,10 @@ assert_true(naturals().contains(2))
 assert_eq(naturals().nth(6), 6)
 # only as many pulls as the answer needs
 mut pulls = 0
-assert_eq(range(1000000).map(fn (x) { pulls = pulls + 1; x }).nth(3), 3)
+assert_eq(range(1000000).map(fn (x) {
+      pulls = pulls + 1
+      x
+    }).nth(3), 3)
 assert_eq(pulls, 4)
 
 # --- numeric aggregates accept Float -------------------------------------
@@ -93,8 +101,18 @@ assert_eq([2, 2.0].min(), 2)
 assert_eq([].sum(), 0)
 assert_eq([].product(), 1)
 assert_eq([].iter().sum(), 0)
-try { [].min(); assert_true(false) } catch e { assert_eq(e.kind, "ValueError") }
-try { [].iter().max(); assert_true(false) } catch e { assert_eq(e.kind, "ValueError") }
+try {
+  [].min()
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "ValueError")
+}
+try {
+  [].iter().max()
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "ValueError")
+}
 # A non-numeric element names both accepted types.
 try {
   [1, 'x'].iter().sum()
@@ -121,13 +139,31 @@ assert_eq([{k: 1, t: 'first'}, {k: 1, t: 'second'}].min_by(|o| o.k).t, 'first')
 assert_eq([{k: 1, t: 'first'}, {k: 1, t: 'second'}].max_by(|o| o.k).t, 'first')
 # The key is computed exactly once per element.
 mut keycalls = 0
-assert_eq([5, 3, 9, 1].min_by(fn (x) { keycalls = keycalls + 1; x }), 1)
+assert_eq([5, 3, 9, 1].min_by(fn (x) {
+    keycalls = keycalls + 1
+    x
+  }), 1)
 assert_eq(keycalls, 4)
 # Empty throws, like min/max.
-try { [].min_by(|x| x); assert_true(false) } catch e { assert_eq(e.kind, "ValueError") }
-try { [].iter().max_by(|x| x); assert_true(false) } catch e { assert_eq(e.kind, "ValueError") }
+try {
+  [].min_by(|x| x)
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "ValueError")
+}
+try {
+  [].iter().max_by(|x| x)
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "ValueError")
+}
 # A non-numeric key reports like the unkeyed forms.
-try { [1, 2].min_by(|x| 'k'); assert_true(false) } catch e { assert_eq(e.kind, "TypeError") }
+try {
+  [1, 2].min_by(|x| 'k')
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "TypeError")
+}
 
 # --- to_set / group_by / partition ---------------------------------------
 # to_set is the only way to build a Set from a collection (set literals are
@@ -144,8 +180,18 @@ assert_eq(['b', 'a', 'b'].to_set().to_array(), ['b', 'a'])
 assert_eq([1, 1.0, true].to_set().size(), 3)
 assert_eq([1, 1.0, true].to_set(), {1, 1.0, true})
 # An unhashable element reports like any other unhashable key.
-try { [[1]].to_set(); assert_true(false) } catch e { assert_eq(e.kind, "TypeError") }
-try { [[1]].iter().to_set(); assert_true(false) } catch e { assert_eq(e.kind, "TypeError") }
+try {
+  [[1]].to_set()
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "TypeError")
+}
+try {
+  [[1]].iter().to_set()
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "TypeError")
+}
 
 # to_object is to_set's Object twin: the way back from (key, value) pairs,
 # so a lookup table is an expression (a `let`) instead of a `mut` + loop.
@@ -156,7 +202,10 @@ assert_eq([].iter().to_object().size(), 0)
 # It inverts Object.iter(), so the pair round-trips and a value remap is a chain.
 mut src = {a: 1, b: 2, c: 3}
 assert_eq(src.iter().to_object(), src)
-assert_eq(src.iter().map(|(k, v)| (k, v * 10)).to_object(), {a: 10, b: 20, c: 30})
+assert_eq(
+  src.iter().map(|(k, v)| (k, v * 10)).to_object(),
+  {a: 10, b: 20, c: 30},
+)
 assert_eq(['x', 'y'].enumerate().map(|(i, n)| (n, i)).to_object(), {x: 0, y: 1})
 # A repeated key overwrites in place: last value, first-seen position.
 assert_eq([('a', 1), ('b', 2), ('a', 9)].to_object(), {a: 9, b: 2})
@@ -166,16 +215,34 @@ assert_eq([(1, 'x'), (2, 'y')].to_object()[1], 'x')
 assert_eq([(1, 'x'), ('s', 'y'), (true, 'z')].to_object().size(), 3)
 # Entries are immutable, like group_by's — `{...built}` is the mutable copy.
 mut built = [('a', 1)].to_object()
-try { built.a = 2; assert_true(false) } catch e { assert_eq(e.kind, "ImmutableError") }
+try {
+  built.a = 2
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "ImmutableError")
+}
 mut copied = {...built}
 copied.a = 2
 assert_eq(copied.a, 2)
 # An element that is not a 2-tuple, and an unhashable key, both report here.
-try { [1, 2].to_object(); assert_true(false) }
-catch e { assert_eq(e.message, "type error: to_object expects (key, value) tuples") }
-try { [('a', 1, 2)].iter().to_object(); assert_true(false) }
-catch e { assert_eq(e.message, "type error: to_object expects (key, value) tuples") }
-try { [([1], 'v')].to_object(); assert_true(false) } catch e { assert_eq(e.kind, "TypeError") }
+try {
+  [1, 2].to_object()
+  assert_true(false)
+} catch e {
+  assert_eq(e.message, "type error: to_object expects (key, value) tuples")
+}
+try {
+  [('a', 1, 2)].iter().to_object()
+  assert_true(false)
+} catch e {
+  assert_eq(e.message, "type error: to_object expects (key, value) tuples")
+}
+try {
+  [([1], 'v')].to_object()
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "TypeError")
+}
 
 # group_by buckets into Arrays under f(x), in first-seen key order.
 mut staff = [{n: 'a', d: 'eng'}, {n: 'b', d: 'ops'}, {n: 'c', d: 'eng'}]
@@ -185,7 +252,12 @@ assert_eq([1, 2, 3, 4, 5].group_by(|x| x % 2)[1], [1, 3, 5])
 assert_eq([1, 2, 3, 4, 5].iter().group_by(|x| x % 2)[0], [2, 4])
 assert_eq(['aa', 'b', 'cc'].group_by(|s| s.size())[2], ['aa', 'cc'])
 assert_eq([].group_by(|x| x).keys().size(), 0)
-try { [1].group_by(|x| [x]); assert_true(false) } catch e { assert_eq(e.kind, "TypeError") }
+try {
+  [1].group_by(|x| [x])
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "TypeError")
+}
 
 # partition splits in one pass and returns a Tuple, so it destructures.
 assert_eq([1, 2, 3, 4, 5].partition(|x| x % 2 == 0), ([2, 4], [1, 3, 5]))
@@ -202,23 +274,31 @@ assert_eq([].iter().partition(|x| true), ([], []))
 
 # --- flatten: one level of nesting removed ---------------------------------
 assert_eq([[1, 2], [3], [], [4, 5]].iter().flatten().collect(), [1, 2, 3, 4, 5])
-assert_eq([[[1]], [[2]]].iter().flatten().collect(), [[1], [2]])   # one level only
+assert_eq([[[1]], [[2]]].iter().flatten().collect(), [[1], [2]])  # one level only
 assert_eq([].iter().flatten().collect(), [])
 # Any iterable inner works, including String and Set (same coercion flat_map uses)
 assert_eq(['ab', 'cd'].iter().flatten().collect(), ['a', 'b', 'c', 'd'])
 mut s1 = {1, 2}
 assert_eq([s1, s1].iter().flatten().collect(), [1, 2, 1, 2])
 assert_eq(['ab'].iter().flat_map(|s| s).collect(), ['a', 'b'])
-try { [1, 2].iter().flatten().collect(); assert_true(false) }
-catch e { assert_eq(e.kind, "TypeError") }
+try {
+  [1, 2].iter().flatten().collect()
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "TypeError")
+}
 
 # --- scan: running fold, one output per input ------------------------------
 assert_eq([1, 2, 3, 4].iter().scan(0, |a, x| a + x).collect(), [1, 3, 6, 10])
 assert_eq([1, 2, 3].iter().scan(1, |a, x| a * x).collect(), [1, 2, 6])
 assert_eq(['a', 'b'].iter().scan('', |a, x| a + x).collect(), ['a', 'ab'])
-assert_eq([].iter().scan(0, |a, x| a + x).collect(), [])   # init is not yielded
-try { [1].iter().scan(0, |x| x).collect(); assert_true(false) }
-catch e { assert_eq(e.message, "type error: scan expects a 2-parameter function") }
+assert_eq([].iter().scan(0, |a, x| a + x).collect(), [])  # init is not yielded
+try {
+  [1].iter().scan(0, |x| x).collect()
+  assert_true(false)
+} catch e {
+  assert_eq(e.message, "type error: scan expects a 2-parameter function")
+}
 
 # --- distinct: first occurrence wins ---------------------------------------
 assert_eq([1, 2, 2, 3, 1, 2].iter().distinct().collect(), [1, 2, 3])
@@ -226,47 +306,70 @@ assert_eq(['b', 'a', 'b'].iter().distinct().collect(), ['b', 'a'])
 assert_eq([].iter().distinct().collect(), [])
 # Same key identity as to_set / Object keys: these three stay distinct.
 assert_eq([1, 1.0, true].iter().distinct().collect().size(), 3)
-try { [[1], [1]].iter().distinct().collect(); assert_true(false) }
-catch e { assert_eq(e.kind, "TypeError") }
+try {
+  [[1], [1]].iter().distinct().collect()
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "TypeError")
+}
 
 # --- tap: side effect, element passes through unchanged ---------------------
 mut tapped = []
-assert_eq([1, 2, 3].iter().tap(fn (x) { tapped.push(x) }).map(|x| x * 10).collect(),
-          [10, 20, 30])
+assert_eq([1, 2, 3].iter().tap(fn (x) {
+      tapped.push(x)
+    }).map(|x| x * 10).collect(), [10, 20, 30])
 assert_eq(tapped, [1, 2, 3])
 # Lazy: only the pulled elements run the callback.
 mut probed = []
-assert_eq(range(100).tap(fn (x) { probed.push(x) }).take(3).collect(), [0, 1, 2])
+assert_eq(range(100).tap(fn (x) {
+      probed.push(x)
+    }).take(3).collect(), [0, 1, 2])
 assert_eq(probed, [0, 1, 2])
 
 # --- step_by: first element, then every n-th --------------------------------
 assert_eq(range(10).step_by(3).collect(), [0, 3, 6, 9])
 assert_eq([10, 20, 30, 40, 50].iter().step_by(2).collect(), [10, 30, 50])
 assert_eq([1, 2, 3].iter().step_by(1).collect(), [1, 2, 3])
-assert_eq([1, 2].iter().step_by(9).collect(), [1])       # first still yielded
+assert_eq([1, 2].iter().step_by(9).collect(), [1])  # first still yielded
 assert_eq([].iter().step_by(2).collect(), [])
-try { [1].iter().step_by(0).collect(); assert_true(false) }
-catch e { assert_eq(e.kind, "ValueError") }
+try {
+  [1].iter().step_by(0).collect()
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "ValueError")
+}
 
 # --- chunk_by: ADJACENT elements only --------------------------------------
 # A key that reappears after a different one starts a NEW run -- this is what
 # separates it from group_by, which buckets by key regardless of position.
-assert_eq([1, 1, 2, 2, 2, 1].iter().chunk_by(|x| x).collect(),
-          [[1, 1], [2, 2, 2], [1]])
-assert_eq([1, 1, 2, 2, 2, 1].group_by(|x| x)[1], [1, 1, 1])   # contrast
+assert_eq(
+  [1, 1, 2, 2, 2, 1].iter().chunk_by(|x| x).collect(),
+  [[1, 1], [2, 2, 2], [1]],
+)
+assert_eq([1, 1, 2, 2, 2, 1].group_by(|x| x)[1], [1, 1, 1])  # contrast
 assert_eq([1, 2, 3].iter().chunk_by(|x| x).collect(), [[1], [2], [3]])
 assert_eq([1, 1, 1].iter().chunk_by(|x| x).collect(), [[1, 1, 1]])
 assert_eq([].iter().chunk_by(|x| x).collect(), [])
-assert_eq(['aa', 'ab', 'bc'].iter().chunk_by(|s| s[0..1]).collect(),
-          [['aa', 'ab'], ['bc']])
+assert_eq(
+  ['aa', 'ab', 'bc'].iter().chunk_by(|s| s[0..1]).collect(),
+  [['aa', 'ab'], ['bc']],
+)
 
 # --- all six stream an unbounded source ------------------------------------
 fn naturals2() {
   mut n = 0
-  { has_next: fn () { true }, next: fn () { n = n + 1; n - 1 } }
+  {has_next: fn () {
+      true
+    }, next: fn () {
+      n = n + 1
+      n - 1
+    }}
 }
 assert_eq(naturals2().scan(0, |a, x| a + x).take(5).collect(), [0, 1, 3, 6, 10])
 assert_eq(naturals2().step_by(4).take(3).collect(), [0, 4, 8])
 assert_eq(naturals2().map(|x| x % 3).distinct().take(3).collect(), [0, 1, 2])
-assert_eq(naturals2().chunk_by(|x| x / 3).take(2).collect(), [[0, 1, 2], [3, 4, 5]])
+assert_eq(
+  naturals2().chunk_by(|x| x / 3).take(2).collect(),
+  [[0, 1, 2], [3, 4, 5]],
+)
 assert_eq(naturals2().map(|x| [x]).flatten().take(3).collect(), [0, 1, 2])

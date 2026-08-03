@@ -5,41 +5,65 @@
 
 // --- User class conforming to Iterator + Iterable ---
 class Counter {
-  new (start, stop) {
+  new(start, stop) {
     self.cur = start
     self.stop = stop
   }
-  iter () { self }
-  has_next () { self.cur < self.stop }
-  next () { let v = self.cur; self.cur = self.cur + 1; v }
+  iter() {
+    self
+  }
+  has_next() {
+    self.cur < self.stop
+  }
+  next() {
+    let v = self.cur
+    self.cur = self.cur + 1
+    v
+  }
 }
 
 mut collected = []
-for x in Counter.new(0, 3) { collected.push(x) }
+for x in Counter.new(0, 3) {
+  collected.push(x)
+}
 assert_eq(collected.size(), 3)
 assert_true(collected[0] == 0 && collected[1] == 1 && collected[2] == 2)
 
 // --- nil yield works (the key advantage over a T?-terminator design) ---
 class NilYielder {
-  new () { self.i = 0 }
-  iter () { self }
-  has_next () { self.i < 3 }
-  next () {
+  new() {
+    self.i = 0
+  }
+  iter() {
+    self
+  }
+  has_next() {
+    self.i < 3
+  }
+  next() {
     let v = self.i
     self.i = self.i + 1
-    if v == 1 { nil } else { v }
+    if v == 1 {
+      nil
+    } else {
+      v
+    }
   }
 }
 
 mut seen = []
-for x in NilYielder.new() { seen.push(x) }
+for x in NilYielder.new() {
+  seen.push(x)
+}
 assert_eq(seen.size(), 3)
 assert_true(seen[0] == 0 && seen[1] == nil && seen[2] == 2)
 
 // --- primitive Iterable conformance ---
-fn iterate (it: Iterable) -> Long {
+fn iterate(it: Iterable) -> Long {
   mut n = 0
-  for _ in it { n = n + 1 }
+  for _ in it {
+    n = n + 1
+  }
   n
 }
 assert_eq(iterate([1, 2, 3]), 3)
@@ -67,16 +91,22 @@ assert_eq(it.next(), 2)
 assert_eq(it.has_next(), false)
 
 // --- Iterator pipeline methods compose under the new protocol ---
-let doubled = [1, 2, 3].iter().map(fn (x) { x * 2 }).collect()
+let doubled = [1, 2, 3].iter().map(fn (x) {
+    x * 2
+  }).collect()
 assert_eq(doubled.size(), 3)
 assert_true(doubled[0] == 2 && doubled[1] == 4 && doubled[2] == 6)
 
-let evens = range(10).filter(fn (x) { x % 2 == 0 }).collect()
+let evens = range(10).filter(fn (x) {
+    x % 2 == 0
+  }).collect()
 assert_eq(evens.size(), 5)
 assert_true(evens[0] == 0 && evens[4] == 8)
 
 // --- User class works in the pipeline too ---
-let cs = Counter.new(0, 5).map(fn (x) { x * x }).collect()
+let cs = Counter.new(0, 5).map(fn (x) {
+    x * x
+  }).collect()
 assert_eq(cs.size(), 5)
 assert_true(cs[0] == 0 && cs[4] == 16)
 

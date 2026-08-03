@@ -49,13 +49,18 @@ effect fn de_throw() {
 }
 let de_r3 = try {
   handle { de_throw() } with de_ask(resume) { resume(1) }
-} catch e { de_log3.push("catch"); e }
+} catch e {
+  de_log3.push("catch")
+  e
+}
 assert_eq(de_log3, ["before-throw", "defer", "catch"])
 assert_eq(de_r3, "boom")
 
 // a throw from a *called* fn (not a statement-level throw) still runs the defer
 mut de_log4 = []
-fn de_boom() { throw "x" }
+fn de_boom() {
+  throw "x"
+}
 effect fn de_callthrow() {
   defer { de_log4.push("defer") }
   let v = perform de_ask()
@@ -64,7 +69,9 @@ effect fn de_callthrow() {
 }
 let de_r4 = try {
   handle { de_callthrow() } with de_ask(resume) { resume(1) }
-} catch e { "caught:" + e }
+} catch e {
+  "caught:" + e
+}
 assert_eq(de_log4, ["defer"])
 assert_eq(de_r4, "caught:x")
 
@@ -152,7 +159,9 @@ effect fn de_sig_f() {
   perform de_sig_op()
   0
 }
-fn de_sig_plain() { de_sig_f() }   // bare call → _run_comp
+fn de_sig_plain() {
+  de_sig_f()
+}  // bare call → _run_comp
 let de_r10 = handle { de_sig_plain() } with de_sig_op(resume) { "aborted" }
 assert_eq(de_r10, "aborted")
 assert_eq(de_log10, ["f-defer"])
@@ -163,7 +172,9 @@ assert_eq(de_log10, ["f-defer"])
 mut de_log11 = []
 effect fn de_outer_op()
 effect fn de_inner_op()
-fn de_cross_plain() { perform de_outer_op() }
+fn de_cross_plain() {
+  perform de_outer_op()
+}
 let de_r11 = handle {
   handle {
     defer { de_log11.push("inner-defer") }
@@ -187,7 +198,11 @@ effect fn de_delegator() {
   de_thrower()
   0
 }
-let de_r12 = try { handle { de_delegator() } with dummy(r) { 0 } } catch e { "caught:" + e.message }
+let de_r12 = try {
+  handle { de_delegator() } with dummy(r) { 0 }
+} catch e {
+  "caught:" + e.message
+}
 assert_eq(de_r12, "caught:boom")
 assert_eq(de_log12, ["inner", "outer"])
 
@@ -202,7 +217,9 @@ effect fn de_esc2() {
 }
 let de_out13 = try {
   handle { de_esc2() } with de_fail(resume) { de_saved13 = resume; throw { kind: "E", message: "h" } }
-} catch e { "caught:" + e.message }
+} catch e {
+  "caught:" + e.message
+}
 assert_eq(de_out13, "caught:h")
 assert_eq(de_log13, [])
 assert_eq(de_saved13(41), 42)
@@ -222,9 +239,11 @@ let de_r14 = try {
   handle { de_body14() } with de_t14(resume) {
     de_log14.push("clause")
     throw { kind: "E", message: "t-threw" }
-    resume(1)   // dead — its presence is what classifies the clause "t"
+    resume(1)  // dead — its presence is what classifies the clause "t"
   }
-} catch e { "caught:" + e.message }
+} catch e {
+  "caught:" + e.message
+}
 assert_eq(de_r14, "caught:t-threw")
 assert_eq(de_log14, ["clause", "body-defer"])
 
@@ -235,14 +254,18 @@ effect fn de_body15() {
   perform de_t14()
   0
 }
-fn de_plain15() { de_body15() }
+fn de_plain15() {
+  de_body15()
+}
 let de_r15 = try {
   handle { de_plain15() } with de_t14(resume) {
     de_log15.push("clause")
     throw { kind: "E", message: "t-threw2" }
-    resume(1)   // dead — its presence is what classifies the clause "t"
+    resume(1)  // dead — its presence is what classifies the clause "t"
   }
-} catch e { "caught:" + e.message }
+} catch e {
+  "caught:" + e.message
+}
 assert_eq(de_r15, "caught:t-threw2")
 assert_eq(de_log15, ["clause", "body-defer"])
 
@@ -256,7 +279,9 @@ effect fn de_body16() {
 }
 let de_r16 = try {
   handle { de_body16() } with de_t14(resume) { throw { kind: "E", message: "a-threw" } }
-} catch e { "caught:" + e.message }
+} catch e {
+  "caught:" + e.message
+}
 assert_eq(de_r16, "caught:a-threw")
 assert_eq(de_log16, ["body-defer"])
 
@@ -271,7 +296,9 @@ effect fn de_body17() {
 }
 let de_r17 = try {
   handle { de_body17() } with de_t14(resume) { resume(1) }
-} catch e { "caught:" + e.kind }
+} catch e {
+  "caught:" + e.kind
+}
 assert_eq(de_r17, "caught:EffectError")
 assert_eq(de_log17, ["body-defer"])
 
@@ -362,7 +389,10 @@ effect fn cf_trailing_loop() {
   let r = perform cf_side()
   for x in [1, 2] { cf_log.push(x + r) }
 }
-assert_eq(handle { cf_trailing_loop() } with cf_side(resume) { resume(10) }, nil)
+assert_eq(
+  handle { cf_trailing_loop() } with cf_side(resume) { resume(10) },
+  nil,
+)
 assert_eq(cf_log, [11, 12])
 
 // a non-suspending if in tail position still yields its branch value

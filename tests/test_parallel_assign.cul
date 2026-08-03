@@ -3,7 +3,7 @@
 
 mut a = 1
 mut b = 2
-(a, b) = (b, a)             // swap
+(a, b) = (b, a)  // swap
 assert_eq(a, 2)
 assert_eq(b, 1)
 
@@ -38,7 +38,12 @@ assert_eq(n, 6)
 // Assigning to an immutable binding is an error.
 let imm = 1
 mut ok2 = 2
-let e = try { (imm, ok2) = (9, 9); nil } catch er { er.kind }
+let e = try {
+  (imm, ok2) = (9, 9)
+  nil
+} catch er {
+  er.kind
+}
 assert_eq(e, "ImmutableError")
 
 // Destructuring refcounted (heap) elements must retain each leaf binding:

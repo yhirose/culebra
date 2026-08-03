@@ -12,13 +12,18 @@
 #      ./build/culebra --jit tests/isolate/test_lazy_ns_isolate_jit.cul
 
 # Minimal repro from the bug report.
-let t = Isolate.spawn(fn () { Time.sleep(0.001); 42 })
+let t = Isolate.spawn(fn () {
+  Time.sleep(0.001)
+  42
+})
 assert_eq(t.join(), 42)
 
 # Regex inside a spawned closure: the module has an internal `Regex` class whose
 # methods are referenced by `find_all`/`test` — exercises both the cross-Runtime
 # rebuild and the lexical-capture-of-internal-class path on the child heap.
-let r = Isolate.spawn(fn () { Regex.find_all("x+", "xx ax xxx").size() })
+let r = Isolate.spawn(fn () {
+  Regex.find_all("x+", "xx ax xxx").size()
+})
 assert_eq(r.join(), 3)
 
 # Several lazy namespaces in one child.
@@ -38,7 +43,12 @@ assert_eq(outs.sum(), 18)
 # closed-namespace marker too — otherwise an unknown member would read as nil
 # inside an isolate while raising on the parent.
 let closed = Isolate.spawn(fn () {
-  try { Time.typo; "no throw" } catch e { e.kind }
+  try {
+    Time.typo
+    "no throw"
+  } catch e {
+    e.kind
+  }
 })
 assert_eq(closed.join(), "AttributeError")
 

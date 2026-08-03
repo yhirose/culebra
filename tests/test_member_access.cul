@@ -10,12 +10,14 @@
 
 # --- permissive nil reads ---
 assert_true("abc".nope == nil)
-assert_true("abc".slice(1, 2).nope == nil)   # StringView
+assert_true("abc".slice(1, 2).nope == nil)  # StringView
 assert_true([1, 2].nope == nil)
-assert_true({1, 2}.nope == nil)              # Set
-assert_true((1, 2).nope == nil)              # Tuple
-assert_true({a: 1}.nope == nil)              # Object
-assert_true((fn (x) { x }).nope == nil)
+assert_true({1, 2}.nope == nil)  # Set
+assert_true((1, 2).nope == nil)  # Tuple
+assert_true({a: 1}.nope == nil)  # Object
+assert_true(fn (x) {
+  x
+}.nope == nil)
 assert_true(Tensor.zeros([2]).nope == nil)
 
 # A real member still resolves (the permissive path only catches misses).
@@ -24,15 +26,25 @@ assert_eq({a: 1}.a, 1)
 
 # --- scalars raise TypeError ---
 fn read_kind(thunk) {
-  try { let _ = thunk(); 'no-throw' } catch e { e.kind }
+  try {
+    let _ = thunk()
+    'no-throw'
+  } catch e {
+    e.kind
+  }
 }
-assert_eq(read_kind(|| (5).nope), 'TypeError')
-assert_eq(read_kind(|| (5.0).nope), 'TypeError')
+assert_eq(read_kind(|| 5.nope), 'TypeError')
+assert_eq(read_kind(|| 5.0.nope), 'TypeError')
 assert_eq(read_kind(|| true.nope), 'TypeError')
 assert_eq(read_kind(|| nil.nope), 'TypeError')
 
 # --- calling a missing member: nil is not callable ---
-let r_call = try { let _ = [1].nope(); nil } catch e { e }
+let r_call = try {
+  let _ = [1].nope()
+  nil
+} catch e {
+  e
+}
 assert_eq(r_call.kind, 'TypeError')
 assert_true(r_call.message.contains('expected Function, got Nil'))
 

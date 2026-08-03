@@ -17,54 +17,86 @@
 fn bound_port(rx) {
   let p = rx.recv()
   if p == nil {
-    throw { kind: "AssertionError", message: "server never bound" }
+    throw {kind: "AssertionError", message: "server never bound"}
   }
   return p
 }
 
 let (tx, rx) = Channel.new(1)
-iso = Isolate.spawn(fn() {
+iso = Isolate.spawn(fn () {
   let srv = Http.server()
-  srv.get("/", fn(req) { "Hello, world!" })
-  srv.get("/users/:id", fn(req) { "user " + req.params["id"] })
-  srv.post("/echo", fn(req) { req.body })
-  srv.get("/q", fn(req) { "name=" + req.query["name"] })
-  srv.get("/method", fn(req) { req.method })
-  srv.get("/json", fn(req) {
-    { status: 201, body: '{"ok":true}', content_type: "application/json",
-      headers: { "X-Test": "yes" } }
+  srv.get("/", fn (req) {
+    "Hello, world!"
   })
-  srv.get("/empty", fn(req) { nil })
+  srv.get("/users/:id", fn (req) {
+    "user " + req.params["id"]
+  })
+  srv.post("/echo", fn (req) {
+    req.body
+  })
+  srv.get("/q", fn (req) {
+    "name=" + req.query["name"]
+  })
+  srv.get("/method", fn (req) {
+    req.method
+  })
+  srv.get("/json", fn (req) {
+    {
+      status: 201,
+      body: '{"ok":true}',
+      content_type: "application/json",
+      headers: {"X-Test": "yes"},
+    }
+  })
+  srv.get("/empty", fn (req) {
+    nil
+  })
   # Malformed response objects: a wrong-typed field is a TypeError → 500, with
   # an identical message across interp/JIT (the trampoline puts e.what() in the
   # body). These lock the apply-response type checks symmetric.
-  srv.get("/bad_status", fn(req) { { status: "x" } })
-  srv.get("/bad_ct", fn(req) { { body: "ok", content_type: 9 } })
-  srv.get("/bad_body", fn(req) { { body: 9 } })
-  srv.get("/bad_hdr", fn(req) { { body: "ok", headers: { "A": 1 } } })
+  srv.get("/bad_status", fn (req) {
+    {status: "x"}
+  })
+  srv.get("/bad_ct", fn (req) {
+    {body: "ok", content_type: 9}
+  })
+  srv.get("/bad_body", fn (req) {
+    {body: 9}
+  })
+  srv.get("/bad_hdr", fn (req) {
+    {body: "ok", headers: {"A": 1}}
+  })
   # Streaming (chunked / SSE): the handler returns an Object with a `stream`
   # Function. The provider runs on this worker thread and hands the closure a
   # `sink` whose .write(chunk) pushes one chunk. status/content_type/headers
   # apply as usual; body + stream is a TypeError → 500.
-  srv.get("/count", fn(req) {
-    { stream: fn(sink) { for i in 0..5 { sink.write(i.to_string() + ",") } } }
+  srv.get("/count", fn (req) {
+    {stream: fn (sink) {
+      for i in 0..5 {
+        sink.write(i.to_string() + ",")
+      }
+    }}
   })
-  srv.get("/sse", fn(req) {
-    { status: 202, content_type: "text/event-stream",
-      headers: { "Cache-Control": "no-cache" },
-      stream: fn(sink) {
-        for i in 0..3 { sink.write("data: " + i.to_string() + "\n\n") }
-      } }
+  srv.get("/sse", fn (req) {
+    {status: 202, content_type: "text/event-stream", headers: {"Cache-Control": "no-cache"}, stream: fn (sink) {
+      for i in 0..3 {
+        sink.write("data: " + i.to_string() + "\n\n")
+      }
+    }}
   })
-  srv.get("/stream_both", fn(req) {
-    { body: "x", stream: fn(sink) { sink.write("y") } }
+  srv.get("/stream_both", fn (req) {
+    {body: "x", stream: fn (sink) {
+      sink.write("y")
+    }}
   })
-  srv.get("/stream_bad", fn(req) { { stream: 42 } })
-  tx.send(srv.bind(0))               # bind first, hand the port to the parent
+  srv.get("/stream_bad", fn (req) {
+    {stream: 42}
+  })
+  tx.send(srv.bind(0))  # bind first, hand the port to the parent
   tx.drop()
   srv.serve()
 })
-tx.drop()                            # the parent's copy; the isolate holds one
+tx.drop()  # the parent's copy; the isolate holds one
 BASE = "http://127.0.0.1:" + bound_port(rx).to_string()
 
 r = Http.get(BASE + "/")
@@ -83,11 +115,20 @@ r5 = Http.get(BASE + "/method")
 inspect("method -> " + r5.body)
 
 r6 = Http.get(BASE + "/json")
-inspect("object return -> " + r6.status.to_string() + " | " + r6.body +
-     " | ct=" + r6.headers["Content-Type"] + " | x=" + r6.headers["X-Test"])
+inspect("object return -> " +
+  r6.status.to_string() +
+  " | " +
+  r6.body +
+  " | ct=" +
+  r6.headers["Content-Type"] +
+  " | x=" +
+  r6.headers["X-Test"])
 
 r7 = Http.get(BASE + "/empty")
-inspect("nil return -> " + r7.status.to_string() + " | len=" + r7.body.size().to_string())
+inspect("nil return -> " +
+  r7.status.to_string() +
+  " | len=" +
+  r7.body.size().to_string())
 
 r8 = Http.get(BASE + "/missing")
 inspect("unmatched -> " + r8.status.to_string())
@@ -102,9 +143,14 @@ rc = Http.get(BASE + "/count")
 inspect("stream count -> " + rc.status.to_string() + " | " + rc.body)
 
 rs = Http.get(BASE + "/sse")
-inspect("stream sse -> " + rs.status.to_string() + " | ct=" +
-     rs.headers["Content-Type"] + " | cc=" + rs.headers["Cache-Control"] +
-     " | bytes=" + rs.body.size().to_string())
+inspect("stream sse -> " +
+  rs.status.to_string() +
+  " | ct=" +
+  rs.headers["Content-Type"] +
+  " | cc=" +
+  rs.headers["Cache-Control"] +
+  " | bytes=" +
+  rs.body.size().to_string())
 
 for sb in ["/stream_both", "/stream_bad"] {
   let rsb = Http.get(BASE + sb)
@@ -119,9 +165,9 @@ inspect("server stopped")
 # true parallel request handling. Parallel.map preserves input order, so the
 # output is deterministic across backends.
 let (tx2, rx2) = Channel.new(1)
-iso2 = Isolate.spawn(fn() {
+iso2 = Isolate.spawn(fn () {
   let srv = Http.server()
-  srv.get("/sq/:n", fn(req) {
+  srv.get("/sq/:n", fn (req) {
     let n = to_long(req.params["n"])
     (n * n).to_string()
   })
@@ -131,7 +177,7 @@ iso2 = Isolate.spawn(fn() {
 })
 tx2.drop()
 BASE2 = "http://127.0.0.1:" + bound_port(rx2).to_string()
-squares = Parallel.map([1, 2, 3, 4, 5, 6, 7, 8], fn(i) {
+squares = Parallel.map([1, 2, 3, 4, 5, 6, 7, 8], fn (i) {
   Http.get(BASE2 + "/sq/" + i.to_string()).body
 })
 inspect("concurrent squares: " + squares.to_string())
@@ -142,7 +188,10 @@ inspect("pool stopped")
 # check is at serve, so listen() has bound by then) — identical across backends.
 bad = Http.server()
 mut hits = 0
-bad.get("/", fn(req) { hits = hits + 1; "x" })
+bad.get("/", fn (req) {
+  hits = hits + 1
+  "x"
+})
 try {
   bad.listen(0, workers: 2)
 } catch e {
@@ -151,14 +200,22 @@ try {
 # The routes survive the rejection, so the retry reaches the same verdict rather
 # than quietly serving an empty server.
 mut bad2 = "none"
-try { bad.serve_async(workers: 2) } catch e { bad2 = e.kind }
+try {
+  bad.serve_async(workers: 2)
+} catch e {
+  bad2 = e.kind
+}
 inspect("non-sendable retry -> " + bad2)
 bad.close()
 
 # Port-free checks: handle methods chain (return the handle), and close is
 # idempotent. These never bind a socket.
 srv2 = Http.server()
-chained = srv2.get("/a", fn(req) { "a" }).post("/b", fn(req) { "b" })
+chained = srv2.get("/a", fn (req) {
+    "a"
+  }).post("/b", fn (req) {
+    "b"
+  })
 inspect("chaining returns handle -> " + (chained == srv2).to_string())
 srv2.close()
 srv2.close()
@@ -170,21 +227,28 @@ inspect("double close ok")
 # route pushes messages then returns, which the client drains with for-in. Under
 # a worker pool so each connection occupies its own worker.
 let (wtx, wrx) = Channel.new(1)
-wiso = Isolate.spawn(fn() {
+wiso = Isolate.spawn(fn () {
   let srv = Http.server()
-  srv.ws("/echo", fn(req, ws) {
-    for msg in ws { ws.send("echo:" + msg) }
+  srv.ws("/echo", fn (req, ws) {
+    for msg in ws {
+      ws.send("echo:" + msg)
+    }
   })
-  srv.ws("/greet", fn(req, ws) {
+  srv.ws("/greet", fn (req, ws) {
     while true {
       let m = ws.receive()
-      if m == nil { break }
+      if m == nil {
+        break
+      }
       ws.send(req.path + ":" + m)
     }
   })
-  srv.ws("/push", fn(req, ws) {
+  srv.ws("/push", fn (req, ws) {
     mut i = 0
-    while i < 3 { ws.send("p" + i.to_string()); i = i + 1 }
+    while i < 3 {
+      ws.send("p" + i.to_string())
+      i = i + 1
+    }
   })
   wtx.send(srv.bind(0))
   wtx.drop()
@@ -206,7 +270,7 @@ inspect("ws greet -> " + wg.receive())
 wg.close()
 
 # Concurrent ws echoes, one client (isolate) each — Parallel.map keeps order.
-wmany = Parallel.map([1, 2, 3, 4], fn(i) {
+wmany = Parallel.map([1, 2, 3, 4], fn (i) {
   let c = Http.ws(WBASE + "/echo")
   c.send(i.to_string())
   let r = c.receive()
@@ -218,12 +282,18 @@ inspect("ws pool -> " + wmany.to_string())
 # Client drains server-pushed messages with for-in (ends when the server closes).
 wp = Http.ws(WBASE + "/push")
 mut pushed = []
-for m in wp { pushed.push(m) }
+for m in wp {
+  pushed.push(m)
+}
 inspect("ws pushed -> " + pushed.to_string())
 
 # A bad URL is an HttpError.
 mut werr = "none"
-try { Http.ws("ws://127.0.0.1:1/nope") } catch e { werr = e.kind }
+try {
+  Http.ws("ws://127.0.0.1:1/nope")
+} catch e {
+  werr = e.kind
+}
 inspect("ws bad connect -> " + werr)
 
 wiso.drop()
@@ -235,9 +305,14 @@ inspect("ws stopped")
 # worker pool (off this thread), so they must be Sendable. It returns the bound
 # port, so bind/serve is only needed where the call blocks.
 asrv = Http.server()
-asrv.get("/", fn(req) { "async-hi" })
-asrv.get("/sq/:n", fn(req) { let n = to_long(req.params["n"]); (n * n).to_string() })
-APORT = asrv.listen_async(0, workers: 2)   # returns the port immediately
+asrv.get("/", fn (req) {
+  "async-hi"
+})
+asrv.get("/sq/:n", fn (req) {
+  let n = to_long(req.params["n"])
+  (n * n).to_string()
+})
+APORT = asrv.listen_async(0, workers: 2)  # returns the port immediately
 ABASE = "http://127.0.0.1:" + APORT.to_string()
 
 ar = Http.get(ABASE + "/")
@@ -246,17 +321,27 @@ inspect("listen_async route -> " + Http.get(ABASE + "/sq/9").body)
 # A server is single-use: starting it again (even on a free port) is a catchable
 # error, not a crash/hang — serve again with a fresh Http.server().
 mut reerr = "none"
-try { asrv.listen_async(0) } catch e { reerr = e.kind }
+try {
+  asrv.listen_async(0)
+} catch e {
+  reerr = e.kind
+}
 inspect("listen_async twice -> " + reerr)
-asrv.stop()                                # cross-thread stop + join
+asrv.stop()  # cross-thread stop + join
 inspect("async stopped")
 mut reerr2 = "none"
-try { asrv.listen_async(0) } catch e { reerr2 = e.kind }
+try {
+  asrv.listen_async(0)
+} catch e {
+  reerr2 = e.kind
+}
 inspect("relisten after stop -> " + reerr2)
 
 # After stop the port is free: a fresh server binds that same port and serves it.
 asrv2 = Http.server()
-asrv2.get("/", fn(req) { "rebound" })
+asrv2.get("/", fn (req) {
+  "rebound"
+})
 asrv2.listen_async(APORT)
 inspect("rebind -> " + Http.get(ABASE + "/").body)
 asrv2.stop()
@@ -264,7 +349,10 @@ asrv2.stop()
 # A non-Sendable handler is rejected at listen_async (it runs off this thread).
 abad = Http.server()
 mut acount = 0
-abad.get("/", fn(req) { acount = acount + 1; "x" })
+abad.get("/", fn (req) {
+  acount = acount + 1
+  "x"
+})
 try {
   abad.listen_async(0)
 } catch e {
@@ -274,9 +362,15 @@ abad.close()
 
 # A bad bind (a host not on this machine) is an HttpError, reported synchronously.
 abind = Http.server()
-abind.get("/", fn(req) { "x" })
+abind.get("/", fn (req) {
+  "x"
+})
 mut abinderr = "none"
-try { abind.listen_async(0, "192.0.2.1") } catch e { abinderr = e.kind }
+try {
+  abind.listen_async(0, "192.0.2.1")
+} catch e {
+  abinderr = e.kind
+}
 inspect("async bind fail -> " + abinderr)
 abind.close()
 
@@ -286,13 +380,21 @@ abind.close()
 # culebra overrides them with exclusive ones.) The holder takes an OS-assigned
 # port; the intruder asks for exactly that one.
 xsrv = Http.server()
-xsrv.get("/", fn(req) { "holder" })
+xsrv.get("/", fn (req) {
+  "holder"
+})
 XPORT = xsrv.listen_async(0, workers: 1)
 XBASE = "http://127.0.0.1:" + XPORT.to_string()
 xsrv2 = Http.server()
-xsrv2.get("/", fn(req) { "intruder" })
+xsrv2.get("/", fn (req) {
+  "intruder"
+})
 mut xerr = "none"
-try { xsrv2.listen_async(XPORT, workers: 1) } catch e { xerr = e.kind }
+try {
+  xsrv2.listen_async(XPORT, workers: 1)
+} catch e {
+  xerr = e.kind
+}
 inspect("exclusive bind -> " + xerr)
 inspect("holder still serves -> " + Http.get(XBASE).body)
 xsrv2.close()
@@ -301,19 +403,28 @@ xsrv.stop()
 # --- port 0: the OS picks a free port, listen_async returns it. (Don't print
 # the port itself — it differs per run, and interp/jit outputs are diffed.)
 zsrv = Http.server()
-zsrv.get("/", fn(req) { "zeroed" })
+zsrv.get("/", fn (req) {
+  "zeroed"
+})
 zport = zsrv.listen_async(0, workers: 1)
 inspect("port 0 assigns -> " + (zport > 0 && zport <= 65535).to_string())
-inspect("port 0 serves -> " + Http.get("http://127.0.0.1:" + zport.to_string() + "/").body)
+inspect("port 0 serves -> " +
+  Http.get("http://127.0.0.1:" + zport.to_string() + "/").body)
 zsrv.stop()
 
 # --- bind / serve as separate steps. serve() needs a bound socket, bind() is
 # once-only, and listen() includes a bind — each mis-sequencing is a catchable
 # HttpError naming what is wrong, not a crash or a hang.
 ssrv = Http.server()
-ssrv.get("/", fn(req) { "split" })
+ssrv.get("/", fn (req) {
+  "split"
+})
 mut unbound = "none"
-try { ssrv.serve_async() } catch e { unbound = e.message }
+try {
+  ssrv.serve_async()
+} catch e {
+  unbound = e.message
+}
 inspect("serve before bind -> " + unbound)
 
 # A rejected serve leaves the recorded routes alone — the same handle can serve
@@ -321,14 +432,24 @@ inspect("serve before bind -> " + unbound)
 # neither consumes the records nor half-installs their trampolines.
 SPORT = ssrv.bind(0)
 mut rebound = "none"
-try { ssrv.bind(0) } catch e { rebound = e.message }
+try {
+  ssrv.bind(0)
+} catch e {
+  rebound = e.message
+}
 inspect("bind twice -> " + rebound)
 mut relisten = "none"
-try { ssrv.listen_async(0) } catch e { relisten = e.message }
+try {
+  ssrv.listen_async(0)
+} catch e {
+  relisten = e.message
+}
 inspect("listen after bind -> " + relisten)
 
 # Routes registered after bind still take effect — bind only opens the socket.
-ssrv.get("/late", fn(req) { "registered after bind" })
+ssrv.get("/late", fn (req) {
+  "registered after bind"
+})
 ssrv.serve_async(workers: 2)
 SBASE = "http://127.0.0.1:" + SPORT.to_string()
 inspect("split serve -> " + Http.get(SBASE + "/").body)
@@ -339,21 +460,44 @@ ssrv.stop()
 # decommissions the server on a failed bind and then refuses every later one, so
 # this only holds because http_server_bind clears that.)
 fsrv = Http.server()
-fsrv.get("/", fn(req) { "recovered" })
+fsrv.get("/", fn (req) {
+  "recovered"
+})
 mut firstbind = "none"
-try { fsrv.bind(0, "192.0.2.1") } catch e { firstbind = e.kind }
+try {
+  fsrv.bind(0, "192.0.2.1")
+} catch e {
+  firstbind = e.kind
+}
 FPORT = fsrv.bind(0)
 fsrv.serve_async(workers: 2)
-inspect("bind after failed bind -> " + firstbind + " | " +
-     Http.get("http://127.0.0.1:" + FPORT.to_string() + "/").body)
+inspect("bind after failed bind -> " +
+  firstbind +
+  " | " +
+  Http.get("http://127.0.0.1:" + FPORT.to_string() + "/").body)
 fsrv.stop()
 
 # A missing or wrong-typed port is rejected the same way on bind and listen
 # (these unwind through the handle-method path, so they also pin its refcounting).
-fn error_kind(f) { return try { f(); "none" } catch e { e.kind } }
+fn error_kind(f) {
+  return try {
+    f()
+    "none"
+  } catch e {
+    e.kind
+  }
+}
 esrv = Http.server()
-inspect("bind-missing -> " + error_kind(fn() { esrv.bind() }))
-inspect("bind-type -> " + error_kind(fn() { esrv.bind("80") }))
-inspect("listen-missing -> " + error_kind(fn() { esrv.listen() }))
-inspect("workers-type -> " + error_kind(fn() { esrv.serve_async(workers: "4") }))
+inspect("bind-missing -> " + error_kind(fn () {
+    esrv.bind()
+  }))
+inspect("bind-type -> " + error_kind(fn () {
+    esrv.bind("80")
+  }))
+inspect("listen-missing -> " + error_kind(fn () {
+    esrv.listen()
+  }))
+inspect("workers-type -> " + error_kind(fn () {
+    esrv.serve_async(workers: "4")
+  }))
 esrv.close()

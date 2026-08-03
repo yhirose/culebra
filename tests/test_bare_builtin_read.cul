@@ -7,34 +7,58 @@
 // diverged (interp nil / JIT TypeError). Runs under interp, --jit, and AOT.
 
 // --- rejected: the receiver's builtin table has the name ---
-assert_throws("TypeError", fn() { [1, 2].map })
-assert_throws("TypeError", fn() { "x".upper })
-assert_throws("TypeError", fn() { [1, 2].to_set().union })
-assert_throws("TypeError", fn() { [1, 2].iter().collect })     // builtin iterator
-assert_throws("TypeError", fn() { {a: 1}.size })               // dict builtin
-assert_throws("TypeError", fn() { IO.keys })                   // ns + dict builtin
+assert_throws("TypeError", fn () {
+  [1, 2].map
+})
+assert_throws("TypeError", fn () {
+  "x".upper
+})
+assert_throws("TypeError", fn () {
+  [1, 2].to_set().union
+})
+assert_throws("TypeError", fn () {
+  [1, 2].iter().collect
+})  // builtin iterator
+assert_throws("TypeError", fn () {
+  {a: 1}.size
+})  // dict builtin
+assert_throws("TypeError", fn () {
+  IO.keys
+})  // ns + dict builtin
 // user object satisfying the iterator protocol gains the lazy method set
-assert_throws("TypeError", fn() {
-  let o = {has_next: fn() { false }, next: fn() { nil }}
+assert_throws("TypeError", fn () {
+  let o = {has_next: fn () {
+      false
+    }, next: fn () {
+      nil
+    }}
   o.collect
 })
 
 // --- nil: builtin-named property that simply misses ---
 class C {
-  join(o) { o }          // builtin-named instance method
-  m(x) { x }
+  join(o) {
+    o
+  }  // builtin-named instance method
+  m(x) {
+    x
+  }
 }
-assert_eq(C.join, nil)   // class object: instance methods aren't members
+assert_eq(C.join, nil)  // class object: instance methods aren't members
 assert_eq(C.m, nil)
-assert_eq(Path.join, nil)  // the lazy-ns module class (original repro)
-assert_eq({a: 1}.map, nil) // plain dict: map is not a dict builtin
+assert_eq(Path.join, nil)    // the lazy-ns module class (original repro)
+assert_eq({a: 1}.map, nil)   // plain dict: map is not a dict builtin
 assert_eq(C.new().map, nil)  // instance without the method
 assert_eq((0..3).map, nil)   // range object: no builtin table
 assert_eq("x".map, nil)      // string table has no map
 assert_eq(nil?.map, nil)     // safe-nav short-circuit
 
 // --- first-class: a real user property wins even when nil-valued ---
-class G { get size() { nil } }
+class G {
+  get size() {
+    nil
+  }
+}
 assert_eq(G.new().size, nil)  // getter fires; result nil, no reject
 let c2 = C.new()
 assert_eq(c2.join("z"), "z")  // defined builtin-named method still calls

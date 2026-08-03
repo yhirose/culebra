@@ -34,7 +34,11 @@ assert_eq(it.collect(), [1, 2])
 
 // A snapshot per loop entry: a second loop sees the mutated set.
 mut v = [1].to_set()
-for x in v { v.add(2) }
+for x in v {
+  v.add(2)
+}
 mut seen3 = []
-for x in v { seen3.push(x) }
+for x in v {
+  seen3.push(x)
+}
 assert_eq(seen3, [1, 2])

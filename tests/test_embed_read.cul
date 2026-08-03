@@ -18,15 +18,33 @@ inspect(d.exists("/etc/hosts"))
 inspect(d.exists(""))
 
 # A missing file names both the directory and the file.
-try { d.read("nope.css") } catch e { inspect(e.kind + ": " + e.message) }
-try { d.read("../test_embed_read.cul") } catch e { inspect(e.kind) }
+try {
+  d.read("nope.css")
+} catch e {
+  inspect(e.kind + ": " + e.message)
+}
+try {
+  d.read("../test_embed_read.cul")
+} catch e {
+  inspect(e.kind)
+}
 
 # Wrong / missing argument, at the same position on every backend.
-try { d.read(42) } catch e { inspect(e.kind + ": " + e.message) }
-try { d.exists() } catch e { inspect(e.kind + ": " + e.message) }
+try {
+  d.read(42)
+} catch e {
+  inspect(e.kind + ": " + e.message)
+}
+try {
+  d.exists()
+} catch e {
+  inspect(e.kind + ": " + e.message)
+}
 
 # The handle is Sendable: an isolate rebuilds it over the same directory.
 (tx, rx) = Channel.new()
-h = Isolate.spawn(fn (tx, art) { tx.send(art.read("app.js").trim()) }, tx, d)
+h = Isolate.spawn(fn (tx, art) {
+    tx.send(art.read("app.js").trim())
+  }, tx, d)
 inspect("from isolate: " + rx.recv())
 h.join()

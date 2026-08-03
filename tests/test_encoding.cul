@@ -23,7 +23,7 @@ assert_eq(Encoding.html.unescape("caf&eacute;"), "café")
 assert_eq(Encoding.html.unescape("&#65;&#66;&#67;"), "ABC")
 assert_eq(Encoding.html.unescape("&#x41;&#X42;"), "AB")
 assert_eq(Encoding.html.unescape("&#12354;&#x3042;"), "ああ")  // Japanese あ
-assert_eq(Encoding.html.unescape("&#128512;"), "😀")          // astral plane
+assert_eq(Encoding.html.unescape("&#128512;"), "😀")           // astral plane
 
 // --- unescape: leniency — anything not a well-formed ref is left verbatim ---
 assert_eq(Encoding.html.unescape("a & b"), "a & b")
@@ -49,9 +49,9 @@ assert_eq(enc.html.unescape("&copy;"), "©")
 // --- base64 (RFC 4648, standard alphabet + `=` padding) ---
 assert_eq(Encoding.base64.encode("user:pass"), "dXNlcjpwYXNz")
 assert_eq(Encoding.base64.encode(""), "")
-assert_eq(Encoding.base64.encode("a"), "YQ==")        // 1 byte → 2 pad
-assert_eq(Encoding.base64.encode("ab"), "YWI=")       // 2 bytes → 1 pad
-assert_eq(Encoding.base64.encode("abc"), "YWJj")      // 3 bytes → no pad
+assert_eq(Encoding.base64.encode("a"), "YQ==")    // 1 byte → 2 pad
+assert_eq(Encoding.base64.encode("ab"), "YWI=")   // 2 bytes → 1 pad
+assert_eq(Encoding.base64.encode("abc"), "YWJj")  // 3 bytes → no pad
 assert_eq(Encoding.base64.decode("dXNlcjpwYXNz"), "user:pass")
 assert_eq(Encoding.base64.decode("YQ=="), "a")
 assert_eq(Encoding.base64.decode(""), "")
@@ -61,7 +61,12 @@ assert_eq(Encoding.base64.decode(Encoding.base64.encode(bin)), bin)
 // whitespace in encoded input is tolerated (wrapped base64)
 assert_eq(Encoding.base64.decode("dXNlcjpw\nYXNz"), "user:pass")
 // invalid characters → ValueError
-let b64bad = try { Encoding.base64.decode("!!!!"); nil } catch e { e.kind }
+let b64bad = try {
+  Encoding.base64.decode("!!!!")
+  nil
+} catch e {
+  e.kind
+}
 assert_eq(b64bad, "ValueError")
 // bound sub-namespace as a value
 let b = Encoding.base64
@@ -70,27 +75,37 @@ assert_eq(b.decode(b.encode("xyz")), "xyz")
 // --- hex (lower-case, two digits per byte) ---
 assert_eq(Encoding.hex.encode("abc"), "616263")
 assert_eq(Encoding.hex.encode(""), "")
-assert_eq(Encoding.hex.encode("\x00\xff"), "00ff")    // full byte range
+assert_eq(Encoding.hex.encode("\x00\xff"), "00ff")  // full byte range
 assert_eq(Encoding.hex.decode("616263"), "abc")
-assert_eq(Encoding.hex.decode("00FF"), "\x00\xff")    // upper-case digits ok
+assert_eq(Encoding.hex.decode("00FF"), "\x00\xff")  // upper-case digits ok
 assert_eq(Encoding.hex.decode(""), "")
 // round trip, binary-safe (multi-byte UTF-8 survives)
 assert_eq(Encoding.hex.decode(Encoding.hex.encode(bin)), bin)
 // odd length → ValueError
-let hexodd = try { Encoding.hex.decode("abc"); nil } catch e { e.kind }
+let hexodd = try {
+  Encoding.hex.decode("abc")
+  nil
+} catch e {
+  e.kind
+}
 assert_eq(hexodd, "ValueError")
 // non-hex character → ValueError
-let hexbad = try { Encoding.hex.decode("zz"); nil } catch e { e.kind }
+let hexbad = try {
+  Encoding.hex.decode("zz")
+  nil
+} catch e {
+  e.kind
+}
 assert_eq(hexbad, "ValueError")
 
 // --- url (RFC 3986 percent-encoding; unreserved A-Za-z0-9-_.~ kept) ---
-assert_eq(Encoding.url.encode("a b"), "a%20b")        // space → %20, not +
+assert_eq(Encoding.url.encode("a b"), "a%20b")  // space → %20, not +
 assert_eq(Encoding.url.encode("a+b=c&d"), "a%2Bb%3Dc%26d")
 assert_eq(Encoding.url.encode("foo-_.~"), "foo-_.~")  // unreserved untouched
-assert_eq(Encoding.url.encode("café"), "caf%C3%A9")   // UTF-8 bytes percent-encoded
+assert_eq(Encoding.url.encode("café"), "caf%C3%A9")  // UTF-8 bytes percent-encoded
 assert_eq(Encoding.url.decode("a%20b"), "a b")
 assert_eq(Encoding.url.decode("caf%C3%A9"), "café")
-assert_eq(Encoding.url.decode("%6a%6B"), "jk")        // either hex case
+assert_eq(Encoding.url.decode("%6a%6B"), "jk")  // either hex case
 // lenient: a malformed `%` and a literal `+` are left verbatim (round-trips)
 assert_eq(Encoding.url.decode("100%"), "100%")
 assert_eq(Encoding.url.decode("%zz"), "%zz")

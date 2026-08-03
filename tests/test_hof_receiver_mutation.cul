@@ -20,7 +20,10 @@
 fn seen_forin() {
   mut a = [1, 2, 3, 4]
   mut seen = []
-  for x in a { seen.push(x); a.pop() }
+  for x in a {
+    seen.push(x)
+    a.pop()
+  }
   seen
 }
 assert_eq(seen_forin(), [1, 2])
@@ -28,7 +31,10 @@ assert_eq(seen_forin(), [1, 2])
 fn seen_for_each() {
   mut a = [1, 2, 3, 4]
   mut seen = []
-  a.for_each(fn (x) { seen.push(x); a.pop() })
+  a.for_each(fn (x) {
+    seen.push(x)
+    a.pop()
+  })
   seen
 }
 assert_eq(seen_for_each(), [1, 2])
@@ -36,7 +42,11 @@ assert_eq(seen_for_each(), [1, 2])
 fn seen_map() {
   mut a = [1, 2, 3, 4]
   mut seen = []
-  a.map(fn (x) { seen.push(x); a.pop(); x })
+  a.map(fn (x) {
+    seen.push(x)
+    a.pop()
+    x
+  })
   seen
 }
 assert_eq(seen_map(), [1, 2])
@@ -44,7 +54,11 @@ assert_eq(seen_map(), [1, 2])
 fn seen_filter() {
   mut a = [1, 2, 3, 4]
   mut seen = []
-  a.filter(fn (x) { seen.push(x); a.pop(); true })
+  a.filter(fn (x) {
+    seen.push(x)
+    a.pop()
+    true
+  })
   seen
 }
 assert_eq(seen_filter(), [1, 2])
@@ -52,7 +66,11 @@ assert_eq(seen_filter(), [1, 2])
 fn seen_reduce() {
   mut a = [1, 2, 3, 4]
   mut seen = []
-  a.reduce(0, fn (acc, x) { seen.push(x); a.pop(); acc })
+  a.reduce(0, fn (acc, x) {
+    seen.push(x)
+    a.pop()
+    acc
+  })
   seen
 }
 assert_eq(seen_reduce(), [1, 2])
@@ -60,7 +78,11 @@ assert_eq(seen_reduce(), [1, 2])
 fn seen_find() {
   mut a = [1, 2, 3, 4]
   mut seen = []
-  a.find(fn (x) { seen.push(x); a.pop(); false })
+  a.find(fn (x) {
+    seen.push(x)
+    a.pop()
+    false
+  })
   seen
 }
 assert_eq(seen_find(), [1, 2])
@@ -68,7 +90,11 @@ assert_eq(seen_find(), [1, 2])
 fn seen_any() {
   mut a = [1, 2, 3, 4]
   mut seen = []
-  a.any(fn (x) { seen.push(x); a.pop(); false })
+  a.any(fn (x) {
+    seen.push(x)
+    a.pop()
+    false
+  })
   seen
 }
 assert_eq(seen_any(), [1, 2])
@@ -76,7 +102,11 @@ assert_eq(seen_any(), [1, 2])
 fn seen_all() {
   mut a = [1, 2, 3, 4]
   mut seen = []
-  a.all(fn (x) { seen.push(x); a.pop(); true })
+  a.all(fn (x) {
+    seen.push(x)
+    a.pop()
+    true
+  })
   seen
 }
 assert_eq(seen_all(), [1, 2])
@@ -84,7 +114,11 @@ assert_eq(seen_all(), [1, 2])
 fn seen_flat_map() {
   mut a = [1, 2, 3, 4]
   mut seen = []
-  a.flat_map(fn (x) { seen.push(x); a.pop(); [x] })
+  a.flat_map(fn (x) {
+    seen.push(x)
+    a.pop()
+    [x]
+  })
   seen
 }
 assert_eq(seen_flat_map(), [1, 2])
@@ -101,7 +135,10 @@ assert_eq(reduce_result(), [7, 0])
 fn seen_for_each_bound() {
   mut a = [1, 2, 3, 4]
   mut seen = []
-  let cb = fn (x) { seen.push(x); a.pop() }
+  let cb = fn (x) {
+    seen.push(x)
+    a.pop()
+  }
   a.for_each(cb)
   seen
 }
@@ -110,7 +147,11 @@ assert_eq(seen_for_each_bound(), [1, 2])
 fn seen_reduce_bound() {
   mut a = [1, 2, 3, 4]
   mut seen = []
-  let cb = fn (acc, x) { seen.push(x); a.pop(); acc }
+  let cb = fn (acc, x) {
+    seen.push(x)
+    a.pop()
+    acc
+  }
   a.reduce(0, cb)
   seen
 }
@@ -122,7 +163,13 @@ fn grow_for_each() {
   mut a = [1, 2]
   mut seen = []
   mut n = 0
-  a.for_each(fn (x) { seen.push(x); n = n + 1; if n < 20 { a.push(100 + n) } })
+  a.for_each(fn (x) {
+    seen.push(x)
+    n = n + 1
+    if n < 20 {
+      a.push(100 + n)
+    }
+  })
   [n, seen.size(), a.size()]
 }
 assert_eq(grow_for_each(), [21, 21, 21])
@@ -130,7 +177,12 @@ assert_eq(grow_for_each(), [21, 21, 21])
 fn grow_forin() {
   mut a = [1, 2]
   mut n = 0
-  for x in a { n = n + 1; if n < 20 { a.push(100 + n) } }
+  for x in a {
+    n = n + 1
+    if n < 20 {
+      a.push(100 + n)
+    }
+  }
   [n, a.size()]
 }
 assert_eq(grow_forin(), [21, 21])
@@ -147,9 +199,13 @@ assert_eq([1, 2].flat_map(|x| [x, x]), [1, 1, 2, 2])
 # Tuples are immutable and the Set walk uses a private copy, so re-reading
 # the size cannot change what they visit.
 mut tseen = []
-for x in (1, 2, 3) { tseen.push(x) }
+for x in (1, 2, 3) {
+  tseen.push(x)
+}
 assert_eq(tseen, [1, 2, 3])
 
 mut sseen = []
-for x in {1, 2, 3} { sseen.push(x) }
+for x in {1, 2, 3} {
+  sseen.push(x)
+}
 assert_eq(sseen.size(), 3)

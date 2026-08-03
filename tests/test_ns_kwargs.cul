@@ -35,17 +35,30 @@ assert_eq(r5.size(), 2)
 
 // --- Error paths (must match across backends) ---
 // Unknown kwarg to a namespace method → TypeError.
-let e1 = try { p.run(["echo"], bogus: 1); "no-err" } catch e { e.kind }
+let e1 = try {
+  p.run(["echo"], bogus: 1)
+  "no-err"
+} catch e {
+  e.kind
+}
 assert_eq(e1, "TypeError")
 
 // Kwarg to a TRUE builtin method (Array.all) → TypeError, not ArityError.
-let e2 = try { [1, 2, 3].all(pred: fn (x) { x > 0 }); "no-err" }
-         catch e { e.kind }
+let e2 = try {
+  [1, 2, 3].all(pred: fn (x) { x > 0 })
+  "no-err"
+} catch e {
+  e.kind
+}
 assert_eq(e2, "TypeError")
 
 // Real builtin methods still work positionally (regression guard).
-assert_eq([1, 2, 3].all(fn (x) { x > 0 }), true)
-assert_eq([1, 2, 3].map(fn (x) { x * 2 }), [2, 4, 6])
+assert_eq([1, 2, 3].all(fn (x) {
+    x > 0
+  }), true)
+assert_eq([1, 2, 3].map(fn (x) {
+    x * 2
+  }), [2, 4, 6])
 assert_eq("hi".upper(), "HI")
 
 // --- ns-method arity / splat check ORDER matches interp -------------------
@@ -53,19 +66,32 @@ assert_eq("hi".upper(), "HI")
 // operands, mirroring the interp's strict_arity block: a `**`splat (which only
 // carries keywords) never satisfies a required positional, and the ArityError
 // fires before any splat type error. Same kind/message/timing on both backends.
-fn nm_err(thunk) { try { thunk(); nil } catch e { e } }
+fn nm_err(thunk) {
+  try {
+    thunk()
+    nil
+  } catch e {
+    e
+  }
+}
 
 // 0 positional + bad splat → ArityError (arity checked first), not a splat error.
-let a1 = nm_err(fn () { JSON.stringify(**5) })
+let a1 = nm_err(fn () {
+  JSON.stringify(**5)
+})
 assert_eq(a1.kind, 'ArityError')
 assert_true(a1.message.contains('expected 1 positional argument, got 0'))
 // A required positional given only as a keyword is still missing for arity.
-let a2 = nm_err(fn () { JSON.stringify(v: {a: 1}) })
+let a2 = nm_err(fn () {
+  JSON.stringify(v: {a: 1})
+})
 assert_eq(a2.kind, 'ArityError')
 assert_true(a2.message.contains('got 0'))
 // With the required positional present, a bad splat IS reported (Object check,
 // with the operand's type — the message carries `, got <type>`).
-let a3 = nm_err(fn () { JSON.stringify({a: 1}, **5) })
+let a3 = nm_err(fn () {
+  JSON.stringify({a: 1}, **5)
+})
 assert_eq(a3.kind, 'TypeError')
 assert_eq(a3.message, '**: splat operand must be Object, got Long')
 // A non-String splat key is rejected (was silently dropped on the JIT before).
@@ -78,12 +104,16 @@ assert_eq(a4.kind, 'TypeError')
 assert_true(a4.message.contains('splat key must be String'))
 // Too many positionals report the cap (max), not the required count.
 // JSON.parse caps at 4 (s, lines, number_mode, jsonc); a 5th overflows.
-let a5 = nm_err(fn () { JSON.parse("[1]", true, "auto", true, 9) })
+let a5 = nm_err(fn () {
+  JSON.parse("[1]", true, "auto", true, 9)
+})
 assert_eq(a5.kind, 'ArityError')
 assert_true(a5.message.contains('expected 4 positional arguments, got 5'))
 // Same order through the other slab path (FS / Parallel use the Proc-style
 // marshaller, which must agree too).
-let a6 = nm_err(fn () { FS.remove(**5) })
+let a6 = nm_err(fn () {
+  FS.remove(**5)
+})
 assert_eq(a6.kind, 'ArityError')
 
 // --- ns-method-as-value: binder wording + argument position ----------------
@@ -93,32 +123,53 @@ assert_eq(a6.kind, 'ArityError')
 // direct call. The JIT used to report a callback-style "expected <T>, got
 // <actual>" at the call site (it only threaded the first argument's position).
 let gp = JSON.parse
-let v1 = nm_err(fn () { gp("[1]", 5) })   // 2nd positional binds `lines: Bool`
+let v1 = nm_err(fn () {
+  gp("[1]", 5)
+})  // 2nd positional binds `lines: Bool`
 assert_eq(v1.kind, 'TypeError')
 assert_eq(v1.message, "type error: parameter 'lines' expects Bool")
-assert_eq(v1.col, 35)                     // points at the `5`, not the call site
+assert_eq(v1.col, 13)  // points at the `5`, not the call site
 let gr = FS.read
-let v2 = nm_err(fn () { gr(5) })          // arg0 of a param-less method
+let v2 = nm_err(fn () {
+  gr(5)
+})  // arg0 of a param-less method
 assert_eq(v2.kind, 'TypeError')
 assert_eq(v2.message, "type error: parameter 'path' expects String|Path")
 // A callback keeps the body-coercion wording (the value path must not leak in).
-let v3 = nm_err(fn () { [5].map(FS.read).collect() })
+let v3 = nm_err(fn () {
+  [5].map(FS.read).collect()
+})
 assert_eq(v3.message, "type error: expected String|Path, got Long")
 
 // --- value-type built-in methods are not first-class values ----------------
 // `let m = [1,2].map` is not a usable value (the JIT dispatches it inline with
 // no closure), so both backends reject a bare reference. Immediate calls and
 // user-defined methods are unaffected.
-let bm = nm_err(fn () { let m = [1, 2].map; m(fn (x) { x }) })
+let bm = nm_err(fn () {
+  let m = [1, 2].map
+  m(fn (x) {
+    x
+  })
+})
 assert_eq(bm.kind, 'TypeError')
 assert_true(bm.message.contains("built-in method 'map' cannot be used as a value"))
-let bs = nm_err(fn () { let s = "x".upper; s() })
+let bs = nm_err(fn () {
+  let s = "x".upper
+  s()
+})
 assert_true(bs.message.contains("'upper' cannot be used as a value"))
 // Immediate method calls still work.
-assert_eq([1, 2].map(fn (x) { x * 2 }), [2, 4])
+assert_eq([1, 2].map(fn (x) {
+    x * 2
+  }), [2, 4])
 assert_eq("hi".upper(), "HI")
 // A user-defined method IS a first-class value (stays callable through a var).
-class Doubler { new () {} run (x) { x * 2 } }
+class Doubler {
+  new() {}
+  run(x) {
+    x * 2
+  }
+}
 let d = Doubler.new()
 let um = d.run
 assert_eq(um(21), 42)

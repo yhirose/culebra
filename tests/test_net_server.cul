@@ -15,22 +15,26 @@
 HOST = "127.0.0.1"
 
 let (tx, rx) = Channel.new(1)
-iso = Isolate.spawn(fn() {
+iso = Isolate.spawn(fn () {
   let l = Net.listen(0, host: HOST)
   tx.send(l.port)
   tx.drop()
   // Each connection: read one line, echo it back uppercased. "boom" raises, to
   // prove one failing handler doesn't take the server (or its worker) down.
-  l.serve(fn(conn) {
-    let line = conn.read_line()
-    if line == "boom" { throw "handler exploded" }
-    if line != nil { conn.write(line.upper() + "\n") }
-  }, workers: 4)
+  l.serve(fn (conn) {
+      let line = conn.read_line()
+      if line == "boom" {
+        throw "handler exploded"
+      }
+      if line != nil {
+        conn.write(line.upper() + "\n")
+      }
+    }, workers: 4)
 })
-tx.drop()                            // the parent's own sender copy
+tx.drop()  // the parent's own sender copy
 PORT = rx.recv()
 if PORT == nil {
-  throw { kind: "AssertionError", message: "listener never bound" }
+  throw {kind: "AssertionError", message: "listener never bound"}
 }
 
 fn ask(msg) {
@@ -57,7 +61,7 @@ assert_eq(replies, ["N0", "N1", "N2", "N3", "N4", "N5", "N6", "N7"])
 let c = Net.connect(HOST, PORT, timeout: 2000)
 c.set_timeout(2000)
 c.write("boom\n")
-assert_eq(c.read_line(), nil)        // connection closed, no reply
+assert_eq(c.read_line(), nil)  // connection closed, no reply
 c.close()
 
 // ... and the server is still serving afterwards.
@@ -67,12 +71,14 @@ assert_eq(ask("after"), "AFTER")
 mut captured = 0
 let kind = try {
   let l2 = Net.listen(0, host: HOST)
-  l2.serve(fn(conn) { captured = captured + 1 })
+  l2.serve(fn (conn) {
+    captured = captured + 1
+  })
   ""
 } catch e {
   e.kind
 }
 assert_eq(kind, "SendError")
 
-iso.drop()                           // stops the accept loop, joins the thread
+iso.drop()  // stops the accept loop, joins the thread
 inspect("net server ok")

@@ -189,8 +189,10 @@ let BG_TREES = Art.new(5, 985, 1280, 480)
 # is why the executable needs no files beside it.
 let ART_DIR = args.dir
 let ART = ART_DIR != nil
-  ? { exists: |n| FS.exists(ART_DIR + "/" + n),
-      read: |n| FS.read(ART_DIR + "/" + n) }
+  ? {
+    exists: |n| FS.exists(ART_DIR + "/" + n),
+    read: |n| FS.read(ART_DIR + "/" + n),
+  }
   : Embed.dir("assets")
 let SCENES = ["asayake", "hiru", "yuugure", "twilight"]
 let SCENE_COUNT = SCENES.size()
@@ -270,19 +272,27 @@ let limit = fn (v, lo, hi) {
     _ => v,
   }
 }
-let ease_in = fn (a, b, percent) { a + (b - a) * percent * percent }
+let ease_in = fn (a, b, percent) {
+  a + (b - a) * percent * percent
+}
 let ease_in_out = fn (a, b, percent) {
   a + (b - a) * (-Math.cos(percent * Math.pi) / 2.0 + 0.5)
 }
-let percent_remaining = fn (n, total) { (n % total) / total }
+let percent_remaining = fn (n, total) {
+  (n % total) / total
+}
 let exponential_fog = fn (distance, density) {
   1.0 / Math.exp(distance * distance * density)
 }
 
 let increase = fn (start, increment, max) {
   mut result = start + increment
-  while result >= max { result -= max }
-  while result < 0 { result += max }
+  while result >= max {
+    result -= max
+  }
+  while result < 0 {
+    result += max
+  }
   result
 }
 
@@ -387,8 +397,12 @@ let H_HIGH = 60.0
 let C_EASY = 2.0
 let C_MEDIUM = 4.0
 
-let add_straight = fn (num) { add_road(num, num, num, 0.0, 0.0) }
-let add_hill = fn (num, height) { add_road(num, num, num, 0.0, height) }
+let add_straight = fn (num) {
+  add_road(num, num, num, 0.0, 0.0)
+}
+let add_hill = fn (num, height) {
+  add_road(num, num, num, 0.0, height)
+}
 let add_curve = fn (num, curve, height) {
   add_road(num, num, num, curve, height)
 }
@@ -561,7 +575,9 @@ mut fast_lap_time = 180.0  # v4's starting target, session-lived
 # music, so the riff below is the default. It sits under the engine and the
 # chiptune's own level, loud enough to carry on laptop speakers.
 let MUSIC_FILE = ["music.ogg", "music.mp3"].find(|n| ART.exists(n))
-if MUSIC_FILE != nil { Canvas.music(art(MUSIC_FILE), vol: 60) }
+if MUSIC_FILE != nil {
+  Canvas.music(art(MUSIC_FILE), vol: 60)
+}
 
 # The chiptune fallback — a bossa-flavored run, not a transcription of any
 # particular tune: a brisk ii-V-I-ish turnaround (F△7-Dm7-Gm7-C7, one bar
@@ -663,7 +679,9 @@ let steer_car = fn (car, car_index, player_index, n, player_half) {
     let car_speed = car.speed
     for i in 1..LOOKAHEAD {
       mut si = car_index + i
-      if si >= n { si -= n }
+      if si >= n {
+        si -= n
+      }
       let segment = segments[si]
 
       if si == player_index && car_speed > speed {
@@ -730,7 +748,9 @@ let update_cars = fn (dt, player_index) {
     if zin >= seg_len {
       zin -= seg_len
       mut ni = old_index + 1
-      if ni >= n { ni = 0 }
+      if ni >= n {
+        ni = 0
+      }
       car.seg = ni
       remove_car(segments[old_index].cars, car)
       segments[ni].cars.push(car)
@@ -767,7 +787,9 @@ let update = fn (dt) {
   }
 
   if player_x < -1.0 || player_x > 1.0 {
-    if speed > OFF_ROAD_LIMIT { speed += OFF_ROAD_DECEL * dt }
+    if speed > OFF_ROAD_LIMIT {
+      speed += OFF_ROAD_DECEL * dt
+    }
 
     for prop in player_segment.sprites {
       let pw = prop.art.sw
@@ -806,13 +828,17 @@ let update = fn (dt) {
     if current_lap_time > 0.0 && start_position < PLAYER_Z {
       last_lap_time = current_lap_time
       current_lap_time = 0.0
-      if last_lap_time < fast_lap_time { fast_lap_time = last_lap_time }
+      if last_lap_time < fast_lap_time {
+        fast_lap_time = last_lap_time
+      }
     } else {
       current_lap_time += dt
     }
   }
 
-  if MUSIC_FILE == nil { tick_bgm() }
+  if MUSIC_FILE == nil {
+    tick_bgm()
+  }
 }
 
 # --- render ----------------------------------------------------------------
@@ -847,7 +873,9 @@ let build_palette = fn (scene, blend) {
   let b = SCENE_COLORS[(scene + 1) % SCENE_COUNT]
   let f = blend
   let g = 256 - blend
-  let c = fn (i) { (a[i] * g + b[i] * f) / 256 }
+  let c = fn (i) {
+    (a[i] * g + b[i] * f) / 256
+  }
   pal[KIND_DARK] = [
     c(0),
     c(1),
@@ -1038,7 +1066,9 @@ let draw_road = fn (base_index, base_percent, player_y) {
     x += dx
     dx += segment.curve
     si += 1
-    if si >= n_segments { si = 0 }
+    if si >= n_segments {
+      si = 0
+    }
 
     if visible {
       let p = pal[segment.kind]
@@ -1285,7 +1315,9 @@ let render = fn () {
 
   # Back to front over the same window, so nearer sprites overlap farther ones.
   mut mi = base_index + DRAW_DISTANCE - 1
-  while mi >= n_segments { mi -= n_segments }
+  while mi >= n_segments {
+    mi -= n_segments
+  }
   for _ in 1..DRAW_DISTANCE {
     let segment = segments[mi]
     if segment.vis {
@@ -1332,7 +1364,9 @@ let render = fn () {
         }, player_segment.p2_wy - player_segment.p1_wy)
     }
     mi -= 1
-    if mi < 0 { mi = n_segments - 1 }
+    if mi < 0 {
+      mi = n_segments - 1
+    }
   }
 
   draw_hud()

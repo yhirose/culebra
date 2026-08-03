@@ -40,11 +40,21 @@ assert_eq(([1, 2] + [3, 4])[1..3], [2, 3])
 
 // Only two Arrays concatenate; other operands are a TypeError, as with
 // String + Long.
-assert_throws("TypeError", fn() { [1] + "s" })
-assert_throws("TypeError", fn() { [1] + (2, 3) })
-assert_throws("TypeError", fn() { [1] + [2].to_set() })
-assert_throws("TypeError", fn() { "s" + [1] })
-assert_throws("TypeError", fn() { [1] + 2 })
+assert_throws("TypeError", fn () {
+  [1] + "s"
+})
+assert_throws("TypeError", fn () {
+  [1] + (2, 3)
+})
+assert_throws("TypeError", fn () {
+  [1] + [2].to_set()
+})
+assert_throws("TypeError", fn () {
+  "s" + [1]
+})
+assert_throws("TypeError", fn () {
+  [1] + 2
+})
 
 // --- `extend`: append every element, in place ---
 mut extended = [1, 2]
@@ -63,9 +73,15 @@ selfext.extend(selfext)
 assert_eq(selfext, [1, 2, 1, 2])
 
 // `extend` takes an Array; use spread for Tuple / Set sources.
-assert_throws("TypeError", fn() { [1].extend((2, 3)) })
-assert_throws("TypeError", fn() { [1].extend([2].to_set()) })
-assert_throws("TypeError", fn() { [1].extend(2) })
+assert_throws("TypeError", fn () {
+  [1].extend((2, 3))
+})
+assert_throws("TypeError", fn () {
+  [1].extend([2].to_set())
+})
+assert_throws("TypeError", fn () {
+  [1].extend(2)
+})
 
 // --- `insert`: push addressed by position ---
 mut inserted = [1, 2, 3]
@@ -89,11 +105,21 @@ assert_eq(from_end, [1, 2, 9, 3])
 from_end.insert(-4, 0)
 assert_eq(from_end, [0, 1, 2, 9, 3])
 
-assert_throws("IndexError", fn() { [1, 2].insert(3, 0) })
-assert_throws("IndexError", fn() { [1, 2].insert(-3, 0) })
-assert_throws("IndexError", fn() { [].insert(1, 0) })
-assert_throws("IndexError", fn() { [].insert(-1, 0) })
-assert_throws("TypeError", fn() { [1].insert("x", 0) })
+assert_throws("IndexError", fn () {
+  [1, 2].insert(3, 0)
+})
+assert_throws("IndexError", fn () {
+  [1, 2].insert(-3, 0)
+})
+assert_throws("IndexError", fn () {
+  [].insert(1, 0)
+})
+assert_throws("IndexError", fn () {
+  [].insert(-1, 0)
+})
+assert_throws("TypeError", fn () {
+  [1].insert("x", 0)
+})
 
 // --- `remove_at`: pop addressed by position ---
 mut drained = [10, 20, 30]
@@ -105,10 +131,18 @@ assert_eq(drained.remove_at(0), 10)
 assert_eq(drained, [])
 
 // Unlike `insert`, `size` is out of range — it must address a live element.
-assert_throws("IndexError", fn() { [1, 2].remove_at(2) })
-assert_throws("IndexError", fn() { [1, 2].remove_at(-3) })
-assert_throws("IndexError", fn() { [].remove_at(0) })
-assert_throws("TypeError", fn() { [1].remove_at("x") })
+assert_throws("IndexError", fn () {
+  [1, 2].remove_at(2)
+})
+assert_throws("IndexError", fn () {
+  [1, 2].remove_at(-3)
+})
+assert_throws("IndexError", fn () {
+  [].remove_at(0)
+})
+assert_throws("TypeError", fn () {
+  [1].remove_at("x")
+})
 
 // The removed element outlives the Array it came from.
 mut owner = [{mut v: 1}, {mut v: 2}]

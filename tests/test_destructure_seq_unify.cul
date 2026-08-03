@@ -16,7 +16,9 @@ assert_eq(out, [30, 70])
 // Bracket pattern over dict pairs (which are yielded as tuples).
 d = {"k1": 1, "k2": 2}
 mut sum = 0
-for [k, v] in d { sum = sum + v }
+for [k, v] in d {
+  sum = sum + v
+}
 assert_eq(sum, 3)
 
 // Rest pattern collects the tail of a tuple into an Array.

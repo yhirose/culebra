@@ -71,15 +71,21 @@ let r = 1..3
 assert_eq(xs[r], [20, 30])
 let ropen = 2..
 assert_eq(xs[ropen], [30, 40, 50])
-fn drop_first(seq) { seq[1..] }
+fn drop_first(seq) {
+  seq[1..]
+}
 assert_eq(drop_first(xs), [20, 30, 40, 50])
 
 // --- for-in over a bounded range (.. and ..=) ---
 mut s1 = 0
-for i in 1..4 { s1 = s1 + i }
+for i in 1..4 {
+  s1 = s1 + i
+}
 assert_eq(s1, 6)
 mut s2 = 0
-for i in 1..=4 { s2 = s2 + i }
+for i in 1..=4 {
+  s2 = s2 + i
+}
 assert_eq(s2, 10)
 
 // --- range repr (source form) ---
@@ -91,9 +97,13 @@ assert_eq("{1..=3}", "1..=3")
 
 // --- GC: tight-loop slicing must not leak ---
 let big = []
-for i in 0..1000 { big.push(i) }
+for i in 0..1000 {
+  big.push(i)
+}
 mut acc = 0
-for r in 0..2000 { acc = acc + big[10..20].size() }
+for r in 0..2000 {
+  acc = acc + big[10..20].size()
+}
 assert_eq(acc, 20000)
 
 // Stored-range slicing (`xs[r]`) must release the range value each pass.

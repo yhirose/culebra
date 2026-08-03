@@ -33,9 +33,15 @@ assert_true(e.stdout.contains("PATH="))
 
 // --- cwd changes the child's working directory ---
 let tmpdir_env = Sys.env("TMPDIR")
-let tmp_root   = if tmpdir_env != "" { tmpdir_env } else { "/tmp" }
-let workdir    = FS.join(tmp_root, "culebra_proc_test")
-if FS.exists(workdir) { FS.remove(workdir) }
+let tmp_root = if tmpdir_env != "" {
+  tmpdir_env
+} else {
+  "/tmp"
+}
+let workdir = FS.join(tmp_root, "culebra_proc_test")
+if FS.exists(workdir) {
+  FS.remove(workdir)
+}
 FS.mkdir(workdir)
 let pw = Proc.run(["pwd"], cwd: workdir)
 // pwd may resolve symlinks (/var -> /private/var), so match the basename.
@@ -54,19 +60,39 @@ assert_eq(sig.signal, "SIGTERM")
 assert_eq(sig.code, -1)
 
 // --- check: true throws ProcessError on a non-zero exit ---
-let chk = try { Proc.run(["false"], check: true); "no-error" } catch e { e.kind }
+let chk = try {
+  Proc.run(["false"], check: true)
+  "no-error"
+} catch e {
+  e.kind
+}
 assert_eq(chk, "ProcessError")
 // ...and returns normally (no throw) when the command succeeds.
 assert_true(Proc.run(["true"], check: true).ok)
 
 // --- Spawn failure (nonexistent executable) throws ProcessError ---
-let nx = try { Proc.run(["culebra_no_such_cmd_xyzzy"]); "no-error" } catch e { e.kind }
+let nx = try {
+  Proc.run(["culebra_no_such_cmd_xyzzy"])
+  "no-error"
+} catch e {
+  e.kind
+}
 assert_eq(nx, "ProcessError")
 
 // --- Argument validation ---
-let te = try { Proc.run([1, 2]); "no-error" } catch e { e.kind }
+let te = try {
+  Proc.run([1, 2])
+  "no-error"
+} catch e {
+  e.kind
+}
 assert_eq(te, "TypeError")
-let ve = try { Proc.run([]); "no-error" } catch e { e.kind }
+let ve = try {
+  Proc.run([])
+  "no-error"
+} catch e {
+  e.kind
+}
 assert_eq(ve, "ValueError")
 
 // --- Proc.all: parallel, results in input order, error nil on success ---
@@ -84,22 +110,34 @@ assert_eq(mix.size(), 3)
 assert_true(mix[0].ok)
 assert_eq(mix[1].ok, false)
 assert_eq(mix[1].code, 1)
-assert_eq(mix[1].error, nil)         // ran, just exited non-zero
+assert_eq(mix[1].error, nil)  // ran, just exited non-zero
 assert_eq(mix[2].ok, false)
-assert_true(mix[2].error != nil)     // failed to spawn
+assert_true(mix[2].error != nil)  // failed to spawn
 
 // --- limit caps concurrency; all commands still complete ---
-let lim = Proc.all([["echo", "1"], ["echo", "2"], ["echo", "3"], ["echo", "4"]], limit: 2)
+let lim = Proc.all(
+  [["echo", "1"], ["echo", "2"], ["echo", "3"], ["echo", "4"]],
+  limit: 2,
+)
 assert_eq(lim.size(), 4)
 
 // --- Large output across several children must not deadlock (CLOEXEC) ---
-let big = Proc.all([["seq", "1", "5000"], ["seq", "1", "5000"], ["seq", "1", "5000"]])
+let big = Proc.all([
+  ["seq", "1", "5000"],
+  ["seq", "1", "5000"],
+  ["seq", "1", "5000"],
+])
 assert_eq(big[0].stdout.split("\n").size(), 5001)
 assert_eq(big[2].stdout.split("\n").size(), 5001)
 
 // --- Empty list: all -> [], race -> ValueError ---
 assert_eq(Proc.all([]).size(), 0)
-let re = try { Proc.race([]); "no-error" } catch e { e.kind }
+let re = try {
+  Proc.race([])
+  "no-error"
+} catch e {
+  e.kind
+}
 assert_eq(re, "ValueError")
 
 // --- Proc.race: fastest wins, the rest are killed (does not block on sleep) ---
@@ -108,14 +146,19 @@ assert_eq(win.stdout.trim(), "fast")
 assert_true(win.ok)
 
 // --- Type errors on malformed command lists ---
-let ne = try { Proc.all([["echo"], "notarray"]); "no-error" } catch e { e.kind }
+let ne = try {
+  Proc.all([["echo"], "notarray"])
+  "no-error"
+} catch e {
+  e.kind
+}
 assert_eq(ne, "TypeError")
 
 // --- timeout: a slow command is killed and flagged timed_out ---
 let slow = Proc.run(["sleep", "5"], timeout: 200)
 assert_eq(slow.ok, false)
 assert_true(slow.timed_out)
-assert_true(slow.signal != nil)       // killed by SIGTERM/SIGKILL
+assert_true(slow.signal != nil)  // killed by SIGTERM/SIGKILL
 
 // A command that finishes within the timeout is unaffected.
 let quick = Proc.run(["echo", "hi"], timeout: 5000)
@@ -124,8 +167,12 @@ assert_eq(quick.timed_out, false)
 assert_eq(quick.stdout.trim(), "hi")
 
 // timeout + check: true throws ProcessError.
-let ce = try { Proc.run(["sleep", "5"], timeout: 100, check: true); "no-error" }
-         catch e { e.kind }
+let ce = try {
+  Proc.run(["sleep", "5"], timeout: 100, check: true)
+  "no-error"
+} catch e {
+  e.kind
+}
 assert_eq(ce, "ProcessError")
 
 // timeout applies per command in Proc.all.
@@ -142,7 +189,9 @@ assert_eq(Proc.run(["echo", "x"]).timed_out, false)
 let ff = try {
   Proc.all([["sleep", "5"], ["false"], ["sleep", "5"]], fail_fast: true)
   "no-error"
-} catch e { e.kind }
+} catch e {
+  e.kind
+}
 assert_eq(ff, "ProcessError")
 
 // fail_fast with all successes returns the result array (no throw).
@@ -159,7 +208,9 @@ assert_eq(settled[1].ok, false)
 let ffspawn = try {
   Proc.all([["culebra_no_such_cmd_xyzzy"], ["sleep", "5"]], fail_fast: true)
   "no-error"
-} catch e { e.kind }
+} catch e {
+  e.kind
+}
 assert_eq(ffspawn, "ProcessError")
 
 // --- retries: a persistently failing command keeps the last failure ---
@@ -173,8 +224,12 @@ assert_true(rok[0].ok)
 assert_eq(rok[0].stdout.trim(), "hi")
 
 // retries + fail_fast: fail_fast only fires after retries are exhausted.
-let rff = try { Proc.all([["false"]], retries: 1, fail_fast: true); "no-error" }
-          catch e { e.kind }
+let rff = try {
+  Proc.all([["false"]], retries: 1, fail_fast: true)
+  "no-error"
+} catch e {
+  e.kind
+}
 assert_eq(rff, "ProcessError")
 
 // --- Proc.spawn: a live handle with wait/poll/kill ---
@@ -189,7 +244,7 @@ assert_eq(sp.wait().stdout.trim(), "spawned")
 let slow = Proc.spawn(["sleep", "2"])
 assert_eq(slow.poll(), nil)
 assert_true(slow.wait().ok)
-assert_true(slow.poll().ok)        // cached after wait
+assert_true(slow.poll().ok)  // cached after wait
 
 // kill() stops a running child; wait() then reports the signal death.
 let doomed = Proc.spawn(["sleep", "5"])
@@ -203,12 +258,20 @@ let pipe = Proc.spawn(["cat"], stdin: "fed\n")
 assert_eq(pipe.wait().stdout, "fed\n")
 
 // A spawn failure throws (like Proc.run).
-let se = try { Proc.spawn(["culebra_no_such_cmd_xyzzy"]); "no-error" }
-         catch e { e.kind }
+let se = try {
+  Proc.spawn(["culebra_no_such_cmd_xyzzy"])
+  "no-error"
+} catch e {
+  e.kind
+}
 assert_eq(se, "ProcessError")
 
 // Handles dropped without wait() are reaped by GC (no leak / no hang).
-fn spawn_and_drop() { Proc.spawn(["true"]) }
-for i in range(10) { spawn_and_drop() }
+fn spawn_and_drop() {
+  Proc.spawn(["true"])
+}
+for i in range(10) {
+  spawn_and_drop()
+}
 
 IO.inspect("test_proc OK")

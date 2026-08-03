@@ -14,7 +14,10 @@ fn measure(work) {
   work()
   let base = GC.stat().live_objects
   mut i = 0
-  while i < 30 { work(); i = i + 1 }
+  while i < 30 {
+    work()
+    i = i + 1
+  }
   GC.stat().live_objects - base
 }
 
@@ -23,8 +26,8 @@ mut sink = nil
 fn pure_object_cycle() {
   let a = {}
   let b = {}
-  a.peer = b          # a.properties -> b
-  b.peer = a          # b.properties -> a  (RC never reaches zero)
+  a.peer = b  # a.properties -> b
+  b.peer = a  # b.properties -> a  (RC never reaches zero)
   sink = a
 }
 assert_lt(measure(pure_object_cycle), 1000)
@@ -38,25 +41,27 @@ assert_lt(measure(self_cycle), 1000)
 
 fn tuple_in_object() {
   let a = {}
-  a.t = (a, 1)        # cycle through a Tuple element
+  a.t = (a, 1)  # cycle through a Tuple element
   sink = a
 }
 assert_lt(measure(tuple_in_object), 1000)
 
 fn nonstring_key_cycle() {
   let a = {}
-  a[(1, 2)] = a       # cycle through the non-String-key sidecars
+  a[(1, 2)] = a  # cycle through the non-String-key sidecars
   sink = a
 }
 assert_lt(measure(nonstring_key_cycle), 1000)
 
 fn instance_data_cycle() {
   class Node {
-    new() { self.link = nil }
+    new() {
+      self.link = nil
+    }
   }
   let a = Node.new()
   let b = Node.new()
-  a.link = b          # class-instance data cycle (not just an env cycle)
+  a.link = b  # class-instance data cycle (not just an env cycle)
   b.link = a
   sink = a
 }
@@ -72,7 +77,9 @@ assert_lt(measure(instance_data_cycle), 1000)
 # one-collect reclamation lag doesn't count against it.
 fn ctor_only_local_class() {
   class Lone {
-    new() { self.x = 1 }
+    new() {
+      self.x = 1
+    }
   }
   Lone.new()
 }
@@ -80,7 +87,10 @@ ctor_only_local_class()
 GC.stat()
 let conly_base = GC.stat().live_objects
 mut conly_i = 0
-while conly_i < 600 { ctor_only_local_class(); conly_i = conly_i + 1 }
+while conly_i < 600 {
+  ctor_only_local_class()
+  conly_i = conly_i + 1
+}
 GC.stat()
 assert_lt(GC.stat().live_objects - conly_base, 300)
 

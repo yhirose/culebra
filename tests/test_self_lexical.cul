@@ -4,36 +4,75 @@
 // recursion handle, and bound-method value reads all see the same self.
 
 fn kind_of(thunk) {
-  try { thunk(); 'ok' } catch e { e.kind }
+  try {
+    thunk()
+    'ok'
+  } catch e {
+    e.kind
+  }
 }
 
 // --- lexical fallback from nested frames inside a method --------------------
 class Counter {
-  new (n) { self.n = n }
-  via_fn ()      { let f = fn (x) { x + self.n }; f(10) }
-  via_lambda ()  { let g = |x| x + self.n; g(10) }
-  via_hof ()     { let cb = fn (x) { x * self.n }; [1, 2].map(cb) }
-  via_inline ()  { [1, 2].map(|x| x * self.n) }
-  returned ()    { |x| x + self.n }
-  deferred (out) {
-    defer { out.push(self.n) }
+  new(n) {
+    self.n = n
+  }
+  via_fn() {
+    let f = fn (x) {
+      x + self.n
+    }
+    f(10)
+  }
+  via_lambda() {
+    let g = |x| x + self.n
+    g(10)
+  }
+  via_hof() {
+    let cb = fn (x) {
+      x * self.n
+    }
+    [1, 2].map(cb)
+  }
+  via_inline() {
+    [1, 2].map(|x| x * self.n)
+  }
+  returned() {
+    |x| x + self.n
+  }
+  deferred(out) {
+    defer {
+      out.push(self.n)
+    }
     out.push(0)
   }
-  via_multifn () {
-    fn h (x: Long) { x + self.n }
+  via_multifn() {
+    fn h(x: Long) {
+      x + self.n
+    }
     h(1)
   }
-  two_level () {
+  two_level() {
     let mid = fn () {
-      let inner = fn () { self.n }
+      let inner = fn () {
+        self.n
+      }
       inner()
     }
     mid()
   }
-  get twice () { self.n * 2 }
-  via_getter () { let g = fn () { self.twice }; g() }
-  ufcs () {
-    let f = fn (x) { x + self.n }
+  get twice() {
+    self.n * 2
+  }
+  via_getter() {
+    let g = fn () {
+      self.twice
+    }
+    g()
+  }
+  ufcs() {
+    let f = fn (x) {
+      x + self.n
+    }
     5.f()
   }
 }
@@ -54,49 +93,83 @@ assert_eq(c.via_getter(), 14)
 assert_eq(c.ufcs(), 12)
 
 // --- object-literal methods get the same fallback ---------------------------
-let o = {
-  n: 3,
-  m: fn () { let f = fn () { self.n }; f() },
-}
+let o = {n: 3, m: fn () {
+  let f = fn () {
+    self.n
+  }
+  f()
+}}
 assert_eq(o.m(), 3)
 
 // --- dynamic receiver wins over the lexical capture -------------------------
 class V {
-  new (n) { self.n = n }
-  make () {
-    fn g() { self.n }
+  new(n) {
+    self.n = n
+  }
+  make() {
+    fn g() {
+      self.n
+    }
     g
   }
 }
 let g = V.new(1).make()
-assert_eq(g(), 1)                      // no receiver → lexical
-let o2 = { n: 99, g: g }
-assert_eq(o2.g(), 99)                  // receiver call → dynamic wins
+assert_eq(g(), 1)  // no receiver → lexical
+let o2 = {n: 99, g: g}
+assert_eq(o2.g(), 99)  // receiver call → dynamic wins
 
 // --- no receiver anywhere → NameError at the read ---------------------------
-let bare = fn () { self }
+let bare = fn () {
+  self
+}
 assert_eq(kind_of(|| bare()), 'NameError')
-let top_nested = fn () { let f = fn () { self }; f() }
+let top_nested = fn () {
+  let f = fn () {
+    self
+  }
+  f()
+}
 assert_eq(kind_of(|| top_nested()), 'NameError')
 
 // --- trait default methods --------------------------------------------------
 trait Greet {
   name() -> String
-  hello() { "hi " + self.name() }
-  hello_nested() { let f = fn () { "hi " + self.name() }; f() }
+  hello() {
+    "hi " + self.name()
+  }
+  hello_nested() {
+    let f = fn () {
+      "hi " + self.name()
+    }
+    f()
+  }
 }
 class P {
-  new (s) { self.s = s }
-  name () { self.s }
+  new(s) {
+    self.s = s
+  }
+  name() {
+    self.s
+  }
 }
 assert_eq(P.new("bob").hello(), "hi bob")
 assert_eq(P.new("bob").hello_nested(), "hi bob")
 
 // --- `fn` recursion handle keeps the receiver -------------------------------
 class R {
-  new (n) { self.n = n }
-  m (k) { if k == 0 { self.n } else { fn(k - 1) } }
-  grab () { fn }
+  new(n) {
+    self.n = n
+  }
+  m(k) {
+    if k == 0 {
+      self.n
+    } else {
+      fn(k - 1)
+    }
+  }
+  grab() {
+    fn
+  }
 }
 assert_eq(R.new(5).m(3), 5)
 // escaped handle: still bound to the original receiver, even plain-called
@@ -104,15 +177,21 @@ let rh = R.new(8).grab
 assert_eq(kind_of(|| rh()), 'ok')
 // bound method: rebinding via another object does NOT override
 let rm = R.new(5).m
-let other = { n: 100, h: rm }
+let other = {n: 100, h: rm}
 assert_eq(other.h(1), 5)
 assert_eq(rm(1), 5)
 
 // --- bound-method value reads (own slot / static / ctor) --------------------
 class K {
-  new (v) { self.v = v }
-  get_v () { self.v }
-  static mk (v) { K.new(v) }
+  new(v) {
+    self.v = v
+  }
+  get_v() {
+    self.v
+  }
+  static mk(v) {
+    K.new(v)
+  }
 }
 let mk = K.new
 assert_eq(mk(5).get_v(), 5)
@@ -120,7 +199,9 @@ let st = K.mk
 assert_eq(st(6).get_v(), 6)
 let det = K.new(7).get_v
 assert_eq(det(), 7)
-let ol = { n: 3, f: fn () { self.n } }
+let ol = {n: 3, f: fn () {
+  self.n
+}}
 let mf = ol.f
 assert_eq(mf(), 3)
 // each read mints a fresh wrapper
@@ -128,16 +209,27 @@ assert_eq(ol.f == ol.f, false)
 assert_eq(K.new == K.new, false)
 // own field holding a closure
 class F {
-  new () { self.cb = fn () { type_of(self) } }
+  new() {
+    self.cb = fn () {
+      type_of(self)
+    }
+  }
 }
 let fc = F.new().cb
 assert_eq(fc(), 'Object')
 
 // --- `let self` shadowing stays legal ---------------------------------------
 class S {
-  new (n) { self.n = n }
-  shadow () { let self = 99; self }
-  reassign () { self = 1 }
+  new(n) {
+    self.n = n
+  }
+  shadow() {
+    let self = 99
+    self
+  }
+  reassign() {
+    self = 1
+  }
 }
 assert_eq(S.new(1).shadow(), 99)
 assert_eq(kind_of(|| S.new(1).reassign()), 'ImmutableError')

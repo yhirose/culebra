@@ -11,57 +11,131 @@
 
 # --- Variadic callbacks are accepted and bind *args correctly ---------------
 # A `*args` callback collects the per-element args into an Array.
-assert_eq([10, 20].map(fn (*xs) { xs.size() }), [1, 1])          # map → 1 arg
-assert_eq([1, 2, 3].reduce(0, fn (*xs) { xs.size() }), 2)        # reduce → 2 args
-assert_eq([1, 2, 3].reduce(0, fn (a, *xs) { a + xs.size() }), 3) # acc + 1 each
-assert_eq([1, 2, 3].map(fn (a, *xs) { a }), [1, 2, 3])           # rest empty
+assert_eq([10, 20].map(fn (*xs) {
+    xs.size()
+  }), [1, 1])  # map → 1 arg
+assert_eq([1, 2, 3].reduce(0, fn (*xs) {
+    xs.size()
+  }), 2)  # reduce → 2 args
+assert_eq([1, 2, 3].reduce(0, fn (a, *xs) {
+    a + xs.size()
+  }), 3)  # acc + 1 each
+assert_eq([1, 2, 3].map(fn (a, *xs) {
+    a
+  }), [1, 2, 3])  # rest empty
 
 # Same through iterators (terminal HOFs) and as a lazy stage's terminal.
-assert_eq(range(1, 4).find(fn (*xs) { xs[0] == 2 }), 2)
-assert_eq(range(1, 4).reduce(0, fn (a, b) { a + b }), 6)
+assert_eq(range(1, 4).find(fn (*xs) {
+    xs[0] == 2
+  }), 2)
+assert_eq(range(1, 4).reduce(0, fn (a, b) {
+    a + b
+  }), 6)
 
 # range / iota stay usable as higher-order callbacks (variadic builtins).
 assert_eq([2, 4].map(iota), [[0, 1], [0, 1, 2, 3]])
 
 # --- Fixed-arity mismatches are rejected, identically on both backends ------
 # #10: a 1-parameter function can't be a 2-arg reducer (was silently 0 in interp).
-let r10 = try { [1, 2, 3].reduce(0, |x| x); nil } catch e { e }
+let r10 = try {
+  [1, 2, 3].reduce(0, |x| x)
+  nil
+} catch e {
+  e
+}
 assert_eq(r10.kind, 'TypeError')
 assert_eq(r10.message, 'type error: reduce expects a 2-parameter function')
 
 # A 2-parameter function can't be a 1-arg mapper (was silently accepted in interp).
-let rm2 = try { [1, 2, 3].map(fn (a, b) { a }); nil } catch e { e }
+let rm2 = try {
+  [1, 2, 3].map(fn (a, b) {
+    a
+  })
+  nil
+} catch e {
+  e
+}
 assert_eq(rm2.kind, 'TypeError')
 assert_eq(rm2.message, 'type error: map expects a 1-parameter function')
 
 # A 0-parameter function can't be a 1-arg mapper either.
-let rm0 = try { [1, 2, 3].map(fn () { 9 }); nil } catch e { e }
+let rm0 = try {
+  [1, 2, 3].map(fn () {
+    9
+  })
+  nil
+} catch e {
+  e
+}
 assert_eq(rm0.kind, 'TypeError')
 
 # Too many params for reduce.
-let r3 = try { [1, 2, 3].reduce(0, fn (a, b, c) { a }); nil } catch e { e }
+let r3 = try {
+  [1, 2, 3].reduce(0, fn (a, b, c) {
+    a
+  })
+  nil
+} catch e {
+  e
+}
 assert_eq(r3.kind, 'TypeError')
 
 # A defaulted extra param does not shrink the required callback arity: a HOF
 # always supplies its fixed count, so `fn (a, b = 9)` is rejected by `map`
 # (expects exactly 1) on both backends rather than diverging.
-let rd = try { [1, 2, 3].map(fn (a, b = 9) { a + b }); nil } catch e { e }
+let rd = try {
+  [1, 2, 3].map(fn (a, b = 9) {
+    a + b
+  })
+  nil
+} catch e {
+  e
+}
 assert_eq(rd.kind, 'TypeError')
 
 # The same fixed-arity function IS accepted where the count matches.
-assert_eq([1, 2, 3].reduce(0, fn (a, b = 9) { a + b }), 6)
+assert_eq([1, 2, 3].reduce(0, fn (a, b = 9) {
+    a + b
+  }), 6)
 
 # --- The check fires before iterating, so an empty receiver still errors ----
-let re = try { [].map(fn (a, b) { a }); nil } catch e { e }
+let re = try {
+  [].map(fn (a, b) {
+    a
+  })
+  nil
+} catch e {
+  e
+}
 assert_eq(re.kind, 'TypeError')
-let rei = try { range(5, 5).reduce(0, |x| x); nil } catch e { e }
+let rei = try {
+  range(5, 5).reduce(0, |x| x)
+  nil
+} catch e {
+  e
+}
 assert_eq(rei.kind, 'TypeError')
 
 # --- Callable instances (`__call__`) follow the same rule -------------------
-class Dbl { new() {} __call__(x) { x * 2 } }
-class Two { new() {} __call__(a, b) { a } }
-assert_eq([1, 2, 3].map(Dbl.new()), [2, 4, 6])           # __call__ arity matches
-let rc = try { [1, 2, 3].map(Two.new()); nil } catch e { e }  # 2-arg __call__ to map
+class Dbl {
+  new() {}
+  __call__(x) {
+    x * 2
+  }
+}
+class Two {
+  new() {}
+  __call__(a, b) {
+    a
+  }
+}
+assert_eq([1, 2, 3].map(Dbl.new()), [2, 4, 6])  # __call__ arity matches
+let rc = try {
+  [1, 2, 3].map(Two.new())
+  nil
+} catch e {
+  e
+}  # 2-arg __call__ to map
 assert_eq(rc.kind, 'TypeError')
 assert_eq(rc.message, 'type error: map expects a 1-parameter function')
 
@@ -70,24 +144,61 @@ assert_eq(rc.message, 'type error: map expects a 1-parameter function')
 # built (not lazily per element), so they reject a wrong-arity callback up
 # front. Previously interp silently bound it and the JIT crashed / errored
 # inconsistently.
-let lm = try { range(1, 4).map(fn (a, b) { a }).collect(); nil } catch e { e }
+let lm = try {
+  range(1, 4).map(fn (a, b) {
+      a
+    }).collect()
+  nil
+} catch e {
+  e
+}
 assert_eq(lm.kind, 'TypeError')
 assert_eq(lm.message, 'type error: map expects a 1-parameter function')
-let lf = try { range(1, 4).filter(fn (a, b) { a }).collect(); nil } catch e { e }
+let lf = try {
+  range(1, 4).filter(fn (a, b) {
+      a
+    }).collect()
+  nil
+} catch e {
+  e
+}
 assert_eq(lf.kind, 'TypeError')
 assert_eq(lf.message, 'type error: filter expects a 1-parameter function')
-let ltw = try { range(1, 9).take_while(fn (a, b) { a }).collect(); nil } catch e { e }
+let ltw = try {
+  range(1, 9).take_while(fn (a, b) {
+      a
+    }).collect()
+  nil
+} catch e {
+  e
+}
 assert_eq(ltw.message, 'type error: take_while expects a 1-parameter function')
-let lfm = try { range(1, 4).flat_map(fn (a, b) { [a] }).collect(); nil } catch e { e }
+let lfm = try {
+  range(1, 4).flat_map(fn (a, b) {
+      [a]
+    }).collect()
+  nil
+} catch e {
+  e
+}
 assert_eq(lfm.message, 'type error: flat_map expects a 1-parameter function')
 
 # A `*args` callback still works through every lazy stage.
-assert_eq(range(1, 4).map(fn (*xs) { xs.size() }).collect(), [1, 1, 1])
-assert_eq(range(1, 9).take_while(fn (*xs) { xs[0] < 3 }).collect(), [1, 2])
+assert_eq(range(1, 4).map(fn (*xs) {
+      xs.size()
+    }).collect(), [1, 1, 1])
+assert_eq(range(1, 9).take_while(fn (*xs) {
+      xs[0] < 3
+    }).collect(), [1, 2])
 
 # A non-Function callback is rejected eagerly (it used to crash the JIT lazy
 # wrapper, which invoked it as a function pointer).
-let lnf = try { range(1, 4).map(5).collect(); nil } catch e { e }
+let lnf = try {
+  range(1, 4).map(5).collect()
+  nil
+} catch e {
+  e
+}
 assert_eq(lnf.kind, 'TypeError')
 assert_eq(lnf.message, "type error: parameter 'f' expects Function")
 
@@ -97,15 +208,27 @@ assert_eq(lnf.message, "type error: parameter 'f' expects Function")
 # reading the defaulted param raised NameError while the JIT (and a direct
 # call) applied it. Both backends now evaluate `default_expr` in the callback
 # path, matching `f(x)`.
-assert_eq([1, 2, 3].map(fn (a, b = 9, *xs) { b }), [9, 9, 9])        # literal default
-assert_eq([1, 2, 3].map(fn (a, b = 9, *xs) { xs }), [[], [], []])   # rest still empty
-assert_eq([1, 2, 3].map(fn (a, b = a * 10, *xs) { b }), [10, 20, 30]) # default sees earlier param
+assert_eq([1, 2, 3].map(fn (a, b = 9, *xs) {
+    b
+  }), [9, 9, 9])  # literal default
+assert_eq([1, 2, 3].map(fn (a, b = 9, *xs) {
+    xs
+  }), [[], [], []])  # rest still empty
+assert_eq([1, 2, 3].map(fn (a, b = a * 10, *xs) {
+    b
+  }), [10, 20, 30])  # default sees earlier param
 let cap = 100
-assert_eq([1, 2, 3].map(fn (a, b = cap, *xs) { b }), [100, 100, 100]) # default sees closure var
+assert_eq([1, 2, 3].map(fn (a, b = cap, *xs) {
+    b
+  }), [100, 100, 100])  # default sees closure var
 # Same through a 2-arg reducer.
-assert_eq([1, 2].reduce(0, fn (acc, x, c = 5, *xs) { acc + x + c }), 13)
+assert_eq([1, 2].reduce(0, fn (acc, x, c = 5, *xs) {
+    acc + x + c
+  }), 13)
 # A direct call is the reference semantics the callback path now matches.
-let g = fn (a, b = 9, *xs) { b }
+let g = fn (a, b = 9, *xs) {
+  b
+}
 assert_eq(g(1), 9)
 
 # --- Named free functions / multimethods as callbacks -----------------------
@@ -114,21 +237,36 @@ assert_eq(g(1), 9)
 # synthetic `**__KWARGS__` params and reject every named-fn callback, while
 # the JIT accepted them — a backend split). Accept iff some overload takes the
 # supplied arg count; the per-element call dispatches to it.
-fn dbl(a) { a * 2 }
-assert_eq([1, 2, 3].map(dbl), [2, 4, 6])              # single-method, 1 param
+fn dbl(a) {
+  a * 2
+}
+assert_eq([1, 2, 3].map(dbl), [2, 4, 6])  # single-method, 1 param
 let alias = dbl
-assert_eq([1, 2].map(alias), [2, 4])                  # via let-binding
-fn vararg(a, *xs) { [a, xs] }
-assert_eq([1, 2].map(vararg), [[1, []], [2, []]])     # variadic overload accepted
+assert_eq([1, 2].map(alias), [2, 4])  # via let-binding
+fn vararg(a, *xs) {
+  [a, xs]
+}
+assert_eq([1, 2].map(vararg), [[1, []], [2, []]])  # variadic overload accepted
 
 # An overloaded name: the 1-arg overload is picked per element.
-fn ov(a) { a + 1 }
-fn ov(a, b) { a + b }
+fn ov(a) {
+  a + 1
+}
+fn ov(a, b) {
+  a + b
+}
 assert_eq([10, 20].map(ov), [11, 21])
 
 # No overload taking 1 arg → rejected at the HOF entry (both backends).
-fn needs2(a, b) { a + b }
-let rn = try { [1, 2].map(needs2); nil } catch e { e }
+fn needs2(a, b) {
+  a + b
+}
+let rn = try {
+  [1, 2].map(needs2)
+  nil
+} catch e {
+  e
+}
 assert_eq(rn.kind, 'TypeError')
 assert_eq(rn.message, 'type error: map expects a 1-parameter function')
 
@@ -137,7 +275,12 @@ assert_eq(rn.message, 'type error: map expects a 1-parameter function')
 # 4, so a 1-arg `map` callback doesn't match (expected == max is false). The
 # JIT used to accept it (its ns-method closure was JIT_VARIADIC_ARITY); it now
 # gates on the method's real declared bounds like the interp.
-let rj = try { [1, 2].map(JSON.stringify); nil } catch e { e }
+let rj = try {
+  [1, 2].map(JSON.stringify)
+  nil
+} catch e {
+  e
+}
 assert_eq(rj.kind, 'TypeError')
 assert_eq(rj.message, 'type error: map expects a 1-parameter function')
 
@@ -145,8 +288,16 @@ assert_eq(rj.message, 'type error: map expects a 1-parameter function')
 # The JIT's inline fusion (literal lambda map/filter/reduce, iter fusion) used
 # to bind the pattern param as an unnamed slot and NameError on the body's
 # first read; it now declines to the runtime helper, whose prologue unpacks.
-let pf = fn ((a, b)) { a + b }
+let pf = fn ((a, b)) {
+  a + b
+}
 assert_eq([(1, 2)].map(pf), [3])
-assert_eq([(1, 2)].map(fn ((a, b)) { a + b }), [3])
-assert_eq([(1, 2)].reduce(0, fn (acc, (a, b)) { acc + a + b }), 3)
-assert_eq([(1, 2)].iter().map(fn ((a, b)) { a + b }).collect(), [3])
+assert_eq([(1, 2)].map(fn ((a, b)) {
+    a + b
+  }), [3])
+assert_eq([(1, 2)].reduce(0, fn (acc, (a, b)) {
+    acc + a + b
+  }), 3)
+assert_eq([(1, 2)].iter().map(fn ((a, b)) {
+      a + b
+    }).collect(), [3])

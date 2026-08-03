@@ -5,29 +5,39 @@ let xs = [1, 2, 3, 4, 5, 6, 7, 8]
 assert_eq(Parallel.map(xs, |x| x * x), [1, 4, 9, 16, 25, 36, 49, 64])
 
 # --- map preserves order even with a single worker (limit: 1) ---
-assert_eq(Parallel.map(xs, |x| x + 100, limit: 1),
-          [101, 102, 103, 104, 105, 106, 107, 108])
+assert_eq(
+  Parallel.map(xs, |x| x + 100, limit: 1),
+  [101, 102, 103, 104, 105, 106, 107, 108],
+)
 
 # --- map over an empty array ---
 assert_eq(Parallel.map([], |x| x), [])
 
 # --- map captures an immutable free variable + a top-level fn ---
 let factor = 10
-fn dbl(n) { return n * 2 }
+fn dbl(n) {
+  return n * 2
+}
 assert_eq(Parallel.map([1, 2, 3], |x| dbl(x) * factor), [20, 40, 60])
 
 # --- map returning structured values ---
-assert_eq(Parallel.map([1, 2], |x| {n: x, sq: x * x}),
-          [{n: 1, sq: 1}, {n: 2, sq: 4}])
+assert_eq(
+  Parallel.map([1, 2], |x| {n: x, sq: x * x}),
+  [{n: 1, sq: 1}, {n: 2, sq: 4}],
+)
 
 # --- a heavier workload across the pool still matches the serial result ---
 fn fib(n) {
-  if n < 2 { return n }
+  if n < 2 {
+    return n
+  }
   return fib(n - 1) + fib(n - 2)
 }
 let ns = [10, 12, 14, 16, 18, 20]
 mut serial = []
-for n in ns { serial.push(fib(n)) }
+for n in ns {
+  serial.push(fib(n))
+}
 assert_eq(Parallel.map(ns, |n| fib(n)), serial)
 
 # --- each: side effects only, returns nil; sum collected via a channel ---
@@ -37,12 +47,14 @@ Parallel.each([1, 2, 3, 4, 5], fn (x) {
 })
 tx.drop()
 mut total = 0
-for v in rx { total = total + v }
-assert_eq(total, 55)   # 1+4+9+16+25
+for v in rx {
+  total = total + v
+}
+assert_eq(total, 55)  # 1+4+9+16+25
 
 # --- fail-fast: a failing element raises ParallelError with the index ---
 try {
-  Parallel.map([1, 2, 0, 4], |x| 12 / x)   # element[2] divides by zero
+  Parallel.map([1, 2, 0, 4], |x| 12 / x)  # element[2] divides by zero
   assert_true(false)
 } catch e {
   assert_eq(e.kind, "ParallelError")
@@ -68,21 +80,39 @@ try {
 # --- a multimethod `fn name` ships ALL its overloads across the boundary ---
 # (regression: the interp sendable used to transfer only the first method, so a
 # worker that dispatched to a later overload failed with a spurious type error.)
-fn classify(x: Long) { "long:{x}" }
-fn classify(x: String) { "str:{x}" }
-fn classify(x: Bool) { "bool:{x}" }
-assert_eq(Parallel.map([1, "a", true, 2], |v| classify(v)),
-          ["long:1", "str:a", "bool:true", "long:2"])
+fn classify(x: Long) {
+  "long:{x}"
+}
+fn classify(x: String) {
+  "str:{x}"
+}
+fn classify(x: Bool) {
+  "bool:{x}"
+}
+assert_eq(
+  Parallel.map([1, "a", true, 2], |v| classify(v)),
+  ["long:1", "str:a", "bool:true", "long:2"],
+)
 
 # a recursive multimethod survives transfer (the body back-references the
 # dispatcher, which must be rebuilt before its method bodies)
-fn fibm(n: Long) { if n < 2 { n } else { fibm(n - 1) + fibm(n - 2) } }
+fn fibm(n: Long) {
+  if n < 2 {
+    n
+  } else {
+    fibm(n - 1) + fibm(n - 2)
+  }
+}
 assert_eq(Parallel.map([10, 11, 12], |k| fibm(k)), [55, 89, 144])
 
 # a method body that captures a top-level free var is rebuilt with its capture
 let bias = 100
-fn shift(x: Long) { x + bias }
-fn shift(x: String) { "s:{x}" }
+fn shift(x: Long) {
+  x + bias
+}
+fn shift(x: String) {
+  "s:{x}"
+}
 assert_eq(Parallel.map([1, "z", 3], |v| shift(v)), [101, "s:z", 103])
 
 inspect("test_parallel: all assertions passed")

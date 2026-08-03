@@ -8,15 +8,23 @@ mut handles = []
 mut sources = []
 for w in [1, 2, 3, 4] {
   let (tx, rx) = Channel.new(2)
-  handles.push(Isolate.spawn(fn () { for i in 1..6 { tx.send(w * 100 + i) } }))
-  tx.drop()                    # the parent's own sender; the producer's auto-drops
+  handles.push(Isolate.spawn(fn () {
+    for i in 1..6 {
+      tx.send(w * 100 + i)
+    }
+  }))
+  tx.drop()  # the parent's own sender; the producer's auto-drops
   sources.push(rx)
 }
 mut got = []
-for v in Channel.fan_in(sources) { got.push(v) }
-for h in handles { h.join() }
-assert_eq(got.size(), 20)                       # 4 producers x 5 values
-assert_eq(got.reduce(0, |a, b| a + b), 5060)    # (101..105)+(201..205)+(301..305)+(401..405)
+for v in Channel.fan_in(sources) {
+  got.push(v)
+}
+for h in handles {
+  h.join()
+}
+assert_eq(got.size(), 20)                     # 4 producers x 5 values
+assert_eq(got.reduce(0, |a, b| a + b), 5060)  # (101..105)+(201..205)+(301..305)+(401..405)
 
 # explicit recv() until nil also works
 let (t1, r1) = Channel.new(4)
@@ -29,7 +37,10 @@ t2.drop()
 let m = Channel.fan_in([r1, r2])
 mut sum = 0
 mut v = m.recv()
-while v != nil { sum = sum + v; v = m.recv() }
+while v != nil {
+  sum = sum + v
+  v = m.recv()
+}
 assert_eq(sum, 6)
 
 # single source is a pass-through
@@ -42,7 +53,9 @@ assert_eq(one.recv(), nil)
 
 # empty source list → an immediately-closed rx
 mut empty_count = 0
-for v in Channel.fan_in([]) { empty_count = empty_count + 1 }
+for v in Channel.fan_in([]) {
+  empty_count = empty_count + 1
+}
 assert_eq(empty_count, 0)
 
 # type errors
@@ -54,7 +67,7 @@ try {
 }
 try {
   let (txx, rxx) = Channel.new()
-  Channel.fan_in([txx])          # a sender, not a receiver
+  Channel.fan_in([txx])  # a sender, not a receiver
   assert_true(false)
 } catch e {
   assert_eq(e.kind, "TypeError")
@@ -63,23 +76,36 @@ try {
 # fan_in(items, fn): spawn a producer per item + merge — no tx, no drop, no
 # handle in user code. (The producer's tx auto-drops; fan_in owns the rest.)
 let merged = Channel.fan_in([1, 2, 3], fn (w, tx) {
-  for i in 1..6 { tx.send(w * 100 + i) }
+  for i in 1..6 {
+    tx.send(w * 100 + i)
+  }
 })
 mut g2 = []
-for v in merged { g2.push(v) }
+for v in merged {
+  g2.push(v)
+}
 merged.join()
-assert_eq(g2.size(), 15)                       # 3 producers x 5
+assert_eq(g2.size(), 15)  # 3 producers x 5
 assert_eq(g2.reduce(0, |a, b| a + b), 3045)
 
 # a structured producer error surfaces via merged.join() (both backends)
 let mf = Channel.fan_in([1, 2], fn (w, tx) {
   tx.send(w)
-  if w == 2 { let bad = 1 / 0 }    # ZeroDivisionError
+  if w == 2 {
+    let bad = 1 / 0
+  }  # ZeroDivisionError
 })
 mut cf = 0
-for v in mf { cf = cf + 1 }
+for v in mf {
+  cf = cf + 1
+}
 assert_eq(cf, 2)
-let kind = try { mf.join(); "no error" } catch e { e.kind }
+let kind = try {
+  mf.join()
+  "no error"
+} catch e {
+  e.kind
+}
 assert_eq(kind, "ZeroDivisionError")
 
 # a raw `throw <value>` from a producer crosses the isolate boundary intact —
@@ -89,14 +115,28 @@ let mr = Channel.fan_in([7], fn (w, tx) {
   throw "boom"
 })
 mut cr = 0
-for v in mr { cr = cr + 1 }
+for v in mr {
+  cr = cr + 1
+}
 assert_eq(cr, 1)
-let caught = try { mr.join(); "no error" } catch e { e }
+let caught = try {
+  mr.join()
+  "no error"
+} catch e {
+  e
+}
 assert_eq(caught, "boom")
 
 # the same raw-throw symmetry on a plain Isolate.spawn handle
-let h = Isolate.spawn(fn () { throw [1, 2, 3] })
-let ch = try { h.join(); nil } catch e { e }
+let h = Isolate.spawn(fn () {
+  throw [1, 2, 3]
+})
+let ch = try {
+  h.join()
+  nil
+} catch e {
+  e
+}
 assert_eq(ch, [1, 2, 3])
 
 inspect("test_fanin_jit: all assertions passed")

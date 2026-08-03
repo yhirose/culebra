@@ -7,57 +7,88 @@
 # so the closure's capture chain links to the eventual binding.
 
 # --- (1) Top-level: closure → forward let ---
-let calls_f = fn() { f() + 1 }
+let calls_f = fn () {
+  f() + 1
+}
 
-let f = fn() { 41 }
+let f = fn () {
+  41
+}
 
 assert_eq(calls_f(), 42)
 
 # --- (2) Top-level: closure → forward class ---
-let make_point = fn(x) { Point.new(x, x) }
+let make_point = fn (x) {
+  Point.new(x, x)
+}
 
 class Point {
-  new(a, b) { self.a = a; self.b = b }
+  new(a, b) {
+    self.a = a
+    self.b = b
+  }
 }
 
 let p = make_point(3)
 assert_true(p.a == 3 && p.b == 3)
 
 # --- (3) Top-level: closure → forward multifn ---
-let dispatch = fn() { area(5) }
+let dispatch = fn () {
+  area(5)
+}
 
-fn area(s: Long) { s * s }
+fn area(s: Long) {
+  s * s
+}
 
 assert_eq(dispatch(), 25)
 
 # --- (4) Inside a function body: forward ref between locals ---
-let outer = fn() {
-  let inner_a = fn() { inner_b() * 2 }
-  let inner_b = fn() { 21 }
+let outer = fn () {
+  let inner_a = fn () {
+    inner_b() * 2
+  }
+  let inner_b = fn () {
+    21
+  }
   inner_a()
 }
 
 assert_eq(outer(), 42)
 
 # --- (5) Stacked forward refs (a refers to b refers to c) ---
-let chain_a = fn() { chain_b() + 1 }
-let chain_b = fn() { chain_c() + 1 }
-let chain_c = fn() { 40 }
+let chain_a = fn () {
+  chain_b() + 1
+}
+let chain_b = fn () {
+  chain_c() + 1
+}
+let chain_c = fn () {
+  40
+}
 
 assert_eq(chain_a(), 42)
 
 # --- (6) Forward ref to an implicit binding (`g = …`, no `let`) ---
 # First assignment declares, so the pre-allocated cell must accept it as the
 # declaration — not mut-check it as a reassignment.
-calls_g = fn() { g() + 1 }
+calls_g = fn () {
+  g() + 1
+}
 
-g = fn() { 41 }
+g = fn () {
+  41
+}
 
 assert_eq(calls_g(), 42)
-assert_throws('ImmutableError', fn () { g = 1 })
+assert_throws('ImmutableError', fn () {
+  g = 1
+})
 
 # …and `mut` keeps its reassignability through the same cell.
-reads_h = fn() { h }
+reads_h = fn () {
+  h
+}
 
 mut h = 1
 h = 2
@@ -67,10 +98,16 @@ assert_eq(reads_h(), 2)
 # --- (7) Reassignment drops the recorded FUNCTION AST ---
 # kwargs resolve against the binding's current value, not the literal the
 # name was first declared with.
-reads_k = fn() { k }
+reads_k = fn () {
+  k
+}
 
-mut k = fn(a = 0) { "a" + to_string(a) }
-k = fn(b = 0) { "b" + to_string(b) }
+mut k = fn (a = 0) {
+  "a" + to_string(a)
+}
+k = fn (b = 0) {
+  "b" + to_string(b)
+}
 
 assert_eq(k(b: 1), "b1")
 assert_eq(reads_k()(b: 2), "b2")

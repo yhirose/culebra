@@ -13,5 +13,9 @@ inspect(Geo.Vec2.dims())
   inspect(tmp.show())
 }
 v.drop()
-inspect(try { v.len() } catch e { e.kind + ': ' + e.message })
+inspect(try {
+  v.len()
+} catch e {
+  e.kind + ': ' + e.message
+})
 inspect(u.show())

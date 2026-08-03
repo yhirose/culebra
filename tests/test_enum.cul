@@ -4,9 +4,20 @@
 // Match uses constructor patterns `Ok(x)` (bare or `Name.Ok(x)`);
 // type patterns match both the variant (`: Ok`) and the enum (`: Name`).
 
-enum Result<T, E> { Ok(T), Err(E) }
-enum Color { Red, Green, Blue }
-enum Shape { Circle(Float), Rect(Float, Float), Origin }
+enum Result<T, E> {
+  Ok(T),
+  Err(E),
+}
+enum Color {
+  Red,
+  Green,
+  Blue,
+}
+enum Shape {
+  Circle(Float),
+  Rect(Float, Float),
+  Origin,
+}
 
 // --- Construction + payload field access ---
 let r = Result.Ok(5)
@@ -16,23 +27,23 @@ let e = Result.Err("boom")
 assert_eq(e._0, "boom")
 
 // --- Constructor patterns bind positional payload ---
-let unwrap = fn(v) {
+let unwrap = fn (v) {
   match v {
-    Ok(x)  => x,
+    Ok(x) => x,
     Err(m) => -1,
-    _      => -2,
+    _ => -2,
   }
 }
 assert_eq(unwrap(Result.Ok(42)), 42)
 assert_eq(unwrap(Result.Err("x")), -1)
 
 // --- Qualified ctor pattern + multi-payload + nullary via type pattern ---
-let describe = fn(s) {
+let describe = fn (s) {
   match s {
     Shape.Circle(rad) => "circle:{rad}",
-    Rect(w, h)        => "rect:{w}x{h}",
-    x: Origin         => "origin",
-    _                 => "?",
+    Rect(w, h) => "rect:{w}x{h}",
+    x: Origin => "origin",
+    _ => "?",
   }
 }
 assert_eq(describe(Shape.Circle(2.0)), "circle:2.0")
@@ -40,35 +51,35 @@ assert_eq(describe(Shape.Rect(3, 4)), "rect:3x4")
 assert_eq(describe(Shape.Origin), "origin")
 
 // --- Type matching: variant name and enum parent name ---
-let kind = fn(v) {
+let kind = fn (v) {
   match v {
     x: Result => "result",
-    x: Color  => "color",
-    _         => "other",
+    x: Color => "color",
+    _ => "other",
   }
 }
-assert_eq(kind(Result.Ok(1)), "result")   // enum-parent match
+assert_eq(kind(Result.Ok(1)), "result")  // enum-parent match
 assert_eq(kind(Result.Err(1)), "result")
 assert_eq(kind(Color.Red), "color")
 assert_eq(kind(Color.Blue), "color")
 assert_eq(kind(42), "other")
 
 // Variant-name type pattern is more specific than enum.
-let is_ok = fn(v) {
+let is_ok = fn (v) {
   match v {
     x: Ok => true,
-    _     => false,
+    _ => false,
   }
 }
 assert_eq(is_ok(Result.Ok(1)), true)
 assert_eq(is_ok(Result.Err(1)), false)
 
 // --- Nested ctor pattern (payload is itself matched) ---
-let deep = fn(v) {
+let deep = fn (v) {
   match v {
     Ok(Ok(x)) => "nested:{x}",
-    Ok(y)     => "single",
-    _         => "no",
+    Ok(y) => "single",
+    _ => "no",
   }
 }
 assert_eq(deep(Result.Ok(Result.Ok(9))), "nested:9")
@@ -79,9 +90,15 @@ let mk = Result.Ok
 assert_eq(mk(11)._0, 11)
 
 // --- Free-fn multidispatch on the VARIANT works (exact class tag) ---
-fn tag_of(x: Ok) { "ok" }
-fn tag_of(x: Err) { "err" }
-fn tag_of(x: Long) { "long" }
+fn tag_of(x: Ok) {
+  "ok"
+}
+fn tag_of(x: Err) {
+  "err"
+}
+fn tag_of(x: Long) {
+  "long"
+}
 assert_eq(tag_of(Result.Ok(1)), "ok")
 assert_eq(tag_of(Result.Err(1)), "err")
 assert_eq(tag_of(5), "long")
@@ -91,9 +108,9 @@ assert_eq(tag_of(5), "long")
 // dispatch key; dispatch on the variant or match instead.)
 fn area(s) {
   match s {
-    Circle(r)  => r,
+    Circle(r) => r,
     Rect(w, h) => w,
-    _          => 0,
+    _ => 0,
   }
 }
 assert_eq(area(Shape.Circle(9.0)), 9.0)

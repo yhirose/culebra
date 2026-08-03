@@ -3,22 +3,25 @@
 // (which can't hold a literal '). The only inexpressible byte is a backtick.
 
 // --- apostrophes, quotes, braces, backslashes are all literal ---
-assert_eq(`it's`, "it's")                    // holds a single quote
-assert_eq(`say "hi"`.size(), 8)              // holds double quotes, no escaping
-assert_eq(`a\nb`.size(), 4)                  // \, n literal (not a newline)
-assert_eq(`{x}`, '{x}')                       // braces literal, no interpolation
-assert_eq(`C:\path\to`, 'C:\path\to')        // same as the '...' raw form
+assert_eq(`it's`, "it's")              // holds a single quote
+assert_eq(`say "hi"`.size(), 8)        // holds double quotes, no escaping
+assert_eq(`a\nb`.size(), 4)            // \, n literal (not a newline)
+assert_eq(`{x}`, '{x}')                // braces literal, no interpolation
+assert_eq(`C:\path\to`, 'C:\path\to')  // same as the '...' raw form
 
 // --- multi-line ---
 let m = `line1
 line2`
-assert_eq(m.size(), 11)                      // 5 + newline + 5
+
+assert_eq(m.size(), 11)  // 5 + newline + 5
 
 // --- the motivating case: regex needing BOTH ' and {} in one literal ---
 // GPT-2 pre-tokenizer: contractions ('s 't) + \p{L}/\p{N} + lookahead.
 let tok = Regex.compile(`'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+`)
 let mut shown = ""
-for piece in tok.find_all("I've got 3 cats!") { shown = shown + "[" + piece.value + "]" }
+for piece in tok.find_all("I've got 3 cats!") {
+  shown = shown + "[" + piece.value + "]"
+}
 assert_eq(shown, "[I]['ve][ got][ 3][ cats][!]")
 
 // --- regex with quantifiers reads clean (no \{ escaping needed) ---

@@ -8,8 +8,13 @@
 # binding-order errors (missing-required vs unknown-keyword) match too.
 
 class Point {
-  new(x, y) { self.x = x; self.y = y }
-  sum() { self.x + self.y }
+  new(x, y) {
+    self.x = x
+    self.y = y
+  }
+  sum() {
+    self.x + self.y
+  }
 }
 
 # All-keyword, mixed, reordered, positional — all reach the same instance.
@@ -20,11 +25,13 @@ assert_eq(Point.new(1, 2).sum(), 3)
 
 # Defaults fill from a keyword that skips them, and per-call default eval.
 class Box {
-  new(w, h = 10, d = 100) { self.v = w + h + d }
+  new(w, h = 10, d = 100) {
+    self.v = w + h + d
+  }
 }
 assert_eq(Box.new(1).v, 111)
 assert_eq(Box.new(w: 1).v, 111)
-assert_eq(Box.new(1, d: 5).v, 16)          # middle gap on h
+assert_eq(Box.new(1, d: 5).v, 16)  # middle gap on h
 assert_eq(Box.new(d: 5, w: 1).v, 16)
 assert_eq(Box.new(1, h: 2, d: 3).v, 6)
 
@@ -35,9 +42,16 @@ assert_eq(Point.new(**opts).sum(), 9)
 
 # Type checking on a kwarg-bound constructor param.
 class Typed {
-  new(n: Long) { self.n = n }
+  new(n: Long) {
+    self.n = n
+  }
 }
-let te = try { Typed.new(n: "s"); nil } catch e { e }
+let te = try {
+  Typed.new(n: "s")
+  nil
+} catch e {
+  e
+}
 assert_eq(te.kind, 'TypeError')
 assert_true(te.message.contains("parameter 'n'"))
 
@@ -46,22 +60,42 @@ assert_true(te.message.contains("parameter 'n'"))
 # Unknown keyword AND missing required: missing-required wins (the interp
 # walks params in order and raises on the unfilled required slot before
 # treating leftover kwargs as unknown).
-let e_ctor = try { Point.new(bad: 1); nil } catch e { e }
+let e_ctor = try {
+  Point.new(bad: 1)
+  nil
+} catch e {
+  e
+}
 assert_eq(e_ctor.kind, 'ArityError')
 assert_true(e_ctor.message.contains("missing required argument 'x'"))
 
 # Required filled positionally, leftover kwarg is unknown.
-let e_unk = try { Point.new(1, 2, bad: 3); nil } catch e { e }
+let e_unk = try {
+  Point.new(1, 2, bad: 3)
+  nil
+} catch e {
+  e
+}
 assert_eq(e_unk.kind, 'TypeError')
 assert_true(e_unk.message.contains("unknown keyword argument 'bad'"))
 
 # Missing a second required param supplied by neither positional nor kwarg.
-let e_miss = try { Point.new(x: 1); nil } catch e { e }
+let e_miss = try {
+  Point.new(x: 1)
+  nil
+} catch e {
+  e
+}
 assert_eq(e_miss.kind, 'ArityError')
 assert_true(e_miss.message.contains("missing required argument 'y'"))
 
 # Same key positionally and by keyword.
-let e_dup = try { Point.new(1, x: 2); nil } catch e { e }
+let e_dup = try {
+  Point.new(1, x: 2)
+  nil
+} catch e {
+  e
+}
 assert_eq(e_dup.kind, 'TypeError')
 assert_true(e_dup.message.contains('both positionally'))
 
@@ -70,12 +104,19 @@ assert_true(e_dup.message.contains('both positionally'))
 # unfilled required param.
 class Calc {
   new() {}
-  combine(a, b) { a + b }
+  combine(a, b) {
+    a + b
+  }
 }
 let c = Calc.new()
 assert_eq(c.combine(a: 1, b: 2), 3)
 assert_eq(c.combine(1, b: 2), 3)
-let e_m = try { c.combine(bad: 1); nil } catch e { e }
+let e_m = try {
+  c.combine(bad: 1)
+  nil
+} catch e {
+  e
+}
 assert_eq(e_m.kind, 'ArityError')
 assert_true(e_m.message.contains("missing required argument 'a'"))
 
@@ -85,23 +126,44 @@ assert_true(e_m.message.contains("missing required argument 'a'"))
 # as a positional arg (which misbound `add(bad: 1)` to a=bad and reported
 # 'b' missing under the JIT's set-mutate fast path).
 class Acc {
-  new() { self.total = 0 }
-  add(a, b) { a + b }
+  new() {
+    self.total = 0
+  }
+  add(a, b) {
+    a + b
+  }
 }
 let acc = Acc.new()
 assert_eq(acc.add(a: 1, b: 2), 3)
 assert_eq(acc.add(1, b: 2), 3)
-let e_add = try { acc.add(bad: 1); nil } catch e { e }
+let e_add = try {
+  acc.add(bad: 1)
+  nil
+} catch e {
+  e
+}
 assert_eq(e_add.kind, 'ArityError')
 assert_true(e_add.message.contains("missing required argument 'a'"))
 
 # A real Set receiver rejects keyword args to its mutating `add` / `remove`,
 # the same TypeError the interp raises (the JIT used to treat `s.add(x: 3)`
 # as `s.add(3)` and silently succeed).
-let e_setadd = try { mut s = {1, 2}; s.add(x: 3); nil } catch e { e }
+let e_setadd = try {
+  mut s = {1, 2}
+  s.add(x: 3)
+  nil
+} catch e {
+  e
+}
 assert_eq(e_setadd.kind, 'TypeError')
 assert_true(e_setadd.message.contains('does not accept keyword arguments'))
-let e_setrem = try { mut s = {1, 2}; s.remove(x: 1); nil } catch e { e }
+let e_setrem = try {
+  mut s = {1, 2}
+  s.remove(x: 1)
+  nil
+} catch e {
+  e
+}
 assert_eq(e_setrem.kind, 'TypeError')
 assert_true(e_setrem.message.contains('does not accept keyword arguments'))
 

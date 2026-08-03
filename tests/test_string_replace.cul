@@ -16,7 +16,9 @@ assert_eq("x@y".replace(re'(\w+)@(\w+)', '$2.$1'), "y.x")
 assert_eq("John 3".replace(re'(?<w>\w+) (?<n>\d+)', "$<n>:$<w>"), "3:John")
 
 # Regex with a callback repl.
-assert_eq("x12y3".replace(re'\d+', fn (m) { "[{m.value}]" }), "x[12]y[3]")
+assert_eq("x12y3".replace(re'\d+', fn (m) {
+    "[{m.value}]"
+  }), "x[12]y[3]")
 
 # A pre-compiled named Regex works too.
 let R = Regex.compile("(?<a>\d+)-(?<b>\d+)")
@@ -25,11 +27,14 @@ assert_eq("10-20".replace(R, "$<a>から$<b>"), "10から20")
 # Chaining — the whole point.
 assert_eq(
   "a, b  1".replace(",", "、").replace(re'\s+', " ").replace(re'\d', "N"),
-  "a、 b N")
+  "a、 b N",
+)
 
 # A receiver's own `replace` wins over the stdlib free function, exactly as it
 # does for a user-defined one: UFCS is the fallback, never the override.
-let obj = {tag: "own", replace: fn (pat, repl) { "{self.tag}:{pat}->{repl}" }}
+let obj = {tag: "own", replace: fn (pat, repl) {
+  "{self.tag}:{pat}->{repl}"
+}}
 assert_eq(obj.replace("a", "b"), "own:a->b")
 
 # The free function is one value, wherever it is read from.

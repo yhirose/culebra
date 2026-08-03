@@ -5,14 +5,27 @@ fn measure(work) {
   work()
   let base = GC.stat().live_objects
   mut i = 0
-  while i < 30 { work(); i = i + 1 }
+  while i < 30 {
+    work()
+    i = i + 1
+  }
   GC.stat().live_objects - base
 }
-class Num { new(d) { self.data = d }  __add__(o) { Num.new(self.data + o.data) } }
+class Num {
+  new(d) {
+    self.data = d
+  }
+  __add__(o) {
+    Num.new(self.data + o.data)
+  }
+}
 assert_lt(measure(fn () {
-  mut acc = Num.new(0)
-  mut k = 0
-  while k < 200 { acc = acc + Num.new(k); k = k + 1 }
-  acc.data
-}), 200)
+    mut acc = Num.new(0)
+    mut k = 0
+    while k < 200 {
+      acc = acc + Num.new(k)
+      k = k + 1
+    }
+    acc.data
+  }), 200)
 inspect("gc leak [operator]: no leak")

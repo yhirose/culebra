@@ -5,63 +5,96 @@
 # closest to the `fn` / `class` runs first, the topmost runs last.
 
 # --- 1. Simple fn decorator ---
-let tag = fn(f) { fn() { "[{f()}]" } }
+let tag = fn (f) {
+  fn () {
+    "[{f()}]"
+  }
+}
 
 @tag
-fn greet() { "hello" }
+fn greet() {
+  "hello"
+}
 
 assert_eq(greet(), "[hello]")
 
 # --- 2. Stacked decorators (bottom-up application) ---
-let bracket = fn(f) { fn() { "[{f()}]" } }
-let star    = fn(f) { fn() { "*{f()}*" } }
+let bracket = fn (f) {
+  fn () {
+    "[{f()}]"
+  }
+}
+let star = fn (f) {
+  fn () {
+    "*{f()}*"
+  }
+}
 
 @bracket
 @star
-fn name() { "x" }
+fn name() {
+  "x"
+}
 
 # bracket(star(name))() → "[" + star(name)() + "]" → "[*x*]"
 assert_eq(name(), "[*x*]")
 
 # --- 3. Decorator factory (@deco(arg) form) ---
-let prefix = fn(p) {
-  fn(f) { fn() { "{p}:{f()}" } }
+let prefix = fn (p) {
+  fn (f) {
+    fn () {
+      "{p}:{f()}"
+    }
+  }
 }
 
 @prefix("LOG")
-fn shout() { "boom" }
+fn shout() {
+  "boom"
+}
 
 assert_eq(shout(), "LOG:boom")
 
 # --- 4. Decorator receives the original Value ---
-let identity = fn(f) { f }
+let identity = fn (f) {
+  f
+}
 
 @identity
-fn doubled(n) { n * 2 }
+fn doubled(n) {
+  n * 2
+}
 
 assert_eq(doubled(5), 10)
 assert_eq(doubled(7), 14)
 
 # --- 5. Decorator that adds parameters via wrapper ---
-let with_default = fn(f) {
-  fn(x = 10) { f(x) }
+let with_default = fn (f) {
+  fn (x = 10) {
+    f(x)
+  }
 }
 
 @with_default
-fn square(n) { n * n }
+fn square(n) {
+  n * n
+}
 
 assert_eq(square(), 100)
 assert_eq(square(3), 9)
 
 # --- 6. Class decorator: returns the (possibly modified) class ---
-let mark = fn(cls) {
+let mark = fn (cls) {
   cls.marked = true
   cls
 }
 
 @mark
 class Point {
-  new(x, y) { self.x = x; self.y = y }
+  new(x, y) {
+    self.x = x
+    self.y = y
+  }
 }
 
 assert_eq(Point.marked, true)
@@ -69,11 +102,17 @@ let p = Point.new(3, 4)
 assert_true(p.x == 3 && p.y == 4)
 
 # --- 7. Multiple-arg decorator factory ---
-let combine = fn(a, b) {
-  fn(f) { fn() { a + f() + b } }
+let combine = fn (a, b) {
+  fn (f) {
+    fn () {
+      a + f() + b
+    }
+  }
 }
 
 @combine(1, 100)
-fn middle() { 10 }
+fn middle() {
+  10
+}
 
 assert_eq(middle(), 111)

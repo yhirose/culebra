@@ -8,11 +8,17 @@ let db = SQLite.open(":memory:")
 assert_true(SQLite.version().size() > 0)
 
 // --- DDL + DML return rows affected ---
-assert_eq(db.execute("CREATE TABLE users (id INTEGER, name TEXT, score REAL, bio TEXT)"), 0)
+assert_eq(
+  db.execute("CREATE TABLE users (id INTEGER, name TEXT, score REAL, bio TEXT)"),
+  0,
+)
 assert_eq(db.execute("INSERT INTO users VALUES (1, 'Alice', 9.5, 'hi')"), 1)
 
 // --- positional ? binding + runtime type mapping (Long / Float / Text / Nil) ---
-assert_eq(db.execute("INSERT INTO users VALUES (?, ?, ?, ?)", [2, "Bob", 7.25, nil]), 1)
+assert_eq(
+  db.execute("INSERT INTO users VALUES (?, ?, ?, ?)", [2, "Bob", 7.25, nil]),
+  1,
+)
 let rows = db.query("SELECT * FROM users ORDER BY id")
 assert_eq(rows.size(), 2)
 assert_eq(rows[0]["id"], 1)

@@ -45,10 +45,18 @@ test_concat_stringview = fn () {
 
 test_concat_type_errors = fn () {
   // Mixed types are rejected — interpolation is the way to stringify.
-  assert_throws('TypeError', fn () { 'count: ' + 1 })
-  assert_throws('TypeError', fn () { 1 + 'x' })
-  assert_throws('TypeError', fn () { 'a' + true })
-  assert_throws('TypeError', fn () { 'a' + [1, 2] })
+  assert_throws('TypeError', fn () {
+    'count: ' + 1
+  })
+  assert_throws('TypeError', fn () {
+    1 + 'x'
+  })
+  assert_throws('TypeError', fn () {
+    'a' + true
+  })
+  assert_throws('TypeError', fn () {
+    'a' + [1, 2]
+  })
 }
 
 test_concat_basic()

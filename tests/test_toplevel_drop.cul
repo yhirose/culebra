@@ -13,26 +13,31 @@
 mut drop_count = 0
 
 class R {
-  new(n) { self.name = n }
-  drop() { drop_count = drop_count + 1; inspect("DROP:" + self.name) }
+  new(n) {
+    self.name = n
+  }
+  drop() {
+    drop_count = drop_count + 1
+    inspect("DROP:" + self.name)
+  }
 }
 
 fn make_inner() {
-  let x = R.new("inner")        // inner-scope: drop fires at function exit
+  let x = R.new("inner")  // inner-scope: drop fires at function exit
   x.name
 }
 
 make_inner()
-assert_eq(drop_count, 1)        // inner-scope drop really fired
+assert_eq(drop_count, 1)  // inner-scope drop really fired
 
 // Plain and closure-captured top-level bindings: none may drop at exit.
 // (Both are objects the JIT/AOT would otherwise release at __culebra_main
 // exit — so a regression here re-introduces a `DROP:top-*` line.)
 let g_plain = R.new("top-plain")
 let g_lam = R.new("top-lam")
-let keep = || g_lam.name        // top-level closure capturing a binding
+let keep = || g_lam.name  // top-level closure capturing a binding
 
-assert_eq(drop_count, 1)        // still 1: no top-level drop ran before exit
+assert_eq(drop_count, 1)  // still 1: no top-level drop ran before exit
 
 // Orphan cycle surviving to program exit: a nested-fn self-capture cycle
 // built inside a function that returns, leaving it unreachable garbage with
@@ -45,10 +50,12 @@ assert_eq(drop_count, 1)        // still 1: no top-level drop ran before exit
 // leaks top-level bindings), so neither backend drops it: symmetric.
 fn make_orphan() {
   let r = R.new("orphan")
-  fn hold() { r }               // nested fn captures r; r holds the dispatcher
+  fn hold() {
+    r
+  }  // nested fn captures r; r holds the dispatcher
   r.h = hold
 }
 make_orphan()
-assert_eq(drop_count, 1)        // orphan never fires (parked, then exit-suppressed)
+assert_eq(drop_count, 1)  // orphan never fires (parked, then exit-suppressed)
 
 inspect("toplevel-drop test: OK")

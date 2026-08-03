@@ -29,7 +29,9 @@ assert_eq(Isolate.spawn(|| (1, "two", 3)).join(), (1, "two", 3))
 
 # a recursive top-level function captured as a free var (multifn dispatcher)
 fn fib(n) {
-  if n < 2 { return n }
+  if n < 2 {
+    return n
+  }
   return fib(n - 1) + fib(n - 2)
 }
 assert_eq(Isolate.spawn(|| fib(20)).join(), 6765)
@@ -37,11 +39,15 @@ assert_eq(Isolate.spawn(|n| fib(n), 15).join(), 610)
 
 # mutual recursion across two dispatchers
 fn ev(n) {
-  if n == 0 { return true }
+  if n == 0 {
+    return true
+  }
   return od(n - 1)
 }
 fn od(n) {
-  if n == 0 { return false }
+  if n == 0 {
+    return false
+  }
   return ev(n - 1)
 }
 assert_eq(Isolate.spawn(|| ev(10)).join(), true)
@@ -56,15 +62,23 @@ assert_eq(adder(5), 105)
 
 # many isolates: results correct past the parallelism cap (synchronous fallback)
 mut handles = []
-for i in 0..40 { handles.push(Isolate.spawn(|x| x * x, i)) }
+for i in 0..40 {
+  handles.push(Isolate.spawn(|x| x * x, i))
+}
 mut total = 0
-for h in handles { total = total + h.join() }
+for h in handles {
+  total = total + h.join()
+}
 mut expect = 0
-for i in 0..40 { expect = expect + i * i }
+for i in 0..40 {
+  expect = expect + i * i
+}
 assert_eq(total, expect)
 
 # nested: a spawned closure can itself spawn
-fn dbl(x) { return x * 2 }
+fn dbl(x) {
+  return x * 2
+}
 let hnest = Isolate.spawn(fn () {
   let inner = Isolate.spawn(|| dbl(21))
   inner.join()

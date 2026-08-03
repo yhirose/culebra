@@ -14,38 +14,76 @@ assert_eq(sign(0), "zero")
 
 // First true wins regardless of later arms.
 x = 10
-assert_eq(cond { x > 100 => "huge", x > 5 => "big", _ => "small" }, "big")
+assert_eq(cond {
+    x > 100 => "huge",
+    x > 5 => "big",
+    _ => "small",
+  }, "big")
 
 // No arm matches → nil (like match).
-assert_eq(cond { false => 1, false => 2 }, nil)
+assert_eq(cond {
+    false => 1,
+    false => 2,
+  }, nil)
 
 // `_` short-circuits: later arms after it never run.
-assert_eq(cond { _ => "first", true => "never" }, "first")
+assert_eq(cond {
+    _ => "first",
+    true => "never",
+  }, "first")
 
 // Block body yields its last value; binds in its own scope.
 y = 3
-assert_eq(cond { y > 0 => { a = y * 2; a + 1 }, _ => 0 }, 7)
+assert_eq(cond {
+    y > 0 => {
+      a = y * 2
+      a + 1
+    },
+    _ => 0,
+  }, 7)
 
 // Tests are arbitrary expressions (calls, &&, ||, comparisons).
-fn even(n) { n % 2 == 0 }
-assert_eq(cond { even(3) => "e", even(4) && y > 0 => "ok", _ => "no" }, "ok")
+fn even(n) {
+  n % 2 == 0
+}
+assert_eq(cond {
+    even(3) => "e",
+    even(4) && y > 0 => "ok",
+    _ => "no",
+  }, "ok")
 
 // Truthiness mirrors `if`: zero is falsy, nonzero truthy.
-assert_eq(cond { 0 => "t", _ => "f" }, "f")
-assert_eq(cond { 5 => "t", _ => "f" }, "t")
+assert_eq(cond {
+    0 => "t",
+    _ => "f",
+  }, "f")
+assert_eq(cond {
+    5 => "t",
+    _ => "f",
+  }, "t")
 
 // Usable inline (interpolation, assignment, arguments).
 assert_eq("s={cond { y > 0 => 1, _ => 0 }}", "s=1")
-z = cond { y > 10 => "a", _ => "b" }
+z = cond {
+  y > 10 => "a",
+  _ => "b",
+}
 assert_eq(z, "b")
 
 // `cond` is not reserved: an arm is required, so `if cond {}` with an empty
 // block still reads `cond` as an identifier instead of an arm-less `cond {}`.
 cond = false
-if cond { }
+if cond {
+}
 mut taken = "none"
-if cond { taken = "then" } else { taken = "else" }
+if cond {
+  taken = "then"
+} else {
+  taken = "else"
+}
 assert_eq(taken, "else")
 mut hits = 0
-while cond { hits = hits + 1 }
+while cond {
+  hits = hits + 1
+}
 assert_eq(hits, 0)

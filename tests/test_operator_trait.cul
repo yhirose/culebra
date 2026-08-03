@@ -8,7 +8,10 @@
 // --- @derive(Eq) makes `==` / `!=` work (was structural-only before) ---
 @derive(Eq, Hash, Comparable)
 class Point {
-  new(x, y) { self.x = x; self.y = y }
+  new(x, y) {
+    self.x = x
+    self.y = y
+  }
 }
 
 let a = Point.new(1, 2)
@@ -31,36 +34,54 @@ assert_eq(a > c, false)
 // --- `==` operator and key-equality now agree (no divergence) ---
 mut bag = {}
 mut bag[a] = "hit"
-assert_eq(bag[b], "hit")   // key lookup uses eq
-assert_eq(a == b, true)    // operator now uses eq too
+assert_eq(bag[b], "hit")  // key lookup uses eq
+assert_eq(a == b, true)   // operator now uses eq too
 
 // --- Hand-written eq: `==` routes through it ---
 class Mod3 {
-  new(n) { self.n = n }
-  eq(other) { self.n % 3 == other.n % 3 }
+  new(n) {
+    self.n = n
+  }
+  eq(other) {
+    self.n % 3 == other.n % 3
+  }
 }
-assert_eq(Mod3.new(1) == Mod3.new(4), true)   // 1%3 == 4%3
+assert_eq(Mod3.new(1) == Mod3.new(4), true)  // 1%3 == 4%3
 assert_eq(Mod3.new(1) == Mod3.new(2), false)
 assert_eq(Mod3.new(1) != Mod3.new(2), true)
 
 // --- Hand-written cmp: ordering routes through it ---
 class Rev {
-  new(n) { self.n = n }
-  cmp(other) { other.n - self.n }   // reversed order
+  new(n) {
+    self.n = n
+  }
+  cmp(other) {
+    other.n - self.n
+  }  // reversed order
 }
-assert_eq(Rev.new(1) < Rev.new(2), false)   // reversed: 1 > 2 under cmp
+assert_eq(Rev.new(1) < Rev.new(2), false)  // reversed: 1 > 2 under cmp
 assert_eq(Rev.new(2) < Rev.new(1), true)
 assert_eq(Rev.new(1) >= Rev.new(2), true)
 
 // --- Explicit __eq__ / __lt__ win over the trait methods ---
 class Tagged {
-  new(n) { self.n = n }
-  eq(other) { false }              // trait method says never-equal
-  __eq__(other) { self.n == other.n }   // dunder wins
-  cmp(other) { 0 }                 // trait method says always-equal
-  __lt__(other) { self.n < other.n }    // dunder wins
+  new(n) {
+    self.n = n
+  }
+  eq(other) {
+    false
+  }  // trait method says never-equal
+  __eq__(other) {
+    self.n == other.n
+  }  // dunder wins
+  cmp(other) {
+    0
+  }  // trait method says always-equal
+  __lt__(other) {
+    self.n < other.n
+  }  // dunder wins
 }
-assert_eq(Tagged.new(5) == Tagged.new(5), true)   // __eq__ used, not eq
-assert_eq(Tagged.new(1) < Tagged.new(2), true)    // __lt__ used, not cmp
+assert_eq(Tagged.new(5) == Tagged.new(5), true)  // __eq__ used, not eq
+assert_eq(Tagged.new(1) < Tagged.new(2), true)   // __lt__ used, not cmp
 
 inspect("test_operator_trait ok")

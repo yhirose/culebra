@@ -18,7 +18,12 @@ let s = {10, 20}
 assert_eq([...s].size(), 2)
 
 // Non-iterable spread errors.
-let e = try { let _ = [...5]; nil } catch er { er.kind }
+let e = try {
+  let _ = [...5]
+  nil
+} catch er {
+  er.kind
+}
 assert_eq(e, "TypeError")
 
 // --- Object spread / merge ---
@@ -41,7 +46,12 @@ assert_eq(cfg.host, "localhost")
 assert_eq(cfg.port, 8080)
 
 // Non-object spread into object errors.
-let e2 = try { let _ = {...5}; nil } catch er { er.kind }
+let e2 = try {
+  let _ = {...5}
+  nil
+} catch er {
+  er.kind
+}
 assert_eq(e2, "TypeError")
 
 IO.inspect("test_spread OK")

@@ -12,14 +12,17 @@
 # --- Basic: scalar fields + class-instance fields ---
 
 class V {
-  new(d) { self.data = d; self.grad = 0.0 }
+  new(d) {
+    self.data = d
+    self.grad = 0.0
+  }
 }
 
 class M1 {
   new() {
     self.a = V.new(1.0)
     self.b = V.new(2.0)
-    self.scalar = 42         # not a class instance — should be skipped
+    self.scalar = 42  # not a class instance — should be skipped
   }
 }
 
@@ -48,8 +51,7 @@ assert_eq(p2[2].data, 30.0)
 
 class M3 {
   new() {
-    self.W = [[V.new(1.0), V.new(2.0)],
-              [V.new(3.0), V.new(4.0)]]
+    self.W = [[V.new(1.0), V.new(2.0)], [V.new(3.0), V.new(4.0)]]
   }
 }
 
@@ -63,7 +65,7 @@ assert_eq(p3[3].data, 4.0)
 
 class M4 {
   new() {
-    self.state = { x: V.new(7.0), y: V.new(8.0) }
+    self.state = {x: V.new(7.0), y: V.new(8.0)}
   }
 }
 
@@ -79,8 +81,8 @@ assert_eq(p4[1].data, 8.0)
 class M5 {
   new() {
     self.a = V.new(1.0)
-    self._cache = V.new(99.0)     # leading underscore — skipped
-    self._visited = false         # also skipped
+    self._cache = V.new(99.0)  # leading underscore — skipped
+    self._visited = false      # also skipped
   }
 }
 
@@ -96,7 +98,9 @@ class M6 {
     self.a = V.new(100.0)
     self.b = V.new(200.0)
   }
-  parameters() { [self.a] }    # explicit override: only `a` is trainable
+  parameters() {
+    [self.a]
+  }  # explicit override: only `a` is trainable
 }
 
 let m6 = M6.new()
@@ -113,7 +117,9 @@ class M7 {
 }
 
 let m7 = M7.new()
-for p in m7.parameters() { p.data = p.data * 2.0 }
+for p in m7.parameters() {
+  p.data = p.data * 2.0
+}
 # Re-fetch parameters and check the underlying instances were mutated.
 let after = m7.parameters()
 assert_eq(after[0].data, 1.0)

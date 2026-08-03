@@ -53,7 +53,7 @@ assert_eq(result, 7)
 // the value lose their special meaning (injection-safe by default).
 let word = "a.b"
 assert_true(re"^${word}$".test("a.b"))
-assert_false(re"^${word}$".test("axb"))   // the `.` is escaped, not a wildcard
+assert_false(re"^${word}$".test("axb"))  // the `.` is escaped, not a wildcard
 
 // Non-string values are stringified, then escaped.
 let n = 42

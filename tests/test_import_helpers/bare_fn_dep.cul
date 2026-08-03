@@ -12,9 +12,15 @@ let checked = fn () {
   "checked"
 }
 
-let rewritten = fn (s) { replace(s, "a", "b") }
+let rewritten = fn (s) {
+  replace(s, "a", "b")
+}
 
-let held_matcher = fn () { assert_eq }
-let held_replace = fn () { replace }
+let held_matcher = fn () {
+  assert_eq
+}
+let held_replace = fn () {
+  replace
+}
 
 export {checked, rewritten, held_matcher, held_replace}

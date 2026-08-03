@@ -4,7 +4,7 @@
 @packable
 class Node {
   id: Int32
-  parent: Int32?        // optional: a sparse "no parent" slot
+  parent: Int32?  // optional: a sparse "no parent" slot
   weight: Float32?
 }
 
@@ -35,7 +35,7 @@ buf[2].parent = 9
 assert_eq(buf[2].parent, 9)
 buf[2].parent = nil
 assert_eq(buf[2].parent, nil)
-buf[2].parent = 0          // 0 is a real value, distinct from nil
+buf[2].parent = 0  // 0 is a real value, distinct from nil
 assert_eq(buf[2].parent, 0)
 assert_true(buf[2].parent != nil)
 
@@ -45,7 +45,9 @@ assert_eq(buf[0].parent ?? -1, -1)
 
 // Cross-isolate share: a child sets an optional in the shared bytes.
 shared = SharedBuffer.new(1, Node)
-w = Isolate.spawn(fn() { shared[0].parent = 42 })
+w = Isolate.spawn(fn () {
+  shared[0].parent = 42
+})
 w.join()
 assert_eq(shared[0].parent, 42)
 

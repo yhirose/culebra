@@ -12,18 +12,24 @@ mut log = ''
 # Scope-level defer on throw (already worked — sanity baseline)
 let r1 = try {
   {
-    defer { log = "{log}scope-defer;" }
+    defer {
+      log = "{log}scope-defer;"
+    }
     throw 'sx'
   }
   nil
-} catch e { e }
+} catch e {
+  e
+}
 assert_eq(r1, 'sx')
 assert_eq(log, 'scope-defer;')
 
 # Function-level defer on normal exit
 log = ''
 let f_normal = fn () {
-  defer { log = "{log}fn-defer;" }
+  defer {
+    log = "{log}fn-defer;"
+  }
   log = "{log}body;"
   42
 }
@@ -35,22 +41,40 @@ assert_eq(log, 'body;fn-defer;')
 # with the interp.
 log = ''
 let f_throw = fn () {
-  defer { log = "{log}fn-defer;" }
+  defer {
+    log = "{log}fn-defer;"
+  }
   throw 'boom'
 }
-let r2 = try { f_throw(); nil } catch e { e }
+let r2 = try {
+  f_throw()
+  nil
+} catch e {
+  e
+}
 assert_eq(r2, 'boom')
 assert_eq(log, 'fn-defer;')
 
 # Multiple fn-level defers run in LIFO on throw
 log = ''
 let f_multi = fn () {
-  defer { log = "{log}A;" }
-  defer { log = "{log}B;" }
-  defer { log = "{log}C;" }
+  defer {
+    log = "{log}A;"
+  }
+  defer {
+    log = "{log}B;"
+  }
+  defer {
+    log = "{log}C;"
+  }
   throw 'multi'
 }
-let r3 = try { f_multi(); nil } catch e { e }
+let r3 = try {
+  f_multi()
+  nil
+} catch e {
+  e
+}
 assert_eq(r3, 'multi')
 assert_eq(log, 'C;B;A;')
 
@@ -58,13 +82,22 @@ assert_eq(log, 'C;B;A;')
 # scope. Inner defers run first, then outer.
 log = ''
 let f_mixed = fn () {
-  defer { log = "{log}outer;" }
+  defer {
+    log = "{log}outer;"
+  }
   {
-    defer { log = "{log}inner;" }
+    defer {
+      log = "{log}inner;"
+    }
     throw 'mixed'
   }
 }
-let r4 = try { f_mixed(); nil } catch e { e }
+let r4 = try {
+  f_mixed()
+  nil
+} catch e {
+  e
+}
 assert_eq(r4, 'mixed')
 assert_eq(log, 'inner;outer;')
 

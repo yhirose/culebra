@@ -6,33 +6,60 @@
 
 # --- arithmetic: Vec + Vec (elementwise) vs Vec + Long (scalar) ---
 class Vec {
-  new(x: Long, y: Long) { self.x = x; self.y = y }
-  __add__(o: Vec) { Vec(self.x + o.x, self.y + o.y) }
-  __add__(n: Long) { Vec(self.x + n, self.y + n) }
-  __mul__(n: Long) { Vec(self.x * n, self.y * n) }
-  __mul__(o: Vec)  { self.x * o.x + self.y * o.y }   # dot product -> Long
-  show() { "({self.x},{self.y})" }
+  new(x: Long, y: Long) {
+    self.x = x
+    self.y = y
+  }
+  __add__(o: Vec) {
+    Vec(self.x + o.x, self.y + o.y)
+  }
+  __add__(n: Long) {
+    Vec(self.x + n, self.y + n)
+  }
+  __mul__(n: Long) {
+    Vec(self.x * n, self.y * n)
+  }
+  __mul__(o: Vec) {
+    self.x * o.x + self.y * o.y
+  }  # dot product -> Long
+  show() {
+    "({self.x},{self.y})"
+  }
 }
 assert_eq((Vec(1, 2) + Vec(10, 20)).show(), "(11,22)")
 assert_eq((Vec(1, 2) + 5).show(), "(6,7)")
 assert_eq((Vec(2, 3) * 4).show(), "(8,12)")
-assert_eq(Vec(1, 2) * Vec(3, 4), 11)               # dot: 3 + 8
+assert_eq(Vec(1, 2) * Vec(3, 4), 11)  # dot: 3 + 8
 
 # --- commutative auto-reflection still fires: Long + Vec -> Vec.__add__(Long) ---
 assert_eq((5 + Vec(1, 2)).show(), "(6,7)")
 
 # --- no matching overload raises a catchable DispatchError ---
 mut err = nil
-try { Vec(1, 2) + "str" } catch e { err = e.kind }
+try {
+  Vec(1, 2) + "str"
+} catch e {
+  err = e.kind
+}
 assert_eq(err, "DispatchError")
 
 # --- comparison: __eq__ / __lt__ overloaded on operand type ---
 class Num {
-  new(n: Long) { self.n = n }
-  __eq__(o: Num) { self.n == o.n }
-  __eq__(n: Long) { self.n == n }
-  __lt__(o: Num) { self.n < o.n }
-  __lt__(n: Long) { self.n < n }
+  new(n: Long) {
+    self.n = n
+  }
+  __eq__(o: Num) {
+    self.n == o.n
+  }
+  __eq__(n: Long) {
+    self.n == n
+  }
+  __lt__(o: Num) {
+    self.n < o.n
+  }
+  __lt__(n: Long) {
+    self.n < n
+  }
 }
 assert_eq(Num(7) == Num(7), true)
 assert_eq(Num(7) == 7, true)
@@ -42,11 +69,21 @@ assert_eq(Num(3) < 2, false)
 
 # --- subscript: __index__ / __setindex__ overloaded on key type ---
 class Grid {
-  new() { self.d = [10, 20, 30] }
-  __index__(i: Long)   { self.d[i] }
-  __index__(s: String) { "k:{s}" }
-  __setindex__(i: Long, v: Long)   { self.d[i] = v }
-  __setindex__(s: String, v: Long) { self.d = self.d.push(v) }
+  new() {
+    self.d = [10, 20, 30]
+  }
+  __index__(i: Long) {
+    self.d[i]
+  }
+  __index__(s: String) {
+    "k:{s}"
+  }
+  __setindex__(i: Long, v: Long) {
+    self.d[i] = v
+  }
+  __setindex__(s: String, v: Long) {
+    self.d = self.d.push(v)
+  }
 }
 let g = Grid()
 assert_eq(g[1], 20)
@@ -57,31 +94,55 @@ assert_eq(g[0], 99)
 # --- callable: __call__ overloaded on argument type ---
 class Fn {
   new() {}
-  __call__(n: Long)   { "long:{n}" }
-  __call__(s: String) { "str:{s}" }
+  __call__(n: Long) {
+    "long:{n}"
+  }
+  __call__(s: String) {
+    "str:{s}"
+  }
 }
 let f = Fn()
 assert_eq(f(3), "long:3")
 assert_eq(f("hi"), "str:hi")
 mut cerr = nil
-try { f(1.5) } catch e { cerr = e.kind }
+try {
+  f(1.5)
+} catch e {
+  cerr = e.kind
+}
 assert_eq(cerr, "DispatchError")
 
 # --- a single dunder is unaffected (bare method, no dispatcher) ---
 class Solo {
-  new(n: Long) { self.n = n }
-  __add__(o) { self.n + o.n }
+  new(n: Long) {
+    self.n = n
+  }
+  __add__(o) {
+    self.n + o.n
+  }
 }
 assert_eq(Solo(3) + Solo(4), 7)
 
 # --- dunder overloads coexist with regular method overloads ---
 class Both {
-  new(n: Long) { self.n = n }
-  __add__(o: Both) { Both(self.n + o.n) }
-  __add__(k: Long) { Both(self.n + k) }
-  scaled(k: Long)   { self.n * k }
-  scaled(o: Both)   { self.n * o.n }
-  n_() { self.n }
+  new(n: Long) {
+    self.n = n
+  }
+  __add__(o: Both) {
+    Both(self.n + o.n)
+  }
+  __add__(k: Long) {
+    Both(self.n + k)
+  }
+  scaled(k: Long) {
+    self.n * k
+  }
+  scaled(o: Both) {
+    self.n * o.n
+  }
+  n_() {
+    self.n
+  }
 }
 assert_eq((Both(2) + Both(3)).n_(), 5)
 assert_eq((Both(2) + 10).n_(), 12)

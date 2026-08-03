@@ -5,7 +5,11 @@
  */
 
 test_call = fn () {
-  ret = fn(){[1,fn(){[4,5,6]},3]}()[1]()[1]
+  ret = fn () {
+    [1, fn () {
+        [4, 5, 6]
+      }, 3]
+  }()[1]()[1]
   assert_eq(ret, 5)
 }
 
@@ -22,7 +26,7 @@ test_return = fn () {
   mut val = 0
   f2 = fn () {
     val = 1
-    return // comment
+    return  // comment
     val = 2
   }
   f2()
@@ -31,21 +35,21 @@ test_return = fn () {
 
 test_nil = fn () {
   assert_eq(nil, nil)
-  assert_false((nil != nil))
+  assert_false(nil != nil)
 
   a = nil
   assert_eq(a, nil)
-  assert_false((a != nil))
-  assert_false((a <= nil))
-  assert_false((a < nil))
-  assert_false((a >= nil))
-  assert_false((a > nil))
+  assert_false(a != nil)
+  assert_false(a <= nil)
+  assert_false(a < nil)
+  assert_false(a >= nil)
+  assert_false(a > nil)
   assert_eq(nil, a)
-  assert_false((nil != a))
-  assert_false((nil <= a))
-  assert_false((nil < a))
-  assert_false((nil >= a))
-  assert_false((nil > a))
+  assert_false(nil != a)
+  assert_false(nil <= a)
+  assert_false(nil < a)
+  assert_false(nil >= a)
+  assert_false(nil > a)
 }
 
 test_closure = fn () {
@@ -87,11 +91,16 @@ test_lambda = fn () {
   assert_eq(add5(3), 8)
   assert_eq(add5(10), 15)
 
-  f = fn (mut x = 10) { x = x + 1; x }
+  f = fn (mut x = 10) {
+    x = x + 1
+    x
+  }
   assert_eq(f(), 11)
   assert_eq(f(100), 101)
 
-  apply = fn (g, v) { g(v) }
+  apply = fn (g, v) {
+    g(v)
+  }
   assert_eq(apply(|x| x * 10, 7), 70)
 
   # Type annotation on a lambda parameter works the same as on `fn`.
@@ -99,12 +108,16 @@ test_lambda = fn () {
   assert_eq(typed(5), 6)
 
   # `fn` inside a lambda refers to the lambda itself.
-  fib = |n| if n < 2 { n } else { fn(n - 1) + fn(n - 2) }
+  fib = |n| if n < 2 {
+    n
+  } else {
+    fn(n - 1) + fn(n - 2)
+  }
   assert_eq(fib(10), 55)
 }
 
 test_array = fn () {
-  a = [1,2,3]
+  a = [1, 2, 3]
   assert_eq(a.size(), 3)
 
   a.push(4)
@@ -118,14 +131,14 @@ test_array = fn () {
   c = [1]
   assert_eq(c.size(), 1)
 
-	d = [1,2,3](5, 0)
-	assert_true(d.size() == 5 && d[-1] == 0)
+  d = [1,2,3](5, 0)
+  assert_true(d.size() == 5 && d[-1] == 0)
 
-	e = [1,2,3](2)
-	assert_true(e.size() == 3 && e[-1] == 3)
+  e = [1,2,3](2)
+  assert_true(e.size() == 3 && e[-1] == 3)
 
-	f = [1,2,3](5)
-	assert_true(f.size() == 5 && f[-1] == nil)
+  f = [1,2,3](5)
+  assert_true(f.size() == 5 && f[-1] == nil)
 }
 
 g_ = 1
@@ -143,14 +156,17 @@ test_function = fn () {
 }
 
 test_nil_coalesce = fn () {
-  assert_eq((nil ?? 'd'), 'd')
-  assert_eq(('v' ?? 'd'), 'v')
-  assert_eq((nil ?? nil ?? 'c'), 'c')
-  assert_eq((nil ?? nil ?? nil), nil)
+  assert_eq(nil ?? 'd', 'd')
+  assert_eq('v' ?? 'd', 'v')
+  assert_eq(nil ?? nil ?? 'c', 'c')
+  assert_eq(nil ?? nil ?? nil, nil)
 
   # Short-circuit: RHS only evaluated when LHS is nil
   mut n = 0
-  bump = fn () { n = n + 1; 'x' }
+  bump = fn () {
+    n = n + 1
+    'x'
+  }
   let a1 = 'present' ?? bump()
   assert_eq(n, 0)
   let a2 = nil ?? bump()
@@ -158,43 +174,50 @@ test_nil_coalesce = fn () {
 
   # Missing object property feeds ??
   o = {a: 1}
-  assert_eq((o.missing ?? -1), -1)
-  assert_eq((o.a ?? -1), 1)
+  assert_eq(o.missing ?? -1, -1)
+  assert_eq(o.a ?? -1, 1)
 
   # Lower precedence than || (left-associative, `||` groups tighter)
-  assert_eq((true || false ?? 'd'), true)
+  assert_eq(true || false ?? 'd', true)
 }
 
 test_default_params = fn () {
-  greet = fn (name, greeting = 'hello') { "{greeting}, {name}" }
+  greet = fn (name, greeting = 'hello') {
+    "{greeting}, {name}"
+  }
   assert_eq(greet('alice'), 'hello, alice')
   assert_eq(greet('alice', 'hi'), 'hi, alice')
 
-  make_point = fn (x = 0, y = 0, z = 0) { {x, y, z} }
+  make_point = fn (x = 0, y = 0, z = 0) {
+    {x, y, z}
+  }
   assert_eq(make_point().x, 0)
   assert_eq(make_point(10, 20).z, 0)
   assert_eq(make_point(10, 20, 30).z, 30)
 
   # Default expr references earlier param
-  bump = fn (a, b = a + 1) { a + b }
+  bump = fn (a, b = a + 1) {
+    a + b
+  }
   assert_eq(bump(5), 11)
   assert_eq(bump(5, 100), 105)
 
   # Default closes over enclosing scope
   base = 100
-  add_base = fn (n = base) { n }
+  add_base = fn (n = base) {
+    n
+  }
   assert_eq(add_base(), 100)
   assert_eq(add_base(5), 5)
 }
 
 test_object = fn () {
   n = 1
-  o = {
-    n: 123,
-    s: 'str',
-    f1: fn (x) { x + self.n },
-    f2: fn (x) { x + n }
-  }
+  o = {n: 123, s: 'str', f1: fn (x) {
+      x + self.n
+    }, f2: fn (x) {
+      x + n
+    }}
   assert_eq(o.size(), 4)
   assert_eq(o.f1(10), 133)
   assert_eq(o.f2(10), 11)
@@ -268,7 +291,10 @@ test_destructure = fn () {
   assert_eq(bv, 2)
 
   # Empty object pattern matches any Object.
-  let empty_ok = match {} { {} => true, _ => false }
+  let empty_ok = match {} {
+    {} => true,
+    _ => false,
+  }
   assert_eq(empty_ok, true)
 
   let r = match {name: 'alice', age: 30} {
@@ -283,17 +309,13 @@ test_object_factory = fn () {
   ctor = fn (init) {
     mut n = init
 
-    {
-      add: fn (x) {
+    {add: fn (x) {
         n = n + x
-      },
-      sub: fn (x) {
+      }, sub: fn (x) {
         n = n - x
-      },
-      val: fn () {
+      }, val: fn () {
         n
-      }
-    }
+      }}
   }
 
   calc = ctor(10)
@@ -305,20 +327,15 @@ test_object_factory = fn () {
 
 test_class = fn () {
   // TODO: support 'prototype' property
-  Car = {
-    new: fn(miles_per_run) {
-      mut total_miles = 0
+  Car = {new: fn (miles_per_run) {
+    mut total_miles = 0
 
-      {
-        run: fn (times) {
-          total_miles = total_miles + miles_per_run * times
-        },
-        total: fn () {
-          total_miles
-        }
-      }
-    }
-  }
+    {run: fn (times) {
+        total_miles = total_miles + miles_per_run * times
+      }, total: fn () {
+        total_miles
+      }}
+  }}
 
   car = Car.new(5)
   car.run(1)
@@ -374,7 +391,7 @@ test_float = fn () {
   // Cross-type equality (numeric).
   assert_eq(1, 1.0)
   assert_eq(1.0, 1)
-  assert_false((1 == 1.5))
+  assert_false(1 == 1.5)
   assert_lt(1, 1.5)
   assert_gt(2.5, 2)
 
@@ -385,12 +402,12 @@ test_float = fn () {
   // Power.
   assert_eq(2 ** 10, 1024)
   assert_eq(type_of(2 ** 10), 'Long')
-  assert_eq(2 ** -1, 0.5)
-  assert_eq(type_of(2 ** -1), 'Float')
+  assert_eq(2 ** (-1), 0.5)
+  assert_eq(type_of(2 ** (-1)), 'Float')
   assert_true(2.0 ** 0.5 < 1.4143 && 2.0 ** 0.5 > 1.4142)
   assert_eq(type_of(2.0 ** 10), 'Float')
   // Right-associative: 2**3**2 == 2**(3**2) == 512.
-  assert_eq(2 ** 3 ** 2, 512)
+  assert_eq(2 ** (3 ** 2), 512)
   // Unary minus binds looser than **: -2**2 == -(2**2) == -4.
   assert_eq(-2 ** 2, -4)
   // Operator precedence: 2 * 3**2 == 2 * 9 == 18.
@@ -403,22 +420,26 @@ test_float = fn () {
   assert_eq(x, 3.14)
 
   // Conversions.
-  assert_eq(to_long(3.7), 3)       // truncate toward zero
+  assert_eq(to_long(3.7), 3)  // truncate toward zero
   assert_eq(to_long(-3.7), -3)
   assert_eq(to_float(3), 3.0)
   assert_eq(to_float('1.5'), 1.5)
-  assert_eq(to_long('42'), 42)     // unchanged string path
+  assert_eq(to_long('42'), 42)  // unchanged string path
 
   // Zero sign: IEEE 754 treats 0.0 and -0.0 as equal but with
   // distinct bit patterns. Culebra follows Python: equal.
   assert_eq(0.0, -0.0)
-  assert_false((0.0 != -0.0))
+  assert_false(0.0 != -0.0)
   // Truthiness: 0.0 and -0.0 are both false.
   mut zero_is_falsy = true
-  if 0.0 { zero_is_falsy = false }
+  if 0.0 {
+    zero_is_falsy = false
+  }
   assert_true(zero_is_falsy)
   mut nz_is_truthy = false
-  if 0.5 { nz_is_truthy = true }
+  if 0.5 {
+    nz_is_truthy = true
+  }
   assert_true(nz_is_truthy)
 
   // NaN: self-inequality, arithmetic propagation, ordering returns
@@ -426,16 +447,18 @@ test_float = fn () {
   // sqrt of a negative (0.0 / 0.0 would raise divide-by-zero).
   nan = (-1.0) ** 0.5
   assert_eq(type_of(nan), 'Float')
-  assert_ne(nan, nan)               // IEEE 754: NaN !=  everything
-  assert_false((nan == nan))
-  assert_false((nan < 1.0))             // ordering on NaN is false
-  assert_false((nan > 1.0))
-  assert_false((nan <= 1.0))
-  assert_false((nan >= 1.0))
+  assert_ne(nan, nan)  // IEEE 754: NaN !=  everything
+  assert_false(nan == nan)
+  assert_false(nan < 1.0)  // ordering on NaN is false
+  assert_false(nan > 1.0)
+  assert_false(nan <= 1.0)
+  assert_false(nan >= 1.0)
   nan_plus = nan + 1.0
-  assert_ne(nan_plus, nan_plus)     // NaN propagates through arithmetic
+  assert_ne(nan_plus, nan_plus)  // NaN propagates through arithmetic
   mut nan_truthy = false
-  if nan { nan_truthy = true }     // NaN is truthy
+  if nan {
+    nan_truthy = true
+  }  // NaN is truthy
   assert_true(nan_truthy)
 
   // Infinity: produced by overflow (1e308 * 10), propagates through
@@ -454,13 +477,13 @@ test_float = fn () {
   // Pattern matching on Float literals.
   described = match 1.5 {
     1.5 => 'one-point-five',
-    _   => 'other',
+    _ => 'other',
   }
   assert_eq(described, 'one-point-five')
   described2 = match 2.0 {
     1.5 => 'nope',
     x: Float => x + 1.0,
-    _   => nil,
+    _ => nil,
   }
   assert_eq(described2, 3.0)
 
@@ -502,20 +525,20 @@ test_math = fn () {
   assert_eq(Math.log(Math.e), 1.0)
   assert_eq(Math.exp(0), 1.0)
   assert_eq(Math.log(1), 0.0)
-  assert_eq(type_of(Math.log(1)), 'Float')          // Long arg, Float result
+  assert_eq(type_of(Math.log(1)), 'Float')  // Long arg, Float result
   assert_eq(type_of(Math.exp(1.0)), 'Float')
 
   // sqrt.
   assert_eq(Math.sqrt(4), 2.0)
   assert_true(Math.sqrt(2.0) > 1.4142 && Math.sqrt(2.0) < 1.4143)
-  assert_ne(Math.sqrt(-1.0), Math.sqrt(-1.0))       // NaN
+  assert_ne(Math.sqrt(-1.0), Math.sqrt(-1.0))  // NaN
 
   // floor / ceil / round. Long input passes through unchanged.
   assert_eq(Math.floor(2.7), 2)
   assert_eq(Math.floor(-2.3), -3)
   assert_eq(Math.ceil(2.3), 3)
   assert_eq(Math.ceil(-2.7), -2)
-  assert_eq(Math.round(2.5), 2)                     // banker's rounding (ties to even)
+  assert_eq(Math.round(2.5), 2)  // banker's rounding (ties to even)
   assert_eq(Math.round(3.5), 4)
   assert_eq(Math.round(-0.5), 0)
   assert_eq(Math.round(1.4), 1)
@@ -573,7 +596,7 @@ test_random = fn () {
 
   // gauss returns Float; not checking value because it's unbounded.
   assert_eq(type_of(Random.gauss(0.0, 1.0)), 'Float')
-  assert_eq(type_of(Random.gauss(0, 1)), 'Float')    // Long args promoted
+  assert_eq(type_of(Random.gauss(0, 1)), 'Float')  // Long args promoted
 
   // shuffle permutes without adding or dropping elements.
   Random.seed(0)
@@ -581,7 +604,9 @@ test_random = fn () {
   Random.shuffle(arr)
   assert_eq(arr.size(), 10)
   mut sum = 0
-  arr.for_each(fn (elem) { sum = sum + elem })
+  arr.for_each(fn (elem) {
+    sum = sum + elem
+  })
   assert_eq(sum, 55)
 
   // weighted_choice: weight 0 is never picked.
@@ -610,7 +635,7 @@ test_fib = fn () {
     if x < 2 {
       x
     } else {
-      fn(x - 2) + fn(x -1)
+      fn(x - 2) + fn(x - 1)
     }
   }
 
@@ -667,33 +692,31 @@ test_string_escapes = fn () {
 }
 
 test_lexical_scope = fn () {
-	a = 0
-	{
-		let a = 1;
-		assert_eq(a, 1)
-	}
-	assert_eq(a, 0)
+  a = 0
+  {
+    let a = 1
+    assert_eq(a, 1)
+  }
+  assert_eq(a, 0)
 
-	mut b = 0
-	{
-		b = 1;
-		assert_eq(b, 1)
-	}
-	assert_eq(b, 1)
+  mut b = 0
+  {
+    b = 1
+    assert_eq(b, 1)
+  }
+  assert_eq(b, 1)
 
-	c = 0
-	{
-		let mut c = 0;
-		c = 1
-		assert_eq(c, 1)
-	}
-	assert_eq(c, 0)
+  c = 0
+  {
+    let mut c = 0
+    c = 1
+    assert_eq(c, 1)
+  }
+  assert_eq(c, 0)
 
-	obj = {
-		name: 'object'
-	}
+  obj = {name: 'object'}
 
-	assert_eq(obj.name, 'object')
+  assert_eq(obj.name, 'object')
 }
 
 test_builtin_methods = fn () {
@@ -753,31 +776,57 @@ test_builtin_methods = fn () {
   assert_true(p.has('b'))
 
   // Higher-order array methods (§17.2)
-  squared = [1, 2, 3].map(fn (x) { x * x })
+  squared = [1, 2, 3].map(fn (x) {
+    x * x
+  })
   assert_true(squared.size() == 3 && squared[0] == 1 && squared[2] == 9)
 
-  evens = [1, 2, 3, 4, 5].filter(fn (x) { x % 2 == 0 })
+  evens = [1, 2, 3, 4, 5].filter(fn (x) {
+    x % 2 == 0
+  })
   assert_true(evens.size() == 2 && evens[0] == 2 && evens[1] == 4)
 
-  sum = [1, 2, 3, 4].reduce(0, fn (acc, x) { acc + x })
+  sum = [1, 2, 3, 4].reduce(0, fn (acc, x) {
+    acc + x
+  })
   assert_eq(sum, 10)
 
-  assert_eq([1, 2, 3].reduce(1, fn (acc, x) { acc * x }), 6)
+  assert_eq([1, 2, 3].reduce(1, fn (acc, x) {
+      acc * x
+    }), 6)
 
   mut total = 0
-  [10, 20, 30].for_each(fn (x) { total = total + x })
+  [10, 20, 30].for_each(fn (x) {
+    total = total + x
+  })
   assert_eq(total, 60)
 
-  assert_eq([3, 1, 4, 1, 5].find(fn (x) { x > 3 }), 4)
-  assert_eq([3, 1, 4].find(fn (x) { x > 100 }), nil)
+  assert_eq([3, 1, 4, 1, 5].find(fn (x) {
+      x > 3
+    }), 4)
+  assert_eq([3, 1, 4].find(fn (x) {
+      x > 100
+    }), nil)
 
-  assert_true([1, 2, 3].any(fn (x) { x > 2 }))
-  assert_false([1, 2, 3].any(fn (x) { x > 100 }))
-  assert_eq([].any(fn (x) { x > 0 }), false)
+  assert_true([1, 2, 3].any(fn (x) {
+    x > 2
+  }))
+  assert_false([1, 2, 3].any(fn (x) {
+    x > 100
+  }))
+  assert_eq([].any(fn (x) {
+      x > 0
+    }), false)
 
-  assert_true([1, 2, 3].all(fn (x) { x > 0 }))
-  assert_false([1, 2, 3].all(fn (x) { x > 1 }))
-  assert_true([].all(fn (x) { x > 0 }))
+  assert_true([1, 2, 3].all(fn (x) {
+    x > 0
+  }))
+  assert_false([1, 2, 3].all(fn (x) {
+    x > 1
+  }))
+  assert_true([].all(fn (x) {
+    x > 0
+  }))
 
   # sum / product: identity on empty (0 / 1)
   assert_eq([1, 2, 3, 4].sum(), 10)
@@ -790,15 +839,21 @@ test_builtin_methods = fn () {
   assert_eq([3, 1, 4, 1, 5, 9, 2, 6].max(), 9)
   assert_eq([-3, -1, -4].min(), -4)
 
-  fm = [1, 2, 3].flat_map(fn (x) { [x, x * 10] })
+  fm = [1, 2, 3].flat_map(fn (x) {
+    [x, x * 10]
+  })
   assert_true(fm.size() == 6 && fm[0] == 1 && fm[1] == 10 && fm[5] == 30)
 
   mut nums = [3, 1, 4, 1, 5, 9, 2, 6]
-  nums.sort_by(fn (x) { x })
+  nums.sort_by(fn (x) {
+    x
+  })
   assert_true(nums[0] == 1 && nums[1] == 1 && nums[7] == 9)
 
   mut ws = ['banana', 'fig', 'apple']
-  ws.sort_by(fn (s) { s.size() })
+  ws.sort_by(fn (s) {
+    s.size()
+  })
   assert_true(ws[0] == 'fig' && ws[1] == 'apple' && ws[2] == 'banana')
 }
 
@@ -808,13 +863,15 @@ shadow_src_value = 100
 
 // Top-level function whose parameter shadows a top-level binding
 // (globals tier — allowed).
-shadow_arg_fn = fn (shadow_src_value) { shadow_src_value + 1 }
+shadow_arg_fn = fn (shadow_src_value) {
+  shadow_src_value + 1
+}
 
 // Top-level function whose match pattern shadows a top-level binding
 // (globals tier — allowed).
 shadow_match_fn = fn (v) {
   match v {
-    shadow_src_value: Long => shadow_src_value * 10
+    shadow_src_value: Long => shadow_src_value * 10,
   }
 }
 
@@ -839,10 +896,11 @@ test_shadow_rules = fn () {
   // (D) Closure-as-object: bare reassignment reaches captured outer.
   make_counter = fn () {
     mut n = 0
-    {
-      incr: fn () { n = n + 1 },
-      get:  fn () { n }
-    }
+    {incr: fn () {
+        n = n + 1
+      }, get: fn () {
+        n
+      }}
   }
   c = make_counter()
   c.incr()
@@ -867,7 +925,9 @@ test_drop = fn () {
   // depending on stdout ordering.
   mut events = []
   make_thing = fn (id) {
-    { drop: fn () { events.push(id) } }
+    {drop: fn () {
+      events.push(id)
+    }}
   }
 
   // Scope-exit drop on a single object.
@@ -881,22 +941,28 @@ test_drop = fn () {
   make_parent = fn () {
     let c1 = make_thing('c1')
     let c2 = make_thing('c2')
-    { c1: c1, c2: c2, drop: fn () { events.push('p') } }
+    {c1: c1, c2: c2, drop: fn () {
+      events.push('p')
+    }}
   }
   {
     let _p = make_parent()
   }
   assert_eq(events.size(), 3)
-  assert_eq(events[0], 'p')        // parent's drop runs first
+  assert_eq(events[0], 'p')  // parent's drop runs first
   // Child order between c1/c2 isn't observable from refcount semantics
-  assert_true((events[1] == 'c1' && events[2] == 'c2') ||
-         (events[1] == 'c2' && events[2] == 'c1'))
+  assert_true(events[1] == 'c1' && events[2] == 'c2' ||
+    events[1] == 'c2' && events[2] == 'c1')
 
   // `drop` declared as a class-sugar method.
   events = []
   class CSDrop {
-    new(id) { self.id = id }
-    drop()  { events.push(self.id) }
+    new(id) {
+      self.id = id
+    }
+    drop() {
+      events.push(self.id)
+    }
   }
   {
     let _r = CSDrop.new('cs1')
@@ -909,8 +975,8 @@ test_drop = fn () {
     let _b = CSDrop.new('cs2b')
   }
   assert_eq(events.size(), 2)
-  assert_true((events[0] == 'cs2a' && events[1] == 'cs2b') ||
-         (events[0] == 'cs2b' && events[1] == 'cs2a'))
+  assert_true(events[0] == 'cs2a' && events[1] == 'cs2b' ||
+    events[0] == 'cs2b' && events[1] == 'cs2a')
 
   // Reading an instance property in scope must not pin the instance —
   // the JIT property-read path used to leak the receiver's +1 ref,
@@ -933,16 +999,23 @@ test_drop = fn () {
   // block — the block's exit owns and drops both members.
   events = []
   make_pair = fn () {
-    mut a = nil; mut b = nil
-    a = { id: 'cyc-a', drop: fn () { events.push('cyc-a') } }
-    b = { id: 'cyc-b', drop: fn () { events.push('cyc-b') } }
+    mut a = nil
+    mut b = nil
+    a = {id: 'cyc-a', drop: fn () {
+      events.push('cyc-a')
+    }}
+    b = {id: 'cyc-b', drop: fn () {
+      events.push('cyc-b')
+    }}
     a.other = b
     b.other = a
     a
   }
-  { let _cyc = make_pair() }
+  {
+    let _cyc = make_pair()
+  }
   assert_eq(events.size(), 2)
-  assert_eq(events[0], 'cyc-b')   // reverse creation order
+  assert_eq(events[0], 'cyc-b')  // reverse creation order
   assert_eq(events[1], 'cyc-a')
 }
 
@@ -950,22 +1023,34 @@ test_drop = fn () {
 // __ARGS__/variadic case lives in tests/test_ufcs.cul.
 test_ufcs = fn () {
   // Free function as method on primitive
-  double = fn (x) { x * 2 }
+  double = fn (x) {
+    x * 2
+  }
   assert_eq(42.double(), 84)
   assert_eq((-3).double(), -6)
 
   // UFCS on String / Array
-  word_count = fn (s) { s.split(' ').size() }
+  word_count = fn (s) {
+    s.split(' ').size()
+  }
   assert_eq('a b c'.word_count(), 3)
-  sum = fn (xs) { xs.reduce(0, fn (a, x) { a + x }) }
+  sum = fn (xs) {
+    xs.reduce(0, fn (a, x) {
+      a + x
+    })
+  }
   assert_eq([1, 2, 3, 4].sum(), 10)
 
   // Multiple args: receiver first, rest follow
-  scale = fn (x, factor) { x * factor }
+  scale = fn (x, factor) {
+    x * factor
+  }
   assert_eq(7.scale(3), 21)
 
   // Existing method wins over same-named free function
-  size = fn (x) { 99 }
+  size = fn (x) {
+    99
+  }
   assert_eq([1, 2, 3].size(), 3)
   assert_eq('hello'.size(), 5)
   assert_eq({a: 1, b: 2}.size(), 2)
@@ -973,29 +1058,40 @@ test_ufcs = fn () {
   // Object HOF via UFCS
   map_keys_to = fn (o, f) {
     mut r = []
-    for k in o.keys() { r.push(f(k)) }
+    for k in o.keys() {
+      r.push(f(k))
+    }
     r
   }
-  ks = {b: 2, a: 1}.map_keys_to(fn (k) { k })
+  ks = {b: 2, a: 1}.map_keys_to(fn (k) {
+    k
+  })
   assert_eq(ks.size(), 2)
   assert_true(ks[0] == 'b' && ks[1] == 'a')
 
   // Chain mixing builtin (Array.map) and UFCS (sum/incr)
-  incr = fn (x) { x + 1 }
-  result = [1, 2, 3]
-    .map(fn (x) { x * 10 })
-    .sum()
-    .incr()
+  incr = fn (x) {
+    x + 1
+  }
+  result = [1, 2, 3].map(fn (x) {
+      x * 10
+    }).sum().incr()
   assert_eq(result, 61)
 
   // Variadic __ARGS__: overflow goes to __ARGS__, and __ARGS__ is
   // always bound (empty Array when no overflow).
   greet = fn () {
-    if __ARGS__.size() > 0 { "hello {__ARGS__[0]}" } else { 'hello' }
+    if __ARGS__.size() > 0 {
+      "hello {__ARGS__[0]}"
+    } else {
+      'hello'
+    }
   }
   assert_eq('world'.greet(), 'hello world')
   assert_eq(greet(), 'hello')
-  collect_extras = fn (first) { __ARGS__ }
+  collect_extras = fn (first) {
+    __ARGS__
+  }
   assert_eq(collect_extras('a').size(), 0)
   rest = collect_extras(1, 2, 3)
   assert_true(rest.size() == 2 && rest[0] == 2 && rest[1] == 3)
@@ -1007,13 +1103,18 @@ test_ufcs = fn () {
 test_for_in = fn () {
   // Array iteration
   mut sum = 0
-  for x in [1, 2, 3, 4] { sum = sum + x }
+  for x in [1, 2, 3, 4] {
+    sum = sum + x
+  }
   assert_eq(sum, 10)
 
   // Object iteration yields (key, value) pairs in insertion order
   mut keys = []
   mut vals = []
-  for k, v in {b: 2, a: 1, c: 3} { keys.push(k); vals.push(v) }
+  for k, v in {b: 2, a: 1, c: 3} {
+    keys.push(k)
+    vals.push(v)
+  }
   assert_eq(keys, ['b', 'a', 'c'])
   assert_eq(vals, [2, 1, 3])
   // Single-axis views
@@ -1024,7 +1125,9 @@ test_for_in = fn () {
   mut hit = 0
   for i in [1, 2, 3] {
     for j in [10, 20, 30] {
-      if j == 20 { break }
+      if j == 20 {
+        break
+      }
       hit = hit + 1
     }
   }
@@ -1033,31 +1136,43 @@ test_for_in = fn () {
   // continue skips
   mut evens = 0
   for x in [1, 2, 3, 4, 5, 6] {
-    if x % 2 == 1 { continue }
+    if x % 2 == 1 {
+      continue
+    }
     evens = evens + 1
   }
   assert_eq(evens, 3)
 
   // Empty iteration
   mut touched = false
-  for _ in [] { touched = true }
+  for _ in [] {
+    touched = true
+  }
   assert_eq(touched, false)
 
   // iota returns an Array — goes through the Array fast path.
   mut total = 0
-  for i in iota(5) { total = total + i }
+  for i in iota(5) {
+    total = total + i
+  }
   assert_eq(total, 10)
 
   // Range literals (exclusive / inclusive).
   total = 0
-  for i in 1..5 { total = total + i }
+  for i in 1..5 {
+    total = total + i
+  }
   assert_eq(total, 10)
   total = 0
-  for i in 1..=5 { total = total + i }
+  for i in 1..=5 {
+    total = total + i
+  }
   assert_eq(total, 15)
   n = 3
   total = 0
-  for i in 0..n*2 { total = total + i }
+  for i in 0..n * 2 {
+    total = total + i
+  }
   assert_eq(total, 15)
 
   // Range literals with an explicit step (`by`) — ascending, descending,
@@ -1068,7 +1183,9 @@ test_for_in = fn () {
   assert_eq((10..0 by -2).iter().collect(), [10, 8, 6, 4, 2])
   assert_eq((10..=0 by -2).iter().collect(), [10, 8, 6, 4, 2, 0])
   total = 0
-  for i in 0..10 by 3 { total = total + i }
+  for i in 0..10 by 3 {
+    total = total + i
+  }
   assert_eq(total, 18)  // 0 + 3 + 6 + 9
   assert_eq(to_string(0..10 by 2), "0..10 by 2")
   assert_eq(to_string(0..10), "0..10")  // step 1 prints no suffix
@@ -1082,13 +1199,19 @@ test_for_in = fn () {
 
   // String: UTF-8 scalar walk. 'café' is 5 bytes but 4 scalars.
   mut count = 0
-  for c in 'hello' { count = count + 1 }
+  for c in 'hello' {
+    count = count + 1
+  }
   assert_eq(count, 5)
   mut scalars = 0
-  for c in 'café' { scalars = scalars + 1 }
+  for c in 'café' {
+    scalars = scalars + 1
+  }
   assert_eq(scalars, 4)
   mut parts = []
-  for c in 'ab' { parts.push(c) }
+  for c in 'ab' {
+    parts.push(c)
+  }
   assert_eq(parts.size(), 2)
   assert_true(parts[0] == 'a' && parts[1] == 'b')
 }
@@ -1100,12 +1223,17 @@ test_underscore_sink = fn () {
 
   // for _ in iter: body still runs, no `_` is bound
   mut count = 0
-  for _ in 0..3 { count = count + 1 }
+  for _ in 0..3 {
+    count = count + 1
+  }
   assert_eq(count, 3)
 
   // RHS side effects of `let _ = ...` still run
   mut touched = false
-  let side_effect = fn () { touched = true; 42 }
+  let side_effect = fn () {
+    touched = true
+    42
+  }
   let _ = side_effect()
   assert_eq(touched, true)
 
@@ -1115,9 +1243,13 @@ test_underscore_sink = fn () {
   let _ = 3
 
   // fn(_, _, x): repeated `_` parameters allowed
-  let third_arg = fn (_, _, x) { x }
+  let third_arg = fn (_, _, x) {
+    x
+  }
   assert_eq(third_arg(100, 200, 'hello'), 'hello')
-  let ignore_all = fn (_, _, _) { 99 }
+  let ignore_all = fn (_, _, _) {
+    99
+  }
   assert_eq(ignore_all(1, 2, 3), 99)
 
   // Array destructure with `_`
@@ -1130,13 +1262,17 @@ test_underscore_sink = fn () {
   assert_eq(last, 5)
 
   // match: `_` inside an array pattern slot is a sink
-  let m = match [1, 2, 3] { [a, _, c] => a + c }
+  let m = match [1, 2, 3] {
+    [a, _, c] => a + c,
+  }
   assert_eq(m, 4)
 
   // `_` inside a nested function does not collide with outer `_`
   let outer_fn = fn () {
     let _ = 'a'
-    let inner = fn (_) { 'b' }
+    let inner = fn (_) {
+      'b'
+    }
     inner(99)
   }
   assert_eq(outer_fn(), 'b')
@@ -1170,7 +1306,9 @@ test_stdlib = fn () {
   # |n| == 1 is always 0, including the LONG_MIN % -1 overflow case.
   assert_eq(Math.wrap(7, -1), 0)
   assert_eq(Math.wrap(-9223372036854775807 - 1, -1), 0)
-  assert_throws('ZeroDivisionError', fn () { Math.wrap(1, 0) })
+  assert_throws('ZeroDivisionError', fn () {
+    Math.wrap(1, 0)
+  })
   assert_eq(iota(3).size(), 3)
   assert_true(iota(3)[0] == 0 && iota(3)[2] == 2)
   assert_eq(iota(2, 5).size(), 3)
@@ -1187,7 +1325,6 @@ test_stdlib = fn () {
   assert_eq(type_of(nil), 'Nil')
   assert_eq(type_of(true), 'Bool')
 }
-
 
 debugger
 test_call()
@@ -1206,27 +1343,29 @@ test_object_factory()
 
 test_special_method_ops = fn () {
   make_box = fn (v) {
-    {
-      v: v,
-      __add__: fn (r) {
+    {v: v, __add__: fn (r) {
         match r {
           n: Long => self.v + n,
-          _       => self.v + r.v
+          _ => self.v + r.v,
         }
-      },
-      __mul__: fn (r) {
+      }, __mul__: fn (r) {
         match r {
           n: Long => self.v * n,
-          _       => self.v * r.v
+          _ => self.v * r.v,
         }
-      },
-      __sub__: fn (r) { self.v - r.v },
-      __neg__: fn ()  { -self.v },
-      __pow__: fn (e) { self.v ** e.v },
-      __matmul__: fn (r) { self.v * r.v + 1 },
-      __eq__:  fn (r) { self.v == r.v },
-      __lt__:  fn (r) { self.v <  r.v }
-    }
+      }, __sub__: fn (r) {
+        self.v - r.v
+      }, __neg__: fn () {
+        -self.v
+      }, __pow__: fn (e) {
+        self.v ** e.v
+      }, __matmul__: fn (r) {
+        self.v * r.v + 1
+      }, __eq__: fn (r) {
+        self.v == r.v
+      }, __lt__: fn (r) {
+        self.v < r.v
+      }}
   }
   a = make_box(3)
   b = make_box(4)
@@ -1278,30 +1417,44 @@ test_underscore_sink()
 test_compound_assign = fn () {
   // Identifier target — every operator on Long.
   mut x = 10
-  x += 3;  assert_eq(x, 13)
-  x -= 5;  assert_eq(x, 8)
-  x *= 4;  assert_eq(x, 32)
-  x /= 2;  assert_eq(x, 16)
-  x %= 7;  assert_eq(x, 2)
-  x **= 4; assert_eq(x, 16)
+  x += 3
+  assert_eq(x, 13)
+  x -= 5
+  assert_eq(x, 8)
+  x *= 4
+  assert_eq(x, 32)
+  x /= 2
+  assert_eq(x, 16)
+  x %= 7
+  assert_eq(x, 2)
+  x **= 4
+  assert_eq(x, 16)
 
   // Float promotion via `/=` and `**=`.
   mut f = 9
-  f /= 2.0; assert_eq(f, 4.5)
+  f /= 2.0
+  assert_eq(f, 4.5)
   mut e = 2
-  e **= -1; assert_eq(e, 0.5)
+  e **= -1
+  assert_eq(e, 0.5)
 
   // Array index target.
   mut a = [1, 2, 3]
-  a[1] += 10;  assert_true(a[0] == 1 && a[1] == 12 && a[2] == 3)
-  a[2] *= 100; assert_eq(a[2], 300)
-  a[0] -= 1;   assert_eq(a[0], 0)
+  a[1] += 10
+  assert_true(a[0] == 1 && a[1] == 12 && a[2] == 3)
+  a[2] *= 100
+  assert_eq(a[2], 300)
+  a[0] -= 1
+  assert_eq(a[0], 0)
 
   // Object property target (must be `mut` to permit reassignment).
   mut o = {mut count: 5, mut total: 1.0}
-  o.count += 2; assert_eq(o.count, 7)
-  o.total *= 3; assert_eq(o.total, 3.0)
-  o.count -= 7; assert_eq(o.count, 0)
+  o.count += 2
+  assert_eq(o.count, 7)
+  o.total *= 3
+  assert_eq(o.total, 3.0)
+  o.count -= 7
+  assert_eq(o.count, 0)
 }
 test_compound_assign()
 
@@ -1311,7 +1464,9 @@ test_chained_index_assign_in_nested_loops = fn () {
   mut g = []
   for i in range(3) {
     mut row = []
-    for j in range(4) { row.push(0.0) }
+    for j in range(4) {
+      row.push(0.0)
+    }
     g.push(row)
   }
   for k in range(10) {
@@ -1335,23 +1490,35 @@ test_chained_index_assign_in_nested_loops()
 // identity. #181 — interp previously crashed with "invalid internal
 // condition." on Array/Object/Tensor.
 fn test_value_equality_semantics() {
-  let a = [1, 2]; let b = [1, 2]; let c = a
-  assert_true((a == b)); assert_eq(a, c)        // value-equal
+  let a = [1, 2]
+  let b = [1, 2]
+  let c = a
+  assert_true(a == b)
+  assert_eq(a, c)  // value-equal
 
-  let o1 = {x: 1}; let o2 = {x: 1}; let o3 = o1
-  assert_true((o1 == o2)); assert_eq(o1, o3)    // value-equal
+  let o1 = {x: 1}
+  let o2 = {x: 1}
+  let o3 = o1
+  assert_true(o1 == o2)
+  assert_eq(o1, o3)  // value-equal
 
-  fn add1(x) { x + 1 }
-  let f = add1; let g = add1
-  assert_eq(f, g)                                // same function
+  fn add1(x) {
+    x + 1
+  }
+  let f = add1
+  let g = add1
+  assert_eq(f, g)  // same function
 
   // Tensor still compares by identity (not structural).
-  let t1 = Tensor.zeros(2, 3); let t2 = Tensor.zeros(2, 3); let t3 = t1
-  assert_false((t1 == t2)); assert_eq(t1, t3)
+  let t1 = Tensor.zeros(2, 3)
+  let t2 = Tensor.zeros(2, 3)
+  let t3 = t1
+  assert_false(t1 == t2)
+  assert_eq(t1, t3)
 
   // The original #181 repro: .shape() comparison must not crash.
   let s = t1.shape()
-  assert_true((s == [2, 3]))   // structural array equality
+  assert_true(s == [2, 3])  // structural array equality
   assert_eq(s, s)
   assert_true(s[0] == 2 && s[1] == 3)
 }

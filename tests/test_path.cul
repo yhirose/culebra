@@ -12,7 +12,7 @@ assert_eq(Path.typo, nil)
 
 // --- construction / display ---
 let p = Path.new("/home/user/project")
-assert_eq("{p}", "/home/user/project")          // __str__ yields raw path
+assert_eq("{p}", "/home/user/project")  // __str__ yields raw path
 assert_eq(p.str(), "/home/user/project")
 assert_eq(to_string(p), "/home/user/project")
 
@@ -29,7 +29,7 @@ assert_eq(q.name, "main.cul")
 assert_eq(q.stem, "main")
 assert_eq(q.suffix, ".cul")
 assert_eq("{q.parent}", "/home/user/project/src")
-assert_eq(q.parent.name, "src")                   // the fluent-chain payoff
+assert_eq(q.parent.name, "src")  // the fluent-chain payoff
 // a getter still works when spelled with call parens (both forms invoke it)
 assert_eq(q.name(), "main.cul")
 assert_eq(q.parent(), q.parent)
@@ -46,20 +46,36 @@ assert_eq(p == 99, false)
 // --- ordering (by the normalized inner string, so Paths sort) ---
 assert_eq(Path.new("a") < Path.new("b"), true)
 assert_eq(Path.new("b") < Path.new("a"), false)
-assert_eq(Path.new("a") <= Path.new("a"), true)   // derived from __lt__ + __eq__
+assert_eq(Path.new("a") <= Path.new("a"), true)  // derived from __lt__ + __eq__
 assert_eq(Path.new("b") > Path.new("a"), true)
 assert_eq(Path.new("a") >= Path.new("b"), false)
-assert_eq(Path.new("a") < "b", true)              // String RHS via _s coercion
+assert_eq(Path.new("a") < "b", true)  // String RHS via _s coercion
 // a Path array sorts (the point of the ordering) — dedup/min also follow
-assert_eq([Path.new("z"), Path.new("a"), Path.new("m")].sorted().map(fn (x) { x.str() }),
-          ["a", "m", "z"])
+assert_eq([Path.new("z"), Path.new("a"), Path.new("m")].sorted().map(fn (x) {
+      x.str()
+    }), ["a", "m", "z"])
 // ordering against a non-PathLike is a TypeError (no meaningful answer),
 // unlike __eq__ which is simply not-equal
-assert_eq(try { Path.new("a") < 5; "" } catch e { e.kind }, "TypeError")
+assert_eq(try {
+    Path.new("a") < 5
+    ""
+  } catch e {
+    e.kind
+  }, "TypeError")
 
 // --- construction / join reject a non-PathLike (mirrors the FS.* contract) ---
-assert_eq(try { Path.new(42); "" } catch e { e.kind }, "TypeError")
-assert_eq(try { p / [1, 2]; "" } catch e { e.kind }, "TypeError")
+assert_eq(try {
+    Path.new(42)
+    ""
+  } catch e {
+    e.kind
+  }, "TypeError")
+assert_eq(try {
+    p / [1, 2]
+    ""
+  } catch e {
+    e.kind
+  }, "TypeError")
 
 // --- queries on known-good paths ---
 assert_eq(Path.new("/tmp").exists(), true)
@@ -69,8 +85,12 @@ assert_eq(Path.new("/definitely/not/real/xyzzy").exists(), false)
 
 // --- filesystem round-trip: mkdir / write / read / list / glob / remove ---
 let tmpdir_env = Sys.env("TMPDIR")
-let tmp_root   = if tmpdir_env != "" { tmpdir_env } else { "/tmp" }
-let base       = Path.new(tmp_root) / "culebra_path_test"
+let tmp_root = if tmpdir_env != "" {
+  tmpdir_env
+} else {
+  "/tmp"
+}
+let base = Path.new(tmp_root) / "culebra_path_test"
 base.remove(recursive: true)  // clean any stale run (idempotent enough)
 base.mkdir()
 assert_eq(base.is_dir(), true)
@@ -99,23 +119,35 @@ assert_eq(f.exists(), false)
 // --- PathLike: native FS.* / File.open accept a Path directly ---
 base.mkdir()
 let pf = base / "pl.txt"
-FS.write(pf, "PL")                          // FS.write(Path, ...)
-assert_eq(FS.read(pf), "PL")                // FS.read(Path)
-assert_eq(FS.exists(pf), true)              // FS.exists(Path)
-assert_eq(FS.basename(pf), "pl.txt")        // FS.basename(Path)
+FS.write(pf, "PL")                    // FS.write(Path, ...)
+assert_eq(FS.read(pf), "PL")          // FS.read(Path)
+assert_eq(FS.exists(pf), true)        // FS.exists(Path)
+assert_eq(FS.basename(pf), "pl.txt")  // FS.basename(Path)
 assert_eq(FS.is_file(pf), true)
-assert_eq(FS.join(base, "x"), "{base}/x")   // FS.join(Path, String)
+assert_eq(FS.join(base, "x"), "{base}/x")  // FS.join(Path, String)
 let pf2 = base / "pl2.txt"
-FS.copy(pf, pf2)                            // FS.copy(Path, Path)
+FS.copy(pf, pf2)  // FS.copy(Path, Path)
 assert_eq(FS.read(pf2), "PL")
-File.with(pf, "r", |fh| assert_eq(fh.read(), "PL"))   // File.with(Path)
+File.with(pf, "r", |fh| assert_eq(fh.read(), "PL"))  // File.with(Path)
 // a plain String param still rejects a Path (types stay distinct)
-let needs_string = fn (s: String) { s }
-let te = try { needs_string(base); nil } catch e { e.kind }
+let needs_string = fn (s: String) {
+  s
+}
+let te = try {
+  needs_string(base)
+  nil
+} catch e {
+  e.kind
+}
 assert_eq(te, "TypeError")
 // a mistyped path arg raises a TypeError (exact wording asserted, per call
 // form, in test_ns_kwargs / test_stdlib_argtype_symmetry)
-let te2 = try { FS.read(42); nil } catch e { e.kind }
+let te2 = try {
+  FS.read(42)
+  nil
+} catch e {
+  e.kind
+}
 assert_eq(te2, "TypeError")
 
 base.remove(recursive: true)

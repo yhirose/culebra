@@ -11,8 +11,12 @@
 
 fn test_keys_excludes_methods() {
   class P {
-    new() { self.a = 1 }
-    m() { 2 }
+    new() {
+      self.a = 1
+    }
+    m() {
+      2
+    }
   }
   let p = P()
   assert_eq(p.keys(), ['class', 'a'])
@@ -26,8 +30,12 @@ fn test_declared_fields_enumerate_too() {
   class C {
     a = 1
     b: Long
-    new() { self.c = 3 }
-    m() { 0 }
+    new() {
+      self.c = 3
+    }
+    m() {
+      0
+    }
   }
   let c = C()
   assert_eq(c.keys(), ['class', 'a', 'b', 'c'])
@@ -35,14 +43,18 @@ fn test_declared_fields_enumerate_too() {
   assert_eq(c.to_string(), 'C {mut a: 1, mut b: 0, mut c: 3}')
   assert_eq(JSON.stringify(c), '{"class":"C","a":1,"b":0,"c":3}')
   mut acc = []
-  for k, v in c { acc.push([k, v]) }
+  for k, v in c {
+    acc.push([k, v])
+  }
   assert_eq(acc, [['class', 'C'], ['a', 1], ['b', 0], ['c', 3]])
   assert_eq({...c}.keys(), ['class', 'a', 'b', 'c'])
 }
 
 fn test_keys_no_fields() {
   class Q {
-    m() { 3 }
+    m() {
+      3
+    }
   }
   let q = Q()
   assert_eq(q.keys(), ['class'])
@@ -51,31 +63,48 @@ fn test_keys_no_fields() {
 
 fn test_to_string_hoists_class_and_hides_methods() {
   class P {
-    new() { self.a = 1 }
-    m() { 2 }
+    new() {
+      self.a = 1
+    }
+    m() {
+      2
+    }
   }
   assert_eq(P().to_string(), 'P {mut a: 1}')
 
   class Q {
-    m() { 3 }
+    m() {
+      3
+    }
   }
   assert_eq(Q().to_string(), 'Q {}')
 }
 
 fn test_for_in_yields_class_and_fields() {
   class P {
-    new() { self.a = 1; self.b = 2 }
-    m() { 0 }
+    new() {
+      self.a = 1
+      self.b = 2
+    }
+    m() {
+      0
+    }
   }
   mut acc = []
-  for k, v in P() { acc.push([k, v]) }
+  for k, v in P() {
+    acc.push([k, v])
+  }
   assert_eq(acc, [['class', 'P'], ['a', 1], ['b', 2]])
 }
 
 fn test_spread_copies_class_and_fields_only() {
   class P {
-    new() { self.a = 1 }
-    m() { 2 }
+    new() {
+      self.a = 1
+    }
+    m() {
+      2
+    }
   }
   let d = {...P()}
   assert_eq(d.keys(), ['class', 'a'])
@@ -85,17 +114,27 @@ fn test_spread_copies_class_and_fields_only() {
 
 fn test_json_stringify_serializes_instance() {
   class P {
-    new() { self.a = 1 }
-    m() { 2 }
+    new() {
+      self.a = 1
+    }
+    m() {
+      2
+    }
   }
   assert_eq(JSON.stringify(P()), '{"class":"P","a":1}')
 }
 
 fn test_methods_still_reachable() {
   class P {
-    new() { self.a = 1 }
-    m() { self.a + 1 }
-    __str__() { 'custom' }
+    new() {
+      self.a = 1
+    }
+    m() {
+      self.a + 1
+    }
+    __str__() {
+      'custom'
+    }
   }
   let p = P()
   assert_eq(p.m(), 2)
@@ -113,7 +152,9 @@ fn test_methods_still_reachable() {
 
 fn test_own_field_shadows_method() {
   class P {
-    m() { 'method' }
+    m() {
+      'method'
+    }
   }
   mut p = P()
   p.m = 'field'
@@ -124,8 +165,12 @@ fn test_own_field_shadows_method() {
 
 fn test_instances_share_one_meta() {
   class P {
-    new(a) { self.a = a }
-    m() { self.a * 2 }
+    new(a) {
+      self.a = a
+    }
+    m() {
+      self.a * 2
+    }
   }
   let x = P(1)
   let y = P(2)
@@ -139,9 +184,15 @@ fn test_instances_share_one_meta() {
 
 fn test_operator_and_call_specials_live_on_the_meta() {
   class V {
-    new(n) { self.n = n }
-    __add__(o) { V(self.n + o.n) }
-    __call__(k) { self.n * k }
+    new(n) {
+      self.n = n
+    }
+    __add__(o) {
+      V(self.n + o.n)
+    }
+    __call__(k) {
+      self.n * k
+    }
   }
   let a = V(1)
   let b = V(2)
@@ -154,9 +205,15 @@ fn test_drop_runs_from_the_meta() {
   mut log = []
   fn run() {
     class R {
-      new(t) { self.t = t }
-      close() { log.push('close:' + self.t) }
-      drop() { self.close() }
+      new(t) {
+        self.t = t
+      }
+      close() {
+        log.push('close:' + self.t)
+      }
+      drop() {
+        self.close()
+      }
     }
     let r = R('a')
     assert_eq(r.keys(), ['class', 't'])

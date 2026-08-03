@@ -7,33 +7,45 @@ let xs = [1, 2, 3, 4, 5, 6, 7, 8]
 assert_eq(Parallel.map(xs, |x| x * x), [1, 4, 9, 16, 25, 36, 49, 64])
 
 # positional limit
-assert_eq(Parallel.map(xs, |x| x + 100, 1),
-          [101, 102, 103, 104, 105, 106, 107, 108])
+assert_eq(
+  Parallel.map(xs, |x| x + 100, 1),
+  [101, 102, 103, 104, 105, 106, 107, 108],
+)
 
 # `limit:` keyword form (symmetric across backends)
-assert_eq(Parallel.map(xs, |x| x + 100, limit: 2),
-          [101, 102, 103, 104, 105, 106, 107, 108])
+assert_eq(
+  Parallel.map(xs, |x| x + 100, limit: 2),
+  [101, 102, 103, 104, 105, 106, 107, 108],
+)
 
 # empty array
 assert_eq(Parallel.map([], |x| x), [])
 
 # captured free var + a top-level fn (multifn dispatcher)
 let factor = 10
-fn dbl(n) { return n * 2 }
+fn dbl(n) {
+  return n * 2
+}
 assert_eq(Parallel.map([1, 2, 3], |x| dbl(x) * factor), [20, 40, 60])
 
 # structured results
-assert_eq(Parallel.map([1, 2], |x| {n: x, sq: x * x}),
-          [{n: 1, sq: 1}, {n: 2, sq: 4}])
+assert_eq(
+  Parallel.map([1, 2], |x| {n: x, sq: x * x}),
+  [{n: 1, sq: 1}, {n: 2, sq: 4}],
+)
 
 # heavier workload matches the serial result
 fn fib(n) {
-  if n < 2 { return n }
+  if n < 2 {
+    return n
+  }
   return fib(n - 1) + fib(n - 2)
 }
 let ns = [10, 12, 14, 16, 18, 20]
 mut serial = []
-for n in ns { serial.push(fib(n)) }
+for n in ns {
+  serial.push(fib(n))
+}
 assert_eq(Parallel.map(ns, |n| fib(n)), serial)
 
 # each: side effects, returns nil
@@ -59,10 +71,14 @@ try {
 # the worker-rebuilt tx must drop when the worker ends so the channel closes and
 # a downstream for-in terminates. Regression for the JIT worker not releasing fn.
 let (tx, rx) = Channel.new(8)
-Parallel.each([1, 2, 3], fn (x) { tx.send(x * 10) })
+Parallel.each([1, 2, 3], fn (x) {
+  tx.send(x * 10)
+})
 tx.drop()
 mut drained = []
-for v in rx { drained.push(v) }
+for v in rx {
+  drained.push(v)
+}
 assert_eq(drained.size(), 3)
 assert_eq(drained.reduce(0, |a, b| a + b), 60)
 

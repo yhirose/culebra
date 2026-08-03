@@ -10,8 +10,12 @@
 let log = []
 
 class R {
-  new(lg) { self.log = lg }
-  drop() { self.log.push(1) }
+  new(lg) {
+    self.log = lg
+  }
+  drop() {
+    self.log.push(1)
+  }
 }
 
 # Explicit drop() then scope-exit: auto-drop must be suppressed → exactly once.
@@ -52,12 +56,12 @@ assert_eq({a: 1}.drop(), nil)
 fn use_after_drop() {
   let r = R.new(log)
   r.drop()
-  r.extra = 1          # still writable
-  let v = r.extra      # still readable
+  r.extra = 1      # still writable
+  let v = r.extra  # still readable
   assert_eq(v, 1)
-  r.drop()             # still droppable (no-op)
+  r.drop()  # still droppable (no-op)
   r
 }
-let kept = use_after_drop()   # and it can even escape afterwards
+let kept = use_after_drop()  # and it can even escape afterwards
 assert_eq(kept.extra, 1)
-assert_eq(log.size(), 4)      # exactly one drop for this object
+assert_eq(log.size(), 4)  # exactly one drop for this object

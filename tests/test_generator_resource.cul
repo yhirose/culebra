@@ -12,22 +12,32 @@
 
 // --- (1) Built-in iterators still work (default dispose = no-op) ---
 mut sum = 0
-for v in [1, 2, 3] { sum = sum + v }
+for v in [1, 2, 3] {
+  sum = sum + v
+}
 assert_eq(sum, 6)
 
 // --- (2) defer runs on natural drain ---
 mut log_a = ''
 fn gen_a() {
-  defer { log_a = "{log_a}closed;" }
-  for v in [1, 2, 3] { yield v }
+  defer {
+    log_a = "{log_a}closed;"
+  }
+  for v in [1, 2, 3] {
+    yield v
+  }
 }
-for v in gen_a() { log_a = "{log_a}{v};" }
+for v in gen_a() {
+  log_a = "{log_a}{v};"
+}
 assert_eq(log_a, '1;2;3;closed;')
 
 // --- (3) defer runs on early `break` ---
 mut log_b = ''
 fn gen_b() {
-  defer { log_b = "{log_b}closed;" }
+  defer {
+    log_b = "{log_b}closed;"
+  }
   mut i = 0
   while i < 100 {
     yield i
@@ -36,45 +46,71 @@ fn gen_b() {
 }
 for v in gen_b() {
   log_b = "{log_b}{v};"
-  if v >= 2 { break }
+  if v >= 2 {
+    break
+  }
 }
 assert_eq(log_b, '0;1;2;closed;')
 
 // --- (4) multiple defers run in LIFO order ---
 mut log_c = ''
 fn gen_c() {
-  defer { log_c = "{log_c}c1;" }
-  defer { log_c = "{log_c}c2;" }
-  defer { log_c = "{log_c}c3;" }
-  for v in [42] { yield v }
+  defer {
+    log_c = "{log_c}c1;"
+  }
+  defer {
+    log_c = "{log_c}c2;"
+  }
+  defer {
+    log_c = "{log_c}c3;"
+  }
+  for v in [42] {
+    yield v
+  }
 }
-for v in gen_c() { log_c = "{log_c}{v};" }
+for v in gen_c() {
+  log_c = "{log_c}{v};"
+}
 assert_eq(log_c, '42;c3;c2;c1;')
 
 // --- (5) explicit dispose is idempotent; defer fires exactly once ---
 mut log_d = ''
 fn gen_d() {
-  defer { log_d = "{log_d}once;" }
-  for v in [1, 2] { yield v }
+  defer {
+    log_d = "{log_d}once;"
+  }
+  for v in [1, 2] {
+    yield v
+  }
 }
 let g_d = gen_d()
-for v in g_d { log_d = "{log_d}{v};" }
-g_d.dispose()                    // explicit second call — must be no-op
-g_d.dispose()                    // and a third
+for v in g_d {
+  log_d = "{log_d}{v};"
+}
+g_d.dispose()  // explicit second call — must be no-op
+g_d.dispose()  // and a third
 assert_eq(log_d, '1;2;once;')
 
 // --- (6) defer runs on exception thrown inside for-in body ---
 mut log_e = ''
 fn gen_e() {
-  defer { log_e = "{log_e}closed;" }
-  for v in [1, 2, 3] { yield v }
+  defer {
+    log_e = "{log_e}closed;"
+  }
+  for v in [1, 2, 3] {
+    yield v
+  }
 }
 try {
   for v in gen_e() {
     log_e = "{log_e}{v};"
-    if v == 1 { throw 'boom' }
+    if v == 1 {
+      throw 'boom'
+    }
   }
-} catch e { log_e = "{log_e}caught;" }
+} catch e {
+  log_e = "{log_e}caught;"
+}
 assert_eq(log_e, '1;closed;caught;')
 
 // --- (7) defer accesses locals set during body execution ---
@@ -83,15 +119,25 @@ assert_eq(log_e, '1;closed;caught;')
 // open resource; the closure sees the current value via `self.f`.
 mut log_f = ''
 class FakeResource {
-  new(name) { self.name = name }
-  close() { log_f = "{log_f}close:{self.name};" }
+  new(name) {
+    self.name = name
+  }
+  close() {
+    log_f = "{log_f}close:{self.name};"
+  }
 }
 fn gen_f() {
   let f = FakeResource.new('alpha')
-  defer { f.close() }
-  for v in [10, 20] { yield v }
+  defer {
+    f.close()
+  }
+  for v in [10, 20] {
+    yield v
+  }
 }
-for v in gen_f() { log_f = "{log_f}{v};" }
+for v in gen_f() {
+  log_f = "{log_f}{v};"
+}
 assert_eq(log_f, '10;20;close:alpha;')
 
 // --- (8) Stage 3 pre-yield try/catch ---
@@ -101,7 +147,11 @@ assert_eq(log_f, '10;20;close:alpha;')
 fn classify(arr) {
   for v in arr {
     mut tag = nil
-    try { tag = to_string(100 / v) } catch e { tag = 'err' }
+    try {
+      tag = to_string(100 / v)
+    } catch e {
+      tag = 'err'
+    }
     yield tag
   }
 }
@@ -117,43 +167,79 @@ assert_eq(cls[2], '5')
 // a throw out of next(); its registered defers must still run.
 mut log_g = ''
 fn gen_g() {
-  defer { log_g = "{log_g}closed;" }
+  defer {
+    log_g = "{log_g}closed;"
+  }
   for v in [1, 2, 3] {
-    if v == 2 { throw 'from-generator' }
+    if v == 2 {
+      throw 'from-generator'
+    }
     yield v
   }
 }
 try {
-  for v in gen_g() { log_g = "{log_g}{v};" }
-} catch e { log_g = "{log_g}caught:{e};" }
+  for v in gen_g() {
+    log_g = "{log_g}{v};"
+  }
+} catch e {
+  log_g = "{log_g}caught:{e};"
+}
 assert_eq(log_g, '1;closed;caught:from-generator;')
 
 // Same for a hand-written iterator: next() and has_next() alike.
 mut log_h = ''
 fn iter_h(thrower) {
   mut i = 0
-  {
-    iter: fn () { self },
-    has_next: fn () { if thrower == 'has_next' && i == 1 { throw 'hn' }; true },
-    next: fn () { i = i + 1; if thrower == 'next' && i == 2 { throw 'nx' }; i },
-    dispose: fn () { log_h = "{log_h}disposed;" },
-  }
+  {iter: fn () {
+      self
+    }, has_next: fn () {
+      if thrower == 'has_next' && i == 1 {
+        throw 'hn'
+      }
+      true
+    }, next: fn () {
+      i = i + 1
+      if thrower == 'next' && i == 2 {
+        throw 'nx'
+      }
+      i
+    }, dispose: fn () {
+      log_h = "{log_h}disposed;"
+    }}
 }
-try { for v in iter_h('next') { } } catch e { log_h = "{log_h}c:{e};" }
+try {
+  for v in iter_h('next') {
+}
+} catch e {
+  log_h = "{log_h}c:{e};"
+}
 assert_eq(log_h, 'disposed;c:nx;')
 log_h = ''
-try { for v in iter_h('has_next') { } } catch e { log_h = "{log_h}c:{e};" }
+try {
+  for v in iter_h('has_next') {
+}
+} catch e {
+  log_h = "{log_h}c:{e};"
+}
 assert_eq(log_h, 'disposed;c:hn;')
 
 // A dispose that throws on this path must not replace the in-flight error.
-let iter_i = {
-  iter: fn () { self },
-  has_next: fn () { true },
-  next: fn () { throw 'original' },
-  dispose: fn () { throw 'from-dispose' },
-}
+let iter_i = {iter: fn () {
+    self
+  }, has_next: fn () {
+    true
+  }, next: fn () {
+    throw 'original'
+  }, dispose: fn () {
+    throw 'from-dispose'
+  }}
 mut log_i = ''
-try { for v in iter_i { } } catch e { log_i = "{log_i}{e};" }
+try {
+  for v in iter_i {
+}
+} catch e {
+  log_i = "{log_i}{e};"
+}
 assert_eq(log_i, 'original;')
 
 // Nested loops: the inner iterator disposes first, then the outer one as the
@@ -161,16 +247,27 @@ assert_eq(log_i, 'original;')
 mut log_j = ''
 fn iter_j(tag, bad) {
   mut i = 0
-  {
-    iter: fn () { self },
-    has_next: fn () { i < 4 },
-    next: fn () { i = i + 1; if bad && i == 2 { throw 'inner' }; i },
-    dispose: fn () { log_j = "{log_j}{tag};" },
-  }
+  {iter: fn () {
+      self
+    }, has_next: fn () {
+      i < 4
+    }, next: fn () {
+      i = i + 1
+      if bad && i == 2 {
+        throw 'inner'
+      }
+      i
+    }, dispose: fn () {
+      log_j = "{log_j}{tag};"
+    }}
 }
 try {
-  for a in iter_j('out', false) { for b in iter_j('in', true) { } }
-} catch e { }
+  for a in iter_j('out', false) {
+    for b in iter_j('in', true) {
+}
+  }
+} catch e {
+}
 assert_eq(log_j, 'in;out;')
 
 // --- (10) dispose forwards through a lazy chain ---
@@ -180,37 +277,62 @@ assert_eq(log_j, 'in;out;')
 // above ran them.
 mut log_k = ''
 fn gen_k(tag) {
-  defer { log_k = "{log_k}{tag};" }
-  for v in [1, 2, 3, 4, 5] { yield v }
+  defer {
+    log_k = "{log_k}{tag};"
+  }
+  for v in [1, 2, 3, 4, 5] {
+    yield v
+  }
 }
-for v in gen_k('map').map(|x| x) { break }
+for v in gen_k('map').map(|x| x) {
+  break
+}
 assert_eq(log_k, 'map;')
 
 log_k = ''
-for v in gen_k('take').take(2) { }
+for v in gen_k('take').take(2) {
+}
 assert_eq(log_k, 'take;')
 
 // Cascades through every stage of a multi-stage chain.
 log_k = ''
-for v in gen_k('deep').map(|x| x).filter(|x| true).enumerate() { break }
+for v in gen_k('deep').map(|x| x).filter(|x| true).enumerate() {
+  break
+}
 assert_eq(log_k, 'deep;')
 
 // Both sides of a two-source combinator are closed.
 log_k = ''
-for v in gen_k('z').zip([9, 9, 9].iter()) { break }
+for v in gen_k('z').zip([9, 9, 9].iter()) {
+  break
+}
 assert_eq(log_k, 'z;')
 
 // A throw leaving the loop forwards the same way — body and producer alike.
 log_k = ''
-try { for v in gen_k('body').map(|x| x) { throw 'b' } } catch e { }
+try {
+  for v in gen_k('body').map(|x| x) {
+    throw 'b'
+  }
+} catch e {
+}
 assert_eq(log_k, 'body;')
 
 log_k = ''
 fn gen_bad(tag) {
-  defer { log_k = "{log_k}{tag};" }
-  for v in [1, 2] { throw 'producer'; yield v }
+  defer {
+    log_k = "{log_k}{tag};"
+  }
+  for v in [1, 2] {
+    throw 'producer'
+    yield v
+  }
 }
-try { for v in gen_bad('prod').map(|x| x) { } } catch e { }
+try {
+  for v in gen_bad('prod').map(|x| x) {
+}
+} catch e {
+}
 assert_eq(log_k, 'prod;')
 
 // A chain over a dispose-less source stays dispose-less (no wrapper cost, and
@@ -223,37 +345,51 @@ assert_eq(gen_k('probe').map(|x| x).has('dispose'), true)
 // this in step with the combinator list.
 assert_eq([1, 2].iter().skip_while(|x| false).has('dispose'), false)
 log_k = ''
-for v in gen_k('skip_while').skip_while(|x| x < 3) { break }
+for v in gen_k('skip_while').skip_while(|x| x < 3) {
+  break
+}
 assert_eq(log_k, 'skip_while;')
 
 assert_eq([1, 2].iter().scan(0, |a, b| a + b).has('dispose'), false)
 log_k = ''
-for v in gen_k('scan').scan(0, |a, b| a + b) { break }
+for v in gen_k('scan').scan(0, |a, b| a + b) {
+  break
+}
 assert_eq(log_k, 'scan;')
 
 assert_eq([1, 2].iter().map(|v| [v]).flatten().has('dispose'), false)
 log_k = ''
-for v in gen_k('flatten').map(|v| [v]).flatten() { break }
+for v in gen_k('flatten').map(|v| [v]).flatten() {
+  break
+}
 assert_eq(log_k, 'flatten;')
 
 assert_eq([1, 2].iter().distinct().has('dispose'), false)
 log_k = ''
-for v in gen_k('distinct').distinct() { break }
+for v in gen_k('distinct').distinct() {
+  break
+}
 assert_eq(log_k, 'distinct;')
 
 assert_eq([1, 2].iter().tap(|v| v).has('dispose'), false)
 log_k = ''
-for v in gen_k('tap').tap(|v| v) { break }
+for v in gen_k('tap').tap(|v| v) {
+  break
+}
 assert_eq(log_k, 'tap;')
 
 assert_eq([1, 2].iter().step_by(2).has('dispose'), false)
 log_k = ''
-for v in gen_k('step_by').step_by(2) { break }
+for v in gen_k('step_by').step_by(2) {
+  break
+}
 assert_eq(log_k, 'step_by;')
 
 assert_eq([1, 2].iter().chunk_by(|v| v).has('dispose'), false)
 log_k = ''
-for v in gen_k('chunk_by').chunk_by(|v| v) { break }
+for v in gen_k('chunk_by').chunk_by(|v| v) {
+  break
+}
 assert_eq(log_k, 'chunk_by;')
 
 // --- (11) terminal methods dispose the iterator (C# rule) ---
@@ -263,8 +399,12 @@ assert_eq(log_k, 'chunk_by;')
 // wiring side).
 mut log_t = ''
 fn gen_t() {
-  defer { log_t = "{log_t}closed;" }
-  for v in [1, 2, 3] { yield v }
+  defer {
+    log_t = "{log_t}closed;"
+  }
+  for v in [1, 2, 3] {
+    yield v
+  }
 }
 
 // Full drain sweep over all 22 terminals: dispose exactly once per call.
@@ -326,7 +466,7 @@ let g_t = gen_t()
 assert_eq(g_t.find(|x| x == 1), 1)
 assert_eq(log_t, 'closed;')
 assert_eq(g_t.collect().size(), 0)
-assert_eq(log_t, 'closed;')          // and the second terminal didn't re-dispose
+assert_eq(log_t, 'closed;')  // and the second terminal didn't re-dispose
 
 // Terminal + explicit dispose: the generator's once-guard still holds.
 log_t = ''
@@ -339,25 +479,48 @@ assert_eq(log_t, 'closed;')
 // error is the one caught), for both an eagerly-drained and a short-circuit
 // terminal.
 log_t = ''
-try { gen_t().for_each(fn (x) { if x == 2 { throw 'boom' } }) }
-catch e { log_t = "{log_t}caught:{e};" }
+try {
+  gen_t().for_each(fn (x) {
+    if x == 2 {
+      throw 'boom'
+    }
+  })
+} catch e {
+  log_t = "{log_t}caught:{e};"
+}
 assert_eq(log_t, 'closed;caught:boom;')
 
 log_t = ''
-try { gen_t().find(fn (x) { if x == 2 { throw 'boom' }; false }) }
-catch e { log_t = "{log_t}caught:{e};" }
+try {
+  gen_t().find(fn (x) {
+    if x == 2 {
+      throw 'boom'
+    }
+    false
+  })
+} catch e {
+  log_t = "{log_t}caught:{e};"
+}
 assert_eq(log_t, 'closed;caught:boom;')
 
 // Dispose runs when the producer throws mid-drain (generator defers run).
 log_t = ''
 fn gen_bad_t() {
-  defer { log_t = "{log_t}closed;" }
+  defer {
+    log_t = "{log_t}closed;"
+  }
   for v in [1, 2] {
-    if v == 2 { throw 'prod' }
+    if v == 2 {
+      throw 'prod'
+    }
     yield v
   }
 }
-try { gen_bad_t().collect() } catch e { log_t = "{log_t}caught:{e};" }
+try {
+  gen_bad_t().collect()
+} catch e {
+  log_t = "{log_t}caught:{e};"
+}
 assert_eq(log_t, 'closed;caught:prod;')
 
 // Terminal through a lazy chain: forwarding + terminal dispose, once.
@@ -378,18 +541,33 @@ assert_eq(log_t, 'closed;')
 // keeps the original error (same lines for-in draws).
 fn make_bad_dispose(thrower) {
   mut i = 0
-  {
-    iter: fn () { self },
-    has_next: fn () { i < 2 },
-    next: fn () { i = i + 1; if thrower && i == 2 { throw 'original' }; i },
-    dispose: fn () { throw 'from-dispose' },
-  }
+  {iter: fn () {
+      self
+    }, has_next: fn () {
+      i < 2
+    }, next: fn () {
+      i = i + 1
+      if thrower && i == 2 {
+        throw 'original'
+      }
+      i
+    }, dispose: fn () {
+      throw 'from-dispose'
+    }}
 }
 mut caught_t = ''
-try { make_bad_dispose(false).collect() } catch e { caught_t = "{e}" }
+try {
+  make_bad_dispose(false).collect()
+} catch e {
+  caught_t = "{e}"
+}
 assert_eq(caught_t, 'from-dispose')
 caught_t = ''
-try { make_bad_dispose(true).collect() } catch e { caught_t = "{e}" }
+try {
+  make_bad_dispose(true).collect()
+} catch e {
+  caught_t = "{e}"
+}
 assert_eq(caught_t, 'original')
 
 // Array-sourced chains stay dispose-free: nothing to close, nothing thrown.

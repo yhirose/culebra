@@ -9,20 +9,34 @@
 // JIT behave identically (see tests/jit_error_pos_test.sh for the position).
 
 // --- A5: unknown namespace member raises AttributeError ---
-assert_throws("AttributeError", fn() { IO.read_all() })   // removed API
-assert_throws("AttributeError", fn() { FS.nope("x") })
-assert_throws("AttributeError", fn() { Math.tau })        // bare read
-assert_throws("AttributeError", fn() { IO.push(1) })      // array-method name
+assert_throws("AttributeError", fn () {
+  IO.read_all()
+})  // removed API
+assert_throws("AttributeError", fn () {
+  FS.nope("x")
+})
+assert_throws("AttributeError", fn () {
+  Math.tau
+})  // bare read
+assert_throws("AttributeError", fn () {
+  IO.push(1)
+})  // array-method name
 
 // A namespace bound to a value carries the same behavior (the marker travels
 // with the value).
 let io = IO
-assert_throws("AttributeError", fn() { io.read_all() })
+assert_throws("AttributeError", fn () {
+  io.read_all()
+})
 
 // The error is a normal catchable runtime exception, so a script can probe for
 // an optional API without a separate process.
 let mut probed = false
-try { IO.read_all() } catch e { probed = (e.kind == "AttributeError") }
+try {
+  IO.read_all()
+} catch e {
+  probed = e.kind == "AttributeError"
+}
 assert_true(probed)
 
 // --- The culebra-source namespaces are closed too ---
@@ -34,28 +48,38 @@ assert_true(probed)
 // Naming a module here splices it into the JIT entry module (seconds of
 // compile time each), so the per-module cases live in that module's own test;
 // Time and Log are the cheap two and cover the shared path.
-assert_throws("AttributeError", fn() { Time.time() })     // Python name, absent
-assert_throws("AttributeError", fn() { Log.warning("x") })
+assert_throws("AttributeError", fn () {
+  Time.time()
+})  // Python name, absent
+assert_throws("AttributeError", fn () {
+  Log.warning("x")
+})
 
 // The marker travels with the value here as well.
 let t = Time
-assert_throws("AttributeError", fn() { t.typo })
+assert_throws("AttributeError", fn () {
+  t.typo
+})
 
 // A miss no longer escapes as nil to fail somewhere else: reading the bad name
 // raises at the read, not inside whatever consumes the nil.
-fn deadline(now) { now + 60 }
-assert_throws("AttributeError", fn() { deadline(Time.time) })
+fn deadline(now) {
+  now + 60
+}
+assert_throws("AttributeError", fn () {
+  deadline(Time.time)
+})
 
 // (`Path` is a class rather than a namespace, so it keeps the permissive rule;
 // that exclusion is pinned in tests/test_path.cul, which already splices it.)
 
 // --- Real members and dict builtins still resolve on a namespace ---
-assert_true(IO.keys().size() > 0)            // dict builtin over a namespace
-assert_true(IO.has("print"))                 // dict builtin
+assert_true(IO.keys().size() > 0)  // dict builtin over a namespace
+assert_true(IO.has("print"))       // dict builtin
 assert_true(FS.exists("tests/test_namespace_attr.cul"))
 assert_true(Math.pi > 3.14 && Math.pi < 3.15)
-assert_eq(Time.seconds(2).seconds(), 2.0)    // lazy namespace, real member
-assert_true(Time.keys().size() > 0)          // dict builtin over a lazy one
+assert_eq(Time.seconds(2).seconds(), 2.0)  // lazy namespace, real member
+assert_true(Time.keys().size() > 0)        // dict builtin over a lazy one
 assert_true(Time.has("now"))
 
 // --- Plain dicts are UNCHANGED: a missing key reads as nil ---

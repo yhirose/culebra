@@ -9,7 +9,7 @@
 mut i = 0
 mut acc = []
 while i < 3 {
-  p = i * 10            // fresh immutable binding per iteration
+  p = i * 10  // fresh immutable binding per iteration
   acc.push(p)
   i = i + 1
 }
@@ -28,16 +28,26 @@ assert_eq(acc2, [1, 2, 3])
 // 3. A binding first introduced inside the body does NOT leak out (fresh
 //    scope, like `for`). Referencing it after the loop is a NameError.
 mut k = 0
-while k < 1 { leaked = 99; k = k + 1 }
+while k < 1 {
+  leaked = 99
+  k = k + 1
+}
 mut saw_err = false
-try { inspect(leaked) } catch e { saw_err = true }
+try {
+  inspect(leaked)
+} catch e {
+  saw_err = true
+}
 assert_eq(saw_err, true)
 
 // 4. An outer `mut` accumulator is still reassigned from inside via the scope
 //    chain — the common loop idiom is unaffected by the fresh body scope.
 mut total = 0
 mut m = 0
-while m < 4 { total = total + m; m = m + 1 }
+while m < 4 {
+  total = total + m
+  m = m + 1
+}
 assert_eq(total, 6)
 
 // 5. `defer` in a while body fires per iteration (not at function exit),
@@ -46,7 +56,9 @@ fn defer_order() {
   mut out = []
   mut n = 0
   while n < 2 {
-    defer { out.push("c") }
+    defer {
+      out.push("c")
+    }
     out.push(n)
     n = n + 1
   }
@@ -60,8 +72,12 @@ fn defer_break() {
   mut out = []
   mut n = 0
   while n < 5 {
-    defer { out.push("cleanup") }
-    if n == 2 { break }
+    defer {
+      out.push("cleanup")
+    }
+    if n == 2 {
+      break
+    }
     out.push(n)
     n = n + 1
   }

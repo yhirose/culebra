@@ -7,53 +7,123 @@
 # converted in shared.h / interpreter.h / tensor.h / stdlib_interp.h.
 
 # --- TypeError ---
-let r1 = try { let _ = 'a' < 1; nil } catch e { e }
+let r1 = try {
+  let _ = 'a' < 1
+  nil
+} catch e {
+  e
+}
 assert_eq(r1.kind, 'TypeError')
 
-let r2 = try { let _ = 1 + 'b'; nil } catch e { e }
+let r2 = try {
+  let _ = 1 + 'b'
+  nil
+} catch e {
+  e
+}
 assert_eq(r2.kind, 'TypeError')
 
 # Ordered comparison of same-type collections is a catchable TypeError,
 # never an uncatchable internal abort. (== is structural; <,<=,>,>= are a
 # type error — see value-equality.) Regression: ord_compare used to fall
 # through to a C++ logic_error that try/catch could not intercept.
-let r2b = try { let _ = [1] < [2]; nil } catch e { e }
+let r2b = try {
+  let _ = [1] < [2]
+  nil
+} catch e {
+  e
+}
 assert_eq(r2b.kind, 'TypeError')
-let r2c = try { let _ = {} < {}; nil } catch e { e }
+let r2c = try {
+  let _ = {} < {}
+  nil
+} catch e {
+  e
+}
 assert_eq(r2c.kind, 'TypeError')
-let r2d = try { let _ = (1, 2) < (3, 4); nil } catch e { e }
+let r2d = try {
+  let _ = (1, 2) < (3, 4)
+  nil
+} catch e {
+  e
+}
 assert_eq(r2d.kind, 'TypeError')
 
 # --- ZeroDivisionError ---
-let r3 = try { let _ = 1 / 0; nil } catch e { e }
+let r3 = try {
+  let _ = 1 / 0
+  nil
+} catch e {
+  e
+}
 assert_eq(r3.kind, 'ZeroDivisionError')
 
-let r4 = try { let _ = 1.0 / 0.0; nil } catch e { e }
+let r4 = try {
+  let _ = 1.0 / 0.0
+  nil
+} catch e {
+  e
+}
 assert_eq(r4.kind, 'ZeroDivisionError')
 
-let r5 = try { let _ = 1 % 0; nil } catch e { e }
+let r5 = try {
+  let _ = 1 % 0
+  nil
+} catch e {
+  e
+}
 assert_eq(r5.kind, 'ZeroDivisionError')
 
 # A name bound in no scope is a *static* error caught before eval (the
 # sound subset, alongside ShadowError). A flow-dependent NameError — a
 # name read before its own later declaration runs — stays runtime-catchable:
-let r_nameread = try { read_before_decl; let read_before_decl = 1; nil } catch e { e }
+let r_nameread = try {
+  read_before_decl
+  let read_before_decl = 1
+  nil
+} catch e {
+  e
+}
 assert_eq(r_nameread.kind, 'NameError')
 
 let r_namewrite = try {
-  fn () { let z = rhs_before_decl; let rhs_before_decl = 1; z }()
-} catch e { e.kind }
+  fn () {
+    let z = rhs_before_decl
+    let rhs_before_decl = 1
+    z
+  }()
+} catch e {
+  e.kind
+}
 assert_eq(r_namewrite, 'NameError')
 
 # --- IndexError ---
-let r7 = try { let a = [1, 2, 3]; let _ = a[10]; nil } catch e { e }
+let r7 = try {
+  let a = [1, 2, 3]
+  let _ = a[10]
+  nil
+} catch e {
+  e
+}
 assert_eq(r7.kind, 'IndexError')
 
 # --- DropContractError ---
-let r9 = try { let _ = { drop: 42 }; nil } catch e { e }
+let r9 = try {
+  let _ = {drop: 42}
+  nil
+} catch e {
+  e
+}
 assert_eq(r9.kind, 'DropContractError')
 
-let r10 = try { let _ = { drop: fn (x) { x } }; nil } catch e { e }
+let r10 = try {
+  let _ = {drop: fn (x) {
+    x
+  }}
+  nil
+} catch e {
+  e
+}
 assert_eq(r10.kind, 'DropContractError')
 
 # Note: ImmutableError on plain variables is interp-only — JIT does not
@@ -66,7 +136,9 @@ let r11b = try {
   let o = {x: 1}
   o['x'] = 2
   nil
-} catch e { e }
+} catch e {
+  e
+}
 assert_eq(r11b.kind, 'ImmutableError')
 
 # Compound subscript-set on a missing key raises KeyError on both
@@ -76,7 +148,9 @@ let r11c = try {
   mut o = {mut a: 1}
   o['missing'] += 1
   nil
-} catch e { e }
+} catch e {
+  e
+}
 assert_eq(r11c.kind, 'KeyError')
 
 # Compound subscript-set on an immutable shape slot raises
@@ -85,7 +159,9 @@ let r11d = try {
   let o = {x: 1}
   o['x'] += 1
   nil
-} catch e { e }
+} catch e {
+  e
+}
 assert_eq(r11d.kind, 'ImmutableError')
 
 # Subscript-set on an immutable Tuple-keyed sidecar slot also raises
@@ -95,30 +171,49 @@ let r11e = try {
   let m = {(1, 2): 10}
   m[(1, 2)] = 20
   nil
-} catch e { e }
+} catch e {
+  e
+}
 assert_eq(r11e.kind, 'ImmutableError')
 
 # --- ValueError ---
-let r12 = try { let _ = [].min(); nil } catch e { e }
+let r12 = try {
+  let _ = [].min()
+  nil
+} catch e {
+  e
+}
 assert_eq(r12.kind, 'ValueError')
 
 # JSON.parse errors carry the JSON-internal line:col (1-based, within
 # the parsed string — not the caller's source line). The structured
 # Error exposes the position via e.line / e.col.
-let r_json = try { JSON.parse('{"a": ,}'); nil } catch e { e }
+let r_json = try {
+  JSON.parse('{"a": ,}')
+  nil
+} catch e {
+  e
+}
 assert_eq(r_json.kind, 'ValueError')
 assert_eq(r_json.line, 1)
 assert_eq(r_json.col, 7)
 
 # JSON.stringify(lines: true) requires Array/Tuple/Set
-let r_json2 = try { JSON.stringify({a: 1}, lines: true); nil } catch e { e }
+let r_json2 = try {
+  JSON.stringify({a: 1}, lines: true)
+  nil
+} catch e {
+  e
+}
 assert_eq(r_json2.kind, 'TypeError')
 
 # lines + indent is incompatible
 let r_json3 = try {
   JSON.stringify([1, 2], lines: true, indent: 2)
   nil
-} catch e { e }
+} catch e {
+  e
+}
 assert_eq(r_json3.kind, 'TypeError')
 
 # `o.b += 1` on a missing property — interp and JIT both throw
@@ -128,19 +223,28 @@ let r_attr = try {
   let mut o_attr = {a: 1}
   o_attr.b += 1
   nil
-} catch e { e }
+} catch e {
+  e
+}
 assert_eq(r_attr.kind, 'AttributeError')
 assert_true(r_attr.message.contains('compound assignment on missing property'))
 
 # --- AssertionError ---
-let r14 = try { assert_true(false); nil } catch e { e }
+let r14 = try {
+  assert_true(false)
+  nil
+} catch e {
+  e
+}
 assert_eq(r14.kind, 'AssertionError')
 
 # --- Destructure mismatch (interp + JIT agree on kind / message) ---
 let r_destr = try {
   let {present, missing} = {present: 1}
   nil
-} catch e { e }
+} catch e {
+  e
+}
 assert_eq(r_destr.kind, 'ValueError')
 assert_true(r_destr.message.contains('destructure pattern did not match value'))
 
@@ -149,48 +253,84 @@ assert_true(r_destr.message.contains('destructure pattern did not match value'))
 # fails to dispatch while walking the assignment target. Both backends
 # attribute it to the chain head `ret_f` (col 3), not the inner `()` arg
 # list — matching the rvalue call path.
-fn f_one(x) { x }
-fn ret_f() { f_one }
+fn f_one(x) {
+  x
+}
+fn ret_f() {
+  f_one
+}
 let r_lvcall = try {
   let mut holder = {}
   ret_f()(1, 2, 3).slot = holder
   nil
-} catch e { e }
+} catch e {
+  e
+}
 assert_eq(r_lvcall.kind, 'DispatchError')
 # Column anchors at `ret_f` (col 3), the same node the rvalue path uses.
 # Line and column both match across backends: the JIT no longer shifts
 # error lines by the stdlib preamble height (the preamble is now spliced
 # into the AST after parse, so user nodes keep their natural positions).
-assert_eq(r_lvcall.line, 156)
+assert_eq(r_lvcall.line, 264)
 assert_eq(r_lvcall.col, 3)
 
 # --- Runtime helpers (throwing stdlib functions) ---
 # Verify the JIT sweep that routes runtime-helper calls through the
 # landingpad: Math.pow with a negative exp, to_long on bad input,
 # Random.int with hi <= lo all surface to user catch as TypeError.
-let r_pow = try { Math.pow(2, -1); nil } catch e { e }
+let r_pow = try {
+  Math.pow(2, -1)
+  nil
+} catch e {
+  e
+}
 assert_eq(r_pow.kind, 'TypeError')
 
-let r_tolong = try { to_long('not a number'); nil } catch e { e }
+let r_tolong = try {
+  to_long('not a number')
+  nil
+} catch e {
+  e
+}
 assert_eq(r_tolong.kind, 'TypeError')
 
-let r_rand = try { Random.int(5, 1); nil } catch e { e }
+let r_rand = try {
+  Random.int(5, 1)
+  nil
+} catch e {
+  e
+}
 assert_eq(r_rand.kind, 'TypeError')
 
 # --- structure introspection: fields are usable ---
-let e_ = try { let _ = 1 / 0; nil } catch e { e }
+let e_ = try {
+  let _ = 1 / 0
+  nil
+} catch e {
+  e
+}
 assert_eq(e_.kind, 'ZeroDivisionError')
 assert_ne(e_.message, '')
-assert_gt(e_.line, 0)   # location is attached by eval() wrapper
+assert_gt(e_.line, 0)  # location is attached by eval() wrapper
 assert_gt(e_.col, 0)
 
 # --- user `throw expr` is unaffected ---
-let r15 = try { throw 'plain string'; nil } catch e { e }
+let r15 = try {
+  throw 'plain string'
+  nil
+} catch e {
+  e
+}
 assert_true(type_of(r15) == 'String' && r15 == 'plain string')
 
 # --- catch can re-throw the structured error ---
 let r16 = try {
-  try { let _ = 1 / 0; nil } catch e { throw e }
+  try {
+    let _ = 1 / 0
+    nil
+  } catch e {
+    throw e
+  }
 } catch outer {
   outer.kind
 }
@@ -207,15 +347,22 @@ let r_attr = try {
   mut o = {a: 1}
   o.missing += 1
   nil
-} catch e { e }
+} catch e {
+  e
+}
 assert_eq(r_attr.kind, 'AttributeError')
-assert_eq(r_attr.line, 208)
+assert_eq(r_attr.line, 348)
 assert_eq(r_attr.col, 5)
 
-let r_type = try { let _ = 'a' < 1; nil } catch e { e }
+let r_type = try {
+  let _ = 'a' < 1
+  nil
+} catch e {
+  e
+}
 assert_eq(r_type.kind, 'TypeError')
-assert_eq(r_type.line, 215)
-assert_eq(r_type.col, 28)
+assert_eq(r_type.line, 358)
+assert_eq(r_type.col, 11)
 
 # --- built-in method arity: symmetric count-based ArityError ---
 # A fixed-shape builtin on a value-typed receiver rejects too few / too
@@ -223,25 +370,50 @@ assert_eq(r_type.col, 28)
 # (this file runs under all three). Too-many used to be silently dropped
 # on interp and surfaced as "expected Function, got Nil" on the JIT;
 # both now match.
-let r_af = try { [1].push(); nil } catch e { e }
+let r_af = try {
+  [1].push()
+  nil
+} catch e {
+  e
+}
 assert_eq(r_af.kind, 'ArityError')
 assert_eq(r_af.message, "'push' takes 1 argument but 0 given")
 
-let r_am = try { [1].push(1, 2, 3); nil } catch e { e }
+let r_am = try {
+  [1].push(1, 2, 3)
+  nil
+} catch e {
+  e
+}
 assert_eq(r_am.kind, 'ArityError')
 assert_eq(r_am.message, "'push' takes 1 argument but 3 given")
 
-let r_a0 = try { [1].size(9); nil } catch e { e }
+let r_a0 = try {
+  [1].size(9)
+  nil
+} catch e {
+  e
+}
 assert_eq(r_a0.kind, 'ArityError')
 assert_eq(r_a0.message, "'size' takes 0 arguments but 1 given")
 
-let r_a2 = try { [1].slice(0, 1, 2); nil } catch e { e }
+let r_a2 = try {
+  [1].slice(0, 1, 2)
+  nil
+} catch e {
+  e
+}
 assert_eq(r_a2.kind, 'ArityError')
 assert_eq(r_a2.message, "'slice' takes 2 arguments but 3 given")
 
 # A receiver type that doesn't define the method stays a TypeError (the
 # "type lacks method" path), NOT an arity error — on both backends.
-let r_amiss = try { "abc".push(1, 2); nil } catch e { e }
+let r_amiss = try {
+  "abc".push(1, 2)
+  nil
+} catch e {
+  e
+}
 assert_eq(r_amiss.kind, 'TypeError')
 
 # Passing a non-Function where a higher-order builtin expects a callback
@@ -249,15 +421,30 @@ assert_eq(r_amiss.kind, 'TypeError')
 # both backends. (interp routes the argument through its typed-param
 # check; the JIT's _culebra_expect_callback matches the wording. The
 # callback param is `f` for every such builtin.)
-let r_cb1 = try { let _ = [1, 2, 3].map({}); nil } catch e { e }
+let r_cb1 = try {
+  let _ = [1, 2, 3].map({})
+  nil
+} catch e {
+  e
+}
 assert_eq(r_cb1.kind, 'TypeError')
 assert_eq(r_cb1.message, "type error: parameter 'f' expects Function")
 
-let r_cb2 = try { let _ = [1, 2, 3].reduce(0, 5); nil } catch e { e }
+let r_cb2 = try {
+  let _ = [1, 2, 3].reduce(0, 5)
+  nil
+} catch e {
+  e
+}
 assert_eq(r_cb2.kind, 'TypeError')
 assert_eq(r_cb2.message, "type error: parameter 'f' expects Function")
 
-let r_cb3 = try { let _ = [1, 2, 3].sort_by('x'); nil } catch e { e }
+let r_cb3 = try {
+  let _ = [1, 2, 3].sort_by('x')
+  nil
+} catch e {
+  e
+}
 assert_eq(r_cb3.kind, 'TypeError')
 assert_eq(r_cb3.message, "type error: parameter 'f' expects Function")
 
@@ -265,26 +452,54 @@ assert_eq(r_cb3.message, "type error: parameter 'f' expects Function")
 # Iterator-protocol methods and dict methods are TAG_OBJECT on the JIT,
 # but their arity errors still match interp. Iterator too-many used to be
 # silently dropped on interp and "expected Function, got Nil" on the JIT.
-let r_im = try { [1, 2].iter().map(fn (x) { x }, fn (y) { y }); nil }
-           catch e { e }
+let r_im = try {
+  [1, 2].iter().map(fn (x) {
+        x
+      }, fn (y) {
+        y
+      })
+  nil
+} catch e {
+  e
+}
 assert_eq(r_im.kind, 'ArityError')
 assert_eq(r_im.message, "'map' takes 1 argument but 2 given")
 
-let r_ic = try { [1, 2].iter().collect(9); nil } catch e { e }
+let r_ic = try {
+  [1, 2].iter().collect(9)
+  nil
+} catch e {
+  e
+}
 assert_eq(r_ic.kind, 'ArityError')
 assert_eq(r_ic.message, "'collect' takes 0 arguments but 1 given")
 
-let r_dk = try { {a: 1}.keys(9); nil } catch e { e }
+let r_dk = try {
+  {a: 1}.keys(9)
+  nil
+} catch e {
+  e
+}
 assert_eq(r_dk.kind, 'ArityError')
 assert_eq(r_dk.message, "'keys' takes 0 arguments but 1 given")
 
-let r_dh = try { {a: 1}.has(); nil } catch e { e }
+let r_dh = try {
+  {a: 1}.has()
+  nil
+} catch e {
+  e
+}
 assert_eq(r_dh.kind, 'ArityError')
 assert_eq(r_dh.message, "'has' takes 1 argument but 0 given")
 
 # A name that resolves to no builtin at all stays a TypeError (not
 # arity) on both backends — the "type lacks method" path.
-let r_dmiss = try { {a: 1}.nope(1); nil } catch e { e }
+let r_dmiss = try {
+  {a: 1}.nope(1)
+  nil
+} catch e {
+  e
+}
 assert_eq(r_dmiss.kind, 'TypeError')
 
 # An iterator-protocol method on a non-iterator-shaped Object (a plain
@@ -294,102 +509,216 @@ assert_eq(r_dmiss.kind, 'TypeError')
 # terminal ones (sum/reduce); now every iterator method matches interp's
 # "expected Function, got Nil" at the call. (A real iterator with `next`
 # still chains — covered by the iterator tests.)
-let r_dmap = try { {a: 1}.map(fn (x) { x }); nil } catch e { e }
+let r_dmap = try {
+  {a: 1}.map(fn (x) {
+    x
+  })
+  nil
+} catch e {
+  e
+}
 assert_eq(r_dmap.kind, 'TypeError')
 assert_eq(r_dmap.message, "type error: expected Function, got Nil")
 
-let r_dsum = try { {a: 1}.sum(); nil } catch e { e }
+let r_dsum = try {
+  {a: 1}.sum()
+  nil
+} catch e {
+  e
+}
 assert_eq(r_dsum.kind, 'TypeError')
 assert_eq(r_dsum.message, "type error: expected Function, got Nil")
 
 # A reduction's 1-arg form is the Tensor axis reduction; on a non-Tensor
 # it is whatever interp resolves it to, NOT "expected Tensor". The JIT
 # used to greedily claim `arg-count == 1` for the Tensor path.
-let r_asum = try { [1, 2].sum(9); nil } catch e { e }
-assert_eq(r_asum.kind, 'ArityError')                       # Array.sum takes 0
+let r_asum = try {
+  [1, 2].sum(9)
+  nil
+} catch e {
+  e
+}
+assert_eq(r_asum.kind, 'ArityError')  # Array.sum takes 0
 assert_eq(r_asum.message, "'sum' takes 0 arguments but 1 given")
 
-let r_amean = try { [1, 2].mean(9); nil } catch e { e }     # Array has no mean
+let r_amean = try {
+  [1, 2].mean(9)
+  nil
+} catch e {
+  e
+}  # Array has no mean
 assert_eq(r_amean.kind, 'TypeError')
 assert_eq(r_amean.message, "type error: expected Function, got Nil")
 
 # Iterator-only methods (collect/count/take/...) on a value type or scalar
 # follow interp's resolution: a value type that lacks them is method-miss,
 # a scalar is the member-access error — not the codegen's "expected Object".
-let r_acoll = try { [1].collect(); nil } catch e { e }
+let r_acoll = try {
+  [1].collect()
+  nil
+} catch e {
+  e
+}
 assert_eq(r_acoll.kind, 'TypeError')
 assert_eq(r_acoll.message, "type error: expected Function, got Nil")
 
-let r_scoll = try { (5).collect(); nil } catch e { e }
+let r_scoll = try {
+  5.collect()
+  nil
+} catch e {
+  e
+}
 assert_eq(r_scoll.kind, 'TypeError')
-assert_eq(r_scoll.message, "type error: expected Object, Array, or Tensor, got Long")
+assert_eq(
+  r_scoll.message,
+  "type error: expected Object, Array, or Tensor, got Long",
+)
 
 # The JIT fuses `.map(λ).collect()`, but the fusion is only valid for an
 # iterator-shaped receiver. On an Array — whose `.map` is eager, so
 # `.collect()` on the result is method-miss — it must NOT leak the fused
 # path's "expected Object, got Array"; it falls back to the unfused map
 # (eager) then collect (method-miss), matching interp.
-let r_mc = try { [1, 2, 3].map(fn (x) { x * 2 }).collect(); nil } catch e { e }
+let r_mc = try {
+  [1, 2, 3].map(fn (x) {
+      x * 2
+    }).collect()
+  nil
+} catch e {
+  e
+}
 assert_eq(r_mc.kind, 'TypeError')
 assert_eq(r_mc.message, "type error: expected Function, got Nil")
 # The valid fused path still produces the collected array.
-assert_eq([1, 2, 3].iter().map(fn (x) { x * 2 }).collect(), [2, 4, 6])
+assert_eq([1, 2, 3].iter().map(fn (x) {
+      x * 2
+    }).collect(), [2, 4, 6])
 
 # A type-specific builtin method on the WRONG receiver resolves like
 # interp, not via the codegen's "expected <SpecificType>". A scalar can't
 # be an object → the member-access error; an object-ish value of the wrong
 # type just lacks the method → "expected Function, got Nil". (The JIT used
 # to leak "expected String/Tensor/Set, got X".)
-let r_su = try { (2).upper(); nil } catch e { e }            # String method on Long
+let r_su = try {
+  2.upper()
+  nil
+} catch e {
+  e
+}  # String method on Long
 assert_eq(r_su.kind, 'TypeError')
-assert_eq(r_su.message, "type error: expected Object, Array, or Tensor, got Long")
+assert_eq(
+  r_su.message,
+  "type error: expected Object, Array, or Tensor, got Long",
+)
 
-let r_au = try { [1].upper(); nil } catch e { e }            # String method on Array
+let r_au = try {
+  [1].upper()
+  nil
+} catch e {
+  e
+}  # String method on Array
 assert_eq(r_au.kind, 'TypeError')
 assert_eq(r_au.message, "type error: expected Function, got Nil")
 
-let r_tp = try { (2).pow(3); nil } catch e { e }             # Tensor method on Long
+let r_tp = try {
+  2.pow(3)
+  nil
+} catch e {
+  e
+}  # Tensor method on Long
 assert_eq(r_tp.kind, 'TypeError')
-assert_eq(r_tp.message, "type error: expected Object, Array, or Tensor, got Long")
+assert_eq(
+  r_tp.message,
+  "type error: expected Object, Array, or Tensor, got Long",
+)
 
-let r_su2 = try { [1].union([2]); nil } catch e { e }        # Set method on Array
+let r_su2 = try {
+  [1].union([2])
+  nil
+} catch e {
+  e
+}  # Set method on Array
 assert_eq(r_su2.kind, 'TypeError')
 assert_eq(r_su2.message, "type error: expected Function, got Nil")
 
-let r_ap = try { (2).push(1); nil } catch e { e }            # Array method on Long
+let r_ap = try {
+  2.push(1)
+  nil
+} catch e {
+  e
+}  # Array method on Long
 assert_eq(r_ap.kind, 'TypeError')
-assert_eq(r_ap.message, "type error: expected Object, Array, or Tensor, got Long")
+assert_eq(
+  r_ap.message,
+  "type error: expected Object, Array, or Tensor, got Long",
+)
 
 # range / iota take 1 or 2 positional args. Too few/many is an ArityError
 # (no silent truncation, no empty-range), and an unknown keyword is a
 # TypeError — same on bare calls, UFCS, and all three backends.
-let r_r3 = try { range(0, 5, 10); nil } catch e { e }
+let r_r3 = try {
+  range(0, 5, 10)
+  nil
+} catch e {
+  e
+}
 assert_eq(r_r3.kind, 'ArityError')
 assert_eq(r_r3.message, "'range' takes 1 to 2 arguments but 3 given")
 
-let r_i0 = try { iota(); nil } catch e { e }
+let r_i0 = try {
+  iota()
+  nil
+} catch e {
+  e
+}
 assert_eq(r_i0.kind, 'ArityError')
 assert_eq(r_i0.message, "'iota' takes 1 to 2 arguments but 0 given")
 
-let r_ik = try { iota(3, step: 2); nil } catch e { e }
+let r_ik = try {
+  iota(3, step: 2)
+  nil
+} catch e {
+  e
+}
 assert_eq(r_ik.kind, 'TypeError')
 assert_eq(r_ik.message, "unknown keyword argument 'step'")
 
-let r_ur = try { (0).range(5, 10); nil } catch e { e }       # UFCS, 3 total positional
+let r_ur = try {
+  0.range(5, 10)
+  nil
+} catch e {
+  e
+}  # UFCS, 3 total positional
 assert_eq(r_ur.kind, 'ArityError')
 assert_eq(r_ur.message, "'range' takes 1 to 2 arguments but 3 given")
 
 # Same diagnostics through the value/closure path (range/iota as first-class
 # values routed via call_with_kwargs), not just the direct-call fast path.
-let r_sp = try { iota(0, 6, **{step: 2}); nil } catch e { e }   # iota has no step
+let r_sp = try {
+  iota(0, 6, **{step: 2})
+  nil
+} catch e {
+  e
+}  # iota has no step
 assert_eq(r_sp.kind, 'TypeError')
 assert_eq(r_sp.message, "unknown keyword argument 'step'")
 
-let r_vp = try { let f = range; f(0, 10, 5); nil } catch e { e } # 3rd positional
+let r_vp = try {
+  let f = range
+  f(0, 10, 5)
+  nil
+} catch e {
+  e
+}  # 3rd positional
 assert_eq(r_vp.kind, 'ArityError')
 assert_eq(r_vp.message, "'range' takes 1 to 2 arguments but 3 given")
 
-let r_bo = try { range(0, 10, **{bogus: 1}); nil } catch e { e }
+let r_bo = try {
+  range(0, 10, **{bogus: 1})
+  nil
+} catch e {
+  e
+}
 assert_eq(r_bo.kind, 'TypeError')
 assert_eq(r_bo.message, "unknown keyword argument 'bogus'")
 
@@ -398,13 +727,22 @@ assert_eq(r_bo.message, "unknown keyword argument 'bogus'")
 # closure ABI carries no line/col (the ns trampoline now backfills from the
 # recorded call site, the analog of interp's eval-wrapper). Single-line so the
 # caught error's line equals the statement's own line.
-let r_nsv = try { let a = Math.abs; a("x") } catch e { e }
+let r_nsv = try {
+  let a = Math.abs
+  a("x")
+} catch e {
+  e
+}
 assert_eq(r_nsv.kind, 'TypeError')
-assert_eq(r_nsv.line, 401)
+assert_eq(r_nsv.line, 732)
 # Through a higher-order call, the error is attributed to the HOF call site.
-let r_nshof = try { ["x", "y"].map(Math.abs) } catch e { e }
+let r_nshof = try {
+  ["x", "y"].map(Math.abs)
+} catch e {
+  e
+}
 assert_eq(r_nshof.kind, 'TypeError')
-assert_eq(r_nshof.line, 405)
+assert_eq(r_nshof.line, 740)
 
 # A built-in method on a receiver whose type doesn't support it reports the
 # same receiver-resolution failure on both backends. The JIT's polymorphic
@@ -413,10 +751,31 @@ assert_eq(r_nshof.line, 405)
 # route through the shared receiver-error path, matching interp's generic
 # message for a scalar receiver (and "expected Function, got Nil" for a wrong
 # object-ish type, via permissive member access).
-let r_rs = try { (1).size() } catch e { e }
+let r_rs = try {
+  1.size()
+} catch e {
+  e
+}
 assert_eq(r_rs.kind, 'TypeError')
-assert_eq(r_rs.message, 'type error: expected Object, Array, or Tensor, got Long')
-let r_rm = try { (1).map(|x| x) } catch e { e }
-assert_eq(r_rm.message, 'type error: expected Object, Array, or Tensor, got Long')
-let r_ri = try { true.iter() } catch e { e }
-assert_eq(r_ri.message, 'type error: expected Object, Array, or Tensor, got Bool')
+assert_eq(
+  r_rs.message,
+  'type error: expected Object, Array, or Tensor, got Long',
+)
+let r_rm = try {
+  1.map(|x| x)
+} catch e {
+  e
+}
+assert_eq(
+  r_rm.message,
+  'type error: expected Object, Array, or Tensor, got Long',
+)
+let r_ri = try {
+  true.iter()
+} catch e {
+  e
+}
+assert_eq(
+  r_ri.message,
+  'type error: expected Object, Array, or Tensor, got Bool',
+)

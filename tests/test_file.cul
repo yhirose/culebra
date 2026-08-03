@@ -3,9 +3,15 @@
 // via `just test`; identical stdout across all three.
 
 let tmpdir_env = Sys.env("TMPDIR")
-let tmp_root = if tmpdir_env != "" { tmpdir_env } else { "/tmp" }
+let tmp_root = if tmpdir_env != "" {
+  tmpdir_env
+} else {
+  "/tmp"
+}
 let p = FS.join(tmp_root, "culebra_file_test.txt")
-if FS.exists(p) { FS.remove(p) }
+if FS.exists(p) {
+  FS.remove(p)
+}
 
 // --- write / flush / close round-trip ---
 let w = File.open(p, "w")
@@ -29,15 +35,15 @@ r2.close()
 // --- seek / tell (set / cur / end) ---
 let r3 = File.open(p, "r")
 assert_eq(r3.tell(), 0)
-r3.seek(6)                    // default whence = "set"
+r3.seek(6)  // default whence = "set"
 assert_eq(r3.tell(), 6)
 assert_eq(r3.read(5), "world")
 r3.seek(0, "set")
 assert_eq(r3.read(5), "hello")
-r3.seek(-6, "end")            // 6 bytes before end -> "world\n"
+r3.seek(-6, "end")  // 6 bytes before end -> "world\n"
 assert_eq(r3.read(5), "world")
 r3.seek(0, "set")
-r3.seek(6, "cur")             // skip "hello\n" relative
+r3.seek(6, "cur")  // skip "hello\n" relative
 assert_eq(r3.read(5), "world")
 r3.close()
 
@@ -54,12 +60,16 @@ FS.remove(crlf)
 // --- lines() with mid-iteration break: dispose closes the handle ---
 let big = FS.join(tmp_root, "culebra_file_big.txt")
 let wb = File.open(big, "w")
-for i in range(0, 100) { wb.write("line{i}\n") }
+for i in range(0, 100) {
+  wb.write("line{i}\n")
+}
 wb.close()
 let first_two = []
 for line in File.open(big, "r").lines() {
   first_two.push(line)
-  if first_two.size() == 2 { break }
+  if first_two.size() == 2 {
+    break
+  }
 }
 assert_eq(first_two, ["line0", "line1"])
 
@@ -67,25 +77,47 @@ assert_eq(first_two, ["line0", "line1"])
 // reports IOError on every backend (the JIT's dispose used to be a no-op —
 // it read `self._id` off the iterator wrapper, which has none).
 let fb = File.open(big, "r")
-for line in fb.lines() { break }
-let e_broken = try { fb.read(); "no-err" } catch e { e.kind }
+for line in fb.lines() {
+  break
+}
+let e_broken = try {
+  fb.read()
+  "no-err"
+} catch e {
+  e.kind
+}
 assert_eq(e_broken, "IOError")
 
 // Terminal methods dispose the lines()/chunks() iterator too (§18.5, same
 // rule as break): draining and early-exiting terminals both close the fd.
 let ft1 = File.open(big, "r")
 assert_eq(ft1.lines().count(), 100)
-let e_t1 = try { ft1.read(); "no-err" } catch e { e.kind }
+let e_t1 = try {
+  ft1.read()
+  "no-err"
+} catch e {
+  e.kind
+}
 assert_eq(e_t1, "IOError")
 
 let ft2 = File.open(big, "r")
 assert_eq(ft2.lines().find(|l| l == "line1"), "line1")
-let e_t2 = try { ft2.read(); "no-err" } catch e { e.kind }
+let e_t2 = try {
+  ft2.read()
+  "no-err"
+} catch e {
+  e.kind
+}
 assert_eq(e_t2, "IOError")
 
 let ft3 = File.open(big, "r")
 assert_eq(ft3.chunks(4096).count(), 1)
-let e_t3 = try { ft3.read(); "no-err" } catch e { e.kind }
+let e_t3 = try {
+  ft3.read()
+  "no-err"
+} catch e {
+  e.kind
+}
 assert_eq(e_t3, "IOError")
 FS.remove(big)
 
@@ -100,11 +132,15 @@ assert_eq(chunks, ["abc", "def", "g"])
 FS.remove(cf)
 
 // --- File.with: scoped handle, returns the block value, closes after ---
-let n = File.with(p, "r", fn (f) { f.read(5) })
+let n = File.with(p, "r", fn (f) {
+  f.read(5)
+})
 assert_eq(n, "hello")
 
 // File.with with an explicit `return` in the block (must unwrap, not escape).
-let n2 = File.with(p, "r", fn (f) { return f.read(5) })
+let n2 = File.with(p, "r", fn (f) {
+  return f.read(5)
+})
 assert_eq(n2, "hello")
 
 // --- append mode ---
@@ -116,17 +152,24 @@ assert_eq(FS.read(p), "hello\nworld\n!")
 // --- close() is idempotent ---
 let c = File.open(p, "r")
 c.close()
-c.close()                     // no-op, no throw
+c.close()  // no-op, no throw
 
 // --- error paths ---
-let e_mode = try { File.open(p, "q"); "no-err" } catch e { e.kind }
+let e_mode = try {
+  File.open(p, "q")
+  "no-err"
+} catch e {
+  e.kind
+}
 assert_eq(e_mode, "ValueError")
 
 let e_write = try {
   let rh = File.open(p, "r")
   rh.write("x")
   "no-err"
-} catch e { e.kind }
+} catch e {
+  e.kind
+}
 assert_eq(e_write, "IOError")
 
 let e_closed = try {
@@ -134,13 +177,20 @@ let e_closed = try {
   ch.close()
   ch.read()
   "no-err"
-} catch e { e.kind }
+} catch e {
+  e.kind
+}
 assert_eq(e_closed, "IOError")
 
 // A handle method's error is positioned at the call, like every other error.
 let ph = File.open(p, "r")
 ph.close()
-let e_pos = try { ph.read(); nil } catch e { e }
+let e_pos = try {
+  ph.read()
+  nil
+} catch e {
+  e
+}
 assert_true(e_pos.line > 0 && e_pos.col > 0)
 
 // A lines() step reports where the ITERATOR was built, not at the loop that
@@ -148,7 +198,14 @@ assert_true(e_pos.line > 0 && e_pos.col > 0)
 let lh = File.open(p, "r")
 let lit = lh.lines()
 lh.close()
-let e_lines = try { for l in lit { l }; nil } catch e { e }
+let e_lines = try {
+  for l in lit {
+    l
+  }
+  nil
+} catch e {
+  e
+}
 assert_eq(e_lines.kind, "IOError")
 assert_true(e_lines.line > 0 && e_lines.col > 0)
 
@@ -159,10 +216,14 @@ assert_true(e_lines.line > 0 && e_lines.col > 0)
 // string round-trip in tests/embedding/utf8_invalid_smoke.cc.)
 let bin = FS.join(tmp_root, "culebra_file_bin.dat")
 let payload = "a日本語b"
-File.with(bin, "w", fn (f) { f.write(payload) })
-let back = File.with(bin, "r", fn (f) { f.read() })
+File.with(bin, "w", fn (f) {
+  f.write(payload)
+})
+let back = File.with(bin, "r", fn (f) {
+  f.read()
+})
 assert_eq(back, payload)
-assert_eq(back.size(), 11)   // 'a' + 3×3 (CJK) + 'b'
+assert_eq(back.size(), 11)  // 'a' + 3×3 (CJK) + 'b'
 FS.remove(bin)
 
 // --- argument validation (interp/JIT symmetric) ---
@@ -171,23 +232,50 @@ FS.remove(bin)
 // (read's n, seek's whence) alike. The JIT used to silently degrade
 // these to the no-arg/default behavior.
 let vf = FS.join(tmp_root, "culebra_file_check.txt")
-File.with(vf, "w", fn (f) { f.write("0123456789") })
-let kind_of = fn (body) { try { body(); "no-err" } catch e { e.kind } }
+File.with(vf, "w", fn (f) {
+  f.write("0123456789")
+})
+let kind_of = fn (body) {
+  try {
+    body()
+    "no-err"
+  } catch e {
+    e.kind
+  }
+}
 File.with(vf, "r", fn (f) {
-  assert_eq(kind_of(fn () { f.read("x") }), "TypeError")
-  assert_eq(kind_of(fn () { f.read(n: "x") }), "TypeError")
-  assert_eq(kind_of(fn () { f.seek() }), "ArityError")
-  assert_eq(kind_of(fn () { f.seek("x") }), "TypeError")
-  assert_eq(kind_of(fn () { f.seek(0, 5) }), "TypeError")
-  assert_eq(kind_of(fn () { f.chunks() }), "ArityError")
-  assert_eq(kind_of(fn () { f.chunks("x") }), "TypeError")
+  assert_eq(kind_of(fn () {
+      f.read("x")
+    }), "TypeError")
+  assert_eq(kind_of(fn () {
+      f.read(n: "x")
+    }), "TypeError")
+  assert_eq(kind_of(fn () {
+      f.seek()
+    }), "ArityError")
+  assert_eq(kind_of(fn () {
+      f.seek("x")
+    }), "TypeError")
+  assert_eq(kind_of(fn () {
+      f.seek(0, 5)
+    }), "TypeError")
+  assert_eq(kind_of(fn () {
+      f.chunks()
+    }), "ArityError")
+  assert_eq(kind_of(fn () {
+      f.chunks("x")
+    }), "TypeError")
   // the handle survives a failed check and still works
   f.seek(offset: 3)
   assert_eq(f.read(n: 2), "34")
 })
 File.with(vf, "w", fn (f) {
-  assert_eq(kind_of(fn () { f.write() }), "ArityError")
-  assert_eq(kind_of(fn () { f.write(123) }), "TypeError")
+  assert_eq(kind_of(fn () {
+      f.write()
+    }), "ArityError")
+  assert_eq(kind_of(fn () {
+      f.write(123)
+    }), "TypeError")
 })
 FS.remove(vf)
 

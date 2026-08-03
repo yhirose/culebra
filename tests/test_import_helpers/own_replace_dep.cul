@@ -1,7 +1,11 @@
 # A module that defines `replace` itself. Naming the token must not let the
 # stdlib binding win over the module's own definition.
 
-let replace = fn (s, pat, repl) { "own:{s}" }
-let apply = fn (s) { replace(s, "a", "b") }
+let replace = fn (s, pat, repl) {
+  "own:{s}"
+}
+let apply = fn (s) {
+  replace(s, "a", "b")
+}
 
 export {apply}

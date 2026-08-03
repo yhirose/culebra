@@ -6,12 +6,16 @@
 # Basic: a callable class instance behaves like a function.
 test_call_basic = fn () {
   class Adder {
-    new(b) { self.b = b }
-    __call__(x) { self.b + x }
+    new(b) {
+      self.b = b
+    }
+    __call__(x) {
+      self.b + x
+    }
   }
   let f = Adder.new(3)
   assert_eq(f(10), 13)
-  assert_eq(Adder.new(100)(1), 101)   # call a fresh instance directly
+  assert_eq(Adder.new(100)(1), 101)  # call a fresh instance directly
 }
 
 # Variadic positional args reach __call__ through *xs.
@@ -20,7 +24,9 @@ test_call_variadic = fn () {
     new() {}
     __call__(*xs) {
       mut total = 0
-      for x in xs { total = total + x }
+      for x in xs {
+        total = total + x
+      }
       total
     }
   }
@@ -33,47 +39,76 @@ test_call_variadic = fn () {
 # Chaining: a model whose __call__ invokes its layers' __call__.
 test_call_chain = fn () {
   class Layer {
-    new(w) { self.w = w }
-    __call__(x) { x * self.w }
+    new(w) {
+      self.w = w
+    }
+    __call__(x) {
+      x * self.w
+    }
   }
   class Model {
-    new() { self.l1 = Layer.new(2); self.l2 = Layer.new(3) }
-    __call__(x) { self.l2(self.l1(x)) }
+    new() {
+      self.l1 = Layer.new(2)
+      self.l2 = Layer.new(3)
+    }
+    __call__(x) {
+      self.l2(self.l1(x))
+    }
   }
   let m = Model.new()
-  assert_eq(m(5), 30)            # 5 * 2 * 3
+  assert_eq(m(5), 30)  # 5 * 2 * 3
 }
 
 # Callables in containers / closures: direct call syntax inside a lambda.
 test_call_in_lambda_and_loop = fn () {
   class Mul {
-    new(k) { self.k = k }
-    __call__(x) { x * self.k }
+    new(k) {
+      self.k = k
+    }
+    __call__(x) {
+      x * self.k
+    }
   }
   let fs = [Mul.new(1), Mul.new(2), Mul.new(3)]
   assert_eq(fs.map(|f| f(10)), [10, 20, 30])
 
   mut acc = 1
-  for f in fs { acc = f(acc) }   # 1*1*2*3
+  for f in fs {
+    acc = f(acc)
+  }  # 1*1*2*3
   assert_eq(acc, 6)
 }
 
 # A plain dict that merely holds a "__call__" key is NOT callable —
 # __call__ is a class-instance feature, mirroring __index__.
 test_plain_dict_not_callable = fn () {
-  let plain = { __call__: fn(x) { x } }
+  let plain = {__call__: fn (x) {
+    x
+  }}
   mut threw = false
-  try { let _ = plain(5) } catch e { threw = true }
+  try {
+    let _ = plain(5)
+  } catch e {
+    threw = true
+  }
   assert_true(threw)
 }
 
 # A class instance without __call__ is not callable; both backends raise
 # a TypeError (captured as a boolean so the message text need not match).
 test_non_callable_instance = fn () {
-  class Plain { new() { self.x = 1 } }
+  class Plain {
+    new() {
+      self.x = 1
+    }
+  }
   let p = Plain.new()
   mut threw = false
-  try { let _ = p(1) } catch e { threw = true }
+  try {
+    let _ = p(1)
+  } catch e {
+    threw = true
+  }
   assert_true(threw)
 }
 
@@ -82,15 +117,28 @@ test_non_callable_instance = fn () {
 # positionals. A non-callable instance called with kwargs still errors
 # identically on both backends.
 test_kwargs_call = fn () {
-  class F { new() {} __call__(x, step) { x * step } }
+  class F {
+    new() {}
+    __call__(x, step) {
+      x * step
+    }
+  }
   let f = F.new()
-  assert_eq(f(x: 5, step: 2), 10)        # keyword args
-  assert_eq(f(step: 2, x: 5), 10)        # order-independent
-  assert_eq(f(5, step: 2), 10)           # positional + keyword
+  assert_eq(f(x: 5, step: 2), 10)  # keyword args
+  assert_eq(f(step: 2, x: 5), 10)  # order-independent
+  assert_eq(f(5, step: 2), 10)     # positional + keyword
 
-  class Plain { new() { self.v = 1 } }
+  class Plain {
+    new() {
+      self.v = 1
+    }
+  }
   mut kind = nil
-  try { let _ = Plain.new()(a: 1) } catch e { kind = e.kind }
+  try {
+    let _ = Plain.new()(a: 1)
+  } catch e {
+    kind = e.kind
+  }
   assert_eq(kind, 'TypeError')
 }
 
@@ -98,20 +146,43 @@ test_kwargs_call = fn () {
 # callback — the builtin invokes its __call__ per element, `self` bound to
 # the instance. A class with __call__ structurally satisfies `Function`.
 test_callable_as_value = fn () {
-  class Inc { new() {} __call__(x) { x + 1 } }
+  class Inc {
+    new() {}
+    __call__(x) {
+      x + 1
+    }
+  }
   assert_eq([1, 2, 3].map(Inc.new()), [2, 3, 4])
 
-  class Mul { new(k) { self.k = k } __call__(x) { x * self.k } }
-  assert_eq([1, 2, 3].filter(fn (x) { x > 1 }).map(Mul.new(10)), [20, 30])
+  class Mul {
+    new(k) {
+      self.k = k
+    }
+    __call__(x) {
+      x * self.k
+    }
+  }
+  assert_eq([1, 2, 3].filter(fn (x) {
+        x > 1
+      }).map(Mul.new(10)), [20, 30])
 
   # 2-arg __call__ as a reduce callback.
-  class Add2 { new() {} __call__(acc, x) { acc + x } }
+  class Add2 {
+    new() {}
+    __call__(acc, x) {
+      acc + x
+    }
+  }
   assert_eq([1, 2, 3, 4].reduce(0, Add2.new()), 10)
 
   # A genuine non-callable (no __call__) is still rejected, same kind both
   # backends (message pinned in test_runtime_errors).
   mut kind = nil
-  try { let _ = [1, 2, 3].map({}) } catch e { kind = e.kind }
+  try {
+    let _ = [1, 2, 3].map({})
+  } catch e {
+    kind = e.kind
+  }
   assert_eq(kind, 'TypeError')
 }
 
@@ -120,14 +191,33 @@ test_callable_as_value = fn () {
 # honored by multidispatch + the param type check. A non-callable bound
 # there is rejected with the same message on both backends.
 test_callable_function_param = fn () {
-  class Mul { new(k) { self.k = k } __call__(x) { x * self.k } }
-  class Plain { new() { self.x = 1 } }
-  fn apply2(cb: Function, v) { cb(cb(v)) }
-  assert_eq(apply2(Mul.new(3), 2), 18)            # 2*3*3
-  assert_eq(apply2(fn (x) { x + 1 }, 0), 2)       # real function still works
+  class Mul {
+    new(k) {
+      self.k = k
+    }
+    __call__(x) {
+      x * self.k
+    }
+  }
+  class Plain {
+    new() {
+      self.x = 1
+    }
+  }
+  fn apply2(cb: Function, v) {
+    cb(cb(v))
+  }
+  assert_eq(apply2(Mul.new(3), 2), 18)  # 2*3*3
+  assert_eq(apply2(fn (x) {
+        x + 1
+      }, 0), 2)  # real function still works
 
   mut msg = nil
-  try { let _ = apply2(Plain.new(), 1) } catch e { msg = e.message }
+  try {
+    let _ = apply2(Plain.new(), 1)
+  } catch e {
+    msg = e.message
+  }
   assert_eq(msg, "type error: parameter 'cb' expects Function")
 }
 
@@ -147,22 +237,48 @@ test_dezero_call = fn () {
     }
   }
   class Mul {
-    new() { self.inputs = nil; self.output = nil }
-    forward(x, y) { x * y }
-    backward(gy) { [self.inputs[1].data * gy, self.inputs[0].data * gy] }
+    new() {
+      self.inputs = nil
+      self.output = nil
+    }
+    forward(x, y) {
+      x * y
+    }
+    backward(gy) {
+      [self.inputs[1].data * gy, self.inputs[0].data * gy]
+    }
   }
   class Add {
-    new() { self.inputs = nil; self.output = nil }
-    forward(x, y) { x + y }
-    backward(gy) { [gy, gy] }
+    new() {
+      self.inputs = nil
+      self.output = nil
+    }
+    forward(x, y) {
+      x + y
+    }
+    backward(gy) {
+      [gy, gy]
+    }
   }
   class Variable {
-    new(data) { self.data = data; self.grad = nil; self.creator = nil }
-    set_creator(f) { self.creator = f }
-    __mul__(o) { Mul.new()(self, o) }
-    __add__(o) { Add.new()(self, o) }
+    new(data) {
+      self.data = data
+      self.grad = nil
+      self.creator = nil
+    }
+    set_creator(f) {
+      self.creator = f
+    }
+    __mul__(o) {
+      Mul.new()(self, o)
+    }
+    __add__(o) {
+      Add.new()(self, o)
+    }
     backward() {
-      if self.grad == nil { self.grad = 1.0 }
+      if self.grad == nil {
+        self.grad = 1.0
+      }
       mut funcs = [self.creator]
       while funcs.size() > 0 {
         let f = funcs.pop()
@@ -170,8 +286,14 @@ test_dezero_call = fn () {
         mut i = 0
         while i < f.inputs.size() {
           let x = f.inputs[i]
-          if x.grad == nil { x.grad = gxs[i] } else { x.grad = x.grad + gxs[i] }
-          if x.creator != nil { funcs.push(x.creator) }
+          if x.grad == nil {
+            x.grad = gxs[i]
+          } else {
+            x.grad = x.grad + gxs[i]
+          }
+          if x.creator != nil {
+            funcs.push(x.creator)
+          }
           i = i + 1
         }
       }

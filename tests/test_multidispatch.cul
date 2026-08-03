@@ -7,9 +7,15 @@
 
 # --- Concrete-type dispatch ---
 
-fn area(s: Long)   { s * s }
-fn area(s: Float)  { s * s }
-fn area(s: String) { s.size() }
+fn area(s: Long) {
+  s * s
+}
+fn area(s: Float) {
+  s * s
+}
+fn area(s: String) {
+  s.size()
+}
 
 assert_eq(area(5), 25)
 assert_eq(area(5.0), 25.0)
@@ -17,16 +23,26 @@ assert_eq(area("hello"), 5)
 
 # --- Any (no annotation) catch-all ---
 
-fn area(x) { -1 }
+fn area(x) {
+  -1
+}
 assert_eq(area([1, 2, 3]), -1)
 assert_eq(area(true), -1)
 
 # --- Specificity: concrete beats Any ---
 
-fn label(x: Long, y) { "long-any" }
-fn label(x, y: Long) { "any-long" }
-fn label(x: Long, y: Long) { "long-long" }    # most specific
-fn label(x, y) { "any-any" }
+fn label(x: Long, y) {
+  "long-any"
+}
+fn label(x, y: Long) {
+  "any-long"
+}
+fn label(x: Long, y: Long) {
+  "long-long"
+}  # most specific
+fn label(x, y) {
+  "any-any"
+}
 
 assert_eq(label(1, 2), "long-long")
 assert_eq(label(1, "x"), "long-any")
@@ -36,14 +52,22 @@ assert_eq(label("x", "y"), "any-any")
 # --- Class-instance dispatch ---
 
 class Square {
-  new(side) { self.side = side }
+  new(side) {
+    self.side = side
+  }
 }
 class Circle {
-  new(r) { self.r = r }
+  new(r) {
+    self.r = r
+  }
 }
 
-fn shape_area(s: Square) { s.side * s.side }
-fn shape_area(c: Circle) { 3.14 * c.r * c.r }
+fn shape_area(s: Square) {
+  s.side * s.side
+}
+fn shape_area(c: Circle) {
+  3.14 * c.r * c.r
+}
 
 let s = Square.new(4)
 let c = Circle.new(2)
@@ -52,14 +76,22 @@ assert_eq(shape_area(c), 12.56)
 
 # --- Same-signature redefinition overwrites (REPL-friendly) ---
 
-fn greet(name: String) { "hi, {name}" }
-fn greet(name: String) { "hello, {name}" }
+fn greet(name: String) {
+  "hi, {name}"
+}
+fn greet(name: String) {
+  "hello, {name}"
+}
 assert_eq(greet("alice"), "hello, alice")
 
 # --- Disambiguated dispatch (concrete-on-one-side wins) ---
 
-fn amb(x: Long, y) { 1 }
-fn amb(x, y: Long) { 2 }
+fn amb(x: Long, y) {
+  1
+}
+fn amb(x, y: Long) {
+  2
+}
 
 # amb(1, "x") — only (Long, Any) matches.
 assert_eq(amb(1, "x"), 1)
@@ -70,7 +102,9 @@ assert_eq(amb("x", 1), 2)
 
 # --- Coexist with closures: regular `let f = fn(...)` still works ---
 
-let helper = fn(x) { x * 2 }
+let helper = fn (x) {
+  x * 2
+}
 assert_eq(helper(7), 14)
 
 # --- Coexist with class methods + special methods ---
@@ -79,8 +113,12 @@ assert_eq(helper(7), 14)
 # dispatch via `obj.method()`.
 
 class Box {
-  new(v) { self.v = v }
-  squared() { self.v * self.v }
+  new(v) {
+    self.v = v
+  }
+  squared() {
+    self.v * self.v
+  }
 }
 let b = Box.new(5)
 assert_eq(b.squared(), 25)
@@ -90,8 +128,12 @@ assert_eq(b.squared(), 25)
 # Multifn dispatch picks on positional types only; kwargs flow into
 # the picked method's signature like any other call.
 
-fn greet(name: String, *, prefix: String = 'hi') { "{prefix}, {name}" }
-fn greet(n: Long, *, prefix: String = 'num') { "{prefix}:{n}" }
+fn greet(name: String, *, prefix: String = 'hi') {
+  "{prefix}, {name}"
+}
+fn greet(n: Long, *, prefix: String = 'num') {
+  "{prefix}:{n}"
+}
 
 assert_eq(greet('alice'), 'hi, alice')
 assert_eq(greet('alice', prefix: 'yo'), 'yo, alice')
@@ -103,60 +145,89 @@ let opts = {prefix: 'splat'}
 assert_eq(greet('bob', **opts), 'splat, bob')
 
 # Methods can have their own kw-only defaults
-fn paint(shape: String, *, color: String = 'red') { "{color} {shape}" }
-fn paint(n: Long, *, color: String = 'blue') { "{color} {n}" }
+fn paint(shape: String, *, color: String = 'red') {
+  "{color} {shape}"
+}
+fn paint(n: Long, *, color: String = 'blue') {
+  "{color} {n}"
+}
 assert_eq(paint('circle'), 'red circle')
 assert_eq(paint(7), 'blue 7')
 assert_eq(paint('box', color: 'green'), 'green box')
 
 # **rest inside a multifn method body
-fn collect(tag: String, **opts) { "{tag}:{opts.a}" }
+fn collect(tag: String, **opts) {
+  "{tag}:{opts.a}"
+}
 assert_eq(collect('hi', a: 99, b: 5), 'hi:99')
 
 # Regular (positional) params with defaults: a multimethod matches arg counts
 # in [required, total], filling the tail from defaults. The omitted param may
 # also be supplied as a trailing keyword. (Previously these raised
 # DispatchError — dispatch matched arity exactly, ignoring defaults.)
-fn deff(a, b = 10) { a + b }
-assert_eq(deff(1), 11)             # default applied
-assert_eq(deff(1, 2), 3)           # positional
-assert_eq(deff(1, b: 2), 3)        # trailing keyword
-fn deff2(a, b = 2, c = 3) { a * 100 + b * 10 + c }
+fn deff(a, b = 10) {
+  a + b
+}
+assert_eq(deff(1), 11)       # default applied
+assert_eq(deff(1, 2), 3)     # positional
+assert_eq(deff(1, b: 2), 3)  # trailing keyword
+fn deff2(a, b = 2, c = 3) {
+  a * 100 + b * 10 + c
+}
 assert_eq(deff2(1), 123)
 assert_eq(deff2(1, 5), 153)
-assert_eq(deff2(1, c: 7), 127)     # skip b, set c by keyword
+assert_eq(deff2(1, c: 7), 127)  # skip b, set c by keyword
 
 # An exact-arity overload outranks a default-filled one of equal type
 # specificity (fewer params filled by default = more specific).
-fn ovd(a) { 'one' }
-fn ovd(a, b = 9) { 'two' }
+fn ovd(a) {
+  'one'
+}
+fn ovd(a, b = 9) {
+  'two'
+}
 assert_eq(ovd(5), 'one')
 assert_eq(ovd(5, 6), 'two')
 
 # Defaults compose with a `*args` tail.
-fn vd(a, b = 1, *rest) { a + b + rest.size() }
+fn vd(a, b = 1, *rest) {
+  a + b + rest.size()
+}
 assert_eq(vd(1), 2)
 assert_eq(vd(1, 2), 3)
 assert_eq(vd(1, 2, 9, 9), 5)
 
 # A keyword argument may cover a *required* param the positional args didn't
 # fill (CLOS-style: keywords contribute to applicability). Order-independent.
-fn kwc(a, b = 10) { a + b }
-assert_eq(kwc(a: 1, b: 2), 3)      # both required+optional by keyword
-assert_eq(kwc(a: 5), 15)           # required by keyword, b defaulted
-assert_eq(kwc(b: 7, a: 1), 8)      # keyword order doesn't matter
-fn kwc3(a, b = 2, c = 3) { a * 100 + b * 10 + c }
+fn kwc(a, b = 10) {
+  a + b
+}
+assert_eq(kwc(a: 1, b: 2), 3)  # both required+optional by keyword
+assert_eq(kwc(a: 5), 15)       # required by keyword, b defaulted
+assert_eq(kwc(b: 7, a: 1), 8)  # keyword order doesn't matter
+fn kwc3(a, b = 2, c = 3) {
+  a * 100 + b * 10 + c
+}
 assert_eq(kwc3(a: 1), 123)
 assert_eq(kwc3(a: 1, c: 9), 129)
 
 # A required param supplied by NO argument is still unmatched (sound).
-let miss = try { kwc(b: 5); 'no error' } catch e { e.kind }
+let miss = try {
+  kwc(b: 5)
+  'no error'
+} catch e {
+  e.kind
+}
 assert_eq(miss, 'DispatchError')
 
 # Selection still scores on positional args, so type-distinguished overloads
 # dispatch as usual; keywords don't change which overload is most specific.
-fn kt(a: Long) { 'long' }
-fn kt(a: String) { 'str' }
+fn kt(a: Long) {
+  'long'
+}
+fn kt(a: String) {
+  'str'
+}
 assert_eq(kt(5), 'long')
 assert_eq(kt('x'), 'str')
 
@@ -164,23 +235,47 @@ assert_eq(kt('x'), 'str')
 # sibling scope must NOT see it. (The JIT once funneled every `fn name` into one
 # by-name global table, so `scope1`'s `g/1` silently satisfied `scope2`'s `g(99)`
 # — a wrong result, not the DispatchError the interp raises.)
-fn scope1() { fn g(x) { x }; g(1) }
-fn scope2() { fn g(x, y) { x + y }; g(99) }
+fn scope1() {
+  fn g(x) {
+    x
+  }
+  g(1)
+}
+fn scope2() {
+  fn g(x, y) {
+    x + y
+  }
+  g(99)
+}
 assert_eq(scope1(), 1)
-let leak = try { scope2(); 'no error' } catch e { e.kind }
+let leak = try {
+  scope2()
+  'no error'
+} catch e {
+  e.kind
+}
 assert_eq(leak, 'DispatchError')
 
 # Same-scope overloads still merge into one dispatcher.
 fn merged() {
-  fn h(x) { 'one' }
-  fn h(x, y) { 'two' }
+  fn h(x) {
+    'one'
+  }
+  fn h(x, y) {
+    'two'
+  }
   [h(1), h(1, 2)]
 }
 assert_eq(merged(), ['one', 'two'])
 
 # A nested helper survives across two activations of its enclosing function
 # (the per-scope table is rebuilt on each entry without bleeding state).
-fn twice(n) { fn k(x) { x * 2 }; k(n) }
+fn twice(n) {
+  fn k(x) {
+    x * 2
+  }
+  k(n)
+}
 assert_eq(twice(10), 20)
 assert_eq(twice(21), 42)
 

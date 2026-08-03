@@ -6,7 +6,9 @@
 // --- (1) the signal passes through a user try/catch; defer fires ---
 mut log = []
 fn deep() {
-  defer { log.push("defer") }
+  defer {
+    log.push("defer")
+  }
   try {
     __eff_abort(42)
     "unreached"
@@ -15,17 +17,23 @@ fn deep() {
     "caught"
   }
 }
-let r1 = __eff_catch_abort(fn() { deep() })
+let r1 = __eff_catch_abort(fn () {
+  deep()
+})
 assert_eq(r1, [true, 42])
 assert_eq(log, ["defer"])
 
 // --- (2) normal completion: no signal, result passes through ---
-let r2 = __eff_catch_abort(fn() { 7 })
+let r2 = __eff_catch_abort(fn () {
+  7
+})
 assert_eq(r2, [false, 7])
 
 // --- (3) nested catchers: the innermost stops it, outer sees normal ---
-let r3 = __eff_catch_abort(fn() {
-  __eff_catch_abort(fn() { __eff_abort("x") })
+let r3 = __eff_catch_abort(fn () {
+  __eff_catch_abort(fn () {
+    __eff_abort("x")
+  })
 })
 assert_eq(r3, [false, [true, "x"]])
 
@@ -33,18 +41,26 @@ assert_eq(r3, [false, [true, "x"]])
 fn hop() {
   mut i = 0
   while i < 3 {
-    if i == 1 { __eff_abort([i, "stop"]) }
+    if i == 1 {
+      __eff_abort([i, "stop"])
+    }
     i += 1
   }
   "unreached"
 }
-fn relay() { hop() }
-let r4 = __eff_catch_abort(fn() { relay() })
+fn relay() {
+  hop()
+}
+let r4 = __eff_catch_abort(fn () {
+  relay()
+})
 assert_eq(r4, [true, [1, "stop"]])
 
 // --- (5) a user throw is untouched by the catcher ---
 let r5 = try {
-  __eff_catch_abort(fn() { throw { kind: "MyError", message: "boom" } })
+  __eff_catch_abort(fn () {
+    throw {kind: "MyError", message: "boom"}
+  })
   "no-error"
 } catch e {
   e.kind

@@ -8,5 +8,5 @@
 
 @test
 fn raw_throw_escapes_to_runner() {
-  throw { kind: "RawThrowKind", message: "expected payload" }
+  throw {kind: "RawThrowKind", message: "expected payload"}
 }

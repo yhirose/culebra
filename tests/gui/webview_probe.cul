@@ -19,7 +19,9 @@ let h = Isolate.spawn(fn () {
   # a fixed sleep that a slow machine outran would quietly test the held-quit
   # path instead of the cross-thread terminate this probe exists for — and
   # still print the OK marker. The caller's timeout bounds this.
-  while !Webview.Window.is_running() { Time.sleep(0.05) }
+  while !Webview.Window.is_running() {
+    Time.sleep(0.05)
+  }
   Webview.Window.quit()
 })
 w.run()

@@ -5,7 +5,10 @@
 test_shorthand_captures_outer_var = fn () {
   let f = fn () {
     let z = 99
-    let g = fn () { let o = {z}; o }
+    let g = fn () {
+      let o = {z}
+      o
+    }
     g()
   }
   assert_eq(f().z, 99)
@@ -15,7 +18,9 @@ test_shorthand_multiple_vars = fn () {
   let f = fn () {
     let a = 1
     let b = 2
-    let g = fn () { {a, b} }
+    let g = fn () {
+      {a, b}
+    }
     g()
   }
   let r = f()

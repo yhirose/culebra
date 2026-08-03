@@ -5,16 +5,30 @@
 // The builtin must still apply when the receiver is an Array/String.
 
 class Box {
-  new(tag) { self._tag = tag }
+  new(tag) {
+    self._tag = tag
+  }
   // shadows Array.find / String.split / Array.map / Tensor.relu / ...
-  find(x) { "box-find:" + to_string(x) }
-  split(x) { "box-split:" + to_string(x) }
-  map(x) { "box-map:" + to_string(x) }
-  match(x) { "box-match:" + to_string(x) }
+  find(x) {
+    "box-find:" + to_string(x)
+  }
+  split(x) {
+    "box-split:" + to_string(x)
+  }
+  map(x) {
+    "box-map:" + to_string(x)
+  }
+  match(x) {
+    "box-match:" + to_string(x)
+  }
   // relu/sigmoid are Tensor builtin methods; a user class (cf. microgpt's
   // Value.relu()) must still reach its own definition, not the Tensor op.
-  relu() { "box-relu" }
-  sigmoid() { "box-sigmoid" }
+  relu() {
+    "box-relu"
+  }
+  sigmoid() {
+    "box-sigmoid"
+  }
 }
 
 let b = Box.new("t")
@@ -28,13 +42,19 @@ assert_eq(b.relu(), "box-relu")
 assert_eq(b.sigmoid(), "box-sigmoid")
 
 // builtins still apply on Array / String receivers
-assert_eq([3, 1, 2].find(fn (x) { x == 2 }), 2)
+assert_eq([3, 1, 2].find(fn (x) {
+    x == 2
+  }), 2)
 assert_eq("a,b,c".split(",").size(), 3)
-assert_eq([1, 2, 3].map(fn (x) { x * 2 })[2], 6)
+assert_eq([1, 2, 3].map(fn (x) {
+    x * 2
+  })[2], 6)
 
 // a builtin the user class does not define still reaches the builtin
 let xs = [5, 1, 9]
-xs.sort_by(fn (x) { x })
+xs.sort_by(fn (x) {
+  x
+})
 assert_eq(xs[0], 1)
 
 inspect("test_method_shadows_builtin: ok")

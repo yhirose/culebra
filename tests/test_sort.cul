@@ -7,7 +7,7 @@
 // --- sorted: non-mutating, returns a new Array ---
 let xs = [3, 1, 2]
 assert_eq(xs.sorted(), [1, 2, 3])
-assert_eq(xs, [3, 1, 2])                       // receiver unchanged
+assert_eq(xs, [3, 1, 2])  // receiver unchanged
 assert_eq(xs.sorted(reverse: true), [3, 2, 1])
 
 // --- sort: in place, returns Nil ---
@@ -22,8 +22,9 @@ assert_eq(["bb", "a", "ccc"].sorted(), ["a", "bb", "ccc"])
 assert_eq([2.5, 1.5, 3.0].sorted(), [1.5, 2.5, 3.0])
 
 // --- stable (equal elements keep input order) ---
-assert_eq([[1, "a"], [1, "b"]].sorted_by(fn (p) { p[0] }),
-          [[1, "a"], [1, "b"]])
+assert_eq([[1, "a"], [1, "b"]].sorted_by(fn (p) {
+    p[0]
+  }), [[1, "a"], [1, "b"]])
 
 // --- edge cases ---
 assert_eq([].sorted(), [])
@@ -34,14 +35,36 @@ assert_eq([].sort(), nil)
 assert_eq([3, 1, 2].sorted().join(","), "1,2,3")
 
 // --- Object with cmp (Comparable) orders by cmp; __lt__ takes precedence ---
-class Money { new(c) { self.c = c } cmp(o) { self.c - o.c } }
-assert_eq([Money.new(3), Money.new(1), Money.new(2)].sorted().map(fn (m) { m.c }),
-          [1, 2, 3])
-class Rank { new(n) { self.n = n } __lt__(o) { self.n < o.n } }
-assert_eq([Rank.new(2), Rank.new(1)].sorted().map(fn (r) { r.n }), [1, 2])
+class Money {
+  new(c) {
+    self.c = c
+  }
+  cmp(o) {
+    self.c - o.c
+  }
+}
+assert_eq([Money.new(3), Money.new(1), Money.new(2)].sorted().map(fn (m) {
+      m.c
+    }), [1, 2, 3])
+class Rank {
+  new(n) {
+    self.n = n
+  }
+  __lt__(o) {
+    self.n < o.n
+  }
+}
+assert_eq([Rank.new(2), Rank.new(1)].sorted().map(fn (r) {
+      r.n
+    }), [1, 2])
 
 // --- incomparable elements throw, like `a < b` ---
-let e = try { [1, "a"].sorted(); nil } catch e { e.kind }
+let e = try {
+  [1, "a"].sorted()
+  nil
+} catch e {
+  e.kind
+}
 assert_eq(e, "TypeError")
 
 // --- the comparator sees the same pairs in the same order on every backend.
@@ -51,8 +74,13 @@ assert_eq(e, "TypeError")
 // the backend. ---
 let seen = []
 class Probe {
-  new(v) { self.v = v }
-  cmp(o) { seen.push(self.v.to_string() + ":" + o.v.to_string()); self.v - o.v }
+  new(v) {
+    self.v = v
+  }
+  cmp(o) {
+    seen.push(self.v.to_string() + ":" + o.v.to_string())
+    self.v - o.v
+  }
 }
 // How many pairs std::stable_sort asks about, and in which order, is the
 // standard library's business (libstdc++ compares 1 against 2 twice here;
@@ -62,20 +90,43 @@ class Probe {
 [Probe.new(1), Probe.new(2), Probe.new(3)].sorted()
 inspect(seen)
 
-let e3 = try { [1, [2], 3].sorted(); nil } catch e { e.message }
+let e3 = try {
+  [1, [2], 3].sorted()
+  nil
+} catch e {
+  e.message
+}
 assert_eq(e3, "type error: cannot compare Array and Long")
 
 // A throwing comparison leaves the receiver as it was — the elements are never
 // moved while comparisons run.
 let untouched = [5, 3, "a", 1, 7]
-try { untouched.sort() } catch e { nil }
+try {
+  untouched.sort()
+} catch e {
+  nil
+}
 assert_eq(untouched, [5, 3, "a", 1, 7])
 
 // Keyed sorts report the same operand first, and are equally non-destructive.
-let e4 = try { [1, "a", 2].sorted_by(fn (x) { x }); nil } catch e { e.message }
+let e4 = try {
+  [1, "a", 2].sorted_by(fn (x) {
+    x
+  })
+  nil
+} catch e {
+  e.message
+}
 assert_eq(e4, "type error: cannot compare String and Long")
 let ks = [3, "a", 1]
-let e5 = try { ks.sort_by(fn (x) { x }, reverse: true); nil } catch e { e.message }
+let e5 = try {
+  ks.sort_by(fn (x) {
+      x
+    }, reverse: true)
+  nil
+} catch e {
+  e.message
+}
 assert_eq(e5, "type error: cannot compare Long and String")
 assert_eq(ks, [3, "a", 1])
 
@@ -83,7 +134,9 @@ assert_eq(ks, [3, "a", 1])
 // sort by value rather than falling out by type.
 assert_eq([3, 1.5, 2, 1, 2.0].sorted(), [1, 1.5, 2, 2.0, 3])
 assert_eq([3, 1.5, 2, 1, 2.0].sorted(reverse: true), [3, 2, 2.0, 1.5, 1])
-assert_eq([3, 1.5, 2].sorted_by(fn (x) { x }), [1.5, 2, 3])
+assert_eq([3, 1.5, 2].sorted_by(fn (x) {
+    x
+  }), [1.5, 2, 3])
 
 // Shuffled runs of user objects go through that same path; exercise multi-
 // element cycles at several sizes, both directions, mutating and not.
@@ -94,45 +147,127 @@ fn nextval() {
 }
 for n in [1, 2, 3, 5, 17, 64, 200] {
   let raw = []
-  for i in 0..n { raw.push(nextval()) }
-  let objs = raw.map(fn (v) { Money.new(v) })
-  assert_eq(objs.sorted().map(fn (m) { m.c }), raw.sorted())
-  assert_eq(objs.sorted(reverse: true).map(fn (m) { m.c }),
-            raw.sorted(reverse: true))
-  assert_eq(objs.map(fn (m) { m.c }), raw)   // non-mutating form leaves it be
-  let mutable = raw.map(fn (v) { Money.new(v) })
+  for i in 0..n {
+    raw.push(nextval())
+  }
+  let objs = raw.map(fn (v) {
+    Money.new(v)
+  })
+  assert_eq(objs.sorted().map(fn (m) {
+        m.c
+      }), raw.sorted())
+  assert_eq(objs.sorted(reverse: true).map(fn (m) {
+        m.c
+      }), raw.sorted(reverse: true))
+  assert_eq(objs.map(fn (m) {
+      m.c
+    }), raw)  // non-mutating form leaves it be
+  let mutable = raw.map(fn (v) {
+    Money.new(v)
+  })
   mutable.sort()
-  assert_eq(mutable.map(fn (m) { m.c }), raw.sorted())
+  assert_eq(mutable.map(fn (m) {
+      m.c
+    }), raw.sorted())
 }
 
 // --- a user cmp / __lt__ that throws leaves the array whole -----------------
 // The comparator borrows the array's slots (the array owns them), so the
 // throw must not consume a ref: reading the elements back afterwards is the
 // check that nothing was freed underneath.
-class Boom { new(v) { self.v = v } cmp(o) { if self.v == 9 { throw {kind: "E", message: "boom"} }; return self.v - o.v } }
-let bs = [3, 9, 1].map(fn (v) { Boom.new(v) })
-let eb = try { bs.sort(); nil } catch e { e.kind }
+class Boom {
+  new(v) {
+    self.v = v
+  }
+  cmp(o) {
+    if self.v == 9 {
+      throw {kind: "E", message: "boom"}
+    }
+    return self.v - o.v
+  }
+}
+let bs = [3, 9, 1].map(fn (v) {
+  Boom.new(v)
+})
+let eb = try {
+  bs.sort()
+  nil
+} catch e {
+  e.kind
+}
 assert_eq(eb, "E")
-assert_eq(bs.map(fn (b) { b.v }), [3, 9, 1])   // untouched, nothing freed
-let eb2 = try { bs.sorted(); nil } catch e { e.kind }
+assert_eq(bs.map(fn (b) {
+    b.v
+  }), [3, 9, 1])  // untouched, nothing freed
+let eb2 = try {
+  bs.sorted()
+  nil
+} catch e {
+  e.kind
+}
 assert_eq(eb2, "E")
-assert_eq(bs.map(fn (b) { b.v }), [3, 9, 1])
+assert_eq(bs.map(fn (b) {
+    b.v
+  }), [3, 9, 1])
 // `reverse:` swaps which side is the receiver, so throw on either operand to
 // reach the same borrow window from the flipped direction.
-class Boom2 { new(v) { self.v = v } cmp(o) { if self.v == 9 || o.v == 9 { throw {kind: "E", message: "boom"} }; return self.v - o.v } }
-let rs = [3, 9, 1].map(fn (v) { Boom2.new(v) })
-let eb3 = try { rs.sort(reverse: true); nil } catch e { e.kind }
+class Boom2 {
+  new(v) {
+    self.v = v
+  }
+  cmp(o) {
+    if self.v == 9 || o.v == 9 {
+      throw {kind: "E", message: "boom"}
+    }
+    return self.v - o.v
+  }
+}
+let rs = [3, 9, 1].map(fn (v) {
+  Boom2.new(v)
+})
+let eb3 = try {
+  rs.sort(reverse: true)
+  nil
+} catch e {
+  e.kind
+}
 assert_eq(eb3, "E")
-assert_eq(rs.map(fn (b) { b.v }), [3, 9, 1])
+assert_eq(rs.map(fn (b) {
+    b.v
+  }), [3, 9, 1])
 
-class Blt { new(v) { self.v = v } __lt__(o) { if self.v == 9 { throw {kind: "E", message: "boom"} }; return self.v < o.v } }
-let ls = [3, 9, 1].map(fn (v) { Blt.new(v) })
-let el = try { ls.sort(); nil } catch e { e.kind }
+class Blt {
+  new(v) {
+    self.v = v
+  }
+  __lt__(o) {
+    if self.v == 9 {
+      throw {kind: "E", message: "boom"}
+    }
+    return self.v < o.v
+  }
+}
+let ls = [3, 9, 1].map(fn (v) {
+  Blt.new(v)
+})
+let el = try {
+  ls.sort()
+  nil
+} catch e {
+  e.kind
+}
 assert_eq(el, "E")
-assert_eq(ls.map(fn (b) { b.v }), [3, 9, 1])
+assert_eq(ls.map(fn (b) {
+    b.v
+  }), [3, 9, 1])
 
 // --- extra positional arg is rejected (0 positional params) ---
-let e2 = try { [1, 2].sorted(1); nil } catch e { e.kind }
+let e2 = try {
+  [1, 2].sorted(1)
+  nil
+} catch e {
+  e.kind
+}
 assert_eq(e2, "TypeError")
 
 IO.inspect("test_sort OK")

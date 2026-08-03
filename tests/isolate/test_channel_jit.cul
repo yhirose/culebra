@@ -3,12 +3,16 @@
 # --- producer isolate streams into a channel; consumer drains via for-in ---
 let (tx, rx) = Channel.new(4)
 let prod = Isolate.spawn(fn () {
-  for i in 1..6 { tx.send(i * 10) }
-  tx.drop()        # release the sender copy so the channel can close
+  for i in 1..6 {
+    tx.send(i * 10)
+  }
+  tx.drop()  # release the sender copy so the channel can close
 })
-tx.drop()          # the parent's own sender copy — both must drop to close
+tx.drop()  # the parent's own sender copy — both must drop to close
 mut got = []
-for v in rx { got.push(v) }
+for v in rx {
+  got.push(v)
+}
 prod.join()
 assert_eq(got, [10, 20, 30, 40, 50])
 
@@ -22,7 +26,7 @@ let p2 = Isolate.spawn(fn () {
 tx2.drop()
 assert_eq(rx2.recv(), "a")
 assert_eq(rx2.recv(), "b")
-assert_eq(rx2.recv(), nil)   # closed + empty
+assert_eq(rx2.recv(), nil)  # closed + empty
 p2.join()
 
 # --- multi-producer via tx.clone(); fan-in sum ---
@@ -35,23 +39,31 @@ for w in 0..3 {
     mytx.drop()
   }))
 }
-tx3.drop()                   # drop the original; clones keep it open
+tx3.drop()  # drop the original; clones keep it open
 mut total = 0
-for v in rx3 { total = total + v }
-for wk in workers { wk.join() }
-assert_eq(total, 6)          # 1 + 2 + 3
+for v in rx3 {
+  total = total + v
+}
+for wk in workers {
+  wk.join()
+}
+assert_eq(total, 6)  # 1 + 2 + 3
 
 # --- backpressure: capacity-1 channel, producer outpaces consumer ---
 let (tx4, rx4) = Channel.new(1)
 let p4 = Isolate.spawn(fn () {
-  for i in 0..5 { tx4.send(i) }
+  for i in 0..5 {
+    tx4.send(i)
+  }
   tx4.drop()
 })
 tx4.drop()
 mut sum4 = 0
-for v in rx4 { sum4 = sum4 + v }
+for v in rx4 {
+  sum4 = sum4 + v
+}
 p4.join()
-assert_eq(sum4, 10)          # 0+1+2+3+4
+assert_eq(sum4, 10)  # 0+1+2+3+4
 
 # --- sending a structured value across the channel ---
 let (tx5, rx5) = Channel.new(2)
@@ -66,18 +78,20 @@ assert_eq(rec, {id: 1, tags: ["a", "b"]})
 
 # --- dropping an isolate blocked on recv() unwinds it (interrupt-aware wait) ---
 let (tx6, rx6) = Channel.new(1)
-let blocked = Isolate.spawn(fn () { rx6.recv() })  # blocks: no value is ever sent
-blocked.drop()                                     # must not hang (reaching the
-tx6.drop()                                         # final line proves it)
+let blocked = Isolate.spawn(fn () {
+  rx6.recv()
+})              # blocks: no value is ever sent
+blocked.drop()  # must not hang (reaching the
+tx6.drop()      # final line proves it)
 
 # --- an endpoint can itself be sent through a channel (the Sendable exception);
 #     the refcount stays balanced (no leak / premature close) ---
 let (ctrl_tx, ctrl_rx) = Channel.new(1)
 let (data_tx, data_rx) = Channel.new(4)
-ctrl_tx.send(data_tx)              # ship the data-sender over the control channel
+ctrl_tx.send(data_tx)  # ship the data-sender over the control channel
 ctrl_tx.drop()
-data_tx.drop()                     # parent's original data sender
-let moved_tx = ctrl_rx.recv()      # the rebuilt data-sender
+data_tx.drop()                 # parent's original data sender
+let moved_tx = ctrl_rx.recv()  # the rebuilt data-sender
 moved_tx.send(42)
 moved_tx.drop()
 assert_eq(data_rx.recv(), 42)
@@ -85,10 +99,15 @@ assert_eq(data_rx.recv(), 42)
 # --- a producer that does NOT explicitly drop its tx still auto-closes: the
 #     spawned closure's captured endpoint drops when the isolate finishes ---
 let (atx, arx) = Channel.new(4)
-let auto_prod = Isolate.spawn(fn () { atx.send(7); atx.send(8) })  # no atx.drop()
-atx.drop()                         # only the parent drops explicitly
+let auto_prod = Isolate.spawn(fn () {
+  atx.send(7)
+  atx.send(8)
+})          # no atx.drop()
+atx.drop()  # only the parent drops explicitly
 mut auto_got = []
-for v in arx { auto_got.push(v) }  # ends only if the channel actually closes
+for v in arx {
+  auto_got.push(v)
+}  # ends only if the channel actually closes
 auto_prod.join()
 assert_eq(auto_got, [7, 8])
 

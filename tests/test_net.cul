@@ -23,7 +23,7 @@ assert_true(s.is_open())
 c.write("hello\n")
 assert_eq(s.read_line(), "hello")
 s.write("hi there\r\n")
-assert_eq(c.read_line(), "hi there")   // a trailing \r is stripped
+assert_eq(c.read_line(), "hi there")  // a trailing \r is stripped
 
 // --- read(n) is a short read; read_exact(n) waits for exactly n ---
 c.write("abcdef")
@@ -69,8 +69,8 @@ for line in s.lines() {
   collected.push(line)
 }
 assert_eq(collected, ["l1", "l2"])
-assert_eq(s.read_line(), nil)          // nil once the stream ends
-assert_eq(s.read(16), "")              // "" at EOF, mirroring File.read
+assert_eq(s.read_line(), nil)  // nil once the stream ends
+assert_eq(s.read(16), "")      // "" at EOF, mirroring File.read
 s.write("bye\n")
 assert_eq(c.read_line(), "bye")
 
@@ -122,7 +122,7 @@ try {
 }
 assert_eq(ckind, "NetError")
 assert_true(cmsg.contains("closed socket"))
-l.close()                              // close is idempotent
+l.close()  // close is idempotent
 
 // --- connect failures raise NetError (message is OS-worded, so kind only) ---
 let mut fkind = ""

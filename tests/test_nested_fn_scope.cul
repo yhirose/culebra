@@ -10,10 +10,18 @@
 fn in_block() {
   mut out = []
   {
-    fn h(n) { n > 0 ? h(n - 1) : 'fn' }
-    let rec = fn (n) { n > 0 ? rec(n - 1) : 'lambda' }
-    let a = fn () { b() }
-    let b = fn () { 'fwd' }
+    fn h(n) {
+      n > 0 ? h(n - 1) : 'fn'
+    }
+    let rec = fn (n) {
+      n > 0 ? rec(n - 1) : 'lambda'
+    }
+    let a = fn () {
+      b()
+    }
+    let b = fn () {
+      'fwd'
+    }
     out.push(h(2))
     out.push(rec(2))
     out.push(a())
@@ -23,7 +31,16 @@ fn in_block() {
 assert_eq(in_block(), ['fn', 'lambda', 'fwd'])
 
 # if / while / for bodies
-fn in_if() { if true { fn h(n) { n > 0 ? h(n - 1) : 'if' }; h(2) } else { nil } }
+fn in_if() {
+  if true {
+    fn h(n) {
+      n > 0 ? h(n - 1) : 'if'
+    }
+    h(2)
+  } else {
+    nil
+  }
+}
 assert_eq(in_if(), 'if')
 
 fn in_while() {
@@ -31,7 +48,9 @@ fn in_while() {
   mut i = 0
   while i < 2 {
     let k = i
-    fn h(n) { n > 0 ? h(n - 1) : k }   # fresh capture each iteration
+    fn h(n) {
+      n > 0 ? h(n - 1) : k
+    }  # fresh capture each iteration
     r = h(2)
     i = i + 1
   }
@@ -39,30 +58,84 @@ fn in_while() {
 }
 assert_eq(in_while(), 1)
 
-fn in_for() { mut r = nil; for i in [7] { fn h(n) { n > 0 ? h(n - 1) : i }; r = h(2) }; r }
+fn in_for() {
+  mut r = nil
+  for i in [7] {
+    fn h(n) {
+      n > 0 ? h(n - 1) : i
+    }
+    r = h(2)
+  }
+  r
+}
 assert_eq(in_for(), 7)
 
 # match arm / try body / catch body
 fn in_match(v) {
   match v {
-    Long => { fn h(n) { n > 0 ? h(n - 1) : 'arm' }; h(2) },
+    Long => {
+      fn h(n) {
+        n > 0 ? h(n - 1) : 'arm'
+      }
+      h(2)
+    },
     _ => nil,
   }
 }
 assert_eq(in_match(1), 'arm')
 
-fn in_try() { try { fn h(n) { n > 0 ? h(n - 1) : 'try' }; h(2) } catch e { e.kind } }
+fn in_try() {
+  try {
+    fn h(n) {
+      n > 0 ? h(n - 1) : 'try'
+    }
+    h(2)
+  } catch e {
+    e.kind
+  }
+}
 assert_eq(in_try(), 'try')
 
-fn in_catch() { try { throw 'x' } catch e { fn h(n) { n > 0 ? h(n - 1) : 'catch' }; h(2) } }
+fn in_catch() {
+  try {
+    throw 'x'
+  } catch e {
+    fn h(n) {
+      n > 0 ? h(n - 1) : 'catch'
+    }
+    h(2)
+  }
+}
 assert_eq(in_catch(), 'catch')
 
 # block-scoped fn stays block-scoped (must not leak to the function)
-fn no_leak() { { fn g() { 'y' }; nil }; mut k = nil; try { g() } catch e { k = e.kind }; k }
+fn no_leak() {
+  {
+    fn g() {
+      'y'
+    }
+    nil
+  }
+  mut k = nil
+  try {
+    g()
+  } catch e {
+    k = e.kind
+  }
+  k
+}
 assert_eq(no_leak(), 'NameError')
 
 # `mut rec = fn ...` declares too — same self-recursion support
-fn mut_rec() { { mut rec = fn (n) { n > 0 ? rec(n - 1) : 'mut' }; rec(2) }; nil }
+fn mut_rec() {
+  {
+    mut rec = fn (n) {
+      n > 0 ? rec(n - 1) : 'mut'
+    }
+    rec(2)
+  }
+  nil
+}
 mut_rec()
 
 # if branches share the enclosing scope: both branches may declare the
@@ -71,18 +144,48 @@ mut_rec()
 # (used to be a whole-program compile failure — or, for a non-recursive
 # fn, a null-cell crash).
 fn both_branches(c) {
-  if c { fn h(n) { n > 0 ? h(n - 1) : 'then' }; h(2) }
-  else { fn h(n) { n > 0 ? h(n - 1) : 'else' }; h(2) }
+  if c {
+    fn h(n) {
+      n > 0 ? h(n - 1) : 'then'
+    }
+    h(2)
+  } else {
+    fn h(n) {
+      n > 0 ? h(n - 1) : 'else'
+    }
+    h(2)
+  }
 }
 assert_eq(both_branches(true), 'then')
 assert_eq(both_branches(false), 'else')
 
-fn untaken() { if false { fn h(n) { n }; nil } else { nil }; h(2) }
-assert_eq(try { untaken() } catch e { e.kind }, 'NameError')
+fn untaken() {
+  if false {
+    fn h(n) {
+      n
+    }
+    nil
+  } else {
+    nil
+  }
+  h(2)
+}
+assert_eq(try {
+    untaken()
+  } catch e {
+    e.kind
+  }, 'NameError')
 
 # an inner `fn` shadows an outer same-named one; the outer survives
-fn sh_outer() { 'outer' }
-{ fn sh_outer() { 'inner' }; assert_eq(sh_outer(), 'inner') }
+fn sh_outer() {
+  'outer'
+}
+{
+  fn sh_outer() {
+    'inner'
+  }
+  assert_eq(sh_outer(), 'inner')
+}
 assert_eq(sh_outer(), 'outer')
 
 IO.inspect("test_nested_fn_scope OK")

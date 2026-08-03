@@ -116,7 +116,12 @@ assert_true(parsed.size() == 3 && parsed[0] == 1)
 // backends (compile-time path's literal splats throw before catch in
 // JIT, but the runtime adapter throws after entry).
 let bad = {bogus: 1}
-let r = try { JSON.stringify({a: 1}, **bad); nil } catch e { e }
+let r = try {
+  JSON.stringify({a: 1}, **bad)
+  nil
+} catch e {
+  e
+}
 assert_true(r.kind == 'TypeError' && r.message.contains('bogus'))
 
 // --- Full signature symmetry: positional / multi-positional / as-value ------
@@ -126,11 +131,16 @@ assert_true(r.kind == 'TypeError' && r.message.contains('bogus'))
 // rejected the rest with an ArityError.)
 
 // `indent` / `sort_keys` / `lines` bind positionally after the value.
-assert_eq(JSON.stringify([2, 1], 0, true), '[2,1]')      # sort_keys positional
+assert_eq(JSON.stringify([2, 1], 0, true), '[2,1]')  # sort_keys positional
 assert_eq(JSON.parse("[1, 2]"), [1, 2])
 // `lines` is the 2nd positional of parse (Bool); a non-Bool is a type error
 // at that argument, naming the param — same kind/message/wording on both.
-let pe = try { JSON.parse("[1]", 2); nil } catch e { e }
+let pe = try {
+  JSON.parse("[1]", 2)
+  nil
+} catch e {
+  e
+}
 assert_eq(pe.kind, 'TypeError')
 assert_eq(pe.message, "type error: parameter 'lines' expects Bool")
 // `lines: true` as a positional Bool works (JSON Lines mode).
@@ -138,16 +148,26 @@ assert_eq(JSON.parse("1\n2\n", true), [1, 2])
 
 // As a first-class value, with positional and keyword extras alike.
 let strfy = JSON.stringify
-assert_eq(strfy({a: 1}, 2), strfy({a: 1}, indent: 2))    # 2nd positional == indent:
+assert_eq(strfy({a: 1}, 2), strfy({a: 1}, indent: 2))  # 2nd positional == indent:
 let parse = JSON.parse
 assert_eq(parse("[1, 2]", number_mode: "float"), [1.0, 2.0])
 // A wrong-typed kwarg through the value path is the interp's typed-param error.
-let ae = try { strfy({a: 1}, indent: "no"); nil } catch e { e }
+let ae = try {
+  strfy({a: 1}, indent: "no")
+  nil
+} catch e {
+  e
+}
 assert_eq(ae.kind, 'TypeError')
 assert_eq(ae.message, "type error: parameter 'indent' expects Long")
 // An invalid `number_mode` is a ValueError on both backends (the JIT used to
 // silently treat any non-"float" value as "auto").
-let nme = try { JSON.parse("[1]", number_mode: "bogus"); nil } catch e { e }
+let nme = try {
+  JSON.parse("[1]", number_mode: "bogus")
+  nil
+} catch e {
+  e
+}
 assert_eq(nme.kind, 'ValueError')
 assert_true(nme.message.contains("number_mode must be 'auto' or 'float'"))
 
@@ -163,6 +183,7 @@ let jc = `{
   "nums": [1, 2, 3,],  // trailing comma in array
   "nested": { "ok": true, },
 }`
+
 let jo = JSON.parse(jc, jsonc: true)
 assert_eq(jo.name, "culebra")
 assert_eq(jo.nums, [1, 2, 3])
@@ -177,9 +198,19 @@ assert_eq(js.n, 42)
 assert_eq(JSON.parse(`{"a":1}`, jsonc: true).a, 1)
 
 // Strict mode (default) rejects comments and trailing commas as ValueError.
-let sc = try { JSON.parse(jc); nil } catch e { e }
+let sc = try {
+  JSON.parse(jc)
+  nil
+} catch e {
+  e
+}
 assert_eq(sc.kind, 'ValueError')
-let tc = try { JSON.parse("[1, 2,]"); nil } catch e { e }
+let tc = try {
+  JSON.parse("[1, 2,]")
+  nil
+} catch e {
+  e
+}
 assert_eq(tc.kind, 'ValueError')
 
 // `jsonc` binds positionally too (s, lines, number_mode, jsonc).
@@ -188,33 +219,78 @@ assert_eq(JSON.parse("[1, /* c */ 2,]", false, "auto", true), [1, 2])
 // Exact wording + position pins for the parser/stringify error surface.
 // The logic is single-sourced in json.h; these keep kind, message, and
 // 1-based line:col identical across interp/JIT/AOT.
-let pe1 = try { JSON.parse(`{"a" 1}`); nil } catch e { e }
+let pe1 = try {
+  JSON.parse(`{"a" 1}`)
+  nil
+} catch e {
+  e
+}
 assert_true(pe1.kind == 'ValueError' &&
-       pe1.message == "JSON.parse: expected ':'" &&
-       pe1.line == 1 && pe1.col == 6)
-let pe2 = try { JSON.parse("[1,\n 2,,]"); nil } catch e { e }  // error on line 2
+  pe1.message == "JSON.parse: expected ':'" &&
+  pe1.line == 1 &&
+  pe1.col == 6)
+let pe2 = try {
+  JSON.parse("[1,\n 2,,]")
+  nil
+} catch e {
+  e
+}  // error on line 2
 assert_true(pe2.kind == 'ValueError' &&
-       pe2.message == 'JSON.parse: expected value' &&
-       pe2.line == 2 && pe2.col == 4)
-let pe3 = try { JSON.parse(`"a\q"`); nil } catch e { e }
+  pe2.message == 'JSON.parse: expected value' &&
+  pe2.line == 2 &&
+  pe2.col == 4)
+let pe3 = try {
+  JSON.parse(`"a\q"`)
+  nil
+} catch e {
+  e
+}
 assert_true(pe3.kind == 'ValueError' && pe3.message == 'JSON.parse: bad escape')
-let pe4 = try { JSON.parse("[1"); nil } catch e { e }
+let pe4 = try {
+  JSON.parse("[1")
+  nil
+} catch e {
+  e
+}
 assert_true(pe4.kind == 'ValueError' &&
-       pe4.message == "JSON.parse: expected ',' or ']'")
-let pe5 = try { JSON.parse("1 x"); nil } catch e { e }
+  pe4.message == "JSON.parse: expected ',' or ']'")
+let pe5 = try {
+  JSON.parse("1 x")
+  nil
+} catch e {
+  e
+}
 assert_true(pe5.kind == 'ValueError' &&
-       pe5.message == 'JSON.parse: trailing characters' &&
-       pe5.line == 1 && pe5.col == 3)
-let se1 = try { JSON.stringify(to_float("inf")); nil } catch e { e }
+  pe5.message == 'JSON.parse: trailing characters' &&
+  pe5.line == 1 &&
+  pe5.col == 3)
+let se1 = try {
+  JSON.stringify(to_float("inf"))
+  nil
+} catch e {
+  e
+}
 assert_true(se1.kind == 'ValueError' &&
-       se1.message == 'JSON.stringify: non-finite Float')
+  se1.message == 'JSON.stringify: non-finite Float')
 let nsk = {}
 nsk[(1, 2)] = "x"
-let se2 = try { JSON.stringify(nsk); nil } catch e { e }
+let se2 = try {
+  JSON.stringify(nsk)
+  nil
+} catch e {
+  e
+}
 assert_true(se2.kind == 'TypeError' &&
-       se2.message == 'JSON.stringify: Object has non-String keys')
-let se3 = try { JSON.stringify(fn() { 1 }); nil } catch e { e }
+  se2.message == 'JSON.stringify: Object has non-String keys')
+let se3 = try {
+  JSON.stringify(fn () {
+    1
+  })
+  nil
+} catch e {
+  e
+}
 assert_true(se3.kind == 'TypeError' &&
-       se3.message == 'JSON.stringify: cannot serialize Function')
+  se3.message == 'JSON.stringify: cannot serialize Function')
 
 IO.inspect("test_json OK")

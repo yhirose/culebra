@@ -18,7 +18,7 @@ assert_eq(FS.dirname("c.txt"), "")
 
 assert_eq(FS.extension("a/b/c.txt"), ".txt")
 assert_eq(FS.extension("noext"), "")
-assert_eq(FS.extension(".hidden"), "")   // C++ filesystem treats leading-dot files as no-extension
+assert_eq(FS.extension(".hidden"), "")  // C++ filesystem treats leading-dot files as no-extension
 
 assert_eq(FS.stem("a/b/c.txt"), "c")
 assert_eq(FS.stem("c.txt"), "c")
@@ -43,15 +43,25 @@ assert_eq(FS.is_file("/tmp"), false)
 // isn't writable; fall back to /tmp for environments that don't set
 // TMPDIR.
 let tmpdir_env = Sys.env("TMPDIR")
-let tmp_root = if tmpdir_env != "" { tmpdir_env } else { "/tmp" }
-let dir      = FS.join(tmp_root, "culebra_fs_test")
-let f1       = FS.join(dir, "hello.txt")
-let f2       = FS.join(dir, "world.txt")
+let tmp_root = if tmpdir_env != "" {
+  tmpdir_env
+} else {
+  "/tmp"
+}
+let dir = FS.join(tmp_root, "culebra_fs_test")
+let f1 = FS.join(dir, "hello.txt")
+let f2 = FS.join(dir, "world.txt")
 
 // Clean any leftover from a prior failed run.
-if FS.exists(f1) { FS.remove(f1) }
-if FS.exists(f2) { FS.remove(f2) }
-if FS.exists(dir) { FS.remove(dir) }
+if FS.exists(f1) {
+  FS.remove(f1)
+}
+if FS.exists(f2) {
+  FS.remove(f2)
+}
+if FS.exists(dir) {
+  FS.remove(dir)
+}
 
 FS.mkdir(dir)
 assert_true(FS.is_dir(dir))
@@ -92,13 +102,28 @@ FS.remove(dir)
 assert_eq(FS.exists(dir), false)
 
 // --- Error path: size on non-existent throws IOError ---
-let err = try { FS.size(bogus); "no-error" } catch e { e.kind }
+let err = try {
+  FS.size(bogus)
+  "no-error"
+} catch e {
+  e.kind
+}
 assert_eq(err, "IOError")
 
 // read/write of an unopenable path: kind + message identical across backends.
-let rerr = try { FS.read(bogus); "no-error" } catch e { e.kind + ": " + e.message }
+let rerr = try {
+  FS.read(bogus)
+  "no-error"
+} catch e {
+  e.kind + ": " + e.message
+}
 assert_eq(rerr, "IOError: FS.read: cannot open '" + bogus + "'")
-let werr = try { FS.write("/no/such/dir/x.txt", "x"); "no-error" } catch e { e.kind + ": " + e.message }
+let werr = try {
+  FS.write("/no/such/dir/x.txt", "x")
+  "no-error"
+} catch e {
+  e.kind + ": " + e.message
+}
 assert_eq(werr, "IOError: FS.write: cannot open '/no/such/dir/x.txt'")
 
 // --- Extensions: stat / rename / copy / walk / glob / paths / symlinks ---
@@ -108,7 +133,9 @@ assert_eq(FS.is_abs("/tmp"), true)
 assert_eq(FS.is_abs("rel/path"), false)
 
 let xdir = FS.join(tmp_root, "culebra_fs_ext")
-if FS.exists(xdir) { FS.remove(xdir, recursive: true) }
+if FS.exists(xdir) {
+  FS.remove(xdir, recursive: true)
+}
 FS.mkdir(FS.join(xdir, "sub"))
 FS.write(FS.join(xdir, "f.txt"), "hello")
 FS.write(FS.join(xdir, "sub/g.txt"), "yy")
@@ -131,26 +158,56 @@ assert_eq(FS.stat(cf).mode, 0o600)
 FS.chmod(cf, 0o755)
 assert_eq(FS.stat(cf).mode, 0o755)
 // chmod on a missing path throws IOError; a non-Long mode is a TypeError.
-assert_eq(try { FS.chmod(bogus, 0o644); "ok" } catch e { e.kind }, "IOError")
-assert_eq(try { FS.chmod(cf, "644"); "ok" } catch e { e.kind }, "TypeError")
+assert_eq(try {
+    FS.chmod(bogus, 0o644)
+    "ok"
+  } catch e {
+    e.kind
+  }, "IOError")
+assert_eq(try {
+    FS.chmod(cf, "644")
+    "ok"
+  } catch e {
+    e.kind
+  }, "TypeError")
 
 // stat exposes uid/gid; chown to the file's own owner/group is allowed for a
 // non-root process (so this is root-independent) and leaves them unchanged.
 let own = FS.stat(cf)
 assert_true(own.uid >= 0)
 assert_true(own.gid >= 0)
-FS.chown(cf, own.uid, own.gid)            // numeric owner + group
+FS.chown(cf, own.uid, own.gid)  // numeric owner + group
 assert_eq(FS.stat(cf).uid, own.uid)
-FS.chown(cf, group: own.gid)              // group only; owner left unchanged
+FS.chown(cf, group: own.gid)  // group only; owner left unchanged
 assert_eq(FS.stat(cf).uid, own.uid)
 // chown errors: missing path -> IOError; unknown name -> IOError; a non
 // String/Long/Nil owner -> TypeError. (All identical across backends.)
-assert_eq(try { FS.chown(bogus, 0); "ok" } catch e { e.kind }, "IOError")
-assert_eq(try { FS.chown(cf, owner: "no_such_user_zzz"); "ok" } catch e { e.kind }, "IOError")
-assert_eq(try { FS.chown(cf, owner: true); "ok" } catch e { e.kind }, "TypeError")
+assert_eq(try {
+    FS.chown(bogus, 0)
+    "ok"
+  } catch e {
+    e.kind
+  }, "IOError")
+assert_eq(try {
+    FS.chown(cf, owner: "no_such_user_zzz")
+    "ok"
+  } catch e {
+    e.kind
+  }, "IOError")
+assert_eq(try {
+    FS.chown(cf, owner: true)
+    "ok"
+  } catch e {
+    e.kind
+  }, "TypeError")
 // A StringView (e.g. a slice) is a name, not a type error: it reaches name
 // resolution -> unknown-user IOError, identically on both backends.
-assert_eq(try { FS.chown(cf, owner: "no_such_user_zzz"[0..5]); "ok" } catch e { e.kind }, "IOError")
+assert_eq(try {
+    FS.chown(cf, owner: "no_such_user_zzz"[0..5])
+    "ok"
+  } catch e {
+    e.kind
+  }, "IOError")
 
 // walk: every path under xdir (sub/, f.txt, sub/g.txt) = 3 entries.
 assert_eq(FS.walk(xdir).size(), 3)

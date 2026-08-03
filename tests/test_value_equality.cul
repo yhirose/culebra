@@ -4,7 +4,7 @@
 
 // --- Arrays ---
 assert_eq([1, 2, 3] == [1, 2, 3], true)
-assert_eq([1, [2, 3]] == [1, [2, 3]], true)     // nested
+assert_eq([1, [2, 3]] == [1, [2, 3]], true)  // nested
 assert_eq([] == [], true)
 assert_eq([1, 2] == [1, 2, 3], false)
 assert_eq([1, 2] == [1, 3], false)
@@ -25,12 +25,22 @@ assert_eq((1, 2) == (1, 2), true)
 assert_eq({1, 2, 3} == {3, 2, 1}, true)
 
 // --- Class instances: same class + same fields are equal ---
-class P { new(x, y) { self.x = x; self.y = y } }
+class P {
+  new(x, y) {
+    self.x = x
+    self.y = y
+  }
+}
 assert_eq(P.new(1, 2) == P.new(1, 2), true)
 assert_eq(P.new(1, 2) == P.new(1, 3), false)
 
 // Different classes with identical fields are not equal (class tag).
-class Q { new(x, y) { self.x = x; self.y = y } }
+class Q {
+  new(x, y) {
+    self.x = x
+    self.y = y
+  }
+}
 assert_eq(P.new(1, 2) == Q.new(1, 2), false)
 
 // --- assert_eq now compares collections structurally ---

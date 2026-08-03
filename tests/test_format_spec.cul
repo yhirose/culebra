@@ -39,7 +39,12 @@ let b = 3
 assert_eq("{a + b:03}", "005")
 
 // Invalid spec for the type raises ValueError.
-let e = try { let _ = "{pi:z}"; nil } catch er { er.kind }
+let e = try {
+  let _ = "{pi:z}"
+  nil
+} catch er {
+  er.kind
+}
 assert_eq(e, "ValueError")
 
 IO.inspect("test_format_spec OK")

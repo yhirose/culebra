@@ -6,9 +6,15 @@
 
 # --- type dispatch on a static method ---
 class Vec {
-  static make(x: Long)   { "long:{x}" }
-  static make(x: String) { "str:{x}" }
-  static make(x: Long, y: Long) { "pair:{x},{y}" }
+  static make(x: Long) {
+    "long:{x}"
+  }
+  static make(x: String) {
+    "str:{x}"
+  }
+  static make(x: Long, y: Long) {
+    "pair:{x},{y}"
+  }
 }
 assert_eq(Vec.make(5), "long:5")
 assert_eq(Vec.make("hi"), "str:hi")
@@ -16,8 +22,12 @@ assert_eq(Vec.make(1, 2), "pair:1,2")
 
 # --- default param on one static overload ---
 class D {
-  static f(x: Long, y: Long = 100) { x + y }
-  static f(x: String) { x.size() }
+  static f(x: Long, y: Long = 100) {
+    x + y
+  }
+  static f(x: String) {
+    x.size()
+  }
 }
 assert_eq(D.f(1), 101)
 assert_eq(D.f(1, 2), 3)
@@ -25,38 +35,68 @@ assert_eq(D.f("qq"), 2)
 
 # --- keyword argument flows to the picked static overload ---
 class Srv {
-  static handle(x: Long, scale: Long = 2) { x * scale }
-  static handle(x: String) { x.size() }
+  static handle(x: Long, scale: Long = 2) {
+    x * scale
+  }
+  static handle(x: String) {
+    x.size()
+  }
 }
 assert_eq(Srv.handle(5), 10)
 assert_eq(Srv.handle(5, scale: 10), 50)
 assert_eq(Srv.handle("hey"), 3)
 
 # --- dispatch on a class-instance-typed param ---
-class Animal { new(n) { self.n = n } }
+class Animal {
+  new(n) {
+    self.n = n
+  }
+}
 class Reg {
-  static of(a: Animal) { "animal" }
-  static of(x: Long)   { "count" }
+  static of(a: Animal) {
+    "animal"
+  }
+  static of(x: Long) {
+    "count"
+  }
 }
 assert_eq(Reg.of(Animal.new("cat")), "animal")
 assert_eq(Reg.of(7), "count")
 
 # --- no matching static overload raises a catchable DispatchError ---
 mut err = nil
-try { Reg.of(1.5) } catch e { err = e.kind }
+try {
+  Reg.of(1.5)
+} catch e {
+  err = e.kind
+}
 assert_eq(err, "DispatchError")
 
 # --- a single static method is unaffected (bare fn, no dispatcher) ---
-class S { static only(x) { x * 2 } }
+class S {
+  static only(x) {
+    x * 2
+  }
+}
 assert_eq(S.only(21), 42)
 
 # --- static overloads coexist with same-named instance overloads ---
 class Both {
-  new(n) { self.n = n }
-  tag(x: Long)   { "inst-long:{self.n}" }
-  tag(x: String) { "inst-str:{self.n}" }
-  static tag(x: Long)   { "static-long" }
-  static tag(x: String) { "static-str" }
+  new(n) {
+    self.n = n
+  }
+  tag(x: Long) {
+    "inst-long:{self.n}"
+  }
+  tag(x: String) {
+    "inst-str:{self.n}"
+  }
+  static tag(x: Long) {
+    "static-long"
+  }
+  static tag(x: String) {
+    "static-str"
+  }
 }
 assert_eq(Both.tag(1), "static-long")
 assert_eq(Both.tag("a"), "static-str")
@@ -65,16 +105,40 @@ assert_eq(bo.tag(1), "inst-long:9")
 assert_eq(bo.tag("a"), "inst-str:9")
 
 # --- two same-named classes in different scopes keep separate static tables ---
-fn mk_p() { class K { static g(x: Long){"P1"} static g(x: String){"P2"} }; K }
-fn mk_q() { class K { static g(x: Long){"Q1"} static g(x: String){"Q2"} }; K }
+fn mk_p() {
+  class K {
+    static g(x: Long) {
+      "P1"
+    }
+    static g(x: String) {
+      "P2"
+    }
+  }
+  K
+}
+fn mk_q() {
+  class K {
+    static g(x: Long) {
+      "Q1"
+    }
+    static g(x: String) {
+      "Q2"
+    }
+  }
+  K
+}
 let kp = mk_p()
 let kq = mk_q()
 assert_eq(kp.g(1) + kp.g("z") + kq.g(1) + kq.g("z"), "P1P2Q1Q2")
 
 # --- static overload set survives use as a first-class value ---
 class Fmt {
-  static show(x: Long)   { "L" }
-  static show(x: String) { "S" }
+  static show(x: Long) {
+    "L"
+  }
+  static show(x: String) {
+    "S"
+  }
 }
 let f = Fmt.show
 assert_eq(f(1), "L")

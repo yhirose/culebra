@@ -9,7 +9,12 @@
 // file shifts them. Keep additions at the bottom.
 
 fn check(label, expect, thunk) {
-  let got = try { thunk(); -1 } catch e { e.line }
+  let got = try {
+    thunk()
+    -1
+  } catch e {
+    e.line
+  }
   assert_eq("{label}:{got}", "{label}:{expect}")
 }
 
@@ -25,14 +30,18 @@ effect fn in_while() {
   }
   x
 }
-check("while-body", 23, fn() { handle { in_while() } with ask(k) { k(1) } })
+check("while-body", 28, fn () {
+  handle { in_while() } with ask(k) { k(1) }
+})
 
 // error inside an ANF-hoisted operand
 effect fn anf_hoist() {
   let y = perform ask() + "s"
   y
 }
-check("anf-hoisted", 32, fn() { handle { anf_hoist() } with ask(k) { k(1) } })
+check("anf-hoisted", 39, fn () {
+  handle { anf_hoist() } with ask(k) { k(1) }
+})
 
 // error inside a desugared for-in body
 effect fn in_for() {
@@ -42,7 +51,9 @@ effect fn in_for() {
   }
   x
 }
-check("for-body", 41, fn() { handle { in_for() } with ask(k) { k(1) } })
+check("for-body", 50, fn () {
+  handle { in_for() } with ask(k) { k(1) }
+})
 
 // error inside a single-line for body (marker sits outside the for's span)
 effect fn in_for1() {
@@ -50,7 +61,9 @@ effect fn in_for1() {
   for v in [1, 2] { let bad = v + "s" }
   x
 }
-check("for-body-1line", 50, fn() { handle { in_for1() } with ask(k) { k(1) } })
+check("for-body-1line", 61, fn () {
+  handle { in_for1() } with ask(k) { k(1) }
+})
 
 // error inside a nested handle's body
 effect fn inner_op()
@@ -60,11 +73,14 @@ effect fn nested_err() {
     base + "s" + perform inner_op()
   } with inner_op(k) { k(1) }
 }
-check("nested-handle", 60, fn() { handle { nested_err() } with ask(k) { k(1) } })
+check("nested-handle", 73, fn () {
+  handle { nested_err() } with ask(k) { k(1) }
+})
 
 // error inside a handler clause
-check("handler-clause", 67,
-      fn() { handle { perform ask() } with ask(k) { k(1 + "s") } })
+check("handler-clause", 82, fn () {
+  handle { perform ask() } with ask(k) { k(1 + "s") }
+})
 
 // a multi-line triple string doesn't derail the lines that follow it
 effect fn after_triple() {
@@ -75,7 +91,9 @@ line three"""
   let bad = x + "s"
   "{doc.size()}-{bad}"
 }
-check("after-triple", 75, fn() { handle { after_triple() } with ask(k) { k(1) } })
+check("after-triple", 91, fn () {
+  handle { after_triple() } with ask(k) { k(1) }
+})
 
 // generator: error at a yield inside a while
 fn gen_loop() {
@@ -85,13 +103,17 @@ fn gen_loop() {
     i = i + 1
   }
 }
-check("gen-while-yield", 84, fn() { gen_loop().collect() })
+check("gen-while-yield", 102, fn () {
+  gen_loop().collect()
+})
 
 // generator: error at a yield inside a (desugared) single-line for body
 fn gen_for() {
-  for v in [1, 2] { yield v + "s" }
+  for v in [1, 2] { yield v + "s" }  // kept single-line: fmt-target, see header
 }
-check("gen-for-yield", 92, fn() { gen_for().collect() })
+check("gen-for-yield", 112, fn () {
+  gen_for().collect()
+})
 
 // generator: plain statement error in a generator body
 fn gen_stmt() {
@@ -99,7 +121,9 @@ fn gen_stmt() {
   let bad = a + "s"
   yield bad
 }
-check("gen-stmt", 99, fn() { gen_stmt().collect() })
+check("gen-stmt", 121, fn () {
+  gen_stmt().collect()
+})
 
 // no-handler EffectError carries the line of the offending `perform`
 effect fn nh_body() {
@@ -107,23 +131,29 @@ effect fn nh_body() {
   let x = perform ask()
   x + a
 }
-check("no-handler", 107, fn() { handle { nh_body() } with return(v) { v } })
+check("no-handler", 131, fn () {
+  handle { nh_body() } with return(v) { v }
+})
 
 // …and across a delegate chain it is the innermost perform's line
 effect fn nh_inner() {
   perform ask()
 }
 effect fn nh_outer() { nh_inner() }
-check("no-handler-delegate", 114, fn() { handle { nh_outer() } with return(v) { v } })
+check("no-handler-delegate", 140, fn () {
+  handle { nh_outer() } with return(v) { v }
+})
 
 // a user comment ending in a bare `#@N` is not provenance (the marker token
 // is the verbose `#@culebra:N`)
 effect fn imit_body() {
-  let a = 1   # decoy #@5
+  let a = 1  # decoy #@5
   let bad = a + "s"
   bad
 }
-check("marker-imitation", 123, fn() { handle { imit_body() } with return(v) { v } })
+check("marker-imitation", 151, fn () {
+  handle { imit_body() } with return(v) { v }
+})
 
 // error inside a named generator fn nested in an effect body reports the
 // original line (markers survive the effects fragment AND the generator
@@ -136,7 +166,9 @@ effect fn ng_body() {
   }
   g(x).collect()
 }
-check("nested-gen-in-effect", 135, fn() { handle { ng_body() } with ask(k) { k(1) } })
+check("nested-gen-in-effect", 165, fn () {
+  handle { ng_body() } with ask(k) { k(1) }
+})
 
 // error inside a handle body nested in a generator reports the original line
 // (the effects pass sliced it from the generator fragment via the registry)
@@ -147,7 +179,9 @@ fn eg_gen() {
   } with ask(k) { k(1) }
   yield v
 }
-check("handle-in-gen", 146, fn() { eg_gen().collect() })
+check("handle-in-gen", 178, fn () {
+  eg_gen().collect()
+})
 
 // error inside a single-line top-level defer body reports the defer's own
 // line (its marker survives the block-brace strip of `defer { ... }`)
@@ -157,6 +191,8 @@ effect fn de_prov() {
   let x = perform ask()
   x
 }
-check("defer-1line", 156, fn() { handle { de_prov() } with ask(k) { k(1) } })
+check("defer-1line", 190, fn () {
+  handle { de_prov() } with ask(k) { k(1) }
+})
 
 inspect("test_transform_error_lines: all assertions passed")

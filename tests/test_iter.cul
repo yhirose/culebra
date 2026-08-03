@@ -13,13 +13,18 @@
 
 # Array iteration
 mut sum = 0
-for x in [1, 2, 3, 4] { sum = sum + x }
+for x in [1, 2, 3, 4] {
+  sum = sum + x
+}
 assert_eq(sum, 10)
 
 # Object iteration yields (key, value) pairs in insertion order
 mut keys = []
 mut vals = []
-for k, v in {b: 2, a: 1, c: 3} { keys.push(k); vals.push(v) }
+for k, v in {b: 2, a: 1, c: 3} {
+  keys.push(k)
+  vals.push(v)
+}
 assert_eq(keys, ['b', 'a', 'c'])
 assert_eq(vals, [2, 1, 3])
 
@@ -27,7 +32,9 @@ assert_eq(vals, [2, 1, 3])
 mut hit = 0
 for i in [1, 2, 3] {
   for j in [10, 20, 30] {
-    if j == 20 { break }
+    if j == 20 {
+      break
+    }
     hit = hit + 1
   }
 }
@@ -36,7 +43,9 @@ assert_eq(hit, 3)
 # continue skips
 mut evens = 0
 for x in [1, 2, 3, 4, 5, 6] {
-  if x % 2 == 1 { continue }
+  if x % 2 == 1 {
+    continue
+  }
   evens = evens + 1
 }
 assert_eq(evens, 3)
@@ -44,39 +53,54 @@ assert_eq(evens, 3)
 # User-defined iterator (new Iterator/Iterable protocol)
 once = fn (v) {
   mut emitted = false
-  {
-    iter: fn () { self },
-    has_next: fn () { !emitted },
-    next: fn () { emitted = true; v }
-  }
+  {iter: fn () {
+      self
+    }, has_next: fn () {
+      !emitted
+    }, next: fn () {
+      emitted = true
+      v
+    }}
 }
 mut seen = []
-for x in once(42) { seen.push(x) }
+for x in once(42) {
+  seen.push(x)
+}
 assert_true(seen.size() == 1 && seen[0] == 42)
 
 # Empty iteration
 mut touched = false
-for _ in [] { touched = true }
+for _ in [] {
+  touched = true
+}
 assert_false(touched)
 
 # Iteration over iota (factory-returned Array)
 mut total = 0
-for i in iota(5) { total = total + i }
+for i in iota(5) {
+  total = total + i
+}
 assert_eq(total, 10)
 
 # --- Phase 2: String iteration (UTF-8 scalar walk) ---
 mut count = 0
-for c in 'hello' { count = count + 1 }
+for c in 'hello' {
+  count = count + 1
+}
 assert_eq(count, 5)
 
 # Non-ASCII: 'café' is 5 UTF-8 bytes but 4 scalars
 mut scalars = 0
-for c in 'café' { scalars = scalars + 1 }
+for c in 'café' {
+  scalars = scalars + 1
+}
 assert_eq(scalars, 4)
 
 # Scalars are yielded as 1-char Strings, not Longs
 mut parts = []
-for c in 'ab' { parts.push(c) }
+for c in 'ab' {
+  parts.push(c)
+}
 assert_eq(parts.size(), 2)
 assert_true(parts[0] == 'a' && parts[1] == 'b')
 
@@ -86,9 +110,9 @@ assert_eq(cps.size(), 4)
 assert_true(cps[0] == 99 && cps[1] == 97 && cps[2] == 102 && cps[3] == 233)
 
 # Numeric ops are natural on code points (range / classification)
-upper = 'Hello World'.code_points()
-  .filter(fn (cp) { cp >= 65 && cp <= 90 })
-  .count()
+upper = 'Hello World'.code_points().filter(fn (cp) {
+    cp >= 65 && cp <= 90
+  }).count()
 assert_eq(upper, 2)
 
 # Empty and ASCII-only
@@ -113,7 +137,11 @@ assert_eq(''.graphemes().count(), 0)
 # --- String.bytes() — Iterator<Long> over raw UTF-8 bytes (no decoding) ---
 bs = 'café'.bytes().collect()
 assert_eq(bs.size(), 5)  # 'é' is 2 bytes; code_points() above sees 4 scalars
-assert_true(bs[0] == 99 && bs[1] == 97 && bs[2] == 102 && bs[3] == 195 && bs[4] == 169)
+assert_true(bs[0] == 99 &&
+  bs[1] == 97 &&
+  bs[2] == 102 &&
+  bs[3] == 195 &&
+  bs[4] == 169)
 assert_eq(''.bytes().count(), 0)
 assert_eq('hello'.bytes().count(), 5)
 # ASCII: bytes() and code_points() agree
@@ -124,55 +152,87 @@ assert_eq(String.from_code_point(97), 'a')
 assert_eq(String.from_code_point(233), 'é')
 # Round-trips through code_points()
 assert_eq(String.from_code_point('é'.code_points().collect()[0]), 'é')
-assert_throws("ValueError", fn () { String.from_code_point(0x110000) })   # above max scalar
-assert_throws("ValueError", fn () { String.from_code_point(0xD800) })     # surrogate range
-assert_throws("TypeError", fn () { String.from_code_point('a') })        # not a Long
+assert_throws("ValueError", fn () {
+  String.from_code_point(0x110000)
+})  # above max scalar
+assert_throws("ValueError", fn () {
+  String.from_code_point(0xD800)
+})  # surrogate range
+assert_throws("TypeError", fn () {
+  String.from_code_point('a')
+})  # not a Long
 
 # --- String.from_code_points(cps) — plural inverse of code_points() ---
 assert_eq(String.from_code_points([99, 97, 102, 233]), 'café')
 assert_eq(String.from_code_points([]), '')
 # Round-trips through code_points() for any String
 assert_eq(String.from_code_points('café'.code_points().collect()), 'café')
-assert_eq(String.from_code_points('a👨‍👩‍👧b'.code_points().collect()), 'a👨‍👩‍👧b')
+assert_eq(
+  String.from_code_points('a👨‍👩‍👧b'.code_points().collect()),
+  'a👨‍👩‍👧b',
+)
 # Agrees with the singular form
 assert_eq(String.from_code_points([233]), String.from_code_point(233))
-assert_throws("ValueError", fn () { String.from_code_points([0x110000]) })
-assert_throws("ValueError", fn () { String.from_code_points([0xD800]) })
-assert_throws("TypeError", fn () { String.from_code_points(['a']) })
+assert_throws("ValueError", fn () {
+  String.from_code_points([0x110000])
+})
+assert_throws("ValueError", fn () {
+  String.from_code_points([0xD800])
+})
+assert_throws("TypeError", fn () {
+  String.from_code_points(['a'])
+})
 
 # --- String.from_bytes(bytes) — inverse of bytes() (no UTF-8 validation) ---
 assert_eq(String.from_bytes([99, 97, 102, 195, 169]), 'café')
 assert_eq(String.from_bytes([]), '')
 # Round-trips through bytes() for any String, including multi-byte scalars
 assert_eq(String.from_bytes('café'.bytes().collect()), 'café')
-assert_eq(String.from_bytes('a👨‍👩‍👧b'.bytes().collect()), 'a👨‍👩‍👧b')
+assert_eq(
+  String.from_bytes('a👨‍👩‍👧b'.bytes().collect()),
+  'a👨‍👩‍👧b',
+)
 # Invalid UTF-8 byte still builds — culebra Strings tolerate invalid UTF-8
 assert_eq(String.from_bytes([0xFF]).bytes().collect(), [0xFF])
-assert_throws("ValueError", fn () { String.from_bytes([256]) })   # above byte range
-assert_throws("ValueError", fn () { String.from_bytes([-1]) })    # below byte range
-assert_throws("TypeError", fn () { String.from_bytes(['a']) })    # not a Long
+assert_throws("ValueError", fn () {
+  String.from_bytes([256])
+})  # above byte range
+assert_throws("ValueError", fn () {
+  String.from_bytes([-1])
+})  # below byte range
+assert_throws("TypeError", fn () {
+  String.from_bytes(['a'])
+})  # not a Long
 
 # --- Phase 2: range (lazy integer iterator) ---
 mut sum = 0
-for i in range(5) { sum = sum + i }
+for i in range(5) {
+  sum = sum + i
+}
 assert_eq(sum, 10)
 
 # Empty range
 mut touched = false
-for _ in range(5, 2) { touched = true }
+for _ in range(5, 2) {
+  touched = true
+}
 assert_false(touched)
 
 # Large bounds with early break — must not OOM/hang
 mut n = 0
 for i in range(1000000) {
   n = i
-  if i >= 3 { break }
+  if i >= 3 {
+    break
+  }
 }
 assert_eq(n, 3)
 
 # start, end form
 mut coll = []
-for i in range(3, 7) { coll.push(i) }
+for i in range(3, 7) {
+  coll.push(i)
+}
 assert_eq(coll.size(), 4)
 assert_true(coll[0] == 3 && coll[3] == 6)
 
@@ -193,18 +253,26 @@ assert_eq(down.size(), 5)
 assert_true(down[0] == 5 && down[4] == 1)
 
 # step: 0 raises ValueError.
-let err = try { range(10, step: 0).collect() } catch e { e }
+let err = try {
+  range(10, step: 0).collect()
+} catch e {
+  e
+}
 assert_true(err.kind == 'ValueError' && err.message.contains('step'))
 
 # --- Phase 3: non-terminal Iterator methods ---
 
 # map
-r1 = [1, 2, 3].iter().map(fn (x) { x * 10 }).collect()
+r1 = [1, 2, 3].iter().map(fn (x) {
+    x * 10
+  }).collect()
 assert_eq(r1.size(), 3)
 assert_true(r1[0] == 10 && r1[2] == 30)
 
 # filter
-r2 = range(10).filter(fn (x) { x % 3 == 0 }).collect()
+r2 = range(10).filter(fn (x) {
+    x % 3 == 0
+  }).collect()
 assert_eq(r2.size(), 4)
 assert_true(r2[0] == 0 && r2[3] == 9)
 
@@ -219,7 +287,9 @@ assert_eq(r4.size(), 3)
 assert_true(r4[0] == 7 && r4[2] == 9)
 
 # take_while
-r5 = range(20).take_while(fn (x) { x < 5 }).collect()
+r5 = range(20).take_while(fn (x) {
+    x < 5
+  }).collect()
 assert_eq(r5.size(), 5)
 assert_true(r5[0] == 0 && r5[4] == 4)
 
@@ -235,8 +305,10 @@ try {
 }
 
 # windows: sliding, full windows only
-assert_eq([1, 2, 3, 4, 5].iter().windows(3).collect(),
-         [[1, 2, 3], [2, 3, 4], [3, 4, 5]])
+assert_eq(
+  [1, 2, 3, 4, 5].iter().windows(3).collect(),
+  [[1, 2, 3], [2, 3, 4], [3, 4, 5]],
+)
 assert_eq([1, 2].iter().windows(3).collect(), [])
 try {
   [1].iter().windows(-1).collect()
@@ -261,6 +333,8 @@ r8 = ['a', 'b'].iter().enumerate().collect()
 assert_eq(r8, [(0, 'a'), (1, 'b')])
 
 # flat_map
-r9 = [[1, 2], [], [3]].iter().flat_map(fn (xs) { xs }).collect()
+r9 = [[1, 2], [], [3]].iter().flat_map(fn (xs) {
+    xs
+  }).collect()
 assert_eq(r9.size(), 3)
 assert_true(r9[0] == 1 && r9[1] == 2 && r9[2] == 3)

@@ -40,11 +40,15 @@ assert_eq(handle { plain_calls_effect() } with get(resume) { resume(7) }, 19)
 // --- (4) call-site drive crosses DELEGATE frames (effect -> effect) ---
 effect fn inner_e() { perform get() + 1 }
 effect fn outer_e() { inner_e() * 3 }
-fn plain_deleg() { outer_e() }
+fn plain_deleg() {
+  outer_e()
+}
 assert_eq(handle { plain_deleg() } with get(resume) { resume(2) }, 9)
 
 // --- (5) perform transparent through first-class use (.map with plain fn) ---
-fn scale(x) { x * perform get() }
+fn scale(x) {
+  x * perform get()
+}
 let mapped = handle { [1, 2, 3].map(scale) } with get(resume) { resume(10) }
 assert_eq(mapped, [10, 20, 30])
 
@@ -52,7 +56,9 @@ assert_eq(mapped, [10, 20, 30])
 mut cleanup = []
 effect fn fail(msg)
 fn risky() {
-  defer { cleanup.push("defer-ran") }
+  defer {
+    cleanup.push("defer-ran")
+  }
   perform fail("nope")
   "unreached"
 }
@@ -62,7 +68,11 @@ assert_eq(cleanup, ["defer-ran"])
 
 // --- (7) abort unwind is invisible to a user try/catch in between ---
 fn risky_wrapped() {
-  try { risky() } catch e { "user-caught" }
+  try {
+    risky()
+  } catch e {
+    "user-caught"
+  }
 }
 let aborted2 = handle { risky_wrapped() } with fail(msg, resume) { "abort: " + msg }
 assert_eq(aborted2, "abort: nope")
@@ -70,7 +80,9 @@ assert_eq(aborted2, "abort: nope")
 // --- (8) nested handles: a direct abort lands on ITS handle, not the
 // innermost one (the signal carries the owning handle's token) ---
 effect fn tick()
-fn deep_fail() { perform fail("outer-stop") }
+fn deep_fail() {
+  perform fail("outer-stop")
+}
 let nested = handle {
   handle { deep_fail() } with tick(resume) { resume(nil) }
 } with fail(msg, resume) { "outer-abort: " + msg }
@@ -78,20 +90,31 @@ assert_eq(nested, "outer-abort: outer-stop")
 
 // --- (9) no handler at all: EffectError with the perform line ---
 effect fn nope()
-fn orphan() { perform nope() }
-let no_handler = try { orphan(); "no-error" } catch e { [e.kind, e.line] }
-assert_eq(no_handler, ["EffectError", 81])
+fn orphan() {
+  perform nope()
+}
+let no_handler = try {
+  orphan()
+  "no-error"
+} catch e {
+  [e.kind, e.line]
+}
+assert_eq(no_handler, ["EffectError", 94])
 
 // --- (10) full-control handler reached from a plain fn: symmetric error ---
 effect fn choice()
-fn wants_full() { perform choice() }
+fn wants_full() {
+  perform choice()
+}
 let full_err = try {
   handle { wants_full() } with choice(resume) {
     let a = resume(1)
     let b = resume(2)
     a + b
   }
-} catch e { e.kind }
+} catch e {
+  e.kind
+}
 assert_eq(full_err, "EffectError")
 
 // --- (11) …but the same full-control handler works via an effect fn ---
@@ -120,7 +143,9 @@ assert_eq(logged, ["asked"])
 
 // --- (13) tail clause with op args, from a plain fn ---
 effect fn add(a, b)
-fn adder() { perform add(3, 4) }
+fn adder() {
+  perform add(3, 4)
+}
 assert_eq(handle { adder() } with add(a, b, resume) { resume(a + b) }, 7)
 
 // --- (14) plain-fn perform at top level of the handle body still works ---
@@ -140,16 +165,22 @@ let er_driven = handle { er_eff() } with er_ask(resume) {
   resume(7)
 }
 assert_eq(er_driven, "aborted")
-fn er_plain() { perform er_ask() }
+fn er_plain() {
+  perform er_ask()
+}
 let er_direct = try {
   handle { er_plain() } with er_ask(resume) {
     if true { return "aborted" }
     resume(7)
   }
-} catch e { e.kind }
+} catch e {
+  e.kind
+}
 assert_eq(er_direct, "EffectError")
 // …while a `return` inside a nested fn does not demote the clause.
-fn er_plain2() { perform er_ask() }
+fn er_plain2() {
+  perform er_ask()
+}
 let er_tail = handle { er_plain2() } with er_ask(resume) {
   let f = fn() { return 9 }
   resume(f())
@@ -164,7 +195,9 @@ assert_eq(er_tail, 9)
 // wins while active, and the outer one is restored when it exits — on the
 // direct path, the driven path, and for clause-kind mixes ---
 effect fn sh_ask()
-fn sh_direct() { perform sh_ask() }
+fn sh_direct() {
+  perform sh_ask()
+}
 effect fn sh_eff() { perform sh_ask() }
 let sh1 = handle {
   let inner = handle { sh_direct() } with sh_ask(r) { r("inner") }
@@ -183,21 +216,38 @@ let sh3 = handle {
 assert_eq(sh3, "tail-in")
 // a user throw unwinding through a handle still unwinds its handler scope:
 // afterwards a fresh handle dispatches, and no stale handler is left behind
-fn sh_boom() { throw "boom" }
-let sh4 = try { handle { sh_boom() } with sh_ask(r) { r(1) } } catch e { "caught" }
+fn sh_boom() {
+  throw "boom"
+}
+let sh4 = try {
+  handle { sh_boom() } with sh_ask(r) { r(1) }
+} catch e {
+  "caught"
+}
 assert_eq(sh4, "caught")
 assert_eq(handle { sh_direct() } with sh_ask(r) { r("after") }, "after")
-assert_eq(try { sh_direct() } catch e { e.kind }, "EffectError")
+assert_eq(try {
+    sh_direct()
+  } catch e {
+    e.kind
+  }, "EffectError")
 
 // --- (17) an op named like a dict method (get/has/…) dispatches correctly:
 // the handler index keys must not let such a name shadow the methods the
 // runtime calls on that index ---
 effect fn get()
 effect fn has(k)
-fn uses_get() { perform get() }
-fn uses_has() { perform has("x") }
+fn uses_get() {
+  perform get()
+}
+fn uses_has() {
+  perform has("x")
+}
 assert_eq(handle { uses_get() } with get(resume) { resume(42) }, 42)
-assert_eq(handle { uses_has() } with has(k, resume) { resume("saw " + k) }, "saw x")
+assert_eq(
+  handle { uses_has() } with has(k, resume) { resume("saw " + k) },
+  "saw x",
+)
 // nested: outer `get`, inner `has`, both reachable
 let both = handle {
   handle { [uses_get(), uses_has()] } with has(k, resume) { resume("H") }
@@ -209,8 +259,12 @@ assert_eq(both, [7, "H"])
 // is spliced at entry-module top level; its call-form `comp._step(rv)` is a
 // UFCS candidate that, before the scope barrier, captured the same-named
 // user global and broke the captureless-builder invariant (JIT-only crash) ---
-fn _step(x) { x + 100 }
-fn f(x) { x - 1 }
+fn _step(x) {
+  x + 100
+}
+fn f(x) {
+  x - 1
+}
 effect fn cg_ask()
 effect fn cg_body() {
   let v = perform cg_ask()

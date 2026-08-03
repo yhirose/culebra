@@ -47,7 +47,9 @@ assert_eq(three.size(), 3)
 assert_eq(three[0], 'a')
 assert_eq(three[2], 'c')
 
-let upper = 'a,b,c'.split_iter(',').map(fn (s) { s.upper() }).collect()
+let upper = 'a,b,c'.split_iter(',').map(fn (s) {
+    s.upper()
+  }).collect()
 assert_eq(upper[0], 'A')
 assert_eq(upper[2], 'C')
 
@@ -69,7 +71,9 @@ assert_true(v.ends_with('lo'.view()))
 trait Sized {
   size() -> Long
 }
-fn n_bytes(x: StringLike) -> Long { x.size() }
+fn n_bytes(x: StringLike) -> Long {
+  x.size()
+}
 assert_eq(n_bytes('hello'), 5)
 assert_eq(n_bytes('hello'.view()), 5)
 assert_eq(n_bytes('hello'.slice(0, 3)), 3)
@@ -80,7 +84,9 @@ assert_eq('hello'.view(), 'hello')
 
 // --- for-in iterates StringView ---
 let chars = []
-for c in 'abc'.view() { chars.push(c) }
+for c in 'abc'.view() {
+  chars.push(c)
+}
 assert_eq(chars.size(), 3)
 assert_eq(chars[0], 'a')
 
@@ -89,7 +95,10 @@ assert_eq('a,b,c'.split(',').join('-'), 'a-b-c')
 
 // Match patterns: String literal matches StringView subject.
 fn classify(s: StringLike) -> Long {
-  match s { 'hi' => 1, _ => 0 }
+  match s {
+    'hi' => 1,
+    _ => 0,
+  }
 }
 assert_eq(classify('hi'), 1)
 assert_eq(classify('hi'.view()), 1)
@@ -97,8 +106,12 @@ assert_eq(classify('bye'), 0)
 
 // __str__ may return either flavor.
 class Tag {
-  new(label) { self.label = label }
-  __str__() { self.label.view() }
+  new(label) {
+    self.label = label
+  }
+  __str__() {
+    self.label.view()
+  }
 }
 assert_eq(to_string(Tag.new('demo')), 'demo')
 
@@ -115,7 +128,10 @@ assert_eq(kind('hi'.view()), 'view')
 assert_eq(kind(42), 'other')
 
 fn is_stringlike(x) {
-  match x { s: StringLike => true, _ => false }
+  match x {
+    s: StringLike => true,
+    _ => false,
+  }
 }
 assert_true(is_stringlike('a'))
 assert_true(is_stringlike('a'.view()))

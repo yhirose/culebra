@@ -3,18 +3,30 @@
 # these assertions only need to pin the shape.
 
 fn caught(thunk) {
-  try { thunk(); "NO ERROR" } catch e { "{e.kind}: {e.message}" }
+  try {
+    thunk()
+    "NO ERROR"
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
 }
 
 mut counter = 0
 
 # A mut-capture closure is rejected at the spawn site, and the message names the
 # operation (Isolate.spawn / Channel.fan_in). Both backends prefix identically.
-let a = caught(fn () { Isolate.spawn(fn () { counter = counter + 1 }) })
+let a = caught(fn () {
+  Isolate.spawn(fn () {
+    counter = counter + 1
+  })
+})
 assert_true(a.starts_with("SendError: Isolate.spawn: closure captures the mutable"))
 
 let b = caught(fn () {
-  Channel.fan_in([1], fn (x, tx) { counter = counter + x; tx.send(x) })
+  Channel.fan_in([1], fn (x, tx) {
+    counter = counter + x
+    tx.send(x)
+  })
 })
 assert_true(b.starts_with("SendError: Channel.fan_in: closure captures the mutable"))
 
@@ -25,17 +37,29 @@ fn send_through(v) {
   let (tx, rx) = Channel.new(2)
   tx.send(v)
 }
-let f = caught(fn () { send_through(File.open("README.md", "r")) })
+let f = caught(fn () {
+  send_through(File.open("README.md", "r"))
+})
 assert_eq(f, "SendError: a native handle is not Sendable")
 
-let p = caught(fn () { send_through(Proc.spawn(["echo", "hi"])) })
+let p = caught(fn () {
+  send_through(Proc.spawn(["echo", "hi"]))
+})
 assert_eq(p, "SendError: a native handle is not Sendable")
 
-let h = caught(fn () { send_through(Isolate.spawn(fn () { 1 })) })
+let h = caught(fn () {
+  send_through(Isolate.spawn(fn () {
+    1
+  }))
+})
 assert_eq(h, "SendError: a native handle is not Sendable")
 
 # A handle returned out of an isolate is rejected the same way.
-let r = caught(fn () { Isolate.spawn(fn () { File.open("README.md", "r") }).join() })
+let r = caught(fn () {
+  Isolate.spawn(fn () {
+      File.open("README.md", "r")
+    }).join()
+})
 assert_eq(r, "SendError: a native handle is not Sendable")
 
 # A native (C++-bodied) closure is not Sendable: an iterator's wrapper
@@ -44,21 +68,49 @@ assert_eq(r, "SendError: a native handle is not Sendable")
 # fn_ptr + captures — a captured lazy iterator then hung or crashed the
 # child when it pulled from parent-heap cells.
 let it = [1, 2].iter().map(|x| x)
-let i1 = caught(fn () { Isolate.spawn(fn () { it.collect() }).join() })
-assert_eq(i1, "SendError: Isolate.spawn: a native/builtin function is not Sendable")
+let i1 = caught(fn () {
+  Isolate.spawn(fn () {
+      it.collect()
+    }).join()
+})
+assert_eq(
+  i1,
+  "SendError: Isolate.spawn: a native/builtin function is not Sendable",
+)
 
 let nsf = Math.abs
-let i2 = caught(fn () { Isolate.spawn(fn () { nsf(-3) }).join() })
-assert_eq(i2, "SendError: Isolate.spawn: a native/builtin function is not Sendable")
+let i2 = caught(fn () {
+  Isolate.spawn(fn () {
+      nsf(-3)
+    }).join()
+})
+assert_eq(
+  i2,
+  "SendError: Isolate.spawn: a native/builtin function is not Sendable",
+)
 
-enum SendShape { Circle(Long), Dot }
+enum SendShape {
+  Circle(Long),
+  Dot,
+}
 let ctor = SendShape.Circle
-let i3 = caught(fn () { Isolate.spawn(fn () { ctor(2) }).join() })
-assert_eq(i3, "SendError: Isolate.spawn: a native/builtin function is not Sendable")
+let i3 = caught(fn () {
+  Isolate.spawn(fn () {
+      ctor(2)
+    }).join()
+})
+assert_eq(
+  i3,
+  "SendError: Isolate.spawn: a native/builtin function is not Sendable",
+)
 
 # User closures and multimethods still cross fine.
-let g = fn (x) { x * 2 }
-assert_eq(Isolate.spawn(fn () { g(21) }).join(), 42)
+let g = fn (x) {
+  x * 2
+}
+assert_eq(Isolate.spawn(fn () {
+      g(21)
+    }).join(), 42)
 
 inspect("test_send_errors_jit: all assertions passed")
 
@@ -70,15 +122,27 @@ inspect("test_send_errors_jit: all assertions passed")
 # instances share one rebuilt meta), mirroring interp instances whose
 # methods are own props.
 class SendP {
-  new(x) { self.x = x }
-  get() { self.x }
-  add(d) { self.x + d }
+  new(x) {
+    self.x = x
+  }
+  get() {
+    self.x
+  }
+  add(d) {
+    self.x + d
+  }
 }
 let sp = SendP.new(7)
-assert_eq(Isolate.spawn(fn () { sp.get() }).join(), 7)
-assert_eq(Isolate.spawn(fn () { sp.add(3) }).join(), 10)
+assert_eq(Isolate.spawn(fn () {
+      sp.get()
+    }).join(), 7)
+assert_eq(Isolate.spawn(fn () {
+      sp.add(3)
+    }).join(), 10)
 let sps = [SendP.new(1), SendP.new(2)]
-assert_eq(Isolate.spawn(fn () { sps.map(|p| p.get()) }).join(), [1, 2])
+assert_eq(Isolate.spawn(fn () {
+      sps.map(|p| p.get())
+    }).join(), [1, 2])
 let (stx, srx) = Channel.new(1)
 stx.send(SendP.new(5))
 assert_eq(srx.recv().get(), 5)
@@ -86,11 +150,25 @@ assert_eq(srx.recv().get(), 5)
 # A class object (its ctor is native on the interp side) and a `C.new`
 # value reject on both backends — and so does a @derive class instance,
 # whose meta carries native derived thunks.
-let kls = caught(fn () { Isolate.spawn(fn () { SendP.new(1) }).join() })
-assert_eq(kls, "SendError: Isolate.spawn: a native/builtin function is not Sendable")
+let kls = caught(fn () {
+  Isolate.spawn(fn () {
+      SendP.new(1)
+    }).join()
+})
+assert_eq(
+  kls,
+  "SendError: Isolate.spawn: a native/builtin function is not Sendable",
+)
 let mk = SendP.new
-let mkr = caught(fn () { Isolate.spawn(fn () { mk(1) }).join() })
-assert_eq(mkr, "SendError: Isolate.spawn: a native/builtin function is not Sendable")
+let mkr = caught(fn () {
+  Isolate.spawn(fn () {
+      mk(1)
+    }).join()
+})
+assert_eq(
+  mkr,
+  "SendError: Isolate.spawn: a native/builtin function is not Sendable",
+)
 
 inspect("test_send_errors_jit: instance-send assertions passed")
 
@@ -100,16 +178,22 @@ inspect("test_send_errors_jit: instance-send assertions passed")
 # gate ships with each instance (sender-side has_drop), so it can't depend
 # on the class's member declaration order (`drop` declared after `peek`).
 class DropOrder {
-  peek() { drop_registry }
-  drop() { inspect('dropped ' + to_string(self.x)) }
-  new(x) { self.x = x }
+  peek() {
+    drop_registry
+  }
+  drop() {
+    inspect('dropped ' + to_string(self.x))
+  }
+  new(x) {
+    self.x = x
+  }
 }
 let drop_registry = [DropOrder.new(1)]
 let dc = DropOrder.new(2)
 let child_dropped = Isolate.spawn(fn () {
-  dc.peek()[0].drop()   # prints "dropped 1" from the child on BOTH backends
-  'sent-drop-ran'
-}).join()
+    dc.peek()[0].drop()  # prints "dropped 1" from the child on BOTH backends
+    'sent-drop-ran'
+  }).join()
 assert_eq(child_dropped, 'sent-drop-ran')
 
 inspect("test_send_errors_jit: drop-gate assertions passed")

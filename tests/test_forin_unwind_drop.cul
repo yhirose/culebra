@@ -6,59 +6,75 @@
 
 # Keys branch: plain object, body throws.
 fn run_keys() {
-  for k in { a: 1, b: 2, drop: fn () { inspect("keys: iterable dropped") } } {
+  for k in {a: 1, b: 2, drop: fn () {
+    inspect("keys: iterable dropped")
+  }} {
     throw "boom"
   }
 }
-try { run_keys() } catch e { inspect("keys: caught " + e) }
+try {
+  run_keys()
+} catch e {
+  inspect("keys: caught " + e)
+}
 
 # Protocol branch, distinct iterator: body throws; the iterator is disposed
 # and dropped by the protocol cleanup, then the iterable by the for scope.
 fn mk_proto() {
-  {
-    v: 1,
-    iter: fn () {
-      {
-        mut i: 0,
-        has_next: fn () { self.i < 3 },
-        next: fn () { self.i = self.i + 1; self.i },
-        dispose: fn () { inspect("proto: disposed") },
-        drop: fn () { inspect("proto: iter dropped") },
-      }
-    },
-    drop: fn () { inspect("proto: iterable dropped") },
-  }
+  {v: 1, iter: fn () {
+      {mut i: 0, has_next: fn () {
+          self.i < 3
+        }, next: fn () {
+          self.i = self.i + 1
+          self.i
+        }, dispose: fn () {
+          inspect("proto: disposed")
+        }, drop: fn () {
+          inspect("proto: iter dropped")
+        }}
+    }, drop: fn () {
+      inspect("proto: iterable dropped")
+    }}
 }
 fn run_proto() {
   for x in mk_proto() {
     throw "boom"
   }
 }
-try { run_proto() } catch e { inspect("proto: caught " + e) }
+try {
+  run_proto()
+} catch e {
+  inspect("proto: caught " + e)
+}
 
 # Protocol branch, throwing dispose on break: the dispose's own throw
 # propagates, and both the iterator and the iterable still drop.
 fn mk_throwing() {
-  {
-    v: 1,
-    iter: fn () {
-      {
-        mut i: 0,
-        has_next: fn () { self.i < 3 },
-        next: fn () { self.i = self.i + 1; self.i },
-        dispose: fn () { throw "dboom" },
-        drop: fn () { inspect("dthrow: iter dropped") },
-      }
-    },
-    drop: fn () { inspect("dthrow: iterable dropped") },
-  }
+  {v: 1, iter: fn () {
+      {mut i: 0, has_next: fn () {
+          self.i < 3
+        }, next: fn () {
+          self.i = self.i + 1
+          self.i
+        }, dispose: fn () {
+          throw "dboom"
+        }, drop: fn () {
+          inspect("dthrow: iter dropped")
+        }}
+    }, drop: fn () {
+      inspect("dthrow: iterable dropped")
+    }}
 }
 fn run_dthrow() {
   for x in mk_throwing() {
     break
   }
 }
-try { run_dthrow() } catch e { inspect("dthrow: caught " + e) }
+try {
+  run_dthrow()
+} catch e {
+  inspect("dthrow: caught " + e)
+}
 
 # Set branch: members survive the unwind (the temp array's slot releases,
 # the set itself is dropped at its let scope's exit).
@@ -68,7 +84,11 @@ fn run_set() {
     throw "boom"
   }
 }
-try { run_set() } catch e { inspect("set: caught " + e) }
+try {
+  run_set()
+} catch e {
+  inspect("set: caught " + e)
+}
 
 # The element itself, not just the iterable: a destructuring loop variable
 # whose pattern misses throws while the cursor still holds this iteration's
@@ -76,33 +96,42 @@ try { run_set() } catch e { inspect("set: caught " + e) }
 # too. The JIT used to strand it (one leaked element per throw) because the
 # cursor's element guard was outside the loop's cleanup pad.
 fn mk_elem(n) {
-  { at: n, drop: fn () { inspect("elem: dropped " + self.at.to_string()) } }
+  {at: n, drop: fn () {
+    inspect("elem: dropped " + self.at.to_string())
+  }}
 }
 fn run_elem_mismatch() {
   for (a, b) in [mk_elem(1)] {
     inspect("elem: body ran")
   }
 }
-try { run_elem_mismatch() } catch e { inspect("elem: caught " + e.kind) }
+try {
+  run_elem_mismatch()
+} catch e {
+  inspect("elem: caught " + e.kind)
+}
 
 # Same window on the protocol cursor, where the element comes from next().
 fn mk_elem_gen() {
-  {
-    iter: fn () {
-      {
-        mut done: false,
-        has_next: fn () { !self.done },
-        next: fn () { self.done = true; mk_elem(2) },
-      }
-    },
-  }
+  {iter: fn () {
+    {mut done: false, has_next: fn () {
+        !self.done
+      }, next: fn () {
+        self.done = true
+        mk_elem(2)
+      }}
+  }}
 }
 fn run_elem_proto() {
   for (a, b) in mk_elem_gen() {
     inspect("proto: body ran")
   }
 }
-try { run_elem_proto() } catch e { inspect("elem: caught " + e.kind) }
+try {
+  run_elem_proto()
+} catch e {
+  inspect("elem: caught " + e.kind)
+}
 
 # A matching pattern hands the element to the body slot, so it dies at the
 # end of the iteration — the guard must not release it a second time.

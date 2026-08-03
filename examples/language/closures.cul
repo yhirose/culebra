@@ -1,4 +1,6 @@
-fn fib(n) { n < 2 ? n : fib(n - 1) + fib(n - 2) }
+fn fib(n) {
+  n < 2 ? n : fib(n - 1) + fib(n - 2)
+}
 
 println("fib(20) = {fib(20)}")
 

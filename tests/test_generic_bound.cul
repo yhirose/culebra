@@ -6,53 +6,96 @@
 // repeated T is NOT forced to a single concrete type.
 
 // --- Free-fn generics work (regression: previously rejected all args) ---
-fn id<T>(x: T) { x }
+fn id<T>(x: T) {
+  x
+}
 assert_eq(id(5), 5)
 assert_eq(id("hi"), "hi")
-assert_eq(id([1, 2, 3]).size(), 3)   // Array == is identity, so check size
+assert_eq(id([1, 2, 3]).size(), 3)  // Array == is identity, so check size
 
 // --- Bound accepts conforming args, rejects non-conforming ---
-fn needs_cmp<T: Comparable>(x: T) { x }
-assert_eq(needs_cmp(5), 5)          // Long is Comparable
-assert_eq(needs_cmp(1.5), 1.5)      // Float is Comparable
-assert_eq(needs_cmp("ab"), "ab")    // String is Comparable
+fn needs_cmp<T: Comparable>(x: T) {
+  x
+}
+assert_eq(needs_cmp(5), 5)        // Long is Comparable
+assert_eq(needs_cmp(1.5), 1.5)    // Float is Comparable
+assert_eq(needs_cmp("ab"), "ab")  // String is Comparable
 
-let e_arr = try { needs_cmp([1, 2, 3]); nil } catch e { e }
-assert_eq(e_arr != nil, true)       // Array is not Comparable -> rejected
+let e_arr = try {
+  needs_cmp([1, 2, 3])
+  nil
+} catch e {
+  e
+}
+assert_eq(e_arr != nil, true)  // Array is not Comparable -> rejected
 
 // --- Overload ordering: concrete > bounded > unbounded ---
-fn rank(x: Long) { "concrete" }
-fn rank<T: Comparable>(x: T) { "bounded" }
-fn rank<T>(x: T) { "unbounded" }
-assert_eq(rank(5), "concrete")       // exact concrete wins
-assert_eq(rank(1.5), "bounded")      // Float conforms to Comparable, not concrete Long
-assert_eq(rank([1]), "unbounded")    // Array conforms to neither -> catch-all
+fn rank(x: Long) {
+  "concrete"
+}
+fn rank<T: Comparable>(x: T) {
+  "bounded"
+}
+fn rank<T>(x: T) {
+  "unbounded"
+}
+assert_eq(rank(5), "concrete")     // exact concrete wins
+assert_eq(rank(1.5), "bounded")    // Float conforms to Comparable, not concrete Long
+assert_eq(rank([1]), "unbounded")  // Array conforms to neither -> catch-all
 
 // --- User class conforming to Comparable dispatches to bounded fn ---
 // and trait default methods (gt/lt built on cmp) work in the body.
 class Money {
-  new(amount) { self.amount = amount }
-  cmp(other) { self.amount - other.amount }
+  new(amount) {
+    self.amount = amount
+  }
+  cmp(other) {
+    self.amount - other.amount
+  }
 }
-fn pick_max<T: Comparable>(a: T, b: T) { if a.gt(b) { a } else { b } }
+fn pick_max<T: Comparable>(a: T, b: T) {
+  if a.gt(b) {
+    a
+  } else {
+    b
+  }
+}
 assert_eq(pick_max(Money.new(10), Money.new(25)).amount, 25)
 assert_eq(pick_max(Money.new(40), Money.new(7)).amount, 40)
 
 // A class WITHOUT cmp does not conform -> rejected by the bound.
-class Plain { new(v) { self.v = v } }
-let e_plain = try { needs_cmp(Plain.new(1)); nil } catch e { e }
+class Plain {
+  new(v) {
+    self.v = v
+  }
+}
+let e_plain = try {
+  needs_cmp(Plain.new(1))
+  nil
+} catch e {
+  e
+}
 assert_eq(e_plain != nil, true)
 
 // --- Lenient T-unification: repeated T is not forced to one type ---
-fn pair_ok<T: Comparable>(a: T, b: T) { (a, b) }
+fn pair_ok<T: Comparable>(a: T, b: T) {
+  (a, b)
+}
 assert_eq(pair_ok(3, 9), (3, 9))
-assert_eq(pair_ok(1, 2.0), (1, 2.0))     // mixed Long/Float, both Comparable
-assert_eq(pair_ok(1, "x"), (1, "x"))     // mixed Long/String, both Comparable
-let e_one = try { pair_ok([1], 2); nil } catch e { e }
-assert_eq(e_one != nil, true)            // first arg not Comparable -> rejected
+assert_eq(pair_ok(1, 2.0), (1, 2.0))  // mixed Long/Float, both Comparable
+assert_eq(pair_ok(1, "x"), (1, "x"))  // mixed Long/String, both Comparable
+let e_one = try {
+  pair_ok([1], 2)
+  nil
+} catch e {
+  e
+}
+assert_eq(e_one != nil, true)  // first arg not Comparable -> rejected
 
 // Independent type-params bind independently.
-fn zip2<A, B>(a: A, b: B) { (a, b) }
+fn zip2<A, B>(a: A, b: B) {
+  (a, b)
+}
 assert_eq(zip2(1, "hi"), (1, "hi"))
 
 // --- Introspection preserves the declared type-param name ---
@@ -61,47 +104,93 @@ assert_eq(pick_max.params[0].type, "T")
 
 // --- Bounded class type-param enforces on methods too ---
 class Box<T: Comparable> {
-  new(v) { self.v = v }
-  set(v: T) { self.v = v }
-  get() { self.v }
+  new(v) {
+    self.v = v
+  }
+  set(v: T) {
+    self.v = v
+  }
+  get() {
+    self.v
+  }
 }
 let b = Box.new(1)
 b.set(42)
 assert_eq(b.get(), 42)
-let e_box = try { b.set([1, 2]); nil } catch e { e }
-assert_eq(e_box != nil, true)            // Array violates T: Comparable
+let e_box = try {
+  b.set([1, 2])
+  nil
+} catch e {
+  e
+}
+assert_eq(e_box != nil, true)  // Array violates T: Comparable
 
 // --- Composite bound `<T: A + B>` (all-of) ---
-fn both<T: Hashable + Stringer>(x: T) { x }
-assert_eq(both(5), 5)          // Long conforms to Hashable AND Stringer
-assert_eq(both("hi"), "hi")    // String conforms to both
-let e_both = try { both([1, 2, 3]); nil } catch e { e }
-assert_eq(e_both != nil, true) // Array is Stringer but not Hashable -> rejected
+fn both<T: Hashable + Stringer>(x: T) {
+  x
+}
+assert_eq(both(5), 5)        // Long conforms to Hashable AND Stringer
+assert_eq(both("hi"), "hi")  // String conforms to both
+let e_both = try {
+  both([1, 2, 3])
+  nil
+} catch e {
+  e
+}
+assert_eq(e_both != nil, true)  // Array is Stringer but not Hashable -> rejected
 
 // Overload: concrete > composite-bounded > unbounded.
-fn kc(x: Long) { "concrete" }
-fn kc<T: Hashable + Stringer>(x: T) { "composite" }
-fn kc<T>(x: T) { "unbounded" }
+fn kc(x: Long) {
+  "concrete"
+}
+fn kc<T: Hashable + Stringer>(x: T) {
+  "composite"
+}
+fn kc<T>(x: T) {
+  "unbounded"
+}
 assert_eq(kc(5), "concrete")
-assert_eq(kc("s"), "composite")   // String conforms to both bounds
-assert_eq(kc([1]), "unbounded")   // Array conforms to neither
+assert_eq(kc("s"), "composite")  // String conforms to both bounds
+assert_eq(kc([1]), "unbounded")  // Array conforms to neither
 
 // User class conforming to both built-in traits.
 class Tag {
-  new(n) { self.n = n }
-  hash() { self.n }
-  to_s() { "Tag" }
+  new(n) {
+    self.n = n
+  }
+  hash() {
+    self.n
+  }
+  to_s() {
+    "Tag"
+  }
 }
-fn need_both<T: Hashable + Stringer>(x: T) { x.n }
+fn need_both<T: Hashable + Stringer>(x: T) {
+  x.n
+}
 assert_eq(need_both(Tag.new(7)), 7)
 
 // User class missing one part is rejected.
-class HashOnly { new(n) { self.n = n } hash() { self.n } }
-let e_ho = try { need_both(HashOnly.new(1)); nil } catch e { e }
+class HashOnly {
+  new(n) {
+    self.n = n
+  }
+  hash() {
+    self.n
+  }
+}
+let e_ho = try {
+  need_both(HashOnly.new(1))
+  nil
+} catch e {
+  e
+}
 assert_eq(e_ho != nil, true)
 
 // Spacing tolerance: no-space `<T:A+B>` parses and behaves the same.
-fn tight<T:Hashable+Stringer>(x: T) { x }
+fn tight<T:Hashable+Stringer>(x: T) {
+  x
+}
 assert_eq(tight(9), 9)
 
 IO.inspect("test_generic_bound OK")

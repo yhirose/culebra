@@ -8,20 +8,26 @@
 
 // A property named `self` is a label, not a reference.
 fn g_key() {
-  let o = { self: 1 }
+  let o = {self: 1}
   yield o.self
 }
 assert_eq(g_key().collect()[0], 1)
 
 // A kwarg label named `self` likewise.
-fn kw(**opts) { opts["self"] }
-fn g_kwarg() { yield kw(self: 5) }
+fn kw(**opts) {
+  opts["self"]
+}
+fn g_kwarg() {
+  yield kw(self: 5)
+}
 assert_eq(g_kwarg().collect()[0], 5)
 
 // A nested fn value keeps its own dynamic-receiver contract: called as an
 // object-literal method, its `self` is that object.
 fn g_method() {
-  let o = { name: "obj", m: fn () { self.name } }
+  let o = {name: "obj", m: fn () {
+    self.name
+  }}
   yield o.m()
 }
 assert_eq(g_method().collect()[0], "obj")
@@ -29,21 +35,35 @@ assert_eq(g_method().collect()[0], "obj")
 // The sanctioned idiom: bind the enclosing receiver outside the generator
 // and capture the variable.
 class Holder {
-  new() { self.tag = "held" }
+  new() {
+    self.tag = "held"
+  }
   run() {
     let me = self
-    fn g() { yield me.tag }
+    fn g() {
+      yield me.tag
+    }
     return g().collect()
   }
 }
 assert_eq(Holder.new().run()[0], "held")
 
 // The word `self` inside string content is untouched.
-fn g_str() { yield "self service" }
+fn g_str() {
+  yield "self service"
+}
 assert_eq(g_str().collect()[0], "self service")
 
-fn mk_plain() { return fn () { 1 } }
-fn mk_self() { return fn () { self } }
+fn mk_plain() {
+  return fn () {
+    1
+  }
+}
+fn mk_self() {
+  return fn () {
+    self
+  }
+}
 
 // A function from OUTSIDE, called bare in the body, is called the way a bare
 // call is called anywhere: with no receiver. The lowering promotes the local
@@ -52,20 +72,34 @@ fn mk_self() { return fn () { self } }
 // the parse-time rule above.
 fn g_bare() {
   let f = mk_self()
-  yield try { f(); "no error" } catch e { e.kind }
+  yield try {
+    f()
+    "no error"
+  } catch e {
+    e.kind
+  }
 }
 fn plain_bare() {
   let f = mk_self()
-  return try { f(); "no error" } catch e { e.kind }
+  return try {
+    f()
+    "no error"
+  } catch e {
+    e.kind
+  }
 }
 assert_eq(g_bare().collect()[0], "NameError")
-assert_eq(g_bare().collect()[0], plain_bare())   // same as outside a generator
+assert_eq(g_bare().collect()[0], plain_bare())  // same as outside a generator
 
 // ...and an ordinary local call is untouched by that rewrite, including one
 // spelled inside an interpolation.
 fn g_local_calls() {
-  let add = fn (a, b) { a + b }
-  let mk = fn () { [1, 2] }
+  let add = fn (a, b) {
+    a + b
+  }
+  let mk = fn () {
+    [1, 2]
+  }
   yield add(2, 3)
   yield mk().size()
   yield "one and one is {add(1, 1)}"
@@ -79,7 +113,6 @@ assert_eq(g_local_calls().collect(), [5, 2, "one and one is 2"])
 // agreed with each other even while this was broken, so difftest cannot see
 // it — these need value asserts.
 
-
 // (1) Identity. A bound wrapper is minted per read, so `f == f` went false.
 fn g_identity() {
   let f = mk_plain()
@@ -91,7 +124,7 @@ assert_eq(g_identity().collect()[0], true)
 // kept answering with the state object no matter who called it.
 fn g_receiver() {
   let f = mk_self()
-  let holder = { tag: "holder" }
+  let holder = {tag: "holder"}
   holder.f = f
   yield holder.f().tag
 }
@@ -99,8 +132,12 @@ assert_eq(g_receiver().collect()[0], "holder")
 
 // (3) An already-bound method keeps the receiver it was bound to.
 class Box {
-  new(v) { self.v = v }
-  get_v() { self.v }
+  new(v) {
+    self.v = v
+  }
+  get_v() {
+    self.v
+  }
 }
 fn g_bound() {
   let b = Box(7)
@@ -111,7 +148,10 @@ assert_eq(g_bound().collect()[0], 7)
 
 // The state class's OWN protocol methods are proto entries, not promoted
 // locals, so they still bind: reading one as a value keeps its receiver.
-fn g_protocol() { yield 11; yield 22 }
+fn g_protocol() {
+  yield 11
+  yield 22
+}
 let it = g_protocol()
 let read_has_next = it.has_next
 let read_next = it.next
@@ -122,21 +162,29 @@ assert_eq(read_has_next(), false)
 
 // An ordinary object is unaffected — a function-valued field still binds the
 // object it is read off, and each read is a fresh wrapper.
-let obj = { tag: "obj", m: fn () { self.tag } }
+let obj = {tag: "obj", m: fn () {
+  self.tag
+}}
 assert_eq(obj.m(), "obj")
 assert_eq(obj.m == obj.m, false)
-let stolen = { tag: "other" }
+let stolen = {tag: "other"}
 stolen.m = obj.m
 assert_eq(stolen.m(), "obj")
 
 // A user class spelled with a lowering's prefix keeps ordinary binding: the
 // state class is recognized by name AND by the `<stem#N>` parse label only a
 // re-parsed synthesized source carries, so a user file cannot reach it.
-class _Gen_decoy { new() { self.m = fn () { self.tag } } }
+class _Gen_decoy {
+  new() {
+    self.m = fn () {
+      self.tag
+    }
+  }
+}
 let decoy = _Gen_decoy()
 assert_eq(decoy.m == decoy.m, false)
-let decoy_holder = { tag: "holder" }
+let decoy_holder = {tag: "holder"}
 decoy_holder.m = decoy.m
-assert_eq(decoy_holder.m(), nil)   // still bound to the decoy, which has no tag
+assert_eq(decoy_holder.m(), nil)  // still bound to the decoy, which has no tag
 
 println("test_generator_self ok")

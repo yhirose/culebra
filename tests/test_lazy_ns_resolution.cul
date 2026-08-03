@@ -19,16 +19,24 @@ assert_eq(Regex.test("a.c", "abc"), true)
 assert_eq(Regex.compile("\\d+").find_all("a1 b22").size(), 2)
 
 # --- A nested closure resolves the namespace per Runtime (no captured slot) ---
-let inner = fn () { fn () { Time.seconds(3).seconds() }() }
+let inner = fn () {
+  fn () {
+    Time.seconds(3).seconds()
+  }()
+}
 assert_eq(inner(), 3.0)
 
-let re_in_closure = fn () { Regex.find_all("x+", "xx ax xxx").size() }
+let re_in_closure = fn () {
+  Regex.find_all("x+", "xx ax xxx").size()
+}
 assert_eq(re_in_closure(), 3)
 
 # --- Lexical scope wins over a builtin name (was JIT-asymmetric: the closure
 #     ignored the user's binding and resolved the Math namespace) ---
 let Math = 5
-let read_shadow = fn () { Math }
+let read_shadow = fn () {
+  Math
+}
 assert_eq(read_shadow(), 5)
 
 # A stdlib module reusing a builtin-looking name internally is the same case:
@@ -39,13 +47,15 @@ assert_eq(Regex.compile("a").replace_all("aaa", "b"), "bbb")
 
 # --- The regex literal desugars through the module's `interp` member ---
 let w = "ab"
-assert_eq((re"^${w}c$").test("abc"), true)
+assert_eq(re"^${w}c$".test("abc"), true)
 
 # --- A resolved module is closed, like the C++ namespaces ---
 # The marker is applied where the module is built, so it has to come out of
 # both resolution paths this file covers: the interp's lazy binder and the
 # JIT's per-Runtime builder thunk.
-assert_throws("AttributeError", fn () { Regex.typo })
-assert_true(Regex.has("Regex"))          # the class the namespace holds
+assert_throws("AttributeError", fn () {
+  Regex.typo
+})
+assert_true(Regex.has("Regex"))  # the class the namespace holds
 
 inspect("lazy-ns resolution OK")

@@ -11,7 +11,7 @@
 // an immortal .rodata literal.
 fn make_view() {
   let backing = "abcdefghij" + "klmnopqrst"
-  return backing.slice(2, 8)          // "cdefgh"
+  return backing.slice(2, 8)  // "cdefgh"
 }
 
 let v = make_view()
@@ -19,7 +19,9 @@ let v = make_view()
 // Churn a lot of transient strings to drive collections between the slice and
 // the read. A swept backing would corrupt `v`.
 mut sink = 0
-for i in 0..50000 { sink = sink + "x${i}".size() }
+for i in 0..50000 {
+  sink = sink + "x${i}".size()
+}
 
 assert_eq(v, "cdefgh")
 assert_eq(v.size(), 6)
@@ -27,7 +29,9 @@ assert_eq(v.size(), 6)
 // split() yields views into its (freshly-copied) backing; each element must
 // root that backing.
 let parts = ("alpha,beta,gamma,delta" + "").split(",")
-for i in 0..50000 { sink = sink + "y${i}".size() }
+for i in 0..50000 {
+  sink = sink + "y${i}".size()
+}
 assert_eq(parts, ["alpha", "beta", "gamma", "delta"])
 
 // code_points / scalars / graphemes iterators dereference the backing on every
@@ -36,16 +40,20 @@ let src = "héllo wörld" + ""
 mut chars = []
 for c in src {
   chars.push(c)
-  for j in 0..1000 { sink = sink + "z${j}".size() }
+  for j in 0..1000 {
+    sink = sink + "z${j}".size()
+  }
 }
 assert_eq(chars.size(), 11)
 assert_eq(chars.join(""), "héllo wörld")
 
 // A view of a view (transitive owner_base) must still root the ultimate
 // backing.
-let outer = ("0123456789" + "").slice(1, 9)   // "12345678"
-let inner = outer.slice(2, 5)                 // "345"
-for i in 0..50000 { sink = sink + "w${i}".size() }
+let outer = ("0123456789" + "").slice(1, 9)  // "12345678"
+let inner = outer.slice(2, 5)                // "345"
+for i in 0..50000 {
+  sink = sink + "w${i}".size()
+}
 assert_eq(inner, "345")
 
 inspect("string_view_gc ok")
