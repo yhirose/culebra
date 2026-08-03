@@ -1,0 +1,81 @@
+// Ruby-style trailing statement modifiers: `stmt if cond` / `stmt unless
+// cond`. Grammar: STATEMENT <- STATEMENT_BASE (STMT_MODIFIER_IF /
+// STMT_MODIFIER_UNLESS)?; parser.h's desugar_postfix_modifiers rewrites the
+// shape into a plain IF node before either backend ever sees it, so these
+// checks are really pinning the desugar, not a separate eval/codegen path.
+
+// --- `if`: runs only when the condition is truthy -------------------------
+mut trace = []
+trace.push(1) if true
+trace.push(2) if false
+trace.push(3) if 1
+trace.push(4) if 0
+assert_eq(trace, [1, 3])
+
+// --- `unless`: the negated counterpart -------------------------------------
+trace = []
+trace.push(1) unless true
+trace.push(2) unless false
+trace.push(3) unless 0
+assert_eq(trace, [2, 3])
+
+// --- value: nil when the condition is false, else the statement's value.
+// The modifier is statement-only (like Ruby's), so it can't nest inside an
+// expression (`f(1 if true)` is a SyntaxError, same as Ruby) — its value only
+// shows through as a block/function's implicit last-statement result.
+fn v1() { 1 if true }
+fn v2() { 1 if false }
+fn v3() { 1 unless false }
+fn v4() { 1 unless true }
+assert_eq(v1(), 1)
+assert_eq(v2(), nil)
+assert_eq(v3(), 1)
+assert_eq(v4(), nil)
+
+// --- `break` / `continue` inside a loop ------------------------------------
+mut seen = []
+mut i = 0
+while i < 10 {
+  i += 1
+  break if i > 5
+  continue unless i % 2 == 0
+  seen.push(i)
+}
+assert_eq(seen, [2, 4])
+assert_eq(i, 6)
+
+for x in 0..10 {
+  break unless x < 4
+  seen.push(100 + x)
+}
+assert_eq(seen, [2, 4, 100, 101, 102, 103])
+
+// --- `return` from a function -----------------------------------------------
+fn early(v) {
+  return "small" if v < 10
+  return "big" unless v < 100
+  "medium"
+}
+assert_eq(early(1), "small")
+assert_eq(early(50), "medium")
+assert_eq(early(500), "big")
+
+// --- the modified statement can itself be any statement, not just an
+// expression: an assignment, a nested postfix-guarded loop, etc. ------------
+mut y = 0
+y = 5 if true
+assert_eq(y, 5)
+y = 9 unless true
+assert_eq(y, 5)  // guard false -> assignment skipped, y unchanged
+
+// --- `unless` negates via a synthesized `!`, so it composes with `&&`/`||`
+// exactly as a hand-written `if !(...)` would ---------------------------------
+mut hits = 0
+hits += 1 unless true && false
+assert_eq(hits, 1)
+
+// --- `unless` as an object-key / parameter name still works: reservation
+// only blocks the assignment-target position -------------------------------
+fn take(unless) { unless }
+assert_eq(take(7), 7)
+assert_eq({unless: 42}["unless"], 42)

@@ -1422,6 +1422,16 @@ class Printer {
     return doc_concat({doc_text(kw + " "), print(*node.nodes[0])});
   }
 
+  // `stmt if cond` / `stmt unless cond` — parse_for_format keeps this shape
+  // intact (see view_postfix_modifier), so it prints back as the one
+  // canonical one-line form rather than the desugared multi-line `if cond {
+  // stmt }` the interp/JIT path would otherwise see.
+  DocP print_postfix_modifier(const peg::Ast& node) {
+    auto pv = culebra::view_postfix_modifier(node);
+    const char* kw = pv.is_unless ? " unless " : " if ";
+    return doc_concat({print(*pv.base), doc_text(kw), print(*pv.cond)});
+  }
+
   // A match / cond arm body is `(EXPRESSION | BLOCK)`. A brace block lays out
   // multi-line; an expression body stays on the `=>` line.
   static bool is_block_body(const peg::Ast& b) { return b.original_name == "BLOCK"; }
@@ -1604,6 +1614,7 @@ class Printer {
     if (n == "RETURN") return print_keyword_expr("return", node);
     if (n == "THROW") return print_keyword_expr("throw", node);
     if (n == "YIELD") return print_keyword_expr("yield", node);
+    if (n == "STATEMENT") return print_postfix_modifier(node);
 
     // Expressions
     if (n == "CALL") return print_call(node);

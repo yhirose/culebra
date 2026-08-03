@@ -13,7 +13,7 @@ import { tags as t } from "https://esm.sh/@lezer/highlight@1.2.1";
 const KEYWORDS = new Set([
   "fn",
   "class", "trait", "enum",
-  "if", "else", "match", "cond",
+  "if", "unless", "else", "match", "cond",
   "while", "for", "in", "by",
   "return", "break", "continue", "nobreak", "throw", "try", "catch", "defer", "yield",
   "effect", "perform", "handle", "with",

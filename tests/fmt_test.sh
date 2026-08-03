@@ -221,6 +221,36 @@ if ! diff -u "$TMP/atom_want.cul" "$TMP/atom_got.cul" > "$TMP/atom_diff" 2>&1; t
   fail=1
 fi
 
+# --- 1f. Golden fixture: postfix `if`/`unless` statement modifiers --------
+# `stmt if cond` / `stmt unless cond` is its own one-line canonical shape
+# (parse_for_format keeps the modifier node intact — see
+# include/parser.h view_postfix_modifier — unlike a full `if cond { ... }`
+# block, which always expands to multiple lines regardless of source form).
+cat > "$TMP/mod_in.cul" <<'EOF'
+fn f(v) {
+  return    "small"    if v<10
+  return "big" unless   v<100
+  "medium"
+}
+break   if x>3
+continue unless x==2
+EOF
+cat > "$TMP/mod_want.cul" <<'EOF'
+fn f(v) {
+  return "small" if v < 10
+  return "big" unless v < 100
+  "medium"
+}
+break if x > 3
+continue unless x == 2
+EOF
+"$CULEBRA" fmt "$TMP/mod_in.cul" > "$TMP/mod_got.cul" 2>"$TMP/mod_err"
+if ! diff -u "$TMP/mod_want.cul" "$TMP/mod_got.cul" > "$TMP/mod_diff" 2>&1; then
+  echo "FAIL golden (postfix if/unless): formatted output differs from expected"
+  cat "$TMP/mod_diff"
+  fail=1
+fi
+
 # --- 2 + 3. Corpus safety + idempotency (parallel) ------------------------
 # Format every corpus file twice — once to check the re-parse/comment safety
 # net doesn't refuse (exit 2), once more to assert idempotency. The files are

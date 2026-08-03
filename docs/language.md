@@ -95,7 +95,7 @@ Identifiers are case-sensitive.
 
 Reserved words that cannot name a variable:
 
-    nil  true  false  mut  debugger  return  while  for  in  if  else
+    nil  true  false  mut  debugger  return  while  for  in  if  unless  else
     fn  match  break  continue  throw  try  catch  defer
     class  trait  enum  import  export  yield
 
@@ -2284,6 +2284,48 @@ if mut d = compute(n); d > threshold {
 Each binding must be a declaration (`let` / `mut`); a bare `if x = 0;
 …` is a `SyntaxError`. Multiple bindings use `,`
 (`if mut a = f(), mut b = g(); …`).
+
+### Statement modifiers (`if` / `unless`)
+
+    stmt if cond
+    stmt unless cond
+
+A trailing `if` / `unless` (Ruby's statement modifiers) runs `stmt`
+only when `cond` is (`if`) or is not (`unless`) truthy — `unless` is
+exactly `if !cond`. It desugars to an ordinary `if cond { stmt }` /
+`if !cond { stmt }` before either backend sees it, so it is `nil`
+when the condition doesn't hold, same as a bodyless `if`:
+
+```culebra
+mut i = 0
+while i < 10 {
+  i = i + 1
+  break if i > 5
+  continue unless i % 2 == 0
+  println(i)
+}
+# => 2
+# => 4
+```
+
+The modifier attaches to a whole **statement**, not an arbitrary
+expression — `f(1 if true)` is a `SyntaxError`, exactly as in Ruby.
+Its value only shows through when the modified statement is the last
+one in a block or function body:
+
+```culebra
+fn grade(v) {
+  return "small" if v < 10
+  return "big" unless v < 100
+  "medium"
+}
+inspect(grade(5))    # => 'small'
+inspect(grade(500))  # => 'big'
+```
+
+`unless` is a reserved word only at the assignment-target position,
+like the rest of the [hard-reserved keywords](#keywords) — it stays a
+valid parameter name, object key, and property name.
 
 ### `cond`
 

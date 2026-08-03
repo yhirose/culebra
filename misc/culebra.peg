@@ -1,6 +1,15 @@
   PROGRAM                  <-  _ STATEMENTS _
   STATEMENTS               <-  (STATEMENT (_sp_ (';' / _nl_) (_ STATEMENT)?)*)?
-  STATEMENT                <-  DEBUGGER / RETURN / THROW / YIELD_FROM / YIELD / BREAK / CONTINUE / DEFER / IMPORT_STMT / EXPORT_STMT / EFFECT_FN_DECL / MULTIFN_DECL / ENUM_DECL / CLASS_DECL / TRAIT_DECL / LEXICAL_SCOPE / EXPRESSION
+  STATEMENT                <-  STATEMENT_BASE (_sp_ !_nl_ (STMT_MODIFIER_IF / STMT_MODIFIER_UNLESS))?
+  STATEMENT_BASE           <-  DEBUGGER / RETURN / THROW / YIELD_FROM / YIELD / BREAK / CONTINUE / DEFER / IMPORT_STMT / EXPORT_STMT / EFFECT_FN_DECL / MULTIFN_DECL / ENUM_DECL / CLASS_DECL / TRAIT_DECL / LEXICAL_SCOPE / EXPRESSION
+  # Ruby-style trailing statement modifier: `stmt if cond` / `stmt unless
+  # cond`. Parses as STATEMENT = [STATEMENT_BASE, (STMT_MODIFIER_IF |
+  # STMT_MODIFIER_UNLESS)]; desugar_postfix_modifiers (parser.h) rewrites it,
+  # after AST optimization, into an ordinary IF node so both backends reuse
+  # eval_if / compile_if unchanged. `culebra fmt` never desugars (parse_for_format
+  # skips it) and prints the modifier form verbatim as its own one-line shape.
+  STMT_MODIFIER_IF         <-  if _sp_ !_nl_ EXPRESSION
+  STMT_MODIFIER_UNLESS     <-  unless _sp_ !_nl_ EXPRESSION
 
   # Module system (§25). `import name from "./path"` binds the file's
   # `export { ... }` value to `name`. String-literal paths only.
@@ -500,6 +509,7 @@
   ~for                     <-  K('for')
   ~in                      <-  K('in')
   ~if                      <-  K('if')
+  ~unless                  <-  K('unless')
   ~else                    <-  K('else')
   ~fn                      <-  K('fn')
   ~return                  <-  K('return')

@@ -92,7 +92,7 @@ Culebraは動的型付けスクリプト言語です。設計上の優先事項:
 
 変数名にできない予約語:
 
-    nil  true  false  mut  debugger  return  while  for  in  if  else
+    nil  true  false  mut  debugger  return  while  for  in  if  unless  else
     fn  match  break  continue  throw  try  catch  defer
     class  trait  enum  import  export  yield
 
@@ -2182,6 +2182,47 @@ if mut d = compute(n); d > threshold {
 各束縛は宣言（`let` / `mut`）でなければならず、素の`if x = 0; …`は
 `SyntaxError`です。複数束縛は`,`で
 （`if mut a = f(), mut b = g(); …`）。
+
+### 文修飾子（`if` / `unless`）
+
+    stmt if cond
+    stmt unless cond
+
+末尾に付く`if` / `unless`（Rubyの文修飾子）は、`cond`が真（`if`）
+または偽（`unless`）のときだけ`stmt`を実行します — `unless`は
+`if !cond`とまったく同じです。どちらのバックエンドに渡る前に通常の
+`if cond { stmt }` / `if !cond { stmt }`へ脱糖されるので、条件が
+成立しないときの値は本体なし`if`と同じく`nil`です:
+
+```culebra
+mut i = 0
+while i < 10 {
+  i = i + 1
+  break if i > 5
+  continue unless i % 2 == 0
+  println(i)
+}
+# => 2
+# => 4
+```
+
+修飾子は任意の式ではなく**文**全体に付きます — `f(1 if true)`は
+Rubyと同様`SyntaxError`です。値が意味を持つのは、修飾された文が
+ブロックや関数本体の最後の文であるときだけです:
+
+```culebra
+fn grade(v) {
+  return "small" if v < 10
+  return "big" unless v < 100
+  "medium"
+}
+inspect(grade(5))    # => 'small'
+inspect(grade(500))  # => 'big'
+```
+
+`unless`が予約されるのは代入ターゲットの位置だけで、他の
+[hard 予約語](#キーワード)と同様パラメータ名・オブジェクトのキー・
+プロパティ名としては引き続き使えます。
 
 ### `cond`
 

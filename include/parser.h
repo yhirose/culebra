@@ -504,6 +504,33 @@ inline IfView view_if(const peg::Ast& a) {
   return IfView{has_init ? a.nodes[0].get() : nullptr, has_init ? 1u : 0u};
 }
 
+// View of a trailing statement modifier — see grammar:
+//   STATEMENT <- STATEMENT_BASE (_ (STMT_MODIFIER_IF / STMT_MODIFIER_UNLESS))?
+// A STATEMENT node only survives AST optimization under its own "STATEMENT"
+// tag (rather than collapsing onto its lone child) when the modifier is
+// present, since that is the only shape with more than one child — so
+// `has_postfix_modifier` doubles as the presence check. Both the parser's
+// desugar_postfix_modifiers (which rewrites this shape into a plain IF node
+// for the interp/JIT backends) and the formatter (which prints it verbatim
+// as its own one-line shape) go through this view.
+struct PostfixModifierView {
+  const peg::Ast* base;      // the modified statement (STATEMENT_BASE result)
+  const peg::Ast* cond;      // the modifier's condition (its lone child)
+  bool is_unless;            // true for `unless`, false for `if`
+};
+
+inline bool has_postfix_modifier(const peg::Ast& stmt) {
+  using namespace peg::udl;
+  return stmt.tag == "STATEMENT"_ && stmt.nodes.size() == 2;
+}
+
+inline PostfixModifierView view_postfix_modifier(const peg::Ast& stmt) {
+  using namespace peg::udl;
+  const auto& modifier = *stmt.nodes[1];
+  return PostfixModifierView{stmt.nodes[0].get(), modifier.nodes[0].get(),
+                             modifier.tag == "STMT_MODIFIER_UNLESS"_};
+}
+
 // View of a MATCH AST node — see grammar:
 //   MATCH <- match _ (INIT_CLAUSE _ ';' _)? EXPRESSION _ '{' _ MATCH_ARMS _ '}'
 // Post-optimizer children: [(INIT_CLAUSE)?, subject, MATCH_ARMS]. The optional
@@ -822,11 +849,12 @@ inline DerivedMethod derive_method_for(std::string_view trait) {
 inline bool is_keyword(std::string_view ident) {
   using namespace std::literals;
   static const std::set<std::string_view> keywords = {
-      "nil"sv,    "true"sv,   "false"sv,    "mut"sv,    "debugger"sv,
-      "return"sv, "while"sv,  "for"sv,      "in"sv,     "if"sv,
-      "else"sv,   "fn"sv,     "match"sv,    "throw"sv,  "try"sv,
-      "catch"sv,  "break"sv,  "continue"sv, "defer"sv,  "class"sv,
-      "trait"sv,  "enum"sv,   "import"sv,   "export"sv, "yield"sv};
+      "nil"sv,    "true"sv,   "false"sv,  "mut"sv,      "debugger"sv,
+      "return"sv, "while"sv,  "for"sv,    "in"sv,       "if"sv,
+      "unless"sv, "else"sv,   "fn"sv,     "match"sv,    "throw"sv,
+      "try"sv,    "catch"sv,  "break"sv,  "continue"sv, "defer"sv,
+      "class"sv,  "trait"sv,  "enum"sv,   "import"sv,   "export"sv,
+      "yield"sv};
   return keywords.contains(ident);
 }
 
@@ -1142,6 +1170,34 @@ inline std::shared_ptr<peg::Ast> parse_builtin_traits_preamble();
 inline std::shared_ptr<peg::Ast> desugar_regex_literals(
     std::shared_ptr<peg::Ast> node);
 
+// Shared by every desugar_* synthesizer below (make_regex_compile_call,
+// make_postfix_if, ...): builds a token leaf / group node with the
+// `tag`/`original_tag` split the AstOptimizer emits for a hand-written node.
+// Both backends resolve a call by each child's *original_tag* (PRIMARY
+// callee / DOT method / ARGUMENTS list / ARG_ITEM args), not just by name —
+// the single-arg `Node(name, token)` / `Node(name, nodes)` constructors set
+// `original_tag == tag`, which the JIT's namespace resolution rejects. The
+// copy-with-original_name constructor reproduces the real shape: `tok`/`grp`
+// build a node whose `tag` comes from `name` and whose `original_tag` comes
+// from `orig`, exactly as the optimizer emits for a hand-written call. It
+// takes its source by const&, so a stack temporary is enough — no need to
+// heap-allocate the inner node.
+struct SynthNode {
+  const char* path;
+  size_t ln, col;
+
+  std::shared_ptr<peg::Ast> tok(const char* name, const char* orig,
+                                std::string_view t, size_t l, size_t c) const {
+    return std::make_shared<peg::Ast>(peg::Ast(path, l, c, name, t), orig);
+  }
+  std::shared_ptr<peg::Ast> grp(
+      const char* name, const char* orig,
+      std::vector<std::shared_ptr<peg::Ast>> kids) const {
+    return std::make_shared<peg::Ast>(
+        peg::Ast(path, ln, col, name, std::move(kids)), orig);
+  }
+};
+
 // A `re'...'` / `re"..."` / `` re`...` `` literal is desugared, after AST
 // optimization, into an ordinary `Regex.compile(<pattern>, <flags>)` call so
 // both backends reuse the existing Regex machinery (no new eval/codegen paths).
@@ -1164,24 +1220,12 @@ inline std::shared_ptr<peg::Ast> make_regex_compile_call(const peg::Ast& lit) {
   const auto& body = *lit.nodes[0];   // REGEX_BODY
   const auto& flags = *lit.nodes[1];  // REGEX_FLAGS
 
-  // Both backends resolve a `Ns.method(args)` call by the *original_tag* of
-  // each child (PRIMARY callee / DOT method / ARGUMENTS list / ARG_ITEM args),
-  // not just by name — the AstOptimizer normally leaves `tag` and
-  // `original_tag` distinct (e.g. a DOT node whose `tag` is IDENTIFIER). The
-  // single-arg `Node(name, token)` / `Node(name, nodes)` constructors set
-  // `original_tag == tag`, which the JIT's namespace resolution rejects. The
-  // copy-with-original_name constructor reproduces the real shape: `tok`/`grp`
-  // build a node whose `tag` comes from `name` and whose `original_tag` comes
-  // from `orig`, exactly as the optimizer emits for a hand-written call.
-  // The copy-with-original_name constructor takes its source by const&, so a
-  // stack temporary is enough — no need to heap-allocate the inner node.
+  SynthNode nf{path, ln, col};
   auto tok = [&](const char* name, const char* orig, std::string_view t,
-                 size_t l, size_t c) {
-    return std::make_shared<Node>(Node(path, l, c, name, t), orig);
-  };
+                 size_t l, size_t c) { return nf.tok(name, orig, t, l, c); };
   auto grp = [&](const char* name, const char* orig,
                  std::vector<std::shared_ptr<Node>> kids) {
-    return std::make_shared<Node>(Node(path, ln, col, name, kids), orig);
+    return nf.grp(name, orig, std::move(kids));
   };
   // Relabel an existing node's `original_tag` (here, to ARG_ITEM) while keeping
   // its tag and children, matching the shape the optimizer emits for a
@@ -1271,6 +1315,57 @@ inline std::shared_ptr<peg::Ast> desugar_regex_literals(
   return node;
 }
 
+inline std::shared_ptr<peg::Ast> desugar_postfix_modifiers(
+    std::shared_ptr<peg::Ast> node);
+
+// `stmt if cond` / `stmt unless cond` (see view_postfix_modifier) is
+// desugared, after AST optimization, into an ordinary IF node — `[cond,
+// then]` for `if`, `[!cond, then]` for `unless` — so both backends reuse
+// eval_if / compile_if unchanged; no new eval/codegen path. `unless`'s
+// negation is a synthesized UNARY_NOT, matching how a hand-written `!cond`
+// parses. `then` is a relabeled copy of the base statement whose
+// original_tag is set to STATEMENT — deliberately different from the BLOCK
+// tag a hand-written `{ stmt }` body gets, so `then` fires the debugger's
+// statement hook via _eval_dispatch's unconditional `original_tag ==
+// STATEMENT` check (interpreter.h) instead of eval_if's
+// is_collapsed_single_statement fallback, the same way any ordinary
+// top-level statement does.
+inline std::shared_ptr<peg::Ast> make_postfix_if(const peg::Ast& stmt) {
+  using Node = peg::Ast;
+  const char* path = stmt.path.c_str();
+  size_t ln = stmt.line, col = stmt.column;
+  bool is_unless = view_postfix_modifier(stmt).is_unless;
+  SynthNode nf{path, ln, col};
+  auto tok = [&](const char* name, const char* orig, std::string_view t,
+                size_t l, size_t c) { return nf.tok(name, orig, t, l, c); };
+  auto grp = [&](const char* name, const char* orig,
+                std::vector<std::shared_ptr<Node>> kids) {
+    return nf.grp(name, orig, std::move(kids));
+  };
+
+  std::shared_ptr<Node> cond =
+      desugar_postfix_modifiers(stmt.nodes[1]->nodes[0]);
+  std::shared_ptr<Node> then_body = std::make_shared<Node>(
+      Node(*desugar_postfix_modifiers(stmt.nodes[0]), "STATEMENT"));
+
+  if (is_unless) {
+    auto bang = tok("UNARY_NOT_OPERATOR", "UNARY_NOT_OPERATOR",
+                    std::string_view("!"), cond->line, cond->column);
+    cond = grp("UNARY_NOT", "UNARY_NOT", {bang, cond});
+  }
+
+  return grp("IF", "IF", {cond, then_body});
+}
+
+// Walk the optimized AST, replacing every postfix-modifier STATEMENT with
+// its desugared IF (see make_postfix_if). Mirrors desugar_regex_literals.
+inline std::shared_ptr<peg::Ast> desugar_postfix_modifiers(
+    std::shared_ptr<peg::Ast> node) {
+  if (has_postfix_modifier(*node)) return make_postfix_if(*node);
+  for (auto& child : node->nodes) child = desugar_postfix_modifiers(child);
+  return node;
+}
+
 // Rules the AstOptimizer must NOT collapse onto a single child — the shared
 // single source of truth for every consumer of the optimized AST (interp /
 // JIT / lint / fmt). Adding a structural node to the grammar usually means
@@ -1314,6 +1409,11 @@ inline const std::vector<std::string>& ast_optimizer_keep_rules() {
       "TRIPLE_STRING", "REGEX_LIT", "REGEX_BODY", "REGEX_INTERP",
       "SPREAD_ELEM",
       "IMPORT_STMT", "EXPORT_STMT",
+      // STMT_MODIFIER_IF/_UNLESS (`stmt if cond` / `stmt unless cond`) each
+      // wrap a single condition EXPRESSION; kept so a lone modifier condition
+      // does not collapse and lose the tag has_postfix_modifier / the
+      // formatter's printer key on (see view_postfix_modifier).
+      "STMT_MODIFIER_IF", "STMT_MODIFIER_UNLESS",
       // BY_STEP (`0..10 by 2`) wraps a single ADDITIVE step expression; kept
       // so RANGE's decoder can tell a step clause apart from an end bound
       // positionally (see grammar_def.h).
@@ -1333,16 +1433,17 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
   std::shared_ptr<peg::Ast> ast;
   if (parser.parse_n(expr, len, ast, path.c_str())) {
     auto opt = peg::AstOptimizer(true, ast_optimizer_keep_rules());
-    return desugar_regex_literals(opt.optimize(ast));
+    return desugar_postfix_modifiers(desugar_regex_literals(opt.optimize(ast)));
   }
 
   return nullptr;
 }
 
-// Like parse(), but keeps REGEX_LIT nodes intact (no desugaring to a
-// `Regex.compile(...)` call) so the source formatter can re-emit `re"..."`
-// literals verbatim. Used only by `culebra fmt`; never feed this AST to a
-// backend, which expects the desugared form.
+// Like parse(), but keeps REGEX_LIT and postfix-modifier (`stmt if cond` /
+// `stmt unless cond`) nodes intact — no desugaring to a `Regex.compile(...)`
+// call or a plain IF — so the source formatter can re-emit both forms
+// verbatim. Used only by `culebra fmt`; never feed this AST to a backend,
+// which expects the desugared form.
 inline std::shared_ptr<peg::Ast> parse_for_format(
     const std::string& path, const char* expr, size_t len,
     std::vector<std::string>& msgs) {

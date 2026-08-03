@@ -66,7 +66,7 @@ module.exports = grammar({
     // --- keywords (mirror misc/keyword-map.txt) ---
     kw_function: ($) => "fn",
     kw_class: ($) => choice("class", "trait", "enum"),
-    kw_conditional: ($) => choice("if", "else", "match", "cond"),
+    kw_conditional: ($) => choice("if", "unless", "else", "match", "cond"),
     kw_repeat: ($) => choice("while", "for", "in"),
     kw_statement: ($) =>
       choice(
