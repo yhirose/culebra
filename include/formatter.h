@@ -49,7 +49,7 @@ namespace culebra::fmt {
 struct Doc;
 using DocP = std::shared_ptr<Doc>;
 
-enum class DocKind { Text, Line, SoftLine, HardLine, Group, Isolate, Indent, Concat, IfBreak };
+enum class DocKind { Text, Line, SoftLine, HardLine, Group, Indent, Concat, IfBreak };
 
 struct Doc {
   DocKind kind;
@@ -97,18 +97,6 @@ inline DocP doc_group(DocP x) {
   d->children = {std::move(x)};
   return d;
 }
-// A group measured on its own. An ordinary Group asks "does this, and
-// everything after it on the line, still fit?", which is right for a list that
-// shares the line with what follows. It is wrong for a brace body: the body is
-// the last thing on its line, and letting it push on what precedes it makes a
-// parameter list break to buy room the body cannot use. An Isolate is laid out
-// against the remaining width alone, and never constrains what came before.
-inline DocP doc_isolate(DocP x) {
-  auto d = std::make_shared<Doc>();
-  d->kind = DocKind::Isolate;
-  d->children = {std::move(x)};
-  return d;
-}
 inline DocP doc_indent(int n, DocP x) {
   auto d = std::make_shared<Doc>();
   d->kind = DocKind::Indent;
@@ -142,29 +130,6 @@ inline bool doc_has_hardline(const DocP& d) {
   return false;
 }
 
-// Width of a doc laid out flat, or -1 if it cannot lay out flat at all (it
-// holds a HardLine). An Isolate settles on this rather than on a fit scan, so
-// that it costs the line what it actually takes.
-inline int doc_flat_width(const DocP& d) {
-  if (!d) return 0;
-  switch (d->kind) {
-    case DocKind::Text:
-      return d->weightless ? 0 : static_cast<int>(d->text.size());
-    case DocKind::Line: return 1;
-    case DocKind::SoftLine:
-    case DocKind::IfBreak: return 0;
-    case DocKind::HardLine: return -1;
-    default: break;
-  }
-  int sum = 0;
-  for (const auto& c : d->children) {
-    int w = doc_flat_width(c);
-    if (w < 0) return -1;
-    sum += w;
-  }
-  return sum;
-}
-
 struct LayoutCmd {
   int indent;
   bool flat;
@@ -187,14 +152,6 @@ inline bool doc_fits(int remaining, std::vector<LayoutCmd> stack) {
       case DocKind::Group:
         stack.push_back({c.indent, /*flat=*/true, c.doc->children[0].get()});
         break;
-      case DocKind::Isolate: {
-        // Costs its flat width if it can take it, and otherwise ends the line —
-        // at which point what follows is on another line and not ours to weigh.
-        int w = doc_flat_width(c.doc->children[0]);
-        if (w < 0 || w > remaining) return true;
-        remaining -= w;
-        break;
-      }
       case DocKind::Indent:
         stack.push_back({c.indent + c.doc->indent, c.flat, c.doc->children[0].get()});
         break;
@@ -250,12 +207,6 @@ inline std::string doc_render(const DocP& root, int width) {
         std::vector<LayoutCmd> test = stack;
         test.push_back({c.indent, /*flat=*/true, c.doc->children[0].get()});
         bool flat = doc_fits(width - col, std::move(test));
-        stack.push_back({c.indent, flat, c.doc->children[0].get()});
-        break;
-      }
-      case DocKind::Isolate: {
-        int w = doc_flat_width(c.doc->children[0]);  // measured alone
-        bool flat = w >= 0 && w <= width - col;
         stack.push_back({c.indent, flat, c.doc->children[0].get()});
         break;
       }
@@ -813,8 +764,7 @@ class Printer {
   // brace interior is located by scanning from `after_pos` (at or before `{`).
   template <typename Render>
   DocP print_braced(const std::vector<const peg::Ast*>& items, size_t after_pos,
-                    const std::string& sep, bool empty_ok, Render render,
-                    bool allow_inline = true) {
+                    const std::string& sep, bool empty_ok, Render render) {
     BlockSpan span = block_interior(after_pos);
     size_t lo = span.found ? span.lo : (items.empty() ? after_pos : items.front()->position);
     size_t hi = span.found ? span.hi : (items.empty() ? after_pos : node_end(*items.back()));
@@ -832,24 +782,6 @@ class Printer {
       return doc_concat({doc_text("{"), doc_indent(kIndent, doc_concat(std::move(inner))),
                          doc_hardline(), doc_text("}")});
     }
-    // A lone statement with no comments in the braces may stay on one line —
-    // `if !ok { return }` is how culebra is written, in the docs and throughout
-    // the examples. Member lists (sep == ",") always lay out multi-line.
-    // An Isolate rather than a Group, so a long body cannot make the head in
-    // front of it break to buy room the body will not use.
-    if (allow_inline && items.size() == 1 && sep.empty()) {
-      bool has_comment = false;
-      for (const auto& c : comments_)
-        if (c.start >= lo && c.start < hi) { has_comment = true; break; }
-      DocP only = has_comment ? nullptr : render(0);
-      if (only && !doc_has_hardline(only))
-        return doc_isolate(doc_concat({
-            doc_text("{"),
-            doc_indent(kIndent, doc_concat({doc_line(), std::move(only)})),
-            doc_line(),
-            doc_text("}"),
-        }));
-    }
     return doc_concat({
         doc_text("{"),
         doc_indent(kIndent, doc_concat({doc_hardline(),
@@ -861,24 +793,10 @@ class Printer {
 
   // A brace block of statements: `body` is the block's statement node(s),
   // `after_pos` at or before its `{`.
-  // A construct that carries braces of its own. One of these as a block's only
-  // statement keeps the block multi-line: `for … { for … { … } }` fits, but it
-  // hides the nesting the indentation was showing.
-  static bool carries_a_block(const peg::Ast& n) {
-    const std::string& s = n.name;
-    return s == "IF" || s == "WHILE" || s == "FOR" || s == "MATCH" ||
-           s == "COND" || s == "TRY" || s == "DEFER" || s == "HANDLE" ||
-           s == "LEXICAL_SCOPE" || s == "CLASS_DECL" || s == "TRAIT_DECL" ||
-           s == "ENUM_DECL";
-  }
-
-  DocP print_block(const peg::Ast& body, size_t after_pos, bool empty_ok,
-                   bool allow_inline = true) {
+  DocP print_block(const peg::Ast& body, size_t after_pos, bool empty_ok) {
     auto stmts = stmt_children(body);
-    if (allow_inline && stmts.size() == 1 && carries_a_block(*stmts[0]))
-      allow_inline = false;
     return print_braced(stmts, after_pos, "", empty_ok,
-                        [&](size_t k) { return print(*stmts[k]); }, allow_inline);
+                        [&](size_t k) { return print(*stmts[k]); });
   }
 
   // A bare `{ ... }` statement block. The optimizer keeps LEXICAL_SCOPE as a
@@ -895,9 +813,7 @@ class Printer {
     // from it would locate the wrong brace and mis-attribute interior comments.
     // The lone child's span is folded to start exactly at this scope's own `{`.
     const peg::Ast& body = *node.nodes[0];
-    // Never inline: a bare block exists to mark a scope, and collapsing it to
-    // `{ let a = i }` inside another block's braces reads as a typo.
-    return print_block(body, body.position, /*empty_ok=*/true, /*allow_inline=*/false);
+    return print_block(body, body.position, /*empty_ok=*/true);
   }
 
   // Print `node` as an operand of a binary/unary context, parenthesizing when
@@ -1427,27 +1343,22 @@ class Printer {
       }
       parts.push_back(doc_text("; "));
     }
-    // Only a lone `if` may keep its body inline. Once there is an `else`, the
-    // arms have to agree: each block decides its own layout, so a long `else if`
-    // would otherwise leave `if c {` broken across lines next to a one-line
-    // `else { … }`.
-    const bool lone = nodes.size() - off == 2;
     parts.push_back(doc_flatten(print(*nodes[off])));
     parts.push_back(doc_text(" "));
-    parts.push_back(print_block(*nodes[off + 1], node_end(*nodes[off]), false, lone));
+    parts.push_back(print_block(*nodes[off + 1], node_end(*nodes[off]), false));
     size_t cursor = block_interior(node_end(*nodes[off])).after;
     size_t i = off + 2, n = nodes.size();
     while (n - i >= 2) {
       parts.push_back(doc_text(" else if "));
       parts.push_back(doc_flatten(print(*nodes[i])));
       parts.push_back(doc_text(" "));
-      parts.push_back(print_block(*nodes[i + 1], node_end(*nodes[i]), false, /*allow_inline=*/false));
+      parts.push_back(print_block(*nodes[i + 1], node_end(*nodes[i]), false));
       cursor = block_interior(node_end(*nodes[i])).after;
       i += 2;
     }
     if (i < n) {
       parts.push_back(doc_text(" else "));
-      parts.push_back(print_block(*nodes[i], cursor, false, /*allow_inline=*/false));
+      parts.push_back(print_block(*nodes[i], cursor, false));
     }
     return doc_concat(std::move(parts));
   }
