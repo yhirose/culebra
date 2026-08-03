@@ -12148,11 +12148,13 @@ struct JIT {
     // (compile_call and compile_call_with_builtins) funnel through here, so
     // one guard suffices.
     if (method == "drop" && argsAst.nodes.empty()) {
-      emit_call(module_->getOrInsertFunction(
-                    rt::explicit_drop, builder_.getVoidTy(),
-                    builder_.getInt8Ty(), builder_.getInt64Ty()),
-                {extract_tag(receiver.borrow()), extract_data(receiver.borrow())});
-      return own(make_nil());
+      // The intercept is not unconditional: interp's UFCS block sits *above*
+      // it (deliberately — see eval_call), so a receiver that resolves no
+      // `drop` of its own hands `x.drop()` to a free `drop` in scope, and a
+      // non-Function `drop` binding comes back to the guard.
+      auto guard = [this](llvm::Value* r) { return emit_explicit_drop(r); };
+      return compile_resolved_or_ufcs(method, argsAst, receiver.consume(),
+                                      dot_ast, "drop", guard, guard);
     }
     // Method dispatch: true built-ins (Array/String/...) parse argsAst
     // positionally and can't accept kwargs. But a builtin-named method can
@@ -12221,6 +12223,21 @@ struct JIT {
       return builtinR;
     }
 
+    // Auto-synthesized `parameters()` on class instances. Mirrors the
+    // interp branch in eval_property: when the receiver is a class
+    // instance (Object with `class:` tag) and has no user-defined
+    // `parameters` method, walk its fields and return a flat Array of
+    // class-instance Values. User-defined parameters takes precedence.
+    // Ahead of the UFCS fallback below because the synthesized method is a
+    // property of every class instance (interp's receiver_has_property says
+    // so), so a free `parameters` may only claim the receivers that lack it —
+    // the dispatch below routes those to the same UFCS arm.
+    if (method == "parameters" && argsAst.nodes.empty()) {
+      return compile_class_parameters_call(argsAst, receiver.consume(),
+                                           ufcs_free_fn_loader(method),
+                                           dot_ast);
+    }
+
     // UFCS fallback: if `method` resolves as a free function in scope,
     // `x.method(args)` becomes `method(x, args)` — but only when the receiver
     // has no user property by that name. Existing methods always win
@@ -12284,17 +12301,6 @@ struct JIT {
       }
     }
 
-    // Auto-synthesized `parameters()` on class instances. Mirrors the
-    // interp branch in eval_property: when the receiver is a class
-    // instance (Object with `class:` tag) and has no user-defined
-    // `parameters` method, walk its fields and return a flat Array of
-    // class-instance Values. User-defined parameters takes precedence.
-    // (`parameters` is not a hook name, so the namespace guard above never
-    // branched and this return can't skip a pending merge.)
-    if (method == "parameters" && argsAst.nodes.empty()) {
-      return compile_class_parameters_call(argsAst, receiver.consume());
-    }
-
     // User-defined method on Object: fetch property, call with this=receiver.
     // emit_property_get returns a BORROWED (+0) slot value for an ordinary
     // method, but a +1-OWNED value for the three function-introspection names
@@ -12328,8 +12334,12 @@ struct JIT {
   // and (b) the original property-get + call path for user overrides
   // and degenerate cases (non-Object receiver, plain dict). See
   // _jit_walk_collect_params for the walker semantics.
-  Owned compile_class_parameters_call(const peg::Ast& argsAst,
-                                             llvm::Value* receiver) {
+  // `load_free_fn`, when set, adds (c): a receiver that resolves `parameters`
+  // in neither way is a UFCS candidate on the interp, so give it the same arm.
+  Owned compile_class_parameters_call(
+      const peg::Ast& argsAst, llvm::Value* receiver,
+      const std::function<llvm::Value*()>& load_free_fn,
+      const peg::Ast* dot_ast) {
     auto fn = builder_.GetInsertBlock()->getParent();
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
 
@@ -12341,23 +12351,47 @@ struct JIT {
     auto autoBB = llvm::BasicBlock::Create(ctx_, "params.auto", fn);
     auto fallbackBB = llvm::BasicBlock::Create(ctx_, "params.fb", fn);
     auto mergeBB = llvm::BasicBlock::Create(ctx_, "params.merge", fn);
+    // Without a candidate every non-synthesizing receiver takes the property
+    // path, so the IR is exactly what it was before UFCS entered the picture.
+    auto ufcsBB = load_free_fn
+                      ? llvm::BasicBlock::Create(ctx_, "params.ufcs", fn)
+                      : fallbackBB;
 
-    builder_.CreateCondBr(isObj, checkBB, fallbackBB);
+    builder_.CreateCondBr(isObj, checkBB, ufcsBB);
+
+    OwnedPhi merge(this, "params.result");
 
     // checkBB: receiver is Object — auto-synth iff has `class:` tag and
     // no user-defined `parameters`.
     builder_.SetInsertPoint(checkBB);
-    auto objPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto data = extract_data(receiver);
+    auto objPtr = builder_.CreateIntToPtr(data, ptrTy);
     auto classKey = get_or_create_global_str("class", ".params.ck");
     auto paramsKey = get_or_create_global_str("parameters", ".params.pk");
     auto hasClass = emit_object_has(objPtr, classKey, "params.has.class");
     auto hasUser = emit_object_has(objPtr, paramsKey, "params.has.user");
     auto useAuto = builder_.CreateAnd(
         hasClass, builder_.CreateNot(hasUser), "params.use.auto");
-    builder_.CreateCondBr(useAuto, autoBB, fallbackBB);
+    if (!load_free_fn) {
+      builder_.CreateCondBr(useAuto, autoBB, fallbackBB);
+    } else {
+      // An own `parameters` — or a closed namespace, which answers every
+      // name — resolves it; any other Object leaves the name free.
+      auto propBB = llvm::BasicBlock::Create(ctx_, "params.prop", fn);
+      builder_.CreateCondBr(useAuto, autoBB, propBB);
+      builder_.SetInsertPoint(propBB);
+      builder_.CreateCondBr(
+          builder_.CreateOr(hasUser, emit_object_is_namespace(data),
+                            "params.resolves"),
+          fallbackBB, ufcsBB);
+
+      builder_.SetInsertPoint(ufcsBB);
+      merge.add_incoming(compile_ufcs_or_miss("parameters", load_free_fn,
+                                              argsAst, receiver, dot_ast));
+      builder_.CreateBr(mergeBB);
+    }
 
     // autoBB: call the runtime walker.
-    OwnedPhi merge(this, "params.result");
     builder_.SetInsertPoint(autoBB);
     Owned walkResult = own(emit_value_call(
         module_->getOrInsertFunction(rt::class_parameters_walk, valueType_,
@@ -12382,40 +12416,70 @@ struct JIT {
     return merge.finish(mergeBB);
   }
 
-  // `.add(x)` / `.remove(x)`: the UFCS gate, then the tag dispatch below.
-  // A receiver that doesn't resolve the name — `(5).add(1)`, `[1,2].remove(9)`,
-  // a plain dict's `.add` — is a UFCS candidate on the interp
-  // (receiver_has_property is false there), so give it the same arm. The
-  // branch has to come before the
-  // argument is compiled: the UFCS arm compiles its own from argsAst, and a
-  // shared eager compile would strand that `+1` on the arm that doesn't run.
-  Owned compile_set_mutate_dispatch(const std::string& method,
-                                    const peg::Ast& argsAst,
-                                    llvm::Value* receiver,
-                                    const peg::Ast* dot_ast) {
+  // The at-most-once explicit-drop guard itself. Consumes the receiver's `+1`
+  // (the runtime call only borrows it) and yields nil, `drop`'s value. The
+  // borrow rides an `Owned` so the unwind-temp window covers it: the runtime
+  // entry is not nothrow, so this is an invoke wherever a cleanup pad is live.
+  Owned emit_explicit_drop(llvm::Value* receiver) {
+    Owned recv = own(receiver);
+    emit_call(module_->getOrInsertFunction(rt::explicit_drop,
+                                           builder_.getVoidTy(),
+                                           builder_.getInt8Ty(),
+                                           builder_.getInt64Ty()),
+              {extract_tag(recv.borrow()), extract_data(recv.borrow())});
+    recv.drop();
+    return own(make_nil());
+  }
+
+  // The UFCS gate shared by the two names with their own dispatch ahead of the
+  // generic builtin path (`add`/`remove`, `drop`). A receiver that resolves the
+  // name itself takes `resolved`; one that doesn't — `(5).add(1)`, a plain
+  // dict's `.drop` — is a UFCS candidate on the interp (receiver_has_property
+  // is false there), so give it that arm, with `miss` overriding what a
+  // non-Function binding falls back to. Without a compile-time candidate the
+  // gate collapses to `resolved` and the IR is unchanged. The branch has to
+  // come before the argument is compiled: the UFCS arm compiles its own from
+  // argsAst, and a shared eager compile would strand that `+1` on the arm that
+  // doesn't run. The receiver arrives owned (+1); every arm consumes it.
+  Owned compile_resolved_or_ufcs(
+      const std::string& method, const peg::Ast& argsAst,
+      llvm::Value* receiver, const peg::Ast* dot_ast, const std::string& prefix,
+      const std::function<Owned(llvm::Value*)>& resolved,
+      const std::function<Owned(llvm::Value*)>& miss = {}) {
     auto load_free_fn = ufcs_free_fn_loader(method);
-    if (!load_free_fn)
-      return compile_set_mutate_arms(method, argsAst, receiver);
+    if (!load_free_fn) return resolved(receiver);
 
     auto fn = builder_.GetInsertBlock()->getParent();
     auto resolves = emit_receiver_has_property(method, receiver);
-    auto hitBB = llvm::BasicBlock::Create(ctx_, "ma.resolved", fn);
-    auto missBB = llvm::BasicBlock::Create(ctx_, "ma.unresolved", fn);
-    auto mergeBB = llvm::BasicBlock::Create(ctx_, "ma.ufcs.merge", fn);
+    auto hitBB = llvm::BasicBlock::Create(ctx_, prefix + ".resolved", fn);
+    auto missBB = llvm::BasicBlock::Create(ctx_, prefix + ".unresolved", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, prefix + ".merge", fn);
     builder_.CreateCondBr(resolves, hitBB, missBB);
 
-    OwnedPhi merge(this, "ma.ufcs.res");
+    OwnedPhi merge(this, prefix + ".res");
     builder_.SetInsertPoint(missBB);
     merge.add_incoming(compile_ufcs_or_miss(method, load_free_fn, argsAst,
-                                            receiver, dot_ast));
+                                            receiver, dot_ast, miss));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(hitBB);
-    merge.add_incoming(compile_set_mutate_arms(method, argsAst, receiver));
+    merge.add_incoming(resolved(receiver));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(mergeBB);
     return merge.finish(mergeBB);
+  }
+
+  // `.add(x)` / `.remove(x)`: the UFCS gate, then the tag dispatch below.
+  Owned compile_set_mutate_dispatch(const std::string& method,
+                                    const peg::Ast& argsAst,
+                                    llvm::Value* receiver,
+                                    const peg::Ast* dot_ast) {
+    return compile_resolved_or_ufcs(
+        method, argsAst, receiver, dot_ast, "ma",
+        [&](llvm::Value* r) {
+          return compile_set_mutate_arms(method, argsAst, r);
+        });
   }
 
   // The tag dispatch itself.
@@ -12942,11 +13006,15 @@ struct JIT {
   // gives a non-builtin name. Args are compiled inside whichever arm runs (the
   // caller's builtin arm compiles its own from the same argsAst), so an
   // argument expression that throws can't strand the receiver. The receiver
-  // arrives owned (+1) and every arm consumes it.
-  Owned compile_ufcs_or_miss(const std::string& method,
-                             const std::function<llvm::Value*()>& load_free_fn,
-                             const peg::Ast& argsAst, llvm::Value* receiver,
-                             const peg::Ast* dot_ast) {
+  // arrives owned (+1) and every arm consumes it. `miss` overrides what a
+  // non-Function binding falls back to, for the one name whose fallback isn't
+  // an error (`drop`'s at-most-once guard).
+  Owned compile_ufcs_or_miss(
+      const std::string& method,
+      const std::function<llvm::Value*()>& load_free_fn,
+      const peg::Ast& argsAst, llvm::Value* receiver,
+      const peg::Ast* dot_ast,
+      const std::function<Owned(llvm::Value*)>& miss = {}) {
     auto fn = builder_.GetInsertBlock()->getParent();
     auto freeFn = load_free_fn();
     auto isFn = builder_.CreateICmpEQ(extract_tag(freeFn),
@@ -12960,8 +13028,10 @@ struct JIT {
 
     builder_.SetInsertPoint(missBB);
     own(freeFn).drop();  // a non-Function binding is not a callee
-    merge.add_incoming(emit_unresolved_builtin_method(
-        method, argsAst, receiver, /*guard_arity_receiver=*/true));
+    merge.add_incoming(miss ? miss(receiver)
+                            : emit_unresolved_builtin_method(
+                                  method, argsAst, receiver,
+                                  /*guard_arity_receiver=*/true));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(callBB);

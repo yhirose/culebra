@@ -507,4 +507,73 @@ assert_throws('TypeError', fn () {
   view.upper()
 })
 
+# --- Phase 7 (J): `drop`'s at-most-once guard sits below UFCS ---
+
+# A free `drop` claims every receiver that carries no `drop` of its own, just
+# as the interpreter's UFCS block does before reaching the guard.
+fn drop(o) { "ufcs drop" }
+
+assert_eq({a: 1}.drop(), "ufcs drop")
+assert_eq((5).drop(), "ufcs drop")
+assert_eq([1, 2].drop(), "ufcs drop")
+assert_eq("ab".drop(), "ufcs drop")
+
+fn drop_through_nested(r) { return r.drop() }
+assert_eq(drop_through_nested({b: 2}), "ufcs drop")
+assert_eq(drop_through_nested(7), "ufcs drop")
+
+# An own `drop` resolves the name, so the guard runs it — once.
+mut own_drop_runs = 0
+let dropper = {drop: fn () { own_drop_runs = own_drop_runs + 1 }}
+assert_eq(dropper.drop(), nil)
+assert_eq(dropper.drop(), nil)
+assert_eq(own_drop_runs, 1)
+
+# A closed namespace resolves every name, so it reaches the guard too.
+assert_eq(Math.drop(), nil)
+
+# A non-Function binding is not a callee: the guard answers instead.
+fn drop_shadowed_by_value() {
+  let drop = 5
+  return {a: 1}.drop()
+}
+assert_eq(drop_shadowed_by_value(), nil)
+
+# --- Phase 7 (K): synthesized `parameters()` outranks a free `parameters` ---
+
+fn parameters(o) { "ufcs parameters" }
+
+class PV {
+  new(d) { self.data = d }
+}
+class PHolder {
+  new() { self.a = PV.new(1.0) }
+}
+class POverride {
+  new() { self.a = PV.new(1.0) }
+  parameters() { return "own parameters" }
+}
+
+# Every class instance carries the synthesized method, so the global can't
+# claim it — with or without a user-defined override.
+assert_eq(PHolder.new().parameters().size(), 1)
+assert_eq(POverride.new().parameters(), "own parameters")
+
+fn parameters_through_nested(r) { return r.parameters() }
+assert_eq(parameters_through_nested(PHolder.new()).size(), 1)
+
+# Receivers with no `parameters` of their own are UFCS candidates as before.
+assert_eq({z: 1}.parameters(), "ufcs parameters")
+assert_eq((5).parameters(), "ufcs parameters")
+
+# A non-Function binding is not a callee: the ordinary member miss answers.
+fn parameters_shadowed_by_value() {
+  let parameters = 5
+  return {z: 1}.parameters()
+}
+assert_throws('TypeError', parameters_shadowed_by_value)
+
+# A closed namespace answers the name itself.
+assert_throws('AttributeError', fn () { Math.parameters() })
+
 inspect("test_ufcs_builtin_shadow: ok")
