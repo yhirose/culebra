@@ -302,4 +302,58 @@ assert_eq(Adder().add(2, 3), 5)
 assert_eq(Adder().to_string(), "Adder")
 assert_eq({add: fn (v) { "own add:" + to_string(v) }}.add(7), "own add:7")
 
+# --- Phase 7 (I): a closed namespace is never a UFCS receiver ---
+# A builtin namespace resolves every name itself — as a member, or as the
+# member-miss AttributeError. A same-named global must not stand in for it.
+
+fn zzz(o, v) { "ufcs zzz" }
+fn push(o, v) { "ufcs push" }
+
+# Its own members and the dict builtins still answer.
+assert_eq(Math.abs(-3), 3)
+assert_eq(Sys.has("script"), true)
+assert_eq(IO.keys().contains("println"), true)
+
+# …but nothing else does, whether the name is known to the builtin tables,
+# an extension global, or arbitrary.
+assert_throws('AttributeError', fn () { IO.zzz(9) })
+assert_throws('AttributeError', fn () { IO.push(9) })
+assert_throws('AttributeError', fn () { IO.to_string() })
+assert_throws('AttributeError', fn () { IO.type_of() })
+assert_throws('AttributeError', fn () { Math.inspect() })
+assert_throws('AttributeError', fn () { JSON.zzz(9) })
+
+# The receiver's namespace-ness is a runtime fact, so a bound one behaves the
+# same as the bare name.
+fn ns_through_binding() {
+  let m = Math
+  m.zzz(9)
+}
+assert_throws('AttributeError', ns_through_binding)
+
+# A namespace member called at the wrong arity is that member's ArityError,
+# not the same-named global taking over.
+assert_throws('ArityError', fn () { IO.println() })
+
+# Plain dicts keep UFCS, and an own property still beats an extension global.
+assert_eq({a: 1}.zzz(9), "ufcs zzz")
+assert_eq({a: 1}.push(9), "ufcs push")
+assert_eq({inspect: fn () { "own inspect" }}.inspect(), "own inspect")
+assert_eq((5).type_of(), "Long")
+assert_eq((1).range(4).collect(), [1, 2, 3])
+assert_throws('ArityError', fn () { (5).inspect(1, 2) })
+assert_throws('TypeError', fn () { (5).inspect(k: 1) })
+
+# An own slot wins even when it holds a non-Function, so the builtin of that
+# name never answers for it.
+assert_throws('TypeError', fn () { {size: 5}.size() })
+assert_throws('TypeError', fn () { {to_string: 5}.to_string() })
+
+# A Shared.new view carries only its reader methods; every other name is left
+# to the receiver-type resolution, exactly as on the interpreter.
+let view = Shared.new({a: 1})
+assert_eq(view.size(), 1)
+assert_eq(view.to_string(), to_string(view))
+assert_throws('TypeError', fn () { view.upper() })
+
 inspect("test_ufcs_builtin_shadow: ok")

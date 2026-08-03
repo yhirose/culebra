@@ -10429,6 +10429,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     if (val.type == Value::Object || val.type == Value::Array ||
         val.type == Value::Tensor) {
       const auto& obj = val.to_object();
+      // A builtin namespace has a closed member set, so it resolves EVERY name
+      // itself — as a member, or as eval_property's AttributeError. UFCS must
+      // not hand a same-named free function an escape hatch (the JIT's
+      // emit_receiver_has_property says the same).
+      if (obj.is_namespace) return true;
       if (obj.has(name)) return true;
       // Iterator-shaped receivers resolve the lazy method set via
       // eval_property's duck-typed fallback; those names must block UFCS

@@ -1852,6 +1852,10 @@ struct JIT {
     Owned (*compile_ufcs_builtin)(JIT&, const std::string& method,
                                   const peg::Ast& argsAst,
                                   llvm::Value* receiver);
+    // Whether `compile_ufcs_builtin` can answer this method name at all.
+    // Asked before emitting the namespace guard, so a name the hook would
+    // decline leaves every ordinary method call's IR untouched.
+    bool (*ufcs_builtin_name)(const std::string& method);
   };
   // Inside a RuntimeScope: install into that Runtime (overrides the
   // default, for sandboxing). Outside any scope: install into the
@@ -12227,18 +12231,53 @@ struct JIT {
     // show up in `scopes_`, so the lookup_var branch above misses them.
     // Matches interp's UFCS resolution, which consults the full env.
     auto& h = current_hooks();
+    // …but only for a receiver that doesn't resolve the name itself, which is
+    // interp's UFCS gate verbatim: a closed namespace answers every name (so
+    // `Math.type_of()` is a member miss and `IO.print()` is IO's own `print` at
+    // the wrong arity), and an own property wins outright (`{inspect: f}
+    // .inspect()` calls f). Such a receiver goes straight to the property tail
+    // below. The runtime test is emitted only for a name the hook could take,
+    // so every ordinary method call keeps the IR it had.
+    OwnedPhi propMerge(this, "mcall.res");
+    llvm::BasicBlock* propBB = nullptr;
+    llvm::BasicBlock* propMergeBB = nullptr;
     if (h.compile_ufcs_builtin) {
+      if (h.ufcs_builtin_name && h.ufcs_builtin_name(method)) {
+        auto fn = builder_.GetInsertBlock()->getParent();
+        auto hookBB = llvm::BasicBlock::Create(ctx_, "ufcsg.hook", fn);
+        propBB = llvm::BasicBlock::Create(ctx_, "ufcsg.prop", fn);
+        propMergeBB = llvm::BasicBlock::Create(ctx_, "ufcsg.merge", fn);
+        builder_.CreateCondBr(
+            emit_receiver_has_property(method, receiver.borrow()), propBB,
+            hookBB);
+        builder_.SetInsertPoint(hookBB);
+      }
       // Hook contract: a non-null result means the hook's emitted code
       // consumed the receiver's +1; a null result (no IR emitted) leaves it
       // untouched. consume() before the hook runs so the unwind-temp window
       // can't spill a value the emitted code already released; re-own
-      // on decline.
+      // on decline. The gate arm never enters that block, so its +1 is
+      // untouched by the hook — keep the raw value to re-own it there
+      // (`consume()` pins its result to the hook's block).
+      llvm::Value* rawForTail = receiver.borrow();
       auto rawReceiver = receiver.consume();
       Owned r = h.compile_ufcs_builtin(*this, method, argsAst, rawReceiver);
       if (r.borrow()) {
-        return r;
+        if (!propBB) return r;
+        propMerge.add_incoming(std::move(r));
+        builder_.CreateBr(propMergeBB);
+      } else if (propBB) {
+        // The hook declined this arg shape: both edges take the tail.
+        builder_.CreateBr(propBB);
+      } else {
+        receiver = own(rawReceiver);
       }
-      receiver = own(rawReceiver);
+      if (propBB) {
+        builder_.SetInsertPoint(propBB);
+        // Every edge reaching here still holds the +1 (the hook's own edge
+        // jumps straight to the merge), so the tail re-owns it.
+        receiver = own(rawForTail);
+      }
     }
 
     // Auto-synthesized `parameters()` on class instances. Mirrors the
@@ -12246,6 +12285,8 @@ struct JIT {
     // instance (Object with `class:` tag) and has no user-defined
     // `parameters` method, walk its fields and return a flat Array of
     // class-instance Values. User-defined parameters takes precedence.
+    // (`parameters` is not a hook name, so the namespace guard above never
+    // branched and this return can't skip a pending merge.)
     if (method == "parameters" && argsAst.nodes.empty()) {
       return compile_class_parameters_call(argsAst, receiver.consume());
     }
@@ -12270,7 +12311,11 @@ struct JIT {
                                          /*own_self_on_error=*/true,
                                          /*own_args_on_error=*/true);
     if (owned_method_view) emit_value_release(methodVal);
-    return callRes;
+    if (!propMergeBB) return callRes;
+    propMerge.add_incoming(std::move(callRes));
+    builder_.CreateBr(propMergeBB);
+    builder_.SetInsertPoint(propMergeBB);
+    return propMerge.finish(propMergeBB);
   }
 
   // Auto-synthesized `parameters()` on class instances, JIT side. The
@@ -12724,6 +12769,18 @@ struct JIT {
     }
   }
 
+  // Whether an Object receiver is a closed builtin namespace. Valid only where
+  // the tag is already known to be TAG_OBJECT — it probes the pointer. A
+  // namespace resolves every member name itself (as a member, or as the
+  // property read's AttributeError), so both backends' UFCS gates count one as
+  // having the property.
+  llvm::Value* emit_object_is_namespace(llvm::Value* data,
+                                        const char* name = "is.ns") {
+    return builder_.CreateICmpNE(
+        emit_call(module_->getFunction(rt::is_namespace), {data}, name),
+        builder_.getInt8(0));
+  }
+
   // Whether the receiver resolves `method` on its own — the runtime twin of
   // interp's `receiver_has_property`, the predicate that decides between a
   // real method call and the UFCS fallback. True for a builtin-table method of
@@ -12773,9 +12830,7 @@ struct JIT {
 
     builder_.SetInsertPoint(objBB);
     auto data = extract_data(receiver);
-    llvm::Value* objHit = builder_.CreateICmpNE(
-        emit_call(module_->getFunction(rt::is_namespace), {data}, "rhp.is.ns"),
-        builder_.getInt8(0));
+    llvm::Value* objHit = emit_object_is_namespace(data, "rhp.is.ns");
     auto objPtr = builder_.CreateIntToPtr(data, ptrTy);
     // An own/proto property wins over UFCS even when it isn't a Function
     // (interp's `obj.has()`): `{map: 5}.map(f)` must raise "expected Function,
@@ -12963,21 +13018,23 @@ struct JIT {
 
     builder_.CreateCondBr(isObj, checkBB, builtinBB);
 
-    // checkBB: does the object's class define `method` (own + proto)?
+    // checkBB: does the object itself carry `method` (own + proto)? That is
+    // interp's `obj.has()` gate, so an own slot wins even when it holds a
+    // non-Function — `{size: 5}.size()` is "expected Function, got Long", not
+    // the dict builtin. A trait default has no slot to find, so the Function
+    // test stays alongside: the property read resolves it and it takes the
+    // user arm like any other method. Names the object lacks (a Shared.new
+    // view's frozen-tree keys included) drop to the builtin arm, whose own
+    // receiver gates route them back to the same property read.
     builder_.SetInsertPoint(checkBB);
     auto methodVal = emit_property_get(receiver, method);  // borrowed; nil if absent
     auto isFunc = builder_.CreateICmpEQ(extract_tag(methodVal),
                                         builder_.getInt8(TAG_FUNC), "umb.is.func");
-    // A Shared.new view has no builtin methods — `view.get(...)` reads the
-    // frozen tree (data or nil) and then calls it, exactly like the interp.
-    // Route it to userBB unconditionally: an own reader method is a Function
-    // (called normally); any other name read a non-Function from the tree
-    // and calling it raises the interp's "expected Function, got <T>".
-    auto isView = builder_.CreateICmpNE(
-        emit_call(module_->getFunction(rt::is_shared_val),
-                  {extract_data(receiver)}, "umb.is.view"),
-        builder_.getInt8(0));
-    auto toUser = builder_.CreateOr(isFunc, isView, "umb.to.user");
+    auto hasOwn = emit_object_has(
+        builder_.CreateIntToPtr(extract_data(receiver),
+                                llvm::PointerType::get(ctx_, 0)),
+        get_or_create_global_str(method, ".umb.key"), "umb.has");
+    auto toUser = builder_.CreateOr(isFunc, hasOwn, "umb.to.user");
     builder_.CreateCondBr(toUser, userBB, builtinBB);
 
     // userBB: the user-defined function shadows the builtin. Use the same
@@ -13125,10 +13182,13 @@ struct JIT {
       builder_.CreateCondBr(isObj, checkBB, ufcsHasBB);
 
       builder_.SetInsertPoint(checkBB);
-      auto objPtr =
-          builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+      auto data = extract_data(receiver);
+      auto objPtr = builder_.CreateIntToPtr(data, ptrTy);
       auto keyPtr = get_or_create_global_str(method, ".mkey");
-      auto hasProp = emit_object_has(objPtr, keyPtr);
+      // A closed namespace resolves the name itself either way, so it takes
+      // the property arm (see emit_object_is_namespace).
+      auto hasProp = builder_.CreateOr(emit_object_has(objPtr, keyPtr),
+                                       emit_object_is_namespace(data));
       builder_.CreateCondBr(hasProp, methodHasBB, ufcsHasBB);
 
       // The incoming receiver +1 is handed to whichever arm runs — the same
@@ -13238,9 +13298,13 @@ struct JIT {
     builder_.CreateCondBr(isObj, checkBB, ufcsBB);
 
     builder_.SetInsertPoint(checkBB);
-    auto objPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto data = extract_data(receiver);
+    auto objPtr = builder_.CreateIntToPtr(data, ptrTy);
     auto keyPtr = get_or_create_global_str(method, ".mkey");
-    auto hasProp = emit_object_has(objPtr, keyPtr);
+    // A closed namespace resolves the name itself either way, so it takes the
+    // property arm (see emit_object_is_namespace).
+    auto hasProp = builder_.CreateOr(emit_object_has(objPtr, keyPtr),
+                                     emit_object_is_namespace(data));
     builder_.CreateCondBr(hasProp, methodBB, ufcsBB);
 
     builder_.SetInsertPoint(methodBB);

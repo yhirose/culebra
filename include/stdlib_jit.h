@@ -3588,6 +3588,7 @@ struct JitExtension {
                                              const std::string& method,
                                              const peg::Ast& argsAst,
                                              llvm::Value* receiver);
+  static bool ufcs_builtin_name(const std::string& method);
 
   static void install() {
     JIT::install_extension({
@@ -3598,6 +3599,7 @@ struct JitExtension {
         .compile_ns_prop = &compile_ns_prop,
         .is_builtin_var = &is_builtin_var,
         .compile_ufcs_builtin = &compile_ufcs_builtin,
+        .ufcs_builtin_name = &ufcs_builtin_name,
     });
   }
 };
@@ -10029,6 +10031,16 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
   return false;
 }
 
+// Every method name compile_ufcs_builtin below can answer. Keep the two in
+// step: a name missing here just loses the caller's namespace guard (it would
+// let `Ns.method()` reach the global instead of the namespace's own miss).
+inline bool JitExtension::ufcs_builtin_name(const std::string& method) {
+  static const std::unordered_set<std::string_view> names = {
+      "range",   "iota",  "to_long", "to_float",
+      "type_of", "hash",  "inspect", "print",    "println"};
+  return names.contains(method);
+}
+
 inline JIT::Owned JitExtension::compile_ufcs_builtin(
     JIT& jit, const std::string& method, const peg::Ast& argsAst,
     llvm::Value* receiver) {
@@ -10127,10 +10139,24 @@ inline JIT::Owned JitExtension::compile_ufcs_builtin(
   // extra positional arg is an ArityError on the arity-1 global — not the
   // property-get TypeError the JIT used to fall into when it only handled the
   // 0-arg form. (hash and to_float were also missing here entirely, so
-  // `x.hash()` / `x.to_float()` failed outright.) inspect/print/println are
-  // variadic and handled separately below.
+  // `x.hash()` / `x.to_float()` failed outright.) inspect/print/println take a
+  // variadic *bare* call but bind arity-1 in the global env, so their UFCS form
+  // belongs here too; only the 0-arg spelling reaches their branches below.
   static const std::set<std::string_view> arity1_globals = {
-      "to_long", "to_float", "type_of", "hash"};
+      "to_long", "to_float", "type_of", "hash",
+      "inspect", "print",    "println"};
+  // None of them declares a parameter name, so a keyword is interp's plain
+  // "function does not accept keyword arguments" — decided before the count
+  // below, which would otherwise read the keyword as a positional. (`range` /
+  // `iota` take a real `step:` kwarg and are handled above.)
+  if (arity1_globals.contains(method) &&
+      !JIT::arg_list_is_positional_only(argsAst)) {
+    jit.emit_value_release(receiver);  // consumed before the throw
+    jit.emit_throw_error("TypeError",
+                         "function does not accept keyword arguments",
+                         argsAst.line, argsAst.column);
+    return jit.own(make_nil());  // unreachable after the throw
+  }
   if (arity1_globals.contains(method) && argsAst.nodes.size() != 0) {
     long extra = static_cast<long>(argsAst.nodes.size());
     // These have no value-method form: the receiver is the implicit arg 0, so
