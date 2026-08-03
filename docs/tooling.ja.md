@@ -340,9 +340,10 @@ stdin 形式 (`culebra fmt -`) が整形フックです。各統合はバッフ�
 終了コードが 0 のときだけ結果を反映するので、パース／安全性エラーの時は
 バッファに触れません。
 
-- **VSCode** — 同梱拡張 (`misc/vscode/`) が document formatting provider を
-  登録するので、**Format Document** と `editor.formatOnSave` が `.cul` で
-  そのまま動きます（`build-vsix.sh` / `install.sh` で再ビルド）。
+- **VSCode** — 同梱拡張が document formatting provider を登録するので、
+  **Format Document** と `editor.formatOnSave` が `.cul` でそのまま動きます
+  （導入は `culebra init`、またはソースチェックアウトから
+  `misc/vscode/install.sh`）。
 - **Zed** — `settings.json` の
   `"languages": { "Culebra": { ... } }` の下に外部フォーマッタを追加:
   `"formatter": { "external": { "command": "culebra", "arguments": ["fmt", "-"] } }`
@@ -406,19 +407,33 @@ culebra dap        # stdin/stdoutでDAPを話す
 - ソース中の `debugger` 文はブレークポイントに関係なく停止します（設定不要の一時停止に
   便利）。
 
+### 手早いセットアップ: `culebra init`
+
+プロジェクトディレクトリで `culebra init` を実行すると、この機械にある
+VSCode・Vim・Neovim のうち見つかったものに対して、エディタ統合（シンタックス
+ハイライト＋`culebra dap` デバッグアダプタ）と AI コーディングエージェント向け
+指示を導入／更新します。ペイロードはバイナリ内に同梱されているのでソース
+チェックアウトは不要です。何度でも再実行して構いません — 実行のたびに
+このバイナリが持つ内容で上書きするので、アップグレード後の再実行がそのまま
+更新手順になります。Zed は今のところソースチェックアウトが必要です（後述）
+— `init` は Zed の存在を検出して知らせるだけです。
+
+以下のエディタ別手順は、同じ統合をソースチェックアウトから作る手順です
+（拡張自体への contribute、または `init` が届かない環境向け）。
+
 ### VSCode
 
 VSCode は `.cul` のハイライトと `culebra` デバッグタイプ登録のための小さな拡張が必要です
 （デバッグは登録のみで、ロジックは全て `culebra dap` 側にある）。
 公開は不要。リポジトリに雛形とインストーラを `misc/vscode/` に同梱しています。
 
-1. 拡張をインストール:
+1. 拡張をインストール — `culebra init`、またはソースチェックアウトから:
 
    ```sh
    misc/vscode/install.sh
    ```
 
-   拡張を `.vsix` にパッケージし（`build-vsix.sh`、npm 不要）、`code --install-extension`
+   どちらも拡張を `.vsix` にパッケージし、`code --install-extension`
    でインストールします＝VS Code が公式にサポートする方法。（`~/.vscode/extensions` に
    フォルダを直接コピーする方法は**非サポート**で、認識されないことが多い。）`culebra` が
    `PATH` 上にあればデバッグアダプタ設定に絶対パスを埋め込みます。`code-insiders`/`cursor`/
@@ -487,9 +502,14 @@ let g:vimspector_enable_mappings = 'HUMAN'
 gadget のインストール（`:VimspectorInstall`）は不要 — 上記 `command` を stdio で
 直接起動します。Vim は `+python3` ビルドが必要です。
 
-シンタックスハイライトは `misc/vim/install.sh` を実行してください。
+シンタックスハイライトは `culebra init`、またはソースチェックアウトから
+`misc/vim/install.sh` を実行してください。
 
 ### Zed
+
+`culebra init` は Zed の存在を検出してこの節へ誘導するだけです — 理由は
+上の「手早いセットアップ」を参照（拡張は Zed が git チェックアウトから
+取得する仕組みで、バイナリ単体のダウンロードにはそれがありません）。
 
 Zed はシンタックスハイライト（tree-sitter 文法）にもデバッグ（デバッグアダプタは
 **拡張による登録が必須**＝`debug.json` から任意の DAP コマンドを直接指せない）にも
@@ -603,3 +623,9 @@ culebra docs agent >> AGENTS.md                        # Codex, Cursor
 markdownだけが入ります。`agent`も`llm`も横断検索には参加しません
 （どちらも他のトピックを凝縮したもので、同じAPIが二重に出ます）。
 名前を指定すれば検索できます: `culebra docs agent -g …`。
+
+`culebra init`はこの追記を代わりにやってくれます — 上記3ファイルの
+うちどれが既に存在するかを検出し（どれも無ければ`AGENTS.md`を新規作成）、
+再実行するたびにブロックを最新に保ちます。`culebra docs agent`を直接
+使うのは、生のmarkdownが欲しいときか、このリストに無い追記先を使う
+ときだけで十分です。

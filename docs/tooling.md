@@ -353,10 +353,10 @@ The stdin form (`culebra fmt -`) is the format hook: each integration
 formats the whole buffer and applies the result only when it exits zero,
 leaving the buffer untouched on a parse/safety error.
 
-- **VSCode** — the bundled extension (`misc/vscode/`) registers a
-  document formatting provider, so **Format Document** and
-  `editor.formatOnSave` work for `.cul` files out of the box (rebuild
-  with `build-vsix.sh` / `install.sh`).
+- **VSCode** — the bundled extension registers a document formatting
+  provider, so **Format Document** and `editor.formatOnSave` work for
+  `.cul` files out of the box once it's installed (`culebra init`, or
+  `misc/vscode/install.sh` from a source checkout).
 - **Zed** — add an external formatter in `settings.json`:
   `"formatter": { "external": { "command": "culebra", "arguments": ["fmt", "-"] } }`
   under `"languages": { "Culebra": { ... } }`.
@@ -427,6 +427,22 @@ Notes that apply to every editor:
 - A `debugger` statement in source forces a stop regardless of
   breakpoints — handy for a one-off pause without configuring anything.
 
+### Quick setup: `culebra init`
+
+Run `culebra init` in your project directory to install or update the
+editor integration (syntax highlighting + the `culebra dap` debug
+adapter) for whichever of VSCode, Vim, or Neovim it finds on this
+machine, plus AI coding agent instructions — no source checkout
+needed, since the payload travels inside the binary. It's safe to
+re-run any time; every run overwrites with whatever this binary
+carries, so re-running after an upgrade is the update path. Zed needs
+a source checkout for now (see below) — `init` only tells you it
+noticed Zed is installed.
+
+The per-editor steps below build the same integration from a source
+checkout instead — for contributing to it, or if `init` can't reach
+your setup.
+
 ### VSCode
 
 VSCode needs a tiny extension to highlight `.cul` files and register the
@@ -434,20 +450,20 @@ VSCode needs a tiny extension to highlight `.cul` files and register the
 in `culebra dap`). Publishing isn't required: the repo ships a template
 under `misc/vscode/` with an installer.
 
-1. Install the extension:
+1. Install the extension — `culebra init`, or from a source checkout:
 
    ```sh
    misc/vscode/install.sh
    ```
 
-   This packages the extension as a `.vsix` (via `build-vsix.sh`, no npm
-   needed) and installs it with `code --install-extension` — the method VS
-   Code supports. (Copying the folder into `~/.vscode/extensions` directly
-   is *not* supported and is often not detected.) If `culebra` is on your
-   `PATH`, its absolute path is baked into the debug adapter config. The
-   script also works with `code-insiders` / `cursor` / `codium` if that's
-   your CLI; if none is on `PATH`, it tells you how to install the `.vsix`
-   from the Extensions view instead. Syntax highlighting then applies to
+   Both package the extension as a `.vsix` and install it with
+   `code --install-extension` — the method VS Code supports. (Copying the
+   folder into `~/.vscode/extensions` directly is *not* supported and is
+   often not detected.) If `culebra` is on your `PATH`, its absolute path
+   is baked into the debug adapter config. Both work with
+   `code-insiders` / `cursor` / `codium` if that's your CLI; if none is on
+   `PATH`, `install.sh` tells you how to install the `.vsix` from the
+   Extensions view instead. Syntax highlighting then applies to
    any `.cul` file with no further setup; the steps below are only needed
    for debugging. The grammar's keyword list is generated from the parser
    by `just sync-grammar` (the same source as the Vim syntax file), so it
@@ -517,9 +533,14 @@ mappings; `<F10>`/`<F11>`/`<F12>` step over/in/out, `<F3>` or
 needed — the adapter is launched straight from the `command` above over
 stdio. Vim must be a `+python3` build.
 
-For syntax highlighting, run `misc/vim/install.sh`.
+For syntax highlighting, run `culebra init`, or `misc/vim/install.sh`
+from a source checkout.
 
 ### Zed
+
+`culebra init` only detects Zed and points here — see "Quick setup"
+above for why (the extension is fetched by Zed from a git checkout, which
+a binary-only download has none of).
 
 Zed needs an extension for both syntax highlighting (a Tree-sitter
 grammar) and debugging (a debug adapter must be *registered* by an
@@ -643,3 +664,9 @@ The destinations are listed on stderr, not stdout, so a redirect gets
 the markdown alone. Neither `agent` nor `llm` takes part in a
 corpus-wide search — both condense the other topics, and would report
 the same API twice — but naming one searches it: `culebra docs agent -g …`.
+
+`culebra init` does this append for you — it detects which of the three
+files above already exist (creating `AGENTS.md` if none do) and keeps
+the block up to date on every re-run. Reach for `culebra docs agent`
+directly only when you want the raw markdown or a destination this
+list doesn't cover.

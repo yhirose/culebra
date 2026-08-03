@@ -58,6 +58,12 @@ culebra --version
 Checksums and every release's notes are on the
 [releases page](https://github.com/yhirose/culebra/releases).
 
+In a project directory, `culebra init` installs syntax highlighting and
+the debug adapter for whichever of VSCode, Vim, or Neovim it finds on
+this machine, and adds coding-agent instructions to `AGENTS.md` (or
+`CLAUDE.md`/`.github/copilot-instructions.md` if one already exists).
+Safe to re-run any time.
+
 Highlights
 ----------
 

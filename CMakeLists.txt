@@ -705,8 +705,29 @@ add_custom_command(
   COMMENT "Embedding docs/*.md"
   VERBATIM)
 
+# The VSCode/Vim editor-integration payload files travel inside the binary
+# too, so `culebra init` can lay them down with no source checkout — same
+# rationale as the docs embedding just above, and not committed for the same
+# reason (the payload changes with grammar/keyword sync and would need its
+# own staleness gate if committed).
+set(_editor_gen "${CMAKE_CURRENT_BINARY_DIR}/gen/editor_assets_embedded.cc")
+file(GLOB _editor_sources
+  "${CMAKE_CURRENT_SOURCE_DIR}/misc/vscode/*.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/misc/vscode/*.js"
+  "${CMAKE_CURRENT_SOURCE_DIR}/misc/vscode/syntaxes/*.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/misc/vim/*.vim")
+add_custom_command(
+  OUTPUT ${_editor_gen}
+  COMMAND ${CMAKE_COMMAND}
+          -DMISC_DIR=${CMAKE_CURRENT_SOURCE_DIR}/misc
+          -DOUT=${_editor_gen}
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_editor_assets.cmake
+  DEPENDS ${_editor_sources} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_editor_assets.cmake
+  COMMENT "Embedding misc/{vscode,vim} editor assets"
+  VERBATIM)
+
 add_executable(culebra ./src/main.cc ./src/source_dir.cc ./src/docs_cmd.cc
-                       ${_docs_gen})
+                       ./src/init_cmd.cc ${_docs_gen} ${_editor_gen})
 if(_culebra_enable_lto)
   set_target_properties(culebra PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
   # Before 3.24, CMake hands GCC a bare `-flto`, which runs all 128 LTRANS jobs
@@ -1532,6 +1553,14 @@ add_test(NAME docs_test
 # asserting the re-parse safety net never refuses and formatting is idempotent.
 add_test(NAME fmt_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/fmt_test.sh
+                 $<TARGET_FILE:culebra>)
+
+# `culebra init` (src/init_cmd.cc): the AI-instructions marker block is
+# idempotent and preserves existing file content, the Vim step only writes
+# where a config dir already exists, and a missing editor is a skip, not a
+# failure. Every case is HOME/cwd-isolated into a tmpdir.
+add_test(NAME init_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/init_test.sh
                  $<TARGET_FILE:culebra>)
 
 # Compile-time error position symmetry (include/jit.h compile() wrapper):

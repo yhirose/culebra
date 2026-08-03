@@ -5,6 +5,7 @@
 #include <docs_cmd.h>
 #include <doctest_runner.h>
 #include <formatter.h>
+#include <init_cmd.h>
 #include <source_dir.h>
 #include <stdlib_interp.h>
 #include <test_runner.h>
@@ -528,6 +529,9 @@ void print_usage(ostream& os) {
         "  docs [topic]              Read the reference docs carried in this\n"
         "                            binary (-g searches them; `culebra docs`\n"
         "                            lists the topics)\n"
+        "  init                      Set up this directory (AI agent\n"
+        "                            instructions) and this machine's editors\n"
+        "                            (VSCode/Vim/Neovim); safe to re-run\n"
 #ifdef CULEBRA_JIT_ENABLED
         "  wrap <decl.cpp> ...       Build an extended culebra binary exposing\n"
         "                            your C++ classes (`culebra wrap --help`)\n"
@@ -1852,6 +1856,9 @@ int main(int argc, const char** argv) {
   }
   if (argc >= 2 && string(argv[1]) == "docs") {
     return culebra::run_docs(argc, argv, CULEBRA_VERSION);
+  }
+  if (argc >= 2 && string(argv[1]) == "init") {
+    return culebra::run_init(argc, argv);
   }
   if (argc >= 2 && string(argv[1]) == "dap") {
     // Debug Adapter Protocol server over stdio (interp-backed). The program to
