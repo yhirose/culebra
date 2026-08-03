@@ -100,6 +100,13 @@ Culebraは動的型付けスクリプト言語です。設計上の優先事項:
 代入ターゲットの位置だけで、パラメータ名・`for`変数・オブジェクトのキー・
 プロパティ名はキーワードが始まりえない位置なので、これらの語も受け付けます。
 
+ただし`return`・`throw`・`break`・`continue`の4語は、束縛ではなく**読み
+出す**ときだけ例外です。これらは式なので (§12)、式の位置に現れた時点で
+制御を移す形式であって変数参照にはなりません。`for break in xs { f(break) }`
+は`break`を束縛しますが、渡す代わりにループを抜けます。オブジェクトの
+キーとプロパティ名はどちらも式の位置ではないので影響を受けません
+（`{break: 1}`も`o.break`もそのまま動きます）。
+
 残りのキーワードは**文脈依存**で、それぞれの構文が始まりうる位置でのみ
 キーワードとして認識され、それ以外では普通の識別子です:
 
@@ -194,16 +201,20 @@ Culebraは動的型付けスクリプト言語です。設計上の優先事項:
     CALL        <- PRIMARY (ARGUMENTS / INDEX / SAFE_DOT / SAFE_INDEX
                             / DOT / NONNULL)*
     PRIMARY     <- WHILE / FOR / IF / MATCH / COND / HANDLE / PERFORM
+                 / RETURN / THROW / BREAK / CONTINUE
                  / FUNCTION / LAMBDA / OBJECT / SET / ARRAY / NIL
                  / BOOLEAN / FLOAT / NUMBER / REGEX_LIT / IDENTIFIER
                  / TRIPLE_STRING / STRING / RAW_STRING
                  / INTERPOLATED_STRING / TUPLE / '(' EXPRESSION ')'
 
-文 (STATEMENT) は式の位置に置けない構文 — 各種宣言形式、制御を移す形式
-(`return` / `throw` / `yield` / `break` / `continue` / `defer`)、および
-モジュール形式 — です。それ以外は`if`・`while`・`for`・`match`・`cond`・
-`handle`・`perform`を含めてすべて`PRIMARY`であり、これが値として
-使える理由です (§7)。
+文 (STATEMENT) は式の位置に置けない構文 — 各種宣言形式、`yield` /
+`yield from`、`defer`、およびモジュール形式 — です。それ以外は`if`・
+`while`・`for`・`match`・`cond`・`handle`・`perform`を含めてすべて
+`PRIMARY`であり、これが値として使える理由です (§7)。
+
+制御を移す4形式`return`・`throw`・`break`・`continue`も`PRIMARY`なので、
+式が置ける場所ならどこにでも書けます。これらは値を生まず、到達した時点で
+制御が移るため、外側の式が受け取るものがそもそも存在しません (§12)。
 
 ### 演算子の優先順位
 
@@ -2213,9 +2224,14 @@ liveに読まれます（§18.5参照）。`Array`は1ステップごとにlive�
     break           # 最内ループを抜ける
     continue        # 次のiterationへ
 
-`for`か`while`の内部でのみ有効。ループ外で使うと実行時エラーが
-伝播します。`break` / `continue`は値を運びません（ループの値は
-`nil`のまま）。
+`for`か`while`の内部でのみ有効。ループ外で使うと実行前に検査され
+`SyntaxError`になります。`break` / `continue`は値を運びません
+（ループの値は`nil`のまま）。
+
+どちらも**式**なので (§3)、専用の文の位置を必要としません。`match`の
+アーム（`')' => break`）、`cond`のアーム、三項演算子の両側にそのまま
+置けます — アームの形は[アーム本体](#アーム本体)を、大きな式の途中に
+置いたときの意味は[制御を移す式](#制御を移す式)を参照。
 
 ### `nobreak`（loop-else）
 
@@ -2256,6 +2272,43 @@ fn find(xs, target) {
 関数本体内でのみ有効。指定した値（または`nil`）で関数を抜けます。
 関数の外の`return`は`SyntaxError`（実行前に検査）。スクリプトは
 最後の文で終了し、早期終了は`Sys.exit`を使う。
+
+`break`・`continue`と同じく`return`も式なので、`_ => return x`は
+正当な`match`アームです。
+
+### 制御を移す式
+
+`return`・`throw`・`break`・`continue`には共通の性質があります —
+どれも値を生みません。到達した時点で制御が他所へ移るので、それが
+置かれた式は最後まで評価されません。4つが文でなく式である理由も
+そこにあります。外側の式に渡すべき値が存在しない以上、型が合わない
+位置というものが無いからです:
+
+```culebra
+# doctest: skip
+let width = "v" + match n {      # nが4のとき`+`は完了しない
+  4 => break,
+  _ => "x",
+}
+```
+
+知っておくべき帰結:
+
+* 制御が移る前に評価済みのオペランドは破棄されます。
+  `f(a(), match n { 0 => break, _ => b() })`では`break`到達時点で
+  `a()`は既に実行済みですが、`f`の呼び出しは起こりません。
+* `defer`ブロックは文で書いた場合とまったく同じく、内側から順に
+  抜ける途中で実行されます (§15)。
+* `break` / `continue`が束縛されるのは最内の**ループ**であって、
+  それが書かれている`match`や`cond`ではありません。これらは式で
+  あって制御フローのスコープではないため、「matchを抜ける」という
+  解釈自体が存在せず、混同の余地がありません。
+* `break`に囲むループがあるか、`return`に囲む関数があるかの検査は
+  実行前に走り、式の位置でも文の位置と同じく`SyntaxError`です。
+
+式になったからといって結合が強くなるわけではありません。`return`の
+オペランドはどちらの位置でも式全体なので、`return 1 + 2`は`match`の
+アームでも文の先頭でも`3`を返します。
 
 ### `debugger`
 
@@ -2344,6 +2397,16 @@ fn find(xs, target) {
 / `break` / `continue`は通常どおり振る舞い、抜ける際にそのアームの
 保留中の`defer`も実行します。
 
+制御を移すだけのアームにブロックは不要です。制御を移す4形式はすべて式
+だからです (§12):
+
+    match tok {
+      ')' => break,
+      '!' => throw "unexpected",
+      ' ' => continue,
+      _   => tok,
+    }
+
 アームのパーサはまず式として解釈を試みるので、波括弧がそのまま有効な
 リテラルなら、ブロックではなくリテラルの意味を保ちます:
 
@@ -2357,8 +2420,9 @@ fn find(xs, target) {
 注意点が一つ、Objectの**省略形**から派生します: 単一の裸の識別子を
 包んだ`{ v }`はObject `{v: v}`であって、`v`を返すブロックでは
 ありません。それには`_ => v`（波括弧なし）か、ブロックを強制する
-`{ v; }`と書きます。単独の`{ break }` / `{ continue }`も同様で、
-`{ break; }`とします。
+`{ v; }`と書きます。単独の`{ break }` / `{ continue }`も省略形として
+読まれ、`break`という名前の変数は作れないのでそのアームは`NameError`
+になります — 意図どおりの裸の`_ => break`と書いてください。
 
 ### 網羅性
 
@@ -2964,6 +3028,8 @@ Culebraは`throw`で例外を発生させ、`try`/`catch`で受けます。
   と表示され、プログラムは非ゼロ終了します
 * `throw`は`return`と別: `return`は自分の関数だけを抜け、
   `throw`は外側の関数も貫通します
+* `throw`は式なので (§12)、ブロックで包まずに`match`のアーム全体に
+  できます (`_ => throw "unexpected"`)
 
 ### `defer`
 

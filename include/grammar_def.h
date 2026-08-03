@@ -325,7 +325,7 @@ const auto grammar_ = R"(
   TUPLE_PATTERN            <-  '(' _ PATTERN _ ',' _ PATTERN (_ ',' _ PATTERN)* _ ','? _ ')'
                             /  '(' _ PATTERN _ ',' _ ')'
 
-  PRIMARY                  <-  WHILE / FOR / IF / MATCH / COND / HANDLE / PERFORM / FUNCTION / LAMBDA / OBJECT / SET / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / REGEX_LIT / IDENTIFIER /
+  PRIMARY                  <-  WHILE / FOR / IF / MATCH / COND / HANDLE / PERFORM / RETURN / THROW / BREAK / CONTINUE / FUNCTION / LAMBDA / OBJECT / SET / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / REGEX_LIT / IDENTIFIER /
                                TRIPLE_STRING / STRING / RAW_STRING / INTERPOLATED_STRING / TUPLE / '(' _ EXPRESSION _ ')'
 
   # `perform op(args)` invokes an effect operation; it is an expression

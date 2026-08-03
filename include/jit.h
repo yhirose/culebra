@@ -8109,14 +8109,21 @@ struct JIT {
                          savedLpad);
   }
 
-  // Branch to `target`, then switch the insert point to a fresh dead
-  // block so any statements the caller still emits in the same scope
-  // land somewhere valid (their IR is simply unreachable).
+  // Park the builder on a fresh unreachable block after emitting a
+  // terminator, so whatever the caller still emits lands somewhere valid
+  // (the IR is simply unreachable). Every diverging form — return / throw /
+  // break / continue — must end this way: they are expressions, so the
+  // operand compilers that surround them keep emitting into the current
+  // block without checking for a terminator.
+  void enter_dead_block(const char* name) {
+    auto fn = builder_.GetInsertBlock()->getParent();
+    builder_.SetInsertPoint(llvm::BasicBlock::Create(ctx_, name, fn));
+  }
+
+  // Branch to `target`, then switch the insert point to a fresh dead block.
   void branch_then_dead(llvm::BasicBlock* target, const char* dead_name) {
     builder_.CreateBr(target);
-    auto fn = builder_.GetInsertBlock()->getParent();
-    auto dead = llvm::BasicBlock::Create(ctx_, dead_name, fn);
-    builder_.SetInsertPoint(dead);
+    enter_dead_block(dead_name);
   }
 
   Owned compile_break(const peg::Ast& ast) {
@@ -14479,8 +14486,12 @@ struct JIT {
     auto retV = valOwned.consume();
     builder_.CreateStore(retV, current_sret_);
     builder_.CreateRetVoid();
+    enter_dead_block("return.dead");
     current_lpad_ = savedExitLpad;
-    return own(retV);
+    // retV's +1 now belongs to the caller through current_sret_, so it must
+    // not be handed out a second time: like the other diverging forms, the
+    // value seen by any surrounding expression is an unreachable nil.
+    return own(make_nil());
   }
 
   // `defer { BODY }` — compiles BODY as a 0-param closure and pushes
@@ -14595,10 +14606,7 @@ struct JIT {
     emit_call(module_->getFunction(rt::throw_),
               {extract_tag(val), extract_data(val)});
     builder_.CreateUnreachable();
-    // Fresh dead block so any trailing code has a valid insert point.
-    auto deadBB = llvm::BasicBlock::Create(
-        ctx_, "throw.dead", builder_.GetInsertBlock()->getParent());
-    builder_.SetInsertPoint(deadBB);
+    enter_dead_block("throw.dead");
     return own(make_nil());
   }
 

@@ -104,6 +104,14 @@ covers the assignment target only: a parameter, a `for` variable, an
 object key, and a property name are all positions where no keyword can
 start, so they accept any of these words.
 
+Four of them — `return`, `throw`, `break`, `continue` — are the
+exception when *read* rather than bound. They are expressions (§12), so
+an occurrence of one in expression position is the control-transfer
+form, never a variable reference. `for break in xs { f(break) }` binds
+`break` and then leaves the loop instead of passing it. Object keys and
+property names are unaffected (`{break: 1}` and `o.break` still work),
+since neither is an expression position.
+
 The grammar's remaining keywords are *contextual* — each is recognized
 only where its own construct can begin, and is an ordinary identifier
 everywhere else:
@@ -206,17 +214,22 @@ of truth that `parser.h` loads. Its top-level rules:
     CALL        <- PRIMARY (ARGUMENTS / INDEX / SAFE_DOT / SAFE_INDEX
                             / DOT / NONNULL)*
     PRIMARY     <- WHILE / FOR / IF / MATCH / COND / HANDLE / PERFORM
+                 / RETURN / THROW / BREAK / CONTINUE
                  / FUNCTION / LAMBDA / OBJECT / SET / ARRAY / NIL
                  / BOOLEAN / FLOAT / NUMBER / REGEX_LIT / IDENTIFIER
                  / TRIPLE_STRING / STRING / RAW_STRING
                  / INTERPOLATED_STRING / TUPLE / '(' EXPRESSION ')'
 
 Statements are the constructs that may not appear in expression
-position: the declaration forms, the control-transfer forms
-(`return` / `throw` / `yield` / `break` / `continue` / `defer`), and the
+position: the declaration forms, `yield` / `yield from`, `defer`, and the
 module forms. Everything else — including `if`, `while`, `for`, `match`,
 `cond`, `handle` and `perform` — is a `PRIMARY`, which is what makes
 them usable as values (§7).
+
+The four **diverging** forms — `return`, `throw`, `break`, `continue` —
+are `PRIMARY` too, so they may sit wherever an expression may. They never
+produce a value; reaching one transfers control instead, so there is
+nothing for the surrounding expression to consume (§12).
 
 ### Operator precedence
 
@@ -2329,9 +2342,15 @@ Array/String/keys cases.
     break           # exit the innermost enclosing loop
     continue        # skip to the next iteration of the innermost loop
 
-Valid only inside `for` or `while`. Using them outside a loop
-propagates up as a runtime error. `break` / `continue` do not carry a
-value (the loop's value remains `nil`).
+Valid only inside `for` or `while`. Using them outside a loop is a
+`SyntaxError`, checked before the program runs. `break` / `continue` do
+not carry a value (the loop's value remains `nil`).
+
+Both are **expressions** (§3), so they need no statement position of
+their own — a `match` arm (`')' => break`), a `cond` arm, or either side
+of a ternary takes one directly. See [Arm bodies](#arm-bodies) for the
+arm form, and [Diverging expressions](#diverging-expressions) for what
+this means in the middle of a larger expression.
 
 ### `nobreak` (loop-else)
 
@@ -2374,6 +2393,45 @@ Valid only inside a function body. Exits the enclosing function with
 the given value (or `nil`). `return` outside any function is a
 `SyntaxError` (checked before the program runs) — a script ends at its
 last statement, or exits early via `Sys.exit`.
+
+Like `break` and `continue`, `return` is an expression, so
+`_ => return x` is a legal `match` arm.
+
+### Diverging expressions
+
+`return`, `throw`, `break` and `continue` share a property: none of them
+produces a value. Reaching one transfers control elsewhere, so the
+expression it sits inside never finishes evaluating. That is why all
+four are expressions rather than statements — there is no value for the
+surrounding expression to be given, and so no position where one would
+be ill-typed:
+
+```culebra
+# doctest: skip
+let width = "v" + match n {      # the `+` never completes when n is 4
+  4 => break,
+  _ => "x",
+}
+```
+
+Consequences worth knowing:
+
+* Operands evaluated before the diverging one are discarded. In
+  `f(a(), match n { 0 => break, _ => b() })`, `a()` has already run when
+  the `break` is taken; the call to `f` never happens.
+* `defer` blocks still fire on the way out, innermost first, exactly as
+  they would for the statement spelling (§15).
+* `break` / `continue` bind to the nearest enclosing *loop*, never to
+  the `match` or `cond` they appear in — those are expressions, not
+  control-flow scopes, so there is no "exit the match" reading to
+  confuse them with.
+* The check that a `break` has an enclosing loop, and a `return` an
+  enclosing function, runs before the program does and is a
+  `SyntaxError` in expression position just as in statement position.
+
+Being an expression does not make one bind tighter. `return`'s operand
+is a whole expression in either position, so `return 1 + 2` returns `3`
+— in a `match` arm exactly as at the head of a statement.
 
 ### `debugger`
 
@@ -2467,6 +2525,16 @@ close (LIFO, before the arm value is consumed). `return` / `break` /
 `continue` inside a block arm behave as they would anywhere — and still run
 the arm's pending defers on the way out.
 
+An arm that does nothing *but* transfer control needs no block, since all
+four control-transfer forms are expressions (§12):
+
+    match tok {
+      ')' => break,
+      '!' => throw "unexpected",
+      ' ' => continue,
+      _   => tok,
+    }
+
 The arm parser tries an expression first, so a brace that *is* a valid
 literal keeps its literal meaning, not a block:
 
@@ -2479,8 +2547,10 @@ literal keeps its literal meaning, not a block:
 
 One sharp edge falls out of object **shorthand**: a brace wrapping a single
 bare identifier, `{ v }`, is the object `{v: v}`, not a block yielding `v`.
-Write `_ => v` (no braces) for that, or `{ v; }` to force a block. The same
-applies to a lone `{ break }` / `{ continue }` — use `{ break; }`.
+Write `_ => v` (no braces) for that, or `{ v; }` to force a block. Shorthand
+reads a lone `{ break }` / `{ continue }` the same way, and since no variable
+may be named `break`, that arm raises `NameError` — write the bare
+`_ => break`, which is what you meant.
 
 ### Exhaustiveness
 
@@ -3145,6 +3215,8 @@ Semantics:
 * `throw` is distinct from `return`: a function's early `return`
   unwinds only that function; a user `throw` travels past enclosing
   functions.
+* `throw` is an expression (§12), so it can be the whole of a `match`
+  arm (`_ => throw "unexpected"`) with no block around it.
 
 ### `defer`
 
