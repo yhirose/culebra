@@ -1286,6 +1286,14 @@ invocation does **not** bind `self` to the receiver — the call is
 semantically a free-function call with the receiver in the first
 positional slot.
 
+Two names dispatch outside the built-in tables and still follow this
+order. A class instance's synthesized `parameters()` (§10) is a property
+for step 1, so a global `parameters` never claims one. The explicit-drop
+form `x.drop()` (§17) sits *below* step 2 instead: a receiver carrying
+no `drop` of its own hands the call to a free `drop` in scope, and only
+a receiver that resolves the name — a handle with its own `drop`, or no
+candidate in scope at all — reaches the at-most-once guard.
+
 #### Namespaces are closed
 
 A built-in namespace exposes a fixed member set, so an unknown member is
