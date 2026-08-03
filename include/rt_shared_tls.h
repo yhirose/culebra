@@ -13,10 +13,15 @@
 //
 //     CULEBRA_RT_CORE_OWNED thread_local std::vector<Handle*> g_handles;
 //
-// A feature archive (CULEBRA_RT_FEATURE_BUILD, set by CMake on every
-// culebra_rt_* target) turns that into an `extern` declaration and resolves
-// against the core at link time; every other build — the driver, the in-process
-// JIT, header-only embedding — keeps the inline definition it always had.
+// A borrowing TU (CULEBRA_RT_FEATURE_BUILD, set by CMake on every culebra_rt_*
+// target and on the binding sources the driver compiles in) turns that into an
+// `extern` declaration and resolves against its owner at link time — the core
+// archive in an AOT link, main.cc in the driver. Every other build — plain
+// embedding, the header-only JIT — keeps the inline definition it always had.
+//
+// Only the thread_locals travel on this flag. The runtime helpers' emission is
+// CULEBRA_RT_FEATURE_ARCHIVE (rt_macros.h), which is archive-only: the driver
+// has to keep defining those for the in-process JIT to resolve them.
 //
 // State the core has no business holding at all is the other, simpler answer:
 // gate the declaration out of the weak-stub build entirely (sqlite.h). Either

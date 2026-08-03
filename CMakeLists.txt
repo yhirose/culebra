@@ -665,7 +665,7 @@ if(CULEBRA_ENABLE_WEBVIEW)
       list(JOIN _webview_lflags " " _webview_link)
       # The binding reaches wrap.h, so its TU can emit a runtime helper the core
       # archive also defines, and PE has no weak external to fold the two with.
-      # CULEBRA_RT_FEATURE_BUILD (rt_macros.h) stops the wholesale emission but
+      # CULEBRA_RT_FEATURE_ARCHIVE (rt_macros.h) stops the wholesale emission but
       # not the last un-inlined one — that is the compiler's business, and
       # mingw's GCC 16 keeps `_jit_handle_bind_method` where GCC 14 does not.
       # It takes the first definition and drops the diagnostic; COMDAT folding
@@ -764,6 +764,8 @@ if(CULEBRA_WRAP_SOURCES)
   # main.cc's thread_locals a second time in the same image — the link error
   # PE has and ELF does not. The archive copy of the same sources gets this
   # from the feature loop below; the driver copy needs saying (rt_shared_tls.h).
+  # This flag only, never CULEBRA_RT_FEATURE_ARCHIVE: that one belongs to the
+  # archive target, and here it would strip the JIT's helpers out of the driver.
   set_source_files_properties(${CULEBRA_WRAP_SOURCES} PROPERTIES
     COMPILE_DEFINITIONS CULEBRA_RT_FEATURE_BUILD=1)
   if(CULEBRA_WRAP_LINK)
@@ -989,16 +991,23 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   endif()
   # Every feature archive is force-loaded next to the core archive, so the two
   # must not both define the same symbol: mingw's ld rejects the duplicate and
-  # the Windows AOT link fails. The flag says "this TU borrows from the core"
-  # and has two halves — it flips the CULEBRA_RT_CORE_OWNED declarations
-  # (rt_shared_tls.h) to `extern`, and stops the runtime helpers being
-  # force-emitted (rt_macros.h) — leaving the core archive the single owner of
-  # both. Ratchet: tools/check_rt_archive_tls.sh, run by the `all` test gate.
+  # the Windows AOT link fails. Two flags say so, because the two halves do not
+  # have the same scope. CULEBRA_RT_FEATURE_BUILD flips the CULEBRA_RT_CORE_OWNED
+  # declarations (rt_shared_tls.h) to `extern`, and belongs on the binding
+  # sources too — the driver's copies of them borrow main.cc's thread_locals the
+  # same way. CULEBRA_RT_FEATURE_ARCHIVE stops the runtime helpers being
+  # force-emitted (rt_macros.h) and belongs ONLY here, on the archive targets:
+  # the driver is what the in-process JIT resolves those helpers from, so a
+  # source-file property carrying this to the driver's copy would strip them out
+  # of the JIT's own image. Ratchets: tools/check_rt_archive_tls.sh for what the
+  # archives may define, tools/check_jit_host_symbols.sh for what the driver
+  # must still define.
   foreach(_rt_feature culebra_rt_tensor culebra_rt_http culebra_rt_compress
                       culebra_rt_sqlite culebra_rt_scene culebra_rt_canvas
                       culebra_rt_webview culebra_rt_wrap)
     if(TARGET ${_rt_feature})
-      target_compile_definitions(${_rt_feature} PRIVATE CULEBRA_RT_FEATURE_BUILD=1)
+      target_compile_definitions(${_rt_feature} PRIVATE
+        CULEBRA_RT_FEATURE_BUILD=1 CULEBRA_RT_FEATURE_ARCHIVE=1)
     endif()
   endforeach()
   # Embed the archives deflated: 33.8 -> 6.9 MB of .rodata, a quarter of the
@@ -1375,11 +1384,16 @@ endif()
 # it). These three reach them through wrap.h and borrow instead.
 #
 # The flag is not a general licence to include the world: it moves the
-# CULEBRA_RT_CORE_OWNED variables and the runtime helpers' force-emission
-# (rt_macros.h), and nothing else — a TU that reaches culebra.h picks up ~18
-# more thread_locals from the net/http/sqlite registries that no flag can move.
-# Such a TU has to stop reaching those headers. check_rt_archive_tls.sh
-# enforces all of it.
+# CULEBRA_RT_CORE_OWNED variables and nothing else — a TU that reaches culebra.h
+# picks up ~18 more thread_locals from the net/http/sqlite registries that no
+# flag can move. Such a TU has to stop reaching those headers.
+#
+# A source-file property reaches every target that names the file, and these
+# three are named twice: once here and once by the culebra_rt_* archive built
+# from the same source. That is why the helpers' force-emission is NOT on this
+# flag (rt_macros.h) — suppressing `used` is right for the archive and wrong for
+# the driver, which is the image the in-process JIT resolves those helpers from.
+# check_jit_host_symbols.sh is what fails when that distinction is lost.
 set_source_files_properties(
   ./src/runtime/culebra_rt_webview.cc
   ./src/runtime/culebra_rt_scene.cc

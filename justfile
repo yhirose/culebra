@@ -759,6 +759,14 @@ _run-tests BACKEND:
         bash tools/check_rt_archive_tls.sh "$(dirname "$BIN")"
     }
 
+    # The driver is what the in-process JIT resolves `culebra_runtime_*` from
+    # (dlsym over the process), so every helper codegen names has to survive
+    # the driver's own dead-strip (tools/check_jit_host_symbols.sh). Reads the
+    # linked binary and nothing else, so it runs off `build-dev` too — which
+    # matters because the platform this breaks on is macOS, and the miss reads
+    # as every JIT test crashing at once.
+    run_jit_host_symbols() { bash tools/check_jit_host_symbols.sh "$BIN"; }
+
     # Webview dynamic-load gate (Linux): the engine is dlopen'd at window
     # creation, so neither the driver nor an AOT binary may carry it in
     # DT_NEEDED or export the forwarders (tools/check_webview_dynload.sh).
@@ -784,6 +792,7 @@ _run-tests BACKEND:
         phase "flow-discipline (return-completion ratchet)"; run_flow_discipline
         phase "dispatch symmetry (eval_X vs compile_X tag sets)"; run_dispatch_symmetry
         phase "iter wiring (JitIterDrive + upstream forwarding ratchet)"; run_iter_wiring
+        phase "jit host symbols (driver defines what codegen names)"; run_jit_host_symbols
         phase "rt-archive TLS ownership (core vs force-loaded features)"; run_rt_archive_tls
         phase "webview dynload (engine stays behind dlopen)"; run_webview_dynload
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
@@ -814,6 +823,7 @@ _run-tests BACKEND:
         phase "flow-discipline (return-completion ratchet)"; run_flow_discipline
         phase "dispatch symmetry (eval_X vs compile_X tag sets)"; run_dispatch_symmetry
         phase "iter wiring (JitIterDrive + upstream forwarding ratchet)"; run_iter_wiring
+        phase "jit host symbols (driver defines what codegen names)"; run_jit_host_symbols
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
         phase "culebra-test self"; run_culebra_test_self
         phase "isolate (interp + jit)"; run_isolate

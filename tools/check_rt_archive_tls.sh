@@ -153,7 +153,7 @@ else
   PE has no weak external, so mingw's ld calls each of these a multiple
   definition and the Windows AOT link fails. A feature TU must not define what
   the core archive defines strongly: check that its build carries
-  CULEBRA_RT_FEATURE_BUILD (CMakeLists' feature loop). Many of them mean the
+  CULEBRA_RT_FEATURE_ARCHIVE (CMakeLists' feature loop). Many of them mean the
   __attribute__((used)) came back (rt_macros.h); one or two mean a call stopped
   inlining, which only an axis whose link fragment carries
   --allow-multiple-definition can absorb.
@@ -200,9 +200,10 @@ if [[ -f "$owner" ]]; then
   Keep the TU off the interpreter/JIT headers if it can be -- reaching
   culebra.h costs ~70 s of compile for them anyway. If it genuinely needs
   them, CULEBRA_RT_FEATURE_BUILD covers the CULEBRA_RT_CORE_OWNED variables
-  (rt_shared_tls.h) and the runtime helpers (rt_macros.h), and nothing else:
-  the net/http/sqlite registries are plain `inline thread_local` and no build
-  flag will move them.
+  (rt_shared_tls.h) and nothing else: the net/http/sqlite registries are plain
+  `inline thread_local` and no build flag will move them. Do not reach for
+  CULEBRA_RT_FEATURE_ARCHIVE here -- it drops the `used` that keeps the JIT's
+  helpers in the driver image (tools/check_jit_host_symbols.sh).
 EOF
     exit 1
   fi

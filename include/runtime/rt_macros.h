@@ -16,23 +16,32 @@
 // binaries — `cc -Wl,-dead_strip` can now drop runtime helpers a
 // program never references.
 
-// Borrowing path: a TU that links beside the core archive rather than being it
-// — every feature archive, and the driver's own copies of those sources (see
-// CULEBRA_RT_FEATURE_BUILD in CMakeLists, and rt_shared_tls.h for the same
-// flag's other half). Reaching wrap.h pulled these headers in, and `used` then
-// forced out a copy of every helper next to the core archive's real ones: 348
-// in the Webview archive. Dropping the attribute leaves ordinary `inline`, so
-// nothing is emitted for a use the compiler inlines — which today is all of
-// them. That is an optimizer-dependent outcome, not a contract: at -O0 four
-// copies come back, and each one is a multiple definition to PE's ld, which
-// has no weak external to fold it with (ELF and Mach-O fold silently, so only
-// Windows would report it). tools/check_rt_archive_tls.sh checks the result
-// instead of trusting it.
+// Feature-archive path: a `culebra_rt_*` archive, force-loaded beside the core
+// archive into an AOT binary (CULEBRA_RT_FEATURE_ARCHIVE, set by CMake on those
+// targets). Reaching wrap.h pulls these headers in, and `used` then forced out
+// a copy of every helper next to the core archive's real ones: 348 in the
+// Webview archive. Dropping the attribute leaves ordinary `inline`, so nothing
+// is emitted for a use the compiler inlines — which today is all of them. That
+// is an optimizer-dependent outcome, not a contract: at -O0 four copies come
+// back, and each one is a multiple definition to PE's ld, which has no weak
+// external to fold it with (ELF and Mach-O fold silently, so only Windows would
+// report it). tools/check_rt_archive_tls.sh checks the result instead of
+// trusting it.
+//
+// Scoped to the archive targets, and never to a source file: the binding TUs
+// (culebra_rt_webview.cc and its siblings) compile into BOTH the archive and
+// the driver, and a source-file property reaches every target that names the
+// file. Suppressing `used` in the driver strips the JIT's own helpers out of
+// the image it resolves them from — tools/check_jit_host_symbols.sh is the
+// ratchet, and its header records what that cost. That is why this is a
+// separate flag from CULEBRA_RT_FEATURE_BUILD (rt_shared_tls.h), which does
+// belong on the sources: borrowing a thread_local is right in both places,
+// borrowing a helper is not.
 
 #ifdef CULEBRA_RT_DEFINE_RUNTIME
 #define CULEBRA_RT_KEEP
 #define CULEBRA_RT_INLINE
-#elif defined(CULEBRA_RT_FEATURE_BUILD)
+#elif defined(CULEBRA_RT_FEATURE_ARCHIVE)
 #define CULEBRA_RT_KEEP
 #define CULEBRA_RT_INLINE inline
 #else
