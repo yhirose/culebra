@@ -2025,4 +2025,63 @@ for c in wkprop {
   case("wkprop|" + c, c)
 }
 
+# --- Dimension: UFCS shadowing (builtin method name vs same-named free fn) --
+# Method resolution is one contract with a fixed order (docs/language.md §22):
+# a closed namespace answers every name, then the receiver's own property,
+# then its type's builtin, then a free function of that name (UFCS, only when
+# the binding really is a Function), then the miss error. Both backends
+# implement it separately, so sweep it: which arm answers depends on the
+# receiver's runtime shape, and the JIT decides part of it at compile time.
+#
+# Every candidate is declared INSIDE the thunk. A top-level `fn map` would be
+# a UFCS candidate for the whole module and would rewrite Dimension 2.
+let shadow_recvs = ['5', '1.5', 'true', 'nil', '"ab"', '[1, 2]', '{a: 1}',
+                    '(1, 2)', '{1, 2}', 'Math', '[1, 2].iter()',
+                    'Shared.new({a: 1})', 'Tensor.zeros("f32", 2, 2)',
+                    'Sc.new()']
+# Name classes: array/dict builtins, Set's mutating `add`, String's
+# `to_string`, an iterator-only terminal, the two names with a dispatch of
+# their own (`drop`'s at-most-once guard, class `parameters()`), and a name
+# no builtin table holds.
+let shadow_names = ['size', 'map', 'push', 'add', 'to_string', 'collect',
+                    'upper', 'drop', 'parameters', 'zzz']
+# Candidate kinds: one that fits the UFCS call, one whose arity does not, and
+# a binding that is not a Function at all (never a callee — the receiver's own
+# resolution answers instead).
+let shadow_cands = ['fn NAME(o) { "ufcs-NAME" }',
+                    'fn NAME(o, extra) { "ufcs-NAME" }',
+                    'let NAME = 5']
+let shadow_prelude = 'class Sc { new() { self.f = 1 } }; '
+for n in shadow_names {
+  for cand in shadow_cands {
+    let decl = cand.replace("NAME", n)
+    for r in shadow_recvs {
+      case("ufcsshadow|" + n + "|" + decl + "|" + r,
+           shadow_prelude + decl + '; (' + r + ').' + n + '()')
+      # Same call one frame down: the candidate reaches it as a free variable,
+      # so the compile-time visibility the JIT gates on must agree with the
+      # interpreter's environment lookup.
+      case("ufcsshadownest|" + n + "|" + decl + "|" + r,
+           shadow_prelude + decl + '; fn nest(x) { return x.' + n +
+           '() }; nest(' + r + ')')
+    }
+  }
+}
+
+# Call forms other than the plain 0-arg call the sweep above already makes:
+# a bare method reference is not a first-class value, kwargs never reach a
+# real builtin, `?.` short-circuits before any of this, and a wrong arity on
+# a resolved name is that name's ArityError, not the free function's.
+let shadow_forms = ['.NAME(9)', '.NAME(k: 1)', '?.NAME()', '.NAME']
+for n in ['size', 'add', 'to_string', 'drop', 'parameters', 'zzz'] {
+  let decl = shadow_cands[0].replace("NAME", n)
+  for f in shadow_forms {
+    let call = f.replace("NAME", n)
+    for r in ['5', '"ab"', '[1, 2]', '{a: 1}', '{1, 2}', 'nil', 'Math'] {
+      case("ufcsshadowform|" + n + "|" + call + "|" + r,
+           decl + '; (' + r + ')' + call)
+    }
+  }
+}
+
 print(out.join("\n"))
