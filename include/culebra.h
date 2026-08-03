@@ -43,18 +43,6 @@ namespace culebra {
   for (auto& [k, _] : tuple_builtins()) interp.insert(k);
   for (auto& [k, _] : iterator_builtins()) interp.insert(k);
   for (auto& [k, _] : TensorValue(TensorPtr{}).builtins()) interp.insert(k);
-  // A few interp builtin methods are intentionally ABSENT from
-  // known_builtin_methods() so that `x.method(...)` on a receiver that lacks
-  // that builtin still UFCS-resolves to a same-named global function — which
-  // is how the interpreter behaves too:
-  //   - `to_string`: String/StringView method, but `x.to_string()` routes
-  //     through the global `to_string(x)` via UFCS.
-  //   - `add`: Set has builtin codegen, but listing it would force
-  //     `x.add(y)` on a non-Set receiver to the builtin path instead of
-  //     UFCS-resolving to a user-defined global `add` (interp parity).
-  // Excluding them keeps the parity check from flagging a non-drift.
-  interp.erase("to_string");
-  interp.erase("add");
   const auto& jit_set = JIT::known_builtin_methods();
   bool ok = true;
   for (auto& m : interp) {

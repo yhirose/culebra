@@ -252,4 +252,54 @@ fn both_uses() {
 }
 assert_eq(both_uses(), ["local step_by", "Function"])
 
+# --- Phase 6: `add` and `to_string` are ordinary builtin method names ---
+# Both used to be held out of the builtin-method set, which made the JIT
+# UFCS-resolve them on receivers that DO define them and left a bare
+# reference readable as a value.
+
+# `to_string` on a String-like is the value method, even with a same-named
+# global in scope; every other receiver still reaches that global.
+fn to_string_shadowed() {
+  let to_string = fn (x) { "shadow" }
+  [("ab").to_string(), ("ab").view().to_string(), (5).to_string(),
+   [1, 2].to_string()]
+}
+assert_eq(to_string_shadowed(), ["ab", "ab", "shadow", "shadow"])
+assert_eq((5).to_string(), "5")
+assert_eq({a: 1}.to_string(), to_string({a: 1}))
+
+# `add` resolves on a Set at its one declared arity; any other arity is the
+# interp's ArityError, and a non-Set receiver is free for UFCS.
+fn add_shadowed() {
+  let add = fn (a, b) { "shadow" }
+  [(5).add(1), [1].add(1, 2)]
+}
+assert_eq(add_shadowed(), ["shadow", "shadow"])
+assert_throws('ArityError', fn () { {1, 2}.add() })
+assert_throws('ArityError', fn () { {1, 2}.add(1, 2) })
+assert_throws('TypeError', fn () { {1, 2}.add(x: 1) })
+
+# Wrong arity picks its message by receiver: the String value method for a
+# String-like, the arity-1 global for everything else.
+assert_throws('ArityError', fn () { ("ab").to_string(9) })
+assert_throws('ArityError', fn () { (5).to_string(9) })
+assert_throws('TypeError', fn () { ("ab").to_string(x: 1) })
+assert_throws('TypeError', fn () { (5).to_string(x: 1) })
+
+# A bare reference to either is not a first-class value on a receiver that
+# resolves it — and stays an ordinary miss on one that doesn't.
+assert_throws('TypeError', fn () { ("ab").to_string })
+assert_throws('TypeError', fn () { {1, 2}.add })
+assert_eq({a: 1}.add, nil)
+
+# A user-defined method of the same name still wins.
+class Adder {
+  init() { self.n = 0 }
+  add(a, b) { a + b }
+  to_string() { "Adder" }
+}
+assert_eq(Adder().add(2, 3), 5)
+assert_eq(Adder().to_string(), "Adder")
+assert_eq({add: fn (v) { "own add:" + to_string(v) }}.add(7), "own add:7")
+
 inspect("test_ufcs_builtin_shadow: ok")

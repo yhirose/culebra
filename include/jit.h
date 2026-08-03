@@ -1793,9 +1793,10 @@ struct JIT {
                                           const peg::Ast& init_ast,
                                           const peg::Ast& lambda_ast);
 
-  // Method names with JIT-native codegen in compile_builtin_method.
-  // Exposed so a startup self-check (see culebra.h) can guard against
-  // drift from the interpreter's builtin tables.
+  // Method names the JIT lowers natively rather than as a property call —
+  // compile_builtin_method for nearly all of them, compile_set_mutate_dispatch
+  // for the one-arg `add`/`remove`. Exposed so a startup self-check (see
+  // culebra.h) can guard against drift from the interpreter's builtin tables.
   // Single source in shared.h (culebra::builtin_method_names), shared with the
   // interp + both backends' bare-method-reference rejection so the list can't
   // drift. Array/String/Set/Tuple/Object-dict/Iterator/Tensor methods are
@@ -12155,15 +12156,13 @@ struct JIT {
     // rejecting at compile time; the builtin branch still raises if the
     // receiver turns out to be a real builtin value.
     bool has_kwargs = !arg_list_is_positional_only(argsAst);
-    // `remove` is in known_builtin_methods; `add` is not (it is special-cased
-    // only in the set-mutate dispatch below). Both must route a kwargs call
-    // through compile_user_method_over_builtin so a user class method binds
-    // keywords (a class `add(a, b)` called `obj.add(a: 1, b: 2)`) while a real
-    // Set receiver raises "built-in method 'add' does not accept keyword
-    // arguments" — the set-mutate fast path treats its one arg as positional
-    // and would silently misbind a keyword.
-    if (has_kwargs && (known_builtin_methods().contains(method) ||
-                       method == "add")) {
+    // This also covers `add`/`remove`: their set-mutate fast path below treats
+    // its one arg as positional and would silently misbind a keyword, so a
+    // kwargs call goes through compile_user_method_over_builtin instead — a
+    // user class `add(a, b)` called `obj.add(a: 1, b: 2)` binds its keywords
+    // while a real Set receiver raises "built-in method 'add' does not accept
+    // keyword arguments".
+    if (has_kwargs && known_builtin_methods().contains(method)) {
       return compile_user_method_over_builtin(method, argsAst,
                                               receiver.consume(), dot_ast);
     }
@@ -12172,7 +12171,9 @@ struct JIT {
     // a runtime dispatch here so all three worlds coexist: Set receiver
     // → set_add_method / set_remove; Object receiver → user property;
     // a receiver that resolves neither → a free function of that name.
-    // Positional-only: a kwargs call was already routed above.
+    // Positional-only: a kwargs call was already routed above. Any other arity
+    // has no mutate spelling, so it falls through to the generic arm below,
+    // where the arity check raises interp's ArityError on a Set receiver.
     if ((method == "add" || method == "remove") &&
         argsAst.nodes.size() == 1 && !has_kwargs) {
       // Never declines: every receiver lands in one of its arms
@@ -12560,6 +12561,16 @@ struct JIT {
         if (p.kw_only || p.kwargs_rest) return true;
     }
     return false;
+  }
+
+  // Whether `method` names two callees at once, so only the receiver's tag
+  // says which one a bad call was addressed to. `to_string` is the sole such
+  // name: the 0-arg String/StringView value method, and the arity-1 global
+  // `to_string(x)` every other receiver reaches. Their arity and "no keywords"
+  // errors are worded differently, so compile_builtin_method raises both and
+  // the generic gates here step aside for it.
+  static bool builtin_method_errors_by_receiver(const std::string& method) {
+    return method == "to_string";
   }
 
   // Raise the interpreter's count-based ArityError for a wrong-arity
@@ -13015,16 +13026,16 @@ struct JIT {
     // free function binds its keywords normally.)
     Owned builtinRes;
     if (!arg_list_is_positional_only(argsAst) &&
-        !builtin_method_is_kwarg_capable(method)) {
+        !builtin_method_is_kwarg_capable(method) &&
+        !builtin_method_errors_by_receiver(method)) {
       // The receiver is owned here (+1) and this arm never hands it to a
       // callee frame, so release it before the throw or it strands (the Set
       // in `{1, 2}.add(x: 3)`). emit_throw_error only reads the message, not
       // the receiver's data, so release-before-throw is safe.
       emit_value_release(receiver);
       emit_throw_error("TypeError",
-          std::format("built-in method '{}' does not accept keyword "
-                      "arguments", method),
-          argsAst.line, argsAst.column);
+                       culebra::builtin_method_kwargs_error_message(method),
+                       argsAst.line, argsAst.column);
       builtinRes = own(llvm::UndefValue::get(valueType_));
     } else {
       // Try the builtin; if it declines (e.g. an arity it doesn't implement —
@@ -16518,6 +16529,53 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   }
 
   // --- String methods ---
+
+  // `.to_string()` is two spellings of one conversion: the String/StringView
+  // value method (the StringView→String materializer) and the arity-1 global
+  // `to_string(x)` every other receiver reaches by UFCS. Both yield the display
+  // form, so one call answers either. Only the ERRORS distinguish the two
+  // callees (see builtin_method_errors_by_receiver), so those branch on the
+  // receiver tag — which is why this arm, not the generic gates, raises them.
+  if (method == "to_string") {
+    // Raise the String-like receiver's error or the global's, by tag. Both
+    // arms throw, so the block this leaves behind is unreachable.
+    auto throw_by_receiver = [&](const char* kind, const std::string& str_msg,
+                                 const std::string& global_msg) {
+      auto strBB = llvm::BasicBlock::Create(ctx_, "tostr.err.str", fn);
+      auto glBB = llvm::BasicBlock::Create(ctx_, "tostr.err.gl", fn);
+      auto deadBB = llvm::BasicBlock::Create(ctx_, "tostr.err.dead", fn);
+      builder_.CreateCondBr(
+          builder_.CreateOr(
+              builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_STRING)),
+              builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_STRINGVIEW)),
+              "tostr.is.str"),
+          strBB, glBB);
+      builder_.SetInsertPoint(strBB);
+      emit_throw_error(kind, str_msg, argsAst.line, argsAst.column);
+      builder_.CreateBr(deadBB);  // unreachable (throw is noreturn) but valid
+      builder_.SetInsertPoint(glBB);
+      emit_throw_error(kind, global_msg, argsAst.line, argsAst.column);
+      builder_.CreateBr(deadBB);
+      builder_.SetInsertPoint(deadBB);
+      return own(make_nil());  // unreachable: both predecessors throw
+    };
+    if (!arg_list_is_positional_only(argsAst)) {
+      return throw_by_receiver(
+          "TypeError", culebra::builtin_method_kwargs_error_message(method),
+          "function does not accept keyword arguments");
+    }
+    if (!argsAst.nodes.empty()) {
+      int64_t extra = static_cast<int64_t>(argsAst.nodes.size());
+      // The receiver is the global's arg 0, so its total is 1 + the extras.
+      return throw_by_receiver(
+          "ArityError",
+          culebra::builtin_arity_error_message("to_string", 0, 0, extra),
+          culebra::ns_fn_arity_error_message(1, 1 + extra));
+    }
+    auto s = emit_call(module_->getFunction(rt::value_to_display),
+                       {tag, extract_data(receiver)});
+    return own(make_string(s));
+  }
 
   // `.view()` on String/StringView → TAG_STRINGVIEW.
   if (method == "view" && argsAst.nodes.size() == 0) {

@@ -10130,47 +10130,14 @@ inline JIT::Owned JitExtension::compile_ufcs_builtin(
   // `x.hash()` / `x.to_float()` failed outright.) inspect/print/println are
   // variadic and handled separately below.
   static const std::set<std::string_view> arity1_globals = {
-      "to_long", "to_float", "to_string", "type_of", "hash"};
+      "to_long", "to_float", "type_of", "hash"};
   if (arity1_globals.contains(method) && argsAst.nodes.size() != 0) {
     long extra = static_cast<long>(argsAst.nodes.size());
-    // `to_string` is *also* a 0-arg value-method on String/StringView in the
-    // interp (the StringView→String materializer), which reports a
-    // value-method arity message for those receivers; every other type uses
-    // the arity-1 global. Branch on the receiver tag so the JIT matches interp
-    // byte-for-byte. (The receiver type isn't known until runtime.)
-    if (method == "to_string") {
-      auto fn = builder_.GetInsertBlock()->getParent();
-      auto svBB = llvm::BasicBlock::Create(ctx_, "tostr.arity.sv", fn);
-      auto glBB = llvm::BasicBlock::Create(ctx_, "tostr.arity.gl", fn);
-      auto deadBB = llvm::BasicBlock::Create(ctx_, "tostr.arity.dead", fn);
-      auto tag = extract_tag(receiver);
-      auto isStr = builder_.CreateOr(
-          builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_STRING)),
-          builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_STRINGVIEW)),
-          "tostr.is.str");
-      // Both arms throw unconditionally; consume the receiver's +1 first
-      // (the tag was already extracted above, nothing reads it after).
-      jit.emit_value_release(receiver);
-      builder_.CreateCondBr(isStr, svBB, glBB);
-      // String/StringView: value-method (0 expected, `extra` given).
-      builder_.SetInsertPoint(svBB);
-      jit.emit_throw_error(
-          "ArityError",
-          culebra::builtin_arity_error_message("to_string", 0, 0, extra),
-          argsAst.line, argsAst.column);
-      builder_.CreateBr(deadBB);
-      // Everything else: arity-1 global (receiver is arg 0, so 1 + extra).
-      builder_.SetInsertPoint(glBB);
-      jit.emit_throw_error("ArityError",
-                           culebra::ns_fn_arity_error_message(1, 1 + extra),
-                           argsAst.line, argsAst.column);
-      builder_.CreateBr(deadBB);
-      builder_.SetInsertPoint(deadBB);
-      return jit.own(make_nil());  // unreachable: both predecessors throw
-    }
-    // Other arity-1 globals have no value-method form: the receiver is the
-    // implicit arg 0, so the total is 1 + the extras. The nameless message
-    // matches interp's global-UFCS arity error.
+    // These have no value-method form: the receiver is the implicit arg 0, so
+    // the total is 1 + the extras. The nameless message matches interp's
+    // global-UFCS arity error. (`to_string` also names a String value method,
+    // so it is a real builtin method now — jit.h's compile_builtin_method owns
+    // both its call and its receiver-dependent arity error.)
     jit.emit_value_release(receiver);  // consumed before the throw (see above)
     jit.emit_throw_error("ArityError",
                          culebra::ns_fn_arity_error_message(1, 1 + extra),
@@ -10221,13 +10188,6 @@ inline JIT::Owned JitExtension::compile_ufcs_builtin(
          argCol});
     recv.drop();
     return jit.own(r);
-  }
-  if (method == "to_string") {
-    auto s = emit_call(
-        module_->getFunction(rt::value_to_display),
-        {extract_tag(recv.borrow()), extract_data(recv.borrow())});
-    recv.drop();
-    return jit.own(make_string(s));
   }
   if (method == "type_of") {
     auto s = emit_call(module_->getFunction(rt::type_of),

@@ -9836,8 +9836,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         for (const auto& child : ast.nodes) {
           if (child->tag == "KWARG"_ || child->tag == "KWARG_SPLAT"_) {
             throw CulebraError("TypeError",
-                std::format("built-in method '{}' does not accept keyword "
-                            "arguments", fn.name.empty() ? "<builtin>" : fn.name),
+                builtin_method_kwargs_error_message(
+                    fn.name.empty() ? "<builtin>" : fn.name),
                 ast.line, ast.column);
           }
         }

@@ -56,7 +56,7 @@ inline const std::unordered_set<std::string_view>& builtin_method_names() {
       "slice",      "join",        "index_of",   "contains",   "upper",
       "lower",
       "trim",       "tr",          "trim_start", "trim_end",   "split",
-      "repeat",     "capitalize",  "lines",
+      "repeat",     "capitalize",  "lines",      "to_string",
       "starts_with","ends_with",   "keys",       "values",     "has",
       "remove",     "get",         "get_or_put", "map",        "filter",
       "reduce",     "for_each",    "find",
@@ -75,6 +75,7 @@ inline const std::unordered_set<std::string_view>& builtin_method_names() {
       "reshape",    "mean",        "argmax",     "to_array",   "dot",
       "linear_sigmoid", "clone",   "relu",       "sigmoid",    "softmax",
       "log",
+      "add",
       "union",      "intersect",   "diff",       "sym_diff",   "subset",
       "superset",   "requires_grad","grad",      "backward",   "zero_grad",
       "detach",     "item"};
@@ -350,6 +351,14 @@ inline std::string builtin_arity_error_message(std::string_view method,
   }
   return std::format("'{}' takes {} to {} arguments but {} given", method, min,
                      max, got);
+}
+
+// A built-in method called with keyword arguments. Built-ins bind their args
+// positionally, so any keyword is a TypeError; shared so interp and both
+// backends emit byte-identical text.
+inline std::string builtin_method_kwargs_error_message(std::string_view method) {
+  return std::format("built-in method '{}' does not accept keyword arguments",
+                     method);
 }
 
 // Count-based arity error for a built-in *function* (namespace method or
