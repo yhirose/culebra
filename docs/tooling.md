@@ -20,7 +20,7 @@ The plain `culebra [flags] script.cul` form — `--jit`, `-O0`..`-O3`,
 `--ast`, `--shell` and the rest — is specified in
 [§22 of the language spec](language.md#22-command-line-interface).
 For a narrative introduction to the same tools see
-[`guide.md` §15](guide.md#15-tooling-test-lint-fmt-debug).
+[`handbook.md` §15](handbook.md#15-tooling-test-lint-fmt-debug).
 
 Contents
 --------
@@ -189,7 +189,7 @@ context.
 
 `culebra test --doc <path>` extracts every ` ```culebra ` block from the
 markdown under `<path>` and runs it in a fresh interpreter, checking its
-output against the markers below. Every block in `guide.md`,
+output against the markers below. Every block in `handbook.md`,
 `language.md` and `stdlib.md` follows this convention:
 
 - `# => <value>` — expected stdout (one line)
@@ -646,7 +646,7 @@ pointer to `--at`.
 
 ### Which topic to read
 
-`culebra docs llm` is the condensed pack: the syntax, the habits from
+`culebra docs quick-guide` is the condensed pack: the syntax, the habits from
 other languages that do not carry over, and every standard-library
 signature, in a file that fits in a prompt. It is the one to read
 before writing culebra rather than to search. The rest of the set is

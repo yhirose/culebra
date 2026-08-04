@@ -12,12 +12,12 @@
 #
 # Usage: cmake -DDOCS_DIR=<dir> -DOUT=<file> -P gen_docs.cmake
 
-# name|English summary|Japanese summary — `llm` leads because it is the one a
-# reader with no context should open first.
+# name|English summary|Japanese summary — `quick-guide` leads because it is
+# the one a reader with no context should open first.
 set(TOPICS
-  "llm|Everything needed to write culebra, in one file|書き始めに必要な全部を 1 ファイルに凝縮"
+  "quick-guide|Everything needed to write culebra, in one file|書き始めに必要な全部を 1 ファイルに凝縮"
   "agent|Rules to paste into a coding agent's instructions|コーディングエージェントの指示ファイルに貼る規則"
-  "guide|Task-oriented walkthrough of the language|言語のタスク指向ガイド"
+  "handbook|Task-oriented walkthrough of the language|言語のタスク指向ガイド"
   "language|The language reference|言語リファレンス"
   "stdlib|Every namespace and its signatures|全 namespace とその署名"
   "tooling|test, lint, fmt and the debug adapter|test・lint・fmt とデバッグアダプタ"
@@ -32,6 +32,11 @@ foreach(entry IN LISTS TOPICS)
   list(GET parts 0 name)
   list(GET parts 1 summary_en)
   list(GET parts 2 summary_ja)
+
+  # Topic names are also C++ identifiers below; a hyphen (e.g. quick-guide)
+  # is valid in the former but not the latter, so the generated symbol uses
+  # a sanitized copy while `name` itself stays what the CLI and file paths use.
+  string(REPLACE "-" "_" ident "${name}")
 
   foreach(lang en ja)
     if(lang STREQUAL en)
@@ -53,8 +58,8 @@ foreach(entry IN LISTS TOPICS)
       message(FATAL_ERROR "gen_docs: ${path} contains the raw-string delimiter )=culdoc=")
     endif()
 
-    string(APPEND BODY "constexpr const char* kText_${name}_${lang} =\n    R\"=culdoc=(${text})=culdoc=\";\n\n")
-    string(APPEND TABLE "    {\"${name}\", \"${lang}\", \"${summary}\", kText_${name}_${lang}},\n")
+    string(APPEND BODY "constexpr const char* kText_${ident}_${lang} =\n    R\"=culdoc=(${text})=culdoc=\";\n\n")
+    string(APPEND TABLE "    {\"${name}\", \"${lang}\", \"${summary}\", kText_${ident}_${lang}},\n")
   endforeach()
 endforeach()
 

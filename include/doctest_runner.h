@@ -3,7 +3,7 @@
 // Doctest runner: extract ` ```culebra ` blocks from Markdown docs,
 // run each in a fresh interpreter, and check output against the
 // convention markers (`# =>`, `# => |`, `# !!`, `# doctest:`).
-// See docs/guide.md §16.1 for the convention. MVP runs interp only;
+// See docs/handbook.md §16.1 for the convention. MVP runs interp only;
 // backend-filter directives (jit-only/aot-only) and `compile-only`
 // are not yet honored — see the per-marker notes below.
 

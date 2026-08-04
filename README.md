@@ -341,8 +341,8 @@ binaries, and BLAS-class numerics.
 Documentation
 -------------
 
-* The Culebra Guide: [`docs/guide.md`](docs/guide.md)
-  / [日本語](docs/guide.ja.md)
+* The Culebra Handbook: [`docs/handbook.md`](docs/handbook.md)
+  / [日本語](docs/handbook.ja.md)
 * Language specification: [`docs/language.md`](docs/language.md)
   / [日本語](docs/language.ja.md)
 * Standard library reference: [`docs/stdlib.md`](docs/stdlib.md)
@@ -355,10 +355,11 @@ Documentation
   C++ libraries (`culebra build` / `culebra wrap`):
   [`docs/deployment.md`](docs/deployment.md)
   / [日本語](docs/deployment.ja.md)
-* Context pack — the syntax, the carried-over mistakes and every stdlib
-  signature condensed into one file to paste into an LLM prompt:
-  [`docs/llm.md`](docs/llm.md)
-  / [日本語](docs/llm.ja.md)
+* Quick guide — the syntax, the carried-over mistakes and every stdlib
+  signature condensed into one file; written for an LLM prompt, and short
+  enough for a human to read start to finish:
+  [`docs/quick-guide.md`](docs/quick-guide.md)
+  / [日本語](docs/quick-guide.ja.md)
 * Agent rules — the same starting point in the form a coding agent
   reads, to append to `CLAUDE.md`, `.github/copilot-instructions.md` or
   `AGENTS.md` (`culebra docs agent`):

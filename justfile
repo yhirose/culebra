@@ -854,18 +854,19 @@ _run-tests BACKEND:
 doctest: build
     ./build/culebra test --doc tests/doctest docs
 
-# Rewrite the signature index inside docs/llm.md and docs/llm.ja.md from
-# language.md and stdlib.md, so the context pack never becomes a second
-# copy of the reference that can drift. `check-llm-context` is the CI gate.
-[doc("Regenerate the signature index in docs/llm.md (en+ja)")]
+# Rewrite the signature index inside docs/quick-guide.md and
+# docs/quick-guide.ja.md from language.md and stdlib.md, so the context pack
+# never becomes a second copy of the reference that can drift.
+# `check-quick-guide` is the CI gate.
+[doc("Regenerate the signature index in docs/quick-guide.md (en+ja)")]
 [group("docs")]
-gen-llm-context: build
-    ./build/culebra misc/gen_llm_context.cul
+gen-quick-guide: build
+    ./build/culebra misc/gen_quick_guide.cul
 
-[doc("Fail if docs/llm.md's signature index is stale")]
+[doc("Fail if docs/quick-guide.md's signature index is stale")]
 [group("docs")]
-check-llm-context: build
-    ./build/culebra misc/gen_llm_context.cul --check
+check-quick-guide: build
+    ./build/culebra misc/gen_quick_guide.cul --check
 
 # Differential test: generate the template-combinator corpus (tools/difftest)
 # and assert interp == jit byte-for-byte over every case. Enumerates the full

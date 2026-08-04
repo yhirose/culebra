@@ -7,7 +7,7 @@ disagree, the interpreter is considered authoritative and the JIT
 tracks its behavior.
 
 For an introductory tour with runnable examples, see
-[`guide.md`](guide.md). For API reference of the standard library see
+[`handbook.md`](handbook.md). For API reference of the standard library see
 [`stdlib.md`](stdlib.md).
 
 ## Table of contents
@@ -557,7 +557,7 @@ The three positions get different policies because each serves a
 different purpose in the closure-as-object idiom:
 
 * **Captured state is object state.** In the closure-based object
-  pattern (see [`guide.md` §9.2](guide.md#92-the-closure-based-alternative)), an enclosing function's mutable
+  pattern (see [`handbook.md` §9.2](handbook.md#92-the-closure-based-alternative)), an enclosing function's mutable
   binding is the object's private field. Accidentally shadowing it —
   typically by writing `mut x = ...` intending a new local — silently
   breaks the object. Making this a compile-time error is worth the

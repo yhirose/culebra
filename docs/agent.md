@@ -22,7 +22,7 @@ culebra docs -g '<name>' >/dev/null  # exits 1 when nothing matches
 Exit status is grep's: `0` printed something, `1` nothing matched. A
 signature `-g` cannot find does not exist.
 
-**Read `culebra docs llm` before writing Culebra.** It is one
+**Read `culebra docs quick-guide` before writing Culebra.** It is one
 prompt-sized file: the syntax, every standard-library signature, and a
 table of the habits from other languages that do not carry over. One
 row of that table, for the kind of thing it covers:

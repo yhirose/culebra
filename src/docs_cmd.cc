@@ -82,9 +82,10 @@ bool is_atx_heading(std::string_view l) {
   return h >= 1 && h <= 6 && h < l.size() && l[h] == ' ';
 }
 
-// `====` / `----` under a line of text. Only guide.md, llm.md, tooling.md and
-// deployment.md use this form, but their part titles are exactly the headings
-// a reader searches for, so the splitter cannot skip it.
+// `====` / `----` under a line of text. Only handbook.md, quick-guide.md,
+// tooling.md and deployment.md use this form, but their part titles are
+// exactly the headings a reader searches for, so the splitter cannot skip
+// it.
 bool is_setext_rule(std::string_view l) {
   if (l.size() < 2) return false;
   char c = l[0];
@@ -284,7 +285,7 @@ void print_list(bool ja, const char* version) {
   for (size_t i = 0; i < kTopicCount; i++) {
     const Topic& t = kTopics[i];
     if (std::string_view(t.lang) != (ja ? "ja" : "en")) continue;
-    std::println("  {:<11} {} {}", t.name, pad_to(t.summary, 52),
+    std::println("  {:<12} {} {}", t.name, pad_to(t.summary, 52),
                  tokens_label(t.text));
   }
   std::println("");
@@ -296,8 +297,8 @@ void print_list(bool ja, const char* version) {
   std::println("  culebra docs --ja ...         the Japanese edition");
   std::println("");
   std::println(
-      "Writing culebra? Read `culebra docs llm` first: it is the one file"
-      " that");
+      "Writing culebra? Read `culebra docs quick-guide` first: it is the one"
+      " file that");
   std::println(
       "fits in a prompt, and it lists the habits from other languages that do");
   std::println("not carry over.");
@@ -361,12 +362,12 @@ int search(std::string_view pattern, const Topic* only, bool ja, bool full) {
     const Topic& t = kTopics[i];
     if (std::string_view(t.lang) != (ja ? "ja" : "en")) continue;
     if (only && &t != only) continue;
-    // llm.md's signature index is generated *from* stdlib.md and language.md,
-    // so a corpus-wide search would report every API twice. agent.md condenses
-    // the same ground again, down to placeholders like `<name>` that would
-    // match a search for themselves. Naming either still works:
-    // `culebra docs llm -g …`.
-    if (!only && (std::string_view(t.name) == "llm" ||
+    // quick-guide.md's signature index is generated *from* stdlib.md and
+    // language.md, so a corpus-wide search would report every API twice.
+    // agent.md condenses the same ground again, down to placeholders like
+    // `<name>` that would match a search for themselves. Naming either still
+    // works: `culebra docs quick-guide -g …`.
+    if (!only && (std::string_view(t.name) == "quick-guide" ||
                   std::string_view(t.name) == "agent")) {
       continue;
     }
@@ -390,7 +391,7 @@ int search(std::string_view pattern, const Topic* only, bool ja, bool full) {
   }
 
   // Rank first, document order second: a heading hit in stdlib.md is what the
-  // reader wants ahead of a passing mention in a guide paragraph.
+  // reader wants ahead of a passing mention in a handbook paragraph.
   std::stable_sort(hits.begin(), hits.end(), [](const Hit& a, const Hit& b) {
     return a.sec->rank > b.sec->rank;
   });

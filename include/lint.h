@@ -1861,7 +1861,7 @@ inline void analyze_module(const peg::Ast& ast,
 // read better as a block) and a manual index `enumerate()` *could* replace (the
 // index may be wanted for something else, or the walk may run backwards). Both
 // are real advice and both have exceptions, so they belong in the prose
-// (`docs/llm.md` §3) rather than in a check that gates CI.
+// (`docs/quick-guide.md` §3) rather than in a check that gates CI.
 namespace idiom {
 
 inline bool is_name(const peg::Ast& n, std::string_view name) {
@@ -1944,7 +1944,7 @@ inline void check_range_zero(const peg::Ast& n, std::vector<Diagnostic>& diags) 
 // have to open with `||` (the logical-or token), and `fn () { throw … }` is a
 // statement the optimizer merely collapses to look like an expression. Each
 // exclusion is a judgement, which is the signature of a check that cannot meet
-// the bar. The advice keeps its place in `docs/llm.md` §3 instead.
+// the bar. The advice keeps its place in `docs/quick-guide.md` §3 instead.
 
 inline void analyze_walk(const peg::Ast& node, std::vector<Diagnostic>& diags) {
   check_self_assign(node, diags);

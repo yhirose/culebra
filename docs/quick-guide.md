@@ -1,10 +1,10 @@
-Culebra Context Pack
+Culebra Quick Guide
 ====================
 
 One file with everything needed to write correct Culebra: the syntax,
 the habits from other languages that do *not* carry over, and every
 standard-library signature. The reference set it condenses
-([`guide.md`](guide.md), [`language.md`](language.md),
+([`handbook.md`](handbook.md), [`language.md`](language.md),
 [`stdlib.md`](stdlib.md)) is around 150k tokens; this is the part that
 fits in a prompt.
 
@@ -12,7 +12,7 @@ Every ` ```culebra ` block below is executed by `culebra test --doc
 docs`, so it cannot drift from the implementation. A line ending in
 `# => <value>` is verified stdout; `# !! <pattern>` is a verified
 throw. Section 4 is generated from the reference docs by `just
-gen-llm-context` — do not edit it by hand.
+gen-quick-guide` — do not edit it by hand.
 
 Contents
 --------
@@ -765,7 +765,7 @@ fn adds_each(a, b, want) {
 Where to go next
 ----------------
 
-- Tutorial with rationale: [`guide.md`](guide.md)
+- Tutorial with rationale: [`handbook.md`](handbook.md)
 - Formal grammar and evaluation rules: [`language.md`](language.md)
 - Full API reference with prose: [`stdlib.md`](stdlib.md)
 - Binary builds and embedding: [`deployment.md`](deployment.md)

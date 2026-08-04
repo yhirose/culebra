@@ -20,7 +20,7 @@
 `--shell`など — は
 [言語仕様 §22](language.ja.md#22-コマンドラインインタフェース) が規定します。
 同じツール群の読み物としての導入は
-[`guide.ja.md` §15](guide.ja.md#15-ツール-test-lint-fmt-デバッグ) にあります。
+[`handbook.ja.md` §15](handbook.ja.md#15-ツール-test-lint-fmt-デバッグ) にあります。
 
 目次
 ----
@@ -188,7 +188,7 @@ culebra test --doc docs            # markdown 中の doctest を実行
 
 `culebra test --doc <path>`は`<path>`配下のmarkdownからすべての
 ` ```culebra ` ブロックを取り出し、新しいインタプリタで実行して、下記の
-マーカーと出力を突き合わせます。`guide.ja.md`・`language.ja.md`・
+マーカーと出力を突き合わせます。`handbook.ja.md`・`language.ja.md`・
 `stdlib.ja.md` の全ブロックがこの規約に従っています:
 
 - `# => <value>` — 標準出力の期待値（1 行）
@@ -606,7 +606,7 @@ culebra docs -g '<名前>' >/dev/null || echo "そんなAPIは無い"
 
 ### どのトピックを読むか
 
-`culebra docs llm` が凝縮パックです。構文・他言語から転移しない癖・
+`culebra docs quick-guide` が凝縮パックです。構文・他言語から転移しない癖・
 標準ライブラリの全署名が、プロンプトに収まる 1 ファイルに入っています。
 これは検索するものではなく、culebra を書く前に読むものです。残りは
 プロンプト窓より大きく、そのために `-g` があります。

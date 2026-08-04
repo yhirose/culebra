@@ -51,7 +51,7 @@ check_exit "ja topic"       0 --ja tooling
 # Every topic is present in both editions: a missing half would mean the
 # bilingual pair broke, and gen_docs.cmake refuses to build in that case —
 # this catches a topic silently dropped from its table instead.
-for t in llm agent guide language stdlib tooling deployment; do
+for t in quick-guide agent handbook language stdlib tooling deployment; do
   check_exit "topic $t"    0 "$t" --at 1
   check_exit "topic $t ja" 0 --ja "$t" --at 1
 done
@@ -74,10 +74,10 @@ if [[ $lines -gt 400 ]]; then
 fi
 check_contains "broad pattern degrades" 'headings only' -g 'the'
 
-# llm.md's signature index is generated from the other topics, so a
+# quick-guide.md's signature index is generated from the other topics, so a
 # corpus-wide search must not report every API twice — but naming it works.
-check_absent   "llm excluded by default" 'llm.md:' -g 'Math.wrap'
-check_contains "llm searchable on request" 'llm.md:' llm -g 'Math.wrap'
+check_absent   "quick-guide excluded by default" 'quick-guide.md:' -g 'Math.wrap'
+check_contains "quick-guide searchable on request" 'quick-guide.md:' quick-guide -g 'Math.wrap'
 check_absent   "agent excluded by default" 'agent.md:' -g 'Math.wrap'
 check_contains "agent searchable on request" 'agent.md:' agent -g 'Math.wrap'
 

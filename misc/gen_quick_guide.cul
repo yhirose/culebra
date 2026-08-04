@@ -1,8 +1,9 @@
-# Regenerate the signature index inside docs/llm.md and docs/llm.ja.md from
-# the reference docs, so the context pack can never drift from them.
+# Regenerate the signature index inside docs/quick-guide.md and
+# docs/quick-guide.ja.md from the reference docs, so the context pack can
+# never drift from them.
 #
-#   just gen-llm-context           rewrite the generated section
-#   just check-llm-context         exit 1 if it is stale (CI gate)
+#   just gen-quick-guide            rewrite the generated section
+#   just check-quick-guide          exit 1 if it is stale (CI gate)
 #
 # Signatures live in three markdown shapes in docs/:
 #   heading   ### `Math.abs(x) -> Long`
@@ -177,7 +178,7 @@ check = Sys.argv.contains('--check')
 mut stale = []
 
 for ja in [false, true] {
-  path = ja ? 'docs/llm.ja.md' : 'docs/llm.md'
+  path = ja ? 'docs/quick-guide.ja.md' : 'docs/quick-guide.md'
   groups = collect(ja)
   want = splice(FS.read(path), render(groups))
   total = groups.iter().map(|g| g.sigs.size()).sum()
@@ -193,6 +194,6 @@ for ja in [false, true] {
 }
 
 if stale.size() > 0 {
-  IO.eprintln("run `just gen-llm-context` to refresh: {stale.join(', ')}")
+  IO.eprintln("run `just gen-quick-guide` to refresh: {stale.join(', ')}")
   Sys.exit(1)
 }

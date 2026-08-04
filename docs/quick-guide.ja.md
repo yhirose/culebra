@@ -1,17 +1,17 @@
-Culebraコンテキストパック
+Culebraクイックガイド
 ==========================
 
 正しいCulebraを書くために必要なものを1ファイルにまとめたもの:
 構文、他言語から**持ち込むと外れる**習慣、そして標準ライブラリの全
 シグネチャ。凝縮元のリファレンス
-([`guide.ja.md`](guide.ja.md)、[`language.ja.md`](language.ja.md)、
+([`handbook.ja.md`](handbook.ja.md)、[`language.ja.md`](language.ja.md)、
 [`stdlib.ja.md`](stdlib.ja.md)) は合計15万トークン規模で、これは
 そのうちプロンプトに載る部分です。
 
 以下の` ```culebra ` ブロックはすべて `culebra test --doc docs` が
 実行するので、実装から乖離することはありません。行末の
 `# => <値>` は検証済みの stdout、`# !! <パターン>` は検証済みの throw
-です。§4 は `just gen-llm-context` がリファレンスから生成します —
+です。§4 は `just gen-quick-guide` がリファレンスから生成します —
 手で編集しないでください。
 
 目次
@@ -756,7 +756,7 @@ fn adds_each(a, b, want) {
 次に読むもの
 ------------
 
-- 理由付きのチュートリアル: [`guide.ja.md`](guide.ja.md)
+- 理由付きのチュートリアル: [`handbook.ja.md`](handbook.ja.md)
 - 形式文法と評価規則: [`language.ja.md`](language.ja.md)
 - 散文付きの完全なAPIリファレンス: [`stdlib.ja.md`](stdlib.ja.md)
 - バイナリビルドと埋め込み: [`deployment.ja.md`](deployment.ja.md)

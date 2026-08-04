@@ -337,8 +337,8 @@ BLAS級の数値計算です。
 ドキュメント
 ------------
 
-* Culebraガイド: [`docs/guide.ja.md`](docs/guide.ja.md)
-  / [English](docs/guide.md)
+* Culebraハンドブック: [`docs/handbook.ja.md`](docs/handbook.ja.md)
+  / [English](docs/handbook.md)
 * 言語仕様: [`docs/language.ja.md`](docs/language.ja.md)
   / [English](docs/language.md)
 * 標準ライブラリリファレンス: [`docs/stdlib.ja.md`](docs/stdlib.ja.md)
@@ -351,10 +351,11 @@ BLAS級の数値計算です。
   ラップ（`culebra build` / `culebra wrap`）:
   [`docs/deployment.ja.md`](docs/deployment.ja.md)
   / [English](docs/deployment.md)
-* コンテキストパック — 構文、間違えやすい点、標準ライブラリの全シグネチャを
-  1ファイルに凝縮したもの。LLMのプロンプトに貼って使います:
-  [`docs/llm.ja.md`](docs/llm.ja.md)
-  / [English](docs/llm.md)
+* クイックガイド — 構文、間違えやすい点、標準ライブラリの全シグネチャを
+  1ファイルに凝縮したもの。LLMのプロンプト用に書いていますが、人が最初から
+  最後まで読み切れる分量でもあります:
+  [`docs/quick-guide.ja.md`](docs/quick-guide.ja.md)
+  / [English](docs/quick-guide.md)
 * エージェント規約 — 同じ出発点をコーディングエージェントが読む形にした
   もの。`CLAUDE.md`・`.github/copilot-instructions.md`・`AGENTS.md`に
   追記して使います（`culebra docs agent`）:
