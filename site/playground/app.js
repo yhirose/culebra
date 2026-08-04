@@ -832,10 +832,16 @@ gameCanvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
 // `?code=` seeds the editor with base64url-encoded source, so a page that
 // already shows a snippet can hand it over instead of keeping a second copy
-// that drifts. `?run=1` starts it once the worker is up — an embed's visitor
-// pressed Run on the hosting page and should not have to press it again.
+// that drifts. It's fine for the few-line Quickstart sample, but a full
+// example inlined this way can push the URL past a host's request-line limit
+// (GitHub Pages' CDN 414s past a few KB) — `?example=<catalog title>` covers
+// that case by naming a `examples.json` entry instead, so the Playground
+// fetches its own copy and the URL stays short regardless of source size.
+// `?run=1` starts it once the worker is up — an embed's visitor pressed Run
+// on the hosting page and should not have to press it again.
 const params = new URLSearchParams(location.search);
 const seeded = decodeSource(params.get("code"));
+const exampleParam = params.get("example");
 let pendingAutorun = params.get("run") === "1";
 let seedApplied = false;
 
@@ -863,7 +869,16 @@ function maybeAutorun() {
 }
 
 loadExampleCatalog()
-  .then(() => (seeded === null ? loadExample("Hello") : seeded))
+  .then(() => {
+    if (seeded !== null) return seeded;
+    if (exampleParam === null) return loadExample("Hello");
+    if (Object.prototype.hasOwnProperty.call(EXAMPLE_PATHS, exampleParam)) {
+      examplesSel.value = exampleParam;
+      return loadExample(exampleParam);
+    }
+    console.error("ignoring unknown ?example=", exampleParam);
+    return loadExample("Hello");
+  })
   .then((src) => {
     editor.setValue(src);
     seedApplied = true;

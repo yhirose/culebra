@@ -387,25 +387,22 @@ int main() {
     wireCopyButton("copy-init", "init-cmd");
 
     // YouTube-style poster → click → live game, on demand for the same
-    // ~1.2 MB-wasm reason as run-sample above. The source is fetched fresh
-    // from the Playground's own copy of the example, so this can't drift
-    // from what actually ships in examples/games/rocci-bird.cul.
-    document.getElementById("play-rocci").addEventListener("click", async function () {
+    // ~1.2 MB-wasm reason as run-sample above. `?example=` names the catalog
+    // entry rather than inlining the source as base64 in `?code=`: Rocci
+    // Bird's ~24 KB encoded is short enough for a local dev server but 414s
+    // on GitHub Pages' CDN, which caps the request line at a few KB. Naming
+    // the entry keeps the URL short and the Playground fetches its own copy,
+    // so this still can't drift from what ships in examples/games/rocci-bird.cul.
+    document.getElementById("play-rocci").addEventListener("click", function () {
       var poster = document.getElementById("rocci-poster");
       // One shot — gone immediately so a second click can't stack another
       // iframe underneath while the first is still loading.
       document.getElementById("play-rocci").remove();
-      var res = await fetch("./playground/examples/games/rocci-bird.cul");
-      var src = await res.text();
-      var bytes = new TextEncoder().encode(src);
-      var bin = "";
-      for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-      var code = btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
       var frame = document.createElement("iframe");
       frame.className = "game-frame";
       frame.title = "Rocci Bird — culebra Playground";
-      frame.src = "./playground/?embed=1&view=canvas&run=1&code=" + code;
+      frame.src = "./playground/?embed=1&view=canvas&run=1&example=" + encodeURIComponent("Canvas: Rocci Bird");
       // Stays hidden behind the poster (z-index) until the embedded page
       // says its first frame is actually on screen.
       window.addEventListener("message", function onFirstFrame(e) {
