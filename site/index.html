@@ -77,28 +77,39 @@
     .showcase-card pre.sample { border-radius: var(--radius); }
     /* Square-ish, matching the poster PNG's aspect (the game's own 160x160
        framebuffer, upscaled) so the play button lands dead center. Capped
-       so a full-width single column doesn't blow it up to page-width. */
+       so a full-width single column doesn't blow it up to page-width.
+       aspect-ratio (rather than sizing from the img) keeps the box's size
+       independent of which child is inside it — the poster img, or later
+       the game iframe once the poster is gone — so swapping one for the
+       other during play never collapses or resizes the box. */
     .poster {
       position: relative; border-radius: var(--radius); overflow: hidden;
       border: 1px solid var(--border); cursor: pointer; line-height: 0;
-      max-width: 420px;
+      max-width: 420px; aspect-ratio: 1 / 1;
     }
-    .poster img { display: block; width: 100%; height: auto; }
+    /* Positioned + z-index so the poster paints over the game-frame iframe
+       (see below) while the game is still loading, instead of the iframe's
+       own black background winning by DOM order. */
+    .poster img { display: block; width: 100%; height: auto; position: relative; z-index: 1; }
     .play-btn {
       position: absolute; inset: 0; margin: auto; width: 4.2rem; height: 4.2rem;
       border-radius: 50%; background: rgba(10, 12, 20, 0.6); color: #fff;
       border: 2px solid rgba(255, 255, 255, 0.85); cursor: pointer;
       display: flex; align-items: center; justify-content: center;
       font-size: 1.5rem; padding: 0 0 0 0.25rem; transition: background 0.15s;
+      z-index: 1;
     }
     .poster:hover .play-btn { background: var(--brand-strong); }
     /* Same on-demand-iframe trick as the hero sample — see the run-sample
        handler below. &view=canvas strips the embed down to just the running
-       game, so this keeps the poster's own square aspect (and its width
-       cap) instead of the taller box a full editor+canvas embed would need. */
+       game. Loaded underneath the still-visible poster image (see the
+       z-index above) and only unveiled once the embedded page's first real
+       frame lands — see app.js's drawFrame(), which posts that moment up to
+       here — so the WASM boot's black .pg-canvas background is never
+       exposed as a flash. */
     .game-frame {
-      display: block; width: 100%; max-width: 420px; aspect-ratio: 1 / 1; border: 0;
-      background: #000; border-radius: var(--radius);
+      position: absolute; inset: 0; display: block; width: 100%; height: 100%; border: 0;
+      background: #000;
     }
 
     footer { border-top: 1px solid var(--border); color: var(--muted); font-size: 0.85rem; }
@@ -381,6 +392,9 @@ int main() {
     // from what actually ships in examples/games/rocci-bird.cul.
     document.getElementById("play-rocci").addEventListener("click", async function () {
       var poster = document.getElementById("rocci-poster");
+      // One shot — gone immediately so a second click can't stack another
+      // iframe underneath while the first is still loading.
+      document.getElementById("play-rocci").remove();
       var res = await fetch("./playground/examples/games/rocci-bird.cul");
       var src = await res.text();
       var bytes = new TextEncoder().encode(src);
@@ -392,7 +406,16 @@ int main() {
       frame.className = "game-frame";
       frame.title = "Rocci Bird — culebra Playground";
       frame.src = "./playground/?embed=1&view=canvas&run=1&code=" + code;
-      poster.replaceWith(frame);
+      // Stays hidden behind the poster (z-index) until the embedded page
+      // says its first frame is actually on screen.
+      window.addEventListener("message", function onFirstFrame(e) {
+        if (e.source !== frame.contentWindow) return;
+        if (!e.data || e.data.type !== "culebra-canvas-first-frame") return;
+        window.removeEventListener("message", onFirstFrame);
+        poster.querySelector("img").remove();
+        poster.style.cursor = "default";
+      });
+      poster.appendChild(frame);
     });
   </script>
 </body>

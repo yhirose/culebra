@@ -403,6 +403,10 @@ function drawFrame(msg) {
   if (!inCanvas) {
     inCanvas = true;
     switchTab("canvas");
+    // Lets an embedding host (e.g. the homepage's poster-and-play-button)
+    // hold its own placeholder over the iframe until real pixels are ready,
+    // instead of exposing .pg-canvas's black background for the load gap.
+    if (window.parent !== window) window.parent.postMessage({ type: "culebra-canvas-first-frame" }, "*");
   }
 }
 
