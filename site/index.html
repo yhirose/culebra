@@ -28,7 +28,7 @@
     .nav-links a { color: var(--muted); font-weight: 500; }
     .nav-links a:hover { color: var(--text); text-decoration: none; }
 
-    main { max-width: 760px; margin: 0 auto; padding: 3.5rem 1.4rem 5rem; }
+    main { max-width: 800px; margin: 0 auto; padding: 3.5rem 1.4rem 5rem; }
     .hero h1 {
       font-size: clamp(2.4rem, 6vw, 3.4rem); line-height: 1.05;
       letter-spacing: -0.03em; margin: 0 0 0.9rem;
@@ -36,10 +36,11 @@
     .hero .tag { font-size: 1.15rem; color: var(--muted); margin: 0 0 1.8rem; max-width: 34em; }
     .cta { display: flex; flex-wrap: wrap; gap: 0.7rem; margin-bottom: 3.2rem; }
 
-    .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.1rem; margin: 2.5rem 0; }
-    .fact { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.1rem 1.2rem; box-shadow: var(--shadow); }
-    .fact h3 { margin: 0 0 0.35rem; font-size: 0.95rem; color: var(--brand-strong); }
-    .fact p { margin: 0; font-size: 0.92rem; color: var(--muted); }
+    .quickstart { margin: 3rem 0 2.5rem; }
+    .quickstart h2 { font-size: 1.4rem; margin: 0 0 0.6rem; }
+    .quickstart > p { color: var(--muted); margin: 0 0 1.2rem; max-width: 40em; }
+    .quickstart .fine-print { font-size: 0.85rem; margin: 0.9rem 0 0; }
+    .cta-secondary { margin: 2.2rem 0 1rem; }
 
     .sample-wrap {
       border: 1px solid var(--border); border-radius: var(--radius);
@@ -68,8 +69,40 @@
     .s { color: var(--accent); }
     .c { color: var(--muted); font-style: italic; }
 
+    /* Stacked, not side by side — a two-up grid let the left card's long
+       code line force a min-content width that squeezed the right card
+       down to almost nothing (the classic CSS Grid 1fr-track blowout). */
+    .showcase { display: grid; grid-template-columns: 1fr; gap: 2.2rem; margin: 1.6rem 0 0.6rem; }
+    .showcase-card h3 { margin: 0 0 0.7rem; font-size: 1.05rem; }
+    .showcase-card pre.sample { border-radius: var(--radius); }
+    /* Square-ish, matching the poster PNG's aspect (the game's own 160x160
+       framebuffer, upscaled) so the play button lands dead center. Capped
+       so a full-width single column doesn't blow it up to page-width. */
+    .poster {
+      position: relative; border-radius: var(--radius); overflow: hidden;
+      border: 1px solid var(--border); cursor: pointer; line-height: 0;
+      max-width: 420px;
+    }
+    .poster img { display: block; width: 100%; height: auto; }
+    .play-btn {
+      position: absolute; inset: 0; margin: auto; width: 4.2rem; height: 4.2rem;
+      border-radius: 50%; background: rgba(10, 12, 20, 0.6); color: #fff;
+      border: 2px solid rgba(255, 255, 255, 0.85); cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.5rem; padding: 0 0 0 0.25rem; transition: background 0.15s;
+    }
+    .poster:hover .play-btn { background: var(--brand-strong); }
+    /* Same on-demand-iframe trick as the hero sample — see the run-sample
+       handler below. &view=canvas strips the embed down to just the running
+       game, so this keeps the poster's own square aspect (and its width
+       cap) instead of the taller box a full editor+canvas embed would need. */
+    .game-frame {
+      display: block; width: 100%; max-width: 420px; aspect-ratio: 1 / 1; border: 0;
+      background: #000; border-radius: var(--radius);
+    }
+
     footer { border-top: 1px solid var(--border); color: var(--muted); font-size: 0.85rem; }
-    .foot-inner { max-width: 760px; margin: 0 auto; padding: 1.6rem 1.4rem; }
+    .foot-inner { max-width: 800px; margin: 0 auto; padding: 1.6rem 1.4rem; }
 
     @media (max-width: 560px) {
       .nav { padding: 0.9rem 1.1rem; }
@@ -78,7 +111,7 @@
       /* Full-width and stacked: two half-width buttons side by side leave the
          labels wrapping inside them at this width. */
       .cta .btn { flex: 1 1 100%; }
-      .facts { margin: 2rem 0; }
+      .quickstart { margin: 2.2rem 0 2rem; }
       /* Sized so the sample's widest line lands inside the block instead of
          under a scrollbar: it is 42 columns, and a phone has no width to spare
          for a horizontal scroll the reader has to discover. */
@@ -123,7 +156,6 @@
       <p class="tag">A dynamically-typed cross-platform scripting language that runs three ways from one source: an interpreter, an LLVM JIT, and native binaries.</p>
       <div class="cta">
         <a class="btn btn-primary" href="./playground/">Open the Playground →</a>
-        <a class="btn" href="https://github.com/yhirose/culebra/blob/master/docs/guide.md#1-get-started">Get started</a>
       </div>
     </section>
 
@@ -133,39 +165,151 @@
         <button id="run-sample" class="btn btn-primary" type="button">▶ Run in your browser</button>
       </div>
       <pre class="sample" id="sample"><span class="k">let</span> people = [
-  { name: <span class="s">'Taro'</span>, age: <span class="s">30</span> },
-  { name: <span class="s">'John'</span>, age: <span class="s">45</span> },
-  { name: <span class="s">'Ada'</span>,  age: <span class="s">36</span> },
+  { name: <span class="s">'Taro'</span>, greeting: <span class="s">'Konnichiwa'</span> },
+  { name: <span class="s">'John'</span>, greeting: <span class="s">'Hello'</span> },
+  { name: <span class="s">'Ada'</span>,  greeting: <span class="s">'Bonjour'</span> },
 ]
 
-<span class="k">for</span> p <span class="k">in</span> people.sorted_by(|p| p.age) {
-  println(<span class="s">"{p.name} is {p.age} years old"</span>)
+<span class="k">for</span> p <span class="k">in</span> people.sorted_by(|p| p.name) {
+  println(<span class="s">"{p.greeting}, {p.name}!"</span>)
 }</pre>
     </div>
 
-    <section class="facts">
-      <div class="fact">
-        <h3>Three backends, one language</h3>
-        <p>The same program yields identical results and errors under the interpreter, JIT, and AOT.</p>
+    <section class="quickstart">
+      <h2>Try it on your machine</h2>
+      <p>Paste this into a terminal on macOS (Apple Silicon) — it downloads
+        culebra, writes the example above to <code>hello.cul</code>, and runs
+        that same source file three ways: as a script, JIT-compiled, and
+        built into a standalone binary.</p>
+      <div class="sample-wrap">
+        <div class="sample-bar">
+          <span class="name">quickstart.sh</span>
+          <button id="copy-quickstart" class="btn" type="button">Copy</button>
+        </div>
+        <pre class="sample" id="quickstart">curl -fsSL https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64.tar.gz | tar xz
+export PATH="$PWD/culebra-macos-arm64:$PATH"
+culebra --version
+
+cat &gt; hello.cul &lt;&lt;'EOF'
+let people = [
+  { name: 'Taro', greeting: 'Konnichiwa' },
+  { name: 'John', greeting: 'Hello' },
+  { name: 'Ada',  greeting: 'Bonjour' },
+]
+
+for p in people.sorted_by(|p| p.name) {
+  println("{p.greeting}, {p.name}!")
+}
+EOF
+
+culebra hello.cul                            # interpreter
+culebra --jit hello.cul                      # JIT
+culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship the binary</pre>
       </div>
-      <div class="fact">
-        <h3>Runs in the browser</h3>
-        <p>The interpreter compiles to WebAssembly, so the Playground executes entirely client-side.</p>
+      <p>Optional — this one also touches your editor's config
+        (VSCode/Vim/Neovim) and writes <code>AGENTS.md</code>/<code>CLAUDE.md</code>
+        into the current directory, so it isn't bundled into the block
+        above:</p>
+      <div class="sample-wrap">
+        <div class="sample-bar">
+          <span class="name">culebra-init.sh</span>
+          <button id="copy-init" class="btn" type="button">Copy</button>
+        </div>
+        <pre class="sample" id="init-cmd">culebra init</pre>
       </div>
-      <div class="fact">
-        <h3>Batteries included</h3>
-        <p>Strings, collections, tensors, regex, JSON/TOML, HTTP, and more in the standard library.</p>
+      <p><code>culebra init</code> installs syntax highlighting and the
+        debug adapter for whichever of VSCode, Vim, or Neovim it finds on
+        this machine, and adds coding-agent instructions to
+        <code>AGENTS.md</code> (or <code>CLAUDE.md</code>/<code>.github/copilot-instructions.md</code>
+        if one already exists) — reopen <code>hello.cul</code> afterward
+        and the highlighting is already on.</p>
+      <p class="fine-print">Linux (x86-64): swap the first line for
+        <code>culebra-linux-x64.tar.gz</code>. Windows and a permanent
+        install are in the
+        <a href="https://github.com/yhirose/culebra#quickstart">README</a>.</p>
+    </section>
+
+    <section class="quickstart">
+      <h2>One executable, every tool</h2>
+      <p>The same binary that just ran <code>hello.cul</code> also
+        builds, tests, lints, formats, and documents it —
+        <a href="https://github.com/yhirose/culebra/blob/master/docs/deployment.md#1-standalone-binary-build-culebra-build"><code>culebra build</code></a>,
+        <a href="https://github.com/yhirose/culebra/blob/master/docs/tooling.md#1-testing-culebra-test"><code>test</code></a>,
+        <a href="https://github.com/yhirose/culebra/blob/master/docs/tooling.md#2-linting-culebra-lint"><code>lint</code></a>,
+        <a href="https://github.com/yhirose/culebra/blob/master/docs/tooling.md#3-formatting-culebra-fmt"><code>fmt</code></a>,
+        <a href="https://github.com/yhirose/culebra/blob/master/docs/tooling.md#4-debugging-culebra-dap"><code>dap</code></a>,
+        <a href="https://github.com/yhirose/culebra/blob/master/docs/tooling.md#5-reading-the-docs-culebra-docs"><code>docs</code></a>,
+        <a href="https://github.com/yhirose/culebra/blob/master/docs/tooling.md#quick-setup-culebra-init"><code>init</code></a>, and
+        <a href="https://github.com/yhirose/culebra/blob/master/docs/deployment.md#3-wrapping-c-libraries-culebra-wrap"><code>wrap</code></a>
+        are all built in. Nothing else to install.</p>
+      <p>The <a href="https://github.com/yhirose/culebra#batteries-included-in-one-binary">standard library</a> is
+        baked in too — JSON, HTTP, Tensor, Canvas, and the rest are bound
+        before the program runs. No package manager, no lockfile.</p>
+    </section>
+
+    <section class="quickstart">
+      <h2>For the things you want to make</h2>
+      <div class="showcase">
+        <div class="showcase-card">
+          <h3>A desktop app</h3>
+          <pre class="sample">Desktop.run({
+  title: "Hello from culebra",
+  assets: Embed.dir("dist"),             # index.html, favicon.ico, ...
+  routes: fn (srv) {
+    srv.get("/api/hello", fn (req) { "hi from the embedded server" })
+  },
+})</pre>
+          <p class="fine-print">That's the whole app — a local server,
+            your UI (baked in — see
+            <a href="https://github.com/yhirose/culebra#embedded-assets">Embedded assets</a>
+            in the README), and the
+            <a href="https://github.com/yhirose/culebra/blob/master/docs/stdlib.md#29-desktop-webview">WebView</a>
+            that shows it, shipped as one native binary.</p>
+        </div>
+        <div class="showcase-card">
+          <h3>A retro game</h3>
+          <div class="poster" id="rocci-poster">
+            <img src="./assets/rocci-bird-poster.png" alt="Rocci Bird title screen — a culebra Canvas game" width="1092" height="1092">
+            <button id="play-rocci" class="play-btn" type="button" aria-label="Play Rocci Bird">▷</button>
+          </div>
+          <p class="fine-print">Sprites, collision, chiptune audio — all
+            <a href="https://github.com/yhirose/culebra/blob/master/docs/stdlib.md#26-canvas">Canvas</a>,
+            running live in your browser —
+            <a href="https://github.com/yhirose/culebra/blob/master/examples/games/rocci-bird.cul">source</a>.
+            Click to play.</p>
+        </div>
+        <div class="showcase-card">
+          <h3>A C++ host</h3>
+          <pre class="sample">#include &lt;culebra.h&gt;
+#include &lt;stdlib_interp.h&gt;
+
+int main() {
+  auto env = culebra::environment();  // stdlib bound
+
+  std::vector&lt;std::string&gt; msgs;
+  auto ast = culebra::parse("&lt;inline&gt;", "1 + 2", 5, msgs);
+
+  culebra::Value val;
+  culebra::interpret(ast, env, val, msgs, culebra::Debugger());
+  // val.to_long() == 3
+}</pre>
+          <p class="fine-print">No LLVM dependency — the interpreter drops
+            straight into a C++23 host through a minimal environment API.
+            See
+            <a href="https://github.com/yhirose/culebra#embedding-in-a-c-host">Embedding in a C++ host</a>
+            in the README for the JIT path, threading, and host-function
+            registration.</p>
+        </div>
       </div>
-      <div class="fact">
-        <h3>One executable</h3>
-        <p>The stdlib, test runner, linter, formatter, debugger and docs are all in the same binary. Nothing else to install.</p>
+      <div class="cta cta-secondary">
+        <a class="btn btn-primary" href="https://github.com/yhirose/culebra/blob/master/docs/guide.md#1-get-started">Continue with the guide →</a>
       </div>
     </section>
   </main>
 
   <footer>
     <div class="foot-inner">
-      culebra · <a href="https://github.com/yhirose/culebra">github.com/yhirose/culebra</a>
+      © 2026 Yuji Hirose. All rights reserved.
     </div>
   </footer>
 
@@ -204,6 +348,51 @@
       link.href = "./playground/?code=" + code;
       link.textContent = "Open in the Playground ↗";
       btn.replaceWith(link);
+    });
+
+    // Plain clipboard copy for the terminal blocks — nothing to run here,
+    // just text the reader is about to paste into their own shell.
+    function wireCopyButton(btnId, sourceId) {
+      var btn = document.getElementById(btnId);
+      btn.addEventListener("click", function () {
+        var text = document.getElementById(sourceId).textContent;
+        navigator.clipboard.writeText(text).then(function () {
+          var original = btn.textContent;
+          btn.textContent = "Copied!";
+          setTimeout(function () { btn.textContent = original; }, 1500);
+        }).catch(function () {
+          // Clipboard permission can be denied or unavailable; fall back
+          // to selecting the block so Cmd/Ctrl+C still works.
+          var range = document.createRange();
+          range.selectNodeContents(document.getElementById(sourceId));
+          var sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+          btn.textContent = "Selected — press ⌘/Ctrl+C";
+        });
+      });
+    }
+    wireCopyButton("copy-quickstart", "quickstart");
+    wireCopyButton("copy-init", "init-cmd");
+
+    // YouTube-style poster → click → live game, on demand for the same
+    // ~1.2 MB-wasm reason as run-sample above. The source is fetched fresh
+    // from the Playground's own copy of the example, so this can't drift
+    // from what actually ships in examples/games/rocci-bird.cul.
+    document.getElementById("play-rocci").addEventListener("click", async function () {
+      var poster = document.getElementById("rocci-poster");
+      var res = await fetch("./playground/examples/games/rocci-bird.cul");
+      var src = await res.text();
+      var bytes = new TextEncoder().encode(src);
+      var bin = "";
+      for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      var code = btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+      var frame = document.createElement("iframe");
+      frame.className = "game-frame";
+      frame.title = "Rocci Bird — culebra Playground";
+      frame.src = "./playground/?embed=1&view=canvas&run=1&code=" + code;
+      poster.replaceWith(frame);
     });
   </script>
 </body>
