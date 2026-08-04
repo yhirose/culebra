@@ -114,6 +114,17 @@ culebra --version
 Checksums and every release's notes are on the
 [releases page](https://github.com/yhirose/culebra/releases).
 
+Once you have the binary, `culebra init` sets up your editor and any
+coding agent working in this project: it installs syntax highlighting
+and the debug adapter for whichever of VSCode, Vim, or Neovim it finds
+on this machine, and adds coding-agent instructions to `AGENTS.md` (or
+`CLAUDE.md`/`.github/copilot-instructions.md` if one already exists).
+Run it from your project directory — safe to re-run any time:
+
+```bash
+culebra init
+```
+
 ### 1.2 Build from source
 
 Needed only to track master or to work on Culebra itself. `just build`

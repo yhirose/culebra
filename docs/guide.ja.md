@@ -108,6 +108,17 @@ culebra --version
 チェックサムと各リリースのノートは
 [releasesページ](https://github.com/yhirose/culebra/releases)にある。
 
+バイナリを入手したら、`culebra init`でエディタとこのプロジェクトで動く
+コーディングエージェントの設定を整える。このマシンにあるVSCode・Vim・
+Neovimのうち見つかったものにシンタックスハイライトとデバッグアダプタを
+導入し、`AGENTS.md`（既に`CLAUDE.md`か`.github/copilot-instructions.md`
+があればそちら）にコーディングエージェント向けの指示を追加する。
+プロジェクトディレクトリで実行し、何度でも再実行して構わない:
+
+```bash
+culebra init
+```
+
 ### 1.2 ソースからビルド
 
 masterを追う場合とCulebra自体を開発する場合にだけ必要。`just build`は
