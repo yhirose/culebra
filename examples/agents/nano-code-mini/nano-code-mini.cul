@@ -244,7 +244,8 @@ fn main() {
   while true {
     try {
       println(separator())
-      print("{Term.bold(Term.blue("\u276f"))} ")
+      let prompt_glyph = Term.bold(Term.blue("\u276f"))
+      print("{prompt_glyph} ")
 
       let user_input = IO.input().trim()
       println(separator())
@@ -269,7 +270,8 @@ fn main() {
         # A safety classifier can decline the request: HTTP 200, no content.
         # Say so rather than looping back with an empty turn.
         if response.stop_reason == 'refusal' {
-          println(Term.red("\u23fa Declined ({response.stop_details?.category ?? 'no category'})"))
+          let category = response.stop_details?.category ?? 'no category'
+          println(Term.red("\u23fa Declined ({category})"))
           break
         }
 
@@ -280,7 +282,8 @@ fn main() {
         for block in content_blocks {
           println()
           if block.type == 'text' {
-            println("{Term.cyan("\u23fa")} {render_markdown(block.text)}")
+            let rendered = render_markdown(block.text)
+            println("{Term.cyan("\u23fa")} {rendered}")
           } else if block.type == 'tool_use' {
             let first_arg = "{block.input.values().first() ?? ''}"
             let label = Term.green("\u23fa {block.name.capitalize()}")
