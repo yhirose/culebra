@@ -4,79 +4,54 @@
 
 import fmt from './fmt.cul'
 
-let binary = !Sys.argv.empty() ? Sys.argv[0] : '/Users/yuji/Projects/culebra/build/culebra'
+let binary = !Sys.argv.empty()
+  ? Sys.argv[0]
+  : '/Users/yuji/Projects/culebra/build/culebra'
 
 let nm_out = Proc.run(["nm", "-n", binary], check: true).stdout
+let entries = fmt.text_symbol_sizes(nm_out)
+let demangled = fmt.demangle(entries.map(|e| e[0]))
 
-# Next address strictly greater than raw[i]'s, scanning forward over a
-# (possibly long) run of aliases at the same address; raw is sorted by
-# address so the first greater one found is the right one. nil at the
-# end of the table.
-fn addr_after(raw, i) {
-  let addr = raw[i][0]
-  for j in i+1..raw.size() {
-    if raw[j][0] > addr { return raw[j][0] }
-  } nobreak {
-    return nil
-  }
-}
-
-let ws = re'\s+'
-let candidates = nm_out.lines()
-    .map(|line| ws.split(line.trim()))
-    .filter(|parts| parts.size() == 3)
-
-# addr, type, name — sorted by address. Mach-O nm has no size field, so
-# each symbol's size is inferred as next_addr - this_addr below.
-mut raw = []
-for parts in candidates {
-  try {
-    raw.push((fmt.hex_to_long(parts[0]), parts[1], parts[2]))
-  } catch e {
-    # not a valid fixed-width hex address (e.g. a blank/undefined-symbol
-    # row) — skip, matching the Python original's `except ValueError`.
-  }
-}
-raw.sort_by(|t| t[0])
-
-mut entries = []
-for i in 0..raw.size() {
-  let (addr, t, name) = raw[i]
-  if t != 'T' && t != 't' { continue }
-  let nxt = addr_after(raw, i)
-  if nxt == nil { continue }
-  let size = nxt - addr
-  if size > 0 && size <= 10 * 1024 * 1024 {
-    entries.push((name, size))
-  }
-}
-
-let names = entries.map(|e| e[0])
-let demangled = Proc.run(["c++filt"], stdin: names.join("\n"))
-    .stdout.trim_end("\n").split("\n")
-
-let known_targets = ['X86', 'AArch64', 'ARM', 'PowerPC', 'Mips', 'RISCV',
-  'WebAssembly', 'SystemZ', 'Sparc', 'AVR', 'AMDGPU', 'NVPTX', 'Hexagon',
-  'Lanai', 'BPF', 'LoongArch', 'VE', 'XCore', 'M68k', 'MSP430', 'Xtensa',
-  'CSKY', 'DirectX', 'SPIRV']
-let target_pat = Regex.compile('\bllvm::(' + known_targets.join('|') + ')\b')
-let component_pats = [
-  re'\bllvm::orc::',
-  re'\bllvm::MC[A-Z]|\bllvm::mc::',
-  re'\bllvm::(MachineFunction|MachineInstr|SelectionDAG|LiveInterval|RegAlloc)',
-  re'\bllvm::(IRBuilder|Module|Function|Instruction|BasicBlock|Constant|GlobalVariable|Type|Value)\b',
-  re'\bllvm::(StringRef|SmallVector|DenseMap|StringMap|Triple|raw_|ErrorOr|Optional|cl::)',
-  re'\bllvm::(LoopInfo|ScalarEvolution|AAResults|DominatorTree|MemorySSA|TargetLibraryInfo)',
-  re'\bllvm::(PassBuilder|InstCombine|GVN|SimplifyCFG|LoopVectorize|SLPVectorizer)',
-  re'\bllvm::(DWARF|DIE|DebugInfo|DIBuilder)',
-  re'\bllvm::Bitcode',
-  re'\bllvm::object::',
+let known_targets = [
+  'X86',
+  'AArch64',
+  'ARM',
+  'PowerPC',
+  'Mips',
+  'RISCV',
+  'WebAssembly',
+  'SystemZ',
+  'Sparc',
+  'AVR',
+  'AMDGPU',
+  'NVPTX',
+  'Hexagon',
+  'Lanai',
+  'BPF',
+  'LoongArch',
+  'VE',
+  'XCore',
+  'M68k',
+  'MSP430',
+  'Xtensa',
+  'CSKY',
+  'DirectX',
+  'SPIRV',
 ]
+let target_pat = Regex.compile('\bllvm::(' + known_targets.join('|') + ')\b')
+let component_pats = fmt.llvm_component_patterns.map(|(
+  _,
+  pat,
+)| Regex.compile(pat))
 
 fn classified(name) {
-  if target_pat.test(name) { return true }
+  if target_pat.test(name) {
+    return true
+  }
   for p in component_pats {
-    if p.test(name) { return true }
+    if p.test(name) {
+      return true
+    }
   } nobreak {
     return false
   }
@@ -103,14 +78,14 @@ for (n, s) in other[..30] {
 # ImmutableError on the second hit for the same key).
 let ns2_pat = re'\bllvm::(\(anonymous namespace\)::)?([A-Za-z0-9_]+)'
 fn ns2_key((n, s)) {
-  let m = ns2_pat.find(n)
-  m != nil ? m[2] : '<other>'
+  ns2_pat.find(n)?[2] ?? '<other>'
 }
-let ns2 = other.group_by(ns2_key)
-    .iter()
-    .map(|(k, items)| (k, items.reduce(0, |acc, (_, s)| acc + s)))
-    .to_object()
-let ns2_sorted = ns2.iter().collect().sorted_by(|(_, v)| v, reverse: true)
+let ns2_sorted = other
+  .group_by(ns2_key)
+  .iter()
+  .map(|(k, items)| (k, items.reduce(0, |acc, (_, s)| acc + s)))
+  .collect()
+  .sorted_by(|(_, v)| v, reverse: true)
 
 println()
 println("=== top 30 second-level prefixes under llvm:: in 'other' ===")

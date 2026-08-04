@@ -9,53 +9,9 @@ import fmt from './fmt.cul'
 let binary = !Sys.argv.empty() ? Sys.argv[0] : 'build/culebra'
 
 let nm_out = Proc.run(["nm", "-n", binary], check: true).stdout
-
-# Next address strictly greater than raw[i]'s, scanning forward over a
-# (possibly long) run of aliases at the same address; raw is sorted by
-# address so the first greater one found is the right one. nil at the
-# end of the table.
-fn addr_after(raw, i) {
-  let addr = raw[i][0]
-  for j in i+1..raw.size() {
-    if raw[j][0] > addr { return raw[j][0] }
-  } nobreak {
-    return nil
-  }
-}
-
-let ws = re'\s+'
-let candidates = nm_out.lines()
-    .map(|line| ws.split(line.trim()))
-    .filter(|parts| parts.size() == 3)
-
-# addr, type, name — sorted by address.
-mut raw = []
-for parts in candidates {
-  try {
-    raw.push((fmt.hex_to_long(parts[0]), parts[1], parts[2]))
-  } catch e {
-    # not a valid fixed-width hex address — skip, matching the Python
-    # original's `except ValueError`.
-  }
-}
-raw.sort_by(|t| t[0])
-
-mut entries = []
-mut total = 0
-for i in 0..raw.size() {
-  let (addr, t, name) = raw[i]
-  if t != 'T' && t != 't' { continue }
-  let nxt = addr_after(raw, i)
-  if nxt == nil { continue }
-  let size = nxt - addr
-  if size <= 0 || size > 10 * 1024 * 1024 { continue }
-  entries.push((name, size))
-  total += size
-}
-
-let names = entries.map(|e| e[0])
-let demangled = Proc.run(["c++filt"], stdin: names.join("\n"))
-    .stdout.trim_end("\n").split("\n")
+let entries = fmt.text_symbol_sizes(nm_out)
+let total = entries.map(|e| e[1]).sum()
+let demangled = fmt.demangle(entries.map(|e| e[0]))
 
 # LLVM backend targets (folder names under llvm/lib/Target/).
 let target_alias_pats = [
@@ -90,53 +46,45 @@ let target_res = target_alias_pats.map(|(t, pat)| (t, Regex.compile(pat)))
 # Non-target LLVM components (rough buckets by namespace prefix). Array of
 # pairs, not an Object, so first-match order (declaration order) is
 # guaranteed rather than incidental.
-let component_res = [
-  ('llvm::orc',        re'\bllvm::orc::'),
-  ('llvm::mc',         re'\bllvm::MC[A-Z]|\bllvm::mc::'),
-  ('llvm::codegen',    re'\bllvm::(MachineFunction|MachineInstr|SelectionDAG|LiveInterval|RegAlloc)'),
-  ('llvm::ir',         re'\bllvm::(IRBuilder|Module|Function|Instruction|BasicBlock|Constant|GlobalVariable|Type|Value)\b'),
-  ('llvm::support',    re'\bllvm::(StringRef|SmallVector|DenseMap|StringMap|Triple|raw_|ErrorOr|Optional|cl::)'),
-  ('llvm::analysis',   re'\bllvm::(LoopInfo|ScalarEvolution|AAResults|DominatorTree|MemorySSA|TargetLibraryInfo)'),
-  ('llvm::transforms', re'\bllvm::(PassBuilder|InstCombine|GVN|SimplifyCFG|LoopVectorize|SLPVectorizer)'),
-  ('llvm::debuginfo',  re'\bllvm::(DWARF|DIE|DebugInfo|DIBuilder)'),
-  ('llvm::bitcode',    re'\bllvm::Bitcode'),
-  ('llvm::object',     re'\bllvm::object::'),
-]
+let component_res = fmt.llvm_component_patterns.map(|(
+  k,
+  pat,
+)| (k, Regex.compile(pat)))
 
 # [symbol_count, byte_count] cells, keyed by target/component name. Built
 # via to_object from (key, cell) pairs rather than a Counter-style
 # increment loop — see sample_llvm_other.cul for why a bare `o[k] += v`
 # doesn't work here (Object slots inserted via subscript default to
 # immutable). Mutating the cell array in place, never reassigning the
-# slot, sidesteps that.
-let target_size = target_res.map(|(t, _)| (t, [0, 0])).to_object()
-let comp_size = component_res.map(|(k, _)| (k, [0, 0])).to_object()
-mut llvm_other = [0, 0]
-mut non_llvm = [0, 0]
+# slot, sidesteps that. byte_count starts as a Float 0.0 rather than
+# Long 0 so `cell[1] += size` promotes to Float on the first add (Either
+# operand Float -> Float) — the display math below wants MB and %, and
+# this way it never needs a per-print to_float(b).
+let target_size = target_res.map(|(t, _)| (t, [0, 0.0])).to_object()
+let comp_size = component_res.map(|(k, _)| (k, [0, 0.0])).to_object()
+mut llvm_other = [0, 0.0]
+mut non_llvm = [0, 0.0]
 
 for i in 0..entries.size() {
   let name = demangled[i]
   let size = entries[i][1]
-  mut matched = false
-  for (t, p) in target_res {
-    if p.test(name) {
-      target_size[t][0] += 1
-      target_size[t][1] += size
-      matched = true
-      break
-    }
+
+  let target_hit = target_res.find(|(_, p)| p.test(name))
+  if target_hit != nil {
+    let (t, _) = target_hit
+    target_size[t][0] += 1
+    target_size[t][1] += size
+    continue
   }
-  if !matched {
-    for (k, p) in component_res {
-      if p.test(name) {
-        comp_size[k][0] += 1
-        comp_size[k][1] += size
-        matched = true
-        break
-      }
-    }
+
+  let comp_hit = component_res.find(|(_, p)| p.test(name))
+  if comp_hit != nil {
+    let (k, _) = comp_hit
+    comp_size[k][0] += 1
+    comp_size[k][1] += size
+    continue
   }
-  if matched { continue }
+
   if name.contains('llvm::') {
     llvm_other[0] += 1
     llvm_other[1] += size
@@ -153,26 +101,34 @@ println("approx code (text): {total_f / 1024 / 1024:.2f} MB across {fmt.commas(e
 println()
 println("=== LLVM TARGETS (cross-compile backends) ===")
 println("{'target':<14} {'symbols':>9}   {'MB':>7}   {'%text':>6}")
-mut target_total = 0
-let target_sorted = target_size.iter().collect().sorted_by(|(_, cb)| cb[1], reverse: true)
+mut target_total = 0.0
+let target_sorted = target_size
+  .iter()
+  .collect()
+  .sorted_by(|(_, cb)| cb[1], reverse: true)
 for (t, cb) in target_sorted {
   let (c, b) = (cb[0], cb[1])
-  if c == 0 { continue }
+  if c == 0 {
+    continue
+  }
   target_total += b
-  println("  {t:<12} {fmt.commas(c):>9}   {to_float(b)/1024/1024:>7.2f}   {to_float(b)/total_f*100:>5.2f}%")
+  println("  {t:<12} {fmt.commas(c):>9}   {b/1024/1024:>7.2f}   {b/total_f*100:>5.2f}%")
 }
-println("  {'(targets sum)':<12} {'':>9}   {to_float(target_total)/1024/1024:>7.2f}   {to_float(target_total)/total_f*100:>5.2f}%")
+println("  {'(targets sum)':<12} {'':>9}   {target_total/1024/1024:>7.2f}   {target_total/total_f*100:>5.2f}%")
 println()
 println("=== OTHER LLVM COMPONENTS ===")
 println("{'component':<14} {'symbols':>9}   {'MB':>7}   {'%text':>6}")
-mut comp_total = 0
-let comp_sorted = comp_size.iter().collect().sorted_by(|(_, cb)| cb[1], reverse: true)
+mut comp_total = 0.0
+let comp_sorted = comp_size
+  .iter()
+  .collect()
+  .sorted_by(|(_, cb)| cb[1], reverse: true)
 for (k, cb) in comp_sorted {
   let (c, b) = (cb[0], cb[1])
   comp_total += b
-  println("  {k:<12} {fmt.commas(c):>9}   {to_float(b)/1024/1024:>7.2f}   {to_float(b)/total_f*100:>5.2f}%")
+  println("  {k:<12} {fmt.commas(c):>9}   {b/1024/1024:>7.2f}   {b/total_f*100:>5.2f}%")
 }
-println("  llvm::other  {fmt.commas(llvm_other[0]):>9}   {to_float(llvm_other[1])/1024/1024:>7.2f}   {to_float(llvm_other[1])/total_f*100:>5.2f}%")
+println("  llvm::other  {fmt.commas(llvm_other[0]):>9}   {llvm_other[1]/1024/1024:>7.2f}   {llvm_other[1]/total_f*100:>5.2f}%")
 println()
 println("=== NON-LLVM ===")
-println("  {fmt.commas(non_llvm[0]):>9} symbols   {to_float(non_llvm[1])/1024/1024:>7.2f} MB   {to_float(non_llvm[1])/total_f*100:>5.2f}%")
+println("  {fmt.commas(non_llvm[0]):>9} symbols   {non_llvm[1]/1024/1024:>7.2f} MB   {non_llvm[1]/total_f*100:>5.2f}%")

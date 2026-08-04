@@ -5,7 +5,10 @@
 fn group_digits(s) {
   let chars = s.graphemes().collect()
   chars.reverse()
-  let groups = chars.iter().chunks(3).map(fn (c) { c.reverse(); c.join('') }).collect()
+  let groups = chars.iter().chunks(3).map(fn (c) {
+      c.reverse()
+      c.join('')
+    }).collect()
   groups.reverse()
   groups.join(',')
 }
@@ -25,4 +28,100 @@ fn hex_to_long(s) {
   Encoding.hex.decode(s).bytes().reduce(0, |acc, b| acc * 256 + b)
 }
 
-export { commas, hex_to_long }
+# Next address strictly greater than raw[i]'s, scanning forward over a
+# (possibly long) run of aliases at the same address; raw is sorted by
+# address so the first greater one found is the right one. nil at the
+# end of the table.
+fn addr_after(raw, i) {
+  let addr = raw[i][0]
+  for j in i + 1..raw.size() {
+    if raw[j][0] > addr {
+      return raw[j][0]
+    }
+  } nobreak {
+    return nil
+  }
+}
+
+# Parse `nm -n <binary>` output into (name, size) pairs for T/t (text)
+# symbols. Mach-O nm has no size field, so each symbol's size is
+# approximated as next_addr - this_addr; zero and pathologically large
+# (>10 MB) inferred sizes are dropped. Rows that aren't a valid 3-field
+# symbol line, or whose address column isn't valid fixed-width hex (e.g.
+# a blank/undefined-symbol row), are skipped — matching the Python
+# originals' `except ValueError`.
+fn text_symbol_sizes(nm_out) {
+  let ws = re'\s+'
+  let candidates = nm_out
+    .lines()
+    .map(|line| ws.split(line.trim()))
+    .filter(|parts| parts.size() == 3)
+
+  mut raw = []
+  for parts in candidates {
+    try {
+      raw.push((hex_to_long(parts[0]), parts[1], parts[2]))
+    } catch e {
+    }
+  }
+  raw.sort_by(|t| t[0])
+
+  mut entries = []
+  for i in 0..raw.size() {
+    let (addr, t, name) = raw[i]
+    if t != 'T' && t != 't' {
+      continue
+    }
+    let nxt = addr_after(raw, i)
+    if nxt == nil {
+      continue
+    }
+    let size = nxt - addr
+    if size > 0 && size <= 10 * 1024 * 1024 {
+      entries.push((name, size))
+    }
+  }
+  entries
+}
+
+# Demangle a batch of mangled C++ names via one c++filt invocation.
+fn demangle(names) {
+  Proc
+    .run(["c++filt"], stdin: names.join("\n"))
+    .stdout
+    .trim_end("\n")
+    .split("\n")
+}
+
+# LLVM sub-component classification patterns, shared so the "known" vs.
+# "other" boundary can't silently drift between the two reports built on
+# top of this module.
+let llvm_component_patterns = [
+  ('llvm::orc', '\bllvm::orc::'),
+  ('llvm::mc', '\bllvm::MC[A-Z]|\bllvm::mc::'),
+  (
+    'llvm::codegen',
+    '\bllvm::(MachineFunction|MachineInstr|SelectionDAG|LiveInterval|RegAlloc)',
+  ),
+  (
+    'llvm::ir',
+    '\bllvm::(IRBuilder|Module|Function|Instruction|BasicBlock|Constant|GlobalVariable|Type|Value)\b',
+  ),
+  (
+    'llvm::support',
+    '\bllvm::(StringRef|SmallVector|DenseMap|StringMap|Triple|raw_|ErrorOr|Optional|cl::)',
+  ),
+  (
+    'llvm::analysis',
+    '\bllvm::(LoopInfo|ScalarEvolution|AAResults|DominatorTree|MemorySSA|TargetLibraryInfo)',
+  ),
+  (
+    'llvm::transforms',
+    '\bllvm::(PassBuilder|InstCombine|GVN|SimplifyCFG|LoopVectorize|SLPVectorizer)',
+  ),
+  ('llvm::debuginfo', '\bllvm::(DWARF|DIE|DebugInfo|DIBuilder)'),
+  ('llvm::bitcode', '\bllvm::Bitcode'),
+  ('llvm::object', '\bllvm::object::'),
+]
+
+export {commas, hex_to_long, text_symbol_sizes, demangle, llvm_component_patterns}
