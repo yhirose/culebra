@@ -1,8 +1,12 @@
-# Rocci Bird — a faithful culebra port of Luke Boswell's WASM-4 example
-# (github.com/lukewilliamboswell/roc-wasm4, examples/rocci-bird.roc; sprite art
-# by Luke DeVault). The five 2BPP sprite sheets, the Lospec "Candy Cloud"
-# palette, the physics, the pixel-readback collision, the ADSR tones, and the
-# three-state flow (title -> game -> game over) are reproduced from the original.
+# Rocci Bird — a faithful culebra port of Brendan Hansknecht's WASM-4 demo
+# (art by Luke DeVault), from Luke Boswell's roc-wasm4 platform
+# (github.com/lukewilliamboswell/roc-wasm4, examples/rocci-bird.roc). The five
+# 2BPP sprite sheets, the Lospec "Candy Cloud" palette, the physics, the
+# pixel-readback collision, the ADSR tones, and the three-state flow (title ->
+# game -> game over) are reproduced from the original.
+#
+# roc-wasm4 is UPL-1.0 licensed (Copyright (c) 2023 Luke Boswell and
+# subsequent authors) — see the LICENSE.md there.
 #
 # WASM-4 draws indexed 2BPP art through a per-draw "draw colors" remap; this
 # game uses a fixed remap per asset, so each sheet is baked once into an indexed
