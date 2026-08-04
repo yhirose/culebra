@@ -173,3 +173,23 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .embed #args,
 .embed .backend { display: none; }
 .embed .pg-toolbar { padding: 0.45rem 0.8rem; }
+
+/* --- canvas-only mode (?view=canvas) ------------------------------------ */
+/* A poster-and-play-button host wants just the running game — no source,
+   no Run/Stop/status, no tab strip. .pg-editor is gone, so .pg-main drops
+   to a single column instead of leaving its half of the grid empty; the
+   canvas pane (already flex: 1 inside .pg-right) fills what remains. */
+.canvas-only .pg-toolbar,
+.canvas-only .pg-tabs,
+.canvas-only .pg-editor { display: none; }
+/* grid-template-rows needs stating explicitly: with .pg-editor gone,
+   .pg-right is the grid's only item, and an unset (auto) row sizes to its
+   content height rather than stretching to fill .pg-main — leaving the
+   canvas pane's own #000 short of the bottom and the host page's
+   background showing through beneath it. */
+.canvas-only .pg-main { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+/* .pg-pane's base overflow: auto is for the Output/TUI panes, which can
+   genuinely grow past their box; the canvas pane never needs to scroll,
+   and a few px of sub-pixel layout slop was enough to paint a scrollbar
+   sliver along the edge. */
+.canvas-only .pg-canvas { overflow: hidden; }

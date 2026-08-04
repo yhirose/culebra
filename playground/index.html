@@ -15,6 +15,11 @@
     // paints the standalone header and then takes it away.
     if (new URLSearchParams(location.search).get("embed") === "1")
       document.documentElement.classList.add("embed");
+    // ?view=canvas is for a host that wants only the running game — a
+    // poster-and-play-button embed with no source, controls, or other panes
+    // to distract from it. See the styles.css "canvas-only mode" block.
+    if (new URLSearchParams(location.search).get("view") === "canvas")
+      document.documentElement.classList.add("canvas-only");
   </script>
 </head>
 <body>
