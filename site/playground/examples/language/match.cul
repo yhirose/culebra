@@ -7,7 +7,9 @@ fn describe(x) {
   }
 }
 
-for v in [0, -3, 4, 7] { println("describe({v}) = {describe(v)}") }
+for v in [0, -3, 4, 7] {
+  println("describe({v}) = {describe(v)}")
+}
 
 fn head_tail(arr) {
   match arr {

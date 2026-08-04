@@ -32,7 +32,9 @@ fn new_board() {
 # All cells orthogonally connected to (r,c) sharing its colour.
 fn group_at(b, r, c) {
   let color = b[r][c]
-  if color == 0 { return [] }
+  if color == 0 {
+    return []
+  }
 
   mut out = []
   mut seen = [].to_set()  # (row, col) tuples — Sets take any hashable
@@ -54,7 +56,9 @@ fn group_at(b, r, c) {
 }
 
 fn remove_cells(b, cells) {
-  for (r, c) in cells { b[r][c] = 0 }
+  for (r, c) in cells {
+    b[r][c] = 0
+  }
 }
 
 # Tiles fall to the bottom of each column: the survivors keep their order and
@@ -63,7 +67,9 @@ fn gravity(b) {
   for c in 0..COLS {
     let col = range(ROWS).map(|r| b[r][c]).filter(|v| v != 0).collect()
     let gap = ROWS - col.size()
-    for r in 0..ROWS { b[r][c] = r < gap ? 0 : col[r - gap] }
+    for r in 0..ROWS {
+      b[r][c] = r < gap ? 0 : col[r - gap]
+    }
   }
 }
 
@@ -73,13 +79,17 @@ fn collapse(b) {
   for c in 0..COLS {
     if b[ROWS - 1][c] != 0 {
       if write != c {
-        for r in 0..ROWS { b[r][write] = b[r][c] }
+        for r in 0..ROWS {
+          b[r][write] = b[r][c]
+        }
       }
       write += 1
     }
   }
   for c in write..COLS {
-    for r in 0..ROWS { b[r][c] = 0 }
+    for r in 0..ROWS {
+      b[r][c] = 0
+    }
   }
 }
 
@@ -88,27 +98,37 @@ fn has_moves(b) {
     for c in 0..COLS {
       let v = b[r][c]
       if v != 0 {
-        if c + 1 < COLS && b[r][c + 1] == v { return true }
-        if r + 1 < ROWS && b[r + 1][c] == v { return true }
+        if c + 1 < COLS && b[r][c + 1] == v {
+          return true
+        }
+        if r + 1 < ROWS && b[r + 1][c] == v {
+          return true
+        }
       }
     }
   }
   false
 }
 
-fn count_tiles(b) { b.iter().flatten().filter(|v| v != 0).count() }
+fn count_tiles(b) {
+  b.iter().flatten().filter(|v| v != 0).count()
+}
 
 # First cell whose group is removable (used by the auto-demo).
 fn find_move(b) {
   for r in 0..ROWS {
     for c in 0..COLS {
-      if b[r][c] != 0 && group_at(b, r, c).size() >= 2 { return (r, c) }
+      if b[r][c] != 0 && group_at(b, r, c).size() >= 2 {
+        return (r, c)
+      }
     }
   }
   (-1, -1)
 }
 
-fn offsets(s) { ((s.cols() - COLS * 2) / 2, (s.rows() - ROWS) / 2) }
+fn offsets(s) {
+  ((s.cols() - COLS * 2) / 2, (s.rows() - ROWS) / 2)
+}
 
 fn draw(s, b, cur_r, cur_c, score, msg) {
   s.clear()
@@ -134,8 +154,14 @@ fn draw(s, b, cur_r, cur_c, score, msg) {
 }
 
 fn load_scores() {
-  if !FS.exists(SCORE_FILE) { return [] }
-  try { JSON.parse(FS.read(SCORE_FILE)) } catch e { [] }
+  if !FS.exists(SCORE_FILE) {
+    return []
+  }
+  try {
+    JSON.parse(FS.read(SCORE_FILE))
+  } catch e {
+    []
+  }
 }
 
 fn save_scores(scores) {
@@ -163,11 +189,15 @@ fn record_score(score) {
     time: now.format("%H:%M:%S"),
   }
   let (list, made_top5) = rank_into(scores, entry)
-  if made_top5 { save_scores(list) }
+  if made_top5 {
+    save_scores(list)
+  }
   (list, made_top5 ? entry : nil)
 }
 
-fn spaces(n) { [](n, " ").join("") }
+fn spaces(n) {
+  [](n, " ").join("")
+}
 
 let BOX_BODY = Term.style(bg: 236, fg: 255)
 let BOX_TITLE = Term.style(bg: 236, fg: 226, bold: true)
@@ -184,7 +214,9 @@ fn draw_box(s, w, title, lines, pick, footer) {
   let by = (s.rows() - h) / 2
 
   let blank = spaces(w)
-  for r in 0..h { s.put(bx, by + r, blank, BOX_BODY) }
+  for r in 0..h {
+    s.put(bx, by + r, blank, BOX_BODY)
+  }
 
   s.put(bx + 2, by + 1, title, BOX_TITLE)
   for i, line in lines.enumerate() {
@@ -251,13 +283,17 @@ fn show_help(s, board, cur_r, cur_c, score, msg) {
 fn wait_any_key(s) {
   while true {
     let e = s.poll(0.1)
-    if e?.kind == "key" { return e.key }
+    if e?.kind == "key" {
+      return e.key
+    }
   }
 }
 
 fn try_remove(b, r, c) {
   let cells = group_at(b, r, c)
-  if cells.size() < 2 { return -1 }
+  if cells.size() < 2 {
+    return -1
+  }
   remove_cells(b, cells)
   gravity(b)
   collapse(b)
@@ -294,20 +330,28 @@ Term.app(fn (s) {
         }
         msg += "  —  q: quit, other key: new game"
         draw(s, board, cur_r, cur_c, score, msg)
-        if !INTERACTIVE { return }
+        if !INTERACTIVE {
+          return
+        }
         let (best, entry) = record_score(score)
         if entry != nil {
           draw_score_box(s, best, entry, "q: quit   other key: new game")
-          if wait_any_key(s) == "q" { return }
+          if wait_any_key(s) == "q" {
+            return
+          }
           new_round()
           draw(s, board, cur_r, cur_c, score, msg)
           continue
         }
-        if wait_any_key(s) == "q" { return }
+        if wait_any_key(s) == "q" {
+          return
+        }
         new_round()
         draw(s, board, cur_r, cur_c, score, msg)
       }
-      if MAX_MOVES >= 0 && moves >= MAX_MOVES { return }
+      if MAX_MOVES >= 0 && moves >= MAX_MOVES {
+        return
+      }
 
       mut sr = -1
       mut sc = -1
@@ -315,15 +359,31 @@ Term.app(fn (s) {
         let ev = s.poll(0.1)
         if ev != nil {
           if ev.kind == "key" {
-            if ev.key == "q" { return }
+            if ev.key == "q" {
+              return
+            }
             match ev.key {
-              "n" => { new_round() },
-              "s" => { show_scores(s, board, cur_r, cur_c, score, msg) },
-              "h" => { show_help(s, board, cur_r, cur_c, score, msg) },
-              "left" => { cur_c = Math.clamp(cur_c - 1, 0, COLS - 1) },
-              "right" => { cur_c = Math.clamp(cur_c + 1, 0, COLS - 1) },
-              "up" => { cur_r = Math.clamp(cur_r - 1, 0, ROWS - 1) },
-              "down" => { cur_r = Math.clamp(cur_r + 1, 0, ROWS - 1) },
+              "n" => {
+                new_round()
+              },
+              "s" => {
+                show_scores(s, board, cur_r, cur_c, score, msg)
+              },
+              "h" => {
+                show_help(s, board, cur_r, cur_c, score, msg)
+              },
+              "left" => {
+                cur_c = Math.clamp(cur_c - 1, 0, COLS - 1)
+              },
+              "right" => {
+                cur_c = Math.clamp(cur_c + 1, 0, COLS - 1)
+              },
+              "up" => {
+                cur_r = Math.clamp(cur_r - 1, 0, ROWS - 1)
+              },
+              "down" => {
+                cur_r = Math.clamp(cur_r + 1, 0, ROWS - 1)
+              },
               " " | "enter" => {
                 sr = cur_r
                 sc = cur_c

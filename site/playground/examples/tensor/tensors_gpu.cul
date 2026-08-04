@@ -9,7 +9,9 @@ fn bench(label, n) {
   let warm = a.dot(b)
   Tensor.eval(warm)  # compile shaders / first dispatch
   let t0 = Time.monotonic()
-  for _ in 0..5 { Tensor.eval(a.dot(b)) }
+  for _ in 0..5 {
+    Tensor.eval(a.dot(b))
+  }
   println("{label} {n}x{n}: {(Time.monotonic() - t0) * 200.0} ms/iter")
 }
 
