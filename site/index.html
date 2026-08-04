@@ -36,10 +36,10 @@
     .hero .tag { font-size: 1.15rem; color: var(--muted); margin: 0 0 1.8rem; max-width: 34em; }
     .cta { display: flex; flex-wrap: wrap; gap: 0.7rem; margin-bottom: 3.2rem; }
 
-    .quickstart { margin: 3rem 0 2.5rem; }
-    .quickstart h2 { font-size: 1.4rem; margin: 0 0 0.6rem; }
-    .quickstart > p { color: var(--muted); margin: 0 0 1.2rem; max-width: 40em; }
-    .quickstart .fine-print { font-size: 0.85rem; margin: 0.9rem 0 0; }
+    .section { margin: 3rem 0 2.5rem; }
+    .section h2 { font-size: 1.4rem; margin: 0 0 0.6rem; }
+    .section > p { color: var(--muted); margin: 0 0 1.2rem; max-width: 40em; }
+    .section .fine-print { font-size: 0.85rem; margin: 0.9rem 0 0; }
     .cta-secondary { margin: 2.2rem 0 1rem; }
 
     .sample-wrap {
@@ -122,7 +122,7 @@
       /* Full-width and stacked: two half-width buttons side by side leave the
          labels wrapping inside them at this width. */
       .cta .btn { flex: 1 1 100%; }
-      .quickstart { margin: 2.2rem 0 2rem; }
+      .section { margin: 2.2rem 0 2rem; }
       /* Sized so the sample's widest line lands inside the block instead of
          under a scrollbar: it is 42 columns, and a phone has no width to spare
          for a horizontal scroll the reader has to discover. */
@@ -186,7 +186,7 @@
 }</pre>
     </div>
 
-    <section class="quickstart">
+    <section class="section">
       <h2>Try it on your machine</h2>
       <p>Paste this into a terminal on macOS (Apple Silicon) — it downloads
         culebra, writes the example above to <code>hello.cul</code>, and runs
@@ -223,8 +223,8 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
         <a href="https://github.com/yhirose/culebra#quickstart">README</a>.</p>
     </section>
 
-    <section class="quickstart">
-      <h2>Set up your editor</h2>
+    <section class="section">
+      <h2>Set up your dev environment</h2>
       <p>Optional — this one also touches your editor's config
         (VSCode/Vim/Neovim) and writes <code>AGENTS.md</code>/<code>CLAUDE.md</code>
         into the current directory, so it isn't bundled into the block
@@ -244,7 +244,7 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
         and the highlighting is already on.</p>
     </section>
 
-    <section class="quickstart">
+    <section class="section">
       <h2>One executable, every tool</h2>
       <p>The same binary that just ran <code>hello.cul</code> also
         builds, tests, lints, formats, and documents it —
@@ -262,7 +262,7 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
         before the program runs. No package manager, no lockfile.</p>
     </section>
 
-    <section class="quickstart">
+    <section class="section">
       <h2>For the things you want to make</h2>
       <div class="showcase">
         <div class="showcase-card">
