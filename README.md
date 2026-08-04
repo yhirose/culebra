@@ -245,6 +245,7 @@ Every subcommand below is part of the executable that runs a program.
 | `culebra fmt [paths...]` | reformat source to the canonical style |
 | `culebra dap` | speak the Debug Adapter Protocol over stdio (VSCode / Vim / Zed) |
 | `culebra docs [topic]` | read and search the embedded reference docs |
+| `culebra init` | set up this directory's AI agent instructions and this machine's editors |
 | `culebra build <in.cul> -o <out>` | compile ahead-of-time into a standalone executable |
 | `culebra wrap` | build an extended binary exposing your own C++ classes |
 
