@@ -605,10 +605,14 @@ column.
 | `mut out = []` + `for` + `out.push(f(x))` | `xs.map(f)` — same for `filter` |
 | `mut t = {}` + `for` + `t[k] = v` | `xs.map(\|x\| (k(x), v(x))).to_object()` |
 | `mut found = false` + `while !found` | `for x in xs { … break }`, or `xs.find(p)` |
+| `mut hit = false` + `for` + `if p(x) { hit = true; break }` | `xs.any(p)` (`xs.all(p)` for the inverse) |
 | `"a\n" + "b\n"` | a `"""` block |
 | `.map(fn (x) { expr })` | `.map(\|x\| expr)` |
 | `range(0, n)` | `range(n)` |
 | `for i in 0..xs.size() { xs[i] … }` | `for x in xs` |
+| `mut i = start; while i < end { …; i += 1 }` | `for i in start..end { … }` |
+| `{k1: v1, k2: obj.k2, k3: obj.k3}` (copy every field to change one) | `{...obj, k1: v1}` |
+| `"{a.b(c).d ?? e}"` — a long/nested expression inline | `let x = a.b(c).d ?? e`, then `"{x}"` |
 
 `cond` is a `match` with no subject, so a chain of unrelated tests is
 `cond { a > 1 => …, b < 2 => …, _ => … }`. A loop that must report

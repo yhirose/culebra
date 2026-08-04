@@ -596,10 +596,14 @@ inspect([1, 2].size())                          # => 2
 | `mut out = []` + `for` + `out.push(f(x))` | `xs.map(f)`（`filter` も同様） |
 | `mut t = {}` + `for` + `t[k] = v` | `xs.map(\|x\| (k(x), v(x))).to_object()` |
 | `mut found = false` + `while !found` | `for x in xs { … break }` か `xs.find(p)` |
+| `mut hit = false` + `for` + `if p(x) { hit = true; break }` | `xs.any(p)`（逆は `xs.all(p)`） |
 | `"a\n" + "b\n"` | `"""` ブロック |
 | `.map(fn (x) { expr })` | `.map(\|x\| expr)` |
 | `range(0, n)` | `range(n)` |
 | `for i in 0..xs.size() { xs[i] … }` | `for x in xs` |
+| `mut i = start; while i < end { …; i += 1 }` | `for i in start..end { … }` |
+| `{k1: v1, k2: obj.k2, k3: obj.k3}`（1つ変えるために全フィールドを手コピー） | `{...obj, k1: v1}` |
+| `"{a.b(c).d ?? e}"`（長く入れ子になった式をそのまま埋め込む） | `let x = a.b(c).d ?? e` としてから `"{x}"` |
 
 `cond` は主語のない `match` なので、互いに無関係な条件の連鎖は
 `cond { a > 1 => …, b < 2 => …, _ => … }` になる。完走したかどうかを
