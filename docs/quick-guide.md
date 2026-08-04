@@ -200,24 +200,36 @@ inspect(typed(2, 3))  # => 5
 square = |x| x * x  # a lambda body is a single expression
 inspect(square(7))  # => 49
 
-fib = fn (x) {
-  if x < 2 {
-    x
-  } else {
-    fn(x - 2) + fn(x - 1)
-  }
-}
-inspect(fib(10))  # => 55
-
 inspect([1, 2, 3].map(|x| x * 2))  # => [2, 4, 6]
 inspect([[1, 2]].map(fn ((a, b)) {
   a + b
 }))  # => [3]
 ```
 
-Name a function with `fn`; pass a callback as `|x|`. A lambda body is a
-single expression, so switch to `fn (x) { ... }` when the callback needs
-statements — that is the only reason to write `fn` inline.
+Bind a literal like any other value (`name = fn (...) { ... }`), or use
+the declaration form `fn name(...) { ... }`. Pass a callback inline as
+`|x|`; a lambda body is a single expression, so switch to
+`fn (x) { ... }` when the callback needs statements.
+
+For a named function — one you are going to call by name, especially a
+recursive one — prefer the declaration form. Only it can be a
+[generator](#26-iterators) or take part in [multimethod
+dispatch](#29-classes-ufcs-multimethods-traits), and only it gives
+`fn.name` a source-level name; the two forms are otherwise
+interchangeable, and inside either one a bare `fn` in the body calls
+the function itself:
+
+```culebra
+fn fib(x) {
+  if x < 2 {
+    x
+  } else {
+    fn(x - 2) + fn(x - 1)
+  }
+}
+inspect(fib(10))    # => 55
+inspect(fib.name)   # => 'fib'
+```
 
 A block evaluates to its last expression, so `return` is rarely
 needed. `*` makes the rest keyword-only, `**rest` collects unknown
