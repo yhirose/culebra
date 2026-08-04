@@ -13,32 +13,54 @@ desktop apps, and games.
 The stdlib, test runner, linter, formatter, debugger and docs are all
 in that one executable. Nothing else to install!
 
-```culebra
-let people = [
-  { name: 'Taro', age: 30 },
-  { name: 'John', age: 45 },
-  { name: 'Ada',  age: 36 },
-]
+Quickstart
+----------
 
-for p in people.sorted_by(|p| p.age) {
-  println("{p.name} is {p.age} years old")
-}
-```
-
-All three run that same source file, with no project layout and no
-compile step:
+Paste this into a terminal on macOS (Apple Silicon) — it downloads
+culebra, writes an example to `hello.cul`, and runs that same source
+file three ways: as a script, JIT-compiled, and built into a
+standalone binary.
 
 ```bash
-culebra script.cul                        # run as a script (interpreter)
-culebra --jit script.cul                  # JIT-compiled
-culebra build script.cul -o app && ./app  # ship as a standalone binary
+curl -fsSL https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64.tar.gz | tar xz
+export PATH="$PWD/culebra-macos-arm64:$PATH"
+culebra --version
+
+cat > hello.cul <<'EOF'
+let people = [
+  { name: 'Taro', greeting: 'Konnichiwa' },
+  { name: 'John', greeting: 'Hello' },
+  { name: 'Ada',  greeting: 'Bonjour' },
+]
+
+for p in people.sorted_by(|p| p.name) {
+  println("{p.greeting}, {p.name}!")
+}
+EOF
+
+culebra hello.cul                            # interpreter
+culebra --jit hello.cul                      # JIT
+culebra build hello.cul -o hello && ./hello  # AOT: compile once, ship the binary
 ```
 
-Download
---------
+Optional — this one also touches your editor's config
+(VSCode/Vim/Neovim) and writes `AGENTS.md`/`CLAUDE.md` into the
+current directory, so it isn't bundled into the block above:
 
-These always point at the newest release. Each archive holds the binary
-and the license; `culebra --version` reports which release it is.
+```bash
+culebra init
+```
+
+`culebra init` installs syntax highlighting and the debug adapter for
+whichever of VSCode, Vim, or Neovim it finds on this machine, and adds
+coding-agent instructions to `AGENTS.md` (or
+`CLAUDE.md`/`.github/copilot-instructions.md` if one already exists) —
+reopen `hello.cul` afterward and the highlighting is already on, and
+Claude Code or another agent reading `AGENTS.md` already knows the
+conventions.
+
+For Linux (x86-64), swap the first line for `culebra-linux-x64.tar.gz`;
+Windows and a permanent, system-wide install are below.
 
 | Platform | Download |
 |---|---|
@@ -46,28 +68,23 @@ and the license; `culebra --version` reports which release it is.
 | Linux (x86-64) | [culebra-linux-x64.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-linux-x64.tar.gz) |
 | Windows (x86-64) | [culebra-windows-x64.zip](https://github.com/yhirose/culebra/releases/latest/download/culebra-windows-x64.zip) |
 
-Extracting from the command line also avoids the quarantine flag macOS
-puts on anything unpacked through Finder — the binaries are unsigned:
+These always point at the newest release; `culebra --version` reports
+which one you have. Extracting from the command line also avoids the
+quarantine flag macOS puts on anything unpacked through Finder — the
+binaries are unsigned. To put `culebra` on `PATH` permanently instead
+of just for this shell:
 
 ```bash
-curl -fsSL https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64.tar.gz | tar xz
 sudo mv culebra-*/culebra /usr/local/bin/
-culebra --version
 ```
 
 Checksums and every release's notes are on the
 [releases page](https://github.com/yhirose/culebra/releases).
 
-In a project directory, `culebra init` installs syntax highlighting and
-the debug adapter for whichever of VSCode, Vim, or Neovim it finds on
-this machine, and adds coding-agent instructions to `AGENTS.md` (or
-`CLAUDE.md`/`.github/copilot-instructions.md` if one already exists).
-Safe to re-run any time.
-
 Highlights
 ----------
 
-### Small, fast, runs anywhere
+### Cold start, single binary, cross-platform
 
 - **CLI script.** Cold start in tens of milliseconds.
 - **Standalone binary.** `culebra build` emits a single executable —
@@ -112,25 +129,12 @@ package manager, no lockfile:
   resolution underneath.
 - **Concurrency.** Isolates, channels, `Parallel`, shared buffers, and
   Ctrl+C delivered as a channel message.
-
-### Terminals, windows, and games
-
-The same binary that runs a script also draws:
-
-- **`Term`.** Colour, cursor control, the alternate screen, and
-  key/mouse input for TUIs, downsampled to whatever the terminal
+- **Terminal.** `Term` — colour, cursor control, the alternate screen,
+  and key/mouse input for TUIs, downsampled to whatever the terminal
   supports (and silent under `NO_COLOR`).
-- **`Canvas`.** An immediate-mode 2D framebuffer — draw, `present`,
-  poll input, repeat — with sprites, text, and tone/music. It opens a
-  real window on macOS, Linux and Windows; a run that declares itself
-  headless does the same pixel work and displays nothing, which is how
-  the tests and a displayless server run it.
-- **`Desktop` / `Webview`.** A desktop GUI in web tech: a local HTTP
-  server supplies the UI, the OS's own WebView engine displays it, and
-  the whole thing ships as one binary.
-- **`Scene`.** A retained-mode 3D renderer for procedural geometry with
-  physically based lighting. Opt-in (`-DCULEBRA_ENABLE_SCENE=ON`) and
-  macOS-only today.
+- **3D.** `Scene` — a retained-mode 3D renderer for procedural geometry
+  with physically based lighting. Opt-in
+  (`-DCULEBRA_ENABLE_SCENE=ON`) and macOS-only today.
 
 ### Built-in Tensor
 
@@ -144,6 +148,51 @@ picked per op by size unless a `Tensor.use_*()` call pins one.
 x = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
 y = x.dot(x.transpose())
 Tensor.eval(y)                       # [[5.0, 11.0], [11.0, 25.0]]
+```
+
+### Embedded assets
+
+`Embed.dir(name)` hands a directory of files to your program with no
+code change across backends: the interpreter and JIT read it live
+from disk — edit a file, rerun — and `culebra build` bakes every byte
+into the executable, so the shipped binary needs nothing alongside it.
+
+```culebra
+let assets = Embed.dir("dist")           # index.html, favicon.ico, ...
+println(assets.exists("index.html"))     # => true
+println(assets.exists("favicon.ico"))    # => true
+```
+
+### Desktop app creation
+
+A desktop GUI in web tech: a local HTTP server supplies the UI, the
+OS's own WebView engine displays it, and `culebra build` ships the
+whole thing — server, routes, and embedded assets — as one binary.
+
+```culebra
+Desktop.run({
+  title: "Hello from culebra",
+  assets: Embed.dir("dist"),             # index.html, favicon.ico, ...
+  routes: fn (srv) {
+    srv.get("/api/hello", fn (req) { "hi from the embedded server" })
+  },
+})
+```
+
+### 2D Canvas
+
+An immediate-mode 2D framebuffer — draw, `present`, poll input,
+repeat — with sprites, text, and tone/music. It opens a real window on
+macOS, Linux and Windows; a run that declares itself headless does the
+same pixel work and displays nothing, which is how the tests and a
+displayless server run it.
+
+```culebra
+Canvas.run(160, 160, fn () {
+  Canvas.clear(Canvas.rgba(20, 24, 40))
+  Canvas.rect(20, 76, 8, 8, Canvas.rgba(220, 60, 60))
+  false  # stop after one frame
+})
 ```
 
 Language features

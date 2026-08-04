@@ -13,32 +13,52 @@ CLIツール、機械学習、デスクトップアプリ、ゲームが書け�
 まで、すべてその1つの実行ファイルに入っています。ほかにインストールする
 ものはありません！
 
-```culebra
-let people = [
-  { name: 'Taro', age: 30 },
-  { name: 'John', age: 45 },
-  { name: 'Ada',  age: 36 },
-]
+Quickstart
+----------
 
-for p in people.sorted_by(|p| p.age) {
-  println("{p.name} is {p.age} years old")
-}
-```
-
-どれも同じソース1ファイルから、プロジェクト構成もコンパイル手順もなしに
-行えます:
+macOS（Apple Silicon）のターミナルにこれを貼り付けると、culebraを
+ダウンロードし、例を`hello.cul`として書き出し、同じソース1ファイルを
+スクリプト・JITコンパイル・単体バイナリの3通りで実行します:
 
 ```bash
-culebra script.cul                        # スクリプトとして実行（インタプリタ）
-culebra --jit script.cul                  # JITコンパイル
-culebra build script.cul -o app && ./app  # 単体バイナリとして配る
+curl -fsSL https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64.tar.gz | tar xz
+export PATH="$PWD/culebra-macos-arm64:$PATH"
+culebra --version
+
+cat > hello.cul <<'EOF'
+let people = [
+  { name: 'Taro', greeting: 'Konnichiwa' },
+  { name: 'John', greeting: 'Hello' },
+  { name: 'Ada',  greeting: 'Bonjour' },
+]
+
+for p in people.sorted_by(|p| p.name) {
+  println("{p.greeting}, {p.name}!")
+}
+EOF
+
+culebra hello.cul                            # インタプリタ
+culebra --jit hello.cul                      # JIT
+culebra build hello.cul -o hello && ./hello  # AOT: 一度コンパイルしてバイナリを配る
 ```
 
-ダウンロード
-------------
+任意 — これはエディタの設定（VSCode・Vim・Neovim）も書き換え、
+カレントディレクトリに`AGENTS.md`/`CLAUDE.md`も書き出すので、上の
+ブロックには含めていません:
 
-いずれも常に最新リリースを指します。各アーカイブにはバイナリとライセンスが
-入っており、どのリリースかは`culebra --version`が答えます。
+```bash
+culebra init
+```
+
+`culebra init`は、このマシンにあるVSCode・Vim・Neovimのうち見つかった
+ものにシンタックスハイライトとデバッグアダプタを導入し、`AGENTS.md`
+（既に`CLAUDE.md`か`.github/copilot-instructions.md`があればそちら）に
+コーディングエージェント向けの指示を追加します —
+実行後に`hello.cul`を開き直せばもうハイライトが効いていますし、
+`AGENTS.md`を読むClaude Codeなど他のエージェントも規約を把握済みです。
+
+Linux（x86-64）では1行目を`culebra-linux-x64.tar.gz`に差し替えてください。
+Windowsと恒久的なシステム全体へのインストールは以下です。
 
 | プラットフォーム | ダウンロード |
 |---|---|
@@ -46,28 +66,22 @@ culebra build script.cul -o app && ./app  # 単体バイナリとして配る
 | Linux (x86-64) | [culebra-linux-x64.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-linux-x64.tar.gz) |
 | Windows (x86-64) | [culebra-windows-x64.zip](https://github.com/yhirose/culebra/releases/latest/download/culebra-windows-x64.zip) |
 
-バイナリは署名していないため、Finderで展開したものにはmacOSが検疫フラグを
-付けます。コマンドラインからの展開ならそれを避けられます:
+いずれも常に最新リリースを指し、どのリリースかは`culebra --version`が
+答えます。コマンドラインからの展開なら、Finderで展開したものに
+macOSが付ける検疫フラグ（バイナリは署名していません）を避けられます。
+このシェルだけでなく恒久的に`culebra`を`PATH`に通すには:
 
 ```bash
-curl -fsSL https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64.tar.gz | tar xz
 sudo mv culebra-*/culebra /usr/local/bin/
-culebra --version
 ```
 
 チェックサムと各リリースのノートは
 [リリースページ](https://github.com/yhirose/culebra/releases)にあります。
 
-プロジェクトディレクトリで`culebra init`を実行すると、このマシンにある
-VSCode・Vim・Neovimのうち見つかったものにシンタックスハイライトと
-デバッグアダプタを導入し、`AGENTS.md`（既に`CLAUDE.md`か
-`.github/copilot-instructions.md`があればそちら）にコーディングエージェント
-向けの指示を追加します。何度でも再実行して構いません。
-
 主な特長
 --------
 
-### 小さく、速く、どこでも動く
+### 起動速度・単体バイナリ・クロスプラットフォーム
 
 - **CLIスクリプト。** 起動は数十ミリ秒。
 - **単体バイナリ。** `culebra build`が実行ファイルを1つ出力します。並べて
@@ -110,23 +124,11 @@ VSCode・Vim・Neovimのうち見つかったものにシンタックスハイ�
   TCP / UDPソケットと名前解決も入っています。
 - **並行処理。** アイソレート、チャネル、`Parallel`、共有バッファ、そして
   チャネルのメッセージとして届くCtrl+C。
-
-### 端末、ウィンドウ、ゲーム
-
-スクリプトを走らせるのと同じバイナリが描画もします:
-
-- **`Term`。** 色、カーソル制御、代替画面、TUI向けのキー・マウス入力。色は
-  端末が対応する範囲へ落とし込まれます（`NO_COLOR`下では何も出しません）。
-- **`Canvas`。** 即時モードの2Dフレームバッファ — 描いて`present`し、入力を
-  読んで、また描く — スプライト、テキスト、トーン・音楽つき。macOS・Linux・
-  Windowsで実際のウィンドウを開きます。ヘッドレスを宣言した実行では同じ
-  ピクセル処理をして表示だけしないので、テストや画面のないサーバーでも
-  同じプログラムが走ります。
-- **`Desktop` / `Webview`。** Web技術で書くデスクトップGUI。ローカルの
-  HTTPサーバーがUIを供給し、OS自身のWebViewエンジンが表示し、全体が
-  バイナリ1つとして配れます。
-- **`Scene`。** 手続き的に構築したジオメトリを物理ベースライティングで描く
-  保持モードの3Dレンダラ。オプトイン（`-DCULEBRA_ENABLE_SCENE=ON`）で、
+- **端末。** `Term` — 色、カーソル制御、代替画面、TUI向けのキー・マウス
+  入力。端末が対応する範囲へ落とし込まれます（`NO_COLOR`下では何も
+  出しません）。
+- **3D。** `Scene` — 手続き的に構築したジオメトリを物理ベースライティングで
+  描く保持モードの3Dレンダラ。オプトイン（`-DCULEBRA_ENABLE_SCENE=ON`）で、
   現状はmacOSのみです。
 
 ### 組み込みのTensor
@@ -141,6 +143,51 @@ VSCode・Vim・Neovimのうち見つかったものにシンタックスハイ�
 x = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
 y = x.dot(x.transpose())
 Tensor.eval(y)                       # [[5.0, 11.0], [11.0, 25.0]]
+```
+
+### 埋め込みアセット
+
+`Embed.dir(name)`は、ディレクトリ1つをbackendを問わず同じコードで
+プログラムに渡します。インタプリタとJITはディスクから直接読み込むので
+（ファイルを直して再実行するだけ）、`culebra build`はすべてのバイトを
+実行ファイルへ焼き込むので、配布するバイナリはそれだけで完結します。
+
+```culebra
+let assets = Embed.dir("dist")           # index.html、favicon.icoなど
+println(assets.exists("index.html"))     # => true
+println(assets.exists("favicon.ico"))    # => true
+```
+
+### デスクトップアプリ作成
+
+Web技術で書くデスクトップGUI。ローカルのHTTPサーバーがUIを供給し、
+OS自身のWebViewエンジンが表示し、`culebra build`がサーバー・ルート・
+埋め込みアセットをまるごとバイナリ1つとして配ります。
+
+```culebra
+Desktop.run({
+  title: "Hello from culebra",
+  assets: Embed.dir("dist"),             # index.html、favicon.icoなど
+  routes: fn (srv) {
+    srv.get("/api/hello", fn (req) { "hi from the embedded server" })
+  },
+})
+```
+
+### 2D Canvas
+
+即時モードの2Dフレームバッファ — 描いて`present`し、入力を読んで、また
+描く — スプライト、テキスト、トーン・音楽つき。macOS・Linux・Windowsで
+実際のウィンドウを開きます。ヘッドレスを宣言した実行では同じピクセル
+処理をして表示だけしないので、テストや画面のないサーバーでも同じ
+プログラムが走ります。
+
+```culebra
+Canvas.run(160, 160, fn () {
+  Canvas.clear(Canvas.rgba(20, 24, 40))
+  Canvas.rect(20, 76, 8, 8, Canvas.rgba(220, 60, 60))
+  false  # 1フレームで終了
+})
 ```
 
 言語機能
