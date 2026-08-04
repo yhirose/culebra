@@ -705,7 +705,7 @@ add_custom_command(
   COMMENT "Embedding docs/*.md"
   VERBATIM)
 
-# The VSCode/Vim editor-integration payload files travel inside the binary
+# The VSCode/Vim/Zed editor-integration payload files travel inside the binary
 # too, so `culebra init` can lay them down with no source checkout — same
 # rationale as the docs embedding just above, and not committed for the same
 # reason (the payload changes with grammar/keyword sync and would need its
@@ -715,15 +715,23 @@ file(GLOB _editor_sources
   "${CMAKE_CURRENT_SOURCE_DIR}/misc/vscode/*.json"
   "${CMAKE_CURRENT_SOURCE_DIR}/misc/vscode/*.js"
   "${CMAKE_CURRENT_SOURCE_DIR}/misc/vscode/syntaxes/*.json"
-  "${CMAKE_CURRENT_SOURCE_DIR}/misc/vim/*.vim")
+  "${CMAKE_CURRENT_SOURCE_DIR}/misc/vim/*.vim"
+  "${CMAKE_CURRENT_SOURCE_DIR}/misc/zed/Cargo.toml"
+  "${CMAKE_CURRENT_SOURCE_DIR}/misc/zed/src/*.rs"
+  "${CMAKE_CURRENT_SOURCE_DIR}/misc/zed/debug_adapter_schemas/*.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/misc/zed/languages/culebra/*"
+  "${CMAKE_CURRENT_SOURCE_DIR}/misc/zed/debug.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/misc/zed/extension.toml.template")
 add_custom_command(
   OUTPUT ${_editor_gen}
   COMMAND ${CMAKE_COMMAND}
           -DMISC_DIR=${CMAKE_CURRENT_SOURCE_DIR}/misc
+          -DVERSION_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/include/culebra.h
           -DOUT=${_editor_gen}
           -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_editor_assets.cmake
-  DEPENDS ${_editor_sources} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_editor_assets.cmake
-  COMMENT "Embedding misc/{vscode,vim} editor assets"
+  DEPENDS ${_editor_sources} ${CMAKE_CURRENT_SOURCE_DIR}/include/culebra.h
+          ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_editor_assets.cmake
+  COMMENT "Embedding misc/{vscode,vim,zed} editor assets"
   VERBATIM)
 
 add_executable(culebra ./src/main.cc ./src/source_dir.cc ./src/docs_cmd.cc

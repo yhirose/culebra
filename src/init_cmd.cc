@@ -7,11 +7,14 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <print>
 #include <random>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <os_compat.h>  // os_isatty (stdin_is_interactive)
 
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>  // _NSGetExecutablePath (self_executable_path)
@@ -20,7 +23,8 @@
 #include <climits>   // PATH_MAX
 #include <unistd.h>  // readlink (self_executable_path)
 #elif defined(_WIN32)
-#include <os_compat.h>  // <windows.h> (guarded) — GetModuleFileNameW
+// os_compat.h above already brings in <windows.h> (guarded) for
+// GetModuleFileNameW.
 #endif
 
 #include "docs_embedded.h"
@@ -88,6 +92,11 @@ std::string home_dir() {
 #endif
   return h ? h : "";
 }
+
+// Gates the "Proceed? [y/N]" prompt: a human typing at a terminal sees and
+// answers it; a pipe/redirect/CI runner (no tty on stdin) skips straight to
+// applying, so scripts calling `culebra init` don't need to know it prompts.
+bool stdin_is_interactive() { return os_isatty(0); }
 
 // PATH search without shelling out to `command -v`/`where` — the candidate
 // list (code/code-insiders/cursor/codium, zed) is small and fixed, so this
@@ -311,13 +320,21 @@ std::string vsix_manifest(std::string_view version) {
 constexpr const char* kVSCodeClis[] = {"code", "code-insiders", "cursor",
                                        "codium"};
 
-bool setup_vscode() {
+// Every setup_* function below shares this convention: `plan == nullptr`
+// means actually do it; `plan != nullptr` means describe what would happen,
+// one human-readable line per action, and return without any side effects.
+bool setup_vscode(std::vector<std::string>* plan) {
   std::string cli;
   for (const char* c : kVSCodeClis) {
     cli = find_on_path(c);
     if (!cli.empty()) break;
   }
   if (cli.empty()) return true;  // no VSCode-family editor found — not an error
+
+  if (plan) {
+    plan->push_back("VSCode: install extension via " + cli);
+    return true;
+  }
 
   const editor_assets::Asset* package_asset = find_asset("vscode", "package.json");
   const editor_assets::Asset* ext_asset = find_asset("vscode", "extension.js");
@@ -423,43 +440,137 @@ bool install_vim_into(const fs::path& root, std::string_view name) {
 
 // Targets ~/.vim and ~/.config/nvim — whichever already exists, matching
 // misc/vim/install.sh (directory presence, not a `vim`/`nvim` binary check).
-bool setup_vim() {
+bool setup_vim(std::vector<std::string>* plan) {
   std::string home = home_dir();
   if (home.empty()) return true;
   std::error_code ec;
   bool ok = true;
-  if (fs::is_directory(fs::path(home) / ".vim", ec)) {
-    ok &= install_vim_into(fs::path(home) / ".vim", "vim");
+  fs::path vim_root = fs::path(home) / ".vim";
+  fs::path nvim_root = fs::path(home) / ".config" / "nvim";
+  bool has_vim = fs::is_directory(vim_root, ec);
+  bool has_nvim = fs::is_directory(nvim_root, ec);
+  if (plan) {
+    if (has_vim) plan->push_back("Vim (vim): install into " + vim_root.string());
+    if (has_nvim) {
+      plan->push_back("Vim (neovim): install into " + nvim_root.string());
+    }
+    return true;
   }
-  if (fs::is_directory(fs::path(home) / ".config" / "nvim", ec)) {
-    ok &= install_vim_into(fs::path(home) / ".config" / "nvim", "neovim");
-  }
+  if (has_vim) ok &= install_vim_into(vim_root, "vim");
+  if (has_nvim) ok &= install_vim_into(nvim_root, "neovim");
   return ok;
 }
 
-// Zed's grammar/debug-adapter extension is fetched by Zed itself from a git
-// checkout (file:// + commit rev — see misc/zed/install.sh), which a
-// binary-only download has none of. Full auto-install needs its own design;
-// for now `init` only makes Zed users aware setup exists at all.
-void note_zed_if_present() {
-  bool found = !find_on_path("zed").empty();
-  if (!found) {
-    std::string home = home_dir();
-    if (!home.empty()) {
-      std::error_code ec;
+bool zed_detected() {
+  if (!find_on_path("zed").empty()) return true;
+  std::string home = home_dir();
+  if (home.empty()) return false;
+  std::error_code ec;
 #if defined(__APPLE__)
-      found = fs::exists(fs::path(home) / "Library/Application Support/Zed",
-                         ec);
+  return fs::exists(fs::path(home) / "Library/Application Support/Zed", ec);
 #elif defined(__linux__)
-      found = fs::exists(fs::path(home) / ".config/zed", ec);
+  return fs::exists(fs::path(home) / ".config/zed", ec);
+#else
+  return false;
 #endif
+}
+
+// Empty when neither XDG_DATA_HOME nor HOME is set — the caller treats that
+// as "nowhere sensible to write" rather than falling back to a path relative
+// to the current directory.
+fs::path zed_extension_dir() {
+  const char* xdg = std::getenv("XDG_DATA_HOME");
+  if (xdg && *xdg) return fs::path(xdg) / "culebra-zed-extension";
+  std::string home = home_dir();
+  if (home.empty()) return {};
+  return fs::path(home) / ".local/share" / "culebra-zed-extension";
+}
+
+// Written into the extension directory itself. debug.json is handled
+// separately below — it goes to .zed/debug.json in the project, not here.
+constexpr const char* kZedExtensionFiles[] = {
+    "Cargo.toml",
+    "src/culebra.rs",
+    "debug_adapter_schemas/culebra.json",
+    "languages/culebra/config.toml",
+    "languages/culebra/highlights.scm",
+};
+
+// Zed's grammar fetch (`[grammars.culebra]` in extension.toml) can only name
+// a git `repository` + `rev` + `path` — never bundle the parser source
+// directly — so this points it at this binary's release tag on the public
+// repo instead of a local checkout, which a binary-only download has none
+// of. Editing the grammar itself needs misc/zed/install.sh, which tracks
+// local HEAD via file:// instead (see docs/tooling.md's Zed section).
+bool setup_zed(std::vector<std::string>* plan) {
+  if (!zed_detected()) return true;  // no Zed found — not an error
+
+  fs::path ext = zed_extension_dir();
+  if (ext.empty()) return true;  // nowhere to write (no XDG_DATA_HOME/HOME)
+  std::string tag = std::string("v") + editor_assets::kCulebraVersion;
+
+  if (plan) {
+    plan->push_back("Zed: write extension to " + ext.string() +
+                    " + .zed/debug.json (grammar pinned to release " + tag +
+                    ")");
+    return true;
+  }
+
+  std::error_code ec;
+  fs::remove_all(ext, ec);
+
+  bool ok = true;
+  for (const char* rel : kZedExtensionFiles) {
+    const editor_assets::Asset* a = find_asset("zed", rel);
+    if (!a) {
+      std::println(stderr, "culebra init: Zed asset '{}' missing from this binary",
+                   rel);
+      ok = false;
+      continue;
     }
+    ok &= write_file(ext / rel, a->text);
   }
-  if (found) {
-    std::println(
-        "Zed: detected, but automatic setup isn't available yet — see"
-        " `culebra docs tooling -g Zed` for the manual steps.");
+
+  const editor_assets::Asset* tmpl = find_asset("zed", "extension.toml.template");
+  if (!tmpl) {
+    std::println(stderr,
+                 "culebra init: Zed asset 'extension.toml.template' missing"
+                 " from this binary");
+    ok = false;
+  } else {
+    std::string toml = tmpl->text;
+    replace_all(toml, "{{REPOSITORY}}", "https://github.com/yhirose/culebra");
+    replace_all(toml, "{{REV}}", tag);
+    ok &= write_file(ext / "extension.toml", toml);
   }
+
+  fs::path dbg_dir = fs::current_path() / ".zed";
+  fs::path dbg_json = dbg_dir / "debug.json";
+  if (fs::exists(dbg_json, ec)) {
+    fs::copy_file(dbg_json, dbg_dir / "debug.json.bak",
+                  fs::copy_options::overwrite_existing, ec);
+  }
+  const editor_assets::Asset* dbg_asset = find_asset("zed", "debug.json");
+  if (dbg_asset) ok &= write_file(dbg_json, dbg_asset->text);
+
+  if (!ok) {
+    std::println(stderr, "culebra init: couldn't write the Zed extension into {}",
+                 ext.string());
+    return false;
+  }
+
+  std::println("Zed: extension written to {} (grammar pinned to release {})",
+               ext.string(), tag);
+  std::println(
+      "  1. Command palette -> 'zed: install dev extension' -> select: {}",
+      ext.string());
+  std::println(
+      "     (needs `rustup target add wasm32-wasip2` to build the debug"
+      " adapter)");
+  std::println(
+      "  2. Editing the grammar itself? Use misc/zed/install.sh from a"
+      " source checkout instead — it tracks your local HEAD.");
+  return true;
 }
 
 // --- AI coding agent instructions ---------------------------------------
@@ -507,33 +618,44 @@ bool upsert_block(std::string& content, std::string_view block) {
   return true;
 }
 
+// The plan pass and the apply pass both run upsert_block on a scratch copy
+// to decide whether anything would change; the apply pass just goes on to
+// write that same scratch content out, so the "what would change" check and
+// the actual change can never drift out of sync with each other.
 bool write_agent_block_to(const fs::path& path, std::string_view block,
-                          bool create_if_missing) {
+                          bool create_if_missing,
+                          std::vector<std::string>* plan) {
   std::error_code ec;
   bool existed = fs::exists(path, ec);
   if (!existed && !create_if_missing) return true;
 
-  std::string content;
+  std::string scratch;
   if (existed) {
     std::ifstream in(path, std::ios::binary);
-    content.assign(std::istreambuf_iterator<char>(in),
+    scratch.assign(std::istreambuf_iterator<char>(in),
                    std::istreambuf_iterator<char>());
   }
-  if (!upsert_block(content, block)) {
-    std::println("{}: already up to date", path.string());
+  if (!upsert_block(scratch, block)) {
+    if (!plan) std::println("{}: already up to date", path.string());
     return true;
   }
+
+  if (plan) {
+    plan->push_back(path.string() + ": " + (existed ? "update" : "create"));
+    return true;
+  }
+
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
   if (!out) {
     std::println(stderr, "culebra init: can't write '{}'", path.string());
     return false;
   }
-  out << content;
+  out << scratch;
   std::println("{}: {}", path.string(), existed ? "updated" : "created");
   return true;
 }
 
-bool setup_agent_instructions() {
+bool setup_agent_instructions(std::vector<std::string>* plan) {
   const docs::Topic* t = find_agent_topic();
   if (!t) return true;  // shouldn't happen — the topic ships with this binary
   std::string block = build_block(t->text);
@@ -546,17 +668,18 @@ bool setup_agent_instructions() {
     std::error_code ec;
     if (fs::exists(c, ec)) {
       any_existing = true;
-      ok &= write_agent_block_to(c, block, /*create_if_missing=*/false);
+      ok &= write_agent_block_to(c, block, /*create_if_missing=*/false, plan);
     }
   }
   if (!any_existing) {
-    ok &= write_agent_block_to("AGENTS.md", block, /*create_if_missing=*/true);
+    ok &= write_agent_block_to("AGENTS.md", block, /*create_if_missing=*/true,
+                               plan);
   }
   return ok;
 }
 
 void print_usage() {
-  std::println("Usage: culebra init");
+  std::println("Usage: culebra init [--yes|-y]");
   std::println("");
   std::println(
       "Set up this directory and this machine's editors for culebra"
@@ -569,33 +692,71 @@ void print_usage() {
   std::println(
       "  - install/update syntax highlighting and the `culebra dap` debug");
   std::println(
-      "    adapter for whichever of VSCode, Vim, Neovim this machine has");
+      "    adapter for whichever of VSCode, Vim, Neovim, Zed this machine");
+  std::println(
+      "    has (Zed still needs one manual step in its UI — see"
+      " `culebra docs tooling -g Zed`)");
   std::println("");
   std::println(
       "Safe to re-run any time: every step overwrites with whatever this");
   std::println("binary carries, so re-running after an upgrade is the update"
                " path.");
+  std::println("");
+  std::println(
+      "Prints what it would change and asks to confirm when run at an");
+  std::println(
+      "interactive terminal. Non-interactive runs (pipes, CI) and --yes/-y");
+  std::println("skip the prompt and apply immediately.");
 }
 
 }  // namespace
 
 int run_init(int argc, const char** argv) {
+  bool assume_yes = false;
   for (int i = 2; i < argc; i++) {
     std::string_view a = argv[i];
     if (a == "-h" || a == "--help") {
       print_usage();
       return 0;
     }
+    if (a == "--yes" || a == "-y") {
+      assume_yes = true;
+      continue;
+    }
     std::println(stderr, "culebra init: unknown argument {}", a);
     print_usage();
     return 2;
   }
 
+  std::vector<std::string> plan;
+  setup_agent_instructions(&plan);
+  setup_vscode(&plan);
+  setup_vim(&plan);
+  setup_zed(&plan);
+
+  if (plan.empty()) {
+    std::println("Nothing to do.");
+    return 0;
+  }
+
+  std::println("culebra init will:");
+  for (const std::string& line : plan) std::println("  - {}", line);
+
+  if (!assume_yes && stdin_is_interactive()) {
+    std::print("Proceed? [y/N] ");
+    std::string answer;
+    std::getline(std::cin, answer);
+    if (answer != "y" && answer != "Y" && answer != "yes") {
+      std::println("Aborted — no changes made.");
+      return 1;
+    }
+  }
+
   bool ok = true;
-  ok &= setup_agent_instructions();
-  ok &= setup_vscode();
-  ok &= setup_vim();
-  note_zed_if_present();
+  ok &= setup_agent_instructions(nullptr);
+  ok &= setup_vscode(nullptr);
+  ok &= setup_vim(nullptr);
+  ok &= setup_zed(nullptr);
 
   return ok ? 0 : 1;
 }

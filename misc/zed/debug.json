@@ -1,0 +1,10 @@
+[
+  {
+    "label": "Debug current Culebra file",
+    "adapter": "culebra",
+    "request": "launch",
+    "program": "$ZED_FILE",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "stopOnEntry": false
+  }
+]

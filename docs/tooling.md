@@ -433,13 +433,20 @@ Notes that apply to every editor:
 
 Run `culebra init` in your project directory to install or update the
 editor integration (syntax highlighting + the `culebra dap` debug
-adapter) for whichever of VSCode, Vim, or Neovim it finds on this
+adapter) for whichever of VSCode, Vim, Neovim, or Zed it finds on this
 machine, plus AI coding agent instructions — no source checkout
-needed, since the payload travels inside the binary. It's safe to
-re-run any time; every run overwrites with whatever this binary
-carries, so re-running after an upgrade is the update path. Zed needs
-a source checkout for now (see below) — `init` only tells you it
-noticed Zed is installed.
+needed, since the payload travels inside the binary. Zed is the one
+exception to "no source checkout needed" for its syntax grammar: Zed
+can only fetch a Tree-sitter grammar from a git repository, so `init`
+points it at this binary's release tag on the public repo instead of
+a local checkout (see the Zed section below for what that means and
+its one manual step in Zed's UI).
+
+`init` prints what it's about to do and, at an interactive terminal,
+asks you to confirm before touching anything; a non-interactive run
+(piped, CI) or `--yes`/`-y` skips the prompt and applies immediately.
+It's safe to re-run any time; every run overwrites with whatever this
+binary carries, so re-running after an upgrade is the update path.
 
 The per-editor steps below build the same integration from a source
 checkout instead — for contributing to it, or if `init` can't reach
@@ -540,33 +547,34 @@ from a source checkout.
 
 ### Zed
 
-`culebra init` only detects Zed and points here — see "Quick setup"
-above for why (the extension is fetched by Zed from a git checkout, which
-a binary-only download has none of).
-
 Zed needs an extension for both syntax highlighting (a Tree-sitter
 grammar) and debugging (a debug adapter must be *registered* by an
 extension — Zed can't point at an arbitrary DAP command from `debug.json`
-alone). Both ship as one dev extension. Set it up with:
+alone). Both ship as one dev extension.
 
-```sh
-misc/zed/install.sh
-```
+`culebra init` writes that extension the same way it lays down the
+VSCode/Vim payload — no source checkout needed for the adapter shim or
+language config, since they travel inside the binary. The one thing it
+can't avoid is how Zed fetches a Tree-sitter grammar: a dev extension can
+only name a git `repository` + `rev` + `path`, never bundle the parser
+source directly. So the extension `culebra init` writes points at this
+binary's `vX.Y.Z` release tag on the public repo
+(`github.com/yhirose/culebra`) instead of a local path — exact for a
+release download, since the binary and the tag always match. Editing the
+grammar itself needs a source checkout instead — see "Building from a
+source checkout" below.
 
-This generates the extension (the in-repo Tree-sitter grammar at
-`misc/zed/tree-sitter-culebra` plus a small Rust shim that registers the
-`culebra` debug adapter → `culebra dap`) and writes `.zed/debug.json` for
-the current project. Install it once in Zed:
+`init` writes the extension to `~/.local/share/culebra-zed-extension`
+and `.zed/debug.json` for the current project. Install it once in Zed:
 
 1. Command palette → **`zed: install dev extension`** → select the
-   directory the script printed (default
-   `~/.local/share/culebra-zed-extension`). Zed compiles the Rust shim to
+   directory `init` printed. Zed compiles the Rust adapter shim to
    `wasm32-wasip2`, so you need a recent Zed plus Rust with that target:
    `rustup target add wasm32-wasip2` (without it the build fails with
    "can't find crate for core" and the adapter never registers;
-   highlighting still works). `install.sh` warns if it's missing.
-2. Re-run `misc/zed/install.sh` and re-select the directory after pulling
-   grammar/adapter changes (it re-pins the commit).
+   highlighting still works).
+2. Re-run `culebra init` and re-select the directory after upgrading —
+   this re-pins the release tag.
 
 Then open a `.cul` file (it highlights), set a breakpoint, and run
 **"Debug current Culebra file"** from the debug panel. The generated
@@ -590,6 +598,22 @@ Then open a `.cul` file (it highlights), set a breakpoint, and run
 > the dev extension fails to build or the adapter doesn't launch, check
 > the Zed version against the `zed_extension_api` version in
 > `misc/zed/Cargo.toml`.
+
+#### Building from a source checkout
+
+Editing the grammar or the adapter itself needs `misc/zed/install.sh`
+instead of `culebra init` — it points Zed at your local checkout's
+`HEAD` (via `file://`), so uncommitted or unpushed changes show up
+immediately, which the release-tag path above can't do:
+
+```sh
+misc/zed/install.sh
+```
+
+This builds the same extension shape (grammar + adapter +
+`.zed/debug.json`) from `misc/zed/` directly. Re-run it — and re-select
+the directory in Zed — after pulling grammar/adapter changes; it
+re-pins the commit each time.
 
 ---
 

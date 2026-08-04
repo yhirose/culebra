@@ -47,20 +47,8 @@ cp "$SRC_DIR/src/culebra.rs" "$EXT/src/culebra.rs"
 # (debug_adapter_schemas/<adapter>.json); without it the adapter fails to load.
 cp "$SRC_DIR/debug_adapter_schemas/culebra.json" \
   "$EXT/debug_adapter_schemas/culebra.json"
-cat > "$EXT/extension.toml" <<TOML
-id = "culebra"
-name = "Culebra"
-version = "0.0.1"
-schema_version = 1
-description = "Syntax highlighting and debugging for the Culebra language."
-
-[grammars.culebra]
-repository = "file://$REPO"
-rev = "$REV"
-path = "misc/zed/tree-sitter-culebra"
-
-[debug_adapters.culebra]
-TOML
+sed -e "s|{{REPOSITORY}}|file://$REPO|" -e "s|{{REV}}|$REV|" \
+  "$SRC_DIR/extension.toml.template" > "$EXT/extension.toml"
 
 # 2. Write the project's debug scenarios. The adapter binary is supplied by the
 #    extension above, so the scenario only names the adapter + the program.
@@ -70,18 +58,7 @@ if [ -f "$DBG_DIR/debug.json" ]; then
   cp "$DBG_DIR/debug.json" "$DBG_DIR/debug.json.bak"
   echo "note: existing $DBG_DIR/debug.json backed up to debug.json.bak — merge if needed."
 fi
-cat > "$DBG_DIR/debug.json" <<'JSON'
-[
-  {
-    "label": "Debug current Culebra file",
-    "adapter": "culebra",
-    "request": "launch",
-    "program": "$ZED_FILE",
-    "cwd": "$ZED_WORKTREE_ROOT",
-    "stopOnEntry": false
-  }
-]
-JSON
+cp "$SRC_DIR/debug.json" "$DBG_DIR/debug.json"
 
 echo "wrote Zed extension to:   $EXT  (grammar @ ${REV})"
 echo "wrote debug scenarios to: $DBG_DIR/debug.json"

@@ -1,0 +1,12 @@
+id = "culebra"
+name = "Culebra"
+version = "0.0.1"
+schema_version = 1
+description = "Syntax highlighting and debugging for the Culebra language."
+
+[grammars.culebra]
+repository = "{{REPOSITORY}}"
+rev = "{{REV}}"
+path = "misc/zed/tree-sitter-culebra"
+
+[debug_adapters.culebra]
