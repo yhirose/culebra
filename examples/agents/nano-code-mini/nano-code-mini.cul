@@ -87,9 +87,8 @@ fn tool_grep(args) {
   let re = Regex.compile(args.pat)
   mut hits = []
   for p in FS.walk(args.path ?? '.') {
-    if !FS.is_file(p) {
-      continue
-    }
+    continue unless FS.is_file(p)
+
     try {
       for i, line in FS.read(p).lines().enumerate() {
         if re.test(line) {
@@ -100,7 +99,7 @@ fn tool_grep(args) {
         }
       }
     } catch _ {
-}
+    }
   }
 
   # The walk returns at 50, so whatever is left here is already under the cap.
@@ -175,6 +174,7 @@ fn run_tool(name, args) {
   if tool == nil {
     return "error: unknown tool {name}"
   }
+
   try {
     tool.run(args)
   } catch e {
@@ -251,9 +251,7 @@ fn main() {
 
       match user_input {
         '' => {
-          if !IO.stdin_is_terminal() {
-            break
-          }
+          break if !IO.stdin_is_terminal()
           continue
         },
         '/q' | 'exit' => break,
@@ -276,20 +274,23 @@ fn main() {
         }
 
         let content_blocks = response.content ?? []
-        mut tool_results = []
+        messages.push({role: 'assistant', content: content_blocks})
 
+        mut tool_results = []
         for block in content_blocks {
+          println()
           if block.type == 'text' {
-            println("\n{Term.cyan("\u23fa")} {render_markdown(block.text)}")
+            println("{Term.cyan("\u23fa")} {render_markdown(block.text)}")
           } else if block.type == 'tool_use' {
             let first_arg = "{block.input.values().first() ?? ''}"
             let label = Term.green("\u23fa {block.name.capitalize()}")
-            println("\n{label}({Term.dim(first_arg.slice(0, 50))})")
+            println("{label}({Term.dim(first_arg.slice(0, 50))})")
 
             let result = run_tool(block.name, block.input)
-            let lines = result.split("\n")
+
             # "+N lines" already signals more text, so multi-line skips
             # truncate's own ellipsis; single-line adds it when it cuts.
+            let lines = result.split("\n")
             let preview = lines.size() > 1
               ? "{lines[0].slice(0, 60)} ... +{lines.size() - 1} lines"
               : lines[0].truncate(60)
@@ -302,16 +303,13 @@ fn main() {
             })
           }
         }
-
-        messages.push({role: 'assistant', content: content_blocks})
-
         if tool_results.empty() {
           break
         }
         messages.push({role: 'user', content: tool_results})
       }
 
-      println('')
+      println()
     } catch e {
       if e.kind == 'Interrupted' {
         break
