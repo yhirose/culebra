@@ -1,0 +1,28 @@
+# Small formatting/parsing helpers not covered by the stdlib format-spec
+# mini-language — shared by the tools/analysis/*.cul scripts ported from
+# their Python originals.
+
+fn group_digits(s) {
+  let chars = s.graphemes().collect()
+  chars.reverse()
+  let groups = chars.iter().chunks(3).map(fn (c) { c.reverse(); c.join('') }).collect()
+  groups.reverse()
+  groups.join(',')
+}
+
+# Long -> decimal String with ',' every 3 digits. `std::format` has no `,`
+# type char and the `L` locale option is inert under the C locale, so
+# there is no format-spec way to get this.
+fn commas(n) {
+  n < 0 ? '-' + group_digits(to_string(-n)) : group_digits(to_string(n))
+}
+
+# Fixed-width hex String (as `nm -n` prints addresses) -> Long. Reuses
+# Encoding.hex.decode instead of a hand-rolled digit parser; raises
+# ValueError on odd-length / non-hex input, same as to_long does for an
+# unparseable decimal string.
+fn hex_to_long(s) {
+  Encoding.hex.decode(s).bytes().reduce(0, |acc, b| acc * 256 + b)
+}
+
+export { commas, hex_to_long }
