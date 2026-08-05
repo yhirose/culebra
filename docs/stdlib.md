@@ -5067,6 +5067,40 @@ through `dlopen` on Linux — so it starts on a machine that has none, and a
 program that never opens a window runs there unaffected. Asking for a window
 without an engine raises `webview: failed to create window`.
 
+### How the pieces fit together
+
+Three different things share this one feature, and it's easy to conflate
+them:
+
+| Component | What it is |
+| --- | --- |
+| `Desktop` | culebra's one-call facade — starts an HTTP server, opens a window pointed at it, blocks until the window closes, then stops the server |
+| `Webview.Window` | the raw native window binding — one OS window, backed by the platform's WebView engine, that can navigate to a URL or load raw HTML |
+| `window` | the standard JS **global object** — it exists inside the web page the native window is displaying. Plain JavaScript, not a culebra API |
+
+`Desktop.run` is built on `Webview.Window`: it starts a local HTTP server,
+then creates a window and navigates it to that server's loopback URL
+(`http://127.0.0.1:PORT`). From there, the native window and the page it
+renders talk to each other over two independent channels:
+
+- **Loopback HTTP.** The page's JS can call
+  `fetch('/__quit', {method: 'POST'})` against the server `Desktop.run`
+  started (the route is registered for you), and culebra code on the server
+  side can call `Desktop.quit()` / `Webview.Window.quit()` directly. This is
+  how server-side or page-side code tells the *native window* to close.
+- **Two properties on the page's `window`.** Before honoring the frame's own
+  close button, the native side checks whether the page's `window` defines
+  `__culebra_before_close__` — that function alone then decides whether and
+  when to actually close, by calling `window.__culebra_close__()` once ready.
+  This is how the *page* tells the *native window* it's safe to close, e.g.
+  after a confirmation dialog. See [The page's `window`
+  object](#the-pages-window-object) below.
+
+In short: `Desktop` orchestrates, `Webview.Window` is the native window it
+drives, and `window` is the ordinary browser global inside whatever page
+that window happens to be showing — culebra never creates or owns it, it
+only looks for two conventionally-named properties on it.
+
 ### `Desktop.run(config: Object) -> Nil`
 
 The one-call facade: start the server, open the window on it, block until
@@ -5123,15 +5157,6 @@ w.set_html('<h1>hi from culebra</h1>')
 w.run()
 ```
 
-**Confirming before the window closes.** Clicking the frame's own close
-button does not close the window outright. If the page defines
-`window.__culebra_before_close__`, that function alone decides whether and
-when to actually close (a confirmation dialog, an unsaved-changes check,
-etc.) — once ready, call `window.__culebra_close__()`, the same
-function an in-page quit button can call directly, `Desktop.run` or not.
-A page that doesn't define `__culebra_before_close__` keeps closing
-immediately, as before this existed.
-
 **When the window becomes visible.** On macOS the window stays transparent
 until the page puts its first frame on screen, so an app opens on its own
 content instead of flashing an empty white rectangle first. A page that never
@@ -5139,6 +5164,36 @@ reports a frame — JavaScript turned off, a navigation that never completes —
 gets the window shown anyway after 1.5 s, blank rather than invisible. Windows
 and Linux show the window as soon as `set_size` runs, so the empty frame is
 still briefly visible there.
+
+### The page's `window` object
+
+The native window and the page it displays coordinate a close through two
+conventionally-named properties culebra looks for on the page's own
+`window` — the standard JS global object, not anything culebra defines or
+owns. Nothing needs importing on the page side; culebra simply reads and
+calls whatever the page happens to put there.
+
+Clicking the frame's own close button does not close the window outright:
+
+1. Before closing, the native side checks whether the page defined
+   `window.__culebra_before_close__`.
+2. If it did, that function alone now decides whether and when to actually
+   close — show a confirmation dialog, run an unsaved-changes check,
+   whatever the page needs — and calls `window.__culebra_close__()` once
+   it's ready to proceed. That's the same function an in-page "Quit" button
+   can call directly, whether or not the app uses `Desktop.run`.
+3. A page that never defines `__culebra_before_close__` keeps closing
+   immediately, exactly as if this hook didn't exist.
+
+```js
+// in the page's own JS — not culebra code
+window.__culebra_before_close__ = () => {
+  if (confirm('Discard unsaved changes?')) {
+    window.__culebra_close__()
+  }
+  // returning without calling __culebra_close__() cancels the close
+}
+```
 
 ---
 
