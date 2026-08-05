@@ -50,8 +50,11 @@
   <div class="pg-toolbar">
     <button id="run" class="btn btn-primary" disabled>Run</button>
     <button id="stop" class="btn" disabled>Stop</button>
-    <select id="examples" aria-label="Load an example">
+    <select id="example-category" class="example-select" aria-label="Example category">
       <option value="">Examples…</option>
+    </select>
+    <select id="example-item" class="example-select" aria-label="Load an example" disabled>
+      <option value="">…</option>
     </select>
     <input id="args" type="text" spellcheck="false" autocomplete="off"
            placeholder="arguments → Sys.argv" aria-label="Command-line arguments">

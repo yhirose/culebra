@@ -169,7 +169,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
    picker and the argument box have nothing to do here. Run/Stop, the status
    and the panes stay: they are the part that is being embedded. */
 .embed .pg-header,
-.embed #examples,
+.embed .example-select,
 .embed #args,
 .embed .backend { display: none; }
 .embed .pg-toolbar { padding: 0.45rem 0.8rem; }
