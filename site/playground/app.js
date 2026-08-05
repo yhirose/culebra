@@ -10,7 +10,8 @@ const output = $("output");
 const runBtn = $("run");
 const stopBtn = $("stop");
 const clearBtn = $("clear");
-const examplesSel = $("examples");
+const exampleCatSel = $("example-category");
+const exampleItemSel = $("example-item");
 const argsInput = $("args");
 const status = $("status");
 const backendEl = $("backend");
@@ -148,28 +149,56 @@ function routeOutput(text) {
 // the copy and the fetch cannot drift. The worker mirrors them into its
 // in-memory filesystem under the same relative paths before the program runs.
 
-let EXAMPLE_PATHS = {};  // title -> path
-let EXAMPLE_ASSETS = {}; // title -> [path]
-let EXAMPLE_ARGS = {};   // title -> [arg], the program's Sys.argv here
+let EXAMPLE_CATALOG = [];  // [{name, examples: [{title, path, assets?, args?}]}]
+let EXAMPLE_PATHS = {};    // title -> path
+let EXAMPLE_ASSETS = {};   // title -> [path]
+let EXAMPLE_ARGS = {};     // title -> [arg], the program's Sys.argv here
+let EXAMPLE_CATEGORY = {}; // title -> category name
 let currentExample = null;
 
 async function loadExampleCatalog() {
   const res = await fetch("./examples.json");
-  const { categories } = await res.json();
-  for (const category of categories) {
-    const group = document.createElement("optgroup");
-    group.label = category.name;
+  ({ categories: EXAMPLE_CATALOG } = await res.json());
+  for (const category of EXAMPLE_CATALOG) {
+    const opt = document.createElement("option");
+    opt.value = category.name;
+    opt.textContent = category.name;
+    exampleCatSel.appendChild(opt);
     for (const example of category.examples) {
       EXAMPLE_PATHS[example.title] = example.path;
       EXAMPLE_ASSETS[example.title] = example.assets || [];
       EXAMPLE_ARGS[example.title] = (example.args || []).map(String);
-      const opt = document.createElement("option");
-      opt.value = example.title;
-      opt.textContent = example.title;
-      group.appendChild(opt);
+      EXAMPLE_CATEGORY[example.title] = category.name;
     }
-    examplesSel.appendChild(group);
   }
+  exampleItemSel.disabled = false;
+}
+
+// Rebuilds the item select for one category. Distinct from selectExample()
+// below: this alone doesn't move the item select's value onto anything in
+// particular (the browser default-selects the new first option), it just
+// keeps the two selects' cascade in sync.
+function populateExampleItems(categoryName) {
+  exampleItemSel.innerHTML = "";
+  const category = EXAMPLE_CATALOG.find((c) => c.name === categoryName);
+  if (!category) return;
+  for (const example of category.examples) {
+    const opt = document.createElement("option");
+    opt.value = example.title;
+    opt.textContent = example.title;
+    exampleItemSel.appendChild(opt);
+  }
+}
+
+// Points both selects at `title` — the category select, and the item select
+// after populateExampleItems() rebuilds it for that category — without
+// loading it into the editor. Callers that also want it loaded (boot, for a
+// `?example=` match) call loadExample() themselves once they have it synced.
+function selectExample(title) {
+  const category = EXAMPLE_CATEGORY[title];
+  exampleCatSel.value = category;
+  populateExampleItems(category);
+  exampleItemSel.value = title;
 }
 
 async function loadExample(title) {
@@ -356,13 +385,20 @@ clearBtn.addEventListener("click", () => {
   output.textContent = "";
   output.classList.remove("err");
 });
-examplesSel.addEventListener("change", () => {
-  const name = examplesSel.value;
-  if (!name) return;
-  loadExample(name).then((src) => {
+function loadExampleIntoEditor(title) {
+  return loadExample(title).then((src) => {
     editor.setValue(src);
     editor.focus();
   });
+}
+exampleCatSel.addEventListener("change", () => {
+  populateExampleItems(exampleCatSel.value);
+  const name = exampleItemSel.value;
+  if (name) loadExampleIntoEditor(name);
+});
+exampleItemSel.addEventListener("change", () => {
+  const name = exampleItemSel.value;
+  if (name) loadExampleIntoEditor(name);
 });
 // Enter in a command line runs it, the way it would in a shell.
 argsInput.addEventListener("keydown", (e) => {
@@ -871,12 +907,16 @@ function maybeAutorun() {
 loadExampleCatalog()
   .then(() => {
     if (seeded !== null) return seeded;
-    if (exampleParam === null) return loadExample("Hello");
+    if (exampleParam === null) {
+      selectExample("Hello");
+      return loadExample("Hello");
+    }
     if (Object.prototype.hasOwnProperty.call(EXAMPLE_PATHS, exampleParam)) {
-      examplesSel.value = exampleParam;
+      selectExample(exampleParam);
       return loadExample(exampleParam);
     }
     console.error("ignoring unknown ?example=", exampleParam);
+    selectExample("Hello");
     return loadExample("Hello");
   })
   .then((src) => {
