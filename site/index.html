@@ -187,11 +187,11 @@
     </div>
 
     <section class="section">
-      <h2>Try it on your machine</h2>
+      <h2>Try culebra on your machine</h2>
       <p>Paste this into a terminal on macOS (Apple Silicon) — it downloads
-        culebra, writes the example above to <code>hello.cul</code>, and runs
-        that same source file three ways: as a script, JIT-compiled, and
-        built into a standalone binary.</p>
+        culebra and writes a one-line program to <code>hello.cul</code>, then
+        runs that same source file three ways: as a script, JIT-compiled, and
+        built into a standalone binary — all three print the same line.</p>
       <div class="sample-wrap">
         <div class="sample-bar">
           <span class="name">quickstart.sh</span>
@@ -202,15 +202,7 @@ export PATH="$PWD/culebra-macos-arm64:$PATH"
 culebra --version
 
 cat &gt; hello.cul &lt;&lt;'EOF'
-let people = [
-  { name: 'Taro', greeting: 'Konnichiwa' },
-  { name: 'John', greeting: 'Hello' },
-  { name: 'Ada',  greeting: 'Bonjour' },
-]
-
-for p in people.sorted_by(|p| p.name) {
-  println("{p.greeting}, {p.name}!")
-}
+println("Hello!")
 EOF
 
 culebra hello.cul                            # interpreter
