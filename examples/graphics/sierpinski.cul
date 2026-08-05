@@ -1,0 +1,29 @@
+let SIZE = 512
+let DEPTH = 7
+
+let WHITE = Canvas.rgba(255, 255, 255)
+let BLACK = Canvas.rgba(0, 0, 0)
+
+let directions = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)]
+
+fn sierpinski(ox, oy, s, depth) {
+  if depth == 0 {
+    Canvas.triangle(ox, oy, ox + s, oy, ox, oy + s, WHITE)
+  } else {
+    half = s * 0.5
+    for dx, dy in directions {
+      fn(ox + half * dx, oy + half * dy, half, depth - 1)
+    }
+  }
+}
+
+Canvas.title('sierpinski')
+Canvas.run(SIZE, SIZE, fn () {
+  if Canvas.key('escape') {
+    false
+  } else {
+    Canvas.clear(BLACK)
+    sierpinski(0.0, 0.0, to_float(SIZE), DEPTH)
+    true
+  }
+})
