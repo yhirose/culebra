@@ -260,10 +260,10 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
         <div class="showcase-card">
           <h3>A desktop app</h3>
           <pre class="sample">Desktop.run({
-  title: "Hello from culebra",
-  assets: Embed.dir("dist"),             # index.html, favicon.ico, ...
-  routes: fn (srv) {
-    srv.get("/api/hello", fn (req) { "hi from the embedded server" })
+  title: <span class="s">"Hello from culebra"</span>,
+  assets: Embed.dir(<span class="s">"dist"</span>),             <span class="c"># index.html, favicon.ico, ...</span>
+  routes: <span class="k">fn</span> (srv) {
+    srv.get(<span class="s">"/api/hello"</span>, <span class="k">fn</span> (req) { <span class="s">"hi from the embedded server"</span> })
   },
 })</pre>
           <p class="fine-print">That's the whole app — a local server,
@@ -289,18 +289,18 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
         </div>
         <div class="showcase-card">
           <h3>A C++ host</h3>
-          <pre class="sample">#include &lt;culebra.h&gt;
-#include &lt;stdlib_interp.h&gt;
+          <pre class="sample"><span class="k">#include</span> &lt;culebra.h&gt;
+<span class="k">#include</span> &lt;stdlib_interp.h&gt;
 
-int main() {
-  auto env = culebra::environment();  // stdlib bound
+<span class="k">int</span> main() {
+  <span class="k">auto</span> env = culebra::environment();  <span class="c">// stdlib bound</span>
 
   std::vector&lt;std::string&gt; msgs;
-  auto ast = culebra::parse("&lt;inline&gt;", "1 + 2", 5, msgs);
+  <span class="k">auto</span> ast = culebra::parse(<span class="s">"&lt;inline&gt;"</span>, <span class="s">"1 + 2"</span>, 5, msgs);
 
   culebra::Value val;
   culebra::interpret(ast, env, val, msgs, culebra::Debugger());
-  // val.to_long() == 3
+  <span class="c">// val.to_long() == 3</span>
 }</pre>
           <p class="fine-print">No LLVM dependency — the interpreter drops
             straight into a C++23 host through a minimal environment API.
