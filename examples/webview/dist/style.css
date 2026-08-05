@@ -10,3 +10,12 @@ input { flex: 1; padding: .6rem .8rem; border-radius: .5rem;
 button { padding: .6rem 1rem; border-radius: .5rem; border: 0;
          background: #4f6dff; color: white; cursor: pointer; }
 .reply { margin-top: 1rem; opacity: .9; min-height: 1.4em; color: #9ad0ff; }
+
+.confirm-overlay { position: fixed; inset: 0; display: grid; place-items: center;
+                    background: rgba(4, 6, 16, .55); }
+.confirm-overlay[hidden] { display: none; }
+.confirm-box { background: #131a33; border: 1px solid #2a3358; border-radius: .75rem;
+               padding: 1.5rem; min-width: 16rem; box-shadow: 0 1rem 2rem rgba(0, 0, 0, .4); }
+.confirm-box p { margin: 0 0 1.25rem; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: .5rem; }
+button.secondary { background: #2a3358; }

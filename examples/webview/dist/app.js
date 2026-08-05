@@ -14,9 +14,42 @@ async function send() {
   document.getElementById("reply").textContent = d.reply;
 }
 document.getElementById("send").addEventListener("click", send);
-// Close the app over the HTTP bridge. Harmless (404, ignored) if the server
-// didn't register /__quit.
-document.getElementById("quit").addEventListener("click", () => {
-  fetch("/__quit", { method: "POST" }).catch(() => {});
-});
+
+// A centered, in-page confirmation — not window.confirm() — so it matches
+// the app's own look. Resolves true/false; never rejects.
+function confirmDialog(message) {
+  return new Promise((resolve) => {
+    const overlay = document.getElementById("confirmOverlay");
+    const okBtn = document.getElementById("confirmOk");
+    const cancelBtn = document.getElementById("confirmCancel");
+    document.getElementById("confirmMessage").textContent = message;
+    overlay.hidden = false;
+    const done = (result) => {
+      overlay.hidden = true;
+      okBtn.removeEventListener("click", onOk);
+      cancelBtn.removeEventListener("click", onCancel);
+      resolve(result);
+    };
+    const onOk = () => done(true);
+    const onCancel = () => done(false);
+    okBtn.addEventListener("click", onOk);
+    cancelBtn.addEventListener("click", onCancel);
+  });
+}
+
+async function requestQuit() {
+  const ok = await confirmDialog("Would you like to quit?");
+  if (!ok) return;
+  // The native window's own close, bound by the Webview runtime — the same
+  // call a raw Webview.Window app (no server) would use. Desktop.run also
+  // exposes /__quit over HTTP, for closing the app from outside the window.
+  window.__culebra_close__();
+}
+document.getElementById("quit").addEventListener("click", requestQuit);
+
+// Opt-in hook the native runtime calls when the window frame's close button
+// is clicked, instead of closing immediately. Without this, the frame closes
+// the app straight away (see culebra_rt_webview.cc).
+window.__culebra_before_close__ = requestQuit;
+
 load();

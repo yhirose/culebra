@@ -5123,6 +5123,15 @@ w.set_html('<h1>hi from culebra</h1>')
 w.run()
 ```
 
+**Confirming before the window closes.** Clicking the frame's own close
+button does not close the window outright. If the page defines
+`window.__culebra_before_close__`, that function alone decides whether and
+when to actually close (a confirmation dialog, an unsaved-changes check,
+etc.) — once ready, call `window.__culebra_close__()`, the same
+function an in-page quit button can call directly, `Desktop.run` or not.
+A page that doesn't define `__culebra_before_close__` keeps closing
+immediately, as before this existed.
+
 **When the window becomes visible.** On macOS the window stays transparent
 until the page puts its first frame on screen, so an app opens on its own
 content instead of flashing an empty white rectangle first. A page that never
