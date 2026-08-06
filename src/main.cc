@@ -1039,25 +1039,14 @@ int run_build(const BuildOptions& opts) {
   // implicit -lstdc++ so the experimental lib resolves against the base.
   // ws2_32 mirrors the driver link (see CMakeLists WIN32 block): net.h reaches
   // the base runtime archive via stdlib_interp.h, so even a socket-free program
-  // pulls Winsock out of libculebra_rt.a.
-  // CULEBRA_SSL_LINK rides along for the same reason, one step further. The
-  // core archive's Http entry points are weak stubs (CULEBRA_RT_HTTP_REQUEST_-
-  // WEAK), but httplib's Windows-only TLS code -- schannel cert verification,
-  // the SSL stream -- still lands in that object, so the archive carries
-  // undefined OpenSSL/zlib/crypt32 references a non-Http program never calls.
-  // ELF and Mach-O dead-strip those sections; ld for PE diagnoses the
-  // references before --gc-sections runs, so Windows cannot gate this on use
-  // and every AOT binary pays the ~4 MB. Duplicated on the link line when the
-  // Http axis also fires, which the linker dedupes.
-  std::string win_static =
+  // pulls Winsock out of libculebra_rt.a. OpenSSL/zlib do NOT need the same
+  // treatment: the core archive declares no httplib type (http.h gates the
+  // include), so only the Http axis below supplies CULEBRA_SSL_LINK.
+  const char* win_static =
       "-static -static-libgcc -static-libstdc++ -lstdc++exp -lws2_32";
-  if (*CULEBRA_SSL_LINK) {
-    win_static += ' ';
-    win_static += CULEBRA_SSL_LINK;
-  }
 #else
   const char* no_pie = target_is_macho ? "" : "-no-pie";
-  std::string win_static;
+  const char* win_static = "";
 #endif
 
   // Assembled in link order: driver, target selection, inputs, force-loaded
