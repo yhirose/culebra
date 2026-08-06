@@ -4757,10 +4757,11 @@ inline JitValue _ns_http_client(JitValue* a, int64_t n) {
 // route handler closure for the server's lifetime (released when the server is
 // closed, via the shared_ptr holder captured in the RouteHandler).
 
-// Build the `req` Object from an httplib request (mirrors interp
+// Build the `req` Object from a neutral server request (mirrors interp
 // http_request_to_object): method/path/body Strings + headers/query/params
 // Objects of String.
-inline JitObject* _jit_http_request_to_object(const httplib::Request& q) {
+inline JitObject* _jit_http_request_to_object(
+    const culebra::http::ServerRequest& q) {
   auto* o = culebra_runtime_object_new();
   culebra_runtime_object_set(o, "method", false, TAG_STRING,
       reinterpret_cast<int64_t>(_culebra_heap_str(q.method)), 0, 0);
@@ -4768,22 +4769,25 @@ inline JitObject* _jit_http_request_to_object(const httplib::Request& q) {
       reinterpret_cast<int64_t>(_culebra_heap_str(q.path)), 0, 0);
   culebra_runtime_object_set(o, "body", false, TAG_STRING,
       reinterpret_cast<int64_t>(_culebra_heap_str(q.body)), 0, 0);
+  // culebra_runtime_object_set is a codegen-facing ABI symbol and takes a
+  // `const char*`, but only ever reads it as a string_view and interns the
+  // name into the shape — so the NUL-terminated temporary below is enough.
   auto* headers = culebra_runtime_object_new();
   for (const auto& [k, v] : q.headers)
-    culebra_runtime_object_set(headers, k.c_str(), false, TAG_STRING,
-        reinterpret_cast<int64_t>(_culebra_heap_str(v)), 0, 0);
+    culebra_runtime_object_set(headers, std::string(k).c_str(), false,
+        TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(v)), 0, 0);
   culebra_runtime_object_set(o, "headers", false, TAG_OBJECT,
       reinterpret_cast<int64_t>(headers), 0, 0);
   auto* query = culebra_runtime_object_new();
   for (const auto& [k, v] : q.params)
-    culebra_runtime_object_set(query, k.c_str(), false, TAG_STRING,
-        reinterpret_cast<int64_t>(_culebra_heap_str(v)), 0, 0);
+    culebra_runtime_object_set(query, std::string(k).c_str(), false,
+        TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(v)), 0, 0);
   culebra_runtime_object_set(o, "query", false, TAG_OBJECT,
       reinterpret_cast<int64_t>(query), 0, 0);
   auto* params = culebra_runtime_object_new();
   for (const auto& [k, v] : q.path_params)
-    culebra_runtime_object_set(params, k.c_str(), false, TAG_STRING,
-        reinterpret_cast<int64_t>(_culebra_heap_str(v)), 0, 0);
+    culebra_runtime_object_set(params, std::string(k).c_str(), false,
+        TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(v)), 0, 0);
   culebra_runtime_object_set(o, "params", false, TAG_OBJECT,
       reinterpret_cast<int64_t>(params), 0, 0);
   return o;
@@ -4795,8 +4799,8 @@ inline JitObject* _jit_http_request_to_object(const httplib::Request& q) {
 // (_jit_http_try_stream_response). A present, non-nil field of the wrong type is
 // a TypeError — caught by the trampoline as a 500 — not a silently-defaulted
 // value (interp reads these via to_long / to_string_view, same rejection).
-inline std::string _jit_http_apply_response_meta(JitObject* o,
-                                                 httplib::Response& res) {
+inline std::string _jit_http_apply_response_meta(
+    JitObject* o, culebra::http::ServerResponse& res) {
   int64_t status = 200;
   size_t si = o->find_slot("status");
   if (si != static_cast<size_t>(-1) && o->slots[si].value.tag != TAG_NIL) {
@@ -4805,7 +4809,7 @@ inline std::string _jit_http_apply_response_meta(JitObject* o,
       culebra::throw_type_mismatch("Long", _culebra_tag_name(v.tag), 0, 0);
     status = v.data;
   }
-  res.status = static_cast<int>(status);
+  culebra::http::http_res_set_status(res, static_cast<int>(status));
   std::string content_type = "text/plain";
   size_t ci = o->find_slot("content_type");
   if (ci != static_cast<size_t>(-1) && o->slots[ci].value.tag != TAG_NIL) {
@@ -4824,26 +4828,28 @@ inline std::string _jit_http_apply_response_meta(JitObject* o,
         JitValue v = h->slots[k].value;
         if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW)
           culebra::throw_type_mismatch("String", _culebra_tag_name(v.tag), 0, 0);
-        res.set_header(std::string(h->shape->names[k]),
-                       std::string(_culebra_str_view(v.tag, v.data)));
+        culebra::http::http_res_set_header(
+            res, std::string(h->shape->names[k]),
+            std::string(_culebra_str_view(v.tag, v.data)));
       }
     }
   }
   return content_type;
 }
 
-// Apply a handler's return value to the httplib response (mirrors interp
+// Apply a handler's return value to the response (mirrors interp
 // http_apply_response): String → 200 text/plain; Object → status/body/
 // headers/content_type with defaults; nil → 200 empty; else TypeError.
-inline void _jit_http_apply_response(JitValue ret, httplib::Response& res) {
+inline void _jit_http_apply_response(JitValue ret,
+                                     culebra::http::ServerResponse& res) {
   if (ret.tag == TAG_NIL) {
-    res.status = 200;
+    culebra::http::http_res_set_status(res, 200);
     return;
   }
   if (ret.tag == TAG_STRING || ret.tag == TAG_STRINGVIEW) {
-    res.status = 200;
-    res.set_content(std::string(_culebra_str_view(ret.tag, ret.data)),
-                    "text/plain");
+    culebra::http::http_res_set_status(res, 200);
+    culebra::http::http_res_set_content(
+        res, std::string(_culebra_str_view(ret.tag, ret.data)), "text/plain");
     return;
   }
   if (ret.tag == TAG_OBJECT) {
@@ -4857,7 +4863,7 @@ inline void _jit_http_apply_response(JitValue ret, httplib::Response& res) {
         culebra::throw_type_mismatch("String", _culebra_tag_name(v.tag), 0, 0);
       body = std::string(_culebra_str_view(v.tag, v.data));
     }
-    res.set_content(body, content_type);
+    culebra::http::http_res_set_content(res, std::move(body), content_type);
     return;
   }
   throw culebra::CulebraError(
@@ -4899,7 +4905,8 @@ inline JitObject* _jit_make_http_sink_handle(int64_t sink_id) {
 // fields, same order, same TypeError messages as _jit_http_apply_response) and
 // return true; the caller then skips _jit_http_apply_response. body + stream is
 // a TypeError. A mid-stream exception aborts the connection.
-inline bool _jit_http_try_stream_response(JitValue ret, httplib::Response& res) {
+inline bool _jit_http_try_stream_response(JitValue ret,
+                                          culebra::http::ServerResponse& res) {
   if (ret.tag != TAG_OBJECT) return false;
   auto* o = reinterpret_cast<JitObject*>(ret.data);
   size_t sti = o->find_slot("stream");
@@ -4927,7 +4934,7 @@ inline bool _jit_http_try_stream_response(JitValue ret, httplib::Response& res) 
                                culebra_runtime_value_release(
                                    TAG_FUNC, reinterpret_cast<int64_t>(p));
                              });
-  culebra::http::http_server_set_stream(
+  culebra::http::http_res_set_stream(
       res, content_type, [keep](int64_t sink_id) -> bool {
         auto* cls = reinterpret_cast<JitClosure*>(keep.get());
         try {
@@ -5187,8 +5194,9 @@ inline JitValue _jit_http_server_do_serve(int64_t id, int64_t workers,
       std::string rerr;
       if (recs[i].method == "WS") {
         culebra::http::WsHandler wh =
-            [ri](const httplib::Request& q, httplib::ws::WebSocket& ws) {
-              int64_t wsid = culebra::http::ws_register_server(&ws);
+            [ri](const culebra::http::ServerRequest& q,
+                culebra::http::WebSocketRef* ws) {
+              int64_t wsid = culebra::http::ws_register_server(ws);
               try {
                 JitOwnedVal req(JitValue{
                     TAG_OBJECT,
@@ -5209,7 +5217,8 @@ inline JitValue _jit_http_server_do_serve(int64_t id, int64_t workers,
         culebra::http::http_server_ws(id, recs[i].pattern, std::move(wh), rerr);
       } else {
         culebra::http::RouteHandler rh =
-            [ri](const httplib::Request& q, httplib::Response& res) {
+            [ri](const culebra::http::ServerRequest& q,
+                culebra::http::ServerResponse& res) {
               try {
                 JitValue req{TAG_OBJECT, reinterpret_cast<int64_t>(
                                              _jit_http_request_to_object(q))};
@@ -5223,8 +5232,9 @@ inline JitValue _jit_http_server_do_serve(int64_t id, int64_t workers,
                 if (!_jit_http_try_stream_response(ret.borrow(), res))
                   _jit_http_apply_response(ret.borrow(), res);
               } catch (const std::exception& e) {
-                res.status = 500;
-                res.set_content(e.what(), "text/plain");
+                culebra::http::http_res_set_status(res, 500);
+                culebra::http::http_res_set_content(res, e.what(),
+                                                    "text/plain");
               }
             };
         culebra::http::http_server_route(id, recs[i].method, recs[i].pattern,

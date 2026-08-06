@@ -179,9 +179,12 @@ if(CULEBRA_ENABLE_HTTP)
   add_compile_definitions(CULEBRA_HTTP_ENABLED CPPHTTPLIB_OPENSSL_SUPPORT
                           CPPHTTPLIB_ZLIB_SUPPORT)
   # Make OpenSSL headers visible to every TU that includes httplib.h — notably
-  # the culebra_rt archives, which compile httplib.h but don't link it (the AOT
-  # consumer's link resolves the symbols via _ssl_link). zlib headers are added
-  # unconditionally above.
+  # culebra_rt_http (the Http feature archive), which compiles httplib.h but
+  # doesn't link it (the AOT consumer's link resolves the symbols via
+  # _ssl_link). The core archive (culebra_rt) no longer includes httplib.h at
+  # all — see http.h's CULEBRA_RT_HTTP_REQUEST_WEAK include guard — so it needs
+  # neither these headers nor _ssl_link. zlib headers are added unconditionally
+  # above.
   include_directories(${OPENSSL_INCLUDE_DIR})
 
   # Link line reused by the driver, the smoke exes, and (as a string) the AOT

@@ -726,17 +726,27 @@ inline std::optional<std::string> hex_decode(std::string_view in) {
   return out;
 }
 
-// Percent-encode per RFC 3986: the unreserved set `A-Za-z0-9-_.~` is kept
-// verbatim, every other byte becomes `%XX` with upper-case hex (so a space
-// is `%20`, not `+`). Shared by the interp and JIT `Encoding.url.*` adapters.
-inline std::string url_encode(std::string_view in) {
+// Percent-encode: the RFC 3986 unreserved set `A-Za-z0-9-_.~` plus whatever
+// `extra_unreserved` lists is kept verbatim, every other byte becomes `%XX`
+// with upper-case hex (so a space is `%20`, not `+`). Byte-oriented, so UTF-8
+// is encoded as its bytes.
+//
+// `extra_unreserved` is what separates the two percent-encodings culebra
+// speaks: RFC 3986 for `Encoding.url.*` (nothing extra) and ECMA-262
+// encodeURIComponent for HTTP query strings and form bodies (`!*'()` — see
+// http.h's percent_encode_component).
+inline std::string percent_encode(std::string_view in,
+                                  std::string_view extra_unreserved = {}) {
   static const char tbl[] = "0123456789ABCDEF";
   std::string out;
-  out.reserve(in.size());
+  // Enough for a run of unreserved bytes plus a few escapes, so the common
+  // "mostly unreserved" input never reallocates.
+  out.reserve(in.size() + in.size() / 2);
   for (unsigned char c : in) {
     if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
         (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' ||
-        c == '~') {
+        c == '~' ||
+        extra_unreserved.find(static_cast<char>(c)) != std::string_view::npos) {
       out += static_cast<char>(c);
     } else {
       out += '%';
@@ -745,6 +755,12 @@ inline std::string url_encode(std::string_view in) {
     }
   }
   return out;
+}
+
+// RFC 3986 percent-encoding. Backs the interp and JIT `Encoding.url.*`
+// adapters.
+inline std::string url_encode(std::string_view in) {
+  return percent_encode(in);
 }
 
 // Decode percent-encoding: `%XX` (either hex case) becomes its byte. A `%`

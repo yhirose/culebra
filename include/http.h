@@ -1,11 +1,16 @@
 #pragma once
 
-// Type-neutral HTTP client core for the Http namespace.
+// Type-neutral HTTP core for the Http namespace: both the client (a request)
+// and server (a route handler) halves.
 //
 // No dependency on culebra Value / JitValue / GC: both the interp and JIT
 // backends call http_request() and adapt HttpResult into their own object
-// representation. Keeping this header value-neutral lets stdlib_interp.h and
-// stdlib_jit.h include it without pulling each other in (mirrors proc.h).
+// representation, and both build a server handler's request/response Object
+// from the neutral ServerRequest/ServerResponse below. Keeping this header
+// value-neutral lets stdlib_interp.h and stdlib_jit.h include it without
+// pulling each other in (mirrors proc.h) — and lets the core runtime archive
+// (CULEBRA_RT_HTTP_REQUEST_WEAK) compile the whole binding surface without
+// ever declaring an httplib type; see the include guard below.
 //
 //   http_request — one request, blocking. Builds a cpp-httplib Client from the
 //                  URL origin and sends a single Request; a transport failure
@@ -23,13 +28,26 @@
 #include <deque>
 #include <fstream>
 #include <functional>
-#include <httplib.h>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
+
+// Included only where a body actually instantiates an httplib type (STRONG,
+// or neither WEAK nor STRONG — the header-only / in-process JIT / http_test
+// configurations). The core runtime archive (CULEBRA_RT_HTTP_REQUEST_WEAK)
+// compiles the stubs alone: merely *declaring* httplib::SSLClient / SSLServer
+// / SSLSocketStream emits their vtables (plus the digest-auth hashes) — 33
+// undefined OpenSSL and 6 zlib references that ELF and Mach-O dead-strip but
+// PE's ld reports before --gc-sections runs. Gating the include is what lets a
+// Windows AOT binary stop linking OpenSSL/zlib unconditionally (src/main.cc,
+// win_static) for a program that never uses Http.
+#if !defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+#include <httplib.h>
+#endif
 
 #include <rt_shared_tls.h>  // CULEBRA_RT_CORE_OWNED (one owner per thread_local)
 #include <shared.h>  // throw_if_interrupted / culebra_g_sigint (Ctrl+C wiring)
@@ -217,37 +235,59 @@ inline bool split_url(const std::string& url, std::string& origin,
   return true;
 }
 
+// Percent-encode one URI component: RFC 3986's unreserved set plus `!*'()`,
+// which is ECMA-262 encodeURIComponent — and what vendored cpp-httplib's
+// encode_uri_component does. Those specs are the authority here, not httplib,
+// so this rides culebra's own encoder rather than being gated on
+// CULEBRA_RT_HTTP_REQUEST_WEAK: the Http bindings call it for `form:` bodies
+// and the core archive compiles them too, so a weak stub would make a pure
+// function silently depend on whether the Http feature archive got
+// force-loaded. Byte-for-byte equivalence with httplib is asserted for all
+// 256 byte values in test/http_test.cc.
+inline std::string percent_encode_component(std::string_view s) {
+  return culebra::percent_encode(s, "!*'()");
+}
+
 // Percent-encode name/value pairs as `k=v&k2=v2` (application/x-www-form-
 // urlencoded form). Shared by query params (`?`+this) and `form:` bodies.
 inline std::string encode_query(const HeaderList& pairs) {
   std::string q;
   for (const auto& [k, v] : pairs) {
     if (!q.empty()) q += "&";
-    q += httplib::encode_uri_component(k) + "=" + httplib::encode_uri_component(v);
+    q += percent_encode_component(k) + "=" + percent_encode_component(v);
   }
   return q;
 }
 
 // http_request and the Http.client functions are the single OpenSSL/zlib choke:
 // httplib::Client (the only code that pulls in TLS + gzip) is instantiated only
-// inside the bodies below. Their linkage is partitioned across the AOT runtime
-// archives exactly like tensor_eval_node:
+// inside the bodies below; on the server side, only the httplib adapters
+// inside http_server_route/_ws and the http_res_* response setters
+// setters touch httplib::Response. Their linkage is partitioned across the AOT
+// runtime archives exactly like tensor_eval_node:
 //   - core archive   (CULEBRA_RT_HTTP_REQUEST_WEAK):   weak stubs, never
-//     touch httplib::Client, so no CALL of ours reaches ssl/zlib.
+//     touch httplib::Client/Server, so no CALL of ours reaches ssl/zlib —
+//     and, since the binding layer (stdlib_interp.h/stdlib_jit.h) names only
+//     the neutral ServerRequest/ServerResponse, this TU never *declares* an
+//     httplib type either (httplib.h itself is `#if`-gated out above).
 //   - http archive   (CULEBRA_RT_HTTP_REQUEST_STRONG): strong real bodies,
 //     force-loaded only when the program uses Http (overrides the stubs).
 //   - header-only / in-process JIT (neither): the normal inline bodies.
 //
-// The stub archive still carries ~32 undefined OpenSSL references anyway:
-// including httplib.h emits SSLClient / SSLServer / SSLSocketStream vtables and
-// the digest-auth hashes whatever we do, and stdlib_interp.h's Http bindings —
-// compiled here — name httplib::Request / Response, so the include cannot be
-// gated out. ELF and Mach-O dead-strip them; PE's ld reports them before
-// --gc-sections runs, which is why Windows links OpenSSL into every AOT binary
-// (src/main.cc, win_static). Closing that means moving the binding surface into
-// the Http archive, not compiling this one without TLS: the two configurations
-// disagree about httplib's inline bodies and the linker folds them across the
-// archives, which segfaults the first Http program built that way (measured).
+// A program that never uses Http therefore links no OpenSSL/zlib symbol at
+// all (src/main.cc's win_static no longer appends CULEBRA_SSL_LINK
+// unconditionally). This used to be impossible: including httplib.h emits
+// SSLClient/SSLServer/SSLSocketStream vtables and the digest-auth hashes
+// regardless of whether anything calls them (ELF/Mach-O dead-strip the
+// resulting undefined OpenSSL references; PE's ld reports them before
+// --gc-sections runs), and the binding layer used to name httplib::Request/
+// Response directly, so the include could not be gated out. Moving the
+// binding surface's *types* — not its TLS configuration — onto a neutral
+// shape is what closes it: compiling this TU without TLS (e.g.
+// -UCPPHTTPLIB_OPENSSL_SUPPORT for the core archive alone) is still not an
+// option, since the two configurations would disagree about httplib's inline
+// bodies and the linker folds them across the archives, segfaulting the
+// first Http program built that way (measured).
 #if defined(CULEBRA_RT_HTTP_REQUEST_STRONG)
 #define CULEBRA_RT_HTTP_LINKAGE
 #elif defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
@@ -670,23 +710,70 @@ CULEBRA_RT_HTTP_LINKAGE void http_client_close(int64_t id) {
 // matched route, calls back into a culebra handler closure. Invoking the
 // closure is backend-specific (interp call_closure / JIT _culebra_invoke1), so
 // this core stays value-neutral — the backend hands us a RouteHandler that
-// reads the httplib request and fills the response. Handlers always run on a
-// CulebraWorkerPool (one culebra runtime per worker thread; a value/GC is
-// thread_local and non-sendable), never on the accept loop — so a slow handler
-// can't block accepting new connections, and handlers must be Sendable.
+// reads the neutral ServerRequest and fills the ServerResponse. Handlers always
+// run on a CulebraWorkerPool (one culebra runtime per worker thread; a
+// value/GC is thread_local and non-sendable), never on the accept loop — so a
+// slow handler can't block accepting new connections, and handlers must be
+// Sendable.
 
-// Backend-supplied per-route handler: read the request, fill the response. This
-// is exactly httplib's Handler type; declaring it pulls no TLS symbol (only
-// instantiating httplib::Server / httplib::Client does), so it stays ungated.
+// The non-owning counterpart of HeaderList: (key, value) views into whatever
+// parsed them. Used for a received request, whose fields all point into the
+// live httplib::Request.
+using HeaderViews =
+    std::vector<std::pair<std::string_view, std::string_view>>;
+
+// One received request, mirrored out of httplib::Request by an adapter inside
+// http_server_route/_ws (_http_make_request, below) so the binding layer — and
+// therefore the core runtime archive — needs no httplib declaration.
+//
+// Every field is a view into the live httplib::Request, which outlives the
+// handler call — nothing here is copied; the backends copy straight into their
+// own values (the same single copy they always did). Only the three lists are
+// materialized at all, because httplib's containers are httplib types, and the
+// adapter builds them in iteration order, which is the order the backends
+// insert into the Object they build.
+struct ServerRequest {
+  std::string_view method;  // "GET" / "POST" / ...
+  std::string_view path;
+  std::string_view body;
+  HeaderViews headers;      // received headers
+  HeaderViews params;       // parsed query string
+  HeaderViews path_params;  // matched route parameters (":id" etc.)
+};
+
+// A borrowed handle on the httplib::Response a handler is filling — really an
+// httplib::Response*, opaque here. http_res_set_status/header/content/stream
+// (below) are the whole mutation surface and apply immediately (no buffering),
+// so a handler that throws partway through a malformed response Object leaves
+// exactly the fields it had already set — matching http_apply_response_meta's
+// field-by-field application order.
+//
+// A wrapper around void* rather than an incomplete type (the shape
+// WebSocketRef uses) because the adapter has to *create* one per request, and
+// an incomplete type has no storage; going through void* keeps the cast a
+// plain static_cast back to the original type.
+struct ServerResponse {
+  void* h;
+};
+
+// Opaque handle on a borrowed httplib::ws::WebSocket, only ever passed back to
+// ws_register_server(void*) — never created here, so an incomplete type is
+// enough and keeps the pointer type-checked. Declaring it pulls no TLS symbol,
+// matching RouteHandler below.
+struct WebSocketRef;
+
+// Backend-supplied per-route handler: read the request, fill the response.
+// Declaring it pulls no TLS symbol (only instantiating httplib::Server /
+// httplib::Client does), so it stays ungated.
 using RouteHandler =
-    std::function<void(const httplib::Request&, httplib::Response&)>;
+    std::function<void(const ServerRequest&, ServerResponse&)>;
 
-// Backend-supplied WebSocket handler: run a long-lived loop over `ws` (read /
-// send) for one connection. httplib calls it on the worker thread, so it
-// occupies that worker until it returns. Like RouteHandler, declaring it (ws is
-// an incomplete type here) pulls no TLS symbol.
-using WsHandler =
-    std::function<void(const httplib::Request&, httplib::ws::WebSocket&)>;
+// Backend-supplied WebSocket handler: run a long-lived loop over the
+// connection referenced by `ws` (via ws_send/ws_receive after
+// ws_register_server(ws)) for one connection. httplib calls it on the worker
+// thread, so it occupies that worker until it returns. Like RouteHandler,
+// declaring it pulls no TLS symbol.
+using WsHandler = std::function<void(const ServerRequest&, WebSocketRef*)>;
 
 // id → HttpServer* registry, same opaque-pointer model as the client: scripts
 // hold a small integer id, a forged/closed id resolves to nullptr and fails
@@ -772,14 +859,20 @@ struct IdRegistry {
   }
 };
 
-CULEBRA_RT_CORE_OWNED thread_local IdRegistry<httplib::DataSink> g_http_sinks;
+// Borrowed chunk writers, one per in-flight streaming response. What gets
+// registered is the httplib::DataSink's own `write` member (which is exactly a
+// BodySink) rather than the DataSink: pointing at the callback instead of its
+// owner keeps this registry and http_sink_write free of any httplib type, so
+// both stay ungated and the core archive keeps defining the registry (the
+// feature archive borrows it — see rt_shared_tls.h).
+CULEBRA_RT_CORE_OWNED thread_local IdRegistry<BodySink> g_http_sinks;
 
 // Write a chunk through sink `id`. Returns false if the id is stale/invalid (an
 // escaped sink) or the client has gone away — so the handler can stop early.
 inline bool http_sink_write(int64_t id, const char* data, size_t len) {
-  httplib::DataSink* s = g_http_sinks.get(id);
-  if (!s) return false;
-  return s->write(data, len);
+  BodySink* w = g_http_sinks.get(id);
+  if (!w) return false;
+  return (*w)(data, len);
 }
 
 // Backend-supplied stream runner: given a sink id, invoke the script's stream
@@ -787,18 +880,67 @@ inline bool http_sink_write(int64_t id, const char* data, size_t len) {
 // closure threw — the connection is then aborted without a terminating chunk.
 using StreamRunner = std::function<bool(int64_t sink_id)>;
 
+// http_res_set_status/header/content are the response half of the same choke
+// as http_request (below): the only code that touches a real httplib::Response
+// is here, linkage-split like every other server entry point. The WEAK stub in
+// the core archive never runs — the route path that would call it
+// (http_server_route/_ws) is itself a weak stub that never invokes a real
+// handler — so it never actually dereferences res.h.
+CULEBRA_RT_HTTP_LINKAGE void http_res_set_status(ServerResponse& res,
+                                                 int status) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)res;
+  (void)status;
+#else
+  static_cast<httplib::Response*>(res.h)->status = status;
+#endif
+}
+
+CULEBRA_RT_HTTP_LINKAGE void http_res_set_header(ServerResponse& res,
+                                                 const std::string& k,
+                                                 const std::string& v) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)res;
+  (void)k;
+  (void)v;
+#else
+  static_cast<httplib::Response*>(res.h)->set_header(k, v);
+#endif
+}
+
+// `body` is taken by value and moved into httplib's std::string&& overload of
+// set_content — the same overload the call sites that build it (a temporary
+// std::string) were already binding to, so this keeps the same copy count
+// rather than adding one.
+CULEBRA_RT_HTTP_LINKAGE void http_res_set_content(
+    ServerResponse& res, std::string body, const std::string& content_type) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)res;
+  (void)body;
+  (void)content_type;
+#else
+  static_cast<httplib::Response*>(res.h)->set_content(std::move(body),
+                                                       content_type);
+#endif
+}
+
 // Wire `res` as a chunked stream of `content_type`, driven by `run`. httplib's
 // chunked loop calls the provider repeatedly until done() is signaled; our
 // provider drives the whole stream in one call, then sends the terminating
 // chunk on success or aborts the connection on failure.
-inline void http_server_set_stream(httplib::Response& res,
-                                   const std::string& content_type,
-                                   StreamRunner run) {
-  res.set_chunked_content_provider(
+CULEBRA_RT_HTTP_LINKAGE void http_res_set_stream(ServerResponse& res,
+                                                    const std::string& content_type,
+                                                    StreamRunner run) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)res;
+  (void)content_type;
+  (void)run;
+#else
+  static_cast<httplib::Response*>(res.h)->set_chunked_content_provider(
       content_type,
       [run = std::move(run)](size_t /*offset*/,
                              httplib::DataSink& sink) -> bool {
-        int64_t id = g_http_sinks.add(&sink);
+        int64_t id = g_http_sinks.add(&sink.write);
         bool ok = run(id);
         g_http_sinks.invalidate(id);
         if (ok) {
@@ -807,6 +949,7 @@ inline void http_server_set_stream(httplib::Response& res,
         }
         return false;  // closure threw → abort (no terminating chunk)
       });
+#endif
 }
 
 #if !defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
@@ -975,6 +1118,27 @@ struct WsConn {
 // resolves stale and its ops fail safely.
 inline thread_local IdRegistry<WsConn> g_ws_conns;
 
+// Mirror one httplib request into the neutral shape handed to the backends.
+// Views throughout: `q` outlives the handler call. Iteration order from
+// httplib's containers is preserved (see ServerRequest) — never sort or
+// otherwise reorder here.
+inline ServerRequest _http_make_request(const httplib::Request& q) {
+  ServerRequest out;
+  out.method = q.method;
+  out.path = q.path;
+  out.body = q.body;
+  auto views = [](const auto& m) {
+    HeaderViews v;
+    v.reserve(m.size());
+    for (const auto& [k, val] : m) v.emplace_back(k, val);
+    return v;
+  };
+  out.headers = views(q.headers);
+  out.params = views(q.params);
+  out.path_params = views(q.path_params);
+  return out;
+}
+
 #endif  // !CULEBRA_RT_HTTP_REQUEST_WEAK
 
 // Create a server handle. Returns an id (>= 0); never fails in v0.
@@ -1002,12 +1166,20 @@ CULEBRA_RT_HTTP_LINKAGE void http_server_route(int64_t id,
     err = "Http: server is closed";
     return;
   }
-  if (method == "GET") s->svr.Get(pattern, std::move(handler));
-  else if (method == "POST") s->svr.Post(pattern, std::move(handler));
-  else if (method == "PUT") s->svr.Put(pattern, std::move(handler));
-  else if (method == "DELETE") s->svr.Delete(pattern, std::move(handler));
-  else if (method == "PATCH") s->svr.Patch(pattern, std::move(handler));
-  else if (method == "OPTIONS") s->svr.Options(pattern, std::move(handler));
+  // Adapt once: fill the neutral request and hand the backend handler an
+  // opaque response handle, whichever verb matches below.
+  httplib::Server::Handler h =
+      [handler = std::move(handler)](const httplib::Request& q,
+                                     httplib::Response& r) {
+        ServerResponse sr{&r};
+        handler(_http_make_request(q), sr);
+      };
+  if (method == "GET") s->svr.Get(pattern, std::move(h));
+  else if (method == "POST") s->svr.Post(pattern, std::move(h));
+  else if (method == "PUT") s->svr.Put(pattern, std::move(h));
+  else if (method == "DELETE") s->svr.Delete(pattern, std::move(h));
+  else if (method == "PATCH") s->svr.Patch(pattern, std::move(h));
+  else if (method == "OPTIONS") s->svr.Options(pattern, std::move(h));
   else err = "Http: unsupported method: " + method;
 #endif
 }
@@ -1281,7 +1453,11 @@ CULEBRA_RT_HTTP_LINKAGE void http_server_ws(int64_t id,
     err = "Http: server is closed";
     return;
   }
-  s->svr.WebSocket(pattern, std::move(handler));
+  s->svr.WebSocket(
+      pattern, [handler = std::move(handler)](const httplib::Request& q,
+                                              httplib::ws::WebSocket& ws) {
+        handler(_http_make_request(q), reinterpret_cast<WebSocketRef*>(&ws));
+      });
 #endif
 }
 

@@ -5059,11 +5059,12 @@ inline Value make_http_client_handle(int64_t id) {
   return Value(std::move(h));
 }
 
-// Build the `req` Object handed to a server handler from an httplib request:
-// method/path/body as Strings, and headers/query/params as Objects of String.
-// `query` is the parsed query string; `params` the matched route path
-// parameters (e.g. ":id" → req.params["id"]). Express-style naming.
-inline Value http_request_to_object(const httplib::Request& q) {
+// Build the `req` Object handed to a server handler from a neutral server
+// request: method/path/body as Strings, and headers/query/params as Objects
+// of String. `query` is the parsed query string; `params` the matched route
+// path parameters (e.g. ":id" → req.params["id"]). Express-style naming.
+inline Value http_request_to_object(
+    const culebra::http::ServerRequest& q) {
   ObjectValue req;
   req.initialize("method", Value(std::string(q.method)), false);
   req.initialize("path", Value(std::string(q.path)), false);
@@ -5088,13 +5089,13 @@ inline Value http_request_to_object(const httplib::Request& q) {
 // the streaming path (http_try_stream_response); the body/stream differs, this
 // metadata does not. status/content_type read via to_long/to_string_view, which
 // reject a present, non-nil field of the wrong type with a TypeError.
-inline std::string http_apply_response_meta(const ObjectValue& obj,
-                                            httplib::Response& res) {
+inline std::string http_apply_response_meta(
+    const ObjectValue& obj, culebra::http::ServerResponse& res) {
   int64_t status = 200;
   if (obj.has_own("status") && obj.get("status").type != Value::Nil) {
     status = obj.get("status").to_long();
   }
-  res.status = static_cast<int>(status);
+  culebra::http::http_res_set_status(res, static_cast<int>(status));
   std::string content_type = "text/plain";
   if (obj.has_own("content_type") &&
       obj.get("content_type").type != Value::Nil) {
@@ -5102,26 +5103,29 @@ inline std::string http_apply_response_meta(const ObjectValue& obj,
   }
   if (obj.has_own("headers") && obj.get("headers").type == Value::Object) {
     for (const auto& [k, sym] : *obj.get("headers").to_object().properties) {
-      res.set_header(std::string(k), std::string(sym.val.to_string_view()));
+      culebra::http::http_res_set_header(
+          res, std::string(k), std::string(sym.val.to_string_view()));
     }
   }
   return content_type;
 }
 
-// Apply a handler's return value to the httplib response:
+// Apply a handler's return value to the response:
 //   String   → 200, text/plain, body = string
 //   Object   → {status?, body?, headers?, content_type?}; absent → defaults
 //              (200 / "" / text/plain). headers is an Object of String.
 //   nil      → 200, empty body
 // Anything else is a TypeError (turned into a 500 by the trampoline's catch).
-inline void http_apply_response(const Value& ret, httplib::Response& res) {
+inline void http_apply_response(const Value& ret,
+                                culebra::http::ServerResponse& res) {
   if (ret.type == Value::Nil) {
-    res.status = 200;
+    culebra::http::http_res_set_status(res, 200);
     return;
   }
   if (ret.type == Value::String || ret.type == Value::StringView) {
-    res.status = 200;
-    res.set_content(std::string(ret.to_string_view()), "text/plain");
+    culebra::http::http_res_set_status(res, 200);
+    culebra::http::http_res_set_content(
+        res, std::string(ret.to_string_view()), "text/plain");
     return;
   }
   if (ret.type == Value::Object) {
@@ -5131,7 +5135,7 @@ inline void http_apply_response(const Value& ret, httplib::Response& res) {
     if (obj.has_own("body") && obj.get("body").type != Value::Nil) {
       body = std::string(obj.get("body").to_string_view());
     }
-    res.set_content(body, content_type);
+    culebra::http::http_res_set_content(res, std::move(body), content_type);
     return;
   }
   throw CulebraError(
@@ -5170,7 +5174,8 @@ inline Value make_http_sink_handle(int64_t sink_id) {
 // worker thread. body + stream together is a TypeError. Returns false for any
 // non-streaming response. A mid-stream exception aborts the connection (the
 // status line is already sent, so it cannot become a 500).
-inline bool http_try_stream_response(const Value& ret, httplib::Response& res,
+inline bool http_try_stream_response(const Value& ret,
+                                     culebra::http::ServerResponse& res,
                                      std::shared_ptr<Interpreter> interp,
                                      std::shared_ptr<Environment> env) {
   if (ret.type != Value::Object) return false;
@@ -5188,7 +5193,7 @@ inline bool http_try_stream_response(const Value& ret, httplib::Response& res,
   std::string content_type = http_apply_response_meta(obj, res);
   // Capturing stream_fn (a Value copy = +1) keeps the closure alive until the
   // provider runs after this returns (same worker thread, same response write).
-  http::http_server_set_stream(
+  http::http_res_set_stream(
       res, content_type, [interp, env, stream_fn](int64_t sink_id) -> bool {
         try {
           interp->call_closure(stream_fn, env, {make_http_sink_handle(sink_id)});
@@ -7812,8 +7817,9 @@ inline Value _http_server_do_serve(int64_t id, int64_t workers, bool async,
         // loop. The ws handle is registered for the call and invalidated after
         // (its borrowed WebSocket dies when the handler returns).
         culebra::http::WsHandler wh =
-            [ri](const httplib::Request& q, httplib::ws::WebSocket& ws) {
-              int64_t wsid = culebra::http::ws_register_server(&ws);
+            [ri](const culebra::http::ServerRequest& q,
+                culebra::http::WebSocketRef* ws) {
+              int64_t wsid = culebra::http::ws_register_server(ws);
               try {
                 Value req = http_request_to_object(q);
                 Value wsh = make_http_ws_handle(wsid, /*is_client=*/false);
@@ -7827,7 +7833,8 @@ inline Value _http_server_do_serve(int64_t id, int64_t workers, bool async,
         culebra::http::http_server_ws(id, recs[i].pattern, std::move(wh), rerr);
       } else {
         culebra::http::RouteHandler rh =
-            [ri](const httplib::Request& q, httplib::Response& res) {
+            [ri](const culebra::http::ServerRequest& q,
+                culebra::http::ServerResponse& res) {
               try {
                 Value req = http_request_to_object(q);
                 Value ret = g_srv_w_interp->call_closure(g_srv_w_handlers[ri],
@@ -7836,8 +7843,8 @@ inline Value _http_server_do_serve(int64_t id, int64_t workers, bool async,
                                               g_srv_w_base))
                   http_apply_response(ret, res);
               } catch (const std::exception& e) {
-                res.status = 500;
-                res.set_content(e.what(), "text/plain");
+                culebra::http::http_res_set_status(res, 500);
+                culebra::http::http_res_set_content(res, e.what(), "text/plain");
               }
             };
         culebra::http::http_server_route(id, recs[i].method, recs[i].pattern,

@@ -49,6 +49,23 @@ int main() {
         "a=b%20c&x=1%262");
   CHECK(culebra::http::encode_query({}) == "");
 
+  // percent_encode_component is self-hosted rather than gated on
+  // CULEBRA_RT_HTTP_REQUEST_WEAK (see http.h) precisely so it does not depend
+  // on httplib at all -- but that only holds if it stays byte-for-byte
+  // equivalent to httplib::encode_uri_component. Assert that over every byte
+  // value here, where httplib is linked in.
+  {
+    int first_mismatch = -1;
+    for (int b = 0; b < 256 && first_mismatch < 0; b++) {
+      std::string s(1, static_cast<char>(b));
+      if (culebra::http::percent_encode_component(s) !=
+          httplib::encode_uri_component(s)) {
+        first_mismatch = b;
+      }
+    }
+    CHECK(first_mismatch == -1);  // reports the byte via the value on failure
+  }
+
   // SseDecoder: parse a text/event-stream, including a comment, a typed event
   // with id, multi-line data, and an event split across two feed() calls (so
   // the line buffer carries a partial line). This is what Http.sse rides on.
@@ -437,7 +454,8 @@ int main() {
   // method validation, static mount errors, and idempotent close.
   {
     using culebra::http::RouteHandler;
-    RouteHandler noop = [](const httplib::Request&, httplib::Response&) {};
+    RouteHandler noop = [](const culebra::http::ServerRequest&,
+                           culebra::http::ServerResponse&) {};
 
     int64_t sid = culebra::http::http_server_open();
     CHECK(sid >= 0);
@@ -484,7 +502,7 @@ int main() {
       buf.append(d, n);
       return true;
     };
-    int64_t id = culebra::http::g_http_sinks.add(&sink);
+    int64_t id = culebra::http::g_http_sinks.add(&sink.write);
     CHECK(culebra::http::http_sink_write(id, "ab", 2));   // live sink writes
     CHECK(culebra::http::http_sink_write(id, "c", 1));
     CHECK(buf == "abc");
@@ -500,7 +518,7 @@ int main() {
       buf2.append(d, n);
       return true;
     };
-    int64_t id2 = culebra::http::g_http_sinks.add(&sink2);
+    int64_t id2 = culebra::http::g_http_sinks.add(&sink2.write);
     CHECK(id2 != id);                                      // distinct id
     CHECK(!culebra::http::http_sink_write(id, "z", 1));    // old id still dead
     CHECK(culebra::http::http_sink_write(id2, "Q", 1));    // new id is live
