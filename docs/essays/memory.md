@@ -271,7 +271,8 @@ No amount of discipline unties a cycle — a limit by construction that Rust's
 exactly the interpreter collector's — both backends reclaiming the same
 cycle shapes is part of keeping behavior symmetric — but the mechanism is
 the opposite. The JIT's hand-written RC has none of `shared_ptr`'s
-strictness, so a precise collector is off the table. Root finding is **conservative** instead.
+strictness, so a precise collector is off the table. Root finding is
+**conservative** instead.
 
 At the moment of collection, every mutator thread's machine stack and its
 callee-saved registers are scanned uniformly, eight bytes at a time, and any
@@ -373,7 +374,12 @@ top level and it survives to program exit on every backend, with `drop`
 never running. The interpreter's top-level environment is one large cycle —
 the functions bound there capture it themselves — so it is never destroyed,
 and the JIT and AOT deliberately suppress the drop to match. Program-wide
-resources want `defer` or explicit cleanup.
+resources want `defer` or explicit cleanup. This lands on the same side as
+Rust, whose `static` items are never dropped — Rust does not guarantee that
+destructors run at all (`mem::forget` isn't even `unsafe`), on the reasoning
+that exit-time cleanup is not the language's job. Swift's globals are
+likewise never deinitialized. Where culebra parts from them is not here but
+on cycles, which it takes on itself.
 
 **Closure-only cycles and extremely large cascades go to the GC.** A cycle
 formed only by closures with no back-reference from the resource (a
