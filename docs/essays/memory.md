@@ -381,6 +381,24 @@ linger an extra collection.
 measured to be a real cost, or the raw-pointer interop is redesigned behind
 handles or pinning, that decision doesn't move.
 
+**The runtime cost is paid twice.** Carrying two mechanisms means carrying
+both refcount traffic on every touch of a value and a periodic mark-sweep;
+a language with only one of them pays only one of those. And the tracing
+side is non-generational, so a single collection walks the whole live heap
+rather than an amount proportional to survivors (a generational layer is
+pure throughput optimization, so the policy is to add it only once the
+non-generational baseline is measured to be insufficient). The JIT
+abandoning `shared_ptr` and emitting retains and releases as explicit IR is
+an attempt to cut one half of that double cost — the atomic refcount
+operation on every touch — and the ownership discipline described above is
+what it pays in exchange. Part of the collector's own overhead was measured
+and removed: the structure that keeps per-object bookkeeping in a separate
+registry rather than in the object started as a `std::unordered_map`, and
+its per-entry node allocation accounted for the *entire* allocation-churn
+overhead this collector added (12–21%) on object- and array-heavy
+workloads. Replacing it with an open-addressing flat hash map eliminated
+that.
+
 And finally, the biggest one: **this design is expensive to implement.** A
 GC-only language needs one collector. An RC-only language just makes the
 user write `weak`. culebra has both, has to make two backends agree on the
