@@ -304,6 +304,11 @@ JIT経路、スレッド、ホスト関数の登録については
   すでに採っている形です。理由は
   [`docs/essays/concurrency.ja.md`](docs/essays/concurrency.ja.md)に
   書き下しています。
+- **決定的な破棄、`weak`なし。** `drop`プロパティを持つオブジェクトは、
+  最後の参照が消えた時点でそれが呼ばれます — スコープが残した循環参照も
+  含むので、親への逆参照にweak注釈は要りません。タイミングを駆動するのは
+  参照カウントで、循環はトレーシングコレクタが引き取ります。理由は
+  [`docs/essays/memory.ja.md`](docs/essays/memory.ja.md)に書き下しています。
 - **コンパイル手順なしの漸進的型付け。** 注釈は境界で実行時に検査され、
   起動は即座のままです。Union・Optional・Tuple・Trait・Genericの注釈は
   すべて入っています。

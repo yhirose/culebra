@@ -9,7 +9,9 @@
 実装形になっているかを説明する。本書と`language.ja.md`が食い違う
 場合は`language.ja.md`が勝つ。
 
-英語原本は[`memory.md`](memory.md)。
+英語原本は[`memory.md`](memory.md)。この設計がなぜこの位置に立って
+いるのか — 決定的な破棄を持ちながら言語に`weak`が無いこと — は
+エッセイ[`essays/memory.ja.md`](../essays/memory.ja.md)に書いた。
 
 目次
 ----

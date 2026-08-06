@@ -307,6 +307,13 @@ Design choices
   SQLite, Redis, and most line-of-business backends already use. The
   reasoning is written out in
   [`docs/essays/concurrency.md`](docs/essays/concurrency.md).
+- **Deterministic destruction, and no `weak`.** An object with a
+  `drop` property has it called when the last reference goes away —
+  including for a reference cycle a scope leaves behind, so a
+  back-reference to a parent needs no weak annotation. Reference
+  counting drives the timing; a tracing collector backs it up for
+  cycles. The reasoning is written out in
+  [`docs/essays/memory.md`](docs/essays/memory.md).
 - **Gradual typing without a compile step.** Annotations are
   runtime-checked at boundaries; startup stays instant. Union,
   Optional, Tuple, Trait and Generic annotations are all in.

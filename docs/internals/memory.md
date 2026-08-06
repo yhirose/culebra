@@ -11,7 +11,9 @@ why the implementation takes the shape it does. Where this document
 and `language.md` disagree, `language.md` wins.
 
 The Japanese mirror of this file is
-[`memory.ja.md`](memory.ja.md).
+[`memory.ja.md`](memory.ja.md). For why the design stands where it
+does — deterministic destruction with no `weak` in the language —
+see the essay [`essays/memory.md`](../essays/memory.md).
 
 Contents
 --------
