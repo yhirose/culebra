@@ -14947,6 +14947,18 @@ struct JIT {
                    bool fast_codegen = false) {
     using namespace llvm;
     auto jit = create_jit_instance(fast_codegen);
+    // Cancel + join every isolate still running before `jit` (just above)
+    // tears down: declared after `jit`, so on any exit path — including an
+    // uncaught throw that skips past the script's own h.join() — this runs
+    // FIRST during unwind. Every isolate's compiled body is the same
+    // JitClosure::fn_ptr living in this LLJIT (sendable_jit.h); one still
+    // running when the module's code memory is freed returns into memory
+    // the teardown just unmapped. See isolate_teardown_join_hook (shared.h).
+    struct JoinIsolatesGuard {
+      ~JoinIsolatesGuard() {
+        if (auto& fn = isolate_teardown_join_hook()) fn();
+      }
+    } join_isolates_guard;
     orc::ThreadSafeContext tsctx(std::move(ctx));
     cantFail(jit->addIRModule(
         orc::ThreadSafeModule(std::move(mod), std::move(tsctx))));

@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <format>
+#include <functional>
 #include <random>
 #include <optional>
 #include <shared_mutex>
@@ -1974,6 +1975,20 @@ inline void _consume_sigint() {
 // isolate.h; here is only the handler's branch.
 inline std::atomic<bool> culebra_g_signal_notify{false};
 inline std::atomic<bool> culebra_g_signal_pending{false};
+
+// Hook jit.h calls into and sendable_jit.h fills in at load — jit.h can't
+// include sendable_jit.h/isolate.h directly (they reach back to jit.h through
+// stdlib_interp.h), so the two meet here instead, same as
+// culebra_g_signal_notify above. Called once, right before JIT::exec tears
+// down the LLJIT: every isolate's compiled body is the SAME JitClosure::fn_ptr
+// living in that LLJIT (sendable_jit.h), so a spawn still running when the
+// module's code memory is freed returns into unmapped memory. Cancels + joins
+// whatever is still outstanding — a no-op once every isolate has already been
+// joined (the normal case), which is the vast majority of runs.
+inline std::function<void()>& isolate_teardown_join_hook() {
+  static std::function<void()> fn;
+  return fn;
+}
 
 // True iff `f` is the process SIGINT flag (a Ctrl+C) rather than a per-isolate
 // cancel — the poll uses this to pick the message and the one-shot consume.

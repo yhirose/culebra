@@ -566,6 +566,51 @@ inline void _jit_isolate_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
+// Cancel + join every JIT isolate still outstanding — a standalone
+// Isolate.spawn handle (jit_isolate_reg) or a Channel.fan_in producer
+// (merge_registry's MergeEntry.producers, isolate.h) — before JIT::exec
+// (jit.h) tears down the LLJIT that backs every one's shared
+// JitClosure::fn_ptr (see the header comment at the top of this file). A
+// script normally reaps its own isolates via h.join()/h.drop(), which mark
+// `joined` and make this a no-op walk; the gap is a top-level throw that
+// unwinds straight past an unreached join(), leaving one still running when
+// the LLJIT that owns its compiled body is about to be freed out from under
+// it. Installed into isolate_teardown_join_hook (shared.h) below — jit.h
+// can't call into isolate.h's registries directly (isolate.h reaches back to
+// jit.h through stdlib_interp.h), so the hook meets both sides there.
+inline void _jit_isolate_teardown_join_all() {
+  std::vector<std::shared_ptr<IsolateCore>> live;
+  {
+    std::lock_guard<std::mutex> lk(jit_isolate_reg_mutex());
+    for (auto& [_, core] : jit_isolate_reg())
+      if (!core->joined) live.push_back(core);
+  }
+  {
+    std::lock_guard<std::mutex> lk(merge_registry_mutex());
+    for (auto& [_, entry] : merge_registry())
+      for (auto& core : entry.producers)
+        if (!core->joined) live.push_back(core);
+  }
+  // Cancel everyone up front so every wait below unblocks promptly, instead
+  // of waiting each one out serially before cancelling the next.
+  for (auto& core : live) mark_isolate_cancelled(*core);
+  for (auto& core : live) {
+    {
+      std::unique_lock<std::mutex> lk(core->m);
+      core->cv.wait(lk, [&] { return core->finished; });
+    }
+    if (core->thread.joinable()) core->thread.join();
+    core->joined = true;
+    _reap_isolate_cancel(*core);
+  }
+}
+inline bool _install_jit_isolate_teardown_hook() {
+  isolate_teardown_join_hook() = _jit_isolate_teardown_join_all;
+  return true;
+}
+inline const bool _jit_isolate_teardown_hook_installed =
+    _install_jit_isolate_teardown_hook();
+
 // _jit_native_method (captureless native method closure) now lives in jit.h.
 
 inline JitValue _jit_build_isolate_handle(int64_t id) {
