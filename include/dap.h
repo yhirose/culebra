@@ -479,7 +479,7 @@ class DapServer {
                    const std::string& expr, Value& out, std::string& err) {
     if (!frame) { err = "no frame"; return false; }
     std::vector<std::string> msgs;
-    auto ast = parse_with_transforms("(dap)", expr.data(), expr.size(), msgs);
+    auto ast = parse_with_transforms("(dap)", expr, msgs);
     if (!ast) { err = msgs.empty() ? "parse error" : msgs.front(); return false; }
     try {
       out = std::make_shared<Interpreter>()->eval(*ast, frame);

@@ -3,8 +3,8 @@
 // exception carriers, PRNG, and the PEG parser itself.
 
 #include <atomic>
-#include <cstring>
 #include <iostream>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -20,7 +20,11 @@ namespace mt_smoke_ns {
 
 namespace {
 
-const char* kScript = R"(
+// parse()'s AST holds string_view tokens into its source buffer, and
+// run_interp/run_jit below use the AST well past the parse call — so these
+// need a real, permanently-owned std::string, not a const char* (which
+// would force a short-lived temporary at each culebra::parse call).
+const std::string kScript = R"(
 let mut acc = 0
 for i in 0..1000 {
   try {
@@ -41,7 +45,7 @@ long expected_sum() {
 
 // The script throws "bad" if `acc` doesn't match the expected sum,
 // so JIT::run will surface a runtime_error and we can detect it.
-const char* kCheckedScript = R"(
+const std::string kCheckedScript = R"(
 let mut acc = 0
 for i in 0..1000 {
   try {
@@ -59,7 +63,7 @@ std::atomic<int> failures{0};
 void run_interp(int tid) {
   for (int rep = 0; rep < 50; ++rep) {
     std::vector<std::string> msgs;
-    auto ast = culebra::parse("<mt>", kScript, std::strlen(kScript), msgs);
+    auto ast = culebra::parse("<mt>", kScript, msgs);
     if (!ast) {
       std::cerr << "parse tid=" << tid << " rep=" << rep << " failed\n";
       ++failures;
@@ -88,8 +92,7 @@ void run_interp(int tid) {
 void run_jit(int tid) {
   for (int rep = 0; rep < 10; ++rep) {
     std::vector<std::string> msgs;
-    auto ast = culebra::parse("<mt-jit>", kCheckedScript,
-                              std::strlen(kCheckedScript), msgs);
+    auto ast = culebra::parse("<mt-jit>", kCheckedScript, msgs);
     if (!ast) {
       std::cerr << "jit-parse tid=" << tid << " rep=" << rep << " failed\n";
       ++failures;

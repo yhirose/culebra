@@ -1722,10 +1722,11 @@ inline std::vector<std::string> comment_multiset(std::string_view s) {
   return out;
 }
 
-inline FormatResult format_source(const std::string& path, std::string_view src,
+inline FormatResult format_source(const std::string& path,
+                                  const std::string& src,
                                   int width = 80) {
   std::vector<std::string> msgs;
-  auto ast = parse_for_format(path, src.data(), src.size(), msgs);
+  auto ast = parse_for_format(path, src, msgs);
   if (!ast) {
     std::string m;
     for (auto& s : msgs) m += s;
@@ -1740,7 +1741,7 @@ inline FormatResult format_source(const std::string& path, std::string_view src,
   // Safety net 1: re-parse and require structural AST equality, so a printer
   // bug can never silently change program meaning.
   std::vector<std::string> msgs2;
-  auto ast2 = parse_for_format(path, out.data(), out.size(), msgs2);
+  auto ast2 = parse_for_format(path, out, msgs2);
   if (!ast2 || !ast_equal(*ast, *ast2)) {
     return {FormatStatus::Refused, "",
             "culebra fmt: internal check failed (formatted output would change "

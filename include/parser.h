@@ -1422,7 +1422,7 @@ inline const std::vector<std::string>& ast_optimizer_keep_rules() {
 }
 
 inline std::shared_ptr<peg::Ast> parse(const std::string& path,
-                                       const char* expr, size_t len,
+                                       const std::string& expr,
                                        std::vector<std::string>& msgs) {
   auto& parser = get_parser();
 
@@ -1431,7 +1431,7 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
   });
 
   std::shared_ptr<peg::Ast> ast;
-  if (parser.parse_n(expr, len, ast, path.c_str())) {
+  if (parser.parse_n(expr.data(), expr.size(), ast, path.c_str())) {
     auto opt = peg::AstOptimizer(true, ast_optimizer_keep_rules());
     return desugar_postfix_modifiers(desugar_regex_literals(opt.optimize(ast)));
   }
@@ -1445,7 +1445,7 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
 // verbatim. Used only by `culebra fmt`; never feed this AST to a backend,
 // which expects the desugared form.
 inline std::shared_ptr<peg::Ast> parse_for_format(
-    const std::string& path, const char* expr, size_t len,
+    const std::string& path, const std::string& expr,
     std::vector<std::string>& msgs) {
   auto& parser = get_parser();
 
@@ -1454,7 +1454,7 @@ inline std::shared_ptr<peg::Ast> parse_for_format(
   });
 
   std::shared_ptr<peg::Ast> ast;
-  if (parser.parse_n(expr, len, ast, path.c_str())) {
+  if (parser.parse_n(expr.data(), expr.size(), ast, path.c_str())) {
     auto opt = peg::AstOptimizer(true, ast_optimizer_keep_rules());
     return opt.optimize(ast);
   }
@@ -1463,10 +1463,12 @@ inline std::shared_ptr<peg::Ast> parse_for_format(
 }
 
 inline std::shared_ptr<peg::Ast> parse_builtin_traits_preamble() {
+  // `cached`'s AST holds string_view tokens into this buffer, so it must
+  // outlive `cached` itself — static, not a lambda-local temporary.
+  static std::string src{builtin_traits_preamble()};
   static auto cached = [] {
-    auto src = builtin_traits_preamble();
     std::vector<std::string> ignore;
-    return parse("<builtin>", src.data(), src.size(), ignore);
+    return parse("<builtin>", src, ignore);
   }();
   return cached;
 }

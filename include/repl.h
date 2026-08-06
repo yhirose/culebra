@@ -213,7 +213,7 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast) {
       // accepted input).
       retained_sources_.push_back(full_line);
       const auto& src = retained_sources_.back();
-      auto ast = parse_with_transforms("(repl)", src.data(), src.size(), msgs);
+      auto ast = parse_with_transforms("(repl)", src, msgs);
       if (ast) {
         if (print_ast) {
           cout << peg::ast_to_s(ast);

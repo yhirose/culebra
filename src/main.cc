@@ -1599,7 +1599,7 @@ int run_lint(int argc, const char** argv) {
     auto lint_source = [&](const std::string& s, vector<string>& parse_msgs,
                            std::shared_ptr<peg::Ast>* authored_out = nullptr)
         -> std::optional<vector<culebra::lint::Diagnostic>> {
-      auto authored = culebra::parse(path, s.data(), s.size(), parse_msgs);
+      auto authored = culebra::parse(path, s, parse_msgs);
       if (!authored) return std::nullopt;
       if (authored_out) *authored_out = authored;
       // The lowering itself rejects malformed effects (two `return` clauses,
@@ -1608,8 +1608,7 @@ int run_lint(int argc, const char** argv) {
       // must never abort on the input it was asked to inspect.
       std::shared_ptr<peg::Ast> lowered;
       try {
-        lowered = culebra::parse_with_transforms(path, s.data(), s.size(),
-                                                 parse_msgs);
+        lowered = culebra::parse_with_transforms(path, s, parse_msgs);
       } catch (const culebra::CulebraError& e) {
         return vector<culebra::lint::Diagnostic>{
             {e.kind, e.what(), e.line, e.col, culebra::lint::Severity::Error}};
@@ -1776,7 +1775,7 @@ int run_fmt(int argc, const char** argv) {
     }
   };
 
-  auto fmt = [&](const std::string& p, std::string_view s) {
+  auto fmt = [&](const std::string& p, const std::string& s) {
     return culebra::fmt::format_source(p, s);
   };
 

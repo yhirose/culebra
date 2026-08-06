@@ -295,8 +295,9 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
 <span class="k">int</span> main() {
   <span class="k">auto</span> env = culebra::environment();  <span class="c">// stdlib bound</span>
 
+  std::string src = <span class="s">"1 + 2"</span>;
   std::vector&lt;std::string&gt; msgs;
-  <span class="k">auto</span> ast = culebra::parse(<span class="s">"&lt;inline&gt;"</span>, <span class="s">"1 + 2"</span>, 5, msgs);
+  <span class="k">auto</span> ast = culebra::parse(<span class="s">"&lt;inline&gt;"</span>, src, msgs);
 
   culebra::Value val;
   culebra::interpret(ast, env, val, msgs, culebra::Debugger());

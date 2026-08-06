@@ -280,8 +280,11 @@ via a minimal environment API:
 int main() {
   auto env = culebra::environment();  // stdlib bound
 
+  // parse()'s AST holds string_view tokens into this buffer, so it must
+  // outlive the AST — keep it in a named variable, not a temporary.
+  std::string src = "1 + 2";
   std::vector<std::string> msgs;
-  auto ast = culebra::parse("<inline>", "1 + 2", 5, msgs);
+  auto ast = culebra::parse("<inline>", src, msgs);
 
   culebra::Value val;
   culebra::interpret(ast, env, val, msgs, culebra::Debugger());

@@ -297,8 +297,7 @@ inline TestRunSummary run_doctests(
 
       // Parse (with generator transforms, matching every other backend).
       std::vector<std::string> pmsgs;
-      auto ast = parse_with_transforms(name, blk.code.data(), blk.code.size(),
-                                       pmsgs);
+      auto ast = parse_with_transforms(name, blk.code, pmsgs);
       if (!ast) {
         std::string m;
         for (const auto& s : pmsgs) m += (m.empty() ? "" : "; ") + s;

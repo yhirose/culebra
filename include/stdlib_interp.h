@@ -7597,8 +7597,7 @@ inline void splice_stdlib_preamble(std::vector<LoadedModule>& modules) {
 
   auto buf = std::make_shared<std::string>(std::move(preamble));
   std::vector<std::string> msgs;
-  auto ast = parse_with_transforms(kStdlibPreamblePath, buf->data(),
-                                   buf->size(), msgs);
+  auto ast = parse_with_transforms(kStdlibPreamblePath, *buf, msgs);
   if (!ast) return;  // stdlib is trusted; a parse failure is a build bug
   LoadedModule pre;
   pre.abs_path = kStdlibPreamblePath;

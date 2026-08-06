@@ -157,8 +157,11 @@ LLVMをリンクすれば、C++ からインタプリタやJITを駆動できま
 int main() {
   auto env = culebra::environment();  // stdlib をバインド
 
+  // parse() が返す AST は string_view でこのバッファを参照するので、
+  // AST より先に破棄されてはいけない — 一時オブジェクトではなく変数に。
+  std::string src = "1 + 2";
   std::vector<std::string> msgs;
-  auto ast = culebra::parse("<inline>", "1 + 2", 5, msgs);
+  auto ast = culebra::parse("<inline>", src, msgs);
 
   culebra::Value val;
   culebra::interpret(ast, env, val, msgs, culebra::Debugger());

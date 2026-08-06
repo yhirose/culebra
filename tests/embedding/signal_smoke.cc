@@ -11,7 +11,7 @@
 // on any platform that builds culebra.
 
 #include <atomic>
-#include <cstring>
+#include <deque>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -39,9 +39,16 @@ void expect(bool cond, const char* what) {
   }
 }
 
+// parse()'s AST holds string_view tokens into its source buffer, and
+// callers here keep using the returned AST beyond this call, so the buffer
+// needs a stable, permanent home. A deque never relocates existing elements
+// on growth (unlike vector, which could move a short string's SSO storage),
+// matching repl.h's retained_sources_.
 std::shared_ptr<peg::Ast> parse_or_die(const char* code) {
+  static std::deque<std::string> sources;
+  sources.emplace_back(code);
   std::vector<std::string> msgs;
-  auto ast = culebra::parse("<sig>", code, std::strlen(code), msgs);
+  auto ast = culebra::parse("<sig>", sources.back(), msgs);
   if (!ast) {
     for (auto& m : msgs) std::cerr << m;
     std::exit(2);

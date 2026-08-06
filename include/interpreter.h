@@ -12017,8 +12017,7 @@ inline void Environment::resolve_from_lazy(
   lazy_module_sources.push_back(source);
   std::vector<std::string> parse_msgs;
   auto vpath = std::format("<lazy-{}>", name);
-  auto ast = parse_with_transforms(vpath, source->data(), source->size(),
-                                   parse_msgs);
+  auto ast = parse_with_transforms(vpath, *source, parse_msgs);
   if (!ast) {
     std::fprintf(stderr, "culebra: lazy module '%s' failed to parse\n",
                  std::string(name).c_str());

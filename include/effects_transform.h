@@ -124,12 +124,12 @@ class EffectsLowerer {
   // `path` names the parse label `src` belongs to (the file path for the
   // original, a fragment label for re-parses); the transform() walk uses it to
   // notice subtrees spliced in from other fragments.
-  EffectsLowerer(const char* src, size_t src_len,
+  EffectsLowerer(const std::string& src,
                  const std::set<std::string>& effect_fns,
                  bool src_is_original = false, std::string path = "")
-      : src_(src), src_len_(src_len), effect_fns_(effect_fns),
+      : src_(src), effect_fns_(effect_fns),
         src_is_original_(src_is_original), path_(std::move(path)),
-        markers_{{src, src_len}, src_is_original} {}
+        markers_{src, src_is_original} {}
 
   // --- entry: rebuild the tree, lowering effect constructs -------------
   std::shared_ptr<peg::Ast> transform(std::shared_ptr<peg::Ast> ast) {
@@ -139,7 +139,7 @@ class EffectsLowerer {
     // ours — hand the walk to a lowerer over the right slice base.
     if (!path_.empty() && ast->path != path_) {
       if (auto src = fragment_source_for(ast->path)) {
-        EffectsLowerer sub(src->data(), src->size(), effect_fns_,
+        EffectsLowerer sub(*src, effect_fns_,
                            /*src_is_original=*/false, ast->path);
         return sub.transform(ast);
       }
@@ -169,8 +169,7 @@ class EffectsLowerer {
   }
 
  private:
-  const char* src_;
-  size_t src_len_;
+  const std::string& src_;
   const std::set<std::string>& effect_fns_;
   bool src_is_original_ = false;
   std::string path_;
@@ -189,7 +188,7 @@ class EffectsLowerer {
   }
 
   std::string_view slice(const peg::Ast& n) const {
-    return ast_source_slice(n, src_, src_len_);
+    return ast_source_slice(n, src_);
   }
 
   // First CLASS_DECL anywhere under `n` (including nested fn values — the
@@ -476,7 +475,7 @@ class EffectsLowerer {
       walk(*prog);
     }
     if (!expr) reject_unsupported_expr(context);
-    EffectsLowerer sub(buf->data(), buf->size(), effect_fns_);
+    EffectsLowerer sub(*buf, effect_fns_);
     return sub.anf(*expr, ctr, hoists);
   }
 
@@ -784,7 +783,7 @@ class EffectsLowerer {
       throw CulebraError("InternalError",
                          "effects ANF could not re-parse a block body", 0, 0);
     }
-    EffectsLowerer sub(buf->data(), buf->size(), effect_fns_);
+    EffectsLowerer sub(*buf, effect_fns_);
     auto norm = sub.anf_program(*prog, ctr);
     return "{\n" + (norm ? *norm : inner) + "\n}";
   }
@@ -1054,7 +1053,7 @@ class EffectsLowerer {
       auto buf = std::make_shared<std::string>(inner + "\n");
       auto prog = parse_registered_source("<eff-block>", buf);
       if (!prog) { st.failed = true; return -1; }
-      EffectsLowerer sub(buf->data(), buf->size(), effect_fns_);
+      EffectsLowerer sub(*buf, effect_fns_);
       return sub.cps_seq(st, body_stmts(*prog), cont, tail, rw);
     }
     return cps_seq(st, body_stmts(block), cont, tail, rw);
@@ -1479,8 +1478,8 @@ class EffectsLowerer {
     auto inner_sv = strip_block_braces(slice(body_node));
     std::string inner(inner_sv);
     if (src_is_original_) {
-      int64_t first = line_of_offset({src_, src_len_},
-                                  static_cast<size_t>(inner_sv.data() - src_));
+      int64_t first = line_of_offset(
+          src_, static_cast<size_t>(inner_sv.data() - src_.data()));
       inner = annotate_line_markers(inner, first);
       inner += '\n';  // a trailing marker comment needs a newline to parse
     }
@@ -1496,7 +1495,7 @@ class EffectsLowerer {
     // for-in desugar to a fixpoint (a nested for-in surfaces as outermost on
     // the next pass).
     while (true) {
-      EffectsLowerer fl(src->data(), src->size(), effect_fns_);
+      EffectsLowerer fl(*src, effect_fns_);
       auto desugared = fl.rewrite_suspending_fors(*prog);
       if (!desugared) break;
       src = std::make_shared<std::string>(std::move(*desugared));
@@ -1509,7 +1508,7 @@ class EffectsLowerer {
     }
 
     // A-normalization.
-    EffectsLowerer anf_pass(src->data(), src->size(), effect_fns_);
+    EffectsLowerer anf_pass(*src, effect_fns_);
     int ctr = 0;
     if (auto normalized = anf_pass.anf_program(*prog, ctr)) {
       auto src2 = std::make_shared<std::string>(std::move(*normalized));
@@ -1519,11 +1518,11 @@ class EffectsLowerer {
             "InternalError",
             "effects A-normalization produced unparseable source", 0, 0);
       }
-      EffectsLowerer sub(src2->data(), src2->size(), effect_fns_);
+      EffectsLowerer sub(*src2, effect_fns_);
       return sub.build_class_from_program(class_name, *prog2, param_names,
                                           rv_name);
     }
-    EffectsLowerer sub(src->data(), src->size(), effect_fns_);
+    EffectsLowerer sub(*src, effect_fns_);
     return sub.build_class_from_program(class_name, *prog, param_names, rv_name);
   }
 
@@ -1839,8 +1838,8 @@ class EffectsLowerer {
       throw CulebraError("InternalError",
                          "effects transform produced unparseable source", 0, 0);
     }
-    fn = transform_generators_in(fn, synth->data(), synth->size());
-    EffectsLowerer sub(synth->data(), synth->size(), effect_fns_,
+    fn = transform_generators_in(fn, *synth);
+    EffectsLowerer sub(*synth, effect_fns_,
                        /*src_is_original=*/false, label);
     auto out = sub.transform(fn);
     // Restore original line numbers from the provenance markers; machinery
@@ -1862,9 +1861,9 @@ class EffectsLowerer {
       throw CulebraError("InternalError",
                          "effects transform produced unparseable source", 0, 0);
     }
-    fn = transform_generators_in(fn, synth->data(), synth->size());
+    fn = transform_generators_in(fn, *synth);
     auto body = fn->nodes.back();
-    EffectsLowerer sub(synth->data(), synth->size(), effect_fns_,
+    EffectsLowerer sub(*synth, effect_fns_,
                        /*src_is_original=*/false, label);
     auto out = sub.transform(body);
     return reposition_ast(out, marker_line_map(*synth), fallback_line, label);
@@ -1886,9 +1885,9 @@ class EffectsLowerer {
 // Walk the AST, lowering every effect construct. Yield-free / effect-free
 // modules pay one whole-tree pointer pass.
 inline std::shared_ptr<peg::Ast> transform_effects_in(
-    std::shared_ptr<peg::Ast> ast, const char* src, size_t src_len) {
+    std::shared_ptr<peg::Ast> ast, const std::string& src) {
   auto effect_fns = collect_effect_fn_names(*ast);
-  EffectsLowerer lowerer(src, src_len, effect_fns, /*src_is_original=*/true,
+  EffectsLowerer lowerer(src, effect_fns, /*src_is_original=*/true,
                          ast->path);
   return lowerer.transform(ast);
 }
@@ -1898,11 +1897,11 @@ inline std::shared_ptr<peg::Ast> transform_effects_in(
 // (interp module load, JIT/AOT, REPL, lazy module loader) routes through
 // here.
 inline std::shared_ptr<peg::Ast> parse_with_transforms(
-    const std::string& path, const char* expr, size_t len,
+    const std::string& path, const std::string& expr,
     std::vector<std::string>& msgs) {
-  auto ast = parse_with_generator_transforms(path, expr, len, msgs);
+  auto ast = parse_with_generator_transforms(path, expr, msgs);
   if (!ast) return ast;
-  auto out = transform_effects_in(ast, expr, len);
+  auto out = transform_effects_in(ast, expr);
   reject_orphan_yield(*out);
   // CULEBRA_TRANSFORM_STATS=1 reports how much culebra source the generator +
   // effects passes synthesized for this module — the input to every backend's
@@ -1917,7 +1916,7 @@ inline std::shared_ptr<peg::Ast> parse_with_transforms(
     std::fprintf(stderr,
                  "[transform-stats] %s: source %zu bytes -> synthesized %zu "
                  "fragments, %zu bytes, %zu lines\n",
-                 path.c_str(), len, sources.size(), bytes, lines);
+                 path.c_str(), expr.size(), sources.size(), bytes, lines);
     if (std::string_view(std::getenv("CULEBRA_TRANSFORM_STATS")) == "2") {
       for (auto& s : sources)
         std::fprintf(stderr, "----8<---- fragment\n%s\n", s->c_str());

@@ -2,7 +2,7 @@
 // holding independent state (RNG seed, exception carriers, GC).
 // Verifies the RuntimeScope + isolated-state guarantee.
 
-#include <cstring>
+#include <deque>
 #include <iostream>
 
 #include <culebra.h>
@@ -29,9 +29,17 @@ fn step() {
 }
 )";
 
+// parse()'s AST holds string_view tokens into its source buffer, and
+// callers here keep the returned AST — and anything built from it, like a
+// `fn` bound into an Environment — alive well past this call, so the buffer
+// needs a stable, permanent home. A deque never relocates existing elements
+// on growth (unlike vector, which could move a short string's SSO storage),
+// matching repl.h's retained_sources_.
 std::shared_ptr<peg::Ast> parse_or_die(const char* code) {
+  static std::deque<std::string> sources;
+  sources.emplace_back(code);
   std::vector<std::string> msgs;
-  auto ast = culebra::parse("<mi>", code, std::strlen(code), msgs);
+  auto ast = culebra::parse("<mi>", sources.back(), msgs);
   if (!ast) {
     for (auto& m : msgs) std::cerr << m;
     std::exit(1);

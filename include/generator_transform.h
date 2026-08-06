@@ -250,9 +250,9 @@ inline const peg::Ast* find_nested_fndef(const peg::Ast& body) {
 // `position` + `length` in bytes; safe so long as `src` is the same
 // buffer that produced `node`.
 inline std::string_view ast_source_slice(const peg::Ast& node,
-                                          const char* src, size_t src_len) {
-  if (node.position + node.length > src_len) return {};
-  return std::string_view(src + node.position, node.length);
+                                          const std::string& src) {
+  if (node.position + node.length > src.size()) return {};
+  return std::string_view(src.data() + node.position, node.length);
 }
 
 // --- Source-text helpers -------------------------------------------------
@@ -761,22 +761,22 @@ inline std::vector<const peg::Ast*> collect_outermost_yielding_fors(
 // stay unique. The result has fresh source positions once re-parsed;
 // callers must re-parse before walking the AST again.
 inline std::optional<std::string> rewrite_yielding_fors_to_while(
-    const peg::Ast& body, const char* src, size_t src_len) {
+    const peg::Ast& body, const std::string& src) {
   using namespace peg::udl;
   auto fors = collect_outermost_yielding_fors(body);
   if (fors.empty()) return std::nullopt;
-  std::string out(ast_source_slice(body, src, src_len));
+  std::string out(ast_source_slice(body, src));
   size_t base = body.position;
-  auto marker_map = marker_line_map({src, src_len});  // loop-invariant
+  auto marker_map = marker_line_map(src);  // loop-invariant
   for (auto it = fors.rbegin(); it != fors.rend(); ++it) {
     auto* f = *it;
     if (f->nodes.size() < 3) continue;
     const auto& var_node = *f->nodes[0];
     const auto& expr_node = *f->nodes[1];
     const auto& blk_node = *f->nodes[2];
-    auto expr_sv = ast_source_slice(expr_node, src, src_len);
+    auto expr_sv = ast_source_slice(expr_node, src);
     auto blk_inner = strip_block_braces(
-        ast_source_slice(blk_node, src, src_len));
+        ast_source_slice(blk_node, src));
     auto iter_var = std::format("_g_it_{}", f->position);
     // The three synthesized lines carry the `for`'s provenance marker so an
     // error in the loop machinery (e.g. `.iter()` on a non-iterable) reports
@@ -795,7 +795,7 @@ inline std::optional<std::string> rewrite_yielding_fors_to_while(
     std::string nobreak_suffix;
     if (const peg::Ast* nc = culebra::nobreak_clause_of(*f)) {
       nobreak_suffix =
-          std::string(" ") + std::string(ast_source_slice(*nc, src, src_len));
+          std::string(" ") + std::string(ast_source_slice(*nc, src));
     }
     auto replacement = std::format(
         "let {0} = ({1}).iter(){4}\n"
@@ -859,7 +859,7 @@ inline std::shared_ptr<peg::Ast> parse_registered_source(
     _fragment_registry()[label] = synthesized;
   }
   std::vector<std::string> msgs;
-  return parse(label, synthesized->data(), synthesized->size(), msgs);
+  return parse(label, *synthesized, msgs);
 }
 
 inline std::shared_ptr<peg::Ast> parse_wrapper_fn(
@@ -998,8 +998,7 @@ inline bool has_escaping_loop_ctrl(const peg::Ast& node, int loop_depth = 0) {
 }
 
 struct CpsBuilder {
-  const char* src;
-  size_t src_len;
+  const std::string& src;
   const std::set<std::string>& rewrite_set;
   std::vector<std::string> states;
   int terminal = -1;  // state that sets drained + returns false
@@ -1016,10 +1015,10 @@ struct CpsBuilder {
     return static_cast<int>(states.size()) - 1;
   }
   std::string rw(const peg::Ast& n) {
-    return rewrite_locals_to_self(ast_source_slice(n, src, src_len),
+    return rewrite_locals_to_self(ast_source_slice(n, src),
                                   rewrite_set);
   }
-  LineMarkers markers{{src, src_len}};
+  LineMarkers markers{src};
   std::string mk(const peg::Ast& n) { return markers.mk(n); }
   // A fresh state that just jumps to `target` (break/continue/return).
   int jump_state(int target) {
@@ -1105,7 +1104,7 @@ struct CpsBuilder {
       // Register the defer body when reached; dispose runs it (LIFO).
       int k = static_cast<int>(defer_bodies.size());
       defer_bodies.push_back(rewrite_locals_to_self(
-          strip_block_braces(ast_source_slice(*u->nodes[0], src, src_len)),
+          strip_block_braces(ast_source_slice(*u->nodes[0], src)),
           rewrite_set));
       int e = fresh();
       states[e] = std::format(
@@ -1190,7 +1189,7 @@ struct CpsBuilder {
 // original ast unchanged when the body uses a construct outside the
 // engine's scope (caller then reports / falls back).
 inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
-    std::shared_ptr<peg::Ast> ast, const char* src, size_t src_len,
+    std::shared_ptr<peg::Ast> ast, const std::string& src,
     const peg::Ast& name_ast, const peg::Ast& params_ast,
     int64_t decl_fallback) {
   using namespace peg::udl;
@@ -1207,7 +1206,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
   std::set<std::string> rewrite_set = locals;
   for (auto& pn : param_names) rewrite_set.insert(std::string(pn));
 
-  CpsBuilder b{src, src_len, rewrite_set, {}};
+  CpsBuilder b{src, rewrite_set, {}};
   b.terminal = b.fresh();
   b.states[b.terminal] =
       "      self._g_drained = true\n      return false\n";
@@ -1308,7 +1307,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
 // yields per iteration, post-loop tails, break/continue/return, defer,
 // yield from — is handled by the one engine.
 inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
-    std::shared_ptr<peg::Ast> ast, const char* src, size_t src_len) {
+    std::shared_ptr<peg::Ast> ast, const std::string& src) {
   using namespace peg::udl;
   size_t i = 0;
   while (i < ast->nodes.size() && ast->nodes[i]->tag == "DECORATOR"_) i++;
@@ -1387,47 +1386,51 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
   // in an effect body) keeps its markers as-is: re-annotating would stamp
   // fragment-relative numbers onto the marker-less machinery lines.
   int64_t decl_fallback = static_cast<int64_t>(ast->nodes[i]->line);
+  // The synthesized fragments below re-parse into fresh buffers as the
+  // pre-passes rewrite the body; `cur` tracks whichever one currently backs
+  // `ast`'s positions. Each buffer is registered for process lifetime by
+  // swap_body_with_wrapper_params (via parse_registered_source), so `cur`
+  // stays valid across the rebinds below.
+  const std::string* cur = &src;
   {
     auto inner = strip_block_braces(
-        ast_source_slice(*ast->nodes.back(), src, src_len));
+        ast_source_slice(*ast->nodes.back(), *cur));
     if (!text_has_line_marker(inner)) {
-      int64_t first = line_of_offset({src, src_len},
-                                  static_cast<size_t>(inner.data() - src));
-      auto params_sv = ast_source_slice(*ast->nodes[i + 1], src, src_len);
+      int64_t first = line_of_offset(
+          *cur, static_cast<size_t>(inner.data() - cur->data()));
+      auto params_sv = ast_source_slice(*ast->nodes[i + 1], *cur);
       auto annotated = std::make_shared<std::string>(std::format(
           "fn __gen_wrapper__{} {{\n{}\n}}\n", std::string(params_sv),
           annotate_line_markers(inner, first)));
       if (!swap_body_with_wrapper_params(ast, annotated, i)) return ast;
-      src = annotated->data();
-      src_len = annotated->size();
+      cur = annotated.get();
     } else {
       // Already-annotated fragment: map the decl line through its markers
-      // while `src` is still the buffer the name node indexes.
-      decl_fallback = marker_orig_line({src, src_len}, ast->nodes[i]->line);
+      // while `cur` is still the buffer the name node indexes.
+      decl_fallback = marker_orig_line(*cur, ast->nodes[i]->line);
     }
   }
 
   // Desugar yielding for-in loops to while + iterator, re-parsing each
   // time, until none remain (nested for-ins surface as outermost on the
   // next pass). After the swap, params/body positions point into the
-  // synthesized source, so `src`/`src_len` track it.
+  // synthesized source, so `cur` tracks it.
   while (auto rewritten = rewrite_yielding_fors_to_while(
-             *ast->nodes.back(), src, src_len)) {
-    auto params_sv = ast_source_slice(*ast->nodes[i + 1], src, src_len);
+             *ast->nodes.back(), *cur)) {
+    auto params_sv = ast_source_slice(*ast->nodes[i + 1], *cur);
     auto body_inner = strip_block_braces(*rewritten);
     auto desugared = std::make_shared<std::string>(std::format(
         "fn __gen_wrapper__{} {{\n{}\n}}\n",
         std::string(params_sv), std::string(body_inner)));
     if (!swap_body_with_wrapper_params(ast, desugared, i)) return ast;
-    src = desugared->data();
-    src_len = desugared->size();
+    cur = desugared.get();
     if (!fn_body_has_yield(*ast->nodes.back())) return ast;
   }
 
   const auto& name_ast = *ast->nodes[i];
   const auto& params_ast = *ast->nodes[i + 1];
   auto orig_body = ast->nodes.back();
-  auto out = transform_one_generator_fn_cps(ast, src, src_len, name_ast,
+  auto out = transform_one_generator_fn_cps(ast, *cur, name_ast,
                                             params_ast, decl_fallback);
   if (out->nodes.back().get() != orig_body.get()) return out;
 
@@ -1446,15 +1449,15 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
 // walk visits every node — yield-free modules pay one whole-tree
 // pointer pass (dwarfed by the PEG parse already run).
 inline std::shared_ptr<peg::Ast> transform_generators_in(
-    std::shared_ptr<peg::Ast> ast, const char* src, size_t src_len) {
+    std::shared_ptr<peg::Ast> ast, const std::string& src) {
   using namespace peg::udl;
   for (auto& child : ast->nodes) {
-    child = transform_generators_in(child, src, src_len);
+    child = transform_generators_in(child, src);
   }
   if (ast->tag == "MULTIFN_DECL"_) {
     auto& body = ast->nodes.back();
     if (fn_body_has_yield(*body)) {
-      return transform_one_generator_fn(ast, src, src_len);
+      return transform_one_generator_fn(ast, src);
     }
   }
   return ast;
@@ -1464,11 +1467,11 @@ inline std::shared_ptr<peg::Ast> transform_generators_in(
 // `parse_with_transforms` (effects_transform.h) chains the effects pass
 // after this one; callers route through the public entry.
 inline std::shared_ptr<peg::Ast> parse_with_generator_transforms(
-    const std::string& path, const char* expr, size_t len,
+    const std::string& path, const std::string& expr,
     std::vector<std::string>& msgs) {
-  auto ast = parse(path, expr, len, msgs);
+  auto ast = parse(path, expr, msgs);
   if (!ast) return ast;
-  return transform_generators_in(ast, expr, len);
+  return transform_generators_in(ast, expr);
 }
 
 // Reject the yields no pass claimed. Runs from `parse_with_transforms` once

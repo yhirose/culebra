@@ -2,7 +2,7 @@
 // with auto-deduced signatures, then invoke them from script and from
 // C++ via culebra::call.
 
-#include <cstring>
+#include <deque>
 #include <iostream>
 #include <string>
 
@@ -15,9 +15,16 @@ namespace define_smoke_ns {
 
 namespace {
 
+// parse()'s AST holds string_view tokens into its source buffer, and
+// callers here keep using the returned AST beyond this call, so the buffer
+// needs a stable, permanent home. A deque never relocates existing elements
+// on growth (unlike vector, which could move a short string's SSO storage),
+// matching repl.h's retained_sources_.
 std::shared_ptr<peg::Ast> parse_or_die(const char* code) {
+  static std::deque<std::string> sources;
+  sources.emplace_back(code);
   std::vector<std::string> msgs;
-  auto ast = culebra::parse("<dfn>", code, std::strlen(code), msgs);
+  auto ast = culebra::parse("<dfn>", sources.back(), msgs);
   if (!ast) {
     for (auto& m : msgs) std::cerr << m;
     std::exit(1);

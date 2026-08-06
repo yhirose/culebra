@@ -134,9 +134,8 @@ inline size_t ModuleLoader::load_recursive(
     }
   }
 
-  auto ast = culebra::parse_with_transforms(abs_path.string(),
-                                            src_buf->data(),
-                                            src_buf->size(), parse_msgs);
+  auto ast = culebra::parse_with_transforms(abs_path.string(), *src_buf,
+                                            parse_msgs);
   if (!ast) {
     // PEG diagnostics live in parse_msgs (path:line:col: ...). Fold them
     // into the error so the CLI catch handler prints the actual hint.
