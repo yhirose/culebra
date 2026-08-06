@@ -111,6 +111,40 @@ fi
 echo "rt-archive-tls OK ($checked feature archives," \
      "$(printf '%s\n' "$core_defs" | grep -c . || true) core-owned thread_locals)"
 
+# The core archive must never declare an httplib type, let alone reference the
+# TLS/compression libraries behind it: http.h gates the httplib.h include on
+# CULEBRA_RT_HTTP_REQUEST_WEAK, and the binding layer (stdlib_interp.h /
+# stdlib_jit.h) names only the neutral ServerRequest/ServerResponse on the
+# server side. A program that never uses Http should therefore link no such
+# symbol at all. This is easy to lose silently: ELF/Mach-O dead-strip an
+# unreferenced undefined symbol, so only Windows notices when one comes back
+# (PE's ld reports it before --gc-sections runs) -- catch it here instead of
+# in a Windows CI round trip.
+#
+# The pattern covers the library prefixes, not just the 39 symbols the leak
+# happened to produce, so a vendored cpp-httplib bump that reaches a different
+# corner of OpenSSL/zlib still trips it. `7httplib` is the Itanium mangling of
+# `namespace httplib`, matched directly so the check does not depend on c++filt
+# being installed (demangle() falls back to `cat`, which would silently pass).
+core_undef=$(nm -u "$core" 2>/dev/null | awk '{print $NF}' | sort -u)
+leak=$(printf '%s\n' "$core_undef" | grep -E \
+  '^_?(SSL|X509|EVP_|BIO_|ERR_|ASN1_|RAND_|PEM_|OPENSSL|CRYPTO_|OCSP_|i2d_|d2i_|GENERAL_NAME|deflate|inflate|crc32|adler32|compress|uncompress|zlib|gz)|7httplib' \
+  || true)
+if [[ -n "$leak" ]]; then
+  echo "rt-archive-deps FAIL: the core archive references OpenSSL/zlib/httplib:" >&2
+  printf '%s\n' "$leak" | demangle | sed 's/^/  /' >&2
+  cat >&2 <<'EOF'
+  A program that never uses Http should link no such symbol -- ELF/Mach-O
+  dead-strip these, so only Windows AOT (src/main.cc's win_static) would
+  notice, silently paying ~4 MB again for every program regardless of use.
+  Check that no binding (stdlib_interp.h/stdlib_jit.h) or http.h server-side
+  declaration names an httplib type directly; see http.h's
+  ServerRequest/ServerResponse for the neutral shape to use instead.
+EOF
+  exit 1
+fi
+echo "rt-archive-deps OK (core archive references no OpenSSL/zlib/httplib symbol)"
+
 # Same hazard, one symbol class over: the runtime helpers. The core archive
 # defines all of them outright, and a feature TU that reaches wrap.h emits its
 # own copy of any the compiler declines to inline (rt_macros.h explains what
