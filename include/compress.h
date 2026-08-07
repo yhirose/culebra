@@ -45,16 +45,15 @@ struct Result {
 #define CULEBRA_RT_COMPRESS_LINKAGE inline
 #endif
 
-// gzip-compress `data` (RFC 1952 wrapper). Binary-safe: `data` may hold NUL.
-CULEBRA_RT_COMPRESS_LINKAGE Result gzip(std::string_view data) {
-#if defined(CULEBRA_RT_COMPRESS_WEAK)
-  (void)data;
-  return {{}, "runtime not linked (no Compress use detected at build)"};
-#else
+#if !defined(CULEBRA_RT_COMPRESS_WEAK)
+// The two compressors are one deflate stream apart: `window_bits` picks the
+// wrapper and `level` the effort. Everything else — the size guard, the
+// bound-sized reserve, the chunk loop, the error strings — is the same.
+inline Result _deflate_stream(std::string_view data, int level,
+                              int window_bits) {
   if (data.size() > 0xFFFFFFFFull) return {{}, "input too large"};
   z_stream zs{};
-  // windowBits 15 + 16 selects a gzip wrapper over raw deflate.
-  if (deflateInit2(&zs, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 15 + 16, 8,
+  if (deflateInit2(&zs, level, Z_DEFLATED, window_bits, 8,
                    Z_DEFAULT_STRATEGY) != Z_OK) {
     return {{}, "deflate init failed"};
   }
@@ -75,6 +74,17 @@ CULEBRA_RT_COMPRESS_LINKAGE Result gzip(std::string_view data) {
   deflateEnd(&zs);
   if (ret != Z_STREAM_END) return {{}, "deflate failed"};
   return {std::move(out), {}};
+}
+#endif
+
+// gzip-compress `data` (RFC 1952 wrapper). Binary-safe: `data` may hold NUL.
+CULEBRA_RT_COMPRESS_LINKAGE Result gzip(std::string_view data) {
+#if defined(CULEBRA_RT_COMPRESS_WEAK)
+  (void)data;
+  return {{}, "runtime not linked (no Compress use detected at build)"};
+#else
+  // windowBits 15 + 16 selects a gzip wrapper over raw deflate.
+  return _deflate_stream(data, Z_DEFAULT_COMPRESSION, 15 + 16);
 #endif
 }
 
@@ -88,28 +98,9 @@ CULEBRA_RT_COMPRESS_LINKAGE Result deflate_zlib(std::string_view data,
   (void)level;
   return {{}, "runtime not linked (no Compress use detected at build)"};
 #else
-  if (data.size() > 0xFFFFFFFFull) return {{}, "input too large"};
-  z_stream zs{};
   // windowBits 15 (no +16) selects the zlib wrapper — the adler32 trailer a
   // PNG decoder checks.
-  if (deflateInit2(&zs, level, Z_DEFLATED, 15, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
-    return {{}, "deflate init failed"};
-  }
-  zs.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(data.data()));
-  zs.avail_in = static_cast<uInt>(data.size());
-  std::string out;
-  out.reserve(deflateBound(&zs, static_cast<uLong>(data.size())));
-  unsigned char buf[16384];
-  int ret;
-  do {
-    zs.next_out = buf;
-    zs.avail_out = sizeof(buf);
-    ret = deflate(&zs, Z_FINISH);
-    out.append(reinterpret_cast<char*>(buf), sizeof(buf) - zs.avail_out);
-  } while (ret == Z_OK);
-  deflateEnd(&zs);
-  if (ret != Z_STREAM_END) return {{}, "deflate failed"};
-  return {std::move(out), {}};
+  return _deflate_stream(data, level, 15);
 #endif
 }
 
