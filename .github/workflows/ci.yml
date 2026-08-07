@@ -1222,11 +1222,11 @@ jobs:
           # costs only Http users, on the platform win_static used to charge it
           # to everyone. No "before" binary to diff against (this build already
           # has the fix), but the delta here is what the old unconditional link
-          # would have added to triv.exe.
-          if [ -f triv.exe ]; then
-            echo "=== binary size: non-Http vs Http (Windows AOT) ==="
-            ls -la triv.exe httpsrv.exe
-          fi
+          # would have added to triv.exe. triv.exe is built by the trivial-AOT
+          # step above, which fails the job if it doesn't produce one.
+          test -f triv.exe || { echo "triv.exe missing (trivial-AOT step didn't run?)"; exit 1; }
+          echo "=== binary size: non-Http vs Http (Windows AOT) ==="
+          ls -la triv.exe httpsrv.exe
       # The step above proves the link; this one proves the window.
       - name: Smoke — Webview window + event loop (interp / JIT)
         run: misc/probe_webview_window.sh ./build-win-aot/culebra.exe

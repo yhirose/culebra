@@ -57,51 +57,6 @@ namespace culebra::http {
 
 using HeaderList = std::vector<std::pair<std::string, std::string>>;
 
-// A slot+generation id registry over borrowed/owned `T*` handles: a captured or
-// escaped id (used after the handle is invalidated, or after a slot is reused)
-// resolves stale and fails safely with no ABA. The id encodes (gen<<32 | slot)
-// in unsigned space (a signed shift into the sign bit would be UB). thread_local
-// per registry instance — each handle is non-sendable. Every handle table in
-// this file (client, server, streaming sink, WebSocket connection) is one of
-// these, so a forged or stale id behaves the same way everywhere: bounds- and
-// generation-checked, never a dereference of arbitrary memory (same posture as
-// the wrap.h foreign table and File's fd table). Declared here, ahead of any
-// httplib type, so it stays outside the WEAK/STRONG gate — a registry over
-// T* never itself needs T to be complete.
-template <class T>
-struct IdRegistry {
-  std::vector<T*> slots;
-  std::vector<uint32_t> gen;
-  std::vector<uint32_t> free;
-  int64_t add(T* p) {
-    uint32_t s;
-    if (!free.empty()) {
-      s = free.back();
-      free.pop_back();
-      slots[s] = p;
-    } else {
-      s = static_cast<uint32_t>(slots.size());
-      slots.push_back(p);
-      gen.push_back(0);
-    }
-    return static_cast<int64_t>((static_cast<uint64_t>(gen[s]) << 32) |
-                                static_cast<uint64_t>(s));
-  }
-  T* get(int64_t id) {
-    uint32_t s = static_cast<uint32_t>(id & 0xFFFFFFFF);
-    uint32_t g = static_cast<uint32_t>(static_cast<uint64_t>(id) >> 32);
-    if (s >= slots.size() || gen[s] != g) return nullptr;
-    return slots[s];
-  }
-  void invalidate(int64_t id) {
-    uint32_t s = static_cast<uint32_t>(id & 0xFFFFFFFF);
-    if (s >= slots.size()) return;
-    slots[s] = nullptr;
-    gen[s]++;  // bump so a stale id (old generation) now fails
-    free.push_back(s);
-  }
-};
-
 // Per-chunk sink for streaming the response body. Return false to abort the
 // transfer. When set on a request, the body is delivered to this sink as it
 // arrives and HttpResult::body stays empty (no whole-body buffering). Used by
@@ -341,6 +296,52 @@ inline std::string encode_query(const HeaderList& pairs) {
 #define CULEBRA_RT_HTTP_LINKAGE inline
 #endif
 
+// A slot+generation id registry over borrowed/owned `T*` handles: a captured or
+// escaped id (used after the handle is invalidated, or after a slot is reused)
+// resolves stale and fails safely with no ABA. The id encodes (gen<<32 | slot)
+// in unsigned space (a signed shift into the sign bit would be UB). thread_local
+// per registry instance — each handle is non-sendable. Every handle table in
+// this file (client, server, streaming sink, WebSocket connection) is one of
+// these, so a forged or stale id behaves the same way everywhere: bounds- and
+// generation-checked, never a dereference of arbitrary memory (same posture as
+// the wrap.h foreign table and File's fd table). Declared here, ahead of the
+// client table (its first use) but outside the WEAK/STRONG gate that follows —
+// a registry over T* never itself needs T to be complete, and the streaming
+// sink table below needs it visible in the WEAK build too.
+template <class T>
+struct IdRegistry {
+  std::vector<T*> slots;
+  std::vector<uint32_t> gen;
+  std::vector<uint32_t> free;
+  int64_t add(T* p) {
+    uint32_t s;
+    if (!free.empty()) {
+      s = free.back();
+      free.pop_back();
+      slots[s] = p;
+    } else {
+      s = static_cast<uint32_t>(slots.size());
+      slots.push_back(p);
+      gen.push_back(0);
+    }
+    return static_cast<int64_t>((static_cast<uint64_t>(gen[s]) << 32) |
+                                static_cast<uint64_t>(s));
+  }
+  T* get(int64_t id) {
+    uint32_t s = static_cast<uint32_t>(id & 0xFFFFFFFF);
+    uint32_t g = static_cast<uint32_t>(static_cast<uint64_t>(id) >> 32);
+    if (s >= slots.size() || gen[s] != g) return nullptr;
+    return slots[s];
+  }
+  void invalidate(int64_t id) {
+    uint32_t s = static_cast<uint32_t>(id & 0xFFFFFFFF);
+    if (s >= slots.size()) return;
+    slots[s] = nullptr;
+    gen[s]++;  // bump so a stale id (old generation) now fails
+    free.push_back(s);
+  }
+};
+
 // Everything from here to the end of the client half is implementation: the
 // handle table, the httplib-touching helpers and the HttpClient definition.
 // The WEAK core archive's stubs never intern a handle, and a `thread_local`
@@ -356,9 +357,9 @@ struct HttpClient;
 // pointer (matching the SQLite handle model — an invalid/forged id resolves to
 // nullptr and fails safely instead of dereferencing arbitrary memory).
 // thread_local because a client is non-sendable (one connection, one thread).
-// A slot is reusable the moment a client closes, so without a generation check
-// a captured/escaped id from a prior client could silently address a later,
-// unrelated one on the same slot; IdRegistry closes that (no ABA).
+// A slot is reusable the moment a client closes, so without IdRegistry's
+// generation check a captured/escaped id from a prior client could silently
+// address a later, unrelated one on the same slot (no ABA).
 inline thread_local IdRegistry<HttpClient> g_http_clients;
 inline int64_t _http_client_register(HttpClient* c) { return g_http_clients.add(c); }
 inline HttpClient* _http_client_get(int64_t id) { return g_http_clients.get(id); }
@@ -808,11 +809,8 @@ using WsHandler = std::function<void(const ServerRequest&, WebSocketRef*)>;
 // hold a small integer id, a forged/closed id resolves to nullptr and fails
 // safely. thread_local because a server (v0) runs on the thread that created it.
 // Gated with the bodies that intern a server, so the core archive does not also
-// define the table (see rt_shared_tls.h).
-// A slot is reusable the moment a server closes, so without a generation check
-// a captured/escaped id from a prior server could silently address a later,
-// unrelated one on the same slot; IdRegistry closes that (no ABA) — same
-// reasoning as the client registry above.
+// define the table (see rt_shared_tls.h). Same no-ABA reasoning as the client
+// registry above.
 #if !defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
 struct HttpServer;
 inline thread_local IdRegistry<HttpServer> g_http_servers;
