@@ -106,6 +106,20 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast) {
   // the force-kill second press only applies within a single wedged eval.
   install_sigint_handler();
 
+  // Reap any isolate still outstanding once the REPL session itself ends
+  // (Ctrl-D, `exit`/`quit`, or an unexpected early return) — the same
+  // teardown-safety concern interpret_modules's JoinIsolatesGuard covers for
+  // a single script run (interpreter.h), but scoped to the whole session
+  // here instead of each accepted input: an Isolate.spawn'd background task
+  // is expected to keep running across multiple REPL lines, so joining
+  // after every `interpret()` call below would cancel legitimate in-flight
+  // work instead of just reaping stragglers at exit.
+  struct JoinIsolatesGuard {
+    ~JoinIsolatesGuard() {
+      if (auto& fn = interp_isolate_teardown_join_hook()) fn();
+    }
+  } join_isolates_guard;
+
   // The interp REPL relies on the env's lazy Time / Args / Regex bindings
   // registered by `environment()`; no explicit preamble load is needed.
 

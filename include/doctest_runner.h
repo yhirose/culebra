@@ -316,6 +316,13 @@ inline TestRunSummary run_doctests(
         ok = interpret(ast, env, val, emsgs);
         captured = cap.take();
       }
+      // Reap any isolate this block left outstanding (e.g. a doc example
+      // that throws past an unreached join()) before the next block's
+      // make_env() call and the loop moving on — same teardown-safety
+      // concern interpret_modules's JoinIsolatesGuard covers for a script
+      // run (interpreter.h); each doc block is its own fresh env / run, so
+      // it gets the same per-run join, not the REPL's per-session one.
+      if (auto& fn = interp_isolate_teardown_join_hook()) fn();
       // interpret() converts uncaught throws into emsgs and returns false.
       std::string err = emsgs.empty() ? "" : emsgs.front();
 
