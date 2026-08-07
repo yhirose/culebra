@@ -11912,21 +11912,10 @@ inline bool interpret_modules(const std::vector<LoadedModule>& orig_modules,
                               std::vector<std::string>& msgs,
                               Debugger debugger = nullptr) {
   if (orig_modules.empty()) return true;
-  // Prepend a synthetic preamble module that registers the built-in
-  // traits (Stringer / Eq / Comparable). The AST is cached process-
-  // wide; default-method closures are constructed per-Interpreter
+  // The built-in traits ride in as a synthetic module. The AST is cached
+  // process-wide; default-method closures are constructed per-Interpreter
   // (they capture env), matching how user-declared traits behave.
-  std::vector<LoadedModule> modules;
-  modules.reserve(orig_modules.size() + 1);
-  if (auto pre_ast = parse_builtin_traits_preamble()) {
-    LoadedModule preamble;
-    preamble.abs_path = "<builtin>";
-    preamble.source = std::make_shared<std::string>(
-        std::string(culebra::builtin_traits_preamble()));
-    preamble.ast = pre_ast;
-    modules.push_back(std::move(preamble));
-  }
-  for (const auto& m : orig_modules) modules.push_back(m);
+  auto modules = with_builtin_traits(orig_modules);
 
   auto interp = std::make_shared<Interpreter>(debugger);
   // Inherit any interrupt flag installed on this thread's Runtime (the CLI

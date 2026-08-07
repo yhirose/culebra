@@ -374,8 +374,9 @@ can point your own link step at.
 
 **Emitting the object.** Load the program through `ModuleLoader` and
 splice the stdlib preamble *before* handing the modules to
-`build_object` — the preamble is what defines `println` / `inspect` and
-the trait declarations:
+`build_object` — the preamble is what defines `println` / `inspect`.
+(The `Stringer` / `Eq` / `Comparable` declarations are not part of it:
+`build_object` prepends those itself, as `JIT::run` does.)
 
 ```cpp
 #include <culebra.h>

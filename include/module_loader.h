@@ -30,6 +30,26 @@ struct LoadedModule {
   std::vector<std::filesystem::path> deps;
 };
 
+// Prepend a synthetic module declaring the built-in traits (Stringer /
+// Eq / Comparable), so they are registered before any user code runs.
+// Interp and JIT/AOT share this one definition — the synthetic module's
+// shape is part of what keeps the backends symmetric.
+inline std::vector<LoadedModule> with_builtin_traits(
+    const std::vector<LoadedModule>& orig_modules) {
+  std::vector<LoadedModule> modules;
+  modules.reserve(orig_modules.size() + 1);
+  if (auto pre_ast = parse_builtin_traits_preamble()) {
+    LoadedModule preamble;
+    preamble.abs_path = "<builtin>";
+    preamble.source = std::make_shared<std::string>(
+        std::string(builtin_traits_preamble()));
+    preamble.ast = pre_ast;
+    modules.push_back(std::move(preamble));
+  }
+  for (const auto& m : orig_modules) modules.push_back(m);
+  return modules;
+}
+
 // Resolve a relative module path against an importing module's
 // directory into a stable absolute key. Used by the loader, interp,
 // and JIT — they must all agree on the same key so the module table

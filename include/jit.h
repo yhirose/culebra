@@ -823,8 +823,12 @@ struct JIT {
     std::string acc = jit_cache_salt();
     acc += fast_codegen ? "|fast|O" : "|O";
     acc += std::to_string(opt_level);
-    for (const auto& m : modules)
-      if (m.source) acc += '|' + *m.source;
+    // A source-less module (an embedder's bare AST) can't be keyed — two
+    // different programs would share one entry, so don't cache at all.
+    for (const auto& m : modules) {
+      if (!m.source) return "culebra";
+      acc += '|' + *m.source;
+    }
     return std::string(kCacheKeyTag) +
            std::to_string(llvm::xxh3_64bits(acc));
   }
@@ -957,232 +961,132 @@ struct JIT {
   }
 #endif
 
+  // Resolve `triple` and stamp the module's data layout and triple, so IR
+  // struct field offsets, alignments and pointer sizes match the C++ runtime.
+  // Without it a {i8, i64} Value lays out with i64 at offset 1 (no padding),
+  // diverging from the 16-byte JitValue the runtime uses — any alloca-backed
+  // arg-slab would break.
+  static inline std::unique_ptr<llvm::TargetMachine> apply_target(
+      llvm::Module& mod, const llvm::Triple& triple,
+      std::string* err = nullptr) {
+    std::string lookup_err;
+    auto* target = llvm::TargetRegistry::lookupTarget(triple, lookup_err);
+    if (!target) {
+      if (err) {
+        *err = "target lookup failed for '" + triple.str() + "': " + lookup_err;
+      }
+      return nullptr;
+    }
+    std::unique_ptr<llvm::TargetMachine> tm(
+        target->createTargetMachine(triple, "", "", {}, {}));
+    if (!tm) {
+      if (err) *err = "target machine creation failed";
+      return nullptr;
+    }
+    mod.setDataLayout(tm->createDataLayout());
+    mod.setTargetTriple(triple);
+    return tm;
+  }
+
+  // Emit `__culebra_main: void ()` for `modules` (ModuleLoader order: deps
+  // first, entry last). Each dependency compiles inside a fresh scope so its
+  // top-level bindings don't leak into the entry, and registers its export
+  // Object before that scope closes; the entry module shares the rest of the
+  // function. A dep's top-level defers fire at dep-end, the entry's at
+  // program end — matching interpret_modules.
+  llvm::Function* emit_main_fn(const std::vector<LoadedModule>& modules) {
+    using namespace llvm;
+    declare_runtime_functions();
+
+    // Per-module free-variable analysis, pre-computed before any IR emission
+    // so the main fn header knows the aggregate EH / kw-only flags.
+    std::vector<FuncInfo> infos;
+    infos.reserve(modules.size());
+    bool any_eh = false;
+    bool any_kw_only = false;
+    for (const auto& m : modules) {
+      infos.push_back(analyze_program(*m.ast));
+      any_eh = any_eh || infos.back().has_eh;
+      any_kw_only = any_kw_only || scan_for_kw_only_marker(*m.ast);
+    }
+    any_kw_only_in_program_ = any_kw_only;
+
+    auto mainFnType = FunctionType::get(builder_.getVoidTy(), {}, false);
+    auto mainFn = Function::Create(mainFnType, GlobalValue::ExternalLinkage,
+                                   "__culebra_main", module_);
+    if (any_eh) mainFn->setPersonalityFn(get_personality_fn());
+    builder_.SetInsertPoint(BasicBlock::Create(ctx_, "entry", mainFn));
+
+    for (size_t i = 0; i < modules.size(); ++i) {
+      const bool is_entry = i + 1 == modules.size();
+      const auto& m = modules[i];
+      current_module_path_ = m.abs_path;
+      main_info_ = std::move(infos[i]);
+      current_info_ = &main_info_;
+      push_scope();
+      llvm::Value* mark = nullptr;
+      if (main_info_.has_fn_defer) {
+        mark = builder_.CreateCall(module_->getFunction(rt::defer_mark), {},
+                                   is_entry ? "main.mark" : "dep.mark");
+        current_fn_defer_mark_ = mark;
+      }
+      pre_allocate_forward_refs(*m.ast);
+      compile(*m.ast).consume();
+      if (!is_entry) {
+        emit_build_and_register_export(*m.ast, m.abs_path.string());
+        if (mark) {
+          builder_.CreateCall(module_->getFunction(rt::defer_run_to), {mark});
+        }
+      } else if (!builder_.GetInsertBlock()->getTerminator()) {
+        // Top-level defers run on normal completion; an uncaught throw skips
+        // them.
+        if (mark) {
+          builder_.CreateCall(module_->getFunction(rt::defer_run_to), {mark});
+        }
+        release_all_scopes_for_exit(/*suppress_drop=*/true);
+        builder_.CreateRetVoid();
+      }
+      current_fn_defer_mark_ = nullptr;
+      current_owned_hot_ = nullptr;
+      pop_scope();
+      current_info_ = nullptr;
+    }
+
+    verifyFunction(*mainFn);
+    return mainFn;
+  }
+
+  // Embedder entry: one bare AST, routed through run_modules so it can't drift.
   static inline void run(const std::shared_ptr<peg::Ast>& ast,
                          bool emit_llvm = false, bool debug = false,
                          int opt_level = 2) {
-    using namespace llvm;
-
-    ensure_native_target_init();
-
-    auto ctx = std::make_unique<LLVMContext>();
-    auto mod = std::make_unique<Module>("culebra", *ctx);
-    // Apply the host's data layout so struct field offsets, alignments
-    // and pointer sizes match the C++ runtime we're linking against.
-    // Without this, a {i8, i64} Value is laid out with i64 at offset 1
-    // (no padding), diverging from C++'s 16-byte layout the runtime
-    // uses for JitValue — any alloca-backed arg-slab would break.
-    {
-      llvm::Triple triple(llvm::sys::getDefaultTargetTriple());
-      std::string err;
-      auto* target = llvm::TargetRegistry::lookupTarget(triple, err);
-      if (target) {
-        std::unique_ptr<llvm::TargetMachine> tm(
-            target->createTargetMachine(triple, "", "", {}, {}));
-        if (tm) {
-          mod->setDataLayout(tm->createDataLayout());
-          mod->setTargetTriple(triple);
-        }
-      }
-    }
-    IRBuilder<> builder(*ctx);
-
-    JIT jit(ctx.get(), mod.get(), builder);
-    jit.debug_enabled_ = debug;
-    jit.declare_runtime_functions();
-
-    // Pre-pass: free variable analysis for the whole program
-    jit.main_info_ = jit.analyze_program(*ast);
-    jit.current_info_ = &jit.main_info_;
-    jit.any_kw_only_in_program_ = scan_for_kw_only_marker(*ast);
-
-    // Create __culebra_main: void ()
-    auto mainFnType = FunctionType::get(builder.getVoidTy(), {}, false);
-    auto mainFn = Function::Create(mainFnType, GlobalValue::ExternalLinkage,
-                                   "__culebra_main", mod.get());
-    if (jit.main_info_.has_eh) {
-      mainFn->setPersonalityFn(jit.get_personality_fn());
-    }
-
-    auto entryBB = BasicBlock::Create(*ctx, "entry", mainFn);
-    builder.SetInsertPoint(entryBB);
-
-    jit.push_scope();
-
-    // Top-level defers run on normal completion; on an uncaught throw
-    // they are skipped (wrap in a `{}` or try/catch for throw-path
-    // cleanup).
-    llvm::Value* mainMark = nullptr;
-    if (jit.main_info_.has_fn_defer) {
-      mainMark = builder.CreateCall(
-          mod->getFunction(rt::defer_mark), {}, "main.mark");
-      jit.current_fn_defer_mark_ = mainMark;
-    }
-
-    jit.pre_allocate_forward_refs(*ast);
-    jit.compile(*ast).consume();
-
-    if (!builder.GetInsertBlock()->getTerminator()) {
-      if (mainMark) {
-        builder.CreateCall(
-            mod->getFunction(rt::defer_run_to), {mainMark});
-      }
-      jit.release_all_scopes_for_exit(/*suppress_drop=*/true);
-      builder.CreateRetVoid();
-    }
-
-    jit.current_fn_defer_mark_ = nullptr;
-    jit.current_owned_hot_ = nullptr;
-    jit.pop_scope();
-    jit.current_info_ = nullptr;
-
-    verifyFunction(*mainFn);
-
-    if (opt_level > 0) {
-      optimize_module(*mod, opt_level);
-    }
-
-    if (emit_llvm) {
-      mod->print(outs(), nullptr);
-    } else {
-      exec(std::move(ctx), std::move(mod));
-    }
+    run_modules({{.ast = ast}}, emit_llvm, debug, opt_level);
   }
 
-  // Multi-module variant. `modules` comes from ModuleLoader in
-  // topological order (deps first, entry last). Dependencies compile
-  // into a private scope inside __culebra_main, build their export
-  // Object, and hand it to `culebra_runtime_module_register`. The
-  // entry module compiles last and shares the caller-facing scope.
-  // IMPORT_STMT sites in any module fetch from the module table via
-  // `culebra_runtime_module_get`.
+  // Multi-module JIT entry. `modules` comes from ModuleLoader in
+  // topological order (deps first, entry last); see emit_main_fn for how
+  // the module graph maps onto __culebra_main.
   static inline void run_modules(
       const std::vector<LoadedModule>& orig_modules,
       bool emit_llvm = false, bool debug = false, int opt_level = 2,
       bool fast_codegen = false) {
     using namespace llvm;
     if (orig_modules.empty()) return;
-
-    // Prepend built-in trait preamble (mirrors interp's
-    // interpret_modules). Registers Stringer / Eq / Comparable before
-    // any user code runs; default-method closures compile into the
-    // same JIT module so dispatch works from the first call.
-    std::vector<LoadedModule> modules;
-    modules.reserve(orig_modules.size() + 1);
-    if (auto pre_ast = culebra::parse_builtin_traits_preamble()) {
-      LoadedModule preamble;
-      preamble.abs_path = "<builtin>";
-      preamble.source = std::make_shared<std::string>(
-          std::string(culebra::builtin_traits_preamble()));
-      preamble.ast = pre_ast;
-      modules.push_back(std::move(preamble));
-    }
-    for (const auto& m : orig_modules) modules.push_back(m);
+    auto modules = with_builtin_traits(orig_modules);
 
     ensure_native_target_init();
     auto ctx = std::make_unique<LLVMContext>();
     // With the object cache on, name the module by a content key so
     // FileObjectCache can find a prior backend object (see jit_module_name).
-    auto mod =
-        std::make_unique<Module>(jit_module_name(modules, fast_codegen, opt_level), *ctx);
-    {
-      llvm::Triple triple(llvm::sys::getDefaultTargetTriple());
-      std::string err;
-      auto* target = llvm::TargetRegistry::lookupTarget(triple, err);
-      if (target) {
-        std::unique_ptr<llvm::TargetMachine> tm(
-            target->createTargetMachine(triple, "", "", {}, {}));
-        if (tm) {
-          mod->setDataLayout(tm->createDataLayout());
-          mod->setTargetTriple(triple);
-        }
-      }
-    }
-    IRBuilder<> builder(*ctx);
+    auto mod = std::make_unique<Module>(
+        jit_module_name(modules, fast_codegen, opt_level), *ctx);
+    apply_target(*mod, llvm::Triple(llvm::sys::getDefaultTargetTriple()));
 
+    IRBuilder<> builder(*ctx);
     JIT jit(ctx.get(), mod.get(), builder);
     jit.debug_enabled_ = debug;
-    jit.declare_runtime_functions();
+    jit.emit_main_fn(modules);
 
-    // Per-module FuncInfo. Pre-compute before any IR emission so we
-    // know the aggregate EH / fn-defer flags for the main fn header.
-    std::vector<FuncInfo> infos;
-    infos.reserve(modules.size());
-    bool any_eh = false;
-    bool any_kw_only = false;
-    for (const auto& m : modules) {
-      infos.push_back(jit.analyze_program(*m.ast));
-      any_eh = any_eh || infos.back().has_eh;
-      any_kw_only = any_kw_only || scan_for_kw_only_marker(*m.ast);
-    }
-    jit.any_kw_only_in_program_ = any_kw_only;
-
-    auto mainFnType = FunctionType::get(builder.getVoidTy(), {}, false);
-    auto mainFn = Function::Create(mainFnType, GlobalValue::ExternalLinkage,
-                                    "__culebra_main", mod.get());
-    if (any_eh) mainFn->setPersonalityFn(jit.get_personality_fn());
-
-    auto entryBB = BasicBlock::Create(*ctx, "entry", mainFn);
-    builder.SetInsertPoint(entryBB);
-
-    // Dependencies. Each module compiles inside a fresh scope so its
-    // top-level bindings don't leak into the entry; the export Object
-    // is registered in the module table before the scope closes.
-    for (size_t i = 0; i + 1 < modules.size(); ++i) {
-      const auto& m = modules[i];
-      jit.current_module_path_ = m.abs_path;
-      jit.main_info_ = std::move(infos[i]);
-      jit.current_info_ = &jit.main_info_;
-      jit.push_scope();
-      // Per-dep defer mark so top-level defers in the dep fire at
-      // dep-end, matching interp's interpret_modules.
-      llvm::Value* depMark = nullptr;
-      if (jit.main_info_.has_fn_defer) {
-        depMark = builder.CreateCall(
-            mod->getFunction(rt::defer_mark), {}, "dep.mark");
-        jit.current_fn_defer_mark_ = depMark;
-      }
-      jit.pre_allocate_forward_refs(*m.ast);
-      jit.compile(*m.ast).consume();
-      jit.emit_build_and_register_export(*m.ast, m.abs_path.string());
-      if (depMark) {
-        builder.CreateCall(
-            mod->getFunction(rt::defer_run_to), {depMark});
-      }
-      jit.current_fn_defer_mark_ = nullptr;
-    jit.current_owned_hot_ = nullptr;
-      jit.pop_scope();
-      jit.current_info_ = nullptr;
-    }
-
-    // Entry module — shares the rest of __culebra_main (defer mark,
-    // top-level scope cleanup, ret void).
-    const auto& entry = modules.back();
-    jit.current_module_path_ = entry.abs_path;
-    jit.main_info_ = std::move(infos.back());
-    jit.current_info_ = &jit.main_info_;
-    jit.push_scope();
-    llvm::Value* mainMark = nullptr;
-    if (jit.main_info_.has_fn_defer) {
-      mainMark = builder.CreateCall(
-          mod->getFunction(rt::defer_mark), {}, "main.mark");
-      jit.current_fn_defer_mark_ = mainMark;
-    }
-    jit.pre_allocate_forward_refs(*entry.ast);
-    jit.compile(*entry.ast).consume();
-    if (!builder.GetInsertBlock()->getTerminator()) {
-      if (mainMark) {
-        builder.CreateCall(
-            mod->getFunction(rt::defer_run_to), {mainMark});
-      }
-      jit.release_all_scopes_for_exit(/*suppress_drop=*/true);
-      builder.CreateRetVoid();
-    }
-    jit.current_fn_defer_mark_ = nullptr;
-    jit.current_owned_hot_ = nullptr;
-    jit.pop_scope();
-    jit.current_info_ = nullptr;
-
-    verifyFunction(*mainFn);
     if (opt_level > 0) optimize_module(*mod, opt_level);
     if (emit_llvm) {
       mod->print(outs(), nullptr);
@@ -1191,142 +1095,11 @@ struct JIT {
     }
   }
 
-  // AOT codegen path. Mirrors `run()` up through `compile(ast)` but
-  // emits an object file via TargetMachine instead of handing the
-  // module to ORC. Also adds a `int main(int, char**)` IR function
-  // that calls `culebra_aot_bootstrap` (defined in libculebra_rt.a)
-  // with the program's `__culebra_main` as the user-main pointer.
-  // Returns 0 on success, non-zero on emission failure.
-  static inline int build_object(const std::shared_ptr<peg::Ast>& ast,
-                                 const std::string& out_path,
-                                 int opt_level = 2,
-                                 bool emit_llvm = false,
-                                 const std::string& target_triple = "") {
-    using namespace llvm;
-
-    if (target_triple.empty()) {
-      ensure_native_target_init();
-    } else {
-      ensure_all_targets_init();
-    }
-
-    auto ctx = std::make_unique<LLVMContext>();
-    auto mod = std::make_unique<Module>("culebra", *ctx);
-
-    llvm::Triple triple(target_triple.empty()
-                            ? llvm::sys::getDefaultTargetTriple()
-                            : target_triple);
-    std::string err;
-    auto* target = llvm::TargetRegistry::lookupTarget(triple, err);
-    if (!target) {
-      std::fprintf(stderr,
-                   "culebra build: target lookup failed for '%s': %s\n",
-                   triple.str().c_str(), err.c_str());
-      return 1;
-    }
-    std::unique_ptr<llvm::TargetMachine> tm(
-        target->createTargetMachine(triple, "", "", {}, {}));
-    if (!tm) {
-      std::fprintf(stderr,
-                   "culebra build: target machine creation failed\n");
-      return 1;
-    }
-    mod->setDataLayout(tm->createDataLayout());
-    mod->setTargetTriple(triple);
-
-    IRBuilder<> builder(*ctx);
-    JIT jit(ctx.get(), mod.get(), builder);
-    jit.declare_runtime_functions();
-
-    jit.main_info_ = jit.analyze_program(*ast);
-    jit.current_info_ = &jit.main_info_;
-    jit.any_kw_only_in_program_ = scan_for_kw_only_marker(*ast);
-
-    auto mainFnType = FunctionType::get(builder.getVoidTy(), {}, false);
-    auto mainFn = Function::Create(mainFnType, GlobalValue::ExternalLinkage,
-                                   "__culebra_main", mod.get());
-    if (jit.main_info_.has_eh) {
-      mainFn->setPersonalityFn(jit.get_personality_fn());
-    }
-    auto entryBB = BasicBlock::Create(*ctx, "entry", mainFn);
-    builder.SetInsertPoint(entryBB);
-    jit.push_scope();
-    llvm::Value* mainMark = nullptr;
-    if (jit.main_info_.has_fn_defer) {
-      mainMark = builder.CreateCall(
-          mod->getFunction(rt::defer_mark), {}, "main.mark");
-      jit.current_fn_defer_mark_ = mainMark;
-    }
-    jit.pre_allocate_forward_refs(*ast);
-    jit.compile(*ast).consume();
-    if (!builder.GetInsertBlock()->getTerminator()) {
-      if (mainMark) {
-        builder.CreateCall(
-            mod->getFunction(rt::defer_run_to), {mainMark});
-      }
-      jit.release_all_scopes_for_exit(/*suppress_drop=*/true);
-      builder.CreateRetVoid();
-    }
-    jit.current_fn_defer_mark_ = nullptr;
-    jit.current_owned_hot_ = nullptr;
-    jit.pop_scope();
-    jit.current_info_ = nullptr;
-    verifyFunction(*mainFn);
-
-    // Emit C entry: `int main(int argc, char** argv)` that
-    // tail-calls `culebra_aot_bootstrap(argc, argv, __culebra_main)`.
-    auto i32 = builder.getInt32Ty();
-    auto ptrTy = PointerType::get(*ctx, 0);
-    auto bootstrapTy = FunctionType::get(i32, {i32, ptrTy, ptrTy}, false);
-    auto bootstrapFn = Function::Create(
-        bootstrapTy, GlobalValue::ExternalLinkage,
-        "culebra_aot_bootstrap", mod.get());
-
-    auto cMainTy = FunctionType::get(i32, {i32, ptrTy}, false);
-    auto cMain = Function::Create(
-        cMainTy, GlobalValue::ExternalLinkage, "main", mod.get());
-    auto cEntry = BasicBlock::Create(*ctx, "entry", cMain);
-    builder.SetInsertPoint(cEntry);
-    auto argIt = cMain->arg_begin();
-    llvm::Value* argcArg = &*argIt++;
-    llvm::Value* argvArg = &*argIt;
-    auto callRet = builder.CreateCall(
-        bootstrapFn, {argcArg, argvArg, mainFn});
-    builder.CreateRet(callRet);
-    verifyFunction(*cMain);
-
-    if (opt_level > 0) {
-      optimize_module(*mod, opt_level);
-    }
-
-    if (emit_llvm) {
-      mod->print(outs(), nullptr);
-    }
-
-    std::error_code EC;
-    llvm::raw_fd_ostream OS(out_path, EC, llvm::sys::fs::OF_None);
-    if (EC) {
-      std::fprintf(stderr, "culebra build: cannot open %s: %s\n",
-                   out_path.c_str(), EC.message().c_str());
-      return 1;
-    }
-    llvm::legacy::PassManager pm;
-    if (tm->addPassesToEmitFile(pm, OS, nullptr,
-                                llvm::CodeGenFileType::ObjectFile)) {
-      std::fprintf(stderr,
-                   "culebra build: target does not support object emission\n");
-      return 1;
-    }
-    pm.run(*mod);
-    OS.flush();
-    return 0;
-  }
-
-  // Multi-module variant of build_object. Same target-machine,
-  // bootstrap-trampoline, and object emission as the single-AST form;
-  // the body section follows run_modules — each dependency compiles
-  // into its own scope and registers an export Object before the
-  // entry module shares the rest of __culebra_main.
+  // AOT codegen path. Same program body as run_modules (see emit_main_fn),
+  // but the module goes to a TargetMachine object file instead of ORC, and
+  // gains a C `int main(int, char**)` entry that calls `culebra_aot_bootstrap`
+  // (defined in libculebra_rt.a) with `__culebra_main` as the user-main
+  // pointer. `target_triple` empty means the host. Returns 0 on success.
   static inline int build_object(const std::vector<LoadedModule>& orig_modules,
                                  const std::string& out_path,
                                  int opt_level = 2,
@@ -1337,20 +1110,7 @@ struct JIT {
       std::fprintf(stderr, "culebra build: empty module list\n");
       return 1;
     }
-
-    // Prepend the built-in trait preamble so AOT binaries also see
-    // Stringer / Eq / Comparable (mirrors run_modules).
-    std::vector<LoadedModule> modules;
-    modules.reserve(orig_modules.size() + 1);
-    if (auto pre_ast = culebra::parse_builtin_traits_preamble()) {
-      LoadedModule preamble;
-      preamble.abs_path = "<builtin>";
-      preamble.source = std::make_shared<std::string>(
-          std::string(culebra::builtin_traits_preamble()));
-      preamble.ast = pre_ast;
-      modules.push_back(std::move(preamble));
-    }
-    for (const auto& m : orig_modules) modules.push_back(m);
+    auto modules = with_builtin_traits(orig_modules);
 
     if (target_triple.empty()) {
       ensure_native_target_init();
@@ -1360,103 +1120,22 @@ struct JIT {
 
     auto ctx = std::make_unique<LLVMContext>();
     auto mod = std::make_unique<Module>("culebra", *ctx);
-
-    llvm::Triple triple(target_triple.empty()
-                            ? llvm::sys::getDefaultTargetTriple()
-                            : target_triple);
     std::string err;
-    auto* target = llvm::TargetRegistry::lookupTarget(triple, err);
-    if (!target) {
-      std::fprintf(stderr,
-                   "culebra build: target lookup failed for '%s': %s\n",
-                   triple.str().c_str(), err.c_str());
-      return 1;
-    }
-    std::unique_ptr<llvm::TargetMachine> tm(
-        target->createTargetMachine(triple, "", "", {}, {}));
+    auto tm = apply_target(
+        *mod,
+        llvm::Triple(target_triple.empty() ? llvm::sys::getDefaultTargetTriple()
+                                           : target_triple),
+        &err);
     if (!tm) {
-      std::fprintf(stderr,
-                   "culebra build: target machine creation failed\n");
+      std::fprintf(stderr, "culebra build: %s\n", err.c_str());
       return 1;
     }
-    mod->setDataLayout(tm->createDataLayout());
-    mod->setTargetTriple(triple);
 
     IRBuilder<> builder(*ctx);
     JIT jit(ctx.get(), mod.get(), builder);
-    jit.declare_runtime_functions();
+    auto* mainFn = jit.emit_main_fn(modules);
 
-    std::vector<FuncInfo> infos;
-    infos.reserve(modules.size());
-    bool any_eh = false;
-    bool any_kw_only = false;
-    for (const auto& m : modules) {
-      infos.push_back(jit.analyze_program(*m.ast));
-      any_eh = any_eh || infos.back().has_eh;
-      any_kw_only = any_kw_only || scan_for_kw_only_marker(*m.ast);
-    }
-    jit.any_kw_only_in_program_ = any_kw_only;
-
-    auto mainFnType = FunctionType::get(builder.getVoidTy(), {}, false);
-    auto mainFn = Function::Create(mainFnType, GlobalValue::ExternalLinkage,
-                                    "__culebra_main", mod.get());
-    if (any_eh) mainFn->setPersonalityFn(jit.get_personality_fn());
-
-    auto entryBB = BasicBlock::Create(*ctx, "entry", mainFn);
-    builder.SetInsertPoint(entryBB);
-
-    for (size_t i = 0; i + 1 < modules.size(); ++i) {
-      const auto& m = modules[i];
-      jit.current_module_path_ = m.abs_path;
-      jit.main_info_ = std::move(infos[i]);
-      jit.current_info_ = &jit.main_info_;
-      jit.push_scope();
-      llvm::Value* depMark = nullptr;
-      if (jit.main_info_.has_fn_defer) {
-        depMark = builder.CreateCall(
-            mod->getFunction(rt::defer_mark), {}, "dep.mark");
-        jit.current_fn_defer_mark_ = depMark;
-      }
-      jit.pre_allocate_forward_refs(*m.ast);
-      jit.compile(*m.ast).consume();
-      jit.emit_build_and_register_export(*m.ast, m.abs_path.string());
-      if (depMark) {
-        builder.CreateCall(
-            mod->getFunction(rt::defer_run_to), {depMark});
-      }
-      jit.current_fn_defer_mark_ = nullptr;
-    jit.current_owned_hot_ = nullptr;
-      jit.pop_scope();
-      jit.current_info_ = nullptr;
-    }
-
-    const auto& entry = modules.back();
-    jit.current_module_path_ = entry.abs_path;
-    jit.main_info_ = std::move(infos.back());
-    jit.current_info_ = &jit.main_info_;
-    jit.push_scope();
-    llvm::Value* mainMark = nullptr;
-    if (jit.main_info_.has_fn_defer) {
-      mainMark = builder.CreateCall(
-          mod->getFunction(rt::defer_mark), {}, "main.mark");
-      jit.current_fn_defer_mark_ = mainMark;
-    }
-    jit.pre_allocate_forward_refs(*entry.ast);
-    jit.compile(*entry.ast).consume();
-    if (!builder.GetInsertBlock()->getTerminator()) {
-      if (mainMark) {
-        builder.CreateCall(
-            mod->getFunction(rt::defer_run_to), {mainMark});
-      }
-      jit.release_all_scopes_for_exit(/*suppress_drop=*/true);
-      builder.CreateRetVoid();
-    }
-    jit.current_fn_defer_mark_ = nullptr;
-    jit.current_owned_hot_ = nullptr;
-    jit.pop_scope();
-    jit.current_info_ = nullptr;
-    verifyFunction(*mainFn);
-
+    // C entry: `int main(argc, argv)` tail-calling the bootstrap.
     auto i32 = builder.getInt32Ty();
     auto ptrTy = PointerType::get(*ctx, 0);
     auto bootstrapTy = FunctionType::get(i32, {i32, ptrTy, ptrTy}, false);
@@ -1467,14 +1146,12 @@ struct JIT {
     auto cMainTy = FunctionType::get(i32, {i32, ptrTy}, false);
     auto cMain = Function::Create(
         cMainTy, GlobalValue::ExternalLinkage, "main", mod.get());
-    auto cEntry = BasicBlock::Create(*ctx, "entry", cMain);
-    builder.SetInsertPoint(cEntry);
+    builder.SetInsertPoint(BasicBlock::Create(*ctx, "entry", cMain));
     auto argIt = cMain->arg_begin();
     llvm::Value* argcArg = &*argIt++;
     llvm::Value* argvArg = &*argIt;
-    auto callRet = builder.CreateCall(
-        bootstrapFn, {argcArg, argvArg, mainFn});
-    builder.CreateRet(callRet);
+    builder.CreateRet(
+        builder.CreateCall(bootstrapFn, {argcArg, argvArg, mainFn}));
     verifyFunction(*cMain);
 
     if (opt_level > 0) {

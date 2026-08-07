@@ -377,7 +377,9 @@ materializeする — 自前のlink手順からそのパスを指してもよい
 
 **オブジェクトの生成。** プログラムは`ModuleLoader`経由で読み込み、
 `build_object`に渡す**前に** stdlib preambleをspliceする。この
-preambleが`println` / `inspect`とtrait宣言を定義している:
+preambleが`println` / `inspect`を定義している。（`Stringer` / `Eq` /
+`Comparable`の宣言はこれには含まれない — `build_object`が`JIT::run`と
+同じく自前でprependする。）
 
 ```cpp
 #include <culebra.h>

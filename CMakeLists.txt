@@ -1438,10 +1438,10 @@ set_source_files_properties(
 # step with the headers.
 enable_testing()
 
-# One UNITY executable for all five smokes (tests/embedding/smoke_suite.cc
+# One UNITY executable for every smoke (tests/embedding/smoke_suite.cc
 # #includes each smoke .cc). Every smoke TU pulls in the interpreter +
 # JIT header stack whose codegen costs minutes on the 3-core macOS CI
-# runner; as five separate executables the smokes were ~28 of the ~33 CI
+# runner; as separate executables the smokes were ~28 of the ~33 CI
 # build minutes whenever a core header changed — the unity TU emits that
 # once. ctest still runs each smoke as its own PROCESS (argv selects it),
 # so signal handlers / thread_locals / GC state stay isolated per test.
@@ -1480,7 +1480,7 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(smoke_suite Threads::Threads ${CMAKE_DL_LIBS})
 endif()
-foreach(smoke mt mi define signal utf8_invalid)
+foreach(smoke mt mi define signal single_ast utf8_invalid)
   add_test(NAME ${smoke}_smoke COMMAND smoke_suite ${smoke})
 endforeach()
 # Two entries, not one: the device default installs from a function-local
