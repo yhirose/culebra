@@ -13888,6 +13888,21 @@ struct JIT {
     return out;
   }
 
+  // `reverse:` is the only keyword the sort family takes. Sets `rev_expr` to
+  // its value expression and returns whether the call carries nothing else —
+  // an unknown keyword, a repeat, or a `**` splat sends the caller to
+  // emit_builtin_arity_check for interp's generic binder errors.
+  static bool sort_reverse_kwarg(const ArgScan& scan,
+                                 const peg::Ast*& rev_expr) {
+    if (!scan.splats.empty()) return false;
+    bool only_known = true;
+    for (const auto& [name, val] : scan.explicit_kwargs) {
+      if (name == "reverse" && !rev_expr) rev_expr = val;
+      else only_known = false;
+    }
+    return only_known;
+  }
+
   Owned compile_function_call_with_kwargs(
       const peg::Ast& argsAst, llvm::Value* callee,
       const peg::Ast& fnAst, llvm::Value* selfVal = nullptr) {
@@ -17359,23 +17374,10 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   // returns null and is reported by emit_builtin_arity_check, which raises
   // interp's generic binder errors for kwarg-capable builtins.
   if (method == "sort_by" || method == "sorted_by") {
-    using namespace peg::udl;
-    const peg::Ast* cb = nullptr;
+    auto scan = scan_arg_list(argsAst);
     const peg::Ast* rev_expr = nullptr;
-    int npos = 0;
-    bool only_known_kw = true;
-    for (auto& n : argsAst.nodes) {
-      if (n->tag == "KWARG"_) {
-        if (n->nodes[0]->token == "reverse" && !rev_expr) rev_expr = n->nodes[1].get();
-        else only_known_kw = false;
-      } else if (n->tag == "KWARG_SPLAT"_) {
-        only_known_kw = false;
-      } else {
-        npos++;
-        if (!cb) cb = n.get();
-      }
-    }
-    if (npos == 1 && only_known_kw) {
+    if (scan.positional.size() == 1 && sort_reverse_kwarg(scan, rev_expr)) {
+      const peg::Ast* cb = scan.positional[0];
       auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, method.c_str());
       auto f = compile(*cb);
       emit_set_callback_arg_site(*cb);
@@ -17407,21 +17409,9 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   // `reverse:`. Elements order by `<` (Object __lt__/cmp honored). Same
   // malformed-shape fallthrough as sort_by above.
   if (method == "sort" || method == "sorted") {
-    using namespace peg::udl;
+    auto scan = scan_arg_list(argsAst);
     const peg::Ast* rev_expr = nullptr;
-    int npos = 0;
-    bool only_known_kw = true;
-    for (auto& n : argsAst.nodes) {
-      if (n->tag == "KWARG"_) {
-        if (n->nodes[0]->token == "reverse" && !rev_expr) rev_expr = n->nodes[1].get();
-        else only_known_kw = false;
-      } else if (n->tag == "KWARG_SPLAT"_) {
-        only_known_kw = false;
-      } else {
-        npos++;
-      }
-    }
-    if (npos == 0 && only_known_kw) {
+    if (scan.positional.empty() && sort_reverse_kwarg(scan, rev_expr)) {
       auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, method.c_str());
       llvm::Value* rev = rev_expr ? value_to_bool(compile(*rev_expr).consume())
                                   : builder_.getInt1(false);
