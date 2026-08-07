@@ -65,12 +65,12 @@ exit 1 になるので、出力を読まずに API の実在を判定できま�
 最も近い外側の束縛を再代入します。
 
 ```culebra
-x = 1                # 新規不変束縛、または外側を再代入
-let y = 2            # 不変; 外側のシャドウは不可
-mut z = 3            # 可変
-z = 4                # bare再代入
-z += 1               # -= *= /= %= **= @= も同様
-inspect(z)           # => 5
+x = 1       # 新規不変束縛、または外側を再代入
+let y = 2   # 不変; 外側のシャドウは不可
+mut z = 3   # 可変
+z = 4       # bare再代入
+z += 1      # -= *= /= %= **= @= も同様
+inspect(z)  # => 5
 ```
 
 引数も不変です。代入するとローカルコピーではなくエラーになります:
@@ -222,8 +222,8 @@ fn fib(x) {
     fn(x - 2) + fn(x - 1)
   }
 }
-inspect(fib(10))    # => 55
-inspect(fib.name)   # => 'fib'
+inspect(fib(10))   # => 55
+inspect(fib.name)  # => 'fib'
 ```
 
 ブロックは最後の式に評価されるので `return` はほとんど不要です。`*`
@@ -235,10 +235,10 @@ greet = fn (name, *, greeting = 'hi', **opts) {
   suffix = opts.has('loud') && opts.loud ? '!' : ''
   "{greeting}, {name}{suffix}"
 }
-inspect(greet('alice'))                        # => 'hi, alice'
-inspect(greet('bob', greeting: 'yo'))          # => 'yo, bob'
-inspect(greet('cy', loud: true))               # => 'hi, cy!'
-inspect(greet('dee', **{greeting: 'hey'}))     # => 'hey, dee'
+inspect(greet('alice'))                     # => 'hi, alice'
+inspect(greet('bob', greeting: 'yo'))       # => 'yo, bob'
+inspect(greet('cy', loud: true))            # => 'hi, cy!'
+inspect(greet('dee', **{greeting: 'hey'}))  # => 'hey, dee'
 ```
 
 ### 2.5 文字列
@@ -247,9 +247,9 @@ inspect(greet('dee', **{greeting: 'hey'}))     # => 'hey, dee'
 
 ```culebra
 name = 'Culebra'
-inspect("hello, {name}")         # => 'hello, Culebra'
-inspect('hello, {name}')         # => 'hello, {name}'
-inspect('a' + 'b')               # => 'ab'
+inspect("hello, {name}")  # => 'hello, Culebra'
+inspect('hello, {name}')  # => 'hello, {name}'
+inspect('a' + 'b')        # => 'ab'
 ```
 
 `size()` は UTF-8 のバイト数、`for` と `iter()` は Unicode スカラー
@@ -257,11 +257,11 @@ inspect('a' + 'b')               # => 'ab'
 演算子は**ありません** — バイトオフセットを取る `slice` を使います。
 
 ```culebra
-inspect('café'.size())                          # => 5
-inspect('café'.graphemes().collect().size())    # => 4
-inspect('café'.slice(0, 1))                     # => 'c'
-inspect('hello world'.split(' '))               # => ['hello', 'world']
-inspect(['a', 'b'].join('-'))                   # => 'a-b'
+inspect('café'.size())                        # => 5
+inspect('café'.graphemes().collect().size())  # => 4
+inspect('café'.slice(0, 1))                   # => 'c'
+inspect('hello world'.split(' '))              # => ['hello', 'world']
+inspect(['a', 'b'].join('-'))                  # => 'a-b'
 ```
 
 `"""` はブロック文字列。`"..."` と同じく補間し、閉じ区切りのインデントを
@@ -319,22 +319,22 @@ inspect(countdown(3).collect())  # => [3, 2, 1]
 ```culebra
 describe = fn (v) {
   match v {
-    0                  => 'zero',
-    1 | 2 | 3          => 'small',
+    0 => 'zero',
+    1 | 2 | 3 => 'small',
     n: Long if n > 100 => "big ({n})",
-    n: Long            => "int ({n})",
-    s: String          => "str ({s})",
-    []                 => 'empty',
-    [x]                => "one ({x})",
-    [head, ...tail]    => "head={head} rest={tail.size()}",
-    {name}             => "named {name}",
-    _                  => 'other'
+    n: Long => "int ({n})",
+    s: String => "str ({s})",
+    [] => 'empty',
+    [x] => "one ({x})",
+    [head, ...tail] => "head={head} rest={tail.size()}",
+    {name} => "named {name}",
+    _ => 'other',
   }
 }
-inspect(describe(2))                 # => 'small'
-inspect(describe(999))               # => 'big (999)'
-inspect(describe([1, 2, 3]))         # => 'head=1 rest=2'
-inspect(describe({name: 'z'}))       # => 'named z'
+inspect(describe(2))            # => 'small'
+inspect(describe(999))          # => 'big (999)'
+inspect(describe([1, 2, 3]))    # => 'head=1 rest=2'
+inspect(describe({name: 'z'}))  # => 'named z'
 ```
 
 網羅性検査はありません。`_` の腕を用意してください。
@@ -504,7 +504,7 @@ inspect(handle {
   perform ask() * 2
 } with ask(resume) {
   resume(21)
-})                               # => 42
+})  # => 42
 ```
 
 `resume` を呼ばない節は残りの計算を捨てます — これはまさに例外です。
@@ -528,7 +528,7 @@ export {greet}
 # doctest: skip
 # main.cul
 import lib from './lib.cul'
-inspect(lib.greet('world'))      # => 'hello, world'
+inspect(lib.greet('world'))  # => 'hello, world'
 ```
 
 パスは import 元ファイルからの相対で解決される単一引用符リテラルです。
@@ -584,11 +584,11 @@ inspect(show('hi'))  # => 'hi'
 
 ```culebra
 # split が返すのは String ではなく StringView。安いが type_of は異なる
-inspect(type_of('a,b'.split(',')[0]))          # => 'StringView'
+inspect(type_of('a,b'.split(',')[0]))  # => 'StringView'
 
 # 存在しないプロパティは黙って nil
-inspect([1, 2].length)                          # => nil
-inspect([1, 2].size())                          # => 2
+inspect([1, 2].length)  # => nil
+inspect([1, 2].size())  # => 2
 ```
 
 ### 慣用形

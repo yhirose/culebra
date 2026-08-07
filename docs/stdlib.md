@@ -157,10 +157,10 @@ Positive infinity (`Math.inf > 1e308 == true`). Negate with `-Math.inf`.
 Quiet NaN. Note `Math.nan == Math.nan` is `false` per IEEE-754.
 
 ```culebra
-inspect(Math.pi)              # => 3.141592653589793
-inspect(Math.e)               # => 2.718281828459045
-inspect(Math.inf > 1e308)     # => true
-inspect(Math.nan == Math.nan) # => false
+inspect(Math.pi)               # => 3.141592653589793
+inspect(Math.e)                # => 2.718281828459045
+inspect(Math.inf > 1e308)      # => true
+inspect(Math.nan == Math.nan)  # => false
 ```
 
 ### Scalar operations
@@ -171,8 +171,8 @@ Absolute value. Returns `Long` for `Long` input, `Float` for `Float`
 input.
 
 ```culebra
-inspect(Math.abs(-7))     # => 7
-inspect(Math.abs(-7.5))   # => 7.5
+inspect(Math.abs(-7))    # => 7
+inspect(Math.abs(-7.5))  # => 7.5
 ```
 
 ### `Math.min(a, b, ...) -> Long|Float`, `Math.max(a, b, ...) -> Long|Float`
@@ -183,8 +183,8 @@ result to `Float`. At least two arguments are required; fewer — or
 any non-numeric argument — raises `type error`.
 
 ```culebra
-inspect(Math.min(3, 1, 4, 1, 5))   # => 1
-inspect(Math.max(1.5, 2, 0.5))     # => 2.0
+inspect(Math.min(3, 1, 4, 1, 5))  # => 1
+inspect(Math.max(1.5, 2, 0.5))    # => 2.0
 ```
 
 ### `Math.log(x: Long|Float) -> Float`
@@ -206,8 +206,8 @@ Principal square root. `Math.sqrt(-1.0)` is `nan`.
 Trigonometric functions; `x` is in **radians** (`Long` or `Float`).
 
 ```culebra
-inspect(Math.sin(Math.pi / 2))   # => 1.0
-inspect(Math.cos(0))             # => 1.0
+inspect(Math.sin(Math.pi / 2))  # => 1.0
+inspect(Math.cos(0))            # => 1.0
 ```
 
 ### `Math.asin(x) -> Float`, `Math.acos(x) -> Float`, `Math.atan(x) -> Float`, `Math.atan2(y, x) -> Float`
@@ -217,7 +217,7 @@ expect `x` in `[-1, 1]` (else `nan`). `Math.atan2(y, x)` is the
 quadrant-aware arctangent of `y / x`.
 
 ```culebra
-inspect(Math.atan2(1.0, 1.0))    # => 0.7853981633974483
+inspect(Math.atan2(1.0, 1.0))  # => 0.7853981633974483
 # (that is pi/4)
 ```
 
@@ -228,11 +228,11 @@ unchanged. `Math.floor` rounds toward `-∞`, `Math.ceil` toward `+∞`,
 and `Math.round` uses **banker's rounding** (round half to even).
 
 ```culebra
-inspect(Math.floor(-1.5))   # => -2
-inspect(Math.ceil(-1.5))    # => -1
+inspect(Math.floor(-1.5))  # => -2
+inspect(Math.ceil(-1.5))   # => -1
 # A tie rounds to the even neighbour, so 2.5 and 3.5 both land on even:
-inspect(Math.round(2.5))    # => 2
-inspect(Math.round(3.5))    # => 4
+inspect(Math.round(2.5))  # => 2
+inspect(Math.round(3.5))  # => 4
 ```
 
 ### `Math.pow(base: Long, exp: Long) -> Long`
@@ -246,9 +246,9 @@ Kept for back-compat; **prefer the `**` operator** which also handles
 `Float` and negative exponents (see language spec §7).
 
 ```culebra
-inspect(Math.pow(2, 10))    # => 1024
-inspect(Math.pow(7, 0))     # => 1
-inspect(Math.pow(-3, 3))    # => -27
+inspect(Math.pow(2, 10))  # => 1024
+inspect(Math.pow(7, 0))   # => 1
+inspect(Math.pow(-3, 3))  # => -27
 ```
 
 ### `Math.sign(x: Long) -> Long`
@@ -256,9 +256,9 @@ inspect(Math.pow(-3, 3))    # => -27
 Returns `-1` for negative, `0` for zero, `1` for positive.
 
 ```culebra
-inspect(Math.sign(-5))      # => -1
-inspect(Math.sign(0))       # => 0
-inspect(Math.sign(42))      # => 1
+inspect(Math.sign(-5))  # => -1
+inspect(Math.sign(0))   # => 0
+inspect(Math.sign(42))  # => 1
 ```
 
 ### `Math.clamp(x: Long, lo: Long, hi: Long) -> Long`
@@ -282,10 +282,10 @@ what a circular index wants: the element before index 0 is the last one,
 not a negative subscript.
 
 ```culebra
-inspect(Math.wrap(3, 320))     # => 3
-inspect(Math.wrap(-3, 320))    # => 317
-inspect(-3 % 320)              # => -3
-inspect(Math.wrap(320, 320))   # => 0
+inspect(Math.wrap(3, 320))    # => 3
+inspect(Math.wrap(-3, 320))   # => 317
+inspect(-3 % 320)             # => -3
+inspect(Math.wrap(320, 320))  # => 0
 ```
 
 The two agree wherever `x` is non-negative, so `Math.wrap` is only worth
@@ -317,9 +317,9 @@ are formatted the same way as `Array`/`Object`'s default `to_string`,
 and strings are printed **with surrounding single quotes**.
 
 ```culebra
-IO.inspect('hi')       # → 'hi'
-IO.inspect(42)         # → 42
-IO.inspect([1, 'a'])   # → [1, 'a']
+IO.inspect('hi')      # → 'hi'
+IO.inspect(42)        # → 42
+IO.inspect([1, 'a'])  # → [1, 'a']
 ```
 
 ### `IO.print(x: Any) -> Nil`
@@ -331,7 +331,7 @@ building a single line of output from several writes.
 ```culebra
 IO.print('Hello, ')
 IO.print('world!')
-IO.println('')      # → Hello, world!
+IO.println('')  # → Hello, world!
 ```
 
 ### `IO.println(x: Any = '') -> Nil`
@@ -342,9 +342,9 @@ formatting (strings are **unquoted**) — the raw-display twin of
 `''`, so a bare `println()` just writes a blank line.
 
 ```culebra
-IO.println('hi')       # → hi
-IO.println(42)         # → 42
-IO.println()           # → (blank line)
+IO.println('hi')  # → hi
+IO.println(42)    # → 42
+IO.println()      # → (blank line)
 ```
 
 ### `IO.input() -> String`
@@ -452,9 +452,9 @@ arguments returns `""`. Trailing separators in components are
 respected — the operator behaves like `std::filesystem::path::operator/=`.
 
 ```culebra
-inspect(FS.join('a', 'b', 'c.txt'))      # => 'a/b/c.txt'
-inspect(FS.join('/usr', 'local', 'bin')) # => '/usr/local/bin'
-inspect(FS.join())                       # => ''
+inspect(FS.join('a', 'b', 'c.txt'))       # => 'a/b/c.txt'
+inspect(FS.join('/usr', 'local', 'bin'))  # => '/usr/local/bin'
+inspect(FS.join())                        # => ''
 ```
 
 #### `FS.basename(path: String) -> String`
@@ -588,8 +588,8 @@ existing bits. Read the current bits back with `FS.stat(path).mode`. Throws
 
 ```culebra
 # doctest: skip
-FS.chmod('deploy.sh', 0o755)       # make executable
-inspect(FS.stat('deploy.sh').mode)    # 493  (0o755)
+FS.chmod('deploy.sh', 0o755)        # make executable
+inspect(FS.stat('deploy.sh').mode)  # 493  (0o755)
 ```
 
 #### `FS.chown(path: String, owner = nil, group = nil) -> Nil`
@@ -603,8 +603,8 @@ permission failure; a non-String/Long/Nil argument is a `TypeError`.
 
 ```culebra
 # doctest: skip
-FS.chown('app.log', group: 'staff')      # set group by name, keep owner
-FS.chown('data', 'deploy', 'deploy')     # set both by name (root)
+FS.chown('app.log', group: 'staff')   # set group by name, keep owner
+FS.chown('data', 'deploy', 'deploy')  # set both by name (root)
 ```
 
 ### Stat / metadata
@@ -693,7 +693,7 @@ and property chains read more clearly:
 # doctest: skip
 let root = Path.new(FS.dirname(Sys.script)).resolve()
 for src in root.glob("*/content.src.js") {
-  let dst = src.parent / "content.js"         # vs FS.join(FS.dirname(src), …)
+  let dst = src.parent / "content.js"  # vs FS.join(FS.dirname(src), …)
   dst.write(transform(src.read()))
   IO.print("{src.parent.name}/content.js\n")  # vs FS.basename(FS.dirname(src))
 }
@@ -946,8 +946,8 @@ Format with a strftime format string. Local time by default.
 
 ```culebra
 # doctest: skip
-t.format("%Y-%m-%d %H:%M:%S")             # local
-t.format("%Y%m%d", utc: true)             # 20260520
+t.format("%Y-%m-%d %H:%M:%S")  # local
+t.format("%Y%m%d", utc: true)  # 20260520
 ```
 
 #### `t.parts(utc: false) -> Object`
@@ -976,9 +976,9 @@ semantics: `2026-01-31 + 1 month → 2026-02-28`,
 compose as straightforward addition.
 
 ```culebra
-let next_month   = Time.now().add(months: 1)
+let next_month = Time.now().add(months: 1)
 let next_quarter = Time.now().add(months: 3)
-let next_year    = Time.now().add(years: 1)
+let next_year = Time.now().add(years: 1)
 ```
 
 #### `t.start_of(unit: String, utc: false) -> Instant`
@@ -989,7 +989,7 @@ on any other unit.
 
 ```culebra
 # doctest: skip
-let day_bucket  = t.start_of("day")
+let day_bucket = t.start_of("day")
 let hour_bucket = t.start_of("hour")
 ```
 
@@ -1002,7 +1002,7 @@ or Long nanoseconds (lossless).
 
 ```culebra
 # doctest: skip
-Time.seconds(n)        # n seconds
+Time.seconds(n)  # n seconds
 Time.milliseconds(n)
 Time.minutes(n)
 Time.hours(n)
@@ -1073,7 +1073,7 @@ otherwise `type error`.
 
 ```culebra
 Random.seed(0)
-inspect(Random.int(0, 10))        # 0..9
+inspect(Random.int(0, 10))  # 0..9
 ```
 
 ### `Random.uniform(lo: Float, hi: Float) -> Float`
@@ -1087,7 +1087,7 @@ A sample from a Gaussian distribution with the given mean and
 standard deviation. `Long` arguments are promoted to `Float`.
 
 ```culebra
-Random.gauss(0.0, 1.0)         # standard normal
+Random.gauss(0.0, 1.0)  # standard normal
 ```
 
 ### `Random.shuffle(a: Array) -> Nil`
@@ -1103,7 +1103,7 @@ length as `pop`; empty or mismatched inputs raise `type error`.
 Weights of `0` are never selected.
 
 ```culebra
-Random.weighted_choice(['hit', 'miss'], [1, 9])   # ~10% 'hit'
+Random.weighted_choice(['hit', 'miss'], [1, 9])  # ~10% 'hit'
 ```
 
 ---
@@ -1124,7 +1124,7 @@ when running in the REPL.
 ```culebra
 # doctest: skip
 # $ culebra run.cul hello world
-inspect(Sys.argv)        # ['hello', 'world']
+inspect(Sys.argv)  # ['hello', 'world']
 # $ culebra --jit run.cul hello   →  ['hello']   (--jit is culebra's)
 ```
 
@@ -1188,7 +1188,7 @@ path are resolved. Raises `IOError` if the directory cannot be determined
 
 ```culebra
 # doctest: skip
-inspect(Sys.getcwd())             # '/Users/alice/project'
+inspect(Sys.getcwd())  # '/Users/alice/project'
 ```
 
 ### `Sys.chdir(path: String) -> Nil`
@@ -1199,7 +1199,7 @@ does not exist or is not a directory.
 ```culebra
 # doctest: skip
 Sys.chdir('/tmp')
-inspect(Sys.getcwd())             # '/tmp' (or its resolved path)
+inspect(Sys.getcwd())  # '/tmp' (or its resolved path)
 ```
 
 ### `Sys.executable -> String`
@@ -1211,7 +1211,7 @@ to that standalone binary.)
 
 ```culebra
 # doctest: skip
-inspect(Sys.executable)           # '/usr/local/bin/culebra'
+inspect(Sys.executable)  # '/usr/local/bin/culebra'
 ```
 
 ### `Sys.script -> String?`
@@ -1224,7 +1224,7 @@ carries no `.cul`; use `Sys.executable` there).
 
 ```culebra
 # doctest: skip
-inspect(Sys.script)               # '/Users/alice/project/build.cul'
+inspect(Sys.script)  # '/Users/alice/project/build.cul'
 ```
 
 ### `Sys.time() -> Float`
@@ -1240,7 +1240,7 @@ mixing the two.
 ```culebra
 let t0 = Sys.time()
 let sum = range(1000).reduce(0, |a, x| a + x)
-inspect(Sys.time() - t0 >= 0.0)   # => true
+inspect(Sys.time() - t0 >= 0.0)  # => true
 ```
 
 ### `GC` — heap introspection
@@ -1263,7 +1263,7 @@ the code under test rather than an absolute count.
 # doctest: skip
 let base = GC.stat().live_objects
 build_some_structure()
-inspect(GC.stat().live_objects - base)   # objects retained by the structure
+inspect(GC.stat().live_objects - base)  # objects retained by the structure
 ```
 
 This is the foundation for leak-regression tests (see
@@ -1282,12 +1282,12 @@ Shapes can be supplied as variadic args or as an `[m, n]` Array.
 `transpose`, `slice`, and `reshape` produce zero-copy views.
 
 ```culebra
-let A = Tensor.from([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])   # [2, 3]
-let B = Tensor.from([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]) # [3, 2]
-let C = A.dot(B) + 1.0                # lazy: builds the graph only
-Tensor.eval(C)                        # BLAS GEMM runs here
-inspect(C.shape())                    # => [2, 2]
-inspect(C.to_array())                 # => [[5.0, 6.0], [11.0, 12.0]]
+let A = Tensor.from([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])    # [2, 3]
+let B = Tensor.from([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])  # [3, 2]
+let C = A.dot(B) + 1.0                                     # lazy: builds the graph only
+Tensor.eval(C)                                             # BLAS GEMM runs here
+inspect(C.shape())                                         # => [2, 2]
+inspect(C.to_array())                                      # => [[5.0, 6.0], [11.0, 12.0]]
 ```
 
 ### Construction (namespace functions)
@@ -1300,11 +1300,11 @@ The shape is variadic (`Tensor.zeros(3, 4)`) or an Array
 has no fast path on GPU backends):
 
 ```culebra
-let a   = Tensor.zeros(3, 4)              # F32 default
-let a32 = Tensor.zeros("f32", 3, 4)       # explicit
+let a = Tensor.zeros(3, 4)           # F32 default
+let a32 = Tensor.zeros("f32", 3, 4)  # explicit
 let dims = [3, 4]
-let b   = Tensor.zeros(dims)              # computed shape
-let r   = Tensor.randn(2, 3)              # standard normal
+let b = Tensor.zeros(dims)  # computed shape
+let r = Tensor.randn(2, 3)  # standard normal
 ```
 
 #### `Tensor.from(arr: Array) -> Tensor`
@@ -1339,9 +1339,9 @@ the `Tensor.from(load_2d(path))` pattern (measured on MNIST):
 
 ```culebra
 # doctest: skip
-let W1 = Tensor.from_csv("W1.csv")    # [30, 784]
-let b1 = Tensor.from_csv("b1.csv")    # [30, 1]
-let X  = Tensor.from_csv("X.csv")     # [N, 784]
+let W1 = Tensor.from_csv("W1.csv")  # [30, 784]
+let b1 = Tensor.from_csv("b1.csv")  # [30, 1]
+let X = Tensor.from_csv("X.csv")    # [N, 784]
 ```
 
 #### `Tensor.eval(t1, t2, ...) -> Nil`
@@ -1358,7 +1358,7 @@ W2 -= d2.dot(a1.transpose()) * lr
 b2 -= d2.sum(1).reshape([N_OUT, 1]) * lr
 W1 -= d1.dot(xb.transpose()) * lr
 b1 -= d1.sum(1).reshape([N_HID, 1]) * lr
-Tensor.eval(W1, b1, W2, b2)              # evaluate all four in one pass
+Tensor.eval(W1, b1, W2, b2)  # evaluate all four in one pass
 ```
 
 ### Activation functions
@@ -1370,10 +1370,10 @@ clash.
 
 ```culebra
 # doctest: skip
-let h = z.sigmoid()        # 1/(1+exp(-z)) elementwise
-let r = x.relu()           # max(0, x)
-let p = logits.softmax()   # over the last axis, online-stable
-let l = p.log()            # natural log, elementwise
+let h = z.sigmoid()       # 1/(1+exp(-z)) elementwise
+let r = x.relu()          # max(0, x)
+let p = logits.softmax()  # over the last axis, online-stable
+let l = p.log()           # natural log, elementwise
 ```
 
 ### Tensor methods
@@ -1429,7 +1429,7 @@ automatically, so a bias added across a batch sums back to its shape.
 ```culebra
 let w = Tensor.from([[2.0, 0.0], [0.0, 3.0]]).requires_grad()
 let x = Tensor.from([[1.0], [1.0]]).requires_grad()
-let y = w.dot(x)              # [2, 1]
+let y = w.dot(x)  # [2, 1]
 let loss = (y * y).sum(0).sum(0)
 loss.backward()
 Tensor.eval(w.grad(), x.grad())
@@ -1466,8 +1466,8 @@ Scalars mix automatically:
 
 ```culebra
 let M = Tensor.ones(3, 4)
-let v = Tensor.ones(4)            # broadcasts to [3, 4]
-let r = Tensor.ones(3, 1)         # broadcasts to [3, 4]
+let v = Tensor.ones(4)     # broadcasts to [3, 4]
+let r = Tensor.ones(3, 1)  # broadcasts to [3, 4]
 Tensor.eval(M + v, M + r, M + 1.0, M * 2.0)
 ```
 
@@ -1485,8 +1485,8 @@ path (a fresh Tensor).
 # doctest: skip
 mut W = Tensor.randn('f32', 1024, 256)
 let alias = W
-W -= grad * lr     # writes directly into W's buffer
-Tensor.eval(alias) # alias.to_array() sees the updated values
+W -= grad * lr      # writes directly into W's buffer
+Tensor.eval(alias)  # alias.to_array() sees the updated values
 ```
 
 The SGD-style update `W = W - grad * lr` allocates a W-sized buffer
@@ -1530,8 +1530,8 @@ switchable at runtime:
 | `Tensor.device() -> String` | the selection in effect: `'cpu'`, `'gpu'` or `'auto'` |
 
 ```culebra
-inspect(type_of(Tensor.gpu_available()))    # => 'Bool'
-inspect(Tensor.device())                    # => 'auto'
+inspect(type_of(Tensor.gpu_available()))  # => 'Bool'
+inspect(Tensor.device())                  # => 'auto'
 ```
 
 `device()` reports the selection, not where a given op ran — under
@@ -1804,14 +1804,14 @@ parsed as that subcommand's:
 let spec = {
   name: "git-lite",
   subcommands: [
-    {name: "add",    args: [{name: "files",   type: "String", repeated: true}]},
-    {name: "commit", args: [{name: "message", short: "m", type: "String"}]}
-  ]
+    {name: "add", args: [{name: "files", type: "String", repeated: true}]},
+    {name: "commit", args: [{name: "message", short: "m", type: "String"}]},
+  ],
 }
 
 match Args.parse(Sys.argv, spec).subcommand {
-  "add"    => stage_files(args.files),
-  "commit" => commit_with_message(args.message)
+  "add" => stage_files(args.files),
+  "commit" => commit_with_message(args.message),
 }
 ```
 
@@ -1997,14 +1997,14 @@ the direct child is signalled, not any grandchildren.
 # doctest: skip
 let server = Proc.spawn(["python", "-m", "http.server", "8000"])
 # ... do work against the server ...
-server.kill()                 # SIGTERM
+server.kill()  # SIGTERM
 let r = server.wait()
 IO.inspect("server exited via " + (r.signal ?? to_string(r.code)))
 
 # Run something and poll for completion without blocking.
 let job = Proc.spawn(["make", "-j4"])
 while job.poll() == nil {
-  IO.print(".")               # ...other work...
+  IO.print(".")  # ...other work...
 }
 ```
 
@@ -2034,10 +2034,10 @@ positional `args` are passed to `fn`.
 ```culebra
 # doctest: skip
 let h = Isolate.spawn(|| 1 + 2)
-h.join()                       # => 3
+h.join()  # => 3
 
 let h2 = Isolate.spawn(|n| n * n, 7)
-h2.join()                      # => 49
+h2.join()  # => 49
 ```
 
 The handle has:
@@ -2084,8 +2084,8 @@ as an argument instead:
 ```culebra
 # doctest: skip
 mut total = 0
-Isolate.spawn(|| total)        # SendError: captures the mutable variable 'total'
-Isolate.spawn(|t| t, total)    # ok — passed by value
+Isolate.spawn(|| total)      # SendError: captures the mutable variable 'total'
+Isolate.spawn(|t| t, total)  # ok — passed by value
 ```
 
 ### Parallelism cap
@@ -2232,11 +2232,11 @@ Sendable (the same rules as `Isolate.spawn`).
 
 ```culebra
 # doctest: skip
-Parallel.map([1, 2, 3, 4], |x| x * x)         # => [1, 4, 9, 16]  (input order)
-Parallel.map(urls, |u| fetch(u), limit: 8)    # at most 8 live isolates
-Parallel.each(jobs, |j| process(j))           # side effects; returns nil
-Parallel.map_settled(urls, |u| fetch(u))      # => [{ok, value, error}, ...]
-Parallel.race(mirrors, |m| download(m))       # first success wins
+Parallel.map([1, 2, 3, 4], |x| x * x)       # => [1, 4, 9, 16]  (input order)
+Parallel.map(urls, |u| fetch(u), limit: 8)  # at most 8 live isolates
+Parallel.each(jobs, |j| process(j))         # side effects; returns nil
+Parallel.map_settled(urls, |u| fetch(u))    # => [{ok, value, error}, ...]
+Parallel.race(mirrors, |m| download(m))     # first success wins
 ```
 
 | call | returns | notes |
@@ -2292,9 +2292,9 @@ own graceful shutdown. This is Go's `signal.Notify` model.
 ```culebra
 # doctest: skip
 let (tx, rx) = Channel.new(1)
-Signal.notify(tx)              # Ctrl+C now goes to the channel, not a throw
+Signal.notify(tx)  # Ctrl+C now goes to the channel, not a throw
 serve_in_background()
-rx.recv()                      # blocks until the first Ctrl+C
+rx.recv()  # blocks until the first Ctrl+C
 inspect("shutting down…")
 drain_and_close()
 ```
@@ -2741,7 +2741,7 @@ readers:
 let dict = Shared.new(JSON.parse(FS.read("vocab.json")))
 
 let workers = [0, 1, 2, 3].map(|i| Isolate.spawn(fn () {
-  dict["hello"]          # all isolates read the SAME frozen tree
+  dict["hello"]  # all isolates read the SAME frozen tree
 }))
 ```
 
@@ -2784,7 +2784,7 @@ matcher for each kind of check. For production invariants, write the
 
 ```culebra
 # doctest: skip
-if (!cond) {
+if !cond {
   throw {kind: "AssertionError", message: "invariant violated"}
 }
 ```
@@ -2924,11 +2924,11 @@ caches by pattern so the one-shot forms pay no recompile. Put flags inline
 | `Regex.replace_first(pat, s, repl)` | `String` — same `repl`, only the leftmost match |
 
 ```culebra
-inspect(Regex.find('(\d+)', "ab12")[1])            # => '12'
-inspect(Regex.test('(?i)hello', "HELLO"))          # => true
+inspect(Regex.find('(\d+)', "ab12")[1])                 # => '12'
+inspect(Regex.test('(?i)hello', "HELLO"))               # => true
 inspect(Regex.replace_all('[;；]', "a;b；c", "、"))  # => 'a、b、c'
 # A miss is nil, so it composes with `?.` and `??`:
-inspect(Regex.find('x', "y")?.value ?? "none")     # => 'none'
+inspect(Regex.find('x', "y")?.value ?? "none")  # => 'none'
 ```
 
 | Method | Result |
@@ -2974,10 +2974,10 @@ you need spans (`m.groups[i].start`).
 
 ```culebra
 let d = Regex.compile('\d+')
-inspect(d.test("abc 123"))                                # => true
-inspect(Regex.compile('\w+').find("  hello world").value) # => 'hello'
-inspect(d.find("no digits"))                              # => nil
-inspect(d.find_all("a1 b22 c333").size())                 # => 3
+inspect(d.test("abc 123"))                                 # => true
+inspect(Regex.compile('\w+').find("  hello world").value)  # => 'hello'
+inspect(d.find("no digits"))                               # => nil
+inspect(d.find_all("a1 b22 c333").size())                  # => 3
 ```
 
 Captures reach by position (`m[1]`) and by name (`m["year"]`); `m[0]` is
@@ -2986,12 +2986,12 @@ the whole match and a miss reads as `nil`. The `Group` objects under
 
 ```culebra
 let m = Regex.compile('(?<year>\d{4})-(\d{2})').find("2026-05")
-inspect(m[1])                    # => '2026'
-inspect(m["year"])               # => '2026'
-inspect(m[0])                    # => '2026-05'
-inspect(m[9] ?? "none")          # => 'none'
-inspect(m.groups[1].value)       # => '2026'
-inspect(m.named["year"].value)   # => '2026'
+inspect(m[1])                   # => '2026'
+inspect(m["year"])              # => '2026'
+inspect(m[0])                   # => '2026-05'
+inspect(m[9] ?? "none")         # => 'none'
+inspect(m.groups[1].value)      # => '2026'
+inspect(m.named["year"].value)  # => '2026'
 ```
 
 Replacing and splitting — a replacement is either a `$n` template or a
@@ -3016,8 +3016,8 @@ walks no further than the match it broke on:
 
 ```culebra
 let d = Regex.compile('\d+')
-inspect(d.find_iter("1 2 3").take(2).collect().size())   # => 2
-inspect(Regex.escape("a.b(c)"))                          # => 'a\.b\(c\)'
+inspect(d.find_iter("1 2 3").take(2).collect().size())  # => 2
+inspect(Regex.escape("a.b(c)"))                         # => 'a\.b\(c\)'
 ```
 
 The supported syntax (literal / `.` / character classes / `* + ? {n,m}` greedy
@@ -3314,9 +3314,9 @@ combinators over `Http.get`, not an HTTP-specific API — the same shape as
 ```culebra
 # doctest: skip
 let urls = ["https://api.example/a", "https://api.example/b"]
-Parallel.map(urls, |u| Http.get(u).body)        # all, input order (fail-fast)
-Parallel.map_settled(urls, |u| Http.get(u))     # allSettled: [{ok, value, error}, ...]
-Parallel.race(urls, |u| Http.get(u))            # first success wins, cancels the rest
+Parallel.map(urls, |u| Http.get(u).body)     # all, input order (fail-fast)
+Parallel.map_settled(urls, |u| Http.get(u))  # allSettled: [{ok, value, error}, ...]
+Parallel.race(urls, |u| Http.get(u))         # first success wins, cancels the rest
 ```
 
 TLS currently links OpenSSL statically; a future swap to BoringSSL is a build-only
@@ -3391,12 +3391,12 @@ returns `false` if the client has gone away (so a long loop can stop early):
 
 ```culebra
 # doctest: skip
-srv.get("/events", fn(req) {
-  { content_type: "text/event-stream",
-    headers: {"Cache-Control": "no-cache"},
-    stream: fn(sink) {
-      for i in 0..10 { sink.write("data: " + i.to_string() + "\n\n") }
-    } }
+srv.get("/events", fn (req) {
+  {content_type: "text/event-stream", headers: {"Cache-Control": "no-cache"}, stream: fn (sink) {
+    for i in 0..10 {
+      sink.write("data: " + i.to_string() + "\n\n")
+    }
+  }}
 })
 ```
 
@@ -3657,13 +3657,13 @@ well-formed, recognized reference is left **exactly as written** (browser-style
 leniency), so a bare `&` and unknown entities pass through unchanged.
 
 ```culebra
-inspect(Encoding.html.escape("a & b < c"))          # => 'a &amp; b &lt; c'
-inspect(Encoding.html.escape("it's fine"))          # => 'it&#39;s fine'
-inspect(Encoding.html.unescape("Tom &amp; Jerry"))  # => 'Tom & Jerry'
-inspect(Encoding.html.unescape("caf&eacute; &mdash; x")) # => 'café — x'
-inspect(Encoding.html.unescape("&#65;&#x42;"))      # => 'AB'
-inspect(Encoding.html.unescape("&#12354;"))         # => 'あ'
-inspect(Encoding.html.unescape("&unknownent;"))     # => '&unknownent;'
+inspect(Encoding.html.escape("a & b < c"))                # => 'a &amp; b &lt; c'
+inspect(Encoding.html.escape("it's fine"))                # => 'it&#39;s fine'
+inspect(Encoding.html.unescape("Tom &amp; Jerry"))        # => 'Tom & Jerry'
+inspect(Encoding.html.unescape("caf&eacute; &mdash; x"))  # => 'café — x'
+inspect(Encoding.html.unescape("&#65;&#x42;"))            # => 'AB'
+inspect(Encoding.html.unescape("&#12354;"))               # => 'あ'
+inspect(Encoding.html.unescape("&unknownent;"))           # => '&unknownent;'
 ```
 
 ### `Encoding.base64`
@@ -3678,8 +3678,8 @@ inspect(Encoding.html.unescape("&unknownent;"))     # => '&unknownent;'
 decodes) and `=` padding; an out-of-alphabet character raises `ValueError`.
 
 ```culebra
-inspect(Encoding.base64.encode("user:pass"))   # => 'dXNlcjpwYXNz'
-inspect(Encoding.base64.decode("dXNlcjpwYXNz")) # => 'user:pass'
+inspect(Encoding.base64.encode("user:pass"))     # => 'dXNlcjpwYXNz'
+inspect(Encoding.base64.decode("dXNlcjpwYXNz"))  # => 'user:pass'
 ```
 
 ```culebra
@@ -3700,9 +3700,9 @@ let r = Http.get(url, headers: {Authorization: "Basic " + cred})
 raises `ValueError` on an odd-length string or any non-hex character.
 
 ```culebra
-inspect(Encoding.hex.encode("abc"))   # => '616263'
-inspect(Encoding.hex.decode("616263")) # => 'abc'
-inspect(Encoding.hex.decode("00FF").size()) # => 2
+inspect(Encoding.hex.encode("abc"))          # => '616263'
+inspect(Encoding.hex.decode("616263"))       # => 'abc'
+inspect(Encoding.hex.decode("00FF").size())  # => 2
 ```
 
 ### `Encoding.url`
@@ -3719,9 +3719,9 @@ and multi-byte UTF-8 is percent-encoded byte by byte. `decode` is lenient: a
 stays a `+` (so `encode`/`decode` round-trip exactly).
 
 ```culebra
-inspect(Encoding.url.encode("a b&c"))   # => 'a%20b%26c'
-inspect(Encoding.url.decode("a%20b%26c")) # => 'a b&c'
-inspect(Encoding.url.encode("café"))    # => 'caf%C3%A9'
+inspect(Encoding.url.encode("a b&c"))      # => 'a%20b%26c'
+inspect(Encoding.url.decode("a%20b%26c"))  # => 'a b&c'
+inspect(Encoding.url.encode("café"))      # => 'caf%C3%A9'
 ```
 
 ---
@@ -3744,8 +3744,8 @@ A truncated or unrecognized input raises `ValueError`.
 ```culebra
 let original = "the quick brown fox the quick brown fox the quick brown fox the quick brown fox"
 let z = Compress.gzip(original)
-inspect(z.size() < original.size())          # => true
-inspect(Compress.gunzip(z) == original)      # => true
+inspect(z.size() < original.size())      # => true
+inspect(Compress.gunzip(z) == original)  # => true
 ```
 
 ```culebra
@@ -3762,10 +3762,10 @@ nothing (an in-memory blob, a value embedded in another container).
 
 ```culebra
 let text = "the quick brown fox the quick brown fox the quick brown fox"
-let z2 = Compress.deflate(text)          # zlib wrapper, not gzip's
-inspect(Compress.gunzip(z2) == text)     # the same decoder handles both
+let z2 = Compress.deflate(text)       # zlib wrapper, not gzip's
+inspect(Compress.gunzip(z2) == text)  # the same decoder handles both
 # => true
-inspect(z2.size() < Compress.gzip(text).size())   # no gzip header to pay for
+inspect(z2.size() < Compress.gzip(text).size())  # no gzip header to pay for
 # => true
 ```
 
@@ -3777,7 +3777,7 @@ the most time for the smallest output. A value outside `-1..9` raises
 ```culebra
 let text = "the quick brown fox the quick brown fox the quick brown fox"
 inspect(Compress.deflate(text, level: 9).size() <=
-        Compress.deflate(text, level: 0).size())   # => true
+  Compress.deflate(text, level: 0).size())  # => true
 ```
 
 HTTP responses are decompressed transparently by the `Http` client (it sends
@@ -3842,9 +3842,9 @@ well-formed input.
 
 ```culebra
 let rows = CSV.parse("name,age\nalice,30\nbob,25")
-inspect(rows[1])                                         # => ['alice', '30']
-inspect(CSV.stringify([["a,b", "c"], [1, 2]]) == "\"a,b\",c\n1,2")   # => true
-inspect(CSV.parse("a\tb", delimiter: "\t")[0])           # => ['a', 'b']
+inspect(rows[1])                                                    # => ['alice', '30']
+inspect(CSV.stringify([["a,b", "c"], [1, 2]]) == "\"a,b\",c\n1,2")  # => true
+inspect(CSV.parse("a\tb", delimiter: "\t")[0])                      # => ['a', 'b']
 ```
 
 **Header mode — `header: true`.** The first row names the columns, and each later
@@ -3852,7 +3852,7 @@ row becomes an `Object` keyed by those names (instead of a positional Array):
 
 ```culebra
 let rows = CSV.parse("name,age\nalice,30\nbob,25", header: true)
-inspect(rows[0]["name"])                                 # => 'alice'
+inspect(rows[0]["name"])  # => 'alice'
 ```
 
 A header with no data rows (or empty input) yields `[]`. A duplicate header name,
@@ -3918,14 +3918,14 @@ variables are visible via `Sys.env` and inherited by children spawned afterward
 
 ```culebra
 let cfg = Env.parse("# app config\nPORT=8080\nNAME=\"my app\"\nDEBUG=true")
-inspect(cfg["PORT"])                 # => '8080'
-inspect(cfg["NAME"])                 # => 'my app'
-inspect(cfg["DEBUG"])                # => 'true'
+inspect(cfg["PORT"])   # => '8080'
+inspect(cfg["NAME"])   # => 'my app'
+inspect(cfg["DEBUG"])  # => 'true'
 ```
 
 ```culebra
 # doctest: skip
-Env.load(".env")                  # set vars from ./.env (if present)
+Env.load(".env")  # set vars from ./.env (if present)
 inspect(Sys.env("PORT"))
 ```
 
@@ -3951,8 +3951,8 @@ two values created within the same millisecond are not ordered relative to
 each other (there is no monotonic counter).
 
 ```culebra
-inspect(UUID.v4().size())          # => 36
-inspect(UUID.v4() != UUID.v4())    # => true
+inspect(UUID.v4().size())        # => 36
+inspect(UUID.v4() != UUID.v4())  # => true
 ```
 
 ---
@@ -3989,8 +3989,8 @@ helpers wrap a string for direct printing; `Term.style(...)` produces the
 style passed to `screen.set` / `screen.put` for coloured cells.
 
 ```culebra
-inspect(Term.bold(Term.fg("alert", 196)))      # bold bright-red "alert" (printed)
-let st = Term.style(fg: (255, 128, 0), bold: true)   # for a Screen cell
+inspect(Term.bold(Term.fg("alert", 196)))           # bold bright-red "alert" (printed)
+let st = Term.style(fg: (255, 128, 0), bold: true)  # for a Screen cell
 ```
 
 ### Escapes, size, and width
@@ -4097,7 +4097,7 @@ Term.app(fn (s) {
   s.clear()
   s.put(2, 1, "hello")
   s.flush()
-  s.poll(2.0)            # wait up to 2s for a keypress
+  s.poll(2.0)  # wait up to 2s for a keypress
 })
 ```
 
@@ -4147,8 +4147,8 @@ Log.info("server started")
 Log.set_level("debug")
 Log.debug("cache miss", {key: "user:42"})
 
-let log = Log.with({request_id: id})   # bind context once
-log.info("received")                    # ...carried on every line
+let log = Log.with({request_id: id})  # bind context once
+log.info("received")                  # ...carried on every line
 log.error("upstream failed", {status: 502})
 ```
 
@@ -4218,8 +4218,8 @@ ports = [80, 443]
 [server]
 host = "localhost"
 """)
-inspect(cfg.title)            # => 'demo'
-inspect(cfg.server.host)      # => 'localhost'
+inspect(cfg.title)        # => 'demo'
+inspect(cfg.server.host)  # => 'localhost'
 ```
 
 `stringify` renders bare keys before the headers that would capture them:
@@ -4391,8 +4391,8 @@ expressions in HSV that have no simple RGB equivalent. `Canvas.hsv(h, s, v, a
 = 255) -> Long` packs the result directly, mirroring `rgba`.
 
 ```culebra
-inspect(Canvas.rgb_to_hsv(255, 0, 0))     # => (0.0, 1.0, 1.0)
-inspect(Canvas.hsv_to_rgb(0.0, 1.0, 1.0)) # => (255, 0, 0)
+inspect(Canvas.rgb_to_hsv(255, 0, 0))                         # => (0.0, 1.0, 1.0)
+inspect(Canvas.hsv_to_rgb(0.0, 1.0, 1.0))                     # => (255, 0, 0)
 inspect(Canvas.hsv(0.0, 1.0, 1.0) == Canvas.rgba(255, 0, 0))  # => true
 
 # saturate a base colour by 40%, in HSV, then pack it
@@ -4922,8 +4922,8 @@ bounds the connect, then becomes the socket's read/write timeout.
 # doctest: skip
 let s = Net.connect("example.com", 80, timeout: 5000)
 s.write("GET / HTTP/1.0\r\nHost: example.com\r\n\r\n")
-s.shutdown_write()                  # tell the server the request is complete
-inspect(s.read())                      # read until the server closes
+s.shutdown_write()  # tell the server the request is complete
+inspect(s.read())   # read until the server closes
 s.close()
 ```
 
@@ -5017,7 +5017,7 @@ Open a datagram socket bound to `host:port` (`port: 0` = ephemeral).
 # doctest: skip
 let sock = Net.udp(9000)
 sock.set_timeout(2000)
-let msg = sock.recv_from()              # {data, host, port}
+let msg = sock.recv_from()  # {data, host, port}
 sock.send_to("ack", msg.host, msg.port)
 ```
 
@@ -5039,7 +5039,7 @@ numeric address resolves to itself; a name that doesn't resolve is a `NetError`.
 
 ```culebra
 # doctest: skip
-inspect(Net.resolve("localhost"))       # => ["127.0.0.1", "::1"]
+inspect(Net.resolve("localhost"))  # => ["127.0.0.1", "::1"]
 ```
 
 ### Not available in the Playground

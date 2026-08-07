@@ -174,7 +174,7 @@ is to omit `;` at end-of-line.
 
 ```culebra
 # this is a comment
-inspect('hello')          # => 'hello'
+inspect('hello')  # => 'hello'
 ```
 
 `inspect` prints values in quoted, inspectable form, so strings appear
@@ -206,12 +206,12 @@ Four more show up once you reach for them: `StringView` (Ch.4.4),
 ### 2.2 Bindings: bare, `let`, `mut`
 
 ```culebra
-x = 10              # bare: new immutable binding, or reassign outer
-let y = 20          # let: new immutable binding (must not shadow outer)
-mut z = 30          # mut: new mutable binding
-z = 31              # mut allows reassignment
-z += 1              # compound (`-= *= /= %= **= @=` work the same way)
-inspect(z)             # => 32
+x = 10      # bare: new immutable binding, or reassign outer
+let y = 20  # let: new immutable binding (must not shadow outer)
+mut z = 30  # mut: new mutable binding
+z = 31      # mut allows reassignment
+z += 1      # compound (`-= *= /= %= **= @=` work the same way)
+inspect(z)  # => 32
 ```
 
 A bare assignment searches outward through enclosing scopes and
@@ -237,13 +237,13 @@ make = fn () {
   mut n = 0
   fn () {
     # let n = 1   # error: would shadow captured `n`
-    n += 1        # bare reassignment of the captured `n` — OK
+    n += 1  # bare reassignment of the captured `n` — OK
     n
   }
 }
 c = make()
-inspect(c())                     # => 1
-inspect(c())                     # => 2
+inspect(c())  # => 1
+inspect(c())  # => 2
 ```
 
 ### 2.4 Control flow
@@ -371,11 +371,11 @@ grade = fn (n) {
   cond {
     n >= 90 => 'A',
     n >= 80 => 'B',
-    _       => 'C'
+    _ => 'C',
   }
 }
-inspect(grade(85))               # => 'B'
-inspect(grade(50) == 'C' ? 'ok' : 'no')   # => 'ok'
+inspect(grade(85))                       # => 'B'
+inspect(grade(50) == 'C' ? 'ok' : 'no')  # => 'ok'
 ```
 
 Captured state *is* the object's state in the closure-based pattern
@@ -482,9 +482,9 @@ Full parameter, default, and splat semantics: [language.md
 
 ```culebra
 name = 'Culebra'
-inspect("hello, {name}!")                   # => 'hello, Culebra!'
-inspect("two plus three is {2 + 3}")        # => 'two plus three is 5'
-inspect('a' + 'b' + 'c')                    # => 'abc'
+inspect("hello, {name}!")             # => 'hello, Culebra!'
+inspect("two plus three is {2 + 3}")  # => 'two plus three is 5'
+inspect('a' + 'b' + 'c')              # => 'abc'
 ```
 
 ### 4.2 Iteration and slicing
@@ -515,11 +515,11 @@ a time (four steps).
 ### 4.3 Common methods
 
 ```culebra
-inspect('hello world'.split(' '))        # => ['hello', 'world']
-inspect('  hi  '.trim())                 # => 'hi'
-inspect('abc'.upper())                   # => 'ABC'
-inspect('foo'.starts_with('fo'))         # => true
-inspect(['a', 'b', 'c'].join('-'))       # => 'a-b-c'
+inspect('hello world'.split(' '))   # => ['hello', 'world']
+inspect('  hi  '.trim())            # => 'hi'
+inspect('abc'.upper())              # => 'ABC'
+inspect('foo'.starts_with('fo'))    # => true
+inspect(['a', 'b', 'c'].join('-'))  # => 'a-b-c'
 ```
 
 See [language.md §18.1](language.md) for the full method list.
@@ -550,8 +550,8 @@ each step is one user-perceived character, even a multi-codepoint
 emoji family joined by ZWJ:
 
 ```culebra
-inspect('a👨‍👩‍👧b'.graphemes().collect().size())    # => 3
-inspect('café'.graphemes().collect().size())        # => 4
+inspect('a👨‍👩‍👧b'.graphemes().collect().size())  # => 3
+inspect('café'.graphemes().collect().size())                 # => 4
 ```
 
 Full `StringView`/grapheme API: [language.md §18.1](language.md).
@@ -621,10 +621,10 @@ for p in [1, 2, 3].iter().zip(['a', 'b', 'c']) {
 # '3 / c'
 
 flat = [[1, 2], [3], [4, 5, 6]].iter().flat_map(|xs| xs).collect()
-inspect(flat)                    # => [1, 2, 3, 4, 5, 6]
+inspect(flat)  # => [1, 2, 3, 4, 5, 6]
 
 head = range(100).skip(10).take_while(|x| x < 15).collect()
-inspect(head)                    # => [10, 11, 12, 13, 14]
+inspect(head)  # => [10, 11, 12, 13, 14]
 
 # chunks: fixed-size groups (last may be shorter)
 inspect([1, 2, 3, 4, 5].iter().chunks(2).collect())
@@ -711,22 +711,22 @@ inspect(chunk([1, 2, 3, 4, 5], 2).collect())  # => [[1, 2], [3, 4], [5]]
 ```culebra
 describe = fn (x) {
   match x {
-    0                  => 'zero',
-    1 | 2 | 3          => 'small',
+    0 => 'zero',
+    1 | 2 | 3 => 'small',
     n: Long if n > 100 => "big ({n})",
-    n: Long            => "int ({n})",
-    s: String          => "str ({s})",
-    true               => 'TRUE',
-    false              => 'FALSE',
-    nil                => 'NIL',
-    _                  => 'other'
+    n: Long => "int ({n})",
+    s: String => "str ({s})",
+    true => 'TRUE',
+    false => 'FALSE',
+    nil => 'NIL',
+    _ => 'other',
   }
 }
-inspect(describe(0))             # => 'zero'
-inspect(describe(2))             # => 'small'
-inspect(describe(999))           # => 'big (999)'
-inspect(describe('hi'))          # => 'str (hi)'
-inspect(describe([1]))           # => 'other'
+inspect(describe(0))     # => 'zero'
+inspect(describe(2))     # => 'small'
+inspect(describe(999))   # => 'big (999)'
+inspect(describe('hi'))  # => 'str (hi)'
+inspect(describe([1]))   # => 'other'
 ```
 
 ### 6.2 As an expression
@@ -737,13 +737,13 @@ inspect(describe([1]))           # => 'other'
 classify = fn (n: Long) -> Long {
   match n {
     n if n < 0 => -1,
-    0          => 0,
-    _          => 1
+    0 => 0,
+    _ => 1,
   }
 }
-inspect(classify(-5))            # => -1
-inspect(classify(0))             # => 0
-inspect(classify(7))             # => 1
+inspect(classify(-5))  # => -1
+inspect(classify(0))   # => 0
+inspect(classify(7))   # => 1
 ```
 
 ### 6.3 Destructuring
@@ -751,24 +751,24 @@ inspect(classify(7))             # => 1
 ```culebra
 shape = fn (a) {
   match a {
-    []              => 'empty',
-    [x]             => "one ({x})",
-    [x, y]          => "two ({x},{y})",
+    [] => 'empty',
+    [x] => "one ({x})",
+    [x, y] => "two ({x},{y})",
     [head, ...tail] => "head={head}, rest={tail.size()}",
   }
 }
-inspect(shape([]))               # => 'empty'
-inspect(shape([10, 20]))         # => 'two (10,20)'
-inspect(shape([1, 2, 3, 4]))     # => 'head=1, rest=3'
+inspect(shape([]))            # => 'empty'
+inspect(shape([10, 20]))      # => 'two (10,20)'
+inspect(shape([1, 2, 3, 4]))  # => 'head=1, rest=3'
 
 first_name = fn (people) {
   match people {
     [{name}, ..._] => name,
-    _              => 'none'
+    _ => 'none',
   }
 }
-inspect(first_name([{name: 'x'}, {name: 'y'}]))     # => 'x'
-inspect(first_name([]))                              # => 'none'
+inspect(first_name([{name: 'x'}, {name: 'y'}]))  # => 'x'
+inspect(first_name([]))                          # => 'none'
 ```
 
 ### 6.4 Recursion
@@ -778,11 +778,11 @@ is_even = fn (n) {
   match n {
     0 => true,
     1 => false,
-    _ => fn(n - 2)
+    _ => fn(n - 2),
   }
 }
-inspect(is_even(10))             # => true
-inspect(is_even(7))              # => false
+inspect(is_even(10))  # => true
+inspect(is_even(7))   # => false
 ```
 
 ### Why no exhaustiveness check?
@@ -934,7 +934,7 @@ let answer = handle {
 } with ask(resume) {
   resume(21)
 }
-inspect(answer)   # => 42
+inspect(answer)  # => 42
 ```
 
 `resume(21)` continues the handled body at the `perform ask()` point with the
@@ -958,7 +958,7 @@ effect fn counter() {
 mut cell = 0
 let n = handle { counter() } with get(k) { k(cell) }
                              with put(v, k) { cell = v; k(nil) }
-inspect(n)   # => 2
+inspect(n)  # => 2
 ```
 
 Any function may perform: a plain fn's `perform` dispatches to the handlers
@@ -981,7 +981,7 @@ let both = handle {
 } with choose(a, b, k) {
   [k(a), k(b)]
 }
-inspect(both)   # => [10, 20]
+inspect(both)  # => [10, 20]
 ```
 
 ### 8.4 Handlers that never resume
@@ -998,8 +998,8 @@ effect fn safeDiv(a, b) {
   a / b
 }
 
-inspect(handle { safeDiv(10, 2) } with raise(m, k) { -1 })   # => 5
-inspect(handle { safeDiv(10, 0) } with raise(m, k) { -1 })   # => -1
+inspect(handle { safeDiv(10, 2) } with raise(m, k) { -1 })  # => 5
+inspect(handle { safeDiv(10, 0) } with raise(m, k) { -1 })  # => -1
 ```
 
 Add `with return(v) { … }` to map the normal-completion value. It runs only on
@@ -1013,7 +1013,7 @@ let out = handle {
   n + 1
 } with ask(k) { k(41) }
   with return(v) { "final={v}" }
-inspect(out)   # => 'final=42'
+inspect(out)  # => 'final=42'
 ```
 
 A `handle` may also be written inside an effectful body, to capture and resume
@@ -1105,19 +1105,19 @@ returns an Object literal. State lives in captured locals (truly
 private). Both styles are first-class.
 
 ```culebra
-Car2 = {
-  new: fn (mpr) {
-    mut miles = 0
-    {
-      run:   fn (n) { miles += mpr * n },
-      total: fn () { "total: {miles} miles" }
-    }
-  }
-}
+Car2 = {new: fn (mpr) {
+  mut miles = 0
+  {run: fn (n) {
+      miles += mpr * n
+    }, total: fn () {
+      "total: {miles} miles"
+    }}
+}}
 
 car = Car2.new(5)
-car.run(1); car.run(2)
-inspect(car.total())             # => 'total: 15 miles'
+car.run(1)
+car.run(2)
+inspect(car.total())  # => 'total: 15 miles'
 ```
 
 Use `class` when you want the `class:` tag and matchable shape; use
@@ -1466,9 +1466,9 @@ export {greet, PI}
 # main.cul — same directory as lib.cul
 import lib from './lib.cul'
 
-inspect(lib.greet('world'))      # => 'hello, world'
-inspect(lib.PI)                  # => 3.14159
-inspect(lib.helper)              # => nil — not on the export Object
+inspect(lib.greet('world'))  # => 'hello, world'
+inspect(lib.PI)              # => 3.14159
+inspect(lib.helper)          # => nil — not on the export Object
 ```
 
 The path is a single-quoted literal resolved relative to the
@@ -1676,10 +1676,10 @@ additionally installs `inspect` / `print` / `println` as aliases for
 environment get the namespaces but not the bare aliases.
 
 ```culebra
-inspect(to_long('42'))               # => 42
-inspect(Math.clamp(15, 0, 10))       # => 10
-inspect(re'\d+'.test('order #42'))   # => true
-inspect(JSON.stringify({a: 1}))      # => '{"a":1}'
+inspect(to_long('42'))              # => 42
+inspect(Math.clamp(15, 0, 10))      # => 10
+inspect(re'\d+'.test('order #42'))  # => true
+inspect(JSON.stringify({a: 1}))     # => '{"a":1}'
 ```
 
 ### 14.1 What ships
@@ -1716,12 +1716,12 @@ as one fused kernel.
 
 ```culebra
 a = Tensor.from([1.0, 2.0, 3.0])
-inspect((a + a).to_array())      # => [2.0, 4.0, 6.0]
+inspect((a + a).to_array())  # => [2.0, 4.0, 6.0]
 
 m = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
 c = m.dot(m)
 Tensor.eval(c)
-inspect(c.to_array())            # => [[7.0, 10.0], [15.0, 22.0]]
+inspect(c.to_array())  # => [[7.0, 10.0], [15.0, 22.0]]
 ```
 
 The same type runs on the GPU — there is no separate GPU type.

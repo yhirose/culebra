@@ -65,12 +65,12 @@ Bindings are immutable unless declared `mut`. A bare `x = ...`
 introduces a binding, or reassigns the nearest enclosing one.
 
 ```culebra
-x = 1                # immutable binding, or reassign an outer one
-let y = 2            # immutable; must not shadow an outer binding
-mut z = 3            # mutable
-z = 4                # bare reassignment
-z += 1               # also -= *= /= %= **= @=
-inspect(z)           # => 5
+x = 1       # immutable binding, or reassign an outer one
+let y = 2   # immutable; must not shadow an outer binding
+mut z = 3   # mutable
+z = 4       # bare reassignment
+z += 1      # also -= *= /= %= **= @=
+inspect(z)  # => 5
 ```
 
 Parameters are immutable too — assigning to one is an error, not a
@@ -227,8 +227,8 @@ fn fib(x) {
     fn(x - 2) + fn(x - 1)
   }
 }
-inspect(fib(10))    # => 55
-inspect(fib.name)   # => 'fib'
+inspect(fib(10))   # => 55
+inspect(fib.name)  # => 'fib'
 ```
 
 A block evaluates to its last expression, so `return` is rarely
@@ -240,10 +240,10 @@ greet = fn (name, *, greeting = 'hi', **opts) {
   suffix = opts.has('loud') && opts.loud ? '!' : ''
   "{greeting}, {name}{suffix}"
 }
-inspect(greet('alice'))                        # => 'hi, alice'
-inspect(greet('bob', greeting: 'yo'))          # => 'yo, bob'
-inspect(greet('cy', loud: true))               # => 'hi, cy!'
-inspect(greet('dee', **{greeting: 'hey'}))     # => 'hey, dee'
+inspect(greet('alice'))                     # => 'hi, alice'
+inspect(greet('bob', greeting: 'yo'))       # => 'yo, bob'
+inspect(greet('cy', loud: true))            # => 'hi, cy!'
+inspect(greet('dee', **{greeting: 'hey'}))  # => 'hey, dee'
 ```
 
 ### 2.5 Strings
@@ -252,9 +252,9 @@ Double quotes interpolate; single quotes are literal.
 
 ```culebra
 name = 'Culebra'
-inspect("hello, {name}")         # => 'hello, Culebra'
-inspect('hello, {name}')         # => 'hello, {name}'
-inspect('a' + 'b')               # => 'ab'
+inspect("hello, {name}")  # => 'hello, Culebra'
+inspect('hello, {name}')  # => 'hello, {name}'
+inspect('a' + 'b')        # => 'ab'
 ```
 
 `size()` counts UTF-8 bytes; `for` and `iter()` step one Unicode
@@ -262,11 +262,11 @@ scalar; `graphemes()` steps one user-perceived character. There is no
 `s[i]` operator — use `slice`, which takes byte offsets.
 
 ```culebra
-inspect('café'.size())                          # => 5
-inspect('café'.graphemes().collect().size())    # => 4
-inspect('café'.slice(0, 1))                     # => 'c'
-inspect('hello world'.split(' '))               # => ['hello', 'world']
-inspect(['a', 'b'].join('-'))                   # => 'a-b'
+inspect('café'.size())                        # => 5
+inspect('café'.graphemes().collect().size())  # => 4
+inspect('café'.slice(0, 1))                   # => 'c'
+inspect('hello world'.split(' '))              # => ['hello', 'world']
+inspect(['a', 'b'].join('-'))                  # => 'a-b'
 ```
 
 `"""` is a block string: it interpolates like `"..."`, strips the
@@ -325,22 +325,22 @@ and with every chain method.
 ```culebra
 describe = fn (v) {
   match v {
-    0                  => 'zero',
-    1 | 2 | 3          => 'small',
+    0 => 'zero',
+    1 | 2 | 3 => 'small',
     n: Long if n > 100 => "big ({n})",
-    n: Long            => "int ({n})",
-    s: String          => "str ({s})",
-    []                 => 'empty',
-    [x]                => "one ({x})",
-    [head, ...tail]    => "head={head} rest={tail.size()}",
-    {name}             => "named {name}",
-    _                  => 'other'
+    n: Long => "int ({n})",
+    s: String => "str ({s})",
+    [] => 'empty',
+    [x] => "one ({x})",
+    [head, ...tail] => "head={head} rest={tail.size()}",
+    {name} => "named {name}",
+    _ => 'other',
   }
 }
-inspect(describe(2))                 # => 'small'
-inspect(describe(999))               # => 'big (999)'
-inspect(describe([1, 2, 3]))         # => 'head=1 rest=2'
-inspect(describe({name: 'z'}))       # => 'named z'
+inspect(describe(2))            # => 'small'
+inspect(describe(999))          # => 'big (999)'
+inspect(describe([1, 2, 3]))    # => 'head=1 rest=2'
+inspect(describe({name: 'z'}))  # => 'named z'
 ```
 
 There is no exhaustiveness check; supply a `_` arm.
@@ -512,7 +512,7 @@ inspect(handle {
   perform ask() * 2
 } with ask(resume) {
   resume(21)
-})                               # => 42
+})  # => 42
 ```
 
 A clause that never calls `resume` discards the rest of the
@@ -537,7 +537,7 @@ export {greet}
 # doctest: skip
 # main.cul
 import lib from './lib.cul'
-inspect(lib.greet('world'))      # => 'hello, world'
+inspect(lib.greet('world'))  # => 'hello, world'
 ```
 
 The path is a single-quoted literal resolved relative to the importing
@@ -594,11 +594,11 @@ Two that yield a value rather than an error, and so are easy to miss:
 
 ```culebra
 # split returns StringView, not String — cheap, but type_of differs
-inspect(type_of('a,b'.split(',')[0]))          # => 'StringView'
+inspect(type_of('a,b'.split(',')[0]))  # => 'StringView'
 
 # a missing property is nil, silently
-inspect([1, 2].length)                          # => nil
-inspect([1, 2].size())                          # => 2
+inspect([1, 2].length)  # => nil
+inspect([1, 2].size())  # => 2
 ```
 
 ### Idioms

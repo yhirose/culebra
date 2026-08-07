@@ -52,14 +52,22 @@ culebraの並行モデルは「隔離単位（プロセス/isolate）+ コピー
 ```culebra
 # doctest: skip
 # 3つのLLMプロバイダに同じプロンプトを並列で投げ、全結果を回収する
-let results = Proc.all([
-  ["llm-cli", "--provider", "openai",    prompt],
-  ["llm-cli", "--provider", "anthropic", prompt],
-  ["llm-cli", "--provider", "google",    prompt],
-], limit: 3, timeout: 30000)
+let results = Proc.all(
+  [
+    ["llm-cli", "--provider", "openai", prompt],
+    ["llm-cli", "--provider", "anthropic", prompt],
+    ["llm-cli", "--provider", "google", prompt],
+  ],
+  limit: 3,
+  timeout: 30000,
+)
 
 for r in results {
-  if r.ok { println(r.stdout) } else { println("failed: " + r.stderr) }
+  if r.ok {
+    println(r.stdout)
+  } else {
+    println("failed: " + r.stderr)
+  }
 }
 
 # 最速の1個だけ欲しいなら
@@ -84,8 +92,11 @@ let fastest = Proc.race([cmd_a, cmd_b, cmd_c])
 let thumbs = Parallel.map(image_paths, |p| make_thumbnail(p), limit: 8)
 
 # 進捗表示つき・全件走り切り版
-let settled = Parallel.map_settled(urls, |u| Http.get(u).body,
-    on_progress: |done, total| IO.print("\r" + done.to_string() + "/" + total.to_string()))
+let settled = Parallel.map_settled(
+  urls,
+  |u| Http.get(u).body,
+  on_progress: |done, total| IO.print("\r" + done.to_string() + "/" + total.to_string()),
+)
 ```
 
 これはデータパラレル処理について彼が語った「データはここ、演算はこれ、使える
@@ -115,17 +126,25 @@ CPUを使ってできる限り高速にやってほしい」という高レベ�
 # producer-consumer: パースを別isolateに逃がし、本体はストリームを消費する
 let (tx, rx) = Channel.new(64)
 let prod = Isolate.spawn(fn () {
-  for line in File.open("big.log").lines() { tx.send(parse(line)) }
-})   # isolate終了でtxがdrop → channel自動close → for-inが終わる
+  for line in File.open("big.log").lines() {
+    tx.send(parse(line))
+  }
+})  # isolate終了でtxがdrop → channel自動close → for-inが終わる
 
-for record in rx { index.add(record) }
+for record in rx {
+  index.add(record)
+}
 prod.join()
 
 # fan-in: worker N本のストリームを1本に合流する
 let merged = Channel.fan_in(shards, fn (shard, tx) {
-  for hit in search(shard, query) { tx.send(hit) }
+  for hit in search(shard, query) {
+    tx.send(hit)
+  }
 })
-for hit in merged { report(hit) }
+for hit in merged {
+  report(hit)
+}
 merged.join()
 ```
 
@@ -206,7 +225,7 @@ let model = Shared.new(load_weights())
 let vocab = Shared.new(JSON.parse(FS.read("vocab.json")))
 
 let outs = Parallel.map(batches, fn (b) {
-  infer(model, vocab, b)     # 全workerが同じ凍結ツリーを読む。コピーなし
+  infer(model, vocab, b)  # 全workerが同じ凍結ツリーを読む。コピーなし
 })
 # vocab["hello"] = 1  →  ImmutableError（全書き込み面が実行時に拒否される）
 ```

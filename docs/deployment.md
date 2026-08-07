@@ -522,11 +522,11 @@ optimized binary (slower build).
 ```culebra
 # doctest: skip
 let v = Geo.Vec2.new(3.0, 4.0)
-inspect(v.len())        # => 5
+inspect(v.len())  # => 5
 v.scale(2.0)
-let u = v.unit()       # by-value return -> a NEW owned instance
-v.drop()               # ~Vec2 runs NOW (deterministic)
-v.len()                # !! ClosedError
+let u = v.unit()  # by-value return -> a NEW owned instance
+v.drop()          # ~Vec2 runs NOW (deterministic)
+v.len()           # !! ClosedError
 ```
 
 Wrapped instances are resources with the full lifetime model: scope-exit
@@ -577,8 +577,8 @@ generation counter, bumped automatically by non-const dispatch), raises
 ```culebra
 let b = __Foreign.Box.new(3)
 let c = b.inner()
-b.reset(9)             # non-const -> generation bump
-c.value()              # !! ClosedError
+b.reset(9)  # non-const -> generation bump
+c.value()   # !! ClosedError
 ```
 
 A non-const method that provably never invalidates borrows can opt out:

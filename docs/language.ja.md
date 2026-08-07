@@ -986,19 +986,19 @@ rangeは**第一級の値**です（`let r = 1..3`）。変数に入れ、関数
 
 ```culebra
 let xs = [10, 20, 30, 40, 50]
-inspect(xs[1..3])      # => [20, 30]
-inspect(xs[1..=3])     # => [20, 30, 40]
-inspect(xs[-3..-1])    # => [30, 40]
-inspect(xs[2..])       # => [30, 40, 50]
-inspect(xs[..3])       # => [10, 20, 30]
+inspect(xs[1..3])    # => [20, 30]
+inspect(xs[1..=3])   # => [20, 30, 40]
+inspect(xs[-3..-1])  # => [30, 40]
+inspect(xs[2..])     # => [30, 40, 50]
+inspect(xs[..3])     # => [10, 20, 30]
 ```
 
 ```culebra
 let xs = [10, 20, 30, 40, 50]
-inspect(xs[1..100])    # => [20, 30, 40, 50]
-inspect(xs[3..1])      # => []
+inspect(xs[1..100])  # => [20, 30, 40, 50]
+inspect(xs[3..1])    # => []
 let r = 1..3
-inspect(xs[r])         # => [20, 30]
+inspect(xs[r])  # => [20, 30]
 ```
 
 ```culebra
@@ -1006,12 +1006,12 @@ inspect(xs[r])         # => [20, 30]
 mut xs = [10, 20, 30]
 let s = xs[0..2]
 xs[0] = 99
-inspect(s)            # => [10, 20]
+inspect(s)  # => [10, 20]
 ```
 
 ```culebra
-inspect("hello"[1..3])    # => 'el'
-inspect("hello"[1..=3])   # => 'ell'
+inspect("hello"[1..3])   # => 'el'
+inspect("hello"[1..=3])  # => 'ell'
 ```
 
 ### 等価性・順序
@@ -2018,7 +2018,7 @@ fn counter() {
   yield 2
   yield 3
 }
-inspect(counter().collect())   # => [1, 2, 3]
+inspect(counter().collect())  # => [1, 2, 3]
 ```
 
 `yield expr`は式ではなく**文**です。消費側に値を渡すだけで自身は何にも
@@ -2182,9 +2182,9 @@ C++17の`if (init; cond)`に相当）:
 ```culebra
 # doctest: skip
 if mut d = compute(n); d > threshold {
-  use(d)                # ここで d が見える …
+  use(d)  # ここで d が見える …
 } else {
-  fallback(d)           # … ここでも見えるが、チェーンの外では見えない
+  fallback(d)  # … ここでも見えるが、チェーンの外では見えない
 }
 ```
 
@@ -2249,10 +2249,10 @@ fn grade(n) {
   cond {
     n >= 90 => 'A',
     n >= 80 => 'B',
-    _       => 'C'
+    _ => 'C',
   }
 }
-inspect(grade(85))   # => 'B'
+inspect(grade(85))  # => 'B'
 ```
 
 `test`の真偽値変換規則は`if`と同じ（`Bool`または`Long`、ゼロは
@@ -3366,7 +3366,7 @@ shutdownパターン）は、`Signal.notify`でチャネルを登録します（
 
 ```culebra
 # doctest: skip
-if (!cond) {
+if !cond {
   throw {kind: "AssertionError", message: "..."}
 }
 ```
@@ -3441,7 +3441,7 @@ let x = handle {
 } with ask(resume) {
   resume(10)
 }
-inspect(x)     # => 11
+inspect(x)  # => 11
 ```
 
 ### handle
@@ -3463,7 +3463,7 @@ let r = handle {
 } with fail(resume) {
   "aborted"
 }
-inspect(r)     # => 'aborted'
+inspect(r)  # => 'aborted'
 ```
 
 #### 複数の操作と `return` clause
@@ -3482,7 +3482,7 @@ let out = handle {
 } with get(k) { k(cell) }
   with put(v, k) { cell = v; k(nil) }
   with return(v) { "final={v}" }
-inspect(out)   # => 'final=5'
+inspect(out)  # => 'final=5'
 ```
 
 `return` clauseは*正常*完了にのみ適用されます。ハンドラが（再開せず）abort
@@ -3503,7 +3503,7 @@ let all = handle {
 } with choose(a, b, k) {
   [k(a), k(b)]
 }
-inspect(all)   # => [[11, 21], [12, 22]]
+inspect(all)  # => [[11, 21], [12, 22]]
 ```
 
 各forkは参照するheap値（配列・オブジェクト）を共有し（forkは浅いコピー）、
@@ -3522,7 +3522,7 @@ effect fn double() {
   let n = perform ask2()
   n * 2
 }
-inspect(handle { double() } with ask2(k) { k(21) })   # => 42
+inspect(handle { double() } with ask2(k) { k(21) })  # => 42
 ```
 
 ### 通常の関数とエフェクト
@@ -3578,7 +3578,7 @@ effect fn work() {
     base + perform inner()
   } with inner(k) { k(100) }
 }
-inspect(handle { work() } with outer(k) { k(5) })    # => 105
+inspect(handle { work() } with outer(k) { k(5) })  # => 105
 ```
 
 エフェクトとジェネレータは双方向に合成できます — ジェネレータ本体の中の
@@ -3590,7 +3590,7 @@ fn doubled() {
   yield handle { perform scale() * 2 } with scale(k) { k(10) }
   yield 7
 }
-inspect(doubled().collect())    # => [20, 7]
+inspect(doubled().collect())  # => [20, 7]
 ```
 
 ### 意味論と制約
@@ -3889,8 +3889,8 @@ matcher一族`assert_true` / `assert_eq`等）は
 
 ```culebra
 # 'é' は UTF-8 で 2 バイトなので 'café' は 5 バイト
-inspect('café'.bytes().collect())          # => [99, 97, 102, 195, 169]
-inspect(String.from_code_point(233))       # => 'é'
+inspect('café'.bytes().collect())                    # => [99, 97, 102, 195, 169]
+inspect(String.from_code_point(233))                  # => 'é'
 inspect(String.from_bytes([99, 97, 102, 195, 169]))   # => 'café'
 inspect(String.from_code_points([99, 97, 102, 233]))  # => 'café'
 ```
@@ -3905,12 +3905,12 @@ viewは有効:
 
 ```culebra
 let v = 'hello world'.slice(6, 11)
-inspect(v)                              # => 'world'
+inspect(v)  # => 'world'
 # 等価比較はバイト単位なので view と String は等しい:
-inspect(v == 'world')                   # => true
-inspect(type_of(v))                     # => 'StringView'
+inspect(v == 'world')  # => true
+inspect(type_of(v))    # => 'StringView'
 # to_string() は所有権を持つ String を実体化する:
-inspect(v.to_string())                  # => 'world'
+inspect(v.to_string())  # => 'world'
 ```
 
 所有権付き`String`が必要な場面 (data structureに格納、長寿命の
@@ -3936,18 +3936,18 @@ inspect('hello world'.truncate(8))   # => 'hello...'
 inspect(''.presence() ?? 'default')  # => 'default'
 
 # 同じ文字列の3つのビュー
-inspect('café'.size())                # => 5
-inspect('café'.code_points().count()) # => 4
-inspect('café'.graphemes().count())   # => 4
+inspect('café'.size())                 # => 5
+inspect('café'.code_points().count())  # => 4
+inspect('café'.graphemes().count())    # => 4
 
 # 絵文字 ZWJ シーケンス: 5 スカラー、1 grapheme
 inspect('👨‍👩‍👧'.code_points().count())  # => 5
 inspect('👨‍👩‍👧'.graphemes().count())    # => 1
 
 # code_points なら数値演算が自然
-upper = 'Hello World'.code_points()
-  .filter(fn (cp) { cp >= 65 && cp <= 90 })
-  .count()                        # 2 ('H', 'W')
+upper = 'Hello World'.code_points().filter(fn (cp) {
+    cp >= 65 && cp <= 90
+  }).count()  # 2 ('H', 'W')
 ```
 
 3種のイテレータはすべて **UTF-8を逐次decode** します。各
@@ -4077,7 +4077,7 @@ inspect(words)  # => ['fig', 'apple', 'banana']
 `TypeError`。チェックは反復の前に1度だけ行われるので、空のレシーバでも失敗する:
 
 ```culebra
-[1, 2, 3].reduce(0, |x| x)        # !! reduce expects a 2-parameter function
+[1, 2, 3].reduce(0, |x| x)  # !! reduce expects a 2-parameter function
 ```
 
 ```culebra
@@ -4129,22 +4129,22 @@ inspect([1, 2, 3].reduce(0, fn (a, *xs) {
 ```culebra
 o = {b: 2, a: 1, c: 3}
 # keys() と values() はどちらも挿入順に走査する:
-inspect(o.keys())             # => ['b', 'a', 'c']
-inspect(o.values().collect()) # => [2, 1, 3]
-inspect(o.has('a'))           # => true
+inspect(o.keys())              # => ['b', 'a', 'c']
+inspect(o.values().collect())  # => [2, 1, 3]
+inspect(o.has('a'))            # => true
 # 無いキーはフォールバックを返すだけで、挿入はしない:
-inspect(o.get('z', 0))        # => 0
+inspect(o.get('z', 0))  # => 0
 
 # 先頭 1 文字でグループ化する（キーは StringView）:
 mut groups = {}
 for w in ['apple', 'avocado', 'banana'] {
   groups.get_or_put(w[0..1], || []).push(w)
 }
-inspect(groups)               # => {mut a: ['apple', 'avocado'], mut b: ['banana']}
+inspect(groups)  # => {mut a: ['apple', 'avocado'], mut b: ['banana']}
 
 mut p = {a: 1, b: 2}
 p.remove('a')
-inspect(p)                    # => {b: 2}
+inspect(p)  # => {b: 2}
 ```
 
 `o.iter()`が`(key, value)`タプルを返し、`to_object()`がそれを受けるので、
@@ -4453,7 +4453,7 @@ fusion / specialisationの対象として認識し、言語全体の`for`-inル�
 inspect([1, 2, 3].map(type_of))                     # => ['Long', 'Long', 'Long']
 inspect([1, 2, 3].map(range).map(|r| r.collect()))  # => [[0], [0, 1], [0, 1, 2]]
 let f = range
-inspect(f(0, 10, step: 2).collect())                # => [0, 2, 4, 6, 8]
+inspect(f(0, 10, step: 2).collect())  # => [0, 2, 4, 6, 8]
 ```
 
 直接呼び出しは引き続きfast pathで、クロージャ形は名前が値の位置に
@@ -4477,9 +4477,9 @@ inspect(f(0, 10, step: 2).collect())                # => [0, 2, 4, 6, 8]
 `type error at L:C.`。
 
 ```culebra
-inspect(to_long('42'))    # => 42
-inspect(to_long('-7'))    # => -7
-inspect(to_long(3.9))     # => 3
+inspect(to_long('42'))  # => 42
+inspect(to_long('-7'))  # => -7
+inspect(to_long(3.9))   # => 3
 ```
 
 ### `to_float(v: Any) -> Float`
@@ -4494,9 +4494,9 @@ inspect(to_long(3.9))     # => 3
 * 上記以外の型は`type error`。
 
 ```culebra
-inspect(to_float(3))         # => 3.0
-inspect(to_float('1.5'))     # => 1.5
-inspect(to_float('1e-5'))    # => 1e-05
+inspect(to_float(3))       # => 3.0
+inspect(to_float('1.5'))   # => 1.5
+inspect(to_float('1e-5'))  # => 1e-05
 ```
 
 ### `to_string(v: Any) -> String`
@@ -4506,11 +4506,11 @@ inspect(to_float('1e-5'))    # => 1e-05
 表現で、必ず小数点か指数を伴うため`Long`と視覚的に区別できます。
 
 ```culebra
-inspect(to_string(42))         # => '42'
-inspect(to_string(1.0))        # => '1.0'
-inspect(to_string(1e-5))       # => '1e-05'
-inspect(to_string([1, 2]))     # => '[1, 2]'
-inspect(to_string('hi'))       # => 'hi'
+inspect(to_string(42))      # => '42'
+inspect(to_string(1.0))     # => '1.0'
+inspect(to_string(1e-5))    # => '1e-05'
+inspect(to_string([1, 2]))  # => '[1, 2]'
+inspect(to_string('hi'))    # => 'hi'
 ```
 
 ### `type_of(v: Any) -> String`
@@ -4520,12 +4520,12 @@ inspect(to_string('hi'))       # => 'hi'
 `'Object'`, `'Function'`, `'Tensor'`, `'Tuple'`, `'Set'`のいずれか。
 
 ```culebra
-inspect(type_of(42))          # => 'Long'
-inspect(type_of(1.5))         # => 'Float'
-inspect(type_of('hi'))        # => 'String'
-inspect(type_of([1, 2]))      # => 'Array'
-inspect(type_of((1, 2)))      # => 'Tuple'
-inspect(type_of({1, 2}))      # => 'Set'
+inspect(type_of(42))      # => 'Long'
+inspect(type_of(1.5))     # => 'Float'
+inspect(type_of('hi'))    # => 'String'
+inspect(type_of([1, 2]))  # => 'Array'
+inspect(type_of((1, 2)))  # => 'Tuple'
+inspect(type_of({1, 2}))  # => 'Set'
 ```
 
 ### `range(n: Long, *, step: Long = 1) -> Iterator` / `range(start: Long, end: Long, *, step: Long = 1) -> Iterator`
@@ -4579,9 +4579,9 @@ C++ `std::iota` / Scheme SRFI-1から命名。`for`-inループには`range`を
   なら空配列。
 
 ```culebra
-inspect(iota(3))         # => [0, 1, 2]
-inspect(iota(2, 5))      # => [2, 3, 4]
-inspect(iota(5, 2))      # => []
+inspect(iota(3))     # => [0, 1, 2]
+inspect(iota(2, 5))  # => [2, 3, 4]
+inspect(iota(5, 2))  # => []
 ```
 
 ### `__ARGS__` (可変長 catch-all バインディング)
@@ -4595,7 +4595,7 @@ inspect(iota(5, 2))      # => []
 let logger = fn (level) {
   inspect("[{level}] " + __ARGS__.join(' '))
 }
-logger('info', 'building', 'fizzbuzz')   # → '[info] building fizzbuzz'
+logger('info', 'building', 'fizzbuzz')  # → '[info] building fizzbuzz'
 ```
 
 あふれた分に必ず行き先があるので、ユーザ定義関数を宣言より多い

@@ -1054,19 +1054,19 @@ iteration end and raises if iterated.
 
 ```culebra
 let xs = [10, 20, 30, 40, 50]
-inspect(xs[1..3])      # => [20, 30]
-inspect(xs[1..=3])     # => [20, 30, 40]
-inspect(xs[-3..-1])    # => [30, 40]
-inspect(xs[2..])       # => [30, 40, 50]
-inspect(xs[..3])       # => [10, 20, 30]
+inspect(xs[1..3])    # => [20, 30]
+inspect(xs[1..=3])   # => [20, 30, 40]
+inspect(xs[-3..-1])  # => [30, 40]
+inspect(xs[2..])     # => [30, 40, 50]
+inspect(xs[..3])     # => [10, 20, 30]
 ```
 
 ```culebra
 let xs = [10, 20, 30, 40, 50]
-inspect(xs[1..100])    # => [20, 30, 40, 50]
-inspect(xs[3..1])      # => []
+inspect(xs[1..100])  # => [20, 30, 40, 50]
+inspect(xs[3..1])    # => []
 let r = 1..3
-inspect(xs[r])         # => [20, 30]
+inspect(xs[r])  # => [20, 30]
 ```
 
 ```culebra
@@ -1074,12 +1074,12 @@ inspect(xs[r])         # => [20, 30]
 mut xs = [10, 20, 30]
 let s = xs[0..2]
 xs[0] = 99
-inspect(s)            # => [10, 20]
+inspect(s)  # => [10, 20]
 ```
 
 ```culebra
-inspect("hello"[1..3])    # => 'el'
-inspect("hello"[1..=3])   # => 'ell'
+inspect("hello"[1..3])   # => 'el'
+inspect("hello"[1..=3])  # => 'ell'
 ```
 
 ### Equality and ordering
@@ -2137,7 +2137,7 @@ fn counter() {
   yield 2
   yield 3
 }
-inspect(counter().collect())   # => [1, 2, 3]
+inspect(counter().collect())  # => [1, 2, 3]
 ```
 
 `yield expr` is a **statement**, not an expression. It hands a value to
@@ -2301,9 +2301,9 @@ if` / `else` chain (the same form as [`while`](#while)):
 ```culebra
 # doctest: skip
 if mut d = compute(n); d > threshold {
-  use(d)                # d is in scope here …
+  use(d)  # d is in scope here …
 } else {
-  fallback(d)           # … and here, but not after the chain
+  fallback(d)  # … and here, but not after the chain
 }
 ```
 
@@ -2369,10 +2369,10 @@ fn grade(n) {
   cond {
     n >= 90 => 'A',
     n >= 80 => 'B',
-    _       => 'C'
+    _ => 'C',
   }
 }
-inspect(grade(85))   # => 'B'
+inspect(grade(85))  # => 'B'
 ```
 
 A `test` follows the same truthiness rule as `if` (`Bool` or `Long`,
@@ -3575,7 +3575,7 @@ For production invariants, throw an Object:
 
 ```culebra
 # doctest: skip
-if (!cond) {
+if !cond {
   throw {kind: "AssertionError", message: "..."}
 }
 ```
@@ -3651,7 +3651,7 @@ let x = handle {
 } with ask(resume) {
   resume(10)
 }
-inspect(x)     # => 11
+inspect(x)  # => 11
 ```
 
 ### Handling
@@ -3674,7 +3674,7 @@ let r = handle {
 } with fail(resume) {
   "aborted"
 }
-inspect(r)     # => 'aborted'
+inspect(r)  # => 'aborted'
 ```
 
 #### Multiple operations, and a `return` clause
@@ -3693,7 +3693,7 @@ let out = handle {
 } with get(k) { k(cell) }
   with put(v, k) { cell = v; k(nil) }
   with return(v) { "final={v}" }
-inspect(out)   # => 'final=5'
+inspect(out)  # => 'final=5'
 ```
 
 The `return` clause applies only to *normal* completion. When a handler aborts
@@ -3714,7 +3714,7 @@ let all = handle {
 } with choose(a, b, k) {
   [k(a), k(b)]
 }
-inspect(all)   # => [[11, 21], [12, 22]]
+inspect(all)  # => [[11, 21], [12, 22]]
 ```
 
 Forks share referenced heap values (arrays, objects) — the fork is a shallow
@@ -3733,7 +3733,7 @@ effect fn double() {
   let n = perform ask2()
   n * 2
 }
-inspect(handle { double() } with ask2(k) { k(21) })   # => 42
+inspect(handle { double() } with ask2(k) { k(21) })  # => 42
 ```
 
 ### Plain functions and effects
@@ -3791,7 +3791,7 @@ effect fn work() {
     base + perform inner()
   } with inner(k) { k(100) }
 }
-inspect(handle { work() } with outer(k) { k(5) })    # => 105
+inspect(handle { work() } with outer(k) { k(5) })  # => 105
 ```
 
 Effects compose with generators in both directions — a `handle` expression
@@ -3803,7 +3803,7 @@ fn doubled() {
   yield handle { perform scale() * 2 } with scale(k) { k(10) }
   yield 7
 }
-inspect(doubled().collect())    # => [20, 7]
+inspect(doubled().collect())  # => [20, 7]
 ```
 
 ### Semantics and limitations
@@ -4115,8 +4115,8 @@ receiver is never mutated.
 
 ```culebra
 # 'é' is 2 UTF-8 bytes, so 'café' is 5 bytes
-inspect('café'.bytes().collect())          # => [99, 97, 102, 195, 169]
-inspect(String.from_code_point(233))       # => 'é'
+inspect('café'.bytes().collect())                    # => [99, 97, 102, 195, 169]
+inspect(String.from_code_point(233))                  # => 'é'
 inspect(String.from_bytes([99, 97, 102, 195, 169]))   # => 'café'
 inspect(String.from_code_points([99, 97, 102, 233]))  # => 'café'
 ```
@@ -4131,12 +4131,12 @@ created it:
 
 ```culebra
 let v = 'hello world'.slice(6, 11)
-inspect(v)                              # => 'world'
+inspect(v)  # => 'world'
 # Equality is by bytes, so a view compares equal to a String:
-inspect(v == 'world')                   # => true
-inspect(type_of(v))                     # => 'StringView'
+inspect(v == 'world')  # => true
+inspect(type_of(v))    # => 'StringView'
 # to_string() materializes an owned String:
-inspect(v.to_string())                  # => 'world'
+inspect(v.to_string())  # => 'world'
 ```
 
 Use `.to_string()` when you need an owning `String` (storing in a
@@ -4162,18 +4162,18 @@ inspect('hello world'.truncate(8))   # => 'hello...'
 inspect(''.presence() ?? 'default')  # => 'default'
 
 # Three views of the same string: bytes, scalars, clusters
-inspect('café'.size())                # => 5
-inspect('café'.code_points().count()) # => 4
-inspect('café'.graphemes().count())   # => 4
+inspect('café'.size())                 # => 5
+inspect('café'.code_points().count())  # => 4
+inspect('café'.graphemes().count())    # => 4
 
 # Emoji ZWJ sequence: 5 scalars, 1 grapheme
 inspect('👨‍👩‍👧'.code_points().count())  # => 5
 inspect('👨‍👩‍👧'.graphemes().count())    # => 1
 
 # Numeric ops via code_points
-upper = 'Hello World'.code_points()
-  .filter(fn (cp) { cp >= 65 && cp <= 90 })
-  .count()                        # 2 ('H', 'W')
+upper = 'Hello World'.code_points().filter(fn (cp) {
+    cp >= 65 && cp <= 90
+  }).count()  # 2 ('H', 'W')
 ```
 
 All three iterators **decode the source string on demand**: each
@@ -4305,7 +4305,7 @@ the wrong fixed arity is a `TypeError` — checked once before iterating, so it
 fails even on an empty receiver:
 
 ```culebra
-[1, 2, 3].reduce(0, |x| x)        # !! reduce expects a 2-parameter function
+[1, 2, 3].reduce(0, |x| x)  # !! reduce expects a 2-parameter function
 ```
 
 ```culebra
@@ -4358,22 +4358,22 @@ A `String` and a byte-equal `StringView` (e.g. `s[0..2]`) are the **same key** �
 ```culebra
 o = {b: 2, a: 1, c: 3}
 # keys() and values() both walk in insertion order:
-inspect(o.keys())             # => ['b', 'a', 'c']
-inspect(o.values().collect()) # => [2, 1, 3]
-inspect(o.has('a'))           # => true
+inspect(o.keys())              # => ['b', 'a', 'c']
+inspect(o.values().collect())  # => [2, 1, 3]
+inspect(o.has('a'))            # => true
 # An absent key yields the fallback and is not inserted:
-inspect(o.get('z', 0))        # => 0
+inspect(o.get('z', 0))  # => 0
 
 # Group items by their first letter (StringView keys):
 mut groups = {}
 for w in ['apple', 'avocado', 'banana'] {
   groups.get_or_put(w[0..1], || []).push(w)
 }
-inspect(groups)               # => {mut a: ['apple', 'avocado'], mut b: ['banana']}
+inspect(groups)  # => {mut a: ['apple', 'avocado'], mut b: ['banana']}
 
 mut p = {a: 1, b: 2}
 p.remove('a')
-inspect(p)                    # => {b: 2}
+inspect(p)  # => {b: 2}
 ```
 
 `o.iter()` yields `(key, value)` tuples and `to_object()` consumes them, so
@@ -4687,7 +4687,7 @@ on both backends.
 inspect([1, 2, 3].map(type_of))                     # => ['Long', 'Long', 'Long']
 inspect([1, 2, 3].map(range).map(|r| r.collect()))  # => [[0], [0, 1], [0, 1, 2]]
 let f = range
-inspect(f(0, 10, step: 2).collect())                # => [0, 2, 4, 6, 8]
+inspect(f(0, 10, step: 2).collect())  # => [0, 2, 4, 6, 8]
 ```
 
 A direct call is still the fast path; the closure form is used only
@@ -4711,9 +4711,9 @@ Convert `v` to `Long`:
 non-numeric / non-string argument.
 
 ```culebra
-inspect(to_long('42'))    # => 42
-inspect(to_long('-7'))    # => -7
-inspect(to_long(3.9))     # => 3
+inspect(to_long('42'))  # => 42
+inspect(to_long('-7'))  # => -7
+inspect(to_long(3.9))   # => 3
 ```
 
 ### `to_float(v: Any) -> Float`
@@ -4728,9 +4728,9 @@ Convert `v` to `Float`:
 * Other types raise `type error`.
 
 ```culebra
-inspect(to_float(3))         # => 3.0
-inspect(to_float('1.5'))     # => 1.5
-inspect(to_float('1e-5'))    # => 1e-05
+inspect(to_float(3))       # => 3.0
+inspect(to_float('1.5'))   # => 1.5
+inspect(to_float('1e-5'))  # => 1e-05
 ```
 
 ### `to_string(v: Any) -> String`
@@ -4742,11 +4742,11 @@ carries either a decimal point or an exponent, so the type is
 visually distinguishable from `Long`.
 
 ```culebra
-inspect(to_string(42))         # => '42'
-inspect(to_string(1.0))        # => '1.0'
-inspect(to_string(1e-5))       # => '1e-05'
-inspect(to_string([1, 2]))     # => '[1, 2]'
-inspect(to_string('hi'))       # => 'hi'
+inspect(to_string(42))      # => '42'
+inspect(to_string(1.0))     # => '1.0'
+inspect(to_string(1e-5))    # => '1e-05'
+inspect(to_string([1, 2]))  # => '[1, 2]'
+inspect(to_string('hi'))    # => 'hi'
 ```
 
 ### `type_of(v: Any) -> String`
@@ -4756,12 +4756,12 @@ Return the runtime type name of `v`. One of
 `'Object'`, `'Function'`, `'Tensor'`, `'Tuple'`, `'Set'`.
 
 ```culebra
-inspect(type_of(42))          # => 'Long'
-inspect(type_of(1.5))         # => 'Float'
-inspect(type_of('hi'))        # => 'String'
-inspect(type_of([1, 2]))      # => 'Array'
-inspect(type_of((1, 2)))      # => 'Tuple'
-inspect(type_of({1, 2}))      # => 'Set'
+inspect(type_of(42))      # => 'Long'
+inspect(type_of(1.5))     # => 'Float'
+inspect(type_of('hi'))    # => 'String'
+inspect(type_of([1, 2]))  # => 'Array'
+inspect(type_of((1, 2)))  # => 'Tuple'
+inspect(type_of({1, 2}))  # => 'Set'
 ```
 
 ### `range(n: Long, *, step: Long = 1) -> Iterator` / `range(start: Long, end: Long, *, step: Long = 1) -> Iterator`
@@ -4819,9 +4819,9 @@ expects an `Array`).
   `start >= end`, an empty array.
 
 ```culebra
-inspect(iota(3))         # => [0, 1, 2]
-inspect(iota(2, 5))      # => [2, 3, 4]
-inspect(iota(5, 2))      # => []
+inspect(iota(3))     # => [0, 1, 2]
+inspect(iota(2, 5))  # => [2, 3, 4]
+inspect(iota(5, 2))  # => []
 ```
 
 ### `__ARGS__` (variadic catch-all binding)
@@ -4836,7 +4836,7 @@ values without declaring an explicit `**rest` (which catches
 let logger = fn (level) {
   inspect("[{level}] " + __ARGS__.join(' '))
 }
-logger('info', 'building', 'fizzbuzz')   # → '[info] building fizzbuzz'
+logger('info', 'building', 'fizzbuzz')  # → '[info] building fizzbuzz'
 ```
 
 Because that overflow always has somewhere to land, passing a user

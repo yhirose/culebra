@@ -57,7 +57,7 @@ registers one test per case.
 # tests/test_string.cul
 
 # Call form
-test("interpolation embeds Long", fn() {
+test("interpolation embeds Long", fn () {
   let x = 42
   assert_eq("hi {x}", "hi 42")
 })
@@ -85,8 +85,13 @@ required. Fixtures can themselves take fixtures.
 
 ```culebra
 # doctest: skip
-fn db()       { { users: [], next_id: 1 } }
-fn user(db)   { db.users.push({ id: 1, name: "alice" }); db.users[0] }
+fn db() {
+  {users: [], next_id: 1}
+}
+fn user(db) {
+  db.users.push({id: 1, name: "alice"})
+  db.users[0]
+}
 
 @test
 fn user_has_name(user) {
@@ -107,12 +112,20 @@ at test end.
 ```culebra
 # doctest: skip
 class TestDB {
-  new()    { self.conn = Database.connect("memory") }
-  drop()   { self.conn.close() }
-  users()  { self.conn.users }
+  new() {
+    self.conn = Database.connect("memory")
+  }
+  drop() {
+    self.conn.close()
+  }
+  users() {
+    self.conn.users
+  }
 }
 
-fn db() { TestDB.new() }
+fn db() {
+  TestDB.new()
+}
 
 @test
 fn user_count(db) {
@@ -135,9 +148,11 @@ environment, same as `inspect` / `Math`), so they work identically under
 
 ```culebra
 # doctest: skip
-assert_eq(arr.len(), 3)                 # == ; shows both sides on failure
-assert_throws("TypeError", fn() { let _ = 1 + 'b' })
-assert_close(0.1 + 0.2, 0.3, 1e-9)      # |a - b| <= tol
+assert_eq(arr.len(), 3)  # == ; shows both sides on failure
+assert_throws("TypeError", fn () {
+  let _ = 1 + 'b'
+})
+assert_close(0.1 + 0.2, 0.3, 1e-9)  # |a - b| <= tol
 ```
 
 Full matcher list (`assert_true`/`false`/`ne`/`lt`/`le`/`gt`/`ge` and the

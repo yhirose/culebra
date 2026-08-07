@@ -165,7 +165,7 @@ culebra --help                       # 全オプション・コマンド一覧
 
 ```culebra
 # this is a comment
-inspect('hello')          # => 'hello'
+inspect('hello')  # => 'hello'
 ```
 
 `inspect` は値をクォート付きの inspect 形式で出力するため、文字列は引用符付き
@@ -197,12 +197,12 @@ inspect(type_of(fn () {
 ### 2.2 束縛: bare / `let` / `mut`
 
 ```culebra
-x = 10              # bare: 新規不変束縛、または外側を再代入
-let y = 20          # let: 新規不変束縛 (外側のシャドウは不可)
-mut z = 30          # mut: 新規可変束縛
-z = 31              # mutは再代入可能
-z += 1              # 複合 (`-= *= /= %= **= @=`も同様)
-inspect(z)             # => 32
+x = 10      # bare: 新規不変束縛、または外側を再代入
+let y = 20  # let: 新規不変束縛 (外側のシャドウは不可)
+mut z = 30  # mut: 新規可変束縛
+z = 31      # mutは再代入可能
+z += 1      # 複合 (`-= *= /= %= **= @=`も同様)
+inspect(z)  # => 32
 ```
 
 bare 代入は外側スコープへ向かって検索し、最も近い同名束縛を再代入。
@@ -226,13 +226,13 @@ make = fn () {
   mut n = 0
   fn () {
     # let n = 1   # エラー: 捕捉された`n`をシャドウしてしまう
-    n += 1        # bare代入で捕捉`n`を更新 — OK
+    n += 1  # bare代入で捕捉`n`を更新 — OK
     n
   }
 }
 c = make()
-inspect(c())                     # => 1
-inspect(c())                     # => 2
+inspect(c())  # => 1
+inspect(c())  # => 2
 ```
 
 ### 2.4 制御フロー
@@ -359,11 +359,11 @@ grade = fn (n) {
   cond {
     n >= 90 => 'A',
     n >= 80 => 'B',
-    _       => 'C'
+    _ => 'C',
   }
 }
-inspect(grade(85))               # => 'B'
-inspect(grade(50) == 'C' ? 'ok' : 'no')   # => 'ok'
+inspect(grade(85))                       # => 'B'
+inspect(grade(50) == 'C' ? 'ok' : 'no')  # => 'ok'
 ```
 
 クロージャベースのオブジェクトパターン (Ch.9) では、捕捉された状態が
@@ -469,9 +469,9 @@ inspect(sum_all(1, 2, 3, 4))  # => 10
 
 ```culebra
 name = 'Culebra'
-inspect("hello, {name}!")                   # => 'hello, Culebra!'
-inspect("two plus three is {2 + 3}")        # => 'two plus three is 5'
-inspect('a' + 'b' + 'c')                    # => 'abc'
+inspect("hello, {name}!")             # => 'hello, Culebra!'
+inspect("two plus three is {2 + 3}")  # => 'two plus three is 5'
+inspect('a' + 'b' + 'c')              # => 'abc'
 ```
 
 ### 4.2 反復とスライス
@@ -501,11 +501,11 @@ inspect('café'.size())  # => 5
 ### 4.3 よく使うメソッド
 
 ```culebra
-inspect('hello world'.split(' '))        # => ['hello', 'world']
-inspect('  hi  '.trim())                 # => 'hi'
-inspect('abc'.upper())                   # => 'ABC'
-inspect('foo'.starts_with('fo'))         # => true
-inspect(['a', 'b', 'c'].join('-'))       # => 'a-b-c'
+inspect('hello world'.split(' '))   # => ['hello', 'world']
+inspect('  hi  '.trim())            # => 'hi'
+inspect('abc'.upper())              # => 'ABC'
+inspect('foo'.starts_with('fo'))    # => true
+inspect(['a', 'b', 'c'].join('-'))  # => 'a-b-c'
 ```
 
 完全な一覧は [language.ja.md §18.1](language.ja.md)。
@@ -536,8 +536,8 @@ inspect('hello'.slice(1, 4))           # => 'ell'
 あっても、1 ステップ = ユーザが知覚する 1 文字になる:
 
 ```culebra
-inspect('a👨‍👩‍👧b'.graphemes().collect().size())    # => 3
-inspect('café'.graphemes().collect().size())        # => 4
+inspect('a👨‍👩‍👧b'.graphemes().collect().size())  # => 3
+inspect('café'.graphemes().collect().size())                 # => 4
 ```
 
 `StringView`/grapheme の完全な API は [language.ja.md §18.1](language.ja.md)。
@@ -606,10 +606,10 @@ for p in [1, 2, 3].iter().zip(['a', 'b', 'c']) {
 # '3 / c'
 
 flat = [[1, 2], [3], [4, 5, 6]].iter().flat_map(|xs| xs).collect()
-inspect(flat)                    # => [1, 2, 3, 4, 5, 6]
+inspect(flat)  # => [1, 2, 3, 4, 5, 6]
 
 head = range(100).skip(10).take_while(|x| x < 15).collect()
-inspect(head)                    # => [10, 11, 12, 13, 14]
+inspect(head)  # => [10, 11, 12, 13, 14]
 
 # chunks: 固定長のグループ (最後だけ短くなりうる)
 inspect([1, 2, 3, 4, 5].iter().chunks(2).collect())
@@ -696,22 +696,22 @@ inspect(chunk([1, 2, 3, 4, 5], 2).collect())  # => [[1, 2], [3, 4], [5]]
 ```culebra
 describe = fn (x) {
   match x {
-    0                  => 'zero',
-    1 | 2 | 3          => 'small',
+    0 => 'zero',
+    1 | 2 | 3 => 'small',
     n: Long if n > 100 => "big ({n})",
-    n: Long            => "int ({n})",
-    s: String          => "str ({s})",
-    true               => 'TRUE',
-    false              => 'FALSE',
-    nil                => 'NIL',
-    _                  => 'other'
+    n: Long => "int ({n})",
+    s: String => "str ({s})",
+    true => 'TRUE',
+    false => 'FALSE',
+    nil => 'NIL',
+    _ => 'other',
   }
 }
-inspect(describe(0))             # => 'zero'
-inspect(describe(2))             # => 'small'
-inspect(describe(999))           # => 'big (999)'
-inspect(describe('hi'))          # => 'str (hi)'
-inspect(describe([1]))           # => 'other'
+inspect(describe(0))     # => 'zero'
+inspect(describe(2))     # => 'small'
+inspect(describe(999))   # => 'big (999)'
+inspect(describe('hi'))  # => 'str (hi)'
+inspect(describe([1]))   # => 'other'
 ```
 
 ### 6.2 式として
@@ -722,13 +722,13 @@ inspect(describe([1]))           # => 'other'
 classify = fn (n: Long) -> Long {
   match n {
     n if n < 0 => -1,
-    0          => 0,
-    _          => 1
+    0 => 0,
+    _ => 1,
   }
 }
-inspect(classify(-5))            # => -1
-inspect(classify(0))             # => 0
-inspect(classify(7))             # => 1
+inspect(classify(-5))  # => -1
+inspect(classify(0))   # => 0
+inspect(classify(7))   # => 1
 ```
 
 ### 6.3 分解
@@ -736,24 +736,24 @@ inspect(classify(7))             # => 1
 ```culebra
 shape = fn (a) {
   match a {
-    []              => 'empty',
-    [x]             => "one ({x})",
-    [x, y]          => "two ({x},{y})",
+    [] => 'empty',
+    [x] => "one ({x})",
+    [x, y] => "two ({x},{y})",
     [head, ...tail] => "head={head}, rest={tail.size()}",
   }
 }
-inspect(shape([]))               # => 'empty'
-inspect(shape([10, 20]))         # => 'two (10,20)'
-inspect(shape([1, 2, 3, 4]))     # => 'head=1, rest=3'
+inspect(shape([]))            # => 'empty'
+inspect(shape([10, 20]))      # => 'two (10,20)'
+inspect(shape([1, 2, 3, 4]))  # => 'head=1, rest=3'
 
 first_name = fn (people) {
   match people {
     [{name}, ..._] => name,
-    _              => 'none'
+    _ => 'none',
   }
 }
-inspect(first_name([{name: 'x'}, {name: 'y'}]))     # => 'x'
-inspect(first_name([]))                              # => 'none'
+inspect(first_name([{name: 'x'}, {name: 'y'}]))  # => 'x'
+inspect(first_name([]))                          # => 'none'
 ```
 
 ### 6.4 再帰
@@ -763,11 +763,11 @@ is_even = fn (n) {
   match n {
     0 => true,
     1 => false,
-    _ => fn(n - 2)
+    _ => fn(n - 2),
   }
 }
-inspect(is_even(10))             # => true
-inspect(is_even(7))              # => false
+inspect(is_even(10))  # => true
+inspect(is_even(7))   # => false
 ```
 
 ### Why exhaustiveness check 無し
@@ -918,7 +918,7 @@ let answer = handle {
 } with ask(resume) {
   resume(21)
 }
-inspect(answer)   # => 42
+inspect(answer)  # => 42
 ```
 
 `resume(21)` はハンドルされた本体を `perform ask()` の地点から値 `21` で再開する
@@ -942,7 +942,7 @@ effect fn counter() {
 mut cell = 0
 let n = handle { counter() } with get(k) { k(cell) }
                              with put(v, k) { cell = v; k(nil) }
-inspect(n)   # => 2
+inspect(n)  # => 2
 ```
 
 どの関数からでも `perform` できます。plain 関数の `perform` は現在のコール
@@ -964,7 +964,7 @@ let both = handle {
 } with choose(a, b, k) {
   [k(a), k(b)]
 }
-inspect(both)   # => [10, 20]
+inspect(both)  # => [10, 20]
 ```
 
 ### 8.4 再開しないハンドラ
@@ -981,8 +981,8 @@ effect fn safeDiv(a, b) {
   a / b
 }
 
-inspect(handle { safeDiv(10, 2) } with raise(m, k) { -1 })   # => 5
-inspect(handle { safeDiv(10, 0) } with raise(m, k) { -1 })   # => -1
+inspect(handle { safeDiv(10, 2) } with raise(m, k) { -1 })  # => 5
+inspect(handle { safeDiv(10, 0) } with raise(m, k) { -1 })  # => -1
 ```
 
 正常完了値を写すには `with return(v) { … }` を加えます。 これが走るのは*正常*
@@ -996,7 +996,7 @@ let out = handle {
   n + 1
 } with ask(k) { k(41) }
   with return(v) { "final={v}" }
-inspect(out)   # => 'final=42'
+inspect(out)  # => 'final=42'
 ```
 
 エフェクトフルな本体の中に `handle` を書けば、外側の計算をキャプチャしてそこ
@@ -1086,19 +1086,19 @@ inspect(t.scale)       # => 'C'
 とも第一級。
 
 ```culebra
-Car2 = {
-  new: fn (mpr) {
-    mut miles = 0
-    {
-      run:   fn (n) { miles += mpr * n },
-      total: fn () { "走行距離: {miles} miles" }
-    }
-  }
-}
+Car2 = {new: fn (mpr) {
+  mut miles = 0
+  {run: fn (n) {
+      miles += mpr * n
+    }, total: fn () {
+      "走行距離: {miles} miles"
+    }}
+}}
 
 car = Car2.new(5)
-car.run(1); car.run(2)
-inspect(car.total())             # => '走行距離: 15 miles'
+car.run(1)
+car.run(2)
+inspect(car.total())  # => '走行距離: 15 miles'
 ```
 
 `class:` タグと shape マッチが欲しいなら `class`、private 状態の
@@ -1444,9 +1444,9 @@ export {greet, PI}
 # main.cul — lib.cul と同じディレクトリ
 import lib from './lib.cul'
 
-inspect(lib.greet('world'))      # => 'hello, world'
-inspect(lib.PI)                  # => 3.14159
-inspect(lib.helper)              # => nil — export Objectに載っていない
+inspect(lib.greet('world'))  # => 'hello, world'
+inspect(lib.PI)              # => 3.14159
+inspect(lib.helper)          # => nil — export Objectに載っていない
 ```
 
 パスはシングルクォートのリテラルで、import する側のファイルの
@@ -1650,10 +1650,10 @@ inspect(first([1, 2, 3]))  # => 1
 名前空間だけが見え、この裸の別名は入りません。
 
 ```culebra
-inspect(to_long('42'))               # => 42
-inspect(Math.clamp(15, 0, 10))       # => 10
-inspect(re'\d+'.test('order #42'))   # => true
-inspect(JSON.stringify({a: 1}))      # => '{"a":1}'
+inspect(to_long('42'))              # => 42
+inspect(Math.clamp(15, 0, 10))      # => 10
+inspect(re'\d+'.test('order #42'))  # => true
+inspect(JSON.stringify({a: 1}))     # => '{"a":1}'
 ```
 
 ### 14.1 何が入っているか
@@ -1690,12 +1690,12 @@ Linux/Windows は CUDA) が実行します。格納は F32 で、スカラー結
 
 ```culebra
 a = Tensor.from([1.0, 2.0, 3.0])
-inspect((a + a).to_array())      # => [2.0, 4.0, 6.0]
+inspect((a + a).to_array())  # => [2.0, 4.0, 6.0]
 
 m = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
 c = m.dot(m)
 Tensor.eval(c)
-inspect(c.to_array())            # => [[7.0, 10.0], [15.0, 22.0]]
+inspect(c.to_array())  # => [[7.0, 10.0], [15.0, 22.0]]
 ```
 
 同じ型が GPU でも動きます — GPU 専用の型はありません。

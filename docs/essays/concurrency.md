@@ -62,14 +62,22 @@ falls relative to what Hejlsberg said.
 ```culebra
 # doctest: skip
 # Fire the same prompt at three LLM providers in parallel and collect every result
-let results = Proc.all([
-  ["llm-cli", "--provider", "openai",    prompt],
-  ["llm-cli", "--provider", "anthropic", prompt],
-  ["llm-cli", "--provider", "google",    prompt],
-], limit: 3, timeout: 30000)
+let results = Proc.all(
+  [
+    ["llm-cli", "--provider", "openai", prompt],
+    ["llm-cli", "--provider", "anthropic", prompt],
+    ["llm-cli", "--provider", "google", prompt],
+  ],
+  limit: 3,
+  timeout: 30000,
+)
 
 for r in results {
-  if r.ok { println(r.stdout) } else { println("failed: " + r.stderr) }
+  if r.ok {
+    println(r.stdout)
+  } else {
+    println("failed: " + r.stderr)
+  }
 }
 
 # just want the fastest one?
@@ -98,8 +106,11 @@ here too.
 let thumbs = Parallel.map(image_paths, |p| make_thumbnail(p), limit: 8)
 
 # with progress reporting, running every element to completion
-let settled = Parallel.map_settled(urls, |u| Http.get(u).body,
-    on_progress: |done, total| IO.print("\r" + done.to_string() + "/" + total.to_string()))
+let settled = Parallel.map_settled(
+  urls,
+  |u| Http.get(u).body,
+  on_progress: |done, total| IO.print("\r" + done.to_string() + "/" + total.to_string()),
+)
 ```
 
 This traces fairly faithfully over the high-level API model he described
@@ -134,17 +145,25 @@ the same question.
 # producer-consumer: offload parsing to a separate isolate, consume the stream in the body
 let (tx, rx) = Channel.new(64)
 let prod = Isolate.spawn(fn () {
-  for line in File.open("big.log").lines() { tx.send(parse(line)) }
-})   # tx drops when the isolate ends → the channel auto-closes → the for-in ends
+  for line in File.open("big.log").lines() {
+    tx.send(parse(line))
+  }
+})  # tx drops when the isolate ends → the channel auto-closes → the for-in ends
 
-for record in rx { index.add(record) }
+for record in rx {
+  index.add(record)
+}
 prod.join()
 
 # fan-in: merge N worker streams into one
 let merged = Channel.fan_in(shards, fn (shard, tx) {
-  for hit in search(shard, query) { tx.send(hit) }
+  for hit in search(shard, query) {
+    tx.send(hit)
+  }
 })
-for hit in merged { report(hit) }
+for hit in merged {
+  report(hit)
+}
 merged.join()
 ```
 
@@ -234,7 +253,7 @@ let model = Shared.new(load_weights())
 let vocab = Shared.new(JSON.parse(FS.read("vocab.json")))
 
 let outs = Parallel.map(batches, fn (b) {
-  infer(model, vocab, b)     # every worker reads the same frozen tree. no copying
+  infer(model, vocab, b)  # every worker reads the same frozen tree. no copying
 })
 # vocab["hello"] = 1  →  ImmutableError (every write surface is rejected at runtime)
 ```
