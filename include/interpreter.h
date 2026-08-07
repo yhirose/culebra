@@ -11993,7 +11993,8 @@ inline bool interpret_modules(const std::vector<LoadedModule>& orig_modules,
 inline bool interpret(const std::shared_ptr<peg::Ast>& ast,
                       const std::shared_ptr<Environment>& env, Value& val,
                       std::vector<std::string>& msgs,
-                      Debugger debugger = nullptr) {
+                      Debugger debugger = nullptr,
+                      bool rethrow_interrupted = false) {
   auto flush_top_defers = [&] {
     // Best-effort: swallow exceptions thrown by top-level defers so
     // that all registered defers get a chance to run.
@@ -12031,6 +12032,15 @@ inline bool interpret(const std::shared_ptr<peg::Ast>& ast,
     msgs.push_back(std::format("uncaught: {}", e.str_display()));
   } catch (const CulebraError& e) {
     flush_top_defers();
+    // An Interrupted here isn't a real per-line failure to report — a
+    // caller that opts in (resolve_from_lazy, below) needs it to propagate
+    // like interpret_modules's top-level rethrow does, e.g. so an isolate
+    // cancelled mid-lazy-load surfaces as a catchable Interrupted instead
+    // of this function converting it into a swallowed message. Default off:
+    // the REPL / doctest runner rely on the opposite — Ctrl+C during a
+    // single line/block must return a message and let the caller keep
+    // going, not unwind past it.
+    if (rethrow_interrupted && e.kind == "Interrupted") throw;
     // Mirror main.cc's CulebraError formatter: append the source
     // location from the structured fields when present so both
     // backends produce identical uncaught-error output.
@@ -12094,7 +12104,15 @@ inline void Environment::resolve_from_lazy(
   }
   Value dummy;
   std::vector<std::string> eval_msgs;
-  if (!interpret(ast, shared_from_this(), dummy, eval_msgs)) {
+  // rethrow_interrupted=true: an Interrupted here (Ctrl+C, or an isolate
+  // cancelled mid-lazy-load — e.g. h.drop() racing a spawned closure's
+  // first touch of a stdlib namespace) is not a bug in this trusted,
+  // bundled module source; it must propagate to whoever triggered this
+  // lazy load (eventually reaching, for an isolate, run_isolate_child's
+  // own CulebraError handling) like any other interrupted eval, not read
+  // as "the module itself is broken" and abort the whole process.
+  if (!interpret(ast, shared_from_this(), dummy, eval_msgs, nullptr,
+                 /*rethrow_interrupted=*/true)) {
     std::fprintf(stderr, "culebra: lazy module '%s' failed to eval\n",
                  std::string(name).c_str());
     for (auto& m : eval_msgs) std::fprintf(stderr, "  %s", m.c_str());
