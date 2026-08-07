@@ -36,12 +36,26 @@ ret=$(grep "emit_value_retain(" include/jit.h \
 # The pin is dropped once per leaf arm; the ctor and not-a-function arms
 # need a new bare release each (the overload arm folds it into the existing
 # recursive-call handoff instead).
-ratchet "bare emit_value_release sites (jit.h)" "$rel" 51
+# 51 -> 55 (2026-08-06, reviewed): compile_assign_complex's new `??=`
+# nil-coalesce dispatch for Array/Object INDEX and Object DOT lvalues
+# builds its own basic-block structure (rval is null for `??=`, so it can't
+# reuse the existing compound/plain dispatch's Owned-threaded flow) —
+# each arm needs its own retain-for-merge-result / release-of-the-discarded
+# short-circuit-or-nil-hit value, mirroring the bare-RC style the adjacent
+# compound/plain arms already use for the same receiver kinds.
+ratchet "bare emit_value_release sites (jit.h)" "$rel" 55
 # 29 includes the ctor-overload shared-meta multi-capture retain in
 # compile_class_decl: one class meta fans out into N `new` overload closures,
 # each capture needing its own +1 (a genuine fan-out, not a throw-safety
 # carve-out).
-ratchet "bare emit_value_retain sites (jit.h)" "$ret" 29
+# 29 -> 34 (2026-08-06, reviewed): same `??=` nil-coalesce dispatch as
+# above — the Array/Object/DOT arms each retain their merge-result value
+# (a +0 borrow promoted to +1, or the value handed to object_set_any /
+# emit_object_set / array_set, whose consumed +1 must be re-minted for the
+# expression result) and retain the Object-INDEX key across the
+# object_get_for_coalesce / object_set_any pair, matching the existing
+# compound branch's identical retain-before-transient-consume pattern.
+ratchet "bare emit_value_retain sites (jit.h)" "$ret" 34
 # The borrow -> +1 seam funnels its retain through one call, so its call sites
 # are invisible to the grep above. Count them here on their own ceiling —
 # otherwise the seam becomes a way to add hand-placed retains unnoticed.

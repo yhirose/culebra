@@ -11215,8 +11215,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     for (size_t i = 0; i < pv.count; i++) {
       const auto& target = *ast.nodes[i];
       if (target.tag == "PLACE"_) {
+        // PLACE_ASSIGN targets don't support `??=` (parallel assignment has
+        // no compound-op grammar); nil_coalesce is always false here, so
+        // eval_rhs is never invoked.
         eval_assign_complex(target, culebra::view_place_as_assignment(target),
-                            env, std::move(vals[i]));
+                            env, std::move(vals[i]), /*nil_coalesce=*/false,
+                            []() -> Value { return Value(); });
       } else {
         assign_name(target, std::move(vals[i]), env);
       }
@@ -11240,15 +11244,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     auto base_op = av.op_base;
     // `??=` (nil-coalescing assign) short-circuits: the RHS is evaluated
     // and assigned only when the current lvalue reads as nil (or is
-    // missing). Defer the RHS so a non-nil lvalue skips its side effects.
+    // missing, for a complex lvalue — an absent Object key already reads
+    // as nil like a plain `obj.key`/`obj[k]` read does). Defer the RHS so
+    // a non-nil lvalue skips its side effects.
     bool nil_coalesce = compound && base_op == "??";
-    // `??=` is MVP-limited to a simple variable target (the short-circuit
-    // write on indexed / property lvalues is a JIT-parity follow-up).
-    if (nil_coalesce && av.lvalcnt != 1) {
-      throw CulebraError("SyntaxError",
-          R"(`??=` is only supported on a simple variable target.)",
-          static_cast<long>(ast.line), static_cast<long>(ast.column));
-    }
 
     auto eval_rhs = [&]() {
       auto v = eval(*av.rhs, env);
@@ -11268,7 +11267,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     if (av.lvalcnt == 1)
       return eval_assign_var(ast, av, env, std::move(rval), nil_coalesce,
                              eval_rhs);
-    return eval_assign_complex(ast, av, env, std::move(rval));
+    return eval_assign_complex(ast, av, env, std::move(rval), nil_coalesce,
+                               eval_rhs);
   }
 
   // Simple variable target: `x = e`, `let x = e`, `mut x = e`, `x op= e`,
@@ -11334,8 +11334,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // (`self.d[i] = v`). Resolves the receiver through the intermediate
   // postfixes, then dispatches the final INDEX / DOT write (fixed-array /
   // shared-view / object / array element cases).
+  template <class EvalRhs>
   Value eval_assign_complex(const peg::Ast& ast, const culebra::AssignmentView& av,
-                            const std::shared_ptr<Environment>& env, Value rval) {
+                            const std::shared_ptr<Environment>& env, Value rval,
+                            bool nil_coalesce, EvalRhs&& eval_rhs) {
     using namespace peg::udl;
     auto lvaloff = av.lvaloff;
     auto lvalcnt = av.lvalcnt;
@@ -11386,6 +11388,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         // FixedArray view `arr[i] = v` (and compound `arr[i] += v`): write
         // element i into the inline bytes.
         if (is_fixed_array_view(lval)) {
+          if (nil_coalesce) {
+            throw CulebraError("TypeError",
+                "`?" "?=` is not supported on a FixedArray element");
+          }
           Value iv;
           if (!eval_operand(postfix, env, iv)) return Value();
           int64_t i = iv.to_long();
@@ -11421,6 +11427,35 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         if (lval.type == Value::Object) {
           auto key = eval(postfix, env);
           auto& obj = lval.to_object();
+          if (nil_coalesce) {
+            // `o[k] ??= v`: read the current value the same way the
+            // `compound` branch's read side does (own slot, else class
+            // __index__) — an absent key with no __index__ counts as nil,
+            // unlike a plain `o[k]` read (which throws KeyError). On a nil
+            // result, evaluate and write `v` exactly like a plain
+            // `o[k] = v` (own slot, else __setindex__, else insert).
+            Value cur;
+            bool found = obj.has(key);
+            if (found) {
+              cur = obj.get(key);
+            } else if (class_tag(lval)) {
+              if (auto r = try_special(lval, &key, "__index__", env)) {
+                cur = *r;
+                found = true;
+              }
+            }
+            if (found && cur.type != Value::Nil) return cur;  // short-circuit
+            auto new_val = eval_rhs();
+            if (obj.has(key)) {
+              obj.assign(key, new_val);
+            } else if (class_tag(lval) &&
+                       try_special2(lval, key, new_val, "__setindex__", env)) {
+              // handled by the user method
+            } else {
+              obj.initialize(key, new_val, mut);
+            }
+            return new_val;
+          }
           if (compound) {
             if (obj.has(key)) {
               auto cur = obj.get(key);
@@ -11461,6 +11496,16 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         if (idx < 0 || idx >= static_cast<long>(arr.values->size())) {
           throw CulebraError("IndexError", "index out of range");
         }
+        if (nil_coalesce) {
+          // `arr[i] ??= v`: replaces a nil element in place. No auto-extend
+          // — an out-of-range index still raises IndexError above, same as
+          // every other Array write.
+          auto cur = arr.values->at(idx);
+          if (cur.type != Value::Nil) return cur;  // short-circuit
+          auto new_val = eval_rhs();
+          arr.values->at(idx) = new_val;
+          return new_val;
+        }
         if (compound) {
           auto cur = arr.values->at(idx);
           if (try_tensor_inplace(cur, base_op, rval)) {
@@ -11485,6 +11530,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         // shared backing bytes (zero copy).
         if (is_packed_view(lval)) {
           auto name = postfix.token;
+          if (nil_coalesce) {
+            throw CulebraError("TypeError",
+                "`?" "?=` is not supported on a packed field");
+          }
           if (compound) {
             Value cur = packed_view_get(lval, name);
             Value new_val = apply_compound_op(cur, rval, base_op, env);
@@ -11497,6 +11546,22 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         }
         auto& obj = lval.to_object();
         auto name = postfix.token;
+        if (nil_coalesce) {
+          // `o.k ??= v`: matches a plain `o.k` read (an absent property
+          // reads as nil) rather than the `compound` branch's stricter
+          // find_prop-or-AttributeError. On a nil result, evaluate and
+          // write `v` exactly like a plain `o.k = v` (own slot, else
+          // insert).
+          const Symbol* sym = obj.find_prop(name);
+          if (sym && sym->val.type != Value::Nil) return sym->val;  // short-circuit
+          auto new_val = eval_rhs();
+          if (obj.has_own(name)) {
+            obj.assign(name, new_val);
+          } else {
+            obj.initialize(name, new_val, mut);
+          }
+          return new_val;
+        }
         if (compound) {
           // find_prop (not has) so a builtin-named miss still errors rather
           // than compounding against a builtin method value — the exact

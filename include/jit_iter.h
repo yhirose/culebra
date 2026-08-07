@@ -3315,6 +3315,24 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_is_shared_val(
   return reinterpret_cast<JitObject*>(data)->is_shared_val ? 1 : 0;
 }
 
+// `??=`'s upfront receiver-kind guard for a TAG_OBJECT lval, in one call
+// instead of chaining is_fixed_array_view / is_shared_val / is_shared_buffer
+// / is_packed_view separately — mirrors the single-call style
+// object_get_any / object_set_any already use for these same flags in
+// their own C++ bodies (jit_fixed.h). None of `??=`'s receiver kinds have
+// a clean `nil` sentinel to coalesce against (a packed scalar can't read
+// back as nil; Shared.new is unconditionally immutable), so each is
+// rejected outright before the plain-dict/class-instance path runs.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_nc_receiver_kind(
+    int64_t data) {
+  auto* obj = reinterpret_cast<JitObject*>(data);
+  if (obj->is_fixed_array_view) return 1;
+  if (obj->is_shared_val) return 2;
+  if (obj->is_shared_buffer) return 3;
+  if (obj->is_packed_view) return 4;
+  return 0;
+}
+
 // True if a TAG_OBJECT receiver is a builtin stdlib namespace (IO, Sys, ...).
 // A namespace answers every member itself — an unknown one is an AttributeError
 // (culebra_runtime_prop_get), never a UFCS candidate — so the builtin-receiver

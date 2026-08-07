@@ -1056,6 +1056,36 @@ inline JitValue _jit_match_index(JitObject* m, int8_t key_tag,
   return JitValue{TAG_NIL, 0};
 }
 
+// Shared "own slot" lookup for a plain-dict receiver: String keys through
+// the shape table, everything else through the non-string sidecar. Shared
+// by object_get_any (throws KeyError on a miss) and object_get_for_coalesce
+// (`??=`, reports a miss as found=false instead) — same slot-lookup logic,
+// different miss policy. Consumes a non-String key's +1 on a hit; leaves it
+// untouched on a miss so each caller makes its own miss-path decision
+// (__index__ fallback, throw, or "not found") and handles the key itself.
+inline bool _jit_try_own_slot(JitObject* obj, int8_t key_tag, int64_t key_data,
+                              int8_t* out_tag, int64_t* out_data) {
+  if (key_tag == TAG_STRING) {
+    auto idx = obj->find_slot(reinterpret_cast<const char*>(key_data));
+    if (idx != static_cast<size_t>(-1)) {
+      *out_tag = obj->slots[idx].value.tag;
+      *out_data = obj->slots[idx].value.data;
+      culebra_runtime_value_retain(*out_tag, *out_data);
+      return true;
+    }
+  } else if (obj->non_string_props) {
+    auto it = obj->non_string_props->find(JitValue{key_tag, key_data});
+    if (it != obj->non_string_props->end()) {
+      *out_tag = it->second.value.tag;
+      *out_data = it->second.value.data;
+      culebra_runtime_value_retain(*out_tag, *out_data);
+      _culebra_value_release_impl(key_tag, key_data);
+      return true;
+    }
+  }
+  return false;
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
     JitObject* obj, int8_t key_tag, int64_t key_data,
     int8_t* out_tag, int64_t* out_data, int64_t line, int64_t col,
@@ -1131,30 +1161,48 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
   }
   // Slot hit: String keys are unified with shape access (see object_set_any);
   // other keys live in the non-String sidecar.
-  if (key_tag == TAG_STRING) {
-    auto idx = obj->find_slot(reinterpret_cast<const char*>(key_data));
-    if (idx != static_cast<size_t>(-1)) {
-      *out_tag = obj->slots[idx].value.tag;
-      *out_data = obj->slots[idx].value.data;
-      culebra_runtime_value_retain(*out_tag, *out_data);
-      return;
-    }
-  } else if (obj->non_string_props) {
-    auto it = obj->non_string_props->find(JitValue{key_tag, key_data});
-    if (it != obj->non_string_props->end()) {
-      *out_tag = it->second.value.tag;
-      *out_data = it->second.value.data;
-      culebra_runtime_value_retain(*out_tag, *out_data);
-      _culebra_value_release_impl(key_tag, key_data);
-      return;
-    }
-  }
+  if (_jit_try_own_slot(obj, key_tag, key_data, out_tag, out_data)) return;
   // Miss → user `__index__` overload.
   if (_jit_try_object_index(obj, key_tag, key_data, out_tag, out_data)) {
     if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
     return;
   }
   throw culebra::CulebraError("KeyError", "key not present", line, col);
+}
+
+// Read-only lookup for `o[k] ??= v`: unlike object_get_any, a plain-dict
+// miss returns found=false (mirrors the interp's `obj.has(key) ? obj.get
+// (key) : nil` treatment — a plain `o[k]` read still throws KeyError via
+// object_get_any). A class instance's `__index__` is still consulted on a
+// miss, exactly like the plain-read path. Only the plain-dict / class-
+// instance receivers are supported (this is `??=`'s complex-lvalue path,
+// not the general subscript-read path) — the receiver dispatch in
+// compile_assign_complex only calls this for a TAG_OBJECT lval that isn't
+// a FixedArray view / SharedBuffer / Shared.new view (those reject `??=`
+// before reaching here, matching the interp).
+// Consumes the caller's +1 to a non-String key on every exit; a TAG_STRING
+// key is a borrowed cstring (never released). The receiver is borrowed.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_get_for_coalesce(
+    JitObject* obj, int8_t key_tag, int64_t key_data,
+    int8_t* out_tag, int64_t* out_data, int64_t line, int64_t col) {
+  std::string _kbuf;
+  _jit_normalize_str_key(key_tag, key_data, _kbuf);
+  const JitValue key_guard = key_tag != TAG_STRING
+      ? JitValue{key_tag, key_data}
+      : JitValue{TAG_NIL, 0};
+  JitUnwindRelease g{key_guard};
+  if (_jit_try_own_slot(obj, key_tag, key_data, out_tag, out_data)) return true;
+  // Miss → user `__index__` overload, else "not found" (nil for `??=`).
+  if (_jit_try_object_index(obj, key_tag, key_data, out_tag, out_data)) {
+    if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
+    return true;
+  }
+  if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
+  // Caller loads *out_tag/*out_data unconditionally before checking the
+  // return value — always leave them well-defined.
+  *out_tag = TAG_NIL;
+  *out_data = 0;
+  return false;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_object_has_any(

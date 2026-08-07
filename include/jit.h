@@ -5602,12 +5602,6 @@ struct JIT {
     // lvalue reads as nil. Mirrors interp's eval_assignment. The RHS is
     // therefore compiled lazily (inside the nil branch), not up front.
     bool nil_coalesce = compound && base_op == "??";
-    // `??=` is MVP-limited to a simple variable target (matches interp).
-    if (nil_coalesce && av.lvalcnt != 1) {
-      // Position backfilled by compile()'s wrapper (the ASSIGNMENT node).
-      throw culebra::CulebraError("SyntaxError",
-          R"(`??=` is only supported on a simple variable target.)");
-    }
     auto compile_rhs = [&]() {
       auto v = compile(*av.rhs).consume();
       if (!av.type_annotation.empty()) {
@@ -5626,7 +5620,7 @@ struct JIT {
     // throw-guarded steps.
     if (av.lvalcnt == 1)
       return compile_assign_var(ast, av, rval, nil_coalesce, compile_rhs);
-    return compile_assign_complex(ast, av, rval);
+    return compile_assign_complex(ast, av, rval, nil_coalesce, compile_rhs);
   }
 
   // Simple variable target: `x = e`, `let x = e`, `mut x = e`, `x op= e`,
@@ -5811,9 +5805,11 @@ struct JIT {
   // Complex lvalue: `obj.prop = e`, `arr[idx] = e`, and chains
   // (`self.d[i] = v`). Rolls the receiver through one Owned handle across
   // the intermediate postfixes, then dispatches the final INDEX / DOT set.
+  template <class CompileRhs>
   Owned compile_assign_complex(const peg::Ast& ast,
                                const culebra::AssignmentView& av,
-                               llvm::Value* rval) {
+                               llvm::Value* rval, bool nil_coalesce,
+                               CompileRhs&& compile_rhs) {
     using namespace peg::udl;
     auto lvaloff = av.lvaloff;
     auto lvalcnt = av.lvalcnt;
@@ -5891,6 +5887,194 @@ struct JIT {
         auto ptrTy = llvm::PointerType::get(ctx_, 0);
         auto tag = extract_tag(lval);
         auto fn = builder_.GetInsertBlock()->getParent();
+        if (nil_coalesce) {
+          // `lval[k] ??= v`: own dispatch (Array element / Object key) —
+          // `rval` is null here (the RHS is compiled lazily below, only on
+          // the branch that needs it), so this cannot share the
+          // compound/plain dispatch below, which assumes a real `rval`.
+          auto ncArrBB = llvm::BasicBlock::Create(ctx_, "nc.arr", fn);
+          auto ncObjBB = llvm::BasicBlock::Create(ctx_, "nc.obj", fn);
+          auto ncErrBB = llvm::BasicBlock::Create(ctx_, "nc.err", fn);
+          auto ncMergeBB = llvm::BasicBlock::Create(ctx_, "nc.merge", fn);
+          auto ncIsArr = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_ARRAY));
+          auto ncChkObjBB = llvm::BasicBlock::Create(ctx_, "nc.chk_obj", fn);
+          builder_.CreateCondBr(ncIsArr, ncArrBB, ncChkObjBB);
+          builder_.SetInsertPoint(ncChkObjBB);
+          auto ncIsObj = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT));
+          auto ncObjKindBB = llvm::BasicBlock::Create(ctx_, "nc.obj_kind", fn);
+          builder_.CreateCondBr(ncIsObj, ncObjKindBB, ncErrBB);
+
+          builder_.SetInsertPoint(ncErrBB);
+          emit_type_error_typed("Array or Object", tag);
+          builder_.CreateUnreachable();
+
+          // FixedArray view / SharedBuffer / Shared.new receivers are all
+          // TAG_OBJECT under the hood but reject `??=` before reaching the
+          // plain-dict logic below — mirrors the interp's is_fixed_array_view
+          // / is_shared_val_view / is_shared_buffer guards ahead of its
+          // Object handling. One call classifies all three kinds (plus
+          // packed view, unused on this path) instead of three chained
+          // is_* calls — see nc_receiver_kind.
+          builder_.SetInsertPoint(ncObjKindBB);
+          auto objData = extract_data(lval);
+          auto ncKind = emit_call(
+              module_->getOrInsertFunction(rt::nc_receiver_kind,
+                                           builder_.getInt8Ty(),
+                                           builder_.getInt64Ty()),
+              {objData}, "nc.kind");
+          auto favErrBB = llvm::BasicBlock::Create(ctx_, "nc.faverr", fn);
+          auto svErrBB = llvm::BasicBlock::Create(ctx_, "nc.sverr", fn);
+          auto sbErrBB = llvm::BasicBlock::Create(ctx_, "nc.sberr", fn);
+          auto ncPlainBB = llvm::BasicBlock::Create(ctx_, "nc.plain", fn);
+          auto ncKindSw = builder_.CreateSwitch(ncKind, ncPlainBB, 3);
+          ncKindSw->addCase(builder_.getInt8(1), favErrBB);
+          ncKindSw->addCase(builder_.getInt8(2), svErrBB);
+          ncKindSw->addCase(builder_.getInt8(3), sbErrBB);
+
+          builder_.SetInsertPoint(favErrBB);
+          emit_throw_error("TypeError",
+              "`?" "?=` is not supported on a FixedArray element",
+              finalPostfix.line, finalPostfix.column);
+          builder_.CreateUnreachable();
+
+          builder_.SetInsertPoint(svErrBB);
+          emit_throw_error("ImmutableError", "Shared values are immutable",
+                           finalPostfix.line, finalPostfix.column);
+          builder_.CreateUnreachable();
+
+          builder_.SetInsertPoint(sbErrBB);
+          emit_throw_error("TypeError",
+              "cannot assign to a SharedBuffer element directly; "
+              "set fields via buf[i].field = value",
+              finalPostfix.line, finalPostfix.column);
+          builder_.CreateUnreachable();
+
+          builder_.SetInsertPoint(ncPlainBB);
+          builder_.CreateBr(ncObjBB);
+
+          OwnedPhi ncMerge(this, "nc.r");
+
+          // Array element: replaces a nil element in place. No auto-extend
+          // — an out-of-range index still raises IndexError via array_get.
+          builder_.SetInsertPoint(ncArrBB);
+          {
+            auto arrPtr = builder_.CreateIntToPtr(extract_data(lval), ptrTy);
+            auto idxVal = compile(finalPostfix).consume();
+            auto idx = value_to_long(idxVal);
+            auto outTag = builder_.CreateAlloca(builder_.getInt8Ty(), nullptr,
+                                                "ncidx.out.tag");
+            auto outData = builder_.CreateAlloca(builder_.getInt64Ty(), nullptr,
+                                                 "ncidx.out.data");
+            emit_call(
+                module_->getOrInsertFunction(
+                    rt::array_get, builder_.getVoidTy(), ptrTy,
+                    builder_.getInt64Ty(), ptrTy, ptrTy,
+                    builder_.getInt64Ty(), builder_.getInt64Ty()),
+                {arrPtr, idx, outTag, outData, current_line_val(),
+                 current_column_val()});
+            auto curTag = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
+            auto curData = builder_.CreateLoad(builder_.getInt64Ty(), outData);
+            llvm::Value* cur = make_value(curTag, curData);
+            auto isNil = builder_.CreateICmpEQ(curTag, builder_.getInt8(TAG_NIL));
+            auto arrAssignBB = llvm::BasicBlock::Create(ctx_, "nc.arr.assign", fn);
+            auto arrKeepBB = llvm::BasicBlock::Create(ctx_, "nc.arr.keep", fn);
+            builder_.CreateCondBr(isNil, arrAssignBB, arrKeepBB);
+
+            builder_.SetInsertPoint(arrKeepBB);
+            // array_get returns a +0 borrow; retain for the merge result.
+            emit_value_retain(cur);
+            ncMerge.add_incoming(own(cur));
+            builder_.CreateBr(ncMergeBB);
+
+            builder_.SetInsertPoint(arrAssignBB);
+            llvm::Value* newVal = compile_rhs();  // +1, lazily emitted here (pinned -> raw immediately)
+            emit_call(
+                module_->getOrInsertFunction(
+                    rt::array_set, builder_.getVoidTy(), ptrTy,
+                    builder_.getInt64Ty(), builder_.getInt8Ty(),
+                    builder_.getInt64Ty(), builder_.getInt64Ty(),
+                    builder_.getInt64Ty()),
+                {arrPtr, idx, extract_tag(newVal), extract_data(newVal),
+                 current_line_val(), current_column_val()});
+            emit_value_retain(newVal);
+            ncMerge.add_incoming(own(newVal));
+            builder_.CreateBr(ncMergeBB);
+          }
+
+          // Object key: culebra_runtime_object_get_for_coalesce reports a
+          // plain-dict miss as not-found (rather than throwing KeyError,
+          // matching a plain `o[k]` read) and still consults a class
+          // instance's __index__. A miss or an existing nil value writes
+          // `v` back through the same object_set_any codepath the plain
+          // `o[k] = v` case below uses (mut-checked on an existing slot,
+          // mutable-by-default on insert per Stage 1, __setindex__-routed
+          // for a class instance without an own slot).
+          builder_.SetInsertPoint(ncObjBB);
+          {
+            auto objPtr = builder_.CreateIntToPtr(extract_data(lval), ptrTy);
+            Owned keyO = compile(finalPostfix);
+            emit_value_retain(keyO.borrow());
+            auto outTag = builder_.CreateAlloca(builder_.getInt8Ty(), nullptr,
+                                                "ncobj.out.tag");
+            auto outData = builder_.CreateAlloca(builder_.getInt64Ty(), nullptr,
+                                                 "ncobj.out.data");
+            auto found = emit_call(
+                module_->getOrInsertFunction(
+                    rt::object_get_for_coalesce, builder_.getInt1Ty(), ptrTy,
+                    builder_.getInt8Ty(), builder_.getInt64Ty(), ptrTy, ptrTy,
+                    builder_.getInt64Ty(), builder_.getInt64Ty()),
+                {objPtr, extract_tag(keyO.borrow()), extract_data(keyO.borrow()),
+                 outTag, outData, current_line_val(), current_column_val()},
+                "nc.found");
+            auto curTag = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
+            auto curData = builder_.CreateLoad(builder_.getInt64Ty(), outData);
+            llvm::Value* cur = make_value(curTag, curData);
+            auto isNilTag =
+                builder_.CreateICmpEQ(curTag, builder_.getInt8(TAG_NIL));
+            auto notFound = builder_.CreateNot(found);
+            auto needsWrite = builder_.CreateOr(notFound, isNilTag);
+            auto objAssignBB = llvm::BasicBlock::Create(ctx_, "nc.obj.assign", fn);
+            auto objKeepBB = llvm::BasicBlock::Create(ctx_, "nc.obj.keep", fn);
+            builder_.CreateCondBr(needsWrite, objAssignBB, objKeepBB);
+
+            builder_.SetInsertPoint(objKeepBB);
+            // Found and non-nil: `cur` is +1 (object_get_for_coalesce
+            // matches object_get_any's contract). keyO's ref is unused on
+            // this path.
+            emit_value_release(keyO.borrow());
+            ncMerge.add_incoming(own(cur));
+            builder_.CreateBr(ncMergeBB);
+
+            builder_.SetInsertPoint(objAssignBB);
+            // Not found (cur is nil, a no-op release) or found holding an
+            // existing +1 nil value — either way `cur` is discarded.
+            emit_value_release(cur);
+            llvm::Value* newValObj = compile_rhs();  // +1, lazily emitted here (pinned -> raw immediately)
+            auto keyVal = keyO.consume();
+            emit_call(
+                module_->getOrInsertFunction(
+                    rt::object_set_any, builder_.getVoidTy(), ptrTy,
+                    builder_.getInt8Ty(), builder_.getInt64Ty(),
+                    builder_.getInt1Ty(), builder_.getInt8Ty(),
+                    builder_.getInt64Ty(), builder_.getInt64Ty(),
+                    builder_.getInt64Ty(), builder_.getInt1Ty()),
+                {objPtr, extract_tag(keyVal), extract_data(keyVal),
+                 builder_.getInt1(mut), extract_tag(newValObj),
+                 extract_data(newValObj),
+                 builder_.getInt64(static_cast<int64_t>(ast.nodes[lvaloff]->line)),
+                 builder_.getInt64(
+                     static_cast<int64_t>(ast.nodes[lvaloff]->column)),
+                 builder_.getInt1(false)});
+            emit_value_retain(newValObj);
+            ncMerge.add_incoming(own(newValObj));
+            builder_.CreateBr(ncMergeBB);
+          }
+
+          builder_.SetInsertPoint(ncMergeBB);
+          Owned ncResult = ncMerge.finish(ncMergeBB);
+          emit_value_release(lval);
+          return ncResult;
+        }
         // Dispatch on receiver type. Array + Object support both plain
         // and compound assignment; the Object compound path uses
         // object_get_any (throws KeyError on missing) and routes the
@@ -6048,6 +6232,77 @@ struct JIT {
         builder_.SetInsertPoint(okBB);
         auto objPtr = builder_.CreateIntToPtr(extract_data(lval), ptrTy);
         auto name = std::string(finalPostfix.token);
+        if (nil_coalesce) {
+          // `o.k ??= v`: matches a plain `o.k` read (emit_property_get
+          // returns nil on a missing property, unlike the `compound`
+          // branch's stricter object_has-or-AttributeError below). On a
+          // nil result, evaluate and write `v` through the same
+          // emit_object_set the plain `o.k = v` case below uses (mut-
+          // checked on an existing slot, mutable-by-default on insert per
+          // Stage 1).
+          // Shared.new views reject `??=` unconditionally, before even
+          // attempting a read (matches the interp's is_shared_val_view
+          // guard, which fires ahead of every DOT write form) — otherwise
+          // a frozen field holding a non-nil value would short-circuit
+          // silently instead of raising ImmutableError like every other
+          // write to a Shared.new view. A @packable packed view rejects
+          // `??=` outright too (matches the interp) — a packed scalar has
+          // no `nil` sentinel to coalesce against, unlike a full Object
+          // property. One call classifies both kinds (plus FixedArray
+          // view / SharedBuffer, unreachable for a `.field` receiver)
+          // instead of two chained is_* calls — see nc_receiver_kind.
+          auto ncDotKind = emit_call(
+              module_->getOrInsertFunction(rt::nc_receiver_kind,
+                                           builder_.getInt8Ty(),
+                                           builder_.getInt64Ty()),
+              {extract_data(lval)}, "ncprop.kind");
+          auto svDotErrBB = llvm::BasicBlock::Create(ctx_, "ncprop.sverr", fn);
+          auto packedErrBB = llvm::BasicBlock::Create(ctx_, "ncprop.packederr", fn);
+          auto ncDotPlainBB = llvm::BasicBlock::Create(ctx_, "ncprop.plain", fn);
+          auto ncDotKindSw = builder_.CreateSwitch(ncDotKind, ncDotPlainBB, 2);
+          ncDotKindSw->addCase(builder_.getInt8(2), svDotErrBB);
+          ncDotKindSw->addCase(builder_.getInt8(4), packedErrBB);
+
+          builder_.SetInsertPoint(svDotErrBB);
+          emit_throw_error("ImmutableError", "Shared values are immutable",
+                           finalPostfix.line, finalPostfix.column);
+          builder_.CreateUnreachable();
+
+          builder_.SetInsertPoint(packedErrBB);
+          emit_throw_error("TypeError",
+              "`?" "?=` is not supported on a packed field",
+              finalPostfix.line, finalPostfix.column);
+          builder_.CreateUnreachable();
+
+          builder_.SetInsertPoint(ncDotPlainBB);
+          auto cur = emit_property_get(lval, name);  // +0 borrowed
+          auto isNil =
+              builder_.CreateICmpEQ(extract_tag(cur), builder_.getInt8(TAG_NIL));
+          auto ncAssignBB = llvm::BasicBlock::Create(ctx_, "ncprop.assign", fn);
+          auto ncKeepBB = llvm::BasicBlock::Create(ctx_, "ncprop.keep", fn);
+          auto ncMergeBB = llvm::BasicBlock::Create(ctx_, "ncprop.merge", fn);
+          builder_.CreateCondBr(isNil, ncAssignBB, ncKeepBB);
+
+          OwnedPhi ncMerge(this, "ncprop.r");
+
+          builder_.SetInsertPoint(ncKeepBB);
+          emit_value_retain(cur);  // +0 borrow -> +1 for the merge result
+          ncMerge.add_incoming(own(cur));
+          builder_.CreateBr(ncMergeBB);
+
+          builder_.SetInsertPoint(ncAssignBB);
+          llvm::Value* newVal = compile_rhs();  // +1 (pinned -> raw immediately)
+          emit_value_retain(newVal);  // balances emit_object_set's consume
+          emit_object_set(objPtr, name, mut, extract_tag(newVal),
+                          extract_data(newVal));
+          ncMerge.add_incoming(own(newVal));
+          builder_.CreateBr(ncMergeBB);
+
+          builder_.SetInsertPoint(ncMergeBB);
+          Owned ncResult = ncMerge.finish(ncMergeBB);
+          emit_value_release(lval);
+          return ncResult;
+        }
         // For compound (`o.x += rhs`), read current → apply op → write back.
         llvm::Value* to_store = rval;
         if (compound) {
@@ -6304,9 +6559,13 @@ struct JIT {
       if (target.tag == "PLACE"_) {
         // consume() in the same block the call runs in, matching
         // compile_assignment's handoff; the result ref is unused here.
+        // PLACE_ASSIGN targets don't support `??=` (no compound-op
+        // grammar for parallel assignment); nil_coalesce is always false
+        // here, so compile_rhs is never invoked.
         compile_assign_complex(target,
                                culebra::view_place_as_assignment(target),
-                               elems[i].consume())
+                               elems[i].consume(), /*nil_coalesce=*/false,
+                               [&]() -> llvm::Value* { return nullptr; })
             .drop();
       } else if (is_sink_name(target.token)) {
         elems[i].drop();  // `_`: the element is simply discarded

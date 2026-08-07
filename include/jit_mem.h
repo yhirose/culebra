@@ -804,6 +804,7 @@ inline constexpr auto object_values       = "culebra_runtime_object_values";
 inline constexpr auto object_new          = "culebra_runtime_object_new";
 inline constexpr auto object_remove       = "culebra_runtime_object_remove";
 inline constexpr auto is_shared_val       = "culebra_runtime_is_shared_val";
+inline constexpr auto nc_receiver_kind    = "culebra_runtime_nc_receiver_kind";
 inline constexpr auto is_namespace        = "culebra_runtime_is_namespace";
 inline constexpr auto object_remove_any   = "culebra_runtime_object_remove_any";
 inline constexpr auto build_class_instance
@@ -823,6 +824,8 @@ inline constexpr auto object_set_fast     = "culebra_runtime_object_set_fast";
 inline constexpr auto object_set_ic       = "culebra_runtime_object_set_ic";
 inline constexpr auto object_set_any      = "culebra_runtime_object_set_any";
 inline constexpr auto object_get_any      = "culebra_runtime_object_get_any";
+inline constexpr auto object_get_for_coalesce
+    = "culebra_runtime_object_get_for_coalesce";
 inline constexpr auto object_has_any      = "culebra_runtime_object_has_any";
 inline constexpr auto register_packable   = "culebra_runtime_register_packable";
 inline constexpr auto register_packable_enum =
