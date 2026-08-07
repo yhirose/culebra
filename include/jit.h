@@ -11369,28 +11369,26 @@ struct JIT {
         "call.receiver");
   }
 
-  Owned compile_call(const peg::Ast& ast) {
+  // Walk a CALL node's postfix chain from `first`, with `callee` holding the
+  // value the caller resolved the chain's head to. The chain value rolls
+  // through one Owned handle: each postfix either consumes the current +1 into
+  // its step or borrows it, and move-assigning the step's fresh +1 releases the
+  // previous link at the same insertion point the hand-placed releases used to
+  // occupy.
+  //
+  // Shared by compile_call, which starts at 1 (its head is the callee
+  // expression), and compile_call_with_builtins, which starts wherever its
+  // builtin / namespace peephole consumed up to — never below 2, since a
+  // peephole that declines returns to compile_call instead. The `i == 1` arms
+  // below are therefore compile_call's alone, and `fn_direct_call` (its
+  // `fn(...)` recursion flag) is always false on the builtin path.
+  Owned walk_call_postfixes(const peg::Ast& ast, size_t first, Owned callee,
+                            bool fn_direct_call) {
     using namespace peg::udl;
     auto calleeNode = ast.nodes[0];
-    CallRootSaver call_root(*this, ast);
-    // Direct `fn(...)` recursion re-passes the frame's (merged) self so the
-    // callee sees the same receiver — interp parity, where a method call's
-    // `fn` is the bound wrapper. Reading the raw slot here (not
-    // compile_identifier's fn.handle path) keeps recursion allocation-free.
-    bool fn_direct_call =
-        calleeNode->tag == "IDENTIFIER"_ && calleeNode->token == "fn" &&
-        ast.nodes.size() > 1 &&
-        ast.nodes[1]->original_tag == "ARGUMENTS"_ &&
-        lookup_var("fn.bound") != nullptr;
-    // The chain value rolls through one Owned handle: each postfix either
-    // consumes the current +1 into its step or borrows it, and move-assigning
-    // the step's fresh +1 releases the previous link at the same insertion
-    // point the hand-placed releases used to occupy.
-    Owned callee = fn_direct_call ? own(load_slot(*lookup_var("fn"), "fn"))
-                                  : compile(*calleeNode);
     auto sn = begin_safe_nav(ast);
 
-    for (auto i = 1u; i < ast.nodes.size(); i++) {
+    for (size_t i = first; i < ast.nodes.size(); i++) {
       const auto& postfix = *ast.nodes[i];
 
       switch (postfix.original_tag) {
@@ -11542,6 +11540,24 @@ struct JIT {
     }
 
     return own(end_safe_nav(sn, callee.consume()));
+  }
+
+  Owned compile_call(const peg::Ast& ast) {
+    using namespace peg::udl;
+    auto calleeNode = ast.nodes[0];
+    CallRootSaver call_root(*this, ast);
+    // Direct `fn(...)` recursion re-passes the frame's (merged) self so the
+    // callee sees the same receiver — interp parity, where a method call's
+    // `fn` is the bound wrapper. Reading the raw slot here (not
+    // compile_identifier's fn.handle path) keeps recursion allocation-free.
+    bool fn_direct_call =
+        calleeNode->tag == "IDENTIFIER"_ && calleeNode->token == "fn" &&
+        ast.nodes.size() > 1 &&
+        ast.nodes[1]->original_tag == "ARGUMENTS"_ &&
+        lookup_var("fn.bound") != nullptr;
+    Owned callee = fn_direct_call ? own(load_slot(*lookup_var("fn"), "fn"))
+                                  : compile(*calleeNode);
+    return walk_call_postfixes(ast, 1, std::move(callee), fn_direct_call);
   }
 
   // The three function-introspection properties (`g.name` / `g.params` /
@@ -14465,91 +14481,8 @@ struct JIT {
 
     if (!start.borrow()) return compile_call(ast);
 
-    // Continue with remaining postfixes (matching compile_call's loop —
-    // same rolling Owned handle, see the ownership note there).
-    Owned callee = std::move(start);
-    auto sn = begin_safe_nav(ast);
-    for (auto i = next_idx; i < ast.nodes.size(); i++) {
-      const auto& postfix = *ast.nodes[i];
-      switch (postfix.original_tag) {
-        case "ARGUMENTS"_: {
-          // Borrowed-callee dispatch; the move-assign releases the owned
-          // temp after (see the compile_call ARGUMENTS note).
-          callee = compile_function_call(postfix, callee.borrow());
-          break;
-        }
-        case "INDEX"_: {
-          callee = own(emit_index_step(postfix, std::move(callee)));
-          break;
-        }
-        case "SAFE_INDEX"_: {
-          emit_safe_nav_guard(callee.borrow(), sn);
-          callee = own(emit_index_step(postfix, std::move(callee)));
-          break;
-        }
-        case "SAFE_DOT"_:
-          emit_safe_nav_guard(callee.borrow(), sn);
-          [[fallthrough]];
-        case "DOT"_: {
-          if (i + 1 < ast.nodes.size() &&
-              ast.nodes[i + 1]->original_tag == "ARGUMENTS"_) {
-            auto method = std::string(postfix.token);
-            if (method == "map" && postfix.original_tag == "DOT"_) {
-              // consume() before emitting; re-own on decline (see the
-              // compile_call copy of this hook for the rationale).
-              auto rawCallee = callee.consume();
-              if (auto fused =
-                      try_fuse_iter_map_collect(ast, i, rawCallee)) {
-                callee = own(*fused);
-                i += 3;  // consume ARGUMENTS, DOT(collect), ARGUMENTS
-                break;
-              }
-              callee = own(rawCallee);
-            }
-            callee = compile_method_call(method, *ast.nodes[i + 1],
-                                         std::move(callee), &postfix);
-            i++;
-          } else {
-            auto name = std::string(postfix.token);
-            // Park the receiver's +1 in its own handle: it must outlive the
-            // value read AND the bare-builtin check (whose cold arm reads the
-            // receiver's builtin tables). recv.drop() releases it right after
-            // — the same point the move-assign into `callee` used to.
-            Owned recv = std::move(callee);
-            auto receiver = recv.borrow();
-            // A direct-error throw out of the cold read path (dropped Shared
-            // view, closed namespace) would strand the +1, so let the helper
-            // release it on the unwind edge.
-            auto view = emit_property_get(receiver, name,
-                                             /*own_receiver=*/true);
-            auto hasOwn = emit_has_own_field(receiver, name);
-            callee = own(emit_property_value_read(receiver, view, name));
-            emit_reject_bare_builtin_method(callee.borrow(), hasOwn, receiver,
-                                            name, postfix);
-            recv.drop();
-          }
-          break;
-        }
-        case "NONNULL"_: {
-          auto fn = builder_.GetInsertBlock()->getParent();
-          auto nilBB = llvm::BasicBlock::Create(ctx_, "nonnull.nil", fn);
-          auto okBB = llvm::BasicBlock::Create(ctx_, "nonnull.ok", fn);
-          auto isNil = builder_.CreateICmpEQ(
-              extract_tag(callee.borrow()), builder_.getInt8(TAG_NIL),
-              "nonnull.isnil");
-          builder_.CreateCondBr(isNil, nilBB, okBB);
-          builder_.SetInsertPoint(nilBB);
-          emit_throw_error("NilError", "`!!` applied to nil",
-                           postfix.line, postfix.column);
-          builder_.CreateUnreachable();
-          builder_.SetInsertPoint(okBB);
-          break;
-        }
-        default:
-          throw std::runtime_error("invalid call postfix");
-      }
-    }
-    return own(end_safe_nav(sn, callee.consume()));
+    return walk_call_postfixes(ast, next_idx, std::move(start),
+                               /*fn_direct_call=*/false);
   }
 
   // --- Debugger ---
