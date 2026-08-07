@@ -31,6 +31,8 @@
 #include <utility>
 #include <vector>
 
+#include <unicodelib_encodings.h>  // unicode::utf8::encode_codepoint
+
 namespace culebra::toml {
 
 enum class Kind { Table, Array, String, Int, Float, Bool };
@@ -114,6 +116,13 @@ class Parser {
 
   [[noreturn]] void fail(const std::string& msg) {
     throw ParseError{msg, line_, col_};
+  }
+
+  // Report at a position already passed — for a token only diagnosable once
+  // it has been fully consumed, so `e.line`/`e.col` still name its first
+  // character.
+  [[noreturn]] void fail_at(const std::string& msg, long line, long col) {
+    throw ParseError{msg, line, col};
   }
 
   void advance() {
@@ -247,27 +256,15 @@ class Parser {
     return parse_atom();
   }
 
-  // Append a Unicode code point as UTF-8 bytes.
-  static void append_utf8(std::string& out, uint32_t cp) {
-    if (cp <= 0x7F) {
-      out += static_cast<char>(cp);
-    } else if (cp <= 0x7FF) {
-      out += static_cast<char>(0xC0 | (cp >> 6));
-      out += static_cast<char>(0x80 | (cp & 0x3F));
-    } else if (cp <= 0xFFFF) {
-      out += static_cast<char>(0xE0 | (cp >> 12));
-      out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-      out += static_cast<char>(0x80 | (cp & 0x3F));
-    } else {
-      out += static_cast<char>(0xF0 | (cp >> 18));
-      out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
-      out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-      out += static_cast<char>(0x80 | (cp & 0x3F));
-    }
-  }
-
   // Decode a `\uXXXX` / `\UXXXXXXXX` escape body of `digits` hex chars.
+  // TOML v1.0 requires the escape to name a Unicode scalar value, so a
+  // surrogate or an out-of-range code point is a parse error rather than a
+  // replacement character — the same boundary culebra's own `\u`/`\U` string
+  // escapes reject at (parser.h::decode_unicode_escape_u/_U). The encoder
+  // answers both questions at once: it writes nothing and returns 0 for a
+  // non-scalar value.
   void read_unicode_escape(std::string& out, int digits) {
+    long line0 = line_, col0 = col_;  // the first hex digit
     uint32_t cp = 0;
     for (int k = 0; k < digits; k++) {
       if (p_ >= end_) fail("bad unicode escape");
@@ -279,7 +276,13 @@ class Parser {
       else fail("bad unicode escape");
       advance();
     }
-    append_utf8(out, cp);
+    if (!unicode::utf8::encode_codepoint(static_cast<char32_t>(cp), out)) {
+      char buf[32];
+      std::snprintf(buf, sizeof buf, "U+%04X", cp);
+      fail_at(std::string("unicode escape ") + buf +
+                  " is not a Unicode scalar value",
+              line0, col0);
+    }
   }
 
   // Parse any of the four string forms; returns a String node.

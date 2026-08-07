@@ -34,6 +34,8 @@
 #include <os_compat.h>  // <windows.h> (guarded)
 #endif
 
+#include <unicodelib_encodings.h>  // unicode::utf8::encode_codepoint
+
 #include "exe_path.h"  // current_executable_path (Sys.executable)
 
 namespace culebra {
@@ -381,30 +383,18 @@ inline std::string json_escape(std::string_view s) {
 // (U+D800-U+DFFF). Same boundary the `\u`/`\U` string-literal escapes enforce
 // (parser.h::decode_unicode_escape_u/_U) — `String.from_code_point` reuses it
 // so both ways of turning a number into a codepoint agree on what's valid.
+// Takes int64_t so a negative code point is rejected here rather than
+// wrapping into the valid range.
 inline bool is_unicode_scalar_value(int64_t cp) {
   return cp >= 0 && cp <= 0x10FFFF && !(cp >= 0xD800 && cp <= 0xDFFF);
 }
 
-// Append code point `cp` to `out` as UTF-8. Out-of-range / surrogate code
-// points fall back to U+FFFD, matching how the rest of the runtime handles
-// invalid scalar values.
+// Append code point `cp` to `out` as UTF-8. **Precondition: `cp` is a scalar
+// value** — everything that turns a number into a code point checks first and
+// raises (`string_from_code_point`, `append_checked_code_point`, parser.h's
+// `\u`/`\U` escapes, toml.h's). A non-scalar appends nothing.
 inline void append_utf8(std::string& out, uint32_t cp) {
-  if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) cp = 0xFFFD;
-  if (cp < 0x80) {
-    out += static_cast<char>(cp);
-  } else if (cp < 0x800) {
-    out += static_cast<char>(0xC0 | (cp >> 6));
-    out += static_cast<char>(0x80 | (cp & 0x3F));
-  } else if (cp < 0x10000) {
-    out += static_cast<char>(0xE0 | (cp >> 12));
-    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-    out += static_cast<char>(0x80 | (cp & 0x3F));
-  } else {
-    out += static_cast<char>(0xF0 | (cp >> 18));
-    out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
-    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-    out += static_cast<char>(0x80 | (cp & 0x3F));
-  }
+  unicode::utf8::encode_codepoint(static_cast<char32_t>(cp), out);
 }
 
 // `String.from_code_point(cp)` — the runtime counterpart of the `\u`/`\U`
@@ -565,6 +555,10 @@ inline std::string html_unescape(std::string_view s) {
              r.ptr == digits.data() + digits.size();
       }
       if (ok) {
+        // HTML5 maps a surrogate or out-of-range numeric reference to U+FFFD
+        // rather than rejecting the document. This is the one caller that
+        // substitutes; every other path raises on a non-scalar value.
+        if (!is_unicode_scalar_value(cp)) cp = 0xFFFD;
         append_utf8(out, cp);
         replaced = true;
       }

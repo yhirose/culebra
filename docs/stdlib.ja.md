@@ -4072,7 +4072,10 @@ log.error("upstream failed", {status: 502})
 | 日時 / 日付 / 時刻 | `String`（生のまま保持 — 専用の日時型は無い） |
 
 日時は専用型ではなく生テキストとして返るため、往復すると通常の文字列として
-再クォートされる。不正な入力は`ValueError`を投げ、`e.line` / `e.col`
+再クォートされる。`\uXXXX` / `\UXXXXXXXX`エスケープはUnicodeスカラ値を
+指さねばならず、サロゲート（`U+D800`〜`U+DFFF`）や`U+10FFFF`超のコードポイントは
+parseエラーになる — culebra自身の文字列エスケープと同じ境界である。
+不正な入力は`ValueError`を投げ、`e.line` / `e.col`
 （いずれも1始まり）が問題の文字を指す:
 
 ```culebra

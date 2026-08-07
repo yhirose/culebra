@@ -4201,9 +4201,11 @@ literal, and their multiline `"""` / `'''` variants), integers
 | date-time / date / time | `String` (kept raw — there is no date type) |
 
 Date-times come back as their raw text rather than a dedicated type, so a
-round trip re-quotes them as ordinary strings. Malformed input raises a
-`ValueError` whose `e.line` / `e.col` (both 1-based) point at the offending
-character:
+round trip re-quotes them as ordinary strings. A `\uXXXX` / `\UXXXXXXXX`
+escape must name a Unicode scalar value — a surrogate (`U+D800`–`U+DFFF`) or a
+code point above `U+10FFFF` is a parse error, the same boundary culebra's own
+string escapes enforce. Malformed input raises a `ValueError` whose
+`e.line` / `e.col` (both 1-based) point at the offending character:
 
 ```culebra
 let r = try {

@@ -26,6 +26,8 @@
 #include <string_view>
 #include <unordered_map>
 
+#include <unicodelib_encodings.h>  // unicode::utf8::encode_codepoint
+
 #include "raylib.h"
 #include <SDL3/SDL_init.h>
 #include <SDL3/SDL_keyboard.h>
@@ -253,25 +255,12 @@ std::string key_name_of(int code) {
   return "";
 }
 
-// A unicode code point as UTF-8, for the typed-characters queue.
+// A unicode code point as UTF-8, for the typed-characters queue. A negative
+// or non-scalar value (raylib hands over whatever the platform reported)
+// yields the empty string rather than ill-formed bytes.
 std::string utf8_of(int cp) {
   std::string out;
-  if (cp < 0) return out;
-  if (cp < 0x80) {
-    out += static_cast<char>(cp);
-  } else if (cp < 0x800) {
-    out += static_cast<char>(0xc0 | (cp >> 6));
-    out += static_cast<char>(0x80 | (cp & 0x3f));
-  } else if (cp < 0x10000) {
-    out += static_cast<char>(0xe0 | (cp >> 12));
-    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3f));
-    out += static_cast<char>(0x80 | (cp & 0x3f));
-  } else {
-    out += static_cast<char>(0xf0 | (cp >> 18));
-    out += static_cast<char>(0x80 | ((cp >> 12) & 0x3f));
-    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3f));
-    out += static_cast<char>(0x80 | (cp & 0x3f));
-  }
+  if (cp >= 0) unicode::utf8::encode_codepoint(static_cast<char32_t>(cp), out);
   return out;
 }
 

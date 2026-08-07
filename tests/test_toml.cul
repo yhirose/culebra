@@ -35,6 +35,28 @@ assert_eq(str.uni, "é")
 let ml = TOML.parse("x = \"\"\"\nline1\nline2\"\"\"")
 assert_eq(ml.x, "line1\nline2")
 
+// `\u`/`\U` must name a Unicode scalar value (TOML v1.0), the same boundary
+// culebra's own string escapes enforce — a surrogate or a code point above
+// U+10FFFF is a parse error, not a replacement character.
+assert_eq(TOML.parse("a = \"\\U0001F600\"").a, "😀")
+assert_eq(TOML.parse("a = \"\\U0010FFFF\"").a, String.from_code_point(0x10FFFF))
+assert_throws("ValueError", || TOML.parse("a = \"\\udfff\""))
+assert_throws("ValueError", || TOML.parse("a = \"\\U00110000\""))
+assert_throws("ValueError", || TOML.parse("a = \"\\Uffffffff\""))
+// The message names the offending code point, and `col` points at the
+// escape's first hex digit rather than where the scan happened to stop.
+let bad_esc = try {
+  TOML.parse("a = \"\\ud800\"")
+  nil
+} catch e {
+  e
+}
+assert_eq(
+  bad_esc.message,
+  "TOML.parse: unicode escape U+D800 is not a Unicode scalar value",
+)
+assert_eq("{bad_esc.line}:{bad_esc.col}", "1:8")
+
 // --- arrays, nested arrays, inline tables ---
 // (`\{` escapes a literal brace in interpolated strings — the TOML source
 // here contains an inline table.)
