@@ -254,6 +254,56 @@ let err = try {
 }
 assert_true(err.kind == 'ValueError' && err.message.contains('step'))
 
+# --- grid(x_range, y_range): cartesian-product iterator, x fastest ---
+assert_eq(
+  grid(0..3, 0..2).collect(),
+  [(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1)],
+)
+
+# Inclusive ranges, negative step, single cell.
+assert_eq(grid(0..=1, 5..=6).collect(), [(0, 5), (1, 5), (0, 6), (1, 6)])
+assert_eq(grid(2..=0 by -1, 0..1).collect(), [(2, 0), (1, 0), (0, 0)])
+assert_eq(grid(5..=5, 7..=7).collect(), [(5, 7)])
+
+# Either side empty → the whole product is empty.
+assert_eq(grid(0..0, 0..3).collect(), [])
+assert_eq(grid(0..3, 0..0).collect(), [])
+assert_eq(grid(0..0, 0..0).collect(), [])
+
+# `for (x, y) in grid(...)` destructures directly.
+mut cells = []
+for (x, y) in grid(0..2, 0..2) {
+  cells.push(x + y)
+}
+assert_eq(cells, [0, 1, 1, 2])
+
+# Non-Range arguments raise the same TypeError both backends give any
+# Parameter-annotated arg (see grid() in interpreter.h).
+assert_throws("TypeError", fn () {
+  grid(1, 2..3)
+})
+assert_throws("TypeError", fn () {
+  grid(1..2, 3)
+})
+
+# Wrong arity: 'grid' takes 2 arguments, matching the builtin-method
+# arity-error wording (see try_compile_core_global in jit.h).
+assert_throws("ArityError", fn () {
+  grid(1..2)
+})
+assert_throws("ArityError", fn () {
+  grid(1..2, 3..4, 5..6)
+})
+
+# Unbounded / zero-step ranges raise the same errors range()'s own
+# consumers do (range_bounds() / culebra_runtime_range_iter).
+assert_throws("TypeError", fn () {
+  grid(1.., 3..4)
+})
+assert_throws("ValueError", fn () {
+  grid(1..2 by 0, 3..4)
+})
+
 # --- Phase 3: non-terminal Iterator methods ---
 
 # map

@@ -4670,11 +4670,12 @@ into every execution environment as global names and cannot be
 replaced. The first group (`to_long` / `to_float` / `to_string`,
 `type_of`) is tied to language semantics — source-position errors,
 type introspection, and the display convention. The second group
-(`range`, `iota`) provides the canonical integer-sequence factories;
-both backends recognise them for fusion / specialisation, and they
-are the standard form used in `for`-in loops throughout the language.
-The matcher family (`assert_true` / `assert_eq` / `assert_throws` /
-`assert_close` / etc.) is a third group of globals — see
+(`range`, `iota`, `grid`) provides the canonical integer-sequence
+factories; both backends recognise `range`/`iota` for fusion /
+specialisation, and they are the standard form used in `for`-in
+loops throughout the language. The matcher family (`assert_true` /
+`assert_eq` / `assert_throws` / `assert_close` / etc.) is a third
+group of globals — see
 [`docs/stdlib.md`](stdlib.md) for the full reference. The broader
 standard library (namespaced under `Math`, `IO`, `Sys`) is also
 documented in `stdlib.md`. Output primitives `inspect`, `print`, and
@@ -4823,6 +4824,30 @@ expects an `Array`).
 inspect(iota(3))     # => [0, 1, 2]
 inspect(iota(2, 5))  # => [2, 3, 4]
 inspect(iota(5, 2))  # => []
+```
+
+### `grid(x_range: Range, y_range: Range) -> Iterator`
+
+Lazy cartesian-product factory over two bounded integer ranges:
+returns an Iterator (§18.5) that yields `(x, y)` Tuples, `x` varying
+fastest — the same order the nested loop `for y in y_range { for x
+in x_range { ... } }` walks, in one line and constant additional
+memory. Both arguments must be bounded `Range` values (`a..b` /
+`a..=b`, `by` step); an open-ended range or `step: 0` raises the
+same errors `for`-in over a Range does. If either range is empty,
+the whole product is empty.
+
+```culebra
+for (x, y) in grid(0..3, 0..2) {
+  inspect((x, y))
+}  # (0,0), (1,0), (2,0), (0,1), (1,1), (2,1)
+```
+
+```culebra
+inspect(grid(0..2, 0..2).collect())
+# => [(0, 0), (1, 0), (0, 1), (1, 1)]
+# An empty x or y range makes the whole product empty.
+inspect(grid(0..0, 0..3).collect())  # => []
 ```
 
 ### `__ARGS__` (variadic catch-all binding)

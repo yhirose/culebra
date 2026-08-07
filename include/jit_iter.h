@@ -1398,24 +1398,37 @@ culebra_runtime_strlike_to_cstr(int8_t tag, int64_t data);
 inline JitObject* _range_iter_new(int64_t start, int64_t end, int64_t step,
                                   bool inclusive, int64_t line, int64_t col);
 
-// Build a bounded iterator over a range value `data`. An open start or end
-// has no defined iteration bound, so an unbounded range is not iterable.
-// `step` defaults to 1 when absent (older/manually-built range objects);
-// _range_iter_new validates step != 0.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_range_iter(
-    int64_t data, int64_t line, int64_t col) {
-  auto* o = reinterpret_cast<JitObject*>(data);
+// Read start/end/step/inclusive off a Range JitObject. An open start or end
+// has no defined iteration bound, so an unbounded range is not iterable —
+// checked here once so culebra_runtime_range_iter (for-in) and
+// _grid_bounds_from_range (grid()) cannot drift on the wording. `step`
+// defaults to 1 when absent (older/manually-built range objects); callers
+// that need step != 0 enforced check it themselves (_range_iter_new does,
+// for the for-in path).
+inline culebra::RangeBounds _range_bounds_from_object(JitObject* o,
+                                                       int64_t line,
+                                                       int64_t col) {
   auto sv = _jit_slot_or_nil(o, "start");
   auto ev = _jit_slot_or_nil(o, "end");
-  auto iv = _jit_slot_or_nil(o, "inclusive");
   if (sv.tag == TAG_NIL || ev.tag == TAG_NIL) {
     throw culebra::CulebraError("TypeError", "cannot iterate an unbounded range",
                                 line, col);
   }
+  auto iv = _jit_slot_or_nil(o, "inclusive");
   auto stv = _jit_slot_or_nil(o, "step");
   int64_t step = stv.tag == TAG_NIL ? 1 : stv.data;
   bool inclusive = iv.tag == TAG_BOOL && iv.data != 0;
-  return _range_iter_new(sv.data, ev.data, step, inclusive, line, col);
+  return culebra::RangeBounds{sv.data, ev.data, step, inclusive,
+                              /*exhausted=*/false};
+}
+
+// Build a bounded iterator over a range value `data`. _range_iter_new
+// validates step != 0.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_range_iter(
+    int64_t data, int64_t line, int64_t col) {
+  auto b = _range_bounds_from_object(reinterpret_cast<JitObject*>(data),
+                                     line, col);
+  return _range_iter_new(b.cur, b.end, b.step, b.inclusive, line, col);
 }
 
 inline JitValue _iter_coerce_iterable(int8_t t, int64_t d, int64_t line,
@@ -2450,6 +2463,99 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_iota(int64_t start,
     culebra_runtime_array_push(r, /*tag Long*/ 2, i);
   }
   return r;
+}
+
+// Decode a `grid()` argument into its RangeBounds, mirroring the interp's
+// range_bounds() (interpreter.h): reject a non-Range value with the same
+// "parameter 'x_range'/'y_range' expects Range" wording the interp's
+// generic type check would give a Parameter-annotated arg, then the same
+// "cannot iterate an unbounded range" / "step must not be zero" wording
+// culebra_runtime_range_iter gives any other Range consumer. `ctx` is the
+// pre-formatted "parameter 'x_range'" string — always one of two literals,
+// so the caller passes it directly rather than formatting on every call.
+inline culebra::RangeBounds _grid_bounds_from_range(int8_t t, int64_t d,
+                                                     const char* ctx,
+                                                     int64_t line,
+                                                     int64_t col) {
+  culebra_runtime_type_check(t, d, "Range", ctx, line, col);
+  auto b = _range_bounds_from_object(reinterpret_cast<JitObject*>(d),
+                                     line, col);
+  culebra_runtime_range_step_check(b.step, line, col);
+  return b;
+}
+
+// grid: cartesian product of two RangeBounds, x varying fastest. Captures
+// the x template (const: start/end/step/inclusive) plus a mutable x
+// cursor and a mutable y cursor, mirroring the interp's _iter_over_grid
+// (interpreter.h) state machine field-for-field so both backends walk the
+// identical sequence at the int64 boundary.
+inline void _grid_fast_fn(JitClosure* cls, JitValue, bool* done,
+                          int8_t* out_tag, int64_t* out_data) {
+  auto* xt_start = cls->captures[0];
+  auto* xt_end = cls->captures[1];
+  auto* xt_step = cls->captures[2];
+  auto* xt_incl = cls->captures[3];
+  auto* x_cur = cls->captures[4];
+  auto* x_exh = cls->captures[5];
+  auto* y_end = cls->captures[6];
+  auto* y_step = cls->captures[7];
+  auto* y_incl = cls->captures[8];
+  auto* y_cur = cls->captures[9];
+  auto* y_exh = cls->captures[10];
+  auto* cur_y = cls->captures[11];
+  auto* need_row = cls->captures[12];
+
+  culebra::RangeBounds x{x_cur->value.data, xt_end->value.data,
+                         xt_step->value.data, xt_incl->value.data != 0,
+                         x_exh->value.data != 0};
+  while (need_row->value.data != 0 || x.done()) {
+    culebra::RangeBounds y{y_cur->value.data, y_end->value.data,
+                           y_step->value.data, y_incl->value.data != 0,
+                           y_exh->value.data != 0};
+    if (y.done()) {
+      *done = true;
+      return;
+    }
+    int64_t yv = y.take();
+    y_cur->value.data = y.cur;
+    if (y.exhausted) y_exh->value.data = 1;
+    cur_y->value.data = yv;
+    x = culebra::RangeBounds{xt_start->value.data, xt_end->value.data,
+                             xt_step->value.data, xt_incl->value.data != 0,
+                             /*exhausted=*/false};
+    need_row->value.data = 0;
+  }
+  int64_t xv = x.take();
+  x_cur->value.data = x.cur;
+  if (x.exhausted) x_exh->value.data = 1;
+  *done = false;
+  auto* tup = culebra_runtime_tuple_new();
+  culebra_runtime_tuple_push(tup, TAG_LONG, xv);
+  culebra_runtime_tuple_push(tup, TAG_LONG, cur_y->value.data);
+  *out_tag = TAG_TUPLE;
+  *out_data = reinterpret_cast<int64_t>(tup);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_grid_new(
+    int8_t xt, int64_t xd, int8_t yt, int64_t yd, int64_t line, int64_t col) {
+  auto xb = _grid_bounds_from_range(xt, xd, "parameter 'x_range'", line, col);
+  auto yb = _grid_bounds_from_range(yt, yd, "parameter 'y_range'", line, col);
+  auto* xt_start = culebra_runtime_cell_new(TAG_LONG, xb.cur);
+  auto* xt_end = culebra_runtime_cell_new(TAG_LONG, xb.end);
+  auto* xt_step = culebra_runtime_cell_new(TAG_LONG, xb.step);
+  auto* xt_incl = culebra_runtime_cell_new(TAG_BOOL, xb.inclusive ? 1 : 0);
+  auto* x_cur = culebra_runtime_cell_new(TAG_LONG, xb.cur);
+  auto* x_exh = culebra_runtime_cell_new(TAG_BOOL, 0);
+  auto* y_end = culebra_runtime_cell_new(TAG_LONG, yb.end);
+  auto* y_step = culebra_runtime_cell_new(TAG_LONG, yb.step);
+  auto* y_incl = culebra_runtime_cell_new(TAG_BOOL, yb.inclusive ? 1 : 0);
+  auto* y_cur = culebra_runtime_cell_new(TAG_LONG, yb.cur);
+  auto* y_exh = culebra_runtime_cell_new(TAG_BOOL, 0);
+  auto* cur_y = culebra_runtime_cell_new(TAG_LONG, 0);
+  auto* need_row = culebra_runtime_cell_new(TAG_LONG, 1);
+  return _iter_wrap_fast<&_grid_fast_fn>(
+      {xt_start, xt_end, xt_step, xt_incl, x_cur, x_exh, y_end, y_step,
+       y_incl, y_cur, y_exh, cur_y, need_row});
 }
 
 // --- Higher-order array helpers -------------------------------------------

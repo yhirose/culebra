@@ -234,20 +234,20 @@ class Cells {
   }
 
   rect(x, y, w, h, key) {
-    for yy in y.to_long()..(y + h).to_long() {
-      for xx in x.to_long()..(x + w).to_long() {
-        self.set(xx, yy, key)
-      }
+    let xs = x.to_long()..(x + w).to_long()
+    let ys = y.to_long()..(y + h).to_long()
+    for (xx, yy) in grid(xs, ys) {
+      self.set(xx, yy, key)
     }
   }
 
   # Checkerboard between two keys — how shading is done, since the palette has
   # no in-between tones.
   dither(x, y, w, h, key_a, key_b, size = 1) {
-    for yy in y.to_long()..(y + h).to_long() {
-      for xx in x.to_long()..(x + w).to_long() {
-        self.set(xx, yy, (xx / size + yy / size) % 2 == 0 ? key_a : key_b)
-      }
+    let xs = x.to_long()..(x + w).to_long()
+    let ys = y.to_long()..(y + h).to_long()
+    for (xx, yy) in grid(xs, ys) {
+      self.set(xx, yy, (xx / size + yy / size) % 2 == 0 ? key_a : key_b)
     }
   }
 
@@ -270,23 +270,21 @@ class Cells {
   outline(key = "INK") {
     let src = self.k.slice(0, self.k.size())
     let kid = KEY_ID[key]
-    for y in 0..self.h {
-      for x in 0..self.w {
-        continue if src[y * self.w + x] != 0
-        mut touching = false
-        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-          let nx = x + dx
-          let ny = y + dy
-          if nx >= 0 && nx < self.w && ny >= 0 && ny < self.h {
-            let v = src[ny * self.w + nx]
-            if v != 0 && v != kid {
-              touching = true
-              break
-            }
+    for (x, y) in grid(0..self.w, 0..self.h) {
+      continue if src[y * self.w + x] != 0
+      mut touching = false
+      for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+        let nx = x + dx
+        let ny = y + dy
+        if nx >= 0 && nx < self.w && ny >= 0 && ny < self.h {
+          let v = src[ny * self.w + nx]
+          if v != 0 && v != kid {
+            touching = true
+            break
           }
         }
-        self.k[y * self.w + x] = kid if touching
       }
+      self.k[y * self.w + x] = kid if touching
     }
   }
 

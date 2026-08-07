@@ -3899,6 +3899,23 @@ inline JitValue _ns_global_iota(JitValue* a, int64_t) {
   _range_bounds(a[0], "iota", start, end);
   return _ns_adapt::v_array(culebra_runtime_iota(start, end));
 }
+// grid as a first-class value: the collected positional Array must hold
+// exactly 2 (Range) args — culebra_runtime_grid_new does the Range/bounds
+// validation, same as the direct-call fast path. Line/col fall back to
+// 0:0 like range/iota (the NsMethod adapter ABI carries no call-site
+// position either).
+inline JitValue _ns_global_grid(JitValue* a, int64_t) {
+  auto* arr = reinterpret_cast<JitArray*>(a[0].data);
+  int64_t cnt = arr->size;
+  if (cnt != 2) {
+    throw_runtime_error_at("ArityError",
+        builtin_arity_error_message("grid", 2, 2, cnt), 0, 0);
+  }
+  auto x = arr->items[0];
+  auto y = arr->items[1];
+  return _ns_adapt::v_object(
+      culebra_runtime_grid_new(x.tag, x.data, y.tag, y.data, 0, 0));
+}
 // Whole-file read/write convenience on FS (open+read/write+close). Reuses
 // the runtime file helpers; streaming lives on the File handle.
 inline JitValue _ns_fs_read(JitValue* a, int64_t) {
@@ -6635,7 +6652,7 @@ inline bool _ns_method_uses_kwarg_slab(const NsMethod* m) {
   if (ns == "Compress") return nm == "deflate";  // level default
   if (ns == "IO")       return nm == "println";  // arg defaults to ""
   if (ns.empty())       return nm == "range" || nm == "iota" ||
-                               nm == "println";  // bare globals
+                               nm == "grid" || nm == "println";  // bare globals
   return false;
 }
 
@@ -7522,6 +7539,7 @@ inline const NsMethod kBuiltinFns[] = {
   {"", "__eff_catch_abort", 1, &_ns_global_eff_catch_abort},
   {"", "range",    -1, &_ns_global_range},
   {"", "iota",     -1, &_ns_global_iota},
+  {"", "grid",     -1, &_ns_global_grid},
 };
 
 namespace _ns_spec_detail {

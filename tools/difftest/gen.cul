@@ -220,6 +220,7 @@ let vals = [
   'Math.min',
   'range',
   'iota',
+  'grid',
   'type_of',
   'to_long',
   'to_float',
@@ -322,6 +323,7 @@ let disp_vals = [
   '{1, 2}',
   'range',
   'iota',
+  'grid',
 ]
 for v in disp_vals {
   case("disp-inspect|" + v, "inspect(" + v + ")")

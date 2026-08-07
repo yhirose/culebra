@@ -100,10 +100,11 @@ PYEOF
 mi=$(count_no_upstream '_make_iterator\s*\(')
 ratchet "no-upstream _make_iterator calls (interp leaves)" "$mi" 21
 
-# JIT: leaf sources = 14 (8 jit_iter.h + 6 stdlib_jit.h).
+# JIT: leaf sources = 15 (9 jit_iter.h + 6 stdlib_jit.h) — grid_new joined
+# math_range/iota et al. as a new source factory (no upstream iterator).
 wf=$(count_no_upstream '_iter_wrap_fast<[^>]*>\s*\(')
-ratchet "no-upstream _iter_wrap_fast calls (JIT leaves)" "$wf" 14
+ratchet "no-upstream _iter_wrap_fast calls (JIT leaves)" "$wf" 15
 
 if (( fail )); then exit 1; fi
 echo "iter-wiring OK (pull=$pull/0 advance_raw=$adv/25 has_next_closure=$hnc/4" \
-     "make_iterator-leaves=$mi/21 wrap_fast-leaves=$wf/14)"
+     "make_iterator-leaves=$mi/21 wrap_fast-leaves=$wf/15)"

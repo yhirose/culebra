@@ -4438,10 +4438,11 @@ iterator chainで不可避）。eagerに実体化して最大スループット�
 バインドされ、置き換えはできません。第1グループ（`to_long`
 / `to_float` / `to_string`、`type_of`）は言語セマンティクス（ソース位置に
 紐付くエラー、型の内省、表示規則）に結びついています。第2グループ
-（`range`、`iota`）は標準的な整数列ファクトリで、両バックエンドが
-fusion / specialisationの対象として認識し、言語全体の`for`-inループで
-使われる正規形です。第3グループはmatcher一族 (`assert_true` /
-`assert_eq` / `assert_throws` / `assert_close`等) — 全referenceは
+（`range`、`iota`、`grid`）は標準的な整数列ファクトリで、`range`
+/ `iota`は両バックエンドがfusion / specialisationの対象として認識し、
+言語全体の`for`-inループで使われる正規形です。第3グループはmatcher
+一族 (`assert_true` / `assert_eq` / `assert_throws` / `assert_close`等)
+— 全referenceは
 [`docs/stdlib.ja.md`](stdlib.ja.md) を参照。`Math` / `IO` / `Sys`
 といったネームスペース付きの標準ライブラリも同じく`stdlib.ja.md`を
 参照。出力プリミティブ`inspect` / `print` / `println`はCLIが追加する
@@ -4583,6 +4584,30 @@ C++ `std::iota` / Scheme SRFI-1から命名。`for`-inループには`range`を
 inspect(iota(3))     # => [0, 1, 2]
 inspect(iota(2, 5))  # => [2, 3, 4]
 inspect(iota(5, 2))  # => []
+```
+
+### `grid(x_range: Range, y_range: Range) -> Iterator`
+
+2つの有界な整数RangeのCartesian積を返す遅延評価ファクトリ。
+Iterator（§18.5）を返し、`(x, y)`のTupleをyieldします（`x`が最も
+速く変化）。これは`for y in y_range { for x in x_range { ... } }`
+という二重forループが辿る順序と同じで、1行かつ一定の追加メモリ
+で書けます。両方の引数は有界な`Range`値（`a..b` / `a..=b`、
+`by`ステップ指定可）である必要があり、無限範囲や`step: 0`は
+Rangeに対する`for`-inと同じエラーを送出します。どちらかの
+Rangeが空なら、積全体も空になります。
+
+```culebra
+for (x, y) in grid(0..3, 0..2) {
+  inspect((x, y))
+}  # (0,0), (1,0), (2,0), (0,1), (1,1), (2,1)
+```
+
+```culebra
+inspect(grid(0..2, 0..2).collect())
+# => [(0, 0), (1, 0), (0, 1), (1, 1)]
+# x側かy側が空なら、積全体も空になる。
+inspect(grid(0..0, 0..3).collect())  # => []
 ```
 
 ### `__ARGS__` (可変長 catch-all バインディング)

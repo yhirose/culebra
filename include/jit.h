@@ -3183,12 +3183,12 @@ struct JIT {
   // value), bound in every function frame. `self` is NOT here: it is a
   // lexically capturable binding (note_free_var special-cases it) so a
   // nested closure inherits the enclosing frame's receiver, interp-style.
-  // `range`/`iota` are core globals (see `try_compile_core_global`);
+  // `range`/`iota`/`grid` are core globals (see `try_compile_core_global`);
   // everything else (inspect/Math/IO/...) is supplied by the registered
   // extension.
   static bool is_builtin_var(const std::string& name) {
     if (name == "fn") return true;
-    if (name == "range" || name == "iota") return true;
+    if (name == "range" || name == "iota" || name == "grid") return true;
     auto& h = current_hooks();
     return h.is_builtin_var && h.is_builtin_var(name);
   }
@@ -4361,6 +4361,14 @@ struct JIT {
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    // grid: also a core global (see try_compile_core_global) — two Range
+    // value pairs (tag, data) + line/col for the "expects Range" /
+    // "unbounded range" / "step must not be zero" diagnostics.
+    module_->getOrInsertFunction(rt::grid_new, ptrTy,
+                                 builder_.getInt8Ty(), builder_.getInt64Ty(),
+                                 builder_.getInt8Ty(), builder_.getInt64Ty(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::check_pos_count, builder_.getVoidTy(),
@@ -14332,16 +14340,18 @@ struct JIT {
     std::vector<const peg::Ast*> positional;
     const peg::Ast* step_ast = nullptr;
     bool is_seq = (name == "range" || name == "iota");
+    bool is_grid = (name == "grid");
     for (auto& c : argsAst.nodes) {
       if (c->tag == "KWARG_SPLAT"_) return {};  // splat: see compile_global
       if (c->tag == "KWARG"_) {
         auto kwname = std::string(c->nodes[0]->token);
         if (name == "range" && kwname == "step") {
           step_ast = c->nodes[1].get();
-        } else if (is_seq) {
-          // range/iota take only `step:` (range) — any other keyword is
-          // unknown, the same runtime TypeError interp's binder raises
-          // (not a compile-time "does not accept keyword arguments").
+        } else if (is_seq || is_grid) {
+          // range/iota take only `step:` (range); grid takes none — any
+          // other keyword is unknown, the same runtime TypeError interp's
+          // binder raises (not a compile-time "does not accept keyword
+          // arguments").
           emit_throw_error(
               "TypeError", unknown_kwarg_message(kwname),
               current_line_, current_column_);  // call site, matching interp
@@ -14353,9 +14363,10 @@ struct JIT {
         positional.push_back(c.get());
       }
     }
-    // range/iota take 1 (end) or 2 (start, end) positionals; outside that
-    // is an ArityError, matching interp — not a silent truncation/empty
-    // range, and not the fall-through "undefined variable" NameError.
+    // range/iota take 1 (end) or 2 (start, end) positionals; grid takes
+    // exactly 2 (x_range, y_range). Outside that is an ArityError, matching
+    // interp — not a silent truncation/empty range, and not the
+    // fall-through "undefined variable" NameError.
     if ((name == "range" || name == "iota") &&
         (positional.size() < 1 || positional.size() > 2)) {
       emit_throw_error(
@@ -14364,6 +14375,24 @@ struct JIT {
                                       static_cast<long>(positional.size())),
           current_line_, current_column_);  // call site, matching interp
       return own(make_nil());  // unreachable after the throw
+    }
+    if (is_grid) {
+      if (positional.size() != 2) {
+        emit_throw_error(
+            "ArityError",
+            builtin_arity_error_message(name, 2, 2,
+                                        static_cast<long>(positional.size())),
+            current_line_, current_column_);  // call site, matching interp
+        return own(make_nil());  // unreachable after the throw
+      }
+      Owned xr = compile(*positional[0]);
+      Owned yr = compile(*positional[1]);
+      auto obj = emit_call(
+          module_->getFunction(rt::grid_new),
+          {extract_tag(xr.borrow()), extract_data(xr.borrow()),
+           extract_tag(yr.borrow()), extract_data(yr.borrow()),
+           current_line_val(), current_column_val()});
+      return own(make_object(obj));
     }
     auto two_args = [&](llvm::Value*& s, llvm::Value*& e) {
       if (positional.size() == 1) {

@@ -3414,6 +3414,41 @@ inline Value _iter_over_range(RangeBounds bounds) {
   });
 }
 
+// Cartesian product of two bounded integer ranges, x varying fastest —
+// the order `for yy in ... { for xx in ... { ... } }` walks, which this
+// replaces. Yields `(x, y)` Tuples so `for (x, y) in grid(xs, ys)`
+// destructures directly (see grid() in setup_core_globals). x_template
+// is re-copied into the cursor at the start of every row; the JIT's
+// _grid_fast_fn mirrors this state machine field-for-field.
+inline Value _iter_over_grid(RangeBounds x_template, RangeBounds y_bounds) {
+  struct GridState {
+    RangeBounds x_template;
+    RangeBounds x;
+    RangeBounds y;
+    int64_t cur_y = 0;
+    // Forces the very first advance() to pull a y row even when x_template
+    // is non-empty (x.done() alone wouldn't trigger that, and cur_y needs a
+    // real value before the first x is taken).
+    bool need_row = true;
+  };
+  auto state = std::make_shared<GridState>();
+  state->x_template = x_template;
+  state->x = x_template;
+  state->y = y_bounds;
+  return _make_iterator(
+      [state](std::shared_ptr<Environment>) -> std::optional<Value> {
+        while (state->need_row || state->x.done()) {
+          if (state->y.done()) return _iter_step_done();
+          state->cur_y = state->y.take();
+          state->x = state->x_template;
+          state->need_row = false;
+        }
+        int64_t xv = state->x.take();
+        std::vector<Value> pair{Value(xv), Value(state->cur_y)};
+        return _iter_step_value(Value(TupleValue(std::move(pair))));
+      });
+}
+
 // Iterating a Set walks a snapshot of its members: the walk must not see
 // mutations made by the loop body (the JIT's set_to_array does the same,
 // and sharing the live vector also skipped elements when a remove shifted
@@ -6868,6 +6903,40 @@ inline void setup_core_globals(Environment& env) {
                   "range() step must not be zero", line, col);
             }
             return _iter_over_range({start, end, step, /*inclusive=*/false});
+          })),
+      false);
+
+  // grid(x_range, y_range): lazy cartesian-product iterator over two
+  // bounded Range values, yielding `(x, y)` Tuples with x varying
+  // fastest. Modeled as `grid(*args)` like range/iota (fixed arity 2,
+  // checked by hand — args_rest keeps it usable as a higher-order
+  // callback and avoids the generic per-param kwarg-matching path,
+  // matching the JIT's compile-time fast path in try_compile_core_global).
+  env.initialize(
+      "grid",
+      Value(FunctionValue(
+          {FunctionValue::Parameter::make_args_rest("args")},
+          [](std::shared_ptr<Environment> callEnv) {
+            const auto& extras = *callEnv->get("__ARGS__").to_array().values;
+            auto line = callEnv->get("__LINE__").to_long();
+            auto col = callEnv->get("__COLUMN__").to_long();
+            if (extras.size() != 2) {
+              throw CulebraError(
+                  "ArityError",
+                  builtin_arity_error_message("grid", 2, 2,
+                                              static_cast<long>(extras.size())),
+                  line, col);
+            }
+            auto expect_range = [&](const Value& v,
+                                    const char* pname) -> RangeBounds {
+              check_type(v, "Range", std::format("parameter '{}'", pname),
+                        static_cast<size_t>(line), static_cast<size_t>(col));
+              return range_bounds(v.to_object(), static_cast<size_t>(line),
+                                  static_cast<size_t>(col));
+            };
+            auto xb = expect_range(extras[0], "x_range");
+            auto yb = expect_range(extras[1], "y_range");
+            return _iter_over_grid(xb, yb);
           })),
       false);
 }
