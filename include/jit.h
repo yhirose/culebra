@@ -1220,80 +1220,6 @@ struct JIT {
                                       const peg::Ast& argsAst,
                                       llvm::Value* receiver);
 
-  // The length probe behind `.size()` / `.empty()` / `.presence()`: switch on
-  // the receiver tag (Tuple rides with Array), take each container's length
-  // its own way, and merge them into one i64. A tag with no length raises the
-  // receiver-resolution error for `label`, which also names the blocks.
-  // Returns with the builder inserting at the merge block, so a caller only
-  // has to turn the length into its own result.
-  llvm::Value* emit_size_probe(llvm::Value* receiver, llvm::Value* tag,
-                               const std::string& label) {
-    auto fn = builder_.GetInsertBlock()->getParent();
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    auto block = [&](const char* name) {
-      return llvm::BasicBlock::Create(ctx_, label + "." + name, fn);
-    };
-    auto arrBB = block("arr");
-    auto objBB = block("obj");
-    auto strBB = block("str");
-    auto svBB = block("sv");
-    auto setBB = block("set");
-    auto errBB = block("err");
-    // `.len`, not `.merge`: `.presence()` has a merge block of its own further
-    // down, and two blocks named alike only tell them apart by LLVM's uniquing
-    // suffix.
-    auto mergeBB = block("len");
-
-    auto sw = builder_.CreateSwitch(tag, errBB, 6);
-    sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
-    sw->addCase(builder_.getInt8(TAG_TUPLE), arrBB);
-    sw->addCase(builder_.getInt8(TAG_OBJECT), objBB);
-    sw->addCase(builder_.getInt8(TAG_STRING), strBB);
-    sw->addCase(builder_.getInt8(TAG_STRINGVIEW), svBB);
-    sw->addCase(builder_.getInt8(TAG_SET), setBB);
-
-    // Each arm ends at its own insert block, not the one it started in: a
-    // helper is free to split the arm, and the PHI has to name where control
-    // actually leaves from.
-    std::vector<std::pair<llvm::Value*, llvm::BasicBlock*>> arms;
-    auto arm = [&](llvm::BasicBlock* bb, auto emit) {
-      builder_.SetInsertPoint(bb);
-      auto* size = emit(builder_.CreateIntToPtr(extract_data(receiver), ptrTy));
-      arms.push_back({size, builder_.GetInsertBlock()});
-      builder_.CreateBr(mergeBB);
-    };
-
-    arm(arrBB, [&](llvm::Value* p) {
-      return emit_call(module_->getFunction(rt::array_size), {p}, "asz");
-    });
-    arm(objBB, [&](llvm::Value* p) {
-      return emit_call(module_->getFunction(rt::object_size), {p}, "osz");
-    });
-    arm(strBB, [&](llvm::Value* p) {
-      return emit_call(module_->getFunction(rt::str_size), {p}, "ssz");
-    });
-    // JitStringView { ptr, len } — load len at offset 8.
-    arm(svBB, [&](llvm::Value* p) -> llvm::Value* {
-      auto lenPtr =
-          builder_.CreateConstInBoundsGEP1_64(builder_.getInt8Ty(), p, 8);
-      return builder_.CreateLoad(builder_.getInt64Ty(), lenPtr, "svsz");
-    });
-    arm(setBB, [&](llvm::Value* p) {
-      return emit_call(module_->getOrInsertFunction(
-                           rt::set_size, builder_.getInt64Ty(), ptrTy),
-                       {p}, "ssz2");
-    });
-
-    builder_.SetInsertPoint(errBB);
-    emit_receiver_resolution_error(tag, label);
-
-    builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(builder_.getInt64Ty(),
-                                  static_cast<unsigned>(arms.size()), "sz");
-    for (auto& [size, bb] : arms) phi->addIncoming(size, bb);
-    return phi;
-  }
-
   // One row per iterator-only method (no eager Array equivalent): receiver
   // gate, argument shape, whether the runtime symbol takes the call
   // position, and the result wrapping fully determine the emit. Rows are
@@ -11459,7 +11385,7 @@ struct JIT {
   Owned walk_call_postfixes(const peg::Ast& ast, size_t first, Owned callee,
                             bool fn_direct_call) {
     using namespace peg::udl;
-    auto calleeNode = ast.nodes[0];
+    const auto& calleeNode = ast.nodes[0];
     auto sn = begin_safe_nav(ast);
 
     for (size_t i = first; i < ast.nodes.size(); i++) {
@@ -11618,7 +11544,7 @@ struct JIT {
 
   Owned compile_call(const peg::Ast& ast) {
     using namespace peg::udl;
-    auto calleeNode = ast.nodes[0];
+    const auto& calleeNode = ast.nodes[0];
     CallRootSaver call_root(*this, ast);
     // Direct `fn(...)` recursion re-passes the frame's (merged) self so the
     // callee sees the same receiver — interp parity, where a method call's
@@ -12093,6 +12019,76 @@ struct JIT {
     builder_.SetInsertPoint(okBB);
     return builder_.CreateIntToPtr(extract_data(receiver),
                                    llvm::PointerType::get(ctx_, 0));
+  }
+
+  // The length probe behind `.size()` / `.empty()` / `.presence()`: switch on
+  // the receiver tag (Tuple rides with Array), take each container's length
+  // its own way, and merge them into one i64. A tag with no length raises the
+  // receiver-resolution error for `label`, which also names the blocks.
+  // Returns with the builder inserting at the merge block, so a caller only
+  // has to turn the length into its own result.
+  llvm::Value* emit_size_probe(llvm::Value* receiver, llvm::Value* tag,
+                               const std::string& label) {
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto block = [&](const char* name) {
+      return llvm::BasicBlock::Create(ctx_, label + "." + name, fn);
+    };
+    auto arrBB = block("arr");
+    auto objBB = block("obj");
+    auto strBB = block("str");
+    auto svBB = block("sv");
+    auto setBB = block("set");
+    auto errBB = block("err");
+    auto mergeBB = block("len");  // not ".merge" — presence names its own
+
+    auto sw = builder_.CreateSwitch(tag, errBB, 6);
+    sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
+    sw->addCase(builder_.getInt8(TAG_TUPLE), arrBB);
+    sw->addCase(builder_.getInt8(TAG_OBJECT), objBB);
+    sw->addCase(builder_.getInt8(TAG_STRING), strBB);
+    sw->addCase(builder_.getInt8(TAG_STRINGVIEW), svBB);
+    sw->addCase(builder_.getInt8(TAG_SET), setBB);
+
+    // The PHI names where each arm actually leaves from, which is not where it
+    // started when a helper splits the block.
+    llvm::SmallVector<std::pair<llvm::Value*, llvm::BasicBlock*>, 5> arms;
+    auto arm = [&](llvm::BasicBlock* bb, auto emit) {
+      builder_.SetInsertPoint(bb);
+      auto* size = emit(builder_.CreateIntToPtr(extract_data(receiver), ptrTy));
+      arms.push_back({size, builder_.GetInsertBlock()});
+      builder_.CreateBr(mergeBB);
+    };
+
+    arm(arrBB, [&](llvm::Value* p) {
+      return emit_call(module_->getFunction(rt::array_size), {p}, "asz");
+    });
+    arm(objBB, [&](llvm::Value* p) {
+      return emit_call(module_->getFunction(rt::object_size), {p}, "osz");
+    });
+    arm(strBB, [&](llvm::Value* p) {
+      return emit_call(module_->getFunction(rt::str_size), {p}, "ssz");
+    });
+    // JitStringView { ptr, len } — load len at offset 8.
+    arm(svBB, [&](llvm::Value* p) -> llvm::Value* {
+      auto lenPtr =
+          builder_.CreateConstInBoundsGEP1_64(builder_.getInt8Ty(), p, 8);
+      return builder_.CreateLoad(builder_.getInt64Ty(), lenPtr, "svsz");
+    });
+    arm(setBB, [&](llvm::Value* p) {
+      return emit_call(module_->getOrInsertFunction(
+                           rt::set_size, builder_.getInt64Ty(), ptrTy),
+                       {p}, "ssz2");
+    });
+
+    builder_.SetInsertPoint(errBB);
+    emit_receiver_resolution_error(tag, label);
+
+    builder_.SetInsertPoint(mergeBB);
+    auto phi = builder_.CreatePHI(builder_.getInt64Ty(),
+                                  static_cast<unsigned>(arms.size()), "sz");
+    for (auto& [size, bb] : arms) phi->addIncoming(size, bb);
+    return phi;
   }
 
   // Head of an iterator-only method (`collect`, `take`, ...): require an
@@ -14491,7 +14487,7 @@ struct JIT {
   // through to the regular CALL dispatch.
   Owned compile_call_with_builtins(const peg::Ast& ast) {
     using namespace peg::udl;
-    auto calleeNode = ast.nodes[0];
+    const auto& calleeNode = ast.nodes[0];
     CallRootSaver call_root(*this, ast);
 
     // A user binding that shadows a builtin name wins, exactly as interp's

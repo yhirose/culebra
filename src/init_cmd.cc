@@ -4,7 +4,6 @@
 
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -16,11 +15,7 @@
 
 #include <os_compat.h>  // os_isatty (stdin_is_interactive)
 
-// current_executable_path. Depends on nothing else of culebra's, so this TU
-// keeps the isolation docs_cmd.h documents for itself: no culebra.h, no
-// interpreter internals, so a docs-or-init edit never drags the interpreter
-// into the link.
-#include <exe_path.h>
+#include <exe_path.h>  // current_executable_path
 
 #include "docs_embedded.h"
 #include "editor_assets_embedded.h"

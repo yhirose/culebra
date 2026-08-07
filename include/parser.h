@@ -55,22 +55,15 @@ inline peg::parser& get_parser() {
   return parser;
 }
 
-inline int _hex_val(char c) {
-  if (c >= '0' && c <= '9') return c - '0';
-  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-  return -1;
-}
-
 // `\xHH` — exactly two hex digits → one raw byte (0x00–0xFF). `i` points
 // at the backslash; returns the index of the last consumed char.
 inline size_t decode_hex_byte(std::string_view raw, size_t i, std::string& out) {
   if (i + 3 >= raw.size() ||
-      _hex_val(raw[i + 2]) < 0 || _hex_val(raw[i + 3]) < 0) {
+      hex_digit(raw[i + 2]) < 0 || hex_digit(raw[i + 3]) < 0) {
     throw CulebraError("SyntaxError",
         "invalid \\x escape: expected two hex digits (\\xHH).");
   }
-  out += static_cast<char>(_hex_val(raw[i + 2]) * 16 + _hex_val(raw[i + 3]));
+  out += static_cast<char>(hex_digit(raw[i + 2]) * 16 + hex_digit(raw[i + 3]));
   return i + 3;
 }
 
@@ -84,7 +77,7 @@ inline uint32_t parse_fixed_hex(std::string_view raw, size_t start, int width,
   }
   uint32_t cp = 0;
   for (int k = 0; k < width; k++) {
-    int v = _hex_val(raw[start + k]);
+    int v = hex_digit(raw[start + k]);
     if (v < 0) {
       throw CulebraError("SyntaxError", std::format(
           "invalid {} escape: expected {} hex digits.", escape_name, width));
@@ -115,7 +108,7 @@ inline size_t decode_unicode_escape_u(std::string_view raw, size_t i,
 inline size_t decode_unicode_escape_U(std::string_view raw, size_t i,
                                        std::string& out) {
   uint32_t cp = parse_fixed_hex(raw, i + 2, 8, "\\U");
-  if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+  if (!is_unicode_scalar_value(cp)) {
     throw CulebraError("SyntaxError", std::format(
         "invalid \\U escape: U+{:X} is not a Unicode scalar value.", cp));
   }

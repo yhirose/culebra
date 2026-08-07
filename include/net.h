@@ -599,9 +599,9 @@ namespace detail {
 
 // Bind a fresh `socktype` socket to host:port, trying every address
 // getaddrinfo offers and keeping the first that takes. `ready` runs on the
-// bound descriptor to finish the setup; returning false (with *last set)
-// abandons that address and moves to the next. Returns a `kind` handle id, or
-// -1 with *err set to the last failure. Shared by listen() and udp_open().
+// bound descriptor to finish the setup; returning false abandons that address
+// for the next one. Returns a `kind` handle id, or -1 with *err set to the last
+// failure. Shared by listen() and udp_open().
 template <typename Ready>
 inline int64_t bind_and_intern(const std::string& host, int port, int socktype,
                                Kind kind, std::string* err, Ready&& ready) {
@@ -634,7 +634,10 @@ inline int64_t bind_and_intern(const std::string& host, int port, int socktype,
       last = error_string(last_error());
       continue;
     }
-    if (!ready(fd.fd, &last)) continue;
+    if (!ready(fd.fd)) {
+      last = error_string(last_error());
+      continue;
+    }
     auto s = std::make_unique<Sock>();
     s->kind = kind;
     s->fd = fd.release();
@@ -652,10 +655,8 @@ inline int64_t bind_and_intern(const std::string& host, int port, int socktype,
 inline int64_t listen(const std::string& host, int port, int backlog,
                       std::string* err) {
   return detail::bind_and_intern(
-      host, port, SOCK_STREAM, Kind::Listener, err,
-      [&](socket_t fd, std::string* last) {
+      host, port, SOCK_STREAM, Kind::Listener, err, [&](socket_t fd) {
         if (::listen(fd, backlog > 0 ? backlog : kDefaultBacklog) != 0) {
-          *last = detail::error_string(detail::last_error());
           return false;
         }
         detail::set_nonblocking(fd);
@@ -981,7 +982,7 @@ inline bool serve(int64_t lid, int n_workers, const ServeHooks& hooks,
 // all interfaces). Returns a Udp handle id, or -1 with *err set.
 inline int64_t udp_open(const std::string& host, int port, std::string* err) {
   return detail::bind_and_intern(host, port, SOCK_DGRAM, Kind::Udp, err,
-                                 [](socket_t fd, std::string*) {
+                                 [](socket_t fd) {
                                    detail::suppress_sigpipe(fd);
                                    detail::set_nonblocking(fd);
                                    return true;

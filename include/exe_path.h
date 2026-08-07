@@ -24,8 +24,7 @@ namespace culebra {
 
 // Absolute path to the running culebra executable, for re-spawning a worker
 // copy of the interpreter (Sys.executable). macOS: _NSGetExecutablePath;
-// Linux: /proc/self/exe. Empty string if it can't be resolved. Backend-neutral
-// so interp and JIT both surface the same value.
+// Linux: /proc/self/exe. Empty string if it can't be resolved.
 inline std::string current_executable_path() {
 #if defined(__APPLE__)
   uint32_t sz = 0;

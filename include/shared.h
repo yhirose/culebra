@@ -25,7 +25,6 @@
 #include <unordered_set>
 #include <vector>
 
-#include <cstring>
 #include <cstdio>    // Windows stdin fallback (read_stdin_*_interruptible)
 #if !defined(_WIN32)
 #include <unistd.h>  // read (interruptible stdin)
@@ -225,10 +224,6 @@ class CulebraError : public std::runtime_error {
 inline void culebra_note_pending_error(const CulebraError& e) {
   culebra_note_pending_error(e.kind, e.what(), e.line, e.col);
 }
-
-// `current_executable_path` (Sys.executable) lives in exe_path.h, included
-// above — a dependency-free header the docs / init command TUs can take
-// without the interpreter stack coming with it.
 
 // --- Call-binding error messages (single source for both backends) ---
 //

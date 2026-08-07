@@ -1977,22 +1977,28 @@ culebra_runtime_object_iter_dispatch(JitObject* obj) {
   return culebra_runtime_object_iter(obj);
 }
 
-// The surrounding block is `extern "C"` (the runtime symbols the JIT names),
-// and a template cannot have C language linkage. These two are internal
-// helpers, never named from IR, so they opt back out.
-extern "C++" {
+}  // extern "C" (close briefly for the flatten step)
 
-// The cells flat_map and flatten both walk. They sit at different capture
-// indices (flat_map carries a callback the other doesn't), so each caller
-// unpacks its own and hands the set over.
+// The six cells flat_map and flatten both walk. Both lay them out at captures
+// 0-5, so one unpacker serves both; what follows differs (flat_map's callback,
+// then each one's packed position cell).
 struct _IterFlattenCells {
-  JitValue upstream;
+  JitCell* upstream;
   JitCell* inner;
   JitClosure* up_has_next;
   JitClosure* up_next;
   JitCell* inner_has_next;
   JitCell* inner_next;
 };
+
+inline _IterFlattenCells _iter_flatten_cells(JitClosure* cls) {
+  return {cls->captures[0],
+          cls->captures[1],
+          reinterpret_cast<JitClosure*>(cls->captures[2]->value.data),
+          reinterpret_cast<JitClosure*>(cls->captures[3]->value.data),
+          cls->captures[4],
+          cls->captures[5]};
+}
 
 // The step both flat_map and flatten run: drain the inner iterator if one is
 // live, and when it ends, pull the next upstream element and open the inner
@@ -2022,7 +2028,8 @@ inline void _iter_flatten_step(const _IterFlattenCells& c, bool* done,
     }
     int8_t tag;
     int64_t data;
-    if (!_iter_advance_raw(c.up_has_next, c.up_next, c.upstream, &tag, &data)) {
+    if (!_iter_advance_raw(c.up_has_next, c.up_next, c.upstream->value, &tag,
+                           &data)) {
       *done = true;
       return;
     }
@@ -2035,29 +2042,21 @@ inline void _iter_flatten_step(const _IterFlattenCells& c, bool* done,
   }
 }
 
-}  // extern "C++"
+extern "C" {
 
-// flat_map captures: upstream, fn, current-inner-iter (nullable),
-// has_next/next pair for upstream, has_next/next pair for the current
-// inner (refreshed per-element when fn() returns a new iterable), and
-// a packed (line << 32 | col) cell for error reporting when the
-// callback yields a non-iterable.
+// flat_map captures: the six shared cells (see _IterFlattenCells), then fn,
+// then a packed (line << 32 | col) cell for error reporting when the callback
+// yields a non-iterable. The inner has_next/next pair is refreshed per element,
+// as fn() returns a new iterable each time.
 inline void _iter_flat_map_fast_fn(JitClosure* cls, JitValue, bool* done,
                                    int8_t* out_tag, int64_t* out_data) {
-  auto fnv = cls->captures[1]->value;
-  auto* fn_cls = reinterpret_cast<JitClosure*>(fnv.data);
+  auto* fn_cls = reinterpret_cast<JitClosure*>(cls->captures[6]->value.data);
   int64_t packed = cls->captures[7]->value.data;
   int64_t line = packed >> 32;
   int64_t col = packed & 0xFFFFFFFF;
-  _IterFlattenCells c{
-      cls->captures[0]->value,
-      cls->captures[2],
-      reinterpret_cast<JitClosure*>(cls->captures[3]->value.data),
-      reinterpret_cast<JitClosure*>(cls->captures[4]->value.data),
-      cls->captures[5],
-      cls->captures[6]};
   _iter_flatten_step(
-      c, done, out_tag, out_data, [&](int8_t tag, int64_t data) {
+      _iter_flatten_cells(cls), done, out_tag, out_data,
+      [&](int8_t tag, int64_t data) {
         culebra_runtime_set_call_site(line, col);
         // invoke1 consumes the pulled value's +1 (the callee frame takes
         // ownership on entry, per the calling convention) — do NOT release it
@@ -2084,29 +2083,19 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_flat_map(
   auto up_cells = _iter_cache_closure_cells({it, id});
   auto* inner_has_next = culebra_runtime_cell_new(TAG_LONG, 0);
   auto* inner_next = culebra_runtime_cell_new(TAG_LONG, 0);
-  auto* loc = culebra_runtime_cell_new(
-      TAG_LONG, (line << 32) | (col & 0xFFFFFFFF));
   return _iter_wrap_fast<&_iter_flat_map_fast_fn>(
-      {up, f, inner, up_cells.has_next, up_cells.next,
-       inner_has_next, inner_next, loc}, /*n_upstreams=*/1);
+      {up, inner, up_cells.has_next, up_cells.next, inner_has_next, inner_next,
+       f, _iter_pos_cell(line, col)}, /*n_upstreams=*/1);
 }
 
-// flatten: flat_map's shape without the callback -- the upstream element IS
-// the inner iterable. Cells: upstream, inner, up has_next/next, inner
-// has_next/next, packed line|col.
+// flatten: flat_map's shape without the callback — the upstream element IS the
+// inner iterable. The six shared cells, then the packed line|col.
 inline void _iter_flatten_fast_fn(JitClosure* cls, JitValue, bool* done,
                                   int8_t* out_tag, int64_t* out_data) {
   int64_t packed = cls->captures[6]->value.data;
   int64_t line = packed >> 32;
   int64_t col = packed & 0xFFFFFFFF;
-  _IterFlattenCells c{
-      cls->captures[0]->value,
-      cls->captures[1],
-      reinterpret_cast<JitClosure*>(cls->captures[2]->value.data),
-      reinterpret_cast<JitClosure*>(cls->captures[3]->value.data),
-      cls->captures[4],
-      cls->captures[5]};
-  _iter_flatten_step(c, done, out_tag, out_data,
+  _iter_flatten_step(_iter_flatten_cells(cls), done, out_tag, out_data,
                      [&](int8_t tag, int64_t data) {
                        auto iv = _iter_coerce_iterable(tag, data, line, col);
                        _culebra_value_release_impl(tag, data);
@@ -2122,11 +2111,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_flatten(
   auto up_cells = _iter_cache_closure_cells({it, id});
   auto* inner_has_next = culebra_runtime_cell_new(TAG_LONG, 0);
   auto* inner_next = culebra_runtime_cell_new(TAG_LONG, 0);
-  auto* loc = culebra_runtime_cell_new(
-      TAG_LONG, (line << 32) | (col & 0xFFFFFFFF));
   return _iter_wrap_fast<&_iter_flatten_fast_fn>(
-      {up, inner, up_cells.has_next, up_cells.next,
-       inner_has_next, inner_next, loc}, /*n_upstreams=*/1);
+      {up, inner, up_cells.has_next, up_cells.next, inner_has_next, inner_next,
+       _iter_pos_cell(line, col)}, /*n_upstreams=*/1);
 }
 
 // scan: threads an accumulator cell, yielding f(acc, x) each step. The cell

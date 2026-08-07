@@ -47,8 +47,7 @@ struct Result {
 
 #if !defined(CULEBRA_RT_COMPRESS_WEAK)
 // The two compressors are one deflate stream apart: `window_bits` picks the
-// wrapper and `level` the effort. Everything else — the size guard, the
-// bound-sized reserve, the chunk loop, the error strings — is the same.
+// wrapper and `level` the effort.
 inline Result _deflate_stream(std::string_view data, int level,
                               int window_bits) {
   if (data.size() > 0xFFFFFFFFull) return {{}, "input too large"};
