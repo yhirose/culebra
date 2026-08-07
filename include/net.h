@@ -46,6 +46,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -278,6 +279,10 @@ struct FdGuard {
   }
   FdGuard(const FdGuard&) = delete;
   FdGuard& operator=(const FdGuard&) = delete;
+  // Move-constructible so the descriptor can be handed on — into intern_fd,
+  // or through a queue — without a window where nothing owns it. Assignment
+  // stays deleted: every handoff is a construction.
+  FdGuard(FdGuard&& o) noexcept : fd(o.release()) {}
   socket_t release() {
     socket_t f = fd;
     fd = kInvalidSocket;
@@ -871,8 +876,7 @@ class ServePool {
     {
       std::lock_guard<std::mutex> lk(m_);
       shutdown_ = true;
-      for (socket_t fd : jobs_) detail::close_fd(fd);
-      jobs_.clear();
+      jobs_.clear();  // each queued guard closes its descriptor
     }
     cv_.notify_all();
     room_.notify_all();
@@ -885,14 +889,11 @@ class ServePool {
 
   // Blocks while the queue is full so a fast accept loop can't outrun the
   // workers without bound — the kernel's listen backlog is the real buffer.
-  void submit(socket_t fd) {
+  void submit(detail::FdGuard&& fd) {
     std::unique_lock<std::mutex> lk(m_);
     room_.wait(lk, [this] { return shutdown_ || jobs_.size() < cap_; });
-    if (shutdown_) {
-      detail::close_fd(fd);
-      return;
-    }
-    jobs_.push_back(fd);
+    if (shutdown_) return;  // not moved from: the caller's guard closes it
+    jobs_.push_back(std::move(fd));
     lk.unlock();
     cv_.notify_one();
   }
@@ -904,17 +905,17 @@ class ServePool {
     rt.interrupt_flag = interrupt_flag_;  // honor cancel in nested blocking ops
     if (hooks_.setup) hooks_.setup();
     for (;;) {
-      socket_t fd;
+      std::optional<detail::FdGuard> fd;
       {
         std::unique_lock<std::mutex> lk(m_);
         cv_.wait(lk, [this] { return shutdown_ || !jobs_.empty(); });
         if (shutdown_ && jobs_.empty()) break;
-        fd = jobs_.front();
+        fd.emplace(std::move(jobs_.front()));
         jobs_.pop_front();
       }
       room_.notify_one();
       int64_t id =
-          detail::intern_fd(Kind::Tcp, detail::FdGuard(fd), conn_timeout_ms_);
+          detail::intern_fd(Kind::Tcp, std::move(*fd), conn_timeout_ms_);
       try {
         if (hooks_.on_conn) hooks_.on_conn(id);
       } catch (...) {
@@ -932,7 +933,7 @@ class ServePool {
   int64_t conn_timeout_ms_;
   size_t cap_;
   std::vector<std::thread> threads_;
-  std::deque<socket_t> jobs_;
+  std::deque<detail::FdGuard> jobs_;
   std::mutex m_;
   std::condition_variable cv_;    // a job is ready
   std::condition_variable room_;  // the queue has room
@@ -966,9 +967,10 @@ inline bool serve(int64_t lid, int n_workers, const ServeHooks& hooks,
       if (err) *err = detail::error_string(e);
       return false;
     }
+    detail::FdGuard guard(fd);
     detail::suppress_sigpipe(fd);
     detail::set_nonblocking(fd);
-    pool.submit(fd);
+    pool.submit(std::move(guard));
   }
 }
 
