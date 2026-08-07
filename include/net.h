@@ -46,7 +46,6 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -273,16 +272,24 @@ inline IoStatus wait_ready(socket_t fd, bool want_write, int64_t deadline,
 // wait_ready(), which is exactly the path a hand-rolled close() would miss.
 struct FdGuard {
   socket_t fd;
+  FdGuard() : fd(kInvalidSocket) {}
   explicit FdGuard(socket_t f) : fd(f) {}
   ~FdGuard() {
     if (fd != kInvalidSocket) close_fd(fd);
   }
   FdGuard(const FdGuard&) = delete;
   FdGuard& operator=(const FdGuard&) = delete;
-  // Move-constructible so the descriptor can be handed on — into intern_fd,
-  // or through a queue — without a window where nothing owns it. Assignment
-  // stays deleted: every handoff is a construction.
+  // Move-only, like the other descriptor owners here (proc.h's Child): the
+  // descriptor travels into intern_fd, or through ServePool's queue, with no
+  // window where nothing owns it.
   FdGuard(FdGuard&& o) noexcept : fd(o.release()) {}
+  FdGuard& operator=(FdGuard&& o) noexcept {
+    if (this != &o) {
+      if (fd != kInvalidSocket) close_fd(fd);
+      fd = o.release();
+    }
+    return *this;
+  }
   socket_t release() {
     socket_t f = fd;
     fd = kInvalidSocket;
@@ -889,10 +896,10 @@ class ServePool {
 
   // Blocks while the queue is full so a fast accept loop can't outrun the
   // workers without bound — the kernel's listen backlog is the real buffer.
-  void submit(detail::FdGuard&& fd) {
+  void submit(detail::FdGuard fd) {
     std::unique_lock<std::mutex> lk(m_);
     room_.wait(lk, [this] { return shutdown_ || jobs_.size() < cap_; });
-    if (shutdown_) return;  // not moved from: the caller's guard closes it
+    if (shutdown_) return;  // ~FdGuard closes it, after lk unlocks
     jobs_.push_back(std::move(fd));
     lk.unlock();
     cv_.notify_one();
@@ -905,17 +912,17 @@ class ServePool {
     rt.interrupt_flag = interrupt_flag_;  // honor cancel in nested blocking ops
     if (hooks_.setup) hooks_.setup();
     for (;;) {
-      std::optional<detail::FdGuard> fd;
+      detail::FdGuard fd;
       {
         std::unique_lock<std::mutex> lk(m_);
         cv_.wait(lk, [this] { return shutdown_ || !jobs_.empty(); });
         if (shutdown_ && jobs_.empty()) break;
-        fd.emplace(std::move(jobs_.front()));
+        fd = std::move(jobs_.front());
         jobs_.pop_front();
       }
       room_.notify_one();
       int64_t id =
-          detail::intern_fd(Kind::Tcp, std::move(*fd), conn_timeout_ms_);
+          detail::intern_fd(Kind::Tcp, std::move(fd), conn_timeout_ms_);
       try {
         if (hooks_.on_conn) hooks_.on_conn(id);
       } catch (...) {
@@ -960,17 +967,16 @@ inline bool serve(int64_t lid, int n_workers, const ServeHooks& hooks,
     if (st != IoStatus::Ok) return false;
     sockaddr_storage ss{};
     socklen_t len = sizeof(ss);
-    socket_t fd = ::accept(lfd, reinterpret_cast<sockaddr*>(&ss), &len);
-    if (fd == kInvalidSocket) {
+    detail::FdGuard fd(::accept(lfd, reinterpret_cast<sockaddr*>(&ss), &len));
+    if (fd.fd == kInvalidSocket) {
       int e = detail::last_error();
       if (detail::is_eintr(e) || detail::is_wouldblock(e)) continue;
       if (err) *err = detail::error_string(e);
       return false;
     }
-    detail::FdGuard guard(fd);
-    detail::suppress_sigpipe(fd);
-    detail::set_nonblocking(fd);
-    pool.submit(std::move(guard));
+    detail::suppress_sigpipe(fd.fd);
+    detail::set_nonblocking(fd.fd);
+    pool.submit(std::move(fd));
   }
 }
 

@@ -250,6 +250,21 @@ inline void _jit_backfill_op_pos(culebra::CulebraError& e) {
   }
 }
 
+// A source position packed into one int64, so a single value can carry it
+// through an ABI with room for one: a runtime call's return (param_pos), a
+// rodata entry (the codegen's .argpos array), a cell's payload (the lazy
+// combinators' call-site capture). (C++ aggregate return, so outside the
+// extern "C" block below; JIT'd code never calls these.)
+struct _JitPos {
+  int64_t line, col;
+};
+inline int64_t _jit_pack_pos(int64_t line, int64_t col) {
+  return (line << 32) | (col & 0xffffffff);
+}
+inline _JitPos _jit_unpack_pos(int64_t packed) {
+  return {packed >> 32, packed & 0xffffffff};
+}
+
 // Trait-conformance arity for a method slot: the widest overload if `cls`
 // is a multimethod dispatcher, else its own arity. Defined after the
 // multimethod registry below; declared here (outside the extern "C" block)
@@ -596,22 +611,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_arity_error(
 // emitted its own non-odr TLS wrapper and the link failed duplicate.
 inline thread_local int64_t _jit_call_site_line = 0;
 inline thread_local int64_t _jit_call_site_col = 0;
-
-// A source position packed into one int64 so a single value can carry it
-// through an ABI that has room for one: a runtime call's return (param_pos),
-// a rodata entry (the codegen's .argpos array), a cell's payload (the lazy
-// combinators' call-site capture). Defined here so every producer and
-// consumer agrees on the layout — jit_dispatch.h and jit_iter.h see it, and
-// so does the codegen in jit.h, which bakes the same packing into constants.
-struct _JitPos {
-  int64_t line, col;
-};
-inline int64_t _jit_pack_pos(int64_t line, int64_t col) {
-  return (line << 32) | (col & 0xffffffff);
-}
-inline _JitPos _jit_unpack_pos(int64_t packed) {
-  return {packed >> 32, packed & 0xffffffff};
-}
 
 // Name-aware arity error: callee passes its declared parameter name
 // table (a const char* array, NUL-terminated entries) and the runtime

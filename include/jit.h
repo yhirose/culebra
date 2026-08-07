@@ -12745,6 +12745,8 @@ struct JIT {
       builder_.CreateBr(okBB);  // unreachable (throw is noreturn) but valid
       builder_.SetInsertPoint(okBB);
     };
+    // Scanned once: error_for runs per builtin table, on the same ARG_LIST.
+    auto scan = scan_arg_list(argsAst);
     // The error `method` would raise on this arg shape when it resolves in
     // `tbl`, or nullopt if the call is valid / the method is absent. A pure
     // positional builtin uses the count-based ArityError; a kwarg-capable one
@@ -12779,11 +12781,10 @@ struct JIT {
       // Kwarg-capable: replicate interp's bind order (too-many positional →
       // per-param missing / positional+keyword conflict → leftover unknown
       // keyword). Args are static here, so the whole check is compile-time.
-      auto scan = scan_arg_list(argsAst);
+      if (!scan.splats.empty()) return std::nullopt;  // **splat binds later
       auto n_pos = static_cast<int64_t>(scan.positional.size());
       bool has_rest = false;
       for (const auto& p : params) if (p.kwargs_rest) has_rest = true;
-      if (!scan.splats.empty()) return std::nullopt;  // **splat binds later
       auto named = [&](std::string_view n) { return scan.kwarg(n) != nullptr; };
       // Rich errors point at the call chain's root (interp's
       // call_callee_position) — NOT current_line_/col, which for a
@@ -12806,7 +12807,7 @@ struct JIT {
                      rl, rc};
       }
       if (!has_rest)
-        for (const auto& [kn, val] : scan.explicit_kwargs) {
+        for (const auto& [kn, _val] : scan.explicit_kwargs) {
           bool known = false;
           for (const auto& p : params)
             if (!p.kwargs_rest && p.name == kn) { known = true; break; }
@@ -13860,8 +13861,9 @@ struct JIT {
     std::vector<const peg::Ast*> splats;  // `**` operands, in source order
 
     // The value expression given for `name`, or null. First wins, matching
-    // the binder. Only the builtin-arity path can see a repeat at all — it
-    // skips check_arg_list (see scan_arg_list) — and it asks presence only.
+    // the binder. Callers that skipped check_arg_list can be handed a repeat,
+    // so they either decline one first (the sort family gates on a single
+    // kwarg) or ask presence only (emit_builtin_arity_check).
     const peg::Ast* kwarg(std::string_view name) const {
       for (const auto& [kw, val] : explicit_kwargs)
         if (kw == name) return val;
@@ -13870,12 +13872,12 @@ struct JIT {
   };
 
   // Split an ARG_LIST into its three buckets. Pure bucketing: it never reports
-  // a malformed list. The call paths run culebra::check_arg_list first (via
-  // emit_arg_list_check) and it raises the structural errors — duplicate
-  // keyword, positional after keyword — with a precedence a linear scan here
-  // would get wrong. The builtin-method path does not run that check and
-  // instead declines a shape it does not recognise, leaving the report to
-  // emit_builtin_arity_check.
+  // a malformed list. Callers come in three kinds: most run
+  // culebra::check_arg_list first (via emit_arg_list_check), which raises the
+  // structural errors — duplicate keyword, positional after keyword — with a
+  // precedence a linear scan here would get wrong; the builtin-method fast
+  // paths skip it and decline any shape they do not recognise; and
+  // emit_builtin_arity_check skips it and is itself the report.
   static ArgScan scan_arg_list(const peg::Ast& argsAst) {
     using namespace peg::udl;
     ArgScan out;
