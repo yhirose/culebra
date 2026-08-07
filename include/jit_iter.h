@@ -2215,10 +2215,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_distinct(
   auto* seen = culebra_runtime_cell_new(
       TAG_SET, reinterpret_cast<int64_t>(culebra_runtime_set_new()));
   auto up_cells = _iter_cache_closure_cells({it, id});
-  auto* loc = culebra_runtime_cell_new(
-      TAG_LONG, (line << 32) | (col & 0xFFFFFFFF));
   return _iter_wrap_fast<&_iter_distinct_fast_fn>(
-      {up, seen, up_cells.has_next, up_cells.next, loc}, /*n_upstreams=*/1);
+      {up, seen, up_cells.has_next, up_cells.next, _iter_pos_cell(line, col)},
+      /*n_upstreams=*/1);
 }
 
 // tap: run the callback for its side effect, pass the element through.
