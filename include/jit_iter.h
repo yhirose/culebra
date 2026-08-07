@@ -954,8 +954,7 @@ inline JitCell* _iter_pos_cell(int64_t line, int64_t col) {
   return culebra_runtime_cell_new(TAG_LONG,
                                   (line << 32) | (col & 0xFFFFFFFF));
 }
-// The decode half of the same packing. Reading a position cell any other way
-// is how the two halves drift apart.
+// The decode half of the same packing, for the combinators that read the cell.
 struct _IterPos {
   int64_t line, col;
 };
@@ -965,8 +964,8 @@ inline _IterPos _iter_unpack_pos(const JitCell* cell) {
 }
 inline void _iter_publish_call_site(JitClosure* cls) {
   // Last user capture = captures[n-3]; [n-2]/[n-1] are the lookahead pair.
-  auto pos = _iter_unpack_pos(cls->captures[cls->n_captures - 3]);
-  culebra_runtime_set_call_site(pos.line, pos.col);
+  auto [line, col] = _iter_unpack_pos(cls->captures[cls->n_captures - 3]);
+  culebra_runtime_set_call_site(line, col);
 }
 
 // map: captures upstream + fn. Fast form feeds cascading raw-advance

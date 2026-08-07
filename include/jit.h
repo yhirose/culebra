@@ -13864,13 +13864,24 @@ struct JIT {
     std::vector<const peg::Ast*> positional;
     std::vector<std::pair<std::string_view, const peg::Ast*>> explicit_kwargs;
     std::vector<const peg::Ast*> splats;  // `**` operands, in source order
+
+    // The value expression given for `name`, or null. First wins, matching
+    // the binder; a repeat is a duplicate-keyword error check_arg_list has
+    // already raised.
+    const peg::Ast* kwarg(std::string_view name) const {
+      for (const auto& [kw, val] : explicit_kwargs)
+        if (kw == name) return val;
+      return nullptr;
+    }
   };
 
-  // Split an ARG_LIST into its three buckets. Pure bucketing: the structural
-  // rules (duplicate keyword, positional after keyword) belong to
-  // culebra::check_arg_list, which every caller has already run through
-  // emit_arg_list_check — including their precedence, which a linear scan
-  // here would get wrong.
+  // Split an ARG_LIST into its three buckets. Pure bucketing: it never reports
+  // a malformed list. The call paths run culebra::check_arg_list first (via
+  // emit_arg_list_check) and it raises the structural errors — duplicate
+  // keyword, positional after keyword — with a precedence a linear scan here
+  // would get wrong. The builtin-method path does not run that check and
+  // instead declines a shape it does not recognise, leaving the report to
+  // emit_builtin_arity_check.
   static ArgScan scan_arg_list(const peg::Ast& argsAst) {
     using namespace peg::udl;
     ArgScan out;
@@ -13886,21 +13897,6 @@ struct JIT {
       }
     }
     return out;
-  }
-
-  // `reverse:` is the only keyword the sort family takes. Sets `rev_expr` to
-  // its value expression and returns whether the call carries nothing else —
-  // an unknown keyword, a repeat, or a `**` splat sends the caller to
-  // emit_builtin_arity_check for interp's generic binder errors.
-  static bool sort_reverse_kwarg(const ArgScan& scan,
-                                 const peg::Ast*& rev_expr) {
-    if (!scan.splats.empty()) return false;
-    bool only_known = true;
-    for (const auto& [name, val] : scan.explicit_kwargs) {
-      if (name == "reverse" && !rev_expr) rev_expr = val;
-      else only_known = false;
-    }
-    return only_known;
   }
 
   Owned compile_function_call_with_kwargs(
@@ -17375,8 +17371,14 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   // interp's generic binder errors for kwarg-capable builtins.
   if (method == "sort_by" || method == "sorted_by") {
     auto scan = scan_arg_list(argsAst);
-    const peg::Ast* rev_expr = nullptr;
-    if (scan.positional.size() == 1 && sort_reverse_kwarg(scan, rev_expr)) {
+    // `reverse:` is the only keyword these take; an unknown one, a repeat or
+    // a `**` splat leaves the fast path.
+    bool kw_ok = scan.splats.empty() &&
+                 (scan.explicit_kwargs.empty() ||
+                  (scan.explicit_kwargs.size() == 1 &&
+                   scan.explicit_kwargs[0].first == "reverse"));
+    if (scan.positional.size() == 1 && kw_ok) {
+      const peg::Ast* rev_expr = scan.kwarg("reverse");
       const peg::Ast* cb = scan.positional[0];
       auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, method.c_str());
       auto f = compile(*cb);
@@ -17410,8 +17412,14 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   // malformed-shape fallthrough as sort_by above.
   if (method == "sort" || method == "sorted") {
     auto scan = scan_arg_list(argsAst);
-    const peg::Ast* rev_expr = nullptr;
-    if (scan.positional.empty() && sort_reverse_kwarg(scan, rev_expr)) {
+    // `reverse:` is the only keyword these take; an unknown one, a repeat or
+    // a `**` splat leaves the fast path.
+    bool kw_ok = scan.splats.empty() &&
+                 (scan.explicit_kwargs.empty() ||
+                  (scan.explicit_kwargs.size() == 1 &&
+                   scan.explicit_kwargs[0].first == "reverse"));
+    if (scan.positional.empty() && kw_ok) {
+      const peg::Ast* rev_expr = scan.kwarg("reverse");
       auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, method.c_str());
       llvm::Value* rev = rev_expr ? value_to_bool(compile(*rev_expr).consume())
                                   : builder_.getInt1(false);

@@ -3570,14 +3570,12 @@ struct JitExtension {
       JIT& jit, const NsMethod* m, const peg::Ast& argsAst,
       const peg::Ast& callAst);
 
-  // Evaluate the first `eval_count` args (source order, for side effects), then
-  // emit a runtime IR throw. Used by the stdlib compile paths for the
-  // statically-known malformed calls (arity / positional-vs-keyword conflict)
-  // so the error is catchable on every backend, matching interp's
-  // evaluate-then-error semantics: every argument runs for its side effects
-  // before the throw. Returns a placeholder value (unreachable:
-  // emit_throw_error is noreturn).
-  static llvm::Value* emit_malformed_arg_throw(
+  // Evaluate every arg (source order, for side effects), then emit a runtime
+  // IR throw — interp's evaluate-then-error semantics for a statically known
+  // arity / positional-vs-keyword conflict, so the error is catchable on every
+  // backend. Returns a placeholder (unreachable: emit_throw_error is
+  // noreturn).
+  static llvm::Value* emit_binder_error_throw(
       JIT& jit, const peg::Ast& argsAst, const char* kind,
       const std::string& msg, int64_t line, int64_t col);
 
@@ -8505,13 +8503,6 @@ inline JIT::Owned JitExtension::compile_global(JIT& jit,
     return jit.emit_call(callee, args);                                       \
   }
 
-// The stdlib compile paths (Proc / Http / JSON / ...) split their ARG_LIST
-// with JIT::scan_arg_list, the same bucketing the general kwargs path uses.
-// The two structural errors (duplicate keyword, positional-after-keyword)
-// are not this scan's business: culebra::check_arg_list owns them for every
-// backend, and every route into these paths runs it first through
-// JIT::emit_arg_list_check.
-
 inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
                                                     std::string_view ns,
                                                     std::string_view method,
@@ -9640,7 +9631,7 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
   return {};
 }
 
-inline llvm::Value* JitExtension::emit_malformed_arg_throw(
+inline llvm::Value* JitExtension::emit_binder_error_throw(
     JIT& jit, const peg::Ast& argsAst, const char* kind,
     const std::string& msg, int64_t line, int64_t col) {
   CULEBRA_JIT_EXT_BODY_ALIASES(jit);
@@ -9670,11 +9661,6 @@ inline JIT::Owned JitExtension::compile_single_positional_kwargs(
   auto& positional = scanned.positional;
   auto& explicit_kwargs = scanned.explicit_kwargs;
   auto& splats = scanned.splats;
-  auto given_by_keyword = [&](std::string_view name) {
-    for (const auto& [kw, _] : explicit_kwargs)
-      if (kw == name) return true;
-    return false;
-  };
   // Arity (too few / too many positionals) and positional-vs-keyword conflict
   // are statically known here, but interp reports them at RUNTIME (catchable,
   // after evaluating every argument). Mirror that: evaluate all args, then emit
@@ -9686,7 +9672,7 @@ inline JIT::Owned JitExtension::compile_single_positional_kwargs(
   std::string conflict_param;  // first param given both positionally and by kw
   for (size_t i = 1; i < positional.size() &&
                      i < static_cast<size_t>(meta->n_params); i++) {
-    if (given_by_keyword(meta->params[i].name)) {
+    if (scanned.kwarg(meta->params[i].name)) {
       conflict_param = std::string(meta->params[i].name);
       break;
     }
@@ -9698,7 +9684,7 @@ inline JIT::Owned JitExtension::compile_single_positional_kwargs(
                   too_few ? meta->min_arity : meta->n_params,
                   static_cast<long>(positional.size()))
             : culebra::positional_kw_conflict_message(conflict_param);
-    return jit.own(emit_malformed_arg_throw(
+    return jit.own(emit_binder_error_throw(
         jit, argsAst, (too_few || too_many) ? "ArityError" : "TypeError", msg,
         callAst.line, callAst.column));
   }

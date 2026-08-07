@@ -334,9 +334,8 @@ struct Sock {
 inline thread_local IdRegistry<Sock> g_socks;
 
 // Hand a connected/bound descriptor to the table as a `kind` handle. Taking
-// the guard by rvalue is the ownership transfer: the caller cannot keep a
-// closing guard over a descriptor the table now owns. `timeout_ms` 0 means
-// wait forever.
+// the guard by rvalue is the ownership transfer. `timeout_ms` 0 means wait
+// forever.
 inline int64_t intern_fd(Kind kind, FdGuard&& fd, int64_t timeout_ms) {
   auto s = std::make_unique<Sock>();
   s->kind = kind;
