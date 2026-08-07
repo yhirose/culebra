@@ -16,16 +16,11 @@
 
 #include <os_compat.h>  // os_isatty (stdin_is_interactive)
 
-#if defined(__APPLE__)
-#include <mach-o/dyld.h>  // _NSGetExecutablePath (self_executable_path)
-#include <climits>        // PATH_MAX
-#elif defined(__linux__)
-#include <climits>   // PATH_MAX
-#include <unistd.h>  // readlink (self_executable_path)
-#elif defined(_WIN32)
-// os_compat.h above already brings in <windows.h> (guarded) for
-// GetModuleFileNameW.
-#endif
+// current_executable_path. Depends on nothing else of culebra's, so this TU
+// keeps the isolation docs_cmd.h documents for itself: no culebra.h, no
+// interpreter internals, so a docs-or-init edit never drags the interpreter
+// into the link.
+#include <exe_path.h>
 
 #include "docs_embedded.h"
 #include "editor_assets_embedded.h"
@@ -39,51 +34,6 @@ constexpr char kPathSep = ';';
 #else
 constexpr char kPathSep = ':';
 #endif
-
-// --- self-exe path -----------------------------------------------------
-//
-// Duplicated from shared.h's current_executable_path rather than included:
-// this TU stays free of culebra.h / interpreter internals, the same
-// isolation docs_cmd.h documents for itself, so a docs-or-init edit never
-// drags the interpreter into the link.
-std::string self_executable_path() {
-#if defined(__APPLE__)
-  uint32_t sz = 0;
-  _NSGetExecutablePath(nullptr, &sz);  // first call reports the needed size
-  std::string buf(sz, '\0');
-  if (_NSGetExecutablePath(buf.data(), &sz) != 0) return "";
-  buf.resize(std::strlen(buf.c_str()));
-  char real[PATH_MAX];
-  if (::realpath(buf.c_str(), real)) return real;
-  return buf;
-#elif defined(__linux__)
-  char buf[PATH_MAX];
-  ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-  if (n <= 0) return "";
-  return std::string(buf, static_cast<size_t>(n));
-#elif defined(_WIN32)
-  std::wstring wbuf(MAX_PATH, L'\0');
-  for (;;) {
-    DWORD n = GetModuleFileNameW(nullptr, wbuf.data(),
-                                 static_cast<DWORD>(wbuf.size()));
-    if (n == 0) return "";
-    if (n < wbuf.size()) {
-      wbuf.resize(n);
-      break;
-    }
-    wbuf.resize(wbuf.size() * 2);
-  }
-  int len = WideCharToMultiByte(CP_UTF8, 0, wbuf.data(),
-                                static_cast<int>(wbuf.size()), nullptr, 0,
-                                nullptr, nullptr);
-  std::string out(len, '\0');
-  WideCharToMultiByte(CP_UTF8, 0, wbuf.data(), static_cast<int>(wbuf.size()),
-                      out.data(), len, nullptr, nullptr);
-  return out;
-#else
-  return "";
-#endif
-}
 
 std::string home_dir() {
   const char* h = std::getenv("HOME");
@@ -356,7 +306,7 @@ bool setup_vscode(std::vector<std::string>* plan) {
   // path when known, so they still work when the editor launches without
   // inheriting the shell PATH — this is more reliable than
   // build-vsix.sh's `command -v culebra`, since init IS culebra running.
-  std::string self = self_executable_path();
+  std::string self = current_executable_path();
   if (!self.empty()) {
     replace_all(package_json, "\"program\": \"culebra\"",
                "\"program\": \"" + self + "\"");
