@@ -3062,13 +3062,12 @@ struct JIT {
   // the variadic `__ARGS__` binding are extracted from it in the prologue. The
   // uniform shape lets every call site (user calls, UFCS, runtime callbacks)
   // use one ABI even when the declared arity differs from the passed arg
-  // count. Shared by compile_fn_common and the defer thunks.
-  llvm::Function* declare_closure_fn(const char* name_prefix,
-                                     const FuncInfo& info) {
+  // count.
+  llvm::Function* declare_closure_fn(const char* name_prefix, bool has_eh) {
     auto fn = llvm::Function::Create(
         jitFnCalleeType(), llvm::GlobalValue::ExternalLinkage,
         std::format("{}{}", name_prefix, funcCounter_++), module_);
-    if (info.has_eh) fn->setPersonalityFn(get_personality_fn());
+    if (has_eh) fn->setPersonalityFn(get_personality_fn());
     auto argIt = fn->arg_begin();
     for (const char* name : {"__ret", "__cls__", "self_tag", "self_data",
                              "n_args", "args"}) {
@@ -9083,10 +9082,9 @@ struct JIT {
     auto i64Ty = builder_.getInt64Ty();
     auto i8Ty = builder_.getInt8Ty();
 
-    auto fnType = jitFnCalleeType();
-    auto fnName = std::format("__culebra_ctor_{}", funcCounter_++);
-    auto fn = Function::Create(fnType, GlobalValue::ExternalLinkage, fnName,
-                               module_);
+    // No personality: CompilerStateSaver nulls current_lpad_ below, so the
+    // body emits calls rather than invokes.
+    auto fn = declare_closure_fn("__culebra_ctor_", /*has_eh=*/false);
 
     // Full per-function state snapshot, not just the insert point: a class
     // declared inside a `try` has current_lpad_ pointing at the OUTER
@@ -9100,12 +9098,6 @@ struct JIT {
     auto selfDataArg = &*argIt++;
     auto nArgsArg = &*argIt++;
     auto argsArg = &*argIt++;
-    current_sret_->setName("__ret");
-    clsArg->setName("__cls__");
-    selfTagArg->setName("self_tag");
-    selfDataArg->setName("self_data");
-    nArgsArg->setName("n_args");
-    argsArg->setName("args");
 
     auto entryBB = BasicBlock::Create(ctx_, "entry", fn);
     builder_.SetInsertPoint(entryBB);
@@ -10424,7 +10416,7 @@ struct JIT {
       }
     }
 
-    auto fn = declare_closure_fn("__culebra_fn_", info);
+    auto fn = declare_closure_fn("__culebra_fn_", info.has_eh);
 
     CompilerStateSaver saver(*this);
     current_info_ = &info;
@@ -13868,50 +13860,38 @@ struct JIT {
     return false;
   }
 
-  // Structural scan of an ARG_LIST into positionals and explicit kwargs,
-  // emitting the two structural throws on the way: a duplicate keyword, at the
-  // offending KWARG's own position (interp points there via split_call_args,
-  // not at the call site), and a positional following a keyword. `on_splat`
-  // receives each `**` operand — the compile-time resolver expands a literal
-  // Object into its own map, the runtime one just collects the operand.
-  template <typename OnSplat>
-  void scan_arg_list(
-      const peg::Ast& argsAst, std::vector<const peg::Ast*>& positional,
-      std::vector<std::pair<std::string_view, const peg::Ast*>>&
-          explicit_kwargs,
-      OnSplat&& on_splat) {
+  struct ArgScan {
+    std::vector<const peg::Ast*> positional;
+    std::vector<std::pair<std::string_view, const peg::Ast*>> explicit_kwargs;
+    std::vector<const peg::Ast*> splats;  // `**` operands, in source order
+  };
+
+  // Split an ARG_LIST into its three buckets. Pure bucketing: the structural
+  // rules (duplicate keyword, positional after keyword) belong to
+  // culebra::check_arg_list, which every caller has already run through
+  // emit_arg_list_check — including their precedence, which a linear scan
+  // here would get wrong.
+  ArgScan scan_arg_list(const peg::Ast& argsAst) {
     using namespace peg::udl;
-    std::set<std::string_view> seen_explicit;
-    bool saw_named = false;
+    ArgScan out;
+    out.positional.reserve(argsAst.nodes.size());
     for (auto& child : argsAst.nodes) {
       if (child->tag == "KWARG_SPLAT"_) {
-        saw_named = true;
-        on_splat(*child->nodes[0]);
+        out.splats.push_back(child->nodes[0].get());
       } else if (child->tag == "KWARG"_) {
-        saw_named = true;
-        auto name = child->nodes[0]->token;
-        if (!seen_explicit.insert(name).second) {
-          emit_throw_error("TypeError",
-              std::format("duplicate keyword argument '{}'", name),
-              child->line, child->column);
-        }
-        explicit_kwargs.emplace_back(name, child->nodes[1].get());
+        out.explicit_kwargs.emplace_back(child->nodes[0]->token,
+                                         child->nodes[1].get());
       } else {
-        if (saw_named) {
-          emit_throw_error("SyntaxError",
-              "positional argument follows keyword argument",
-              child->line, child->column);
-        }
-        positional.push_back(child.get());
+        out.positional.push_back(child.get());
       }
     }
+    return out;
   }
 
   Owned compile_function_call_with_kwargs(
       const peg::Ast& argsAst, llvm::Value* callee,
       const peg::Ast& fnAst, llvm::Value* selfVal = nullptr) {
     using namespace peg::udl;
-    // shared single source; inline scan stays
     emit_arg_list_check(argsAst, {selfVal});
 
     // FUNCTION layout: [PARAMETERS, (RETURN_TYPE)?, BLOCK]. Each
@@ -13956,34 +13936,31 @@ struct JIT {
     // top regardless of source order. So `f(c: 3, **{c: 5})` always
     // resolves to `c = 3` because the explicit wins, just like
     // `f(**{c: 5}, c: 3)`.
-    std::vector<const peg::Ast*> positional;
+    auto [positional, explicit_kwargs, splats] = scan_arg_list(argsAst);
     std::map<std::string_view, const peg::Ast*> kwargs;
-    std::vector<std::pair<std::string_view, const peg::Ast*>>
-        explicit_kwargs;
-    scan_arg_list(
-        argsAst, positional, explicit_kwargs, [&](const peg::Ast& operand) {
-          // Caller (the CALL postfix dispatcher) only routes here when
-          // every splat is a literal OBJECT — dynamic splats fall back
-          // to `compile_function_call_runtime_kwargs`. So we can read
-          // the OBJECT literal's properties straight from the AST.
-          for (auto& prop : operand.nodes) {
-            const auto& key_node = *prop->nodes[1];
-            if (key_node.tag != "IDENTIFIER"_) {
-              // Emit a runtime throw and skip this entry — inserting a
-              // non-identifier token into the kwargs map would corrupt
-              // the subsequent resolver state for downstream IR even
-              // though the throw fires first at runtime.
-              emit_throw_error("TypeError",
-                  "**: splat Object key must be an identifier",
-                  argsAst.line, argsAst.column);
-              continue;
-            }
-            const peg::Ast* val_ast = prop->nodes.size() >= 3
-                ? prop->nodes[2].get()
-                : &key_node;
-            kwargs[key_node.token] = val_ast;
-          }
-        });
+    // Caller (the CALL postfix dispatcher) only routes here when every splat
+    // is a literal OBJECT — dynamic splats fall back to
+    // `compile_function_call_runtime_kwargs`. So we can read the OBJECT
+    // literal's properties straight from the AST.
+    for (const peg::Ast* operand : splats) {
+      for (auto& prop : operand->nodes) {
+        const auto& key_node = *prop->nodes[1];
+        if (key_node.tag != "IDENTIFIER"_) {
+          // Emit a runtime throw and skip this entry — inserting a
+          // non-identifier token into the kwargs map would corrupt
+          // the subsequent resolver state for downstream IR even
+          // though the throw fires first at runtime.
+          emit_throw_error("TypeError",
+              "**: splat Object key must be an identifier",
+              argsAst.line, argsAst.column);
+          continue;
+        }
+        const peg::Ast* val_ast = prop->nodes.size() >= 3
+            ? prop->nodes[2].get()
+            : &key_node;
+        kwargs[key_node.token] = val_ast;
+      }
+    }
     // Layer explicit kwargs on top of the splat-merged map.
     for (const auto& [name, val] : explicit_kwargs) {
       kwargs[name] = val;
@@ -14135,9 +14112,9 @@ struct JIT {
       const std::vector<llvm::Value*>& positional_prefix = {},
       const peg::Ast* prefix_ast = nullptr) {
     using namespace peg::udl;
-    // shared single source; inline scan stays. A malformed arg list aborts
-    // before the receiver `self` and any UFCS positional prefix are consumed
-    // by the call — release those caller-owned +1s on the throw path. They
+    // A malformed arg list aborts before the receiver `self` and any UFCS
+    // positional prefix are consumed by the call — release those caller-owned
+    // +1s on the throw path. They
     // must be released inside emit_arg_list_check (before the noreturn throw);
     // releasing after it returns would land behind dead IR and never run.
     std::vector<llvm::Value*> owned_on_throw{selfVal};
@@ -14149,12 +14126,7 @@ struct JIT {
 
     // Scan ARG_LIST. Two-pass merge happens inside the runtime helper
     // so the IR scan only enforces structural rules.
-    std::vector<const peg::Ast*> positional;
-    std::vector<std::pair<std::string_view, const peg::Ast*>>
-        explicit_kwargs;
-    std::vector<const peg::Ast*> splats;
-    scan_arg_list(argsAst, positional, explicit_kwargs,
-                  [&](const peg::Ast& operand) { splats.push_back(&operand); });
+    auto [positional, explicit_kwargs, splats] = scan_arg_list(argsAst);
 
     // This frame owns the receiver's +1 until call_with_kwargs consumes it —
     // held as Owned so the unwind-temp window covers it while the argument
@@ -14642,7 +14614,7 @@ struct JIT {
     }
 
     // Defer thunks ignore n_args/args (callers always pass 0/null).
-    auto fn = declare_closure_fn("__culebra_defer_", info);
+    auto fn = declare_closure_fn("__culebra_defer_", info.has_eh);
 
     CompilerStateSaver saver(*this);
     current_info_ = &info;

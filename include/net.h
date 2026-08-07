@@ -333,23 +333,19 @@ struct Sock {
 // prior socket silently addressing a later, unrelated one on the same slot.
 inline thread_local IdRegistry<Sock> g_socks;
 
-// s stays owning until add() has actually placed the pointer, so a
-// growth-triggered bad_alloc inside add() doesn't leak it.
-inline int64_t intern(std::unique_ptr<Sock> s) {
-  int64_t id = g_socks.add(s.get());
-  s.release();
-  return id;
-}
-
 // Hand a connected/bound descriptor to the table as a `kind` handle. The
 // caller has already released it from its FdGuard (or never had one); from
 // here the table owns it. `timeout_ms` 0 means wait forever.
-inline int64_t intern_fd(Kind kind, socket_t fd, int64_t timeout_ms = 0) {
+inline int64_t intern_fd(Kind kind, socket_t fd, int64_t timeout_ms) {
   auto s = std::make_unique<Sock>();
   s->kind = kind;
   s->fd = fd;
   s->timeout_ms = timeout_ms;
-  return intern(std::move(s));
+  // s stays owning until add() has actually placed the pointer, so a
+  // growth-triggered bad_alloc inside add() doesn't leak it.
+  int64_t id = g_socks.add(s.get());
+  s.release();
+  return id;
 }
 
 inline Sock* find(int64_t id) { return g_socks.get(id); }
@@ -646,7 +642,9 @@ inline int64_t bind_and_intern(const std::string& host, int port, int socktype,
       last = error_string(last_error());
       continue;
     }
-    return intern_fd(kind, fd.release());
+    // A listener never times out on its own; accept() waits on the deadline
+    // the caller sets afterwards.
+    return intern_fd(kind, fd.release(), /*timeout_ms=*/0);
   }
   if (err) *err = last;
   return -1;
