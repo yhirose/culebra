@@ -1218,6 +1218,15 @@ jobs:
             echo "AOT_HTTP_ROUNDTRIP_BUILD_FAIL rc=$?"
             exit 1
           fi
+          # triv.exe (no Http) vs httpsrv.exe (Http) isolates what OpenSSL now
+          # costs only Http users, on the platform win_static used to charge it
+          # to everyone. No "before" binary to diff against (this build already
+          # has the fix), but the delta here is what the old unconditional link
+          # would have added to triv.exe.
+          if [ -f triv.exe ]; then
+            echo "=== binary size: non-Http vs Http (Windows AOT) ==="
+            ls -la triv.exe httpsrv.exe
+          fi
       # The step above proves the link; this one proves the window.
       - name: Smoke — Webview window + event loop (interp / JIT)
         run: misc/probe_webview_window.sh ./build-win-aot/culebra.exe

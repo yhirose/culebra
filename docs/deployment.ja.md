@@ -56,8 +56,8 @@ culebra build path/to/program.cul -o ./program
 各機能軸は独立にforce-loadされる（仕組みは
 [§4](#4-共有-runtime-archive-レイアウト) 参照）ので、`Tensor`も
 `Http`も使わないプログラムはbaseのみをlinkする。OpenSSLを
-落とすだけで約4.5 MB効く（非Httpバイナリ ~6.2 MBに対しHttp版は
-~10.8 MB、OpenSSLは静的リンクのため）。
+落とすだけで約4.7 MB効く（非Httpバイナリ ~7.6 MBに対しHttp版は
+~12.2 MB、OpenSSLは静的リンクのため）。
 
 `otool -L`（macOS）や`ldd`（Linux）で確認できます:
 

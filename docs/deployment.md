@@ -56,8 +56,8 @@ The default invocation targets the host platform.
 
 Each feature axis force-loads independently (mechanism: [§4](#4-shared-runtime-archive-layout)),
 so a program using neither `Tensor` nor `Http` links only the base
-archive. Dropping OpenSSL alone is worth ~4.5 MB (a non-Http binary is
-~6.2 MB vs ~10.8 MB for an Http one, since OpenSSL is statically
+archive. Dropping OpenSSL alone is worth ~4.7 MB (a non-Http binary is
+~7.6 MB vs ~12.2 MB for an Http one, since OpenSSL is statically
 linked).
 
 Verify with `otool -L` (macOS) / `ldd` (Linux):
