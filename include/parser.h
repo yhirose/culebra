@@ -55,26 +55,6 @@ inline peg::parser& get_parser() {
   return parser;
 }
 
-// Append `cp` to `out` as UTF-8 (1–4 bytes). Caller guarantees
-// cp <= 0x10FFFF and not a surrogate.
-inline void _append_utf8(std::string& out, uint32_t cp) {
-  if (cp < 0x80) {
-    out += static_cast<char>(cp);
-  } else if (cp < 0x800) {
-    out += static_cast<char>(0xC0 | (cp >> 6));
-    out += static_cast<char>(0x80 | (cp & 0x3F));
-  } else if (cp < 0x10000) {
-    out += static_cast<char>(0xE0 | (cp >> 12));
-    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-    out += static_cast<char>(0x80 | (cp & 0x3F));
-  } else {
-    out += static_cast<char>(0xF0 | (cp >> 18));
-    out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
-    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-    out += static_cast<char>(0x80 | (cp & 0x3F));
-  }
-}
-
 inline int _hex_val(char c) {
   if (c >= '0' && c <= '9') return c - '0';
   if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -125,7 +105,7 @@ inline size_t decode_unicode_escape_u(std::string_view raw, size_t i,
         "invalid \\u escape: U+{:04X} is not a Unicode scalar value "
         "(surrogate).", cp));
   }
-  _append_utf8(out, cp);
+  append_utf8(out, cp);
   return i + 5;
 }
 
@@ -139,7 +119,7 @@ inline size_t decode_unicode_escape_U(std::string_view raw, size_t i,
     throw CulebraError("SyntaxError", std::format(
         "invalid \\U escape: U+{:X} is not a Unicode scalar value.", cp));
   }
-  _append_utf8(out, cp);
+  append_utf8(out, cp);
   return i + 9;
 }
 
