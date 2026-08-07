@@ -1163,11 +1163,24 @@ struct SynthNode {
                                 std::string_view t, size_t l, size_t c) const {
     return std::make_shared<peg::Ast>(peg::Ast(path, l, c, name, t), orig);
   }
+  // `position`/`length` default to 0 (cpp-peglib's own default) for callers
+  // that never need a source-text slice of the synthesized node. Passing the
+  // real span matters for consumers that read raw source by offset instead
+  // of walking the tree — e.g. generator_transform.h's CPS builder takes a
+  // verbatim `ast_source_slice` of any statement it doesn't need to split,
+  // which silently slices empty text from a position-less node.
   std::shared_ptr<peg::Ast> grp(
       const char* name, const char* orig,
-      std::vector<std::shared_ptr<peg::Ast>> kids) const {
+      std::vector<std::shared_ptr<peg::Ast>> kids, size_t position = 0,
+      size_t length = 0) const {
+    // The relabeling copy-constructor below (AstBase(const AstBase&,
+    // original_name, position, length, ...)) has its own position/length
+    // params, defaulted to 0 independently of the temporary's — passing
+    // `position`/`length` only to the inner peg::Ast(...) and not here would
+    // silently zero them right back out.
     return std::make_shared<peg::Ast>(
-        peg::Ast(path, ln, col, name, std::move(kids)), orig);
+        peg::Ast(path, ln, col, name, std::move(kids), position, length),
+        orig, position, length);
   }
 };
 
@@ -1312,14 +1325,21 @@ inline std::shared_ptr<peg::Ast> make_postfix_if(const peg::Ast& stmt) {
   auto tok = [&](const char* name, const char* orig, std::string_view t,
                 size_t l, size_t c) { return nf.tok(name, orig, t, l, c); };
   auto grp = [&](const char* name, const char* orig,
-                std::vector<std::shared_ptr<Node>> kids) {
-    return nf.grp(name, orig, std::move(kids));
+                std::vector<std::shared_ptr<Node>> kids, size_t position = 0,
+                size_t length = 0) {
+    return nf.grp(name, orig, std::move(kids), position, length);
   };
 
   std::shared_ptr<Node> cond =
       desugar_postfix_modifiers(stmt.nodes[1]->nodes[0]);
+  std::shared_ptr<Node> base = desugar_postfix_modifiers(stmt.nodes[0]);
+  // Real position/length (not the SynthNode default of 0), so a consumer
+  // that reads raw source by offset instead of walking the tree — e.g.
+  // generator_transform.h's CPS builder, which takes a verbatim
+  // `ast_source_slice` of any statement it doesn't need to split — slices
+  // `then`'s own source text instead of an empty string.
   std::shared_ptr<Node> then_body = std::make_shared<Node>(
-      Node(*desugar_postfix_modifiers(stmt.nodes[0]), "STATEMENT"));
+      Node(*base, "STATEMENT", base->position, base->length));
 
   if (is_unless) {
     auto bang = tok("UNARY_NOT_OPERATOR", "UNARY_NOT_OPERATOR",
@@ -1327,7 +1347,11 @@ inline std::shared_ptr<peg::Ast> make_postfix_if(const peg::Ast& stmt) {
     cond = grp("UNARY_NOT", "UNARY_NOT", {bang, cond});
   }
 
-  return grp("IF", "IF", {cond, then_body});
+  // The whole IF node's span mirrors `stmt`'s (start of the base statement
+  // through the end of the condition) — source order is reversed from the
+  // synthesized tree shape, but the slice is still the original, valid
+  // `stmt if cond` / `stmt unless cond` text, byte for byte.
+  return grp("IF", "IF", {cond, then_body}, stmt.position, stmt.length);
 }
 
 // Walk the optimized AST, replacing every postfix-modifier STATEMENT with
