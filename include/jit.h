@@ -13871,7 +13871,7 @@ struct JIT {
   // culebra::check_arg_list, which every caller has already run through
   // emit_arg_list_check — including their precedence, which a linear scan
   // here would get wrong.
-  ArgScan scan_arg_list(const peg::Ast& argsAst) {
+  static ArgScan scan_arg_list(const peg::Ast& argsAst) {
     using namespace peg::udl;
     ArgScan out;
     out.positional.reserve(argsAst.nodes.size());

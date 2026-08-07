@@ -3572,12 +3572,13 @@ struct JitExtension {
 
   // Evaluate the first `eval_count` args (source order, for side effects), then
   // emit a runtime IR throw. Used by the stdlib compile paths for the
-  // statically-known malformed calls (arity / positional-vs-keyword conflict /
-  // duplicate keyword / positional-after-keyword) so the error is catchable on
-  // every backend, matching interp's evaluate-then-error semantics. Returns a
-  // placeholder value (unreachable: emit_throw_error is noreturn).
+  // statically-known malformed calls (arity / positional-vs-keyword conflict)
+  // so the error is catchable on every backend, matching interp's
+  // evaluate-then-error semantics: every argument runs for its side effects
+  // before the throw. Returns a placeholder value (unreachable:
+  // emit_throw_error is noreturn).
   static llvm::Value* emit_malformed_arg_throw(
-      JIT& jit, const peg::Ast& argsAst, size_t eval_count, const char* kind,
+      JIT& jit, const peg::Ast& argsAst, const char* kind,
       const std::string& msg, int64_t line, int64_t col);
 
   static llvm::Value* emit_output_call(JIT& jit, const char* rt_name,
@@ -8504,63 +8505,12 @@ inline JIT::Owned JitExtension::compile_global(JIT& jit,
     return jit.emit_call(callee, args);                                       \
   }
 
-// An ARG_LIST split into positionals / explicit kwargs / **splats. The single
-// AST-scan shared by every kwarg-accepting stdlib compile path (Proc / Http /
-// JSON), so the merge order and the two structural errors (duplicate keyword,
-// positional-after-keyword) are defined once. Those errors are NOT thrown here:
-// interp reports them at runtime (catchable), so the scan records the first one
-// and the caller re-emits it as a runtime IR throw — matching interp and the
-// general kwargs path. `err_eval_count` is how many leading args the caller
-// evaluates (for side effects) before the throw, mirroring interp's
-// evaluate-then-error point: the whole list for a duplicate keyword (caught in
-// the binder after a full collection), but only up to the offending arg for a
-// positional-after-keyword (caught mid-collection, before that arg is run).
-struct ScannedArgs {
-  std::vector<const peg::Ast*> positional;
-  std::vector<std::pair<std::string_view, const peg::Ast*>> explicit_kwargs;
-  std::set<std::string_view> seen_explicit;
-  std::vector<const peg::Ast*> splats;
-  const char* err_kind = nullptr;  // "TypeError" | "SyntaxError" | nullptr
-  std::string err_msg;
-  int64_t err_line = 0, err_col = 0;
-  size_t err_eval_count = 0;
-};
-
-inline ScannedArgs _jit_scan_arg_list(const peg::Ast& argsAst) {
-  using namespace peg::udl;
-  ScannedArgs s;
-  bool saw_named = false;
-  for (size_t i = 0; i < argsAst.nodes.size(); i++) {
-    const auto& child = argsAst.nodes[i];
-    if (child->tag == "KWARG_SPLAT"_) {
-      saw_named = true;
-      s.splats.push_back(child->nodes[0].get());
-    } else if (child->tag == "KWARG"_) {
-      saw_named = true;
-      auto name = child->nodes[0]->token;
-      if (!s.seen_explicit.insert(name).second) {
-        s.err_kind = "TypeError";
-        s.err_msg = std::format("duplicate keyword argument '{}'", name);
-        s.err_line = static_cast<long>(child->line);
-        s.err_col = static_cast<long>(child->column);
-        s.err_eval_count = argsAst.nodes.size();  // interp evals the full list
-        return s;
-      }
-      s.explicit_kwargs.emplace_back(name, child->nodes[1].get());
-    } else {
-      if (saw_named) {
-        s.err_kind = "SyntaxError";
-        s.err_msg = "positional argument follows keyword argument";
-        s.err_line = static_cast<long>(child->line);
-        s.err_col = static_cast<long>(child->column);
-        s.err_eval_count = i;  // interp throws before evaluating this arg
-        return s;
-      }
-      s.positional.push_back(child.get());
-    }
-  }
-  return s;
-}
+// The stdlib compile paths (Proc / Http / JSON / ...) split their ARG_LIST
+// with JIT::scan_arg_list, the same bucketing the general kwargs path uses.
+// The two structural errors (duplicate keyword, positional-after-keyword)
+// are not this scan's business: culebra::check_arg_list owns them for every
+// backend, and every route into these paths runs it first through
+// JIT::emit_arg_list_check.
 
 inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
                                                     std::string_view ns,
@@ -9691,12 +9641,11 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
 }
 
 inline llvm::Value* JitExtension::emit_malformed_arg_throw(
-    JIT& jit, const peg::Ast& argsAst, size_t eval_count, const char* kind,
+    JIT& jit, const peg::Ast& argsAst, const char* kind,
     const std::string& msg, int64_t line, int64_t col) {
   CULEBRA_JIT_EXT_BODY_ALIASES(jit);
   using namespace peg::udl;
-  for (size_t i = 0; i < eval_count && i < argsAst.nodes.size(); i++) {
-    const auto& child = argsAst.nodes[i];
+  for (const auto& child : argsAst.nodes) {
     const peg::Ast* expr = child->tag == "KWARG"_ ? child->nodes[1].get()
                          : child->tag == "KWARG_SPLAT"_ ? child->nodes[0].get()
                                                         : child.get();
@@ -9717,19 +9666,15 @@ inline JIT::Owned JitExtension::compile_single_positional_kwargs(
 
   // Scan ARG_LIST: cmd + (kwargs / **splat). Extra positionals after cmd are
   // folded into the kwarg slab below, bound to the leading params by name.
-  auto scanned = _jit_scan_arg_list(argsAst);
+  auto scanned = JIT::scan_arg_list(argsAst);
   auto& positional = scanned.positional;
   auto& explicit_kwargs = scanned.explicit_kwargs;
-  auto& seen_explicit = scanned.seen_explicit;
   auto& splats = scanned.splats;
-  // Structural syntax error (duplicate keyword / positional-after-keyword): the
-  // scan recorded it instead of throwing, so re-emit it as a runtime throw at
-  // its evaluate-then-error point — catchable like interp + the general path.
-  if (scanned.err_kind) {
-    return jit.own(emit_malformed_arg_throw(jit, argsAst, scanned.err_eval_count,
-                                    scanned.err_kind, scanned.err_msg,
-                                    scanned.err_line, scanned.err_col));
-  }
+  auto given_by_keyword = [&](std::string_view name) {
+    for (const auto& [kw, _] : explicit_kwargs)
+      if (kw == name) return true;
+    return false;
+  };
   // Arity (too few / too many positionals) and positional-vs-keyword conflict
   // are statically known here, but interp reports them at RUNTIME (catchable,
   // after evaluating every argument). Mirror that: evaluate all args, then emit
@@ -9741,7 +9686,7 @@ inline JIT::Owned JitExtension::compile_single_positional_kwargs(
   std::string conflict_param;  // first param given both positionally and by kw
   for (size_t i = 1; i < positional.size() &&
                      i < static_cast<size_t>(meta->n_params); i++) {
-    if (seen_explicit.count(meta->params[i].name)) {
+    if (given_by_keyword(meta->params[i].name)) {
       conflict_param = std::string(meta->params[i].name);
       break;
     }
@@ -9754,8 +9699,7 @@ inline JIT::Owned JitExtension::compile_single_positional_kwargs(
                   static_cast<long>(positional.size()))
             : culebra::positional_kw_conflict_message(conflict_param);
     return jit.own(emit_malformed_arg_throw(
-        jit, argsAst, argsAst.nodes.size(),
-        (too_few || too_many) ? "ArityError" : "TypeError", msg,
+        jit, argsAst, (too_few || too_many) ? "ArityError" : "TypeError", msg,
         callAst.line, callAst.column));
   }
 
@@ -9846,15 +9790,7 @@ inline JIT::Owned JitExtension::compile_ns_method_kwargs(
 
   // Scan ARG_LIST into positionals / explicit kwargs / splats (same shape as
   // compile_single_positional_kwargs, but N positionals).
-  auto scanned = _jit_scan_arg_list(argsAst);
-  // Structural syntax error (duplicate keyword / positional-after-keyword):
-  // re-emit as a runtime throw, catchable like interp (the scan no longer
-  // throws at compile time).
-  if (scanned.err_kind) {
-    return jit.own(emit_malformed_arg_throw(jit, argsAst, scanned.err_eval_count,
-                                    scanned.err_kind, scanned.err_msg,
-                                    scanned.err_line, scanned.err_col));
-  }
+  auto scanned = JIT::scan_arg_list(argsAst);
   auto& positional = scanned.positional;
   auto& explicit_kwargs = scanned.explicit_kwargs;
   auto& splats = scanned.splats;
