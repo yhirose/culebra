@@ -624,11 +624,18 @@ column.
 | `for i in 0..xs.size() { xs[i] … }` | `for x in xs` |
 | `mut i = start; while i < end { …; i += 1 }` | `for i in start..end { … }` |
 | `{k1: v1, k2: obj.k2, k3: obj.k3}` (copy every field to change one) | `{...obj, k1: v1}` |
+| `if cond { stmt }` — single statement, no `else` | `stmt if cond` (`stmt unless cond` for the negation) |
+| `if x == nil { x = v }` / `if !d.has(k) { d[k] = v }` | `x ??= v` / `d[k] ??= v` — also targets `obj.key` |
 | `"{a.b(c).d ?? e}"` — a long/nested expression inline | `let x = a.b(c).d ?? e`, then `"{x}"` |
 
 `cond` is a `match` with no subject, so a chain of unrelated tests is
 `cond { a > 1 => …, b < 2 => …, _ => … }`. A loop that must report
 whether it finished takes a `nobreak` block instead of a flag.
+
+A bare `return if cond` — no value between `return` and `if` — parses
+`if` as the start of the return's own value (an `if`-expression) and
+fails with a confusing error. Give `return` an explicit value: `return
+nil if cond`.
 
 ## 4. Signature index
 

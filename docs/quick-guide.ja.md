@@ -613,11 +613,18 @@ inspect([1, 2].size())  # => 2
 | `for i in 0..xs.size() { xs[i] … }` | `for x in xs` |
 | `mut i = start; while i < end { …; i += 1 }` | `for i in start..end { … }` |
 | `{k1: v1, k2: obj.k2, k3: obj.k3}`（1つ変えるために全フィールドを手コピー） | `{...obj, k1: v1}` |
+| `if cond { stmt }` — `else` なしの単文 | `stmt if cond`（否定は `stmt unless cond`） |
+| `if x == nil { x = v }` / `if !d.has(k) { d[k] = v }` | `x ??= v` / `d[k] ??= v`（`obj.key` にも使える） |
 | `"{a.b(c).d ?? e}"`（長く入れ子になった式をそのまま埋め込む） | `let x = a.b(c).d ?? e` としてから `"{x}"` |
 
 `cond` は主語のない `match` なので、互いに無関係な条件の連鎖は
 `cond { a > 1 => …, b < 2 => …, _ => … }` になる。完走したかどうかを
 知りたいループはフラグでなく `nobreak` ブロックを使う。
+
+`return` と `if` の間に値を挟まない `return if cond` は、`if` を
+`return` 自身の値（`if` 式）の開始とパースしてしまい、分かりにくい
+エラーになる。`return nil if cond` のように `return` に明示的な値を
+与えること。
 
 ## 4. シグネチャ索引
 
