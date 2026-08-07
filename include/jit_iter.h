@@ -954,10 +954,19 @@ inline JitCell* _iter_pos_cell(int64_t line, int64_t col) {
   return culebra_runtime_cell_new(TAG_LONG,
                                   (line << 32) | (col & 0xFFFFFFFF));
 }
+// The decode half of the same packing. Reading a position cell any other way
+// is how the two halves drift apart.
+struct _IterPos {
+  int64_t line, col;
+};
+inline _IterPos _iter_unpack_pos(const JitCell* cell) {
+  int64_t packed = cell->value.data;
+  return {packed >> 32, packed & 0xFFFFFFFF};
+}
 inline void _iter_publish_call_site(JitClosure* cls) {
   // Last user capture = captures[n-3]; [n-2]/[n-1] are the lookahead pair.
-  int64_t packed = cls->captures[cls->n_captures - 3]->value.data;
-  culebra_runtime_set_call_site(packed >> 32, packed & 0xFFFFFFFF);
+  auto pos = _iter_unpack_pos(cls->captures[cls->n_captures - 3]);
+  culebra_runtime_set_call_site(pos.line, pos.col);
 }
 
 // map: captures upstream + fn. Fast form feeds cascading raw-advance
@@ -2051,9 +2060,7 @@ extern "C" {
 inline void _iter_flat_map_fast_fn(JitClosure* cls, JitValue, bool* done,
                                    int8_t* out_tag, int64_t* out_data) {
   auto* fn_cls = reinterpret_cast<JitClosure*>(cls->captures[6]->value.data);
-  int64_t packed = cls->captures[7]->value.data;
-  int64_t line = packed >> 32;
-  int64_t col = packed & 0xFFFFFFFF;
+  auto [line, col] = _iter_unpack_pos(cls->captures[7]);
   _iter_flatten_step(
       _iter_flatten_cells(cls), done, out_tag, out_data,
       [&](int8_t tag, int64_t data) {
@@ -2092,9 +2099,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_flat_map(
 // inner iterable. The six shared cells, then the packed line|col.
 inline void _iter_flatten_fast_fn(JitClosure* cls, JitValue, bool* done,
                                   int8_t* out_tag, int64_t* out_data) {
-  int64_t packed = cls->captures[6]->value.data;
-  int64_t line = packed >> 32;
-  int64_t col = packed & 0xFFFFFFFF;
+  auto [line, col] = _iter_unpack_pos(cls->captures[6]);
   _iter_flatten_step(_iter_flatten_cells(cls), done, out_tag, out_data,
                      [&](int8_t tag, int64_t data) {
                        auto iv = _iter_coerce_iterable(tag, data, line, col);
@@ -2173,9 +2178,7 @@ inline void _iter_distinct_fast_fn(JitClosure* cls, JitValue, bool* done,
   auto* up_has_next =
       reinterpret_cast<JitClosure*>(cls->captures[2]->value.data);
   auto* up_next = reinterpret_cast<JitClosure*>(cls->captures[3]->value.data);
-  int64_t packed = cls->captures[4]->value.data;
-  int64_t line = packed >> 32;
-  int64_t col = packed & 0xFFFFFFFF;
+  auto [line, col] = _iter_unpack_pos(cls->captures[4]);
   for (;;) {
     int8_t tag;
     int64_t data;
