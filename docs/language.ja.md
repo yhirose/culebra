@@ -639,7 +639,16 @@ Culebraはシャドウを3つの軸で独立に扱います:
 * `expr!!` — **非nullアサーション**: `expr`をそのまま通すが、`nil`
   なら`NilError`。後置なので連鎖可: `a!!.b`, `a!![0]`。
 * `a ??= b` — **nilコアレス代入**: `a`が現在`nil`のときだけ`b`を
-  代入し、それ以外では`b`を評価しない。MVPでは対象は単純変数のみ。
+  代入し、それ以外では`b`を評価しない（短絡）。対象は単純変数の他、
+  `obj.key`・`obj[k]`（classインスタンスの`__index__`/`__setindex__`
+  フォールバック込み）・`arr[i]`にも使える。存在しないObjectキーは
+  素の`obj.key`読み取り（§10）と同じく`nil`扱いなので、`obj[k] ??= v`
+  はキーが無ければ挿入する — 実行時に挿入されたキーのmutable-by-default
+  ルール（§10）に従い、既存キーがnil値を持つ場合はそのスロットの
+  `mut`フラグに従う。Array要素は自動拡張しない: 範囲外の`i`は引き続き
+  `IndexError`。`FixedArray`/`SharedBuffer`要素や`@packable`のpacked
+  フィールド（packed scalarにnilセンチネルは無い）、`Shared.new`ビュー
+  （常にimmutable）には非対応。
 
 ### 真偽値変換
 
@@ -2816,13 +2825,13 @@ nil可能値を辿り、`!!`で非nilをアサート（`NilError`）、`??` / `?
 「遅延初期化を*静的*非null検査器に納得させる」ためのもので、culebra
 にはその検査器が無いからです。nullableフィールド + 使用箇所`!!`、
 または`??`ガードで代替します。遅延計算・メモ化フィールドのイディオム
-はnilチェック付きアクセサメソッド（フィールドへの`??=`は将来拡張 —
-現状`??=`は単純変数のみ）:
+はnilチェック付きアクセサメソッド —`self._data ??= load()`が直接
+使えます（`??=`は単純変数だけでなく`obj.key`ターゲットにも対応）:
 
     class Cache {
       new() { self._data = nil }
       data() {
-        if self._data == nil { self._data = load() }
+        self._data ??= load()
         self._data
       }
     }
@@ -4131,7 +4140,7 @@ mut groups = {}
 for w in ['apple', 'avocado', 'banana'] {
   groups.get_or_put(w[0..1], || []).push(w)
 }
-inspect(groups)               # => {a: ['apple', 'avocado'], b: ['banana']}
+inspect(groups)               # => {mut a: ['apple', 'avocado'], mut b: ['banana']}
 
 mut p = {a: 1, b: 2}
 p.remove('a')
@@ -4145,10 +4154,10 @@ inspect(p)                    # => {b: 2}
 mut prices = {apple: 100, banana: 80}
 # 値を変換する:
 inspect(prices.iter().map(|(k, v)| (k, v * 2)).to_object())
-# => {apple: 200, banana: 160}
+# => {mut apple: 200, mut banana: 160}
 # 反転する:
 inspect(prices.iter().map(|(k, v)| (v, k)).to_object())
-# => {100: 'apple', 80: 'banana'}
+# => {mut 100: 'apple', mut 80: 'banana'}
 ```
 
 ### 18.4 特殊識別子

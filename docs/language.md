@@ -679,8 +679,18 @@ working with possibly-nil values.
   raises `NilError` if it is `nil`. Postfix, so it chains: `a!!.b`,
   `a!![0]`.
 * `a ??= b` — **nil-coalescing assignment**: assigns `b` to `a` only
-  when `a` currently reads as `nil`, short-circuiting `b` otherwise.
-  MVP: the target must be a simple variable.
+  when `a` currently reads as `nil`, short-circuiting `b` otherwise (`b`
+  is not evaluated on the non-nil path). The target may be a plain
+  variable, `obj.key`, `obj[k]` (including a class instance's
+  `__index__`/`__setindex__` fallback), or `arr[i]`. An absent Object
+  key reads as `nil` for this purpose, same as a plain `obj.key` read
+  (§10) — so `obj[k] ??= v` inserts `k` when it is missing, honoring the
+  usual mutable-by-default rule for a runtime-inserted key (§10) and the
+  existing slot's `mut` flag when the key is already present but nil. An
+  Array index does not auto-extend: an out-of-range `i` still raises
+  `IndexError`. Not supported on a `FixedArray`/`SharedBuffer` element or
+  a `@packable` packed field (no `nil` sentinel for a packed scalar), or
+  on a `Shared.new` view (unconditionally immutable).
 
 ### Truthiness
 
@@ -1150,15 +1160,20 @@ the fallback and `p['m']` raises `KeyError`. Assigning to a method name
 ### Access and mutation
 
     obj.key              # read, returns nil if absent
-    obj.key = v          # set (creates if absent); mut required on existing
+    obj.key = v          # set (creates as mutable if absent; see below)
     obj[k]               # subscript read with a non-String key (see below)
     obj.size()           # property count (Long), includes non-String keys
     obj.has(key)         # Bool — accepts String, Long, Float, Bool, Nil, Tuple
     obj.keys()           # Array of keys in insertion order (interleaved)
     obj.remove(key)      # remove the entry for `key` (any hashable key); no-op if absent
 
-Assigning to an existing property that was declared without `mut`
-raises `immutable property 'key' at L:C`.
+Assigning to an *existing* property that was declared without `mut`
+raises `immutable property 'key' at L:C`. A property created at
+runtime by `obj.key = v` (or `obj[k] = v`, `get_or_put`, `to_object`,
+`group_by`) is mutable by default — the same rule the `{...spread}`
+merge already uses ("merged entries are mutable"). Only an Object
+*literal*'s own keys are immutable by default (`{key: v}`; `mut key: v`
+opts a literal key in — see Construction, above).
 
 Dot-form names (`obj.key`) are identifiers (`[A-Za-z_][A-Za-z0-9_]*`)
 that go through the fast shape path. Non-identifier keys reach the
@@ -1221,6 +1236,17 @@ reach the same slot:
     inspect(o.x)                       # 1
     o.y = 2
     inspect(o['y'])                    # 2
+
+A key created at runtime is mutable, so writing it again succeeds
+(unlike a same-named Object *literal* key, which stays immutable
+without an explicit `mut`):
+
+    mut tally = {}
+    for w in ['a', 'b', 'a'] {
+      tally[w] ??= 0    # insert 0 on the first sighting (§7, nil-coalescing assignment)
+      tally[w] += 1
+    }
+    inspect(tally)                      # {a: 2, b: 1}
 
 Existing slots honor their `mut` flag, regardless of which form the
 write uses; `obj[k] = v` on an immutable slot raises `ImmutableError`.
@@ -3013,13 +3039,13 @@ feature exists to satisfy a *static* non-null checker for deferred
 initialization, which culebra does not have. Use a plain (nullable)
 field and assert with `!!` at the use site, or guard with `??`. For
 lazily-computed / memoized fields, the idiom is a nil-checked accessor
-method (a field-level `??=` is a future extension — `??=` currently
-targets simple variables):
+method — `self._data ??= load()` works directly (`??=` supports
+`obj.key` targets, not just simple variables):
 
     class Cache {
       new() { self._data = nil }
       data() {
-        if self._data == nil { self._data = load() }
+        self._data ??= load()
         self._data
       }
     }
@@ -4343,7 +4369,7 @@ mut groups = {}
 for w in ['apple', 'avocado', 'banana'] {
   groups.get_or_put(w[0..1], || []).push(w)
 }
-inspect(groups)               # => {a: ['apple', 'avocado'], b: ['banana']}
+inspect(groups)               # => {mut a: ['apple', 'avocado'], mut b: ['banana']}
 
 mut p = {a: 1, b: 2}
 p.remove('a')
@@ -4357,10 +4383,10 @@ a whole table is one expression — no `mut` accumulator to declare:
 mut prices = {apple: 100, banana: 80}
 # Remap the values:
 inspect(prices.iter().map(|(k, v)| (k, v * 2)).to_object())
-# => {apple: 200, banana: 160}
+# => {mut apple: 200, mut banana: 160}
 # Invert it:
 inspect(prices.iter().map(|(k, v)| (v, k)).to_object())
-# => {100: 'apple', 80: 'banana'}
+# => {mut 100: 'apple', mut 80: 'banana'}
 ```
 
 ### 18.4 Special identifiers
