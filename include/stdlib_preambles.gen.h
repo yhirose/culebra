@@ -1756,9 +1756,7 @@ inline constexpr const char* REGEX_MODULE_SOURCE = R"=culpre=(fn _regex_find_ite
   let mut pos = 0
   while pos <= s.size() {
     let r = _Regex.find_from(pat, s, pos)
-    if r.m == nil {
-      return
-    }
+    return if r.m == nil
     yield r.m
     pos = r.nxt
   }

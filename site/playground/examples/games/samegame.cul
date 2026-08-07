@@ -314,28 +314,20 @@ Term.app(fn (s) {
         }
         msg += "  —  q: quit, other key: new game"
         draw(s, board, cur_r, cur_c, score, msg)
-        if !INTERACTIVE {
-          return
-        }
+        return if !INTERACTIVE
         let (best, entry) = record_score(score)
         if entry != nil {
           draw_score_box(s, best, entry, "q: quit   other key: new game")
-          if wait_any_key(s) == "q" {
-            return
-          }
+          return if wait_any_key(s) == "q"
           new_round()
           draw(s, board, cur_r, cur_c, score, msg)
           continue
         }
-        if wait_any_key(s) == "q" {
-          return
-        }
+        return if wait_any_key(s) == "q"
         new_round()
         draw(s, board, cur_r, cur_c, score, msg)
       }
-      if MAX_MOVES >= 0 && moves >= MAX_MOVES {
-        return
-      }
+      return if MAX_MOVES >= 0 && moves >= MAX_MOVES
 
       mut sr = -1
       mut sc = -1
@@ -343,9 +335,7 @@ Term.app(fn (s) {
         let ev = s.poll(0.1)
         if ev != nil {
           if ev.kind == "key" {
-            if ev.key == "q" {
-              return
-            }
+            return if ev.key == "q"
             match ev.key {
               "n" => {
                 new_round()

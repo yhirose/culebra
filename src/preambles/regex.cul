@@ -2,9 +2,7 @@ fn _regex_find_iter(pat, s) {
   let mut pos = 0
   while pos <= s.size() {
     let r = _Regex.find_from(pat, s, pos)
-    if r.m == nil {
-      return
-    }
+    return if r.m == nil
     yield r.m
     pos = r.nxt
   }
