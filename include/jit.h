@@ -12779,20 +12779,12 @@ struct JIT {
       // Kwarg-capable: replicate interp's bind order (too-many positional →
       // per-param missing / positional+keyword conflict → leftover unknown
       // keyword). Args are static here, so the whole check is compile-time.
-      int64_t n_pos = 0;
-      std::vector<std::string_view> kw_names;
-      bool has_splat = false, has_rest = false;
-      for (const auto& n : argsAst.nodes) {
-        if (n->tag == "KWARG"_) kw_names.push_back(n->nodes[0]->token);
-        else if (n->tag == "KWARG_SPLAT"_) has_splat = true;
-        else n_pos++;
-      }
+      auto scan = scan_arg_list(argsAst);
+      auto n_pos = static_cast<int64_t>(scan.positional.size());
+      bool has_rest = false;
       for (const auto& p : params) if (p.kwargs_rest) has_rest = true;
-      if (has_splat) return std::nullopt;  // dynamic **splat: bound at runtime
-      auto named = [&](std::string_view nm) {
-        for (auto k : kw_names) if (k == nm) return true;
-        return false;
-      };
+      if (!scan.splats.empty()) return std::nullopt;  // **splat binds later
+      auto named = [&](std::string_view n) { return scan.kwarg(n) != nullptr; };
       // Rich errors point at the call chain's root (interp's
       // call_callee_position) — NOT current_line_/col, which for a
       // parenthesized receiver is the `(` rather than the callee.
@@ -12814,7 +12806,7 @@ struct JIT {
                      rl, rc};
       }
       if (!has_rest)
-        for (auto kn : kw_names) {
+        for (const auto& [kn, val] : scan.explicit_kwargs) {
           bool known = false;
           for (const auto& p : params)
             if (!p.kwargs_rest && p.name == kn) { known = true; break; }
@@ -13868,8 +13860,8 @@ struct JIT {
     std::vector<const peg::Ast*> splats;  // `**` operands, in source order
 
     // The value expression given for `name`, or null. First wins, matching
-    // the binder; a repeat is a duplicate-keyword error check_arg_list has
-    // already raised.
+    // the binder. Only the builtin-arity path can see a repeat at all — it
+    // skips check_arg_list (see scan_arg_list) — and it asks presence only.
     const peg::Ast* kwarg(std::string_view name) const {
       for (const auto& [kw, val] : explicit_kwargs)
         if (kw == name) return val;
