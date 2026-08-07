@@ -352,6 +352,28 @@ int main() {
     CHECK(d.error.find("closed") != std::string::npos);
   }
 
+  // --- Client registry: closing then reopening must not alias (no ABA) ---
+  // g_http_clients is an IdRegistry, so a slot freed by close() gets a bumped
+  // generation on reuse: a captured id from the closed client must not resolve
+  // to whatever new client lands on the same slot.
+  {
+    std::string err;
+    int64_t cid1 = culebra::http::http_client_open(base + "/api", {}, 0, true, err);
+    CHECK(cid1 >= 0);
+    culebra::http::http_client_close(cid1);
+    int64_t cid2 =
+        culebra::http::http_client_open(base + "/api", {}, 0, true, err);
+    CHECK(cid1 != cid2);  // likely reuses cid1's slot, but the id itself differs
+    HttpRequest r1;
+    r1.method = "GET";
+    r1.url = "/echo";
+    auto a = culebra::http::http_client_request(cid1, r1);
+    CHECK(!a.ok && a.error.find("closed") != std::string::npos);  // old id: dead
+    auto b = culebra::http::http_client_request(cid2, r1);
+    CHECK(b.ok);  // new id on the same slot: live
+    culebra::http::http_client_close(cid2);
+  }
+
   // Http.client with a bad base_url (no scheme) fails to open (-1 + err).
   {
     std::string err;
@@ -492,6 +514,27 @@ int main() {
     culebra::http::http_server_route(sid, "GET", "/x", noop, err);
     CHECK(err.find("closed") != std::string::npos);  // closed id no longer routes
     culebra::http::http_server_close(sid);            // idempotent: no crash
+  }
+
+  // --- Server registry: closing then reopening must not alias (no ABA) ---
+  // g_http_servers is an IdRegistry, so a slot freed by close() gets a bumped
+  // generation on reuse: a captured id from the closed server must not resolve
+  // to whatever new server lands on the same slot.
+  {
+    using culebra::http::RouteHandler;
+    RouteHandler noop = [](const culebra::http::ServerRequest&,
+                           culebra::http::ServerResponse&) {};
+    int64_t sid1 = culebra::http::http_server_open();
+    culebra::http::http_server_close(sid1);
+    int64_t sid2 = culebra::http::http_server_open();  // likely reuses sid1's slot
+    CHECK(sid1 != sid2);
+    std::string err;
+    culebra::http::http_server_route(sid1, "GET", "/x", noop, err);
+    CHECK(err.find("closed") != std::string::npos);  // old id: still dead
+    err.clear();
+    culebra::http::http_server_route(sid2, "GET", "/x", noop, err);
+    CHECK(err.empty());  // new id on the same slot: live
+    culebra::http::http_server_close(sid2);
   }
 
   // --- Streaming sink registry (slot + generation defense) ---
