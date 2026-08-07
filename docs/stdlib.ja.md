@@ -305,7 +305,7 @@ inspect(prev(0))  # => 'c'
 ### `IO.inspect(x: Any) -> Nil`
 
 `x`を改行付きで標準出力に書き出します。参照型は
-`Array.str_array()` / `Object.str_object()`と同じ書式で整形され、
+`Array`/`Object`の既定の`to_string`と同じ書式で整形され、
 文字列は**シングルクォートで囲んで**出力されます。
 
 ```culebra

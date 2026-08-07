@@ -313,9 +313,8 @@ Output and standard input. File reading/writing lives under `FS`
 ### `IO.inspect(x: Any) -> Nil`
 
 Print `x` followed by a newline to standard output. Reference types
-are formatted the same way as `Array.str_array()` /
-`Object.str_object()`, and strings are printed **with surrounding
-single quotes**.
+are formatted the same way as `Array`/`Object`'s default `to_string`,
+and strings are printed **with surrounding single quotes**.
 
 ```culebra
 IO.inspect('hi')       # → 'hi'
