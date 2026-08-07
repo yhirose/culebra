@@ -151,3 +151,17 @@ taken.v = 7
 assert_eq(taken.v, 7)
 assert_eq(owner.size(), 1)
 assert_eq(owner[0].v, 2)
+
+// --- `get`: read-only, never throws — out-of-range falls back ---
+let g = [10, 20, 30]
+assert_eq(g.get(0, -1), 10)
+assert_eq(g.get(2, -1), 30)
+assert_eq(g.get(-1, -1), 30)  // negative counts from the end, like `g[-1]`
+assert_eq(g.get(-3, -1), 10)
+assert_eq(g.get(3, -1), -1)   // one past the end
+assert_eq(g.get(-4, -1), -1)  // one before the start
+assert_eq(g.get(100, 'missing'), 'missing')
+assert_eq([].get(0, 'empty'), 'empty')
+assert_throws("TypeError", fn () {
+  g.get("x", -1)
+})

@@ -98,7 +98,14 @@ count_bare() { # file
 # 100 -> 98 (2026-08-01): the Http route/ws handlers and the sqlite
 # transaction body hold their invoke result in JitOwnedVal, so the tail
 # releases a throwing response-apply / COMMIT used to skip are gone.
-ratchet "bare RC calls (stdlib_jit.h)" "$(count_bare include/stdlib_jit.h)" 98
+# 98 -> 99 (2026-08-07, reviewed): new culebra_runtime_random_choice picks
+# one element out of a raw JitArray and retains it before returning —
+# the exact same shape culebra_runtime_random_weighted_choice already uses
+# (already inside the 98). There's no Owned/JitOwnedVal layer to route
+# through here: this is a CULEBRA_RT_INLINE extern-C runtime helper, not
+# codegen, so the retain has to be bare — one more instance of an already-
+# justified pattern, not a new debt shape.
+ratchet "bare RC calls (stdlib_jit.h)" "$(count_bare include/stdlib_jit.h)" 99
 # 17 -> 12 (2026-08-01): the isolate/parallel child entries hold the rebuilt
 # closure, its args and the call result in JitOwnedVal, so their tail releases
 # are gone — and with them the hang a throwing child caused by never dropping a

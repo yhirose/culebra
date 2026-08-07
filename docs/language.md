@@ -4224,6 +4224,7 @@ inspect(seen)  # => [1, 2]
 | `a.extend(other: Array) -> Nil` *(mutating)* | Append every element of `other`. `a.extend(a)` appends the elements `a` had on entry. For `Tuple` / `Set` sources use spread (§9). |
 | `a.insert(i: Long, x: Any) -> Nil` *(mutating)* | Insert `x` at position `i`, shifting the rest right. Negative `i` counts from the end, like `a[i]`; `i == a.size()` is the append slot. Out of range raises `IndexError`. |
 | `a.remove_at(i: Long) -> Any` *(mutating)*  | Remove the element at `i` and return it, shifting the rest left. Negative `i` counts from the end. Unlike `insert`, `i == a.size()` is out of range — raises `IndexError`, as does any `i` on an empty array. |
+| `a.get(i: Long, fallback: Any) -> Any`      | The element at `i` (negative counts from the end, like `a[i]`), or `fallback` if out of range. Read-only, never throws. |
 | `a.slice(start: Long, end: Long) -> Array`  | Shallow subarray `[start, end)`. Same clamping as `String.slice`. |
 | `a.join(sep: String) -> String`             | Concatenate elements via `to_string` (strings unquoted), separated by `sep`. |
 | `a.contains(v: Any) -> Bool`                | Whether `v == elem` for some element (reference types: identity; value types: contents). |

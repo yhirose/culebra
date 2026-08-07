@@ -4936,6 +4936,16 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                              }
                              return Value(false);
                            }))},
+      {"get"sv,
+       Value(FunctionValue({{"i", false, "Long"sv}, {"fallback", false}},
+                           [](std::shared_ptr<Environment> callEnv) {
+                             const auto& vs = *callEnv->get("self").to_array().values;
+                             auto i = callEnv->get("i").to_long();
+                             auto n = static_cast<int64_t>(vs.size());
+                             if (i < 0) i += n;
+                             if (i < 0 || i >= n) return callEnv->get("fallback");
+                             return vs[i];
+                           }))},
       {"reverse"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          const auto& val = callEnv->get("self");

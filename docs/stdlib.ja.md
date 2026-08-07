@@ -44,7 +44,7 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println`を
 3. [`FS`](#3-fs) — パス操作・ファイル/ディレクトリ問い合わせ・更新
 4. [`File`](#4-file) — ストリーミング読み書き/seekの状態付きハンドル
 5. [`Time`](#5-time) — `Instant` / `Duration`クラス、ISO 8601、カレンダー算術、ナノ秒精度
-6. [`Random`](#6-random) — シード可能なPRNG（uniform / gauss / shuffle / weighted_choice）
+6. [`Random`](#6-random) — シード可能なPRNG（uniform / gauss / shuffle / choice / weighted_choice）
 7. [`Sys`](#7-sys) — argv / exit / env / executable。`GC`ヒープ情報の取得も同節
 8. [`Tensor`](#8-tensor) — N次元数値テンソル、BLAS対応lazy graph
 9. [`JSON`](#9-json) — stringify / parseの相互変換
@@ -86,7 +86,7 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println`を
 | ディレクトリ列挙・作成・削除 | `FS.list_dir`、`FS.mkdir`、`FS.remove` |
 | `Instant` / `Duration`クラス、ISO 8601、カレンダー算術 | [§5 Time](#5-time) |
 | 負になりうるインデックスを`0..n`に巻き戻す | [§1 Math](#1-math) — `Math.wrap(i, n)`（`%`は切り捨てなので負のまま） |
-| 乱数 | `Random.int`、`.uniform`、`.gauss`、`.shuffle`、`.weighted_choice` |
+| 乱数 | `Random.int`、`.uniform`、`.gauss`、`.shuffle`、`.choice`、`.weighted_choice` |
 | CLI引数解析 | [§10 Args](#10-args) |
 | プロセス情報 | `Sys.argv`、`Sys.exit`、`Sys.env`、`Sys.set_env`、`Sys.getcwd`、`Sys.chdir`、`Sys.executable`、`Sys.script` |
 | 外部コマンド実行 | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
@@ -118,9 +118,9 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println`を
 
 ## 1. `Math`
 
-数値ユーティリティ群。整数専用ルーチン（`pow`・`sign`・`clamp`・
-`wrap`）は`Long`入力を保ち、浮動小数点ルーチン（`log`ほか）は`Long` /
-`Float`のいずれかを受け取ります。`Long`と`Float`の相互作用は
+数値ユーティリティ群。整数専用ルーチン（`pow`・`sign`・
+`wrap`）は`Long`入力を保ち、`clamp`と浮動小数点ルーチン（`log`ほか）は
+`Long` / `Float`のいずれかを受け取ります。`Long`と`Float`の相互作用は
 言語仕様 §4 / §7を参照。
 
 このセクションのサブグループ: **定数**（`Math.pi`、`Math.e`、
@@ -254,15 +254,19 @@ inspect(Math.sign(0))   # => 0
 inspect(Math.sign(42))  # => 1
 ```
 
-### `Math.clamp(x: Long, lo: Long, hi: Long) -> Long`
+### `Math.clamp(x: Long|Float, lo: Long|Float, hi: Long|Float) -> Long|Float`
 
 `x`を閉区間`[lo, hi]`に収めます。`lo > hi`の場合はエラーに
-ならず`hi`を返します。
+ならず`hi`を返します。`x`・`lo`・`hi`が全て`Long`なら`Long`、
+いずれかが`Float`なら`Float`を返します（`Math.min`/`Math.max`と
+同じ昇格ルール）。
 
 ```culebra
 inspect(Math.clamp(5, 0, 10))   # => 5
 inspect(Math.clamp(-5, 0, 10))  # => 0
 inspect(Math.clamp(15, 0, 10))  # => 10
+inspect(Math.clamp(0.5, 0.0, 1.0))  # => 0.5
+inspect(Math.clamp(-3.0, 0.0, 10.0))  # => 0.0
 ```
 
 ### `Math.wrap(x: Long, n: Long) -> Long`
@@ -1081,6 +1085,15 @@ Fisher–Yatesによるインプレース置換。`nil`を返し、引数は破�
 
 ```culebra
 Random.weighted_choice(['hit', 'miss'], [1, 9])  # ~10% 'hit'
+```
+
+### `Random.choice(pop: Array) -> Any`
+
+`pop`から一様な確率で1要素を取り出します。`pop`が空なら`type error`。
+
+```culebra
+Random.seed(0)
+Random.choice(['rock', 'paper', 'scissors'])
 ```
 
 ---

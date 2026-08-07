@@ -259,6 +259,27 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_math_max(
   return _culebra_numeric_reduce(args, n, line, col, /*pick_less=*/false);
 }
 
+// clamp(x, lo, hi): Long if x/lo/hi are all Long, else Float (mirrors
+// min/max's promotion rule: any Float input promotes the whole comparison to
+// Float).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_math_clamp(
+    int8_t xt, int64_t xd, int8_t lot, int64_t lod, int8_t hit, int64_t hid,
+    int64_t line, int64_t col) {
+  if ((xt != TAG_LONG && xt != TAG_FLOAT) ||
+      (lot != TAG_LONG && lot != TAG_FLOAT) ||
+      (hit != TAG_LONG && hit != TAG_FLOAT)) {
+    throw_type_error_at(line, col);
+  }
+  if (xt == TAG_FLOAT || lot == TAG_FLOAT || hit == TAG_FLOAT) {
+    double x = _culebra_coerce_num(xt, xd);
+    double lo = _culebra_coerce_num(lot, lod);
+    double hi = _culebra_coerce_num(hit, hid);
+    double r = x < lo ? lo : (x > hi ? hi : x);
+    return {TAG_FLOAT, _culebra_double_to_bits(r)};
+  }
+  return {TAG_LONG, xd < lod ? lod : (xd > hid ? hid : xd)};
+}
+
 // --- Random ---
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_random_seed(int64_t n) {
@@ -320,6 +341,20 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_random_weighted_choic
     scratch.push_back(_culebra_coerce_num(v.tag, v.data));
   }
   std::discrete_distribution<size_t> d(scratch.begin(), scratch.end());
+  auto picked = pop->items[d(culebra::random_engine())];
+  culebra_runtime_value_retain(picked.tag, picked.data);
+  return picked;
+}
+
+// choice(pop): returns one uniformly-random element from pop. Returned
+// value is +1 owned by the caller (we retain the picked element before
+// returning).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_random_choice(
+    JitArray* pop, int64_t line, int64_t col) {
+  if (!pop || pop->size == 0) {
+    throw_type_error_at(line, col);
+  }
+  std::uniform_int_distribution<size_t> d(0, pop->size - 1);
   auto picked = pop->items[d(culebra::random_engine())];
   culebra_runtime_value_retain(picked.tag, picked.data);
   return picked;
@@ -3988,10 +4023,8 @@ inline JitValue _ns_math_sign(JitValue* a, int64_t) {
   return _ns_adapt::v_long(x > 0 ? 1 : (x < 0 ? -1 : 0));
 }
 inline JitValue _ns_math_clamp(JitValue* a, int64_t) {
-  auto x = _ns_adapt::take_long(a[0]);
-  auto lo = _ns_adapt::take_long(a[1]);
-  auto hi = _ns_adapt::take_long(a[2]);
-  return _ns_adapt::v_long(x < lo ? lo : (x > hi ? hi : x));
+  return culebra_runtime_math_clamp(a[0].tag, a[0].data, a[1].tag, a[1].data,
+                                    a[2].tag, a[2].data, 0, 0);
 }
 inline JitValue _ns_math_wrap(JitValue* a, int64_t) {
   return _ns_adapt::v_long(culebra_runtime_math_wrap(
@@ -4160,6 +4193,9 @@ inline JitValue _ns_random_shuffle(JitValue* a, int64_t) {
 inline JitValue _ns_random_weighted_choice(JitValue* a, int64_t) {
   return culebra_runtime_random_weighted_choice(
       _ns_adapt::take_array(a[0]), _ns_adapt::take_array(a[1]), 0, 0);
+}
+inline JitValue _ns_random_choice(JitValue* a, int64_t) {
+  return culebra_runtime_random_choice(_ns_adapt::take_array(a[0]), 0, 0);
 }
 
 // Sys
@@ -6771,6 +6807,7 @@ inline const NsMethod kNsMethods[] = {
   {"Random", "gauss",           2, &_ns_random_gauss},
   {"Random", "shuffle",         1, &_ns_random_shuffle, nullptr, "Array", "a"},
   {"Random", "weighted_choice", 2, &_ns_random_weighted_choice},
+  {"Random", "choice",          1, &_ns_random_choice},
 
   {"Sys",    "exit",    1, &_ns_sys_exit},
   {"Sys",    "env",     1, &_ns_sys_env, nullptr, "String", "name"},
@@ -7980,6 +8017,12 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
                                jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
                                jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
+  // clamp(x, lo, hi): three (tag, data) pairs + line + col -> JitValue.
+  jit.module_->getOrInsertFunction(rt::math_clamp, jit.valueType_,
+                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
   // Variadic min/max: (args_ptr, n, line, col) -> JitValue.
   for (auto name : {rt::math_min, rt::math_max}) {
     jit.module_->getOrInsertFunction(name, jit.valueType_, ptrTy,
@@ -8837,21 +8880,58 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
       return jit.own(make_long(r));
     }
     if (method == "clamp" && argsAst.nodes.size() == 3) {
-      // Same Owned-across-checks discipline as Math.pow above.
+      // Same Owned-across-checks discipline as Math.pow above (now a no-op:
+      // clamp's params are untyped in the canonical signature since the
+      // widening to Long|Float). Long fast path mirrors reduce_pair's
+      // shape: if x/lo/hi are all TAG_LONG, an inline i64 compare+select;
+      // any other combination (including Float) falls through to the
+      // runtime, which handles promotion and error reporting.
       JIT::Owned xV = jit.compile(*argsAst.nodes[0]);
       emit_canon_arg_check(0, xV.borrow());
       JIT::Owned loV = jit.compile(*argsAst.nodes[1]);
       emit_canon_arg_check(1, loV.borrow());
       JIT::Owned hiV = jit.compile(*argsAst.nodes[2]);
       emit_canon_arg_check(2, hiV.borrow());
-      auto x = value_to_long(xV.consume());
-      auto lo = value_to_long(loV.consume());
-      auto hi = value_to_long(hiV.consume());
+      auto xtag = extract_tag(xV.borrow());
+      auto lotag = extract_tag(loV.borrow());
+      auto hitag = extract_tag(hiV.borrow());
+      auto longTag = builder_.getInt8(TAG_LONG);
+      auto allLong = builder_.CreateAnd(
+          builder_.CreateAnd(builder_.CreateICmpEQ(xtag, longTag),
+                             builder_.CreateICmpEQ(lotag, longTag)),
+          builder_.CreateICmpEQ(hitag, longTag), "all.long");
+      auto intBB = build_block("clamp.int");
+      auto slowBB = build_block("clamp.slow");
+      auto mergeBB = build_block("clamp.merge");
+      builder_.CreateCondBr(allLong, intBB, slowBB);
+
+      builder_.SetInsertPoint(intBB);
+      auto x = extract_data(xV.borrow());
+      auto lo = extract_data(loV.borrow());
+      auto hi = extract_data(hiV.borrow());
       auto above_lo = builder_.CreateSelect(builder_.CreateICmpSLT(x, lo),
                                             lo, x);
-      auto r = builder_.CreateSelect(builder_.CreateICmpSGT(above_lo, hi),
-                                     hi, above_lo);
-      return jit.own(make_long(r));
+      auto intResult = make_long(builder_.CreateSelect(
+          builder_.CreateICmpSGT(above_lo, hi), hi, above_lo));
+      auto intEndBB = builder_.GetInsertBlock();
+      builder_.CreateBr(mergeBB);
+
+      builder_.SetInsertPoint(slowBB);
+      auto slowResult = emit_call(
+          module_->getFunction(rt::math_clamp),
+          {xtag, extract_data(xV.borrow()), lotag, extract_data(loV.borrow()),
+           hitag, extract_data(hiV.borrow()), line, col});
+      auto slowEndBB = builder_.GetInsertBlock();
+      builder_.CreateBr(mergeBB);
+
+      builder_.SetInsertPoint(mergeBB);
+      auto phi = builder_.CreatePHI(valueType_, 2, "clamp.r");
+      phi->addIncoming(intResult, intEndBB);
+      phi->addIncoming(slowResult, slowEndBB);
+      xV.drop();
+      loV.drop();
+      hiV.drop();
+      return jit.own(static_cast<llvm::Value*>(phi));
     }
   }
 

@@ -1808,18 +1808,40 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_resize(
   }
 }
 
+// Negative `idx` counts from the end, like `a[i]`. Returns false (leaving
+// `idx` unnormalized) when out of range, shared by array_get's throw and
+// array_get_default's fallback.
+inline bool _culebra_normalize_array_index(JitArray* arr, int64_t& idx) {
+  if (idx < 0) idx = static_cast<int64_t>(arr->size) + idx;
+  return idx >= 0 && static_cast<size_t>(idx) < arr->size;
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_get(JitArray* arr,
                                                             int64_t idx,
                                                             int8_t* out_tag,
                                                             int64_t* out_data,
                                                             int64_t line,
                                                             int64_t col) {
-  if (idx < 0) idx = static_cast<int64_t>(arr->size) + idx;
-  if (idx < 0 || static_cast<size_t>(idx) >= arr->size) {
+  if (!_culebra_normalize_array_index(arr, idx)) {
     throw culebra::CulebraError("IndexError", "index out of range", line, col);
   }
   *out_tag = arr->items[idx].tag;
   *out_data = arr->items[idx].data;
+}
+
+// a.get(i, fallback): read-only. Returns the element at `i` (negative
+// counts from the end, like `a[i]`) retained +1, or `fallback` if out of
+// range. Never throws. Consumes the fallback's +1 — mirroring
+// Object.get_default's ownership contract.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_array_get_default(
+    JitArray* arr, int64_t idx, int8_t ft, int64_t fd) {
+  if (!_culebra_normalize_array_index(arr, idx)) {
+    return JitValue{ft, fd};  // transfer the fallback's +1 to the caller
+  }
+  auto picked = arr->items[idx];
+  culebra_runtime_value_retain(picked.tag, picked.data);
+  _culebra_value_release_impl(ft, fd);  // fallback unused
+  return picked;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_set(JitArray* arr,

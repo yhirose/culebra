@@ -50,21 +50,13 @@ let e5 = err(fn () {
 })
 assert_eq(e5.message, "type error: parameter 'base' expects Long")
 let e6 = err(fn () {
-  Math.clamp(1, "x", 5)
-})
-assert_eq(e6.message, "type error: parameter 'lo' expects Long")
-let e7 = err(fn () {
-  Math.clamp(1, 0, "x")
-})
-assert_eq(e7.message, "type error: parameter 'hi' expects Long")
-let e6b = err(fn () {
   Math.wrap("x", 5)
 })
-assert_eq(e6b.message, "type error: parameter 'x' expects Long")
-let e7b = err(fn () {
+assert_eq(e6.message, "type error: parameter 'x' expects Long")
+let e7 = err(fn () {
   Math.wrap(1, "x")
 })
-assert_eq(e7b.message, "type error: parameter 'n' expects Long")
+assert_eq(e7.message, "type error: parameter 'n' expects Long")
 let e8 = err(fn () {
   Random.int(1, "x")
 })
@@ -113,6 +105,16 @@ assert_eq(err(fn () {
 # Both Long and Float operands are accepted (no over-strict Float rejection).
 assert_eq(type_of(Random.uniform(0, 1)), 'Float')
 assert_eq(type_of(Random.gauss(0.0, 1.0)), 'Float')
+
+# Math.clamp(x, lo, hi) is Long|Float, same untyped-numeric convention.
+assert_eq(err(fn () {
+    Math.clamp(1, "x", 5)
+  }).kind, 'TypeError')
+assert_eq(err(fn () {
+    Math.clamp(1, 0, "x")
+  }).kind, 'TypeError')
+assert_eq(type_of(Math.clamp(5, 0.0, 10)), 'Float')
+assert_eq(type_of(Math.clamp(5, 0, 10)), 'Long')
 
 # SharedBuffer.{new,file,shared} count: the JIT used to report a custom
 # `count must be an integer`; it now matches interp's canonical

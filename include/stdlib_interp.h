@@ -168,20 +168,38 @@ inline Value make_math_namespace() {
                           "Long"sv)),
       false);
 
+  // Long if x/lo/hi are all Long, else Float (mirrors min/max's promotion
+  // rule: any Float input promotes the whole comparison to Float).
   ns.initialize(
       "clamp",
-      Value(FunctionValue({{"x", false, "Long"sv},
-                           {"lo", false, "Long"sv},
-                           {"hi", false, "Long"sv}},
+      Value(FunctionValue({{"x", false}, {"lo", false}, {"hi", false}},
                           [](std::shared_ptr<Environment> env) {
-                            auto x = env->get("x").to_long();
-                            auto lo = env->get("lo").to_long();
-                            auto hi = env->get("hi").to_long();
-                            if (x < lo) return Value(lo);
-                            if (x > hi) return Value(hi);
-                            return Value(x);
-                          },
-                          "Long"sv)),
+                            const auto& x = env->get("x");
+                            const auto& lo = env->get("lo");
+                            const auto& hi = env->get("hi");
+                            if (!x.is_numeric() || !lo.is_numeric() ||
+                                !hi.is_numeric()) {
+                              auto line = env->get("__LINE__").to_long();
+                              auto col = env->get("__COLUMN__").to_long();
+                              throw_type_error_at(line, col);
+                            }
+                            if (x.type == Value::Float ||
+                                lo.type == Value::Float ||
+                                hi.type == Value::Float) {
+                              auto xd = x.to_double_coerce();
+                              auto lod = lo.to_double_coerce();
+                              auto hid = hi.to_double_coerce();
+                              if (xd < lod) return Value(lod);
+                              if (xd > hid) return Value(hid);
+                              return Value(xd);
+                            }
+                            auto xl = x.get<int64_t>();
+                            auto lol = lo.get<int64_t>();
+                            auto hil = hi.get<int64_t>();
+                            if (xl < lol) return Value(lol);
+                            if (xl > hil) return Value(hil);
+                            return Value(xl);
+                          })),
       false);
 
   ns.initialize(
@@ -2549,6 +2567,22 @@ inline Value make_random_namespace() {
             }
             std::discrete_distribution<size_t> d(scratch.begin(),
                                                  scratch.end());
+            return pop[d(random_engine())];
+          })),
+      false);
+
+  ns.initialize(
+      "choice",
+      Value(FunctionValue(
+          {{"pop", false, "Array"sv}},
+          [](std::shared_ptr<Environment> env) {
+            const auto& pop = *env->get("pop").to_array().values;
+            if (pop.empty()) {
+              auto line = env->get("__LINE__").to_long();
+              auto col = env->get("__COLUMN__").to_long();
+              throw_type_error_at(line, col);
+            }
+            std::uniform_int_distribution<size_t> d(0, pop.size() - 1);
             return pop[d(random_engine())];
           })),
       false);

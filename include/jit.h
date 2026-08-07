@@ -16797,8 +16797,41 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     return own(make_bool(r));
   }
 
+  // get(k, fallback): Array indexes by Long (negative counts from the end,
+  // like `a[i]`), Object looks up by key — both are read-only and never
+  // throw, falling back instead. `contains`-style per-receiver-tag switch
+  // (above): the argument nodes are compiled once per case block, since
+  // only one of these ever runs at runtime, which is also what lets each
+  // arm consume its own compiled key/fallback without fighting the other
+  // arm over ownership.
   if (method == "get" && argsAst.nodes.size() == 2) {
-    auto objPtr = expect_receiver_tag(receiver, TAG_OBJECT, "get");
+    auto arrBB = llvm::BasicBlock::Create(ctx_, "get.arr", fn);
+    auto objBB = llvm::BasicBlock::Create(ctx_, "get.obj", fn);
+    auto errBB = llvm::BasicBlock::Create(ctx_, "get.err", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "get.merge", fn);
+    auto sw = builder_.CreateSwitch(tag, errBB, 2);
+    sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
+    sw->addCase(builder_.getInt8(TAG_OBJECT), objBB);
+
+    OwnedPhi getMerge(this, "get");
+    builder_.SetInsertPoint(arrBB);
+    auto arrPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    Owned idxO = compile(*argsAst.nodes[0]);
+    emit_type_check(idxO.borrow(), "Long", "parameter 'i'",
+                    argsAst.nodes[0].get());
+    Owned fbAO = compile(*argsAst.nodes[1]);
+    auto idx = extract_data(idxO.consume());
+    auto fbA = fbAO.consume();
+    auto arrResult = emit_value_call(
+        module_->getOrInsertFunction(
+            rt::array_get_default, valueType_, ptrTy, builder_.getInt64Ty(),
+            builder_.getInt8Ty(), builder_.getInt64Ty()),
+        {arrPtr, idx, extract_tag(fbA), extract_data(fbA)});
+    getMerge.add_incoming(arrResult);
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(objBB);
+    auto objPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
     // The key stays Owned while the fallback compiles (its evaluation may
     // throw; a bare +1 key used to strand on that edge), then both
     // are consumed at the handoff: the runtime fn consumes the key's +1 and
@@ -16808,14 +16841,22 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     Owned fbO = compile(*argsAst.nodes[1]);
     auto key = keyO.consume();
     auto fb = fbO.consume();
-    return own(emit_value_call(
+    auto objResult = emit_value_call(
         module_->getOrInsertFunction(
             rt::object_get_default, valueType_, ptrTy, builder_.getInt8Ty(),
             builder_.getInt64Ty(), builder_.getInt8Ty(),
             builder_.getInt64Ty(), builder_.getInt64Ty(),
             builder_.getInt64Ty()),
         {objPtr, extract_tag(key), extract_data(key), extract_tag(fb),
-         extract_data(fb), current_line_val(), current_column_val()}));
+         extract_data(fb), current_line_val(), current_column_val()});
+    getMerge.add_incoming(objResult);
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(errBB);
+    emit_receiver_resolution_error(tag, "get");
+
+    builder_.SetInsertPoint(mergeBB);
+    return getMerge.finish(mergeBB);
   }
 
   if (method == "get_or_put" && argsAst.nodes.size() == 2) {

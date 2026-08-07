@@ -614,6 +614,16 @@ test_random = fn () {
   }
   // All weight on one element.
   assert_eq(Random.weighted_choice(['only'], [1.0]), 'only')
+
+  // choice: always draws a member of pop, single-element pop is exact.
+  Random.seed(0)
+  i = 0
+  while i < 50 {
+    assert_true(['a', 'b', 'c'].contains(Random.choice(['a', 'b', 'c'])))
+    i = i + 1
+  }
+  assert_eq(Random.choice(['only']), 'only')
+  assert_throws('TypeError', fn () { Random.choice([]) })
 }
 
 test_io_exists = fn () {
@@ -1282,6 +1292,13 @@ test_stdlib = fn () {
   assert_eq(Math.clamp(5, 0, 10), 5)
   assert_eq(Math.clamp(-5, 0, 10), 0)
   assert_eq(Math.clamp(15, 0, 10), 10)
+  assert_eq(type_of(Math.clamp(5, 0, 10)), 'Long')
+  # any Float operand lifts the result to Float (Math.min/max's rule).
+  assert_eq(Math.clamp(0.5, 0.0, 1.0), 0.5)
+  assert_eq(Math.clamp(-3.0, 0.0, 10.0), 0.0)
+  assert_eq(Math.clamp(15.0, 0.0, 10.0), 10.0)
+  assert_eq(Math.clamp(5, 0.0, 10), 5.0)
+  assert_eq(type_of(Math.clamp(5, 0.0, 10)), 'Float')
   # wrap is the floored remainder `%` does not give: a negative index
   # lands inside 0..n instead of staying negative.
   assert_eq(Math.wrap(3, 320), 3)

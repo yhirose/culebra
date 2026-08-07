@@ -302,6 +302,14 @@ let r_rand = try {
 }
 assert_eq(r_rand.kind, 'TypeError')
 
+let r_choice = try {
+  Random.choice([])
+  nil
+} catch e {
+  e
+}
+assert_eq(r_choice.kind, 'TypeError')
+
 # --- structure introspection: fields are usable ---
 let e_ = try {
   let _ = 1 / 0
@@ -351,7 +359,7 @@ let r_attr = try {
   e
 }
 assert_eq(r_attr.kind, 'AttributeError')
-assert_eq(r_attr.line, 348)
+assert_eq(r_attr.line, 356)
 assert_eq(r_attr.col, 5)
 
 let r_type = try {
@@ -361,7 +369,7 @@ let r_type = try {
   e
 }
 assert_eq(r_type.kind, 'TypeError')
-assert_eq(r_type.line, 358)
+assert_eq(r_type.line, 366)
 assert_eq(r_type.col, 11)
 
 # --- built-in method arity: symmetric count-based ArityError ---
@@ -734,7 +742,7 @@ let r_nsv = try {
   e
 }
 assert_eq(r_nsv.kind, 'TypeError')
-assert_eq(r_nsv.line, 732)
+assert_eq(r_nsv.line, 740)
 # Through a higher-order call, the error is attributed to the HOF call site.
 let r_nshof = try {
   ["x", "y"].map(Math.abs)
@@ -742,7 +750,7 @@ let r_nshof = try {
   e
 }
 assert_eq(r_nshof.kind, 'TypeError')
-assert_eq(r_nshof.line, 740)
+assert_eq(r_nshof.line, 748)
 
 # A built-in method on a receiver whose type doesn't support it reports the
 # same receiver-resolution failure on both backends. The JIT's polymorphic

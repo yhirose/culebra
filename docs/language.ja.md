@@ -3997,6 +3997,7 @@ inspect(seen)  # => [1, 2]
 | `a.extend(other: Array) -> Nil` *(破壊的)*  | `other`の全要素を末尾に追加。`a.extend(a)`は呼び出し時点の`a`の要素を追加する。`Tuple` / `Set`を対象にしたい場合はスプレッド（§9）を使う |
 | `a.insert(i: Long, x: Any) -> Nil` *(破壊的)* | 位置`i`に`x`を挿入し、以降を右へずらす。負の`i`は`a[i]`と同じく末尾から数える。`i == a.size()`は末尾追加スロット。範囲外は`IndexError` |
 | `a.remove_at(i: Long) -> Any` *(破壊的)*    | 位置`i`の要素を取り除いて返し、以降を左へずらす。負の`i`は末尾から数える。`insert`と違い`i == a.size()`は範囲外で`IndexError`。空配列ではどの`i`でも`IndexError` |
+| `a.get(i: Long, fallback: Any) -> Any`      | 位置`i`の要素（負の`i`は`a[i]`と同じく末尾から数える）、範囲外なら`fallback`。読み取り専用で、決して例外を投げない |
 | `a.slice(start: Long, end: Long) -> Array`  | 浅い部分配列`[start, end)`。`String.slice`と同じクランプ規則 |
 | `a.join(sep: String) -> String`             | 要素を`to_string`で変換（文字列は引用符なし）し`sep`で連結 |
 | `a.contains(v: Any) -> Bool`                | いずれかの要素が`v == elem`（参照型はポインタ同一性、値型は内容比較） |

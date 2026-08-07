@@ -46,7 +46,7 @@ Conventions used below:
 3. [`FS`](#3-fs) — path manipulation, file/dir queries and mutations
 4. [`File`](#4-file) — stateful handle for streaming read/write/seek
 5. [`Time`](#5-time) — `Instant` / `Duration` classes, ISO 8601, calendar arithmetic, nanosecond precision
-6. [`Random`](#6-random) — seedable PRNG (uniform, gauss, shuffle, weighted_choice)
+6. [`Random`](#6-random) — seedable PRNG (uniform, gauss, shuffle, choice, weighted_choice)
 7. [`Sys`](#7-sys) — argv, exit, env, executable; `GC` heap introspection lives here too
 8. [`Tensor`](#8-tensor) — N-dimensional numeric tensor with a BLAS-backed lazy graph
 9. [`JSON`](#9-json) — stringify / parse round-trip
@@ -88,7 +88,7 @@ Conventions used below:
 | Directory listing / create / remove | `FS.list_dir`, `FS.mkdir`, `FS.remove` |
 | `Instant` / `Duration`, ISO 8601, calendar arithmetic | [§5 Time](#5-time) |
 | Wrap an index that can go negative into `0..n` | [§1 Math](#1-math) — `Math.wrap(i, n)` (`%` truncates, so it stays negative) |
-| Random numbers | `Random.int`, `.uniform`, `.gauss`, `.shuffle`, `.weighted_choice` |
+| Random numbers | `Random.int`, `.uniform`, `.gauss`, `.shuffle`, `.choice`, `.weighted_choice` |
 | CLI argument parsing | [§10 Args](#10-args) |
 | Process info | `Sys.argv`, `Sys.exit`, `Sys.env`, `Sys.set_env`, `Sys.getcwd`, `Sys.chdir`, `Sys.executable`, `Sys.script` |
 | Run an external command | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
@@ -120,9 +120,9 @@ Conventions used below:
 
 ## 1. `Math`
 
-Numeric utilities. Integer-only routines (`pow`, `sign`, `clamp`,
-`wrap`) preserve `Long` input; the Float-domain routines (`log`, `exp`,
-`sqrt`, …) accept either `Long` or `Float` and return the shape
+Numeric utilities. Integer-only routines (`pow`, `sign`, `wrap`)
+preserve `Long` input; `clamp` and the Float-domain routines (`log`,
+`exp`, `sqrt`, …) accept either `Long` or `Float` and return the shape
 documented below. See [§4](language.md#4-types) and
 [§7](language.md#7-expressions) of the language spec for how `Long`
 and `Float` interact.
@@ -261,15 +261,19 @@ inspect(Math.sign(0))   # => 0
 inspect(Math.sign(42))  # => 1
 ```
 
-### `Math.clamp(x: Long, lo: Long, hi: Long) -> Long`
+### `Math.clamp(x: Long|Float, lo: Long|Float, hi: Long|Float) -> Long|Float`
 
 Clamp `x` to the inclusive range `[lo, hi]`. No error is raised when
-`lo > hi`; the result in that case is `hi`.
+`lo > hi`; the result in that case is `hi`. Returns `Long` when `x`,
+`lo` and `hi` are all `Long`; `Float` if any of the three is `Float`
+(matching `Math.min`/`Math.max`'s promotion rule).
 
 ```culebra
 inspect(Math.clamp(5, 0, 10))   # => 5
 inspect(Math.clamp(-5, 0, 10))  # => 0
 inspect(Math.clamp(15, 0, 10))  # => 10
+inspect(Math.clamp(0.5, 0.0, 1.0))  # => 0.5
+inspect(Math.clamp(-3.0, 0.0, 10.0))  # => 0.0
 ```
 
 ### `Math.wrap(x: Long, n: Long) -> Long`
@@ -1104,6 +1108,16 @@ Weights of `0` are never selected.
 
 ```culebra
 Random.weighted_choice(['hit', 'miss'], [1, 9])  # ~10% 'hit'
+```
+
+### `Random.choice(pop: Array) -> Any`
+
+Draw a single element from `pop` with uniform probability. An empty
+`pop` raises `type error`.
+
+```culebra
+Random.seed(0)
+Random.choice(['rock', 'paper', 'scissors'])
 ```
 
 ---
