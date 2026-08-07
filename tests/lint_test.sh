@@ -209,9 +209,12 @@ expect_accept "sep then kwargs"         'fn f(a, *, b, **kw) { }'
 expect_param_reject "compound declares (let)"  "compound assignment cannot declare a new variable" 'let x += 1'
 expect_param_reject "compound declares (mut)"  "compound assignment cannot declare a new variable" 'mut x += 1'
 expect_param_reject "compound declares (??=)"  "compound assignment cannot declare a new variable" 'let x ??= 1'
-expect_param_reject "??= on index target"      "is only supported on a simple variable target" 'mut o = [1]
+# `??=` on a complex lvalue (index / property) is accepted: it extends past
+# the former simple-variable-only MVP to Object dot/subscript and Array
+# elements.
+expect_accept "??= on index target"            'mut o = [1]
 o[0] ??= 9'
-expect_param_reject "??= on property target"   "is only supported on a simple variable target" 'mut o = { a: 1 }
+expect_accept "??= on property target"         'mut o = { a: 1 }
 o.a ??= 9'
 expect_param_reject "keyword LHS (if)"         "left-hand side is invalid variable name" 'if = 1'
 expect_param_reject "keyword LHS (true)"       "left-hand side is invalid variable name" 'true = 1'
