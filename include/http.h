@@ -881,7 +881,7 @@ inline bool http_sink_write(int64_t id, const char* data, size_t len) {
 using StreamRunner = std::function<bool(int64_t sink_id)>;
 
 // http_res_set_status/header/content are the response half of the same choke
-// as http_request (below): the only code that touches a real httplib::Response
+// as http_request (above): the only code that touches a real httplib::Response
 // is here, linkage-split like every other server entry point. The WEAK stub in
 // the core archive never runs — the route path that would call it
 // (http_server_route/_ws) is itself a weak stub that never invokes a real

@@ -4772,24 +4772,19 @@ inline JitObject* _jit_http_request_to_object(
   // culebra_runtime_object_set is a codegen-facing ABI symbol and takes a
   // `const char*`, but only ever reads it as a string_view and interns the
   // name into the shape — so the NUL-terminated temporary below is enough.
-  auto* headers = culebra_runtime_object_new();
-  for (const auto& [k, v] : q.headers)
-    culebra_runtime_object_set(headers, std::string(k).c_str(), false,
-        TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(v)), 0, 0);
+  auto to_object = [](const culebra::http::HeaderViews& m) {
+    auto* obj = culebra_runtime_object_new();
+    for (const auto& [k, v] : m)
+      culebra_runtime_object_set(obj, std::string(k).c_str(), false,
+          TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(v)), 0, 0);
+    return obj;
+  };
   culebra_runtime_object_set(o, "headers", false, TAG_OBJECT,
-      reinterpret_cast<int64_t>(headers), 0, 0);
-  auto* query = culebra_runtime_object_new();
-  for (const auto& [k, v] : q.params)
-    culebra_runtime_object_set(query, std::string(k).c_str(), false,
-        TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(v)), 0, 0);
+      reinterpret_cast<int64_t>(to_object(q.headers)), 0, 0);
   culebra_runtime_object_set(o, "query", false, TAG_OBJECT,
-      reinterpret_cast<int64_t>(query), 0, 0);
-  auto* params = culebra_runtime_object_new();
-  for (const auto& [k, v] : q.path_params)
-    culebra_runtime_object_set(params, std::string(k).c_str(), false,
-        TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(v)), 0, 0);
+      reinterpret_cast<int64_t>(to_object(q.params)), 0, 0);
   culebra_runtime_object_set(o, "params", false, TAG_OBJECT,
-      reinterpret_cast<int64_t>(params), 0, 0);
+      reinterpret_cast<int64_t>(to_object(q.path_params)), 0, 0);
   return o;
 }
 
