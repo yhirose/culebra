@@ -430,9 +430,7 @@ fn mk_proto_throwing(v) {
 fn forin_ret(n) {
   let r = 0..8
   for j in r {
-    if j == 3 {
-      return j
-    }
+    return j if j == 3
   }
   -1
 }

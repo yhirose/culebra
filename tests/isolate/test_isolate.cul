@@ -44,9 +44,7 @@ assert_eq(hn.join(), {xs: [1, 2], inner: {a: [true, false]}})
 
 # --- Slice 2: a recursive top-level function captured as a free var ---
 fn fib(n) {
-  if n < 2 {
-    return n
-  }
+  return n if n < 2
   return fib(n - 1) + fib(n - 2)
 }
 let hfib = Isolate.spawn(|| fib(20))

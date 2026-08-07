@@ -43,18 +43,14 @@ let _time_module = fn () {
       let n = match o {
         d: Duration => d._nanos,
       }
-      if n == nil {
-        _type_error("Duration", o)
-      }
+      _type_error("Duration", o) if n == nil
       Duration.new(self._nanos + n)
     }
     __sub__(o) {
       let n = match o {
         d: Duration => d._nanos,
       }
-      if n == nil {
-        _type_error("Duration", o)
-      }
+      _type_error("Duration", o) if n == nil
       Duration.new(self._nanos - n)
     }
     __mul__(n) {
@@ -70,18 +66,14 @@ let _time_module = fn () {
       let n = match o {
         d: Duration => d._nanos,
       }
-      if n == nil {
-        _type_error("Duration", o)
-      }
+      _type_error("Duration", o) if n == nil
       self._nanos < n
     }
     __le__(o) {
       let n = match o {
         d: Duration => d._nanos,
       }
-      if n == nil {
-        _type_error("Duration", o)
-      }
+      _type_error("Duration", o) if n == nil
       self._nanos <= n
     }
     __eq__(o) {
@@ -140,9 +132,7 @@ let _time_module = fn () {
       let n = match o {
         d: Duration => d._nanos,
       }
-      if n == nil {
-        _type_error("Duration", o)
-      }
+      _type_error("Duration", o) if n == nil
       Instant.new(self._nanos + n)
     }
     __sub__(o) {
@@ -150,27 +140,21 @@ let _time_module = fn () {
         d: Duration => Instant.new(self._nanos - d._nanos),
         i: Instant => Duration.new(self._nanos - i._nanos),
       }
-      if r == nil {
-        _type_error("Duration or Instant", o)
-      }
+      _type_error("Duration or Instant", o) if r == nil
       r
     }
     __lt__(o) {
       let n = match o {
         i: Instant => i._nanos,
       }
-      if n == nil {
-        _type_error("Instant", o)
-      }
+      _type_error("Instant", o) if n == nil
       self._nanos < n
     }
     __le__(o) {
       let n = match o {
         i: Instant => i._nanos,
       }
-      if n == nil {
-        _type_error("Instant", o)
-      }
+      _type_error("Instant", o) if n == nil
       self._nanos <= n
     }
     __eq__(o) {

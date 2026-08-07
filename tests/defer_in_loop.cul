@@ -17,9 +17,7 @@ for i in [1, 2, 3] {
   defer {
     inspect("cont:" + i.to_string())
   }
-  if i == 2 {
-    continue
-  }
+  continue if i == 2
   inspect(i)
 }
 inspect("---")
@@ -29,9 +27,7 @@ for i in [1, 2, 3] {
   defer {
     inspect("brk:" + i.to_string())
   }
-  if i == 2 {
-    break
-  }
+  break if i == 2
   inspect(i)
 }
 inspect("---")

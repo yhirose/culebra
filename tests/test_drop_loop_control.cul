@@ -33,9 +33,7 @@ fn expect(n) {
 fn for_break(base) {
   for x in [0, 1, 2] {
     let r = R.new(log)  # x=0 drops at fall-through, x=1 at break
-    if x == 1 {
-      break
-    }
+    break if x == 1
   }
   expect(base + 2)  # both R's dropped by the time the loop exits
 }
@@ -46,9 +44,7 @@ fn while_break(base) {
   let mut i = 0
   while true {
     let r = R.new(log)
-    if i == 1 {
-      break
-    }
+    break if i == 1
     i = i + 1
   }
   expect(base + 2)
@@ -60,9 +56,7 @@ while_break(log.size())
 fn for_continue_last(base) {
   for x in [0, 1] {
     let r = R.new(log)
-    if x == 1 {
-      continue
-    }
+    continue if x == 1
   }
   expect(base + 2)
 }
@@ -74,9 +68,7 @@ fn while_continue_last(base) {
   while j < 2 {
     let r = R.new(log)
     j = j + 1
-    if j == 2 {
-      continue
-    }
+    continue if j == 2
   }
   expect(base + 2)
 }
@@ -88,9 +80,7 @@ fn nested_break(base) {
   for x in [0, 1] {
     {
       let r = R.new(log)
-      if x == 0 {
-        break
-      }
+      break if x == 0
     }
   }
   expect(base + 1)  # only x=0's R created, and it drops

@@ -222,9 +222,7 @@ assert_eq(outer, [110, 210, 310])  # not [110, 310, 210, 610, ...]
 mut q = 0
 while true {
   q = q + 1
-  if q > 2 {
-    break
-  }
+  break if q > 2
 }
 assert_eq(q, 3)
 

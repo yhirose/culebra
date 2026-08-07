@@ -47,18 +47,14 @@ inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = 
       let n = match o {
         d: Duration => d._nanos,
       }
-      if n == nil {
-        _type_error("Duration", o)
-      }
+      _type_error("Duration", o) if n == nil
       Duration.new(self._nanos + n)
     }
     __sub__(o) {
       let n = match o {
         d: Duration => d._nanos,
       }
-      if n == nil {
-        _type_error("Duration", o)
-      }
+      _type_error("Duration", o) if n == nil
       Duration.new(self._nanos - n)
     }
     __mul__(n) {
@@ -74,18 +70,14 @@ inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = 
       let n = match o {
         d: Duration => d._nanos,
       }
-      if n == nil {
-        _type_error("Duration", o)
-      }
+      _type_error("Duration", o) if n == nil
       self._nanos < n
     }
     __le__(o) {
       let n = match o {
         d: Duration => d._nanos,
       }
-      if n == nil {
-        _type_error("Duration", o)
-      }
+      _type_error("Duration", o) if n == nil
       self._nanos <= n
     }
     __eq__(o) {
@@ -144,9 +136,7 @@ inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = 
       let n = match o {
         d: Duration => d._nanos,
       }
-      if n == nil {
-        _type_error("Duration", o)
-      }
+      _type_error("Duration", o) if n == nil
       Instant.new(self._nanos + n)
     }
     __sub__(o) {
@@ -154,27 +144,21 @@ inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = 
         d: Duration => Instant.new(self._nanos - d._nanos),
         i: Instant => Duration.new(self._nanos - i._nanos),
       }
-      if r == nil {
-        _type_error("Duration or Instant", o)
-      }
+      _type_error("Duration or Instant", o) if r == nil
       r
     }
     __lt__(o) {
       let n = match o {
         i: Instant => i._nanos,
       }
-      if n == nil {
-        _type_error("Instant", o)
-      }
+      _type_error("Instant", o) if n == nil
       self._nanos < n
     }
     __le__(o) {
       let n = match o {
         i: Instant => i._nanos,
       }
-      if n == nil {
-        _type_error("Instant", o)
-      }
+      _type_error("Instant", o) if n == nil
       self._nanos <= n
     }
     __eq__(o) {
@@ -266,9 +250,7 @@ inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(let _term_module = 
     let n = raw.size()
     let last = raw[n - 1..n]
     let parts = raw[3..n - 1].split(";")  # drop "\x1b[<" and the final M/m
-    if parts.size() != 3 {
-      return nil
-    }
+    return nil if parts.size() != 3
     let b = to_long(parts[0])
     let x = to_long(parts[1]) - 1
     let y = to_long(parts[2]) - 1
@@ -300,9 +282,7 @@ inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(let _term_module = 
           }
         }
       }
-      if b & 32 != 0 {
-        event = "drag"
-      }
+      event = "drag" if b & 32 != 0
     }
     {
       kind: "mouse",
@@ -319,16 +299,10 @@ inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(let _term_module = 
   # Parse one raw report into an event Object, or nil.
   let _parse_event = fn (raw) {
     let n = raw.size()
-    if n == 0 {
-      return nil
-    }
-    if n >= 3 && raw[0..3] == "\x1b[<" {
-      return _parse_mouse(raw)
-    }
+    return nil if n == 0
+    return _parse_mouse(raw) if n >= 3 && raw[0..3] == "\x1b[<"
     if raw[0..1] == "\x1b" {
-      if n == 1 {
-        return _evkey("escape", false, false, false)
-      }
+      return _evkey("escape", false, false, false) if n == 1
       let second = raw[1..2]
       if second == "[" || second == "O" {
         let body = raw[2..n]  # after "\x1b[" / "\x1bO"
@@ -353,9 +327,7 @@ inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(let _term_module = 
         } else {
           _csi_keys.get(final, "")
         }
-        if name != "" {
-          return _evkey(name, ctrl, shift, alt)
-        }
+        return _evkey(name, ctrl, shift, alt) if name != ""
         return nil  # unrecognized sequence
       }
       if n == 2 {
@@ -364,12 +336,8 @@ inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(let _term_module = 
       return nil
     }
     if n == 1 {
-      if raw == "\r" || raw == "\n" {
-        return _evkey("enter", false, false, false)
-      }
-      if raw == "\t" {
-        return _evkey("tab", false, false, false)
-      }
+      return _evkey("enter", false, false, false) if raw == "\r" || raw == "\n"
+      return _evkey("tab", false, false, false) if raw == "\t"
       if raw == "\x7f" || raw == "\x08" {
         return _evkey("backspace", false, false, false)
       }
@@ -535,31 +503,19 @@ inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(let _term_module = 
     underline = false,
     reverse = false,
   ) {
-    if _level == 0 {
-      return ""
-    }
+    return "" if _level == 0
     mut parts = []
-    if bold {
-      parts.push("1")
-    }
-    if dim {
-      parts.push("2")
-    }
-    if underline {
-      parts.push("4")
-    }
-    if reverse {
-      parts.push("7")
-    }
+    parts.push("1") if bold
+    parts.push("2") if dim
+    parts.push("4") if underline
+    parts.push("7") if reverse
     if fg != nil {
       let p = if type_of(fg) == "Tuple" || type_of(fg) == "Array" {
         _rgbfg_params(fg[0], fg[1], fg[2])
       } else {
         _fg_params(fg)
       }
-      if p != "" {
-        parts.push(p)
-      }
+      parts.push(p) if p != ""
     }
     if bg != nil {
       let p = if type_of(bg) == "Tuple" || type_of(bg) == "Array" {
@@ -567,9 +523,7 @@ inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(let _term_module = 
       } else {
         _bg_params(bg)
       }
-      if p != "" {
-        parts.push(p)
-      }
+      parts.push(p) if p != ""
     }
     parts.join(";")
   }
@@ -705,9 +659,7 @@ inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(let _term_module = 
               }
               if st != pen {
                 out = out + "\x1b[0m"
-                if st != "" {
-                  out = out + "\x1b[" + st + "m"
-                }
+                out = out + "\x1b[" + st + "m" if st != ""
                 pen = st
               }
               out = out + back
@@ -818,9 +770,7 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     let bf = b / 255.0
     let hi = Math.max(rf, gf, bf)
     let lo = Math.min(rf, gf, bf)
-    if lo == hi {
-      return (0.0, 0.0, hi)
-    }
+    return (0.0, 0.0, hi) if lo == hi
     let span = hi - lo
     let rc = (hi - rf) / span
     let gc = (hi - gf) / span
@@ -943,9 +893,7 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     # program that creates them per frame doesn't grow the registry. A
     # constructor that threw (bad PNG bytes) drops before _id was ever set.
     drop() {
-      if self._id != nil {
-        _Canvas.sprite_free(self._id)
-      }
+      _Canvas.sprite_free(self._id) if self._id != nil
     }
     width() {
       self._w
@@ -1241,9 +1189,7 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     # Free the decoded sample with the last reference (a constructor that
     # threw drops before _id was ever set).
     drop() {
-      if self._id != nil {
-        _Canvas.sound_free(self._id)
-      }
+      _Canvas.sound_free(self._id) if self._id != nil
     }
   }
 
@@ -1293,15 +1239,9 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
       let cont = tick()
       _Canvas.present()
       i = i + 1
-      if cont == false {
-        running = false
-      }
-      if _Canvas.closing() {
-        running = false
-      }
-      if !interactive && i >= frames {
-        running = false
-      }
+      running = false if cont == false
+      running = false if _Canvas.closing()
+      running = false if !interactive && i >= frames
     }
   }
 
@@ -1382,22 +1322,12 @@ let Canvas = _canvas_module()
 
 inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = fn () {
   let _coerce = fn (raw, type, name) {
-    if type == "String" {
-      return raw
-    }
-    if type == "Long" {
-      return to_long(raw)
-    }
-    if type == "Float" {
-      return to_float(raw)
-    }
+    return raw if type == "String"
+    return to_long(raw) if type == "Long"
+    return to_float(raw) if type == "Float"
     if type == "Bool" {
-      if raw == "true" || raw == "1" {
-        return true
-      }
-      if raw == "false" || raw == "0" {
-        return false
-      }
+      return true if raw == "true" || raw == "1"
+      return false if raw == "false" || raw == "0"
       throw {
         kind: "ArgParseError",
         message: "argument '{name}' expects Bool, got '{raw}'",
@@ -1412,12 +1342,8 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
     let mut i = 0
     while i < args.size() {
       let a = args[i]
-      if a.name == name {
-        return a
-      }
-      if a.has("short") && a.short == name {
-        return a
-      }
+      return a if a.name == name
+      return a if a.has("short") && a.short == name
       i += 1
     }
     nil
@@ -1463,9 +1389,7 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
       i += 1
     }
     parts.push("Usage: {name}")
-    if opt_args.size() > 0 {
-      parts.push(" [options]")
-    }
+    parts.push(" [options]") if opt_args.size() > 0
     let mut j = 0
     while j < pos_args.size() {
       let a = pos_args[j]
@@ -1516,9 +1440,7 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
     parts.join("")
   }
   let _route_subcommand = fn (argv, spec) {
-    if !spec.has("subcommands") {
-      return nil
-    }
+    return nil if !spec.has("subcommands")
     let mut i = 0
     while i < argv.size() {
       let tok = argv[i]
@@ -1536,9 +1458,7 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
           let mut rest = []
           let mut k = 0
           while k < argv.size() {
-            if k != i {
-              rest.push(argv[k])
-            }
+            rest.push(argv[k]) if k != i
             k += 1
           }
           return {sub: sub, argv: rest}
@@ -1603,9 +1523,7 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
           }
           let v = _coerce(raw, _arg_type(spec_a), spec_a.name)
           if spec_a.has("repeated") && spec_a.repeated {
-            if !result.has(spec_a.name) {
-              result[spec_a.name] = []
-            }
+            result[spec_a.name] ??= []
             result[spec_a.name].push(v)
           } else {
             result[spec_a.name] = v
@@ -1649,9 +1567,7 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
           }
           let v = _coerce(raw, _arg_type(spec_a), spec_a.name)
           if spec_a.has("repeated") && spec_a.repeated {
-            if !result.has(spec_a.name) {
-              result[spec_a.name] = []
-            }
+            result[spec_a.name] ??= []
             result[spec_a.name].push(v)
           } else {
             result[spec_a.name] = v
@@ -1743,66 +1659,50 @@ let Args = _args_module()
 )=culpre=";
 
 inline constexpr const char* MATCHERS_MODULE_SOURCE = R"=culpre=(let assert_true = fn (x) {
-  if x {
-    return nil
-  }
+  return nil if x
   throw {kind: "AssertionError", message: "assert_true failed:\n  value: {x}"}
 }
 let assert_false = fn (x) {
-  if !x {
-    return nil
-  }
+  return nil if !x
   throw {kind: "AssertionError", message: "assert_false failed:\n  value: {x}"}
 }
 let assert_eq = fn (a, b) {
-  if a == b {
-    return nil
-  }
+  return nil if a == b
   throw {
     kind: "AssertionError",
     message: "assert_eq failed:\n  left:  {a}\n  right: {b}",
   }
 }
 let assert_ne = fn (a, b) {
-  if a != b {
-    return nil
-  }
+  return nil if a != b
   throw {
     kind: "AssertionError",
     message: "assert_ne failed:\n  left:  {a}\n  right: {b}",
   }
 }
 let assert_lt = fn (a, b) {
-  if a < b {
-    return nil
-  }
+  return nil if a < b
   throw {
     kind: "AssertionError",
     message: "assert_lt failed:\n  left:  {a}\n  right: {b}",
   }
 }
 let assert_le = fn (a, b) {
-  if a <= b {
-    return nil
-  }
+  return nil if a <= b
   throw {
     kind: "AssertionError",
     message: "assert_le failed:\n  left:  {a}\n  right: {b}",
   }
 }
 let assert_gt = fn (a, b) {
-  if a > b {
-    return nil
-  }
+  return nil if a > b
   throw {
     kind: "AssertionError",
     message: "assert_gt failed:\n  left:  {a}\n  right: {b}",
   }
 }
 let assert_ge = fn (a, b) {
-  if a >= b {
-    return nil
-  }
+  return nil if a >= b
   throw {
     kind: "AssertionError",
     message: "assert_ge failed:\n  left:  {a}\n  right: {b}",
@@ -1842,9 +1742,7 @@ let assert_throws = fn (kind, f) {
 }
 let assert_close = fn (a, b, tol) {
   let mut diff = a - b
-  if diff < 0 {
-    diff = -diff
-  }
+  diff = -diff if diff < 0
   if diff != diff || tol != tol || diff > tol {
     throw {
       kind: "AssertionError",
@@ -1931,9 +1829,7 @@ let _regex_module = fn () {
         return _Regex.replace_first(self._pat, s, repl)
       }
       let m = _Regex.find(self._pat, s)
-      if m == nil {
-        return s
-      }
+      return s if m == nil
       s.slice(0, m.start) + repl(m) + s.slice(m.end, s.size())
     }
     split(s) {
@@ -2023,16 +1919,12 @@ inline constexpr const char* LOG_MODULE_SOURCE = R"=culpre=(let _log_module = fn
   }
   let _set_level = fn (l) {
     let n = _levels.get(l, -1)
-    if n < 0 {
-      throw "Log.set_level: unknown level '" + l + "'"
-    }
+    throw "Log.set_level: unknown level '" + l + "'" if n < 0
     _threshold = n
   }
   let _set_format = fn (f) {
     if f != "text" {
-      if f != "json" {
-        throw "Log.set_format: unknown format '" + f + "'"
-      }
+      throw "Log.set_format: unknown format '" + f + "'" if f != "json"
     }
     _format = f
   }
@@ -2048,12 +1940,8 @@ inline constexpr const char* DESKTOP_MODULE_SOURCE = R"=culpre=(let _desktop_mod
     let workers = config.get("workers", 4)
 
     let srv = Http.server()
-    if config.has("assets") {
-      srv.static("/", config["assets"])
-    }
-    if config.has("routes") {
-      config["routes"](srv)
-    }
+    srv.static("/", config["assets"]) if config.has("assets")
+    config["routes"](srv) if config.has("routes")
     srv.post("/__quit", fn (req) {
       Webview.Window.quit()
       ""
@@ -2309,9 +2197,7 @@ let _eff_module = fn () {
     let st = _op_stacks.get(_key(op), nil)
     if st != nil {
       let n = st.size()
-      if n > 0 {
-        return st[n - 1]
-      }
+      return st[n - 1] if n > 0
     }
     # `line` is the original source line of the `perform` (carried on the
     # computation object by the transform), so the error points at the caller.
@@ -2349,9 +2235,7 @@ let _eff_module = fn () {
     if pair[0] {
       _finalize_stack(stack)
       let sig = pair[1]
-      if sig[0] == tok {
-        return sig[1]
-      }
+      return sig[1] if sig[0] == tok
       __eff_abort(sig)
     }
     pair[1]
@@ -2392,9 +2276,7 @@ let _eff_module = fn () {
         let done_val = comp._eff_val
         if stack.size() == 1 {
           # The handled body finished: a `return` clause (if any) maps it.
-          if ret != nil {
-            return ret(done_val)
-          }
+          return ret(done_val) if ret != nil
           return done_val
         }
         # A delegated call finished; feed its value to the enclosing frame.
@@ -2450,15 +2332,11 @@ let _eff_module = fn () {
         let result = try {
           hf(comp._eff_args, resume)
         } catch e {
-          if h.t != "f" {
-            _finalize_stack(stack)
-          }
+          _finalize_stack(stack) if h.t != "f"
           throw e
         }
         # An abort clause never resumes: the suspended body is abandoned.
-        if is_abort {
-          _finalize_stack(stack)
-        }
+        _finalize_stack(stack) if is_abort
         return result
       }
       # DELEGATE: push the sub-computation as a new frame and run it next.
@@ -2478,9 +2356,7 @@ let _eff_module = fn () {
     for op, entry in frame {
       entry["tok"] = tok
       let k = _key(op)
-      if !_op_stacks.has(k) {
-        _op_stacks[k] = []
-      }
+      _op_stacks[k] ??= []
       _op_stacks[k].push(entry)
       keys.push(k)
     }
@@ -2505,12 +2381,8 @@ let _eff_module = fn () {
   fn _perform_direct(op, args, line) {
     let h = _find(op, line)
     let hf = h.f
-    if h.t == "f" {
-      _full_control_error(op, line)
-    }
-    if h.t == "a" {
-      __eff_abort([h.tok, hf(args, _id_resume)])
-    }
+    _full_control_error(op, line) if h.t == "f"
+    __eff_abort([h.tok, hf(args, _id_resume)]) if h.t == "a"
     hf(args, _id_resume)
   }
 
@@ -2535,9 +2407,7 @@ let _eff_module = fn () {
           throw e
         }
         if tag == 0 {
-          if stack.size() == 1 {
-            return c._eff_val
-          }
+          return c._eff_val if stack.size() == 1
           stack.pop()
           resume_val = c._eff_val
           continue

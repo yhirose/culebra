@@ -252,16 +252,12 @@ class Cells {
   }
 
   ellipse(cx, cy, rx, ry, key) {
-    if rx <= 0 || ry <= 0 {
-      return nil
-    }
+    return nil if rx <= 0 || ry <= 0
     for yy in (cy - ry).to_long()..=(cy + ry).to_long() {
       # `.to_float()`: callers pass Longs as often as Floats, and `/` on two
       # Longs truncates — which would flatten the ellipse into a rectangle.
       let dy = (yy - cy).to_float() / ry
-      if Math.abs(dy) > 1 {
-        continue
-      }
+      continue if Math.abs(dy) > 1
       let half = rx * Math.sqrt(1 - dy * dy)
       for xx in (cx - half).to_long()..=(cx + half).to_long() {
         self.set(xx, yy, key)
@@ -276,9 +272,7 @@ class Cells {
     let kid = KEY_ID[key]
     for y in 0..self.h {
       for x in 0..self.w {
-        if src[y * self.w + x] != 0 {
-          continue
-        }
+        continue if src[y * self.w + x] != 0
         mut touching = false
         for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
           let nx = x + dx
@@ -291,9 +285,7 @@ class Cells {
             }
           }
         }
-        if touching {
-          self.k[y * self.w + x] = kid
-        }
+        self.k[y * self.w + x] = kid if touching
       }
     }
   }
@@ -307,14 +299,10 @@ class Cells {
         let v = self.get(x, y)
         v != 0 && v != ink
       })
-      if col.empty() {
-        continue
-      }
+      continue if col.empty()
       let start = (col.min() + (col.max() - col.min()) * (1 - frac)).to_long()
       for y in col {
-        if y >= start && (x + y) % 2 == 0 {
-          self.set(x, y, key_dark)
-        }
+        self.set(x, y, key_dark) if y >= start && (x + y) % 2 == 0
       }
     }
   }
@@ -332,20 +320,14 @@ class KeyImage {
   blit_cells(cells, x, y, w, h, scale) {
     for py in 0..h {
       let cy = py / scale
-      if cy >= cells.h {
-        break
-      }
+      break if cy >= cells.h
       let row = cy * cells.w
       let base = (y + py) * self.w + x
       for px in 0..w {
         let cx = px / scale
-        if cx >= cells.w {
-          break
-        }
+        break if cx >= cells.w
         let v = cells.k[row + cx]
-        if v != 0 {
-          self.k[base + px] = v
-        }
+        self.k[base + px] = v if v != 0
       }
     }
   }
@@ -391,16 +373,12 @@ fn draw_sky(c) {
   c.rect(0, mid, LW, LH - mid, "SKY_LOW")
   for y in top - 4..top + 4 {
     for x in 0..LW {
-      if (x + y) % 2 == 0 {
-        c.set(x, y, y < top ? "SKY_TOP" : "SKY_MID")
-      }
+      c.set(x, y, y < top ? "SKY_TOP" : "SKY_MID") if (x + y) % 2 == 0
     }
   }
   for y in mid - 4..mid + 4 {
     for x in 0..LW {
-      if (x + y) % 2 == 0 {
-        c.set(x, y, y < mid ? "SKY_MID" : "SKY_LOW")
-      }
+      c.set(x, y, y < mid ? "SKY_MID" : "SKY_LOW") if (x + y) % 2 == 0
     }
   }
 
@@ -418,9 +396,7 @@ fn draw_sky(c) {
       let ox = cx + (j - 1) * rx
       for yy in cy - ry..=cy + ry {
         let dy = (yy - cy).to_float() / ry
-        if Math.abs(dy) > 1 {
-          continue
-        }
+        continue if Math.abs(dy) > 1
         let half = rx * Math.sqrt(1 - dy * dy)
         for xx in (ox - half).to_long()..=(ox + half).to_long() {
           c.set(Math.wrap(xx, LW), yy, "CLOUD")
@@ -440,9 +416,7 @@ fn draw_hills(c) {
     c.rect(x, near.to_long(), 1, LH - near.to_long(), "HILL_NEAR")
     # A dithered band where the near ridge starts, so the two read apart.
     for y in near.to_long()..Math.min(LH, near.to_long() + 6) {
-      if (x + y) % 2 == 0 {
-        c.set(x, y, "HILL_FAR")
-      }
+      c.set(x, y, "HILL_FAR") if (x + y) % 2 == 0
     }
   }
 }
@@ -844,9 +818,7 @@ fn draw_boulder(c, w, h, seed) {
   c.ellipse(w * 0.40, h * 0.46, w * 0.18, h * 0.12, "PLATE")  # small highlight
   for y in (h * 0.62).to_long()..h {
     for x in 0..w {
-      if c.get(x, y) != 0 && (x + y) % 2 == 0 {
-        c.set(x, y, "INK2")
-      }
+      c.set(x, y, "INK2") if c.get(x, y) != 0 && (x + y) % 2 == 0
     }
   }
   c.outline()

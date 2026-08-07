@@ -95,9 +95,7 @@ fn harvest(lines) {
       # one heading may carry several: ### `Math.sin(x)`, `Math.cos(x)`
       for span in SPAN.find_all_str(title) {
         inner = strip_ticks(span)
-        if inner.contains('(') {
-          cands.push(unescape(inner))
-        }
+        cands.push(unescape(inner)) if inner.contains('(')
       }
       # a bare `Math.pi` heading is a constant, worth listing
       if cands.size() == 0 && BARE.test(title) {
@@ -109,9 +107,7 @@ fn harvest(lines) {
         mut sig = unescape(tm[1])
         if !sig.contains('->') {
           r = ret_of(tm[3])
-          if r != nil {
-            sig = sig + ' -> ' + r
-          }
+          sig = sig + ' -> ' + r if r != nil
         }
         # a trailing `*(mutating)*` on the same cell is worth carrying over
         note = tm[2].replace('*', '').trim()
@@ -121,9 +117,7 @@ fn harvest(lines) {
         cands.push(sig)
       } else {
         bm = BULLET.find(line)
-        if bm != nil && bm[1].contains('(') {
-          cands.push(unescape(bm[1]))
-        }
+        cands.push(unescape(bm[1])) if bm != nil && bm[1].contains('(')
       }
     }
     for sig in cands {
@@ -141,9 +135,7 @@ fn slice_lines(lines, from, to) {
   mut inside = false
   for line in lines {
     if inside {
-      if line.starts_with(to) {
-        break
-      }
+      break if line.starts_with(to)
       out.push(line)
     } else if line.starts_with(from) {
       inside = true
@@ -199,9 +191,10 @@ fn collect(ja) {
 fn render(groups) {
   mut out = []
   for g in groups {
-    if g.sigs.size() > 0 {
-      out.push('**' + g.title + '** — ' + g.sigs.join('; '))
-    }
+    out.push('**' +
+      g.title +
+      '** — ' +
+      g.sigs.join('; ')) if g.sigs.size() > 0
   }
   out.join("\n\n")
 }
@@ -228,9 +221,7 @@ fn splice(text, body) {
       out.push(line)
     }
   }
-  if state != 'after' {
-    throw "missing generated-section markers"
-  }
+  throw "missing generated-section markers" if state != 'after'
   out.join("\n")
 }
 

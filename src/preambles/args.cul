@@ -1,21 +1,11 @@
 let _args_module = fn () {
   let _coerce = fn (raw, type, name) {
-    if type == "String" {
-      return raw
-    }
-    if type == "Long" {
-      return to_long(raw)
-    }
-    if type == "Float" {
-      return to_float(raw)
-    }
+    return raw if type == "String"
+    return to_long(raw) if type == "Long"
+    return to_float(raw) if type == "Float"
     if type == "Bool" {
-      if raw == "true" || raw == "1" {
-        return true
-      }
-      if raw == "false" || raw == "0" {
-        return false
-      }
+      return true if raw == "true" || raw == "1"
+      return false if raw == "false" || raw == "0"
       throw {
         kind: "ArgParseError",
         message: "argument '{name}' expects Bool, got '{raw}'",
@@ -30,12 +20,8 @@ let _args_module = fn () {
     let mut i = 0
     while i < args.size() {
       let a = args[i]
-      if a.name == name {
-        return a
-      }
-      if a.has("short") && a.short == name {
-        return a
-      }
+      return a if a.name == name
+      return a if a.has("short") && a.short == name
       i += 1
     }
     nil
@@ -81,9 +67,7 @@ let _args_module = fn () {
       i += 1
     }
     parts.push("Usage: {name}")
-    if opt_args.size() > 0 {
-      parts.push(" [options]")
-    }
+    parts.push(" [options]") if opt_args.size() > 0
     let mut j = 0
     while j < pos_args.size() {
       let a = pos_args[j]
@@ -134,9 +118,7 @@ let _args_module = fn () {
     parts.join("")
   }
   let _route_subcommand = fn (argv, spec) {
-    if !spec.has("subcommands") {
-      return nil
-    }
+    return nil if !spec.has("subcommands")
     let mut i = 0
     while i < argv.size() {
       let tok = argv[i]
@@ -154,9 +136,7 @@ let _args_module = fn () {
           let mut rest = []
           let mut k = 0
           while k < argv.size() {
-            if k != i {
-              rest.push(argv[k])
-            }
+            rest.push(argv[k]) if k != i
             k += 1
           }
           return {sub: sub, argv: rest}
@@ -221,9 +201,7 @@ let _args_module = fn () {
           }
           let v = _coerce(raw, _arg_type(spec_a), spec_a.name)
           if spec_a.has("repeated") && spec_a.repeated {
-            if !result.has(spec_a.name) {
-              result[spec_a.name] = []
-            }
+            result[spec_a.name] ??= []
             result[spec_a.name].push(v)
           } else {
             result[spec_a.name] = v
@@ -267,9 +245,7 @@ let _args_module = fn () {
           }
           let v = _coerce(raw, _arg_type(spec_a), spec_a.name)
           if spec_a.has("repeated") && spec_a.repeated {
-            if !result.has(spec_a.name) {
-              result[spec_a.name] = []
-            }
+            result[spec_a.name] ??= []
             result[spec_a.name].push(v)
           } else {
             result[spec_a.name] = v

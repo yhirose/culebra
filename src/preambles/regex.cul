@@ -75,9 +75,7 @@ let _regex_module = fn () {
         return _Regex.replace_first(self._pat, s, repl)
       }
       let m = _Regex.find(self._pat, s)
-      if m == nil {
-        return s
-      }
+      return s if m == nil
       s.slice(0, m.start) + repl(m) + s.slice(m.end, s.size())
     }
     split(s) {

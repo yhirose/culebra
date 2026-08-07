@@ -77,9 +77,7 @@ fn opaque_in(sprite, r) {
   mut n = 0
   for py in 0..h {
     for px in 0..w {
-      if Canvas.get_pixel(px, py) != 0 {
-        n += 1
-      }
+      n += 1 if Canvas.get_pixel(px, py) != 0
     }
   }
   n

@@ -133,9 +133,7 @@ class FCell {
   v: Int64 = 0
 }
 mut tmpdir = Sys.env("TMPDIR")
-if tmpdir == "" {
-  tmpdir = "/tmp"
-}
+tmpdir = "/tmp" if tmpdir == ""
 let fpath = tmpdir + "/culebra_test_packable_file.bin"
 let fb = SharedBuffer.file(fpath, 3, FCell)
 fb[0].v = 7

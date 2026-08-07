@@ -39,9 +39,7 @@ let tmp_root = if tmpdir_env != "" {
   "/tmp"
 }
 let workdir = FS.join(tmp_root, "culebra_proc_test")
-if FS.exists(workdir) {
-  FS.remove(workdir)
-}
+FS.remove(workdir) if FS.exists(workdir)
 FS.mkdir(workdir)
 let pw = Proc.run(["pwd"], cwd: workdir)
 // pwd may resolve symlinks (/var -> /private/var), so match the basename.

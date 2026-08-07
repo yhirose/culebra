@@ -217,9 +217,7 @@ let BASE_POINTS = [
 let hit_at = |px, py| Canvas.get_pixel(px, py) != C1
 
 let collided = fn (player_y, anim_index) {
-  if player_y < -1 {
-    return hit_at(PLAYER_X + 13, 0)
-  }
+  return hit_at(PLAYER_X + 13, 0) if player_y < -1
   # The wing sweeps through a different cell on each frame of the flap.
   let wing = cond {
     anim_index == 2 => [[2, 1], [7, 1]],
@@ -320,9 +318,7 @@ class App {
   enter_over() {
     self.mode = Mode.Over
     self.new_high = self.max_score > self.high_score
-    if self.new_high {
-      self.high_score = self.max_score
-    }
+    self.high_score = self.max_score if self.new_high
     self.rocci = fall_anim(self.fc)
     self.hiscore = hiscore_anim(self.fc)
     death_tone()
@@ -346,9 +342,7 @@ class App {
     self.interactive ? self.action_held() : true
   }
   restart_input() {
-    if !self.interactive {
-      return true
-    }
+    return true if !self.interactive
     let m = Canvas.mouse()
     self.input.down(Canvas.B) ||
       self.input.down(Canvas.RIGHT) ||
@@ -392,9 +386,7 @@ class App {
     draw_ground(0)
     draw_plants(self.plants)
     self.rocci.draw(PLAYER_X, PLAYER_START_Y + self.idle_shift())
-    if self.start_input() {
-      self.enter_game()
-    }
+    self.enter_game() if self.start_input()
   }
 
   tick_game() {
@@ -429,9 +421,7 @@ class App {
     self.score = Math.min(self.score + gained, 255)
     self.max_score = Math.max(self.score, self.max_score)
     self.ground_x = (self.ground_x - 1) % W
-    if gained > 0 {
-      point_tone()
-    }
+    point_tone() if gained > 0
 
     draw_pipes(self.pipes)
     draw_ground(self.ground_x)
@@ -442,9 +432,7 @@ class App {
     self.rocci.draw(PLAYER_X, y_pixel)
     draw_score(self.score, 68, 4)
 
-    if hit || self.player_y >= 134.0 {
-      self.enter_over()
-    }
+    self.enter_over() if hit || self.player_y >= 134.0
   }
 
   tick_over() {
@@ -464,16 +452,12 @@ class App {
     Canvas.text("Art by Luke DeVault", 4, 151, C4)
     Canvas.rect(66, 2, 28, 12, C1)
     draw_score(self.score, 68, 4)
-    if self.new_high {
-      self.hiscore.draw(64, 0)
-    }
+    self.hiscore.draw(64, 0) if self.new_high
     Canvas.rect(54, 18, 52, 12, C1)
     Canvas.text("HS:", 57, 20, C4)
     draw_score(self.high_score, 80, 20)
 
-    if self.restart_input() {
-      self.enter_title()
-    }
+    self.enter_title() if self.restart_input()
   }
 }
 

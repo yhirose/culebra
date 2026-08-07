@@ -27,9 +27,7 @@ if !FS.exists(data_path) {
 mut docs = []
 for line in FS.read(data_path).split("\n") {
   let s = line.trim()
-  if s.size() > 0 {
-    docs.push(s)
-  }
+  docs.push(s) if s.size() > 0
 }
 Random.shuffle(docs)
 inspect("num docs: {docs.size()}")
@@ -37,9 +35,7 @@ inspect("num docs: {docs.size()}")
 mut uchars = []
 for d in docs {
   for c in d {
-    if !uchars.contains(c) {
-      uchars.push(c)
-    }
+    uchars.push(c) if !uchars.contains(c)
   }
 }
 uchars.sort_by(|c| c)
@@ -327,9 +323,7 @@ if n_samples > 0 {
       Tensor.eval(probs)
       let weights = probs.to_array()
       token_id = Random.weighted_choice(pop, weights)
-      if token_id == BOS {
-        break
-      }
+      break if token_id == BOS
       sample.push(uchars[token_id])
     }
     inspect("sample {sample_idx+1}: {sample.join('')}")

@@ -12,9 +12,7 @@
 fn fe_array() {
   mut n = 0
   [1, 2, 3].for_each(fn (x) {
-    if x == 2 {
-      return nil
-    }
+    return nil if x == 2
     n = n + 1
   })
   n
@@ -24,9 +22,7 @@ assert_eq(fe_array(), 2)
 fn fe_iter() {
   mut n = 0
   [1, 2, 3].iter().for_each(fn (x) {
-      if x == 2 {
-        return nil
-      }
+      return nil if x == 2
       n = n + 1
     })
   n
@@ -36,9 +32,7 @@ assert_eq(fe_iter(), 2)
 fn fe_range() {
   mut n = 0
   range(3).for_each(fn (x) {
-    if x == 1 {
-      return nil
-    }
+    return nil if x == 1
     n = n + 1
   })
   n
@@ -48,9 +42,7 @@ assert_eq(fe_range(), 2)
 # --- return value becomes the element result -------------------------------
 fn m_array() {
   [1, 2, 3].map(fn (x) {
-    if x == 2 {
-      return 99
-    }
+    return 99 if x == 2
     x * 10
   })
 }
@@ -58,9 +50,7 @@ assert_eq(m_array(), [10, 99, 30])
 
 fn m_iter() {
   [1, 2, 3].iter().map(fn (x) {
-      if x == 2 {
-        return 99
-      }
+      return 99 if x == 2
       x
     }).collect()
 }
@@ -68,9 +58,7 @@ assert_eq(m_iter(), [1, 99, 3])
 
 fn m_range() {
   range(3).map(fn (x) {
-      if x == 1 {
-        return 99
-      }
+      return 99 if x == 1
       x
     }).collect()
 }
@@ -78,9 +66,7 @@ assert_eq(m_range(), [0, 99, 2])
 
 fn f_array() {
   [1, 2, 3].filter(fn (x) {
-    if x == 2 {
-      return true
-    }
+    return true if x == 2
     false
   })
 }
@@ -88,9 +74,7 @@ assert_eq(f_array(), [2])
 
 fn r_array() {
   [1, 2, 3].reduce(0, fn (a, x) {
-    if x == 2 {
-      return a
-    }
+    return a if x == 2
     a + x
   })
 }
@@ -98,9 +82,7 @@ assert_eq(r_array(), 4)
 
 fn r_range() {
   range(3).reduce(0, fn (acc, x) {
-    if x == 1 {
-      return acc
-    }
+    return acc if x == 1
     acc + x
   })
 }
@@ -133,9 +115,7 @@ fn fe_nested() {
   mut n = 0
   [1, 2, 3].for_each(fn (x) {
     [x].for_each(fn (y) {
-      if y == 2 {
-        return nil
-      }
+      return nil if y == 2
       n = n + 1
     })
   })
@@ -147,9 +127,7 @@ assert_eq(fe_nested(), 2)
 fn fe_bound() {
   mut n = 0
   let cb = fn (x) {
-    if x == 2 {
-      return nil
-    }
+    return nil if x == 2
     n = n + 1
   }
   [1, 2, 3].for_each(cb)
@@ -159,9 +137,7 @@ assert_eq(fe_bound(), 2)
 
 fn r_bound() {
   let cb = fn (a, x) {
-    if x == 2 {
-      return a
-    }
+    return a if x == 2
     a + x
   }
   [1, 2, 3].reduce(0, cb)

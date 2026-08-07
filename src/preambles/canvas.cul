@@ -21,9 +21,7 @@ let _canvas_module = fn () {
     let bf = b / 255.0
     let hi = Math.max(rf, gf, bf)
     let lo = Math.min(rf, gf, bf)
-    if lo == hi {
-      return (0.0, 0.0, hi)
-    }
+    return (0.0, 0.0, hi) if lo == hi
     let span = hi - lo
     let rc = (hi - rf) / span
     let gc = (hi - gf) / span
@@ -146,9 +144,7 @@ let _canvas_module = fn () {
     # program that creates them per frame doesn't grow the registry. A
     # constructor that threw (bad PNG bytes) drops before _id was ever set.
     drop() {
-      if self._id != nil {
-        _Canvas.sprite_free(self._id)
-      }
+      _Canvas.sprite_free(self._id) if self._id != nil
     }
     width() {
       self._w
@@ -444,9 +440,7 @@ let _canvas_module = fn () {
     # Free the decoded sample with the last reference (a constructor that
     # threw drops before _id was ever set).
     drop() {
-      if self._id != nil {
-        _Canvas.sound_free(self._id)
-      }
+      _Canvas.sound_free(self._id) if self._id != nil
     }
   }
 
@@ -496,15 +490,9 @@ let _canvas_module = fn () {
       let cont = tick()
       _Canvas.present()
       i = i + 1
-      if cont == false {
-        running = false
-      }
-      if _Canvas.closing() {
-        running = false
-      }
-      if !interactive && i >= frames {
-        running = false
-      }
+      running = false if cont == false
+      running = false if _Canvas.closing()
+      running = false if !interactive && i >= frames
     }
   }
 

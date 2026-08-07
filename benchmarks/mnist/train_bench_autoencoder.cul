@@ -83,9 +83,7 @@ let run_epoch = fn (Ws, bs) {
       }
       let dW = dnet.dot(input_l.transpose())
       let db = dnet.sum(1).reshape([L[l + 1], 1])
-      if l > 0 {
-        dout = Ws[l].transpose().dot(dnet)
-      }
+      dout = Ws[l].transpose().dot(dnet) if l > 0
       Ws[l] = Ws[l] - dW * LR
       bs[l] = bs[l] - db * LR
     }

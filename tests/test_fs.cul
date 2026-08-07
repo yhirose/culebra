@@ -53,15 +53,9 @@ let f1 = FS.join(dir, "hello.txt")
 let f2 = FS.join(dir, "world.txt")
 
 // Clean any leftover from a prior failed run.
-if FS.exists(f1) {
-  FS.remove(f1)
-}
-if FS.exists(f2) {
-  FS.remove(f2)
-}
-if FS.exists(dir) {
-  FS.remove(dir)
-}
+FS.remove(f1) if FS.exists(f1)
+FS.remove(f2) if FS.exists(f2)
+FS.remove(dir) if FS.exists(dir)
 
 FS.mkdir(dir)
 assert_true(FS.is_dir(dir))
@@ -133,9 +127,7 @@ assert_eq(FS.is_abs("/tmp"), true)
 assert_eq(FS.is_abs("rel/path"), false)
 
 let xdir = FS.join(tmp_root, "culebra_fs_ext")
-if FS.exists(xdir) {
-  FS.remove(xdir, recursive: true)
-}
+FS.remove(xdir, recursive: true) if FS.exists(xdir)
 FS.mkdir(FS.join(xdir, "sub"))
 FS.write(FS.join(xdir, "f.txt"), "hello")
 FS.write(FS.join(xdir, "sub/g.txt"), "yy")

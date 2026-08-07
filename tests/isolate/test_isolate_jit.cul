@@ -29,9 +29,7 @@ assert_eq(Isolate.spawn(|| (1, "two", 3)).join(), (1, "two", 3))
 
 # a recursive top-level function captured as a free var (multifn dispatcher)
 fn fib(n) {
-  if n < 2 {
-    return n
-  }
+  return n if n < 2
   return fib(n - 1) + fib(n - 2)
 }
 assert_eq(Isolate.spawn(|| fib(20)).join(), 6765)
@@ -39,15 +37,11 @@ assert_eq(Isolate.spawn(|n| fib(n), 15).join(), 610)
 
 # mutual recursion across two dispatchers
 fn ev(n) {
-  if n == 0 {
-    return true
-  }
+  return true if n == 0
   return od(n - 1)
 }
 fn od(n) {
-  if n == 0 {
-    return false
-  }
+  return false if n == 0
   return ev(n - 1)
 }
 assert_eq(Isolate.spawn(|| ev(10)).join(), true)

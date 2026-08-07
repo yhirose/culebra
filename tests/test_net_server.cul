@@ -23,12 +23,8 @@ iso = Isolate.spawn(fn () {
   // prove one failing handler doesn't take the server (or its worker) down.
   l.serve(fn (conn) {
       let line = conn.read_line()
-      if line == "boom" {
-        throw "handler exploded"
-      }
-      if line != nil {
-        conn.write(line.upper() + "\n")
-      }
+      throw "handler exploded" if line == "boom"
+      conn.write(line.upper() + "\n") if line != nil
     }, workers: 4)
 })
 tx.drop()  // the parent's own sender copy

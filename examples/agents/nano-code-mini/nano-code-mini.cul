@@ -61,9 +61,7 @@ fn tool_write(args) {
 fn tool_edit(args) {
   let text = FS.read(args.path)
   let count = text.count(args.old)
-  if count == 0 {
-    return 'error: old_string not found'
-  }
+  return 'error: old_string not found' if count == 0
 
   let all = args.all ?? false
   if !all && count > 1 {
@@ -93,9 +91,7 @@ fn tool_grep(args) {
       for i, line in FS.read(p).lines().enumerate() {
         if re.test(line) {
           hits.push("{p}:{i + 1}:{line}")
-          if hits.size() >= 50 {
-            return hits.join("\n")
-          }
+          return hits.join("\n") if hits.size() >= 50
         }
       }
     } catch _ {
@@ -306,17 +302,13 @@ fn main() {
             })
           }
         }
-        if tool_results.empty() {
-          break
-        }
+        break if tool_results.empty()
         messages.push({role: 'user', content: tool_results})
       }
 
       println()
     } catch e {
-      if e.kind == 'Interrupted' {
-        break
-      }
+      break if e.kind == 'Interrupted'
       println(Term.red("\u23fa Error: {e}"))
     }
   }

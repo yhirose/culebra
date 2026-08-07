@@ -237,9 +237,7 @@ wiso = Isolate.spawn(fn () {
   srv.ws("/greet", fn (req, ws) {
     while true {
       let m = ws.receive()
-      if m == nil {
-        break
-      }
+      break if m == nil
       ws.send(req.path + ":" + m)
     }
   })

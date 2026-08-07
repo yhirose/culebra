@@ -75,9 +75,7 @@ fn defer_break() {
     defer {
       out.push("cleanup")
     }
-    if n == 2 {
-      break
-    }
+    break if n == 2
     out.push(n)
     n = n + 1
   }

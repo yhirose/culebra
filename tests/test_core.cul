@@ -15,9 +15,7 @@ test_call = fn () {
 
 test_return = fn () {
   f = fn (x) {
-    if x % 2 {
-      return 'odd'
-    }
+    return 'odd' if x % 2
     'even'
   }
   assert_eq(f(3), 'odd')
@@ -432,14 +430,10 @@ test_float = fn () {
   assert_false(0.0 != -0.0)
   // Truthiness: 0.0 and -0.0 are both false.
   mut zero_is_falsy = true
-  if 0.0 {
-    zero_is_falsy = false
-  }
+  zero_is_falsy = false if 0.0
   assert_true(zero_is_falsy)
   mut nz_is_truthy = false
-  if 0.5 {
-    nz_is_truthy = true
-  }
+  nz_is_truthy = true if 0.5
   assert_true(nz_is_truthy)
 
   // NaN: self-inequality, arithmetic propagation, ordering returns
@@ -1125,9 +1119,7 @@ test_for_in = fn () {
   mut hit = 0
   for i in [1, 2, 3] {
     for j in [10, 20, 30] {
-      if j == 20 {
-        break
-      }
+      break if j == 20
       hit = hit + 1
     }
   }
@@ -1136,9 +1128,7 @@ test_for_in = fn () {
   // continue skips
   mut evens = 0
   for x in [1, 2, 3, 4, 5, 6] {
-    if x % 2 == 1 {
-      continue
-    }
+    continue if x % 2 == 1
     evens = evens + 1
   }
   assert_eq(evens, 3)

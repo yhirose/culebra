@@ -70,9 +70,7 @@ let all = handle {
 }
 
 println("{N} queens: {all.size()} solutions, {nodes_all} placements considered\n")
-if !all.empty() {
-  println(board_of(all[0]) + "\n")
-}
+println(board_of(all[0]) + "\n") if !all.empty()
 
 # --- handler B: same search, stop at the first solution ------------------
 # Only the `choose` clause changes — it stops resuming once a branch has

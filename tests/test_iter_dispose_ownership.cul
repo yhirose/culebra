@@ -27,9 +27,7 @@ fn mk_distinct() {
 fn run_distinct() {
   let g = mk_distinct()
   for x in g {
-    if x > 1 {
-      break
-    }
+    break if x > 1
   }
   inspect("distinct: after loop")
 }
@@ -39,9 +37,7 @@ inspect("distinct: after run")
 # Fresh iterable (no binding): its drop fires at the loop's own scope exit.
 fn run_fresh() {
   for x in mk_distinct() {
-    if x > 1 {
-      break
-    }
+    break if x > 1
   }
   inspect("fresh: after loop")
 }
@@ -67,9 +63,7 @@ fn mk_self() {
 fn run_self() {
   let g = mk_self()
   for x in g {
-    if x > 1 {
-      break
-    }
+    break if x > 1
   }
   inspect("self: after loop")
   inspect("self: usable " + g.has_next().to_string())
@@ -89,9 +83,7 @@ fn gen() {
 
 fn run_gen() {
   for x in gen() {
-    if x > 1 {
-      break
-    }
+    break if x > 1
   }
   inspect("gen: after loop")
 }

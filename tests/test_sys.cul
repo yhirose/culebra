@@ -63,9 +63,7 @@ let tmp_root = if tmpdir_env != "" {
   "/tmp"
 }
 let dir = FS.join(tmp_root, "culebra_sys_test")
-if FS.exists(dir) {
-  FS.remove(dir, recursive: true)
-}
+FS.remove(dir, recursive: true) if FS.exists(dir)
 FS.mkdir(dir)
 
 Sys.chdir(dir)

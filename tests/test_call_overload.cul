@@ -276,9 +276,7 @@ test_dezero_call = fn () {
       Add.new()(self, o)
     }
     backward() {
-      if self.grad == nil {
-        self.grad = 1.0
-      }
+      self.grad ??= 1.0
       mut funcs = [self.creator]
       while funcs.size() > 0 {
         let f = funcs.pop()
@@ -286,14 +284,8 @@ test_dezero_call = fn () {
         mut i = 0
         while i < f.inputs.size() {
           let x = f.inputs[i]
-          if x.grad == nil {
-            x.grad = gxs[i]
-          } else {
-            x.grad = x.grad + gxs[i]
-          }
-          if x.creator != nil {
-            funcs.push(x.creator)
-          }
+          x.grad = (x.grad ?? 0) + gxs[i]
+          funcs.push(x.creator) if x.creator != nil
           i = i + 1
         }
       }

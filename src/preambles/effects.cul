@@ -60,9 +60,7 @@ let _eff_module = fn () {
     let st = _op_stacks.get(_key(op), nil)
     if st != nil {
       let n = st.size()
-      if n > 0 {
-        return st[n - 1]
-      }
+      return st[n - 1] if n > 0
     }
     # `line` is the original source line of the `perform` (carried on the
     # computation object by the transform), so the error points at the caller.
@@ -100,9 +98,7 @@ let _eff_module = fn () {
     if pair[0] {
       _finalize_stack(stack)
       let sig = pair[1]
-      if sig[0] == tok {
-        return sig[1]
-      }
+      return sig[1] if sig[0] == tok
       __eff_abort(sig)
     }
     pair[1]
@@ -143,9 +139,7 @@ let _eff_module = fn () {
         let done_val = comp._eff_val
         if stack.size() == 1 {
           # The handled body finished: a `return` clause (if any) maps it.
-          if ret != nil {
-            return ret(done_val)
-          }
+          return ret(done_val) if ret != nil
           return done_val
         }
         # A delegated call finished; feed its value to the enclosing frame.
@@ -201,15 +195,11 @@ let _eff_module = fn () {
         let result = try {
           hf(comp._eff_args, resume)
         } catch e {
-          if h.t != "f" {
-            _finalize_stack(stack)
-          }
+          _finalize_stack(stack) if h.t != "f"
           throw e
         }
         # An abort clause never resumes: the suspended body is abandoned.
-        if is_abort {
-          _finalize_stack(stack)
-        }
+        _finalize_stack(stack) if is_abort
         return result
       }
       # DELEGATE: push the sub-computation as a new frame and run it next.
@@ -229,9 +219,7 @@ let _eff_module = fn () {
     for op, entry in frame {
       entry["tok"] = tok
       let k = _key(op)
-      if !_op_stacks.has(k) {
-        _op_stacks[k] = []
-      }
+      _op_stacks[k] ??= []
       _op_stacks[k].push(entry)
       keys.push(k)
     }
@@ -256,12 +244,8 @@ let _eff_module = fn () {
   fn _perform_direct(op, args, line) {
     let h = _find(op, line)
     let hf = h.f
-    if h.t == "f" {
-      _full_control_error(op, line)
-    }
-    if h.t == "a" {
-      __eff_abort([h.tok, hf(args, _id_resume)])
-    }
+    _full_control_error(op, line) if h.t == "f"
+    __eff_abort([h.tok, hf(args, _id_resume)]) if h.t == "a"
     hf(args, _id_resume)
   }
 
@@ -286,9 +270,7 @@ let _eff_module = fn () {
           throw e
         }
         if tag == 0 {
-          if stack.size() == 1 {
-            return c._eff_val
-          }
+          return c._eff_val if stack.size() == 1
           stack.pop()
           resume_val = c._eff_val
           continue

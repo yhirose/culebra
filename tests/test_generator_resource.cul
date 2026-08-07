@@ -46,9 +46,7 @@ fn gen_b() {
 }
 for v in gen_b() {
   log_b = "{log_b}{v};"
-  if v >= 2 {
-    break
-  }
+  break if v >= 2
 }
 assert_eq(log_b, '0;1;2;closed;')
 
@@ -104,9 +102,7 @@ fn gen_e() {
 try {
   for v in gen_e() {
     log_e = "{log_e}{v};"
-    if v == 1 {
-      throw 'boom'
-    }
+    throw 'boom' if v == 1
   }
 } catch e {
   log_e = "{log_e}caught;"
@@ -171,9 +167,7 @@ fn gen_g() {
     log_g = "{log_g}closed;"
   }
   for v in [1, 2, 3] {
-    if v == 2 {
-      throw 'from-generator'
-    }
+    throw 'from-generator' if v == 2
     yield v
   }
 }
@@ -193,15 +187,11 @@ fn iter_h(thrower) {
   {iter: fn () {
       self
     }, has_next: fn () {
-      if thrower == 'has_next' && i == 1 {
-        throw 'hn'
-      }
+      throw 'hn' if thrower == 'has_next' && i == 1
       true
     }, next: fn () {
       i = i + 1
-      if thrower == 'next' && i == 2 {
-        throw 'nx'
-      }
+      throw 'nx' if thrower == 'next' && i == 2
       i
     }, dispose: fn () {
       log_h = "{log_h}disposed;"
@@ -253,9 +243,7 @@ fn iter_j(tag, bad) {
       i < 4
     }, next: fn () {
       i = i + 1
-      if bad && i == 2 {
-        throw 'inner'
-      }
+      throw 'inner' if bad && i == 2
       i
     }, dispose: fn () {
       log_j = "{log_j}{tag};"
@@ -481,9 +469,7 @@ assert_eq(log_t, 'closed;')
 log_t = ''
 try {
   gen_t().for_each(fn (x) {
-    if x == 2 {
-      throw 'boom'
-    }
+    throw 'boom' if x == 2
   })
 } catch e {
   log_t = "{log_t}caught:{e};"
@@ -493,9 +479,7 @@ assert_eq(log_t, 'closed;caught:boom;')
 log_t = ''
 try {
   gen_t().find(fn (x) {
-    if x == 2 {
-      throw 'boom'
-    }
+    throw 'boom' if x == 2
     false
   })
 } catch e {
@@ -510,9 +494,7 @@ fn gen_bad_t() {
     log_t = "{log_t}closed;"
   }
   for v in [1, 2] {
-    if v == 2 {
-      throw 'prod'
-    }
+    throw 'prod' if v == 2
     yield v
   }
 }
@@ -547,9 +529,7 @@ fn make_bad_dispose(thrower) {
       i < 2
     }, next: fn () {
       i = i + 1
-      if thrower && i == 2 {
-        throw 'original'
-      }
+      throw 'original' if thrower && i == 2
       i
     }, dispose: fn () {
       throw 'from-dispose'

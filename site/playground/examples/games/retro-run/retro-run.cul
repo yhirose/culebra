@@ -575,9 +575,7 @@ mut fast_lap_time = 180.0  # v4's starting target, session-lived
 # music, so the riff below is the default. It sits under the engine and the
 # chiptune's own level, loud enough to carry on laptop speakers.
 let MUSIC_FILE = ["music.ogg", "music.mp3"].find(|n| ART.exists(n))
-if MUSIC_FILE != nil {
-  Canvas.music(art(MUSIC_FILE), vol: 60)
-}
+Canvas.music(art(MUSIC_FILE), vol: 60) if MUSIC_FILE != nil
 
 # The chiptune fallback — a bossa-flavored run, not a transcription of any
 # particular tune: a brisk ii-V-I-ish turnaround (F△7-Dm7-Gm7-C7, one bar
@@ -679,9 +677,7 @@ let steer_car = fn (car, car_index, player_index, n, player_half) {
     let car_speed = car.speed
     for i in 1..LOOKAHEAD {
       mut si = car_index + i
-      if si >= n {
-        si -= n
-      }
+      si -= n if si >= n
       let segment = segments[si]
 
       if si == player_index && car_speed > speed {
@@ -748,9 +744,7 @@ let update_cars = fn (dt, player_index) {
     if zin >= seg_len {
       zin -= seg_len
       mut ni = old_index + 1
-      if ni >= n {
-        ni = 0
-      }
+      ni = 0 if ni >= n
       car.seg = ni
       remove_car(segments[old_index].cars, car)
       segments[ni].cars.push(car)
@@ -787,9 +781,7 @@ let update = fn (dt) {
   }
 
   if player_x < -1.0 || player_x > 1.0 {
-    if speed > OFF_ROAD_LIMIT {
-      speed += OFF_ROAD_DECEL * dt
-    }
+    speed += OFF_ROAD_DECEL * dt if speed > OFF_ROAD_LIMIT
 
     for prop in player_segment.sprites {
       let pw = prop.art.sw
@@ -836,9 +828,7 @@ let update = fn (dt) {
     }
   }
 
-  if MUSIC_FILE == nil {
-    tick_bgm()
-  }
+  tick_bgm() if MUSIC_FILE == nil
 }
 
 # --- render ----------------------------------------------------------------
@@ -1066,9 +1056,7 @@ let draw_road = fn (base_index, base_percent, player_y) {
     x += dx
     dx += segment.curve
     si += 1
-    if si >= n_segments {
-      si = 0
-    }
+    si = 0 if si >= n_segments
 
     if visible {
       let p = pal[segment.kind]
@@ -1364,9 +1352,7 @@ let render = fn () {
         }, player_segment.p2_wy - player_segment.p1_wy)
     }
     mi -= 1
-    if mi < 0 {
-      mi = n_segments - 1
-    }
+    mi = n_segments - 1 if mi < 0
   }
 
   draw_hud()

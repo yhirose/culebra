@@ -41,9 +41,7 @@ assert_eq(r3, [false, [true, "x"]])
 fn hop() {
   mut i = 0
   while i < 3 {
-    if i == 1 {
-      __eff_abort([i, "stop"])
-    }
+    __eff_abort([i, "stop"]) if i == 1
     i += 1
   }
   "unreached"

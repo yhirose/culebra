@@ -32,9 +32,7 @@ fn new_board() {
 # All cells orthogonally connected to (r,c) sharing its colour.
 fn group_at(b, r, c) {
   let color = b[r][c]
-  if color == 0 {
-    return []
-  }
+  return [] if color == 0
 
   mut out = []
   mut seen = [].to_set()  # (row, col) tuples — Sets take any hashable
@@ -98,12 +96,8 @@ fn has_moves(b) {
     for c in 0..COLS {
       let v = b[r][c]
       if v != 0 {
-        if c + 1 < COLS && b[r][c + 1] == v {
-          return true
-        }
-        if r + 1 < ROWS && b[r + 1][c] == v {
-          return true
-        }
+        return true if c + 1 < COLS && b[r][c + 1] == v
+        return true if r + 1 < ROWS && b[r + 1][c] == v
       }
     }
   }
@@ -118,9 +112,7 @@ fn count_tiles(b) {
 fn find_move(b) {
   for r in 0..ROWS {
     for c in 0..COLS {
-      if b[r][c] != 0 && group_at(b, r, c).size() >= 2 {
-        return (r, c)
-      }
+      return (r, c) if b[r][c] != 0 && group_at(b, r, c).size() >= 2
     }
   }
   (-1, -1)
@@ -154,9 +146,7 @@ fn draw(s, b, cur_r, cur_c, score, msg) {
 }
 
 fn load_scores() {
-  if !FS.exists(SCORE_FILE) {
-    return []
-  }
+  return [] if !FS.exists(SCORE_FILE)
   try {
     JSON.parse(FS.read(SCORE_FILE))
   } catch e {
@@ -189,9 +179,7 @@ fn record_score(score) {
     time: now.format("%H:%M:%S"),
   }
   let (list, made_top5) = rank_into(scores, entry)
-  if made_top5 {
-    save_scores(list)
-  }
+  save_scores(list) if made_top5
   (list, made_top5 ? entry : nil)
 }
 
@@ -283,17 +271,13 @@ fn show_help(s, board, cur_r, cur_c, score, msg) {
 fn wait_any_key(s) {
   while true {
     let e = s.poll(0.1)
-    if e?.kind == "key" {
-      return e.key
-    }
+    return e.key if e?.kind == "key"
   }
 }
 
 fn try_remove(b, r, c) {
   let cells = group_at(b, r, c)
-  if cells.size() < 2 {
-    return -1
-  }
+  return -1 if cells.size() < 2
   remove_cells(b, cells)
   gravity(b)
   collapse(b)

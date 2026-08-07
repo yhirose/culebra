@@ -191,9 +191,7 @@ assert_eq(_Canvas.get_pixel(2, 2), RED)  // reverse overdrew every pixel
 mut leftover = 0
 for y in 0..6 {
   for x in 0..6 {
-    if _Canvas.get_pixel(x, y) == BLUE {
-      leftover = leftover + 1
-    }
+    leftover = leftover + 1 if _Canvas.get_pixel(x, y) == BLUE
   }
 }
 assert_eq(leftover, 0)

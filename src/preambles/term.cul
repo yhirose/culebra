@@ -51,9 +51,7 @@ let _term_module = fn () {
     let n = raw.size()
     let last = raw[n - 1..n]
     let parts = raw[3..n - 1].split(";")  # drop "\x1b[<" and the final M/m
-    if parts.size() != 3 {
-      return nil
-    }
+    return nil if parts.size() != 3
     let b = to_long(parts[0])
     let x = to_long(parts[1]) - 1
     let y = to_long(parts[2]) - 1
@@ -85,9 +83,7 @@ let _term_module = fn () {
           }
         }
       }
-      if b & 32 != 0 {
-        event = "drag"
-      }
+      event = "drag" if b & 32 != 0
     }
     {
       kind: "mouse",
@@ -104,16 +100,10 @@ let _term_module = fn () {
   # Parse one raw report into an event Object, or nil.
   let _parse_event = fn (raw) {
     let n = raw.size()
-    if n == 0 {
-      return nil
-    }
-    if n >= 3 && raw[0..3] == "\x1b[<" {
-      return _parse_mouse(raw)
-    }
+    return nil if n == 0
+    return _parse_mouse(raw) if n >= 3 && raw[0..3] == "\x1b[<"
     if raw[0..1] == "\x1b" {
-      if n == 1 {
-        return _evkey("escape", false, false, false)
-      }
+      return _evkey("escape", false, false, false) if n == 1
       let second = raw[1..2]
       if second == "[" || second == "O" {
         let body = raw[2..n]  # after "\x1b[" / "\x1bO"
@@ -138,9 +128,7 @@ let _term_module = fn () {
         } else {
           _csi_keys.get(final, "")
         }
-        if name != "" {
-          return _evkey(name, ctrl, shift, alt)
-        }
+        return _evkey(name, ctrl, shift, alt) if name != ""
         return nil  # unrecognized sequence
       }
       if n == 2 {
@@ -149,12 +137,8 @@ let _term_module = fn () {
       return nil
     }
     if n == 1 {
-      if raw == "\r" || raw == "\n" {
-        return _evkey("enter", false, false, false)
-      }
-      if raw == "\t" {
-        return _evkey("tab", false, false, false)
-      }
+      return _evkey("enter", false, false, false) if raw == "\r" || raw == "\n"
+      return _evkey("tab", false, false, false) if raw == "\t"
       if raw == "\x7f" || raw == "\x08" {
         return _evkey("backspace", false, false, false)
       }
@@ -320,31 +304,19 @@ let _term_module = fn () {
     underline = false,
     reverse = false,
   ) {
-    if _level == 0 {
-      return ""
-    }
+    return "" if _level == 0
     mut parts = []
-    if bold {
-      parts.push("1")
-    }
-    if dim {
-      parts.push("2")
-    }
-    if underline {
-      parts.push("4")
-    }
-    if reverse {
-      parts.push("7")
-    }
+    parts.push("1") if bold
+    parts.push("2") if dim
+    parts.push("4") if underline
+    parts.push("7") if reverse
     if fg != nil {
       let p = if type_of(fg) == "Tuple" || type_of(fg) == "Array" {
         _rgbfg_params(fg[0], fg[1], fg[2])
       } else {
         _fg_params(fg)
       }
-      if p != "" {
-        parts.push(p)
-      }
+      parts.push(p) if p != ""
     }
     if bg != nil {
       let p = if type_of(bg) == "Tuple" || type_of(bg) == "Array" {
@@ -352,9 +324,7 @@ let _term_module = fn () {
       } else {
         _bg_params(bg)
       }
-      if p != "" {
-        parts.push(p)
-      }
+      parts.push(p) if p != ""
     }
     parts.join(";")
   }
@@ -490,9 +460,7 @@ let _term_module = fn () {
               }
               if st != pen {
                 out = out + "\x1b[0m"
-                if st != "" {
-                  out = out + "\x1b[" + st + "m"
-                }
+                out = out + "\x1b[" + st + "m" if st != ""
                 pen = st
               }
               out = out + back

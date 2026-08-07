@@ -130,9 +130,7 @@ class Frog {
     }
   }
   eaten() {
-    if self.energy == -1 {
-      self.energy = 50
-    }
+    self.energy = 50 if self.energy == -1
   }
   alive() {
     self.energy != 0
@@ -218,9 +216,7 @@ fn check(frog, foods, enemies, score) {
     }
   }
   for enemy in enemies {
-    if frog.x == enemy.x && frog.y == enemy.y {
-      frog.eaten()
-    }
+    frog.eaten() if frog.x == enemy.x && frog.y == enemy.y
   }
   s
 }
@@ -252,9 +248,7 @@ fn draw_screen(s, frog, fruit, dessert, eagle, snake, score, time) {
   }
   frog.draw(s, off)
   for food in [fruit, dessert] {
-    if food.remaining() > 0 {
-      food.draw(s, off)
-    }
+    food.draw(s, off) if food.remaining() > 0
   }
   for enemy in [eagle, snake] {
     enemy.draw(s, off)
@@ -289,14 +283,10 @@ fn draw_game_over(s, score, time, frog, fruit, dessert) {
 # Block until one of `chars` is pressed; auto-return the first when there is
 # no tty (demo mode).
 fn wait_key(s, chars) {
-  if !INTERACTIVE {
-    return chars[0]
-  }
+  return chars[0] if !INTERACTIVE
   while true {
     let ev = s.poll(0.1)
-    if ev?.kind == "key" && chars.contains(ev.key) {
-      return ev.key
-    }
+    return ev.key if ev?.kind == "key" && chars.contains(ev.key)
   }
 }
 
@@ -304,9 +294,7 @@ fn wait_key(s, chars) {
 fn run(s) {
   mut time = 99
   draw_opening(s, time)
-  if wait_key(s, [" ", "q"]) == "q" {
-    return false
-  }
+  return false if wait_key(s, [" ", "q"]) == "q"
 
   mut score = 0
   mut tic = 0
@@ -342,18 +330,12 @@ fn run(s) {
     snake.move(s)
     score = check(frog, [fruit, dessert], [eagle, snake], score)
     draw_screen(s, frog, fruit, dessert, eagle, snake, score, time)
-    if tic % 10 == 0 {
-      time -= 1
-    }
+    time -= 1 if tic % 10 == 0
     tic += 1
   }
 
-  if frog.alive() {
-    score += time
-  }
-  if !INTERACTIVE {
-    return false
-  }
+  score += time if frog.alive()
+  return false if !INTERACTIVE
   Time.sleep(1.2)
   draw_game_over(s, score, time, frog, fruit, dessert)
   wait_key(s, [" ", "q"]) != "q"

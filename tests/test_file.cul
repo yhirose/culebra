@@ -9,9 +9,7 @@ let tmp_root = if tmpdir_env != "" {
   "/tmp"
 }
 let p = FS.join(tmp_root, "culebra_file_test.txt")
-if FS.exists(p) {
-  FS.remove(p)
-}
+FS.remove(p) if FS.exists(p)
 
 // --- write / flush / close round-trip ---
 let w = File.open(p, "w")
@@ -67,9 +65,7 @@ wb.close()
 let first_two = []
 for line in File.open(big, "r").lines() {
   first_two.push(line)
-  if first_two.size() == 2 {
-    break
-  }
+  break if first_two.size() == 2
 }
 assert_eq(first_two, ["line0", "line1"])
 

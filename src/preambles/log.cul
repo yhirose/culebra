@@ -47,16 +47,12 @@ let _log_module = fn () {
   }
   let _set_level = fn (l) {
     let n = _levels.get(l, -1)
-    if n < 0 {
-      throw "Log.set_level: unknown level '" + l + "'"
-    }
+    throw "Log.set_level: unknown level '" + l + "'" if n < 0
     _threshold = n
   }
   let _set_format = fn (f) {
     if f != "text" {
-      if f != "json" {
-        throw "Log.set_format: unknown format '" + f + "'"
-      }
+      throw "Log.set_format: unknown format '" + f + "'" if f != "json"
     }
     _format = f
   }

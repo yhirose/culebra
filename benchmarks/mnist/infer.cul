@@ -10,9 +10,7 @@ let load_int_1d = fn (path) {
   mut out = []
   for line in FS.read(path).split("\n") {
     let s = line.trim()
-    if s.size() == 0 {
-      continue
-    }
+    continue if s.size() == 0
     out.push(to_long(s))
   }
   out
@@ -59,9 +57,7 @@ Tensor.eval(preds)
 let p = preds.to_array()
 mut correct = 0
 for k in range(n) {
-  if to_long(p[k]) == y[k] {
-    correct = correct + 1
-  }
+  correct = correct + 1 if to_long(p[k]) == y[k]
 }
 let acc = to_float(correct) / to_float(n)
 

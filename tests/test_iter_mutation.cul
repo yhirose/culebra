@@ -33,9 +33,7 @@ assert_true(b.has("new_key"))  # but the add did take effect
 mut c = {x: 1, y: 2, z: 3}
 mut c_seen = []
 for k, v in c.iter() {
-  if k == "x" {
-    c.remove("z")
-  }
+  c.remove("z") if k == "x"
   c_seen.push(k)
 }
 assert_eq(c_seen, ["x", "y"])  # z removed before its turn → skipped
@@ -53,9 +51,7 @@ assert_eq(d_seen, ["a", "b"])  # a2 / b2 added but not visited
 # 5. The setdefault-style pattern: add derived entries while iterating.
 mut books = {"創": ("創世記", "章"), "詩": ("詩編", "編")}
 for reading, unit in books.values() {
-  if !books.has(reading) {
-    books[reading] = (reading, unit)
-  }
+  books[reading] = (reading, unit) if !books.has(reading)
 }
 assert_eq(books.size(), 4)
 assert_true(books.has("創世記") && books.has("詩編"))

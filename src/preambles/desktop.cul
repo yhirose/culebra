@@ -5,12 +5,8 @@ let _desktop_module = fn () {
     let workers = config.get("workers", 4)
 
     let srv = Http.server()
-    if config.has("assets") {
-      srv.static("/", config["assets"])
-    }
-    if config.has("routes") {
-      config["routes"](srv)
-    }
+    srv.static("/", config["assets"]) if config.has("assets")
+    config["routes"](srv) if config.has("routes")
     srv.post("/__quit", fn (req) {
       Webview.Window.quit()
       ""

@@ -16,9 +16,7 @@ if !FS.exists(data_path) {
 mut docs = []
 for line in FS.read(data_path).split("\n") {
   let s = line.trim()
-  if s.size() > 0 {
-    docs.push(s)
-  }
+  docs.push(s) if s.size() > 0
 }
 Random.shuffle(docs)
 inspect("num docs: {docs.size()}")
@@ -27,9 +25,7 @@ inspect("num docs: {docs.size()}")
 mut uchars = []  # unique characters in the dataset become token ids 0..n-1
 for d in docs {
   for c in d {
-    if !uchars.contains(c) {
-      uchars.push(c)
-    }
+    uchars.push(c) if !uchars.contains(c)
   }
 }
 uchars.sort_by(|c| c)
@@ -333,9 +329,7 @@ for sample_idx in 0..n_samples {
     let probs = softmax(logits.map(|l| l / temperature))
     let weights = probs.map(|p| p.data)
     token_id = Random.weighted_choice(pop, weights)
-    if token_id == BOS {
-      break
-    }
+    break if token_id == BOS
     sample.push(uchars[token_id])
   }
   inspect("sample {sample_idx+1}: {sample.join('')}")

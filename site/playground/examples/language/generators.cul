@@ -16,9 +16,7 @@ fn chunk(arr, n) {
       buf = []
     }
   }
-  if !buf.empty() {
-    yield buf
-  }
+  yield buf if !buf.empty()
 }
 
 println("chunks   = {chunk([1, 2, 3, 4, 5], 2).collect()}")

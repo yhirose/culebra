@@ -15,9 +15,7 @@ fn chunk(arr, n) {
       buf = []
     }
   }
-  if buf.size() > 0 {
-    yield buf
-  }
+  yield buf if buf.size() > 0
 }
 let c = chunk([1, 2, 3, 4, 5], 2).collect()
 assert_eq(c.size(), 3)
@@ -44,9 +42,7 @@ fn group_consecutive(arr) {
     cur.push(v)
     key = v
   }
-  if cur.size() > 0 {
-    yield cur
-  }
+  yield cur if cur.size() > 0
 }
 let g = group_consecutive([1, 1, 2, 3, 3, 3]).collect()
 assert_eq(g.size(), 3)
@@ -58,9 +54,7 @@ assert_eq(g[2].size(), 3)
 fn intersperse(arr, sep) {
   mut first = true
   for v in arr {
-    if !first {
-      yield sep
-    }
+    yield sep if !first
     yield v
     first = false
   }

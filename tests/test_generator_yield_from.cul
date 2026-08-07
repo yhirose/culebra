@@ -108,9 +108,7 @@ fn outer(leaves) {
 }
 for l in outer([Leaf.new(1), Leaf.new(2), Leaf.new(3), Leaf.new(4)]) {
   l.visit()
-  if l.id == 2 {
-    break
-  }
+  break if l.id == 2
 }
 assert_eq(leaf_log, 'v1;v2;')
 

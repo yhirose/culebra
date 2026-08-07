@@ -36,9 +36,7 @@ assert_eq(
 
 # heavier workload matches the serial result
 fn fib(n) {
-  if n < 2 {
-    return n
-  }
+  return n if n < 2
   return fib(n - 1) + fib(n - 2)
 }
 let ns = [10, 12, 14, 16, 18, 20]

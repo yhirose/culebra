@@ -1,64 +1,48 @@
 let assert_true = fn (x) {
-  if x {
-    return nil
-  }
+  return nil if x
   throw {kind: "AssertionError", message: "assert_true failed:\n  value: {x}"}
 }
 let assert_false = fn (x) {
-  if !x {
-    return nil
-  }
+  return nil if !x
   throw {kind: "AssertionError", message: "assert_false failed:\n  value: {x}"}
 }
 let assert_eq = fn (a, b) {
-  if a == b {
-    return nil
-  }
+  return nil if a == b
   throw {
     kind: "AssertionError",
     message: "assert_eq failed:\n  left:  {a}\n  right: {b}",
   }
 }
 let assert_ne = fn (a, b) {
-  if a != b {
-    return nil
-  }
+  return nil if a != b
   throw {
     kind: "AssertionError",
     message: "assert_ne failed:\n  left:  {a}\n  right: {b}",
   }
 }
 let assert_lt = fn (a, b) {
-  if a < b {
-    return nil
-  }
+  return nil if a < b
   throw {
     kind: "AssertionError",
     message: "assert_lt failed:\n  left:  {a}\n  right: {b}",
   }
 }
 let assert_le = fn (a, b) {
-  if a <= b {
-    return nil
-  }
+  return nil if a <= b
   throw {
     kind: "AssertionError",
     message: "assert_le failed:\n  left:  {a}\n  right: {b}",
   }
 }
 let assert_gt = fn (a, b) {
-  if a > b {
-    return nil
-  }
+  return nil if a > b
   throw {
     kind: "AssertionError",
     message: "assert_gt failed:\n  left:  {a}\n  right: {b}",
   }
 }
 let assert_ge = fn (a, b) {
-  if a >= b {
-    return nil
-  }
+  return nil if a >= b
   throw {
     kind: "AssertionError",
     message: "assert_ge failed:\n  left:  {a}\n  right: {b}",
@@ -98,9 +82,7 @@ let assert_throws = fn (kind, f) {
 }
 let assert_close = fn (a, b, tol) {
   let mut diff = a - b
-  if diff < 0 {
-    diff = -diff
-  }
+  diff = -diff if diff < 0
   if diff != diff || tol != tol || diff > tol {
     throw {
       kind: "AssertionError",

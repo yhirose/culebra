@@ -65,9 +65,7 @@ fn wloop() {
   let mut i = 0
   while i < 3 {
     let r = Res.new(10 + i)
-    if i == 1 {
-      throw "x"
-    }
+    throw "x" if i == 1
     i = i + 1
   }
 }
@@ -82,9 +80,7 @@ try {
 fn floop() {
   for i in 0..3 {
     let r = Res.new(20 + i)
-    if i == 1 {
-      throw "x"
-    }
+    throw "x" if i == 1
   }
 }
 print("== for ==\n")
@@ -150,9 +146,7 @@ fn gen(n) {
 fn geniter() {
   for i in gen(5) {
     let r = Res.new(60 + i)
-    if i == 2 {
-      throw "x"
-    }
+    throw "x" if i == 2
   }
 }
 print("== for-in generator ==\n")

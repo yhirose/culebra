@@ -104,9 +104,7 @@ Canvas.run(8, 8, fn () {
   mut stray = 0
   for y in 0..8 {
     for x in 0..8 {
-      if Canvas.get_pixel(x, y) == BLUE {
-        stray = stray + 1
-      }
+      stray = stray + 1 if Canvas.get_pixel(x, y) == BLUE
     }
   }
   assert_eq(stray, 0)
@@ -207,9 +205,7 @@ Canvas.run(8, 8, fn () {
   mut lit = 0
   for y in 0..8 {
     for x in 0..8 {
-      if Canvas.get_pixel(x, y) == RED {
-        lit = lit + 1
-      }
+      lit = lit + 1 if Canvas.get_pixel(x, y) == RED
     }
   }
   assert_eq(lit > 0, true)
@@ -293,9 +289,7 @@ Canvas.text("1", 0, 0, RED)
 mut lit1 = []
 for y in 0..8 {
   for x in 0..8 {
-    if Canvas.get_pixel(x, y) == RED {
-      lit1.push([x, y])
-    }
+    lit1.push([x, y]) if Canvas.get_pixel(x, y) == RED
   }
 }
 Canvas.clear(0)
@@ -304,9 +298,7 @@ mut blocks_ok = true
 mut lit2 = 0
 for y in 0..16 {
   for x in 0..16 {
-    if Canvas.get_pixel(x, y) == RED {
-      lit2 = lit2 + 1
-    }
+    lit2 = lit2 + 1 if Canvas.get_pixel(x, y) == RED
   }
 }
 for p in lit1 {
@@ -324,9 +316,7 @@ Canvas.text("1", 0, 0, RED, scale: 0)
 mut lit0 = 0
 for y in 0..16 {
   for x in 0..16 {
-    if Canvas.get_pixel(x, y) == RED {
-      lit0 = lit0 + 1
-    }
+    lit0 = lit0 + 1 if Canvas.get_pixel(x, y) == RED
   }
 }
 assert_eq(lit0, 0)
