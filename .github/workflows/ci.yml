@@ -1186,6 +1186,38 @@ jobs:
             echo "AOT_WEBVIEW_HTTP_BUILD_FAIL rc=$?"
             exit 1
           fi
+      # The step above proves the link; this one proves the request path. AOT
+      # force-loads the Http archive's strong bodies over the core archive's
+      # weak stubs, and those strong bodies are the ServerRequest/ServerResponse
+      # adapter (http_server_route, http_res_set_status/content, ...) — code
+      # this build has so far only linked, never run. listen_async avoids an
+      # Isolate for a minimal script; the server answers on its own worker
+      # while this thread's Http.get() drives the round trip.
+      - name: Smoke — AOT Http server round trip
+        env:
+          CULEBRA_VERBOSE: "1"
+        run: |
+          cat > httpsrv.cul <<'EOF'
+          let srv = Http.server()
+          srv.get("/ping", fn (req) { "pong" })
+          let port = srv.listen_async(0)
+          let r = Http.get("http://127.0.0.1:" + port.to_string() + "/ping")
+          srv.stop()
+          if r.ok && r.status == 200 && r.body == "pong" {
+            print("http server roundtrip ok")
+          } else {
+            print("http server roundtrip FAIL: " + r.status.to_string() + " " + r.body)
+          }
+          EOF
+          if ./build-win-aot/culebra.exe build httpsrv.cul -o httpsrv.exe; then
+            out=$(./httpsrv.exe 2>&1); rc=$?
+            echo "out=[$out] rc=$rc"
+            [ "$out" = "http server roundtrip ok" ] && echo "AOT_HTTP_ROUNDTRIP_PASS" \
+              || { echo "AOT_HTTP_ROUNDTRIP_RUN_FAIL"; exit 1; }
+          else
+            echo "AOT_HTTP_ROUNDTRIP_BUILD_FAIL rc=$?"
+            exit 1
+          fi
       # The step above proves the link; this one proves the window.
       - name: Smoke — Webview window + event loop (interp / JIT)
         run: misc/probe_webview_window.sh ./build-win-aot/culebra.exe
