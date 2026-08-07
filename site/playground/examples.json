@@ -41,6 +41,13 @@
           "args": ["--cars", "80", "150"]
         }
       ]
+    },
+    {
+      "name": "Graphics",
+      "examples": [
+        { "title": "Canvas: Perlin Noise", "path": "examples/graphics/perlin_noise.cul" },
+        { "title": "Canvas: Sierpinski", "path": "examples/graphics/sierpinski.cul" }
+      ]
     }
   ]
 }
