@@ -10633,6 +10633,8 @@ struct JIT {
           {builder_.getInt64(static_cast<int64_t>(i)), current_line_val(),
            current_column_val()},
           paramNames[i] + ".errpos");
+      // _jit_unpack_pos, emitted as IR because the value is only known at
+      // runtime.
       paramErrPos[i] = {
           builder_.CreateLShr(packed, builder_.getInt64(32)),
           builder_.CreateAnd(packed, builder_.getInt64(0xffffffff))};
@@ -13536,7 +13538,7 @@ struct JIT {
                               : static_cast<int64_t>(root_l);
       int64_t c = arg_asts[i] ? static_cast<int64_t>(arg_asts[i]->column)
                               : static_cast<int64_t>(root_c);
-      packed.push_back(builder_.getInt64((l << 32) | (c & 0xffffffff)));
+      packed.push_back(builder_.getInt64(_jit_pack_pos(l, c)));
     }
     auto arrTy = llvm::ArrayType::get(builder_.getInt64Ty(), n);
     auto* posGlobal = new llvm::GlobalVariable(

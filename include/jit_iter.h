@@ -951,16 +951,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_iter_max_by(
 // before `_iter_wrap_new`'s two trailing lookahead cells), and the fast_fn
 // publishes it via `_jit_call_site` right before invoking the callback.
 inline JitCell* _iter_pos_cell(int64_t line, int64_t col) {
-  return culebra_runtime_cell_new(TAG_LONG,
-                                  (line << 32) | (col & 0xFFFFFFFF));
+  return culebra_runtime_cell_new(TAG_LONG, _jit_pack_pos(line, col));
 }
-// The decode half of the same packing, for the combinators that read the cell.
-struct _IterPos {
-  int64_t line, col;
-};
-inline _IterPos _iter_unpack_pos(const JitCell* cell) {
-  int64_t packed = cell->value.data;
-  return {packed >> 32, packed & 0xFFFFFFFF};
+// The decode half, for the combinators that read the cell back.
+inline _JitPos _iter_unpack_pos(const JitCell* cell) {
+  return _jit_unpack_pos(cell->value.data);
 }
 inline void _iter_publish_call_site(JitClosure* cls) {
   // Last user capture = captures[n-3]; [n-2]/[n-1] are the lookahead pair.

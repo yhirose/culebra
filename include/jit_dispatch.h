@@ -1237,7 +1237,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_param_pos(
     l = _jit_call_site_line;
     c = _jit_call_site_col;
   }
-  return (l << 32) | (c & 0xffffffff);
+  return _jit_pack_pos(l, c);
 }
 
 // Batched form of set_call_site + N× set_arg_pos: one runtime call per
@@ -1251,8 +1251,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_call_positions(
   culebra_runtime_set_call_site(line, col);
   int64_t k = n < _JIT_ARGPOS_MAX ? n : _JIT_ARGPOS_MAX;
   for (int64_t i = 0; i < k; i++) {
-    _jit_argpos_line[i] = packed[i] >> 32;
-    _jit_argpos_col[i] = packed[i] & 0xffffffff;
+    auto pos = _jit_unpack_pos(packed[i]);
+    _jit_argpos_line[i] = pos.line;
+    _jit_argpos_col[i] = pos.col;
   }
   _jit_argpos_n = static_cast<int>(k);
 }

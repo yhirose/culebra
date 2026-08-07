@@ -597,6 +597,22 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_arity_error(
 inline thread_local int64_t _jit_call_site_line = 0;
 inline thread_local int64_t _jit_call_site_col = 0;
 
+// A source position packed into one int64 so a single value can carry it
+// through an ABI that has room for one: a runtime call's return (param_pos),
+// a rodata entry (the codegen's .argpos array), a cell's payload (the lazy
+// combinators' call-site capture). Defined here so every producer and
+// consumer agrees on the layout — jit_dispatch.h and jit_iter.h see it, and
+// so does the codegen in jit.h, which bakes the same packing into constants.
+struct _JitPos {
+  int64_t line, col;
+};
+inline int64_t _jit_pack_pos(int64_t line, int64_t col) {
+  return (line << 32) | (col & 0xffffffff);
+}
+inline _JitPos _jit_unpack_pos(int64_t packed) {
+  return {packed >> 32, packed & 0xffffffff};
+}
+
 // Name-aware arity error: callee passes its declared parameter name
 // table (a const char* array, NUL-terminated entries) and the runtime
 // throws "missing required argument 'X'" where X is the first slot
@@ -988,10 +1004,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_check_param(
     int64_t idx, int64_t def_line, int64_t def_col) {
   if (expected == nullptr || expected[0] == '\0') return;
   if (_culebra_value_matches_type(tag, data, std::string_view(expected))) return;
-  int64_t packed = culebra_runtime_param_pos(idx, def_line, def_col);
+  auto pos = _jit_unpack_pos(culebra_runtime_param_pos(idx, def_line, def_col));
   throw culebra::CulebraError("TypeError", std::format(
       "type error: {} expects {}", context, expected),
-      packed >> 32, packed & 0xffffffff);
+      pos.line, pos.col);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_div_zero(int64_t line,
