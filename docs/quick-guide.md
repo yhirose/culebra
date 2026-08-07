@@ -632,11 +632,6 @@ column.
 `cond { a > 1 => …, b < 2 => …, _ => … }`. A loop that must report
 whether it finished takes a `nobreak` block instead of a flag.
 
-A bare `return if cond` — no value between `return` and `if` — parses
-`if` as the start of the return's own value (an `if`-expression) and
-fails with a confusing error. Give `return` an explicit value: `return
-nil if cond`.
-
 ## 4. Signature index
 
 Receivers are named by convention: `s` a String, `a` an Array, `o` an

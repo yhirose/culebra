@@ -98,7 +98,18 @@
   MEMBER_MOD               <-  (< 'static' !IdentInitChar > / < 'get' !IdentInitChar > &(_ IdentInitChar))?
 
   DEBUGGER                 <-  debugger
-  RETURN                   <-  return (_sp_ !_nl_ EXPRESSION)?
+  # `return if cond` / `return unless cond` (no value between `return` and the
+  # modifier) is ambiguous with "return the value of this if-expression":
+  # IDENTIFIER has no keyword exclusion (see is_keyword in parser.h), so once
+  # the IF alternative fails here (no block follows), EXPRESSION falls through
+  # PRIMARY's alternatives all the way to IDENTIFIER, which happily matches
+  # bare `if`/`unless` as if they were 2-/6-letter variable names — silently
+  # misparsing the modifier as RETURN's own value and leaving the condition
+  # as unparseable leftover text. `&IF` reuses IF's own grammar (rather than
+  # re-approximating "is a block coming") to tell the two shapes apart: only
+  # attempt EXPRESSION when a real if-expression matches (`return if cond {
+  # a } else { b }`, unaffected), or the next token isn't if/unless at all.
+  RETURN                   <-  return (_sp_ !_nl_ (&IF / !(if / unless)) EXPRESSION)?
   THROW                    <-  throw _sp_ !_nl_ EXPRESSION
   YIELD_FROM               <-  yield _sp_ from _sp_ !_nl_ EXPRESSION                  { no_ast_opt }
   YIELD                    <-  yield _sp_ !_nl_ EXPRESSION                            { no_ast_opt }

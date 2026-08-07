@@ -621,11 +621,6 @@ inspect([1, 2].size())  # => 2
 `cond { a > 1 => …, b < 2 => …, _ => … }` になる。完走したかどうかを
 知りたいループはフラグでなく `nobreak` ブロックを使う。
 
-`return` と `if` の間に値を挟まない `return if cond` は、`if` を
-`return` 自身の値（`if` 式）の開始とパースしてしまい、分かりにくい
-エラーになる。`return nil if cond` のように `return` に明示的な値を
-与えること。
-
 ## 4. シグネチャ索引
 
 レシーバ名は慣例です: `s` は String、`a` は Array、`o` は Object、
