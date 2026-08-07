@@ -11900,6 +11900,22 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   Debugger debugger_;
 };
 
+// Reaps any isolate still outstanding via the interp teardown hook (see
+// interp_isolate_teardown_join_hook, shared.h) when it goes out of scope,
+// before whatever runs next assumes no isolate is still touching shared
+// state (e.g. main() tearing down process-wide statics after a script
+// run) — RAII so this fires on every exit path (normal return, uncaught
+// throw, Interrupted rethrow), without each caller re-deriving that
+// discipline. Mirrors jit.h's JoinIsolatesGuard around JIT::exec. Shared
+// by interpret_modules (below, function-scoped: once per script run),
+// repl.h (session-scoped: once per REPL session, not per line), and
+// doctest_runner.h (statement-scoped: once per doc block).
+struct JoinIsolatesGuard {
+  ~JoinIsolatesGuard() {
+    if (auto& fn = interp_isolate_teardown_join_hook()) fn();
+  }
+};
+
 // Drives a multi-module program: evaluates dependencies in
 // topological order into fresh per-module scopes, caches each
 // module's export Object, and finally evaluates the entry module
@@ -11929,15 +11945,7 @@ inline bool interpret_modules(const std::vector<LoadedModule>& orig_modules,
       try { fn(); } catch (...) {}
     }
   };
-  // Reap any isolate still outstanding once this run ends, however it ends
-  // (normal return, uncaught throw, Interrupted rethrow) — before the caller
-  // (main()) can start tearing down the process-wide statics an isolate
-  // thread still touches. Mirrors jit.h's JoinIsolatesGuard around JIT::exec.
-  struct JoinIsolatesGuard {
-    ~JoinIsolatesGuard() {
-      if (auto& fn = interp_isolate_teardown_join_hook()) fn();
-    }
-  } join_isolates_guard;
+  JoinIsolatesGuard join_isolates_guard;
   try {
     for (const auto& m : modules) lint::check_shadow(*m.ast);
 
