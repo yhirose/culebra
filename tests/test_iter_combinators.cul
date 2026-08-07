@@ -213,17 +213,10 @@ assert_eq([('a', 1), ('b', 2), ('a', 9)].to_object().keys(), ['a', 'b'])
 # Non-String keys work, exactly as `o[k] = v` does.
 assert_eq([(1, 'x'), (2, 'y')].to_object()[1], 'x')
 assert_eq([(1, 'x'), ('s', 'y'), (true, 'z')].to_object().size(), 3)
-# Entries are immutable, like group_by's — `{...built}` is the mutable copy.
+# Entries are mutable, like a normal runtime-inserted dict entry (`o[k] = v`).
 mut built = [('a', 1)].to_object()
-try {
-  built.a = 2
-  assert_true(false)
-} catch e {
-  assert_eq(e.kind, "ImmutableError")
-}
-mut copied = {...built}
-copied.a = 2
-assert_eq(copied.a, 2)
+built.a = 2
+assert_eq(built.a, 2)
 # An element that is not a 2-tuple, and an unhashable key, both report here.
 try {
   [1, 2].to_object()

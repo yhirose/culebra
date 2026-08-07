@@ -4166,10 +4166,10 @@ inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
                                              Value v = init.type == Value::Function
                                                            ? _invoke_callback(init)
                                                            : init;
-                                             // Immutable slot, like a normal dict
-                                             // entry (`d[k] = v`); the value can
-                                             // still be mutated in place (.push).
-                                             obj.initialize(key, v, false);
+                                             // Mutable slot, like a normal
+                                             // runtime-inserted dict entry
+                                             // (`d[k] = v`).
+                                             obj.initialize(key, v, true);
                                              return obj.get(key);
                                            }))},
       {"remove"sv,
@@ -4502,7 +4502,7 @@ inline Value _collect_to_object(ForEach each) {
                          "type error: to_object expects (key, value) tuples");
     }
     auto& pair = *v.to_tuple().elements;
-    out.initialize(pair[0], pair[1], false);  // insert, or overwrite in place
+    out.initialize(pair[0], pair[1], true);  // insert, or overwrite in place
   });
   return Value(std::move(out));
 }
@@ -4514,7 +4514,7 @@ inline Value _collect_group_by(ForEach each, const Value& f) {
   ObjectValue out;
   each([&](Value v) {
     Value key = _invoke_callback(f, v);
-    if (!out.has(key)) out.initialize(key, Value(ArrayValue()), false);
+    if (!out.has(key)) out.initialize(key, Value(ArrayValue()), true);
     out.get(key).to_array().values->push_back(std::move(v));
   });
   return Value(std::move(out));
@@ -11341,7 +11341,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     auto lvalcnt = av.lvalcnt;
     bool compound = av.compound;
     auto base_op = av.op_base;
-    bool mut = av.is_mut;
+    // Runtime-inserted slots (a key that didn't exist before this write)
+    // default to mutable, matching the existing spread-merge rule ("Merged
+    // entries are mutable") — only Object *literal* keys are immutable by
+    // default. The `mut` prefix (`mut o[k] = v`) is still accepted but is
+    // now a no-op, since insertion is unconditionally mutable.
+    bool mut = true;
     Value lval = eval(*ast.nodes[lvaloff], env);
 
     auto end = lvaloff + lvalcnt - 1;

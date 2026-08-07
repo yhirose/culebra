@@ -3474,15 +3474,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_or_put(
     v = JitValue{it_tag, it_data};  // use as-is (already +1)
   }
   // Two refs: one consumed by the slot store, one returned to the caller.
-  // Immutable slot, matching a normal dict entry (`d[k] = v`); the value can
-  // still be mutated in place (e.g. `.push`).
+  // Mutable slot, matching a normal runtime-inserted dict entry (`d[k] = v`).
   // The store owns both the key and the slot's ref on every exit, including
   // its own throw (`d.get_or_put([1, 2], …)` is an unhashable key), so hand
   // those over and keep only the caller's ref under RAII.
   JitOwnedVal ret_guard(v);
   culebra_runtime_value_retain(v.tag, v.data);
   key_guard.consume();
-  culebra_runtime_object_set_any(obj, kt, kd, /*mut*/ false, v.tag, v.data,
+  culebra_runtime_object_set_any(obj, kt, kd, /*mut*/ true, v.tag, v.data,
                                  line, col, /*is_init*/ false);
   return ret_guard.consume();
 }
@@ -3578,8 +3577,9 @@ inline JitSet* _collect_set_jit(Each each, int64_t line, int64_t col) {
 
 // `(key, value)` pairs into an Object. Keys keep first-seen order and a
 // repeat overwrites in place (is_init, matching the interp's `initialize`);
-// entries are immutable, like group_by's. The hashability check runs before
-// either half is handed off, so an unhashable key strands nothing.
+// entries are mutable, like a runtime-inserted dict entry. The hashability
+// check runs before either half is handed off, so an unhashable key strands
+// nothing.
 template <typename Each>
 inline JitObject* _collect_to_object_jit(Each each, int64_t line, int64_t col) {
   auto* out = culebra_runtime_object_new();
@@ -3599,7 +3599,7 @@ inline JitObject* _collect_to_object_jit(Each each, int64_t line, int64_t col) {
     // set_any consumes one ref of each half; the tuple still holds its own.
     culebra_runtime_value_retain(k.tag, k.data);
     culebra_runtime_value_retain(val.tag, val.data);
-    culebra_runtime_object_set_any(out, k.tag, k.data, /*mut*/ false,
+    culebra_runtime_object_set_any(out, k.tag, k.data, /*mut*/ true,
                                    val.tag, val.data, line, col,
                                    /*is_init*/ true);
   });

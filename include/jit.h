@@ -5819,7 +5819,12 @@ struct JIT {
     auto lvalcnt = av.lvalcnt;
     bool compound = av.compound;
     auto base_op = av.op_base;
-    bool mut = av.is_mut;
+    // Runtime-inserted slots default to mutable (matches interp's
+    // eval_assign_complex and the existing spread-merge rule). Only affects
+    // the new-slot append path — an existing slot's mut flag is untouched
+    // (object_set_any / _jit_overwrite_slot ignore this parameter unless
+    // is_init, which this call site never sets).
+    bool mut = true;
     // Complex lvalue (obj.prop, arr[idx]). The receiver rolls through one
     // Owned handle (the compile_call idiom): each step borrows the current
     // +1 and move-assigning the step's fresh +1 releases the previous link
