@@ -2042,6 +2042,39 @@ for c in wkprop {
   case("wkprop|" + c, c)
 }
 
+# --- Dimension: runtime-inserted keys default mutable, `??=` complex lvalue -
+# o[k]=v / o.k=v / get_or_put / to_object insert mutable slots now (only
+# Object *literal* keys stay immutable-by-default); `??=` extends past its
+# former simple-variable-only MVP to Object dot/subscript (incl. class
+# __index__/__setindex__) and Array elements (no auto-extend).
+let nilco = [
+  # mutable-by-default insert: second write to the same runtime key succeeds
+  'mut o = {}; o["a"] = 1; o["a"] = 2; o["a"]',
+  'mut o = {}; o.a = 1; o.a = 2; o.a',
+  'let o = {x: 1}; try { o.x = 2; 0 } catch e { e.kind }',
+  'mut o = {}; o.get_or_put("k", 0); o["k"] += 1; o["k"]',
+  'mut o = [("a", 1)].to_object(); o.a = 2; o.a',
+  # tally idiom
+  'mut t = {}; for w in ["a", "b", "a"] { t[w] ??= 0; t[w] += 1 }; [t.a, t.b]',
+  # short-circuit: RHS not evaluated when the current value is non-nil
+  'mut ran = false; mut o = {z: 1}; let r = (o.z ??= (fn () { ran = true; 9 })()); [r, ran]',
+  # subscript vs dot both coalesce a mutable nil slot
+  'mut o = {mut x: nil}; o.x ??= 5; o.x ??= 99; o.x',
+  'mut o = {}; o["y"] ??= 7; o["y"]',
+  # immutable existing slot still throws on the write-back
+  'mut o = {x: nil}; try { o.x ??= 5; 0 } catch e { e.kind }',
+  # Tuple-keyed flat "sparse tensor" accumulation
+  'mut s = {}; s[(1, 2)] ??= 0; s[(1, 2)] += 1; s[(1, 2)] += 1; s[(1, 2)]',
+  # Array element: replace nil in place, no auto-extend
+  'mut a = [1, nil, 3]; a[1] ??= 42; a',
+  'mut a = [1, 2]; try { a[9] ??= 1; 0 } catch e { e.kind }',
+  # class instance routes through __index__/__setindex__
+  'class Ctr { new() { self.d = {} } __index__(k) { self.d.get(k, nil) } __setindex__(k, v) { self.d[k] = v; true } }; c = Ctr.new(); c["a"] ??= 0; c["a"] += 1; c["a"]',
+]
+for c in nilco {
+  case("nilco|" + c, c)
+}
+
 # --- Dimension: UFCS shadowing (builtin method name vs same-named free fn) --
 # Method resolution is one contract with a fixed order (docs/language.md §22):
 # a closed namespace answers every name, then the receiver's own property,
