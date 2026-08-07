@@ -23,10 +23,18 @@ assert_eq(trace, [2, 3])
 // The modifier is statement-only (like Ruby's), so it can't nest inside an
 // expression (`f(1 if true)` is a SyntaxError, same as Ruby) — its value only
 // shows through as a block/function's implicit last-statement result.
-fn v1() { 1 if true }
-fn v2() { 1 if false }
-fn v3() { 1 unless false }
-fn v4() { 1 unless true }
+fn v1() {
+  1 if true
+}
+fn v2() {
+  1 if false
+}
+fn v3() {
+  1 unless false
+}
+fn v4() {
+  1 unless true
+}
 assert_eq(v1(), 1)
 assert_eq(v2(), nil)
 assert_eq(v3(), 1)
@@ -76,6 +84,8 @@ assert_eq(hits, 1)
 
 // --- `unless` as an object-key / parameter name still works: reservation
 // only blocks the assignment-target position -------------------------------
-fn take(unless) { unless }
+fn take(unless) {
+  unless
+}
 assert_eq(take(7), 7)
 assert_eq({unless: 42}["unless"], 42)
