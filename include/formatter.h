@@ -712,12 +712,38 @@ class Printer {
       return p;
     };
 
+    // A wrapper-collapsed item (e.g. a TRY that is the sole statement of a
+    // bare block) has its span widened onto the wrapper's own braces, so a
+    // verbatim slice of `extent[k]` would still carry that outer `{`/`}` —
+    // doubling up when this doc is placed inside the enclosing block's own
+    // braces. Shed exactly that one collapsed brace layer first.
+    auto verbatim_span = [&](size_t k) {
+      size_t vs = extent[k].first, ve = extent[k].second;
+      if (is_wrapper_collapsed(*items[k])) {
+        std::string_view t = src_.substr(vs, ve - vs);
+        if (t.size() >= 2 && t.front() == '{' && encloses_whole(t, '{', '}')) {
+          vs++;
+          ve--;
+          while (vs < ve && (src_[vs] == ' ' || src_[vs] == '\t' ||
+                             src_[vs] == '\n' || src_[vs] == '\r'))
+            vs++;
+          while (ve > vs && (src_[ve - 1] == ' ' || src_[ve - 1] == '\t' ||
+                             src_[ve - 1] == '\n' || src_[ve - 1] == '\r'))
+            ve--;
+        }
+      }
+      return std::make_pair(vs, ve);
+    };
+
     std::vector<DocP> trailing(items.size());
     for (size_t k = 0; k < items.size(); k++) {
-      DocP doc = has_mid_comment(k)
-                     ? doc_text(std::string(src_.substr(
-                           extent[k].first, extent[k].second - extent[k].first)))
-                     : render(k);
+      DocP doc;
+      if (has_mid_comment(k)) {
+        auto [vs, ve] = verbatim_span(k);
+        doc = doc_text(std::string(src_.substr(vs, ve - vs)));
+      } else {
+        doc = render(k);
+      }
       if (!sep.empty()) doc = doc_concat({doc, doc_text(sep)});
       entries.push_back({first_token_pos(k), extent[k].first, extent[k].second, doc});
     }
