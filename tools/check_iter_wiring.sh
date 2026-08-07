@@ -52,14 +52,15 @@ ratchet "raw _iter_pull uses (outside JitIterDrive)" "$pull" 0
 adv=$(grep -rn "_iter_advance_raw(" include/ \
       | grep -v "inline bool _iter_advance_raw(" \
       | grep -vcE ":[[:space:]]*//" || true)
-ratchet "raw _iter_advance_raw uses" "$adv" 27
+ratchet "raw _iter_advance_raw uses" "$adv" 25
 
-# _iter_has_next_closure: protocol open, the lazy closure caches (x3),
-# JitIterDrive's ctor. A new hand-resolved drive would add one here.
+# _iter_has_next_closure: protocol open, the lazy closure caches (flat_map and
+# flatten share one), JitIterDrive's ctor. A new hand-resolved drive would add
+# one here.
 hnc=$(grep -rn "_iter_has_next_closure(" include/ \
       | grep -v "inline JitClosure\* _iter_has_next_closure(" \
       | grep -vcE ":[[:space:]]*//" || true)
-ratchet "raw _iter_has_next_closure uses" "$hnc" 5
+ratchet "raw _iter_has_next_closure uses" "$hnc" 4
 
 # --- 2. combinator upstream wiring -----------------------------------------
 
@@ -104,5 +105,5 @@ wf=$(count_no_upstream '_iter_wrap_fast<[^>]*>\s*\(')
 ratchet "no-upstream _iter_wrap_fast calls (JIT leaves)" "$wf" 14
 
 if (( fail )); then exit 1; fi
-echo "iter-wiring OK (pull=$pull/0 advance_raw=$adv/27 has_next_closure=$hnc/5" \
+echo "iter-wiring OK (pull=$pull/0 advance_raw=$adv/25 has_next_closure=$hnc/4" \
      "make_iterator-leaves=$mi/21 wrap_fast-leaves=$wf/14)"
