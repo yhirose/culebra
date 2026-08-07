@@ -1220,6 +1220,80 @@ struct JIT {
                                       const peg::Ast& argsAst,
                                       llvm::Value* receiver);
 
+  // The length probe behind `.size()` / `.empty()` / `.presence()`: switch on
+  // the receiver tag (Tuple rides with Array), take each container's length
+  // its own way, and merge them into one i64. A tag with no length raises the
+  // receiver-resolution error for `label`, which also names the blocks.
+  // Returns with the builder inserting at the merge block, so a caller only
+  // has to turn the length into its own result.
+  llvm::Value* emit_size_probe(llvm::Value* receiver, llvm::Value* tag,
+                               const std::string& label) {
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto block = [&](const char* name) {
+      return llvm::BasicBlock::Create(ctx_, label + "." + name, fn);
+    };
+    auto arrBB = block("arr");
+    auto objBB = block("obj");
+    auto strBB = block("str");
+    auto svBB = block("sv");
+    auto setBB = block("set");
+    auto errBB = block("err");
+    // `.len`, not `.merge`: `.presence()` has a merge block of its own further
+    // down, and two blocks named alike only tell them apart by LLVM's uniquing
+    // suffix.
+    auto mergeBB = block("len");
+
+    auto sw = builder_.CreateSwitch(tag, errBB, 6);
+    sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
+    sw->addCase(builder_.getInt8(TAG_TUPLE), arrBB);
+    sw->addCase(builder_.getInt8(TAG_OBJECT), objBB);
+    sw->addCase(builder_.getInt8(TAG_STRING), strBB);
+    sw->addCase(builder_.getInt8(TAG_STRINGVIEW), svBB);
+    sw->addCase(builder_.getInt8(TAG_SET), setBB);
+
+    // Each arm ends at its own insert block, not the one it started in: a
+    // helper is free to split the arm, and the PHI has to name where control
+    // actually leaves from.
+    std::vector<std::pair<llvm::Value*, llvm::BasicBlock*>> arms;
+    auto arm = [&](llvm::BasicBlock* bb, auto emit) {
+      builder_.SetInsertPoint(bb);
+      auto* size = emit(builder_.CreateIntToPtr(extract_data(receiver), ptrTy));
+      arms.push_back({size, builder_.GetInsertBlock()});
+      builder_.CreateBr(mergeBB);
+    };
+
+    arm(arrBB, [&](llvm::Value* p) {
+      return emit_call(module_->getFunction(rt::array_size), {p}, "asz");
+    });
+    arm(objBB, [&](llvm::Value* p) {
+      return emit_call(module_->getFunction(rt::object_size), {p}, "osz");
+    });
+    arm(strBB, [&](llvm::Value* p) {
+      return emit_call(module_->getFunction(rt::str_size), {p}, "ssz");
+    });
+    // JitStringView { ptr, len } — load len at offset 8.
+    arm(svBB, [&](llvm::Value* p) -> llvm::Value* {
+      auto lenPtr =
+          builder_.CreateConstInBoundsGEP1_64(builder_.getInt8Ty(), p, 8);
+      return builder_.CreateLoad(builder_.getInt64Ty(), lenPtr, "svsz");
+    });
+    arm(setBB, [&](llvm::Value* p) {
+      return emit_call(module_->getOrInsertFunction(
+                           rt::set_size, builder_.getInt64Ty(), ptrTy),
+                       {p}, "ssz2");
+    });
+
+    builder_.SetInsertPoint(errBB);
+    emit_receiver_resolution_error(tag, label);
+
+    builder_.SetInsertPoint(mergeBB);
+    auto phi = builder_.CreatePHI(builder_.getInt64Ty(),
+                                  static_cast<unsigned>(arms.size()), "sz");
+    for (auto& [size, bb] : arms) phi->addIncoming(size, bb);
+    return phi;
+  }
+
   // One row per iterator-only method (no eager Array equivalent): receiver
   // gate, argument shape, whether the runtime symbol takes the call
   // position, and the result wrapping fully determine the emit. Rows are
@@ -16114,142 +16188,14 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
 
   // .size() — works on Array, Object, String, StringView, Set
   if (method == "size" && argsAst.nodes.size() == 0) {
-    auto arrBB = llvm::BasicBlock::Create(ctx_, "size.arr", fn);
-    auto objBB = llvm::BasicBlock::Create(ctx_, "size.obj", fn);
-    auto strBB = llvm::BasicBlock::Create(ctx_, "size.str", fn);
-    auto svBB  = llvm::BasicBlock::Create(ctx_, "size.sv", fn);
-    auto setBB = llvm::BasicBlock::Create(ctx_, "size.set", fn);
-    auto errBB = llvm::BasicBlock::Create(ctx_, "size.err", fn);
-    auto mergeBB = llvm::BasicBlock::Create(ctx_, "size.merge", fn);
-
-    auto sw = builder_.CreateSwitch(tag, errBB, 6);
-    sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
-    sw->addCase(builder_.getInt8(TAG_TUPLE), arrBB);
-    sw->addCase(builder_.getInt8(TAG_OBJECT), objBB);
-    sw->addCase(builder_.getInt8(TAG_STRING), strBB);
-    sw->addCase(builder_.getInt8(TAG_STRINGVIEW), svBB);
-    sw->addCase(builder_.getInt8(TAG_SET), setBB);
-
-    builder_.SetInsertPoint(arrBB);
-    auto arrPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto arrSize = emit_call(
-        module_->getFunction(rt::array_size), {arrPtr}, "asz");
-    auto arrSizeBB = builder_.GetInsertBlock();
-    builder_.CreateBr(mergeBB);
-
-    builder_.SetInsertPoint(objBB);
-    auto objPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto objSize = emit_call(
-        module_->getFunction(rt::object_size), {objPtr}, "osz");
-    auto objSizeBB = builder_.GetInsertBlock();
-    builder_.CreateBr(mergeBB);
-
-    builder_.SetInsertPoint(strBB);
-    auto strPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto strSize = emit_call(
-        module_->getFunction(rt::str_size), {strPtr}, "ssz");
-    auto strSizeBB = builder_.GetInsertBlock();
-    builder_.CreateBr(mergeBB);
-
-    // JitStringView { ptr, len } — load len at offset 8.
-    builder_.SetInsertPoint(svBB);
-    auto svPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto svLenPtr = builder_.CreateConstInBoundsGEP1_64(
-        builder_.getInt8Ty(), svPtr, 8);
-    auto svSize = builder_.CreateLoad(builder_.getInt64Ty(), svLenPtr, "svsz");
-    auto svSizeBB = builder_.GetInsertBlock();
-    builder_.CreateBr(mergeBB);
-
-    builder_.SetInsertPoint(setBB);
-    auto setPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto setSize = emit_call(
-        module_->getOrInsertFunction(rt::set_size,
-                                     builder_.getInt64Ty(), ptrTy),
-        {setPtr}, "ssz2");
-    auto setSizeBB = builder_.GetInsertBlock();
-    builder_.CreateBr(mergeBB);
-
-    builder_.SetInsertPoint(errBB);
-    emit_receiver_resolution_error(tag, "size");
-
-    builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(builder_.getInt64Ty(), 5, "sz");
-    phi->addIncoming(arrSize, arrSizeBB);
-    phi->addIncoming(objSize, objSizeBB);
-    phi->addIncoming(strSize, strSizeBB);
-    phi->addIncoming(svSize, svSizeBB);
-    phi->addIncoming(setSize, setSizeBB);
-    return own(make_long(phi));
+    return own(make_long(emit_size_probe(receiver, tag, "size")));
   }
 
   // .empty() — works on Array, Object, String, StringView, Set
   if (method == "empty" && argsAst.nodes.size() == 0) {
-    auto arrBB = llvm::BasicBlock::Create(ctx_, "empty.arr", fn);
-    auto objBB = llvm::BasicBlock::Create(ctx_, "empty.obj", fn);
-    auto strBB = llvm::BasicBlock::Create(ctx_, "empty.str", fn);
-    auto svBB  = llvm::BasicBlock::Create(ctx_, "empty.sv", fn);
-    auto setBB = llvm::BasicBlock::Create(ctx_, "empty.set", fn);
-    auto errBB = llvm::BasicBlock::Create(ctx_, "empty.err", fn);
-    auto mergeBB = llvm::BasicBlock::Create(ctx_, "empty.merge", fn);
-
-    auto sw = builder_.CreateSwitch(tag, errBB, 6);
-    sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
-    sw->addCase(builder_.getInt8(TAG_TUPLE), arrBB);
-    sw->addCase(builder_.getInt8(TAG_OBJECT), objBB);
-    sw->addCase(builder_.getInt8(TAG_STRING), strBB);
-    sw->addCase(builder_.getInt8(TAG_STRINGVIEW), svBB);
-    sw->addCase(builder_.getInt8(TAG_SET), setBB);
-
-    builder_.SetInsertPoint(arrBB);
-    auto arrPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto arrSize = emit_call(
-        module_->getFunction(rt::array_size), {arrPtr}, "asz");
-    auto arrSizeBB = builder_.GetInsertBlock();
-    builder_.CreateBr(mergeBB);
-
-    builder_.SetInsertPoint(objBB);
-    auto objPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto objSize = emit_call(
-        module_->getFunction(rt::object_size), {objPtr}, "osz");
-    auto objSizeBB = builder_.GetInsertBlock();
-    builder_.CreateBr(mergeBB);
-
-    builder_.SetInsertPoint(strBB);
-    auto strPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto strSize = emit_call(
-        module_->getFunction(rt::str_size), {strPtr}, "ssz");
-    auto strSizeBB = builder_.GetInsertBlock();
-    builder_.CreateBr(mergeBB);
-
-    // JitStringView { ptr, len } — load len at offset 8.
-    builder_.SetInsertPoint(svBB);
-    auto svPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto svLenPtr = builder_.CreateConstInBoundsGEP1_64(
-        builder_.getInt8Ty(), svPtr, 8);
-    auto svSize = builder_.CreateLoad(builder_.getInt64Ty(), svLenPtr, "svsz");
-    auto svSizeBB = builder_.GetInsertBlock();
-    builder_.CreateBr(mergeBB);
-
-    builder_.SetInsertPoint(setBB);
-    auto setPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto setSize = emit_call(
-        module_->getOrInsertFunction(rt::set_size,
-                                     builder_.getInt64Ty(), ptrTy),
-        {setPtr}, "ssz2");
-    auto setSizeBB = builder_.GetInsertBlock();
-    builder_.CreateBr(mergeBB);
-
-    builder_.SetInsertPoint(errBB);
-    emit_receiver_resolution_error(tag, "empty");
-
-    builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(builder_.getInt64Ty(), 5, "sz");
-    phi->addIncoming(arrSize, arrSizeBB);
-    phi->addIncoming(objSize, objSizeBB);
-    phi->addIncoming(strSize, strSizeBB);
-    phi->addIncoming(svSize, svSizeBB);
-    phi->addIncoming(setSize, setSizeBB);
-    auto isEmpty = builder_.CreateICmpEQ(phi, builder_.getInt64(0), "isempty");
+    auto isEmpty = builder_.CreateICmpEQ(
+        emit_size_probe(receiver, tag, "empty"), builder_.getInt64(0),
+        "isempty");
     return own(make_bool(isEmpty));
   }
 
@@ -16257,74 +16203,12 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   // itself (retained: a second owner is now handing it out) when non-empty,
   // or nil when it is. Works on Array, Object, String, StringView, Set.
   if (method == "presence" && argsAst.nodes.size() == 0) {
-    auto arrBB = llvm::BasicBlock::Create(ctx_, "pres.arr", fn);
-    auto objBB = llvm::BasicBlock::Create(ctx_, "pres.obj", fn);
-    auto strBB = llvm::BasicBlock::Create(ctx_, "pres.str", fn);
-    auto svBB  = llvm::BasicBlock::Create(ctx_, "pres.sv", fn);
-    auto setBB = llvm::BasicBlock::Create(ctx_, "pres.set", fn);
-    auto errBB = llvm::BasicBlock::Create(ctx_, "pres.err", fn);
-    auto sizeBB = llvm::BasicBlock::Create(ctx_, "pres.size", fn);
-    auto emptyBB = llvm::BasicBlock::Create(ctx_, "pres.empty", fn);
-    auto presentBB = llvm::BasicBlock::Create(ctx_, "pres.present", fn);
-    auto mergeBB = llvm::BasicBlock::Create(ctx_, "pres.merge", fn);
-
-    auto sw = builder_.CreateSwitch(tag, errBB, 6);
-    sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
-    sw->addCase(builder_.getInt8(TAG_TUPLE), arrBB);
-    sw->addCase(builder_.getInt8(TAG_OBJECT), objBB);
-    sw->addCase(builder_.getInt8(TAG_STRING), strBB);
-    sw->addCase(builder_.getInt8(TAG_STRINGVIEW), svBB);
-    sw->addCase(builder_.getInt8(TAG_SET), setBB);
-
-    builder_.SetInsertPoint(arrBB);
-    auto arrPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto arrSize = emit_call(
-        module_->getFunction(rt::array_size), {arrPtr}, "asz3");
-    auto arrSizeBB = builder_.GetInsertBlock();
-    builder_.CreateBr(sizeBB);
-
-    builder_.SetInsertPoint(objBB);
-    auto objPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto objSize = emit_call(
-        module_->getFunction(rt::object_size), {objPtr}, "osz3");
-    auto objSizeBB = builder_.GetInsertBlock();
-    builder_.CreateBr(sizeBB);
-
-    builder_.SetInsertPoint(strBB);
-    auto strPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto strSize = emit_call(
-        module_->getFunction(rt::str_size), {strPtr}, "ssz3");
-    auto strSizeBB = builder_.GetInsertBlock();
-    builder_.CreateBr(sizeBB);
-
-    builder_.SetInsertPoint(svBB);
-    auto svPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto svLenPtr = builder_.CreateConstInBoundsGEP1_64(
-        builder_.getInt8Ty(), svPtr, 8);
-    auto svSize = builder_.CreateLoad(builder_.getInt64Ty(), svLenPtr, "svsz3");
-    auto svSizeBB = builder_.GetInsertBlock();
-    builder_.CreateBr(sizeBB);
-
-    builder_.SetInsertPoint(setBB);
-    auto setPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto setSize = emit_call(
-        module_->getOrInsertFunction(rt::set_size,
-                                     builder_.getInt64Ty(), ptrTy),
-        {setPtr}, "ssz4");
-    auto setSizeBB = builder_.GetInsertBlock();
-    builder_.CreateBr(sizeBB);
-
-    builder_.SetInsertPoint(errBB);
-    emit_receiver_resolution_error(tag, "presence");
-
-    builder_.SetInsertPoint(sizeBB);
-    auto phi = builder_.CreatePHI(builder_.getInt64Ty(), 5, "sz3");
-    phi->addIncoming(arrSize, arrSizeBB);
-    phi->addIncoming(objSize, objSizeBB);
-    phi->addIncoming(strSize, strSizeBB);
-    phi->addIncoming(svSize, svSizeBB);
-    phi->addIncoming(setSize, setSizeBB);
-    auto isEmpty = builder_.CreateICmpEQ(phi, builder_.getInt64(0), "isempty3");
+    auto size = emit_size_probe(receiver, tag, "presence");
+    auto emptyBB = llvm::BasicBlock::Create(ctx_, "presence.empty", fn);
+    auto presentBB = llvm::BasicBlock::Create(ctx_, "presence.present", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "presence.merge", fn);
+    auto isEmpty =
+        builder_.CreateICmpEQ(size, builder_.getInt64(0), "isempty");
     builder_.CreateCondBr(isEmpty, emptyBB, presentBB);
 
     OwnedPhi merge(this, "presence.r");
