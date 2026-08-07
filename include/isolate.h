@@ -354,6 +354,112 @@ inline void chan_merge_join(int64_t mid) {
   if (first_err) throw *first_err;
 }
 
+// --- Interp teardown safety net -------------------------------------------
+//
+// A standalone Isolate.spawn handle is only reachable through the script's
+// own Value (its join/poll/drop closures each capture a shared_ptr<IsolateCore>)
+// plus the spawned thread's own capture — nothing process-wide keeps it
+// reachable. Normally that's fine: h.join()/h.drop() (or the handle simply
+// going out of scope, reaped by IsolateCore's destructor safety net) joins
+// the OS thread promptly. But a top-level uncaught throw unwinds straight
+// past an unreached join(), and by the time the handle's refcount actually
+// drops to zero the process may already be past interpret_modules, into
+// main()'s static-destruction teardown — including process-wide statics an
+// isolate's own send/recv still touches (channel_registry, merge_registry).
+// A thread racing that teardown is a use-after-free, not merely a hang.
+//
+// This registry exists purely so _interp_isolate_teardown_join_all (called
+// once, right after a top-level script run ends — interpreter.h) can find
+// and join whatever standalone spawn is still outstanding at that point.
+// It holds weak_ptrs, not owning refs: unlike jit_isolate_reg (sendable_jit.h,
+// the sole owner behind a captureless JIT handle's integer id), an interp
+// handle already owns the strong ref, so a weak entry here just rides along
+// without changing when a handle that IS reaped promptly (the common case)
+// actually frees its isolate — it only gives teardown a way to reach the
+// stragglers that outlive their handle.
+inline std::mutex& interp_isolate_reg_mutex() { static std::mutex m; return m; }
+inline std::vector<std::weak_ptr<IsolateCore>>& interp_isolate_reg() {
+  static std::vector<std::weak_ptr<IsolateCore>> r;
+  return r;
+}
+// Spawning is already the heavy operation (a new OS thread), so prune expired
+// entries here rather than only at teardown — otherwise a long-lived process
+// that never reaches teardown (a REPL session, or a single script's batch
+// loop spawning many isolates before interpret_modules returns) grows this
+// vector by one entry per spawn for the life of the process, even though
+// every one of them is promptly joined and freed elsewhere.
+inline void interp_isolate_reg_add(const std::shared_ptr<IsolateCore>& core) {
+  std::lock_guard<std::mutex> lk(interp_isolate_reg_mutex());
+  auto& reg = interp_isolate_reg();
+  reg.erase(std::remove_if(reg.begin(), reg.end(),
+                            [](const std::weak_ptr<IsolateCore>& w) {
+                              return w.expired();
+                            }),
+            reg.end());
+  reg.push_back(core);
+}
+
+// Producers of every merge_registry entry (Channel.fan_in(items, fn)) not
+// yet joined. Shared by both backends' teardown walks: interp's below and
+// JIT's _jit_isolate_teardown_join_all (sendable_jit.h) — a fan_in producer
+// always runs through this same registry regardless of which backend spawned
+// it (a process runs under exactly one backend, so the two walks never race).
+inline void collect_live_merge_producers(
+    std::vector<std::shared_ptr<IsolateCore>>& live) {
+  std::lock_guard<std::mutex> lk(merge_registry_mutex());
+  for (auto& [_, entry] : merge_registry())
+    for (auto& core : entry.producers)
+      if (!core->joined) live.push_back(core);
+}
+
+// Cancel every isolate in `live` up front (so every wait below unblocks
+// promptly instead of waiting each one out serially), then join + reap.
+// Shared by both backends' teardown walks (see collect_live_merge_producers).
+inline void cancel_and_join_isolates(
+    std::vector<std::shared_ptr<IsolateCore>> live) {
+  for (auto& core : live) mark_isolate_cancelled(*core);
+  for (auto& core : live) {
+    if (core->joined) continue;  // defensive: joining twice is UB, and
+                                  // nothing currently guarantees `live` is
+                                  // duplicate-free across future callers
+    {
+      std::unique_lock<std::mutex> lk(core->m);
+      core->cv.wait(lk, [&] { return core->finished; });
+    }
+    if (core->thread.joinable()) core->thread.join();
+    core->joined = true;
+    _reap_isolate_cancel(*core);
+  }
+}
+
+// Cancel + join every interp isolate still outstanding: a standalone
+// Isolate.spawn (interp_isolate_reg, weak — collect the survivors) or a
+// Channel.fan_in producer (collect_live_merge_producers above). A no-op once
+// everything has already been joined (h.join()/h.drop() ran, or the handle's
+// own scope exit reaped it), which is the common case. Installed into
+// interp_isolate_teardown_join_hook (shared.h) below; interpreter.h calls the
+// hook once a top-level script run ends, mirroring jit.h's JoinIsolatesGuard
+// around JIT::exec.
+inline void _interp_isolate_teardown_join_all() {
+  std::vector<std::shared_ptr<IsolateCore>> live;
+  {
+    std::lock_guard<std::mutex> lk(interp_isolate_reg_mutex());
+    auto& reg = interp_isolate_reg();
+    for (auto& w : reg)
+      if (auto core = w.lock())
+        if (!core->joined) live.push_back(std::move(core));
+    reg.clear();  // prune both the expired and the ones we're about to join
+  }
+  collect_live_merge_producers(live);
+  cancel_and_join_isolates(std::move(live));
+}
+inline bool _install_interp_isolate_teardown_hook() {
+  interp_isolate_teardown_join_hook() = _interp_isolate_teardown_join_all;
+  return true;
+}
+inline const bool _interp_isolate_teardown_hook_installed =
+    _install_interp_isolate_teardown_hook();
+
 inline Value make_channel_endpoint(int64_t id, int role);  // fwd (clone recurses)
 
 // Adjust an endpoint's active count (+1 on clone / in-flight send, -1 on drop).
@@ -1488,6 +1594,10 @@ inline Value make_isolate_namespace() {
                    sargs = std::move(sargs)]() mutable {
                     run_isolate_child(core, sclosure, sargs);
                   });
+              // So a top-level teardown can still reach this isolate if the
+              // script's own handle unwinds past an unreached join()/drop()
+              // (see interp_isolate_teardown_join_all above).
+              interp_isolate_reg_add(core);
             } else {
               // Synchronous fallback (over the parallelism cap): run on the
               // current thread, but through the SAME copy round-trip as the

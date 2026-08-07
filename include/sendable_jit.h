@@ -585,24 +585,8 @@ inline void _jit_isolate_teardown_join_all() {
     for (auto& [_, core] : jit_isolate_reg())
       if (!core->joined) live.push_back(core);
   }
-  {
-    std::lock_guard<std::mutex> lk(merge_registry_mutex());
-    for (auto& [_, entry] : merge_registry())
-      for (auto& core : entry.producers)
-        if (!core->joined) live.push_back(core);
-  }
-  // Cancel everyone up front so every wait below unblocks promptly, instead
-  // of waiting each one out serially before cancelling the next.
-  for (auto& core : live) mark_isolate_cancelled(*core);
-  for (auto& core : live) {
-    {
-      std::unique_lock<std::mutex> lk(core->m);
-      core->cv.wait(lk, [&] { return core->finished; });
-    }
-    if (core->thread.joinable()) core->thread.join();
-    core->joined = true;
-    _reap_isolate_cancel(*core);
-  }
+  collect_live_merge_producers(live);  // isolate.h; shared with the interp side
+  cancel_and_join_isolates(std::move(live));
 }
 inline bool _install_jit_isolate_teardown_hook() {
   isolate_teardown_join_hook() = _jit_isolate_teardown_join_all;

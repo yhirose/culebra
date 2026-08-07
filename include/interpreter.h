@@ -11929,6 +11929,15 @@ inline bool interpret_modules(const std::vector<LoadedModule>& orig_modules,
       try { fn(); } catch (...) {}
     }
   };
+  // Reap any isolate still outstanding once this run ends, however it ends
+  // (normal return, uncaught throw, Interrupted rethrow) — before the caller
+  // (main()) can start tearing down the process-wide statics an isolate
+  // thread still touches. Mirrors jit.h's JoinIsolatesGuard around JIT::exec.
+  struct JoinIsolatesGuard {
+    ~JoinIsolatesGuard() {
+      if (auto& fn = interp_isolate_teardown_join_hook()) fn();
+    }
+  } join_isolates_guard;
   try {
     for (const auto& m : modules) lint::check_shadow(*m.ast);
 

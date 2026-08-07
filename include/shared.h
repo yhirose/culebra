@@ -1960,6 +1960,18 @@ inline std::function<void()>& isolate_teardown_join_hook() {
   return fn;
 }
 
+// Interp counterpart of the hook above. interpreter.h calls this once, right
+// after a top-level script run finishes (success, uncaught throw, or any
+// other exit) — before returning control to main() and letting the process
+// tear down process-wide statics (channel_registry, merge_registry, ...) that
+// an isolate thread still running past that point would touch. Filled in by
+// isolate.h at load, same indirection and same reason: interpreter.h can't
+// include isolate.h (isolate.h needs the Interpreter type it declares).
+inline std::function<void()>& interp_isolate_teardown_join_hook() {
+  static std::function<void()> fn;
+  return fn;
+}
+
 // True iff `f` is the process SIGINT flag (a Ctrl+C) rather than a per-isolate
 // cancel — the poll uses this to pick the message and the one-shot consume.
 inline bool is_sigint_flag(const std::atomic<bool>* f) {
