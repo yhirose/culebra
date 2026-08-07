@@ -1,0 +1,114 @@
+// `??=` on complex lvalues (Object dot/subscript, Array elements), plus the
+// mutable-by-default rule for runtime-inserted Object keys that makes the
+// tally idiom work. Both are the same feature: subscript/dot/get_or_put
+// insertion defaults to mutable now (only Object *literal* keys stay
+// immutable-by-default), and `??=` short-circuits on a non-nil read instead
+// of throwing/erroring the way `+=` does on a missing key.
+
+// --- Stage 1: runtime-inserted keys default to mutable ---------------------
+
+mut counts = {}
+counts['a'] = 1
+counts['a'] = 2  // second write to the same runtime-inserted key: was ImmutableError
+assert_eq(counts['a'], 2)
+
+mut o = {}
+o.x = 1
+o.x = 2
+assert_eq(o.x, 2)
+
+// Literal-declared keys are still immutable by default.
+let lit = {x: 1}
+assert_throws('ImmutableError', fn () { lit.x = 2 })
+
+// get_or_put's inserted slot is mutable too.
+mut g = {}
+g.get_or_put('k', 0)
+g['k'] += 1
+g['k'] += 1
+assert_eq(g['k'], 2)
+
+// to_object() / group_by() entries are mutable (matches the spread-merge
+// rule: "Merged entries are mutable").
+mut built = [('a', 1)].to_object()
+built.a = 2
+assert_eq(built.a, 2)
+
+// --- Stage 2: `??=` on Object subscript / dot, the classic tally idiom ----
+
+mut tally = {}
+for w in ['a', 'b', 'a', 'c', 'a', 'b'] {
+  tally[w] ??= 0
+  tally[w] += 1
+}
+assert_eq(tally, {a: 3, b: 2, c: 1})
+
+// Short-circuit: a non-nil existing value is returned unchanged, and the
+// RHS is not evaluated (no side effect).
+mut evaluated = false
+fn rhs_side_effect() { evaluated = true; 999 }
+mut has_val = {z: 1}
+assert_eq(has_val.z ??= rhs_side_effect(), 1)
+assert_eq(evaluated, false)
+
+// A mutable nil-valued slot coalesces and can be re-coalesced afterward
+// (now holding a non-nil value, so it short-circuits).
+mut nilslot = {mut x: nil}
+assert_eq(nilslot.x ??= 5, 5)
+assert_eq(nilslot.x ??= 99, 5)
+
+// An immutable nil-valued slot still raises ImmutableError on the write-back.
+mut imm_nilslot = {x: nil}
+assert_throws('ImmutableError', fn () { imm_nilslot.x ??= 5 })
+
+// Tuple-keyed sparse-map accumulation (no nesting needed).
+mut sparse = {}
+sparse[(1, 2, 3)] ??= 0
+sparse[(1, 2, 3)] += 1
+sparse[(1, 2, 3)] += 1
+assert_eq(sparse[(1, 2, 3)], 2)
+
+// Class instance `??=` routes through __index__ (read) / __setindex__
+// (write), like compound assignment already does.
+class Counter {
+  new() { self.data = {} }
+  __index__(k) { self.data.get(k, nil) }
+  __setindex__(k, v) { self.data[k] = v; true }
+}
+c = Counter.new()
+c['a'] ??= 0
+c['a'] += 1
+c['a'] += 1
+assert_eq(c['a'], 2)
+
+// --- Array elements: replace nil in place, no auto-extend -----------------
+
+mut arr = [1, nil, 3]
+arr[1] ??= 42
+assert_eq(arr, [1, 42, 3])
+assert_eq(arr[1] ??= 100, 42)  // short-circuit, still 42
+assert_throws('IndexError', fn () { arr[9] ??= 1 })
+
+// --- Rejected receivers (mirrors the interp exactly) -----------------------
+
+@packable
+class Point {
+  x: Float32
+  y: Float32
+}
+let buf = SharedBuffer.new(2, Point)
+assert_throws('TypeError', fn () { buf[0].x ??= 5.0 })   // packed field
+assert_throws('TypeError', fn () { buf[0] ??= 5.0 })     // SharedBuffer element
+
+@packable
+class Vec {
+  n: Int32 = 0
+  xs: FixedArray<Float32, 4>
+}
+let vb = SharedBuffer.new(1, Vec)
+vb[0].xs.push(1.5)
+assert_throws('TypeError', fn () { vb[0].xs[0] ??= 9.0 })  // FixedArray element
+
+let shared = Shared.new({a: 1})
+assert_throws('ImmutableError', fn () { shared.a ??= 2 })
+assert_throws('ImmutableError', fn () { shared['a'] ??= 2 })
