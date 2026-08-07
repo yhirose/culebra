@@ -6,10 +6,18 @@
 #
 # Usage: ./build/culebra --jit benchmarks/mnist/train_bench_transformer.cul [cpu|gpu|auto]
 
-let device = if Sys.argv.size() > 0 { Sys.argv[0] } else { 'auto' }
-if device == 'cpu' { Tensor.use_cpu() }
-else if device == 'gpu' { Tensor.use_gpu() }
-else { Tensor.use_auto() }
+let device = if Sys.argv.size() > 0 {
+  Sys.argv[0]
+} else {
+  'auto'
+}
+if device == 'cpu' {
+  Tensor.use_cpu()
+} else if device == 'gpu' {
+  Tensor.use_gpu()
+} else {
+  Tensor.use_auto()
+}
 
 let EPS = 0.00001
 
@@ -73,7 +81,9 @@ for cfg in configs {
   }
 
   # warmup (stabilizes GPU clock + first-call init), not timed
-  for w in range(3) { block() }
+  for w in range(3) {
+    block()
+  }
 
   mut total = 0.0
   for it in range(iters) {

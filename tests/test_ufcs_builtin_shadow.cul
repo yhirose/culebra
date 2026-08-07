@@ -8,6 +8,9 @@
 #
 # Run: ./build/culebra tests/test_ufcs_builtin_shadow.cul
 #      ./build/culebra --jit tests/test_ufcs_builtin_shadow.cul
+#
+# NOTE: the ns_miss_col cases below assert a specific COLUMN NUMBER — keep
+# each `fn () { ... }` there on one line; `culebra fmt` would move the column.
 
 # --- Tensor: builtin methods win over same-named globals ---
 
@@ -517,7 +520,8 @@ assert_throws('TypeError', fn () { view.remove("a") })
 assert_throws('TypeError', fn () { view.empty() })
 
 # The member miss reports the position of the whole postfix chain, so
-# parenthesizing the receiver doesn't move it.
+# parenthesizing the receiver doesn't move it. Columns are load-bearing in
+# every assert below — keep each case on one line.
 fn ns_miss_col(f) {
   try { f(); nil } catch e { return e.col }
 }

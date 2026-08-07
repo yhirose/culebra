@@ -1,17 +1,26 @@
 let _desktop_module = fn () {
   # A Tauri-shaped desktop facade: local HTTP server + native WebView + assets,
   # in one call.
-  let run = fn(config) {
+  let run = fn (config) {
     let workers = config.get("workers", 4)
 
     let srv = Http.server()
-    if config.has("assets") { srv.static("/", config["assets"]) }
-    if config.has("routes") { config["routes"](srv) }
-    srv.post("/__quit", fn(req) { Webview.Window.quit(); "" })
+    if config.has("assets") {
+      srv.static("/", config["assets"])
+    }
+    if config.has("routes") {
+      config["routes"](srv)
+    }
+    srv.post("/__quit", fn (req) {
+      Webview.Window.quit()
+      ""
+    })
     # The server outlives every early exit from here on — a throw out of the
     # WebView would otherwise leave its workers holding the port for the rest
     # of the process.
-    defer { srv.stop() }
+    defer {
+      srv.stop()
+    }
     let port = if config.has("port") {
       # An explicit port is a contract: if it's taken, fail loudly.
       srv.listen_async(config["port"], workers: workers)
@@ -38,8 +47,10 @@ let _desktop_module = fn () {
     w.run()
   }
 
-  let quit = fn() { Webview.Window.quit() }
+  let quit = fn () {
+    Webview.Window.quit()
+  }
 
-  { run: run, quit: quit }
-};
+  {run: run, quit: quit}
+}
 let Desktop = _desktop_module()

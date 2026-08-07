@@ -1,87 +1,178 @@
-
 let _term_module = fn () {
   # Input is a single event model: poll() returns one of these Objects (or
   # nil for no input). `kind` discriminates; modifiers are booleans.
   #   { kind: "key",    key, ctrl, shift, alt }      # key = name or character
   #   { kind: "mouse",  event, button, x, y, ctrl, shift, alt }
   #   { kind: "resize", cols, rows }
-  let _evkey = fn (name, ctrl, shift, alt) { { kind: "key", key: name, ctrl: ctrl, shift: shift, alt: alt } }
+  let _evkey = fn (name, ctrl, shift, alt) {
+    {kind: "key", key: name, ctrl: ctrl, shift: shift, alt: alt}
+  }
   # An xterm modifier number: (m - 1) is a bitmask 1=shift 2=alt 4=ctrl.
-  let _mods = fn (m) { let k = m - 1; ((k & 1) != 0, (k & 2) != 0, (k & 4) != 0) }
-  let _csi_keys = { "A": "up", "B": "down", "C": "right", "D": "left",
-                    "H": "home", "F": "end", "P": "f1", "Q": "f2", "R": "f3", "S": "f4" }
-  let _tilde_keys = { "1": "home", "2": "insert", "3": "delete", "4": "end",
-                      "5": "pageup", "6": "pagedown", "11": "f1", "12": "f2",
-                      "13": "f3", "14": "f4", "15": "f5", "17": "f6", "18": "f7",
-                      "19": "f8", "20": "f9", "21": "f10", "23": "f11", "24": "f12" }
+  let _mods = fn (m) {
+    let k = m - 1
+    (k & 1 != 0, k & 2 != 0, k & 4 != 0)
+  }
+  let _csi_keys = {
+    "A": "up",
+    "B": "down",
+    "C": "right",
+    "D": "left",
+    "H": "home",
+    "F": "end",
+    "P": "f1",
+    "Q": "f2",
+    "R": "f3",
+    "S": "f4",
+  }
+  let _tilde_keys = {
+    "1": "home",
+    "2": "insert",
+    "3": "delete",
+    "4": "end",
+    "5": "pageup",
+    "6": "pagedown",
+    "11": "f1",
+    "12": "f2",
+    "13": "f3",
+    "14": "f4",
+    "15": "f5",
+    "17": "f6",
+    "18": "f7",
+    "19": "f8",
+    "20": "f9",
+    "21": "f10",
+    "23": "f11",
+    "24": "f12",
+  }
   let _ctrl_letters = "abcdefghijklmnopqrstuvwxyz"
 
   # Parse an SGR mouse report "\x1b[<b;x;yM/m" into a mouse Object (0-based).
   let _parse_mouse = fn (raw) {
     let n = raw.size()
     let last = raw[n - 1..n]
-    let parts = raw[3..n - 1].split(";")   # drop "\x1b[<" and the final M/m
-    if parts.size() != 3 { return nil }
+    let parts = raw[3..n - 1].split(";")  # drop "\x1b[<" and the final M/m
+    if parts.size() != 3 {
+      return nil
+    }
     let b = to_long(parts[0])
     let x = to_long(parts[1]) - 1
     let y = to_long(parts[2]) - 1
     mut button = "none"
-    mut event = if last == "M" { "press" } else { "release" }
-    if (b & 64) != 0 {
-      button = if (b & 1) == 0 { "wheel_up" } else { "wheel_down" }
+    mut event = if last == "M" {
+      "press"
+    } else {
+      "release"
+    }
+    if b & 64 != 0 {
+      button = if b & 1 == 0 {
+        "wheel_up"
+      } else {
+        "wheel_down"
+      }
       event = "scroll"
     } else {
       let low = b & 3
-      button = if low == 0 { "left" } else { if low == 1 { "middle" } else { if low == 2 { "right" } else { "none" } } }
-      if (b & 32) != 0 { event = "drag" }
+      button = if low == 0 {
+        "left"
+      } else {
+        if low == 1 {
+          "middle"
+        } else {
+          if low == 2 {
+            "right"
+          } else {
+            "none"
+          }
+        }
+      }
+      if b & 32 != 0 {
+        event = "drag"
+      }
     }
-    { kind: "mouse", event: event, button: button, x: x, y: y,
-      shift: (b & 4) != 0, alt: (b & 8) != 0, ctrl: (b & 16) != 0 }
+    {
+      kind: "mouse",
+      event: event,
+      button: button,
+      x: x,
+      y: y,
+      shift: b & 4 != 0,
+      alt: b & 8 != 0,
+      ctrl: b & 16 != 0,
+    }
   }
 
   # Parse one raw report into an event Object, or nil.
   let _parse_event = fn (raw) {
     let n = raw.size()
-    if n == 0 { return nil }
-    if n >= 3 && raw[0..3] == "\x1b[<" { return _parse_mouse(raw) }
+    if n == 0 {
+      return nil
+    }
+    if n >= 3 && raw[0..3] == "\x1b[<" {
+      return _parse_mouse(raw)
+    }
     if raw[0..1] == "\x1b" {
-      if n == 1 { return _evkey("escape", false, false, false) }
+      if n == 1 {
+        return _evkey("escape", false, false, false)
+      }
       let second = raw[1..2]
       if second == "[" || second == "O" {
-        let body = raw[2..n]                            # after "\x1b[" / "\x1bO"
+        let body = raw[2..n]  # after "\x1b[" / "\x1bO"
         let bn = body.size()
         let final = body[bn - 1..bn]
         mut shift = false
         mut alt = false
         mut ctrl = false
-        mut numpart = body[0..bn - 1]                   # params before final
+        mut numpart = body[0..bn - 1]  # params before final
         if numpart.size() > 0 {
           let ps = numpart.split(";")
           numpart = ps[0]
-          if ps.size() == 2 { let m = _mods(to_long(ps[1])); shift = m[0]; alt = m[1]; ctrl = m[2] }
+          if ps.size() == 2 {
+            let m = _mods(to_long(ps[1]))
+            shift = m[0]
+            alt = m[1]
+            ctrl = m[2]
+          }
         }
-        let name = if final == "~" { _tilde_keys.get(numpart, "") } else { _csi_keys.get(final, "") }
-        if name != "" { return _evkey(name, ctrl, shift, alt) }
-        return nil                                       # unrecognized sequence
+        let name = if final == "~" {
+          _tilde_keys.get(numpart, "")
+        } else {
+          _csi_keys.get(final, "")
+        }
+        if name != "" {
+          return _evkey(name, ctrl, shift, alt)
+        }
+        return nil  # unrecognized sequence
       }
-      if n == 2 { return _evkey(raw[1..2], false, false, true) }   # ESC+char = alt+char
+      if n == 2 {
+        return _evkey(raw[1..2], false, false, true)
+      }  # ESC+char = alt+char
       return nil
     }
     if n == 1 {
-      if raw == "\r" || raw == "\n" { return _evkey("enter", false, false, false) }
-      if raw == "\t" { return _evkey("tab", false, false, false) }
-      if raw == "\x7f" || raw == "\x08" { return _evkey("backspace", false, false, false) }
+      if raw == "\r" || raw == "\n" {
+        return _evkey("enter", false, false, false)
+      }
+      if raw == "\t" {
+        return _evkey("tab", false, false, false)
+      }
+      if raw == "\x7f" || raw == "\x08" {
+        return _evkey("backspace", false, false, false)
+      }
       let cp = raw.code_points().collect()[0]
-      if cp >= 1 && cp <= 26 { return _evkey(_ctrl_letters[cp - 1..cp], true, false, false) }   # ctrl+letter
-      return _evkey(raw, false, false, false)            # printable
+      if cp >= 1 && cp <= 26 {
+        return _evkey(_ctrl_letters[cp - 1..cp], true, false, false)
+      }                                        # ctrl+letter
+      return _evkey(raw, false, false, false)  # printable
     }
-    _evkey(raw, false, false, false)                     # multi-byte character
+    _evkey(raw, false, false, false)  # multi-byte character
   }
 
   # A pending resize wins; otherwise parse one input report. Returns nil for
   # no input.
   let _poll = fn (timeout) {
-    if _Term.resized() { return { kind: "resize", cols: _Term.cols(), rows: _Term.rows() } }
+    if _Term.resized() {
+      return {kind: "resize", cols: _Term.cols(), rows: _Term.rows()}
+    }
     _parse_event(_Term.read_key(timeout))
   }
   # Colour capability (0 none / 1 16 / 2 256 / 3 truecolour), auto-detected
@@ -89,19 +180,54 @@ let _term_module = fn () {
   mut _level = _Term.color_level()
   let _rgb256 = fn (r, g, b) {
     if r == g && g == b {
-      if r < 8 { 16 } else { if r > 248 { 231 } else { 232 + (r - 8) * 24 / 247 } }
-    } else { 16 + 36 * (r * 5 / 255) + 6 * (g * 5 / 255) + (b * 5 / 255) }
+      if r < 8 {
+        16
+      } else {
+        if r > 248 {
+          231
+        } else {
+          232 + (r - 8) * 24 / 247
+        }
+      }
+    } else {
+      16 + 36 * (r * 5 / 255) + 6 * (g * 5 / 255) + b * 5 / 255
+    }
   }
   let _rgb16 = fn (r, g, b) {
-    let bright = if r > 170 || g > 170 || b > 170 { 8 } else { 0 }
-    bright + (if r > 110 { 1 } else { 0 }) + (if g > 110 { 2 } else { 0 }) + (if b > 110 { 4 } else { 0 })
+    let bright = if r > 170 || g > 170 || b > 170 {
+      8
+    } else {
+      0
+    }
+    bright + if r > 110 {
+        1
+      } else {
+        0
+      } + if g > 110 {
+        2
+      } else {
+        0
+      } + if b > 110 {
+        4
+      } else {
+        0
+      }
   }
   let _idx_rgb = fn (n) {
     if n < 232 {
       let i = n - 16
-      let conv = fn (c) { if c == 0 { 0 } else { 55 + c * 40 } }
+      let conv = fn (c) {
+        if c == 0 {
+          0
+        } else {
+          55 + c * 40
+        }
+      }
       (conv(i / 36), conv((i % 36) / 6), conv(i % 6))
-    } else { let g = 8 + (n - 232) * 10; (g, g, g) }
+    } else {
+      let g = 8 + (n - 232) * 10
+      (g, g, g)
+    }
   }
   # SGR parameter fragments (no escape wrapper), already downsampled to the
   # active level — "" means "no colour at this level". `Term.style` joins
@@ -109,40 +235,126 @@ let _term_module = fn () {
   # Foreground and background differ only by ground: the 16-colour bases are
   # 30/90 vs 40/100 (each +10) and the extended-colour introducer is 38 vs 48.
   # Both grounds share one downsample ladder so a fix to it can't reach only one.
-  let _16sgr = fn (i, base) { to_string(if i < 8 { base + i } else { base + 60 + i - 8 }) }
-  let _16fg = fn (i) { _16sgr(i, 30) }
+  let _16sgr = fn (i, base) {
+    to_string(if i < 8 {
+      base + i
+    } else {
+      base + 60 + i - 8
+    })
+  }
+  let _16fg = fn (i) {
+    _16sgr(i, 30)
+  }
   let _idx_params = fn (n, base, ext) {
-    if _level >= 2 { ext + ";5;" + to_string(n) }
-    else { if _level == 1 { if n < 16 { _16sgr(n, base) } else { let c = _idx_rgb(n); _16sgr(_rgb16(c[0], c[1], c[2]), base) } } else { "" } }
+    if _level >= 2 {
+      ext + ";5;" + to_string(n)
+    } else {
+      if _level == 1 {
+        if n < 16 {
+          _16sgr(n, base)
+        } else {
+          let c = _idx_rgb(n)
+          _16sgr(_rgb16(c[0], c[1], c[2]), base)
+        }
+      } else {
+        ""
+      }
+    }
   }
   let _rgb_params = fn (r, g, b, base, ext) {
-    if _level >= 3 { ext + ";2;" + to_string(r) + ";" + to_string(g) + ";" + to_string(b) }
-    else { if _level == 2 { ext + ";5;" + to_string(_rgb256(r, g, b)) } else { if _level == 1 { _16sgr(_rgb16(r, g, b), base) } else { "" } } }
+    if _level >= 3 {
+      ext + ";2;" + to_string(r) + ";" + to_string(g) + ";" + to_string(b)
+    } else {
+      if _level == 2 {
+        ext + ";5;" + to_string(_rgb256(r, g, b))
+      } else {
+        if _level == 1 {
+          _16sgr(_rgb16(r, g, b), base)
+        } else {
+          ""
+        }
+      }
+    }
   }
-  let _fg_params = fn (n) { _idx_params(n, 30, "38") }
-  let _bg_params = fn (n) { _idx_params(n, 40, "48") }
-  let _rgbfg_params = fn (r, g, b) { _rgb_params(r, g, b, 30, "38") }
-  let _rgbbg_params = fn (r, g, b) { _rgb_params(r, g, b, 40, "48") }
+  let _fg_params = fn (n) {
+    _idx_params(n, 30, "38")
+  }
+  let _bg_params = fn (n) {
+    _idx_params(n, 40, "48")
+  }
+  let _rgbfg_params = fn (r, g, b) {
+    _rgb_params(r, g, b, 30, "38")
+  }
+  let _rgbbg_params = fn (r, g, b) {
+    _rgb_params(r, g, b, 40, "48")
+  }
   # Wrap text in `\x1b[<params>m ... \x1b[<reset>m` (passthrough when empty).
-  let _wrap = fn (s, params, reset) { if params == "" { s } else { "\x1b[" + params + "m" + s + "\x1b[" + reset + "m" } }
-  let _named = fn (s, i) { if _level == 0 { s } else { _wrap(s, _16fg(i), "39") } }
-  let _attr = fn (s, on, off) { if _level == 0 { s } else { "\x1b[" + on + "m" + s + "\x1b[" + off + "m" } }
+  let _wrap = fn (s, params, reset) {
+    if params == "" {
+      s
+    } else {
+      "\x1b[" + params + "m" + s + "\x1b[" + reset + "m"
+    }
+  }
+  let _named = fn (s, i) {
+    if _level == 0 {
+      s
+    } else {
+      _wrap(s, _16fg(i), "39")
+    }
+  }
+  let _attr = fn (s, on, off) {
+    if _level == 0 {
+      s
+    } else {
+      "\x1b[" + on + "m" + s + "\x1b[" + off + "m"
+    }
+  }
   # Build an SGR parameter string for a cell style. fg/bg take a 256-colour
   # index (Long) or an (r,g,b) tuple; attrs are booleans. "" at level 0.
-  let _style = fn (fg = nil, bg = nil, bold = false, dim = false, underline = false, reverse = false) {
-    if _level == 0 { return "" }
+  let _style = fn (
+    fg = nil,
+    bg = nil,
+    bold = false,
+    dim = false,
+    underline = false,
+    reverse = false,
+  ) {
+    if _level == 0 {
+      return ""
+    }
     mut parts = []
-    if bold { parts.push("1") }
-    if dim { parts.push("2") }
-    if underline { parts.push("4") }
-    if reverse { parts.push("7") }
+    if bold {
+      parts.push("1")
+    }
+    if dim {
+      parts.push("2")
+    }
+    if underline {
+      parts.push("4")
+    }
+    if reverse {
+      parts.push("7")
+    }
     if fg != nil {
-      let p = if type_of(fg) == "Tuple" || type_of(fg) == "Array" { _rgbfg_params(fg[0], fg[1], fg[2]) } else { _fg_params(fg) }
-      if p != "" { parts.push(p) }
+      let p = if type_of(fg) == "Tuple" || type_of(fg) == "Array" {
+        _rgbfg_params(fg[0], fg[1], fg[2])
+      } else {
+        _fg_params(fg)
+      }
+      if p != "" {
+        parts.push(p)
+      }
     }
     if bg != nil {
-      let p = if type_of(bg) == "Tuple" || type_of(bg) == "Array" { _rgbbg_params(bg[0], bg[1], bg[2]) } else { _bg_params(bg) }
-      if p != "" { parts.push(p) }
+      let p = if type_of(bg) == "Tuple" || type_of(bg) == "Array" {
+        _rgbbg_params(bg[0], bg[1], bg[2])
+      } else {
+        _bg_params(bg)
+      }
+      if p != "" {
+        parts.push(p)
+      }
     }
     parts.join(";")
   }
@@ -153,10 +365,24 @@ let _term_module = fn () {
   # occupy two cells. Glyph and style are kept in parallel arrays so reuse
   # stays alloc-free (see clear()).
   class Screen {
-    new() { self._w = 0; self._h = 0; self._fw = 0; self._back = []; self._front = []; self._bstyle = []; self._fstyle = [] }
-    cols() { _Term.cols() }
-    rows() { _Term.rows() }
-    size() { (_Term.cols(), _Term.rows()) }
+    new() {
+      self._w = 0
+      self._h = 0
+      self._fw = 0
+      self._back = []
+      self._front = []
+      self._bstyle = []
+      self._fstyle = []
+    }
+    cols() {
+      _Term.cols()
+    }
+    rows() {
+      _Term.rows()
+    }
+    size() {
+      (_Term.cols(), _Term.rows())
+    }
     clear() {
       let w = _Term.cols()
       let h = _Term.rows()
@@ -166,16 +392,22 @@ let _term_module = fn () {
       # Reuse the buffers on the common path (size unchanged); only reallocate
       # when the terminal was resized.
       if self._back.size() == n {
-        for i in 0..n { self._back[i] = " "; self._bstyle[i] = "" }
+        for i in 0..n {
+          self._back[i] = " "
+          self._bstyle[i] = ""
+        }
       } else {
         self._back = []
         self._bstyle = []
-        for _ in 0..n { self._back.push(" "); self._bstyle.push("") }
+        for _ in 0..n {
+          self._back.push(" ")
+          self._bstyle.push("")
+        }
       }
       self
     }
     set(x, y, g, style = "") {
-      let gs = to_string(g)   # graphemes()/slices yield StringView
+      let gs = to_string(g)  # graphemes()/slices yield StringView
       if x >= 0 && x < self._w && y >= 0 && y < self._h {
         let idx = y * self._w + x
         self._back[idx] = gs
@@ -184,8 +416,13 @@ let _term_module = fn () {
           # "" marks the right half of a wide glyph, so it must be written and
           # taken back with its owner: a narrow glyph landing here frees the
           # cell the previous wide one held.
-          if _Term.width(gs) == 2 { self._back[idx + 1] = ""; self._bstyle[idx + 1] = style }
-          else if self._back[idx + 1] == "" { self._back[idx + 1] = " "; self._bstyle[idx + 1] = style }
+          if _Term.width(gs) == 2 {
+            self._back[idx + 1] = ""
+            self._bstyle[idx + 1] = style
+          } else if self._back[idx + 1] == "" {
+            self._back[idx + 1] = " "
+            self._bstyle[idx + 1] = style
+          }
         }
       }
       self
@@ -198,7 +435,11 @@ let _term_module = fn () {
         # Advance by the glyph's own display width, the same measure set() uses
         # to blank the continuation cell. Reading that cell back instead misses
         # the row offset and breaks whenever the draw was clipped.
-        cx = cx + (if _Term.width(gs) == 2 { 2 } else { 1 })
+        cx = cx + if _Term.width(gs) == 2 {
+            2
+          } else {
+            1
+          }
       }
       self
     }
@@ -213,13 +454,16 @@ let _term_module = fn () {
       if self._front.size() != n || self._fw != self._w {
         self._front = []
         self._fstyle = []
-        for _ in 0..n { self._front.push("\x00"); self._fstyle.push("") }   # force a full repaint
+        for _ in 0..n {
+          self._front.push("\x00")
+          self._fstyle.push("")
+        }  # force a full repaint
         self._fw = self._w
-        out = "\x1b[2J"                                                     # wipe stale content
+        out = "\x1b[2J"  # wipe stale content
       }
       mut cy = -1
       mut cx = -1
-      mut pen = ""   # SGR currently applied at the terminal ("" = default)
+      mut pen = ""  # SGR currently applied at the terminal ("" = default)
       for y in 0..self._h {
         for x in 0..self._w {
           let idx = y * self._w + x
@@ -232,12 +476,23 @@ let _term_module = fn () {
             # A wide glyph owns the cell to its right, so it is stale when that
             # cell shows anything but a continuation — an overlapping draw wrote
             # there last frame and only the owner can paint over it.
-            let half_lost = x + 1 < self._w && self._back[idx + 1] == "" && self._front[idx + 1] != ""
+            let half_lost = x + 1 < self._w &&
+              self._back[idx + 1] == "" &&
+              self._front[idx + 1] != ""
             if back != self._front[idx] || st != self._fstyle[idx] || half_lost {
-              if cy != y || cx != x { out = out + "\x1b[" + to_string(y + 1) + ";" + to_string(x + 1) + "H" }
+              if cy != y || cx != x {
+                out = out +
+                  "\x1b[" +
+                  to_string(y + 1) +
+                  ";" +
+                  to_string(x + 1) +
+                  "H"
+              }
               if st != pen {
                 out = out + "\x1b[0m"
-                if st != "" { out = out + "\x1b[" + st + "m" }
+                if st != "" {
+                  out = out + "\x1b[" + st + "m"
+                }
                 pen = st
               }
               out = out + back
@@ -249,16 +504,30 @@ let _term_module = fn () {
               # since filled it, drifting cx and stranding a later cell's erase.
               let wide = x + 1 < self._w && _Term.width(back) == 2
               cy = y
-              if wide { cx = x + 2; self._front[idx + 1] = ""; self._fstyle[idx + 1] = st } else { cx = x + 1 }
+              if wide {
+                cx = x + 2
+                self._front[idx + 1] = ""
+                self._fstyle[idx + 1] = st
+              } else {
+                cx = x + 1
+              }
             }
           }
         }
       }
-      if pen != "" { out = out + "\x1b[0m" }   # leave the terminal at default
+      if pen != "" {
+        out = out + "\x1b[0m"
+      }  # leave the terminal at default
       out
     }
-    flush() { IO.print(self.render()); _Term.flush(); self }
-    poll(timeout) { _poll(timeout) }
+    flush() {
+      IO.print(self.render())
+      _Term.flush()
+      self
+    }
+    poll(timeout) {
+      _poll(timeout)
+    }
   }
   {
     cols: fn () { _Term.cols() },
@@ -287,8 +556,8 @@ let _term_module = fn () {
     white: fn (s) { _named(s, 7) },
     level: fn () { _level },
     set_level: fn (n) { _level = n },
-    parse: fn (raw) { _parse_event(raw) },           # raw report -> Event | nil
-    mouse_on: fn () { "\x1b[?1002h\x1b[?1006h" },    # button + drag, SGR coords
+    parse: fn (raw) { _parse_event(raw) },         # raw report -> Event | nil
+    mouse_on: fn () { "\x1b[?1002h\x1b[?1006h" },  # button + drag, SGR coords
     mouse_off: fn () { "\x1b[?1002l\x1b[?1006l" },
     width: fn (s) { _Term.width(s) },
     resized: fn () { _Term.resized() },

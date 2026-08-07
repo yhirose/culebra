@@ -32,18 +32,46 @@ NS_HEADING = re'^## \d+\. (.+)$'
 # rest are numbered headings, which translation preserves.
 fn builtin_groups(ja) {
   [
-    {title: ja ? '文字列メソッド' : 'String methods', from: '### 18.1 ', to: '### 18.2 '},
-    {title: ja ? '配列メソッド' : 'Array methods', from: '### 18.2 ', to: '### 18.3 '},
-    {title: ja ? 'オブジェクトメソッド' : 'Object methods', from: '### 18.3 ', to: '### 18.4 '},
-    {title: ja ? 'セットのメソッド' : 'Set methods', from: ja ? '## 集合' : '## Sets', to: '## 11. '},
-    {title: ja ? 'イテレータメソッド' : 'Iterator methods', from: '### 18.5 ', to: '## 19. '},
-    {title: ja ? 'コア組み込み関数' : 'Core built-ins', from: '## 19. ', to: '## 20. '},
+    {
+      title: ja ? '文字列メソッド' : 'String methods',
+      from: '### 18.1 ',
+      to: '### 18.2 ',
+    },
+    {
+      title: ja ? '配列メソッド' : 'Array methods',
+      from: '### 18.2 ',
+      to: '### 18.3 ',
+    },
+    {
+      title: ja ? 'オブジェクトメソッド' : 'Object methods',
+      from: '### 18.3 ',
+      to: '### 18.4 ',
+    },
+    {
+      title: ja ? 'セットのメソッド' : 'Set methods',
+      from: ja ? '## 集合' : '## Sets',
+      to: '## 11. ',
+    },
+    {
+      title: ja ? 'イテレータメソッド' : 'Iterator methods',
+      from: '### 18.5 ',
+      to: '## 19. ',
+    },
+    {
+      title: ja ? 'コア組み込み関数' : 'Core built-ins',
+      from: '## 19. ',
+      to: '## 20. ',
+    },
   ]
 }
 
-fn strip_ticks(t) { t.slice(1, t.size() - 1).to_string() }
+fn strip_ticks(t) {
+  t.slice(1, t.size() - 1).to_string()
+}
 
-fn unescape(s) { s.replace('\|', '|').to_string() }
+fn unescape(s) {
+  s.replace('\|', '|').to_string()
+}
 
 fn ret_of(cell) {
   m = CELL_RET.find(cell)
@@ -67,25 +95,35 @@ fn harvest(lines) {
       # one heading may carry several: ### `Math.sin(x)`, `Math.cos(x)`
       for span in SPAN.find_all_str(title) {
         inner = strip_ticks(span)
-        if inner.contains('(') { cands.push(unescape(inner)) }
+        if inner.contains('(') {
+          cands.push(unescape(inner))
+        }
       }
       # a bare `Math.pi` heading is a constant, worth listing
-      if cands.size() == 0 && BARE.test(title) { cands.push(strip_ticks(title)) }
+      if cands.size() == 0 && BARE.test(title) {
+        cands.push(strip_ticks(title))
+      }
     } else {
       tm = TABLE.find(line)
       if tm != nil && tm[1].contains('(') {
         mut sig = unescape(tm[1])
         if !sig.contains('->') {
           r = ret_of(tm[3])
-          if r != nil { sig = sig + ' -> ' + r }
+          if r != nil {
+            sig = sig + ' -> ' + r
+          }
         }
         # a trailing `*(mutating)*` on the same cell is worth carrying over
         note = tm[2].replace('*', '').trim()
-        if note.size() > 0 && note.size() <= 20 { sig = sig + ' ' + note.to_string() }
+        if note.size() > 0 && note.size() <= 20 {
+          sig = sig + ' ' + note.to_string()
+        }
         cands.push(sig)
       } else {
         bm = BULLET.find(line)
-        if bm != nil && bm[1].contains('(') { cands.push(unescape(bm[1])) }
+        if bm != nil && bm[1].contains('(') {
+          cands.push(unescape(bm[1]))
+        }
       }
     }
     for sig in cands {
@@ -103,7 +141,9 @@ fn slice_lines(lines, from, to) {
   mut inside = false
   for line in lines {
     if inside {
-      if line.starts_with(to) { break }
+      if line.starts_with(to) {
+        break
+      }
       out.push(line)
     } else if line.starts_with(from) {
       inside = true
@@ -114,7 +154,9 @@ fn slice_lines(lines, from, to) {
 
 fn read_lines(path) {
   mut out = []
-  for raw in FS.read(path).split("\n") { out.push(raw.to_string()) }
+  for raw in FS.read(path).split("\n") {
+    out.push(raw.to_string())
+  }
   out
 }
 
@@ -125,7 +167,9 @@ fn namespace_groups(lines) {
   mut buf = []
   for line in lines {
     if line.starts_with('## ') {
-      if title != nil { out.push({title: title, sigs: harvest(buf)}) }
+      if title != nil {
+        out.push({title: title, sigs: harvest(buf)})
+      }
       m = NS_HEADING.find(line)
       title = m == nil ? nil : m[1].replace('`', '').trim().to_string()
       buf = []
@@ -133,7 +177,9 @@ fn namespace_groups(lines) {
       buf.push(line)
     }
   }
-  if title != nil { out.push({title: title, sigs: harvest(buf)}) }
+  if title != nil {
+    out.push({title: title, sigs: harvest(buf)})
+  }
   out
 }
 
@@ -144,14 +190,18 @@ fn collect(ja) {
   for g in builtin_groups(ja) {
     out.push({title: g.title, sigs: harvest(slice_lines(lang, g.from, g.to))})
   }
-  for g in namespace_groups(read_lines("docs/stdlib{suffix}.md")) { out.push(g) }
+  for g in namespace_groups(read_lines("docs/stdlib{suffix}.md")) {
+    out.push(g)
+  }
   out
 }
 
 fn render(groups) {
   mut out = []
   for g in groups {
-    if g.sigs.size() > 0 { out.push('**' + g.title + '** — ' + g.sigs.join('; ')) }
+    if g.sigs.size() > 0 {
+      out.push('**' + g.title + '** — ' + g.sigs.join('; '))
+    }
   }
   out.join("\n\n")
 }
@@ -163,14 +213,24 @@ fn splice(text, body) {
     line = raw.to_string()
     if state == 'before' {
       out.push(line)
-      if line.starts_with(BEGIN_MARK) { out.push(''); out.push(body); out.push(''); state = 'inside' }
+      if line.starts_with(BEGIN_MARK) {
+        out.push('')
+        out.push(body)
+        out.push('')
+        state = 'inside'
+      }
     } else if state == 'inside' {
-      if line.starts_with(END_MARK) { out.push(line); state = 'after' }
+      if line.starts_with(END_MARK) {
+        out.push(line)
+        state = 'after'
+      }
     } else {
       out.push(line)
     }
   }
-  if state != 'after' { throw "missing generated-section markers" }
+  if state != 'after' {
+    throw "missing generated-section markers"
+  }
   out.join("\n")
 }
 

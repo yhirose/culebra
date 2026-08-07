@@ -2,93 +2,392 @@
 // Edit the .cul sources, then run `just gen-preambles` (CI checks sync).
 #pragma once
 
-inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = fn () { let _tname = fn(o) { let t = type_of(o); if t == "Object" && o.has("class") { o.class } else { t } }; let _type_error = fn(want, got) { throw {kind: "TypeError", message: "type error: expected {want}, got {_tname(got)}"} }; class Duration { new(nanos) { self._nanos = nanos } seconds() { to_float(self._nanos) / 1000000000.0 } milliseconds() { to_float(self._nanos) / 1000000.0 } minutes() { self.seconds() / 60.0 } hours() { self.seconds() / 3600.0 } days() { self.seconds() / 86400.0 } abs() { if self._nanos < 0 { Duration.new(-self._nanos) } else { Duration.new(self._nanos) } } __add__(o) { let n = match o { d: Duration => d._nanos }; if n == nil { _type_error("Duration", o) }; Duration.new(self._nanos + n) } __sub__(o) { let n = match o { d: Duration => d._nanos }; if n == nil { _type_error("Duration", o) }; Duration.new(self._nanos - n) } __mul__(n) { Duration.new(to_long(to_float(self._nanos) * to_float(n))) } __div__(n) { Duration.new(to_long(to_float(self._nanos) / to_float(n))) } __neg__() { Duration.new(-self._nanos) } __lt__(o) { let n = match o { d: Duration => d._nanos }; if n == nil { _type_error("Duration", o) }; self._nanos < n } __le__(o) { let n = match o { d: Duration => d._nanos }; if n == nil { _type_error("Duration", o) }; self._nanos <= n } __eq__(o) { let n = match o { d: Duration => d._nanos }; n != nil && self._nanos == n } }; class Instant { new(nanos) { self._nanos = nanos } iso(utc = true) { _Time.iso_nanos(self._nanos, utc) } format(fmt, utc = false) { _Time.format_nanos(self._nanos, fmt, utc) } parts(utc = false) { _Time.parts_nanos(self._nanos, utc) } weekday(utc = false) { _Time.weekday_nanos(self._nanos, utc) } add(years = 0, months = 0, days = 0, hours = 0, minutes = 0, seconds = 0, utc = false) { Instant.new(_Time.add_nanos(self._nanos, years, months, days, hours, minutes, seconds, utc)) } start_of(unit, utc = false) { Instant.new(_Time.start_of_nanos(self._nanos, unit, utc)) } unix() { to_float(self._nanos) / 1000000000.0 } unix_nanos() { self._nanos } __add__(o) { let n = match o { d: Duration => d._nanos }; if n == nil { _type_error("Duration", o) }; Instant.new(self._nanos + n) } __sub__(o) { let r = match o { d: Duration => Instant.new(self._nanos - d._nanos), i: Instant  => Duration.new(self._nanos - i._nanos) }; if r == nil { _type_error("Duration or Instant", o) }; r } __lt__(o) { let n = match o { i: Instant => i._nanos }; if n == nil { _type_error("Instant", o) }; self._nanos < n } __le__(o) { let n = match o { i: Instant => i._nanos }; if n == nil { _type_error("Instant", o) }; self._nanos <= n } __eq__(o) { let n = match o { i: Instant => i._nanos }; n != nil && self._nanos == n } }; { now: fn() { Instant.new(_Time.now_nanos()) }, monotonic: fn() { _Time.monotonic() }, sleep: fn(secs) { _Time.sleep(secs) }, from_iso: fn(s) { Instant.new(_Time.from_iso_nanos(s)) }, from_unix: fn(secs) { Instant.new(to_long(to_float(secs) * 1000000000.0)) }, from_parts: fn(p, utc = false) { Instant.new(_Time.from_parts_nanos(p, utc)) }, parse: fn(s, fmt) { Instant.new(_Time.parse_nanos(s, fmt)) }, seconds: fn(n) { Duration.new(to_long(to_float(n) * 1000000000.0)) }, milliseconds: fn(n) { Duration.new(to_long(to_float(n) * 1000000.0)) }, minutes: fn(n) { Duration.new(to_long(to_float(n) * 60000000000.0)) }, hours: fn(n) { Duration.new(to_long(to_float(n) * 3600000000000.0)) }, days: fn(n) { Duration.new(to_long(to_float(n) * 86400000000000.0)) }, Instant: Instant, Duration: Duration } }; let Time = _time_module()
+inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = fn () {
+  let _tname = fn (o) {
+    let t = type_of(o)
+    if t == "Object" && o.has("class") {
+      o.class
+    } else {
+      t
+    }
+  }
+  let _type_error = fn (want, got) {
+    throw {
+      kind: "TypeError",
+      message: "type error: expected {want}, got {_tname(got)}",
+    }
+  }
+  class Duration {
+    new(nanos) {
+      self._nanos = nanos
+    }
+    seconds() {
+      to_float(self._nanos) / 1000000000.0
+    }
+    milliseconds() {
+      to_float(self._nanos) / 1000000.0
+    }
+    minutes() {
+      self.seconds() / 60.0
+    }
+    hours() {
+      self.seconds() / 3600.0
+    }
+    days() {
+      self.seconds() / 86400.0
+    }
+    abs() {
+      if self._nanos < 0 {
+        Duration.new(-self._nanos)
+      } else {
+        Duration.new(self._nanos)
+      }
+    }
+    __add__(o) {
+      let n = match o {
+        d: Duration => d._nanos,
+      }
+      if n == nil {
+        _type_error("Duration", o)
+      }
+      Duration.new(self._nanos + n)
+    }
+    __sub__(o) {
+      let n = match o {
+        d: Duration => d._nanos,
+      }
+      if n == nil {
+        _type_error("Duration", o)
+      }
+      Duration.new(self._nanos - n)
+    }
+    __mul__(n) {
+      Duration.new(to_long(to_float(self._nanos) * to_float(n)))
+    }
+    __div__(n) {
+      Duration.new(to_long(to_float(self._nanos) / to_float(n)))
+    }
+    __neg__() {
+      Duration.new(-self._nanos)
+    }
+    __lt__(o) {
+      let n = match o {
+        d: Duration => d._nanos,
+      }
+      if n == nil {
+        _type_error("Duration", o)
+      }
+      self._nanos < n
+    }
+    __le__(o) {
+      let n = match o {
+        d: Duration => d._nanos,
+      }
+      if n == nil {
+        _type_error("Duration", o)
+      }
+      self._nanos <= n
+    }
+    __eq__(o) {
+      let n = match o {
+        d: Duration => d._nanos,
+      }
+      n != nil && self._nanos == n
+    }
+  }
+  class Instant {
+    new(nanos) {
+      self._nanos = nanos
+    }
+    iso(utc = true) {
+      _Time.iso_nanos(self._nanos, utc)
+    }
+    format(fmt, utc = false) {
+      _Time.format_nanos(self._nanos, fmt, utc)
+    }
+    parts(utc = false) {
+      _Time.parts_nanos(self._nanos, utc)
+    }
+    weekday(utc = false) {
+      _Time.weekday_nanos(self._nanos, utc)
+    }
+    add(
+      years = 0,
+      months = 0,
+      days = 0,
+      hours = 0,
+      minutes = 0,
+      seconds = 0,
+      utc = false,
+    ) {
+      Instant.new(_Time.add_nanos(
+        self._nanos,
+        years,
+        months,
+        days,
+        hours,
+        minutes,
+        seconds,
+        utc,
+      ))
+    }
+    start_of(unit, utc = false) {
+      Instant.new(_Time.start_of_nanos(self._nanos, unit, utc))
+    }
+    unix() {
+      to_float(self._nanos) / 1000000000.0
+    }
+    unix_nanos() {
+      self._nanos
+    }
+    __add__(o) {
+      let n = match o {
+        d: Duration => d._nanos,
+      }
+      if n == nil {
+        _type_error("Duration", o)
+      }
+      Instant.new(self._nanos + n)
+    }
+    __sub__(o) {
+      let r = match o {
+        d: Duration => Instant.new(self._nanos - d._nanos),
+        i: Instant => Duration.new(self._nanos - i._nanos),
+      }
+      if r == nil {
+        _type_error("Duration or Instant", o)
+      }
+      r
+    }
+    __lt__(o) {
+      let n = match o {
+        i: Instant => i._nanos,
+      }
+      if n == nil {
+        _type_error("Instant", o)
+      }
+      self._nanos < n
+    }
+    __le__(o) {
+      let n = match o {
+        i: Instant => i._nanos,
+      }
+      if n == nil {
+        _type_error("Instant", o)
+      }
+      self._nanos <= n
+    }
+    __eq__(o) {
+      let n = match o {
+        i: Instant => i._nanos,
+      }
+      n != nil && self._nanos == n
+    }
+  }
+  {now: fn () {
+      Instant.new(_Time.now_nanos())
+    }, monotonic: fn () {
+      _Time.monotonic()
+    }, sleep: fn (secs) {
+      _Time.sleep(secs)
+    }, from_iso: fn (s) {
+      Instant.new(_Time.from_iso_nanos(s))
+    }, from_unix: fn (secs) {
+      Instant.new(to_long(to_float(secs) * 1000000000.0))
+    }, from_parts: fn (p, utc = false) {
+      Instant.new(_Time.from_parts_nanos(p, utc))
+    }, parse: fn (s, fmt) {
+      Instant.new(_Time.parse_nanos(s, fmt))
+    }, seconds: fn (n) {
+      Duration.new(to_long(to_float(n) * 1000000000.0))
+    }, milliseconds: fn (n) {
+      Duration.new(to_long(to_float(n) * 1000000.0))
+    }, minutes: fn (n) {
+      Duration.new(to_long(to_float(n) * 60000000000.0))
+    }, hours: fn (n) {
+      Duration.new(to_long(to_float(n) * 3600000000000.0))
+    }, days: fn (n) {
+      Duration.new(to_long(to_float(n) * 86400000000000.0))
+    }, Instant: Instant, Duration: Duration}
+}
+let Time = _time_module()
 )=culpre=";
 
-inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(
-let _term_module = fn () {
+inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(let _term_module = fn () {
   # Input is a single event model: poll() returns one of these Objects (or
   # nil for no input). `kind` discriminates; modifiers are booleans.
   #   { kind: "key",    key, ctrl, shift, alt }      # key = name or character
   #   { kind: "mouse",  event, button, x, y, ctrl, shift, alt }
   #   { kind: "resize", cols, rows }
-  let _evkey = fn (name, ctrl, shift, alt) { { kind: "key", key: name, ctrl: ctrl, shift: shift, alt: alt } }
+  let _evkey = fn (name, ctrl, shift, alt) {
+    {kind: "key", key: name, ctrl: ctrl, shift: shift, alt: alt}
+  }
   # An xterm modifier number: (m - 1) is a bitmask 1=shift 2=alt 4=ctrl.
-  let _mods = fn (m) { let k = m - 1; ((k & 1) != 0, (k & 2) != 0, (k & 4) != 0) }
-  let _csi_keys = { "A": "up", "B": "down", "C": "right", "D": "left",
-                    "H": "home", "F": "end", "P": "f1", "Q": "f2", "R": "f3", "S": "f4" }
-  let _tilde_keys = { "1": "home", "2": "insert", "3": "delete", "4": "end",
-                      "5": "pageup", "6": "pagedown", "11": "f1", "12": "f2",
-                      "13": "f3", "14": "f4", "15": "f5", "17": "f6", "18": "f7",
-                      "19": "f8", "20": "f9", "21": "f10", "23": "f11", "24": "f12" }
+  let _mods = fn (m) {
+    let k = m - 1
+    (k & 1 != 0, k & 2 != 0, k & 4 != 0)
+  }
+  let _csi_keys = {
+    "A": "up",
+    "B": "down",
+    "C": "right",
+    "D": "left",
+    "H": "home",
+    "F": "end",
+    "P": "f1",
+    "Q": "f2",
+    "R": "f3",
+    "S": "f4",
+  }
+  let _tilde_keys = {
+    "1": "home",
+    "2": "insert",
+    "3": "delete",
+    "4": "end",
+    "5": "pageup",
+    "6": "pagedown",
+    "11": "f1",
+    "12": "f2",
+    "13": "f3",
+    "14": "f4",
+    "15": "f5",
+    "17": "f6",
+    "18": "f7",
+    "19": "f8",
+    "20": "f9",
+    "21": "f10",
+    "23": "f11",
+    "24": "f12",
+  }
   let _ctrl_letters = "abcdefghijklmnopqrstuvwxyz"
 
   # Parse an SGR mouse report "\x1b[<b;x;yM/m" into a mouse Object (0-based).
   let _parse_mouse = fn (raw) {
     let n = raw.size()
     let last = raw[n - 1..n]
-    let parts = raw[3..n - 1].split(";")   # drop "\x1b[<" and the final M/m
-    if parts.size() != 3 { return nil }
+    let parts = raw[3..n - 1].split(";")  # drop "\x1b[<" and the final M/m
+    if parts.size() != 3 {
+      return nil
+    }
     let b = to_long(parts[0])
     let x = to_long(parts[1]) - 1
     let y = to_long(parts[2]) - 1
     mut button = "none"
-    mut event = if last == "M" { "press" } else { "release" }
-    if (b & 64) != 0 {
-      button = if (b & 1) == 0 { "wheel_up" } else { "wheel_down" }
+    mut event = if last == "M" {
+      "press"
+    } else {
+      "release"
+    }
+    if b & 64 != 0 {
+      button = if b & 1 == 0 {
+        "wheel_up"
+      } else {
+        "wheel_down"
+      }
       event = "scroll"
     } else {
       let low = b & 3
-      button = if low == 0 { "left" } else { if low == 1 { "middle" } else { if low == 2 { "right" } else { "none" } } }
-      if (b & 32) != 0 { event = "drag" }
+      button = if low == 0 {
+        "left"
+      } else {
+        if low == 1 {
+          "middle"
+        } else {
+          if low == 2 {
+            "right"
+          } else {
+            "none"
+          }
+        }
+      }
+      if b & 32 != 0 {
+        event = "drag"
+      }
     }
-    { kind: "mouse", event: event, button: button, x: x, y: y,
-      shift: (b & 4) != 0, alt: (b & 8) != 0, ctrl: (b & 16) != 0 }
+    {
+      kind: "mouse",
+      event: event,
+      button: button,
+      x: x,
+      y: y,
+      shift: b & 4 != 0,
+      alt: b & 8 != 0,
+      ctrl: b & 16 != 0,
+    }
   }
 
   # Parse one raw report into an event Object, or nil.
   let _parse_event = fn (raw) {
     let n = raw.size()
-    if n == 0 { return nil }
-    if n >= 3 && raw[0..3] == "\x1b[<" { return _parse_mouse(raw) }
+    if n == 0 {
+      return nil
+    }
+    if n >= 3 && raw[0..3] == "\x1b[<" {
+      return _parse_mouse(raw)
+    }
     if raw[0..1] == "\x1b" {
-      if n == 1 { return _evkey("escape", false, false, false) }
+      if n == 1 {
+        return _evkey("escape", false, false, false)
+      }
       let second = raw[1..2]
       if second == "[" || second == "O" {
-        let body = raw[2..n]                            # after "\x1b[" / "\x1bO"
+        let body = raw[2..n]  # after "\x1b[" / "\x1bO"
         let bn = body.size()
         let final = body[bn - 1..bn]
         mut shift = false
         mut alt = false
         mut ctrl = false
-        mut numpart = body[0..bn - 1]                   # params before final
+        mut numpart = body[0..bn - 1]  # params before final
         if numpart.size() > 0 {
           let ps = numpart.split(";")
           numpart = ps[0]
-          if ps.size() == 2 { let m = _mods(to_long(ps[1])); shift = m[0]; alt = m[1]; ctrl = m[2] }
+          if ps.size() == 2 {
+            let m = _mods(to_long(ps[1]))
+            shift = m[0]
+            alt = m[1]
+            ctrl = m[2]
+          }
         }
-        let name = if final == "~" { _tilde_keys.get(numpart, "") } else { _csi_keys.get(final, "") }
-        if name != "" { return _evkey(name, ctrl, shift, alt) }
-        return nil                                       # unrecognized sequence
+        let name = if final == "~" {
+          _tilde_keys.get(numpart, "")
+        } else {
+          _csi_keys.get(final, "")
+        }
+        if name != "" {
+          return _evkey(name, ctrl, shift, alt)
+        }
+        return nil  # unrecognized sequence
       }
-      if n == 2 { return _evkey(raw[1..2], false, false, true) }   # ESC+char = alt+char
+      if n == 2 {
+        return _evkey(raw[1..2], false, false, true)
+      }  # ESC+char = alt+char
       return nil
     }
     if n == 1 {
-      if raw == "\r" || raw == "\n" { return _evkey("enter", false, false, false) }
-      if raw == "\t" { return _evkey("tab", false, false, false) }
-      if raw == "\x7f" || raw == "\x08" { return _evkey("backspace", false, false, false) }
+      if raw == "\r" || raw == "\n" {
+        return _evkey("enter", false, false, false)
+      }
+      if raw == "\t" {
+        return _evkey("tab", false, false, false)
+      }
+      if raw == "\x7f" || raw == "\x08" {
+        return _evkey("backspace", false, false, false)
+      }
       let cp = raw.code_points().collect()[0]
-      if cp >= 1 && cp <= 26 { return _evkey(_ctrl_letters[cp - 1..cp], true, false, false) }   # ctrl+letter
-      return _evkey(raw, false, false, false)            # printable
+      if cp >= 1 && cp <= 26 {
+        return _evkey(_ctrl_letters[cp - 1..cp], true, false, false)
+      }                                        # ctrl+letter
+      return _evkey(raw, false, false, false)  # printable
     }
-    _evkey(raw, false, false, false)                     # multi-byte character
+    _evkey(raw, false, false, false)  # multi-byte character
   }
 
   # A pending resize wins; otherwise parse one input report. Returns nil for
   # no input.
   let _poll = fn (timeout) {
-    if _Term.resized() { return { kind: "resize", cols: _Term.cols(), rows: _Term.rows() } }
+    if _Term.resized() {
+      return {kind: "resize", cols: _Term.cols(), rows: _Term.rows()}
+    }
     _parse_event(_Term.read_key(timeout))
   }
   # Colour capability (0 none / 1 16 / 2 256 / 3 truecolour), auto-detected
@@ -96,19 +395,54 @@ let _term_module = fn () {
   mut _level = _Term.color_level()
   let _rgb256 = fn (r, g, b) {
     if r == g && g == b {
-      if r < 8 { 16 } else { if r > 248 { 231 } else { 232 + (r - 8) * 24 / 247 } }
-    } else { 16 + 36 * (r * 5 / 255) + 6 * (g * 5 / 255) + (b * 5 / 255) }
+      if r < 8 {
+        16
+      } else {
+        if r > 248 {
+          231
+        } else {
+          232 + (r - 8) * 24 / 247
+        }
+      }
+    } else {
+      16 + 36 * (r * 5 / 255) + 6 * (g * 5 / 255) + b * 5 / 255
+    }
   }
   let _rgb16 = fn (r, g, b) {
-    let bright = if r > 170 || g > 170 || b > 170 { 8 } else { 0 }
-    bright + (if r > 110 { 1 } else { 0 }) + (if g > 110 { 2 } else { 0 }) + (if b > 110 { 4 } else { 0 })
+    let bright = if r > 170 || g > 170 || b > 170 {
+      8
+    } else {
+      0
+    }
+    bright + if r > 110 {
+        1
+      } else {
+        0
+      } + if g > 110 {
+        2
+      } else {
+        0
+      } + if b > 110 {
+        4
+      } else {
+        0
+      }
   }
   let _idx_rgb = fn (n) {
     if n < 232 {
       let i = n - 16
-      let conv = fn (c) { if c == 0 { 0 } else { 55 + c * 40 } }
+      let conv = fn (c) {
+        if c == 0 {
+          0
+        } else {
+          55 + c * 40
+        }
+      }
       (conv(i / 36), conv((i % 36) / 6), conv(i % 6))
-    } else { let g = 8 + (n - 232) * 10; (g, g, g) }
+    } else {
+      let g = 8 + (n - 232) * 10
+      (g, g, g)
+    }
   }
   # SGR parameter fragments (no escape wrapper), already downsampled to the
   # active level — "" means "no colour at this level". `Term.style` joins
@@ -116,40 +450,126 @@ let _term_module = fn () {
   # Foreground and background differ only by ground: the 16-colour bases are
   # 30/90 vs 40/100 (each +10) and the extended-colour introducer is 38 vs 48.
   # Both grounds share one downsample ladder so a fix to it can't reach only one.
-  let _16sgr = fn (i, base) { to_string(if i < 8 { base + i } else { base + 60 + i - 8 }) }
-  let _16fg = fn (i) { _16sgr(i, 30) }
+  let _16sgr = fn (i, base) {
+    to_string(if i < 8 {
+      base + i
+    } else {
+      base + 60 + i - 8
+    })
+  }
+  let _16fg = fn (i) {
+    _16sgr(i, 30)
+  }
   let _idx_params = fn (n, base, ext) {
-    if _level >= 2 { ext + ";5;" + to_string(n) }
-    else { if _level == 1 { if n < 16 { _16sgr(n, base) } else { let c = _idx_rgb(n); _16sgr(_rgb16(c[0], c[1], c[2]), base) } } else { "" } }
+    if _level >= 2 {
+      ext + ";5;" + to_string(n)
+    } else {
+      if _level == 1 {
+        if n < 16 {
+          _16sgr(n, base)
+        } else {
+          let c = _idx_rgb(n)
+          _16sgr(_rgb16(c[0], c[1], c[2]), base)
+        }
+      } else {
+        ""
+      }
+    }
   }
   let _rgb_params = fn (r, g, b, base, ext) {
-    if _level >= 3 { ext + ";2;" + to_string(r) + ";" + to_string(g) + ";" + to_string(b) }
-    else { if _level == 2 { ext + ";5;" + to_string(_rgb256(r, g, b)) } else { if _level == 1 { _16sgr(_rgb16(r, g, b), base) } else { "" } } }
+    if _level >= 3 {
+      ext + ";2;" + to_string(r) + ";" + to_string(g) + ";" + to_string(b)
+    } else {
+      if _level == 2 {
+        ext + ";5;" + to_string(_rgb256(r, g, b))
+      } else {
+        if _level == 1 {
+          _16sgr(_rgb16(r, g, b), base)
+        } else {
+          ""
+        }
+      }
+    }
   }
-  let _fg_params = fn (n) { _idx_params(n, 30, "38") }
-  let _bg_params = fn (n) { _idx_params(n, 40, "48") }
-  let _rgbfg_params = fn (r, g, b) { _rgb_params(r, g, b, 30, "38") }
-  let _rgbbg_params = fn (r, g, b) { _rgb_params(r, g, b, 40, "48") }
+  let _fg_params = fn (n) {
+    _idx_params(n, 30, "38")
+  }
+  let _bg_params = fn (n) {
+    _idx_params(n, 40, "48")
+  }
+  let _rgbfg_params = fn (r, g, b) {
+    _rgb_params(r, g, b, 30, "38")
+  }
+  let _rgbbg_params = fn (r, g, b) {
+    _rgb_params(r, g, b, 40, "48")
+  }
   # Wrap text in `\x1b[<params>m ... \x1b[<reset>m` (passthrough when empty).
-  let _wrap = fn (s, params, reset) { if params == "" { s } else { "\x1b[" + params + "m" + s + "\x1b[" + reset + "m" } }
-  let _named = fn (s, i) { if _level == 0 { s } else { _wrap(s, _16fg(i), "39") } }
-  let _attr = fn (s, on, off) { if _level == 0 { s } else { "\x1b[" + on + "m" + s + "\x1b[" + off + "m" } }
+  let _wrap = fn (s, params, reset) {
+    if params == "" {
+      s
+    } else {
+      "\x1b[" + params + "m" + s + "\x1b[" + reset + "m"
+    }
+  }
+  let _named = fn (s, i) {
+    if _level == 0 {
+      s
+    } else {
+      _wrap(s, _16fg(i), "39")
+    }
+  }
+  let _attr = fn (s, on, off) {
+    if _level == 0 {
+      s
+    } else {
+      "\x1b[" + on + "m" + s + "\x1b[" + off + "m"
+    }
+  }
   # Build an SGR parameter string for a cell style. fg/bg take a 256-colour
   # index (Long) or an (r,g,b) tuple; attrs are booleans. "" at level 0.
-  let _style = fn (fg = nil, bg = nil, bold = false, dim = false, underline = false, reverse = false) {
-    if _level == 0 { return "" }
+  let _style = fn (
+    fg = nil,
+    bg = nil,
+    bold = false,
+    dim = false,
+    underline = false,
+    reverse = false,
+  ) {
+    if _level == 0 {
+      return ""
+    }
     mut parts = []
-    if bold { parts.push("1") }
-    if dim { parts.push("2") }
-    if underline { parts.push("4") }
-    if reverse { parts.push("7") }
+    if bold {
+      parts.push("1")
+    }
+    if dim {
+      parts.push("2")
+    }
+    if underline {
+      parts.push("4")
+    }
+    if reverse {
+      parts.push("7")
+    }
     if fg != nil {
-      let p = if type_of(fg) == "Tuple" || type_of(fg) == "Array" { _rgbfg_params(fg[0], fg[1], fg[2]) } else { _fg_params(fg) }
-      if p != "" { parts.push(p) }
+      let p = if type_of(fg) == "Tuple" || type_of(fg) == "Array" {
+        _rgbfg_params(fg[0], fg[1], fg[2])
+      } else {
+        _fg_params(fg)
+      }
+      if p != "" {
+        parts.push(p)
+      }
     }
     if bg != nil {
-      let p = if type_of(bg) == "Tuple" || type_of(bg) == "Array" { _rgbbg_params(bg[0], bg[1], bg[2]) } else { _bg_params(bg) }
-      if p != "" { parts.push(p) }
+      let p = if type_of(bg) == "Tuple" || type_of(bg) == "Array" {
+        _rgbbg_params(bg[0], bg[1], bg[2])
+      } else {
+        _bg_params(bg)
+      }
+      if p != "" {
+        parts.push(p)
+      }
     }
     parts.join(";")
   }
@@ -160,10 +580,24 @@ let _term_module = fn () {
   # occupy two cells. Glyph and style are kept in parallel arrays so reuse
   # stays alloc-free (see clear()).
   class Screen {
-    new() { self._w = 0; self._h = 0; self._fw = 0; self._back = []; self._front = []; self._bstyle = []; self._fstyle = [] }
-    cols() { _Term.cols() }
-    rows() { _Term.rows() }
-    size() { (_Term.cols(), _Term.rows()) }
+    new() {
+      self._w = 0
+      self._h = 0
+      self._fw = 0
+      self._back = []
+      self._front = []
+      self._bstyle = []
+      self._fstyle = []
+    }
+    cols() {
+      _Term.cols()
+    }
+    rows() {
+      _Term.rows()
+    }
+    size() {
+      (_Term.cols(), _Term.rows())
+    }
     clear() {
       let w = _Term.cols()
       let h = _Term.rows()
@@ -173,16 +607,22 @@ let _term_module = fn () {
       # Reuse the buffers on the common path (size unchanged); only reallocate
       # when the terminal was resized.
       if self._back.size() == n {
-        for i in 0..n { self._back[i] = " "; self._bstyle[i] = "" }
+        for i in 0..n {
+          self._back[i] = " "
+          self._bstyle[i] = ""
+        }
       } else {
         self._back = []
         self._bstyle = []
-        for _ in 0..n { self._back.push(" "); self._bstyle.push("") }
+        for _ in 0..n {
+          self._back.push(" ")
+          self._bstyle.push("")
+        }
       }
       self
     }
     set(x, y, g, style = "") {
-      let gs = to_string(g)   # graphemes()/slices yield StringView
+      let gs = to_string(g)  # graphemes()/slices yield StringView
       if x >= 0 && x < self._w && y >= 0 && y < self._h {
         let idx = y * self._w + x
         self._back[idx] = gs
@@ -191,8 +631,13 @@ let _term_module = fn () {
           # "" marks the right half of a wide glyph, so it must be written and
           # taken back with its owner: a narrow glyph landing here frees the
           # cell the previous wide one held.
-          if _Term.width(gs) == 2 { self._back[idx + 1] = ""; self._bstyle[idx + 1] = style }
-          else if self._back[idx + 1] == "" { self._back[idx + 1] = " "; self._bstyle[idx + 1] = style }
+          if _Term.width(gs) == 2 {
+            self._back[idx + 1] = ""
+            self._bstyle[idx + 1] = style
+          } else if self._back[idx + 1] == "" {
+            self._back[idx + 1] = " "
+            self._bstyle[idx + 1] = style
+          }
         }
       }
       self
@@ -205,7 +650,11 @@ let _term_module = fn () {
         # Advance by the glyph's own display width, the same measure set() uses
         # to blank the continuation cell. Reading that cell back instead misses
         # the row offset and breaks whenever the draw was clipped.
-        cx = cx + (if _Term.width(gs) == 2 { 2 } else { 1 })
+        cx = cx + if _Term.width(gs) == 2 {
+            2
+          } else {
+            1
+          }
       }
       self
     }
@@ -220,13 +669,16 @@ let _term_module = fn () {
       if self._front.size() != n || self._fw != self._w {
         self._front = []
         self._fstyle = []
-        for _ in 0..n { self._front.push("\x00"); self._fstyle.push("") }   # force a full repaint
+        for _ in 0..n {
+          self._front.push("\x00")
+          self._fstyle.push("")
+        }  # force a full repaint
         self._fw = self._w
-        out = "\x1b[2J"                                                     # wipe stale content
+        out = "\x1b[2J"  # wipe stale content
       }
       mut cy = -1
       mut cx = -1
-      mut pen = ""   # SGR currently applied at the terminal ("" = default)
+      mut pen = ""  # SGR currently applied at the terminal ("" = default)
       for y in 0..self._h {
         for x in 0..self._w {
           let idx = y * self._w + x
@@ -239,12 +691,23 @@ let _term_module = fn () {
             # A wide glyph owns the cell to its right, so it is stale when that
             # cell shows anything but a continuation — an overlapping draw wrote
             # there last frame and only the owner can paint over it.
-            let half_lost = x + 1 < self._w && self._back[idx + 1] == "" && self._front[idx + 1] != ""
+            let half_lost = x + 1 < self._w &&
+              self._back[idx + 1] == "" &&
+              self._front[idx + 1] != ""
             if back != self._front[idx] || st != self._fstyle[idx] || half_lost {
-              if cy != y || cx != x { out = out + "\x1b[" + to_string(y + 1) + ";" + to_string(x + 1) + "H" }
+              if cy != y || cx != x {
+                out = out +
+                  "\x1b[" +
+                  to_string(y + 1) +
+                  ";" +
+                  to_string(x + 1) +
+                  "H"
+              }
               if st != pen {
                 out = out + "\x1b[0m"
-                if st != "" { out = out + "\x1b[" + st + "m" }
+                if st != "" {
+                  out = out + "\x1b[" + st + "m"
+                }
                 pen = st
               }
               out = out + back
@@ -256,16 +719,30 @@ let _term_module = fn () {
               # since filled it, drifting cx and stranding a later cell's erase.
               let wide = x + 1 < self._w && _Term.width(back) == 2
               cy = y
-              if wide { cx = x + 2; self._front[idx + 1] = ""; self._fstyle[idx + 1] = st } else { cx = x + 1 }
+              if wide {
+                cx = x + 2
+                self._front[idx + 1] = ""
+                self._fstyle[idx + 1] = st
+              } else {
+                cx = x + 1
+              }
             }
           }
         }
       }
-      if pen != "" { out = out + "\x1b[0m" }   # leave the terminal at default
+      if pen != "" {
+        out = out + "\x1b[0m"
+      }  # leave the terminal at default
       out
     }
-    flush() { IO.print(self.render()); _Term.flush(); self }
-    poll(timeout) { _poll(timeout) }
+    flush() {
+      IO.print(self.render())
+      _Term.flush()
+      self
+    }
+    poll(timeout) {
+      _poll(timeout)
+    }
   }
   {
     cols: fn () { _Term.cols() },
@@ -294,8 +771,8 @@ let _term_module = fn () {
     white: fn (s) { _named(s, 7) },
     level: fn () { _level },
     set_level: fn (n) { _level = n },
-    parse: fn (raw) { _parse_event(raw) },           # raw report -> Event | nil
-    mouse_on: fn () { "\x1b[?1002h\x1b[?1006h" },    # button + drag, SGR coords
+    parse: fn (raw) { _parse_event(raw) },         # raw report -> Event | nil
+    mouse_on: fn () { "\x1b[?1002h\x1b[?1006h" },  # button + drag, SGR coords
     mouse_off: fn () { "\x1b[?1002l\x1b[?1006l" },
     width: fn (s) { _Term.width(s) },
     resized: fn () { _Term.resized() },
@@ -318,12 +795,13 @@ let _term_module = fn () {
 let Term = _term_module()
 )=culpre=";
 
-inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(
-let _canvas_module = fn () {
+inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_module = fn () {
   # Pack r,g,b,a (each 0..255) into one Long, byte order [r,g,b,a] — exactly
   # what the browser's putImageData reads, so no repacking at present(). This
   # is the colour every Canvas call takes.
-  let rgba = fn (r, g, b, a = 255) { r + g * 256 + b * 65536 + a * 16777216 }
+  let rgba = fn (r, g, b, a = 255) {
+    r + g * 256 + b * 65536 + a * 16777216
+  }
 
   # RGB (each channel 0..255) to HSV (each of h, s, v in 0.0..1.0) — the usual
   # transform for deriving a palette from a few base colours: boost saturation,
@@ -340,19 +818,30 @@ let _canvas_module = fn () {
     let bf = b / 255.0
     let hi = Math.max(rf, gf, bf)
     let lo = Math.min(rf, gf, bf)
-    if lo == hi { return (0.0, 0.0, hi) }
+    if lo == hi {
+      return (0.0, 0.0, hi)
+    }
     let span = hi - lo
     let rc = (hi - rf) / span
     let gc = (hi - gf) / span
     let bc = (hi - bf) / span
-    let h6 = if rf == hi { bc - gc } else if gf == hi { 2.0 + rc - bc } else { 4.0 + gc - rc }
+    let h6 = if rf == hi {
+      bc - gc
+    } else if gf == hi {
+      2.0 + rc - bc
+    } else {
+      4.0 + gc - rc
+    }
     let h = h6 / 6.0
     (h - Math.floor(h), span / hi, hi)
   }
 
   # The inverse: HSV (each 0.0..1.0) to RGB (each channel rounded to 0..255).
   let hsv_to_rgb = fn (h, s, v) {
-    if s == 0.0 { let g = Math.round(v * 255); return (g, g, g) }
+    if s == 0.0 {
+      let g = Math.round(v * 255)
+      return (g, g, g)
+    }
     let sector = (h * 6.0).to_long() % 6
     let f = h * 6.0 - (h * 6.0).to_long().to_float()
     let p = v * (1.0 - s)
@@ -364,7 +853,7 @@ let _canvas_module = fn () {
       2 => (p, v, t),
       3 => (p, q, v),
       4 => (t, p, v),
-      _ => (v, p, q)
+      _ => (v, p, q),
     }
     (Math.round(r * 255), Math.round(g * 255), Math.round(b * 255))
   }
@@ -378,20 +867,36 @@ let _canvas_module = fn () {
 
   # The mirror bits, shared by both blit paths.
   let _flip_bits = fn (flip_x, flip_y) {
-    (if flip_x { 1 } else { 0 }) + (if flip_y { 2 } else { 0 })
+    if flip_x {
+      1
+    } else {
+      0
+    } + if flip_y {
+        2
+      } else {
+        0
+      }
   }
 
   # Pack the blit transform flags. transpose swaps the X and Y axes — a
   # reflection across the main diagonal (combine it with a flip for a true 90°
   # rotation).
   let _blit_flags = fn (flip_x, flip_y, transpose) {
-    _flip_bits(flip_x, flip_y) + (if transpose { 4 } else { 0 })
+    _flip_bits(flip_x, flip_y) + if transpose {
+        4
+      } else {
+        0
+      }
   }
 
   # Flags for the scaling blit. There is no transpose, and bit 3 asks for box
   # averaging when the sprite shrinks (ignored when it doesn't).
   let _scale_flags = fn (flip_x, flip_y, smooth) {
-    _flip_bits(flip_x, flip_y) + (if smooth { 8 } else { 0 })
+    _flip_bits(flip_x, flip_y) + if smooth {
+        8
+      } else {
+        0
+      }
   }
 
   # A registered sprite. `pixels` is a flat row-major array; if `palette` is
@@ -401,7 +906,11 @@ let _canvas_module = fn () {
   # nothing is re-marshalled per frame.
   class Sprite {
     new(pixels: Array, w: Long, h: Long, palette = nil) {
-      let rgba_px = if palette == nil { pixels } else { pixels.map(|i| palette[i]) }
+      let rgba_px = if palette == nil {
+        pixels
+      } else {
+        pixels.map(|i| palette[i])
+      }
       self._id = _Canvas.sprite_load(rgba_px, w, h)
       self._w = _Canvas.sprite_width(self._id)
       self._h = _Canvas.sprite_height(self._id)
@@ -423,42 +932,127 @@ let _canvas_module = fn () {
     }
     # Named form of the String constructor, for call sites where `Sprite(data)`
     # would not read as "this is a PNG".
-    static from_png(data) { Sprite(data) }
+    static from_png(data) {
+      Sprite(data)
+    }
     # Named form of the blank constructor, mirroring from_png.
-    static blank(w, h, color = 0) { Sprite(w, h, color) }
+    static blank(w, h, color = 0) {
+      Sprite(w, h, color)
+    }
     # Sprites free their native pixels when the last reference drops, so a
     # program that creates them per frame doesn't grow the registry. A
     # constructor that threw (bad PNG bytes) drops before _id was ever set.
-    drop() { if self._id != nil { _Canvas.sprite_free(self._id) } }
-    width() { self._w }
-    height() { self._h }
+    drop() {
+      if self._id != nil {
+        _Canvas.sprite_free(self._id)
+      }
+    }
+    width() {
+      self._w
+    }
+    height() {
+      self._h
+    }
     # Blit the whole sprite to (x, y). flip_x/flip_y mirror; transpose swaps
     # X/Y. Transparent (alpha 0) pixels are skipped.
     draw(x, y, flip_x = false, flip_y = false, transpose = false) {
-      _Canvas.blit(self._id, x, y, 0, 0, self._w, self._h, _blit_flags(flip_x, flip_y, transpose))
+      _Canvas.blit(
+        self._id,
+        x,
+        y,
+        0,
+        0,
+        self._w,
+        self._h,
+        _blit_flags(flip_x, flip_y, transpose),
+      )
     }
     # Blit a sub-rectangle (sx, sy, sw, sh) of the sprite to (x, y) — for sheets.
-    draw_sub(x, y, sx, sy, sw, sh, flip_x = false, flip_y = false, transpose = false) {
-      _Canvas.blit(self._id, x, y, sx, sy, sw, sh, _blit_flags(flip_x, flip_y, transpose))
+    draw_sub(
+      x,
+      y,
+      sx,
+      sy,
+      sw,
+      sh,
+      flip_x = false,
+      flip_y = false,
+      transpose = false,
+    ) {
+      _Canvas.blit(
+        self._id,
+        x,
+        y,
+        sx,
+        sy,
+        sw,
+        sh,
+        _blit_flags(flip_x, flip_y, transpose),
+      )
     }
     # Blit the whole sprite into the w×h rectangle at (x, y), resampling to fit.
     # Sampling is nearest-neighbour (pixel art stays crisp); `smooth` box-averages
     # instead when the sprite shrinks. `alpha` (0..255) composites the whole blit
     # over what is already there — 255 draws it opaque.
-    draw_scaled(x, y, w, h, flip_x = false, flip_y = false, smooth = false, alpha = 255) {
-      _Canvas.blit_scaled(self._id, x, y, w, h, 0, 0, self._w, self._h,
-                          _scale_flags(flip_x, flip_y, smooth), alpha)
+    draw_scaled(
+      x,
+      y,
+      w,
+      h,
+      flip_x = false,
+      flip_y = false,
+      smooth = false,
+      alpha = 255,
+    ) {
+      _Canvas.blit_scaled(
+        self._id,
+        x,
+        y,
+        w,
+        h,
+        0,
+        0,
+        self._w,
+        self._h,
+        _scale_flags(flip_x, flip_y, smooth),
+        alpha,
+      )
     }
     # draw_scaled from a sub-rectangle (sx, sy, sw, sh) — for sheets.
-    draw_sub_scaled(x, y, w, h, sx, sy, sw, sh, flip_x = false, flip_y = false,
-                    smooth = false, alpha = 255) {
-      _Canvas.blit_scaled(self._id, x, y, w, h, sx, sy, sw, sh,
-                          _scale_flags(flip_x, flip_y, smooth), alpha)
+    draw_sub_scaled(
+      x,
+      y,
+      w,
+      h,
+      sx,
+      sy,
+      sw,
+      sh,
+      flip_x = false,
+      flip_y = false,
+      smooth = false,
+      alpha = 255,
+    ) {
+      _Canvas.blit_scaled(
+        self._id,
+        x,
+        y,
+        w,
+        h,
+        sx,
+        sy,
+        sw,
+        sh,
+        _scale_flags(flip_x, flip_y, smooth),
+        alpha,
+      )
     }
     # Encode the sprite's pixels as PNG bytes — the inverse of from_png, so
     # `FS.write(path, sprite.to_png())` saves what `Sprite.from_png(FS.read(
     # path))` loads back.
-    to_png() { _Canvas.sprite_to_png(self._id) }
+    to_png() {
+      _Canvas.sprite_to_png(self._id)
+    }
   }
 
   # --- built-in 8x8 bitmap font -------------------------------------------
@@ -479,8 +1073,8 @@ let _canvas_module = fn () {
     }
     out
   }()
-  let _font_first = 32       # first glyph code (space)
-  let _font_last = 126       # last glyph code (~)
+  let _font_first = 32  # first glyph code (space)
+  let _font_last = 126  # last glyph code (~)
   let _char_w = 8
   # Upload the table once; drawing then costs one call per character rather
   # than one per lit pixel (a 42-character HUD line went 5.1 ms -> 0.2 ms).
@@ -500,7 +1094,9 @@ let _canvas_module = fn () {
     }
   }
   # Pixel width a string will occupy — for right-aligning / centring HUD text.
-  let text_width = fn (s, scale = 1) { s.graphemes().collect().size() * _char_w * scale }
+  let text_width = fn (s, scale = 1) {
+    s.graphemes().collect().size() * _char_w * scale
+  }
 
   # --- input --------------------------------------------------------------
   # Button bitmask bits (also mapped by the Playground frontend). A/B are the
@@ -513,8 +1109,16 @@ let _canvas_module = fn () {
   let B = 32
 
   # Held-button bitmask this frame, and the mouse as an Object.
-  let buttons = fn () { _Canvas.buttons() }
-  let mouse = fn () { { x: _Canvas.mouse_x(), y: _Canvas.mouse_y(), buttons: _Canvas.mouse_buttons() } }
+  let buttons = fn () {
+    _Canvas.buttons()
+  }
+  let mouse = fn () {
+    {
+      x: _Canvas.mouse_x(),
+      y: _Canvas.mouse_y(),
+      buttons: _Canvas.mouse_buttons(),
+    }
+  }
 
   # Arbitrary keys, in Term.read_key's vocabulary: a printable character
   # ("a", " ", "-") or a special-key name ("left", "enter", "escape", "tab",
@@ -523,7 +1127,13 @@ let _canvas_module = fn () {
   # key(name) is the held state now; key_queue() drains this frame's presses
   # (so call it from one place per frame); typed() drains the characters the
   # user typed (shift/layout/IME applied) — for name entry, not movement.
-  let key = fn (name) { _Canvas.key(if name == "space" { " " } else { name }) }
+  let key = fn (name) {
+    _Canvas.key(if name == "space" {
+      " "
+    } else {
+      name
+    })
+  }
   let key_queue = fn () {
     mut out = []
     mut k = _Canvas.key_pop()
@@ -547,18 +1157,29 @@ let _canvas_module = fn () {
   # on the frame a button goes down (the natural "flap" trigger). Call update()
   # once per frame, after reading input.
   class Input {
-    new() { self._prev = 0; self._cur = 0 }
-    update() { self._prev = self._cur; self._cur = _Canvas.buttons(); self }
-    down(btn) { (self._cur & btn) != 0 }                       # held now
-    pressed(btn) { (self._cur & btn) != 0 && (self._prev & btn) == 0 }  # just went down
+    new() {
+      self._prev = 0
+      self._cur = 0
+    }
+    update() {
+      self._prev = self._cur
+      self._cur = _Canvas.buttons()
+      self
+    }
+    down(btn) {
+      self._cur & btn != 0
+    }  # held now
+    pressed(btn) {
+      self._cur & btn != 0 && self._prev & btn == 0
+    }  # just went down
   }
 
   # --- audio --------------------------------------------------------------
   # Channels, matching WASM-4's APU. The two pulse channels take a duty cycle;
   # SAWTOOTH is a culebra extension (not a WASM-4 channel). These values are the
   # channel codes passed straight through to the host.
-  let PULSE = 0       # pulse 1
-  let PULSE2 = 1      # pulse 2
+  let PULSE = 0   # pulse 1
+  let PULSE2 = 1  # pulse 2
   let TRIANGLE = 2
   let NOISE = 3
   let SAWTOOTH = 4
@@ -574,10 +1195,28 @@ let _canvas_module = fn () {
   # `dur` is the sustain length) shapes the amplitude from 0 up to `peak`, down
   # to the sustain `vol`, and back to 0. `wave` picks the channel and `duty` the
   # pulse shape. No-op on the headless native backend.
-  let tone = fn (freq, dur, vol = 100, wave = 0, end_freq = nil,
-                 attack = 0, decay = 0, release = 0, peak = nil, duty = 2) {
-    let ef = if end_freq == nil { freq } else { end_freq }
-    let pk = if peak == nil { vol } else { peak }
+  let tone = fn (
+    freq,
+    dur,
+    vol = 100,
+    wave = 0,
+    end_freq = nil,
+    attack = 0,
+    decay = 0,
+    release = 0,
+    peak = nil,
+    duty = 2,
+  ) {
+    let ef = if end_freq == nil {
+      freq
+    } else {
+      end_freq
+    }
+    let pk = if peak == nil {
+      vol
+    } else {
+      peak
+    }
     _Canvas.tone(freq, ef, attack, decay, dur, release, vol, pk, wave, duty)
   }
 
@@ -587,13 +1226,25 @@ let _canvas_module = fn () {
   # restarts it, like the underlying host samplers. Raises ValueError when the
   # bytes are none of the three formats; silent on the headless backend.
   class Sound {
-    new(data: String) { self._id = _Canvas.sound_load(data) }
-    play(vol = 100) { _Canvas.sound_play(self._id, vol) }
-    stop() { _Canvas.sound_stop(self._id) }
-    playing() { _Canvas.sound_playing(self._id) }
+    new(data: String) {
+      self._id = _Canvas.sound_load(data)
+    }
+    play(vol = 100) {
+      _Canvas.sound_play(self._id, vol)
+    }
+    stop() {
+      _Canvas.sound_stop(self._id)
+    }
+    playing() {
+      _Canvas.sound_playing(self._id)
+    }
     # Free the decoded sample with the last reference (a constructor that
     # threw drops before _id was ever set).
-    drop() { if self._id != nil { _Canvas.sound_free(self._id) } }
+    drop() {
+      if self._id != nil {
+        _Canvas.sound_free(self._id)
+      }
+    }
   }
 
   # --- music ---------------------------------------------------------------
@@ -603,7 +1254,11 @@ let _canvas_module = fn () {
   # stream is fed from present(), so it only advances while frames are shown.
   # Raises ValueError when the bytes are neither MP3 nor Ogg.
   let music = fn (data, loop = true, vol = 100, start = 0.0) {
-    _Canvas.music_play(data, if loop { 1 } else { 0 }, vol, start)
+    _Canvas.music_play(data, if loop {
+        1
+      } else {
+        0
+      }, vol, start)
   }
 
   # --- offscreen drawing --------------------------------------------------
@@ -614,7 +1269,9 @@ let _canvas_module = fn () {
   # sprite onto itself (sprite.draw inside its own draw_to) raises.
   let draw_to = fn (sprite, f) {
     let prev = _Canvas.target(sprite._id)
-    defer { _Canvas.target(prev) }
+    defer {
+      _Canvas.target(prev)
+    }
     f()
   }
 
@@ -636,9 +1293,15 @@ let _canvas_module = fn () {
       let cont = tick()
       _Canvas.present()
       i = i + 1
-      if cont == false { running = false }
-      if _Canvas.closing() { running = false }
-      if !interactive && i >= frames { running = false }
+      if cont == false {
+        running = false
+      }
+      if _Canvas.closing() {
+        running = false
+      }
+      if !interactive && i >= frames {
+        running = false
+      }
     }
   }
 
@@ -717,35 +1380,690 @@ let _canvas_module = fn () {
 let Canvas = _canvas_module()
 )=culpre=";
 
-inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = fn() { let _coerce = fn(raw, type, name) { if type == "String" { return raw }; if type == "Long" { return to_long(raw) }; if type == "Float" { return to_float(raw) }; if type == "Bool" { if raw == "true" || raw == "1" { return true }; if raw == "false" || raw == "0" { return false }; throw {kind: "ArgParseError", message: "argument '{name}' expects Bool, got '{raw}'"} }; throw {kind: "ArgParseError", message: "argument '{name}' has unknown type '{type}'"} }; let _find_by_name = fn(args, name) { let mut i = 0; while i < args.size() { let a = args[i]; if a.name == name { return a }; if a.has("short") && a.short == name { return a }; i += 1 }; nil }; let _is_option = fn(a) { a.has("short") || a.has("default") }; let _is_positional = fn(a) { !_is_option(a) }; let _arg_type = fn(a) { if a.has("type") { a.type } else { "String" } }; let _format_help = fn(spec) { let name = if spec.has("name") { spec.name } else { "program" }; let doc = if spec.has("doc") { spec.doc } else { "" }; let mut parts = []; if doc != "" { parts.push("{name} - {doc}\n\n") }; let mut pos_args = []; let mut opt_args = []; let mut i = 0; while i < spec.args.size() { let a = spec.args[i]; if _is_positional(a) { pos_args.push(a) } else { opt_args.push(a) }; i += 1 }; parts.push("Usage: {name}"); if opt_args.size() > 0 { parts.push(" [options]") }; let mut j = 0; while j < pos_args.size() { let a = pos_args[j]; if a.has("default") { parts.push(" [<{a.name}>]") } else if a.has("repeated") && a.repeated { parts.push(" <{a.name}>...") } else { parts.push(" <{a.name}>") }; j += 1 }; parts.push("\n"); if pos_args.size() > 0 { parts.push("\nArguments:\n"); let mut k = 0; while k < pos_args.size() { let a = pos_args[k]; let d = if a.has("doc") { a.doc } else { "" }; parts.push("  {a.name}    {d}\n"); k += 1 } }; if opt_args.size() > 0 { parts.push("\nOptions:\n"); let mut m = 0; while m < opt_args.size() { let a = opt_args[m]; let short = if a.has("short") { "-{a.short}, " } else { "    " }; let d = if a.has("doc") { a.doc } else { "" }; parts.push("  {short}--{a.name}    {d}\n"); m += 1 } }; parts.push("  -h, --help    show this help and exit\n"); parts.join("") }; let _route_subcommand = fn(argv, spec) { if !spec.has("subcommands") { return nil }; let mut i = 0; while i < argv.size() { let tok = argv[i]; if tok == "-h" || tok == "--help" { throw {kind: "ArgParseHelp", help: _format_help(spec)} }; if tok.starts_with("-") { i += 1; continue }; let mut j = 0; while j < spec.subcommands.size() { let sub = spec.subcommands[j]; if sub.name == tok { let mut rest = []; let mut k = 0; while k < argv.size() { if k != i { rest.push(argv[k]) }; k += 1 }; return {sub: sub, argv: rest} }; j += 1 }; throw {kind: "ArgParseError", message: "unknown subcommand '{tok}'"} }; throw {kind: "ArgParseError", message: "expected subcommand"} }; let _parse_impl_flat = fn(argv, spec) { let mut result = {}; let mut positionals = []; let mut i = 0; let n = argv.size(); while i < n { let tok = argv[i]; if tok == "--" { let mut j = i + 1; while j < n { positionals.push(argv[j]); j += 1 }; i = n } else if tok == "-h" || tok == "--help" { throw {kind: "ArgParseHelp", help: _format_help(spec)} } else if tok.starts_with("--") { let body = tok.slice(2, tok.size()); let mut name = body; let mut explicit_value = nil; let mut has_value = false; if body.contains("=") { let parts = body.split("="); name = parts[0]; let mut v = parts[1]; let mut pi = 2; while pi < parts.size() { v = "{v}={parts[pi]}"; pi += 1 }; explicit_value = v; has_value = true }; let spec_a = _find_by_name(spec.args, name); if spec_a == nil { throw {kind: "ArgParseError", message: "unknown option '--{name}'"} }; if _arg_type(spec_a) == "Bool" && !has_value { result[spec_a.name] = true } else { let raw = if has_value { explicit_value } else { i = i + 1; if i >= n { throw {kind: "ArgParseError", message: "option '--{name}' expects a value"} }; argv[i] }; let v = _coerce(raw, _arg_type(spec_a), spec_a.name); if spec_a.has("repeated") && spec_a.repeated { if !result.has(spec_a.name) { result[spec_a.name] = [] }; result[spec_a.name].push(v) } else { result[spec_a.name] = v } } } else if tok.starts_with("-") && tok.size() > 1 { let body = tok.slice(1, tok.size()); let mut name = body; let mut explicit_value = nil; let mut has_value = false; if body.contains("=") { let parts = body.split("="); name = parts[0]; let mut v = parts[1]; let mut pi = 2; while pi < parts.size() { v = "{v}={parts[pi]}"; pi += 1 }; explicit_value = v; has_value = true }; let spec_a = _find_by_name(spec.args, name); if spec_a == nil { throw {kind: "ArgParseError", message: "unknown option '-{name}'"} }; if _arg_type(spec_a) == "Bool" && !has_value { result[spec_a.name] = true } else { let raw = if has_value { explicit_value } else { i = i + 1; if i >= n { throw {kind: "ArgParseError", message: "option '-{name}' expects a value"} }; argv[i] }; let v = _coerce(raw, _arg_type(spec_a), spec_a.name); if spec_a.has("repeated") && spec_a.repeated { if !result.has(spec_a.name) { result[spec_a.name] = [] }; result[spec_a.name].push(v) } else { result[spec_a.name] = v } } } else { positionals.push(tok) }; i += 1 }; let mut pos_idx = 0; let mut spec_idx = 0; while spec_idx < spec.args.size() { let a = spec.args[spec_idx]; if _is_positional(a) { if a.has("repeated") && a.repeated { result[a.name] = []; while pos_idx < positionals.size() { let v = _coerce(positionals[pos_idx], _arg_type(a), a.name); result[a.name].push(v); pos_idx += 1 } } else if pos_idx < positionals.size() { result[a.name] = _coerce(positionals[pos_idx], _arg_type(a), a.name); pos_idx += 1 } }; spec_idx += 1 }; if pos_idx < positionals.size() { throw {kind: "ArgParseError", message: "unexpected positional argument '{positionals[pos_idx]}'"} }; let mut k = 0; while k < spec.args.size() { let a = spec.args[k]; if !result.has(a.name) { if a.has("default") { result[a.name] = a.default } else if a.has("repeated") && a.repeated { result[a.name] = [] } else if _arg_type(a) == "Bool" { result[a.name] = false } else { throw {kind: "ArgParseError", message: "missing required argument '{a.name}'"} } }; k += 1 }; result }; let _parse_impl = fn(argv, spec) { let routed = _route_subcommand(argv, spec); if routed != nil { let mut result = _parse_impl_flat(routed.argv, routed.sub); result.subcommand = routed.sub.name; return result }; _parse_impl_flat(argv, spec) }; { try_parse: fn(argv, spec) { _parse_impl(argv, spec) }, parse: fn(argv, spec) { try { _parse_impl(argv, spec) } catch e { if e.has("kind") && e.kind == "ArgParseHelp" { IO.print(e.help); Sys.exit(0) }; let msg = if e.has("message") { e.message } else { to_string(e) }; IO.eprintln("error: {msg}"); Sys.exit(2) } }, help: fn(spec) { _format_help(spec) } } }; let Args = _args_module()
+inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = fn () {
+  let _coerce = fn (raw, type, name) {
+    if type == "String" {
+      return raw
+    }
+    if type == "Long" {
+      return to_long(raw)
+    }
+    if type == "Float" {
+      return to_float(raw)
+    }
+    if type == "Bool" {
+      if raw == "true" || raw == "1" {
+        return true
+      }
+      if raw == "false" || raw == "0" {
+        return false
+      }
+      throw {
+        kind: "ArgParseError",
+        message: "argument '{name}' expects Bool, got '{raw}'",
+      }
+    }
+    throw {
+      kind: "ArgParseError",
+      message: "argument '{name}' has unknown type '{type}'",
+    }
+  }
+  let _find_by_name = fn (args, name) {
+    let mut i = 0
+    while i < args.size() {
+      let a = args[i]
+      if a.name == name {
+        return a
+      }
+      if a.has("short") && a.short == name {
+        return a
+      }
+      i += 1
+    }
+    nil
+  }
+  let _is_option = fn (a) {
+    a.has("short") || a.has("default")
+  }
+  let _is_positional = fn (a) {
+    !_is_option(a)
+  }
+  let _arg_type = fn (a) {
+    if a.has("type") {
+      a.type
+    } else {
+      "String"
+    }
+  }
+  let _format_help = fn (spec) {
+    let name = if spec.has("name") {
+      spec.name
+    } else {
+      "program"
+    }
+    let doc = if spec.has("doc") {
+      spec.doc
+    } else {
+      ""
+    }
+    let mut parts = []
+    if doc != "" {
+      parts.push("{name} - {doc}\n\n")
+    }
+    let mut pos_args = []
+    let mut opt_args = []
+    let mut i = 0
+    while i < spec.args.size() {
+      let a = spec.args[i]
+      if _is_positional(a) {
+        pos_args.push(a)
+      } else {
+        opt_args.push(a)
+      }
+      i += 1
+    }
+    parts.push("Usage: {name}")
+    if opt_args.size() > 0 {
+      parts.push(" [options]")
+    }
+    let mut j = 0
+    while j < pos_args.size() {
+      let a = pos_args[j]
+      if a.has("default") {
+        parts.push(" [<{a.name}>]")
+      } else if a.has("repeated") && a.repeated {
+        parts.push(" <{a.name}>...")
+      } else {
+        parts.push(" <{a.name}>")
+      }
+      j += 1
+    }
+    parts.push("\n")
+    if pos_args.size() > 0 {
+      parts.push("\nArguments:\n")
+      let mut k = 0
+      while k < pos_args.size() {
+        let a = pos_args[k]
+        let d = if a.has("doc") {
+          a.doc
+        } else {
+          ""
+        }
+        parts.push("  {a.name}    {d}\n")
+        k += 1
+      }
+    }
+    if opt_args.size() > 0 {
+      parts.push("\nOptions:\n")
+      let mut m = 0
+      while m < opt_args.size() {
+        let a = opt_args[m]
+        let short = if a.has("short") {
+          "-{a.short}, "
+        } else {
+          "    "
+        }
+        let d = if a.has("doc") {
+          a.doc
+        } else {
+          ""
+        }
+        parts.push("  {short}--{a.name}    {d}\n")
+        m += 1
+      }
+    }
+    parts.push("  -h, --help    show this help and exit\n")
+    parts.join("")
+  }
+  let _route_subcommand = fn (argv, spec) {
+    if !spec.has("subcommands") {
+      return nil
+    }
+    let mut i = 0
+    while i < argv.size() {
+      let tok = argv[i]
+      if tok == "-h" || tok == "--help" {
+        throw {kind: "ArgParseHelp", help: _format_help(spec)}
+      }
+      if tok.starts_with("-") {
+        i += 1
+        continue
+      }
+      let mut j = 0
+      while j < spec.subcommands.size() {
+        let sub = spec.subcommands[j]
+        if sub.name == tok {
+          let mut rest = []
+          let mut k = 0
+          while k < argv.size() {
+            if k != i {
+              rest.push(argv[k])
+            }
+            k += 1
+          }
+          return {sub: sub, argv: rest}
+        }
+        j += 1
+      }
+      throw {kind: "ArgParseError", message: "unknown subcommand '{tok}'"}
+    }
+    throw {kind: "ArgParseError", message: "expected subcommand"}
+  }
+  let _parse_impl_flat = fn (argv, spec) {
+    let mut result = {}
+    let mut positionals = []
+    let mut i = 0
+    let n = argv.size()
+    while i < n {
+      let tok = argv[i]
+      if tok == "--" {
+        let mut j = i + 1
+        while j < n {
+          positionals.push(argv[j])
+          j += 1
+        }
+        i = n
+      } else if tok == "-h" || tok == "--help" {
+        throw {kind: "ArgParseHelp", help: _format_help(spec)}
+      } else if tok.starts_with("--") {
+        let body = tok.slice(2, tok.size())
+        let mut name = body
+        let mut explicit_value = nil
+        let mut has_value = false
+        if body.contains("=") {
+          let parts = body.split("=")
+          name = parts[0]
+          let mut v = parts[1]
+          let mut pi = 2
+          while pi < parts.size() {
+            v = "{v}={parts[pi]}"
+            pi += 1
+          }
+          explicit_value = v
+          has_value = true
+        }
+        let spec_a = _find_by_name(spec.args, name)
+        if spec_a == nil {
+          throw {kind: "ArgParseError", message: "unknown option '--{name}'"}
+        }
+        if _arg_type(spec_a) == "Bool" && !has_value {
+          result[spec_a.name] = true
+        } else {
+          let raw = if has_value {
+            explicit_value
+          } else {
+            i = i + 1
+            if i >= n {
+              throw {
+                kind: "ArgParseError",
+                message: "option '--{name}' expects a value",
+              }
+            }
+            argv[i]
+          }
+          let v = _coerce(raw, _arg_type(spec_a), spec_a.name)
+          if spec_a.has("repeated") && spec_a.repeated {
+            if !result.has(spec_a.name) {
+              result[spec_a.name] = []
+            }
+            result[spec_a.name].push(v)
+          } else {
+            result[spec_a.name] = v
+          }
+        }
+      } else if tok.starts_with("-") && tok.size() > 1 {
+        let body = tok.slice(1, tok.size())
+        let mut name = body
+        let mut explicit_value = nil
+        let mut has_value = false
+        if body.contains("=") {
+          let parts = body.split("=")
+          name = parts[0]
+          let mut v = parts[1]
+          let mut pi = 2
+          while pi < parts.size() {
+            v = "{v}={parts[pi]}"
+            pi += 1
+          }
+          explicit_value = v
+          has_value = true
+        }
+        let spec_a = _find_by_name(spec.args, name)
+        if spec_a == nil {
+          throw {kind: "ArgParseError", message: "unknown option '-{name}'"}
+        }
+        if _arg_type(spec_a) == "Bool" && !has_value {
+          result[spec_a.name] = true
+        } else {
+          let raw = if has_value {
+            explicit_value
+          } else {
+            i = i + 1
+            if i >= n {
+              throw {
+                kind: "ArgParseError",
+                message: "option '-{name}' expects a value",
+              }
+            }
+            argv[i]
+          }
+          let v = _coerce(raw, _arg_type(spec_a), spec_a.name)
+          if spec_a.has("repeated") && spec_a.repeated {
+            if !result.has(spec_a.name) {
+              result[spec_a.name] = []
+            }
+            result[spec_a.name].push(v)
+          } else {
+            result[spec_a.name] = v
+          }
+        }
+      } else {
+        positionals.push(tok)
+      }
+      i += 1
+    }
+    let mut pos_idx = 0
+    let mut spec_idx = 0
+    while spec_idx < spec.args.size() {
+      let a = spec.args[spec_idx]
+      if _is_positional(a) {
+        if a.has("repeated") && a.repeated {
+          result[a.name] = []
+          while pos_idx < positionals.size() {
+            let v = _coerce(positionals[pos_idx], _arg_type(a), a.name)
+            result[a.name].push(v)
+            pos_idx += 1
+          }
+        } else if pos_idx < positionals.size() {
+          result[a.name] = _coerce(positionals[pos_idx], _arg_type(a), a.name)
+          pos_idx += 1
+        }
+      }
+      spec_idx += 1
+    }
+    if pos_idx < positionals.size() {
+      throw {
+        kind: "ArgParseError",
+        message: "unexpected positional argument '{positionals[pos_idx]}'",
+      }
+    }
+    let mut k = 0
+    while k < spec.args.size() {
+      let a = spec.args[k]
+      if !result.has(a.name) {
+        if a.has("default") {
+          result[a.name] = a.default
+        } else if a.has("repeated") && a.repeated {
+          result[a.name] = []
+        } else if _arg_type(a) == "Bool" {
+          result[a.name] = false
+        } else {
+          throw {
+            kind: "ArgParseError",
+            message: "missing required argument '{a.name}'",
+          }
+        }
+      }
+      k += 1
+    }
+    result
+  }
+  let _parse_impl = fn (argv, spec) {
+    let routed = _route_subcommand(argv, spec)
+    if routed != nil {
+      let mut result = _parse_impl_flat(routed.argv, routed.sub)
+      result.subcommand = routed.sub.name
+      return result
+    }
+    _parse_impl_flat(argv, spec)
+  }
+  {try_parse: fn (argv, spec) {
+      _parse_impl(argv, spec)
+    }, parse: fn (argv, spec) {
+      try {
+        _parse_impl(argv, spec)
+      } catch e {
+        if e.has("kind") && e.kind == "ArgParseHelp" {
+          IO.print(e.help)
+          Sys.exit(0)
+        }
+        let msg = if e.has("message") {
+          e.message
+        } else {
+          to_string(e)
+        }
+        IO.eprintln("error: {msg}")
+        Sys.exit(2)
+      }
+    }, help: fn (spec) {
+      _format_help(spec)
+    }}
+}
+let Args = _args_module()
 )=culpre=";
 
-inline constexpr const char* MATCHERS_MODULE_SOURCE = R"=culpre=(let assert_true = fn(x) { if x { return nil }; throw {kind: "AssertionError", message: "assert_true failed:\n  value: {x}"} }; let assert_false = fn(x) { if !x { return nil }; throw {kind: "AssertionError", message: "assert_false failed:\n  value: {x}"} }; let assert_eq = fn(a, b) { if a == b { return nil }; throw {kind: "AssertionError", message: "assert_eq failed:\n  left:  {a}\n  right: {b}"} }; let assert_ne = fn(a, b) { if a != b { return nil }; throw {kind: "AssertionError", message: "assert_ne failed:\n  left:  {a}\n  right: {b}"} }; let assert_lt = fn(a, b) { if a < b { return nil }; throw {kind: "AssertionError", message: "assert_lt failed:\n  left:  {a}\n  right: {b}"} }; let assert_le = fn(a, b) { if a <= b { return nil }; throw {kind: "AssertionError", message: "assert_le failed:\n  left:  {a}\n  right: {b}"} }; let assert_gt = fn(a, b) { if a > b { return nil }; throw {kind: "AssertionError", message: "assert_gt failed:\n  left:  {a}\n  right: {b}"} }; let assert_ge = fn(a, b) { if a >= b { return nil }; throw {kind: "AssertionError", message: "assert_ge failed:\n  left:  {a}\n  right: {b}"} }; let assert_throws = fn(kind, f) { if f.params.size() != 0 { throw {kind: "ArityError", message: "assert_throws: fn must take 0 parameters (got {f.params.size()})"} }; let mut threw = false; let mut actual_kind = ""; try { f() } catch e { threw = true; actual_kind = if type_of(e) == "Object" && e.has("kind") { e.kind } else { type_of(e) } }; if !threw { throw {kind: "AssertionError", message: "assert_throws('{kind}', fn): expected throw but fn returned normally"} }; if actual_kind != kind { throw {kind: "AssertionError", message: "assert_throws: expected kind '{kind}' but got '{actual_kind}'"} } }; let assert_close = fn(a, b, tol) { let mut diff = a - b; if diff < 0 { diff = -diff }; if diff != diff || tol != tol || diff > tol { throw {kind: "AssertionError", message: "assert_close failed:\n  a:    {a}\n  b:    {b}\n  diff: {diff} (> tol {tol})"} } }
+inline constexpr const char* MATCHERS_MODULE_SOURCE = R"=culpre=(let assert_true = fn (x) {
+  if x {
+    return nil
+  }
+  throw {kind: "AssertionError", message: "assert_true failed:\n  value: {x}"}
+}
+let assert_false = fn (x) {
+  if !x {
+    return nil
+  }
+  throw {kind: "AssertionError", message: "assert_false failed:\n  value: {x}"}
+}
+let assert_eq = fn (a, b) {
+  if a == b {
+    return nil
+  }
+  throw {
+    kind: "AssertionError",
+    message: "assert_eq failed:\n  left:  {a}\n  right: {b}",
+  }
+}
+let assert_ne = fn (a, b) {
+  if a != b {
+    return nil
+  }
+  throw {
+    kind: "AssertionError",
+    message: "assert_ne failed:\n  left:  {a}\n  right: {b}",
+  }
+}
+let assert_lt = fn (a, b) {
+  if a < b {
+    return nil
+  }
+  throw {
+    kind: "AssertionError",
+    message: "assert_lt failed:\n  left:  {a}\n  right: {b}",
+  }
+}
+let assert_le = fn (a, b) {
+  if a <= b {
+    return nil
+  }
+  throw {
+    kind: "AssertionError",
+    message: "assert_le failed:\n  left:  {a}\n  right: {b}",
+  }
+}
+let assert_gt = fn (a, b) {
+  if a > b {
+    return nil
+  }
+  throw {
+    kind: "AssertionError",
+    message: "assert_gt failed:\n  left:  {a}\n  right: {b}",
+  }
+}
+let assert_ge = fn (a, b) {
+  if a >= b {
+    return nil
+  }
+  throw {
+    kind: "AssertionError",
+    message: "assert_ge failed:\n  left:  {a}\n  right: {b}",
+  }
+}
+let assert_throws = fn (kind, f) {
+  if f.params.size() != 0 {
+    throw {
+      kind: "ArityError",
+      message: "assert_throws: fn must take 0 parameters (got {f.params.size()})",
+    }
+  }
+  let mut threw = false
+  let mut actual_kind = ""
+  try {
+    f()
+  } catch e {
+    threw = true
+    actual_kind = if type_of(e) == "Object" && e.has("kind") {
+      e.kind
+    } else {
+      type_of(e)
+    }
+  }
+  if !threw {
+    throw {
+      kind: "AssertionError",
+      message: "assert_throws('{kind}', fn): expected throw but fn returned normally",
+    }
+  }
+  if actual_kind != kind {
+    throw {
+      kind: "AssertionError",
+      message: "assert_throws: expected kind '{kind}' but got '{actual_kind}'",
+    }
+  }
+}
+let assert_close = fn (a, b, tol) {
+  let mut diff = a - b
+  if diff < 0 {
+    diff = -diff
+  }
+  if diff != diff || tol != tol || diff > tol {
+    throw {
+      kind: "AssertionError",
+      message: "assert_close failed:\n  a:    {a}\n  b:    {b}\n  diff: {diff} (> tol {tol})",
+    }
+  }
+}
 )=culpre=";
 
-inline constexpr const char* REGEX_MODULE_SOURCE = R"=culpre=(fn _regex_find_iter(pat, s) { let mut pos = 0; while pos <= s.size() { let r = _Regex.find_from(pat, s, pos); if r.m == nil { return }; yield r.m; pos = r.nxt } }; fn _regex_escape(s) { let metas = `\.^$|?*+()[]{}`; let mut out = ""; for c in s { if metas.contains(c) { out = out + `\` + c } else { out = out + c } }; out }; fn _regex_interp(x) { if type_of(x) == "Object" && x.has("class") && x["class"] == "Regex" { "(?:" + x._pat + ")" } else { _regex_escape("{x}") } }; let _regex_module = fn () { class Regex { new(pattern) { self._pat = pattern; _Regex.check(pattern) } test(s) { _Regex.test(self._pat, s) } find(s) { _Regex.find(self._pat, s) } match(s) { _Regex.match(self._pat, s) } find_all(s) { _Regex.find_all(self._pat, s) } find_all_str(s) { _Regex.find_all_str(self._pat, s) } find_all_index(s) { _Regex.find_all_index(self._pat, s) } count(s) { _Regex.count(self._pat, s) } find_iter(s) { _regex_find_iter(self._pat, s) } replace_all(s, repl) { if type_of(repl) != "Function" { return _Regex.replace_all(self._pat, s, repl) }; let mut out = ""; let mut last = 0; for m in _Regex.find_all(self._pat, s) { out = out + s.slice(last, m.start) + repl(m); last = m.end }; out + s.slice(last, s.size()) } replace_first(s, repl) { if type_of(repl) != "Function" { return _Regex.replace_first(self._pat, s, repl) }; let m = _Regex.find(self._pat, s); if m == nil { return s }; s.slice(0, m.start) + repl(m) + s.slice(m.end, s.size()) } split(s) { _Regex.split(self._pat, s) } }; { compile: fn(pattern, flags = "") { Regex.new(if flags == "" { pattern } else { "(?" + flags + ")" + pattern }) }, escape: _regex_escape, interp: _regex_interp, find: fn(pattern, s) { _Regex.find(pattern, s) }, match: fn(pattern, s) { _Regex.match(pattern, s) }, find_all: fn(pattern, s) { _Regex.find_all(pattern, s) }, test: fn(pattern, s) { _Regex.test(pattern, s) }, split: fn(pattern, s) { _Regex.split(pattern, s) }, replace_all: fn(pattern, s, repl) { Regex.new(pattern).replace_all(s, repl) }, replace_first: fn(pattern, s, repl) { Regex.new(pattern).replace_first(s, repl) }, Regex: Regex } }; let Regex = _regex_module()
+inline constexpr const char* REGEX_MODULE_SOURCE = R"=culpre=(fn _regex_find_iter(pat, s) {
+  let mut pos = 0
+  while pos <= s.size() {
+    let r = _Regex.find_from(pat, s, pos)
+    if r.m == nil {
+      return
+    }
+    yield r.m
+    pos = r.nxt
+  }
+}
+fn _regex_escape(s) {
+  let metas = `\.^$|?*+()[]{}`
+  let mut out = ""
+  for c in s {
+    if metas.contains(c) {
+      out = out + `\` + c
+    } else {
+      out = out + c
+    }
+  }
+  out
+}
+fn _regex_interp(x) {
+  if type_of(x) == "Object" && x.has("class") && x["class"] == "Regex" {
+    "(?:" + x._pat + ")"
+  } else {
+    _regex_escape("{x}")
+  }
+}
+let _regex_module = fn () {
+  class Regex {
+    new(pattern) {
+      self._pat = pattern
+      _Regex.check(pattern)
+    }
+    test(s) {
+      _Regex.test(self._pat, s)
+    }
+    find(s) {
+      _Regex.find(self._pat, s)
+    }
+    match(s) {
+      _Regex.match(self._pat, s)
+    }
+    find_all(s) {
+      _Regex.find_all(self._pat, s)
+    }
+    find_all_str(s) {
+      _Regex.find_all_str(self._pat, s)
+    }
+    find_all_index(s) {
+      _Regex.find_all_index(self._pat, s)
+    }
+    count(s) {
+      _Regex.count(self._pat, s)
+    }
+    find_iter(s) {
+      _regex_find_iter(self._pat, s)
+    }
+    replace_all(s, repl) {
+      if type_of(repl) != "Function" {
+        return _Regex.replace_all(self._pat, s, repl)
+      }
+      let mut out = ""
+      let mut last = 0
+      for m in _Regex.find_all(self._pat, s) {
+        out = out + s.slice(last, m.start) + repl(m)
+        last = m.end
+      }
+      out + s.slice(last, s.size())
+    }
+    replace_first(s, repl) {
+      if type_of(repl) != "Function" {
+        return _Regex.replace_first(self._pat, s, repl)
+      }
+      let m = _Regex.find(self._pat, s)
+      if m == nil {
+        return s
+      }
+      s.slice(0, m.start) + repl(m) + s.slice(m.end, s.size())
+    }
+    split(s) {
+      _Regex.split(self._pat, s)
+    }
+  }
+  {compile: fn (pattern, flags = "") {
+      Regex.new(if flags == "" {
+        pattern
+      } else {
+        "(?" + flags + ")" + pattern
+      })
+    }, escape: _regex_escape, interp: _regex_interp, find: fn (pattern, s) {
+      _Regex.find(pattern, s)
+    }, match: fn (pattern, s) {
+      _Regex.match(pattern, s)
+    }, find_all: fn (pattern, s) {
+      _Regex.find_all(pattern, s)
+    }, test: fn (pattern, s) {
+      _Regex.test(pattern, s)
+    }, split: fn (pattern, s) {
+      _Regex.split(pattern, s)
+    }, replace_all: fn (pattern, s, repl) {
+      Regex.new(pattern).replace_all(s, repl)
+    }, replace_first: fn (pattern, s, repl) {
+      Regex.new(pattern).replace_first(s, repl)
+    }, Regex: Regex}
+}
+let Regex = _regex_module()
 )=culpre=";
 
-inline constexpr const char* STRING_REPLACE_MODULE_SOURCE = R"=culpre=(let replace = fn(s, pat, repl) { if type_of(pat) == "String" { s.split(pat).join(repl) } else { pat.replace_all(s, repl) } }
+inline constexpr const char* STRING_REPLACE_MODULE_SOURCE = R"=culpre=(let replace = fn (s, pat, repl) {
+  if type_of(pat) == "String" {
+    s.split(pat).join(repl)
+  } else {
+    pat.replace_all(s, repl)
+  }
+}
 )=culpre=";
 
-inline constexpr const char* LOG_MODULE_SOURCE = R"=culpre=(let _log_module = fn () { let _levels = {debug: 0, info: 1, warn: 2, error: 3}; let mut _threshold = _levels.get(Sys.env("LOG_LEVEL"), 1); let mut _format = if Sys.env("LOG_FORMAT") == "json" { "json" } else { "text" }; let _colors = {debug: "\x1b[2m", info: "\x1b[32m", warn: "\x1b[33m", error: "\x1b[31m"}; let _emit = fn (name, num, msg, bound, fields) { if num >= _threshold { let _all = {...bound, ...fields}; let ts = _Time.iso_nanos(_Time.now_nanos(), true); if _format == "json" { IO.eprint(JSON.stringify({..._all, time: ts, level: name, msg: msg}) + "\n"); } else { let mut lvl = name; if IO.stderr_is_terminal() { lvl = _colors.get(name, "") + name + "\x1b[0m"; }; let mut line = ts + " " + lvl + " " + msg; for k, v in _all { line = line + " " + k + "=" + to_string(v); }; IO.eprint(line + "\n"); }; } }; let _methods = fn (bound) { {debug: fn (msg, fields = {}) { _emit("debug", 0, msg, bound, fields) }, info: fn (msg, fields = {}) { _emit("info", 1, msg, bound, fields) }, warn: fn (msg, fields = {}) { _emit("warn", 2, msg, bound, fields) }, error: fn (msg, fields = {}) { _emit("error", 3, msg, bound, fields) }, with: fn (more) { _methods({...bound, ...more}) }} }; let _set_level = fn (l) { let n = _levels.get(l, -1); if n < 0 { throw "Log.set_level: unknown level '" + l + "'" }; _threshold = n; }; let _set_format = fn (f) { if f != "text" { if f != "json" { throw "Log.set_format: unknown format '" + f + "'" } }; _format = f; }; {..._methods({}), set_level: _set_level, set_format: _set_format} }; let Log = _log_module()
+inline constexpr const char* LOG_MODULE_SOURCE = R"=culpre=(let _log_module = fn () {
+  let _levels = {debug: 0, info: 1, warn: 2, error: 3}
+  let mut _threshold = _levels.get(Sys.env("LOG_LEVEL"), 1)
+  let mut _format = if Sys.env("LOG_FORMAT") == "json" {
+    "json"
+  } else {
+    "text"
+  }
+  let _colors = {
+    debug: "\x1b[2m",
+    info: "\x1b[32m",
+    warn: "\x1b[33m",
+    error: "\x1b[31m",
+  }
+  let _emit = fn (name, num, msg, bound, fields) {
+    if num >= _threshold {
+      let _all = {...bound, ...fields}
+      let ts = _Time.iso_nanos(_Time.now_nanos(), true)
+      if _format == "json" {
+        IO.eprint(JSON.stringify({..._all, time: ts, level: name, msg: msg}) +
+          "\n")
+      } else {
+        let mut lvl = name
+        if IO.stderr_is_terminal() {
+          lvl = _colors.get(name, "") + name + "\x1b[0m"
+        }
+        let mut line = ts + " " + lvl + " " + msg
+        for k, v in _all {
+          line = line + " " + k + "=" + to_string(v)
+        }
+        IO.eprint(line + "\n")
+      }
+    }
+  }
+  let _methods = fn (bound) {
+    {debug: fn (msg, fields = {}) {
+        _emit("debug", 0, msg, bound, fields)
+      }, info: fn (msg, fields = {}) {
+        _emit("info", 1, msg, bound, fields)
+      }, warn: fn (msg, fields = {}) {
+        _emit("warn", 2, msg, bound, fields)
+      }, error: fn (msg, fields = {}) {
+        _emit("error", 3, msg, bound, fields)
+      }, with: fn (more) {
+        _methods({...bound, ...more})
+      }}
+  }
+  let _set_level = fn (l) {
+    let n = _levels.get(l, -1)
+    if n < 0 {
+      throw "Log.set_level: unknown level '" + l + "'"
+    }
+    _threshold = n
+  }
+  let _set_format = fn (f) {
+    if f != "text" {
+      if f != "json" {
+        throw "Log.set_format: unknown format '" + f + "'"
+      }
+    }
+    _format = f
+  }
+  {..._methods({}), set_level: _set_level, set_format: _set_format}
+}
+let Log = _log_module()
 )=culpre=";
 
 inline constexpr const char* DESKTOP_MODULE_SOURCE = R"=culpre=(let _desktop_module = fn () {
   # A Tauri-shaped desktop facade: local HTTP server + native WebView + assets,
   # in one call.
-  let run = fn(config) {
+  let run = fn (config) {
     let workers = config.get("workers", 4)
 
     let srv = Http.server()
-    if config.has("assets") { srv.static("/", config["assets"]) }
-    if config.has("routes") { config["routes"](srv) }
-    srv.post("/__quit", fn(req) { Webview.Window.quit(); "" })
+    if config.has("assets") {
+      srv.static("/", config["assets"])
+    }
+    if config.has("routes") {
+      config["routes"](srv)
+    }
+    srv.post("/__quit", fn (req) {
+      Webview.Window.quit()
+      ""
+    })
     # The server outlives every early exit from here on — a throw out of the
     # WebView would otherwise leave its workers holding the port for the rest
     # of the process.
-    defer { srv.stop() }
+    defer {
+      srv.stop()
+    }
     let port = if config.has("port") {
       # An explicit port is a contract: if it's taken, fail loudly.
       srv.listen_async(config["port"], workers: workers)
@@ -772,10 +2090,12 @@ inline constexpr const char* DESKTOP_MODULE_SOURCE = R"=culpre=(let _desktop_mod
     w.run()
   }
 
-  let quit = fn() { Webview.Window.quit() }
+  let quit = fn () {
+    Webview.Window.quit()
+  }
 
-  { run: run, quit: quit }
-};
+  {run: run, quit: quit}
+}
 let Desktop = _desktop_module()
 )=culpre=";
 
@@ -789,33 +2109,52 @@ inline constexpr const char* PATH_MODULE_SOURCE = R"=culpre=(# Path — a thin, 
 # Path collapses to its inner string via __str__ (honored by to_string). So
 # every method accepts either a String or another Path wherever a path is
 # expected.
-let _path_module = fn() {
+let _path_module = fn () {
   # A structural "is this a Path" probe: a Path is the only object carrying a
   # `_path` string field. `type_of` first so `.has` is only ever called on an
   # Object (String/Array/… don't answer `.has`).
-  let _is_path = fn(o) { type_of(o) == "Object" && o.has("_path") }
+  let _is_path = fn (o) {
+    type_of(o) == "Object" && o.has("_path")
+  }
   # PathLike coercion used *inside* the class: a String/StringView stays a
   # string, a Path collapses to its inner string via __str__. Anything else is
   # a TypeError — the same strictness the native FS.* layer enforces, so a
   # non-path never slips through Path.new / `/` / `rename` as stringified junk.
-  let _s = fn(o) {
+  let _s = fn (o) {
     let t = type_of(o)
-    if t == "String" || t == "StringView" { o }
-    else if _is_path(o) { to_string(o) }
-    else { throw {kind: "TypeError", message: "type error: expected String|Path, got {t}"} }
+    if t == "String" || t == "StringView" {
+      o
+    } else if _is_path(o) {
+      to_string(o)
+    } else {
+      throw {
+        kind: "TypeError",
+        message: "type error: expected String|Path, got {t}",
+      }
+    }
   }
   class Path {
-    new(p) { self._path = _s(p) }
+    new(p) {
+      self._path = _s(p)
+    }
 
     # --- display / conversion ---
-    __str__() { self._path }         # "{p}" and to_string(p) yield the raw path
-    str() { self._path }             # explicit String escape hatch
+    __str__() {
+      self._path
+    }  # "{p}" and to_string(p) yield the raw path
+    str() {
+      self._path
+    }  # explicit String escape hatch
     # equal only to a String/StringView or another Path with the same path;
     # any other type is simply not-equal (never a TypeError).
     __eq__(o) {
-      if type_of(o) == "String" || type_of(o) == "StringView" { self._path == o }
-      else if _is_path(o) { self._path == to_string(o) }
-      else { false }
+      if type_of(o) == "String" || type_of(o) == "StringView" {
+        self._path == o
+      } else if _is_path(o) {
+        self._path == to_string(o)
+      } else {
+        false
+      }
     }
     # Order paths by their normalized inner string, so a Path array sorts and
     # `<`/`<=`/`>`/`>=` work. `_s` coerces a String/StringView/Path to the raw
@@ -823,40 +2162,85 @@ let _path_module = fn() {
     # TypeError, not a silent false, since an ordering has no meaningful answer
     # there. `<=`/`>`/`>=` fall out of `__lt__` + `__eq__` via the backends'
     # comparison derivation. Raw (not resolved) to stay consistent with __eq__.
-    __lt__(o) { self._path < _s(o) }
+    __lt__(o) {
+      self._path < _s(o)
+    }
 
     # --- joining: `base / "sub" / "leaf"` ---
-    join(o) { Path.new(FS.join(self._path, _s(o))) }
-    __div__(o) { self.join(o) }
+    join(o) {
+      Path.new(FS.join(self._path, _s(o)))
+    }
+    __div__(o) {
+      self.join(o)
+    }
 
     # --- path components (String, mirroring FS.*) ---
     # Pure, total, O(1) string derivations, so they read as properties
     # (`p.name`, `p.parent`) — no parens. `p.name()` still works too. The
     # filesystem ops below stay methods: they do I/O and can throw.
-    get name() { FS.basename(self._path) }    # final component, e.g. "content.js"
-    get stem() { FS.stem(self._path) }        # final component without suffix
-    get suffix() { FS.extension(self._path) } # extension incl. dot, e.g. ".js"
-    get parent() { Path.new(FS.dirname(self._path)) }
+    get name() {
+      FS.basename(self._path)
+    }  # final component, e.g. "content.js"
+    get stem() {
+      FS.stem(self._path)
+    }  # final component without suffix
+    get suffix() {
+      FS.extension(self._path)
+    }  # extension incl. dot, e.g. ".js"
+    get parent() {
+      Path.new(FS.dirname(self._path))
+    }
 
     # --- queries ---
-    exists() { FS.exists(self._path) }
-    is_file() { FS.is_file(self._path) }
-    is_dir() { FS.is_dir(self._path) }
+    exists() {
+      FS.exists(self._path)
+    }
+    is_file() {
+      FS.is_file(self._path)
+    }
+    is_dir() {
+      FS.is_dir(self._path)
+    }
 
     # --- filesystem ops (delegate to FS) ---
-    read() { FS.read(self._path) }
-    write(content) { FS.write(self._path, content) }
-    mkdir() { FS.mkdir(self._path) }               # creates parents (FS.mkdir does)
-    remove(recursive = false) { FS.remove(self._path, recursive: recursive) }
-    rename(dst) { FS.rename(self._path, _s(dst)); Path.new(_s(dst)) }
+    read() {
+      FS.read(self._path)
+    }
+    write(content) {
+      FS.write(self._path, content)
+    }
+    mkdir() {
+      FS.mkdir(self._path)
+    }  # creates parents (FS.mkdir does)
+    remove(recursive = false) {
+      FS.remove(self._path, recursive: recursive)
+    }
+    rename(dst) {
+      FS.rename(self._path, _s(dst))
+      Path.new(_s(dst))
+    }
 
     # --- normalization ---
-    resolve() { Path.new(FS.abspath(self._path)) }
+    resolve() {
+      Path.new(FS.abspath(self._path))
+    }
 
     # --- directory listing / globbing (return Path, so chains stay Path) ---
-    list() { FS.list_dir(self._path).map(fn(e) { Path.new(FS.join(self._path, e)) }) }
-    glob(pattern) { FS.glob(FS.join(self._path, pattern)).map(fn(p) { Path.new(p) }) }
-    walk() { FS.walk(self._path).map(fn(p) { Path.new(p) }) }
+    list() {
+      FS.list_dir(self._path).map(fn (e) {
+          Path.new(FS.join(self._path, e))
+        })
+    }
+    glob(pattern) {
+      FS.glob(FS.join(self._path, pattern)).map(fn (p) {
+          Path.new(p)
+        })
+    }
+    walk() {
+      FS.walk(self._path).map(fn (p) {
+          Path.new(p)
+        })
+    }
   }
   Path
 }
@@ -899,7 +2283,7 @@ inline constexpr const char* EFFECTS_MODULE_SOURCE = R"=culpre=(# Algebraic-effe
 # cannot observe. Full-control needs a captured continuation, so reaching one
 # from direct dispatch is an EffectError (the native frames in between cannot
 # be reified).
-let _eff_module = fn() {
+let _eff_module = fn () {
   # Dynamically-scoped handlers indexed by op-name: each op maps to a stack of
   # its live `{t, f, tok}` entries, innermost last. Lookup is one dict probe
   # regardless of how deeply `handle`s nest (an O(1) dispatch that stays a pure
@@ -908,24 +2292,34 @@ let _eff_module = fn() {
   # `@` so a user op named like a dict method (`get`, `has`, …) can never
   # shadow the method we call on this dict.
   let _op_stacks = {}
-  fn _key(op) { "@" + op }
+  fn _key(op) {
+    "@" + op
+  }
   # Monotonic token distinguishing nested `handle`s, so an abort unwinds to
   # exactly the handle whose clause ran (not the innermost catcher).
   let _tok = [0]
   # Identity resume for tail clauses (direct dispatch and the driven fast
   # path) — hoisted so the per-perform hot path does not allocate a closure
   # (which also perturbs the leak oracle).
-  let _id_resume = fn(v) { v }
+  let _id_resume = fn (v) {
+    v
+  }
 
   fn _find(op, line) {
     let st = _op_stacks.get(_key(op), nil)
     if st != nil {
       let n = st.size()
-      if n > 0 { return st[n - 1] }
+      if n > 0 {
+        return st[n - 1]
+      }
     }
     # `line` is the original source line of the `perform` (carried on the
     # computation object by the transform), so the error points at the caller.
-    throw { kind: "EffectError", message: "no handler for effect '{op}'", line: line }
+    throw {
+      kind: "EffectError",
+      message: "no handler for effect '{op}'",
+      line: line,
+    }
   }
 
   fn _full_control_error(op, line) {
@@ -938,7 +2332,7 @@ let _eff_module = fn() {
 
   # Run each abandoned frame's deferred cleanup, innermost (deepest) first.
   fn _finalize_stack(stack) {
-    for i in (stack.size() - 1)..=0 by -1 {
+    for i in stack.size() - 1..=0 by -1 {
       stack[i]._eff_finalize()
     }
   }
@@ -955,7 +2349,9 @@ let _eff_module = fn() {
     if pair[0] {
       _finalize_stack(stack)
       let sig = pair[1]
-      if sig[0] == tok { return sig[1] }
+      if sig[0] == tok {
+        return sig[1]
+      }
       __eff_abort(sig)
     }
     pair[1]
@@ -996,7 +2392,9 @@ let _eff_module = fn() {
         let done_val = comp._eff_val
         if stack.size() == 1 {
           # The handled body finished: a `return` clause (if any) maps it.
-          if ret != nil { return ret(done_val) }
+          if ret != nil {
+            return ret(done_val)
+          }
           return done_val
         }
         # A delegated call finished; feed its value to the enclosing frame.
@@ -1014,7 +2412,12 @@ let _eff_module = fn() {
         # of a silent crash, but the bind-then-call form avoids it outright).
         # A no-handler EffectError abandons the frames just like a clause
         # throw (`_find` never touches the stack, so the catch is sound).
-        let h = try { _find(comp._eff_op, comp._eff_line) } catch e { _finalize_stack(stack); throw e }
+        let h = try {
+          _find(comp._eff_op, comp._eff_line)
+        } catch e {
+          _finalize_stack(stack)
+          throw e
+        }
         let hf = h.f
         # Tail clause: a lone trailing `resume(v)`, so no continuation needs
         # capturing — run it with the identity resume (as direct dispatch
@@ -1034,8 +2437,10 @@ let _eff_module = fn() {
           continue
         }
         let is_abort = h.t == "a"
-        let snapshot = stack   # frozen at the suspend point; forks clone it
-        let resume = fn(v) { _drive(snapshot.map(|c| __eff_copy(c)), v, ret) }
+        let snapshot = stack  # frozen at the suspend point; forks clone it
+        let resume = fn (v) {
+          _drive(snapshot.map(|c| __eff_copy(c)), v, ret)
+        }
         # An "a" clause never mentions `resume`, so — like the tail path — a
         # throw out of it abandons the frames: finalize. An "f" clause may
         # have stored `resume` for a later fork, so its throw leaves the
@@ -1045,11 +2450,15 @@ let _eff_module = fn() {
         let result = try {
           hf(comp._eff_args, resume)
         } catch e {
-          if h.t != "f" { _finalize_stack(stack) }
+          if h.t != "f" {
+            _finalize_stack(stack)
+          }
           throw e
         }
         # An abort clause never resumes: the suspended body is abandoned.
-        if is_abort { _finalize_stack(stack) }
+        if is_abort {
+          _finalize_stack(stack)
+        }
         return result
       }
       # DELEGATE: push the sub-computation as a new frame and run it next.
@@ -1069,16 +2478,24 @@ let _eff_module = fn() {
     for op, entry in frame {
       entry["tok"] = tok
       let k = _key(op)
-      if !_op_stacks.has(k) { _op_stacks[k] = [] }
+      if !_op_stacks.has(k) {
+        _op_stacks[k] = []
+      }
       _op_stacks[k].push(entry)
       keys.push(k)
     }
-    defer { for pk in keys { _op_stacks[pk].pop() } }
+    defer {
+      for pk in keys {
+        _op_stacks[pk].pop()
+      }
+    }
     # `_drive` mutates `stack` in place, so on an abort signal the frames left
     # here are exactly the ones the signal abandoned; `_guard_stack` finalizes
     # them and settles a signal carrying this handle's token.
     let stack = [comp]
-    _guard_stack(stack, tok, fn() { _drive(stack, nil, ret) })
+    _guard_stack(stack, tok, fn () {
+      _drive(stack, nil, ret)
+    })
   }
 
   # A `perform` in ordinary (non-effect) code: no computation object, no
@@ -1088,8 +2505,12 @@ let _eff_module = fn() {
   fn _perform_direct(op, args, line) {
     let h = _find(op, line)
     let hf = h.f
-    if h.t == "f" { _full_control_error(op, line) }
-    if h.t == "a" { __eff_abort([h.tok, hf(args, _id_resume)]) }
+    if h.t == "f" {
+      _full_control_error(op, line)
+    }
+    if h.t == "a" {
+      __eff_abort([h.tok, hf(args, _id_resume)])
+    }
     hf(args, _id_resume)
   }
 
@@ -1100,7 +2521,7 @@ let _eff_module = fn() {
   # before it keeps unwinding to the handle that owns it.
   fn _run_comp(comp) {
     let stack = [comp]
-    _guard_stack(stack, nil, fn() {
+    _guard_stack(stack, nil, fn () {
       let mut resume_val = nil
       while true {
         let c = stack[stack.size() - 1]
@@ -1114,7 +2535,9 @@ let _eff_module = fn() {
           throw e
         }
         if tag == 0 {
-          if stack.size() == 1 { return c._eff_val }
+          if stack.size() == 1 {
+            return c._eff_val
+          }
           stack.pop()
           resume_val = c._eff_val
           continue
@@ -1138,7 +2561,7 @@ let _eff_module = fn() {
     })
   }
 
-  { handle: _handle, perform_direct: _perform_direct, run_comp: _run_comp }
+  {handle: _handle, perform_direct: _perform_direct, run_comp: _run_comp}
 }
 let __Eff = _eff_module()
 )=culpre=";

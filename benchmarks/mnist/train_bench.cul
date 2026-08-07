@@ -6,14 +6,16 @@ let DIR = 'benchmarks/mnist'
 let N_HID = 30
 let N_OUT = 10
 let BATCH = 10
-let ETA   = 3.0
+let ETA = 3.0
 let CYCLES = 2
 
 let load_int_1d = fn (path) {
   mut out = []
   for line in FS.read(path).split("\n") {
     let s = line.trim()
-    if s.size() == 0 { continue }
+    if s.size() == 0 {
+      continue
+    }
     out.push(to_long(s))
   }
   out
@@ -24,7 +26,11 @@ let build_one_hot = fn (labels, k) {
   for label in labels {
     mut row = []
     for j in range(k) {
-      row.push(if j == label { 1.0 } else { 0.0 })
+      row.push(if j == label {
+        1.0
+      } else {
+        0.0
+      })
     }
     rows.push(row)
   }
@@ -32,9 +38,7 @@ let build_one_hot = fn (labels, k) {
 }
 
 # Sanity check.
-for f in ['init_W1.csv', 'init_b1.csv', 'init_W2.csv', 'init_b2.csv',
-          'train_images.csv', 'train_labels.csv',
-          'test_images.csv',  'test_labels.csv'] {
+for f in ['init_W1.csv', 'init_b1.csv', 'init_W2.csv', 'init_b2.csv', 'train_images.csv', 'train_labels.csv', 'test_images.csv', 'test_labels.csv'] {
   if !FS.exists("{DIR}/{f}") {
     inspect("missing {DIR}/{f}; run prep_train.py and prep_test.py first")
     Sys.exit(1)
@@ -42,29 +46,29 @@ for f in ['init_W1.csv', 'init_b1.csv', 'init_W2.csv', 'init_b2.csv',
 }
 
 let load_t0 = Sys.time()
-let X  = Tensor.from_csv("{DIR}/train_images.csv") # [N, 784]
+let X = Tensor.from_csv("{DIR}/train_images.csv")  # [N, 784]
 let Xt = Tensor.from_csv("{DIR}/test_images.csv")  # [N_test, 784]
-let y  = load_int_1d("{DIR}/train_labels.csv")
+let y = load_int_1d("{DIR}/train_labels.csv")
 let yt = load_int_1d("{DIR}/test_labels.csv")
-let init_W1 = Tensor.from_csv("{DIR}/init_W1.csv") # [30, 784]
-let init_b1 = Tensor.from_csv("{DIR}/init_b1.csv") # [30, 1]
-let init_W2 = Tensor.from_csv("{DIR}/init_W2.csv") # [10, 30]
-let init_b2 = Tensor.from_csv("{DIR}/init_b2.csv") # [10, 1]
+let init_W1 = Tensor.from_csv("{DIR}/init_W1.csv")  # [30, 784]
+let init_b1 = Tensor.from_csv("{DIR}/init_b1.csv")  # [30, 1]
+let init_W2 = Tensor.from_csv("{DIR}/init_W2.csv")  # [10, 30]
+let init_b2 = Tensor.from_csv("{DIR}/init_b2.csv")  # [10, 1]
 let t_load = Sys.time() - load_t0
 
 let n = X.shape()[0]
-let Y = build_one_hot(y, N_OUT)        # [N, 10]
+let Y = build_one_hot(y, N_OUT)  # [N, 10]
 inspect("[culebra-tensor-train] loaded train={n} test={Xt.shape()[0]} in {t_load}s")
 
 let lr = ETA / to_float(BATCH)
 
 let run_epoch = fn (W1, b1, W2, b2) {
   for s in 0..n by BATCH {
-    let xb = X.slice(s, s + BATCH).transpose()        # [784, BATCH]
-    let tb = Y.slice(s, s + BATCH).transpose()        # [10,  BATCH]
+    let xb = X.slice(s, s + BATCH).transpose()  # [784, BATCH]
+    let tb = Y.slice(s, s + BATCH).transpose()  # [10,  BATCH]
 
-    let a1 = W1.linear_sigmoid(xb, b1)                # [30, BATCH]
-    let a2 = W2.linear_sigmoid(a1, b2)                # [10, BATCH]
+    let a1 = W1.linear_sigmoid(xb, b1)  # [30, BATCH]
+    let a2 = W2.linear_sigmoid(a1, b2)  # [10, BATCH]
 
     let d2 = (a2 - tb) * a2 * (Tensor.ones(N_OUT, BATCH) - a2)
     let d1 = W2.transpose().dot(d2) * a1 * (Tensor.ones(N_HID, BATCH) - a1)
@@ -106,14 +110,22 @@ Tensor.eval(preds)
 let p = preds.to_array()
 mut correct = 0
 for k in range(yt.size()) {
-  if to_long(p[k]) == yt[k] { correct = correct + 1 }
+  if to_long(p[k]) == yt[k] {
+    correct = correct + 1
+  }
 }
 let acc = to_float(correct) / to_float(yt.size())
 
 let cold = times[0]
 mut warm_sum = 0.0
-for t in times { warm_sum = warm_sum + t }
+for t in times {
+  warm_sum = warm_sum + t
+}
 warm_sum = warm_sum - cold
-let warm = if times.size() > 1 { warm_sum / to_float(times.size() - 1) } else { Math.nan }
+let warm = if times.size() > 1 {
+  warm_sum / to_float(times.size() - 1)
+} else {
+  Math.nan
+}
 inspect("[culebra-tensor-train] cold={cold}s warm={warm}s accuracy={acc}")
 print("BENCH label=culebra_tensor_train load={t_load} cold={cold} warm={warm} accuracy={acc}\n")

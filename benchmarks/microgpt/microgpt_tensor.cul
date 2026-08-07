@@ -27,13 +27,21 @@ if !FS.exists(data_path) {
 mut docs = []
 for line in FS.read(data_path).split("\n") {
   let s = line.trim()
-  if s.size() > 0 { docs.push(s) }
+  if s.size() > 0 {
+    docs.push(s)
+  }
 }
 Random.shuffle(docs)
 inspect("num docs: {docs.size()}")
 
 mut uchars = []
-for d in docs { for c in d { if !uchars.contains(c) { uchars.push(c) } } }
+for d in docs {
+  for c in d {
+    if !uchars.contains(c) {
+      uchars.push(c)
+    }
+  }
+}
 uchars.sort_by(|c| c)
 let BOS = uchars.size()
 let vocab_size = uchars.size() + 1
@@ -46,7 +54,7 @@ let n_embd = 16
 let block_size = 16
 let n_head = 4
 let head_dim = n_embd / n_head
-let attn_scale = 1.0 / (to_float(head_dim) ** 0.5)
+let attn_scale = 1.0 / to_float(head_dim) ** 0.5
 let std_init = 0.08
 
 # === Native Tensor ops ===
@@ -68,9 +76,9 @@ let embed = fn (table, idx) {
 let rmsnorm = fn (x) {
   let d = to_float(x.shape()[0])
   let eps = 1.0e-5
-  let ms = (x * x).sum(0) * (1.0 / d)   # [1]
-  let scale = (ms + eps).pow(-0.5)      # [1]
-  x * scale                              # [D, 1] broadcast
+  let ms = (x * x).sum(0) * (1.0 / d)  # [1]
+  let scale = (ms + eps).pow(-0.5)     # [1]
+  x * scale                            # [D, 1] broadcast
 }
 
 # Single-head attention over the cached keys/values for one head.
@@ -78,11 +86,11 @@ let rmsnorm = fn (x) {
 # K, V are [n_t, hd]; weights = softmax(K@q_h * scale); out = V^T @ w.
 let head_attention = fn (q_h, k_rows, v_rows, scale) {
   let n_t = k_rows.size()
-  let kmat = Tensor.concat(k_rows)            # [n_t, hd]
-  let vmat = Tensor.concat(v_rows)            # [n_t, hd]
-  let logits = kmat.dot(q_h) * scale          # [n_t, 1]
+  let kmat = Tensor.concat(k_rows)    # [n_t, hd]
+  let vmat = Tensor.concat(v_rows)    # [n_t, hd]
+  let logits = kmat.dot(q_h) * scale  # [n_t, 1]
   let weights = logits.reshape([n_t]).softmax().reshape([n_t, 1])
-  vmat.transpose().dot(weights)               # [hd, 1]
+  vmat.transpose().dot(weights)  # [hd, 1]
 }
 
 # Softmax + cross-entropy for one position: -log(softmax(logits)[target]),
@@ -90,12 +98,18 @@ let head_attention = fn (q_h, k_rows, v_rows, scale) {
 # dL/dlogits = (p - onehot)/n through softmax + log.
 let ce_loss = fn (logits, target, n) {
   let v = logits.shape()[0]
-  let probs = logits.reshape([v]).softmax()   # [V]
+  let probs = logits.reshape([v]).softmax()  # [V]
   mut oh = []
-  for i in 0..v { oh.push(if i == target { 1.0 } else { 0.0 }) }
-  let onehot = Tensor.from(oh)                 # [V], constant (no grad)
-  let ce = (onehot * probs.log()).sum(0)       # rank-0
-  ce * (-1.0 / to_float(n))                    # rank-0 scalar loss
+  for i in 0..v {
+    oh.push(if i == target {
+      1.0
+    } else {
+      0.0
+    })
+  }
+  let onehot = Tensor.from(oh)            # [V], constant (no grad)
+  let ce = (onehot * probs.log()).sum(0)  # rank-0
+  ce * (-1.0 / to_float(n))               # rank-0 scalar loss
 }
 
 # === Parameter init ===
@@ -107,7 +121,9 @@ let ce_loss = fn (logits, target, n) {
 # scalar version's distribution.
 
 class Param {
-  new(t) { self.t = t }
+  new(t) {
+    self.t = t
+  }
 }
 
 let make_param = fn (out_dim, in_dim) {
@@ -128,15 +144,18 @@ for _ in 0..n_layer {
     attn_wv: make_param(n_embd, n_embd),
     attn_wo: make_param(n_embd, n_embd),
     mlp_fc1: make_param(4 * n_embd, n_embd),
-    mlp_fc2: make_param(n_embd, 4 * n_embd)
+    mlp_fc2: make_param(n_embd, 4 * n_embd),
   })
 }
 
 mut params = [wte, wpe, lm_head]
 for layer in layers {
-  params.push(layer.attn_wq); params.push(layer.attn_wk)
-  params.push(layer.attn_wv); params.push(layer.attn_wo)
-  params.push(layer.mlp_fc1); params.push(layer.mlp_fc2)
+  params.push(layer.attn_wq)
+  params.push(layer.attn_wk)
+  params.push(layer.attn_wv)
+  params.push(layer.attn_wo)
+  params.push(layer.mlp_fc1)
+  params.push(layer.mlp_fc2)
 }
 inspect("num params: {params.size()} weight matrices")
 
@@ -220,28 +239,47 @@ let adam_step = fn (step, num_steps) {
 
 # === Training loop ===
 
-let num_steps = if Sys.argv.size() > 0 { to_long(Sys.argv[0]) } else { 50 }
+let num_steps = if Sys.argv.size() > 0 {
+  to_long(Sys.argv[0])
+} else {
+  50
+}
 mut final_loss = 0.0
 
 let train_t0 = Sys.time()
 for step in 0..num_steps {
   let doc = docs[step % docs.size()]
   mut tokens = [BOS]
-  for c in doc { tokens.push(uchars.index_of(c)) }
+  for c in doc {
+    tokens.push(uchars.index_of(c))
+  }
   tokens.push(BOS)
-  let n = if block_size < tokens.size() - 1 { block_size } else { tokens.size() - 1 }
+  let n = if block_size < tokens.size() - 1 {
+    block_size
+  } else {
+    tokens.size() - 1
+  }
 
-  for p in params { p.t.zero_grad() }
+  for p in params {
+    p.t.zero_grad()
+  }
 
   mut keys = []
   mut values = []
-  for _ in 0..n_layer { keys.push([]); values.push([]) }
+  for _ in 0..n_layer {
+    keys.push([])
+    values.push([])
+  }
 
   mut loss = nil
   for pos_id in 0..n {
     let logits = gpt_forward(tokens[pos_id], pos_id, keys, values)
     let l = ce_loss(logits, tokens[pos_id + 1], n)
-    loss = if loss == nil { l } else { loss + l }
+    loss = if loss == nil {
+      l
+    } else {
+      loss + l
+    }
   }
 
   loss.backward()
@@ -259,7 +297,11 @@ inspect("final loss: {final_loss} (train {train_time}s, {1000.0 * train_time / t
 
 # === Inference: sample new names ===
 
-let n_samples = if Sys.argv.size() > 1 { to_long(Sys.argv[1]) } else { 5 }
+let n_samples = if Sys.argv.size() > 1 {
+  to_long(Sys.argv[1])
+} else {
+  5
+}
 let temperature = 0.5
 
 if n_samples > 0 {
@@ -269,7 +311,10 @@ if n_samples > 0 {
   for sample_idx in 0..n_samples {
     mut keys2 = []
     mut values2 = []
-    for _ in 0..n_layer { keys2.push([]); values2.push([]) }
+    for _ in 0..n_layer {
+      keys2.push([])
+      values2.push([])
+    }
     mut token_id = BOS
     mut sample = []
     for pos_id in 0..block_size {
@@ -282,7 +327,9 @@ if n_samples > 0 {
       Tensor.eval(probs)
       let weights = probs.to_array()
       token_id = Random.weighted_choice(pop, weights)
-      if token_id == BOS { break }
+      if token_id == BOS {
+        break
+      }
       sample.push(uchars[token_id])
     }
     inspect("sample {sample_idx+1}: {sample.join('')}")

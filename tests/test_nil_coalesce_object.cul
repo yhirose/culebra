@@ -19,7 +19,9 @@ assert_eq(o.x, 2)
 
 // Literal-declared keys are still immutable by default.
 let lit = {x: 1}
-assert_throws('ImmutableError', fn () { lit.x = 2 })
+assert_throws('ImmutableError', fn () {
+  lit.x = 2
+})
 
 // get_or_put's inserted slot is mutable too.
 mut g = {}
@@ -46,7 +48,10 @@ assert_eq(tally, {a: 3, b: 2, c: 1})
 // Short-circuit: a non-nil existing value is returned unchanged, and the
 // RHS is not evaluated (no side effect).
 mut evaluated = false
-fn rhs_side_effect() { evaluated = true; 999 }
+fn rhs_side_effect() {
+  evaluated = true
+  999
+}
 mut has_val = {z: 1}
 assert_eq(has_val.z ??= rhs_side_effect(), 1)
 assert_eq(evaluated, false)
@@ -59,7 +64,9 @@ assert_eq(nilslot.x ??= 99, 5)
 
 // An immutable nil-valued slot still raises ImmutableError on the write-back.
 mut imm_nilslot = {x: nil}
-assert_throws('ImmutableError', fn () { imm_nilslot.x ??= 5 })
+assert_throws('ImmutableError', fn () {
+  imm_nilslot.x ??= 5
+})
 
 // Tuple-keyed sparse-map accumulation (no nesting needed).
 mut sparse = {}
@@ -71,9 +78,16 @@ assert_eq(sparse[(1, 2, 3)], 2)
 // Class instance `??=` routes through __index__ (read) / __setindex__
 // (write), like compound assignment already does.
 class Counter {
-  new() { self.data = {} }
-  __index__(k) { self.data.get(k, nil) }
-  __setindex__(k, v) { self.data[k] = v; true }
+  new() {
+    self.data = {}
+  }
+  __index__(k) {
+    self.data.get(k, nil)
+  }
+  __setindex__(k, v) {
+    self.data[k] = v
+    true
+  }
 }
 c = Counter.new()
 c['a'] ??= 0
@@ -87,7 +101,9 @@ mut arr = [1, nil, 3]
 arr[1] ??= 42
 assert_eq(arr, [1, 42, 3])
 assert_eq(arr[1] ??= 100, 42)  // short-circuit, still 42
-assert_throws('IndexError', fn () { arr[9] ??= 1 })
+assert_throws('IndexError', fn () {
+  arr[9] ??= 1
+})
 
 // --- Rejected receivers (mirrors the interp exactly) -----------------------
 
@@ -97,8 +113,12 @@ class Point {
   y: Float32
 }
 let buf = SharedBuffer.new(2, Point)
-assert_throws('TypeError', fn () { buf[0].x ??= 5.0 })   // packed field
-assert_throws('TypeError', fn () { buf[0] ??= 5.0 })     // SharedBuffer element
+assert_throws('TypeError', fn () {
+  buf[0].x ??= 5.0
+})  // packed field
+assert_throws('TypeError', fn () {
+  buf[0] ??= 5.0
+})  // SharedBuffer element
 
 @packable
 class Vec {
@@ -107,8 +127,14 @@ class Vec {
 }
 let vb = SharedBuffer.new(1, Vec)
 vb[0].xs.push(1.5)
-assert_throws('TypeError', fn () { vb[0].xs[0] ??= 9.0 })  // FixedArray element
+assert_throws('TypeError', fn () {
+  vb[0].xs[0] ??= 9.0
+})  // FixedArray element
 
 let shared = Shared.new({a: 1})
-assert_throws('ImmutableError', fn () { shared.a ??= 2 })
-assert_throws('ImmutableError', fn () { shared['a'] ??= 2 })
+assert_throws('ImmutableError', fn () {
+  shared.a ??= 2
+})
+assert_throws('ImmutableError', fn () {
+  shared['a'] ??= 2
+})

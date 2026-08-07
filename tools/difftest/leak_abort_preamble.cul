@@ -18,6 +18,14 @@
 # +1 on every heap-returning case (a scan artifact, not a real leak).
 fn _p(label, thunk) {
   mut i = 0
-  while i < 8 { try { thunk(); nil } catch e { nil }; i = i + 1 }
+  while i < 8 {
+    try {
+      thunk()
+      nil
+    } catch e {
+      nil
+    }
+    i = i + 1
+  }
   nil
 }

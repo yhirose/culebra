@@ -34,7 +34,7 @@
 # cannot observe. Full-control needs a captured continuation, so reaching one
 # from direct dispatch is an EffectError (the native frames in between cannot
 # be reified).
-let _eff_module = fn() {
+let _eff_module = fn () {
   # Dynamically-scoped handlers indexed by op-name: each op maps to a stack of
   # its live `{t, f, tok}` entries, innermost last. Lookup is one dict probe
   # regardless of how deeply `handle`s nest (an O(1) dispatch that stays a pure
@@ -43,24 +43,34 @@ let _eff_module = fn() {
   # `@` so a user op named like a dict method (`get`, `has`, …) can never
   # shadow the method we call on this dict.
   let _op_stacks = {}
-  fn _key(op) { "@" + op }
+  fn _key(op) {
+    "@" + op
+  }
   # Monotonic token distinguishing nested `handle`s, so an abort unwinds to
   # exactly the handle whose clause ran (not the innermost catcher).
   let _tok = [0]
   # Identity resume for tail clauses (direct dispatch and the driven fast
   # path) — hoisted so the per-perform hot path does not allocate a closure
   # (which also perturbs the leak oracle).
-  let _id_resume = fn(v) { v }
+  let _id_resume = fn (v) {
+    v
+  }
 
   fn _find(op, line) {
     let st = _op_stacks.get(_key(op), nil)
     if st != nil {
       let n = st.size()
-      if n > 0 { return st[n - 1] }
+      if n > 0 {
+        return st[n - 1]
+      }
     }
     # `line` is the original source line of the `perform` (carried on the
     # computation object by the transform), so the error points at the caller.
-    throw { kind: "EffectError", message: "no handler for effect '{op}'", line: line }
+    throw {
+      kind: "EffectError",
+      message: "no handler for effect '{op}'",
+      line: line,
+    }
   }
 
   fn _full_control_error(op, line) {
@@ -73,7 +83,7 @@ let _eff_module = fn() {
 
   # Run each abandoned frame's deferred cleanup, innermost (deepest) first.
   fn _finalize_stack(stack) {
-    for i in (stack.size() - 1)..=0 by -1 {
+    for i in stack.size() - 1..=0 by -1 {
       stack[i]._eff_finalize()
     }
   }
@@ -90,7 +100,9 @@ let _eff_module = fn() {
     if pair[0] {
       _finalize_stack(stack)
       let sig = pair[1]
-      if sig[0] == tok { return sig[1] }
+      if sig[0] == tok {
+        return sig[1]
+      }
       __eff_abort(sig)
     }
     pair[1]
@@ -131,7 +143,9 @@ let _eff_module = fn() {
         let done_val = comp._eff_val
         if stack.size() == 1 {
           # The handled body finished: a `return` clause (if any) maps it.
-          if ret != nil { return ret(done_val) }
+          if ret != nil {
+            return ret(done_val)
+          }
           return done_val
         }
         # A delegated call finished; feed its value to the enclosing frame.
@@ -149,7 +163,12 @@ let _eff_module = fn() {
         # of a silent crash, but the bind-then-call form avoids it outright).
         # A no-handler EffectError abandons the frames just like a clause
         # throw (`_find` never touches the stack, so the catch is sound).
-        let h = try { _find(comp._eff_op, comp._eff_line) } catch e { _finalize_stack(stack); throw e }
+        let h = try {
+          _find(comp._eff_op, comp._eff_line)
+        } catch e {
+          _finalize_stack(stack)
+          throw e
+        }
         let hf = h.f
         # Tail clause: a lone trailing `resume(v)`, so no continuation needs
         # capturing — run it with the identity resume (as direct dispatch
@@ -169,8 +188,10 @@ let _eff_module = fn() {
           continue
         }
         let is_abort = h.t == "a"
-        let snapshot = stack   # frozen at the suspend point; forks clone it
-        let resume = fn(v) { _drive(snapshot.map(|c| __eff_copy(c)), v, ret) }
+        let snapshot = stack  # frozen at the suspend point; forks clone it
+        let resume = fn (v) {
+          _drive(snapshot.map(|c| __eff_copy(c)), v, ret)
+        }
         # An "a" clause never mentions `resume`, so — like the tail path — a
         # throw out of it abandons the frames: finalize. An "f" clause may
         # have stored `resume` for a later fork, so its throw leaves the
@@ -180,11 +201,15 @@ let _eff_module = fn() {
         let result = try {
           hf(comp._eff_args, resume)
         } catch e {
-          if h.t != "f" { _finalize_stack(stack) }
+          if h.t != "f" {
+            _finalize_stack(stack)
+          }
           throw e
         }
         # An abort clause never resumes: the suspended body is abandoned.
-        if is_abort { _finalize_stack(stack) }
+        if is_abort {
+          _finalize_stack(stack)
+        }
         return result
       }
       # DELEGATE: push the sub-computation as a new frame and run it next.
@@ -204,16 +229,24 @@ let _eff_module = fn() {
     for op, entry in frame {
       entry["tok"] = tok
       let k = _key(op)
-      if !_op_stacks.has(k) { _op_stacks[k] = [] }
+      if !_op_stacks.has(k) {
+        _op_stacks[k] = []
+      }
       _op_stacks[k].push(entry)
       keys.push(k)
     }
-    defer { for pk in keys { _op_stacks[pk].pop() } }
+    defer {
+      for pk in keys {
+        _op_stacks[pk].pop()
+      }
+    }
     # `_drive` mutates `stack` in place, so on an abort signal the frames left
     # here are exactly the ones the signal abandoned; `_guard_stack` finalizes
     # them and settles a signal carrying this handle's token.
     let stack = [comp]
-    _guard_stack(stack, tok, fn() { _drive(stack, nil, ret) })
+    _guard_stack(stack, tok, fn () {
+      _drive(stack, nil, ret)
+    })
   }
 
   # A `perform` in ordinary (non-effect) code: no computation object, no
@@ -223,8 +256,12 @@ let _eff_module = fn() {
   fn _perform_direct(op, args, line) {
     let h = _find(op, line)
     let hf = h.f
-    if h.t == "f" { _full_control_error(op, line) }
-    if h.t == "a" { __eff_abort([h.tok, hf(args, _id_resume)]) }
+    if h.t == "f" {
+      _full_control_error(op, line)
+    }
+    if h.t == "a" {
+      __eff_abort([h.tok, hf(args, _id_resume)])
+    }
     hf(args, _id_resume)
   }
 
@@ -235,7 +272,7 @@ let _eff_module = fn() {
   # before it keeps unwinding to the handle that owns it.
   fn _run_comp(comp) {
     let stack = [comp]
-    _guard_stack(stack, nil, fn() {
+    _guard_stack(stack, nil, fn () {
       let mut resume_val = nil
       while true {
         let c = stack[stack.size() - 1]
@@ -249,7 +286,9 @@ let _eff_module = fn() {
           throw e
         }
         if tag == 0 {
-          if stack.size() == 1 { return c._eff_val }
+          if stack.size() == 1 {
+            return c._eff_val
+          }
           stack.pop()
           resume_val = c._eff_val
           continue
@@ -273,6 +312,6 @@ let _eff_module = fn() {
     })
   }
 
-  { handle: _handle, perform_direct: _perform_direct, run_comp: _run_comp }
+  {handle: _handle, perform_direct: _perform_direct, run_comp: _run_comp}
 }
 let __Eff = _eff_module()

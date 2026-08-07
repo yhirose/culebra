@@ -10,13 +10,30 @@
 # absorbs first-call lazy allocation (namespace init, shape caches). Comparing
 # JIT growth vs interp growth (interp is leak-free by shared_ptr) isolates
 # JIT-specific RC leaks from cases that legitimately accumulate global state.
-fn _show(v) { type_of(v) + ":" + to_string(v) }
+fn _show(v) {
+  type_of(v) + ":" + to_string(v)
+}
 fn _p(label, thunk) {
-  let warm = try { thunk(); 1 } catch e { 0 }
-  if warm == 0 { print(label + " ::: skip=err\n"); return }
+  let warm = try {
+    thunk()
+    1
+  } catch e {
+    0
+  }
+  if warm == 0 {
+    print(label + " ::: skip=err\n")
+    return
+  }
   let base = GC.stat().rc_objects
   mut i = 0
-  while i < 40 { try { thunk() } catch e { 0 }; i = i + 1 }
+  while i < 40 {
+    try {
+      thunk()
+    } catch e {
+      0
+    }
+    i = i + 1
+  }
   let growth = GC.stat().rc_objects - base
   print(label + " ::: growth=" + growth.to_string() + "\n")
 }

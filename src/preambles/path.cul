@@ -8,33 +8,52 @@
 # Path collapses to its inner string via __str__ (honored by to_string). So
 # every method accepts either a String or another Path wherever a path is
 # expected.
-let _path_module = fn() {
+let _path_module = fn () {
   # A structural "is this a Path" probe: a Path is the only object carrying a
   # `_path` string field. `type_of` first so `.has` is only ever called on an
   # Object (String/Array/… don't answer `.has`).
-  let _is_path = fn(o) { type_of(o) == "Object" && o.has("_path") }
+  let _is_path = fn (o) {
+    type_of(o) == "Object" && o.has("_path")
+  }
   # PathLike coercion used *inside* the class: a String/StringView stays a
   # string, a Path collapses to its inner string via __str__. Anything else is
   # a TypeError — the same strictness the native FS.* layer enforces, so a
   # non-path never slips through Path.new / `/` / `rename` as stringified junk.
-  let _s = fn(o) {
+  let _s = fn (o) {
     let t = type_of(o)
-    if t == "String" || t == "StringView" { o }
-    else if _is_path(o) { to_string(o) }
-    else { throw {kind: "TypeError", message: "type error: expected String|Path, got {t}"} }
+    if t == "String" || t == "StringView" {
+      o
+    } else if _is_path(o) {
+      to_string(o)
+    } else {
+      throw {
+        kind: "TypeError",
+        message: "type error: expected String|Path, got {t}",
+      }
+    }
   }
   class Path {
-    new(p) { self._path = _s(p) }
+    new(p) {
+      self._path = _s(p)
+    }
 
     # --- display / conversion ---
-    __str__() { self._path }         # "{p}" and to_string(p) yield the raw path
-    str() { self._path }             # explicit String escape hatch
+    __str__() {
+      self._path
+    }  # "{p}" and to_string(p) yield the raw path
+    str() {
+      self._path
+    }  # explicit String escape hatch
     # equal only to a String/StringView or another Path with the same path;
     # any other type is simply not-equal (never a TypeError).
     __eq__(o) {
-      if type_of(o) == "String" || type_of(o) == "StringView" { self._path == o }
-      else if _is_path(o) { self._path == to_string(o) }
-      else { false }
+      if type_of(o) == "String" || type_of(o) == "StringView" {
+        self._path == o
+      } else if _is_path(o) {
+        self._path == to_string(o)
+      } else {
+        false
+      }
     }
     # Order paths by their normalized inner string, so a Path array sorts and
     # `<`/`<=`/`>`/`>=` work. `_s` coerces a String/StringView/Path to the raw
@@ -42,40 +61,85 @@ let _path_module = fn() {
     # TypeError, not a silent false, since an ordering has no meaningful answer
     # there. `<=`/`>`/`>=` fall out of `__lt__` + `__eq__` via the backends'
     # comparison derivation. Raw (not resolved) to stay consistent with __eq__.
-    __lt__(o) { self._path < _s(o) }
+    __lt__(o) {
+      self._path < _s(o)
+    }
 
     # --- joining: `base / "sub" / "leaf"` ---
-    join(o) { Path.new(FS.join(self._path, _s(o))) }
-    __div__(o) { self.join(o) }
+    join(o) {
+      Path.new(FS.join(self._path, _s(o)))
+    }
+    __div__(o) {
+      self.join(o)
+    }
 
     # --- path components (String, mirroring FS.*) ---
     # Pure, total, O(1) string derivations, so they read as properties
     # (`p.name`, `p.parent`) — no parens. `p.name()` still works too. The
     # filesystem ops below stay methods: they do I/O and can throw.
-    get name() { FS.basename(self._path) }    # final component, e.g. "content.js"
-    get stem() { FS.stem(self._path) }        # final component without suffix
-    get suffix() { FS.extension(self._path) } # extension incl. dot, e.g. ".js"
-    get parent() { Path.new(FS.dirname(self._path)) }
+    get name() {
+      FS.basename(self._path)
+    }  # final component, e.g. "content.js"
+    get stem() {
+      FS.stem(self._path)
+    }  # final component without suffix
+    get suffix() {
+      FS.extension(self._path)
+    }  # extension incl. dot, e.g. ".js"
+    get parent() {
+      Path.new(FS.dirname(self._path))
+    }
 
     # --- queries ---
-    exists() { FS.exists(self._path) }
-    is_file() { FS.is_file(self._path) }
-    is_dir() { FS.is_dir(self._path) }
+    exists() {
+      FS.exists(self._path)
+    }
+    is_file() {
+      FS.is_file(self._path)
+    }
+    is_dir() {
+      FS.is_dir(self._path)
+    }
 
     # --- filesystem ops (delegate to FS) ---
-    read() { FS.read(self._path) }
-    write(content) { FS.write(self._path, content) }
-    mkdir() { FS.mkdir(self._path) }               # creates parents (FS.mkdir does)
-    remove(recursive = false) { FS.remove(self._path, recursive: recursive) }
-    rename(dst) { FS.rename(self._path, _s(dst)); Path.new(_s(dst)) }
+    read() {
+      FS.read(self._path)
+    }
+    write(content) {
+      FS.write(self._path, content)
+    }
+    mkdir() {
+      FS.mkdir(self._path)
+    }  # creates parents (FS.mkdir does)
+    remove(recursive = false) {
+      FS.remove(self._path, recursive: recursive)
+    }
+    rename(dst) {
+      FS.rename(self._path, _s(dst))
+      Path.new(_s(dst))
+    }
 
     # --- normalization ---
-    resolve() { Path.new(FS.abspath(self._path)) }
+    resolve() {
+      Path.new(FS.abspath(self._path))
+    }
 
     # --- directory listing / globbing (return Path, so chains stay Path) ---
-    list() { FS.list_dir(self._path).map(fn(e) { Path.new(FS.join(self._path, e)) }) }
-    glob(pattern) { FS.glob(FS.join(self._path, pattern)).map(fn(p) { Path.new(p) }) }
-    walk() { FS.walk(self._path).map(fn(p) { Path.new(p) }) }
+    list() {
+      FS.list_dir(self._path).map(fn (e) {
+          Path.new(FS.join(self._path, e))
+        })
+    }
+    glob(pattern) {
+      FS.glob(FS.join(self._path, pattern)).map(fn (p) {
+          Path.new(p)
+        })
+    }
+    walk() {
+      FS.walk(self._path).map(fn (p) {
+          Path.new(p)
+        })
+    }
   }
   Path
 }

@@ -1,9 +1,10 @@
-
 let _canvas_module = fn () {
   # Pack r,g,b,a (each 0..255) into one Long, byte order [r,g,b,a] — exactly
   # what the browser's putImageData reads, so no repacking at present(). This
   # is the colour every Canvas call takes.
-  let rgba = fn (r, g, b, a = 255) { r + g * 256 + b * 65536 + a * 16777216 }
+  let rgba = fn (r, g, b, a = 255) {
+    r + g * 256 + b * 65536 + a * 16777216
+  }
 
   # RGB (each channel 0..255) to HSV (each of h, s, v in 0.0..1.0) — the usual
   # transform for deriving a palette from a few base colours: boost saturation,
@@ -20,19 +21,30 @@ let _canvas_module = fn () {
     let bf = b / 255.0
     let hi = Math.max(rf, gf, bf)
     let lo = Math.min(rf, gf, bf)
-    if lo == hi { return (0.0, 0.0, hi) }
+    if lo == hi {
+      return (0.0, 0.0, hi)
+    }
     let span = hi - lo
     let rc = (hi - rf) / span
     let gc = (hi - gf) / span
     let bc = (hi - bf) / span
-    let h6 = if rf == hi { bc - gc } else if gf == hi { 2.0 + rc - bc } else { 4.0 + gc - rc }
+    let h6 = if rf == hi {
+      bc - gc
+    } else if gf == hi {
+      2.0 + rc - bc
+    } else {
+      4.0 + gc - rc
+    }
     let h = h6 / 6.0
     (h - Math.floor(h), span / hi, hi)
   }
 
   # The inverse: HSV (each 0.0..1.0) to RGB (each channel rounded to 0..255).
   let hsv_to_rgb = fn (h, s, v) {
-    if s == 0.0 { let g = Math.round(v * 255); return (g, g, g) }
+    if s == 0.0 {
+      let g = Math.round(v * 255)
+      return (g, g, g)
+    }
     let sector = (h * 6.0).to_long() % 6
     let f = h * 6.0 - (h * 6.0).to_long().to_float()
     let p = v * (1.0 - s)
@@ -44,7 +56,7 @@ let _canvas_module = fn () {
       2 => (p, v, t),
       3 => (p, q, v),
       4 => (t, p, v),
-      _ => (v, p, q)
+      _ => (v, p, q),
     }
     (Math.round(r * 255), Math.round(g * 255), Math.round(b * 255))
   }
@@ -58,20 +70,36 @@ let _canvas_module = fn () {
 
   # The mirror bits, shared by both blit paths.
   let _flip_bits = fn (flip_x, flip_y) {
-    (if flip_x { 1 } else { 0 }) + (if flip_y { 2 } else { 0 })
+    if flip_x {
+      1
+    } else {
+      0
+    } + if flip_y {
+        2
+      } else {
+        0
+      }
   }
 
   # Pack the blit transform flags. transpose swaps the X and Y axes — a
   # reflection across the main diagonal (combine it with a flip for a true 90°
   # rotation).
   let _blit_flags = fn (flip_x, flip_y, transpose) {
-    _flip_bits(flip_x, flip_y) + (if transpose { 4 } else { 0 })
+    _flip_bits(flip_x, flip_y) + if transpose {
+        4
+      } else {
+        0
+      }
   }
 
   # Flags for the scaling blit. There is no transpose, and bit 3 asks for box
   # averaging when the sprite shrinks (ignored when it doesn't).
   let _scale_flags = fn (flip_x, flip_y, smooth) {
-    _flip_bits(flip_x, flip_y) + (if smooth { 8 } else { 0 })
+    _flip_bits(flip_x, flip_y) + if smooth {
+        8
+      } else {
+        0
+      }
   }
 
   # A registered sprite. `pixels` is a flat row-major array; if `palette` is
@@ -81,7 +109,11 @@ let _canvas_module = fn () {
   # nothing is re-marshalled per frame.
   class Sprite {
     new(pixels: Array, w: Long, h: Long, palette = nil) {
-      let rgba_px = if palette == nil { pixels } else { pixels.map(|i| palette[i]) }
+      let rgba_px = if palette == nil {
+        pixels
+      } else {
+        pixels.map(|i| palette[i])
+      }
       self._id = _Canvas.sprite_load(rgba_px, w, h)
       self._w = _Canvas.sprite_width(self._id)
       self._h = _Canvas.sprite_height(self._id)
@@ -103,42 +135,127 @@ let _canvas_module = fn () {
     }
     # Named form of the String constructor, for call sites where `Sprite(data)`
     # would not read as "this is a PNG".
-    static from_png(data) { Sprite(data) }
+    static from_png(data) {
+      Sprite(data)
+    }
     # Named form of the blank constructor, mirroring from_png.
-    static blank(w, h, color = 0) { Sprite(w, h, color) }
+    static blank(w, h, color = 0) {
+      Sprite(w, h, color)
+    }
     # Sprites free their native pixels when the last reference drops, so a
     # program that creates them per frame doesn't grow the registry. A
     # constructor that threw (bad PNG bytes) drops before _id was ever set.
-    drop() { if self._id != nil { _Canvas.sprite_free(self._id) } }
-    width() { self._w }
-    height() { self._h }
+    drop() {
+      if self._id != nil {
+        _Canvas.sprite_free(self._id)
+      }
+    }
+    width() {
+      self._w
+    }
+    height() {
+      self._h
+    }
     # Blit the whole sprite to (x, y). flip_x/flip_y mirror; transpose swaps
     # X/Y. Transparent (alpha 0) pixels are skipped.
     draw(x, y, flip_x = false, flip_y = false, transpose = false) {
-      _Canvas.blit(self._id, x, y, 0, 0, self._w, self._h, _blit_flags(flip_x, flip_y, transpose))
+      _Canvas.blit(
+        self._id,
+        x,
+        y,
+        0,
+        0,
+        self._w,
+        self._h,
+        _blit_flags(flip_x, flip_y, transpose),
+      )
     }
     # Blit a sub-rectangle (sx, sy, sw, sh) of the sprite to (x, y) — for sheets.
-    draw_sub(x, y, sx, sy, sw, sh, flip_x = false, flip_y = false, transpose = false) {
-      _Canvas.blit(self._id, x, y, sx, sy, sw, sh, _blit_flags(flip_x, flip_y, transpose))
+    draw_sub(
+      x,
+      y,
+      sx,
+      sy,
+      sw,
+      sh,
+      flip_x = false,
+      flip_y = false,
+      transpose = false,
+    ) {
+      _Canvas.blit(
+        self._id,
+        x,
+        y,
+        sx,
+        sy,
+        sw,
+        sh,
+        _blit_flags(flip_x, flip_y, transpose),
+      )
     }
     # Blit the whole sprite into the w×h rectangle at (x, y), resampling to fit.
     # Sampling is nearest-neighbour (pixel art stays crisp); `smooth` box-averages
     # instead when the sprite shrinks. `alpha` (0..255) composites the whole blit
     # over what is already there — 255 draws it opaque.
-    draw_scaled(x, y, w, h, flip_x = false, flip_y = false, smooth = false, alpha = 255) {
-      _Canvas.blit_scaled(self._id, x, y, w, h, 0, 0, self._w, self._h,
-                          _scale_flags(flip_x, flip_y, smooth), alpha)
+    draw_scaled(
+      x,
+      y,
+      w,
+      h,
+      flip_x = false,
+      flip_y = false,
+      smooth = false,
+      alpha = 255,
+    ) {
+      _Canvas.blit_scaled(
+        self._id,
+        x,
+        y,
+        w,
+        h,
+        0,
+        0,
+        self._w,
+        self._h,
+        _scale_flags(flip_x, flip_y, smooth),
+        alpha,
+      )
     }
     # draw_scaled from a sub-rectangle (sx, sy, sw, sh) — for sheets.
-    draw_sub_scaled(x, y, w, h, sx, sy, sw, sh, flip_x = false, flip_y = false,
-                    smooth = false, alpha = 255) {
-      _Canvas.blit_scaled(self._id, x, y, w, h, sx, sy, sw, sh,
-                          _scale_flags(flip_x, flip_y, smooth), alpha)
+    draw_sub_scaled(
+      x,
+      y,
+      w,
+      h,
+      sx,
+      sy,
+      sw,
+      sh,
+      flip_x = false,
+      flip_y = false,
+      smooth = false,
+      alpha = 255,
+    ) {
+      _Canvas.blit_scaled(
+        self._id,
+        x,
+        y,
+        w,
+        h,
+        sx,
+        sy,
+        sw,
+        sh,
+        _scale_flags(flip_x, flip_y, smooth),
+        alpha,
+      )
     }
     # Encode the sprite's pixels as PNG bytes — the inverse of from_png, so
     # `FS.write(path, sprite.to_png())` saves what `Sprite.from_png(FS.read(
     # path))` loads back.
-    to_png() { _Canvas.sprite_to_png(self._id) }
+    to_png() {
+      _Canvas.sprite_to_png(self._id)
+    }
   }
 
   # --- built-in 8x8 bitmap font -------------------------------------------
@@ -159,8 +276,8 @@ let _canvas_module = fn () {
     }
     out
   }()
-  let _font_first = 32       # first glyph code (space)
-  let _font_last = 126       # last glyph code (~)
+  let _font_first = 32  # first glyph code (space)
+  let _font_last = 126  # last glyph code (~)
   let _char_w = 8
   # Upload the table once; drawing then costs one call per character rather
   # than one per lit pixel (a 42-character HUD line went 5.1 ms -> 0.2 ms).
@@ -180,7 +297,9 @@ let _canvas_module = fn () {
     }
   }
   # Pixel width a string will occupy — for right-aligning / centring HUD text.
-  let text_width = fn (s, scale = 1) { s.graphemes().collect().size() * _char_w * scale }
+  let text_width = fn (s, scale = 1) {
+    s.graphemes().collect().size() * _char_w * scale
+  }
 
   # --- input --------------------------------------------------------------
   # Button bitmask bits (also mapped by the Playground frontend). A/B are the
@@ -193,8 +312,16 @@ let _canvas_module = fn () {
   let B = 32
 
   # Held-button bitmask this frame, and the mouse as an Object.
-  let buttons = fn () { _Canvas.buttons() }
-  let mouse = fn () { { x: _Canvas.mouse_x(), y: _Canvas.mouse_y(), buttons: _Canvas.mouse_buttons() } }
+  let buttons = fn () {
+    _Canvas.buttons()
+  }
+  let mouse = fn () {
+    {
+      x: _Canvas.mouse_x(),
+      y: _Canvas.mouse_y(),
+      buttons: _Canvas.mouse_buttons(),
+    }
+  }
 
   # Arbitrary keys, in Term.read_key's vocabulary: a printable character
   # ("a", " ", "-") or a special-key name ("left", "enter", "escape", "tab",
@@ -203,7 +330,13 @@ let _canvas_module = fn () {
   # key(name) is the held state now; key_queue() drains this frame's presses
   # (so call it from one place per frame); typed() drains the characters the
   # user typed (shift/layout/IME applied) — for name entry, not movement.
-  let key = fn (name) { _Canvas.key(if name == "space" { " " } else { name }) }
+  let key = fn (name) {
+    _Canvas.key(if name == "space" {
+      " "
+    } else {
+      name
+    })
+  }
   let key_queue = fn () {
     mut out = []
     mut k = _Canvas.key_pop()
@@ -227,18 +360,29 @@ let _canvas_module = fn () {
   # on the frame a button goes down (the natural "flap" trigger). Call update()
   # once per frame, after reading input.
   class Input {
-    new() { self._prev = 0; self._cur = 0 }
-    update() { self._prev = self._cur; self._cur = _Canvas.buttons(); self }
-    down(btn) { (self._cur & btn) != 0 }                       # held now
-    pressed(btn) { (self._cur & btn) != 0 && (self._prev & btn) == 0 }  # just went down
+    new() {
+      self._prev = 0
+      self._cur = 0
+    }
+    update() {
+      self._prev = self._cur
+      self._cur = _Canvas.buttons()
+      self
+    }
+    down(btn) {
+      self._cur & btn != 0
+    }  # held now
+    pressed(btn) {
+      self._cur & btn != 0 && self._prev & btn == 0
+    }  # just went down
   }
 
   # --- audio --------------------------------------------------------------
   # Channels, matching WASM-4's APU. The two pulse channels take a duty cycle;
   # SAWTOOTH is a culebra extension (not a WASM-4 channel). These values are the
   # channel codes passed straight through to the host.
-  let PULSE = 0       # pulse 1
-  let PULSE2 = 1      # pulse 2
+  let PULSE = 0   # pulse 1
+  let PULSE2 = 1  # pulse 2
   let TRIANGLE = 2
   let NOISE = 3
   let SAWTOOTH = 4
@@ -254,10 +398,28 @@ let _canvas_module = fn () {
   # `dur` is the sustain length) shapes the amplitude from 0 up to `peak`, down
   # to the sustain `vol`, and back to 0. `wave` picks the channel and `duty` the
   # pulse shape. No-op on the headless native backend.
-  let tone = fn (freq, dur, vol = 100, wave = 0, end_freq = nil,
-                 attack = 0, decay = 0, release = 0, peak = nil, duty = 2) {
-    let ef = if end_freq == nil { freq } else { end_freq }
-    let pk = if peak == nil { vol } else { peak }
+  let tone = fn (
+    freq,
+    dur,
+    vol = 100,
+    wave = 0,
+    end_freq = nil,
+    attack = 0,
+    decay = 0,
+    release = 0,
+    peak = nil,
+    duty = 2,
+  ) {
+    let ef = if end_freq == nil {
+      freq
+    } else {
+      end_freq
+    }
+    let pk = if peak == nil {
+      vol
+    } else {
+      peak
+    }
     _Canvas.tone(freq, ef, attack, decay, dur, release, vol, pk, wave, duty)
   }
 
@@ -267,13 +429,25 @@ let _canvas_module = fn () {
   # restarts it, like the underlying host samplers. Raises ValueError when the
   # bytes are none of the three formats; silent on the headless backend.
   class Sound {
-    new(data: String) { self._id = _Canvas.sound_load(data) }
-    play(vol = 100) { _Canvas.sound_play(self._id, vol) }
-    stop() { _Canvas.sound_stop(self._id) }
-    playing() { _Canvas.sound_playing(self._id) }
+    new(data: String) {
+      self._id = _Canvas.sound_load(data)
+    }
+    play(vol = 100) {
+      _Canvas.sound_play(self._id, vol)
+    }
+    stop() {
+      _Canvas.sound_stop(self._id)
+    }
+    playing() {
+      _Canvas.sound_playing(self._id)
+    }
     # Free the decoded sample with the last reference (a constructor that
     # threw drops before _id was ever set).
-    drop() { if self._id != nil { _Canvas.sound_free(self._id) } }
+    drop() {
+      if self._id != nil {
+        _Canvas.sound_free(self._id)
+      }
+    }
   }
 
   # --- music ---------------------------------------------------------------
@@ -283,7 +457,11 @@ let _canvas_module = fn () {
   # stream is fed from present(), so it only advances while frames are shown.
   # Raises ValueError when the bytes are neither MP3 nor Ogg.
   let music = fn (data, loop = true, vol = 100, start = 0.0) {
-    _Canvas.music_play(data, if loop { 1 } else { 0 }, vol, start)
+    _Canvas.music_play(data, if loop {
+        1
+      } else {
+        0
+      }, vol, start)
   }
 
   # --- offscreen drawing --------------------------------------------------
@@ -294,7 +472,9 @@ let _canvas_module = fn () {
   # sprite onto itself (sprite.draw inside its own draw_to) raises.
   let draw_to = fn (sprite, f) {
     let prev = _Canvas.target(sprite._id)
-    defer { _Canvas.target(prev) }
+    defer {
+      _Canvas.target(prev)
+    }
     f()
   }
 
@@ -316,9 +496,15 @@ let _canvas_module = fn () {
       let cont = tick()
       _Canvas.present()
       i = i + 1
-      if cont == false { running = false }
-      if _Canvas.closing() { running = false }
-      if !interactive && i >= frames { running = false }
+      if cont == false {
+        running = false
+      }
+      if _Canvas.closing() {
+        running = false
+      }
+      if !interactive && i >= frames {
+        running = false
+      }
     }
   }
 

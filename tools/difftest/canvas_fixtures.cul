@@ -19,7 +19,11 @@ fn _cdump() {
     mut x = 0
     while x < _Canvas.width() {
       let p = _Canvas.get_pixel(x, y)
-      s = s + (if p == 0 { "." } else { to_string(p % 10) })
+      s = s + if p == 0 {
+          "."
+        } else {
+          to_string(p % 10)
+        }
       x = x + 1
     }
     rows.push(s)
@@ -31,8 +35,24 @@ fn _cdump() {
 # Two-glyph 8x8 font for the glyph cases: index 0 is a solid block, index 1 a
 # single top-left pixel. A ZERO bit is lit, so 0x00 is solid and 0x7f lights
 # only the leftmost pixel.
-let _CFONT = _Canvas.font_load([0, 0, 0, 0, 0, 0, 0, 0,
-                                127, 255, 255, 255, 255, 255, 255, 255])
+let _CFONT = _Canvas.font_load([
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  127,
+  255,
+  255,
+  255,
+  255,
+  255,
+  255,
+  255,
+])
 
 # PNG fixtures for the sprite_from_png cases: one 2-pixel-wide image per colour
 # type the decoder accepts, plus a truncated header. Hex so the bytes survive as

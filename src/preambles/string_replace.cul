@@ -1,1 +1,7 @@
-let replace = fn(s, pat, repl) { if type_of(pat) == "String" { s.split(pat).join(repl) } else { pat.replace_all(s, repl) } }
+let replace = fn (s, pat, repl) {
+  if type_of(pat) == "String" {
+    s.split(pat).join(repl)
+  } else {
+    pat.replace_all(s, repl)
+  }
+}

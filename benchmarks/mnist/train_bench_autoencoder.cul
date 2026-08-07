@@ -16,10 +16,18 @@ let BATCH = 100
 let LR = 0.01
 let CYCLES = 2
 
-let device = if Sys.argv.size() > 0 { Sys.argv[0] } else { 'auto' }
-if device == 'cpu' { Tensor.use_cpu() }
-else if device == 'gpu' { Tensor.use_gpu() }
-else { Tensor.use_auto() }
+let device = if Sys.argv.size() > 0 {
+  Sys.argv[0]
+} else {
+  'auto'
+}
+if device == 'cpu' {
+  Tensor.use_cpu()
+} else if device == 'gpu' {
+  Tensor.use_gpu()
+} else {
+  Tensor.use_auto()
+}
 
 if !FS.exists("{DIR}/train_images.csv") {
   inspect("missing {DIR}/train_images.csv; run prep_train.py 60000 first")
@@ -27,7 +35,7 @@ if !FS.exists("{DIR}/train_images.csv") {
 }
 
 let load_t0 = Sys.time()
-let X = Tensor.from_csv("{DIR}/train_images.csv") # [N, 784]
+let X = Tensor.from_csv("{DIR}/train_images.csv")  # [N, 784]
 let t_load = Sys.time() - load_t0
 let n = X.shape()[0]
 inspect("[culebra-tensor-autoencoder] device={device} loaded train={n} in {t_load}s")
@@ -42,14 +50,16 @@ let make_weights = fn () {
     # from a raw binop expression makes it look immutable to a callee's
     # first parameter that later does `-=`/index-assign on it. Harmless
     # here: outside the timed region.
-    Ws.push((Tensor.randn(n_out, n_in) * (2.0 / Math.sqrt(to_float(n_in)))).clone())
+    Ws.push((Tensor.randn(n_out, n_in) *
+      (2.0 / Math.sqrt(to_float(n_in)))).clone())
     bs.push(Tensor.zeros(n_out, 1))
   }
   [Ws, bs]
 }
 
 let run_epoch = fn (Ws, bs) {
-  for s in 0..=(n - BATCH) by BATCH {           # whole batches only
+  for s in 0..=n - BATCH by BATCH {
+    # whole batches only
     let xb = X.slice(s, s + BATCH).transpose()  # [784, BATCH]
 
     mut outs = []
@@ -63,10 +73,14 @@ let run_epoch = fn (Ws, bs) {
     let inv_n = 2.0 / to_float(BATCH * 784)
     mut dout = (h - xb) * inv_n
 
-    for l in (N_LAYERS - 1)..=0 by -1 {
+    for l in N_LAYERS - 1..=0 by -1 {
       let out_l = outs[l]
       let dnet = dout * out_l * (Tensor.ones(L[l + 1], BATCH) - out_l)
-      let input_l = if l > 0 { outs[l - 1] } else { xb }
+      let input_l = if l > 0 {
+        outs[l - 1]
+      } else {
+        xb
+      }
       let dW = dnet.dot(input_l.transpose())
       let db = dnet.sum(1).reshape([L[l + 1], 1])
       if l > 0 {
@@ -92,8 +106,14 @@ for cycle in range(CYCLES) {
 
 let cold = times[0]
 mut warm_sum = 0.0
-for t in times { warm_sum = warm_sum + t }
+for t in times {
+  warm_sum = warm_sum + t
+}
 warm_sum = warm_sum - cold
-let warm = if times.size() > 1 { warm_sum / to_float(times.size() - 1) } else { Math.nan }
+let warm = if times.size() > 1 {
+  warm_sum / to_float(times.size() - 1)
+} else {
+  Math.nan
+}
 inspect("[culebra-tensor-autoencoder] cold={cold}s warm={warm}s")
 print("BENCH label=culebra_tensor_autoencoder device={device} load={t_load} cold={cold} warm={warm}\n")

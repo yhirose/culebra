@@ -10,25 +10,50 @@
 # caught and recorded by `_p`, never a parse error that would break the run.
 # Run: culebra tools/difftest/gen.cul > cases.cul
 mut out = []
-fn emit(line) { out.push(line) }
+fn emit(line) {
+  out.push(line)
+}
 
 # A case: label (for the diff report) + a body expression whose outcome is
 # compared. Labels use single-quote raw strings so embedded `"`/`{}` need no
 # escaping (no generated operand contains a single quote).
 # `"..."` interpolates `{expr}`, so the literal braces of the generated lambda
 # come from single-quote raw strings; the label/body are plain concatenation.
-fn case(label, body) { emit("_p('" + label + "', fn () " + '{ ' + body + ' }' + ")") }
+fn case(label, body) {
+  emit("_p('" + label + "', fn () " + '{ ' + body + ' }' + ")")
+}
 
 # Receiver expressions spanning every Value::Type variant (interpreter.h's
 # `enum Type`) except Tensor and StringView, which get their own dedicated
 # sweeps (Dimension 15, Dimension 19/24) because neither is reachable through
 # a plain literal. Parenthesized so a scalar receiver (`(1).size()`) and a
 # method/index chain both parse.
-let recvs = ['1', '1.5', 'true', 'nil', '"abc"', '[1, 2, 3]', '{a: 1, b: 2}',
-             '(1, 2, 3)', '{1, 2, 3}', 'fn (x) { x }']
+let recvs = [
+  '1',
+  '1.5',
+  'true',
+  'nil',
+  '"abc"',
+  '[1, 2, 3]',
+  '{a: 1, b: 2}',
+  '(1, 2, 3)',
+  '{1, 2, 3}',
+  'fn (x) { x }',
+]
 
 # --- Dimension 1: operators x operand-type pairs --------------------------
-let operands = ['1', '2', '1.5', '"a"', '"b"', 'true', 'nil', '[1, 2]', '{a: 1}', '(1, 2)']
+let operands = [
+  '1',
+  '2',
+  '1.5',
+  '"a"',
+  '"b"',
+  'true',
+  'nil',
+  '[1, 2]',
+  '{a: 1}',
+  '(1, 2)',
+]
 let binops = ['+', '-', '*', '/', '%', '<', '<=', '>', '>=', '==', '!=']
 for op in binops {
   for l in operands {
@@ -51,33 +76,136 @@ for u in ['-', '!'] {
 # corpus never applies is a method whose error shapes nobody compares
 # (`trim_start` sat outside this list for two months with a live asymmetry).
 # tools/check_difftest_coverage.sh fails the build when the two drift apart.
-let methods = ['add', 'all', 'any', 'argmax', 'backward', 'bytes',
-               'capitalize', 'chain', 'chunk_by', 'chunks', 'clone',
-               'code_points', 'collect', 'contains', 'count', 'detach',
-               'diff', 'distinct', 'dot', 'empty', 'ends_with',
-               'enumerate', 'extend', 'filter', 'find', 'first',
-               'flat_map', 'flatten', 'for_each', 'get', 'get_or_put',
-               'grad', 'graphemes', 'group_by', 'has', 'index_of',
-               'insert', 'intersect', 'item', 'iter', 'join', 'keys',
-               'last', 'linear_sigmoid', 'lines', 'log', 'lower', 'map',
-               'max', 'max_by', 'mean', 'min', 'min_by', 'nth',
-               'partition', 'pop', 'position', 'pow', 'presence',
-               'product', 'push', 'reduce', 'relu', 'remove', 'remove_at',
-               'repeat', 'requires_grad', 'reshape', 'reverse', 'scan',
-               'shape', 'sigmoid', 'size', 'skip', 'skip_while', 'slice',
-               'softmax', 'sort', 'sort_by', 'sorted', 'sorted_by',
-               'split', 'split_iter', 'starts_with', 'step_by', 'subset',
-               'sum', 'superset', 'sym_diff', 'take', 'take_while', 'tap',
-               'to_array', 'to_object', 'to_set', 'to_string', 'tr',
-               'transpose', 'trim', 'trim_end', 'trim_start', 'truncate',
-               'union', 'upper', 'values', 'view', 'windows', 'zero_grad',
-               'zip']
-let argshapes = ['', '0', '"x"', '1, 2', '0, 1, 2', '|x| x', '|x| x > 0',
-                 '0, |a, b| a + b', 'fn (a, b) { a }', '[1]']
+let methods = [
+  'add',
+  'all',
+  'any',
+  'argmax',
+  'backward',
+  'bytes',
+  'capitalize',
+  'chain',
+  'chunk_by',
+  'chunks',
+  'clone',
+  'code_points',
+  'collect',
+  'contains',
+  'count',
+  'detach',
+  'diff',
+  'distinct',
+  'dot',
+  'empty',
+  'ends_with',
+  'enumerate',
+  'extend',
+  'filter',
+  'find',
+  'first',
+  'flat_map',
+  'flatten',
+  'for_each',
+  'get',
+  'get_or_put',
+  'grad',
+  'graphemes',
+  'group_by',
+  'has',
+  'index_of',
+  'insert',
+  'intersect',
+  'item',
+  'iter',
+  'join',
+  'keys',
+  'last',
+  'linear_sigmoid',
+  'lines',
+  'log',
+  'lower',
+  'map',
+  'max',
+  'max_by',
+  'mean',
+  'min',
+  'min_by',
+  'nth',
+  'partition',
+  'pop',
+  'position',
+  'pow',
+  'presence',
+  'product',
+  'push',
+  'reduce',
+  'relu',
+  'remove',
+  'remove_at',
+  'repeat',
+  'requires_grad',
+  'reshape',
+  'reverse',
+  'scan',
+  'shape',
+  'sigmoid',
+  'size',
+  'skip',
+  'skip_while',
+  'slice',
+  'softmax',
+  'sort',
+  'sort_by',
+  'sorted',
+  'sorted_by',
+  'split',
+  'split_iter',
+  'starts_with',
+  'step_by',
+  'subset',
+  'sum',
+  'superset',
+  'sym_diff',
+  'take',
+  'take_while',
+  'tap',
+  'to_array',
+  'to_object',
+  'to_set',
+  'to_string',
+  'tr',
+  'transpose',
+  'trim',
+  'trim_end',
+  'trim_start',
+  'truncate',
+  'union',
+  'upper',
+  'values',
+  'view',
+  'windows',
+  'zero_grad',
+  'zip',
+]
+let argshapes = [
+  '',
+  '0',
+  '"x"',
+  '1, 2',
+  '0, 1, 2',
+  '|x| x',
+  '|x| x > 0',
+  '0, |a, b| a + b',
+  'fn (a, b) { a }',
+  '[1]',
+]
 for recv in recvs {
   for m in methods {
     for a in argshapes {
-      case("m|" + recv + "|" + m + "|" + a, "(" + recv + ")." + m + "(" + a + ")")
+      case(
+        "m|" + recv + "|" + m + "|" + a,
+        "(" + recv + ")." + m + "(" + a + ")",
+      )
     }
   }
 }
@@ -85,8 +213,19 @@ for recv in recvs {
 # --- Dimension 3: builtins / ns-methods as values x call forms ------------
 # Covers the direct-vs-as-value duality: a builtin called directly, bound to a
 # variable, or handed to a higher-order / lazy combinator. `arg` is good or bad.
-let vals = ['Math.abs', 'Math.sqrt', 'Math.max', 'Math.min', 'range', 'iota',
-            'type_of', 'to_long', 'to_float', 'to_string', 'hash']
+let vals = [
+  'Math.abs',
+  'Math.sqrt',
+  'Math.max',
+  'Math.min',
+  'range',
+  'iota',
+  'type_of',
+  'to_long',
+  'to_float',
+  'to_string',
+  'hash',
+]
 let vargs = ['1', '"x"', '', '1, 2', '1, 2, 3']
 for v in vals {
   for a in vargs {
@@ -110,9 +249,17 @@ for v in vals {
 # builtin_method_names(), coverage-gated) rather than its own hand-picked
 # subset — a name added there is swept here for free, closing the same kind
 # of gap `trim_start` fell into (tools/check_difftest_coverage.sh).
-let bare_recvs = ['1', '"abc"', '[1, 2]', '{a: 1}', '(1, 2)', '{1, 2}', '0..3',
-                  '[1, 2].iter()',
-                  '{has_next: fn () { false }, next: fn () { nil }}']
+let bare_recvs = [
+  '1',
+  '"abc"',
+  '[1, 2]',
+  '{a: 1}',
+  '(1, 2)',
+  '{1, 2}',
+  '0..3',
+  '[1, 2].iter()',
+  '{has_next: fn () { false }, next: fn () { nil }}',
+]
 let bare_names = [...methods, 'zzz']
 for r in bare_recvs {
   for n in bare_names {
@@ -137,8 +284,10 @@ for recv in recvs {
 # case because both mutate.
 for i in [...indices, '3', '-3', '-4'] {
   case('insert|' + i, '{ mut a = [1, 2, 3]; a.insert(' + i + ', 9); a }')
-  case('removeat|' + i,
-       '{ mut a = [1, 2, 3]; let r = a.remove_at(' + i + '); (r, a) }')
+  case(
+    'removeat|' + i,
+    '{ mut a = [1, 2, 3]; let r = a.remove_at(' + i + '); (r, a) }',
+  )
 }
 for src in ['[4, 5]', '[]', '(4, 5)', '{4, 5}', '"ab"', '4', 'nil'] {
   case('extend|' + src, '{ mut a = [1, 2]; a.extend(' + src + '); a }')
@@ -156,9 +305,24 @@ case("concat-shared", '{ let a = [{v: 1}]; let c = a + []; (a[0].v, c[0].v) }')
 # `[function]`). `inspect(V)` prints before _p's own line, so a display
 # divergence shows up on that leading line; `to_string(V)` is compared via
 # `_show` on the returned String.
-let disp_vals = ['to_long', 'Math.abs', 'print', 'fn (x) { x }', '|x| x',
-                 '1', '1.5', 'true', 'nil', '"s"', '[1, 2]', '{a: 1}',
-                 '(1, 2)', '{1, 2}', 'range', 'iota']
+let disp_vals = [
+  'to_long',
+  'Math.abs',
+  'print',
+  'fn (x) { x }',
+  '|x| x',
+  '1',
+  '1.5',
+  'true',
+  'nil',
+  '"s"',
+  '[1, 2]',
+  '{a: 1}',
+  '(1, 2)',
+  '{1, 2}',
+  'range',
+  'iota',
+]
 for v in disp_vals {
   case("disp-inspect|" + v, "inspect(" + v + ")")
   case("disp-str|" + v, "to_string(" + v + ")")
@@ -196,42 +360,61 @@ case("ctor-call-plaindict", 'let d = { new: fn (x) { x } }; d(1)')
 # for a `new`-less class) — value, error kind/position, and init-vs-binding
 # ordering must all mirror the interp.
 let field_pre = 'class F { a: Long = 3  b: Long = self.a * 2  z: Long  ' +
-                's: String  arr: Array = [] }; '
+  's: String  arr: Array = [] }; '
 case("field-default", field_pre + "F.new().a")
 case("field-this-order", field_pre + "F.new().b")
 case("field-zero-long", field_pre + "F.new().z")
 case("field-zero-string", field_pre + "F.new().s")
-case("field-fresh-array",
-     field_pre + "let x = F.new(); let y = F.new(); x.arr.push(1); y.arr")
-case("field-before-new",
-     'class F { a: Long = 3  new(m) { self.r = self.a * m } }; F.new(5).r')
-case("field-init-throws",
-     'class F { a: Long = to_long("x") }; F.new()')
-case("field-init-after-binding",
-     'class F { a: Long = to_long("x")  new(p, q) { } }; F.new(1)')
-case("field-method-call-init",
-     'class F { a: Long = self.base()  base() { 41 } }; F.new().a + 1')
-case("field-forward-read",
-     'class F { a: Long = self.later  later: Long = 9 }; F.new().a')
-case("field-packable-defaults",
-     '@packable class P { x: Int32 = 7  y: Float32 = 0.5 }; ' +
-     'let p = P.new(); [p.x, p.y]')
+case(
+  "field-fresh-array",
+  field_pre + "let x = F.new(); let y = F.new(); x.arr.push(1); y.arr",
+)
+case(
+  "field-before-new",
+  'class F { a: Long = 3  new(m) { self.r = self.a * m } }; F.new(5).r',
+)
+case("field-init-throws", 'class F { a: Long = to_long("x") }; F.new()')
+case(
+  "field-init-after-binding",
+  'class F { a: Long = to_long("x")  new(p, q) { } }; F.new(1)',
+)
+case(
+  "field-method-call-init",
+  'class F { a: Long = self.base()  base() { 41 } }; F.new().a + 1',
+)
+case(
+  "field-forward-read",
+  'class F { a: Long = self.later  later: Long = 9 }; F.new().a',
+)
+case(
+  "field-packable-defaults",
+  '@packable class P { x: Int32 = 7  y: Float32 = 0.5 }; ' +
+    'let p = P.new(); [p.x, p.y]',
+)
 # The type annotation is optional (`x = e` declares the same field).
 # (@packable rejects the untyped form — a STATIC error, pre-eval, so it
 # cannot live in this corpus of runnable thunks.)
-case("field-untyped",
-     'class F { a = 3  b = self.a * 2 }; let f = F.new(); [f.a, f.b]')
+case(
+  "field-untyped",
+  'class F { a = 3  b = self.a * 2 }; let f = F.new(); [f.a, f.b]',
+)
 
 # --- Dimension 6e: ctor / method param defaults resolve in defining scope ---
 # The interp's method-binding wrapper must carry def_env + the default
 # evaluator: a defaulted member call resolves globals (and raises the
 # default's own error) identically across backends.
-case("member-default-global",
-     'let g = 7; class M { new() {} m(b = g * 2) { b } }; M.new().m()')
-case("member-default-throws",
-     'class M { new(a = to_long("zzz")) { self.a = a } }; M.new()')
-case("member-default-hof",
-     'class M { new(x = 1, a = to_long("z")) { } }; [9].map(M.new)')
+case(
+  "member-default-global",
+  'let g = 7; class M { new() {} m(b = g * 2) { b } }; M.new().m()',
+)
+case(
+  "member-default-throws",
+  'class M { new(a = to_long("zzz")) { self.a = a } }; M.new()',
+)
+case(
+  "member-default-hof",
+  'class M { new(x = 1, a = to_long("z")) { } }; [9].map(M.new)',
+)
 
 # --- Dimension 6b: class getters (`get name()` read as `obj.name`) ----------
 # A getter fires on a bare property read AND when spelled with call parens;
@@ -239,7 +422,7 @@ case("member-default-hof",
 # runtime path than the interp). A getter named `name` also exercises the
 # function-introspection member path. `p` is fresh per case thunk.
 let getter_pre = 'class G { new(a) { self.a = a } get twice() { self.a * 2 } ' +
-                 'get name() { "g" } plain() { self.a } }; let p = G.new(21); '
+  'get name() { "g" } plain() { self.a } }; let p = G.new(21); '
 case("getter-bare", getter_pre + "p.twice")
 case("getter-paren", getter_pre + "p.twice()")
 case("getter-name-bare", getter_pre + "p.name")
@@ -263,9 +446,17 @@ case("iterjoin-filter", 'range(1, 10).filter(|x| x % 2 == 0).join("-")')
 # over `[1, "x"]` so a per-element type error tests the callback's error
 # kind / message / *position* through the lazy pipeline (the eager forms
 # are covered by D3's v-map). Terminal `collect`/`count`/`for_each`.
-let lazycbs = ['map(to_long)', 'filter(to_long)', 'take_while(to_long)',
-               'skip_while(to_long)', 'tap(to_long)', 'chunk_by(to_long)',
-               'flat_map(to_long)', 'map(Math.abs)', 'map(|x| x + 1)']
+let lazycbs = [
+  'map(to_long)',
+  'filter(to_long)',
+  'take_while(to_long)',
+  'skip_while(to_long)',
+  'tap(to_long)',
+  'chunk_by(to_long)',
+  'flat_map(to_long)',
+  'map(Math.abs)',
+  'map(|x| x + 1)',
+]
 for c in lazycbs {
   case("lazyerr-collect|" + c, '[1, "x"].iter().' + c + ".collect()")
   case("lazyerr-count|" + c, '[1, "x"].iter().' + c + ".count()")
@@ -274,15 +465,17 @@ for c in lazycbs {
 # --- Dimension 8: keyword args / kwargs splat -----------------------------
 # Positional splat `f(*xs)` is unimplemented (parse error on both), so only
 # keyword + `**{}` forms appear here. Good and bad keywords.
-let kwcases = ['range(0, 5, step: 2).collect()',
-               'range(0, 5, **{step: 2}).collect()',
-               'range(0, 5, step: 0).collect()',
-               'range(0, 5, **{bad: 2}).collect()',
-               'range(0, 5, bad: 2).collect()',
-               '[1, 2, 3].sort_by(key: |x| x)',
-               '[3, 1, 2].sorted(reverse: true)',
-               '[3, 1, 2].sorted(bad: 1)',
-               'Math.abs(x: 1)']
+let kwcases = [
+  'range(0, 5, step: 2).collect()',
+  'range(0, 5, **{step: 2}).collect()',
+  'range(0, 5, step: 0).collect()',
+  'range(0, 5, **{bad: 2}).collect()',
+  'range(0, 5, bad: 2).collect()',
+  '[1, 2, 3].sort_by(key: |x| x)',
+  '[3, 1, 2].sorted(reverse: true)',
+  '[3, 1, 2].sorted(bad: 1)',
+  'Math.abs(x: 1)',
+]
 for kc in kwcases {
   case("kw|" + kc, kc)
 }
@@ -291,8 +484,10 @@ for kc in kwcases {
 # keyword TypeError. Every backend must name the same leftover kwarg — leftover
 # selection is single-sourced to the lexicographically smallest name, so this
 # guards against the interp/JIT map-iteration-order drift it used to have.
-case("kw|overload_0param_ambiguous",
-     'fn f() { "empty" }; fn f(x: Long, y: Long) { "xy" }; f(y: 9, x: 8)')
+case(
+  "kw|overload_0param_ambiguous",
+  'fn f() { "empty" }; fn f(x: Long, y: Long) { "xy" }; f(y: 9, x: 8)',
+)
 
 # --- Dimension 9: generators / yield --------------------------------------
 # Generators lower to a flat-dispatch CPS engine — structurally a different
@@ -317,14 +512,16 @@ for g in gens {
 # --- Dimension 10: try / catch / throw ------------------------------------
 # Exception propagation + the caught error's kind/message/line, including
 # throws raised inside an eager HOF, a lazy pipeline, and a raw user throw.
-let trys = ['try { to_long("x") } catch e { e.kind }',
-            'try { to_long("x") } catch e { e.message }',
-            'try { to_long("x") } catch e { e.line }',
-            'try { [1].map(|x| to_long("x")) } catch e { e.kind }',
-            'try { [1, "x"].iter().map(to_long).collect() } catch e { e.line }',
-            'try { throw {kind: "K", message: "m"} } catch e { e.kind }',
-            'try { throw {kind: "K", message: "m"} } catch e { e.message }',
-            'try { 1 + 1 } catch e { -1 }']
+let trys = [
+  'try { to_long("x") } catch e { e.kind }',
+  'try { to_long("x") } catch e { e.message }',
+  'try { to_long("x") } catch e { e.line }',
+  'try { [1].map(|x| to_long("x")) } catch e { e.kind }',
+  'try { [1, "x"].iter().map(to_long).collect() } catch e { e.line }',
+  'try { throw {kind: "K", message: "m"} } catch e { e.kind }',
+  'try { throw {kind: "K", message: "m"} } catch e { e.message }',
+  'try { 1 + 1 } catch e { -1 }',
+]
 for t in trys {
   case("try|" + t, t)
 }
@@ -341,13 +538,20 @@ let winits = [
   '{ mut t = 0; while mut i = 0; i < 3 { while mut j = 0; j < 3 { t = t + i * j; j = j + 1 }; i = i + 1 }; t }',
   '{ mut o = []; while mut (a, b) = (1, 2); a < b { o.push(a + b); a = a + 5 }; o }',
   '{ mut i = 999; while mut i = 0; i < 3 { i = i + 1 }; i }',
-  '{ let hd = "0123456789abcdef".graphemes().collect(); let cs = "48656c6c6f".graphemes().collect(); mut o = []; while mut i = 0; i < cs.size() { o.push(hd.index_of(cs[i]) * 16 + hd.index_of(cs[i + 1])); i = i + 2 }; o }']
+  '{ let hd = "0123456789abcdef".graphemes().collect(); let cs = "48656c6c6f".graphemes().collect(); mut o = []; while mut i = 0; i < cs.size() { o.push(hd.index_of(cs[i]) * 16 + hd.index_of(cs[i + 1])); i = i + 2 }; o }',
+]
 for w in winits {
   case("while_init|" + w, w)
 }
 # Generator + effect fn bodies with a while-init loop (source-transform paths).
-case("while_init|gen", 'fn g() { while mut i = 0; i < 4 { yield i * i; i = i + 1 } }; g().collect()')
-case("while_init|eff", 'effect fn tk(); effect fn c(n) { mut s = 0; while mut i = 0; i < n { perform tk(); s = s + i; i = i + 1 }; s }; handle { c(5) } with tk(r) { r(nil) }')
+case(
+  "while_init|gen",
+  'fn g() { while mut i = 0; i < 4 { yield i * i; i = i + 1 } }; g().collect()',
+)
+case(
+  "while_init|eff",
+  'effect fn tk(); effect fn c(n) { mut s = 0; while mut i = 0; i < n { perform tk(); s = s + i; i = i + 1 }; s }; handle { c(5) } with tk(r) { r(nil) }',
+)
 
 # --- Dimension: nobreak clause (loop-else, no-break semantics) -------------
 # `nobreak { … }` runs only when the loop completes normally (condition false /
@@ -361,26 +565,54 @@ let nobreaks = [
   '{ mut o = []; for x in [10, 20, 30] { o.push(x) } nobreak { o.push(0) }; o }',
   '{ mut o = []; for x in [10, 20, 30] { if x == 20 { break }; o.push(x) } nobreak { o.push(0) }; o }',
   '{ mut o = []; for x in 0..4 { o.push(x) } nobreak { o.push(-1) }; o }',
-  '{ mut t = 0; for c in "abc" { t = t + 1 } nobreak { t = t + 100 }; t }']
+  '{ mut t = 0; for c in "abc" { t = t + 1 } nobreak { t = t + 100 }; t }',
+]
 for nb in nobreaks {
   case("nobreak|" + nb, nb)
 }
 # Search idiom: return inside body (break-like, skips nobreak) vs return inside
 # nobreak (exhausted). Both the for and while forms, in a function.
-case("nobreak|find_hit", 'fn f(xs, t) { for x in xs { if x == t { return "hit" } } nobreak { return "miss" } }; f([1, 2, 3], 2)')
-case("nobreak|find_miss", 'fn f(xs, t) { for x in xs { if x == t { return "hit" } } nobreak { return "miss" } }; f([1, 2, 3], 9)')
-case("nobreak|while_ret", 'fn f() { while mut i = 0; i < 3 { i = i + 1 } nobreak { return "done" } }; f()')
+case(
+  "nobreak|find_hit",
+  'fn f(xs, t) { for x in xs { if x == t { return "hit" } } nobreak { return "miss" } }; f([1, 2, 3], 2)',
+)
+case(
+  "nobreak|find_miss",
+  'fn f(xs, t) { for x in xs { if x == t { return "hit" } } nobreak { return "miss" } }; f([1, 2, 3], 9)',
+)
+case(
+  "nobreak|while_ret",
+  'fn f() { while mut i = 0; i < 3 { i = i + 1 } nobreak { return "done" } }; f()',
+)
 # A closure defined inside a nobreak block must capture enclosing locals
 # identically on both backends (regression: the JIT free-var / local-collect
 # pre-passes special-case FOR and used to drop the trailing nobreak child, so a
 # closure there had no func_info and the JIT aborted while interp ran fine).
-case("nobreak|for_closure", 'fn f() { let tag = "cap"; mut g = nil; for x in [1, 2] { } nobreak { g = fn() { tag } }; g() }; f()')
-case("nobreak|while_closure", 'fn f() { let tag = "cap"; mut g = nil; while mut i = 0; i < 2 { i = i + 1 } nobreak { g = fn() { tag } }; g() }; f()')
-case("nobreak|for_closure_sum", 'fn f() { mut total = 0; mut g = nil; for x in [1, 2, 3] { total = total + x } nobreak { g = fn() { total } }; g() }; f()')
+case(
+  "nobreak|for_closure",
+  'fn f() { let tag = "cap"; mut g = nil; for x in [1, 2] { } nobreak { g = fn() { tag } }; g() }; f()',
+)
+case(
+  "nobreak|while_closure",
+  'fn f() { let tag = "cap"; mut g = nil; while mut i = 0; i < 2 { i = i + 1 } nobreak { g = fn() { tag } }; g() }; f()',
+)
+case(
+  "nobreak|for_closure_sum",
+  'fn f() { mut total = 0; mut g = nil; for x in [1, 2, 3] { total = total + x } nobreak { g = fn() { total } }; g() }; f()',
+)
 # Generator + effect fn with nobreak (source-transform paths).
-case("nobreak|gen_while", 'fn g() { while mut i = 0; i < 3 { yield i; i = i + 1 } nobreak { yield 100 } }; g().collect()')
-case("nobreak|gen_for", 'fn g() { for x in [1, 2, 3] { yield x } nobreak { yield 99 } }; g().collect()')
-case("nobreak|eff", 'effect fn tk(); effect fn c(n) { mut s = 0; while mut i = 0; i < n { perform tk(); s = s + i; i = i + 1 } nobreak { s = s + 1000 }; s }; handle { c(3) } with tk(r) { r(nil) }')
+case(
+  "nobreak|gen_while",
+  'fn g() { while mut i = 0; i < 3 { yield i; i = i + 1 } nobreak { yield 100 } }; g().collect()',
+)
+case(
+  "nobreak|gen_for",
+  'fn g() { for x in [1, 2, 3] { yield x } nobreak { yield 99 } }; g().collect()',
+)
+case(
+  "nobreak|eff",
+  'effect fn tk(); effect fn c(n) { mut s = 0; while mut i = 0; i < n { perform tk(); s = s + i; i = i + 1 } nobreak { s = s + 1000 }; s }; handle { c(3) } with tk(r) { r(nil) }',
+)
 
 # --- Dimension: if init clause (`if mut x = f(); cond { … }`) --------------
 # The init clause scopes bindings to the whole if / else-if / else chain and is
@@ -393,13 +625,20 @@ let ifinits = [
   '{ mut acc = 0; if mut a = 1, mut b = 2; a < b { acc = a + b }; acc }',
   '{ if mut s = "ab" + "cd"; s.size() > 3 { s } else { "x" } }',
   '{ if mut n = 5; n > 0 { n * 10 } else { -1 } }',
-  '{ mut x = 100; if mut x = 1; x > 0 { x } else { x } }']
+  '{ mut x = 100; if mut x = 1; x > 0 { x } else { x } }',
+]
 for f in ifinits {
   case("if_init|" + f, f)
 }
 # Generator + effect fn bodies with an if-init (source-transform paths).
-case("if_init|gen", 'fn g() { for x in [1, 2, 3, 4] { if mut d = x * 2; d > 4 { yield d } } }; g().collect()')
-case("if_init|eff", 'effect fn ask(); effect fn go() { let v = perform ask(); if mut d = v * 10; d > 50 { "big" } else { "small" } }; handle { go() } with ask(r) { r(9) }')
+case(
+  "if_init|gen",
+  'fn g() { for x in [1, 2, 3, 4] { if mut d = x * 2; d > 4 { yield d } } }; g().collect()',
+)
+case(
+  "if_init|eff",
+  'effect fn ask(); effect fn go() { let v = perform ask(); if mut d = v * 10; d > 50 { "big" } else { "small" } }; handle { go() } with ask(r) { r(9) }',
+)
 
 # --- Dimension: match init clause (`match mut x = f(); subject { … }`) -----
 # The init clause scopes bindings to the subject and every arm, and is dropped
@@ -413,23 +652,29 @@ let minits = [
   '{ match mut arr = [1, 2, 3]; arr.size() { 3 => arr.size() * 10, _ => 0 } }',
   '{ match mut s = "hi" + "!"; s { v => { defer { }; v.size() } } }',
   '{ mut x = 100; match mut x = 1; x { v => v } }',
-  '{ mut o = []; for k in 0..3 { match mut d = k * 2; d { 0 => o.push("a"), 2 => o.push("b"), _ => o.push("c") } }; o }']
+  '{ mut o = []; for k in 0..3 { match mut d = k * 2; d { 0 => o.push("a"), 2 => o.push("b"), _ => o.push("c") } }; o }',
+]
 for m in minits {
   case("match_init|" + m, m)
 }
 # Throw out of an arm with a heap-typed init var: the init slot must be released
 # on the unwind path (no leak), and the error must surface identically.
-case("match_init|throw", 'fn f() { match mut arr = [1, 2, 3]; arr.size() { 3 => { throw "boom" }, _ => 0 } }; try { f() } catch e { "caught" }')
+case(
+  "match_init|throw",
+  'fn f() { match mut arr = [1, 2, 3]; arr.size() { 3 => { throw "boom" }, _ => 0 } }; try { f() } catch e { "caught" }',
+)
 
 # --- Dimension 11: match / patterns ---------------------------------------
 let me_pre = 'enum E { A(Long), B }; '
-let matches = [me_pre + 'match E.A(5) { A(x) => x, _ => -1 }',
-               me_pre + 'match E.B { A(x) => x, B => 0, _ => -1 }',
-               me_pre + 'match E.A(5) { B => 0 }',
-               'match 5 { 1 => "a", 5 => "b", _ => "c" }',
-               'match [1, 2] { [a, b] => a + b, _ => 0 }',
-               'match (1, 2) { (a, b) => a + b, _ => 0 }',
-               'match 5 { x: Long => "long", _ => "other" }']
+let matches = [
+  me_pre + 'match E.A(5) { A(x) => x, _ => -1 }',
+  me_pre + 'match E.B { A(x) => x, B => 0, _ => -1 }',
+  me_pre + 'match E.A(5) { B => 0 }',
+  'match 5 { 1 => "a", 5 => "b", _ => "c" }',
+  'match [1, 2] { [a, b] => a + b, _ => 0 }',
+  'match (1, 2) { (a, b) => a + b, _ => 0 }',
+  'match 5 { x: Long => "long", _ => "other" }',
+]
 for m in matches {
   case("match|" + m, m)
 }
@@ -441,19 +686,39 @@ for m in matches {
 case("match-string", `match 'z' { 'a' => 1, 'z' => 2, _ => 3 }`)
 
 # --- Dimension 12: numeric edge cases -------------------------------------
-let nums = ['(1 << 63)', '(1 << 64)', '(-1 >> 1)', '(0.0 / 0.0)', '(1.0 / 0.0)',
-            '(-5) % 3', '(5) % (-3)', '(0xff) + (0b1010) + (0o17)',
-            '(2 ** 10)', '(2 ** 63)', '(~0)', '(~5)', '(5 / 0)', '(5 % 0)',
-            '(1.5 % 0.5)']
+let nums = [
+  '(1 << 63)',
+  '(1 << 64)',
+  '(-1 >> 1)',
+  '(0.0 / 0.0)',
+  '(1.0 / 0.0)',
+  '(-5) % 3',
+  '(5) % (-3)',
+  '(0xff) + (0b1010) + (0o17)',
+  '(2 ** 10)',
+  '(2 ** 63)',
+  '(~0)',
+  '(~5)',
+  '(5 / 0)',
+  '(5 % 0)',
+  '(1.5 % 0.5)',
+]
 for n in nums {
   case("num|" + n, n)
 }
 
 # --- Dimension 13: string formatting / escapes ----------------------------
-let strs = ['let _x = 3.14159; "v={_x:.2f}"', 'let _n = 42; "n={_n:05}"',
-            'let _n = 255; "h={_n:x}"', '"a\tb\nc".size()', '"caf\u00e9".size()',
-            '"a\x41b".size()', '"hello".slice(1, 3)', '"hello"[1..3]',
-            'let _s = "x"; "interp={_s}{_s}"']
+let strs = [
+  'let _x = 3.14159; "v={_x:.2f}"',
+  'let _n = 42; "n={_n:05}"',
+  'let _n = 255; "h={_n:x}"',
+  '"a\tb\nc".size()',
+  '"caf\u00e9".size()',
+  '"a\x41b".size()',
+  '"hello".slice(1, 3)',
+  '"hello"[1..3]',
+  'let _s = "x"; "interp={_s}{_s}"',
+]
 for s in strs {
   case("str|" + s, s)
 }
@@ -589,19 +854,35 @@ for t in tensors {
 # declared inside each thunk (single-quote raw so the decl braces are literal,
 # not read as `"{...}"` interpolation).
 let kwc_pre = 'class C { new(a, b = 10) { self.s = a + b } m(a, b = 10) { a + b } }; '
-let kw_ctor_calls = ['C.new(1).s', 'C.new(1, 2).s', 'C.new(a: 1).s',
-                     'C.new(a: 1, b: 2).s', 'C.new(b: 2, a: 1).s',
-                     'C.new(1, b: 2).s', 'C.new(1, **{b: 5}).s',
-                     'C.new().s', 'C.new(bad: 1).s', 'C.new(1, bad: 2).s',
-                     'C.new(1, a: 2).s', 'C.new(a: 1, a: 2).s']
+let kw_ctor_calls = [
+  'C.new(1).s',
+  'C.new(1, 2).s',
+  'C.new(a: 1).s',
+  'C.new(a: 1, b: 2).s',
+  'C.new(b: 2, a: 1).s',
+  'C.new(1, b: 2).s',
+  'C.new(1, **{b: 5}).s',
+  'C.new().s',
+  'C.new(bad: 1).s',
+  'C.new(1, bad: 2).s',
+  'C.new(1, a: 2).s',
+  'C.new(a: 1, a: 2).s',
+]
 for c in kw_ctor_calls {
   case("kwbind-ctor|" + c, kwc_pre + c)
 }
-let kw_method_calls = ['C.new(0).m(1)', 'C.new(0).m(1, 2)', 'C.new(0).m(a: 1)',
-                       'C.new(0).m(a: 1, b: 2)', 'C.new(0).m(b: 2, a: 1)',
-                       'C.new(0).m(1, b: 2)', 'C.new(0).m()',
-                       'C.new(0).m(bad: 1)', 'C.new(0).m(1, bad: 2)',
-                       'C.new(0).m(1, a: 2)']
+let kw_method_calls = [
+  'C.new(0).m(1)',
+  'C.new(0).m(1, 2)',
+  'C.new(0).m(a: 1)',
+  'C.new(0).m(a: 1, b: 2)',
+  'C.new(0).m(b: 2, a: 1)',
+  'C.new(0).m(1, b: 2)',
+  'C.new(0).m()',
+  'C.new(0).m(bad: 1)',
+  'C.new(0).m(1, bad: 2)',
+  'C.new(0).m(1, a: 2)',
+]
 for c in kw_method_calls {
   case("kwbind-method|" + c, kwc_pre + c)
 }
@@ -609,9 +890,14 @@ for c in kw_method_calls {
 # still bind kwargs to the user method, not the JIT's positional set-mutate
 # fast path (which silently misbound a keyword as a positional arg).
 let kwa_pre = 'class A { new() {} add(a, b = 10) { a + b } }; '
-let kw_add_calls = ['A.new().add(1)', 'A.new().add(a: 1)',
-                    'A.new().add(a: 1, b: 2)', 'A.new().add(1, b: 2)',
-                    'A.new().add(bad: 1)', 'A.new().add()']
+let kw_add_calls = [
+  'A.new().add(1)',
+  'A.new().add(a: 1)',
+  'A.new().add(a: 1, b: 2)',
+  'A.new().add(1, b: 2)',
+  'A.new().add(bad: 1)',
+  'A.new().add()',
+]
 for c in kw_add_calls {
   case("kwbind-add|" + c, kwa_pre + c)
 }
@@ -659,14 +945,20 @@ for it in iters {
 # Bodies hold literal `{...}` decl braces, so they are single-quote raw (a
 # double-quoted body would read the braces as `{expr}` interpolation).
 case("scope-iso|decl-1-arg", 'fn lx(x) { x }; lx(41)')
-case("scope-iso|call-arity-only-local",
-     'fn lx(x, y) { x + y }; try { lx(99) } catch e { e.kind }')
+case(
+  "scope-iso|call-arity-only-local",
+  'fn lx(x, y) { x + y }; try { lx(99) } catch e { e.kind }',
+)
 # Same-scope overloads still merge into one dispatcher within a thunk.
-case("scope-iso|same-scope-overload",
-     'fn ov(x) { 1 }; fn ov(x, y) { 2 }; [ov(0), ov(0, 0)]')
+case(
+  "scope-iso|same-scope-overload",
+  'fn ov(x) { 1 }; fn ov(x, y) { 2 }; [ov(0), ov(0, 0)]',
+)
 # A nested helper rebuilt across two activations keeps a stable table.
-case("scope-iso|nested-reentrant",
-     'fn mk(n) { fn h(x) { x * 2 }; h(n) }; [mk(3), mk(4)]')
+case(
+  "scope-iso|nested-reentrant",
+  'fn mk(n) { fn h(x) { x * 2 }; h(n) }; [mk(3), mk(4)]',
+)
 
 # --- Dimension 19: string scalar iteration (value AND type) ---------------
 # for-in / .iter() / .graphemes() yield 1-scalar StringViews; .code_points()
@@ -685,7 +977,8 @@ let strits = [
   'type_of("a".iter().collect()[0])',
   'type_of("a".graphemes().collect()[0])',
   'type_of("a".code_points().collect()[0])',
-  'mut r = []; for c in "ab" { r.push(c.upper()) }; r']
+  'mut r = []; for c in "ab" { r.push(c.upper()) }; r',
+]
 for s in strits {
   case("striter|" + s, s)
 }
@@ -703,7 +996,8 @@ let reps = [
   '"x@y".replace(re"(\w+)@(\w+)", "$2.$1")',
   '"x12y3".replace(re"\d+", fn (m) { "[{m.value}]" })',
   '"10-20".replace(Regex.compile("(?<a>\d+)-(?<b>\d+)"), "$<a>から$<b>")',
-  '"a, b  1".replace(",", "、").replace(re"\s+", " ").replace(re"\d", "N")']
+  '"a, b  1".replace(",", "、").replace(re"\s+", " ").replace(re"\d", "N")',
+]
 for r in reps {
   case("replace|" + r, r)
 }
@@ -718,7 +1012,8 @@ let sorts = [
   '["bb", "a", "ccc"].sorted_by(|s| s.size(), reverse: true)',
   '[(1, "a"), (1, "b"), (0, "c")].sorted_by(|t| t[0], reverse: true)',
   'mut a = [3, 1, 2]; a.sort_by(|x| x, reverse: true); a',
-  'mut k = nil; try { [1].sorted_by(|x| x, bad: 1) } catch e { k = e.kind }; k']
+  'mut k = nil; try { [1].sorted_by(|x| x, bad: 1) } catch e { k = e.kind }; k',
+]
 for s in sorts {
   case("sortrev|" + s, s)
 }
@@ -742,7 +1037,8 @@ let interps = [
   'let num = re"[0-9]+"; re"(${num})".find("x42y")[1]',
   'let nm = "abc"; re"${nm}"i.test("ABC")',
   're"".test("")',
-  'let p = "c.t"; Regex.interp(p)']
+  'let p = "c.t"; Regex.interp(p)',
+]
 for r in interps {
   case("regex_interp|" + r, r)
 }
@@ -768,7 +1064,8 @@ let drops = [
   'mut g = []; { let a = {drop: fn () { g.push(1) }}; a.me = a; a.drop() }; g',
   'mut g = []; { let a = {mut p: nil, drop: fn () { g.push(1) }}; let b = {mut p: nil, drop: fn () { self.p = nil; g.push(2) }}; a.p = b; b.p = a }; g',
   'mut g = []; { let a = {drop: fn () { g.push(1) }}; let k = {hash: fn () { 42 }, eq: fn () { true }, back: a}; a[k] = 1 }; g',
-  'mut g = []; { let a = {drop: fn () { g.push(1) }}; let b = {drop: fn () { g.push(2) }}; a.p = b; b.p = a }; let n = g.size(); n']
+  'mut g = []; { let a = {drop: fn () { g.push(1) }}; let b = {drop: fn () { g.push(2) }}; a.p = b; b.p = a }; let n = g.size(); n',
+]
 for d in drops {
   case("drop|" + d, d)
 }
@@ -786,7 +1083,8 @@ let svs = [
   'let v = "xz"[1..2]; v < "z"',
   'let v = "xz"[1..2]; (v == "z", "z" == v, v != "z")',
   '"ab"[0..1] == "ab"[1..2]',
-  'mut xs = []; for c in "banana" { if !xs.contains(c) { xs.push(c) } }; xs.sort_by(|c| c); xs.join("")']
+  'mut xs = []; for c in "banana" { if !xs.contains(c) { xs.push(c) } }; xs.sort_by(|c| c); xs.join("")',
+]
 for s in svs {
   case("svord|" + s, s)
 }
@@ -811,7 +1109,8 @@ let fns = [
   '{ let c = __Foreign.Counter.new(0); let g = c.add; g("x") }',
   '{ let c = __Foreign.Counter.new(0); c.add() }',
   '__Foreign.Counter.new("x")',
-  '__Foreign.Counter.new()']
+  '__Foreign.Counter.new()',
+]
 for f in fns {
   case("foreign|" + f, f)
 }
@@ -917,7 +1216,8 @@ let pps = [
   '[(1, 2)].iter().map(fn ((a, b)) { a + b }).collect()',
   '[(1, 2)].for_each(fn ((a, b)) { a + b })',
   '[(2, 1)].sort_by(fn ((a, b)) { b })',
-  '[{x: 1, y: 2}].map(fn ({x, y}) { x + y })']
+  '[{x: 1, y: 2}].map(fn ({x, y}) { x + y })',
+]
 for p in pps {
   case("patcb|" + p, p)
 }
@@ -944,7 +1244,8 @@ let brs = [
   'mut c = nil; { let b = __Foreign.Box.new(2); c = b.inner() }; c.value()',
   '{ let b = __Foreign.Box.new(8); let c = b.inner(); c.label() }',
   '{ let b = __Foreign.Box.new(8); b.inner().clone().value() }',
-  '{ let b = __Foreign.Box.new(1); let c = b.inner(); c.drop(); c.value() }']
+  '{ let b = __Foreign.Box.new(1); let c = b.inner(); c.drop(); c.value() }',
+]
 for r in brs {
   case("borrow|" + r, r)
 }
@@ -961,7 +1262,8 @@ let hkw = [
   '{ let f = File.open("README.md", "r"); f.read(n: 4).size() }',
   '{ let f = File.open("README.md", "r"); f.read(size: 4) }',
   '{ let f = File.open("README.md", "r"); f.seek(offset: 10); f.tell() }',
-  '{ let f = File.open("README.md", "r"); f.seek(offset: 4, whence: "set"); f.tell() }']
+  '{ let f = File.open("README.md", "r"); f.seek(offset: 4, whence: "set"); f.tell() }',
+]
 for h in hkw {
   case("handlekw|" + h, h)
 }
@@ -984,7 +1286,8 @@ let fck = [
   '{ let f = File.open("README.md", "r"); f.seek() }',
   '{ let f = File.open("README.md", "r"); f.seek(0, 5) }',
   '{ let f = File.open("README.md", "r"); f.chunks("x") }',
-  '{ let f = File.open("README.md", "r"); f.chunks() }']
+  '{ let f = File.open("README.md", "r"); f.chunks() }',
+]
 for c in fck {
   case("filecheck|" + c, c)
 }
@@ -1009,7 +1312,8 @@ let nrec = [
   'if true { fn h(n) { n > 0 ? h(n - 1) : 21 }; h(2) } else { fn h(n) { n > 0 ? h(n - 1) : 22 }; h(2) }',
   'if false { fn h(n) { n > 0 ? h(n - 1) : 23 }; h(2) } else { fn h(n) { n > 0 ? h(n - 1) : 24 }; h(2) }',
   'fn h() { 25 }; { fn h() { 26 }; h() }',
-  '{ fn h() { 27 }; nil }; fn h() { 28 }; h()']
+  '{ fn h() { 27 }; nil }; fn h() { 28 }; h()',
+]
 for c in nrec {
   case("nestedfn|" + c, c)
 }
@@ -1051,7 +1355,8 @@ let shv = [
   '{ let s = Shared.new({ a: 1 }); let it = s.iter(); to_string(it.has_next()) }',
   '{ let s = Shared.new({ m: { z: 5 } }); let v = s.m; s.drop(); v.z }',
   '{ let fake = { __sharedval_id__: 9, __sharedval_node__: 0 }; to_string(fake.x) + to_string(fake["__sharedval_id__"]) }',
-  '{ let v = Shared.new({ a: 1 }); to_string(try { Shared.new({ inner: v }) } catch e { e.kind }) + to_string(v.a) }']
+  '{ let v = Shared.new({ a: 1 }); to_string(try { Shared.new({ inner: v }) } catch e { e.kind }) + to_string(v.a) }',
+]
 for c in shv {
   case("sharedval|" + c, c)
 }
@@ -1108,7 +1413,8 @@ let fnty = [
   'fn ro(f: fn(Long) -> Long?) -> Long { let r = f(0); r ?? -1 }; ro(|n| n + 42)',
   'fn fx(v: fn(Long) -> Long | Long) -> Long { match v { x: Long => x, _ => v(0) } }; to_string(fx(7)) + to_string(fx(|n| n + 100))',
   'fn ds(x: Long) -> String { "long" }; fn ds(f: fn(Long) -> Long) -> String { "fn" }; ds(5) + ds(|n| n)',
-  'fn ds(x: Long) -> String { "long" }; fn ds(f: fn(Long) -> Long) -> String { "fn" }; class I { new() {} __call__(n) { n } }; ds(I.new())']
+  'fn ds(x: Long) -> String { "long" }; fn ds(f: fn(Long) -> Long) -> String { "fn" }; class I { new() {} __call__(n) { n } }; ds(I.new())',
+]
 for c in fnty {
   case("fnty|" + c, c)
 }
@@ -1129,7 +1435,8 @@ let mmd = [
   'class A { new(n){self.n=n} }; class Z { new(){} f(a: A){"a"} f(x: Long){"n"} }; Z.new().f(A.new("c")) + Z.new().f(7)',
   'class Z { new(){} f(x: Long){"n"} f(x: String){"s"} }; Z.new().f(1.5)',
   'class S { new(){} only(x){x*2} }; to_string(S.new().only(21))',
-  'class T { new(){} __call__(n){n*2} }; class P { new(){} run(f: Function, x: Long){f(x)} run(x: Long){x} }; to_string(P.new().run(T.new(), 21)) + to_string(P.new().run(9))']
+  'class T { new(){} __call__(n){n*2} }; class P { new(){} run(f: Function, x: Long){f(x)} run(x: Long){x} }; to_string(P.new().run(T.new(), 21)) + to_string(P.new().run(9))',
+]
 for c in mmd {
   case("mmd|" + c, c)
 }
@@ -1410,47 +1717,125 @@ for c in selfcases {
 # The coordinate sweep runs fractional, negative, non-finite and out-of-range
 # values through every prim, which pins the rounding, the clipping and the type
 # errors (colour/flags/handle stay Long-only) in one place.
-let cvcoords = ['0', '1', '2.0', '1.5', '-0.5', '-1.5', '2.75', '4.5',
-                'Math.nan', 'Math.inf', '-Math.inf', '1e30', '"x"', 'nil',
-                'true']
+let cvcoords = [
+  '0',
+  '1',
+  '2.0',
+  '1.5',
+  '-0.5',
+  '-1.5',
+  '2.75',
+  '4.5',
+  'Math.nan',
+  'Math.inf',
+  '-Math.inf',
+  '1e30',
+  '"x"',
+  'nil',
+  'true',
+]
 let cvinit = '_Canvas.init(6, 4); _Canvas.clear(0); '
 let cvsprite = '_Canvas.sprite_load([_CA+1, _CA+2, _CA+3, _CA+4], 2, 2)'
 for c in cvcoords {
-  case("cvrect|" + c, cvinit + '_Canvas.rect(' + c + ', 0, 3, 2, _CA+5, 1); _cdump()')
-  case("cvpix|" + c, cvinit + '_Canvas.set_pixel(' + c + ', 1, _CA+5); _cdump()')
-  case("cvget|" + c, '_Canvas.init(6, 4); _Canvas.clear(_CA+7); to_string(_Canvas.get_pixel(' + c + ', 0))')
-  case("cvtri|" + c, cvinit + '_Canvas.triangle(' + c + ', 0, 5, 0, 0, 3, _CA+5, 1); _cdump()')
-  case("cvpolyv|" + c, cvinit + '_Canvas.polygon([1, 0, 5, 0, ' + c + ', 3, 0, 3], _CA+5, 1); _cdump()')
-  case("cvblit|" + c, cvinit + '_Canvas.blit(' + cvsprite + ', ' + c + ', 0, 0, 0, 2, 2, 0); _cdump()')
-  case("cvbsd|" + c, cvinit + '_Canvas.blit_scaled(' + cvsprite + ', ' + c + ', 0, 4, 4, 0, 0, 2, 2, 0, 255); _cdump()')
-  case("cvbss|" + c, cvinit + '_Canvas.blit_scaled(' + cvsprite + ', 0, 0, 4, 4, 0, 0, ' + c + ', 2, 0, 255); _cdump()')
-  case("cvcolor|" + c, cvinit + '_Canvas.rect(0, 0, 2, 2, ' + c + ', 1); _cdump()')
-  case("cvglyph|" + c, cvinit + '_Canvas.glyph(_CFONT, 0, ' + c + ', 0, _CA+5, 1); _cdump()')
-  case("cvglyphi|" + c, cvinit + '_Canvas.glyph(_CFONT, ' + c + ', 0, 0, _CA+5, 1); _cdump()')
+  case(
+    "cvrect|" + c,
+    cvinit + '_Canvas.rect(' + c + ', 0, 3, 2, _CA+5, 1); _cdump()',
+  )
+  case(
+    "cvpix|" + c,
+    cvinit + '_Canvas.set_pixel(' + c + ', 1, _CA+5); _cdump()',
+  )
+  case(
+    "cvget|" + c,
+    '_Canvas.init(6, 4); _Canvas.clear(_CA+7); to_string(_Canvas.get_pixel(' +
+      c +
+      ', 0))',
+  )
+  case(
+    "cvtri|" + c,
+    cvinit + '_Canvas.triangle(' + c + ', 0, 5, 0, 0, 3, _CA+5, 1); _cdump()',
+  )
+  case(
+    "cvpolyv|" + c,
+    cvinit +
+      '_Canvas.polygon([1, 0, 5, 0, ' +
+      c +
+      ', 3, 0, 3], _CA+5, 1); _cdump()',
+  )
+  case(
+    "cvblit|" + c,
+    cvinit +
+      '_Canvas.blit(' +
+      cvsprite +
+      ', ' +
+      c +
+      ', 0, 0, 0, 2, 2, 0); _cdump()',
+  )
+  case(
+    "cvbsd|" + c,
+    cvinit +
+      '_Canvas.blit_scaled(' +
+      cvsprite +
+      ', ' +
+      c +
+      ', 0, 4, 4, 0, 0, 2, 2, 0, 255); _cdump()',
+  )
+  case(
+    "cvbss|" + c,
+    cvinit +
+      '_Canvas.blit_scaled(' +
+      cvsprite +
+      ', 0, 0, 4, 4, 0, 0, ' +
+      c +
+      ', 2, 0, 255); _cdump()',
+  )
+  case(
+    "cvcolor|" + c,
+    cvinit + '_Canvas.rect(0, 0, 2, 2, ' + c + ', 1); _cdump()',
+  )
+  case(
+    "cvglyph|" + c,
+    cvinit + '_Canvas.glyph(_CFONT, 0, ' + c + ', 0, _CA+5, 1); _cdump()',
+  )
+  case(
+    "cvglyphi|" + c,
+    cvinit + '_Canvas.glyph(_CFONT, ' + c + ', 0, 0, _CA+5, 1); _cdump()',
+  )
 }
 # music: the format sniff (MP3 frame sync / ID3 / OggS) and its ValueError run
 # before any backend branch, so message and position must match everywhere; the
 # controls are unloaded no-ops under the corpus's headless backend. Sniffable
 # headers with garbage after them pass the sniff and fail the decoder silently.
-for d in ['"x"', '""', '"RIFF...."', '"\xff\x00abcd"', '"\xff\xfbjunk"',
-          '"\xff\xe3junk"', '"ID3 junk"', '"OggS junk"', '42', 'nil'] {
-  case("cvmusic|" + d, '_Canvas.music_play(' + d + ', 1, 100, 0); _Canvas.music_playing()')
+for d in ['"x"', '""', '"RIFF...."', '"\xff\x00abcd"', '"\xff\xfbjunk"', '"\xff\xe3junk"', '"ID3 junk"', '"OggS junk"', '42', 'nil'] {
+  case(
+    "cvmusic|" + d,
+    '_Canvas.music_play(' + d + ', 1, 100, 0); _Canvas.music_playing()',
+  )
 }
 for c in cvcoords {
-  case("cvmusicstart|" + c, '_Canvas.music_play("\xff\xfbok", 1, 100, ' + c + '); "ok"')
-  case("cvmusicseek|" + c, '_Canvas.music_seek(' + c + '); _Canvas.music_playing()')
+  case(
+    "cvmusicstart|" + c,
+    '_Canvas.music_play("\xff\xfbok", 1, 100, ' + c + '); "ok"',
+  )
+  case(
+    "cvmusicseek|" + c,
+    '_Canvas.music_seek(' + c + '); _Canvas.music_playing()',
+  )
 }
-case("cvmusic|noop", '_Canvas.music_stop(); _Canvas.music_pause(); _Canvas.music_resume(); _Canvas.music_volume(55); _Canvas.music_playing()')
+case(
+  "cvmusic|noop",
+  '_Canvas.music_stop(); _Canvas.music_pause(); _Canvas.music_resume(); _Canvas.music_volume(55); _Canvas.music_playing()',
+)
 
 # font_load / glyph: an unknown handle, a negative index and an index past the
 # table must all draw nothing rather than read out of bounds. The two huge
 # indices are the ones where `index * 8` wraps a 64-bit product, so a bound
 # computed from that product would let them through.
-for g in ['999, 0', '_CFONT, -1', '_CFONT, 2', '_CFONT, 99999',
-          '_CFONT, 2305843009213693951', '_CFONT, 2305843009213693952',
-          '_CFONT, 9223372036854775807',
-          '_Canvas.font_load([]), 0', '_Canvas.font_load([1, 2]), 0'] {
-  case("cvglyphoob|" + g, cvinit + '_Canvas.glyph(' + g + ', 0, 0, _CA+5, 1); _cdump()')
+for g in ['999, 0', '_CFONT, -1', '_CFONT, 2', '_CFONT, 99999', '_CFONT, 2305843009213693951', '_CFONT, 2305843009213693952', '_CFONT, 9223372036854775807', '_Canvas.font_load([]), 0', '_Canvas.font_load([1, 2]), 0'] {
+  case(
+    "cvglyphoob|" + g,
+    cvinit + '_Canvas.glyph(' + g + ', 0, 0, _CA+5, 1); _cdump()',
+  )
 }
 # Degenerate and inverted extents: a non-positive height/width draws nothing
 # rather than wrapping, and shapes that share an edge tile with no seam and no
@@ -1480,15 +1865,24 @@ for s in cvshapes {
 # `points` itself must be an Array — the element sweep above covers what may be
 # inside one.
 for p in ['5', '1.5', 'nil', '"xy"', '{a: 1}', '(1, 2)'] {
-  case("cvpolyarg|" + p, cvinit + '_Canvas.polygon(' + p + ', _CA+5, 1); _cdump()')
+  case(
+    "cvpolyarg|" + p,
+    cvinit + '_Canvas.polygon(' + p + ', _CA+5, 1); _cdump()',
+  )
 }
 # line / ellipse: the same coordinate sweep through the new prims (rounding,
 # clipping, type errors), then shape-specific degenerates — reversed endpoints
 # draw the same pixels, outlines leave the interior, non-positive radii/scales
 # draw nothing, and a doubled glyph doubles.
 for c in cvcoords {
-  case("cvline|" + c, cvinit + '_Canvas.line(' + c + ', 0, 5, 3, _CA+5); _cdump()')
-  case("cvellip|" + c, cvinit + '_Canvas.ellipse(3, 2, ' + c + ', 2, _CA+5, 1); _cdump()')
+  case(
+    "cvline|" + c,
+    cvinit + '_Canvas.line(' + c + ', 0, 5, 3, _CA+5); _cdump()',
+  )
+  case(
+    "cvellip|" + c,
+    cvinit + '_Canvas.ellipse(3, 2, ' + c + ', 2, _CA+5, 1); _cdump()',
+  )
 }
 let cvnew = [
   '_Canvas.line(5, 3, 0, 0, _CA+5); _Canvas.line(0, 0, 5, 3, _CA+6)',
@@ -1514,63 +1908,121 @@ for s in cvnew {
 # Shape-colour alpha composites on every drawing call (integer source-over);
 # raw pixel values in the record so the blended channels are pinned exactly.
 for al in ['0', '1', '128', '255'] {
-  case("cvshapealpha|" + al,
-       '_Canvas.init(3, 1); _Canvas.clear(_CA+9); ' +
-       '_Canvas.rect(0, 0, 2, 1, 12345 + ' + al + ' * 16777216, 1); ' +
-       'to_string(_Canvas.get_pixel(0, 0)) + "," + to_string(_Canvas.get_pixel(2, 0))')
+  case(
+    "cvshapealpha|" + al,
+    '_Canvas.init(3, 1); _Canvas.clear(_CA+9); ' +
+      '_Canvas.rect(0, 0, 2, 1, 12345 + ' +
+      al +
+      ' * 16777216, 1); ' +
+      'to_string(_Canvas.get_pixel(0, 0)) + "," + to_string(_Canvas.get_pixel(2, 0))',
+  )
 }
 # Offscreen target: draw_to semantics at the prim level — width/height/get
 # follow the target, the framebuffer is untouched until the blit back, a
 # self-blit and freeing the live target both raise, and a stale handle
 # resolves to nothing after free.
-case("cvtarget|roundtrip",
-     '_Canvas.init(4, 2); _Canvas.clear(_CA+1); ' +
-     'let s = _Canvas.sprite_blank(2, 2, _CA+2); let prev = _Canvas.target(s); ' +
-     'let inw = _Canvas.width(); _Canvas.set_pixel(0, 0, _CA+3); ' +
-     'let inp = _Canvas.get_pixel(0, 0); _Canvas.target(prev); ' +
-     '_Canvas.blit(s, 0, 0, 0, 0, 2, 2, 0); ' +
-     'to_string(inw) + ":" + to_string(inp % 10) + ":" + _cdump()')
-case("cvtarget|selfblit",
-     '_Canvas.init(4, 2); let s = _Canvas.sprite_blank(2, 2, _CA+2); ' +
-     '_Canvas.target(s); _Canvas.blit(s, 0, 0, 0, 0, 2, 2, 0)')
-case("cvtarget|freetarget",
-     '_Canvas.init(4, 2); let s = _Canvas.sprite_blank(2, 2, _CA+2); ' +
-     '_Canvas.target(s); _Canvas.sprite_free(s)')
-case("cvtarget|stale",
-     '_Canvas.init(4, 2); let s = _Canvas.sprite_blank(2, 2, _CA+2); ' +
-     '_Canvas.sprite_free(s); to_string(_Canvas.sprite_width(s)) + ":" + ' +
-     'to_string(_Canvas.sprite_height(s))')
-case("cvtarget|deadhandle",
-     '_Canvas.init(4, 2); let s = _Canvas.sprite_blank(2, 2, _CA+2); ' +
-     '_Canvas.sprite_free(s); _Canvas.target(s)')
+case(
+  "cvtarget|roundtrip",
+  '_Canvas.init(4, 2); _Canvas.clear(_CA+1); ' +
+    'let s = _Canvas.sprite_blank(2, 2, _CA+2); let prev = _Canvas.target(s); ' +
+    'let inw = _Canvas.width(); _Canvas.set_pixel(0, 0, _CA+3); ' +
+    'let inp = _Canvas.get_pixel(0, 0); _Canvas.target(prev); ' +
+    '_Canvas.blit(s, 0, 0, 0, 0, 2, 2, 0); ' +
+    'to_string(inw) + ":" + to_string(inp % 10) + ":" + _cdump()',
+)
+case(
+  "cvtarget|selfblit",
+  '_Canvas.init(4, 2); let s = _Canvas.sprite_blank(2, 2, _CA+2); ' +
+    '_Canvas.target(s); _Canvas.blit(s, 0, 0, 0, 0, 2, 2, 0)',
+)
+case(
+  "cvtarget|freetarget",
+  '_Canvas.init(4, 2); let s = _Canvas.sprite_blank(2, 2, _CA+2); ' +
+    '_Canvas.target(s); _Canvas.sprite_free(s)',
+)
+case(
+  "cvtarget|stale",
+  '_Canvas.init(4, 2); let s = _Canvas.sprite_blank(2, 2, _CA+2); ' +
+    '_Canvas.sprite_free(s); to_string(_Canvas.sprite_width(s)) + ":" + ' +
+    'to_string(_Canvas.sprite_height(s))',
+)
+case(
+  "cvtarget|deadhandle",
+  '_Canvas.init(4, 2); let s = _Canvas.sprite_blank(2, 2, _CA+2); ' +
+    '_Canvas.sprite_free(s); _Canvas.target(s)',
+)
 case("cvtarget|blank_neg", '_Canvas.sprite_blank(-1, -1, _CA+2)')
 # flags x alpha: the flip / box-average bits, and the integer compositing rule
 # read back over a filled buffer so the blended channels show up in the dump.
 for f in ['0', '1', '2', '3', '8', '9', '4', '16', '-1'] {
-  case("cvflags|" + f, cvinit + '_Canvas.blit_scaled(' + cvsprite + ', 0, 0, 4, 4, 0, 0, 2, 2, ' + f + ', 255); _cdump()')
+  case(
+    "cvflags|" + f,
+    cvinit +
+      '_Canvas.blit_scaled(' +
+      cvsprite +
+      ', 0, 0, 4, 4, 0, 0, 2, 2, ' +
+      f +
+      ', 255); _cdump()',
+  )
 }
 # PNG decoding: every accepted colour type must land on the same packed-RGBA
 # layout, and every rejection must be the one shared ValueError. The `_PNG_*`
 # fixtures live in the preamble.
-let cvpngs = ['_PNG_RGBA', '_PNG_RGB', '_PNG_GREY', '_PNG_GREYA', '_PNG_PAL',
-              '_PNG_I16', '_PNG_TRUNCATED', '""', '"0102030405"', '5', 'nil',
-              '[1, 2]']
+let cvpngs = [
+  '_PNG_RGBA',
+  '_PNG_RGB',
+  '_PNG_GREY',
+  '_PNG_GREYA',
+  '_PNG_PAL',
+  '_PNG_I16',
+  '_PNG_TRUNCATED',
+  '""',
+  '"0102030405"',
+  '5',
+  'nil',
+  '[1, 2]',
+]
 for p in cvpngs {
-  case("cvpng|" + p, 'let id = _Canvas.sprite_from_png(' + p + '); let w = _Canvas.sprite_width(id); let h = _Canvas.sprite_height(id); _Canvas.init(w, h); _Canvas.clear(0); _Canvas.blit(id, 0, 0, 0, 0, w, h, 0); to_string(w) + "x" + to_string(h) + ":" + to_string(_Canvas.get_pixel(0, 0)) + "," + to_string(_Canvas.get_pixel(w - 1, h - 1))')
+  case(
+    "cvpng|" + p,
+    'let id = _Canvas.sprite_from_png(' +
+      p +
+      '); let w = _Canvas.sprite_width(id); let h = _Canvas.sprite_height(id); _Canvas.init(w, h); _Canvas.clear(0); _Canvas.blit(id, 0, 0, 0, 0, w, h, 0); to_string(w) + "x" + to_string(h) + ":" + to_string(_Canvas.get_pixel(0, 0)) + "," + to_string(_Canvas.get_pixel(w - 1, h - 1))',
+  )
 }
 # PNG encoding: the round trip has to reproduce the pixels, and the two
 # rejections (stale handle, empty target) have to be the shared ValueError.
 for p in ['_PNG_RGBA', '_PNG_RGB', '_PNG_GREY', '_PNG_PAL'] {
-  case("cvtopng|" + p, 'let a = _Canvas.sprite_from_png(' + p + '); let b = _Canvas.sprite_from_png(_Canvas.sprite_to_png(a)); let w = _Canvas.sprite_width(b); let h = _Canvas.sprite_height(b); _Canvas.init(w, h); _Canvas.clear(0); _Canvas.blit(b, 0, 0, 0, 0, w, h, 0); to_string(w) + "x" + to_string(h) + ":" + to_string(_Canvas.get_pixel(0, 0)) + "," + to_string(_Canvas.get_pixel(w - 1, h - 1))')
+  case(
+    "cvtopng|" + p,
+    'let a = _Canvas.sprite_from_png(' +
+      p +
+      '); let b = _Canvas.sprite_from_png(_Canvas.sprite_to_png(a)); let w = _Canvas.sprite_width(b); let h = _Canvas.sprite_height(b); _Canvas.init(w, h); _Canvas.clear(0); _Canvas.blit(b, 0, 0, 0, 0, w, h, 0); to_string(w) + "x" + to_string(h) + ":" + to_string(_Canvas.get_pixel(0, 0)) + "," + to_string(_Canvas.get_pixel(w - 1, h - 1))',
+  )
 }
 for id in ['0', '9999', '-1', 'nil', '"x"'] {
-  case("cvtopngerr|" + id, '_Canvas.init(2, 1); _Canvas.clear(_CA+9); _Canvas.sprite_to_png(' + id + ').size()')
+  case(
+    "cvtopngerr|" + id,
+    '_Canvas.init(2, 1); _Canvas.clear(_CA+9); _Canvas.sprite_to_png(' +
+      id +
+      ').size()',
+  )
 }
 case("cvtopng|empty", '_Canvas.init(0, 0); _Canvas.sprite_to_png(0).size()')
-case("cvtopng|target", '_Canvas.init(4, 4); _Canvas.clear(_CA+1); let s = _Canvas.sprite_blank(2, 3, _CA+2); _Canvas.target(s); let inner = _Canvas.sprite_to_png(0).size(); _Canvas.target(0); [inner > 0, _Canvas.sprite_to_png(0).size() > 0]')
+case(
+  "cvtopng|target",
+  '_Canvas.init(4, 4); _Canvas.clear(_CA+1); let s = _Canvas.sprite_blank(2, 3, _CA+2); _Canvas.target(s); let inner = _Canvas.sprite_to_png(0).size(); _Canvas.target(0); [inner > 0, _Canvas.sprite_to_png(0).size() > 0]',
+)
 
 for al in ['0', '1', '64', '128', '191', '254', '255', '256', '-1', '1.5', '"x"'] {
-  case("cvalpha|" + al, '_Canvas.init(2, 1); _Canvas.clear(_CA+9); _Canvas.blit_scaled(' + cvsprite + ', 0, 0, 2, 1, 0, 0, 2, 1, 0, ' + al + '); to_string(_Canvas.get_pixel(0, 0)) + "," + to_string(_Canvas.get_pixel(1, 0))')
+  case(
+    "cvalpha|" + al,
+    '_Canvas.init(2, 1); _Canvas.clear(_CA+9); _Canvas.blit_scaled(' +
+      cvsprite +
+      ', 0, 0, 2, 1, 0, 0, 2, 1, 0, ' +
+      al +
+      '); to_string(_Canvas.get_pixel(0, 0)) + "," + to_string(_Canvas.get_pixel(1, 0))',
+  )
 }
 
 # Compress.deflate: an optional trailing param (level) with a default, decoded
@@ -1581,13 +2033,49 @@ for al in ['0', '1', '64', '128', '191', '254', '255', '256', '-1', '1.5', '"x"'
 # every non-single-arg call form throws an ArityError while interp accepts it.
 let deflate_data = '"the quick brown fox the quick brown fox"'
 for lv in ['-1', '0', '1', '9', '99', '"x"'] {
-  case("cfdeflvl|" + lv, 'let z = Compress.deflate(' + deflate_data + ', ' + lv + '); Compress.gunzip(z) == ' + deflate_data)
-  case("cfdeflvlkw|" + lv, 'let z = Compress.deflate(' + deflate_data + ', level: ' + lv + '); Compress.gunzip(z) == ' + deflate_data)
+  case(
+    "cfdeflvl|" + lv,
+    'let z = Compress.deflate(' +
+      deflate_data +
+      ', ' +
+      lv +
+      '); Compress.gunzip(z) == ' +
+      deflate_data,
+  )
+  case(
+    "cfdeflvlkw|" + lv,
+    'let z = Compress.deflate(' +
+      deflate_data +
+      ', level: ' +
+      lv +
+      '); Compress.gunzip(z) == ' +
+      deflate_data,
+  )
 }
-case("cfdefdefault", 'Compress.gunzip(Compress.deflate(' + deflate_data + ')) == ' + deflate_data)
-case("cfdefvalue", 'let f = Compress.deflate; Compress.gunzip(f(' + deflate_data + ', 9)) == ' + deflate_data)
-case("cfdefbare", 'let c = Compress; Compress.gunzip(c.deflate(' + deflate_data + ', 9)) == ' + deflate_data)
-case("cfdefhof", '[' + deflate_data + '].map(|d| Compress.gunzip(Compress.deflate(d, 9)) == d)')
+case(
+  "cfdefdefault",
+  'Compress.gunzip(Compress.deflate(' + deflate_data + ')) == ' + deflate_data,
+)
+case(
+  "cfdefvalue",
+  'let f = Compress.deflate; Compress.gunzip(f(' +
+    deflate_data +
+    ', 9)) == ' +
+    deflate_data,
+)
+case(
+  "cfdefbare",
+  'let c = Compress; Compress.gunzip(c.deflate(' +
+    deflate_data +
+    ', 9)) == ' +
+    deflate_data,
+)
+case(
+  "cfdefhof",
+  '[' +
+    deflate_data +
+    '].map(|d| Compress.gunzip(Compress.deflate(d, 9)) == d)',
+)
 case("cfdefbaddata", 'Compress.deflate(5, 9)')
 case("cfdeftoomany", 'Compress.deflate(' + deflate_data + ', 1, 2)')
 
@@ -2085,35 +2573,68 @@ for c in nilco {
 #
 # Every candidate is declared INSIDE the thunk. A top-level `fn map` would be
 # a UFCS candidate for the whole module and would rewrite Dimension 2.
-let shadow_recvs = ['5', '1.5', 'true', 'nil', '"ab"', '[1, 2]', '{a: 1}',
-                    '(1, 2)', '{1, 2}', 'Math', '[1, 2].iter()',
-                    'Shared.new({a: 1})', 'Tensor.zeros("f32", 2, 2)',
-                    'Sc.new()']
+let shadow_recvs = [
+  '5',
+  '1.5',
+  'true',
+  'nil',
+  '"ab"',
+  '[1, 2]',
+  '{a: 1}',
+  '(1, 2)',
+  '{1, 2}',
+  'Math',
+  '[1, 2].iter()',
+  'Shared.new({a: 1})',
+  'Tensor.zeros("f32", 2, 2)',
+  'Sc.new()',
+]
 # Name classes: array/dict builtins, Set's mutating `add`, String's
 # `to_string`, an iterator-only terminal, the two names with a dispatch of
 # their own (`drop`'s at-most-once guard, class `parameters()`), and a name
 # no builtin table holds.
-let shadow_names = ['size', 'map', 'push', 'add', 'to_string', 'collect',
-                    'upper', 'drop', 'parameters', 'zzz']
+let shadow_names = [
+  'size',
+  'map',
+  'push',
+  'add',
+  'to_string',
+  'collect',
+  'upper',
+  'drop',
+  'parameters',
+  'zzz',
+]
 # Candidate kinds: one that fits the UFCS call, one whose arity does not, and
 # a binding that is not a Function at all (never a callee — the receiver's own
 # resolution answers instead).
-let shadow_cands = ['fn NAME(o) { "ufcs-NAME" }',
-                    'fn NAME(o, extra) { "ufcs-NAME" }',
-                    'let NAME = 5']
+let shadow_cands = [
+  'fn NAME(o) { "ufcs-NAME" }',
+  'fn NAME(o, extra) { "ufcs-NAME" }',
+  'let NAME = 5',
+]
 let shadow_prelude = 'class Sc { new() { self.f = 1 } }; '
 for n in shadow_names {
   for cand in shadow_cands {
     let decl = cand.replace("NAME", n)
     for r in shadow_recvs {
-      case("ufcsshadow|" + n + "|" + decl + "|" + r,
-           shadow_prelude + decl + '; (' + r + ').' + n + '()')
+      case(
+        "ufcsshadow|" + n + "|" + decl + "|" + r,
+        shadow_prelude + decl + '; (' + r + ').' + n + '()',
+      )
       # Same call one frame down: the candidate reaches it as a free variable,
       # so the compile-time visibility the JIT gates on must agree with the
       # interpreter's environment lookup.
-      case("ufcsshadownest|" + n + "|" + decl + "|" + r,
-           shadow_prelude + decl + '; fn nest(x) { return x.' + n +
-           '() }; nest(' + r + ')')
+      case(
+        "ufcsshadownest|" + n + "|" + decl + "|" + r,
+        shadow_prelude +
+          decl +
+          '; fn nest(x) { return x.' +
+          n +
+          '() }; nest(' +
+          r +
+          ')',
+      )
     }
   }
 }
@@ -2128,8 +2649,10 @@ for n in ['size', 'add', 'to_string', 'drop', 'parameters', 'zzz'] {
   for f in shadow_forms {
     let call = f.replace("NAME", n)
     for r in ['5', '"ab"', '[1, 2]', '{a: 1}', '{1, 2}', 'nil', 'Math'] {
-      case("ufcsshadowform|" + n + "|" + call + "|" + r,
-           decl + '; (' + r + ')' + call)
+      case(
+        "ufcsshadowform|" + n + "|" + call + "|" + r,
+        decl + '; (' + r + ')' + call,
+      )
     }
   }
 }
