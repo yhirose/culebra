@@ -75,9 +75,14 @@ else
   # patterns dominate the gate (~5 s each); parallel they collapse to the
   # slowest single pattern. Per-pattern output is buffered and replayed in list
   # order; a leak/error drops a marker file collected afterward.
-  work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+  work="$(mktemp -d)" || { echo "error: mktemp -d failed" >&2; exit 2; }
+  trap 'rm -rf "$work"' EXIT
   list="$work/patterns"
   "$CULEBRA" --jit "$PATTERNS" list 2>/dev/null | grep -v '^[[:space:]]*$' > "$list"
+  if [[ ! -s "$list" ]]; then
+    echo "error: pattern battery listed no patterns ($PATTERNS via $CULEBRA)" >&2
+    exit 2
+  fi
   jobs="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}"
   export -f check_one live_of
   export CULEBRA PATTERNS N THRESHOLD work
