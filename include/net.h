@@ -341,6 +341,17 @@ inline int64_t intern(std::unique_ptr<Sock> s) {
   return id;
 }
 
+// Hand a connected/bound descriptor to the table as a `kind` handle. The
+// caller has already released it from its FdGuard (or never had one); from
+// here the table owns it. `timeout_ms` 0 means wait forever.
+inline int64_t intern_fd(Kind kind, socket_t fd, int64_t timeout_ms = 0) {
+  auto s = std::make_unique<Sock>();
+  s->kind = kind;
+  s->fd = fd;
+  s->timeout_ms = timeout_ms;
+  return intern(std::move(s));
+}
+
 inline Sock* find(int64_t id) { return g_socks.get(id); }
 
 // Look up a live handle of the expected kind. A closed / forged / wrong-kind id
@@ -583,11 +594,8 @@ inline int64_t connect(const std::string& host, int port,
         continue;
       }
     }
-    auto s = std::make_unique<detail::Sock>();
-    s->kind = Kind::Tcp;
-    s->fd = fd.release();
-    s->timeout_ms = timeout_ms > 0 ? timeout_ms : 0;
-    return detail::intern(std::move(s));
+    return detail::intern_fd(Kind::Tcp, fd.release(),
+                             timeout_ms > 0 ? timeout_ms : 0);
   }
   if (err) *err = last;
   return -1;
@@ -638,10 +646,7 @@ inline int64_t bind_and_intern(const std::string& host, int port, int socktype,
       last = error_string(last_error());
       continue;
     }
-    auto s = std::make_unique<Sock>();
-    s->kind = kind;
-    s->fd = fd.release();
-    return intern(std::move(s));
+    return intern_fd(kind, fd.release());
   }
   if (err) *err = last;
   return -1;
@@ -685,11 +690,7 @@ inline IoStatus accept(int64_t lid, int64_t* out_id, std::string* err) {
     }
     detail::suppress_sigpipe(fd.fd);
     detail::set_nonblocking(fd.fd);
-    auto s = std::make_unique<detail::Sock>();
-    s->kind = Kind::Tcp;
-    s->timeout_ms = l->timeout_ms;
-    s->fd = fd.release();
-    *out_id = detail::intern(std::move(s));
+    *out_id = detail::intern_fd(Kind::Tcp, fd.release(), l->timeout_ms);
     return IoStatus::Ok;
   }
 }
@@ -914,11 +915,7 @@ class ServePool {
         jobs_.pop_front();
       }
       room_.notify_one();
-      auto s = std::make_unique<detail::Sock>();
-      s->kind = Kind::Tcp;
-      s->fd = fd;
-      s->timeout_ms = conn_timeout_ms_;
-      int64_t id = detail::intern(std::move(s));
+      int64_t id = detail::intern_fd(Kind::Tcp, fd, conn_timeout_ms_);
       try {
         if (hooks_.on_conn) hooks_.on_conn(id);
       } catch (...) {
