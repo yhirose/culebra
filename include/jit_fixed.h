@@ -27,11 +27,8 @@ inline int64_t _jit_fa_field_long(JitObject* v, const char* key) {
   return v->slots[v->find_slot(key)].value.data;
 }
 inline culebra::PackableField _jit_fa_elem_field(JitObject* v) {
-  culebra::PackableField f;
-  f.type = culebra::packable_scalar_name(
-      static_cast<int>(_jit_fa_field_long(v, "__fa_ecode__")));
-  f.offset = 0;
-  return f;
+  return culebra::PackableField::scalar(culebra::packable_scalar_name(
+      static_cast<int>(_jit_fa_field_long(v, "__fa_ecode__"))));
 }
 inline int64_t _jit_fa_len(JitObject* v) {
   auto core = _jit_fa_core(v);
@@ -342,10 +339,10 @@ inline JitValue _jit_make_fixed_array_view(int64_t id, int64_t abs_off,
   h->is_fixed_array_view = true;
   h->set_or_append("__fa_id__", JitValue{TAG_LONG, id}, false);
   h->set_or_append("__fa_off__", JitValue{TAG_LONG, abs_off}, false);
-  h->set_or_append("__fa_cap__", JitValue{TAG_LONG, static_cast<long>(f.capacity)}, false);
-  h->set_or_append("__fa_dataoff__", JitValue{TAG_LONG, static_cast<long>(f.data_offset)}, false);
-  h->set_or_append("__fa_esize__", JitValue{TAG_LONG, static_cast<long>(f.elem_size)}, false);
-  h->set_or_append("__fa_ecode__", JitValue{TAG_LONG, culebra::packable_scalar_code(f.elem_type)}, false);
+  h->set_or_append("__fa_cap__", JitValue{TAG_LONG, static_cast<long>(f.layout.capacity)}, false);
+  h->set_or_append("__fa_dataoff__", JitValue{TAG_LONG, static_cast<long>(f.layout.data_offset)}, false);
+  h->set_or_append("__fa_esize__", JitValue{TAG_LONG, static_cast<long>(f.layout.elem_size)}, false);
+  h->set_or_append("__fa_ecode__", JitValue{TAG_LONG, culebra::packable_scalar_code(f.layout.elem_type)}, false);
   auto meth = [&](const char* nm,
                   void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
     _jit_view_method(h, nm, fn);
@@ -385,11 +382,8 @@ inline uint8_t* _jit_fs_vals(JitObject* v) {
   return _jit_fs_base(v) + _jit_fs_long(v, "__fs_dataoff__");
 }
 inline culebra::PackableField _jit_fs_elem_field(JitObject* v) {
-  culebra::PackableField f;
-  f.type = culebra::packable_scalar_name(
-      static_cast<int>(_jit_fs_long(v, "__fs_ecode__")));
-  f.offset = 0;
-  return f;
+  return culebra::PackableField::scalar(culebra::packable_scalar_name(
+      static_cast<int>(_jit_fs_long(v, "__fs_ecode__"))));
 }
 // Encode a scalar arg into key bytes (a fixed scalar is ≤ 8 bytes); a wrong
 // type raises TypeError via _jit_packable_write_field. Returns elem_size.
@@ -507,10 +501,10 @@ inline JitValue _jit_make_fixed_set_view(int64_t id, int64_t abs_off,
   auto* h = culebra_runtime_object_new();
   h->set_or_append("__fs_id__", JitValue{TAG_LONG, id}, false);
   h->set_or_append("__fs_off__", JitValue{TAG_LONG, abs_off}, false);
-  h->set_or_append("__fs_cap__", JitValue{TAG_LONG, static_cast<long>(f.capacity)}, false);
-  h->set_or_append("__fs_dataoff__", JitValue{TAG_LONG, static_cast<long>(f.data_offset)}, false);
-  h->set_or_append("__fs_esize__", JitValue{TAG_LONG, static_cast<long>(f.elem_size)}, false);
-  h->set_or_append("__fs_ecode__", JitValue{TAG_LONG, culebra::packable_scalar_code(f.elem_type)}, false);
+  h->set_or_append("__fs_cap__", JitValue{TAG_LONG, static_cast<long>(f.layout.capacity)}, false);
+  h->set_or_append("__fs_dataoff__", JitValue{TAG_LONG, static_cast<long>(f.layout.data_offset)}, false);
+  h->set_or_append("__fs_esize__", JitValue{TAG_LONG, static_cast<long>(f.layout.elem_size)}, false);
+  h->set_or_append("__fs_ecode__", JitValue{TAG_LONG, culebra::packable_scalar_code(f.layout.elem_type)}, false);
   auto meth = [&](const char* nm,
                   void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
     _jit_view_method(h, nm, fn);
@@ -552,11 +546,8 @@ inline uint8_t* _jit_fm_vals(JitObject* v) {
   return _jit_fm_base(v) + _jit_fm_long(v, "__fm_voff__");
 }
 inline culebra::PackableField _jit_fm_field(JitObject* v, const char* code_key) {
-  culebra::PackableField f;
-  f.type = culebra::packable_scalar_name(
-      static_cast<int>(_jit_fm_long(v, code_key)));
-  f.offset = 0;
-  return f;
+  return culebra::PackableField::scalar(
+      culebra::packable_scalar_name(static_cast<int>(_jit_fm_long(v, code_key))));
 }
 inline int64_t _jit_fm_enc_key(JitObject* v, int8_t tag, int64_t data,
                             uint8_t* out) {
@@ -711,13 +702,13 @@ inline JitValue _jit_make_fixed_map_view(int64_t id, int64_t abs_off,
   auto* h = culebra_runtime_object_new();
   h->set_or_append("__fm_id__", JitValue{TAG_LONG, id}, false);
   h->set_or_append("__fm_off__", JitValue{TAG_LONG, abs_off}, false);
-  h->set_or_append("__fm_cap__", JitValue{TAG_LONG, static_cast<long>(f.capacity)}, false);
-  h->set_or_append("__fm_koff__", JitValue{TAG_LONG, static_cast<long>(f.data_offset)}, false);
-  h->set_or_append("__fm_voff__", JitValue{TAG_LONG, static_cast<long>(f.val_offset)}, false);
-  h->set_or_append("__fm_ksize__", JitValue{TAG_LONG, static_cast<long>(f.elem_size)}, false);
-  h->set_or_append("__fm_vsize__", JitValue{TAG_LONG, static_cast<long>(f.val_size)}, false);
-  h->set_or_append("__fm_kcode__", JitValue{TAG_LONG, culebra::packable_scalar_code(f.elem_type)}, false);
-  h->set_or_append("__fm_vcode__", JitValue{TAG_LONG, culebra::packable_scalar_code(f.val_type)}, false);
+  h->set_or_append("__fm_cap__", JitValue{TAG_LONG, static_cast<long>(f.layout.capacity)}, false);
+  h->set_or_append("__fm_koff__", JitValue{TAG_LONG, static_cast<long>(f.layout.data_offset)}, false);
+  h->set_or_append("__fm_voff__", JitValue{TAG_LONG, static_cast<long>(f.layout.val_offset)}, false);
+  h->set_or_append("__fm_ksize__", JitValue{TAG_LONG, static_cast<long>(f.layout.elem_size)}, false);
+  h->set_or_append("__fm_vsize__", JitValue{TAG_LONG, static_cast<long>(f.layout.val_size)}, false);
+  h->set_or_append("__fm_kcode__", JitValue{TAG_LONG, culebra::packable_scalar_code(f.layout.elem_type)}, false);
+  h->set_or_append("__fm_vcode__", JitValue{TAG_LONG, culebra::packable_scalar_code(f.layout.val_type)}, false);
   auto meth = [&](const char* nm,
                   void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
     _jit_view_method(h, nm, fn);

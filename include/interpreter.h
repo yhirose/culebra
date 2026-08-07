@@ -8417,29 +8417,28 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   static Value packable_read_field(const uint8_t* base,
                                    const culebra::PackableField& f) {
     const uint8_t* p = base + f.offset;
-    if (f.is_fixed_string) {
+    if (f.layout.is_fixed_string) {
       // `[len:i32][byte × N]` -> a String of the first `len` bytes.
       int32_t len; std::memcpy(&len, p, 4);
       return Value(std::string(
-          reinterpret_cast<const char*>(p + f.data_offset),
+          reinterpret_cast<const char*>(p + f.layout.data_offset),
           static_cast<size_t>(len)));
     }
-    if (f.is_bytes) {
+    if (f.layout.is_bytes) {
       // Exactly N raw bytes -> a byte String of length N.
-      return Value(std::string(reinterpret_cast<const char*>(p), f.capacity));
+      return Value(std::string(reinterpret_cast<const char*>(p), f.layout.capacity));
     }
-    if (f.is_optional) {
+    if (f.layout.is_optional) {
       // `[present:byte][T]` -> nil when absent, else the inner scalar.
       if (*p == 0) return Value();
-      culebra::PackableField inner;
-      inner.type = f.elem_type;
-      inner.offset = 0;
-      return packable_read_field(p + f.data_offset, inner);
+      return packable_read_field(
+          p + f.layout.data_offset,
+          culebra::PackableField::scalar(f.layout.elem_type));
     }
-    if (f.is_enum) {
+    if (f.layout.is_enum) {
       // `[tag:i32][payload]` -> the tagged variant instance (class/__enum +
       // positional `_0.._n` payload fields), matching eval_enum_decl's shape.
-      const auto* el = culebra::lookup_packable_enum(f.elem_type);
+      const auto* el = culebra::lookup_packable_enum(f.layout.elem_type);
       int32_t tag; std::memcpy(&tag, p, 4);
       if (!el || tag < 0 || tag >= static_cast<int32_t>(el->variants.size()))
         return Value();
@@ -8447,7 +8446,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       ObjectValue inst;
       inst.properties->emplace("class", Symbol{Value(std::string(var.name)), true});
       inst.properties->emplace("__enum",
-                               Symbol{Value(std::string(f.elem_type)), true});
+                               Symbol{Value(std::string(f.layout.elem_type)), true});
       const uint8_t* payload = p + el->payload_offset;
       for (size_t fi = 0; fi < var.fields.size(); fi++) {
         culebra::PackableField sf;
@@ -8502,62 +8501,61 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                                    const culebra::PackableField& f,
                                    const Value& val) {
     uint8_t* p = base + f.offset;
-    if (f.is_fixed_string) {
+    if (f.layout.is_fixed_string) {
       if (val.type != Value::String && val.type != Value::StringView) {
         throw CulebraError("TypeError", std::format(
             "FixedString field `{}` expects a String, got {}", f.name,
             val.type_name()));
       }
       auto sv = val.to_string_view();
-      if (sv.size() > f.capacity) {
+      if (sv.size() > f.layout.capacity) {
         throw CulebraError("CapacityError", std::format(
-            "FixedString<{}> overflow: `{}` needs {} bytes", f.capacity, f.name,
+            "FixedString<{}> overflow: `{}` needs {} bytes", f.layout.capacity, f.name,
             sv.size()));
       }
       int32_t len = static_cast<int32_t>(sv.size());
       std::memcpy(p, &len, 4);
-      std::memcpy(p + f.data_offset, sv.data(), sv.size());
+      std::memcpy(p + f.layout.data_offset, sv.data(), sv.size());
       return;
     }
-    if (f.is_bytes) {
+    if (f.layout.is_bytes) {
       if (val.type != Value::String && val.type != Value::StringView) {
         throw CulebraError("TypeError", std::format(
             "Bytes field `{}` expects a String, got {}", f.name,
             val.type_name()));
       }
       auto sv = val.to_string_view();
-      if (sv.size() != f.capacity) {
+      if (sv.size() != f.layout.capacity) {
         throw CulebraError("ValueError", std::format(
-            "Bytes<{}> field `{}` expects exactly {} bytes, got {}", f.capacity,
-            f.name, f.capacity, sv.size()));
+            "Bytes<{}> field `{}` expects exactly {} bytes, got {}", f.layout.capacity,
+            f.name, f.layout.capacity, sv.size()));
       }
-      std::memcpy(p, sv.data(), f.capacity);
+      std::memcpy(p, sv.data(), f.layout.capacity);
       return;
     }
-    if (f.is_optional) {
+    if (f.layout.is_optional) {
       // nil clears the present flag; any other value sets it and writes T
       // (a wrong type raises through the inner write).
       if (val.type == Value::Nil) { *p = 0; return; }
       *p = 1;
-      culebra::PackableField inner;
-      inner.type = f.elem_type;
-      inner.offset = 0;
-      packable_write_field(p + f.data_offset, inner, val);
+      packable_write_field(p + f.layout.data_offset,
+                           culebra::PackableField::scalar(f.layout.elem_type),
+                           val);
       return;
     }
-    if (f.is_enum) {
-      const auto* el = culebra::lookup_packable_enum(f.elem_type);
+    if (f.layout.is_enum) {
+      const auto* el = culebra::lookup_packable_enum(f.layout.elem_type);
       if (val.type != Value::Object || !val.to_object().has("__enum") ||
-          val.to_object().get("__enum").to_string_view() != f.elem_type) {
+          val.to_object().get("__enum").to_string_view() != f.layout.elem_type) {
         throw CulebraError("TypeError", std::format(
-            "field `{}` expects a `{}` enum value, got {}", f.name, f.elem_type,
+            "field `{}` expects a `{}` enum value, got {}", f.name, f.layout.elem_type,
             val.type_name()));
       }
       const auto& obj = val.to_object();
       int idx = el ? el->index_of(obj.get("class").get<std::string>()) : -1;
       if (idx < 0) {
         throw CulebraError("TypeError", std::format(
-            "field `{}`: unknown variant for enum `{}`", f.name, f.elem_type));
+            "field `{}`: unknown variant for enum `{}`", f.name, f.layout.elem_type));
       }
       int32_t tag = static_cast<int32_t>(idx);
       std::memcpy(p, &tag, 4);
@@ -8656,10 +8654,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     std::memcpy(v.core->data + v.off, &x, 4);
   }
   static culebra::PackableField fa_elem_field(const FaView& v) {
-    culebra::PackableField f;
-    f.type = v.etype;
-    f.offset = 0;
-    return f;
+    return culebra::PackableField::scalar(v.etype);
   }
   static uint8_t* fa_elem_ptr(const FaView& v, int64_t i) {
     return v.core->data + v.off + v.dataoff + i * v.esize;
@@ -8687,10 +8682,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     ObjectValue h;
     h.initialize("__fa_id__", Value(id), false);
     h.initialize("__fa_off__", Value(abs_off), false);
-    h.initialize("__fa_cap__", Value(static_cast<int64_t>(f.capacity)), false);
-    h.initialize("__fa_dataoff__", Value(static_cast<int64_t>(f.data_offset)), false);
-    h.initialize("__fa_esize__", Value(static_cast<int64_t>(f.elem_size)), false);
-    h.initialize("__fa_etype__", Value(std::string(f.elem_type)), false);
+    h.initialize("__fa_cap__", Value(static_cast<int64_t>(f.layout.capacity)), false);
+    h.initialize("__fa_dataoff__", Value(static_cast<int64_t>(f.layout.data_offset)), false);
+    h.initialize("__fa_esize__", Value(static_cast<int64_t>(f.layout.elem_size)), false);
+    h.initialize("__fa_etype__", Value(std::string(f.layout.elem_type)), false);
     h.initialize("size", Value(FunctionValue({},
         [](std::shared_ptr<Environment> e) {
           return Value(fa_len(fa_resolve(e->get("self"))));
@@ -8765,7 +8760,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return v.core->data + v.off + v.dataoff;
   }
   static culebra::PackableField fs_elem_field(const FsView& v) {
-    culebra::PackableField f; f.type = v.etype; f.offset = 0; return f;
+    return culebra::PackableField::scalar(v.etype);
   }
   static std::vector<uint8_t> fs_encode(const FsView& v, const Value& val) {
     std::vector<uint8_t> buf(v.esize, 0);
@@ -8778,10 +8773,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     ObjectValue h;
     h.initialize("__fs_id__", Value(id), false);
     h.initialize("__fs_off__", Value(abs_off), false);
-    h.initialize("__fs_cap__", Value(static_cast<int64_t>(f.capacity)), false);
-    h.initialize("__fs_dataoff__", Value(static_cast<int64_t>(f.data_offset)), false);
-    h.initialize("__fs_esize__", Value(static_cast<int64_t>(f.elem_size)), false);
-    h.initialize("__fs_etype__", Value(std::string(f.elem_type)), false);
+    h.initialize("__fs_cap__", Value(static_cast<int64_t>(f.layout.capacity)), false);
+    h.initialize("__fs_dataoff__", Value(static_cast<int64_t>(f.layout.data_offset)), false);
+    h.initialize("__fs_esize__", Value(static_cast<int64_t>(f.layout.elem_size)), false);
+    h.initialize("__fs_etype__", Value(std::string(f.layout.elem_type)), false);
     h.initialize("size", Value(FunctionValue({},
         [](std::shared_ptr<Environment> e) {
           return Value(fs_count(fs_resolve(e->get("self"))));
@@ -8874,7 +8869,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   static uint8_t* fm_keys(const FmView& v) { return v.core->data + v.off + v.koff; }
   static uint8_t* fm_vals(const FmView& v) { return v.core->data + v.off + v.voff; }
   static culebra::PackableField fm_field(const std::string& t) {
-    culebra::PackableField f; f.type = t; f.offset = 0; return f;
+    return culebra::PackableField::scalar(t);
   }
   static std::vector<uint8_t> fm_enc(const std::string& t, int64_t sz,
                                      const Value& val) {
@@ -8888,13 +8883,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     ObjectValue h;
     h.initialize("__fm_id__", Value(id), false);
     h.initialize("__fm_off__", Value(abs_off), false);
-    h.initialize("__fm_cap__", Value(static_cast<int64_t>(f.capacity)), false);
-    h.initialize("__fm_koff__", Value(static_cast<int64_t>(f.data_offset)), false);
-    h.initialize("__fm_voff__", Value(static_cast<int64_t>(f.val_offset)), false);
-    h.initialize("__fm_ksize__", Value(static_cast<int64_t>(f.elem_size)), false);
-    h.initialize("__fm_vsize__", Value(static_cast<int64_t>(f.val_size)), false);
-    h.initialize("__fm_ktype__", Value(std::string(f.elem_type)), false);
-    h.initialize("__fm_vtype__", Value(std::string(f.val_type)), false);
+    h.initialize("__fm_cap__", Value(static_cast<int64_t>(f.layout.capacity)), false);
+    h.initialize("__fm_koff__", Value(static_cast<int64_t>(f.layout.data_offset)), false);
+    h.initialize("__fm_voff__", Value(static_cast<int64_t>(f.layout.val_offset)), false);
+    h.initialize("__fm_ksize__", Value(static_cast<int64_t>(f.layout.elem_size)), false);
+    h.initialize("__fm_vsize__", Value(static_cast<int64_t>(f.layout.val_size)), false);
+    h.initialize("__fm_ktype__", Value(std::string(f.layout.elem_type)), false);
+    h.initialize("__fm_vtype__", Value(std::string(f.layout.val_type)), false);
     h.initialize("size", Value(FunctionValue({},
         [](std::shared_ptr<Environment> e) {
           return Value(fm_count(fm_resolve(e->get("self"))));
@@ -9047,10 +9042,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     }
     int64_t id = view.to_object().get("__packedview_id__").to_long();
     int64_t abs_off = off + static_cast<int64_t>(f->offset);
-    if (f->is_fixed_array) return make_fixed_array_view(id, abs_off, *f);
-    if (f->is_fixed_set) return make_fixed_set_view(id, abs_off, *f);
-    if (f->is_fixed_map) return make_fixed_map_view(id, abs_off, *f);
-    if (f->is_struct) return make_nested_view(id, abs_off, f->elem_type);
+    if (f->layout.is_fixed_array) return make_fixed_array_view(id, abs_off, *f);
+    if (f->layout.is_fixed_set) return make_fixed_set_view(id, abs_off, *f);
+    if (f->layout.is_fixed_map) return make_fixed_map_view(id, abs_off, *f);
+    if (f->layout.is_struct) return make_nested_view(id, abs_off, f->layout.elem_type);
     return packable_read_field(core->data + off, *f);
   }
 
@@ -9064,38 +9059,38 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           "@packable {} has no field `{}`", packed_view_class(view, *core),
           name), static_cast<long>(line), static_cast<long>(col));
     }
-    if (f->is_fixed_array) {
+    if (f->layout.is_fixed_array) {
       throw CulebraError(
           "TypeError",
           std::format("cannot assign to FixedArray field `{}`; mutate it via "
                       ".push(...) / [i] = ...", name),
           static_cast<long>(line), static_cast<long>(col));
     }
-    if (f->is_fixed_set || f->is_fixed_map) {
+    if (f->layout.is_fixed_set || f->layout.is_fixed_map) {
       throw CulebraError(
           "TypeError",
           std::format("cannot assign to {} field `{}`; mutate it through its "
-                      "methods", f->is_fixed_set ? "FixedSet" : "FixedMap",
+                      "methods", f->layout.is_fixed_set ? "FixedSet" : "FixedMap",
                       name),
           static_cast<long>(line), static_cast<long>(col));
     }
-    if (f->is_struct) {
+    if (f->layout.is_struct) {
       // Copy another @packable record of the same class (memcpy its bytes);
       // otherwise mutate the nested record field-by-field through the view.
       if (!is_packed_view(val)) {
         throw CulebraError("TypeError", std::format(
-            "field `{}` expects a `{}` record value", name, f->elem_type),
+            "field `{}` expects a `{}` record value", name, f->layout.elem_type),
             static_cast<long>(line), static_cast<long>(col));
       }
       auto [src_core, src_off] = packed_view_loc(val);
       std::string src_cls = packed_view_class(val, *src_core);
-      if (src_cls != f->elem_type) {
+      if (src_cls != f->layout.elem_type) {
         throw CulebraError("TypeError", std::format(
-            "field `{}` expects a `{}` record, got `{}`", name, f->elem_type,
+            "field `{}` expects a `{}` record, got `{}`", name, f->layout.elem_type,
             src_cls), static_cast<long>(line), static_cast<long>(col));
       }
       std::memcpy(core->data + off + f->offset, src_core->data + src_off,
-                  culebra::lookup_packable_layout(f->elem_type)->stride);
+                  culebra::lookup_packable_layout(f->layout.elem_type)->stride);
       return;
     }
     packable_write_field(core->data + off, *f, val);

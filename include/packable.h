@@ -420,30 +420,27 @@ inline std::string_view packable_scalar_name(int code) {
   return "";
 }
 
-// A single fixed-layout field: its name, the type token as written
-// (`Float32`, `FixedArray<Int32, 8>`, ...), and the byte offset/size from
-// C-ABI natural alignment. FixedArray fields carry their element layout so
-// the view can address `[len][T × N]` inline.
+// A single declared field: its name, the type token as written (`Float32`,
+// `FixedArray<Int32, 8>`, ...), the byte offset from C-ABI natural alignment,
+// and `layout` — what `packable_field_info` says about that type. A field
+// *has* a layout rather than being one, so the two stay separate structs and
+// `compute_packable_layout` never recomputes the layout from `type`.
+//
+// The read/write paths also address the *elements* of a FixedArray/Set/Map,
+// which are bare scalars with no declaration of their own. `scalar()` builds
+// that second shape: only `type` carries information, and the all-zero
+// `layout` is what routes it past every `layout.is_*` arm to the scalar
+// ladder. A new `is_*` arm must therefore be reachable from a declared field
+// only — an element field will always read it as false.
 struct PackableField {
   std::string name;
   std::string type;
-  size_t offset;
-  size_t size;
-  bool is_fixed_array = false;
-  bool is_fixed_string = false;
-  bool is_fixed_set = false;
-  bool is_fixed_map = false;
-  bool is_optional = false;
-  bool is_enum = false;
-  bool is_bytes = false;
-  bool is_struct = false;
-  std::string elem_type;
-  std::string val_type;
-  size_t capacity = 0;
-  size_t elem_size = 0;
-  size_t val_size = 0;
-  size_t data_offset = 0;  // offset of T[0]/K[0] within the field
-  size_t val_offset = 0;   // offset of V[0] within the field (FixedMap)
+  size_t offset = 0;
+  PackableFieldInfo layout;
+
+  static PackableField scalar(std::string_view type) {
+    return {"", std::string(type), 0, {}};
+  }
 };
 
 // FNV-1a over `n` key bytes — the hash for open-addressed Fixed{Set,Map}.
@@ -531,27 +528,7 @@ inline PackableLayout compute_packable_layout(
                       class_name, name, type));
     }
     off = packable_align_up(off, info.align);
-    PackableField f;
-    f.name = name;
-    f.type = type;
-    f.offset = off;
-    f.size = info.size;
-    f.is_fixed_array = info.is_fixed_array;
-    f.is_fixed_string = info.is_fixed_string;
-    f.is_fixed_set = info.is_fixed_set;
-    f.is_fixed_map = info.is_fixed_map;
-    f.is_optional = info.is_optional;
-    f.is_enum = info.is_enum;
-    f.is_bytes = info.is_bytes;
-    f.is_struct = info.is_struct;
-    f.elem_type = info.elem_type;
-    f.val_type = info.val_type;
-    f.capacity = info.capacity;
-    f.elem_size = info.elem_size;
-    f.val_size = info.val_size;
-    f.data_offset = info.data_offset;
-    f.val_offset = info.val_offset;
-    layout.fields.push_back(std::move(f));
+    layout.fields.push_back({name, type, off, info});
     off += info.size;
     layout.align = std::max(layout.align, info.align);
   }

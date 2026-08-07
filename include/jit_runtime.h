@@ -2523,30 +2523,29 @@ CULEBRA_RT_INLINE JitValue _jit_shared_val_index(JitObject* view,
 inline JitValue _jit_packable_read_field(const uint8_t* base,
                                          const culebra::PackableField& f) {
   const uint8_t* p = base + f.offset;
-  if (f.is_fixed_string) {
+  if (f.layout.is_fixed_string) {
     // `[len:i32][byte × N]` -> a String of the first `len` bytes.
     int32_t len; std::memcpy(&len, p, 4);
     const char* s = _culebra_heap_str(std::string_view(
-        reinterpret_cast<const char*>(p + f.data_offset),
+        reinterpret_cast<const char*>(p + f.layout.data_offset),
         static_cast<size_t>(len)));
     return {TAG_STRING, reinterpret_cast<int64_t>(s)};
   }
-  if (f.is_bytes) {
+  if (f.layout.is_bytes) {
     const char* s = _culebra_heap_str(std::string_view(
-        reinterpret_cast<const char*>(p), f.capacity));
+        reinterpret_cast<const char*>(p), f.layout.capacity));
     return {TAG_STRING, reinterpret_cast<int64_t>(s)};
   }
-  if (f.is_optional) {
+  if (f.layout.is_optional) {
     if (*p == 0) return {TAG_NIL, 0};
-    culebra::PackableField inner;
-    inner.type = f.elem_type;
-    inner.offset = 0;
-    return _jit_packable_read_field(p + f.data_offset, inner);
+    return _jit_packable_read_field(
+        p + f.layout.data_offset,
+        culebra::PackableField::scalar(f.layout.elem_type));
   }
-  if (f.is_enum) {
+  if (f.layout.is_enum) {
     // `[tag:i32][payload]` -> the tagged variant instance (class/__enum +
     // positional `_0.._n` fields), matching culebra_runtime_build_variant.
-    const auto* el = culebra::lookup_packable_enum(f.elem_type);
+    const auto* el = culebra::lookup_packable_enum(f.layout.elem_type);
     int32_t tag; std::memcpy(&tag, p, 4);
     if (!el || tag < 0 || tag >= static_cast<int32_t>(el->variants.size()))
       return {TAG_NIL, 0};
@@ -2555,13 +2554,12 @@ inline JitValue _jit_packable_read_field(const uint8_t* base,
     culebra_runtime_object_set(inst, "class", false, TAG_STRING,
         reinterpret_cast<int64_t>(_intern_str(var.name)), 0, 0);
     culebra_runtime_object_set(inst, "__enum", false, TAG_STRING,
-        reinterpret_cast<int64_t>(_intern_str(f.elem_type)), 0, 0);
+        reinterpret_cast<int64_t>(_intern_str(f.layout.elem_type)), 0, 0);
     const uint8_t* payload = p + el->payload_offset;
     for (size_t fi = 0; fi < var.fields.size(); fi++) {
-      culebra::PackableField sf;
-      sf.type = var.fields[fi].type;
-      sf.offset = 0;
-      JitValue fv = _jit_packable_read_field(payload + var.fields[fi].offset, sf);
+      JitValue fv = _jit_packable_read_field(
+          payload + var.fields[fi].offset,
+          culebra::PackableField::scalar(var.fields[fi].type));
       auto fn = culebra::positional_field_name(fi);
       culebra_runtime_object_set(inst, fn.data(), false, fv.tag, fv.data, 0, 0);
     }
@@ -2635,49 +2633,48 @@ inline void _jit_packable_write_field(uint8_t* base,
                                       const culebra::PackableField& f,
                                       int8_t tag, int64_t data) {
   uint8_t* p = base + f.offset;
-  if (f.is_fixed_string) {
+  if (f.layout.is_fixed_string) {
     if (tag != TAG_STRING && tag != TAG_STRINGVIEW) {
       throw culebra::CulebraError("TypeError", std::format(
           "FixedString field `{}` expects a String, got {}", f.name,
           _culebra_tag_name(tag)));
     }
     auto sv = _culebra_str_view(tag, data);
-    if (sv.size() > f.capacity) {
+    if (sv.size() > f.layout.capacity) {
       throw culebra::CulebraError("CapacityError", std::format(
-          "FixedString<{}> overflow: `{}` needs {} bytes", f.capacity, f.name,
+          "FixedString<{}> overflow: `{}` needs {} bytes", f.layout.capacity, f.name,
           sv.size()));
     }
     int32_t len = static_cast<int32_t>(sv.size());
     std::memcpy(p, &len, 4);
-    std::memcpy(p + f.data_offset, sv.data(), sv.size());
+    std::memcpy(p + f.layout.data_offset, sv.data(), sv.size());
     return;
   }
-  if (f.is_bytes) {
+  if (f.layout.is_bytes) {
     if (tag != TAG_STRING && tag != TAG_STRINGVIEW) {
       throw culebra::CulebraError("TypeError", std::format(
           "Bytes field `{}` expects a String, got {}", f.name,
           _culebra_tag_name(tag)));
     }
     auto sv = _culebra_str_view(tag, data);
-    if (sv.size() != f.capacity) {
+    if (sv.size() != f.layout.capacity) {
       throw culebra::CulebraError("ValueError", std::format(
-          "Bytes<{}> field `{}` expects exactly {} bytes, got {}", f.capacity,
-          f.name, f.capacity, sv.size()));
+          "Bytes<{}> field `{}` expects exactly {} bytes, got {}", f.layout.capacity,
+          f.name, f.layout.capacity, sv.size()));
     }
-    std::memcpy(p, sv.data(), f.capacity);
+    std::memcpy(p, sv.data(), f.layout.capacity);
     return;
   }
-  if (f.is_optional) {
+  if (f.layout.is_optional) {
     if (tag == TAG_NIL) { *p = 0; return; }
     *p = 1;
-    culebra::PackableField inner;
-    inner.type = f.elem_type;
-    inner.offset = 0;
-    _jit_packable_write_field(p + f.data_offset, inner, tag, data);
+    _jit_packable_write_field(p + f.layout.data_offset,
+                              culebra::PackableField::scalar(f.layout.elem_type),
+                              tag, data);
     return;
   }
-  if (f.is_enum) {
-    const auto* el = culebra::lookup_packable_enum(f.elem_type);
+  if (f.layout.is_enum) {
+    const auto* el = culebra::lookup_packable_enum(f.layout.elem_type);
     JitObject* obj =
         (tag == TAG_OBJECT) ? reinterpret_cast<JitObject*>(data) : nullptr;
     size_t ei = obj ? obj->find_slot("__enum") : static_cast<size_t>(-1);
@@ -2685,9 +2682,9 @@ inline void _jit_packable_write_field(uint8_t* base,
         (ei != static_cast<size_t>(-1))
             ? _culebra_str_view(obj->slots[ei].value.tag, obj->slots[ei].value.data)
             : std::string_view{};
-    if (!obj || ei == static_cast<size_t>(-1) || en != f.elem_type) {
+    if (!obj || ei == static_cast<size_t>(-1) || en != f.layout.elem_type) {
       throw culebra::CulebraError("TypeError", std::format(
-          "field `{}` expects a `{}` enum value, got {}", f.name, f.elem_type,
+          "field `{}` expects a `{}` enum value, got {}", f.name, f.layout.elem_type,
           _culebra_tag_name(tag)));
     }
     size_t ci = obj->find_slot("class");
@@ -2696,7 +2693,7 @@ inline void _jit_packable_write_field(uint8_t* base,
     int idx = el ? el->index_of(variant) : -1;
     if (idx < 0) {
       throw culebra::CulebraError("TypeError", std::format(
-          "field `{}`: unknown variant for enum `{}`", f.name, f.elem_type));
+          "field `{}`: unknown variant for enum `{}`", f.name, f.layout.elem_type));
     }
     int32_t vtag = static_cast<int32_t>(idx);
     std::memcpy(p, &vtag, 4);
@@ -2819,12 +2816,12 @@ inline JitValue _jit_packed_view_get(JitObject* view, const char* key,
                     _jit_packed_view_class(view, *core), key), line, col);
   }
   int64_t abs_off = off + static_cast<int64_t>(f->offset);
-  if (f->is_fixed_array) return _jit_make_fixed_array_view(id, abs_off, *f);
-  if (f->is_fixed_set) return _jit_make_fixed_set_view(id, abs_off, *f);
-  if (f->is_fixed_map) return _jit_make_fixed_map_view(id, abs_off, *f);
-  if (f->is_struct)
+  if (f->layout.is_fixed_array) return _jit_make_fixed_array_view(id, abs_off, *f);
+  if (f->layout.is_fixed_set) return _jit_make_fixed_set_view(id, abs_off, *f);
+  if (f->layout.is_fixed_map) return _jit_make_fixed_map_view(id, abs_off, *f);
+  if (f->layout.is_struct)
     return {TAG_OBJECT, reinterpret_cast<int64_t>(
-                            _jit_make_nested_view(id, abs_off, f->elem_type.c_str()))};
+                            _jit_make_nested_view(id, abs_off, f->layout.elem_type.c_str()))};
   return _jit_packable_read_field(core->data + off, *f);
 }
 
@@ -2848,19 +2845,19 @@ inline void _jit_packed_view_set(JitObject* view, const char* key, int8_t tag,
         std::format("@packable {} has no field `{}`",
                     _jit_packed_view_class(view, *core), key), line, col);
   }
-  if (f->is_fixed_array) {
+  if (f->layout.is_fixed_array) {
     throw culebra::CulebraError("TypeError",
         std::format("cannot assign to FixedArray field `{}`; mutate it via "
                     ".push(...) / [i] = ...", key),
         line, col);
   }
-  if (f->is_fixed_set || f->is_fixed_map) {
+  if (f->layout.is_fixed_set || f->layout.is_fixed_map) {
     throw culebra::CulebraError("TypeError",
         std::format("cannot assign to {} field `{}`; mutate it through its "
-                    "methods", f->is_fixed_set ? "FixedSet" : "FixedMap", key),
+                    "methods", f->layout.is_fixed_set ? "FixedSet" : "FixedMap", key),
         line, col);
   }
-  if (f->is_struct) {
+  if (f->layout.is_struct) {
     // Copy another @packable record of the same class (memcpy its bytes).
     auto* src = (tag == TAG_OBJECT) ? reinterpret_cast<JitObject*>(data) : nullptr;
     bool ok = src && src->is_packed_view;
@@ -2879,15 +2876,15 @@ inline void _jit_packed_view_set(JitObject* view, const char* key, int8_t tag,
     }
     if (!ok) {
       throw culebra::CulebraError("TypeError", std::format(
-          "field `{}` expects a `{}` record value", key, f->elem_type), line, col);
+          "field `{}` expects a `{}` record value", key, f->layout.elem_type), line, col);
     }
-    if (src_cls != f->elem_type) {
+    if (src_cls != f->layout.elem_type) {
       throw culebra::CulebraError("TypeError", std::format(
-          "field `{}` expects a `{}` record, got `{}`", key, f->elem_type,
+          "field `{}` expects a `{}` record, got `{}`", key, f->layout.elem_type,
           src_cls), line, col);
     }
     std::memcpy(core->data + off + f->offset, src_core->data + src_off,
-                culebra::lookup_packable_layout(f->elem_type)->stride);
+                culebra::lookup_packable_layout(f->layout.elem_type)->stride);
     return;  // _consume releases the source record value
   }
   _jit_packable_write_field(core->data + off, *f, tag, data);
