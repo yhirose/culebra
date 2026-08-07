@@ -595,30 +595,35 @@ inline int64_t connect(const std::string& host, int port,
 
 // ---- TCP server ------------------------------------------------------------
 
-// Bind and listen on host:port. `port` 0 asks the OS for an ephemeral port
-// (read it back with local_addr). Returns a Listener handle id, or -1 with
-// *err set.
-inline int64_t listen(const std::string& host, int port, int backlog,
-                      std::string* err) {
-  if (detail::unavailable(err)) return -1;
-  detail::platform_init();
+namespace detail {
+
+// Bind a fresh `socktype` socket to host:port, trying every address
+// getaddrinfo offers and keeping the first that takes. `ready` runs on the
+// bound descriptor to finish the setup; returning false (with *last set)
+// abandons that address and moves to the next. Returns a `kind` handle id, or
+// -1 with *err set to the last failure. Shared by listen() and udp_open().
+template <typename Ready>
+inline int64_t bind_and_intern(const std::string& host, int port, int socktype,
+                               Kind kind, std::string* err, Ready&& ready) {
+  if (unavailable(err)) return -1;
+  platform_init();
   addrinfo hints{};
   hints.ai_family = AF_UNSPEC;
-  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_socktype = socktype;
   hints.ai_flags = AI_PASSIVE;
-  detail::AddrInfoGuard res;
+  AddrInfoGuard res;
   std::string service = std::to_string(port);
   const char* node = host.empty() ? nullptr : host.c_str();
   int rc = ::getaddrinfo(node, service.c_str(), &hints, &res.p);
   if (rc != 0) {
-    if (err) *err = detail::gai_message(rc);
+    if (err) *err = gai_message(rc);
     return -1;
   }
   std::string last = "bind failed";
   for (addrinfo* ai = res.p; ai; ai = ai->ai_next) {
-    detail::FdGuard fd(::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol));
+    FdGuard fd(::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol));
     if (fd.fd == kInvalidSocket) {
-      last = detail::error_string(detail::last_error());
+      last = error_string(last_error());
       continue;
     }
     // Rebind a port still in TIME_WAIT from a previous run rather than failing.
@@ -626,21 +631,36 @@ inline int64_t listen(const std::string& host, int port, int backlog,
     ::setsockopt(fd.fd, SOL_SOCKET, SO_REUSEADDR,
                  reinterpret_cast<const char*>(&on), sizeof(on));
     if (::bind(fd.fd, ai->ai_addr, static_cast<socklen_t>(ai->ai_addrlen)) != 0) {
-      last = detail::error_string(detail::last_error());
+      last = error_string(last_error());
       continue;
     }
-    if (::listen(fd.fd, backlog > 0 ? backlog : kDefaultBacklog) != 0) {
-      last = detail::error_string(detail::last_error());
-      continue;
-    }
-    detail::set_nonblocking(fd.fd);
-    auto s = std::make_unique<detail::Sock>();
-    s->kind = Kind::Listener;
+    if (!ready(fd.fd, &last)) continue;
+    auto s = std::make_unique<Sock>();
+    s->kind = kind;
     s->fd = fd.release();
-    return detail::intern(std::move(s));
+    return intern(std::move(s));
   }
   if (err) *err = last;
   return -1;
+}
+
+}  // namespace detail
+
+// Bind and listen on host:port. `port` 0 asks the OS for an ephemeral port
+// (read it back with local_addr). Returns a Listener handle id, or -1 with
+// *err set.
+inline int64_t listen(const std::string& host, int port, int backlog,
+                      std::string* err) {
+  return detail::bind_and_intern(
+      host, port, SOCK_STREAM, Kind::Listener, err,
+      [&](socket_t fd, std::string* last) {
+        if (::listen(fd, backlog > 0 ? backlog : kDefaultBacklog) != 0) {
+          *last = detail::error_string(detail::last_error());
+          return false;
+        }
+        detail::set_nonblocking(fd);
+        return true;
+      });
 }
 
 // Accept one connection, waiting up to the listener's timeout. On Ok, *out_id
@@ -960,43 +980,12 @@ inline bool serve(int64_t lid, int n_workers, const ServeHooks& hooks,
 // Open a datagram socket bound to host:port (port 0 = ephemeral, host empty =
 // all interfaces). Returns a Udp handle id, or -1 with *err set.
 inline int64_t udp_open(const std::string& host, int port, std::string* err) {
-  if (detail::unavailable(err)) return -1;
-  detail::platform_init();
-  addrinfo hints{};
-  hints.ai_family = AF_UNSPEC;
-  hints.ai_socktype = SOCK_DGRAM;
-  hints.ai_flags = AI_PASSIVE;
-  detail::AddrInfoGuard res;
-  std::string service = std::to_string(port);
-  const char* node = host.empty() ? nullptr : host.c_str();
-  int rc = ::getaddrinfo(node, service.c_str(), &hints, &res.p);
-  if (rc != 0) {
-    if (err) *err = detail::gai_message(rc);
-    return -1;
-  }
-  std::string last = "bind failed";
-  for (addrinfo* ai = res.p; ai; ai = ai->ai_next) {
-    detail::FdGuard fd(::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol));
-    if (fd.fd == kInvalidSocket) {
-      last = detail::error_string(detail::last_error());
-      continue;
-    }
-    int on = 1;
-    ::setsockopt(fd.fd, SOL_SOCKET, SO_REUSEADDR,
-                 reinterpret_cast<const char*>(&on), sizeof(on));
-    if (::bind(fd.fd, ai->ai_addr, static_cast<socklen_t>(ai->ai_addrlen)) != 0) {
-      last = detail::error_string(detail::last_error());
-      continue;
-    }
-    detail::suppress_sigpipe(fd.fd);
-    detail::set_nonblocking(fd.fd);
-    auto s = std::make_unique<detail::Sock>();
-    s->kind = Kind::Udp;
-    s->fd = fd.release();
-    return detail::intern(std::move(s));
-  }
-  if (err) *err = last;
-  return -1;
+  return detail::bind_and_intern(host, port, SOCK_DGRAM, Kind::Udp, err,
+                                 [](socket_t fd, std::string*) {
+                                   detail::suppress_sigpipe(fd);
+                                   detail::set_nonblocking(fd);
+                                   return true;
+                                 });
 }
 
 // Send one datagram to host:port. A datagram is sent whole or not at all, so
