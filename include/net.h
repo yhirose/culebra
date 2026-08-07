@@ -333,13 +333,14 @@ struct Sock {
 // prior socket silently addressing a later, unrelated one on the same slot.
 inline thread_local IdRegistry<Sock> g_socks;
 
-// Hand a connected/bound descriptor to the table as a `kind` handle. The
-// caller has already released it from its FdGuard (or never had one); from
-// here the table owns it. `timeout_ms` 0 means wait forever.
-inline int64_t intern_fd(Kind kind, socket_t fd, int64_t timeout_ms) {
+// Hand a connected/bound descriptor to the table as a `kind` handle. Taking
+// the guard by rvalue is the ownership transfer: the caller cannot keep a
+// closing guard over a descriptor the table now owns. `timeout_ms` 0 means
+// wait forever.
+inline int64_t intern_fd(Kind kind, FdGuard&& fd, int64_t timeout_ms) {
   auto s = std::make_unique<Sock>();
   s->kind = kind;
-  s->fd = fd;
+  s->fd = fd.release();
   s->timeout_ms = timeout_ms;
   // s stays owning until add() has actually placed the pointer, so a
   // growth-triggered bad_alloc inside add() doesn't leak it.
@@ -590,7 +591,7 @@ inline int64_t connect(const std::string& host, int port,
         continue;
       }
     }
-    return detail::intern_fd(Kind::Tcp, fd.release(),
+    return detail::intern_fd(Kind::Tcp, std::move(fd),
                              timeout_ms > 0 ? timeout_ms : 0);
   }
   if (err) *err = last;
@@ -644,7 +645,7 @@ inline int64_t bind_and_intern(const std::string& host, int port, int socktype,
     }
     // A listener never times out on its own; accept() waits on the deadline
     // the caller sets afterwards.
-    return intern_fd(kind, fd.release(), /*timeout_ms=*/0);
+    return intern_fd(kind, std::move(fd), /*timeout_ms=*/0);
   }
   if (err) *err = last;
   return -1;
@@ -688,7 +689,7 @@ inline IoStatus accept(int64_t lid, int64_t* out_id, std::string* err) {
     }
     detail::suppress_sigpipe(fd.fd);
     detail::set_nonblocking(fd.fd);
-    *out_id = detail::intern_fd(Kind::Tcp, fd.release(), l->timeout_ms);
+    *out_id = detail::intern_fd(Kind::Tcp, std::move(fd), l->timeout_ms);
     return IoStatus::Ok;
   }
 }
@@ -913,7 +914,8 @@ class ServePool {
         jobs_.pop_front();
       }
       room_.notify_one();
-      int64_t id = detail::intern_fd(Kind::Tcp, fd, conn_timeout_ms_);
+      int64_t id =
+          detail::intern_fd(Kind::Tcp, detail::FdGuard(fd), conn_timeout_ms_);
       try {
         if (hooks_.on_conn) hooks_.on_conn(id);
       } catch (...) {
