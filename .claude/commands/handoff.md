@@ -22,8 +22,13 @@ description: 現在の作業状態から「次セッションの開始メッセ�
 
 3. **クリップボードへコピー**: 生成した本文を一時ファイル（`$TMPDIR` 配下）に Write してから、OS に応じたコマンドで入れる。**クリップボードアクセスはサンドボックス外なので Bash は `dangerouslyDisableSandbox: true` で実行。**
    - macOS（`uname -s` = `Darwin`）: `pbcopy < <file>`
-   - Linux（WSL2 含む）: `clip.exe`（WSL2、`/proc/version` に `microsoft` を含む）→ それ以外は `xclip -selection clipboard < <file>`、無ければ `wl-copy < <file>`
-   どちらのコマンドも無い/失敗する環境では、コピーは諦めてチャット表示のみで済ませる。
+   - **WSL2**（`/proc/version` に `microsoft` を含む）: `iconv -f UTF-8 -t UTF-16LE <file> | clip.exe`。
+     **`clip.exe` に UTF-8 を直接流すと日本語が化ける** — ANSI コードページとして解釈されるため。
+     UTF-16LE に変換すれば通る。BOM は付けないこと（付けると貼り付けた本文の先頭に不可視文字が残る）。
+   - その他の Linux: `xclip -selection clipboard < <file>`、無ければ `wl-copy < <file>`
+   どのコマンドも無い/失敗する環境では、コピーは諦めてチャット表示のみで済ませる。
+   コピー後は `powershell.exe -NoProfile -Command "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-Clipboard"`（WSL2）
+   等で読み戻し、日本語が化けていないことを確認する。
 
 4. **チャットにも本文を表示**し、「クリップボードにコピー済み」と一言添える。次セッションはこれを貼るだけで開始できる。
 
