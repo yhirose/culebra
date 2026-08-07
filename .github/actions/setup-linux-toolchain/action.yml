@@ -65,12 +65,7 @@ runs:
         sudo apt-get install -y "${pkgs[@]}"
 
     - name: Install just
-      shell: bash
-      run: |
-        # Ubuntu 24.04's apt-shipped `just` predates the [group(...)] attribute
-        # (just 1.27.0+). Install from the official script.
-        curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
-          | sudo bash -s -- --to /usr/local/bin
+      uses: ./.github/actions/install-just
 
     - name: Install LLVM 22
       shell: bash

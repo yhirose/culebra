@@ -28,61 +28,29 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            # mold (Rui Ueyama's modern linker, ~2-3x faster than lld on
-            # Linux) for the LLVM-heavy static link step. macOS already
-            # uses Apple's ld-prime (Xcode 15+) by default — fast enough,
-            # no override needed.
-            linker_flag: -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
-            # build_jobs empty = all cores (16 GB Ubuntu has headroom for the
-            # ~3 GB-per-TU parallel compile). Ubuntu runs the full test suite.
-            build_jobs: ""
-            skip_heavy: ""
-            # The wrap lane is opt-in locally (it rebuilds the whole tree, so
-            # it doubles the pre-commit gate); Ubuntu CI keeps running it.
-            test_wrap: "1"
-          - os: macos-latest
-            linker_flag: ""
-            # The 7 GB macOS runner swaps when compiling >2 LLVM-header-heavy
-            # TUs (~3 GB each) at once — cap the build to 2 (cuts ~64 min → ~18).
-            build_jobs: "2"
-            # The test suite's two heavy phases (the 5114-case difftest + the
-            # per-test AOT links) are platform-independent and run on Ubuntu CI
-            # and in local dev; the slow 3-core macOS runner takes ~30 min on
-            # them for no extra coverage, so skip them here. macOS still does
-            # the clean-env build + interp/JIT symmetry + ctest + isolate +
-            # microgpt smoke.
-            skip_heavy: "1"
-            # wrap was already part of the SKIP_HEAVY set here — stays off.
-            test_wrap: ""
-    runs-on: ${{ matrix.os }}
+  # Ubuntu used to be one job (build + `_run-tests all`), and on the 4-core
+  # standard runner that serialized ~24 min of test phases behind the build,
+  # making it the workflow's ~34 min critical path. It is now this build job
+  # plus the parallel test-ubuntu lanes below: most test phases need only the
+  # built binary, so they fan out across free ubuntu-latest jobs instead of
+  # queueing behind each other. This job builds, uploads the binary the lanes
+  # download, and runs the phases that need the CMake build tree itself
+  # (`_run-tests ci-buildtree`).
+  build-ubuntu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
-      # `just build`'s `make -j${CULEBRA_BUILD_JOBS:-<ncpu>}` honors this.
-      CULEBRA_BUILD_JOBS: ${{ matrix.build_jobs }}
-      # `just test` skips difftest + AOT when this is non-empty.
-      CULEBRA_TEST_SKIP_HEAVY: ${{ matrix.skip_heavy }}
-      # `just test` runs the wrap lane only when this is non-empty.
-      CULEBRA_TEST_WRAP: ${{ matrix.test_wrap }}
-      # Tied to the same matrix field as CULEBRA_TEST_WRAP: wherever the wrap
-      # lane runs, LTO the rebuild the same as the Build step below (which
-      # LTOs by default — matrix.linker_flag carries no -DCULEBRA_LTO=OFF) so
-      # wrap's ccache entries land in that step's namespace. See wrap_test.sh.
-      CULEBRA_WRAP_LTO: ${{ matrix.test_wrap }}
-      # macOS and Linux default the Canvas desktop window ON; a runner has no
-      # display, building the vendored SDL3 + raylib statics would add ~4 min
-      # per job, and the Linux runners do not install SDL3's build dependencies
-      # (whose absence fails its configure outright).
+      # Linux defaults the Canvas desktop window ON; a runner has no display,
+      # building the vendored SDL3 + raylib statics would add ~4 min, and the
+      # runner does not install SDL3's build dependencies (whose absence fails
+      # its configure outright).
       # Job-wide env, not a -D on the build step, so every cmake configure
-      # agrees — including the gate build `just test` runs.
+      # agrees — including the `just build` prereq `just smoke-microgpt`
+      # re-runs.
       CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
       # ccache as the compiler launcher via env (job-wide) — not just the build
       # step's -D flags — so EVERY cmake configure agrees, including the
-      # `just build` prereq that `just test` / `just smoke-microgpt` re-run.
+      # `just build` prereq that `just smoke-microgpt` re-runs.
       # With only the -D flags, that reconfigure dropped the launcher, changed
       # every compile command, and recompiled everything WITHOUT ccache
       # (~12 min) inside the test step.
@@ -95,29 +63,19 @@ jobs:
         with:
           submodules: recursive
 
-      # No windowed dependencies: this matrix pins the Canvas window off, and
+      # No windowed dependencies: this job pins the Canvas window off, and
       # without gtk4/webkitgtk the Webview namespace self-disables — which is
       # also the coverage this lane provides, that the tree still builds and
       # passes with both windowed axes absent.
-      - name: Install dependencies (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
+      - name: Install dependencies
         uses: ./.github/actions/setup-linux-toolchain
 
-      - name: Install dependencies (macOS)
-        if: matrix.os == 'macos-latest'
-        run: |
-          # coreutils provides `gtimeout` — `just test` uses it to bound each
-          # test so a frozen macOS VM fails the phase fast instead of hanging
-          # the job (macOS has no native `timeout`). Ubuntu's is built in.
-          brew install llvm just ccache coreutils
-
       # Compiler cache for incremental CI builds. Without it every PR
-      # push re-compiles culebra from scratch (~4 min macOS / 7 min
-      # Ubuntu, dominated by LLVM-header-heavy interpreter.h + jit.h
-      # translation units). LLVM static link itself is not cached.
-      # CCACHE_DIR is pinned under the workspace so the path is
-      # identical between actions/cache and ccache itself (brew
-      # ccache defaults to ~/Library/Caches/ccache on macOS otherwise).
+      # push re-compiles culebra from scratch (~7 min, dominated by
+      # LLVM-header-heavy interpreter.h + jit.h translation units). LLVM
+      # static link itself is not cached. CCACHE_DIR is pinned under the
+      # workspace so the path is identical between actions/cache and
+      # ccache itself.
       - name: Restore ccache
         uses: actions/cache@v4
         with:
@@ -142,45 +100,34 @@ jobs:
       - name: Check Playground version sync (culebra.h -> site/playground)
         run: just check-site-version
 
+      # mold (Rui Ueyama's modern linker, ~2-3x faster than lld on Linux) for
+      # the LLVM-heavy static link step.
       - name: Build (interpreter + JIT)
-        run: just build ${{ matrix.linker_flag }}
+        run: just build -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
 
-      # Interpreter-only build gate (CULEBRA_ENABLE_JIT=OFF). The `culebra`
-      # driver is the one TU with #ifdef CULEBRA_JIT_ENABLED gating, so a
-      # mismatched guard there breaks the no-JIT build while the default
-      # JIT build stays green. Ubuntu-only — the breakage is compiler/define
-      # driven, not platform-specific, and the slow macOS runner needn't pay
-      # for a second from-scratch compile (the JIT define flips every ccache
-      # key, so this shares nothing with the build above).
-      # A binary to try on a real desktop, which no CI job can stand in for: a
-      # runner proves a window does not hang or crash, never that anyone can
-      # see it. Before the no-JIT build, so that failing still leaves this
-      # behind. Note both of these carry Canvas headless (the job pins
-      # CULEBRA_CANVAS_WINDOW_DEFAULT off) and the Ubuntu one has no Webview
-      # either (no gtk4/webkitgtk here) — the Windows artifact is the only one
-      # with a window backend in it.
-      - name: Upload the binary for manual testing
+      # Two consumers: the test-ubuntu lanes below download it to run against,
+      # and it's a binary to try on a real desktop, which no CI job can stand
+      # in for (a runner proves a window does not hang or crash, never that
+      # anyone can see it). Right after the build, so a test failure below
+      # still leaves it behind. Note it carries Canvas headless (the job pins
+      # CULEBRA_CANVAS_WINDOW_DEFAULT off) and no Webview (no gtk4/webkitgtk
+      # here) — the Windows artifact is the only one with a window backend.
+      - name: Upload the binary for the test lanes and manual testing
         uses: actions/upload-artifact@v4
         with:
-          name: culebra-${{ matrix.os }}
+          name: culebra-ubuntu-latest
           path: build/culebra
           retention-days: 1
           compression-level: 1  # ~5x faster than the default, 12% larger
 
-      - name: Build (interpreter only, no JIT)
-        if: matrix.os == 'ubuntu-latest'
-        run: just build-no-jit
-
       - name: Report ccache stats
         run: ccache -s
 
-      - name: Test (interp/JIT diff + embedding smoke + AOT + culebra-test self)
-        # Reuse the LTO build/ from the Build step rather than letting `just
-        # test` spin up a second no-LTO build-gate/. CI already pays for the
-        # LTO link in the Build step above, so run the full gate against it
-        # — this also keeps the gate exercising the LTO binary on both OSes.
-        # (Local dev gets the fast no-LTO gate via plain `just test`.)
-        run: BIN=./build/culebra just _run-tests all
+      # Only the phases that need this job's build tree (runtime archives,
+      # driver objects, ctest executables) plus the source-only ratchets;
+      # everything else runs in the test-ubuntu lanes.
+      - name: Test (build-tree phases - ratchets + rt archives + ctest)
+        run: BIN=./build/culebra just _run-tests ci-buildtree
 
       # Run the ```culebra examples in docs/ (interp only). Invoke the
       # binary directly rather than `just doctest` so it reuses the build
@@ -197,11 +144,220 @@ jobs:
       - name: Smoke test microgpt (5 steps, both backends)
         run: just smoke-microgpt
 
+  # The heavy test phases, fanned out one lane per free ubuntu-latest job.
+  # Every lane needs only the binary build-ubuntu uploaded (LLVM is statically
+  # linked into it) plus the checkout; the aot and wrap lanes additionally
+  # compile and link, so they install the toolchain, and wrap reuses
+  # build-ubuntu's ccache. The lane groups live in justfile's `_run-tests`
+  # (ci-light/ci-diff/ci-leak); their union with the aot and wrap lanes and
+  # build-ubuntu's ci-buildtree equals what `_run-tests all` runs locally
+  # (with the wrap lane opted in).
+  test-ubuntu:
+    name: test-ubuntu (${{ matrix.lane }})
+    needs: build-ubuntu
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # One lane failing must not cancel the others' results.
+      fail-fast: false
+      matrix:
+        include:
+          # jit host symbols + interp/JIT symmetry + codegen backends +
+          # leak-abort smoke + culebra-test self + isolate
+          - lane: ci-light
+          # generated difftest corpus + the corpus RC-leak regression gate
+          - lane: ci-diff
+          # corpus inflated-RC audit + jit gc-stress + rc-leak battery
+          - lane: ci-leak
+          # per-test AOT builds: `culebra build` shells out to the stock
+          # `cc`/`c++` (never $CC/$CXX or LLVM tools — LLVM is statically
+          # linked into the binary), so the preinstalled runner compiler is
+          # all this lane needs.
+          - lane: aot
+          # wrap rebuilds the whole tree through cmake: toolchain + ccache
+          - lane: wrap
+            toolchain: "1"
+            ccache: "1"
+    env:
+      # The wrap rebuild must configure exactly like build-ubuntu's Build step
+      # (LTO on, Canvas window off, ccache launcher) or its ccache restore
+      # misses on every TU (see wrap_test.sh on CULEBRA_WRAP_LTO). Harmless
+      # for the other lanes, which never run cmake.
+      CULEBRA_WRAP_LTO: "1"
+      CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Only wrap's cmake rebuild reads vendor/; every other lane runs the
+          # downloaded binary against tests/ + tools/, which reference nothing
+          # under vendor/.
+          submodules: ${{ matrix.lane == 'wrap' && 'recursive' || 'false' }}
+
+      - name: Install toolchain
+        if: matrix.toolchain
+        uses: ./.github/actions/setup-linux-toolchain
+
+      # The binary-only lanes skip the toolchain install but still drive
+      # their phases through `just _run-tests`.
+      - name: Install just
+        if: ${{ !matrix.toolchain }}
+        uses: ./.github/actions/install-just
+
+      # actions/cache/restore, not actions/cache: build-ubuntu owns the save,
+      # and wrap's rebuild is a pure consumer (same tree, same flags — near
+      # 100% hits against the cache the Build step just populated).
+      - name: Restore ccache
+        if: matrix.ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ${{ runner.os }}-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-
+
+      - name: Download the built culebra
+        uses: actions/download-artifact@v4
+        with:
+          name: culebra-ubuntu-latest
+          path: build
+
+      # Artifacts drop file modes.
+      - name: Restore the exec bit
+        run: chmod +x build/culebra
+
+      - name: Test (${{ matrix.lane }})
+        run: BIN=./build/culebra just _run-tests ${{ matrix.lane }}
+
+  # Interpreter-only build gate (CULEBRA_ENABLE_JIT=OFF). The `culebra`
+  # driver is the one TU with #ifdef CULEBRA_JIT_ENABLED gating, so a
+  # mismatched guard there breaks the no-JIT build while the default JIT
+  # build stays green. Ubuntu-only — the breakage is compiler/define driven,
+  # not platform-specific. Its own job with its own ccache key: the JIT
+  # define flips every ccache key, so this build shares nothing with
+  # build-ubuntu's cache and would only churn it from inside that job.
+  build-no-jit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        uses: ./.github/actions/setup-linux-toolchain
+
+      # Outside the shared `Linux-ccache-` prefix like the other variant jobs
+      # (canvas/webview/assert), so build-ubuntu's fallback restore can never
+      # land on this cache and miss on every TU.
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: linux-nojit-ccache-${{ github.sha }}
+          restore-keys: |
+            linux-nojit-ccache-
+
+      - name: Build (interpreter only, no JIT)
+        run: just build-no-jit
+
+      - name: Report ccache stats
+        run: ccache -s
+
+  # The macOS leg of what used to be a two-OS test matrix, unchanged in what
+  # it runs: the clean-env build + the SKIP_HEAVY `_run-tests all` sweep +
+  # the macOS-only smokes. The test suite's heavy phases (the generated
+  # difftest + the per-test AOT links) are platform-independent and run in
+  # the Ubuntu lanes above and in local dev; the slow 3-core macOS runner
+  # takes ~30 min on them for no extra coverage. Apple's ld-prime (Xcode 15+)
+  # is fast enough that no mold-style linker override is needed.
+  test-macos:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      # The 7 GB macOS runner swaps when compiling >2 LLVM-header-heavy TUs
+      # (~3 GB each) at once — cap `just build`'s `make -j` to 2 (cuts
+      # ~64 min → ~18).
+      CULEBRA_BUILD_JOBS: "2"
+      # `_run-tests all` skips the platform-independent heavy phases
+      # (difftest, leak sweeps, gc-stress, AOT) when this is non-empty.
+      CULEBRA_TEST_SKIP_HEAVY: "1"
+      # A runner has no display; building the vendored SDL3 + raylib statics
+      # would add ~4 min. Job-wide env, not a -D on the build step, so every
+      # cmake configure agrees.
+      CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
+      # ccache as the compiler launcher via env (job-wide), so the `just
+      # build` prereq `just smoke-microgpt` re-runs configures identically.
+      # CCACHE_DIR is pinned under the workspace so the path is identical
+      # between actions/cache and ccache itself (brew ccache defaults to
+      # ~/Library/Caches/ccache otherwise).
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          # coreutils provides `gtimeout` — `just test` uses it to bound each
+          # test so a frozen macOS VM fails the phase fast instead of hanging
+          # the job (macOS has no native `timeout`).
+          brew install llvm just ccache coreutils
+
+      # Compiler cache for incremental CI builds. Without it every PR push
+      # re-compiles culebra from scratch (~4 min, dominated by
+      # LLVM-header-heavy interpreter.h + jit.h translation units). The LLVM
+      # static link itself is not cached.
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ${{ runner.os }}-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-
+
+      - name: Build (interpreter + JIT)
+        run: just build
+
+      # A binary to try on a real desktop — this one carries Webview (macOS
+      # needs no extra packages for it) but Canvas headless.
+      - name: Upload the binary for manual testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: culebra-macos-latest
+          path: build/culebra
+          retention-days: 1
+          compression-level: 1  # ~5x faster than the default, 12% larger
+
+      - name: Report ccache stats
+        run: ccache -s
+
+      - name: Test (interp/JIT diff + embedding smoke + culebra-test self)
+        # Reuse the LTO build/ from the Build step rather than letting `just
+        # test` spin up a second no-LTO build-gate/ — this also keeps the
+        # gate exercising the LTO binary. (Local dev gets the fast no-LTO
+        # gate via plain `just test`.)
+        run: BIN=./build/culebra just _run-tests all
+
+      - name: Doctest (docs examples, interp)
+        run: ./build/culebra test --doc tests/doctest docs
+
+      - name: Smoke test microgpt (5 steps, both backends)
+        run: just smoke-microgpt
+
       # macOS builds Webview by default and needs no packages, so this costs
-      # only the run. Ubuntu self-disables it for want of gtk4/webkitgtk, where
-      # `Webview` is then an undefined name — skip rather than pretend.
+      # only the run. (Ubuntu self-disables it for want of gtk4/webkitgtk,
+      # where `Webview` is then an undefined name — skip rather than pretend.)
       - name: Smoke — Webview window + event loop (interp / JIT)
-        if: matrix.os == 'macos-latest'
         run: misc/probe_webview_window.sh ./build/culebra
 
       # The driver is dead-stripped (CMakeLists, -Wl,-dead_strip) and the AOT
@@ -210,23 +366,22 @@ jobs:
       # This job sets CULEBRA_TEST_SKIP_HEAVY=1, so nothing else here builds an
       # AOT binary, and Ubuntu's dead-strip is a different linker's. One link,
       # not the per-test AOT sweep SKIP_HEAVY exists to avoid.
-      - name: Smoke — AOT survives the driver's dead-strip (macOS)
-        if: matrix.os == 'macos-latest'
+      - name: Smoke — AOT survives the driver's dead-strip
         run: |
           printf 'print(6 * 7)\n' > aot_smoke.cul
           ./build/culebra build aot_smoke.cul -o aot_smoke
           test "$(./aot_smoke)" = 42
 
   # The Canvas desktop window backend is the one part of the tree no other job
-  # builds: the matrix above pins CULEBRA_CANVAS_WINDOW_DEFAULT=OFF on both
-  # OSes, and release.yml (which does leave CMake's ON default alone) only runs
+  # builds: the build/test jobs above pin CULEBRA_CANVAS_WINDOW_DEFAULT=OFF on
+  # both OSes, and release.yml (which does leave CMake's ON default alone) only runs
   # on a `v*` tag. So the raylib present/input bodies, the weak-stub split in
   # culebra_rt, and the culebra_rt_canvas force-load axis compile nowhere —
   # a break in them surfaces at release time, or on a contributor's desktop.
   #
   # Not a second full gate: CULEBRA_ENABLE_CANVAS_WINDOW changes only how
   # present/input reach a display. The framebuffer core every Canvas test
-  # asserts on is the same code either way and the matrix above already gates
+  # asserts on is the same code either way and the jobs above already gate
   # it, so this job proves the parts that differ — that the window build
   # compiles and links, that the headless path still works inside it, that the
   # AOT weak choke resolves, and that a window really opens (under Xvfb).
@@ -289,7 +444,7 @@ jobs:
       # Full `just build`, not the DEV_NO_RT inner-loop build: the window knob
       # also splits culebra_rt's Canvas ops into weak headless stubs and adds
       # the culebra_rt_canvas archive, and DEV_NO_RT skips every AOT archive.
-      # LTO off — this job proves compiles and links; the matrix above already
+      # LTO off — this job proves compiles and links; build-ubuntu already
       # pays for the LTO link on this OS.
       - name: Build (window backend ON)
         run: just build -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold -DCULEBRA_LTO=OFF
@@ -379,7 +534,7 @@ jobs:
 
   # Linux is the only platform where culebra has to find the WebView engine
   # itself (macOS links a system framework; Windows lets webview.h's own loader
-  # locate the Edge runtime), and the `test` matrix above installs no gtk4 or
+  # locate the Edge runtime), and the Ubuntu test jobs above install no gtk4 or
   # webkitgtk, so there the namespace self-disables and every Webview path
   # compiles out. That left the whole Linux engine — the dlopen table, the
   # window, the event loop, the AOT force-load — proved only by hand on a

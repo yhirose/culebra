@@ -1,0 +1,15 @@
+name: Install just
+description: >-
+  Install `just` from the official script. Ubuntu 24.04's apt-shipped `just`
+  predates the [group(...)] attribute (just 1.27.0+). Shared by
+  setup-linux-toolchain and the binary-only test lanes, so the install method
+  cannot drift between them.
+
+runs:
+  using: composite
+  steps:
+    - name: Install just
+      shell: bash
+      run: |
+        curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
+          | sudo bash -s -- --to /usr/local/bin

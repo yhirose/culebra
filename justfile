@@ -234,7 +234,7 @@ check-preambles:
 #   embed             — C++ ctest (mt_smoke, mi_smoke, define_smoke).
 #   wrap              — `culebra wrap` end-to-end (rebuilds the tree).
 # The single-backend modes are for focused debugging.
-[doc("Full gate (no-LTO gate build). BACKEND=all|fast|interp|jit|aot|embed|isolate|wrap (default: all). JOBS=N controls parallelism (default: CPU cores). CULEBRA_TEST_SKIP_HEAVY=1 skips difftest + gc-stress + AOT (set on the slow macOS CI runner); CULEBRA_TEST_WRAP=1 adds the wrap lane (set on Ubuntu CI).")]
+[doc("Full gate (no-LTO gate build). BACKEND=all|fast|interp|jit|aot|embed|isolate|wrap (default: all). JOBS=N controls parallelism (default: CPU cores). CULEBRA_TEST_SKIP_HEAVY=1 skips difftest + gc-stress + AOT (set on the slow macOS CI runner); CULEBRA_TEST_WRAP=1 adds the wrap lane (CI runs it as its own lane instead).")]
 [group("test")]
 test BACKEND='all': check-generated build-gate
     @BIN=./build-gate/culebra {{lock_cmd}} just _run-tests {{BACKEND}}
@@ -785,6 +785,15 @@ _run-tests BACKEND:
     # run shows where it is (otherwise the silent phases — difftest, the
     # interp/jit sweep — emit nothing until they finish).
     phase() { echo ">>> [${SECONDS}s] $1"; }
+
+    # The five source-only ratchets, shared by the all/fast/ci-buildtree cases.
+    run_source_ratchets() {
+        phase "rc-discipline (bare retain/release ratchet)"; run_rc_discipline
+        phase "long width (language values are int64_t, not long)"; run_long_width
+        phase "flow-discipline (return-completion ratchet)"; run_flow_discipline
+        phase "dispatch symmetry (eval_X vs compile_X tag sets)"; run_dispatch_symmetry
+        phase "iter wiring (JitIterDrive + upstream forwarding ratchet)"; run_iter_wiring
+    }
     case "{{BACKEND}}" in
       # Order: cheap tests first, then AOT (slowest + most env-sensitive,
       # so a failure there shouldn't mask matcher regressions).
@@ -793,11 +802,7 @@ _run-tests BACKEND:
       # per-test AOT links). CI sets it on the slow macOS runner — those run on
       # Linux CI and in local dev.
       all)
-        phase "rc-discipline (bare retain/release ratchet)"; run_rc_discipline
-        phase "long width (language values are int64_t, not long)"; run_long_width
-        phase "flow-discipline (return-completion ratchet)"; run_flow_discipline
-        phase "dispatch symmetry (eval_X vs compile_X tag sets)"; run_dispatch_symmetry
-        phase "iter wiring (JitIterDrive + upstream forwarding ratchet)"; run_iter_wiring
+        run_source_ratchets
         phase "jit host symbols (driver defines what codegen names)"; run_jit_host_symbols
         phase "rt-archive TLS ownership (core vs force-loaded features)"; run_rt_archive_tls
         phase "webview dynload (engine stays behind dlopen)"; run_webview_dynload
@@ -815,7 +820,8 @@ _run-tests BACKEND:
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "AOT (== jit)"; run_aot; }
         # Opt-in rather than skip-by-flag: wrap rebuilds the whole tree, which
         # doubled this gate, and only a wrap/CMake/AOT change can break it.
-        # Ubuntu CI sets CULEBRA_TEST_WRAP=1; locally use `just test wrap`.
+        # Ubuntu CI runs wrap as its own lane (`_run-tests wrap`); locally
+        # use `just test wrap` or CULEBRA_TEST_WRAP=1.
         [[ -z "${CULEBRA_TEST_WRAP:-}" ]] || { phase "wrap (extended binary, 3 backends)"; run_wrap_test; }
         phase "done"; echo "test OK"
         ;;
@@ -824,11 +830,7 @@ _run-tests BACKEND:
       # no-LTO build-dev/ binary too (see `test-dev`). This is the green-light
       # check after a single edit; `all` is the pre-commit gate.
       fast)
-        phase "rc-discipline (bare retain/release ratchet)"; run_rc_discipline
-        phase "long width (language values are int64_t, not long)"; run_long_width
-        phase "flow-discipline (return-completion ratchet)"; run_flow_discipline
-        phase "dispatch symmetry (eval_X vs compile_X tag sets)"; run_dispatch_symmetry
-        phase "iter wiring (JitIterDrive + upstream forwarding ratchet)"; run_iter_wiring
+        run_source_ratchets
         phase "jit host symbols (driver defines what codegen names)"; run_jit_host_symbols
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
         phase "culebra-test self"; run_culebra_test_self
@@ -841,7 +843,46 @@ _run-tests BACKEND:
       embed)  run_embed ;;
       isolate) run_isolate ;;
       wrap)   run_wrap_test ;;
-      *) echo "test: unknown backend '{{BACKEND}}' (expected: all|fast|interp|jit|aot|embed|isolate|wrap)" >&2; exit 2 ;;
+      # CI shards: ci.yml splits `all` across parallel Ubuntu jobs — the build
+      # job runs ci-buildtree against its build tree, and the lane matrix runs
+      # ci-light/ci-diff/ci-leak/aot/wrap against the downloaded binary. Keep
+      # the union of these shards equal to `all` when adding a phase, or CI
+      # silently stops running it.
+      # ci-buildtree groups everything that needs the CMake build tree (the
+      # runtime archives, driver objects, ctest executables), plus the
+      # source-only ratchets — the build job is the one place both exist.
+      ci-buildtree)
+        run_source_ratchets
+        phase "rt-archive TLS ownership (core vs force-loaded features)"; run_rt_archive_tls
+        phase "webview dynload (engine stays behind dlopen)"; run_webview_dynload
+        phase "ctest (embedding smokes)"; run_embed
+        phase "done"; echo "test OK (ci-buildtree)"
+        ;;
+      # The three binary-only lanes: everything below runs the culebra binary
+      # (plus scripts in the checkout) and touches no build tree, so the CI
+      # lanes need only the downloaded artifact. Grouped so the slowest lane
+      # stays under the wrap lane's wall-clock.
+      ci-light)
+        phase "jit host symbols (driver defines what codegen names)"; run_jit_host_symbols
+        phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
+        phase "codegen backends (-O0, fast vs interp)"; run_codegen_backends
+        phase "leak-abort (GAP5 loud detector smoke)"; run_leak_abort
+        phase "culebra-test self"; run_culebra_test_self
+        phase "isolate (interp + jit)"; run_isolate
+        phase "done"; echo "test OK (ci-light)"
+        ;;
+      ci-diff)
+        phase "difftest (generated corpus)"; run_difftest
+        phase "leak-fuzz (corpus RC-leak regression)"; run_leak_fuzz
+        phase "done"; echo "test OK (ci-diff)"
+        ;;
+      ci-leak)
+        phase "leak-abort-suite (corpus inflated-RC, throw-paths)"; run_leak_abort_suite
+        phase "jit gc-stress (collect every alloc)"; run_gc_stress
+        phase "rc-leak battery (gc_refs vs conservative)"; run_leak_battery
+        phase "done"; echo "test OK (ci-leak)"
+        ;;
+      *) echo "test: unknown backend '{{BACKEND}}' (expected: all|fast|interp|jit|aot|embed|isolate|wrap|ci-buildtree|ci-light|ci-diff|ci-leak)" >&2; exit 2 ;;
     esac
 
 # Run the doctest examples in the public docs (interp). Both en and ja
