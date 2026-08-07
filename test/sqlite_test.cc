@@ -153,6 +153,36 @@ int main() {
   sq::close_db(db);  // idempotent / no-op on a forged id
   CHECK(sq::prepare(999999, "SELECT 1", &err) == -1);
 
+  // ---- no ABA on slot reuse: g_dbs/g_stmts are IdRegistry, so a slot freed by
+  // close_db()/finalize() gets a bumped generation on reuse. A captured id from
+  // the closed db/stmt must not resolve to whatever new one lands on the same
+  // slot. ----
+  {
+    int64_t db1 = sq::open_db(":memory:", &err);
+    CHECK(db1 >= 0);
+    sq::close_db(db1);
+    int64_t db2 = sq::open_db(":memory:", &err);
+    CHECK(db2 >= 0);
+    CHECK(db2 != db1);  // likely reuses db1's slot, but the id itself differs
+    CHECK(sq::prepare(db1, "SELECT 1", &err) == -1);  // old id: dead
+    int64_t st2 = sq::prepare(db2, "SELECT 1", &err);
+    CHECK(st2 >= 0);  // new id on the same slot: live
+
+    int64_t stmt1 = st2;
+    sq::finalize(stmt1);
+    int64_t stmt2 = sq::prepare(db2, "SELECT 2", &err);
+    CHECK(stmt2 >= 0);
+    CHECK(stmt2 != stmt1);  // likely reuses stmt1's slot, but the id differs
+    err.clear();
+    CHECK(sq::step(stmt1, &err) == -1);  // old id: dead
+    CHECK(err == "statement is finalized");
+    CHECK(sq::step(stmt2, &err) == 1);  // new id on the same slot: live
+    CHECK(sq::column(stmt2, 0).i == 2);
+    sq::finalize(stmt2);
+
+    sq::close_db(db2);
+  }
+
   if (g_failures == 0) {
     std::printf("sqlite_test: all checks passed (sqlite %s)\n",
                 sq::libversion());

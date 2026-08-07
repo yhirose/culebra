@@ -29,9 +29,10 @@
 // then retry`: a poll/select readiness hint is advisory (it can be spurious),
 // so a blocking recv() behind it could still stall past its timeout.
 //
-// Handles are int64 ids into a thread_local table, never a raw fd: a forged id
-// is bounds-checked and degrades to a graceful error (same soundness posture as
-// sqlite.h and File's fd table). Thread_local is correct because a Net handle
+// Handles are int64 ids into a thread_local IdRegistry (id_registry.h), never
+// a raw fd: a forged, closed, or stale (slot-reused) id is bounds- and
+// generation-checked and degrades to a graceful error, never a dereference of
+// arbitrary or unrelated memory. Thread_local is correct because a Net handle
 // is __nonsendable__ — it never crosses an isolate, i.e. never crosses a
 // thread.
 
@@ -75,6 +76,7 @@
 
 #include <cerrno>
 
+#include <id_registry.h>  // IdRegistry<T> (slot+generation handle table)
 #include <shared.h>  // throw_if_interrupted / culebra_g_sigint (Ctrl+C wiring)
 
 namespace culebra::net {
@@ -324,26 +326,22 @@ struct Sock {
   bool eof = false;      // peer closed its write end and rbuf is drained
 };
 
-// unique_ptr so a live Sock& is not invalidated by a concurrent intern() that
-// grows the table.
-inline thread_local std::vector<std::unique_ptr<Sock>> g_socks;
-inline thread_local std::vector<int64_t> g_free;
+// IdRegistry<Sock>::slots is vector<Sock*>, so a concurrent intern() that
+// grows the table only moves pointers, never a live Sock itself — a Sock& in
+// hand stays valid. A slot is reusable the moment a socket closes, so the
+// registry's generation check is what stops a captured/escaped id from a
+// prior socket silently addressing a later, unrelated one on the same slot.
+inline thread_local IdRegistry<Sock> g_socks;
 
+// s stays owning until add() has actually placed the pointer, so a
+// growth-triggered bad_alloc inside add() doesn't leak it.
 inline int64_t intern(std::unique_ptr<Sock> s) {
-  if (!g_free.empty()) {
-    int64_t id = g_free.back();
-    g_free.pop_back();
-    g_socks[static_cast<size_t>(id)] = std::move(s);
-    return id;
-  }
-  g_socks.push_back(std::move(s));
-  return static_cast<int64_t>(g_socks.size()) - 1;
+  int64_t id = g_socks.add(s.get());
+  s.release();
+  return id;
 }
 
-inline Sock* find(int64_t id) {
-  if (id < 0 || id >= static_cast<int64_t>(g_socks.size())) return nullptr;
-  return g_socks[static_cast<size_t>(id)].get();
-}
+inline Sock* find(int64_t id) { return g_socks.get(id); }
 
 // Look up a live handle of the expected kind. A closed / forged / wrong-kind id
 // is a graceful error, never a dereference.
@@ -416,8 +414,8 @@ inline void close_handle(int64_t id) {
   detail::Sock* s = detail::find(id);
   if (!s) return;
   if (s->fd != kInvalidSocket) detail::close_fd(s->fd);
-  detail::g_socks[static_cast<size_t>(id)].reset();
-  detail::g_free.push_back(id);
+  delete s;
+  detail::g_socks.invalidate(id);
 }
 
 inline bool is_open(int64_t id) { return detail::find(id) != nullptr; }

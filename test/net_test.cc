@@ -501,6 +501,9 @@ static void test_serve() {
 
 // Closing a handle must return its slot to the free list, so a long-running
 // accept loop doesn't grow the table forever.
+// g_socks is an IdRegistry, so a slot freed by close_handle() gets a bumped
+// generation on reuse: a captured id from the closed socket must not resolve
+// to whatever new socket lands on the same slot (no ABA).
 static void test_slot_reuse() {
   std::string err;
   int64_t first = nt::listen("127.0.0.1", 0, 0, &err);
@@ -508,8 +511,33 @@ static void test_slot_reuse() {
   nt::close_handle(first);
   int64_t second = nt::listen("127.0.0.1", 0, 0, &err);
   CHECK_OK(second >= 0, err);
-  CHECK(second == first);
+  CHECK(second != first);  // likely reuses first's slot, but the id itself differs
+  CHECK(!nt::is_open(first));  // old id: dead
+  CHECK(nt::is_open(second));  // new id on the same slot: live
   nt::close_handle(second);
+}
+
+// Same guarantee end to end: a stale id captured before close/reopen must not
+// silently read from whatever unrelated connection now occupies its slot.
+static void test_no_aba_on_reopen() {
+  std::string err, out;
+  Pair p1;
+  if (!make_pair(p1)) return;
+  int64_t stale_server = p1.server;
+  close_pair(p1);
+
+  Pair p2;
+  if (!make_pair(p2)) return;
+
+  err.clear();
+  CHECK(nt::read(stale_server, 64, out, &err) == nt::IoStatus::Error);
+  CHECK(err == "operation on a closed socket");  // stale id: dead, not aliased
+
+  CHECK_OK(nt::write_all(p2.client, "hi", 2, &err) == nt::IoStatus::Ok, err);
+  CHECK_OK(nt::read(p2.server, 64, out, &err) == nt::IoStatus::Ok, err);
+  CHECK(out == "hi");  // new connection on the (likely) same slot: live
+
+  close_pair(p2);
 }
 
 int main() {
@@ -526,6 +554,7 @@ int main() {
   test_no_fd_leak();
   test_serve();
   test_slot_reuse();
+  test_no_aba_on_reopen();
 
   if (g_failures == 0) {
     std::puts("net_test: all checks passed");

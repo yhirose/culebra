@@ -49,6 +49,7 @@
 #include <httplib.h>
 #endif
 
+#include <id_registry.h>    // IdRegistry<T> (slot+generation handle table)
 #include <rt_shared_tls.h>  // CULEBRA_RT_CORE_OWNED (one owner per thread_local)
 #include <shared.h>  // throw_if_interrupted / culebra_g_sigint (Ctrl+C wiring)
 #include <vfs.h>     // Dir / DiskDir / EmbeddedDir / serve_static (static assets)
@@ -296,51 +297,13 @@ inline std::string encode_query(const HeaderList& pairs) {
 #define CULEBRA_RT_HTTP_LINKAGE inline
 #endif
 
-// A slot+generation id registry over borrowed/owned `T*` handles: a captured or
-// escaped id (used after the handle is invalidated, or after a slot is reused)
-// resolves stale and fails safely with no ABA. The id encodes (gen<<32 | slot)
-// in unsigned space (a signed shift into the sign bit would be UB). thread_local
-// per registry instance — each handle is non-sendable. Every handle table in
-// this file (client, server, streaming sink, WebSocket connection) is one of
-// these, so a forged or stale id behaves the same way everywhere: bounds- and
-// generation-checked, never a dereference of arbitrary memory (same posture as
-// the wrap.h foreign table and File's fd table). Declared here, ahead of the
-// client table (its first use) but outside the WEAK/STRONG gate that follows —
-// a registry over T* never itself needs T to be complete, and the streaming
-// sink table below needs it visible in the WEAK build too.
-template <class T>
-struct IdRegistry {
-  std::vector<T*> slots;
-  std::vector<uint32_t> gen;
-  std::vector<uint32_t> free;
-  int64_t add(T* p) {
-    uint32_t s;
-    if (!free.empty()) {
-      s = free.back();
-      free.pop_back();
-      slots[s] = p;
-    } else {
-      s = static_cast<uint32_t>(slots.size());
-      slots.push_back(p);
-      gen.push_back(0);
-    }
-    return static_cast<int64_t>((static_cast<uint64_t>(gen[s]) << 32) |
-                                static_cast<uint64_t>(s));
-  }
-  T* get(int64_t id) {
-    uint32_t s = static_cast<uint32_t>(id & 0xFFFFFFFF);
-    uint32_t g = static_cast<uint32_t>(static_cast<uint64_t>(id) >> 32);
-    if (s >= slots.size() || gen[s] != g) return nullptr;
-    return slots[s];
-  }
-  void invalidate(int64_t id) {
-    uint32_t s = static_cast<uint32_t>(id & 0xFFFFFFFF);
-    if (s >= slots.size()) return;
-    slots[s] = nullptr;
-    gen[s]++;  // bump so a stale id (old generation) now fails
-    free.push_back(s);
-  }
-};
+// IdRegistry<T> (id_registry.h): the slot+generation id table every handle
+// table in this file (client, server, streaming sink, WebSocket connection)
+// is built on, thread_local per instance since each handle is non-sendable.
+// Included ahead of the client table (its first use) but outside the
+// WEAK/STRONG gate that follows — a registry over T* never itself needs T to
+// be complete, and the streaming sink table below needs it visible in the
+// WEAK build too.
 
 // Everything from here to the end of the client half is implementation: the
 // handle table, the httplib-touching helpers and the HttpClient definition.

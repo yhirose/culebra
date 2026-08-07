@@ -25,7 +25,8 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
-#include <vector>
+
+#include <id_registry.h>  // IdRegistry<T> (slot+generation handle table)
 
 #include "sqlite3.h"
 
@@ -70,12 +71,16 @@ struct BindVal {
 
 // ---- Process-local handle tables -------------------------------------------
 //
-// Script-visible handles store an int64 index into these tables, never a raw
-// sqlite3*/sqlite3_stmt* — a forged index is bounds-checked here and degrades
-// to a graceful error, it can never be dereferenced (same soundness posture as
-// the wrap.h foreign table and File's fd table). Tables are thread_local: a
-// Database/Statement handle is __nonsendable__ (never crosses an isolate, i.e.
-// never crosses a thread), so per-thread tables are correct and lock-free.
+// Script-visible handles store an int64 id from an IdRegistry (id_registry.h),
+// never a raw sqlite3*/sqlite3_stmt* — a forged, closed, or stale (slot-reused)
+// id is bounds- and generation-checked here and degrades to a graceful error,
+// it can never be dereferenced (same soundness posture as the wrap.h foreign
+// table and File's fd table). A slot is reusable the moment a db/stmt closes,
+// so the generation check is what stops a captured/escaped id from a prior
+// handle silently addressing a later, unrelated one on the same slot. Tables
+// are thread_local: a Database/Statement handle is __nonsendable__ (never
+// crosses an isolate, i.e. never crosses a thread), so per-thread tables are
+// correct and lock-free.
 //
 // The tables belong to the implementation, so the weak-stub branch leaves them
 // out: it never interns a handle. Carrying them there would put the same
@@ -86,39 +91,13 @@ struct BindVal {
 #if !defined(CULEBRA_RT_SQLITE_WEAK)
 
 namespace detail {
-inline thread_local std::vector<sqlite3*> g_dbs;
-inline thread_local std::vector<int64_t> g_db_free;
-inline thread_local std::vector<sqlite3_stmt*> g_stmts;
-inline thread_local std::vector<int64_t> g_stmt_free;
+inline thread_local IdRegistry<sqlite3> g_dbs;
+inline thread_local IdRegistry<sqlite3_stmt> g_stmts;
 
-inline int64_t db_intern(sqlite3* db) {
-  if (!g_db_free.empty()) {
-    int64_t id = g_db_free.back();
-    g_db_free.pop_back();
-    g_dbs[id] = db;
-    return id;
-  }
-  g_dbs.push_back(db);
-  return static_cast<int64_t>(g_dbs.size()) - 1;
-}
-inline sqlite3* db_get(int64_t id) {
-  if (id < 0 || id >= static_cast<int64_t>(g_dbs.size())) return nullptr;
-  return g_dbs[id];
-}
-inline int64_t stmt_intern(sqlite3_stmt* st) {
-  if (!g_stmt_free.empty()) {
-    int64_t id = g_stmt_free.back();
-    g_stmt_free.pop_back();
-    g_stmts[id] = st;
-    return id;
-  }
-  g_stmts.push_back(st);
-  return static_cast<int64_t>(g_stmts.size()) - 1;
-}
-inline sqlite3_stmt* stmt_get(int64_t id) {
-  if (id < 0 || id >= static_cast<int64_t>(g_stmts.size())) return nullptr;
-  return g_stmts[id];
-}
+inline int64_t db_intern(sqlite3* db) { return g_dbs.add(db); }
+inline sqlite3* db_get(int64_t id) { return g_dbs.get(id); }
+inline int64_t stmt_intern(sqlite3_stmt* st) { return g_stmts.add(st); }
+inline sqlite3_stmt* stmt_get(int64_t id) { return g_stmts.get(id); }
 }  // namespace detail
 
 #endif  // !CULEBRA_RT_SQLITE_WEAK
@@ -245,8 +224,7 @@ CULEBRA_RT_SQLITE_LINKAGE void close_db(int64_t db_id) {
   sqlite3* db = detail::db_get(db_id);
   if (!db) return;
   sqlite3_close_v2(db);
-  detail::g_dbs[db_id] = nullptr;
-  detail::g_db_free.push_back(db_id);
+  detail::g_dbs.invalidate(db_id);
 }
 
 CULEBRA_RT_SQLITE_LINKAGE int64_t changes(int64_t db_id) {
@@ -281,8 +259,7 @@ CULEBRA_RT_SQLITE_LINKAGE void finalize(int64_t stmt_id) {
   sqlite3_stmt* st = detail::stmt_get(stmt_id);
   if (!st) return;
   sqlite3_finalize(st);
-  detail::g_stmts[stmt_id] = nullptr;
-  detail::g_stmt_free.push_back(stmt_id);
+  detail::g_stmts.invalidate(stmt_id);
 }
 
 CULEBRA_RT_SQLITE_LINKAGE void reset(int64_t stmt_id) {
