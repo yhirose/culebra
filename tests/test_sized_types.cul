@@ -1,0 +1,78 @@
+// Which types have a length: the receivers `size()` / `empty()` / `presence()`
+// accept, and the error every other receiver gets.
+//
+// The two backends state this set in different places — the JIT in one tag
+// switch (jit.h::emit_size_probe), the interpreter across five builtins
+// tables (object / array / string / set / tuple). Nothing in the code makes
+// them agree, so this file pins the set from both sides: adding a type to one
+// backend and not the other fails here, and so does dropping one.
+
+// --- the six tags that carry a length ---------------------------------
+assert_eq("ab".size(), 2)               // String
+assert_eq("abc".slice(0, 2).size(), 2)  // StringView
+assert_eq([1, 2].size(), 2)             // Array
+assert_eq((1, 2).size(), 2)             // Tuple
+assert_eq({a: 1}.size(), 1)             // Object
+assert_eq({1, 2}.size(), 2)             // Set
+
+// `empty()` is `size() == 0`; `presence()` is self-or-nil on the same probe.
+assert_eq("".empty(), true)
+assert_eq("ab".slice(0, 0).empty(), true)
+assert_eq([].empty(), true)
+assert_eq({}.empty(), true)
+assert_eq((1, 2).empty(), false)   // a Tuple has no zero-arity literal
+let drained = {1, 2}.diff({1, 2})  // no empty-Set literal; `{}` is an Object
+assert_eq(drained.empty(), true)
+
+// `presence()` on each of the six is `tests/test_presence.cul`'s subject —
+// not restated here. What it does not cover is the receivers that answer
+// nothing at all, which is the rejection block below.
+
+// Anything Object-shaped rides the Object arm and reports its property
+// count — a class instance, and an iterator (which is an Object of three
+// closures, so `range(5).size()` is 3 for every range, not 5).
+class Box {
+  new() {
+    self.x = 1
+  }
+}
+assert_eq(Box.new().size(), 2)  // `class` + `x`
+assert_eq(range(5).size(), 3)
+assert_eq([1, 2, 3, 4].iter().size(), 3)
+
+// --- every other receiver is rejected, identically on both backends -----
+// A scalar has no member table at all, so it raises the shared
+// receiver-resolution error naming what could have answered.
+fn rejects(v, kind, message) {
+  for f in [|| v.size(), || v.empty(), || v.presence()] {
+    let e = try {
+      f()
+      nil
+    } catch err {
+      err
+    }
+    assert_eq(e.kind, kind)
+    assert_eq(e.message, message)
+  }
+}
+
+for scalar in [nil, true, 1, 1.5] {
+  rejects(
+    scalar,
+    "TypeError",
+    "type error: expected Object, Array, or Tensor, got {type_of(scalar)}",
+  )
+}
+
+// Functions and Tensors do have member access, so `.size` reads as a missing
+// property (`nil`) and the call is what fails. Note the scalar message above
+// names Tensor as a receiver that could have answered, but a Tensor does not
+// carry a length either — it reports its extent through `.shape`.
+rejects(|x| x, "TypeError", "type error: expected Function, got Nil")
+rejects(
+  Tensor.zeros([2]),
+  "TypeError",
+  "type error: expected Function, got Nil",
+)
+
+IO.inspect("test_sized_types OK")
