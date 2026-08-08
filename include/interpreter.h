@@ -4111,6 +4111,14 @@ inline Value _invoke_callback(const Value& fn_val) {
   env->is_function_frame = true;
   env->initialize("fn", fn_val, false);
   bind_callback_params(*env, fn, {});
+  // A multimethod dispatcher declares only `**__KWARGS__`, so the binder's
+  // overflow guard skips `__ARGS__` — yet the dispatcher body reads it
+  // unconditionally to pick an overload. Give it the empty list the ordinary
+  // call path would have bound, so a zero-argument thunk reports the
+  // DispatchError the JIT reports instead of a NameError for the internal name.
+  if (fn.multimethod_accepts_arity) {
+    env->initialize("__ARGS__", Value(ArrayValue{}), false);
+  }
   env->initialize("__LINE__", Value(int64_t{0}), false);
   env->initialize("__COLUMN__", Value(int64_t{0}), false);
   return deliver_call(fn.eval(env));

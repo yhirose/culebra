@@ -279,4 +279,17 @@ fn twice(n) {
 assert_eq(twice(10), 20)
 assert_eq(twice(21), 42)
 
+# Handed to a builtin that calls it as a zero-argument thunk, a dispatcher
+# reports the same miss it would report at a bare `mm()` call site.
+fn mm(x: Long) {
+  x + 1
+}
+fn mm(x: String) {
+  x + '!'
+}
+mut tally = {}
+assert_throws('DispatchError', fn () {
+  tally.get_or_put('k', mm)
+})
+
 inspect("test_multidispatch: OK")
