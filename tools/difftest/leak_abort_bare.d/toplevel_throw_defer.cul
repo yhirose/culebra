@@ -1,6 +1,6 @@
-# The pad runs the top-level defers before it releases the bindings, so a defer
-# body can still read them. exec()'s catch drains whatever is left, so a defer
-# must fire exactly once — not twice.
+# A top-level defer still fires on an uncaught throw (exec()'s catch drains the
+# stack), exactly once, and its body can still read the bindings it closed over.
+# This one does not leak today: the defer's own teardown covers what it holds.
 let arr = [1, 2, 3]
 
 defer {

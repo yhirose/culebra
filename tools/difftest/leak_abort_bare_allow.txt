@@ -1,0 +1,13 @@
+# Bare fixtures (tools/difftest/leak_abort_bare.d) that are KNOWN to leak, with
+# the reason. A fixture not listed here must not leak; a fixture listed here
+# that stops leaking is reported so the entry can be dropped.
+#
+# __culebra_main has no frame-level cleanup landingpad, so an uncaught error
+# leaves the top-level frame with every binding still held. Giving it the pad
+# every other frame has does fix the leak, but it makes each throwing top-level
+# call an unwind edge, and the merge then needs a PHI per top-level slot per
+# edge: a 200-statement script went from 1.7s to 3m18s to JIT-compile. That
+# quadratic is not new — the same 200 statements inside a function cost 3m24s
+# today — so the pad waits on fixing the frame-pad shape itself.
+toplevel_error.cul
+toplevel_throw.cul

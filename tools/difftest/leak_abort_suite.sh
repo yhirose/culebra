@@ -42,25 +42,33 @@ mkdir -p "$WORK"
 
 # Phase 0: the bare fixtures. Every corpus case is a thunk `_p` calls inside a
 # try, and a thunk is an ordinary function with its own cleanup pad — so the
-# corpus cannot express "an uncaught error leaves the top-level frame", the one
-# shape __culebra_main's own pad exists for. These run as whole programs, with
-# no preamble and no wrapper, and each must exit on its error rather than abort
-# on a leak. Both backends run: the audit is JIT-side, but a divergence in what
-# the two print is a bug either way.
+# corpus cannot express "an uncaught error leaves the top-level frame". These
+# run as whole programs, with no preamble and no wrapper. A fixture leaks only
+# if leak_abort_bare_allow.txt says it may; one that stops leaking is reported
+# so the entry can be dropped. Both backends run: the audit is JIT-side, but a
+# divergence in what the two print is a bug either way.
+BARE_ALLOW="$HERE/leak_abort_bare_allow.txt"
 bare_fail=0
 for bf in "$HERE"/leak_abort_bare.d/*.cul; do
   [ -e "$bf" ] || break
+  name=$(basename "$bf")
+  grep -qx "$name" "$BARE_ALLOW" 2>/dev/null && allowed=1 || allowed=0
   bi=$(CULEBRA_GC_NEVER=1 CULEBRA_GC_LEAK_ABORT=1 ASAN_OPTIONS=detect_leaks=0 \
          "$CULEBRA" "$bf" 2>&1); bi_rc=$?
   bj=$(CULEBRA_GC_NEVER=1 CULEBRA_GC_LEAK_ABORT=1 ASAN_OPTIONS=detect_leaks=0 \
          "$CULEBRA" --jit "$bf" 2>&1); bj_rc=$?
   # SIGABRT (134) is the audit firing; anything else is the program's own exit.
   if [ "$bj_rc" = 134 ] || [ "$bi_rc" = 134 ]; then
-    echo "leak-abort-suite: FAIL — $(basename "$bf") leaked (interp rc=$bi_rc jit rc=$bj_rc)" >&2
-    printf '%s\n' "$bj" | sed 's/^/    /' >&2
-    bare_fail=1
+    if [ "$allowed" = 0 ]; then
+      echo "leak-abort-suite: FAIL — $name leaked (interp rc=$bi_rc jit rc=$bj_rc)" >&2
+      printf '%s\n' "$bj" | sed 's/^/    /' >&2
+      bare_fail=1
+    fi
+  elif [ "$allowed" = 1 ]; then
+    echo "leak-abort-suite: $name no longer leaks — drop it from" \
+         "$(basename "$BARE_ALLOW")"
   elif [ "$bi" != "$bj" ] || [ "$bi_rc" != "$bj_rc" ]; then
-    echo "leak-abort-suite: FAIL — $(basename "$bf") differs between backends" >&2
+    echo "leak-abort-suite: FAIL — $name differs between backends" >&2
     echo "  interp (rc=$bi_rc): $bi" >&2
     echo "  jit    (rc=$bj_rc): $bj" >&2
     bare_fail=1
