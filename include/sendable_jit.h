@@ -1139,14 +1139,17 @@ inline void _jit_sv_has(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t s
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   JitMethodArgs _a{n_args, args};  // consumed on any exit, throws included
-  auto [core, n, id, idx] = _jit_shared_val_node_of(
-      reinterpret_cast<JitObject*>(self.data));
-  using K = sendable::SendNode::K;
-  _jit_sv_require_object(n, "has");
+  // Before the node lookup: interp declares `key` as a required parameter, so
+  // its binder raises ArityError before the body observes a dropped view or a
+  // non-Object node. Checking here keeps both orderings symmetric.
   if (n_args < 1) {
     throw culebra::CulebraError("ArityError",
                                 culebra::missing_required_arg_message("key"));
   }
+  auto [core, n, id, idx] = _jit_shared_val_node_of(
+      reinterpret_cast<JitObject*>(self.data));
+  using K = sendable::SendNode::K;
+  _jit_sv_require_object(n, "has");
   for (const auto& [k, v] : n->entries) {
     if (_jit_shared_val_key_eq(k, args[0].tag, args[0].data)) {
       { *__ret = {TAG_BOOL, 1}; return; }
