@@ -3565,6 +3565,14 @@ stay safe at any depth — teardown is bounded internally, not by this
 error. `JSON` / `TOML` apply the same limit to their own trees (see the
 stdlib reference).
 
+A `Tensor`'s autograd graph is not value nesting and is not subject to
+this bound: `.backward()` and dropping an unevaluated graph both stay
+safe at any depth, with no `ValueError` cap. A computation graph has no
+natural "too deep" — an RNN unrolled over a long sequence is a
+legitimate graph, not malformed data — so both are internally bounded
+without an artificial depth limit (see the Autograd section of the
+stdlib reference).
+
 ### Compile-time errors
 
 Two checks run when the program is loaded, before any `try` block runs —
