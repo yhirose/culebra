@@ -337,8 +337,44 @@ culebra_runtime_owned_scope_exit(int64_t mark_arg) {
   }
 }
 
+// CPython-trashcan release: a deep chain (`a = [a]`×100k) would recurse
+// this function to a C-stack overflow (~56B/level; dies near 150k on an
+// 8MB stack). Beyond the budget the release is deferred to a thread-local
+// list drained at the outermost level. A release cannot throw, so unlike
+// the value walkers this bound is structural. Mirrors interp's ~Value.
+inline thread_local int64_t _jit_release_depth = 0;
+inline thread_local bool _jit_release_draining = false;
+CULEBRA_RT_CORE_OWNED thread_local std::vector<JitValue>
+    _jit_release_deferred;
+
+inline void _culebra_value_release_node(int8_t tag, int64_t data);
+
 inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
-  if (data == 0) return;
+  // Non-refcounted tags are a no-op in the release switch, so they skip
+  // the trashcan bookkeeping entirely (this is the hottest release path).
+  if (data == 0 || !_is_refcounted_value_tag(tag)) return;
+  if (_jit_release_depth >= culebra::kValueTeardownDepthBudget) {
+    _jit_release_deferred.push_back(JitValue{tag, data});
+    return;
+  }
+  ++_jit_release_depth;
+  _culebra_value_release_node(tag, data);
+  --_jit_release_depth;
+  if (_jit_release_depth == 0 && !_jit_release_deferred.empty() &&
+      !_jit_release_draining) {
+    _jit_release_draining = true;
+    // Each pop may re-defer its own deep tail, so loop until dry. The
+    // flag keeps an inner release from nesting a drain.
+    while (!_jit_release_deferred.empty()) {
+      JitValue v = _jit_release_deferred.back();
+      _jit_release_deferred.pop_back();
+      _culebra_value_release_impl(v.tag, v.data);
+    }
+    _jit_release_draining = false;
+  }
+}
+
+inline void _culebra_value_release_node(int8_t tag, int64_t data) {
   switch (tag) {
     case GC_TAG_FUNC: {
       auto* c = reinterpret_cast<JitClosure*>(data);

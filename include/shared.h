@@ -362,6 +362,14 @@ struct ValueWalkFrame {
   ValueWalkFrame& operator=(const ValueWalkFrame&) = delete;
 };
 
+// Deallocation deferral threshold (CPython's trashcan): a container release
+// nested deeper than this moves its work to a thread-local list drained at
+// the outermost level, so dropping `a = [a]`×100k never overflows the C
+// stack — a dtor cannot throw, so unlike the walkers above this bound has
+// to be structural. ~84B/level (interp ~Value chain) keeps the in-stack
+// portion under ~42KB. Consumers: interp ~Value, JIT value release.
+inline constexpr int64_t kValueTeardownDepthBudget = 500;
+
 // A thread for running culebra code: std::thread's join surface, but with
 // an explicit 8MB stack on POSIX. macOS gives non-main pthreads 512KB by
 // default — barely 100 interp eval frames — while the recursion limit above

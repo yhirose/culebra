@@ -579,6 +579,14 @@ struct StrGuard {
   }
 };
 
+// CPython-trashcan deallocation state: see ~Value. The deferred list holds
+// container payloads (std::any) whose destruction was postponed past the
+// depth budget; it is drained at the outermost teardown level.
+inline thread_local int64_t _value_teardown_depth = 0;
+inline thread_local bool _value_teardown_draining = false;
+CULEBRA_RT_CORE_OWNED thread_local std::vector<std::any>
+    _value_teardown_deferred;
+
 struct FunctionValue {
   struct Parameter {
     std::string_view name;
@@ -982,6 +990,38 @@ struct Value {
     type = rhs.type;
     v = std::move(rhs.v);
     return *this;
+  }
+
+  // Deep chains (`a = [a]` in a loop) would otherwise recurse ~any →
+  // container → vector<Value> → ~Value to a C-stack overflow (~84B/level;
+  // dies near 100k on an 8MB stack). Beyond the budget the payload moves
+  // to a thread-local list drained at the outermost level — CPython's
+  // trashcan. Scalars return at the switch; a dtor cannot throw, so this
+  // bound is structural rather than a ValueError.
+  ~Value() {
+    switch (type) {
+      case Object: case Array: case Tuple: case Set: case Function: break;
+      default: return;
+    }
+    if (!v.has_value()) return;  // moved-from shell
+    if (_value_teardown_depth >= kValueTeardownDepthBudget) {
+      _value_teardown_deferred.push_back(std::move(v));
+      return;
+    }
+    ++_value_teardown_depth;
+    v.reset();
+    --_value_teardown_depth;
+    if (_value_teardown_depth == 0 && !_value_teardown_deferred.empty() &&
+        !_value_teardown_draining) {
+      _value_teardown_draining = true;
+      // Each pop's destruction may re-defer its own deep tail, so loop
+      // until dry. The flag keeps an inner dtor from nesting a drain.
+      while (!_value_teardown_deferred.empty()) {
+        auto payload = std::move(_value_teardown_deferred.back());
+        _value_teardown_deferred.pop_back();
+      }
+      _value_teardown_draining = false;
+    }
   }
 
   explicit Value(bool b) : type(Bool), v(b) {}
@@ -2472,7 +2512,7 @@ inline void _owned_resolve_ambiguous(
     bool fresh;
     size_t pid = add_node(proto.get(), proto.use_count(), fresh);
     edge(from_id, pid);
-    if (fresh)
+    if (fresh && !overflow)
       gc_for_each_child(GcKind::Map, proto.get(), nullptr, nullptr,
                         [&](const Value& cv) { wv(cv, pid, wv); });
   };
@@ -2491,7 +2531,13 @@ inline void _owned_resolve_ambiguous(
           if (binding_root && v.type == Value::Object)
             binding_held.insert(primary);
           edge(from, id);
-          if (fresh) {
+          // The !overflow check is what makes the budget bound the C-stack
+          // depth of this recursive walk, not just the node count: a deep
+          // container chain ([1] wrapped 100k times) discovers one node per
+          // level and would otherwise recurse past the budget to a stack
+          // overflow. Overflow already means "every candidate survives"
+          // (see the bail below), so truncating discovery loses nothing.
+          if (fresh && !overflow) {
             link_proto(id, kind, primary, self);
             gc_for_each_child(kind, primary, side1, side2,
                               [&](const Value& cv) { self(cv, id, self); });

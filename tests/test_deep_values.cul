@@ -120,4 +120,61 @@ assert_throws('ValueError', || bx.hash())
 let h = Isolate.spawn(|x| x.size(), ok)
 assert_eq(1, h.join())
 
+# --- teardown: dropping a deep value must never overflow the stack ----
+# (the walkers above throw; a dtor cannot, so its bound is structural —
+# scope exit, reassignment, and a drop-finalizer holder all release fine)
+deep_teardown = fn () {
+  mut d = [1]
+  for i in 0..200000 {
+    d = [d]
+  }
+  0
+}
+assert_eq(0, deep_teardown())
+
+reassign_teardown = fn () {
+  mut d = [1]
+  for i in 0..200000 {
+    d = [d]
+  }
+  d = 0
+  d
+}
+assert_eq(0, reassign_teardown())
+
+closure_teardown = fn () {
+  mut cf = fn () {
+    0
+  }
+  while mut i = 0; i < 200000 {
+    let g = cf
+    cf = fn () {
+      g()
+    }
+    i += 1
+  }
+  0
+}
+assert_eq(0, closure_teardown())
+
+mut holder_fired = false
+class DeepHolder {
+  new(v) {
+    self.v = v
+  }
+  drop() {
+    holder_fired = true
+  }
+}
+holder_teardown = fn () {
+  mut d = [1]
+  for i in 0..100000 {
+    d = [d]
+  }
+  let _dh = DeepHolder.new(d)
+  0
+}
+assert_eq(0, holder_teardown())
+assert_true(holder_fired)
+
 IO.inspect("test_deep_values OK")
