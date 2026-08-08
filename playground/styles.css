@@ -156,11 +156,6 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   .pg-main .pg-editor .cm-editor { font-size: 16px; }
   .pg-tab { padding: 0.5rem 1rem; }
   .pg-tab-action { padding: 0.35rem 0.8rem; }
-
-  /* An embed is narrow by nature, so this is its normal layout rather than a
-     phone case: give the source the larger share, since the snippet a host
-     page sends is the thing being shown and the output is a few lines. */
-  .embed .pg-main { grid-template-rows: 1.35fr 1fr; }
 }
 
 /* --- embed mode (?embed=1) --------------------------------------------- */
@@ -173,6 +168,13 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .embed #args,
 .embed .backend { display: none; }
 .embed .pg-toolbar { padding: 0.45rem 0.8rem; }
+/* Stacked at every width, not just the phone one the standalone page splits
+   at: a host page gives the frame the full column width but only a few
+   hundred pixels of height, so side by side leaves the source wrapping in
+   half the width while the output's few lines waste the other half. The
+   source takes the larger share — it is the thing the host is showing. */
+.embed .pg-main { grid-template-columns: 1fr; grid-template-rows: 1.35fr 1fr; }
+.embed .pg-editor { border-right: 0; border-bottom: 1px solid var(--border); }
 
 /* --- canvas-only mode (?view=canvas) ------------------------------------ */
 /* A poster-and-play-button host wants just the running game — no source,
