@@ -1181,8 +1181,10 @@ shapeが単調増加します。そのようなワークロードでは非String
 1. `receiver`が`name`という名前のプロパティ / 組み込みメソッドを
    持てばそれを呼ぶ。`Object` / `Array`ではユーザ定義プロパティが
    組み込みを上書きできる。`String`は専用のメソッドテーブルのみ。
-   解決された値が`Function`であれば、呼出の間`self`は`receiver`
-   に束縛されます。
+   レシーバのクラスが適合するtraitのデフォルト実装 (§14) もここでの
+   「そのメソッド」に含まれるので、UFCSに落ちずにこの段階で解決
+   されます。解決された値が`Function`であれば、呼出の間`self`は
+   `receiver`に束縛されます。
 2. 存在しない場合、外側スコープに`name`という名前の自由関数が
    あれば、`receiver`を第一引数として`name(receiver, args)`を
    呼ぶ。これが **Uniform Function Call Syntax (UFCS)** で、

@@ -1271,9 +1271,11 @@ A method call `receiver.name(args)` resolves in this order:
 1. If `receiver` exposes a property or built-in method named `name`,
    invoke it. For `Object` / `Array`, user-defined properties win
    over built-ins; built-ins fill in otherwise. String methods are
-   the only choice for `String` receivers. When the resolved value is
-   a `Function`, `self` is bound to `receiver` for the duration of
-   the call.
+   the only choice for `String` receivers. A default implementation
+   the receiver's class conforms to (§14) counts as one of its
+   methods here, so it resolves at this step rather than falling
+   through to UFCS. When the resolved value is a `Function`, `self`
+   is bound to `receiver` for the duration of the call.
 2. Otherwise, if a free function named `name` is visible in the
    enclosing scope, call it with `receiver` as the first argument and
    the remaining arguments as-is. This is **Uniform Function Call
