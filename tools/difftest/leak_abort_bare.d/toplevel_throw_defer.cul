@@ -1,6 +1,6 @@
 # A top-level defer still fires on an uncaught throw (exec()'s catch drains the
 # stack), exactly once, and its body can still read the bindings it closed over.
-# This one does not leak today: the defer's own teardown covers what it holds.
+# Known to leak the bindings themselves — see leak_abort_bare_allow.txt.
 let arr = [1, 2, 3]
 
 defer {

@@ -9,5 +9,11 @@
 # edge: a 200-statement script went from 1.7s to 3m18s to JIT-compile. That
 # quadratic is not new — the same 200 statements inside a function cost 3m24s
 # today — so the pad waits on fixing the frame-pad shape itself.
+#
+# The audit rides the conservative stack scan, which under-reports when a
+# stranded object happens to be aliased as live — so decide an entry from the
+# gate's own binary (build-gate), not whichever build is at hand. build-dev
+# reported toplevel_throw_defer as clean; build-gate does not.
 toplevel_error.cul
 toplevel_throw.cul
+toplevel_throw_defer.cul
