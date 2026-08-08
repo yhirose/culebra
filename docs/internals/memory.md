@@ -236,6 +236,20 @@ covers every scope-like region uniformly — lexical blocks, loop
 bodies, `match`/`try` bodies, the `for` loop's iterable scope, and the
 function frame itself.
 
+**The function frame's unwind path is a ladder, not one pad.** The
+frame is the region every throwing call falls back to, so a single
+landing pad for it would collect one unwind edge per call and read
+every slot in the frame — which asks the compiler for a merge value
+per slot per edge, quadratic in the size of the function. Instead the
+frame's teardown is split into a rung per owned binding: a call
+unwinds to the rung for the bindings alive where it stands, and that
+rung releases its own slot before falling into the one below. A rung
+is only reachable from after its binding's initializing store, so no
+merge values are needed at all, and the release order down the ladder
+is the same reverse-declaration order the normal exit uses. The top
+level is an ordinary frame here — a program's own bindings are
+released when an uncaught error leaves it, just like a function's.
+
 **Borrowed values expose no release operation.** A borrowed value's
 handle offers only the read operation; there is no API that both
 borrows and releases the same value. "A borrowed operand was

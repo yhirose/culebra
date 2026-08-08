@@ -1,6 +1,6 @@
-# A top-level defer still fires on an uncaught throw (exec()'s catch drains the
-# stack), exactly once, and its body can still read the bindings it closed over.
-# Known to leak the bindings themselves — see leak_abort_bare_allow.txt.
+# A rung runs the top-level defers before the chain releases the bindings, so a
+# defer body can still read them. exec()'s catch drains whatever is left, so a
+# defer must fire exactly once — not twice.
 let arr = [1, 2, 3]
 
 defer {

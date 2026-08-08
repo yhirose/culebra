@@ -614,14 +614,12 @@ struct JIT {
     UnwindCleanupEmission cleanup_scope(this);
     emit_catch_all_prologue(cleanupBB, "build.lpad");
     // In-flight expression temporaries die first, then the partial
-    // container — the same order as finish_scope_cleanup / the fn-level pad.
-    // Required here too: at top level (__culebra_main has no fn-level pad) a
-    // bare statement's construction pad re-raises straight out of the frame
-    // with outerLpad null, so nothing downstream drains the pool — the
-    // stranded +1 outlives the error in any embedding that catches it and
-    // keeps the process alive (the REPL). The nil-clear makes any outer pad
-    // on the same unwind chain a no-op, so draining at every link never
-    // double-frees.
+    // container — the same order as finish_scope_cleanup / the frame ladder.
+    // Draining here and not only at the frame's ladder keeps the guarantee
+    // local: this pad re-raises to `outerLpad`, which is null for a
+    // construction that is not nested inside one, so nothing downstream would
+    // drain the pool. The nil-clear makes any outer pad on the same unwind
+    // chain a no-op, so draining at every link never double-frees.
     release_unwind_temps();
     for (auto* guard : guards)
       emit_value_release(
@@ -1101,22 +1099,38 @@ struct JIT {
                                    is_entry ? "main.mark" : "dep.mark");
         current_fn_defer_mark_ = mark;
       }
+      // The entry module's frame gets the same cleanup ladder every other frame
+      // has. Without one, `__culebra_main` was the only frame whose bindings
+      // were never released on the throw path: an uncaught top-level throw
+      // compiled to a plain call plus `unreachable`, so the normal-exit
+      // epilogue below landed in a dead block and the exception left the frame
+      // holding every top-level binding. A dep's scope closes mid-function and
+      // gets no ladder of its own — an uncaught throw while a dep is still
+      // initializing keeps the old shape.
+      if (is_entry) open_frame_cleanup_ladder();
       pre_allocate_forward_refs(*m.ast);
       compile(*m.ast).consume();
+      // The body is done: the normal-exit epilogue is not an unwind, so it must
+      // not become a predecessor of the ladder (same reason as
+      // compile_fn_common's).
+      if (is_entry) current_lpad_ = nullptr;
       if (!is_entry) {
         emit_build_and_register_export(*m.ast, m.abs_path.string());
         if (mark) {
           builder_.CreateCall(module_->getFunction(rt::defer_run_to), {mark});
         }
       } else if (!builder_.GetInsertBlock()->getTerminator()) {
-        // Top-level defers run on normal completion; an uncaught throw skips
-        // them.
         if (mark) {
           builder_.CreateCall(module_->getFunction(rt::defer_run_to), {mark});
         }
         release_all_scopes_for_exit(/*suppress_drop=*/true);
         builder_.CreateRetVoid();
       }
+      // `suppress_drop` matches the normal-exit epilogue above: program exit
+      // leaks the top-level bindings without firing `drop` on both backends
+      // (§16), and the throw path is still program exit, so the two exits stay
+      // symmetric.
+      if (is_entry) finish_frame_cleanup_ladder(mark, /*suppress_drop=*/true);
       current_fn_defer_mark_ = nullptr;
       current_owned_hot_ = nullptr;
       pop_scope();

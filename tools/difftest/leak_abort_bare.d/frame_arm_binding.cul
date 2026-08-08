@@ -1,0 +1,23 @@
+# A binding declared inside an `if` arm shares the enclosing frame scope, so it
+# extends that frame's cleanup ladder from inside a region that saves and
+# restores the current unwind target. The rung has to outlive the arm: a call
+# after the `if` must still unwind to it, or the arm's binding is never
+# released. Both the function frame and the top-level one are covered — the
+# corpus reaches only the first, and only through `_p`'s try.
+fn in_arm(flag) {
+  let outer = [1, 2, 3]
+  if flag {
+    let inner = {a: [4, 5]}
+  }
+  throw 'after-arm'
+}
+
+let top_outer = [6, 7]
+if true {
+  let top_inner = {b: [8, 9]}
+}
+
+try { in_arm(true) } catch e { }
+try { in_arm(false) } catch e { }
+
+throw 'boom'
