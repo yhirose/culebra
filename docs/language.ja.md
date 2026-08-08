@@ -3330,6 +3330,7 @@ shutdownパターン）は、`Signal.notify`でチャネルを登録します（
 | `ChannelError` | 全endpointが消えた（closed）channelへの`tx.send` | はい |
 | `ParallelError` | `Parallel.map` / `Parallel.each`の要素が例外を投げた。失敗要素のindexと原因を保持（fail-fast） | はい |
 | `DropContractError` | `drop` / `iter` / `has_next` / `next`プロパティが非Functionまたは非0引数Function | はい |
+| `RecursionError` | 関数呼び出しの深さが固定上限1000フレームを超えた。ユーザ関数の入口（fn・lambda・メソッド・コンストラクタ — フィールド初期化子はコンストラクタのフレーム内で走る）が1フレームで、組み込みヘルパーやマルチメソッドのディスパッチは数えない。上限と報告される深さは全backendで同一、位置はcall site。カウントは`throw`とともに巻き戻るので、`catch`後は全予算を使い直せる | はい |
 | `RuntimeError` | 未変換throw siteから伝播した`std::runtime_error`をインタプリタが拾うフォールバック。この場合のみ`e.line == 0` / `e.col == 0`がありうる | はい |
 
 未catchのエラーは`Kind: message`形式で表示し非ゼロ終了します。

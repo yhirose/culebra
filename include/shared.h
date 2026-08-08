@@ -295,6 +295,42 @@ inline void throw_if_too_many_positionals(int64_t cap, int64_t n_pos,
                      line, col);
 }
 
+// --- recursion guard --------------------------------------------------
+// One logical culebra call = one unit, counted identically by the interp
+// (the user-body eval closures — make_function_value and the two ctor
+// shapes) and by the JIT/AOT (the compiled-function prologue), so
+// `RecursionError` fires at the same depth on every backend. Without it the
+// two backends overflow the C stack at wildly different depths (interp
+// ~4.7KB of eval frames per call, JIT ~350B) and die as an uncatchable
+// SIGSEGV. 1000 matches CPython's default; the deepest recursion in the
+// test corpus is ~614, and 1000 interp frames need ~4.7MB — inside every
+// thread stack the runtime guarantees (see isolate.h's spawn helper).
+inline constexpr int64_t kCulebraRecursionLimit = 1000;
+inline thread_local int64_t _culebra_call_depth = 0;
+
+inline void check_recursion_depth(int64_t line, int64_t col) {
+  if (_culebra_call_depth >= kCulebraRecursionLimit) {
+    throw CulebraError(
+        "RecursionError",
+        std::format("maximum recursion depth exceeded ({})",
+                    kCulebraRecursionLimit),
+        line, col);
+  }
+}
+
+// RAII frame for the interp's C++-recursive eval: the dtor runs while an
+// exception unwinds, so every abandoned frame decrements as it is passed —
+// the depth a `catch` observes matches the JIT, whose compiled frames
+// restore the count at cleanup pads / catch entry instead.
+struct RecursionFrame {
+  RecursionFrame(int64_t line, int64_t col) {
+    check_recursion_depth(line, col);
+    ++_culebra_call_depth;
+  }
+  ~RecursionFrame() { --_culebra_call_depth; }
+  RecursionFrame(const RecursionFrame&) = delete;
+  RecursionFrame& operator=(const RecursionFrame&) = delete;
+};
 // Count-based ArityError message for a wrong-arity built-in method call,
 // shared by both backends so interp/JIT/AOT emit byte-identical text. A
 // fixed arity renders `'push' takes 1 argument but 3 given`; an optional

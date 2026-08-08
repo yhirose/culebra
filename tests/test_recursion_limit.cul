@@ -1,0 +1,160 @@
+// RecursionError: the call-depth limit is 1000 frames on every backend —
+// the same program must reach the same depth, throw the same error at the
+// same position, and get its full budget back after a catch. One counted
+// frame per user-function entry (fn / lambda / method / ctor); builtins and
+// multimethod dispatch are free. §15's error table pins the contract.
+
+mut n = 0
+
+fn bump() {
+  n += 1
+  n
+}
+
+// --- plain fn: the probe itself is 1 frame per level ----------------------
+fn probe(label, f, want) {
+  n = 0
+  let e = try {
+    f()
+    nil
+  } catch err {
+    err
+  }
+  assert_eq(e.kind, "RecursionError")
+  assert_eq(e.message, "maximum recursion depth exceeded (1000)")
+  assert_eq(n, want)
+  IO.println("{label} ok")
+}
+
+fn plain() {
+  bump()
+  plain()
+}
+// probe(+1) and its lambda argument(+1) sit under the recursion, so plain()
+// reaches 997 — pinning the exact number is the point: a backend that counts
+// frames differently fails here.
+probe("plain", || plain(), 997)
+
+// --- method + ctor recursion ----------------------------------------------
+class M {
+  new() {
+    self.d = 0
+  }
+  go() {
+    bump()
+    self.go()
+  }
+}
+probe("method", || M.new().go(), 997)  // the ctor frame is gone by then
+
+class C {
+  new() {
+    bump()
+    C.new()
+  }
+}
+probe("ctor", || C.new(), 997)
+
+// --- default ctor: field initializers count inside the ctor's frame -------
+fn build() {
+  bump()
+  D.new()
+  1
+}
+
+class D {
+  x: Long = build()
+}
+probe("field-init", || build(), 499)  // build + D.new = 2 frames per level
+
+// --- multifn: dispatch is free, the picked body is 1 frame ----------------
+fn mf(x: Long) {
+  bump()
+  mf(1)
+}
+
+fn mf(x: String) {
+  0
+}
+probe("multifn", || mf(1), 997)
+
+// --- callbacks: through map, named fn and literal lambda alike ------------
+fn step(x) {
+  bump()
+  [x].map(step)
+}
+probe("map-named", || [1].map(step), 997)
+
+fn step2(x) {
+  bump()
+  [x].map(|y| step2(y))
+}
+probe("map-inline", || [1].map(|y| step2(y)), 498)
+
+// --- the error is positioned at the recursive call site -------------------
+fn where() {
+  where()
+}
+let ew = try {
+  where()
+  nil
+} catch err {
+  err
+}
+assert_eq("{ew.line}:{ew.col}", "96:3")
+
+// --- unwinding refunds the budget: a catch can recurse deeply again -------
+fn depth_to(d) {
+  if d == 0 {
+    0
+  } else {
+    depth_to(d - 1)
+  }
+}
+assert_eq(depth_to(990), 0)
+
+// --- defers still run (and can call functions) while the error unwinds ----
+mut probe_note = "unset"
+
+fn quiet() {
+  "called-ok"
+}
+
+fn deep(d) {
+  bump()
+  if d == 1 {
+    defer {
+      probe_note = quiet()
+    }
+  }
+  deep(d + 1)
+}
+
+n = 0
+let ed = try {
+  deep(1)
+  nil
+} catch err {
+  err
+}
+assert_eq(ed.kind, "RecursionError")
+assert_eq(probe_note, "called-ok")
+
+// --- an isolate thread has the same budget (its stack is sized for it) ----
+let h = Isolate.spawn(fn () {
+  mut c = 0
+  fn iso_burn() {
+    c += 1
+    iso_burn()
+  }
+  let k = try {
+    iso_burn()
+    "no"
+  } catch err2 {
+    err2.kind
+  }
+  [k, c]
+})
+assert_eq(h.join(), ["RecursionError", 999])
+
+IO.inspect("test_recursion_limit OK")

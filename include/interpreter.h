@@ -7941,6 +7941,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         // _owned_resolve_ambiguous's exiting-env credit).
         [self = std::move(self), body, env,
          destructures](const std::shared_ptr<Environment>& callEnv) {
+          // Depth guard before any body-side work (the caller already bound
+          // and type-checked the args, so a TypeError there wins over
+          // RecursionError — the JIT prologue orders its checks the same).
+          culebra::RecursionFrame rec_frame(
+              callEnv->get("__LINE__").to_long(),
+              callEnv->get("__COLUMN__").to_long());
           callEnv->append_outer(env);
           for (auto& [name, pat] : destructures) {
             if (!self->try_pattern(*pat, callEnv->get(name), callEnv,
@@ -9390,6 +9396,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
             // make_function_value's eval lambda for why).
             [self = std::move(self), body, env, build_instance, promote_all_mut,
              shared_fields](const std::shared_ptr<Environment>& callEnv) {
+              // One counted frame per construction: field initializers and
+              // the `new` body both run inside it (JIT: the compiled `new`
+              // body's prologue enters before invoking the field-init fn).
+              culebra::RecursionFrame rec_frame(
+                  callEnv->get("__LINE__").to_long(),
+                  callEnv->get("__COLUMN__").to_long());
               callEnv->append_outer(env);
               // `self` is immutable inside the constructor body — match
               // Java / Crystal / Ruby and the JIT backend. Attempts to
@@ -9444,7 +9456,17 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         ctor = Value(FunctionValue(
             {},
             [self = std::move(self), env, build_instance, promote_all_mut,
-             shared_fields](std::shared_ptr<Environment>) {
+             shared_fields](const std::shared_ptr<Environment>& callEnv) {
+              // Field initializers are user code that can construct again
+              // (`class A { x: A.new() }`), so a default ctor with fields is
+              // a counted frame — the JIT's field-init fn enters when it IS
+              // the ctor. A fieldless default ctor runs no user code and
+              // counts on neither backend.
+              std::optional<culebra::RecursionFrame> rec_frame;
+              if (!shared_fields->empty()) {
+                rec_frame.emplace(callEnv->get("__LINE__").to_long(),
+                                  callEnv->get("__COLUMN__").to_long());
+              }
               auto inst = Value(build_instance());
               self->init_instance_fields(*shared_fields, env, inst);
               promote_all_mut(inst);

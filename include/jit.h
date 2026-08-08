@@ -230,6 +230,7 @@ struct JIT {
     llvm::BasicBlock* lpad;
     llvm::Value* fn_defer_mark;
     llvm::Value* owned_hot;
+    llvm::Value* rec_depth_slot;
     std::vector<IterCleanup> iter_cleanup;
     // The unwind-temp window state is per LLVM function: the outer
     // frame's live handles, slot pool and coverage belong to the outer
@@ -251,6 +252,7 @@ struct JIT {
           lpad(std::exchange(j.current_lpad_, nullptr)),
           fn_defer_mark(std::exchange(j.current_fn_defer_mark_, nullptr)),
           owned_hot(std::exchange(j.current_owned_hot_, nullptr)),
+          rec_depth_slot(std::exchange(j.current_rec_depth_slot_, nullptr)),
           // A nested fn's `return` must not clean up an enclosing fn's for-in
           // iterators (their allocas belong to the outer function).
           iter_cleanup(std::exchange(j.iter_cleanup_stack_, {})),
@@ -278,6 +280,7 @@ struct JIT {
       jit->iter_cleanup_stack_ = std::move(iter_cleanup);
       jit->current_owned_hot_ = owned_hot;
       jit->current_fn_defer_mark_ = fn_defer_mark;
+      jit->current_rec_depth_slot_ = rec_depth_slot;
       jit->current_lpad_ = lpad;
       jit->current_return_type_ = return_type;
       jit->current_closure_arg_ = closure_arg;
@@ -1360,7 +1363,18 @@ struct JIT {
     define_var(param_name,
                make_var_slot(captured, param_name, elem, pv.is_mut));
     emit_inlined_param_check(pv, elem);
+    // The inlined callback is still one culebra frame: count it like the
+    // helper path's compiled prologue would, after the param check (its
+    // TypeError outranks RecursionError) and around the body only — a
+    // throw skips the leave, and the enclosing frame's cleanup/catch
+    // restore corrects the count, same as a real callee frame.
+    emit_call(module_->getOrInsertFunction(rt::recursion_enter,
+                                           builder_.getInt64Ty()),
+              {}, "ihof.rec");
     auto result = compile(*lambda_ast.nodes[1]).consume();
+    builder_.CreateCall(module_->getOrInsertFunction(rt::recursion_leave,
+                                                    builder_.getVoidTy()),
+                        {});
     per_iter(elem, result);
     finish_and_pop_scope(cleanupBB, /*defer_mark=*/nullptr, savedLpad,
                          "ihof.body.exc", savedLpad);
@@ -1395,7 +1409,14 @@ struct JIT {
                make_var_slot(val_captured, val_name, val_val, val_pv.is_mut));
     emit_inlined_param_check(acc_pv, acc_val);
     emit_inlined_param_check(val_pv, val_val);
+    // Count the inlined callback frame — see emit_unary_lambda_body.
+    emit_call(module_->getOrInsertFunction(rt::recursion_enter,
+                                           builder_.getInt64Ty()),
+              {}, "ihof.rec");
     auto result = compile(*lambda_ast.nodes[1]).consume();
+    builder_.CreateCall(module_->getOrInsertFunction(rt::recursion_leave,
+                                                    builder_.getVoidTy()),
+                        {});
     store_result(result);
     finish_and_pop_scope(cleanupBB, /*defer_mark=*/nullptr, savedLpad,
                          "ihof.body.exc", savedLpad);
@@ -1718,6 +1739,14 @@ struct JIT {
   // (see owned_hot_ptr). Reset wherever current_fn_defer_mark_ is —
   // an SSA value must never leak into a different function.
   llvm::Value* current_owned_hot_ = nullptr;
+
+  // Recursion-guard state for the function being compiled: an entry-block
+  // alloca holding the depth AFTER this frame's `recursion_enter`. Non-null
+  // exactly when the prologue counted (a user body, or a field-init fn
+  // serving as a default ctor) — return paths emit `recursion_leave` and
+  // cleanup pads emit `recursion_restore(slot)` under the same gate, so an
+  // uncounted frame (defer thunk, ctor wrapper) never underflows the count.
+  llvm::Value* current_rec_depth_slot_ = nullptr;
 
   // Counter for generating unique function names. Process-wide so names
   // stay unique across separate JIT instances that share an `LLJIT` —
@@ -9722,7 +9751,8 @@ struct JIT {
           compile_fn_common(&ast, /*params_ast=*/nullptr,
                             /*body_ast=*/nullptr, /*returnType=*/{},
                             /*declName=*/{}, /*outParamMeta=*/nullptr,
-                            &members.field_inits);
+                            &members.field_inits,
+                            /*field_init_is_ctor=*/!has_new);
       if (has_new) {
         // Every `new` overload's body captures the SAME field-init closure
         // via this hidden slot and invokes it after binding its params
@@ -10295,7 +10325,12 @@ struct JIT {
       // order — the per-instance evaluation compile_class_decl hands to
       // build_class_instance. Everything else (captures, EH scaffolding,
       // scope teardown) is the regular function machinery.
-      const std::vector<JitFieldInit>* field_inits = nullptr) {
+      const std::vector<JitFieldInit>* field_inits = nullptr,
+      // Field-init mode only: true when this fn IS the class's constructor
+      // (no user `new`), so field initializers count a recursion frame the
+      // way the interp's default-ctor closure does. With a user `new` the
+      // field-init fn runs inside the (already counted) `new` frame instead.
+      bool field_init_is_ctor = false) {
     using namespace llvm;
     using namespace peg::udl;
     auto ptrTy = PointerType::get(ctx_, 0);
@@ -10784,6 +10819,30 @@ struct JIT {
       builder_.SetInsertPoint(skipBB);
     }
 
+    // Recursion guard: count this frame. After the param binding and type
+    // checks (whose errors outrank RecursionError — interp checks them
+    // caller-side before entering the body closure), before the destructure
+    // unpack and any user code (field inits, body). The post-enter depth is
+    // stashed so cleanup pads can restore it while unwinding (see
+    // current_rec_depth_slot_).
+    if (body_ast || field_init_is_ctor) {
+      // The slot starts at the "never entered" sentinel so the cleanup pad's
+      // restore is a no-op when the enter itself threw (the store below only
+      // runs once it returned).
+      {
+        llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                                 fn->getEntryBlock().begin());
+        current_rec_depth_slot_ =
+            entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "rec.slot");
+        entryB.CreateStore(builder_.getInt64(-1), current_rec_depth_slot_);
+      }
+      auto newDepth =
+          emit_call(module_->getOrInsertFunction(rt::recursion_enter,
+                                                 builder_.getInt64Ty()),
+                    {}, "rec.depth");
+      builder_.CreateStore(newDepth, current_rec_depth_slot_);
+    }
+
     // Unpack destructuring params (`fn ({a, b})`): the synthetic slot was
     // bound above; emit_pattern binds the pattern's names from it. A shape
     // mismatch throws the same ValueError as the interp.
@@ -10893,6 +10952,14 @@ struct JIT {
         builder_.CreateCall(
             module_->getFunction(rt::defer_run_to), {fnMark});
       }
+      // Uncount this frame after its defers (interp: run_deferred fires
+      // inside the guarded closure) but before the scope releases — their
+      // drop() bodies run at the caller's depth there (callEnv teardown).
+      if (current_rec_depth_slot_) {
+        builder_.CreateCall(module_->getOrInsertFunction(
+                                rt::recursion_leave, builder_.getVoidTy()),
+                            {});
+      }
       release_all_scopes_for_exit();
       builder_.CreateStore(bodyOwned.consume(), current_sret_);
       builder_.CreateRetVoid();
@@ -10919,6 +10986,19 @@ struct JIT {
       if (!fn->hasPersonalityFn()) fn->setPersonalityFn(get_personality_fn());
       UnwindCleanupEmission cleanup_scope(this);
       emit_catch_all_prologue(fnCleanupBB, "fn.exc");
+      // Restore the depth this frame entered with before its defers run:
+      // the frames unwound below us never ran their leaves, while interp's
+      // RAII has already decremented them by the time run_deferred fires.
+      // (restore ignores the -1 sentinel — an enter that threw counts
+      // nothing, so its unwind must move nothing.)
+      auto recFn = module_->getOrInsertFunction(
+          rt::recursion_restore, builder_.getVoidTy(), builder_.getInt64Ty());
+      llvm::Value* recD = nullptr;
+      if (current_rec_depth_slot_) {
+        recD = builder_.CreateLoad(builder_.getInt64Ty(),
+                                   current_rec_depth_slot_, "rec.d");
+        builder_.CreateCall(recFn, {recD});
+      }
       // In-flight expression temporaries first, then the frame's
       // defers and slots — the same order as finish_scope_cleanup.
       release_unwind_temps();
@@ -10927,6 +11007,13 @@ struct JIT {
             module_->getFunction(rt::defer_run_to), {fnMark});
       }
       release_all_scopes_for_exit();
+      // Uncount this frame on the way out — interp's guard dtor runs after
+      // run_deferred as the rethrow passes it. Absolute (d-1) rather than a
+      // bare decrement so the -1 sentinel stays a no-op (-2 is ignored too).
+      if (recD) {
+        builder_.CreateCall(
+            recFn, {builder_.CreateSub(recD, builder_.getInt64(1), "rec.d1")});
+      }
       emit_rethrow(/*outerLpad=*/nullptr);
     } else if (fnCleanupBB) {
       fnCleanupBB->eraseFromParent();
@@ -14611,6 +14698,13 @@ struct JIT {
           module_->getFunction(rt::defer_run_to),
           {current_fn_defer_mark_});
     }
+    // Uncount this frame — same slot in the epilogue as the fall-through
+    // exit (after defers, before the scope releases).
+    if (current_rec_depth_slot_) {
+      builder_.CreateCall(module_->getOrInsertFunction(rt::recursion_leave,
+                                                       builder_.getVoidTy()),
+                          {});
+    }
     release_all_scopes_for_exit();
     // JitFn returns its result through the out-pointer (see JitFn), not by
     // value — so no 16-byte aggregate crosses the closure-call ABI boundary.
@@ -14740,6 +14834,19 @@ struct JIT {
     builder_.CreateStore(make_nil(), resultSlot);
     auto caughtSlot = entryB.CreateAlloca(valueType_, nullptr, "try.caught");
 
+    // Snapshot the recursion depth: frames unwound between a throw and this
+    // try's handler never ran their `recursion_leave`, so the handler entry
+    // restores the count to what it was here — the value interp's RAII
+    // guards leave behind. (Works at top level too, where the enclosing
+    // frame is uncounted and carries no depth slot of its own.)
+    auto recSlot =
+        entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "try.rec");
+    builder_.CreateStore(
+        builder_.CreateCall(module_->getOrInsertFunction(
+                                rt::recursion_depth, builder_.getInt64Ty()),
+                            {}, "try.rec.d"),
+        recSlot);
+
     builder_.CreateBr(tryBB);
 
     // --- Try body: compile through a body-scope cleanup that unwinds to the
@@ -14822,6 +14929,16 @@ struct JIT {
     auto endCatchFn = module_->getOrInsertFunction("__cxa_end_catch",
                                                    builder_.getVoidTy());
     builder_.CreateCall(endCatchFn);
+    // Handled: bring the recursion count back to this frame's level (see
+    // the try.rec snapshot above). The foreign-exception arm keeps
+    // unwinding, so an outer handler restores instead.
+    {
+      auto d = builder_.CreateLoad(builder_.getInt64Ty(), recSlot, "rec.d");
+      builder_.CreateCall(module_->getOrInsertFunction(
+                              rt::recursion_restore, builder_.getVoidTy(),
+                              builder_.getInt64Ty()),
+                          {d});
+    }
     // Read the thrown Value via accessors (see thread-local note above).
     auto getTag = module_->getOrInsertFunction(
         "culebra_runtime_get_thrown_tag", builder_.getInt8Ty());

@@ -3536,6 +3536,7 @@ AOT builds (unless noted).
 | `ChannelError` | `tx.send` on a channel whose receivers/senders have all gone (closed). | yes |
 | `ParallelError` | A `Parallel.map` / `Parallel.each` element threw; carries the failing element's index and cause (fail-fast). | yes |
 | `DropContractError` | `drop` / `iter` / `has_next` / `next` property bound to a non-Function or non-zero-arity function. | yes |
+| `RecursionError` | Function-call depth exceeded the fixed limit of 1000 frames. Every user-function entry counts one frame (fn, lambda, method, constructor — field initializers run inside the constructor's frame); built-in helpers and multimethod dispatch do not. The limit and the reported depth are identical on every backend, and reported at the call site. The count unwinds with `throw`, so a `catch` regains the full budget. | yes |
 | `RuntimeError` | Fallback when interp catches an unconverted `std::runtime_error` from a not-yet-migrated throw site. `e.line == 0` and `e.col == 0` are possible in this case only. | yes |
 
 Uncaught errors print as `Kind: message` and exit with non-zero

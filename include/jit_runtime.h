@@ -612,6 +612,36 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_arity_error(
 inline thread_local int64_t _jit_call_site_line = 0;
 inline thread_local int64_t _jit_call_site_col = 0;
 
+// Recursion guard, compiled-code side. The counter itself lives in shared.h
+// (`_culebra_call_depth`) so the interp's RecursionFrame and these helpers
+// move the same per-thread count. `enter` sits in every user-body prologue
+// (after the param type checks — a TypeError there outranks RecursionError,
+// interp order); `leave` on the normal return paths. Unwinding skips the
+// leaves, so cleanup pads and catch entries `restore` to an absolute depth
+// snapshot instead — by the time a catch body (or an unwinding frame's
+// defers) runs, the count agrees with what the interp's RAII dtors left.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_recursion_enter() {
+  // Reports at the call site the caller published (set_call_site), which is
+  // what the interp reads back out of `__LINE__`/`__COLUMN__`. Returns the
+  // new depth so the prologue can stash it for its cleanup pads.
+  culebra::check_recursion_depth(_jit_call_site_line, _jit_call_site_col);
+  return ++culebra::_culebra_call_depth;
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_recursion_leave() {
+  --culebra::_culebra_call_depth;
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_recursion_depth() {
+  return culebra::_culebra_call_depth;
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_recursion_restore(
+    int64_t depth) {
+  // A negative depth is the prologue's "never entered" sentinel: the frame's
+  // slot is pre-set to -1 and only overwritten once `enter` succeeded, so a
+  // RecursionError thrown by the enter itself unwinds through the frame's
+  // own cleanup pad without touching the count.
+  if (depth >= 0) culebra::_culebra_call_depth = depth;
+}
+
 // Name-aware arity error: callee passes its declared parameter name
 // table (a const char* array, NUL-terminated entries) and the runtime
 // throws "missing required argument 'X'" where X is the first slot
