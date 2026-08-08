@@ -201,6 +201,27 @@ struct JIT {
     std::map<std::string, std::string> multifn_keys;
   };
 
+  // One rung of a frame's cleanup ladder — its throw-path teardown.
+  //
+  // A single fn-wide pad would collect every throwing call's unwind edge, and
+  // releasing the frame's slots there needs a PHI per slot per edge: a
+  // 200-statement body reached 1.4M PHI operands, and the optimizer plus the
+  // backend spent minutes on them (117s to compile, against 1.4s for the same
+  // statements at the top level, which had no pad). So each frame-scope owned
+  // binding gets a rung of its own instead, and a call unwinds to the rung for
+  // the bindings alive where it stands: rung k releases its slot, then falls
+  // into rung k-1, down to the base. A rung is only reachable from after its
+  // own binding's store, so the ladder needs no PHI for the slots at all. This
+  // is the shape Clang and Rust emit (a "drop ladder"); the cost is now linear
+  // in the frame's size. See open_/finish_frame_cleanup_ladder.
+  struct FrameCleanupRung {
+    llvm::BasicBlock* pad;  // landingpad: the unwind target for this rung
+    // Index into the frame scope's `order` of the slot this rung releases.
+    // SIZE_MAX for the base rung, which releases nothing — it covers the
+    // prologue, before the first owned binding exists.
+    size_t order_index;
+  };
+
   // Active for-in protocol-loop iterator record (see iter_cleanup_stack_).
   struct IterCleanup {
     llvm::Value* iterAlloca;
@@ -228,6 +249,11 @@ struct JIT {
     llvm::Value* sret;
     std::string_view return_type;
     llvm::BasicBlock* lpad;
+    // The cleanup ladder is per LLVM function: its rungs are blocks of the
+    // outer function, so a nested body must start (and finish) with its own.
+    std::vector<FrameCleanupRung> frame_ladder;
+    size_t frame_scope_depth;
+    llvm::BasicBlock* ladder_stand_in;
     llvm::Value* fn_defer_mark;
     llvm::Value* owned_hot;
     llvm::Value* rec_depth_slot;
@@ -250,6 +276,9 @@ struct JIT {
           sret(std::exchange(j.current_sret_, nullptr)),
           return_type(std::exchange(j.current_return_type_, {})),
           lpad(std::exchange(j.current_lpad_, nullptr)),
+          frame_ladder(std::exchange(j.frame_ladder_, {})),
+          frame_scope_depth(std::exchange(j.frame_scope_depth_, 0)),
+          ladder_stand_in(std::exchange(j.ladder_stand_in_, nullptr)),
           fn_defer_mark(std::exchange(j.current_fn_defer_mark_, nullptr)),
           owned_hot(std::exchange(j.current_owned_hot_, nullptr)),
           rec_depth_slot(std::exchange(j.current_rec_depth_slot_, nullptr)),
@@ -272,6 +301,12 @@ struct JIT {
       // its end — a survivor would deregister into the restored (outer)
       // registry and corrupt it.
       assert(jit->live_owned_.empty() && "Owned outlived its LLVM function");
+      // Every rung is either filled or erased by the body's own epilogue;
+      // a survivor would be an empty block left in the finished function.
+      assert(jit->frame_ladder_.empty() && "cleanup ladder outlived its fn");
+      jit->frame_ladder_ = std::move(frame_ladder);
+      jit->frame_scope_depth_ = frame_scope_depth;
+      jit->ladder_stand_in_ = ladder_stand_in;
       jit->live_owned_ = std::move(live_owned);
       jit->unwind_temp_slots_ = std::move(unwind_temp_slots);
       jit->unwind_covered_ = std::move(unwind_covered);
@@ -304,7 +339,39 @@ struct JIT {
   // while this is non-null is emitted as `invoke` with this as the
   // unwind destination, so a user `throw` propagates back to the
   // nearest enclosing `try`. Nested try blocks save/restore.
+  // May also hold `ladder_stand_in_`, which is not a block anything can unwind
+  // to — resolve_lpad turns it into the frame ladder's current rung.
   llvm::BasicBlock* current_lpad_ = nullptr;
+
+  // The frame's throw-path teardown (see FrameCleanupRung), innermost last.
+  std::vector<FrameCleanupRung> frame_ladder_;
+  // scopes_.size() while the frame scope is the innermost one, so define_var
+  // can tell a frame binding (which grows the ladder) from a nested one.
+  size_t frame_scope_depth_ = 0;
+  // Stand-in for "unwind to the frame's cleanup ladder", held by current_lpad_
+  // instead of a concrete rung. Nested regions save and restore current_lpad_
+  // around their own pads, so a concrete rung would go stale the moment a
+  // binding inside such a region added one; the stand-in resolves to whichever
+  // rung is current at the point the unwind edge is finally emitted. Unwinding
+  // to a later rung is always safe — the extra slots are still zero-init on
+  // any path that reaches it, and releasing nil is a no-op — and it is what
+  // keeps a binding declared inside an `if` arm from being skipped.
+  llvm::BasicBlock* ladder_stand_in_ = nullptr;
+
+  // Concrete unwind destination for an lpad slot that may hold the stand-in.
+  llvm::BasicBlock* resolve_lpad(llvm::BasicBlock* lpad) const {
+    if (lpad && lpad == ladder_stand_in_) return frame_ladder_.back().pad;
+    return lpad;
+  }
+
+  // Open a rung for the frame binding just registered at `order_index`.
+  void push_frame_cleanup_rung(size_t order_index) {
+    auto fn = builder_.GetInsertBlock()->getParent();
+    frame_ladder_.push_back(
+        {llvm::BasicBlock::Create(
+             ctx_, "fn.cleanup." + std::to_string(frame_ladder_.size()), fn),
+         order_index});
+  }
 
   // Targets for the innermost enclosing loop. `break` jumps to the
   // break target (after the loop); `continue` jumps to the continue
@@ -355,8 +422,8 @@ struct JIT {
       auto armed = open_unwind_window();
       auto fn = builder_.GetInsertBlock()->getParent();
       auto contBB = llvm::BasicBlock::Create(ctx_, "call.cont", fn);
-      auto inv = builder_.CreateInvoke(callee, contBB, current_lpad_, args,
-                                       name);
+      auto inv = builder_.CreateInvoke(
+          callee, contBB, resolve_lpad(current_lpad_), args, name);
       builder_.SetInsertPoint(contBB);
       close_unwind_window(armed);
       return inv;
@@ -455,6 +522,7 @@ struct JIT {
     auto rethrowFn = module_->getOrInsertFunction(
         "__cxa_rethrow", builder_.getVoidTy());
     auto fn = builder_.GetInsertBlock()->getParent();
+    outerLpad = resolve_lpad(outerLpad);
     if (outerLpad) {
       auto deadBB = llvm::BasicBlock::Create(ctx_, "rethrow.dead", fn);
       builder_.CreateInvoke(rethrowFn, deadBB, outerLpad, {});
@@ -601,9 +669,9 @@ struct JIT {
     // scope's defers, then the scope's resources are released — so a defer body
     // may still touch them): defers first, then the slot release, which fires
     // drop via refcount-0 for every non-escaped resource. The escaped/cyclic
-    // drop remainder is resolved once at the function-level cleanup's
-    // release_all_scopes_for_exit (owned_scope_exit over the whole frame's
-    // mark), not per scope — that keeps this cold block small (no owned-region
+    // drop remainder is resolved once at the frame cleanup ladder's base
+    // (owned_scope_exit over the whole frame's mark), not per scope — that
+    // keeps this cold block small (no owned-region
     // diamond, no extra unwind edge), so routing throwing calls through it
     // stays cheap.
     if (defer_mark)
@@ -1896,6 +1964,125 @@ struct JIT {
                         {builder_.getInt8(v)});
   }
 
+  // Open the frame's cleanup ladder (see FrameCleanupRung): a base rung for
+  // the prologue — which releases nothing, since no owned binding exists yet —
+  // and the stand-in current_lpad_ carries from here on. Call once the frame
+  // scope is pushed and before its first binding compiles — a binding that
+  // lands ahead of the ladder gets no rung of its own.
+  void open_frame_cleanup_ladder() {
+    frame_scope_depth_ = scopes_.size();
+    // Never inserted into the function: resolve_lpad swaps it for the rung
+    // that is current when the unwind edge is emitted.
+    ladder_stand_in_ = llvm::BasicBlock::Create(ctx_, "fn.cleanup.frame");
+    push_frame_cleanup_rung(SIZE_MAX);
+    current_lpad_ = ladder_stand_in_;
+  }
+
+  // Fill the frame's cleanup ladder and close it out. Every rung something
+  // unwinds to gets a landingpad that runs the frame-wide unwind prologue —
+  // the in-flight expression temporaries, then the frame's defers — and then
+  // enters the release chain at its own slot. The chain releases the frame's
+  // owned slots in reverse declaration order down to the base, which resolves
+  // the escaped/cyclic drop remainder and re-raises out of the frame. This is
+  // the throw-path twin of release_all_scopes_for_exit, and keeps the same
+  // order, so `drop` and RC release fire on `throw` as they do on return.
+  //
+  // Must run while the frame scope is still the live top-of-stack: the slots
+  // it releases are that scope's own, and every slot alloca is zero-init'd in
+  // the entry block, so a rung reached before its binding assigned releases nil
+  // (a no-op). Rungs nothing unwinds to are erased — a leaf function pays
+  // nothing and needs no personality. `fn_mark` is null when the frame has no
+  // defer; `suppress_drop` mirrors release_all_scopes_for_exit's.
+  void finish_frame_cleanup_ladder(llvm::Value* fn_mark, bool suppress_drop) {
+    if (frame_ladder_.empty()) return;
+    // The ladder's own releases must not unwind into the ladder: the trim below
+    // erases rungs without shrinking frame_ladder_, so a stand-in still in
+    // current_lpad_ would resolve to an erased block. Closing the ladder owns
+    // the state opening it took, rather than trusting each caller to clear it.
+    current_lpad_ = nullptr;
+    const Scope& frame = scopes_[frame_scope_depth_ - 1];
+    auto fn = frame_ladder_.front().pad->getParent();
+
+    // Everything above the highest rung an invoke reaches is dead; the chain
+    // below it still has to run, even where a rung's own pad is unreachable.
+    size_t live = frame_ladder_.size();
+    while (live > 0 && llvm::pred_empty(frame_ladder_[live - 1].pad)) {
+      frame_ladder_[--live].pad->eraseFromParent();
+    }
+
+    if (live > 0) {
+      // A landingpad needs the function to carry a personality; a throw-capable
+      // body with no try/defer had none set at creation (has_eh gates that).
+      // Idempotent.
+      if (!fn->hasPersonalityFn()) fn->setPersonalityFn(get_personality_fn());
+      UnwindCleanupEmission cleanup_scope(this);
+      auto i64Ty = builder_.getInt64Ty();
+      auto recFn = module_->getOrInsertFunction(
+          rt::recursion_restore, builder_.getVoidTy(), i64Ty);
+
+      // The chain's base, then its steps bottom-up so each can branch to the
+      // rung below it. `chain[k]` is where rung k joins the chain.
+      std::vector<llvm::BasicBlock*> chain(live);
+      chain[0] = llvm::BasicBlock::Create(ctx_, "fn.unwind", fn);
+      for (size_t k = 1; k < live; k++) {
+        chain[k] = llvm::BasicBlock::Create(
+            ctx_, "fn.release." + std::to_string(k), fn);
+        builder_.SetInsertPoint(chain[k]);
+        release_slot_value(frame.order[frame_ladder_[k].order_index]->second);
+        builder_.CreateBr(chain[k - 1]);
+      }
+
+      builder_.SetInsertPoint(chain[0]);
+      if (suppress_drop) emit_set_drop_suppressed(0);
+      // Resolve the frame's owned region once, after the slot releases, so
+      // non-escaped resources have already died through the ordinary
+      // refcount-0 path. Skipped at `__culebra_main`'s suppressed exit for the
+      // same reason release_all_scopes_for_exit skips it.
+      if (!suppress_drop) emit_owned_scope_exit(frame.owned_mark);
+      // Uncount this frame on the way out — interp's guard dtor runs after
+      // run_deferred as the rethrow passes it. Absolute (d-1) rather than a
+      // bare decrement so the -1 sentinel stays a no-op (-2 is ignored too).
+      if (current_rec_depth_slot_) {
+        auto recD =
+            builder_.CreateLoad(i64Ty, current_rec_depth_slot_, "rec.d");
+        builder_.CreateCall(
+            recFn, {builder_.CreateSub(recD, builder_.getInt64(1), "rec.d1")});
+      }
+      emit_rethrow(/*outerLpad=*/nullptr);
+
+      for (size_t k = 0; k < live; k++) {
+        auto pad = frame_ladder_[k].pad;
+        if (llvm::pred_empty(pad)) {
+          pad->eraseFromParent();
+          continue;
+        }
+        emit_catch_all_prologue(pad, "fn.exc");
+        // Restore the depth this frame entered with before its defers run:
+        // the frames unwound below us never ran their leaves, while interp's
+        // RAII has already decremented them by the time run_deferred fires.
+        // (restore ignores the -1 sentinel — an enter that threw counts
+        // nothing, so its unwind must move nothing.)
+        if (current_rec_depth_slot_) {
+          builder_.CreateCall(
+              recFn,
+              {builder_.CreateLoad(i64Ty, current_rec_depth_slot_, "rec.d")});
+        }
+        release_unwind_temps();
+        if (fn_mark) {
+          builder_.CreateCall(module_->getFunction(rt::defer_run_to),
+                              {fn_mark});
+        }
+        if (suppress_drop) emit_set_drop_suppressed(1);
+        builder_.CreateBr(chain[k]);
+      }
+    }
+
+    frame_ladder_.clear();
+    frame_scope_depth_ = 0;
+    delete ladder_stand_in_;
+    ladder_stand_in_ = nullptr;
+  }
+
   // break/continue abandon the current iteration without running the loop
   // body's normal pop_scope, so emit the same owned-slot release + owned-region
   // resolution that fall-through does — for every open scope from the innermost
@@ -1942,6 +2129,13 @@ struct JIT {
     auto [it, inserted] = scope.slots.try_emplace(name, slot);
     if (inserted) {
       scope.order.push_back(it);
+      // A new owned binding in the frame scope extends the cleanup ladder, so
+      // calls from here on unwind to a rung that releases it. A borrowed slot
+      // (capture cell, match-arm alias) releases nothing, so it needs no rung.
+      if (slot.owned && !frame_ladder_.empty() &&
+          scopes_.size() == frame_scope_depth_) {
+        push_frame_cleanup_rung(scope.order.size() - 1);
+      }
     } else {
       // Re-binding the same name within one scope. The LIFO `order` list holds
       // only the FIRST slot registered for this name, so scope teardown never
@@ -10497,7 +10691,6 @@ struct JIT {
     push_scope();
 
     llvm::Value* fnMark = nullptr;
-    llvm::BasicBlock* fnCleanupBB = nullptr;
     // Establish a defer-stack mark whenever the body has *any* defer (fn-level
     // or inside a nested lexical scope / match arm), so `compile_return` /
     // `compile_break` / `compile_continue` run the still-pending defers on an
@@ -10508,18 +10701,15 @@ struct JIT {
           module_->getFunction(rt::defer_mark), {}, "fn.mark");
       current_fn_defer_mark_ = fnMark;
     }
-    // Function-level cleanup landingpad. Every throwing call in the frame that
-    // is not already caught by a nested try/scope/loop cleanup unwinds through
-    // here; on the throw path it runs the fn-level defers, releases the frame's
-    // owned slots (the params region + the body's top-level locals — the body
-    // BLOCK compiles into this frame scope, not a nested LEXICAL_SCOPE), and
-    // resolves the escaped/cyclic drop remainder, matching the interpreter's
-    // scope-unwind teardown. Erased at the end when nothing in the body can
-    // throw (pred_empty), so a leaf function pays nothing. Synthesized ctor /
-    // multifn-dispatcher closures build their own frames outside
-    // compile_fn_common and are unaffected.
-    fnCleanupBB = BasicBlock::Create(ctx_, "fn.cleanup", fn);
-    current_lpad_ = fnCleanupBB;
+    // Function-level cleanup ladder. Every throwing call in the frame that is
+    // not already caught by a nested try/scope/loop cleanup unwinds into it; on
+    // the throw path it runs the fn-level defers, releases the frame's owned
+    // slots (the params region + the body's top-level locals — the body BLOCK
+    // compiles into this frame scope, not a nested LEXICAL_SCOPE), and resolves
+    // the escaped/cyclic drop remainder, matching the interpreter's scope-unwind
+    // teardown. Synthesized ctor / multifn-dispatcher closures build their own
+    // frames outside compile_fn_common and are unaffected.
+    open_frame_cleanup_ladder();
 
     auto argIt = fn->arg_begin();
     current_sret_ = &*argIt++;  // __ret out-pointer (result slot)
@@ -10563,7 +10753,7 @@ struct JIT {
       builder_.SetInsertPoint(errBB);
       // callee-cleans-on-direct-binding-error: this arity check runs in the
       // prologue *before* `self`/params enter the frame's cleanup scope, so
-      // the fn.cleanup landingpad releases nothing on this throw. The +1s the
+      // the ladder's base rung releases nothing on this throw. The +1s the
       // caller transferred — the receiver `self` and every passed positional
       // — would otherwise strand (a ctor receiver stranding on `C.new()`, a
       // method receiver on `obj.m()` with a missing arg). Release them here,
@@ -10963,8 +11153,8 @@ struct JIT {
 
     // The body is done: the normal-exit epilogue below is not an unwind, so its
     // scope-exit owned-region resolution runs as a plain call, not an invoke
-    // back into fnCleanupBB. Keeping current_lpad_ here would make the normal
-    // return's owned_scope_exit a predecessor of fnCleanupBB, defeating its
+    // back into the ladder. Keeping current_lpad_ here would make the normal
+    // return's owned_scope_exit a predecessor of the top rung, defeating the
     // pred_empty erase for a body that never throws. (A drop that itself throws
     // during a *normal* return propagates out of the frame — matching the prior
     // behaviour of a function with no fn-level defer.)
@@ -10998,53 +11188,7 @@ struct JIT {
       (void)bodyOwned.consume();
     }
 
-    // Throw-path cleanup landingpad for the function frame. Runs any fn-level
-    // defers back to `fn.mark`, releases the owned slots (params / locals are
-    // zero-init'd in entry so pre-init throws release nil, a no-op) and fires
-    // the escaped/cyclic drop remainder via release_all_scopes_for_exit, then
-    // rethrows out of the frame. This pairs with the `current_lpad_ =
-    // fnCleanupBB` wired at function entry so every throw-capable invoke in the
-    // body unwinds through here. Erased when nothing in the body reaches it
-    // (pred_empty) — a leaf function pays nothing and needs no personality.
-    if (fnCleanupBB && !llvm::pred_empty(fnCleanupBB)) {
-      // A landingpad needs the function to carry a personality; a throw-capable
-      // body with no try/defer had none set at creation (has_eh gates that).
-      // Idempotent.
-      if (!fn->hasPersonalityFn()) fn->setPersonalityFn(get_personality_fn());
-      UnwindCleanupEmission cleanup_scope(this);
-      emit_catch_all_prologue(fnCleanupBB, "fn.exc");
-      // Restore the depth this frame entered with before its defers run:
-      // the frames unwound below us never ran their leaves, while interp's
-      // RAII has already decremented them by the time run_deferred fires.
-      // (restore ignores the -1 sentinel — an enter that threw counts
-      // nothing, so its unwind must move nothing.)
-      auto recFn = module_->getOrInsertFunction(
-          rt::recursion_restore, builder_.getVoidTy(), builder_.getInt64Ty());
-      llvm::Value* recD = nullptr;
-      if (current_rec_depth_slot_) {
-        recD = builder_.CreateLoad(builder_.getInt64Ty(),
-                                   current_rec_depth_slot_, "rec.d");
-        builder_.CreateCall(recFn, {recD});
-      }
-      // In-flight expression temporaries first, then the frame's
-      // defers and slots — the same order as finish_scope_cleanup.
-      release_unwind_temps();
-      if (fnMark) {
-        builder_.CreateCall(
-            module_->getFunction(rt::defer_run_to), {fnMark});
-      }
-      release_all_scopes_for_exit();
-      // Uncount this frame on the way out — interp's guard dtor runs after
-      // run_deferred as the rethrow passes it. Absolute (d-1) rather than a
-      // bare decrement so the -1 sentinel stays a no-op (-2 is ignored too).
-      if (recD) {
-        builder_.CreateCall(
-            recFn, {builder_.CreateSub(recD, builder_.getInt64(1), "rec.d1")});
-      }
-      emit_rethrow(/*outerLpad=*/nullptr);
-    } else if (fnCleanupBB) {
-      fnCleanupBB->eraseFromParent();
-    }
+    finish_frame_cleanup_ladder(fnMark, /*suppress_drop=*/false);
 
     pop_scope();
     verifyFunction(*fn);
