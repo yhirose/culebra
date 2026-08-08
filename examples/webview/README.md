@@ -1,5 +1,10 @@
 # WebView — web-tech desktop GUI from culebra
 
+For a step-by-step walkthrough of building the app in this directory, see
+[`docs/guides/desktop-app.md`](../../docs/guides/desktop-app.md). This file
+covers the implementation in depth instead — the bridge, packaging, and
+per-platform build requirements.
+
 culebra drives a **native WebView window** through the builtin `Webview`
 namespace, serves the UI from a **local HTTP server**, bakes the frontend
 (`dist/`) into a **single-file binary** under AOT while staying **live from

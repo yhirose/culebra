@@ -365,6 +365,9 @@ Documentation
   C++ libraries (`culebra build` / `culebra wrap`):
   [`docs/deployment.md`](docs/deployment.md)
   / [日本語](docs/deployment.ja.md)
+* Guides — task-oriented how-tos for building specific things with
+  culebra:
+  [`docs/guides/`](docs/guides/)
 * Quick guide — the syntax, the carried-over mistakes and every stdlib
   signature condensed into one file; written for an LLM prompt, and short
   enough for a human to read start to finish:

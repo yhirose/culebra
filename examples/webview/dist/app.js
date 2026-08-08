@@ -3,6 +3,14 @@ async function load() {
   const d = await r.json();
   document.getElementById("msg").textContent = d.message;
 }
+async function trackVisit() {
+  // /api/visit persists the count with SQLite, opened fresh inside the
+  // handler on every call — see "Keeping state safe across workers" in
+  // docs/guides/desktop-app.md.
+  const r = await fetch("/api/visit", { method: "POST" });
+  const d = await r.json();
+  document.getElementById("visits").textContent = `Visit #${d.visits}`;
+}
 async function send() {
   const text = document.getElementById("text").value;
   const r = await fetch("/api/echo", {
@@ -53,3 +61,4 @@ document.getElementById("quit").addEventListener("click", requestQuit);
 window.__culebra_before_close__ = requestQuit;
 
 load();
+trackVisit();

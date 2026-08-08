@@ -359,6 +359,8 @@ BLAS級の数値計算です。
   ラップ（`culebra build` / `culebra wrap`）:
   [`docs/deployment.ja.md`](docs/deployment.ja.md)
   / [English](docs/deployment.md)
+* ガイド — culebraで特定のものを作るためのタスク指向how-to集:
+  [`docs/guides/`](docs/guides/)
 * クイックガイド — 構文、間違えやすい点、標準ライブラリの全シグネチャを
   1ファイルに凝縮したもの。LLMのプロンプト用に書いていますが、人が最初から
   最後まで読み切れる分量でもあります:

@@ -52,6 +52,9 @@ culebra-wrapped
 webview-culebra
 webview-app
 
+# examples/webview/desktop_app.cul's persisted visit counter
+examples/webview/visits.db
+
 # macOS metadata
 .DS_Store
 

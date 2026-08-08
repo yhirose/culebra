@@ -10,6 +10,9 @@ input { flex: 1; padding: .6rem .8rem; border-radius: .5rem;
 button { padding: .6rem 1rem; border-radius: .5rem; border: 0;
          background: #4f6dff; color: white; cursor: pointer; }
 .reply { margin-top: 1rem; opacity: .9; min-height: 1.4em; color: #9ad0ff; }
+.visits { margin-top: 1.5rem; opacity: .6; font-size: .9rem; }
+.nav { margin: .25rem 0 1.5rem; }
+.nav a, .back a { color: #9ad0ff; }
 
 .confirm-overlay { position: fixed; inset: 0; display: grid; place-items: center;
                     background: rgba(4, 6, 16, .55); }
