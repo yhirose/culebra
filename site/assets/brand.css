@@ -70,6 +70,7 @@ a { color: var(--brand-strong); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 code, pre { font-family: var(--font-mono); }
+code { background: var(--code-bg); color: var(--text); padding: 0.1em 0.4em; border-radius: 4px; }
 
 /* --- wordmark (logo) --------------------------------------------------- */
 .wordmark {
