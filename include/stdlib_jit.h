@@ -6782,6 +6782,12 @@ inline const NsMethod kNsMethods[] = {
   {"IO",     "stderr_is_terminal", 0, &_ns_io_stderr_is_terminal},
 
   {"Math",   "abs",       1, &_ns_math_abs},
+  {"Math",   "min",      -1, &_ns_math_min},
+  {"Math",   "max",      -1, &_ns_math_max},
+  {"Math",   "pow",       2, &_ns_math_pow},
+  {"Math",   "sign",      1, &_ns_math_sign},
+  {"Math",   "clamp",     3, &_ns_math_clamp},
+  {"Math",   "wrap",      2, &_ns_math_wrap},
   {"Math",   "log",       1, &_ns_math_log},
   {"Math",   "exp",       1, &_ns_math_exp},
   {"Math",   "sqrt",      1, &_ns_math_sqrt},
@@ -6795,12 +6801,6 @@ inline const NsMethod kNsMethods[] = {
   {"Math",   "floor",     1, &_ns_math_floor},
   {"Math",   "ceil",      1, &_ns_math_ceil},
   {"Math",   "round",     1, &_ns_math_round},
-  {"Math",   "min",      -1, &_ns_math_min},
-  {"Math",   "max",      -1, &_ns_math_max},
-  {"Math",   "pow",       2, &_ns_math_pow},
-  {"Math",   "sign",      1, &_ns_math_sign},
-  {"Math",   "clamp",     3, &_ns_math_clamp},
-  {"Math",   "wrap",      2, &_ns_math_wrap},
 
   {"FS",     "join",     -1, &_ns_fs_join},
   {"FS",     "basename",  1, &_ns_fs_basename, nullptr, "String|Path", "path"},
@@ -6844,10 +6844,10 @@ inline const NsMethod kNsMethods[] = {
 
   {"Sys",    "exit",    1, &_ns_sys_exit},
   {"Sys",    "env",     1, &_ns_sys_env, nullptr, "String", "name"},
-  {"Sys",    "time",    0, &_ns_sys_time},
   {"Sys",    "getcwd",  0, &_ns_sys_getcwd},
   {"Sys",    "chdir",   1, &_ns_sys_chdir, nullptr, "String", "path"},
   {"Sys",    "set_env", 2, &_ns_sys_set_env, nullptr, "String", "name"},
+  {"Sys",    "time",    0, &_ns_sys_time},
 
   {"GC",     "stat", 0, &_ns_gc_stat},
 
@@ -6949,11 +6949,11 @@ inline const NsMethod kNsMethods[] = {
   {"Tensor", "zeros",    -1, &_ns_tensor_zeros},
   {"Tensor", "ones",     -1, &_ns_tensor_ones},
   {"Tensor", "randn",    -1, &_ns_tensor_randn},
+  {"Tensor", "eval",     -1, &_ns_tensor_eval},
+  {"Tensor", "from_csv",  1, &_ns_tensor_from_csv, nullptr, "String", "path"},
   {"Tensor", "from",      1, &_ns_tensor_from, nullptr, "Array",  "a"},
   {"Tensor", "concat",    1, &_ns_tensor_concat, nullptr, "Array", "parts"},
-  {"Tensor", "from_csv",  1, &_ns_tensor_from_csv, nullptr, "String", "path"},
   {"Tensor", "no_grad",   1, &_ns_tensor_no_grad, nullptr, "Function", "fn"},
-  {"Tensor", "eval",     -1, &_ns_tensor_eval},
   {"Tensor", "use_cpu",       0, &_ns_tensor_use_cpu},
   {"Tensor", "use_gpu",       0, &_ns_tensor_use_gpu},
   {"Tensor", "use_auto",      0, &_ns_tensor_use_auto},
@@ -7447,39 +7447,9 @@ inline JitObject* _jit_build_namespace_object(std::string_view ns_name) {
   // slotted, so a GC_STRESS collect mid-build would sweep them.
   culebra::gc::Heap::CollectPause _pause(_gc_heap());
   auto* obj = culebra_runtime_object_new();
-  // Sub-namespace objects, created lazily and keyed by `sub` (e.g. "html").
-  // Reachable from `obj` (a pinned root), so the marker keeps them + their
-  // method closures alive for the program's lifetime.
-  std::unordered_map<std::string_view, JitObject*> subs;
-  auto add_method = [&](const NsMethod& m) {
-    if (ns_name != m.ns) return;
-    auto* fn = _jit_make_ns_method_closure(&m);
-    JitValue fv{TAG_FUNC, reinterpret_cast<int64_t>(fn)};
-    if (m.sub) {
-      auto& sub = subs[m.sub];
-      if (!sub) sub = culebra_runtime_object_new();
-      sub->append_slot(m.name, fv, /*mut=*/false);
-    } else {
-      obj->append_slot(m.name, fv, /*mut=*/false);
-    }
-  };
-  for (auto& m : kNsMethods) add_method(m);
-  for (auto& m : _wrapped_ns_methods()) add_method(m);
-  // Wrapped classes with no ctor/static rows still get their (empty)
-  // class sub-object, mirroring the interp's registry walk.
-  for (auto& wc : culebra::wrapped_classes()) {
-    if (ns_name != wc.ns) continue;
-    auto& sub = subs[wc.name];
-    if (!sub) sub = culebra_runtime_object_new();
-  }
-  for (auto& [name, sub] : subs) {
-    obj->append_slot(name, JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(sub)},
-                     /*mut=*/false);
-  }
-  for (auto& c : kNsConstants) {
-    if (ns_name != c.ns) continue;
-    obj->append_slot(c.name, c.build(), /*mut=*/false);
-  }
+  // Sys leads with its dynamic members — the interpreter's make_sys_namespace
+  // registers them before the table-driven ones, and `keys()` is insertion
+  // order on both backends.
   if (ns_name == "Sys") {
     auto* a = culebra_runtime_sys_argv();
     obj->append_slot(
@@ -7502,6 +7472,44 @@ inline JitObject* _jit_build_namespace_object(std::string_view ns_name) {
             : JitValue{TAG_STRING,
                        reinterpret_cast<int64_t>(_culebra_heap_str(sp))},
         /*mut=*/false);
+  }
+  // Sub-namespace objects, created lazily and keyed by `sub` (e.g. "html").
+  // Reachable from `obj` (a pinned root), so the marker keeps them + their
+  // method closures alive for the program's lifetime. Kept in first-appearance
+  // order: `keys()` reports insertion order, so a hash map's bucket order would
+  // make the sub-namespace names come out differently from the interpreter
+  // (and differently across runs).
+  std::vector<std::pair<std::string_view, JitObject*>> subs;
+  auto sub_object = [&](std::string_view name) {
+    for (auto& [n, o] : subs)
+      if (n == name) return o;
+    return subs.emplace_back(name, culebra_runtime_object_new()).second;
+  };
+  auto add_method = [&](const NsMethod& m) {
+    if (ns_name != m.ns) return;
+    auto* fn = _jit_make_ns_method_closure(&m);
+    JitValue fv{TAG_FUNC, reinterpret_cast<int64_t>(fn)};
+    if (m.sub) {
+      sub_object(m.sub)->append_slot(m.name, fv, /*mut=*/false);
+    } else {
+      obj->append_slot(m.name, fv, /*mut=*/false);
+    }
+  };
+  for (auto& m : kNsMethods) add_method(m);
+  for (auto& m : _wrapped_ns_methods()) add_method(m);
+  // Wrapped classes with no ctor/static rows still get their (empty)
+  // class sub-object, mirroring the interp's registry walk.
+  for (auto& wc : culebra::wrapped_classes()) {
+    if (ns_name != wc.ns) continue;
+    (void)sub_object(wc.name);
+  }
+  for (auto& [name, sub] : subs) {
+    obj->append_slot(name, JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(sub)},
+                     /*mut=*/false);
+  }
+  for (auto& c : kNsConstants) {
+    if (ns_name != c.ns) continue;
+    obj->append_slot(c.name, c.build(), /*mut=*/false);
   }
   // Tag as a builtin namespace so an unknown-member read raises AttributeError
   // (see culebra_runtime_object_get_ic), matching the interpreter.

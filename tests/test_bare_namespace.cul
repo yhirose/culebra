@@ -101,4 +101,24 @@ let arr = t.from([1.0, 2.0, 3.0])
 let as = arr.shape()
 assert_true(as.size() == 1 && as[0] == 3)
 
+// --- keys() order ---
+// `keys()` reports insertion order, and each namespace is built from a
+// separate table per backend, so the two registration orders have to agree.
+// Pinning the lists here catches a row landing in the wrong place.
+assert_eq(Math.keys(), [
+  "abs", "min", "max", "pow", "sign", "clamp", "wrap", "log", "exp", "sqrt",
+  "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "floor", "ceil",
+  "round", "pi", "e", "inf", "nan",
+])
+assert_eq(Sys.keys(), [
+  "argv", "executable", "script", "exit", "env", "getcwd", "chdir", "set_env",
+  "time",
+])
+assert_eq(Tensor.keys(), [
+  "zeros", "ones", "randn", "eval", "from_csv", "from", "concat", "no_grad",
+  "use_cpu", "use_gpu", "use_auto", "gpu_available", "device",
+])
+// Sub-namespaces come out in first-appearance order, not hash order.
+assert_eq(Encoding.keys(), ["html", "base64", "hex", "url"])
+
 "OK".inspect()
