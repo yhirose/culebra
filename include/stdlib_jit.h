@@ -873,7 +873,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_sprite_height(
     int64_t id) {
   return culebra::_canvas_detail::sprite_height(id);
 }
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void _culebra_canvas_blit_check(
+inline void _culebra_canvas_blit_check(
     bool ok, int64_t line, int64_t col) {
   if (!ok)
     throw culebra::CulebraError(
@@ -1597,7 +1597,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_json_parse(
 // by Proc.run/all/race. Spawned => process result with `error` nil; a spawn
 // failure => `ok:false` with the message in `error` (Proc.all's allSettled
 // error representation).
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* _culebra_proc_outcome_to_object(
+inline JitObject* _culebra_proc_outcome_to_object(
     const culebra::proc::RunOutcome& oc, int64_t line, int64_t col) {
   auto* o = culebra_runtime_object_new();
   if (oc.spawned) {
@@ -1679,7 +1679,7 @@ inline std::vector<std::vector<std::string>> _culebra_proc_parse_commands(
 // null. A spawn failure (or `check` on a non-ok result) throws ProcessError;
 // a normal non-zero exit / signal death is a `{ok:false}` result Object.
 // Does not consume `cmd` — the compile side / trampoline releases it.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_run_impl(
+inline JitValue _culebra_proc_run_impl(
     int8_t cmd_tag, int64_t cmd_data, const std::string* cwd,
     const std::vector<std::pair<std::string, std::string>>* env_over,
     const std::string& stdin_data, bool check, int64_t timeout,
@@ -1772,7 +1772,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_run_kw(
 
 // Proc.all core (shared by trampoline + kwarg adapter). `commands` is not
 // consumed. Returns an Array of result Objects (allSettled, input order).
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_all_impl(
+inline JitValue _culebra_proc_all_impl(
     int8_t commands_tag, int64_t commands_data, int64_t limit, int64_t timeout,
     bool fail_fast, int64_t retries, int64_t line, int64_t col,
     const std::vector<std::pair<std::string, std::string>>* env = nullptr,
@@ -1834,7 +1834,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_all_kw(
 
 // Proc.race(commands) — first to finish wins, the rest are killed. `commands`
 // is not consumed. Empty list throws ValueError.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_race_impl(
+inline JitValue _culebra_proc_race_impl(
     int8_t commands_tag, int64_t commands_data, int64_t line, int64_t col,
     const std::vector<std::pair<std::string, std::string>>* env = nullptr,
     const std::vector<int>* inherit_fds = nullptr) {
@@ -1899,7 +1899,7 @@ CULEBRA_RT_INLINE void _jit_http_json(JitValue* __ret, JitClosure*, int8_t self_
 // plus a `json()` method. `ok` is 2xx; a 4xx/5xx is a completed round-trip
 // (ok:false). Transport failures never reach here — _culebra_http_run throws
 // HttpError first.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* _culebra_http_result_to_object(
+inline JitObject* _culebra_http_result_to_object(
     culebra::http::HttpResult& r, int64_t line, int64_t col) {
   auto* o = culebra_runtime_object_new();
   culebra_runtime_object_set(o, "status", false, TAG_LONG, r.status, line, col);

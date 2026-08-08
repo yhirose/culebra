@@ -1441,7 +1441,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
 // `self` = Nil; this thunk substitutes the captured receiver so the method
 // body sees the right `self`. It forwards args/arity unchanged, so it composes
 // with every existing invoke path and with the callee's own arg handling.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void _jit_bound_method_thunk(JitValue* __ret,
+inline void _jit_bound_method_thunk(JitValue* __ret,
     JitClosure* self, int8_t in_self_tag, int64_t in_self_data,
     int64_t n_args, JitValue* args) {
   // The binding is permanent: an incoming receiver (the wrapper attached to
