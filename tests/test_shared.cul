@@ -167,4 +167,16 @@ assert_eq(it.next(), 1)
 assert_eq(it.next(), 2)
 assert_eq(it.has_next(), false)
 
+# An Object view yields (key, value) pairs, and a container value comes back
+# as a sub-view the pair owns — the pair must outlive this step.
+let nested = Shared.new({xs: [1, 2, 3]})
+let pair = nested.iter().next()
+assert_eq(pair[0], 'xs')
+assert_eq(pair[1].size(), 3)
+mut seen = []
+for (k, v) in Shared.new({a: [1, 2], b: [3]}) {
+  seen.push("{k}={v.size()}")
+}
+assert_eq(seen, ['a=2', 'b=1'])
+
 IO.inspect('test_shared OK')

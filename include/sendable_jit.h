@@ -1272,10 +1272,10 @@ inline void _jit_sv_iter_next(JitValue* __ret, JitClosure* cls, int8_t self_tag,
     JitValue kv = _jit_sv_materialize(k);
     JitValue vv = _jit_shared_val_read(id, *core, v);
     auto* pair = culebra_runtime_tuple_new();
+    // Each push absorbs its +1, so the pair is the sole owner — releasing
+    // here would free a container value out from under it.
     culebra_runtime_tuple_push(pair, kv.tag, kv.data);
     culebra_runtime_tuple_push(pair, vv.tag, vv.data);
-    _culebra_value_release_impl(kv.tag, kv.data);
-    _culebra_value_release_impl(vv.tag, vv.data);
     { *__ret = {TAG_TUPLE, reinterpret_cast<int64_t>(pair)}; return; }
   }
   { *__ret = _jit_shared_val_read(id, *core,
