@@ -4114,38 +4114,62 @@ inline Value _get_iterator(const Value& iterable, size_t line, size_t col) {
       _make_method_call_env(iterable, line, col));
 }
 
+// The length of a value belonging to one of the five "sized" builtins
+// tables below (Array/Object/String·StringView/Set/Tuple) — the single
+// source of truth for that type set on the interp side, mirroring the
+// JIT's `emit_size_probe` switch (jit.h). Only called on those five types.
+inline int64_t sized_value_length(const Value& v) {
+  switch (v.type) {
+    case Value::Array:
+      return static_cast<int64_t>(v.to_array().values->size());
+    case Value::Tuple:
+      return static_cast<int64_t>(v.get<TupleValue>().elements->size());
+    case Value::Object: {
+      const auto& obj = v.to_object();
+      int64_t n = static_cast<int64_t>(obj.properties->size());
+      if (obj.non_string_props) {
+        n += static_cast<int64_t>(obj.non_string_props->size());
+      }
+      return n;
+    }
+    case Value::String:
+    case Value::StringView:
+      return static_cast<int64_t>(v.to_string_view().size());
+    case Value::Set:
+      return static_cast<int64_t>(v.get<SetValue>().members->size());
+    default:
+      throw std::logic_error("invalid internal condition.");
+  }
+  std::unreachable();
+}
+
+// `size`/`empty`/`presence` share this shape across all five sized types —
+// only how to measure a receiver's length differs, and that's
+// sized_value_length's job. `presence` returns `self` unchanged if
+// non-empty, else `nil` — pairs with `??`/`?.` for the common "use it if
+// there's anything there" idiom.
+inline Value sized_length_builtin(const std::shared_ptr<Environment>& callEnv) {
+  return Value(sized_value_length(callEnv->get("self")));
+}
+inline Value sized_empty_builtin(const std::shared_ptr<Environment>& callEnv) {
+  return Value(sized_value_length(callEnv->get("self")) == 0);
+}
+inline Value sized_presence_builtin(const std::shared_ptr<Environment>& callEnv) {
+  auto self = callEnv->get("self");
+  return sized_value_length(self) == 0 ? Value() : self;
+}
+
 inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
   using namespace std::literals;
   // NOTE: keep the key set in sync with `is_object_builtin_method_name`
   // (shared.h) — that predicate lets the JIT match this table when deciding
   // whether an unknown namespace member is a dict builtin or an AttributeError.
   static std::unordered_map<std::string_view, Value> props_ = {
-      {"size"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& obj = callEnv->get("self").to_object();
-         int64_t n = static_cast<int64_t>(obj.properties->size());
-         if (obj.non_string_props) {
-           n += static_cast<int64_t>(obj.non_string_props->size());
-         }
-         return Value(n);
-       }))},
-      {"empty"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& obj = callEnv->get("self").to_object();
-         bool empty = obj.properties->empty() &&
-                      (!obj.non_string_props || obj.non_string_props->empty());
-         return Value(empty);
-       }))},
+      {"size"sv, Value(FunctionValue({}, sized_length_builtin))},
+      {"empty"sv, Value(FunctionValue({}, sized_empty_builtin))},
       // `self` unchanged if non-empty, else `nil` — pairs with `??`/`?.` for
       // the common "use it if there's anything there" idiom.
-      {"presence"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto self = callEnv->get("self");
-         const auto& obj = self.to_object();
-         bool empty = obj.properties->empty() &&
-                      (!obj.non_string_props || obj.non_string_props->empty());
-         return empty ? Value() : self;
-       }))},
+      {"presence"sv, Value(FunctionValue({}, sized_presence_builtin))},
       {"keys"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          const auto& obj = callEnv->get("self").to_object();
@@ -4850,26 +4874,11 @@ inline void define(const std::shared_ptr<Environment>& env, std::string_view nam
 inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
   using namespace std::literals;
   static std::unordered_map<std::string_view, Value> props_ = {
-      {"size"sv, Value(FunctionValue({},
-                                     [](std::shared_ptr<Environment> callEnv) {
-                                       const auto& val = callEnv->get("self");
-                                       int64_t n = val.to_array().values->size();
-                                       return Value(n);
-                                     }))},
-      {"empty"sv, Value(FunctionValue({},
-                                      [](std::shared_ptr<Environment> callEnv) {
-                                        const auto& val = callEnv->get("self");
-                                        return Value(val.to_array().values->empty());
-                                      }))},
+      {"size"sv, Value(FunctionValue({}, sized_length_builtin))},
+      {"empty"sv, Value(FunctionValue({}, sized_empty_builtin))},
       // `self` unchanged if non-empty, else `nil` — pairs with `??`/`?.` for
       // the common "use it if there's anything there" idiom.
-      {"presence"sv, Value(FunctionValue({},
-                                         [](std::shared_ptr<Environment> callEnv) {
-                                           auto val = callEnv->get("self");
-                                           return val.to_array().values->empty()
-                                                      ? Value()
-                                                      : val;
-                                         }))},
+      {"presence"sv, Value(FunctionValue({}, sized_presence_builtin))},
       {"push"sv, Value(FunctionValue{{{"arg", false}},
                                      [](std::shared_ptr<Environment> callEnv) {
                                        const auto& val = callEnv->get("self");
@@ -5619,22 +5628,11 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
 inline std::unordered_map<std::string_view, Value>& string_builtins() {
   using namespace std::literals;
   static std::unordered_map<std::string_view, Value> props_ = {
-      {"size"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         return Value(static_cast<int64_t>(
-             callEnv->get("self").to_string_view().size()));
-       }))},
-      {"empty"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         return Value(callEnv->get("self").to_string_view().empty());
-       }))},
+      {"size"sv, Value(FunctionValue({}, sized_length_builtin))},
+      {"empty"sv, Value(FunctionValue({}, sized_empty_builtin))},
       // `self` unchanged if non-empty, else `nil` — pairs with `??`/`?.` for
       // the common "use it if there's anything there" idiom.
-      {"presence"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto self = callEnv->get("self");
-         return self.to_string_view().empty() ? Value() : self;
-       }))},
+      {"presence"sv, Value(FunctionValue({}, sized_presence_builtin))},
       // `.view()` → StringView sharing the receiver's bytes.
       {"view"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
@@ -5973,23 +5971,11 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
 inline std::unordered_map<std::string_view, Value>& set_builtins() {
   using namespace std::literals;
   static std::unordered_map<std::string_view, Value> props_ = {
-      {"size"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& self = callEnv->get("self").get<SetValue>();
-         return Value(static_cast<int64_t>(self.members->size()));
-       }))},
-      {"empty"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& self = callEnv->get("self").get<SetValue>();
-         return Value(self.members->empty());
-       }))},
+      {"size"sv, Value(FunctionValue({}, sized_length_builtin))},
+      {"empty"sv, Value(FunctionValue({}, sized_empty_builtin))},
       // `self` unchanged if non-empty, else `nil` — pairs with `??`/`?.` for
       // the common "use it if there's anything there" idiom.
-      {"presence"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto self = callEnv->get("self");
-         return self.get<SetValue>().members->empty() ? Value() : self;
-       }))},
+      {"presence"sv, Value(FunctionValue({}, sized_presence_builtin))},
       {"contains"sv,
        Value(FunctionValue(
            {{"x", false}},
@@ -6129,23 +6115,11 @@ inline std::unordered_map<std::string_view, Value>& set_builtins() {
 inline std::unordered_map<std::string_view, Value>& tuple_builtins() {
   using namespace std::literals;
   static std::unordered_map<std::string_view, Value> props_ = {
-      {"size"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& self = callEnv->get("self").get<TupleValue>();
-         return Value(static_cast<int64_t>(self.elements->size()));
-       }))},
-      {"empty"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& self = callEnv->get("self").get<TupleValue>();
-         return Value(self.elements->empty());
-       }))},
+      {"size"sv, Value(FunctionValue({}, sized_length_builtin))},
+      {"empty"sv, Value(FunctionValue({}, sized_empty_builtin))},
       // `self` unchanged if non-empty, else `nil` — pairs with `??`/`?.` for
       // the common "use it if there's anything there" idiom.
-      {"presence"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto self = callEnv->get("self");
-         return self.get<TupleValue>().elements->empty() ? Value() : self;
-       }))},
+      {"presence"sv, Value(FunctionValue({}, sized_presence_builtin))},
       {"contains"sv,
        Value(FunctionValue(
            {{"x", false}},
