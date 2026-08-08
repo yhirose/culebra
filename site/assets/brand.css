@@ -71,6 +71,10 @@ a:hover { text-decoration: underline; }
 
 code, pre { font-family: var(--font-mono); }
 code { background: var(--code-bg); color: var(--text); padding: 0.1em 0.4em; border-radius: 4px; }
+/* Source order puts this after the bare `code` rule above, so a linked
+   `<code>` (e.g. tool names in the "One executable" section) keeps
+   reading as a link instead of falling back to plain text color. */
+a code { color: inherit; }
 
 /* --- wordmark (logo) --------------------------------------------------- */
 .wordmark {
