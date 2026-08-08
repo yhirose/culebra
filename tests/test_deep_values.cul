@@ -120,10 +120,16 @@ assert_eq(1, h.join())
 
 # --- teardown: dropping a deep value must never overflow the stack ----
 # (the walkers above throw; a dtor cannot, so its bound is structural —
-# scope exit, reassignment, and a drop-finalizer holder all release fine)
+# scope exit, reassignment, and a drop-finalizer holder all release fine).
+# 6000 clears the trashcan's 500-deep budget by 12x — enough for several
+# drain rounds — while staying far below the depth that turns quadratic
+# under `--jit`'s CULEBRA_GC_STRESS=1 (collect-on-every-allocation): each
+# of these loops' N allocations does an O(current-heap) mark-sweep, so
+# total cost is O(N^2). 200000 measured minutes under stress, timing out
+# the CI lane that runs it; 6000 finishes in well under a second there.
 deep_teardown = fn () {
   mut d = [1]
-  for i in 0..200000 {
+  for i in 0..6000 {
     d = [d]
   }
   0
@@ -132,7 +138,7 @@ assert_eq(0, deep_teardown())
 
 reassign_teardown = fn () {
   mut d = [1]
-  for i in 0..200000 {
+  for i in 0..6000 {
     d = [d]
   }
   d = 0
@@ -144,7 +150,7 @@ closure_teardown = fn () {
   mut cf = fn () {
     0
   }
-  while mut i = 0; i < 200000 {
+  while mut i = 0; i < 6000 {
     let g = cf
     cf = fn () {
       g()
@@ -166,7 +172,7 @@ class DeepHolder {
 }
 holder_teardown = fn () {
   mut d = [1]
-  for i in 0..100000 {
+  for i in 0..6000 {
     d = [d]
   }
   let _dh = DeepHolder.new(d)
