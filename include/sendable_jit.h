@@ -1120,18 +1120,21 @@ inline void _jit_sv_require_object(const sendable::SendNode* n,
 
 
 
+// How many values a node yields: its entries when it is an Object, its
+// elements otherwise. Shared by size() and the iterator.
+inline int64_t _jit_sv_node_count(const sendable::SendNode* n) {
+  using K = sendable::SendNode::K;
+  return n->kind == K::Object ? static_cast<int64_t>(n->entries.size())
+                              : static_cast<int64_t>(n->elems.size());
+}
+
 inline void _jit_sv_size(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   // Callee-consumes on any exit: _jit_shared_val_node_of raises ClosedError
   // on a dropped view, which a tail release would strand `self` on.
   JitMethodSelf _s{self};
-  auto [core, n, id, idx] = _jit_shared_val_node_of(
-      reinterpret_cast<JitObject*>(self.data));
-  using K = sendable::SendNode::K;
-  int64_t sz = n->kind == K::Object
-                   ? static_cast<int64_t>(n->entries.size())
-                   : static_cast<int64_t>(n->elems.size());
-  { *__ret = {TAG_LONG, sz}; return; }
+  auto rn = _jit_shared_val_node_of(reinterpret_cast<JitObject*>(self.data));
+  { *__ret = {TAG_LONG, _jit_sv_node_count(rn.node)}; return; }
 }
 
 inline void _jit_sv_has(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n_args,
@@ -1227,22 +1230,12 @@ inline void _jit_sv_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
 // node it walks are not the caller's business.
 enum : size_t { _SV_ITER_KEEPER = 0, _SV_ITER_CURSOR = 1 };
 
-inline JitValue _jit_make_shared_val_view(int64_t id, int64_t node);
-
-// Resolve the captured view and report how many entries its node holds. The
-// lookup runs per step, exactly as it did when the markers lived on the
-// iterator object, so a tree freed underneath the iterator still raises
-// ClosedError. The resolved node borrows from `core`, so the caller keeps the
-// returned struct alive for as long as it reads the node.
+// Resolved per step, so a tree freed underneath the iterator still raises
+// ClosedError. The node borrows from `core`: the caller keeps the returned
+// struct alive for as long as it reads the node.
 inline JitResolvedNode _jit_sv_iter_resolve(JitClosure* cls) {
   return _jit_shared_val_node_of(reinterpret_cast<JitObject*>(
       cls->captures[_SV_ITER_KEEPER]->value.data));
-}
-
-inline int64_t _jit_sv_node_count(const sendable::SendNode* n) {
-  using K = sendable::SendNode::K;
-  return n->kind == K::Object ? static_cast<int64_t>(n->entries.size())
-                              : static_cast<int64_t>(n->elems.size());
 }
 
 inline void _jit_sv_iter_has_next(JitValue* __ret, JitClosure* cls, int8_t self_tag, int64_t self_data, int64_t,
@@ -1288,23 +1281,21 @@ inline void _jit_sv_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   auto* view = reinterpret_cast<JitObject*>(self.data);
   // Validate first (a dropped handle must not mint a live iterator) and
   // reuse the resolved id/node index.
-  auto [core, n, id, idx] = _jit_shared_val_node_of(view);
-  (void)core;
-  (void)n;
-  int64_t node = static_cast<int64_t>(idx);
+  auto rn = _jit_shared_val_node_of(view);
   // The iterator holds the tree open on its own: the interpreter's readers
   // capture the core shared_ptr, so an explicit `view.drop()` part-way
   // through an iteration doesn't pull the tree out from under them. Here the
   // registry ref rides a private view — never handed to user code — whose
   // own `drop` returns it once the captures are collected. It also carries
   // the id/node markers the readers resolve through.
-  culebra::shared_val_bump(id);
-  JitValue keeper = _jit_make_shared_val_view(id, node);
+  culebra::shared_val_bump(rn.id);
+  JitValue keeper =
+      _jit_make_shared_val_view(rn.id, static_cast<int64_t>(rn.idx));
   JitCell* caps[] = {
       culebra_runtime_cell_new(keeper.tag, keeper.data),
       culebra_runtime_cell_new(TAG_LONG, 0),
   };
-  constexpr size_t n_caps = sizeof(caps) / sizeof(caps[0]);
+  constexpr size_t n_caps = std::size(caps);
   auto reader = [&](void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
     _jit_register_native_fn(reinterpret_cast<const void*>(f));
     auto* cls = culebra_runtime_closure_new(reinterpret_cast<void*>(f),

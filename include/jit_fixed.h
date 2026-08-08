@@ -1345,6 +1345,22 @@ inline std::unordered_map<std::string,
                           std::unordered_map<std::string, JitClosure*>>&
 _jit_trait_default_impls();
 
+// The registered default named `key` whose trait this instance conforms to,
+// or null. Conformance is cached inside _culebra_type_matches_single. One
+// source for the three askers: the property read, the UFCS gate, and the
+// `__call__` lookup — each keeps its own gate on what may ask.
+inline JitClosure* _jit_find_trait_default(JitObject* obj, const char* key) {
+  for (auto& [trait_name, methods] : _jit_trait_default_impls()) {
+    auto m_it = methods.find(key);
+    if (m_it == methods.end() || !m_it->second) continue;
+    if (_culebra_type_matches_single(TAG_OBJECT,
+                                     reinterpret_cast<int64_t>(obj),
+                                     trait_name))
+      return m_it->second;
+  }
+  return nullptr;
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
     JitObject* obj, const char* key, JitPropIC* ic, int64_t line,
     int64_t col) {
@@ -1399,19 +1415,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
                     obj->ns_name ? obj->ns_name : "?", key),
         line, col);
   }
-  // Trait default-method fallback (T4 part 2). Walk registered
-  // defaults; for each candidate trait that owns `key`, check whether
-  // this instance conforms (cached). Returns the first matching
-  // default's closure as a TAG_FUNC value.
-  for (auto& [trait_name, methods] : _jit_trait_default_impls()) {
-    auto m_it = methods.find(key);
-    if (m_it == methods.end() || !m_it->second) continue;
-    if (_culebra_type_matches_single(TAG_OBJECT,
-                                      reinterpret_cast<int64_t>(obj),
-                                      trait_name)) {
-      return {TAG_FUNC, reinterpret_cast<int64_t>(m_it->second)};
-    }
-  }
+  // Trait default-method fallback (T4 part 2).
+  if (auto* d = _jit_find_trait_default(obj, key))
+    return {TAG_FUNC, reinterpret_cast<int64_t>(d)};
   return {TAG_NIL, 0};
 }
 
@@ -1507,16 +1513,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool
 culebra_runtime_object_has_or_trait_default(JitObject* obj, const char* key) {
   if (culebra_runtime_object_has(obj, key)) return true;
   if (!obj->proto) return false;
-  for (auto& [trait_name, methods] : _jit_trait_default_impls()) {
-    auto m_it = methods.find(key);
-    if (m_it == methods.end() || !m_it->second) continue;
-    if (_culebra_type_matches_single(TAG_OBJECT,
-                                     reinterpret_cast<int64_t>(obj),
-                                     trait_name)) {
-      return true;
-    }
-  }
-  return false;
+  return _jit_find_trait_default(obj, key) != nullptr;
 }
 
 // True iff `tag/data` is an Object carrying an OWN slot named `key` (proto /
@@ -1546,13 +1543,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_class_call_method(
   if (auto* e = _find_property(obj, "__call__")) {
     if (e->value.tag == TAG_FUNC) return e->value;
   }
-  for (auto& [trait_name, methods] : _jit_trait_default_impls()) {
-    auto m_it = methods.find("__call__");
-    if (m_it == methods.end() || !m_it->second) continue;
-    if (_culebra_type_matches_single(TAG_OBJECT, data, trait_name)) {
-      return {TAG_FUNC, reinterpret_cast<int64_t>(m_it->second)};
-    }
-  }
+  if (auto* d = _jit_find_trait_default(obj, "__call__"))
+    return {TAG_FUNC, reinterpret_cast<int64_t>(d)};
   return {TAG_NIL, 0};
 }
 
