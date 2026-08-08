@@ -141,9 +141,7 @@ class Anim {
   }
   update(fc) {
     let fpu = self.cells[self.index][0]
-    if fc - self.last_updated < fpu {
-      return
-    }
+    return if fc - self.last_updated < fpu
     let ni = (self.index + 1) % self.cells.size()
     match self.state {
       s: Completed => {
