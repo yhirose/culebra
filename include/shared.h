@@ -367,7 +367,9 @@ struct ValueWalkFrame {
 // the outermost level, so dropping `a = [a]`×100k never overflows the C
 // stack — a dtor cannot throw, so unlike the walkers above this bound has
 // to be structural. ~84B/level (interp ~Value chain) keeps the in-stack
-// portion under ~42KB. Consumers: interp ~Value, JIT value release.
+// portion under ~42KB. Consumers: interp ~Value, JIT value release,
+// tensor.h's ~TensorImpl (the autograd tape's own linear parent->input
+// chain).
 inline constexpr int64_t kValueTeardownDepthBudget = 500;
 
 // A thread for running culebra code: std::thread's join surface, but with

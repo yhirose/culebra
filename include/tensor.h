@@ -208,13 +208,21 @@ struct TensorImpl;
 // the CULEBRA_RT_CORE_OWNED split rt_shared_tls.h's comment describes. A
 // function-local static's guard is per-inline-function and merges cleanly
 // under ODR without that machinery.
-inline int64_t& _tensor_teardown_depth() {
-  thread_local int64_t depth = 0;
-  return depth;
-}
-inline bool& _tensor_teardown_has_deferred() {
-  thread_local bool has = false;
-  return has;
+//
+// Split in two, not one bundle: `depth`/`has_deferred` are POD with constant
+// initializers, so the compiler skips the usual thread-safe-init guard
+// entirely (verified via -O2 disassembly: a single %fs-relative instruction,
+// no branch) — that's what keeps every ~TensorImpl call on the leaf/shallow
+// fast path free. `deferred` holds a vector, whose non-trivial destructor
+// forces a real guard check; folding it into the same struct would spread
+// that guard onto the depth/has_deferred reads too, on every destruction.
+struct TensorTeardownState {
+  int64_t depth = 0;
+  bool has_deferred = false;
+};
+inline TensorTeardownState& _tensor_teardown_state() {
+  thread_local TensorTeardownState s;
+  return s;
 }
 inline std::vector<std::vector<std::shared_ptr<TensorImpl>>>&
 _tensor_teardown_deferred() {
@@ -225,7 +233,7 @@ _tensor_teardown_deferred() {
 [[gnu::noinline]] inline void _tensor_teardown_defer(
     std::vector<std::shared_ptr<TensorImpl>> inputs) {
   _tensor_teardown_deferred().push_back(std::move(inputs));
-  _tensor_teardown_has_deferred() = true;
+  _tensor_teardown_state().has_deferred = true;
 }
 
 [[gnu::noinline]] inline void _tensor_teardown_drain() {
@@ -239,7 +247,7 @@ _tensor_teardown_deferred() {
     // inputs' shared_ptrs release here; any that hit refcount 0 recurse
     // back into ~TensorImpl, which is depth-bounded the same way.
   }
-  _tensor_teardown_has_deferred() = false;
+  _tensor_teardown_state().has_deferred = false;
 }
 
 // Tensor — an Op-tagged autograd tape node whose value is a tl::array
@@ -298,15 +306,15 @@ struct TensorImpl {
   // entirely — the member's post-body destruction, now empty, is a no-op.
   ~TensorImpl() {
     if (inputs.empty()) return;
-    if (_tensor_teardown_depth() >= kValueTeardownDepthBudget) {
+    auto& st = _tensor_teardown_state();
+    if (st.depth >= kValueTeardownDepthBudget) {
       _tensor_teardown_defer(std::move(inputs));
       return;
     }
-    ++_tensor_teardown_depth();
+    ++st.depth;
     inputs.clear();
-    if (_tensor_teardown_depth() == 1 && _tensor_teardown_has_deferred())
-      _tensor_teardown_drain();
-    --_tensor_teardown_depth();
+    if (st.depth == 1 && st.has_deferred) _tensor_teardown_drain();
+    --st.depth;
   }
 
   // Element strides (tl's, no mirror — a per-op vector copy was measurable
@@ -917,6 +925,7 @@ inline void _tensor_build_topo(const TensorPtr& root,
   };
   if (!visited.insert(root.get()).second) return;
   std::vector<Frame> stack;
+  stack.reserve(8);  // covers most real graphs; skips the first grow-malloc
   stack.push_back({&root, 0});
   while (!stack.empty()) {
     Frame& top = stack.back();
