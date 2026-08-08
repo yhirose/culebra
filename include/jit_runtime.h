@@ -79,6 +79,7 @@ inline bool _culebra_value_equal(int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
       auto* a = reinterpret_cast<JitArray*>(d1);
       auto* b = reinterpret_cast<JitArray*>(d2);
       if (a == b) return true;
+      culebra::ValueWalkFrame walk;
       if (a->size != b->size) return false;
       for (size_t i = 0; i < a->size; i++) {
         if (!_culebra_value_equal(a->items[i].tag, a->items[i].data,
@@ -94,6 +95,7 @@ inline bool _culebra_value_equal(int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
       auto* a = reinterpret_cast<JitSet*>(d1);
       auto* b = reinterpret_cast<JitSet*>(d2);
       if (a == b) return true;
+      culebra::ValueWalkFrame walk;
       if (a->members.size() != b->members.size()) return false;
       if (!b->index) return false;
       for (auto& m : a->members) {
@@ -106,6 +108,7 @@ inline bool _culebra_value_equal(int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
       auto* a = reinterpret_cast<JitArray*>(d1);
       auto* b = reinterpret_cast<JitArray*>(d2);
       if (a == b) return true;
+      culebra::ValueWalkFrame walk;
       if (a->size != b->size) return false;
       for (size_t i = 0; i < a->size; i++) {
         if (!_culebra_value_equal(a->items[i].tag, a->items[i].data,
@@ -123,6 +126,7 @@ inline bool _culebra_value_equal(int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
       auto* a = reinterpret_cast<JitObject*>(d1);
       auto* b = reinterpret_cast<JitObject*>(d2);
       if (a == b) return true;
+      culebra::ValueWalkFrame walk;
       if (a->prop_size() != b->prop_size()) return false;
       bool eq = true;
       a->for_each([&](std::string_view name, const JitObjectEntry& e) {
@@ -574,8 +578,9 @@ culebra_runtime_module_get(const char* path, int8_t* out_tag,
 // expected type as a string-literal global and the runtime tag of the
 // actual value. Used by leaf JIT accessors (value_to_long etc.) where
 // both pieces of context are statically available at the throw site.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_error_typed(
-    int64_t line, int64_t col, const char* expected, int8_t got_tag) {
+[[noreturn]] CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
+culebra_runtime_type_error_typed(int64_t line, int64_t col,
+                                 const char* expected, int8_t got_tag) {
   const char* got = "?";
   switch (got_tag) {
     case TAG_NIL:    got = "Nil";      break;

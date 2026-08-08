@@ -622,6 +622,7 @@ struct JitValueHash {
       case TAG_STRINGVIEW:
         return std::hash<std::string_view>{}(_culebra_str_view(v.tag, v.data));
       case TAG_TUPLE: {
+        culebra::ValueWalkFrame walk;
         auto* a = reinterpret_cast<JitArray*>(v.data);
         size_t h = a->size;
         for (size_t i = 0; i < a->size; i++) {
@@ -669,6 +670,7 @@ struct JitValueEq {
         auto* aa = reinterpret_cast<JitArray*>(a.data);
         auto* bb = reinterpret_cast<JitArray*>(b.data);
         if (aa == bb) return true;
+        culebra::ValueWalkFrame walk;
         if (aa->size != bb->size) return false;
         for (size_t i = 0; i < aa->size; i++) {
           if (!(*this)(aa->items[i], bb->items[i])) return false;

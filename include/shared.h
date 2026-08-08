@@ -340,6 +340,28 @@ struct RecursionFrame {
   RecursionFrame& operator=(const RecursionFrame&) = delete;
 };
 
+// Depth of the current *value* walk — the C++-recursive traversals that
+// follow a value's own nesting (str/inspect, ==, hash, sendable serialize)
+// rather than culebra calls. A loop can build `a = [a]` deeper than any
+// parse, so every walker bounds its descent here and fails as a catchable
+// ValueError instead of overflowing the C stack. One shared counter, not
+// one per walker: nested walks (a `__str__` that inspects, eq inside a Set
+// probe) stack on the same C stack and must share the budget.
+inline thread_local int64_t _culebra_value_walk_depth = 0;
+
+struct ValueWalkFrame {
+  ValueWalkFrame() {
+    if (_culebra_value_walk_depth >= kCulebraRecursionLimit) {
+      throw CulebraError("ValueError",
+                         nesting_too_deep_message(kCulebraRecursionLimit));
+    }
+    ++_culebra_value_walk_depth;
+  }
+  ~ValueWalkFrame() { --_culebra_value_walk_depth; }
+  ValueWalkFrame(const ValueWalkFrame&) = delete;
+  ValueWalkFrame& operator=(const ValueWalkFrame&) = delete;
+};
+
 // A thread for running culebra code: std::thread's join surface, but with
 // an explicit 8MB stack on POSIX. macOS gives non-main pthreads 512KB by
 // default — barely 100 interp eval frames — while the recursion limit above

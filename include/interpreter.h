@@ -1225,6 +1225,7 @@ struct Value {
     auto* key = av.values.get();
     StrGuard guard(key);
     if (guard.already) return "[...]";
+    ValueWalkFrame walk;
     const auto& values = *av.values;
     std::string s = "[";
     for (auto i = 0u; i < values.size(); i++) {
@@ -1260,6 +1261,7 @@ struct Value {
       case Function:
         return "[function]";
       case Tuple: {
+        ValueWalkFrame walk;
         const auto& v = *get<TupleValue>().elements;
         std::string s = "(";
         for (size_t i = 0; i < v.size(); i++) {
@@ -1325,6 +1327,12 @@ struct Value {
         return get<StringViewPayload>().view ==
                rhs.get<StringViewPayload>().view;
       case Tuple: {
+        // Same-pointer short-circuit, matching Array/Object below and the
+        // JIT's TAG_TUPLE arm: `t == t` answers without walking.
+        if (get<TupleValue>().elements.get() ==
+            rhs.get<TupleValue>().elements.get())
+          return true;
+        ValueWalkFrame walk;
         const auto& a = *get<TupleValue>().elements;
         const auto& b = *rhs.get<TupleValue>().elements;
         if (a.size() != b.size()) return false;
@@ -1444,6 +1452,7 @@ struct ValueHash {
         return std::hash<std::string_view>{}(
             v.get<StringViewPayload>().view);
       case Value::Tuple: {
+        ValueWalkFrame walk;
         // Golden-ratio seed, matching the 0x9e3779b9 combine constant below.
         // Cast to size_t so it narrows cleanly on 32-bit targets (wasm32)
         // instead of implicitly truncating the 64-bit literal to low bits.
@@ -1494,6 +1503,11 @@ struct ValueEq {
       case Value::Long:  return a.get<int64_t>() == b.get<int64_t>();
       case Value::Float: return a.get<double>() == b.get<double>();
       case Value::Tuple: {
+        // Same-pointer short-circuit, matching JitValueEq's TAG_TUPLE arm.
+        if (a.get<TupleValue>().elements.get() ==
+            b.get<TupleValue>().elements.get())
+          return true;
+        ValueWalkFrame walk;
         const auto& ea = *a.get<TupleValue>().elements;
         const auto& eb = *b.get<TupleValue>().elements;
         if (ea.size() != eb.size()) return false;
@@ -1539,6 +1553,7 @@ struct SetValue {
 inline Value::Value(SetValue&& s) : type(Set), v(std::move(s)) {}
 
 inline std::string _set_str(const Value& v) {
+  ValueWalkFrame walk;
   const auto& xs = *v.get<SetValue>().members;
   std::string s = "{";
   for (size_t i = 0; i < xs.size(); i++) {
@@ -1550,6 +1565,7 @@ inline std::string _set_str(const Value& v) {
 }
 
 inline bool _set_eq(const Value& a, const Value& b) {
+  ValueWalkFrame walk;
   const auto& ia = *a.get<SetValue>().index;
   const auto& ib = *b.get<SetValue>().index;
   if (ia.size() != ib.size()) return false;
@@ -1561,6 +1577,7 @@ inline bool _set_eq(const Value& a, const Value& b) {
 
 // Element-wise array equality (recurses through Value::operator==).
 inline bool _array_eq(const Value& a, const Value& b) {
+  ValueWalkFrame walk;
   const auto& va = *a.get<ArrayValue>().values;
   const auto& vb = *b.get<ArrayValue>().values;
   if (va.size() != vb.size()) return false;
@@ -1744,6 +1761,7 @@ struct OrderedSymbolMap {
 // the shared meta, outside the compared entries, matching the JIT.
 // Defined here so OrderedSymbolMap is complete.
 inline bool _object_eq(const Value& a, const Value& b) {
+  ValueWalkFrame walk;
   const auto& oa = a.to_object();
   const auto& ob = b.to_object();
   if (oa.properties->size() != ob.properties->size()) return false;
@@ -3169,6 +3187,7 @@ inline std::string Value::str_object() const {
   auto* key = obj.properties.get();
   StrGuard guard(key);
   if (guard.already) return "{...}";
+  ValueWalkFrame walk;
   const auto& properties = *obj.properties;
   // Range value: print in source form (`1..3`, `2..`, `..3`, `..`,
   // `1..=3`) rather than as a raw object.

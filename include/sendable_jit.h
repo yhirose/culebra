@@ -44,6 +44,7 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
   auto seq = [&](JitArray* a, K kind) -> sendable::SendNode {
     if (!ctx.visiting.insert(a).second)
       sendable::send_error("a cyclic value cannot be sent");
+    culebra::ValueWalkFrame walk;
     n.kind = kind;
     n.elems.reserve(a->size);
     for (size_t i = 0; i < a->size; i++)
@@ -67,6 +68,7 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       auto* s = reinterpret_cast<JitSet*>(v.data);
       if (!ctx.visiting.insert(s).second)
         sendable::send_error("a cyclic value cannot be sent");
+      culebra::ValueWalkFrame walk;
       n.kind = K::Set;
       n.elems.reserve(s->members.size());
       for (const auto& m : s->members) n.elems.push_back(jit_serialize(m, ctx));
@@ -129,6 +131,7 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
         sendable::send_error("a native handle is not Sendable");
       if (!ctx.visiting.insert(o).second)
         sendable::send_error("a cyclic value cannot be sent");
+      culebra::ValueWalkFrame walk;
       n.kind = K::Object;
       if (o->shape) {
         for (size_t i = 0; i < o->shape->names.size(); i++) {
@@ -193,6 +196,9 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
         n.ref_id = it->second;
         return n;
       }
+      // Closure chains nest through captures, not containers, so the
+      // Function node counts a level too (mirrors the interp serializer).
+      culebra::ValueWalkFrame walk;
       n.ref_id = ctx.next_id++;
       ctx.closure_ids.emplace(c, n.ref_id);  // before recursing (fib recursion)
       n.jit_fn = c->fn_ptr;
@@ -233,7 +239,8 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       return n;
     }
     case TAG_TENSOR:
-      sendable::send_error("Tensor is not Sendable");
+      // Wording matches the interp serializer exactly (sendable.h).
+      sendable::send_error("Tensor is not Sendable (share via SharedBuffer instead)");
   }
   sendable::send_error("value is not Sendable");
 }
@@ -701,7 +708,12 @@ inline void _jit_chan_send(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
   int64_t id = _jit_self_long(self, "__channel_id__");
   if (n >= 1) {
     JitSerCtx sc;
-    channel_send_node(id, jit_serialize(args[0], sc));  // Sendable check here
+    // The thunk ABI carries no line/col; backfill the serializer's
+    // positionless errors (SendError, nesting ValueError) from the call
+    // site the codegen published, like _jit_ns_method_dispatch does.
+    _jit_at_pos(_jit_call_site_line, _jit_call_site_col, [&] {
+      channel_send_node(id, jit_serialize(args[0], sc));  // Sendable check here
+    });
   }
   { *__ret = {TAG_NIL, 0}; return; }
 }

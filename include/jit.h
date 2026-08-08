@@ -5097,6 +5097,7 @@ struct JIT {
       auto val = compile(*node.nodes[0]);
       auto specPtr = get_or_create_global_str(
           std::string(node.nodes[1]->token), ".fmtspec");
+      emit_set_op_pos();  // positionless ValueError on a too-deep value
       return emit_call(
           module_->getOrInsertFunction(rt::format_value, ptrTy,
                                        builder_.getInt8Ty(),
@@ -5111,6 +5112,7 @@ struct JIT {
     // bare expr node.
     auto exprNode = (node.tag == "INTERP_EXPR"_) ? node.nodes[0].get() : &node;
     auto val = compile(*exprNode);
+    emit_set_op_pos();  // positionless ValueError on a too-deep value
     return emit_call(
         module_->getOrInsertFunction(rt::value_to_display, ptrTy,
                                      builder_.getInt8Ty(),
@@ -16543,6 +16545,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   if (method == "index_of" && argsAst.nodes.size() == 1) {
     auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "iof");
     auto v = compile(*argsAst.nodes[0]);
+    emit_set_op_pos();  // positionless ValueError on a too-deep element
     auto idx = emit_call(
         module_->getFunction(rt::array_index_of),
         {arrPtr, extract_tag(v.borrow()), extract_data(v.borrow())});
@@ -16580,6 +16583,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
       // type") and can throw; guard the borrowed `+1` so it isn't stranded on
       // that edge, mutually exclusive with the drop below.
       ThrowGuard v_guard(this, {v.borrow()});
+      emit_set_op_pos();  // positionless ValueError on a too-deep element
       arrFound = emit_call(
           module_->getFunction(rt::array_contains),
           {arrPtr, extract_tag(v.borrow()), extract_data(v.borrow())});
@@ -16629,6 +16633,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
       // tuple_contains compares (and may hash) the value; guard the borrowed
       // `+1` on a throw edge (see the array arm above).
       ThrowGuard vt_guard(this, {vt.borrow()});
+      emit_set_op_pos();  // positionless ValueError on a too-deep element
       tupFound = emit_call(
           module_->getOrInsertFunction(
               rt::tuple_contains, builder_.getInt8Ty(), ptrTy,
@@ -16645,6 +16650,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     // runs user callbacks that can throw, but `vi` stays Owned across the
     // call, so the automatic unwind-temp window covers that edge.
     auto vi = compile(*argsAst.nodes[0]);
+    emit_set_op_pos();  // positionless ValueError on a too-deep element
     auto iterFound = emit_call(
         module_->getFunction(rt::iter_contains),
         {tag, extract_data(receiver), extract_tag(vi.borrow()),
@@ -16705,6 +16711,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
           culebra::builtin_arity_error_message("to_string", 0, 0, extra),
           culebra::ns_fn_arity_error_message(1, 1 + extra));
     }
+    emit_set_op_pos();  // positionless ValueError on a too-deep value
     auto s = emit_call(module_->getFunction(rt::value_to_display),
                        {tag, extract_data(receiver)});
     return own(make_string(s));
@@ -17254,6 +17261,11 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
       if (row->line_col) {
         args.push_back(ho_line);
         args.push_back(ho_col);
+      } else {
+        // join: the symbol carries no position, and its str walker raises a
+        // positionless ValueError on a too-deep element — publish the call
+        // position for the boundary backfill instead.
+        emit_set_op_pos();
       }
       if (res == DR::OutParam) {
         args.push_back(outTag);

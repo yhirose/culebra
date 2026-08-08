@@ -394,6 +394,7 @@ inline SendNode serialize(const Value& v, SerCtx& ctx) {
     const void* bp = store.get();
     if (!ctx.visiting.insert(bp).second)
       send_error("a cyclic value cannot be sent");
+    ValueWalkFrame walk;
     n.kind = kind;
     n.elems.reserve(store->size());
     for (const auto& e : *store) n.elems.push_back(serialize(e, ctx));
@@ -460,6 +461,7 @@ inline SendNode serialize(const Value& v, SerCtx& ctx) {
       const void* bp = obj.properties.get();
       if (!ctx.visiting.insert(bp).second)
         send_error("a cyclic value cannot be sent");
+      ValueWalkFrame walk;
       n.kind = SendNode::K::Object;
       size_t nprops = obj.properties->size() +
                       (obj.non_string_props ? obj.non_string_props->size() : 0);
@@ -529,6 +531,9 @@ inline SendNode serialize(const Value& v, SerCtx& ctx) {
           n.ref_id = it->second;
           return n;
         }
+        // Closure chains nest through captures, not containers, so a fresh
+        // (non-backref) Function node counts a walk level too.
+        ValueWalkFrame walk;
         n.ref_id = ctx.next_id++;
         ctx.closure_ids.emplace(key, n.ref_id);  // before recursing (recursion)
         n.mf_name = f.name.empty() ? std::string("__multifn__") : f.name;
@@ -558,6 +563,9 @@ inline SendNode serialize(const Value& v, SerCtx& ctx) {
         n.ref_id = it->second;
         return n;
       }
+      // Fresh (non-backref) closure: counts a walk level, like the multifn
+      // arm above and the JIT serializer.
+      ValueWalkFrame walk;
       n.ref_id = ctx.next_id++;
       ctx.closure_ids.emplace(key, n.ref_id);  // before recursing (fib cycle)
       n.params_ast = impl->params_ast;

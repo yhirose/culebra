@@ -8486,6 +8486,7 @@ inline JIT::Owned JitExtension::compile_global(JIT& jit,
 
   if (name == "to_string" && argsAst.nodes.size() == 1) {
     auto arg = jit.compile(*argsAst.nodes[0]);
+    jit.emit_set_op_pos();  // positionless ValueError on a too-deep value
     auto s = jit.emit_call(
         jit.module_->getFunction(rt::value_to_display),
         {jit.extract_tag(arg.borrow()), jit.extract_data(arg.borrow())});
@@ -10050,6 +10051,9 @@ inline llvm::Value* JitExtension::emit_output_call(JIT& jit,
   auto arg = argsAst.nodes.empty()
                  ? jit.own(jit.make_string(jit.emit_str_literal("")))
                  : jit.compile(*argsAst.nodes[0]);
+  // The str walker inside raises a positionless ValueError on a too-deep
+  // value; publish the call position so the boundary backfill lands there.
+  jit.emit_set_op_pos();
   jit.emit_call(jit.module_->getFunction(rt_name),
                       {jit.extract_tag(arg.borrow()),
                        jit.extract_data(arg.borrow())});

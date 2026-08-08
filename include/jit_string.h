@@ -83,6 +83,7 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
       auto* arr = reinterpret_cast<JitArray*>(data);
       _JitStrGuard guard(arr);
       if (guard.already) return "[...]";
+      culebra::ValueWalkFrame walk;
       std::string s = "[";
       for (size_t i = 0; i < arr->size; i++) {
         if (i > 0) s += ", ";
@@ -96,6 +97,7 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
       auto* arr = reinterpret_cast<JitArray*>(data);
       _JitStrGuard guard(arr);
       if (guard.already) return "(...)";
+      culebra::ValueWalkFrame walk;
       std::string s = "(";
       for (size_t i = 0; i < arr->size; i++) {
         if (i > 0) s += ", ";
@@ -112,6 +114,7 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
       auto* set = reinterpret_cast<JitSet*>(data);
       _JitStrGuard guard(set);
       if (guard.already) return "{...}";
+      culebra::ValueWalkFrame walk;
       std::string s = "{";
       for (size_t i = 0; i < set->members.size(); i++) {
         if (i > 0) s += ", ";
@@ -129,6 +132,7 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
       auto* obj = reinterpret_cast<JitObject*>(data);
       _JitStrGuard guard(obj);
       if (guard.already) return "{...}";
+      culebra::ValueWalkFrame walk;
       // Range value: print in source form (`1..3`, `2..`, `..3`, `..`,
       // `1..=3`) rather than as a raw object (matches the interpreter).
       {

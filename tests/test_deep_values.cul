@@ -1,0 +1,123 @@
+# Deep-value walkers: every C++-recursive traversal of a value's own
+# nesting (str/inspect, ==, hash, sendable serialize) is bounded at
+# kCulebraRecursionLimit and fails as a catchable ValueError — never a
+# C-stack SIGSEGV. Both backends must agree on kind, wording, position,
+# and the 1000-deep boundary.
+
+let deep_msg = 'nesting too deep (limit 1000)'
+
+# --- boundary: depth 1000 works on every walker -----------------------
+mut ok = [1]
+mut ok2 = [1]
+for i in 0..999 {
+  ok = [ok]
+  ok2 = [ok2]
+}                                      # [1] is depth 1
+assert_eq(2001, to_string(ok).size())  # 1000 '['s + '1' + 1000 ']'s
+assert_true(ok == ok2)
+
+mut okt = (1, 2)
+for i in 0..998 {
+  okt = (okt, 1)
+}  # (1, 2) is depth 1; +998 → 999
+assert_eq('Long', type_of(hash(okt)))
+
+# --- depth 1001: a ValueError, not a crash ----------------------------
+mut over = [1]
+mut over2 = [1]
+for i in 0..1000 {
+  over = [over]
+  over2 = [over2]
+}
+mut overt = (1, 2)
+for i in 0..1000 {
+  overt = (overt, 1)
+}
+
+# str family: inspect / print / to_string / interpolation / join, with
+# the position pinned at the call site on both backends.
+let e1 = try {
+  to_string(over)
+  nil
+} catch e {
+  e
+}
+assert_true(e1.kind == 'ValueError' && e1.message == deep_msg)
+assert_true(e1.line == 40 && e1.col == 3)
+assert_throws('ValueError', || inspect(over))
+assert_throws('ValueError', || IO.println(over))
+assert_throws('ValueError', || IO.einspect(over))
+assert_throws('ValueError', || "{over}")
+assert_throws('ValueError', || "{over:>5}")
+assert_throws('ValueError', || over.to_string())
+assert_throws('ValueError', || [over].join(','))
+assert_throws('ValueError', || [over].iter().join(','))
+
+# equality / hash / membership
+let e2 = try {
+  over == over2
+  nil
+} catch e {
+  e
+}
+assert_true(e2.kind == 'ValueError' && e2.message == deep_msg)
+assert_true(e2.line == 58 && e2.col == 3)
+assert_throws('ValueError', || over != over2)
+assert_throws('ValueError', || hash(overt))
+assert_throws('ValueError', || [over2].index_of(over))
+assert_throws('ValueError', || [over2].contains(over))
+
+# same-pointer short-circuits answer without walking (matches the JIT's
+# identity arms; Array/Object had them, Tuple gets one in this change).
+assert_true(over == over)
+assert_true(overt == overt)
+
+# sendable: spawn args, channel send, Shared.new
+let e3 = try {
+  Isolate.spawn(|x| 0, over).join()
+  nil
+} catch e {
+  e
+}
+assert_true(e3.kind == 'ValueError' && e3.message == deep_msg)
+let (tx, rx) = Channel.new(1)
+assert_throws('ValueError', || tx.send(over))
+tx.drop()
+let e4 = try {
+  Shared.new(over)
+  nil
+} catch e {
+  e
+}
+assert_true(e4.kind == 'ValueError' && e4.message == "Shared.new: {deep_msg}")
+
+# a deep chain of sendable closures nests through captures, not
+# containers; the serializer counts those levels too.
+mut f = fn () {
+  0
+}
+while mut i = 0; i < 1001 {
+  let g = f
+  f = fn () {
+    g()
+  }
+  i += 1
+}
+assert_throws('ValueError', || Isolate.spawn(f).join())
+
+# @derive walkers reuse the same guards
+@derive(Eq, Hash, Show)
+class Box {
+  new(v) {
+    self.v = v
+  }
+}
+let bx = Box.new(overt)
+assert_throws('ValueError', || bx.to_s())
+assert_throws('ValueError', || bx.hash())
+
+# depth 1000 round-trips through an isolate unharmed
+let h = Isolate.spawn(|x| x.size(), ok)
+assert_eq(1, h.join())
+
+IO.inspect("test_deep_values OK")

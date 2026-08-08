@@ -314,9 +314,13 @@ inline void _jit_derived_eq_thunk(JitValue* __ret, JitClosure*, int8_t self_tag,
   JitMethodArgs _a{n, args};
   JitMethodSelf _s{self};
   JitValue r{TAG_BOOL, 0};
+  // The thunk ABI carries no line/col; backfill the walker's positionless
+  // nesting ValueError from the published call site (all four thunks).
   if (self.tag == TAG_OBJECT && n >= 1)
-    r = culebra_runtime_derived_eq(reinterpret_cast<JitObject*>(self.data),
-                                   args[0]);
+    r = _jit_at_pos(_jit_call_site_line, _jit_call_site_col, [&] {
+      return culebra_runtime_derived_eq(reinterpret_cast<JitObject*>(self.data),
+                                        args[0]);
+    });
   { *__ret = r; return; }
 }
 inline void _jit_derived_hash_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
@@ -326,8 +330,10 @@ inline void _jit_derived_hash_thunk(JitValue* __ret, JitClosure*, int8_t self_ta
   JitMethodSelf _s{self};
   JitValue r{TAG_LONG, 0};
   if (self.tag == TAG_OBJECT)
-    r = {TAG_LONG, culebra_runtime_derived_hash(
-                       reinterpret_cast<JitObject*>(self.data))};
+    r = {TAG_LONG, _jit_at_pos(_jit_call_site_line, _jit_call_site_col, [&] {
+           return culebra_runtime_derived_hash(
+               reinterpret_cast<JitObject*>(self.data));
+         })};
   { *__ret = r; return; }
 }
 inline void _jit_derived_show_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
@@ -336,8 +342,12 @@ inline void _jit_derived_show_thunk(JitValue* __ret, JitClosure*, int8_t self_ta
   JitMethodArgs _a{n, args};
   JitMethodSelf _s{self};
   const char* s = (self.tag == TAG_OBJECT)
-                      ? culebra_runtime_derived_show(
-                            reinterpret_cast<JitObject*>(self.data))
+                      ? _jit_at_pos(_jit_call_site_line, _jit_call_site_col,
+                                    [&] {
+                                      return culebra_runtime_derived_show(
+                                          reinterpret_cast<JitObject*>(
+                                              self.data));
+                                    })
                       : _culebra_heap_str("");
   { *__ret = {TAG_STRING, reinterpret_cast<int64_t>(s)}; return; }
 }
@@ -348,8 +358,10 @@ inline void _jit_derived_cmp_thunk(JitValue* __ret, JitClosure*, int8_t self_tag
   JitMethodSelf _s{self};
   JitValue r{TAG_LONG, 0};
   if (self.tag == TAG_OBJECT && n >= 1)
-    r = {TAG_LONG, culebra_runtime_derived_cmp(
-                       reinterpret_cast<JitObject*>(self.data), args[0])};
+    r = {TAG_LONG, _jit_at_pos(_jit_call_site_line, _jit_call_site_col, [&] {
+           return culebra_runtime_derived_cmp(
+               reinterpret_cast<JitObject*>(self.data), args[0]);
+         })};
   { *__ret = r; return; }
 }
 
