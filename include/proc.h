@@ -111,6 +111,89 @@ inline std::string outcome_detail(const RunOutcome& oc) {
   return failure_detail(oc.result);
 }
 
+namespace _detail {
+
+// run_all's job-scheduling core, shared by the POSIX (`Child`) and Windows
+// (`WinChild`) backends: tracks per-command retries and keeps up to `limit`
+// children busy, drawing from `retry_queue` first then new work. `ChildT` is
+// the platform child handle; `spawn(i)` must launch command `i` (spawn_child
+// + any timeout wiring) and return its ChildT — this only sequences *when*,
+// not *how*.
+template <typename ChildT, typename SpawnFn>
+struct RetryScheduler {
+  RetryScheduler(size_t n, size_t limit, int64_t retries, bool fail_fast,
+                 SpawnFn spawn)
+      : limit_(limit), fail_fast_(fail_fast), spawn_(std::move(spawn)),
+        results(n), attempts_left_(n, retries < 0 ? 0 : retries) {
+    running.reserve(limit);
+  }
+
+  std::vector<ChildT> running;
+  std::vector<RunOutcome> results;
+  size_t finished = 0;
+  int64_t failed_index = -1;
+
+  // Record a completed attempt: re-queue it if it failed with retries left,
+  // else mark it finished (and arm fail_fast if it's still a failure).
+  void handle_outcome(size_t idx, RunOutcome&& oc) {
+    bool failed = !oc.spawned || !oc.result.ok;
+    results[idx] = std::move(oc);
+    if (failed && attempts_left_[idx] > 0) {
+      --attempts_left_[idx];
+      retry_queue_.push_back(idx);
+      return;
+    }
+    ++finished;
+    if (fail_fast_ && failed && failed_index < 0)
+      failed_index = static_cast<int64_t>(idx);
+  }
+
+  // Keep up to `limit` children busy, drawing from retries first then new work.
+  void fill() {
+    while (failed_index < 0 && running.size() < limit_ &&
+           (!retry_queue_.empty() || next_ < results.size())) {
+      if (!retry_queue_.empty()) {
+        size_t i = retry_queue_.back();
+        retry_queue_.pop_back();
+        launch(i);
+      } else {
+        launch(next_++);
+      }
+    }
+  }
+
+ private:
+  void launch(size_t i) {
+    ChildT c = spawn_(i);
+    if (c.done) {
+      handle_outcome(i, std::move(c.outcome));  // spawn failure: instant attempt
+    } else {
+      running.push_back(std::move(c));
+    }
+  }
+
+  size_t limit_;
+  bool fail_fast_;
+  SpawnFn spawn_;
+  std::vector<long> attempts_left_;     // remaining retries per command
+  std::vector<size_t> retry_queue_;     // indices awaiting a re-run
+  size_t next_ = 0;
+};
+
+// Deduces SpawnFn from `spawn` so callers only name ChildT explicitly:
+// make_retry_scheduler<Child>(n, limit, retries, fail_fast, [&](size_t i){...}).
+template <typename ChildT, typename SpawnFn>
+inline RetryScheduler<ChildT, SpawnFn> make_retry_scheduler(size_t n,
+                                                            size_t limit,
+                                                            int64_t retries,
+                                                            bool fail_fast,
+                                                            SpawnFn spawn) {
+  return RetryScheduler<ChildT, SpawnFn>(n, limit, retries, fail_fast,
+                                         std::move(spawn));
+}
+
+}  // namespace _detail
+
 #if !defined(_WIN32)
 
 // Decode a waitpid() status plus captured output into a ProcResult.
@@ -619,80 +702,40 @@ inline std::vector<RunOutcome> run_all(
     int64_t retries = 0,
     const std::vector<int>* inherit_fds = nullptr) {
   size_t n = commands.size();
-  std::vector<RunOutcome> results(n);
-  if (n == 0) return results;
+  if (n == 0) return {};
   if (limit == 0) limit = _detail::default_limit();
   if (limit > n) limit = n;
-  if (retries < 0) retries = 0;
 
   _detail::SigpipeGuard guard;
-  std::vector<_detail::Child> running;
-  running.reserve(limit);
-  _detail::ScopeKiller killer(running);
-  std::vector<long> attempts_left(n, retries);  // remaining retries per command
-  std::vector<size_t> retry_queue;              // indices awaiting a re-run
-  size_t next = 0, finished = 0;
-  int64_t failed_index = -1;
-  auto is_failure = [](const RunOutcome& oc) {
-    return !oc.spawned || !oc.result.ok;
-  };
-
-  // Record a completed attempt: re-queue it if it failed with retries left,
-  // else mark it finished (and arm fail_fast if it's still a failure).
-  auto handle_outcome = [&](size_t idx, RunOutcome&& oc) {
-    bool failed = is_failure(oc);
-    results[idx] = std::move(oc);
-    if (failed && attempts_left[idx] > 0) {
-      --attempts_left[idx];
-      retry_queue.push_back(idx);
-      return;
-    }
-    ++finished;
-    if (fail_fast && failed && failed_index < 0)
-      failed_index = static_cast<int64_t>(idx);
-  };
-  auto launch = [&](size_t i) {
-    const std::string* sp =
-        (stdins && !(*stdins)[i].empty()) ? &(*stdins)[i] : nullptr;
-    _detail::Child c =
-        _detail::spawn_child(commands[i], cwd, env, sp, i, inherit_fds);
-    if (c.done) {
-      handle_outcome(i, std::move(c.outcome));  // spawn failure: instant attempt
-    } else {
-      if (timeout_ms > 0) c.deadline_ms = _detail::now_ms() + timeout_ms;
-      running.push_back(std::move(c));
-    }
-  };
-  // Keep up to `limit` children busy, drawing from retries first then new work.
-  auto fill = [&]() {
-    while (failed_index < 0 && running.size() < limit &&
-           (!retry_queue.empty() || next < n)) {
-      if (!retry_queue.empty()) {
-        size_t i = retry_queue.back();
-        retry_queue.pop_back();
-        launch(i);
-      } else {
-        launch(next++);
-      }
-    }
-  };
-  fill();
+  auto sched = _detail::make_retry_scheduler<_detail::Child>(
+      n, limit, retries, fail_fast, [&](size_t i) {
+        const std::string* sp =
+            (stdins && !(*stdins)[i].empty()) ? &(*stdins)[i] : nullptr;
+        _detail::Child c =
+            _detail::spawn_child(commands[i], cwd, env, sp, i, inherit_fds);
+        if (!c.done && timeout_ms > 0)
+          c.deadline_ms = _detail::now_ms() + timeout_ms;
+        return c;
+      });
+  _detail::ScopeKiller killer(sched.running);
+  sched.fill();
 
   char buf[65536];
-  while (finished < n && failed_index < 0) {
+  while (sched.finished < n && sched.failed_index < 0) {
     if (_detail::interrupt_pending()) throw_if_interrupted();  // killer reaps survivors
-    int pto = _detail::clamp_interrupt_timeout(_detail::deadline_poll_timeout(running));
-    if (!_detail::poll_step(running, buf, sizeof(buf), pto)) break;
+    int pto = _detail::clamp_interrupt_timeout(
+        _detail::deadline_poll_timeout(sched.running));
+    if (!_detail::poll_step(sched.running, buf, sizeof(buf), pto)) break;
     // Reap finished children (both pipes EOF), then backfill to keep <= limit.
-    for (size_t k = 0; k < running.size();) {
-      _detail::Child& c = running[k];
+    for (size_t k = 0; k < sched.running.size();) {
+      _detail::Child& c = sched.running[k];
       if (!c.out_open && !c.err_open && !c.in_open) {
         size_t idx = c.index;
         RunOutcome oc = _detail::reap_child(c);
-        running.erase(running.begin() + k);
-        handle_outcome(idx, std::move(oc));
-        if (failed_index >= 0) break;
-        fill();
+        sched.running.erase(sched.running.begin() + k);
+        sched.handle_outcome(idx, std::move(oc));
+        if (sched.failed_index >= 0) break;
+        sched.fill();
       } else {
         ++k;
       }
@@ -700,11 +743,12 @@ inline std::vector<RunOutcome> run_all(
   }
   // Kills survivors on a fail_fast trigger (or a poll-error break); no-op once
   // everything has been reaped.
-  _detail::kill_and_reap(running);
+  _detail::kill_and_reap(sched.running);
   killer.disarm();
   throw_if_interrupted();  // a Ctrl+C that landed as the batch finished
-  if (out_failed && failed_index >= 0) *out_failed = static_cast<size_t>(failed_index);
-  return results;
+  if (out_failed && sched.failed_index >= 0)
+    *out_failed = static_cast<size_t>(sched.failed_index);
+  return std::move(sched.results);
 }
 
 // Runs up to `limit` (0 => all) commands and returns the first to finish
@@ -1123,78 +1167,47 @@ inline std::vector<RunOutcome> run_all(
     bool fail_fast = false, size_t* out_failed = nullptr, int64_t retries = 0,
     const std::vector<int>* = nullptr) {
   size_t n = commands.size();
-  std::vector<RunOutcome> results(n);
-  if (n == 0) return results;
+  if (n == 0) return {};
   if (limit == 0) limit = _detail::default_limit();
   if (limit > n) limit = n;
-  if (retries < 0) retries = 0;
 
-  std::vector<_detail::WinChild> running;
-  running.reserve(limit);
-  _detail::ScopeKiller killer(running);
-  std::vector<long> attempts_left(n, retries);
-  std::vector<size_t> retry_queue;
-  size_t next = 0, finished = 0;
-  int64_t failed_index = -1;
-  auto is_failure = [](const RunOutcome& oc) { return !oc.spawned || !oc.result.ok; };
-  auto handle_outcome = [&](size_t idx, RunOutcome&& oc) {
-    bool failed = is_failure(oc);
-    results[idx] = std::move(oc);
-    if (failed && attempts_left[idx] > 0) {
-      --attempts_left[idx];
-      retry_queue.push_back(idx);
-      return;
-    }
-    ++finished;
-    if (fail_fast && failed && failed_index < 0) failed_index = (long)idx;
-  };
-  auto launch = [&](size_t i) {
-    const std::string* sp =
-        (stdins && !(*stdins)[i].empty()) ? &(*stdins)[i] : nullptr;
-    _detail::WinChild c = _detail::spawn_child(commands[i], cwd, env, sp, i);
-    if (c.done) {
-      handle_outcome(i, std::move(c.outcome));
-    } else {
-      if (timeout_ms > 0) c.deadline_ms = _detail::now_ms() + timeout_ms;
-      running.push_back(std::move(c));
-    }
-  };
-  auto fill = [&]() {
-    while (failed_index < 0 && running.size() < limit &&
-           (!retry_queue.empty() || next < n)) {
-      if (!retry_queue.empty()) {
-        size_t i = retry_queue.back();
-        retry_queue.pop_back();
-        launch(i);
-      } else {
-        launch(next++);
-      }
-    }
-  };
-  fill();
+  auto sched = _detail::make_retry_scheduler<_detail::WinChild>(
+      n, limit, retries, fail_fast, [&](size_t i) {
+        const std::string* sp =
+            (stdins && !(*stdins)[i].empty()) ? &(*stdins)[i] : nullptr;
+        _detail::WinChild c = _detail::spawn_child(commands[i], cwd, env, sp, i);
+        if (!c.done && timeout_ms > 0)
+          c.deadline_ms = _detail::now_ms() + timeout_ms;
+        return c;
+      });
+  _detail::ScopeKiller killer(sched.running);
+  sched.fill();
 
-  while (finished < n && failed_index < 0) {
+  while (sched.finished < n && sched.failed_index < 0) {
     if (_detail::interrupt_pending()) throw_if_interrupted();  // killer reaps
-    long long nearest = _detail::enforce_deadlines(running, _detail::now_ms());
-    _detail::wait_any(running, (DWORD)_detail::clamp_interrupt_timeout(nearest));
-    for (size_t k = 0; k < running.size();) {
-      if (_detail::child_exited(running[k])) {
-        size_t idx = running[k].index;
-        RunOutcome oc = _detail::reap_child(running[k]);
-        running.erase(running.begin() + k);
-        handle_outcome(idx, std::move(oc));
-        if (failed_index >= 0) break;
-        fill();
+    long long nearest =
+        _detail::enforce_deadlines(sched.running, _detail::now_ms());
+    _detail::wait_any(sched.running,
+                      (DWORD)_detail::clamp_interrupt_timeout(nearest));
+    for (size_t k = 0; k < sched.running.size();) {
+      if (_detail::child_exited(sched.running[k])) {
+        size_t idx = sched.running[k].index;
+        RunOutcome oc = _detail::reap_child(sched.running[k]);
+        sched.running.erase(sched.running.begin() + k);
+        sched.handle_outcome(idx, std::move(oc));
+        if (sched.failed_index >= 0) break;
+        sched.fill();
       } else {
         ++k;
       }
     }
   }
-  _detail::kill_and_reap(running);
+  _detail::kill_and_reap(sched.running);
   killer.disarm();
   throw_if_interrupted();
-  if (out_failed && failed_index >= 0) *out_failed = (size_t)failed_index;
-  return results;
+  if (out_failed && sched.failed_index >= 0)
+    *out_failed = (size_t)sched.failed_index;
+  return std::move(sched.results);
 }
 
 inline std::pair<size_t, RunOutcome> run_race(

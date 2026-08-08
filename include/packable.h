@@ -747,6 +747,30 @@ inline std::shared_ptr<SharedBufferCore> lookup_shared_buffer(int64_t id) {
   return it == shared_buffer_registry().end() ? nullptr : it->second;
 }
 
+// Shared precondition for both platforms' prepare_share_buffer (Proc.run
+// `share:`): `id` must resolve to a live SharedBuffer.shared(...) core. Throws
+// ValueError on a dropped or wrong-storage buffer; the caller still owns the
+// platform-specific env-value encoding (fd-based on POSIX, name-based on
+// Windows).
+inline std::shared_ptr<SharedBufferCore> require_shareable_buffer(
+    int64_t id, std::string_view name) {
+  auto core = lookup_shared_buffer(id);
+  if (!core) {
+    throw CulebraError(
+        "ValueError",
+        std::format("Proc share `{}`: SharedBuffer has been dropped", name));
+  }
+  if (core->storage != SharedBufferCore::Storage::Shared) {
+    throw CulebraError(
+        "ValueError",
+        std::format("Proc share `{}`: only a SharedBuffer.shared(...) buffer "
+                    "can be shared with a child process (heap is isolate-local; "
+                    "share a file buffer by re-opening its path)",
+                    name));
+  }
+  return core;
+}
+
 // Allocate a zero-initialized SharedBuffer of `count` records laid out per
 // `layout`, register it (refcount 1 for the handle the caller builds), and
 // return its id. Pure metadata + raw bytes (no Value / JitValue), so interp
@@ -944,20 +968,7 @@ inline std::string share_env_value(int fd, size_t bytes, size_t stride,
 // Throws ValueError on a dropped or wrong-storage buffer.
 inline std::pair<int, std::string> prepare_share_buffer(int64_t id,
                                                         std::string_view name) {
-  auto core = lookup_shared_buffer(id);
-  if (!core) {
-    throw CulebraError(
-        "ValueError",
-        std::format("Proc share `{}`: SharedBuffer has been dropped", name));
-  }
-  if (core->storage != SharedBufferCore::Storage::Shared) {
-    throw CulebraError(
-        "ValueError",
-        std::format("Proc share `{}`: only a SharedBuffer.shared(...) buffer "
-                    "can be shared with a child process (heap is isolate-local; "
-                    "share a file buffer by re-opening its path)",
-                    name));
-  }
+  auto core = require_shareable_buffer(id, name);
   return {core->fd, share_env_value(core->fd, core->byte_size,
                                     core->layout.stride, core->count)};
 }
@@ -1149,20 +1160,7 @@ inline int64_t make_shared_buffer_shared(const PackableLayout& layout,
 // ValueError on a dropped or wrong-storage buffer.
 inline std::pair<int, std::string> prepare_share_buffer(int64_t id,
                                                         std::string_view name) {
-  auto core = lookup_shared_buffer(id);
-  if (!core) {
-    throw CulebraError(
-        "ValueError",
-        std::format("Proc share `{}`: SharedBuffer has been dropped", name));
-  }
-  if (core->storage != SharedBufferCore::Storage::Shared) {
-    throw CulebraError(
-        "ValueError",
-        std::format("Proc share `{}`: only a SharedBuffer.shared(...) buffer "
-                    "can be shared with a child process (heap is isolate-local; "
-                    "share a file buffer by re-opening its path)",
-                    name));
-  }
+  auto core = require_shareable_buffer(id, name);
   std::string env_val = std::format("{}|{}|{}|{}|{}", core->name,
                                     core->mutex_name, core->byte_size,
                                     core->layout.stride, core->count);
