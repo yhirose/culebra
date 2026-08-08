@@ -110,7 +110,10 @@ ratchet "bare RC calls (stdlib_jit.h)" "$(count_bare include/stdlib_jit.h)" 99
 # closure, its args and the call result in JitOwnedVal, so their tail releases
 # are gone — and with them the hang a throwing child caused by never dropping a
 # captured channel endpoint.
-ratchet "bare RC calls (sendable_jit.h)" "$(count_bare include/sendable_jit.h)" 12
+# 12 -> 11 (2026-08-08): the Shared view's iterator keeps its state in closure
+# captures, so its `iter` self-returning reader (and that reader's hand-placed
+# retain) is gone.
+ratchet "bare RC calls (sendable_jit.h)" "$(count_bare include/sendable_jit.h)" 11
 
 # Runtime-side borrow -> +1 seam (JitOwnedVal::from_borrowed). Its retain lives
 # inside the ownership layer, so it is invisible to count_bare above — the same
@@ -174,5 +177,5 @@ if (( fail )); then exit 1; fi
 echo "rc-discipline OK (release=$rel/51 retain=$ret/29 borrow=$brw/5" \
      "rt-borrow=$rbrw/1 tail-self=$tail_self/0" \
      "stdlib=$(count_bare include/stdlib_jit.h)/98" \
-     "sendable=$(count_bare include/sendable_jit.h)/12 throwguard=$tg/21" \
+     "sendable=$(count_bare include/sendable_jit.h)/11 throwguard=$tg/21" \
      "unchecked=$cu/14 vphi=$vphi/0 typed-consume=$tassign/0 rawcompile=$rawc/0)"

@@ -1219,33 +1219,54 @@ inline void _jit_sv_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
 // changes. Object nodes yield (key, value) pairs, Array/Tuple/Set nodes
 // yield elements — mirroring the local collection protocols. The tree is
 // immutable, so a plain cursor is a correct snapshot.
-inline void _jit_sv_iter_has_next(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
-                                      JitValue*) {
-  JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};  // consumed on any exit (node_of raises ClosedError)
-  auto [core, n, id, nidx] = _jit_shared_val_node_of(
-      reinterpret_cast<JitObject*>(self.data));
-  (void)nidx;
-  using K = sendable::SendNode::K;
-  int64_t total = n->kind == K::Object ? static_cast<long>(n->entries.size())
-                                    : static_cast<long>(n->elems.size());
-  int64_t idx = _jit_self_long(self, "_idx");
-  { *__ret = {TAG_BOOL, idx < total ? 1 : 0}; return; }
+//
+// Both readers take their state from the closure's captures, laid out by
+// _jit_sv_iter below: [0] the private view holding the tree open, [1] the
+// cursor. That keeps the iterator object itself down to the two protocol
+// methods the interpreter's `{has_next, next}` exposes — the cursor and the
+// node it walks are not the caller's business.
+enum : size_t { _SV_ITER_KEEPER = 0, _SV_ITER_CURSOR = 1 };
+
+inline JitValue _jit_make_shared_val_view(int64_t id, int64_t node);
+
+// Resolve the captured view and report how many entries its node holds. The
+// lookup runs per step, exactly as it did when the markers lived on the
+// iterator object, so a tree freed underneath the iterator still raises
+// ClosedError. The resolved node borrows from `core`, so the caller keeps the
+// returned struct alive for as long as it reads the node.
+inline JitResolvedNode _jit_sv_iter_resolve(JitClosure* cls) {
+  return _jit_shared_val_node_of(reinterpret_cast<JitObject*>(
+      cls->captures[_SV_ITER_KEEPER]->value.data));
 }
 
-inline void _jit_sv_iter_next(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
+inline int64_t _jit_sv_node_count(const sendable::SendNode* n) {
+  using K = sendable::SendNode::K;
+  return n->kind == K::Object ? static_cast<int64_t>(n->entries.size())
+                              : static_cast<int64_t>(n->elems.size());
+}
+
+inline void _jit_sv_iter_has_next(JitValue* __ret, JitClosure* cls, int8_t self_tag, int64_t self_data, int64_t,
+                                      JitValue*) {
+  JitValue self{self_tag, self_data};
+  JitMethodSelf _s{self};  // consumed on any exit (resolve raises ClosedError)
+  auto rn = _jit_sv_iter_resolve(cls);
+  int64_t idx = cls->captures[_SV_ITER_CURSOR]->value.data;
+  { *__ret = {TAG_BOOL, idx < _jit_sv_node_count(rn.node) ? 1 : 0}; return; }
+}
+
+inline void _jit_sv_iter_next(JitValue* __ret, JitClosure* cls, int8_t self_tag, int64_t self_data, int64_t,
                                   JitValue*) {
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
-  auto* it = reinterpret_cast<JitObject*>(self.data);
-  auto [core, n, id, nidx] = _jit_shared_val_node_of(it);
-  (void)nidx;
+  auto rn = _jit_sv_iter_resolve(cls);
+  const auto* n = rn.node;
+  const auto& core = rn.core;
+  int64_t id = rn.id;
+  auto* cursor = cls->captures[_SV_ITER_CURSOR];
+  int64_t idx = cursor->value.data;
+  if (idx >= _jit_sv_node_count(n)) { *__ret = {TAG_NIL, 0}; return; }
+  cursor->value = JitValue{TAG_LONG, idx + 1};
   using K = sendable::SendNode::K;
-  int64_t total = n->kind == K::Object ? static_cast<long>(n->entries.size())
-                                    : static_cast<long>(n->elems.size());
-  int64_t idx = _jit_self_long(self, "_idx");
-  if (idx >= total) { *__ret = {TAG_NIL, 0}; return; }
-  it->set_or_append("_idx", JitValue{TAG_LONG, idx + 1}, true);
   if (n->kind == K::Object) {
     const auto& [k, v] = n->entries[static_cast<size_t>(idx)];
     JitValue kv = _jit_sv_materialize(k);
@@ -1261,13 +1282,6 @@ inline void _jit_sv_iter_next(JitValue* __ret, JitClosure*, int8_t self_tag, int
                               n->elems[static_cast<size_t>(idx)]); return; }
 }
 
-inline void _jit_sv_iter_self(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
-                                  JitValue*) {
-  JitValue self{self_tag, self_data};
-  culebra_runtime_value_retain(self.tag, self.data);
-  { *__ret = self; return; }
-}
-
 inline void _jit_sv_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};  // consumed on any exit (node_of raises ClosedError)
@@ -1275,31 +1289,37 @@ inline void _jit_sv_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   // Validate first (a dropped handle must not mint a live iterator) and
   // reuse the resolved id/node index.
   auto [core, n, id, idx] = _jit_shared_val_node_of(view);
+  (void)core;
+  (void)n;
   int64_t node = static_cast<int64_t>(idx);
-  // The iterator is a PLAIN object (NOT a view): it carries the id/node
-  // for has_next/next's node accessor plus a cursor, but `is_shared_val`
-  // stays false so introspection (.keys()/.size()) sees an ordinary
-  // iterator object rather than routing into the frozen tree — the
-  // interp's iterator is likewise a plain `{has_next, next}` object. Its
-  // registry ref (bumped here) is released by its own drop on scope exit
-  // (has_drop), keeping the tree alive for the iteration like the interp
-  // captures the shared_ptr.
+  // The iterator holds the tree open on its own: the interpreter's readers
+  // capture the core shared_ptr, so an explicit `view.drop()` part-way
+  // through an iteration doesn't pull the tree out from under them. Here the
+  // registry ref rides a private view — never handed to user code — whose
+  // own `drop` returns it once the captures are collected. It also carries
+  // the id/node markers the readers resolve through.
   culebra::shared_val_bump(id);
-  auto* it = culebra_runtime_object_new();
-  it->set_or_append("__sharedval_id__", JitValue{TAG_LONG, id}, false);
-  it->set_or_append("__sharedval_node__", JitValue{TAG_LONG, node}, false);
-  it->set_or_append("_idx", JitValue{TAG_LONG, 0}, true);
-  auto meth = [&](const char* nm,
-                  void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
-    it->set_or_append(nm,
-        JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
-        false);
+  JitValue keeper = _jit_make_shared_val_view(id, node);
+  JitCell* caps[] = {
+      culebra_runtime_cell_new(keeper.tag, keeper.data),
+      culebra_runtime_cell_new(TAG_LONG, 0),
   };
-  meth("iter", _jit_sv_iter_self);
-  meth("has_next", _jit_sv_iter_has_next);
-  meth("next", _jit_sv_iter_next);
-  meth("drop", _jit_sv_drop);
-  it->has_drop = true;
+  constexpr size_t n_caps = sizeof(caps) / sizeof(caps[0]);
+  auto reader = [&](void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
+    _jit_register_native_fn(reinterpret_cast<const void*>(f));
+    auto* cls = culebra_runtime_closure_new(reinterpret_cast<void*>(f),
+                                            n_caps, 0);
+    for (size_t i = 0; i < n_caps; i++) {
+      culebra_runtime_cell_retain(caps[i]);
+      cls->captures[i] = caps[i];
+    }
+    return JitValue{TAG_FUNC, reinterpret_cast<int64_t>(cls)};
+  };
+  auto* it = culebra_runtime_object_new();
+  it->set_or_append("has_next", reader(_jit_sv_iter_has_next), false);
+  it->set_or_append("next", reader(_jit_sv_iter_next), false);
+  // The cells were minted at +1 for this builder; each reader took its own.
+  for (auto* c : caps) culebra_runtime_cell_release(c);
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
 
