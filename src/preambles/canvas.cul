@@ -496,6 +496,63 @@ let _canvas_module = fn () {
     }
   }
 
+  # --- coordinate methods, scalar + Vector2 overloads --------------------
+  # Each is a single `let`-bound fn matching on the first arg's type, not a
+  # `fn name(...)` multimethod pair: measured up to ~5x combined overhead
+  # from per-call dispatcher-arm scoring and from `fn name(...)`'s wider
+  # closure-over-scope cost this deep in the module (2M-call JIT microbench).
+  #
+  # rect/circle/ellipse/triangle accept `fill` positionally or as `fill:`
+  # (tests/test_canvas_module.cul), and *args can't combine with a named
+  # default param (docs/language.md) — so each param list is sized to the
+  # scalar form's own max arity; the shorter Vector2 form's unused trailing
+  # slot catches its own positional `fill` instead (`d ?? fill` / `e ?? fill`
+  # below, named for each function's own trailing param).
+  let set_pixel = fn (a, b, c = nil) {
+    match a {
+      p: Vector2 => _Canvas.set_pixel(p.x, p.y, b),
+      _ => _Canvas.set_pixel(a, b, c),
+    }
+  }
+  let get_pixel = fn (a, b = nil) {
+    match a {
+      p: Vector2 => _Canvas.get_pixel(p.x, p.y),
+      _ => _Canvas.get_pixel(a, b),
+    }
+  }
+  let line = fn (a, b, c, d = nil, e = nil) {
+    match a {
+      p1: Vector2 => _Canvas.line(p1.x, p1.y, b.x, b.y, c),
+      _ => _Canvas.line(a, b, c, d, e),
+    }
+  }
+  let rect = fn (a, b, c, d, e = nil, fill = true) {
+    match a {
+      p: Vector2 => _Canvas.rect(p.x, p.y, b, c, d, if e ?? fill { 1 } else { 0 }),
+      _ => _Canvas.rect(a, b, c, d, e, if fill { 1 } else { 0 }),
+    }
+  }
+  let circle = fn (a, b, c, d = nil, fill = true) {
+    match a {
+      p: Vector2 => _Canvas.ellipse(p.x, p.y, b, b, c, if d ?? fill { 1 } else { 0 }),
+      _ => _Canvas.ellipse(a, b, c, c, d, if fill { 1 } else { 0 }),
+    }
+  }
+  let ellipse = fn (a, b, c, d, e = nil, fill = true) {
+    match a {
+      p: Vector2 => _Canvas.ellipse(p.x, p.y, b, c, d, if e ?? fill { 1 } else { 0 }),
+      _ => _Canvas.ellipse(a, b, c, d, e, if fill { 1 } else { 0 }),
+    }
+  }
+  let triangle = fn (a, b, c, d, e = nil, f = nil, g = nil, fill = true) {
+    match a {
+      p1: Vector2 => _Canvas.triangle(
+        p1.x, p1.y, b.x, b.y, c.x, c.y, d, if e ?? fill { 1 } else { 0 },
+      ),
+      _ => _Canvas.triangle(a, b, c, d, e, f, g, if fill { 1 } else { 0 }),
+    }
+  }
+
   {
     rgba: rgba,
     rgb_to_hsv: rgb_to_hsv,
@@ -509,26 +566,16 @@ let _canvas_module = fn () {
     # already up. No-op where there is no window (headless, browser).
     title: fn (name) { _Canvas.title(name) },
     clear: fn (color) { _Canvas.clear(color) },
-    set_pixel: fn (x, y, color) { _Canvas.set_pixel(x, y, color) },
-    get_pixel: fn (x, y) { _Canvas.get_pixel(x, y) },
-    # Shapes take `fill: false` to draw just the one-pixel outline instead.
-    rect: fn (x, y, w, h, color, fill = true) {
-      _Canvas.rect(x, y, w, h, color, if fill { 1 } else { 0 })
-    },
-    # Line between two points, both endpoints included.
-    line: fn (x1, y1, x2, y2, color) { _Canvas.line(x1, y1, x2, y2, color) },
-    # Circle / ellipse centred on (cx, cy). The row through the centre spans
-    # 2r+1 pixels, so (cx ± r, cy) lies on the circle.
-    circle: fn (cx, cy, r, color, fill = true) {
-      _Canvas.ellipse(cx, cy, r, r, color, if fill { 1 } else { 0 })
-    },
-    ellipse: fn (cx, cy, rx, ry, color, fill = true) {
-      _Canvas.ellipse(cx, cy, rx, ry, color, if fill { 1 } else { 0 })
-    },
-    # Triangle from three vertices — the conventional general shape.
-    triangle: fn (x1, y1, x2, y2, x3, y3, color, fill = true) {
-      _Canvas.triangle(x1, y1, x2, y2, x3, y3, color, if fill { 1 } else { 0 })
-    },
+    # set_pixel/get_pixel/rect/line/circle/ellipse/triangle: multimethod
+    # dispatchers declared above (scalar + Vector2 overloads), bound here as
+    # first-class Function values like any other field.
+    set_pixel: set_pixel,
+    get_pixel: get_pixel,
+    rect: rect,
+    line: line,
+    circle: circle,
+    ellipse: ellipse,
+    triangle: triangle,
     # Polygon from a flat x0, y0, x1, y1, ... vertex list (even-odd rule; the
     # outline closes itself). Each filled row covers [xl, xr), like rect, so
     # polygons sharing an edge tile with no seam.

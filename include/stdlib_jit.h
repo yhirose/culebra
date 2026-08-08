@@ -10060,7 +10060,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       // them and bare references compile to namespace_get — mirroring the
       // interp's builtin_names skip. See _jit_namespace_get_or_build.
       "Time",    "Args",      "Regex",     "Term",      "Log",      "Path",
-      "Canvas",  "__Eff",
+      "Canvas",  "__Eff",     "Vector2",   "Vector3",
       // The bare function globals from those same source modules (assert_*,
       // `replace`) are listed by lazy_fn_group_of below, not here.
 #if defined(CULEBRA_HTTP_ENABLED)

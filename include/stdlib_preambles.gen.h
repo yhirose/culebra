@@ -1245,6 +1245,63 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     }
   }
 
+  # --- coordinate methods, scalar + Vector2 overloads --------------------
+  # Each is a single `let`-bound fn matching on the first arg's type, not a
+  # `fn name(...)` multimethod pair: measured up to ~5x combined overhead
+  # from per-call dispatcher-arm scoring and from `fn name(...)`'s wider
+  # closure-over-scope cost this deep in the module (2M-call JIT microbench).
+  #
+  # rect/circle/ellipse/triangle accept `fill` positionally or as `fill:`
+  # (tests/test_canvas_module.cul), and *args can't combine with a named
+  # default param (docs/language.md) — so each param list is sized to the
+  # scalar form's own max arity; the shorter Vector2 form's unused trailing
+  # slot catches its own positional `fill` instead (`d ?? fill` / `e ?? fill`
+  # below, named for each function's own trailing param).
+  let set_pixel = fn (a, b, c = nil) {
+    match a {
+      p: Vector2 => _Canvas.set_pixel(p.x, p.y, b),
+      _ => _Canvas.set_pixel(a, b, c),
+    }
+  }
+  let get_pixel = fn (a, b = nil) {
+    match a {
+      p: Vector2 => _Canvas.get_pixel(p.x, p.y),
+      _ => _Canvas.get_pixel(a, b),
+    }
+  }
+  let line = fn (a, b, c, d = nil, e = nil) {
+    match a {
+      p1: Vector2 => _Canvas.line(p1.x, p1.y, b.x, b.y, c),
+      _ => _Canvas.line(a, b, c, d, e),
+    }
+  }
+  let rect = fn (a, b, c, d, e = nil, fill = true) {
+    match a {
+      p: Vector2 => _Canvas.rect(p.x, p.y, b, c, d, if e ?? fill { 1 } else { 0 }),
+      _ => _Canvas.rect(a, b, c, d, e, if fill { 1 } else { 0 }),
+    }
+  }
+  let circle = fn (a, b, c, d = nil, fill = true) {
+    match a {
+      p: Vector2 => _Canvas.ellipse(p.x, p.y, b, b, c, if d ?? fill { 1 } else { 0 }),
+      _ => _Canvas.ellipse(a, b, c, c, d, if fill { 1 } else { 0 }),
+    }
+  }
+  let ellipse = fn (a, b, c, d, e = nil, fill = true) {
+    match a {
+      p: Vector2 => _Canvas.ellipse(p.x, p.y, b, c, d, if e ?? fill { 1 } else { 0 }),
+      _ => _Canvas.ellipse(a, b, c, d, e, if fill { 1 } else { 0 }),
+    }
+  }
+  let triangle = fn (a, b, c, d, e = nil, f = nil, g = nil, fill = true) {
+    match a {
+      p1: Vector2 => _Canvas.triangle(
+        p1.x, p1.y, b.x, b.y, c.x, c.y, d, if e ?? fill { 1 } else { 0 },
+      ),
+      _ => _Canvas.triangle(a, b, c, d, e, f, g, if fill { 1 } else { 0 }),
+    }
+  }
+
   {
     rgba: rgba,
     rgb_to_hsv: rgb_to_hsv,
@@ -1258,26 +1315,16 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     # already up. No-op where there is no window (headless, browser).
     title: fn (name) { _Canvas.title(name) },
     clear: fn (color) { _Canvas.clear(color) },
-    set_pixel: fn (x, y, color) { _Canvas.set_pixel(x, y, color) },
-    get_pixel: fn (x, y) { _Canvas.get_pixel(x, y) },
-    # Shapes take `fill: false` to draw just the one-pixel outline instead.
-    rect: fn (x, y, w, h, color, fill = true) {
-      _Canvas.rect(x, y, w, h, color, if fill { 1 } else { 0 })
-    },
-    # Line between two points, both endpoints included.
-    line: fn (x1, y1, x2, y2, color) { _Canvas.line(x1, y1, x2, y2, color) },
-    # Circle / ellipse centred on (cx, cy). The row through the centre spans
-    # 2r+1 pixels, so (cx ± r, cy) lies on the circle.
-    circle: fn (cx, cy, r, color, fill = true) {
-      _Canvas.ellipse(cx, cy, r, r, color, if fill { 1 } else { 0 })
-    },
-    ellipse: fn (cx, cy, rx, ry, color, fill = true) {
-      _Canvas.ellipse(cx, cy, rx, ry, color, if fill { 1 } else { 0 })
-    },
-    # Triangle from three vertices — the conventional general shape.
-    triangle: fn (x1, y1, x2, y2, x3, y3, color, fill = true) {
-      _Canvas.triangle(x1, y1, x2, y2, x3, y3, color, if fill { 1 } else { 0 })
-    },
+    # set_pixel/get_pixel/rect/line/circle/ellipse/triangle: multimethod
+    # dispatchers declared above (scalar + Vector2 overloads), bound here as
+    # first-class Function values like any other field.
+    set_pixel: set_pixel,
+    get_pixel: get_pixel,
+    rect: rect,
+    line: line,
+    circle: circle,
+    ellipse: ellipse,
+    triangle: triangle,
     # Polygon from a flat x0, y0, x1, y1, ... vertex list (even-odd rule; the
     # outline closes itself). Each filled row covers [xl, xr), like rect, so
     # polygons sharing an edge tile with no seam.
@@ -2131,6 +2178,137 @@ let _path_module = fn () {
   Path
 }
 let Path = _path_module()
+)=culpre=";
+
+inline constexpr const char* VECTOR2_MODULE_SOURCE = R"=culpre=(# Vector2 — a minimal 2D float vector for graphics/game code. Elements are
+# always Float: `new` accepts Long|Float and coerces via to_float, so
+# `Vector2.new(1, 0)` works, but self.x/self.y are never Long. Distinct from
+# the `@packable class FloatPair` used for SharedBuffer's fixed-layout demo
+# (see tests/test_packable.cul) — that type is a raw fixed-layout descriptor
+# with no operators; this is the general-purpose math type. Also stands in
+# for a "Point" (position vs. direction is not distinguished, matching Unity
+# / Godot / three.js rather than CGAL / nalgebra's stricter split).
+let _vector2_module = fn () {
+  class Vector2 {
+    new(x: Long | Float, y: Long | Float) {
+      self.x = to_float(x)
+      self.y = to_float(y)
+    }
+
+    __str__() {
+      "({self.x}, {self.y})"
+    }
+
+    __add__(o) {
+      Vector2.new(self.x + o.x, self.y + o.y)
+    }
+    __sub__(o) {
+      Vector2.new(self.x - o.x, self.y - o.y)
+    }
+    __mul__(k: Long | Float) {
+      Vector2.new(self.x * k, self.y * k)
+    }
+    __neg__() {
+      Vector2.new(-self.x, -self.y)
+    }
+    # Nominal, not structural: a `match` type-pattern checks the class tag
+    # (docs/language.md §match), so this correctly rejects a same-shaped
+    # Vector3 (also has x/y) — a plain `o.has("x") && o.has("y")` probe
+    # would not. Mirrors Duration.__eq__ / Instant.__eq__ in time.cul: a
+    # non-matching match yields nil, so a non-Vector2 RHS is simply
+    # not-equal, never a thrown TypeError.
+    __eq__(o) {
+      let v = match o { v: Vector2 => v }
+      v != nil && self.x == v.x && self.y == v.y
+    }
+
+    dot(o) {
+      self.x * o.x + self.y * o.y
+    }
+    length_squared() {
+      self.dot(self)
+    }
+    length() {
+      Math.sqrt(self.length_squared())
+    }
+    # A zero vector's normalized() divides by 0.0 like any other Float
+    # division in culebra — raises ZeroDivisionError. No silent fallback.
+    normalized() {
+      let len = self.length()
+      Vector2.new(self.x / len, self.y / len)
+    }
+    # Component-wise, not `(self - o).length()` — avoids allocating a
+    # throwaway Vector2 just to measure it.
+    distance_to(o) {
+      let dx = self.x - o.x
+      let dy = self.y - o.y
+      Math.sqrt(dx * dx + dy * dy)
+    }
+  }
+  Vector2
+}
+let Vector2 = _vector2_module()
+)=culpre=";
+
+inline constexpr const char* VECTOR3_MODULE_SOURCE = R"=culpre=(# Vector3 — the 3D counterpart of Vector2 (see vector2.cul for the shared
+# design rationale: Float-only, no Point split, nominal __eq__). cross() is
+# intentionally omitted from both: Vector2's cross is a scalar (perp dot),
+# Vector3's is a vector — the asymmetry invites naming/shape drift, and no
+# example in this repo needs it yet.
+let _vector3_module = fn () {
+  class Vector3 {
+    new(x: Long | Float, y: Long | Float, z: Long | Float) {
+      self.x = to_float(x)
+      self.y = to_float(y)
+      self.z = to_float(z)
+    }
+
+    __str__() {
+      "({self.x}, {self.y}, {self.z})"
+    }
+
+    __add__(o) {
+      Vector3.new(self.x + o.x, self.y + o.y, self.z + o.z)
+    }
+    __sub__(o) {
+      Vector3.new(self.x - o.x, self.y - o.y, self.z - o.z)
+    }
+    __mul__(k: Long | Float) {
+      Vector3.new(self.x * k, self.y * k, self.z * k)
+    }
+    __neg__() {
+      Vector3.new(-self.x, -self.y, -self.z)
+    }
+    __eq__(o) {
+      let v = match o { v: Vector3 => v }
+      v != nil && self.x == v.x && self.y == v.y && self.z == v.z
+    }
+
+    dot(o) {
+      self.x * o.x + self.y * o.y + self.z * o.z
+    }
+    length_squared() {
+      self.dot(self)
+    }
+    length() {
+      Math.sqrt(self.length_squared())
+    }
+    normalized() {
+      let len = self.length()
+      Vector3.new(self.x / len, self.y / len, self.z / len)
+    }
+    # Component-wise, not `(self - o).length()` — avoids allocating a
+    # throwaway Vector3 just to measure it.
+    distance_to(o) {
+      let dx = self.x - o.x
+      let dy = self.y - o.y
+      let dz = self.z - o.z
+      Math.sqrt(dx * dx + dy * dy + dz * dz)
+    }
+  }
+  Vector3
+}
+let Vector3 = _vector3_module()
 )=culpre=";
 
 inline constexpr const char* EFFECTS_MODULE_SOURCE = R"=culpre=(# Algebraic-effects runtime (thin slice). The parse-time transform

@@ -1,0 +1,59 @@
+# Vector3 — the 3D counterpart of Vector2 (see vector2.cul for the shared
+# design rationale: Float-only, no Point split, nominal __eq__). cross() is
+# intentionally omitted from both: Vector2's cross is a scalar (perp dot),
+# Vector3's is a vector — the asymmetry invites naming/shape drift, and no
+# example in this repo needs it yet.
+let _vector3_module = fn () {
+  class Vector3 {
+    new(x: Long | Float, y: Long | Float, z: Long | Float) {
+      self.x = to_float(x)
+      self.y = to_float(y)
+      self.z = to_float(z)
+    }
+
+    __str__() {
+      "({self.x}, {self.y}, {self.z})"
+    }
+
+    __add__(o) {
+      Vector3.new(self.x + o.x, self.y + o.y, self.z + o.z)
+    }
+    __sub__(o) {
+      Vector3.new(self.x - o.x, self.y - o.y, self.z - o.z)
+    }
+    __mul__(k: Long | Float) {
+      Vector3.new(self.x * k, self.y * k, self.z * k)
+    }
+    __neg__() {
+      Vector3.new(-self.x, -self.y, -self.z)
+    }
+    __eq__(o) {
+      let v = match o { v: Vector3 => v }
+      v != nil && self.x == v.x && self.y == v.y && self.z == v.z
+    }
+
+    dot(o) {
+      self.x * o.x + self.y * o.y + self.z * o.z
+    }
+    length_squared() {
+      self.dot(self)
+    }
+    length() {
+      Math.sqrt(self.length_squared())
+    }
+    normalized() {
+      let len = self.length()
+      Vector3.new(self.x / len, self.y / len, self.z / len)
+    }
+    # Component-wise, not `(self - o).length()` — avoids allocating a
+    # throwaway Vector3 just to measure it.
+    distance_to(o) {
+      let dx = self.x - o.x
+      let dy = self.y - o.y
+      let dz = self.z - o.z
+      Math.sqrt(dx * dx + dy * dy + dz * dz)
+    }
+  }
+  Vector3
+}
+let Vector3 = _vector3_module()

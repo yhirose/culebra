@@ -68,8 +68,10 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println`を
 27. [`Scene`](#27-scene) — 手続きジオメトリ向けのretained-mode 3Dレンダラ（opt-in、macOS限定）
 28. [`Net`](#28-net) — 生のTCP / UDPソケットと名前解決（`Http`の下位レイヤ）
 29. [`Desktop` / `Webview`](#29-desktop--webview) — ネイティブWebViewのデスクトップアプリ: ローカルHTTPサーバ + ウィンドウを1呼び出しで
-30. [設計上の注記](#30-設計上の注記)
-31. [未収録（将来検討）](#31-未収録将来検討)
+30. [`Vector2`](#30-vector2) — グラフィックス/ゲーム向けの最小限の2D floatベクトル（「Point」の代わりも兼ねる）
+31. [`Vector3`](#31-vector3) — `Vector2`の3D版
+32. [設計上の注記](#32-設計上の注記)
+33. [未収録（将来検討）](#33-未収録将来検討)
 
 **目的別索引**
 
@@ -104,11 +106,12 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println`を
 | UUIDの生成 | [§21 UUID](#21-uuid) — `UUID.v4()` / `UUID.v7()` |
 | レベル付き / 構造化ログ | [§23 Log](#23-log) — `Log.info("msg", {k: v})` / `Log.with({req: id})` |
 | 別スレッドで処理を実行（CPU並列） | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
-| 固定レイアウトデータをスレッド/プロセス間で共有（zero copy） | [§12 SharedBuffer](#sharedbuffer--zero-copy-で共有する固定レイアウトデータ) — `SharedBuffer.new(n, Vec2)` / `.file` / `.shared` |
+| 固定レイアウトデータをスレッド/プロセス間で共有（zero copy） | [§12 SharedBuffer](#sharedbuffer--zero-copy-で共有する固定レイアウトデータ) — `SharedBuffer.new(n, FloatPair)` / `.file` / `.shared` |
 | 可変長のread-onlyデータをスレッド間で共有（コピーなし） | [§12 Shared](#shared--参照共有する-immutable-値) — `Shared.new(value)` |
 | Ctrl+C / SIGINTを綺麗に扱う | [§12 Signal](#signal--signalnotify--signalreset) — `Signal.notify(tx)` / `Signal.reset()` |
 | デスクトップGUI（ネイティブWebView + ローカルサーバ） | [§29 Desktop](#29-desktop--webview) — `Desktop.run({title, assets, routes})` |
 | ヒープ情報・リークチェック | [§7 GC](#gc--ヒープ情報の取得) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes}` |
+| 2D/3Dベクトル演算（dot、length、normalize、distance） | [§30 `Vector2`](#30-vector2) / [§31 `Vector3`](#31-vector3) |
 | 行列・テンソル演算（BLAS対応） | [§8 Tensor](#8-tensor) |
 | String / Array / Objectのメソッド | [言語仕様 §18](language.ja.md) |
 | 整数列（`range`, `iota`） | [言語仕様 §19](language.ja.md) |
@@ -2267,7 +2270,7 @@ drain_and_close()
 ```culebra
 # doctest: skip
 @packable
-class Vec2 {
+class FloatPair {
   x: Float32 = 0.0
   y: Float32 = 0.0
 }
@@ -2324,11 +2327,11 @@ buf.flush()  # ディスクへ永続化
 
 ```culebra
 @packable
-class Vec2 {
+class FloatPair {
   x: Float32 = 0.0
   y: Float32 = 0.0
 }
-let buf = SharedBuffer.new(3, Vec2)
+let buf = SharedBuffer.new(3, FloatPair)
 inspect(buf.size)  # => 3
 buf[0].x = 1.5     # その場でバイトを書く
 let v = buf[0]     # 保持した view は同じ要素を指す
@@ -4307,6 +4310,15 @@ inspect(Canvas.hsv(h, Math.min(1.0, s * 1.4), v))  # => 4291327148
 | `Canvas.to_png() -> String` | 現在の描画先のピクセルをPNGバイト列で返す |
 | `Canvas.present()` | フレームを提示（下記ループ参照） |
 
+`set_pixel`、`get_pixel`、`rect`、`line`、`circle`、`ellipse`、
+`triangle`は、それぞれ`(x, y)`座標ペアの代わりに[`Vector2`](#30-vector2)
+も受け付けます——`Canvas.line(Vector2.new(0, 0), Vector2.new(10, 10),
+color)`は`Canvas.line(0, 0, 10, 10, color)`と等価です。`fill:`はどちら
+の形でも位置引数・キーワード引数のいずれでも指定できます。`polygon`
+に`Vector2`版はありません(`points`引数は平坦な`Array`で、宣言された
+パラメータ型だけでは数値の`Array`と`Vector2`の`Array`を区別できない
+ため)。
+
 フレームバッファとスプライトレジストリは1つのisolateのもので、最初に触れた
 isolate（描画でも`width`/`get_pixel`のような読み取りでも）が持ち主になる。
 2つ目のisolateは競合させる代わりに拒否され、空のキャンバス（ピクセルも
@@ -5064,7 +5076,79 @@ window.__culebra_before_close__ = () => {
 
 ---
 
-## 30. 設計上の注記
+## 30. `Vector2`
+
+グラフィックス/ゲームコード向けの最小限の2D floatベクトル——言語組み込み
+ではなく普通のculebraクラス(`src/preambles/vector2.cul`)です。要素は
+常に`Float`: `new`は`Long | Float`を受けてcoerceするので`Vector2.new(1,
+0)`は動きますが、`.x` / `.y`が`Long`になることはありません。
+
+`Vector2`は「Point」の代わりも兼ねます——位置と方向を型で区別しない
+設計で、これはCGAL / nalgebraの厳密な分離よりもUnity / Godot /
+three.jsの流儀に合わせたもので、標準ライブラリ全体の「必要最小限の
+型数で済ませる」という方針とも一致します。`SharedBuffer`の固定レイア
+ウトレコード(§12)に使う`@packable class`パターンとは別物——あちらは
+演算を持たない生バイトレイアウト記述子で、`Vector2`は汎用の数学型
+です。
+
+```culebra
+let a = Vector2.new(3, 4)
+inspect(a.length())              # => 5.0
+inspect(a.normalized())          # => (0.6, 0.8)
+inspect(a + Vector2.new(1, 1))   # => (4.0, 5.0)
+```
+
+| メンバー | 返り値 |
+|---|---|
+| `Vector2.new(x, y)` | `Vector2` |
+| `a + b` / `a - b` | `Vector2`（成分ごと） |
+| `a * k` / `k * a` | `Vector2`（スカラー；`k: Long \| Float`） |
+| `-a` | `Vector2` |
+| `a == b` | `Bool` — nominal判定: `Vector2`以外(同形の`Vector3`も含む)は常に`false`、例外は投げない |
+| `a.dot(b)` | `Float` |
+| `a.length()` / `a.length_squared()` | `Float` |
+| `a.normalized()` | `Vector2`（単位長；ゼロベクトルは`ZeroDivisionError`、他の`Float / 0.0`と同じ） |
+| `a.distance_to(b)` | `Float` |
+| `"{a}"` / `to_string(a)` | `String` — `"(x, y)"` |
+
+`cross()`は(`Vector2`・`Vector3`(§31)いずれにも)意図的に持たせて
+いません: 2Dの外積はスカラー(perp dot)、3Dの外積はベクトルを返す
+非対称な演算で、このリポジトリのどのexampleでも必要とされなかった
+ためです。
+
+[`§26 Canvas`](#26-canvas)の座標を取るメソッド(`set_pixel`、
+`get_pixel`、`line`、`rect`、`circle`、`ellipse`、`triangle`)は、
+それぞれ`(x, y)`座標ペアの代わりに`Vector2`も受け付けます。
+
+## 31. `Vector3`
+
+`Vector2`(§30)の3D版——同じ設計(Float固定、独立したPoint型を
+作らない、nominalな`==`)、同じメンバー構成で、`x` / `y` / `z`
+フィールドと`Vector3.new(x, y, z)`を持ちます。現時点で`Canvas`
+(2D専用)や`Scene`(culebra側wrapper層を持たないネイティブクラスで、
+`Canvas`のようにオーバーロードを追加する経路が無い)からは受け
+付けられません。
+
+```culebra
+let a = Vector3.new(1, 2, 3)
+inspect(a.length())               # => 3.7416573867739413
+inspect(a + Vector3.new(1, 1, 1)) # => (2.0, 3.0, 4.0)
+```
+
+| メンバー | 返り値 |
+|---|---|
+| `Vector3.new(x, y, z)` | `Vector3` |
+| `a + b` / `a - b` | `Vector3`（成分ごと） |
+| `a * k` / `k * a` | `Vector3`（スカラー；`k: Long \| Float`） |
+| `-a` | `Vector3` |
+| `a == b` | `Bool` — nominal判定、`Vector2`と同様 |
+| `a.dot(b)` | `Float` |
+| `a.length()` / `a.length_squared()` | `Float` |
+| `a.normalized()` | `Vector3`（単位長；ゼロベクトルは`ZeroDivisionError`） |
+| `a.distance_to(b)` | `Float` |
+| `"{a}"` / `to_string(a)` | `String` — `"(x, y, z)"` |
+
+## 32. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -5120,7 +5204,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 31. 未収録（将来検討）
+## 33. 未収録（将来検討）
 
 ### 重量級データ構造
 

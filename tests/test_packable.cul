@@ -9,12 +9,12 @@
 #      ./build/culebra --jit tests/test_packable.cul
 
 @packable
-class Vec2 {
+class FloatPair {
   x: Float32 = 0.0
   y: Float32 = 0.0
 }
 
-let buf = SharedBuffer.new(3, Vec2)
+let buf = SharedBuffer.new(3, FloatPair)
 assert_eq(buf.size, 3)
 assert_eq(buf.count, 3)
 assert_eq(buf.len, 3)
@@ -74,7 +74,7 @@ assert_eq(m[1].flag, false)
 
 # Explicit drop frees the buffer; using the handle afterward errors (rather
 # than crashing or silently leaking) — proof the core was reclaimed.
-let tmp = SharedBuffer.new(1, Vec2)
+let tmp = SharedBuffer.new(1, FloatPair)
 tmp[0].x = 1.0
 tmp.drop()
 assert_throws('ValueError', fn () {

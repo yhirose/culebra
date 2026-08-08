@@ -1,0 +1,68 @@
+# Vector2 — a minimal 2D float vector for graphics/game code. Elements are
+# always Float: `new` accepts Long|Float and coerces via to_float, so
+# `Vector2.new(1, 0)` works, but self.x/self.y are never Long. Distinct from
+# the `@packable class FloatPair` used for SharedBuffer's fixed-layout demo
+# (see tests/test_packable.cul) — that type is a raw fixed-layout descriptor
+# with no operators; this is the general-purpose math type. Also stands in
+# for a "Point" (position vs. direction is not distinguished, matching Unity
+# / Godot / three.js rather than CGAL / nalgebra's stricter split).
+let _vector2_module = fn () {
+  class Vector2 {
+    new(x: Long | Float, y: Long | Float) {
+      self.x = to_float(x)
+      self.y = to_float(y)
+    }
+
+    __str__() {
+      "({self.x}, {self.y})"
+    }
+
+    __add__(o) {
+      Vector2.new(self.x + o.x, self.y + o.y)
+    }
+    __sub__(o) {
+      Vector2.new(self.x - o.x, self.y - o.y)
+    }
+    __mul__(k: Long | Float) {
+      Vector2.new(self.x * k, self.y * k)
+    }
+    __neg__() {
+      Vector2.new(-self.x, -self.y)
+    }
+    # Nominal, not structural: a `match` type-pattern checks the class tag
+    # (docs/language.md §match), so this correctly rejects a same-shaped
+    # Vector3 (also has x/y) — a plain `o.has("x") && o.has("y")` probe
+    # would not. Mirrors Duration.__eq__ / Instant.__eq__ in time.cul: a
+    # non-matching match yields nil, so a non-Vector2 RHS is simply
+    # not-equal, never a thrown TypeError.
+    __eq__(o) {
+      let v = match o { v: Vector2 => v }
+      v != nil && self.x == v.x && self.y == v.y
+    }
+
+    dot(o) {
+      self.x * o.x + self.y * o.y
+    }
+    length_squared() {
+      self.dot(self)
+    }
+    length() {
+      Math.sqrt(self.length_squared())
+    }
+    # A zero vector's normalized() divides by 0.0 like any other Float
+    # division in culebra — raises ZeroDivisionError. No silent fallback.
+    normalized() {
+      let len = self.length()
+      Vector2.new(self.x / len, self.y / len)
+    }
+    # Component-wise, not `(self - o).length()` — avoids allocating a
+    # throwaway Vector2 just to measure it.
+    distance_to(o) {
+      let dx = self.x - o.x
+      let dy = self.y - o.y
+      Math.sqrt(dx * dx + dy * dy)
+    }
+  }
+  Vector2
+}
+let Vector2 = _vector2_module()

@@ -134,6 +134,60 @@ Canvas.run(8, 8, fn () {
   assert_eq(Canvas.get_pixel(4, 3), BLUE)
   assert_eq(Canvas.get_pixel(4, 2), GREEN)
 
+  // Vector2 overloads (multidispatch): set_pixel / get_pixel / rect / line /
+  // circle / ellipse / triangle each take a Vector2 in place of their (x, y)
+  // pair(s); the scalar form stays available unchanged (same dispatcher, more
+  // specific arm wins). Every draw is checked pixel-for-pixel against the
+  // scalar call it replaces, including the fill: kwarg and the arity-
+  // overlapping rect(..., fill) shape.
+  Canvas.clear(GREEN)
+  Canvas.set_pixel(Vector2.new(3, 3), BLUE)
+  assert_eq(Canvas.get_pixel(Vector2.new(3, 3)), BLUE)
+  assert_eq(Canvas.get_pixel(3, 3), BLUE)  // scalar get_pixel sees the same store
+
+  Canvas.clear(GREEN)
+  Canvas.rect(Vector2.new(2, 2), 3, 3, BLUE)
+  assert_eq(Canvas.get_pixel(2, 2), BLUE)
+  assert_eq(Canvas.get_pixel(1, 1), GREEN)
+  Canvas.clear(GREEN)
+  Canvas.rect(Vector2.new(1, 1), 6, 6, BLUE, fill: false)  // arity overlaps the scalar 5-arg form
+  assert_eq(Canvas.get_pixel(1, 1), BLUE)
+  assert_eq(Canvas.get_pixel(3, 3), GREEN)  // interior untouched — the Vector2 arm resolved, not the scalar one
+
+  Canvas.clear(GREEN)
+  Canvas.line(Vector2.new(1, 1), Vector2.new(6, 4), BLUE)
+  assert_eq(Canvas.get_pixel(1, 1), BLUE)
+  assert_eq(Canvas.get_pixel(6, 4), BLUE)
+
+  Canvas.clear(GREEN)
+  Canvas.circle(Vector2.new(4, 4), 3, BLUE)
+  assert_eq(Canvas.get_pixel(1, 4), BLUE)
+  assert_eq(Canvas.get_pixel(0, 4), GREEN)
+  Canvas.clear(GREEN)
+  Canvas.circle(Vector2.new(4, 4), 3, BLUE, fill: false)
+  assert_eq(Canvas.get_pixel(1, 4), BLUE)   // edge drawn
+  assert_eq(Canvas.get_pixel(4, 4), GREEN)  // interior untouched
+
+  Canvas.clear(GREEN)
+  Canvas.ellipse(Vector2.new(4, 4), 3, 1, BLUE)
+  assert_eq(Canvas.get_pixel(1, 4), BLUE)
+  assert_eq(Canvas.get_pixel(4, 2), GREEN)
+
+  Canvas.clear(GREEN)
+  Canvas.triangle(Vector2.new(0, 0), Vector2.new(8, 0), Vector2.new(0, 8), BLUE)
+  assert_eq(Canvas.get_pixel(0, 0), BLUE)
+  assert_eq(Canvas.get_pixel(7, 7), GREEN)  // past the hypotenuse
+
+  // A bad-typed positional argument still surfaces the native TypeError
+  // (not a DispatchError) — the scalar arm's own type check, not multidispatch
+  // "no matching overload" (docs/language.md).
+  assert_eq(try {
+      Canvas.set_pixel("x", 1, RED)
+      ""
+    } catch e {
+      e.kind
+    }, "TypeError")
+
   // fill: false on rect / triangle / polygon leaves the interior untouched.
   Canvas.clear(GREEN)
   Canvas.rect(1, 1, 6, 6, BLUE, fill: false)

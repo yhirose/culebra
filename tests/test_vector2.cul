@@ -1,0 +1,57 @@
+# Conformance: stdlib (Vector2). See docs/stdlib.md and docs/language.md.
+#
+# Vector2 — a minimal 2D float vector (src/preambles/vector2.cul). Tested on
+# interp, JIT, and AOT via `just test`; identical stdout (asserts are silent
+# on success).
+
+# Unlike the stdlib namespaces, Vector2 is a class, so a missing property
+# reads as nil rather than raising AttributeError — the same rule user
+# classes get.
+assert_eq(Vector2.new(1, 2).typo, nil)
+
+# --- construction / display ---
+let a = Vector2.new(3, 4)
+assert_eq(a.x, 3.0)
+assert_eq(a.y, 4.0)
+assert_eq("{a}", "(3.0, 4.0)")
+assert_eq(to_string(a), "(3.0, 4.0)")
+
+# Long args coerce to Float; Float args pass through unchanged.
+assert_eq(Vector2.new(1, 2).x, 1.0)
+assert_eq(Vector2.new(1.5, 2.5).x, 1.5)
+
+# --- operators (always return a fresh Vector2) ---
+assert_eq(a + Vector2.new(1, 1), Vector2.new(4, 5))
+assert_eq(a - Vector2.new(1, 1), Vector2.new(2, 3))
+assert_eq(a * 2, Vector2.new(6, 8))
+assert_eq(2 * a, Vector2.new(6, 8))  # commutative reflection
+assert_eq(-a, Vector2.new(-3, -4))
+
+# --- equality: nominal (class tag), never throws on a mismatched type ---
+assert_eq(Vector2.new(1, 2) == Vector2.new(1, 2), true)
+assert_eq(Vector2.new(1, 2) == Vector2.new(1, 3), false)
+assert_eq(Vector2.new(1, 2) == 5, false)
+assert_eq(Vector2.new(1, 2) == nil, false)
+assert_eq(Vector2.new(1, 2) == "1, 2", false)
+assert_eq(Vector2.new(1, 2) == {x: 1, y: 2}, false)  # structural lookalike
+
+# --- methods ---
+assert_eq(a.dot(Vector2.new(1, 0)), 3.0)
+assert_eq(a.dot(Vector2.new(0, 1)), 4.0)
+assert_eq(a.length_squared(), 25.0)
+assert_eq(a.length(), 5.0)
+assert_eq(a.normalized(), Vector2.new(0.6, 0.8))
+assert_close(a.normalized().length(), 1.0, 1e-9)
+assert_eq(a.distance_to(Vector2.new(0, 0)), 5.0)
+assert_eq(Vector2.new(0, 0).distance_to(Vector2.new(3, 4)), 5.0)
+
+# --- error cases ---
+assert_throws("ZeroDivisionError", fn () {
+  Vector2.new(0, 0).normalized()
+})
+assert_throws("TypeError", fn () {
+  Vector2.new(1, "x")
+})
+assert_throws("TypeError", fn () {
+  Vector2.new(1, 2) * "x"
+})

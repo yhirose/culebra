@@ -70,8 +70,10 @@ Conventions used below:
 27. [`Scene`](#27-scene) — retained-mode 3D renderer for procedural geometry (opt-in, macOS-only)
 28. [`Net`](#28-net) — raw TCP / UDP sockets and name resolution (the layer under `Http`)
 29. [`Desktop` / `Webview`](#29-desktop--webview) — native WebView desktop app: local HTTP server + window, one call
-30. [Design notes](#30-design-notes)
-31. [Not included (yet)](#31-not-included-yet)
+30. [`Vector2`](#30-vector2) — minimal 2D float vector for graphics/game code (also stands in for a "Point")
+31. [`Vector3`](#31-vector3) — the 3D counterpart of `Vector2`
+32. [Design notes](#32-design-notes)
+33. [Not included (yet)](#33-not-included-yet)
 
 **Where to find what**
 
@@ -107,11 +109,12 @@ Conventions used below:
 | Generate a UUID | [§21 UUID](#21-uuid) — `UUID.v4()` / `UUID.v7()` |
 | Leveled / structured logging | [§23 Log](#23-log) — `Log.info("msg", {k: v})` / `Log.with({req: id})` |
 | Run work on another thread (CPU parallelism) | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
-| Share fixed-layout data across threads/processes (zero copy) | [§12 SharedBuffer](#sharedbuffer--zero-copy-shared-fixed-layout-data) — `SharedBuffer.new(n, Vec2)` / `.file` / `.shared` |
+| Share fixed-layout data across threads/processes (zero copy) | [§12 SharedBuffer](#sharedbuffer--zero-copy-shared-fixed-layout-data) — `SharedBuffer.new(n, FloatPair)` / `.file` / `.shared` |
 | Share variable-length read-only data across threads (no copy) | [§12 Shared](#shared--immutable-values-shared-by-reference) — `Shared.new(value)` |
 | Handle Ctrl+C / SIGINT gracefully | [§12 Signal](#signal--signalnotify--signalreset) — `Signal.notify(tx)` / `Signal.reset()` |
 | Desktop GUI (native WebView + local server) | [§29 Desktop](#29-desktop--webview) — `Desktop.run({title, assets, routes})` |
 | Heap introspection / leak checks | [§7 GC](#gc--heap-introspection) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes}` |
+| 2D/3D vector math (dot, length, normalize, distance) | [§30 `Vector2`](#30-vector2) / [§31 `Vector3`](#31-vector3) |
 | String / Array / Object methods | [language spec §18](language.md) |
 | Integer sequences (`range`, `iota`) | [language spec §19](language.md) |
 | Conversion (`to_long`, `to_float`, `to_string`, `type_of`) | [language spec §19](language.md) |
@@ -2337,7 +2340,7 @@ type annotation and an optional default:
 ```culebra
 # doctest: skip
 @packable
-class Vec2 {
+class FloatPair {
   x: Float32 = 0.0
   y: Float32 = 0.0
 }
@@ -2393,11 +2396,11 @@ per-record object is materialized:
 
 ```culebra
 @packable
-class Vec2 {
+class FloatPair {
   x: Float32 = 0.0
   y: Float32 = 0.0
 }
-let buf = SharedBuffer.new(3, Vec2)
+let buf = SharedBuffer.new(3, FloatPair)
 inspect(buf.size)  # => 3
 buf[0].x = 1.5     # writes the bytes in place
 let v = buf[0]     # a stored view aliases the same element
@@ -4439,6 +4442,15 @@ visually-close approximation.
 | `Canvas.to_png() -> String` | the current draw target's pixels as PNG bytes |
 | `Canvas.present()` | show the frame (see the loop below) |
 
+`set_pixel`, `get_pixel`, `rect`, `line`, `circle`, `ellipse`, and
+`triangle` each also accept a [`Vector2`](#30-vector2) in place of their
+`(x, y)` coordinate pair(s) — `Canvas.line(Vector2.new(0, 0), Vector2.new(10,
+10), color)` is equivalent to `Canvas.line(0, 0, 10, 10, color)`. `fill:`
+works either positionally or by keyword with either form.
+`polygon` does not have a `Vector2` form (its `points` argument is a flat
+`Array`, and there's no way to distinguish an `Array` of numbers from an
+`Array` of `Vector2` by declared parameter type alone).
+
 The framebuffer and the sprite registry belong to one isolate — the first one
 to touch them, by drawing or by reading (`width`, `get_pixel`). A second
 isolate is refused rather than raced: it finds an empty canvas (no pixels, no
@@ -5212,7 +5224,79 @@ window.__culebra_before_close__ = () => {
 
 ---
 
-## 30. Design notes
+## 30. `Vector2`
+
+A minimal 2D float vector for graphics/game code — an ordinary culebra
+class (`src/preambles/vector2.cul`), not a language builtin. Elements are
+always `Float`: `new` accepts `Long | Float` and coerces, so
+`Vector2.new(1, 0)` works, but `.x` / `.y` are never `Long`.
+
+`Vector2` also stands in for a "Point" — position vs. direction is not
+distinguished, matching Unity / Godot / three.js rather than CGAL /
+nalgebra's stricter split, and matching the rest of the standard library's
+preference for the fewest types that cover the need. Distinct from the
+`@packable class` pattern used for `SharedBuffer`'s fixed-layout records
+(§12) — that's a raw byte-layout descriptor with no operators; `Vector2` is
+the general-purpose math type.
+
+```culebra
+let a = Vector2.new(3, 4)
+inspect(a.length())              # => 5.0
+inspect(a.normalized())          # => (0.6, 0.8)
+inspect(a + Vector2.new(1, 1))   # => (4.0, 5.0)
+```
+
+| Member | Returns |
+|---|---|
+| `Vector2.new(x, y)` | `Vector2` |
+| `a + b` / `a - b` | `Vector2` (component-wise) |
+| `a * k` / `k * a` | `Vector2` (scalar; `k: Long \| Float`) |
+| `-a` | `Vector2` |
+| `a == b` | `Bool` — nominal: a non-`Vector2` (including a same-shaped `Vector3`) is always `false`, never a thrown error |
+| `a.dot(b)` | `Float` |
+| `a.length()` / `a.length_squared()` | `Float` |
+| `a.normalized()` | `Vector2` (unit length; a zero vector raises `ZeroDivisionError`, same as any `Float / 0.0`) |
+| `a.distance_to(b)` | `Float` |
+| `"{a}"` / `to_string(a)` | `String` — `"(x, y)"` |
+
+`cross()` is intentionally not provided (on either `Vector2` or `Vector3`
+— see §31): a 2D cross product returns a scalar (the perp dot product)
+while a 3D cross product returns a vector, and no example in this codebase
+needed one.
+
+[`§26 Canvas`](#26-canvas)'s coordinate-taking methods (`set_pixel`,
+`get_pixel`, `line`, `rect`, `circle`, `ellipse`, `triangle`) each accept a
+`Vector2` in place of their `(x, y)` pair(s), alongside the original
+scalar form.
+
+## 31. `Vector3`
+
+The 3D counterpart of `Vector2` (§30) — same design (Float-only, no
+separate "Point" type, nominal `==`), same member set, with `x`, `y`, `z`
+fields and `Vector3.new(x, y, z)`. Not currently accepted by `Canvas`
+(2D-only) or `Scene` (a native class with no culebra-side wrapper to add
+an overload to, unlike `Canvas`).
+
+```culebra
+let a = Vector3.new(1, 2, 3)
+inspect(a.length())               # => 3.7416573867739413
+inspect(a + Vector3.new(1, 1, 1)) # => (2.0, 3.0, 4.0)
+```
+
+| Member | Returns |
+|---|---|
+| `Vector3.new(x, y, z)` | `Vector3` |
+| `a + b` / `a - b` | `Vector3` (component-wise) |
+| `a * k` / `k * a` | `Vector3` (scalar; `k: Long \| Float`) |
+| `-a` | `Vector3` |
+| `a == b` | `Bool` — nominal, same as `Vector2` |
+| `a.dot(b)` | `Float` |
+| `a.length()` / `a.length_squared()` | `Float` |
+| `a.normalized()` | `Vector3` (unit length; a zero vector raises `ZeroDivisionError`) |
+| `a.distance_to(b)` | `Float` |
+| `"{a}"` / `to_string(a)` | `String` — `"(x, y, z)"` |
+
+## 32. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -5268,7 +5352,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 31. Not included (yet)
+## 33. Not included (yet)
 
 ### Heavier data structures
 

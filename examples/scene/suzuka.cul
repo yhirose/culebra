@@ -48,10 +48,9 @@ fn frame_at(pts, i) {
   let n = pts.size()
   let [px, pz] = pts[i]
   let [qx, qz] = pts[(i + 1) % n]
-  let dx = qx - px
-  let dz = qz - pz
-  let len = Math.sqrt(dx * dx + dz * dz) + 0.0001
-  (-dz / len, dx / len, Math.atan2(dx, dz))
+  let d = Vector2.new(qx - px, qz - pz)
+  let len = d.length() + 0.0001  # epsilon kept explicit — normalized() has none
+  (-d.y / len, d.x / len, Math.atan2(d.x, d.y))
 }
 
 # Road height at arc-length s: a smooth hump centred on the crossover bridge,
@@ -315,12 +314,11 @@ class Car {
 
   drive(dt) {
     let [tx, tz] = self.cl[self.wp]
-    let dx = tx - self.x
-    let dz = tz - self.z
-    if Math.sqrt(dx * dx + dz * dz) < 12.0 {
+    let d = Vector2.new(tx - self.x, tz - self.z)
+    if d.length() < 12.0 {
       self.wp = (self.wp + 3) % self.cl.size()
     }
-    let want = Math.atan2(dz, dx)
+    let want = Math.atan2(d.y, d.x)
     self.heading += shortest_angle(want - self.heading) *
       (1.0 - Math.exp(-6.0 * dt))
     self.speed += (55.0 - self.speed) * (1.0 - Math.exp(-1.5 * dt))
@@ -368,19 +366,18 @@ class Car {
     let n = self.cl.size()
     let [ax, az] = self.cl[self.ti]
     let [bx, bz] = self.cl[(self.ti + 1) % n]
-    let ex = bx - ax
-    let ez = bz - az
-    let raw_t = ((self.x - ax) * ex + (self.z - az) * ez) /
-      (ex * ex + ez * ez + 0.0001)
+    let edge = Vector2.new(bx - ax, bz - az)
+    let offset = Vector2.new(self.x - ax, self.z - az)
+    let raw_t = offset.dot(edge) / (edge.length_squared() + 0.0001)
     let t = Math.min(Math.max(raw_t, -1.0), 1.0)
     let s = (to_float(self.ti) + t) * SPACING
     self.y = road_h(s)
     # pitch the body to the road gradient so its tail doesn't sink through the
     # descending ramp. Measure the slope along the car's TRAVEL direction (not
     # the centerline's +s sense) so it stays correct when driving the wrong way.
-    let dir = Math.cos(self.heading) * ex + Math.sin(self.heading) * ez >= 0.0
-      ? 1.0
-      : -1.0
+    let travel_along_edge = Math.cos(self.heading) * edge.x +
+      Math.sin(self.heading) * edge.y
+    let dir = travel_along_edge >= 0.0 ? 1.0 : -1.0
     let slope = (road_h(s + 6.0) - road_h(s - 6.0)) / 12.0 * dir
     self
       .node
