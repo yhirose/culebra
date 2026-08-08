@@ -1566,6 +1566,13 @@ add_test(NAME fmt_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/fmt_test.sh
                  $<TARGET_FILE:culebra>)
 
+# Parser nesting-depth guard (include/parser.h): 20k-deep brackets must be a
+# SyntaxError rather than a recursive-descent stack overflow, while 500-deep
+# generated literals and 50k-term flat chains keep parsing.
+add_test(NAME parse_depth_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/parse_depth_test.sh
+                 $<TARGET_FILE:culebra>)
+
 # `culebra init` (src/init_cmd.cc): the AI-instructions marker block is
 # idempotent and preserves existing file content, the Vim step only writes
 # where a config dir already exists, and a missing editor is a skip, not a

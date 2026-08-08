@@ -20,6 +20,20 @@
 
 namespace culebra {
 
+// Nesting-depth guard for the PEG's recursive descent. Machine-written
+// nesting (20k `(`s or `[`s) otherwise overflows the C stack inside
+// peglib — an uncatchable SIGSEGV instead of a SyntaxError. The unit is
+// *rule* entries, not brackets: one literal nesting level costs ~6 rules
+// (measured), the deepest file in the test corpus reaches 101, and the
+// crash needs ~120k — so 4000 allows ~650-deep generated literals with
+// 40x corpus headroom while staying two orders under the cliff, which
+// also keeps every downstream AST walker (optimizer, transforms, both
+// backends' compilers, the formatter) far from its own stack budget.
+// Reset per parse: a throw from the enter hook aborts the parse before
+// peglib's scope_exit can rebalance the count.
+inline constexpr int64_t kCulebraParseDepthLimit = 4000;
+inline thread_local int64_t _culebra_parse_depth = 0;
+
 inline peg::parser& get_parser() {
   // thread_local — peg::parser's logger callback and VM state aren't
   // safe to share across host threads.
@@ -50,6 +64,31 @@ inline peg::parser& get_parser() {
 
     parser.enable_ast();
     parser.enable_packrat_parsing();
+
+    // Every nesting construct passes through EXPRESSION or STATEMENT, so
+    // two hooks bound the whole grammar's recursion. peglib runs `leave`
+    // from a scope_exit, so backtracking keeps the count balanced.
+    auto enter_depth = [](const peg::Context& c, const char* s, size_t,
+                          std::any&) {
+      if (++_culebra_parse_depth > kCulebraParseDepthLimit) {
+        auto [ln, col] = c.line_info(s);
+        throw CulebraError(
+            "SyntaxError",
+            std::format("nesting too deep (limit {})",
+                        kCulebraParseDepthLimit),
+            static_cast<long>(ln), static_cast<long>(col));
+      }
+    };
+    auto leave_depth = [](const peg::Context&, const char*, size_t, size_t,
+                          std::any&, std::any&) { --_culebra_parse_depth; };
+    // Every named rule counts: deep nesting descends through whichever
+    // recursive rule family matches first (a 20k-`[` tower dives through
+    // the *pattern* rules while probing DESTRUCTURE_ASSIGN, never touching
+    // EXPRESSION), so hooking a hand-picked subset is a losing game.
+    for (const auto& [rule_name, def] : parser.get_grammar()) {
+      parser[rule_name.c_str()].enter = enter_depth;
+      parser[rule_name.c_str()].leave = leave_depth;
+    }
   }
 
   return parser;
@@ -1422,6 +1461,7 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
                                        const std::string& expr,
                                        std::vector<std::string>& msgs) {
   auto& parser = get_parser();
+  _culebra_parse_depth = 0;  // an aborted parse leaves the count mid-flight
 
   parser.set_logger([&](size_t ln, size_t col, const std::string& err_msg) {
     msgs.push_back(std::format("{}:{}:{}: {}\n", path, ln, col, err_msg));
@@ -1445,6 +1485,7 @@ inline std::shared_ptr<peg::Ast> parse_for_format(
     const std::string& path, const std::string& expr,
     std::vector<std::string>& msgs) {
   auto& parser = get_parser();
+  _culebra_parse_depth = 0;  // an aborted parse leaves the count mid-flight
 
   parser.set_logger([&](size_t ln, size_t col, const std::string& err_msg) {
     msgs.push_back(std::format("{}:{}:{}: {}\n", path, ln, col, err_msg));
