@@ -317,7 +317,7 @@ inline void _jit_derived_eq_thunk(JitValue* __ret, JitClosure*, int8_t self_tag,
   // The thunk ABI carries no line/col; backfill the walker's positionless
   // nesting ValueError from the published call site (all four thunks).
   if (self.tag == TAG_OBJECT && n >= 1)
-    r = _jit_at_pos(_jit_call_site_line, _jit_call_site_col, [&] {
+    r = _jit_at_call_site([&] {
       return culebra_runtime_derived_eq(reinterpret_cast<JitObject*>(self.data),
                                         args[0]);
     });
@@ -330,7 +330,7 @@ inline void _jit_derived_hash_thunk(JitValue* __ret, JitClosure*, int8_t self_ta
   JitMethodSelf _s{self};
   JitValue r{TAG_LONG, 0};
   if (self.tag == TAG_OBJECT)
-    r = {TAG_LONG, _jit_at_pos(_jit_call_site_line, _jit_call_site_col, [&] {
+    r = {TAG_LONG, _jit_at_call_site([&] {
            return culebra_runtime_derived_hash(
                reinterpret_cast<JitObject*>(self.data));
          })};
@@ -342,12 +342,10 @@ inline void _jit_derived_show_thunk(JitValue* __ret, JitClosure*, int8_t self_ta
   JitMethodArgs _a{n, args};
   JitMethodSelf _s{self};
   const char* s = (self.tag == TAG_OBJECT)
-                      ? _jit_at_pos(_jit_call_site_line, _jit_call_site_col,
-                                    [&] {
-                                      return culebra_runtime_derived_show(
-                                          reinterpret_cast<JitObject*>(
-                                              self.data));
-                                    })
+                      ? _jit_at_call_site([&] {
+                          return culebra_runtime_derived_show(
+                              reinterpret_cast<JitObject*>(self.data));
+                        })
                       : _culebra_heap_str("");
   { *__ret = {TAG_STRING, reinterpret_cast<int64_t>(s)}; return; }
 }
@@ -358,7 +356,7 @@ inline void _jit_derived_cmp_thunk(JitValue* __ret, JitClosure*, int8_t self_tag
   JitMethodSelf _s{self};
   JitValue r{TAG_LONG, 0};
   if (self.tag == TAG_OBJECT && n >= 1)
-    r = {TAG_LONG, _jit_at_pos(_jit_call_site_line, _jit_call_site_col, [&] {
+    r = {TAG_LONG, _jit_at_call_site([&] {
            return culebra_runtime_derived_cmp(
                reinterpret_cast<JitObject*>(self.data), args[0]);
          })};

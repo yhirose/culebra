@@ -670,8 +670,8 @@ struct JitValueEq {
         auto* aa = reinterpret_cast<JitArray*>(a.data);
         auto* bb = reinterpret_cast<JitArray*>(b.data);
         if (aa == bb) return true;
-        culebra::ValueWalkFrame walk;
         if (aa->size != bb->size) return false;
+        culebra::ValueWalkFrame walk;
         for (size_t i = 0; i < aa->size; i++) {
           if (!(*this)(aa->items[i], bb->items[i])) return false;
         }

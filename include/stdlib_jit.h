@@ -4624,7 +4624,7 @@ inline JitValue _jit_http_client_bodyless(JitValue self, int64_t n,
   auto at = [&](size_t i) {
     return _jit_file_arg_present(n, args, i) ? args[i] : JitValue{TAG_NIL, 0};
   };
-  return _jit_at_pos(_jit_call_site_line, _jit_call_site_col, [&] {
+  return _jit_at_call_site([&] {
     culebra::http::HttpRequest req;
     req.method = method;
     req.url = std::string(_culebra_str_view(args[0].tag, args[0].data));
@@ -4649,7 +4649,7 @@ inline JitValue _jit_http_client_withbody(JitValue self, int64_t n,
   auto at = [&](size_t i) {
     return _jit_file_arg_present(n, args, i) ? args[i] : JitValue{TAG_NIL, 0};
   };
-  return _jit_at_pos(_jit_call_site_line, _jit_call_site_col, [&] {
+  return _jit_at_call_site([&] {
     culebra::http::HttpRequest req;
     req.method = method;
     req.url = std::string(_culebra_str_view(args[0].tag, args[0].data));
@@ -4702,7 +4702,7 @@ CULEBRA_RT_INLINE void _jit_http_client_request(JitValue* __ret, JitClosure*, in
   auto at = [&](size_t i) {
     return _jit_file_arg_present(n, args, i) ? args[i] : JitValue{TAG_NIL, 0};
   };
-  *__ret = _jit_at_pos(_jit_call_site_line, _jit_call_site_col, [&] {
+  *__ret = _jit_at_call_site([&] {
     culebra::http::HttpRequest req;
     req.method = std::string(_culebra_str_view(args[0].tag, args[0].data));
     req.url = std::string(_culebra_str_view(args[1].tag, args[1].data));
@@ -5171,7 +5171,7 @@ CULEBRA_RT_INLINE void _jit_http_server_static(JitValue* __ret, JitClosure*, int
     _jit_file_param_type_error(self, "mount", "String", 0);
   if (!_jit_file_arg_present(n, args, 1)) _jit_file_missing_arg(self, "dir");
   _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
-  *__ret = _jit_at_pos(_jit_call_site_line, _jit_call_site_col, [&] {
+  *__ret = _jit_at_call_site([&] {
     std::string mount(_culebra_str_view(args[0].tag, args[0].data));
     std::string err;
     // dir is either a String path (live disk via mount point) or an
@@ -5356,7 +5356,7 @@ CULEBRA_RT_INLINE void _jit_http_server_bind(JitValue* __ret, JitClosure*, int8_
   JitValue self{self_tag, self_data};
   if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "port");
   _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
-  *__ret = _jit_at_pos(_jit_call_site_line, _jit_call_site_col, [&] {
+  *__ret = _jit_at_call_site([&] {
     return JitValue{TAG_LONG,
                     _jit_http_server_bind_args(_jit_http_server_id(self), n,
                                                args, "server.bind")};
@@ -5368,7 +5368,7 @@ inline JitValue _jit_http_server_serve_impl(JitValue self, int64_t n,
                                             JitValue* args, bool async) {
   int64_t id = _jit_http_server_id(self);
   _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
-  return _jit_at_pos(_jit_call_site_line, _jit_call_site_col, [&] {
+  return _jit_at_call_site([&] {
     return _jit_http_server_do_serve(
         id, _jit_http_server_workers_arg(n, args, 0), async,
         async ? "server.serve_async" : "server.serve");
@@ -5393,7 +5393,7 @@ inline JitValue _jit_http_server_listen_impl(JitValue self, int64_t n,
   int64_t id = _jit_http_server_id(self);
   if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "port");
   _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
-  return _jit_at_pos(_jit_call_site_line, _jit_call_site_col, [&] {
+  return _jit_at_call_site([&] {
     const char* ctx = async ? "server.listen_async" : "server.listen";
     int64_t bound = _jit_http_server_bind_args(id, n, args, ctx);
     int64_t workers = _jit_http_server_workers_arg(n, args, 2);

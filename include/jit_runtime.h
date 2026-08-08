@@ -79,8 +79,10 @@ inline bool _culebra_value_equal(int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
       auto* a = reinterpret_cast<JitArray*>(d1);
       auto* b = reinterpret_cast<JitArray*>(d2);
       if (a == b) return true;
-      culebra::ValueWalkFrame walk;
       if (a->size != b->size) return false;
+      // After the size fast-fail so a mismatched probe never pays the
+      // frame (same order on every arm here and in the interp).
+      culebra::ValueWalkFrame walk;
       for (size_t i = 0; i < a->size; i++) {
         if (!_culebra_value_equal(a->items[i].tag, a->items[i].data,
                                   b->items[i].tag, b->items[i].data)) {
@@ -95,9 +97,9 @@ inline bool _culebra_value_equal(int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
       auto* a = reinterpret_cast<JitSet*>(d1);
       auto* b = reinterpret_cast<JitSet*>(d2);
       if (a == b) return true;
-      culebra::ValueWalkFrame walk;
       if (a->members.size() != b->members.size()) return false;
       if (!b->index) return false;
+      culebra::ValueWalkFrame walk;
       for (auto& m : a->members) {
         if (!b->index->contains(m)) return false;
       }
@@ -108,8 +110,8 @@ inline bool _culebra_value_equal(int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
       auto* a = reinterpret_cast<JitArray*>(d1);
       auto* b = reinterpret_cast<JitArray*>(d2);
       if (a == b) return true;
-      culebra::ValueWalkFrame walk;
       if (a->size != b->size) return false;
+      culebra::ValueWalkFrame walk;
       for (size_t i = 0; i < a->size; i++) {
         if (!_culebra_value_equal(a->items[i].tag, a->items[i].data,
                                   b->items[i].tag, b->items[i].data)) {
@@ -126,8 +128,8 @@ inline bool _culebra_value_equal(int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
       auto* a = reinterpret_cast<JitObject*>(d1);
       auto* b = reinterpret_cast<JitObject*>(d2);
       if (a == b) return true;
-      culebra::ValueWalkFrame walk;
       if (a->prop_size() != b->prop_size()) return false;
+      culebra::ValueWalkFrame walk;
       bool eq = true;
       a->for_each([&](std::string_view name, const JitObjectEntry& e) {
         if (!eq) return;
@@ -616,6 +618,19 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_arity_error(
 // emitted its own non-odr TLS wrapper and the link failed duplicate.
 inline thread_local int64_t _jit_call_site_line = 0;
 inline thread_local int64_t _jit_call_site_col = 0;
+
+// Run `op`, backfilling a positionless error from the published call site.
+// The entry-catch idiom for native thunks, whose ABI carries no line/col
+// (handle methods, derived-method thunks, ns adapters). A template needs
+// C++ linkage, and it must follow the thread-locals above, so the extern
+// "C" block pauses around it.
+}  // extern "C" (resumed below)
+template <class F>
+inline auto _jit_at_call_site(F&& op) -> decltype(op()) {
+  return _jit_at_pos(_jit_call_site_line, _jit_call_site_col,
+                     std::forward<F>(op));
+}
+extern "C" {
 
 // Recursion guard, compiled-code side. The counter itself lives in shared.h
 // (`_culebra_call_depth`) so the interp's RecursionFrame and these helpers

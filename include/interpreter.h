@@ -581,11 +581,30 @@ struct StrGuard {
 
 // CPython-trashcan deallocation state: see ~Value. The deferred list holds
 // container payloads (std::any) whose destruction was postponed past the
-// depth budget; it is drained at the outermost teardown level.
+// depth budget; it is drained at the outermost teardown level. The bool
+// mirrors !deferred.empty() so the hot path never touches the guarded
+// (non-trivially-destructible) thread_local vector; the cold helpers are
+// outlined so ~Value's inline body stays small at its many expansion sites.
 inline thread_local int64_t _value_teardown_depth = 0;
-inline thread_local bool _value_teardown_draining = false;
+inline thread_local bool _value_teardown_has_deferred = false;
 CULEBRA_RT_CORE_OWNED thread_local std::vector<std::any>
     _value_teardown_deferred;
+
+[[gnu::noinline]] inline void _value_teardown_defer(std::any payload) {
+  _value_teardown_deferred.push_back(std::move(payload));
+  _value_teardown_has_deferred = true;
+}
+
+[[gnu::noinline]] inline void _value_teardown_drain() {
+  // Runs at depth 1 (see ~Value), so every dtor it triggers bottoms out at
+  // depth >= 2 and can never nest a second drain. Each pop may re-defer
+  // its own deep tail; loop until dry.
+  while (!_value_teardown_deferred.empty()) {
+    auto payload = std::move(_value_teardown_deferred.back());
+    _value_teardown_deferred.pop_back();
+  }
+  _value_teardown_has_deferred = false;
+}
 
 struct FunctionValue {
   struct Parameter {
@@ -1005,23 +1024,14 @@ struct Value {
     }
     if (!v.has_value()) return;  // moved-from shell
     if (_value_teardown_depth >= kValueTeardownDepthBudget) {
-      _value_teardown_deferred.push_back(std::move(v));
+      _value_teardown_defer(std::move(v));
       return;
     }
     ++_value_teardown_depth;
     v.reset();
+    if (_value_teardown_depth == 1 && _value_teardown_has_deferred)
+      _value_teardown_drain();
     --_value_teardown_depth;
-    if (_value_teardown_depth == 0 && !_value_teardown_deferred.empty() &&
-        !_value_teardown_draining) {
-      _value_teardown_draining = true;
-      // Each pop's destruction may re-defer its own deep tail, so loop
-      // until dry. The flag keeps an inner dtor from nesting a drain.
-      while (!_value_teardown_deferred.empty()) {
-        auto payload = std::move(_value_teardown_deferred.back());
-        _value_teardown_deferred.pop_back();
-      }
-      _value_teardown_draining = false;
-    }
   }
 
   explicit Value(bool b) : type(Bool), v(b) {}
@@ -1372,10 +1382,10 @@ struct Value {
         if (get<TupleValue>().elements.get() ==
             rhs.get<TupleValue>().elements.get())
           return true;
-        ValueWalkFrame walk;
         const auto& a = *get<TupleValue>().elements;
         const auto& b = *rhs.get<TupleValue>().elements;
         if (a.size() != b.size()) return false;
+        ValueWalkFrame walk;
         for (size_t i = 0; i < a.size(); i++) {
           if (!(a[i] == b[i])) return false;
         }
@@ -1547,10 +1557,10 @@ struct ValueEq {
         if (a.get<TupleValue>().elements.get() ==
             b.get<TupleValue>().elements.get())
           return true;
-        ValueWalkFrame walk;
         const auto& ea = *a.get<TupleValue>().elements;
         const auto& eb = *b.get<TupleValue>().elements;
         if (ea.size() != eb.size()) return false;
+        ValueWalkFrame walk;
         for (size_t i = 0; i < ea.size(); i++) {
           if (!(*this)(ea[i], eb[i])) return false;
         }
@@ -1605,10 +1615,16 @@ inline std::string _set_str(const Value& v) {
 }
 
 inline bool _set_eq(const Value& a, const Value& b) {
-  ValueWalkFrame walk;
+  // Same-pointer short-circuit, matching the JIT's TAG_SET arm (it lives
+  // here rather than in operator=='s Set arm because SetValue is still
+  // incomplete there).
+  if (a.get<SetValue>().index.get() == b.get<SetValue>().index.get())
+    return true;
   const auto& ia = *a.get<SetValue>().index;
   const auto& ib = *b.get<SetValue>().index;
   if (ia.size() != ib.size()) return false;
+  // After the size fast-fail so a mismatched probe never pays the frame.
+  ValueWalkFrame walk;
   for (const auto& [k, _] : ia) {
     if (!ib.contains(k)) return false;
   }
@@ -1617,10 +1633,10 @@ inline bool _set_eq(const Value& a, const Value& b) {
 
 // Element-wise array equality (recurses through Value::operator==).
 inline bool _array_eq(const Value& a, const Value& b) {
-  ValueWalkFrame walk;
   const auto& va = *a.get<ArrayValue>().values;
   const auto& vb = *b.get<ArrayValue>().values;
   if (va.size() != vb.size()) return false;
+  ValueWalkFrame walk;
   for (size_t i = 0; i < va.size(); i++) {
     if (!(va[i] == vb[i])) return false;
   }
@@ -1801,10 +1817,10 @@ struct OrderedSymbolMap {
 // the shared meta, outside the compared entries, matching the JIT.
 // Defined here so OrderedSymbolMap is complete.
 inline bool _object_eq(const Value& a, const Value& b) {
-  ValueWalkFrame walk;
   const auto& oa = a.to_object();
   const auto& ob = b.to_object();
   if (oa.properties->size() != ob.properties->size()) return false;
+  ValueWalkFrame walk;
   for (const auto& [k, sym] : *oa.properties) {
     auto it = ob.properties->find(k);
     if (it == ob.properties->end() || !(sym.val == it->second.val)) {
@@ -2512,11 +2528,18 @@ inline void _owned_resolve_ambiguous(
     bool fresh;
     size_t pid = add_node(proto.get(), proto.use_count(), fresh);
     edge(from_id, pid);
-    if (fresh && !overflow)
+    if (fresh)
       gc_for_each_child(GcKind::Map, proto.get(), nullptr, nullptr,
                         [&](const Value& cv) { wv(cv, pid, wv); });
   };
   auto walk_value = [&](const Value& v, size_t from, auto&& self) -> void {
+    // Every recursion arm (containers, protos, env expansion, hidden
+    // captures) re-enters here, so this one gate bounds the walk's C-stack
+    // depth at the node budget — a deep container chain ([1] wrapped 100k
+    // times) discovers one node per level and would otherwise recurse past
+    // the budget to a stack overflow. Overflow already means "every
+    // candidate survives" (see the bail below), so truncation loses nothing.
+    if (overflow) return;
     // Container backings and their children — single-sourced with
     // InterpGC::collect (GAP2); this collector supplies the node bookkeeping.
     const bool binding_root = (from == npos || nodes[from].is_env);
@@ -2531,13 +2554,7 @@ inline void _owned_resolve_ambiguous(
           if (binding_root && v.type == Value::Object)
             binding_held.insert(primary);
           edge(from, id);
-          // The !overflow check is what makes the budget bound the C-stack
-          // depth of this recursive walk, not just the node count: a deep
-          // container chain ([1] wrapped 100k times) discovers one node per
-          // level and would otherwise recurse past the budget to a stack
-          // overflow. Overflow already means "every candidate survives"
-          // (see the bail below), so truncating discovery loses nothing.
-          if (fresh && !overflow) {
+          if (fresh) {
             link_proto(id, kind, primary, self);
             gc_for_each_child(kind, primary, side1, side2,
                               [&](const Value& cv) { self(cv, id, self); });
@@ -2572,7 +2589,7 @@ inline void _owned_resolve_ambiguous(
           // the single-frame-ref invariant when touching eval lambdas.
           if (fresh && e.get() == env) nodes[id].explained++;
           edge(from, id);
-          if (fresh && !overflow) {
+          if (fresh) {
             // Expand the env: its bindings are the closure's reachable
             // world. The global env (outer == null) is never expanded —
             // unexplained is safe, and its dictionary is the stdlib.

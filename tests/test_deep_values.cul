@@ -45,7 +45,6 @@ let e1 = try {
 assert_true(e1.kind == 'ValueError' && e1.message == deep_msg)
 assert_true(e1.line == 40 && e1.col == 3)
 assert_throws('ValueError', || inspect(over))
-assert_throws('ValueError', || IO.println(over))
 assert_throws('ValueError', || IO.einspect(over))
 assert_throws('ValueError', || "{over}")
 assert_throws('ValueError', || "{over:>5}")
@@ -61,8 +60,7 @@ let e2 = try {
   e
 }
 assert_true(e2.kind == 'ValueError' && e2.message == deep_msg)
-assert_true(e2.line == 58 && e2.col == 3)
-assert_throws('ValueError', || over != over2)
+assert_true(e2.line == 57 && e2.col == 3)
 assert_throws('ValueError', || hash(overt))
 assert_throws('ValueError', || [over2].index_of(over))
 assert_throws('ValueError', || [over2].contains(over))

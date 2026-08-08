@@ -711,7 +711,7 @@ inline void _jit_chan_send(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
     // The thunk ABI carries no line/col; backfill the serializer's
     // positionless errors (SendError, nesting ValueError) from the call
     // site the codegen published, like _jit_ns_method_dispatch does.
-    _jit_at_pos(_jit_call_site_line, _jit_call_site_col, [&] {
+    _jit_at_call_site([&] {
       channel_send_node(id, jit_serialize(args[0], sc));  // Sendable check here
     });
   }
