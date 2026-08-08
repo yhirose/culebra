@@ -3523,7 +3523,7 @@ AOT builds (unless noted).
 | `ImmutableError` | Assignment to a `let` (non-`mut`) binding; assignment to an immutable Object property or `Dict` entry; rebinding `self` inside a constructor body. | yes |
 | `KeyError` | Dict subscript on absent key; Object subscript on absent key. | yes |
 | `IndexError` | Array / String / Tensor index out of range; Tensor slice out of bounds; Tensor reduction axis out of range. | yes |
-| `ValueError` | Destructure pattern mismatch (`[a, b] = ...` shape mismatch); Tensor shape / dtype mismatch; `[].min()` or other empty-collection reductions; numeric conversion of malformed string; JSON parse failure. | yes |
+| `ValueError` | Destructure pattern mismatch (`[a, b] = ...` shape mismatch); Tensor shape / dtype mismatch; `[].min()` or other empty-collection reductions; numeric conversion of malformed string; JSON parse failure; walking a value nested deeper than 1000 levels (see the value-nesting bound below). | yes |
 | `AttributeError` | Compound assignment (`o.x += ...`) on a missing property; reading a member a builtin namespace doesn't have (namespaces are closed — a class or plain dict still reads `nil`). | yes |
 | `ArityError` | Call missing a required argument — too few positional args to a function or a class constructor; more positional args than a *built-in* or namespace function accepts. Surplus positionals to a **user** function are not an error: they overflow into `__ARGS__` (§19). | yes |
 | `DispatchError` | Multimethod call with no matching method or with ambiguous specificity tie (§20). | yes |
@@ -3546,6 +3546,22 @@ status. User-thrown values via `throw expr` print as `uncaught: {value}`.
 not a builtin is the exception: it is caught before evaluation (see
 Compile-time errors) and so is *not* catchable. Every other `NameError` —
 notably use-before-def — is a runtime error and is catchable.
+
+### The value-nesting bound
+
+A loop can build a value of unbounded depth (`a = [a]` repeated). Every
+operation that walks a value's nesting — printing (`inspect` / `print` /
+interpolation / `to_string` / `join`), `==` / `!=`, `hash`, membership
+(`contains` / `index_of`), sending across an isolate boundary
+(`Isolate.spawn` arguments, `tx.send`, `Shared.new` — where a chain of
+closures nesting through captures counts the same way), and the
+`@derive`d methods — stops at 1000 levels and raises a catchable
+`ValueError` (`nesting too deep (limit 1000)`) at the call site,
+identically on every backend. A same-pointer comparison (`a == a`)
+answers without walking. Building, indexing, and dropping a deeper value
+stay safe at any depth — teardown is bounded internally, not by this
+error. `JSON` / `TOML` apply the same limit to their own trees (see the
+stdlib reference).
 
 ### Compile-time errors
 

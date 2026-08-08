@@ -3317,7 +3317,7 @@ shutdownパターン）は、`Signal.notify`でチャネルを登録します（
 | `ImmutableError` | `let`（非`mut`）束縛への代入；immutable ObjectプロパティまたはDictエントリへの代入；コンストラクタ本体内の`self`再代入 | はい |
 | `KeyError` | Dictの存在しないキーsubscript；Objectの存在しないキーsubscript | はい |
 | `IndexError` | Array / String / Tensorの範囲外index；Tensor slice範囲外；Tensor reduction axis範囲外 | はい |
-| `ValueError` | Destructure pattern mismatch；Tensorのshape / dtype不一致；`[].min()`等空コレクションへのreduce；不正な数値文字列；JSON parse失敗 | はい |
+| `ValueError` | Destructure pattern mismatch；Tensorのshape / dtype不一致；`[].min()`等空コレクションへのreduce；不正な数値文字列；JSON parse失敗；1000段を超えてネストした値のwalk（下記「値ネストの上限」参照） | はい |
 | `AttributeError` | compound代入（`o.x += ...`）で`x`が存在しない；組み込み名前空間が持たないメンバーの読み取り（名前空間は閉じている — クラスやプレーンなdictは`nil`のまま） | はい |
 | `ArityError` | 必須引数の欠如 — 関数やclass constructorへのpositional不足；**組み込み**・名前空間関数が受け取れる数を超えたpositional。**ユーザ定義**関数への余分なpositionalはエラーではなく`__ARGS__`（§19）に溢れる | はい |
 | `DispatchError` | 多重ディスパッチ（§20）でマッチなし、またはspecificity同点 | はい |
@@ -3339,6 +3339,21 @@ shutdownパターン）は、`Signal.notify`でチャネルを登録します（
 ¹ どのスコープにも無くbuiltinでもない名前の`NameError`だけは例外で、
 評価前に検出され（コンパイル時エラー参照）catchできません。それ以外の
 `NameError`（特にuse-before-def）はruntimeエラーでcatch可能です。
+
+### 値ネストの上限
+
+ループは深さ無制限の値を作れます（`a = [a]`の繰り返し）。値のネストを
+walkする操作 — 表示系（`inspect` / `print` / 補間 / `to_string` /
+`join`）、`==` / `!=`、`hash`、メンバーシップ（`contains` /
+`index_of`）、isolate境界への送出（`Isolate.spawn`の引数、`tx.send`、
+`Shared.new` — captureで連なるクロージャの鎖も同じ数え方）、
+`@derive`されたメソッド — はすべて1000段で停止し、catch可能な
+`ValueError`（`nesting too deep (limit 1000)`）をcall siteの位置で
+投げます。全backendで同一です。同一ポインタの比較（`a == a`）は
+walkせずに答えます。より深い値の構築・index・破棄はどの深さでも
+安全です — teardownは内部的にboundされ、このエラーにはなりません。
+`JSON` / `TOML`は自身の木に同じ上限を適用します（stdlibリファレンス
+参照）。
 
 ### コンパイル時エラー
 
