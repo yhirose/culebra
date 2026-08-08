@@ -297,6 +297,35 @@ struct FdGuard {
   }
 };
 
+struct AcceptResult {
+  IoStatus status;
+  FdGuard fd;
+};
+
+// Wait for `lfd` then accept one connection, retrying past EINTR/EWOULDBLOCK
+// (including the spurious-wakeup case where wait_ready's poll says ready but
+// accept disagrees). `deadline` is a wait_ready deadline (negative = forever).
+// On Ok, the returned fd is hardened (SIGPIPE-suppressed, non-blocking).
+inline AcceptResult accept_guarded(socket_t lfd, int64_t deadline,
+                                    std::string* err) {
+  for (;;) {
+    IoStatus st = wait_ready(lfd, false, deadline, err);
+    if (st != IoStatus::Ok) return {st, FdGuard()};
+    sockaddr_storage ss{};
+    socklen_t len = sizeof(ss);
+    FdGuard fd(::accept(lfd, reinterpret_cast<sockaddr*>(&ss), &len));
+    if (fd.fd == kInvalidSocket) {
+      int e = last_error();
+      if (is_eintr(e) || is_wouldblock(e)) continue;
+      if (err) *err = error_string(e);
+      return {IoStatus::Error, FdGuard()};
+    }
+    suppress_sigpipe(fd.fd);
+    set_nonblocking(fd.fd);
+    return {IoStatus::Ok, std::move(fd)};
+  }
+}
+
 struct AddrInfoGuard {
   addrinfo* p = nullptr;
   AddrInfoGuard() = default;
@@ -684,25 +713,11 @@ inline int64_t listen(const std::string& host, int port, int backlog,
 inline IoStatus accept(int64_t lid, int64_t* out_id, std::string* err) {
   detail::Sock* l = detail::get(lid, Kind::Listener, err);
   if (!l) return IoStatus::Error;
-  int64_t deadline = detail::deadline_from(l->timeout_ms);
-  for (;;) {
-    IoStatus st = detail::wait_ready(l->fd, false, deadline, err);
-    if (st != IoStatus::Ok) return st;
-    sockaddr_storage ss{};
-    socklen_t len = sizeof(ss);
-    detail::FdGuard fd(
-        ::accept(l->fd, reinterpret_cast<sockaddr*>(&ss), &len));
-    if (fd.fd == kInvalidSocket) {
-      int e = detail::last_error();
-      if (detail::is_eintr(e) || detail::is_wouldblock(e)) continue;
-      if (err) *err = detail::error_string(e);
-      return IoStatus::Error;
-    }
-    detail::suppress_sigpipe(fd.fd);
-    detail::set_nonblocking(fd.fd);
-    *out_id = detail::intern_fd(Kind::Tcp, std::move(fd), l->timeout_ms);
-    return IoStatus::Ok;
-  }
+  auto [st, fd] = detail::accept_guarded(
+      l->fd, detail::deadline_from(l->timeout_ms), err);
+  if (st != IoStatus::Ok) return st;
+  *out_id = detail::intern_fd(Kind::Tcp, std::move(fd), l->timeout_ms);
+  return IoStatus::Ok;
 }
 
 // ---- Stream I/O ------------------------------------------------------------
@@ -963,19 +978,8 @@ inline bool serve(int64_t lid, int n_workers, const ServeHooks& hooks,
   ServePool pool(nw, hooks, culebra::current_runtime().interrupt_flag,
                  conn_timeout);
   for (;;) {
-    IoStatus st = detail::wait_ready(lfd, false, -1, err);  // may throw
+    auto [st, fd] = detail::accept_guarded(lfd, -1, err);  // may throw
     if (st != IoStatus::Ok) return false;
-    sockaddr_storage ss{};
-    socklen_t len = sizeof(ss);
-    detail::FdGuard fd(::accept(lfd, reinterpret_cast<sockaddr*>(&ss), &len));
-    if (fd.fd == kInvalidSocket) {
-      int e = detail::last_error();
-      if (detail::is_eintr(e) || detail::is_wouldblock(e)) continue;
-      if (err) *err = detail::error_string(e);
-      return false;
-    }
-    detail::suppress_sigpipe(fd.fd);
-    detail::set_nonblocking(fd.fd);
     pool.submit(std::move(fd));
   }
 }
