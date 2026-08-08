@@ -251,6 +251,28 @@ if ! diff -u "$TMP/mod_want.cul" "$TMP/mod_got.cul" > "$TMP/mod_diff" 2>&1; then
   fail=1
 fi
 
+# --- 1g. Golden fixture: 1-element Set keeps its trailing comma -----------
+# `{a,}` is the only spelling of a 1-element Set (`{a}` doesn't parse; `{}`
+# is the empty Object), so print_set must keep the comma the same way a
+# 1-tuple keeps `(a,)`. Dropping it turned the literal into a SyntaxError,
+# which made the safety net refuse the whole file.
+cat > "$TMP/set1_in.cul" <<'EOF'
+let one={42,}
+let two={1,2}
+let s={ 'x' ,}
+EOF
+cat > "$TMP/set1_want.cul" <<'EOF'
+let one = {42,}
+let two = {1, 2}
+let s = {'x',}
+EOF
+"$CULEBRA" fmt "$TMP/set1_in.cul" > "$TMP/set1_got.cul" 2>"$TMP/set1_err"
+if ! diff -u "$TMP/set1_want.cul" "$TMP/set1_got.cul" > "$TMP/set1_diff" 2>&1; then
+  echo "FAIL golden (1-element set): formatted output differs from expected"
+  cat "$TMP/set1_diff"
+  fail=1
+fi
+
 # --- 2 + 3. Corpus safety + idempotency (parallel) ------------------------
 # Format every corpus file twice — once to check the re-parse/comment safety
 # net doesn't refuse (exit 2), once more to assert idempotency. The files are

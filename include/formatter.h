@@ -1134,6 +1134,11 @@ class Printer {
     if (holds_comment(node)) return verbatim(node);
     std::vector<DocP> items;
     for (auto& e : node.nodes) items.push_back(print(*e));
+    // A 1-element Set must keep its trailing comma (`{a,}`) for the same
+    // reason a 1-tuple must: without it the braces read as an Object literal,
+    // and `{a}` does not parse at all. print_delimited would drop it.
+    if (items.size() == 1)
+      return doc_concat({doc_text("{"), items[0], doc_text(",}")});
     return print_delimited("{", std::move(items), "}");
   }
 
