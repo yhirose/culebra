@@ -6619,11 +6619,24 @@ inline Value toml_node_to_value(const culebra::toml::Node& n) {
   return Value();
 }
 
+// toml.h is value-neutral and cannot include shared.h, so its "matches
+// kCulebraRecursionLimit" claim is enforced here instead.
+static_assert(culebra::toml::kTomlDepthLimit == culebra::kCulebraRecursionLimit);
+
+inline void toml_check_stringify_depth(int64_t depth, int64_t line,
+                                       int64_t col) {
+  if (depth >= culebra::toml::kTomlDepthLimit) {
+    throw CulebraError("ValueError",
+        "TOML.stringify: " + culebra::toml::depth_message(), line, col);
+  }
+}
+
 // Convert a culebra Value into a neutral toml::Node for serialization. Objects
 // become tables (non-String keys rejected, mirroring JSON), Array/Tuple/Set
-// become arrays, scalars map across; everything else is a TypeError.
+// become arrays, scalars map across; everything else is a TypeError. `depth`
+// guards the recursion: a loop can build a value deeper than any parse.
 inline culebra::toml::Node value_to_toml_node(const Value& v, int64_t line,
-                                              int64_t col) {
+                                              int64_t col, int64_t depth = 0) {
   using N = culebra::toml::Node;
   switch (v.type) {
     case Value::Bool:   return N::boolean(v.get<bool>());
@@ -6633,15 +6646,18 @@ inline culebra::toml::Node value_to_toml_node(const Value& v, int64_t line,
     case Value::Array:
     case Value::Tuple:
     case Value::Set: {
+      toml_check_stringify_depth(depth, line, col);
       const std::vector<Value>* xs = nullptr;
       if (v.type == Value::Array) xs = v.to_array().values.get();
       else if (v.type == Value::Tuple) xs = v.template get<TupleValue>().elements.get();
       else xs = v.template get<SetValue>().members.get();
       N arr = N::array();
-      for (const auto& e : *xs) arr.elems.push_back(value_to_toml_node(e, line, col));
+      for (const auto& e : *xs)
+        arr.elems.push_back(value_to_toml_node(e, line, col, depth + 1));
       return arr;
     }
     case Value::Object: {
+      toml_check_stringify_depth(depth, line, col);
       const auto& obj = v.to_object();
       if (obj.non_string_props && !obj.non_string_props->empty()) {
         throw CulebraError("TypeError",
@@ -6649,7 +6665,7 @@ inline culebra::toml::Node value_to_toml_node(const Value& v, int64_t line,
       }
       N tbl = N::table();
       for (const auto& [k, sym] : *obj.properties)
-        tbl.set(std::string(k), value_to_toml_node(sym.val, line, col));
+        tbl.set(std::string(k), value_to_toml_node(sym.val, line, col, depth + 1));
       return tbl;
     }
     default:

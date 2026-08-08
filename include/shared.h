@@ -320,6 +320,12 @@ inline void check_recursion_depth(int64_t line, int64_t col) {
   }
 }
 
+// Wording shared by every nesting bound (PEG rule depth, JSON data depth);
+// toml.h keeps a value-neutral copy its backends reuse.
+inline std::string nesting_too_deep_message(int64_t limit) {
+  return std::format("nesting too deep (limit {})", limit);
+}
+
 // RAII frame for the interp's C++-recursive eval: the dtor runs while an
 // exception unwinds, so every abandoned frame decrements as it is passed —
 // the depth a `catch` observes matches the JIT, whose compiled frames

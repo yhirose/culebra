@@ -73,9 +73,7 @@ inline peg::parser& get_parser() {
       if (++_culebra_parse_depth > kCulebraParseDepthLimit) {
         auto [ln, col] = c.line_info(s);
         throw CulebraError(
-            "SyntaxError",
-            std::format("nesting too deep (limit {})",
-                        kCulebraParseDepthLimit),
+            "SyntaxError", nesting_too_deep_message(kCulebraParseDepthLimit),
             static_cast<long>(ln), static_cast<long>(col));
       }
     };

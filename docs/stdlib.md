@@ -1646,6 +1646,10 @@ inspect(r.message)           # => 'JSON.parse: expected value'
 inspect("{r.line}:{r.col}")  # => '1:7'
 ```
 
+Nesting is bounded: containers more than 1000 levels deep raise a
+`ValueError` (`nesting too deep (limit 1000)`) instead of exhausting the
+C stack. `stringify` applies the same bound to the value tree it walks.
+
 Examples:
 
 ```culebra
@@ -4220,6 +4224,11 @@ let r = try {
 inspect(r.message)           # => 'TOML.parse: expected value'
 inspect("{r.line}:{r.col}")  # => '1:5'
 ```
+
+Nesting is bounded: a document whose tree runs more than 1000 levels deep —
+through nested arrays / inline tables or through dotted keys — raises a
+`ValueError` (`nesting too deep (limit 1000)`) instead of exhausting the
+C stack. `stringify` applies the same bound to the value tree it walks.
 
 `stringify` takes an `Object` (a TOML document is always a table) and renders
 each scalar / array / inline value first, then expands sub-tables into

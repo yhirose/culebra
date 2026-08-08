@@ -72,6 +72,19 @@ struct ParseError {
   int64_t col;
 };
 
+// Nodes deeper than this are a ParseError instead of a C-stack overflow in
+// the parser, the backend converters, or the Node destructor. The depth is
+// reached by nested arrays / inline tables *or* by dotted keys (`a.b.c…`),
+// so the guard bounds tree depth, not just parser recursion. 1000 matches
+// kCulebraRecursionLimit (shared.h — not included: this core is value-neutral).
+// The message is shared with the backends' stringify-side converters and
+// mirrors shared.h's nesting_too_deep_message; stdlib_interp.h static_asserts
+// the limits stay equal.
+inline constexpr int64_t kTomlDepthLimit = 1000;
+inline std::string depth_message() {
+  return "nesting too deep (limit " + std::to_string(kTomlDepthLimit) + ")";
+}
+
 // --- parser ---------------------------------------------------------------
 
 class Parser {
@@ -86,14 +99,14 @@ class Parser {
   // Parse a whole document into the root table.
   Node parse_document() {
     Node root = Node::table();
-    Node* current = &root;  // where bare keys land
+    Target current{&root, 0};  // where bare keys land
     for (;;) {
       skip_ws_and_comments_and_newlines();
       if (p_ >= end_) break;
       if (*p_ == '[') {
         current = parse_header(root);
       } else {
-        parse_keyval(*current);
+        parse_keyval(*current.table, current.depth);
       }
       skip_inline_ws();
       skip_comment();
@@ -113,6 +126,12 @@ class Parser {
   const char* end_;
   long line_ = 1;
   long col_ = 1;
+
+  // A table bare keys land in, with its tree depth for the nesting guard.
+  struct Target {
+    Node* table;
+    int64_t depth;
+  };
 
   [[noreturn]] void fail(const std::string& msg) {
     throw ParseError{msg, line_, col_};
@@ -199,7 +218,8 @@ class Parser {
 
   // `[a.b]` selects/creates a table; `[[a.b]]` appends a table to an array.
   // Returns the table subsequent bare keys belong to.
-  Node* parse_header(Node& root) {
+  Target parse_header(Node& root) {
+    long line0 = line_, col0 = col_;  // the opening '['
     advance();  // consume '['
     bool array_of_tables = (p_ < end_ && *p_ == '[');
     if (array_of_tables) advance();
@@ -212,6 +232,8 @@ class Parser {
       advance();
     }
     if (path.empty()) fail("empty table header");
+    int64_t depth = static_cast<int64_t>(path.size()) + (array_of_tables ? 1 : 0);
+    if (depth > kTomlDepthLimit) fail_at(depth_message(), line0, col0);
     Node* parent = descend(root, path, path.size() - 1);
     const std::string& leaf = path.back();
     if (array_of_tables) {
@@ -219,33 +241,38 @@ class Parser {
       if (!arr) arr = &parent->set(leaf, Node::array());
       if (arr->kind != Kind::Array) fail("key '" + leaf + "' is not an array");
       arr->elems.push_back(Node::table());
-      return &arr->elems.back();
+      return {&arr->elems.back(), depth};
     }
     Node* tbl = parent->find(leaf);
     if (!tbl) tbl = &parent->set(leaf, Node::table());
     if (tbl->kind != Kind::Table) fail("key '" + leaf + "' is not a table");
-    return tbl;
+    return {tbl, depth};
   }
 
-  // `key = value` (key may be dotted) into table `dest`.
-  void parse_keyval(Node& dest) {
+  // `key = value` (key may be dotted) into table `dest`, whose tree depth is
+  // `dest_depth` — the dotted segments deepen the tree just like containers.
+  void parse_keyval(Node& dest, int64_t dest_depth) {
+    long line0 = line_, col0 = col_;  // the key's first character
     auto path = parse_key_path();
+    int64_t val_depth = dest_depth + static_cast<int64_t>(path.size());
+    if (val_depth > kTomlDepthLimit) fail_at(depth_message(), line0, col0);
     skip_inline_ws();
     if (p_ >= end_ || *p_ != '=') fail("expected '='");
     advance();
     skip_inline_ws();
-    Node val = parse_value();
+    Node val = parse_value(val_depth);
     Node* parent = descend(dest, path, path.size() - 1);
     if (parent->find(path.back())) fail("duplicate key '" + path.back() + "'");
     parent->set(path.back(), std::move(val));
   }
 
-  Node parse_value() {
+  // `depth` is the tree depth of the value being parsed.
+  Node parse_value(int64_t depth) {
     if (p_ >= end_) fail("expected value");
     char c = *p_;
     if (c == '"' || c == '\'') return parse_string_value();
-    if (c == '[') return parse_array();
-    if (c == '{') return parse_inline_table();
+    if (c == '[') return parse_array(depth);
+    if (c == '{') return parse_inline_table(depth);
     if (c >= '0' && c <= '9') {
       if (size_t len = match_datetime()) {
         std::string raw(p_, p_ + len);
@@ -383,14 +410,15 @@ class Parser {
     }
   }
 
-  Node parse_array() {
+  Node parse_array(int64_t depth) {
+    if (depth >= kTomlDepthLimit) fail(depth_message());
     advance();  // '['
     Node arr = Node::array();
     for (;;) {
       skip_ws_and_comments_and_newlines();
       if (p_ >= end_) fail("unterminated array");
       if (*p_ == ']') { advance(); return arr; }
-      arr.elems.push_back(parse_value());
+      arr.elems.push_back(parse_value(depth + 1));
       skip_ws_and_comments_and_newlines();
       if (p_ < end_ && *p_ == ',') { advance(); continue; }
       skip_ws_and_comments_and_newlines();
@@ -399,13 +427,14 @@ class Parser {
     }
   }
 
-  Node parse_inline_table() {
+  Node parse_inline_table(int64_t depth) {
+    if (depth >= kTomlDepthLimit) fail(depth_message());
     advance();  // '{'
     Node tbl = Node::table();
     skip_inline_ws();
     if (p_ < end_ && *p_ == '}') { advance(); return tbl; }
     for (;;) {
-      parse_keyval(tbl);  // same key = value handling as a top-level entry
+      parse_keyval(tbl, depth);  // same key = value handling as a top-level entry
       skip_inline_ws();
       if (p_ < end_ && *p_ == ',') { advance(); continue; }
       skip_inline_ws();

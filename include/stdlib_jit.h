@@ -6077,11 +6077,21 @@ inline JitValue _toml_node_to_jit(const culebra::toml::Node& n) {
   return {TAG_NIL, 0};
 }
 
+inline void _toml_check_stringify_depth(int64_t depth, int64_t line,
+                                        int64_t col) {
+  if (depth >= culebra::toml::kTomlDepthLimit) {
+    throw culebra::CulebraError("ValueError",
+        "TOML.stringify: " + culebra::toml::depth_message(), line, col);
+  }
+}
+
 // Convert a JitValue into a neutral toml::Node for serialization. Objects
 // become tables (non-String keys rejected, like JSON); Array/Tuple/Set become
-// arrays; scalars map across; everything else is a TypeError.
+// arrays; scalars map across; everything else is a TypeError. `depth` guards
+// the recursion: a loop can build a value deeper than any parse.
 inline culebra::toml::Node _jit_to_toml_node(int8_t tag, int64_t data,
-                                             int64_t line, int64_t col) {
+                                             int64_t line, int64_t col,
+                                             int64_t depth = 0) {
   using N = culebra::toml::Node;
   switch (tag) {
     case TAG_BOOL:  return N::boolean(data != 0);
@@ -6092,21 +6102,26 @@ inline culebra::toml::Node _jit_to_toml_node(int8_t tag, int64_t data,
       return N::string(std::string(_culebra_str_view(tag, data)));
     case TAG_ARRAY:
     case TAG_TUPLE: {
+      _toml_check_stringify_depth(depth, line, col);
       auto* arr = reinterpret_cast<JitArray*>(data);
       N a = N::array();
       for (size_t i = 0; i < arr->size; i++)
         a.elems.push_back(_jit_to_toml_node(arr->items[i].tag,
-                                            arr->items[i].data, line, col));
+                                            arr->items[i].data, line, col,
+                                            depth + 1));
       return a;
     }
     case TAG_SET: {
+      _toml_check_stringify_depth(depth, line, col);
       auto* set = reinterpret_cast<JitSet*>(data);
       N a = N::array();
       for (const auto& m : set->members)
-        a.elems.push_back(_jit_to_toml_node(m.tag, m.data, line, col));
+        a.elems.push_back(_jit_to_toml_node(m.tag, m.data, line, col,
+                                            depth + 1));
       return a;
     }
     case TAG_OBJECT: {
+      _toml_check_stringify_depth(depth, line, col);
       auto* obj = reinterpret_cast<JitObject*>(data);
       if (obj->non_string_props && !obj->non_string_props->empty()) {
         throw culebra::CulebraError("TypeError",
@@ -6117,7 +6132,8 @@ inline culebra::toml::Node _jit_to_toml_node(int8_t tag, int64_t data,
         for (size_t i = 0; i < obj->shape->names.size(); i++)
           t.set(std::string(obj->shape->names[i]),
                 _jit_to_toml_node(obj->slots[i].value.tag,
-                                  obj->slots[i].value.data, line, col));
+                                  obj->slots[i].value.data, line, col,
+                                  depth + 1));
       }
       return t;
     }

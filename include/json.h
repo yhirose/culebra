@@ -58,6 +58,11 @@ namespace culebra::json {
 // arrays (Seq); Other rejects with "cannot serialize <type>".
 enum class Kind { Nil, Bool, Long, Float, String, Seq, Object, Other };
 
+// Containers nested deeper than this are a ValueError instead of a C-stack
+// overflow (machine-written input: 100k `[`s). Applies to parse and to the
+// value tree stringify walks.
+inline constexpr int64_t kJsonDepthLimit = kCulebraRecursionLimit;
+
 // Minimal recursive-descent JSON parser. Tracks 1-based line/col so
 // `JSON.parse(bad)` surfaces `e.line` / `e.col` pointing at the offending
 // character.
@@ -107,18 +112,27 @@ struct Parser {
     throw CulebraError("ValueError",
                        std::format("JSON.parse: {}", msg), line, col);
   }
-  V parse_value() {
+  // `depth` is the container nesting level of the value being parsed; the
+  // container parsers reject level kJsonDepthLimit so the C stack stays
+  // bounded on adversarial input.
+  V parse_value(int64_t depth) {
     skip_ws();
     if (p >= end) fail("unexpected end");
     char c = *p;
-    if (c == '{') return parse_object();
-    if (c == '[') return parse_array();
+    if (c == '{') return parse_object(depth);
+    if (c == '[') return parse_array(depth);
     if (c == '"') return parse_string();
     if (c == 't' || c == 'f') return parse_bool();
     if (c == 'n') return parse_null();
     return parse_number();
   }
-  V parse_object() {
+  void check_depth(int64_t depth) {
+    if (depth >= kJsonDepthLimit) {
+      fail(nesting_too_deep_message(kJsonDepthLimit).c_str());
+    }
+  }
+  V parse_object(int64_t depth) {
+    check_depth(depth);
     advance(); skip_ws();
     auto obj = B::object_new();
     // Any throw below (malformed input or a nested parse) must release the
@@ -136,7 +150,7 @@ struct Parser {
         skip_ws();
         if (p >= end || *p != ':') fail("expected ':'");
         advance();
-        B::object_set(obj, key, parse_value());
+        B::object_set(obj, key, parse_value(depth + 1));
         skip_ws();
         if (p < end && *p == ',') { advance(); continue; }
         if (p < end && *p == '}') { advance(); return B::object_done(std::move(obj)); }
@@ -148,7 +162,8 @@ struct Parser {
       throw;
     }
   }
-  V parse_array() {
+  V parse_array(int64_t depth) {
+    check_depth(depth);
     advance(); skip_ws();
     auto arr = B::array_new();
     try {
@@ -160,7 +175,7 @@ struct Parser {
           advance();
           return B::array_done(std::move(arr));
         }
-        B::array_push(arr, parse_value());
+        B::array_push(arr, parse_value(depth + 1));
         skip_ws();
         if (p < end && *p == ',') { advance(); continue; }
         if (p < end && *p == ']') { advance(); return B::array_done(std::move(arr)); }
@@ -249,7 +264,7 @@ typename B::Value parse(std::string_view s, std::string_view number_mode,
   Parser<B> jp{s.data(), s.data() + s.size()};
   jp.number_mode = number_mode;
   jp.jsonc = jsonc;
-  auto v = jp.parse_value();
+  auto v = jp.parse_value(0);
   jp.skip_ws();
   if (jp.p != jp.end) {
     B::abandon_value(v);  // v is a finished +1; release before the throw
@@ -278,7 +293,7 @@ typename B::Value parse_lines(std::string_view s,
         jp.line = lineno;
         jp.number_mode = number_mode;
         jp.jsonc = jsonc;
-        B::array_push(arr, jp.parse_value());
+        B::array_push(arr, jp.parse_value(0));
         jp.skip_ws();
         if (jp.p != jp.end) {
           throw CulebraError("ValueError",
@@ -299,7 +314,8 @@ typename B::Value parse_lines(std::string_view s,
 
 // `indent` > 0 pretty-prints with that many spaces per level; 0 is compact.
 // `sort_keys` walks Object keys alphabetically (deterministic output for
-// diffs / hashing). `depth` tracks recursion for indentation only.
+// diffs / hashing). `depth` tracks recursion for indentation and for the
+// kJsonDepthLimit guard (a loop can build a value deeper than any parse).
 template <class R>
 std::string stringify(const typename R::Value& v, int indent = 0,
                       bool sort_keys = false, int depth = 0) {
@@ -307,7 +323,12 @@ std::string stringify(const typename R::Value& v, int indent = 0,
     if (indent <= 0) return "";
     return std::string("\n") + std::string(indent * level, ' ');
   };
-  switch (R::kind(v)) {
+  auto kind = R::kind(v);
+  if (depth >= kJsonDepthLimit && (kind == Kind::Seq || kind == Kind::Object)) {
+    throw CulebraError("ValueError",
+        "JSON.stringify: " + nesting_too_deep_message(kJsonDepthLimit));
+  }
+  switch (kind) {
     case Kind::Nil:  return "null";
     case Kind::Bool: return R::as_bool(v) ? "true" : "false";
     case Kind::Long: return std::to_string(R::as_long(v));

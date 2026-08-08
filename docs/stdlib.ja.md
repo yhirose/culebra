@@ -1606,6 +1606,10 @@ inspect(r.message)           # => 'JSON.parse: expected value'
 inspect("{r.line}:{r.col}")  # => '1:7'
 ```
 
+ネストの深さには上限がある: コンテナのネストが1000段を超えると、Cスタックを
+使い果たす代わりに`ValueError`（`nesting too deep (limit 1000)`）を投げる。
+`stringify`も走査する値の木に同じ上限を適用する。
+
 例:
 
 ```culebra
@@ -4091,6 +4095,11 @@ let r = try {
 inspect(r.message)           # => 'TOML.parse: expected value'
 inspect("{r.line}:{r.col}")  # => '1:5'
 ```
+
+ネストの深さには上限がある: 木が1000段を超える文書 — ネストした配列 /
+インラインテーブルでも、dottedキーでも — は、Cスタックを使い果たす代わりに
+`ValueError`（`nesting too deep (limit 1000)`）を投げる。`stringify`も
+走査する値の木に同じ上限を適用する。
 
 `stringify`は`Object`（TOML文書は常にテーブル）を取り、まずスカラ / 配列 /
 インライン値を出力し、続いてサブテーブルを`[section]`見出しへ、テーブル配列を

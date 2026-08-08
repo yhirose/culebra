@@ -293,4 +293,34 @@ let se3 = try {
 assert_true(se3.kind == 'TypeError' &&
   se3.message == 'JSON.stringify: cannot serialize Function')
 
+// --- nesting depth guard: an error, not a C-stack overflow ---
+// 1000 nested containers are the limit; the 1001st is a ValueError whose
+// position names the offending bracket.
+assert_eq(JSON.stringify(JSON.parse('['.repeat(1000) + ']'.repeat(1000))),
+  '['.repeat(1000) + ']'.repeat(1000))
+let de1 = try {
+  JSON.parse('['.repeat(1001))
+  nil
+} catch e {
+  e
+}
+assert_true(de1.kind == 'ValueError' &&
+  de1.message == 'JSON.parse: nesting too deep (limit 1000)' &&
+  de1.line == 1 &&
+  de1.col == 1001)
+assert_throws("ValueError", || JSON.parse('{"a":'.repeat(1001)))
+// stringify walks values a loop can build deeper than any parse.
+mut deep = []
+for _ in 0..1001 {
+  deep = [deep]
+}
+let de2 = try {
+  JSON.stringify(deep)
+  nil
+} catch e {
+  e
+}
+assert_true(de2.kind == 'ValueError' &&
+  de2.message == 'JSON.stringify: nesting too deep (limit 1000)')
+
 IO.inspect("test_json OK")
