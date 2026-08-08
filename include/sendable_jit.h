@@ -662,7 +662,7 @@ inline JitValue culebra_jit_isolate_spawn(int8_t fn_tag, int64_t fn_data,
       g_live_isolates().fetch_add(1, std::memory_order_relaxed) < isolate_cap();
   bool threaded = must_thread || under_cap;
   if (!threaded) g_live_isolates().fetch_sub(1, std::memory_order_relaxed);
-  core->thread = std::thread([core, sclo = std::move(sclo),
+  core->thread = culebra::SizedThread([core, sclo = std::move(sclo),
                               sargs = std::move(sargs), threaded]() mutable {
     run_isolate_child_jit(core, sclo, sargs, /*decrement_live=*/threaded);
   });
@@ -1547,7 +1547,7 @@ inline JitValue culebra_jit_channel_fan_in(int64_t n, JitValue* args,
     sargs.push_back(std::move(txnode));
     auto pcore = std::make_shared<IsolateCore>();
     g_live_isolates().fetch_add(1, std::memory_order_relaxed);
-    pcore->thread = std::thread(
+    pcore->thread = culebra::SizedThread(
         [pcore, sfn, sargs = std::move(sargs)]() mutable {
           run_isolate_child_jit(pcore, sfn, sargs, /*decrement_live=*/true);
         });
@@ -1730,7 +1730,7 @@ inline JitValue jit_parallel_run(JitValue items_v, JitValue fn_v, int64_t limit,
   // Workers run on threads only (the JIT multifn tables are thread_local, so an
   // inline run on the parent thread would pollute its overloads). Each thread
   // drains the shared queue; one thread still finishes the whole job.
-  std::vector<std::thread> threads;
+  std::vector<culebra::SizedThread> threads;
   for (size_t w = 0; w < target; w++) {
     if (g_live_isolates().fetch_add(1, std::memory_order_relaxed) <
         isolate_cap()) {
@@ -1746,7 +1746,7 @@ inline JitValue jit_parallel_run(JitValue items_v, JitValue fn_v, int64_t limit,
   std::exception_ptr cb_err;
   if (threads.empty()) {
     // Cap exhausted: run the whole job on one thread (no live progress).
-    std::thread t([st] { jit_parallel_worker(st); });
+    culebra::SizedThread t([st] { jit_parallel_worker(st); });
     t.join();
   } else {
     if (on_progress.tag == TAG_FUNC) {

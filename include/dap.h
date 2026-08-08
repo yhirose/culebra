@@ -599,7 +599,7 @@ class DapServer {
   void maybe_start() {
     if (started_ || !launched_ || !configured_) return;
     started_ = true;
-    debuggee_ = std::thread([this] { debuggee_main(); });
+    debuggee_ = culebra::SizedThread([this] { debuggee_main(); });
   }
 
   void debuggee_main() {
@@ -837,7 +837,7 @@ class DapServer {
   std::atomic<long> seq_{1};
   std::mutex write_mu_;
 
-  std::thread debuggee_;
+  culebra::SizedThread debuggee_;
   Runtime* debuggee_rt_ = nullptr;  // the debuggee thread's runtime substate
   std::mutex mu_;
   std::condition_variable cv_;

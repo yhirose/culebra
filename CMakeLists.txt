@@ -141,6 +141,12 @@ if(WIN32)
   # like GetCurrentThreadStackLimits (conservative-GC stack_base, needs 0x0602)
   # undeclared. Windows 10 (0x0A00) is the realistic floor.
   add_compile_definitions(_WIN32_WINNT=0x0A00)
+  # 16MB PE stack reserve: mingw's 2MB default holds ~400 interpreter eval
+  # frames, while the recursion limit (shared.h kCulebraRecursionLimit) is
+  # calibrated for an 8MB stack. Every thread inherits the reserve, so this
+  # also covers isolates/workers (SizedThread's Windows arm relies on it).
+  # `culebra build` passes the same flag to AOT links (src/main.cc).
+  add_link_options(-Wl,--stack,16777216)
 endif()
 find_package(ZLIB REQUIRED)
 message(STATUS "Found ZLIB ${ZLIB_VERSION_STRING}")

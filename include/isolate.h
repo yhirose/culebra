@@ -83,7 +83,7 @@ inline void _reap_isolate_cancel(IsolateCore& core);
 // plus its completion state; the result crosses the boundary as a neutral
 // SendNode (threaded) or, for the inline fallback, as a parent-heap Value.
 struct IsolateCore {
-  std::thread thread;
+  culebra::SizedThread thread;
   std::mutex m;
   std::condition_variable cv;
   bool finished = false;
@@ -1094,7 +1094,7 @@ inline Value make_channel_namespace() {
               sargs.push_back(std::move(txnode));
               auto pcore = std::make_shared<IsolateCore>();
               g_live_isolates().fetch_add(1, std::memory_order_relaxed);
-              pcore->thread = std::thread(
+              pcore->thread = culebra::SizedThread(
                   [pcore, sfn, sargs = std::move(sargs)]() mutable {
                     run_isolate_child(pcore, sfn, sargs);
                   });
@@ -1380,7 +1380,7 @@ inline Value parallel_run(const Value& items_v, const Value& fn_v, int64_t limit
   // inline, so the pool drains even when no thread slots are free.
   bool has_progress = on_progress.type == Value::Function;
   size_t to_spawn = has_progress ? target : target - 1;
-  std::vector<std::thread> threads;
+  std::vector<culebra::SizedThread> threads;
   for (size_t w = 0; w < to_spawn; w++) {
     if (g_live_isolates().fetch_add(1, std::memory_order_relaxed) <
         isolate_cap()) {
@@ -1589,7 +1589,7 @@ inline Value make_isolate_namespace() {
             if (!threaded) g_live_isolates().fetch_sub(1, std::memory_order_relaxed);
 
             if (threaded) {
-              core->thread = std::thread(
+              core->thread = culebra::SizedThread(
                   [core, sclosure = std::move(sclosure),
                    sargs = std::move(sargs)]() mutable {
                     run_isolate_child(core, sclosure, sargs);

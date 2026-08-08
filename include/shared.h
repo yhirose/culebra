@@ -26,9 +26,11 @@
 #include <vector>
 
 #include <cstdio>    // Windows stdin fallback (read_stdin_*_interruptible)
+#include <thread>    // SizedThread's Windows arm and its std::thread surface
 #if !defined(_WIN32)
-#include <unistd.h>  // read (interruptible stdin)
-#include <poll.h>    // interruptible stdin (poll fd 0 between interrupt checks)
+#include <unistd.h>   // read (interruptible stdin)
+#include <poll.h>     // interruptible stdin (poll fd 0 between interrupt checks)
+#include <pthread.h>  // SizedThread (explicit stack size)
 #endif
 #if defined(_WIN32)
 #include <os_compat.h>  // <windows.h> (guarded)
@@ -331,6 +333,96 @@ struct RecursionFrame {
   RecursionFrame(const RecursionFrame&) = delete;
   RecursionFrame& operator=(const RecursionFrame&) = delete;
 };
+
+// A thread for running culebra code: std::thread's join surface, but with
+// an explicit 8MB stack on POSIX. macOS gives non-main pthreads 512KB by
+// default — barely 100 interp eval frames — while the recursion limit above
+// assumes every thread executing user code has the main thread's headroom.
+// Windows threads inherit the PE stack reserve (set at link time), so the
+// std::thread arm is already right there; Linux pthreads default to the
+// rlimit (8MB) and the explicit size just pins that down. IO-only threads
+// (pipe drains, accept loops) stay plain std::thread.
+class SizedThread {
+ public:
+  static constexpr size_t kStackBytes = 8ull << 20;
+
+  SizedThread() = default;
+
+  template <class F>
+  explicit SizedThread(F f) {
+#if !defined(_WIN32)
+    auto* fn = new std::function<void()>(std::move(f));
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, kStackBytes);
+    if (pthread_create(&handle_, &attr, &run_boxed, fn) == 0) {
+      joinable_ = true;
+    } else {
+      delete fn;
+    }
+    pthread_attr_destroy(&attr);
+    if (!joinable_) throw std::runtime_error("SizedThread: pthread_create failed");
+#else
+    thread_ = std::thread(std::move(f));
+#endif
+  }
+
+  SizedThread(SizedThread&& o) noexcept { swap(o); }
+  SizedThread& operator=(SizedThread&& o) noexcept {
+    if (this != &o) {
+      // std::thread semantics: assigning over a joinable thread terminates.
+      if (joinable()) std::terminate();
+      swap(o);
+    }
+    return *this;
+  }
+  SizedThread(const SizedThread&) = delete;
+  SizedThread& operator=(const SizedThread&) = delete;
+
+  ~SizedThread() {
+    // Same contract as std::thread: destroying a joinable thread is a bug.
+    if (joinable()) std::terminate();
+  }
+
+  bool joinable() const {
+#if !defined(_WIN32)
+    return joinable_;
+#else
+    return thread_.joinable();
+#endif
+  }
+
+  void join() {
+#if !defined(_WIN32)
+    if (joinable_) {
+      pthread_join(handle_, nullptr);
+      joinable_ = false;
+    }
+#else
+    thread_.join();
+#endif
+  }
+
+ private:
+#if !defined(_WIN32)
+  static void* run_boxed(void* p) {
+    std::unique_ptr<std::function<void()>> fn(
+        static_cast<std::function<void()>*>(p));
+    (*fn)();
+    return nullptr;
+  }
+  void swap(SizedThread& o) noexcept {
+    std::swap(handle_, o.handle_);
+    std::swap(joinable_, o.joinable_);
+  }
+  pthread_t handle_{};
+  bool joinable_ = false;
+#else
+  void swap(SizedThread& o) noexcept { std::swap(thread_, o.thread_); }
+  std::thread thread_;
+#endif
+};
+
 // Count-based ArityError message for a wrong-arity built-in method call,
 // shared by both backends so interp/JIT/AOT emit byte-identical text. A
 // fixed arity renders `'push' takes 1 argument but 3 given`; an optional

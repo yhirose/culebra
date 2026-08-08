@@ -1016,7 +1016,7 @@ class CulebraWorkerPool : public httplib::TaskQueue {
   httplib::Server* svr_;
   std::atomic<bool>* isolate_flag_;
   ServerWorkerHooks hooks_;
-  std::vector<std::thread> threads_;
+  std::vector<culebra::SizedThread> threads_;
   std::deque<std::function<void()>> jobs_;
   std::mutex m_;
   std::condition_variable cv_;

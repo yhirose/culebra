@@ -1042,8 +1042,13 @@ int run_build(const BuildOptions& opts) {
   // pulls Winsock out of libculebra_rt.a. OpenSSL/zlib do NOT need the same
   // treatment: the core archive declares no httplib type (http.h gates the
   // include), so only the Http axis below supplies CULEBRA_SSL_LINK.
+  // 16MB PE stack reserve, mirroring the interpreter build (CMakeLists WIN32
+  // block): mingw's 2MB default holds ~400 interp eval frames, while the
+  // recursion limit (kCulebraRecursionLimit) is calibrated for an 8MB stack.
+  // Windows threads inherit the PE reserve, so this also covers isolates.
   const char* win_static =
-      "-static -static-libgcc -static-libstdc++ -lstdc++exp -lws2_32";
+      "-static -static-libgcc -static-libstdc++ -lstdc++exp -lws2_32 "
+      "-Wl,--stack,16777216";
 #else
   const char* no_pie = target_is_macho ? "" : "-no-pie";
   const char* win_static = "";
