@@ -5356,11 +5356,15 @@ struct JIT {
     // therefore compiled lazily (inside the nil branch), not up front.
     bool nil_coalesce = compound && base_op == "??";
     auto compile_rhs = [&]() {
-      auto v = compile(*av.rhs).consume();
+      auto v = compile(*av.rhs);
+      // The +1 stays in its handle across the check: a failing check throws,
+      // and only a registered Owned rides emit_call's unwind-temp window.
+      // Consuming first also unpins the value the moment the check compiles
+      // to an invoke (i.e. wherever the frame carries a cleanup pad).
       if (!av.type_annotation.empty()) {
-        emit_type_check(v, av.type_annotation, "assignment");
+        emit_type_check(v.borrow(), av.type_annotation, "assignment");
       }
-      return v;
+      return v.consume();
     };
 
     llvm::Value* rval = nullptr;

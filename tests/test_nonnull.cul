@@ -41,4 +41,15 @@ fn pick(v) -> Long {
 assert_eq(pick(nil), 0)
 assert_eq(pick(9), 9)
 
+// A typed `let` inside a function body, where the frame has a cleanup pad and
+// the check therefore compiles to an invoke that ends the block the value was
+// produced in.
+fn typed_locals() -> String {
+  let s: String? = "hi"
+  let n: Long = 3
+  let xs: Array = [1, 2]
+  "{s!!}{n}{xs.size()}"
+}
+assert_eq(typed_locals(), "hi32")
+
 IO.inspect("test_nonnull OK")
