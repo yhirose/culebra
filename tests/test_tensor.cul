@@ -437,4 +437,48 @@ let dev_m3 = dev_a.dot(dev_b)
 Tensor.eval(dev_m3)
 assert_eq(to_string(dev_m3.to_array()), "[[3.0, 2.75], [9.0, 5.0]]")
 
+# --- deep autograd graph: RNN-style unrolling must not overflow the C
+# stack, in `.backward()`'s topological walk or in dropping the graph.
+# 6000 clears the depths that used to crash the un-fixed recursion
+# (backward ~70-80k, drop ~160-180k) many times over while staying fast
+# even under --jit's CULEBRA_GC_STRESS=1 (collect on every allocation),
+# which goes quadratic on a long linear chain — see the analogous note
+# on test_deep_values.cul's teardown depths.
+let leaf = Tensor.from([1.0]).requires_grad()
+mut chain = leaf
+for _ in 0..6000 {
+  # `+=` would route through tensor_inplace_binop and defeat the point of
+  # this test (mutating one node in place, never building the chain).
+  chain = chain + Tensor.from([1.0])
+}
+chain.backward()
+# Pure addition propagates grad=1 unchanged through every level, so a
+# non-1.0 result would mean the walk stopped short of the leaf (or
+# double-counted a node) somewhere in the 6000-deep chain.
+assert_eq(to_string(leaf.grad().to_array()), "[1.0]")
+
+# Gradient accumulation through a genuinely shared subgraph (`a` feeds
+# both of `b`'s inputs and `c`'s second input) — the topo walk must
+# still visit each node exactly once and sum every contribution:
+# a=2, b=a*a=4, c=b+a=6, d=c*b=24, dL/da = 44 (hand-derived via the
+# chain rule; matches both backends bit-for-bit).
+let sh_a = Tensor.from([2.0]).requires_grad()
+let sh_b = sh_a * sh_a
+let sh_c = sh_b + sh_a
+let sh_d = sh_c * sh_b
+sh_d.backward()
+assert_eq(to_string(sh_a.grad().to_array()), "[44.0]")
+
+# Dropping a deep graph that was never backward()'d recurses the same
+# chain through TensorImpl's own destructor (a dtor can't throw, so this
+# is a structural bound, not the walk's catchable path above).
+tensor_drop_deep = fn () {
+  mut d = Tensor.from([1.0]).requires_grad()
+  for _ in 0..6000 {
+    d = d + Tensor.from([1.0])  # see the chain-building comment above
+  }
+  0
+}
+assert_eq(0, tensor_drop_deep())
+
 inspect("test_tensor: OK")

@@ -189,6 +189,59 @@ inline const char* tensor_device() {
   }
 }
 
+struct TensorImpl;
+
+// CPython-trashcan teardown for TensorImpl chains: a long unbroken
+// requires_grad graph (RNN-style unrolling — `x = x + step` in a loop, never
+// detached) is a linear parent->input chain, and dropping it recursed the
+// implicit destructor through `inputs` to a C-stack overflow past a few
+// hundred thousand nodes (measured: ~160-180k). Mirrors interp's ~Value and
+// the JIT's release_impl: past kValueTeardownDepthBudget, a node's `inputs`
+// moves whole into a thread-local deferred list drained at the outermost
+// teardown level. A dtor cannot throw, so this bound is structural, not a
+// catchable error like the graph-walk fix below.
+//
+// Function-local statics (matching tensor_no_grad_depth() below), not bare
+// namespace-scope `inline thread_local`: tensor.h is shared between the core
+// archive and the tensor feature archive (see the file's AOT-gating comment
+// above), and a namespace-scope thread_local with dynamic init would need
+// the CULEBRA_RT_CORE_OWNED split rt_shared_tls.h's comment describes. A
+// function-local static's guard is per-inline-function and merges cleanly
+// under ODR without that machinery.
+inline int64_t& _tensor_teardown_depth() {
+  thread_local int64_t depth = 0;
+  return depth;
+}
+inline bool& _tensor_teardown_has_deferred() {
+  thread_local bool has = false;
+  return has;
+}
+inline std::vector<std::vector<std::shared_ptr<TensorImpl>>>&
+_tensor_teardown_deferred() {
+  thread_local std::vector<std::vector<std::shared_ptr<TensorImpl>>> d;
+  return d;
+}
+
+[[gnu::noinline]] inline void _tensor_teardown_defer(
+    std::vector<std::shared_ptr<TensorImpl>> inputs) {
+  _tensor_teardown_deferred().push_back(std::move(inputs));
+  _tensor_teardown_has_deferred() = true;
+}
+
+[[gnu::noinline]] inline void _tensor_teardown_drain() {
+  // Runs at depth 1 (see ~TensorImpl below), so every release it triggers
+  // bottoms out at depth >= 2 and can never nest a second drain. Each pop
+  // may re-defer its own deep tail; loop until dry.
+  auto& deferred = _tensor_teardown_deferred();
+  while (!deferred.empty()) {
+    auto inputs = std::move(deferred.back());
+    deferred.pop_back();
+    // inputs' shared_ptrs release here; any that hit refcount 0 recurse
+    // back into ~TensorImpl, which is depth-bounded the same way.
+  }
+  _tensor_teardown_has_deferred() = false;
+}
+
 // Tensor — an Op-tagged autograd tape node whose value is a tl::array
 // (lazy graph node, zero-copy view, or materialized buffer).
 //
@@ -235,6 +288,25 @@ struct TensorImpl {
         is_view(view) {
     tensor_rt_bootstrap();
     shape = TensorShape(std::vector<int64_t>(value.shape()));
+  }
+
+  // See _tensor_teardown_defer/_drain above. A leaf (Const, no inputs —
+  // every `grad` tensor is one by construction, so this never re-enters
+  // for those) returns immediately; only a chain node pays the budget
+  // check. Moving `inputs` out before it would run its own (recursive)
+  // destruction is what lets the deferred case skip that recursion
+  // entirely — the member's post-body destruction, now empty, is a no-op.
+  ~TensorImpl() {
+    if (inputs.empty()) return;
+    if (_tensor_teardown_depth() >= kValueTeardownDepthBudget) {
+      _tensor_teardown_defer(std::move(inputs));
+      return;
+    }
+    ++_tensor_teardown_depth();
+    inputs.clear();
+    if (_tensor_teardown_depth() == 1 && _tensor_teardown_has_deferred())
+      _tensor_teardown_drain();
+    --_tensor_teardown_depth();
   }
 
   // Element strides (tl's, no mirror — a per-op vector copy was measurable
@@ -824,14 +896,42 @@ inline TensorPtr _tensor_slice_backward(const TensorPtr& g,
 
 // Reverse-topological DFS over the autograd graph (shared subgraphs —
 // reused params, residuals — are visited once by pointer identity).
-inline void _tensor_build_topo(const TensorPtr& n,
+//
+// Explicit-stack post-order DFS, not C++ recursion: an RNN-style unrolled
+// graph (`x = x + step` in a loop, never detached) is a linear chain, and
+// the straightforward recursive walk overflowed the C stack past ~70-80k
+// nodes. Grad accumulation for a shared subgraph (a residual feeding two
+// paths) sums in whatever order `topo` visits it, and float addition is
+// not associative — so this reproduces the recursive version's push order
+// EXACTLY (frame-by-frame: same node, same next-unvisited-input index,
+// same visited-before-descend check) rather than just "a" valid
+// topological order, to keep backward()'s numerics bit-for-bit unchanged.
+// Frames live on this vector (heap), not the C stack, so depth is no
+// longer bounded by stack size at all.
+inline void _tensor_build_topo(const TensorPtr& root,
                                std::vector<TensorPtr>& topo,
                                std::unordered_set<TensorImpl*>& visited) {
-  if (!visited.insert(n.get()).second) return;
-  for (auto& in : n->inputs) {
-    if (in) _tensor_build_topo(in, topo, visited);
+  struct Frame {
+    const TensorPtr* n;
+    size_t next_input;
+  };
+  if (!visited.insert(root.get()).second) return;
+  std::vector<Frame> stack;
+  stack.push_back({&root, 0});
+  while (!stack.empty()) {
+    Frame& top = stack.back();
+    const TensorPtr& n = *top.n;
+    if (top.next_input < n->inputs.size()) {
+      const TensorPtr& in = n->inputs[top.next_input++];
+      if (in && visited.insert(in.get()).second) {
+        stack.push_back({&in, 0});  // may reallocate `stack` — `top`/`n`
+                                     // unused after this in the iteration
+      }
+    } else {
+      topo.push_back(n);
+      stack.pop_back();
+    }
   }
-  topo.push_back(n);
 }
 
 // Route node->grad through one op's VJP into its inputs' grads.
