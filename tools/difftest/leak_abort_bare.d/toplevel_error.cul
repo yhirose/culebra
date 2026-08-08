@@ -1,0 +1,14 @@
+# Same shape, but the error comes from the runtime rather than `throw`, so it
+# leaves through the CulebraError arm of exec()'s catch instead of the
+# CulebraException one.
+let arr = [1, 2, 3]
+let obj = {a: 1, b: [4, 5]}
+
+class Holder {
+  new(v) {
+    self.v = v
+  }
+}
+let h = Holder.new([6, 7])
+
+let boom = arr[99]

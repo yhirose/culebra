@@ -1,0 +1,17 @@
+# An uncaught throw straight out of the top level, with heap bindings live.
+# Nothing wraps this in try/catch or in a function — the corpus can't express
+# it, because every generated case is a thunk called inside `_p`'s try. That
+# shape is exactly what needs __culebra_main's own cleanup pad: with no pad,
+# the exception leaves the frame with every binding below still held.
+let arr = [1, 2, 3]
+let obj = {a: 1, b: [4, 5]}
+let s = 'x'.repeat(40)
+
+class Holder {
+  new(v) {
+    self.v = v
+  }
+}
+let h = Holder.new([6, 7])
+
+throw 'boom'

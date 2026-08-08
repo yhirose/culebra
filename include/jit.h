@@ -547,13 +547,11 @@ struct JIT {
     emit_catch_all_prologue(cleanupBB, "build.lpad");
     // In-flight expression temporaries die first, then the partial
     // container — the same order as finish_scope_cleanup / the fn-level pad.
-    // Required here too: at top level (__culebra_main has no fn-level pad) a
-    // bare statement's construction pad re-raises straight out of the frame
-    // with outerLpad null, so nothing downstream drains the pool — the
-    // stranded +1 outlives the error in any embedding that catches it and
-    // keeps the process alive (the REPL). The nil-clear makes any outer pad
-    // on the same unwind chain a no-op, so draining at every link never
-    // double-frees.
+    // Draining here and not only at the frame pad keeps the guarantee local:
+    // this pad re-raises to `outerLpad`, which is null for a construction
+    // that is not nested inside one, so nothing downstream would drain the
+    // pool. The nil-clear makes any outer pad on the same unwind chain a
+    // no-op, so draining at every link never double-frees.
     release_unwind_temps();
     for (auto* guard : guards)
       emit_value_release(
@@ -1033,21 +1031,57 @@ struct JIT {
                                    is_entry ? "main.mark" : "dep.mark");
         current_fn_defer_mark_ = mark;
       }
+      // Frame-level cleanup landingpad for the entry module, the twin of
+      // compile_fn_common's: without one, __culebra_main is the only frame
+      // whose bindings are never released on the throw path. An uncaught
+      // top-level throw compiles to a plain call plus `unreachable`, so the
+      // normal-exit epilogue below lands in a dead block and the exception
+      // leaves the frame with every top-level binding still held. A dep's
+      // scope closes mid-function and gets no pad of its own — an uncaught
+      // throw while a dep is still initializing keeps the old shape.
+      llvm::BasicBlock* mainCleanupBB = nullptr;
+      if (is_entry) {
+        mainCleanupBB = BasicBlock::Create(ctx_, "main.cleanup", mainFn);
+        current_lpad_ = mainCleanupBB;
+      }
       pre_allocate_forward_refs(*m.ast);
       compile(*m.ast).consume();
+      // The body is done: the normal-exit epilogue is not an unwind, so it
+      // must not become a predecessor of the pad (same reason as
+      // compile_fn_common's).
+      current_lpad_ = nullptr;
       if (!is_entry) {
         emit_build_and_register_export(*m.ast, m.abs_path.string());
         if (mark) {
           builder_.CreateCall(module_->getFunction(rt::defer_run_to), {mark});
         }
       } else if (!builder_.GetInsertBlock()->getTerminator()) {
-        // Top-level defers run on normal completion; an uncaught throw skips
-        // them.
         if (mark) {
           builder_.CreateCall(module_->getFunction(rt::defer_run_to), {mark});
         }
         release_all_scopes_for_exit(/*suppress_drop=*/true);
         builder_.CreateRetVoid();
+      }
+      if (mainCleanupBB && !llvm::pred_empty(mainCleanupBB)) {
+        // A landingpad needs a personality; a program with no try/defer has
+        // none set at creation (any_eh gates that). Idempotent.
+        if (!mainFn->hasPersonalityFn())
+          mainFn->setPersonalityFn(get_personality_fn());
+        UnwindCleanupEmission cleanup_scope(this);
+        emit_catch_all_prologue(mainCleanupBB, "main.exc");
+        // In-flight temporaries first, then the top-level defers and slots —
+        // the same order as finish_scope_cleanup. `suppress_drop` matches the
+        // normal-exit epilogue above: program exit leaks top-level bindings
+        // without firing `drop` on both backends (§16), and the throw path is
+        // still program exit, so the two exits stay symmetric.
+        release_unwind_temps();
+        if (mark) {
+          builder_.CreateCall(module_->getFunction(rt::defer_run_to), {mark});
+        }
+        release_all_scopes_for_exit(/*suppress_drop=*/true);
+        emit_rethrow(/*outerLpad=*/nullptr);
+      } else if (mainCleanupBB) {
+        mainCleanupBB->eraseFromParent();
       }
       current_fn_defer_mark_ = nullptr;
       current_owned_hot_ = nullptr;

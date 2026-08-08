@@ -1,0 +1,10 @@
+# The pad runs the top-level defers before it releases the bindings, so a defer
+# body can still read them. exec()'s catch drains whatever is left, so a defer
+# must fire exactly once — not twice.
+let arr = [1, 2, 3]
+
+defer {
+  IO.println("defer saw {arr.size()}")
+}
+
+throw 'boom'
