@@ -4193,6 +4193,8 @@ struct JIT {
                                  ptrTy);
     module_->getOrInsertFunction(rt::object_has,
                                  builder_.getInt1Ty(), ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::object_has_or_trait_default,
+                                 builder_.getInt1Ty(), ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::object_size,
                                  builder_.getInt64Ty(), ptrTy);
     module_->getOrInsertFunction(rt::cell_new, ptrTy,
@@ -4962,6 +4964,20 @@ struct JIT {
     return emit_call(
         module_->getOrInsertFunction(rt::object_has, builder_.getInt1Ty(),
                                      ptrTy, ptrTy),
+        {objPtr, keyPtr}, name);
+  }
+
+  // emit_object_has plus the trait defaults a conforming instance inherits —
+  // the membership question the UFCS gate asks (see the runtime helper). Only
+  // that gate wants the wider answer: the iterator-protocol and dispose probes
+  // read a concrete slot, so they stay on emit_object_has.
+  llvm::Value* emit_object_has_or_trait_default(
+      llvm::Value* objPtr, llvm::Value* keyPtr,
+      const llvm::Twine& name = "has.prop.trait") {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    return emit_call(
+        module_->getOrInsertFunction(rt::object_has_or_trait_default,
+                                     builder_.getInt1Ty(), ptrTy, ptrTy),
         {objPtr, keyPtr}, name);
   }
 
@@ -13385,8 +13401,9 @@ struct JIT {
       auto keyPtr = get_or_create_global_str(method, ".mkey");
       // A closed namespace resolves the name itself either way, so it takes
       // the property arm (see emit_object_is_namespace).
-      auto hasProp = builder_.CreateOr(emit_object_has(objPtr, keyPtr),
-                                       emit_object_is_namespace(data));
+      auto hasProp =
+          builder_.CreateOr(emit_object_has_or_trait_default(objPtr, keyPtr),
+                            emit_object_is_namespace(data));
       builder_.CreateCondBr(hasProp, methodHasBB, ufcsHasBB);
 
       // The incoming receiver +1 is handed to whichever arm runs — the same
@@ -13501,8 +13518,9 @@ struct JIT {
     auto keyPtr = get_or_create_global_str(method, ".mkey");
     // A closed namespace resolves the name itself either way, so it takes the
     // property arm (see emit_object_is_namespace).
-    auto hasProp = builder_.CreateOr(emit_object_has(objPtr, keyPtr),
-                                     emit_object_is_namespace(data));
+    auto hasProp =
+        builder_.CreateOr(emit_object_has_or_trait_default(objPtr, keyPtr),
+                          emit_object_is_namespace(data));
     builder_.CreateCondBr(hasProp, methodBB, ufcsBB);
 
     builder_.SetInsertPoint(methodBB);

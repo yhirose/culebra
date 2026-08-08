@@ -144,4 +144,27 @@ let w3 = Isolate.spawn(fn () {
 assert_eq(w3.join(), 7)
 assert_eq(keep.n, 7)
 
+# --- has() misses its argument before it inspects the node ---
+# The reader takes `key` as a required parameter, so the arity is what fails
+# first — on an Array view (which has no keys at all) and on a dropped one.
+let arr_view = Shared.new([1, 2])
+assert_throws('ArityError', fn () {
+  arr_view.has()
+})
+let gone = Shared.new({a: 1})
+gone.drop()
+assert_throws('ArityError', fn () {
+  gone.has()
+})
+
+# --- iter() hands back the bare iterator protocol, nothing else ---
+# The cursor and the node it walks are the iterator's own business; the object
+# carries the two protocol methods and no implementation detail.
+let it = arr_view.iter()
+assert_eq(it.keys(), ['has_next', 'next'])
+assert_eq(it.has_next(), true)
+assert_eq(it.next(), 1)
+assert_eq(it.next(), 2)
+assert_eq(it.has_next(), false)
+
 IO.inspect('test_shared OK')

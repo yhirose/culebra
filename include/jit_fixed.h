@@ -1496,6 +1496,29 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has(JitObject* obj
   return _find_property(obj, key) != nullptr;
 }
 
+// The UFCS gate's question for an Object receiver: does it resolve `key` as a
+// property of its own? Own slots and the class meta answer for themselves;
+// past those, a conforming instance also owns every trait default of that
+// name, which is what keeps a same-named free function from hijacking the
+// call (interp asks this in receiver_has_property). Gated on `proto` — a
+// plain dict is not a class instance and inherits nothing — so a dict's
+// lookup costs one extra null test.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool
+culebra_runtime_object_has_or_trait_default(JitObject* obj, const char* key) {
+  if (culebra_runtime_object_has(obj, key)) return true;
+  if (!obj->proto) return false;
+  for (auto& [trait_name, methods] : _jit_trait_default_impls()) {
+    auto m_it = methods.find(key);
+    if (m_it == methods.end() || !m_it->second) continue;
+    if (_culebra_type_matches_single(TAG_OBJECT,
+                                     reinterpret_cast<int64_t>(obj),
+                                     trait_name)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // True iff `tag/data` is an Object carrying an OWN slot named `key` (proto /
 // class methods excluded). Lets a user field that shadows a built-in method
 // name (e.g. an autograd `grad` field set to nil) stay a first-class field,

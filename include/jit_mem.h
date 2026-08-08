@@ -845,6 +845,8 @@ inline constexpr auto explicit_drop       = "culebra_runtime_explicit_drop";
 inline constexpr auto owned_hot           = "culebra_runtime_owned_hot";
 inline constexpr auto owned_scope_exit    = "culebra_runtime_owned_scope_exit";
 inline constexpr auto object_has          = "culebra_runtime_object_has";
+inline constexpr auto object_has_or_trait_default
+    = "culebra_runtime_object_has_or_trait_default";
 inline constexpr auto object_has_own_field
     = "culebra_runtime_object_has_own_field";
 inline constexpr auto bare_builtin_reject

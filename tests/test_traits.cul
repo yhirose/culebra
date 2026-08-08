@@ -147,4 +147,41 @@ let e_cmp = try {
 }
 assert_eq(e_cmp.kind, "DispatchError")  // Array isn't Comparable here
 
+// --- An inherited default outranks a same-named free function ---
+// A default a class conforms to is one of that instance's methods, so it sits
+// above UFCS in the resolution order — the receiver resolves the name itself.
+trait Announcer {
+  greet() -> String {
+    "trait-default"
+  }
+  hail(sep) -> String {
+    "trait-hail{sep}"
+  }
+}
+
+class Plain {
+  new() {}
+}
+class Loud {
+  new() {}
+  greet() {
+    "own-method"
+  }
+}
+
+fn greet(x) -> String {
+  "free-function"
+}
+fn hail(x, sep) -> String {
+  "free-hail"
+}
+
+assert_eq(Plain.new().greet(), "trait-default")
+assert_eq(Loud.new().greet(), "own-method")  // a real method still wins
+assert_eq(Plain.new().hail("?"), "trait-hail?")
+assert_eq(Plain.new().hail(sep: "!"), "trait-hail!")  // same gate, kwargs arm
+// A plain dict inherits nothing, so the free function keeps the name.
+assert_eq({}.greet(), "free-function")
+assert_eq({greet: fn () { "dict-slot" }}.greet(), "dict-slot")
+
 IO.inspect("test_traits OK")
