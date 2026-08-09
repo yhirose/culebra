@@ -273,6 +273,52 @@ if ! diff -u "$TMP/set1_want.cul" "$TMP/set1_got.cul" > "$TMP/set1_diff" 2>&1; t
   fail=1
 fi
 
+# --- 1h. Golden fixture: a comment inside a keyword statement's own block --
+# A statement falls back to a verbatim slice only when it owns a comment its
+# printer has no slot for. A comment among the statements of the block the
+# statement itself opens is NOT that: the block's printer places it. `try` and
+# `catch` are keywords the AST keeps no token for, so the statement's first
+# token sits inside its own braces — which once made a depth-counting test read
+# such a comment as belonging to the statement, freeze the whole `try` verbatim,
+# and preserve a one-line `catch` body that the canonical style always expands.
+# See include/formatter.h owner_.
+cat > "$TMP/own_in.cul" <<'EOF'
+try {
+  work()  // why
+  more()
+} catch e { handle(e) }
+try {
+  work()
+} catch e { handle(e) }
+while ready() {
+  // note
+  step()
+}
+EOF
+cat > "$TMP/own_want.cul" <<'EOF'
+try {
+  work()  // why
+  more()
+} catch e {
+  handle(e)
+}
+try {
+  work()
+} catch e {
+  handle(e)
+}
+while ready() {
+  // note
+  step()
+}
+EOF
+"$CULEBRA" fmt "$TMP/own_in.cul" > "$TMP/own_got.cul" 2>"$TMP/own_err"
+if ! diff -u "$TMP/own_want.cul" "$TMP/own_got.cul" > "$TMP/own_diff" 2>&1; then
+  echo "FAIL golden (comment in a keyword statement's block): output differs"
+  cat "$TMP/own_diff"
+  fail=1
+fi
+
 # --- 2 + 3. Corpus safety + idempotency (parallel) ------------------------
 # Format every corpus file twice — once to check the re-parse/comment safety
 # net doesn't refuse (exit 2), once more to assert idempotency. The files are

@@ -390,18 +390,40 @@ class Printer {
     auto info = scan_source(src);
     comments_ = std::move(info.comments);
     is_code_ = std::move(info.is_code);
+    // Innermost enclosing brace pair per comment. A comment byte is never code
+    // (the scanner clears the mask over it), so braces written inside comments
+    // and inside strings / interpolation holes are correctly ignored.
+    owner_.assign(comments_.size(), 0);
+    std::vector<size_t> open;  // interiors of the brace pairs still open
+    size_t c = 0;
+    for (size_t i = 0; i < src_.size(); i++) {
+      if (c < comments_.size() && comments_[c].start == i)
+        owner_[c++] = open.empty() ? 0 : open.back();
+      if (!is_code_[i]) continue;
+      if (src_[i] == '{') open.push_back(i + 1);
+      else if (src_[i] == '}' && !open.empty()) open.pop_back();
+    }
   }
 
   DocP print_program(const peg::Ast& program) {
-    // The whole file is the top-level statement list; its comment range is the
-    // entire source.
-    return print_statement_list(stmt_children(program), 0, src_.size());
+    // The file is the top-level statement list, which owns every comment
+    // outside all braces — the interior key 0 (see owner_).
+    return print_statement_list(stmt_children(program), 0);
   }
 
  private:
   std::string_view src_;
   std::vector<Comment> comments_;  // sorted by start (scan order)
   std::vector<char> is_code_;      // per-byte code mask (see scan_source)
+  // Comment ownership, parallel to comments_: the byte just past the `{` of the
+  // innermost code-level brace pair holding the comment, or 0 when no brace
+  // encloses it. This is the whole of comment attachment. Every printer that
+  // places comments takes its interior start from block_interior(), which
+  // brace-matches the same mask, so a comment belongs to the list being printed
+  // exactly when its owner equals that interior — an equality, not a guess at
+  // nesting depth. Object and set literals open a pair of their own, so their
+  // interior comments can never be mistaken for a statement's.
+  std::vector<size_t> owner_;
   static constexpr int kIndent = 2;
 
   std::string slice(const peg::Ast& a) const {
@@ -595,25 +617,28 @@ class Printer {
     return {ts, te};
   }
 
-  // The interior byte range of the first brace block at or after `from`:
-  // returns {lo = just after `{`, hi = the matching `}`, after = hi + 1}. The
-  // scan ignores braces inside strings / interpolation holes via is_code_, and
-  // balances object / set / nested-block braces. `found` is false if no block
-  // brace exists (shouldn't happen for a real block).
-  struct BlockSpan { size_t lo, hi, after; bool found; };
+  // The first brace block at or after `from`: returns {lo = just after `{`,
+  // after = just past the matching `}`}. `lo` doubles as the block's identity
+  // for comment ownership (see owner_), since it is derived from the same
+  // is_code_ brace matching. The scan ignores braces inside strings /
+  // interpolation holes, and balances object / set / nested-block braces.
+  // `found` is false if no block brace exists (shouldn't happen for a real
+  // block); the caller then gets an interior no comment can be owned by, so a
+  // misanchored block refuses the file rather than dropping its comments.
+  struct BlockSpan { size_t lo, after; bool found; };
   BlockSpan block_interior(size_t from) const {
     size_t i = from, n = src_.size();
     while (i < n && !(is_code_[i] && src_[i] == '{')) i++;
-    if (i >= n) return {from, from, from, false};
+    if (i >= n) return {from, from, false};
     size_t lo = i + 1;
     int depth = 0;
     for (; i < n; i++) {
       if (!is_code_[i]) continue;
       if (src_[i] == '{') depth++;
       else if (src_[i] == '}' && --depth == 0)
-        return {lo, i, i + 1, true};
+        return {lo, i + 1, true};
     }
-    return {lo, n, n, false};
+    return {lo, n, false};
   }
 
   // Comment text as a single Doc line, trailing whitespace already trimmed by
@@ -622,27 +647,28 @@ class Printer {
     return doc_text(std::string(src_.substr(c.start, c.end - c.start)));
   }
 
-  // Render a statement list occupying source range [lo, hi). Comments in the
-  // gaps between this level's statements are attached: an own-line comment
+  // Render the statement list whose brace interior begins at `lo` (0 for the
+  // file itself). Comments this list owns are attached: an own-line comment
   // becomes a standalone line before the following statement; a same-line
-  // comment trails the preceding statement. Comments inside a statement's own
-  // span are left to that statement's printer (nested blocks recurse with their
-  // own range); any it doesn't emit is caught by the comment-preservation check.
-  DocP print_statement_list(const std::vector<const peg::Ast*>& stmts, size_t lo,
-                            size_t hi) {
-    return print_items(stmts, lo, hi, "",
-                       [&](size_t k) { return print(*stmts[k]); });
+  // comment trails the preceding statement. Comments owned by a nested pair
+  // belong to whichever printer recurses into it; any comment nobody emits is
+  // caught by the comment-preservation check.
+  DocP print_statement_list(const std::vector<const peg::Ast*>& stmts, size_t lo) {
+    return print_items(stmts, lo, "", [&](size_t k) { return print(*stmts[k]); });
   }
 
-  // Render a comma/blank-separated list of member nodes occupying source range
-  // [lo, hi), with comments attached. Shared by statement blocks, match/cond
-  // arms, class members, and enum variants. `render(k)` produces the body of
-  // item k (without the trailing `sep`); `sep` is "" (statements/members) or
-  // "," (arms/variants), appended after each item before any trailing comment.
+  // Render a comma/blank-separated list of member nodes whose brace interior
+  // begins at `lo`, with the comments that interior owns attached. Shared by
+  // statement blocks, match/cond arms, class members, and enum variants.
+  // `render(k)` produces the body of item k (without the trailing `sep`); `sep`
+  // is "" (statements/members) or "," (arms/variants), appended after each item
+  // before any trailing comment.
   //
-  // Comment attachment hinges on three positions per item, all of which the AST
-  // optimizer's single-child span widening can corrupt (a lone item inherits
-  // its block's span, swallowing the `{ }` and a leading comment):
+  // Which comments land here is settled by owner_ alone. What remains positional
+  // is only layout: where within this list a comment goes, and which items must
+  // fall back to a verbatim slice. That rests on three offsets per item, all of
+  // which the AST optimizer's single-child span widening can corrupt (a lone
+  // item inherits its block's span, swallowing the `{ }` and a leading comment):
   //   * extent — code-tight span (keyword..closing delimiter), for ordering and
   //     blank-line math;
   //   * head/tail — first/last descendant-token offset (never widened), to test
@@ -651,7 +677,7 @@ class Printer {
   //     sort key, so an item never sorts before its own leading comment.
   template <typename Render>
   DocP print_items(const std::vector<const peg::Ast*>& items, size_t lo,
-                   size_t hi, const std::string& sep, Render render) {
+                   const std::string& sep, Render render) {
     struct Entry { size_t sort, gstart, gend; DocP doc; };
     std::vector<Entry> entries;
 
@@ -664,35 +690,23 @@ class Printer {
       tail[k] = rhi;
     }
 
-    auto brace_depth = [&](size_t from, size_t p) {
-      int d = 0;
-      for (size_t i = from; i < p && i < src_.size(); i++) {
-        if (!is_code_[i]) continue;
-        if (src_[i] == '{') d++;
-        else if (src_[i] == '}') d--;
-      }
-      return d;
-    };
-    // "Inside an item" = enclosed by a `{` the item opened (handled by its
-    // recursion / verbatim slice) OR strictly between some item's first and
-    // last token (e.g. a comment on a wrapped chain's continuation line).
+    // A comment this list owns that falls between some item's first and last
+    // token is already inside the bytes that item may slice verbatim, so the
+    // list must not emit it a second time.
     auto inside_item = [&](size_t p) {
-      if (brace_depth(lo, p) > 0) return true;
       for (size_t k = 0; k < items.size(); k++)
         if (head[k] <= p && p < tail[k]) return true;
       return false;
     };
-    // A mid-item comment (between first and last token, brace depth 0) is one
-    // the item's printer can't place; the item is emitted verbatim to keep it.
-    // A bare block (LEXICAL_SCOPE) is exempt: unlike keyword-led constructs its
-    // first token sits *inside* its own `{`, so a comment among its statements
-    // would read as brace-depth 0 — yet its printer (print_lexical_scope) places
-    // every interior comment, so verbatim would only corrupt it (double braces).
+    // An owned comment between item k's first and last token is one the item's
+    // printer has no slot for (a wrapped chain's continuation line, say), so the
+    // item is emitted verbatim to keep it. Comments a nested pair owns are not
+    // this item's problem — the printer that recurses into that pair places
+    // them, which is how a bare block's statements keep their own comments.
     auto has_mid_comment = [&](size_t k) {
-      if (items[k]->name == "LEXICAL_SCOPE") return false;
-      for (const auto& c : comments_)
-        if (head[k] < c.start && c.start < tail[k] &&
-            brace_depth(head[k], c.start) == 0)
+      for (size_t c = 0; c < comments_.size(); c++)
+        if (owner_[c] == lo && head[k] < comments_[c].start &&
+            comments_[c].start < tail[k])
           return true;
       return false;
     };
@@ -748,8 +762,9 @@ class Printer {
       entries.push_back({first_token_pos(k), extent[k].first, extent[k].second, doc});
     }
 
-    for (const auto& c : comments_) {
-      if (c.start < lo || c.start >= hi) continue;
+    for (size_t ci = 0; ci < comments_.size(); ci++) {
+      const Comment& c = comments_[ci];
+      if (owner_[ci] != lo) continue;      // a nested pair's printer places it
       if (inside_item(c.start)) continue;  // handled by the item's printer
       if (!c.own_line) {
         int pk = prev_item_index(c.start);
@@ -793,12 +808,11 @@ class Printer {
                     const std::string& sep, bool empty_ok, Render render) {
     BlockSpan span = block_interior(after_pos);
     size_t lo = span.found ? span.lo : (items.empty() ? after_pos : items.front()->position);
-    size_t hi = span.found ? span.hi : (items.empty() ? after_pos : node_end(*items.back()));
 
     if (items.empty()) {  // `{}` unless it holds dangling comments
       std::vector<DocP> dangling;
-      for (const auto& c : comments_)
-        if (c.start >= lo && c.start < hi) dangling.push_back(comment_doc(c));
+      for (size_t ci = 0; ci < comments_.size(); ci++)
+        if (owner_[ci] == lo) dangling.push_back(comment_doc(comments_[ci]));
       if (dangling.empty()) {
         return empty_ok ? doc_text("{}")
                         : doc_concat({doc_text("{"), doc_hardline(), doc_text("}")});
@@ -814,7 +828,7 @@ class Printer {
     return doc_concat({
         doc_text("{"),
         doc_indent(kIndent, doc_concat({doc_hardline(),
-                                        print_items(items, lo, hi, sep, render)})),
+                                        print_items(items, lo, sep, render)})),
         doc_hardline(),
         doc_text("}"),
     });
