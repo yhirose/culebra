@@ -372,6 +372,79 @@ struct ValueWalkFrame {
 // chain).
 inline constexpr int64_t kValueTeardownDepthBudget = 500;
 
+// The trashcan itself. `Release` tears one payload down in place — `reset()`
+// on interp's std::any, `clear()` on a tensor node's input vector, a refcount
+// decrement for the JIT's tagged handle — and re-enters this class through
+// whatever recursion that teardown drives. Callers do their own early exit
+// (a scalar Value, a leaf tensor, a non-refcounted tag) before calling in, so
+// the budget check only runs for a payload that can chain.
+template <class Payload, void (*Release)(Payload&)>
+class Trashcan {
+ public:
+  // Tear `p` down at the current depth, or park it for the outermost level
+  // once the chain is deeper than the budget.
+  static void release(Payload&& p) {
+    State& st = state();
+    if (st.depth >= kValueTeardownDepthBudget) {
+      defer(std::move(p));
+      return;
+    }
+    ++st.depth;
+    Release(p);
+    if (st.depth == 1 && st.has_deferred) drain();
+    --st.depth;
+  }
+
+ private:
+  // Two statics, not one bundle: `depth`/`has_deferred` are POD with constant
+  // initializers, so the compiler skips the thread-safe-init guard entirely
+  // (verified via -O2 disassembly: a single %fs-relative instruction, no
+  // branch) — that is what keeps every leaf/shallow teardown free. `deferred`
+  // holds a vector, whose non-trivial destructor forces a real guard check;
+  // folding it into the same struct would spread that guard onto the
+  // depth/has_deferred reads too, on every teardown.
+  //
+  // Function-local statics, not namespace-scope `inline thread_local`: the
+  // consumers live in headers shared between the core runtime archive and the
+  // feature archives, where a namespace-scope thread_local with dynamic
+  // initialization needs the CULEBRA_RT_CORE_OWNED split rt_shared_tls.h
+  // describes. A function-local static's guard is per-inline-function and
+  // merges under ODR without that machinery.
+  struct State {
+    int64_t depth = 0;
+    bool has_deferred = false;
+  };
+  static State& state() {
+    thread_local State s;
+    return s;
+  }
+  static std::vector<Payload>& deferred() {
+    thread_local std::vector<Payload> d;
+    return d;
+  }
+
+  // Outlined so `release`'s inline body stays small at its many expansion
+  // sites; `has_deferred` mirrors !deferred().empty() so the fast path never
+  // touches the guarded vector.
+  [[gnu::noinline]] static void defer(Payload&& p) {
+    deferred().push_back(std::move(p));
+    state().has_deferred = true;
+  }
+
+  [[gnu::noinline]] static void drain() {
+    // Runs at depth 1 (see release), so every teardown it triggers bottoms
+    // out at depth >= 2 and can never nest a second drain. Each pop may
+    // re-defer its own deep tail; loop until dry.
+    auto& d = deferred();
+    while (!d.empty()) {
+      Payload p = std::move(d.back());
+      d.pop_back();
+      release(std::move(p));
+    }
+    state().has_deferred = false;
+  }
+};
+
 // A thread for running culebra code: std::thread's join surface, but with
 // an explicit 8MB stack on POSIX. macOS gives non-main pthreads 512KB by
 // default — barely 100 interp eval frames — while the recursion limit above
