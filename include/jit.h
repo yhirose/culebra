@@ -4594,8 +4594,8 @@ struct JIT {
                                  builder_.getInt8Ty(), builder_.getInt64Ty(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
-    // to_set/to_object/group_by/partition return a fresh Set / Object /
-    // Object / Tuple pointer.
+    // to_set/to_object/group_by/partition/unzip return a fresh Set / Object /
+    // Object / Tuple / Tuple pointer.
     module_->getOrInsertFunction(rt::array_to_set, ptrTy, ptrTy,
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
@@ -4608,6 +4608,9 @@ struct JIT {
                                  builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::array_partition, ptrTy, ptrTy,
                                  builder_.getInt8Ty(), builder_.getInt64Ty(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::array_unzip, ptrTy, ptrTy,
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
 
@@ -15783,6 +15786,9 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
       // only way back from `(key, value)` pairs.
       {"to_set",    rt::array_to_set,    rt::iter_to_set,    DA::None,     DR::Set,      DR::Set},
       {"to_object", rt::array_to_object, rt::iter_to_object, DA::None,     DR::Object,   DR::Object},
+      // unzip is the inverse of zip's `{first, second}` pairs (and of any
+      // 2-element Tuple pair), split into `(Array, Array)`.
+      {"unzip",     rt::array_unzip,     rt::iter_unzip,     DA::None,     DR::Tuple,    DR::Tuple},
       // find answers nil when nothing matches, so it loads through out-params.
       {"find",      rt::array_find,      rt::iter_find,      DA::Callback, DR::OutParam, DR::OutParam},
       // reduce fuses on BOTH arms (its emitters share the (receiver, seed,

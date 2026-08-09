@@ -25,3 +25,7 @@ println("sorted   = {names}")
 let prices = [("apple", 100), ("banana", 80)].to_object()
 
 println("to_object = {prices}")
+
+let (fruits, amounts) = [("apple", 100), ("banana", 80)].unzip()
+
+println("unzip    = {fruits}, {amounts}")

@@ -4289,6 +4289,7 @@ inspect(seen)  # => [1, 2]
 | `a.to_object() -> Object`                   | Fresh `Object` from `(key, value)` tuples — the inverse of `Object.iter()`, so a table can be built as an expression instead of a `mut` + loop. Keys keep first-seen order and a repeat overwrites in place (last value, first position). Entries are **immutable**, like `group_by`'s; `{...built}` is the mutable copy. An element that is not a 2-tuple raises `TypeError`; an unhashable key throws like any other. |
 | `a.group_by(f: Function) -> Object`         | Buckets elements into Arrays keyed by `f(x)`, in first-seen key order; `f` must take one parameter and return a hashable key. |
 | `a.partition(p: Function) -> Tuple`         | One-pass split into `(matching, non_matching)`, order preserved in both halves. `p` must take one parameter. Destructures: `let (yes, no) = xs.partition(p)`. |
+| `a.unzip() -> Tuple`                        | Split `(a, b)` pairs into `(Array, Array)` — the inverse of `zip`. Each element must be a 2-element `Tuple` or a `{first, second}` Object (either pair spelling is accepted); anything else raises `TypeError`. Destructures: `let (xs, ys) = pairs.unzip()`. |
 | `a.sort(reverse: Bool = false) -> Nil` *(mutating)* | Stable-sort in place in natural order — elements compare by the same rule as `<`, so an Object's `__lt__` / `cmp` is honored (a `Path` array sorts) and incomparable elements throw (leaving the array as it was). Keyword-only `reverse: true` sorts descending (still stable). |
 | `a.sorted(reverse: Bool = false) -> Array` | Like `sort` but returns a new sorted Array, leaving the receiver unchanged — so it chains (`xs.sorted().join(",")`). `reverse: true` for stable descending. |
 | `a.sort_by(key: Function, reverse: Bool = false) -> Nil` *(mutating)* | Stable-sort in place using `key(x)` as the comparison key (ascending). `key` must take one parameter and return a comparable value (`Long` / `String` / `Bool`). Keyword-only `reverse: true` sorts descending (still stable). |
@@ -4630,6 +4631,7 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())  # => [20, 40]
 | `it.to_object()` | `Object` | `(key, value)` tuples into an Object — the inverse of `Object.iter()`. Keys in first-seen order, a repeat overwriting in place; entries immutable. A non-2-tuple element raises `TypeError` |
 | `it.group_by(f)` | `Object` | buckets elements into Arrays keyed by `f(x)`, in first-seen key order |
 | `it.partition(p)` | `Tuple` | `(matching, non_matching)` in one pass, order preserved in both halves |
+| `it.unzip()` | `Tuple` | `(Array, Array)` — the inverse of `zip`. Each element must be a 2-element `Tuple` or a `{first, second}` Object (either pair spelling is accepted); anything else raises `TypeError` |
 
 Every terminal disposes the iterator it drove (see **Optional
 `dispose`** above), including the early-exiting ones — so after

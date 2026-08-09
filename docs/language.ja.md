@@ -4060,6 +4060,7 @@ inspect(seen)  # => [1, 2]
 | `a.to_object() -> Object`                   | `(key, value)`タプル列から新しい`Object`を作る。`Object.iter()`の逆なので、テーブルを`mut` + ループでなく式として組める。キーは初出順を保ち、重複したキーはその位置のまま値だけ上書き（後勝ち）。エントリは`group_by`と同じく **immutable**（可変コピーが要るなら`{...built}`）。要素が2要素タプルでなければ`TypeError`、ハッシュ不可のキーは通常どおり例外 |
 | `a.group_by(f: Function) -> Object`         | `f(x)`をキーに要素をArrayへ振り分ける（キーは初出順）。`f`は1引数を受け取り、ハッシュ可能なキーを返す必要あり |
 | `a.partition(p: Function) -> Tuple`         | 1パスで`(条件を満たす, 満たさない)`に分割し、両方とも順序を保つ。`p`は1引数を受け取る。分配束縛できる: `let (yes, no) = xs.partition(p)` |
+| `a.unzip() -> Tuple`                        | `(a, b)`ペアを`(Array, Array)`に分割する — `zip`の逆。各要素は2要素タプルか`{first, second}`形のObjectのどちらかを受け付け、それ以外は`TypeError`。分配束縛できる: `let (xs, ys) = pairs.unzip()` |
 | `a.sort(reverse: Bool = false) -> Nil` *(破壊的)* | 自然順でin-place安定ソート。要素は`<`と同じ規則で比較し、Objectの`__lt__` / `cmp`を尊重する（`Path`配列もソート可）。比較不能な要素はthrow（このとき配列は元のまま）。キーワード専用`reverse: true`で降順（安定のまま） |
 | `a.sorted(reverse: Bool = false) -> Array` | `sort`の非破壊版。新しいソート済みArrayを返し、受け手は不変＝チェーン可（`xs.sorted().join(",")`）。`reverse: true`で安定降順 |
 | `a.sort_by(key: Function, reverse: Bool = false) -> Nil` *(破壊的)* | `key(x)`を比較キーとして昇順にin-placeで安定ソート。`key`は1引数を受け取り、比較可能な値（`Long` / `String` / `Bool`）を返す必要あり。キーワード専用`reverse: true`で降順（安定のまま） |
@@ -4396,6 +4397,7 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())  # => [20, 40]
 | `it.to_object()` | `Object` | `(key, value)`タプルをObjectへ — `Object.iter()`の逆。キーは初出順、重複はその位置で上書き、エントリはimmutable。2要素タプルでない要素は`TypeError` |
 | `it.group_by(f)` | `Object` | `f(x)`をキーに要素をArrayへ振り分ける。キーは初出順 |
 | `it.partition(p)` | `Tuple` | 1パスで`(条件を満たす, 満たさない)`に分割。両方とも順序を保つ |
+| `it.unzip()` | `Tuple` | `(Array, Array)` — `zip`の逆。各要素は2要素タプルか`{first, second}`形のObjectのどちらかを受け付け、それ以外は`TypeError` |
 
 すべての終端は自分が駆動したイテレータをdisposeします（上記
 **省略可能な`dispose`** 参照）。早期終了する終端も同様なので、

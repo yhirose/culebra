@@ -3781,6 +3781,54 @@ inline JitArray* _collect_partition_jit(Each each, int8_t pt, int64_t pd,
   return out;
 }
 
+// Split `(a, b)` pairs into `(Array of a's, Array of b's)` — the inverse
+// of zip. Duck-typed, like the interp: a 2-element Tuple (the general pair
+// spelling) or an Object with `first`/`second` (what zip yields) are both
+// accepted. Each half is read borrowed out of the pair and retained fresh;
+// the pair's own +1 releases when `vg` goes out of scope, same as
+// `_collect_to_object_jit`'s tuple.
+template <typename Each>
+inline JitArray* _collect_unzip_jit(Each each, int64_t line, int64_t col) {
+  auto* firsts = culebra_runtime_array_new();
+  JitOwnedVal fg(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(firsts)});
+  auto* seconds = culebra_runtime_array_new();
+  JitOwnedVal sg(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(seconds)});
+  each([&](JitValue v) {
+    JitOwnedVal vg(v);
+    JitValue a, b;
+    const JitObjectEntry* fe = nullptr;
+    const JitObjectEntry* se = nullptr;
+    auto* pair =
+        v.tag == TAG_TUPLE ? reinterpret_cast<JitArray*>(v.data) : nullptr;
+    if (v.tag == TAG_OBJECT) {
+      auto* obj = reinterpret_cast<JitObject*>(v.data);
+      fe = _find_property(obj, "first");
+      se = _find_property(obj, "second");
+    }
+    if (pair != nullptr && pair->size == 2) {
+      a = pair->items[0];
+      b = pair->items[1];
+    } else if (fe != nullptr && se != nullptr) {
+      a = fe->value;
+      b = se->value;
+    } else {
+      throw culebra::CulebraError(
+          "TypeError",
+          "type error: unzip expects (a, b) tuples or {first, second} "
+          "objects",
+          line, col);
+    }
+    culebra_runtime_value_retain(a.tag, a.data);
+    culebra_runtime_value_retain(b.tag, b.data);
+    culebra_runtime_array_push(firsts, a.tag, a.data);
+    culebra_runtime_array_push(seconds, b.tag, b.data);
+  });
+  auto* out = culebra_runtime_tuple_new();
+  culebra_runtime_tuple_push(out, TAG_ARRAY, fg.consume().data);
+  culebra_runtime_tuple_push(out, TAG_ARRAY, sg.consume().data);
+  return out;
+}
+
 // The six exported entry points; the templates above stay C++.
 extern "C" {
 
@@ -3836,6 +3884,19 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_partition(
     JitArray* arr, int8_t pt, int64_t pd, int64_t line, int64_t col) {
   return _collect_partition_jit(
       [&](auto emit) { _each_of_jit_array(arr, emit); }, pt, pd, line, col);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_iter_unzip(
+    int8_t it, int64_t id, int64_t line, int64_t col) {
+  JitIterDrive drive{it, id};
+  return _collect_unzip_jit(
+      [&](auto emit) { _each_of_jit_iter(drive, emit); }, line, col);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_unzip(
+    JitArray* arr, int64_t line, int64_t col) {
+  return _collect_unzip_jit(
+      [&](auto emit) { _each_of_jit_array(arr, emit); }, line, col);
 }
 
 }  // extern "C"

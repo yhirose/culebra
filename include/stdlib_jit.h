@@ -8325,6 +8325,7 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                i64, i64);
   jit.module_->getOrInsertFunction(rt::iter_partition, ptrTy, i8, i64, i8, i64,
                                i64, i64);
+  jit.module_->getOrInsertFunction(rt::iter_unzip, ptrTy, i8, i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::iter_all, i64, i8, i64, i8, i64, i64,
                                i64);
 

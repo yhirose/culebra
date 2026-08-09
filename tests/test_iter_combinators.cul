@@ -265,6 +265,47 @@ assert_eq([1, 2, 3].partition(|x| true), ([1, 2, 3], []))
 assert_eq([1, 2, 3].partition(|x| false), ([], [1, 2, 3]))
 assert_eq([].iter().partition(|x| true), ([], []))
 
+# --- unzip: the inverse of zip's {first, second} pairs ---------------------
+# Duck-typed: a 2-element Tuple or an Object with first/second (what zip
+# yields) are both accepted, so it inverts either pair convention.
+assert_eq([(1, 'a'), (2, 'b'), (3, 'c')].unzip(), ([1, 2, 3], ['a', 'b', 'c']))
+assert_eq([(1, 'a'), (2, 'b')].iter().unzip(), ([1, 2], ['a', 'b']))
+assert_eq([].unzip(), ([], []))
+assert_eq([].iter().unzip(), ([], []))
+mut xs = nil
+mut ys = nil
+(xs, ys) = [1, 2, 3].iter().zip([10, 20, 30]).unzip()
+assert_eq(xs, [1, 2, 3])
+assert_eq(ys, [10, 20, 30])
+# enumerate() yields (index, value) tuples — the same pair shape as a
+# hand-written 2-tuple — so unzip inverts it too.
+assert_eq(['p', 'q'].iter().enumerate().unzip(), ([0, 1], ['p', 'q']))
+# Heterogeneous halves keep each element's own type.
+assert_eq(
+  [(1, 'x'), (true, 'y'), (1.5, 'z')].unzip(), ([1, true, 1.5], ['x', 'y', 'z']))
+# An Object pair with extra keys still works — only first/second matter.
+assert_eq([{first: 1, second: 2, extra: 3}].unzip(), ([1], [2]))
+try {
+  [1, 2, 3].unzip()
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "TypeError")
+  assert_eq(e.message,
+            'type error: unzip expects (a, b) tuples or {first, second} objects')
+}
+try {
+  [(1, 2, 3)].unzip()  # wrong Tuple arity
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "TypeError")
+}
+try {
+  [{first: 1}].iter().unzip()  # Object missing `second`
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "TypeError")
+}
+
 # --- flatten: one level of nesting removed ---------------------------------
 assert_eq([[1, 2], [3], [], [4, 5]].iter().flatten().collect(), [1, 2, 3, 4, 5])
 assert_eq([[[1]], [[2]]].iter().flatten().collect(), [[1], [2]])  # one level only

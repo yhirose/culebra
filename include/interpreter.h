@@ -4662,6 +4662,43 @@ inline Value _collect_partition(ForEach each, const Value& p) {
   return Value(TupleValue(std::move(pair)));
 }
 
+// Split `(a, b)` pairs into `(Array of a's, Array of b's)` — the inverse
+// of `zip`. Duck-typed: a 2-element Tuple (the general pair spelling) or
+// an Object with `first`/`second` (what `zip` yields) are both accepted,
+// since the language has both conventions for "a pair" and unzip is
+// mainly used to invert either one.
+template <typename ForEach>
+inline Value _collect_unzip(ForEach each) {
+  ArrayValue firsts;
+  ArrayValue seconds;
+  each([&](const Value& v) {
+    const Value* a = nullptr;
+    const Value* b = nullptr;
+    if (v.type == Value::Tuple && v.to_tuple().elements->size() == 2) {
+      auto& pair = *v.to_tuple().elements;
+      a = &pair[0];
+      b = &pair[1];
+    } else if (v.type == Value::Object) {
+      const auto& obj = v.to_object();
+      a = obj.get_ptr("first");
+      b = obj.get_ptr("second");
+    }
+    if (a == nullptr || b == nullptr) {
+      throw CulebraError(
+          "TypeError",
+          "type error: unzip expects (a, b) tuples or {first, second} "
+          "objects");
+    }
+    firsts.values->push_back(*a);
+    seconds.values->push_back(*b);
+  });
+  std::vector<Value> pair;
+  pair.reserve(2);
+  pair.push_back(Value(std::move(firsts)));
+  pair.push_back(Value(std::move(seconds)));
+  return Value(TupleValue(std::move(pair)));
+}
+
 // Element sources for the two receiver kinds.
 inline auto _each_of_array(const std::vector<Value>& vs) {
   return [&vs](auto emit) {
@@ -5293,6 +5330,11 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
          auto p = Value(as_callback(callEnv->get("p")));
          check_callback_arity(p.to_function(), 1, "partition");
          return _collect_partition(_each_of_array(*arr.values), p);
+       }))},
+      {"unzip"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         const auto& arr = callEnv->get("self").to_array();
+         return _collect_unzip(_each_of_array(*arr.values));
        }))},
       {"sort_by"sv,
        Value(FunctionValue({{"f", false, "Function"sv},
@@ -6863,6 +6905,11 @@ inline std::unordered_map<std::string_view, IterBuiltin>& iterator_builtins() {
          auto p = Value(as_callback(callEnv->get("p")));
          check_callback_arity(p.to_function(), 1, "partition");
          return _collect_partition(_each_of_iter(callEnv->get("self")), p);
+       })), Terminal}},
+
+      {"unzip"sv,
+       {Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         return _collect_unzip(_each_of_iter(callEnv->get("self")));
        })), Terminal}},
   };
   return props_;

@@ -73,7 +73,7 @@ inline const std::unordered_set<std::string_view>& builtin_method_names() {
       "zip",        "enumerate",   "code_points","graphemes",  "iter",
       "chunks",     "windows",     "skip_while", "first",      "last",
       "nth",        "position",    "flatten",    "scan",       "distinct",
-      "tap",        "step_by",     "chunk_by",
+      "tap",        "step_by",     "chunk_by",   "unzip",
       "bytes",
       "view",       "split_iter",  "shape",      "pow",        "transpose",
       "reshape",    "mean",        "argmax",     "to_array",   "dot",
