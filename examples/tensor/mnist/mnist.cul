@@ -192,7 +192,7 @@ let tick = fn () {
 
   # --- render ---
   Canvas.clear(BG)
-  Canvas.text('DRAW A DIGIT', PAD_X, 16, TEXT, 2)
+  Canvas.text('DRAW A DIGIT', PAD_X, 16, BRAND, 2)
   pad.draw(PAD_X, PAD_Y)
   Canvas.rect(PAD_X - 1, PAD_Y - 1, PAD_W + 2, PAD_W + 2, BORDER, false)
 
@@ -210,12 +210,13 @@ let tick = fn () {
       }
     }
   }
-  let headline = if best >= 0 {
-    "PREDICTION: {best}"
+  Canvas.text('PREDICTION:', LABEL_X, 16, ACCENT, 2)
+  let digit_x = LABEL_X + Canvas.text_width('PREDICTION: ', 2)
+  if best >= 0 {
+    Canvas.text(to_string(best), digit_x, 16, TEXT, 2)
   } else {
-    'PREDICTION: -'
+    Canvas.text('-', digit_x, 16, MUTED, 2)
   }
-  Canvas.text(headline, LABEL_X, 16, ACCENT, 2)
 
   for i in 0..10 {
     let y = ROW_Y0 + i * ROW_H
