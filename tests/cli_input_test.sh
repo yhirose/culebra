@@ -110,5 +110,35 @@ out=$(embed_out)
   echo "FAIL embed unreadable file: embedded it as empty: $out"; fail=1; }
 chmod 644 "$TMP/emb/assets/a.txt"
 
+# `culebra -` reads the script from stdin (the Python / Ruby convention),
+# instead of trying to open a file literally named `-`.
+out=$(printf 'IO.println("from stdin")\n' | "$CULEBRA" - 2>&1); rc=$?
+[[ $rc -eq 0 && "$out" == "from stdin" ]] || {
+  echo "FAIL culebra -: rc=$rc out=$out"; fail=1; }
+
+if "$CULEBRA" --help 2>&1 | grep -q -- '--jit'; then
+  out=$(printf 'IO.println("from stdin")\n' | "$CULEBRA" --jit - 2>&1); rc=$?
+  [[ $rc -eq 0 && "$out" == "from stdin" ]] || {
+    echo "FAIL culebra --jit -: rc=$rc out=$out"; fail=1; }
+fi
+
+# `Sys.script` has no real file to point at when the script came from stdin —
+# it reads back as nil there, same as the REPL.
+out=$(printf 'IO.println(Sys.script)\n' | "$CULEBRA" - 2>&1); rc=$?
+[[ $rc -eq 0 && "$out" == "nil" ]] || {
+  echo "FAIL culebra - Sys.script: rc=$rc out=$out"; fail=1; }
+
+# Arguments after `-` still land in Sys.argv, same as after a real path.
+out=$(printf 'IO.println(Sys.argv)\n' | "$CULEBRA" - a b 2>&1); rc=$?
+[[ $rc -eq 0 && "$out" == "['a', 'b']" ]] || {
+  echo "FAIL culebra - argv: rc=$rc out=$out"; fail=1; }
+
+# A file actually named `-` is unambiguous once it's spelled as a path
+# (`./-`), so bare `-` staying reserved for stdin costs nothing.
+printf 'IO.println("literal dash file")\n' > "$TMP/-"
+out=$(cd "$TMP" && "$CULEBRA" "./-" 2>&1); rc=$?
+[[ $rc -eq 0 && "$out" == "literal dash file" ]] || {
+  echo "FAIL ./- : rc=$rc out=$out"; fail=1; }
+
 if [[ $fail -eq 0 ]]; then echo "cli_input_test OK"; exit 0; fi
 echo "cli_input_test FAILED"; exit 1

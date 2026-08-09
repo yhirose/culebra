@@ -5078,13 +5078,17 @@ fn ...`は前の式のmatmul継続ではなく、独立した2 statementとし�
 
 ## 22. コマンドラインインタフェース
 
-    culebra [flags] [script.cul] [arg ...]
+    culebra [flags] [script.cul | -] [arg ...]
     culebra <command> [command-flags]
 
 スクリプトパスより後の引数はそのまま`Sys.argv`としてスクリプトに
 渡されます（`--`不要。[`docs/stdlib.ja.md`](stdlib.ja.md)
 参照）。スクリプトより前の単独の`--`は任意のエスケープハッチで、フラグ
 解析を止めるため、ダッシュ始まりの名前でも次の引数がスクリプトとして扱われます。
+
+`-`はファイルの代わりに標準入力からスクリプトを読み込みます（例:
+`curl ... | culebra -`）。この場合`Sys.script`はREPLと同様`nil`になります。
+`-`という名前のファイル自体は`./-`のようにパスを明示すれば引き続き参照できます。
 
 ### フラグ
 

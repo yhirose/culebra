@@ -5333,7 +5333,7 @@ expression.
 
 ## 22. Command-line interface
 
-    culebra [flags] [script.cul] [arg ...]
+    culebra [flags] [script.cul | -] [arg ...]
     culebra <command> [command-flags]
 
 Everything after the script path is captured verbatim and exposed to the
@@ -5341,6 +5341,10 @@ script as `Sys.argv` — no `--` needed; see
 [`docs/stdlib.md`](stdlib.md). A standalone `--` before the script is an
 optional escape hatch: it stops flag parsing, so the next argument is taken
 as the script even if it begins with a dash.
+
+`-` reads the script from stdin instead of a file, e.g.
+`curl ... | culebra -`. `Sys.script` is `nil` there, same as in the REPL; a
+file actually named `-` is still reachable by spelling the path, e.g. `./-`.
 
 ### Flags
 

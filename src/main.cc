@@ -116,6 +116,14 @@ optional<string> read_file(const char* path) {
   return buff;
 }
 
+// Read the whole of stdin as bytes, for `culebra -` (the Python / Ruby
+// convention for piping a one-shot script in, e.g. `curl ... | culebra -`).
+optional<string> read_stdin() {
+  string buff((istreambuf_iterator<char>(cin)), istreambuf_iterator<char>());
+  if (cin.bad()) return nullopt;
+  return buff;
+}
+
 // Report a CulebraError on stderr in the CLI's canonical shape —
 // `Kind: message at LINE:COL.`, position omitted when unknown. Shared so the
 // `build`, script-run and top-level handlers can't drift apart.
@@ -482,10 +490,11 @@ struct BuildOptions {
 #endif  // CULEBRA_JIT_ENABLED — end of build/wrap-only helpers
 
 void print_usage(ostream& os) {
-  os << "Usage: culebra [options] [script.cul] [script-args...]\n"
+  os << "Usage: culebra [options] [script.cul | -] [script-args...]\n"
         "       culebra <command> [command-options]\n"
         "\n"
         "Run a culebra program, or start a REPL when no script is given.\n"
+        "`-` reads the script from stdin (e.g. `curl ... | culebra -`).\n"
         "Arguments after the script path are passed to it as Sys.argv (the\n"
         "Python / Node convention — no `--` needed).\n"
         "\n"
@@ -1299,7 +1308,9 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
   if (!options.script_path) return true;
   const string& path = *options.script_path;
 
-  auto user_src = read_file(path.c_str());
+  // `-` reads the script from stdin instead of opening a file named `-`; a
+  // file actually named `-` is still reachable via a path like `./-`.
+  auto user_src = path == "-" ? read_stdin() : read_file(path.c_str());
   if (!user_src) {
     std::println(stderr, "can't open '{}'.", path);
     return false;
@@ -1995,7 +2006,7 @@ int main(int argc, const char** argv) {
   // relative to the source — whatever the cwd is. Both are left empty (→ nil)
   // for the REPL and stdin.
   culebra::set_main_script("");
-  if (options.script_path) {
+  if (options.script_path && *options.script_path != "-") {
     std::error_code ec;
     auto abs = std::filesystem::absolute(*options.script_path, ec);
     if (!ec) culebra::set_main_script(abs.string());
