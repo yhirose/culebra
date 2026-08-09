@@ -1,0 +1,247 @@
+# Handwritten-digit recognition: draw in the left pad, an MLP trained
+# by train.cul (784-128-64-10, ReLU + softmax) scores it live, and the
+# right side charts the ten class probabilities. Works in the native
+# window and in the browser playground alike:
+#
+#   culebra examples/tensor/mnist/mnist.cul
+
+# Weights live next to this script, so resolve them from Sys.script
+# rather than the current directory — the same expression works natively
+# and in the playground (whose staging mirrors the repository layout).
+let WEIGHTS = FS.join(FS.dirname(Sys.script), 'weights')
+
+# Palette from site/assets/brand.css (light theme).
+let BG = Canvas.rgba(247, 245, 239)
+let SURFACE = Canvas.rgba(255, 253, 248)
+let SURFACE2 = Canvas.rgba(242, 239, 230)
+let TEXT = Canvas.rgba(26, 32, 29)
+let MUTED = Canvas.rgba(108, 115, 109)
+let BORDER = Canvas.rgba(229, 224, 212)
+let BRAND = Canvas.rgba(21, 144, 196)
+let BRAND_STRONG = Canvas.rgba(15, 111, 156)
+let BRAND_SOFT = Canvas.rgba(227, 242, 249)
+let ACCENT = Canvas.rgba(192, 106, 56)
+let INK = Canvas.rgba(0, 0, 0)
+
+# Layout. The pad is 280x280 — a 10x blow-up of the model's 28x28 input.
+let PAD_X = 24
+let PAD_Y = 48
+let PAD_W = 280
+let BTN_X = 24
+let BTN_Y = 336
+let BTN_W = 88
+let BTN_H = 28
+let ROW_Y0 = 48
+let ROW_H = 28
+let LABEL_X = 344
+let BAR_X = 372
+let BAR_W = 204
+let BAR_H = 16
+let PCT_X = 584
+let STROKE_R = 10
+
+let W1 = Tensor.from_csv("{WEIGHTS}/w1.csv")
+let B1 = Tensor.from_csv("{WEIGHTS}/b1.csv")
+let W2 = Tensor.from_csv("{WEIGHTS}/w2.csv")
+let B2 = Tensor.from_csv("{WEIGHTS}/b2.csv")
+let W3 = Tensor.from_csv("{WEIGHTS}/w3.csv")
+let B3 = Tensor.from_csv("{WEIGHTS}/b3.csv")
+
+let predict = fn (row) {
+  let x = Tensor.from([row])
+  let h1 = (x.dot(W1) + B1).relu()
+  let h2 = (h1.dot(W2) + B2).relu()
+  (h2.dot(W3) + B3).softmax().to_array()[0]
+}
+
+let pad = Canvas.Sprite.blank(PAD_W, PAD_W, SURFACE)
+
+# Ink bounding box, updated per stamp so preprocessing never scans the pad.
+mut ink_min_x = PAD_W
+mut ink_min_y = PAD_W
+mut ink_max_x = -1
+mut ink_max_y = -1
+mut probs = nil
+mut dirty = false
+mut prev_x = 0
+mut prev_y = 0
+mut prev_down = false
+mut frame = 0
+
+let stamp = fn (x, y) {
+  Canvas.circle(x, y, STROKE_R, INK)
+  ink_min_x = Math.max(0, Math.min(ink_min_x, x - STROKE_R))
+  ink_min_y = Math.max(0, Math.min(ink_min_y, y - STROKE_R))
+  ink_max_x = Math.min(PAD_W - 1, Math.max(ink_max_x, x + STROKE_R))
+  ink_max_y = Math.min(PAD_W - 1, Math.max(ink_max_y, y + STROKE_R))
+}
+
+# MNIST preprocessing: fit the ink box into 20x20 (box-averaged), then
+# shift the 28x28 grid so the centre of mass sits at (13.5, 13.5) —
+# the same normalization the training set went through.
+let preprocess = fn () {
+  let bw = ink_max_x - ink_min_x + 1
+  let bh = ink_max_y - ink_min_y + 1
+  let scale = 20.0 / to_float(Math.max(bw, bh))
+  let dw = Math.max(1, Math.round(to_float(bw) * scale))
+  let dh = Math.max(1, Math.round(to_float(bh) * scale))
+
+  let small = Canvas.Sprite.blank(28, 28, SURFACE)
+  mut vals = []
+  mut mass = 0.0
+  mut mx = 0.0
+  mut my = 0.0
+  Canvas.draw_to(small, fn () {
+    pad.draw_sub_scaled(
+      (28 - dw) / 2,
+      (28 - dh) / 2,
+      dw,
+      dh,
+      ink_min_x,
+      ink_min_y,
+      bw,
+      bh,
+      smooth: true,
+    )
+    for y in 0..28 {
+      for x in 0..28 {
+        let v = to_float(255 - (Canvas.get_pixel(x, y) & 0xff)) / 255.0
+        vals.push(v)
+        mass += v
+        mx += to_float(x) * v
+        my += to_float(y) * v
+      }
+    }
+  })
+
+  let dx = Math.round(13.5 - mx / mass)
+  let dy = Math.round(13.5 - my / mass)
+  mut row = []
+  for y in 0..28 {
+    for x in 0..28 {
+      let sx = x - dx
+      let sy = y - dy
+      row.push(if sx >= 0 && sx < 28 && sy >= 0 && sy < 28 {
+        vals[sy * 28 + sx]
+      } else {
+        0.0
+      })
+    }
+  }
+  row
+}
+
+let clear_pad = fn () {
+  Canvas.draw_to(pad, fn () {
+    Canvas.clear(SURFACE)
+  })
+  ink_min_x = PAD_W
+  ink_min_y = PAD_W
+  ink_max_x = -1
+  ink_max_y = -1
+  probs = nil
+  dirty = false
+}
+
+let in_rect = fn (px, py, x, y, w, h) {
+  px >= x && px < x + w && py >= y && py < y + h
+}
+
+let tick = fn () {
+  let m = Canvas.mouse()
+  let down = m.buttons & 1 != 0
+  let lx = m.x - PAD_X
+  let ly = m.y - PAD_Y
+
+  if down && in_rect(m.x, m.y, PAD_X, PAD_Y, PAD_W, PAD_W) {
+    Canvas.draw_to(pad, fn () {
+      if prev_down {
+        # Stamp along the segment from the previous point so fast
+        # moves leave a solid stroke.
+        let steps = Math.max(
+          1,
+          Math.max(Math.abs(lx - prev_x), Math.abs(ly - prev_y)) / 3,
+        )
+        for i in 0..steps + 1 {
+          let t = to_float(i) / to_float(steps)
+          stamp(
+            prev_x + Math.round(to_float(lx - prev_x) * t),
+            prev_y + Math.round(to_float(ly - prev_y) * t),
+          )
+        }
+      } else {
+        stamp(lx, ly)
+      }
+    })
+    dirty = true
+  }
+  if down && !prev_down && in_rect(m.x, m.y, BTN_X, BTN_Y, BTN_W, BTN_H) {
+    clear_pad()
+  }
+
+  # Re-score at ~10 Hz while drawing, and once more on release.
+  let released = prev_down && !down
+  if dirty && ink_max_x >= 0 && (frame % 6 == 0 || released) {
+    probs = predict(preprocess())
+    dirty = false if !down
+  }
+  prev_x = lx
+  prev_y = ly
+  prev_down = down
+  frame += 1
+
+  # --- render ---
+  Canvas.clear(BG)
+  Canvas.text('DRAW A DIGIT', PAD_X, 16, TEXT, 2)
+  pad.draw(PAD_X, PAD_Y)
+  Canvas.rect(PAD_X - 1, PAD_Y - 1, PAD_W + 2, PAD_W + 2, BORDER, false)
+
+  Canvas.rect(BTN_X, BTN_Y, BTN_W, BTN_H, BRAND_SOFT)
+  Canvas.rect(BTN_X, BTN_Y, BTN_W, BTN_H, BRAND, false)
+  Canvas.text('CLEAR', BTN_X + 24, BTN_Y + 10, BRAND_STRONG)
+
+  mut best = -1
+  if probs != nil {
+    mut best_p = 0.0
+    for i in 0..10 {
+      if probs[i] > best_p {
+        best_p = probs[i]
+        best = i
+      }
+    }
+  }
+  let headline = if best >= 0 {
+    "PREDICTION: {best}"
+  } else {
+    'PREDICTION: -'
+  }
+  Canvas.text(headline, LABEL_X, 16, ACCENT, 2)
+
+  for i in 0..10 {
+    let y = ROW_Y0 + i * ROW_H
+    let digit_color = if i == best {
+      TEXT
+    } else {
+      MUTED
+    }
+    Canvas.text(to_string(i), LABEL_X, y + 6, digit_color, 2)
+    Canvas.rect(BAR_X, y + 6, BAR_W, BAR_H, SURFACE2)
+    if probs != nil {
+      let p = probs[i]
+      let w = Math.round(to_float(BAR_W) * p)
+      if w > 0 {
+        Canvas.rect(BAR_X, y + 6, w, BAR_H, if i == best {
+          ACCENT
+        } else {
+          BRAND
+        })
+      }
+      Canvas.text("{Math.round(p * 100.0)}%", PCT_X, y + 10, MUTED)
+    }
+  }
+
+  true
+}
+
+Canvas.title('MNIST Digits')
+Canvas.run(640, 380, tick)

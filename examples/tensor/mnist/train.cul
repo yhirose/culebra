@@ -1,0 +1,231 @@
+# Trains the 784-128-64-10 MLP behind mnist.cul on the raw MNIST IDX
+# files and writes the weights as CSV into weights/. Run once from the
+# repo root (data comes from `just fetch-mnist`):
+#
+#   culebra --jit examples/tensor/mnist/train.cul [n_train]
+#
+# Row-vector convention throughout: X is [B, 784], weights are
+# [in, out], so softmax lands on the class axis without a transpose.
+
+let DATA = 'benchmarks/mnist/data'
+let OUT = 'examples/tensor/mnist/weights'
+let BATCH = 64
+let EPOCHS = 8
+let LR = 0.001
+let ROUND = 100000.0  # keep 5 decimals in the CSVs
+
+for f in ['train-images-idx3-ubyte.gz', 'train-labels-idx1-ubyte.gz', 't10k-images-idx3-ubyte.gz', 't10k-labels-idx1-ubyte.gz'] {
+  if !FS.exists("{DATA}/{f}") {
+    inspect("missing {DATA}/{f}; run `just fetch-mnist` first")
+    Sys.exit(1)
+  }
+}
+
+Random.seed(42)
+
+# === IDX loading ===
+#
+# Images: 16-byte header, then rows*cols bytes per sample. `order`
+# picks the samples and their sequence, so the training set arrives
+# pre-shuffled. Chunked Tensor.concat keeps the peak Array small.
+
+let load_images = fn (path, order) {
+  let raw = Compress.gunzip(FS.read(path))
+  mut chunks = []
+  mut rows = []
+  for idx in order {
+    let off = 16 + idx * 784
+    rows.push(raw
+      .slice(off, off + 784)
+      .bytes()
+      .map(|b| to_float(b) / 255.0)
+      .collect())
+    if rows.size() == 2000 {
+      chunks.push(Tensor.from(rows))
+      rows = []
+    }
+  }
+  chunks.push(Tensor.from(rows)) if !rows.empty()
+  Tensor.concat(chunks)
+}
+
+let load_labels = fn (path) {
+  let raw = Compress.gunzip(FS.read(path))
+  raw.slice(8, raw.size()).bytes().collect()
+}
+
+let build_one_hot = fn (labels, k) {
+  mut rows = []
+  for label in labels {
+    mut row = []
+    for j in range(k) {
+      row.push(if j == label {
+        1.0
+      } else {
+        0.0
+      })
+    }
+    rows.push(row)
+  }
+  Tensor.from(rows)
+}
+
+let n_train = if !Sys.argv.empty() {
+  to_long(Sys.argv[0])
+} else {
+  60000
+}
+
+let load_t0 = Sys.time()
+let labels_all = load_labels("{DATA}/train-labels-idx1-ubyte.gz")
+
+mut order = range(labels_all.size()).collect()
+for i in 0..order.size() {
+  let j = Random.int(i, order.size())
+  (order[i], order[j]) = (order[j], order[i])
+}
+order = order.slice(0, n_train)
+
+mut y = []
+for idx in order {
+  y.push(labels_all[idx])
+}
+
+let X = load_images("{DATA}/train-images-idx3-ubyte.gz", order)
+let Y = build_one_hot(y, 10)
+
+let yt = load_labels("{DATA}/t10k-labels-idx1-ubyte.gz")
+let Xt = load_images("{DATA}/t10k-images-idx3-ubyte.gz", range(yt.size()))
+inspect("loaded train={n_train} test={yt.size()} in {Sys.time() - load_t0}s")
+
+# === Model: He-initialized leaves in mutable boxes (microgpt pattern) ===
+
+class Param {
+  new(t) {
+    self.t = t
+  }
+}
+
+let make_weight = fn (in_dim, out_dim) {
+  let t = Tensor.randn(in_dim, out_dim) * Math.sqrt(2.0 / to_float(in_dim))
+  Tensor.eval(t)
+  Param.new(t.detach().requires_grad())
+}
+
+let make_bias = fn (out_dim) {
+  Param.new(Tensor.zeros(1, out_dim).requires_grad())
+}
+
+let w1 = make_weight(784, 128)
+let b1 = make_bias(128)
+let w2 = make_weight(128, 64)
+let b2 = make_bias(64)
+let w3 = make_weight(64, 10)
+let b3 = make_bias(10)
+let params = [w1, b1, w2, b2, w3, b3]
+
+let forward = fn (x) {
+  let h1 = (x.dot(w1.t) + b1.t).relu()
+  let h2 = (h1.dot(w2.t) + b2.t).relu()
+  h2.dot(w3.t) + b3.t
+}
+
+# === Adam ===
+
+let beta1 = 0.9
+let beta2 = 0.999
+let eps_adam = 1.0e-8
+
+mut m_buf = []
+mut v_buf = []
+for p in params {
+  m_buf.push(Tensor.zeros(p.t.shape()))
+  v_buf.push(Tensor.zeros(p.t.shape()))
+}
+
+let adam_step = fn (step) {
+  let bc1 = 1.0 - beta1 ** to_float(step + 1)
+  let bc2 = 1.0 - beta2 ** to_float(step + 1)
+  for i in 0..params.size() {
+    let p = params[i]
+    let g = p.t.grad()
+    m_buf[i] = (m_buf[i] * beta1 + g * (1.0 - beta1)).detach()
+    v_buf[i] = (v_buf[i] * beta2 + g * g * (1.0 - beta2)).detach()
+    Tensor.eval(m_buf[i], v_buf[i])
+    let m_hat = m_buf[i] * (1.0 / bc1)
+    let denom = (v_buf[i] * (1.0 / bc2)).pow(0.5) + eps_adam
+    let new_t = (p.t - (m_hat / denom) * LR).detach()
+    Tensor.eval(new_t)
+    p.t = new_t.requires_grad()
+  }
+}
+
+let accuracy = fn () {
+  Tensor.no_grad(fn () {
+    let preds = forward(Xt).argmax(1)
+    Tensor.eval(preds)
+    let p = preds.to_array()
+    mut correct = 0
+    for k in range(yt.size()) {
+      correct += 1 if to_long(p[k]) == yt[k]
+    }
+    to_float(correct) / to_float(yt.size())
+  })
+}
+
+# === Training loop ===
+
+let train_t0 = Sys.time()
+mut step = 0
+for epoch in 0..EPOCHS {
+  mut loss_sum = 0.0
+  mut batches = 0
+  for s in 0..n_train by BATCH {
+    let e = Math.min(s + BATCH, n_train)
+    let xb = X.slice(s, e)
+    let yb = Y.slice(s, e)
+
+    for p in params {
+      p.t.zero_grad()
+    }
+    let probs = forward(xb).softmax()
+    let loss = (yb * probs.log()).sum(1).sum(0) * (-1.0 / to_float(e - s))
+    loss.backward()
+    adam_step(step)
+
+    loss_sum += loss.item()
+    batches += 1
+    step += 1
+  }
+  inspect("epoch {epoch + 1}/{EPOCHS} | loss {loss_sum / to_float(batches)} | test acc {accuracy()}")
+}
+inspect("trained in {Sys.time() - train_t0}s")
+
+# === Save (5-decimal CSV), then reload and re-check the accuracy ===
+
+let save_csv = fn (name, t) {
+  mut rows = []
+  for row in t.detach().to_array() {
+    mut out = []
+    for v in row {
+      out.push(to_float(Math.round(v * ROUND)) / ROUND)
+    }
+    rows.push(out)
+  }
+  FS.write("{OUT}/{name}.csv", CSV.stringify(rows))
+}
+
+save_csv('w1', w1.t)
+save_csv('b1', b1.t)
+save_csv('w2', w2.t)
+save_csv('b2', b2.t)
+save_csv('w3', w3.t)
+save_csv('b3', b3.t)
+
+w1.t = Tensor.from_csv("{OUT}/w1.csv")
+b1.t = Tensor.from_csv("{OUT}/b1.csv")
+w2.t = Tensor.from_csv("{OUT}/w2.csv")
+b2.t = Tensor.from_csv("{OUT}/b2.csv")
+w3.t = Tensor.from_csv("{OUT}/w3.csv")
+b3.t = Tensor.from_csv("{OUT}/b3.csv")
+inspect("saved to {OUT}/ | reloaded test acc {accuracy()}")
