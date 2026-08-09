@@ -1593,17 +1593,15 @@ int run_lint(int argc, const char** argv) {
     auto lint_source = [&](const std::string& s, vector<string>& parse_msgs,
                            std::shared_ptr<peg::Ast>* authored_out = nullptr)
         -> std::optional<vector<culebra::lint::Diagnostic>> {
-      // Both the parse and the lowering can throw: the parse for what parser.h
-      // raises itself (the nesting-depth guard), the lowering for malformed
-      // effects (two `return` clauses, a duplicate handler clause, …). Report
-      // either as an ordinary error diagnostic instead of letting it escape the
-      // CLI — a linter must never abort on the input it was asked to inspect.
-      std::shared_ptr<peg::Ast> authored;
+      auto authored = culebra::parse(path, s, parse_msgs);
+      if (!authored) return std::nullopt;
+      if (authored_out) *authored_out = authored;
+      // The lowering itself rejects malformed effects (two `return` clauses,
+      // a duplicate handler clause, …) by throwing. Report those as ordinary
+      // error diagnostics instead of letting them escape the CLI — a linter
+      // must never abort on the input it was asked to inspect.
       std::shared_ptr<peg::Ast> lowered;
       try {
-        authored = culebra::parse(path, s, parse_msgs);
-        if (!authored) return std::nullopt;
-        if (authored_out) *authored_out = authored;
         lowered = culebra::parse_with_transforms(path, s, parse_msgs);
       } catch (const culebra::CulebraError& e) {
         return vector<culebra::lint::Diagnostic>{

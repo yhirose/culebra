@@ -1466,12 +1466,21 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
   });
 
   std::shared_ptr<peg::Ast> ast;
-  if (parser.parse_n(expr.data(), expr.size(), ast, path.c_str())) {
-    auto opt = peg::AstOptimizer(true, ast_optimizer_keep_rules());
-    return desugar_postfix_modifiers(desugar_regex_literals(opt.optimize(ast)));
+  // The depth guard throws from peglib's enter hook, so it bypasses the
+  // logger. Convert it here so every caller sees one failure shape
+  // (msgs + nullptr) — before this, each caller needed its own catch, and
+  // fmt/lint/doctest/repl/dap each missed it in turn.
+  try {
+    if (!parser.parse_n(expr.data(), expr.size(), ast, path.c_str())) {
+      return nullptr;
+    }
+  } catch (const CulebraError& e) {
+    msgs.push_back(std::format("{}:{}:{}: {}\n", path, e.line, e.col, e.what()));
+    return nullptr;
   }
 
-  return nullptr;
+  auto opt = peg::AstOptimizer(true, ast_optimizer_keep_rules());
+  return desugar_postfix_modifiers(desugar_regex_literals(opt.optimize(ast)));
 }
 
 // Like parse(), but keeps REGEX_LIT and postfix-modifier (`stmt if cond` /
@@ -1490,12 +1499,17 @@ inline std::shared_ptr<peg::Ast> parse_for_format(
   });
 
   std::shared_ptr<peg::Ast> ast;
-  if (parser.parse_n(expr.data(), expr.size(), ast, path.c_str())) {
-    auto opt = peg::AstOptimizer(true, ast_optimizer_keep_rules());
-    return opt.optimize(ast);
+  try {  // depth guard → msgs, as in parse()
+    if (!parser.parse_n(expr.data(), expr.size(), ast, path.c_str())) {
+      return nullptr;
+    }
+  } catch (const CulebraError& e) {
+    msgs.push_back(std::format("{}:{}:{}: {}\n", path, e.line, e.col, e.what()));
+    return nullptr;
   }
 
-  return nullptr;
+  auto opt = peg::AstOptimizer(true, ast_optimizer_keep_rules());
+  return opt.optimize(ast);
 }
 
 inline std::shared_ptr<peg::Ast> parse_builtin_traits_preamble() {

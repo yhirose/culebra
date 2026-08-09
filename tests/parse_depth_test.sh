@@ -28,32 +28,31 @@ deep() {  # deep <open> <close> <count> — `let x = <<<1>>>` nested N deep
   printf 'let x = %s1%s\nIO.println(1)\n' "$o" "$c"
 }
 
+run_ok() {  # run_ok <label> <expected-stdout> <culebra-args...>
+  local label="$1" expected="$2" out
+  shift 2
+  if ! out=$("$CULEBRA" "$@" 2>&1) || [ "$out" != "$expected" ]; then
+    echo "FAIL $label: expected '$expected', got: ${out:0:120}"
+    fail=1
+  fi
+}
+
 # --- too deep: clean SyntaxError, process must not crash -------------------
+# `run`, `fmt` and `lint` all parse the file; parser.h converts the guard's
+# throw into the ordinary parse-error channel, so each reports and exits with
+# its usual error status. rc in 128..254 is a signal death — the SIGSEGV this
+# guard exists to prevent — and 134 is what an uncaught throw would be.
 for shape in "[ ]" "{ }" "( )"; do
   set -- $shape
   deep "$1" "$2" 20000 > "$TMP/deep.cul"
-  out=$("$CULEBRA" "$TMP/deep.cul" 2>&1)
-  rc=$?
-  # culebra exits 255 for a reported error; 128+N (but never 255) is a
-  # signal death — the SIGSEGV this guard exists to prevent.
-  if [ $rc -ge 128 ] && [ $rc -lt 255 ]; then
-    echo "FAIL deep '$1': died with signal (rc=$rc), expected SyntaxError"
-    fail=1
-  elif ! printf '%s' "$out" | grep -q "SyntaxError: nesting too deep"; then
-    echo "FAIL deep '$1': expected 'nesting too deep', got: ${out:0:120}"
-    fail=1
-  fi
-
-  # `fmt` and `lint` parse the same file. The guard throws mid-parse, so each
-  # has to catch it and report — an uncaught throw is terminate(), rc 134.
-  for cmd in "fmt --check" "lint"; do
+  for cmd in "" "fmt --check" "lint"; do
     out=$("$CULEBRA" $cmd "$TMP/deep.cul" 2>&1)
     rc=$?
     if [ $rc -ge 128 ] && [ $rc -lt 255 ]; then
-      echo "FAIL $cmd deep '$1': died with signal (rc=$rc), expected a diagnostic"
+      echo "FAIL ${cmd:-run} deep '$1': died with signal (rc=$rc), expected a diagnostic"
       fail=1
     elif ! printf '%s' "$out" | grep -q "nesting too deep"; then
-      echo "FAIL $cmd deep '$1': expected 'nesting too deep', got: ${out:0:120}"
+      echo "FAIL ${cmd:-run} deep '$1': expected 'nesting too deep', got: ${out:0:120}"
       fail=1
     fi
   done
@@ -61,14 +60,8 @@ done
 
 # --- realistic generated nesting still parses and runs ---------------------
 deep "[" "]" 500 > "$TMP/ok.cul"
-if ! out=$("$CULEBRA" "$TMP/ok.cul" 2>&1) || [ "$out" != "1" ]; then
-  echo "FAIL 500-deep array: expected to run, got: ${out:0:120}"
-  fail=1
-fi
-if ! out=$("$CULEBRA" --jit "$TMP/ok.cul" 2>&1) || [ "$out" != "1" ]; then
-  echo "FAIL 500-deep array (jit): expected to run, got: ${out:0:120}"
-  fail=1
-fi
+run_ok "500-deep array" 1 "$TMP/ok.cul"
+run_ok "500-deep array (jit)" 1 --jit "$TMP/ok.cul"
 
 # --- nesting that parses must not backtrack exponentially ------------------
 # `(` is the shape that costs: LET and MUTABLE are both optional, so
@@ -77,10 +70,7 @@ fi
 # re-parse PATTERN at the same position. 200 parens took 2^200 steps until
 # peglib's packrat filter started memoizing across a shared prefix.
 deep "(" ")" 200 > "$TMP/paren.cul"
-if ! out=$("$CULEBRA" "$TMP/paren.cul" 2>&1) || [ "$out" != "1" ]; then
-  echo "FAIL 200-deep parens: expected to run, got: ${out:0:120}"
-  fail=1
-fi
+run_ok "200-deep parens" 1 "$TMP/paren.cul"
 
 # The same tower through TUPLE_PATTERN itself: nested single-element tuples,
 # pattern and value alike.
@@ -91,10 +81,7 @@ fi
   printf '(%.0s' $(seq 1 100); printf '1'; printf ',)%.0s' $(seq 1 100)
   printf '\nIO.println(a)\n'
 } > "$TMP/tuple.cul"
-if ! out=$("$CULEBRA" "$TMP/tuple.cul" 2>&1) || [ "$out" != "1" ]; then
-  echo "FAIL 100-deep tuple pattern: expected to run, got: ${out:0:120}"
-  fail=1
-fi
+run_ok "100-deep tuple pattern" 1 "$TMP/tuple.cul"
 
 # --- flat width is not depth: long operator chains stay fine ---------------
 {
@@ -102,10 +89,7 @@ fi
   printf '1+%.0s' $(seq 1 50000)
   printf '1\nIO.println(x)\n'
 } > "$TMP/wide.cul"
-if ! out=$("$CULEBRA" "$TMP/wide.cul" 2>&1) || [ "$out" != "50001" ]; then
-  echo "FAIL 50k-term chain: expected 50001, got: ${out:0:120}"
-  fail=1
-fi
+run_ok "50k-term chain" 50001 "$TMP/wide.cul"
 
 if [ $fail -eq 0 ]; then
   echo "parse_depth_test OK"

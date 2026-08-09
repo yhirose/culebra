@@ -1769,17 +1769,7 @@ inline FormatResult format_source(const std::string& path,
                                   const std::string& src,
                                   int width = 80) {
   std::vector<std::string> msgs;
-  std::shared_ptr<peg::Ast> ast;
-  // A parse has two failure channels: the peglib logger (msgs + null) for an
-  // ordinary syntax error, and a throw for the ones parser.h raises itself —
-  // today the nesting-depth guard. Both are "this input does not parse", and a
-  // formatter must never abort on the file it was asked to format.
-  try {
-    ast = parse_for_format(path, src, msgs);
-  } catch (const CulebraError& e) {
-    return {FormatStatus::ParseError, "",
-            std::format("{}:{}:{}: {}\n", path, e.line, e.col, e.what())};
-  }
+  auto ast = parse_for_format(path, src, msgs);
   if (!ast) {
     std::string m;
     for (auto& s : msgs) m += s;
@@ -1794,12 +1784,7 @@ inline FormatResult format_source(const std::string& path,
   // Safety net 1: re-parse and require structural AST equality, so a printer
   // bug can never silently change program meaning.
   std::vector<std::string> msgs2;
-  std::shared_ptr<peg::Ast> ast2;
-  try {
-    ast2 = parse_for_format(path, out, msgs2);
-  } catch (const CulebraError&) {
-    ast2 = nullptr;  // output the parser rejects is a refusal, same as below
-  }
+  auto ast2 = parse_for_format(path, out, msgs2);
   if (!ast2 || !ast_equal(*ast, *ast2)) {
     return {FormatStatus::Refused, "",
             "culebra fmt: internal check failed (formatted output would change "
