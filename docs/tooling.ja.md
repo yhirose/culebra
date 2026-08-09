@@ -13,6 +13,7 @@
 | `culebra fmt [paths...]` | ソースを正準スタイルに整形する | [§3](#3-フォーマット-culebra-fmt) |
 | `culebra dap` | Debug Adapter Protocolをstdioで話す | [§4](#4-デバッグ-culebra-dap) |
 | `culebra docs [topic]` | 埋め込まれたリファレンスを読む・検索する | [§5](#5-ドキュメントを読む-culebra-docs) |
+| `culebra serve [-p PORT] [-d DIR]` | ディレクトリを静的ファイルとして配信する | [§6](#6-静的ファイルの配信-culebra-serve) |
 | `culebra build <in.cul> -o <out>` | AOTコンパイルして単体実行ファイルを作る | [`deployment.ja.md` §1](deployment.ja.md#1-standalone-バイナリビルドculebra-build) |
 | `culebra wrap` | 自前のC++ クラスを組み込んだ拡張バイナリを作る | [`deployment.ja.md` §3](deployment.ja.md#3-c-ライブラリのラッピングculebra-wrap) |
 
@@ -37,6 +38,7 @@
    * [Vim (vimspector)](#vim-vimspector)
    * [Zed](#zed)
 5. [ドキュメントを読む (`culebra docs`)](#5-ドキュメントを読む-culebra-docs)
+6. [静的ファイルの配信 (`culebra serve`)](#6-静的ファイルの配信-culebra-serve)
 
 ---
 
@@ -670,3 +672,20 @@ markdownだけが入ります。`agent`も`llm`も横断検索には参加しま
 再実行するたびにブロックを最新に保ちます。`culebra docs agent`を直接
 使うのは、生のmarkdownが欲しいときか、このリストに無い追記先を使う
 ときだけで十分です。
+
+## 6. 静的ファイルの配信 (`culebra serve`)
+
+`culebra serve [-p PORT] [-d DIR]`は1つのディレクトリを素のHTTPで配信
+します。ルーティング・WebSocket・OpenSSLは関係なく、ファイル一式
+（`culebra build`の成果物・docsのプレビュー・静的サイトなど）を
+`localhost`に置くだけの場面で`python3 -m http.server`の代わりになります。
+ポートは既定`8000`、ディレクトリは既定でカレント。
+
+```
+culebra serve                  # . を :8000 で配信
+culebra serve -p 3000 -d site  # site/ を :3000 で配信
+```
+
+ルーティング・WebSocket・静的ファイルと同居するAPIが要るならstdlibの
+`Http.server()`名前空間を使う — [`stdlib.ja.md` §15](stdlib.ja.md#15-http)
+参照。

@@ -1061,7 +1061,7 @@ site-build:
 [group("site")]
 [doc("Serve site/ locally (run `just site-build` first if the playground needs rebuilding)")]
 site-serve port="8000":
-    ./build-dev/culebra misc/site_serve.cul -p {{port}}
+    ./build-dev/culebra serve -p {{port}} -d site
 
 # The committed pages under site/ are what GitHub Pages serves, and both name
 # the version: the Playground's is stamped by build.sh from include/culebra.h,

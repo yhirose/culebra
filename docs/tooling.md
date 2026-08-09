@@ -13,6 +13,7 @@ is the reference for those development subcommands.
 | `culebra fmt [paths...]` | reformat source to the canonical style | [§3](#3-formatting-culebra-fmt) |
 | `culebra dap` | speak the Debug Adapter Protocol over stdio | [§4](#4-debugging-culebra-dap) |
 | `culebra docs [topic]` | read and search the embedded reference docs | [§5](#5-reading-the-docs-culebra-docs) |
+| `culebra serve [-p PORT] [-d DIR]` | serve a directory of static files | [§6](#6-serving-static-files-culebra-serve) |
 | `culebra build <in.cul> -o <out>` | compile ahead-of-time into a standalone executable | [`deployment.md` §1](deployment.md#1-standalone-binary-build-culebra-build) |
 | `culebra wrap` | build an extended binary exposing your own C++ classes | [`deployment.md` §3](deployment.md#3-wrapping-c-libraries-culebra-wrap) |
 
@@ -37,6 +38,7 @@ Contents
    * [Vim (vimspector)](#vim-vimspector)
    * [Zed](#zed)
 5. [Reading the docs (`culebra docs`)](#5-reading-the-docs-culebra-docs)
+6. [Serving static files (`culebra serve`)](#6-serving-static-files-culebra-serve)
 
 ---
 
@@ -710,3 +712,20 @@ files above already exist (creating `AGENTS.md` if none do) and keeps
 the block up to date on every re-run. Reach for `culebra docs agent`
 directly only when you want the raw markdown or a destination this
 list doesn't cover.
+
+## 6. Serving static files (`culebra serve`)
+
+`culebra serve [-p PORT] [-d DIR]` serves one directory over plain HTTP —
+a drop-in for `python3 -m http.server` when you just want a set of files
+(a `culebra build` output, a docs preview, a static site) reachable on
+`localhost`, with no OpenSSL, routes, or WebSocket in the picture. Port
+defaults to `8000`, directory to the current one.
+
+```
+culebra serve                  # serve . on :8000
+culebra serve -p 3000 -d site  # serve site/ on :3000
+```
+
+For routes, WebSocket, or an API alongside static files, reach for the
+`Http.server()` stdlib namespace instead — see
+[`stdlib.md` §15](stdlib.md#15-http).

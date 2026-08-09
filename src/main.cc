@@ -532,6 +532,10 @@ void print_usage(ostream& os) {
         "  init                      Set up this directory (AI agent\n"
         "                            instructions) and this machine's editors\n"
         "                            (VSCode/Vim/Neovim); safe to re-run\n"
+#ifdef CULEBRA_HTTP_ENABLED
+        "  serve [-p PORT] [-d DIR]  Serve a directory of static files\n"
+        "                            (default: port 8000, current directory)\n"
+#endif
 #ifdef CULEBRA_JIT_ENABLED
         "  wrap <decl.cpp> ...       Build an extended culebra binary exposing\n"
         "                            your C++ classes (`culebra wrap --help`)\n"
@@ -1826,6 +1830,65 @@ int run_fmt(int argc, const char** argv) {
   return rc;
 }
 
+#ifdef CULEBRA_HTTP_ENABLED
+// `culebra serve [-p PORT] [-d DIR]` — a standalone static file server, so a
+// quick local preview doesn't need `python3 -m http.server`. No routes, no
+// WebSocket, no TLS: `Http.server()` (the stdlib namespace) covers those.
+int run_serve(int argc, const char** argv) {
+  int port = 8000;
+  string dir = ".";
+  auto all_digits = [](std::string_view v) {
+    return !v.empty() &&
+           v.find_first_not_of("0123456789") == std::string_view::npos;
+  };
+  for (int i = 2; i < argc; i++) {
+    string arg = argv[i];
+    if (arg == "-h" || arg == "--help") {
+      std::println("Usage: culebra serve [-p PORT] [-d DIR]\n"
+                   "  -p, --port PORT   port to listen on (default: 8000)\n"
+                   "  -d, --dir DIR     directory to serve (default: .)");
+      return 0;
+    }
+    if ((arg == "-p" || arg == "--port") && i + 1 < argc) {
+      std::string_view v = argv[++i];
+      if (!all_digits(v)) {
+        std::println(stderr, "culebra serve: --port needs a number, got '{}'", v);
+        return 2;
+      }
+      try {
+        port = std::stoi(std::string(v));   // digits checked; this catches overflow
+      } catch (...) {
+        std::println(stderr, "culebra serve: --port value '{}' out of range", v);
+        return 2;
+      }
+      continue;
+    }
+    if ((arg == "-d" || arg == "--dir") && i + 1 < argc) {
+      dir = argv[++i];
+      continue;
+    }
+    std::println(stderr, "culebra serve: unknown option '{}'", arg);
+    return 2;
+  }
+  std::error_code ec;
+  if (!std::filesystem::is_directory(dir, ec)) {
+    std::println(stderr, "culebra serve: '{}' is not a directory", dir);
+    return 2;
+  }
+  httplib::Server svr;
+  if (!svr.set_mount_point("/", dir)) {
+    std::println(stderr, "culebra serve: can't serve '{}'", dir);
+    return 2;
+  }
+  std::println("serving {} at http://localhost:{} (Ctrl+C to stop)", dir, port);
+  if (!svr.listen("0.0.0.0", port)) {
+    std::println(stderr, "culebra serve: failed to bind port {}", port);
+    return 1;
+  }
+  return 0;
+}
+#endif  // CULEBRA_HTTP_ENABLED
+
 int main(int argc, const char** argv) {
   startup_profile::start();
   startup_profile::mark("main entered");
@@ -1853,6 +1916,11 @@ int main(int argc, const char** argv) {
   if (argc >= 2 && string(argv[1]) == "init") {
     return culebra::run_init(argc, argv);
   }
+#ifdef CULEBRA_HTTP_ENABLED
+  if (argc >= 2 && string(argv[1]) == "serve") {
+    return run_serve(argc, argv);
+  }
+#endif
   if (argc >= 2 && string(argv[1]) == "dap") {
     // Debug Adapter Protocol server over stdio (interp-backed). The program to
     // debug + its args arrive in the `launch` request, not on the command line.
