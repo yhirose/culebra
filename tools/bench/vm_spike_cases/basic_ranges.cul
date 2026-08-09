@@ -1,0 +1,40 @@
+# Exclusive, inclusive, stepped, negative-step, and empty ranges.
+let mut sum = 0
+for i in 0..10 {
+    sum = sum + i
+}
+println(sum)
+
+sum = 0
+for i in 0..=10 {
+    sum = sum + i
+}
+println(sum)
+
+sum = 0
+for i in 0..10 by 2 {
+    sum = sum + i
+}
+println(sum)
+
+sum = 0
+for i in 10..0 by -1 {
+    sum = sum + i
+}
+println(sum)
+
+sum = 0
+for i in 10..=0 by -2 {
+    sum = sum + i
+}
+println(sum)
+
+# Empty ranges: same bound, and wrong-direction bounds.
+sum = 0
+for i in 5..5 {
+    sum = sum + 1
+}
+for i in 5..0 {
+    sum = sum + 1
+}
+println(sum)

@@ -1,0 +1,38 @@
+# Nested loops, body-scope let, shadowing, and expression evaluation order.
+let mut acc = 0
+for i in 1..=3 {
+    let base = i * 100
+    for j in 1..=2 {
+        let x = base + j
+        acc = acc + x
+    }
+}
+println(acc)
+
+# Shadowing: the body's x hides the outer one and dies with each iteration.
+let x = 7
+let mut seen = 0
+for i in 0..3 {
+    let x = i * 10
+    seen = seen + x
+}
+println(x)
+println(seen)
+
+# Unary minus and precedence in endpoints and bodies.
+let mut t = 0
+for i in -3..=-1 {
+    t = t + i * -2
+}
+println(t)
+
+# Loop variable used in the next loop's endpoints.
+let mut hi = 0
+for i in 0..4 {
+    hi = i
+}
+let mut s2 = 0
+for j in hi..hi + 3 {
+    s2 = s2 + j
+}
+println(s2)

@@ -1,0 +1,6 @@
+# The zero-step error: kind, message, and position must match across lanes.
+let mut sum = 0
+for i in 0..10 by 0 {
+    sum = sum + i
+}
+println(sum)

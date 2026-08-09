@@ -6031,34 +6031,6 @@ struct JIT {
                                llvm::Value* rval, bool nil_coalesce,
                                CompileRhs&& compile_rhs);
 
-  // Structural decode of a RANGE node (`[start?] OP [end?] [BY_STEP]?`): the
-  // operator child sits at index 0 when there is no start, else index 1;
-  // either endpoint may be omitted (open-ended). A trailing BY_STEP node
-  // (kept un-collapsed by the AstOptimizer, see parser.h) carries the step
-  // expression as its lone child and is excluded from the end-bound slot.
-  // Returns the endpoint/step AST nodes (null when absent) without compiling
-  // them, so callers control evaluation order. Single source for the RANGE
-  // layout shared by compile_range and compile_for's counted fast path.
-  struct RangeLayout {
-    const peg::Ast* start;  // null if open-started
-    const peg::Ast* end;    // null if open-ended
-    bool inclusive;
-    const peg::Ast* step;  // null if no `by` clause (implies step 1)
-  };
-  RangeLayout decode_range_layout(const peg::Ast& ast) {
-    using namespace peg::udl;
-    size_t op_idx = (ast.nodes[0]->tag == "RANGE_OPERATOR"_) ? 0 : 1;
-    size_t n = ast.nodes.size();
-    bool has_step = n > 0 && ast.nodes[n - 1]->tag == "BY_STEP"_;
-    size_t end_limit = has_step ? n - 1 : n;
-    return {
-        op_idx == 1 ? ast.nodes[0].get() : nullptr,
-        op_idx + 1 < end_limit ? ast.nodes[op_idx + 1].get() : nullptr,
-        ast.nodes[op_idx]->token == "..=",
-        has_step ? ast.nodes[n - 1]->nodes[0].get() : nullptr,
-    };
-  }
-
   // `a..b` / `a..=b`, optionally `by <step>`: lazy integer iterator (same
   // runtime object as Math.range). Builds a `{class:"Range",...}` value (the
   // bare `..` form is handled by the RANGE_OPERATOR case in compile()).

@@ -1,0 +1,29 @@
+# break / continue. The slice has no conditionals, so these are the
+# unconditional shapes: break as a body statement (with dead code after it),
+# trailing continue (a no-op), and break out of an inner loop only.
+let mut sum = 0
+for i in 0..100 {
+    sum = sum + 1
+    break
+    sum = sum + 1000000
+}
+println(sum)
+
+sum = 0
+for i in 0..5 {
+    sum = sum + i
+    continue
+}
+println(sum)
+
+sum = 0
+for i in 0..4 {
+    let bonus = 100
+    for j in 0..10 {
+        sum = sum + bonus + j
+        break
+        sum = sum + 1000000
+    }
+    sum = sum + 1
+}
+println(sum)

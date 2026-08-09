@@ -17,6 +17,7 @@
 #endif
 #include <runtime/aot_scan.h>
 #include <stdlib_jit.h>
+#include <vm_spike.h>
 #include "culebra_rt_assets.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
@@ -178,6 +179,11 @@ struct Options {
   bool emit_llvm = false;
   int opt_level = 2;
   bool opt_level_explicit = false;
+  // Bytecode-VM spike lanes (docs/internals/vm.md §7 Phase 0). Hidden flags:
+  // run the slice compiler + VM, its LLVM lowering, or dump the bytecode.
+  bool vm_spike = false;
+  bool vm_spike_llvm = false;
+  bool vm_spike_dump = false;
 #endif
   // The entry script, if one was given. At most one: the first non-flag
   // argument is the script and everything after it is its argv.
@@ -1283,6 +1289,9 @@ Options parse_command_line(int argc, const char** argv) {
         continue;
       }
       if (arg == "--emit-llvm") { options.emit_llvm = true; continue; }
+      if (arg == "--vm-spike") { options.vm_spike = true; continue; }
+      if (arg == "--vm-spike-llvm") { options.vm_spike_llvm = true; continue; }
+      if (arg == "--vm-spike-dump") { options.vm_spike_dump = true; continue; }
       if (arg.starts_with("-O")) {
         if (!parse_opt_level(arg, options.opt_level, options.error)) return options;
         options.opt_level_explicit = true;
@@ -1347,6 +1356,23 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
   }
 
 #ifdef CULEBRA_JIT_ENABLED
+  if (options.vm_spike || options.vm_spike_llvm || options.vm_spike_dump) {
+    if (modules.size() != 1) {
+      throw culebra::CulebraError(
+          "SpikeError", "--vm-spike: single-module scripts only");
+    }
+    auto chunk = culebra::vmspike::SpikeCompiler().compile_module(
+        *modules.front().ast);
+    if (options.vm_spike_dump) {
+      cout << culebra::vmspike::dump(chunk);
+    } else if (options.vm_spike_llvm) {
+      culebra::vmspike::run_chunk_via_llvm(chunk, options.emit_llvm);
+    } else {
+      culebra::vmspike::SpikeVM::run(chunk);
+    }
+    return true;
+  }
+
   if (options.jit) {
     culebra::JIT::run_modules(modules, options.emit_llvm, options.debug,
                                options.opt_level, options.jit_faststart);

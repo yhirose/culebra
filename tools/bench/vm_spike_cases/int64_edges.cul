@@ -1,0 +1,31 @@
+# take()'s overflow guard at both int64 boundaries. INT64_MIN is built by
+# arithmetic (the bare literal parses differently) and INT64_MAX from parts.
+let max = 9223372036854775807
+let min = 0 - max - 1
+
+let mut count = 0
+let mut last = 0
+for i in max - 2..=max {
+    count = count + 1
+    last = i
+}
+println(count)
+println(last)
+
+count = 0
+last = 0
+for i in min + 2..=min by -1 {
+    count = count + 1
+    last = i
+}
+println(count)
+println(last)
+
+# A step that overflows past the inclusive end mid-flight.
+count = 0
+for i in max - 4..=max by 3 {
+    count = count + 1
+    last = i
+}
+println(count)
+println(last)
