@@ -1,9 +1,12 @@
 共有バイトコードVM: 設計提案
 =====================================
 
-**Status: 提案段階。** 本書の内容は一切実装されていない。tree-walking
+**Status: 提案段階（Phase 0 spikeは通過）。** §1〜9はtree-walking
 インタプリタをバイトコードVMに置き換え、値表現とフロントエンドを
 JITと共有するための動機・目標アーキテクチャ・移行計画を記録する。
+§7のPhase 0 spikeは実施済みで、出口の2問とも yes —
+結果は[§10](#10-phase-0-spikeの結果)。spikeの範囲外は依然として
+未実装である。
 [`language.ja.md`](../language.ja.md)にある観測可能な言語契約は影響を
 受けない — これはエンジンの変更であって言語の変更ではない。本書と
 `language.ja.md`が食い違う場合は`language.ja.md`が勝つ。
@@ -22,6 +25,7 @@ JITと共有するための動機・目標アーキテクチャ・移行計画�
 7. [移行計画](#7-移行計画)
 8. [リスクと未解決の問題](#8-リスクと未解決の問題)
 9. [先行例](#9-先行例)
+10. [Phase 0 spikeの結果](#10-phase-0-spikeの結果)
 
 ---
 
@@ -333,3 +337,88 @@ Lua/LuaJIT、V8（Ignition + TurboFan）、SpiderMonkey。culebraの現在
 本提案が採用する値モデルは[`memory.ja.md`](memory.ja.md) §3〜6に
 文書化済みであり、そこにある設計系譜の注記（§7）はVMにもそのまま
 当てはまる。
+
+## 10. Phase 0 spikeの結果
+
+2026-08-09、`vm-spike` branchで実施。対象は§7の指定どおりcounted
+range-`for`。作ったもの（隠しフラグ`--vm-spike` /
+`--vm-spike-llvm` / `--vm-spike-dump`、`include/vm_spike.h`、
+計約770行）:
+
+- レジスタベースのバイトコード — slot解決済み変数、命令列に明示的
+  なRC操作、run-lengthの位置サイドテーブル、常時生成のslot名デバッ
+  グテーブル。fusedな`ForPrep`/`ForLoop`ループ命令の意味論は
+  `RangeBounds::done()/take()`（`range_bounds.h`）— interpのfast
+  pathが読み、JITが手書きIRで写している、あの共有シーケンス
+  オラクルである
+- Longのみの言語スライス用バイトコードコンパイラ（`let`/`let mut`、
+  可視な`let mut` slotへの再代入、`+ - *`と単項マイナス、識別子
+  bindingのネストしたcounted `for`、`break`/`continue`、単一引数
+  `println`。それ以外はコンパイル時にreject）
+- JITのruntime値モデル上で動くswitch-dispatchのVM executor
+  （レジスタはC++スタック配列 — conservativeなGCスキャンがそのまま
+  rootに取る）
+- 同じバイトコードのLLVM lowering。`JIT`のfriendとして既存の
+  codegen contextとORC `exec`の骨組みを再利用する。
+  `decode_range_layout`は共有フロントエンド持ち上げの第一号として
+  `jit.h`から`parser.h`へ移した
+
+3レーンは正当性セット（`tools/bench/vm_spike_cases/`）で完全一致:
+包含/排他/step付き/空のrange、int64両端のoverflow、ネスト、
+shadowing、break/continue、zero-stepエラーのkind・文面・位置まで。
+
+**Q2 — VMはtree-walkerに1.5倍以上勝つか? Yes: 約25倍。**
+branch先端の`just build`（-O3 + LTO）バイナリ、hyperfine、5 runs、
+idle状態（同じコードの一つ前のビルドでは約30倍 — ビルド間の
+コードレイアウト起因のゆらぎで、どちらでも合格ラインを大きく
+超える）:
+
+| bench（反復数） | interp | `--vm-spike` | `--jit`（コンパイル込み） | `--vm-spike-llvm` |
+|---|---|---|---|---|
+| `for_range.cul`（25M、最小body） | 9.20 s | **0.350 s（26.3倍）** | 0.463 s（19.9倍） | 0.062 s（148倍） |
+| `for_range_dense.cul`（4M、密なbody） | 6.54 s | **0.271 s（24.2倍）** | 0.350 s（18.7倍） | 0.140 s（47倍） |
+
+per-iterationではinterp約368 ns、VM約14 ns（最小body）。差の主因は
+tree-walkerがcounted fast pathでも払い続けるper-iterationの
+`make_scope` + 名前mapへの挿入である。副次的発見が3つ: この規模の
+プログラムではVMはwall clockでJITにも勝つ（JITレーンはLLVM
+コンパイルが支配的）。バイトコード→LLVMレーンは小さなchunk
+モジュールだけをコンパイルする（preamble spliceなし）ため約55 ms
+で起動する。1行スクリプトの起動はVMレーン約4.4 ms vs interp約
+4.9 msで、§8の起動レイテンシ懸念はこの規模では現れなかった。
+interp側のコストベースラインが高すぎるため1.5倍の合格ラインに
+弁別力はほぼなく、Phase 1にとって意味のある数字は約14 ns/iteration
+というdispatch下限のほうである。
+
+**Q1 — バイトコード→LLVMはAST→LLVMより有意に小さいか? Yes、同一
+構文で約2〜3倍小さく、重い機構ごと消える。** 同じツリー上での実測:
+
+| 単位 | 行数 |
+|---|---|
+| AST→LLVM、`compile_for`全体 | 309 |
+| AST→LLVM、counted fast path合計（fast pathブロック35 + `compile_for_counted_range` 72 + `emit_for_body_with_owned_binding` 95 + `for_break_target` 16） | 約218 |
+| うちスライスの意味論に実際に効く分（pattern/defer腕を除く） | 約183 |
+| バイトコード→LLVM、スライス全体（`lower_chunk`、全15命令） | 176 |
+| バイトコード→LLVM、ループ相当分（ForPrep/ForLoop/Jump case + ブロック骨格） | 約95 |
+| バイトコードコンパイラのFOR case（エンジン間共有） | 51 |
+
+スライス全体のloweringがAST経路の`for`構文単体より小さい。比率より
+も定性差のほうが大きい: loweringにはscope chainも`Owned`ハンドルも
+`PosGuard`の手渡しもASTの再デコードもない — slotはただのalloca
+（mem2regがSSA化）、位置はテーブル参照になり、スコープとRC配置は
+一度だけ書かれるエンジン共有のバイトコードコンパイラへ移った。
+
+両判定への公平のため、Phase 1向けに記録した留保:
+
+- RC規律の検証は空虚に真 — スライスの値は全て`TAG_LONG`/`TAG_NIL`
+  で、`Retain`/`Release`は実行時no-opである。spikeが証明したのは
+  形式がRCを*運べる*ことであり、heap値に対する発行規律の正しさでは
+  ない
+- スライスにはthrow経路のcleanup義務がなく、loweringはlanding pad
+  を一切emitしない。本物のPhase 1形式にはEH region情報が要り、
+  `lower_chunk`のサイズ優位の一部はそこで消費される
+- 端点/step式の評価順・評価回数は正当性セットでは検証できていない
+  （スライスの式は副作用フリー）。Phase 1で効果つき端点で再検証
+  する
+- spikeのscope-stack slot allocatorは持ち上げ予定の解析パス（§3）
+  のプレースホルダであり、Q1の判定はその置換を前提とする

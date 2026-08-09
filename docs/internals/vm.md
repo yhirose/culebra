@@ -1,11 +1,13 @@
 A Shared Bytecode VM: Design Proposal
 =====================================
 
-**Status: proposal.** Nothing in this document is implemented. It
-records the motivation, the target architecture, and the migration
-plan for replacing the tree-walking interpreter with a bytecode VM
-that shares its value representation — and its front end — with the
-JIT. The observable language contract in
+**Status: proposal; Phase 0 spike passed.** Sections 1–9 record the
+motivation, the target architecture, and the migration plan for
+replacing the tree-walking interpreter with a bytecode VM that shares
+its value representation — and its front end — with the JIT. The
+Phase 0 spike (§7) has since been run and answered both exit
+questions yes — results in [§10](#10-phase-0-spike-results);
+everything beyond the spike remains unimplemented. The observable language contract in
 [`language.md`](../language.md) is unaffected: this is a change of
 engine, not of language. Where this document and `language.md`
 disagree, `language.md` wins.
@@ -24,6 +26,7 @@ Contents
 7. [Migration plan](#7-migration-plan)
 8. [Risks and open questions](#8-risks-and-open-questions)
 9. [Prior art](#9-prior-art)
+10. [Phase 0 spike: results](#10-phase-0-spike-results)
 
 ---
 
@@ -356,3 +359,95 @@ add — is the effect §2 predicts for `jit.h`. The value model this
 proposal adopts is already documented in
 [`memory.md`](memory.md) §3–6; the design lineage note there
 (§7) applies to the VM unchanged.
+
+## 10. Phase 0 spike: results
+
+Run 2026-08-09 on branch `vm-spike`, for the counted range-`for`
+construct as §7 prescribes. What was built (hidden flags
+`--vm-spike` / `--vm-spike-llvm` / `--vm-spike-dump`,
+`include/vm_spike.h`, ~770 lines total):
+
+- a register-based bytecode — slot-resolved variables, RC ops
+  explicit in the instruction stream, a run-length position side
+  table, an always-generated slot-name debug table — with fused
+  `ForPrep`/`ForLoop` loop opcodes whose semantics are
+  `RangeBounds::done()/take()` (`range_bounds.h`), the same sequence
+  oracle the interp fast path reads and the JIT hand-emits;
+- a bytecode compiler for a Long-only slice (`let`/`let mut`,
+  reassignment of a visible `let mut` slot, `+ - *` and unary minus,
+  nested counted `for` with identifier bindings, `break`/`continue`,
+  single-argument `println`; everything else rejects at compile
+  time);
+- a switch-dispatch VM executor on the JIT runtime value model
+  (registers in a C++ stack array, so the conservative GC scan roots
+  them);
+- an LLVM lowering of the same bytecode, reusing the JIT's codegen
+  context and the existing ORC `exec` scaffold as a `JIT` friend.
+  `decode_range_layout` moved from `jit.h` to `parser.h` as the
+  first shared-frontend lift.
+
+All three lanes agree on the correctness set
+(`tools/bench/vm_spike_cases/`): inclusive/exclusive/stepped/empty
+ranges, both int64 overflow edges, nesting, shadowing,
+break/continue, and the zero-step error down to kind, message, and
+position.
+
+**Q2 — does the VM beat the tree-walker by ≥1.5×? Yes: ≈25×.**
+`just build` (-O3 + LTO) binary at the branch head, hyperfine,
+5 runs, idle machine (an earlier build of the same code measured
+≈30× — build-to-build code-layout noise, either way far above the
+bar):
+
+| bench (iterations) | interp | `--vm-spike` | `--jit` (compile incl.) | `--vm-spike-llvm` |
+|---|---|---|---|---|
+| `for_range.cul` (25M, minimal body) | 9.20 s | **0.350 s (26.3×)** | 0.463 s (19.9×) | 0.062 s (148×) |
+| `for_range_dense.cul` (4M, dense body) | 6.54 s | **0.271 s (24.2×)** | 0.350 s (18.7×) | 0.140 s (47×) |
+
+Per-iteration: interp ≈368 ns, VM ≈14 ns (minimal body). The gap is
+dominated by the tree-walker's per-iteration `make_scope` +
+name-map insert, which its counted fast path still pays. Three
+side-findings: at these program sizes the VM also beats the JIT on
+wall clock (LLVM compilation dominates the JIT lane); the
+bytecode→LLVM lane starts in ≈55 ms because it compiles only the
+tiny chunk module (no preamble splice); and startup on a one-line
+script is ≈4.4 ms for the VM lane vs ≈4.9 ms interp — the §8
+startup-latency concern did not materialize at this scale. Because
+the interp cost baseline is so high, the 1.5× bar had little
+discriminating power; the informative number for Phase 1 is the
+≈14 ns/iteration dispatch floor.
+
+**Q1 — is bytecode→LLVM significantly smaller than AST→LLVM? Yes,
+≈2–3× for the construct, with the heavy machinery gone.** Counted
+on the same tree:
+
+| unit | lines |
+|---|---|
+| AST→LLVM, `compile_for` whole | 309 |
+| AST→LLVM, counted-fast-path total (fast-path block 35 + `compile_for_counted_range` 72 + `emit_for_body_with_owned_binding` 95 + `for_break_target` 16) | ≈218 |
+| of which load-bearing for the slice (no pattern/defer arms) | ≈183 |
+| bytecode→LLVM, whole slice (`lower_chunk`, all 15 opcodes) | 176 |
+| bytecode→LLVM, loop share (ForPrep/ForLoop/Jump cases + block scaffolding) | ≈95 |
+| bytecode compiler FOR case (engine-shared) | 51 |
+
+The lowering for the whole slice is smaller than the AST path's
+`for` construct alone, and the qualitative difference is larger than
+the ratio: the lowering has no scope chain, no `Owned` handles, no
+`PosGuard` threading, and no AST re-decoding — slots became plain
+allocas (mem2reg), positions a table lookup, and scoping/RC
+placement moved into the engine-shared bytecode compiler where they
+are written once.
+
+Caveats recorded for Phase 1, in fairness to both verdicts:
+
+- The RC discipline is only vacuously exercised — every slice value
+  is `TAG_LONG`/`TAG_NIL`, so `Retain`/`Release` are runtime no-ops.
+  The spike proves the format *carries* RC, not that an emitter's
+  placement discipline is correct for heap values.
+- The slice has no throw-path cleanup obligations, so the lowering
+  emits no landing pads. A real Phase 1 format needs EH region info;
+  part of `lower_chunk`'s size advantage will be spent there.
+- Endpoint/step evaluation order and once-vs-per-iteration are
+  untested by the correctness set (slice expressions are
+  side-effect-free); re-verify with effectful endpoints in Phase 1.
+- The spike's scope-stack slot allocator is a placeholder for the
+  lifted analysis passes (§3); the Q1 verdict assumes that swap.
