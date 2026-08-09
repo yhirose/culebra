@@ -390,19 +390,7 @@ class Printer {
     auto info = scan_source(src);
     comments_ = std::move(info.comments);
     is_code_ = std::move(info.is_code);
-    // Innermost enclosing brace pair per comment. A comment byte is never code
-    // (the scanner clears the mask over it), so braces written inside comments
-    // and inside strings / interpolation holes are correctly ignored.
-    owner_.assign(comments_.size(), 0);
-    std::vector<size_t> open;  // interiors of the brace pairs still open
-    size_t c = 0;
-    for (size_t i = 0; i < src_.size(); i++) {
-      if (c < comments_.size() && comments_[c].start == i)
-        owner_[c++] = open.empty() ? 0 : open.back();
-      if (!is_code_[i]) continue;
-      if (src_[i] == '{') open.push_back(i + 1);
-      else if (src_[i] == '}' && !open.empty()) open.pop_back();
-    }
+    index_comment_owners();
   }
 
   DocP print_program(const peg::Ast& program) {
@@ -416,41 +404,41 @@ class Printer {
   std::vector<Comment> comments_;  // sorted by start (scan order)
   std::vector<char> is_code_;      // per-byte code mask (see scan_source)
   // Comment ownership, parallel to comments_: the byte just past the `{` of the
-  // innermost code-level brace pair holding the comment, or 0 when no brace
-  // encloses it. This is the whole of comment attachment. Every printer that
-  // places comments takes its interior start from block_interior(), which
-  // brace-matches the same mask, so a comment belongs to the list being printed
-  // exactly when its owner equals that interior — an equality, not a guess at
-  // nesting depth. Object and set literals open a pair of their own, so their
-  // interior comments can never be mistaken for a statement's.
+  // innermost code-level brace pair holding the comment, 0 when none does.
+  // Printers get the same key from block_interior() (same mask, same matching),
+  // so a list owns a comment exactly when owner_[ci] equals its interior start.
+  // Object and set literals open a pair of their own, so their interior
+  // comments are never mistaken for a statement's.
   std::vector<size_t> owner_;
   static constexpr int kIndent = 2;
+
+  // A comment byte is never code (the scanner clears the mask over it), so
+  // braces written inside comments — and inside strings / interpolation holes —
+  // are ignored here just as block_interior() ignores them.
+  void index_comment_owners() {
+    owner_.assign(comments_.size(), 0);
+    std::vector<size_t> open;  // interiors of the brace pairs still open
+    size_t ci = 0;
+    for (size_t i = 0; i < src_.size(); i++) {
+      if (ci < comments_.size() && comments_[ci].start == i)
+        owner_[ci++] = open.empty() ? 0 : open.back();
+      if (!is_code_[i]) continue;
+      if (src_[i] == '{') open.push_back(i + 1);
+      else if (src_[i] == '}' && !open.empty()) open.pop_back();
+    }
+  }
 
   std::string slice(const peg::Ast& a) const {
     return std::string(src_.substr(a.position, a.length));
   }
   DocP verbatim(const peg::Ast& a) const { return doc_text(slice(a)); }
 
-  // A leaf atom (IDENTIFIER / NUMBER / STRING / ...) carries an exact token,
-  // but the AstOptimizer may have collapsed a delimiter-adding wrapper onto it
-  // (a single-statement block `{ x }` or a parenthesized atom `( x )`), leaving
-  // the node's source span widened to include those brackets while its `.token`
-  // drops any string quotes. Recover the tight literal by stripping balanced
-  // wrapping brackets and surrounding whitespace from the span — preserving
-  // string quotes and shedding redundant parens / braces.
-  // Strip balanced wrapper brackets (`{}` block, `()` paren, `[]` index) and
-  // surrounding whitespace that the AstOptimizer folded into a node's span when
-  // it collapsed a single-child delimiter rule onto an inner expression. The
-  // node's intrinsic literal (a string's quotes, a keyword construct) is never
-  // a bracket pair at the outer edge, and every intrinsic bracket/brace literal
-  // (array / object / tuple / set) is printed explicitly and never reaches
-  // here, so trimming is meaning-preserving.
   // True iff the leading bracket of `t` is closed by the bracket at its very
   // end (so the pair encloses the whole span) rather than by some interior
   // bracket — `(a) = (b)` must NOT be treated as a wrapped `a) = (b`. Only code
-  // brackets count: a `)` written inside a comment or a string left the pair
-  // looking unbalanced, so the wrapper stayed on and carried the comment into a
-  // leaf the enclosing list also emits — two copies, and a refused file.
+  // bytes count: a bracket inside a comment or a string would otherwise
+  // unbalance the pair, leaving the wrapper on and the comment it wrapped
+  // duplicated between the leaf and the enclosing list.
   bool encloses_whole(std::string_view t, char open, char close) const {
     size_t off = static_cast<size_t>(t.data() - src_.data());
     int depth = 0;
@@ -462,6 +450,14 @@ class Printer {
     return false;
   }
 
+  // A leaf atom (IDENTIFIER / NUMBER / STRING / ...) carries an exact token, but
+  // the AstOptimizer may have collapsed a delimiter-adding wrapper onto it (a
+  // single-statement block `{ x }`, a parenthesized atom `( x )`), widening the
+  // node's span onto those brackets while its `.token` drops any string quotes.
+  // Recover the node's own text by stripping the balanced wrapper brackets and
+  // surrounding whitespace. A node's intrinsic delimiters are never shed: a
+  // string's quotes are not a bracket pair, and every bracket/brace literal
+  // (array / object / tuple / set) is printed explicitly and never reaches here.
   std::string_view tight_span(const peg::Ast& a) const {
     std::string_view t = src_.substr(a.position, a.length);
     // A comment the optimizer folded into the span goes with the brackets it
@@ -625,8 +621,7 @@ class Printer {
   // is_code_ brace matching. The scan ignores braces inside strings /
   // interpolation holes, and balances object / set / nested-block braces.
   // `found` is false if no block brace exists (shouldn't happen for a real
-  // block); the caller then gets an interior no comment can be owned by, so a
-  // misanchored block refuses the file rather than dropping its comments.
+  // block).
   struct BlockSpan { size_t lo, after; bool found; };
   BlockSpan block_interior(size_t from) const {
     size_t i = from, n = src_.size();
@@ -706,9 +701,9 @@ class Printer {
     // this item's problem — the printer that recurses into that pair places
     // them, which is how a bare block's statements keep their own comments.
     auto has_mid_comment = [&](size_t k) {
-      for (size_t c = 0; c < comments_.size(); c++)
-        if (owner_[c] == lo && head[k] < comments_[c].start &&
-            comments_[c].start < tail[k])
+      for (size_t ci = 0; ci < comments_.size(); ci++)
+        if (owner_[ci] == lo && head[k] < comments_[ci].start &&
+            comments_[ci].start < tail[k])
           return true;
       return false;
     };
@@ -802,6 +797,12 @@ class Printer {
     return doc_concat(std::move(parts));
   }
 
+  bool owns_a_comment(size_t lo) const {
+    for (size_t ci = 0; ci < comments_.size(); ci++)
+      if (owner_[ci] == lo) return true;
+    return false;
+  }
+
   // A `{ ... }` brace group, always multi-line, holding `items` rendered by
   // `render` (with comments attached) and separated by `sep` ("" or ","). The
   // brace interior is located by scanning from `after_pos` (at or before `{`).
@@ -811,22 +812,11 @@ class Printer {
     BlockSpan span = block_interior(after_pos);
     size_t lo = span.found ? span.lo : (items.empty() ? after_pos : items.front()->position);
 
-    if (items.empty()) {  // `{}` unless it holds dangling comments
-      std::vector<DocP> dangling;
-      for (size_t ci = 0; ci < comments_.size(); ci++)
-        if (owner_[ci] == lo) dangling.push_back(comment_doc(comments_[ci]));
-      if (dangling.empty()) {
-        return empty_ok ? doc_text("{}")
-                        : doc_concat({doc_text("{"), doc_hardline(), doc_text("}")});
-      }
-      std::vector<DocP> inner = {doc_hardline()};
-      for (size_t k = 0; k < dangling.size(); k++) {
-        if (k) inner.push_back(doc_hardline());
-        inner.push_back(dangling[k]);
-      }
-      return doc_concat({doc_text("{"), doc_indent(kIndent, doc_concat(std::move(inner))),
-                         doc_hardline(), doc_text("}")});
-    }
+    // With no items, print_items emits just the comments this interior owns —
+    // which is the dangling-comment block. Only a truly empty one is special.
+    if (items.empty() && !owns_a_comment(lo))
+      return empty_ok ? doc_text("{}")
+                      : doc_concat({doc_text("{"), doc_hardline(), doc_text("}")});
     return doc_concat({
         doc_text("{"),
         doc_indent(kIndent, doc_concat({doc_hardline(),
@@ -1121,33 +1111,42 @@ class Printer {
     return print(e);
   }
 
-  // True when a comment sits inside `n`'s own token extent.
+  // True when a comment sits anywhere inside `node`'s brace pair — its own
+  // comments and those of anything nested within it.
   //
-  // Statement-level comment attachment hands a comment to whoever owns the
-  // enclosing `{`, on the assumption that a brace opens a block whose printer
-  // recurses with its own range. Object and set literals also open with `{`,
-  // but they render through print_delimited, which receives finished Docs and
-  // no source positions — so nobody emits the comment and the whole file is
-  // refused by the comment-preservation net. `[...]` / `(...)` never hit this:
-  // their brackets don't count toward that brace depth, so the comment stays
-  // attached to the enclosing statement, which then slices verbatim.
-  //
-  // Emitting a brace literal that holds a comment verbatim gives it the same
-  // treatment, at the same cost: its interior spacing is left as written
-  // rather than normalized. Comment-aware brace-literal printing needs the
-  // group to hard-break whenever a line comment lands inside it, which is a
-  // layout change rather than a plumbing one.
-  bool holds_comment(const peg::Ast& n) const {
-    auto [lo, hi] = real_span(n);
+  // Unlike attachment, this is a layout question, so it asks about containment
+  // rather than ownership. A line comment cannot share a line with what follows
+  // it, so a literal holding one anywhere inside must lay out broken — and
+  // since a Doc that hard-breaks may not sit inside a group, every level above
+  // it inside the same literal has to break along with it.
+  bool brace_holds_comment(const peg::Ast& node) const {
+    BlockSpan span = block_interior(node.position);
+    if (!span.found) return false;
     for (const auto& c : comments_) {
-      if (c.start >= hi) break;  // comments_ is sorted by start
-      if (c.start >= lo) return true;
+      if (c.start >= span.after) break;  // comments_ is sorted by start
+      if (c.start >= span.lo) return true;
     }
     return false;
   }
 
+  // A brace literal holding comments lays out like a block: one element per
+  // line, its comments placed by the same owner test a block's statements get.
+  // The trailing `,` is what the broken form already prints and what a
+  // 1-element Set requires.
+  //
+  // `node.position` is the literal's `{` unless the optimizer folded a lone-
+  // statement block onto it; that shape (a literal alone in a block, holding a
+  // comment) is refused by the safety net, as it always was.
+  template <typename Render>
+  DocP print_brace_literal(const peg::Ast& node, Render render) {
+    std::vector<const peg::Ast*> elems;
+    for (auto& e : node.nodes) elems.push_back(e.get());
+    return print_braced(elems, node.position, ",", /*empty_ok=*/true, render);
+  }
+
   DocP print_set(const peg::Ast& node) {
-    if (holds_comment(node)) return verbatim(node);
+    if (brace_holds_comment(node))
+      return print_brace_literal(node, [&](size_t k) { return print(*node.nodes[k]); });
     std::vector<DocP> items;
     for (auto& e : node.nodes) items.push_back(print(*e));
     // A 1-element Set must keep its trailing comma (`{a,}`) for the same
@@ -1173,28 +1172,25 @@ class Printer {
     return print_tuple_items(std::move(items));
   }
 
+  DocP print_object_property(const peg::Ast& p) {
+    if (p.original_name == "SPREAD_ELEM")
+      return doc_concat({doc_text("..."), print(*p.nodes[0])});
+    auto ov = view_object_property(p);
+    // Non-identifier literal keys slice verbatim; identifiers use the token.
+    DocP keyd = (ov.key->name == "IDENTIFIER") ? doc_text(std::string(ov.key->token))
+                                               : verbatim(*ov.key);
+    DocP muts = ov.is_mut ? doc_text("mut ") : doc_text("");
+    if (ov.is_shorthand) return doc_concat({muts, keyd});
+    return doc_concat({muts, keyd, doc_text(": "), print(*ov.value)});
+  }
+
   DocP print_object(const peg::Ast& node) {
-    if (holds_comment(node)) return verbatim(node);
+    if (brace_holds_comment(node))
+      return print_brace_literal(
+          node, [&](size_t k) { return print_object_property(*node.nodes[k]); });
     if (node.nodes.empty()) return doc_text("{}");
     std::vector<DocP> items;
-    for (auto& p : node.nodes) {
-      if (p->original_name == "SPREAD_ELEM") {
-        items.push_back(doc_concat({doc_text("..."), print(*p->nodes[0])}));
-        continue;
-      }
-      auto ov = view_object_property(*p);
-      std::string key(ov.key->name == "STRING" || ov.key->name == "INTERPOLATED_STRING"
-                          ? slice(*ov.key)
-                          : std::string(ov.key->token));
-      // Non-identifier literal keys slice verbatim; identifiers use the token.
-      DocP keyd = (ov.key->name == "IDENTIFIER") ? doc_text(std::string(ov.key->token))
-                                                  : verbatim(*ov.key);
-      DocP muts = ov.is_mut ? doc_text("mut ") : doc_text("");
-      if (ov.is_shorthand)
-        items.push_back(doc_concat({muts, keyd}));
-      else
-        items.push_back(doc_concat({muts, keyd, doc_text(": "), print(*ov.value)}));
-    }
+    for (auto& p : node.nodes) items.push_back(print_object_property(*p));
     return print_delimited("{", std::move(items), "}");
   }
 

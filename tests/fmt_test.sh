@@ -127,14 +127,14 @@ if ! diff -u "$TMP/par_want.cul" "$TMP/par_got.cul" > "$TMP/par_diff" 2>&1; then
 fi
 
 # --- 1d. Golden fixture: comments inside brace literals --------------------
-# `{...}` opens an object/set literal as well as a block, so statement-level
-# comment attachment hands an interior comment to the literal — which prints
-# from the AST through print_delimited and has nowhere to put it. One such
-# comment used to make the safety net refuse the WHOLE file (`[...]` / `(...)`
-# were never affected: their brackets don't count toward that brace depth).
-# A brace literal holding a comment is now emitted verbatim, so its interior
-# keeps the author's spacing while the rest of the file still normalizes —
-# see include/formatter.h holds_comment.
+# An object / set literal opens a brace pair of its own, so a comment written
+# inside one belongs to that pair — not to the statement around it, which has
+# no slot for it and once made the safety net refuse the WHOLE file. Such a
+# literal lays out broken, one element per line, with its comments attached the
+# way a block's statements get theirs; a literal without comments keeps the
+# compact form. A comment anywhere inside forces the break, nested literals
+# included, since a Doc that hard-breaks may not sit inside a group.
+# See include/formatter.h print_brace_literal.
 cat > "$TMP/brc_in.cul" <<'EOF'
 let  o = {a: 1,
   # inside an object literal
@@ -143,21 +143,55 @@ let  s = {1,
   // inside a set literal
   2}
 let  plain={a:1,b:2}
+let  lead={ # before the first key
+  k: 1}
+let  tail={k: 1
+  # after the last value
+}
+let  nest={x: {y: 1,
+  # only the inner one has it
+  z: 2}, w: 3}
 inspect(o)
 inspect(s)
 inspect(plain)
+inspect(lead)
+inspect(tail)
+inspect(nest)
 EOF
 cat > "$TMP/brc_want.cul" <<'EOF'
-let o = {a: 1,
+let o = {
+  a: 1,
   # inside an object literal
-  b: 2}
-let s = {1,
+  b: 2,
+}
+let s = {
+  1,
   // inside a set literal
-  2}
+  2,
+}
 let plain = {a: 1, b: 2}
+let lead = {
+  # before the first key
+  k: 1,
+}
+let tail = {
+  k: 1,
+  # after the last value
+}
+let nest = {
+  x: {
+    y: 1,
+    # only the inner one has it
+    z: 2,
+  },
+  w: 3,
+}
 inspect(o)
 inspect(s)
 inspect(plain)
+inspect(lead)
+inspect(tail)
+inspect(nest)
 EOF
 "$CULEBRA" fmt "$TMP/brc_in.cul" > "$TMP/brc_got.cul" 2>"$TMP/brc_err"
 if ! diff -u "$TMP/brc_want.cul" "$TMP/brc_got.cul" > "$TMP/brc_diff" 2>&1; then

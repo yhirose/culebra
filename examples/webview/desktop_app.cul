@@ -16,33 +16,39 @@ let VISITS_DB = "visits.db"
 
 # assets: dev = live disk / AOT = baked into the binary. routes: just the app's
 # API — the facade does the server, window, and shutdown.
-Desktop.run({title: "culebra desktop", size: [
-  720,
-  560,
-], assets: Embed.dir("dist"), routes: fn (srv) {
-  srv.get("/api/hello", fn (req) {
-    {
-      content_type: "application/json",
-      body: JSON.stringify({message: "Hello from culebra's local server 🛸"}),
-    }
-  })
-  srv.post("/api/echo", fn (req) {
-    let input = JSON.parse(req.body)
-    {
-      content_type: "application/json",
-      body: JSON.stringify({reply: "You said: " + input["text"]}),
-    }
-  })
-  # Each worker runs on its own runtime (its own heap), so this can't capture
-  # a shared `db` — it opens one fresh per request instead. See "Keeping
-  # state safe across workers" in docs/guides/desktop-app.md.
-  srv.post("/api/visit", fn (req) {
-    let db = SQLite.open(VISITS_DB)
-    db.execute("CREATE TABLE IF NOT EXISTS visits (id INTEGER PRIMARY KEY, n INTEGER)")
-    let rows = db.query("SELECT n FROM visits WHERE id = 1")
-    let n = if rows.size() == 0 { 0 } else { rows[0]["n"] } + 1
-    db.execute("INSERT OR REPLACE INTO visits (id, n) VALUES (1, ?)", [n])
-    db.close()
-    {content_type: "application/json", body: JSON.stringify({visits: n})}
-  })
-}})
+Desktop.run({
+  title: "culebra desktop",
+  size: [720, 560],
+  assets: Embed.dir("dist"),
+  routes: fn (srv) {
+    srv.get("/api/hello", fn (req) {
+      {
+        content_type: "application/json",
+        body: JSON.stringify({message: "Hello from culebra's local server 🛸"}),
+      }
+    })
+    srv.post("/api/echo", fn (req) {
+      let input = JSON.parse(req.body)
+      {
+        content_type: "application/json",
+        body: JSON.stringify({reply: "You said: " + input["text"]}),
+      }
+    })
+    # Each worker runs on its own runtime (its own heap), so this can't capture
+    # a shared `db` — it opens one fresh per request instead. See "Keeping
+    # state safe across workers" in docs/guides/desktop-app.md.
+    srv.post("/api/visit", fn (req) {
+      let db = SQLite.open(VISITS_DB)
+      db.execute("CREATE TABLE IF NOT EXISTS visits (id INTEGER PRIMARY KEY, n INTEGER)")
+      let rows = db.query("SELECT n FROM visits WHERE id = 1")
+      let n = if rows.size() == 0 {
+        0
+      } else {
+        rows[0]["n"]
+      } + 1
+      db.execute("INSERT OR REPLACE INTO visits (id, n) VALUES (1, ?)", [n])
+      db.close()
+      {content_type: "application/json", body: JSON.stringify({visits: n})}
+    })
+  },
+})
