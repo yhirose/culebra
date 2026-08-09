@@ -12,7 +12,7 @@
 namespace culebra {
 
 // Emit the LLVM function for a FUNCTION / METHOD / synthetic-ctor AST.
-// `info_key` matches what `analyze_fn_common` used, so `func_info_`
+// `info_key` matches what `analyze_fn_common` used, so `analysis_.func_info`
 // lookup finds the free-var / captured-local sets.
 inline JIT::Owned JIT::compile_fn_common(
     const peg::Ast* info_key, const peg::Ast* params_ast,
@@ -37,8 +37,8 @@ inline JIT::Owned JIT::compile_fn_common(
   } class_params_guard{class_type_params_,
                        std::vector<std::string_view>(active_class_type_params)};
 
-  auto infoIt = func_info_.find(info_key);
-  if (infoIt == func_info_.end()) {
+  auto infoIt = analysis_.func_info.find(info_key);
+  if (infoIt == analysis_.func_info.end()) {
     throw std::runtime_error("missing func_info for function");
   }
   FuncInfo& info = infoIt->second;

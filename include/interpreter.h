@@ -97,11 +97,11 @@ inline std::unordered_map<std::string_view, IterBuiltin>& iterator_builtins();
 
 // The static shadow analyzer now lives in lint.h (`lint::check_shadow`),
 // the shared home for pre-eval static checks. The interpreter invokes it
-// before evaluation; the JIT performs the equivalent check inline during
-// compilation (jit.h `collect_fn_locals` / `visit_for_frees`).
+// before evaluation; the compiling backends run it via
+// `FnAnalysis::analyze_program` (fn_analysis.h).
 
-// `_` is the non-binding sink in patterns and parameters.
-inline bool is_sink_name(std::string_view s) { return s == "_"; }
+// The sink-name predicate (`is_sink_name`) lives in parser.h with the
+// other AST-adjacent predicates.
 
 // --- Multimethod dispatch (shared between interp and JIT) ---
 

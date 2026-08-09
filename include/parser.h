@@ -994,6 +994,9 @@ inline std::optional<ArgListError> check_arg_list(const peg::Ast& args_ast) {
   return std::nullopt;
 }
 
+// `_` is the non-binding sink in patterns and parameters.
+inline bool is_sink_name(std::string_view s) { return s == "_"; }
+
 inline bool is_kw_only_sep(const peg::Ast& node) {
   using namespace peg::udl;
   return node.tag == "KW_ONLY_SEP"_;
