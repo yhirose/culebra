@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <format>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -552,11 +553,215 @@ struct SpikeVM {
   }
 };
 
-// LLVM lowering of the same bytecode — filled in by the spike's LLVM step.
+// Bytecode -> LLVM IR, reusing the JIT object as the codegen context and the
+// existing exec() scaffold (ORC, isolate-join and teardown-collect guards,
+// uncaught-error conversion). This is the Phase 3 shape: jit.h consuming
+// bytecode instead of the AST.
+struct SpikeLowering {
+  static void run_chunk(const Chunk& c, bool emit_llvm) {
+    using namespace llvm;
+    JIT::ensure_native_target_init();
+    auto ctx = std::make_unique<LLVMContext>();
+    auto mod = std::make_unique<Module>("vm_spike", *ctx);
+    JIT::apply_target(*mod, Triple(sys::getDefaultTargetTriple()));
+    IRBuilder<> builder(*ctx);
+    JIT jit(ctx.get(), mod.get(), builder);
+    jit.declare_runtime_functions();
+
+    auto fn = Function::Create(FunctionType::get(builder.getVoidTy(), false),
+                               Function::ExternalLinkage, "__culebra_main",
+                               mod.get());
+    builder.SetInsertPoint(BasicBlock::Create(*ctx, "entry", fn));
+    lower_chunk(jit, c, fn);
+    verifyFunction(*fn);
+    JIT::optimize_module(*mod, 2);
+    if (emit_llvm) {
+      mod->print(outs(), nullptr);
+    } else {
+      JIT::exec(std::move(ctx), std::move(mod));
+    }
+  }
+
+  static void lower_chunk(JIT& j, const Chunk& c, llvm::Function* fn) {
+    using namespace llvm;
+    auto& b = j.builder_;
+    auto i8Ty = b.getInt8Ty();
+    auto i64Ty = b.getInt64Ty();
+    auto zero_value = ConstantAggregateZero::get(j.valueType_);
+
+    // One Value alloca per slot, nil-initialized — mem2reg turns these into
+    // SSA; this is what replaces the AST path's Scope/VarSlot machinery.
+    // (llvm::Value spelled out: the enclosing namespace's culebra::Value
+    // wins over the using-directive.)
+    std::vector<llvm::Value*> slots(c.num_slots);
+    for (int32_t s = 0; s < c.num_slots; ++s) {
+      slots[s] = b.CreateAlloca(
+          j.valueType_, nullptr,
+          s < static_cast<int32_t>(c.slot_names.size()) ? c.slot_names[s]
+                                                        : "slot");
+      b.CreateStore(zero_value, slots[s]);
+    }
+    auto load_slot = [&](int32_t s) {
+      return b.CreateLoad(j.valueType_, slots[s]);
+    };
+    auto tag_of = [&](llvm::Value* v) {
+      return b.CreateTrunc(b.CreateExtractValue(v, {0}), i8Ty);
+    };
+    auto data_of = [&](llvm::Value* v) {
+      return b.CreateExtractValue(v, {1});
+    };
+    auto rc_call = [&](const char* fname, int32_t s) {
+      auto v = load_slot(s);
+      j.emit_call(
+          j.module_->getOrInsertFunction(fname, b.getVoidTy(), i8Ty, i64Ty),
+          {tag_of(v), data_of(v)});
+    };
+
+    // Pass 1: every jump target opens a basic block.
+    std::map<int32_t, BasicBlock*> blocks;
+    auto mark = [&](int32_t t) {
+      if (!blocks.count(t))
+        blocks[t] = BasicBlock::Create(j.ctx_, std::format("L{}", t), fn);
+    };
+    for (size_t i = 0; i < c.code.size(); ++i) {
+      const auto& in = c.code[i];
+      switch (in.op) {
+        case Op::Jump:
+          mark(in.a);
+          break;
+        case Op::ForPrep:
+          mark(in.b);
+          break;
+        case Op::ForLoop:
+          mark(in.b);
+          mark(static_cast<int32_t>(i) + 1);  // done() falls through here
+          break;
+        default:
+          break;
+      }
+    }
+
+    // Pass 2: linear walk over the instructions.
+    for (size_t i = 0; i < c.code.size(); ++i) {
+      if (auto it = blocks.find(static_cast<int32_t>(i)); it != blocks.end()) {
+        if (!b.GetInsertBlock()->getTerminator()) b.CreateBr(it->second);
+        b.SetInsertPoint(it->second);
+      } else if (b.GetInsertBlock()->getTerminator()) {
+        // Dead code after an unconditional break/continue jump; emit into a
+        // detached block the optimizer erases.
+        b.SetInsertPoint(BasicBlock::Create(j.ctx_, "dead", fn));
+      }
+      const auto& in = c.code[i];
+      switch (in.op) {
+        case Op::LoadConst: {
+          const auto& k = c.consts[in.b];
+          llvm::Value* v =
+              b.CreateInsertValue(zero_value, b.getInt64(k.tag), {0});
+          v = b.CreateInsertValue(v, b.getInt64(k.data), {1});
+          b.CreateStore(v, slots[in.a]);
+          break;
+        }
+        case Op::Move:
+          b.CreateStore(load_slot(in.b), slots[in.a]);
+          break;
+        case Op::Take:
+          b.CreateStore(load_slot(in.b), slots[in.a]);
+          b.CreateStore(zero_value, slots[in.b]);
+          break;
+        case Op::Retain:
+          rc_call(rt::value_retain, in.a);
+          break;
+        case Op::Release:
+          rc_call(rt::value_release, in.a);
+          b.CreateStore(zero_value, slots[in.a]);
+          break;
+        case Op::Neg:
+          b.CreateStore(j.make_long(b.CreateNeg(data_of(load_slot(in.b)))),
+                        slots[in.a]);
+          break;
+        case Op::Add:
+        case Op::Sub:
+        case Op::Mul: {
+          auto l = data_of(load_slot(in.b));
+          auto r = data_of(load_slot(in.c));
+          llvm::Value* d = in.op == Op::Add   ? b.CreateAdd(l, r)
+                           : in.op == Op::Sub ? b.CreateSub(l, r)
+                                              : b.CreateMul(l, r);
+          b.CreateStore(j.make_long(d), slots[in.a]);
+          break;
+        }
+        case Op::Jump:
+          b.CreateBr(blocks.at(in.a));
+          break;
+        case Op::ForPrep: {
+          auto [line, col] = chunk_pos_at(c, i);
+          auto step = data_of(load_slot(in.a + 2));
+          j.emit_call(j.module_->getOrInsertFunction(
+                          rt::range_step_check, b.getVoidTy(), i64Ty, i64Ty,
+                          i64Ty),
+                      {step, b.getInt64(line), b.getInt64(col)});
+          b.CreateStore(j.make_long(b.getInt64(in.c ? 2 : 0)),
+                        slots[in.a + 3]);
+          b.CreateBr(blocks.at(in.b));
+          break;
+        }
+        case Op::ForLoop: {
+          // RangeBounds::done()/take() spelled as IR; inclusive rides the
+          // flags slot as a per-loop constant the optimizer folds.
+          auto cur = data_of(load_slot(in.a));
+          auto end = data_of(load_slot(in.a + 1));
+          auto step = data_of(load_slot(in.a + 2));
+          auto flags = data_of(load_slot(in.a + 3));
+          auto exhausted =
+              b.CreateICmpNE(b.CreateAnd(flags, b.getInt64(1)), b.getInt64(0));
+          auto inclusive =
+              b.CreateICmpNE(b.CreateAnd(flags, b.getInt64(2)), b.getInt64(0));
+          auto up = b.CreateSelect(inclusive, b.CreateICmpSGT(cur, end),
+                                   b.CreateICmpSGE(cur, end));
+          auto down = b.CreateSelect(inclusive, b.CreateICmpSLT(cur, end),
+                                     b.CreateICmpSLE(cur, end));
+          auto step_pos = b.CreateICmpSGT(step, b.getInt64(0));
+          auto done =
+              b.CreateOr(exhausted, b.CreateSelect(step_pos, up, down));
+          auto advBB = BasicBlock::Create(j.ctx_, "for.adv", fn);
+          b.CreateCondBr(done, blocks.at(static_cast<int32_t>(i) + 1), advBB);
+          b.SetInsertPoint(advBB);
+          auto sadd = Intrinsic::getOrInsertDeclaration(
+              j.module_, Intrinsic::sadd_with_overflow, {i64Ty});
+          auto res = b.CreateCall(sadd, {cur, step});
+          b.CreateStore(j.make_long(b.CreateExtractValue(res, 0)),
+                        slots[in.a]);
+          auto newflags =
+              b.CreateOr(b.CreateAnd(flags, b.getInt64(2)),
+                         b.CreateZExt(b.CreateExtractValue(res, 1), i64Ty));
+          b.CreateStore(j.make_long(newflags), slots[in.a + 3]);
+          rc_call(rt::value_release, in.c);
+          b.CreateStore(j.make_long(cur), slots[in.c]);
+          b.CreateBr(blocks.at(in.b));
+          break;
+        }
+        case Op::Println: {
+          auto v = load_slot(in.a);
+          j.emit_call(j.module_->getOrInsertFunction(rt::println,
+                                                     b.getVoidTy(), i8Ty,
+                                                     i64Ty),
+                      {tag_of(v), data_of(v)});
+          break;
+        }
+        case Op::Safepoint:
+          j.emit_safepoint();
+          break;
+        case Op::Halt:
+          b.CreateRetVoid();
+          break;
+      }
+    }
+    if (!b.GetInsertBlock()->getTerminator()) b.CreateRetVoid();
+  }
+};
+
 inline void run_chunk_via_llvm(const Chunk& chunk, bool emit_llvm) {
-  (void)chunk;
-  (void)emit_llvm;
-  throw CulebraError("SpikeError", "--vm-spike-llvm: not implemented yet");
+  SpikeLowering::run_chunk(chunk, emit_llvm);
 }
 
 }  // namespace culebra::vmspike
