@@ -28,7 +28,9 @@ let _vector3_module = fn () {
       Vector3.new(-self.x, -self.y, -self.z)
     }
     __eq__(o) {
-      let v = match o { v: Vector3 => v }
+      let v = match o {
+        v: Vector3 => v,
+      }
       v != nil && self.x == v.x && self.y == v.y && self.z == v.z
     }
 

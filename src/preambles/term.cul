@@ -498,45 +498,117 @@ let _term_module = fn () {
     }
   }
   {
-    cols: fn () { _Term.cols() },
-    rows: fn () { _Term.rows() },
-    size: fn () { (_Term.cols(), _Term.rows()) },
-    clear: fn () { "\x1b[2J\x1b[H" },
-    move: fn (x, y) { "\x1b[" + to_string(y + 1) + ";" + to_string(x + 1) + "H" },
-    hide: fn () { "\x1b[?25l" },
-    show: fn () { "\x1b[?25h" },
-    flush: fn () { _Term.flush() },
-    fg: fn (s, n) { _wrap(s, _fg_params(n), "39") },
-    bg: fn (s, n) { _wrap(s, _bg_params(n), "49") },
-    rgb: fn (s, r, g, b) { _wrap(s, _rgbfg_params(r, g, b), "39") },
+    cols: fn () {
+      _Term.cols()
+    },
+    rows: fn () {
+      _Term.rows()
+    },
+    size: fn () {
+      (_Term.cols(), _Term.rows())
+    },
+    clear: fn () {
+      "\x1b[2J\x1b[H"
+    },
+    move: fn (x, y) {
+      "\x1b[" + to_string(y + 1) + ";" + to_string(x + 1) + "H"
+    },
+    hide: fn () {
+      "\x1b[?25l"
+    },
+    show: fn () {
+      "\x1b[?25h"
+    },
+    flush: fn () {
+      _Term.flush()
+    },
+    fg: fn (s, n) {
+      _wrap(s, _fg_params(n), "39")
+    },
+    bg: fn (s, n) {
+      _wrap(s, _bg_params(n), "49")
+    },
+    rgb: fn (s, r, g, b) {
+      _wrap(s, _rgbfg_params(r, g, b), "39")
+    },
     style: _style,
-    bold: fn (s) { _attr(s, "1", "22") },
-    dim: fn (s) { _attr(s, "2", "22") },
-    underline: fn (s) { _attr(s, "4", "24") },
-    reverse: fn (s) { _attr(s, "7", "27") },
-    black: fn (s) { _named(s, 0) },
-    red: fn (s) { _named(s, 1) },
-    green: fn (s) { _named(s, 2) },
-    yellow: fn (s) { _named(s, 3) },
-    blue: fn (s) { _named(s, 4) },
-    magenta: fn (s) { _named(s, 5) },
-    cyan: fn (s) { _named(s, 6) },
-    white: fn (s) { _named(s, 7) },
-    level: fn () { _level },
-    set_level: fn (n) { _level = n },
-    parse: fn (raw) { _parse_event(raw) },         # raw report -> Event | nil
-    mouse_on: fn () { "\x1b[?1002h\x1b[?1006h" },  # button + drag, SGR coords
-    mouse_off: fn () { "\x1b[?1002l\x1b[?1006l" },
-    width: fn (s) { _Term.width(s) },
-    resized: fn () { _Term.resized() },
-    attach_tty: fn () { _Term.attach_tty() },
-    poll: fn (timeout) { _poll(timeout) },
+    bold: fn (s) {
+      _attr(s, "1", "22")
+    },
+    dim: fn (s) {
+      _attr(s, "2", "22")
+    },
+    underline: fn (s) {
+      _attr(s, "4", "24")
+    },
+    reverse: fn (s) {
+      _attr(s, "7", "27")
+    },
+    black: fn (s) {
+      _named(s, 0)
+    },
+    red: fn (s) {
+      _named(s, 1)
+    },
+    green: fn (s) {
+      _named(s, 2)
+    },
+    yellow: fn (s) {
+      _named(s, 3)
+    },
+    blue: fn (s) {
+      _named(s, 4)
+    },
+    magenta: fn (s) {
+      _named(s, 5)
+    },
+    cyan: fn (s) {
+      _named(s, 6)
+    },
+    white: fn (s) {
+      _named(s, 7)
+    },
+    level: fn () {
+      _level
+    },
+    set_level: fn (n) {
+      _level = n
+    },
+    parse: fn (raw) {
+      _parse_event(raw)
+    },  # raw report -> Event | nil
+    mouse_on: fn () {
+      "\x1b[?1002h\x1b[?1006h"
+    },  # button + drag, SGR coords
+    mouse_off: fn () {
+      "\x1b[?1002l\x1b[?1006l"
+    },
+    width: fn (s) {
+      _Term.width(s)
+    },
+    resized: fn () {
+      _Term.resized()
+    },
+    attach_tty: fn () {
+      _Term.attach_tty()
+    },
+    poll: fn (timeout) {
+      _poll(timeout)
+    },
     app: fn (body, mouse = false) {
       _Term.raw_on()
-      IO.print("\x1b[?1049h\x1b[?25l\x1b[0m" + (if mouse { "\x1b[?1002h\x1b[?1006h" } else { "" }))
+      IO.print("\x1b[?1049h\x1b[?25l\x1b[0m" + if mouse {
+          "\x1b[?1002h\x1b[?1006h"
+        } else {
+          ""
+        })
       _Term.flush()
       defer {
-        IO.print((if mouse { "\x1b[?1002l\x1b[?1006l" } else { "" }) + "\x1b[?25h\x1b[?1049l\x1b[0m")
+        IO.print(if mouse {
+          "\x1b[?1002l\x1b[?1006l"
+        } else {
+          ""
+        } + "\x1b[?25h\x1b[?1049l\x1b[0m")
         _Term.flush()
         _Term.raw_off()
       }

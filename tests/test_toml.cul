@@ -193,8 +193,10 @@ let d2 = try {
 assert_eq(d2.message, "TOML.parse: nesting too deep (limit 1000)")
 assert_eq(d2.col, 1)
 assert_throws("ValueError", || TOML.parse("[" + "a.".repeat(1000) + "a]"))
-assert_throws("ValueError", || TOML.parse("x = " + '{y = '.repeat(1001) + "1" +
-  '}'.repeat(1001)))
+assert_throws(
+  "ValueError",
+  || TOML.parse("x = " + '{y = '.repeat(1001) + "1" + '}'.repeat(1001)),
+)
 // stringify walks values a loop can build deeper than any parse.
 mut deep_obj = {}
 for _ in 0..1001 {

@@ -51,12 +51,26 @@ assert_eq(type_of(Math.sqrt(4)), 'Float')
 assert_eq(Math.sqrt(4), 2.0)
 
 # --- Edge errors: kind and message identical across backends.
-assert_eq(err(fn () { Math.wrap(1, 0) }).kind, 'ZeroDivisionError')
-assert_eq(err(fn () { Math.pow(2, -1) }).kind, 'TypeError')
-assert_eq(err(fn () { Math.min() }).kind, 'TypeError')
-assert_eq(err(fn () { Math.max(1, 'a') }).kind, 'TypeError')
-assert_eq(err(fn () { Math.abs('a') }).kind, 'TypeError')
-assert_eq(err(fn () { Math.clamp(1, 'a', 3) }).kind, 'TypeError')
-assert_eq(err(fn () { Math.atan2(1, 'a') }).kind, 'TypeError')
+assert_eq(err(fn () {
+    Math.wrap(1, 0)
+  }).kind, 'ZeroDivisionError')
+assert_eq(err(fn () {
+    Math.pow(2, -1)
+  }).kind, 'TypeError')
+assert_eq(err(fn () {
+    Math.min()
+  }).kind, 'TypeError')
+assert_eq(err(fn () {
+    Math.max(1, 'a')
+  }).kind, 'TypeError')
+assert_eq(err(fn () {
+    Math.abs('a')
+  }).kind, 'TypeError')
+assert_eq(err(fn () {
+    Math.clamp(1, 'a', 3)
+  }).kind, 'TypeError')
+assert_eq(err(fn () {
+    Math.atan2(1, 'a')
+  }).kind, 'TypeError')
 
 inspect('math kernels: ok')

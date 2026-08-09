@@ -42,7 +42,10 @@ let unit_x = Vector3.new(1, 0, 0)
 assert_eq(a.dot(unit_x), 1.0)
 assert_eq(Vector3.new(2, 3, 6).length_squared(), 49.0)
 assert_eq(Vector3.new(2, 3, 6).length(), 7.0)
-assert_eq(Vector3.new(2, 3, 6).normalized(), Vector3.new(2.0 / 7, 3.0 / 7, 6.0 / 7))
+assert_eq(
+  Vector3.new(2, 3, 6).normalized(),
+  Vector3.new(2.0 / 7, 3.0 / 7, 6.0 / 7),
+)
 assert_close(Vector3.new(2, 3, 6).normalized().length(), 1.0, 1e-9)
 assert_eq(Vector3.new(0, 0, 0).distance_to(Vector3.new(2, 3, 6)), 7.0)
 

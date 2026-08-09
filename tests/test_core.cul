@@ -623,7 +623,9 @@ test_random = fn () {
     i = i + 1
   }
   assert_eq(Random.choice(['only']), 'only')
-  assert_throws('TypeError', fn () { Random.choice([]) })
+  assert_throws('TypeError', fn () {
+    Random.choice([])
+  })
 }
 
 test_io_exists = fn () {

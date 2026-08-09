@@ -296,8 +296,10 @@ assert_true(se3.kind == 'TypeError' &&
 // --- nesting depth guard: an error, not a C-stack overflow ---
 // 1000 nested containers are the limit; the 1001st is a ValueError whose
 // position names the offending bracket.
-assert_eq(JSON.stringify(JSON.parse('['.repeat(1000) + ']'.repeat(1000))),
-  '['.repeat(1000) + ']'.repeat(1000))
+assert_eq(
+  JSON.stringify(JSON.parse('['.repeat(1000) + ']'.repeat(1000))),
+  '['.repeat(1000) + ']'.repeat(1000),
+)
 let de1 = try {
   JSON.parse('['.repeat(1001))
   nil

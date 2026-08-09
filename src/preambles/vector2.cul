@@ -36,7 +36,9 @@ let _vector2_module = fn () {
     # non-matching match yields nil, so a non-Vector2 RHS is simply
     # not-equal, never a thrown TypeError.
     __eq__(o) {
-      let v = match o { v: Vector2 => v }
+      let v = match o {
+        v: Vector2 => v,
+      }
       v != nil && self.x == v.x && self.y == v.y
     }
 

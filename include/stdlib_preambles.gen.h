@@ -697,45 +697,117 @@ inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(let _term_module = 
     }
   }
   {
-    cols: fn () { _Term.cols() },
-    rows: fn () { _Term.rows() },
-    size: fn () { (_Term.cols(), _Term.rows()) },
-    clear: fn () { "\x1b[2J\x1b[H" },
-    move: fn (x, y) { "\x1b[" + to_string(y + 1) + ";" + to_string(x + 1) + "H" },
-    hide: fn () { "\x1b[?25l" },
-    show: fn () { "\x1b[?25h" },
-    flush: fn () { _Term.flush() },
-    fg: fn (s, n) { _wrap(s, _fg_params(n), "39") },
-    bg: fn (s, n) { _wrap(s, _bg_params(n), "49") },
-    rgb: fn (s, r, g, b) { _wrap(s, _rgbfg_params(r, g, b), "39") },
+    cols: fn () {
+      _Term.cols()
+    },
+    rows: fn () {
+      _Term.rows()
+    },
+    size: fn () {
+      (_Term.cols(), _Term.rows())
+    },
+    clear: fn () {
+      "\x1b[2J\x1b[H"
+    },
+    move: fn (x, y) {
+      "\x1b[" + to_string(y + 1) + ";" + to_string(x + 1) + "H"
+    },
+    hide: fn () {
+      "\x1b[?25l"
+    },
+    show: fn () {
+      "\x1b[?25h"
+    },
+    flush: fn () {
+      _Term.flush()
+    },
+    fg: fn (s, n) {
+      _wrap(s, _fg_params(n), "39")
+    },
+    bg: fn (s, n) {
+      _wrap(s, _bg_params(n), "49")
+    },
+    rgb: fn (s, r, g, b) {
+      _wrap(s, _rgbfg_params(r, g, b), "39")
+    },
     style: _style,
-    bold: fn (s) { _attr(s, "1", "22") },
-    dim: fn (s) { _attr(s, "2", "22") },
-    underline: fn (s) { _attr(s, "4", "24") },
-    reverse: fn (s) { _attr(s, "7", "27") },
-    black: fn (s) { _named(s, 0) },
-    red: fn (s) { _named(s, 1) },
-    green: fn (s) { _named(s, 2) },
-    yellow: fn (s) { _named(s, 3) },
-    blue: fn (s) { _named(s, 4) },
-    magenta: fn (s) { _named(s, 5) },
-    cyan: fn (s) { _named(s, 6) },
-    white: fn (s) { _named(s, 7) },
-    level: fn () { _level },
-    set_level: fn (n) { _level = n },
-    parse: fn (raw) { _parse_event(raw) },         # raw report -> Event | nil
-    mouse_on: fn () { "\x1b[?1002h\x1b[?1006h" },  # button + drag, SGR coords
-    mouse_off: fn () { "\x1b[?1002l\x1b[?1006l" },
-    width: fn (s) { _Term.width(s) },
-    resized: fn () { _Term.resized() },
-    attach_tty: fn () { _Term.attach_tty() },
-    poll: fn (timeout) { _poll(timeout) },
+    bold: fn (s) {
+      _attr(s, "1", "22")
+    },
+    dim: fn (s) {
+      _attr(s, "2", "22")
+    },
+    underline: fn (s) {
+      _attr(s, "4", "24")
+    },
+    reverse: fn (s) {
+      _attr(s, "7", "27")
+    },
+    black: fn (s) {
+      _named(s, 0)
+    },
+    red: fn (s) {
+      _named(s, 1)
+    },
+    green: fn (s) {
+      _named(s, 2)
+    },
+    yellow: fn (s) {
+      _named(s, 3)
+    },
+    blue: fn (s) {
+      _named(s, 4)
+    },
+    magenta: fn (s) {
+      _named(s, 5)
+    },
+    cyan: fn (s) {
+      _named(s, 6)
+    },
+    white: fn (s) {
+      _named(s, 7)
+    },
+    level: fn () {
+      _level
+    },
+    set_level: fn (n) {
+      _level = n
+    },
+    parse: fn (raw) {
+      _parse_event(raw)
+    },  # raw report -> Event | nil
+    mouse_on: fn () {
+      "\x1b[?1002h\x1b[?1006h"
+    },  # button + drag, SGR coords
+    mouse_off: fn () {
+      "\x1b[?1002l\x1b[?1006l"
+    },
+    width: fn (s) {
+      _Term.width(s)
+    },
+    resized: fn () {
+      _Term.resized()
+    },
+    attach_tty: fn () {
+      _Term.attach_tty()
+    },
+    poll: fn (timeout) {
+      _poll(timeout)
+    },
     app: fn (body, mouse = false) {
       _Term.raw_on()
-      IO.print("\x1b[?1049h\x1b[?25l\x1b[0m" + (if mouse { "\x1b[?1002h\x1b[?1006h" } else { "" }))
+      IO.print("\x1b[?1049h\x1b[?25l\x1b[0m" + if mouse {
+          "\x1b[?1002h\x1b[?1006h"
+        } else {
+          ""
+        })
       _Term.flush()
       defer {
-        IO.print((if mouse { "\x1b[?1002l\x1b[?1006l" } else { "" }) + "\x1b[?25h\x1b[?1049l\x1b[0m")
+        IO.print(if mouse {
+          "\x1b[?1002l\x1b[?1006l"
+        } else {
+          ""
+        } + "\x1b[?25h\x1b[?1049l\x1b[0m")
         _Term.flush()
         _Term.raw_off()
       }
@@ -1277,28 +1349,58 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
   }
   let rect = fn (a, b, c, d, e = nil, fill = true) {
     match a {
-      p: Vector2 => _Canvas.rect(p.x, p.y, b, c, d, if e ?? fill { 1 } else { 0 }),
-      _ => _Canvas.rect(a, b, c, d, e, if fill { 1 } else { 0 }),
+      p: Vector2 => _Canvas.rect(p.x, p.y, b, c, d, if e ?? fill {
+        1
+      } else {
+        0
+      }),
+      _ => _Canvas.rect(a, b, c, d, e, if fill {
+        1
+      } else {
+        0
+      }),
     }
   }
   let circle = fn (a, b, c, d = nil, fill = true) {
     match a {
-      p: Vector2 => _Canvas.ellipse(p.x, p.y, b, b, c, if d ?? fill { 1 } else { 0 }),
-      _ => _Canvas.ellipse(a, b, c, c, d, if fill { 1 } else { 0 }),
+      p: Vector2 => _Canvas.ellipse(p.x, p.y, b, b, c, if d ?? fill {
+        1
+      } else {
+        0
+      }),
+      _ => _Canvas.ellipse(a, b, c, c, d, if fill {
+        1
+      } else {
+        0
+      }),
     }
   }
   let ellipse = fn (a, b, c, d, e = nil, fill = true) {
     match a {
-      p: Vector2 => _Canvas.ellipse(p.x, p.y, b, c, d, if e ?? fill { 1 } else { 0 }),
-      _ => _Canvas.ellipse(a, b, c, d, e, if fill { 1 } else { 0 }),
+      p: Vector2 => _Canvas.ellipse(p.x, p.y, b, c, d, if e ?? fill {
+        1
+      } else {
+        0
+      }),
+      _ => _Canvas.ellipse(a, b, c, d, e, if fill {
+        1
+      } else {
+        0
+      }),
     }
   }
   let triangle = fn (a, b, c, d, e = nil, f = nil, g = nil, fill = true) {
     match a {
-      p1: Vector2 => _Canvas.triangle(
-        p1.x, p1.y, b.x, b.y, c.x, c.y, d, if e ?? fill { 1 } else { 0 },
-      ),
-      _ => _Canvas.triangle(a, b, c, d, e, f, g, if fill { 1 } else { 0 }),
+      p1: Vector2 => _Canvas.triangle(p1.x, p1.y, b.x, b.y, c.x, c.y, d, if e ?? fill {
+        1
+      } else {
+        0
+      }),
+      _ => _Canvas.triangle(a, b, c, d, e, f, g, if fill {
+        1
+      } else {
+        0
+      }),
     }
   }
 
@@ -1309,12 +1411,18 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     hsv: hsv,
     # Allocate (or resize) the framebuffer. `run` does this for you; call it
     # directly when you drive the frame loop yourself.
-    init: fn (w, h) { _Canvas.init(w, h) },
+    init: fn (w, h) {
+      _Canvas.init(w, h)
+    },
     # --- window ---
     # Name it. Call before the loop starts; a later call renames a window
     # already up. No-op where there is no window (headless, browser).
-    title: fn (name) { _Canvas.title(name) },
-    clear: fn (color) { _Canvas.clear(color) },
+    title: fn (name) {
+      _Canvas.title(name)
+    },
+    clear: fn (color) {
+      _Canvas.clear(color)
+    },
     # set_pixel/get_pixel/rect/line/circle/ellipse/triangle: multimethod
     # dispatchers declared above (scalar + Vector2 overloads), bound here as
     # first-class Function values like any other field.
@@ -1329,14 +1437,26 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     # outline closes itself). Each filled row covers [xl, xr), like rect, so
     # polygons sharing an edge tile with no seam.
     polygon: fn (points, color, fill = true) {
-      _Canvas.polygon(points, color, if fill { 1 } else { 0 })
+      _Canvas.polygon(points, color, if fill {
+        1
+      } else {
+        0
+      })
     },
-    present: fn () { _Canvas.present() },
-    width: fn () { _Canvas.width() },
-    height: fn () { _Canvas.height() },
+    present: fn () {
+      _Canvas.present()
+    },
+    width: fn () {
+      _Canvas.width()
+    },
+    height: fn () {
+      _Canvas.height()
+    },
     # PNG bytes for the current draw target — the framebuffer, or the sprite
     # a surrounding draw_to switched to, following width/height/get_pixel.
-    to_png: fn () { _Canvas.sprite_to_png(0) },
+    to_png: fn () {
+      _Canvas.sprite_to_png(0)
+    },
     Sprite: Sprite,
     draw_to: draw_to,
     text: text,
@@ -1350,17 +1470,39 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     tone: tone,
     Sound: Sound,
     music: music,
-    music_stop: fn () { _Canvas.music_stop() },
-    music_pause: fn () { _Canvas.music_pause() },
-    music_resume: fn () { _Canvas.music_resume() },
-    music_volume: fn (vol) { _Canvas.music_volume(vol) },
-    music_seek: fn (seconds) { _Canvas.music_seek(seconds) },
-    music_playing: fn () { _Canvas.music_playing() },
+    music_stop: fn () {
+      _Canvas.music_stop()
+    },
+    music_pause: fn () {
+      _Canvas.music_pause()
+    },
+    music_resume: fn () {
+      _Canvas.music_resume()
+    },
+    music_volume: fn (vol) {
+      _Canvas.music_volume(vol)
+    },
+    music_seek: fn (seconds) {
+      _Canvas.music_seek(seconds)
+    },
+    music_playing: fn () {
+      _Canvas.music_playing()
+    },
     run: run,
-    LEFT: LEFT, RIGHT: RIGHT, UP: UP, DOWN: DOWN, A: A, B: B,
-    PULSE: PULSE, PULSE2: PULSE2, TRIANGLE: TRIANGLE, SAWTOOTH: SAWTOOTH,
+    LEFT: LEFT,
+    RIGHT: RIGHT,
+    UP: UP,
+    DOWN: DOWN,
+    A: A,
+    B: B,
+    PULSE: PULSE,
+    PULSE2: PULSE2,
+    TRIANGLE: TRIANGLE,
+    SAWTOOTH: SAWTOOTH,
     NOISE: NOISE,
-    DUTY_EIGHTH: DUTY_EIGHTH, DUTY_QUARTER: DUTY_QUARTER, DUTY_HALF: DUTY_HALF,
+    DUTY_EIGHTH: DUTY_EIGHTH,
+    DUTY_QUARTER: DUTY_QUARTER,
+    DUTY_HALF: DUTY_HALF,
     DUTY_THREE_QUARTER: DUTY_THREE_QUARTER,
   }
 }
@@ -2218,7 +2360,9 @@ let _vector2_module = fn () {
     # non-matching match yields nil, so a non-Vector2 RHS is simply
     # not-equal, never a thrown TypeError.
     __eq__(o) {
-      let v = match o { v: Vector2 => v }
+      let v = match o {
+        v: Vector2 => v,
+      }
       v != nil && self.x == v.x && self.y == v.y
     }
 
@@ -2280,7 +2424,9 @@ let _vector3_module = fn () {
       Vector3.new(-self.x, -self.y, -self.z)
     }
     __eq__(o) {
-      let v = match o { v: Vector3 => v }
+      let v = match o {
+        v: Vector3 => v,
+      }
       v != nil && self.x == v.x && self.y == v.y && self.z == v.z
     }
 

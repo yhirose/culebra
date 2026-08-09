@@ -17,7 +17,13 @@ if true {
   let top_inner = {b: [8, 9]}
 }
 
-try { in_arm(true) } catch e { }
-try { in_arm(false) } catch e { }
+try {
+  in_arm(true)
+} catch e {
+}
+try {
+  in_arm(false)
+} catch e {
+}
 
 throw 'boom'

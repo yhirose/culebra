@@ -528,28 +528,58 @@ let _canvas_module = fn () {
   }
   let rect = fn (a, b, c, d, e = nil, fill = true) {
     match a {
-      p: Vector2 => _Canvas.rect(p.x, p.y, b, c, d, if e ?? fill { 1 } else { 0 }),
-      _ => _Canvas.rect(a, b, c, d, e, if fill { 1 } else { 0 }),
+      p: Vector2 => _Canvas.rect(p.x, p.y, b, c, d, if e ?? fill {
+        1
+      } else {
+        0
+      }),
+      _ => _Canvas.rect(a, b, c, d, e, if fill {
+        1
+      } else {
+        0
+      }),
     }
   }
   let circle = fn (a, b, c, d = nil, fill = true) {
     match a {
-      p: Vector2 => _Canvas.ellipse(p.x, p.y, b, b, c, if d ?? fill { 1 } else { 0 }),
-      _ => _Canvas.ellipse(a, b, c, c, d, if fill { 1 } else { 0 }),
+      p: Vector2 => _Canvas.ellipse(p.x, p.y, b, b, c, if d ?? fill {
+        1
+      } else {
+        0
+      }),
+      _ => _Canvas.ellipse(a, b, c, c, d, if fill {
+        1
+      } else {
+        0
+      }),
     }
   }
   let ellipse = fn (a, b, c, d, e = nil, fill = true) {
     match a {
-      p: Vector2 => _Canvas.ellipse(p.x, p.y, b, c, d, if e ?? fill { 1 } else { 0 }),
-      _ => _Canvas.ellipse(a, b, c, d, e, if fill { 1 } else { 0 }),
+      p: Vector2 => _Canvas.ellipse(p.x, p.y, b, c, d, if e ?? fill {
+        1
+      } else {
+        0
+      }),
+      _ => _Canvas.ellipse(a, b, c, d, e, if fill {
+        1
+      } else {
+        0
+      }),
     }
   }
   let triangle = fn (a, b, c, d, e = nil, f = nil, g = nil, fill = true) {
     match a {
-      p1: Vector2 => _Canvas.triangle(
-        p1.x, p1.y, b.x, b.y, c.x, c.y, d, if e ?? fill { 1 } else { 0 },
-      ),
-      _ => _Canvas.triangle(a, b, c, d, e, f, g, if fill { 1 } else { 0 }),
+      p1: Vector2 => _Canvas.triangle(p1.x, p1.y, b.x, b.y, c.x, c.y, d, if e ?? fill {
+        1
+      } else {
+        0
+      }),
+      _ => _Canvas.triangle(a, b, c, d, e, f, g, if fill {
+        1
+      } else {
+        0
+      }),
     }
   }
 
@@ -560,12 +590,18 @@ let _canvas_module = fn () {
     hsv: hsv,
     # Allocate (or resize) the framebuffer. `run` does this for you; call it
     # directly when you drive the frame loop yourself.
-    init: fn (w, h) { _Canvas.init(w, h) },
+    init: fn (w, h) {
+      _Canvas.init(w, h)
+    },
     # --- window ---
     # Name it. Call before the loop starts; a later call renames a window
     # already up. No-op where there is no window (headless, browser).
-    title: fn (name) { _Canvas.title(name) },
-    clear: fn (color) { _Canvas.clear(color) },
+    title: fn (name) {
+      _Canvas.title(name)
+    },
+    clear: fn (color) {
+      _Canvas.clear(color)
+    },
     # set_pixel/get_pixel/rect/line/circle/ellipse/triangle: multimethod
     # dispatchers declared above (scalar + Vector2 overloads), bound here as
     # first-class Function values like any other field.
@@ -580,14 +616,26 @@ let _canvas_module = fn () {
     # outline closes itself). Each filled row covers [xl, xr), like rect, so
     # polygons sharing an edge tile with no seam.
     polygon: fn (points, color, fill = true) {
-      _Canvas.polygon(points, color, if fill { 1 } else { 0 })
+      _Canvas.polygon(points, color, if fill {
+        1
+      } else {
+        0
+      })
     },
-    present: fn () { _Canvas.present() },
-    width: fn () { _Canvas.width() },
-    height: fn () { _Canvas.height() },
+    present: fn () {
+      _Canvas.present()
+    },
+    width: fn () {
+      _Canvas.width()
+    },
+    height: fn () {
+      _Canvas.height()
+    },
     # PNG bytes for the current draw target — the framebuffer, or the sprite
     # a surrounding draw_to switched to, following width/height/get_pixel.
-    to_png: fn () { _Canvas.sprite_to_png(0) },
+    to_png: fn () {
+      _Canvas.sprite_to_png(0)
+    },
     Sprite: Sprite,
     draw_to: draw_to,
     text: text,
@@ -601,17 +649,39 @@ let _canvas_module = fn () {
     tone: tone,
     Sound: Sound,
     music: music,
-    music_stop: fn () { _Canvas.music_stop() },
-    music_pause: fn () { _Canvas.music_pause() },
-    music_resume: fn () { _Canvas.music_resume() },
-    music_volume: fn (vol) { _Canvas.music_volume(vol) },
-    music_seek: fn (seconds) { _Canvas.music_seek(seconds) },
-    music_playing: fn () { _Canvas.music_playing() },
+    music_stop: fn () {
+      _Canvas.music_stop()
+    },
+    music_pause: fn () {
+      _Canvas.music_pause()
+    },
+    music_resume: fn () {
+      _Canvas.music_resume()
+    },
+    music_volume: fn (vol) {
+      _Canvas.music_volume(vol)
+    },
+    music_seek: fn (seconds) {
+      _Canvas.music_seek(seconds)
+    },
+    music_playing: fn () {
+      _Canvas.music_playing()
+    },
     run: run,
-    LEFT: LEFT, RIGHT: RIGHT, UP: UP, DOWN: DOWN, A: A, B: B,
-    PULSE: PULSE, PULSE2: PULSE2, TRIANGLE: TRIANGLE, SAWTOOTH: SAWTOOTH,
+    LEFT: LEFT,
+    RIGHT: RIGHT,
+    UP: UP,
+    DOWN: DOWN,
+    A: A,
+    B: B,
+    PULSE: PULSE,
+    PULSE2: PULSE2,
+    TRIANGLE: TRIANGLE,
+    SAWTOOTH: SAWTOOTH,
     NOISE: NOISE,
-    DUTY_EIGHTH: DUTY_EIGHTH, DUTY_QUARTER: DUTY_QUARTER, DUTY_HALF: DUTY_HALF,
+    DUTY_EIGHTH: DUTY_EIGHTH,
+    DUTY_QUARTER: DUTY_QUARTER,
+    DUTY_HALF: DUTY_HALF,
     DUTY_THREE_QUARTER: DUTY_THREE_QUARTER,
   }
 }
