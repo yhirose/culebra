@@ -579,10 +579,10 @@ struct StrGuard {
   }
 };
 
-// CPython-trashcan deallocation state: see ~Value. The deferred list holds
-// container payloads (std::any) whose destruction was postponed past the
-// depth budget. Resetting the any is the release: whatever container it
-// boxes destroys its elements, and each element ~Value re-enters here.
+// CPython-trashcan deallocation for deep value chains: see ~Value. The
+// payload is a container's boxed std::any, and resetting it is the release —
+// whatever it boxes destroys its elements, and each element ~Value re-enters
+// the trashcan.
 inline void _value_teardown_release(std::any& payload) { payload.reset(); }
 
 using ValueTrashcan = Trashcan<std::any, &_value_teardown_release>;

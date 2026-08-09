@@ -219,7 +219,7 @@ struct TensorImpl {
   TensorShape shape;              // mirror of value.shape(); set at build
   Dtype dtype = Dtype::F32;
   tl::array value;
-  std::vector<std::shared_ptr<TensorImpl>> inputs;
+  TensorInputs inputs;
 
   // Op-specific scalar parameter. Reduction axis for Sum/Mean/Max/Argmax;
   // start row for Slice.
@@ -247,7 +247,7 @@ struct TensorImpl {
   // Engine-node ctor: op tag + built tl expression + autograd inputs.
   // Shape is read back from the tl graph (known at build time).
   TensorImpl(Op o, tl::array v, Dtype d,
-             std::vector<std::shared_ptr<TensorImpl>> ins, bool view = false)
+             TensorInputs ins, bool view = false)
       : op(o),
         dtype(d),
         value(std::move(v)),
