@@ -1,0 +1,18 @@
+# Serve site/ locally, replacing `python3 -m http.server`.
+# Doesn't build the playground wasm — run `just site-build` first if it
+# needs rebuilding.
+#
+#   just site-serve [port]
+
+let args = Args.parse(Sys.argv, {
+  name: "site-serve",
+  doc: "serve site/ locally",
+  args: [
+    {name: "port", short: "p", type: "Long", default: 8000, doc: "port to listen on"},
+  ],
+})
+
+let srv = Http.server()
+srv.static("/", "site")
+println("serving site/ at http://localhost:{args.port} (Ctrl+C to stop)")
+srv.listen(args.port)
