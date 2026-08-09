@@ -1572,9 +1572,10 @@ add_test(NAME fmt_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/fmt_test.sh
                  $<TARGET_FILE:culebra>)
 
-# Parser nesting-depth guard (include/parser.h): 20k-deep brackets must be a
+# Parser behaviour on pathological nesting: 20k-deep brackets must be a
 # SyntaxError rather than a recursive-descent stack overflow, while 500-deep
-# generated literals and 50k-term flat chains keep parsing.
+# generated literals and 50k-term flat chains keep parsing — and nesting that
+# does parse must not backtrack exponentially (200-deep parens).
 add_test(NAME parse_depth_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/parse_depth_test.sh
                  $<TARGET_FILE:culebra>)

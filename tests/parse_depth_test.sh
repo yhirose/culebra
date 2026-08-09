@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
-# Regression test for the parser's nesting-depth guard (include/parser.h
-# get_parser's enter/leave hooks). Deep machine-written nesting must be a
-# SyntaxError, not a C-stack SIGSEGV; realistic generated nesting must still
-# parse. Nesting descends through whichever recursive rule family probes
-# first (a `[` tower dives through the *pattern* rules before the array
-# literal), so both bracket shapes are exercised.
+# Regression test for the parser's behaviour on pathological nesting.
+#
+# Depth (include/parser.h get_parser's enter/leave hooks): deep
+# machine-written nesting must be a SyntaxError, not a C-stack SIGSEGV;
+# realistic generated nesting must still parse. Nesting descends through
+# whichever recursive rule family probes first (a `[` tower dives through the
+# *pattern* rules before the array literal), so all three bracket shapes are
+# exercised.
+#
+# Time: nesting that parses must not backtrack exponentially. The towers below
+# 4000 rules deep are the guard — they finish in milliseconds now and would
+# take 2^depth with a pattern rule whose alternatives share a consuming prefix
+# (see TUPLE_PATTERN in grammar_def.h).
 # Usage: parse_depth_test.sh <path-to-culebra>
 set -u
 CULEBRA="${1:?usage: parse_depth_test.sh <culebra-binary>}"
@@ -21,7 +28,7 @@ deep() {  # deep <open> <close> <count> — `let x = <<<1>>>` nested N deep
 }
 
 # --- too deep: clean SyntaxError, process must not crash -------------------
-for shape in "[ ]" "{ }"; do
+for shape in "[ ]" "{ }" "( )"; do
   set -- $shape
   deep "$1" "$2" 20000 > "$TMP/deep.cul"
   out=$("$CULEBRA" "$TMP/deep.cul" 2>&1)
@@ -45,6 +52,32 @@ if ! out=$("$CULEBRA" "$TMP/ok.cul" 2>&1) || [ "$out" != "1" ]; then
 fi
 if ! out=$("$CULEBRA" --jit "$TMP/ok.cul" 2>&1) || [ "$out" != "1" ]; then
   echo "FAIL 500-deep array (jit): expected to run, got: ${out:0:120}"
+  fail=1
+fi
+
+# --- nesting that parses must not backtrack exponentially ------------------
+# `(` is the shape that costs: LET and MUTABLE are both optional, so
+# EXPRESSION's first alternative (DESTRUCTURE_ASSIGN) reaches TUPLE_PATTERN
+# for every `(`-initial expression. Both towers are far under the depth limit,
+# so they are pure time checks — 200 parens took 2^200 steps before
+# TUPLE_PATTERN was left-factored.
+deep "(" ")" 200 > "$TMP/paren.cul"
+if ! out=$("$CULEBRA" "$TMP/paren.cul" 2>&1) || [ "$out" != "1" ]; then
+  echo "FAIL 200-deep parens: expected to run, got: ${out:0:120}"
+  fail=1
+fi
+
+# The same tower through TUPLE_PATTERN itself: nested single-element tuples,
+# pattern and value alike.
+{
+  printf 'let mut '
+  printf '(%.0s' $(seq 1 100); printf 'a'; printf ',)%.0s' $(seq 1 100)
+  printf ' = '
+  printf '(%.0s' $(seq 1 100); printf '1'; printf ',)%.0s' $(seq 1 100)
+  printf '\nIO.println(a)\n'
+} > "$TMP/tuple.cul"
+if ! out=$("$CULEBRA" "$TMP/tuple.cul" 2>&1) || [ "$out" != "1" ]; then
+  echo "FAIL 100-deep tuple pattern: expected to run, got: ${out:0:120}"
   fail=1
 fi
 

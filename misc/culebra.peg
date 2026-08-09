@@ -335,8 +335,15 @@
 
   # Tuple pattern: at least one comma, optional trailing comma. No
   # rest pattern (Tuple is fixed-arity). Mirrors the TUPLE literal.
-  TUPLE_PATTERN            <-  '(' _ PATTERN _ ',' _ PATTERN (_ ',' _ PATTERN)* _ ','? _ ')'
-                            /  '(' _ PATTERN _ ',' _ ')'
+  # Left-factored on purpose: written as two alternatives sharing the
+  # `'(' _ PATTERN _ ',' _` prefix, the first PATTERN is re-parsed at the
+  # same position by the second alternative. PATTERN is not packrat-cached
+  # (peglib memoizes only rules reachable from 2+ alternatives at the same
+  # *start* position, which a shared prefix hides), so nested parens cost
+  # 2^depth. Every `(`-initial expression pays it: LET and MUTABLE are both
+  # optional, so EXPRESSION's first alternative DESTRUCTURE_ASSIGN reaches
+  # here for any `(`.
+  TUPLE_PATTERN            <-  '(' _ PATTERN _ ',' _ (PATTERN (_ ',' _ PATTERN)* _ ','? _ ')' / ')')
 
   PRIMARY                  <-  WHILE / FOR / IF / MATCH / COND / HANDLE / PERFORM / RETURN / THROW / BREAK / CONTINUE / FUNCTION / LAMBDA / OBJECT / SET / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / REGEX_LIT / IDENTIFIER /
                                TRIPLE_STRING / STRING / RAW_STRING / INTERPOLATED_STRING / TUPLE / '(' _ EXPRESSION _ ')'
