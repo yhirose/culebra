@@ -220,6 +220,10 @@ struct JIT {
     // SIZE_MAX for the base rung, which releases nothing — it covers the
     // prologue, before the first owned binding exists.
     size_t order_index;
+    // Widest unwind-temp window any edge into this rung can arrive with. The
+    // pool is armed from slot 0 up, so everything above this is nil here and
+    // the pad need not drain it (see release_unwind_temps).
+    size_t pool_live = 0;
   };
 
   // Active for-in protocol-loop iterator record (see iter_cleanup_stack_).
@@ -359,8 +363,15 @@ struct JIT {
   llvm::BasicBlock* ladder_stand_in_ = nullptr;
 
   // Concrete unwind destination for an lpad slot that may hold the stand-in.
-  llvm::BasicBlock* resolve_lpad(llvm::BasicBlock* lpad) const {
-    if (lpad && lpad == ladder_stand_in_) return frame_ladder_.back().pad;
+  // `pool_live` is how many unwind-temp slots this edge can arrive with still
+  // armed; the rung widens its drain to cover the worst edge it collects.
+  llvm::BasicBlock* resolve_lpad(llvm::BasicBlock* lpad, size_t pool_live) {
+    if (lpad && lpad == ladder_stand_in_) {
+      auto& rung = frame_ladder_.back();
+      rung.pool_live = std::max(rung.pool_live,
+                                std::min(pool_live, unwind_temp_slots_.size()));
+      return rung.pad;
+    }
     return lpad;
   }
 
@@ -423,7 +434,7 @@ struct JIT {
       auto fn = builder_.GetInsertBlock()->getParent();
       auto contBB = llvm::BasicBlock::Create(ctx_, "call.cont", fn);
       auto inv = builder_.CreateInvoke(
-          callee, contBB, resolve_lpad(current_lpad_), args, name);
+          callee, contBB, resolve_lpad(current_lpad_, armed), args, name);
       builder_.SetInsertPoint(contBB);
       close_unwind_window(armed);
       return inv;
@@ -518,11 +529,14 @@ struct JIT {
   // `__cxa_rethrow` with it as the unwind target so the exception
   // reaches that outer lpad within the same LLVM function; otherwise
   // a plain call lets the exception propagate out to the caller.
-  void emit_rethrow(llvm::BasicBlock* outerLpad) {
+  // `drained` says this pad has already emptied the unwind-temp pool, so the
+  // edge carries none of it onward; the default assumes the worst, which costs
+  // an outer rung a wider drain but can never leave a temporary behind.
+  void emit_rethrow(llvm::BasicBlock* outerLpad, bool drained = false) {
     auto rethrowFn = module_->getOrInsertFunction(
         "__cxa_rethrow", builder_.getVoidTy());
     auto fn = builder_.GetInsertBlock()->getParent();
-    outerLpad = resolve_lpad(outerLpad);
+    outerLpad = resolve_lpad(outerLpad, drained ? 0 : SIZE_MAX);
     if (outerLpad) {
       auto deadBB = llvm::BasicBlock::Create(ctx_, "rethrow.dead", fn);
       builder_.CreateInvoke(rethrowFn, deadBB, outerLpad, {});
@@ -624,7 +638,7 @@ struct JIT {
     for (auto* guard : guards)
       emit_value_release(
           builder_.CreateLoad(valueType_, guard, "build.partial"));
-    emit_rethrow(outerLpad);
+    emit_rethrow(outerLpad, /*drained=*/true);
     builder_.SetInsertPoint(savedInsert);
   }
 
@@ -675,7 +689,7 @@ struct JIT {
     if (defer_mark)
       builder_.CreateCall(module_->getFunction(rt::defer_run_to), {defer_mark});
     release_scope_slots(scope);
-    emit_rethrow(outerLpad);
+    emit_rethrow(outerLpad, /*drained=*/true);
     builder_.SetInsertPoint(savedInsert);
   }
 
@@ -2081,7 +2095,7 @@ struct JIT {
               recFn,
               {builder_.CreateLoad(i64Ty, current_rec_depth_slot_, "rec.d")});
         }
-        release_unwind_temps();
+        release_unwind_temps(frame_ladder_[k].pool_live);
         if (fn_mark) {
           builder_.CreateCall(module_->getFunction(rt::defer_run_to),
                               {fn_mark});
@@ -2632,13 +2646,20 @@ struct JIT {
   }
 
   // Release (then nil-clear, so an outer pad on the same unwind chain no-ops)
-  // the whole unwind-temp pool. Runs at the top of every scope-family cleanup
-  // pad — before the region's defers, matching the interpreter, where the
-  // throwing expression's temporaries die as its eval frames unwind, ahead of
-  // any enclosing block's defers. Outside a window every slot is nil, so the
-  // cold-path cost is a handful of no-op releases.
-  void release_unwind_temps() {
-    for (auto* slot : unwind_temp_slots_) release_pending_guard(slot);
+  // the unwind-temp pool. Runs at the top of every scope-family cleanup pad —
+  // before the region's defers, matching the interpreter, where the throwing
+  // expression's temporaries die as its eval frames unwind, ahead of any
+  // enclosing block's defers.
+  //
+  // `n` bounds how many slots this pad's edges can arrive with armed. A window
+  // fills the pool from slot 0 up and clears it again in the call's
+  // continuation, so above the widest window reaching here every slot is nil
+  // and its release is dead code. The whole pool is the safe default; a frame
+  // ladder rung knows its own bound (FrameCleanupRung::pool_live), which
+  // matters because the ladder repeats this per rung.
+  void release_unwind_temps(size_t n = SIZE_MAX) {
+    for (size_t i = 0; i < std::min(n, unwind_temp_slots_.size()); i++)
+      release_pending_guard(unwind_temp_slots_[i]);
   }
 
   // RAII flag for emitting a cleanup pad's contents (scope teardown,
