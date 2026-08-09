@@ -42,6 +42,20 @@ for shape in "[ ]" "{ }" "( )"; do
     echo "FAIL deep '$1': expected 'nesting too deep', got: ${out:0:120}"
     fail=1
   fi
+
+  # `fmt` and `lint` parse the same file. The guard throws mid-parse, so each
+  # has to catch it and report — an uncaught throw is terminate(), rc 134.
+  for cmd in "fmt --check" "lint"; do
+    out=$("$CULEBRA" $cmd "$TMP/deep.cul" 2>&1)
+    rc=$?
+    if [ $rc -ge 128 ] && [ $rc -lt 255 ]; then
+      echo "FAIL $cmd deep '$1': died with signal (rc=$rc), expected a diagnostic"
+      fail=1
+    elif ! printf '%s' "$out" | grep -q "nesting too deep"; then
+      echo "FAIL $cmd deep '$1': expected 'nesting too deep', got: ${out:0:120}"
+      fail=1
+    fi
+  done
 done
 
 # --- realistic generated nesting still parses and runs ---------------------
