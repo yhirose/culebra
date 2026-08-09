@@ -9,9 +9,10 @@
 # exercised.
 #
 # Time: nesting that parses must not backtrack exponentially. The towers below
-# 4000 rules deep are the guard — they finish in milliseconds now and would
-# take 2^depth with a pattern rule whose alternatives share a consuming prefix
-# (see TUPLE_PATTERN in grammar_def.h).
+# stay under 4000 rules deep, so they are pure time checks — they finish in
+# milliseconds and would take 2^depth if peglib stopped memoizing the rules
+# that alternatives sharing a consuming prefix re-parse (see TUPLE_PATTERN in
+# grammar_def.h for the shape that depends on it).
 # Usage: parse_depth_test.sh <path-to-culebra>
 set -u
 CULEBRA="${1:?usage: parse_depth_test.sh <culebra-binary>}"
@@ -72,9 +73,9 @@ fi
 # --- nesting that parses must not backtrack exponentially ------------------
 # `(` is the shape that costs: LET and MUTABLE are both optional, so
 # EXPRESSION's first alternative (DESTRUCTURE_ASSIGN) reaches TUPLE_PATTERN
-# for every `(`-initial expression. Both towers are far under the depth limit,
-# so they are pure time checks — 200 parens took 2^200 steps before
-# TUPLE_PATTERN was left-factored.
+# for every `(`-initial expression, and TUPLE_PATTERN's two alternatives
+# re-parse PATTERN at the same position. 200 parens took 2^200 steps until
+# peglib's packrat filter started memoizing across a shared prefix.
 deep "(" ")" 200 > "$TMP/paren.cul"
 if ! out=$("$CULEBRA" "$TMP/paren.cul" 2>&1) || [ "$out" != "1" ]; then
   echo "FAIL 200-deep parens: expected to run, got: ${out:0:120}"

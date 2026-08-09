@@ -342,15 +342,12 @@ const auto grammar_ = R"(
 
   # Tuple pattern: at least one comma, optional trailing comma. No
   # rest pattern (Tuple is fixed-arity). Mirrors the TUPLE literal.
-  # Left-factored on purpose: written as two alternatives sharing the
-  # `'(' _ PATTERN _ ',' _` prefix, the first PATTERN is re-parsed at the
-  # same position by the second alternative. PATTERN is not packrat-cached
-  # (peglib memoizes only rules reachable from 2+ alternatives at the same
-  # *start* position, which a shared prefix hides), so nested parens cost
-  # 2^depth. Every `(`-initial expression pays it: LET and MUTABLE are both
-  # optional, so EXPRESSION's first alternative DESTRUCTURE_ASSIGN reaches
-  # here for any `(`.
-  TUPLE_PATTERN            <-  '(' _ PATTERN _ ',' _ (PATTERN (_ ',' _ PATTERN)* _ ','? _ ')' / ')')
+  # The alternatives share a consuming prefix, so PATTERN is parsed twice at
+  # the same offset — affordable only because peglib memoizes across such a
+  # prefix; without that, nested parens cost 2^depth (TUPLE, SET and
+  # PLACE_ASSIGN have the same shape). tests/parse_depth_test.sh catches it.
+  TUPLE_PATTERN            <-  '(' _ PATTERN _ ',' _ PATTERN (_ ',' _ PATTERN)* _ ','? _ ')'
+                            /  '(' _ PATTERN _ ',' _ ')'
 
   PRIMARY                  <-  WHILE / FOR / IF / MATCH / COND / HANDLE / PERFORM / RETURN / THROW / BREAK / CONTINUE / FUNCTION / LAMBDA / OBJECT / SET / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / REGEX_LIT / IDENTIFIER /
                                TRIPLE_STRING / STRING / RAW_STRING / INTERPOLATED_STRING / TUPLE / '(' _ EXPRESSION _ ')'
