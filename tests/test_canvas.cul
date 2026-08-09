@@ -570,6 +570,54 @@ assert_eq(try {
   }, "image has no pixels")
 _Canvas.init(4, 4)
 
+// --- sprite_free: a retired handle stays dead when its slot is reused ---
+// Freeing recycles the slot, so the next registration can land on it. The
+// generation is what keeps the two apart: the retired handle must resolve to
+// nothing rather than to whichever sprite moved in.
+let doomed = _Canvas.sprite_load([RED, RED, RED, RED], 2, 2)
+assert_eq(_Canvas.sprite_width(doomed), 2)
+_Canvas.sprite_free(doomed)
+assert_eq(_Canvas.sprite_width(doomed), 0)
+let heir = _Canvas.sprite_load([BLUE, BLUE, BLUE, BLUE, BLUE, BLUE], 3, 2)
+assert_eq(_Canvas.sprite_width(heir), 3)
+assert_eq(_Canvas.sprite_width(doomed), 0)  // not the heir's 3
+assert_eq(doomed == heir, false)
+// Drawing with a retired handle is a no-op, the way an unknown one is.
+_Canvas.clear(CLEAR)
+_Canvas.blit(doomed, 0, 0, 0, 0, 2, 2, 0)
+assert_eq(_Canvas.get_pixel(0, 0), CLEAR)
+
+// 0 names the framebuffer, so it is never a sprite handle — not even as the
+// first registration of the process.
+assert_eq(_Canvas.sprite_width(0), 0)
+assert_eq(_Canvas.sprite_height(0), 0)
+
+// Freeing an unknown, already-freed or zero handle is a no-op, not an error.
+_Canvas.sprite_free(doomed)
+_Canvas.sprite_free(0)
+_Canvas.sprite_free(123456789)
+
+// Freeing the sprite being drawn into is refused — it would leave the target
+// dangling.
+assert_eq(_Canvas.target(heir) >= 0, true)
+assert_eq(try {
+    _Canvas.sprite_free(heir)
+  } catch e {
+    e.kind + "|" + e.message
+  }, "ValueError|cannot free the sprite currently drawn to")
+_Canvas.target(0)
+
+// Churn create/free: slots are recycled, but no two handles collide and every
+// retired one stays dead.
+mut retired = []
+for _ in 0..64 {
+  let tmp = _Canvas.sprite_load([GREEN], 1, 1)
+  retired.push(tmp)
+  _Canvas.sprite_free(tmp)
+}
+assert_true(retired.all(|h| _Canvas.sprite_width(h) == 0))
+assert_eq(retired.to_set().size(), 64)
+
 _Canvas.init(4, 4)
 
 // --- host-driven prims: headless returns 0 / no-ops (called for symmetry) ---

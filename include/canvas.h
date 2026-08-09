@@ -36,9 +36,12 @@
 #include <cstdint>
 #include <cstdlib>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
+
+#include <id_registry.h>  // IdRegistry<T> (slot+generation handle table)
 #if defined(__EMSCRIPTEN__)
 #include <emscripten.h>
 #endif
@@ -50,28 +53,26 @@ namespace _canvas_detail {
 // upload-once and blit re-references the handle (no per-frame pixel
 // marshalling across the FFI boundary).
 //
-// A handle packs (slot index + 1) in the low 32 bits and the slot's
-// generation in the high 32; freeing a sprite bumps the generation and
-// recycles the slot through a free list, so a stale handle resolves to
-// nothing rather than to whichever sprite the slot holds next. 0 is never a
-// sprite handle — it names the framebuffer as the draw target.
+// A handle is an IdRegistry id (id_registry.h): freeing a sprite bumps its
+// slot's generation, so a stale handle resolves to nothing rather than to
+// whichever sprite the slot holds next. 0 is never a sprite handle — it names
+// the framebuffer as the draw target (see _sprites()).
 struct Sprite {
   int w = 0;
   int h = 0;
-  uint32_t gen = 0;
-  bool alive = false;
   std::vector<uint32_t> px;
 };
 
 // This state is process-global and unsynchronized: drawing is a single-thread
-// activity. The two vectors below reallocate, so a SECOND isolate drawing
-// would free the buffer the first is drawing through — an init() or a sprite
-// registration against a live blit. One isolate owns the state instead: the
-// first thread to reach a seam that claims it (init, resolve_target,
-// sprite_of, sprite_adopt, target — `git grep own_canvas`). Every other thread
-// finds an empty canvas, so its draws clip themselves away; the seams that can
-// report say why (see refusal()), which is how a drawing isolate hears about
-// it at its first call rather than through a window that stays blank.
+// activity. The framebuffer reallocates and sprites are deleted on free, so a
+// SECOND isolate drawing would free the buffer the first is drawing through —
+// an init() or a sprite free against a live blit. One isolate owns the state
+// instead: the first thread to reach a seam that claims it (init,
+// resolve_target, sprite_of, sprite_adopt, target — `git grep own_canvas`).
+// Every other thread finds an empty canvas, so its draws clip themselves away;
+// the seams that can report say why (see refusal()), which is how a drawing
+// isolate hears about it at its first call rather than through a window that
+// stays blank.
 //
 // Deliberately outside the claim: font_load, which every isolate reaches as it
 // resolves the Canvas module (that is why the font registry carries a lock
@@ -96,28 +97,25 @@ inline bool own_canvas() {
 inline int& _fb_w() { static int w = 0; return w; }
 inline int& _fb_h() { static int h = 0; return h; }
 inline std::vector<uint32_t>& _fb() { static std::vector<uint32_t> b; return b; }
-inline std::vector<Sprite>& _sprites() { static std::vector<Sprite> s; return s; }
-inline std::vector<size_t>& _sprite_free_slots() {
-  static std::vector<size_t> f;
-  return f;
-}
-
-inline int64_t sprite_handle(size_t index, uint32_t gen) {
-  return static_cast<int64_t>(index + 1) |
-         (static_cast<int64_t>(gen) << 32);
+// Slot 0 is burned on construction so no sprite can ever be handle 0, the id
+// that names the framebuffer: it resolves to the null slot through the
+// registry's ordinary bounds/generation path, so sprite_of needs no case for
+// it.
+inline IdRegistry<Sprite>& _sprites() {
+  static IdRegistry<Sprite> r = [] {
+    IdRegistry<Sprite> t;
+    t.add(nullptr);
+    return t;
+  }();
+  return r;
 }
 
 // The live sprite a handle names, or nullptr for anything else (freed, stale
-// generation, never valid). The pointer is only good until the registry next
-// mutates — resolve per call, never cache.
+// generation, never valid). Each sprite is its own allocation, so the pointer
+// survives other registrations — but not that sprite's own free.
 inline Sprite* sprite_of(int64_t id) {
   if (!own_canvas()) return nullptr;
-  int64_t index = (id & 0xffffffff) - 1;
-  if (index < 0 || static_cast<size_t>(index) >= _sprites().size())
-    return nullptr;
-  Sprite& s = _sprites()[static_cast<size_t>(index)];
-  if (!s.alive || s.gen != static_cast<uint32_t>(id >> 32)) return nullptr;
-  return &s;
+  return _sprites().get(id);
 }
 
 // (Re)allocate the framebuffer to w*h transparent pixels. The sprite registry
@@ -169,9 +167,8 @@ inline int64_t coord(double d) {
 
 // The drawing target every draw call resolves before writing: the framebuffer
 // (id 0) or a sprite draw_to switched to. Held as an id and resolved per call
-// — never cached as a pointer, because the sprite registry vector can
-// reallocate between calls (registering a sprite inside draw_to must not
-// leave the target dangling).
+// — never cached as a pointer, because init() reallocates the framebuffer and
+// a sprite's pixels go away with the sprite when it is freed.
 struct Target {
   uint32_t* px;
   int w;
@@ -537,28 +534,19 @@ inline void glyph(int64_t id, int64_t index, int x, int y, uint32_t rgba,
 }
 
 // Register a sprite from already-decoded pixels, taking ownership of the
-// buffer. Slots freed by sprite_free are recycled first (their generation
-// already bumped), so the registry doesn't grow monotonically under
-// create-per-frame use.
+// buffer.
 inline int64_t sprite_adopt(std::vector<uint32_t>&& px, int w, int h) {
   if (!own_canvas()) return 0;
-  Sprite s;
-  s.w = w < 0 ? 0 : w;
-  s.h = h < 0 ? 0 : h;
-  s.alive = true;
-  s.px = std::move(px);
-  s.px.resize(static_cast<size_t>(s.w) * static_cast<size_t>(s.h), 0u);
-  size_t index;
-  if (!_sprite_free_slots().empty()) {
-    index = _sprite_free_slots().back();
-    _sprite_free_slots().pop_back();
-    s.gen = _sprites()[index].gen;
-    _sprites()[index] = std::move(s);
-  } else {
-    index = _sprites().size();
-    _sprites().push_back(std::move(s));
-  }
-  return sprite_handle(index, _sprites()[index].gen);
+  auto s = std::make_unique<Sprite>();
+  s->w = w < 0 ? 0 : w;
+  s->h = h < 0 ? 0 : h;
+  s->px = std::move(px);
+  s->px.resize(static_cast<size_t>(s->w) * static_cast<size_t>(s->h), 0u);
+  // s stays owning until add() has placed the pointer, so a growth-triggered
+  // bad_alloc inside add() doesn't leak the pixels (same order as net.h).
+  int64_t id = _sprites().add(s.get());
+  s.release();
+  return id;
 }
 
 // Register a sprite from a flat array of packed-RGBA pixels (row-major, w*h).
@@ -591,11 +579,8 @@ inline bool sprite_free(int64_t id) {
   if (id != 0 && id == _target_id()) return false;
   Sprite* s = sprite_of(id);
   if (s == nullptr) return true;
-  s->alive = false;
-  s->gen++;
-  s->px.clear();
-  s->px.shrink_to_fit();
-  _sprite_free_slots().push_back(static_cast<size_t>((id & 0xffffffff) - 1));
+  delete s;
+  _sprites().invalidate(id);
   return true;
 }
 
