@@ -62,7 +62,7 @@ Conventions used below:
 19. [`CSV`](#19-csv) — parse / stringify RFC 4180-ish comma-separated values
 20. [`Env`](#20-env) — parse / load dotenv-style `.env` files
 21. [`UUID`](#21-uuid) — generate v4 (random) and v7 (time-ordered) UUIDs
-22. [`Term`](#22-term) — terminal colour, cursor control, size, and key/mouse input for TUIs
+22. [`Term`](#22-term) — terminal color, cursor control, size, and key/mouse input for TUIs
 23. [`Log`](#23-log) — leveled, structured logging to stderr (text / JSON, child loggers)
 24. [`TOML`](#24-toml) — parse / stringify TOML configuration
 25. [`SQLite`](#25-sqlite) — embedded SQL database (query / execute / prepared statements / transactions)
@@ -3980,34 +3980,34 @@ inspect(UUID.v4() != UUID.v4())  # => true
 
 ## 22. `Term`
 
-Terminal control for building text UIs — colour, cursor positioning, the
-alternate screen, terminal size, and non-blocking key input. The colour and
+Terminal control for building text UIs — color, cursor positioning, the
+alternate screen, terminal size, and non-blocking key input. The color and
 escape helpers are pure functions that return strings, so they compose and
 are easy to test; the stateful pieces (raw mode, the render loop) are wrapped
 so the terminal is always restored on exit.
 
-### Colour and attributes
+### Color and attributes
 
 Each returns its argument wrapped in the matching ANSI codes (and a reset),
 so calls nest:
 
 | Function | Result |
 | --- | --- |
-| `Term.fg(s, n) -> String` | 256-colour foreground (`n` is 0–255) |
-| `Term.bg(s, n) -> String` | 256-colour background |
-| `Term.rgb(s, r, g, b) -> String` | 24-bit truecolour foreground |
-| `Term.red(s)` / `green` / `yellow` / `blue` / `magenta` / `cyan` / `white` / `black` | named 16-colour foreground |
+| `Term.fg(s, n) -> String` | 256-color foreground (`n` is 0–255) |
+| `Term.bg(s, n) -> String` | 256-color background |
+| `Term.rgb(s, r, g, b) -> String` | 24-bit truecolor foreground |
+| `Term.red(s)` / `green` / `yellow` / `blue` / `magenta` / `cyan` / `white` / `black` | named 16-color foreground |
 | `Term.bold(s)` / `Term.dim(s)` / `Term.underline(s)` / `Term.reverse(s)` | text attributes |
-| `Term.style(fg:, bg:, bold:, dim:, underline:, reverse:) -> String` | an SGR parameter string for a `Screen` cell; `fg`/`bg` take a 256-colour index or an `(r,g,b)` tuple |
+| `Term.style(fg:, bg:, bold:, dim:, underline:, reverse:) -> String` | an SGR parameter string for a `Screen` cell; `fg`/`bg` take a 256-color index or an `(r,g,b)` tuple |
 
-Colours adapt to the terminal's **capability level** — `0` none, `1` 16,
-`2` 256, `3` truecolour — detected from `isatty`, `NO_COLOR` (present ⇒ off),
-`FORCE_COLOR`, `COLORTERM`, and `TERM`. A colour beyond the level is
-downsampled (truecolour → nearest 256 → nearest 16), and at level 0 nothing
+Colors adapt to the terminal's **capability level** — `0` none, `1` 16,
+`2` 256, `3` truecolor — detected from `isatty`, `NO_COLOR` (present ⇒ off),
+`FORCE_COLOR`, `COLORTERM`, and `TERM`. A color beyond the level is
+downsampled (truecolor → nearest 256 → nearest 16), and at level 0 nothing
 is emitted, so piped or `NO_COLOR` output stays plain. `Term.level()` reads
 the level and `Term.set_level(n)` overrides it. The `fg`/`bg`/`rgb`/`bold`/…
 helpers wrap a string for direct printing; `Term.style(...)` produces the
-style passed to `screen.set` / `screen.put` for coloured cells.
+style passed to `screen.set` / `screen.put` for colored cells.
 
 ```culebra
 inspect(Term.bold(Term.fg("alert", 196)))           # bold bright-red "alert" (printed)
@@ -4110,7 +4110,7 @@ optional style. `flush` emits **only the cells that changed** since the last
 frame, with the minimal SGR transitions between styles, so live UIs update
 without flicker and with minimal output; wide glyphs occupy two cells and a
 resize forces a full repaint. Build a frame with `clear` + `set` / `put`
-(passing a `Term.style(...)` for colour), then `flush`; read input with `poll`
+(passing a `Term.style(...)` for color), then `flush`; read input with `poll`
 (which doubles as the per-frame delay).
 
 ```culebra
@@ -4365,7 +4365,7 @@ boundary. Transactions do not nest (use `SAVEPOINT` directly if you need that).
 ## 26. `Canvas`
 
 An immediate-mode 2D framebuffer for little games and pixel graphics: draw a
-frame, `present` it, poll input, repeat. Colours are packed RGBA `Long`s and
+frame, `present` it, poll input, repeat. Colors are packed RGBA `Long`s and
 the buffer can be any size (a WASM-4-style 160×160 is typical). In the WASM
 Playground a Canvas program runs in the **Canvas tab** — frames are shown on a
 `<canvas>`, keyboard/pointer feed the input, and `tone` plays through WebAudio.
@@ -4397,13 +4397,13 @@ guessing that a silent headless run is what was wanted. Outside headless, native
 `tone` plays through a small software APU mixed on raylib's audio thread (see
 Audio below), lazily opening the audio device on first use.
 
-### Colour
+### Color
 
 `Canvas.rgba(r, g, b, a = 255) -> Long` packs four 0–255 channels into one
-`Long` (byte order `[r, g, b, a]`). Every drawing call takes such a colour,
+`Long` (byte order `[r, g, b, a]`). Every drawing call takes such a color,
 and **the alpha composites**: 255 draws opaque, 0 draws nothing, and anything
 between blends the shape over what is already there (integer source-over —
-`(src*a + dst*(255-a) + 127) / 255` per colour channel, so all three backends
+`(src*a + dst*(255-a) + 127) / 255` per color channel, so all three backends
 round identically, and an opaque buffer stays opaque). `rgba(0, 0, 0, 128)`
 is a half-dark overlay; drawing it twice darkens twice. The two exceptions
 are `clear`, which replaces every pixel with the given value (a frame reset,
@@ -4411,7 +4411,7 @@ not a wash), and `set_pixel`, which stores the value raw so it pairs with
 `get_pixel` (writing transparency is what those two are for).
 
 `Canvas.rgb_to_hsv(r, g, b) -> Tuple` and `Canvas.hsv_to_rgb(h, s, v) -> Tuple`
-convert between the two colour models — the RGB side in the same 0–255
+convert between the two color models — the RGB side in the same 0–255
 channels as `rgba`, the HSV side each of hue/saturation/value in `0.0..1.0`.
 HSV is where a palette gets *derived*: boosting saturation, narrowing a
 light/dark pair toward each other, or shifting hue are all one-line
@@ -4423,7 +4423,7 @@ inspect(Canvas.rgb_to_hsv(255, 0, 0))                         # => (0.0, 1.0, 1.
 inspect(Canvas.hsv_to_rgb(0.0, 1.0, 1.0))                     # => (255, 0, 0)
 inspect(Canvas.hsv(0.0, 1.0, 1.0) == Canvas.rgba(255, 0, 0))  # => true
 
-# saturate a base colour by 40%, in HSV, then pack it
+# saturate a base color by 40%, in HSV, then pack it
 let (h, s, v) = Canvas.rgb_to_hsv(180, 140, 200)
 inspect(Canvas.hsv(h, Math.min(1.0, s * 1.4), v))  # => 4291327148
 ```
@@ -4483,7 +4483,7 @@ negative coordinate stays off-buffer instead of snapping onto column 0.
 Non-finite and out-of-range values saturate rather than trap, and `Math.nan`
 reads as 0. This lets a program that computes positions in floating point — a
 projection, a scroll offset — pass them straight in instead of rounding each
-one itself. Colours, blit flags, alpha and sprite handles remain `Long`.
+one itself. Colors, blit flags, alpha and sprite handles remain `Long`.
 
 `Canvas.polygon` takes `points` as a flat `[x0, y0, x1, y1, …]` list of at
 least three vertices — Longs or Floats, like every other coordinate — and
@@ -4531,7 +4531,7 @@ when the last reference to it goes away.
 image file, say, since a `String` is a byte string — and takes the size from
 the image, so there is nothing to pass alongside the data. `Canvas.Sprite.from_png(data)` is the same thing under
 a name that reads as one at the call site. Greyscale, palette (with `tRNS`),
-truecolour and 16-bit-per-channel images all decode to the same packed-RGBA
+truecolor and 16-bit-per-channel images all decode to the same packed-RGBA
 layout the framebuffer uses; anything undecodable raises
 `ValueError: not a valid PNG image`.
 
@@ -4606,7 +4606,7 @@ Canvas.draw_to(tile, fn () {
 FS.write("tile.png", tile.to_png())
 ```
 
-Output is 8-bit truecolour with alpha, one `IDAT`, each row filtered by the
+Output is 8-bit truecolor with alpha, one `IDAT`, each row filtered by the
 choice that scores smallest — so flat, dithered pixel art compresses close to
 what a dedicated encoder gets. An image with no pixels (`Canvas.init(0, 0)`)
 and a sprite handle that has been freed both raise `ValueError`.
@@ -4799,7 +4799,7 @@ nor in the Playground.
 it cannot (no usable display/GL) — unlike `Canvas` there is no headless mode to
 fall back to, because everything a `View` does needs the GPU. Positions and
 sizes are `Float`
-world units; colours are three or four `0–255` integer channels, and a channel
+world units; colors are three or four `0–255` integer channels, and a channel
 outside that range clamps to it. A frame is
 either a 3D pass with a 2D overlay (`render_3d()` → overlay draws → `present()`)
 or pure 2D (`begin2d()` → draws → `present()`).
@@ -4830,7 +4830,7 @@ persistent geometry once and move it each frame.
 | `node.yaw(a)` / `pitch(a)` / `roll(a)` | rotate about one axis (radians) |
 | `node.spin(x, y, z, a)` / `euler(x, y, z)` | axis-angle / Euler rotation |
 | `node.scale(s)` / `scale3(x, y, z)` | uniform / per-axis scale |
-| `node.tint(r, g, b)` | per-node colour |
+| `node.tint(r, g, b)` | per-node color |
 | `node.material(id)` | assign a material (below) |
 | `node.hide()` / `show()` / `name(n)` | visibility / label |
 | `node.x()` / `y()` / `z() -> Float` | read back position |
@@ -4848,7 +4848,7 @@ Materials are created on the view and referenced by id:
 
 | Method | Result |
 | --- | --- |
-| `view.material(r, g, b) -> id` | flat-colour material |
+| `view.material(r, g, b) -> id` | flat-color material |
 | `view.material_pbr(r, g, b, metallic, roughness) -> id` | PBR material (`metallic`/`roughness` are 0–1) |
 | `view.material_tex(tex, r, g, b) -> id` / `material_tex_pbr(tex, r, g, b, metallic, roughness) -> id` | textured material |
 
@@ -4865,7 +4865,7 @@ Lighting is set on the view:
 
 | Method | Effect |
 | --- | --- |
-| `view.background(r, g, b)` | clear colour |
+| `view.background(r, g, b)` | clear color |
 | `view.sky(tr,tg,tb, br,bg,bb)` | zenith → horizon gradient (also the reflected environment) |
 | `view.sun(dx,dy,dz, intensity, r,g,b)` | directional light (two-cascade shadows); `(0, 0, 0)` names no direction and is refused |
 | `view.ambient(intensity, r, g, b)` | fill light |

@@ -4464,7 +4464,7 @@ Canvas.draw_to(tile, fn () {
 FS.write("tile.png", tile.to_png())
 ```
 
-出力は8bit truecolour + アルファ、`IDAT`は1個で、各行はスコアが最小に
+出力は8bit truecolor + アルファ、`IDAT`は1個で、各行はスコアが最小に
 なるフィルタで符号化されます — 平坦でディザのかかったピクセルアートなら
 専用エンコーダに近いところまで縮みます。ピクセルが1つもない画像
 （`Canvas.init(0, 0)`）と、解放済みのスプライトハンドルはどちらも

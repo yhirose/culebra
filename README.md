@@ -129,7 +129,7 @@ package manager, no lockfile:
   resolution underneath.
 - **Concurrency.** Isolates, channels, `Parallel`, shared buffers, and
   Ctrl+C delivered as a channel message.
-- **Terminal.** `Term` — colour, cursor control, the alternate screen,
+- **Terminal.** `Term` — color, cursor control, the alternate screen,
   and key/mouse input for TUIs, downsampled to whatever the terminal
   supports (and silent under `NO_COLOR`).
 - **3D.** `Scene` — a retained-mode 3D renderer for procedural geometry
