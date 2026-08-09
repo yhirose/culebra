@@ -123,7 +123,12 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 }
 .pg-canvas canvas {
   image-rendering: pixelated;
-  width: min(100%, 100vh);
+  /* Fill the pane's width, but never its height: a replaced element with a
+     natural ratio keeps it under max-height by giving width back (CSS 2.1
+     §10.4), so any framebuffer shape — square 160x160, wide 640x380 —
+     letterboxes instead of cropping or squishing. The element box stays
+     equal to the drawn pixels, which sendMouse's coordinate mapping needs. */
+  width: 100%;
   height: auto;
   max-height: 100%;
 }

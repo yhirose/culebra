@@ -87,6 +87,9 @@
       border: 1px solid var(--border); cursor: pointer; line-height: 0;
       max-width: 420px; aspect-ratio: 1 / 1;
     }
+    /* The MNIST demo's own 640x380 framebuffer, so its poster and iframe
+       share the box the same way the square one does for Rocci Bird. */
+    .poster-wide { aspect-ratio: 32 / 19; max-width: 560px; }
     /* Positioned + z-index so the poster paints over the game-frame iframe
        (see below) while the game is still loading, instead of the iframe's
        own black background winning by DOM order. */
@@ -287,6 +290,22 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
             (art by Luke DeVault), from Luke Boswell's roc-wasm4 platform, UPL-1.0 licensed.</p>
         </div>
         <div class="showcase-card">
+          <h3>A neural network</h3>
+          <div class="poster poster-wide" id="mnist-poster">
+            <img src="./assets/mnist-poster.png" alt="MNIST digit recognition — draw a digit and a culebra-trained MLP scores it" width="1280" height="760">
+            <button id="play-mnist" class="play-btn" type="button" aria-label="Try MNIST digit recognition">▷</button>
+          </div>
+          <p class="fine-print">Handwritten-digit recognition, end to end in
+            culebra: a small MLP trained with the built-in
+            <a href="https://github.com/yhirose/culebra/blob/master/docs/stdlib.md#8-tensor">Tensor</a>
+            autograd
+            (<a href="https://github.com/yhirose/culebra/blob/master/examples/tensor/mnist/train.cul">training script</a>),
+            the pad and the probability chart drawn with
+            <a href="https://github.com/yhirose/culebra/blob/master/docs/stdlib.md#26-canvas">Canvas</a> —
+            <a href="https://github.com/yhirose/culebra/blob/master/examples/tensor/mnist/mnist.cul">source</a>.
+            Click, then draw a digit.</p>
+        </div>
+        <div class="showcase-card">
           <h3>A C++ host</h3>
           <pre class="sample"><span class="k">#include</span> &lt;culebra.h&gt;
 <span class="k">#include</span> &lt;stdlib_interp.h&gt;
@@ -391,27 +410,31 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
     // on GitHub Pages' CDN, which caps the request line at a few KB. Naming
     // the entry keeps the URL short and the Playground fetches its own copy,
     // so this still can't drift from what ships in examples/games/rocci-bird.cul.
-    document.getElementById("play-rocci").addEventListener("click", function () {
-      var poster = document.getElementById("rocci-poster");
-      // One shot — gone immediately so a second click can't stack another
-      // iframe underneath while the first is still loading.
-      document.getElementById("play-rocci").remove();
+    function wirePosterDemo(posterId, btnId, exampleTitle, frameTitle) {
+      document.getElementById(btnId).addEventListener("click", function () {
+        var poster = document.getElementById(posterId);
+        // One shot — gone immediately so a second click can't stack another
+        // iframe underneath while the first is still loading.
+        document.getElementById(btnId).remove();
 
-      var frame = document.createElement("iframe");
-      frame.className = "game-frame";
-      frame.title = "Rocci Bird — culebra Playground";
-      frame.src = "./playground/?embed=1&view=canvas&run=1&example=" + encodeURIComponent("Canvas: Rocci Bird");
-      // Stays hidden behind the poster (z-index) until the embedded page
-      // says its first frame is actually on screen.
-      window.addEventListener("message", function onFirstFrame(e) {
-        if (e.source !== frame.contentWindow) return;
-        if (!e.data || e.data.type !== "culebra-canvas-first-frame") return;
-        window.removeEventListener("message", onFirstFrame);
-        poster.querySelector("img").remove();
-        poster.style.cursor = "default";
+        var frame = document.createElement("iframe");
+        frame.className = "game-frame";
+        frame.title = frameTitle;
+        frame.src = "./playground/?embed=1&view=canvas&run=1&example=" + encodeURIComponent(exampleTitle);
+        // Stays hidden behind the poster (z-index) until the embedded page
+        // says its first frame is actually on screen.
+        window.addEventListener("message", function onFirstFrame(e) {
+          if (e.source !== frame.contentWindow) return;
+          if (!e.data || e.data.type !== "culebra-canvas-first-frame") return;
+          window.removeEventListener("message", onFirstFrame);
+          poster.querySelector("img").remove();
+          poster.style.cursor = "default";
+        });
+        poster.appendChild(frame);
       });
-      poster.appendChild(frame);
-    });
+    }
+    wirePosterDemo("rocci-poster", "play-rocci", "Canvas: Rocci Bird", "Rocci Bird — culebra Playground");
+    wirePosterDemo("mnist-poster", "play-mnist", "Canvas: MNIST digits", "MNIST digits — culebra Playground");
   </script>
 </body>
 </html>
