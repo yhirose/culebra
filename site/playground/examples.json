@@ -36,7 +36,7 @@
       ]
     },
     {
-      "name": "Apps",
+      "name": "Games",
       "examples": [
         { "title": "TUI: Same Game", "path": "examples/games/samegame.cul" },
         { "title": "Canvas: Rocci Bird", "path": "examples/games/rocci-bird.cul" },
