@@ -1283,11 +1283,7 @@ let render = fn () {
   let cycle = position * SCENE_COUNT / track_length
   let scene = to_long(cycle)
   let local = cycle - scene
-  let blend = if local < SCENE_HOLD {
-    0
-  } else {
-    Math.round((local - SCENE_HOLD) / (1.0 - SCENE_HOLD) * 256.0)
-  }
+  let blend = local < SCENE_HOLD ? 0 : Math.round((local - SCENE_HOLD) / (1.0 - SCENE_HOLD) * 256.0)
   build_palette(scene, blend)
 
   _Canvas.clear(sky_color)

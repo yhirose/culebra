@@ -41,11 +41,7 @@ Desktop.run({
       let db = SQLite.open(VISITS_DB)
       db.execute("CREATE TABLE IF NOT EXISTS visits (id INTEGER PRIMARY KEY, n INTEGER)")
       let rows = db.query("SELECT n FROM visits WHERE id = 1")
-      let n = if rows.size() == 0 {
-        0
-      } else {
-        rows[0]["n"]
-      } + 1
+      let n = (rows.empty() ? 0 : rows[0]["n"]) + 1
       db.execute("INSERT OR REPLACE INTO visits (id, n) VALUES (1, ?)", [n])
       db.close()
       {content_type: "application/json", body: JSON.stringify({visits: n})}

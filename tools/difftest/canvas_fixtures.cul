@@ -12,24 +12,12 @@ let _CA = 255 * 16777216
 # and "." marks an untouched (0) pixel — a whole rasterized shape then fits in
 # one record.
 fn _cdump() {
-  mut rows = []
-  mut y = 0
-  while y < _Canvas.height() {
-    mut s = ""
-    mut x = 0
-    while x < _Canvas.width() {
+  range(_Canvas.height()).map(fn (y) {
+    range(_Canvas.width()).map(fn (x) {
       let p = _Canvas.get_pixel(x, y)
-      s = s + if p == 0 {
-          "."
-        } else {
-          to_string(p % 10)
-        }
-      x = x + 1
-    }
-    rows.push(s)
-    y = y + 1
-  }
-  rows.join("/")
+      p == 0 ? "." : to_string(p % 10)
+    }).join("")
+  }).join("/")
 }
 
 # Two-glyph 8x8 font for the glyph cases: index 0 is a solid block, index 1 a

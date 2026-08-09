@@ -175,7 +175,8 @@ let tick = fn () {
     })
     dirty = true
   }
-  if down && !prev_down && in_rect(m.x, m.y, BTN_X, BTN_Y, BTN_W, BTN_H) {
+  let has_ink = ink_max_x >= 0
+  if down && !prev_down && has_ink && in_rect(m.x, m.y, BTN_X, BTN_Y, BTN_W, BTN_H) {
     clear_pad()
   }
 
@@ -196,9 +197,15 @@ let tick = fn () {
   pad.draw(PAD_X, PAD_Y)
   Canvas.rect(PAD_X - 1, PAD_Y - 1, PAD_W + 2, PAD_W + 2, BORDER, false)
 
-  Canvas.rect(BTN_X, BTN_Y, BTN_W, BTN_H, BRAND_SOFT)
-  Canvas.rect(BTN_X, BTN_Y, BTN_W, BTN_H, BRAND, false)
-  Canvas.text('CLEAR', BTN_X + 24, BTN_Y + 10, BRAND_STRONG)
+  if has_ink {
+    Canvas.rect(BTN_X, BTN_Y, BTN_W, BTN_H, BRAND_SOFT)
+    Canvas.rect(BTN_X, BTN_Y, BTN_W, BTN_H, BRAND, false)
+    Canvas.text('CLEAR', BTN_X + 24, BTN_Y + 10, BRAND_STRONG)
+  } else {
+    Canvas.rect(BTN_X, BTN_Y, BTN_W, BTN_H, SURFACE2)
+    Canvas.rect(BTN_X, BTN_Y, BTN_W, BTN_H, BORDER, false)
+    Canvas.text('CLEAR', BTN_X + 24, BTN_Y + 10, MUTED)
+  }
 
   mut best = -1
   if probs != nil {
@@ -220,11 +227,7 @@ let tick = fn () {
 
   for i in 0..10 {
     let y = ROW_Y0 + i * ROW_H
-    let digit_color = if i == best {
-      TEXT
-    } else {
-      MUTED
-    }
+    let digit_color = i == best ? TEXT : MUTED
     Canvas.text(to_string(i), LABEL_X, y + 6, digit_color, 2)
     Canvas.rect(BAR_X, y + 6, BAR_W, BAR_H, SURFACE2)
     if probs != nil {

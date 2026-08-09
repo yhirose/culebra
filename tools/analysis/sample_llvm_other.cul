@@ -6,7 +6,7 @@ import fmt from './fmt.cul'
 
 let binary = !Sys.argv.empty()
   ? Sys.argv[0]
-  : '/Users/yuji/Projects/culebra/build/culebra'
+  : 'build/culebra'
 
 let nm_out = Proc.run(["nm", "-n", binary], check: true).stdout
 let entries = fmt.text_symbol_sizes(nm_out)

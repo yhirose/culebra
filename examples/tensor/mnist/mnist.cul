@@ -227,11 +227,7 @@ let tick = fn () {
 
   for i in 0..10 {
     let y = ROW_Y0 + i * ROW_H
-    let digit_color = if i == best {
-      TEXT
-    } else {
-      MUTED
-    }
+    let digit_color = i == best ? TEXT : MUTED
     Canvas.text(to_string(i), LABEL_X, y + 6, digit_color, 2)
     Canvas.rect(BAR_X, y + 6, BAR_W, BAR_H, SURFACE2)
     if probs != nil {

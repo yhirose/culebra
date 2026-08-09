@@ -70,11 +70,7 @@ let build_one_hot = fn (labels, k) {
   Tensor.from(rows)
 }
 
-let n_train = if !Sys.argv.empty() {
-  to_long(Sys.argv[0])
-} else {
-  60000
-}
+let n_train = !Sys.argv.empty() ? to_long(Sys.argv[0]) : 60000
 
 let load_t0 = Sys.time()
 let labels_all = load_labels("{DATA}/train-labels-idx1-ubyte.gz")
