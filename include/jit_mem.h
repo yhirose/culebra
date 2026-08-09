@@ -341,48 +341,23 @@ culebra_runtime_owned_scope_exit(int64_t mark_arg) {
 // this function to a C-stack overflow (~56B/level; dies near 150k on an
 // 8MB stack). Beyond the budget the release is deferred to a thread-local
 // list drained at the outermost level. A release cannot throw, so unlike
-// the value walkers this bound is structural. Mirrors interp's ~Value:
-// the bool mirrors !deferred.empty() so the hot path never touches the
-// guarded thread_local vector, and the cold helpers are outlined so the
-// inline release body stays small at its many call sites.
-inline thread_local int64_t _jit_release_depth = 0;
-inline thread_local bool _jit_release_has_deferred = false;
-CULEBRA_RT_CORE_OWNED thread_local std::vector<JitValue>
-    _jit_release_deferred;
-
+// the value walkers this bound is structural. The skeleton is shared with
+// interp's ~Value and tensor.h's ~TensorImpl (shared.h's Trashcan); what is
+// specific here is that the handle is a plain tagged word, so dropping the
+// last reference is an explicit call rather than a payload destructor.
 inline void _culebra_value_release_node(int8_t tag, int64_t data);
-inline void _culebra_value_release_impl(int8_t tag, int64_t data);
 
-[[gnu::noinline]] inline void _jit_release_defer(int8_t tag, int64_t data) {
-  _jit_release_deferred.push_back(JitValue{tag, data});
-  _jit_release_has_deferred = true;
+inline void _jit_release_one(JitValue& v) {
+  _culebra_value_release_node(v.tag, v.data);
 }
 
-[[gnu::noinline]] inline void _jit_release_drain() {
-  // Runs at depth 1 (see release_impl), so every release it triggers
-  // bottoms out at depth >= 2 and can never nest a second drain. Each pop
-  // may re-defer its own deep tail; loop until dry.
-  while (!_jit_release_deferred.empty()) {
-    JitValue v = _jit_release_deferred.back();
-    _jit_release_deferred.pop_back();
-    _culebra_value_release_impl(v.tag, v.data);
-  }
-  _jit_release_has_deferred = false;
-}
+using JitReleaseTrashcan = culebra::Trashcan<JitValue, &_jit_release_one>;
 
 inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
   // Non-refcounted tags are a no-op in the release switch, so they skip
   // the trashcan bookkeeping entirely (this is the hottest release path).
   if (data == 0 || !_is_refcounted_value_tag(tag)) return;
-  if (_jit_release_depth >= culebra::kValueTeardownDepthBudget) {
-    _jit_release_defer(tag, data);
-    return;
-  }
-  ++_jit_release_depth;
-  _culebra_value_release_node(tag, data);
-  if (_jit_release_depth == 1 && _jit_release_has_deferred)
-    _jit_release_drain();
-  --_jit_release_depth;
+  JitReleaseTrashcan::release(JitValue{tag, data});
 }
 
 inline void _culebra_value_release_node(int8_t tag, int64_t data) {

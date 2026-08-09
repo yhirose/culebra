@@ -21,6 +21,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -380,10 +381,19 @@ inline constexpr int64_t kValueTeardownDepthBudget = 500;
 // the budget check only runs for a payload that can chain.
 template <class Payload, void (*Release)(Payload&)>
 class Trashcan {
+  // How a payload crosses a call boundary. A trivially copyable one (the
+  // JIT's tagged word) goes by value so the outlined defer takes it in
+  // registers; passing it by reference instead makes the caller materialize
+  // it on the stack, which pulls a stack-protector canary onto the hottest
+  // release path (measured: +7 instructions there). One with a real move (an
+  // any, a vector) goes by rvalue reference so no temporary is built at all.
+  using Arg = std::conditional_t<std::is_trivially_copyable_v<Payload>,
+                                 Payload, Payload&&>;
+
  public:
   // Tear `p` down at the current depth, or park it for the outermost level
   // once the chain is deeper than the budget.
-  static void release(Payload&& p) {
+  static void release(Arg p) {
     State& st = state();
     if (st.depth >= kValueTeardownDepthBudget) {
       defer(std::move(p));
@@ -426,7 +436,7 @@ class Trashcan {
   // Outlined so `release`'s inline body stays small at its many expansion
   // sites; `has_deferred` mirrors !deferred().empty() so the fast path never
   // touches the guarded vector.
-  [[gnu::noinline]] static void defer(Payload&& p) {
+  [[gnu::noinline]] static void defer(Arg p) {
     deferred().push_back(std::move(p));
     state().has_deferred = true;
   }
