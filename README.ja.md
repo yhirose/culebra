@@ -40,6 +40,7 @@ EOF
 culebra hello.cul                            # インタプリタ
 culebra --jit hello.cul                      # JIT
 culebra build hello.cul -o hello && ./hello  # AOT: 一度コンパイルしてバイナリを配る
+cat hello.cul | culebra -                    # stdin（curl ... | culebra - も同様）
 ```
 
 任意 — これはエディタの設定（VSCode・Vim・Neovim）も書き換え、

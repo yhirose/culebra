@@ -41,6 +41,7 @@ EOF
 culebra hello.cul                            # interpreter
 culebra --jit hello.cul                      # JIT
 culebra build hello.cul -o hello && ./hello  # AOT: compile once, ship the binary
+cat hello.cul | culebra -                    # stdin (curl ... | culebra - also works)
 ```
 
 Optional — this one also touches your editor's config
