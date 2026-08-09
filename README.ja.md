@@ -143,7 +143,7 @@ sudo mv culebra-*/culebra /usr/local/bin/
 ```culebra
 x = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
 y = x.dot(x.transpose())
-Tensor.eval(y)                       # [[5.0, 11.0], [11.0, 25.0]]
+Tensor.eval(y)  # [[5.0, 11.0], [11.0, 25.0]]
 ```
 
 ### 埋め込みアセット
@@ -154,9 +154,9 @@ Tensor.eval(y)                       # [[5.0, 11.0], [11.0, 25.0]]
 実行ファイルへ焼き込むので、配布するバイナリはそれだけで完結します。
 
 ```culebra
-let assets = Embed.dir("dist")           # index.html、favicon.icoなど
-println(assets.exists("index.html"))     # => true
-println(assets.exists("favicon.ico"))    # => true
+let assets = Embed.dir("dist")         # index.html、favicon.icoなど
+println(assets.exists("index.html"))   # => true
+println(assets.exists("favicon.ico"))  # => true
 ```
 
 ### デスクトップアプリ作成
@@ -168,9 +168,11 @@ OS自身のWebViewエンジンが表示し、`culebra build`がサーバー・�
 ```culebra
 Desktop.run({
   title: "Hello from culebra",
-  assets: Embed.dir("dist"),             # index.html、favicon.icoなど
+  assets: Embed.dir("dist"),  # index.html、favicon.icoなど
   routes: fn (srv) {
-    srv.get("/api/hello", fn (req) { "hi from the embedded server" })
+    srv.get("/api/hello", fn (req) {
+      "hi from the embedded server"
+    })
   },
 })
 ```

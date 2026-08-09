@@ -172,23 +172,34 @@ virtual thread（色なしのblockingへの回帰）に舵を切ったことは�
 
 ```culebra
 # doctest: skip
-@packable class Particle { x: Float32; y: Float32; vx: Float32; vy: Float32 }
+@packable
+class Particle {
+  x: Float32
+  y: Float32
+  vx: Float32
+  vy: Float32
+}
 let world = SharedBuffer.new(100000, Particle)
 
 # 各workerが互いに素な範囲だけ書く — 同期ゼロ、コピーゼロ
 let chunk = 12500
 Parallel.each(iota(0, 8), fn (w) {
-  for i in (w * chunk)..((w + 1) * chunk) {
+  for i in w * chunk..(w + 1) * chunk {
     world[i].x = world[i].x + world[i].vx
     world[i].y = world[i].y + world[i].vy
   }
 })
 
 # 本当に同じセルを触るときだけ、唯一のロックが登場する
-@packable class Counter { n: Int64 = 0 }
+@packable
+class Counter {
+  n: Int64 = 0
+}
 let tally = SharedBuffer.new(1, Counter)
 Parallel.each(iota(0, 8), fn (w) {
-  tally.with_lock(fn () { tally[0].n = tally[0].n + 1 })
+  tally.with_lock(fn () {
+    tally[0].n = tally[0].n + 1
+  })
 })
 ```
 

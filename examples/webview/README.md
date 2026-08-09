@@ -215,13 +215,13 @@ For a window without the facade (see `hello.cul`):
 let w = Webview.Window.new()
 w.set_title("Hello")
 w.set_size(640, 480)
-w.set_html("<h1>It works</h1>")    # or: w.navigate("https://…" / "data:…" / "file://…")
-w.run()                            # blocks the GUI thread until terminate()
-w.terminate()                      # from the thread that called run()
+w.set_html("<h1>It works</h1>")  # or: w.navigate("https://…" / "data:…" / "file://…")
+w.run()                          # blocks the GUI thread until terminate()
+w.terminate()                    # from the thread that called run()
 
-Webview.Window.quit()              # static: terminate the window currently in
-                                   # run(), callable from any thread (e.g. an
-                                   # HTTP handler)
+Webview.Window.quit()  # static: terminate the window currently in
+# run(), callable from any thread (e.g. an
+# HTTP handler)
 ```
 
 The window is a resource with culebra's full lifetime model: scope-exit

@@ -265,10 +265,10 @@ inspect(Math.sign(42))  # => 1
 同じ昇格ルール）。
 
 ```culebra
-inspect(Math.clamp(5, 0, 10))   # => 5
-inspect(Math.clamp(-5, 0, 10))  # => 0
-inspect(Math.clamp(15, 0, 10))  # => 10
-inspect(Math.clamp(0.5, 0.0, 1.0))  # => 0.5
+inspect(Math.clamp(5, 0, 10))         # => 5
+inspect(Math.clamp(-5, 0, 10))        # => 0
+inspect(Math.clamp(15, 0, 10))        # => 10
+inspect(Math.clamp(0.5, 0.0, 1.0))    # => 0.5
 inspect(Math.clamp(-3.0, 0.0, 10.0))  # => 0.0
 ```
 
@@ -5102,9 +5102,9 @@ three.jsの流儀に合わせたもので、標準ライブラリ全体の「必
 
 ```culebra
 let a = Vector2.new(3, 4)
-inspect(a.length())              # => 5.0
-inspect(a.normalized())          # => (0.6, 0.8)
-inspect(a + Vector2.new(1, 1))   # => (4.0, 5.0)
+inspect(a.length())             # => 5.0
+inspect(a.normalized())         # => (0.6, 0.8)
+inspect(a + Vector2.new(1, 1))  # => (4.0, 5.0)
 ```
 
 | メンバー | 返り値 |
@@ -5140,8 +5140,8 @@ inspect(a + Vector2.new(1, 1))   # => (4.0, 5.0)
 
 ```culebra
 let a = Vector3.new(1, 2, 3)
-inspect(a.length())               # => 3.7416573867739413
-inspect(a + Vector3.new(1, 1, 1)) # => (2.0, 3.0, 4.0)
+inspect(a.length())                # => 3.7416573867739413
+inspect(a + Vector3.new(1, 1, 1))  # => (2.0, 3.0, 4.0)
 ```
 
 | メンバー | 返り値 |

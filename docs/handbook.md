@@ -1559,10 +1559,10 @@ Duplicates collapse on construction and equality ignores order.
 
 ```culebra
 s = {1, 2, 3, 3}
-inspect(s.size())                 # => 3
-inspect(s.contains(2))            # => true
-inspect({1, 2, 3} == {3, 2, 1})   # => true
-inspect({42,})                    # => {42}
+inspect(s.size())                # => 3
+inspect(s.contains(2))           # => true
+inspect({1, 2, 3} == {3, 2, 1})  # => true
+inspect({42,})                   # => {42}
 ```
 
 Set operations are methods, not operators (`|` is taken by lambda

@@ -183,9 +183,9 @@
         </div>
       </div>
       <pre class="sample" id="sample"><span class="k">let</span> people = [
-  { name: <span class="s">'Taro'</span>, greeting: <span class="s">'Konnichiwa'</span> },
-  { name: <span class="s">'John'</span>, greeting: <span class="s">'Hello'</span> },
-  { name: <span class="s">'Ada'</span>,  greeting: <span class="s">'Bonjour'</span> },
+  {name: <span class="s">'Taro'</span>, greeting: <span class="s">'Konnichiwa'</span>},
+  {name: <span class="s">'John'</span>, greeting: <span class="s">'Hello'</span>},
+  {name: <span class="s">'Ada'</span>, greeting: <span class="s">'Bonjour'</span>},
 ]
 
 <span class="k">for</span> p <span class="k">in</span> people.sorted_by(|p| p.name) {
@@ -269,9 +269,11 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
           <h3>A desktop app</h3>
           <pre class="sample">Desktop.run({
   title: <span class="s">"Hello from culebra"</span>,
-  assets: Embed.dir(<span class="s">"dist"</span>),             <span class="c"># index.html, favicon.ico, ...</span>
+  assets: Embed.dir(<span class="s">"dist"</span>),  <span class="c"># index.html, favicon.ico, ...</span>
   routes: <span class="k">fn</span> (srv) {
-    srv.get(<span class="s">"/api/hello"</span>, <span class="k">fn</span> (req) { <span class="s">"hi from the embedded server"</span> })
+    srv.get(<span class="s">"/api/hello"</span>, <span class="k">fn</span> (req) {
+      <span class="s">"hi from the embedded server"</span>
+    })
   },
 })</pre>
           <p class="fine-print">That's the whole app — a local server,

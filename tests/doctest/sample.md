@@ -9,13 +9,15 @@ that are meant to fail).
 Single-line expected output:
 
 ```culebra
-print("hello")        # => hello
+print("hello")  # => hello
 ```
 
 Multi-line expected output:
 
 ```culebra
-for i in iota(3) { print("{i}\n") }
+for i in iota(3) {
+  print("{i}\n")
+}
 # => |
 # 0
 # 1
@@ -25,7 +27,7 @@ for i in iota(3) { print("{i}\n") }
 Expected throw, substring match:
 
 ```culebra
-to_long('abc')        # !! type error
+to_long('abc')  # !! type error
 ```
 
 No markers — only needs to run without error:

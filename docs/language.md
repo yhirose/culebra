@@ -1353,8 +1353,8 @@ outcome there is `ImmutableError`, not a silent overwrite:
 
 ```culebra
 # doctest: skip
-Math.zzz = 1     # AttributeError: namespace 'Math' has no member 'zzz'
-Math.pi = 3.0    # ImmutableError: immutable property 'pi'
+Math.zzz = 1   # AttributeError: namespace 'Math' has no member 'zzz'
+Math.pi = 3.0  # ImmutableError: immutable property 'pi'
 ```
 
 A bare read of a **built-in** method (`let m = [1, 2].map`, no parens)
@@ -3949,8 +3949,12 @@ with non-zero arity, raises a `type error`.
 File.open = fn (path) {
   h = _native_open(path)
   {
-    read: fn () { _native_read(h) },
-    drop: fn () { _native_close(h) }    # called on scope exit
+    read: fn () {
+      _native_read(h)
+    },
+    drop: fn () {
+      _native_close(h)
+    },  # called on scope exit
   }
 }
 
@@ -4678,13 +4682,17 @@ range(1000000).filter(f).map(g).take(4).collect()
 countdown = fn (start) {
   mut i = start
   {
-    iter:     fn () { self },  # Iterator is its own Iterable
-    has_next: fn () { i > 0 },
-    next:     fn () {
+    iter: fn () {
+      self
+    },  # Iterator is its own Iterable
+    has_next: fn () {
+      i > 0
+    },
+    next: fn () {
       v = i
       i -= 1
       v
-    }
+    },
   }
 }
 

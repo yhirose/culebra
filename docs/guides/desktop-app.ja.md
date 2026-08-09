@@ -61,10 +61,7 @@ GUIスレッドの仕事のすべて。`set_html`はHTML文字列リテラルを
 
 ```culebra
 # doctest: skip
-Desktop.run({title: "My App", size: [
-  720,
-  560,
-], assets: Embed.dir("dist")})
+Desktop.run({title: "My App", size: [720, 560], assets: Embed.dir("dist")})
 ```
 
 `Embed.dir("dist")`はコード変更なしに**backendごとに**解決先が変わる:
@@ -95,11 +92,17 @@ dist/
 # doctest: skip
 Desktop.run({assets: Embed.dir("dist"), routes: fn (srv) {
   srv.get("/api/hello", fn (req) {
-    {content_type: "application/json", body: JSON.stringify({message: "Hello from culebra's local server"})}
+    {
+      content_type: "application/json",
+      body: JSON.stringify({message: "Hello from culebra's local server"}),
+    }
   })
   srv.post("/api/echo", fn (req) {
     let input = JSON.parse(req.body)
-    {content_type: "application/json", body: JSON.stringify({reply: "You said: " + input["text"]})}
+    {
+      content_type: "application/json",
+      body: JSON.stringify({reply: "You said: " + input["text"]}),
+    }
   })
 }})
 ```
@@ -218,9 +221,13 @@ OSが割り当てた空きポートへ落ちる — 2つのculebraデスクト�
 
 ```culebra
 # doctest: skip
-Desktop.run({assets: Embed.dir("dist"), port: 5173, routes: fn (srv) {
-  # ...
-}})
+Desktop.run({
+  assets: Embed.dir("dist"),
+  port: 5173,
+  routes: fn (srv) {
+    # ...
+  },
+})
 ```
 
 ### ワーカー間で安全に状態を持つ
@@ -265,7 +272,11 @@ srv.post("/api/visit", fn (req) {
   let db = SQLite.open(VISITS_DB)
   db.execute("CREATE TABLE IF NOT EXISTS visits (id INTEGER PRIMARY KEY, n INTEGER)")
   let rows = db.query("SELECT n FROM visits WHERE id = 1")
-  let n = if rows.size() == 0 { 0 } else { rows[0]["n"] } + 1
+  let n = if rows.size() == 0 {
+    0
+  } else {
+    rows[0]["n"]
+  } + 1
   db.execute("INSERT OR REPLACE INTO visits (id, n) VALUES (1, ?)", [n])
   db.close()
   {content_type: "application/json", body: JSON.stringify({visits: n})}

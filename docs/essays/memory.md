@@ -72,9 +72,9 @@ make_node = fn (name) {
   let root = make_node('root')
   let leaf = make_node('leaf')
   root.children.push(leaf)
-  leaf.parent = root         # a back-reference to the parent. no weak needed
+  leaf.parent = root  # a back-reference to the parent. no weak needed
 }
-inspect(closed)   # => ['leaf', 'root']
+inspect(closed)  # => ['leaf', 'root']
 ```
 
 `leaf.parent` is a reference cycle. Build the same shape with plain
@@ -97,15 +97,21 @@ and only a handle you never close falls through to the GC backstop:
 ```culebra
 # doctest: skip
 # 1. scoped helper: closes on every exit path — normal, return, throw
-let head = File.with('big.log', 'r', fn (f) { f.read(256) })
+let head = File.with('big.log', 'r', fn (f) {
+  f.read(256)
+})
 
 # 2. when the lifetime is wider than one block
 let f = File.open(path, 'w')
-defer { f.close() }
+defer {
+  f.close()
+}
 
 # 3. the iterator owns the handle. it closes even when you break out
 for line in File.open(path).lines() {
-  if line == '' { break }
+  if line == '' {
+    break
+  }
   process(line)
 }
 ```

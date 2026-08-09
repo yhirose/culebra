@@ -1263,8 +1263,8 @@ missing propertyでエラーでした）。**既存**メンバーへの書き込
 
 ```culebra
 # doctest: skip
-Math.zzz = 1     # AttributeError: namespace 'Math' has no member 'zzz'
-Math.pi = 3.0    # ImmutableError: immutable property 'pi'
+Math.zzz = 1   # AttributeError: namespace 'Math' has no member 'zzz'
+Math.pi = 3.0  # ImmutableError: immutable property 'pi'
 ```
 
 **組み込み**メソッドの裸読み（括弧なしの`let m = [1, 2].map`）は
@@ -3729,8 +3729,12 @@ inspect(doubled().collect())  # => [20, 7]
 File.open = fn (path) {
   h = _native_open(path)
   {
-    read: fn () { _native_read(h) },
-    drop: fn () { _native_close(h) }    # スコープ抜けで呼ばれる
+    read: fn () {
+      _native_read(h)
+    },
+    drop: fn () {
+      _native_close(h)
+    },  # スコープ抜けで呼ばれる
   }
 }
 
@@ -4444,13 +4448,17 @@ range(1000000).filter(f).map(g).take(4).collect()
 countdown = fn (start) {
   mut i = start
   {
-    iter:     fn () { self },  # Iterator は自身が Iterable
-    has_next: fn () { i > 0 },
-    next:     fn () {
+    iter: fn () {
+      self
+    },  # Iterator は自身が Iterable
+    has_next: fn () {
+      i > 0
+    },
+    next: fn () {
       v = i
       i -= 1
       v
-    }
+    },
   }
 }
 

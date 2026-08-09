@@ -148,7 +148,7 @@ picked per op by size unless a `Tensor.use_*()` call pins one.
 ```culebra
 x = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
 y = x.dot(x.transpose())
-Tensor.eval(y)                       # [[5.0, 11.0], [11.0, 25.0]]
+Tensor.eval(y)  # [[5.0, 11.0], [11.0, 25.0]]
 ```
 
 ### Embedded assets
@@ -159,9 +159,9 @@ from disk — edit a file, rerun — and `culebra build` bakes every byte
 into the executable, so the shipped binary needs nothing alongside it.
 
 ```culebra
-let assets = Embed.dir("dist")           # index.html, favicon.ico, ...
-println(assets.exists("index.html"))     # => true
-println(assets.exists("favicon.ico"))    # => true
+let assets = Embed.dir("dist")         # index.html, favicon.ico, ...
+println(assets.exists("index.html"))   # => true
+println(assets.exists("favicon.ico"))  # => true
 ```
 
 ### Desktop app creation
@@ -173,9 +173,11 @@ whole thing — server, routes, and embedded assets — as one binary.
 ```culebra
 Desktop.run({
   title: "Hello from culebra",
-  assets: Embed.dir("dist"),             # index.html, favicon.ico, ...
+  assets: Embed.dir("dist"),  # index.html, favicon.ico, ...
   routes: fn (srv) {
-    srv.get("/api/hello", fn (req) { "hi from the embedded server" })
+    srv.get("/api/hello", fn (req) {
+      "hi from the embedded server"
+    })
   },
 })
 ```

@@ -70,9 +70,9 @@ make_node = fn (name) {
   let root = make_node('root')
   let leaf = make_node('leaf')
   root.children.push(leaf)
-  leaf.parent = root         # 親への逆参照。ここに weak は要らない
+  leaf.parent = root  # 親への逆参照。ここに weak は要らない
 }
-inspect(closed)   # => ['leaf', 'root']
+inspect(closed)  # => ['leaf', 'root']
 ```
 
 `leaf.parent`は循環参照である。素の`shared_ptr`のまま、あるいは
@@ -94,15 +94,21 @@ culebraでは、この循環はブロックを抜けた`}`の位置で解放さ�
 ```culebra
 # doctest: skip
 # 1. スコープ付きヘルパー: 正常・return・throw のどの経路でも閉じる
-let head = File.with('big.log', 'r', fn (f) { f.read(256) })
+let head = File.with('big.log', 'r', fn (f) {
+  f.read(256)
+})
 
 # 2. 寿命がブロックより広いとき
 let f = File.open(path, 'w')
-defer { f.close() }
+defer {
+  f.close()
+}
 
 # 3. iterator がハンドルを所有する。break で抜けても閉じる
 for line in File.open(path).lines() {
-  if line == '' { break }
+  if line == '' {
+    break
+  }
   process(line)
 }
 ```

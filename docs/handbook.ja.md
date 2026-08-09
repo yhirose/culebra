@@ -1534,10 +1534,10 @@ inspect(pair == (1, 'one'))  # => true
 
 ```culebra
 s = {1, 2, 3, 3}
-inspect(s.size())                 # => 3
-inspect(s.contains(2))            # => true
-inspect({1, 2, 3} == {3, 2, 1})   # => true
-inspect({42,})                    # => {42}
+inspect(s.size())                # => 3
+inspect(s.contains(2))           # => true
+inspect({1, 2, 3} == {3, 2, 1})  # => true
+inspect({42,})                   # => {42}
 ```
 
 集合演算は演算子でなくメソッド (`|` はラムダ引数に取られている):
