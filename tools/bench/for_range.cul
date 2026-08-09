@@ -1,0 +1,10 @@
+# Q2 microbench for the bytecode-VM spike: nested counted range-for with a
+# minimal Long body, so per-iteration engine overhead dominates. Sized for
+# a multi-second interp run on the -O3 build.
+let mut sum = 0
+for i in 0..5000 {
+    for j in 0..5000 {
+        sum = sum + i * j
+    }
+}
+println(sum)

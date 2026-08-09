@@ -1,0 +1,16 @@
+# Arithmetic-dense variant: more expression work per iteration, so the
+# engines' expression evaluation (not just loop dispatch) is on the clock.
+let mut a = 0
+let mut b = 1
+let mut c = 2
+for i in 0..2000 {
+    for j in 0..2000 {
+        let t = i * 31 + j * 17
+        a = a + t * t - i
+        b = b + a * 3 - j * j
+        c = c + a - b + t
+    }
+}
+println(a)
+println(b)
+println(c)
