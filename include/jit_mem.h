@@ -848,6 +848,8 @@ inline constexpr auto make_derived_method
 inline constexpr auto build_class_meta
     = "culebra_runtime_build_class_meta";
 inline constexpr auto object_set          = "culebra_runtime_object_set";
+inline constexpr auto check_namespace_write
+    = "culebra_runtime_check_namespace_write";
 inline constexpr auto object_bind_static  = "culebra_runtime_object_bind_static";
 inline constexpr auto wk_contract_error   = "culebra_runtime_wk_contract_error";
 inline constexpr auto object_set_fast     = "culebra_runtime_object_set_fast";

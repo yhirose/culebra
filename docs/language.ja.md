@@ -1253,6 +1253,20 @@ Math.to_string()  # AttributeError。to_string(Math) ではない
 答えます。素のobjectは影響を受けません —— `{a: 1}.zzz(9)`は従来
 どおりUFCSです。
 
+書き込みも同じ固定集合ルールに従い、`Ns.zzz = v`と`Ns.zzz ??= v`は
+幽霊メンバーを生やす代わりに同じ`AttributeError`を投げます
+（`Ns.zzz += v`は後述の一般的なcompound代入ルールにより既に
+missing propertyでエラーでした）。**既存**メンバーへの書き込みは
+そのslotの通常の代入ルールに従います —— stdlib名前空間のメンバーの
+多くはimmutableとして登録されているため、結果は無言の上書きでなく
+`ImmutableError`になるのが通例です:
+
+```culebra
+# doctest: skip
+Math.zzz = 1     # AttributeError: namespace 'Math' has no member 'zzz'
+Math.pi = 3.0    # ImmutableError: immutable property 'pi'
+```
+
 **組み込み**メソッドの裸読み（括弧なしの`let m = [1, 2].map`）は
 第一級値になりません — `TypeError: built-in method 'map' cannot be
 used as a value (call it, or wrap it in a lambda)`を投げます。この
@@ -3320,7 +3334,7 @@ shutdownパターン）は、`Signal.notify`でチャネルを登録します（
 | `KeyError` | Dictの存在しないキーsubscript；Objectの存在しないキーsubscript | はい |
 | `IndexError` | Array / String / Tensorの範囲外index；Tensor slice範囲外；Tensor reduction axis範囲外 | はい |
 | `ValueError` | Destructure pattern mismatch；Tensorのshape / dtype不一致；`[].min()`等空コレクションへのreduce；不正な数値文字列；JSON parse失敗；1000段を超えてネストした値のwalk（下記「値ネストの上限」参照） | はい |
-| `AttributeError` | compound代入（`o.x += ...`）で`x`が存在しない；組み込み名前空間が持たないメンバーの読み取り（名前空間は閉じている — クラスやプレーンなdictは`nil`のまま） | はい |
+| `AttributeError` | compound代入（`o.x += ...`）で`x`が存在しない；組み込み名前空間が持たないメンバーの読み取り・書き込み（`=`/`??=`）（名前空間は閉じている — クラスやプレーンなdictは自由に読み書きできる） | はい |
 | `ArityError` | 必須引数の欠如 — 関数やclass constructorへのpositional不足；**組み込み**・名前空間関数が受け取れる数を超えたpositional。**ユーザ定義**関数への余分なpositionalはエラーではなく`__ARGS__`（§19）に溢れる | はい |
 | `DispatchError` | 多重ディスパッチ（§20）でマッチなし、またはspecificity同点 | はい |
 | `AssertionError` | matcherの失敗 (`assert_true` / `assert_eq`等) もしくはユーザ`throw {kind: "AssertionError", ...}`。比較系matcherは両辺をmessageに含めます | はい |

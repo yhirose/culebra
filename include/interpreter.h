@@ -10574,11 +10574,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       int64_t line = recv && recv->line ? static_cast<long>(recv->line) : ast.line;
       int64_t col =
           recv && recv->column ? static_cast<long>(recv->column) : ast.column;
-      throw CulebraError(
-          "AttributeError",
-          std::format("namespace '{}' has no member '{}'",
-                      obj.ns_name ? obj.ns_name : "?", name),
-          line, col);
+      throw_namespace_missing_member_at(obj.ns_name, name, line, col);
     }
 
     // Trait default-method fallback: if this instance's class doesn't
@@ -11679,6 +11675,17 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         }
         auto& obj = lval.to_object();
         auto name = postfix.token;
+        // A closed namespace has a fixed member set (see eval_property);
+        // no-op when `obj` isn't a namespace or `name` is a builtin method
+        // name. Shared by the `??=` and plain branches below, both of which
+        // must reject an unknown member before minting a phantom slot.
+        auto reject_namespace_write = [&] {
+          if (obj.is_namespace && !is_object_builtin_method_name(name)) {
+            throw_namespace_missing_member_at(
+                obj.ns_name, name, static_cast<long>(postfix.line),
+                static_cast<long>(postfix.column));
+          }
+        };
         if (nil_coalesce) {
           // `o.k ??= v`: matches a plain `o.k` read (an absent property
           // reads as nil) rather than the `compound` branch's stricter
@@ -11687,6 +11694,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           // insert).
           const Symbol* sym = obj.find_prop(name);
           if (sym && sym->val.type != Value::Nil) return sym->val;  // short-circuit
+          // A closed namespace's unknown member throws here too — before
+          // the RHS runs, matching the JIT (whose `??=` reads the current
+          // value through the same closed-namespace-checked path as a
+          // plain read, so a missing member throws ahead of the `??=`
+          // deciding whether to even evaluate the RHS).
+          if (!sym) reject_namespace_write();
           auto new_val = eval_rhs();
           if (obj.has_own(name)) {
             obj.assign(name, new_val);
@@ -11727,6 +11740,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         if (obj.has_own(name)) {
           obj.assign(name, rval);
         } else {
+          // A plain `Ns.zzz = 1` used to fall through to initialize() and
+          // silently mint a phantom member instead of catching the typo.
+          reject_namespace_write();
           obj.initialize(name, rval, mut);
         }
         return rval;

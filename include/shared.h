@@ -1008,6 +1008,19 @@ inline std::string url_decode(std::string_view in) {
                      line, col);
 }
 
+// `Ns.member` where `member` isn't in the closed namespace `Ns`'s member
+// set — on a read (`Ns.member`) or a plain/`??=` write (`Ns.member = v`).
+// Shared so both directions and both backends report the identical kind +
+// message; only the location differs by call site.
+[[noreturn]] inline void throw_namespace_missing_member_at(
+    const char* ns_name, std::string_view member, int64_t line, int64_t col) {
+  throw CulebraError(
+      "AttributeError",
+      std::format("namespace '{}' has no member '{}'",
+                  ns_name ? ns_name : "?", member),
+      line, col);
+}
+
 // Reassigning a `let` (non-mut) binding. Interp tracks per-binding
 // mut via the `Symbol`'s `mut` flag; the JIT carries `mut` on
 // `VarSlot` and routes here when a write hits a non-mut slot.

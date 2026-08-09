@@ -1409,11 +1409,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
   // path, so it is unaffected. Placed before the trait-default scan to match
   // interp's ordering: a closed namespace never picks up a user trait default.
   if (obj->is_namespace && !culebra::is_object_builtin_method_name(key)) {
-    throw culebra::CulebraError(
-        "AttributeError",
-        std::format("namespace '{}' has no member '{}'",
-                    obj->ns_name ? obj->ns_name : "?", key),
-        line, col);
+    culebra::throw_namespace_missing_member_at(obj->ns_name, key, line, col);
   }
   // Trait default-method fallback (T4 part 2).
   if (auto* d = _jit_find_trait_default(obj, key))
@@ -1525,6 +1521,22 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has_own_field(
     int8_t tag, int64_t data, const char* key) {
   if (tag != TAG_OBJECT) return false;
   return reinterpret_cast<JitObject*>(data)->has_own(key);
+}
+
+// `Ns.member = v` where `member` isn't already an own member of the closed
+// namespace `Ns` — same closed-member-set rule as a read
+// (culebra_runtime_object_get_ic above), checked at the plain-assignment
+// site so a typo minting a phantom member is caught immediately instead of
+// silently succeeding. `??=`/compound need no counterpart call: `??=`
+// re-reads the current value through the checked read path before ever
+// reaching this write, and compound already pre-checks existence via
+// object_has (jit.h compile_assign_complex).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_check_namespace_write(
+    JitObject* obj, const char* key, int64_t line, int64_t col) {
+  if (obj->is_namespace && !obj->has_own(key) &&
+      !culebra::is_object_builtin_method_name(key)) {
+    culebra::throw_namespace_missing_member_at(obj->ns_name, key, line, col);
+  }
 }
 
 // `obj(args)` overload resolution: returns the class instance's

@@ -545,6 +545,23 @@ JIT::Owned JIT::compile_assign_complex(const peg::Ast& ast,
         auto cur = emit_property_get(lval, name);
         to_store = emit_arith_step(cur, rval, base_op, /*inplace=*/true);
         emit_value_release(rval);
+      } else {
+        // Plain `o.k = v` on a closed namespace: an absent own member
+        // isn't a legitimate extension point (mirrors interp's
+        // is_namespace branch in eval_assign_complex) — check ahead of
+        // object_set so a typo can't mint a phantom member. `??=` needs
+        // no counterpart: its current-value read already goes through
+        // the checked read path (emit_property_get) before ever reaching
+        // object_set.
+        auto namePtr = get_or_create_global_str(name, ".propname");
+        emit_call(
+            module_->getOrInsertFunction(rt::check_namespace_write,
+                                         builder_.getVoidTy(),
+                                         ptrTy, ptrTy,
+                                         builder_.getInt64Ty(),
+                                         builder_.getInt64Ty()),
+            {objPtr, namePtr, builder_.getInt64(finalPostfix.line),
+             builder_.getInt64(finalPostfix.column)});
       }
       // Retain the result ref *before* the set: `object_set` consumes one
       // reference to `to_store`. For a normal slot that consume is a
