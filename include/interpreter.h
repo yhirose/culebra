@@ -11179,36 +11179,27 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // allocation. `to_long` throws `type error` on Float or non-numeric
   // operands (matching the JIT's `value_to_long` guard); range literals
   // are stricter than Math.range on purpose.
-  // A RANGE node carries `[start?] OP [end?]` — either endpoint may be
-  // omitted (open-ended). The operator child is at index 0 when there is
-  // no start, else index 1; an end follows it when present. (The bare `..`
-  // form collapses to a lone RANGE_OPERATOR node, handled in eval().) A
-  // trailing `by <step>` clause is its own BY_STEP node (single child: the
-  // step expression) so it can't be confused with the end bound positionally.
+  // The RANGE node layout ([start?] OP [end?] [BY_STEP]?, either endpoint
+  // open) is decoded by the shared decode_range_layout (parser.h). The bare
+  // `..` form collapses to a lone RANGE_OPERATOR node, handled in eval().
   Value eval_range(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
-    using namespace peg::udl;
-    size_t op_idx = (ast.nodes[0]->tag == "RANGE_OPERATOR"_) ? 0 : 1;
-    bool has_start = op_idx == 1;
-    size_t n = ast.nodes.size();
-    bool has_step = n > 0 && ast.nodes[n - 1]->tag == "BY_STEP"_;
-    size_t end_limit = has_step ? n - 1 : n;
-    bool has_end = op_idx + 1 < end_limit;
+    auto lay = culebra::decode_range_layout(ast);
     std::optional<int64_t> start, end;
     Value bound;
-    if (has_start) {
-      if (!eval_operand(*ast.nodes[0], env, bound)) return Value();
+    if (lay.start) {
+      if (!eval_operand(*lay.start, env, bound)) return Value();
       start = bound.to_long();
     }
-    if (has_end) {
-      if (!eval_operand(*ast.nodes[op_idx + 1], env, bound)) return Value();
+    if (lay.end) {
+      if (!eval_operand(*lay.end, env, bound)) return Value();
       end = bound.to_long();
     }
     int64_t step = 1;
-    if (has_step) {
-      if (!eval_operand(*ast.nodes[n - 1]->nodes[0], env, bound)) return Value();
+    if (lay.step) {
+      if (!eval_operand(*lay.step, env, bound)) return Value();
       step = bound.to_long();
     }
-    return _make_range(start, end, ast.nodes[op_idx]->token == "..=", step);
+    return _make_range(start, end, lay.inclusive, step);
   }
 
   // Resolve a method by name on a class instance, honoring both the

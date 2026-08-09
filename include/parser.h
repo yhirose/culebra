@@ -546,8 +546,9 @@ inline ForView view_for(const peg::Ast& a) {
 // the step expression as its lone child and is excluded from the end-bound
 // slot. Returns the endpoint/step AST nodes (null when absent) without
 // compiling them, so callers control evaluation order. Single source for the
-// RANGE layout shared by the JIT (compile_range, compile_for's counted fast
-// path) and the bytecode-VM spike.
+// RANGE layout shared by the interpreter (eval_range), the JIT
+// (compile_range, compile_for's counted fast path), and the bytecode-VM
+// spike.
 struct RangeLayout {
   const peg::Ast* start;  // null if open-started
   const peg::Ast* end;    // null if open-ended

@@ -13,14 +13,13 @@
 #include <parser.h>
 #include <range_bounds.h>
 #include <shared.h>
+#include <stdlib_jit.h>  // culebra_runtime_println + the rt::println decl hook
 
 #include <cstdint>
 #include <format>
 #include <map>
 #include <string>
 #include <vector>
-
-extern "C" void culebra_runtime_println(int8_t tag, int64_t data);
 
 namespace culebra::vmspike {
 
@@ -94,14 +93,7 @@ inline std::pair<int64_t, int64_t> chunk_pos_at(const Chunk& c, size_t pc) {
 class SpikeCompiler {
  public:
   Chunk compile_module(const peg::Ast& ast) {
-    using namespace peg::udl;
-    push_scope();
-    if (ast.tag == "STATEMENTS"_) {
-      for (const auto& n : ast.nodes) compile_statement(*n);
-    } else {
-      compile_statement(ast);
-    }
-    pop_scope();
+    compile_block(ast);
     emit(Op::Halt);
     chunk_.num_slots = high_water_;
     return std::move(chunk_);
@@ -191,12 +183,18 @@ class SpikeCompiler {
 
   void push_scope() { scopes_.push_back({{}, next_slot_}); }
 
-  // Emits the scope's Releases (reverse order, mirroring the JIT's frame
-  // ladder) and returns its slots to the allocator.
+  // The release ladder every scope exit uses (reverse order, mirroring the
+  // JIT's frame ladder). Capped at named_top_: slots above it are statement
+  // temps owned by a live TempScope, which releases them itself.
+  void release_down_to(int32_t watermark) {
+    for (int32_t s = std::min(next_slot_, named_top_) - 1; s >= watermark; --s)
+      emit(Op::Release, s);
+  }
+
+  // Emits the scope's Releases and returns its slots to the allocator.
   void pop_scope() {
     const auto& sc = scopes_.back();
-    for (int32_t s = next_slot_ - 1; s >= sc.slot_watermark; --s)
-      emit(Op::Release, s);
+    release_down_to(sc.slot_watermark);
     next_slot_ = sc.slot_watermark;
     named_top_ = std::min(named_top_, next_slot_);
     scopes_.pop_back();
@@ -227,10 +225,14 @@ class SpikeCompiler {
 
   // Release dst's previous value, then either transfer the temp's +1 or
   // copy-and-retain the borrowed slot. The one store rule every write uses.
-  void store_into(int32_t dst, ExprResult r) {
-    emit(Op::Release, dst);
+  // `dst_is_fresh` skips the Release for a just-allocated slot (always nil).
+  // A Take'n temp is dropped from the statement's sweep list — its +1 moved,
+  // so the end-of-statement Release would be a provable no-op.
+  void store_into(int32_t dst, ExprResult r, bool dst_is_fresh = false) {
+    if (!dst_is_fresh) emit(Op::Release, dst);
     if (r.owned) {
       emit(Op::Take, dst, r.slot);
+      std::erase(stmt_temps_, r.slot);
     } else {
       emit(Op::Move, dst, r.slot);
       emit(Op::Retain, dst);
@@ -265,20 +267,14 @@ class SpikeCompiler {
       case "CALL"_:
         compile_println(ast);
         break;
-      case "BREAK"_: {
-        if (loops_.empty()) reject(ast, "break outside a loop");
-        auto& lc = loops_.back();
-        for (int32_t s = next_slot_ - 1; s >= lc.slot_watermark; --s)
-          emit(Op::Release, s);
-        lc.break_jumps.push_back(emit(Op::Jump));
-        break;
-      }
+      case "BREAK"_:
       case "CONTINUE"_: {
-        if (loops_.empty()) reject(ast, "continue outside a loop");
+        bool brk = ast.tag == "BREAK"_;
+        if (loops_.empty())
+          reject(ast, brk ? "break outside a loop" : "continue outside a loop");
         auto& lc = loops_.back();
-        for (int32_t s = next_slot_ - 1; s >= lc.slot_watermark; --s)
-          emit(Op::Release, s);
-        lc.continue_jumps.push_back(emit(Op::Jump));
+        release_down_to(lc.slot_watermark);
+        (brk ? lc.break_jumps : lc.continue_jumps).push_back(emit(Op::Jump));
         break;
       }
       default:
@@ -298,18 +294,14 @@ class SpikeCompiler {
       // Slot reserved before the RHS so temps stack above it; the name only
       // becomes visible after the RHS (let x = x reads the outer x).
       int32_t slot = alloc_slot(*tgt, std::string(tgt->token));
-      auto r = compile_expr(*av.rhs);
-      stamp(ast);
-      store_into(slot, r);
+      store_into(slot, compile_expr(*av.rhs), /*dst_is_fresh=*/true);
       scopes_.back().bindings.push_back(
           {std::string(tgt->token), slot, av.is_mut});
     } else {
       const Binding* b = lookup(tgt->token);
       if (!b) reject(*tgt, "assignment to an undeclared name");
       if (!b->is_mut) reject(*tgt, "assignment to an immutable binding");
-      auto r = compile_expr(*av.rhs);
-      stamp(ast);
-      store_into(b->slot, r);
+      store_into(b->slot, compile_expr(*av.rhs));
     }
   }
 
@@ -335,14 +327,13 @@ class SpikeCompiler {
     // Endpoints evaluate before the binding exists, in source order, with
     // errors attributed to the range expression — same as both backends.
     stamp(*fv.iter);
-    store_into(base + 0, compile_expr(*lay.start));
-    store_into(base + 1, compile_expr(*lay.end));
+    store_into(base + 0, compile_expr(*lay.start), /*dst_is_fresh=*/true);
+    store_into(base + 1, compile_expr(*lay.end), /*dst_is_fresh=*/true);
     if (lay.step) {
-      store_into(base + 2, compile_expr(*lay.step));
+      store_into(base + 2, compile_expr(*lay.step), /*dst_is_fresh=*/true);
     } else {
       emit(Op::LoadConst, base + 2, kconst(1));
     }
-    stamp(*fv.iter);
     size_t prep = emit(Op::ForPrep, base, 0, lay.inclusive ? 1 : 0);
 
     scopes_.back().bindings.push_back({std::string(id.token), var, false});
@@ -372,9 +363,7 @@ class SpikeCompiler {
       reject(ast, "call (only a direct println(<expr>) is in the slice)");
     const auto& args = *ast.nodes[1];
     if (args.nodes.size() != 1) reject(args, "println takes one argument here");
-    auto r = compile_expr(*args.nodes[0]);
-    stamp(ast);
-    emit(Op::Println, r.slot);
+    emit(Op::Println, compile_expr(*args.nodes[0]).slot);
   }
 
   ExprResult compile_expr(const peg::Ast& ast) {
@@ -509,9 +498,10 @@ struct SpikeVM {
         case Op::ForPrep: {
           int64_t step = regs[in.a + 2].data;
           if (step == 0) {
+            // The runtime helper is the sole owner of this diagnostic
+            // (jit_iter.h); routing through it keeps the lanes identical.
             auto [line, col] = chunk_pos_at(c, pc);
-            throw CulebraError("ValueError", "range() step must not be zero",
-                               line, col);
+            culebra_runtime_range_step_check(step, line, col);
           }
           regs[in.a + 3] = JitValue{TAG_LONG, in.c ? 2 : 0};
           pc = static_cast<size_t>(in.b);
@@ -558,7 +548,7 @@ struct SpikeVM {
 // uncaught-error conversion). This is the Phase 3 shape: jit.h consuming
 // bytecode instead of the AST.
 struct SpikeLowering {
-  static void run_chunk(const Chunk& c, bool emit_llvm) {
+  static void run_chunk(const Chunk& c, bool emit_llvm, int opt_level) {
     using namespace llvm;
     JIT::ensure_native_target_init();
     auto ctx = std::make_unique<LLVMContext>();
@@ -574,7 +564,7 @@ struct SpikeLowering {
     builder.SetInsertPoint(BasicBlock::Create(*ctx, "entry", fn));
     lower_chunk(jit, c, fn);
     verifyFunction(*fn);
-    JIT::optimize_module(*mod, 2);
+    if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
     if (emit_llvm) {
       mod->print(outs(), nullptr);
     } else {
@@ -585,9 +575,7 @@ struct SpikeLowering {
   static void lower_chunk(JIT& j, const Chunk& c, llvm::Function* fn) {
     using namespace llvm;
     auto& b = j.builder_;
-    auto i8Ty = b.getInt8Ty();
     auto i64Ty = b.getInt64Ty();
-    auto zero_value = ConstantAggregateZero::get(j.valueType_);
 
     // One Value alloca per slot, nil-initialized — mem2reg turns these into
     // SSA; this is what replaces the AST path's Scope/VarSlot machinery.
@@ -595,32 +583,17 @@ struct SpikeLowering {
     // wins over the using-directive.)
     std::vector<llvm::Value*> slots(c.num_slots);
     for (int32_t s = 0; s < c.num_slots; ++s) {
-      slots[s] = b.CreateAlloca(
-          j.valueType_, nullptr,
-          s < static_cast<int32_t>(c.slot_names.size()) ? c.slot_names[s]
-                                                        : "slot");
-      b.CreateStore(zero_value, slots[s]);
+      slots[s] = b.CreateAlloca(j.valueType_, nullptr, c.slot_names[s]);
+      b.CreateStore(j.make_nil(), slots[s]);
     }
     auto load_slot = [&](int32_t s) {
       return b.CreateLoad(j.valueType_, slots[s]);
-    };
-    auto tag_of = [&](llvm::Value* v) {
-      return b.CreateTrunc(b.CreateExtractValue(v, {0}), i8Ty);
-    };
-    auto data_of = [&](llvm::Value* v) {
-      return b.CreateExtractValue(v, {1});
-    };
-    auto rc_call = [&](const char* fname, int32_t s) {
-      auto v = load_slot(s);
-      j.emit_call(
-          j.module_->getOrInsertFunction(fname, b.getVoidTy(), i8Ty, i64Ty),
-          {tag_of(v), data_of(v)});
     };
 
     // Pass 1: every jump target opens a basic block.
     std::map<int32_t, BasicBlock*> blocks;
     auto mark = [&](int32_t t) {
-      if (!blocks.count(t))
+      if (t < static_cast<int32_t>(c.code.size()) && !blocks.count(t))
         blocks[t] = BasicBlock::Create(j.ctx_, std::format("L{}", t), fn);
     };
     for (size_t i = 0; i < c.code.size(); ++i) {
@@ -628,6 +601,10 @@ struct SpikeLowering {
       switch (in.op) {
         case Op::Jump:
           mark(in.a);
+          // The next insn opens a block too: dead code after an unconditional
+          // break/continue jump lands there (predecessor-less; the optimizer
+          // erases it), so pass 2 never emits into a terminated block.
+          mark(static_cast<int32_t>(i) + 1);
           break;
         case Op::ForPrep:
           mark(in.b);
@@ -646,44 +623,38 @@ struct SpikeLowering {
       if (auto it = blocks.find(static_cast<int32_t>(i)); it != blocks.end()) {
         if (!b.GetInsertBlock()->getTerminator()) b.CreateBr(it->second);
         b.SetInsertPoint(it->second);
-      } else if (b.GetInsertBlock()->getTerminator()) {
-        // Dead code after an unconditional break/continue jump; emit into a
-        // detached block the optimizer erases.
-        b.SetInsertPoint(BasicBlock::Create(j.ctx_, "dead", fn));
       }
       const auto& in = c.code[i];
       switch (in.op) {
-        case Op::LoadConst: {
-          const auto& k = c.consts[in.b];
-          llvm::Value* v =
-              b.CreateInsertValue(zero_value, b.getInt64(k.tag), {0});
-          v = b.CreateInsertValue(v, b.getInt64(k.data), {1});
-          b.CreateStore(v, slots[in.a]);
+        case Op::LoadConst:
+          // The const table is Long-only in the slice (see kconst).
+          b.CreateStore(j.make_long(b.getInt64(c.consts[in.b].data)),
+                        slots[in.a]);
           break;
-        }
         case Op::Move:
           b.CreateStore(load_slot(in.b), slots[in.a]);
           break;
         case Op::Take:
           b.CreateStore(load_slot(in.b), slots[in.a]);
-          b.CreateStore(zero_value, slots[in.b]);
+          b.CreateStore(j.make_nil(), slots[in.b]);
           break;
         case Op::Retain:
-          rc_call(rt::value_retain, in.a);
+          j.emit_value_retain(load_slot(in.a));
           break;
         case Op::Release:
-          rc_call(rt::value_release, in.a);
-          b.CreateStore(zero_value, slots[in.a]);
+          j.emit_value_release(load_slot(in.a));
+          b.CreateStore(j.make_nil(), slots[in.a]);
           break;
         case Op::Neg:
-          b.CreateStore(j.make_long(b.CreateNeg(data_of(load_slot(in.b)))),
-                        slots[in.a]);
+          b.CreateStore(
+              j.make_long(b.CreateNeg(j.extract_data(load_slot(in.b)))),
+              slots[in.a]);
           break;
         case Op::Add:
         case Op::Sub:
         case Op::Mul: {
-          auto l = data_of(load_slot(in.b));
-          auto r = data_of(load_slot(in.c));
+          auto l = j.extract_data(load_slot(in.b));
+          auto r = j.extract_data(load_slot(in.c));
           llvm::Value* d = in.op == Op::Add   ? b.CreateAdd(l, r)
                            : in.op == Op::Sub ? b.CreateSub(l, r)
                                               : b.CreateMul(l, r);
@@ -695,11 +666,8 @@ struct SpikeLowering {
           break;
         case Op::ForPrep: {
           auto [line, col] = chunk_pos_at(c, i);
-          auto step = data_of(load_slot(in.a + 2));
-          j.emit_call(j.module_->getOrInsertFunction(
-                          rt::range_step_check, b.getVoidTy(), i64Ty, i64Ty,
-                          i64Ty),
-                      {step, b.getInt64(line), b.getInt64(col)});
+          j.emit_range_step_check(j.extract_data(load_slot(in.a + 2)), line,
+                                  col);
           b.CreateStore(j.make_long(b.getInt64(in.c ? 2 : 0)),
                         slots[in.a + 3]);
           b.CreateBr(blocks.at(in.b));
@@ -708,10 +676,10 @@ struct SpikeLowering {
         case Op::ForLoop: {
           // RangeBounds::done()/take() spelled as IR; inclusive rides the
           // flags slot as a per-loop constant the optimizer folds.
-          auto cur = data_of(load_slot(in.a));
-          auto end = data_of(load_slot(in.a + 1));
-          auto step = data_of(load_slot(in.a + 2));
-          auto flags = data_of(load_slot(in.a + 3));
+          auto cur = j.extract_data(load_slot(in.a));
+          auto end = j.extract_data(load_slot(in.a + 1));
+          auto step = j.extract_data(load_slot(in.a + 2));
+          auto flags = j.extract_data(load_slot(in.a + 3));
           auto exhausted =
               b.CreateICmpNE(b.CreateAnd(flags, b.getInt64(1)), b.getInt64(0));
           auto inclusive =
@@ -735,17 +703,15 @@ struct SpikeLowering {
               b.CreateOr(b.CreateAnd(flags, b.getInt64(2)),
                          b.CreateZExt(b.CreateExtractValue(res, 1), i64Ty));
           b.CreateStore(j.make_long(newflags), slots[in.a + 3]);
-          rc_call(rt::value_release, in.c);
+          j.emit_value_release(load_slot(in.c));
           b.CreateStore(j.make_long(cur), slots[in.c]);
           b.CreateBr(blocks.at(in.b));
           break;
         }
         case Op::Println: {
           auto v = load_slot(in.a);
-          j.emit_call(j.module_->getOrInsertFunction(rt::println,
-                                                     b.getVoidTy(), i8Ty,
-                                                     i64Ty),
-                      {tag_of(v), data_of(v)});
+          j.emit_call(j.module_->getFunction(rt::println),
+                      {j.extract_tag(v), j.extract_data(v)});
           break;
         }
         case Op::Safepoint:
@@ -756,12 +722,12 @@ struct SpikeLowering {
           break;
       }
     }
-    if (!b.GetInsertBlock()->getTerminator()) b.CreateRetVoid();
   }
 };
 
-inline void run_chunk_via_llvm(const Chunk& chunk, bool emit_llvm) {
-  SpikeLowering::run_chunk(chunk, emit_llvm);
+inline void run_chunk_via_llvm(const Chunk& chunk, bool emit_llvm,
+                               int opt_level) {
+  SpikeLowering::run_chunk(chunk, emit_llvm, opt_level);
 }
 
 }  // namespace culebra::vmspike

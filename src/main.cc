@@ -179,11 +179,9 @@ struct Options {
   bool emit_llvm = false;
   int opt_level = 2;
   bool opt_level_explicit = false;
-  // Bytecode-VM spike lanes (docs/internals/vm.md §7 Phase 0). Hidden flags:
+  // Bytecode-VM spike lane (docs/internals/vm.md §7 Phase 0). Hidden flags:
   // run the slice compiler + VM, its LLVM lowering, or dump the bytecode.
-  bool vm_spike = false;
-  bool vm_spike_llvm = false;
-  bool vm_spike_dump = false;
+  enum class VmSpike { Off, Vm, Llvm, Dump } vm_spike = VmSpike::Off;
 #endif
   // The entry script, if one was given. At most one: the first non-flag
   // argument is the script and everything after it is its argv.
@@ -1289,9 +1287,9 @@ Options parse_command_line(int argc, const char** argv) {
         continue;
       }
       if (arg == "--emit-llvm") { options.emit_llvm = true; continue; }
-      if (arg == "--vm-spike") { options.vm_spike = true; continue; }
-      if (arg == "--vm-spike-llvm") { options.vm_spike_llvm = true; continue; }
-      if (arg == "--vm-spike-dump") { options.vm_spike_dump = true; continue; }
+      if (arg == "--vm-spike") { options.vm_spike = Options::VmSpike::Vm; continue; }
+      if (arg == "--vm-spike-llvm") { options.vm_spike = Options::VmSpike::Llvm; continue; }
+      if (arg == "--vm-spike-dump") { options.vm_spike = Options::VmSpike::Dump; continue; }
       if (arg.starts_with("-O")) {
         if (!parse_opt_level(arg, options.opt_level, options.error)) return options;
         options.opt_level_explicit = true;
@@ -1340,7 +1338,10 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
   // backend for one program.
   bool splice = false;
 #ifdef CULEBRA_JIT_ENABLED
-  splice = options.jit && !options.print_ast;
+  // The spike lane compiles the raw user AST — `--jit --vm-spike` must not
+  // hand it a preamble-spliced module.
+  splice = options.jit && !options.print_ast &&
+           options.vm_spike == Options::VmSpike::Off;
 #endif
   std::vector<culebra::LoadedModule> modules;
   if (!load_entry_program(path, *user_src, splice, modules)) return false;
@@ -1356,19 +1357,24 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
   }
 
 #ifdef CULEBRA_JIT_ENABLED
-  if (options.vm_spike || options.vm_spike_llvm || options.vm_spike_dump) {
+  if (options.vm_spike != Options::VmSpike::Off) {
     if (modules.size() != 1) {
       throw culebra::CulebraError(
           "SpikeError", "--vm-spike: single-module scripts only");
     }
     auto chunk = culebra::vmspike::SpikeCompiler().compile_module(
         *modules.front().ast);
-    if (options.vm_spike_dump) {
-      cout << culebra::vmspike::dump(chunk);
-    } else if (options.vm_spike_llvm) {
-      culebra::vmspike::run_chunk_via_llvm(chunk, options.emit_llvm);
-    } else {
-      culebra::vmspike::SpikeVM::run(chunk);
+    switch (options.vm_spike) {
+      case Options::VmSpike::Dump:
+        cout << culebra::vmspike::dump(chunk);
+        break;
+      case Options::VmSpike::Llvm:
+        culebra::vmspike::run_chunk_via_llvm(chunk, options.emit_llvm,
+                                             options.opt_level);
+        break;
+      default:
+        culebra::vmspike::SpikeVM::run(chunk);
+        break;
     }
     return true;
   }

@@ -8187,20 +8187,7 @@ struct JIT {
         auto endV = value_to_long(compile(*lay.end).consume());
         llvm::Value* stepV =
             lay.step ? value_to_long(compile(*lay.step).consume()) : nullptr;
-        // A zero step never terminates: reject it before the first
-        // iteration, as range_iter does on the generic path. Reported at
-        // the range's own position (the interpreter's `iter_expr`), not
-        // the enclosing `for`. A literal non-zero step is already proven
-        // safe here, so skip the call.
-        if (stepV && !is_nonzero_constant(stepV)) {
-          emit_call(
-              module_->getOrInsertFunction(
-                  rt::range_step_check, builder_.getVoidTy(),
-                  builder_.getInt64Ty(), builder_.getInt64Ty(),
-                  builder_.getInt64Ty()),
-              {stepV, builder_.getInt64(static_cast<int64_t>(iter_expr.line)),
-               builder_.getInt64(static_cast<int64_t>(iter_expr.column))});
-        }
+        emit_range_step_check(stepV, iter_expr.line, iter_expr.column);
         auto endBB = llvm::BasicBlock::Create(ctx_, "for.r.end", fn);
         compile_for_counted_range(startV, endV, lay.inclusive, stepV, id, body,
                                   endBB, brokeFlag);
@@ -8561,6 +8548,21 @@ struct JIT {
   static bool is_nonzero_constant(llvm::Value* v) {
     auto* c = llvm::dyn_cast<llvm::ConstantInt>(v);
     return c && !c->isZero();
+  }
+
+  // A zero step never terminates: reject it before the first iteration, as
+  // range_iter does on the generic path. Reported at the range expression's
+  // own position (the interpreter's `iter_expr`), not the enclosing `for`.
+  // A literal non-zero step is already proven safe, so the call is skipped.
+  // Shared by compile_for's counted fast path and the bytecode-VM lowering.
+  void emit_range_step_check(llvm::Value* stepV, size_t line, size_t col) {
+    if (!stepV || is_nonzero_constant(stepV)) return;
+    emit_call(module_->getOrInsertFunction(
+                  rt::range_step_check, builder_.getVoidTy(),
+                  builder_.getInt64Ty(), builder_.getInt64Ty(),
+                  builder_.getInt64Ty()),
+              {stepV, builder_.getInt64(static_cast<int64_t>(line)),
+               builder_.getInt64(static_cast<int64_t>(col))});
   }
 
   // Direct Long counter loop for `for v in start..end` (see compile_for's
