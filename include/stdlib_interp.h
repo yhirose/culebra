@@ -36,6 +36,7 @@
 #endif
 #include <canvas.h>
 #include <regexlib.h>
+#include <stdlib_math.h>
 #include <term.h>
 
 #include <algorithm>
@@ -70,6 +71,27 @@
 
 namespace culebra {
 
+// Value <-> culebra::math::Num boundary for the shared Math kernels
+// (stdlib_math.h). Position lookups stay on the cold path: this converter
+// and the kernels read __LINE__/__COLUMN__ only when they throw.
+inline math::Num _math_num(const Value& v,
+                           const std::shared_ptr<Environment>& env) {
+  if (v.type == Value::Long) return math::num_long(v.get<int64_t>());
+  if (v.type == Value::Float) return math::num_float(v.get<double>());
+  auto line = env->get("__LINE__").to_long();
+  auto col = env->get("__COLUMN__").to_long();
+  throw_type_error_at(line, col);
+}
+
+inline Value _math_value(const math::Num& n) {
+  return n.is_float ? Value(n.d) : Value(n.l);
+}
+
+// The Math namespace. The parameter lists below are the canonical spec both
+// binders consume (the JIT derives its NsParamMeta from them — see "Single
+// source of truth for the calling convention" in stdlib_jit.h); the bodies
+// delegate to the kernels in stdlib_math.h, which the JIT runtime calls
+// too, so promotion / comparison / error decisions exist once.
 inline Value make_math_namespace() {
   using namespace std::literals;
   ObjectValue ns;
@@ -78,68 +100,38 @@ inline Value make_math_namespace() {
       "abs",
       Value(FunctionValue({{"x", false}},
                           [](std::shared_ptr<Environment> env) {
-                            const auto& x = env->get("x");
-                            if (x.type == Value::Long) {
-                              auto v = x.get<int64_t>();
-                              return Value(v < 0 ? -v : v);
-                            }
-                            if (x.type == Value::Float) {
-                              return Value(std::fabs(x.get<double>()));
-                            }
-                            auto line = env->get("__LINE__").to_long();
-                            auto col = env->get("__COLUMN__").to_long();
-                            throw_type_error_at(line, col);
+                            return _math_value(
+                                math::abs(_math_num(env->get("x"), env)));
                           })),
       false);
 
-  // Returns Long if every arg was Long, else Float. Requires ≥2 args.
-  auto numeric_reduce = [](std::shared_ptr<Environment> env,
-                           auto better) {
-    int64_t line = env->get("__LINE__").to_long();
-    int64_t col = env->get("__COLUMN__").to_long();
-    if (!env->has("__ARGS__")) throw_type_error_at(line, col);
-    const auto& extras = *env->get("__ARGS__").to_array().values;
-    if (extras.empty()) throw_type_error_at(line, col);
-    bool any_float = false;
-    for (const auto& v : extras) {
-      if (!v.is_numeric()) throw_type_error_at(line, col);
-      if (v.type == Value::Float) any_float = true;
-    }
-    if (any_float) {
-      double acc = extras[0].to_double_coerce();
-      for (size_t i = 1; i < extras.size(); i++) {
-        double x = extras[i].to_double_coerce();
-        if (better(x, acc)) acc = x;
-      }
-      return Value(acc);
-    }
-    int64_t acc = extras[0].get<int64_t>();
-    for (size_t i = 1; i < extras.size(); i++) {
-      int64_t x = extras[i].get<int64_t>();
-      if (better(static_cast<double>(x), static_cast<double>(acc))) acc = x;
-    }
-    return Value(acc);
-  };
-
   // Modeled as `min(*args)` / `max(*args)`: the >=1 positional args are read
-  // from __ARGS__ by numeric_reduce. Declaring `*args` (rather than an empty
-  // list) makes the arity variadic so they stay usable as higher-order
-  // callbacks (`map(Math.max)`), matching the JIT — mirrors range/iota.
-  ns.initialize(
-      "min",
-      Value(FunctionValue({FunctionValue::Parameter::make_args_rest("args")},
-                          [numeric_reduce](std::shared_ptr<Environment> env) {
-        return numeric_reduce(env, [](double a, double b) { return a < b; });
-      })),
-      false);
-
-  ns.initialize(
-      "max",
-      Value(FunctionValue({FunctionValue::Parameter::make_args_rest("args")},
-                          [numeric_reduce](std::shared_ptr<Environment> env) {
-        return numeric_reduce(env, [](double a, double b) { return a > b; });
-      })),
-      false);
+  // from __ARGS__. Declaring `*args` (rather than an empty list) makes the
+  // arity variadic so they stay usable as higher-order callbacks
+  // (`map(Math.max)`), matching the JIT — mirrors range/iota.
+  auto minmax = [](bool pick_less) {
+    return Value(FunctionValue(
+        {FunctionValue::Parameter::make_args_rest("args")},
+        [pick_less](std::shared_ptr<Environment> env) {
+          auto pos = [&] {
+            return std::pair(env->get("__LINE__").to_long(),
+                             env->get("__COLUMN__").to_long());
+          };
+          if (!env->has("__ARGS__")) {
+            auto [line, col] = pos();
+            throw_type_error_at(line, col);
+          }
+          const auto& extras = *env->get("__ARGS__").to_array().values;
+          return _math_value(math::reduce_min_max(
+              static_cast<int64_t>(extras.size()), pick_less,
+              [&](int64_t i) {
+                return _math_num(extras[static_cast<size_t>(i)], env);
+              },
+              pos));
+        }));
+  };
+  ns.initialize("min", minmax(/*pick_less=*/true), false);
+  ns.initialize("max", minmax(/*pick_less=*/false), false);
 
   // Integer power: 0^0 == 1; negative exponent throws.
   ns.initialize(
@@ -148,12 +140,11 @@ inline Value make_math_namespace() {
                           [](std::shared_ptr<Environment> env) {
                             auto base = env->get("base").to_long();
                             auto exp = env->get("exp").to_long();
-                            if (exp < 0) {
-                              auto line = env->get("__LINE__").to_long();
-                              auto col = env->get("__COLUMN__").to_long();
-                              throw_type_error_at(line, col);
-                            }
-                            return Value(ipow_nonneg(base, exp));
+                            return Value(math::pow_long(base, exp, [&] {
+                              return std::pair(
+                                  env->get("__LINE__").to_long(),
+                                  env->get("__COLUMN__").to_long());
+                            }));
                           },
                           "Long"sv)),
       false);
@@ -162,8 +153,7 @@ inline Value make_math_namespace() {
       "sign",
       Value(FunctionValue({{"x", false, "Long"sv}},
                           [](std::shared_ptr<Environment> env) {
-                            auto x = env->get("x").to_long();
-                            return Value(int64_t{x > 0 ? 1 : (x < 0 ? -1 : 0)});
+                            return Value(math::sign(env->get("x").to_long()));
                           },
                           "Long"sv)),
       false);
@@ -174,31 +164,10 @@ inline Value make_math_namespace() {
       "clamp",
       Value(FunctionValue({{"x", false}, {"lo", false}, {"hi", false}},
                           [](std::shared_ptr<Environment> env) {
-                            const auto& x = env->get("x");
-                            const auto& lo = env->get("lo");
-                            const auto& hi = env->get("hi");
-                            if (!x.is_numeric() || !lo.is_numeric() ||
-                                !hi.is_numeric()) {
-                              auto line = env->get("__LINE__").to_long();
-                              auto col = env->get("__COLUMN__").to_long();
-                              throw_type_error_at(line, col);
-                            }
-                            if (x.type == Value::Float ||
-                                lo.type == Value::Float ||
-                                hi.type == Value::Float) {
-                              auto xd = x.to_double_coerce();
-                              auto lod = lo.to_double_coerce();
-                              auto hid = hi.to_double_coerce();
-                              if (xd < lod) return Value(lod);
-                              if (xd > hid) return Value(hid);
-                              return Value(xd);
-                            }
-                            auto xl = x.get<int64_t>();
-                            auto lol = lo.get<int64_t>();
-                            auto hil = hi.get<int64_t>();
-                            if (xl < lol) return Value(lol);
-                            if (xl > hil) return Value(hil);
-                            return Value(xl);
+                            return _math_value(math::clamp(
+                                _math_num(env->get("x"), env),
+                                _math_num(env->get("lo"), env),
+                                _math_num(env->get("hi"), env)));
                           })),
       false);
 
@@ -208,13 +177,11 @@ inline Value make_math_namespace() {
                           [](std::shared_ptr<Environment> env) {
                             auto x = env->get("x").to_long();
                             auto n = env->get("n").to_long();
-                            if (n == 0) {
-                              auto line = env->get("__LINE__").to_long();
-                              auto col = env->get("__COLUMN__").to_long();
-                              throw CulebraError("ZeroDivisionError",
-                                                 "divide by 0 error", line, col);
-                            }
-                            return Value(floored_mod(x, n));
+                            return Value(math::wrap(x, n, [&] {
+                              return std::pair(
+                                  env->get("__LINE__").to_long(),
+                                  env->get("__COLUMN__").to_long());
+                            }));
                           },
                           "Long"sv)),
       false);
@@ -223,13 +190,7 @@ inline Value make_math_namespace() {
     return Value(FunctionValue(
         {{"x", false}},
         [fn](std::shared_ptr<Environment> env) {
-          const auto& v = env->get("x");
-          if (!v.is_numeric()) {
-            auto line = env->get("__LINE__").to_long();
-            auto col = env->get("__COLUMN__").to_long();
-            throw_type_error_at(line, col);
-          }
-          return Value(fn(v.to_double_coerce()));
+          return Value(math::f2f(_math_num(env->get("x"), env), fn));
         },
         "Float"sv));
   };
@@ -237,14 +198,7 @@ inline Value make_math_namespace() {
     return Value(FunctionValue(
         {{"x", false}},
         [fn](std::shared_ptr<Environment> env) {
-          const auto& v = env->get("x");
-          if (v.type == Value::Long) return v;
-          if (v.type != Value::Float) {
-            auto line = env->get("__LINE__").to_long();
-            auto col = env->get("__COLUMN__").to_long();
-            throw_type_error_at(line, col);
-          }
-          return Value(static_cast<int64_t>(fn(v.get<double>())));
+          return _math_value(math::f2l(_math_num(env->get("x"), env), fn));
         },
         "Long"sv));
   };
@@ -257,21 +211,15 @@ inline Value make_math_namespace() {
   ns.initialize("asin",  float_to_float([](double x) { return std::asin(x); }), false);
   ns.initialize("acos",  float_to_float([](double x) { return std::acos(x); }), false);
   ns.initialize("atan",  float_to_float([](double x) { return std::atan(x); }), false);
-  // atan2(y, x): two numeric args -> Float (radians), shared shape with the
+  // atan2(y, x): two numeric args -> Float (radians), same kernel as the
   // JIT's culebra_runtime_math_atan2.
   ns.initialize(
       "atan2",
       Value(FunctionValue(
           {{"y", false}, {"x", false}},
           [](std::shared_ptr<Environment> env) {
-            const auto& y = env->get("y");
-            const auto& x = env->get("x");
-            if (!y.is_numeric() || !x.is_numeric()) {
-              auto line = env->get("__LINE__").to_long();
-              auto col = env->get("__COLUMN__").to_long();
-              throw_type_error_at(line, col);
-            }
-            return Value(std::atan2(y.to_double_coerce(), x.to_double_coerce()));
+            return Value(math::atan2(_math_num(env->get("y"), env),
+                                     _math_num(env->get("x"), env)));
           },
           "Float"sv)),
       false);

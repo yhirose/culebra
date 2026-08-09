@@ -31,6 +31,7 @@
 #include <shared.h>
 #include <regexlib.h>
 #include <sendable_jit.h>  // JIT isolate transfer (jit_serialize, spawn, handle)
+#include <stdlib_math.h>   // Math kernels shared with the interp
 
 #include <algorithm>
 #include <chrono>
@@ -149,135 +150,99 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_write_file(
   ofs.write(sv.data(), static_cast<std::streamsize>(sv.size()));
 }
 
+// The Math bodies below delegate to the kernels in stdlib_math.h — the
+// same ones the interp's make_math_namespace calls — so the semantic
+// decisions (Long/Float promotion, exact Long comparison, edge-case
+// errors) exist once across backends. These shims only translate the JIT
+// value representation to and from culebra::math::Num.
+inline culebra::math::Num _math_num(int8_t tag, int64_t data, int64_t line,
+                                    int64_t col) {
+  if (tag == TAG_LONG) return culebra::math::num_long(data);
+  if (tag == TAG_FLOAT)
+    return culebra::math::num_float(_culebra_float_to_double(data));
+  throw_type_error_at(line, col);
+}
+inline JitValue _math_out(const culebra::math::Num& n) {
+  return n.is_float ? JitValue{TAG_FLOAT, _culebra_double_to_bits(n.d)}
+                    : JitValue{TAG_LONG, n.l};
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_math_pow(
     int64_t base, int64_t exp, int64_t line, int64_t col) {
-  if (exp < 0) culebra::throw_type_error_at(line, col);
-  return culebra::ipow_nonneg(base, exp);
+  return culebra::math::pow_long(base, exp,
+                                 [&] { return std::pair(line, col); });
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_math_wrap(
     int64_t x, int64_t n, int64_t line, int64_t col) {
-  if (n == 0) culebra_runtime_div_zero(line, col);
-  return culebra::floored_mod(x, n);
+  return culebra::math::wrap(x, n, [&] { return std::pair(line, col); });
 }
 
-#define CUL_MATH_F2F(name, call)                                        \
+#define CUL_MATH_F2F(name, fn)                                          \
   CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_math_##name(    \
       int8_t tag, int64_t data, int64_t line, int64_t col) {            \
-    double x;                                                           \
-    if (tag == TAG_LONG)        x = static_cast<double>(data);          \
-    else if (tag == TAG_FLOAT)  x = _culebra_float_to_double(data);     \
-    else                        throw_type_error_at(line, col);         \
-    return {TAG_FLOAT, _culebra_double_to_bits(call)};                  \
+    return {TAG_FLOAT,                                                  \
+            _culebra_double_to_bits(culebra::math::f2f(                 \
+                _math_num(tag, data, line, col),                        \
+                [](double x) { return fn(x); }))};                      \
   }
-CUL_MATH_F2F(log,  std::log(x))
-CUL_MATH_F2F(exp,  std::exp(x))
-CUL_MATH_F2F(sqrt, std::sqrt(x))
-CUL_MATH_F2F(sin,  std::sin(x))
-CUL_MATH_F2F(cos,  std::cos(x))
-CUL_MATH_F2F(tan,  std::tan(x))
-CUL_MATH_F2F(asin, std::asin(x))
-CUL_MATH_F2F(acos, std::acos(x))
-CUL_MATH_F2F(atan, std::atan(x))
+CUL_MATH_F2F(log,  std::log)
+CUL_MATH_F2F(exp,  std::exp)
+CUL_MATH_F2F(sqrt, std::sqrt)
+CUL_MATH_F2F(sin,  std::sin)
+CUL_MATH_F2F(cos,  std::cos)
+CUL_MATH_F2F(tan,  std::tan)
+CUL_MATH_F2F(asin, std::asin)
+CUL_MATH_F2F(acos, std::acos)
+CUL_MATH_F2F(atan, std::atan)
 #undef CUL_MATH_F2F
 
-// atan2(y, x): two numeric args -> Float (radians). Mirrors the F2F family
-// but binary; either Long or Float coerces to double.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_math_atan2(
     int8_t yt, int64_t yd, int8_t xt, int64_t xd, int64_t line, int64_t col) {
-  if ((yt != TAG_LONG && yt != TAG_FLOAT) ||
-      (xt != TAG_LONG && xt != TAG_FLOAT))
-    throw_type_error_at(line, col);
-  double y = _culebra_coerce_num(yt, yd);
-  double x = _culebra_coerce_num(xt, xd);
-  return {TAG_FLOAT, _culebra_double_to_bits(std::atan2(y, x))};
+  return {TAG_FLOAT, _culebra_double_to_bits(culebra::math::atan2(
+                         _math_num(yt, yd, line, col),
+                         _math_num(xt, xd, line, col)))};
 }
 
-// Long input is identity (not coerced through Float, which would lose
-// precision on values past 2^53).
-#define CUL_MATH_F2L(name, call)                                        \
+#define CUL_MATH_F2L(name, fn)                                          \
   CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_math_##name(    \
       int8_t tag, int64_t data, int64_t line, int64_t col) {            \
-    if (tag == TAG_LONG) return {TAG_LONG, data};                       \
-    if (tag != TAG_FLOAT) throw_type_error_at(line, col);               \
-    double x = _culebra_float_to_double(data);                          \
-    return {TAG_LONG, static_cast<int64_t>(call)};                      \
+    return _math_out(culebra::math::f2l(                                \
+        _math_num(tag, data, line, col),                                \
+        [](double x) { return fn(x); }));                               \
   }
-CUL_MATH_F2L(floor, std::floor(x))
-CUL_MATH_F2L(ceil,  std::ceil(x))
-CUL_MATH_F2L(round, std::rint(x))
+CUL_MATH_F2L(floor, std::floor)
+CUL_MATH_F2L(ceil,  std::ceil)
+CUL_MATH_F2L(round, std::rint)
 #undef CUL_MATH_F2L
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_math_abs(
     int8_t tag, int64_t data, int64_t line, int64_t col) {
-  if (tag == TAG_LONG) return {TAG_LONG, data < 0 ? -data : data};
-  if (tag == TAG_FLOAT) {
-    double x = _culebra_float_to_double(data);
-    return {TAG_FLOAT, _culebra_double_to_bits(std::fabs(x))};
-  }
-  throw_type_error_at(line, col);
-}
-
-// Returns Long if every entry was Long, else Float. Callers handle
-// retain/release of `args`; the return is numeric (no ref).
-inline JitValue _culebra_numeric_reduce(const JitValue* args, int64_t n,
-                                        int64_t line, int64_t col,
-                                        bool pick_less) {
-  // min/max are variadic over >=1 numeric arg (max(5) == 5), matching the
-  // interpreter's numeric_reduce (which rejects only the empty arg list).
-  if (n < 1) throw_type_error_at(line, col);
-  bool any_float = false;
-  for (int64_t i = 0; i < n; i++) {
-    if (args[i].tag != TAG_LONG && args[i].tag != TAG_FLOAT) {
-      throw_type_error_at(line, col);
-    }
-    if (args[i].tag == TAG_FLOAT) any_float = true;
-  }
-  if (any_float) {
-    double acc = _culebra_coerce_num(args[0].tag, args[0].data);
-    for (int64_t i = 1; i < n; i++) {
-      double x = _culebra_coerce_num(args[i].tag, args[i].data);
-      if (pick_less ? x < acc : x > acc) acc = x;
-    }
-    return {TAG_FLOAT, _culebra_double_to_bits(acc)};
-  }
-  int64_t acc = args[0].data;
-  for (int64_t i = 1; i < n; i++) {
-    int64_t x = args[i].data;
-    if (pick_less ? x < acc : x > acc) acc = x;
-  }
-  return {TAG_LONG, acc};
+  return _math_out(culebra::math::abs(_math_num(tag, data, line, col)));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_math_min(
     const JitValue* args, int64_t n, int64_t line, int64_t col) {
-  return _culebra_numeric_reduce(args, n, line, col, /*pick_less=*/true);
+  return _math_out(culebra::math::reduce_min_max(
+      n, /*pick_less=*/true,
+      [&](int64_t i) { return _math_num(args[i].tag, args[i].data, line, col); },
+      [&] { return std::pair(line, col); }));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_math_max(
     const JitValue* args, int64_t n, int64_t line, int64_t col) {
-  return _culebra_numeric_reduce(args, n, line, col, /*pick_less=*/false);
+  return _math_out(culebra::math::reduce_min_max(
+      n, /*pick_less=*/false,
+      [&](int64_t i) { return _math_num(args[i].tag, args[i].data, line, col); },
+      [&] { return std::pair(line, col); }));
 }
 
-// clamp(x, lo, hi): Long if x/lo/hi are all Long, else Float (mirrors
-// min/max's promotion rule: any Float input promotes the whole comparison to
-// Float).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_math_clamp(
     int8_t xt, int64_t xd, int8_t lot, int64_t lod, int8_t hit, int64_t hid,
     int64_t line, int64_t col) {
-  if ((xt != TAG_LONG && xt != TAG_FLOAT) ||
-      (lot != TAG_LONG && lot != TAG_FLOAT) ||
-      (hit != TAG_LONG && hit != TAG_FLOAT)) {
-    throw_type_error_at(line, col);
-  }
-  if (xt == TAG_FLOAT || lot == TAG_FLOAT || hit == TAG_FLOAT) {
-    double x = _culebra_coerce_num(xt, xd);
-    double lo = _culebra_coerce_num(lot, lod);
-    double hi = _culebra_coerce_num(hit, hid);
-    double r = x < lo ? lo : (x > hi ? hi : x);
-    return {TAG_FLOAT, _culebra_double_to_bits(r)};
-  }
-  return {TAG_LONG, xd < lod ? lod : (xd > hid ? hid : xd)};
+  return _math_out(culebra::math::clamp(_math_num(xt, xd, line, col),
+                                        _math_num(lot, lod, line, col),
+                                        _math_num(hit, hid, line, col)));
 }
 
 // --- Random ---
@@ -4036,8 +4001,7 @@ inline JitValue _ns_math_pow(JitValue* a, int64_t) {
       _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1]), 0, 0));
 }
 inline JitValue _ns_math_sign(JitValue* a, int64_t) {
-  auto x = _ns_adapt::take_long(a[0]);
-  return _ns_adapt::v_long(x > 0 ? 1 : (x < 0 ? -1 : 0));
+  return _ns_adapt::v_long(culebra::math::sign(_ns_adapt::take_long(a[0])));
 }
 inline JitValue _ns_math_clamp(JitValue* a, int64_t) {
   return culebra_runtime_math_clamp(a[0].tag, a[0].data, a[1].tag, a[1].data,

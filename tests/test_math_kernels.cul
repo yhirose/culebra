@@ -1,0 +1,62 @@
+# Conformance: the Math namespace's numeric semantics are identical across
+# interp / JIT / AOT — both backends call the shared kernels in
+# include/stdlib_math.h (promotion, exact Long comparison, edge errors).
+#
+# Regression: Math.min/max used to compare Long args through double on the
+# interp, collapsing neighbours past 2^53 (`Math.min(2^53+1, 2^53)` returned
+# the larger value) while the JIT compared exact 64-bit. The shared kernel
+# compares exact on both.
+#
+# Run: ./build/culebra tests/test_math_kernels.cul
+#      ./build/culebra --jit tests/test_math_kernels.cul
+
+let err = fn (f) {
+  try {
+    f()
+    nil
+  } catch e {
+    e
+  }
+}
+
+# --- Exact Long comparison past 2^53 (2^53 = 9007199254740992).
+assert_eq(Math.max(9007199254740993, 9007199254740992), 9007199254740993)
+assert_eq(Math.min(9007199254740993, 9007199254740992), 9007199254740992)
+assert_eq(Math.max(-9007199254740993, -9007199254740992), -9007199254740992)
+assert_eq(Math.min(-9007199254740993, -9007199254740992), -9007199254740993)
+
+# --- Long result iff every arg was Long; any Float promotes.
+assert_eq(Math.max(1, 2.5), 2.5)
+assert_eq(Math.min(3, 2.5, 4), 2.5)
+assert_eq(type_of(Math.max(1, 2)), 'Long')
+assert_eq(type_of(Math.max(1, 2.0)), 'Float')
+assert_eq(Math.max(5), 5)  # variadic over >=1 arg
+
+# --- clamp shares the promotion rule.
+assert_eq(Math.clamp(5, 1, 10), 5)
+assert_eq(type_of(Math.clamp(5, 1.0, 10)), 'Float')
+assert_eq(Math.clamp(-1, 1, 10), 1)
+assert_eq(Math.clamp(99, 1, 10), 10)
+
+# --- floor/ceil/round: Long input passes through untouched (no double trip).
+assert_eq(Math.floor(9007199254740993), 9007199254740993)
+assert_eq(Math.ceil(9007199254740993), 9007199254740993)
+assert_eq(Math.round(9007199254740993), 9007199254740993)
+# Banker's rounding on Float.
+assert_eq(Math.round(2.5), 2)
+assert_eq(Math.round(3.5), 4)
+
+# --- f2f family returns Float even for Long input.
+assert_eq(type_of(Math.sqrt(4)), 'Float')
+assert_eq(Math.sqrt(4), 2.0)
+
+# --- Edge errors: kind and message identical across backends.
+assert_eq(err(fn () { Math.wrap(1, 0) }).kind, 'ZeroDivisionError')
+assert_eq(err(fn () { Math.pow(2, -1) }).kind, 'TypeError')
+assert_eq(err(fn () { Math.min() }).kind, 'TypeError')
+assert_eq(err(fn () { Math.max(1, 'a') }).kind, 'TypeError')
+assert_eq(err(fn () { Math.abs('a') }).kind, 'TypeError')
+assert_eq(err(fn () { Math.clamp(1, 'a', 3) }).kind, 'TypeError')
+assert_eq(err(fn () { Math.atan2(1, 'a') }).kind, 'TypeError')
+
+inspect('math kernels: ok')
