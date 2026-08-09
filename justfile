@@ -755,6 +755,13 @@ _run-tests BACKEND:
     # upstream(s) to the wrapper factory (tools/check_iter_wiring.sh).
     run_iter_wiring() { bash tools/check_iter_wiring.sh; }
 
+    # CULEBRA_RT_KEEP scope ratchet: the macro exists only to keep
+    # culebra_runtime_* ABI helpers alive for the JIT's by-name symbol
+    # resolution: an internal helper that drifts onto it by copy-paste gets
+    # nothing from it and rides an optimizer-dependent path on Windows
+    # (tools/check_rt_keep_scope.sh).
+    run_rt_keep_scope() { bash tools/check_rt_keep_scope.sh; }
+
     # Runtime-archive ownership: a dynamically-initialized namespace-scope
     # thread_local — and any symbol the core archive defines strongly — must
     # come from one archive, never both. mingw's ld rejects the duplicate and
@@ -793,6 +800,7 @@ _run-tests BACKEND:
         phase "flow-discipline (return-completion ratchet)"; run_flow_discipline
         phase "dispatch symmetry (eval_X vs compile_X tag sets)"; run_dispatch_symmetry
         phase "iter wiring (JitIterDrive + upstream forwarding ratchet)"; run_iter_wiring
+        phase "rt-keep scope (CULEBRA_RT_KEEP is culebra_runtime_*-only)"; run_rt_keep_scope
     }
     case "{{BACKEND}}" in
       # Order: cheap tests first, then AOT (slowest + most env-sensitive,
