@@ -581,30 +581,11 @@ struct StrGuard {
 
 // CPython-trashcan deallocation state: see ~Value. The deferred list holds
 // container payloads (std::any) whose destruction was postponed past the
-// depth budget; it is drained at the outermost teardown level. The bool
-// mirrors !deferred.empty() so the hot path never touches the guarded
-// (non-trivially-destructible) thread_local vector; the cold helpers are
-// outlined so ~Value's inline body stays small at its many expansion sites.
-inline thread_local int64_t _value_teardown_depth = 0;
-inline thread_local bool _value_teardown_has_deferred = false;
-CULEBRA_RT_CORE_OWNED thread_local std::vector<std::any>
-    _value_teardown_deferred;
+// depth budget. Resetting the any is the release: whatever container it
+// boxes destroys its elements, and each element ~Value re-enters here.
+inline void _value_teardown_release(std::any& payload) { payload.reset(); }
 
-[[gnu::noinline]] inline void _value_teardown_defer(std::any payload) {
-  _value_teardown_deferred.push_back(std::move(payload));
-  _value_teardown_has_deferred = true;
-}
-
-[[gnu::noinline]] inline void _value_teardown_drain() {
-  // Runs at depth 1 (see ~Value), so every dtor it triggers bottoms out at
-  // depth >= 2 and can never nest a second drain. Each pop may re-defer
-  // its own deep tail; loop until dry.
-  while (!_value_teardown_deferred.empty()) {
-    auto payload = std::move(_value_teardown_deferred.back());
-    _value_teardown_deferred.pop_back();
-  }
-  _value_teardown_has_deferred = false;
-}
+using ValueTrashcan = Trashcan<std::any, &_value_teardown_release>;
 
 struct FunctionValue {
   struct Parameter {
@@ -1023,15 +1004,7 @@ struct Value {
       default: return;
     }
     if (!v.has_value()) return;  // moved-from shell
-    if (_value_teardown_depth >= kValueTeardownDepthBudget) {
-      _value_teardown_defer(std::move(v));
-      return;
-    }
-    ++_value_teardown_depth;
-    v.reset();
-    if (_value_teardown_depth == 1 && _value_teardown_has_deferred)
-      _value_teardown_drain();
-    --_value_teardown_depth;
+    ValueTrashcan::release(std::move(v));
   }
 
   explicit Value(bool b) : type(Bool), v(b) {}
