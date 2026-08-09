@@ -319,6 +319,44 @@ if ! diff -u "$TMP/own_want.cul" "$TMP/own_got.cul" > "$TMP/own_diff" 2>&1; then
   fail=1
 fi
 
+# --- 1i. Golden fixture: a bracket written inside a comment or a string ----
+# Shedding the parentheses the optimizer folded onto a collapsed node needs to
+# know the pair encloses the whole span, which means matching brackets — and a
+# `)` inside a comment or a string is not one. Counting it left the pair
+# looking unbalanced, so the parentheses stayed on and dragged the comment into
+# the leaf's text while the enclosing block emitted it too, refusing the file.
+# See include/formatter.h encloses_whole.
+cat > "$TMP/brk_in.cul" <<'EOF'
+fn f() { ( # )
+  1 ) }
+fn g() { ( ")" ) }
+fn h() { ( "]" ) }
+inspect(f())
+inspect(g())
+inspect(h())
+EOF
+cat > "$TMP/brk_want.cul" <<'EOF'
+fn f() {
+  # )
+  1
+}
+fn g() {
+  ")"
+}
+fn h() {
+  "]"
+}
+inspect(f())
+inspect(g())
+inspect(h())
+EOF
+"$CULEBRA" fmt "$TMP/brk_in.cul" > "$TMP/brk_got.cul" 2>"$TMP/brk_err"
+if ! diff -u "$TMP/brk_want.cul" "$TMP/brk_got.cul" > "$TMP/brk_diff" 2>&1; then
+  echo "FAIL golden (bracket inside a comment/string): output differs"
+  cat "$TMP/brk_diff"
+  fail=1
+fi
+
 # --- 2 + 3. Corpus safety + idempotency (parallel) ------------------------
 # Format every corpus file twice — once to check the re-parse/comment safety
 # net doesn't refuse (exit 2), once more to assert idempotency. The files are

@@ -447,13 +447,15 @@ class Printer {
   // here, so trimming is meaning-preserving.
   // True iff the leading bracket of `t` is closed by the bracket at its very
   // end (so the pair encloses the whole span) rather than by some interior
-  // bracket — `(a) = (b)` must NOT be treated as a wrapped `a) = (b`. The scan
-  // is string-naive, which is sufficient because it is only consulted for
-  // wrapper-collapsed nodes (a single inner expression), and any residual
-  // mistake is caught by the re-parse safety check.
-  static bool encloses_whole(std::string_view t, char open, char close) {
+  // bracket — `(a) = (b)` must NOT be treated as a wrapped `a) = (b`. Only code
+  // brackets count: a `)` written inside a comment or a string left the pair
+  // looking unbalanced, so the wrapper stayed on and carried the comment into a
+  // leaf the enclosing list also emits — two copies, and a refused file.
+  bool encloses_whole(std::string_view t, char open, char close) const {
+    size_t off = static_cast<size_t>(t.data() - src_.data());
     int depth = 0;
     for (size_t i = 0; i < t.size(); i++) {
+      if (!is_code_[off + i]) continue;
       if (t[i] == open) depth++;
       else if (t[i] == close) { if (--depth == 0) return i == t.size() - 1; }
     }
