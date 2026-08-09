@@ -341,9 +341,11 @@ Lua/LuaJIT、V8（Ignition + TurboFan）、SpiderMonkey。culebraの現在
 ## 10. Phase 0 spikeの結果
 
 2026-08-09、`vm-spike` branchで実施。対象は§7の指定どおりcounted
-range-`for`。作ったもの（隠しフラグ`--vm-spike` /
-`--vm-spike-llvm` / `--vm-spike-dump`、`include/vm_spike.h`、
-計約770行）:
+range-`for`。以下の数字はcleanup後のもの（`/simplify`パスがVMの
+hot loopから証明可能に無駄なRC操作を数個取り除いた — cleanup前の
+数字はbranch履歴を参照、その時点でも合格ラインは十分クリアして
+いた）。作ったもの（隠しフラグ`--vm-spike` / `--vm-spike-llvm` /
+`--vm-spike-dump`、`include/vm_spike.h`、計約700行）:
 
 - レジスタベースのバイトコード — slot解決済み変数、命令列に明示的
   なRC操作、run-lengthの位置サイドテーブル、常時生成のslot名デバッ
@@ -367,27 +369,25 @@ range-`for`。作ったもの（隠しフラグ`--vm-spike` /
 包含/排他/step付き/空のrange、int64両端のoverflow、ネスト、
 shadowing、break/continue、zero-stepエラーのkind・文面・位置まで。
 
-**Q2 — VMはtree-walkerに1.5倍以上勝つか? Yes: 約25倍。**
-branch先端の`just build`（-O3 + LTO）バイナリ、hyperfine、5 runs、
-idle状態（同じコードの一つ前のビルドでは約30倍 — ビルド間の
-コードレイアウト起因のゆらぎで、どちらでも合格ラインを大きく
-超える）:
+**Q2 — VMはtree-walkerに1.5倍以上勝つか? Yes: 約34倍。**
+branch先端の`just build`（-O3 + LTO）バイナリ、hyperfine、10 runs、
+idle状態:
 
 | bench（反復数） | interp | `--vm-spike` | `--jit`（コンパイル込み） | `--vm-spike-llvm` |
 |---|---|---|---|---|
-| `for_range.cul`（25M、最小body） | 9.20 s | **0.350 s（26.3倍）** | 0.463 s（19.9倍） | 0.062 s（148倍） |
-| `for_range_dense.cul`（4M、密なbody） | 6.54 s | **0.271 s（24.2倍）** | 0.350 s（18.7倍） | 0.140 s（47倍） |
+| `for_range.cul`（25M、最小body） | 9.15 s | **0.270 s（33.9倍）** | 0.462 s（19.8倍） | 0.056 s（163倍） |
+| `for_range_dense.cul`（4M、密なbody） | 6.53 s | **0.192 s（34.0倍）** | 0.337 s（19.4倍） | 0.101 s（64倍） |
 
-per-iterationではinterp約368 ns、VM約14 ns（最小body）。差の主因は
+per-iterationではinterp約366 ns、VM約11 ns（最小body）。差の主因は
 tree-walkerがcounted fast pathでも払い続けるper-iterationの
 `make_scope` + 名前mapへの挿入である。副次的発見が3つ: この規模の
 プログラムではVMはwall clockでJITにも勝つ（JITレーンはLLVM
 コンパイルが支配的）。バイトコード→LLVMレーンは小さなchunk
-モジュールだけをコンパイルする（preamble spliceなし）ため約55 ms
+モジュールだけをコンパイルする（preamble spliceなし）ため約56 ms
 で起動する。1行スクリプトの起動はVMレーン約4.4 ms vs interp約
 4.9 msで、§8の起動レイテンシ懸念はこの規模では現れなかった。
 interp側のコストベースラインが高すぎるため1.5倍の合格ラインに
-弁別力はほぼなく、Phase 1にとって意味のある数字は約14 ns/iteration
+弁別力はほぼなく、Phase 1にとって意味のある数字は約11 ns/iteration
 というdispatch下限のほうである。
 
 **Q1 — バイトコード→LLVMはAST→LLVMより有意に小さいか? Yes、同一
@@ -398,8 +398,8 @@ interp側のコストベースラインが高すぎるため1.5倍の合格ラ�
 | AST→LLVM、`compile_for`全体 | 309 |
 | AST→LLVM、counted fast path合計（fast pathブロック35 + `compile_for_counted_range` 72 + `emit_for_body_with_owned_binding` 95 + `for_break_target` 16） | 約218 |
 | うちスライスの意味論に実際に効く分（pattern/defer腕を除く） | 約183 |
-| バイトコード→LLVM、スライス全体（`lower_chunk`、全15命令） | 176 |
-| バイトコード→LLVM、ループ相当分（ForPrep/ForLoop/Jump case + ブロック骨格） | 約95 |
+| バイトコード→LLVM、スライス全体（`lower_chunk`、全15命令） | 151 |
+| バイトコード→LLVM、ループ相当分（ForPrep/ForLoop/Jump case + ブロック骨格） | 約82 |
 | バイトコードコンパイラのFOR case（エンジン間共有） | 51 |
 
 スライス全体のloweringがAST経路の`for`構文単体より小さい。比率より

@@ -363,9 +363,12 @@ proposal adopts is already documented in
 ## 10. Phase 0 spike: results
 
 Run 2026-08-09 on branch `vm-spike`, for the counted range-`for`
-construct as §7 prescribes. What was built (hidden flags
-`--vm-spike` / `--vm-spike-llvm` / `--vm-spike-dump`,
-`include/vm_spike.h`, ~770 lines total):
+construct as §7 prescribes. Numbers below are post-cleanup (a
+`/simplify` pass removed several provably-dead RC ops from the VM's
+hot loop — see the branch history for the pre-cleanup figures, which
+already cleared the bar). What was built (hidden flags `--vm-spike`
+/ `--vm-spike-llvm` / `--vm-spike-dump`, `include/vm_spike.h`, ~700
+lines total):
 
 - a register-based bytecode — slot-resolved variables, RC ops
   explicit in the instruction stream, a run-length position side
@@ -392,29 +395,27 @@ ranges, both int64 overflow edges, nesting, shadowing,
 break/continue, and the zero-step error down to kind, message, and
 position.
 
-**Q2 — does the VM beat the tree-walker by ≥1.5×? Yes: ≈25×.**
+**Q2 — does the VM beat the tree-walker by ≥1.5×? Yes: ≈34×.**
 `just build` (-O3 + LTO) binary at the branch head, hyperfine,
-5 runs, idle machine (an earlier build of the same code measured
-≈30× — build-to-build code-layout noise, either way far above the
-bar):
+10 runs, idle machine:
 
 | bench (iterations) | interp | `--vm-spike` | `--jit` (compile incl.) | `--vm-spike-llvm` |
 |---|---|---|---|---|
-| `for_range.cul` (25M, minimal body) | 9.20 s | **0.350 s (26.3×)** | 0.463 s (19.9×) | 0.062 s (148×) |
-| `for_range_dense.cul` (4M, dense body) | 6.54 s | **0.271 s (24.2×)** | 0.350 s (18.7×) | 0.140 s (47×) |
+| `for_range.cul` (25M, minimal body) | 9.15 s | **0.270 s (33.9×)** | 0.462 s (19.8×) | 0.056 s (163×) |
+| `for_range_dense.cul` (4M, dense body) | 6.53 s | **0.192 s (34.0×)** | 0.337 s (19.4×) | 0.101 s (64×) |
 
-Per-iteration: interp ≈368 ns, VM ≈14 ns (minimal body). The gap is
+Per-iteration: interp ≈366 ns, VM ≈11 ns (minimal body). The gap is
 dominated by the tree-walker's per-iteration `make_scope` +
 name-map insert, which its counted fast path still pays. Three
 side-findings: at these program sizes the VM also beats the JIT on
 wall clock (LLVM compilation dominates the JIT lane); the
-bytecode→LLVM lane starts in ≈55 ms because it compiles only the
+bytecode→LLVM lane starts in ≈56 ms because it compiles only the
 tiny chunk module (no preamble splice); and startup on a one-line
 script is ≈4.4 ms for the VM lane vs ≈4.9 ms interp — the §8
 startup-latency concern did not materialize at this scale. Because
 the interp cost baseline is so high, the 1.5× bar had little
 discriminating power; the informative number for Phase 1 is the
-≈14 ns/iteration dispatch floor.
+≈11 ns/iteration dispatch floor.
 
 **Q1 — is bytecode→LLVM significantly smaller than AST→LLVM? Yes,
 ≈2–3× for the construct, with the heavy machinery gone.** Counted
@@ -425,8 +426,8 @@ on the same tree:
 | AST→LLVM, `compile_for` whole | 309 |
 | AST→LLVM, counted-fast-path total (fast-path block 35 + `compile_for_counted_range` 72 + `emit_for_body_with_owned_binding` 95 + `for_break_target` 16) | ≈218 |
 | of which load-bearing for the slice (no pattern/defer arms) | ≈183 |
-| bytecode→LLVM, whole slice (`lower_chunk`, all 15 opcodes) | 176 |
-| bytecode→LLVM, loop share (ForPrep/ForLoop/Jump cases + block scaffolding) | ≈95 |
+| bytecode→LLVM, whole slice (`lower_chunk`, all 15 opcodes) | 151 |
+| bytecode→LLVM, loop share (ForPrep/ForLoop/Jump cases + block scaffolding) | ≈82 |
 | bytecode compiler FOR case (engine-shared) | 51 |
 
 The lowering for the whole slice is smaller than the AST path's
