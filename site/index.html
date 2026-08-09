@@ -52,6 +52,7 @@
       background: var(--surface-2); border-bottom: 1px solid var(--border);
     }
     .sample-bar .name { color: var(--muted); font-size: 0.82rem; font-family: var(--font-mono); }
+    .sample-bar .actions { display: flex; align-items: center; gap: 0.5rem; }
     .sample-bar .btn { padding: 0.25rem 0.8rem; font-size: 0.85rem; }
     pre.sample {
       background: var(--code-bg); border: 0; border-radius: 0;
@@ -132,7 +133,8 @@
          under a scrollbar: it is 42 columns, and a phone has no width to spare
          for a horizontal scroll the reader has to discover. */
       pre.sample { padding: 0.9rem 1rem; font-size: min(0.8rem, 2.85vw); }
-      .sample-bar { padding-left: 0.9rem; }
+      /* Name plus two buttons no longer fit on one line at this width. */
+      .sample-bar { padding-left: 0.9rem; flex-wrap: wrap; row-gap: 0.5rem; }
       /* Taller than on a desktop, not shorter: below 720px the Playground
          stacks the editor over the output, so the frame has two panes to fit
          in its height instead of two columns to fit in its width. */
@@ -175,7 +177,10 @@
     <div class="sample-wrap" id="sample-wrap">
       <div class="sample-bar">
         <span class="name">example.cul</span>
-        <button id="run-sample" class="btn btn-primary" type="button">▶ Run</button>
+        <div class="actions">
+          <button id="run-sample" class="btn btn-primary" type="button">▶ Run</button>
+          <a id="open-playground" class="btn" href="./playground/">Open in the Playground ↗</a>
+        </div>
       </div>
       <pre class="sample" id="sample"><span class="k">let</span> people = [
   { name: <span class="s">'Taro'</span>, greeting: <span class="s">'Konnichiwa'</span> },
@@ -350,34 +355,31 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
       if (t) document.documentElement.setAttribute("data-theme", t);
     } catch (e) {}
 
-    // Run swaps the listing for the Playground in an iframe. Loading it on
-    // demand is the point: the wasm interpreter is ~1.2 MB compressed, which
-    // nobody should pay for just to read the page. The <pre> above is the one
-    // copy of the snippet — its text is handed over through ?code=, so the
-    // sample that runs cannot drift from the sample that is shown.
-    document.getElementById("run-sample").addEventListener("click", function () {
+    // Both buttons hand the same snippet to the Playground through ?code=,
+    // so the <pre> below is the one copy of it — nothing can drift.
+    function encodeSampleCode() {
       var src = document.getElementById("sample").textContent;
       var bytes = new TextEncoder().encode(src);
       var bin = "";
       for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-      var code = btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    }
+    document.getElementById("open-playground").href = "./playground/?code=" + encodeSampleCode();
 
+    // Run swaps the listing for the Playground in an iframe. Loading it on
+    // demand is the point: the wasm interpreter is ~1.2 MB compressed, which
+    // nobody should pay for just to read the page.
+    document.getElementById("run-sample").addEventListener("click", function () {
       var frame = document.createElement("iframe");
       frame.className = "sample-frame";
       frame.title = "culebra Playground";
-      frame.src = "./playground/?embed=1&run=1&code=" + code;
+      frame.src = "./playground/?embed=1&run=1&code=" + encodeSampleCode();
 
       var wrap = document.getElementById("sample-wrap");
       wrap.replaceChild(frame, document.getElementById("sample"));
 
-      // The button has done its job; from here the way on is the full editor,
-      // carrying the same source so nothing typed in the frame is needed.
-      var btn = document.getElementById("run-sample");
-      var link = document.createElement("a");
-      link.className = "btn";
-      link.href = "./playground/?code=" + code;
-      link.textContent = "Open in the Playground ↗";
-      btn.replaceWith(link);
+      // The pre it read from is gone now; nothing left to run again.
+      document.getElementById("run-sample").remove();
     });
 
     // Plain clipboard copy for the terminal blocks — nothing to run here,
