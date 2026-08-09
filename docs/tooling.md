@@ -280,6 +280,19 @@ What it reports today:
   — a multidispatch clause or method signature fixes the arity, and a
   higher-order callback (a route handler `fn(req)`, an `|i| 4.0`) ignores
   an argument it must still declare — so the check would be all noise.
+- **Idiom warnings** — rewrites with no exception, so no false positive:
+  - **Redundant self-assignment** — `x = x + 1` says `x += 1` the long
+    way (also `-=`, `*=`, `/=`).
+  - **`.size()` compared to zero** — `xs.size() == 0` / `> 0` / `!= 0`
+    asks what `.empty()` / `!xs.empty()` answers more directly.
+  - **`range(0, n)`** — the explicit zero start is redundant; `range(n)`
+    already means that.
+
+  Two related rewrites — an `if`/`else` a ternary could express, and a
+  manual index loop `enumerate()` could replace — stay prose in
+  [`quick-guide.md` §3](quick-guide.md#3-what-does-not-carry-over)
+  instead: both have real exceptions, so neither clears the zero-false-
+  positive bar this check holds to.
 
 `culebra lint --fix <paths...>` mechanically removes unused-import lines —
 the only warning safe to autofix unattended, since deleting a dead
