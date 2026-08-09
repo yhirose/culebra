@@ -18,7 +18,7 @@ inspect(combine(|a, b| a + b, 10, 32))  # => 42
 fn call_it(f: fn() -> String) -> String {
   f()
 }
-inspect(call_it(|| "hi"))  # => hi
+inspect(call_it(|| "hi"))  # => 'hi'
 
 # --- a non-callable is rejected at the type check ---
 fn needs_fn(f: fn(Long) -> Long) -> Long {
@@ -28,7 +28,7 @@ try {
   needs_fn(99)
   inspect("no error")
 } catch e {
-  inspect("rejected")  # => rejected
+  inspect("rejected")  # => 'rejected'
 }
 
 # --- callable class instance (`__call__`) satisfies a function type ---
@@ -58,7 +58,7 @@ try {
   run_opt(nil)
   inspect("nil accepted")
 } catch e {
-  inspect("nil rejected")  # => nil rejected
+  inspect("nil rejected")  # => 'nil rejected'
 }
 
 # --- union with a function type: `fn(...) -> X | Long` ---
