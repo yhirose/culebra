@@ -5917,9 +5917,12 @@ struct JIT {
                                      builder_.getInt8Ty(),
                                      builder_.getInt64Ty(),
                                      builder_.getInt8Ty(),
+                                     builder_.getInt64Ty(),
+                                     builder_.getInt64Ty(),
                                      builder_.getInt64Ty()),
         {extract_tag(base.borrow()), extract_data(base.borrow()),
-         extract_tag(exp.borrow()), extract_data(exp.borrow())}, "pow.r");
+         extract_tag(exp.borrow()), extract_data(exp.borrow()),
+         current_line_val(), current_column_val()}, "pow.r");
     return own(result);  // base and exp consumed by `**`, released by their handles
   }
 

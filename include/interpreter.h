@@ -11122,8 +11122,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   Value eval_unary_bnot(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     auto v = eval(*ast.nodes[1], env);
     if (v.type != Value::Long) {
-      throw CulebraError("TypeError", std::format(
-          "type error: '~' requires Long, got {}", v.type_name()));
+      throw CulebraError("TypeError",
+                         culebra::type_mismatch_message("Long", v.type_name()));
     }
     return Value(~v.get<int64_t>());
   }
@@ -11132,18 +11132,24 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // [operand, OP, operand, ...]; operands must be Long. The operator is
   // read from the captured OP token (handles the 2-char `<<` / `>>`).
   Value eval_bitwise(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
-    auto require_long = [&](const Value& v) -> int64_t {
-      if (v.type != Value::Long) {
-        throw CulebraError("TypeError", std::format(
-            "type error: bitwise operator requires Long, got {}",
-            v.type_name()));
+    // Both operands of a step evaluate before the Long check (operands run
+    // for their effects first, like the arithmetic operators), and the check
+    // reports whichever side isn't a Long, lhs first — the JIT's
+    // compile_bitwise order and message.
+    auto step_longs = [&](const Value& l, const Value& r) {
+      const Value& bad = l.type != Value::Long ? l : r;
+      if (bad.type != Value::Long) {
+        throw CulebraError("TypeError", culebra::type_mismatch_message(
+                                            "Long", bad.type_name()));
       }
-      return v.get<int64_t>();
     };
-    int64_t acc = require_long(eval(*ast.nodes[0], env));
+    auto cur = eval(*ast.nodes[0], env);
     for (size_t i = 1; i < ast.nodes.size(); i += 2) {
       auto op = ast.nodes[i]->token;
-      int64_t rhs = require_long(eval(*ast.nodes[i + 1], env));
+      auto rval = eval(*ast.nodes[i + 1], env);
+      step_longs(cur, rval);
+      int64_t acc = cur.get<int64_t>();
+      int64_t rhs = rval.get<int64_t>();
       if (op == "|") acc |= rhs;
       else if (op == "^") acc ^= rhs;
       else if (op == "&") acc &= rhs;
@@ -11154,8 +11160,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       else if (op == "<<") acc <<= (rhs & 63);
       else if (op == ">>") acc >>= (rhs & 63);
       else throw std::logic_error("invalid bitwise operator");
+      cur = Value(acc);
     }
-    return Value(acc);
+    return cur;
   }
 
   // Arithmetic with Long↔Float promotion. Both operands Long → Long

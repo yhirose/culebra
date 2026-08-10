@@ -65,4 +65,17 @@ let e = try {
 }
 assert_eq(e, "TypeError")
 
+// Message is the standard type-mismatch form, and a step's operands both
+// evaluate (for their effects) before the Long check — the lhs is reported
+// first when both sides are bad.
+mut effects = []
+fn traced(v) { effects = effects + [v]; v }
+let em = try { 1.5 | traced(2) } catch er { er.message }
+assert_eq(em, "type error: expected Long, got Float")
+assert_eq(effects, [2])  // rhs ran before the check
+let em2 = try { 1 & traced("x") } catch er { er.message }
+assert_eq(em2, "type error: expected Long, got String")
+let em3 = try { ~1.5 } catch er { er.message }
+assert_eq(em3, "type error: expected Long, got Float")
+
 IO.inspect("test_bitwise OK")

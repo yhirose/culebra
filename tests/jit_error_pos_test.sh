@@ -123,6 +123,11 @@ check_same "to_long bad type (Array)" '[1].to_long()'
 check_same "to_float bad type"        'true.to_float()'
 check_same "to_long bad string"       '"abc".to_long()'
 
+# A `**` type error carries the operator's position — compile_power once
+# called num_pow without line/col args, so the JIT printed garbage there.
+check_same "pow type error"           'let x = 1 ** "a"'
+check_same "pow zero neg exponent"    'let x = 0 ** -1'
+
 # An uncaught top-level `throw` prints `uncaught: <value>`. A thrown string
 # prints raw (it's the message), matching the interp's str_display — the JIT
 # once quoted it (`uncaught: 'boom'`). Non-strings already agreed.

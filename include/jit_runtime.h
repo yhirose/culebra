@@ -1575,7 +1575,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_pow(
   if (lt == TAG_LONG && rt == TAG_LONG) {
     int64_t a = ld, e = rd;
     if (e >= 0) return {TAG_LONG, culebra::ipow_nonneg(a, e)};
-    if (a == 0) throw culebra::CulebraError("ZeroDivisionError", "divide by 0 error");
+    if (a == 0)
+      throw culebra::CulebraError("ZeroDivisionError", "divide by 0 error",
+                                  static_cast<int>(line),
+                                  static_cast<int>(col));
     return {TAG_FLOAT,
             _culebra_double_to_bits(std::pow(static_cast<double>(a),
                                              static_cast<double>(e)))};
