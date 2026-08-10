@@ -607,10 +607,16 @@ The rows above fail loudly. These ones run — they are just not how the
 language is written, and nothing will tell you so. Prefer the right
 column.
 
+Porting from another language: its `if/elif/else` or `case`/`switch`
+chains map onto `match`/`cond` here, not onto a literal `if`/`else if`
+chain — carrying the source's control-flow shape over verbatim is the
+single most common transfer mistake.
+
 | Works, but | Write |
 |---|---|
 | `if c { a } else { b }` as a value | `c ? a : b` |
-| `if` / `else if` chain yielding a value | `match` (on a subject) or `cond` |
+| `if` / `else if` chain yielding a value | one value against constants: `match`; unrelated conditions: `cond` |
+| `"a" + x + "b"` (splicing literal text around a value) | `"a{x}b"` |
 | `i = i + 1` | `i += 1` |
 | `x.size() == 0` / `> 0` | `x.empty()` / `!x.empty()` |
 | `mut i = 0` alongside a loop, `i += 1` | `for i, v in xs.enumerate()` |

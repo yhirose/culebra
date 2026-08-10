@@ -1,0 +1,62 @@
+# Assembler: assembly text (vga.txt) -> executable JSON-lines (vge.txt).
+# Ported from vm2gol-v2's vgasm.rb. `culebra vgasm.cul <file.vga.txt>` prints
+# the executable, mirroring `ruby vgasm.rb <file.vga.txt>`.
+
+INT_LITERAL_RE = Regex.compile('^-?\d+$')
+
+fn is_int_literal(s) {
+  INT_LITERAL_RE.test(s)
+}
+
+fn parse_asm(src) {
+  mut alines = []
+  for line in src.lines() {
+    stripped = line.split('#')[0].trim()
+    if !stripped.empty() {
+      alines.push(stripped
+        .split(' ')
+        .filter(|w| !w.empty())
+        .map(|w| w.to_string()))
+    }
+  }
+  alines
+}
+
+fn create_label_addr_map(alines) {
+  mut map = {}
+  mut addr = 0
+  for aline in alines {
+    map[aline[1]] = addr if aline[0] == 'label'
+    addr += 1
+  }
+  map
+}
+
+fn assemble(src) {
+  alines = parse_asm(src)
+  label_addr_map = create_label_addr_map(alines)
+
+  alines.map(fn (aline) {
+    let [head, ...rest] = aline
+
+    words = match head {
+      'label' => [head, rest[0]],
+      'jump' | 'jump_eq' | 'call' => [head, label_addr_map[rest[0]]],
+      _ => [head] + rest.map(|arg| is_int_literal(arg) ? to_long(arg) : arg),
+    }
+
+    JSON.stringify(words)
+  })
+}
+
+export {assemble}
+
+# --------------------------------
+
+if Sys.script != nil && FS.basename(Sys.script) == 'vgasm.cul' {
+  src = FS.read(Sys.argv[0])
+
+  for line in assemble(src) {
+    println(line)
+  }
+}
