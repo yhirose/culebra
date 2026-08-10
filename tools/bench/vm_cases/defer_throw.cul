@@ -1,0 +1,83 @@
+# defer × try/catch. The try body is its own defer scope: its defers fire
+# when the block closes (normal exit) or between the throw and the catch
+# body (throw exit) — never at function exit.
+try {
+  defer { println("t-normal") }
+  println("t-body")
+} catch _ {
+  println("t-caught")
+}
+println("t-after")
+
+# On a caught throw, pending defers run innermost-first before the handler.
+try {
+  defer { println("d-outer") }
+  {
+    defer { println("d-inner") }
+    throw "x"
+  }
+} catch e {
+  println(e)
+}
+
+# The catch body is its own defer scope too.
+try {
+  throw "y"
+} catch _ {
+  defer { println("c-defer") }
+  println("c-body")
+}
+println("c-after")
+
+# A defer throwing at the try body's NORMAL exit escapes its own catch
+# (the interp runs the body's deferred outside the try/catch pair); the
+# enclosing try catches it instead.
+let r = try {
+  try {
+    defer { throw "dboom" }
+    "ok"
+  } catch _ {
+    "inner"
+  }
+} catch e {
+  e
+}
+println(r)
+
+# A throwing defer abandons the rest of its scope's defers (Swift order).
+let s = try {
+  {
+    defer { println("kept-out") }
+    defer { throw "mid" }
+    defer { println("runs-first") }
+    println("body")
+  }
+  "no"
+} catch e {
+  e
+}
+println(s)
+
+# Runtime errors (not just user throws) trigger the same defer unwind.
+let mut zero = 0
+let t = try {
+  defer { println("rt-defer") }
+  10 / zero
+} catch e {
+  e
+}
+println(t)
+
+# throw INSIDE a catch handler still runs the handler scope's defers on
+# the way out to the enclosing try.
+let u = try {
+  try {
+    throw 1
+  } catch e {
+    defer { println("rethrow-defer") }
+    throw e + 1
+  }
+} catch e {
+  e + 10
+}
+println(u)

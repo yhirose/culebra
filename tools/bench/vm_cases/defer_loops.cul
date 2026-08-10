@@ -1,0 +1,45 @@
+# defer in loop bodies: fires at the end of EVERY iteration, and
+# break/continue run the pending defers — including a nested lexical
+# scope's — before leaving.
+for i in 0..3 {
+  defer { println(100 + i) }
+  println(200 + i)
+}
+
+# Per-iteration cells: each iteration's defer sees its own loop variable.
+let mut w = 0
+while w < 2 {
+  defer { println(300 + w) }
+  w = w + 1
+}
+
+# break out of a nested scope runs that scope's defers first (the
+# compile_break scan; the loop body itself declares none here).
+let mut i = 0
+while true {
+  i = i + 1
+  println(400 + i)
+  {
+    defer { println(500 + i) }
+    if i == 1 { continue }
+    break
+  }
+}
+println("loop-done")
+
+# break with defers at BOTH levels: nested first, then the body's own.
+for k in 0..5 {
+  defer { println(600 + k) }
+  {
+    defer { println(700 + k) }
+    if k == 1 { break }
+  }
+}
+
+# A deferred capture outliving its iteration (per-iteration cell parity
+# with closure_loop_var.cul, through the defer thunk).
+let mut hold = fn () { -1 }
+for n in 0..3 {
+  defer { hold = fn () { n } }
+}
+println(hold())

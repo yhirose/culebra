@@ -108,6 +108,14 @@ enum class Op : uint8_t {
                // carrier (culebra_runtime_throw); regs[a] is nil'd BEFORE the
                // raise so a handler's release ladder cannot double-release
                // the payload. Never falls through.
+  DeferMark,   // regs[a] = defer-stack mark (a Long; culebra_runtime_
+               // defer_mark). Frame marks are the chunk's first insn, so a
+               // throw at any pc finds the slot populated.
+  DeferPush,   // push closure regs[a] onto the global defer stack (borrow;
+               // the runtime retains — compile_defer's push-then-drop)
+  DeferRunTo,  // culebra_runtime_defer_run_to(regs[a]): pop and run every
+               // defer above the mark, LIFO. A defer body that throws drops
+               // the rest to the mark and propagates (interp/Swift order).
   ForPrep,     // control quad at base=a: {cur, end, step, flags}. Rejects a
                // zero step (ValueError at the range expression's position,
                // like rt::range_step_check), stores inclusive (c) into the
@@ -170,6 +178,13 @@ struct Chunk {
     int32_t caught_slot;
   };
   std::vector<EhRegion> eh;
+  // Frame-level defer mark slot (-1 when the chunk has no defers). Taken by
+  // the chunk's first instruction; a throw that no region catches runs the
+  // frame's pending defers back to it before unwinding out (Exec::run_frame's
+  // catch-all, the lowering's frame cleanup pad) — the observable slice of
+  // the JIT's frame cleanup ladder. Slot releases still fall to the GC
+  // backstop on that path (the known Phase 1 residual).
+  int32_t defer_mark_slot = -1;
 };
 
 struct VmProgram;
@@ -218,7 +233,22 @@ class Compiler {
     FuncInfo top_info = analysis.analyze_program(ast);
     prog.chunks.emplace_back();  // reserve index 0 for the top level
     Compiler main(prog, analysis, /*in_function=*/false, &top_info);
-    main.compile_block(ast);
+    // The top-level frame mark (JIT main's fn.mark): first insn, so a
+    // throw at any pc finds it populated. The Halt epilogue runs to it —
+    // before the top scope's releases, hence the inlined block below.
+    main.establish_frame_defer_mark(ast, top_info);
+    {
+      using namespace peg::udl;
+      main.push_scope();
+      if (ast.tag == "STATEMENTS"_) {
+        for (const auto& n : ast.nodes) main.compile_statement(*n);
+      } else {
+        main.compile_statement(ast);
+      }
+      if (main.frame_defer_mark_ >= 0)
+        main.emit(Op::DeferRunTo, main.frame_defer_mark_);
+      main.pop_scope();
+    }
     main.emit(Op::Halt);
     main.chunk_.num_slots = main.high_water_;
     prog.chunks[0] = std::move(main.chunk_);
@@ -248,6 +278,10 @@ class Compiler {
   };
   struct LoopCtx {
     int32_t slot_watermark;  // slots >= this are inner to the loop scope
+    size_t defer_watermark;  // defer_scopes_.size() at loop entry: entries
+                             // above it are scopes a break/continue jumps
+                             // out of, and the first (outermost) one's mark
+                             // bounds every defer the iteration pushed
     std::vector<size_t> break_jumps;
     std::vector<size_t> continue_jumps;
   };
@@ -286,6 +320,14 @@ class Compiler {
   // make that choice wrong at runtime. The wasted indices are bounded by the
   // number of captured bindings (kMaxSlots rejects overflow).
   int32_t pin_floor_ = 0;
+  // Frame-level defer mark slot (mirrors the JIT's fn.mark, gated on
+  // has_any_defer): `return` and the Halt epilogue run to it, as does the
+  // executor / frame pad when a throw escapes every region.
+  int32_t frame_defer_mark_ = -1;
+  // Mark slots of the open scopes that declared their own defers, outermost
+  // first (the JIT's Scope::defer_mark, flattened): break/continue run to
+  // the first entry above the loop's defer_watermark.
+  std::vector<int32_t> defer_scopes_;
 
   void mark_cell_slot(int32_t s) {
     slot_cell_[s] = true;
@@ -487,14 +529,47 @@ class Compiler {
     return {t, true};
   }
 
-  void compile_block(const peg::Ast& ast) {
+  // Scope-level defer mark, established around a block whose scope declares
+  // its own defers (scan_eh_defer's scope_has_defer, keyed by `key` — the
+  // block node for loop bodies, the LEXICAL_SCOPE node for `{ ... }`). The
+  // mark slot lives in the ENCLOSING scope (it must survive this scope's
+  // release ladder); DeferMark re-executes per entry, so one slot serves a
+  // loop body's every iteration. Exits run before the scope's releases —
+  // fall-through here, break/continue via defer_scopes_, a throw via the
+  // region handler's mark (compile_try) or the frame's (run_frame).
+  struct DeferScope {
+    Compiler& c;
+    int32_t mark = -1;
+    DeferScope(Compiler& c_, const peg::Ast& key) : c(c_) {
+      if (c.analysis_.scope_has_defer.contains(&key)) {
+        mark = c.alloc_slot(key, "(defer.mark)");
+        c.emit(Op::DeferMark, mark);
+        c.defer_scopes_.push_back(mark);
+      }
+    }
+    // Emit the fall-through run; pop before the caller's pop_scope so the
+    // releases that follow are no longer "inside" this defer scope.
+    void close() {
+      if (mark < 0) return;
+      c.emit(Op::DeferRunTo, mark);
+      c.defer_scopes_.pop_back();
+      mark = -1;
+    }
+    ~DeferScope() {
+      if (mark >= 0) c.defer_scopes_.pop_back();  // reject-unwind path
+    }
+  };
+
+  void compile_block(const peg::Ast& ast, const peg::Ast* defer_key = nullptr) {
     using namespace peg::udl;
+    DeferScope ds(*this, defer_key ? *defer_key : ast);
     push_scope();
     if (ast.tag == "STATEMENTS"_) {
       for (const auto& n : ast.nodes) compile_statement(*n);
     } else {
       compile_statement(ast);
     }
+    ds.close();
     pop_scope();
   }
 
@@ -502,9 +577,20 @@ class Compiler {
   // value lands in `dst` (nil for the valueless statements) before the block
   // scope's bindings are released. Every path writes `dst` at most once and
   // arrives with it still nil, so the stores skip the pre-Release.
-  void compile_block_into(const peg::Ast& ast, int32_t dst) {
+  void compile_block_into(const peg::Ast& ast, int32_t dst,
+                          const peg::Ast* defer_key = nullptr) {
     using namespace peg::udl;
+    DeferScope ds(*this, defer_key ? *defer_key : ast);
     push_scope();
+    compile_body_into(ast, dst);
+    ds.close();
+    pop_scope();
+  }
+
+  // compile_block_into's core, scope management left to the caller —
+  // compile_try brackets it with the region's own mark/end placement.
+  void compile_body_into(const peg::Ast& ast, int32_t dst) {
+    using namespace peg::udl;
     if (ast.tag == "STATEMENTS"_) {
       for (size_t i = 0; i + 1 < ast.nodes.size(); i++)
         compile_statement(*ast.nodes[i]);
@@ -512,7 +598,6 @@ class Compiler {
     } else {
       compile_value_into(ast, dst);
     }
-    pop_scope();
   }
 
   // One statement in value position. FOR/WHILE evaluate to nil; BREAK /
@@ -530,6 +615,8 @@ class Compiler {
       case "BREAK"_:
       case "CONTINUE"_:
       case "RETURN"_:
+      case "LEXICAL_SCOPE"_:
+      case "DEFER"_:
         compile_statement_inner(ast);
         break;
       case "ASSIGNMENT"_:
@@ -562,12 +649,43 @@ class Compiler {
       case "WHILE"_:
         compile_while(ast);
         break;
+      case "LEXICAL_SCOPE"_:
+        // `{ ... }` statement: its own scope, and its own defer scope
+        // (scan_eh_defer keys the LEXICAL_SCOPE node; the child is the
+        // STATEMENTS list, or a lone collapsed statement).
+        compile_block(*ast.nodes[0], /*defer_key=*/&ast);
+        break;
+      case "DEFER"_: {
+        // `defer { ... }` — the body becomes a 0-arity chunk (the same
+        // closure machinery as a fn literal, captures included), pushed
+        // onto the global defer stack. DeferPush borrows; the statement
+        // temp's sweep drops our +1 (compile_defer's push-then-drop).
+        int32_t t = alloc_temp(ast);
+        emit(Op::MakeClosure, t, compile_defer_chunk(ast));
+        emit(Op::DeferPush, t);
+        break;
+      }
       case "BREAK"_:
       case "CONTINUE"_: {
         bool brk = ast.tag == "BREAK"_;
         if (loops_.empty())
           reject(ast, brk ? "break outside a loop" : "continue outside a loop");
         auto& lc = loops_.back();
+        // A break/continue jumps out mid-statement: the enclosing
+        // statements' in-flight temps still hold values (interp frees them
+        // as the signal unwinds the eval frames). Release nils them, which
+        // both frees a heap temp and keeps a later generation of the slot
+        // honest — a stale scalar left behind reads as a cell pointer once
+        // the slot is reused as a loop variable's cell (CellNew releases
+        // the previous generation blindly). Only this iteration's temps are
+        // ours; an enclosing statement below the loop still needs its own.
+        for (int32_t t : stmt_temps_)
+          if (t >= lc.slot_watermark) emit(Op::Release, t);
+        // Then the pending defers — everything above the outermost defer
+        // scope opened inside the loop — before the named-slot releases
+        // (interp unwinds scope by scope, defers first).
+        if (defer_scopes_.size() > lc.defer_watermark)
+          emit(Op::DeferRunTo, defer_scopes_[lc.defer_watermark]);
         release_down_to(lc.slot_watermark);
         (brk ? lc.break_jumps : lc.continue_jumps).push_back(emit(Op::Jump));
         break;
@@ -588,6 +706,10 @@ class Compiler {
             emit(Op::LoadConst, rv, kconst({TAG_NIL, 0}));
           sweep_temps(base, slot_base);
         }
+        // Run every still-pending defer of the frame before its slots
+        // release (the fn.mark bounds them all — nested scope marks sit
+        // above it, so one run covers a return from any depth).
+        if (frame_defer_mark_ >= 0) emit(Op::DeferRunTo, frame_defer_mark_);
         release_down_to(0);
         emit(Op::Ret, rv);
         break;
@@ -596,6 +718,39 @@ class Compiler {
         compile_expr(ast);  // expression statement; temps swept by the caller
         break;
     }
+  }
+
+  // Frame-level defer mark (the JIT's fn.mark, gated on has_any_defer):
+  // allocated and taken as the chunk's FIRST instruction, so the executor's
+  // catch-all / the lowering's frame pad can trust the slot at any pc.
+  void establish_frame_defer_mark(const peg::Ast& at, const FuncInfo& info) {
+    if (!info.has_any_defer) return;
+    frame_defer_mark_ = alloc_slot(at, "(defer.mark)");
+    chunk_.defer_mark_slot = frame_defer_mark_;
+    emit(Op::DeferMark, frame_defer_mark_);
+  }
+
+  // Resolve a nested chunk's capture list in the creating frame. The mut
+  // flag rides along (the JIT's free_var_mut snapshot): a capture of a
+  // capture keeps the original binding's flag by construction.
+  struct CaptureList {
+    std::vector<int32_t> slots;
+    std::vector<bool> muts;
+  };
+  CaptureList resolve_captures(const peg::Ast& ast, const FuncInfo& info) {
+    CaptureList caps;
+    for (const auto& fv : info.free_vars) {
+      if (fv == "self") reject(ast, "closure capture of 'self'");
+      if (info.optional_free_vars.contains(fv))
+        reject(ast, std::format("UFCS candidate capture of '{}'", fv));
+      const Binding* b = lookup(fv);
+      // The JIT covers this with lazy forward-ref cells
+      // (pre_allocate_forward_refs); outside the slice for now.
+      if (!b) reject(ast, std::format("forward-reference capture of '{}'", fv));
+      caps.slots.push_back(b->slot);
+      caps.muts.push_back(b->is_mut);
+    }
+    return caps;
   }
 
   // One function literal -> one chunk, compiled by a fresh Compiler (frame
@@ -620,23 +775,7 @@ class Compiler {
         if (pc->tag == "TYPE_ANNOTATION"_) reject(*p, "typed parameter");
     }
     const auto& body = *ast.nodes[1];
-
-    // Resolve the capture list in the creating frame. The mut flag rides
-    // along (the JIT's free_var_mut snapshot): a capture of a capture
-    // keeps the original binding's flag by construction.
-    std::vector<int32_t> cap_slots;
-    std::vector<bool> cap_muts;
-    for (const auto& fv : info.free_vars) {
-      if (fv == "self") reject(ast, "closure capture of 'self'");
-      if (info.optional_free_vars.contains(fv))
-        reject(ast, std::format("UFCS candidate capture of '{}'", fv));
-      const Binding* b = lookup(fv);
-      // The JIT covers this with lazy forward-ref cells
-      // (pre_allocate_forward_refs); outside the slice for now.
-      if (!b) reject(ast, std::format("forward-reference capture of '{}'", fv));
-      cap_slots.push_back(b->slot);
-      cap_muts.push_back(b->is_mut);
-    }
+    auto caps = resolve_captures(ast, info);
 
     int32_t idx = static_cast<int32_t>(prog_.chunks.size());
     prog_.chunks.emplace_back();  // reserve the index; nested fns append
@@ -644,7 +783,7 @@ class Compiler {
     fc.stamp(ast);
     fc.push_scope();  // the frame scope: params + captures + the `fn` handle
     fc.chunk_.arity = static_cast<int32_t>(params.nodes.size());
-    fc.chunk_.capture_src_slots = std::move(cap_slots);
+    fc.chunk_.capture_src_slots = std::move(caps.slots);
     // Params occupy the ABI slots [0, arity). A captured param moves into a
     // fresh cell right after (the JIT's make_cell_slot on a param); the ABI
     // slot stays behind as an anonymous drained slot.
@@ -671,6 +810,7 @@ class Compiler {
       fc.chunk_.fn_slot = fc.alloc_slot(ast, "fn");
       fc.scopes_.back().bindings.push_back({"fn", fc.chunk_.fn_slot, false});
     }
+    fc.establish_frame_defer_mark(ast, info);
     for (const auto& pr : promos) {
       int32_t cslot = fc.alloc_slot(*pr.at, pr.name);
       fc.emit(Op::CellNew, cslot, pr.abi_slot);
@@ -684,11 +824,54 @@ class Compiler {
       int32_t s = fc.alloc_slot(ast, info.free_vars[i]);
       fc.emit(Op::BindCapture, s, static_cast<int32_t>(i));
       fc.scopes_.back().bindings.push_back(
-          {info.free_vars[i], s, cap_muts[i], true});
+          {info.free_vars[i], s, caps.muts[i], true});
     }
     int32_t rv = fc.alloc_temp(ast);
     fc.compile_block_into(body, rv);
+    // Frame defers run before the frame scope's releases (interp's
+    // run_deferred(callEnv) order); `return` emits its own copy.
+    if (fc.frame_defer_mark_ >= 0)
+      fc.emit(Op::DeferRunTo, fc.frame_defer_mark_);
     fc.pop_scope();
+    fc.emit(Op::Ret, rv);
+    fc.chunk_.num_slots = fc.high_water_;
+    prog_.chunks[idx] = std::move(fc.chunk_);
+    return idx;
+  }
+
+  // One `defer { ... }` body -> one 0-arity chunk: the fn-literal machinery
+  // minus params (analyze_defer's FuncInfo drives the same capture cells).
+  // `return` inside exits only the thunk (interp's flow_discard, the JIT
+  // thunk's local ret) — in_function_=true gives exactly that.
+  int32_t compile_defer_chunk(const peg::Ast& ast) {
+    const FuncInfo& info = analysis_.func_info.at(&ast);
+    if (info.uses_args) reject(ast, "__ARGS__");
+    // The JIT thunk binds only free vars, so an enclosing fn's recursion
+    // handle is not reachable from a defer body there; keep the lanes
+    // symmetric by rejecting instead of quietly diverging.
+    if (info.uses_fn) reject(ast, "recursion handle `fn` inside defer");
+    auto caps = resolve_captures(ast, info);
+
+    int32_t idx = static_cast<int32_t>(prog_.chunks.size());
+    prog_.chunks.emplace_back();  // reserve the index; nested fns append
+    Compiler fc(prog_, analysis_, /*in_function=*/true, &info);
+    fc.stamp(ast);
+    fc.push_scope();
+    fc.chunk_.capture_src_slots = std::move(caps.slots);
+    fc.establish_frame_defer_mark(ast, info);
+    for (size_t i = 0; i < info.free_vars.size(); ++i) {
+      int32_t s = fc.alloc_slot(ast, info.free_vars[i]);
+      fc.emit(Op::BindCapture, s, static_cast<int32_t>(i));
+      fc.scopes_.back().bindings.push_back(
+          {info.free_vars[i], s, caps.muts[i], true});
+    }
+    int32_t rv = fc.alloc_temp(ast);
+    fc.compile_block_into(*ast.nodes[0], rv);
+    if (fc.frame_defer_mark_ >= 0)
+      fc.emit(Op::DeferRunTo, fc.frame_defer_mark_);
+    fc.pop_scope();
+    // The thunk's +1 result crosses the ABI like any return; defer_run_to
+    // releases it right after the invoke, so nothing leaks per run.
     fc.emit(Op::Ret, rv);
     fc.chunk_.num_slots = fc.high_water_;
     prog_.chunks[idx] = std::move(fc.chunk_);
@@ -704,7 +887,7 @@ class Compiler {
     auto* tgt = culebra::assign_name_target(ast, av);
     if (!tgt) reject(ast, "non-identifier assignment target");
     if (tgt->token == "_") reject(*tgt, "sink binding");
-    if (av.is_let) {
+    if (av.is_let || av.is_mut) {  // interp's assign_name: let||mut declares
       // Slot reserved before the RHS so temps stack above it; the name only
       // becomes visible after the RHS (let x = x reads the outer x).
       auto name = std::string(tgt->token);
@@ -778,7 +961,7 @@ class Compiler {
     size_t prep = emit(Op::ForPrep, base, 0, lay.inclusive ? 1 : 0);
 
     scopes_.back().bindings.push_back({std::string(id.token), bind, false, cell});
-    loops_.push_back({next_slot_, {}, {}});
+    loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}});
     size_t body_ix = chunk_.code.size();
     if (cell) emit(Op::CellNew, bind, var);
     compile_block(*fv.body);
@@ -817,7 +1000,7 @@ class Compiler {
     }
     size_t exit_jump = emit(Op::JumpIfFalse, cond_slot);
 
-    loops_.push_back({next_slot_, {}, {}});
+    loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}});
     compile_block(*wv.body);
     emit(Op::Jump, static_cast<int32_t>(top_ix));
     size_t exit_ix = chunk_.code.size();
@@ -957,11 +1140,43 @@ class Compiler {
     const auto& id = *ast.nodes[1];
     int32_t res = alloc_temp(ast);
     int32_t caught = alloc_temp(ast);
+    // Region defer mark: taken before the region opens whenever any defer
+    // can be pending inside it — the body's own scope-level defers share it
+    // (the stack height is identical at region entry and body-scope entry),
+    // and defers of nested scopes sit above it, so the handler's single run
+    // covers a throw from any depth. The slot lives below `wm`, out of the
+    // release ladder's range.
+    int32_t rmark = -1;
+    if (subtree_has_defer(*ast.nodes[0])) {
+      rmark = alloc_slot(ast, "(try.mark)");
+      emit(Op::DeferMark, rmark);
+    }
+    bool body_scope_defer =
+        analysis_.scope_has_defer.contains(ast.nodes[0].get());
     int32_t wm = next_slot_;
     auto start = static_cast<uint32_t>(chunk_.code.size());
-    compile_block_into(*ast.nodes[0], res);
+    // The body inline (compile_block_into minus its own DeferScope): the
+    // region must END before the body's fall-through defer run, because a
+    // defer throwing at the try body's NORMAL exit escapes this catch
+    // (interp runs run_deferred(tryEnv) outside its try/catch pair), while
+    // one throwing at a NESTED scope's exit — still inside the region — is
+    // caught here, exactly as the interp's nesting has it.
+    if (body_scope_defer) defer_scopes_.push_back(rmark);
+    push_scope();
+    compile_body_into(*ast.nodes[0], res);
+    auto end = static_cast<uint32_t>(chunk_.code.size());
+    if (body_scope_defer) {
+      emit(Op::DeferRunTo, rmark);
+      defer_scopes_.pop_back();
+    }
+    pop_scope();
     size_t end_jump = emit(Op::Jump);
     auto handler = static_cast<uint32_t>(chunk_.code.size());
+    // Handler: pending defers first (they may still read captured cells),
+    // then the region's release ladder, then the catch binding. A defer
+    // throwing HERE is outside [start, end): it propagates to the next
+    // region out / the frame, never back into this catch (interp order).
+    if (rmark >= 0) emit(Op::DeferRunTo, rmark);
     for (int32_t s = high_water_ - 1; s >= wm; --s)
       emit(slot_cell_[s] ? Op::CellRelease : Op::Release, s);
     push_scope();
@@ -979,12 +1194,25 @@ class Compiler {
       }
       scopes_.back().bindings.push_back({name, e, /*is_mut=*/true, cell});
     }
-    compile_block_into(*ast.nodes[2], res);
+    // The catch body is its own defer scope (scan_eh_defer keys the node);
+    // handler code sits outside the region, so its defers behave like any
+    // scope's — a throwing one propagates outward, past this try.
+    compile_block_into(*ast.nodes[2], res, /*defer_key=*/ast.nodes[2].get());
     pop_scope();
     chunk_.code[end_jump].a = static_cast<int32_t>(chunk_.code.size());
-    chunk_.eh.push_back(
-        {start, static_cast<uint32_t>(end_jump), handler, caught});
+    chunk_.eh.push_back({start, end, handler, caught});
     return {res, true};
+  }
+
+  // Any DEFER in the subtree that would register on this frame's stack —
+  // stops at fn/defer boundaries (their bodies push at their own run time).
+  static bool subtree_has_defer(const peg::Ast& n) {
+    using namespace peg::udl;
+    if (n.tag == "DEFER"_) return true;
+    if (n.tag == "FUNCTION"_ || n.tag == "LAMBDA"_) return false;
+    for (const auto& c : n.nodes)
+      if (subtree_has_defer(*c)) return true;
+    return false;
   }
 
   ExprResult compile_expr(const peg::Ast& ast) {
@@ -1161,7 +1389,7 @@ inline std::string dump(const Chunk& c) {
       "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil",
       "MakeClosure", "Call",    "Ret",
       "CellNew",   "CellGet",   "CellSet",    "CellRelease",  "BindCapture",
-      "ImmutErr",  "Throw",
+      "ImmutErr",  "Throw",     "DeferMark",  "DeferPush",    "DeferRunTo",
       "ForPrep",   "ForLoop",   "Println",    "Safepoint",    "Halt"};
   static_assert(std::size(kNames) == static_cast<size_t>(Op::Halt) + 1);
   std::string out;
@@ -1288,7 +1516,23 @@ struct Exec {
             r = &e;  // innermost-first table order: first hit wins
             break;
           }
-        if (!r) throw;
+        if (!r) {
+          // No region: run the frame's pending defers before unwinding out
+          // (the observable slice of the JIT's frame cleanup ladder; slot
+          // releases stay on the GC backstop). Ladder order around the run:
+          // restore this frame's depth first — the unwound callees never ran
+          // their `leave`, and a defer body's own calls must count from
+          // here — then uncount the frame. The tag check is belt-and-
+          // braces: DeferMark is the chunk's first instruction.
+          if (c.defer_mark_slot >= 0 &&
+              regs[c.defer_mark_slot].tag == TAG_LONG) {
+            culebra_runtime_recursion_restore(frame_depth);
+            culebra_runtime_defer_run_to(regs[c.defer_mark_slot].data);
+            if (chunk_idx != 0)
+              culebra_runtime_recursion_restore(frame_depth - 1);
+          }
+          throw;
+        }
         culebra_runtime_try_translate();
         if (!culebra_runtime_get_is_throw()) throw;
         culebra_runtime_clear_is_throw();
@@ -1653,6 +1897,21 @@ struct Exec {
           culebra_runtime_throw(static_cast<int8_t>(v.tag), v.data);
           break;  // unreachable — throw never returns
         }
+        case Op::DeferMark:
+          regs[in.a] = JitValue{TAG_LONG, culebra_runtime_defer_mark()};
+          ++pc;
+          break;
+        case Op::DeferPush:
+          // Borrow: the runtime retains, the frame keeps its +1 (the
+          // statement temp's sweep drops it).
+          culebra_runtime_defer_push(static_cast<int8_t>(regs[in.a].tag),
+                                     regs[in.a].data);
+          ++pc;
+          break;
+        case Op::DeferRunTo:
+          culebra_runtime_defer_run_to(regs[in.a].data);
+          ++pc;
+          break;
         case Op::ForPrep: {
           int64_t step = regs[in.a + 2].data;
           if (step == 0) {
@@ -1759,7 +2018,9 @@ struct Lowering {
     auto& b = j.builder_;
     auto i64Ty = b.getInt64Ty();
     auto ptrTy = llvm::PointerType::get(j.ctx_, 0);
-    if (!c.eh.empty()) fn->setPersonalityFn(j.get_personality_fn());
+    bool frame_defers = c.defer_mark_slot >= 0;
+    if (!c.eh.empty() || frame_defers)
+      fn->setPersonalityFn(j.get_personality_fn());
     b.SetInsertPoint(BasicBlock::Create(j.ctx_, "entry", fn));
 
     // Frame-ABI arguments (function chunks only; see JitFn in jit_value.h).
@@ -1845,22 +2106,24 @@ struct Lowering {
         j.emit_value_retain(fnVal);
       }
     }
-    // Region handlers restore the recursion count to the frame's own level
-    // (Exec::run_frame's frame_depth, the JIT's try.rec snapshot hoisted to
-    // the prologue — the depth is constant within a frame).
+    // Region handlers (and the frame pad below) restore the recursion count
+    // to the frame's own level (Exec::run_frame's frame_depth, the JIT's
+    // try.rec snapshot hoisted to the prologue — the depth is constant
+    // within a frame).
     llvm::Value* depthSlot = nullptr;
     {
+      bool need_depth = !c.eh.empty() || frame_defers;
       llvm::Value* depth =
           chunk_idx != 0
               ? b.CreateCall(j.module_->getOrInsertFunction(
                                  rt::recursion_enter, i64Ty),
                              {}, "rec.depth")
-              : (c.eh.empty()
-                     ? nullptr
-                     : b.CreateCall(j.module_->getOrInsertFunction(
+              : (need_depth
+                     ? b.CreateCall(j.module_->getOrInsertFunction(
                                         rt::recursion_depth, i64Ty),
-                                    {}, "rec.depth"));
-      if (!c.eh.empty()) {
+                                    {}, "rec.depth")
+                     : nullptr);
+      if (need_depth) {
         IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
         depthSlot = eb.CreateAlloca(i64Ty, nullptr, "eh.depth");
         b.CreateStore(depth, depthSlot);
@@ -1915,10 +2178,17 @@ struct Lowering {
     std::vector<BasicBlock*> lpads(c.eh.size());
     for (size_t k = 0; k < c.eh.size(); ++k)
       lpads[k] = BasicBlock::Create(j.ctx_, std::format("eh.lpad.{}", k), fn);
+    // Frame-level cleanup pad (chunks with defers only): a throw outside
+    // every region runs the frame's pending defers before unwinding out —
+    // the observable slice of the JIT's frame cleanup ladder; slot releases
+    // stay on the GC backstop, like the executor's catch-all.
+    BasicBlock* framePad =
+        frame_defers ? BasicBlock::Create(j.ctx_, "vm.frame.pad", fn)
+                     : nullptr;
     auto lpad_for = [&](size_t pc) -> BasicBlock* {
       for (size_t k = 0; k < c.eh.size(); ++k)
         if (c.eh[k].start <= pc && pc < c.eh[k].end) return lpads[k];
-      return nullptr;  // innermost-first table order: first hit wins
+      return framePad;  // innermost-first table order: first hit wins
     };
 
     // Pass 2: linear walk over the instructions. The chunk's position table
@@ -2237,6 +2507,25 @@ struct Lowering {
           if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
           break;
         }
+        case Op::DeferMark: {
+          // defer_mark is nothrow: a plain call, like the JIT's marks.
+          auto m = b.CreateCall(j.module_->getFunction(rt::defer_mark), {},
+                                "defer.mark");
+          b.CreateStore(j.make_long(m), slots[in.a]);
+          break;
+        }
+        case Op::DeferPush: {
+          auto v = load_slot(in.a);
+          b.CreateCall(j.module_->getFunction(rt::defer_push),
+                       {j.extract_tag(v), j.extract_data(v)});
+          break;
+        }
+        case Op::DeferRunTo:
+          // May throw (a defer body throws): emit_call routes the unwind
+          // edge through the enclosing region's pad / the frame pad.
+          j.emit_call(j.module_->getFunction(rt::defer_run_to),
+                      {j.extract_data(load_slot(in.a))});
+          break;
         case Op::ForPrep: {
           auto [line, col] = chunk_pos_at(c, i);
           j.emit_range_step_check(j.extract_data(load_slot(in.a + 2)), line,
@@ -2334,6 +2623,9 @@ struct Lowering {
             outer = lpads[m];
             break;
           }
+        // No enclosing region: a foreign exception still owes the frame's
+        // defers on its way out (interp's catch(...) runs run_deferred too).
+        if (!outer) outer = framePad;
         j.emit_rethrow(outer);
       }
 
@@ -2355,6 +2647,32 @@ struct Lowering {
           {}, "exc.data");
       b.CreateStore(j.make_value(tagV, dataV), slots[r.caught_slot]);
       b.CreateBr(blocks.at(static_cast<int32_t>(r.handler)));
+    }
+
+    // Fill the frame pad (see its creation above). Ladder order: restore
+    // this frame's depth first — the unwound callees never ran their
+    // `leave`, and a defer body's own calls must count from here — then
+    // run the pending defers (a plain call: a defer throwing mid-handling
+    // propagates out, as the executor's catch does), uncount the frame,
+    // and re-raise out of the function.
+    if (framePad) {
+      if (pred_empty(framePad)) {
+        framePad->eraseFromParent();
+      } else {
+        j.emit_catch_all_prologue(framePad, "vm.frame.exc");
+        auto restoreFn = j.module_->getOrInsertFunction(
+            rt::recursion_restore, b.getVoidTy(), i64Ty);
+        auto d = b.CreateLoad(i64Ty, depthSlot, "rec.d");
+        b.CreateCall(restoreFn, {d});
+        auto markV = b.CreateLoad(j.valueType_, slots[c.defer_mark_slot]);
+        b.CreateCall(j.module_->getFunction(rt::defer_run_to),
+                     {j.extract_data(markV)});
+        if (chunk_idx != 0) {
+          b.CreateCall(restoreFn,
+                       {b.CreateSub(d, b.getInt64(1), "rec.d1")});
+        }
+        j.emit_rethrow(nullptr);
+      }
     }
   }
 };

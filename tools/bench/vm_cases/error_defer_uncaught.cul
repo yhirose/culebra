@@ -1,0 +1,13 @@
+# An uncaught throw still runs every pending defer on its way out —
+# nested scope, function frame, then the top level — before the process
+# reports it (rc and the "uncaught:" line must match the interp).
+defer { println("top-d") }
+let f = fn () {
+  defer { println("fn-d") }
+  {
+    defer { println("scope-d") }
+    throw "boom"
+  }
+}
+f()
+println("never")

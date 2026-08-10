@@ -1,0 +1,42 @@
+# return runs every still-pending defer of the frame — its own level and
+# nested scopes' — before the frame tears down, and the return value is
+# computed BEFORE the defers run.
+let f = fn (n) {
+  let mut acc = 100
+  defer { println(acc) }
+  {
+    defer { println(acc + 1) }
+    if n > 0 {
+      acc = acc + n
+      return acc
+    }
+  }
+  acc = acc + 1000
+  0
+}
+println(f(7))
+println(f(0))
+
+# A defer observing a mut cell the return already read: the returned value
+# keeps the pre-defer state, the defer sees the last write.
+let g = fn () {
+  let mut r = 1
+  defer { r = r + 10; println(r) }
+  r = 2
+  return r
+}
+println(g())
+
+# `return` inside a defer body exits only the thunk, not the enclosing
+# function.
+let h = fn () {
+  let mut log = 0
+  defer {
+    log = log + 1
+    if log == 1 { return 99 }
+    log = log + 100
+  }
+  defer { println("second") }
+  "h-done"
+}
+println(h())

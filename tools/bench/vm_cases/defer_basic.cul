@@ -1,0 +1,35 @@
+# defer fundamentals: LIFO order, scope-level vs frame-level firing, and
+# the statement's nil value. Top-level defers run at program end.
+defer { println("top-1") }
+defer { println("top-2") }
+
+# A lexical scope's defers fire when its braces close, before the code
+# after the scope.
+{
+  defer { println("scope-1") }
+  defer { println("scope-2") }
+  println("scope-body")
+}
+println("between")
+
+# A defer as a value block's last statement contributes nil.
+let v = if true {
+  defer { println("if-defer") }
+}
+println(v)
+
+# An if-arm defer belongs to the enclosing scope (both backends agree):
+# it fires at program end with the other top-level defers, not at the
+# arm's close.
+if true {
+  defer { println("arm-defer") }
+  println("arm-body")
+}
+
+# A defer body sees captured cells' current values at RUN time.
+let mut x = 1
+{
+  defer { println(x) }
+  x = 42
+}
+println("end")
