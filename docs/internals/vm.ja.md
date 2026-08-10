@@ -444,4 +444,13 @@ ArityError／"expected Function"／RecursionErrorの意味論は位置まで
 含めてJITと同じランタイム機構から出る — `return`・`fn`再帰
 ハンドル・余剰引数のdropつき。型不一致・ゼロ除算・非Bool条件・
 引数不足・非callable・再帰上限のエラーkind/文面/位置まで含め、
-拡張後のセットでも3レーンは完全一致する。
+拡張後のセットでも3レーンは完全一致する。closuresが関数の残り
+半分を埋めた: キャプチャされるローカルは`JitCell`（JIT自身のcell
+機構）へ昇格し、専用の6 op（`CellNew` / `CellGet` / `CellSet` /
+`CellRelease` / `BindCapture` / `ImmutErr`）を通る — 共有可変状態
+のRCも命令ストリームに明示のまま。`MakeClosure`はchunkのcapture
+list（関数リテラルの生成サイトは常に1つ）からcapturesを充填し、
+キャプチャされるループ変数はiterationごとに新しいcellを得る。
+非`mut`束縛への代入は全レーンでinterpと同じ実行時ImmutableError
+になり（実行されない代入は沈黙のまま）、前方参照キャプチャだけが
+未対応のrejectとして残る。

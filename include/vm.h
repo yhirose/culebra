@@ -15,7 +15,9 @@
 // plain identifiers; arithmetic + - * / % and unary - ! + with the JIT's
 // dispatch shape; comparisons (including chains) and `&&` / `||` / `??`;
 // `if` / `else if` / `else` (as an expression) and the ternary; `while`;
-// counted range `for`; `break` / `continue`; single-argument `println`.
+// counted range `for`; `break` / `continue`; single-argument `println`;
+// fn literals with closures (captured locals promoted to JitCells, the
+// JIT's cell mechanism — forward-reference capture is still rejected).
 
 #ifdef CULEBRA_JIT_ENABLED
 
@@ -77,14 +79,31 @@ enum class Op : uint8_t {
                // executor its fn_ptr is Exec::trampoline and captures[0]
                // holds the chunk's descriptor (a Long-valued cell, so its
                // release is a no-op — the bound-method thunk precedent); in
-               // the lowered module it is the chunk's native function with
-               // no captures.
+               // the lowered module it is the chunk's native function. The
+               // chunk's capture_src_slots fill the (remaining) captures
+               // with retained cell pointers from this frame.
   Call,        // regs[a] = call regs[b] with args regs[c..c+d). Publishes
                // the call site (set_call_site), checks TAG_FUNC (else the
                // interp's "expected Function" TypeError), and goes through
                // the JitFn ABI — the callee takes ownership of each arg, so
                // the arg slots are nil'd after the call.
   Ret,         // return regs[a] from the frame (+1 transfers to the caller)
+  CellNew,     // regs[a] = new JitCell absorbing regs[b]'s +1; regs[b] = nil.
+               // Releases the cell previously in regs[a] (null on first run —
+               // a loop's per-iteration redeclaration, like make_cell_slot).
+               // The cell pointer rides the reg as a Long, so the plain
+               // Release/Retain ops are no-ops on it (the descriptor-cell
+               // precedent); only CellRelease touches the cell's refcount.
+  CellGet,     // regs[a] = cell(regs[b])->value, retained (+1) — load_slot
+  CellSet,     // cell(regs[a])->value = regs[b] (absorbs the +1, releases the
+               // old value after the store, like store_slot); regs[b] = nil
+  CellRelease, // release cell regs[a]; regs[a] = nil — an owned cell slot's
+               // scope exit (borrowed capture slots take the no-op Release)
+  BindCapture, // regs[a] = closure's captures[b] as a borrowed cell pointer
+               // (executor offsets past the descriptor at captures[0])
+  ImmutErr,    // throw ImmutableError for name consts[a] (runtime, after the
+               // RHS evaluated — `if false { x = 1 }` stays silent, interp
+               // parity); never falls through
   ForPrep,     // control quad at base=a: {cur, end, step, flags}. Rejects a
                // zero step (ValueError at the range expression's position,
                // like rt::range_step_check), stores inclusive (c) into the
@@ -129,6 +148,11 @@ struct Chunk {
   int32_t arity = 0;
   std::vector<std::string> param_names;  // for the ArityError message
   int32_t fn_slot = -1;
+  // Capture list: for each free var, the slot (in the CREATING frame's
+  // numbering) holding its cell pointer. A fn literal has exactly one
+  // creation site — its MakeClosure — so the list lives with the callee
+  // chunk instead of being encoded into the instruction.
+  std::vector<int32_t> capture_src_slots;
 };
 
 struct VmProgram;
@@ -161,9 +185,10 @@ inline std::pair<int64_t, int64_t> chunk_pos_at(const Chunk& c, size_t pc) {
 
 // AST -> VmProgram. The front end is the shared FnAnalysis — the same passes
 // the JIT runs — so the shadow check and the per-function capture/flag
-// analysis are backend-symmetric by construction (free_vars gates the
-// non-capturing slice; uses_fn places the recursion handle). Slot assignment
-// itself is the scope stack below, mirroring the JIT's Scope/VarSlot walk.
+// analysis are backend-symmetric by construction (captured_locals decides
+// which bindings live in cells; free_vars becomes each chunk's capture
+// list; uses_fn places the recursion handle). Slot assignment itself is
+// the scope stack below, mirroring the JIT's Scope/VarSlot walk.
 // One Compiler instance per chunk; the program and the analysis are shared.
 // Everything outside the slice throws VmError at compile time.
 class Compiler {
@@ -171,10 +196,11 @@ class Compiler {
   static VmProgram compile_module(const peg::Ast& ast) {
     VmProgram prog;
     FnAnalysis analysis(&JIT::is_builtin_var);
-    analysis.analyze_program(ast);  // lint::check_shadow (parity) + the
-                                    // per-fn FuncInfo compile_fn_chunk reads
+    // lint::check_shadow (parity) + the per-fn FuncInfo compile_fn_chunk
+    // reads; the returned top-level info carries chunk 0's captured_locals.
+    FuncInfo top_info = analysis.analyze_program(ast);
     prog.chunks.emplace_back();  // reserve index 0 for the top level
-    Compiler main(prog, analysis, /*in_function=*/false);
+    Compiler main(prog, analysis, /*in_function=*/false, &top_info);
     main.compile_block(ast);
     main.emit(Op::Halt);
     main.chunk_.num_slots = main.high_water_;
@@ -183,13 +209,21 @@ class Compiler {
   }
 
  private:
-  Compiler(VmProgram& prog, FnAnalysis& analysis, bool in_function)
-      : prog_(prog), analysis_(analysis), in_function_(in_function) {}
+  Compiler(VmProgram& prog, FnAnalysis& analysis, bool in_function,
+           const FuncInfo* info)
+      : prog_(prog),
+        analysis_(analysis),
+        in_function_(in_function),
+        info_(info) {}
 
   struct Binding {
     std::string name;
     int32_t slot;
     bool is_mut;
+    // The slot holds a cell pointer, not the value: reads go through
+    // CellGet, writes through CellSet. True for a captured local's owned
+    // cell and for a capture bound from the closure (borrowed).
+    bool is_cell = false;
   };
   struct Scope {
     std::vector<Binding> bindings;
@@ -208,6 +242,7 @@ class Compiler {
   VmProgram& prog_;
   FnAnalysis& analysis_;
   bool in_function_;
+  const FuncInfo* info_;  // this chunk's analysis (captured_locals gate)
   Chunk chunk_;
   std::vector<Scope> scopes_;
   std::vector<LoopCtx> loops_;
@@ -223,6 +258,10 @@ class Compiler {
   // temp is allocated before the body's named slots, so that ordering
   // assumption does not hold once functions exist.
   std::vector<bool> slot_named_;
+  // Parallel: the slot owns a cell (a captured local's CellNew target), so
+  // scope exit emits CellRelease instead of Release. Borrowed capture slots
+  // stay false — the closure owns their cell ref.
+  std::vector<bool> slot_cell_;
   uint32_t pend_line_ = 0, pend_col_ = 0;
 
   [[noreturn]] static void reject(const peg::Ast& ast, const std::string& what) {
@@ -273,9 +312,12 @@ class Compiler {
     if (s >= static_cast<int32_t>(chunk_.slot_names.size()))
       chunk_.slot_names.resize(s + 1);
     chunk_.slot_names[s] = std::move(name);
-    if (s >= static_cast<int32_t>(slot_named_.size()))
+    if (s >= static_cast<int32_t>(slot_named_.size())) {
       slot_named_.resize(s + 1);
+      slot_cell_.resize(s + 1);
+    }
     slot_named_[s] = named;
+    slot_cell_[s] = false;
     high_water_ = std::max(high_water_, next_slot_);
     return s;
   }
@@ -320,7 +362,8 @@ class Compiler {
   // slot), which release on their own paths.
   void release_down_to(int32_t watermark) {
     for (int32_t s = next_slot_ - 1; s >= watermark; --s)
-      if (slot_named_[s]) emit(Op::Release, s);
+      if (slot_named_[s])
+        emit(slot_cell_[s] ? Op::CellRelease : Op::Release, s);
   }
 
   // Emits the scope's Releases and returns its slots to the allocator.
@@ -378,6 +421,39 @@ class Compiler {
       emit(Op::Move, dst, r.slot);
       emit(Op::Retain, dst);
     }
+  }
+
+  // The cell ops absorb an owned +1 from a register: hand them `r` as an
+  // owned temp (retaining a borrowed slot into one first, the ArrayAppend
+  // pattern), and drop a consumed temp from the sweep list like store_into.
+  int32_t owned_src(const peg::Ast& at, ExprResult r) {
+    if (!r.owned) {
+      int32_t src = alloc_temp(at);
+      emit(Op::Move, src, r.slot);
+      emit(Op::Retain, src);
+      return src;
+    }
+    std::erase(stmt_temps_, r.slot);
+    return r.slot;
+  }
+
+  // Declaration point of a captured local: a fresh cell absorbs the value.
+  void store_new_cell(const peg::Ast& at, int32_t dst, ExprResult r) {
+    emit(Op::CellNew, dst, owned_src(at, r));
+  }
+
+  // Reassignment through a cell binding (own or captured).
+  void store_cell(const peg::Ast& at, int32_t dst, ExprResult r) {
+    emit(Op::CellSet, dst, owned_src(at, r));
+  }
+
+  // A read of a cell binding: the value comes out retained, so the result
+  // is an owned temp (JIT load_slot), unlike a plain slot's borrow.
+  ExprResult read_binding(const peg::Ast& at, const Binding& b) {
+    if (!b.is_cell) return {b.slot, false};
+    int32_t t = alloc_temp(at);
+    emit(Op::CellGet, t, b.slot);
+    return {t, true};
   }
 
   void compile_block(const peg::Ast& ast) {
@@ -492,14 +568,14 @@ class Compiler {
   }
 
   // One function literal -> one chunk, compiled by a fresh Compiler (frame
-  // state is per chunk; the program and analysis are shared). The slice is
-  // non-capturing plain-parameter functions — FnAnalysis's free_vars is the
-  // gate, and uses_fn places the recursion-handle slot.
+  // state is per chunk; the program and analysis are shared). free_vars
+  // resolve against THIS frame's bindings — each must already be a declared
+  // cell binding (its own CellNew slot, or a capture passed through) —
+  // and become the callee chunk's capture list. uses_fn places the
+  // recursion-handle slot.
   int32_t compile_fn_chunk(const peg::Ast& ast) {
     using namespace peg::udl;
     const FuncInfo& info = analysis_.func_info.at(&ast);
-    if (!info.free_vars.empty())
-      reject(ast, std::format("closure capture of '{}'", info.free_vars[0]));
     if (info.uses_args) reject(ast, "__ARGS__");
     for (const auto& n : ast.nodes)
       if (n->tag == "RETURN_TYPE"_) reject(*n, "return type annotation");
@@ -514,23 +590,70 @@ class Compiler {
     }
     const auto& body = *ast.nodes[1];
 
+    // Resolve the capture list in the creating frame. The mut flag rides
+    // along (the JIT's free_var_mut snapshot): a capture of a capture
+    // keeps the original binding's flag by construction.
+    std::vector<int32_t> cap_slots;
+    std::vector<bool> cap_muts;
+    for (const auto& fv : info.free_vars) {
+      if (fv == "self") reject(ast, "closure capture of 'self'");
+      if (info.optional_free_vars.contains(fv))
+        reject(ast, std::format("UFCS candidate capture of '{}'", fv));
+      const Binding* b = lookup(fv);
+      // The JIT covers this with lazy forward-ref cells
+      // (pre_allocate_forward_refs); outside the slice for now.
+      if (!b) reject(ast, std::format("forward-reference capture of '{}'", fv));
+      cap_slots.push_back(b->slot);
+      cap_muts.push_back(b->is_mut);
+    }
+
     int32_t idx = static_cast<int32_t>(prog_.chunks.size());
     prog_.chunks.emplace_back();  // reserve the index; nested fns append
-    Compiler fc(prog_, analysis_, /*in_function=*/true);
+    Compiler fc(prog_, analysis_, /*in_function=*/true, &info);
     fc.stamp(ast);
-    fc.push_scope();  // the frame scope: params + the `fn` handle
+    fc.push_scope();  // the frame scope: params + captures + the `fn` handle
     fc.chunk_.arity = static_cast<int32_t>(params.nodes.size());
+    fc.chunk_.capture_src_slots = std::move(cap_slots);
+    // Params occupy the ABI slots [0, arity). A captured param moves into a
+    // fresh cell right after (the JIT's make_cell_slot on a param); the ABI
+    // slot stays behind as an anonymous drained slot.
+    struct CellPromo {
+      std::string name;
+      int32_t abi_slot;
+      bool is_mut;
+      const peg::Ast* at;
+    };
+    std::vector<CellPromo> promos;
     for (const auto& p : params.nodes) {
-      auto [name_sv, pl, pc_] = culebra::extract_param_name_loc(*p);
-      auto name = std::string(name_sv);
+      auto pv = culebra::view_parameter(*p);
+      auto name = std::string(pv.name);
       int32_t slot = fc.alloc_slot(*p, name);
       fc.chunk_.param_names.push_back(name);
-      if (!is_sink_name(name))
-        fc.scopes_.back().bindings.push_back({name, slot, false});
+      if (is_sink_name(name)) continue;
+      if (info.captured_locals.contains(name)) {
+        promos.push_back({name, slot, pv.is_mut, p.get()});
+      } else {
+        fc.scopes_.back().bindings.push_back({name, slot, pv.is_mut});
+      }
     }
     if (info.uses_fn) {
       fc.chunk_.fn_slot = fc.alloc_slot(ast, "fn");
       fc.scopes_.back().bindings.push_back({"fn", fc.chunk_.fn_slot, false});
+    }
+    for (const auto& pr : promos) {
+      int32_t cslot = fc.alloc_slot(*pr.at, pr.name);
+      fc.emit(Op::CellNew, cslot, pr.abi_slot);
+      fc.slot_cell_[cslot] = true;
+      fc.scopes_.back().bindings.push_back({pr.name, cslot, pr.is_mut, true});
+    }
+    // Bind the captures: borrowed cell pointers out of the closure. The
+    // slots are named-but-not-cell, so frame teardown's Release is a no-op
+    // on them (the closure owns the refs).
+    for (size_t i = 0; i < info.free_vars.size(); ++i) {
+      int32_t s = fc.alloc_slot(ast, info.free_vars[i]);
+      fc.emit(Op::BindCapture, s, static_cast<int32_t>(i));
+      fc.scopes_.back().bindings.push_back(
+          {info.free_vars[i], s, cap_muts[i], true});
     }
     int32_t rv = fc.alloc_temp(ast);
     fc.compile_block_into(body, rv);
@@ -553,17 +676,32 @@ class Compiler {
     if (av.is_let) {
       // Slot reserved before the RHS so temps stack above it; the name only
       // becomes visible after the RHS (let x = x reads the outer x).
-      int32_t slot = alloc_slot(*tgt, std::string(tgt->token));
-      store_into(slot, compile_expr(*av.rhs), /*dst_is_fresh=*/true);
-      scopes_.back().bindings.push_back(
-          {std::string(tgt->token), slot, av.is_mut});
-      return {slot, false};
+      auto name = std::string(tgt->token);
+      bool cell = info_->captured_locals.contains(name);
+      int32_t slot = alloc_slot(*tgt, name);
+      if (cell) {
+        store_new_cell(*tgt, slot, compile_expr(*av.rhs));
+        slot_cell_[slot] = true;
+      } else {
+        store_into(slot, compile_expr(*av.rhs), /*dst_is_fresh=*/true);
+      }
+      scopes_.back().bindings.push_back({name, slot, av.is_mut, cell});
+      return read_binding(*tgt, scopes_.back().bindings.back());
     }
     const Binding* b = lookup(tgt->token);
     if (!b) reject(*tgt, "assignment to an undeclared name");
-    if (!b->is_mut) reject(*tgt, "assignment to an immutable binding");
-    store_into(b->slot, compile_expr(*av.rhs));
-    return {b->slot, false};
+    auto r = compile_expr(*av.rhs);
+    if (!b->is_mut) {
+      // Runtime ImmutableError, after the RHS ran — matching the interp/JIT
+      // order and keeping a never-executed assignment silent. The RHS temp
+      // strands like any value abandoned by a throw (conservative backstop).
+      StampGuard pos(*this, ast);
+      emit(Op::ImmutErr, kconst_str(tgt->token));
+      return {b->slot, false};  // unreachable
+    }
+    if (b->is_cell) store_cell(*tgt, b->slot, r);
+    else store_into(b->slot, r);
+    return read_binding(*tgt, *b);
   }
 
   void compile_for(const peg::Ast& ast) {
@@ -578,12 +716,23 @@ class Compiler {
     auto lay = culebra::decode_range_layout(*fv.iter);
     if (!lay.start || !lay.end) reject(*fv.iter, "open-ended range");
 
+    // A captured loop variable gets a fresh cell each iteration (the
+    // interp's per-iteration scope): ForLoop keeps writing a hidden plain
+    // slot, and the body opens with a CellNew from it — so every closure
+    // made in iteration N holds iteration N's value.
+    bool cell = info_->captured_locals.contains(std::string(id.token));
+
     push_scope();
     int32_t base = alloc_slot(ast, "(for.cur)");
     alloc_slot(ast, "(for.end)");
     alloc_slot(ast, "(for.step)");
     alloc_slot(ast, "(for.flags)");
-    int32_t var = alloc_slot(id, std::string(id.token));
+    int32_t var = alloc_slot(id, cell ? "(for.val)" : std::string(id.token));
+    int32_t bind = var;
+    if (cell) {
+      bind = alloc_slot(id, std::string(id.token));
+      slot_cell_[bind] = true;
+    }
 
     // Endpoints evaluate before the binding exists, in source order, with
     // errors attributed to the range expression — same as both backends.
@@ -597,9 +746,10 @@ class Compiler {
     }
     size_t prep = emit(Op::ForPrep, base, 0, lay.inclusive ? 1 : 0);
 
-    scopes_.back().bindings.push_back({std::string(id.token), var, false});
+    scopes_.back().bindings.push_back({std::string(id.token), bind, false, cell});
     loops_.push_back({next_slot_, {}, {}});
     size_t body_ix = chunk_.code.size();
+    if (cell) emit(Op::CellNew, bind, var);
     compile_block(*fv.body);
     size_t safepoint_ix = emit(Op::Safepoint);
     size_t test_ix = chunk_.code.size();
@@ -835,7 +985,7 @@ class Compiler {
         const Binding* b = lookup(ast.token);
         if (!b)
           reject(ast, std::format("unresolved identifier '{}'", ast.token));
-        return {b->slot, false};
+        return read_binding(ast, *b);
       }
       case "UNARY_MINUS"_: {
         auto r = compile_expr(*ast.nodes[1]);  // nodes[0] is the operator
@@ -925,10 +1075,17 @@ inline std::string dump(const Chunk& c) {
       "Le",        "Gt",        "Ge",         "ArrayNew",     "ArrayAppend",
       "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil",
       "MakeClosure", "Call",    "Ret",
+      "CellNew",   "CellGet",   "CellSet",    "CellRelease",  "BindCapture",
+      "ImmutErr",
       "ForPrep",   "ForLoop",   "Println",    "Safepoint",    "Halt"};
   static_assert(std::size(kNames) == static_cast<size_t>(Op::Halt) + 1);
   std::string out;
   out += std::format("; slots: {}\n", c.num_slots);
+  if (!c.capture_src_slots.empty()) {
+    out += "; captures from creator slots:";
+    for (auto s : c.capture_src_slots) out += std::format(" r{}", s);
+    out += "\n";
+  }
   for (size_t s = 0; s < c.slot_names.size(); ++s)
     out += std::format(";   r{} = {}\n", s, c.slot_names[s]);
   for (size_t i = 0; i < c.code.size(); ++i) {
@@ -1252,11 +1409,20 @@ struct Exec {
           break;
         case Op::MakeClosure: {
           const Chunk& f = p.chunks[in.b];
+          auto n = f.capture_src_slots.size();
           auto* mc = culebra_runtime_closure_new(
-              reinterpret_cast<void*>(&trampoline), 1,
+              reinterpret_cast<void*>(&trampoline), 1 + n,
               static_cast<size_t>(f.arity));
           mc->captures[0] = culebra_runtime_cell_new(
               TAG_LONG, reinterpret_cast<int64_t>(&p.descs[in.b]));
+          // Fill the captures from the creating frame's cell slots, each
+          // retained — emit_closure_build's loop.
+          for (size_t i = 0; i < n; ++i) {
+            auto* cell = reinterpret_cast<JitCell*>(
+                regs[f.capture_src_slots[i]].data);
+            culebra_runtime_cell_retain(cell);
+            mc->captures[1 + i] = cell;
+          }
           regs[in.a] = JitValue{TAG_FUNC, reinterpret_cast<int64_t>(mc)};
           ++pc;
           break;
@@ -1285,6 +1451,53 @@ struct Exec {
           JitValue rv = regs[in.a];
           if (chunk_idx != 0) culebra_runtime_recursion_leave();
           return rv;
+        }
+        case Op::CellNew: {
+          culebra_runtime_cell_release(
+              reinterpret_cast<JitCell*>(regs[in.a].data));
+          auto* cell = culebra_runtime_cell_new(
+              static_cast<int8_t>(regs[in.b].tag), regs[in.b].data);
+          regs[in.b] = JitValue{TAG_NIL, 0};
+          regs[in.a] = JitValue{TAG_LONG, reinterpret_cast<int64_t>(cell)};
+          ++pc;
+          break;
+        }
+        case Op::CellGet: {
+          auto* cell = reinterpret_cast<JitCell*>(regs[in.b].data);
+          regs[in.a] = cell->value;
+          culebra_runtime_value_retain(static_cast<int8_t>(regs[in.a].tag),
+                                       regs[in.a].data);
+          ++pc;
+          break;
+        }
+        case Op::CellSet: {
+          auto* cell = reinterpret_cast<JitCell*>(regs[in.a].data);
+          JitValue old = cell->value;
+          cell->value = regs[in.b];
+          regs[in.b] = JitValue{TAG_NIL, 0};
+          culebra_runtime_value_release(static_cast<int8_t>(old.tag),
+                                        old.data);
+          ++pc;
+          break;
+        }
+        case Op::CellRelease:
+          culebra_runtime_cell_release(
+              reinterpret_cast<JitCell*>(regs[in.a].data));
+          regs[in.a] = JitValue{TAG_NIL, 0};
+          ++pc;
+          break;
+        case Op::BindCapture:
+          // captures[0] is the descriptor; user captures follow. Borrowed:
+          // no retain, and the slot's frame-teardown Release is a no-op.
+          regs[in.a] = JitValue{
+              TAG_LONG, reinterpret_cast<int64_t>(cls->captures[1 + in.b])};
+          ++pc;
+          break;
+        case Op::ImmutErr: {
+          auto [line, col] = chunk_pos_at(c, pc);
+          culebra_runtime_immutable_assign(
+              reinterpret_cast<const char*>(c.consts[in.a].data), line, col);
+          break;  // unreachable — the helper always throws
         }
         case Op::ForPrep: {
           int64_t step = regs[in.a + 2].data;
@@ -1493,6 +1706,7 @@ struct Lowering {
           mark(static_cast<int32_t>(i) + 1);
           break;
         case Op::Ret:
+        case Op::ImmutErr:  // lowers to a noreturn call + unreachable
           mark(static_cast<int32_t>(i) + 1);
           break;
         case Op::JumpIfFalse:
@@ -1672,12 +1886,27 @@ struct Lowering {
           break;
         }
         case Op::MakeClosure: {
+          const Chunk& f = p.chunks[in.b];
+          auto n = f.capture_src_slots.size();
           auto cls = j.emit_call(
               j.module_->getOrInsertFunction(rt::closure_new, ptrTy, ptrTy,
                                              i64Ty, i64Ty),
-              {fns[in.b], b.getInt64(0),
-               b.getInt64(p.chunks[in.b].arity)},
+              {fns[in.b], b.getInt64(static_cast<int64_t>(n)),
+               b.getInt64(f.arity)},
               "cls");
+          if (n > 0) {
+            auto capsFieldPtr =
+                b.CreateStructGEP(j.closureType_, cls, 3, "caps.ptr");
+            auto capsArr = b.CreateLoad(ptrTy, capsFieldPtr, "caps");
+            for (size_t k = 0; k < n; ++k) {
+              auto cellPtr = b.CreateIntToPtr(
+                  j.extract_data(load_slot(f.capture_src_slots[k])), ptrTy);
+              auto dst = b.CreateInBoundsGEP(
+                  ptrTy, capsArr, {b.getInt64(static_cast<int64_t>(k))});
+              b.CreateStore(cellPtr, dst);
+              j.emit_cell_retain(cellPtr);  // the closure owns a ref
+            }
+          }
           b.CreateStore(j.make_func(cls), slots[in.a]);
           break;
         }
@@ -1738,6 +1967,66 @@ struct Lowering {
                                                       b.getVoidTy()));
           b.CreateStore(load_slot(in.a), retPtr);
           b.CreateRetVoid();
+          break;
+        }
+        case Op::CellNew: {
+          // Release the previous generation's cell (null on the first pass),
+          // then wrap the value — make_cell_slot's declaration-point shape.
+          j.emit_cell_release(
+              b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy));
+          auto v = load_slot(in.b);
+          auto cellPtr = j.emit_call(
+              j.module_->getOrInsertFunction(rt::cell_new, ptrTy,
+                                             b.getInt8Ty(), i64Ty),
+              {j.extract_tag(v), j.extract_data(v)}, "cell");
+          b.CreateStore(j.make_long(b.CreatePtrToInt(cellPtr, i64Ty)),
+                        slots[in.a]);
+          b.CreateStore(j.make_nil(), slots[in.b]);
+          break;
+        }
+        case Op::CellGet: {
+          auto cellPtr =
+              b.CreateIntToPtr(j.extract_data(load_slot(in.b)), ptrTy);
+          auto valPtr = b.CreateStructGEP(j.cellType_, cellPtr, 1, "cell.vp");
+          auto v = b.CreateLoad(j.valueType_, valPtr, "cell.val");
+          j.emit_value_retain(v);
+          b.CreateStore(v, slots[in.a]);
+          break;
+        }
+        case Op::CellSet: {
+          // store_slot's order: read old, store new, release old.
+          auto cellPtr =
+              b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy);
+          auto valPtr = b.CreateStructGEP(j.cellType_, cellPtr, 1, "cell.vp");
+          auto old = b.CreateLoad(j.valueType_, valPtr, "cell.old");
+          b.CreateStore(load_slot(in.b), valPtr);
+          j.emit_value_release(old);
+          b.CreateStore(j.make_nil(), slots[in.b]);
+          break;
+        }
+        case Op::CellRelease:
+          j.emit_cell_release(
+              b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy));
+          b.CreateStore(j.make_nil(), slots[in.a]);
+          break;
+        case Op::BindCapture: {
+          // Lowered closures carry no descriptor: captures[b] directly.
+          auto capsFieldPtr =
+              b.CreateStructGEP(j.closureType_, clsArg, 3, "caps.ptr");
+          auto capsArr = b.CreateLoad(ptrTy, capsFieldPtr, "caps");
+          auto cellSlot = b.CreateInBoundsGEP(ptrTy, capsArr,
+                                              {b.getInt64(in.b)}, "cell.slot");
+          auto cellPtr = b.CreateLoad(ptrTy, cellSlot, "cell");
+          b.CreateStore(j.make_long(b.CreatePtrToInt(cellPtr, i64Ty)),
+                        slots[in.a]);
+          break;
+        }
+        case Op::ImmutErr: {
+          auto [line, col] = chunk_pos_at(c, i);
+          j.emit_immutable_assign_throw(
+              reinterpret_cast<const char*>(c.consts[in.a].data),
+              static_cast<size_t>(line), static_cast<size_t>(col));
+          b.CreateUnreachable();
           break;
         }
         case Op::ForPrep: {

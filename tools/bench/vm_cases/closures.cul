@@ -1,0 +1,58 @@
+# Closures: value capture, shared mut cells, nested pass-through, capture
+# of params and heap values, and closures escaping their defining frame.
+let base = 10
+let addb = fn (x) { x + base }
+println(addb(5))
+
+# A mut capture is shared state: the closure and the outer frame see the
+# same cell, in both directions.
+let mut count = 0
+let bump = fn () { count = count + 1; count }
+println(bump())
+println(bump())
+count = 100
+println(bump())
+println(count)
+
+# Two closures over the same cell share it; a fresh binding gets a new cell.
+let mut shared = 0
+let inc = fn () { shared = shared + 1 }
+let dec = fn () { shared = shared - 1 }
+inc()
+inc()
+dec()
+println(shared)
+
+# Multi-level nesting: the inner fn reaches x through the middle frame's
+# capture (a capture of a capture keeps the same cell).
+let make_adder = fn (x) {
+    fn (y) {
+        let inner = fn (z) { x + y + z }
+        inner
+    }
+}
+let mid = make_adder(1)
+let inner = mid(2)
+println(inner(3))
+
+# The classic counter factory: each call mints an independent cell.
+let counter = fn () {
+    let mut n = 0
+    fn () { n = n + 1; n }
+}
+let c1 = counter()
+let c2 = counter()
+println(c1())
+println(c1())
+println(c2())
+
+# Heap values through cells; the escaped closure keeps the cell alive
+# after the defining frame returned.
+let holder = fn (xs) { fn () { xs } }
+let get = holder([1, 2, 3])
+println(get())
+
+# Recursion handle and captures coexist in one frame.
+let scale = 3
+let tri = fn (n) { if n <= 0 { 0 } else { n * scale + fn(n - 1) } }
+println(tri(3))

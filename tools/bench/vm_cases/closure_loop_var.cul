@@ -1,0 +1,30 @@
+# A captured loop variable is a fresh cell per iteration (the interp's
+# per-iteration scope): closures chained through the loop each keep their
+# own iteration's value. Shared-cell capture would print 5 here, not 2.
+let mut hold = fn () { -1 }
+for i in 0..3 {
+    let prev = hold
+    hold = fn () { prev() + i }
+}
+println(hold())
+
+# A let inside a loop body is per-iteration too, mut or not.
+let mut last = fn () { -1 }
+for i in 0..3 {
+    let mut v = i * 10
+    v = v + 1
+    let prev = last
+    last = fn () { prev() + v }
+}
+println(last())
+
+# Same shape under `while`, where the body block re-runs its declarations.
+let mut acc = fn () { 0 }
+let mut k = 0
+while k < 3 {
+    let stamp = k * 7
+    let prev = acc
+    acc = fn () { prev() + stamp }
+    k = k + 1
+}
+println(acc())

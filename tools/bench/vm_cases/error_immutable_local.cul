@@ -1,0 +1,5 @@
+# Reassigning an immutable local (no capture involved) is the same
+# runtime ImmutableError on every lane.
+let y = 5
+println(y)
+y = 6

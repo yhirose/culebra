@@ -479,4 +479,14 @@ with `return`, the `fn` recursion handle, and dropped extra args.
 All three lanes agree on the extended set, including error
 kind/message/position for type mismatches, division by zero,
 non-Bool conditions, missing arguments, non-callable callees, and
-the recursion limit.
+the recursion limit. Closures completed the function story: a
+captured local is promoted to a `JitCell` — the JIT's own cell
+mechanism — through six dedicated ops (`CellNew` / `CellGet` /
+`CellSet` / `CellRelease` / `BindCapture` / `ImmutErr`), so the RC
+of shared mutable state stays explicit in the instruction stream;
+`MakeClosure` fills the captures from the chunk's capture list
+(each fn literal has exactly one creation site), captured loop
+variables get a fresh cell per iteration, assignment to a non-`mut`
+binding is now the interp's runtime ImmutableError on every lane
+(a never-executed assignment stays silent), and forward-reference
+capture is the one shape still rejected.

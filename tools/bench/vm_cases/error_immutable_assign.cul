@@ -1,0 +1,7 @@
+# ImmutableError fires at run time, after the RHS evaluated, with the
+# assignment's position — and a never-executed assignment stays silent.
+let x = 1
+if false { x = 2 }
+println(x)
+let poke = fn () { x = 3 }
+poke()
