@@ -1361,8 +1361,10 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
 #ifdef CULEBRA_JIT_ENABLED
   if (options.vm != Options::Vm::Off) {
     if (modules.size() != 1) {
+      // Same shape as Compiler::reject — "--vm: unsupported: ..." is the
+      // one out-of-slice contract the differential harness keys SKIP on.
       throw culebra::CulebraError(
-          "VmError", "--vm: single-module scripts only");
+          "VmError", "--vm: unsupported: multi-module script");
     }
     auto prog = culebra::vm::Compiler::compile_module(*modules.front().ast);
     switch (options.vm) {

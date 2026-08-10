@@ -238,20 +238,16 @@ inline JIT::Owned JIT::compile_fn_common(
             rt::release_overflow_args, builder_.getVoidTy(), ptrTy,
             builder_.getInt64Ty(), builder_.getInt64Ty()),
         {argsArg, builder_.getInt64(0), nArgsArg});
-    // Build a constant char* array of declared param names so the
-    // runtime can name the first missing slot ("missing required
-    // argument 'X'"). Matches interp's bind_call_args message.
+    // Constant char* array of declared param names so the runtime can name
+    // the first missing slot ("missing required argument 'X'"). Matches
+    // interp's bind_call_args message.
     std::vector<llvm::Constant*> nameConsts;
     nameConsts.reserve(paramNames.size());
     for (const auto& n : paramNames) {
       nameConsts.push_back(llvm::cast<llvm::Constant>(
           get_or_create_global_str(n, ".paramname")));
     }
-    auto nameArrayTy = llvm::ArrayType::get(ptrTy, nameConsts.size());
-    auto nameArrayConst = llvm::ConstantArray::get(nameArrayTy, nameConsts);
-    auto namesGlobal = new llvm::GlobalVariable(
-        *module_, nameArrayTy, /*isConstant=*/true,
-        llvm::GlobalValue::PrivateLinkage, nameArrayConst, ".paramnames");
+    auto namesGlobal = build_str_ptr_array(nameConsts, ".paramnames");
     emit_call(
         module_->getOrInsertFunction(
             rt::arity_missing, builder_.getVoidTy(),

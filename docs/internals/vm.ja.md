@@ -563,7 +563,8 @@ CIのci-lightシャードが回し、corpusはslice内のプログラムしか
 スクリプト頼みでなくゲートを赤にする。そして
 `misc/run_all_backends.sh` — Windows CIジョブが呼ぶ共有の
 単発スクリプト対称性ヘルパー — には`--vm`/`--vm-llvm`レーンが
-生えた: 出力一致はpass、コンパイル時VmErrorのrejectはSKIPとして
+生えた: 出力一致はpass、slice外reject（全rejectが共有する
+`--vm: unsupported: ...`という単一の契約）はSKIPとして
 表示して緑のまま、それ以外は失敗 — sliceが育つにつれテストごとに
 VMレーンが自然に点灯する。生成difftest corpusは当面2レーンの
 まま: チャンク先頭にprobe preambleをテキスト連結する構造で、

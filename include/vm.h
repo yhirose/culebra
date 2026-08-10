@@ -38,6 +38,7 @@
 #include <shared.h>
 #include <stdlib_jit.h>  // culebra_runtime_println + the rt::println decl hook
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -90,8 +91,9 @@ enum class Op : uint8_t {
 
   MakeClosure, // regs[a] = new closure (+1) over function chunk b. In the
                // executor its fn_ptr is Exec::trampoline and captures[0]
-               // holds the chunk's descriptor (a Long-valued cell, so its
-               // release is a no-op — the bound-method thunk precedent); in
+               // holds the chunk's shared descriptor cell, retained per
+               // closure (Long-valued, so its value release is a no-op —
+               // the bound-method thunk precedent); in
                // the lowered module it is the chunk's native function. The
                // chunk's capture_src_slots fill the (remaining) captures
                // with retained cell pointers from this frame.
@@ -143,14 +145,15 @@ enum class Op : uint8_t {
   DeferRunTo,  // culebra_runtime_defer_run_to(regs[a]): pop and run every
                // defer above the mark, LIFO. A defer body that throws drops
                // the rest to the mark and propagates (interp/Swift order).
-  ForPrep,     // control quad at base=a: {cur, end, step, flags}. Rejects a
-               // zero step (ValueError at the range expression's position,
-               // like rt::range_step_check), stores inclusive (c) into the
-               // flags slot, jumps to the ForLoop at b.
+  ForPrep,     // control quad at base=a: {cur, end, step, exhausted}. Rejects
+               // a zero step (ValueError at the range expression's position,
+               // like rt::range_step_check), zeroes the exhausted slot, jumps
+               // to the ForLoop at b.
   ForLoop,     // quad at a: constructs RangeBounds (range_bounds.h — the
-               // sequence oracle all backends share); if !done(): take(),
-               // write back cur/exhausted, release + rebind the loop var
-               // slot c, jump to the body at b; else fall through.
+               // sequence oracle all backends share; inclusive rides `d` as
+               // a per-loop immediate); if !done(): take(), write back
+               // cur/exhausted, release + rebind the loop var slot c, jump
+               // to the body at b; else fall through.
   Println,     // culebra_runtime_println(regs[a])
   Safepoint,   // interrupt poll — every loop back edge carries one
   Halt,
@@ -230,16 +233,21 @@ struct VmFnDesc {
 struct VmProgram {
   std::vector<Chunk> chunks;
   std::vector<VmFnDesc> descs;  // filled by Exec::run, one per chunk
+  // One shared descriptor cell per chunk (also Exec::run's): MakeClosure
+  // retains it instead of allocating a cell per closure created.
+  std::vector<JitCell*> desc_cells;
 };
 
 inline std::pair<int64_t, int64_t> chunk_pos_at(const Chunk& c, size_t pc) {
-  int64_t line = 0, col = 0;
-  for (const auto& p : c.positions) {
-    if (p.first_insn > pc) break;
-    line = p.line;
-    col = p.col;
-  }
-  return {line, col};
+  // `positions` is built append-only in emit order, so it is sorted by
+  // first_insn — binary-search the covering entry (this runs on the
+  // executor's slow paths, e.g. once per Call).
+  auto it = std::upper_bound(
+      c.positions.begin(), c.positions.end(), pc,
+      [](size_t v, const PosEntry& e) { return v < e.first_insn; });
+  if (it == c.positions.begin()) return {0, 0};
+  --it;
+  return {it->line, it->col};
 }
 
 // AST -> VmProgram. The front end is the shared FnAnalysis — the same passes
@@ -344,6 +352,7 @@ class Compiler {
                            // sweep rolls next_slot_ back to at most this, so
                            // a let declared mid-statement keeps its slot
   int32_t high_water_ = 0;
+  std::map<std::string, int32_t> str_const_ix_;  // kconst_str interning
   std::vector<int32_t> stmt_temps_;
   // Per-slot named flag for the CURRENT generation of each slot (alloc_raw
   // rewrites it on reuse). Scope-exit releases consult this instead of a
@@ -419,6 +428,14 @@ class Compiler {
     return chunk_.code.size() - 1;
   }
 
+  // Jump-target operand encoding, single-sourced: an unconditional Jump
+  // carries its target in `.a`, every conditional (and ForPrep) in `.b`.
+  void patch_jump(size_t ix, size_t target) {
+    auto& insn = chunk_.code[ix];
+    (insn.op == Op::Jump ? insn.a : insn.b) = static_cast<int32_t>(target);
+  }
+  void patch_to_here(size_t ix) { patch_jump(ix, chunk_.code.size()); }
+
   int32_t alloc_raw(const peg::Ast& at, std::string name, bool named) {
     if (next_slot_ >= kMaxSlots) reject(at, "frame larger than 256 slots");
     int32_t s = next_slot_++;
@@ -454,17 +471,20 @@ class Compiler {
 
   int32_t kconst_long(int64_t v) { return kconst({TAG_LONG, v}); }
 
-  // Runtime string layout: {i64 len} then bytes + NUL; the value points at
-  // the bytes (see the str_arena comment on Chunk).
+  // Runtime string layout via _str_init (jit_string.h — the same header +
+  // NUL shape the JIT bakes into .rodata); the value points at the bytes
+  // (see the str_arena comment on Chunk). Repeated spellings (a lazy
+  // binding's name read at every site) intern to one entry.
   int32_t kconst_str(std::string_view bytes) {
-    auto buf = std::make_unique<char[]>(8 + bytes.size() + 1);
-    int64_t len = static_cast<int64_t>(bytes.size());
-    std::memcpy(buf.get(), &len, 8);
-    std::memcpy(buf.get() + 8, bytes.data(), bytes.size());
-    buf[8 + bytes.size()] = '\0';
-    auto data = reinterpret_cast<int64_t>(buf.get() + 8);
+    auto [it, fresh] = str_const_ix_.try_emplace(std::string(bytes), 0);
+    if (!fresh) return it->second;
+    auto buf =
+        std::make_unique<char[]>(sizeof(JitStrHeader) + bytes.size() + 1);
+    char* data = _str_init(buf.get(), bytes.size());
+    std::memcpy(data, bytes.data(), bytes.size());
     chunk_.str_arena.push_back(std::move(buf));
-    return kconst({TAG_STRING, data});
+    it->second = kconst({TAG_STRING, reinterpret_cast<int64_t>(data)});
+    return it->second;
   }
 
   void push_scope() { scopes_.push_back({{}, next_slot_}); }
@@ -869,7 +889,7 @@ class Compiler {
       reject(*ast.nodes[0], "generic type parameters");
     auto name = std::string(head.outer);
     int32_t idx = compile_fn_chunk(ast, ast.nodes[1].get(),
-                                   ast.nodes.back().get());
+                                   *ast.nodes.back());
     int32_t cls = alloc_temp(ast);
     emit(Op::MakeClosure, cls, idx);
     // Same-scope overloads share one registry key (the binding's scope is
@@ -922,25 +942,26 @@ class Compiler {
   // cell binding (its own CellNew slot, or a capture passed through) —
   // and become the callee chunk's capture list. uses_fn places the
   // recursion-handle slot. A MULTIFN_DECL body reuses this whole path with
-  // its own params/body children (its name child shifts them by one).
-  int32_t compile_fn_chunk(const peg::Ast& ast,
-                           const peg::Ast* params_override = nullptr,
-                           const peg::Ast* body_override = nullptr) {
+  // its own params/body children (its name child shifts them by one); a
+  // `defer` body reuses it with `params` null — a 0-arity thunk over the
+  // same closure machinery and frame epilogue.
+  int32_t compile_fn_chunk(const peg::Ast& ast, const peg::Ast* params,
+                           const peg::Ast& body) {
     using namespace peg::udl;
     const FuncInfo& info = analysis_.func_info.at(&ast);
     if (info.uses_args) reject(ast, "__ARGS__");
     for (const auto& n : ast.nodes)
       if (n->tag == "RETURN_TYPE"_) reject(*n, "return type annotation");
-    const auto& params = params_override ? *params_override : *ast.nodes[0];
-    for (const auto& p : params.nodes) {
-      if (culebra::is_kw_only_sep(*p) || culebra::is_kwargs_rest(*p))
-        reject(*p, "keyword-only / rest parameter");
-      if (culebra::is_pattern_param(*p)) reject(*p, "pattern parameter");
-      if (culebra::extract_default_expr(*p)) reject(*p, "default argument");
-      for (const auto& pc : p->nodes)
-        if (pc->tag == "TYPE_ANNOTATION"_) reject(*p, "typed parameter");
+    if (params) {
+      for (const auto& p : params->nodes) {
+        if (culebra::is_kw_only_sep(*p) || culebra::is_kwargs_rest(*p))
+          reject(*p, "keyword-only / rest parameter");
+        if (culebra::is_pattern_param(*p)) reject(*p, "pattern parameter");
+        if (culebra::extract_default_expr(*p)) reject(*p, "default argument");
+        for (const auto& pc : p->nodes)
+          if (pc->tag == "TYPE_ANNOTATION"_) reject(*p, "typed parameter");
+      }
     }
-    const auto& body = body_override ? *body_override : *ast.nodes[1];
     auto caps = resolve_captures(ast, info);
 
     int32_t idx = static_cast<int32_t>(prog_.chunks.size());
@@ -948,7 +969,8 @@ class Compiler {
     Compiler fc(prog_, analysis_, /*in_function=*/true, &info, multifn_uid_);
     fc.stamp(ast);
     fc.push_scope();  // the frame scope: params + captures + the `fn` handle
-    fc.chunk_.arity = static_cast<int32_t>(params.nodes.size());
+    fc.chunk_.arity =
+        params ? static_cast<int32_t>(params->nodes.size()) : 0;
     fc.chunk_.capture_src_slots = std::move(caps.slots);
     // Params occupy the ABI slots [0, arity). A captured param moves into a
     // fresh cell right after (the JIT's make_cell_slot on a param); the ABI
@@ -960,16 +982,18 @@ class Compiler {
       const peg::Ast* at;
     };
     std::vector<CellPromo> promos;
-    for (const auto& p : params.nodes) {
-      auto pv = culebra::view_parameter(*p);
-      auto name = std::string(pv.name);
-      int32_t slot = fc.alloc_slot(*p, name);
-      fc.chunk_.param_names.push_back(name);
-      if (is_sink_name(name)) continue;
-      if (info.captured_locals.contains(name)) {
-        promos.push_back({name, slot, pv.is_mut, p.get()});
-      } else {
-        fc.scopes_.back().bindings.push_back({name, slot, pv.is_mut});
+    if (params) {
+      for (const auto& p : params->nodes) {
+        auto pv = culebra::view_parameter(*p);
+        auto name = std::string(pv.name);
+        int32_t slot = fc.alloc_slot(*p, name);
+        fc.chunk_.param_names.push_back(name);
+        if (is_sink_name(name)) continue;
+        if (info.captured_locals.contains(name)) {
+          promos.push_back({name, slot, pv.is_mut, p.get()});
+        } else {
+          fc.scopes_.back().bindings.push_back({name, slot, pv.is_mut});
+        }
       }
     }
     if (info.uses_fn) {
@@ -1006,43 +1030,18 @@ class Compiler {
     return idx;
   }
 
-  // One `defer { ... }` body -> one 0-arity chunk: the fn-literal machinery
-  // minus params (analyze_defer's FuncInfo drives the same capture cells).
+  // One `defer { ... }` body -> one 0-arity chunk (analyze_defer's FuncInfo
+  // drives the same capture cells; the thunk's +1 result crosses the ABI
+  // like any return and defer_run_to releases it right after the invoke).
   // `return` inside exits only the thunk (interp's flow_discard, the JIT
   // thunk's local ret) — in_function_=true gives exactly that.
   int32_t compile_defer_chunk(const peg::Ast& ast) {
-    const FuncInfo& info = analysis_.func_info.at(&ast);
-    if (info.uses_args) reject(ast, "__ARGS__");
     // The JIT thunk binds only free vars, so an enclosing fn's recursion
     // handle is not reachable from a defer body there; keep the lanes
     // symmetric by rejecting instead of quietly diverging.
-    if (info.uses_fn) reject(ast, "recursion handle `fn` inside defer");
-    auto caps = resolve_captures(ast, info);
-
-    int32_t idx = static_cast<int32_t>(prog_.chunks.size());
-    prog_.chunks.emplace_back();  // reserve the index; nested fns append
-    Compiler fc(prog_, analysis_, /*in_function=*/true, &info, multifn_uid_);
-    fc.stamp(ast);
-    fc.push_scope();
-    fc.chunk_.capture_src_slots = std::move(caps.slots);
-    fc.establish_frame_defer_mark(ast, info);
-    for (size_t i = 0; i < info.free_vars.size(); ++i) {
-      int32_t s = fc.alloc_slot(ast, info.free_vars[i]);
-      fc.emit(Op::BindCapture, s, static_cast<int32_t>(i));
-      fc.scopes_.back().bindings.push_back(
-          {info.free_vars[i], s, caps.muts[i], true, caps.lazys[i]});
-    }
-    int32_t rv = fc.alloc_temp(ast);
-    fc.compile_block_into(*ast.nodes[0], rv);
-    if (fc.frame_defer_mark_ >= 0)
-      fc.emit(Op::DeferRunTo, fc.frame_defer_mark_);
-    fc.pop_scope();
-    // The thunk's +1 result crosses the ABI like any return; defer_run_to
-    // releases it right after the invoke, so nothing leaks per run.
-    fc.emit(Op::Ret, rv);
-    fc.chunk_.num_slots = fc.high_water_;
-    prog_.chunks[idx] = std::move(fc.chunk_);
-    return idx;
+    if (analysis_.func_info.at(&ast).uses_fn)
+      reject(ast, "recursion handle `fn` inside defer");
+    return compile_fn_chunk(ast, /*params=*/nullptr, *ast.nodes[0]);
   }
 
   // Evaluates to the assigned value (interp parity: `let c = if true
@@ -1107,7 +1106,7 @@ class Compiler {
     int32_t base = alloc_slot(ast, "(for.cur)");
     alloc_slot(ast, "(for.end)");
     alloc_slot(ast, "(for.step)");
-    alloc_slot(ast, "(for.flags)");
+    alloc_slot(ast, "(for.done)");
     int32_t var = alloc_slot(id, cell ? "(for.val)" : std::string(id.token));
     int32_t bind = var;
     if (cell) {
@@ -1125,7 +1124,7 @@ class Compiler {
     } else {
       emit(Op::LoadConst, base + 2, kconst_long(1));
     }
-    size_t prep = emit(Op::ForPrep, base, 0, lay.inclusive ? 1 : 0);
+    size_t prep = emit(Op::ForPrep, base);
 
     scopes_.back().bindings.push_back({std::string(id.token), bind, false, cell});
     loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}});
@@ -1133,16 +1132,14 @@ class Compiler {
     if (cell) emit(Op::CellNew, bind, var);
     compile_block(*fv.body);
     size_t safepoint_ix = emit(Op::Safepoint);
-    size_t test_ix = chunk_.code.size();
-    chunk_.code[prep].b = static_cast<int32_t>(test_ix);
-    emit(Op::ForLoop, base, static_cast<int32_t>(body_ix), var);
+    patch_jump(prep, chunk_.code.size());
+    emit(Op::ForLoop, base, static_cast<int32_t>(body_ix), var,
+         lay.inclusive ? 1 : 0);
     size_t exit_ix = chunk_.code.size();
 
     auto& lc = loops_.back();
-    for (size_t j : lc.continue_jumps)
-      chunk_.code[j].a = static_cast<int32_t>(safepoint_ix);
-    for (size_t j : lc.break_jumps)
-      chunk_.code[j].a = static_cast<int32_t>(exit_ix);
+    for (size_t j : lc.continue_jumps) patch_jump(j, safepoint_ix);
+    for (size_t j : lc.break_jumps) patch_jump(j, exit_ix);
     loops_.pop_back();
     pop_scope();
   }
@@ -1171,13 +1168,11 @@ class Compiler {
     compile_block(*wv.body);
     emit(Op::Jump, static_cast<int32_t>(top_ix));
     size_t exit_ix = chunk_.code.size();
-    chunk_.code[exit_jump].b = static_cast<int32_t>(exit_ix);
+    patch_jump(exit_jump, exit_ix);
 
     auto& lc = loops_.back();
-    for (size_t j : lc.continue_jumps)
-      chunk_.code[j].a = static_cast<int32_t>(top_ix);
-    for (size_t j : lc.break_jumps)
-      chunk_.code[j].a = static_cast<int32_t>(exit_ix);
+    for (size_t j : lc.continue_jumps) patch_jump(j, top_ix);
+    for (size_t j : lc.break_jumps) patch_jump(j, exit_ix);
     loops_.pop_back();
   }
 
@@ -1193,7 +1188,9 @@ class Compiler {
     return false;
   }
 
-  // Direct 1-positional-arg `println(<expr>)` — the dedicated-op peephole.
+  // Direct 1-positional-arg `println(<expr>)` — the dedicated-op peephole,
+  // mirroring the JIT's own direct-println emit (stdlib_jit.h), so both
+  // compiled lanes skip the resolver + closure invoke for the common shape.
   // Every other shape (bare `println()`, wrong arity, kwargs, println as a
   // value) takes the generic NsGet + Call route and the runtime's own
   // diagnostics.
@@ -1249,13 +1246,12 @@ class Compiler {
       size_t skip = emit(Op::JumpIfFalse, cond.slot);
       compile_block_into(*ast.nodes[i + 1], res);
       end_jumps.push_back(emit(Op::Jump));
-      chunk_.code[skip].b = static_cast<int32_t>(chunk_.code.size());
+      patch_to_here(skip);
     }
     if (i < ast.nodes.size()) {  // trailing else block
       compile_block_into(*ast.nodes[i], res);
     }
-    for (size_t j : end_jumps)
-      chunk_.code[j].a = static_cast<int32_t>(chunk_.code.size());
+    for (size_t j : end_jumps) patch_to_here(j);
     return {res, true};
   }
 
@@ -1271,8 +1267,7 @@ class Compiler {
       if (i + 1 < ast.nodes.size())
         end_jumps.push_back(emit(jump_op, res));
     }
-    for (size_t j : end_jumps)
-      chunk_.code[j].b = static_cast<int32_t>(chunk_.code.size());
+    for (size_t j : end_jumps) patch_to_here(j);
     return {res, true};
   }
 
@@ -1309,8 +1304,7 @@ class Compiler {
         false_jumps.push_back(emit(Op::JumpIfFalse, res));
       lhs = rhs;
     }
-    for (size_t j : false_jumps)
-      chunk_.code[j].b = static_cast<int32_t>(chunk_.code.size());
+    for (size_t j : false_jumps) patch_to_here(j);
     return {res, true};
   }
 
@@ -1334,7 +1328,7 @@ class Compiler {
     // covers a throw from any depth. The slot lives below `wm`, out of the
     // release ladder's range.
     int32_t rmark = -1;
-    if (subtree_has_defer(*ast.nodes[0])) {
+    if (analysis_.try_region_has_defer.contains(&ast)) {
       rmark = alloc_slot(ast, "(try.mark)");
       emit(Op::DeferMark, rmark);
     }
@@ -1387,7 +1381,7 @@ class Compiler {
     // scope's — a throwing one propagates outward, past this try.
     compile_block_into(*ast.nodes[2], res, /*defer_key=*/ast.nodes[2].get());
     pop_scope();
-    chunk_.code[end_jump].a = static_cast<int32_t>(chunk_.code.size());
+    patch_to_here(end_jump);
     chunk_.eh.push_back({start, end, handler, caught});
     return {res, true};
   }
@@ -1407,11 +1401,6 @@ class Compiler {
     int32_t res = alloc_temp(ast);
     int32_t subj = alloc_temp(ast);
     store_into(subj, compile_expr(*mv.subject), /*dst_is_fresh=*/true);
-    auto patch_to_here = [&](size_t ix) {
-      auto& insn = chunk_.code[ix];
-      auto here = static_cast<int32_t>(chunk_.code.size());
-      (insn.op == Op::Jump ? insn.a : insn.b) = here;
-    };
     std::vector<size_t> end_jumps;
     for (const auto& arm : mv.arms->nodes) {
       // arm->nodes: PATTERN (GUARD)? body
@@ -1487,17 +1476,12 @@ class Compiler {
         compile_pattern_test(*pat.nodes[i], subj, alt_fail);
         if (i + 1 < pat.nodes.size()) {
           ok_jumps.push_back(emit(Op::Jump));
-          for (size_t ix : alt_fail) {
-            auto& insn = chunk_.code[ix];
-            (insn.op == Op::Jump ? insn.a : insn.b) =
-                static_cast<int32_t>(chunk_.code.size());
-          }
+          for (size_t ix : alt_fail) patch_to_here(ix);
         } else {
           fail.insert(fail.end(), alt_fail.begin(), alt_fail.end());
         }
       }
-      for (size_t ix : ok_jumps)
-        chunk_.code[ix].a = static_cast<int32_t>(chunk_.code.size());
+      for (size_t ix : ok_jumps) patch_to_here(ix);
       return;
     }
     // Tag gate: fall through when the subject's tag is in `tags`.
@@ -1506,8 +1490,7 @@ class Compiler {
       for (int8_t t : tags)
         ok.push_back(emit(Op::JumpIfTag, subj, 0, t));
       fail.push_back(emit(Op::Jump));
-      for (size_t ix : ok)
-        chunk_.code[ix].b = static_cast<int32_t>(chunk_.code.size());
+      for (size_t ix : ok) patch_to_here(ix);
     };
     // Value check after the gate: Eq against the literal constant. The
     // gate makes Eq's dispatch exact (a Float subject never numerically
@@ -1541,10 +1524,8 @@ class Compiler {
         return;
       case "FLOAT"_: {
         tag_gate({TAG_FLOAT});
-        double d = pat.token_to_number<double>();
-        int64_t bits;
-        std::memcpy(&bits, &d, 8);
-        lit_eq(kconst({TAG_FLOAT, bits}));
+        lit_eq(kconst({TAG_FLOAT, _culebra_double_to_bits(
+                                      pat.token_to_number<double>())}));
         return;
       }
       case "STRING"_:
@@ -1596,11 +1577,12 @@ class Compiler {
     return nullptr;
   }
 
-  // Type-annotation name(s) → accepted tag set, mirroring the JIT's
-  // TYPED_IDENT emitter: generic args stripped (`Array<Long>` gates on
-  // Array), unions OR their alternatives, `Any` gates nothing (empty
-  // result). Trait / user-class names need the runtime's type system —
-  // outside the slice.
+  // Type-annotation name(s) → accepted tag set over the shared
+  // _culebra_primitive_type_tag table (the JIT's TYPED_IDENT emitter reads
+  // the same one): generic args stripped (`Array<Long>` gates on Array),
+  // unions OR their alternatives, `Any` gates nothing (empty result).
+  // Trait / user-class names need the runtime's type system — outside the
+  // slice.
   std::vector<int8_t> type_name_tags(const peg::Ast& type_node) {
     auto full = type_node.token;
     std::vector<int8_t> tags;
@@ -1608,23 +1590,10 @@ class Compiler {
       if (tn.find('<') != std::string_view::npos)
         tn = culebra::parse_generic_head(tn).outer;
       if (tn == "Any") return false;
-      int8_t t;
-      if (tn == "Nil") t = TAG_NIL;
-      else if (tn == "Bool") t = TAG_BOOL;
-      else if (tn == "Long") t = TAG_LONG;
-      else if (tn == "Float") t = TAG_FLOAT;
-      else if (tn == "String") t = TAG_STRING;
-      else if (tn == "StringView") t = TAG_STRINGVIEW;
-      else if (tn == "Array") t = TAG_ARRAY;
-      else if (tn == "Object") t = TAG_OBJECT;
-      else if (tn == "Function") t = TAG_FUNC;
-      else if (tn == "Tuple") t = TAG_TUPLE;
-      else if (tn == "Set") t = TAG_SET;
-      else if (tn == "Tensor") t = TAG_TENSOR;
-      else reject(type_node, std::format("type name '{}' in pattern", tn));
-      bool dup = false;
-      for (int8_t e : tags) dup |= (e == t);
-      if (!dup) tags.push_back(t);
+      auto t = _culebra_primitive_type_tag(tn);
+      if (!t) reject(type_node, std::format("type name '{}' in pattern", tn));
+      if (std::find(tags.begin(), tags.end(), *t) == tags.end())
+        tags.push_back(*t);
       return true;
     };
     if (full.find('|') != std::string_view::npos) {
@@ -1634,17 +1603,6 @@ class Compiler {
       return {};
     }
     return tags;
-  }
-
-  // Any DEFER in the subtree that would register on this frame's stack —
-  // stops at fn/defer boundaries (their bodies push at their own run time).
-  static bool subtree_has_defer(const peg::Ast& n) {
-    using namespace peg::udl;
-    if (n.tag == "DEFER"_) return true;
-    if (n.tag == "FUNCTION"_ || n.tag == "LAMBDA"_) return false;
-    for (const auto& c : n.nodes)
-      if (subtree_has_defer(*c)) return true;
-    return false;
   }
 
   ExprResult compile_expr(const peg::Ast& ast) {
@@ -1659,10 +1617,9 @@ class Compiler {
       }
       case "FLOAT"_: {
         int32_t t = alloc_temp(ast);
-        double d = ast.token_to_number<double>();
-        int64_t bits;
-        std::memcpy(&bits, &d, 8);
-        emit(Op::LoadConst, t, kconst({TAG_FLOAT, bits}));
+        emit(Op::LoadConst, t,
+             kconst({TAG_FLOAT,
+                     _culebra_double_to_bits(ast.token_to_number<double>())}));
         return {t, true};
       }
       case "BOOLEAN"_: {
@@ -1701,17 +1658,11 @@ class Compiler {
         for (size_t i = 0; i < seq.nodes.size(); i++) {
           if (seq.nodes[i]->tag == "SPREAD_ELEM"_)
             reject(*seq.nodes[i], "array spread");
+          // ArrayAppend absorbs a +1: owned_src retains a borrowed slot
+          // into a temp and drops a consumed temp from the sweep list.
           auto v = compile_expr(*seq.nodes[i]);
-          // ArrayAppend absorbs a +1: hand it an owned temp (retain a
-          // borrowed slot into one first). The append nils the source, so
-          // the statement sweep releases it as a no-op.
-          int32_t src = v.slot;
-          if (!v.owned) {
-            src = alloc_temp(*seq.nodes[i]);
-            emit(Op::Move, src, v.slot);
-            emit(Op::Retain, src);
-          }
-          emit(Op::ArrayAppend, t, static_cast<int32_t>(i), src);
+          emit(Op::ArrayAppend, t, static_cast<int32_t>(i),
+               owned_src(*seq.nodes[i], v));
         }
         return {t, true};
       }
@@ -1784,7 +1735,7 @@ class Compiler {
       }
       case "FUNCTION"_:
       case "LAMBDA"_: {
-        int32_t idx = compile_fn_chunk(ast);
+        int32_t idx = compile_fn_chunk(ast, ast.nodes[0].get(), *ast.nodes[1]);
         int32_t t = alloc_temp(ast);
         emit(Op::MakeClosure, t, idx);
         return {t, true};
@@ -1873,8 +1824,28 @@ inline std::string dump(const VmProgram& p) {
 struct Exec {
   static void run(VmProgram& p) {
     p.descs.resize(p.chunks.size());
-    for (size_t i = 0; i < p.chunks.size(); ++i)
+    p.desc_cells.resize(p.chunks.size());
+    for (size_t i = 0; i < p.chunks.size(); ++i) {
       p.descs[i] = {&p, static_cast<int32_t>(i)};
+      p.desc_cells[i] = culebra_runtime_cell_new(
+          TAG_LONG, reinterpret_cast<int64_t>(&p.descs[i]));
+      // desc_cells is a C++-held root the conservative stack scan cannot
+      // see (a heap vector) — pin for the run, the namespace-cache pattern.
+      _gc_heap().pin(p.desc_cells[i]);
+    }
+    // Drop the pin and the program's +1 on every exit path; a closure still
+    // alive on the uncaught-throw path holds its own retain (GC backstop
+    // territory).
+    struct CellGuard {
+      VmProgram& p;
+      ~CellGuard() {
+        for (auto* cl : p.desc_cells) {
+          _gc_heap().unpin(cl);
+          culebra_runtime_cell_release(cl);
+        }
+        p.desc_cells.clear();
+      }
+    } guard{p};
     try {
       run_frame(p, 0, nullptr, 0, nullptr);
     } catch (const CulebraException& e) {
@@ -1903,7 +1874,11 @@ struct Exec {
     const Chunk& c = p.chunks[chunk_idx];
     if (c.num_slots > kMaxSlots)
       throw CulebraError("VmError", "--vm: frame too large");
-    JitValue regs[kMaxSlots] = {};  // zero-init == {TAG_NIL, 0}
+    // Nil only the frame's live window (zero-init == {TAG_NIL, 0}); the
+    // executor never touches slots >= num_slots, and the conservative GC
+    // scan tolerates stack garbage above them.
+    JitValue regs[kMaxSlots];
+    std::memset(regs, 0, sizeof(JitValue) * static_cast<size_t>(c.num_slots));
     if (chunk_idx != 0) {
       // Param binding, mirroring the JIT prologue: too few args raises the
       // interp's ArityError at the published call site; extras drop (their
@@ -1915,9 +1890,12 @@ struct Exec {
         for (int64_t i = 0; i < n_args; ++i)
           culebra_runtime_value_release(static_cast<int8_t>(args[i].tag),
                                         args[i].data);
-        culebra::throw_missing_required_arg_at(
-            c.param_names[static_cast<size_t>(n_args)], _jit_call_site_line,
-            _jit_call_site_col);
+        // The runtime helper owns the diagnostic (message + prefer-the-
+        // published-call-site policy) for every lane; cold path.
+        std::vector<const char*> names;
+        names.reserve(c.param_names.size());
+        for (const auto& nm : c.param_names) names.push_back(nm.c_str());
+        culebra_runtime_arity_missing(names.data(), n_args, 0, 0);
       }
       for (int32_t i = 0; i < c.arity; ++i) regs[i] = args[i];
       for (int64_t i = c.arity; i < n_args; ++i)
@@ -1986,16 +1964,13 @@ struct Exec {
   static JitValue dispatch(const VmProgram& p, const Chunk& c,
                            const Insn* code, JitValue* regs, size_t& pc,
                            int32_t chunk_idx, JitClosure* cls) {
+    // Numeric conversions via the runtime's own bit-punning helpers; both
+    // call sites guard with both_num, so coerce_num's throw arm is dead.
     auto as_double = [](const JitValue& v) {
-      if (v.tag == TAG_LONG) return static_cast<double>(v.data);
-      double d;
-      std::memcpy(&d, &v.data, 8);
-      return d;
+      return _culebra_coerce_num(static_cast<int8_t>(v.tag), v.data);
     };
     auto from_double = [](double d) {
-      int64_t bits;
-      std::memcpy(&bits, &d, 8);
-      return JitValue{TAG_FLOAT, bits};
+      return JitValue{TAG_FLOAT, _culebra_double_to_bits(d)};
     };
     auto both_long = [](const JitValue& l, const JitValue& r) {
       return l.tag == TAG_LONG && r.tag == TAG_LONG;
@@ -2237,8 +2212,8 @@ struct Exec {
           auto* mc = culebra_runtime_closure_new(
               reinterpret_cast<void*>(&trampoline), 1 + n,
               static_cast<size_t>(f.arity));
-          mc->captures[0] = culebra_runtime_cell_new(
-              TAG_LONG, reinterpret_cast<int64_t>(&p.descs[in.b]));
+          culebra_runtime_cell_retain(p.desc_cells[in.b]);
+          mc->captures[0] = p.desc_cells[in.b];
           // Fill the captures from the creating frame's cell slots, each
           // retained — emit_closure_build's loop.
           for (size_t i = 0; i < n; ++i) {
@@ -2401,23 +2376,21 @@ struct Exec {
             auto [line, col] = chunk_pos_at(c, pc);
             culebra_runtime_range_step_check(step, line, col);
           }
-          regs[in.a + 3] = JitValue{TAG_LONG, in.c ? 2 : 0};
+          regs[in.a + 3] = JitValue{TAG_LONG, 0};
           pc = static_cast<size_t>(in.b);
           break;
         }
         case Op::ForLoop: {
-          int64_t flags = regs[in.a + 3].data;
           RangeBounds rb{regs[in.a].data, regs[in.a + 1].data,
-                         regs[in.a + 2].data, (flags & 2) != 0,
-                         (flags & 1) != 0};
+                         regs[in.a + 2].data, in.d != 0,
+                         regs[in.a + 3].data != 0};
           if (rb.done()) {
             ++pc;
             break;
           }
           int64_t v = rb.take();
           regs[in.a] = JitValue{TAG_LONG, rb.cur};
-          regs[in.a + 3] =
-              JitValue{TAG_LONG, (flags & 2) | (rb.exhausted ? 1 : 0)};
+          regs[in.a + 3] = JitValue{TAG_LONG, rb.exhausted ? 1 : 0};
           culebra_runtime_value_release(static_cast<int8_t>(regs[in.c].tag),
                                         regs[in.c].data);
           regs[in.c] = JitValue{TAG_LONG, v};
@@ -2449,6 +2422,16 @@ struct Exec {
 // (emit_arith_step, emit_comparison_i1, value_to_bool) — one dispatch
 // definition, two consumers.
 struct Lowering {
+  // The JitFn ABI signature (jit_value.h), spelled once for both the chunk
+  // function creation and the indirect call site.
+  static llvm::FunctionType* jit_fn_type(llvm::IRBuilder<>& b,
+                                         llvm::Type* ptrTy) {
+    return llvm::FunctionType::get(
+        b.getVoidTy(),
+        {ptrTy, ptrTy, b.getInt8Ty(), b.getInt64Ty(), b.getInt64Ty(), ptrTy},
+        false);
+  }
+
   static void run_program(const VmProgram& p, bool emit_llvm, int opt_level) {
     using namespace llvm;
     JIT::ensure_native_target_init();
@@ -2466,11 +2449,7 @@ struct Lowering {
     // entry shape; function chunks get the JitFn ABI, so MakeClosure hands
     // their address to closure_new exactly like a JIT-compiled function.
     auto ptrTy = PointerType::get(*ctx, 0);
-    auto jitFnTy = FunctionType::get(
-        builder.getVoidTy(),
-        {ptrTy, ptrTy, builder.getInt8Ty(), builder.getInt64Ty(),
-         builder.getInt64Ty(), ptrTy},
-        false);
+    auto jitFnTy = jit_fn_type(builder, ptrTy);
     std::vector<Function*> fns(p.chunks.size());
     fns[0] = Function::Create(FunctionType::get(builder.getVoidTy(), false),
                               Function::ExternalLinkage, "__culebra_main",
@@ -2542,12 +2521,8 @@ struct Lowering {
         b.SetInsertPoint(errBB);
         std::vector<Constant*> nameptrs;
         for (const auto& n : c.param_names)
-          nameptrs.push_back(b.CreateGlobalString(n));
-        auto arrTy = ArrayType::get(ptrTy, nameptrs.size());
-        auto* namesG = new GlobalVariable(
-            *j.module_, arrTy, /*isConstant=*/true,
-            GlobalValue::PrivateLinkage, ConstantArray::get(arrTy, nameptrs),
-            ".paramnames");
+          nameptrs.push_back(j.get_or_create_global_str(n, ".paramname"));
+        auto* namesG = j.build_str_ptr_array(nameptrs, ".paramnames");
         // The prologue's own fallback position is unused: set_call_site
         // always ran on the caller side, and arity_missing prefers it.
         b.CreateCall(j.module_->getOrInsertFunction(
@@ -2708,11 +2683,8 @@ struct Lowering {
             case TAG_STRING: {
               // Re-emit the chunk's string constant as module .rodata (the
               // same layout), so the lowered module owns its bytes.
-              auto* bytes = reinterpret_cast<const char*>(k.data);
-              int64_t len;
-              std::memcpy(&len, bytes - 8, 8);
               v = j.make_string(j.emit_str_literal(
-                  std::string_view(bytes, static_cast<size_t>(len))));
+                  _str_sv(reinterpret_cast<const char*>(k.data))));
               break;
             }
             default:
@@ -2735,30 +2707,9 @@ struct Lowering {
           j.emit_value_release(load_slot(in.a));
           b.CreateStore(j.make_nil(), slots[in.a]);
           break;
-        case Op::Neg: {
-          auto v = load_slot(in.b);
-          auto isLong = b.CreateICmpEQ(j.extract_tag(v),
-                                       b.getInt8(TAG_LONG));
-          auto intBB = BasicBlock::Create(j.ctx_, "neg.int", fn);
-          auto slowBB = BasicBlock::Create(j.ctx_, "neg.slow", fn);
-          auto mergeBB = BasicBlock::Create(j.ctx_, "neg.merge", fn);
-          b.CreateCondBr(isLong, intBB, slowBB);
-          b.SetInsertPoint(intBB);
-          b.CreateStore(j.make_long(b.CreateNeg(j.extract_data(v))),
-                        slots[in.a]);
-          b.CreateBr(mergeBB);
-          b.SetInsertPoint(slowBB);
-          auto r = j.emit_value_call(
-              j.module_->getOrInsertFunction(
-                  rt::num_neg_borrow, j.valueType_, b.getInt8Ty(), i64Ty,
-                  i64Ty, i64Ty),
-              {j.extract_tag(v), j.extract_data(v), j.current_line_val(),
-               j.current_column_val()}, "neg.num");
-          b.CreateStore(r, slots[in.a]);
-          b.CreateBr(mergeBB);
-          b.SetInsertPoint(mergeBB);
+        case Op::Neg:
+          b.CreateStore(j.emit_neg_step(load_slot(in.b)), slots[in.a]);
           break;
-        }
         case Op::Not: {
           auto t = j.value_to_bool(load_slot(in.b));
           b.CreateStore(j.make_bool(b.CreateNot(t, "not")), slots[in.a]);
@@ -2907,9 +2858,7 @@ struct Lowering {
             slab = ConstantPointerNull::get(cast<PointerType>(ptrTy));
           }
           auto* retTmp = eb.CreateAlloca(j.valueType_, nullptr, "call.ret");
-          auto jitFnTy = FunctionType::get(
-              b.getVoidTy(),
-              {ptrTy, ptrTy, b.getInt8Ty(), i64Ty, i64Ty, ptrTy}, false);
+          auto jitFnTy = jit_fn_type(b, ptrTy);
           // The callee consumes each arg's +1 on every exit (the JitFn ABI),
           // so the arg slots go nil BEFORE the call — the slab alloca keeps
           // the values alive for the callee, and a region's release ladder
@@ -3007,33 +2956,21 @@ struct Lowering {
         }
         case Op::MultifnReg: {
           const Chunk& f = p.chunks[in.d];
-          auto* keyBytes = reinterpret_cast<const char*>(c.consts[in.c].data);
-          int64_t keyLen;
-          std::memcpy(&keyLen, keyBytes - 8, 8);
           auto keyG = j.get_or_create_global_str(
-              std::string(keyBytes, static_cast<size_t>(keyLen)), ".vm.mfkey");
+              _str_sv(reinterpret_cast<const char*>(c.consts[in.c].data)),
+              ".vm.mfkey");
           // Arity-only dispatch: a null-typed entry per param, the chunk's
-          // param names as .rodata (mirrors emit_multifn_register's arrays).
+          // param names as .rodata (emit_multifn_register's arrays, via the
+          // shared builder).
           auto nparams = static_cast<int64_t>(f.param_names.size());
-          llvm::Value* namesPtr = llvm::ConstantPointerNull::get(ptrTy);
-          llvm::Value* typesPtr = llvm::ConstantPointerNull::get(ptrTy);
-          if (nparams > 0) {
-            std::vector<llvm::Constant*> nameCs;
-            std::vector<llvm::Constant*> typeCs;
-            for (const auto& nm : f.param_names) {
-              nameCs.push_back(j.get_or_create_global_str(nm, ".vm.mfpn"));
-              typeCs.push_back(llvm::ConstantPointerNull::get(ptrTy));
-            }
-            auto arrTy = llvm::ArrayType::get(ptrTy, nameCs.size());
-            namesPtr = new llvm::GlobalVariable(
-                *j.module_, arrTy, /*isConstant=*/true,
-                llvm::GlobalValue::PrivateLinkage,
-                llvm::ConstantArray::get(arrTy, nameCs), ".vm.mfnames");
-            typesPtr = new llvm::GlobalVariable(
-                *j.module_, arrTy, /*isConstant=*/true,
-                llvm::GlobalValue::PrivateLinkage,
-                llvm::ConstantArray::get(arrTy, typeCs), ".vm.mftypes");
+          std::vector<llvm::Constant*> nameCs;
+          std::vector<llvm::Constant*> typeCs;
+          for (const auto& nm : f.param_names) {
+            nameCs.push_back(j.get_or_create_global_str(nm, ".vm.mfpn"));
+            typeCs.push_back(llvm::ConstantPointerNull::get(ptrTy));
           }
+          auto namesPtr = j.build_str_ptr_array(nameCs, ".vm.mfnames");
+          auto typesPtr = j.build_str_ptr_array(typeCs, ".vm.mftypes");
           auto bodyPtr =
               b.CreateIntToPtr(j.extract_data(load_slot(in.b)), ptrTy);
           auto disp = j.emit_call(
@@ -3086,26 +3023,22 @@ struct Lowering {
           auto [line, col] = chunk_pos_at(c, i);
           j.emit_range_step_check(j.extract_data(load_slot(in.a + 2)), line,
                                   col);
-          b.CreateStore(j.make_long(b.getInt64(in.c ? 2 : 0)),
-                        slots[in.a + 3]);
+          b.CreateStore(j.make_long(b.getInt64(0)), slots[in.a + 3]);
           b.CreateBr(blocks.at(in.b));
           break;
         }
         case Op::ForLoop: {
-          // RangeBounds::done()/take() spelled as IR; inclusive rides the
-          // flags slot as a per-loop constant the optimizer folds.
+          // RangeBounds::done()/take() spelled as IR; inclusive is the
+          // instruction's `d` immediate, so the compares are picked here.
           auto cur = j.extract_data(load_slot(in.a));
           auto end = j.extract_data(load_slot(in.a + 1));
           auto step = j.extract_data(load_slot(in.a + 2));
-          auto flags = j.extract_data(load_slot(in.a + 3));
-          auto exhausted =
-              b.CreateICmpNE(b.CreateAnd(flags, b.getInt64(1)), b.getInt64(0));
-          auto inclusive =
-              b.CreateICmpNE(b.CreateAnd(flags, b.getInt64(2)), b.getInt64(0));
-          auto up = b.CreateSelect(inclusive, b.CreateICmpSGT(cur, end),
-                                   b.CreateICmpSGE(cur, end));
-          auto down = b.CreateSelect(inclusive, b.CreateICmpSLT(cur, end),
-                                     b.CreateICmpSLE(cur, end));
+          auto exhausted = b.CreateICmpNE(
+              j.extract_data(load_slot(in.a + 3)), b.getInt64(0));
+          auto up = in.d ? b.CreateICmpSGT(cur, end)
+                         : b.CreateICmpSGE(cur, end);
+          auto down = in.d ? b.CreateICmpSLT(cur, end)
+                           : b.CreateICmpSLE(cur, end);
           auto step_pos = b.CreateICmpSGT(step, b.getInt64(0));
           auto done =
               b.CreateOr(exhausted, b.CreateSelect(step_pos, up, down));
@@ -3117,10 +3050,9 @@ struct Lowering {
           auto res = b.CreateCall(sadd, {cur, step});
           b.CreateStore(j.make_long(b.CreateExtractValue(res, 0)),
                         slots[in.a]);
-          auto newflags =
-              b.CreateOr(b.CreateAnd(flags, b.getInt64(2)),
-                         b.CreateZExt(b.CreateExtractValue(res, 1), i64Ty));
-          b.CreateStore(j.make_long(newflags), slots[in.a + 3]);
+          b.CreateStore(
+              j.make_long(b.CreateZExt(b.CreateExtractValue(res, 1), i64Ty)),
+              slots[in.a + 3]);
           j.emit_value_release(load_slot(in.c));
           b.CreateStore(j.make_long(cur), slots[in.c]);
           b.CreateBr(blocks.at(in.b));
@@ -3142,67 +3074,23 @@ struct Lowering {
     }
     j.current_lpad_ = nullptr;
 
-    // Fill the landingpad preludes (compile_try's pad, minus the AST path's
-    // scope state): classify via the carriers, rethrow a foreign exception
-    // toward the enclosing region's pad (or out of the function), and on
-    // the handled path restore the recursion depth, bind the caught value,
-    // and jump to the bytecode handler — whose release ladder then runs as
-    // ordinary instructions.
+    // Fill the landingpad preludes: emit_lpad_classify (compile_try's pad,
+    // minus the AST path's scope state) classifies via the carriers, binds
+    // the caught value, and jumps to the bytecode handler — whose release
+    // ladder then runs as ordinary instructions.
     for (size_t k = 0; k < c.eh.size(); ++k) {
       const auto& r = c.eh[k];
-      b.SetInsertPoint(lpads[k]);
-      auto lpadTy = StructType::get(ptrTy, b.getInt32Ty());
-      auto lp = b.CreateLandingPad(lpadTy, 1, "exc");
-      lp->addClause(ConstantPointerNull::get(cast<PointerType>(ptrTy)));
-      auto excPtr = b.CreateExtractValue(lp, {0}, "exc.ptr");
-      b.CreateCall(
-          j.module_->getOrInsertFunction("__cxa_begin_catch", ptrTy, ptrTy),
-          {excPtr});
-      b.CreateCall(j.module_->getOrInsertFunction(
-          "culebra_runtime_try_translate", b.getVoidTy()));
-      auto flag = b.CreateCall(
-          j.module_->getOrInsertFunction("culebra_runtime_get_is_throw",
-                                         b.getInt8Ty()),
-          {}, "is_throw");
-      auto ours = b.CreateICmpNE(flag, b.getInt8(0));
-      auto handleBB =
-          BasicBlock::Create(j.ctx_, std::format("eh.handle.{}", k), fn);
-      auto foreignBB =
-          BasicBlock::Create(j.ctx_, std::format("eh.foreign.{}", k), fn);
-      b.CreateCondBr(ours, handleBB, foreignBB);
-
-      b.SetInsertPoint(foreignBB);
-      {
-        BasicBlock* outer = nullptr;
-        for (size_t m = k + 1; m < c.eh.size(); ++m)
-          if (c.eh[m].start <= r.start && r.end <= c.eh[m].end) {
-            outer = lpads[m];
-            break;
-          }
-        // No enclosing region: a foreign exception still owes the frame's
-        // defers on its way out (interp's catch(...) runs run_deferred too).
-        if (!outer) outer = framePad;
-        j.emit_rethrow(outer);
-      }
-
-      b.SetInsertPoint(handleBB);
-      b.CreateCall(j.module_->getOrInsertFunction(
-          "culebra_runtime_clear_is_throw", b.getVoidTy()));
-      b.CreateCall(
-          j.module_->getOrInsertFunction("__cxa_end_catch", b.getVoidTy()));
-      b.CreateCall(j.module_->getOrInsertFunction(rt::recursion_restore,
-                                                  b.getVoidTy(), i64Ty),
-                   {b.CreateLoad(i64Ty, depthSlot, "rec.d")});
-      auto tagV = b.CreateCall(
-          j.module_->getOrInsertFunction("culebra_runtime_get_thrown_tag",
-                                         b.getInt8Ty()),
-          {}, "exc.tag");
-      auto dataV = b.CreateCall(
-          j.module_->getOrInsertFunction("culebra_runtime_get_thrown_data",
-                                         i64Ty),
-          {}, "exc.data");
-      b.CreateStore(j.make_value(tagV, dataV), slots[r.caught_slot]);
-      b.CreateBr(blocks.at(static_cast<int32_t>(r.handler)));
+      // A foreign exception rethrows toward the enclosing region's pad; with
+      // no enclosing region it still owes the frame's defers on its way out
+      // (interp's catch(...) runs run_deferred too), hence the frame pad.
+      BasicBlock* outer = framePad;
+      for (size_t m = k + 1; m < c.eh.size(); ++m)
+        if (c.eh[m].start <= r.start && r.end <= c.eh[m].end) {
+          outer = lpads[m];
+          break;
+        }
+      j.emit_lpad_classify(lpads[k], outer, depthSlot, slots[r.caught_slot],
+                           blocks.at(static_cast<int32_t>(r.handler)));
     }
 
     // Fill the frame pad (see its creation above). Ladder order: restore

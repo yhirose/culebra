@@ -668,7 +668,7 @@ _run-tests BACKEND:
         local out
         out="$(${TIMEOUT_BIN:+$TIMEOUT_BIN 300} tools/bench/vm_cases/compare.sh "$BIN" 2>&1)" \
             || { printf '%s\n' "$out"; exit 1; }
-        out="$(${TIMEOUT_BIN:+$TIMEOUT_BIN 300} tools/bench/vm_cases/gc_stress_check.sh "$BIN" 2>&1)" \
+        out="$(STRESS=1 ${TIMEOUT_BIN:+$TIMEOUT_BIN 300} tools/bench/vm_cases/compare.sh "$BIN" 2>&1)" \
             || { printf '%s\n' "$out"; exit 1; }
         echo "vm_cases OK (interp == --vm == --vm-llvm, + GC_STRESS)"
     }

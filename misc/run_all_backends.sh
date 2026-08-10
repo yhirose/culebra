@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Run one .cul file through interp, JIT, the VM lanes and AOT, and require the
 # same output from every lane that runs it. The VM lanes (--vm, --vm-llvm)
-# reject out-of-slice constructs with a compile-time VmError; that reports the
-# lane as SKIP (visible, still green), so each test's VM lanes light up on
-# their own as the slice grows. Any other VM mismatch fails like the rest.
+# reject out-of-slice constructs at compile time ("--vm: unsupported: ...");
+# that reports the lane as SKIP (visible, still green), so each test's VM
+# lanes light up on their own as the slice grows. Any other VM mismatch —
+# including a runtime VmError — fails like the rest.
 #
 # Usage: misc/run_all_backends.sh <culebra exe> <script.cul> <expected> <LABEL>
 #
@@ -26,7 +27,10 @@ for mode in "" "--jit" "--vm" "--vm-llvm"; do
   [ "$out" = "$expected" ] && continue
   case $mode in
     --vm*)
-      if [ "$rc" -ne 0 ] && [[ "$out" == *VmError* ]]; then
+      # Out-of-slice rejects share one contract ("--vm: unsupported: ...",
+      # Compiler::reject + main.cc's multi-module case); match that prefix,
+      # not the VmError kind, so a runtime VmError still FAILs loudly.
+      if [ "$rc" -ne 0 ] && [[ "$out" == *'--vm: unsupported:'* ]]; then
         echo "${label}_${mode}_SKIP"
         continue
       fi ;;

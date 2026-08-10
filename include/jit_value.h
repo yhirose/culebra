@@ -584,6 +584,26 @@ inline bool _is_refcounted_value_tag(int8_t tag) {
          tag == GC_TAG_TUPLE || tag == GC_TAG_SET;
 }
 
+// Primitive type-name → TAG_* (nullopt for anything else: `Any`, traits,
+// user classes). Single source for the JIT's TYPED_IDENT pattern emitter
+// and the VM compiler's tag gate — the generic-strip and the Any / union /
+// non-primitive policies stay with the callers.
+inline std::optional<int8_t> _culebra_primitive_type_tag(std::string_view tn) {
+  if (tn == "Nil") return TAG_NIL;
+  if (tn == "Bool") return TAG_BOOL;
+  if (tn == "Long") return TAG_LONG;
+  if (tn == "Float") return TAG_FLOAT;
+  if (tn == "String") return TAG_STRING;
+  if (tn == "StringView") return TAG_STRINGVIEW;
+  if (tn == "Array") return TAG_ARRAY;
+  if (tn == "Object") return TAG_OBJECT;
+  if (tn == "Function") return TAG_FUNC;
+  if (tn == "Tuple") return TAG_TUPLE;
+  if (tn == "Set") return TAG_SET;
+  if (tn == "Tensor") return TAG_TENSOR;
+  return std::nullopt;
+}
+
 // Forward decl: byte-view of a TAG_STRING or TAG_STRINGVIEW payload.
 inline std::string_view _culebra_str_view(int8_t tag, int64_t data);
 

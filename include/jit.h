@@ -410,12 +410,6 @@ struct JIT {
   struct LoopBlocks {
     llvm::BasicBlock* continue_target;
     llvm::BasicBlock* break_target;
-    // For a `for` / `while` body that contains defers, the defer-stack mark
-    // captured at the start of each iteration. break/continue run the
-    // iteration's defers back to this mark before branching (matching interp's
-    // eval_for / eval_while, which run_deferred on both signals). null when the
-    // body has no defer.
-    llvm::Value* defer_mark = nullptr;
     // Index into scopes_ of this loop's per-iteration body scope (the scope
     // pushed just before the loop_stack_ entry). break/continue release the
     // owned slots of every scope from the innermost open one down to this one
@@ -624,6 +618,55 @@ struct JIT {
         module_->getOrInsertFunction("__cxa_begin_catch", ptrTy, ptrTy),
         {excPtr});
     return lpad;
+  }
+
+  // Catch-all landingpad + carrier classification, shared by compile_try
+  // and the VM lowering's region pads: begin_catch, try_translate, then
+  // branch on is_throw. A foreign exception rethrows toward `foreignTarget`
+  // (null: out of the function). The handled path clears the flag, ends
+  // the catch, restores the recursion depth from `depthSlot` (frames
+  // unwound between the throw and the handler never ran their `leave`),
+  // stores the thrown value into `caughtSlot`, and branches to `handlerBB`.
+  void emit_lpad_classify(llvm::BasicBlock* lpadBB,
+                          llvm::BasicBlock* foreignTarget,
+                          llvm::Value* depthSlot, llvm::Value* caughtSlot,
+                          llvm::BasicBlock* handlerBB) {
+    auto fn = lpadBB->getParent();
+    emit_catch_all_prologue(lpadBB, "exc");
+    builder_.CreateCall(module_->getOrInsertFunction(
+        "culebra_runtime_try_translate", builder_.getVoidTy()));
+    auto flagVal = builder_.CreateCall(
+        module_->getOrInsertFunction("culebra_runtime_get_is_throw",
+                                     builder_.getInt8Ty()),
+        {}, "is_throw");
+    auto isOurs = builder_.CreateICmpNE(flagVal, builder_.getInt8(0));
+    auto handleBB = llvm::BasicBlock::Create(ctx_, "lpad.handle", fn);
+    auto foreignBB = llvm::BasicBlock::Create(ctx_, "lpad.foreign", fn);
+    builder_.CreateCondBr(isOurs, handleBB, foreignBB);
+
+    builder_.SetInsertPoint(foreignBB);
+    emit_rethrow(foreignTarget);
+
+    builder_.SetInsertPoint(handleBB);
+    builder_.CreateCall(module_->getOrInsertFunction(
+        "culebra_runtime_clear_is_throw", builder_.getVoidTy()));
+    builder_.CreateCall(
+        module_->getOrInsertFunction("__cxa_end_catch", builder_.getVoidTy()));
+    builder_.CreateCall(
+        module_->getOrInsertFunction(rt::recursion_restore,
+                                     builder_.getVoidTy(),
+                                     builder_.getInt64Ty()),
+        {builder_.CreateLoad(builder_.getInt64Ty(), depthSlot, "rec.d")});
+    auto tagVal = builder_.CreateCall(
+        module_->getOrInsertFunction("culebra_runtime_get_thrown_tag",
+                                     builder_.getInt8Ty()),
+        {}, "exc.tag");
+    auto dataVal = builder_.CreateCall(
+        module_->getOrInsertFunction("culebra_runtime_get_thrown_data",
+                                     builder_.getInt64Ty()),
+        {}, "exc.data");
+    builder_.CreateStore(make_value(tagVal, dataVal), caughtSlot);
+    builder_.CreateBr(handlerBB);
   }
 
   // If any construction sub-call could throw, its invoke made `cleanupBB` a
@@ -3162,6 +3205,21 @@ struct JIT {
     return g;
   }
 
+  // Constant char*-array .rodata (a param name/type table): null for an
+  // empty list. Shared by emit_multifn_register, the JitFn arity prologue,
+  // and the VM lowering's multifn/arity sites.
+  llvm::Value* build_str_ptr_array(const std::vector<llvm::Constant*>& ptrs,
+                                   const char* tag) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    if (ptrs.empty()) return llvm::ConstantPointerNull::get(ptrTy);
+    auto arrayTy = llvm::ArrayType::get(ptrTy, ptrs.size());
+    auto gv = new llvm::GlobalVariable(
+        *module_, arrayTy, /*isConstant=*/true,
+        llvm::GlobalValue::PrivateLinkage,
+        llvm::ConstantArray::get(arrayTy, ptrs), tag);
+    return builder_.CreateBitCast(gv, ptrTy);
+  }
+
   // Get the raw cell pointer from a Cell slot (for passing to closure).
   llvm::Value* cell_ptr_of(const VarSlot& slot) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
@@ -5465,6 +5523,10 @@ struct JIT {
                                std::string_view op, bool inplace = false) {
     // Callee-cleans (same as emit_binop_dispatch, which covers again for
     // its own callers): matmul/pow below call their helpers directly.
+    // Those two have no `_borrow` twins, so the VM slice must not reach
+    // them — fail loudly instead of silently violating the contract.
+    if (vm_borrow_ops_ && (op == "@" || op == "**"))
+      throw std::runtime_error("vm: pow/matmul lack borrow-contract helpers");
     UnwindCovered cover(this, {lhs, rhs});
     if (op == "@") {
       // No in-place matmul (output shape differs from lhs).
@@ -5490,25 +5552,29 @@ struct JIT {
            extract_tag(rhs), extract_data(rhs),
            current_line_val(), current_column_val()}, "cmp.pow");
     }
+    // One selection point for the (op, ownership-contract) → helper-name
+    // mapping: callee-cleans by default, the Tensor-aware in-place variant,
+    // or the VM lowering's `_borrow` twin (inplace never combines with it).
     char ope = op[0];
     const char* rt_name = nullptr;
     switch (ope) {
-      case '+': rt_name = inplace ? rt::num_inplace_add : rt::num_add; break;
-      case '-': rt_name = inplace ? rt::num_inplace_sub : rt::num_sub; break;
-      case '*': rt_name = inplace ? rt::num_inplace_mul : rt::num_mul; break;
-      case '/': rt_name = inplace ? rt::num_inplace_div : rt::num_div; break;
-      case '%': rt_name = rt::num_mod; break;  // mod has no Tensor in-place
+      case '+': rt_name = vm_borrow_ops_ ? rt::num_add_borrow
+                          : inplace      ? rt::num_inplace_add
+                                         : rt::num_add; break;
+      case '-': rt_name = vm_borrow_ops_ ? rt::num_sub_borrow
+                          : inplace      ? rt::num_inplace_sub
+                                         : rt::num_sub; break;
+      case '*': rt_name = vm_borrow_ops_ ? rt::num_mul_borrow
+                          : inplace      ? rt::num_inplace_mul
+                                         : rt::num_mul; break;
+      case '/': rt_name = vm_borrow_ops_ ? rt::num_div_borrow
+                          : inplace      ? rt::num_inplace_div
+                                         : rt::num_div; break;
+      case '%':  // mod has no Tensor in-place
+        rt_name = vm_borrow_ops_ ? rt::num_mod_borrow : rt::num_mod;
+        break;
       default:
         throw std::runtime_error("invalid compound assignment operator");
-    }
-    if (vm_borrow_ops_) {
-      switch (ope) {  // inplace never combines with the VM contract
-        case '+': rt_name = rt::num_add_borrow; break;
-        case '-': rt_name = rt::num_sub_borrow; break;
-        case '*': rt_name = rt::num_mul_borrow; break;
-        case '/': rt_name = rt::num_div_borrow; break;
-        case '%': rt_name = rt::num_mod_borrow; break;
-      }
     }
     return emit_binop_dispatch(
         lhs, rhs, rt_name,
@@ -5645,16 +5711,13 @@ struct JIT {
     return compile(*ast.nodes[1]);
   }
 
-  Owned compile_unary_minus(const peg::Ast& ast) {
-    // The operand is a +1-owned temp; the Owned handle releases it once neg
-    // has read it (no-op for an immediate Long, frees a heap operand of an
-    // overloaded `__neg__`). Both paths join at mergeBB, where the handle's
-    // dtor emits the release.
-    Owned val = compile(*ast.nodes[1]);
-    auto tag = extract_tag(val.borrow());
-    auto longTag = builder_.getInt8(TAG_LONG);
-    auto isLong = builder_.CreateICmpEQ(tag, longTag);
-
+  // Value-level unary-minus dispatch: Long negates inline, everything else
+  // goes to num_neg (the `_borrow` twin under the VM contract). One dispatch
+  // definition, two consumers — compile_unary_minus and the VM lowering's
+  // Neg (the emit_arith_step precedent).
+  llvm::Value* emit_neg_step(llvm::Value* v) {
+    auto isLong = builder_.CreateICmpEQ(extract_tag(v),
+                                        builder_.getInt8(TAG_LONG));
     auto fn = builder_.GetInsertBlock()->getParent();
     auto intBB = llvm::BasicBlock::Create(ctx_, "neg.int", fn);
     auto slowBB = llvm::BasicBlock::Create(ctx_, "neg.slow", fn);
@@ -5663,27 +5726,34 @@ struct JIT {
 
     OwnedPhi merge(this, "neg.r");
     builder_.SetInsertPoint(intBB);
-    merge.add_incoming(
-        make_long(builder_.CreateNeg(extract_data(val.borrow()), "neg")));
+    merge.add_incoming(make_long(builder_.CreateNeg(extract_data(v), "neg")));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(slowBB);
     // Callee-cleans: num_neg releases the operand on every throw — its direct
     // type error and a user `__neg__` alike — so exclude it from the
-    // unwind-temp window (see emit_binop_dispatch).
-    UnwindCovered cover(this, {val.borrow()});
+    // unwind-temp window (see emit_binop_dispatch). The borrow twin leaves
+    // operands frame-owned instead (no pool entries exist under the VM).
+    UnwindCovered cover(this, {v});
     merge.add_incoming(emit_value_call(
-        module_->getOrInsertFunction(rt::num_neg, valueType_,
-                                     builder_.getInt8Ty(),
-                                     builder_.getInt64Ty(),
-                                     builder_.getInt64Ty(),
-                                     builder_.getInt64Ty()),
-        {extract_tag(val.borrow()), extract_data(val.borrow()),
+        module_->getOrInsertFunction(
+            vm_borrow_ops_ ? rt::num_neg_borrow : rt::num_neg, valueType_,
+            builder_.getInt8Ty(), builder_.getInt64Ty(),
+            builder_.getInt64Ty(), builder_.getInt64Ty()),
+        {extract_tag(v), extract_data(v),
          current_line_val(), current_column_val()}, "neg.num"));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(mergeBB);
-    return merge.finish(mergeBB);
+    return merge.finish(mergeBB).consume();
+  }
+
+  Owned compile_unary_minus(const peg::Ast& ast) {
+    // The operand is a +1-owned temp; the Owned handle releases it once neg
+    // has read it (no-op for an immediate Long, frees a heap operand of an
+    // overloaded `__neg__`).
+    Owned val = compile(*ast.nodes[1]);
+    return own(emit_neg_step(val.borrow()));
   }
 
   Owned compile_unary_not(const peg::Ast& ast) {
@@ -6473,18 +6543,8 @@ struct JIT {
             tn = culebra::parse_generic_head(tn).outer;
           }
           if (tn == "Any")    return builder_.getTrue();
-          if (tn == "Nil")    return builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_NIL));
-          if (tn == "Bool")   return builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_BOOL));
-          if (tn == "Long")   return builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_LONG));
-          if (tn == "Float")  return builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_FLOAT));
-          if (tn == "String") return builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_STRING));
-          if (tn == "StringView") return builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_STRINGVIEW));
-          if (tn == "Array")  return builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_ARRAY));
-          if (tn == "Object") return builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT));
-          if (tn == "Function") return builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_FUNC));
-          if (tn == "Tuple")  return builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_TUPLE));
-          if (tn == "Set")    return builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_SET));
-          if (tn == "Tensor") return builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_TENSOR));
+          if (auto t = _culebra_primitive_type_tag(tn))
+            return builder_.CreateICmpEQ(tag, builder_.getInt8(*t));
           // Non-primitive name: trait or user class. Delegate to the
           // runtime so trait conformance (StringLike etc.) and class
           // checks share one path with the rest of the type system.
@@ -7116,7 +7176,7 @@ struct JIT {
     scopes_.back().defer_mark = mark;
     current_lpad_ = cleanupBB;
 
-    loop_stack_.push_back({condBB, afterBB, mark, scopes_.size() - 1});
+    loop_stack_.push_back({condBB, afterBB, scopes_.size() - 1});
     // compile_statements returns the body block's final-statement value as an
     // owned (+1) temporary; a loop discards it every iteration, so release it
     // (else a body ending in a heap expression leaks one object per pass).
@@ -7685,7 +7745,7 @@ struct JIT {
     scopes_.back().defer_mark = mark;
     current_lpad_ = cleanupBB;
 
-    loop_stack_.push_back({continue_bb, break_bb, mark, scopes_.size() - 1});
+    loop_stack_.push_back({continue_bb, break_bb, scopes_.size() - 1});
     // compile_statements hands back the body block's final-statement value as
     // an owned (+1) temporary; the loop discards it each iteration, so release
     // it (else a body ending in a heap expression — `for x in xs { f(x) }`,
@@ -8861,18 +8921,8 @@ struct JIT {
     }
     auto n_param_types = static_cast<int64_t>(typePtrs.size());
 
-    auto build_str_array = [&](const std::vector<llvm::Constant*>& ptrs,
-                               const char* tag) -> llvm::Value* {
-      if (ptrs.empty()) return llvm::ConstantPointerNull::get(ptrTy);
-      auto arrayTy = llvm::ArrayType::get(ptrTy, ptrs.size());
-      auto initializer = llvm::ConstantArray::get(arrayTy, ptrs);
-      auto gv = new llvm::GlobalVariable(
-          *module_, arrayTy, /*isConstant=*/true,
-          llvm::GlobalValue::PrivateLinkage, initializer, tag);
-      return builder_.CreateBitCast(gv, ptrTy);
-    };
-    llvm::Value* paramTypesPtr = build_str_array(typePtrs, ".paramtypes");
-    llvm::Value* paramNamesPtr = build_str_array(namePtrs, ".paramnames");
+    llvm::Value* paramTypesPtr = build_str_ptr_array(typePtrs, ".paramtypes");
+    llvm::Value* paramNamesPtr = build_str_ptr_array(namePtrs, ".paramnames");
 
     auto namePtr = get_or_create_global_str(regKey, ".mname");
     auto dispatcherPtr = emit_call(
@@ -12821,7 +12871,6 @@ struct JIT {
   // ran last. `return` inside BODY / HANDLER returns from the
   // enclosing user function (standard LLVM ret semantics).
   Owned compile_try(const peg::Ast& ast) {
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
 
     auto tryBB = llvm::BasicBlock::Create(ctx_, "try.body", fn);
@@ -12910,67 +12959,7 @@ struct JIT {
     // recorded in the pending carrier at its construction. Either way, read the
     // carried tag/data and proceed to the catch body; a foreign exception (no
     // carrier) leaves the flag 0 so we rethrow and keep unwinding. ---
-    builder_.SetInsertPoint(lpadBB);
-    auto lpadTy = llvm::StructType::get(ptrTy, builder_.getInt32Ty());
-    auto lpad = builder_.CreateLandingPad(lpadTy, 1, "exc");
-    lpad->addClause(llvm::ConstantPointerNull::get(ptrTy));  // catch-all
-
-    // Enter the C++ catch context so we own the exception — needed for the
-    // __cxa_end_catch that consumes it on the handled path and the __cxa_rethrow
-    // on the foreign path. (translate no longer re-raises it; it reads the
-    // carrier, so begin_catch is only about owning the region now.)
-    auto excPtr = builder_.CreateExtractValue(lpad, {0}, "exc.ptr");
-    auto beginCatch = module_->getOrInsertFunction(
-        "__cxa_begin_catch", ptrTy, ptrTy);
-    builder_.CreateCall(beginCatch, {excPtr});
-    auto translateFn = module_->getOrInsertFunction(
-        "culebra_runtime_try_translate", builder_.getVoidTy());
-    builder_.CreateCall(translateFn);
-
-    // Load the flag: `culebra_runtime_throw` set it for user throws,
-    // `culebra_runtime_try_translate` for catchable C++ runtime errors.
-    // Either way, 1 means we have a value to bind to the catch name.
-    auto getIsThrow = module_->getOrInsertFunction(
-        "culebra_runtime_get_is_throw", builder_.getInt8Ty());
-    auto flagVal = builder_.CreateCall(getIsThrow, {}, "is_throw");
-    auto isOurs = builder_.CreateICmpNE(flagVal, builder_.getInt8(0));
-    auto handleBB = llvm::BasicBlock::Create(ctx_, "try.handle", fn);
-    auto notOursBB = llvm::BasicBlock::Create(ctx_, "try.notours", fn);
-    builder_.CreateCondBr(isOurs, handleBB, notOursBB);
-
-    // Not classifiable — rethrow so the foreign exception keeps
-    // unwinding past this try/catch.
-    builder_.SetInsertPoint(notOursBB);
-    emit_rethrow(savedLpad);
-
-    builder_.SetInsertPoint(handleBB);
-    // Clear the flag and consume the exception.
-    auto clearIsThrow = module_->getOrInsertFunction(
-        "culebra_runtime_clear_is_throw", builder_.getVoidTy());
-    builder_.CreateCall(clearIsThrow);
-    auto endCatchFn = module_->getOrInsertFunction("__cxa_end_catch",
-                                                   builder_.getVoidTy());
-    builder_.CreateCall(endCatchFn);
-    // Handled: bring the recursion count back to this frame's level (see
-    // the try.rec snapshot above). The foreign-exception arm keeps
-    // unwinding, so an outer handler restores instead.
-    {
-      auto d = builder_.CreateLoad(builder_.getInt64Ty(), recSlot, "rec.d");
-      builder_.CreateCall(module_->getOrInsertFunction(
-                              rt::recursion_restore, builder_.getVoidTy(),
-                              builder_.getInt64Ty()),
-                          {d});
-    }
-    // Read the thrown Value via accessors (see thread-local note above).
-    auto getTag = module_->getOrInsertFunction(
-        "culebra_runtime_get_thrown_tag", builder_.getInt8Ty());
-    auto getData = module_->getOrInsertFunction(
-        "culebra_runtime_get_thrown_data", builder_.getInt64Ty());
-    auto tagVal = builder_.CreateCall(getTag, {}, "exc.tag");
-    auto dataVal = builder_.CreateCall(getData, {}, "exc.data");
-    llvm::Value* caught = make_value(tagVal, dataVal);
-    builder_.CreateStore(caught, caughtSlot);
-    builder_.CreateBr(catchBB);
+    emit_lpad_classify(lpadBB, savedLpad, recSlot, caughtSlot, catchBB);
 
     // --- Catch body: bind thrown value as `name`. A throw from the handler
     // (e.g. `catch e { throw e }`) must release the handler scope's owned

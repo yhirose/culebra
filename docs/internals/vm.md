@@ -614,7 +614,8 @@ VmError there is an output mismatch — a slice regression turns the
 gate red instead of relying on a manually run script. And
 `misc/run_all_backends.sh`, the shared single-script symmetry
 helper the Windows CI jobs call, grew `--vm` / `--vm-llvm` lanes: a
-matching output passes, a compile-time VmError reject prints the
+matching output passes, an out-of-slice reject (the one
+`--vm: unsupported: ...` contract every reject shares) prints the
 lane as SKIP (visible, still green), and anything else fails — so
 each test's VM lanes light up on their own as the slice grows. The
 generated difftest corpus stays two-lane for now: its chunks are

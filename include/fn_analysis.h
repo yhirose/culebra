@@ -107,6 +107,12 @@ struct FnAnalysis {
   // this set skip emitting scope.mark / scope.cleanup landingpad.
   std::unordered_set<const peg::Ast*> scope_has_defer;
 
+  // TRY nodes whose body subtree registers any defer on the enclosing
+  // frame's stack, at ANY scope depth (still stopping at nested FUNCTION /
+  // DEFER boundaries). A throw mid-region leaves those defers pending, so
+  // the VM's region handler needs a mark exactly when the node is in here.
+  std::unordered_set<const peg::Ast*> try_region_has_defer;
+
   FuncInfo analyze_program(const peg::Ast& programAst) {
     // Shadow analysis is single-sourced in lint.h (the same check the
     // interpreter runs). collect_fn_locals/visit_for_frees below only collect
@@ -124,6 +130,7 @@ struct FnAnalysis {
 
  private:
   IsBuiltinVar is_builtin_var_;
+  int defer_count_ = 0;  // DEFER nodes seen so far, across all scans
 
   // Collect names introduced by `let x = ...` or by bare `x = ...` where x is
   // not in any outer scope (auto-local). Does not descend into nested
@@ -746,6 +753,7 @@ struct FnAnalysis {
     if (node.tag == "RETURN"_) info.has_return = true;
     if (node.tag == "DEFER"_) {
       info.has_any_defer = true;
+      ++defer_count_;  // try_region_has_defer's any-depth witness
       if (at_fn_top) {
         info.has_fn_defer = true;
         // Function-level defers run on throw via a cleanup landingpad
@@ -760,10 +768,13 @@ struct FnAnalysis {
       // TRY = [body, catch_ident, catch_body]. Both blocks are their own
       // scopes (interp's tryEnv / catchEnv each run_deferred at exit):
       // absorb their defers so they fire when the block closes, not at
-      // function exit.
+      // function exit. The counter snapshot sees defers the body's nested
+      // scopes absorbed (the return value deliberately does not).
+      int defers_before_body = defer_count_;
       if (scan_eh_defer(*node.nodes[0], /*at_fn_top=*/false, info)) {
         scope_has_defer.insert(node.nodes[0].get());
       }
+      if (defer_count_ > defers_before_body) try_region_has_defer.insert(&node);
       if (scan_eh_defer(*node.nodes[2], /*at_fn_top=*/false, info)) {
         scope_has_defer.insert(node.nodes[2].get());
       }
